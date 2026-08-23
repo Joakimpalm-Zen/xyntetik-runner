@@ -1306,15 +1306,28 @@ int main(int argc, char **argv) {
             // base/data/seed/config must produce the same adapter_sha256.
             char rec[1024];
             snprintf(rec, sizeof rec, "%s.train.json", train_out);
-            char bsha[65] = "", dsha[65] = "", asha[65] = "";
+            char bsha[65] = "", dsha[65] = "", asha[65] = "", xsha[65] = "";
             envelope_file_sha256(load_path, bsha);
             envelope_file_sha256(train_path, dsha);
             envelope_file_sha256(train_out, asha);
+            // The running binary's own hash + build identity, so a
+            // reproduction report can distinguish "same executable" from
+            // "same source" mechanically. The determinism contract is
+            // ARTIFACT-level: same binary + same inputs -> same adapter
+            // bytes. An external rebuild study showed a different ISA
+            // profile changes the bytes (libm expf in SiLU/softmax; the
+            // fmaf chains are pinned, transcendentals are the compiler's)
+            // while behavior stays put — these fields make that boundary
+            // visible in every record.
+            envelope_file_sha256(argv[0], xsha);
             FILE *rf = fopen(rec, "wb");
             if (rf) {
                 fprintf(rf,
                     "{\"schema_version\":\"xyntetik.runner.train.v1\","
                     "\"runner\":\"%s\","
+                    "\"build\":{\"binary_sha256\":\"%s\","
+                    "\"compiler\":\"%s\",\"os\":\"%s\","
+                    "\"arch\":\"%s\"},"
                     "\"base\":{\"path\":\"%s\",\"sha256\":\"%s\"},"
                     "\"data\":{\"path\":\"%s\",\"sha256\":\"%s\"},"
                     "\"seed\":%llu,\"lora_rank\":%d,\"alpha\":%g,"
@@ -1323,7 +1336,20 @@ int main(int argc, char **argv) {
                     "\"eps\":1e-8,\"weight_decay\":0.01},"
                     "\"loss_first\":%.6f,\"loss_last\":%.6f,"
                     "\"adapter\":{\"path\":\"%s\",\"sha256\":\"%s\"}}\n",
-                    RUNNER_VERSION, load_path, bsha, train_path, dsha,
+                    RUNNER_VERSION, xsha, __VERSION__,
+#ifdef _WIN32
+                    "windows",
+#elif defined(__APPLE__)
+                    "macos",
+#else
+                    "linux",
+#endif
+#if defined(__aarch64__) || defined(_M_ARM64)
+                    "arm64",
+#else
+                    "x86_64",
+#endif
+                    load_path, bsha, train_path, dsha,
                     (unsigned long long)(seed_given ? smp.rng : 0),
                     lora_rank, (double)m.lora_alpha, (double)train_lr,
                     train_steps, wctx, first_loss, last_loss, train_out,

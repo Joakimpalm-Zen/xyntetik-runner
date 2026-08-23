@@ -80,6 +80,10 @@ def test_training_is_byte_deterministic(runner_bin, base, tmp_path):
     r2 = json.loads((tmp_path / "a2.gguf.train.json").read_text())
     assert r1["adapter"]["sha256"] == r2["adapter"]["sha256"]
     assert len(r1["base"]["sha256"]) == 64 and len(r1["data"]["sha256"]) == 64
+    # build identity: same executable must be distinguishable from same
+    # source in any reproduction report (external rebuild study, 2026-08)
+    assert len(r1["build"]["binary_sha256"]) == 64
+    assert r1["build"]["compiler"] and r1["build"]["os"] and r1["build"]["arch"]
 
 
 def test_loss_falls_and_adapter_improves_score(runner_bin, base, tmp_path):

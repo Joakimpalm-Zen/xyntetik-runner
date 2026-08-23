@@ -8,6 +8,15 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **Provenance carries build identity**: `.train.json` records the
+  running binary's sha256, compiler, OS and arch — so reproduction
+  reports can distinguish "same executable" from "same source". Prompted
+  by an independent external reproduction (which also confirmed adapter
+  byte-equality on a Tesla T4, a third GPU generation): a rebuild under a
+  different ISA profile changes the bytes via libm's `expf`, so the
+  determinism contract is explicitly artifact-level + behavioral, and the
+  docs now say so (three-level taxonomy, credited).
+
 - **D8 slice 3 — position-batched backward, 2.3× on the CPU** (47 →
   20.5 s/step at 4B, 96 threads): every projection site runs as one
   batched transposed matvec over the training window; workers partition

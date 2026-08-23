@@ -380,6 +380,29 @@ with a pass-band you don't control. Scaling an adapter 8× to survive a
 4-bit merge hands the filter a model the exact form of which you can no
 longer serve.
 
+## Reproducibility, scoped by an external reproduction
+
+An independent reproduction (HF forum, 2026-08-23) confirmed the
+determinism claim on hardware this project never touched — including the
+GPU-assisted backward on a **Tesla T4** (a third GPU generation, and
+exactly the sm_75 floor the embedded PTX targets): identical adapter
+sha256 and loss, CPU vs GPU, byte for byte. The same report contributed a
+finding we had not measured: **rebuilding from source under a different
+ISA profile changes the adapter bytes** (behavior essentially unchanged,
+cosine ~1.0). The mechanism is libm: the trainer's fmaf chains are
+pinned, but SiLU and softmax call `expf`, whose implementation varies
+with compiler codegen and ISA profile.
+
+The reproduction's three-level taxonomy is adopted here, with credit:
+(1) **artifact determinism** — same binary + same inputs → same adapter
+bytes: claimed and gated; (2) **build reproducibility** — independent
+rebuilds byte-agree: NOT claimed, and now known to fail at the libm/ISA
+boundary; (3) **behavioral reproducibility** — same predictions/task
+performance: measured by the evals. The `.train.json` provenance record
+carries the running binary's own sha256, compiler, OS and arch, so any
+reproduction report can distinguish "same executable" from "same source"
+mechanically.
+
 ## Interop, measured in both directions
 
 The "format matches llama.cpp's by construction" claim graduated to
