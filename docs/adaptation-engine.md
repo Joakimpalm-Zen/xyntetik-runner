@@ -380,6 +380,34 @@ with a pass-band you don't control. Scaling an adapter 8× to survive a
 4-bit merge hands the filter a model the exact form of which you can no
 longer serve.
 
+## Measured: weight-space divergence IS behavioral — one level below top-1
+
+The three-precision study left a question on the table: the bf16- and
+Q4_K_M-trained adapters diverge 12% in weight space while every top-1
+metric sits at 1.000 — is the divergence real behavior or numerical
+trivia? The external reproduction proposed the right instrument before
+new benchmarks: compare held-out token logprobs. All 29 eval prompts,
+gold completions appended, scored through the SAME Q4_K_M serving base
+under each adapter (3,195 scored positions):
+
+| pair | weight rel L2 | mean \|Δlogprob\| | p95 | positions >1 nat |
+|---|---|---|---|---|
+| bf16-ad vs Q8-ad | 0.019 | **0.020** | 0.086 | 0% |
+| bf16-ad vs Q4-ad | 0.122 | **0.146** | 0.65 | 2.2% |
+| Q8-ad vs Q4-ad | 0.120 | 0.145 | 0.49 | 2.3% |
+| base vs any adapter | — | 0.32–0.40 | ~1.1–1.7 | 6–8% |
+
+Read: the divergence is real behavior. The Q4-trained adapter differs
+from the bf16-trained one by roughly **40% of the entire adapter effect**
+in logprob space (0.146 vs ~0.36), with a 6× weight-space gap mapping to
+a 7.4× logprob gap — essentially proportional. It is invisible at top-1
+only because this task's decisions have wide margins; on a task whose
+decisions sit closer to zero margin, this is the size of gap that flips
+answers. "Fine-tune FP16 then quantize" and "adapt the deployed quant"
+are not just measurably different objects — they are measurably
+different *behaviors*, one level below where the eval saturates. Raw
+per-position score outputs are in the HF repo (`evals/logprob-study/`).
+
 ## Reproducibility, scoped by an external reproduction
 
 An independent reproduction (HF forum, 2026-08-23) confirmed the
