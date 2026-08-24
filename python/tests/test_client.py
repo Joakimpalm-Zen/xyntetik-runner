@@ -149,6 +149,19 @@ class _Response:
 
 
 class EndpointTests(unittest.TestCase):
+    def test_explicit_zero_timeout_is_not_replaced_by_the_default(self):
+        seen = []
+        endpoint = RunnerEndpoint(
+            "http://127.0.0.1:8080",
+            timeout=600,
+            opener=lambda request, timeout: (
+                seen.append(timeout) or _Response(payload={"ok": True})
+            ),
+        )
+
+        self.assertEqual(endpoint.get_json("/health", timeout=0), {"ok": True})
+        self.assertEqual(seen, [0])
+
     def test_pre_cancelled_stream_never_opens_request(self):
         cancelled = threading.Event()
         cancelled.set()

@@ -349,7 +349,8 @@ class RunnerEndpoint:
         self, request: urllib.request.Request, *, timeout: float | None
     ) -> dict[str, Any]:
         try:
-            with self._open(request, timeout or self.timeout) as response:
+            effective_timeout = self.timeout if timeout is None else timeout
+            with self._open(request, effective_timeout) as response:
                 body = response.read()
         except urllib.error.HTTPError as error:
             raise self._http_error(error) from error
