@@ -34,6 +34,18 @@ typedef int sock_t;
 #define sock_close close
 #endif
 
+#ifdef RUNNER_TEST_TRAY_HTTP
+// Make stream short writes deterministic in the tray-core transport gate.
+// Defined before the macro so the underlying call remains the real send().
+static int tray_test_send(sock_t s, const char *buf, int n, int flags) {
+    const char *chunk = getenv("RUNNER_TEST_TRAY_SEND_CHUNK");
+    int max = chunk ? atoi(chunk) : 0;
+    if (max > 0 && n > max) n = max;
+    return (int)send(s, buf, n, flags);
+}
+#define send(s, buf, n, flags) tray_test_send((s), (buf), (int)(n), (flags))
+#endif
+
 // ------------------------------------------------------------------ config
 
 // <config_dir>/config.json — sibling of instances/. Format:
@@ -373,7 +385,26 @@ static void self_exe(char *out, size_t cap) {
 // One loopback GET, best-effort: fills `out` with the raw response (headers
 // included) and returns false on any failure. Shared by the model list and the
 // activity poll so there is one timeout policy and one socket teardown path.
+static bool tray_send_all(sock_t s, const char *buf, int n) {
+    while (n > 0) {
+        int sent = (int)send(s, buf, n, 0);
+        if (sent > 0) {
+            buf += sent;
+            n -= sent;
+            continue;
+        }
+#ifdef _WIN32
+        if (sent < 0 && WSAGetLastError() == WSAEINTR) continue;
+#else
+        if (sent < 0 && errno == EINTR) continue;
+#endif
+        return false;
+    }
+    return true;
+}
+
 static bool http_get_loopback(int port, const char *path, char *out, int cap) {
+    if (!path || !out || cap < 2 || port < 1 || port > 65535) return false;
 #ifdef _WIN32
     static bool wsa_up = false;
     if (!wsa_up) { WSADATA w; wsa_up = WSAStartup(MAKEWORD(2, 2), &w) == 0; }
@@ -400,15 +431,34 @@ static bool http_get_loopback(int port, const char *path, char *out, int cap) {
     int rl = snprintf(req, sizeof req,
                       "GET %s HTTP/1.1\r\nHost: 127.0.0.1:%d\r\n"
                       "Connection: close\r\n\r\n", path, port);
-    if (send(s, req, rl, 0) != rl) { sock_close(s); return false; }
+    if (rl < 0 || rl >= (int)sizeof req || !tray_send_all(s, req, rl)) {
+        sock_close(s);
+        return false;
+    }
 
-    int n = 0, r;
-    while (n < cap - 1 && (r = (int)recv(s, out + n, cap - 1 - n, 0)) > 0)
-        n += r;
+    int n = 0;
+    bool clean_close = false;
+    while (n < cap - 1) {
+        int r = (int)recv(s, out + n, cap - 1 - n, 0);
+        if (r > 0) { n += r; continue; }
+        if (r == 0) { clean_close = true; break; }
+#ifdef _WIN32
+        if (WSAGetLastError() == WSAEINTR) continue;
+#else
+        if (errno == EINTR) continue;
+#endif
+        break;
+    }
     sock_close(s);
     out[n] = 0;
-    return n > 0;
+    return clean_close && n > 0;
 }
+
+#ifdef RUNNER_TEST_TRAY_HTTP
+bool tray_http_get_for_test(int port, const char *path, char *out, int cap) {
+    return http_get_loopback(port, path, out, cap);
+}
+#endif
 
 // A swap-mode server registers with an empty models list (models come and go
 // at runtime), so the menu asks the instance itself and parses the ids.

@@ -533,7 +533,8 @@ endif
 TEST_TRAY_CORE_SRC = tests/test_tray_core.c src/tray.c src/tray_stub.c \
                      src/instances.c src/json.c
 $(TEST_TRAY_CORE): $(TEST_TRAY_CORE_SRC) $(HDR)
-	$(CC) $(CFLAGS) -I src $(TEST_TRAY_CORE_SRC) -o $@ -lm $(TRAY_TEST_LIBS)
+	$(CC) $(CFLAGS) -DRUNNER_TEST_TRAY_HTTP -I src $(TEST_TRAY_CORE_SRC) \
+		-o $@ -lm $(TRAY_TEST_LIBS)
 
 # TC tolerance gate: same shape as the q8-KV gate — teacher-forced logits,
 # top-1 + bounded-deviation criteria, per (type, arch) via the model argument

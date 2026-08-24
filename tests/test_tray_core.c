@@ -18,8 +18,12 @@
 #define setenv_compat(k, v) _putenv_s(k, v)
 static void msleep(int ms) { Sleep(ms); }
 #else
+#include <arpa/inet.h>
+#include <netinet/in.h>
 #include <signal.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
 #define setenv_compat(k, v) setenv(k, v, 1)
@@ -28,6 +32,8 @@ static void msleep(int ms) {
     nanosleep(&ts, NULL);
 }
 #endif
+
+bool tray_http_get_for_test(int port, const char *path, char *out, int cap);
 
 static int fails = 0;
 #define CHECK(cond, msg) do { if (!(cond)) { \
@@ -46,6 +52,63 @@ static bool menu_has(const tray_item *it, int n, const char *needle) {
     return false;
 }
 
+#ifndef _WIN32
+static void check_tray_http_short_write(void) {
+    int listener = socket(AF_INET, SOCK_STREAM, 0);
+    CHECK(listener >= 0, "short-write fixture opens a listener");
+    if (listener < 0) return;
+    struct sockaddr_in addr = {0};
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    addr.sin_port = 0;
+    CHECK(bind(listener, (struct sockaddr *)&addr, sizeof addr) == 0,
+          "short-write fixture binds loopback");
+    CHECK(listen(listener, 1) == 0, "short-write fixture listens");
+    socklen_t alen = sizeof addr;
+    CHECK(getsockname(listener, (struct sockaddr *)&addr, &alen) == 0,
+          "short-write fixture resolves its port");
+
+    pid_t child = fork();
+    CHECK(child >= 0, "short-write fixture forks a peer");
+    if (child == 0) {
+        int client = accept(listener, NULL, NULL);
+        char req[512] = {0};
+        size_t n = 0;
+        while (client >= 0 && n < sizeof(req) - 1 &&
+               !strstr(req, "\r\n\r\n")) {
+            ssize_t r = read(client, req + n, sizeof(req) - 1 - n);
+            if (r <= 0) break;
+            n += (size_t)r;
+            req[n] = 0;
+        }
+        bool complete = strstr(req, "GET /health HTTP/1.1\r\n") != NULL &&
+                        strstr(req, "\r\n\r\n") != NULL;
+        static const char response[] =
+            "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n"
+            "Connection: close\r\n\r\n{}";
+        if (complete) write(client, response, sizeof(response) - 1);
+        if (client >= 0) close(client);
+        close(listener);
+        _exit(complete ? 0 : 3);
+    }
+    if (child < 0) { close(listener); return; }
+
+    setenv_compat("RUNNER_TEST_TRAY_SEND_CHUNK", "7");
+    char response[512];
+    bool ok = tray_http_get_for_test((int)ntohs(addr.sin_port), "/health",
+                                     response, sizeof response);
+    unsetenv("RUNNER_TEST_TRAY_SEND_CHUNK");
+    close(listener);
+    int status = 0;
+    waitpid(child, &status, 0);
+    CHECK(ok, "tray loopback GET survives short stream writes");
+    CHECK(ok && strstr(response, "\r\n\r\n{}") != NULL,
+          "tray loopback GET receives the response after a short write");
+    CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0,
+          "tray sent the complete request after a short write");
+}
+#endif
+
 int main(int argc, char **argv) {
     // ---- child mode: we ARE the "managed runner" the core spawned
     if (argc > 1 && strcmp(argv[1], "--serve") == 0) {
@@ -61,6 +124,10 @@ int main(int argc, char **argv) {
         msleep(30000);  // idle until the controller stops us
         return 0;
     }
+
+#ifndef _WIN32
+    check_tray_http_short_write();
+#endif
 
     // ---- parent mode: private registry + config under a fake HOME
     snprintf(g_home, sizeof g_home,
