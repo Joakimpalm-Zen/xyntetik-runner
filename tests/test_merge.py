@@ -83,6 +83,16 @@ def test_provenance_record_matches_files(runner_bin, fixtures, tmp_path):
     assert rec["target"] == "keep"
 
 
+def test_provenance_record_escapes_output_path(runner_bin, fixtures, tmp_path):
+    base, adapter = fixtures
+    merged = tmp_path / 'm"erged.gguf'
+    p = _merge(runner_bin, base, adapter, merged)
+    assert p.returncode == 0, p.stderr.decode(errors="replace")
+    record = pathlib.Path(f"{merged}.merge.json")
+    rec = json.loads(record.read_text())
+    assert rec["merged"]["path"] == str(merged)
+
+
 def test_quant_target_writes_that_type(runner_bin, fixtures, tmp_path):
     base, adapter = fixtures
     merged = tmp_path / "m8.gguf"

@@ -104,6 +104,18 @@ def test_jsonl_mode_trains_with_prompt_masking(runner_bin, base, tmp_path):
     _score(runner_bin, base, lora=out)
 
 
+def test_provenance_record_escapes_data_and_output_paths(
+        runner_bin, base, tmp_path):
+    data_name = 'corpus"quoted.txt'
+    (base / data_name).write_text(CORPUS)
+    out = tmp_path / 'adapter"quoted.gguf'
+    _train(runner_bin, base, out, data=data_name, steps=1)
+    record = pathlib.Path(f"{out}.train.json")
+    rec = json.loads(record.read_text())
+    assert rec["data"]["path"] == str(base / data_name)
+    assert rec["adapter"]["path"] == str(out)
+
+
 def test_gpu_training_matches_cpu_bytes(runner_bin, base, tmp_path):
     """D8 slice 2: RUNNER_TRAIN_GPU=1 must not change a single adapter byte.
 

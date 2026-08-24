@@ -94,6 +94,37 @@ static char *read_file(const char *path, size_t *out_len) {
     return buf;
 }
 
+// Write a machine-readable record beside an artifact. The document is built
+// through sbuf/sb_esc by the caller, so paths remain valid JSON on both POSIX
+// (where quotes are legal filename bytes) and Windows (where separators are
+// backslashes). The sidecar name is length-derived instead of living behind a
+// fixed PATH_MAX-shaped buffer: an artifact we successfully wrote must not get
+// a silently truncated or missing provenance filename.
+static bool write_provenance(const char *artifact, const char *suffix,
+                             const char *kind, const sbuf *doc) {
+    size_t an = strlen(artifact), sn = strlen(suffix);
+    if (doc->failed || an > SIZE_MAX - sn - 1) {
+        fprintf(stderr, "error: cannot build %s provenance record\n", kind);
+        return false;
+    }
+    char *path = malloc(an + sn + 1);
+    if (!path) {
+        fprintf(stderr, "error: cannot allocate %s provenance path\n", kind);
+        return false;
+    }
+    memcpy(path, artifact, an);
+    memcpy(path + an, suffix, sn + 1);
+    FILE *f = fopen(path, "wb");
+    bool ok = f && fwrite(doc->s, 1, doc->n, f) == doc->n &&
+              fflush(f) == 0 && !ferror(f);
+    if (f && fclose(f) != 0) ok = false;
+    if (ok) fprintf(stderr, "%s: provenance -> %s\n", kind, path);
+    else    fprintf(stderr, "error: cannot write %s provenance to %s\n",
+                    kind, path);
+    free(path);
+    return ok;
+}
+
 // One-shot and interactive CLI state has a shorter lifetime than the process
 // in embedding/tests. Keep its teardown explicit instead of relying on exit(2)
 // to reclaim it; that also makes the documented sanitizer command a real leak
@@ -922,27 +953,31 @@ int main(int argc, char **argv) {
             // the D7 discipline extended to merged artifacts: the standalone
             // blob stays auditable — base sha + adapter sha + config ->
             // merged sha, machine-written beside the file
-            char rec[1024];
-            snprintf(rec, sizeof rec, "%s.merge.json", merge_out);
             char bsha[65] = "", asha[65] = "", osha[65] = "";
             envelope_file_sha256(model_path, bsha);
             envelope_file_sha256(lora_path, asha);
             envelope_file_sha256(merge_out, osha);
-            FILE *rf = fopen(rec, "wb");
-            if (rf) {
-                fprintf(rf,
-                    "{\"schema_version\":\"xyntetik.runner.merge.v1\","
-                    "\"runner\":\"%s\","
-                    "\"base\":{\"path\":\"%s\",\"sha256\":\"%s\"},"
-                    "\"adapter\":{\"path\":\"%s\",\"sha256\":\"%s\"},"
-                    "\"lora_scale\":%g,\"target\":\"%s\","
-                    "\"merged\":{\"path\":\"%s\",\"sha256\":\"%s\"}}\n",
-                    RUNNER_VERSION, model_path, bsha, lora_path, asha,
-                    (double)lora_scale, quant_type ? quant_type : "keep",
-                    merge_out, osha);
-                fclose(rf);
-                fprintf(stderr, "merge: provenance -> %s\n", rec);
-            }
+            sbuf rec = {0};
+            sb_lit(&rec, "{\"schema_version\":\"xyntetik.runner.merge.v1\","
+                         "\"runner\":\"");
+            sb_esc(&rec, RUNNER_VERSION, strlen(RUNNER_VERSION));
+            sb_lit(&rec, "\",\"base\":{\"path\":\"");
+            sb_esc(&rec, model_path, strlen(model_path));
+            sb_lit(&rec, "\",\"sha256\":\""); sb_lit(&rec, bsha);
+            sb_lit(&rec, "\"},\"adapter\":{\"path\":\"");
+            sb_esc(&rec, lora_path, strlen(lora_path));
+            sb_lit(&rec, "\",\"sha256\":\""); sb_lit(&rec, asha);
+            sb_fmt(&rec, "\"},\"lora_scale\":%g,\"target\":\"",
+                   (double)lora_scale);
+            const char *target = quant_type ? quant_type : "keep";
+            sb_esc(&rec, target, strlen(target));
+            sb_lit(&rec, "\",\"merged\":{\"path\":\"");
+            sb_esc(&rec, merge_out, strlen(merge_out));
+            sb_lit(&rec, "\",\"sha256\":\""); sb_lit(&rec, osha);
+            sb_lit(&rec, "\"}}\n");
+            if (!write_provenance(merge_out, ".merge.json", "merge", &rec))
+                rc = 1;
+            free(rec.s);
         }
         return rc;
     }
@@ -1304,8 +1339,6 @@ int main(int argc, char **argv) {
             // D7: the provenance record, written beside every adapter — the
             // reproducibility claim in checkable form. Two runs with the same
             // base/data/seed/config must produce the same adapter_sha256.
-            char rec[1024];
-            snprintf(rec, sizeof rec, "%s.train.json", train_out);
             char bsha[65] = "", dsha[65] = "", asha[65] = "", xsha[65] = "";
             envelope_file_sha256(load_path, bsha);
             envelope_file_sha256(train_path, dsha);
@@ -1320,43 +1353,56 @@ int main(int argc, char **argv) {
             // while behavior stays put — these fields make that boundary
             // visible in every record.
             envelope_file_sha256(argv[0], xsha);
-            FILE *rf = fopen(rec, "wb");
-            if (rf) {
-                fprintf(rf,
-                    "{\"schema_version\":\"xyntetik.runner.train.v1\","
-                    "\"runner\":\"%s\","
-                    "\"build\":{\"binary_sha256\":\"%s\","
-                    "\"compiler\":\"%s\",\"os\":\"%s\","
-                    "\"arch\":\"%s\"},"
-                    "\"base\":{\"path\":\"%s\",\"sha256\":\"%s\"},"
-                    "\"data\":{\"path\":\"%s\",\"sha256\":\"%s\"},"
-                    "\"seed\":%llu,\"lora_rank\":%d,\"alpha\":%g,"
+            sbuf rec = {0};
+            sb_lit(&rec, "{\"schema_version\":\"xyntetik.runner.train.v1\","
+                         "\"runner\":\"");
+            sb_esc(&rec, RUNNER_VERSION, strlen(RUNNER_VERSION));
+            sb_lit(&rec, "\",\"build\":{\"binary_sha256\":\"");
+            sb_lit(&rec, xsha);
+            sb_lit(&rec, "\",\"compiler\":\"");
+            sb_esc(&rec, __VERSION__, strlen(__VERSION__));
+            sb_lit(&rec, "\",\"os\":\"");
+            const char *build_os =
+#ifdef _WIN32
+                    "windows";
+#elif defined(__APPLE__)
+                    "macos";
+#else
+                    "linux";
+#endif
+            sb_lit(&rec, build_os);
+            sb_lit(&rec, "\",\"arch\":\"");
+            const char *build_arch =
+#if defined(__aarch64__) || defined(_M_ARM64)
+                    "arm64";
+#else
+                    "x86_64";
+#endif
+            sb_lit(&rec, build_arch);
+            sb_lit(&rec, "\"},\"base\":{\"path\":\"");
+            sb_esc(&rec, load_path, strlen(load_path));
+            sb_lit(&rec, "\",\"sha256\":\""); sb_lit(&rec, bsha);
+            sb_lit(&rec, "\"},\"data\":{\"path\":\"");
+            sb_esc(&rec, train_path, strlen(train_path));
+            sb_lit(&rec, "\",\"sha256\":\""); sb_lit(&rec, dsha);
+            sb_fmt(&rec,
+                    "\"},\"seed\":%llu,\"lora_rank\":%d,\"alpha\":%g,"
                     "\"lr\":%g,\"steps\":%d,\"ctx\":%d,"
                     "\"adamw\":{\"beta1\":0.9,\"beta2\":0.999,"
                     "\"eps\":1e-8,\"weight_decay\":0.01},"
                     "\"loss_first\":%.6f,\"loss_last\":%.6f,"
-                    "\"adapter\":{\"path\":\"%s\",\"sha256\":\"%s\"}}\n",
-                    RUNNER_VERSION, xsha, __VERSION__,
-#ifdef _WIN32
-                    "windows",
-#elif defined(__APPLE__)
-                    "macos",
-#else
-                    "linux",
-#endif
-#if defined(__aarch64__) || defined(_M_ARM64)
-                    "arm64",
-#else
-                    "x86_64",
-#endif
-                    load_path, bsha, train_path, dsha,
+                    "\"adapter\":{\"path\":\"",
                     (unsigned long long)(seed_given ? smp.rng : 0),
                     lora_rank, (double)m.lora_alpha, (double)train_lr,
-                    train_steps, wctx, first_loss, last_loss, train_out,
-                    asha);
-                fclose(rf);
-                fprintf(stderr, "train: provenance -> %s\n", rec);
+                    train_steps, wctx, first_loss, last_loss);
+            sb_esc(&rec, train_out, strlen(train_out));
+            sb_lit(&rec, "\",\"sha256\":\""); sb_lit(&rec, asha);
+            sb_lit(&rec, "\"}}\n");
+            if (!write_provenance(train_out, ".train.json", "train", &rec)) {
+                free(rec.s);
+                CLI_FAIL;
             }
+            free(rec.s);
         }
         fprintf(stderr, "train: done — first-step loss %.4f, last-step "
                 "%.4f, adapter -> %s\n", first_loss, last_loss, train_out);
