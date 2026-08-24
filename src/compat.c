@@ -409,8 +409,8 @@ int plat_cpu_count(void) {
 
 int plat_default_thread_count(void) {
     int nc = plat_cpu_count();
-    bool perf_known = false;
 #ifdef __APPLE__
+    bool perf_known = false;
     int perf = 0;
     size_t len = sizeof(perf);
     if (sysctlbyname("hw.perflevel0.physicalcpu", &perf, &len, NULL, 0) == 0 &&
