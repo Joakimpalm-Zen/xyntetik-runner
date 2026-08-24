@@ -13,7 +13,7 @@ jobs:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       # The committed kernels_metal.h / kernels_ptx.h are what every build
       # embeds, so an edit to kernels.metal can be reviewed and merged while
       # the shipped binary still carries the OLD shader bytes. `make test` runs
@@ -481,7 +481,7 @@ jobs:
   make-test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       # PEP 668: keep the venv convention the `unix` job already uses, and pass
       # it in as PYTHON= so every recipe in the target — fixture generation as
       # well as pytest — runs against the interpreter that has pytest. Without
@@ -504,7 +504,7 @@ jobs:
   fuzz:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: install clang
         run: sudo apt-get update && sudo apt-get install -y clang llvm
       # the harnesses must keep compiling even when nobody runs them locally
@@ -516,7 +516,7 @@ jobs:
       # can be reproduced locally with ./fuzz-<target> <artifact>
       - name: upload crash artifacts
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: fuzz-crashes
           path: fuzz-corpus/*/crash-*
@@ -534,7 +534,7 @@ jobs:
       run:
         shell: msys2 {0}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: msys2/setup-msys2@v2
         with:
           msystem: UCRT64
@@ -673,7 +673,7 @@ jobs:
   conformance:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: build
         run: make
       - name: make test model
@@ -718,7 +718,7 @@ jobs:
           print('agent-torture', json.dumps(t))
           sys.exit(1 if t['failed'] else 0)
           "
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: conformance-report
@@ -731,8 +731,8 @@ jobs:
   consumer-compatibility:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm
@@ -748,7 +748,7 @@ jobs:
           npm ci --ignore-scripts --prefix tests/compatibility/node
       - name: official SDK, LiteLLM and LangChain compatibility
         run: .compat-venv/bin/python scripts/consumer_compat.py
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: consumer-compatibility-report
@@ -779,7 +779,7 @@ jobs:
   template-conformance:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: install jinja2
         # jinja2 renders the REFERENCE side. Without it nothing is compared,
         # and the harness says so (exit 2) instead of passing.
@@ -788,7 +788,7 @@ jobs:
           .tmpl-venv/bin/python -m pip install --quiet jinja2
       - name: runner C renderer vs upstream jinja templates
         run: .tmpl-venv/bin/python scripts/template-conformance.py --network-only
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: template-oracles

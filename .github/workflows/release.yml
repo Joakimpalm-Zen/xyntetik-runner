@@ -39,7 +39,7 @@ jobs:
       run:
         shell: ${{ matrix.os == 'windows-latest' && 'msys2 {0}' || 'bash' }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: msys2/setup-msys2@v2
         if: matrix.os == 'windows-latest'
         with:
@@ -94,7 +94,7 @@ jobs:
             shasum -a 256 "${{ matrix.artifact }}" "$ARCHIVE" > "${{ matrix.artifact }}.sha256"
           fi
           cat "${{ matrix.artifact }}.sha256"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.artifact }}
           path: |
@@ -108,8 +108,8 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
         with:
           merge-multiple: true
       - name: collect checksums
@@ -155,7 +155,7 @@ jobs:
       contents: read
       packages: write
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: docker/setup-buildx-action@v3
       - name: log in to GHCR
         uses: docker/login-action@v3
