@@ -5106,7 +5106,7 @@ bool model_lora_load(model_t *m, const char *path, float user_scale) {
             goto fail_tab;
         }
         struct lora_w *lw = &tab[(size_t)l * LW_SLOTS + s];
-        int64_t n_in = base->ne[0], n_out = base->ne[1];
+        uint64_t n_in = base->ne[0], n_out = base->ne[1];
         // our own writer emits F32; llama.cpp's convert_lora_to_gguf emits
         // F16 by default, and community adapters ship that way (measured:
         // the first third-party adapter tried was F16 and refused here).
@@ -5118,25 +5118,27 @@ bool model_lora_load(model_t *m, const char *path, float user_scale) {
                     ggml_type_name(t->type));
             goto fail_tab;
         }
-        int64_t r = side == 'a' ? t->ne[1] : t->ne[0];
-        int64_t want0 = side == 'a' ? n_in : r;
-        int64_t want1 = side == 'a' ? r : n_out;
-        if (r < 1 || r > LORA_R_MAX ||
+        uint64_t r = side == 'a' ? t->ne[1] : t->ne[0];
+        uint64_t want0 = side == 'a' ? n_in : r;
+        uint64_t want1 = side == 'a' ? r : n_out;
+        if (t->n_dims != 2 || r < 1 || r > LORA_R_MAX ||
             t->ne[0] != want0 || t->ne[1] != want1) {
-            fprintf(stderr, "error: adapter tensor '%s' is [%lld,%lld]; "
-                    "base '%s' is [%lld,%lld]\n", t->name,
-                    (long long)t->ne[0], (long long)t->ne[1], base->name,
-                    (long long)n_in, (long long)n_out);
+            fprintf(stderr, "error: adapter tensor '%s' is %u-D "
+                    "[%llu,%llu]; base '%s' is [%llu,%llu]\n", t->name,
+                    t->n_dims, (unsigned long long)t->ne[0],
+                    (unsigned long long)t->ne[1], base->name,
+                    (unsigned long long)n_in, (unsigned long long)n_out);
             goto fail_tab;
         }
         if (lw->r && lw->r != (int)r) {
-            fprintf(stderr, "error: adapter '%s' rank %lld disagrees with "
-                    "its pair (rank %d)\n", t->name, (long long)r, lw->r);
+            fprintf(stderr, "error: adapter '%s' rank %llu disagrees with "
+                    "its pair (rank %d)\n", t->name,
+                    (unsigned long long)r, lw->r);
             goto fail_tab;
         }
         lw->r = (int)r;
         bool cok = true;
-        int64_t need = side == 'a' ? (int64_t)r * n_in : (int64_t)r * n_out;
+        int64_t need = (int64_t)(side == 'a' ? r * n_in : r * n_out);
         float *dat = tensor_to_f32(t, need, &cok);
         if (!cok || !dat) {
             fprintf(stderr, "error: adapter tensor '%s' failed to load\n",

@@ -45,6 +45,7 @@ def fx(tmp_path_factory):
     return {"base": base, "adapter": d / "fx.adapter.gguf",
             "zero": d / "fx.zero.gguf", "merged": d / "fx.merged.gguf",
             "badshape": d / "fx.badshape.gguf",
+            "extradim": d / "fx.extradim.gguf",
             "halfpair": d / "fx.halfpair.gguf",
             "f16": d / "fx.f16.gguf"}
 
@@ -107,6 +108,7 @@ def test_f16_adapter_loads_and_matches_f32(runner_bin, fx):
 
 @pytest.mark.parametrize("bad,needle", [
     ("badshape", b"attn_q"),
+    ("extradim", b"attn_q"),
     ("halfpair", b"lora_a/lora_b pair"),
 ])
 def test_hostile_adapters_are_refused_by_name(runner_bin, fx, bad, needle):

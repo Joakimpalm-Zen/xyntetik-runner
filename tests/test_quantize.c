@@ -193,7 +193,12 @@ static bool files_equal(const char *pa, const char *pb) {
 // general.type=adapter / adapter.type=lora / adapter.lora.alpha, F32
 // lora_a/lora_b tensors. `arch` NULL omits general.architecture, matching
 // the base fixtures here (which carry none either — both read back "").
-typedef struct { const char *name; uint64_t ne[2]; const float *data; } adesc;
+typedef struct {
+    const char *name;
+    uint64_t ne[3];
+    const float *data;
+    uint32_t n_dims;  // zero means the normal 2-D adapter matrix
+} adesc;
 // ttype: T_F32 writes the floats verbatim; T_F16 rounds them to half —
 // the format llama.cpp's converter emits, which the merge must accept
 static void write_adapter(const char *path, float alpha, const char *arch,
@@ -213,17 +218,24 @@ static void write_adapter(const char *path, float alpha, const char *arch,
     uint64_t off = 0;
     size_t esz = ttype == T_F16 ? 2 : 4;
     for (int i = 0; i < nt; i++) {
+        uint32_t nd = ts[i].n_dims ? ts[i].n_dims : 2;
         bstr(&w, ts[i].name);
-        bu32(&w, 2);
-        bu64(&w, ts[i].ne[0]); bu64(&w, ts[i].ne[1]);
+        bu32(&w, nd);
+        uint64_t n = 1;
+        for (uint32_t d = 0; d < nd; d++) {
+            bu64(&w, ts[i].ne[d]);
+            n *= ts[i].ne[d];
+        }
         bu32(&w, (uint32_t)ttype);
         bu64(&w, off);
-        off += ts[i].ne[0] * ts[i].ne[1] * esz;
+        off += n * esz;
         off = (off + (ALIGN - 1)) & ~(uint64_t)(ALIGN - 1);
     }
     bpad(&w, ALIGN);
     for (int i = 0; i < nt; i++) {
-        uint64_t n = ts[i].ne[0] * ts[i].ne[1];
+        uint32_t nd = ts[i].n_dims ? ts[i].n_dims : 2;
+        uint64_t n = 1;
+        for (uint32_t d = 0; d < nd; d++) n *= ts[i].ne[d];
         if (ttype == T_F16) {
             for (uint64_t j = 0; j < n; j++) {
                 f16_t h = f32_to_f16(ts[i].data[j]);
@@ -618,13 +630,16 @@ int main(void) {
         enum { M_IN = 64, M_OUT = 32, M_R = 2 };
         const float alpha = 4.0f;             // scale = alpha/r = 2.0
         static float mw[M_IN * M_OUT], mg[M_IN * 16], mn[8];
-        static float ma[M_R * M_IN], mb[M_OUT * M_R], mz[M_OUT * M_R];
+        static float ma[M_R * M_IN], ma3[2 * M_R * M_IN];
+        static float mb[M_OUT * M_R], mz[M_OUT * M_R];
         for (int i = 0; i < M_IN * M_OUT; i++) mw[i] = ramp((uint64_t)i);
         for (int i = 0; i < M_IN * 16; i++) mg[i] = ramp((uint64_t)i + 3);
         for (int i = 0; i < 8; i++) mn[i] = 1.0f;
         for (int k = 0; k < M_R; k++)
             for (int i = 0; i < M_IN; i++)
                 ma[k * M_IN + i] = 0.001f * (float)(i + 17 * k);
+        for (size_t i = 0; i < sizeof(ma3) / sizeof(*ma3); i++)
+            ma3[i] = ma[i % (M_R * M_IN)];
         for (int j = 0; j < M_OUT; j++)
             for (int k = 0; k < M_R; k++)
                 mb[j * M_R + k] = 0.01f * (float)((j % 5) - 2) +
@@ -637,8 +652,8 @@ int main(void) {
         };
         write_gguf(base, bts, 3, 0);
         adesc ats[2] = {
-            { "blk.0.attn_q.weight.lora_a", {M_IN, M_R},  ma },
-            { "blk.0.attn_q.weight.lora_b", {M_R, M_OUT}, mb },
+            { "blk.0.attn_q.weight.lora_a", {M_IN, M_R},  ma, 2 },
+            { "blk.0.attn_q.weight.lora_b", {M_R, M_OUT}, mb, 2 },
         };
         write_adapter(ad, alpha, NULL, ats, 2, T_F32);
         assert(merge_lora_gguf(base, ad, 1.0f, out1, T_KEEP) == 0);
@@ -665,8 +680,8 @@ int main(void) {
         const char *keep = "q_mrg_keep.gguf", *zad = "q_mrg_zad.gguf";
         const char *zout = "q_mrg_zout.gguf";
         adesc zts[2] = {
-            { "blk.0.attn_q.weight.lora_a", {M_IN, M_R},  ma },
-            { "blk.0.attn_q.weight.lora_b", {M_R, M_OUT}, mz },
+            { "blk.0.attn_q.weight.lora_a", {M_IN, M_R},  ma, 2 },
+            { "blk.0.attn_q.weight.lora_b", {M_R, M_OUT}, mz, 2 },
         };
         write_adapter(zad, alpha, NULL, zts, 2, T_F32);
         assert(quantize_gguf(base, keep, T_KEEP, NULL) == 0);
@@ -727,19 +742,25 @@ int main(void) {
         // hostile adapters refuse the whole merge
         const char *hout = "q_mrg_h.gguf";
         adesc half[1] = {
-            { "blk.0.attn_q.weight.lora_a", {M_IN, M_R}, ma },
+            { "blk.0.attn_q.weight.lora_a", {M_IN, M_R}, ma, 2 },
         };
         write_adapter(ad, alpha, NULL, half, 1, T_F32);
         assert(merge_lora_gguf(base, ad, 1.0f, hout, T_KEEP) != 0);
         adesc badshape[2] = {
-            { "blk.0.attn_q.weight.lora_a", {32, M_R},  ma },
-            { "blk.0.attn_q.weight.lora_b", {M_R, M_OUT}, mb },
+            { "blk.0.attn_q.weight.lora_a", {32, M_R},  ma, 2 },
+            { "blk.0.attn_q.weight.lora_b", {M_R, M_OUT}, mb, 2 },
         };
         write_adapter(ad, alpha, NULL, badshape, 2, T_F32);
         assert(merge_lora_gguf(base, ad, 1.0f, hout, T_KEEP) != 0);
+        adesc extradim[2] = {
+            { "blk.0.attn_q.weight.lora_a", {M_IN, M_R, 2}, ma3, 3 },
+            { "blk.0.attn_q.weight.lora_b", {M_R, M_OUT}, mb, 2 },
+        };
+        write_adapter(ad, alpha, NULL, extradim, 2, T_F32);
+        assert(merge_lora_gguf(base, ad, 1.0f, hout, T_KEEP) != 0);
         adesc unhooked[2] = {
-            { "blk.0.attn_qkv.weight.lora_a", {M_IN, M_R},  ma },
-            { "blk.0.attn_qkv.weight.lora_b", {M_R, M_OUT}, mb },
+            { "blk.0.attn_qkv.weight.lora_a", {M_IN, M_R},  ma, 2 },
+            { "blk.0.attn_qkv.weight.lora_b", {M_R, M_OUT}, mb, 2 },
         };
         write_adapter(ad, alpha, NULL, unhooked, 2, T_F32);
         assert(merge_lora_gguf(base, ad, 1.0f, hout, T_KEEP) != 0);

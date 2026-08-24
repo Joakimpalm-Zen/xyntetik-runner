@@ -11,6 +11,8 @@ Writes, next to the given output prefix:
                           reference the adapter run must approximate
   <out>.badshape.gguf     lora_a whose in-dim disagrees with the base (must
                           be refused, naming the tensor)
+  <out>.extradim.gguf     lora_a with the expected first two axes plus an
+                          extra third axis (must be refused)
   <out>.halfpair.gguf     lora_a without its lora_b (must be refused)
   <out>.f16.gguf          the same adapter with F16 tensors — the format
                           llama.cpp's convert_lora_to_gguf emits, which the
@@ -215,5 +217,10 @@ nin, nout = targets["blk.0.attn_q.weight"][0][0], targets["blk.0.attn_q.weight"]
 bad = [("blk.0.attn_q.weight.lora_a", [nin + 2, RANK], pack_f([0.1] * (RANK * (nin + 2)))),
        ("blk.0.attn_q.weight.lora_b", [RANK, nout], pack_f([0.1] * (nout * RANK)))]
 write_gguf(OUT + ".badshape.gguf", meta, bad)
+extra = [("blk.0.attn_q.weight.lora_a", [nin, RANK, 2],
+          pack_f([0.1] * (2 * RANK * nin))),
+         ("blk.0.attn_q.weight.lora_b", [RANK, nout],
+          pack_f([0.1] * (nout * RANK)))]
+write_gguf(OUT + ".extradim.gguf", meta, extra)
 half = [("blk.0.attn_q.weight.lora_a", [nin, RANK], pack_f([0.1] * (RANK * nin)))]
 write_gguf(OUT + ".halfpair.gguf", meta, half)

@@ -1061,30 +1061,42 @@ static bool merge_set_resolve(merge_set_t *ms, const char *adapter_path,
                     ggml_type_name(t->type));
             return false;
         }
-        int64_t n_in = bt->ne[0], n_out = bt->ne[1];
-        int64_t r = side == 'a' ? t->ne[1] : t->ne[0];
-        int64_t want0 = side == 'a' ? n_in : r;
-        int64_t want1 = side == 'a' ? r : n_out;
+        uint64_t n_in = bt->ne[0], n_out = bt->ne[1];
+        uint64_t r = side == 'a' ? t->ne[1] : t->ne[0];
+        uint64_t want0 = side == 'a' ? n_in : r;
+        uint64_t want1 = side == 'a' ? r : n_out;
         // 512 = LORA_R_MAX, model.c — the merge accepts what --lora serves
-        if (r < 1 || r > 512 || (int64_t)t->ne[0] != want0 ||
-            (int64_t)t->ne[1] != want1) {
-            fprintf(stderr, "error: adapter tensor '%s' is [%lld,%lld]; "
-                    "base '%s' is [%lld,%lld]\n", t->name,
-                    (long long)t->ne[0], (long long)t->ne[1], bt->name,
-                    (long long)n_in, (long long)n_out);
+        if (t->n_dims != 2 || r < 1 || r > 512 || t->ne[0] != want0 ||
+            t->ne[1] != want1) {
+            fprintf(stderr, "error: adapter tensor '%s' is %u-D "
+                    "[%llu,%llu]; base '%s' is [%llu,%llu]\n", t->name,
+                    t->n_dims, (unsigned long long)t->ne[0],
+                    (unsigned long long)t->ne[1], bt->name,
+                    (unsigned long long)n_in, (unsigned long long)n_out);
             return false;
         }
         merge_pair_t *mp = &ms->map[bi];
         if (mp->r && mp->r != (int)r) {
-            fprintf(stderr, "error: adapter '%s' rank %lld disagrees with "
-                    "its pair (rank %d)\n", t->name, (long long)r, mp->r);
+            fprintf(stderr, "error: adapter '%s' rank %llu disagrees with "
+                    "its pair (rank %d)\n", t->name,
+                    (unsigned long long)r, mp->r);
             return false;
         }
         mp->r = (int)r;
-        int64_t n_el = t->ne[0] * (int64_t)t->ne[1];
+        uint64_t n_el;
+        if (!checked_u64_mul(t->ne[0], t->ne[1], &n_el) ||
+            n_el > SIZE_MAX / sizeof(float)) return false;
         float *dat = malloc(sizeof(float) * (size_t)n_el);
         if (!dat) return false;
-        dequant_row(t->type, t->data, dat, (int)n_el);
+        size_t row_size = ggml_row_size(t->type, (int64_t)t->ne[0]);
+        if (row_size == 0 || t->ne[1] > t->nbytes / row_size) {
+            free(dat);
+            return false;
+        }
+        for (uint64_t row = 0; row < t->ne[1]; row++)
+            dequant_row(t->type,
+                        (const uint8_t *)t->data + row * row_size,
+                        dat + row * t->ne[0], (int)t->ne[0]);
         if (side == 'a') { free(mp->a); mp->a = dat; }
         else             { free(mp->b); mp->b = dat; }
     }
