@@ -80,6 +80,11 @@ uint64_t    plat_ram_available_bytes(void);
 bool        plat_file_readable(const char *path);
 double      plat_now(void);        // monotonic seconds
 
+// Install a completed same-filesystem temporary file at `path`, replacing an
+// existing regular file. POSIX rename() has replacement semantics; Windows
+// needs MoveFileEx(..., REPLACE_EXISTING) for the same operation.
+bool        plat_replace_file(const char *tmp_path, const char *path);
+
 // exit(0) this process when pid dies — supervisors pass their own pid so a
 // SIGKILLed xyntetik-thane cannot leave an orphaned runner. pid <= 0 = no-op.
 void        plat_parent_watch(long pid);

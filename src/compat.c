@@ -716,6 +716,15 @@ void plat_parent_watch(long pid) {
 
 #endif
 
+bool plat_replace_file(const char *tmp_path, const char *path) {
+#ifdef _WIN32
+    return MoveFileExA(tmp_path, path,
+                       MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0;
+#else
+    return rename(tmp_path, path) == 0;
+#endif
+}
+
 // --------------------------------------------------------- strict numeric parse
 //
 // One strict parser shared by CLI flags and environment overrides (RNR-021):

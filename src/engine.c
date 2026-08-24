@@ -686,10 +686,17 @@ int prefix_cache_save(const char *path) {
     if (!path || !*path) return -1;
     // write beside and rename, so a crash mid-write cannot leave a file that
     // passes its own digest over half a cache
-    char tmp[1024];
-    if (snprintf(tmp, sizeof(tmp), "%s.partial", path) >= (int)sizeof(tmp)) return -1;
+    size_t path_n = strlen(path);
+    if (path_n > SIZE_MAX - sizeof(".partial")) return -1;
+    char *tmp = malloc(path_n + sizeof(".partial"));
+    if (!tmp) return -1;
+    snprintf(tmp, path_n + sizeof(".partial"), "%s.partial", path);
     FILE *f = fopen(tmp, "wb");
-    if (!f) { fprintf(stderr, "prefix: cannot write %s\n", tmp); return -1; }
+    if (!f) {
+        fprintf(stderr, "prefix: cannot write %s\n", tmp);
+        free(tmp);
+        return -1;
+    }
 
     pthread_mutex_lock(&PFX.mu);
     uint32_t count = 0;
@@ -713,11 +720,13 @@ int prefix_cache_save(const char *path) {
 
     ok = ok && wr(f, &digest, sizeof digest);
     if (fclose(f) != 0) ok = false;
-    if (!ok || rename(tmp, path) != 0) {
+    if (!ok || !plat_replace_file(tmp, path)) {
         remove(tmp);
         fprintf(stderr, "prefix: failed to write %s\n", path);
+        free(tmp);
         return -1;
     }
+    free(tmp);
     return (int)count;
 }
 

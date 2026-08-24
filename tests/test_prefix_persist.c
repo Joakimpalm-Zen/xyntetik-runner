@@ -73,6 +73,8 @@ int main(int argc, char **argv) {
     size_t live_bytes = stats.bytes;
 
     ck(prefix_cache_save(path) == 1, "save reports one entry");
+    ck(prefix_cache_save(path) == 1,
+       "saving again atomically replaces an existing snapshot");
 
     // The restart: drop everything, then load the file back.
     prefix_cache_clear();
