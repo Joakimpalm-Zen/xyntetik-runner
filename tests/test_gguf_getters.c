@@ -21,6 +21,7 @@ static void bu64(buf *w, uint64_t v) { bput(w, &v, 8); }
 static void bi32(buf *w, int32_t v)  { bput(w, &v, 4); }
 static void bf32(buf *w, float v)    { bput(w, &v, 4); }
 static void bstr(buf *w, const char *s) { uint64_t n = strlen(s); bu64(w, n); bput(w, s, n); }
+static void bstrn(buf *w, const char *s, size_t n) { bu64(w, n); bput(w, s, n); }
 static void bkey(buf *w, const char *k, uint32_t type) { bstr(w, k); bu32(w, type); }
 
 // assemble a GGUF from a prebuilt KV blob and tensor-info blob, padded to 32
@@ -163,6 +164,46 @@ static void test_duplicate_tensor_names_rejected(void) {
     printf("ok: duplicate tensor names rejected\n");
 }
 
+static void test_embedded_nul_identities_rejected(void) {
+    gguf_file g;
+
+    // Keys and scalar strings are exposed through strcmp/strlen APIs. Their
+    // on-disk length must not describe bytes after a NUL that every consumer
+    // would ignore, or a different key/value can masquerade as a trusted one.
+    buf kv = {0};
+    static const char bad_key[] = "general.architecture\0.not-really";
+    bstrn(&kv, bad_key, sizeof(bad_key) - 1);
+    bu32(&kv, GGUF_T_STR);
+    bstr(&kv, "llama");
+    write_gguf("nul-key.gguf", &kv, 1, NULL, 0);
+    free(kv.b);
+    assert(!gguf_open(&g, "nul-key.gguf"));
+    remove("nul-key.gguf");
+
+    kv = (buf){0};
+    bkey(&kv, "general.architecture", GGUF_T_STR);
+    static const char bad_value[] = "llama\0.not-really";
+    bstrn(&kv, bad_value, sizeof(bad_value) - 1);
+    write_gguf("nul-value.gguf", &kv, 1, NULL, 0);
+    free(kv.b);
+    assert(!gguf_open(&g, "nul-value.gguf"));
+    remove("nul-value.gguf");
+
+    // Tensor lookup is also C-string based. Use an unsupported type so this
+    // minimal fixture needs no data section; the identity check must still be
+    // what refuses it.
+    buf ti = {0};
+    static const char bad_tensor[] = "output.weight\0.decoy";
+    bstrn(&ti, bad_tensor, sizeof(bad_tensor) - 1);
+    bu32(&ti, 1); bu64(&ti, 1); bu32(&ti, 44); bu64(&ti, 0);
+    write_gguf("nul-tensor.gguf", NULL, 0, &ti, 1);
+    free(ti.b);
+    assert(!gguf_open(&g, "nul-tensor.gguf"));
+    remove("nul-tensor.gguf");
+
+    printf("ok: embedded NUL cannot alias GGUF C-string identities\n");
+}
+
 // A tensor whose ggml type this build does not know keeps its descriptor (the
 // type is "checked at use time" by the loader, which reports it by name), but
 // its stored offset is never validated — computing the extent needs a block
@@ -196,6 +237,7 @@ int main(void) {
     test_u32_idx_getter();
     test_duplicate_keys_rejected();
     test_duplicate_tensor_names_rejected();
+    test_embedded_nul_identities_rejected();
     test_unsupported_type_tensor_has_no_data();
     printf("all gguf getter tests passed\n");
     return 0;

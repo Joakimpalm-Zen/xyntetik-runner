@@ -40,6 +40,10 @@ static bool rd_str(cursor *c, gg_str *s) {
     return true;
 }
 
+static bool str_has_nul(const gg_str *s) {
+    return s->n > 0 && memchr(s->s, 0, (size_t)s->n) != NULL;
+}
+
 static const size_t gguf_scalar_size[] = {
     [GGUF_T_U8] = 1, [GGUF_T_I8] = 1, [GGUF_T_U16] = 2, [GGUF_T_I16] = 2,
     [GGUF_T_U32] = 4, [GGUF_T_I32] = 4, [GGUF_T_F32] = 4, [GGUF_T_BOOL] = 1,
@@ -59,7 +63,11 @@ static bool rd_kv_value(cursor *c, gguf_kv *kv, uint32_t type) {
         case GGUF_T_U64:  kv->v.u64 = rd_u64(c); break;
         case GGUF_T_I64:  kv->v.i64 = (int64_t)rd_u64(c); break;
         case GGUF_T_F64:  kv->raw = rd_u64(c); kv->v.f64 = f64_from_bits(kv->raw); break;
-        case GGUF_T_STR:  return rd_str(c, &kv->str);
+        case GGUF_T_STR:
+            // Scalar strings are exposed through the C-string getter. Bytes
+            // after an embedded NUL would be invisible to every consumer, so
+            // the on-disk value and the value being validated would differ.
+            return rd_str(c, &kv->str) && !str_has_nul(&kv->str);
         case GGUF_T_ARR: {
             kv->arr_type = rd_u32(c);
             kv->arr_n    = rd_u64(c);
@@ -154,6 +162,11 @@ static bool gguf_open_one_x(gguf_file *g, const char *path, bool header_only) {
     for (uint64_t i = 0; i < g->n_kv; i++) {
         gg_str key = {0};
         if (!rd_str(&c, &key)) { fprintf(stderr, "error: bad GGUF metadata\n"); goto fail; }
+        if (str_has_nul(&key)) {
+            free(key.s);
+            fprintf(stderr, "error: GGUF metadata key contains an embedded NUL\n");
+            goto fail;
+        }
         g->kv[i].key  = key.s;
         g->kv[i].type = rd_u32(&c);
         if (!rd_kv_value(&c, &g->kv[i], g->kv[i].type)) {
@@ -168,9 +181,10 @@ static bool gguf_open_one_x(gguf_file *g, const char *path, bool header_only) {
         gguf_tensor *t = &g->tensors[i];
         gg_str name = {0};
         if (!rd_str(&c, &name)) goto fail;
-        if (name.n >= sizeof(t->name)) {
+        if (name.n >= sizeof(t->name) || str_has_nul(&name)) {
             free(name.s);
-            fprintf(stderr, "error: invalid tensor metadata (name too long)\n");
+            fprintf(stderr, "error: invalid tensor metadata (name is too long "
+                    "or contains an embedded NUL)\n");
             goto fail;
         }
         snprintf(t->name, sizeof(t->name), "%s", name.s);
