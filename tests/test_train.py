@@ -7,6 +7,7 @@ through --lora and measurably improves --score on the trained text, the
 JSONL prompt/completion mode masks the prompt from the loss, and a different
 seed produces a different adapter (the determinism is seeded, not vacuous).
 """
+import hashlib
 import json
 import os
 import pathlib
@@ -123,6 +124,22 @@ def test_provenance_record_escapes_data_and_output_paths(
     rec = json.loads(record.read_text())
     assert rec["data"]["path"] == str(base / data_name)
     assert rec["adapter"]["path"] == str(out)
+
+
+def test_provenance_hashes_binary_when_invoked_through_path(
+        runner_bin, base, tmp_path):
+    out = tmp_path / "path-invoked.gguf"
+    env = dict(os.environ)
+    env["PATH"] = str(runner_bin.parent) + os.pathsep + env.get("PATH", "")
+    cmd = [runner_bin.name, "-m", str(base / "base.gguf"),
+           "--train", str(base / "corpus.txt"), "--train-steps", "1",
+           "--lr", "3e-3", "--train-out", str(out), "-t", "2"]
+    p = subprocess.run(cmd, cwd=tmp_path, stdout=subprocess.PIPE,
+                       stderr=subprocess.PIPE, timeout=600, env=env)
+    assert p.returncode == 0, p.stderr.decode(errors="replace")
+    rec = json.loads(pathlib.Path(f"{out}.train.json").read_text())
+    assert rec["build"]["binary_sha256"] == hashlib.sha256(
+        runner_bin.read_bytes()).hexdigest()
 
 
 @pytest.mark.parametrize("record", [

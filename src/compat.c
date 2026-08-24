@@ -339,6 +339,7 @@ void plat_parent_watch(long pid) {
 #include <sys/sysctl.h>
 #include <mach/mach.h>
 #include <mach/mach_host.h>
+#include <mach-o/dyld.h>
 #endif
 
 void *plat_mmap_ro(const char *path, size_t *size) {
@@ -722,6 +723,40 @@ bool plat_replace_file(const char *tmp_path, const char *path) {
                        MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0;
 #else
     return rename(tmp_path, path) == 0;
+#endif
+}
+
+char *plat_executable_path(void) {
+#ifdef __linux__
+    // Opening this magic link reads the running image even when argv[0] was a
+    // bare PATH lookup (and remains meaningful after the original is unlinked).
+    return strdup("/proc/self/exe");
+#else
+    size_t cap = 1024;
+    for (;;) {
+        if (cap > (1u << 20)) return NULL;
+        char *path = malloc(cap);
+        if (!path) return NULL;
+#ifdef _WIN32
+        DWORD n = GetModuleFileNameA(NULL, path, (DWORD)cap);
+        if (n > 0 && n < cap) return path;
+        free(path);
+        if (n == 0) return NULL;
+        cap *= 2;
+#elif defined(__APPLE__)
+        uint32_t needed = (uint32_t)cap;
+        if (_NSGetExecutablePath(path, &needed) == 0) {
+            char *absolute = realpath(path, NULL);
+            if (absolute) { free(path); return absolute; }
+            return path;
+        }
+        free(path);
+        cap = needed > cap ? needed : cap * 2;
+#else
+        free(path);
+        return NULL;
+#endif
+    }
 #endif
 }
 

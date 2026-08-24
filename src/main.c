@@ -1146,9 +1146,13 @@ int main(int argc, char **argv) {
             // blob stays auditable — base sha + adapter sha + config ->
             // merged sha, machine-written beside the file
             char bsha[65] = "", asha[65] = "", osha[65] = "";
-            envelope_file_sha256(model_path, bsha);
-            envelope_file_sha256(lora_path, asha);
-            envelope_file_sha256(merge_out, osha);
+            if (!envelope_file_sha256(model_path, bsha) ||
+                !envelope_file_sha256(lora_path, asha) ||
+                !envelope_file_sha256(merge_out, osha)) {
+                fprintf(stderr, "error: cannot hash every merge artifact for "
+                        "the provenance record\n");
+                return 1;
+            }
             sbuf rec = {0};
             sb_lit(&rec, "{\"schema_version\":\"xyntetik.runner.merge.v1\","
                          "\"runner\":\"");
@@ -1451,9 +1455,9 @@ int main(int argc, char **argv) {
             // reproducibility claim in checkable form. Two runs with the same
             // base/data/seed/config must produce the same adapter_sha256.
             char bsha[65] = "", dsha[65] = "", asha[65] = "", xsha[65] = "";
-            envelope_file_sha256(load_path, bsha);
-            envelope_file_sha256(train_path, dsha);
-            envelope_file_sha256(train_out, asha);
+            bool hash_ok = envelope_file_sha256(load_path, bsha) &&
+                           envelope_file_sha256(train_path, dsha) &&
+                           envelope_file_sha256(train_out, asha);
             // The running binary's own hash + build identity, so a
             // reproduction report can distinguish "same executable" from
             // "same source" mechanically. The determinism contract is
@@ -1463,7 +1467,15 @@ int main(int argc, char **argv) {
             // fmaf chains are pinned, transcendentals are the compiler's)
             // while behavior stays put — these fields make that boundary
             // visible in every record.
-            envelope_file_sha256(argv[0], xsha);
+            char *exe_path = plat_executable_path();
+            hash_ok = hash_ok && exe_path &&
+                      envelope_file_sha256(exe_path, xsha);
+            free(exe_path);
+            if (!hash_ok) {
+                fprintf(stderr, "error: cannot hash every training artifact "
+                        "for the provenance record\n");
+                TRAIN_FAIL;
+            }
             sbuf rec = {0};
             sb_lit(&rec, "{\"schema_version\":\"xyntetik.runner.train.v1\","
                          "\"runner\":\"");
