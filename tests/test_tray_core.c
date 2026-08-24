@@ -240,7 +240,40 @@ int main(int argc, char **argv) {
     fclose(f);
     n = tray_menu_build(items, 128);
     CHECK(menu_has(items, n, "fake-model.gguf"), "restored config re-read too");
-    remove(alt);
+
+    // A failed config install must keep both the durable last-known-good file
+    // and the tray's in-memory selection. Otherwise the menu claims the new
+    // model was saved until restart, while a partial config can erase the old
+    // model permanently.
+    remove(alt); // keep PICK_MODEL from spawning a child in the failure case
+    setenv_compat("RUNNER_TEST_TRAY_CONFIG_INSTALL_FAIL", "1");
+    tray_menu_act(TRAY_ACT_PICK_MODEL, 0, alt);
+#ifdef _WIN32
+    _putenv_s("RUNNER_TEST_TRAY_CONFIG_INSTALL_FAIL", "");
+#else
+    unsetenv("RUNNER_TEST_TRAY_CONFIG_INSTALL_FAIL");
+#endif
+    n = tray_menu_build(items, 128);
+    CHECK(menu_has(items, n, "fake-model.gguf"),
+          "failed config install restores the in-memory model");
+    CHECK(!menu_has(items, n, "edited-model.gguf"),
+          "failed config install does not expose an unsaved model");
+    {
+        char saved[1024] = {0};
+        FILE *cf = fopen(cfg, "rb");
+        size_t got = cf ? fread(saved, 1, sizeof saved - 1, cf) : 0;
+        if (cf) fclose(cf);
+        saved[got] = 0;
+        CHECK(strstr(saved, "fake-model.gguf") != NULL,
+              "failed config install preserves the durable config");
+        CHECK(strstr(saved, "edited-model.gguf") == NULL,
+              "failed config install never publishes partial new state");
+        char partial[800];
+        snprintf(partial, sizeof partial, "%s.partial-%ld", cfg, (long)getpid());
+        cf = fopen(partial, "rb");
+        CHECK(cf == NULL, "failed config install removes its partial file");
+        if (cf) fclose(cf);
+    }
 
     // 2a-bis. a configured model that no longer exists on disk must read as
     // MISSING, never as a crash. Publishing a checkpoint and reclaiming the

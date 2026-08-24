@@ -1,5 +1,6 @@
 // Tray controller core — see tray.h. Portable C; no GUI includes here.
 #include "tray.h"
+#include "compat.h"
 #include "instances.h"
 #include "json.h"
 #include "runner.h"
@@ -16,6 +17,7 @@
 #include <ws2tcpip.h>
 #include <windows.h>
 #include <process.h>
+#include <io.h>
 #define getpid _getpid
 typedef SOCKET sock_t;
 #define sock_close closesocket
@@ -127,21 +129,42 @@ static void cfg_load(void) {
     jv_free(v);
 }
 
-static void cfg_save(void) {
+static bool cfg_save(void) {
     char path[1200];
     cfg_path(path, sizeof path);
-    if (!path[0]) return;
-    FILE *f = fopen(path, "wb");
-    if (!f) return;
+    if (!path[0]) return false;
     sbuf b = {0};
     sb_lit(&b, "{\"last_model\": \"");
     sb_esc(&b, g_cfg.last_model, strlen(g_cfg.last_model));
     sb_lit(&b, "\", \"last_args\": \"");
     sb_esc(&b, g_cfg.last_args, strlen(g_cfg.last_args));
     sb_fmt(&b, "\", \"port\": %d}\n", g_cfg.port);
-    if (!b.failed) fwrite(b.s, 1, b.n, f);
+    if (b.failed) { free(b.s); return false; }
+
+    size_t tmp_cap = strlen(path) + 48;
+    char *tmp = malloc(tmp_cap);
+    if (!tmp) { free(b.s); return false; }
+    snprintf(tmp, tmp_cap, "%s.partial-%ld", path, (long)getpid());
+    FILE *f = fopen(tmp, "wb");
+    if (!f) { free(tmp); free(b.s); return false; }
+    bool ok = fwrite(b.s, 1, b.n, f) == b.n && fflush(f) == 0;
+    if (ok) {
+#ifdef _WIN32
+        ok = _commit(_fileno(f)) == 0;
+#else
+        ok = fsync(fileno(f)) == 0;
+#endif
+    }
+    if (fclose(f) != 0) ok = false;
     free(b.s);
-    fclose(f);
+#ifdef RUNNER_TEST_TRAY_HTTP
+    if (getenv("RUNNER_TEST_TRAY_CONFIG_INSTALL_FAIL")) ok = false;
+#endif
+    if (ok) ok = plat_replace_file(tmp, path);
+    if (!ok) remove(tmp);
+    free(tmp);
+    if (!ok) return false;
+
     // Our own write is not an external edit. Re-stamping here keeps the next
     // menu build from re-reading a file whose contents it already holds.
     struct stat st;
@@ -150,6 +173,7 @@ static void cfg_save(void) {
         g_cfg_size  = (long)st.st_size;
         g_cfg_loaded = true;
     }
+    return true;
 }
 
 // --------------------------------------------------------- managed process
@@ -634,8 +658,14 @@ void tray_menu_act(int action, long arg, const char *text) {
         break;
     case TRAY_ACT_PICK_MODEL:
         if (text && *text) {
+            char previous[sizeof g_cfg.last_model];
+            snprintf(previous, sizeof previous, "%s", g_cfg.last_model);
             snprintf(g_cfg.last_model, sizeof g_cfg.last_model, "%s", text);
-            cfg_save();
+            if (!cfg_save()) {
+                snprintf(g_cfg.last_model, sizeof g_cfg.last_model, "%s", previous);
+                fprintf(stderr, "error: could not save tray configuration\n");
+                break;
+            }
             if (!g_managed_pid || !instance_pid_alive(g_managed_pid))
                 spawn_managed();
         }
