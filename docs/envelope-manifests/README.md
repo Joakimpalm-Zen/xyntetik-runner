@@ -49,7 +49,7 @@ The flagship **selective-precision 30B** (HF `Joakimpalm-Zen`): Qwen3-30B-A3B wi
 attention + embeddings kept Q8_0 and the expert banks at Q4_0, produced via
 `--type-plan` and measured against its Q8_0 source (sha `4ad960d1…`). It passes the
 adopted quality bar at 17.99 GB (v2 top-1 99.50 %, mean KLD 0.0345) per the suite's
-`exhaust-results-2026-08-15` phase 6.
+the 2026-08-15 selective-precision sweep, phase 6.
 
 - artifact sha256 `df02efa8…`, reference (Q8_0 source) sha256 `4ad960d1…`
 - runtime tuple: runner 0.1.19-alpha / CUDA on the RTX PRO 6000 Blackwell box

@@ -53,11 +53,10 @@ of headroom, while N=10 exceeds 16 GiB by 6,387,200 bytes.
 
 ## Evidence and gates
 
-Per-artifact plans, complete dry-run match listings, byte-integrity JSONs,
-fresh zero-point JSONs, raw 400-position comparisons, and gate JSONs are in
-`xyntetik-suite/docs/plans/blackwell-evidence-2026-08-17/`. Evidence was
-committed and pushed section by section at suite commits `84687f4`, `3e9ef70`,
-`3a17265`, and `aff8e04`.
+The public evidence retained here is the exact source hash, plan semantics,
+size boundary, measurements, and gate outcomes above. Per-artifact scratch
+plans, dry-run listings, byte-integrity JSONs, zero-point JSONs, and raw
+400-position comparisons are not distributed with this public repository.
 
 Runner gates on the pulled `main` revision:
 

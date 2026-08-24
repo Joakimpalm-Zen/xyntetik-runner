@@ -214,8 +214,8 @@ shape of a tool call at any quantization, not its contents.** Schema
 conformance and tool selection hold at 100% down to Q4_0; argument
 agreement decays monotonically to 50%. For an agent loop that is the
 difference between a crash and a wrong action — an improvement, and not a
-substitute for bits. Raw report:
-`xyntetik-suite/docs/plans/decisions-evidence-2026-08-14/`.
+substitute for bits. The exact aggregate measurements are retained here; the
+raw scratch report is not distributed with this public repository.
 
 ## 2026-08-15: reproduced on a second family, and a size threshold appears
 
