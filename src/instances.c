@@ -1,5 +1,6 @@
 // Instance discovery registry — see instances.h for the contract.
 #include "instances.h"
+#include "compat.h"
 #include "json.h"
 #include "runner.h"
 
@@ -153,6 +154,7 @@ static struct {
     bool  registered;
     char  mode[16];
     int   port;
+    uint64_t procstart;
     sbuf  models_json;   // pre-serialized models array content
 } g_self;
 
@@ -174,10 +176,12 @@ static bool write_self(void) {
     FILE *f = fopen(tmp, "wb");
     if (!f) return false;
     fprintf(f,
-        "{\"pid\": %ld, \"started\": %lld, \"mode\": \"%s\", \"port\": %d,\n"
+        "{\"pid\": %ld, \"procstart\": %llu, \"started\": %lld, "
+        "\"mode\": \"%s\", \"port\": %d,\n"
         " \"version\": \"%s\",\n \"models\": [%s]}\n",
-        (long)getpid(), (long long)time(NULL), g_self.mode, g_self.port,
-        RUNNER_VERSION, g_self.models_json.s ? g_self.models_json.s : "");
+        (long)getpid(), (unsigned long long)g_self.procstart,
+        (long long)time(NULL), g_self.mode, g_self.port, RUNNER_VERSION,
+        g_self.models_json.s ? g_self.models_json.s : "");
     bool ok = fclose(f) == 0;
 #ifdef _WIN32
     // rename() cannot replace an existing file on Windows
@@ -194,6 +198,8 @@ bool instances_register(const char *mode, int port,
                         const char *const *model_paths, int n_models) {
     snprintf(g_self.mode, sizeof g_self.mode, "%s", mode ? mode : "cli");
     g_self.port = port;
+    if (!plat_pid_start_time((long)getpid(), &g_self.procstart))
+        g_self.procstart = 0;
     free(g_self.models_json.s);
     memset(&g_self.models_json, 0, sizeof g_self.models_json);
     for (int i = 0; i < n_models; i++) {
@@ -269,6 +275,7 @@ static bool parse_rec(const char *path, instance_rec *r) {
     if (!v) return false;
     r->pid     = (long)jv_num(jv_get(v, "pid"), 0);
     r->started = (long long)jv_num(jv_get(v, "started"), 0);
+    r->procstart = (uint64_t)jv_num(jv_get(v, "procstart"), 0);
     r->port    = (int)jv_num(jv_get(v, "port"), 0);
     snprintf(r->mode, sizeof r->mode, "%s", jv_str(jv_get(v, "mode"), "?"));
     snprintf(r->version, sizeof r->version, "%s", jv_str(jv_get(v, "version"), "?"));
@@ -286,6 +293,17 @@ static bool parse_rec(const char *path, instance_rec *r) {
     }
     jv_free(v);
     return r->pid > 0;
+}
+
+static bool record_owner_alive(const instance_rec *r) {
+    if (!instance_pid_alive(r->pid)) return false;
+    if (r->procstart) {
+        uint64_t live_start;
+        if (plat_pid_start_time(r->pid, &live_start) &&
+            live_start != r->procstart)
+            return false;
+    }
+    return true;
 }
 
 instance_rec *instances_list(int *n_out) {
@@ -315,7 +333,7 @@ instance_rec *instances_list(int *n_out) {
 #endif
         instance_rec r = {0};
         bool ok = parse_rec(path, &r);
-        if (ok && instance_pid_alive(r.pid)) {
+        if (ok && record_owner_alive(&r)) {
             // Out of memory stops the enumeration; it does not discard what has
             // already been read. A short list is a true answer, and the record
             // files are left alone -- this is not a reason to sweep a live

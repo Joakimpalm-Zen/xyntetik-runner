@@ -2,6 +2,7 @@
 // sweep, multi-record listing, unregister. Runs against a private HOME
 // (or APPDATA on Windows) so it never touches the user's real registry.
 #include "instances.h"
+#include "compat.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -61,6 +62,11 @@ int main(void) {
     CHECK(n == 1, "one live record after register");
     if (n == 1) {
         CHECK(r[0].pid == (long)getpid(), "record carries our pid");
+        uint64_t live_start = 0;
+        CHECK(r[0].procstart > 0 &&
+              plat_pid_start_time(r[0].pid, &live_start) &&
+              r[0].procstart == live_start,
+              "record carries the owner's process-creation stamp");
         CHECK(strcmp(r[0].mode, "cli") == 0, "mode roundtrips");
         CHECK(r[0].port == 0, "port roundtrips");
         CHECK(r[0].n_models == 2, "both models roundtrip");
@@ -69,6 +75,33 @@ int main(void) {
         CHECK(r[0].version[0] != 0, "version present");
     }
     instances_list_free(r, n);
+
+    // A live PID is not sufficient ownership proof: after a crash and PID
+    // reuse, an old record would otherwise identify an unrelated process as a
+    // runner and the tray's Stop action could signal it. A recorded creation
+    // time that disagrees with the live process makes the record stale.
+    {
+        uint64_t start = 0;
+        CHECK(plat_pid_start_time((long)getpid(), &start) && start > 0,
+              "current process creation time is available");
+        char reused[1300];
+        snprintf(reused, sizeof reused, "%s/reused-pid.json", dir);
+        FILE *f = fopen(reused, "wb");
+        fprintf(f, "{\"pid\": %ld, \"procstart\": %llu, \"started\": 1,"
+                   " \"mode\": \"serve\", \"port\": 8124,"
+                   " \"version\": \"t\", \"models\": []}\n",
+                (long)getpid(), (unsigned long long)(start + 1));
+        fclose(f);
+        r = instances_list(&n);
+        bool found_reused = false;
+        for (int i = 0; i < n; i++)
+            if (r[i].port == 8124) found_reused = true;
+        CHECK(!found_reused, "reused-PID record is not attributed to its new owner");
+        instances_list_free(r, n);
+        f = fopen(reused, "rb");
+        CHECK(f == NULL, "reused-PID record is swept");
+        if (f) fclose(f);
+    }
 
     // 2. set_port rewrites in place
     CHECK(instances_set_port(9099), "set_port succeeds");

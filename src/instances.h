@@ -14,10 +14,12 @@
 #define RUNNER_INSTANCES_H
 
 #include <stdbool.h>
+#include <stdint.h>
 
 typedef struct {
     long       pid;
     long long  started;      // unix seconds
+    uint64_t   procstart;    // OS process-creation stamp; 0 = legacy/unknown
     char       mode[16];     // "cli" | "serve" | "tray"
     int        port;         // 0 = not serving
     char     **model_names;  // [n_models], owned

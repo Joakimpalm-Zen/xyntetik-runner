@@ -506,7 +506,7 @@ $(TEST_QUANTS_SIMD): $(TEST_QUANTS_SIMD_SRC) $(HDR)
 	$(CC) $(QUANTS_CFLAGS) -I src $(TEST_QUANTS_SIMD_SRC) -o $@ -lm -lpthread
 
 # discovery registry: pure-C, runs against a private HOME/APPDATA
-TEST_INSTANCES_SRC = tests/test_instances.c src/instances.c src/json.c
+TEST_INSTANCES_SRC = tests/test_instances.c src/instances.c src/json.c src/compat.c
 $(TEST_INSTANCES): $(TEST_INSTANCES_SRC) $(HDR)
 	$(CC) $(CFLAGS) -I src $(TEST_INSTANCES_SRC) -o $@ -lm
 
@@ -514,8 +514,8 @@ $(TEST_INSTANCES): $(TEST_INSTANCES_SRC) $(HDR)
 # INTO the test (macro-substituted allocators), so it is deliberately absent
 # from the source list here.
 TEST_INSTANCES_OOM = $(TEST_BATCH:test-batch%=test-instances-oom%)
-$(TEST_INSTANCES_OOM): tests/test_instances_oom.c src/instances.c src/json.c $(HDR)
-	$(CC) $(CFLAGS) -I src tests/test_instances_oom.c src/json.c -o $@ -lm
+$(TEST_INSTANCES_OOM): tests/test_instances_oom.c src/instances.c src/json.c src/compat.c $(HDR)
+	$(CC) $(CFLAGS) -I src tests/test_instances_oom.c src/json.c src/compat.c -o $@ -lm
 
 # Pure policy seam: simulates a Mac whose model is larger than one MTLBuffer
 # but still inside the aggregate Metal working set.
@@ -531,7 +531,7 @@ else
 TRAY_TEST_LIBS =
 endif
 TEST_TRAY_CORE_SRC = tests/test_tray_core.c src/tray.c src/tray_stub.c \
-                     src/instances.c src/json.c
+                     src/instances.c src/json.c src/compat.c
 $(TEST_TRAY_CORE): $(TEST_TRAY_CORE_SRC) $(HDR)
 	$(CC) $(CFLAGS) -DRUNNER_TEST_TRAY_HTTP -I src $(TEST_TRAY_CORE_SRC) \
 		-o $@ -lm $(TRAY_TEST_LIBS)
