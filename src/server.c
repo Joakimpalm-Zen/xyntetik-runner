@@ -1331,9 +1331,17 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
         // select the wrong file) or dropping entries past the cap (RNR-014).
         const int max_reg = (int)(sizeof(SV.reg) / sizeof(SV.reg[0]));
         char tmp[4096];
-        if (strlen(model_path) >= sizeof(tmp)) {
+        size_t spec_len = strlen(model_path);
+        if (spec_len >= sizeof(tmp)) {
             fprintf(stderr, "error: -m registry spec is too long (max %zu bytes)\n",
                     sizeof(tmp) - 1);
+            return 1;
+        }
+        // strtok() skips empty fields. Reject them before tokenizing so a
+        // malformed registry cannot silently turn into a different one.
+        if (model_path[0] == ',' || model_path[spec_len - 1] == ',' ||
+            strstr(model_path, ",,")) {
+            fprintf(stderr, "error: -m registry spec contains an empty entry\n");
             return 1;
         }
         snprintf(tmp, sizeof(tmp), "%s", model_path);

@@ -165,3 +165,32 @@ def test_unknown_chat_template_is_an_error(runner_bin, model):
     assert proc.returncode != 0
     err = proc.stderr.decode(errors="replace")
     assert "no-such-template" in err
+
+
+@pytest.mark.parametrize("registry", [
+    ",a={model}",
+    "a={model},,b={model}",
+    "a={model},",
+])
+def test_registry_refuses_an_empty_entry(runner_bin, model, registry):
+    # strtok() skips empty fields, so these used to start a real server after
+    # silently deleting the malformed registry entry.
+    proc = subprocess.Popen(
+        [str(runner_bin), "--gpu", "off", "--no-tray", "-m",
+         registry.format(model=model), "--serve", "--port", str(_free_port())],
+        cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    try:
+        try:
+            proc.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            pytest.fail("registry with an empty entry was accepted and started serving")
+        assert proc.returncode != 0
+        assert "empty" in proc.stderr.read().decode(errors="replace")
+    finally:
+        if proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait(timeout=10)
