@@ -57,6 +57,14 @@ def _train(runner_bin, base_dir, out, data="corpus.txt", steps=20, extra=()):
     return losses
 
 
+def _run_train(runner_bin, base_dir, out, data, extra=()):
+    cmd = [runner_bin, "-m", str(base_dir / "base.gguf"),
+           "--train", str(base_dir / data), "--train-steps", "1",
+           "--lr", "3e-3", "--train-out", str(out), "-t", "2", *extra]
+    return subprocess.run(cmd, cwd=ROOT, stdout=subprocess.PIPE,
+                          stderr=subprocess.PIPE, timeout=600)
+
+
 def _score(runner_bin, base_dir, lora=None):
     cmd = [runner_bin, "-m", str(base_dir / "base.gguf"), "--score",
            "-p", SENT, "-t", "2", "--gpu", "off"]
@@ -115,6 +123,30 @@ def test_provenance_record_escapes_data_and_output_paths(
     rec = json.loads(record.read_text())
     assert rec["data"]["path"] == str(base / data_name)
     assert rec["adapter"]["path"] == str(out)
+
+
+@pytest.mark.parametrize("record", [
+    '{"prompt":"p","completion":"c","weight":"heavy"}\n',
+    "{\n",
+])
+def test_jsonl_rejects_malformed_examples(runner_bin, base, tmp_path, record):
+    (base / "invalid.jsonl").write_text(record)
+    out = tmp_path / "invalid.gguf"
+    p = _run_train(runner_bin, base, out, "invalid.jsonl")
+    assert p.returncode != 0
+    assert not out.exists()
+
+
+def test_jsonl_honors_train_context_without_truncating(
+        runner_bin, base, tmp_path):
+    record = {"prompt": "the runner", "completion": " trains the adapter " * 8}
+    (base / "too-long.jsonl").write_text(json.dumps(record) + "\n")
+    out = tmp_path / "too-long.gguf"
+    p = _run_train(runner_bin, base, out, "too-long.jsonl",
+                   extra=("--train-ctx", "4"))
+    assert p.returncode != 0
+    assert b"--train-ctx" in p.stderr
+    assert not out.exists()
 
 
 def test_failed_checkpoint_install_preserves_previous_adapter(

@@ -125,6 +125,198 @@ static bool write_provenance(const char *artifact, const char *suffix,
     return ok;
 }
 
+typedef struct { int32_t *t; float *w; int n; } train_ex;
+
+static void train_examples_free(train_ex *exs, int n_ex) {
+    for (int i = 0; i < n_ex; i++) {
+        free(exs[i].t);
+        free(exs[i].w);
+    }
+    free(exs);
+}
+
+static bool train_line_blank(const char *s, size_t n) {
+    for (size_t i = 0; i < n; i++)
+        if (s[i] != ' ' && s[i] != '\t' && s[i] != '\r') return false;
+    return true;
+}
+
+static bool train_example_append(train_ex **exs, int *n_ex,
+                                 int32_t *t, float *w, int n) {
+    if (*n_ex == INT_MAX) return false;
+    size_t count = (size_t)*n_ex + 1;
+    if (count > SIZE_MAX / sizeof(**exs)) return false;
+    train_ex *grown = realloc(*exs, sizeof(**exs) * count);
+    if (!grown) return false;
+    *exs = grown;
+    grown[(*n_ex)++] = (train_ex){ t, w, n };
+    return true;
+}
+
+// Parse the two documented training-data forms behind one ownership boundary.
+// A JSONL example is tokenized in full before its length is compared with the
+// requested training context: using the context as tok_encode's output cap
+// would silently turn an over-long completion into a shorter training target.
+static bool train_examples_load(tokenizer *tok, const char *path, bool no_bos,
+                                int wctx, train_ex **out, int *out_n) {
+    size_t data_n = 0;
+    char *data = read_file(path, &data_n);
+    if (!data) {
+        fprintf(stderr, "error: cannot read %s (regular files up to %u MiB "
+                "are supported)\n", path, MAX_INPUT_FILE / (1024u * 1024u));
+        return false;
+    }
+    train_ex *exs = NULL;
+    int n_ex = 0;
+    size_t path_n = strlen(path);
+    bool jsonl = path_n >= 6 && strcmp(path + path_n - 6, ".jsonl") == 0;
+
+    if (jsonl) {
+        size_t off = 0;
+        int line_no = 0;
+        while (off < data_n) {
+            const char *line = data + off;
+            const char *nl = memchr(line, '\n', data_n - off);
+            size_t line_n = nl ? (size_t)(nl - line) : data_n - off;
+            off += line_n + (nl != NULL);
+            line_no++;
+            if (train_line_blank(line, line_n)) continue;
+
+            jv *v = json_parse(line, line_n);
+            const char *prompt = v && v->type == J_OBJ
+                ? jv_str(jv_get(v, "prompt"), NULL) : NULL;
+            const char *completion = v && v->type == J_OBJ
+                ? jv_str(jv_get(v, "completion"), NULL) : NULL;
+            if (!prompt || !completion) {
+                fprintf(stderr, "error: %s line %d needs a JSON object with "
+                        "string {\"prompt\",\"completion\"}\n", path, line_no);
+                jv_free(v);
+                goto fail;
+            }
+            jv *wv = jv_get(v, "weight");
+            double weight = 1.0;
+            if (wv) {
+                if (wv->type != J_NUM || !isfinite(wv->num) ||
+                    wv->num < -(double)FLT_MAX || wv->num > (double)FLT_MAX) {
+                    fprintf(stderr, "error: %s line %d weight must be a "
+                            "finite number representable as f32\n", path,
+                            line_no);
+                    jv_free(v);
+                    goto fail;
+                }
+                weight = wv->num;
+            }
+
+            size_t prompt_n = strlen(prompt), completion_n = strlen(completion);
+            if (prompt_n > SIZE_MAX - completion_n - 8 ||
+                prompt_n + completion_n + 8 > INT_MAX) {
+                fprintf(stderr, "error: %s line %d is too large to tokenize\n",
+                        path, line_no);
+                jv_free(v);
+                goto fail;
+            }
+            // One token per input byte plus BOS is the tokenizer's worst case;
+            // the spare room makes capacity truncation impossible here.
+            int cap = (int)(prompt_n + completion_n + 8);
+            int32_t *tokens = malloc(sizeof(*tokens) * (size_t)cap);
+            if (!tokens) {
+                fprintf(stderr, "error: out of memory loading %s line %d\n",
+                        path, line_no);
+                jv_free(v);
+                goto fail;
+            }
+            int np = tok_encode(tok, prompt, tokens, cap, !no_bos, true);
+            int nc = np >= 0
+                ? tok_encode(tok, completion, tokens + np, cap - np,
+                             false, false) : -1;
+            int total = np >= 0 && nc >= 0 ? np + nc : -1;
+            if (np < 1 || nc < 1 || total > wctx) {
+                if (total > wctx)
+                    fprintf(stderr, "error: %s line %d is %d tokens, above "
+                            "--train-ctx %d; refusing to truncate it\n", path,
+                            line_no, total, wctx);
+                else
+                    fprintf(stderr, "error: %s line %d does not tokenize into "
+                            "a prompt and completion\n", path, line_no);
+                free(tokens);
+                jv_free(v);
+                goto fail;
+            }
+            float *weights = malloc(sizeof(*weights) * (size_t)(total - 1));
+            if (!weights) {
+                fprintf(stderr, "error: out of memory loading %s line %d\n",
+                        path, line_no);
+                free(tokens);
+                jv_free(v);
+                goto fail;
+            }
+            // Transition t predicts token t+1: completion targets begin at
+            // transition np-1. Prompt transitions are fully masked.
+            for (int i = 0; i < total - 1; i++)
+                weights[i] = i >= np - 1 ? (float)weight : 0.0f;
+            if (!train_example_append(&exs, &n_ex, tokens, weights, total)) {
+                fprintf(stderr, "error: out of memory loading training data\n");
+                free(tokens);
+                free(weights);
+                jv_free(v);
+                goto fail;
+            }
+            jv_free(v);
+        }
+    } else {
+        if (memchr(data, '\0', data_n)) {
+            fprintf(stderr, "error: training text %s contains a NUL byte\n",
+                    path);
+            goto fail;
+        }
+        size_t cap_n = data_n + 8;
+        int32_t *all = malloc(sizeof(*all) * cap_n);
+        if (!all) {
+            fprintf(stderr, "error: out of memory loading training data\n");
+            goto fail;
+        }
+        int ntok = tok_encode(tok, data, all, (int)cap_n, !no_bos, true);
+        if (ntok < 2) {
+            fprintf(stderr, "error: training text tokenizes to %d tokens\n",
+                    ntok);
+            free(all);
+            goto fail;
+        }
+        for (int st = 0; st + 2 <= ntok; st += wctx - 1) {
+            int n = ntok - st < wctx ? ntok - st : wctx;
+            if (n < 2) break;
+            int32_t *tokens = malloc(sizeof(*tokens) * (size_t)n);
+            if (!tokens) {
+                fprintf(stderr, "error: out of memory loading training data\n");
+                free(all);
+                goto fail;
+            }
+            memcpy(tokens, all + st, sizeof(*tokens) * (size_t)n);
+            if (!train_example_append(&exs, &n_ex, tokens, NULL, n)) {
+                fprintf(stderr, "error: out of memory loading training data\n");
+                free(tokens);
+                free(all);
+                goto fail;
+            }
+        }
+        free(all);
+    }
+    free(data);
+    if (n_ex < 1) {
+        fprintf(stderr, "error: no training examples in %s\n", path);
+        train_examples_free(exs, n_ex);
+        return false;
+    }
+    *out = exs;
+    *out_n = n_ex;
+    return true;
+
+fail:
+    free(data);
+    train_examples_free(exs, n_ex);
+    return false;
+}
+
 // One-shot and interactive CLI state has a shorter lifetime than the process
 // in embedding/tests. Keep its teardown explicit instead of relying on exit(2)
 // to reclaim it; that also makes the documented sanitizer command a real leak
@@ -1212,93 +1404,12 @@ int main(int argc, char **argv) {
                 fprintf(stderr, "train-gpu: no usable CUDA device — "
                         "training on the CPU\n");
         }
-        FILE *tf = fopen(train_path, "rb");
-        if (!tf) {
-            fprintf(stderr, "error: cannot open %s\n", train_path);
-            CLI_FAIL;
-        }
-        fseek(tf, 0, SEEK_END);
-        long tlen = ftell(tf);
-        fseek(tf, 0, SEEK_SET);
-        char *tdata = malloc((size_t)tlen + 1);
-        if (!tdata || fread(tdata, 1, (size_t)tlen, tf) != (size_t)tlen) {
-            fprintf(stderr, "error: cannot read %s\n", train_path);
-            fclose(tf);
-            CLI_FAIL;
-        }
-        fclose(tf);
-        tdata[tlen] = 0;
-        size_t plen = strlen(train_path);
-        bool jsonl = plen > 6 && strcmp(train_path + plen - 6, ".jsonl") == 0;
-
-        // examples: token arrays + per-transition weights
-        typedef struct { int32_t *t; float *w; int n; } train_ex;
         train_ex *exs = NULL;
         int n_ex = 0;
         int wctx = train_ctx < m.n_ctx ? train_ctx : m.n_ctx;
-        if (jsonl) {
-            char *line = tdata;
-            while (line && *line) {
-                char *nl = strchr(line, '\n');
-                size_t ll = nl ? (size_t)(nl - line) : strlen(line);
-                if (ll > 1) {
-                    jv *v = json_parse(line, ll);
-                    const char *pr = v ? jv_str(jv_get(v, "prompt"), NULL) : NULL;
-                    const char *co = v ? jv_str(jv_get(v, "completion"), NULL) : NULL;
-                    double w = v ? jv_num(jv_get(v, "weight"), 1.0) : 1.0;
-                    if (!pr || !co) {
-                        fprintf(stderr, "error: %s line %d needs "
-                                "{\"prompt\",\"completion\"}\n", train_path,
-                                n_ex + 1);
-                        CLI_FAIL;
-                    }
-                    int32_t *pt = malloc(sizeof(int32_t) * (size_t)m.n_ctx);
-                    int np = tok_encode(&tok, pr, pt, m.n_ctx, !no_bos, true);
-                    int nc = np >= 0 ? tok_encode(&tok, co, pt + np,
-                                                  m.n_ctx - np, false, false)
-                                     : -1;
-                    if (np < 1 || nc < 1) {
-                        fprintf(stderr, "error: %s line %d does not tokenize "
-                                "into prompt+completion within the context\n",
-                                train_path, n_ex + 1);
-                        CLI_FAIL;
-                    }
-                    int tot = np + nc;
-                    float *pw = malloc(sizeof(float) * (size_t)(tot - 1));
-                    // transition t predicts token t+1: completion tokens are
-                    // targets from transition np-1 onward
-                    for (int i = 0; i < tot - 1; i++)
-                        pw[i] = i >= np - 1 ? (float)w : 0.0f;
-                    exs = realloc(exs, sizeof(train_ex) * (size_t)(n_ex + 1));
-                    exs[n_ex++] = (train_ex){ pt, pw, tot };
-                    jv_free(v);
-                } 
-                line = nl ? nl + 1 : NULL;
-            }
-        } else {
-            int32_t *all = malloc(sizeof(int32_t) * ((size_t)tlen + 8));
-            int ntok = tok_encode(&tok, tdata, all, (int)tlen + 8, !no_bos,
-                                  true);
-            if (ntok < 2) {
-                fprintf(stderr, "error: training text tokenizes to %d "
-                        "tokens\n", ntok);
-                CLI_FAIL;
-            }
-            for (int st = 0; st + 2 <= ntok; st += wctx - 1) {
-                int n = ntok - st < wctx ? ntok - st : wctx;
-                if (n < 2) break;
-                int32_t *t = malloc(sizeof(int32_t) * (size_t)n);
-                memcpy(t, all + st, sizeof(int32_t) * (size_t)n);
-                exs = realloc(exs, sizeof(train_ex) * (size_t)(n_ex + 1));
-                exs[n_ex++] = (train_ex){ t, NULL, n };
-            }
-            free(all);
-        }
-        free(tdata);
-        if (n_ex < 1) {
-            fprintf(stderr, "error: no training examples in %s\n", train_path);
-            CLI_FAIL;
-        }
+        if (!train_examples_load(&tok, train_path, no_bos, wctx,
+                                 &exs, &n_ex)) CLI_FAIL;
+#define TRAIN_FAIL do { train_examples_free(exs, n_ex); CLI_FAIL; } while (0)
         fprintf(stderr, "train: %d example%s, %d steps, lr %g, ctx %d\n",
                 n_ex, n_ex == 1 ? "" : "s", train_steps, (double)train_lr,
                 wctx);
@@ -1309,7 +1420,7 @@ int main(int argc, char **argv) {
             double step_t0 = plat_now();
             model_lora_grad_zero(&m);
             if (!model_lora_backward_w(&m, ex->t, ex->n, ex->w, &loss))
-                CLI_FAIL;
+                TRAIN_FAIL;
             model_lora_adam_step(&m, train_lr, 0.9f, 0.999f, 1e-8f, 0.01f,
                                  step);
             // per-token mean over the weighted positions
@@ -1332,9 +1443,9 @@ int main(int argc, char **argv) {
             fflush(stdout);
             if (save_every > 0 && step % save_every == 0 &&
                 !model_lora_save(&m, train_out))
-                CLI_FAIL;
+                TRAIN_FAIL;
         }
-        if (!model_lora_save(&m, train_out)) CLI_FAIL;
+        if (!model_lora_save(&m, train_out)) TRAIN_FAIL;
         {
             // D7: the provenance record, written beside every adapter — the
             // reproducibility claim in checkable form. Two runs with the same
@@ -1400,14 +1511,14 @@ int main(int argc, char **argv) {
             sb_lit(&rec, "\"}}\n");
             if (!write_provenance(train_out, ".train.json", "train", &rec)) {
                 free(rec.s);
-                CLI_FAIL;
+                TRAIN_FAIL;
             }
             free(rec.s);
         }
         fprintf(stderr, "train: done — first-step loss %.4f, last-step "
                 "%.4f, adapter -> %s\n", first_loss, last_loss, train_out);
-        for (int i = 0; i < n_ex; i++) { free(exs[i].t); free(exs[i].w); }
-        free(exs);
+        train_examples_free(exs, n_ex);
+#undef TRAIN_FAIL
         cli_cleanup(&e, toks, &tok, &m);
         free(owned_prompt);
         return 0;
