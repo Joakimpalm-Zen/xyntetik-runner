@@ -2,6 +2,7 @@
 #include "json.h"
 
 #include <assert.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -517,8 +518,8 @@ static void test_schema_type_array_with_open_object(void) {
 // of range, is a live prefix with no valid completion), and no schema here is a
 // homogeneous map (its synthesized closing key can collide with one the model
 // already used).
-static unsigned long walk_rnd(void) {
-    static unsigned long s = 0x9E3779B97F4A7C15UL;
+static uint64_t walk_rnd(void) {
+    static uint64_t s = UINT64_C(0x9E3779B97F4A7C15);
     s ^= s << 13; s ^= s >> 7; s ^= s << 17;
     return s;
 }
