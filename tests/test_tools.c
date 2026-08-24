@@ -11,6 +11,7 @@
 #include "json.h"
 
 #include <assert.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1855,9 +1856,11 @@ static jv *g4_nested_array_tool(int levels) {
     snprintf(inner, sizeof(inner), "{\"type\":\"integer\"}");
     for (int i = 0; i < levels; i++) {
         char wrapped[512];
-        snprintf(wrapped, sizeof(wrapped),
-                 "{\"type\":\"array\",\"items\":%s}", inner);
-        snprintf(inner, sizeof(inner), "%s", wrapped);
+        int n = snprintf(wrapped, sizeof(wrapped),
+                         "{\"type\":\"array\",\"items\":%.*s}",
+                         480, inner);
+        assert(n >= 0 && (size_t)n < sizeof(wrapped));
+        memcpy(inner, wrapped, (size_t)n + 1);
     }
     char src[1024];
     snprintf(src, sizeof(src),
@@ -1920,8 +1923,8 @@ static void test_gemma4_nested_arrays_are_bounded_not_expanded(void) {
 // the same validator reads back to completion. Hand-picked truncation points
 // test what someone thought of; this reaches the ones nobody did -- it is what
 // turned up the wrong-tool's-arguments pair above. Deterministic seed.
-static unsigned long turn_rnd(void) {
-    static unsigned long s = 0xDEADBEEF12345UL;
+static uint64_t turn_rnd(void) {
+    static uint64_t s = UINT64_C(0xDEADBEEF12345);
     s ^= s << 13; s ^= s >> 7; s ^= s << 17;
     return s;
 }
