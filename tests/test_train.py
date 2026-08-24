@@ -8,6 +8,7 @@ JSONL prompt/completion mode masks the prompt from the loss, and a different
 seed produces a different adapter (the determinism is seeded, not vacuous).
 """
 import json
+import os
 import pathlib
 import subprocess
 import sys
@@ -114,6 +115,22 @@ def test_provenance_record_escapes_data_and_output_paths(
     rec = json.loads(record.read_text())
     assert rec["data"]["path"] == str(base / data_name)
     assert rec["adapter"]["path"] == str(out)
+
+
+def test_failed_checkpoint_install_preserves_previous_adapter(
+        runner_bin, base, tmp_path):
+    out = tmp_path / "checkpoint.gguf"
+    sentinel = b"previous valid checkpoint"
+    out.write_bytes(sentinel)
+    env = dict(os.environ, RUNNER_LORA_INSTALL_FAIL="1")
+    cmd = [runner_bin, "-m", str(base / "base.gguf"),
+           "--train", str(base / "corpus.txt"), "--train-steps", "1",
+           "--lr", "3e-3", "--train-out", str(out), "-t", "2"]
+    p = subprocess.run(cmd, cwd=ROOT, stdout=subprocess.PIPE,
+                       stderr=subprocess.PIPE, timeout=600, env=env)
+    assert p.returncode != 0
+    assert out.read_bytes() == sentinel
+    assert not pathlib.Path(f"{out}.partial").exists()
 
 
 def test_gpu_training_matches_cpu_bytes(runner_bin, base, tmp_path):

@@ -6001,11 +6001,35 @@ static void put_str(FILE *f, const char *s) {
     fwrite(s, 1, strlen(s), f);
 }
 
+static int install_lora_file(const char *tmp_path, const char *path) {
+    const char *inject = getenv("RUNNER_LORA_INSTALL_FAIL");
+    if (inject && *inject && strcmp(inject, "0") != 0) return -1;
+#ifdef _WIN32
+    return MoveFileExA(tmp_path, path,
+                       MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)
+        ? 0 : -1;
+#else
+    return rename(tmp_path, path);
+#endif
+}
+
 bool model_lora_save(model_t *m, const char *path) {
     if (!m->lora) return false;
-    FILE *f = fopen(path, "wb");
+    size_t pn = strlen(path);
+    if (pn > SIZE_MAX - sizeof(".partial")) {
+        fprintf(stderr, "error: adapter path is too long\n");
+        return false;
+    }
+    char *tmp_path = malloc(pn + sizeof(".partial"));
+    if (!tmp_path) {
+        fprintf(stderr, "error: cannot allocate adapter checkpoint path\n");
+        return false;
+    }
+    snprintf(tmp_path, pn + sizeof(".partial"), "%s.partial", path);
+    FILE *f = fopen(tmp_path, "wb");
     if (!f) {
-        fprintf(stderr, "error: cannot write %s\n", path);
+        fprintf(stderr, "error: cannot write %s\n", tmp_path);
+        free(tmp_path);
         return false;
     }
     // collect live pairs
@@ -6045,8 +6069,10 @@ bool model_lora_save(model_t *m, const char *path) {
         }
     long hdr_end = ftell(f);
     static const char zeros[32] = {0};
-    long pad = (-(long)hdr_end) & 31;
-    fwrite(zeros, 1, (size_t)pad, f);
+    if (hdr_end >= 0) {
+        long pad = (-hdr_end) & 31;
+        fwrite(zeros, 1, (size_t)pad, f);
+    }
     for (int l = 0; l < m->n_layer; l++)
         for (int s = 0; s < LW_SLOTS; s++) {
             struct lora_w *lw = &m->lora[(size_t)l * LW_SLOTS + s];
@@ -6059,10 +6085,24 @@ bool model_lora_save(model_t *m, const char *path) {
             fwrite(lw->b, 1, nb, f);
             fwrite(zeros, 1, (size_t)((-(long)nb) & 31), f);
         }
-    bool ok = fflush(f) == 0 && !ferror(f);
-    fclose(f);
-    if (!ok) fprintf(stderr, "error: short write to %s\n", path);
-    return ok;
+    bool ok = hdr_end >= 0 && fflush(f) == 0 && !ferror(f);
+    if (fclose(f) != 0) ok = false;
+    if (!ok) {
+        remove(tmp_path);
+        fprintf(stderr, "error: failed writing adapter %s "
+                "(destination left untouched)\n", path);
+        free(tmp_path);
+        return false;
+    }
+    if (install_lora_file(tmp_path, path) != 0) {
+        remove(tmp_path);
+        fprintf(stderr, "error: wrote %s but could not install it as %s "
+                "(destination unchanged)\n", tmp_path, path);
+        free(tmp_path);
+        return false;
+    }
+    free(tmp_path);
+    return true;
 }
 
 float *model_forward_batch(model_t *m, const int32_t *tokens, int n, int pos,
