@@ -311,7 +311,8 @@ def test_signal_during_startup_aborts_startup():
     # survivor in either will at least say where startup was.
     for delay in [0.0003, 0.0005, 0.0008, 0.001, 0.002, 0.005] * 2:
         proc = subprocess.Popen(
-            [exe, "-m", model, "--serve", "--port", str(free_port()),
+            [exe, "-m", model, "--serve", "--no-tray",
+             "--port", str(free_port()),
              "--parallel", "2", "-c", "1024", "--gpu", "off"],
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         try:

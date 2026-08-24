@@ -71,7 +71,7 @@ def test_gpu_off_also_applies_to_speculative_draft(runner_bin, model):
 
 
 def _chat(runner_bin, model, system, n_ctx, stdin=b"hello\n/exit\n"):
-    argv = [runner_bin, "-m", model, "--gpu", "off", "-i",
+    argv = [runner_bin, "-m", model, "--gpu", "off", "--no-tray", "-i",
             "-c", str(n_ctx), "-n", "1", "--temp", "0"]
     if system is not None:
         argv += ["--system", system]

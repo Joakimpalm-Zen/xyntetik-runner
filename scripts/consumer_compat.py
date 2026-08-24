@@ -68,7 +68,8 @@ def main(argv=None):
     with log.open("w") as output:
         proc = subprocess.Popen(
             [str(args.runner.resolve()), "-m", str(args.model.resolve()),
-             "--serve", "--port", str(port), "--parallel", "2", "--gpu", "off"],
+             "--serve", "--no-tray", "--port", str(port),
+             "--parallel", "2", "--gpu", "off"],
             stdout=output, stderr=subprocess.STDOUT)
         try:
             wait_ready(base, proc)

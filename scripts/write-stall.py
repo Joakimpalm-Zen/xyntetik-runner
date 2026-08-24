@@ -100,7 +100,7 @@ def run_experiment(args):
         log_path = Path(tmp) / "runner.log"
         with log_path.open("wb") as log:
             proc = subprocess.Popen([
-                str(args.runner), "-m", str(args.model), "--serve",
+                str(args.runner), "-m", str(args.model), "--serve", "--no-tray",
                 "--port", str(port), "--parallel", "1", "-c", str(args.ctx),
                 "--ignore-eos", "--gpu", "auto"], stdout=log,
                 stderr=subprocess.STDOUT)

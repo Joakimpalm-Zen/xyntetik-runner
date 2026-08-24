@@ -52,7 +52,7 @@ class Server:
     def __init__(self, exe, model, parallel, ctx, extra):
         self.port = free_port()
         self.args = [str(Path(exe).resolve()), "-m", str(Path(model).resolve()),
-                     "--serve", "--port", str(self.port),
+                     "--serve", "--no-tray", "--port", str(self.port),
                      "--parallel", str(parallel), "-c", str(ctx)] + list(extra)
         self.log = None
 

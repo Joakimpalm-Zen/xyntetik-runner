@@ -217,7 +217,8 @@ def main():
     procs = []
     try:
         procs.append(subprocess.Popen(
-            [args.runner, "--serve", "-m", args.model, "-c", str(args.ctx),
+            [args.runner, "--serve", "--no-tray", "-m", args.model,
+             "-c", str(args.ctx),
              "--port", "18201", "--gpu", "off"],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
         procs.append(subprocess.Popen(

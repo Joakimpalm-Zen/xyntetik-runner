@@ -85,7 +85,7 @@ class RunnerServer:
 
     def start(self):
         self.port = free_port()
-        argv = [self.exe, "-m", self.model, "--serve",
+        argv = [self.exe, "-m", self.model, "--serve", "--no-tray",
                 "--port", str(self.port), "--parallel", str(self.parallel),
                 "-c", str(self.ctx)] + self.extra_args
         self._log = open(self.log_path, "wb") if self.log_path else subprocess.DEVNULL
