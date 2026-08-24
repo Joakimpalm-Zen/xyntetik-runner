@@ -211,4 +211,4 @@ class ManagedRunner:
 
     @staticmethod
     def _default_spawn(args: list[str]) -> subprocess.Popen[Any]:
-        return spawn_detached(args, cwd=Path(args[0]).resolve().parent)
+        return spawn_detached(args)

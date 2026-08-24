@@ -12,6 +12,7 @@ import time
 import unittest
 from importlib.resources import files
 from pathlib import Path
+from unittest.mock import patch
 
 from xyntetik_runner import (
     ManagedRunner,
@@ -552,6 +553,15 @@ class ManagedRunnerOwnershipTests(unittest.TestCase):
 
 
 class LaunchTests(unittest.TestCase):
+    def test_default_spawn_preserves_caller_relative_paths(self):
+        args = [str(Path("bin") / "runner"), "-m",
+                str(Path("models") / "model.gguf")]
+
+        with patch("xyntetik_runner.process.spawn_detached") as spawn:
+            ManagedRunner._default_spawn(args)
+
+        spawn.assert_called_once_with(args)
+
     def test_system_capabilities_are_parsed_from_runner_binary(self):
         seen = []
 
