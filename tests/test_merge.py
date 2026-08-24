@@ -85,7 +85,11 @@ def test_provenance_record_matches_files(runner_bin, fixtures, tmp_path):
 
 def test_provenance_record_escapes_output_path(runner_bin, fixtures, tmp_path):
     base, adapter = fixtures
-    merged = tmp_path / 'm"erged.gguf'
+    # Quotes force JSON escaping on POSIX; Windows forbids them in file names,
+    # but its path separators exercise the backslash escaping instead.
+    merged_name = ('merged-windows.gguf' if sys.platform == "win32"
+                   else 'm"erged.gguf')
+    merged = tmp_path / merged_name
     p = _merge(runner_bin, base, adapter, merged)
     assert p.returncode == 0, p.stderr.decode(errors="replace")
     record = pathlib.Path(f"{merged}.merge.json")
