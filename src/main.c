@@ -1425,8 +1425,11 @@ int main(int argc, char **argv) {
             model_lora_grad_zero(&m);
             if (!model_lora_backward_w(&m, ex->t, ex->n, ex->w, &loss))
                 TRAIN_FAIL;
-            model_lora_adam_step(&m, train_lr, 0.9f, 0.999f, 1e-8f, 0.01f,
-                                 step);
+            if (!model_lora_adam_step(&m, train_lr, 0.9f, 0.999f, 1e-8f,
+                                      0.01f, step)) {
+                fprintf(stderr, "error: cannot allocate optimizer state\n");
+                TRAIN_FAIL;
+            }
             // per-token mean over the weighted positions
             double wsum = 0;
             if (ex->w) {

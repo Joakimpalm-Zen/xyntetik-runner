@@ -182,6 +182,21 @@ def test_failed_checkpoint_install_preserves_previous_adapter(
     assert not pathlib.Path(f"{out}.partial").exists()
 
 
+def test_optimizer_allocation_failure_does_not_publish_adapter(
+        runner_bin, base, tmp_path):
+    out = tmp_path / "optimizer-oom.gguf"
+    env = dict(os.environ, RUNNER_LORA_ADAM_ALLOC_FAIL="1")
+    cmd = [runner_bin, "-m", str(base / "base.gguf"),
+           "--train", str(base / "corpus.txt"), "--train-steps", "1",
+           "--lr", "3e-3", "--train-out", str(out), "-t", "2"]
+    p = subprocess.run(cmd, cwd=ROOT, stdout=subprocess.PIPE,
+                       stderr=subprocess.PIPE, timeout=600, env=env)
+    assert p.returncode != 0
+    assert b"optimizer state" in p.stderr
+    assert not out.exists()
+    assert not pathlib.Path(f"{out}.train.json").exists()
+
+
 def test_gpu_training_matches_cpu_bytes(runner_bin, base, tmp_path):
     """D8 slice 2: RUNNER_TRAIN_GPU=1 must not change a single adapter byte.
 

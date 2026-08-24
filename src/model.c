@@ -5953,14 +5953,10 @@ bool model_lora_train_init(model_t *m, int rank, float alpha, uint64_t seed) {
 
 // One AdamW step over every adapter parameter from the accumulated
 // gradients. Plain elementwise loops in fixed order: byte-deterministic.
-static void adam_buf(float *th, const float *g, float **mp, float **vp,
-                     int64_t n, float lr, float b1, float b2, float eps,
+static void adam_buf(float *th, const float *g, float *mo, float *vo,
+                     size_t n, float lr, float b1, float b2, float eps,
                      float wd, float bc1, float bc2) {
-    if (!*mp) *mp = calloc((size_t)n, sizeof(float));
-    if (!*vp) *vp = calloc((size_t)n, sizeof(float));
-    if (!*mp || !*vp) return;
-    float *mo = *mp, *vo = *vp;
-    for (int64_t i = 0; i < n; i++) {
+    for (size_t i = 0; i < n; i++) {
         float gi = g[i];
         mo[i] = b1 * mo[i] + (1.0f - b1) * gi;
         vo[i] = b2 * vo[i] + (1.0f - b2) * gi * gi;
@@ -5970,9 +5966,36 @@ static void adam_buf(float *th, const float *g, float **mp, float **vp,
     }
 }
 
-void model_lora_adam_step(model_t *m, float lr, float beta1, float beta2,
+static bool adam_state(float **state, size_t n) {
+    if (!*state) *state = calloc(n, sizeof(float));
+    return *state != NULL;
+}
+
+bool model_lora_adam_step(model_t *m, float lr, float beta1, float beta2,
                           float eps, float wd, int step) {
-    if (!m->lora) return;
+    if (!m->lora) return true;
+    const char *inject = getenv("RUNNER_LORA_ADAM_ALLOC_FAIL");
+    if (inject && *inject && strcmp(inject, "0") != 0) return false;
+
+    // Allocate every moment before touching any parameter or existing moment.
+    // Otherwise an OOM halfway through the table silently updates only a
+    // prefix of the adapter and the caller can publish it as a successful
+    // checkpoint.
+    for (int l = 0; l < m->n_layer; l++)
+        for (int s = 0; s < LW_SLOTS; s++) {
+            struct lora_w *lw = &m->lora[(size_t)l * LW_SLOTS + s];
+            gguf_tensor *base = lora_slot_base(m, l, s);
+            if (!lw->r || !base || !lw->ga || !lw->gb) continue;
+            if (base->ne[0] > SIZE_MAX / (size_t)lw->r ||
+                base->ne[1] > SIZE_MAX / (size_t)lw->r)
+                return false;
+            size_t na = (size_t)lw->r * (size_t)base->ne[0];
+            size_t nb = (size_t)lw->r * (size_t)base->ne[1];
+            if (!adam_state(&lw->ma, na) || !adam_state(&lw->va, na) ||
+                !adam_state(&lw->mb, nb) || !adam_state(&lw->vb, nb))
+                return false;
+        }
+
     float bc1 = 1.0f - powf(beta1, (float)step);
     float bc2 = 1.0f - powf(beta2, (float)step);
     for (int l = 0; l < m->n_layer; l++)
@@ -5980,15 +6003,16 @@ void model_lora_adam_step(model_t *m, float lr, float beta1, float beta2,
             struct lora_w *lw = &m->lora[(size_t)l * LW_SLOTS + s];
             gguf_tensor *base = lora_slot_base(m, l, s);
             if (!lw->r || !base || !lw->ga || !lw->gb) continue;
-            adam_buf(lw->a, lw->ga, &lw->ma, &lw->va,
-                     (int64_t)lw->r * base->ne[0], lr, beta1, beta2, eps,
+            adam_buf(lw->a, lw->ga, lw->ma, lw->va,
+                     (size_t)lw->r * (size_t)base->ne[0], lr, beta1, beta2, eps,
                      wd, bc1, bc2);
-            adam_buf(lw->b, lw->gb, &lw->mb, &lw->vb,
-                     (int64_t)base->ne[1] * lw->r, lr, beta1, beta2, eps,
+            adam_buf(lw->b, lw->gb, lw->mb, lw->vb,
+                     (size_t)base->ne[1] * (size_t)lw->r, lr, beta1, beta2, eps,
                      wd, bc1, bc2);
         }
     // parameters moved: the adapter is a new behavioral identity
     m->lora_id = m->lora_id * 0x100000001B3ull + 1;
+    return true;
 }
 
 // Adapter GGUF writer — exactly the format model_lora_load reads (v3 header,
