@@ -88,6 +88,39 @@ class StartupLeaseTests(unittest.TestCase):
 
             self.assertTrue(path.exists())
 
+    def test_release_rechecks_the_token_after_moving_the_lease(self):
+        # Ownership can change between release's initial read and its rename.
+        # The old owner must not delete the replacement it actually moved.
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "runner.lease"
+            owner = StartupLease(path)
+            self.assertTrue(owner.acquire())
+            original_move = owner._move_aside
+            replacement = {
+                "owner_pid": os.getpid(),
+                "owner_start": owner.owner_start,
+                "token": "replacement-owner",
+            }
+
+            def replace_then_move(target):
+                # Deterministically place a rival in the exact race window
+                # after release read owner.token but before it moves the path.
+                import shutil
+                shutil.rmtree(target)
+                target.mkdir()
+                (target / "owner.json").write_text(
+                    json.dumps(replacement), encoding="utf-8")
+                return original_move(target)
+
+            with patch.object(owner, "_move_aside", side_effect=replace_then_move):
+                owner.release()
+
+            self.assertTrue(path.exists())
+            self.assertEqual(
+                json.loads((path / "owner.json").read_text(encoding="utf-8")),
+                replacement,
+            )
+
     def test_reused_pid_does_not_block_startup(self):
         # A record naming a LIVE pid (our own) but a start time that does not
         # match that process is a reused PID, not the real owner — the lease

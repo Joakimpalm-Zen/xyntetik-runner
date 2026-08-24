@@ -61,6 +61,16 @@ class StartupLease:
             return
         stale = self._move_aside(self.path)
         if stale is not None:
+            moved = self._read_record(stale)
+            if moved.get("token") != self.token:
+                # The path changed after the read above. Put back the record
+                # we actually moved if nobody else has already claimed the
+                # canonical path; it belongs to another owner, not to us.
+                try:
+                    stale.rename(self.path)
+                except OSError:
+                    pass
+                return
             _remove_tree(stale)
 
     def _prepare_claim(self) -> Path:
