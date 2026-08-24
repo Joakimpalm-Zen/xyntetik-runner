@@ -124,6 +124,35 @@ int main(void) {
     assert(strstr(out, "truncation 6/6") && strstr(out, "schema-shape@Q4_0"));
     assert(strstr(out, "agent-torture pass") && strstr(out, "native granite"));
 
+    // Hostile/forward-version manifests may carry arbitrarily long reported
+    // labels. Reporting with no output buffer must still resolve the state,
+    // and a small output buffer must remain terminated rather than advancing
+    // later appends beyond the fixed internal summary buffer.
+    char long_quant[600];
+    memset(long_quant, 'Q', sizeof(long_quant) - 1);
+    long_quant[sizeof(long_quant) - 1] = 0;
+    char long_manifest[2048];
+    snprintf(long_manifest, sizeof long_manifest,
+             "{\"schema_version\":\"xyntetik.runner.envelope.v1\","
+             "\"runtime\":{\"version\":\"%s\","
+             "\"kernel_set\":{\"backend\":\"cpu\"}},"
+             "\"verdict\":\"certified\",\"tool_calling\":{"
+             "\"schema_shape\":{\"held_to_quant\":\"%s\"},"
+             "\"agent_torture\":{\"gate\":\"pass\"}}}",
+             RUNNER_VERSION, long_quant);
+    write_manifest(long_manifest);
+    assert(envelope_report(MODEL, RUNNER_VERSION, "cpu", NULL, 0) ==
+           ENV_CERTIFIED);
+    int silent_state = -1;
+    assert(envelope_gate(MODEL, RUNNER_VERSION, "cpu", false, NULL, 0,
+                         &silent_state));
+    assert(silent_state == ENV_CERTIFIED);
+    char small[24];
+    memset(small, 'X', sizeof small);
+    assert(envelope_report(MODEL, RUNNER_VERSION, "cpu", small,
+                           sizeof small) == ENV_CERTIFIED);
+    assert(memchr(small, 0, sizeof small));
+
     // The same manifest WITHOUT a tool_calling block emits no such line
     // (back-compat: silent for manifests that predate the axis).
     write_manifest(manifest(RUNNER_VERSION, "cpu", "certified"));

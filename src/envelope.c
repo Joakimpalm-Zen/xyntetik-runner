@@ -3,6 +3,7 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -274,6 +275,18 @@ static void outside_reason(jv *m, char *out, int cap) {
         snprintf(out, (size_t)cap, "the configuration is outside what was measured");
 }
 
+static void summary_add(char *out, size_t cap, size_t *off,
+                        const char *fmt, ...) {
+    if (cap == 0 || *off >= cap - 1) return;
+    size_t rem = cap - *off;
+    va_list ap;
+    va_start(ap, fmt);
+    int n = vsnprintf(out + *off, rem, fmt, ap);
+    va_end(ap);
+    if (n < 0) return;
+    *off += (size_t)n < rem ? (size_t)n : rem - 1;
+}
+
 // REPORT-ONLY: append a one-line summary of the manifest's optional
 // `tool_calling` block (the reported-only tool-calling axis the certifier
 // emits) after whatever classify() wrote into `out`. It is surfaced for the
@@ -288,23 +301,22 @@ static void append_tool_calling(jv *m, char *out, int cap) {
     if (!tc || tc->type != J_OBJ) return;
 
     char parts[192];
-    int p = 0;
+    size_t p = 0;
     const char *sep = "";
-#define TC_REM (p < (int)sizeof parts ? (int)sizeof parts - p : 0)
 
     jv *tr = jv_get(tc, "truncation_recovery");
     if (tr && tr->type == J_OBJ) {
         int passed = (int)jv_num(jv_get(tr, "rungs_passed"), 0);
         int total  = (int)jv_num(jv_get(tr, "rungs_total"), 0);
-        p += snprintf(parts + p, (size_t)TC_REM, "%struncation %d/%d",
-                      sep, passed, total);
+        summary_add(parts, sizeof parts, &p, "%struncation %d/%d",
+                    sep, passed, total);
         sep = ", ";
     }
     jv *ss = jv_get(tc, "schema_shape");
     if (ss && ss->type == J_OBJ) {
         const char *q = jv_str(jv_get(ss, "held_to_quant"), "");
         if (q[0]) {
-            p += snprintf(parts + p, (size_t)TC_REM, "%sschema-shape@%s", sep, q);
+            summary_add(parts, sizeof parts, &p, "%sschema-shape@%s", sep, q);
             sep = ", ";
         }
     }
@@ -312,7 +324,7 @@ static void append_tool_calling(jv *m, char *out, int cap) {
     if (at && at->type == J_OBJ) {
         const char *g = jv_str(jv_get(at, "gate"), "");
         if (g[0]) {
-            p += snprintf(parts + p, (size_t)TC_REM, "%sagent-torture %s", sep, g);
+            summary_add(parts, sizeof parts, &p, "%sagent-torture %s", sep, g);
             sep = ", ";
         }
     }
@@ -321,12 +333,11 @@ static void append_tool_calling(jv *m, char *out, int cap) {
         const char *fam = jv_str(jv_get(nt, "tool_family"), "");
         if (fam[0]) {
             bool native = jv_bool(jv_get(nt, "native"), false);
-            p += snprintf(parts + p, (size_t)TC_REM, "%s%s %s",
-                          sep, native ? "native" : "non-native", fam);
+            summary_add(parts, sizeof parts, &p, "%s%s %s", sep,
+                        native ? "native" : "non-native", fam);
             sep = ", ";
         }
     }
-#undef TC_REM
     if (p == 0) return;   // block present but no usable sub-fields — stay silent
 
     // Append as a SECOND line so it never disturbs the classify summary the
@@ -344,7 +355,9 @@ static void append_tool_calling(jv *m, char *out, int cap) {
 
 int envelope_report(const char *model_path, const char *runtime_version,
                     const char *backend, char *out, int cap) {
-    if (cap > 0) out[0] = 0;
+    char sink[1];
+    if (!out || cap <= 0) { out = sink; cap = 1; }
+    out[0] = 0;
     if (!model_path) return ENV_UNCLASSIFIED;
 
     size_t n = 0;
@@ -374,7 +387,9 @@ int envelope_report(const char *model_path, const char *runtime_version,
 bool envelope_gate(const char *model_path, const char *runtime_version,
                    const char *backend, bool forced,
                    char *msg, int cap, int *out_state) {
-    if (cap > 0) msg[0] = 0;
+    char sink[1];
+    if (!msg || cap <= 0) { msg = sink; cap = 1; }
+    msg[0] = 0;
     if (out_state) *out_state = ENV_UNCLASSIFIED;
     if (!model_path) return true;
 
