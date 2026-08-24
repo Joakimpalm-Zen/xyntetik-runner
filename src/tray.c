@@ -103,9 +103,15 @@ static bool cfg_is_stale(const char *path) {
     if (!path[0] || stat(path, &st) != 0) return false;
     if (g_cfg_loaded && st.st_mtime == g_cfg_mtime &&
         (long)st.st_size == g_cfg_size) return false;
+    return true;
+}
+
+static void cfg_stamp(const char *path) {
+    struct stat st;
+    if (stat(path, &st) != 0) return;
     g_cfg_mtime = st.st_mtime;
     g_cfg_size  = (long)st.st_size;
-    return true;
+    g_cfg_loaded = true;
 }
 
 static void cfg_load(void) {
@@ -117,16 +123,30 @@ static void cfg_load(void) {
     if (!f) return;
     char buf[4096];
     size_t n = fread(buf, 1, sizeof buf - 1, f);
-    fclose(f);
+    bool complete = n < sizeof buf - 1 || fgetc(f) == EOF;
+    bool read_ok = !ferror(f) && fclose(f) == 0;
+    if (!complete || !read_ok) return;
     buf[n] = 0;
     jv *v = json_parse(buf, n);
-    if (!v) return;
-    snprintf(g_cfg.last_model, sizeof g_cfg.last_model, "%s",
-             jv_str(jv_get(v, "last_model"), ""));
-    snprintf(g_cfg.last_args, sizeof g_cfg.last_args, "%s",
-             jv_str(jv_get(v, "last_args"), ""));
-    g_cfg.port = (int)jv_num(jv_get(v, "port"), 8080);
+    if (!v || v->type != J_OBJ) { jv_free(v); return; }
+
+    jv *model_v = jv_get(v, "last_model");
+    jv *args_v  = jv_get(v, "last_args");
+    jv *port_v  = jv_get(v, "port");
+    const char *model = model_v ? jv_str(model_v, NULL) : "";
+    const char *args  = args_v ? jv_str(args_v, NULL) : "";
+    double port_d = port_v ? jv_num(port_v, -1) : 8080;
+    if (!model || !args || strlen(model) >= sizeof g_cfg.last_model ||
+        strlen(args) >= sizeof g_cfg.last_args || port_d < 1 ||
+        port_d > 65535 || port_d != (double)(int)port_d) {
+        jv_free(v);
+        return;
+    }
+    snprintf(g_cfg.last_model, sizeof g_cfg.last_model, "%s", model);
+    snprintf(g_cfg.last_args, sizeof g_cfg.last_args, "%s", args);
+    g_cfg.port = (int)port_d;
     jv_free(v);
+    cfg_stamp(path);
 }
 
 static bool cfg_save(void) {
@@ -167,12 +187,7 @@ static bool cfg_save(void) {
 
     // Our own write is not an external edit. Re-stamping here keeps the next
     // menu build from re-reading a file whose contents it already holds.
-    struct stat st;
-    if (stat(path, &st) == 0) {
-        g_cfg_mtime = st.st_mtime;
-        g_cfg_size  = (long)st.st_size;
-        g_cfg_loaded = true;
-    }
+    cfg_stamp(path);
     return true;
 }
 

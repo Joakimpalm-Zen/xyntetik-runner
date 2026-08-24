@@ -9,11 +9,13 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #ifdef _WIN32
 #include <windows.h>
 #include <direct.h>
 #include <process.h>
+#include <sys/utime.h>
 #define getpid _getpid
 #define setenv_compat(k, v) _putenv_s(k, v)
 static void msleep(int ms) { Sleep(ms); }
@@ -24,7 +26,7 @@ static void msleep(int ms) { Sleep(ms); }
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
-#include <time.h>
+#include <utime.h>
 #include <unistd.h>
 #define setenv_compat(k, v) setenv(k, v, 1)
 static void msleep(int ms) {
@@ -50,6 +52,16 @@ static bool menu_has(const tray_item *it, int n, const char *needle) {
     for (int i = 0; i < n; i++)
         if (strstr(it[i].label, needle)) return true;
     return false;
+}
+
+static void pin_mtime(const char *path, time_t stamp) {
+#ifdef _WIN32
+    struct __utimbuf64 t = { (__time64_t)stamp, (__time64_t)stamp };
+    CHECK(_utime64(path, &t) == 0, "test fixture pins config mtime");
+#else
+    struct utimbuf t = { stamp, stamp };
+    CHECK(utime(path, &t) == 0, "test fixture pins config mtime");
+#endif
 }
 
 #ifndef _WIN32
@@ -240,6 +252,46 @@ int main(int argc, char **argv) {
     fclose(f);
     n = tray_menu_build(items, 128);
     CHECK(menu_has(items, n, "fake-model.gguf"), "restored config re-read too");
+
+    // Editors commonly publish an intermediate invalid file and then the
+    // repaired bytes within one timestamp tick. The invalid observation must
+    // not consume the (mtime,size) identity, or an equal-sized repair remains
+    // invisible for the lifetime of the tray.
+    char repaired_model[600];
+    snprintf(repaired_model, sizeof repaired_model, "%s/repaired-model.gguf",
+             home_json);
+    f = fopen(repaired_model, "wb"); fputs("x", f); fclose(f);
+    char repaired[1600];
+    int repaired_n = snprintf(
+        repaired, sizeof repaired,
+        "{\"last_model\": \"%s\", \"last_args\": \"-c 512\", "
+        "\"port\": 8127}\n", repaired_model);
+    CHECK(repaired_n > 0 && (size_t)repaired_n < sizeof repaired,
+          "repaired config fixture fits");
+    char malformed[1600];
+    memcpy(malformed, repaired, (size_t)repaired_n + 1);
+    malformed[0] = '!';
+    time_t pinned = time(NULL) + 120;
+    f = fopen(cfg, "wb"); fwrite(malformed, 1, (size_t)repaired_n, f); fclose(f);
+    pin_mtime(cfg, pinned);
+    n = tray_menu_build(items, 128);
+    CHECK(menu_has(items, n, "fake-model.gguf"),
+          "invalid edit retains the last-known-good config");
+    f = fopen(cfg, "wb"); fwrite(repaired, 1, (size_t)repaired_n, f); fclose(f);
+    pin_mtime(cfg, pinned);
+    n = tray_menu_build(items, 128);
+    CHECK(menu_has(items, n, "repaired-model.gguf"),
+          "equal-size equal-mtime repair is re-read after an invalid edit");
+
+    // Restore the original again for the lifecycle assertions below.
+    f = fopen(cfg, "wb");
+    fprintf(f, "{\"last_model\": \"%s/fake-model.gguf\","
+               " \"last_args\": \"-c 512\", \"port\": 8127}\n", home_json);
+    fclose(f);
+    n = tray_menu_build(items, 128);
+    CHECK(menu_has(items, n, "fake-model.gguf"),
+          "config after repair remains reloadable");
+    remove(repaired_model);
 
     // A failed config install must keep both the durable last-known-good file
     // and the tray's in-memory selection. Otherwise the menu claims the new
