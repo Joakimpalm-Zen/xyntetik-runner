@@ -119,9 +119,10 @@ const char *plat_runtime_dir(void);
 // the lock is held across all of it, so concurrent callers serialise. `in` is
 // "" for a file that does not exist yet.
 //
-// Returns false only when the file could not be opened at all. When the
-// platform has no working lock the read-modify-write still happens unlocked —
-// an unlockable filesystem must not stop a runner from starting.
+// Returns false when the file could not be opened/read or the complete update
+// could not be written. When the platform has no working lock the
+// read-modify-write still happens unlocked — an unlockable filesystem must not
+// stop a runner from starting.
 typedef char *(*plat_rmw_fn)(const char *in, size_t in_len, void *ud);
 bool        plat_file_rmw(const char *path, plat_rmw_fn fn, void *ud);
 

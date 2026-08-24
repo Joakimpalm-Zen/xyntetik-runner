@@ -259,9 +259,18 @@ bool plat_file_rmw(const char *path, plat_rmw_fn fn, void *ud) {
     if (readable && sz.QuadPart > 0) {
         len = (size_t)sz.QuadPart;
         buf = malloc(len + 1);
-        DWORD got = 0;
-        if (!buf || !ReadFile(f, buf, (DWORD)len, &got, NULL)) { readable = false; len = 0; }
-        else { len = got; buf[len] = 0; }
+        size_t off = 0;
+        while (buf && off < len) {
+            DWORD got = 0;
+            if (!ReadFile(f, buf + off, (DWORD)(len - off), &got, NULL) ||
+                got == 0) {
+                readable = false;
+                break;
+            }
+            off += got;
+        }
+        if (!buf) readable = false;
+        if (readable) buf[len] = 0;
     }
     if (!readable) {
         free(buf);
@@ -276,12 +285,31 @@ bool plat_file_rmw(const char *path, plat_rmw_fn fn, void *ud) {
     char *out = fn(buf ? buf : "", len, ud);
     free(buf);
 
+    bool written = true;
     if (out) {
+        const char *inject = getenv("RUNNER_FILE_RMW_WRITE_FAIL");
+        size_t n = strlen(out);
+        if ((inject && *inject && strcmp(inject, "0") != 0) ||
+            n > MAXDWORD) {
+            written = false;
+        }
         LARGE_INTEGER zero = {0};
-        SetFilePointerEx(f, zero, NULL, FILE_BEGIN);
-        SetEndOfFile(f);
-        DWORD wrote = 0;
-        WriteFile(f, out, (DWORD)strlen(out), &wrote, NULL);
+        if (written && !SetFilePointerEx(f, zero, NULL, FILE_BEGIN))
+            written = false;
+        size_t off = 0;
+        while (written && off < n) {
+            DWORD wrote = 0;
+            if (!WriteFile(f, out + off, (DWORD)(n - off), &wrote, NULL) ||
+                wrote == 0) {
+                written = false;
+                break;
+            }
+            off += wrote;
+        }
+        // Truncate only after the complete replacement is present. A short
+        // write can still damage its prefix, but must not also discard the
+        // untouched tail or be reported as success.
+        if (written && !SetEndOfFile(f)) written = false;
         free(out);
     }
 
@@ -290,7 +318,7 @@ bool plat_file_rmw(const char *path, plat_rmw_fn fn, void *ud) {
         UnlockFileEx(f, 0, MAXDWORD, MAXDWORD, &uo);
     }
     CloseHandle(f);
-    return true;
+    return written;
 }
 
 void plat_parent_watch(long pid) {
@@ -652,9 +680,15 @@ bool plat_file_rmw(const char *path, plat_rmw_fn fn, void *ud) {
     if (readable && st.st_size > 0) {
         len = (size_t)st.st_size;
         buf = malloc(len + 1);
-        ssize_t got = buf ? pread(fd, buf, len, 0) : -1;
-        if (got < 0) { readable = false; len = 0; }
-        else { len = (size_t)got; buf[len] = 0; }
+        size_t off = 0;
+        while (buf && off < len) {
+            ssize_t got = pread(fd, buf + off, len - off, (off_t)off);
+            if (got < 0 && errno == EINTR) continue;
+            if (got <= 0) { readable = false; break; }
+            off += (size_t)got;
+        }
+        if (!buf) readable = false;
+        if (readable) buf[len] = 0;
     }
     if (!readable) {
         free(buf);
@@ -666,18 +700,26 @@ bool plat_file_rmw(const char *path, plat_rmw_fn fn, void *ud) {
     char *out = fn(buf ? buf : "", len, ud);
     free(buf);
 
+    bool written = true;
     if (out) {
         size_t n = strlen(out);
-        if (ftruncate(fd, 0) == 0) {
-            ssize_t w = pwrite(fd, out, n, 0);
-            (void)w;
+        const char *inject = getenv("RUNNER_FILE_RMW_WRITE_FAIL");
+        if (inject && *inject && strcmp(inject, "0") != 0) written = false;
+        size_t off = 0;
+        while (written && off < n) {
+            ssize_t w = pwrite(fd, out + off, n - off, (off_t)off);
+            if (w < 0 && errno == EINTR) continue;
+            if (w <= 0) { written = false; break; }
+            off += (size_t)w;
         }
+        // Preserve the old tail until the full replacement has landed.
+        if (written && ftruncate(fd, (off_t)n) != 0) written = false;
         free(out);
     }
 
     if (locked) flock(fd, LOCK_UN);
     close(fd);
-    return true;
+    return written;
 }
 
 static void *parent_poll(void *arg) {

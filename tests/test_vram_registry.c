@@ -419,6 +419,31 @@ static void test_yield_flag_lifecycle(void) {
     vram_release(l);
 }
 
+static void test_yield_write_failure_is_reported(void) {
+    const char *dir = scratch_dir();
+    const char *gpu = "yield-write-failure-test";
+#ifdef _WIN32
+    assert(_putenv_s("RUNNER_FILE_RMW_WRITE_FAIL", "1") == 0);
+#else
+    assert(setenv("RUNNER_FILE_RMW_WRITE_FAIL", "1", 1) == 0);
+#endif
+    assert(!vram_request_yield(gpu, (long)getpid()) &&
+           "a failed sentinel write must not be reported as successful");
+#ifdef _WIN32
+    assert(_putenv_s("RUNNER_FILE_RMW_WRITE_FAIL", "") == 0);
+#else
+    assert(unsetenv("RUNNER_FILE_RMW_WRITE_FAIL") == 0);
+#endif
+
+    char path[600];
+    reg_file(dir, gpu, path, sizeof(path));
+    char *suffix = strstr(path, ".reg");
+    assert(suffix);
+    snprintf(suffix, (size_t)(path + sizeof(path) - suffix), ".yield.%ld",
+             (long)getpid());
+    remove(path);
+}
+
 #ifndef _WIN32
 // The registry can fall back to a world-writable directory (/tmp), where its
 // path is predictable: another local user can plant a symlink there and a
@@ -913,6 +938,7 @@ int main(void) {
     test_refusal_does_not_blame_an_outsider_it_just_named();
     test_small_error_buffer_is_not_overrun();
     test_yield_flag_lifecycle();
+    test_yield_write_failure_is_reported();
 #ifndef _WIN32
     test_symlinked_registry_is_refused();
     test_concurrent_claims_mint_distinct_seqs();
