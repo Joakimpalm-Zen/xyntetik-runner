@@ -444,6 +444,12 @@ static void usage(const char *prog) {
         "                 f16 | bf16 | keep (default q4_0, or keep if\n"
         "                 --prune-experts or --merge-lora is the reason to\n"
         "                 rewrite)\n"
+        "  --transcript F record the one-shot -p run as a replay-verifiable\n"
+        "                 transcript (xyntetik.runner.transcript.v1): model and\n"
+        "                 binary sha256, profile, config, seed, prompt and\n"
+        "                 output token ids, chain hash. Same binary + same\n"
+        "                 record replays bit-exact; cross-ISA replays\n"
+        "                 token-exact (libm differs)\n"
         "  --merge-lora OUT  fold --lora into the base weights and write\n"
         "                 OUT.gguf + an OUT.gguf.merge.json provenance record:\n"
         "                 W' = W + (alpha/r)*B*A per adapted projection, each\n"
@@ -561,6 +567,26 @@ static void usage(const char *prog) {
         "  --parent-pid N exit when process N dies (supervisor cleanup)\n"
         "  -v             verbose model info\n",
         prog);
+}
+
+// --transcript capture: stream to stdout AND keep the exact bytes for the
+// record (the transcript's output.text is what the terminal saw, verbatim)
+typedef struct { char *buf; size_t n, cap; } outcap_t;
+static int outcap_cb(void *ud, const char *bytes, int n) {
+    outcap_t *o = (outcap_t *)ud;
+    if (o->n + (size_t)n + 1 > o->cap) {
+        size_t cap = (o->n + (size_t)n + 1) * 2 + 256;
+        char *nb = realloc(o->buf, cap);
+        if (nb) { o->buf = nb; o->cap = cap; }
+    }
+    if (o->buf && o->n + (size_t)n + 1 <= o->cap) {
+        memcpy(o->buf + o->n, bytes, (size_t)n);
+        o->n += (size_t)n;
+        o->buf[o->n] = 0;
+    }
+    fwrite(bytes, 1, (size_t)n, stdout);
+    fflush(stdout);
+    return 0;
 }
 
 static int stdout_cb(void *ud, const char *bytes, int n) {
@@ -683,6 +709,7 @@ int main(int argc, char **argv) {
     const char *tmpl_arg = NULL, *prompt_file = NULL, *schema_file = NULL;
     const char *quant_out = NULL, *quant_type = NULL, *prune_experts = NULL;
     const char *type_plan = NULL, *merge_out = NULL;
+    const char *transcript_path = NULL;
     int n_predict = 256, n_threads = 0, tmpl = -1, reserve_cpu_pct = 0;
     int port = 8080, parallel = 1, ttl = -1; // -1: 300 for swap mode, never for single
     long parent_pid = 0;
@@ -757,6 +784,7 @@ int main(int argc, char **argv) {
         else if (!strcmp(a, "--json-schema")) schema_file = NEXT;
         else if (!strcmp(a, "--quantize")) quant_out = NEXT;
         else if (!strcmp(a, "--merge-lora")) merge_out = NEXT;
+        else if (!strcmp(a, "--transcript")) transcript_path = NEXT;
         else if (!strcmp(a, "--quant")) quant_type = NEXT;
         else if (!strcmp(a, "--prune-experts")) prune_experts = NEXT;
         else if (!strcmp(a, "--type-plan")) type_plan = NEXT;
@@ -1738,17 +1766,69 @@ int main(int argc, char **argv) {
 
         if (!prompt_file && !json_mode && !schema_file)
             printf("%s", p); // don't echo file/json/schema prompts
-        free(p);
         fflush(stdout);
-        n_gen = engine_generate(&e, logits, n_predict, stdout_cb, NULL, &gtime);
+        // --transcript: the seed recorded is the value the sampler STARTS
+        // from (it mutates as it draws), and the output bytes are captured
+        // verbatim as they stream
+        uint64_t t_seed = smp.rng;
+        outcap_t ocap = {0};
+        n_gen = engine_generate(&e, logits, n_predict,
+                                transcript_path ? outcap_cb : stdout_cb,
+                                transcript_path ? &ocap : NULL, &gtime);
         printf("\n");
         if (e.hit_stop && !json_mode) fprintf(stderr, "[end of text]\n");
         fprintf(stderr, "\nprompt: %d tok, %.2f tok/s | gen: %d tok, %.2f tok/s\n",
                 n_prompt, n_prompt / (ptime > 0 ? ptime : 1e-9),
                 n_gen, n_gen / (gtime > 0 ? gtime : 1e-9));
+        int t_rc = 0;
+        if (transcript_path) {
+            char gname[128] = "";
+            if (m.gpu) gpu_available(gname, sizeof gname);
+            transcript_info ti = {
+                .out_path = transcript_path,
+                .runner_version = RUNNER_VERSION,
+                .argv0 = argv[0],
+                .compiler = __VERSION__,
+#ifdef _WIN32
+                .os = "windows",
+#elif defined(__APPLE__)
+                .os = "macos",
+#else
+                .os = "linux",
+#endif
+#if defined(__aarch64__) || defined(_M_ARM64)
+                .arch = "arm64",
+#else
+                .arch = "x86_64",
+#endif
+                .device = m.gpu ? gname : "cpu",
+                .gpu = m.gpu != NULL,
+                .threads = mp.n_threads, .n_ctx = m.n_ctx,
+                .n_batch = mp.n_batch, .kv_q8 = mp.kv_q8,
+                .model_path = load_path,
+                .adapter_path = lora_path, .adapter_scale = lora_scale,
+                .seed = t_seed,
+                .temp = e.smp->temp, .top_p = e.smp->top_p,
+                .min_p = e.smp->min_p,
+                .repeat_penalty = e.smp->repeat_penalty,
+                .top_k = e.smp->top_k, .n_predict = n_predict,
+                .bos = !no_bos,
+                .prompt_text = p,
+                .prompt_tokens = toks, .n_prompt = n_prompt,
+                .output_text = ocap.buf, .output_text_len = ocap.n,
+                .output_tokens = e.hist + n_prompt, .n_output = n_gen,
+                .hit_stop = e.hit_stop,
+            };
+            if (transcript_write(&ti))
+                fprintf(stderr, "transcript -> %s\n", transcript_path);
+            else
+                t_rc = 1;
+            free(ocap.buf);
+        }
+        free(p);
         cli_cleanup(&e, toks, &tok, &m);
         free(owned_prompt);
-        return 0;
+        return t_rc;
     }
 
     // interactive chat

@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 // ---- SHA-256 (FIPS 180-4) --------------------------------------------------
 // Used only to verify a sidecar's artifact.sha256 against the file that was
@@ -122,6 +123,173 @@ bool envelope_file_sha256(const char *path, char hex[65]) {
     }
     hex[64] = 0;
     return true;
+}
+
+void envelope_data_sha256(const void *data, size_t n, char hex[65]) {
+    sha256_ctx c;
+    sha256_init(&c);
+    sha256_update(&c, (const uint8_t *)data, n);
+    uint8_t d[32];
+    sha256_final(&c, d);
+    static const char hexd[] = "0123456789abcdef";
+    for (int i = 0; i < 32; i++) {
+        hex[i * 2]     = hexd[d[i] >> 4];
+        hex[i * 2 + 1] = hexd[d[i] & 15];
+    }
+    hex[64] = 0;
+}
+
+// ---- notarized inference D1: the transcript writer -------------------------
+// The record body is built in memory first because the chain hash covers the
+// exact serialized bytes: hash the buffer, then write buffer + chain in one
+// pass to a temp file installed by rename, so a failed write never leaves a
+// half transcript that could be mistaken for evidence.
+
+typedef struct { char *b; size_t n, cap; bool oom; } tsb;
+
+static void tsb_put(tsb *w, const char *p, size_t n) {
+    if (w->oom) return;
+    if (w->n + n + 1 > w->cap) {
+        size_t cap = (w->n + n + 1) * 2 + 256;
+        char *nb = realloc(w->b, cap);
+        if (!nb) { w->oom = true; return; }
+        w->b = nb;
+        w->cap = cap;
+    }
+    memcpy(w->b + w->n, p, n);
+    w->n += n;
+    w->b[w->n] = 0;
+}
+
+static void tsb_fmt(tsb *w, const char *fmt, ...) {
+    char tmp[512];
+    va_list ap;
+    va_start(ap, fmt);
+    int n = vsnprintf(tmp, sizeof tmp, fmt, ap);
+    va_end(ap);
+    if (n > 0) tsb_put(w, tmp, (size_t)n < sizeof tmp ? (size_t)n : sizeof tmp - 1);
+}
+
+// json_escape needs a caller-sized buffer; escape in bounded chunks so an
+// arbitrarily long prompt/output never needs a matching single allocation
+static void tsb_json_str(tsb *w, const char *s, size_t n) {
+    tsb_put(w, "\"", 1);
+    char esc[1024];   // worst case 6 bytes out per byte in: 150*6 = 900
+    size_t i = 0;
+    while (i < n) {
+        size_t take = n - i < 150 ? n - i : 150;
+        // do not split a UTF-8 sequence across chunks: back off to a
+        // boundary unless that would empty the chunk
+        while (take > 1 && i + take < n &&
+               ((unsigned char)s[i + take] & 0xC0) == 0x80)
+            take--;
+        size_t m = json_escape(s + i, take, esc, sizeof esc);
+        tsb_put(w, esc, m);
+        i += take;
+    }
+    tsb_put(w, "\"", 1);
+}
+
+static void tsb_tokens(tsb *w, const int32_t *t, int n) {
+    tsb_put(w, "[", 1);
+    for (int i = 0; i < n; i++)
+        tsb_fmt(w, i ? ",%d" : "%d", (int)t[i]);
+    tsb_put(w, "]", 1);
+}
+
+bool transcript_write(const transcript_info *ti) {
+    char msha[65] = "", bsha[65] = "", asha[65] = "";
+    if (!envelope_file_sha256(ti->model_path, msha)) {
+        fprintf(stderr, "error: transcript: cannot hash model %s\n",
+                ti->model_path);
+        return false;
+    }
+    if (ti->argv0) envelope_file_sha256(ti->argv0, bsha);
+    if (ti->adapter_path && !envelope_file_sha256(ti->adapter_path, asha)) {
+        fprintf(stderr, "error: transcript: cannot hash adapter %s\n",
+                ti->adapter_path);
+        return false;
+    }
+    char utc[32] = "";
+    time_t now = time(NULL);
+    struct tm g;
+#ifdef _WIN32
+    gmtime_s(&g, &now);
+#else
+    gmtime_r(&now, &g);
+#endif
+    strftime(utc, sizeof utc, "%Y-%m-%dT%H:%M:%SZ", &g);
+
+    tsb w = {0};
+    tsb_fmt(&w, "{\"schema_version\":\"xyntetik.runner.transcript.v1\","
+                "\"runner\":\"%s\",", ti->runner_version);
+    tsb_fmt(&w, "\"build\":{\"binary_sha256\":\"%s\",\"compiler\":\"%s\","
+                "\"os\":\"%s\",\"arch\":\"%s\"},",
+            bsha, ti->compiler, ti->os, ti->arch);
+    tsb_fmt(&w, "\"profile\":{\"device\":\"%s\",\"gpu\":%s,"
+                "\"threads\":%d,\"ctx\":%d,\"kv\":\"%s\",\"batch\":%d},",
+            ti->device, ti->gpu ? "true" : "false", ti->threads, ti->n_ctx,
+            ti->kv_q8 ? "q8" : "f16", ti->n_batch);
+    tsb_put(&w, "\"model\":{\"path\":", 16);
+    tsb_json_str(&w, ti->model_path, strlen(ti->model_path));
+    tsb_fmt(&w, ",\"sha256\":\"%s\"},", msha);
+    if (ti->adapter_path) {
+        tsb_put(&w, "\"adapter\":{\"path\":", 18);
+        tsb_json_str(&w, ti->adapter_path, strlen(ti->adapter_path));
+        tsb_fmt(&w, ",\"sha256\":\"%s\",\"scale\":%g},", asha,
+                (double)ti->adapter_scale);
+    } else {
+        tsb_put(&w, "\"adapter\":null,", 15);
+    }
+    tsb_fmt(&w, "\"config\":{\"seed\":%llu,\"temp\":%g,\"top_k\":%d,"
+                "\"top_p\":%g,\"min_p\":%g,\"repeat_penalty\":%g,"
+                "\"n_predict\":%d,\"template\":\"raw\",\"bos\":%s},",
+            (unsigned long long)ti->seed, (double)ti->temp, ti->top_k,
+            (double)ti->top_p, (double)ti->min_p,
+            (double)ti->repeat_penalty, ti->n_predict,
+            ti->bos ? "true" : "false");
+    tsb_fmt(&w, "\"generated_utc\":\"%s\",", utc);
+    tsb_put(&w, "\"prompt\":{\"text\":", 17);
+    tsb_json_str(&w, ti->prompt_text, strlen(ti->prompt_text));
+    tsb_put(&w, ",\"tokens\":", 10);
+    tsb_tokens(&w, ti->prompt_tokens, ti->n_prompt);
+    tsb_put(&w, "},", 2);
+    tsb_put(&w, "\"output\":{\"text\":", 17);
+    tsb_json_str(&w, ti->output_text ? ti->output_text : "",
+                 ti->output_text_len);
+    tsb_put(&w, ",\"tokens\":", 10);
+    tsb_tokens(&w, ti->output_tokens, ti->n_output);
+    tsb_fmt(&w, ",\"n\":%d,\"finish\":\"%s\"}", ti->n_output,
+            ti->hit_stop ? "stop" : "length");
+    if (w.oom) {
+        free(w.b);
+        fprintf(stderr, "error: transcript: out of memory\n");
+        return false;
+    }
+    char chain[65];
+    envelope_data_sha256(w.b, w.n, chain);
+
+    size_t tl = strlen(ti->out_path) + sizeof ".partial";
+    char *tmp = malloc(tl);
+    if (!tmp) { free(w.b); return false; }
+    snprintf(tmp, tl, "%s.partial", ti->out_path);
+    FILE *f = fopen(tmp, "wb");
+    bool ok = f != NULL;
+    if (ok) {
+        ok = fwrite(w.b, 1, w.n, f) == w.n &&
+             fprintf(f, ",\"chain\":{\"algo\":\"sha256\",\"prev\":"
+                     "\"%064d\",\"hash\":\"%s\"}}\n", 0, chain) > 0;
+        ok = (fclose(f) == 0) && ok;
+    }
+    if (ok) ok = rename(tmp, ti->out_path) == 0;
+    if (!ok) {
+        remove(tmp);
+        fprintf(stderr, "error: transcript: failed writing %s\n",
+                ti->out_path);
+    }
+    free(tmp);
+    free(w.b);
+    return ok;
 }
 
 // Case-insensitive hex-string equality (a manifest sha may be written in any

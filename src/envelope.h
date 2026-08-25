@@ -2,6 +2,10 @@
 #define RUNNER_ENVELOPE_H
 
 #include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
+
+#include <stdbool.h>
 
 // Measured-envelope manifest reader (slice 2 of the certified-envelope gate).
 //
@@ -46,6 +50,48 @@ enum envelope_state {
 // sha256 of a whole file as lowercase hex (exported for the training
 // provenance record; the envelope gate uses it internally)
 bool envelope_file_sha256(const char *path, char hex[65]);
+// sha256 of an in-memory buffer as lowercase hex (the transcript chain hash)
+void envelope_data_sha256(const void *data, size_t n, char hex[65]);
+
+// ---- notarized inference D1: xyntetik.runner.transcript.v1 ----------------
+// The record that makes one inference a REPLAYABLE COMPUTATION: everything a
+// verifier needs to rerun (model sha, build identity, profile, config, seed,
+// prompt) plus what was produced (token ids, text, finish reason), bound by a
+// chain hash. Verdict tiers are frozen from the D0 falsifier ladder: T1
+// same-binary = bit-exact replay; T2 cross-ISA = token replay (libm is the
+// bit blocker). The chain hash covers every byte of the file BEFORE the
+// `,"chain"` key — recomputable by any reader with a text editor and
+// sha256sum, which is the point.
+typedef struct {
+    const char *out_path;
+    const char *runner_version;
+    const char *argv0;             // hashed for build identity (may fail ->
+                                   // empty sha and the record says so)
+    const char *compiler, *os, *arch;
+    const char *device;            // "cpu" | gpu device name
+    bool        gpu;
+    int         threads, n_ctx, n_batch;
+    bool        kv_q8;
+    const char *model_path;        // hashed
+    const char *adapter_path;      // NULL = no adapter; hashed when set
+    float       adapter_scale;
+    uint64_t    seed;
+    float       temp, top_p, min_p, repeat_penalty;
+    int         top_k, n_predict;
+    bool        bos;
+    const char *prompt_text;
+    const int32_t *prompt_tokens;
+    int         n_prompt;
+    const char *output_text;       // the streamed bytes, verbatim
+    size_t      output_text_len;
+    const int32_t *output_tokens;
+    int         n_output;
+    bool        hit_stop;          // true = "stop", false = "length"
+} transcript_info;
+
+// Writes the transcript beside the run. Returns false (with the reason on
+// stderr) on any failure; a partial transcript is never left installed.
+bool transcript_write(const transcript_info *ti);
 
 int envelope_report(const char *model_path, const char *runtime_version,
                     const char *backend, char *out, int cap);

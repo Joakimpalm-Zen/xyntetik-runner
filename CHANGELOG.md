@@ -6,6 +6,17 @@ change between releases (the `-alpha` suffix was retired at v0.2.0 — the 0.x
 version already says what it needs to). Entries below the rename keep the
 names that were true when they were written.
 
+## Unreleased
+
+- **`--transcript F` (notarized inference D1)**: records a one-shot run
+  as a replay-verifiable `xyntetik.runner.transcript.v1` document - model
+  and binary sha256, verification profile, full config and seed, prompt
+  and output token ids, and a chain hash covering every byte of the file
+  before the `,"chain"` key (recomputable with a text editor and
+  sha256sum). Same binary + same record replays bit-exact; cross-ISA
+  replays token-exact per the D0 falsifier ladder. `--verify` (replay +
+  diff) is the next slice.
+
 ## v0.3.0 — 2026-08-25
 
 The merge release — and the one where the training loop got fast enough
