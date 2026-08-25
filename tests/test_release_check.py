@@ -1,6 +1,7 @@
 import argparse
 import importlib.util
 import pathlib
+import subprocess
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -164,3 +165,18 @@ def test_release_check_fails_when_the_named_report_directory_is_missing(
     )
     assert not check_release.check(args)
     assert "compat report" in capsys.readouterr().err
+
+
+def test_private_reference_scan_rejects_a_fatal_git_error(monkeypatch, capsys):
+    monkeypatch.setattr(
+        check_release.subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args[0], 128, stdout="", stderr="fatal: not a git repository\n"
+        ),
+    )
+
+    assert not check_release.private_reference_scan()
+    err = capsys.readouterr().err
+    assert "private-reference scan failed" in err
+    assert "not a git repository" in err

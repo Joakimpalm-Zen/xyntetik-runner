@@ -77,6 +77,9 @@ def private_reference_scan():
         print("release-check: note: git unavailable, private-reference "
               "scan skipped on this job (covered by sibling jobs)")
         return True
+    if proc.returncode not in (0, 1):
+        detail = proc.stderr.strip() or f"git grep exited {proc.returncode}"
+        return fail(f"private-reference scan failed: {detail}")
     hits = [l for l in proc.stdout.splitlines() if l.strip()]
     if hits:
         return fail("private-repo references in public tree: "
