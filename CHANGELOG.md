@@ -6,7 +6,21 @@ change between releases (the `-alpha` suffix was retired at v0.2.0 — the 0.x
 version already says what it needs to). Entries below the rename keep the
 names that were true when they were written.
 
-## Unreleased
+## v0.3.0 — 2026-08-25
+
+The merge release — and the one where the training loop got fast enough
+to matter. `--merge-lora` folds a trained adapter into its base as a
+standalone GGUF for any runtime, with the measured warning that motivated
+it: merging into a 4-bit base can silently erase the fine-tune (the study
+that proved it is on HF). The backward was position-batched under the
+byte-exact contract for a 2.3x training speedup with adapter bytes gated
+identical across binaries, thread counts and the new opt-in CUDA assist.
+Adapter interop was measured in both directions, F16 community adapters
+now load, and provenance records grew build identity after an independent
+external reproduction (thanks!) showed exactly where artifact determinism
+ends. Plus 28 hardening commits from an external review: atomic saves,
+stricter validation, Windows portability.
+
 
 - **Provenance carries build identity**: `.train.json` records the
   running binary's sha256, compiler, OS and arch — so reproduction
