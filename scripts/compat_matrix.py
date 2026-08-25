@@ -408,9 +408,12 @@ def main(argv=None):
         "schema_version": "xyntetik.runner.model-compat-report.v1",
         "generated_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "host": {"os": platform.system(), "machine": platform.machine()},
-        "runner": {"path": str(args.runner),
+        # Reports are committed as public evidence. Absolute executable and
+        # model paths only expose the machine's username/workspace layout;
+        # the portable manifest name plus version/hash carry the identity.
+        "runner": {"path": args.runner.name,
                    "version": command_version(args.runner)},
-        "reference": {"path": str(args.reference) if args.reference else None,
+        "reference": {"path": args.reference.name if args.reference else None,
                       "version": command_version(args.reference) if args.reference else None},
         "models": [],
     }
@@ -425,7 +428,7 @@ def main(argv=None):
             item["file_reason"] = path_reason
             failed = True
         elif args.verify_files or args.load or args.execute_checks:
-            item["resolved_file"] = str(path)
+            item["resolved_file"] = entry["file"]
             actual = sha256(path)
             item["actual_sha256"] = actual
             item["file_status"] = "pass" if actual == entry["sha256"] else "fail"

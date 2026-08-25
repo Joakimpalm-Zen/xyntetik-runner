@@ -227,13 +227,16 @@ def test_resolves_pinned_basename_recursively_and_executes_supported_checks(tmp_
         "--runner", str(runner), "--reference", str(reference),
         "--verify-files", "--execute-checks", "--out", str(out),
     ]) == 0
-    item = json.loads(out.read_text())["models"][0]
-    assert item["resolved_file"] == str(model)
+    report = json.loads(out.read_text())
+    item = report["models"][0]
+    assert report["runner"]["path"] == runner.name
+    assert report["reference"]["path"] == reference.name
+    assert item["resolved_file"] == "models/model.gguf"
+    assert str(tmp_path) not in out.read_text()
     assert {name: check["status"] for name, check in item["checks"].items()} == {
         "load": "pass", "tokenizer": "pass", "greedy_reference": "pass",
     }
     assert item["complete"] is True
-    report = json.loads(out.read_text())
     assert report["summary"] == {
         "models": 1,
         "files": {"pass": 1},

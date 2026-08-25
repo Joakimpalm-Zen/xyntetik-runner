@@ -6,7 +6,7 @@
     "machine": "arm64"
   },
   "runner": {
-    "path": "/Users/zenzombie/AI_projects/origin/xyntetik-runner/runner",
+    "path": "runner",
     "version": "runner 0.3.0"
   },
   "reference": {
