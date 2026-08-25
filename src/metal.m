@@ -302,16 +302,35 @@ static bool metal_ensure_batch(gpu_t *g, model_t *m, int n) {
     id<MTLBuffer> agate = nil;
     if (m->attn_out_gate)
         agate = new_f32_scratch(g->dev, nb * (size_t)q_dim);
+    id<MTLBuffer> moe_logits = nil, moe_sel = nil, moe_selw = nil;
+    id<MTLBuffer> moe_hb = nil, moe_hb2 = nil, moe_eout = nil;
+    if (m->n_expert > 0) {
+        size_t slots = nb * (size_t)m->n_expert_used;
+        size_t moe_ff = (size_t)m->n_ff_exp * (m->moe_gemma ? 2u : 1u);
+        moe_logits = new_f32_scratch(g->dev, nb * (size_t)m->n_expert);
+        moe_sel    = [g->dev newBufferWithLength:sizeof(int) * slots
+                                         options:MTLResourceStorageModeShared];
+        moe_selw   = new_f32_scratch(g->dev, slots);
+        moe_hb     = new_f32_scratch(g->dev, slots * moe_ff);
+        moe_hb2    = new_f32_scratch(g->dev, slots * moe_ff);
+        moe_eout   = new_f32_scratch(g->dev, slots * (size_t)m->n_embd);
+    }
     if (!metal_buffer_ok(x) || !metal_buffer_ok(xb) || !metal_buffer_ok(xb2) ||
         !metal_buffer_ok(q) || !metal_buffer_ok(kt) || !metal_buffer_ok(vt) ||
         !metal_buffer_ok(hb) || !metal_buffer_ok(hb2) || !metal_buffer_ok(att) ||
         !metal_buffer_ok(logits) ||
         (P > 0 && (!metal_buffer_ok(ple) || !metal_buffer_ok(ple_tmp))) ||
-        (m->attn_out_gate && !metal_buffer_ok(agate))) {
+        (m->attn_out_gate && !metal_buffer_ok(agate)) ||
+        (m->n_expert > 0 &&
+         (!metal_buffer_ok(moe_logits) || !metal_buffer_ok(moe_sel) ||
+          !metal_buffer_ok(moe_selw) || !metal_buffer_ok(moe_hb) ||
+          !metal_buffer_ok(moe_hb2) || !metal_buffer_ok(moe_eout)))) {
         release_buf(x); release_buf(xb); release_buf(xb2); release_buf(q);
         release_buf(kt); release_buf(vt); release_buf(hb); release_buf(hb2);
         release_buf(att); release_buf(logits);
         release_buf(ple); release_buf(ple_tmp); release_buf(agate);
+        release_buf(moe_logits); release_buf(moe_sel); release_buf(moe_selw);
+        release_buf(moe_hb); release_buf(moe_hb2); release_buf(moe_eout);
         return false;
     }
 
@@ -328,6 +347,14 @@ static bool metal_ensure_batch(gpu_t *g, model_t *m, int n) {
     if (m->attn_out_gate) {
         release_buf(g->agate);
         g->agate = agate;
+    }
+    if (m->n_expert > 0) {
+        release_buf(g->moe_logits); release_buf(g->moe_sel);
+        release_buf(g->moe_selw); release_buf(g->moe_hb);
+        release_buf(g->moe_hb2); release_buf(g->moe_eout);
+        g->moe_logits = moe_logits; g->moe_sel = moe_sel;
+        g->moe_selw = moe_selw; g->moe_hb = moe_hb;
+        g->moe_hb2 = moe_hb2; g->moe_eout = moe_eout;
     }
     g->batch_cap = n;
     return true;
@@ -1249,25 +1276,9 @@ bool gpu_init(model_t *m) {
                         METAL_ATTN_MAX_CHUNKS * (size_t)model_head_dim(m, 0));
     g->att_ms  = NEWBUF(sizeof(float) * (size_t)m->n_head *
                         METAL_ATTN_MAX_CHUNKS * 2);
-    if (m->n_expert > 0) {
-        size_t used = (size_t)m->n_expert_used;
-        size_t moe_ff = (size_t)m->n_ff_exp * (m->moe_gemma ? 2u : 1u);
-        g->moe_logits = NEWBUF(sizeof(float) * (size_t)m->n_expert);
-        g->moe_sel    = NEWBUF(sizeof(int)   * used);
-        g->moe_selw   = NEWBUF(sizeof(float) * used);
-        g->moe_hb     = NEWBUF(sizeof(float) * used * moe_ff);
-        g->moe_hb2    = NEWBUF(sizeof(float) * used * moe_ff);
-        g->moe_eout   = NEWBUF(sizeof(float) * used * (size_t)m->n_embd);
-    }
     #undef NEWBUF
     if (!metal_buffer_ok(g->dummy) ||
-        !metal_buffer_ok(g->att_acc) || !metal_buffer_ok(g->att_ms) ||
-        (m->n_expert > 0 && (!metal_buffer_ok(g->moe_logits) ||
-                             !metal_buffer_ok(g->moe_sel) ||
-                             !metal_buffer_ok(g->moe_selw) ||
-                             !metal_buffer_ok(g->moe_hb) ||
-                             !metal_buffer_ok(g->moe_hb2) ||
-                             !metal_buffer_ok(g->moe_eout))))
+        !metal_buffer_ok(g->att_acc) || !metal_buffer_ok(g->att_ms))
         return gpu_init_fail(m, g, lib, "scratch buffer allocation");
 
     g->inv_freq = f32_buf(dev, m->rope_inv_freq, m->rope_dim / 2);
@@ -1655,8 +1666,8 @@ static void enc_scale(gpu_t *g, id<MTLComputeCommandEncoder> e,
 // the batched and the solo path, so the two cannot drift apart. A Metal-side
 // copy existed here and double-applied the softcap.
 static void enc_moe_route(gpu_t *g, id<MTLComputeCommandEncoder> e,
-                          int ne, int used) {
-    int tokens = 1, ls = ne;
+                          int ne, int used, int tokens) {
+    int ls = ne;
     [e setComputePipelineState:g->p_moe_route];
     [e setBuffer:g->moe_logits offset:0 atIndex:0];
     [e setBuffer:g->moe_sel offset:0 atIndex:1];
@@ -1666,7 +1677,7 @@ static void enc_moe_route(gpu_t *g, id<MTLComputeCommandEncoder> e,
     [e setBytes:&tokens length:4 atIndex:5];
     [e setBytes:&ls length:4 atIndex:6];
     g_disp.moe++;
-    [e dispatchThreads:MTLSizeMake(1, 1, 1)
+    [e dispatchThreads:MTLSizeMake(tokens, 1, 1)
       threadsPerThreadgroup:MTLSizeMake(32, 1, 1)];
 }
 
@@ -1675,7 +1686,8 @@ static void enc_moe_mv(gpu_t *g, id<MTLComputeCommandEncoder> e, model_t *m,
                        id<MTLBuffer> x, NSUInteger x_off,
                        id<MTLBuffer> y, NSUInteger y_off,
                        int n_in, int n_out, int nslots, int xs, int ys,
-                       id<MTLBuffer> bias, int bias_stride) {
+                       id<MTLBuffer> bias, int bias_stride,
+                       NSUInteger sel_off) {
     [e setComputePipelineState:g->p_moe_mv[base->type]];
     moe_args a = { n_in, n_out,
                    metal_bind_weights(g, e,
@@ -1685,7 +1697,7 @@ static void enc_moe_mv(gpu_t *g, id<MTLComputeCommandEncoder> e, model_t *m,
     [e setBuffer:x offset:x_off atIndex:1];
     [e setBuffer:y offset:y_off atIndex:2];
     [e setBytes:&a length:sizeof(a) atIndex:3];
-    [e setBuffer:g->moe_sel offset:0 atIndex:4];
+    [e setBuffer:g->moe_sel offset:sel_off atIndex:4];
     [e setBuffer:bias ? bias : g->dummy offset:0 atIndex:5];
     g_disp.moe++;
     [e dispatchThreadgroups:MTLSizeMake((n_out + 3) / 4, nslots, 1)
@@ -1708,14 +1720,15 @@ static void enc_moe_actmul(gpu_t *g, id<MTLComputeCommandEncoder> e,
 
 static void enc_moe_sum(gpu_t *g, id<MTLComputeCommandEncoder> e,
                         id<MTLBuffer> out, NSUInteger out_off,
-                        int n, int nslots, int es, id<MTLBuffer> dscale) {
+                        int n, int nslots, int es, id<MTLBuffer> dscale,
+                        NSUInteger sel_off) {
     int has_dscale = dscale != nil;
     [e setComputePipelineState:g->p_moe_sum];
     [e setBuffer:out offset:out_off atIndex:0];
     [e setBuffer:g->moe_eout offset:0 atIndex:1];
-    [e setBuffer:g->moe_selw offset:0 atIndex:2];
+    [e setBuffer:g->moe_selw offset:sel_off atIndex:2];
     [e setBuffer:dscale ? dscale : g->dummy offset:0 atIndex:3];
-    [e setBuffer:g->moe_sel offset:0 atIndex:4];
+    [e setBuffer:g->moe_sel offset:sel_off atIndex:4];
     [e setBytes:&n length:4 atIndex:5];
     [e setBytes:&nslots length:4 atIndex:6];
     [e setBytes:&es length:4 atIndex:7];
@@ -1837,10 +1850,10 @@ static NSUInteger foff(size_t elems) {
     return (NSUInteger)(elems * sizeof(float));
 }
 
-static void enc_moe_ffn(gpu_t *g, id<MTLComputeCommandEncoder> e, model_t *m,
-                        layer_t *ly, NSUInteger xbo) {
+static void enc_moe_experts(gpu_t *g, id<MTLComputeCommandEncoder> e,
+                            model_t *m, layer_t *ly, NSUInteger xbo,
+                            NSUInteger sel_off) {
     int n_embd = m->n_embd;
-    int ne = m->n_expert;
     int used = m->n_expert_used;
     int nff = m->n_ff_exp;
     uint64_t gstride = (uint64_t)nff *
@@ -1851,19 +1864,18 @@ static void enc_moe_ffn(gpu_t *g, id<MTLComputeCommandEncoder> e, model_t *m,
                        ggml_row_size(ly->ffn_down_exps->type, nff);
 
     int l = (int)(ly - m->layers);
-    enc_mv(g, e, m, ly->ffn_gate_inp, g->xb, xbo, g->moe_logits, 0,
-           n_embd, ne, g->gib[l]);
-    enc_moe_route(g, e, ne, used);
     enc_moe_mv(g, e, m, ly->ffn_gate_exps, gstride, g->xb, xbo,
-               g->moe_hb, 0, n_embd, nff, used, 0, nff, g->geb[l], nff);
+               g->moe_hb, 0, n_embd, nff, used, 0, nff, g->geb[l], nff,
+               sel_off);
     enc_moe_mv(g, e, m, ly->ffn_up_exps, ustride, g->xb, xbo,
-               g->moe_hb2, 0, n_embd, nff, used, 0, nff, g->ueb[l], nff);
+               g->moe_hb2, 0, n_embd, nff, used, 0, nff, g->ueb[l], nff,
+               sel_off);
     enc_moe_actmul(g, e, g->moe_hb, 0, g->moe_hb2, 0,
                    nff, used, nff, nff, m->ffn_act);
     enc_moe_mv(g, e, m, ly->ffn_down_exps, dstride, g->moe_hb, 0,
                g->moe_eout, 0, nff, n_embd, used, nff, n_embd,
-               g->deb[l], n_embd);
-    enc_moe_sum(g, e, g->xb, xbo, n_embd, used, n_embd, nil);
+               g->deb[l], n_embd, sel_off);
+    enc_moe_sum(g, e, g->xb, xbo, n_embd, used, n_embd, nil, sel_off);
 }
 
 // xo/xbo select this token's slice of the residual (g->x) and of g->xb. The
@@ -1871,42 +1883,87 @@ static void enc_moe_ffn(gpu_t *g, id<MTLComputeCommandEncoder> e, model_t *m,
 // compute encoder is serial, so a token's MoE completes before the next one's
 // begins, and by the time the FFN runs the attention has already drained xb2
 // and q for the whole batch.
-static void enc_gemma_moe_ffn(gpu_t *g, id<MTLComputeCommandEncoder> e,
-                              model_t *m, layer_t *ly, int l,
-                              NSUInteger xo, NSUInteger xbo) {
+static void enc_gemma_moe_experts(gpu_t *g, id<MTLComputeCommandEncoder> e,
+                                  model_t *m, layer_t *ly, int l,
+                                  NSUInteger xbo, NSUInteger qo,
+                                  NSUInteger sel_off) {
     int n_embd = m->n_embd;
-    int ne = m->n_expert;
     int used = m->n_expert_used;
     int nff = m->n_ff_exp;
-    int dff = m->n_ff;
     uint64_t gustride = (uint64_t)(2 * (size_t)nff) *
                         ggml_row_size(ly->ffn_gate_up_exps->type, n_embd);
     uint64_t dstride = (uint64_t)n_embd *
                        ggml_row_size(ly->ffn_down_exps->type, nff);
 
-    // Dense shared branch: norm(x) -> GELU gate/up -> down -> post_norm_1.
-    enc_rmsnorm(g, e, g->x, xo, g->xb2, 0, g->ffn_norm[l], n_embd, m->rms_eps);
-    enc_mv(g, e, m, ly->w_gate, g->xb2, 0, g->hb, 0, n_embd, dff, nil);
-    enc_mv(g, e, m, ly->w_up, g->xb2, 0, g->hb2, 0, n_embd, dff, nil);
-    enc_elem(g, e, g->p_gelu, g->hb, 0, g->hb2, 0, dff);
-    enc_mv(g, e, m, ly->w_down, g->hb, 0, g->xb, xbo, dff, n_embd, nil);
-    enc_rmsnorm(g, e, g->xb, xbo, g->xb, xbo, g->gpn1[l], n_embd, m->rms_eps);
-
-    // Routed branch: pre_norm_2 feeds experts; a separate weightless norm with
-    // the folded 1/sqrt(n_embd)*gate_inp_scale vector feeds the router.
-    enc_rmsnorm(g, e, g->x, xo, g->xb2, 0, g->gprn2[l], n_embd, m->rms_eps);
-    enc_rmsnorm(g, e, g->x, xo, g->q, 0, g->ggis[l], n_embd, m->rms_eps);
-    enc_mv(g, e, m, ly->ffn_gate_inp, g->q, 0, g->moe_logits, 0, n_embd, ne, nil);
-    enc_moe_route(g, e, ne, used);
-    enc_moe_mv(g, e, m, ly->ffn_gate_up_exps, gustride, g->xb2, 0,
-               g->moe_hb, 0, n_embd, 2 * nff, used, 0, 2 * nff, nil, 0);
+    enc_moe_mv(g, e, m, ly->ffn_gate_up_exps, gustride, g->xb2, xbo,
+               g->moe_hb, 0, n_embd, 2 * nff, used, 0, 2 * nff, nil, 0,
+               sel_off);
     enc_moe_actmul(g, e, g->moe_hb, 0, g->moe_hb, foff(nff),
                    nff, used, 2 * nff, 2 * nff, ACT_GELU);
     enc_moe_mv(g, e, m, ly->ffn_down_exps, dstride, g->moe_hb, 0,
-               g->moe_eout, 0, nff, n_embd, used, 2 * nff, n_embd, nil, 0);
-    enc_moe_sum(g, e, g->q, 0, n_embd, used, n_embd, g->gdsc[l]);
-    enc_rmsnorm(g, e, g->q, 0, g->q, 0, g->gpn2[l], n_embd, m->rms_eps);
-    enc_elem(g, e, g->p_add, g->xb, xbo, g->q, 0, n_embd);
+               g->moe_eout, 0, nff, n_embd, used, 2 * nff, n_embd, nil, 0,
+               sel_off);
+    enc_moe_sum(g, e, g->q, qo, n_embd, used, n_embd, g->gdsc[l], sel_off);
+}
+
+static void enc_moe_ffn_batch(gpu_t *g, id<MTLComputeCommandEncoder> e,
+                              model_t *m, layer_t *ly, int l,
+                              int n, int xdim) {
+    int ne = m->n_expert, used = m->n_expert_used;
+    enc_rmsnorm_n(g, e, g->x, 0, g->xb, 0, g->ffn_norm[l],
+                  m->n_embd, m->rms_eps, n, m->n_embd, xdim);
+    for (int b = 0; b < n; b++)
+        enc_mv(g, e, m, ly->ffn_gate_inp, g->xb,
+               foff((size_t)b * xdim), g->moe_logits,
+               foff((size_t)b * ne), m->n_embd, ne, g->gib[l]);
+    enc_moe_route(g, e, ne, used, n);
+    for (int b = 0; b < n; b++)
+        enc_moe_experts(g, e, m, ly, foff((size_t)b * xdim),
+                        foff((size_t)b * used));
+}
+
+static void enc_gemma_moe_ffn_batch(gpu_t *g, id<MTLComputeCommandEncoder> e,
+                                    model_t *m, layer_t *ly, int l,
+                                    int n, int xdim) {
+    int ne = m->n_expert, used = m->n_expert_used;
+    int n_embd = m->n_embd, dff = m->n_ff;
+
+    // Every token retains the old reduction and matvec arithmetic. Only the
+    // independent normalization columns share dispatches in this first slice.
+    enc_rmsnorm_n(g, e, g->x, 0, g->xb2, 0, g->ffn_norm[l],
+                  n_embd, m->rms_eps, n, n_embd, xdim);
+    for (int b = 0; b < n; b++) {
+        NSUInteger xbo = foff((size_t)b * xdim);
+        NSUInteger hbo = foff((size_t)b * dff);
+        enc_mv(g, e, m, ly->w_gate, g->xb2, xbo, g->hb, hbo,
+               n_embd, dff, nil);
+        enc_mv(g, e, m, ly->w_up, g->xb2, xbo, g->hb2, hbo,
+               n_embd, dff, nil);
+        enc_elem(g, e, g->p_gelu, g->hb, hbo, g->hb2, hbo, dff);
+        enc_mv(g, e, m, ly->w_down, g->hb, hbo, g->xb, xbo,
+               dff, n_embd, nil);
+    }
+    enc_rmsnorm_n(g, e, g->xb, 0, g->xb, 0, g->gpn1[l],
+                  n_embd, m->rms_eps, n, xdim, xdim);
+
+    enc_rmsnorm_n(g, e, g->x, 0, g->xb2, 0, g->gprn2[l],
+                  n_embd, m->rms_eps, n, n_embd, xdim);
+    enc_rmsnorm_n(g, e, g->x, 0, g->q, 0, g->ggis[l],
+                  n_embd, m->rms_eps, n, n_embd, xdim);
+    for (int b = 0; b < n; b++)
+        enc_mv(g, e, m, ly->ffn_gate_inp, g->q,
+               foff((size_t)b * xdim), g->moe_logits,
+               foff((size_t)b * ne), n_embd, ne, nil);
+    enc_moe_route(g, e, ne, used, n);
+    for (int b = 0; b < n; b++)
+        enc_gemma_moe_experts(g, e, m, ly, l,
+                              foff((size_t)b * xdim),
+                              foff((size_t)b * xdim),
+                              foff((size_t)b * used));
+    enc_rmsnorm_n(g, e, g->q, 0, g->q, 0, g->gpn2[l],
+                  n_embd, m->rms_eps, n, xdim, xdim);
+    enc_elem_n(g, e, g->p_add, g->xb, 0, g->q, 0,
+               n_embd, n, xdim, xdim);
 }
 
 // gemma-4 E-series per-layer embeddings, mirroring the CPU tail in model.c:
@@ -2220,21 +2277,10 @@ static float *gpu_forward_native_batch(model_t *m, const int32_t *tokens,
         enc_elem_n(g, e, g->p_add, g->x, 0, g->xb, 0, n_embd, n, n_embd, xdim);
 
         if (ly->moe_gemma || ly->is_moe) {
-            // The MoE FFN itself stays per-token — routing picks different
-            // experts for each token, so there is no shared weight tile to
-            // amortize. Everything around it (attention, projections, norms)
-            // already ran once for the whole batch.
-            for (int b = 0; b < n; b++) {
-                NSUInteger xo = foff((size_t)b * n_embd);
-                NSUInteger xbo = foff((size_t)b * xdim);
-                if (ly->moe_gemma) {
-                    enc_gemma_moe_ffn(g, e, m, ly, l, xo, xbo);
-                } else {
-                    enc_rmsnorm(g, e, g->x, xo, g->xb, xbo, g->ffn_norm[l],
-                                n_embd, m->rms_eps);
-                    enc_moe_ffn(g, e, m, ly, xbo);
-                }
-            }
+            if (ly->moe_gemma)
+                enc_gemma_moe_ffn_batch(g, e, m, ly, l, n, xdim);
+            else
+                enc_moe_ffn_batch(g, e, m, ly, l, n, xdim);
         } else {
             // gemma-4 E2B varies the FFN width per layer; hb/hb2 are sized
             // for the max, so pack the batch at THIS layer's width.
