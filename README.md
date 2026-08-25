@@ -36,6 +36,23 @@ macOS note: the binaries are not yet notarized. A `curl` download runs as
 shown; a *browser* download gets quarantined by Gatekeeper — clear it with
 `xattr -d com.apple.quarantine runner` or right-click → Open once.
 
+**Testing Runner?** The project is pre-1.0 and hardware coverage is still
+limited — that is an invitation, not an apology. If you have an
+NVIDIA/Apple setup, an unusual GGUF, a coding agent, or a model family
+not in the [support matrix](#support-matrix), the result is genuinely
+wanted, success or failure alike:
+[open an issue](../../issues) with `runner --version`, `runner --caps`,
+the model's exact filename and the load log. Independent reproductions
+of the determinism claims get credited in the docs, as the first one
+already is.
+
+**Contents:** [try it](#sixty-seconds-to-a-served-model) ·
+[why Runner](#why-this-and-not-llamacpp) ·
+[what it adds](#what-runner-adds) · [training](#adaptation) ·
+[models](#models-and-conversion) · [APIs](#serving-and-apis) ·
+[support matrix](#support-matrix) ·
+[CLI reference](#command-line-reference)
+
 Xyntetik Runner is independent and bootstrapped: **the engine is free
 forever under Apache 2.0** — consulting and enterprise work fund the
 hardware. Built in Sweden, runs on your hardware; your data never leaves
@@ -135,13 +152,10 @@ Run a GGUF:
 > log in issue reports. Read [SECURITY.md](SECURITY.md) for the threat model and
 > [CONTRIBUTING.md](CONTRIBUTING.md) for the required correctness gates.
 
-## Why runner
+## What Runner adds
 
-Choose Runner when local inference needs to behave like dependable
-infrastructure: easy to deploy, bounded by the machine, and explicit about what
-it can prove. One binary is the whole model runtime — it serves, verifies,
-scores, adapts and trains, deterministically. The two capabilities that matter
-most have their own sections below; the rest follow as a list, ordered by how
+The contracts above, made concrete. The two capabilities that matter most
+have their own sections below; the rest follow as a list, ordered by how
 much difference each makes in practice.
 
 <a id="truncation"></a>
