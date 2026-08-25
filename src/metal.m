@@ -148,7 +148,8 @@ static int metal_attn_chunk_override(void) {
     return v;
 }
 
-typedef struct { int n_in, n_out; uint64_t w_off, estride; int xs, ys, has_bias, bias_stride; } moe_args;
+typedef struct { int n_in, n_out; uint64_t w_off, estride;
+                 int xs, ys, has_bias, bias_stride, slots_per_token; } moe_args;
 
 static void gpu_release_state(gpu_t *g, int n_layer) {
     if (!g) return;
@@ -1687,13 +1688,14 @@ static void enc_moe_mv(gpu_t *g, id<MTLComputeCommandEncoder> e, model_t *m,
                        id<MTLBuffer> y, NSUInteger y_off,
                        int n_in, int n_out, int nslots, int xs, int ys,
                        id<MTLBuffer> bias, int bias_stride,
-                       NSUInteger sel_off) {
+                       NSUInteger sel_off, int slots_per_token) {
     [e setComputePipelineState:g->p_moe_mv[base->type]];
     moe_args a = { n_in, n_out,
                    metal_bind_weights(g, e,
                        (uint64_t)((uint8_t *)base->data - (uint8_t *)m->gf.map),
                        base->nbytes),
-                   estride, xs, ys, bias != nil, bias_stride };
+                   estride, xs, ys, bias != nil, bias_stride,
+                   slots_per_token };
     [e setBuffer:x offset:x_off atIndex:1];
     [e setBuffer:y offset:y_off atIndex:2];
     [e setBytes:&a length:sizeof(a) atIndex:3];
@@ -1721,7 +1723,7 @@ static void enc_moe_actmul(gpu_t *g, id<MTLComputeCommandEncoder> e,
 static void enc_moe_sum(gpu_t *g, id<MTLComputeCommandEncoder> e,
                         id<MTLBuffer> out, NSUInteger out_off,
                         int n, int nslots, int es, id<MTLBuffer> dscale,
-                        NSUInteger sel_off) {
+                        NSUInteger sel_off, int tokens, int out_stride) {
     int has_dscale = dscale != nil;
     [e setComputePipelineState:g->p_moe_sum];
     [e setBuffer:out offset:out_off atIndex:0];
@@ -1733,8 +1735,10 @@ static void enc_moe_sum(gpu_t *g, id<MTLComputeCommandEncoder> e,
     [e setBytes:&nslots length:4 atIndex:6];
     [e setBytes:&es length:4 atIndex:7];
     [e setBytes:&has_dscale length:4 atIndex:8];
+    [e setBytes:&tokens length:4 atIndex:9];
+    [e setBytes:&out_stride length:4 atIndex:10];
     g_disp.moe++;
-    [e dispatchThreads:MTLSizeMake(n, 1, 1)
+    [e dispatchThreads:MTLSizeMake(n, tokens, 1)
       threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
 }
 
@@ -1850,11 +1854,11 @@ static NSUInteger foff(size_t elems) {
     return (NSUInteger)(elems * sizeof(float));
 }
 
-static void enc_moe_experts(gpu_t *g, id<MTLComputeCommandEncoder> e,
-                            model_t *m, layer_t *ly, NSUInteger xbo,
-                            NSUInteger sel_off) {
+static void enc_moe_experts_batch(gpu_t *g, id<MTLComputeCommandEncoder> e,
+                                  model_t *m, layer_t *ly,
+                                  int n, int xdim) {
     int n_embd = m->n_embd;
-    int used = m->n_expert_used;
+    int used = m->n_expert_used, slots = n * used;
     int nff = m->n_ff_exp;
     uint64_t gstride = (uint64_t)nff *
                        ggml_row_size(ly->ffn_gate_exps->type, n_embd);
@@ -1864,46 +1868,43 @@ static void enc_moe_experts(gpu_t *g, id<MTLComputeCommandEncoder> e,
                        ggml_row_size(ly->ffn_down_exps->type, nff);
 
     int l = (int)(ly - m->layers);
-    enc_moe_mv(g, e, m, ly->ffn_gate_exps, gstride, g->xb, xbo,
-               g->moe_hb, 0, n_embd, nff, used, 0, nff, g->geb[l], nff,
-               sel_off);
-    enc_moe_mv(g, e, m, ly->ffn_up_exps, ustride, g->xb, xbo,
-               g->moe_hb2, 0, n_embd, nff, used, 0, nff, g->ueb[l], nff,
-               sel_off);
+    enc_moe_mv(g, e, m, ly->ffn_gate_exps, gstride, g->xb, 0,
+               g->moe_hb, 0, n_embd, nff, slots, xdim, nff,
+               g->geb[l], nff, 0, used);
+    enc_moe_mv(g, e, m, ly->ffn_up_exps, ustride, g->xb, 0,
+               g->moe_hb2, 0, n_embd, nff, slots, xdim, nff,
+               g->ueb[l], nff, 0, used);
     enc_moe_actmul(g, e, g->moe_hb, 0, g->moe_hb2, 0,
-                   nff, used, nff, nff, m->ffn_act);
+                   nff, slots, nff, nff, m->ffn_act);
     enc_moe_mv(g, e, m, ly->ffn_down_exps, dstride, g->moe_hb, 0,
-               g->moe_eout, 0, nff, n_embd, used, nff, n_embd,
-               g->deb[l], n_embd, sel_off);
-    enc_moe_sum(g, e, g->xb, xbo, n_embd, used, n_embd, nil, sel_off);
+               g->moe_eout, 0, nff, n_embd, slots, nff, n_embd,
+               g->deb[l], n_embd, 0, 0);
+    enc_moe_sum(g, e, g->xb, 0, n_embd, used, n_embd, nil,
+                0, n, xdim);
 }
 
-// xo/xbo select this token's slice of the residual (g->x) and of g->xb. The
-// remaining scratch (xb2, q, moe_*) is used at offset 0 by every token: the
-// compute encoder is serial, so a token's MoE completes before the next one's
-// begins, and by the time the FFN runs the attention has already drained xb2
-// and q for the whole batch.
-static void enc_gemma_moe_experts(gpu_t *g, id<MTLComputeCommandEncoder> e,
-                                  model_t *m, layer_t *ly, int l,
-                                  NSUInteger xbo, NSUInteger qo,
-                                  NSUInteger sel_off) {
+static void enc_gemma_moe_experts_batch(gpu_t *g,
+                                        id<MTLComputeCommandEncoder> e,
+                                        model_t *m, layer_t *ly, int l,
+                                        int n, int xdim) {
     int n_embd = m->n_embd;
-    int used = m->n_expert_used;
+    int used = m->n_expert_used, slots = n * used;
     int nff = m->n_ff_exp;
     uint64_t gustride = (uint64_t)(2 * (size_t)nff) *
                         ggml_row_size(ly->ffn_gate_up_exps->type, n_embd);
     uint64_t dstride = (uint64_t)n_embd *
                        ggml_row_size(ly->ffn_down_exps->type, nff);
 
-    enc_moe_mv(g, e, m, ly->ffn_gate_up_exps, gustride, g->xb2, xbo,
-               g->moe_hb, 0, n_embd, 2 * nff, used, 0, 2 * nff, nil, 0,
-               sel_off);
+    enc_moe_mv(g, e, m, ly->ffn_gate_up_exps, gustride, g->xb2, 0,
+               g->moe_hb, 0, n_embd, 2 * nff, slots, xdim, 2 * nff,
+               nil, 0, 0, used);
     enc_moe_actmul(g, e, g->moe_hb, 0, g->moe_hb, foff(nff),
-                   nff, used, 2 * nff, 2 * nff, ACT_GELU);
+                   nff, slots, 2 * nff, 2 * nff, ACT_GELU);
     enc_moe_mv(g, e, m, ly->ffn_down_exps, dstride, g->moe_hb, 0,
-               g->moe_eout, 0, nff, n_embd, used, 2 * nff, n_embd, nil, 0,
-               sel_off);
-    enc_moe_sum(g, e, g->q, qo, n_embd, used, n_embd, g->gdsc[l], sel_off);
+               g->moe_eout, 0, nff, n_embd, slots, 2 * nff, n_embd,
+               nil, 0, 0, 0);
+    enc_moe_sum(g, e, g->q, 0, n_embd, used, n_embd, g->gdsc[l],
+                0, n, xdim);
 }
 
 static void enc_moe_ffn_batch(gpu_t *g, id<MTLComputeCommandEncoder> e,
@@ -1917,9 +1918,7 @@ static void enc_moe_ffn_batch(gpu_t *g, id<MTLComputeCommandEncoder> e,
                foff((size_t)b * xdim), g->moe_logits,
                foff((size_t)b * ne), m->n_embd, ne, g->gib[l]);
     enc_moe_route(g, e, ne, used, n);
-    for (int b = 0; b < n; b++)
-        enc_moe_experts(g, e, m, ly, foff((size_t)b * xdim),
-                        foff((size_t)b * used));
+    enc_moe_experts_batch(g, e, m, ly, n, xdim);
 }
 
 static void enc_gemma_moe_ffn_batch(gpu_t *g, id<MTLComputeCommandEncoder> e,
@@ -1955,11 +1954,7 @@ static void enc_gemma_moe_ffn_batch(gpu_t *g, id<MTLComputeCommandEncoder> e,
                foff((size_t)b * xdim), g->moe_logits,
                foff((size_t)b * ne), n_embd, ne, nil);
     enc_moe_route(g, e, ne, used, n);
-    for (int b = 0; b < n; b++)
-        enc_gemma_moe_experts(g, e, m, ly, l,
-                              foff((size_t)b * xdim),
-                              foff((size_t)b * xdim),
-                              foff((size_t)b * used));
+    enc_gemma_moe_experts_batch(g, e, m, ly, l, n, xdim);
     enc_rmsnorm_n(g, e, g->q, 0, g->q, 0, g->gpn2[l],
                   n_embd, m->rms_eps, n, xdim, xdim);
     enc_elem_n(g, e, g->p_add, g->xb, 0, g->q, 0,

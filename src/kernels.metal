@@ -1748,20 +1748,23 @@ struct moe_args {
     int   ys;
     int   has_bias;
     int   bias_stride;
+    int   slots_per_token;
 };
 
 #define MOE_MV_HEAD \
     uint row = tgpig.x * (ntg.x / 32) + sgitg; \
     if (row >= (uint)a.n_out) return; \
-    device const uchar *wbase = wb + a.w_off + (ulong)sel[tgpig.y] * a.estride; \
-    device const float *xp0 = x + (ulong)tgpig.y * a.xs; \
+    uint slot = tgpig.y; \
+    device const uchar *wbase = wb + a.w_off + (ulong)sel[slot] * a.estride; \
+    uint xrow = a.slots_per_token ? slot / a.slots_per_token : slot; \
+    device const float *xp0 = x + (ulong)xrow * a.xs; \
     float s = 0;
 
 #define MOE_MV_TAIL \
     s = simd_sum(s); \
     if (tiisg == 0) { \
-        if (a.has_bias) s += bias[(ulong)sel[tgpig.y] * a.bias_stride + row]; \
-        y[(ulong)tgpig.y * a.ys + row] = s; \
+        if (a.has_bias) s += bias[(ulong)sel[slot] * a.bias_stride + row]; \
+        y[(ulong)slot * a.ys + row] = s; \
     }
 
 #define MOE_MV_PARAMS \
@@ -1986,12 +1989,18 @@ kernel void k_moe_sum(device float       *out    [[buffer(0)]],
                       constant int       &nslots [[buffer(6)]],
                       constant int       &es     [[buffer(7)]],
                       constant int       &has_dscale [[buffer(8)]],
-                      uint i [[thread_position_in_grid]]) {
+                      constant int       &tokens [[buffer(9)]],
+                      constant int       &out_stride [[buffer(10)]],
+                      uint2 gid [[thread_position_in_grid]]) {
+    int i = gid.x, token = gid.y;
     if ((int)i >= n) return;
+    if (token >= tokens) return;
+    int slot0 = token * nslots;
     float s = 0.0f;
     for (int slot = 0; slot < nslots; slot++) {
-        float w = selw[slot] * (has_dscale ? dscale[sel[slot]] : 1.0f);
-        s += w * eout[(ulong)slot * es + i];
+        int si = slot0 + slot;
+        float w = selw[si] * (has_dscale ? dscale[sel[si]] : 1.0f);
+        s += w * eout[(ulong)si * es + i];
     }
-    out[i] = s;
+    out[(ulong)token * out_stride + i] = s;
 }

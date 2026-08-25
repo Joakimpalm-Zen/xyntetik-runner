@@ -55,6 +55,6 @@ def test_prompt_tile_batches_moe_without_changing_tokens(runner_bin,
 
     match = re.search(rb"metal-census n=8 .* moe=(\d+)", gpu.stderr)
     assert match, gpu.stderr.decode(errors="replace")
-    # First tracer slice: one batched route, while the four expert operations
-    # remain serial per token: 2 layers * (1 + 4 * 8).
-    assert int(match.group(1)) == 66
+    # Two layers, each encoded as one route, two expert projections, one
+    # activation, one down projection, and one ordered weighted sum.
+    assert int(match.group(1)) == 10
