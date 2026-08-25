@@ -65,10 +65,18 @@ PRIVATE_MARKERS = ("xyntetik-suite", "xyntetik-shade")
 
 
 def private_reference_scan():
-    proc = subprocess.run(
-        ["git", "grep", "-l", "-i", "-E", "|".join(PRIVATE_MARKERS),
-         "--", ":!scripts/check-release.py"],
-        cwd=ROOT, capture_output=True, text=True)
+    try:
+        proc = subprocess.run(
+            ["git", "grep", "-l", "-i", "-E", "|".join(PRIVATE_MARKERS),
+             "--", ":!scripts/check-release.py"],
+            cwd=ROOT, capture_output=True, text=True)
+    except (FileNotFoundError, OSError):
+        # no git on PATH (the Windows msys CI python): the same tree is
+        # scanned by the Linux/macOS jobs of the same release, so skipping
+        # here loses nothing — but say so rather than pass silently
+        print("release-check: note: git unavailable, private-reference "
+              "scan skipped on this job (covered by sibling jobs)")
+        return True
     hits = [l for l in proc.stdout.splitlines() if l.strip()]
     if hits:
         return fail("private-repo references in public tree: "
