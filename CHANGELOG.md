@@ -8,6 +8,22 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **Metal MoE prompt batching**: routed-MoE prompt processing batches
+  normalization, routing and expert-slot work across the tile instead of
+  dispatching per token per layer. Measured on a real routed MoE
+  (Qwen3-30B-A3B pruned to 24 experts, M1, 729-token prompt): MoE-class
+  dispatches 12,528 -> 288, prefill +2.9% with zero overlap across five
+  interleaved A/B pairs, output tokens byte-exact and expert routes
+  bit-identical to the serial path (gated). Honest mechanics: total
+  dispatch count is roughly unchanged - the win comes from routing
+  expert compute through the better-optimized matvec kernels, not from
+  launch elimination; deeper expert-compute batching remains open.
+  Runtime-toggleable (RUNNER_METAL_MOE_BATCH=0 restores the serial
+  path). Implemented by an agent run whose real-model gate could not
+  find a routed MoE that fits the target machine; the acceptance
+  artifact is a 4.3 GB expert-pruned fixture built with --prune-experts,
+  quality irrelevant and routing intact.
+
 - **`--transcript F` (notarized inference D1)**: records a one-shot run
   as a replay-verifiable `xyntetik.runner.transcript.v1` document - model
   and binary sha256, verification profile, full config and seed, prompt
