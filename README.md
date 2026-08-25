@@ -68,9 +68,11 @@ adapters load straight back into Runner - both measured, not assumed.
 
 What Runner adds is not a longer feature list; it is a set of
 **contracts** the ecosystem does not make. Determinism as a hard promise:
-the same inputs produce the same bytes - same sampled tokens, and in
-training the same adapter file sha256 - across thread counts and binary
-versions, gated in CI. Scope as a promise: supported architectures are
+the same executable and inputs reproduce the same sampled tokens across
+runs and thread counts, and training reproduces the same adapter file
+sha256, gated in CI. Independent rebuilds are explicitly outside that
+byte-identity claim because compiler and ISA libm can differ. Scope as a
+promise: supported architectures are
 named, unknown ones are refused, and every backend claim is tied to an
 executable gate and pinned model evidence. Honesty as an artifact: the
 benchmark tables below include the rows where Runner loses, and the docs
