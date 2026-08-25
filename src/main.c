@@ -450,6 +450,13 @@ static void usage(const char *prog) {
         "                 output token ids, chain hash. Same binary + same\n"
         "                 record replays bit-exact; cross-ISA replays\n"
         "                 token-exact (libm differs)\n"
+        "  --verify F     replay a transcript (see --transcript) against the\n"
+        "                 loaded -m model and byte-diff the result. Verdicts:\n"
+        "                 VERIFIED (exit 0; tier T1 same-binary or T2\n"
+        "                 token-replay), DIVERGED at token N (exit 2),\n"
+        "                 UNVERIFIABLE (exit 3: bad chain hash, wrong model\n"
+        "                 sha, wrong adapter). The record's config and seed\n"
+        "                 override CLI sampling flags\n"
         "  --merge-lora OUT  fold --lora into the base weights and write\n"
         "                 OUT.gguf + an OUT.gguf.merge.json provenance record:\n"
         "                 W' = W + (alpha/r)*B*A per adapted projection, each\n"
@@ -710,6 +717,7 @@ int main(int argc, char **argv) {
     const char *quant_out = NULL, *quant_type = NULL, *prune_experts = NULL;
     const char *type_plan = NULL, *merge_out = NULL;
     const char *transcript_path = NULL;
+    const char *verify_path = NULL;
     int n_predict = 256, n_threads = 0, tmpl = -1, reserve_cpu_pct = 0;
     int port = 8080, parallel = 1, ttl = -1; // -1: 300 for swap mode, never for single
     long parent_pid = 0;
@@ -785,6 +793,7 @@ int main(int argc, char **argv) {
         else if (!strcmp(a, "--quantize")) quant_out = NEXT;
         else if (!strcmp(a, "--merge-lora")) merge_out = NEXT;
         else if (!strcmp(a, "--transcript")) transcript_path = NEXT;
+        else if (!strcmp(a, "--verify")) verify_path = NEXT;
         else if (!strcmp(a, "--quant")) quant_type = NEXT;
         else if (!strcmp(a, "--prune-experts")) prune_experts = NEXT;
         else if (!strcmp(a, "--type-plan")) type_plan = NEXT;
@@ -1058,7 +1067,7 @@ int main(int argc, char **argv) {
         prompt = owned_prompt = fbuf;
     }
     if (!prompt && !interactive && !serve && !quant_out && !merge_out &&
-        !bench_json && !tool_info && !train_path) {
+        !bench_json && !tool_info && !train_path && !verify_path) {
         fprintf(stderr, "error: need -p PROMPT, -i, or --serve\n");
         usage(argv[0]);
         return 1;
@@ -1095,6 +1104,61 @@ int main(int argc, char **argv) {
         return 1;
     }
     if (!seed_given) smp.rng = (uint64_t)time(NULL) ^ 0x9E3779B97F4A7C15ull;
+
+    // ---- notarized inference D2: parse the transcript BEFORE the load so
+    // the record's profile (ctx, kv, gpu) and config (sampler, seed) shape
+    // the replay exactly as they shaped the original. Integrity first: the
+    // chain hash must re-verify from the raw bytes, or nothing else in the
+    // file is worth believing (UNVERIFIABLE, exit 3).
+    jv *vrec = NULL;
+    if (verify_path) {
+        FILE *vf = fopen(verify_path, "rb");
+        if (!vf) { fprintf(stderr, "UNVERIFIABLE: cannot open %s\n", verify_path); return 3; }
+        fseek(vf, 0, SEEK_END);
+        long vlen = ftell(vf);
+        fseek(vf, 0, SEEK_SET);
+        char *vbuf = vlen > 0 ? malloc((size_t)vlen + 1) : NULL;
+        if (!vbuf || fread(vbuf, 1, (size_t)vlen, vf) != (size_t)vlen) {
+            fprintf(stderr, "UNVERIFIABLE: cannot read %s\n", verify_path);
+            fclose(vf); free(vbuf); return 3;
+        }
+        fclose(vf);
+        vbuf[vlen] = 0;
+        char *cpos = strstr(vbuf, ",\"chain\"");
+        char *clast = cpos;
+        while (clast && (clast = strstr(clast + 1, ",\"chain\"")) != NULL) cpos = clast;
+        if (!cpos) { fprintf(stderr, "UNVERIFIABLE: no chain in record\n"); free(vbuf); return 3; }
+        char want[65];
+        envelope_data_sha256(vbuf, (size_t)(cpos - vbuf), want);
+        vrec = json_parse(vbuf, (size_t)vlen);
+        free(vbuf);
+        if (!vrec) { fprintf(stderr, "UNVERIFIABLE: malformed record\n"); return 3; }
+        const char *sv = jv_str(jv_get(vrec, "schema_version"), "");
+        const char *ch = jv_str(jv_get(jv_get(vrec, "chain"), "hash"), "");
+        if (strcmp(sv, "xyntetik.runner.transcript.v1") != 0) {
+            fprintf(stderr, "UNVERIFIABLE: schema %s\n", sv); jv_free(vrec); return 3;
+        }
+        if (strcmp(ch, want) != 0) {
+            fprintf(stderr, "UNVERIFIABLE: chain hash mismatch (record "
+                    "altered after writing)\n");
+            jv_free(vrec); return 3;
+        }
+        jv *prof = jv_get(vrec, "profile"), *cfg = jv_get(vrec, "config");
+        mp.n_ctx = (int)jv_num(jv_get(prof, "ctx"), mp.n_ctx);
+        mp.kv_q8 = strcmp(jv_str(jv_get(prof, "kv"), "f16"), "q8") == 0;
+        mp.gpu_mode = jv_bool(jv_get(prof, "gpu"), false) ? GPU_AUTO : GPU_OFF;
+        smp.rng = (uint64_t)jv_num(jv_get(cfg, "seed"), 0);
+        // the record's sampling config rides the CLI-override mechanism so
+        // it survives sampler_resolve's per-model presets — the replay must
+        // sample exactly as the original did, whatever the model's preset
+        ov.temp = (float)jv_num(jv_get(cfg, "temp"), 0);           ov.has_temp = true;
+        ov.top_k = (int)jv_num(jv_get(cfg, "top_k"), 0);           ov.has_top_k = true;
+        ov.top_p = (float)jv_num(jv_get(cfg, "top_p"), 1);         ov.has_top_p = true;
+        ov.min_p = (float)jv_num(jv_get(cfg, "min_p"), 0);         ov.has_min_p = true;
+        ov.repeat_penalty = (float)jv_num(jv_get(cfg, "repeat_penalty"), 1);
+        ov.has_repeat_penalty = true;
+        n_predict = (int)jv_num(jv_get(cfg, "n_predict"), n_predict);
+    }
 
     if (n_threads <= 0) {
         // Default to a physical-core proxy (nc/2 under the near-universal 2-way
@@ -1566,6 +1630,103 @@ int main(int argc, char **argv) {
         cli_cleanup(&e, toks, &tok, &m);
         free(owned_prompt);
         return 0;
+    }
+
+    // ---- notarized inference D2: the replay
+    if (verify_path) {
+        jv *vm = jv_get(vrec, "model"), *va = jv_get(vrec, "adapter");
+        char sha[65] = "";
+        envelope_file_sha256(load_path, sha);
+        if (strcmp(sha, jv_str(jv_get(vm, "sha256"), "")) != 0) {
+            fprintf(stderr, "UNVERIFIABLE: -m %s sha256 %s does not match "
+                    "the record's %s\n", load_path, sha,
+                    jv_str(jv_get(vm, "sha256"), "?"));
+            jv_free(vrec); cli_cleanup(&e, toks, &tok, &m);
+            free(owned_prompt); return 3;
+        }
+        if (va && va->type != J_NULL) {
+            if (!lora_path) {
+                fprintf(stderr, "UNVERIFIABLE: the record used an adapter "
+                        "(sha %s) — pass it with --lora\n",
+                        jv_str(jv_get(va, "sha256"), "?"));
+                jv_free(vrec); cli_cleanup(&e, toks, &tok, &m);
+                free(owned_prompt); return 3;
+            }
+            char asha[65] = "";
+            envelope_file_sha256(lora_path, asha);
+            if (strcmp(asha, jv_str(jv_get(va, "sha256"), "")) != 0) {
+                fprintf(stderr, "UNVERIFIABLE: --lora sha256 does not match "
+                        "the record's adapter\n");
+                jv_free(vrec); cli_cleanup(&e, toks, &tok, &m);
+                free(owned_prompt); return 3;
+            }
+        } else if (lora_path) {
+            fprintf(stderr, "UNVERIFIABLE: --lora given but the record ran "
+                    "without an adapter\n");
+            jv_free(vrec); cli_cleanup(&e, toks, &tok, &m);
+            free(owned_prompt); return 3;
+        }
+        jv *jp = jv_get(jv_get(vrec, "prompt"), "tokens");
+        jv *jo = jv_get(jv_get(vrec, "output"), "tokens");
+        if (!jp || jp->type != J_ARR || !jo || jo->type != J_ARR ||
+            jp->n < 1 || (size_t)jp->n >= tok_cap) {
+            fprintf(stderr, "UNVERIFIABLE: malformed token arrays\n");
+            jv_free(vrec); cli_cleanup(&e, toks, &tok, &m);
+            free(owned_prompt); return 3;
+        }
+        for (int i = 0; i < jp->n; i++)
+            toks[i] = (int32_t)jv_num(jp->items[i], -1);
+        double vt0 = now_s();
+        float *logits = engine_feed(&e, toks, jp->n);
+        if (!logits) {
+            fprintf(stderr, "UNVERIFIABLE: prompt exceeds context\n");
+            jv_free(vrec); cli_cleanup(&e, toks, &tok, &m);
+            free(owned_prompt); return 3;
+        }
+        double gt = 0;
+        int n_gen = engine_generate(&e, logits, n_predict, discard_cb, NULL,
+                                    &gt);
+        (void)vt0;
+        // tier: same binary = T1 (bit-exact by the gated contract), else
+        // T2 (token replay across builds; libm is the known bit blocker)
+        char bsha[65] = "";
+        envelope_file_sha256(argv[0], bsha);
+        const char *rbsha = jv_str(jv_get(jv_get(vrec, "build"),
+                                          "binary_sha256"), "");
+        const char *tier = (bsha[0] && strcmp(bsha, rbsha) == 0) ? "T1" : "T2";
+        int cmp_n = n_gen < jo->n ? n_gen : jo->n;
+        int div_at = -1;
+        for (int i = 0; i < cmp_n; i++)
+            if ((int32_t)jv_num(jo->items[i], -1) != e.hist[jp->n + i]) {
+                div_at = i;
+                break;
+            }
+        if (div_at < 0 && n_gen != jo->n) div_at = cmp_n;
+        int rc;
+        if (div_at < 0) {
+            printf("{\"schema_version\":\"xyntetik.runner.verify.v1\","
+                   "\"verdict\":\"VERIFIED\",\"tier\":\"%s\","
+                   "\"tokens\":%d}\n", tier, n_gen);
+            fprintf(stderr, "VERIFIED (%s %s): %d output tokens replayed "
+                    "identically\n", tier,
+                    strcmp(tier, "T1") == 0 ? "same-binary"
+                                            : "token-replay", n_gen);
+            rc = 0;
+        } else {
+            int want = div_at < jo->n ? (int)jv_num(jo->items[div_at], -1)
+                                      : -1;
+            int got = div_at < n_gen ? (int)e.hist[jp->n + div_at] : -1;
+            printf("{\"schema_version\":\"xyntetik.runner.verify.v1\","
+                   "\"verdict\":\"DIVERGED\",\"at\":%d,"
+                   "\"expected\":%d,\"got\":%d}\n", div_at, want, got);
+            fprintf(stderr, "DIVERGED at token %d: record has %d, replay "
+                    "produced %d\n", div_at, want, got);
+            rc = 2;
+        }
+        jv_free(vrec);
+        cli_cleanup(&e, toks, &tok, &m);
+        free(owned_prompt);
+        return rc;
     }
 
     if (score) {

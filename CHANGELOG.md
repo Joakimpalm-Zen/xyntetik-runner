@@ -14,8 +14,15 @@ names that were true when they were written.
   and output token ids, and a chain hash covering every byte of the file
   before the `,"chain"` key (recomputable with a text editor and
   sha256sum). Same binary + same record replays bit-exact; cross-ISA
-  replays token-exact per the D0 falsifier ladder. `--verify` (replay +
-  diff) is the next slice.
+  replays token-exact per the D0 falsifier ladder.
+- **`--verify F` (notarized inference D2)**: replays a transcript against
+  the loaded model and diffs. Three verdicts, three exit codes:
+  VERIFIED (0; tier T1 same-binary or T2 token-replay), DIVERGED at
+  token N (2), UNVERIFIABLE (3: altered record, wrong model sha, wrong
+  adapter). The record's profile and sampling config drive the replay,
+  overriding CLI flags. The demo that matters: forge a record's token
+  and recompute its chain hash, and the replay still catches it - you
+  can forge the hash, not the model.
 
 ## v0.3.0 — 2026-08-25
 

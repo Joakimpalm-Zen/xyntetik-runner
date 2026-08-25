@@ -64,6 +64,64 @@ def test_replay_substrate_and_chain(runner_bin, base, tmp_path):
     assert r1["schema_version"] == "xyntetik.runner.transcript.v1"
 
 
+def _verify(runner_bin, base, rec, lora=None):
+    cmd = [runner_bin, "-m", str(base), "--verify", str(rec),
+           "--gpu", "off", "-t", "2"]
+    if lora:
+        cmd += ["--lora", str(lora)]
+    return subprocess.run(cmd, cwd=ROOT, stdout=subprocess.PIPE,
+                          stderr=subprocess.PIPE, timeout=120)
+
+
+def test_verify_verdicts(runner_bin, base, tmp_path):
+    """D2: the three-verdict contract. Same binary verifies at T1; a
+    tampered record (stale chain) is UNVERIFIABLE exit 3; a FORGED record
+    (token changed, chain recomputed to match) is caught by the replay
+    itself: DIVERGED exit 2 — you can forge the hash, not the model."""
+    rec = tmp_path / "r.json"
+    r = _run(runner_bin, base, rec)
+    p = _verify(runner_bin, base, rec)
+    assert p.returncode == 0, p.stderr.decode(errors="replace")
+    v = json.loads(p.stdout)
+    assert v["verdict"] == "VERIFIED" and v["tier"] == "T1"
+
+    raw = rec.read_bytes()
+    tampered = tmp_path / "tampered.json"
+    tampered.write_bytes(raw.replace(b'"finish"', b'"fXnish"', 1))
+    p = _verify(runner_bin, base, tampered)
+    assert p.returncode == 3
+    assert b"chain hash mismatch" in p.stderr
+
+    toks = r["output"]["tokens"]
+    old_arr = json.dumps(toks, separators=(",", ":")).encode()
+    forged_toks = list(toks)
+    forged_toks[0] = forged_toks[0] + 1
+    new_arr = json.dumps(forged_toks, separators=(",", ":")).encode()
+    body = raw[:raw.rindex(b',"chain"')]
+    # the output tokens array is the LAST token array in the body
+    i = body.rindex(old_arr)
+    forged_body = body[:i] + new_arr + body[i + len(old_arr):]
+    import re as _re
+    tail = _re.sub(rb'"hash":"[0-9a-f]{64}"',
+                   b'"hash":"' +
+                   hashlib.sha256(forged_body).hexdigest().encode() + b'"',
+                   raw[raw.rindex(b',"chain"'):])
+    forged = tmp_path / "forged.json"
+    forged.write_bytes(forged_body + tail)
+    p = _verify(runner_bin, base, forged)
+    assert p.returncode == 2
+    v = json.loads(p.stdout)
+    assert v["verdict"] == "DIVERGED" and v["at"] == 0
+
+    # a real adapter the record did not use: UNVERIFIABLE, not a replay
+    subprocess.run([sys.executable, ROOT / "scripts/make-test-lora.py",
+                    str(base), str(tmp_path / "fx")], check=True, cwd=ROOT,
+                   stdout=subprocess.DEVNULL)
+    p = _verify(runner_bin, base, rec, lora=tmp_path / "fx.adapter.gguf")
+    assert p.returncode == 3, p.stderr.decode(errors="replace")
+    assert b"without an adapter" in p.stderr
+
+
 def test_seeded_not_vacuous(runner_bin, base, tmp_path):
     a = _run(runner_bin, base, tmp_path / "a.json", seed="7", temp="0.9")
     b = _run(runner_bin, base, tmp_path / "b.json", seed="7", temp="0.9")
