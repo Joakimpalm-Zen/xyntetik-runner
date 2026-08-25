@@ -1,25 +1,72 @@
 # Xyntetik Runner
 
-Local LLM inference that behaves like infrastructure: agent tool calls that
-still parse when the token budget runs out, a shared GPU that queues instead of
-first-come-first-crash, and a query that tells you what fits before you load
-anything.
+One binary is the whole model runtime: it **serves, verifies, scores,
+adapts and trains** GGUF models — deterministically, with every claim tied
+to a measurement you can re-run. Written from scratch in plain C. No
+Python, no pip, no third-party runtime, no ggml. CPU (x86 AVX2/FMA, ARM
+NEON), CUDA, and Metal.
 
-It is one executable written from scratch in plain C — no third-party runtime
-dependency or ggml — reading standard GGUF on portable CPU code, x86 AVX2/FMA,
-ARM NEON, CUDA, or Metal. Its scope is deliberately explicit: supported
-architectures are named, unknown ones are refused, and backend claims are tied
-to executable gates and pinned model evidence.
+![Two independent training runs producing byte-identical adapters](docs/assets/deterministic-training.gif)
 
-Runner includes interactive chat, speculative decoding, constrained JSON
-generation, a desktop controller, and loopback-only OpenAI- and
-Anthropic-compatible HTTP APIs.
+## Sixty seconds to a served model
+
+```sh
+curl -LO https://github.com/Joakimpalm-Zen/xyntetik-runner/releases/latest/download/runner-macos-arm64
+curl -LO https://github.com/Joakimpalm-Zen/xyntetik-runner/releases/latest/download/SHA256SUMS
+shasum -a 256 --check --ignore-missing SHA256SUMS
+chmod +x runner-macos-arm64 && mv runner-macos-arm64 runner
+curl -L -o model.gguf https://huggingface.co/ibm-granite/granite-4.1-3b-GGUF/resolve/main/granite-4.1-3b-Q8_0.gguf
+./runner -m model.gguf --serve
+```
+
+```sh
+curl localhost:8080/v1/chat/completions \
+  -d '{"messages":[{"role":"user","content":"Say hello in one sentence."}]}'
+```
+
+Linux: the asset is `runner-linux-x86_64` and the check command is
+`sha256sum -c --ignore-missing`. Windows: `runner-windows-x86_64.exe`.
+The checksum line is not decoration — this project's whole culture is
+receipts, and it starts at the download. The model above is the smallest
+that passes this project's fidelity gate against its own BF16 parent;
+alternatives and the reasoning are in the [quick start](#build-from-source)
+below.
+
+macOS note: the binaries are not yet notarized. A `curl` download runs as
+shown; a *browser* download gets quarantined by Gatekeeper — clear it with
+`xattr -d com.apple.quarantine runner` or right-click → Open once.
+
+Xyntetik Runner is independent and bootstrapped: **the engine is free
+forever under Apache 2.0** — consulting and enterprise work fund the
+hardware. Built in Sweden, runs on your hardware; your data never leaves
+the building.
+
+## Why this and not llama.cpp?
+
+Use llama.cpp — it is the ecosystem, and Runner deliberately rides its
+formats rather than competing with them: GGUF in, llama.cpp-convention
+adapter files in *and* out. An adapter Runner trains scores identically
+(1.000 on its held-out eval) served by stock llama.cpp, and community F16
+adapters load straight back into Runner — both measured, not assumed.
+
+What Runner adds is not a longer feature list; it is a set of
+**contracts** the ecosystem does not make. Determinism as a hard promise:
+the same inputs produce the same bytes — same sampled tokens, and in
+training the same adapter file sha256 — across thread counts and binary
+versions, gated in CI. Scope as a promise: supported architectures are
+named, unknown ones are refused, and every backend claim is tied to an
+executable gate and pinned model evidence. Honesty as an artifact: the
+benchmark tables below include the rows where Runner loses, and the docs
+keep the failed experiments. If you want maximum architecture coverage and
+raw speed, use llama.cpp and we mean that sincerely. If you need to prove
+what your model said, what it learned from, or what you actually shipped —
+that is what this runtime is for.
 
 For release history and benchmark narratives, see [CHANGELOG.md](CHANGELOG.md)
-and [docs/benchmarks.md](docs/benchmarks.md). Keeping that material there makes
-this file a current operator reference rather than a second changelog.
+and [docs/benchmarks.md](docs/benchmarks.md).
 
-## Quick start
+<a id="build-from-source"></a>
+## Quick start: source builds and model choice
 
 Download a prebuilt binary from the [latest release](../../releases/latest)
 for Linux, macOS, or Windows, or build from source:
@@ -169,6 +216,8 @@ Measured, on a public artifact you can download and reproduce
 | neutral-corpus drift | nll/token 4.063 → 4.026 (the adapter leaves unrelated text alone) |
 | merge study | `--merge-lora` into Q8_0/F16 keeps the 1.00 (verified in stock llama.cpp); merging into the 4-bit base **erases the fine-tune** — 0.69 again, 98.55% of weight bytes round back to the base's codes. Scale sweep: survival is monotone in delta magnitude (erased through 2×, partial at 4×, full at 8× — where the *exact* 8× adapter breaks the served model, the 4-bit grid filters it back to 1.00) |
 | interop | the adapter scores the same 1.00 served by stock llama.cpp; community F16 adapters load back into runner (measured on a third-party adapter, which also found and fixed the F32-only loader gap) |
+
+![Merging the adapter into the 4-bit base erases it; 8-bit keeps it](docs/assets/merge-erasure.gif)
 
 `--score` gives teacher-forced logprobs for evals and rewards, `--lora`
 serves any adapter back, `--merge-lora` folds an adapter into the base for
