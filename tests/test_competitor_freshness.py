@@ -37,12 +37,21 @@ def test_reports_stale_versions_from_official_registry_payloads(tmp_path):
     }
     result = MOD.check_freshness(
         MOD.read_published(tmp_path), lambda url: payloads[url])
+    # significance policy: a 1-build llama.cpp gap is routine cadence
+    # (reported as drift, does not page a human); a vllm MINOR jump is stale
     assert [(row["runtime"], row["published"], row["upstream"])
             for row in result["stale"]] == [
-                ("llama.cpp", "b10076", "b10077"),
                 ("vllm", "0.26.0", "0.27.0")]
+    assert [(row["runtime"], row["published"], row["upstream"])
+            for row in result["drift"]] == [
+                ("llama.cpp", "b10076", "b10077")]
     assert [row["runtime"] for row in result["current"]] == ["ollama"]
     assert result["skipped"] == []
+    # the policy's own boundaries
+    assert MOD.significant_drift("llama.cpp", (10076,), (10400,))
+    assert not MOD.significant_drift("llama.cpp", (10076,), (10176,))
+    assert not MOD.significant_drift("ollama", (0, 32, 14), (0, 32, 15))
+    assert MOD.significant_drift("ollama", (0, 32, 14), (0, 33, 0))
 
 
 def test_unreachable_registry_is_a_skip_not_stale(tmp_path):

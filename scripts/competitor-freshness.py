@@ -4,6 +4,15 @@
 This performs metadata-only registry requests. It never starts a runtime,
 loads a model, or runs inference. Registry failures are reported as skips so a
 transient network outage cannot make the scheduled workflow red.
+
+Significance policy (2026-08-25): published comparison rows are DATED
+SNAPSHOTS, per the README's own framing - they claim what was measured on a
+date, not what current upstream does. So drift only counts as STALE when it
+could plausibly change a conclusion: a major/minor version jump for semver
+runtimes, or a large build-number gap for llama.cpp. Patch releases land
+weekly and rebenchmarking per patch is an unmeetable standard nobody's
+claims depend on; patch-level drift is still REPORTED (in `drift`) so the
+JSON stays honest, it just does not page a human.
 """
 
 import argparse
@@ -71,8 +80,23 @@ def upstream_version(runtime, payload):
     return normalized_version(runtime, raw)
 
 
+# llama.cpp ships several builds a day; a gap under this many builds is
+# routine cadence, not a conclusion-threatening divergence
+LLAMA_CPP_BUILD_GAP = 300
+
+
+def significant_drift(runtime, published_key, upstream_key):
+    """True when the gap could plausibly change a benchmark conclusion."""
+    if published_key >= upstream_key:
+        return False
+    if runtime == "llama.cpp":
+        return upstream_key[0] - published_key[0] >= LLAMA_CPP_BUILD_GAP
+    # semver runtimes: major or minor jump counts, a patch bump does not
+    return published_key[:2] < upstream_key[:2]
+
+
 def check_freshness(published, fetch=fetch_json):
-    result = {"stale": [], "current": [], "skipped": []}
+    result = {"stale": [], "drift": [], "current": [], "skipped": []}
     for runtime, row in sorted(published.items()):
         try:
             payload = fetch(REGISTRIES[runtime])
@@ -83,7 +107,12 @@ def check_freshness(published, fetch=fetch_json):
             continue
         finding = {"runtime": runtime, "published": row["version"],
                    "upstream": upstream, "reports": row["reports"]}
-        result["stale" if published_key < upstream_key else "current"].append(finding)
+        if significant_drift(runtime, published_key, upstream_key):
+            result["stale"].append(finding)
+        elif published_key < upstream_key:
+            result["drift"].append(finding)
+        else:
+            result["current"].append(finding)
     return result
 
 
