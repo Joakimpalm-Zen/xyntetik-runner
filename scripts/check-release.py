@@ -56,8 +56,29 @@ def pyproject_version(path):
     return match.group(1)
 
 
+# Strings that name PRIVATE repositories. This repo is public: an evidence
+# doc that cites a private path or commit leaks internal topology (found in
+# the wild by the 2026-08-24 review — docs published from a measurement
+# session carried suite paths for a week). The class-level fix is this scan;
+# the instance-level fixes were commit d9557b3.
+PRIVATE_MARKERS = ("xyntetik-suite", "xyntetik-shade")
+
+
+def private_reference_scan():
+    proc = subprocess.run(
+        ["git", "grep", "-l", "-i", "-E", "|".join(PRIVATE_MARKERS),
+         "--", ":!scripts/check-release.py"],
+        cwd=ROOT, capture_output=True, text=True)
+    hits = [l for l in proc.stdout.splitlines() if l.strip()]
+    if hits:
+        return fail("private-repo references in public tree: "
+                    + ", ".join(hits))
+    return True
+
+
 def check(args):
     ok = True
+    ok &= private_reference_scan()
     version = args.tag[1:] if args.tag.startswith("v") else args.tag
     expected_binary = f"runner {version}"
 
