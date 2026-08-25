@@ -28,17 +28,21 @@ def runner_bin():
 
 
 @pytest.fixture(scope="module")
-def gemma_moe_fixture(tmp_path_factory):
+def moe_fixture_prefix(tmp_path_factory):
     prefix = tmp_path_factory.mktemp("metalmoebatch") / "f"
     subprocess.run([sys.executable, ROOT / "scripts/make-test-moe.py", str(prefix)],
                    cwd=ROOT, check=True, stdout=subprocess.DEVNULL)
-    return pathlib.Path(f"{prefix}.gemma4-moe.gguf")
+    return prefix
 
 
-def _run(runner, model, gpu, *, stats=False):
+def _run(runner, model, gpu, *, stats=False, route_trace=False,
+         route_batch=True):
     env = dict(os.environ, RUNNER_METAL_MM="0", RUNNER_METAL_ATTN_COOP="0")
     if stats:
         env["RUNNER_METAL_STATS"] = "1"
+    if route_trace:
+        env["RUNNER_METAL_MOE_ROUTE_TRACE"] = "1"
+        env["RUNNER_METAL_MOE_BATCH"] = "1" if route_batch else "0"
     return subprocess.run(
         [runner, "-m", model, "-p", PROMPT, "-n", "1", "-b", "8",
          "--temp", "0", "--gpu", gpu],
@@ -47,7 +51,8 @@ def _run(runner, model, gpu, *, stats=False):
 
 
 def test_prompt_tile_batches_moe_without_changing_tokens(runner_bin,
-                                                          gemma_moe_fixture):
+                                                          moe_fixture_prefix):
+    gemma_moe_fixture = pathlib.Path(f"{moe_fixture_prefix}.gemma4-moe.gguf")
     cpu = _run(runner_bin, gemma_moe_fixture, "off")
     gpu = _run(runner_bin, gemma_moe_fixture, "auto", stats=True)
     assert cpu.stdout == gpu.stdout
@@ -58,3 +63,18 @@ def test_prompt_tile_batches_moe_without_changing_tokens(runner_bin,
     # Two layers, each encoded as one route, two expert projections, one
     # activation, one down projection, and one ordered weighted sum.
     assert int(match.group(1)) == 10
+
+
+def test_batched_routes_are_byte_identical_to_serial_routes(
+        runner_bin, moe_fixture_prefix):
+    model = pathlib.Path(f"{moe_fixture_prefix}.moe4.gguf")
+    serial = _run(runner_bin, model, "auto", route_trace=True,
+                  route_batch=False)
+    batched = _run(runner_bin, model, "auto", route_trace=True,
+                   route_batch=True)
+    assert serial.stdout == batched.stdout
+    pattern = re.compile(rb"^metal-moe-route .*$", re.MULTILINE)
+    serial_routes = pattern.findall(serial.stderr)
+    batched_routes = pattern.findall(batched.stderr)
+    assert serial_routes, serial.stderr.decode(errors="replace")
+    assert serial_routes == batched_routes
