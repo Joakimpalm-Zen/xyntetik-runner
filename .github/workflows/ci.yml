@@ -93,7 +93,7 @@ jobs:
           python3 -m venv .venv
           .venv/bin/python -m pip install --quiet pytest mypy
           MYPYPATH=python/src .venv/bin/python -m mypy --strict -p xyntetik_runner
-          PYTHONPATH=python/src .venv/bin/python -m pytest python/tests/test_client.py
+          PYTHONPATH=python/src .venv/bin/python -m pytest python/tests/
       - name: sparse MoE synthetic correctness
         run: make test-moe PYTHON=.venv/bin/python
       - name: comparison and release-gate fixtures
@@ -595,7 +595,7 @@ jobs:
             src/json.c src/compat.c src/quants.c -o test-tools.exe -lm
           ./test-tools.exe
       - name: python client tests
-        run: PYTHONPATH=python/src python3 -m pytest python/tests/test_client.py
+        run: PYTHONPATH=python/src python3 -m pytest python/tests/
       - name: smoke test (completion)
         run: ./runner.exe -m test.gguf -p "hello" -n 8 --temp 0
       - name: reject malformed tensor metadata
