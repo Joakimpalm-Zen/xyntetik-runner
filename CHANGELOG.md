@@ -8,6 +8,12 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **Transcript build identity survives PATH invocation.** Transcript creation
+  and replay now hash the OS-resolved running image instead of `argv[0]`.
+  Invoking `runner` by bare name from another directory previously recorded an
+  empty binary hash and downgraded same-binary verification to T2; it now
+  records the real hash and reports T1, or fails the record closed if the
+  executable cannot be hashed.
 - **Transcript replay rejects malformed values before they reach inference.**
   A correctly recomputed public chain hash is an integrity check, not an
   authorization boundary. `--verify` now applies the CLI's finite, range and

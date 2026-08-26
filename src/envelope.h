@@ -65,8 +65,7 @@ void envelope_data_sha256(const void *data, size_t n, char hex[65]);
 typedef struct {
     const char *out_path;
     const char *runner_version;
-    const char *argv0;             // hashed for build identity (may fail ->
-                                   // empty sha and the record says so)
+    const char *executable_path;   // OS-resolved running image, hashed
     const char *compiler, *os, *arch;
     const char *device;            // "cpu" | gpu device name
     bool        gpu;

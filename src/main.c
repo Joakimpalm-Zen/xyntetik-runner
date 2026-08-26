@@ -1827,7 +1827,9 @@ int main(int argc, char **argv) {
         // tier: same binary = T1 (bit-exact by the gated contract), else
         // T2 (token replay across builds; libm is the known bit blocker)
         char bsha[65] = "";
-        envelope_file_sha256(argv[0], bsha);
+        char *verify_exe = plat_executable_path();
+        if (verify_exe) envelope_file_sha256(verify_exe, bsha);
+        free(verify_exe);
         const char *rbsha = jv_str(jv_get(jv_get(vrec, "build"),
                                           "binary_sha256"), "");
         const char *tier = (bsha[0] && strcmp(bsha, rbsha) == 0) ? "T1" : "T2";
@@ -2082,10 +2084,11 @@ int main(int argc, char **argv) {
         if (transcript_path) {
             char gname[128] = "";
             if (m.gpu) gpu_available(gname, sizeof gname);
+            char *transcript_exe = plat_executable_path();
             transcript_info ti = {
                 .out_path = transcript_path,
                 .runner_version = RUNNER_VERSION,
-                .argv0 = argv[0],
+                .executable_path = transcript_exe,
                 .compiler = __VERSION__,
 #ifdef _WIN32
                 .os = "windows",
@@ -2122,6 +2125,7 @@ int main(int argc, char **argv) {
                 fprintf(stderr, "transcript -> %s\n", transcript_path);
             else
                 t_rc = 1;
+            free(transcript_exe);
             free(ocap.buf);
         }
         free(p);

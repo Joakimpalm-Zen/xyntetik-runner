@@ -204,7 +204,11 @@ bool transcript_write(const transcript_info *ti) {
                 ti->model_path);
         return false;
     }
-    if (ti->argv0) envelope_file_sha256(ti->argv0, bsha);
+    if (!ti->executable_path ||
+        !envelope_file_sha256(ti->executable_path, bsha)) {
+        fprintf(stderr, "error: transcript: cannot hash runner executable\n");
+        return false;
+    }
     if (ti->adapter_path && !envelope_file_sha256(ti->adapter_path, asha)) {
         fprintf(stderr, "error: transcript: cannot hash adapter %s\n",
                 ti->adapter_path);

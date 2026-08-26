@@ -9,6 +9,7 @@ is a DIFFERENT record (the determinism is seeded, not vacuous).
 """
 import hashlib
 import json
+import os
 import pathlib
 import subprocess
 import sys
@@ -63,6 +64,28 @@ def test_replay_substrate_and_chain(runner_bin, base, tmp_path):
     assert r1["config"]["seed_u64"] == "7"
     assert r1["output"]["finish"] in ("stop", "length")
     assert r1["schema_version"] == "xyntetik.runner.transcript.v1"
+
+
+def test_binary_hash_uses_running_image_not_argv0(runner_bin, base, tmp_path):
+    rec = tmp_path / "path-invocation.json"
+    env = dict(os.environ)
+    env["PATH"] = str(ROOT) + os.pathsep + env.get("PATH", "")
+    p = subprocess.run(
+        [runner_bin.name, "-m", str(base), "-p", "hello", "-n", "1",
+         "--temp", "0", "--gpu", "off", "--transcript", str(rec)],
+        cwd=tmp_path, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        timeout=120)
+    assert p.returncode == 0, p.stderr.decode(errors="replace")
+    r = json.loads(rec.read_bytes())
+    assert r["build"]["binary_sha256"] == hashlib.sha256(
+        runner_bin.read_bytes()).hexdigest()
+
+    p = subprocess.run(
+        [runner_bin.name, "-m", str(base), "--verify", str(rec),
+         "--gpu", "off"], cwd=tmp_path, env=env, stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE, timeout=120)
+    assert p.returncode == 0, p.stderr.decode(errors="replace")
+    assert json.loads(p.stdout)["tier"] == "T1"
 
 
 def _verify(runner_bin, base, rec, lora=None):
