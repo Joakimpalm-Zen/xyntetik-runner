@@ -1,10 +1,12 @@
 // envelope_report reads a <model>.envelope.json sidecar and resolves the
 // current (version, backend) against it, exact-match, without enforcement.
 #include "envelope.h"
+#include "json.h"
 #include "runner.h"
 
 #include <assert.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 static const char *MODEL = "/tmp/xyntetik-envelope-test.gguf";
@@ -239,6 +241,47 @@ int main(void) {
     write_manifest(manifest(RUNNER_VERSION, "cpu", "outside-envelope"));
     assert(envelope_gate(MODEL, RUNNER_VERSION, "cpu", false, out, sizeof out, &st) == false);
     assert(st == ENV_OUTSIDE);
+
+    // Build/device strings come from the compiler and GPU driver, not a JSON
+    // grammar. A quote/control byte there must be escaped like paths and
+    // prompt text or a successful run writes an unparsable transcript.
+    {
+        static const char *record_path = "/tmp/xyntetik-transcript-test.json";
+        int32_t prompt_tok[] = { 1 };
+        int32_t output_tok[] = { 2 };
+        transcript_info ti = {
+            .out_path = record_path,
+            .runner_version = "runner\"test",
+            .executable_path = MODEL,
+            .compiler = "compiler\nline",
+            .os = "test-os", .arch = "test-arch",
+            .device = "GPU \"quoted\"",
+            .threads = 1, .n_ctx = 8, .n_batch = 1,
+            .model_path = MODEL,
+            .seed = 1, .repeat_penalty = 1,
+            .bos = true, .prompt_text = "p",
+            .prompt_tokens = prompt_tok, .n_prompt = 1,
+            .output_text = "x", .output_text_len = 1,
+            .output_tokens = output_tok, .n_output = 1,
+        };
+        assert(transcript_write(&ti));
+        FILE *rf = fopen(record_path, "rb");
+        assert(rf);
+        char record[8192];
+        size_t rn = fread(record, 1, sizeof record, rf);
+        fclose(rf);
+        jv *rv = json_parse(record, rn);
+        assert(rv);
+        assert(strcmp(jv_str(jv_get(rv, "runner"), ""), "runner\"test") == 0);
+        jv *build = jv_get(rv, "build");
+        jv *profile = jv_get(rv, "profile");
+        assert(strcmp(jv_str(jv_get(build, "compiler"), ""),
+                      "compiler\nline") == 0);
+        assert(strcmp(jv_str(jv_get(profile, "device"), ""),
+                      "GPU \"quoted\"") == 0);
+        jv_free(rv);
+        remove(record_path);
+    }
 
     rm_model();
     rm_manifest();

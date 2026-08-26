@@ -8,6 +8,12 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **Transcript metadata is always valid JSON.** Runner, compiler, OS,
+  architecture and GPU-device strings now use the same JSON escaping path as
+  model paths and prompts. A driver-reported device name containing a quote or
+  control byte previously produced an unparsable receipt. The transcript
+  builder also detects size overflow and no longer truncates formatted fields
+  at its 512-byte scratch buffer.
 - **Tray config read errors no longer leak descriptors.** `cfg_load` now
   closes its stream independently of `ferror`. A config path replaced by a
   directory or failing special file could previously leak one descriptor on

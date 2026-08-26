@@ -149,8 +149,11 @@ typedef struct { char *b; size_t n, cap; bool oom; } tsb;
 
 static void tsb_put(tsb *w, const char *p, size_t n) {
     if (w->oom) return;
-    if (w->n + n + 1 > w->cap) {
-        size_t cap = (w->n + n + 1) * 2 + 256;
+    if (n > SIZE_MAX - w->n - 1) { w->oom = true; return; }
+    size_t need = w->n + n + 1;
+    if (need > w->cap) {
+        size_t cap = need <= (SIZE_MAX - 256) / 2
+                   ? need * 2 + 256 : need;
         char *nb = realloc(w->b, cap);
         if (!nb) { w->oom = true; return; }
         w->b = nb;
@@ -163,11 +166,24 @@ static void tsb_put(tsb *w, const char *p, size_t n) {
 
 static void tsb_fmt(tsb *w, const char *fmt, ...) {
     char tmp[512];
-    va_list ap;
+    va_list ap, ap2;
     va_start(ap, fmt);
+    va_copy(ap2, ap);
     int n = vsnprintf(tmp, sizeof tmp, fmt, ap);
     va_end(ap);
-    if (n > 0) tsb_put(w, tmp, (size_t)n < sizeof tmp ? (size_t)n : sizeof tmp - 1);
+    if (n < 0) { w->oom = true; va_end(ap2); return; }
+    if ((size_t)n < sizeof tmp) {
+        tsb_put(w, tmp, (size_t)n);
+    } else {
+        char *big = malloc((size_t)n + 1);
+        if (!big) w->oom = true;
+        else {
+            vsnprintf(big, (size_t)n + 1, fmt, ap2);
+            tsb_put(w, big, (size_t)n);
+            free(big);
+        }
+    }
+    va_end(ap2);
 }
 
 // json_escape needs a caller-sized buffer; escape in bounded chunks so an
@@ -242,17 +258,24 @@ bool transcript_write(const transcript_info *ti) {
     strftime(utc, sizeof utc, "%Y-%m-%dT%H:%M:%SZ", &g);
 
     tsb w = {0};
-    tsb_fmt(&w, "{\"schema_version\":\"xyntetik.runner.transcript.v1\","
-                "\"runner\":\"%s\",", ti->runner_version);
-    tsb_fmt(&w, "\"build\":{\"binary_sha256\":\"%s\",\"compiler\":\"%s\","
-                "\"os\":\"%s\",\"arch\":\"%s\"},",
-            bsha, ti->compiler, ti->os, ti->arch);
-    tsb_fmt(&w, "\"profile\":{\"device\":\"%s\",\"gpu\":%s,"
-                "\"gpu_layers\":%d,\"threads\":%d,\"ctx\":%d,"
-                "\"kv\":\"%s\",\"batch\":%d},",
-            ti->device, ti->gpu ? "true" : "false", ti->gpu_layers,
-            ti->threads, ti->n_ctx,
-            ti->kv_q8 ? "q8" : "f16", ti->n_batch);
+    static const char record_head[] =
+        "{\"schema_version\":\"xyntetik.runner.transcript.v1\",\"runner\":";
+    tsb_put(&w, record_head, sizeof record_head - 1);
+    tsb_json_str(&w, ti->runner_version, strlen(ti->runner_version));
+    tsb_fmt(&w, ",\"build\":{\"binary_sha256\":\"%s\",\"compiler\":",
+            bsha);
+    tsb_json_str(&w, ti->compiler, strlen(ti->compiler));
+    tsb_put(&w, ",\"os\":", sizeof ",\"os\":" - 1);
+    tsb_json_str(&w, ti->os, strlen(ti->os));
+    tsb_put(&w, ",\"arch\":", sizeof ",\"arch\":" - 1);
+    tsb_json_str(&w, ti->arch, strlen(ti->arch));
+    tsb_put(&w, "},\"profile\":{\"device\":",
+            sizeof "},\"profile\":{\"device\":" - 1);
+    tsb_json_str(&w, ti->device, strlen(ti->device));
+    tsb_fmt(&w, ",\"gpu\":%s,\"gpu_layers\":%d,\"threads\":%d,"
+                "\"ctx\":%d,\"kv\":\"%s\",\"batch\":%d},",
+            ti->gpu ? "true" : "false", ti->gpu_layers, ti->threads,
+            ti->n_ctx, ti->kv_q8 ? "q8" : "f16", ti->n_batch);
     tsb_put(&w, "\"model\":{\"path\":", 16);
     tsb_json_str(&w, ti->model_path, strlen(ti->model_path));
     tsb_fmt(&w, ",\"sha256\":\"%s\"},", msha);
