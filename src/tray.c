@@ -124,7 +124,11 @@ static void cfg_load(void) {
     char buf[4096];
     size_t n = fread(buf, 1, sizeof buf - 1, f);
     bool complete = n < sizeof buf - 1 || fgetc(f) == EOF;
-    bool read_ok = !ferror(f) && fclose(f) == 0;
+    // fclose must not sit behind the ferror predicate: fopen can succeed for
+    // a directory/special file and the later read can fail, but that stream
+    // still owns a descriptor which every menu refresh would otherwise leak.
+    bool read_ok = !ferror(f);
+    if (fclose(f) != 0) read_ok = false;
     if (!complete || !read_ok) return;
     buf[n] = 0;
     jv *v = json_parse(buf, n);

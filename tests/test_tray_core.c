@@ -21,6 +21,7 @@
 static void msleep(int ms) { Sleep(ms); }
 #else
 #include <arpa/inet.h>
+#include <fcntl.h>
 #include <netinet/in.h>
 #include <signal.h>
 #include <sys/socket.h>
@@ -32,6 +33,15 @@ static void msleep(int ms) { Sleep(ms); }
 static void msleep(int ms) {
     struct timespec ts = { ms / 1000, (ms % 1000) * 1000000L };
     nanosleep(&ts, NULL);
+}
+
+static int open_fd_count(void) {
+    int n = 0;
+    long cap = sysconf(_SC_OPEN_MAX);
+    if (cap < 0 || cap > 4096) cap = 4096;
+    for (int fd = 0; fd < cap; fd++)
+        if (fcntl(fd, F_GETFD) != -1) n++;
+    return n;
 }
 #endif
 
@@ -180,6 +190,28 @@ int main(int argc, char **argv) {
     CHECK(n > 0, "menu builds");
     CHECK(menu_has(items, n, "no runners active"), "empty state row present");
     CHECK(!menu_has(items, n, "Stop"), "no stop rows with empty registry");
+
+#ifndef _WIN32
+    // fopen() can succeed on a directory, then fread() reports EISDIR. The
+    // error path must still close the stream: cfg_load runs on every menu
+    // refresh while that special-file replacement remains stale.
+    {
+        char saved_cfg[760];
+        snprintf(saved_cfg, sizeof saved_cfg, "%s.saved", cfg);
+        CHECK(rename(cfg, saved_cfg) == 0,
+              "config fixture moves aside for read-error gate");
+        CHECK(mkdir(cfg, 0755) == 0,
+              "directory config fixture forces a stream read error");
+        int before_fds = open_fd_count();
+        for (int i = 0; i < 8; i++) tray_menu_build(items, 128);
+        int after_fds = open_fd_count();
+        CHECK(after_fds == before_fds,
+              "config read errors do not leak file descriptors");
+        CHECK(rmdir(cfg) == 0, "directory config fixture removed");
+        CHECK(rename(saved_cfg, cfg) == 0, "real config fixture restored");
+        n = tray_menu_build(items, 128);
+    }
+#endif
 
     // 1b. a menu that does not fit the caller's array must be a PREFIX of the
     // one that does, and must stay inside the array.

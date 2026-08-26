@@ -8,6 +8,11 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **Tray config read errors no longer leak descriptors.** `cfg_load` now
+  closes its stream independently of `ferror`. A config path replaced by a
+  directory or failing special file could previously leak one descriptor on
+  every menu refresh because the short-circuit skipped `fclose`, eventually
+  starving the long-lived tray process.
 - **T1 transcript verification now covers exact output bytes.** New records
   carry `output.bytes_hex` alongside the human-readable JSON text, and replay
   diffs both tokens and that raw byte stream. Tokenizer byte pieces can be
