@@ -8,6 +8,14 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **Transcript replay rejects malformed values before they reach inference.**
+  A correctly recomputed public chain hash is an integrity check, not an
+  authorization boundary. `--verify` now applies the CLI's finite, range and
+  integer rules to every recorded sampling value, bounds every prompt/output
+  token id to the loaded vocabulary before replay, and reads records through
+  the capped checked-file path. Previously fractional/overflowing integer
+  fields were narrowed with undefined C conversions and invalid prompt ids
+  could reach the engine; some malformed records could even report VERIFIED.
 - **Transcript replay preserves every accepted RNG seed.** Transcript v1 now
   carries an exact decimal `config.seed_u64` alongside the numeric compatibility
   field, and `--verify` uses it instead of rounding through the JSON parser's

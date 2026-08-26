@@ -68,6 +68,37 @@ static double float_arg(const char *opt, const char *s, double min, double max) 
     return v;
 }
 
+// Transcript fields cross an untrusted JSON boundary.  Keep their admission
+// rules identical to the CLI's before narrowing a double to float/int: a
+// matching public chain hash proves byte integrity, not that the author was
+// Runner, and out-of-range floating-to-integer conversions are undefined C.
+static bool record_num(jv *obj, const char *key, double min, double max,
+                       double *out) {
+    jv *v = jv_get(obj, key);
+    if (!v || v->type != J_NUM || !isfinite(v->num) ||
+        v->num < min || v->num > max)
+        return false;
+    *out = v->num;
+    return true;
+}
+
+static bool record_int(jv *obj, const char *key, int min, int max, int *out) {
+    double d;
+    if (!record_num(obj, key, (double)min, (double)max, &d) ||
+        d != trunc(d))
+        return false;
+    *out = (int)d;
+    return true;
+}
+
+static bool record_token(jv *v, int n_vocab, int32_t *out) {
+    if (!v || v->type != J_NUM || !isfinite(v->num) || v->num < 0 ||
+        v->num >= n_vocab || v->num != trunc(v->num))
+        return false;
+    *out = (int32_t)v->num;
+    return true;
+}
+
 // Read a whole file into a NUL-terminated malloc'd buffer, or NULL on any
 // error: open, seek, a negative or oversized length (ftell can return -1 and a
 // hostile/special file can be enormous), allocation, or a read error. The size
@@ -1112,25 +1143,19 @@ int main(int argc, char **argv) {
     // file is worth believing (UNVERIFIABLE, exit 3).
     jv *vrec = NULL;
     if (verify_path) {
-        FILE *vf = fopen(verify_path, "rb");
-        if (!vf) { fprintf(stderr, "UNVERIFIABLE: cannot open %s\n", verify_path); return 3; }
-        fseek(vf, 0, SEEK_END);
-        long vlen = ftell(vf);
-        fseek(vf, 0, SEEK_SET);
-        char *vbuf = vlen > 0 ? malloc((size_t)vlen + 1) : NULL;
-        if (!vbuf || fread(vbuf, 1, (size_t)vlen, vf) != (size_t)vlen) {
+        size_t vlen = 0;
+        char *vbuf = read_file(verify_path, &vlen);
+        if (!vbuf) {
             fprintf(stderr, "UNVERIFIABLE: cannot read %s\n", verify_path);
-            fclose(vf); free(vbuf); return 3;
+            return 3;
         }
-        fclose(vf);
-        vbuf[vlen] = 0;
         char *cpos = strstr(vbuf, ",\"chain\"");
         char *clast = cpos;
         while (clast && (clast = strstr(clast + 1, ",\"chain\"")) != NULL) cpos = clast;
         if (!cpos) { fprintf(stderr, "UNVERIFIABLE: no chain in record\n"); free(vbuf); return 3; }
         char want[65];
         envelope_data_sha256(vbuf, (size_t)(cpos - vbuf), want);
-        vrec = json_parse(vbuf, (size_t)vlen);
+        vrec = json_parse(vbuf, vlen);
         free(vbuf);
         if (!vrec) { fprintf(stderr, "UNVERIFIABLE: malformed record\n"); return 3; }
         const char *sv = jv_str(jv_get(vrec, "schema_version"), "");
@@ -1214,16 +1239,30 @@ int main(int argc, char **argv) {
             return 3;
         }
         smp.rng = replay_seed;
-        // the record's sampling config rides the CLI-override mechanism so
-        // it survives sampler_resolve's per-model presets — the replay must
-        // sample exactly as the original did, whatever the model's preset
-        ov.temp = (float)jv_num(jv_get(cfg, "temp"), 0);           ov.has_temp = true;
-        ov.top_k = (int)jv_num(jv_get(cfg, "top_k"), 0);           ov.has_top_k = true;
-        ov.top_p = (float)jv_num(jv_get(cfg, "top_p"), 1);         ov.has_top_p = true;
-        ov.min_p = (float)jv_num(jv_get(cfg, "min_p"), 0);         ov.has_min_p = true;
-        ov.repeat_penalty = (float)jv_num(jv_get(cfg, "repeat_penalty"), 1);
+        // The record's sampling config rides the CLI-override mechanism so
+        // it survives sampler_resolve's per-model presets. Apply the same
+        // finite/range/integrality rules as the CLI before any narrowing.
+        double temp, top_p, min_p, repeat_penalty;
+        int top_k, replay_n_predict;
+        if (!record_num(cfg, "temp", 0, FLT_MAX, &temp) ||
+            !record_int(cfg, "top_k", 0, INT_MAX, &top_k) ||
+            !record_num(cfg, "top_p", 0, 1, &top_p) ||
+            !record_num(cfg, "min_p", 0, 1, &min_p) ||
+            !record_num(cfg, "repeat_penalty", FLT_MIN, FLT_MAX,
+                        &repeat_penalty) ||
+            !record_int(cfg, "n_predict", -1, INT_MAX,
+                        &replay_n_predict)) {
+            fprintf(stderr, "UNVERIFIABLE: malformed sampling config\n");
+            jv_free(vrec);
+            return 3;
+        }
+        ov.temp = (float)temp;                         ov.has_temp = true;
+        ov.top_k = top_k;                              ov.has_top_k = true;
+        ov.top_p = (float)top_p;                       ov.has_top_p = true;
+        ov.min_p = (float)min_p;                       ov.has_min_p = true;
+        ov.repeat_penalty = (float)repeat_penalty;
         ov.has_repeat_penalty = true;
-        n_predict = (int)jv_num(jv_get(cfg, "n_predict"), n_predict);
+        n_predict = replay_n_predict;
     }
 
     if (n_threads <= 0) {
@@ -1752,13 +1791,28 @@ int main(int argc, char **argv) {
         jv *jp = jv_get(jv_get(vrec, "prompt"), "tokens");
         jv *jo = jv_get(jv_get(vrec, "output"), "tokens");
         if (!jp || jp->type != J_ARR || !jo || jo->type != J_ARR ||
-            jp->n < 1 || (size_t)jp->n >= tok_cap) {
+            jp->n < 1 || jp->n >= m.n_ctx || (size_t)jp->n >= tok_cap) {
             fprintf(stderr, "UNVERIFIABLE: malformed token arrays\n");
             jv_free(vrec); cli_cleanup(&e, toks, &tok, &m);
             free(owned_prompt); return 3;
         }
-        for (int i = 0; i < jp->n; i++)
-            toks[i] = (int32_t)jv_num(jp->items[i], -1);
+        for (int i = 0; i < jp->n; i++) {
+            if (!record_token(jp->items[i], m.n_vocab, &toks[i])) {
+                fprintf(stderr, "UNVERIFIABLE: invalid prompt token at %d\n",
+                        i);
+                jv_free(vrec); cli_cleanup(&e, toks, &tok, &m);
+                free(owned_prompt); return 3;
+            }
+        }
+        for (int i = 0; i < jo->n; i++) {
+            int32_t ignored;
+            if (!record_token(jo->items[i], m.n_vocab, &ignored)) {
+                fprintf(stderr, "UNVERIFIABLE: invalid output token at %d\n",
+                        i);
+                jv_free(vrec); cli_cleanup(&e, toks, &tok, &m);
+                free(owned_prompt); return 3;
+            }
+        }
         double vt0 = now_s();
         float *logits = engine_feed(&e, toks, jp->n);
         if (!logits) {

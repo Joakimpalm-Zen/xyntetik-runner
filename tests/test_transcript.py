@@ -74,6 +74,18 @@ def _verify(runner_bin, base, rec, lora=None):
                           stderr=subprocess.PIPE, timeout=120)
 
 
+def _forge_record(path, record):
+    """Write a syntactically valid record with a matching public chain hash."""
+    body_record = dict(record)
+    chain = dict(body_record.pop("chain"))
+    body = json.dumps(body_record, separators=(",", ":"),
+                      ensure_ascii=False).encode()[:-1]
+    chain["hash"] = hashlib.sha256(body).hexdigest()
+    path.write_bytes(body + b',"chain":' +
+                     json.dumps(chain, separators=(",", ":")).encode() +
+                     b"}\n")
+
+
 def test_verify_verdicts(runner_bin, base, tmp_path):
     """D2: the three-verdict contract. Same binary verifies at T1; a
     tampered record (stale chain) is UNVERIFIABLE exit 3; a FORGED record
@@ -121,6 +133,32 @@ def test_verify_verdicts(runner_bin, base, tmp_path):
     p = _verify(runner_bin, base, rec, lora=tmp_path / "fx.adapter.gguf")
     assert p.returncode == 3, p.stderr.decode(errors="replace")
     assert b"without an adapter" in p.stderr
+
+
+def test_verify_rejects_invalid_sampling_values_before_replay(
+        runner_bin, base, tmp_path):
+    rec = tmp_path / "sampling.json"
+    r = _run(runner_bin, base, rec)
+    r["config"]["top_k"] = 1.5
+    forged = tmp_path / "fractional-top-k.json"
+    _forge_record(forged, r)
+
+    p = _verify(runner_bin, base, forged)
+    assert p.returncode == 3, p.stderr.decode(errors="replace")
+    assert b"malformed sampling config" in p.stderr
+
+
+def test_verify_rejects_invalid_token_ids_before_engine_feed(
+        runner_bin, base, tmp_path):
+    rec = tmp_path / "tokens.json"
+    r = _run(runner_bin, base, rec)
+    r["prompt"]["tokens"][0] = -1
+    forged = tmp_path / "negative-token.json"
+    _forge_record(forged, r)
+
+    p = _verify(runner_bin, base, forged)
+    assert p.returncode == 3, p.stderr.decode(errors="replace")
+    assert b"invalid prompt token" in p.stderr
 
 
 def test_seeded_not_vacuous(runner_bin, base, tmp_path):
