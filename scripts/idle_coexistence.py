@@ -31,15 +31,33 @@ import argparse, json, re, shlex, signal, subprocess, sys, time, urllib.request
 
 IDLE_S = 60
 
+def _parse_cputime(t: str) -> float:
+    """ps cputime is platform-shaped: macOS emits mm:ss.cc, Linux emits
+    [dd-]hh:mm:ss with no centiseconds. Parsing one shape with the other's
+    rule silently misreads 62 s as 1.02 s, which is fatal in a script whose
+    whole point is CPU seconds, so both shapes are handled explicitly."""
+    days = 0
+    if "-" in t:
+        d, t = t.split("-", 1)
+        days = int(d)
+    frac = 0.0
+    if "." in t:
+        t, cc = t.rsplit(".", 1)
+        frac = int(cc) / 100
+    parts = [int(x) for x in t.split(":")]
+    while len(parts) < 3:
+        parts.insert(0, 0)
+    h, m, s = parts
+    return days * 86400 + h * 3600 + m * 60 + s + frac
+
+
 def ps_stat(pid):
     o = subprocess.run(["ps", "-o", "rss=,cputime=,pcpu=", "-p", str(pid)],
                        capture_output=True, text=True).stdout.split()
     if not o:
         return None
-    t = o[1].replace(".", ":").split(":")
-    cpu = (int(t[0]) * 60 + int(t[1]) + int(t[2]) / 100) if len(t) == 3 \
-        else (int(t[0]) * 3600 + int(t[1]) * 60 + int(t[2]))
-    return {"rss_mb": round(int(o[0]) / 1024, 1), "cputime_s": cpu}
+    return {"rss_mb": round(int(o[0]) / 1024, 1),
+            "cputime_s": _parse_cputime(o[1])}
 
 def wired_mb():
     try:
