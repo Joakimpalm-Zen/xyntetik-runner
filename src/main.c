@@ -1144,9 +1144,53 @@ int main(int argc, char **argv) {
             jv_free(vrec); return 3;
         }
         jv *prof = jv_get(vrec, "profile"), *cfg = jv_get(vrec, "config");
-        mp.n_ctx = (int)jv_num(jv_get(prof, "ctx"), mp.n_ctx);
-        mp.kv_q8 = strcmp(jv_str(jv_get(prof, "kv"), "f16"), "q8") == 0;
-        mp.gpu_mode = jv_bool(jv_get(prof, "gpu"), false) ? GPU_AUTO : GPU_OFF;
+        jv *ctx_v = jv_get(prof, "ctx"), *batch_v = jv_get(prof, "batch");
+        jv *threads_v = jv_get(prof, "threads"), *gpu_v = jv_get(prof, "gpu");
+        jv *gpu_layers_v = jv_get(prof, "gpu_layers");
+        const char *kv = jv_str(jv_get(prof, "kv"), NULL);
+        double ctx_d = jv_num(ctx_v, -1), batch_d = jv_num(batch_v, -1);
+        double threads_d = jv_num(threads_v, -1);
+        double gpu_layers_d = jv_num(gpu_layers_v, -1);
+        if (!prof || prof->type != J_OBJ || !cfg || cfg->type != J_OBJ ||
+            !ctx_v || ctx_v->type != J_NUM || ctx_d < 1 || ctx_d > INT_MAX ||
+            ctx_d != (double)(int)ctx_d || !batch_v || batch_v->type != J_NUM ||
+            batch_d < 1 || batch_d > ctx_d || batch_d != (double)(int)batch_d ||
+            !threads_v || threads_v->type != J_NUM || threads_d < 1 ||
+            threads_d > INT_MAX || threads_d != (double)(int)threads_d ||
+            !gpu_v || gpu_v->type != J_BOOL || !kv ||
+            (gpu_layers_v && (gpu_layers_v->type != J_NUM ||
+             gpu_layers_d < 0 || gpu_layers_d > INT_MAX ||
+             gpu_layers_d != (double)(int)gpu_layers_d ||
+             (gpu_v->b != (gpu_layers_d > 0)))) ||
+            (strcmp(kv, "f16") != 0 && strcmp(kv, "q8") != 0)) {
+            fprintf(stderr, "UNVERIFIABLE: malformed execution profile\n");
+            jv_free(vrec);
+            return 3;
+        }
+        mp.n_ctx = (int)ctx_d;
+        mp.n_batch = (int)batch_d;
+        n_threads = (int)threads_d;
+        mp.kv_q8 = strcmp(kv, "q8") == 0;
+        mp.gpu_mode = gpu_v->b ? GPU_AUTO : GPU_OFF;
+        if (gpu_layers_v && gpu_layers_d > 0)
+            mp.gpu_layers_override = (int)gpu_layers_d;
+        jv *record_adapter = jv_get(vrec, "adapter");
+        if (record_adapter && record_adapter->type != J_NULL) {
+            jv *scale_v = record_adapter->type == J_OBJ
+                            ? jv_get(record_adapter, "scale") : NULL;
+            double scale = jv_num(scale_v, -1);
+            if (!scale_v || scale_v->type != J_NUM || scale < 0 ||
+                scale > FLT_MAX) {
+                fprintf(stderr, "UNVERIFIABLE: malformed adapter scale\n");
+                jv_free(vrec);
+                return 3;
+            }
+            lora_scale = (float)scale;
+        } else if (!record_adapter) {
+            fprintf(stderr, "UNVERIFIABLE: missing adapter profile\n");
+            jv_free(vrec);
+            return 3;
+        }
         // New v1 records carry an exact decimal spelling because this JSON
         // parser stores numbers as doubles.  Keep low legacy seeds working,
         // but refuse to round an older wide seed and call the later mismatch
@@ -1657,6 +1701,23 @@ int main(int argc, char **argv) {
     // ---- notarized inference D2: the replay
     if (verify_path) {
         jv *vm = jv_get(vrec, "model"), *va = jv_get(vrec, "adapter");
+        jv *vprof = jv_get(vrec, "profile");
+        int expected_ctx = (int)jv_num(jv_get(vprof, "ctx"), -1);
+        int expected_batch = (int)jv_num(jv_get(vprof, "batch"), -1);
+        int expected_threads = (int)jv_num(jv_get(vprof, "threads"), -1);
+        bool expected_gpu = jv_bool(jv_get(vprof, "gpu"), false);
+        bool expected_q8 = strcmp(jv_str(jv_get(vprof, "kv"), ""), "q8") == 0;
+        jv *expected_layers_v = jv_get(vprof, "gpu_layers");
+        int expected_layers = (int)jv_num(expected_layers_v, -1);
+        if (m.n_ctx != expected_ctx || m.n_batch != expected_batch ||
+            tpool_size(m.tp) != expected_threads || m.kv_q8 != expected_q8 ||
+            (m.gpu != NULL) != expected_gpu ||
+            (expected_layers_v && m.gpu_layers != expected_layers)) {
+            fprintf(stderr, "UNVERIFIABLE: runtime could not reproduce the "
+                    "recorded execution profile\n");
+            jv_free(vrec); cli_cleanup(&e, toks, &tok, &m);
+            free(owned_prompt); return 3;
+        }
         char sha[65] = "";
         envelope_file_sha256(load_path, sha);
         if (strcmp(sha, jv_str(jv_get(vm, "sha256"), "")) != 0) {
@@ -1986,8 +2047,9 @@ int main(int argc, char **argv) {
 #endif
                 .device = m.gpu ? gname : "cpu",
                 .gpu = m.gpu != NULL,
-                .threads = mp.n_threads, .n_ctx = m.n_ctx,
-                .n_batch = mp.n_batch, .kv_q8 = mp.kv_q8,
+                .gpu_layers = m.gpu_layers,
+                .threads = tpool_size(m.tp), .n_ctx = m.n_ctx,
+                .n_batch = m.n_batch, .kv_q8 = m.kv_q8,
                 .model_path = load_path,
                 .adapter_path = lora_path, .adapter_scale = lora_scale,
                 .seed = t_seed,

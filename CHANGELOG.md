@@ -16,6 +16,13 @@ names that were true when they were written.
   Legacy records remain replayable when their numeric seed is exactly
   representable, and an inexact wide legacy seed is `UNVERIFIABLE` rather than
   silently rounded.
+- **Transcript profiles now describe and reproduce the run that actually
+  happened.** A requested q8 KV mode that fell back to f16 was previously
+  recorded as q8, and the default prompt batch was recorded as zero. Records
+  now carry the effective KV type, batch size, worker count and GPU layer
+  count. `--verify` applies those values plus the recorded LoRA scale, and
+  returns `UNVERIFIABLE` if the runtime cannot reproduce them, instead of
+  silently replaying under conflicting CLI or fallback settings.
 
 - **Metal MoE prompt batching**: routed-MoE prompt processing batches
   normalization, routing and expert-slot work across the tile instead of

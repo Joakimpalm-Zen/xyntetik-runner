@@ -35,11 +35,11 @@ def base(tmp_path_factory):
     return b
 
 
-def _run(runner_bin, base, out, seed="7", temp="0"):
+def _run(runner_bin, base, out, seed="7", temp="0", extra=()):
     p = subprocess.run(
         [runner_bin, "-m", str(base), "-p", "the runner trains the",
          "-n", "12", "--temp", temp, "-s", seed, "--gpu", "off", "-t", "2",
-         "--transcript", str(out)],
+         "--transcript", str(out), *extra],
         cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120)
     assert p.returncode == 0, p.stderr.decode(errors="replace")
     return json.loads(out.read_bytes())
@@ -145,3 +145,44 @@ def test_seed_above_json_exact_integer_range_replays(runner_bin, base, tmp_path)
     p = _verify(runner_bin, base, rec)
     assert p.returncode == 0, p.stderr.decode(errors="replace")
     assert json.loads(p.stdout)["verdict"] == "VERIFIED"
+
+
+def test_profile_records_effective_runtime_and_drives_replay(
+        runner_bin, base, tmp_path):
+    rec = tmp_path / "profile.json"
+    r = _run(runner_bin, base, rec, extra=("--kv", "q8", "-b", "3"))
+    # This fixture cannot store q8 KV.  A receipt records what ran, not merely
+    # what the CLI requested; batch likewise records the allocated geometry.
+    assert r["profile"]["kv"] == "f16"
+    assert r["profile"]["batch"] == 3
+    assert r["profile"]["threads"] == 2
+    assert r["profile"]["gpu_layers"] == 0
+
+    # Conflicting CLI placement values must not reshape the replay.  Verbose
+    # load diagnostics expose the actual pool and activation geometry.
+    p = subprocess.run(
+        [runner_bin, "-m", str(base), "--verify", str(rec), "--gpu", "off",
+         "-t", "1", "-b", "1", "-v"],
+        cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120)
+    assert p.returncode == 0, p.stderr.decode(errors="replace")
+    err = p.stderr.decode(errors="replace")
+    assert "| 2 threads |" in err
+    assert "batch                    3" in err
+
+
+def test_recorded_adapter_scale_drives_replay(runner_bin, base, tmp_path):
+    prefix = tmp_path / "fx"
+    subprocess.run([sys.executable, ROOT / "scripts/make-test-lora.py",
+                    str(base), str(prefix)], check=True, cwd=ROOT,
+                   stdout=subprocess.DEVNULL)
+    adapter = tmp_path / "fx.adapter.gguf"
+    rec = tmp_path / "adapter.json"
+    _run(runner_bin, base, rec,
+         extra=("--lora", str(adapter), "--lora-scale", "0.25"))
+
+    p = subprocess.run(
+        [runner_bin, "-m", str(base), "--verify", str(rec), "--gpu", "off",
+         "-t", "2", "--lora", str(adapter)],
+        cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120)
+    assert p.returncode == 0, p.stderr.decode(errors="replace")
+    assert "scale x0.25" in p.stderr.decode(errors="replace")

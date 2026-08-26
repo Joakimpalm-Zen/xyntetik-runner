@@ -227,8 +227,10 @@ bool transcript_write(const transcript_info *ti) {
                 "\"os\":\"%s\",\"arch\":\"%s\"},",
             bsha, ti->compiler, ti->os, ti->arch);
     tsb_fmt(&w, "\"profile\":{\"device\":\"%s\",\"gpu\":%s,"
-                "\"threads\":%d,\"ctx\":%d,\"kv\":\"%s\",\"batch\":%d},",
-            ti->device, ti->gpu ? "true" : "false", ti->threads, ti->n_ctx,
+                "\"gpu_layers\":%d,\"threads\":%d,\"ctx\":%d,"
+                "\"kv\":\"%s\",\"batch\":%d},",
+            ti->device, ti->gpu ? "true" : "false", ti->gpu_layers,
+            ti->threads, ti->n_ctx,
             ti->kv_q8 ? "q8" : "f16", ti->n_batch);
     tsb_put(&w, "\"model\":{\"path\":", 16);
     tsb_json_str(&w, ti->model_path, strlen(ti->model_path));

@@ -70,7 +70,7 @@ typedef struct {
     const char *compiler, *os, *arch;
     const char *device;            // "cpu" | gpu device name
     bool        gpu;
-    int         threads, n_ctx, n_batch;
+    int         threads, n_ctx, n_batch, gpu_layers;
     bool        kv_q8;
     const char *model_path;        // hashed
     const char *adapter_path;      // NULL = no adapter; hashed when set
