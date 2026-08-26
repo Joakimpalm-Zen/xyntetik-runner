@@ -81,6 +81,45 @@ raw speed, use llama.cpp and we mean that sincerely. If you need to prove
 what your model said, what it learned from, or what you actually shipped -
 that is what this runtime is for.
 
+### Designed to stay on
+
+There is a cost benchmarks rarely show: what a resident inference server
+does to the machine while it serves nothing. We measured it - four-state
+lifecycle (loaded idle, post-inference idle, after unload), granite-4.1-3b
+Q8_0 at c=4096, stock defaults, engines run sequentially, llama.cpp from
+the prebuilt b10639 release. Reproduce it with
+[`scripts/idle_coexistence.py`](scripts/idle_coexistence.py).
+
+On an 8 GB M1 (quiet machine), while loaded and idle:
+
+| while idle | runner | llama-server b10639 |
+|---|---|---|
+| wired (unevictable) memory | +8 MB | +3,819 MB |
+| CPU wakeups per second | 0.5 | 161 |
+| CPU time per idle minute | ~0.00 s | 0.2-0.3 s |
+| give the memory back | `POST /unload` (360 MB to 24 MB) | kill the process |
+
+llama-server wires the whole model into unified memory and holds it until
+the process dies, and its idle loop ticks at ~160 Hz. Runner keeps weights
+as evictable zero-copy mappings the OS can reclaim whenever another app
+needs the RAM, wakes twice per second, and hands everything back on
+`/unload` (or automatically with `--ttl`). The flip side is real and we
+report it: when llama-server is allowed to hold everything, its time to
+first token is faster (0.15 s vs 3.2 s on the pressured M1), because
+residency is exactly what it buys. On a discrete-GPU box (RTX 3070) the
+footprint gap disappears - both engines hold ~4 GB of VRAM loaded - and
+the remaining differences are idle discipline (0.00 vs 0.3-0.6 CPU
+seconds per minute) and lifecycle control (`/unload` returned all 4 GB of
+VRAM; llama-server has no unload).
+
+These are different optimization goals, not a defect: llama-server is
+built to answer the next request as fast as possible, Runner is built to
+be left running all day next to your actual work. If the machine is
+dedicated to inference, that residency is pure win - use llama.cpp. If
+the machine is also your workstation, an engine that wires down half your
+RAM and ticks 160 times a second while idle is the reason you kill it
+every time - and the reason Runner does not need killing.
+
 For release history and benchmark narratives, see [CHANGELOG.md](CHANGELOG.md)
 and [docs/benchmarks.md](docs/benchmarks.md).
 
