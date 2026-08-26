@@ -8,6 +8,14 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **T1 transcript verification now covers exact output bytes.** New records
+  carry `output.bytes_hex` alongside the human-readable JSON text, and replay
+  diffs both tokens and that raw byte stream. Tokenizer byte pieces can be
+  invalid UTF-8 in isolation, so the JSON text alone was lossy; `--verify`
+  previously reported VERIFIED after a chain-valid output-text forgery and
+  could not enforce its documented bit-exact T1 promise. Capture allocation
+  failures now also fail the receipt instead of silently writing truncated
+  output. Legacy v1 records without the exact byte field retain token replay.
 - **Transcript build identity survives PATH invocation.** Transcript creation
   and replay now hash the OS-resolved running image instead of `argv[0]`.
   Invoking `runner` by bare name from another directory previously recorded an

@@ -16,7 +16,9 @@ does not make it, and the absence is deliberate.
   compiler, OS, and arch that produced it.
 - **Transcript replay tiers** (`--transcript` / `--verify`):
   - **T1, same binary**: bit-exact replay of a recorded run; verified
-    output equals recorded output exactly.
+    token ids and raw streamed output bytes equal the record exactly. Raw
+    bytes are authoritative because an individual byte-token piece need not
+    be valid UTF-8; the transcript also keeps a human-readable JSON string.
   - **T2, cross-ISA**: token-level replay on a different machine or
     architecture. Token ids must match; floating-point internals may
     not, and the boundary is libm (`expf` differs between platforms).

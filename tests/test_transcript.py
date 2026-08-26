@@ -184,6 +184,22 @@ def test_verify_rejects_invalid_token_ids_before_engine_feed(
     assert b"invalid prompt token" in p.stderr
 
 
+def test_verify_diffs_recorded_output_bytes(runner_bin, base, tmp_path):
+    rec = tmp_path / "output-text.json"
+    r = _run(runner_bin, base, rec)
+    original = r["output"]["bytes_hex"]
+    r["output"]["bytes_hex"] = ("00" if original[:2] != "00" else "01") + \
+        original[2:]
+    forged = tmp_path / "forged-output-text.json"
+    _forge_record(forged, r)
+
+    p = _verify(runner_bin, base, forged)
+    assert p.returncode == 2, p.stderr.decode(errors="replace")
+    v = json.loads(p.stdout)
+    assert v["verdict"] == "DIVERGED"
+    assert v["unit"] == "byte"
+
+
 def test_seeded_not_vacuous(runner_bin, base, tmp_path):
     a = _run(runner_bin, base, tmp_path / "a.json", seed="7", temp="0.9")
     b = _run(runner_bin, base, tmp_path / "b.json", seed="7", temp="0.9")

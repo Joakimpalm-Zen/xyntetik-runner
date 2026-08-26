@@ -99,6 +99,24 @@ static bool record_token(jv *v, int n_vocab, int32_t *out) {
     return true;
 }
 
+static int hex_nibble(char c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
+static bool record_hex(jv *v, const char **out, size_t *out_n) {
+    if (!v || v->type != J_STR) return false;
+    size_t n = strlen(v->str);
+    if (n % 2 != 0) return false;
+    for (size_t i = 0; i < n; i++)
+        if (hex_nibble(v->str[i]) < 0) return false;
+    *out = v->str;
+    *out_n = n / 2;
+    return true;
+}
+
 // Read a whole file into a NUL-terminated malloc'd buffer, or NULL on any
 // error: open, seek, a negative or oversized length (ftell can return -1 and a
 // hostile/special file can be enormous), allocation, or a read error. The size
@@ -609,22 +627,33 @@ static void usage(const char *prog) {
 
 // --transcript capture: stream to stdout AND keep the exact bytes for the
 // record (the transcript's output.text is what the terminal saw, verbatim)
-typedef struct { char *buf; size_t n, cap; } outcap_t;
+typedef struct {
+    char *buf;
+    size_t n, cap;
+    bool echo, failed;
+} outcap_t;
 static int outcap_cb(void *ud, const char *bytes, int n) {
     outcap_t *o = (outcap_t *)ud;
-    if (o->n + (size_t)n + 1 > o->cap) {
-        size_t cap = (o->n + (size_t)n + 1) * 2 + 256;
+    if (n < 0 || (size_t)n > SIZE_MAX - o->n - 1) {
+        o->failed = true;
+    } else if (o->n + (size_t)n + 1 > o->cap) {
+        size_t need = o->n + (size_t)n + 1;
+        size_t cap = need <= (SIZE_MAX - 256) / 2
+                   ? need * 2 + 256 : need;
         char *nb = realloc(o->buf, cap);
         if (nb) { o->buf = nb; o->cap = cap; }
+        else o->failed = true;
     }
-    if (o->buf && o->n + (size_t)n + 1 <= o->cap) {
+    if (!o->failed) {
         memcpy(o->buf + o->n, bytes, (size_t)n);
         o->n += (size_t)n;
         o->buf[o->n] = 0;
     }
-    fwrite(bytes, 1, (size_t)n, stdout);
-    fflush(stdout);
-    return 0;
+    if (o->echo && n > 0) {
+        fwrite(bytes, 1, (size_t)n, stdout);
+        fflush(stdout);
+    }
+    return o->failed ? 1 : 0;
 }
 
 static int stdout_cb(void *ud, const char *bytes, int n) {
@@ -1789,10 +1818,23 @@ int main(int argc, char **argv) {
             free(owned_prompt); return 3;
         }
         jv *jp = jv_get(jv_get(vrec, "prompt"), "tokens");
-        jv *jo = jv_get(jv_get(vrec, "output"), "tokens");
+        jv *vout = jv_get(vrec, "output");
+        jv *jo = jv_get(vout, "tokens");
+        const char *expected_text = jv_str(jv_get(vout, "text"), NULL);
+        jv *expected_hex_v = jv_get(vout, "bytes_hex");
+        const char *expected_hex = NULL;
+        size_t expected_bytes_n = 0;
+        bool has_exact_bytes = expected_hex_v != NULL;
         if (!jp || jp->type != J_ARR || !jo || jo->type != J_ARR ||
-            jp->n < 1 || jp->n >= m.n_ctx || (size_t)jp->n >= tok_cap) {
+            !expected_text || jp->n < 1 || jp->n >= m.n_ctx ||
+            (size_t)jp->n >= tok_cap) {
             fprintf(stderr, "UNVERIFIABLE: malformed token arrays\n");
+            jv_free(vrec); cli_cleanup(&e, toks, &tok, &m);
+            free(owned_prompt); return 3;
+        }
+        if (has_exact_bytes &&
+            !record_hex(expected_hex_v, &expected_hex, &expected_bytes_n)) {
+            fprintf(stderr, "UNVERIFIABLE: malformed output.bytes_hex\n");
             jv_free(vrec); cli_cleanup(&e, toks, &tok, &m);
             free(owned_prompt); return 3;
         }
@@ -1821,8 +1863,15 @@ int main(int argc, char **argv) {
             free(owned_prompt); return 3;
         }
         double gt = 0;
-        int n_gen = engine_generate(&e, logits, n_predict, discard_cb, NULL,
-                                    &gt);
+        outcap_t replay_out = {0};
+        int n_gen = engine_generate(&e, logits, n_predict, outcap_cb,
+                                    &replay_out, &gt);
+        if (replay_out.failed) {
+            fprintf(stderr, "UNVERIFIABLE: out of memory capturing replay\n");
+            free(replay_out.buf); jv_free(vrec);
+            cli_cleanup(&e, toks, &tok, &m);
+            free(owned_prompt); return 3;
+        }
         (void)vt0;
         // tier: same binary = T1 (bit-exact by the gated contract), else
         // T2 (token replay across builds; libm is the known bit blocker)
@@ -1841,8 +1890,23 @@ int main(int argc, char **argv) {
                 break;
             }
         if (div_at < 0 && n_gen != jo->n) div_at = cmp_n;
+        size_t byte_div_at = SIZE_MAX;
+        if (div_at < 0 && has_exact_bytes) {
+            size_t byte_cmp_n = replay_out.n < expected_bytes_n
+                              ? replay_out.n : expected_bytes_n;
+            for (size_t i = 0; i < byte_cmp_n; i++) {
+                int expected = hex_nibble(expected_hex[i * 2]) * 16 +
+                               hex_nibble(expected_hex[i * 2 + 1]);
+                if ((unsigned char)replay_out.buf[i] != expected) {
+                    byte_div_at = i;
+                    break;
+                }
+            }
+            if (byte_div_at == SIZE_MAX && replay_out.n != expected_bytes_n)
+                byte_div_at = byte_cmp_n;
+        }
         int rc;
-        if (div_at < 0) {
+        if (div_at < 0 && byte_div_at == SIZE_MAX) {
             printf("{\"schema_version\":\"xyntetik.runner.verify.v1\","
                    "\"verdict\":\"VERIFIED\",\"tier\":\"%s\","
                    "\"tokens\":%d}\n", tier, n_gen);
@@ -1851,17 +1915,32 @@ int main(int argc, char **argv) {
                     strcmp(tier, "T1") == 0 ? "same-binary"
                                             : "token-replay", n_gen);
             rc = 0;
-        } else {
+        } else if (div_at >= 0) {
             int want = div_at < jo->n ? (int)jv_num(jo->items[div_at], -1)
                                       : -1;
             int got = div_at < n_gen ? (int)e.hist[jp->n + div_at] : -1;
             printf("{\"schema_version\":\"xyntetik.runner.verify.v1\","
-                   "\"verdict\":\"DIVERGED\",\"at\":%d,"
+                   "\"verdict\":\"DIVERGED\",\"unit\":\"token\","
+                   "\"at\":%d,"
                    "\"expected\":%d,\"got\":%d}\n", div_at, want, got);
             fprintf(stderr, "DIVERGED at token %d: record has %d, replay "
                     "produced %d\n", div_at, want, got);
             rc = 2;
+        } else {
+            int want = byte_div_at < expected_bytes_n
+                     ? hex_nibble(expected_hex[byte_div_at * 2]) * 16 +
+                       hex_nibble(expected_hex[byte_div_at * 2 + 1]) : -1;
+            int got = byte_div_at < replay_out.n
+                    ? (unsigned char)replay_out.buf[byte_div_at] : -1;
+            printf("{\"schema_version\":\"xyntetik.runner.verify.v1\","
+                   "\"verdict\":\"DIVERGED\",\"unit\":\"byte\","
+                   "\"at\":%zu,\"expected\":%d,\"got\":%d}\n",
+                   byte_div_at, want, got);
+            fprintf(stderr, "DIVERGED at output byte %zu: record has %d, "
+                    "replay produced %d\n", byte_div_at, want, got);
+            rc = 2;
         }
+        free(replay_out.buf);
         jv_free(vrec);
         cli_cleanup(&e, toks, &tok, &m);
         free(owned_prompt);
@@ -2071,7 +2150,7 @@ int main(int argc, char **argv) {
         // from (it mutates as it draws), and the output bytes are captured
         // verbatim as they stream
         uint64_t t_seed = smp.rng;
-        outcap_t ocap = {0};
+        outcap_t ocap = { .echo = true };
         n_gen = engine_generate(&e, logits, n_predict,
                                 transcript_path ? outcap_cb : stdout_cb,
                                 transcript_path ? &ocap : NULL, &gtime);
@@ -2121,7 +2200,11 @@ int main(int argc, char **argv) {
                 .output_tokens = e.hist + n_prompt, .n_output = n_gen,
                 .hit_stop = e.hit_stop,
             };
-            if (transcript_write(&ti))
+            if (ocap.failed) {
+                fprintf(stderr, "error: transcript: out of memory capturing "
+                        "output\n");
+                t_rc = 1;
+            } else if (transcript_write(&ti))
                 fprintf(stderr, "transcript -> %s\n", transcript_path);
             else
                 t_rc = 1;

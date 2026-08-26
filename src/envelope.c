@@ -197,6 +197,23 @@ static void tsb_tokens(tsb *w, const int32_t *t, int n) {
     tsb_put(w, "]", 1);
 }
 
+static void tsb_hex_str(tsb *w, const char *s, size_t n) {
+    static const char hexd[] = "0123456789abcdef";
+    char out[512];
+    tsb_put(w, "\"", 1);
+    for (size_t i = 0; i < n;) {
+        size_t take = n - i < sizeof(out) / 2 ? n - i : sizeof(out) / 2;
+        for (size_t j = 0; j < take; j++) {
+            unsigned char c = (unsigned char)s[i + j];
+            out[j * 2] = hexd[c >> 4];
+            out[j * 2 + 1] = hexd[c & 15];
+        }
+        tsb_put(w, out, take * 2);
+        i += take;
+    }
+    tsb_put(w, "\"", 1);
+}
+
 bool transcript_write(const transcript_info *ti) {
     char msha[65] = "", bsha[65] = "", asha[65] = "";
     if (!envelope_file_sha256(ti->model_path, msha)) {
@@ -269,6 +286,9 @@ bool transcript_write(const transcript_info *ti) {
     tsb_put(&w, "\"output\":{\"text\":", 17);
     tsb_json_str(&w, ti->output_text ? ti->output_text : "",
                  ti->output_text_len);
+    tsb_put(&w, ",\"bytes_hex\":", 13);
+    tsb_hex_str(&w, ti->output_text ? ti->output_text : "",
+                ti->output_text_len);
     tsb_put(&w, ",\"tokens\":", 10);
     tsb_tokens(&w, ti->output_tokens, ti->n_output);
     tsb_fmt(&w, ",\"n\":%d,\"finish\":\"%s\"}", ti->n_output,
