@@ -1147,7 +1147,29 @@ int main(int argc, char **argv) {
         mp.n_ctx = (int)jv_num(jv_get(prof, "ctx"), mp.n_ctx);
         mp.kv_q8 = strcmp(jv_str(jv_get(prof, "kv"), "f16"), "q8") == 0;
         mp.gpu_mode = jv_bool(jv_get(prof, "gpu"), false) ? GPU_AUTO : GPU_OFF;
-        smp.rng = (uint64_t)jv_num(jv_get(cfg, "seed"), 0);
+        // New v1 records carry an exact decimal spelling because this JSON
+        // parser stores numbers as doubles.  Keep low legacy seeds working,
+        // but refuse to round an older wide seed and call the later mismatch
+        // inference divergence: that record is not exactly replayable.
+        jv *seed_exact = jv_get(cfg, "seed_u64");
+        uint64_t replay_seed = 0;
+        bool seed_ok = false;
+        if (seed_exact && seed_exact->type == J_STR) {
+            seed_ok = parse_u64(seed_exact->str, 1, UINT64_MAX, &replay_seed);
+        } else {
+            double seed_num = jv_num(jv_get(cfg, "seed"), 0);
+            if (seed_num >= 1.0 && seed_num <= 9007199254740992.0) {
+                replay_seed = (uint64_t)seed_num;
+                seed_ok = seed_num == (double)replay_seed;
+            }
+        }
+        if (!seed_ok) {
+            fprintf(stderr, "UNVERIFIABLE: config.seed is not an exact "
+                    "nonzero uint64 (wide legacy seeds need seed_u64)\n");
+            jv_free(vrec);
+            return 3;
+        }
+        smp.rng = replay_seed;
         // the record's sampling config rides the CLI-override mechanism so
         // it survives sampler_resolve's per-model presets — the replay must
         // sample exactly as the original did, whatever the model's preset

@@ -60,6 +60,7 @@ def test_replay_substrate_and_chain(runner_bin, base, tmp_path):
         base.read_bytes()).hexdigest()
     assert len(r1["build"]["binary_sha256"]) == 64
     assert r1["config"]["seed"] == 7
+    assert r1["config"]["seed_u64"] == "7"
     assert r1["output"]["finish"] in ("stop", "length")
     assert r1["schema_version"] == "xyntetik.runner.transcript.v1"
 
@@ -126,3 +127,21 @@ def test_seeded_not_vacuous(runner_bin, base, tmp_path):
     a = _run(runner_bin, base, tmp_path / "a.json", seed="7", temp="0.9")
     b = _run(runner_bin, base, tmp_path / "b.json", seed="7", temp="0.9")
     assert a["output"]["tokens"] == b["output"]["tokens"]  # same seed replays
+
+
+def test_seed_above_json_exact_integer_range_replays(runner_bin, base, tmp_path):
+    """A uint64 seed must survive the transcript's JSON number boundary.
+
+    Runner's JSON AST stores numbers as doubles, so the numeric compatibility
+    field alone cannot carry every seed accepted by ``-s``.  The exact decimal
+    spelling is the replay authority.
+    """
+    rec = tmp_path / "wide-seed.json"
+    seed = "9007199254740993"  # 2**53 + 1: rounds when parsed as a double
+    r = _run(runner_bin, base, rec, seed=seed, temp="0.9")
+    assert r["config"]["seed"] == int(seed)
+    assert r["config"]["seed_u64"] == seed
+
+    p = _verify(runner_bin, base, rec)
+    assert p.returncode == 0, p.stderr.decode(errors="replace")
+    assert json.loads(p.stdout)["verdict"] == "VERIFIED"

@@ -241,10 +241,16 @@ bool transcript_write(const transcript_info *ti) {
     } else {
         tsb_put(&w, "\"adapter\":null,", 15);
     }
-    tsb_fmt(&w, "\"config\":{\"seed\":%llu,\"temp\":%g,\"top_k\":%d,"
+    // Keep the numeric field for existing readers, but replay from the exact
+    // decimal spelling.  JSON numbers are arbitrary precision on the wire;
+    // Runner's compact JSON AST stores them as doubles, which cannot preserve
+    // every uint64_t seed accepted by -s.
+    tsb_fmt(&w, "\"config\":{\"seed\":%llu,\"seed_u64\":\"%llu\","
+                "\"temp\":%g,\"top_k\":%d,"
                 "\"top_p\":%g,\"min_p\":%g,\"repeat_penalty\":%g,"
                 "\"n_predict\":%d,\"template\":\"raw\",\"bos\":%s},",
-            (unsigned long long)ti->seed, (double)ti->temp, ti->top_k,
+            (unsigned long long)ti->seed, (unsigned long long)ti->seed,
+            (double)ti->temp, ti->top_k,
             (double)ti->top_p, (double)ti->min_p,
             (double)ti->repeat_penalty, ti->n_predict,
             ti->bos ? "true" : "false");

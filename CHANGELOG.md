@@ -8,6 +8,15 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **Transcript replay preserves every accepted RNG seed.** Transcript v1 now
+  carries an exact decimal `config.seed_u64` alongside the numeric compatibility
+  field, and `--verify` uses it instead of rounding through the JSON parser's
+  double representation. Seed `2^53+1` previously replayed a different sampled
+  stream and falsely reported inference divergence; it is now gated end to end.
+  Legacy records remain replayable when their numeric seed is exactly
+  representable, and an inexact wide legacy seed is `UNVERIFIABLE` rather than
+  silently rounded.
+
 - **Metal MoE prompt batching**: routed-MoE prompt processing batches
   normalization, routing and expert-slot work across the tile instead of
   dispatching per token per layer. Measured on a real routed MoE
