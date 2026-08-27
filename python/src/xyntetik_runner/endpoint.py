@@ -55,6 +55,26 @@ class StreamResult:
     finish_reason: str | None = None
 
 
+def _tighten_socket_timeout(response: Any, seconds: float) -> None:
+    """Best-effort: once real content is flowing, shrink the blocking-read
+    bound from the generous first-byte window to the stall window, so a hard
+    mid-stream hang surfaces in ~stall_seconds rather than minutes. The
+    attribute path to the socket is implementation detail, hence the walk and
+    the silent fallback: on failure the watchdog still bounds REPORTED gaps
+    and the first-byte window still bounds the hang, just more slowly."""
+    for probe in ("fp.raw._sock", "fp._sock", "fp.raw", "fp"):
+        obj: Any = response
+        try:
+            for attr in probe.split("."):
+                obj = getattr(obj, attr)
+            settimeout = getattr(obj, "settimeout", None)
+            if settimeout is not None:
+                settimeout(seconds)
+                return
+        except (AttributeError, OSError, ValueError):
+            continue
+
+
 class RunnerEndpoint:
     """Typed access to Runner's HTTP contract."""
 
@@ -103,6 +123,7 @@ class RunnerEndpoint:
         on_delta: Callable[[str], None] | None = None,
         on_reasoning_delta: Callable[[str], None] | None = None,
         stall_seconds: float | None = None,
+        first_byte_seconds: float | None = None,
         cancel_event: Any | None = None,
     ) -> StreamResult:
         """Consume one SSE chat completion.
@@ -131,6 +152,16 @@ class RunnerEndpoint:
         body["stream"] = True
         request = self._request("/v1/chat/completions", body)
         window = stall_seconds if stall_seconds is not None else self.timeout
+        # Decided 2026-08-27 (owner): the wait for the FIRST chunk is bounded
+        # separately from the inter-chunk stall window. Passing stall_seconds
+        # to urlopen(timeout=) also capped connect + prefill, so a tight
+        # stall window made long prompts unusable — the exact opposite of
+        # what the watchdog docstring promises. The first-byte bound defaults
+        # generously (prefill on a big prompt is legitimate minutes of
+        # silence) but is never unbounded: a hung server must not hang the
+        # caller forever.
+        first_window = (first_byte_seconds if first_byte_seconds is not None
+                        else max(window, 300.0))
         text_parts: list[str] = []
         reasoning_parts: list[str] = []
         # streamed tool calls arrive as fragments keyed by index: id/name early,
@@ -142,16 +173,22 @@ class RunnerEndpoint:
         if cancel_event is not None and cancel_event.is_set():
             raise RunnerCancelledError()
         try:
-            with self._open(request, window) as response:
-                # the watchdog covers the stream, not the connect and prompt
-                # processing that precede the first chunk
+            with self._open(request, first_window) as response:
+                # Two windows, switched on CONTENT, not on connection: Runner
+                # sends the role-only delta before prefill starts, so the
+                # long legitimate silence of a big prompt sits BETWEEN the
+                # first frame and the first content frame. Until content (or
+                # a tool fragment, or a finish) arrives, both the watchdog
+                # and the socket run on the generous first-byte window; after
+                # that, the documented stall window takes over.
+                content_seen = False
                 last_event = time.monotonic()
                 for raw_line in response:
                     if cancel_event is not None and cancel_event.is_set():
                         raise RunnerCancelledError(partial="".join(text_parts))
                     now = time.monotonic()
                     idle, last_event = now - last_event, now
-                    if idle > window:
+                    if idle > (window if content_seen else first_window):
                         # the socket timeout cannot see a gap that ends on its
                         # own; the watchdog can, so a resumed stream that went
                         # quiet past the window still reports as a stall
@@ -178,6 +215,11 @@ class RunnerEndpoint:
                     delta = self._stream_delta(choice, "".join(text_parts))
                     piece = delta.get("content") or ""
                     reasoning = delta.get("reasoning_content") or ""
+                    if piece or reasoning or delta.get("tool_calls") \
+                            or choice.get("finish_reason") is not None:
+                        if not content_seen:
+                            content_seen = True
+                            _tighten_socket_timeout(response, window)
                     if piece:
                         text_parts.append(piece)
                         if on_delta is not None:

@@ -54,6 +54,24 @@ class StartupLease:
                 _remove_tree(claim)
         return False
 
+    def refresh(self) -> bool:
+        """Touch the lease so an UNVERIFIABLE ownership claim stays fresh.
+
+        Owners on hosts where process start times are readable never need
+        this: their ownership is proven directly and does not age. On hosts
+        where it is not, calling refresh() at any cadence shorter than the
+        TTL keeps the lease honoured; a crashed owner stops refreshing and
+        ages out, which is the whole point of the window."""
+        record = self._read_record(self.path)
+        if record.get("token") != self.token:
+            return False
+        source = record.get("_path")
+        try:
+            os.utime(source if source else self.path, None)
+            return True
+        except OSError:
+            return False
+
     def release(self) -> None:
         """Release only when the current record still carries this token."""
         record = self._read_record(self.path)
@@ -89,7 +107,13 @@ class StartupLease:
         try:
             source = path / _RECORD if path.is_dir() else path
             data = json.loads(source.read_text(encoding="utf-8"))
-            return data if isinstance(data, dict) else {}
+            if isinstance(data, dict):
+                # the record remembers where it was read from so the
+                # unverified-ownership TTL can use the file's mtime as its
+                # silence clock without a second path argument everywhere
+                data["_path"] = str(source)
+                return data
+            return {}
         except (OSError, ValueError):
             return {}
 
@@ -102,6 +126,37 @@ class StartupLease:
             return None
 
 
+# How long an UNVERIFIABLE claim of ownership stays honoured. Applies only
+# when the start-time check cannot run (record has no owner_start, or the
+# host cannot read process start times): a fresh unverifiable lease is
+# honoured, a silent one ages out. Verifiable ownership never expires — the
+# start-time comparison is the authority whenever it is available. Owners on
+# unverifiable hosts keep their lease alive past the window by calling
+# StartupLease.refresh(); the window is deliberately long enough that any
+# reasonable refresh cadence (or a re-launch supervisor) beats it.
+UNVERIFIED_LEASE_TTL_SECONDS = 900.0
+
+
+def _unverified_still_fresh(record: dict[str, Any]) -> bool:
+    """Bounded-age fallback when ownership can be neither proven nor
+    disproven. Decided 2026-08-27 (owner): the previous behaviour honoured
+    such records forever, which resurrects the RNR-017 deadlock on hosts
+    without readable process start times; immediate takeover instead would
+    steal live leases on those same hosts. The middle path: the file's mtime
+    is the silence clock — deadlocks self-heal after the window, and theft
+    requires the owner to also have been silent that long."""
+    path = record.get("_path")
+    if path is None:
+        return False
+    try:
+        age = time.time() - Path(path).stat().st_mtime
+    except OSError:
+        return False  # cannot even read the clock: do not honour blindly
+    ttl = float(os.environ.get("RUNNER_UNVERIFIED_LEASE_TTL",
+                               UNVERIFIED_LEASE_TTL_SECONDS))
+    return age < ttl
+
+
 def _still_owned(record: dict[str, Any]) -> bool:
     """True only if the record's owner process is genuinely still running.
 
@@ -109,18 +164,19 @@ def _still_owned(record: dict[str, Any]) -> bool:
     reuse that PID for an unrelated process, which would keep the lease "live"
     forever and block startup (RNR-017). So when the record carries the owner's
     process start time, it must also match the live process's start time; a
-    mismatch means the PID was reused and the lease is stale. Records without a
-    start time are honoured PID-only as a bounded migration compatibility.
+    mismatch means the PID was reused and the lease is stale. When the
+    comparison cannot run at all, ownership is honoured only within a bounded
+    age — see _unverified_still_fresh.
     """
     owner_pid = _record_owner_pid(record)
     if owner_pid is None or not _process_alive(owner_pid):
         return False
     rec_start = record.get("owner_start")
     if rec_start is None:
-        return True  # legacy record: PID-only during migration
+        return _unverified_still_fresh(record)
     live_start = _process_start_time(owner_pid)
     if live_start is None:
-        return True  # cannot read the start time to disprove ownership — stay safe
+        return _unverified_still_fresh(record)
     return str(live_start) == str(rec_start)  # differ => PID reused => not the owner
 
 

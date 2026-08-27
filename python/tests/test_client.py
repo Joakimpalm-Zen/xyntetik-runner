@@ -180,14 +180,59 @@ class StartupLeaseTests(unittest.TestCase):
                     else:
                         os.environ[k] = v
 
-    def test_legacy_record_without_start_time_is_honoured(self):
-        # A pre-migration record (no owner_start) with a live pid stays PID-only.
+    def test_unverifiable_record_is_honoured_only_while_fresh(self):
+        # Decided 2026-08-27 (owner): a record whose ownership can be neither
+        # proven nor disproven (no owner_start) is honoured within the TTL and
+        # taken over past it. Forever-honour resurrected the RNR-017 deadlock
+        # on hosts without readable start times; immediate takeover would
+        # steal live leases on those same hosts. The file mtime is the
+        # silence clock, so a live-but-unverifiable owner keeps its lease by
+        # refresh(); a dead one goes silent and ages out.
         with tempfile.TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / "runner.lease"
             path.write_text(
                 json.dumps({"owner_pid": os.getpid(), "token": "legacy"}),
                 encoding="utf-8",
             )
+            self.assertFalse(StartupLease(path).acquire())   # fresh: honoured
+            old = time.time() - 10_000
+            os.utime(path, (old, old))                        # silent past TTL
+            lease = StartupLease(path)
+            self.assertTrue(lease.acquire())                  # aged out
+            lease.release()
+
+    def test_refresh_keeps_an_unverifiable_lease_alive(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "runner.lease"
+            lease = StartupLease(path)
+            self.assertTrue(lease.acquire())
+            record_path = path / "owner.json"
+            data = json.loads(record_path.read_text(encoding="utf-8"))
+            data.pop("owner_start", None)                     # simulate host
+            data.pop("_path", None)
+            record_path.write_text(json.dumps(data), encoding="utf-8")
+            old = time.time() - 10_000
+            os.utime(record_path, (old, old))
+            self.assertTrue(lease.refresh())                  # owner touches
+            self.assertFalse(StartupLease(path).acquire())    # fresh again
+            lease.release()
+
+    def test_verifiable_ownership_never_ages_out(self):
+        # The TTL exists ONLY for the unverifiable case: a provable owner
+        # holds its lease regardless of how old the file is.
+        from xyntetik_runner.lease import _process_start_time
+        start = _process_start_time(os.getpid())
+        if start is None:
+            self.skipTest("start time unreadable on this host")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "runner.lease"
+            path.write_text(
+                json.dumps({"owner_pid": os.getpid(), "owner_start": start,
+                            "token": "held"}),
+                encoding="utf-8",
+            )
+            old = time.time() - 100_000
+            os.utime(path, (old, old))
             self.assertFalse(StartupLease(path).acquire())
 
 
@@ -378,6 +423,41 @@ class EndpointTests(unittest.TestCase):
             endpoint.stream_chat({"messages": []})
 
         self.assertEqual(caught.exception.partial, "partial")
+
+    def test_prefill_silence_does_not_trip_a_tight_stall_window(self):
+        # Decided 2026-08-27 (owner): Runner emits the role-only delta BEFORE
+        # prefill, so a long prompt's legitimate silence sits between the
+        # first frame and the first content frame. That gap is governed by
+        # the generous first-byte window; the stall window starts at content.
+        class SlowPrefill(_Response):
+            def __iter__(self):
+                def gen():
+                    yield b'data: {"choices":[{"delta":{"role":"assistant"}}]}\n'
+                    time.sleep(0.25)               # "prefill"
+                    yield b'data: {"choices":[{"delta":{"content":"hi"}}]}\n'
+                    yield b'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n'
+                    yield b"data: [DONE]\n"
+                return gen()
+        endpoint = RunnerEndpoint(
+            "http://127.0.0.1:8080",
+            opener=lambda request, timeout: SlowPrefill())
+        result = endpoint.stream_chat({"messages": []}, stall_seconds=0.05)
+        self.assertEqual(result.text, "hi")
+
+    def test_stall_window_governs_once_content_has_flowed(self):
+        class MidStreamStall(_Response):
+            def __iter__(self):
+                def gen():
+                    yield b'data: {"choices":[{"delta":{"content":"a"}}]}\n'
+                    time.sleep(0.25)               # silence AFTER content
+                    yield b'data: {"choices":[{"delta":{"content":"b"}}]}\n'
+                return gen()
+        endpoint = RunnerEndpoint(
+            "http://127.0.0.1:8080",
+            opener=lambda request, timeout: MidStreamStall())
+        with self.assertRaises(RunnerStallError) as caught:
+            endpoint.stream_chat({"messages": []}, stall_seconds=0.05)
+        self.assertEqual(caught.exception.partial, "a")
 
     def test_socket_timeout_is_a_stall_with_partial_text(self):
         class StallingResponse(_Response):
