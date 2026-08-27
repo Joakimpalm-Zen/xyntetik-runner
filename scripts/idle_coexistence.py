@@ -51,13 +51,45 @@ def _parse_cputime(t: str) -> float:
     return days * 86400 + h * 3600 + m * 60 + s + frac
 
 
+def _descendants(root_pid):
+    """The root plus every transitive child. `ollama serve` and vLLM fork the
+    process that actually holds the weights, so measuring only the direct
+    child reported near-zero idle RSS/CPU for exactly the engines with the
+    largest footprints. One `ps -Ao pid=,ppid=` snapshot, walked to a fixed
+    point; portable across macOS and Linux, no dependencies."""
+    o = subprocess.run(["ps", "-Ao", "pid=,ppid="],
+                       capture_output=True, text=True).stdout
+    children = {}
+    for line in o.splitlines():
+        parts = line.split()
+        if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
+            children.setdefault(int(parts[1]), []).append(int(parts[0]))
+    tree, frontier = {root_pid}, [root_pid]
+    while frontier:
+        for kid in children.get(frontier.pop(), []):
+            if kid not in tree:
+                tree.add(kid)
+                frontier.append(kid)
+    return sorted(tree)
+
+
 def ps_stat(pid):
-    o = subprocess.run(["ps", "-o", "rss=,cputime=,pcpu=", "-p", str(pid)],
-                       capture_output=True, text=True).stdout.split()
-    if not o:
+    pids = _descendants(pid)
+    o = subprocess.run(["ps", "-o", "rss=,cputime=", "-p",
+                        ",".join(str(p) for p in pids)],
+                       capture_output=True, text=True).stdout
+    rss_kb, cpu = 0, 0.0
+    seen = 0
+    for line in o.splitlines():
+        parts = line.split()
+        if len(parts) >= 2:
+            rss_kb += int(parts[0])
+            cpu += _parse_cputime(parts[1])
+            seen += 1
+    if not seen:
         return None
-    return {"rss_mb": round(int(o[0]) / 1024, 1),
-            "cputime_s": _parse_cputime(o[1])}
+    return {"rss_mb": round(rss_kb / 1024, 1),
+            "cputime_s": cpu, "procs": seen}
 
 def wired_mb():
     try:
@@ -125,7 +157,9 @@ def idle_window(pid, label):
         return {"state": label, "error": "process exited"}
     return {"state": label, "idle_window_s": IDLE_S,
             "cpu_s_during_idle": round(b["cputime_s"] - a["cputime_s"], 2),
-            "rss_mb_end": b["rss_mb"], "wired_mb_system": wired_mb()}
+            "rss_mb_end": b["rss_mb"], "procs": b["procs"],
+            "accounting": "process-tree",
+            "wired_mb_system": wired_mb()}
 
 def main():
     ap = argparse.ArgumentParser()

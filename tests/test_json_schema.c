@@ -219,6 +219,100 @@ static void test_schema_required_close(void) {
     jv_free(schema_json);
 }
 
+// A free-keyed object (SN_MAP: additionalProperties with no fixed keys)
+// must not emit the same key twice: {"a":1,"a":2} parses nowhere in this
+// codebase -- json_parse refuses duplicates -- so a validator that admits it
+// generates a document the runner itself cannot read back. The guard hashes
+// the SPELLING the model feeds and refuses the duplicate at its closing
+// quote, where every other continuation is still legal. A key spelled two
+// different ways (raw vs \u-escape) is outside the guard's scope and
+// remains a parser-level refusal, documented in schema.h.
+static void test_map_refuses_a_duplicate_key_spelling(void) {
+    const char *src =
+        "{\"type\":\"object\",\"additionalProperties\":{\"type\":\"integer\"}}";
+    jv *schema_json = json_parse(src, strlen(src));
+    assert(schema_json != NULL);
+    char err[128];
+    snode *schema = schema_compile(schema_json, err, sizeof(err));
+    assert(schema != NULL);
+
+    sval v;
+    sval_init(&v, schema);
+    // {"a":1,"a  -- the repeat key is typed up to its closing quote
+    assert(sval_feed(&v, "{\"a\":1,\"a", 9));
+    assert(!sval_feed(&v, "\"", 1));        // the duplicate cannot close
+    sval_init(&v, schema);
+    assert(sval_feed(&v, "{\"a\":1,\"ab\":2}", 14));  // extending it is legal
+    assert(v.done);
+
+    // a sibling map opened after this one closes starts with a clean guard
+    const char *nested =
+        "{\"type\":\"object\",\"properties\":{"
+        "\"x\":{\"type\":\"object\",\"additionalProperties\":{\"type\":\"integer\"}},"
+        "\"y\":{\"type\":\"object\",\"additionalProperties\":{\"type\":\"integer\"}}"
+        "},\"required\":[\"x\",\"y\"]}";
+    jv *nj = json_parse(nested, strlen(nested));
+    assert(nj != NULL);
+    snode *ns = schema_compile(nj, err, sizeof(err));
+    assert(ns != NULL);
+    sval nv;
+    sval_init(&nv, ns);
+    const char *doc = "{\"x\":{\"a\":1},\"y\":{\"a\":2}}";
+    assert(sval_feed(&nv, doc, strlen(doc)));
+    assert(nv.done);
+
+    schema_free(ns);
+    jv_free(nj);
+    schema_free(schema);
+    jv_free(schema_json);
+}
+
+// Wherever the grammar REQUIRES whitespace -- a native-protocol literal
+// like atem's newline separators -- the whitespace oracle must report it as
+// content, or the engine masks every whitespace-only token at a position
+// whose only legal byte IS whitespace and generation dead-ends on
+// vocabularies without a combined token. Vocabulary-independent walk: along
+// the grammar's forced path, any position whose sole admissible byte is
+// whitespace must satisfy sval_ws_is_content. sval is memcpy-copyable by
+// contract, which is what makes the probe loop legal.
+static void test_required_whitespace_reports_as_content(void) {
+    const char *tsrc =
+        "[{\"type\":\"function\",\"function\":{\"name\":\"ping\","
+        "\"parameters\":{\"type\":\"object\",\"properties\":{"
+        "\"x\":{\"type\":\"integer\"}},\"required\":[\"x\"]}}}]";
+    jv *tools = json_parse(tsrc, strlen(tsrc));
+    assert(tools != NULL);
+    char err[160];
+    snode *g = schema_compile_atem_turn(tools, false, NULL, NULL,
+                                        ATEM_TURN_EITHER, err, sizeof(err));
+    assert(g != NULL);
+    sval v;
+    sval_init(&v, g);
+    // Drive the invoke opening up to its embedded newline. The literal is
+    // "<atem:function_calls>\n<atem:invoke name=\"..." -- after the '>' the
+    // grammar's next byte is the required '\n'.
+    // wire shape verified by direct grammar walk: the invoke branch opens
+    // with the recipient (the tool name), then the function_calls block
+    // whose literal embeds the required newline
+    const char *prefix = "ping<|message|><atem:function_calls>";
+    assert(sval_feed(&v, prefix, (int)strlen(prefix)));
+    // vocabulary-independent facts about this position, probed on copies
+    // (sval is memcpy-copyable by contract): the newline is admissible and
+    // it is the ONLY admissible whitespace continuation...
+    sval probe = v;
+    assert(sval_feed(&probe, "\n", 1));
+    probe = v;
+    assert(!sval_feed(&probe, " ", 1));
+    // ...and the oracle must therefore call whitespace CONTENT here, or the
+    // engine masks every whitespace-only token at a position whose only
+    // legal byte IS whitespace and generation dead-ends.
+    assert(sval_ws_is_content(&v));
+    // sanity: after the newline the protocol continues
+    assert(sval_feed(&v, "\n<atem:invoke", 13));
+    schema_free(g);
+    jv_free(tools);
+}
+
 // A constrained document must begin with its opening token.
 //
 // Leading whitespace is the livelock that burns the budget. A model that
@@ -2248,6 +2342,8 @@ int main(void) {
     test_escapes_are_paired_and_closable();
     test_json_close_partial_string();
     test_schema_required_close();
+    test_map_refuses_a_duplicate_key_spelling();
+    test_required_whitespace_reports_as_content();
     test_leading_whitespace_is_refused_but_interior_is_kept();
     test_json_mode_leading_whitespace_is_refused();
     test_schema_close_without_payload_fabricates_nothing();

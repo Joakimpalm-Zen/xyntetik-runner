@@ -1097,6 +1097,9 @@ static snode *atem_raw_bounded(const char *sentinel, int max_bytes) {
 
 static bool atem_seq_add(snode *seq, snode *child) {
     if (!child) return false;
+    // see sval_ws_is_content: the container answers for a significant child
+    // whose frame does not exist yet
+    if (child->whitespace_significant) seq->whitespace_significant = true;
     seq->props[seq->n_props++] = child;
     return true;
 }
@@ -2249,6 +2252,18 @@ static void frame_done(sval *v);
 // child value finished: advance parent
 static void frame_done(sval *v) {
     const snode *child = v->stack[v->depth - 1].node;
+    if (child->kind == SN_MAP && v->n_seen) {
+        // this map's keys leave the guard with it; a sibling map that opens
+        // later at the same depth starts clean
+        int w = 0;
+        for (int i = 0; i < v->n_seen; i++)
+            if (v->seen_depth[i] != v->depth) {
+                v->seen_hash[w] = v->seen_hash[i];
+                v->seen_depth[w] = v->seen_depth[i];
+                w++;
+            }
+        v->n_seen = (uint8_t)w;
+    }
     v->depth--;
     if (v->depth == 0) { v->done = true; return; }
     sframe *f = &v->stack[v->depth - 1];
@@ -2729,6 +2744,7 @@ static int feed_byte(sval *v, uint8_t c) {
         if (n->kind == SN_MAP) {
             f->sub = 0;
             f->lit_pos = 0;
+            f->num_abs = 2166136261u; // FNV-1a basis (see sframe.num_abs)
             f->phase = P_OBJ_INKEY;
             return 0;
         }
@@ -2743,8 +2759,27 @@ static int feed_byte(sval *v, uint8_t c) {
             bool continuing_utf8 = f->utf8_state != 0;
             int r = str_byte(c, &f->sub, &f->esc, &f->utf8_state);
             if (r < 0) return -1;
-            if (r == 1) f->phase = P_OBJ_COLON;
-            else if (f->sub == 0 && !continuing_utf8) f->lit_pos++;
+            if (r == 1) {
+                // A key this map already has is refused AT ITS CLOSING
+                // QUOTE: the model still holds every legal continuation
+                // (extend the key, pick another), it just cannot finish a
+                // duplicate -- which its own parser would refuse later
+                // anyway. See map_seen in schema.h for the guard's scope.
+                uint32_t kh = (uint32_t)f->num_abs;
+                for (int i = 0; i < v->n_seen; i++)
+                    if (v->seen_depth[i] == v->depth &&
+                        v->seen_hash[i] == kh)
+                        return -1;
+                if (v->n_seen < MAP_SEEN_MAX) {
+                    v->seen_hash[v->n_seen] = kh;
+                    v->seen_depth[v->n_seen] = (uint8_t)v->depth;
+                    v->n_seen++;
+                }
+                f->phase = P_OBJ_COLON;
+            } else {
+                f->num_abs = ((uint32_t)f->num_abs ^ c) * 16777619u;
+                if (f->sub == 0 && !continuing_utf8) f->lit_pos++;
+            }
             return 0;
         }
         if (c == '"') {
@@ -2918,6 +2953,13 @@ bool sval_ws_is_content(const sval *v) {
     if (v->depth <= 0) return false;
     const sframe *f = &v->stack[v->depth - 1];
     if (!f->node) return false;
+    // Protocol positions where whitespace is REQUIRED, not optional: an
+    // atem_lit("\n") or a native member separator is spelled in whitespace,
+    // and masking a whitespace-only token there can remove the only
+    // reachable document on vocabularies without a combined token. The flag
+    // is propagated onto the native containers at compile time because the
+    // literal's own frame is pushed lazily, after the byte arrives.
+    if (f->node->whitespace_significant) return true;
     // any-subtree runs its own machine; be conservative and treat its
     // whitespace as content rather than reach into it.
     if (f->node->kind == SN_ANY) return true;

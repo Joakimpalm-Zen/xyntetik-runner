@@ -110,11 +110,29 @@ typedef struct {
     uint16_t disc;      // this object's discriminator choice + 1; 0 = not chosen yet
     uint16_t esc;       // \uXXXX value accumulated so far (see json_escape_hex)
     uint64_t alive;
-    uint64_t num_abs;  // integer magnitude accumulated so far
+    uint64_t num_abs;  // integer magnitude accumulated so far; an SN_MAP
+                       // frame is never a number frame, so during P_OBJ_INKEY
+                       // its low 32 bits moonlight as the running FNV-1a of
+                       // the key being fed (sval stays copy-cheap: the size
+                       // gate below this struct is load-bearing)
 } sframe;
+
+// Free-keyed (SN_MAP) duplicate guard: hashes of keys already emitted in
+// each open map, tagged with the map frame's stack depth so nested maps do
+// not collide and a closing map releases its own entries. Fixed-size so the
+// validator stays memcpy-copyable. SCOPE, stated plainly: this refuses a
+// duplicate in the SPELLING the model emits (the realistic constrained-
+// sampling failure); the same key spelled once raw and once escaped hashes
+// differently and still lands on the parser's refusal, as before. A hash
+// collision refuses a distinct key (over-constraint) and can never admit a
+// duplicate. Past MAP_SEEN_MAX open keys the guard stops tracking.
+#define MAP_SEEN_MAX 16
 
 typedef struct {
     sframe stack[48];
+    uint32_t seen_hash[MAP_SEEN_MAX];   // parallel arrays, not structs: the
+    uint8_t  seen_depth[MAP_SEEN_MAX];  // 2560-byte sval size gate is real
+    uint8_t  n_seen;
     int    depth;
     bool   done;
     int    last_enum;   // enum literal completed by the most recent child

@@ -627,7 +627,7 @@ void engine_prefix_publish(engine *e, const int32_t *toks, int n,
         }
     }
 
-    // Store to the DIVERGENCE POINT, not to the end of the prompt.
+    // A DIVERGING SIBLING stores nothing; it refreshes what it shares.
     //
     // Two requests in an agent session share a system prompt, a tool list and
     // a schema, then differ. Storing each one whole means the shared block is
@@ -636,24 +636,27 @@ void engine_prefix_publish(engine *e, const int32_t *toks, int n,
     // 530 MB of a 512 MB budget for what is one 132 MB block of shared KV, and
     // the fourth store evicted the first.
     //
-    // The tail past `diverge_at` is exactly the part another request has
-    // already been observed NOT to share, so it is the part least worth a slot
-    // in a fixed budget. It is also the part a repeat of this same prompt
-    // recovers for free from its own slot's KV via engine_rewind. Truncating
-    // is free in correctness terms for the same reason the half-budget cap
-    // above is: a prefix of a prefix is still a valid prefix.
+    // The remedy is NOT to store a truncated copy of the shared block: the
+    // block is already reusable as a leading slice of the entry we diverged
+    // from (a prefix of a prefix is a valid prefix), so a second copy would
+    // be the duplication this branch exists to prevent. What a sibling
+    // contributes is only its tail -- the part already observed NOT to be
+    // shared, the least worth a slot, and the part a repeat of this exact
+    // prompt recovers from its own slot's KV via engine_rewind. So: touch
+    // the covering entry's clock and store nothing. (An earlier version of
+    // this comment described storing a truncated entry; that store was
+    // unreachable by construction -- the scan below always finds the
+    // diverging entry, since it shares exactly these diverge_at tokens and
+    // is longer -- and unreachable is correct, for the reason above.)
     // Skipped for a recurrent model for the reason given at the half-budget
-    // clamp above: the fold it would carry belongs to position n, not to
-    // diverge_at.
+    // clamp above: a fold belongs to position n, not to diverge_at, so a
+    // recurrent sibling has nothing shareable to refresh at a shorter length.
     if (!recur && diverge_at >= PFX_MIN_TOKENS && diverge_at < store_n) {
-        store_n = diverge_at;
-        // ...unless that exact prefix is already stored, in which case there
-        // is nothing to add and the scan above would have said so.
         for (pfx_entry *p = PFX.head; p; p = p->next) {
-            if (p->key != e->model_key || p->n < store_n) continue;
+            if (p->key != e->model_key || p->n < diverge_at) continue;
             int c = 0;
-            while (c < store_n && p->toks[c] == toks[c]) c++;
-            if (c == store_n) { p->used = now; pthread_mutex_unlock(&PFX.mu); return; }
+            while (c < diverge_at && p->toks[c] == toks[c]) c++;
+            if (c == diverge_at) { p->used = now; pthread_mutex_unlock(&PFX.mu); return; }
         }
     }
 

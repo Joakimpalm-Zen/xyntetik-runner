@@ -1001,8 +1001,15 @@ static bool parse_blk_name(const char *name, int *layer, const char **suffix) {
 // 2D (router/exps-bias: row_len=ne[0], rows=1), and 3D (fused expert
 // weights: row_len=ne[0], rows=ne[1]) shapes this tool prunes.
 static void expert_block_geometry(const gguf_tensor *t, int64_t *row_len, int64_t *rows) {
+    // The expert index is the OUTERMOST dimension; everything between it and
+    // ne[0] belongs to one expert's block. Taking only ne[1] under-wrote a
+    // 4-D per-expert tensor to a zero-padded stub while reporting success --
+    // no shipping model has that shape, but a crafted file must produce a
+    // refusal or a correct file, never a silently short tensor. The 3-D and
+    // 2-D shapes are unchanged: the product degenerates to ne[1] and 1.
     *row_len = t->n_dims >= 2 ? t->ne[0] : 1;
-    *rows    = t->n_dims >= 3 ? t->ne[1] : 1;
+    *rows = 1;
+    for (int d = 1; d < t->n_dims - 1; d++) *rows *= t->ne[d];
 }
 
 // ---------------------------------------------------------------- lora merge
