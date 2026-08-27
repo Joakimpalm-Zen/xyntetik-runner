@@ -312,6 +312,11 @@ static char *claim_rmw(const char *in, size_t in_len, void *ud) {
     }
 
     if (c->need <= avail && !outranked) {
+        // A claim that cannot be RECORDED must not be ADMITTED: an admitted-
+        // but-unwritten entry is bytes the ledger cannot see, and every later
+        // admission decision over-commits by that amount. At capacity this
+        // claim waits like any other; dead-process reaping frees entries, so
+        // a full table is congestion, not deadlock.
         if (n < REG_MAX_ENTRIES) {
             reg_entry me = { .pid = c->pid, .seq = c->seq,
                              .procstart = c->procstart,
@@ -321,9 +326,9 @@ static char *claim_rmw(const char *in, size_t in_len, void *ud) {
             snprintf(me.model, sizeof(me.model), "%s", c->model ? c->model : "");
             for (char *p = me.model; *p; p++) if (*p == '\t' || *p == '\n') *p = ' ';
             e[n++] = me;
+            c->admitted = true;
+            return serialise(e, n);
         }
-        c->admitted = true;
-        return serialise(e, n);
     }
 
     // Not admitted this round. A queueing caller leaves a fresh waiter marker

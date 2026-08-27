@@ -86,14 +86,23 @@ def private_reference_scan():
         proc = subprocess.run(
             ["git", "grep", "-l", "-i", "-E", "|".join(PRIVATE_MARKERS),
              "--", ":!scripts/check-release.py"],
-            cwd=ROOT, capture_output=True, text=True)
-    except (FileNotFoundError, OSError):
+            cwd=ROOT, capture_output=True, text=True, timeout=60)
+    except FileNotFoundError:
         # no git on PATH (the Windows msys CI python): the same tree is
         # scanned by the Linux/macOS jobs of the same release, so skipping
         # here loses nothing — but say so rather than pass silently
         print("release-check: note: git unavailable, private-reference "
               "scan skipped on this job (covered by sibling jobs)")
         return True
+    except subprocess.TimeoutExpired:
+        # A hung scan is not a skippable scan: unlike a missing git, a hang
+        # can hit every sibling job identically, so nothing else covers it.
+        return fail("private-reference scan timed out after 60s")
+    except OSError as e:
+        # PermissionError and friends are NOT "git unavailable": they can
+        # afflict all jobs at once (repo permissions), so the sibling-job
+        # argument does not apply and the gate fails closed.
+        return fail(f"private-reference scan could not run: {e}")
     if proc.returncode not in (0, 1):
         detail = proc.stderr.strip() or f"git grep exited {proc.returncode}"
         return fail(f"private-reference scan failed: {detail}")

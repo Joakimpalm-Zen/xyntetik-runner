@@ -33,7 +33,17 @@ void sampler_accept(sampler *s, int tok) {
 typedef struct { float p; int id; } cand_t;
 static int cand_cmp(const void *a, const void *b) {
     const cand_t *x = a, *y = b;
-    if (x->p != y->p) return y->p > x->p ? 1 : -1;
+    // A NaN logit (a poisoned upstream activation) must not reach qsort as
+    // an incomparable value: `x->p != y->p` is true for NaN while BOTH
+    // directed comparisons are false, so the comparator loses antisymmetry
+    // and qsort's behavior is undefined. Rank NaN below every real value
+    // instead — a poisoned candidate sorts last and the order stays total.
+    int xn = isnan(x->p), yn = isnan(y->p);
+    if (xn | yn) {
+        if (xn != yn) return xn ? 1 : -1;
+    } else if (x->p != y->p) {
+        return y->p > x->p ? 1 : -1;
+    }
     return x->id - y->id;   // deterministic order among exact ties
 }
 

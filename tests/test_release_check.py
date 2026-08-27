@@ -262,3 +262,28 @@ def test_current_doc_replaces_the_default_set_rather_than_adding_to_it(tmp_path)
     default = _parse(["--tag", "v0.1.3-alpha", "--binary", "b",
                       "--build-info", "bi", "--commit", "c"])
     assert len(default.current_docs) == 3
+
+
+def test_scan_failure_modes_fail_closed_except_missing_git(monkeypatch, capsys):
+    """Only a genuinely absent git may skip the private-reference scan: that
+    is the one failure the sibling platform jobs provably cover. A hang or a
+    PermissionError can afflict every job of the release identically, so
+    treating them as skips would green a release nothing scanned. The old
+    handler caught OSError wholesale and PermissionError is an OSError."""
+    def raising(exc):
+        def run(*a, **k):
+            raise exc
+        return run
+
+    monkeypatch.setattr(check_release.subprocess, "run",
+                        raising(FileNotFoundError("no git")))
+    assert check_release.private_reference_scan()          # skip, says so
+    assert "skipped" in capsys.readouterr().out
+
+    monkeypatch.setattr(check_release.subprocess, "run",
+                        raising(PermissionError(13, "denied")))
+    assert not check_release.private_reference_scan()      # fail closed
+
+    monkeypatch.setattr(check_release.subprocess, "run",
+                        raising(subprocess.TimeoutExpired(cmd="git", timeout=60)))
+    assert not check_release.private_reference_scan()      # fail closed

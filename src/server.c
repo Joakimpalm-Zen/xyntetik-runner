@@ -607,13 +607,18 @@ static void send_models(sock_t fd) {
     sb_lit(&r, "{\"object\":\"list\",\"data\":[");
     if (SV.n_reg > 0) {
         for (int i = 0; i < SV.n_reg; i++) {
-            char esc[192];
+            // registry names are char[64]; worst-case escape is \uXXXX per
+            // byte, so 63*6+1 bounds the output exactly — a smaller buffer
+            // truncated operator-chosen names mid-escape in the JSON id
+            char esc[63 * 6 + 2];
             json_escape(SV.reg[i].name, strlen(SV.reg[i].name), esc, sizeof(esc));
             sb_fmt(&r, "%s{\"id\":\"%s\",\"object\":\"model\","
                        "\"owned_by\":\"runner\"}", i ? "," : "", esc);
         }
     } else {
-        char esc[256];
+        // the single-model id is a path basename: 255 bytes on every real
+        // filesystem, worst-case \uXXXX escape per byte bounds the output
+        char esc[255 * 6 + 2];
         json_escape(SV.model_name, strlen(SV.model_name), esc, sizeof(esc));
         sb_fmt(&r, "{\"id\":\"%s\",\"object\":\"model\",\"owned_by\":\"runner\"}", esc);
     }

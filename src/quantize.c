@@ -17,8 +17,10 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
+#include <io.h>
 #else
 #include <sys/types.h>
+#include <unistd.h>
 #endif
 
 // ---------------------------------------------------------------- rows
@@ -610,6 +612,18 @@ static void wr_pad_to(writer *w, uint64_t target) {
 
 static bool wr_close(writer *w) {
     bool ok = w->ok;
+    // The caller installs this file with rename() on success. rename() orders
+    // the DIRECTORY entry, not the data: after a crash the destination can
+    // exist full-length with an unwritten tail of zeros -- a correctly-named
+    // model that fails checksum (or worse, loads). Flush user-space buffers
+    // and force the data to stable storage BEFORE the atomic install, so the
+    // rename can only ever publish bytes that survive a power cut.
+    if (ok && fflush(w->f) != 0) ok = false;
+#ifndef _WIN32
+    if (ok && fsync(fileno(w->f)) != 0) ok = false;
+#else
+    if (ok && _commit(_fileno(w->f)) != 0) ok = false;
+#endif
     if (fclose(w->f) != 0) ok = false;
     w->f = NULL;
     w->ok = ok;
