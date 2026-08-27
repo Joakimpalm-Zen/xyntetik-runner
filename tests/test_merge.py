@@ -117,3 +117,25 @@ def test_merge_lora_requires_lora(runner_bin, fixtures, tmp_path):
         cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60)
     assert p.returncode != 0
     assert b"--lora" in p.stderr
+
+
+def test_two_tensors_for_one_adapter_slot_are_refused(runner_bin, fixtures,
+                                                      tmp_path):
+    """The name parse stopped at the side letter and never looked further.
+
+    `sscanf(..., "...lora_%c")` consumes one character and does not report
+    that the string continued, so `...weight.lora_a2` parsed as side 'a' and
+    returned all three fields. It is a distinct tensor NAME, so gguf's
+    duplicate check does not fire, and both landed in the same
+    (projection, side) slot -- the second freeing and replacing the first.
+    The merged file is then not base + adapter, which is the one thing this
+    loader exists to guarantee.
+    """
+    base, _adapter = fixtures
+    dup = ROOT / "test-lora.dupside.gguf"
+    if not dup.exists():
+        pytest.skip("run `make test-lora.full.gguf` first")
+    out = tmp_path / "dup.gguf"
+    proc = _merge(runner_bin, base, dup, out)
+    assert proc.returncode != 0
+    assert not out.exists()

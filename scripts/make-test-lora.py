@@ -14,6 +14,8 @@ Writes, next to the given output prefix:
   <out>.extradim.gguf     lora_a with the expected first two axes plus an
                           extra third axis (must be refused)
   <out>.halfpair.gguf     lora_a without its lora_b (must be refused)
+  <out>.dupside.gguf      two tensors naming the same lora_a slot (must be
+                          refused: one of them would silently win)
   <out>.f16.gguf          the same adapter with F16 tensors — the format
                           llama.cpp's convert_lora_to_gguf emits, which the
                           loader must accept (converted to f32 at load)
@@ -224,3 +226,12 @@ extra = [("blk.0.attn_q.weight.lora_a", [nin, RANK, 2],
 write_gguf(OUT + ".extradim.gguf", meta, extra)
 half = [("blk.0.attn_q.weight.lora_a", [nin, RANK], pack_f([0.1] * (RANK * nin)))]
 write_gguf(OUT + ".halfpair.gguf", meta, half)
+# A second tensor for the SAME (projection, side). The name is distinct, so
+# gguf's duplicate-name rule does not see it, and the merge loader's
+# name parse read the trailing "2" as nothing at all -- both landed in the one
+# slot and the second silently won, emitting a merged model that is not
+# base + adapter.
+dup = [("blk.0.attn_q.weight.lora_a", [nin, RANK], pack_f([0.1] * (RANK * nin))),
+       ("blk.0.attn_q.weight.lora_a2", [nin, RANK], pack_f([0.9] * (RANK * nin))),
+       ("blk.0.attn_q.weight.lora_b", [RANK, nout], pack_f([0.1] * (nout * RANK)))]
+write_gguf(OUT + ".dupside.gguf", meta, dup)

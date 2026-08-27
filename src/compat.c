@@ -822,7 +822,15 @@ bool parse_i64(const char *s, long long lo, long long hi, long long *out) {
 }
 
 bool parse_u64(const char *s, uint64_t lo, uint64_t hi, uint64_t *out) {
-    if (!s || !*s || *s == '-') return false;   // strtoull silently negates '-'
+    // strtoull silently NEGATES a leading '-' and does not set errno for it,
+    // so the sign has to be refused here. It skips leading whitespace first,
+    // which is why this walks past it rather than testing s[0]: " -1" reached
+    // strtoull with the guard satisfied and came back 18446744073709551615.
+    if (!s) return false;
+    const char *p = s;
+    while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r' ||
+           *p == '\f' || *p == '\v') p++;
+    if (!*p || *p == '-') return false;
     char *end = NULL;
     errno = 0;
     unsigned long long v = strtoull(s, &end, 10);

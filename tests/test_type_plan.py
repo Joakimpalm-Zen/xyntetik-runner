@@ -152,3 +152,92 @@ def test_experts_are_stacked_so_per_expert_precision_is_not_expressible(moe_mode
     assert exps, "fixture has no stacked expert tensors"
     for name, _ty, ne in exps:
         assert len(ne) == 3, f"{name} is {len(ne)}-D; expected a stacked 3-D bank"
+
+
+def test_a_plan_that_selects_nothing_is_rejected(runner_bin, moe_model, tmp_path):
+    """The container was never validated as strictly as the rules inside it.
+
+    Every one of these loaded as "zero rules, keep everything": the quantize
+    exited 0, printed `0 tensors converted`, and wrote a byte-identical copy
+    of the input while the caller believed they had built a selective-
+    precision artifact. `"rule"` for `"rules"` -- one character -- was enough,
+    and the type plan is the mechanism behind the sub-16GB 30B result, so a
+    plan that quietly does nothing is the worst kind of silence here.
+    """
+    bad_plans = [
+        {"default": "keep", "rule": [{"match": "_exps.weight", "type": "q4_0"}]},
+        {"rules": {"match": "_exps.weight", "type": "q4_0"}},
+        {"default": ["keep"]},
+        {"rules": []},
+        {},
+    ]
+    for i, plan in enumerate(bad_plans):
+        out = tmp_path / f"nothing{i}"
+        proc = run_plan(runner_bin, moe_model, out, plan, tmp_path)
+        assert proc.returncode != 0, f"{plan} was accepted"
+        assert not pathlib.Path(out).exists()
+
+
+def test_quant_and_type_plan_together_are_refused(runner_bin, moe_model, tmp_path):
+    """--quant is never read on the plan path, so it was silently dropped.
+
+    Worse than dropped: the summary line named the discarded whole-file type,
+    so `--quant q8_0 --type-plan keep.json` reported
+    `out.gguf (Q8_0): 0 tensors converted` over a byte-identical copy.
+    """
+    plan = tmp_path / "keep.json"
+    plan.write_text(json.dumps({"default": "keep"}))
+    out = tmp_path / "both.gguf"
+    proc = subprocess.run(
+        [runner_bin, "-m", str(moe_model), "--quantize", str(out),
+         "--quant", "q8_0", "--type-plan", str(plan)],
+        cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=180)
+    assert proc.returncode != 0
+    assert b"--quant and --type-plan" in proc.stderr
+    assert not out.exists()
+
+
+def test_a_plan_run_does_not_report_a_whole_file_type(runner_bin, moe_model,
+                                                      tmp_path):
+    """`target` decides nothing under a plan, so naming it described the
+    output as a type no tensor was written in."""
+    out = tmp_path / "labelled"
+    proc = run_plan(runner_bin, moe_model, out,
+                    {"default": "keep",
+                     "rules": [{"match": "_exps.weight", "type": "q4_0"}]},
+                    tmp_path)
+    assert proc.returncode == 0, proc.stderr.decode(errors="replace")
+    err = proc.stderr.decode(errors="replace")
+    assert "per-tensor plan" in err, err
+    assert "(Q4_0):" not in err, err
+
+
+def test_a_same_size_decline_is_reported(runner_bin, tmp_path):
+    """q4_0 and q4_K are both 144 bytes per 256 values.
+
+    The never-grow rule therefore declines `--quant q4_k` over a Q4_0 file and
+    hands back a byte-identical copy -- a real quality request (per-group
+    scales and mins instead of one scale per 32) dropped without a word. The
+    decline stands; it must not be silent, the way the block-width decline
+    beside it never was.
+    """
+    # a 256-divisible row width, so the block-width guard is not what declines
+    wide = tmp_path / "wide.gguf"
+    subprocess.run(
+        [sys.executable, ROOT / "scripts/make-test-model.py", "--wide",
+         str(wide)], check=True, cwd=ROOT, stdout=subprocess.DEVNULL)
+    small = tmp_path / "q40.gguf"
+    assert subprocess.run(
+        [runner_bin, "-m", str(wide), "--quantize", str(small),
+         "--quant", "q4_0"], cwd=ROOT, stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE, timeout=180).returncode == 0
+    out = tmp_path / "q4k.gguf"
+    proc = subprocess.run(
+        [runner_bin, "-m", str(small), "--quantize", str(out),
+         "--quant", "q4_k"], cwd=ROOT, stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE, timeout=180)
+    assert proc.returncode == 0, proc.stderr.decode(errors="replace")
+    assert small.read_bytes() == out.read_bytes(), \
+        "the fixture no longer exercises the same-size decline"
+    assert b"not smaller than what they already carry" in proc.stderr, \
+        proc.stderr.decode(errors="replace")

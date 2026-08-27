@@ -775,16 +775,43 @@ static bool type_plan_load(const char *path, type_plan_t *plan) {
         return false;
     }
     bool ok = true;
+    // The plan's CONTAINER is validated as strictly as its individual rules
+    // already are. Every shape that used to be silently ignored -- a
+    // misspelled key, a non-string "default", a "rules" that is not an array
+    // -- loaded as a plan with zero rules and a keep-everything default: the
+    // quantize then exited 0, printed "0 tensors converted", and wrote a
+    // byte-identical copy of the input while the caller believed they had
+    // built a selective-precision artifact. One character ("rule" for
+    // "rules") was enough.
+    for (int i = 0; ok && i < root->n; i++) {
+        if (strcmp(root->keys[i], "default") == 0 ||
+            strcmp(root->keys[i], "rules") == 0) continue;
+        fprintf(stderr, "error: type-plan key \"%.40s\" is not one of "
+                "\"default\" or \"rules\"\n", root->keys[i]);
+        ok = false;
+    }
     jv *d = jv_get(root, "default");
-    if (d && d->type == J_STR) {
-        plan->dflt = type_from_name(jv_str(d, NULL));
-        if (plan->dflt == -2) {
-            fprintf(stderr, "error: type-plan default \"%s\" is not one of "
-                    "keep|q8_0|q4_0|q3_k|f16\n", jv_str(d, "?"));
+    bool has_default = false;
+    if (ok && d) {
+        if (d->type != J_STR) {
+            fprintf(stderr, "error: type-plan \"default\" must be a type "
+                    "name string\n");
             ok = false;
+        } else {
+            plan->dflt = type_from_name(jv_str(d, NULL));
+            has_default = true;
+            if (plan->dflt == -2) {
+                fprintf(stderr, "error: type-plan default \"%s\" is not one of "
+                        "keep|q8_0|q4_0|q3_k|f16\n", jv_str(d, "?"));
+                ok = false;
+            }
         }
     }
     jv *rules = jv_get(root, "rules");
+    if (ok && rules && rules->type != J_ARR) {
+        fprintf(stderr, "error: type-plan \"rules\" must be an array\n");
+        ok = false;
+    }
     if (ok && rules && rules->type == J_ARR && rules->n > 0) {
         plan->rules = calloc((size_t)rules->n, sizeof(type_rule_t));
         if (!plan->rules) { jv_free(root); return false; }
@@ -810,6 +837,14 @@ static bool type_plan_load(const char *path, type_plan_t *plan) {
             plan->rules[plan->n].type = ty;
             plan->n++;
         }
+    }
+    // A plan that names no rule and states no default selects nothing: it
+    // would copy the model byte for byte and report success.
+    if (ok && plan->n == 0 && !has_default) {
+        fprintf(stderr, "error: %s selects nothing: it declares no \"rules\" "
+                "and no \"default\", so it would copy the model unchanged\n",
+                path);
+        ok = false;
     }
     jv_free(root);
     if (!ok) type_plan_free(plan);
@@ -1048,8 +1083,16 @@ static bool merge_set_resolve(merge_set_t *ms, const char *adapter_path,
         int l = -1;
         char pname[64];
         char side = 0;
-        if (sscanf(t->name, "blk.%d.%40[a-z_].weight.lora_%c", &l, pname,
-                   &side) != 3 || (side != 'a' && side != 'b') || l < 0) {
+        // %n after the last field: sscanf stops at `side` and never reports
+        // that anything followed it, so "...weight.lora_a2" parsed as side
+        // 'a' and returned 3. Two adapter tensors then mapped to the same
+        // (projection, side) slot and the second silently overwrote the
+        // first, emitting a merged model that is not base+adapter -- the one
+        // outcome this loader exists to refuse.
+        int consumed = -1;
+        if (sscanf(t->name, "blk.%d.%40[a-z_].weight.lora_%c%n", &l, pname,
+                   &side, &consumed) != 3 || consumed < 0 ||
+            t->name[consumed] != 0 || (side != 'a' && side != 'b') || l < 0) {
             fprintf(stderr, "error: adapter tensor '%s' does not name a "
                     "hooked projection\n", t->name);
             return false;
@@ -1118,8 +1161,14 @@ static bool merge_set_resolve(merge_set_t *ms, const char *adapter_path,
             dequant_row(t->type,
                         (const uint8_t *)t->data + row * row_size,
                         dat + row * t->ne[0], (int)t->ne[0]);
-        if (side == 'a') { free(mp->a); mp->a = dat; }
-        else             { free(mp->b); mp->b = dat; }
+        if (side == 'a' ? mp->a != NULL : mp->b != NULL) {
+            fprintf(stderr, "error: adapter declares lora_%c for %s twice\n",
+                    side, bname);
+            free(dat);
+            return false;
+        }
+        if (side == 'a') mp->a = dat;
+        else             mp->b = dat;
     }
     for (uint64_t i = 0; i < base->n_tensors; i++) {
         merge_pair_t *mp = &ms->map[i];
@@ -1473,6 +1522,13 @@ static int quantize_gguf_plan_inner(const char *in_path, const char *out_path, i
     int *out_type = malloc(sizeof(int) * g.n_tensors);
     if (g.n_tensors > 0 && !out_type) w.ok = false;
     uint64_t declined_width = 0;
+    // Declines because the requested type is no SMALLER than the one already
+    // there. That is usually the right call, but two pairs are exactly the
+    // same width and materially different quality -- q4_0/q4_K are both 144 B
+    // per 256 values, q5_0/q5_K both 176 -- so `--quant q4_k` over a Q4_0 file
+    // is a real request that came back as a byte-identical copy with nothing
+    // said about it. Counted and reported, as declined_width already is.
+    uint64_t declined_size = 0;
     bool merge_unwritable = false;
     for (uint64_t i = 0; w.ok && i < g.n_tensors; i++) {
         gguf_tensor *t = &g.tensors[i];
@@ -1497,6 +1553,7 @@ static int quantize_gguf_plan_inner(const char *in_path, const char *out_path, i
             } else if (ggml_row_size(t->type, t->ne[0]) <=
                        ggml_row_size(want, t->ne[0])) {
                 out_type[i] = t->type;   // never grow
+                if ((uint32_t)want != t->type) declined_size++;
             } else {
                 out_type[i] = want;
             }
@@ -1522,8 +1579,10 @@ static int quantize_gguf_plan_inner(const char *in_path, const char *out_path, i
             // for a merged f16 from a 4-bit base is a preservation request,
             // not an accident.
             if (!filtered && !ms && should_quantize(t) && !getenv("RUNNER_FORCE_REQUANT") &&
-                ggml_row_size(t->type, t->ne[0]) <= ggml_row_size(target, t->ne[0]))
+                ggml_row_size(t->type, t->ne[0]) <= ggml_row_size(target, t->ne[0])) {
+                if ((uint32_t)target != t->type) declined_size++;
                 out_type[i] = t->type;
+            }
         }
         // an adapted tensor cannot keep a type this file has no quantizer
         // for — refuse before writing a byte rather than skip the delta
@@ -1548,6 +1607,11 @@ static int quantize_gguf_plan_inner(const char *in_path, const char *out_path, i
         fprintf(stderr, "quantize: %llu tensor(s) kept their own type — the "
                 "requested type's block does not divide their row width\n",
                 (unsigned long long)declined_width);
+    if (w.ok && declined_size)
+        fprintf(stderr, "quantize: %llu tensor(s) kept their own type — the "
+                "requested type is not smaller than what they already carry "
+                "(set RUNNER_FORCE_REQUANT=1 to convert anyway)\n",
+                (unsigned long long)declined_size);
     uint32_t ftype_out = 0;
     if (w.ok && g.n_tensors > 0) {
         // dominant non-f32 output type -> its MOSTLY_* code. The K-quant
@@ -1747,8 +1811,13 @@ static int quantize_gguf_plan_inner(const char *in_path, const char *out_path, i
     }
     free(tmp_path);
 
+    // Under a --type-plan the whole-file `target` decided nothing, so naming
+    // it here described the output as a type no tensor was written in.
     fprintf(stderr, "quantize: %s -> %s (%s): %llu tensors converted, %llu kept\n",
-            in_path, out_path, target == T_KEEP ? "per-tensor unchanged" : ggml_type_name(target),
+            in_path, out_path,
+            type_plan_path ? "per-tensor plan"
+                           : target == T_KEEP ? "per-tensor unchanged"
+                                              : ggml_type_name(target),
             (unsigned long long)quantized, (unsigned long long)kept);
     if (ms)
         fprintf(stderr, "merge: %d adapted projection%s folded into the "

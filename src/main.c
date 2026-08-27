@@ -1406,6 +1406,18 @@ int main(int argc, char **argv) {
     }
     if (quant_out) {
         int tt;
+        // --type-plan decides the type PER TENSOR, so a whole-file --quant
+        // alongside it is an instruction with nowhere to go: the plan branch
+        // in quantize_gguf_plan never reads it, and the summary line then
+        // named a type nothing had been written in. Refused rather than
+        // dropped, the same call --merge-lora + --type-plan already makes.
+        if (quant_type && type_plan) {
+            fprintf(stderr, "error: --quant and --type-plan cannot be used "
+                    "together: the plan decides every tensor's type, so "
+                    "--quant would be silently ignored. Put the whole-file "
+                    "type in the plan's \"default\".\n");
+            return 1;
+        }
         if (quant_type) {
             tt = quantize_type_from_name(quant_type);
             if (tt == -2) {

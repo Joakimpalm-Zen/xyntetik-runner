@@ -28,6 +28,11 @@ static void test_u64(void) {
     assert(parse_u64("512", 0, 1u << 20, &v) && v == 512);
     v = 777;
     assert(!parse_u64("-1", 0, UINT64_MAX, &v));  // strtoull would wrap this
+    // strtoull skips leading whitespace BEFORE applying the sign, so a guard
+    // that only inspected s[0] let the negation through it was written to stop
+    assert(!parse_u64(" -1", 0, UINT64_MAX, &v));
+    assert(!parse_u64("\t-5", 0, UINT64_MAX, &v));
+    assert(!parse_u64("   ", 0, UINT64_MAX, &v));
     assert(!parse_u64("3.5", 0, 100, &v));        // trailing garbage
     assert(!parse_u64("", 0, 100, &v));
     assert(!parse_u64("2000000", 0, 1u << 20, &v)); // above range
