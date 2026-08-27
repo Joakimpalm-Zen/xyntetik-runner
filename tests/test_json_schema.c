@@ -1643,6 +1643,163 @@ static void test_schema_string_length_bounds_close_and_reject(void) {
     jv_free(schema_json);
 }
 
+// JSON Schema measures string length in Unicode code points, independent of
+// whether the model spells one as raw UTF-8 or a \u escape. A byte counter made
+// the first two raw forms exceed maxLength while their escaped twins fit.
+static void test_schema_string_length_counts_code_points(void) {
+    const char *src = "{\"type\":\"string\",\"maxLength\":1}";
+    jv *schema_json = json_parse(src, strlen(src));
+    assert(schema_json != NULL);
+    char err[128];
+    snode *schema = schema_compile(schema_json, err, sizeof(err));
+    assert(schema != NULL);
+
+    const char *one[] = {
+        "\"\xC3\xA9\"",            // U+00E9 as raw UTF-8
+        "\"\\u00e9\"",             // U+00E9 as an escape
+        "\"\xF0\x9F\x98\x80\"",  // U+1F600 as raw UTF-8
+        "\"\\uD83D\\uDE00\"",     // U+1F600 as a surrogate pair
+    };
+    for (size_t i = 0; i < sizeof(one) / sizeof(*one); i++) {
+        sval v;
+        sval_init(&v, schema);
+        if (!sval_feed(&v, one[i], (int)strlen(one[i])) || !v.done)
+            fprintf(stderr, "one code point rejected: %s\n", one[i]);
+        assert(v.done);
+    }
+
+    schema_free(schema);
+    jv_free(schema_json);
+}
+
+static void test_schema_string_length_rejects_at_one_code_point(void) {
+    const char *src = "{\"type\":\"string\",\"maxLength\":1}";
+    jv *schema_json = json_parse(src, strlen(src));
+    assert(schema_json != NULL);
+    char err[128];
+    snode *schema = schema_compile(schema_json, err, sizeof(err));
+    assert(schema != NULL);
+
+    const char *two[] = {
+        "\"\xC3\xA9\xC3\xA9\"",
+        "\"\\u00e9\\u00e9\"",
+        "\"\xF0\x9F\x98\x80\xF0\x9F\x98\x80\"",
+        "\"\\uD83D\\uDE00\\uD83D\\uDE00\"",
+    };
+    for (size_t i = 0; i < sizeof(two) / sizeof(*two); i++) {
+        sval v;
+        sval_init(&v, schema);
+        assert(!sval_feed(&v, two[i], (int)strlen(two[i])) || !v.done);
+    }
+
+    schema_free(schema);
+    jv_free(schema_json);
+}
+
+static void test_schema_utf8_boundary_has_a_legal_continuation(void) {
+    const char *src = "{\"type\":\"string\",\"maxLength\":1}";
+    jv *schema_json = json_parse(src, strlen(src));
+    assert(schema_json != NULL);
+    char err[128];
+    snode *schema = schema_compile(schema_json, err, sizeof(err));
+    assert(schema != NULL);
+
+    sval v, trial;
+    sval_init(&v, schema);
+    assert(sval_feed(&v, "\"", 1));
+    assert(sval_feed(&v, "\xC3", 1));
+    assert(!sval_trial(&v, &trial, "\"", 1));
+    assert(sval_trial(&v, &trial, "\xA9", 1));
+    assert(sval_feed(&v, "\xA9\"", 2));
+    assert(v.done);
+
+    // Once an ASCII code point has spent the only slot, a multibyte lead is
+    // refused at the boundary rather than admitted into a dead prefix.
+    sval_init(&v, schema);
+    assert(sval_feed(&v, "\"a", 2));
+    assert(!sval_trial(&v, &trial, "\xC3", 1));
+
+    schema_free(schema);
+    jv_free(schema_json);
+}
+
+static void test_schema_rejects_unpaired_surrogates(void) {
+    const char *src = "{\"type\":\"string\",\"maxLength\":1}";
+    jv *schema_json = json_parse(src, strlen(src));
+    assert(schema_json != NULL);
+    char err[128];
+    snode *schema = schema_compile(schema_json, err, sizeof(err));
+    assert(schema != NULL);
+
+    const char *bad[] = { "\"\\uD800\"", "\"\\uDC00\"" };
+    for (size_t i = 0; i < sizeof(bad) / sizeof(*bad); i++) {
+        sval v;
+        sval_init(&v, schema);
+        assert(!sval_feed(&v, bad[i], (int)strlen(bad[i])) || !v.done);
+    }
+
+    schema_free(schema);
+    jv_free(schema_json);
+}
+
+static void test_schema_minlength_close_after_multibyte_content(void) {
+    const char *src =
+        "{\"type\":\"string\",\"minLength\":2,\"maxLength\":2}";
+    jv *schema_json = json_parse(src, strlen(src));
+    assert(schema_json != NULL);
+    char err[128];
+    snode *schema = schema_compile(schema_json, err, sizeof(err));
+    assert(schema != NULL);
+
+    // Exercise both a complete raw scalar and truncation after only its lead.
+    const char *partials[] = { "\"\xC3\xA9", "\"\xF0" };
+    for (size_t i = 0; i < sizeof(partials) / sizeof(*partials); i++) {
+        sval v;
+        sval_init(&v, schema);
+        assert(sval_feed(&v, partials[i], (int)strlen(partials[i])));
+        char suffix[64];
+        int n = sval_close(&v, suffix, sizeof(suffix));
+        assert(n > 0);
+        char full[128];
+        snprintf(full, sizeof(full), "%s%s", partials[i], suffix);
+        sval check;
+        sval_init(&check, schema);
+        assert(sval_feed(&check, full, (int)strlen(full)) && check.done);
+        jv *parsed = json_parse(full, strlen(full));
+        assert(parsed != NULL);
+        jv_free(parsed);
+    }
+
+    schema_free(schema);
+    jv_free(schema_json);
+}
+
+static void test_schema_close_finishes_multibyte_map_key(void) {
+    const char *src =
+        "{\"type\":\"object\",\"additionalProperties\":{\"type\":\"string\"}}";
+    jv *schema_json = json_parse(src, strlen(src));
+    assert(schema_json != NULL);
+    char err[128];
+    snode *schema = schema_compile(schema_json, err, sizeof(err));
+    assert(schema != NULL);
+
+    const char *partial = "{\"\xF0";
+    sval v;
+    sval_init(&v, schema);
+    assert(sval_feed(&v, partial, (int)strlen(partial)));
+    char suffix[64];
+    int n = sval_close(&v, suffix, sizeof(suffix));
+    assert(n > 0);
+    char full[128];
+    snprintf(full, sizeof(full), "%s%s", partial, suffix);
+    jv *parsed = json_parse(full, strlen(full));
+    assert(parsed != NULL);
+    jv_free(parsed);
+
+    schema_free(schema);
+    jv_free(schema_json);
+}
+
 static void test_schema_string_minlength_full_close(void) {
     const char *src =
         "{\"type\":\"object\",\"properties\":{"
@@ -2131,6 +2288,12 @@ int main(void) {
     test_schema_oneof_const_numeric_prefixes();
     test_schema_rejects_oversized_oneof_const_scalars();
     test_schema_string_length_bounds_close_and_reject();
+    test_schema_string_length_counts_code_points();
+    test_schema_string_length_rejects_at_one_code_point();
+    test_schema_utf8_boundary_has_a_legal_continuation();
+    test_schema_rejects_unpaired_surrogates();
+    test_schema_minlength_close_after_multibyte_content();
+    test_schema_close_finishes_multibyte_map_key();
     test_schema_string_minlength_full_close();
     test_schema_discriminated_action_args();
     test_schema_union_dispatch_rules();

@@ -102,10 +102,11 @@ void   schema_free(snode *n);
 typedef struct {
     const snode *node;
     uint8_t  phase, sub;
+    uint8_t  utf8_state; // pending raw UTF-8 scalar, range plus bytes remaining
     int32_t  idx;       // array element / object key counter (int32: max/minItems
                         // are bounded only by INT_MAX, so int16 could wrap and
                         // silently drop maxItems enforcement past 32767)
-    int32_t  lit_pos;   // string chars / literal bytes seen (int32: file-sized strings)
+    int32_t  lit_pos;   // string code points / literal bytes seen
     uint16_t disc;      // this object's discriminator choice + 1; 0 = not chosen yet
     uint16_t esc;       // \uXXXX value accumulated so far (see json_escape_hex)
     uint64_t alive;

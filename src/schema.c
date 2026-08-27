@@ -2325,7 +2325,8 @@ static const snode *pick_alt(const snode *u, uint8_t c) {
 // string content byte (frame->sub/esc track escapes, with the pairing rules
 // shared with json_mode -- see json_escape_hex); returns -1 invalid,
 // 0 continue, 1 string closed
-static int str_byte(uint8_t c, uint8_t *sub, uint16_t *esc) {
+static int str_byte(uint8_t c, uint8_t *sub, uint16_t *esc,
+                    uint8_t *utf8_state) {
     if (*sub == 1) { // after backslash
         if (c == '"' || c == '\\' || c == '/' || c == 'b' || c == 'f' ||
             c == 'n' || c == 'r' || c == 't') { *sub = 0; return 0; }
@@ -2335,9 +2336,28 @@ static int str_byte(uint8_t c, uint8_t *sub, uint16_t *esc) {
     if (*sub == 6) { if (c != '\\') return -1; *sub = 7; return 0; }
     if (*sub == 7) { if (c != 'u')  return -1; *sub = 8; return 0; }
     if (*sub >= 2) return json_escape_hex(sub, esc, c) ? 0 : -1;
+    if (*utf8_state) {
+        static const uint8_t LO[]   = { 0, 0x80, 0x80, 0x80, 0xA0, 0x80, 0x90, 0x80 };
+        static const uint8_t HI[]   = { 0, 0xBF, 0xBF, 0xBF, 0xBF, 0x9F, 0xBF, 0x8F };
+        static const uint8_t NEXT[] = { 0, 0,    1,    2,    1,    1,    2,    2 };
+        if (c < LO[*utf8_state] || c > HI[*utf8_state]) return -1;
+        *utf8_state = NEXT[*utf8_state];
+        return 0;
+    }
     if (c == '"') return 1;
     if (c == '\\') { *sub = 1; return 0; }
-    return c >= 0x20 ? 0 : -1;
+    if (c < 0x20) return -1;
+    if (c < 0x80) return 0;
+    if (c >= 0xC2 && c <= 0xDF) { *utf8_state = 1; return 0; }
+    if (c >= 0xE0 && c <= 0xEF) {
+        *utf8_state = c == 0xE0 ? 4 : c == 0xED ? 5 : 2;
+        return 0;
+    }
+    if (c >= 0xF0 && c <= 0xF4) {
+        *utf8_state = c == 0xF0 ? 6 : c == 0xF4 ? 7 : 3;
+        return 0;
+    }
+    return -1;
 }
 
 // number byte; returns -1 invalid, 0 consumed, 1 complete-and-reconsume
@@ -2627,7 +2647,8 @@ static int feed_byte(sval *v, uint8_t c) {
         if (f->sub == 0 && c == '\\' &&
             n->max_items >= 0 && f->lit_pos >= n->max_items)
             return -1;
-        int r = str_byte(c, &f->sub, &f->esc);
+        bool continuing_utf8 = f->utf8_state != 0;
+        int r = str_byte(c, &f->sub, &f->esc, &f->utf8_state);
         if (r < 0) return -1;
         if (r == 1) {
             if (f->lit_pos < n->min_items ||
@@ -2635,7 +2656,7 @@ static int feed_byte(sval *v, uint8_t c) {
                 (n->max_items >= 0 && f->lit_pos > n->max_items))
                 return -1;
             frame_done(v);
-        } else if (f->sub == 0) {
+        } else if (f->sub == 0 && !continuing_utf8) {
             f->lit_pos++;
             if (n->max_items >= 0 && f->lit_pos > n->max_items)
                 return -1;
@@ -2719,10 +2740,11 @@ static int feed_byte(sval *v, uint8_t c) {
 
     case P_OBJ_INKEY: {
         if (n->kind == SN_MAP) {
-            int r = str_byte(c, &f->sub, &f->esc);
+            bool continuing_utf8 = f->utf8_state != 0;
+            int r = str_byte(c, &f->sub, &f->esc, &f->utf8_state);
             if (r < 0) return -1;
             if (r == 1) f->phase = P_OBJ_COLON;
-            else if (f->sub == 0) f->lit_pos++;
+            else if (f->sub == 0 && !continuing_utf8) f->lit_pos++;
             return 0;
         }
         if (c == '"') {
@@ -3005,6 +3027,17 @@ static bool eq_escape(emitq *q, sframe *f) {
     int n = json_escape_close(&f->sub, &f->esc, esc, (int)sizeof(esc));
     for (int i = 0; i < n; i++) eq_putc(q, esc[i]);
     return n > 0;
+}
+
+// A raw UTF-8 lead already consumed one code point. If truncation lands in
+// its continuation bytes, finish that same scalar before writing the quote.
+static void eq_utf8(emitq *q, sframe *f) {
+    static const uint8_t LO[]   = { 0, 0x80, 0x80, 0x80, 0xA0, 0x80, 0x90, 0x80 };
+    static const uint8_t NEXT[] = { 0, 0,    1,    2,    1,    1,    2,    2 };
+    while (f->utf8_state) {
+        eq_putc(q, (char)LO[f->utf8_state]);
+        f->utf8_state = NEXT[f->utf8_state];
+    }
 }
 
 static int64_t integer_minimal_value(const snode *n) {
@@ -3293,6 +3326,7 @@ int sval_close(sval *v, char *out, int cap) {
             // still missing added one filler too many -- straight past
             // maxLength, into a document this grammar itself rejects.
             if (eq_escape(&q, f)) f->lit_pos++;
+            eq_utf8(&q, f);
             int string_min = n->min_items;
             if (n->n_pat && string_min < pat_min_len(n))
                 string_min = pat_min_len(n);
@@ -3353,6 +3387,7 @@ int sval_close(sval *v, char *out, int cap) {
         case P_OBJ_INKEY: {
             if (n->kind == SN_MAP) {
                 eq_escape(&q, f);
+                eq_utf8(&q, f);
                 eq_put(&q, "\":");
                 emit_min_choice(&q, n->items, 0, choice);
                 eq_putc(&q, '}');
