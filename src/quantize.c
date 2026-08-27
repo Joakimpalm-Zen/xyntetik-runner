@@ -639,6 +639,27 @@ static void wr_scalar(writer *w, const gguf_kv *kv, uint32_t type) {
     }
 }
 
+// Keys the output writes itself and must therefore NOT copy from its input.
+//
+// general.file_type is re-derived from the histogram of what was actually
+// written (see the pre-pass below). The split.* trio has to go for a different
+// reason: it describes a MULTI-PART set, and gguf_open merges every part
+// before this writer ever runs, so what comes out is one whole file. Copying
+// the trio declares an N-part model inside a single file, and gguf_open then
+// refuses to open it at all -- "split GGUF filename does not follow
+// <prefix>-00001-of-000NN.gguf" -- while the quantize that produced it exited
+// 0 and printed its tensor counts. llama.cpp reads the same keys, so the
+// artifact was unreadable everywhere, and a split checkpoint is how every
+// model past a few tens of GB ships.
+static bool kv_is_reauthored(const char *key) {
+    static const char *const keys[] = {
+        "general.file_type", "split.no", "split.count", "split.tensors.count",
+    };
+    for (size_t i = 0; i < sizeof(keys) / sizeof(*keys); i++)
+        if (!strcmp(key, keys[i])) return true;
+    return false;
+}
+
 static void wr_kv(writer *w, const gguf_kv *kv) {
     wr_str(w, kv->key, strlen(kv->key));
     wr_u32(w, kv->type);
@@ -1567,14 +1588,16 @@ static int quantize_gguf_plan_inner(const char *in_path, const char *out_path, i
                                    (unsigned long long)counts[k]);
         fprintf(stderr, "\n");
     }
-    bool had_ftype = gguf_get(&g, "general.file_type") != NULL;
+    uint64_t dropped_kv = 0;
+    for (uint64_t i = 0; i < g.n_kv; i++)
+        if (kv_is_reauthored(g.kv[i].key)) dropped_kv++;
 
     wr_u32(&w, 0x46554747);
     wr_u32(&w, 3);
     wr_u64(&w, g.n_tensors);
-    wr_u64(&w, g.n_kv - (had_ftype ? 1 : 0) + 1);
+    wr_u64(&w, g.n_kv - dropped_kv + 1);
     for (uint64_t i = 0; i < g.n_kv; i++) {
-        if (!strcmp(g.kv[i].key, "general.file_type")) continue;
+        if (kv_is_reauthored(g.kv[i].key)) continue;
         wr_kv(&w, &g.kv[i]);
     }
     wr_str(&w, "general.file_type", strlen("general.file_type"));

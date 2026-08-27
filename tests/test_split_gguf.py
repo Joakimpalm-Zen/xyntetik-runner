@@ -69,3 +69,28 @@ def test_missing_part_is_refused_loudly(runner_bin, shards):
 def test_parts_are_real_ggufs(shards):
     for shard in shards:
         assert shard.read_bytes()[:4] == b"GGUF"
+
+
+def _quantize(runner_bin, src, dst):
+    return subprocess.run(
+        [runner_bin, "-m", str(src), "--quantize", str(dst), "--quant", "q8_0"],
+        cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=300)
+
+
+def test_quantizing_a_split_source_yields_a_loadable_single_file(
+        runner_bin, whole, shards, tmp_path):
+    """The quantizer emits ONE file. gguf_open merged the parts before it ran,
+    so an output that still carries the source's split.* keys announces a
+    multi-part set that does not exist -- and the loader refuses it outright,
+    after the quantize exited 0 saying it had converted every tensor."""
+    from_split = tmp_path / "from-split.gguf"
+    from_whole = tmp_path / "from-whole.gguf"
+    for src, dst in ((shards[0], from_split), (whole, from_whole)):
+        done = _quantize(runner_bin, src, dst)
+        assert done.returncode == 0, done.stderr.decode(errors="replace")
+
+    split_run = _run(runner_bin, from_split)
+    whole_run = _run(runner_bin, from_whole)
+    assert whole_run.returncode == 0, whole_run.stderr.decode(errors="replace")
+    assert split_run.returncode == 0, split_run.stderr.decode(errors="replace")
+    assert split_run.stdout == whole_run.stdout
