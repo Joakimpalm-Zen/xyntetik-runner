@@ -719,7 +719,11 @@ uint64_t model_hot_set_bytes(const model_t *m);
 // gguf_open_header(); see model_fit_report()'s comment for what is estimated
 // rather than exact.
 typedef struct {
-    const char *arch;
+    // A bounded, printable COPY of general.architecture, not a pointer into
+    // the mapping: this is reported to a terminal from an unvalidated file
+    // (--fit runs before any admission gate), and the raw bytes are the
+    // file's to choose. See meta_printable() in model.c.
+    char     arch[32];
     int      n_layer, n_ctx, train_ctx, n_expert, n_expert_used;
     bool     sparse;             // routed-MoE: hot set is smaller than weights
     uint64_t weights;            // whole file, per the header

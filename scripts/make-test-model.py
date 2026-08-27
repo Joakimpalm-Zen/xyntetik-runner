@@ -16,6 +16,12 @@ ARCH = "llama"
 AGENT_PROFILE = False
 AGENT_FEATURES = ["dense", "json_schema"]
 MTP_LAYERS = 0   # extra trailing blocks declared as NextN/MTP predictor heads
+# Extra USER_DEFINED tokens appended to the vocabulary, in two length classes.
+# The tokenizer sorts its special list by length; two large equal-length runs
+# in ascending order are the worst case for any quadratic sort, and n_special
+# is the FILE's choice, so this is the shape a hostile GGUF takes to make a
+# load cost minutes of CPU. Not a model feature -- a load-cost fixture.
+SPECIALS = 0
 # Gemma-4 E-series: per-layer embeddings plus a tail of layers that own no KV
 # cache. Both mechanisms are structural, so a tiny random model exercises the
 # load-time geometry, the aliased cache reads and the extra forward stage
@@ -162,6 +168,9 @@ while i < len(args):
         # variation 6144/12288); tensor shapes follow the per-layer widths
         i += 1
         FFN_WIDTHS = [int(w) for w in args[i].split(",")]
+    elif a == "--specials":
+        i += 1
+        SPECIALS = int(args[i])
     elif a == "--mtp-layers":
         # emit N extra blocks and declare them as training-only MTP predictor
         # heads; the runner must exclude them and decode exactly as without
@@ -191,6 +200,11 @@ def g4_hd(i):   return 16 if g4_swa(i) else 32
 def g4_kv(i):   return 1 if g4_swa(i) else 2
 VOCAB = ["<unk>", "<s>", "</s>"] + [f"<0x{i:02X}>" for i in range(256)]
 TTYPE = [2, 3, 3] + [6] * 256  # unknown, control, control, bytes
+if SPECIALS:
+    half = SPECIALS // 2
+    VOCAB += [f"{i:06d}" for i in range(half)]
+    VOCAB += [f"{i:07d}" for i in range(SPECIALS - half)]
+    TTYPE += [4] * SPECIALS      # user-defined: they join the special list
 N_VOCAB = len(VOCAB)
 
 GGUF_U32, GGUF_F32, GGUF_STR, GGUF_ARR, GGUF_I32, GGUF_BOOL = 4, 6, 8, 9, 5, 7
@@ -245,6 +259,14 @@ def rnd():
 
 
 def tensor_data(n, scale=1.0):
+    # --specials makes the embedding table enormous, and a per-float LCG in
+    # Python then dominates the generator's runtime (36 s for one fixture).
+    # Tile a random block instead once the tensor is large: the numbers are
+    # gibberish either way, and no fixture below this size changes at all.
+    if n > (1 << 20):
+        block = [rnd() * scale for _ in range(1 << 16)]
+        raw = struct.pack(f"<{1 << 16}f", *block)
+        return (raw * (n // (1 << 16) + 1))[:n * 4]
     return struct.pack(f"<{n}f", *(rnd() * scale for _ in range(n)))
 
 

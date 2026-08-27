@@ -11,6 +11,7 @@ import pathlib
 import struct
 import subprocess
 import sys
+import time
 
 import pytest
 
@@ -46,6 +47,41 @@ def _patch_u32(src, dst, key, value):
     kind = struct.unpack_from("<I", b, j)[0]
     assert kind == 4, f"{key} is type {kind}, not U32"
     struct.pack_into("<I", b, j + 4, value)
+    dst.write_bytes(bytes(b))
+    return dst
+
+
+def _patch_str_value(src, dst, key, value):
+    """Rewrite one STR-typed metadata value in place, same length as before.
+
+    Same-length so nothing after it moves and the file stays structurally
+    valid -- the point is the bytes, not the layout.
+    """
+    b = bytearray(src.read_bytes())
+    k = struct.pack("<Q", len(key)) + key.encode()
+    i = b.find(k)
+    assert i >= 0, f"{key} not found in {src}"
+    j = i + len(k)
+    kind = struct.unpack_from("<I", b, j)[0]
+    assert kind == 8, f"{key} is type {kind}, not STR"
+    n = struct.unpack_from("<Q", b, j + 4)[0]
+    assert len(value) == n, f"{key} is {n} bytes, replacement is {len(value)}"
+    b[j + 12:j + 12 + n] = value
+    dst.write_bytes(bytes(b))
+    return dst
+
+
+def _patch_length_prefixed(src, dst, old, new):
+    """Replace the first length-prefixed string equal to `old`, same length.
+
+    Reaches array ELEMENTS, which the keyed helpers above cannot: a
+    vocabulary entry has no key of its own.
+    """
+    assert len(old) == len(new)
+    b = bytearray(src.read_bytes())
+    i = b.find(struct.pack("<Q", len(old)) + old)
+    assert i >= 0, f"{old!r} not found in {src}"
+    b[i + 8:i + 8 + len(old)] = new
     dst.write_bytes(bytes(b))
     return dst
 
@@ -565,3 +601,142 @@ def test_gemma3_sliding_pattern_of_zero_is_not_a_divisor(runner_bin, tmp_path):
         pytest.skip("sanitizer build absent or stale (make debug)")
     err = _run(debug_bin, bad).stderr.decode(errors="replace")
     assert "division by zero" not in err, err[:400]
+
+
+def test_a_large_special_token_list_does_not_cost_quadratic_time(
+        runner_bin, tmp_path):
+    """n_special is the FILE's choice, and the sort over it was insertion sort.
+
+    The special list is built one entry per vocabulary token whose
+    tokenizer.ggml.token_type is CONTROL or USER_DEFINED, with no cap, and it
+    is ordered by token length. Two large equal-length runs in ascending
+    length order are the worst case for any quadratic sort, so a GGUF that
+    shapes its vocabulary that way buys n^2 comparisons at load: measured at
+    1.2 s for 100k specials, 4.8 s for 200k, 11.4 s for 300k, and minutes at
+    the vocabulary sizes a real download can carry. Under --serve that time is
+    spent inside a model swap, so one request naming the file parks the slot
+    for all of it.
+
+    The budget is deliberately loose. This fixture took 7.5 s before the sort
+    was replaced and 0.5 s after, so anything in between separates them; what
+    the gate is really pinning is that the cost is not quadratic.
+    """
+    model = tmp_path / "specials.gguf"
+    subprocess.run(
+        [sys.executable, ROOT / "scripts/make-test-model.py",
+         "--specials", "250000", str(model)],
+        check=True, cwd=ROOT, stdout=subprocess.DEVNULL)
+
+    started = time.monotonic()
+    proc = _run(runner_bin, str(model))
+    elapsed = time.monotonic() - started
+    assert proc.returncode == 0, proc.stderr.decode(errors="replace")
+    assert elapsed < 5.0, f"loading 250k special tokens took {elapsed:.1f}s"
+
+
+def test_qwen35_ssm_geometry_is_bounded_like_its_siblings(runner_bin, tmp_path):
+    """granitehybrid and nemotron_h bound these fields; qwen35's copy did not.
+
+    The two sibling Mamba-style gates cap ssm_inner and ssm_state at
+    MDL_DIM_MAX and conv_kernel at 8. qwen35's gate checks the ratios and the
+    signs and nothing else, so a file could pass it with values whose product
+    overflows the plain `int` that carries them:
+
+        conv_dim = 2 * ssm_state * ssm_groups + ssm_inner
+
+    at state 65536, groups 1 and inner 2147352576 is exactly 2^31 -- signed
+    overflow, the same UB this file already refuses elsewhere -- and a
+    negative conv_dim then makes check_shape's row test vacuous, so the qkv
+    and conv1d tensors are admitted at any row count at all. The ratio tests
+    are satisfied by construction here (inner / time_step_rank == state), so
+    only a range check can catch it.
+    """
+    good = tmp_path / "q35.gguf"
+    subprocess.run(
+        [sys.executable, ROOT / "scripts/make-test-ornith.py", str(good)],
+        check=True, cwd=ROOT, stdout=subprocess.DEVNULL)
+    bad = _patch_u32(good, tmp_path / "q35-inner.gguf",
+                     "qwen35.ssm.state_size", 65536)
+    bad = _patch_u32(bad, tmp_path / "q35-inner2.gguf",
+                     "qwen35.ssm.time_step_rank", 32766)
+    bad = _patch_u32(bad, tmp_path / "q35-inner3.gguf",
+                     "qwen35.ssm.inner_size", 2147352576)
+
+    assert _run(runner_bin, str(good)).returncode == 0, \
+        "the unmodified fixture must run"
+    proc = _run(runner_bin, str(bad))
+    assert proc.returncode != 0
+    err = proc.stderr.decode(errors="replace")
+    assert "invalid qwen35 Gated DeltaNet geometry" in err, err[:400]
+
+
+def test_negative_shared_expert_width_is_refused(runner_bin, tmp_path):
+    """Only the upper bound was tested, so a negative width read as "absent".
+
+    expert_shared_feed_forward_length is read through a `(int)` cast, and
+    0x80000000 becomes INT_MIN -- which is not greater than MDL_DIM_MAX, so
+    the gate passed it. Every later use asks `n_ff_shexp > 0`, so the shared
+    expert's three tensors were never bound and shexp_add returned
+    immediately: the always-on branch of the FFN silently vanished and the
+    model answered as a different architecture with nothing said. The
+    nemotron_h_moe gate has tested `< 0` all along.
+    """
+    subprocess.run(
+        [sys.executable, ROOT / "scripts/make-test-moe.py", str(tmp_path / "moe")],
+        check=True, cwd=ROOT, stdout=subprocess.DEVNULL)
+    good = tmp_path / "moe.shexp.gguf"
+    bad = _patch_u32(good, tmp_path / "moe-shexp-neg.gguf",
+                     "llama.expert_shared_feed_forward_length", 0x80000000)
+
+    assert _run(runner_bin, str(good)).returncode == 0, \
+        "the unmodified fixture must run"
+    proc = _run(runner_bin, str(bad))
+    assert proc.returncode != 0, "a negative shared-expert width must be refused"
+    assert "shared-expert FFN width" in proc.stderr.decode(errors="replace")
+
+
+def test_metadata_strings_are_not_echoed_to_the_terminal_raw(runner_bin, tmp_path):
+    """general.architecture is attacker bytes, and the refusal path prints it.
+
+    An unknown architecture is refused with a message that quotes the name --
+    which is the FIRST thing a hostile file reaches, before any other gate.
+    The value has no length limit and no character restriction, so raw bytes
+    there can retitle the terminal, clear the screen and forge output that
+    reads as the runner's own.
+    """
+    good = tmp_path / "esc.gguf"
+    subprocess.run(
+        [sys.executable, ROOT / "scripts/make-test-model.py", str(good)],
+        check=True, cwd=ROOT, stdout=subprocess.DEVNULL)
+    # "llama" is 5 bytes; the replacement is an ESC-led CSI of the same length
+    bad = _patch_str_value(good, tmp_path / "esc-arch.gguf",
+                           "general.architecture", b"\x1b[2Jx")
+
+    proc = _run(runner_bin, str(bad))
+    assert proc.returncode != 0, "an unknown architecture must be refused"
+    err = proc.stderr.decode(errors="replace")
+    assert "unsupported architecture" in err, err[:400]
+    assert "\x1b" not in err, repr(err[:200])
+
+
+def test_a_vocabulary_string_with_an_embedded_nul_is_refused(runner_bin, tmp_path):
+    """The scalar-string rule was never applied to array ELEMENTS.
+
+    gguf.c refuses an embedded NUL in a scalar string because the value is
+    exposed as a C string and bytes past the NUL would be invisible to every
+    consumer -- so the value validated and the value on disk differ. A
+    vocabulary entry has exactly that exposure: tok_raw hands it out as a C
+    string and engine.c takes its strlen to feed the constrained-decoding
+    machine, which then acts on fewer bytes than the file declares.
+    """
+    good = tmp_path / "nul.gguf"
+    subprocess.run(
+        [sys.executable, ROOT / "scripts/make-test-model.py", str(good)],
+        check=True, cwd=ROOT, stdout=subprocess.DEVNULL)
+    bad = _patch_length_prefixed(good, tmp_path / "nul-token.gguf",
+                                 b"<0x41>", b"AB\x00CDE")
+
+    assert _run(runner_bin, str(good)).returncode == 0, \
+        "the unmodified fixture must run"
+    assert _run(runner_bin, str(bad)).returncode != 0, \
+        "a vocabulary string with an embedded NUL must be refused"

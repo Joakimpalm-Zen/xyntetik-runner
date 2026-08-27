@@ -528,6 +528,20 @@ static uint64_t fit_routed_expert_bytes(const gguf_file *g) {
     return wb;
 }
 
+// A metadata string, made safe to PRINT. Values like general.architecture are
+// attacker-chosen bytes of unbounded length, and the first thing a hostile file
+// reaches is a message that echoes one back -- a refusal, or --fit, which runs
+// before any admission gate at all. An escape sequence there retitles the
+// terminal, clears the screen and forges output that reads as the runner's own.
+// Comparisons stay on the raw string; only messages use the copy.
+static char *meta_printable(char *dst, size_t cap, const char *src) {
+    size_t n = 0;
+    for (; src && *src && n + 1 < cap; src++)
+        dst[n++] = (*src >= 0x20 && *src < 0x7F) ? *src : '?';
+    dst[n] = 0;
+    return dst;
+}
+
 bool model_fit_report(gguf_file *g, int n_ctx_want, model_fit *out) {
     memset(out, 0, sizeof(*out));
     char key[128];
@@ -535,7 +549,7 @@ bool model_fit_report(gguf_file *g, int n_ctx_want, model_fit *out) {
     if (!arch || !*arch) return false;
     #define FK(fmt) (snprintf(key, sizeof(key), "%s." fmt, arch), key)
 
-    out->arch      = arch;
+    meta_printable(out->arch, sizeof(out->arch), arch);
     out->n_layer   = (int)gguf_get_u32(g, FK("block_count"), 0);
     int n_embd     = (int)gguf_get_u32(g, FK("embedding_length"), 0);
     int n_head     = (int)gguf_get_u32(g, FK("attention.head_count"), 0);
@@ -1382,14 +1396,15 @@ static bool model_bind_weights(model_t *m, const char *path, const model_params 
     model_record_file_id(m, path);
 
     const char *arch = gguf_get_str(g, "general.architecture", "?");
-    snprintf(m->arch, sizeof(m->arch), "%s", arch);
+    // m->arch is what every message below prints; `arch` is what they compare.
+    meta_printable(m->arch, sizeof(m->arch), arch);
     // architectures whose weights load fine llama-style but whose math is
     // silently wrong without arch-specific handling (scalar multipliers,
     // logit softcapping): refuse instead of generating plausible gibberish
     if (strcmp(arch, "gemma2") == 0 ||
         strcmp(arch, "gemma") == 0) {
         fprintf(stderr, "error: unsupported architecture '%s' — it would load "
-                "but produce incorrect output without its scaling/softcapping\n", arch);
+                "but produce incorrect output without its scaling/softcapping\n", m->arch);
         return false;
     }
     size_t n_arch;
@@ -1409,12 +1424,12 @@ static bool model_bind_weights(model_t *m, const char *path, const model_params 
             fprintf(stderr, "error: unsupported architecture '%s' — refusing "
                     "to run it through llama-style math (set "
                     "RUNNER_ALLOW_UNKNOWN_ARCH=1 to try anyway, EXPERIMENTAL: "
-                    "output may be silently wrong)\n", arch);
+                    "output may be silently wrong)\n", m->arch);
             return false;
         }
         fprintf(stderr, "warning: architecture '%s' is UNSUPPORTED; "
                 "RUNNER_ALLOW_UNKNOWN_ARCH is set — attempting llama-style "
-                "load, output may be silently wrong\n", arch);
+                "load, output may be silently wrong\n", m->arch);
     }
     char key[128];
     #define AK(fmt) (snprintf(key, sizeof(key), "%s." fmt, arch), key)
@@ -1605,8 +1620,18 @@ static bool model_bind_weights(model_t *m, const char *path, const model_params 
         m->ssm_state         = (int)gguf_get_u32(g, AK("ssm.state_size"), 0);
         m->ssm_v_heads       = (int)gguf_get_u32(g, AK("ssm.time_step_rank"), 0);
         m->ssm_groups        = (int)gguf_get_u32(g, AK("ssm.group_count"), 0);
-        if (m->full_attn_interval <= 0 || m->ssm_conv_kernel <= 0 ||
-            m->ssm_inner <= 0 || m->ssm_state <= 0 ||
+        // The ratio tests below say the fields agree with each other; the
+        // range tests say they fit the `int` arithmetic that carries them.
+        // Both sibling Mamba-style gates (granitehybrid, nemotron_h) have had
+        // these ceilings all along and this one did not, so a file could
+        // satisfy every ratio with values whose conv_dim
+        // (2 * ssm_state * ssm_groups + ssm_inner) overflows a signed int --
+        // UB, and a negative conv_dim then makes check_shape's row test
+        // vacuous, admitting attn_qkv and ssm_conv1d at any row count.
+        if (m->full_attn_interval <= 0 ||
+            m->ssm_conv_kernel <= 0 || m->ssm_conv_kernel > 8 ||
+            m->ssm_inner <= 0 || m->ssm_inner > MDL_DIM_MAX ||
+            m->ssm_state <= 0 || m->ssm_state > MDL_DIM_MAX ||
             m->ssm_v_heads <= 0 || m->ssm_groups <= 0 ||
             m->ssm_inner % m->ssm_v_heads != 0 ||
             m->ssm_inner / m->ssm_v_heads != m->ssm_state ||
@@ -2260,7 +2285,14 @@ static bool model_bind_weights(model_t *m, const char *path, const model_params 
             if (dflt > MDL_DIM_MAX) dflt = MDL_DIM_MAX + 1;   // refused below
             m->n_ff_shexp = (int)gguf_get_u32(
                 g, AK("expert_shared_feed_forward_length"), (uint32_t)dflt);
-            if (m->n_ff_shexp > MDL_DIM_MAX) {
+            // `< 0` and not only the ceiling: the read is a (int) cast of a
+            // u32, so 0x80000000 lands on INT_MIN, which is not out of range
+            // by the upper test. Every later use asks `n_ff_shexp > 0`, so the
+            // shared expert's tensors were never bound and shexp_add returned
+            // at its first line -- the always-on branch of the FFN silently
+            // gone, the model answering as a different architecture with
+            // nothing said. nemotron_h_moe's gate has tested this all along.
+            if (m->n_ff_shexp < 0 || m->n_ff_shexp > MDL_DIM_MAX) {
                 fprintf(stderr, "error: shared-expert FFN width %d is out of "
                         "range (expert_shared_count=%d, expert width=%d)\n",
                         m->n_ff_shexp, nsh, m->n_ff_exp);
@@ -2289,11 +2321,11 @@ static bool model_bind_weights(model_t *m, const char *path, const model_params 
     if (!m->qwen35 && !m->granite_hybrid && !m->nemotron_h &&
         gguf_get(g, AK("ssm.conv_kernel"))) {
         fprintf(stderr, "error: '%s' is a hybrid SSM/attention architecture — "
-                "only pure-transformer llama-family models are supported\n", arch);
+                "only pure-transformer llama-family models are supported\n", m->arch);
         return false;
     }
     if (m->n_layer <= 0 || m->n_embd <= 0 || m->n_head <= 0 || m->n_ff <= 0) {
-        fprintf(stderr, "error: missing model hyperparameters for arch '%s'\n", arch);
+        fprintf(stderr, "error: missing model hyperparameters for arch '%s'\n", m->arch);
         return false;
     }
     // context_length is read as a u32 into an int, so anything above INT_MAX

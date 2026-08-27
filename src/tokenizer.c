@@ -97,22 +97,43 @@ static int u8_encode(uint32_t cp, char *out) {
 
 // ---------------------------------------------------------------- init
 
-static int cmp_special(const void *a, const void *b, void *ctx) {
-    tokenizer *t = ctx;
-    uint64_t la = t->tokens[*(const int *)a].n, lb = t->tokens[*(const int *)b].n;
-    return la < lb ? 1 : la > lb ? -1 : 0;
+// Length descending, then id ascending. The id tiebreak is what lets plain
+// qsort stand in for the stable insertion sort this replaced: the list is
+// built in ascending id order, so a stable sort leaves equal-length runs in id
+// order and this comparator reproduces that exactly. It also makes the
+// ordering a TOTAL order, which qsort requires and a bare length compare is
+// not.
+typedef struct { uint64_t n; int id; } special_key;
+
+static int cmp_special_key(const void *a, const void *b) {
+    const special_key *x = a, *y = b;
+    if (x->n != y->n) return x->n < y->n ? 1 : -1;
+    return x->id < y->id ? -1 : x->id > y->id ? 1 : 0;
 }
 
-// qsort_r portability shim: simple insertion sort (special token lists are tiny)
-static void sort_specials(tokenizer *t) {
-    for (int i = 1; i < t->n_special; i++) {
-        int key = t->special_ids[i], j = i - 1;
-        while (j >= 0 && cmp_special(&t->special_ids[j], &key, t) > 0) {
-            t->special_ids[j + 1] = t->special_ids[j];
-            j--;
-        }
-        t->special_ids[j + 1] = key;
-    }
+// qsort_r is not portable, so the ordering key is materialised rather than
+// passed as context.
+//
+// This was an insertion sort, on the reading that "special token lists are
+// tiny". That is the FILE's choice, not an invariant: n_special is built from
+// tokenizer.ggml.token_type, one entry per vocabulary token, with no cap. A
+// GGUF whose specials fall into two large equal-length runs in ascending order
+// is the worst case for any quadratic sort, and the cost is exactly n^2 --
+// measured on a generated fixture: 1.2 s at 100k specials, 4.8 s at 200k,
+// 11.4 s at 300k, minutes at the vocabulary sizes a real download can carry.
+// In --serve that time is spent inside a swap, so one request naming a hostile
+// model parks the slot for the whole of it.
+static bool sort_specials(tokenizer *t) {
+    if (t->n_special <= 1) return true;
+    special_key *keys = malloc(sizeof(*keys) * (size_t)t->n_special);
+    if (!keys) return false;
+    for (int i = 0; i < t->n_special; i++)
+        keys[i] = (special_key){ t->tokens[t->special_ids[i]].n,
+                                 t->special_ids[i] };
+    qsort(keys, (size_t)t->n_special, sizeof(*keys), cmp_special_key);
+    for (int i = 0; i < t->n_special; i++) t->special_ids[i] = keys[i].id;
+    free(keys);
+    return true;
 }
 
 // Regroup the sorted special list by first byte, in place of an n_vocab-sized
@@ -284,7 +305,7 @@ bool tokenizer_init(tokenizer *t, gguf_file *g) {
         if ((tt == TT_CONTROL || tt == TT_USER_DEFINED) && t->tokens[i].n > 0)
             t->special_ids[t->n_special++] = i;
     }
-    sort_specials(t);
+    if (!sort_specials(t)) return false;
     if (!bucket_specials(t)) return false;
 
     if (t->model == TOK_BPE || t->model == TOK_BPE_SPM) {

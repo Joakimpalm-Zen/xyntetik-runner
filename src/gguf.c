@@ -83,8 +83,15 @@ static bool rd_kv_value(cursor *c, gguf_kv *kv, uint32_t type) {
                 if (kv->arr_n > SIZE_MAX / sizeof(gg_str)) return false;
                 kv->arr_str = calloc((size_t)kv->arr_n, sizeof(gg_str));
                 if (kv->arr_n > 0 && !kv->arr_str) return false;
+                // Same rule as the scalar branch above, and for the same
+                // reason: tokenizer.ggml.tokens is exposed as a C string by
+                // tok_raw, and engine.c takes its strlen to feed the
+                // constrained-decoding machine. An embedded NUL makes that
+                // length disagree with the one the file declares, so the
+                // bytes acted on are not the bytes the vocabulary holds.
                 for (uint64_t i = 0; i < kv->arr_n; i++)
-                    if (!rd_str(c, &kv->arr_str[i])) return false;
+                    if (!rd_str(c, &kv->arr_str[i]) ||
+                        str_has_nul(&kv->arr_str[i])) return false;
             } else if (kv->arr_type < GGUF_T_F64 + 1 && kv->arr_type != GGUF_T_ARR) {
                 size_t es = gguf_scalar_size[kv->arr_type];
                 if (es == 0 || kv->arr_n > SIZE_MAX / es ||
