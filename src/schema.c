@@ -489,8 +489,15 @@ static bool compile_number_bounds(jv *s, snode *n, char *err, int errcap) {
     state = numeric_keyword(s, "exclusiveMinimum", &x);
     if (state == NUMERIC_INVALID) goto bad;
     if (state == NUMERIC_VALID) {
-        n->real_min = x; n->has_real_min = true;
-        n->real_min = nextafter(n->real_min, DBL_MAX);
+        // INTERSECT with `minimum`, never replace it. A schema carrying both
+        // keywords means both, and overwriting let whichever was written
+        // second win -- so `{"minimum":10,"exclusiveMinimum":5}` accepted 7,
+        // a value the caller declared out of range. compile_integer_bounds
+        // has always taken the tighter of the two; this is the same rule for
+        // the real-valued arm.
+        double v = nextafter(x, DBL_MAX);
+        if (!n->has_real_min || v > n->real_min) n->real_min = v;
+        n->has_real_min = true;
     }
     state = numeric_keyword(s, "maximum", &x);
     if (state == NUMERIC_INVALID) goto bad;
@@ -500,7 +507,9 @@ static bool compile_number_bounds(jv *s, snode *n, char *err, int errcap) {
     state = numeric_keyword(s, "exclusiveMaximum", &x);
     if (state == NUMERIC_INVALID) goto bad;
     if (state == NUMERIC_VALID) {
-        n->real_max = nextafter(x, -DBL_MAX); n->has_real_max = true;
+        double v = nextafter(x, -DBL_MAX);
+        if (!n->has_real_max || v < n->real_max) n->real_max = v;
+        n->has_real_max = true;
     }
     if (n->has_real_min && n->has_real_max && n->real_min > n->real_max) {
         snprintf(err, errcap, "empty number bounds");
@@ -2438,22 +2447,30 @@ static bool integer_prefix_viable(const snode *n, const sframe *f) {
     return false;
 }
 
-static bool integer_take_byte(const snode *n, sframe *f, uint8_t c) {
+// Same tri-state as num_byte, and it is the same verdict: -1 invalid,
+// 0 consumed, 1 the integer is complete and `c` belongs to the parent. The
+// completion signal has to travel out of here rather than be re-derived by the
+// caller, because num_byte ends an integer at `0` followed by ANY byte (RFC
+// 8259 forbids `01`) while the caller could only ask whether the byte looked
+// like a terminator. A digit does not, so `01` was consumed silently: the
+// document went out as JSON no reader accepts, and f->num_abs stayed at 0, so
+// every bound was satisfied by a value the model never wrote.
+static int integer_take_byte(const snode *n, sframe *f, uint8_t c) {
     uint8_t before = f->sub;
     int r = num_byte(c, &f->sub, true);
-    if (r != 0) return r > 0 && integer_in_bounds(n, f);
+    if (r != 0) return (r > 0 && integer_in_bounds(n, f)) ? 1 : -1;
     if (before == N_START && c == '-') {
         f->lit_pos = -1;
-        return !n->has_num_min || n->num_min < 0;
+        return (!n->has_num_min || n->num_min < 0) ? 0 : -1;
     }
     if (c >= '0' && c <= '9') {
-        if (f->num_abs > (uint64_t)JSON_SAFE_INTEGER / 10) return false;
+        if (f->num_abs > (uint64_t)JSON_SAFE_INTEGER / 10) return -1;
         f->num_abs = f->num_abs * 10 + (uint64_t)(c - '0');
-        if (f->num_abs > (uint64_t)JSON_SAFE_INTEGER) return false;
+        if (f->num_abs > (uint64_t)JSON_SAFE_INTEGER) return -1;
         if (f->lit_pos == 0) f->lit_pos = 1;
-        return integer_prefix_viable(n, f);
+        return integer_prefix_viable(n, f) ? 0 : -1;
     }
-    return true;
+    return 0;
 }
 
 // A constrained document must begin with its opening token: whitespace before
@@ -2539,7 +2556,9 @@ static int feed_byte(sval *v, uint8_t c) {
         case SN_INT:
             f->phase = P_NUM; f->sub = N_START; f->lit_pos = 0; f->num_abs = 0;
             v->num_len = 0;
-            if (n->kind == SN_INT) return integer_take_byte(n, f, c) ? 0 : -1;
+            // opening byte: num_byte cannot report completion out of N_START,
+            // so this is only ever "accepted" or "rejected"
+            if (n->kind == SN_INT) return integer_take_byte(n, f, c) < 0 ? -1 : 0;
             // a minus under a non-negative minimum is a dead prefix: no
             // suffix can ever satisfy the bound, and the only exit would be
             // an all-tokens-masked stall — reject it up front (the integer
@@ -2648,11 +2667,9 @@ static int feed_byte(sval *v, uint8_t c) {
 
     case P_NUM: {
         if (n->kind == SN_INT) {
-            uint8_t before = f->sub;
-            if (!integer_take_byte(n, f, c)) return -1;
-            if (before == N_ZERO || before == N_INT) {
-                if (!(c >= '0' && c <= '9')) { frame_done(v); return 1; }
-            }
+            int r = integer_take_byte(n, f, c);
+            if (r < 0) return -1;
+            if (r > 0) { frame_done(v); return 1; }
             return 0;
         }
         int r = num_byte(c, &f->sub, false);
@@ -2942,7 +2959,9 @@ bool sval_feed(sval *v, const char *s, int len) {
 
 // ---------------------------------------------------------------- close
 
-typedef struct { char *out; int cap, n; } emitq;
+// `reserve` is headroom the FILL loops may not touch, so the structural tail
+// behind them always fits. See sval_close, which sets it.
+typedef struct { char *out; int cap, n, reserve; } emitq;
 
 static void eq_put(emitq *q, const char *s) {
     while (*s && q->n < q->cap - 1) q->out[q->n++] = *s++;
@@ -2954,15 +2973,24 @@ static void eq_putc(emitq *q, char c) {
 // minLength loops below stop there. Without this they still iterate to the
 // declared bound, and minItems:2000000000 (nested, worse) spins for minutes
 // while a slot is held.
-static bool eq_full(const emitq *q) { return q->n >= q->cap - 1; }
+//
+// They stop `reserve` bytes SHORT of full, because stopping at the last byte
+// left no room for the `]` / `}` / `"` behind them and eq_putc dropped it
+// silently: a `[` closed under minItems:5000 came back as 4095 filler bytes
+// and no bracket at all. A document that parses and is short of its minItems
+// is something a caller can read; one that does not parse is not.
+static bool eq_full(const emitq *q) { return q->n + q->reserve >= q->cap - 1; }
 
 // Finish the string escape generation stopped inside, if any. Shared with
 // json_mode's closer so the two cannot disagree about what a partial escape
-// completes to -- see json_escape_close.
-static void eq_escape(emitq *q, sframe *f) {
+// completes to -- see json_escape_close. Reports whether it completed a
+// CHARACTER, which the length accounting has not counted yet: feed_byte
+// advances lit_pos only once an escape closes.
+static bool eq_escape(emitq *q, sframe *f) {
     char esc[12];
     int n = json_escape_close(&f->sub, &f->esc, esc, (int)sizeof(esc));
     for (int i = 0; i < n; i++) eq_putc(q, esc[i]);
+    return n > 0;
 }
 
 static int64_t integer_minimal_value(const snode *n) {
@@ -3209,7 +3237,10 @@ static void close_members(emitq *q, const snode *n, int from, bool first,
 }
 
 int sval_close(sval *v, char *out, int cap) {
-    emitq q = { out, cap, 0 };
+    // One closing byte per frame still open, plus the one this frame writes
+    // and the NUL. SVAL_MAX_DEPTH bounds v->depth, so this is a small fixed
+    // reservation against a fill bound the request chose.
+    emitq q = { out, cap, 0, v->depth + 2 };
     if (v->done) { out[0] = 0; return 0; }
     // Nothing generated at all — the root value never opened, so there is no
     // partial document to complete. Emit nothing.
@@ -3243,7 +3274,11 @@ int sval_close(sval *v, char *out, int cap) {
             emit_min_choice(&q, n, 0, choice);
             break;
         case P_STR:
-            eq_escape(&q, f);   // a dangling backslash or a partial \uXXXX
+            // a dangling backslash or a partial \uXXXX. The character it
+            // completes is one lit_pos never saw, and padding as if it were
+            // still missing added one filler too many -- straight past
+            // maxLength, into a document this grammar itself rejects.
+            if (eq_escape(&q, f)) f->lit_pos++;
             int string_min = n->min_items;
             if (n->n_pat && string_min < pat_min_len(n))
                 string_min = pat_min_len(n);

@@ -1006,6 +1006,161 @@ static void test_schema_integer_bounds_are_enforced(void) {
     jv_free(schema_json);
 }
 
+// RFC 8259 has no leading zeros, and the constrained document is the ONE place
+// that guarantee is supposed to be free. It was not: the integer machine
+// re-derived "the number ended" from the byte instead of taking num_byte's
+// verdict, so a digit after `0` was swallowed silently. Two failures ride on
+// the one bug -- the document goes out as JSON nothing can parse (the runner's
+// own reader refuses it, so a tool call's arguments are unreadable), and the
+// running value stays 0, so every bound is satisfied by a number the model
+// never wrote.
+static void test_schema_integer_rejects_leading_zeros(void) {
+    const char *src =
+        "{\"type\":\"object\",\"properties\":{"
+        "\"n\":{\"type\":\"integer\",\"minimum\":0,\"maximum\":100}"
+        "},\"required\":[\"n\"]}";
+    jv *schema_json = json_parse(src, strlen(src));
+    assert(schema_json != NULL);
+    char err[128];
+    snode *schema = schema_compile(schema_json, err, sizeof(err));
+    assert(schema != NULL);
+
+    const char *bad[] = { "{\"n\":01}", "{\"n\":007}", "{\"n\":0999999}",
+                          "{\"n\":-01}" };
+    for (size_t i = 0; i < sizeof(bad) / sizeof(*bad); i++) {
+        sval v;
+        sval_init(&v, schema);
+        bool fed = sval_feed(&v, bad[i], (int)strlen(bad[i]));
+        assert(!fed || !v.done);
+        // and whatever WAS accepted must still parse as JSON, or the client
+        // receives a body no reader can open
+        if (fed) {
+            jv *parsed = json_parse(bad[i], strlen(bad[i]));
+            assert(parsed == NULL);
+            jv_free(parsed);
+        }
+    }
+
+    // the single zero itself is a legal integer and must still pass
+    const char *good = "{\"n\":0}";
+    sval v;
+    sval_init(&v, schema);
+    assert(sval_feed(&v, good, (int)strlen(good)) && v.done);
+
+    schema_free(schema);
+    jv_free(schema_json);
+}
+
+// `minimum` and `exclusiveMinimum` in one schema mean BOTH. The real-valued
+// arm replaced the first with the second instead of intersecting them, so the
+// looser of the two won and a request that asked for two floors got the lower
+// one. compile_integer_bounds has always taken the max; this pins the same
+// rule for `"type":"number"`.
+static void test_schema_number_bounds_intersect_their_exclusive_twins(void) {
+    const char *cases[][2] = {
+        { "{\"type\":\"number\",\"minimum\":10,\"exclusiveMinimum\":5}", "7" },
+        { "{\"type\":\"number\",\"exclusiveMinimum\":10,\"minimum\":5}", "7" },
+        { "{\"type\":\"number\",\"maximum\":5,\"exclusiveMaximum\":100}", "50" },
+        { "{\"type\":\"number\",\"exclusiveMaximum\":5,\"maximum\":100}", "50" },
+    };
+    for (size_t i = 0; i < sizeof(cases) / sizeof(*cases); i++) {
+        jv *schema_json = json_parse(cases[i][0], strlen(cases[i][0]));
+        assert(schema_json != NULL);
+        char err[128];
+        snode *schema = schema_compile(schema_json, err, sizeof(err));
+        assert(schema != NULL);
+        sval v;
+        sval_init(&v, schema);
+        const char *bad = cases[i][1];
+        bool prefix_ok = sval_feed(&v, bad, (int)strlen(bad));
+        // the delimiter is the observable attempt to finish an out-of-range
+        // number; an impossible prefix may be refused earlier
+        assert(!prefix_ok || !sval_feed(&v, " ", 1));
+        schema_free(schema);
+        jv_free(schema_json);
+    }
+}
+
+// The one thing sval_close owes its caller is a document that PARSES. The
+// minItems / minLength fills are the only unbounded emitters in it, both
+// bounds are the request's to choose up to INT_MAX, and they used to eat the
+// buffer to its last byte -- after which the structural closers behind them
+// were silently dropped and the turn went out as JSON no reader accepts.
+static void test_schema_close_never_drops_its_closers(void) {
+    const char *cases[][2] = {
+        { "{\"type\":\"array\",\"items\":{\"type\":\"integer\"},"
+          "\"minItems\":5000}", "[" },
+        { "{\"type\":\"string\",\"minLength\":9000}", "\"ab" },
+        { "{\"type\":\"object\",\"properties\":{"
+          "\"a\":{\"type\":\"array\",\"items\":{\"type\":\"integer\"},"
+          "\"minItems\":5000}},\"required\":[\"a\"]}", "{\"a\":[" },
+    };
+    for (size_t i = 0; i < sizeof(cases) / sizeof(*cases); i++) {
+        jv *schema_json = json_parse(cases[i][0], strlen(cases[i][0]));
+        assert(schema_json != NULL);
+        char err[128];
+        snode *schema = schema_compile(schema_json, err, sizeof(err));
+        assert(schema != NULL);
+        sval v;
+        sval_init(&v, schema);
+        const char *partial = cases[i][1];
+        assert(sval_feed(&v, partial, (int)strlen(partial)));
+        // the engine's own closer buffer (engine.c), so the bound under test
+        // is the one production actually runs with
+        char suffix[4096];
+        int n = sval_close(&v, suffix, sizeof(suffix));
+        assert(n > 0);
+        char *full = malloc(strlen(partial) + (size_t)n + 1);
+        assert(full != NULL);
+        memcpy(full, partial, strlen(partial));
+        memcpy(full + strlen(partial), suffix, (size_t)n + 1);
+        jv *parsed = json_parse(full, strlen(full));
+        assert(parsed != NULL);
+        jv_free(parsed);
+        free(full);
+        schema_free(schema);
+        jv_free(schema_json);
+    }
+}
+
+// A string closed mid-escape gains a character the length accounting never
+// saw: feed_byte advances lit_pos only once an escape closes, so the minLength
+// padding believed the string was one short and added one filler too many --
+// straight past maxLength, producing a document the closer's own grammar
+// rejects.
+static void test_schema_close_counts_the_escape_it_finishes(void) {
+    const char *src =
+        "{\"type\":\"object\",\"properties\":{"
+        "\"s\":{\"type\":\"string\",\"minLength\":3,\"maxLength\":3}"
+        "},\"required\":[\"s\"]}";
+    jv *schema_json = json_parse(src, strlen(src));
+    assert(schema_json != NULL);
+    char err[128];
+    snode *schema = schema_compile(schema_json, err, sizeof(err));
+    assert(schema != NULL);
+
+    const char *partials[] = { "{\"s\":\"ab\\", "{\"s\":\"ab\\u00" };
+    for (size_t i = 0; i < sizeof(partials) / sizeof(*partials); i++) {
+        sval v;
+        sval_init(&v, schema);
+        assert(sval_feed(&v, partials[i], (int)strlen(partials[i])));
+        char suffix[128];
+        int n = sval_close(&v, suffix, sizeof(suffix));
+        assert(n > 0);
+        char full[256];
+        snprintf(full, sizeof(full), "%s%s", partials[i], suffix);
+        // the closed document must be an instance of the grammar that closed
+        // it, or the caller receives output its own constraint refuses
+        sval chk;
+        sval_init(&chk, schema);
+        assert(sval_feed(&chk, full, (int)strlen(full)));
+        assert(chk.done);
+    }
+
+    schema_free(schema);
+    jv_free(schema_json);
+}
+
 static void test_schema_integer_bounds_complete_truncation(void) {
     const char *src =
         "{\"type\":\"object\",\"properties\":{"
@@ -1956,6 +2111,10 @@ int main(void) {
     test_schema_number_bounds_reject_dead_minus_and_close_in_bounds();
     test_schema_merges_enum_and_const_anyof();
     test_schema_integer_bounds_are_enforced();
+    test_schema_integer_rejects_leading_zeros();
+    test_schema_number_bounds_intersect_their_exclusive_twins();
+    test_schema_close_never_drops_its_closers();
+    test_schema_close_counts_the_escape_it_finishes();
     test_schema_integer_bounds_complete_truncation();
     test_schema_number_close_rescues_an_out_of_range_prefix();
     test_schema_number_bounds_are_enforced();
