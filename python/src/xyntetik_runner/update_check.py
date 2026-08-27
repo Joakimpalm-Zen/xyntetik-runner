@@ -32,7 +32,7 @@ import subprocess
 import sys
 import urllib.request
 from dataclasses import dataclass
-from typing import Callable, Optional
+from typing import Any, Callable, Optional, cast
 
 RELEASES_LATEST = ("https://api.github.com/repos/"
                    "Joakimpalm-Zen/xyntetik-runner/releases/latest")
@@ -46,7 +46,7 @@ class UpdateStatus:
     url: str
 
 
-def _version_tuple(tag: str) -> tuple:
+def _version_tuple(tag: str) -> tuple[int, ...]:
     """v0.1.20-alpha -> (0, 1, 20). Pre-release suffixes are ignored for
     ordering: this is a notify-only check, and 'a newer numbered tag
     exists' is the honest bar it answers."""
@@ -56,13 +56,13 @@ def _version_tuple(tag: str) -> tuple:
     return tuple(int(g) for g in m.groups())
 
 
-def _fetch_latest() -> dict:
+def _fetch_latest() -> dict[str, Any]:
     with urllib.request.urlopen(RELEASES_LATEST, timeout=10) as r:
-        return json.load(r)
+        return cast(dict[str, Any], json.load(r))
 
 
 def check_latest(current: str,
-                 fetch: Callable[[], dict] = _fetch_latest) -> UpdateStatus:
+                 fetch: Callable[[], dict[str, Any]] = _fetch_latest) -> UpdateStatus:
     """Compare `current` against the latest published release tag.
 
     `fetch` is injectable so tests never touch the network. Raises on
