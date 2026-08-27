@@ -79,7 +79,8 @@ jobs:
             src/gguf.c src/compat.c src/quants.c -o test-tokenizer-oom -lm
           ./test-tokenizer-oom
           cc -std=gnu11 -Wall -Wextra -Wno-unused-parameter -I src tests/test_template.c \
-            src/gguf.c src/tokenizer.c src/template.c src/json.c src/compat.c src/quants.c \
+            src/gguf.c src/tokenizer.c src/template.c src/schema.c src/jsonmode.c \
+            src/json.c src/compat.c src/quants.c \
             -o test-template -lm
           ./test-template
           cc -std=gnu11 -Wall -Wextra -Wno-unused-parameter -I src tests/test_tools.c \
@@ -587,7 +588,8 @@ jobs:
             src/gguf.c src/compat.c src/quants.c -o test-tokenizer-oom.exe -lm
           ./test-tokenizer-oom.exe
           gcc -std=gnu11 -Wall -Wextra -Wno-unused-parameter -I src tests/test_template.c \
-            src/gguf.c src/tokenizer.c src/template.c src/json.c src/compat.c src/quants.c \
+            src/gguf.c src/tokenizer.c src/template.c src/schema.c src/jsonmode.c \
+            src/json.c src/compat.c src/quants.c \
             -o test-template.exe -lm
           ./test-template.exe
           gcc -std=gnu11 -Wall -Wextra -Wno-unused-parameter -I src tests/test_tools.c \
