@@ -169,9 +169,19 @@ def _process_start_time(pid: int) -> str | None:
         pass
     # macOS / BSD: no /proc — ask ps for the start timestamp (second precision,
     # which together with the PID is enough to catch reuse).
+    # LC_ALL and TZ are pinned because `lstart` is a RENDERING of an absolute
+    # instant, not the instant itself: the same live process reads as
+    # "Thu Aug 27 07:10:48 2026" to a launchd-started supervisor with no TZ set
+    # and "Thu Aug 27 09:10:48 2026" to an interactive shell in Europe, or
+    # "Do. 27 Aug. ..." under a German LC_TIME. _still_owned compares those
+    # strings, so an unpinned rendering reads as "the pid was reused" and the
+    # LIVE owner's lease is moved aside and claimed - the exact inversion of
+    # the guard this identity exists to be.
     try:
+        env = dict(os.environ, LC_ALL="C", TZ="UTC")
+        env.pop("LC_TIME", None)
         out = subprocess.run(["ps", "-o", "lstart=", "-p", str(pid)],
-                             capture_output=True, text=True, timeout=5)
+                             capture_output=True, text=True, timeout=5, env=env)
         stamp = out.stdout.strip()
         return stamp or None
     except (OSError, subprocess.SubprocessError):

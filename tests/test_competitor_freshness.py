@@ -84,3 +84,46 @@ def test_a_results_directory_with_no_reports_is_a_configuration_error(tmp_path):
 def test_a_populated_results_directory_still_runs(tmp_path):
     _report(tmp_path, "vllm", "vllm", "0.26.0")
     assert MOD.read_published(tmp_path)
+
+
+def test_every_registry_failing_is_a_configuration_error_not_a_pass(tmp_path):
+    """A run that compared nothing is not a run that found nothing stale.
+
+    `except Exception` catches a renamed registry field exactly as it catches
+    a DNS failure, so a schema change upstream or three rate-limited GitHub
+    calls from an unauthenticated scheduled runner put every row in `skipped`
+    -- and the workflow only reacts to exit 1, so the weekly job stays green
+    forever with a JSON artifact nobody opens. This is the same reasoning the
+    empty-results gate already applies one function over: a ledger gate with
+    nothing to check is a configuration error.
+    """
+    import pytest
+
+    _report(tmp_path, "ollama", "ollama", "0.32.1")
+    _report(tmp_path, "vllm", "vllm", "0.26.0")
+
+    def unavailable(_url):
+        raise OSError("temporary DNS failure")
+
+    original = MOD.check_freshness
+    MOD.check_freshness = lambda published: original(published, unavailable)
+    try:
+        with pytest.raises(SystemExit) as caught:
+            MOD.main(["--results", str(tmp_path), "--json"])
+    finally:
+        MOD.check_freshness = original
+    assert caught.value.code == 2
+
+
+def test_a_blank_published_version_is_a_report_error_not_a_stale_verdict(tmp_path):
+    """`"".split()[0]` raises IndexError, which is not in read_published's
+    except tuple and not in main's either, so it escaped as a traceback with
+    exit 1 -- the code the workflow reserves for "a published row is stale".
+    The workflow then parses an empty JSON file and fails for a reason
+    unrelated to the actual cause."""
+    import pytest
+
+    _report(tmp_path, "vllm", "vllm", "   ")
+    with pytest.raises(SystemExit) as caught:
+        MOD.main(["--results", str(tmp_path), "--json"])
+    assert caught.value.code == 2

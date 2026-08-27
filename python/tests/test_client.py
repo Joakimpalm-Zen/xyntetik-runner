@@ -152,6 +152,34 @@ class StartupLeaseTests(unittest.TestCase):
             )
             self.assertFalse(StartupLease(path).acquire())
 
+    def test_start_time_identity_is_not_rendered_for_the_caller(self):
+        # `ps -o lstart=` formats an absolute instant in the CALLER's timezone
+        # and LC_TIME, so the same live process yields a different string to a
+        # supervisor started by launchd (no TZ) than to an interactive shell.
+        # _still_owned compares those strings, so a mismatch reads as "the pid
+        # was reused" and the live owner's lease is taken away from it - the
+        # exact inversion of the guard RNR-017 added.
+        from xyntetik_runner.lease import _process_start_time
+        if os.name == "nt" or Path("/proc/self/stat").exists():
+            self.skipTest("this identity does not come from ps on this platform")
+        base = _process_start_time(os.getpid())
+        self.assertTrue(base)
+        for tz, loc in (("Asia/Tokyo", "C"), ("UTC", "de_DE.UTF-8"),
+                        ("America/New_York", "C")):
+            saved = {k: os.environ.get(k) for k in ("TZ", "LC_ALL", "LC_TIME")}
+            os.environ["TZ"] = tz
+            os.environ["LC_ALL"] = loc
+            os.environ["LC_TIME"] = loc
+            try:
+                self.assertEqual(_process_start_time(os.getpid()), base,
+                                 f"start identity moved under TZ={tz} LC={loc}")
+            finally:
+                for k, v in saved.items():
+                    if v is None:
+                        os.environ.pop(k, None)
+                    else:
+                        os.environ[k] = v
+
     def test_legacy_record_without_start_time_is_honoured(self):
         # A pre-migration record (no owner_start) with a live pid stays PID-only.
         with tempfile.TemporaryDirectory() as temp_dir:

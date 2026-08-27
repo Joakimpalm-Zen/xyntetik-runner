@@ -740,3 +740,30 @@ def test_a_vocabulary_string_with_an_embedded_nul_is_refused(runner_bin, tmp_pat
         "the unmodified fixture must run"
     assert _run(runner_bin, str(bad)).returncode != 0, \
         "a vocabulary string with an embedded NUL must be refused"
+
+
+def test_the_fixture_generator_refuses_an_unknown_option(tmp_path):
+    """Every unrecognised token used to become the OUTPUT filename.
+
+    `--quant-type q8_0 out.gguf` (one word wrong) consumed the flag as a name,
+    then `q8_0` as a name, then `out.gguf` as a name, and wrote an F32 fixture
+    while exiting 0 and printing `wrote out.gguf`. The gate downstream then ran
+    on a model that reaches no quantized kernel at all -- verbatim the
+    blindness the --quant flag was added to prevent, reintroducible by a typo
+    in a Makefile line nobody reads again.
+    """
+    out = tmp_path / "typo.gguf"
+    proc = subprocess.run(
+        [sys.executable, ROOT / "scripts/make-test-model.py",
+         "--quant-type", "q8_0", str(out)],
+        cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120)
+    assert proc.returncode != 0
+    assert not out.exists()
+    assert b"unknown option" in proc.stderr
+
+    good = tmp_path / "good.gguf"
+    assert subprocess.run(
+        [sys.executable, ROOT / "scripts/make-test-model.py",
+         "--quant", "q8_0", str(good)],
+        cwd=ROOT, stdout=subprocess.DEVNULL, timeout=120).returncode == 0
+    assert good.exists()

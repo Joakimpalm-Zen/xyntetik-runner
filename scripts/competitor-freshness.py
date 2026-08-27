@@ -33,7 +33,10 @@ REGISTRIES = {
 
 
 def normalized_version(runtime, value):
-    text = str(value).strip().split()[0].removeprefix("v")
+    parts = str(value).strip().split()
+    if not parts:
+        raise ValueError(f"empty {runtime} release {value!r}")
+    text = parts[0].removeprefix("v")
     if runtime == "llama.cpp":
         match = re.fullmatch(r"b(\d+)", text)
         if not match:
@@ -133,6 +136,21 @@ def main(argv=None):
         # scheduled workflow fails on and does not mistake for "stale".
         parser.error(f"no report.json under {args.results}: nothing to check")
     result = check_freshness(published)
+    # Every row skipped means nothing was COMPARED, which is not the same
+    # answer as "nothing is stale". check_freshness catches a renamed registry
+    # field exactly as it catches a DNS failure, so an upstream schema change
+    # or a run of rate-limited API calls lands every runtime in `skipped` --
+    # and the workflow only reacts to exit 1, so the weekly job would stay
+    # green forever. Exit 2 for the same reason the empty-results gate above
+    # does: a ledger gate with nothing to check is a configuration error.
+    if result["skipped"] and not (result["stale"] or result["drift"] or
+                                  result["current"]):
+        if args.json:
+            print(json.dumps(result, indent=2, sort_keys=True))
+        reasons = "; ".join(f"{row['runtime']}: {row['reason']}"
+                            for row in result["skipped"])
+        parser.error(f"every registry lookup failed, so nothing was "
+                     f"compared ({reasons})")
     if args.json:
         print(json.dumps(result, indent=2, sort_keys=True))
     else:

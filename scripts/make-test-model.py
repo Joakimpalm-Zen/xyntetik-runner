@@ -176,6 +176,13 @@ while i < len(args):
         # heads; the runner must exclude them and decode exactly as without
         i += 1
         MTP_LAYERS = int(args[i])
+    elif a.startswith("-"):
+        # Every unrecognised token used to become the output filename, so one
+        # typo silently produced a DIFFERENT fixture: `--quant-type q8_0 x.gguf`
+        # wrote an F32 x.gguf and exited 0, and the gate downstream then ran on
+        # a model that reaches no quantized kernel at all. That is verbatim the
+        # blindness --quant exists to prevent (see its comment above).
+        sys.exit(f"make-test-model: unknown option {a!r}")
     else:
         OUT = a
     i += 1

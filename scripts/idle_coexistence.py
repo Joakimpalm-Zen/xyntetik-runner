@@ -78,6 +78,32 @@ def wait_ready(port, timeout=180):
             time.sleep(1)
     return False
 
+def frame_carries_output(line):
+    """True only when this SSE frame carries model OUTPUT.
+
+    The first `data:` frame of an OpenAI-compatible chat stream is the
+    role-only delta, and Runner sends it immediately after the response
+    headers, deliberately before prefill starts. Stamping TTFT on it measured
+    connection setup: near zero whatever the prompt cost, on every model. That
+    is not the number this script exists to publish, and other engines emit
+    their role frame at different points in their own pipelines, so the
+    cross-engine comparison was not like for like either.
+    """
+    if not line.startswith(b"data:") or b"[DONE]" in line:
+        return False
+    try:
+        payload = json.loads(line[len(b"data:"):].strip())
+    except (ValueError, UnicodeDecodeError):
+        return False
+    for choice in payload.get("choices") or []:
+        delta = choice.get("delta") or {}
+        if delta.get("content") or delta.get("reasoning_content"):
+            return True
+        if choice.get("text"):          # the /v1/completions spelling
+            return True
+    return False
+
+
 def chat_ttft(port, prompt):
     mid = json.load(urllib.request.urlopen(
         f"http://127.0.0.1:{port}/v1/models"))["data"][0]["id"]
@@ -88,9 +114,9 @@ def chat_ttft(port, prompt):
     t0 = time.time(); ttft = None
     with urllib.request.urlopen(req, timeout=180) as resp:
         for line in resp:
-            if line.startswith(b"data:") and b"[DONE]" not in line and ttft is None:
+            if ttft is None and frame_carries_output(line):
                 ttft = time.time() - t0
-    return {"ttft_s": round(ttft, 3) if ttft else None,
+    return {"ttft_s": round(ttft, 3) if ttft is not None else None,
             "total_s": round(time.time() - t0, 3)}
 
 def idle_window(pid, label):
@@ -110,7 +136,15 @@ def main():
 
     report = {"cmd": args.cmd, "idle_window_s": IDLE_S,
               "wired_mb_baseline": wired_mb(), "states": []}
-    p = subprocess.Popen(shlex.split(args.cmd))
+    # The server's own log must not land on OUR stdout: the report is printed
+    # there, and an interleaved log makes it unparseable for anything reading
+    # `... > report.json`. Kept in a file beside the report rather than
+    # discarded, because a server that misbehaves is the thing being measured.
+    log_path = args.out + ".server.log"
+    server_log = open(log_path, "wb")
+    report["server_log"] = log_path
+    p = subprocess.Popen(shlex.split(args.cmd), stdout=server_log,
+                         stderr=subprocess.STDOUT)
     try:
         t0 = time.time()
         if not wait_ready(args.port):
@@ -143,6 +177,7 @@ def main():
         except Exception:
             p.kill()
         time.sleep(5)
+        server_log.close()
         report["wired_mb_after_kill"] = wired_mb()
         json.dump(report, open(args.out, "w"), indent=1)
         print(json.dumps(report, indent=1))

@@ -14,7 +14,23 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-RELEASE_STRING_RE = re.compile(r"\bv?\d+\.\d+\.\d+-alpha\b")
+# What counts as a RELEASE STRING in these files.
+#
+# This required the `-alpha` suffix, which v0.2.0 retired -- so from that
+# release on it matched nothing anywhere in the tree and the three checks built
+# on it (README, workflow, current docs) were vacuous. Found with
+# .github/workflows/release.yml carrying `git tag v0.2.0` against a 0.3.0 tree,
+# in the exact file the workflow scan targets, green.
+#
+# A bare dotted triple cannot be the pattern: this tree cites competitor
+# versions (vLLM 0.27.1, Ollama 0.32.14), tool versions (Docker 29.1.3) and
+# loopback addresses, and none of those are drift. So a release string is one
+# of three unambiguous spellings -- the retired -alpha form, a `v`-prefixed tag
+# spelling, or a version this project names as its own.
+RELEASE_STRING_RE = re.compile(
+    r"(?<![\w.\-])(v?\d+\.\d+\.\d+-alpha)(?![\w.\-])"
+    r"|(?<![\w.\-])(v\d+\.\d+\.\d+)(?![\w.\-])"
+    r"|\b[Rr]unner:?[ \t]+`?(v?\d+\.\d+\.\d+(?:-alpha)?)(?![\w.\-])")
 
 
 def fail(msg):
@@ -32,7 +48,8 @@ def binary_version(binary):
 
 def stale_release_strings(text, version, tag):
     stale = set()
-    for s in RELEASE_STRING_RE.findall(text):
+    for match in RELEASE_STRING_RE.finditer(text):
+        s = match.group(1) or match.group(2) or match.group(3)
         if s not in {version, tag}:
             stale.add(s)
     return sorted(stale)
@@ -133,8 +150,14 @@ def check(args):
                 f"release {version!r} ({expected_python!r})"
             )
 
+    # Naming a workflow that is not there means it moved or was renamed, which
+    # is the one answer this gate must never give quietly -- the same call the
+    # compat-report block below makes, in the same words: skipping on a missing
+    # file turns the check into no check.
     release_workflow = args.release_workflow
-    if release_workflow.exists():
+    if not release_workflow.exists():
+        ok &= fail(f"release workflow {release_workflow} does not exist")
+    else:
         workflow = release_workflow.read_text(encoding="utf-8")
         for stale in stale_release_strings(workflow, version, args.tag):
             ok &= fail(f"release workflow contains stale release string {stale!r}")
@@ -186,13 +209,19 @@ def main(argv=None):
                              "version")
     parser.add_argument("--commit", required=True,
                         help="commit SHA expected in BUILD-INFO.txt")
+    # No default here: argparse APPENDS to one, so a caller passing
+    # --current-doc to NARROW the scan silently widened it instead -- and if
+    # any of the three built-ins were ever deleted from the tree, the widened
+    # scan raised FileNotFoundError from read() rather than reporting it.
     parser.add_argument(
         "--current-doc", dest="current_docs", type=Path, action="append",
-        default=[ROOT / "SECURITY.md", ROOT / "CONTRIBUTING.md",
-                 ROOT / "docs/moe-support.md"],
-        help="current (non-historical) document that may not contain stale versions",
+        help="current (non-historical) document that may not contain stale "
+             "versions; repeatable, and REPLACES the built-in set",
     )
     args = parser.parse_args(argv)
+    if args.current_docs is None:
+        args.current_docs = [ROOT / "SECURITY.md", ROOT / "CONTRIBUTING.md",
+                             ROOT / "docs/moe-support.md"]
     return 0 if check(args) else 1
 
 
