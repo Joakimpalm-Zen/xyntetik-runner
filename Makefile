@@ -249,7 +249,7 @@ DIFFTOK_SRC = tests/difftok.c src/gguf.c src/tokenizer.c src/compat.c $(QUANTS_O
 $(DIFFTOK): $(DIFFTOK_SRC) $(HDR)
 	$(CC) $(CFLAGS) -I src $(DIFFTOK_SRC) -o $@ -lm
 
-TEST_TMPL_SRC = tests/test_template.c src/gguf.c src/tokenizer.c src/template.c \
+TEST_TMPL_SRC = tests/test_template.c src/gguf.c src/tokenizer.c src/template.c src/schema.c src/jsonmode.c \
                 src/json.c src/compat.c $(QUANTS_OBJ)
 $(TEST_TEMPLATE): $(TEST_TMPL_SRC) $(HDR)
 	$(CC) $(CFLAGS) -I src $(TEST_TMPL_SRC) -o $@ -lm

@@ -2130,6 +2130,20 @@ fail:
 
 // Two calls back to back, the bounded multi-call form. gemma4 concatenates
 // call blocks with no separator, so this is simply one tail after the other.
+// Can this tools[] be constrained to gemma4's native call syntax at all?
+// Implemented AS the real compiler (probe and free) so the answer can never
+// drift from what compilation actually accepts: an untyped parameter, an
+// unbounded nested array, or any future refusal all report identically here.
+// Callers use this BEFORE prompt rendering to fall back to the generic
+// envelope for the whole request -- prompt and grammar must switch together.
+bool schema_gemma4_constrainable(jv *tools, char *err, int errcap) {
+    snode *probe = schema_compile_gemma4_turn(tools, true, NULL, NULL,
+                                              true, false, err, errcap);
+    if (!probe) return false;
+    schema_free(probe);
+    return true;
+}
+
 snode *schema_compile_gemma4_parallel(jv *tools, const char *only_tool,
                                       char *err, int errcap) {
     snode *root = atem_seq(2);

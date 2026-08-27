@@ -92,6 +92,10 @@ snode *schema_compile_gemma4_turn(struct jv *tools, bool allow_final,
                                   char *err, int errcap);
 snode *schema_compile_gemma4_parallel(struct jv *tools, const char *only_tool,
                                       char *err, int errcap);
+// true when tools[] compiles to the native gemma4 syntax; false (with the
+// compiler's own reason in err) when a request must fall back to the generic
+// envelope. A probe of the real compiler, not a parallel rule set.
+bool schema_gemma4_constrainable(struct jv *tools, char *err, int errcap);
 void   schema_free(snode *n);
 
 // streaming validator state (memcpy-copyable for token lookahead)

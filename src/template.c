@@ -3,6 +3,7 @@
 // tool-call syntax (declaration rendering and response parsing).
 #include "template.h"
 #include "json.h"
+#include "schema.h"
 
 #include <ctype.h>
 #include <stdio.h>
@@ -2556,21 +2557,44 @@ const jv *tool_decl_native(int tmpl, bool strict, bool atem_tool_calling,
         env->proto = TP_HARMONY;
         env->tools = tools;
     } else if (strict && is_gemma4(tmpl)) {
-        env->proto = TP_GEMMA4;
-        env->tools = tools;
+        // Decided 2026-08-27 (owner, option c of the recorded three): a
+        // tools[] the native compiler cannot constrain -- an untyped
+        // parameter is the common case -- no longer 400s the request. It
+        // falls back to the GENERIC envelope for this one request, losing
+        // native syntax rather than the request, and the same schema now
+        // behaves on gemma4 as it does on gpt-oss. The probe runs HERE,
+        // before any rendering, because prompt and grammar must switch
+        // together: native declarations with a generic grammar (or the
+        // reverse) teach the model one protocol and constrain it to another.
+        char why[192];
+        // tools==NULL is the --tool-info introspection asking which protocol
+        // this family natively speaks; there is nothing to probe and the
+        // answer is native. Every serving request that reaches here has a
+        // tools[] (the envelope is only built when one is declared).
+        if (!tools || schema_gemma4_constrainable(tools, why, sizeof(why))) {
+            env->proto = TP_GEMMA4;
+            env->tools = tools;
+        } else {
+            fprintf(stderr, "tools: gemma4 native syntax unavailable for this "
+                            "request (%s); using the generic envelope\n", why);
+        }
     }
     // gemma4 and Apertus render declarations whenever tools are present,
     // strict or not: tool_choice is a concept their templates lack, so
     // tool_choice:"none" must not fall through to the generic block -- a
     // second, untrained protocol -- for a turn that will not call anything
     // anyway. muse and Harmony render theirs only on the strict path
-    // (env->proto gates them).
-    *skip_generic = is_gemma4(tmpl) || tmpl == TMPL_APERTUS ||
+    // (env->proto gates them). A strict gemma4 request that fell back to
+    // the generic envelope is the one exception: it must render the generic
+    // system turn, because that envelope is now its grammar.
+    bool g4_native = is_gemma4(tmpl) &&
+                     (env->proto == TP_GEMMA4 || !strict);
+    *skip_generic = g4_native || tmpl == TMPL_APERTUS ||
                     (tmpl == TMPL_MUSE && env->proto == TP_ATEM) ||
                     tmpl == TMPL_HARMONY;
     return (tmpl == TMPL_MUSE && env->proto == TP_ATEM) ||
            (tmpl == TMPL_HARMONY && env->proto == TP_HARMONY) ||
-           is_gemma4(tmpl) || tmpl == TMPL_APERTUS
+           g4_native || tmpl == TMPL_APERTUS
                ? tools : NULL;
 }
 
