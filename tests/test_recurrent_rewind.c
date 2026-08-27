@@ -210,6 +210,74 @@ static void test_prefix_cache_fold_restore_matches_cold(void) {
     slot_close(&warm); slot_close(&cold); slot_close(&forked);
 }
 
+// ---- gate 3b: a TRUNCATED publish must never hand back a fold --------------
+//
+// engine_prefix_publish clamps an oversized snapshot to half the cache budget
+// and stores the leading store_n tokens instead of all n, on the reasoning that
+// a prefix of a prefix is still a valid prefix (Fact 1). That reasoning covers
+// attention rows and nothing else. The blob appended to the entry is the fold
+// this slot holds RIGHT NOW, which is the fold after all n tokens, and it is
+// restored verbatim on the exact hit that is the only way a recurrent entry is
+// ever forked (engine_prefix_reuse's recur_ok). A truncated recurrent entry
+// therefore pairs store_n KV rows with recurrent state the prompt does not
+// reach until n - store_n tokens later, and the fork decodes from it and
+// answers, silently, from a state the prompt never had.
+//
+// The budget is derived from the fixture's own measured per-token snapshot cost
+// so the clamp is what does the truncating, exactly as it does on a long prompt
+// against a real RUNNER_PREFIX_CACHE_MB. N is large because this fixture's fold
+// blob dwarfs its one attention layer's rows, and the clamp only fires once the
+// KV side outgrows it.
+static void test_truncated_publish_never_mislabels_the_fold(void) {
+    enum { N = 520, TAIL = 3, WANT = 16 };   // WANT == PFX_MIN_TOKENS
+    model_params p = base_params();
+    p.n_ctx = N + TAIL + 8;
+    slot warm, cold, forked;
+    if (!slot_open(&warm, &p) || !slot_open(&cold, &p) || !slot_open(&forked, &p)) {
+        ck(0, "load three instances for the truncated-publish gate");
+        return;
+    }
+    prefix_cache_clear();
+
+    size_t per_tok = prefix_cache_entry_bytes(&warm.m, 1);
+    // half of this budget buys WANT tokens; the whole N-token prompt does not
+    // fit in that half, so the clamp fires and a SHORT entry is what is stored
+    prefix_cache_configure(2 * (size_t)WANT * per_tok, 3600);
+    ck(per_tok > 0 &&
+       prefix_cache_entry_bytes(&warm.m, N) > (size_t)WANT * per_tok,
+       "the prompt is oversized against half the budget, so the clamp fires");
+
+    int32_t *prompt = malloc(sizeof(int32_t) * (N + TAIL));
+    if (!prompt) {
+        ck(0, "allocate the truncated-publish prompt");
+        slot_close(&warm); slot_close(&cold); slot_close(&forked);
+        return;
+    }
+    for (int i = 0; i < N + TAIL; i++) prompt[i] = 10 + (i % 32);
+
+    engine_reset(&warm.e);
+    ck(engine_feed(&warm.e, prompt, N) != NULL, "warm folds the whole prompt");
+    engine_prefix_publish(&warm.e, prompt, N, N, 0.0);
+
+    engine_reset(&cold.e);
+    float *cl = engine_feed(&cold.e, prompt, N + TAIL);
+    float *cold_l = snap_logits(&cold.m, cl);
+
+    engine_reset(&forked.e);
+    prefix_reuse r = engine_prefix_reuse(&forked.e, prompt, N + TAIL);
+    float *fl = engine_feed(&forked.e, prompt + r.keep, N + TAIL - r.keep);
+    float *fork_l = snap_logits(&forked.m, fl);
+
+    int diffs = logits_differ(&forked.m, fork_l, cold_l);
+    ck(diffs == 0,
+       "a truncated recurrent publish never serves a fold from another position");
+
+    free(prompt); free(cold_l); free(fork_l);
+    prefix_cache_clear();
+    prefix_cache_configure(64u * 1024 * 1024, 600);
+    slot_close(&warm); slot_close(&cold); slot_close(&forked);
+}
+
 // ---- gate 4: speculative decode rolls the fold back on divergence ----------
 //
 // The batched verify advances the recurrent fold through EVERY drafted token; a
@@ -351,6 +419,7 @@ int main(void) {
     test_snapshot_restore_roundtrip();
     test_rewind_divergence_matches_cold();
     test_prefix_cache_fold_restore_matches_cold();
+    test_truncated_publish_never_mislabels_the_fold();
     test_divergent_round_rollback();
     test_spec_full_accept_identity();
     test_spec_admission_requires_host_recurrent_fold();

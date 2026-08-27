@@ -589,10 +589,22 @@ void engine_prefix_publish(engine *e, const int32_t *toks, int n,
     // A snapshot may not eat more than half the budget on its own, or one
     // long prompt evicts everything worth keeping. Truncating it is free:
     // a prefix of a prefix is still a valid prefix (Fact 1).
+    //
+    // Fact 1 is about attention rows and covers nothing else. A recurrent
+    // model's entry also carries the fold blob pfx_save appends, and the only
+    // fold this slot holds is the one after all `n` tokens -- the fold is not
+    // sliceable (model.h), so there is no fold at store_n to store instead.
+    // A shortened recurrent entry would pair store_n rows with state the prompt
+    // does not reach until n - store_n tokens later, and engine_prefix_reuse
+    // restores that blob verbatim on the exact hit that is the ONLY way a
+    // recurrent entry is ever forked -- so every use of it decodes from a state
+    // the prompt never had, and answers. Storing nothing costs a prefill; this
+    // costs the answer.
+    bool recur = model_has_recurrent(e->m);
     size_t per_tok = prefix_cache_entry_bytes(e->m, 1);
     int store_n = n;
     if (per_tok > 0 && prefix_cache_entry_bytes(e->m, store_n) > PFX.budget / 2)
-        store_n = (int)((PFX.budget / 2) / per_tok);
+        store_n = recur ? 0 : (int)((PFX.budget / 2) / per_tok);
     if (store_n < PFX_MIN_TOKENS) { pthread_mutex_unlock(&PFX.mu); return; }
 
     // Already covered? Refresh it. A strict extension of an existing entry
@@ -630,7 +642,10 @@ void engine_prefix_publish(engine *e, const int32_t *toks, int n,
     // recovers for free from its own slot's KV via engine_rewind. Truncating
     // is free in correctness terms for the same reason the half-budget cap
     // above is: a prefix of a prefix is still a valid prefix.
-    if (diverge_at >= PFX_MIN_TOKENS && diverge_at < store_n) {
+    // Skipped for a recurrent model for the reason given at the half-budget
+    // clamp above: the fold it would carry belongs to position n, not to
+    // diverge_at.
+    if (!recur && diverge_at >= PFX_MIN_TOKENS && diverge_at < store_n) {
         store_n = diverge_at;
         // ...unless that exact prefix is already stored, in which case there
         // is nothing to add and the scan above would have said so.
