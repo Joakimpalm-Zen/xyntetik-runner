@@ -279,7 +279,7 @@ $(TEST_TOKENIZER_OOM): $(TEST_TOK_OOM_SRC) src/tokenizer.c $(HDR)
 # same shape for the renderer: json.c and template.c are compiled into the test
 # with instrumented allocators, tokenizer.c/gguf.c link normally
 TEST_TMPL_OOM_SRC = tests/test_template_oom.c src/tokenizer.c src/gguf.c \
-                    src/compat.c $(QUANTS_OBJ)
+                    src/schema.c src/jsonmode.c src/compat.c $(QUANTS_OBJ)
 $(TEST_TEMPLATE_OOM): $(TEST_TMPL_OOM_SRC) src/template.c src/json.c $(HDR)
 	$(CC) $(CFLAGS) -I src $(TEST_TMPL_OOM_SRC) -o $@ -lm
 
