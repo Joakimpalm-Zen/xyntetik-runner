@@ -1436,6 +1436,16 @@ static void trial_matches_full_copy(const snode *schema, const char *doc) {
             if (want) {
                 assert(scratch.done == full.done);
                 assert(scratch.depth == full.depth);
+                // the map seen-key guard is live state: a scratch that
+                // answers from poison instead of the real guard can accept
+                // a duplicate key, and past MAP_SEEN_MAX it reads out of
+                // bounds -- compare the state, not just the answer, so the
+                // check cannot green on an accidental garbage match
+                assert(scratch.n_seen == full.n_seen);
+                assert(!memcmp(scratch.seen_hash, full.seen_hash,
+                               (size_t)full.n_seen * sizeof full.seen_hash[0]));
+                assert(!memcmp(scratch.seen_depth, full.seen_depth,
+                               full.n_seen));
             }
         }
         // the probe must leave the real validator untouched
@@ -1476,6 +1486,29 @@ static void test_sval_trial_matches_full_copy(void) {
 
     schema_free(schema);
     jv_free(schema_json);
+
+    // The map seen-key guard is part of the oracle's answer: at the closing
+    // quote of a duplicate key the full copy refuses while a scratch that
+    // did not inherit the guard accepts. The document walks a key "a", then
+    // a key with prefix "a" (so probing `"` right there IS the duplicate
+    // refusal point), then a sibling map at the same depth that legally
+    // reuses "a" after frame_done compacted the first map's entries out.
+    const char *map_src = "{\"type\":\"object\",\"properties\":{"
+        "\"m\":{\"type\":\"object\",\"additionalProperties\":"
+            "{\"type\":\"integer\"}},"
+        "\"n\":{\"type\":\"object\",\"additionalProperties\":"
+            "{\"type\":\"integer\"}}},"
+        "\"required\":[\"m\",\"n\"]}";
+    jv *map_json = json_parse(map_src, strlen(map_src));
+    assert(map_json != NULL);
+    snode *map_schema = schema_compile(map_json, err, sizeof(err));
+    assert(map_schema != NULL);
+
+    trial_matches_full_copy(map_schema,
+        "{\"m\":{\"a\":1,\"ab\":2,\"b\":3},\"n\":{\"a\":4}}");
+
+    schema_free(map_schema);
+    jv_free(map_json);
 }
 
 // The other half of the invariant: keywords that are pure annotations carry

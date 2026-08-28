@@ -3000,13 +3000,16 @@ bool sval_at_raw_tail(const sval *v) {
 // assigns the whole frame at stack[depth] before depth names it, and every
 // reader (feed_byte, frame_choice, frame_done, sval_close, the two query
 // predicates) indexes depth-1 or less. The number spelling is likewise live
-// only up to num_len, and `any` carries its own live prefix. So a trial copy
-// only has to carry those, which is what makes the per-candidate probe cheap.
+// only up to num_len, `any` carries its own live prefix, and the map
+// seen-key guard is live up to n_seen. So a trial copy only has to carry
+// those, which is what makes the per-candidate probe cheap.
 //
-// Anything added to this file that reads a stack slot above `depth`, or
-// num_text past num_len, breaks this. test_sval_trial_matches_full_copy
-// poisons the scratch and compares against a full struct copy from every
-// state of a document, so it breaks loudly rather than subtly.
+// Anything added to this file that reads a stack slot above `depth`,
+// num_text past num_len, or seen entries past n_seen, breaks this.
+// test_sval_trial_matches_full_copy poisons the scratch and compares
+// against a full struct copy from every state of a document -- the guard
+// state included, not just the answer -- so it breaks loudly rather than
+// subtly.
 bool sval_trial(const sval *v, sval *scratch, const char *s, int n) {
     int d = v->depth;
     if (d < 0) d = 0;
@@ -3018,6 +3021,12 @@ bool sval_trial(const sval *v, sval *scratch, const char *s, int n) {
     scratch->last_enum = v->last_enum;
     scratch->num_len = v->num_len;
     memcpy(scratch->num_text, v->num_text, (size_t)v->num_len + 1);
+    int ns = v->n_seen;
+    if (ns > MAP_SEEN_MAX) ns = MAP_SEEN_MAX;
+    scratch->n_seen = (uint8_t)ns;
+    memcpy(scratch->seen_hash, v->seen_hash,
+           (size_t)ns * sizeof(v->seen_hash[0]));
+    memcpy(scratch->seen_depth, v->seen_depth, (size_t)ns);
     jsonv_snapshot(&scratch->any, &v->any);
     return sval_feed(scratch, s, n);
 }
