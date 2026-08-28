@@ -29,6 +29,7 @@
     "declared_layers": "<number>"
   },
   "object": "runner.capabilities",
+  "pid": "<redacted>",
   "resident": null,
   "sampling": {
     "min_p": "<number>",

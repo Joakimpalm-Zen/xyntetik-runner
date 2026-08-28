@@ -18,8 +18,11 @@ def test_health_and_models(client, report):
     report.check_fixture("models", models)
 
 
-def test_capabilities(client, report):
+def test_capabilities(client, report, server):
     caps = client.get("/v1/capabilities").expect_status(200).json
+    if caps.get("pid") != server.proc.pid:
+        raise ProtocolError("capabilities identifies the wrong process",
+                            got=caps.get("pid"), expected=server.proc.pid)
     for feature in ("json_schema", "stop_sequences"):
         if not caps.get("features", {}).get(feature):
             raise ProtocolError("capability not advertised", feature=feature,

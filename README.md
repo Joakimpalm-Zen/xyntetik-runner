@@ -945,7 +945,7 @@ non-loopback authorities.
 | `POST /v1/messages` | Anthropic Messages translation. |
 | `POST /v1/messages/count_tokens` | Token count for the matching Messages request. |
 | `GET /v1/models` | Registered models and current residency. |
-| `GET /v1/capabilities` | Active model, sampling preset, and optional Xyntetik agent profile. |
+| `GET /v1/capabilities` | Server process ID, active model, sampling preset, and optional Xyntetik agent profile. |
 | `GET /v1/runner/prefix-cache` | Prefix-cache size, limits, and counters. |
 | `POST /v1/runner/prefix-cache/clear` | Release cached prefixes without unloading the model. |
 | `GET /health` | Server and resident-model health, plus this process's `rss_bytes`/`peak_rss_bytes` and cumulative `tokens_prompt`, `tokens_generated`, `generate_seconds`, `batch_steps` and `batch_sequences`. |

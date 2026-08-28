@@ -650,6 +650,43 @@ class EndpointTests(unittest.TestCase):
 
 
 class ManagedRunnerOwnershipTests(unittest.TestCase):
+    def test_start_refuses_a_healthy_runner_owned_by_another_process(self):
+        """A listener that was already on the requested port must not certify
+        the newly spawned child. Otherwise the child can lose bind(), die, and
+        leave this wrapper routing requests to somebody else's model."""
+        class Process:
+            pid = 2002
+
+            def __init__(self):
+                self.running = True
+
+            def poll(self):
+                return None if self.running else 1
+
+            def terminate(self):
+                self.running = False
+
+            def wait(self, timeout=None):
+                return 1
+
+        class Endpoint:
+            def capabilities(self, timeout=2):
+                return {"object": "runner.capabilities", "pid": 1001}
+
+            def healthy(self, timeout=2):
+                return True
+
+        process = Process()
+        managed = ManagedRunner(
+            ServerLaunch("runner", "model.gguf", 8090),
+            spawn=lambda args: process,
+            endpoint_factory=lambda url: Endpoint(),
+        )
+
+        self.assertFalse(managed.start(timeout=0.03, interval=0.01))
+        self.assertFalse(process.running)
+        self.assertIsNone(managed.process)
+
     def test_failed_start_leaves_no_child_process_behind(self):
         """A False start must not hand the caller an orphan. The child here
         never answers, exactly like a runner still loading weights when the
@@ -788,6 +825,8 @@ class LaunchTests(unittest.TestCase):
 
     def test_managed_runner_waits_for_readiness_and_stops_owned_child(self):
         class Process:
+            pid = 2002
+
             def __init__(self):
                 self.running = True
                 self.terminated = False
@@ -803,8 +842,8 @@ class LaunchTests(unittest.TestCase):
                 return 0
 
         class Endpoint:
-            def healthy(self, timeout=2):
-                return True
+            def capabilities(self, timeout=2):
+                return {"object": "runner.capabilities", "pid": 2002}
 
         process = Process()
         seen = []

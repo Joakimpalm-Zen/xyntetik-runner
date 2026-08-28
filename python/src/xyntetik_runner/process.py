@@ -185,7 +185,15 @@ class ManagedRunner:
             while time.monotonic() < deadline:
                 if not self.alive():
                     break
-                if endpoint.healthy(timeout=min(2.0, max(interval, 0.1))):
+                try:
+                    capabilities = endpoint.capabilities(
+                        timeout=min(2.0, max(interval, 0.1)))
+                except (OSError, RuntimeError):
+                    capabilities = {}
+                # A pre-existing Runner can answer on the requested port while
+                # this child is still loading and is about to lose bind(). Only
+                # the process we spawned is evidence that startup succeeded.
+                if capabilities.get("pid") == getattr(self.process, "pid", None):
                     started = True
                     break
                 time.sleep(interval)

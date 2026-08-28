@@ -21,7 +21,7 @@ import time
 from _errors import CATEGORIES, ProtocolError
 
 REDACTED = "<redacted>"
-VOLATILE = {"id", "created", "system_fingerprint"}
+VOLATILE = {"id", "created", "pid", "system_fingerprint"}
 # generated text and anything timing-shaped: present-and-typed is the contract,
 # the value is not
 VOLATILE_TEXT = {"content", "text", "reasoning_content", "embedding", "token"}

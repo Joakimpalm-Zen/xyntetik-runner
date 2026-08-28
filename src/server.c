@@ -677,7 +677,8 @@ static void send_capabilities(sock_t fd) {
     bool guarded = SV.n_reg > 0;
     if (guarded) pthread_mutex_lock(&SV.swap_mu);
     int res = resident_load();
-    sb_lit(&r, "{\"object\":\"runner.capabilities\",\"swap\":");
+    sb_fmt(&r, "{\"object\":\"runner.capabilities\",\"pid\":%ld,\"swap\":",
+           plat_pid_self());
     sb_lit(&r, SV.n_reg > 0 && !SV.single ? "true" : "false");
     sb_lit(&r, ",\"resident\":");
     if (SV.n_reg > 0 && res >= 0) {
