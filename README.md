@@ -135,7 +135,7 @@ for Linux, macOS, or Windows, or build from source:
 git clone https://github.com/Joakimpalm-Zen/xyntetik-runner
 cd xyntetik-runner
 make
-./runner --version   # -> runner 0.4.0
+./runner --version   # -> runner 0.4.1
 ```
 
 CUDA builds and releases need only an NVIDIA driver at runtime. The CUDA
@@ -188,7 +188,7 @@ Run a GGUF:
 ./runner -m big.gguf --draft small.gguf -p "Continue this code"
 ```
 
-> **Pre-1.0 (`0.4.0`).** APIs, model coverage and certification envelopes may
+> **Pre-1.0 (`0.4.1`).** APIs, model coverage and certification envelopes may
 > change between releases. CI builds and smoke-tests Linux, macOS, and
 > Windows, but the project still has limited hardware coverage. Include
 > `runner --version`, `runner --caps`, the model's exact filename, and the load

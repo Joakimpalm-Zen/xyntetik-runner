@@ -6,7 +6,7 @@ change between releases (the `-alpha` suffix was retired at v0.2.0 — the 0.x
 version already says what it needs to). Entries below the rename keep the
 names that were true when they were written.
 
-## Unreleased
+## v0.4.1 - 2026-08-28
 
 - **Constrained output only emits numbers the parser reads back.** The
   validators and json_parse now share one number-acceptance predicate
@@ -48,14 +48,25 @@ names that were true when they were written.
   their scalar), refusing the duplicate at its closing quote while every
   continuation stays legal, and both closers extend a force-closed key
   until it is unique instead of minting the collision.
-- **The candidate-token oracle is now differentially tested.** A seeded
-  walker (tests/test_sval_walk.c, in `make test`) probes all 256 bytes at
-  every step of random walks through legal document space, comparing the
-  poisoned-scratch trial against a full struct copy - answers AND live
-  state - and checks the closer's parse guarantee at every stop; a
-  differential fuzz target (fuzz_sval_trial) does the same under
-  libFuzzer+ASan+UBSan in CI. Both found the two disagreements above within
-  seconds of existing.
+- **`/health` never reports current RSS above peak RSS.** On Linux the two
+  readings come from different kernel counters (statm for current,
+  ru_maxrss for peak) whose split-RSS accounting can lag each other, so a
+  raw pair could show a peak below the present - a self-inconsistency in
+  the number a supervisor budgets machines with. A current reading of X is
+  itself evidence the peak is at least X, so the pair is clamped
+  self-consistent at the moment it is reported.
+- **The candidate-token oracle is now differentially tested, three ways.**
+  A seeded walker (tests/test_sval_walk.c, in `make test`) probes all 256
+  bytes at every step of random walks through legal document space,
+  comparing the poisoned-scratch trial against a full struct copy - answers
+  AND live state - and checks the closer's parse guarantee at every
+  frontier; a differential fuzz target (fuzz_sval_trial) does the same
+  under libFuzzer+ASan+UBSan in CI; and a `conformance-sanitized` CI job
+  drives the full agent-protocol conformance harness against the
+  ASan+UBSan binary, because the plain-build suite proved unable to
+  surface undefined behavior. Between them they found every disagreement
+  above, most within seconds of existing - including one on the sanitized
+  leg's very first run.
 
 ## v0.4.0 - 2026-08-28
 
