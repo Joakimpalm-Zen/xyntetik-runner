@@ -58,10 +58,55 @@ bool json_escape_hex(uint8_t *sub, uint16_t *esc, uint8_t c) {
     return true;
 }
 
-int json_escape_close(uint8_t *sub, uint16_t *esc, char *out, int cap) {
+uint32_t json_key_hash_init(void) { return 2166136261u; }   // FNV-1a basis
+
+uint32_t json_key_hash_byte(uint32_t h, uint8_t c) {
+    return (h ^ c) * 16777619u;
+}
+
+uint32_t json_key_hash_scalar(uint32_t h, uint32_t cp) {
+    // hash the scalar's UTF-8 bytes, so an escaped spelling collides with
+    // the raw one exactly as it does after json_parse unescapes them
+    if (cp < 0x80) return json_key_hash_byte(h, (uint8_t)cp);
+    if (cp < 0x800) {
+        h = json_key_hash_byte(h, (uint8_t)(0xC0 | (cp >> 6)));
+        return json_key_hash_byte(h, (uint8_t)(0x80 | (cp & 0x3F)));
+    }
+    if (cp < 0x10000) {
+        h = json_key_hash_byte(h, (uint8_t)(0xE0 | (cp >> 12)));
+        h = json_key_hash_byte(h, (uint8_t)(0x80 | ((cp >> 6) & 0x3F)));
+        return json_key_hash_byte(h, (uint8_t)(0x80 | (cp & 0x3F)));
+    }
+    h = json_key_hash_byte(h, (uint8_t)(0xF0 | (cp >> 18)));
+    h = json_key_hash_byte(h, (uint8_t)(0x80 | ((cp >> 12) & 0x3F)));
+    h = json_key_hash_byte(h, (uint8_t)(0x80 | ((cp >> 6) & 0x3F)));
+    return json_key_hash_byte(h, (uint8_t)(0x80 | (cp & 0x3F)));
+}
+
+uint8_t json_escape_decode_simple(uint8_t c) {
+    switch (c) {
+    case '"':  return '"';
+    case '\\': return '\\';
+    case '/':  return '/';
+    case 'b':  return 0x08;
+    case 'f':  return 0x0C;
+    case 'n':  return 0x0A;
+    case 'r':  return 0x0D;
+    case 't':  return 0x09;
+    default:   return 0;
+    }
+}
+
+int json_escape_close(uint8_t *sub, uint16_t *esc, uint16_t hi,
+                      char *out, int cap, uint32_t *scalar) {
     int m = 0;
+    uint32_t completed = 0;
     #define ESC_PUT(ch) do { if (m < cap) out[m++] = (char)(ch); } while (0)
-    if (*sub == 1) { ESC_PUT('n'); *sub = 0; return m; }  // dangling backslash
+    if (*sub == 1) {
+        ESC_PUT('n'); *sub = 0;
+        if (scalar) *scalar = 0x0A;
+        return m;
+    }
     if (*sub >= 2 && *sub <= 5) {
         int nth = *sub - 2;                     // digits already written
         uint16_t cp = (uint16_t)((nth ? *esc : 0) << (4 * (4 - nth)));
@@ -72,7 +117,8 @@ int json_escape_close(uint8_t *sub, uint16_t *esc, char *out, int cap) {
         } else {
             for (int i = nth; i < 4; i++) ESC_PUT('0');
         }
-        *sub = (cp >= 0xD800 && cp <= 0xDBFF) ? 6 : 0;
+        if (cp >= 0xD800 && cp <= 0xDBFF) { *sub = 6; hi = cp; }
+        else                              { *sub = 0; completed = cp; }
     }
     if (*sub == 6) { ESC_PUT('\\'); *sub = 7; }
     if (*sub == 7) { ESC_PUT('u');  *sub = 8; }
@@ -81,10 +127,21 @@ int json_escape_close(uint8_t *sub, uint16_t *esc, char *out, int cap) {
         // json_escape_hex has pinned digit 1 to D and digit 2 to C..F, so
         // zeros are safe from the third digit on
         static const char LOW[4] = { 'D', 'C', '0', '0' };
-        for (int i = *sub - 8; i < 4; i++) ESC_PUT(LOW[i]);
+        int nth = *sub - 8;
+        uint32_t lo = nth ? *esc : 0;
+        for (int i = nth; i < 4; i++) {
+            ESC_PUT(LOW[i]);
+            lo = lo * 16 + (LOW[i] <= '9' ? (uint32_t)(LOW[i] - '0')
+                                          : (uint32_t)(LOW[i] - 'A' + 10));
+        }
         *sub = 0;
+        completed = hi >= 0xD800
+                        ? 0x10000u + (((uint32_t)hi - 0xD800u) << 10)
+                                   + (lo - 0xDC00u)
+                        : lo;
     }
     #undef ESC_PUT
+    if (scalar) *scalar = completed;
     return m;
 }
 
@@ -95,6 +152,9 @@ void jsonv_init(jsonv *v) {
     v->lit = 0;
     v->utf8 = 0;
     v->esc = 0;
+    v->esc_hi = 0;
+    v->khash = 0;
+    v->kseen_n = 0;
     v->done = false;
 }
 
@@ -120,6 +180,21 @@ static bool push(jsonv *v, uint8_t c) {
 }
 
 // a value just finished at the current depth
+// a closing object releases its own keys from the duplicate guard; a sibling
+// object that opens later at the same depth starts clean (schema.c's map
+// guard compacts identically in frame_done)
+static void drop_keys(jsonv *v, int depth) {
+    if (!v->kseen_n) return;
+    int w = 0;
+    for (int i = 0; i < v->kseen_n; i++)
+        if (v->kseen_depth[i] != (uint8_t)depth) {
+            v->kseen_hash[w] = v->kseen_hash[i];
+            v->kseen_depth[w] = v->kseen_depth[i];
+            w++;
+        }
+    v->kseen_n = (uint8_t)w;
+}
+
 static void value_done(jsonv *v) {
     if (v->depth == 0) {
         v->st = S_DONE;
@@ -164,30 +239,77 @@ static bool feed_byte(jsonv *v, uint8_t c, bool *reconsume) {
 
     case S_KEY_OR_END:
         if (is_ws(c)) return true;
-        if (c == '"') { v->st = S_KEY; v->sub = 0; return true; }
-        if (c == '}') { v->depth--; value_done(v); return true; }
+        if (c == '"') {
+            v->st = S_KEY; v->sub = 0;
+            v->khash = json_key_hash_init();
+            return true;
+        }
+        if (c == '}') { drop_keys(v, v->depth); v->depth--; value_done(v); return true; }
         return false;
 
     case S_KEY_EXPECT:
         if (is_ws(c)) return true;
-        if (c == '"') { v->st = S_KEY; v->sub = 0; return true; }
+        if (c == '"') {
+            v->st = S_KEY; v->sub = 0;
+            v->khash = json_key_hash_init();
+            return true;
+        }
         return false;
 
     case S_KEY:
     case S_STRING: {
         bool key = v->st == S_KEY;
         if (v->sub == 1) { // after backslash
-            if (c == '"' || c == '\\' || c == '/' || c == 'b' || c == 'f' ||
-                c == 'n' || c == 'r' || c == 't') { v->sub = 0; return true; }
+            uint8_t dec = json_escape_decode_simple(c);
+            if (dec) {
+                v->sub = 0;
+                if (key) v->khash = json_key_hash_byte(v->khash, dec);
+                return true;
+            }
             if (c == 'u') { v->sub = 2; return true; }
             return false;
         }
         if (v->sub == 6) { if (c != '\\') return false; v->sub = 7; return true; }
         if (v->sub == 7) { if (c != 'u')  return false; v->sub = 8; return true; }
-        if (v->sub >= 2) return json_escape_hex(&v->sub, &v->esc, c);
-        if (v->utf8) return json_utf8_byte(&v->utf8, c);
+        if (v->sub >= 2) {
+            uint8_t pre = v->sub;
+            if (!json_escape_hex(&v->sub, &v->esc, c)) return false;
+            if (key) {
+                // hash the decoded scalar at escape completion, so an
+                // escaped key spelling collides with its raw spelling
+                // exactly as it does after json_parse unescapes them
+                if (pre <= 5 && v->sub == 6) v->esc_hi = v->esc;
+                else if (pre <= 5 && v->sub == 0)
+                    v->khash = json_key_hash_scalar(v->khash, v->esc);
+                else if (pre >= 8 && v->sub == 0)
+                    v->khash = json_key_hash_scalar(v->khash,
+                        0x10000u + (((uint32_t)v->esc_hi - 0xD800u) << 10)
+                                 + ((uint32_t)v->esc - 0xDC00u));
+            }
+            return true;
+        }
+        if (v->utf8) {
+            if (!json_utf8_byte(&v->utf8, c)) return false;
+            if (key) v->khash = json_key_hash_byte(v->khash, c);
+            return true;
+        }
         if (c == '"') {
-            if (key) v->st = S_COLON;
+            if (key) {
+                // a key this object already closed is refused AT ITS
+                // CLOSING QUOTE, the same rule (and the same reason) as
+                // schema.c's map guard: json_parse refuses the duplicate,
+                // and the model still holds every legal continuation
+                for (int i = 0; i < v->kseen_n; i++)
+                    if (v->kseen_depth[i] == (uint8_t)v->depth &&
+                        v->kseen_hash[i] == v->khash)
+                        return false;
+                if (v->kseen_n < JSON_KEY_SEEN_MAX && v->depth <= 255) {
+                    v->kseen_hash[v->kseen_n] = v->khash;
+                    v->kseen_depth[v->kseen_n] = (uint8_t)v->depth;
+                    v->kseen_n++;
+                }
+                v->st = S_COLON;
+            }
             else value_done(v);
             return true;
         }
@@ -196,7 +318,9 @@ static bool feed_byte(jsonv *v, uint8_t c, bool *reconsume) {
         // well-formed UTF-8 -- json_parse refuses ill-formed sequences, so
         // accepting them here would emit a document it cannot read back
         if (c < 0x20) return false;
-        return json_utf8_byte(&v->utf8, c);
+        if (!json_utf8_byte(&v->utf8, c)) return false;
+        if (key) v->khash = json_key_hash_byte(v->khash, c);
+        return true;
     }
 
     case S_COLON:
@@ -209,7 +333,10 @@ static bool feed_byte(jsonv *v, uint8_t c, bool *reconsume) {
         uint8_t top = v->depth > 0 ? v->stack[v->depth - 1] : 0;
         if (c == ',' && top == 'O') { v->st = S_KEY_EXPECT; return true; }
         if (c == ',' && top == 'A') { v->st = S_VALUE; return true; }
-        if (c == '}' && top == 'O') { v->depth--; value_done(v); return true; }
+        if (c == '}' && top == 'O') {
+            drop_keys(v, v->depth);
+            v->depth--; value_done(v); return true;
+        }
         if (c == ']' && top == 'A') { v->depth--; value_done(v); return true; }
         return false;
     }
@@ -271,18 +398,53 @@ int jsonv_close(jsonv *v, char *out, int cap) {
     // unfinished string escapes and truncated raw UTF-8 scalars: both must
     // finish before the quote or the document does not survive json_parse
     if (v->st == S_KEY || v->st == S_STRING) {
+        bool key = v->st == S_KEY;
         char u8[3];
         int un = json_utf8_close(&v->utf8, u8);
-        for (int i = 0; i < un; i++) EMIT(u8[i]);
+        for (int i = 0; i < un; i++) {
+            EMIT(u8[i]);
+            if (key) v->khash = json_key_hash_byte(v->khash, (uint8_t)u8[i]);
+        }
         char esc[12];
-        int en = json_escape_close(&v->sub, &v->esc, esc, (int)sizeof(esc));
+        uint32_t scalar = 0;
+        int en = json_escape_close(&v->sub, &v->esc, v->esc_hi, esc,
+                                   (int)sizeof(esc), &scalar);
         for (int i = 0; i < en; i++) EMIT(esc[i]);
+        if (key && scalar) v->khash = json_key_hash_scalar(v->khash, scalar);
+        if (key) {
+            // a force-closed key must not complete into a duplicate the
+            // feed guard would have refused (and json_parse will refuse):
+            // extend it until its decoded hash is fresh in this object
+            for (int guard = 0; guard < 64; guard++) {
+                bool dup = false;
+                for (int i = 0; i < v->kseen_n; i++)
+                    if (v->kseen_depth[i] == (uint8_t)v->depth &&
+                        v->kseen_hash[i] == v->khash) { dup = true; break; }
+                if (!dup) break;
+                EMIT('_');
+                v->khash = json_key_hash_byte(v->khash, '_');
+            }
+        }
         EMIT('"');
-        if (v->st == S_KEY) v->st = S_COLON;
+        if (key) v->st = S_COLON;
         else value_done(v);
     }
     if (v->st == S_COLON)      { EMIT(':'); v->st = S_VALUE; }
-    if (v->st == S_KEY_EXPECT) { EMIT('"'); EMIT('_'); EMIT('"'); EMIT(':'); v->st = S_VALUE; }
+    if (v->st == S_KEY_EXPECT) {
+        // the invented key must dodge the guard too: "_" may exist already
+        uint32_t kh = json_key_hash_byte(json_key_hash_init(), '_');
+        EMIT('"'); EMIT('_');
+        for (int guard = 0; guard < 64; guard++) {
+            bool dup = false;
+            for (int i = 0; i < v->kseen_n; i++)
+                if (v->kseen_depth[i] == (uint8_t)v->depth &&
+                    v->kseen_hash[i] == kh) { dup = true; break; }
+            if (!dup) break;
+            EMIT('_'); kh = json_key_hash_byte(kh, '_');
+        }
+        EMIT('"'); EMIT(':');
+        v->st = S_VALUE;
+    }
     if (v->st == S_LIT) {
         const char *lit = LITS[v->lit];
         while (lit[v->sub]) EMIT(lit[v->sub++]);
@@ -389,6 +551,14 @@ void jsonv_snapshot(jsonv *dst, const jsonv *src) {
     dst->utf8 = src->utf8;
     dst->done = src->done;
     dst->esc = src->esc;
+    dst->esc_hi = src->esc_hi;
+    dst->khash = src->khash;
+    dst->kseen_n = src->kseen_n;
+    int ks = src->kseen_n;
+    if (ks > JSON_KEY_SEEN_MAX) ks = JSON_KEY_SEEN_MAX;
+    memcpy(dst->kseen_hash, src->kseen_hash,
+           (size_t)ks * sizeof(src->kseen_hash[0]));
+    memcpy(dst->kseen_depth, src->kseen_depth, (size_t)ks);
 }
 
 bool jsonv_trial(const jsonv *v, jsonv *scratch, const char *s, int n) {

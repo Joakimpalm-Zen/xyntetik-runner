@@ -35,6 +35,19 @@ names that were true when they were written.
   sequence classifier (json_utf8_byte) the schema strings already used, and
   the json-mode closer finishes a truncated scalar before writing its
   closing quote instead of emitting a document that cannot parse.
+- **Duplicate object keys are refused the way the parser refuses them.**
+  json_parse rejects a repeated key AFTER unescaping, and three generation
+  paths disagreed with it: plain JSON mode (and every free-object subtree
+  of a tool schema) accepted duplicates outright; the schema map guard
+  caught only same-spelling repeats, so `"a"` versus `"a"` slipped
+  through; and both force-closers could complete a truncated key INTO a
+  duplicate - the CI fuzzer's second run produced `{"a":1,"a":0}` from a
+  map close, a document the runner's own tool-argument readback then
+  refused. Both validators now share one duplicate guard that hashes
+  DECODED key content (raw bytes, decoded escapes, surrogate pairs as
+  their scalar), refusing the duplicate at its closing quote while every
+  continuation stays legal, and both closers extend a force-closed key
+  until it is unique instead of minting the collision.
 - **The candidate-token oracle is now differentially tested.** A seeded
   walker (tests/test_sval_walk.c, in `make test`) probes all 256 bytes at
   every step of random walks through legal document space, comparing the

@@ -1413,6 +1413,91 @@ static void test_jsonv_utf8_matches_parser(void) {
     }
 }
 
+// json_parse refuses duplicate object keys AFTER unescaping, so both
+// validators must too: the guards hash decoded key content, which makes
+// `"a"`, `"a"` and the raw spelling of an escaped astral pair collide
+// exactly as they do in the parser. The closers must not mint a duplicate
+// either: force-closing mid-key extends the key until its hash is fresh.
+static void test_duplicate_keys_match_parser(void) {
+    // generic machine, raw duplicate: refused at the second closing quote
+    {
+        jsonv v; jsonv_init(&v);
+        const char *pre = "{\"a\":1,\"a";
+        assert(jsonv_feed(&v, pre, (int)strlen(pre)));
+        assert(!jsonv_feed(&v, "\"", 1));
+        assert(jsonv_feed(&v, "b\":2}", 5));   // extending the key is legal
+        assert(v.done);
+    }
+    // generic machine, escaped duplicate of a raw key
+    {
+        jsonv v; jsonv_init(&v);
+        const char *pre = "{\"a\":1,\"\\u0061";
+        assert(jsonv_feed(&v, pre, (int)strlen(pre)));
+        assert(!jsonv_feed(&v, "\"", 1));
+    }
+    // generic machine, surrogate pair vs the raw astral spelling
+    {
+        jsonv v; jsonv_init(&v);
+        const char *pre = "{\"\xF0\x9F\x98\x80\":1,\"\\ud83d\\ude00";
+        assert(jsonv_feed(&v, pre, (int)strlen(pre)));
+        assert(!jsonv_feed(&v, "\"", 1));
+    }
+    // a sibling object at the same depth starts clean
+    {
+        jsonv v; jsonv_init_any(&v);
+        const char *doc = "[{\"a\":1},{\"a\":2}]";
+        assert(jsonv_feed(&v, doc, (int)strlen(doc)));
+        assert(v.done);
+    }
+    // schema map, escaped duplicate (was a documented residual, now caught)
+    const char *map_src =
+        "{\"type\":\"object\",\"additionalProperties\":{\"type\":\"integer\"}}";
+    jv *map_json = json_parse(map_src, strlen(map_src));
+    assert(map_json != NULL);
+    char err[128];
+    snode *map_schema = schema_compile(map_json, err, sizeof(err));
+    assert(map_schema != NULL);
+    {
+        sval v; sval_init(&v, map_schema);
+        const char *pre = "{\"a\":1,\"\\u0061";
+        assert(sval_feed(&v, pre, (int)strlen(pre)));
+        sval scratch;
+        memset(&scratch, 0xA5, sizeof(scratch));
+        assert(!sval_trial(&v, &scratch, "\"", 1));
+    }
+    // schema-map closer: force-closing mid-duplicate-key extends the key
+    // instead of completing the duplicate json_parse would refuse
+    {
+        sval v; sval_init(&v, map_schema);
+        const char *pre = "{\"a\":1,\"a";
+        assert(sval_feed(&v, pre, (int)strlen(pre)));
+        char close[128];
+        int wrote = sval_close(&v, close, (int)sizeof(close));
+        assert(wrote > 0);
+        char doc[192];
+        int len = snprintf(doc, sizeof(doc), "%s%s", pre, close);
+        jv *parsed = json_parse(doc, (size_t)len);
+        assert(parsed != NULL);
+        jv_free(parsed);
+    }
+    // generic-machine closer, same property through a free-object subtree
+    {
+        jsonv v; jsonv_init(&v);
+        const char *pre = "{\"k\":1,\"k";
+        assert(jsonv_feed(&v, pre, (int)strlen(pre)));
+        char close[128];
+        int n = jsonv_close(&v, close, (int)sizeof(close));
+        assert(n > 0);
+        char doc[192];
+        int len = snprintf(doc, sizeof(doc), "%s%s", pre, close);
+        jv *parsed = json_parse(doc, (size_t)len);
+        assert(parsed != NULL);
+        jv_free(parsed);
+    }
+    schema_free(map_schema);
+    jv_free(map_json);
+}
+
 // The validator must never complete a number spelling json_parse refuses:
 // the caller was promised a document this program reads back, and strtod's
 // range refusals (overflow AND underflow — both ERANGE) are part of the
@@ -2592,6 +2677,7 @@ int main(void) {
     test_schema_integer_bounds_complete_truncation();
     test_schema_number_close_rescues_an_out_of_range_prefix();
     test_jsonv_utf8_matches_parser();
+    test_duplicate_keys_match_parser();
     test_schema_number_matches_parser();
     test_schema_number_bounds_are_enforced();
     test_schema_number_bounds_across_frames();

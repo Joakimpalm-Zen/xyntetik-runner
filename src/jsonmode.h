@@ -7,6 +7,15 @@
 
 // incremental validator: accepts byte strings only while they remain a valid
 // prefix of a single JSON object; small and memcpy-copyable for lookahead
+// Duplicate-key guard capacity, shared with schema.c's map guard: hashes of
+// keys already closed in each open object, tagged with that object's depth.
+// The hash runs over DECODED key content (raw bytes, decoded escapes,
+// surrogate pairs as their scalar), so `"a"` and `"a"` collide exactly
+// as they do in json_parse, which refuses the duplicate either way. A hash
+// collision refuses a distinct key (over-constraint) and can never admit a
+// duplicate. Past the capacity the guard stops tracking.
+#define JSON_KEY_SEEN_MAX 16
+
 typedef struct {
     uint8_t stack[200];     // container nesting: 'O' object, 'A' array
     int16_t depth;
@@ -14,6 +23,11 @@ typedef struct {
     uint8_t utf8;           // pending raw UTF-8 scalar (see json_utf8_byte)
     bool    done;           // a complete top-level object has been parsed
     uint16_t esc;           // \uXXXX value accumulated so far
+    uint16_t esc_hi;        // pending high surrogate of the current key's pair
+    uint32_t khash;         // running decoded-content hash of the open key
+    uint8_t  kseen_n;       // duplicate-key guard (see JSON_KEY_SEEN_MAX)
+    uint32_t kseen_hash[JSON_KEY_SEEN_MAX];
+    uint8_t  kseen_depth[JSON_KEY_SEEN_MAX];
 } jsonv;
 
 // One hex digit of a `\uXXXX` escape, for both validators.
@@ -34,7 +48,18 @@ bool json_escape_hex(uint8_t *sub, uint16_t *esc, uint8_t c);
 // the missing digits with zeros is what a caller would do instead, and that
 // yields the NUL escape or an unpaired surrogate -- both refused by json.c,
 // so the force-closed document would not parse.
-int  json_escape_close(uint8_t *sub, uint16_t *esc, char *out, int cap);
+// `hi` is the pending high surrogate when closing lands inside a pair's low
+// half (0 otherwise); on return *scalar is the decoded code point the close
+// completed, or 0 when it completed none — the duplicate-key guards hash it.
+int  json_escape_close(uint8_t *sub, uint16_t *esc, uint16_t hi,
+                       char *out, int cap, uint32_t *scalar);
+// FNV-1a over decoded key content, shared by both duplicate-key guards so
+// they agree with each other and with json_parse's refusal.
+uint32_t json_key_hash_init(void);
+uint32_t json_key_hash_byte(uint32_t h, uint8_t c);
+uint32_t json_key_hash_scalar(uint32_t h, uint32_t cp);
+// the byte a simple escape decodes to ('n' -> 0x0A, ...), 0 if not simple
+uint8_t  json_escape_decode_simple(uint8_t c);
 // Raw UTF-8 string content, shared by both validators for the same reason as
 // json_escape_hex: a validator that admits a byte sequence json_parse
 // refuses would let a constrained model generate a document this program

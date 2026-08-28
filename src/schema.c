@@ -2767,7 +2767,7 @@ static int feed_byte(sval *v, uint8_t c) {
         if (n->kind == SN_MAP) {
             f->sub = 0;
             f->lit_pos = 0;
-            f->num_abs = 2166136261u; // FNV-1a basis (see sframe.num_abs)
+            f->num_abs = json_key_hash_init(); // see sframe.num_abs
             f->phase = P_OBJ_INKEY;
             return 0;
         }
@@ -2780,6 +2780,7 @@ static int feed_byte(sval *v, uint8_t c) {
     case P_OBJ_INKEY: {
         if (n->kind == SN_MAP) {
             bool continuing_utf8 = f->utf8_state != 0;
+            uint8_t pre_sub = f->sub;
             int r = str_byte(c, &f->sub, &f->esc, &f->utf8_state);
             if (r < 0) return -1;
             if (r == 1) {
@@ -2800,7 +2801,34 @@ static int feed_byte(sval *v, uint8_t c) {
                 }
                 f->phase = P_OBJ_COLON;
             } else {
-                f->num_abs = ((uint32_t)f->num_abs ^ c) * 16777619u;
+                // The guard hashes DECODED key content — raw bytes as
+                // themselves, escapes as the scalar they decode to — so
+                // `"a"` and `"a"` collide exactly as they do after
+                // json_parse unescapes them. The low 32 bits of num_abs
+                // hold the running hash; bits 32..47 stash a pending high
+                // surrogate until its low half completes the pair.
+                uint32_t kh = (uint32_t)f->num_abs;
+                uint64_t hi_bits = f->num_abs & 0xFFFFFFFF00000000ull;
+                if (pre_sub == 1) {
+                    if (c != 'u')       // '\u' contributes nothing until its
+                                        // digits complete a scalar below
+                        kh = json_key_hash_byte(kh,
+                                                json_escape_decode_simple(c));
+                } else if (pre_sub >= 2) {
+                    if (pre_sub <= 5 && f->sub == 6)
+                        hi_bits = (uint64_t)f->esc << 32;
+                    else if (pre_sub <= 5 && f->sub == 0)
+                        kh = json_key_hash_scalar(kh, f->esc);
+                    else if (pre_sub >= 8 && f->sub == 0) {
+                        uint32_t hi = (uint32_t)((f->num_abs >> 32) & 0xFFFF);
+                        kh = json_key_hash_scalar(kh,
+                            0x10000u + ((hi - 0xD800u) << 10)
+                                     + ((uint32_t)f->esc - 0xDC00u));
+                    }
+                } else if (!(pre_sub == 0 && c == '\\')) {
+                    kh = json_key_hash_byte(kh, c);
+                }
+                f->num_abs = hi_bits | kh;
                 if (f->sub == 0 && !continuing_utf8) f->lit_pos++;
             }
             return 0;
@@ -3098,7 +3126,8 @@ static bool eq_full(const emitq *q) { return q->n + q->reserve >= q->cap - 1; }
 // advances lit_pos only once an escape closes.
 static bool eq_escape(emitq *q, sframe *f) {
     char esc[12];
-    int n = json_escape_close(&f->sub, &f->esc, esc, (int)sizeof(esc));
+    int n = json_escape_close(&f->sub, &f->esc, 0, esc, (int)sizeof(esc),
+                              NULL);
     for (int i = 0; i < n; i++) eq_putc(q, esc[i]);
     return n > 0;
 }
@@ -3469,7 +3498,20 @@ int sval_close(sval *v, char *out, int cap) {
             break;
         case P_OBJ_KEY: // a ',' was already consumed
             if (n->kind == SN_MAP) {
-                eq_put(&q, "\"\":");
+                // the invented key must dodge the duplicate guard: an
+                // empty key may already exist in this map
+                uint32_t kh = json_key_hash_init();
+                eq_putc(&q, '"');
+                for (int extend = 0; extend < 64; extend++) {
+                    bool dup = false;
+                    for (int i = 0; i < v->n_seen; i++)
+                        if (v->seen_depth[i] == v->depth &&
+                            v->seen_hash[i] == kh) { dup = true; break; }
+                    if (!dup) break;
+                    eq_putc(&q, '_');
+                    kh = json_key_hash_byte(kh, '_');
+                }
+                eq_put(&q, "\":");
                 emit_min_choice(&q, n->items, 0, choice);
                 eq_putc(&q, '}');
             } else {
@@ -3478,8 +3520,32 @@ int sval_close(sval *v, char *out, int cap) {
             break;
         case P_OBJ_INKEY: {
             if (n->kind == SN_MAP) {
-                eq_escape(&q, f);
-                eq_utf8(&q, f);
+                // a force-closed key must not complete into a duplicate the
+                // feed guard refuses (and json_parse will refuse): finish
+                // any pending escape or scalar while keeping the decoded
+                // hash current, then extend the key until the hash is fresh
+                uint32_t kh = (uint32_t)f->num_abs;
+                char fin[12];
+                uint32_t scalar = 0;
+                int fn = json_escape_close(&f->sub, &f->esc,
+                                           (uint16_t)(f->num_abs >> 32),
+                                           fin, (int)sizeof(fin), &scalar);
+                for (int i = 0; i < fn; i++) eq_putc(&q, fin[i]);
+                if (scalar) kh = json_key_hash_scalar(kh, scalar);
+                fn = json_utf8_close(&f->utf8_state, fin);
+                for (int i = 0; i < fn; i++) {
+                    eq_putc(&q, fin[i]);
+                    kh = json_key_hash_byte(kh, (uint8_t)fin[i]);
+                }
+                for (int extend = 0; extend < 64; extend++) {
+                    bool dup = false;
+                    for (int i = 0; i < v->n_seen; i++)
+                        if (v->seen_depth[i] == v->depth &&
+                            v->seen_hash[i] == kh) { dup = true; break; }
+                    if (!dup) break;
+                    eq_putc(&q, '_');
+                    kh = json_key_hash_byte(kh, '_');
+                }
                 eq_put(&q, "\":");
                 emit_min_choice(&q, n->items, 0, choice);
                 eq_putc(&q, '}');

@@ -91,8 +91,14 @@ static int live_state_equal(const sval *a, const sval *b) {
     const jsonv *ja = &a->any, *jb = &b->any;
     if (ja->depth != jb->depth || ja->st != jb->st || ja->sub != jb->sub ||
         ja->lit != jb->lit || ja->utf8 != jb->utf8 || ja->done != jb->done ||
-        ja->esc != jb->esc)
+        ja->esc != jb->esc || ja->esc_hi != jb->esc_hi ||
+        ja->khash != jb->khash || ja->kseen_n != jb->kseen_n)
         return 0;
+    int jks = ja->kseen_n;
+    if (jks > JSON_KEY_SEEN_MAX) jks = JSON_KEY_SEEN_MAX;
+    if (memcmp(ja->kseen_hash, jb->kseen_hash,
+               (size_t)jks * sizeof(ja->kseen_hash[0]))) return 0;
+    if (memcmp(ja->kseen_depth, jb->kseen_depth, (size_t)jks)) return 0;
     int jd = ja->depth;
     if (jd < 0) jd = 0;
     if (jd > (int)sizeof(ja->stack)) jd = (int)sizeof(ja->stack);

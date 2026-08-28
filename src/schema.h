@@ -120,12 +120,13 @@ typedef struct {
 // Free-keyed (SN_MAP) duplicate guard: hashes of keys already emitted in
 // each open map, tagged with the map frame's stack depth so nested maps do
 // not collide and a closing map releases its own entries. Fixed-size so the
-// validator stays memcpy-copyable. SCOPE, stated plainly: this refuses a
-// duplicate in the SPELLING the model emits (the realistic constrained-
-// sampling failure); the same key spelled once raw and once escaped hashes
-// differently and still lands on the parser's refusal, as before. A hash
-// collision refuses a distinct key (over-constraint) and can never admit a
-// duplicate. Past MAP_SEEN_MAX open keys the guard stops tracking.
+// validator stays memcpy-copyable. The hash runs over DECODED key content
+// (raw bytes as themselves, escapes as the scalar they decode to — see
+// json_key_hash_scalar), so `"a"` and `"a"` collide exactly as they
+// do after json_parse unescapes them, which refuses the duplicate either
+// way. A hash collision refuses a distinct key (over-constraint) and can
+// never admit a duplicate. Past MAP_SEEN_MAX open keys the guard stops
+// tracking.
 #define MAP_SEEN_MAX 16
 
 typedef struct {
