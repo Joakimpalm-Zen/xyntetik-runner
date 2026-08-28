@@ -3,6 +3,7 @@ from __future__ import annotations
 import http.client
 import json
 import socket
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -73,6 +74,38 @@ def _tighten_socket_timeout(response: Any, seconds: float) -> None:
                 return
         except (AttributeError, OSError, ValueError):
             continue
+
+
+def _interrupt_response(response: Any) -> None:
+    """Wake a blocking HTTP body read from another thread.
+
+    Closing an ``HTTPResponse`` alone does not reliably interrupt ``recv`` on
+    every supported platform. Shutting down its socket first does; ``close`` is
+    still called for custom transports and to release the file wrapper.
+    """
+    for probe in ("fp.raw._sock", "fp._sock", "fp.raw", "fp"):
+        obj: Any = response
+        try:
+            for attr in probe.split("."):
+                obj = getattr(obj, attr)
+            shutdown = getattr(obj, "shutdown", None)
+            if shutdown is not None:
+                shutdown(socket.SHUT_RDWR)
+                break
+        except (AttributeError, OSError, ValueError):
+            continue
+    try:
+        response.close()
+    except (AttributeError, OSError, ValueError):
+        pass
+
+
+def _watch_cancellation(cancel_event: Any, response: Any,
+                        finished: threading.Event) -> None:
+    while not finished.wait(0.02):
+        if cancel_event.is_set():
+            _interrupt_response(response)
+            return
 
 
 class RunnerEndpoint:
@@ -183,67 +216,81 @@ class RunnerEndpoint:
                 # that, the documented stall window takes over.
                 content_seen = False
                 last_event = time.monotonic()
-                for raw_line in response:
+                watch_done = threading.Event()
+                watcher = None
+                if cancel_event is not None:
+                    watcher = threading.Thread(
+                        target=_watch_cancellation,
+                        args=(cancel_event, response, watch_done), daemon=True)
+                    watcher.start()
+                try:
+                    for raw_line in response:
+                        if cancel_event is not None and cancel_event.is_set():
+                            raise RunnerCancelledError(partial="".join(text_parts))
+                        now = time.monotonic()
+                        idle, last_event = now - last_event, now
+                        if idle > (window if content_seen else first_window):
+                            # the socket timeout cannot see a gap that ends on its
+                            # own; the watchdog can, so a resumed stream that went
+                            # quiet past the window still reports as a stall
+                            raise RunnerStallError(
+                                self._stall_message(idle, window),
+                                partial="".join(text_parts),
+                            )
+                        try:
+                            line = raw_line.decode("utf-8").strip()
+                        except UnicodeDecodeError as error:
+                            raise RunnerProtocolError(
+                                "runner sent a non-UTF-8 SSE frame",
+                                partial="".join(text_parts),
+                            ) from error
+                        if not line.startswith("data:"):
+                            continue
+                        data = line[5:].strip()
+                        if data == "[DONE]":
+                            complete = True
+                            break
+                        choice = self._stream_choice(data, "".join(text_parts))
+                        if choice is None:
+                            continue
+                        delta = self._stream_delta(choice, "".join(text_parts))
+                        piece = delta.get("content") or ""
+                        reasoning = delta.get("reasoning_content") or ""
+                        if piece or reasoning or delta.get("tool_calls") \
+                                or choice.get("finish_reason") is not None:
+                            if not content_seen:
+                                content_seen = True
+                                _tighten_socket_timeout(response, window)
+                        if piece:
+                            text_parts.append(piece)
+                            if on_delta is not None:
+                                on_delta(piece)
+                        if reasoning:
+                            reasoning_parts.append(reasoning)
+                            if on_reasoning_delta is not None:
+                                on_reasoning_delta(reasoning)
+                        for frag in delta.get("tool_calls") or []:
+                            idx = frag.get("index", 0)
+                            acc = tool_acc.setdefault(
+                                idx, {"id": None, "name": None, "arguments": []})
+                            if frag.get("id"):
+                                acc["id"] = frag["id"]
+                            fn = frag.get("function") or {}
+                            if fn.get("name"):
+                                acc["name"] = fn["name"]
+                            if fn.get("arguments"):
+                                acc["arguments"].append(fn["arguments"])
+                        if cancel_event is not None and cancel_event.is_set():
+                            raise RunnerCancelledError(partial="".join(text_parts))
+                        if choice.get("finish_reason") is not None:
+                            complete = True
+                            finish_reason = choice["finish_reason"]
                     if cancel_event is not None and cancel_event.is_set():
                         raise RunnerCancelledError(partial="".join(text_parts))
-                    now = time.monotonic()
-                    idle, last_event = now - last_event, now
-                    if idle > (window if content_seen else first_window):
-                        # the socket timeout cannot see a gap that ends on its
-                        # own; the watchdog can, so a resumed stream that went
-                        # quiet past the window still reports as a stall
-                        raise RunnerStallError(
-                            self._stall_message(idle, window),
-                            partial="".join(text_parts),
-                        )
-                    try:
-                        line = raw_line.decode("utf-8").strip()
-                    except UnicodeDecodeError as error:
-                        raise RunnerProtocolError(
-                            "runner sent a non-UTF-8 SSE frame",
-                            partial="".join(text_parts),
-                        ) from error
-                    if not line.startswith("data:"):
-                        continue
-                    data = line[5:].strip()
-                    if data == "[DONE]":
-                        complete = True
-                        break
-                    choice = self._stream_choice(data, "".join(text_parts))
-                    if choice is None:
-                        continue
-                    delta = self._stream_delta(choice, "".join(text_parts))
-                    piece = delta.get("content") or ""
-                    reasoning = delta.get("reasoning_content") or ""
-                    if piece or reasoning or delta.get("tool_calls") \
-                            or choice.get("finish_reason") is not None:
-                        if not content_seen:
-                            content_seen = True
-                            _tighten_socket_timeout(response, window)
-                    if piece:
-                        text_parts.append(piece)
-                        if on_delta is not None:
-                            on_delta(piece)
-                    if reasoning:
-                        reasoning_parts.append(reasoning)
-                        if on_reasoning_delta is not None:
-                            on_reasoning_delta(reasoning)
-                    for frag in delta.get("tool_calls") or []:
-                        idx = frag.get("index", 0)
-                        acc = tool_acc.setdefault(
-                            idx, {"id": None, "name": None, "arguments": []})
-                        if frag.get("id"):
-                            acc["id"] = frag["id"]
-                        fn = frag.get("function") or {}
-                        if fn.get("name"):
-                            acc["name"] = fn["name"]
-                        if fn.get("arguments"):
-                            acc["arguments"].append(fn["arguments"])
-                    if cancel_event is not None and cancel_event.is_set():
-                        raise RunnerCancelledError(partial="".join(text_parts))
-                    if choice.get("finish_reason") is not None:
-                        complete = True
-                        finish_reason = choice["finish_reason"]
+                finally:
+                    watch_done.set()
+                    if watcher is not None:
+                        watcher.join(timeout=0.1)
         except (RunnerCancelledError, RunnerStallError, RunnerProtocolError):
             raise
         except (socket.timeout, TimeoutError) as error:
@@ -252,8 +299,12 @@ class RunnerEndpoint:
                 partial="".join(text_parts),
             ) from error
         except urllib.error.HTTPError as error:
+            if cancel_event is not None and cancel_event.is_set():
+                raise RunnerCancelledError(partial="".join(text_parts)) from error
             raise self._http_error(error) from error
         except http.client.HTTPException as error:
+            if cancel_event is not None and cancel_event.is_set():
+                raise RunnerCancelledError(partial="".join(text_parts)) from error
             # a body cut short, or a peer that is not speaking HTTP at all:
             # the answer has a hole in it exactly as a malformed frame does
             raise RunnerProtocolError(
@@ -261,11 +312,17 @@ class RunnerEndpoint:
                 partial="".join(text_parts),
             ) from error
         except urllib.error.URLError as error:
+            if cancel_event is not None and cancel_event.is_set():
+                raise RunnerCancelledError(partial="".join(text_parts)) from error
             if isinstance(getattr(error, "reason", None), (socket.timeout, TimeoutError)):
                 raise RunnerStallError(
                     self._stall_message(time.monotonic() - last_event, window),
                     partial="".join(text_parts),
                 ) from error
+            raise
+        except (OSError, ValueError) as error:
+            if cancel_event is not None and cancel_event.is_set():
+                raise RunnerCancelledError(partial="".join(text_parts)) from error
             raise
         text = "".join(text_parts)
         if not complete:

@@ -296,6 +296,49 @@ class EndpointTests(unittest.TestCase):
                 on_delta=lambda piece: cancelled.set())
 
         self.assertEqual(caught.exception.partial, "partial")
+
+    def test_stream_cancellation_interrupts_a_blocked_read(self):
+        """Cancellation must wake a caller even when the SSE iterator has no
+        line to yield; otherwise the event is not observed until the server's
+        multi-minute first-byte timeout."""
+        class BlockingResponse(_Response):
+            def __init__(self):
+                super().__init__()
+                self.reading = threading.Event()
+                self.released = threading.Event()
+
+            def __iter__(self):
+                self.reading.set()
+                self.released.wait(5)
+                return iter(())
+
+            def close(self):
+                self.released.set()
+
+        cancelled = threading.Event()
+        response = BlockingResponse()
+        endpoint = RunnerEndpoint(
+            "http://127.0.0.1:8080", opener=lambda *args, **kwargs: response)
+        caught = []
+
+        def consume():
+            try:
+                endpoint.stream_chat({"messages": []}, cancel_event=cancelled)
+            except Exception as error:  # asserted below, across the thread
+                caught.append(error)
+
+        worker = threading.Thread(target=consume)
+        worker.start()
+        self.assertTrue(response.reading.wait(1))
+        cancelled.set()
+        worker.join(0.5)
+        self.addCleanup(response.released.set)
+        self.addCleanup(worker.join, 5)
+
+        self.assertFalse(worker.is_alive(), "cancel left the SSE read blocked")
+        self.assertEqual(len(caught), 1)
+        self.assertIsInstance(caught[0], RunnerCancelledError)
+
     def test_capabilities_are_runner_identified_and_expose_context(self):
         seen = {}
 

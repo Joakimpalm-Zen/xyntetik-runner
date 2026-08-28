@@ -7,7 +7,9 @@ tracks the owning parent and never inspects or kills an unrelated child process.
 
 `ManagedRunner.start()` owns the child for the whole call. A False return means
 nothing is left running: a runner that never answered before the deadline is
-terminated rather than handed to a caller that has no reference to it.
+terminated rather than handed to a caller that has no reference to it. A
+healthy endpoint counts as ready only when its reported PID matches the spawned
+child, so an existing Runner on the port cannot be mistaken for that child.
 
 `RunnerEndpoint.stream_chat()` treats a malformed `data:` frame as a protocol
 error rather than skipping it, so a corrupt stream cannot be certified complete
@@ -15,6 +17,8 @@ by a later `finish_reason`; non-data SSE lines (comments, `event:`, `id:`,
 `retry:`) are ignored as the spec requires. `stall_seconds` is a watchdog over
 the time between stream events, and the raised `RunnerStallError` reports the
 measured silence. Both errors carry the text received so far in `.partial`.
+Passing `cancel_event` also interrupts a silent blocking SSE read promptly;
+`RunnerCancelledError.partial` preserves any text received before cancellation.
 
 Transport-level breakage is translated too: a peer holding the port that is not
 speaking HTTP, or a body cut short mid-stream, raises `RunnerProtocolError`
