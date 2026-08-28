@@ -1155,8 +1155,22 @@ size_t render_messages_with_tools(int tmpl, const chat_msg *msgs, int n_msgs,
         }
         break;
     case TMPL_CHATML:
-    case TMPL_CHATML_THINK:
-        for (int i = 0; i < n_msgs; i++) {
+    case TMPL_CHATML_THINK: {
+        bool qwen_tools = tools && tools->type == J_ARR && tools->n > 0;
+        int first = 0;
+        if (qwen_tools) {
+            off = emit(out, cap, off, "<|im_start|>system\n", NULL, NULL);
+            if (n_msgs > 0 && !strcmp(msgs[0].role, "system")) {
+                off = emit(out, cap, off, "%s\n\n", msgs[0].content, NULL);
+                first = 1;
+            }
+            sbuf decl = {0};
+            tools_render_for(tmpl, tools, &decl);
+            off = emit(out, cap, off, "%s<|im_end|>\n",
+                       decl.s ? decl.s : "", NULL);
+            free(decl.s);
+        }
+        for (int i = first; i < n_msgs; i++) {
             // A tool result is not a `tool` turn in this family: every ChatML
             // reference -- Qwen2.5, Qwen3 and ornith alike -- renders it as a
             // USER turn carrying a <tool_response> block, and folds
@@ -1191,6 +1205,7 @@ size_t render_messages_with_tools(int tmpl, const chat_msg *msgs, int n_msgs,
                            NULL, NULL);
         }
         break;
+    }
     case TMPL_LLAMA3:
         for (int i = 0; i < n_msgs; i++)
             off = emit(out, cap, off,
@@ -2041,11 +2056,28 @@ void tools_render(const jv *tools, sbuf *out) {
 }
 
 void tools_render_for(int tmpl, const jv *tools, sbuf *out) {
-    if (tmpl != TMPL_ORNITH) {
+    bool qwen = tmpl == TMPL_CHATML || tmpl == TMPL_CHATML_THINK;
+    if (tmpl != TMPL_ORNITH && !qwen) {
         tools_render(tools, out);
         return;
     }
     if (!tools || tools->type != J_ARR || tools->n == 0) return;
+    if (qwen) {
+        sb_lit(out,
+            "# Tools\n\nYou may call one or more functions to assist with the "
+            "user query.\n\nYou are provided with function signatures within "
+            "<tools></tools> XML tags:\n<tools>");
+        for (int i = 0; i < tools->n; i++) {
+            sb_lit(out, "\n");
+            jv_dump_tojson(tools->items[i], out);
+        }
+        sb_lit(out,
+            "\n</tools>\n\nFor each function call, return a json object with "
+            "function name and arguments within <tool_call></tool_call> XML "
+            "tags:\n<tool_call>\n{\"name\": <function-name>, \"arguments\": "
+            "<args-json-object>}\n</tool_call>");
+        return;
+    }
     sb_lit(out, "# Tools\n\nYou have access to the following functions:\n\n<tools>");
     for (int i = 0; i < tools->n; i++) {
         sb_lit(out, "\n");
@@ -2140,6 +2172,7 @@ void tool_history_render_for(int tmpl, const jv *calls,
     if (tmpl == TMPL_HARMONY) return;
     int muse_calls = 0;
     int ap_calls = 0;
+    int qwen_calls = 0;
     // ornith frames each call relative to what precedes it: the first opens
     // with "\n\n" when the turn carried visible text and with nothing when it
     // did not, every later one with "\n" (ornith.jinja:106-114).
@@ -2155,6 +2188,18 @@ void tool_history_render_for(int tmpl, const jv *calls,
         const char *name = jv_str(jv_get(fn, "name"), NULL);
         const char *args = jv_str(jv_get(fn, "arguments"), "{}");
         if (!name) continue;
+        if (tmpl == TMPL_CHATML || tmpl == TMPL_CHATML_THINK) {
+            if (qwen_calls++ || turn_has_text) sb_lit(out, "\n");
+            sb_lit(out, "<tool_call>\n{\"name\": \"");
+            sb_esc(out, name, strlen(name));
+            sb_lit(out, "\", \"arguments\": ");
+            jv *obj = json_parse(args, strlen(args));
+            if (obj) jv_dump_tojson(obj, out);
+            else sb_lit(out, "{}");
+            jv_free(obj);
+            sb_lit(out, "}\n</tool_call>");
+            continue;
+        }
         if (tmpl == TMPL_APERTUS) {
             if (!ap_calls++) sb_lit(out, "<|tools_prefix|>[");
             else sb_lit(out, ", ");
@@ -2550,7 +2595,11 @@ void tool_envelope_free(tool_envelope *e) {
 
 const jv *tool_decl_native(int tmpl, bool strict, bool atem_tool_calling,
                            jv *tools, tool_envelope *env, bool *skip_generic) {
-    if (strict && tmpl == TMPL_MUSE) {
+    bool qwen = tmpl == TMPL_CHATML || tmpl == TMPL_CHATML_THINK;
+    if (strict && qwen) {
+        env->proto = TP_QWEN;
+        env->tools = tools;
+    } else if (strict && tmpl == TMPL_MUSE) {
         env->proto = atem_tool_calling ? TP_ATEM : TP_MUSE_USER;
         env->tools = tools;
     } else if (strict && tmpl == TMPL_HARMONY) {
@@ -2589,10 +2638,11 @@ const jv *tool_decl_native(int tmpl, bool strict, bool atem_tool_calling,
     // system turn, because that envelope is now its grammar.
     bool g4_native = is_gemma4(tmpl) &&
                      (env->proto == TP_GEMMA4 || !strict);
-    *skip_generic = g4_native || tmpl == TMPL_APERTUS ||
+    *skip_generic = qwen || g4_native || tmpl == TMPL_APERTUS ||
                     (tmpl == TMPL_MUSE && env->proto == TP_ATEM) ||
                     tmpl == TMPL_HARMONY;
-    return (tmpl == TMPL_MUSE && env->proto == TP_ATEM) ||
+    return qwen ||
+           (tmpl == TMPL_MUSE && env->proto == TP_ATEM) ||
            (tmpl == TMPL_HARMONY && env->proto == TP_HARMONY) ||
            g4_native || tmpl == TMPL_APERTUS
                ? tools : NULL;
@@ -2921,6 +2971,42 @@ static int harmony_map(const tool_envelope *e, const char *doc, size_t n,
 
 // ------------------------------------------------- gemma4 native turn -> API
 //
+static const char *trim_left(const char *p, const char *end);
+static const char *trim_right(const char *p, const char *end);
+
+// One Qwen2.5/Qwen3 native block. Its body is ordinary JSON, unlike gemma4's
+// similarly named but non-JSON format_argument dialect. Appends one OpenAI
+// tool_calls[] entry without a leading comma and advances *pp past the close.
+static bool qwen_one_call(const char **pp, const char *end, int index,
+                          sbuf *tc) {
+    static const char OPEN[] = "<tool_call>";
+    static const char CLOSE[] = "</tool_call>";
+    const char *p = *pp;
+    if ((size_t)(end - p) < sizeof(OPEN) - 1 ||
+        memcmp(p, OPEN, sizeof(OPEN) - 1)) return false;
+    const char *body = trim_left(p + sizeof(OPEN) - 1, end);
+    const char *close = strstr(body, CLOSE);
+    if (!close || close > end) return false;
+    const char *body_end = trim_right(body, close);
+    jv *call = json_parse(body, (size_t)(body_end - body));
+    const char *name = call && call->type == J_OBJ
+        ? jv_str(jv_get(call, "name"), NULL) : NULL;
+    jv *args = call && call->type == J_OBJ ? jv_get(call, "arguments") : NULL;
+    if (!name || !args) { jv_free(call); return false; }
+    sbuf encoded = {0};
+    jv_dump(args, &encoded);
+    sb_fmt(tc, "{\"id\":\"call_%d\",\"type\":\"function\","
+               "\"function\":{\"name\":\"", index);
+    sb_esc(tc, name, strlen(name));
+    sb_lit(tc, "\",\"arguments\":\"");
+    sb_esc(tc, encoded.s ? encoded.s : "{}", encoded.s ? encoded.n : 2);
+    sb_lit(tc, "\"}}");
+    free(encoded.s);
+    jv_free(call);
+    *pp = close + sizeof(CLOSE) - 1;
+    return !tc->failed;
+}
+
 // The inverse of g4_format_argument. A caller of the OpenAI API must never see
 // `{city:<|"|>Oslo<|"|>}` in `arguments` -- that field is documented to be a
 // JSON string, clients json.loads() it, and handing them the model's native
@@ -3098,12 +3184,37 @@ static int gemma4_map(const tool_envelope *e, const char *doc, size_t n,
     return content->failed ? -1 : 0;
 }
 
+static int qwen_map(const tool_envelope *e, const char *doc, size_t n,
+                    sbuf *content, sbuf *tc) {
+    (void)e;
+    const char *p = doc, *end = doc + n;
+    int calls = 0;
+    while (p < end) {
+        p = trim_left(p, end);
+        const char *at = p;
+        size_t before = tc->n;
+        if (calls) sb_lit(tc, ",");
+        if (!qwen_one_call(&at, end, calls, tc)) {
+            tc->n = before;
+            if (tc->s) tc->s[tc->n] = 0;
+            break;
+        }
+        calls++;
+        p = at;
+    }
+    if (calls) return tc->failed ? -1 : calls;
+    const char *stop = atem_find(doc, end, "<|im_end|>");
+    sb_put(content, doc, (size_t)((stop ? stop : end) - doc));
+    return content->failed ? -1 : 0;
+}
+
 int tool_envelope_map_channels(const tool_envelope *e, const char *doc,
                                size_t n, sbuf *reasoning, sbuf *content,
                                sbuf *tc) {
     if (!e || !doc || !content || !tc) return -1;
     if (e->proto == TP_HARMONY) return harmony_map(e, doc, n, reasoning, content, tc);
     if (e->proto == TP_GEMMA4) return gemma4_map(e, doc, n, reasoning, content, tc);
+    if (e->proto == TP_QWEN) return qwen_map(e, doc, n, content, tc);
     return tool_envelope_map(e, doc, n, content, tc);
 }
 
@@ -3112,6 +3223,7 @@ int tool_envelope_map(const tool_envelope *e, const char *doc, size_t n,
     if (!e || !doc || !content || !tc) return -1;
     if (e->proto == TP_HARMONY) return harmony_map(e, doc, n, NULL, content, tc);
     if (e->proto == TP_GEMMA4) return gemma4_map(e, doc, n, NULL, content, tc);
+    if (e->proto == TP_QWEN) return qwen_map(e, doc, n, content, tc);
     if (e->proto == TP_ATEM) return atem_map(e, doc, n, content, tc);
     if (e->proto == TP_MUSE_USER) {
         const char *end = doc + n;
@@ -3190,6 +3302,7 @@ enum { TS_TOOL, TS_ARGS, TS_FINAL_KEY, TS_FINAL_STR, TS_VALUE, TS_ATEM,
        // being held to the end of the turn -- unlike TS_ATEM, whose answer
        // branch waits for <|eot|> before the client sees a byte.
        TS_G4_START, TS_G4_THOUGHT, TS_G4_CALLS, TS_G4_TEXT,
+       TS_QWEN_START, TS_QWEN_CALLS, TS_QWEN_TEXT,
        TS_MUSE_HEADER, TS_MUSE_CONTENT,
        // parallel_tool_calls: between two entries of {"calls":[...]}. A
        // value ending inside TS_VALUE/TS_FINAL_STR leaves the entry's own
@@ -3475,6 +3588,7 @@ void tool_stream_init(tool_stream *s, const tool_envelope *e,
     if (sink) s->sink = *sink;
     s->state = e && e->proto == TP_HARMONY ? TS_HARMONY
              : e && e->proto == TP_GEMMA4 ? TS_G4_START
+             : e && e->proto == TP_QWEN ? TS_QWEN_START
              : e && e->proto == TP_ATEM ? TS_ATEM
              : e && e->proto == TP_MUSE_PLAIN ? TS_MUSE_HEADER : TS_TOOL;
 }
@@ -3556,6 +3670,94 @@ static bool ts_starts(const tool_stream *s, const char *lit) {
 #define G4_THOUGHT     "<|channel>thought\n"
 #define G4_THOUGHT_END "<channel|>"
 #define G4_TURN_END    "<turn|>"
+
+#define QWEN_CALL_OPEN "<tool_call>"
+#define QWEN_CALL_END  "</tool_call>"
+#define QWEN_TURN_END  "<|im_end|>"
+
+static int ts_qwen(tool_stream *s, const char *bytes, int n) {
+    head_put(s, bytes, (size_t)n);
+    for (;;) {
+        switch (s->state) {
+        case TS_DONE: return 0;
+        case TS_QWEN_START:
+            if (!s->head_n) return 0;
+            if (ts_starts(s, QWEN_CALL_OPEN)) {
+                s->state = TS_QWEN_CALLS;
+                break;
+            }
+            if (ts_partial(s, QWEN_CALL_OPEN)) return 0;
+            s->state = TS_QWEN_TEXT;
+            break;
+        case TS_QWEN_CALLS: {
+            size_t ws = 0;
+            while (ws < s->head_n && ts_ws(s->head[ws])) ws++;
+            if (ws) head_drop(s, ws);
+            if (!s->head_n) return 0;
+            if (!ts_starts(s, QWEN_CALL_OPEN)) {
+                if (ts_partial(s, QWEN_CALL_OPEN)) return 0;
+                s->state = TS_DONE;
+                return 0;
+            }
+            const char *close = strstr(s->head, QWEN_CALL_END);
+            if (!close) return 0;
+            size_t block_n = (size_t)(close - s->head) + strlen(QWEN_CALL_END);
+            const char *at = s->head;
+            sbuf tc = {0}, wrapped = {0};
+            int rc = 0;
+            if (qwen_one_call(&at, s->head + block_n, 0, &tc) && !tc.failed) {
+                sb_lit(&wrapped, "["); sb_put(&wrapped, tc.s, tc.n);
+                sb_lit(&wrapped, "]");
+                jv *arr = json_parse(wrapped.s, wrapped.n);
+                jv *fn = arr && arr->type == J_ARR && arr->n == 1
+                           ? jv_get(arr->items[0], "function") : NULL;
+                const char *name = jv_str(jv_get(fn, "name"), NULL);
+                const char *args = jv_str(jv_get(fn, "arguments"), NULL);
+                if (name && args) {
+                    s->called = true;
+                    s->any_called = true;
+                    if (s->sink.call_begin)
+                        rc = s->sink.call_begin(s->sink.ud, name);
+                    if (!rc && s->sink.call_args)
+                        rc = s->sink.call_args(s->sink.ud, args,
+                                               (int)strlen(args));
+                    if (!rc && s->sink.call_end)
+                        rc = s->sink.call_end(s->sink.ud);
+                }
+                jv_free(arr);
+            }
+            free(tc.s); free(wrapped.s);
+            head_drop(s, block_n);
+            if (rc) return rc;
+            break;
+        }
+        case TS_QWEN_TEXT: {
+            const char *at = s->head ? strstr(s->head, QWEN_TURN_END) : NULL;
+            size_t emit_n = s->head_n;
+            bool done = false;
+            if (at) {
+                emit_n = (size_t)(at - s->head);
+                done = true;
+            } else {
+                size_t keep = strlen(QWEN_TURN_END) - 1;
+                if (keep > emit_n) keep = emit_n;
+                for (; keep > 0; keep--)
+                    if (!memcmp(s->head + emit_n - keep,
+                                QWEN_TURN_END, keep)) break;
+                emit_n -= keep;
+            }
+            int rc = emit_n && s->sink.content
+                       ? s->sink.content(s->sink.ud, s->head, (int)emit_n) : 0;
+            head_drop(s, done ? emit_n + strlen(QWEN_TURN_END) : emit_n);
+            if (done) s->state = TS_DONE;
+            if (rc) return rc;
+            if (!done) return 0;
+            break;
+        }
+        default: return 0;
+        }
+    }
+}
 
 static int ts_gemma4(tool_stream *s, const char *bytes, int n) {
     head_put(s, bytes, (size_t)n);
@@ -3669,6 +3871,9 @@ int tool_stream_feed(tool_stream *s, const char *bytes, int n) {
     case TS_G4_THOUGHT:
     case TS_G4_CALLS:
     case TS_G4_TEXT:   return ts_gemma4(s, bytes, n);
+    case TS_QWEN_START:
+    case TS_QWEN_CALLS:
+    case TS_QWEN_TEXT: return ts_qwen(s, bytes, n);
     case TS_MUSE_HEADER:return ts_muse_header(s, bytes, n);
     case TS_MUSE_CONTENT:
         return s->sink.content ? s->sink.content(s->sink.ud, bytes, n) : 0;
@@ -3689,6 +3894,18 @@ int tool_stream_finish(tool_stream *s) {
     // guessed at -- the constraint closer completes truncated calls, so
     // reaching here with one means the connection died mid-block, and half a
     // call is not a call.
+    if (s->state == TS_QWEN_START || s->state == TS_QWEN_CALLS ||
+        s->state == TS_QWEN_TEXT) {
+        int rc = 0;
+        bool framing = s->state == TS_QWEN_CALLS ||
+                       (s->state == TS_QWEN_START &&
+                        ts_partial(s, QWEN_CALL_OPEN));
+        if (s->head_n && !framing && s->sink.content)
+            rc = s->sink.content(s->sink.ud, s->head, (int)s->head_n);
+        s->head_n = 0;
+        s->state = TS_DONE;
+        return rc;
+    }
     if (s->state == TS_G4_START || s->state == TS_G4_THOUGHT ||
         s->state == TS_G4_CALLS || s->state == TS_G4_TEXT) {
         int rc = 0;
@@ -3826,6 +4043,39 @@ static const char *trim_right(const char *p, const char *end) {
     return end;
 }
 
+static int qwen_tool_calls_parse(sbuf *content, sbuf *tc) {
+    if (!content->s) return 0;
+    static const char OPEN[] = "<tool_call>";
+    char *w = content->s;
+    const char *p = content->s, *end = content->s + content->n;
+    int n_calls = 0;
+    while (p < end) {
+        const char *o = strstr(p, OPEN);
+        if (!o || o >= end) {
+            memmove(w, p, (size_t)(end - p));
+            w += end - p;
+            break;
+        }
+        memmove(w, p, (size_t)(o - p));
+        w += o - p;
+        size_t before = tc->n;
+        if (n_calls) sb_lit(tc, ",");
+        const char *at = o;
+        if (!qwen_one_call(&at, end, n_calls, tc)) {
+            tc->n = before;
+            if (tc->s) tc->s[tc->n] = 0;
+            memmove(w, o, 1);
+            w++;
+            p = o + 1;
+            continue;
+        }
+        n_calls++;
+        p = at;
+    }
+    if (n_calls) content->n = (size_t)(w - content->s);
+    return n_calls;
+}
+
 // Qwen3.5/Ornith's qwen3_xml dialect. Parameter bodies are JSON when they
 // parse as JSON; ordinary text is preserved as a JSON string.
 static int ornith_tool_calls_parse(sbuf *content, sbuf *tc) {
@@ -3958,7 +4208,9 @@ static int gemma4_tool_calls_parse(sbuf *content, sbuf *tc) {
 }
 
 int tool_calls_parse_for(int tmpl, sbuf *content, sbuf *tc) {
-    return tmpl == TMPL_ORNITH ? ornith_tool_calls_parse(content, tc)
+    return (tmpl == TMPL_CHATML || tmpl == TMPL_CHATML_THINK)
+                               ? qwen_tool_calls_parse(content, tc)
+         : tmpl == TMPL_ORNITH ? ornith_tool_calls_parse(content, tc)
          : is_gemma4(tmpl)     ? gemma4_tool_calls_parse(content, tc)
                                : tool_calls_parse(content, tc);
 }

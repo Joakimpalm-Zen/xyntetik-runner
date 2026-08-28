@@ -221,6 +221,7 @@ enum tool_proto {
     TP_MUSE_USER,     // Muse: generic JSON override after a to=user header
     TP_HARMONY,       // gpt-oss native channels + functions recipient
     TP_GEMMA4,        // gemma4 native <|tool_call>call:NAME{...}
+    TP_QWEN,          // Qwen2.5/Qwen3 native <tool_call>{JSON}</tool_call>
     TP_MUSE_PLAIN,    // Muse: stream a schema payload after a to=user header
 };
 

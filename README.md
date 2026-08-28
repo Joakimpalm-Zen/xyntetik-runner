@@ -1063,14 +1063,17 @@ Chat supports buffered and SSE responses, part-array content, assistant
 and `keep_alive` on a registry-backed server. Tool declarations are rendered into the model
 prompt in the resident model's native tool protocol - identically on
 `/v1/chat/completions`, `/v1/responses`, and `/v1/messages` - and constrained
-back into well-formed `tool_calls`.
+back into well-formed `tool_calls`. Qwen2.5 and Qwen3 use their trained
+`# Tools` / `<tools>` declaration block and JSON `<tool_call>` turns; Runner
+constrains tool names and argument schemas directly in that native grammar and
+maps buffered and streaming output back to the OpenAI shape.
 
 Stop strings and tool declarations cannot be combined: a request carrying both
 `stop` (or Anthropic's `stop_sequences`) and `tools` is refused with HTTP 400.
 A stop string is a rule about the model's visible text, but under the tool
 envelope the model generates protocol - Harmony channel markers and recipient
-headers, Muse's `<atem:invoke>` blocks, gemma-4's `<|tool_call>` blocks, or the
-generic envelope's own JSON syntax - and the caller receives
+headers, Muse's `<atem:invoke>` blocks, gemma-4's `<|tool_call>` blocks, Qwen's
+JSON `<tool_call>` blocks, or the generic envelope's own JSON syntax - and the caller receives
 only the demultiplexed result. Matching stop strings against that document
 fires on framing nobody wrote (`["\n\n"]`, `["}"]` and `["<|"]` all hit).
 Runner refuses the request rather than ignoring the field. The refusal is a
@@ -1339,8 +1342,10 @@ not a generic one bolted onto this surface. A gemma-4 call comes back as
 `<|tool_call>call:NAME{...}<tool_call|>` with gemma-4 argument formatting and
 its result as `<|tool_response>response:NAME{...}<tool_response|>`; an ornith
 call as `<tool_call><function=NAME>…` with the result wrapped in
-`<tool_response>`; a muse call as its `<atem:invoke>` recipient turn with the
-result as a named `<tool_output>`; Harmony as its `to=functions.NAME` turns.
+`<tool_response>`; Qwen as `<tool_call>{"name":...,"arguments":...}</tool_call>`
+with grouped `<tool_response>` results; a muse call as its `<atem:invoke>`
+recipient turn with the result as a named `<tool_output>`; Harmony as its
+`to=functions.NAME` turns.
 The same three-turn conversation therefore renders byte-identically whether it
 arrives on `/v1/chat/completions`, `/v1/responses`, or `/v1/messages` - a
 contract pinned by goldens in `tests/test_tool_attribution.c`.
@@ -1360,7 +1365,7 @@ It implements protocol translation only; it never executes a tool.
 
 A replayed `tool_use` block and its `tool_result` are serialized in the
 resident model's own tool protocol - the same serializer Chat Completions and
-Responses reach - so a gemma-4, ornith, or muse history is never handed the
+Responses reach - so a gemma-4, Qwen, ornith, or muse history is never handed the
 generic call syntax those models were not trained on. The result turn is named
 from the `tool_use` it answers (by `tool_use_id`, falling back to the sole
 declared tool) exactly as on the other two surfaces.

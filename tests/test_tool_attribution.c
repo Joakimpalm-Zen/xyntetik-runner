@@ -212,7 +212,7 @@ static void ta_expect_named(const char *what, const char *fn) {
 
 // A REPLAYED CALL (not a result) survived into the prompt under `fn`. Harmony
 // writes the assistant's own call as a turn addressed to the function; the
-// generic templates write runner's call syntax. Both are checked by the one
+// other templates write their native call syntax. Both are checked by the one
 // thing that matters here: the call is in the prompt, and it names `fn`.
 static void ta_expect_call_named(const char *what, const char *fn) {
     char msg[192], want[128];
@@ -220,6 +220,8 @@ static void ta_expect_call_named(const char *what, const char *fn) {
     ck(ta_prompt != NULL, msg);
     if (ta_tmpl == TMPL_HARMONY)
         snprintf(want, sizeof want, "<|start|>assistant to=functions.%s", fn);
+    else if (ta_tmpl == TMPL_CHATML || ta_tmpl == TMPL_CHATML_THINK)
+        snprintf(want, sizeof want, "\"name\": \"%s\"", fn);
     else
         snprintf(want, sizeof want, "call:%s", fn);
     snprintf(msg, sizeof msg, "%s: the replayed call is in the prompt, as %s",
@@ -618,11 +620,12 @@ static void ct_run_family(const struct ct_family *f) {
 
 static void test_history_serialization_contract(void) {
     static const struct ct_family fams[] = {
-        // chatml: the generic protocol IS the native one here -- a regression
-        // guard that the shared path still produces it identically.
+        // Qwen: native JSON calls and grouped tool responses. The old generic
+        // `<|tool_call>call:` spelling must never leak into history.
         { "chatml", TMPL_CHATML,
-          "<|tool_call>call:get_weather", "<tool_call|>",
-          "<tool_response>", "</tool_response>", NULL },
+          "<tool_call>\n{\"name\": \"get_weather\"", "</tool_call>",
+          "<tool_response>", "</tool_response>",
+          "<|tool_call>call:get_weather" },
         // gemma4: native args are format_argument, not JSON. The generic JSON
         // args must be gone.
         { "gemma4", TMPL_GEMMA4,
@@ -670,8 +673,8 @@ static void test_history_serialization_contract(void) {
 // through to the GENERIC "You have these tools available..." block -- teaching
 // gemma-4 and muse a declaration format they were never trained on. Harmony was
 // already native on all three (env->proto == TP_HARMONY was the one they did set);
-// chatml's native declaration IS the generic one, so it is the regression
-// guard that the shared path still produces it.
+// Qwen uses its native `# Tools` / `<tools>` declaration and JSON
+// `<tool_call>` protocol on all three surfaces.
 //
 // The three logical conversations are the same CT_*_BODY the replay contract
 // uses: each declares one get_weather tool in its surface's own vocabulary, and
@@ -741,13 +744,11 @@ static void dc_run_family(const struct dc_family *f) {
 
 static void test_declaration_rendering_contract(void) {
     static const struct dc_family fams[] = {
-        // NB no chatml row: with a declarable tool it takes the STRICT envelope,
-        // whose teaching turn jv_dumps each tool RAW -- so its bytes carry the
-        // surface's own request vocabulary ({"function":{...}} on chat, a flat
-        // {"name",...} on responses) and are legitimately NOT identical across
-        // surfaces. That is a property of the generic path this fix does not
-        // touch; the families below all normalise the schema before rendering,
-        // which is exactly why their declarations CAN be byte-identical.
+        // Qwen: `# Tools` prose and normalised function JSON between native
+        // `<tools>` tags. The generic instruction must be gone.
+        { "chatml", TMPL_CHATML,
+          "<tools>", "</tools>",
+          "You have these tools available" },
         // gemma4: `<|tool>declaration:NAME{...}<tool|>`. The generic block must
         // be gone.
         { "gemma4", TMPL_GEMMA4,

@@ -561,6 +561,85 @@ static void test_ornith_native_tool_protocol(void) {
     jv_free(tools);
 }
 
+static void test_qwen_native_tool_protocol(void) {
+    jv *tools = parse(TOOLS);
+    sbuf prompt = {0};
+    tools_render_for(TMPL_CHATML, tools, &prompt);
+    assert(prompt.s != NULL);
+    const char *qwen_head = "# Tools\n\nYou may call one or more functions ";
+    assert(!strncmp(prompt.s, qwen_head, strlen(qwen_head)));
+    assert(strstr(prompt.s, "<tools>\n"));
+    assert(strstr(prompt.s, "\"name\": \"get_weather\""));
+    assert(strstr(prompt.s,
+        "<tool_call>\n{\"name\": <function-name>, "
+        "\"arguments\": <args-json-object>}\n</tool_call>"));
+    assert(!strstr(prompt.s, "<|tool_call>call:"));
+
+    jv *history = parse(
+        "[{\"type\":\"function\",\"function\":{\"name\":\"get_weather\","
+        "\"arguments\":\"{\\\"city\\\":\\\"Oslo\\\",\\\"days\\\":2}\"}},"
+        "{\"type\":\"function\",\"function\":{\"name\":\"add\","
+        "\"arguments\":\"{\\\"a\\\":1,\\\"b\\\":2}\"}}]");
+    sbuf replay = {0};
+    tool_history_render_for(TMPL_CHATML, history, false, &replay);
+    assert(!strcmp(replay.s,
+        "<tool_call>\n{\"name\": \"get_weather\", \"arguments\": "
+        "{\"city\": \"Oslo\", \"days\": 2}}\n</tool_call>\n"
+        "<tool_call>\n{\"name\": \"add\", \"arguments\": "
+        "{\"a\": 1, \"b\": 2}}\n</tool_call>"));
+
+    sbuf content = {0}, calls = {0};
+    sb_lit(&content,
+        "checking\n<tool_call>\n{\"name\": \"get_weather\", "
+        "\"arguments\": {\"city\": \"Oslo\", \"days\": 2}}\n"
+        "</tool_call>");
+    assert(tool_calls_parse_for(TMPL_CHATML, &content, &calls) == 1);
+    assert(content.n == strlen("checking\n"));
+    assert(strstr(calls.s, "\"name\":\"get_weather\""));
+    assert(strstr(calls.s,
+                  "{\\\"city\\\":\\\"Oslo\\\",\\\"days\\\":2}"));
+
+    free(content.s); free(calls.s); free(prompt.s); free(replay.s);
+    jv_free(history); jv_free(tools);
+}
+
+static void test_qwen_native_turn_constrains_and_maps_calls(void) {
+    jv *tools = parse(TOOLS);
+    char err[192];
+    snode *root = schema_compile_qwen_turn(
+        tools, true, NULL, NULL, err, sizeof(err));
+    if (!root) fprintf(stderr, "qwen native turn: %s\n", err);
+    assert(root != NULL);
+    const char *doc =
+        "<tool_call>\n{\"name\": \"get_weather\", \"arguments\": "
+        "{\"city\":\"Oslo\",\"units\":\"c\"}}\n</tool_call>";
+    assert(accepts(root, doc));
+    assert(!accepts(root,
+        "<tool_call>\n{\"name\": \"invented\", \"arguments\": {}}\n"
+        "</tool_call>"));
+    assert(!accepts(root,
+        "<tool_call>\n{\"name\": \"get_weather\", \"arguments\": "
+        "{\"city\":7,\"units\":\"c\"}}\n</tool_call>"));
+    assert(accepts(root, "ordinary answer"));
+
+    tool_envelope e;
+    assert(tool_envelope_build(tools, NULL, NULL, &e, err, sizeof(err)) == 1);
+    e.proto = TP_QWEN;
+    e.tools = tools;
+    sbuf content = {0}, calls = {0};
+    assert(tool_envelope_map(&e, doc, strlen(doc), &content, &calls) == 1);
+    assert(content.n == 0);
+    assert(strstr(calls.s, "\"name\":\"get_weather\""));
+    assert(strstr(calls.s, "{\\\"city\\\":\\\"Oslo\\\","
+                           "\\\"units\\\":\\\"c\\\"}"));
+
+    free(content.s); free(calls.s);
+
+    tool_envelope_free(&e);
+    schema_free(root);
+    jv_free(tools);
+}
+
 // The headline guarantee: the model cannot invent a tool name, cannot invent
 // an argument key, and cannot get an argument's type wrong — the union is
 // enforced during sampling rather than parsed hopefully afterward.
@@ -839,6 +918,38 @@ static void log_free(demux_log *l) {
     free(l->content.s);
     free(l->args.s);
     free(l->names.s);
+}
+
+static void test_qwen_native_stream_boundaries(void) {
+    jv *tools = parse(TOOLS);
+    char err[192];
+    tool_envelope e;
+    assert(tool_envelope_build(tools, NULL, NULL, &e, err, sizeof(err)) == 1);
+    e.proto = TP_QWEN;
+    e.tools = tools;
+    const char *doc =
+        "<tool_call>\n{\"name\": \"get_weather\", \"arguments\": "
+        "{\"city\":\"Oslo\",\"units\":\"c\"}}\n</tool_call>";
+    for (size_t step = 1; step <= strlen(doc); step++) {
+        demux_log log;
+        demux_step(&e, doc, step, &log);
+        assert(log.called && log.begins == 1 && log.ends == 1);
+        assert(!strcmp(log.name, "get_weather"));
+        assert(!strcmp(log.args.s,
+                       "{\"city\":\"Oslo\",\"units\":\"c\"}"));
+        assert(log.content.n == 0);
+        log_free(&log);
+    }
+    const char *answer = "ordinary answer<|im_end|>";
+    for (size_t step = 1; step <= strlen(answer); step++) {
+        demux_log log;
+        demux_step(&e, answer, step, &log);
+        assert(!log.called);
+        assert(!strcmp(log.content.s, "ordinary answer"));
+        log_free(&log);
+    }
+    tool_envelope_free(&e);
+    jv_free(tools);
 }
 
 // the same property the SSE boundary matrix asserts one level up: what the
@@ -2018,6 +2129,8 @@ int main(void) {
     test_atem_truncated_string_enum_recovers_closest_member();
     test_atem_truncated_integer_respects_declared_bounds();
     test_ornith_native_tool_protocol();
+    test_qwen_native_tool_protocol();
+    test_qwen_native_turn_constrains_and_maps_calls();
     test_auto_envelope_constrains_names_and_arguments();
     test_truncated_call_stays_valid_and_executable();
     test_tool_choice_required_removes_the_final_branch();
@@ -2026,6 +2139,7 @@ int main(void) {
     test_response_format_schema_becomes_the_final_branch();
     test_map_produces_openai_tool_call_items();
     test_stream_demux_never_leaks_the_envelope();
+    test_qwen_native_stream_boundaries();
     test_stream_demux_is_boundary_independent();
     test_atem_stream_demux_is_boundary_independent();
     test_muse_schema_payload_stream_hides_recipient_header();

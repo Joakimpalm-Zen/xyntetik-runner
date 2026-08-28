@@ -1410,6 +1410,134 @@ parallel_oom:
     return NULL;
 }
 
+// ------------------------------------------------------------- Qwen tools
+
+static snode *qwen_call_tail(jv *tool, char *err, int errcap) {
+    jv *fn = jv_get(tool, "function");
+    if (!fn) fn = tool;
+    const char *name = jv_str(jv_get(fn, "name"), "tool");
+    jv *params = jv_get(fn, "parameters");
+    if (params && params->type != J_OBJ) {
+        snprintf(err, errcap,
+                 "Qwen tool %s parameters must be an object", name);
+        return NULL;
+    }
+    snode *seq = atem_seq(3);
+    snode *args = params ? compile_node(params, err, errcap, 0)
+                         : atem_lit("{}");
+    if (!seq || !args ||
+        !atem_seq_add(seq, atem_lit("\", \"arguments\": ")) ||
+        !atem_seq_add(seq, args) ||
+        !atem_seq_add(seq, atem_lit("}\n</tool_call>"))) {
+        if (!seq || seq->n_props < 2) schema_free(args);
+        schema_free(seq);
+        if (!err[0]) snprintf(err, errcap,
+                              "out of memory compiling Qwen call");
+        return NULL;
+    }
+    seq->whitespace_significant = true;
+    return seq;
+}
+
+static snode *qwen_call(jv *tools, const char *only_tool,
+                        char *err, int errcap) {
+    int selected = 0;
+    for (int i = 0; i < tools->n; i++) {
+        jv *fn = jv_get(tools->items[i], "function");
+        if (!fn) fn = tools->items[i];
+        const char *name = jv_str(jv_get(fn, "name"), NULL);
+        if (!only_tool || (name && !strcmp(name, only_tool))) selected++;
+    }
+    if (!selected) {
+        snprintf(err, errcap, "named Qwen tool is not declared");
+        return NULL;
+    }
+    snode *root = atem_seq(3);
+    snode *names = sn_new(SN_ENUM), *choice = sn_new(SN_COND);
+    if (!root || !names || !choice) goto fail;
+    names->lits = calloc((size_t)selected, sizeof(*names->lits));
+    choice->alts = calloc((size_t)selected, sizeof(*choice->alts));
+    if (!names->lits || !choice->alts ||
+        !atem_seq_add(root, atem_lit(
+            "<tool_call>\n{\"name\": \""))) goto fail;
+    names->min_items = 1;
+    names->whitespace_significant = true;
+    choice->whitespace_significant = true;
+    root->whitespace_significant = true;
+    for (int i = 0; i < tools->n; i++) {
+        jv *fn = jv_get(tools->items[i], "function");
+        if (!fn) fn = tools->items[i];
+        const char *name = jv_str(jv_get(fn, "name"), NULL);
+        if (!name || !name[0]) {
+            snprintf(err, errcap, "Qwen tool %d has no function name", i);
+            goto fail;
+        }
+        if (only_tool && strcmp(name, only_tool)) continue;
+        names->lits[names->n_lits] = strdup(name);
+        if (!names->lits[names->n_lits]) goto fail;
+        names->n_lits++;
+        choice->alts[choice->n_alts] = qwen_call_tail(
+            tools->items[i], err, errcap);
+        if (!choice->alts[choice->n_alts]) goto fail;
+        choice->n_alts++;
+    }
+    if (!atem_seq_add(root, names)) goto fail;
+    names = NULL;
+    if (!atem_seq_add(root, choice)) goto fail;
+    choice = NULL;
+    return root;
+fail:
+    schema_free(names); schema_free(choice); schema_free(root);
+    if (!err[0]) snprintf(err, errcap, "out of memory compiling Qwen call");
+    return NULL;
+}
+
+snode *schema_compile_qwen_turn(jv *tools, bool allow_final,
+                                const char *only_tool, jv *final_schema,
+                                char *err, int errcap) {
+    err[0] = 0;
+    if (!tools || tools->type != J_ARR || tools->n <= 0 || tools->n > 60) {
+        snprintf(err, errcap,
+                 "Qwen tools must be a non-empty array of at most 60 tools");
+        return NULL;
+    }
+    snode *call = qwen_call(tools, only_tool, err, errcap);
+    if (!call || !allow_final) return call;
+    snode *final = final_schema ? compile_node(final_schema, err, errcap, 0)
+                                : atem_raw("<|im_end|>");
+    snode *root = final ? sn_new(SN_UNION) : NULL;
+    if (root) root->alts = calloc(2, sizeof(*root->alts));
+    if (!root || !root->alts) {
+        schema_free(call); schema_free(final); schema_free(root);
+        if (!err[0]) snprintf(err, errcap,
+                              "out of memory compiling Qwen turn");
+        return NULL;
+    }
+    root->whitespace_significant = true;
+    root->alts[root->n_alts++] = call;
+    root->alts[root->n_alts++] = final;
+    return root;
+}
+
+snode *schema_compile_qwen_parallel(jv *tools, const char *only_tool,
+                                    char *err, int errcap) {
+    snode *root = atem_seq(3);
+    snode *first = qwen_call(tools, only_tool, err, errcap);
+    snode *second = first ? qwen_call(tools, only_tool, err, errcap) : NULL;
+    if (!root || !first || !second || !atem_seq_add(root, first) ||
+        !atem_seq_add(root, atem_lit("\n")) ||
+        !atem_seq_add(root, second)) {
+        if (!root || root->n_props == 0) schema_free(first);
+        if (!root || root->n_props < 3) schema_free(second);
+        schema_free(root);
+        if (!err[0]) snprintf(err, errcap,
+                              "out of memory compiling parallel Qwen calls");
+        return NULL;
+    }
+    root->whitespace_significant = true;
+    return root;
+}
+
 snode *schema_compile_muse_user_payload(struct jv *schema,
                                         char *err, int errcap) {
     err[0] = 0;

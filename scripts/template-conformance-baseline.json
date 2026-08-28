@@ -99,46 +99,6 @@
   },
   "known_differences": [
     {
-      "id": "chatml-think/multi-tool-call",
-      "status": "open",
-      "note": "",
-      "digest": "bf96766f0af2c694",
-      "allowlist_applied": [],
-      "first_diff_at": 19,
-      "reference_excerpt": "'<|im_start|>system\\nYou are a helpful assistant.\\n\\n# Tools\\n\\nYou may call one or more functio'",
-      "runner_excerpt": "'<|im_start|>system\\nReply with exactly one JSON object and nothing else.\\nTo answer the user'"
-    },
-    {
-      "id": "chatml-think/tool-call+result",
-      "status": "open",
-      "note": "Same as chatml/tool-call+result -- identical digest, same generic tool protocol substituted for Qwen's native one. Fixing one should fix both.",
-      "digest": "ab4eab0ba0301eda",
-      "allowlist_applied": [],
-      "first_diff_at": 19,
-      "reference_excerpt": "'<|im_start|>system\\nYou are a helpful assistant.\\n\\n# Tools\\n\\nYou may call one or more functio'",
-      "runner_excerpt": "'<|im_start|>system\\nReply with exactly one JSON object and nothing else.\\nTo answer the user'"
-    },
-    {
-      "id": "chatml-think/tool-call-with-text",
-      "status": "open",
-      "note": "",
-      "digest": "eb449fedd3612b21",
-      "allowlist_applied": [],
-      "first_diff_at": 19,
-      "reference_excerpt": "'<|im_start|>system\\nYou are a helpful assistant.\\n\\n# Tools\\n\\nYou may call one or more functio'",
-      "runner_excerpt": "'<|im_start|>system\\nReply with exactly one JSON object and nothing else.\\nTo answer the user'"
-    },
-    {
-      "id": "chatml-think/tool-then-conversation",
-      "status": "open",
-      "note": "",
-      "digest": "fd31fa2e90c8ddb2",
-      "allowlist_applied": [],
-      "first_diff_at": 19,
-      "reference_excerpt": "'<|im_start|>system\\nYou are a helpful assistant.\\n\\n# Tools\\n\\nYou may call one or more functio'",
-      "runner_excerpt": "'<|im_start|>system\\nReply with exactly one JSON object and nothing else.\\nTo answer the user'"
-    },
-    {
       "id": "chatml-think/trailing-assistant+gen",
       "status": "open",
       "note": "Qwen3 emits '<think>\\n\\n</think>\\n\\n' in front of a HISTORICAL assistant message's content (its template strips reasoning out of history and leaves the empty block behind). Runner emits the content bare, so a replayed conversation does not look to the model like the ones it was trained on.",
@@ -157,46 +117,6 @@
       "first_diff_at": 72,
       "reference_excerpt": "'im_start|>assistant\\n<think>\\n\\n</think>\\n\\nBlue, because of Rayleigh scattering.<|im_end|>\\n'",
       "runner_excerpt": "'im_start|>assistant\\nBlue, because of Rayleigh scattering.<|im_end|>\\n'"
-    },
-    {
-      "id": "chatml/multi-tool-call",
-      "status": "open",
-      "note": "",
-      "digest": "bf96766f0af2c694",
-      "allowlist_applied": [],
-      "first_diff_at": 19,
-      "reference_excerpt": "'<|im_start|>system\\nYou are a helpful assistant.\\n\\n# Tools\\n\\nYou may call one or more functio'",
-      "runner_excerpt": "'<|im_start|>system\\nReply with exactly one JSON object and nothing else.\\nTo answer the user'"
-    },
-    {
-      "id": "chatml/tool-call+result",
-      "status": "open",
-      "note": "Tool declarations: the reference builds Qwen's native '# Tools' block with <tools>...</tools> JSON and a <tool_call> reply protocol. Runner emits its own generic '<|tool_call>call:NAME{args}<tool_call|>' protocol instead (src/server.c tools_render_for + tool_history_render_for). A protocol the model was not trained on is a real functional gap, not a formatting one.",
-      "digest": "ab4eab0ba0301eda",
-      "allowlist_applied": [],
-      "first_diff_at": 19,
-      "reference_excerpt": "'<|im_start|>system\\nYou are a helpful assistant.\\n\\n# Tools\\n\\nYou may call one or more functio'",
-      "runner_excerpt": "'<|im_start|>system\\nReply with exactly one JSON object and nothing else.\\nTo answer the user'"
-    },
-    {
-      "id": "chatml/tool-call-with-text",
-      "status": "open",
-      "note": "",
-      "digest": "eb449fedd3612b21",
-      "allowlist_applied": [],
-      "first_diff_at": 19,
-      "reference_excerpt": "'<|im_start|>system\\nYou are a helpful assistant.\\n\\n# Tools\\n\\nYou may call one or more functio'",
-      "runner_excerpt": "'<|im_start|>system\\nReply with exactly one JSON object and nothing else.\\nTo answer the user'"
-    },
-    {
-      "id": "chatml/tool-then-conversation",
-      "status": "open",
-      "note": "",
-      "digest": "fd31fa2e90c8ddb2",
-      "allowlist_applied": [],
-      "first_diff_at": 19,
-      "reference_excerpt": "'<|im_start|>system\\nYou are a helpful assistant.\\n\\n# Tools\\n\\nYou may call one or more functio'",
-      "runner_excerpt": "'<|im_start|>system\\nReply with exactly one JSON object and nothing else.\\nTo answer the user'"
     }
   ]
 }
