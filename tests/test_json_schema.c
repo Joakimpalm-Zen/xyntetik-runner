@@ -1477,6 +1477,35 @@ static void test_schema_number_matches_parser(void) {
     schema_free(schema);
     jv_free(schema_json);
 
+    // the closer's INVENTED minimum must parse too: exclusiveMinimum:0
+    // compiles to a clamped edge of 4.94e-324 — the smallest subnormal,
+    // in bounds by construction, ERANGE at read-back. Force-closing an
+    // array that still owes a minItems fill used to emit it verbatim
+    // (found by the differential fuzzer's first CI run).
+    const char *excl_src = "{\"type\":\"object\",\"properties\":{"
+        "\"v\":{\"type\":\"array\",\"items\":"
+          "{\"type\":\"number\",\"exclusiveMinimum\":0,\"maximum\":99},"
+          "\"minItems\":1}},\"required\":[\"v\"]}";
+    jv *excl_json = json_parse(excl_src, strlen(excl_src));
+    assert(excl_json != NULL);
+    snode *excl = schema_compile(excl_json, err, sizeof(err));
+    assert(excl != NULL);
+    {
+        sval v; sval_init(&v, excl);
+        const char *pre = "{\"v\":";
+        assert(sval_feed(&v, pre, (int)strlen(pre)));
+        char close[128];
+        int wrote = sval_close(&v, close, (int)sizeof(close));
+        assert(wrote > 0);
+        char doc[192];
+        int len = snprintf(doc, sizeof(doc), "%s%s", pre, close);
+        jv *parsed = json_parse(doc, (size_t)len);
+        assert(parsed != NULL);
+        jv_free(parsed);
+    }
+    schema_free(excl);
+    jv_free(excl_json);
+
     // the same numbers flowing through a free-object subtree reach the
     // generic submachine, which never sees a spelling — the wrapper must
     // apply the same commit refusal there

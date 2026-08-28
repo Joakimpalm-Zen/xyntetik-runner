@@ -3111,6 +3111,37 @@ static void eq_utf8(emitq *q, sframe *f) {
     for (int i = 0; i < n; i++) eq_putc(q, u8[i]);
 }
 
+// Minimal in-bounds number fill, emitted as CHECKED text: the clamped edge
+// of an exclusive bound is one ULP inside it, and for exclusiveMinimum:0
+// that edge is the smallest subnormal (4.94e-324) — in bounds by
+// construction, refused by json_parse (ERANGE). When the edge spelling
+// fails the shared predicate, scan decimal magnitudes for the smallest
+// spelling that is both parseable and in bounds. A schema whose entire
+// interval is unparseable (both edges subnormal) has no such spelling; the
+// edge is emitted as the honest best effort.
+static void emit_min_number(emitq *q, const snode *n) {
+    double v = 0.0;
+    if (n->has_real_min && v < n->real_min) v = n->real_min;
+    if (n->has_real_max && v > n->real_max) v = n->real_max;
+    if (v == 0.0) { eq_putc(q, '0'); return; }
+    char b[40];
+    snprintf(b, sizeof(b), "%.17g", v);
+    if (!number_text_in_bounds(n, b)) {
+        for (int mag = -307; mag <= 308; mag++) {
+            for (int sign = 1; sign >= -1; sign -= 2) {
+                char cand[40];
+                snprintf(cand, sizeof(cand), "%s1e%d",
+                         sign < 0 ? "-" : "", mag);
+                if (number_text_in_bounds(n, cand)) {
+                    eq_put(q, cand);
+                    return;
+                }
+            }
+        }
+    }
+    eq_put(q, b);
+}
+
 static int64_t integer_minimal_value(const snode *n) {
     if ((!n->has_num_min || n->num_min <= 0) &&
         (!n->has_num_max || n->num_max >= 0)) return 0;
@@ -3179,13 +3210,9 @@ static void close_number(emitq *q, const sval *v, const snode *n,
     spell[emitted] = 0;
     if (!emitted) {
         // nothing was generated: a bounded number closes to an in-bounds
-        // value, not a blind zero
-        double fill = 0.0;
-        if (n->has_real_min && fill < n->real_min) fill = n->real_min;
-        if (n->has_real_max && fill > n->real_max) fill = n->real_max;
-        char b[40];
-        snprintf(b, sizeof(b), "%.17g", fill);
-        eq_put(q, b);
+        // value, not a blind zero — and to a spelling json_parse reads
+        // back (an exclusive bound's clamped edge can be subnormal)
+        emit_min_number(q, n);
         return;
     }
     int len = emitted;
@@ -3231,18 +3258,12 @@ static void emit_min_choice(emitq *q, const snode *n, int depth, int choice) {
         case SN_ANY:  eq_put(q, n->min_items ? "{}" : "null"); break;
         case SN_NULL: eq_put(q, "null"); break;
         case SN_BOOL: eq_put(q, "false"); break;
-        case SN_NUM: {
+        case SN_NUM:
             // minimal value respects the declared bounds — a bounded number
-            // filled in by force-close must still satisfy its own schema
-            double v = 0.0;
-            if (n->has_real_min && v < n->real_min) v = n->real_min;
-            if (n->has_real_max && v > n->real_max) v = n->real_max;
-            if (v == 0.0) { eq_putc(q, '0'); break; }
-            char b[40];
-            snprintf(b, sizeof(b), "%.17g", v);
-            eq_put(q, b);
+            // filled in by force-close must still satisfy its own schema,
+            // and be a spelling json_parse reads back (see emit_min_number)
+            emit_min_number(q, n);
             break;
-        }
         case SN_INT: emit_integer(q, integer_minimal_value(n)); break;
         case SN_STR:
             eq_putc(q, '"');

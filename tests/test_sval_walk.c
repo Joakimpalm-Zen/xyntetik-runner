@@ -138,28 +138,33 @@ static void walk(const snode *schema, int si, uint64_t seed) {
                         accepted, n_acc);
             if (want) ok[n_ok++] = (unsigned char)c;
         }
+
+        // the closer's guarantee holds at EVERY frontier, not only where a
+        // walk happens to stop: the subnormal minimum fill sat exactly on a
+        // frontier the end-only check rarely landed on
+        char out[1024];
+        sval closing = v;
+        int wrote = sval_close(&closing, out, (int)sizeof(out));
+        if (wrote < 0 || (size_t)wrote > sizeof(out))
+            fail_at(si, seed, step, -1, "close wrote out of bounds",
+                    accepted, n_acc);
+        bool started = !(v.depth == 1 && v.stack[0].phase == 0 /* P_START */);
+        if ((v.done || (wrote > 0 && started)) &&
+            n_acc + (size_t)wrote <= sizeof(accepted)) {
+            char doc[sizeof(accepted)];
+            memcpy(doc, accepted, n_acc);
+            memcpy(doc + n_acc, out, (size_t)wrote);
+            jv *parsed = json_parse(doc, n_acc + (size_t)wrote);
+            if (!parsed)
+                fail_at(si, seed, step, -1, "closed document does not parse",
+                        doc, n_acc + (size_t)wrote);
+            jv_free(parsed);
+        }
+
         if (!n_ok) break;   // fully wedged states exist only via num buffer caps
         char b = (char)ok[lcg(&rng) % (unsigned)n_ok];
         assert(sval_feed(&v, &b, 1));
         if (n_acc < sizeof(accepted)) accepted[n_acc++] = b;
-    }
-
-    // the closer's guarantee at wherever the walk stopped
-    char out[1024];
-    sval closing = v;
-    int wrote = sval_close(&closing, out, (int)sizeof(out));
-    if (wrote < 0 || (size_t)wrote > sizeof(out))
-        fail_at(si, seed, MAX_STEPS, -1, "close wrote out of bounds",
-                accepted, n_acc);
-    bool started = !(v.depth == 1 && v.stack[0].phase == 0 /* P_START */);
-    if ((v.done || (wrote > 0 && started)) &&
-        n_acc + (size_t)wrote <= sizeof(accepted)) {
-        memcpy(accepted + n_acc, out, (size_t)wrote);
-        jv *doc = json_parse(accepted, n_acc + (size_t)wrote);
-        if (!doc)
-            fail_at(si, seed, MAX_STEPS, -1, "closed document does not parse",
-                    accepted, n_acc + (size_t)wrote);
-        jv_free(doc);
     }
 }
 

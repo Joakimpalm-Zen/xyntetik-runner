@@ -21,7 +21,12 @@ names that were true when they were written.
   every reachable state. Numbers inside free-object subtrees get the same
   rule (the generic machine never buffers a spelling, so the schema wrapper
   now mirrors it), which also caps free-subtree numbers at the same 95-byte
-  spelling limit schema numbers have always had.
+  spelling limit schema numbers have always had. The closer's INVENTED
+  minimum obeys the predicate too: `exclusiveMinimum:0` compiles to a
+  clamped edge of 4.94e-324 - the smallest subnormal, in bounds by
+  construction, ERANGE at read-back - and force-closing a bounded number
+  or a minItems array fill used to emit it verbatim; the fill now scans
+  for the smallest spelling that both parses and satisfies the bounds.
 - **JSON mode refuses ill-formed UTF-8 the way the parser does.** The
   generic machine took any string byte >= 0x20 as content, so a lone
   continuation byte, an overlong lead, or an 0xF5.. lead flowed into
