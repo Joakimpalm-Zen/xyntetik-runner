@@ -953,6 +953,12 @@ non-loopback authorities.
 
 `GET /unload` is deliberately refused with `405`; unloading is a state change.
 
+Chat history roles are `system`, `developer`, `user`, `assistant`, and `tool`;
+`developer` is rendered as a system instruction on local templates. Every turn
+must be an object with an explicit role and string or array-shaped content
+(assistant tool-call/reasoning turns may omit visible content). Malformed turns
+are rejected with HTTP 400 rather than defaulted or removed from the prompt.
+
 Legacy Completions accepts neutral `echo:false` and `prompt_logprobs:null`, but
 rejects `echo:true` and non-null `prompt_logprobs` with HTTP 400 until Runner can
 return the requested prompt-side output. These controls are never ignored.

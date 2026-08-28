@@ -189,6 +189,25 @@ def test_missing_required_fields_are_rejected(client):
                       path="/v1/embeddings")
 
 
+@pytest.mark.parametrize("message,label,contains", [
+    ("plain text", "item-not-object", "messages[0]"),
+    ({"content": "hello"}, "missing-role", "role"),
+    ({"role": 7, "content": "hello"}, "role-not-string", "role"),
+    ({"role": "invented", "content": "hello"}, "unknown-role", "role"),
+    ({"role": "user", "content": 12345}, "numeric-content", "content"),
+    ({"role": "user", "content": {"text": "hello"}},
+     "object-content", "content"),
+])
+def test_malformed_chat_messages_are_rejected(client, message, label, contains):
+    """A malformed history turn must not be defaulted or dropped while the
+    remaining conversation is answered. That changes the caller's prompt under
+    a successful HTTP status."""
+    client.expect_400(
+        {"messages": [message, {"role": "user", "content": "retained"}],
+         "max_tokens": 4, "temperature": 0},
+        name=f"bad-message-{label}", contains=contains)
+
+
 def _chat_body(extra):
     """A chat body with a raw JSON fragment spliced in, for values json.dumps
     cannot emit (bare Infinity, overflowing exponents)."""

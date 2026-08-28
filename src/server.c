@@ -130,6 +130,52 @@ static char *message_text(jv *msg, int tmpl, bool *oom) {
     return b.s;
 }
 
+// Validate the message envelope before any turn is rendered. Defaults and
+// `continue` are unsafe at this boundary: either can make a successful request
+// mean a different conversation from the one the caller submitted.
+static bool validate_chat_messages(const jv *msgs, char *err, size_t err_cap) {
+    for (int i = 0; i < msgs->n; i++) {
+        jv *msg = msgs->items[i];
+        if (!msg || msg->type != J_OBJ) {
+            snprintf(err, err_cap, "messages[%d] must be an object", i);
+            return false;
+        }
+        jv *role_v = jv_get(msg, "role");
+        if (!role_v || role_v->type != J_STR) {
+            snprintf(err, err_cap, "messages[%d].role must be a string", i);
+            return false;
+        }
+        const char *role = role_v->str;
+        if (strcmp(role, "system") && strcmp(role, "developer") &&
+            strcmp(role, "user") && strcmp(role, "assistant") &&
+            strcmp(role, "tool")) {
+            snprintf(err, err_cap,
+                     "messages[%d].role must be system, developer, user, "
+                     "assistant or tool", i);
+            return false;
+        }
+        jv *content = jv_get(msg, "content");
+        bool content_shape = content &&
+                             (content->type == J_STR || content->type == J_ARR);
+        jv *calls = jv_get(msg, "tool_calls");
+        const char *reason = jv_str(jv_get(msg, "reasoning_content"), NULL);
+        bool assistant_payload = !strcmp(role, "assistant") &&
+            ((calls && calls->type == J_ARR && calls->n > 0) ||
+             (reason && reason[0]));
+        if (!content_shape && !assistant_payload) {
+            snprintf(err, err_cap,
+                     "messages[%d].content must be a string or an array", i);
+            return false;
+        }
+    }
+    return true;
+}
+
+static const char *chat_role(jv *msg) {
+    const char *role = jv_str(jv_get(msg, "role"), "user");
+    return !strcmp(role, "developer") ? "system" : role;
+}
+
 // The function a tool turn is reporting for, resolved for HARMONY.
 //
 // template.c's tool_result_name() has a last resort this surface cannot use:
@@ -173,6 +219,11 @@ static void handle_chat(slot_t *s, sock_t fd, jv *req) {
     jv *msgs = jv_get(req, "messages");
     if (!msgs || msgs->type != J_ARR || msgs->n == 0) {
         send_error(fd, 400, "missing messages");
+        return;
+    }
+    char merr[192];
+    if (!validate_chat_messages(msgs, merr, sizeof(merr))) {
+        send_error(fd, 400, merr);
         return;
     }
     // OpenAI "tools" become a leading system turn (template.c owns the syntax).
@@ -238,7 +289,7 @@ static void handle_chat(slot_t *s, sock_t fd, jv *req) {
         tools_render_for(s->tmpl, tools, &ts);
     bool ornith_merged_system = false;
     if (s->tmpl == TMPL_ORNITH && ts.n && msgs->n > 0 &&
-        !strcmp(jv_str(jv_get(msgs->items[0], "role"), ""), "system")) {
+        !strcmp(chat_role(msgs->items[0]), "system")) {
         char *system = message_text(msgs->items[0], s->tmpl, &oom);
         if (system && system[0]) {
             sb_lit(&ts, "\n\n");
@@ -281,7 +332,7 @@ static void handle_chat(slot_t *s, sock_t fd, jv *req) {
         cm[n_cm++] = (chat_msg){ .role = "system", .content = ts.s };
     for (int i = 0; i < msgs->n; i++) {
         if (i == 0 && ornith_merged_system) continue;
-        const char *role = jv_str(jv_get(msgs->items[i], "role"), "user");
+        const char *role = chat_role(msgs->items[i]);
         const char *turn_name = NULL;
         // gemma4 names the function in its <|tool_response> block
         // (`response:NAME{...}`) exactly as muse names its tool turn, so the
