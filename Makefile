@@ -36,6 +36,7 @@ GPU_BACKEND_DEF = -DRUNNER_GPU_CUDA
 TRAY_SRC = src/tray.c src/tray_win.c
 RUNNER_EXE = runner.exe
 TEST_JSON_SCHEMA = test-json-schema.exe
+TEST_SVAL_WALK = test-sval-walk.exe
 TEST_TOKENIZER = test-tokenizer.exe
 TEST_TEMPLATE = test-template.exe
 TEST_TOOLS = test-tools.exe
@@ -63,6 +64,7 @@ LDFLAGS += -framework AppKit -framework UniformTypeIdentifiers
 TRAY_SRC = src/tray.c src/tray_macos.m
 RUNNER_EXE = runner
 TEST_JSON_SCHEMA = test-json-schema
+TEST_SVAL_WALK = test-sval-walk
 TEST_TOKENIZER = test-tokenizer
 TEST_TEMPLATE = test-template
 TEST_TOOLS = test-tools
@@ -82,6 +84,7 @@ LDFLAGS += -ldl
 TRAY_SRC = src/tray.c src/tray_stub.c
 RUNNER_EXE = runner
 TEST_JSON_SCHEMA = test-json-schema
+TEST_SVAL_WALK = test-sval-walk
 TEST_TOKENIZER = test-tokenizer
 TEST_TEMPLATE = test-template
 TEST_TOOLS = test-tools
@@ -225,6 +228,9 @@ debug: $(SRC) $(HDR)
 # those flags once gated behavior in a configuration that does not ship.
 $(TEST_JSON_SCHEMA): tests/test_json_schema.c src/json.c src/jsonmode.c src/schema.c $(HDR)
 	$(CC) $(CFLAGS) -I src tests/test_json_schema.c src/json.c src/jsonmode.c src/schema.c -o $@ -lm
+
+$(TEST_SVAL_WALK): tests/test_sval_walk.c src/json.c src/jsonmode.c src/schema.c $(HDR)
+	$(CC) $(CFLAGS) -I src tests/test_sval_walk.c src/json.c src/jsonmode.c src/schema.c -o $@ -lm
 
 # quants.c is needed for the ggml_type_* helpers gguf.c links against; CFLAGS
 # (not the plainer flags above) so the AVX2 paths match a real build
@@ -1286,7 +1292,7 @@ else
 	@echo "metal SWA smoke skipped: macOS-only backend"
 endif
 
-test: $(TEST_JSON_SCHEMA) $(TEST_JSON_OOM) $(TEST_SCHEMA_OOM) $(TEST_SAMPLER) $(TEST_LORA_GRAD) $(TEST_MVT) \
+test: $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSON_OOM) $(TEST_SCHEMA_OOM) $(TEST_SAMPLER) $(TEST_LORA_GRAD) $(TEST_MVT) \
       $(TEST_TOKENIZER) $(TEST_TOK_MERGE) $(TEST_TOKENIZER_OOM) $(TEST_TEMPLATE) \
       $(TEST_TEMPLATE_OOM) \
       $(TEST_TOOLS) $(TEST_SHARED) $(TEST_FILE_ID) $(TEST_BATCH) $(TEST_BIND) $(TEST_HOST_HEADER) \
@@ -1320,6 +1326,7 @@ test: $(TEST_JSON_SCHEMA) $(TEST_JSON_OOM) $(TEST_SCHEMA_OOM) $(TEST_SAMPLER) $(
 	./$(TEST_SCHED_TURN)
 	./$(TEST_VRAMREG)
 	./$(TEST_JSON_SCHEMA)
+	./$(TEST_SVAL_WALK)
 	./$(TEST_JSON_OOM)
 	./$(TEST_SCHEMA_OOM)
 	./$(TEST_SAMPLER)
@@ -1546,8 +1553,8 @@ compat-consumers: runner test.gguf
 FUZZ_CLANG   ?= clang
 FUZZ_TIME    ?= 20
 FUZZ_RSS_MB  ?= 2048
-FUZZ_TARGETS = json_parse schema_compile sval_feed jsonv_feed gguf_open \
-               http_request
+FUZZ_TARGETS = json_parse schema_compile sval_feed sval_trial jsonv_feed \
+               gguf_open http_request
 # TODO: tok_encode (src/tokenizer.c) is deliberately absent. It needs a loaded
 # tokenizer rather than a bare buffer, so the harness has to stand up a vocab
 # first -- and tokenizer.c has been rewritten substantially since the original
@@ -1565,6 +1572,7 @@ FUZZ_FLAGS = -g -O1 -std=gnu11 -Wall -Wextra -Wno-unused-parameter -I src \
 FUZZ_SRC_json_parse     = src/json.c
 FUZZ_SRC_schema_compile = src/json.c src/schema.c src/jsonmode.c
 FUZZ_SRC_sval_feed      = src/json.c src/schema.c src/jsonmode.c
+FUZZ_SRC_sval_trial     = src/json.c src/schema.c src/jsonmode.c
 FUZZ_SRC_jsonv_feed     = src/jsonmode.c
 FUZZ_SRC_gguf_open      = src/gguf.c src/compat.c src/quants.c
 FUZZ_SRC_http_request   = src/http.c src/json.c src/compat.c
@@ -1620,7 +1628,7 @@ fuzz:
 	fi
 
 clean:
-	rm -f test-moe-fixture.*.gguf test-q8.gguf test-bf16.gguf runner runner-debug $(TEST_JSON_SCHEMA) $(TEST_JSON_OOM) \
+	rm -f test-moe-fixture.*.gguf test-q8.gguf test-bf16.gguf runner runner-debug $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSON_OOM) \
 		$(TEST_TEMPLATE_OOM) \
 	      $(TEST_SCHEMA_OOM) $(TEST_SAMPLER) $(TEST_TOKENIZER) \
 	      $(TEST_TOKENIZER_OOM) $(TEST_TEMPLATE) $(TEST_SHARED) \

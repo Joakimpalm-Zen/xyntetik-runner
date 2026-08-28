@@ -6,6 +6,39 @@ change between releases (the `-alpha` suffix was retired at v0.2.0 — the 0.x
 version already says what it needs to). Entries below the rename keep the
 names that were true when they were written.
 
+## Unreleased
+
+- **Constrained output only emits numbers the parser reads back.** The
+  validators and json_parse now share one number-acceptance predicate
+  (`json_number_text_ok`: strtod with ERANGE, both directions). Previously a
+  schema-constrained model could complete `9e999` or a deep-subnormal
+  spelling that the runner's own parser - and therefore its tool-argument
+  readback - refuses; the validator's old `isfinite()` overflow check was
+  dead code in the shipped build because -ffast-math folds it away, exactly
+  the trap json.c's parser documented for itself. The refusal lands on the
+  exponent digit that commits the spelling, so terminating the number always
+  stays legal, and the closer's keep-the-prefix fallback is now sound for
+  every reachable state. Numbers inside free-object subtrees get the same
+  rule (the generic machine never buffers a spelling, so the schema wrapper
+  now mirrors it), which also caps free-subtree numbers at the same 95-byte
+  spelling limit schema numbers have always had.
+- **JSON mode refuses ill-formed UTF-8 the way the parser does.** The
+  generic machine took any string byte >= 0x20 as content, so a lone
+  continuation byte, an overlong lead, or an 0xF5.. lead flowed into
+  documents json_parse rejects - in plain --json output and in every
+  free-object subtree of a tool schema. Both validators now share the
+  sequence classifier (json_utf8_byte) the schema strings already used, and
+  the json-mode closer finishes a truncated scalar before writing its
+  closing quote instead of emitting a document that cannot parse.
+- **The candidate-token oracle is now differentially tested.** A seeded
+  walker (tests/test_sval_walk.c, in `make test`) probes all 256 bytes at
+  every step of random walks through legal document space, comparing the
+  poisoned-scratch trial against a full struct copy - answers AND live
+  state - and checks the closer's parse guarantee at every stop; a
+  differential fuzz target (fuzz_sval_trial) does the same under
+  libFuzzer+ASan+UBSan in CI. Both found the two disagreements above within
+  seconds of existing.
+
 ## v0.4.0 - 2026-08-28
 
 - **Transcript metadata is always valid JSON.** Runner, compiler, OS,

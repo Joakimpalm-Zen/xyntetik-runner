@@ -2351,28 +2351,11 @@ static int str_byte(uint8_t c, uint8_t *sub, uint16_t *esc,
     if (*sub == 6) { if (c != '\\') return -1; *sub = 7; return 0; }
     if (*sub == 7) { if (c != 'u')  return -1; *sub = 8; return 0; }
     if (*sub >= 2) return json_escape_hex(sub, esc, c) ? 0 : -1;
-    if (*utf8_state) {
-        static const uint8_t LO[]   = { 0, 0x80, 0x80, 0x80, 0xA0, 0x80, 0x90, 0x80 };
-        static const uint8_t HI[]   = { 0, 0xBF, 0xBF, 0xBF, 0xBF, 0x9F, 0xBF, 0x8F };
-        static const uint8_t NEXT[] = { 0, 0,    1,    2,    1,    1,    2,    2 };
-        if (c < LO[*utf8_state] || c > HI[*utf8_state]) return -1;
-        *utf8_state = NEXT[*utf8_state];
-        return 0;
-    }
+    if (*utf8_state) return json_utf8_byte(utf8_state, c) ? 0 : -1;
     if (c == '"') return 1;
     if (c == '\\') { *sub = 1; return 0; }
     if (c < 0x20) return -1;
-    if (c < 0x80) return 0;
-    if (c >= 0xC2 && c <= 0xDF) { *utf8_state = 1; return 0; }
-    if (c >= 0xE0 && c <= 0xEF) {
-        *utf8_state = c == 0xE0 ? 4 : c == 0xED ? 5 : 2;
-        return 0;
-    }
-    if (c >= 0xF0 && c <= 0xF4) {
-        *utf8_state = c == 0xF0 ? 6 : c == 0xF4 ? 7 : 3;
-        return 0;
-    }
-    return -1;
+    return json_utf8_byte(utf8_state, c) ? 0 : -1;
 }
 
 // number byte; returns -1 invalid, 0 consumed, 1 complete-and-reconsume
@@ -2430,11 +2413,14 @@ static bool number_put(sval *v, uint8_t c) {
 
 // Does this complete number SPELLING satisfy the node's interval? Taken as
 // text rather than as an accumulated value so the closer can ask the same
-// question about a spelling it is only considering.
+// question about a spelling it is only considering. Parseability comes from
+// json_number_text_ok — the parser's own acceptance, ERANGE included — so a
+// spelling json_parse refuses (overflow OR underflow) never satisfies any
+// bound. The old isfinite() check here was dead code in the shipped build
+// (-ffast-math folds it away) and never caught underflow at all.
 static bool number_text_in_bounds(const snode *n, const char *s) {
-    char *end = NULL;
-    double x = strtod(s, &end);
-    if (!end || *end || !isfinite(x)) return false;
+    double x;
+    if (!json_number_text_ok(s, &x)) return false;
     return (!n->has_real_min || x >= n->real_min) &&
            (!n->has_real_max || x <= n->real_max);
 }
@@ -2558,7 +2544,31 @@ static int feed_byte(sval *v, uint8_t c) {
             f->phase = P_STR; // "running"
         }
         if (v->any.done) { frame_done(v); return 1; }
+        // Numbers inside the free subtree flow through the generic machine,
+        // which never buffers a spelling — so mirror it into num_text (free
+        // here: no number frame can be open while an SN_ANY frame runs) and
+        // apply the P_NUM rules at the same commit points: refuse the
+        // exponent digit whose value json_parse refuses, and cap the
+        // spelling at num_text's size the way number_put does. Terminators
+        // stay legal in both cases.
+        int num_st = jsonv_number_state(&v->any);
+        bool num_ch = (c >= '0' && c <= '9') || c == '.' || c == '+' ||
+                      c == '-' || c == 'e' || c == 'E';
+        if (num_st && num_ch) {
+            if ((size_t)v->num_len + 1 >= sizeof(v->num_text)) return -1;
+            if (num_st == 2 && c >= '0' && c <= '9') {
+                char cand[sizeof(v->num_text) + 1];
+                memcpy(cand, v->num_text, v->num_len);
+                cand[v->num_len] = (char)c;
+                cand[v->num_len + 1] = 0;
+                if (!json_number_text_ok(cand, NULL)) return -1;
+            }
+        }
         if (jsonv_feed(&v->any, (const char *)&c, 1)) {
+            if (jsonv_number_state(&v->any)) {
+                if (!num_st) v->num_len = 0;   // a number starts on this byte
+                (void)number_put(v, c);        // cap enforced above
+            }
             if (v->any.done) frame_done(v);
             return 0;
         }
@@ -2727,6 +2737,19 @@ static int feed_byte(sval *v, uint8_t c) {
         if (r == 1) {
             if (!number_in_bounds(v, n, f)) return -1;
             frame_done(v); return 1;
+        }
+        // An exponent digit that commits the spelling to a value json_parse
+        // refuses (ERANGE, either direction) is refused HERE, not at the
+        // terminator: json_escape_hex's principle — reject at the byte that
+        // commits, so terminating the number always stays legal. Every
+        // spelling that survives this can therefore be read back, which is
+        // also what makes the closer's keep-the-prefix fallback sound.
+        if (f->sub == N_EXP && c >= '0' && c <= '9') {
+            char cand[sizeof(v->num_text) + 1];
+            memcpy(cand, v->num_text, v->num_len);
+            cand[v->num_len] = (char)c;
+            cand[v->num_len + 1] = 0;
+            if (!json_number_text_ok(cand, NULL)) return -1;
         }
         if (!number_put(v, c)) return -1;
         return 0;
@@ -3083,12 +3106,9 @@ static bool eq_escape(emitq *q, sframe *f) {
 // A raw UTF-8 lead already consumed one code point. If truncation lands in
 // its continuation bytes, finish that same scalar before writing the quote.
 static void eq_utf8(emitq *q, sframe *f) {
-    static const uint8_t LO[]   = { 0, 0x80, 0x80, 0x80, 0xA0, 0x80, 0x90, 0x80 };
-    static const uint8_t NEXT[] = { 0, 0,    1,    2,    1,    1,    2,    2 };
-    while (f->utf8_state) {
-        eq_putc(q, (char)LO[f->utf8_state]);
-        f->utf8_state = NEXT[f->utf8_state];
-    }
+    char u8[3];
+    int n = json_utf8_close(&f->utf8_state, u8);
+    for (int i = 0; i < n; i++) eq_putc(q, u8[i]);
 }
 
 static int64_t integer_minimal_value(const snode *n) {

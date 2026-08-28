@@ -36,6 +36,13 @@ size_t json_escape(const char *s, size_t n, char *out, size_t cap);
 // consumed, 0 when the sequence is incomplete and more input would settle it,
 // or -1 when it can never be valid.
 int json_unescape(const char *s, size_t n, char out[4], int *outn);
+// The single definition of "a number spelling this program reads back",
+// shared with the constrained-output validators so the two can never
+// disagree: a validator that completes a spelling this parser refuses lets
+// a constrained model emit a document the runner cannot read. `s` is the
+// NUL-terminated spelling; on acceptance the value lands in *out when out
+// is non-NULL.
+bool json_number_text_ok(const char *s, double *out);
 
 // Growable string builder for assembling JSON/HTTP bodies.
 //

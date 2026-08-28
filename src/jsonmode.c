@@ -93,6 +93,7 @@ void jsonv_init(jsonv *v) {
     v->st = S_START;
     v->sub = 0;
     v->lit = 0;
+    v->utf8 = 0;
     v->esc = 0;
     v->done = false;
 }
@@ -184,13 +185,18 @@ static bool feed_byte(jsonv *v, uint8_t c, bool *reconsume) {
         if (v->sub == 6) { if (c != '\\') return false; v->sub = 7; return true; }
         if (v->sub == 7) { if (c != 'u')  return false; v->sub = 8; return true; }
         if (v->sub >= 2) return json_escape_hex(&v->sub, &v->esc, c);
+        if (v->utf8) return json_utf8_byte(&v->utf8, c);
         if (c == '"') {
             if (key) v->st = S_COLON;
             else value_done(v);
             return true;
         }
         if (c == '\\') { v->sub = 1; return true; }
-        return c >= 0x20; // control chars forbidden; UTF-8 bytes allowed
+        // control chars forbidden, and raw bytes above ASCII must form
+        // well-formed UTF-8 -- json_parse refuses ill-formed sequences, so
+        // accepting them here would emit a document it cannot read back
+        if (c < 0x20) return false;
+        return json_utf8_byte(&v->utf8, c);
     }
 
     case S_COLON:
@@ -262,8 +268,12 @@ int jsonv_close(jsonv *v, char *out, int cap) {
     int m = 0;
     if (v->st == S_START || v->done) return 0;
     #define EMIT(c) do { if (m < cap - 1) out[m++] = (c); } while (0)
-    // unfinished string escapes
+    // unfinished string escapes and truncated raw UTF-8 scalars: both must
+    // finish before the quote or the document does not survive json_parse
     if (v->st == S_KEY || v->st == S_STRING) {
+        char u8[3];
+        int un = json_utf8_close(&v->utf8, u8);
+        for (int i = 0; i < un; i++) EMIT(u8[i]);
         char esc[12];
         int en = json_escape_close(&v->sub, &v->esc, esc, (int)sizeof(esc));
         for (int i = 0; i < en; i++) EMIT(esc[i]);
@@ -304,6 +314,55 @@ int jsonv_close(jsonv *v, char *out, int cap) {
     return m;
 }
 
+// See jsonmode.h. The table encoding is the one schema.c's string frames
+// have always used: index 0 is "between scalars"; 1-3 are plain 2/3/4-byte
+// continuations; 4-7 are the four constrained second bytes (E0, ED, F0, F4)
+// that exclude overlongs, surrogates and values past U+10FFFF.
+bool json_utf8_byte(uint8_t *state, uint8_t c) {
+    static const uint8_t LO[]   = { 0, 0x80, 0x80, 0x80, 0xA0, 0x80, 0x90, 0x80 };
+    static const uint8_t HI[]   = { 0, 0xBF, 0xBF, 0xBF, 0xBF, 0x9F, 0xBF, 0x8F };
+    static const uint8_t NEXT[] = { 0, 0,    1,    2,    1,    1,    2,    2 };
+    if (*state) {
+        if (c < LO[*state] || c > HI[*state]) return false;
+        *state = NEXT[*state];
+        return true;
+    }
+    if (c < 0x80) return true;
+    if (c >= 0xC2 && c <= 0xDF) { *state = 1; return true; }
+    if (c >= 0xE0 && c <= 0xEF) {
+        *state = c == 0xE0 ? 4 : c == 0xED ? 5 : 2;
+        return true;
+    }
+    if (c >= 0xF0 && c <= 0xF4) {
+        *state = c == 0xF0 ? 6 : c == 0xF4 ? 7 : 3;
+        return true;
+    }
+    return false;
+}
+
+int json_utf8_close(uint8_t *state, char out[3]) {
+    static const uint8_t LO[]   = { 0, 0x80, 0x80, 0x80, 0xA0, 0x80, 0x90, 0x80 };
+    static const uint8_t NEXT[] = { 0, 0,    1,    2,    1,    1,    2,    2 };
+    int n = 0;
+    while (*state && n < 3) {
+        out[n++] = (char)LO[*state];
+        *state = NEXT[*state];
+    }
+    return n;
+}
+
+int jsonv_number_state(const jsonv *v) {
+    switch (v->st) {
+    case S_NUM_MINUS: case S_NUM_ZERO: case S_NUM_INT:
+    case S_NUM_FRAC0: case S_NUM_FRAC:
+        return 1;
+    case S_NUM_EXP0: case S_NUM_EXP1: case S_NUM_EXP:
+        return 2;
+    default:
+        return 0;
+    }
+}
+
 bool jsonv_feed(jsonv *v, const char *s, int n) {
     for (int i = 0; i < n; i++) {
         bool re;
@@ -327,6 +386,7 @@ void jsonv_snapshot(jsonv *dst, const jsonv *src) {
     dst->st = src->st;
     dst->sub = src->sub;
     dst->lit = src->lit;
+    dst->utf8 = src->utf8;
     dst->done = src->done;
     dst->esc = src->esc;
 }

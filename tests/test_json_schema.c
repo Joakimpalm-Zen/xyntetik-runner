@@ -1340,6 +1340,165 @@ static void test_schema_number_close_rescues_an_out_of_range_prefix(void) {
     jv_free(schema_json);
 }
 
+// The generic machine (json mode, and every free-object subtree in a tool
+// schema) must refuse the string bytes json_parse refuses: it took any byte
+// >= 0x20 as string content, so a lone continuation byte, an overlong lead
+// or an 0xF5.. lead sailed through into a document the runner's own parser
+// (and its tool-argument readback) then rejected. The schema string machine
+// has validated sequences since the UTF-8 length-accounting fix; this pins
+// the shared rule on the jsonv side, closing quote and closer included.
+static void test_jsonv_utf8_matches_parser(void) {
+    struct { const char *pre; unsigned char byte; bool ok; } cases[] = {
+        { "{\"k",        0x8B, false },  // lone continuation in a key
+        { "{\"k\":\"v",  0x8B, false },  // ...and in a value
+        { "{\"k\":\"v",  0xC0, false },  // overlong lead
+        { "{\"k\":\"v",  0xF5, false },  // beyond U+10FFFF
+        { "{\"k\":\"v",  0xC3, true  },  // valid lead...
+    };
+    for (size_t i = 0; i < sizeof(cases) / sizeof(*cases); i++) {
+        jsonv v; jsonv_init(&v);
+        assert(jsonv_feed(&v, cases[i].pre, (int)strlen(cases[i].pre)));
+        char b = (char)cases[i].byte;
+        assert(jsonv_feed(&v, &b, 1) == cases[i].ok);
+    }
+    // a valid lead's continuation window: quote and ASCII are refused inside
+    // the scalar, the proper continuation is accepted, and the whole
+    // document round-trips through json_parse
+    {
+        jsonv v; jsonv_init(&v);
+        const char *pre = "{\"k\":\"v\xC3";
+        assert(jsonv_feed(&v, pre, (int)strlen(pre)));
+        assert(!jsonv_feed(&v, "\"", 1));
+        assert(!jsonv_feed(&v, "a", 1));
+        const char *rest = "\xA9\"}";
+        assert(jsonv_feed(&v, rest, (int)strlen(rest)));
+        assert(v.done);
+        const char *doc = "{\"k\":\"v\xC3\xA9\"}";
+        jv *parsed = json_parse(doc, strlen(doc));
+        assert(parsed != NULL);
+        jv_free(parsed);
+    }
+    // truncation inside a scalar: the closer finishes the sequence before
+    // the quote, and the result parses
+    {
+        jsonv v; jsonv_init(&v);
+        const char *pre = "{\"k\":\"v\xE4";
+        assert(jsonv_feed(&v, pre, (int)strlen(pre)));
+        char close[64];
+        int n = jsonv_close(&v, close, (int)sizeof(close));
+        assert(n > 0);
+        char doc[128];
+        int len = snprintf(doc, sizeof(doc), "%s%s", pre, close);
+        jv *parsed = json_parse(doc, (size_t)len);
+        assert(parsed != NULL);
+        jv_free(parsed);
+    }
+    // the same bytes through a free-object subtree in a schema
+    {
+        const char *src = "{\"type\":\"object\"}";
+        jv *j = json_parse(src, strlen(src));
+        assert(j != NULL);
+        char err[128];
+        snode *s = schema_compile(j, err, sizeof(err));
+        assert(s != NULL);
+        sval v; sval_init(&v, s);
+        const char *pre = "{\"k";
+        assert(sval_feed(&v, pre, (int)strlen(pre)));
+        char b = (char)0x8B;
+        sval scratch;
+        memset(&scratch, 0xA5, sizeof(scratch));
+        assert(!sval_trial(&v, &scratch, &b, 1));
+        schema_free(s);
+        jv_free(j);
+    }
+}
+
+// The validator must never complete a number spelling json_parse refuses:
+// the caller was promised a document this program reads back, and strtod's
+// range refusals (overflow AND underflow — both ERANGE) are part of the
+// parser's acceptance. The refusal lands on the exponent digit that commits
+// the spelling, the same early-commit principle json_escape_hex documents,
+// so the model always keeps a legal continuation (terminate the number).
+static void test_schema_number_matches_parser(void) {
+    const char *src = "{\"type\":\"number\"}";
+    jv *schema_json = json_parse(src, strlen(src));
+    assert(schema_json != NULL);
+    char err[128];
+    snode *schema = schema_compile(schema_json, err, sizeof(err));
+    assert(schema != NULL);
+
+    // overflow: 9e30 is fine, the digit that makes 9e309 is refused, and
+    // the number can still terminate where it stands
+    {
+        sval v; sval_init(&v, schema);
+        assert(sval_feed(&v, "9e30", 4));
+        sval scratch;
+        memset(&scratch, 0xA5, sizeof(scratch));
+        assert(!sval_trial(&v, &scratch, "9", 1));
+        char close[32];
+        sval closing = v;
+        int wrote = sval_close(&closing, close, (int)sizeof(close));
+        assert(wrote >= 0);
+        char doc[64];
+        int len = snprintf(doc, sizeof(doc), "9e30%s", close);
+        jv *parsed = json_parse(doc, (size_t)len);
+        assert(parsed != NULL);
+        jv_free(parsed);
+    }
+    // underflow: 1e-300 is a normal double, the digit that makes 1e-3000
+    // is refused; deep subnormals are refused at their commit digit too
+    {
+        sval v; sval_init(&v, schema);
+        assert(sval_feed(&v, "1e-300", 6));
+        sval scratch;
+        memset(&scratch, 0xA5, sizeof(scratch));
+        assert(!sval_trial(&v, &scratch, "0", 1));
+    }
+    {
+        sval v; sval_init(&v, schema);
+        assert(sval_feed(&v, "1e-32", 5));   // 1e-32: normal
+        sval scratch;
+        memset(&scratch, 0xA5, sizeof(scratch));
+        assert(!sval_trial(&v, &scratch, "0", 1));   // 1e-320: subnormal
+    }
+    // a dangling exponent still closes to something the parser accepts
+    {
+        sval v; sval_init(&v, schema);
+        assert(sval_feed(&v, "9e", 2));
+        char close[32];
+        int wrote = sval_close(&v, close, (int)sizeof(close));
+        assert(wrote > 0);
+        char doc[64];
+        int len = snprintf(doc, sizeof(doc), "9e%s", close);
+        jv *parsed = json_parse(doc, (size_t)len);
+        assert(parsed != NULL);
+        jv_free(parsed);
+    }
+    schema_free(schema);
+    jv_free(schema_json);
+
+    // the same numbers flowing through a free-object subtree reach the
+    // generic submachine, which never sees a spelling — the wrapper must
+    // apply the same commit refusal there
+    const char *any_src = "{\"type\":\"object\"}";
+    jv *any_json = json_parse(any_src, strlen(any_src));
+    assert(any_json != NULL);
+    snode *any_schema = schema_compile(any_json, err, sizeof(err));
+    assert(any_schema != NULL);
+    {
+        sval v; sval_init(&v, any_schema);
+        const char *pfx = "{\"x\":9e30";
+        assert(sval_feed(&v, pfx, (int)strlen(pfx)));
+        sval scratch;
+        memset(&scratch, 0xA5, sizeof(scratch));
+        assert(!sval_trial(&v, &scratch, "9", 1));   // 9e309 overflows
+        assert(sval_feed(&v, "}", 1));               // terminating is legal
+        assert(v.done);
+    }
+    schema_free(any_schema);
+    jv_free(any_json);
+}
+
 static void test_schema_number_bounds_are_enforced(void) {
     const char *src = "{\"type\":\"object\",\"properties\":{"
         "\"timeout\":{\"type\":\"number\",\"minimum\":0,"
@@ -2403,6 +2562,8 @@ int main(void) {
     test_schema_close_counts_the_escape_it_finishes();
     test_schema_integer_bounds_complete_truncation();
     test_schema_number_close_rescues_an_out_of_range_prefix();
+    test_jsonv_utf8_matches_parser();
+    test_schema_number_matches_parser();
     test_schema_number_bounds_are_enforced();
     test_schema_number_bounds_across_frames();
     test_sval_state_is_small();
