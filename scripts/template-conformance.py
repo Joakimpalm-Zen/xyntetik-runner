@@ -388,20 +388,19 @@ def matrix(family):
          "default"),
         # ---- shape of the CONTENT
         #
-        # The AI-SDK part-array form (Cline, the Vercel AI SDK, and every
-        # client that sends images alongside text). src/server.c's
-        # message_text() concatenates the text parts with a newline BEFORE
-        # anything is rendered, so the reference is asked the equivalent
-        # question -- the same conversation with that concatenation already
-        # done. What this compares is therefore whether runner's part
-        # handling reaches the same prompt as the plain string would: a
-        # dropped part, a lost separator or a mangled order all show up.
+        # The AI-SDK text-part-array form. src/server.c's message_text()
+        # concatenates the parts with a newline BEFORE anything is rendered,
+        # so the reference is asked the equivalent question -- the same
+        # conversation with that concatenation already done. What this
+        # compares is therefore whether runner's part handling reaches the
+        # same prompt as the plain string would: a dropped part, a lost
+        # separator or a mangled order all show up. Images/files are not put
+        # here: Runner is text-only and its public conformance suite verifies
+        # those parts receive 400 rather than being silently removed.
         ("content-array",
          [{"role": "system", "content": SYS},
           {"role": "user", "content": [
               {"type": "text", "text": "What color is the sky?"},
-              {"type": "image_url",
-               "image_url": {"url": "data:image/png;base64,iVBORw0KGgo="}},
               {"type": "text", "text": "Answer briefly."}]}],
          True, "default",
          [{"role": "system", "content": SYS},
