@@ -575,14 +575,23 @@ static void send_health(sock_t fd) {
     // asking. Both stay 0 on a server that never started the scheduler.
     unsigned long long bs = 0, bq = 0;
     sched_batch_totals(&bs, &bq);
+    // The two readings come from different kernel counters on Linux (statm
+    // for current, ru_maxrss for peak) whose split-RSS accounting can lag
+    // each other, so a raw pair can report current above peak — observed
+    // under ASan's mapping churn in the sanitized conformance leg. A
+    // current reading of X is itself evidence the peak is at least X, so
+    // the pair is made self-consistent at the moment it is reported.
+    uint64_t cur_rss = plat_proc_rss_bytes();
+    uint64_t peak_rss = plat_proc_peak_rss_bytes();
+    if (peak_rss < cur_rss) peak_rss = cur_rss;
     char m[384];
     snprintf(m, sizeof(m),
              ",\"rss_bytes\":%llu,\"peak_rss_bytes\":%llu,"
              "\"tokens_prompt\":%llu,\"tokens_generated\":%llu,"
              "\"generate_seconds\":%.6f,"
              "\"batch_steps\":%llu,\"batch_sequences\":%llu",
-             (unsigned long long)plat_proc_rss_bytes(),
-             (unsigned long long)plat_proc_peak_rss_bytes(),
+             (unsigned long long)cur_rss,
+             (unsigned long long)peak_rss,
              wp, wg, ws, bs, bq);
 
     if (SV.n_reg > 0 && res >= 0) {
