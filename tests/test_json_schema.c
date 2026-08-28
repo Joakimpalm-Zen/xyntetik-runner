@@ -1530,21 +1530,30 @@ static void test_schema_number_matches_parser(void) {
         assert(parsed != NULL);
         jv_free(parsed);
     }
-    // underflow: 1e-300 is a normal double, the digit that makes 1e-3000
-    // is refused; deep subnormals are refused at their commit digit too
+    // underflow: strtod's ERANGE behavior in the subnormal band is libc-
+    // specific (glibc and macOS refuse 1e-320, UCRT accepts it), and json.c
+    // inherits the host's verdict. The invariant is therefore AGREEMENT,
+    // not a fixed answer: the validator must accept the commit digit
+    // exactly when the host's json_parse reads the result back.
     {
         sval v; sval_init(&v, schema);
         assert(sval_feed(&v, "1e-300", 6));
         sval scratch;
         memset(&scratch, 0xA5, sizeof(scratch));
-        assert(!sval_trial(&v, &scratch, "0", 1));
+        bool accepted = sval_trial(&v, &scratch, "0", 1);
+        jv *p = json_parse("[1e-3000]", 9);
+        assert(accepted == (p != NULL));
+        jv_free(p);
     }
     {
         sval v; sval_init(&v, schema);
         assert(sval_feed(&v, "1e-32", 5));   // 1e-32: normal
         sval scratch;
         memset(&scratch, 0xA5, sizeof(scratch));
-        assert(!sval_trial(&v, &scratch, "0", 1));   // 1e-320: subnormal
+        bool accepted = sval_trial(&v, &scratch, "0", 1);   // 1e-320
+        jv *p = json_parse("[1e-320]", 8);
+        assert(accepted == (p != NULL));
+        jv_free(p);
     }
     // a dangling exponent still closes to something the parser accepts
     {
