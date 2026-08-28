@@ -47,7 +47,13 @@ names that were true when they were written.
   DECODED key content (raw bytes, decoded escapes, surrogate pairs as
   their scalar), refusing the duplicate at its closing quote while every
   continuation stays legal, and both closers extend a force-closed key
-  until it is unique instead of minting the collision.
+  until it is unique instead of minting the collision. The guard's
+  capacity FAILS CLOSED: it previously stopped tracking past its limit, so
+  a 17th key could duplicate an earlier one unchecked - now the comma that
+  would start an untrackable entry is refused (and the first key of an
+  object opened at capacity), while `}` stays legal, so objects are
+  bounded at 24 tracked keys across open depths, never wedged, and never
+  carry an unchecked duplicate.
 - **`/health` never reports current RSS above peak RSS.** On Linux the two
   readings come from different kernel counters (statm for current,
   ru_maxrss for peak) whose split-RSS accounting can lag each other, so a

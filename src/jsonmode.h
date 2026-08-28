@@ -13,8 +13,11 @@
 // surrogate pairs as their scalar), so `"a"` and `"a"` collide exactly
 // as they do in json_parse, which refuses the duplicate either way. A hash
 // collision refuses a distinct key (over-constraint) and can never admit a
-// duplicate. Past the capacity the guard stops tracking.
-#define JSON_KEY_SEEN_MAX 16
+// duplicate. Capacity FAILS CLOSED: an object that would outgrow the guard
+// refuses the comma (or the first key when `}` is the alternative) instead
+// of un-tracking keys — the object can always close, so generation is
+// bounded, never wedged, and every open key is always dup-checked.
+#define JSON_KEY_SEEN_MAX 24
 
 typedef struct {
     uint8_t stack[200];     // container nesting: 'O' object, 'A' array

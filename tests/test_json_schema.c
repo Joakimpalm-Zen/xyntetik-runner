@@ -1498,6 +1498,76 @@ static void test_duplicate_keys_match_parser(void) {
     jv_free(map_json);
 }
 
+// At guard capacity the machines FAIL CLOSED instead of un-tracking keys:
+// the comma that would start an untrackable entry is refused (and the first
+// key of a map opened at capacity), while `}` stays legal — so a map is
+// bounded at MAP_SEEN_MAX keys, never wedged, and never carries an
+// unchecked duplicate. The old stop-tracking behavior let a 17th key
+// duplicate an earlier one and emitted a document json_parse refuses
+// (found by the CI fuzzer against the v0.4.1 tree).
+static void test_key_guard_capacity_fails_closed(void) {
+    const char *map_src =
+        "{\"type\":\"object\",\"additionalProperties\":{\"type\":\"integer\"}}";
+    jv *map_json = json_parse(map_src, strlen(map_src));
+    assert(map_json != NULL);
+    char err[128];
+    snode *map_schema = schema_compile(map_json, err, sizeof(err));
+    assert(map_schema != NULL);
+    {
+        sval v; sval_init(&v, map_schema);
+        char doc[1024];
+        int len = 0;
+        doc[len++] = '{';
+        for (int i = 0; i < MAP_SEEN_MAX; i++)
+            len += snprintf(doc + len, sizeof(doc) - (size_t)len,
+                            "%s\"k%02d\":%d", i ? "," : "", i, i);
+        assert(sval_feed(&v, doc, len));
+        sval scratch;
+        memset(&scratch, 0xA5, sizeof(scratch));
+        assert(!sval_trial(&v, &scratch, ",", 1));   // 25th entry refused
+        assert(sval_feed(&v, "}", 1));               // closing stays legal
+        assert(v.done);
+        doc[len++] = '}';
+        jv *parsed = json_parse(doc, (size_t)len);
+        assert(parsed != NULL);
+        jv_free(parsed);
+    }
+    schema_free(map_schema);
+    jv_free(map_json);
+
+    // the generic machine, same shape
+    {
+        jsonv v; jsonv_init(&v);
+        char doc[1024];
+        int len = 0;
+        doc[len++] = '{';
+        for (int i = 0; i < JSON_KEY_SEEN_MAX; i++)
+            len += snprintf(doc + len, sizeof(doc) - (size_t)len,
+                            "%s\"k%02d\":%d", i ? "," : "", i, i);
+        assert(jsonv_feed(&v, doc, len));
+        assert(!jsonv_feed(&v, ",", 1));
+        assert(jsonv_feed(&v, "}", 1));
+        assert(v.done);
+    }
+    // a nested object opened AT capacity (the last recorded key's value)
+    // refuses its first key but still closes empty — bounded, not wedged
+    {
+        jsonv v; jsonv_init(&v);
+        char doc[1024];
+        int len = 0;
+        doc[len++] = '{';
+        for (int i = 0; i < JSON_KEY_SEEN_MAX - 1; i++)
+            len += snprintf(doc + len, sizeof(doc) - (size_t)len,
+                            "%s\"k%02d\":%d", i ? "," : "", i, i);
+        len += snprintf(doc + len, sizeof(doc) - (size_t)len,
+                        ",\"last\":{");   // key 24 recorded, guard now full
+        assert(jsonv_feed(&v, doc, len));
+        assert(!jsonv_feed(&v, "\"", 1)); // inner first key untrackable
+        assert(jsonv_feed(&v, "}}", 2));  // inner and outer still close
+        assert(v.done);
+    }
+}
+
 // The validator must never complete a number spelling json_parse refuses:
 // the caller was promised a document this program reads back, and strtod's
 // range refusals (overflow AND underflow — both ERANGE) are part of the
@@ -2687,6 +2757,7 @@ int main(void) {
     test_schema_number_close_rescues_an_out_of_range_prefix();
     test_jsonv_utf8_matches_parser();
     test_duplicate_keys_match_parser();
+    test_key_guard_capacity_fails_closed();
     test_schema_number_matches_parser();
     test_schema_number_bounds_are_enforced();
     test_schema_number_bounds_across_frames();

@@ -2765,6 +2765,11 @@ static int feed_byte(sval *v, uint8_t c) {
         }
         if (c != '"') return -1;
         if (n->kind == SN_MAP) {
+            // FAIL CLOSED at guard capacity: this is P_OBJ_KEY1 whenever the
+            // guard can be full (the comma path above refuses first), and
+            // `}` is legal at KEY1, so refusing the key keeps a closeable
+            // empty map instead of an untracked key
+            if (v->n_seen >= MAP_SEEN_MAX) return -1;
             f->sub = 0;
             f->lit_pos = 0;
             f->num_abs = json_key_hash_init(); // see sframe.num_abs
@@ -2867,6 +2872,11 @@ static int feed_byte(sval *v, uint8_t c) {
         if (c == ',') {
             if (n->kind == SN_OBJ &&
                 (f->idx >= n->n_props || !key_candidates(n, f->idx))) return -1;
+            // FAIL CLOSED at guard capacity: a comma the guard could not
+            // track would reopen the duplicate hole the guard exists to
+            // close, so the map cannot grow past it — but `}` stays legal
+            // here, so the model is never wedged, only bounded.
+            if (n->kind == SN_MAP && v->n_seen >= MAP_SEEN_MAX) return -1;
             f->phase = P_OBJ_KEY;
             return 0;
         }

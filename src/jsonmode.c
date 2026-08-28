@@ -240,6 +240,10 @@ static bool feed_byte(jsonv *v, uint8_t c, bool *reconsume) {
     case S_KEY_OR_END:
         if (is_ws(c)) return true;
         if (c == '"') {
+            // FAIL CLOSED at guard capacity: an untracked key would reopen
+            // the duplicate hole; `}` stays legal here, so refusing the key
+            // leaves a closeable empty object rather than a wedge
+            if (v->kseen_n >= JSON_KEY_SEEN_MAX) return false;
             v->st = S_KEY; v->sub = 0;
             v->khash = json_key_hash_init();
             return true;
@@ -331,7 +335,13 @@ static bool feed_byte(jsonv *v, uint8_t c, bool *reconsume) {
     case S_AFTER: {
         if (is_ws(c)) return true;
         uint8_t top = v->depth > 0 ? v->stack[v->depth - 1] : 0;
-        if (c == ',' && top == 'O') { v->st = S_KEY_EXPECT; return true; }
+        if (c == ',' && top == 'O') {
+            // FAIL CLOSED at guard capacity, at the comma rather than the
+            // key: after a comma the grammar requires a key, so refusing
+            // there would wedge — here `}` remains legal
+            if (v->kseen_n >= JSON_KEY_SEEN_MAX) return false;
+            v->st = S_KEY_EXPECT; return true;
+        }
         if (c == ',' && top == 'A') { v->st = S_VALUE; return true; }
         if (c == '}' && top == 'O') {
             drop_keys(v, v->depth);
