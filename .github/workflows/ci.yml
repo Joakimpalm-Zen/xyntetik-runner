@@ -728,6 +728,50 @@ jobs:
             tests/conformance/out/
             tests/torture/out/
 
+  # The same conformance suite against the ASan+UBSan binary (make debug).
+  # The plain-build suite cannot be trusted to surface undefined behavior:
+  # the v0.4.0 release gate caught an out-of-bounds read that SIGBUSed the
+  # -O3 server on macOS while this Ubuntu suite stayed green on benign
+  # garbage — under UBSan the same read is flagged on any platform, and
+  # -fno-sanitize-recover turns it into a dead server the suite cannot miss.
+  # Scope, stated plainly: this leg gates UB and memory corruption on the
+  # API surface. Leak detection is off (the harness kills servers, so exit
+  # paths never run to completion), and quantize.o links uninstrumented by
+  # the debug recipe's design (the CLI quantizer is not on this surface).
+  conformance-sanitized:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: build sanitized runner
+        run: make debug
+      - name: make test model
+        run: python3 scripts/make-test-model.py test.gguf
+      - name: install pytest
+        run: |
+          python3 -m venv .venv
+          .venv/bin/python -m pip install --quiet pytest
+      - name: agent-protocol conformance harness (sanitized)
+        env:
+          ASAN_OPTIONS: detect_leaks=0
+          UBSAN_OPTIONS: print_stacktrace=1
+          RUNNER_EXE: ./runner-debug
+          RUNNER_CONFORMANCE_OUT: tests/conformance/out-sanitized
+        run: PYTHON=.venv/bin/python ./scripts/conformance.sh
+      - name: conformance report
+        if: always()
+        run: |
+          test -f tests/conformance/out-sanitized/report.json
+          python3 -c "
+          import json
+          d = json.load(open('tests/conformance/out-sanitized/report.json'))
+          print(json.dumps(d['totals'], indent=2))
+          "
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: conformance-sanitized-report
+          path: tests/conformance/out-sanitized/
+
   # Real SDK/gateway/framework parsers catch integration assumptions that raw
   # JSON fixtures cannot. Dependencies are pinned and isolated from Runner.
   consumer-compatibility:
