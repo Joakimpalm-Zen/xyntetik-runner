@@ -1,5 +1,41 @@
 """Legacy Completions logprobs used by reference-differential tooling."""
 
+import os
+
+import pytest
+
+from harness import Client, RunnerServer, find_runner
+
+
+ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+
+
+@pytest.fixture(scope="module")
+def completion_validation_client(report):
+    with RunnerServer(find_runner(ROOT), os.path.join(ROOT, "test.gguf"),
+                      ctx=64, parallel=1,
+                      extra_args=["--gpu", "off"]) as server:
+        yield Client(server, report)
+
+
+def test_text_completion_rejects_unsupported_echo(completion_validation_client):
+    completion_validation_client.expect_400({
+        "prompt": "hello",
+        "max_tokens": 1,
+        "echo": True,
+    }, name="completion-echo-unsupported", contains="echo",
+        path="/v1/completions")
+
+
+def test_text_completion_rejects_unsupported_prompt_logprobs(
+        completion_validation_client):
+    completion_validation_client.expect_400({
+        "prompt": "hello",
+        "max_tokens": 1,
+        "prompt_logprobs": 1,
+    }, name="completion-prompt-logprobs-unsupported",
+        contains="prompt_logprobs", path="/v1/completions")
+
 
 def test_text_completion_returns_requested_logprobs(client):
     response = client.completion({
@@ -7,6 +43,8 @@ def test_text_completion_returns_requested_logprobs(client):
         "max_tokens": 3,
         "temperature": 0,
         "logprobs": 5,
+        "echo": False,
+        "prompt_logprobs": None,
     }, name="completion_logprobs")
 
     choice = response.json["choices"][0]

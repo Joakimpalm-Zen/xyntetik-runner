@@ -953,6 +953,10 @@ non-loopback authorities.
 
 `GET /unload` is deliberately refused with `405`; unloading is a state change.
 
+Legacy Completions accepts neutral `echo:false` and `prompt_logprobs:null`, but
+rejects `echo:true` and non-null `prompt_logprobs` with HTTP 400 until Runner can
+return the requested prompt-side output. These controls are never ignored.
+
 Buffered generation responses include `runner_telemetry` with prompt tokens
 reused/evaluated, generation timing, paging counters, and structured or
 speculative mode flags. `speculative` reports whether that request used the

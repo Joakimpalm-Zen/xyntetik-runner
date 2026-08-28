@@ -1307,6 +1307,10 @@ static const char *unsupported_completion_field(jv *req) {
         return "presence_penalty";
     v = jv_get(req, "logit_bias");
     if (!absent(v) && (v->type != J_OBJ || v->n != 0)) return "logit_bias";
+    v = jv_get(req, "echo");
+    if (!absent(v) && (v->type != J_BOOL || v->b)) return "echo";
+    v = jv_get(req, "prompt_logprobs");
+    if (!absent(v)) return "prompt_logprobs";
     // `user` is advisory rather than an inference control, but recognizing it
     // still means rejecting malformed values instead of accepting any JSON.
     v = jv_get(req, "user");
