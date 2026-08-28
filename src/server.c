@@ -154,18 +154,49 @@ static bool validate_chat_messages(const jv *msgs, char *err, size_t err_cap) {
                      "assistant or tool", i);
             return false;
         }
-        jv *content = jv_get(msg, "content");
-        bool content_shape = content &&
-                             (content->type == J_STR || content->type == J_ARR);
         jv *calls = jv_get(msg, "tool_calls");
         const char *reason = jv_str(jv_get(msg, "reasoning_content"), NULL);
         bool assistant_payload = !strcmp(role, "assistant") &&
             ((calls && calls->type == J_ARR && calls->n > 0) ||
              (reason && reason[0]));
+        jv *content = jv_get(msg, "content");
+        bool content_shape = content &&
+                             (content->type == J_STR || content->type == J_ARR);
         if (!content_shape && !assistant_payload) {
             snprintf(err, err_cap,
                      "messages[%d].content must be a string or an array", i);
             return false;
+        }
+        if (content && content->type == J_ARR) {
+            if (content->n == 0 && !assistant_payload) {
+                snprintf(err, err_cap,
+                         "messages[%d].content must not be an empty array", i);
+                return false;
+            }
+            for (int k = 0; k < content->n; k++) {
+                jv *part = content->items[k];
+                const char *type = part && part->type == J_OBJ
+                    ? jv_str(jv_get(part, "type"), NULL) : NULL;
+                if (!type) {
+                    snprintf(err, err_cap,
+                             "messages[%d].content[%d] must be a typed object",
+                             i, k);
+                    return false;
+                }
+                if (strcmp(type, "text")) {
+                    snprintf(err, err_cap,
+                             "messages[%d].content[%d] type %s is unsupported; "
+                             "only text is accepted", i, k, type);
+                    return false;
+                }
+                jv *text = jv_get(part, "text");
+                if (!text || text->type != J_STR) {
+                    snprintf(err, err_cap,
+                             "messages[%d].content[%d].text must be a string",
+                             i, k);
+                    return false;
+                }
+            }
         }
     }
     return true;

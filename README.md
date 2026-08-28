@@ -955,9 +955,12 @@ non-loopback authorities.
 
 Chat history roles are `system`, `developer`, `user`, `assistant`, and `tool`;
 `developer` is rendered as a system instruction on local templates. Every turn
-must be an object with an explicit role and string or array-shaped content
+must be an object with an explicit role and string or text-part-array content
 (assistant tool-call/reasoning turns may omit visible content). Malformed turns
 are rejected with HTTP 400 rather than defaulted or removed from the prompt.
+Chat Completions and Responses are text-only: image, file, and other
+unrenderable content parts receive HTTP 400 rather than being discarded while
+adjacent text is processed.
 
 Legacy Completions accepts neutral `echo:false` and `prompt_logprobs:null`, but
 rejects `echo:true` and non-null `prompt_logprobs` with HTTP 400 until Runner can

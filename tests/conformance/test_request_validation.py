@@ -208,6 +208,16 @@ def test_malformed_chat_messages_are_rejected(client, message, label, contains):
         name=f"bad-message-{label}", contains=contains)
 
 
+def test_chat_rejects_image_parts_instead_of_answering_text_only(client):
+    client.expect_400({
+        "messages": [{"role": "user", "content": [
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,AA=="}},
+            {"type": "text", "text": "describe this image"},
+        ]}],
+        "max_tokens": 4,
+    }, name="chat-image-part", contains="image_url")
+
+
 def _chat_body(extra):
     """A chat body with a raw JSON fragment spliced in, for values json.dumps
     cannot emit (bare Infinity, overflowing exponents)."""

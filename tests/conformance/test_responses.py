@@ -229,6 +229,21 @@ def test_stateful_features_are_refused(client, field, value, explains):
                             field=field, message=r.json["error"]["message"])
 
 
+@pytest.mark.parametrize("part", [
+    {"type": "input_image", "image_url": "data:image/png;base64,AA=="},
+    {"type": "input_file", "file_id": "file_123"},
+])
+def test_unrenderable_responses_parts_are_refused(client, part):
+    """A text-only runtime must not remove a supplied image or file and answer
+    only the adjacent text under HTTP 200."""
+    client.expect_400({"input": [{
+        "type": "message", "role": "user", "content": [
+            part, {"type": "input_text", "text": "use the attachment"},
+        ],
+    }]}, name=f"responses-{part['type']}", contains=part["type"],
+        path="/v1/responses")
+
+
 def test_supported_stateless_forms_are_accepted(client):
     """The half of those fields that this runtime *can* honour must not be
     refused: store:false and truncation:"disabled" describe what it already

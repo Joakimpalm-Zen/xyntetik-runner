@@ -335,6 +335,43 @@ static bool responses_reject_stateful(sock_t fd, jv *req) {
     return false;
 }
 
+// Runner is text-only. Validate structured content before translating it so an
+// image/file is never removed while adjacent text is answered successfully.
+static bool responses_validate_content_parts(jv *input, char *err,
+                                             size_t err_cap) {
+    if (!input || input->type != J_ARR) return true;
+    for (int i = 0; i < input->n; i++) {
+        jv *item = input->items[i];
+        if (!item || item->type != J_OBJ) continue;
+        jv *content = jv_get(item, "content");
+        if (!content || content->type != J_ARR) continue;
+        for (int k = 0; k < content->n; k++) {
+            jv *part = content->items[k];
+            const char *type = part && part->type == J_OBJ
+                ? jv_str(jv_get(part, "type"), NULL) : NULL;
+            if (!type) {
+                snprintf(err, err_cap,
+                         "input[%d].content[%d] must be a typed object", i, k);
+                return false;
+            }
+            if (strcmp(type, "input_text") && strcmp(type, "output_text") &&
+                strcmp(type, "text")) {
+                snprintf(err, err_cap,
+                         "input[%d].content[%d] type %s is unsupported; "
+                         "Runner accepts text input only", i, k, type);
+                return false;
+            }
+            jv *text = jv_get(part, "text");
+            if (!text || text->type != J_STR) {
+                snprintf(err, err_cap,
+                         "input[%d].content[%d].text must be a string", i, k);
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
 void handle_responses(slot_t *s, sock_t fd, jv *req) {
     if (responses_reject_stateful(fd, req)) return;
 
@@ -345,6 +382,11 @@ void handle_responses(slot_t *s, sock_t fd, jv *req) {
     }
     if (input->type != J_STR && input->type != J_ARR) {
         send_error(fd, 400, "input must be a string or an array of items");
+        return;
+    }
+    char ierr[192];
+    if (!responses_validate_content_parts(input, ierr, sizeof(ierr))) {
+        send_error(fd, 400, ierr);
         return;
     }
     // reasoning is accepted and echoed back rather than rejected: `effort` and
