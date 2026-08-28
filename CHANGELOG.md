@@ -6,7 +6,7 @@ change between releases (the `-alpha` suffix was retired at v0.2.0 — the 0.x
 version already says what it needs to). Entries below the rename keep the
 names that were true when they were written.
 
-## Unreleased
+## v0.4.0 - 2026-08-28
 
 - **Transcript metadata is always valid JSON.** Runner, compiler, OS,
   architecture and GPU-device strings now use the same JSON escaping path as
@@ -88,6 +88,97 @@ names that were true when they were written.
   overriding CLI flags. The demo that matters: forge a record's token
   and recompute its chain hash, and the replay still catches it - you
   can forge the hash, not the model.
+
+- **Legacy Completions rejects prompt controls it cannot honor.** A client
+  requesting `echo:true` or a non-null `prompt_logprobs` previously received
+  HTTP 200 and a response missing the requested prompt-side data, so scoring
+  tooling aligned against an answer that was silently incomplete. Both now
+  return a parameter-naming 400 until Runner can produce the prompt-side
+  output; the neutral SDK forms (`echo:false`, `prompt_logprobs:null`) are
+  still accepted. These controls are never ignored.
+- **gemma4 tool calling falls back instead of refusing.** A `tools[]` schema
+  the native gemma4 syntax cannot constrain (an untyped parameter, for
+  example) previously returned 400 while the same request worked on gpt-oss.
+  The native compiler now runs as a probe before rendering; an
+  unconstrainable request keeps strict mode on the generic JSON envelope,
+  prompt and grammar switching together, and the downgrade is announced on
+  stderr, never silent.
+- **Constrained output now agrees with its own schema.** Fixes across the
+  schema engine, each previously able to emit a 200 whose document did not
+  parse or did not match the request: `{"type":"integer"}` accepted leading
+  zeros (`0999999` went out as JSON the runner's own parser refuses);
+  `minimum` and `exclusiveMinimum` replaced instead of intersecting each
+  other; `minItems`/`minLength` closer fills could eat the buffer and drop
+  the closing bracket; closing inside a string escape overran `maxLength` by
+  one; raw UTF-8 string lengths counted a byte per length unit while escapes
+  counted code points, and a lead byte admitted at the boundary stranded its
+  continuation bytes; a free-keyed object could emit the same key twice.
+  Required whitespace (an exact `"\n"` position) also reported as content, so
+  every whitespace-only token was masked while whitespace was the only legal
+  byte.
+- **Quantize can no longer report success over a file it did not change.**
+  A `--type-plan` with a misspelled container key, a non-array `rules`, or an
+  empty plan loaded as "keep everything", exited 0, and wrote the input back
+  while the caller believed they had built a selective-precision artifact;
+  the container is now as strict as the rules, and a plan selecting nothing
+  is refused by name. `--quant` alongside `--type-plan` (never read) is now
+  refused. Same-width declines (`q4_0`->`q4_K`, `q5_0`->`q5_K`) are counted
+  and reported instead of silent. `--merge-lora` no longer lets a crafted
+  adapter tensor name land two tensors in one (projection, side) slot.
+  Quantizing from a split GGUF no longer copies the source's `split.*` keys
+  into the single-file output (which made the artifact unreadable everywhere,
+  ours and llama.cpp alike). Outputs are forced to stable storage before the
+  rename that publishes them. A crafted 4-D per-expert tensor can no longer
+  be silently under-written to a zero-padded stub.
+- **Four hostile-GGUF gaps closed on the load path.** The special-token sort
+  was quadratic in a count the file controls (minutes of parked slot at
+  vocabulary sizes a real download can carry; now qsort with a stable-order
+  tiebreak). qwen35's Gated DeltaNet gate gains the range ceilings its
+  sibling gates always had (signed overflow made a shape check vacuous). An
+  `expert_shared_feed_forward_length` of `0x80000000` read as INT_MIN and
+  silently dropped the always-on shared expert, the model answering as a
+  different architecture; it is now refused. `general.architecture` and
+  string-array elements are no longer trusted raw: refusal messages print a
+  bounded printable copy instead of attacker bytes, and embedded NULs in
+  tokenizer token arrays are rejected.
+- **A recurrent model never reuses a truncated prefix snapshot.** The prefix
+  cache's half-budget clamp stored the leading tokens of an oversized entry,
+  which is valid for attention rows but pairs them with a recurrent fold
+  state the prompt does not reach until later; a qwen35 / granite-hybrid /
+  nemotron-h server with prompts large against `RUNNER_PREFIX_CACHE_MB`
+  returned wrong tokens with nothing on the wire saying so. The clamp now
+  drops the entry instead; storing nothing costs a prefill.
+- **Server ledger and error-path honesty.** A VRAM claim that cannot be
+  recorded is no longer admitted (an unwritten entry was invisible bytes
+  every later decision over-committed). `/v1/models` escape buffers are
+  sized to the true worst case instead of truncating operator names
+  mid-escape. Candidate ordering is total under NaN logits instead of
+  qsort undefined behavior.
+- **Python client: unverifiable startup leases age out; stream timeouts
+  split.** An ownership claim that can be neither proven nor disproven is
+  honored only while its lease file is fresh and taken over after
+  `RUNNER_UNVERIFIED_LEASE_TTL` (default 900 s); verifiable ownership never
+  ages. Stream timeouts split first-byte from stall on content rather than
+  connection, so the long legitimate silence of a big prompt's prefill
+  (after the role-only delta, before the first content frame) runs on the
+  generous first-byte bound and the documented stall window governs after
+  content. The lease probe also pins `LC_ALL` and `TZ`, so a shell in
+  another timezone or locale no longer reads a live owner's start time as a
+  pid reuse and steals its lease.
+- **Python client: opt-in update check.** Notify-only and never implicit: an
+  explicit opt-in asks GitHub for the latest release tag and prints a notice;
+  nothing is downloaded and nothing runs on by default.
+- **Published-claim scripts fail loudly and measure what they publish.**
+  `idle_coexistence` stamped time-to-first-token on the role-only delta
+  (connection setup, near zero for any model) and now stamps the first
+  content frame, measures the process tree (ollama and vLLM fork their
+  weight-holder), and keeps server logs out of the report JSON.
+  `competitor-freshness` exited 0 when every registry lookup failed; a run
+  that compared nothing now exits 2. `make-test-model.py` no longer turns a
+  misspelled option into the output filename. The release gate's
+  stale-version scan matched nothing after v0.2.0 retired the `-alpha`
+  suffix (three of its checks were vacuous) and now matches the spellings
+  this project actually uses.
 
 ## v0.3.0 — 2026-08-25
 
