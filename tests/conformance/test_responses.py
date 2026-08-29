@@ -276,6 +276,8 @@ def test_supported_stateless_forms_are_accepted(client):
      "tool_choice"),
     ({"input": "hi", "tools": [{"type": "function", "name": "f"}],
       "parallel_tool_calls": True}, "parallel"),
+    ({"input": [{"type": "function_call_output", "call_id": "call_1"}]},
+     "output"),
 ])
 def test_malformed_requests_are_rejected(client, payload, contains):
     client.expect_400(payload, name="responses-malformed", contains=contains,

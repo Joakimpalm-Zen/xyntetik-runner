@@ -410,6 +410,15 @@ static bool responses_validate_content_parts(jv *input, char *err,
                          "JSON object", i);
                 return false;
             }
+        } else if (!jv_get(item, "output")) {
+            // An empty string is a real tool result; a missing member is not.
+            // responses_item_text used to collapse both to the same empty
+            // tool turn, so malformed agent history looked successfully
+            // accepted while giving the model an event that never happened.
+            snprintf(err, err_cap,
+                     "input[%d].output is required for function_call_output",
+                     i);
+            return false;
         }
         if (!content || content->type != J_ARR) continue;
         for (int k = 0; k < content->n; k++) {
