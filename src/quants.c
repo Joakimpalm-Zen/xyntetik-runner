@@ -147,6 +147,9 @@ const char *ggml_type_name(int type) {
         case T_IQ3_XXS: return "IQ3_XXS"; case T_IQ3_S: return "IQ3_S";
         case T_IQ1_S: return "IQ1_S"; case T_IQ1_M: return "IQ1_M";
         case T_MXFP4: return "MXFP4";
+        // named but not decoded: the refusal names the format and the reader
+        // learns "runner lacks NVFP4", not "my file is garbage"
+        case T_NVFP4: return "NVFP4";
         default: return "?";
     }
 }

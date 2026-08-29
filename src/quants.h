@@ -21,6 +21,10 @@ enum ggml_type {
     T_IQ1_M = 29,
     T_BF16 = 30,
     T_MXFP4 = 39,   // OCP microscaling FP4 (E2M1 codes + per-block E8M0 scale); gpt-oss
+    T_NVFP4 = 40,   // NVIDIA FP4 (E2M1 codes + per-block UE4M3 scale, 16/block);
+                    // RECOGNIZED, NOT DECODED: named so a refusal says NVFP4
+                    // instead of "?" (first seen in the wild on a DGX Spark,
+                    // 2026-08-29; upstream llama.cpp ggml type 40)
 };
 int         ggml_block_size(int type);   // elements per block
 size_t      ggml_type_size(int type);    // bytes per block
