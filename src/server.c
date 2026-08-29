@@ -271,7 +271,7 @@ static const char *chat_role(jv *msg) {
     return !strcmp(role, "developer") ? "system" : role;
 }
 
-// The function a tool turn is reporting for, resolved for HARMONY.
+// The function a tool turn is reporting for, resolved without inventing one.
 //
 // template.c's tool_result_name() has a last resort this surface cannot use:
 // with no `name` and an unmatched `tool_call_id` it hands back the ID, and
@@ -279,7 +279,7 @@ static const char *chat_role(jv *msg) {
 // a function name invented from an identifier and declared nowhere. So the
 // lookup is done here without that step, and an unresolved result is treated
 // as unresolved rather than named after its id.
-static const char *harmony_result_name(const jv *msgs, int message_index) {
+static const char *chat_result_name(const jv *msgs, int message_index) {
     jv *msg = msgs->items[message_index];
     const char *name = jv_str(jv_get(msg, "name"), NULL);
     if (name && name[0]) return name;
@@ -452,21 +452,13 @@ static void handle_chat(slot_t *s, sock_t fd, jv *req) {
         if (i == 0 && ornith_merged_system) continue;
         const char *role = chat_role(msgs->items[i]);
         const char *turn_name = NULL;
-        // gemma4 names the function in its <|tool_response> block
-        // (`response:NAME{...}`) exactly as muse names its tool turn, so the
-        // result needs the same resolution. Without it every replayed result
-        // reported for the template's own `'unknown'` fallback.
-        if ((s->tmpl == TMPL_MUSE || is_gemma4(s->tmpl)) &&
-            !strcmp(role, "tool"))
-            turn_name = tool_result_name(msgs, i);
-        if (s->tmpl == TMPL_HARMONY && !strcmp(role, "tool")) {
-            turn_name = harmony_result_name(msgs, i);
+        if (!strcmp(role, "tool")) {
+            turn_name = chat_result_name(msgs, i);
             if (!turn_name) turn_name = sole_tool_name(tools);
-            // Harmony authors a tool turn BY the function that ran, so a
-            // result nothing can name has no on-protocol rendering: it would
-            // go out either as a turn shape the model has never seen or under
-            // an invented function name, and either way the caller is told
-            // 200. Refused instead, naming the field that would fix it.
+            // A result that matches no prior call cannot be assigned safely
+            // when several functions exist. Gemma4 and Muse put the resolved
+            // name on the turn header; Harmony authors the turn by it; other
+            // families still need the call/result relationship to be honest.
             if (!turn_name) {
                 const char *id = jv_str(jv_get(msgs->items[i], "tool_call_id"),
                                         NULL);

@@ -507,6 +507,27 @@ static void test_chat_unmatched_id_two_tools(void) {
     ta_expect_refused("chat, unmatched tool_call_id, 2 tools");
 }
 
+static void test_chat_unmatched_id_is_refused_by_named_result_templates(void) {
+    static const struct { int tmpl; const char *name; } cases[] = {
+        { TMPL_CHATML, "chatml" },
+        { TMPL_GEMMA4, "gemma4" },
+        { TMPL_MUSE, "muse" },
+    };
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        ta_tmpl = cases[i].tmpl;
+        ta_run(handle_chat,
+               "{\"model\":\"m\",\"messages\":["
+               "{\"role\":\"user\",\"content\":\"weather?\"},"
+               "{\"role\":\"tool\",\"tool_call_id\":\"" TA_LONG_CALL_ID "\","
+               "\"content\":\"sunny, 21C\"}]," TA_TWO_TOOLS_CHAT "}");
+        char what[160];
+        snprintf(what, sizeof(what),
+                 "chat, unmatched tool_call_id, 2 tools, %s", cases[i].name);
+        ta_expect_refused(what);
+    }
+    ta_tmpl = TMPL_HARMONY;
+}
+
 static void test_chat_unmatched_id_one_tool(void) {
     ta_run(handle_chat,
            "{\"model\":\"m\",\"messages\":["
@@ -973,6 +994,7 @@ int main(void) {
     test_messages_resolvable_is_unchanged();
     test_messages_refuses_nested_image_in_tool_result();
     test_chat_unmatched_id_two_tools();
+    test_chat_unmatched_id_is_refused_by_named_result_templates();
     test_chat_unmatched_id_one_tool();
     test_chat_no_id_at_all();
     test_chat_resolvable_is_unchanged();
