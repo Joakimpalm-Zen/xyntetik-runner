@@ -675,7 +675,7 @@ static char *messages_prompt(slot_t *s, sock_t fd, jv *req, tool_envelope *env,
     if (rc < 0) {
         jv_free(tools);
         jv_free(choice);
-        send_error(fd, 400, terr);
+        send_error(fd, rc == TOOL_ENVELOPE_OOM ? 500 : 400, terr);
         return NULL;
     }
     *strict = rc == 1;

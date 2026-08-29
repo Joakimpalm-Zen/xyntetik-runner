@@ -253,11 +253,17 @@ typedef struct {
     char *named;          // owned named-tool choice, when kind == TCH_NAMED
 } tool_envelope;
 
+enum tool_envelope_result {
+    TOOL_ENVELOPE_OOM     = -2,
+    TOOL_ENVELOPE_INVALID = -1,
+    TOOL_ENVELOPE_NONE    = 0,
+    TOOL_ENVELOPE_READY   = 1,
+};
+
 // Build the envelope for one request. `final_schema` is the caller's
-// response_format schema, or NULL for a plain text answer. Returns
-//    1  strict mode applies; free with tool_envelope_free
-//    0  strict mode does not apply (no tools, or tool_choice "none")
-//   -1  malformed tools / tool_choice; err holds the client-facing reason
+// response_format schema, or NULL for a plain text answer. Returns one of
+// enum tool_envelope_result; a READY envelope must be freed with
+// tool_envelope_free. INVALID is client input, while OOM is a server fault.
 int  tool_envelope_build(struct jv *tools, struct jv *tool_choice,
                          struct jv *final_schema, tool_envelope *out,
                          char *err, int errcap);

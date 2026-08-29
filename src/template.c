@@ -2526,40 +2526,45 @@ int tool_envelope_build_ex(jv *tools, jv *choice, jv *final_schema,
 
     const char *named = NULL;
     int kind = tool_choice_kind(choice, &named, err, errcap);
-    if (kind < 0) return -1;
+    if (kind < 0) return TOOL_ENVELOPE_INVALID;
 
     bool have_tools = tools && tools->type == J_ARR && tools->n > 0;
     if (!have_tools && tools && tools->type != J_ARR && tools->type != J_NULL) {
         snprintf(err, errcap, "tools must be an array");
-        return -1;
+        return TOOL_ENVELOPE_INVALID;
     }
     if (!have_tools) {
         // asking for a tool call with nothing to call is a contradiction, not
         // a request to answer normally
         if (kind == TCH_REQUIRED || kind == TCH_NAMED) {
             snprintf(err, errcap, "tool_choice requires a non-empty tools array");
-            return -1;
+            return TOOL_ENVELOPE_INVALID;
         }
-        return 0;
+        return TOOL_ENVELOPE_NONE;
     }
-    if (kind == TCH_NONE) return 0;   // not a union this engine can express
+    if (kind == TCH_NONE)
+        return TOOL_ENVELOPE_NONE;   // not a union this engine can express
     // schema.c caps a discriminated union at 60 branches; the final branch
     // takes one of them under "auto"
     if (tools->n > 59) {
         snprintf(err, errcap, "too many tools (max 59)");
-        return -1;
+        return TOOL_ENVELOPE_INVALID;
     }
 
     out->kind = kind;
     if (kind == TCH_NAMED) {
         out->named = strdup(named);
-        if (!out->named) { snprintf(err, errcap, "out of memory building tool choice"); return -1; }
+        if (!out->named) {
+            snprintf(err, errcap, "out of memory building tool choice");
+            return TOOL_ENVELOPE_OOM;
+        }
     }
     out->final_is_text = final_schema == NULL;
     out->parallel = parallel;
     out->max_calls = parallel ? PARALLEL_MAX_CALLS : 1;
 
     sbuf schema = { 0 }, turn = { 0 };
+    int failure = TOOL_ENVELOPE_INVALID;
     if (parallel)
         // One uniform array: a direct answer is a single-element array
         // holding the final branch, so the model never has to choose between
@@ -2650,17 +2655,18 @@ int tool_envelope_build_ex(jv *tools, jv *choice, jv *final_schema,
 
     if (schema.failed || turn.failed || !schema.s || !turn.s) {
         snprintf(err, errcap, "out of memory building the tool envelope");
+        failure = TOOL_ENVELOPE_OOM;
         goto bad;
     }
     out->schema_src = schema.s;
     out->system_turn = turn.s;
-    return 1;
+    return TOOL_ENVELOPE_READY;
 bad:
     free(schema.s);
     free(turn.s);
     free(out->named);
     memset(out, 0, sizeof(*out));
-    return -1;
+    return failure;
 }
 
 void tool_envelope_free(tool_envelope *e) {

@@ -546,7 +546,7 @@ void handle_responses(slot_t *s, sock_t fd, jv *req) {
     if (rc < 0) {
         jv_free(tools);
         jv_free(choice_owned);
-        send_error(fd, 400, terr);
+        send_error(fd, rc == TOOL_ENVELOPE_OOM ? 500 : 400, terr);
         return;
     }
     bool strict = rc == 1;

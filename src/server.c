@@ -425,7 +425,10 @@ static void handle_chat(slot_t *s, sock_t fd, jv *req) {
     int rc = tool_envelope_build_ex(tools, jv_get(req, "tool_choice"),
                                     request_schema(req), parallel, &env,
                                     terr, sizeof(terr));
-    if (rc < 0) { send_error(fd, 400, terr); return; }
+    if (rc < 0) {
+        send_error(fd, rc == TOOL_ENVELOPE_OOM ? 500 : 400, terr);
+        return;
+    }
     // Ornith is specifically trained on qwen3_xml. Keep its native protocol
     // instead of forcing the model into runner's generic JSON envelope.
     bool strict = rc == 1 && s->tmpl != TMPL_ORNITH;

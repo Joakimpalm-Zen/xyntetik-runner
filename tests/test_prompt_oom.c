@@ -196,23 +196,6 @@ static void po_run(void (*route)(slot_t *, sock_t, jv *), int tmpl,
     }
 }
 
-// One failure found by this sweep lives in a module it drives but does not own,
-// and is recorded here rather than silently tolerated: pinning today's
-// behaviour is what stops it widening.
-//
-//   * tool_envelope_build() reports "out of memory building the tool envelope"
-//     through the same rc < 0 that a malformed declaration uses, so the three
-//     call sites cannot tell them apart and answer 400 for both.
-//
-// It needs a change in a module outside this file's reach. Everything else is
-// a hard assertion.
-static bool known_gap(const char *label, const char *missing) {
-    if (!missing &&
-        strstr(po_message, "out of memory building the tool envelope"))
-        return true;   // tool_envelope_build's undifferentiated rc, above
-    return false;
-}
-
 // One injected failure, checked against the only two acceptable outcomes.
 static void check_one(const char *label, long k, long total) {
     char what[256];
@@ -220,7 +203,7 @@ static void check_one(const char *label, long k, long total) {
         const char *missing = !strstr(po_prompt, SYS_MARK) ? SYS_MARK
                             : !strstr(po_prompt, USR_MARK) ? USR_MARK
                             : !strstr(po_prompt, RES_MARK) ? RES_MARK : NULL;
-        if (missing && !known_gap(label, missing)) {
+        if (missing) {
             snprintf(what, sizeof what,
                      "%s: allocation %ld of %ld answered 200 with %s missing "
                      "from the prompt", label, k, total, missing);
@@ -247,7 +230,7 @@ static void check_one(const char *label, long k, long total) {
     // An allocation failure is the server's problem. A refusal that SAYS it ran
     // out of memory and stamps 400 invalid_request_error on it tells the caller
     // to fix a request that was never wrong.
-    if (strstr(po_message, "out of memory") && !known_gap(label, NULL)) {
+    if (strstr(po_message, "out of memory")) {
         snprintf(what, sizeof what,
                  "%s: allocation %ld of %ld answered %d for \"%.60s\", "
                  "wanted a 5xx", label, k, total, po_status, po_message);
