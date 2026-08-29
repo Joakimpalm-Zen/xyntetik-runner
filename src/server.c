@@ -1109,6 +1109,14 @@ static void handle_conn(slot_t *s, sock_t fd) {
         if (!req) {
             send_error(fd, 400, "invalid JSON body");
         } else {
+            jv *model = jv_get(req, "model");
+            if (model && model->type != J_NULL && model->type != J_STR) {
+                send_error_detail(fd, 400, "model must be a string", "model",
+                                  "invalid_type");
+                jv_free(req);
+                free(body);
+                return;
+            }
             bool has_keep_alive = false;
             int keep_alive = 0;
             if (!request_keep_alive(req, &has_keep_alive, &keep_alive)) {

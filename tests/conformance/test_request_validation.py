@@ -332,6 +332,22 @@ def test_unknown_model_is_rejected_on_single_model_server(client):
     assert err["code"] == "model_not_found"
 
 
+@pytest.mark.parametrize(("path", "payload"), [
+    ("/v1/chat/completions", dict(CHAT, model=7)),
+    ("/v1/completions", {"model": True, "prompt": "hi", "max_tokens": 4}),
+    ("/v1/embeddings", {"model": {"name": "local"}, "input": "hi"}),
+    ("/v1/responses", {"model": ["local"], "input": "hi",
+                        "max_output_tokens": 4}),
+    ("/v1/messages", {"model": 7, "max_tokens": 4,
+                       "messages": [{"role": "user", "content": "hi"}]}),
+])
+def test_model_selector_must_be_a_string(client, path, payload):
+    """A present model value must never turn into the default model merely
+    because its JSON type cannot be read as a string."""
+    client.expect_400(payload, name=f"bad-model-type-{path.rsplit('/', 1)[-1]}",
+                      contains="model", path=path)
+
+
 def test_context_overflow_is_a_typed_request_error(client):
     payload = dict(CHAT, messages=[{"role": "user", "content": "hello " * 2000}])
     r = client.chat(payload, name="context-overflow")
