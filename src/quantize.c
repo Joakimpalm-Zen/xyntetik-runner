@@ -1548,7 +1548,11 @@ static int quantize_gguf_plan_inner(const char *in_path, const char *out_path, i
     // against the plan. A few names cost nothing and answer it directly; the
     // cap keeps a MoE's hundreds of expert tensors from burying the summary,
     // and the count still reports the true total.
-    #define DECLINE_NAMES 6
+    // enum, not #define: a macro here would leak to the end of the
+    // translation unit for a constant that is meaningful only inside
+    // this function. Same hand-maintained hazard as the seq capacities
+    // in schema.c, just smaller.
+    enum { DECLINE_NAMES = 6 };
     const char *decl_w_name[DECLINE_NAMES]; uint32_t decl_w_type[DECLINE_NAMES];
     const char *decl_s_name[DECLINE_NAMES]; uint32_t decl_s_type[DECLINE_NAMES];
     int n_decl_w = 0, n_decl_s = 0;
