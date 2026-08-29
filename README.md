@@ -599,7 +599,7 @@ flags into unrelated feature sections.
 | `--kv f16\|q8` | KV storage; f16 is default, q8 uses about 53% as much memory and is lossy. |
 | `--mlock` | Ask the OS to wire mapped weights into RAM; failure is non-fatal. |
 | `--moe-prefetch on\|off\|auto` | Prefetch routed expert blocks. Auto enables it only for measured oversubscribed Apple Silicon cases. |
-| `--draft PATH` | Same-vocabulary draft GGUF for speculative decoding in one-shot, chat, or single-model serve mode. |
+| `--draft PATH` | Same-vocabulary draft GGUF for speculative decoding in one-shot, chat, or single-model serve mode. A draft is refused at load on a vocabulary mismatch, a fully GPU-offloaded target, a CUDA-resident recurrent state, or out of memory, and is dropped in swap mode; the run continues without it. In serve mode `GET /v1/capabilities` reports whether the draft is actually `active`, so a harness never measures the fallback as speculative decoding. |
 | `--draft-k N` | Draft tokens per speculative round, default `4`. |
 
 ### Conversion, diagnostics, and integration
@@ -946,7 +946,7 @@ non-loopback authorities.
 | `POST /v1/messages` | Anthropic Messages translation. |
 | `POST /v1/messages/count_tokens` | Token count for the matching Messages request. |
 | `GET /v1/models` | Registered models and current residency. |
-| `GET /v1/capabilities` | Server process ID, active model, sampling preset, and optional Xyntetik agent profile. |
+| `GET /v1/capabilities` | Server process ID, active model, sampling preset, optional Xyntetik agent profile, and the EFFECTIVE execution mode: `slots` (the slot count actually running) and `draft` (`requested`/`active`, plus a `reason` when a requested draft is not running). |
 | `GET /v1/runner/prefix-cache` | Prefix-cache size, limits, and counters. |
 | `POST /v1/runner/prefix-cache/clear` | Release cached prefixes without unloading the model. |
 | `GET /health` | Server and resident-model health, plus this process's `rss_bytes`/`peak_rss_bytes` and cumulative `tokens_prompt`, `tokens_generated`, `generate_seconds`, `batch_steps` and `batch_sequences`. |

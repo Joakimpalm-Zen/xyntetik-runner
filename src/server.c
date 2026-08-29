@@ -912,6 +912,22 @@ static void send_capabilities(sock_t fd) {
     } else {
         sb_lit(&r, "null");
     }
+    // RI-2: the EFFECTIVE execution mode, not the requested one. Several
+    // requested configurations legitimately resolve to a different one and say
+    // so only on stderr, which a benchmark harness cannot read -- so it can
+    // measure the fallback and publish it as the mode it asked for. `slots` is
+    // what the scheduler actually runs, and `draft` separates what was asked
+    // for from what is running.
+    sb_fmt(&r, ",\"slots\":%d,\"draft\":{\"requested\":%s,\"active\":%s",
+           SV.n_slots,
+           SV.draft_requested ? "true" : "false",
+           SV.draft ? "true" : "false");
+    if (SV.draft_requested && !SV.draft && SV.draft_note) {
+        sb_lit(&r, ",\"reason\":\"");
+        sb_esc(&r, SV.draft_note, strlen(SV.draft_note));
+        sb_lit(&r, "\"");
+    }
+    sb_lit(&r, "}");
     sb_fmt(&r, ",\"context\":%d,\"models\":[", context_load());
     if (SV.n_reg > 0) {
         for (int i = 0; i < SV.n_reg; i++) {
@@ -1549,9 +1565,12 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
 
     bool swap_mode = strchr(model_path, '=') != NULL;
     if (ttl < 0) ttl = swap_mode ? 300 : 0; // single-model default: never unload
+    SV.draft_requested = draft_path != NULL;
     if (draft_path && swap_mode) {
         fprintf(stderr, "note: --draft needs a single served model — "
                 "ignoring it in swap mode\n");
+        SV.draft_note = "a draft needs a single served model; ignored in "
+                        "swap mode";
         draft_path = NULL;
     }
 
@@ -1782,6 +1801,9 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
             // a draft the gates rejected at startup stays rejected: only a
             // draft that actually served is worth reloading after /unload
             if (SV.draft) SV.draft_path = draft_path;
+            else if (draft_path)
+                SV.draft_note = "the draft was refused at load; see the "
+                                "startup log for the gate that rejected it";
             if (!init_swap_runtime(mp, threads_per_slot, ttl)) return 1;
         }
     }

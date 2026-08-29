@@ -1,6 +1,10 @@
 {
   "agent_profile": null,
   "context": "<number>",
+  "draft": {
+    "active": false,
+    "requested": false
+  },
   "features": {
     "family_sampling_presets": true,
     "forkable_prefixes": true,
@@ -39,5 +43,6 @@
     "top_k": "<number>",
     "top_p": "<number>"
   },
+  "slots": "<number>",
   "swap": false
 }

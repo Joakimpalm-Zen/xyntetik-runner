@@ -30,6 +30,36 @@ def test_capabilities(client, report, server):
     report.check_fixture("capabilities", caps)
 
 
+def test_capabilities_reports_effective_slots_and_draft(client, server):
+    """RI-2: the EFFECTIVE execution mode has to be machine-readable.
+
+    Several requested configurations legitimately resolve to a different one:
+    `--draft` is dropped in swap mode and can be refused at load (vocab
+    mismatch, a fully GPU-offloaded target, out of memory), and `-m name=path`
+    with `--parallel N` gives up the registry to keep the slots. Each of those
+    prints a note to stderr and continues, which a benchmark harness cannot
+    see -- so it can measure the fallback and report it as the mode it asked
+    for. These fields are how it finds out instead."""
+    caps = client.get("/v1/capabilities").expect_status(200).json
+    slots = caps.get("slots")
+    if not isinstance(slots, int) or slots < 1:
+        raise ProtocolError("capabilities does not report effective slots",
+                            slots=slots)
+    draft = caps.get("draft")
+    if not isinstance(draft, dict):
+        raise ProtocolError("capabilities does not report draft state",
+                            draft=draft)
+    for key in ("requested", "active"):
+        if not isinstance(draft.get(key), bool):
+            raise ProtocolError("draft state field missing or not a boolean",
+                                key=key, draft=draft)
+    # this server is started without --draft, so both are false and the
+    # reason is absent rather than invented
+    if draft["requested"] or draft["active"]:
+        raise ProtocolError("draft reported active on a server started "
+                            "without --draft", draft=draft)
+
+
 def test_buffered_chat_shape(client, report):
     r = client.chat(dict(BASE), name="buffered-chat").expect_status(200)
     d = r.json

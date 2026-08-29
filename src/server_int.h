@@ -79,6 +79,13 @@ typedef struct {
     // the --draft argv string, kept only when its startup load succeeded, so
     // a swap_to() after /unload can bring the draft back with the target
     const char *draft_path;
+    // RI-2: what the OPERATOR asked for, kept separately from what happened.
+    // draft_path above is set only on a successful load, so it cannot answer
+    // "was a draft requested and refused" -- which is exactly the question a
+    // benchmark harness has to ask before it reports a number as speculative
+    // decoding. draft_note names the reason when requested && !active.
+    bool        draft_requested;
+    const char *draft_note;
     // sampling defaults come from the served model's family preset; the CLI
     // overrides are kept so a swapped-in model can be re-resolved against them
     sampler_override ov;
