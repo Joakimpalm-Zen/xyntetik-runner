@@ -158,6 +158,67 @@ static bool validate_chat_messages(const jv *msgs, char *err, size_t err_cap) {
             return false;
         }
         jv *calls = jv_get(msg, "tool_calls");
+        if (calls && calls->type != J_NULL) {
+            if (calls->type != J_ARR) {
+                snprintf(err, err_cap,
+                         "messages[%d].tool_calls must be an array", i);
+                return false;
+            }
+            if (strcmp(role, "assistant")) {
+                snprintf(err, err_cap,
+                         "messages[%d].tool_calls is valid only on an assistant "
+                         "message", i);
+                return false;
+            }
+            for (int k = 0; k < calls->n; k++) {
+                jv *call = calls->items[k];
+                if (!call || call->type != J_OBJ) {
+                    snprintf(err, err_cap,
+                             "messages[%d].tool_calls[%d] must be an object",
+                             i, k);
+                    return false;
+                }
+                const char *id = jv_str(jv_get(call, "id"), NULL);
+                if (!id || !id[0]) {
+                    snprintf(err, err_cap,
+                             "messages[%d].tool_calls[%d].id must be a "
+                             "non-empty string", i, k);
+                    return false;
+                }
+                const char *type = jv_str(jv_get(call, "type"), NULL);
+                if (!type || strcmp(type, "function")) {
+                    snprintf(err, err_cap,
+                             "messages[%d].tool_calls[%d].type must be "
+                             "function", i, k);
+                    return false;
+                }
+                jv *fn = jv_get(call, "function");
+                if (!fn || fn->type != J_OBJ) {
+                    snprintf(err, err_cap,
+                             "messages[%d].tool_calls[%d].function must be an "
+                             "object", i, k);
+                    return false;
+                }
+                const char *name = jv_str(jv_get(fn, "name"), NULL);
+                if (!name || !name[0]) {
+                    snprintf(err, err_cap,
+                             "messages[%d].tool_calls[%d].function.name must "
+                             "be a non-empty string", i, k);
+                    return false;
+                }
+                jv *args = jv_get(fn, "arguments");
+                jv *parsed = args && args->type == J_STR
+                    ? json_parse(args->str, strlen(args->str)) : NULL;
+                bool valid = parsed && parsed->type == J_OBJ;
+                jv_free(parsed);
+                if (!valid) {
+                    snprintf(err, err_cap,
+                             "messages[%d].tool_calls[%d].function.arguments "
+                             "must be a string containing a JSON object", i, k);
+                    return false;
+                }
+            }
+        }
         const char *reason = jv_str(jv_get(msg, "reasoning_content"), NULL);
         bool assistant_payload = !strcmp(role, "assistant") &&
             ((calls && calls->type == J_ARR && calls->n > 0) ||

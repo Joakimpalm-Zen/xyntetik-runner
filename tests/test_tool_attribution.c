@@ -195,6 +195,16 @@ static void ta_expect_refused(const char *what) {
         fprintf(stderr, "--- status %d error %s\n", ta_status, ta_error);
 }
 
+static void ta_expect_bad_request(const char *what, const char *needle) {
+    char msg[192];
+    snprintf(msg, sizeof msg, "%s: answered 400", what);
+    ck(ta_status == 400, msg);
+    snprintf(msg, sizeof msg, "%s: no prompt was built", what);
+    ck(ta_prompt == NULL, msg);
+    snprintf(msg, sizeof msg, "%s: the error names the malformed field", what);
+    ck(strstr(ta_error, needle) != NULL, msg);
+}
+
 static void ta_expect_named(const char *what, const char *fn) {
     char msg[192], want[128];
     snprintf(msg, sizeof msg, "%s: a prompt was produced", what);
@@ -476,6 +486,32 @@ static void test_chat_explicit_name_is_unchanged(void) {
            "\"content\":\"12:00\"}],"
            TA_TWO_TOOLS_CHAT "}");
     ta_expect_named("chat, tool result carrying its own name", "get_time");
+}
+
+static void test_chat_refuses_non_json_tool_call_arguments(void) {
+    ta_tmpl = TMPL_CHATML;
+    ta_run(handle_chat,
+           "{\"model\":\"m\",\"messages\":["
+           "{\"role\":\"user\",\"content\":\"weather?\"},"
+           "{\"role\":\"assistant\",\"content\":null,\"tool_calls\":["
+           "{\"id\":\"call_1\",\"type\":\"function\",\"function\":{"
+           "\"name\":\"get_weather\",\"arguments\":\"not-json\"}}]}]}"
+    );
+    ta_expect_bad_request("chat, non-JSON tool-call arguments", "arguments");
+    ta_tmpl = TMPL_HARMONY;
+}
+
+static void test_chat_refuses_nameless_tool_call(void) {
+    ta_tmpl = TMPL_CHATML;
+    ta_run(handle_chat,
+           "{\"model\":\"m\",\"messages\":["
+           "{\"role\":\"user\",\"content\":\"weather?\"},"
+           "{\"role\":\"assistant\",\"content\":null,\"tool_calls\":["
+           "{\"id\":\"call_1\",\"type\":\"function\",\"function\":{"
+           "\"arguments\":\"{}\"}}]}]}"
+    );
+    ta_expect_bad_request("chat, nameless tool call", "name");
+    ta_tmpl = TMPL_HARMONY;
 }
 
 // ---------------------------------------------------------------------------
@@ -789,6 +825,8 @@ int main(void) {
     test_chat_no_id_at_all();
     test_chat_resolvable_is_unchanged();
     test_chat_explicit_name_is_unchanged();
+    test_chat_refuses_non_json_tool_call_arguments();
+    test_chat_refuses_nameless_tool_call();
     free(ta_prompt);
     fprintf(stderr, ta_fail ? "test-tool-attribution: FAILED\n"
                             : "test-tool-attribution: all checks passed\n");
