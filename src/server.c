@@ -331,7 +331,7 @@ static void handle_chat(slot_t *s, sock_t fd, jv *req) {
         return;
     }
     for (int i = 0; i < msgs->n; i++) roles[i] = chat_role(msgs->items[i]);
-    bool roles_ok = template_roles_valid(s->tmpl, roles, msgs->n, merr,
+    bool roles_ok = template_roles_valid(s->tmpl, roles, msgs->n, false, merr,
                                          sizeof(merr));
     free(roles);
     if (!roles_ok) {

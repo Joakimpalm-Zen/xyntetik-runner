@@ -529,6 +529,31 @@ def test_unsupported_features_are_refused(client, field, value, explains):
 
 
 @pytest.mark.parametrize("payload,contains", [
+    ({"messages": [{"role": "user", "content": "hi"},
+                    {"role": "assistant", "content": [
+                        {"type": "tool_use", "id": "toolu_1", "name": "f",
+                         "input": 42}]}], "max_tokens": 8}, "input"),
+    ({"messages": [{"role": "user", "content": [
+                        {"type": "tool_use", "id": "toolu_1", "name": "f",
+                         "input": {}}]}], "max_tokens": 8}, "assistant"),
+    ({"messages": [{"role": "user", "content": "hi"},
+                    {"role": "assistant", "content": [
+                        {"type": "tool_use", "name": "f", "input": {}}]}],
+      "max_tokens": 8}, "id"),
+    ({"messages": [{"role": "user", "content": "hi"},
+                    {"role": "assistant", "content": [
+                        {"type": "tool_result", "tool_use_id": "toolu_1",
+                         "content": "done"}]}], "max_tokens": 8}, "user"),
+    ({"messages": [{"role": "user", "content": [
+                        {"type": "tool_result", "tool_use_id": "toolu_1"}]}],
+      "max_tokens": 8}, "content"),
+    ({"messages": [{"role": "user", "content": [
+                        {"type": "tool_result", "content": "done"}]}],
+      "max_tokens": 8}, "tool_use_id"),
+    ({"messages": [{"role": "user", "content": [
+                        {"type": "tool_result", "tool_use_id": "toolu_1",
+                         "content": "failed", "is_error": "true"}]}],
+      "max_tokens": 8}, "is_error"),
     ({"max_tokens": 8}, "messages"),
     ({"messages": [], "max_tokens": 8}, "messages"),
     ({"messages": [{"role": "user", "content": 7}], "max_tokens": 8},

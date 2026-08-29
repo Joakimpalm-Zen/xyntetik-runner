@@ -115,7 +115,7 @@ const char *template_name(int tmpl);
 // is validated separately, but their presence must never forgive a malformed
 // user/assistant prefix that came before them.
 bool template_roles_valid(int tmpl, const char *const *roles, int n,
-                          char *err, size_t err_cap);
+                          bool allow_mid_system, char *err, size_t err_cap);
 // render messages; add_assistant appends the assistant generation prefix.
 // returns bytes written (excl. NUL)
 //

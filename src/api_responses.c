@@ -488,7 +488,7 @@ void handle_responses(slot_t *s, sock_t fd, jv *req) {
             }
         }
     }
-    bool roles_ok = template_roles_valid(s->tmpl, roles, n_roles, ierr,
+    bool roles_ok = template_roles_valid(s->tmpl, roles, n_roles, false, ierr,
                                          sizeof(ierr));
     free(roles);
     if (!roles_ok) {

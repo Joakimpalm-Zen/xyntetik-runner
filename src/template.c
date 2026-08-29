@@ -198,7 +198,7 @@ const char *template_name(int t) {
 }
 
 bool template_roles_valid(int tmpl, const char *const *roles, int n,
-                          char *err, size_t err_cap) {
+                          bool allow_mid_system, char *err, size_t err_cap) {
     bool leading_system_only = tmpl == TMPL_LLAMA2 ||
                                tmpl == TMPL_LLAMA2_FALLBACK ||
                                tmpl == TMPL_GEMMA ||
@@ -208,7 +208,7 @@ bool template_roles_valid(int tmpl, const char *const *roles, int n,
                                tmpl == TMPL_APERTUS ||
                                tmpl == TMPL_ORNITH;
     if (!leading_system_only) return true;
-    for (int i = 1; i < n; i++) {
+    for (int i = 1; !allow_mid_system && i < n; i++) {
         if (!strcmp(roles[i], "system")) {
             snprintf(err, err_cap,
                      "messages[%d].role system is not representable by the %s "

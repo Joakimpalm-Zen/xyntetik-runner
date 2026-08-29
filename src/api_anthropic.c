@@ -63,8 +63,18 @@ static void turnbuf_free(turnbuf *t) {
 // that plain text would otherwise lose.
 static char *anth_tool_result_text(jv *b, char *err, int errcap) {
     sbuf r = {0};
-    if (jv_bool(jv_get(b, "is_error"), false)) sb_lit(&r, "error: ");
+    jv *is_error = jv_get(b, "is_error");
+    if (is_error && is_error->type != J_NULL && is_error->type != J_BOOL) {
+        snprintf(err, errcap, "tool_result.is_error must be a boolean");
+        return NULL;
+    }
+    if (jv_bool(is_error, false)) sb_lit(&r, "error: ");
     jv *c = jv_get(b, "content");
+    if (!c || c->type == J_NULL) {
+        snprintf(err, errcap, "tool_result.content is required");
+        free(r.s);
+        return NULL;
+    }
     if (c && c->type == J_STR) {
         sb_put(&r, c->str, strlen(c->str));
     } else if (c && c->type == J_ARR) {
@@ -176,13 +186,33 @@ static bool anth_blocks(jv *messages, int message_index, jv *msg,
             sb_put(&body, txt, strlen(txt));
         } else if (!strcmp(bt, "tool_use")) {
             // the assistant's own earlier call, replayed
+            if (strcmp(role, "assistant")) {
+                snprintf(err, errcap,
+                         "a tool_use block is valid only in an assistant message");
+                free(body.s); free(calls_json.s);
+                return false;
+            }
+            const char *id = jv_str(jv_get(b, "id"), NULL);
+            if (!id || !id[0]) {
+                snprintf(err, errcap,
+                         "a tool_use block must carry a non-empty id");
+                free(body.s); free(calls_json.s);
+                return false;
+            }
             const char *name = jv_str(jv_get(b, "name"), NULL);
-            if (!name) {
-                snprintf(err, errcap, "a tool_use block must carry a name");
+            if (!name || !name[0]) {
+                snprintf(err, errcap,
+                         "a tool_use block must carry a non-empty name");
                 free(body.s); free(calls_json.s);
                 return false;
             }
             jv *input = jv_get(b, "input");
+            if (!input || input->type != J_OBJ) {
+                snprintf(err, errcap,
+                         "a tool_use block must carry an object input");
+                free(body.s); free(calls_json.s);
+                return false;
+            }
             if (harmony) {
                 if (body.failed) {
                     free(body.s); free(calls_json.s);
@@ -230,6 +260,19 @@ static bool anth_blocks(jv *messages, int message_index, jv *msg,
             // the tool loop closing: a result is its own turn in the chat
             // vocabulary, so it is emitted ahead of whatever text accompanies
             // it in the same Anthropic message
+            if (strcmp(role, "user")) {
+                snprintf(err, errcap,
+                         "a tool_result block is valid only in a user message");
+                free(body.s); free(calls_json.s);
+                return false;
+            }
+            const char *id = jv_str(jv_get(b, "tool_use_id"), NULL);
+            if (!id || !id[0]) {
+                snprintf(err, errcap,
+                         "a tool_result block must carry a non-empty tool_use_id");
+                free(body.s); free(calls_json.s);
+                return false;
+            }
             char *result = anth_tool_result_text(b, err, errcap);
             if (!result) {
                 free(body.s); free(calls_json.s);
@@ -237,7 +280,6 @@ static bool anth_blocks(jv *messages, int message_index, jv *msg,
                 t->failed = true;
                 return true;
             }
-            const char *id = jv_str(jv_get(b, "tool_use_id"), NULL);
             const char *name = anth_call_name(messages, message_index, id);
             if (!name) name = sole_tool;
             if (harmony) {
@@ -600,7 +642,10 @@ static char *messages_prompt(slot_t *s, sock_t fd, jv *req, tool_envelope *env,
                    "\"system\"");
         return NULL;
     }
-    bool roles_ok = template_roles_valid(s->tmpl, roles, msgs->n, terr,
+    // Claude Code sends client-harness context as a system turn inside this
+    // surface's history. Keep that documented compatibility extension while
+    // still checking the surrounding ordinary user/assistant sequence.
+    bool roles_ok = template_roles_valid(s->tmpl, roles, msgs->n, true, terr,
                                          sizeof(terr));
     free(roles);
     if (!roles_ok) {
