@@ -805,7 +805,10 @@ static void send_health(sock_t fd) {
              wp, wg, ws, bs, bq);
 
     if (SV.n_reg > 0 && res >= 0) {
-        char esc[192];
+        // Registry names are char[64]. Match /v1/models' exact worst-case
+        // bound so /health cannot identify the same resident by a truncated
+        // string when every byte needs a six-byte JSON escape.
+        char esc[63 * 6 + 2];
         json_escape(SV.reg[res].name, strlen(SV.reg[res].name), esc, sizeof(esc));
         n = snprintf(b, sizeof(b),
                      "{\"status\":\"ok\",\"resident\":\"%s\","

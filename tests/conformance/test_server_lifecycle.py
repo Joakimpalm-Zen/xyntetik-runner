@@ -14,6 +14,33 @@ import pytest
 from harness import RunnerServer, find_runner, free_port
 
 
+def test_health_preserves_the_complete_resident_model_name():
+    root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+    model = os.environ.get("RUNNER_TEST_MODEL", os.path.join(root, "test.gguf"))
+    # Every byte expands to six JSON bytes. This is a valid registry identifier
+    # and exercises the escape bound rather than merely a long printable name.
+    name = "\x01" * 40
+    registry = name + "=" + model
+    with RunnerServer(find_runner(root), registry, ctx=64, parallel=1,
+                      extra_args=["--gpu", "off"]) as srv:
+        payload = json.dumps({
+            "model": name,
+            "messages": [{"role": "user", "content": "load"}],
+            "max_tokens": 1,
+        }).encode()
+        request = urllib.request.Request(
+            srv.base_url + "/v1/chat/completions", data=payload,
+            headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(request, timeout=10) as response:
+            assert response.status == 200
+        with urllib.request.urlopen(srv.base_url + "/health", timeout=5) as response:
+            health = json.load(response)
+        with urllib.request.urlopen(srv.base_url + "/v1/models", timeout=5) as response:
+            models = json.load(response)
+        assert models["data"][0]["id"] == name
+        assert health["resident"] == name
+
+
 def test_server_ignore_eos_reaches_each_slot_engine(tmp_path):
     root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
     model = tmp_path / "eos-only.gguf"
