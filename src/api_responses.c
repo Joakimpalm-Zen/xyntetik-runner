@@ -452,6 +452,33 @@ void handle_responses(slot_t *s, sock_t fd, jv *req) {
         send_error(fd, 400, ierr);
         return;
     }
+    int n_roles = input->type == J_ARR ? input->n : 1;
+    const char **roles = malloc(sizeof(*roles) * (size_t)n_roles);
+    if (!roles) {
+        send_error(fd, 500, "out of memory validating responses history");
+        return;
+    }
+    if (input->type == J_STR) {
+        roles[0] = "user";
+    } else {
+        for (int i = 0; i < input->n; i++) {
+            jv *item = input->items[i];
+            const char *type = jv_str(jv_get(item, "type"), "message");
+            if (!strcmp(type, "function_call")) roles[i] = "assistant";
+            else if (!strcmp(type, "function_call_output")) roles[i] = "tool";
+            else {
+                const char *role = jv_str(jv_get(item, "role"), "user");
+                roles[i] = !strcmp(role, "developer") ? "system" : role;
+            }
+        }
+    }
+    bool roles_ok = template_roles_valid(s->tmpl, roles, n_roles, ierr,
+                                         sizeof(ierr));
+    free(roles);
+    if (!roles_ok) {
+        send_error(fd, 400, ierr);
+        return;
+    }
     // reasoning is accepted and echoed back rather than rejected: `effort` and
     // `summary` are hints about how much thinking to do, not guarantees about
     // the response document, and a local model's thinking channel is already

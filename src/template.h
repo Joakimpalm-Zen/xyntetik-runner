@@ -109,6 +109,13 @@ typedef struct {
 int         template_detect(const char *meta_tmpl, tokenizer *tok);
 int         template_from_name(const char *name); // -1 if unknown
 const char *template_name(int tmpl);
+
+// Refuse histories whose ordinary roles cannot be represented by a template.
+// Tool results end the ordinary alternating prefix: their call/result protocol
+// is validated separately, but their presence must never forgive a malformed
+// user/assistant prefix that came before them.
+bool template_roles_valid(int tmpl, const char *const *roles, int n,
+                          char *err, size_t err_cap);
 // render messages; add_assistant appends the assistant generation prefix.
 // returns bytes written (excl. NUL)
 //

@@ -576,6 +576,38 @@ static char *messages_prompt(slot_t *s, sock_t fd, jv *req, tool_envelope *env,
         return NULL;
     }
 
+    const char **roles = malloc(sizeof(*roles) * (size_t)msgs->n);
+    if (!roles) {
+        send_error(fd, 500, "out of memory validating messages history");
+        return NULL;
+    }
+    bool role_types_ok = true;
+    for (int i = 0; i < msgs->n; i++) {
+        jv *msg = msgs->items[i];
+        const char *role = msg && msg->type == J_OBJ
+            ? jv_str(jv_get(msg, "role"), NULL) : NULL;
+        if (!role || (strcmp(role, "user") && strcmp(role, "assistant") &&
+                      strcmp(role, "system"))) {
+            role_types_ok = false;
+            break;
+        }
+        roles[i] = role;
+    }
+    if (!role_types_ok) {
+        free(roles);
+        send_error(fd, 400,
+                   "messages[].role must be \"user\", \"assistant\" or "
+                   "\"system\"");
+        return NULL;
+    }
+    bool roles_ok = template_roles_valid(s->tmpl, roles, msgs->n, terr,
+                                         sizeof(terr));
+    free(roles);
+    if (!roles_ok) {
+        send_error(fd, 400, terr);
+        return NULL;
+    }
+
     jv *tools = anth_tools(jv_get(req, "tools"), terr, sizeof(terr), &oom);
     jv *raw_tools = jv_get(req, "tools");
     if (raw_tools && raw_tools->type != J_NULL && !tools) {

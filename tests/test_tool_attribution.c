@@ -598,6 +598,47 @@ static void test_llama2_refuses_consecutive_user_turns(void) {
     ta_tmpl = TMPL_HARMONY;
 }
 
+static void test_mistral_responses_refuses_consecutive_user_turns(void) {
+    ta_tmpl = TMPL_MISTRAL;
+    ta_run(handle_responses,
+           "{\"model\":\"m\",\"input\":["
+           "{\"type\":\"message\",\"role\":\"user\",\"content\":\"first\"},"
+           "{\"type\":\"message\",\"role\":\"user\",\"content\":\"second\"}]}"
+    );
+    ta_expect_bad_request("mistral responses, consecutive user turns",
+                          "alternate");
+    ta_tmpl = TMPL_HARMONY;
+}
+
+static void test_mistral_messages_refuses_consecutive_user_turns(void) {
+    ta_tmpl = TMPL_MISTRAL;
+    ta_run(handle_messages,
+           "{\"model\":\"m\",\"max_tokens\":16,\"messages\":["
+           "{\"role\":\"user\",\"content\":\"first\"},"
+           "{\"role\":\"user\",\"content\":\"second\"}]}"
+    );
+    ta_expect_bad_request("mistral messages, consecutive user turns",
+                          "alternate");
+    ta_tmpl = TMPL_HARMONY;
+}
+
+static void test_mistral_tool_turn_does_not_mask_bad_prefix(void) {
+    ta_tmpl = TMPL_MISTRAL;
+    ta_run(handle_chat,
+           "{\"model\":\"m\",\"messages\":["
+           "{\"role\":\"user\",\"content\":\"first\"},"
+           "{\"role\":\"user\",\"content\":\"second\"},"
+           "{\"role\":\"assistant\",\"content\":null,\"tool_calls\":["
+           "{\"id\":\"call_1\",\"type\":\"function\",\"function\":{"
+           "\"name\":\"get_weather\",\"arguments\":\"{}\"}}]},"
+           "{\"role\":\"tool\",\"tool_call_id\":\"call_1\","
+           "\"content\":\"sunny\"}]," TA_ONE_TOOL_CHAT "}"
+    );
+    ta_expect_bad_request("mistral chat, tool turn after bad prefix",
+                          "alternate");
+    ta_tmpl = TMPL_HARMONY;
+}
+
 static void test_qwen3_null_thinking_mode_uses_family_default(void) {
     ta_tmpl = TMPL_CHATML_THINK;
     ta_run(handle_chat,
@@ -940,6 +981,9 @@ int main(void) {
     test_chat_refuses_nameless_tool_call();
     test_mistral_refuses_system_mid_history();
     test_llama2_refuses_consecutive_user_turns();
+    test_mistral_responses_refuses_consecutive_user_turns();
+    test_mistral_messages_refuses_consecutive_user_turns();
+    test_mistral_tool_turn_does_not_mask_bad_prefix();
     test_qwen3_null_thinking_mode_uses_family_default();
     test_qwen3_refuses_non_boolean_thinking_mode();
     free(ta_prompt);

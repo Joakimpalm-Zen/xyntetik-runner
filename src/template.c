@@ -197,6 +197,54 @@ const char *template_name(int t) {
     }
 }
 
+bool template_roles_valid(int tmpl, const char *const *roles, int n,
+                          char *err, size_t err_cap) {
+    bool leading_system_only = tmpl == TMPL_LLAMA2 ||
+                               tmpl == TMPL_LLAMA2_FALLBACK ||
+                               tmpl == TMPL_GEMMA ||
+                               tmpl == TMPL_MISTRAL ||
+                               tmpl == TMPL_MISTRAL_V1 ||
+                               tmpl == TMPL_MISTRAL_NEMO ||
+                               tmpl == TMPL_APERTUS ||
+                               tmpl == TMPL_ORNITH;
+    if (!leading_system_only) return true;
+    for (int i = 1; i < n; i++) {
+        if (!strcmp(roles[i], "system")) {
+            snprintf(err, err_cap,
+                     "messages[%d].role system is not representable by the %s "
+                     "template after history has started", i,
+                     template_name(tmpl));
+            return false;
+        }
+    }
+    bool alternating = tmpl == TMPL_LLAMA2 ||
+                       tmpl == TMPL_LLAMA2_FALLBACK ||
+                       tmpl == TMPL_GEMMA ||
+                       tmpl == TMPL_MISTRAL ||
+                       tmpl == TMPL_MISTRAL_V1 ||
+                       tmpl == TMPL_MISTRAL_NEMO;
+    if (!alternating) return true;
+    int first = n > 0 && !strcmp(roles[0], "system") ? 1 : 0;
+    int ordinary = 0;
+    for (int i = first; i < n; i++) {
+        const char *role = roles[i];
+        // A tool result starts a separate protocol sequence. Stop here rather
+        // than rejecting the valid extra role, but preserve every check made
+        // on the ordinary prefix before it.
+        if (!strcmp(role, "tool")) break;
+        if (strcmp(role, "user") && strcmp(role, "assistant")) continue;
+        const char *want = (ordinary++ & 1) ? "assistant" : "user";
+        if (strcmp(role, want)) {
+            snprintf(err, err_cap,
+                     "messages must alternate user and assistant roles for the "
+                     "%s template (messages[%d] must be %s)",
+                     template_name(tmpl), i, want);
+            return false;
+        }
+    }
+    return true;
+}
+
 static size_t emit(char *out, size_t cap, size_t off, const char *fmt,
                    const char *a, const char *b) {
     // The family preambles are assembled in an sbuf and then formatted through
