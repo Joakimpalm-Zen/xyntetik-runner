@@ -6,7 +6,86 @@ change between releases (the `-alpha` suffix was retired at v0.2.0 — the 0.x
 version already says what it needs to). Entries below the rename keep the
 names that were true when they were written.
 
-## Unreleased
+## v0.4.2 - 2026-08-29
+
+### Qwen models speak their own tool protocol
+
+- **Qwen2.5 and Qwen3 tool calling is native.** Declarations render into the
+  family's trained `# Tools` / `<tools>` block, a call comes back as its
+  `<tool_call>{"name":...,"arguments":...}</tool_call>` turn, and results
+  replay as grouped `<tool_response>` blocks. Tool names and argument schemas
+  are constrained directly in that native grammar
+  (`schema_compile_qwen_turn`/`_parallel`) rather than through runner's
+  generic JSON envelope, and buffered and streaming output map back to the
+  OpenAI shape. As with every other family, the same three-turn conversation
+  renders byte-identically on `/v1/chat/completions`, `/v1/responses` and
+  `/v1/messages`. Qwen's `<tool_call>` framing joins the list of protocols a
+  `stop` string would fire inside, so stop-plus-tools stays refused.
+- **Qwen3 history keeps the reference template's think framing.** The
+  reference writes an empty `<think>\n\n</think>` block before a trailing
+  historical assistant answer and replays `reasoning_content` there; runner
+  rendered neither, so a replayed Qwen3 conversation did not match what the
+  model was trained to read back. This is replay framing and is independent
+  of whether the new turn enables thinking.
+- **The template conformance matrix is text-only.** Its content-array row
+  carried an image part, which this release refuses outright, so the row was
+  comparing a prompt no accepted request can produce.
+
+### Histories are validated before anything is rendered
+
+An independent review pass went through the three chat surfaces asking what
+happens to a request that is wrong. The answer was too often "it is repaired
+and answered 200": a missing field defaulted, an unrenderable turn dropped,
+an unusable ordering rewritten. A prompt that does not say what the caller
+submitted is the failure mode nothing downstream can detect, so each of these
+is now an HTTP 400 naming the field.
+
+- **Every chat turn must be an object with an explicit role and usable
+  content.** Roles are `system`, `developer`, `user`, `assistant` and `tool`
+  (`developer` renders as a system instruction on local templates). A turn
+  with no role used to be rendered as `user` and a turn whose content was
+  neither string nor array was dropped from the prompt entirely. Assistant
+  turns may still omit visible content when they carry `tool_calls` or
+  `reasoning_content`.
+- **Replayed `tool_calls` are checked.** An array on an assistant turn only;
+  each entry an object with a non-empty `id`, `type: "function"`, a non-empty
+  `function.name`, and `function.arguments` a string containing a JSON object.
+- **Runner is text-only, and now says so.** Image, file and other non-text
+  content parts on Chat Completions and Responses are refused instead of
+  removed while the adjacent text is answered successfully. Anthropic
+  `tool_result.content` gets the same rule: text blocks or a string, with a
+  non-text block refused rather than JSON-dumped into the prompt.
+- **A tool result that names no call is refused on every family.** Only
+  Harmony refused before. Elsewhere an unattributable result rendered under
+  the template's own `'unknown'` fallback, or was named after its
+  `tool_call_id` - a function name invented from an identifier and declared
+  nowhere.
+- **Role sequences a template cannot represent are refused.** llama2, gemma,
+  mistral, apertus and ornith cannot express a system turn once history has
+  started, and the llama2/gemma/mistral families assert alternating
+  user/assistant. One shared `template_roles_valid` enforces this for chat,
+  Responses and Messages alike, instead of each surface silently rendering
+  something the reference template would not. Messages keeps the documented
+  mid-history system extension that Claude Code sends.
+- **Responses input items are validated.** Item `type` must be `message`,
+  `function_call` or `function_call_output`; a message needs a
+  user/assistant/system/developer role and non-empty content; a
+  `function_call` needs a non-empty `call_id` and object-valued `arguments`;
+  and `function_call_output.output` is now required. An absent `output` and
+  an empty string used to collapse to the same empty tool turn, so broken
+  agent history looked accepted while the model was handed an event that
+  never happened.
+- **Anthropic tool blocks are validated.** `tool_use` only inside an
+  assistant message, carrying a non-empty `id`, a non-empty `name` and an
+  object `input`; `tool_result` only inside a user message, carrying a
+  non-empty `tool_use_id`, required `content` and a boolean `is_error`.
+- **Typed request controls are checked rather than coerced.**
+  `enable_thinking` (top level and inside `chat_template_kwargs`),
+  `cache_prompt`, `prefix_cache`, `stream_options` and its `include_usage`,
+  Responses' `truncation`, `include`, `instructions` and `tool_choice` object
+  shape, `parallel_tool_calls` (validated whether or not strict mode is on,
+  where it was previously read only under strict), and a non-string `model`
+  selector on any endpoint.
 
 ### Accepted-then-ignored, closed across the request surface
 
@@ -85,21 +164,67 @@ None reachable on the current tree; each is a hole the next change falls into.
   model names behind a non-zero count; `json_escape` no longer writes its
   terminator under `cap 0`.
 
-### Also
+### HTTP framing, allocation failures, and the accept fastpath
+
+- **The accept thread no longer drains requests.** `/health`, `/v1/models`,
+  `/v1/capabilities` and `/unload` are answered straight from the accept
+  loop, which used to consume the request there under a 0.5 s budget so that
+  closing would not RST away its own reply - the accept thread is the only
+  thing calling `accept()`, so a slow client stalled every later connection
+  behind it. It now peeks the whole header and hands ANY request it cannot
+  prove bodyless - partial header, oversized header, malformed framing, or a
+  declared body - to a slot, whose bounded reader consumes the request before
+  replying. A body sent to a bodyless route is a 400 the client actually
+  receives.
+- **An allocation failure is a 500, not the caller's fault.**
+  `tool_envelope_build_ex` returned `-1` for a malformed request and for its
+  own out of memory alike, so every surface reported an OOM as a 400. Named
+  results (`TOOL_ENVELOPE_INVALID`/`_OOM`/`_NONE`/`_READY`) separate them.
+  Harmony prompt rendering propagates its builder failures the same way
+  (`SIZE_MAX`) instead of handing back a truncated prompt's length.
+- **`/health` cannot report a truncated resident name.** Its escape buffer
+  was 192 bytes against the `63 * 6 + 2` worst case `/v1/models` already
+  used, so a registry name needing six-byte escapes throughout identified the
+  same resident by two different strings.
+- **`/v1/capabilities` reports the server's `pid`.** Needed by the Python
+  launcher below, and useful to anything else that has to tell one Runner on
+  a port from another.
+
+### The Python consumer boundary
+
+- **`ManagedRunner.start()` proves the child it spawned is the one
+  answering.** Readiness was "something healthy is on the port", which a
+  pre-existing Runner satisfies while the spawned child is still loading and
+  about to lose `bind()`. Startup now accepts only a `/v1/capabilities` whose
+  `pid` matches the process it launched.
+- **Startup leases treat a zombie owner as stale.** `_process_alive`
+  answered true for an unreaped zombie (`kill(pid, 0)` succeeds, and on
+  Windows an exited process still opens), so a lease could be held forever by
+  a process that had already exited. POSIX state comes from
+  `/proc/<pid>/stat` with a `ps -o stat=` fallback; Windows uses
+  `GetExitCodeProcess`. PID reuse, dead owners and zombie owners are all
+  stale claims now.
+- **`cancel_event` interrupts a silent stream.** Cancellation was only
+  observed between SSE events, so a stream that went quiet blocked in `recv`
+  until the socket timeout regardless. A watcher thread now shuts the
+  response socket down, and `RunnerCancelledError.partial` still carries the
+  text received before cancellation.
+
+### First external hardware report
 
 - **NVFP4 reads on the CPU.** NVIDIA's block-scaled FP4 (ggml type 40:
   E2M1 codes, one UE4M3 scale per 16-element sub-block, 36 bytes per
-  64-element block — the format NVIDIA ModelOpt produces and the DGX Spark
+  64-element block, the format NVIDIA ModelOpt produces and the DGX Spark
   ecosystem ships) now dequantizes and serves on the CPU path, gated
   against an independent double-precision reference decode in
   test_quants_simd. Scalar kernels only for now, and no GPU path: CUDA and
   Metal decline it by name via their own admission tests, so `--caps`
   advertises it under `quants` and not `gpu_quants`. Both backends'
   per-type kernel tables are also resized past the new highest loadable
-  type — a type-40 tensor must land on a NULL slot and decline, never
+  type: a type-40 tensor must land on a NULL slot and decline, never
   index past the table.
 - **Unified memory is detected, reported, and budgeted.** `--caps` said
-  `unified_memory: false` on a DGX Spark whose GB10 is nothing but — the
+  `unified_memory: false` on a DGX Spark whose GB10 is nothing but: the
   field was a compile-time constant. It is now queried from the device
   (CU_DEVICE_ATTRIBUTE_INTEGRATED), and on an integrated device the GPU
   offload budget is additionally capped at what the OS reports as
