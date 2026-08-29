@@ -973,6 +973,72 @@ static void test_declaration_rendering_contract(void) {
         dc_run_family(&fams[i]);
 }
 
+// ---- chat/completions: the TEXT-SPELLED call. A muse/gemma4 client that
+// keeps its own history replays the assistant's tool call as the exact text
+// the template spells: `<|tool_call>call:NAME{...}<tool_call|>`. That content
+// NAMES the function precisely, so attributing the following result to it
+// invents nothing -- unlike the id fallback this file's rule killed. The CI
+// unix smoke pins the same shape from the wire (`looped == explicit`); the
+// 2026-08-29 fail-closed change refused it by mistake because attribution
+// consulted only tool_calls[] arrays.
+
+static void test_chat_text_spelled_call_resolves(void) {
+    ta_tmpl = TMPL_MUSE;
+    ta_run(handle_chat,
+           "{\"model\":\"m\",\"messages\":["
+           "{\"role\":\"user\",\"content\":\"go\"},"
+           "{\"role\":\"assistant\",\"content\":"
+           "\"<|tool_call>call:read_file{\\\"path\\\":\\\"a.c\\\"}<tool_call|>\"},"
+           "{\"role\":\"tool\",\"tool_call_id\":\"c1\",\"content\":\"data\"}]}");
+    char msg[192];
+    snprintf(msg, sizeof msg,
+             "chat, text-spelled muse call: a prompt was produced");
+    ck(ta_prompt != NULL, msg);
+    snprintf(msg, sizeof msg,
+             "chat, text-spelled muse call: result renders for read_file");
+    ck(ta_prompt && strstr(ta_prompt,
+       "<tool_output name=\"read_file\">") != NULL, msg);
+    snprintf(msg, sizeof msg,
+             "chat, text-spelled muse call: the id never becomes a name");
+    ck(!ta_prompt || strstr(ta_prompt, "name=\"c1\"") == NULL, msg);
+    ta_tmpl = TMPL_HARMONY;
+}
+
+static void test_chat_text_spelled_positional(void) {
+    ta_tmpl = TMPL_MUSE;
+    // two calls spelled in one assistant turn, two results: the k-th result
+    // after the turn reports for the k-th spelled call
+    ta_run(handle_chat,
+           "{\"model\":\"m\",\"messages\":["
+           "{\"role\":\"user\",\"content\":\"go\"},"
+           "{\"role\":\"assistant\",\"content\":"
+           "\"<|tool_call>call:get_time{}<tool_call|>"
+           "<|tool_call>call:get_weather{}<tool_call|>\"},"
+           "{\"role\":\"tool\",\"tool_call_id\":\"a\",\"content\":\"12:00\"},"
+           "{\"role\":\"tool\",\"tool_call_id\":\"b\",\"content\":\"sunny\"}]}");
+    char msg[192];
+    snprintf(msg, sizeof msg,
+             "chat, positional text calls: both results named in order");
+    ck(ta_prompt && strstr(ta_prompt, "<tool_output name=\"get_time\">") != NULL &&
+       strstr(ta_prompt, "<tool_output name=\"get_weather\">") != NULL, msg);
+    ta_tmpl = TMPL_HARMONY;
+}
+
+static void test_chat_text_spelled_exhausted_refuses(void) {
+    ta_tmpl = TMPL_MUSE;
+    // one spelled call cannot attribute two results: past the spelled count
+    // the rule stays fail-closed
+    ta_run(handle_chat,
+           "{\"model\":\"m\",\"messages\":["
+           "{\"role\":\"user\",\"content\":\"go\"},"
+           "{\"role\":\"assistant\",\"content\":"
+           "\"<|tool_call>call:read_file{}<tool_call|>\"},"
+           "{\"role\":\"tool\",\"tool_call_id\":\"a\",\"content\":\"x\"},"
+           "{\"role\":\"tool\",\"tool_call_id\":\"b\",\"content\":\"y\"}]}");
+    ta_expect_refused("chat, more results than spelled calls");
+    ta_tmpl = TMPL_HARMONY;
+}
+
 int main(void) {
     test_history_serialization_contract();
     test_declaration_rendering_contract();
@@ -987,6 +1053,9 @@ int main(void) {
     test_responses_named_call_is_unchanged();
     test_responses_refuses_non_object_input_item();
     test_responses_refuses_unknown_input_item_type();
+    test_chat_text_spelled_call_resolves();
+    test_chat_text_spelled_positional();
+    test_chat_text_spelled_exhausted_refuses();
     test_responses_refuses_malformed_message_item();
     test_responses_refuses_non_string_function_arguments();
     test_messages_orphan_result_two_tools();

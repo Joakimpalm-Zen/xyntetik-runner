@@ -26,6 +26,7 @@
 #include <errno.h>
 #include <pthread.h>
 #include <stdarg.h>
+#include <ctype.h>
 #include <limits.h>
 #include <float.h>
 #include <math.h>
@@ -283,24 +284,71 @@ static const char *chat_role(jv *msg) {
 // a function name invented from an identifier and declared nowhere. So the
 // lookup is done here without that step, and an unresolved result is treated
 // as unresolved rather than named after its id.
-static const char *chat_result_name(const jv *msgs, int message_index) {
+// The call a client replays may be TEXT, not a tool_calls[] entry: muse and
+// gemma4 assistants spell it `<|tool_call>call:NAME{...}` and a client that
+// keeps its own history sends that content straight back. The spelling names
+// the function precisely, so resolving from it invents nothing. The k-th
+// result after the assistant turn reports for the k-th call spelled in it;
+// past the spelled count the result stays unresolved (fail closed). The
+// extracted name is strdup'ed into the caller's owned[] so it outlives this
+// frame -- cm[] keeps the pointer until the prompt renders.
+static const char *text_spelled_call_name(const jv *msgs, int message_index,
+                                          char **owned, int *n_own) {
+    int a = -1;
+    for (int i = message_index - 1; i >= 0; i--) {
+        const char *r = chat_role(msgs->items[i]);
+        if (!strcmp(r, "assistant")) { a = i; break; }
+        if (strcmp(r, "tool")) return NULL; // any other role breaks the loop
+    }
+    if (a < 0) return NULL;
+    int nth = 0;
+    for (int i = a + 1; i < message_index; i++)
+        if (!strcmp(chat_role(msgs->items[i]), "tool")) nth++;
+    const char *content = jv_str(jv_get(msgs->items[a], "content"), NULL);
+    if (!content) return NULL;
+    static const char MARK[] = "<|tool_call>call:";
+    for (const char *p = strstr(content, MARK); p;
+         p = strstr(p, MARK)) {
+        p += sizeof(MARK) - 1;
+        const char *b = p;
+        while (*b && (isalnum((unsigned char)*b) || *b == '_' || *b == '-' ||
+                      *b == '.'))
+            b++;
+        if (*b != '{' || b == p || b - p > 64) continue; // not a call spelling
+        if (nth-- > 0) continue;
+        char *nm = malloc((size_t)(b - p) + 1);
+        if (!nm) return NULL;
+        memcpy(nm, p, (size_t)(b - p));
+        nm[b - p] = 0;
+        owned[(*n_own)++] = nm;
+        return nm;
+    }
+    return NULL;
+}
+
+static const char *chat_result_name(const jv *msgs, int message_index,
+                                    char **owned, int *n_own) {
     jv *msg = msgs->items[message_index];
     const char *name = jv_str(jv_get(msg, "name"), NULL);
     if (name && name[0]) return name;
     const char *id = jv_str(jv_get(msg, "tool_call_id"), NULL);
-    if (!id) return NULL;
-    for (int i = 0; i < message_index; i++) {
-        jv *calls = jv_get(msgs->items[i], "tool_calls");
-        if (!calls || calls->type != J_ARR) continue;
-        for (int k = 0; k < calls->n; k++) {
-            const char *candidate = jv_str(jv_get(calls->items[k], "id"), NULL);
-            if (!candidate || strcmp(candidate, id)) continue;
-            jv *fn = jv_get(calls->items[k], "function");
-            const char *fname = jv_str(jv_get(fn, "name"), NULL);
-            if (fname && fname[0]) return fname;
+    if (id) {
+        for (int i = 0; i < message_index; i++) {
+            jv *calls = jv_get(msgs->items[i], "tool_calls");
+            if (!calls || calls->type != J_ARR) continue;
+            for (int k = 0; k < calls->n; k++) {
+                const char *candidate =
+                    jv_str(jv_get(calls->items[k], "id"), NULL);
+                if (!candidate || strcmp(candidate, id)) continue;
+                jv *fn = jv_get(calls->items[k], "function");
+                const char *fname = jv_str(jv_get(fn, "name"), NULL);
+                if (fname && fname[0]) return fname;
+            }
         }
     }
-    return NULL;
+    // no name field and no id match: the call may be spelled in the prior
+    // assistant turn's TEXT (see text_spelled_call_name)
+    return text_spelled_call_name(msgs, message_index, owned, n_own);
 }
 
 // Declared in api.h, where the reason it exists is written down. It lived as
@@ -435,7 +483,9 @@ static void handle_chat(slot_t *s, sock_t fd, jv *req) {
         }
     }
     chat_msg *cm = malloc(sizeof(chat_msg) * cm_cap);
-    char **owned = malloc(sizeof(char *) * msgs->n);
+    // one rendered content per message, plus at most one text-extracted tool
+    // name per tool result (text_spelled_call_name strdup's into this array)
+    char **owned = malloc(sizeof(char *) * (size_t)msgs->n * 2);
     // client-controlled size (a 32MB body of tiny messages): a NULL here would
     // be indexed below. Fail the request cleanly instead of crashing.
     if (!cm || !owned) {
@@ -457,7 +507,7 @@ static void handle_chat(slot_t *s, sock_t fd, jv *req) {
         const char *role = chat_role(msgs->items[i]);
         const char *turn_name = NULL;
         if (!strcmp(role, "tool")) {
-            turn_name = chat_result_name(msgs, i);
+            turn_name = chat_result_name(msgs, i, owned, &n_own);
             if (!turn_name) turn_name = sole_tool_name(tools);
             // A result that matches no prior call cannot be assigned safely
             // when several functions exist. Gemma4 and Muse put the resolved
