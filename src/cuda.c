@@ -485,7 +485,18 @@ bool gpu_mem_info(size_t *free_bytes, size_t *total_bytes) {
 // over-promises by up to 2x. First seen in the wild in the 2026-08-29
 // Spark field report, where --caps said unified_memory:false on a machine
 // that is nothing but.
-#define CU_DEV_ATTR_INTEGRATED 17
+//
+// The value is 18, NOT 17. 17 is CU_DEVICE_ATTRIBUTE_KERNEL_EXEC_TIMEOUT,
+// which is 1 on any GPU driving a display (the WDDM/X watchdog), so an
+// off-by-one here does not fail loudly on the machines that would catch it:
+// it reports every ordinary desktop GPU as unified and then clamps its
+// offload budget to available system RAM. Shipped that way in v0.4.2 and
+// caught on an RTX 3070 (display attached), where the neighbouring
+// attributes read: 16 MULTIPROCESSOR_COUNT=46 (a 3070 has 46 SMs, so the
+// numbering is anchored to a known-correct answer), 17 KERNEL_EXEC_TIMEOUT=1,
+// 18 INTEGRATED=0. A headless datacenter card reports 17 as 0 and would have
+// looked correct, which is why this needed a desktop to find.
+#define CU_DEV_ATTR_INTEGRATED 18
 static bool cu_dev_integrated(CUdevice dev) {
     int v = 0;
     if (!cu.DeviceGetAttribute ||
