@@ -1075,7 +1075,18 @@ static void handle_conn(slot_t *s, sock_t fd) {
         body[content_length] = 0;
     }
 
-    if (!strcmp(method, "POST") && !strcmp(path, "/unload")) {
+    bool bodyless_route = content_length > 0 &&
+        ((!strcmp(method, "POST") && !strcmp(path, "/unload")) ||
+         (!strcmp(method, "GET") &&
+          (!strcmp(path, "/health") || !strcmp(path, "/v1/models") ||
+           !strcmp(path, "/v1/capabilities"))));
+    if (bodyless_route) {
+        // These routes are normally served by accept_fastpath. A declared body
+        // is deliberately deferred here so the slot can consume it before
+        // replying; closing from the accept thread with unread bytes resets
+        // the TCP connection and can discard the error response itself.
+        send_error(fd, 400, "this route takes no request body");
+    } else if (!strcmp(method, "POST") && !strcmp(path, "/unload")) {
         // Free the resident model's memory. Normally answered straight from
         // the accept loop (see accept_fastpath); this path still serves a
         // request that slipped past it.
@@ -1279,7 +1290,7 @@ static bool accept_fastpath(sock_t fd) {
     FD_SET(fd, &rs);
     if (select(fd + 1, &rs, NULL, NULL, &tv) != 1) return false;
     char hdr[2048];
-    int n = sock_peek(fd, hdr, 64);
+    int n = sock_peek(fd, hdr, sizeof(hdr) - 1);
     if (n <= 0) { sock_close(fd); return true; } // died before speaking
     hdr[n] = 0;
     // match the path plus the space HTTP/1.x always puts before the version,
@@ -1296,70 +1307,32 @@ static bool accept_fastpath(sock_t fd) {
     // to the slot path, which replies 405 with the reason.
     if (!strncmp(hdr, "GET /unload ", 12)) return false;
     if (!health && !models && !caps && !unload) return false;
-    // Drain the request before replying: closing with unread bytes can RST
-    // the connection and discard our response. But the accept thread must
-    // never block indefinitely on a single connection — it's the only thing
-    // calling accept(), so a stalled client here would queue every later
-    // connection behind it, reproducing the watchdog-timeout bug this
-    // fastpath exists to fix. Re-select before each recv with a short
-    // timeout and cap the total drain time; if a client dribbles bytes too
-    // slowly to finish the header in the budget, answer anyway (these GETs
-    // are tiny and read-only, so a reply is always correct) and move on.
-    //
-    // Drop the PEEKED bytes first. MSG_PEEK leaves them in the receive buffer,
-    // so a header that already ended inside the peek left the loop below with
-    // nothing to do -- and the request unread -- and the close then sent RST
-    // instead of FIN, discarding the reply the client had not collected yet.
-    // Every whole request short enough to fit the peek was answered that way:
-    // `GET /health HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n` is
-    // one. The routing above has already read what it needs out of hdr.
-    hdr[0] = 0;
-    double deadline = now_s() + 0.5;
-    size_t got = 0;
-    while (got < sizeof(hdr) - 1 && !strstr(hdr, "\r\n\r\n")) {
-        double remaining = deadline - now_s();
-        if (remaining <= 0) break;
-        struct timeval dtv;
-        dtv.tv_sec = 0;
-        dtv.tv_usec = (long)(remaining * 1e6);
-        if (dtv.tv_usec > 100000) dtv.tv_usec = 100000; // poll in <=100ms steps
-        FD_ZERO(&rs);
-        FD_SET(fd, &rs);
-        if (select(fd + 1, &rs, NULL, NULL, &dtv) != 1) break;
-        int r = sock_recv(fd, hdr + got, sizeof(hdr) - 1 - got);
-        if (r <= 0) break;
-        got += (size_t)r;
-        hdr[got] = 0;
-    }
+    // Keep the request untouched until framing says it is bodyless. A partial
+    // header, an oversized header, malformed framing, and every declared body
+    // are handed to a slot, whose bounded reader can consume the whole request
+    // before replying. The accept thread therefore never waits for a client to
+    // finish speaking, and never closes a body-bearing connection with bytes
+    // unread (which would turn the close into RST and lose the response).
     char *header_end = strstr(hdr, "\r\n\r\n");
-    if (!header_end) {
-        send_error(fd, 400, "bad request");
-        sock_close(fd);
-        return true;
-    }
+    if (!header_end) return false;
     char method[8] = {0}, path[256] = {0};
     char *first_header = NULL;
     size_t content_length = 0;
     if (!parse_request_line(hdr, method, path, &first_header) ||
         !parse_request_framing(first_header, header_end, &content_length) ||
-        content_length > 32u * 1024 * 1024) {
-        send_error(fd, 400, "invalid request framing");
-        sock_close(fd);
-        return true;
-    }
-    if (!validate_request_authority(first_header, header_end)) {
-        send_error(fd, 403, "Host and Origin must be loopback");
-        sock_close(fd);
-        return true;
-    }
-    if (unload && content_length) {
-        // The accept loop must not sit reading a body: it is the only thread
-        // calling accept(), which is the whole reason this fastpath exists.
-        // /unload takes no body, so a request with one is refused rather than
-        // drained.
-        send_error(fd, 400, "unload takes no request body");
-        sock_close(fd);
-        return true;
+        content_length > 32u * 1024 * 1024 ||
+        !validate_request_authority(first_header, header_end) ||
+        content_length > 0)
+        return false;
+
+    // MSG_PEEK proved the complete header is already buffered. Consume exactly
+    // those bytes, never a following body or pipelined request, before closing.
+    size_t header_n = (size_t)(header_end + 4 - hdr);
+    size_t got = 0;
+    while (got < header_n) {
+        int r = sock_recv(fd, hdr + got, header_n - got);
+        if (r <= 0) { sock_close(fd); return true; }
+        got += (size_t)r;
     }
     if (health) send_health(fd);
     else if (models) send_models(fd);

@@ -138,6 +138,33 @@ def test_compact_fastpath_request_closes_cleanly(server, request_bytes):
     assert status(bytes(response)) == 200
 
 
+@pytest.mark.parametrize("path", ["/health", "/v1/models", "/v1/capabilities"])
+def test_fastpath_get_with_body_is_rejected_without_reset(server, path):
+    """A fast-path GET with a body must reach a clean HTTP refusal.
+
+    The accept thread only consumes the header. Closing its socket while a
+    declared body remains unread turns the close into a reset on TCP, which can
+    discard even a response the server already wrote. Keep the body larger than
+    the fast-path header buffer so the unread-byte failure is deterministic.
+    """
+    body = b"x" * 4096
+    request = (f"GET {path} HTTP/1.1\r\nHost: localhost\r\n"
+               f"Content-Length: {len(body)}\r\nConnection: close\r\n\r\n"
+               .encode() + body)
+    with contextlib.closing(socket.create_connection(
+            ("127.0.0.1", server.port), timeout=5)) as sock:
+        sock.settimeout(5)
+        sock.sendall(request)
+        time.sleep(0.2)
+        response = bytearray()
+        while True:
+            part = sock.recv(65536)  # a reset propagates and fails the test
+            if not part:
+                break
+            response += part
+    assert status(bytes(response)) == 400
+
+
 def test_503_status_line_uses_service_unavailable_reason():
     model = os.environ.get("RUNNER_TEST_MODEL", os.path.join(ROOT, "test.gguf"))
     old_queue = os.environ.get("RUNNER_MAX_QUEUE")
