@@ -327,11 +327,37 @@ static void spawn_managed(void) {
 
 #ifdef _WIN32
     // rebuild a command line; CreateProcess wants one string
+    //
+    // The bounded strncat idiom below could not overflow, but it TRUNCATED in
+    // silence, and a truncated command line is not a shorter version of the
+    // request -- it is a different request. The buffer is 2600 bytes against
+    // an exe path of up to 1200, a model path of up to 1024 and 512 bytes of
+    // extra args, so a fully populated config exceeds it. Losing the tail
+    // drops whichever flags came last, and a cut inside an argument leaves an
+    // unbalanced quote that shifts how CreateProcess splits everything after
+    // it. Either way the tray would report a managed server running a
+    // configuration the user never asked for.
+    //
+    // Refused instead, which is the same call the model_file_present() check
+    // above already makes: a spawn that cannot do what was asked does not
+    // happen.
     char cmd[2600] = "";
+    size_t cmd_used = 0;
+    bool cmd_overflow = false;
     for (int i = 0; argv[i]; i++) {
-        strncat(cmd, "\"", sizeof cmd - strlen(cmd) - 1);
-        strncat(cmd, argv[i], sizeof cmd - strlen(cmd) - 1);
-        strncat(cmd, "\" ", sizeof cmd - strlen(cmd) - 1);
+        int n = snprintf(cmd + cmd_used, sizeof cmd - cmd_used, "\"%s\" ",
+                         argv[i]);
+        if (n < 0 || (size_t)n >= sizeof cmd - cmd_used) {
+            cmd_overflow = true;
+            break;
+        }
+        cmd_used += (size_t)n;
+    }
+    if (cmd_overflow) {
+        fprintf(stderr, "tray: refusing to start — the command line for this "
+                "configuration does not fit; shorten the model path or the "
+                "extra arguments\n");
+        return;
     }
     SECURITY_ATTRIBUTES sa = { sizeof sa, NULL, TRUE };
     HANDLE hlog = lp[0] ? CreateFileA(lp, GENERIC_WRITE, FILE_SHARE_READ, &sa,
