@@ -433,6 +433,11 @@ static size_t utf8_seq(const char *s, size_t i, size_t n) {
 }
 
 size_t json_escape(const char *s, size_t n, char *out, size_t cap) {
+    // The loop below cannot run under a tiny cap, but the terminator after it
+    // is unconditional -- so cap 0 wrote out[0] with nowhere to write it. No
+    // caller passes 0 today (every one hands a real buffer's sizeof, and
+    // sb_esc computes n*6+8); this keeps that from being load-bearing.
+    if (cap == 0) return 0;
     size_t m = 0;
     for (size_t i = 0; i < n && m + 8 < cap; ) {
         unsigned char c = (unsigned char)s[i];

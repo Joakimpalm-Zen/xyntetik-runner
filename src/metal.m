@@ -1128,19 +1128,33 @@ bool gpu_init(model_t *m) {
         !g->p_attn_chunk || !g->p_attn_comb ||
         !g->p_silu || !g->p_gelu || !g->p_add || !g->p_scale || !g->p_sigmul ||
         !g->queue || !g->p_qknorm || !g->p_headnorm ||
-        !g->p_moe_route || !g->p_moe_actmul || !g->p_moe_sum ||
-        !g->p_mv[T_F32] || !g->p_mv[T_F16] || !g->p_mv[T_Q8_0] ||
-        !g->p_mv[T_Q4_0] || !g->p_mv[T_Q4_1] ||
-        !g->p_mv[T_Q5_0] || !g->p_mv[T_Q5_1] ||
-        !g->p_mv[T_Q4_K] || !g->p_mv[T_Q5_K] || !g->p_mv[T_Q6_K] ||
-        !g->p_mv[T_MXFP4])
+        !g->p_moe_route || !g->p_moe_actmul || !g->p_moe_sum)
         return gpu_init_fail(m, g, lib, "pipeline allocation");
-    if (m->n_expert > 0 &&
-        (!g->p_moe_mv[T_F32] || !g->p_moe_mv[T_F16] ||
-         !g->p_moe_mv[T_Q8_0] || !g->p_moe_mv[T_Q4_0] ||
-         !g->p_moe_mv[T_Q4_K] || !g->p_moe_mv[T_Q5_K] ||
-         !g->p_moe_mv[T_Q6_K] || !g->p_moe_mv[T_MXFP4]))
-        return gpu_init_fail(m, g, lib, "MoE pipeline allocation");
+    // Admission and the pipeline tables must agree BY CONSTRUCTION rather than
+    // by two hand-kept lists. enc_mv and enc_moe_mv index p_mv[]/p_moe_mv[] by
+    // tensor type with no nil check at the use site, and
+    // -setComputePipelineState:nil raises rather than failing a return value:
+    // a type added to an admission allowlist without its kernel would crash
+    // mid-forward, on whatever model first carried that type. Driving the
+    // check from the same predicates the loader admits with turns that into a
+    // loud refusal at load, and keeps working when a type is added to either
+    // list. (This is what the two literal lists here used to assert by hand,
+    // and they had already fallen behind: the dense list checked 11 of the 16
+    // types gpu_type_ok admits, leaving BF16, Q2_K, Q3_K, IQ4_NL and IQ4_XS
+    // unasserted. All 16 do have kernels today -- the list had drifted, not
+    // the kernels.)
+    for (int t = 0; t < METAL_TYPE_SLOTS; t++) {
+        if (gpu_type_ok(t) && !g->p_mv[t]) {
+            fprintf(stderr, "gpu: no Metal matvec kernel for admitted type %s\n",
+                    ggml_type_name(t));
+            return gpu_init_fail(m, g, lib, "pipeline allocation");
+        }
+        if (m->n_expert > 0 && metal_moe_type_ok(t) && !g->p_moe_mv[t]) {
+            fprintf(stderr, "gpu: no Metal MoE kernel for admitted type %s\n",
+                    ggml_type_name(t));
+            return gpu_init_fail(m, g, lib, "MoE pipeline allocation");
+        }
+    }
     if (metal_init_injected("state"))
         return gpu_init_fail(m, g, lib, "injected state allocation failure");
 

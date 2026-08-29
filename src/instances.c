@@ -284,11 +284,27 @@ static bool parse_rec(const char *path, instance_rec *r) {
         r->model_names = calloc((size_t)ms->n, sizeof(char *));
         r->model_paths = calloc((size_t)ms->n, sizeof(char *));
         if (r->model_names && r->model_paths) {
-            for (int i = 0; i < ms->n; i++) {
+            // All or nothing. Publishing n_models while an entry is NULL
+            // hands every reader a string that is not there -- the arrays are
+            // consumed as `%s` by the listing and tray surfaces, and the free
+            // path below tolerates NULL but no reader does. On a failed
+            // strdup the record reports no models rather than a broken one.
+            bool ok = true;
+            for (int i = 0; i < ms->n && ok; i++) {
                 r->model_names[i] = strdup(jv_str(jv_get(ms->items[i], "name"), "?"));
                 r->model_paths[i] = strdup(jv_str(jv_get(ms->items[i], "path"), ""));
+                ok = r->model_names[i] && r->model_paths[i];
             }
-            r->n_models = ms->n;
+            if (ok) {
+                r->n_models = ms->n;
+            } else {
+                for (int i = 0; i < ms->n; i++) {
+                    free(r->model_names[i]);
+                    free(r->model_paths[i]);
+                }
+                free(r->model_names); free(r->model_paths);
+                r->model_names = r->model_paths = NULL;
+            }
         }
     }
     jv_free(v);

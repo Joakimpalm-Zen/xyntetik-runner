@@ -485,13 +485,20 @@ static int classify(jv *m, const char *runtime_version, const char *backend,
 static void outside_reason(jv *m, char *out, int cap) {
     jv *checks = jv_get(jv_get(m, "quality"), "checks");
     int written = 0;
-    if (checks && checks->type == J_OBJ) {
+    if (checks && checks->type == J_OBJ && cap > 0) {
         for (int i = 0; i < checks->n; i++) {
             const char *status = jv_str(checks->items[i], "");
             if (strcmp(status, "fail") != 0) continue;
-            written += snprintf(out + written, (size_t)(cap - written),
-                                "%s%s", written ? ", " : "", checks->keys[i]);
-            if (written >= cap - 1) break;   // out of room; stop cleanly
+            // snprintf reports what it WOULD have written, so a truncating
+            // call must not be added to the offset: `written` has to stay a
+            // real length or the next iteration indexes out of the buffer and
+            // the `written == 0` test below reads a lie. Clamp to what landed.
+            int n = snprintf(out + written, (size_t)(cap - written),
+                             "%s%s", written ? ", " : "", checks->keys[i]);
+            if (n < 0) break;
+            bool truncated = n >= cap - written;
+            written += truncated ? cap - written - 1 : n;
+            if (truncated) break;            // out of room; stop cleanly
         }
     }
     if (written == 0)

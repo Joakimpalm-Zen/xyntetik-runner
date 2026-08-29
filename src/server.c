@@ -1014,8 +1014,20 @@ static void handle_conn(slot_t *s, sock_t fd) {
             if (r < 0) send_error(fd, 408, "request read timed out");
             return;
         }
+        size_t prev = got;
         got += (size_t)r;
         hdr[got] = 0;
+        // A NUL cannot appear in an HTTP header, and every parse below it is
+        // NUL-terminated: the terminator search here, parse_request_line,
+        // and the authority and framing scans all stop at the first zero
+        // byte. One embedded NUL therefore hides the real "\r\n\r\n" from all
+        // of them, and this loop runs to the full 16 KB buffer or the 10 s
+        // deadline before answering -- a slot held for ten seconds by a
+        // request that was malformed at its first byte. Refuse it there.
+        if (memchr(hdr + prev, 0, (size_t)r)) {
+            send_error(fd, 400, "NUL byte in request header");
+            return;
+        }
         if ((body_start = strstr(hdr, "\r\n\r\n")) != NULL) break;
     }
     if (!body_start) { send_error(fd, 400, "bad request"); return; }

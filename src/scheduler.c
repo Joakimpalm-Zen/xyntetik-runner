@@ -339,6 +339,15 @@ static const float *sched_forward(int id, int32_t tok, int pos, double deadline)
         pthread_cond_timedwait(&SCH.slot_cv, &SCH.mu, &ts);
     }
     bool ok = q->state == SEQ_READY && q->ok;
+    // Leaving SEQ_WAIT without being gathered means this sequence is still
+    // counted in n_wait: the decode worker's `n_wait -= nb` only pays for the
+    // ones it moved to INFLIGHT. The deadline path above decrements for that
+    // reason, and the SCH.stop exit needs the same payment. Today stop is set
+    // only by sched_shutdown, which memsets SCH straight after the join, so
+    // nothing reads the stale count -- but a leaked count is a correctness
+    // hole waiting for stop to mean anything else (a drain, a scheduler
+    // restart), and it costs one branch to close now.
+    if (q->state == SEQ_WAIT) SCH.n_wait--;
     q->state = SEQ_OFF;
     pthread_mutex_unlock(&SCH.mu);
     return ok ? q->logits : NULL;

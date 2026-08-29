@@ -165,6 +165,17 @@ def test_fastpath_get_with_body_is_rejected_without_reset(server, path):
     assert status(bytes(response)) == 400
 
 
+def test_nul_byte_in_header_is_bad_request(server):
+    # Every header parse below the read loop is NUL-terminated, so one embedded
+    # NUL hides the real "\r\n\r\n" from all of them. Before this was
+    # refused the slot read to its 16 KB buffer or sat out the 10 s deadline
+    # before answering -- ten seconds of a serving slot spent on a request that
+    # was malformed at its first line.
+    response = raw_request(server, b"GET /health HTTP/1.1\r\nHost: localhost\r\n"
+                                   b"X-Bad: a\x00b\r\n\r\n")
+    assert status(response) == 400
+
+
 def test_503_status_line_uses_service_unavailable_reason():
     model = os.environ.get("RUNNER_TEST_MODEL", os.path.join(ROOT, "test.gguf"))
     old_queue = os.environ.get("RUNNER_MAX_QUEUE")
