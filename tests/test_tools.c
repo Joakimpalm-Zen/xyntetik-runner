@@ -920,6 +920,68 @@ static void log_free(demux_log *l) {
     free(l->names.s);
 }
 
+// Truncation recovery on the Qwen native protocol.
+//
+// This is the project's headline claim and every other native protocol pins
+// it: a call cut off by the token budget still comes back as an executable
+// tool_calls entry, because the grammar's closer finishes the document and
+// the mapper accepts what the closer produced. gemma4's mapper goes further
+// and treats its block close as OPTIONAL (see g4_one_call: "one cut off by a
+// dropped connection may not [carry it], and the arguments are already
+// complete either way"), which is the same property one layer down.
+//
+// Qwen was the newest native protocol and the only one with no truncation
+// test, while being the only one whose mapper REQUIRES its close token. This
+// walks every cut of a partial call through the real production path -
+// sval_feed, sval_close, then map - and asserts the recovered call names the
+// function it was calling.
+static void test_qwen_truncation_stays_executable(void) {
+    jv *tools = parse(TOOLS);
+    char err[192];
+    snode *root = schema_compile_qwen_turn(
+        tools, true, NULL, NULL, err, sizeof(err));
+    assert(root != NULL);
+
+    tool_envelope e;
+    assert(tool_envelope_build(tools, NULL, NULL, &e, err, sizeof(err)) == 1);
+    e.proto = TP_QWEN;
+    e.tools = tools;
+
+    const char *prefix = "<tool_call>\n{\"name\": \"get_weather\", "
+                         "\"arguments\": {\"city\":\"Os";
+    int recovered = 0;
+    for (size_t cut = 1; cut <= strlen(prefix); cut++) {
+        sval v;
+        sval_init(&v, root);
+        if (!sval_feed(&v, prefix, (int)cut)) continue; // unreachable prefix
+        char tail[512];
+        int n = sval_close(&v, tail, sizeof(tail));
+        assert(n >= 0);
+
+        char doc[1024];
+        snprintf(doc, sizeof(doc), "%.*s%s", (int)cut, prefix, tail);
+        assert(accepts(root, doc));   // the closer owes a legal document
+
+        sbuf content = {0}, tc = {0};
+        int rc = tool_envelope_map(&e, doc, strlen(doc), &content, &tc);
+        assert(rc >= 0);
+        if (rc == 1) {
+            assert(tc.n > 0);
+            assert(strstr(tc.s, "\"name\":\"get_weather\""));
+            recovered++;
+        }
+        free(content.s);
+        free(tc.s);
+    }
+    // a cut deep enough to have committed to the tool name must produce a
+    // call; if none of them do, truncation recovery is not working here
+    assert(recovered > 0);
+
+    tool_envelope_free(&e);
+    schema_free(root);
+    jv_free(tools);
+}
+
 static void test_qwen_native_stream_boundaries(void) {
     jv *tools = parse(TOOLS);
     char err[192];
@@ -2139,6 +2201,7 @@ int main(void) {
     test_response_format_schema_becomes_the_final_branch();
     test_map_produces_openai_tool_call_items();
     test_stream_demux_never_leaks_the_envelope();
+    test_qwen_truncation_stays_executable();
     test_qwen_native_stream_boundaries();
     test_stream_demux_is_boundary_independent();
     test_atem_stream_demux_is_boundary_independent();
