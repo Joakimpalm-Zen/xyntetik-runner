@@ -51,6 +51,10 @@ char *render_prompt_alloc(int tmpl, const chat_msg *msgs, int n_msgs,
         if (!p) return NULL;
         size_t n = render_messages_with_tools(tmpl, msgs, n_msgs, add_assistant,
                                               thinking, tools, p, cap);
+        if (n == SIZE_MAX) {
+            free(p);
+            return NULL;
+        }
         // Complete iff the render did not fill the buffer. Two independent
         // signals, because one of them lives in a module this call does not
         // own: emit() reports an offset at or past `cap` when snprintf

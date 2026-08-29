@@ -1443,6 +1443,10 @@ size_t render_messages_with_tools(int tmpl, const chat_msg *msgs, int n_msgs,
             sb_lit(&system, "\nCalls to these tools must go to the commentary "
                             "channel: 'functions'.");
         sb_lit(&system, "<|end|>");
+        if (system.failed) {
+            free(system.s);
+            return SIZE_MAX;
+        }
         off = emit(out, cap, off, "%s", system.s, NULL);
         free(system.s);
 
@@ -1470,6 +1474,10 @@ size_t render_messages_with_tools(int tmpl, const chat_msg *msgs, int n_msgs,
         if (have_tools) {
             if (dev.n) sb_lit(&dev, "\n\n");
             harmony_render_tool_defs(tools, &dev);
+        }
+        if (dev.failed) {
+            free(dev.s);
+            return SIZE_MAX;
         }
         if (dev.n) {
             off = emit(out, cap, off, "<|start|>developer<|message|>",

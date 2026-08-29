@@ -196,25 +196,17 @@ static void po_run(void (*route)(slot_t *, sock_t, jv *), int tmpl,
     }
 }
 
-// Two failures found by this sweep live in modules it drives but does not own,
-// and are recorded here rather than silently tolerated: pinning today's
-// behaviour is what stops them widening.
+// One failure found by this sweep lives in a module it drives but does not own,
+// and is recorded here rather than silently tolerated: pinning today's
+// behaviour is what stops it widening.
 //
-//   * template.c's Harmony renderer folds every system message and the tool
-//     namespace into one `sbuf dev` and gates the developer turn on `dev.n`
-//     (src/template.c, the `sbuf dev = {0}` block). A failed grow leaves n at
-//     0, so the whole developer turn -- the caller's system prompt AND the
-//     tool declarations -- is dropped and the render reports success.
-//     render_prompt_alloc cannot see it: the short prompt fits the buffer.
 //   * tool_envelope_build() reports "out of memory building the tool envelope"
 //     through the same rc < 0 that a malformed declaration uses, so the three
 //     call sites cannot tell them apart and answer 400 for both.
 //
-// Both need a change in a module outside this file's reach. Everything else is
+// It needs a change in a module outside this file's reach. Everything else is
 // a hard assertion.
 static bool known_gap(const char *label, const char *missing) {
-    if (missing && strstr(label, "harmony") && !strcmp(missing, SYS_MARK))
-        return true;   // template.c's developer turn, above
     if (!missing &&
         strstr(po_message, "out of memory building the tool envelope"))
         return true;   // tool_envelope_build's undifferentiated rc, above

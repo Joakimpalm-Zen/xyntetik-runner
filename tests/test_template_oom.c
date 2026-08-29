@@ -1,10 +1,9 @@
 // Allocation-failure tests for the chat-template renderer.
 //
-// render_messages_with_tools has no error channel: it returns the number of
-// bytes it would have written, and the caller (server.c's render_prompt_alloc)
-// reads that as "grow the buffer and try again". So a failed allocation inside
-// it cannot be reported — it can only be survived. What the renderer must
-// never do is turn one into a DIFFERENT PROMPT that looks fine: the family
+// render_messages_with_tools reports SIZE_MAX when a family can detect an
+// allocation failure, and otherwise returns the bytes it would have written.
+// What the renderer must never do is turn a failure into a DIFFERENT PROMPT
+// that looks fine: the family
 // preambles are built in an sbuf and then formatted into the output with
 // "%s", and an sbuf whose realloc failed carries a NULL pointer, which is
 // undefined behavior and prints as the four characters "(null)" on the libcs
@@ -89,10 +88,9 @@ static const chat_msg MSGS[] = {
 };
 #define N_MSGS ((int)(sizeof(MSGS) / sizeof(*MSGS)))
 
-// A prompt built through a failed allocation may be SHORTER than the complete
-// one -- there is no way to report the failure, and a missing declaration is
-// at least visibly missing. It must never contain the spelling of a NULL
-// pointer, which is what a "%s" of a failed sbuf produces.
+// A family that cannot propagate a failed optional builder may return a shorter
+// prompt, but it must never contain the spelling of a NULL pointer, which is
+// what a "%s" of a failed sbuf produces.
 static void test_render_never_formats_a_failed_buffer(void) {
     char out[8192];
     for (size_t f = 0; f < sizeof(FAMILIES) / sizeof(*FAMILIES); f++) {

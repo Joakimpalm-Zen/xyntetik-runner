@@ -154,7 +154,8 @@ size_t render_messages(int tmpl, const chat_msg *msgs, int n_msgs,
                        bool add_assistant, int thinking,
                        char *out, size_t cap);
 // Structured-tools variant used by native templates. The legacy entry above
-// is exactly this call with tools == NULL.
+// is exactly this call with tools == NULL. SIZE_MAX reports an allocation
+// failure inside the renderer; callers must not treat it as a prompt length.
 size_t render_messages_with_tools(int tmpl, const chat_msg *msgs, int n_msgs,
                                   bool add_assistant, int thinking,
                                   const struct jv *tools,
