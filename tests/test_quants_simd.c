@@ -34,6 +34,9 @@ typedef struct { uint8_t ql[QK_K / 2]; uint8_t qh[QK_K / 4]; int8_t scales[QK_K 
 typedef struct { f16_t d; uint8_t qs[QK / 2]; }                  block_iq4_nl;
 typedef struct { f16_t d; uint16_t scales_h; uint8_t scales_l[QK_K / 64]; uint8_t qs[QK_K / 2]; } block_iq4_xs;
 typedef struct { uint8_t e; uint8_t qs[QK / 2]; }                block_mxfp4;
+#define QK_NVFP4 64
+#define QK_NVFP4_SUB 16
+typedef struct { uint8_t d[QK_NVFP4 / QK_NVFP4_SUB]; uint8_t qs[QK_NVFP4 / 2]; } block_nvfp4;
 typedef struct { f16_t d; uint16_t qs[QK_K / 8]; } block_iq2_xxs;
 typedef struct { f16_t d; uint16_t qs[QK_K / 8]; uint8_t scales[QK_K / 32]; } block_iq2_xs;
 typedef struct { f16_t d; uint8_t qs[QK_K / 4]; uint8_t qh[QK_K / 32]; uint8_t scales[QK_K / 32]; } block_iq2_s;
@@ -258,6 +261,29 @@ static void ref_dq_mxfp4(const block_mxfp4 *b, double *y) {
     }
 }
 
+// independent from quants.c: UE4M3 decoded from the format spec (4 exponent
+// bits biased 7, 3 mantissa bits, no sign; 0 and 0x7F decode to zero), E2M1
+// codes from the same table MXFP4 uses. Within sub-block s, byte j's low
+// nibble is element j and its high nibble element j+8.
+static void ref_dq_nvfp4(const block_nvfp4 *b, double *y) {
+    for (int sub = 0; sub < QK_NVFP4 / QK_NVFP4_SUB; sub++) {
+        uint8_t x = b->d[sub];
+        double d;
+        if (x == 0 || x == 0x7F) d = 0.0;
+        else {
+            int exp = (x >> 3) & 0xF, man = x & 0x7;
+            d = exp == 0 ? ldexp((double)man, -9)
+                         : ldexp(1.0 + man / 8.0, exp - 7);
+        }
+        const uint8_t *q = b->qs + sub * (QK_NVFP4_SUB / 2);
+        double *yb = y + sub * QK_NVFP4_SUB;
+        for (int j = 0; j < QK_NVFP4_SUB / 2; j++) {
+            yb[j]     = kv_mxfp4[q[j] & 0xF] * d;
+            yb[j + 8] = kv_mxfp4[q[j] >> 4]  * d;
+        }
+    }
+}
+
 static void ref_dq_q2_K(const block_q2_K *b, double *y) {
     double d = f16_to_f32(b->d), dmin = f16_to_f32(b->dmin);
     const uint8_t *q = b->qs;
@@ -380,6 +406,17 @@ static void make_row(int type, uint8_t *row, int n) {
             case T_IQ4_NL: ((block_iq4_nl *)p)->d = sane_f16(); break;
             case T_IQ4_XS: ((block_iq4_xs *)p)->d = sane_f16(); break;
             case T_MXFP4: ((block_mxfp4 *)p)->e = (uint8_t)(117 + rnd32() % 21); break;
+            case T_NVFP4: {
+                // scales near 1.0 plus the two zero encodings, so products
+                // stay in a comparable range and the special cases are hit
+                uint8_t *d = ((block_nvfp4 *)p)->d;
+                for (int k = 0; k < QK_NVFP4 / QK_NVFP4_SUB; k++) {
+                    uint32_t r = rnd32() % 20;
+                    d[k] = r == 0 ? 0 : r == 1 ? 0x7F
+                                  : (uint8_t)(0x28 + rnd32() % 0x20);
+                }
+                break;
+            }
             case T_IQ2_XXS: ((block_iq2_xxs *)p)->d = sane_f16(); break;
             case T_IQ2_XS: ((block_iq2_xs *)p)->d = sane_f16(); break;
             case T_IQ2_S: ((block_iq2_s *)p)->d = sane_f16(); break;
@@ -442,6 +479,9 @@ static void ref_weights(int type, const uint8_t *row, double *w, int n) {
             return;
         case T_MXFP4:
             for (int i = 0; i < n; i += bs) ref_dq_mxfp4((const block_mxfp4 *)(row + (i / bs) * ts), w + i);
+            return;
+        case T_NVFP4:
+            for (int i = 0; i < n; i += bs) ref_dq_nvfp4((const block_nvfp4 *)(row + (i / bs) * ts), w + i);
             return;
         case T_IQ2_XXS:
             for (int i = 0; i < n; i += bs) ref_dq_iq2_xxs((const block_iq2_xxs *)(row + (i / bs) * ts), w + i);
@@ -974,6 +1014,9 @@ int main(void) {
     CHECK(ggml_type_size(T_IQ4_NL) == sizeof(block_iq4_nl), "iq4_nl size");
     CHECK(ggml_type_size(T_IQ4_XS) == sizeof(block_iq4_xs), "iq4_xs size");
     CHECK(ggml_type_size(T_MXFP4) == sizeof(block_mxfp4), "mxfp4 size");
+    CHECK(ggml_type_size(T_NVFP4) == sizeof(block_nvfp4), "nvfp4 size");
+    CHECK(ggml_type_size(T_NVFP4) == 36 && ggml_block_size(T_NVFP4) == 64,
+          "nvfp4 wire format is 36 bytes per 64 elements");
     CHECK(ggml_type_size(T_IQ2_XXS) == sizeof(block_iq2_xxs), "iq2_xxs size");
     CHECK(ggml_type_size(T_IQ2_XS) == sizeof(block_iq2_xs), "iq2_xs size");
     CHECK(ggml_type_size(T_IQ2_S) == sizeof(block_iq2_s), "iq2_s size");
@@ -985,6 +1028,7 @@ int main(void) {
     static const int types[] = {
         T_F32, T_F16, T_BF16, T_Q4_0, T_Q4_1, T_Q5_0, T_Q5_1, T_Q8_0,
         T_Q2_K, T_Q3_K, T_Q4_K, T_Q5_K, T_Q6_K, T_IQ4_NL, T_IQ4_XS, T_MXFP4,
+        T_NVFP4,
         T_IQ2_XXS, T_IQ2_XS, T_IQ2_S, T_IQ3_XXS, T_IQ3_S, T_IQ1_S, T_IQ1_M,
     };
     for (size_t t = 0; t < sizeof(types) / sizeof(types[0]); t++) {
@@ -1003,6 +1047,7 @@ int main(void) {
     test_dequant(T_Q4_K, 4096);
     test_dequant(T_Q6_K, 4096);
     test_dequant(T_MXFP4, 4096);
+    test_dequant(T_NVFP4, 4096);
     test_dequant(T_IQ2_XXS, 4096);
     test_dequant(T_IQ2_XS, 4096);
     test_dequant(T_IQ2_S, 4096);

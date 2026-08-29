@@ -15,6 +15,10 @@ bool   gpu_device_id(char *id, int id_cap);
 // dedicated GPU memory in bytes; false when there is no discrete GPU
 // (Metal's unified memory is governed by the RAM reservation instead)
 bool   gpu_mem_info(size_t *free_bytes, size_t *total_bytes);
+// True when the device shares one memory pool with the CPU (Apple silicon,
+// integrated CUDA devices like the DGX Spark's GB10). A caller that budgets
+// "RAM plus VRAM" on such a machine counts the same bytes twice.
+bool   gpu_unified_memory(void);
 // The GPU-side fit ceiling, which is NOT the same number as free RAM: on
 // Metal a single resource allocation larger than the device working-set
 // limit (~2/3 of unified memory) fails even when the file would fit in RAM.

@@ -6,6 +6,30 @@ change between releases (the `-alpha` suffix was retired at v0.2.0 — the 0.x
 version already says what it needs to). Entries below the rename keep the
 names that were true when they were written.
 
+## Unreleased
+
+- **NVFP4 reads on the CPU.** NVIDIA's block-scaled FP4 (ggml type 40:
+  E2M1 codes, one UE4M3 scale per 16-element sub-block, 36 bytes per
+  64-element block — the format NVIDIA ModelOpt produces and the DGX Spark
+  ecosystem ships) now dequantizes and serves on the CPU path, gated
+  against an independent double-precision reference decode in
+  test_quants_simd. Scalar kernels only for now, and no GPU path: CUDA and
+  Metal decline it by name via their own admission tests, so `--caps`
+  advertises it under `quants` and not `gpu_quants`. Both backends'
+  per-type kernel tables are also resized past the new highest loadable
+  type — a type-40 tensor must land on a NULL slot and decline, never
+  index past the table.
+- **Unified memory is detected, reported, and budgeted.** `--caps` said
+  `unified_memory: false` on a DGX Spark whose GB10 is nothing but — the
+  field was a compile-time constant. It is now queried from the device
+  (CU_DEVICE_ATTRIBUTE_INTEGRATED), and on an integrated device the GPU
+  offload budget is additionally capped at what the OS reports as
+  available RAM, because "VRAM free" and "RAM free" are views of the same
+  pool and treating them as two budgets over-promises. A loud one-line
+  notice says so at load. Both findings come from the first external
+  hardware report (DGX Spark, 2026-08-29), which also confirmed the
+  arm64 + CUDA combination works.
+
 ## v0.4.1 - 2026-08-28
 
 - **Constrained output only emits numbers the parser reads back.** The

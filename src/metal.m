@@ -13,7 +13,12 @@
 #include <string.h>
 #include <math.h>
 
-enum { METAL_TYPE_SLOTS = T_MXFP4 + 1 };
+// Sized past the HIGHEST type the loader can admit, not the highest Metal
+// serves: these arrays are indexed by ggml type, and a CPU-supported type
+// with no Metal kernel (T_NVFP4) must land on a NULL slot and decline —
+// never index past the table. The sval review's lesson, applied here before
+// it fires: capacity that silently un-guards is the bug class.
+enum { METAL_TYPE_SLOTS = T_NVFP4 + 1 };
 // Weight-mmap wraps. Enough for a 64 GB monolithic file at the M1's 4.29 GB
 // per-buffer ceiling, with room to spare; exceeding it is reported, not
 // silently truncated.
@@ -398,6 +403,8 @@ bool gpu_available(char *name, int cap) {
     [dev release];
     return true;
 }
+
+bool gpu_unified_memory(void) { return true; }
 
 bool gpu_mem_info(size_t *free_bytes, size_t *total_bytes) {
     // unified memory: the RAM reservation governs; no separate VRAM pool

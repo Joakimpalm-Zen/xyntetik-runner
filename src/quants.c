@@ -61,6 +61,13 @@ typedef struct { f16_t d; uint16_t scales_h; uint8_t scales_l[QK_K / 64]; uint8_
 // OCP microscaling FP4: one E8M0 (power-of-two) block scale byte + 32 packed
 // E2M1 4-bit codes (the gpt-oss expert-tensor format).
 typedef struct { uint8_t e; uint8_t qs[QK / 2]; }               block_mxfp4; // 17
+// NVIDIA FP4: a 64-element super-block of four 16-element sub-blocks, one
+// UE4M3 scale byte each, then 32 packed E2M1 4-bit codes. llama.cpp
+// block_nvfp4 (PR 19769), byte-identical: within sub-block s, byte j's low
+// nibble is element j and its high nibble element j+8.
+#define QK_NVFP4 64
+#define QK_NVFP4_SUB 16
+typedef struct { uint8_t d[QK_NVFP4 / QK_NVFP4_SUB]; uint8_t qs[QK_NVFP4 / 2]; } block_nvfp4; // 36
 // codebook i-quants (llama.cpp b10353 ggml-common.h shapes, byte-identical)
 typedef struct { f16_t d; uint16_t qs[QK_K / 8]; } block_iq2_xxs; // 66
 typedef struct { f16_t d; uint16_t qs[QK_K / 8]; uint8_t scales[QK_K / 32]; } block_iq2_xs; // 74
@@ -95,6 +102,7 @@ int ggml_block_size(int type) {
         case T_F32: case T_F16: case T_BF16: return 1;
         case T_Q4_0: case T_Q4_1: case T_Q5_0: case T_Q5_1: case T_Q8_0:
         case T_IQ4_NL: case T_MXFP4: return QK;
+        case T_NVFP4: return QK_NVFP4;
         case T_Q4_K: case T_Q5_K: case T_Q6_K: case T_Q2_K: case T_Q3_K:
         case T_IQ4_XS:
         case T_IQ2_XXS: case T_IQ2_XS: case T_IQ2_S:
@@ -129,6 +137,7 @@ size_t ggml_type_size(int type) {
         case T_IQ1_S: return sizeof(block_iq1_s);
         case T_IQ1_M: return sizeof(block_iq1_m);
         case T_MXFP4: return sizeof(block_mxfp4);
+        case T_NVFP4: return sizeof(block_nvfp4);
         default:     return 1;
     }
 }
@@ -159,7 +168,7 @@ bool ggml_type_supported(int type) {
         case T_F32: case T_F16: case T_BF16:
         case T_Q4_0: case T_Q4_1: case T_Q5_0: case T_Q5_1: case T_Q8_0:
         case T_Q2_K: case T_Q3_K: case T_Q4_K: case T_Q5_K: case T_Q6_K:
-        case T_IQ4_NL: case T_IQ4_XS: case T_MXFP4:
+        case T_IQ4_NL: case T_IQ4_XS: case T_MXFP4: case T_NVFP4:
         case T_IQ2_XXS: case T_IQ2_XS: case T_IQ2_S:
         case T_IQ3_XXS: case T_IQ3_S: case T_IQ1_S: case T_IQ1_M:
             return true;
@@ -176,6 +185,30 @@ static void dq_mxfp4(const block_mxfp4 *b, float *y) {
     for (int j = 0; j < 16; j++) {
         y[j]      = kvalues_mxfp4[b->qs[j] & 0xF] * d;
         y[j + 16] = kvalues_mxfp4[b->qs[j] >> 4]  * d;
+    }
+}
+
+// UE4M3 sub-block scale, verbatim llama.cpp ggml_ue4m3_to_fp32 EXCEPT the
+// trailing *0.5f: upstream pairs that halving with its doubled-integer E2M1
+// table, and kvalues_mxfp4 above is already the halved float table, so the
+// two conventions meet at identical values by dropping both factors.
+static float ue4m3_to_fp32(uint8_t x) {
+    if (x == 0 || x == 0x7F) return 0.0f;
+    int exp = (x >> 3) & 0xF;
+    int man = x & 0x7;
+    if (exp == 0) return ldexpf((float)man, -9);
+    return ldexpf(1.0f + (float)man / 8.0f, exp - 7);
+}
+
+static void dq_nvfp4(const block_nvfp4 *b, float *y) {
+    for (int s = 0; s < QK_NVFP4 / QK_NVFP4_SUB; s++) {
+        float d = ue4m3_to_fp32(b->d[s]);
+        const uint8_t *q = b->qs + s * (QK_NVFP4_SUB / 2);
+        float *yb = y + s * QK_NVFP4_SUB;
+        for (int j = 0; j < QK_NVFP4_SUB / 2; j++) {
+            yb[j]     = kvalues_mxfp4[q[j] & 0xF] * d;
+            yb[j + 8] = kvalues_mxfp4[q[j] >> 4]  * d;
+        }
     }
 }
 
@@ -1293,6 +1326,7 @@ static void dequant_block(int type, const void *src, float *dst) {
         case T_IQ1_S: dq_iq1_s(src, dst); break;
         case T_IQ1_M: dq_iq1_m(src, dst); break;
         case T_MXFP4: dq_mxfp4(src, dst); break;
+        case T_NVFP4: dq_nvfp4(src, dst); break;
     }
 }
 
@@ -2160,6 +2194,24 @@ float vec_dot(int type, const void *row, const float *x, int n) {
                     t += kvalues_mxfp4[q[j] & 0xF] * xp[j]
                        + kvalues_mxfp4[q[j] >> 4]  * xp[j + 16];
                 s += ldexpf(1.0f, (int)b[i].e - 127) * t;
+            }
+            return s;
+        }
+        case T_NVFP4: {
+            // scalar only for now: the format arrived via the DGX Spark
+            // field report and correctness ships before speed
+            const block_nvfp4 *b = row;
+            float s = 0;
+            for (int i = 0; i < n / QK_NVFP4; i++) {
+                for (int sub = 0; sub < QK_NVFP4 / QK_NVFP4_SUB; sub++) {
+                    const uint8_t *q = b[i].qs + sub * (QK_NVFP4_SUB / 2);
+                    const float *xp = x + i * QK_NVFP4 + sub * QK_NVFP4_SUB;
+                    float t = 0;
+                    for (int j = 0; j < QK_NVFP4_SUB / 2; j++)
+                        t += kvalues_mxfp4[q[j] & 0xF] * xp[j]
+                           + kvalues_mxfp4[q[j] >> 4]  * xp[j + 8];
+                    s += ue4m3_to_fp32(b[i].d[sub]) * t;
+                }
             }
             return s;
         }

@@ -14,6 +14,7 @@
 // CPU path can always take over mid-run.
 #include "runner.h"
 #include "kernel_args.h"   // shared with src/kernels.cu — see the header
+#include "compat.h"     // plat_ram_available_bytes for the unified-pool budget
 
 #include <math.h>
 #include <stdarg.h>
@@ -72,6 +73,7 @@ static struct {
     CUresult (*PrimaryCtxRelease)(CUdevice);
     CUresult (*CtxSetCurrent)(CUcontext);
     CUresult (*MemGetInfo)(size_t *, size_t *);
+    CUresult (*DeviceGetAttribute)(int *, int, CUdevice);
     CUresult (*MemAlloc)(CUdeviceptr *, size_t);
     CUresult (*MemFree)(CUdeviceptr);
     CUresult (*MemcpyHtoD)(CUdeviceptr, const void *, size_t);
@@ -177,6 +179,10 @@ static bool cu_load(void) {
     cu.PrimaryCtxRelease = sym2("cuDevicePrimaryCtxRelease");
     cu.CtxSetCurrent     = dl_sym(cu.lib, "cuCtxSetCurrent");
     cu.MemGetInfo        = sym2("cuMemGetInfo");
+    // optional: every driver since CUDA 2.0 has it, but treating it as
+    // required would brick init over a probe whose absence just means
+    // "assume discrete"
+    cu.DeviceGetAttribute = dl_sym(cu.lib, "cuDeviceGetAttribute");
     cu.MemAlloc          = sym2("cuMemAlloc");
     cu.MemFree           = sym2("cuMemFree");
     cu.MemcpyHtoD        = sym2("cuMemcpyHtoD");
@@ -287,7 +293,11 @@ typedef struct gpu_weights {
     CUfunction  f_attn_dec, f_attn_merge;   // flash-decoding attention (decode)
     // kernel tables indexed by ggml tensor type; sized past the largest
     // supported type id (T_MXFP4 = 39), not the count of supported types
-    #define KT_N 40
+    // Sized past the HIGHEST type the loader can admit (T_NVFP4 = 40), not
+    // the highest CUDA serves: these arrays are indexed by ggml type, and a
+    // CPU-supported type with no CUDA kernel must land on a NULL slot and
+    // decline — never index past the table.
+    #define KT_N (T_NVFP4 + 1)
     CUfunction  f_mv[KT_N], f_mvb[KT_N];// indexed by ggml type; _b = tile variant
     CUfunction  f_mvt[KT_N];            // transposed matvec (training backward)
     CUfunction  f_gemm[KT_N];           // prefill tiled-GEMM variants (Q8_0/Q4_K)
@@ -466,6 +476,31 @@ bool gpu_mem_info(size_t *free_bytes, size_t *total_bytes) {
     if (free_bytes) *free_bytes = f;
     if (total_bytes) *total_bytes = t;
     return true;
+}
+
+// Integrated (unified-memory) device probe: CU_DEVICE_ATTRIBUTE_INTEGRATED.
+// On a DGX Spark (GB10) the GPU shares one LPDDR pool with the CPU and the
+// driver reports that pool as VRAM, so "how much VRAM" and "how much RAM"
+// are the same question — the caller that treats them as two budgets
+// over-promises by up to 2x. First seen in the wild in the 2026-08-29
+// Spark field report, where --caps said unified_memory:false on a machine
+// that is nothing but.
+#define CU_DEV_ATTR_INTEGRATED 17
+static bool cu_dev_integrated(CUdevice dev) {
+    int v = 0;
+    if (!cu.DeviceGetAttribute ||
+        cu.DeviceGetAttribute(&v, CU_DEV_ATTR_INTEGRATED, dev) != 0)
+        return false;
+    return v != 0;
+}
+
+bool gpu_unified_memory(void) {
+    if (!cu_load() || cu.Init(0) != 0) return false;
+    int n = 0;
+    if (cu.DeviceGetCount(&n) != 0 || n < 1) return false;
+    CUdevice dev;
+    if (cu.DeviceGet(&dev, 0) != 0) return false;
+    return cu_dev_integrated(dev);
 }
 
 // The CUDA kernels ship as embedded PTX, not shader source; there is no
@@ -1032,6 +1067,18 @@ static gpu_weights *shared_build(model_t *m, size_t act_bytes, int max_hd,
         size_t vram_free = 0, vram_total = 0;
         CK(cu.MemGetInfo(&vram_free, &vram_total));
         size_t vram_budget = vram_free;
+        // Unified memory (integrated device): the "VRAM" the driver reports
+        // IS system RAM, so the upload budget must also respect what the OS
+        // says is actually free plus reclaimable — the two numbers are views
+        // of one pool, and taking the CUDA view alone over-promises when
+        // the OS is holding memory the driver cannot see committed.
+        if (cu_dev_integrated(w->dev)) {
+            size_t avail = plat_ram_available_bytes();
+            if (avail && avail < vram_budget) vram_budget = avail;
+            fprintf(stderr, "gpu: unified memory — CPU and GPU share one "
+                    "pool; offload budget capped at available RAM "
+                    "(%.1f GiB)\n", (double)vram_budget / (1u << 30));
+        }
         if (m->reserve_vram_pct > 0) {
             size_t cap = vram_total / 100 * m->reserve_vram_pct;
             if (cap < vram_budget) vram_budget = cap;

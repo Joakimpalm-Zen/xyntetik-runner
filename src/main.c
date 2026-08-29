@@ -998,8 +998,12 @@ int main(int argc, char **argv) {
             printf("{\"backend\":\"metal\",\"name\":\"%s\",\"unified_memory\":true",
                    gname);
 #else
-            printf("{\"backend\":\"cuda\",\"name\":\"%s\",\"unified_memory\":false",
-                   gname);
+            // queried, not assumed: an integrated CUDA device (DGX Spark's
+            // GB10) shares one pool with the CPU, and the first field a
+            // launcher reads to decide whether RAM and VRAM are two budgets
+            // must not be a compile-time constant that says they are
+            printf("{\"backend\":\"cuda\",\"name\":\"%s\",\"unified_memory\":%s",
+                   gname, gpu_unified_memory() ? "true" : "false");
             printf(",\"min_compute_capability\":\"%s\",\"min_gpu\":\"%s\","
                    "\"ptx_target\":\"%s\"",
                    RUNNER_CUDA_MIN_CC, RUNNER_CUDA_MIN_GPU,
@@ -1084,6 +1088,7 @@ int main(int argc, char **argv) {
             { "IQ2_XXS", T_IQ2_XXS }, { "IQ2_XS", T_IQ2_XS },
             { "IQ2_S",  T_IQ2_S  },
             { "IQ3_XXS", T_IQ3_XXS }, { "IQ3_S", T_IQ3_S },
+            { "NVFP4",  T_NVFP4  },
         };
         const size_t n_quants = sizeof QUANTS / sizeof *QUANTS;
         printf(",\"quants\":[");
