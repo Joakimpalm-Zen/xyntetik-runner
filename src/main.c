@@ -457,8 +457,12 @@ static char *unescape(const char *s) {
     return out;
 }
 
-static void usage(const char *prog) {
-    fprintf(stderr,
+// Requested help is an answer and goes to stdout; help printed BECAUSE
+// something was wrong is a diagnostic and goes to stderr. `runner --help` is
+// how a script or a package manifest discovers this interface, and a tool
+// that answers that question on the error stream cannot be piped.
+static void usage_to(FILE *f, const char *prog) {
+    fprintf(f,
         "usage: %s -m model.gguf [options]\n\n"
         "options:\n"
         "  -m PATH        GGUF model file\n"
@@ -621,9 +625,12 @@ static void usage(const char *prog) {
         "                 reads only the header, so a partial download works\n"
         "  --version      print the runner version and exit\n"
         "  --parent-pid N exit when process N dies (supervisor cleanup)\n"
-        "  -v             verbose model info\n",
+        "  -v             verbose model info\n"
+        "  -h, --help     print this help to stdout and exit\n",
         prog);
 }
+
+static void usage(const char *prog) { usage_to(stderr, prog); }
 
 // --transcript capture: stream to stdout AND keep the exact bytes for the
 // record (the transcript's output.text is what the terminal saw, verbatim)
@@ -955,7 +962,10 @@ int main(int argc, char **argv) {
         else if (!strcmp(a, "--tool-info")) tool_info = true;
         else if (!strcmp(a, "--fit")) fit_path = NEXT;
         else if (!strcmp(a, "--version")) { printf("runner %s\n", RUNNER_VERSION); return 0; }
-        else if (!strcmp(a, "-h") || !strcmp(a, "--help")) { usage(argv[0]); return 0; }
+        else if (!strcmp(a, "-h") || !strcmp(a, "--help")) {
+            usage_to(stdout, argv[0]);
+            return 0;
+        }
         else { fprintf(stderr, "unknown option %s\n", a); usage(argv[0]); return 1; }
     }
     plat_parent_watch(parent_pid);

@@ -399,6 +399,32 @@ test-bare-invocation: runner
 		echo "FAIL: bare --no-tray did not print usage"; exit 1; }; \
 	echo "bare invocation ok (non-tty gets usage, --no-tray recognized)"
 
+# RI-6: requested help is an ANSWER, not a diagnostic. `runner --help` is how
+# a script or a package manifest discovers this binary's interface, so it goes
+# to stdout and exits 0, stderr stays reserved for things that went wrong, and
+# the help flags appear in the list they head. The parity gate below then keeps
+# that list and the README from drifting apart.
+test-help-interface: runner
+	@set -e; \
+	out=$$(./runner --help 2>/dev/null); \
+	echo "$$out" | grep -q "usage:" || { \
+		echo "FAIL: --help wrote no usage to stdout"; exit 1; }; \
+	err=$$(./runner --help 2>&1 >/dev/null); \
+	[ -z "$$err" ] || { \
+		echo "FAIL: --help wrote to stderr: $$err"; exit 1; }; \
+	./runner --help >/dev/null 2>&1 || { \
+		echo "FAIL: --help exited non-zero"; exit 1; }; \
+	echo "$$out" | grep -q -- "-h, --help" || { \
+		echo "FAIL: --help omits -h/--help from its own option list"; exit 1; }; \
+	err=$$(./runner --definitely-not-a-flag 2>&1 >/dev/null || true); \
+	echo "$$err" | grep -q "unknown option" || { \
+		echo "FAIL: an unknown option did not report on stderr"; exit 1; }; \
+	rc=0; ./runner --definitely-not-a-flag >/dev/null 2>&1 || rc=$$?; \
+	[ $$rc -ne 0 ] || { \
+		echo "FAIL: an unknown option exited 0"; exit 1; }; \
+	$(PYTHON) scripts/help-parity.py --binary ./$(RUNNER_EXE) --readme README.md; \
+	echo "help interface ok (stdout, exit 0, flags listed, README in parity)"
+
 # split-guard harness: same link as the shared-weights test — the guard lives
 # in the GPU registry, so it needs the real backend
 # NOT `test-split-guard%`: on POSIX $(TEST_BATCH) is `test-batch`, so that
@@ -1430,6 +1456,7 @@ test: $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSON_OOM) $(TEST_SCHEMA_OOM) 
 	./$(TEST_THREAD_DEFAULT)
 	./$(TEST_MODEL_LOAD_FAILURE)
 	$(MAKE) --no-print-directory test-bare-invocation
+	$(MAKE) --no-print-directory test-help-interface
 	$(MAKE) --no-print-directory test-shader-embed
 	$(MAKE) --no-print-directory test-metal-shader-gate
 	$(MAKE) --no-print-directory test-metal-kquant
@@ -1710,7 +1737,7 @@ test-makefile-sane:
 
 .PHONY: template-conformance template-conformance-refresh template-conformance-baseline template-conformance-harmony-oracle
 .PHONY: test-gpu-stub
-.PHONY: FORCE makefile-noop test-makefile-sane fixture-scale-note clean debug ptx test test-bare-invocation test-shader-embed test-metal-shader-gate test-apertus test-moe test-prune-experts test-metal-fallback test-metal-prefill test-metal-kquant test-metal-decode-only test-metal-split test-metal-bind-failure test-metal-kv-q8 test-metal-moe test-metal-gptoss-moe test-metal-gemma4-moe test-metal-gemma4-hetero test-metal-gelu-overflow test-metal-eseries test-metal-swa smoke release-check test-truncation fuzz fuzz-build fuzz-run test-shared-asan test-shared-noid test-split-guard test-swap-race
+.PHONY: FORCE makefile-noop test-makefile-sane fixture-scale-note clean debug ptx test test-bare-invocation test-help-interface test-shader-embed test-metal-shader-gate test-apertus test-moe test-prune-experts test-metal-fallback test-metal-prefill test-metal-kquant test-metal-decode-only test-metal-split test-metal-bind-failure test-metal-kv-q8 test-metal-moe test-metal-gptoss-moe test-metal-gemma4-moe test-metal-gemma4-hetero test-metal-gelu-overflow test-metal-eseries test-metal-swa smoke release-check test-truncation fuzz fuzz-build fuzz-run test-shared-asan test-shared-noid test-split-guard test-swap-race
 
 # Soak harness for the startup/SIGTERM race (test_signal_during_startup). Not
 # in `make test` — it is a diagnostic soak (thousands of spawns), run on demand

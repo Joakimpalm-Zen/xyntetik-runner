@@ -621,6 +621,7 @@ flags into unrelated feature sections.
 | `--tool-info` | With `-m`, print the model's tool-call protocol as JSON (`{"tool_family":…,"native_tool_protocol":…}`) and exit. No manifest required. |
 | `--fit PATH` | Estimate whether a GGUF fits this machine and exit. Reads only the header, so a partial download answers the question. |
 | `--version` | Print the version and exit. |
+| `-h`, `--help` | Print the option reference to stdout and exit `0`. Help asked for is written to stdout; help printed because something went wrong goes to stderr with a non-zero exit. |
 | `--parent-pid N` | Exit when process `N` dies; intended for supervisor cleanup. |
 | `-v` | Print verbose model and memory information. |
 
