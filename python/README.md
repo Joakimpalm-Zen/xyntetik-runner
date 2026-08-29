@@ -3,7 +3,8 @@
 The supported Python endpoint, process-launch, and startup-ownership boundary for Runner consumers.
 
 `StartupLease` atomically arbitrates one parent-owned Runner launch. It only
-tracks the owning parent and never inspects or kills an unrelated child process.
+tracks the owning parent and never kills an unrelated child process. PID reuse,
+dead owners, and unreaped zombie owners are treated as stale claims.
 
 `ManagedRunner.start()` owns the child for the whole call. A False return means
 nothing is left running: a runner that never answered before the deadline is

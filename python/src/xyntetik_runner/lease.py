@@ -257,15 +257,37 @@ def _record_owner_pid(record: dict[str, Any]) -> int | None:
     return pid if pid > 0 else None
 
 
+def _process_state(pid: int) -> str | None:
+    """Return the POSIX process state, when the host exposes one."""
+    try:
+        with open(f"/proc/{pid}/stat", "rb") as f:
+            data = f.read()
+        rparen = data.rfind(b")")
+        if rparen >= 0:
+            fields = data[rparen + 2:].split()
+            return fields[0].decode() if fields else None
+    except (OSError, UnicodeError):
+        pass
+    try:
+        env = dict(os.environ, LC_ALL="C")
+        env.pop("LC_TIME", None)
+        out = subprocess.run(["ps", "-o", "stat=", "-p", str(pid)],
+                             capture_output=True, text=True, timeout=5, env=env)
+        return out.stdout.strip() or None
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
 def _process_alive(pid: int) -> bool:
     if os.name != "nt":
         try:
             os.kill(pid, 0)
-            return True
         except PermissionError:
-            return True  # exists, owned by someone else
+            pass  # exists, owned by someone else; still reject a zombie
         except OSError:
             return False
+        state = _process_state(pid)
+        return not (state and state.startswith("Z"))
 
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
     kernel32.OpenProcess.argtypes = [ctypes.c_ulong, ctypes.c_int, ctypes.c_ulong]
@@ -273,8 +295,13 @@ def _process_alive(pid: int) -> bool:
     kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
     handle = kernel32.OpenProcess(0x1000, False, pid)
     if handle:
-        kernel32.CloseHandle(handle)
-        return True
+        try:
+            exit_code = ctypes.c_ulong(0)
+            ok = kernel32.GetExitCodeProcess(
+                ctypes.c_void_p(handle), ctypes.byref(exit_code))
+            return not ok or exit_code.value == 259  # STILL_ACTIVE
+        finally:
+            kernel32.CloseHandle(handle)
     return bool(ctypes.get_last_error() == 5)  # type: ignore[attr-defined]
 
 

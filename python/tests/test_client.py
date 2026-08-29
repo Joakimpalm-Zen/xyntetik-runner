@@ -5,6 +5,7 @@ import json
 import os
 import re
 import socket
+import subprocess
 import sys
 import tempfile
 import threading
@@ -234,6 +235,46 @@ class StartupLeaseTests(unittest.TestCase):
             old = time.time() - 100_000
             os.utime(path, (old, old))
             self.assertFalse(StartupLease(path).acquire())
+
+    def test_zombie_owner_does_not_keep_the_lease(self):
+        # kill(pid, 0) reports a zombie as existing, but it cannot refresh or
+        # release anything and must not deadlock every later launch.
+        if os.name == "nt":
+            self.skipTest("POSIX zombie-state regression")
+        from xyntetik_runner.lease import _process_start_time
+
+        child = subprocess.Popen([
+            sys.executable, "-c", "import time; time.sleep(0.05)"
+        ])
+        try:
+            start = _process_start_time(child.pid)
+            if start is None:
+                self.skipTest("child start time unreadable on this host")
+            deadline = time.monotonic() + 5
+            state = ""
+            while time.monotonic() < deadline:
+                observed = subprocess.run(
+                    ["ps", "-o", "stat=", "-p", str(child.pid)],
+                    capture_output=True, text=True, timeout=2,
+                )
+                state = observed.stdout.strip()
+                if state.startswith("Z"):
+                    break
+                time.sleep(0.01)
+            self.assertTrue(state.startswith("Z"), f"child state was {state!r}")
+
+            with tempfile.TemporaryDirectory() as temp_dir:
+                path = Path(temp_dir) / "runner.lease"
+                path.write_text(json.dumps({
+                    "owner_pid": child.pid,
+                    "owner_start": start,
+                    "token": "zombie",
+                }), encoding="utf-8")
+                lease = StartupLease(path)
+                self.assertTrue(lease.acquire())
+                lease.release()
+        finally:
+            child.wait(timeout=5)
 
 
 class _Response:
