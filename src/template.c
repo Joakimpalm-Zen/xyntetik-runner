@@ -253,14 +253,27 @@ static size_t emit_trimmed(char *out, size_t cap, size_t off, const char *pre,
 // does NOT default to false: gemma-4's reference defaults thinking off and
 // Qwen3's defaults it on, so collapsing "unspecified" onto either one would
 // silently misrender the other family.
+bool req_thinking_mode_valid(struct jv *req) {
+    if (!req) return true;
+    jv *kw = jv_get((jv *)req, "chat_template_kwargs");
+    if (kw && kw->type != J_NULL && kw->type != J_OBJ) return false;
+    jv *nested = kw && kw->type == J_OBJ
+        ? jv_get(kw, "enable_thinking") : NULL;
+    jv *top = jv_get((jv *)req, "enable_thinking");
+    if (nested && nested->type != J_NULL && nested->type != J_BOOL) return false;
+    if (top && top->type != J_NULL && top->type != J_BOOL) return false;
+    return true;
+}
+
 int req_thinking_mode(struct jv *req) {
     if (!req) return THINK_DEFAULT;
     jv *kw = jv_get((jv *)req, "chat_template_kwargs");
     jv *v  = kw ? jv_get(kw, "enable_thinking") : NULL;
-    if (!v) v = jv_get((jv *)req, "enable_thinking");
+    if (!v || v->type == J_NULL)
+        v = jv_get((jv *)req, "enable_thinking");
     // absent means DEFAULT, not false: the reference default differs per
     // family, so a silent request must not be forced onto one of them
-    if (!v) return THINK_DEFAULT;
+    if (!v || v->type == J_NULL) return THINK_DEFAULT;
     return jv_bool(v, false) ? THINK_ON : THINK_OFF;
 }
 

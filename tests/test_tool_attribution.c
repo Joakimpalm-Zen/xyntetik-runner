@@ -598,6 +598,28 @@ static void test_llama2_refuses_consecutive_user_turns(void) {
     ta_tmpl = TMPL_HARMONY;
 }
 
+static void test_qwen3_null_thinking_mode_uses_family_default(void) {
+    ta_tmpl = TMPL_CHATML_THINK;
+    ta_run(handle_chat,
+           "{\"model\":\"m\",\"enable_thinking\":null,\"messages\":["
+           "{\"role\":\"user\",\"content\":\"question\"}]}"
+    );
+    ck(ta_prompt != NULL, "qwen3, null enable_thinking: a prompt was produced");
+    ck(ta_prompt && strstr(ta_prompt, "<think>\n\n</think>") == NULL,
+       "qwen3, null enable_thinking: null preserves the think-on default");
+    ta_tmpl = TMPL_HARMONY;
+}
+
+static void test_qwen3_refuses_non_boolean_thinking_mode(void) {
+    ta_tmpl = TMPL_CHATML_THINK;
+    ta_run(handle_chat,
+           "{\"model\":\"m\",\"enable_thinking\":\"true\",\"messages\":["
+           "{\"role\":\"user\",\"content\":\"question\"}]}"
+    );
+    ta_expect_bad_request("qwen3, string enable_thinking", "enable_thinking");
+    ta_tmpl = TMPL_HARMONY;
+}
+
 // ---------------------------------------------------------------------------
 // CONTRACT: a tool call and its result, replayed as history, must serialize
 // through the SAME model-native protocol on all three surfaces.
@@ -918,6 +940,8 @@ int main(void) {
     test_chat_refuses_nameless_tool_call();
     test_mistral_refuses_system_mid_history();
     test_llama2_refuses_consecutive_user_turns();
+    test_qwen3_null_thinking_mode_uses_family_default();
+    test_qwen3_refuses_non_boolean_thinking_mode();
     free(ta_prompt);
     fprintf(stderr, ta_fail ? "test-tool-attribution: FAILED\n"
                             : "test-tool-attribution: all checks passed\n");

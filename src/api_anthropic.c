@@ -563,6 +563,13 @@ static char *messages_prompt(slot_t *s, sock_t fd, jv *req, tool_envelope *env,
     *strict = false;
     memset(env, 0, sizeof(*env));
 
+    if (!req_thinking_mode_valid(req)) {
+        send_error(fd, 400,
+                   "enable_thinking must be a boolean or null, either at the "
+                   "top level or inside chat_template_kwargs");
+        return NULL;
+    }
+
     jv *msgs = jv_get(req, "messages");
     if (!msgs || msgs->type != J_ARR || msgs->n == 0) {
         send_error(fd, 400, "missing messages");

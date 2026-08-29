@@ -431,6 +431,12 @@ static bool responses_validate_content_parts(jv *input, char *err,
 
 void handle_responses(slot_t *s, sock_t fd, jv *req) {
     if (responses_reject_stateful(fd, req)) return;
+    if (!req_thinking_mode_valid(req)) {
+        send_error(fd, 400,
+                   "enable_thinking must be a boolean or null, either at the "
+                   "top level or inside chat_template_kwargs");
+        return;
+    }
 
     jv *input = jv_get(req, "input");
     if (!input || input->type == J_NULL) {

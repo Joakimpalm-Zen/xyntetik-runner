@@ -1430,6 +1430,16 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
         send_error(fd, 400, msg);
         return;
     }
+    bool cache_prompt = true;
+    bool share_prefix = true;
+    if (!request_bool(req, "cache_prompt", true, &cache_prompt)) {
+        send_error(fd, 400, "cache_prompt must be a boolean");
+        return;
+    }
+    if (!request_bool(req, "prefix_cache", true, &share_prefix)) {
+        send_error(fd, 400, "prefix_cache must be a boolean");
+        return;
+    }
 
     // Per-request deadline. A wall-clock bound is what a batching server owes
     // its clients that a serial one does not: your latency now depends on who
@@ -1509,6 +1519,20 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
     if (!request_bool(req, "stream", false, &stream)) {
         send_error(fd, 400, "stream must be a boolean");
         return;
+    }
+    bool include_usage = false;
+    jv *stream_options = jv_get(req, "stream_options");
+    if (!absent(stream_options)) {
+        if (stream_options->type != J_OBJ) {
+            send_error(fd, 400, "stream_options must be an object");
+            return;
+        }
+        if (!request_bool(stream_options, "include_usage", false,
+                          &include_usage)) {
+            send_error(fd, 400,
+                       "stream_options.include_usage must be a boolean");
+            return;
+        }
     }
     // OpenAI logprobs. Chat uses a boolean plus top_logprobs; legacy text
     // completions use logprobs itself as the requested alternative count.
@@ -1816,11 +1840,9 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
     // not free (a memcpy, and on CUDA a device resync), but it reaches across
     // slots, across requests and across model swaps, so it is what turns a
     // repeated system/tool/schema block into work nobody does twice.
-    bool cache_prompt = jv_bool(jv_get(req, "cache_prompt"), true);
     // Opt out of the *shared* tier only: a caller isolating a pathological
     // prompt still wants its own slot's cache, and one that wants fresh-prompt
     // telemetry wants neither. cache_prompt:false remains the full opt-out.
-    bool share_prefix = jv_bool(jv_get(req, "prefix_cache"), true);
     prefix_reuse reuse = { 0, 0, 0.0 };
     gen_ctx g = { .out = {0}, .fd = fd, .stream = stream, .api = api,
                   .stop_strs = stops, .n_stop = n_stops, .eng = e,
@@ -2141,8 +2163,7 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
             // OpenAI stream_options {"include_usage": true}: one extra chunk
             // with empty choices and the request's token accounting — AI-SDK
             // clients (Cline et al.) request this on every stream
-            if (ok && jv_bool(jv_get(jv_get(req, "stream_options"),
-                                     "include_usage"), false)) {
+            if (ok && include_usage) {
                 sbuf u = {0};
                 sb_fmt(&u, "{\"id\":\"%s\",\"object\":\"%s\",\"created\":%ld,"
                            "\"model\":\"", g.id,

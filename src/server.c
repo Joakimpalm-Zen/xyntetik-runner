@@ -372,6 +372,12 @@ static void handle_chat(slot_t *s, sock_t fd, jv *req) {
         send_error(fd, 400, merr);
         return;
     }
+    if (!req_thinking_mode_valid(req)) {
+        send_error(fd, 400,
+                   "enable_thinking must be a boolean or null, either at the "
+                   "top level or inside chat_template_kwargs");
+        return;
+    }
     // OpenAI "tools" become a leading system turn (template.c owns the syntax).
     //
     // Strict mode compiles them into a discriminated union that constrains

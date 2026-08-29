@@ -159,6 +159,7 @@ struct jv;
 // read the per-request thinking control (top level or chat_template_kwargs);
 // THINK_DEFAULT when absent, so a silent request renders what the model's own
 // reference template would render
+bool req_thinking_mode_valid(struct jv *req);
 int req_thinking_mode(struct jv *req);
 // render OpenAI "tools" declarations as a system turn (no-op when absent)
 void tools_render(const struct jv *tools, struct sbuf *out);

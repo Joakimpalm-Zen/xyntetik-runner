@@ -139,6 +139,18 @@ def test_unsupported_completion_field_semantics_are_rejected(client, field, valu
                       contains=field)
 
 
+@pytest.mark.parametrize("field", ["cache_prompt", "prefix_cache"])
+def test_cache_controls_require_booleans(client, field):
+    client.expect_400(dict(CHAT, **{field: "false"}),
+                      name=f"bad-{field}-type", contains=field)
+
+
+def test_stream_include_usage_requires_a_boolean(client):
+    client.expect_400(
+        dict(CHAT, stream=True, stream_options={"include_usage": "true"}),
+        name="bad-stream-include-usage-type", contains="include_usage")
+
+
 @pytest.mark.parametrize("value", [-1, 21])
 def test_top_logprobs_range_is_rejected(client, value):
     client.expect_400(dict(CHAT, logprobs=True, top_logprobs=value),
