@@ -1065,6 +1065,7 @@ static snode *atem_seq(int count) {
     if (!n) return NULL;
     n->props = calloc((size_t)count, sizeof(*n->props));
     if (!n->props) { schema_free(n); return NULL; }
+    n->n_props_cap = count;
     return n;
 }
 
@@ -1097,6 +1098,19 @@ static snode *atem_raw_bounded(const char *sentinel, int max_bytes) {
 
 static bool atem_seq_add(snode *seq, snode *child) {
     if (!child) return false;
+    // The capacity is chosen at atem_seq() and the adds are written by hand,
+    // several of them behind conditionals (`atem_seq(lead ? 4 : 3)`), so the
+    // two can drift apart in a later edit. Nothing here bounds-checked that
+    // pairing, and props is exact-sized: one add too many was a silent heap
+    // write past the allocation. The container answers for its own capacity
+    // now and refuses instead, which fails the schema compile loudly.
+    //
+    // On that refusal an inline-constructed child (`atem_seq_add(seq,
+    // atem_lit("x"))`) leaks, because no caller holds a pointer to free. That
+    // is deliberate: the path is a programming error that no call site reaches
+    // today, and a one-node leak on an impossible branch is strictly better
+    // than the heap write past the allocation it replaces.
+    if (seq->n_props >= seq->n_props_cap) return false;
     // see sval_ws_is_content: the container answers for a significant child
     // whose frame does not exist yet
     if (child->whitespace_significant) seq->whitespace_significant = true;

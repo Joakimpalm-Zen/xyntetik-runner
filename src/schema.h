@@ -26,6 +26,7 @@ struct snode {
     char  **lits; int n_lits;                       // enum literals (JSON text)
     char  **keys; int *key_len; snode **props;      // object properties
     bool   *req;  int n_props;                      //   (declared order)
+    int     n_props_cap;                            // SN_SEQ: allocated slots
     char  **next_keys; int *next_key_len;           // native member prefixes
     snode  *items; int min_items, max_items;        // array items / map values
     snode **alts; int n_alts;                       // type unions
