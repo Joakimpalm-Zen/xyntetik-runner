@@ -1284,6 +1284,40 @@ static bool whole_number(double n) {
     return n == floor(n);
 }
 
+// RI-5: name the field and the rule it broke.
+//
+// Six sampling settings used to share one "numeric sampling parameter out of
+// range", which identifies neither the offending field nor its bound, so a
+// request carrying several of them could only be debugged by bisection. The
+// error envelope already carries a structured `param`; this puts it to work.
+//
+// Wrong-typed and out-of-range are also separated, because they are different
+// mistakes with different fixes: one is a client serialising a number as a
+// string, the other is a value the engine cannot run.
+//
+// `rule` states the accepted range in the caller's terms rather than echoing
+// the value back, since a caller who sent 1.5 for top_p can see what they
+// sent and needs to be told what is allowed.
+static bool sampling_number(sock_t fd, jv *req, const char *key, double dflt,
+                            double min, double max, const char *rule,
+                            double *out) {
+    jv *v = jv_get(req, key);
+    char msg[192];
+    if (!absent(v) && v->type != J_NUM) {
+        snprintf(msg, sizeof(msg), "%s must be a number", key);
+        send_error_detail(fd, 400, msg, key, "invalid_type");
+        return false;
+    }
+    double n = absent(v) ? dflt : v->num;
+    if (!isfinite(n) || n < min || n > max) {
+        snprintf(msg, sizeof(msg), "%s must be %s", key, rule);
+        send_error_detail(fd, 400, msg, key, "invalid_value");
+        return false;
+    }
+    *out = n;
+    return true;
+}
+
 // Largest double strictly below 2^64, i.e. 2^64 - 2048: the next representable
 // double IS 2^64, and converting that to uint64_t is undefined. Naming it lets
 // the assertion below guarantee the cast rather than a runtime check that can
@@ -1493,26 +1527,38 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
     // one request's overrides must not leak into the next on this slot; only
     // the rng STATE carries across so sampling sequences stay diverse
     double temp, top_p, min_p, top_k, seed, repeat_penalty;
-    if (!request_number(req, "temperature", s->smp_base.temp, 0, FLT_MAX, &temp) ||
-        !request_number(req, "top_p", s->smp_base.top_p, 0, 1, &top_p) ||
-        !request_number(req, "min_p", s->smp_base.min_p, 0, 1, &min_p) ||
-        !request_number(req, "top_k", s->smp_base.top_k, 0, INT_MAX, &top_k) ||
+    if (!sampling_number(fd, req, "temperature", s->smp_base.temp,
+                         0, FLT_MAX, "0 or greater", &temp) ||
+        !sampling_number(fd, req, "top_p", s->smp_base.top_p,
+                         0, 1, "between 0 and 1", &top_p) ||
+        !sampling_number(fd, req, "min_p", s->smp_base.min_p,
+                         0, 1, "between 0 and 1", &min_p) ||
+        !sampling_number(fd, req, "top_k", s->smp_base.top_k,
+                         0, INT_MAX, "between 0 and 2147483647", &top_k) ||
         // the model's family preset decides the default; a client that wants
         // no penalty at all asks for 1. Zero is rejected rather than treated
         // as "off": the penalty divides by it.
-        !request_number(req, "repeat_penalty", s->smp_base.repeat_penalty,
-                        FLT_MIN, FLT_MAX, &repeat_penalty) ||
-        !request_number(req, "seed", 0, 0, SEED_MAX, &seed)) {
-        send_error(fd, 400, "numeric sampling parameter out of range");
-        return;
-    }
+        !sampling_number(fd, req, "repeat_penalty", s->smp_base.repeat_penalty,
+                         FLT_MIN, FLT_MAX,
+                         "greater than 0 (send 1 for no penalty)",
+                         &repeat_penalty) ||
+        !sampling_number(fd, req, "seed", 0, 0, SEED_MAX,
+                         "between 0 and 18446744073709549568", &seed))
+        return;   // sampling_number already answered, naming the field
     // top_k and seed are held as integer engine state, so accepting 2.5 and
     // truncating it to 2 would run the request with settings the caller did
-    // not ask for.
-    if (!whole_number(top_k) || !whole_number(seed)) {
-        // Not "out of range": 2.5 is inside every bound top_k has, and saying
-        // otherwise sends a caller hunting for a limit they never exceeded.
-        send_error(fd, 400, "top_k and seed must be whole numbers");
+    // not ask for. Not "out of range": 2.5 is inside every bound top_k has,
+    // and saying otherwise sends a caller hunting for a limit they never
+    // exceeded. One field per message, so a request setting both learns which
+    // of them was wrong.
+    if (!whole_number(top_k)) {
+        send_error_detail(fd, 400, "top_k must be a whole number",
+                          "top_k", "invalid_value");
+        return;
+    }
+    if (!whole_number(seed)) {
+        send_error_detail(fd, 400, "seed must be a whole number",
+                          "seed", "invalid_value");
         return;
     }
     // An explicit seed:0 asks for a REPRODUCIBLE run and does not get one:

@@ -67,24 +67,27 @@ def test_unsupported_schema_construct_is_rejected(client):
     ("stream", "true", "stream"),
     ("stream", 1, "stream"),
     ("stream", [], "stream"),
-    ("top_k", 1e300, "sampling"),
-    ("temperature", 1e300, "sampling"),
-    ("top_p", 2.0, "sampling"),
-    ("top_p", -1, "sampling"),
-    ("min_p", 5, "sampling"),
+    ("top_k", 1e300, "top_k"),
+    ("temperature", 1e300, "temperature"),
+    ("top_p", 2.0, "top_p"),
+    ("top_p", -1, "top_p"),
+    ("min_p", 5, "min_p"),
     ("keep_alive", 1e300, "keep_alive"),
     ("top_logprobs", 999, "top_logprobs"),
     # Wrong TYPE is rejected for the same reason wrong RANGE is: a value the
     # server cannot use must not be replaced by a default the caller never
     # asked for. Several HTTP layers stringify numbers out of form or
     # env-derived config, so this is the common shape of the mistake.
-    ("temperature", "hot", "sampling"),
-    ("temperature", "0.7", "sampling"),
-    ("top_p", "0.9", "sampling"),
-    ("top_k", True, "sampling"),
-    ("min_p", [], "sampling"),
-    ("repeat_penalty", "1.1", "sampling"),
-    ("seed", "1234", "sampling"),
+    ("temperature", "hot", "temperature"),
+    # RI-5: each sampling field names ITSELF. These asserted the shared
+    # category word "sampling" until 2026-08-29, which told a caller sending
+    # several settings nothing about which one was refused.
+    ("temperature", "0.7", "temperature"),
+    ("top_p", "0.9", "top_p"),
+    ("top_k", True, "top_k"),
+    ("min_p", [], "min_p"),
+    ("repeat_penalty", "1.1", "repeat_penalty"),
+    ("seed", "1234", "seed"),
     ("max_tokens", "eight", "max_tokens"),
     ("max_completion_tokens", "eight", "max_tokens"),
     ("keep_alive", "300", "keep_alive"),
@@ -98,7 +101,7 @@ def test_unsupported_schema_construct_is_rejected(client):
     ("seed", 1.5, "whole number"),
     # This one IS a range rejection: the seed bound is the largest double below
     # 2^64, so 2^64 itself never reaches the uint64_t cast.
-    ("seed", 18446744073709551616, "sampling"),
+    ("seed", 18446744073709551616, "seed"),
     ("max_tokens", 1.5, "max_tokens"),
     ("keep_alive", 1.5, "keep_alive"),
     ("top_logprobs", 1.5, "top_logprobs"),
@@ -484,3 +487,46 @@ def test_thinking_budget_tokens_is_validated(client, budget):
          "thinking": {"type": "disabled", "budget_tokens": budget}},
         name=f"thinking-budget-{budget!r}", contains="budget_tokens",
         path="/v1/messages")
+
+
+# ------------------------------------------------------- sampling parameters
+#
+# RI-5: a caller sending several sampling settings at once cannot act on
+# "numeric sampling parameter out of range". It names neither the field that
+# was rejected nor the rule it broke, so the only way forward is to bisect the
+# request. Each field answers for itself, with the structured `param` the
+# error envelope already carries.
+@pytest.mark.parametrize("field,value", [
+    ("temperature", -1),
+    ("top_p", 1.5),
+    ("top_p", -0.1),
+    ("min_p", 2),
+    ("top_k", -1),
+    ("repeat_penalty", 0),
+])
+def test_out_of_range_sampling_names_its_field(client, field, value):
+    """The rejection names the offending field, not the category."""
+    client.expect_400(dict(CHAT, **{field: value}),
+                      name=f"sampling-range-{field}-{value}",
+                      contains=field)
+
+
+@pytest.mark.parametrize("field", [
+    "temperature", "top_p", "min_p", "top_k", "repeat_penalty", "seed",
+])
+def test_wrong_typed_sampling_names_its_field(client, field):
+    """A string where a number belongs is a different fault from a bad
+    value, and it names the same field."""
+    client.expect_400(dict(CHAT, **{field: "nope"}),
+                      name=f"sampling-type-{field}",
+                      contains=field)
+
+
+@pytest.mark.parametrize("field", ["top_k", "seed"])
+def test_fractional_integer_sampling_names_its_field(client, field):
+    """top_k and seed are integer engine state. 2.5 is inside every bound
+    they have, so the older shared message sent callers hunting for a limit
+    they never exceeded; each names itself now."""
+    client.expect_400(dict(CHAT, **{field: 2.5}),
+                      name=f"sampling-whole-{field}",
+                      contains=field)
