@@ -271,6 +271,53 @@ static const char *chat_role(jv *msg) {
     return !strcmp(role, "developer") ? "system" : role;
 }
 
+static bool validate_chat_sequence(const jv *msgs, int tmpl, char *err,
+                                   size_t err_cap) {
+    bool leading_system_only = tmpl == TMPL_LLAMA2 ||
+                               tmpl == TMPL_LLAMA2_FALLBACK ||
+                               tmpl == TMPL_GEMMA ||
+                               tmpl == TMPL_MISTRAL ||
+                               tmpl == TMPL_MISTRAL_V1 ||
+                               tmpl == TMPL_MISTRAL_NEMO ||
+                               tmpl == TMPL_APERTUS ||
+                               tmpl == TMPL_ORNITH;
+    if (!leading_system_only) return true;
+    for (int i = 1; i < msgs->n; i++) {
+        if (!strcmp(chat_role(msgs->items[i]), "system")) {
+            snprintf(err, err_cap,
+                     "messages[%d].role system is not representable by the %s "
+                     "template after history has started", i,
+                     template_name(tmpl));
+            return false;
+        }
+    }
+    bool alternating = tmpl == TMPL_LLAMA2 ||
+                       tmpl == TMPL_LLAMA2_FALLBACK ||
+                       tmpl == TMPL_GEMMA ||
+                       tmpl == TMPL_MISTRAL ||
+                       tmpl == TMPL_MISTRAL_V1 ||
+                       tmpl == TMPL_MISTRAL_NEMO;
+    if (!alternating) return true;
+    int first = !strcmp(chat_role(msgs->items[0]), "system") ? 1 : 0;
+    for (int i = first; i < msgs->n; i++) {
+        const char *role = chat_role(msgs->items[i]);
+        // Tool-loop history uses extra roles outside the reference's ordinary
+        // two-role assertion and is validated by its own protocol checks.
+        if (strcmp(role, "user") && strcmp(role, "assistant")) return true;
+    }
+    for (int i = first; i < msgs->n; i++) {
+        const char *want = ((i - first) & 1) ? "assistant" : "user";
+        if (strcmp(chat_role(msgs->items[i]), want)) {
+            snprintf(err, err_cap,
+                     "messages must alternate user and assistant roles for the "
+                     "%s template (messages[%d] must be %s)",
+                     template_name(tmpl), i, want);
+            return false;
+        }
+    }
+    return true;
+}
+
 // The function a tool turn is reporting for, resolved for HARMONY.
 //
 // template.c's tool_result_name() has a last resort this surface cannot use:
@@ -318,6 +365,10 @@ static void handle_chat(slot_t *s, sock_t fd, jv *req) {
     }
     char merr[192];
     if (!validate_chat_messages(msgs, merr, sizeof(merr))) {
+        send_error(fd, 400, merr);
+        return;
+    }
+    if (!validate_chat_sequence(msgs, s->tmpl, merr, sizeof(merr))) {
         send_error(fd, 400, merr);
         return;
     }

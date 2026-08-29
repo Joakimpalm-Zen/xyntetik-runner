@@ -575,6 +575,29 @@ static void test_chat_refuses_nameless_tool_call(void) {
     ta_tmpl = TMPL_HARMONY;
 }
 
+static void test_mistral_refuses_system_mid_history(void) {
+    ta_tmpl = TMPL_MISTRAL;
+    ta_run(handle_chat,
+           "{\"model\":\"m\",\"messages\":["
+           "{\"role\":\"user\",\"content\":\"first\"},"
+           "{\"role\":\"system\",\"content\":\"must obey\"},"
+           "{\"role\":\"assistant\",\"content\":\"prior\"}]}"
+    );
+    ta_expect_bad_request("mistral, system mid-history", "system");
+    ta_tmpl = TMPL_HARMONY;
+}
+
+static void test_llama2_refuses_consecutive_user_turns(void) {
+    ta_tmpl = TMPL_LLAMA2;
+    ta_run(handle_chat,
+           "{\"model\":\"m\",\"messages\":["
+           "{\"role\":\"user\",\"content\":\"first\"},"
+           "{\"role\":\"user\",\"content\":\"second\"}]}"
+    );
+    ta_expect_bad_request("llama2, consecutive user turns", "alternate");
+    ta_tmpl = TMPL_HARMONY;
+}
+
 // ---------------------------------------------------------------------------
 // CONTRACT: a tool call and its result, replayed as history, must serialize
 // through the SAME model-native protocol on all three surfaces.
@@ -893,6 +916,8 @@ int main(void) {
     test_chat_explicit_name_is_unchanged();
     test_chat_refuses_non_json_tool_call_arguments();
     test_chat_refuses_nameless_tool_call();
+    test_mistral_refuses_system_mid_history();
+    test_llama2_refuses_consecutive_user_turns();
     free(ta_prompt);
     fprintf(stderr, ta_fail ? "test-tool-attribution: FAILED\n"
                             : "test-tool-attribution: all checks passed\n");
