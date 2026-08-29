@@ -1297,6 +1297,13 @@ collapsing "unspecified" onto one of them would misrender the other.
 Qwen3 history also retains the reference template's empty
 `<think>\n\n</think>` block before a trailing historical assistant answer;
 this is replay framing, independent of whether the new turn enables thinking.
+Under tool calling the same field decides whether the constrained grammar
+admits Qwen3's leading `<think>` block before a call. Qwen3's reference
+defaults thinking on, so a grammar that forbade it would force the model to
+choose between reasoning and calling a tool; with thinking on, reasoning then
+calling is legal and the tool name stays constrained inside the thought turn.
+`enable_thinking:false` renders the closed block and the grammar goes straight
+to the call.
 
 ```python
 import openai

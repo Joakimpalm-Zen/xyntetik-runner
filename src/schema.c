@@ -1439,7 +1439,10 @@ static snode *qwen_call_tail(jv *tool, char *err, int errcap) {
     return seq;
 }
 
-static snode *qwen_call(jv *tools, const char *only_tool,
+// `lead` emits the opening `<tool_call>` marker. It is dropped when an ENUM
+// upstream has already consumed the marker to discriminate a thought block
+// from a call, exactly as g4_call's own lead flag works.
+static snode *qwen_call(jv *tools, const char *only_tool, bool lead,
                         char *err, int errcap) {
     int selected = 0;
     for (int i = 0; i < tools->n; i++) {
@@ -1452,14 +1455,14 @@ static snode *qwen_call(jv *tools, const char *only_tool,
         snprintf(err, errcap, "named Qwen tool is not declared");
         return NULL;
     }
-    snode *root = atem_seq(3);
+    snode *root = atem_seq(lead ? 4 : 3);
     snode *names = sn_new(SN_ENUM), *choice = sn_new(SN_COND);
     if (!root || !names || !choice) goto fail;
     names->lits = calloc((size_t)selected, sizeof(*names->lits));
     choice->alts = calloc((size_t)selected, sizeof(*choice->alts));
-    if (!names->lits || !choice->alts ||
-        !atem_seq_add(root, atem_lit(
-            "<tool_call>\n{\"name\": \""))) goto fail;
+    if (!names->lits || !choice->alts) goto fail;
+    if (lead && !atem_seq_add(root, atem_lit("<tool_call>"))) goto fail;
+    if (!atem_seq_add(root, atem_lit("\n{\"name\": \""))) goto fail;
     names->min_items = 1;
     names->whitespace_significant = true;
     choice->whitespace_significant = true;
@@ -1492,8 +1495,29 @@ fail:
     return NULL;
 }
 
+// The turn's non-call alternative: a caller-supplied final schema, or plain
+// prose terminated by the chatml stop marker.
+static snode *qwen_or_final(snode *body, jv *final_schema,
+                            char *err, int errcap) {
+    snode *final = final_schema ? compile_node(final_schema, err, errcap, 0)
+                                : atem_raw("<|im_end|>");
+    snode *root = final ? sn_new(SN_UNION) : NULL;
+    if (root) root->alts = calloc(2, sizeof(*root->alts));
+    if (!root || !root->alts) {
+        schema_free(body); schema_free(final); schema_free(root);
+        if (!err[0]) snprintf(err, errcap,
+                              "out of memory compiling Qwen turn");
+        return NULL;
+    }
+    root->whitespace_significant = true;
+    root->alts[root->n_alts++] = body;
+    root->alts[root->n_alts++] = final;
+    return root;
+}
+
 snode *schema_compile_qwen_turn(jv *tools, bool allow_final,
                                 const char *only_tool, jv *final_schema,
+                                bool allow_reasoning,
                                 char *err, int errcap) {
     err[0] = 0;
     if (!tools || tools->type != J_ARR || tools->n <= 0 || tools->n > 60) {
@@ -1501,29 +1525,69 @@ snode *schema_compile_qwen_turn(jv *tools, bool allow_final,
                  "Qwen tools must be a non-empty array of at most 60 tools");
         return NULL;
     }
-    snode *call = qwen_call(tools, only_tool, err, errcap);
-    if (!call || !allow_final) return call;
-    snode *final = final_schema ? compile_node(final_schema, err, errcap, 0)
-                                : atem_raw("<|im_end|>");
-    snode *root = final ? sn_new(SN_UNION) : NULL;
-    if (root) root->alts = calloc(2, sizeof(*root->alts));
-    if (!root || !root->alts) {
-        schema_free(call); schema_free(final); schema_free(root);
-        if (!err[0]) snprintf(err, errcap,
-                              "out of memory compiling Qwen turn");
-        return NULL;
+    if (!allow_reasoning) {
+        snode *call = qwen_call(tools, only_tool, true, err, errcap);
+        if (!call || !allow_final) return call;
+        return qwen_or_final(call, final_schema, err, errcap);
     }
-    root->whitespace_significant = true;
-    root->alts[root->n_alts++] = call;
-    root->alts[root->n_alts++] = final;
-    return root;
+    // Thought and call blocks BOTH open with '<', so they cannot be two
+    // alternatives of a union -- pick_alt would resolve on that byte and the
+    // second would be unreachable. One ENUM discriminates them instead,
+    // exactly as gemma4's reasoning turn does, and the union below is left
+    // with a single '<' branch against prose.
+    snode *marked = atem_seq(2);
+    snode *disc = sn_new(SN_ENUM), *choice = sn_new(SN_COND);
+    snode *thought = NULL, *call = NULL, *after = NULL;
+    if (!marked || !disc || !choice) goto fail;
+    disc->lits = calloc(2, sizeof(*disc->lits));
+    choice->alts = calloc(2, sizeof(*choice->alts));
+    if (!disc->lits || !choice->alts) goto fail;
+    disc->min_items = 1;
+    disc->whitespace_significant = true;
+    choice->whitespace_significant = true;
+    marked->whitespace_significant = true;
+    disc->lits[disc->n_lits++] = strdup("<think>");
+    disc->lits[disc->n_lits++] = strdup("<tool_call>");
+    if (!disc->lits[0] || !disc->lits[1]) goto fail;
+    // Once the thought closes, what follows is an ordinary un-thought Qwen
+    // turn, so the same compiler builds it. The sentinel carries the two
+    // newlines the reference template writes after `</think>`, which is also
+    // the form runner emits itself for enable_thinking=false.
+    after = schema_compile_qwen_turn(tools, allow_final, only_tool,
+                                     final_schema, false, err, errcap);
+    thought = atem_seq(2);
+    if (!thought || !after ||
+        !atem_seq_add(thought, atem_raw("</think>\n\n")) ||
+        !atem_seq_add(thought, after)) {
+        if (thought && thought->n_props < 2) schema_free(after);
+        after = NULL;
+        goto fail;
+    }
+    after = NULL;
+    thought->whitespace_significant = true;
+    call = qwen_call(tools, only_tool, false, err, errcap);
+    if (!call) goto fail;
+    choice->alts[choice->n_alts++] = thought; thought = NULL;
+    choice->alts[choice->n_alts++] = call;    call = NULL;
+    if (!atem_seq_add(marked, disc)) goto fail;
+    disc = NULL;
+    if (!atem_seq_add(marked, choice)) goto fail;
+    choice = NULL;
+    if (!allow_final) return marked;
+    return qwen_or_final(marked, final_schema, err, errcap);
+fail:
+    if (!err[0]) snprintf(err, errcap, "out of memory compiling Qwen turn");
+    schema_free(after); schema_free(thought); schema_free(call);
+    schema_free(disc); schema_free(choice); schema_free(marked);
+    return NULL;
 }
 
 snode *schema_compile_qwen_parallel(jv *tools, const char *only_tool,
                                     char *err, int errcap) {
     snode *root = atem_seq(3);
-    snode *first = qwen_call(tools, only_tool, err, errcap);
-    snode *second = first ? qwen_call(tools, only_tool, err, errcap) : NULL;
+    snode *first = qwen_call(tools, only_tool, true, err, errcap);
+    snode *second = first ? qwen_call(tools, only_tool, true, err, errcap)
+                          : NULL;
     if (!root || !first || !second || !atem_seq_add(root, first) ||
         !atem_seq_add(root, atem_lit("\n")) ||
         !atem_seq_add(root, second)) {

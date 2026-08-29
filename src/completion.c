@@ -1756,6 +1756,7 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
                        : schema_compile_qwen_turn(
                              env->tools, env->kind == TCH_AUTO, only,
                              env->kind == TCH_AUTO ? request_schema(req) : NULL,
+                             req_thinking_mode(req) != THINK_OFF,
                              serr, sizeof(serr));
         } else if (env->proto == TP_ATEM) {
             const char *only = env->kind == TCH_NAMED ? env->named : NULL;

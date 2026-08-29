@@ -68,9 +68,13 @@ snode *schema_compile_atem_parallel(struct jv *tools, const char *only_tool,
                                     char *err, int errcap);
 // Compile Qwen2.5/Qwen3's native JSON call block. Auto mode may emit a plain
 // or schema-constrained final answer; named/required mode admits calls only.
+// allow_reasoning admits Qwen3's leading <think>...</think> block before the
+// call or the answer. Qwen3's reference defaults thinking ON, so a turn that
+// forbids it forces the model to choose between reasoning and calling a tool.
 snode *schema_compile_qwen_turn(struct jv *tools, bool allow_final,
                                 const char *only_tool,
                                 struct jv *final_schema,
+                                bool allow_reasoning,
                                 char *err, int errcap);
 snode *schema_compile_qwen_parallel(struct jv *tools, const char *only_tool,
                                     char *err, int errcap);

@@ -607,7 +607,7 @@ static void test_qwen_native_turn_constrains_and_maps_calls(void) {
     jv *tools = parse(TOOLS);
     char err[192];
     snode *root = schema_compile_qwen_turn(
-        tools, true, NULL, NULL, err, sizeof(err));
+        tools, true, NULL, NULL, /*allow_reasoning=*/false, err, sizeof(err));
     if (!root) fprintf(stderr, "qwen native turn: %s\n", err);
     assert(root != NULL);
     const char *doc =
@@ -920,6 +920,41 @@ static void log_free(demux_log *l) {
     free(l->names.s);
 }
 
+// Qwen3 (chatml-think) reasons BEFORE it calls a tool, and its reference
+// template defaults thinking ON: runner emits the closed <think></think> block
+// only when a caller explicitly turns thinking off, so in the default
+// configuration the model produces the block itself. The turn grammar has to
+// admit that, exactly as harmony and gemma4 admit theirs, or the constrained
+// sampler forces a choice the family was never trained to make: think and
+// forfeit the tool call, or call without thinking.
+static void test_qwen_think_then_call_is_legal(void) {
+    jv *tools = parse(TOOLS);
+    char err[192];
+    snode *root = schema_compile_qwen_turn(
+        tools, true, NULL, NULL, /*thinking=*/true, err, sizeof(err));
+    assert(root != NULL);
+
+    // reason first, then call: the ordinary Qwen3 agentic turn
+    assert(accepts(root,
+        "<think>\nthe user wants weather, I should call the tool\n</think>\n\n"
+        "<tool_call>\n{\"name\": \"get_weather\", \"arguments\": "
+        "{\"city\":\"Oslo\",\"units\":\"c\"}}\n</tool_call>"));
+    // reason first, then answer in plain text
+    assert(accepts(root, "<think>\nno tool needed\n</think>\n\nhello<|im_end|>"));
+    // and the un-thought forms stay legal, since thinking is not mandatory
+    assert(accepts(root,
+        "<tool_call>\n{\"name\": \"get_weather\", \"arguments\": "
+        "{\"city\":\"Oslo\",\"units\":\"c\"}}\n</tool_call>"));
+    assert(accepts(root, "ordinary answer<|im_end|>"));
+    // the tool name is still constrained inside a thought turn
+    assert(!accepts(root,
+        "<think>\nhmm\n</think>\n\n<tool_call>\n{\"name\": \"invented\", "
+        "\"arguments\": {}}\n</tool_call>"));
+
+    schema_free(root);
+    jv_free(tools);
+}
+
 // Truncation recovery on the Qwen native protocol.
 //
 // This is the project's headline claim and every other native protocol pins
@@ -939,7 +974,7 @@ static void test_qwen_truncation_stays_executable(void) {
     jv *tools = parse(TOOLS);
     char err[192];
     snode *root = schema_compile_qwen_turn(
-        tools, true, NULL, NULL, err, sizeof(err));
+        tools, true, NULL, NULL, /*allow_reasoning=*/false, err, sizeof(err));
     assert(root != NULL);
 
     tool_envelope e;
@@ -2201,6 +2236,7 @@ int main(void) {
     test_response_format_schema_becomes_the_final_branch();
     test_map_produces_openai_tool_call_items();
     test_stream_demux_never_leaks_the_envelope();
+    test_qwen_think_then_call_is_legal();
     test_qwen_truncation_stays_executable();
     test_qwen_native_stream_boundaries();
     test_stream_demux_is_boundary_independent();
