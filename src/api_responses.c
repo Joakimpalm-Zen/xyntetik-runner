@@ -316,7 +316,12 @@ static bool responses_reject_stateful(sock_t fd, jv *req) {
     }
     // "truncation":"auto" asks the server to silently drop history to fit; a
     // caller told 200 would never learn its context had been edited
-    const char *tr = jv_str(jv_get(req, "truncation"), NULL);
+    v = jv_get(req, "truncation");
+    if (v && v->type != J_NULL && v->type != J_STR) {
+        send_error(fd, 400, "truncation must be a string");
+        return true;
+    }
+    const char *tr = jv_str(v, NULL);
     if (tr && strcmp(tr, "disabled") != 0) {
         send_error(fd, 400,
                    "truncation:\"auto\" is not supported; a prompt that exceeds "
@@ -326,6 +331,10 @@ static bool responses_reject_stateful(sock_t fd, jv *req) {
     // `include` asks for extra output payloads (logprobs, image URLs, encrypted
     // reasoning) none of which this runtime can produce
     v = jv_get(req, "include");
+    if (v && v->type != J_NULL && v->type != J_ARR) {
+        send_error(fd, 400, "include must be an array");
+        return true;
+    }
     if (v && v->type == J_ARR && v->n > 0) {
         send_error(fd, 400,
                    "include[] is not supported; no additional output payloads "
@@ -447,6 +456,12 @@ void handle_responses(slot_t *s, sock_t fd, jv *req) {
         send_error(fd, 400, "input must be a string or an array of items");
         return;
     }
+    jv *instructions_v = jv_get(req, "instructions");
+    if (instructions_v && instructions_v->type != J_NULL &&
+        instructions_v->type != J_STR) {
+        send_error(fd, 400, "instructions must be a string");
+        return;
+    }
     char ierr[192];
     if (!responses_validate_content_parts(input, ierr, sizeof(ierr))) {
         send_error(fd, 400, ierr);
@@ -534,24 +549,22 @@ void handle_responses(slot_t *s, sock_t fd, jv *req) {
     const jv *native_tools = tool_decl_native(s->tmpl, strict,
                                               /*atem_tool_calling=*/true, tools,
                                               &env, &native_decl);
-    if (strict) {
-        bool parallel = false;
-        if (!request_bool(req, "parallel_tool_calls", false, &parallel)) {
-            tool_envelope_free(&env);
-            jv_free(tools);
-            jv_free(choice_owned);
-            send_error(fd, 400, "parallel_tool_calls must be a boolean");
-            return;
-        }
-        if (parallel) {
-            tool_envelope_free(&env);
-            jv_free(tools);
-            jv_free(choice_owned);
-            send_error(fd, 400,
-                       "parallel_tool_calls:true is not supported yet; "
-                       "one call per turn");
-            return;
-        }
+    bool parallel = false;
+    if (!request_bool(req, "parallel_tool_calls", false, &parallel)) {
+        tool_envelope_free(&env);
+        jv_free(tools);
+        jv_free(choice_owned);
+        send_error(fd, 400, "parallel_tool_calls must be a boolean");
+        return;
+    }
+    if (strict && parallel) {
+        tool_envelope_free(&env);
+        jv_free(tools);
+        jv_free(choice_owned);
+        send_error(fd, 400,
+                   "parallel_tool_calls:true is not supported yet; "
+                   "one call per turn");
+        return;
     }
 
     // assemble the turns: tool system turn, then `instructions` as a system

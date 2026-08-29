@@ -258,6 +258,10 @@ def test_supported_stateless_forms_are_accepted(client):
 
 
 @pytest.mark.parametrize("payload,contains", [
+    ({"input": "hi", "instructions": 42}, "instructions"),
+    ({"input": "hi", "truncation": 42}, "truncation"),
+    ({"input": "hi", "include": "message.output_text.logprobs"}, "include"),
+    ({"input": "hi", "parallel_tool_calls": "false"}, "parallel_tool_calls"),
     ({"input": "hi", "reasoning": "high"}, "reasoning"),
     ({"input": "hi", "text": {"format": {"type": "bogus"}}}, "text.format"),
     ({"input": "hi", "text": {"format": {"type": "json_schema"}}}, "schema"),
