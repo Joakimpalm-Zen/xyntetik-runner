@@ -400,6 +400,50 @@ static void test_responses_named_call_is_unchanged(void) {
                          "get_time");
 }
 
+static void test_responses_refuses_non_object_input_item(void) {
+    ta_tmpl = TMPL_CHATML;
+    ta_run(handle_responses,
+           "{\"model\":\"m\",\"input\":[7,{\"type\":\"message\","
+           "\"role\":\"user\",\"content\":\"weather?\"}]}"
+    );
+    ta_expect_bad_request("responses, scalar input item", "input[0]");
+    ta_tmpl = TMPL_HARMONY;
+}
+
+static void test_responses_refuses_unknown_input_item_type(void) {
+    ta_tmpl = TMPL_CHATML;
+    ta_run(handle_responses,
+           "{\"model\":\"m\",\"input\":[{\"type\":\"computer_call\","
+           "\"role\":\"user\",\"content\":\"weather?\"}]}"
+    );
+    ta_expect_bad_request("responses, unknown input item type", "computer_call");
+    ta_tmpl = TMPL_HARMONY;
+}
+
+static void test_responses_refuses_malformed_message_item(void) {
+    ta_tmpl = TMPL_CHATML;
+    ta_run(handle_responses,
+           "{\"model\":\"m\",\"input\":[{\"role\":\"user\","
+           "\"content\":{\"text\":\"weather?\"}},{\"role\":\"user\","
+           "\"content\":\"fallback\"}]}"
+    );
+    ta_expect_bad_request("responses, malformed message item", "content");
+    ta_tmpl = TMPL_HARMONY;
+}
+
+static void test_responses_refuses_non_string_function_arguments(void) {
+    ta_tmpl = TMPL_CHATML;
+    ta_run(handle_responses,
+           "{\"model\":\"m\",\"input\":["
+           "{\"role\":\"user\",\"content\":\"weather?\"},"
+           "{\"type\":\"function_call\",\"call_id\":\"call_1\","
+           "\"name\":\"get_weather\",\"arguments\":{}}]}"
+    );
+    ta_expect_bad_request("responses, non-string function arguments",
+                          "arguments");
+    ta_tmpl = TMPL_HARMONY;
+}
+
 // ---- /v1/messages: the same hole, reached by not replaying the tool_use
 
 static void test_messages_orphan_result_two_tools(void) {
@@ -817,6 +861,10 @@ int main(void) {
     test_responses_unnamed_call_two_tools_chatml();
     test_responses_unnamed_call_one_tool_chatml();
     test_responses_named_call_is_unchanged();
+    test_responses_refuses_non_object_input_item();
+    test_responses_refuses_unknown_input_item_type();
+    test_responses_refuses_malformed_message_item();
+    test_responses_refuses_non_string_function_arguments();
     test_messages_orphan_result_two_tools();
     test_messages_orphan_result_one_tool();
     test_messages_resolvable_is_unchanged();

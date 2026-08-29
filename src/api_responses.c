@@ -342,8 +342,65 @@ static bool responses_validate_content_parts(jv *input, char *err,
     if (!input || input->type != J_ARR) return true;
     for (int i = 0; i < input->n; i++) {
         jv *item = input->items[i];
-        if (!item || item->type != J_OBJ) continue;
+        if (!item || item->type != J_OBJ) {
+            snprintf(err, err_cap, "input[%d] must be an object", i);
+            return false;
+        }
+        jv *type_v = jv_get(item, "type");
+        if (type_v && type_v->type != J_NULL && type_v->type != J_STR) {
+            snprintf(err, err_cap, "input[%d].type must be a string", i);
+            return false;
+        }
+        const char *item_type = jv_str(type_v, "message");
+        if (strcmp(item_type, "message") &&
+            strcmp(item_type, "function_call") &&
+            strcmp(item_type, "function_call_output")) {
+            snprintf(err, err_cap,
+                     "input[%d].type %s is unsupported; Runner accepts message, "
+                     "function_call and function_call_output items", i,
+                     item_type);
+            return false;
+        }
         jv *content = jv_get(item, "content");
+        if (!strcmp(item_type, "message")) {
+            jv *role_v = jv_get(item, "role");
+            const char *role = jv_str(role_v, NULL);
+            if (!role || (strcmp(role, "user") && strcmp(role, "assistant") &&
+                          strcmp(role, "system") && strcmp(role, "developer"))) {
+                snprintf(err, err_cap,
+                         "input[%d].role must be user, assistant, system or "
+                         "developer", i);
+                return false;
+            }
+            if (!content || (content->type != J_STR && content->type != J_ARR)) {
+                snprintf(err, err_cap,
+                         "input[%d].content must be a string or an array", i);
+                return false;
+            }
+            if (content->type == J_ARR && content->n == 0) {
+                snprintf(err, err_cap,
+                         "input[%d].content must not be an empty array", i);
+                return false;
+            }
+        } else if (!strcmp(item_type, "function_call")) {
+            jv *call_id = jv_get(item, "call_id");
+            if (!call_id || call_id->type != J_STR || !call_id->str[0]) {
+                snprintf(err, err_cap,
+                         "input[%d].call_id must be a non-empty string", i);
+                return false;
+            }
+            jv *args = jv_get(item, "arguments");
+            jv *parsed = args && args->type == J_STR
+                ? json_parse(args->str, strlen(args->str)) : NULL;
+            bool valid = parsed && parsed->type == J_OBJ;
+            jv_free(parsed);
+            if (!valid) {
+                snprintf(err, err_cap,
+                         "input[%d].arguments must be a string containing a "
+                         "JSON object", i);
+                return false;
+            }
+        }
         if (!content || content->type != J_ARR) continue;
         for (int k = 0; k < content->n; k++) {
             jv *part = content->items[k];
