@@ -971,8 +971,12 @@ Buffered generation responses include `runner_telemetry` with prompt tokens
 reused/evaluated, generation timing, paging counters, and structured or
 speculative mode flags. `speculative` reports whether that request used the
 speculative walk, not merely whether the server has a draft loaded; logprob and
-choice-logprob capture use the solo walk and therefore report it as false. Set
-request field `"cache_prompt": false` to bypass prefix reuse. Streaming clients
+choice-logprob capture use the solo walk and therefore report it as false.
+Ordinary streamed chat and legacy completions do NOT carry `runner_telemetry`:
+a stream's only extra terminal chunk is the opt-in `stream_options.include_usage`
+one. `GET /v1/capabilities` says so rather than claiming the capability flatly,
+reporting `features.request_telemetry` as `{"buffered": true, "streamed":
+false}`. Set request field `"cache_prompt": false` to bypass prefix reuse. Streaming clients
 whose writes fail cancel generation. An orderly client socket close on any
 completion surface also cancels at the next complete prefill chunk or decode
 step, so an abandoned long prompt does not keep its slot busy; the probe is

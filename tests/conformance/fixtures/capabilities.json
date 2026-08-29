@@ -14,7 +14,10 @@
     "prefix_cache": true,
     "prefix_cache_controls": true,
     "repeat_penalty": true,
-    "request_telemetry": true,
+    "request_telemetry": {
+      "buffered": true,
+      "streamed": false
+    },
     "responses_api": true,
     "schema_conditionals": true,
     "schema_integer_bounds": true,

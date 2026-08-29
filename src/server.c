@@ -990,7 +990,19 @@ static void send_capabilities(sock_t fd) {
                "\"schema_conditionals\":true,"
                "\"schema_string_bounds\":true,"
                "\"schema_integer_bounds\":true,"
-               "\"request_telemetry\":true,"
+               // RI-4: qualified per surface, because it differs per
+               // surface. Buffered replies carry the full
+               // runner_telemetry object; ordinary streamed chat and
+               // legacy completions carry none, since a stream's only
+               // extra terminal chunk is the opt-in include_usage one.
+               // Advertising this unqualified claimed a capability a
+               // caller on the streaming surface cannot get, which is
+               // the accepted-then-ignored shape this project refuses
+               // everywhere else. Widening the streamed wire is a
+               // separate change, deferred by owner decision
+               // 2026-08-08 and still deferred; this fixes the CLAIM.
+               "\"request_telemetry\":{\"buffered\":true,"
+                                     "\"streamed\":false},"
                "\"prefix_cache\":true,"
                "\"prefix_cache_controls\":true,"
                "\"shared_prefix_cache\":true,"

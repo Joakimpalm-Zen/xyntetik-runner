@@ -60,6 +60,32 @@ def test_capabilities_reports_effective_slots_and_draft(client, server):
                             "without --draft", draft=draft)
 
 
+def test_request_telemetry_capability_is_qualified(client):
+    """RI-4: the telemetry claim has to say WHICH surface carries it.
+
+    Buffered replies carry the full runner_telemetry object; ordinary streamed
+    chat and legacy completions carry none, because a stream's only extra
+    terminal chunk is the opt-in include_usage one. Advertising
+    `request_telemetry: true` unqualified is the same accepted-then-ignored
+    shape the project refuses everywhere else: a claimed capability a caller
+    cannot actually get on the surface they are using.
+
+    Widening the streamed wire is a separate change, deliberately deferred by
+    an owner decision on 2026-08-08 and still deferred. What is fixed here is
+    the CLAIM."""
+    caps = client.get("/v1/capabilities").expect_status(200).json
+    rt = caps.get("features", {}).get("request_telemetry")
+    if not isinstance(rt, dict):
+        raise ProtocolError("request_telemetry is advertised unqualified; it "
+                            "differs by surface and must say so",
+                            request_telemetry=rt)
+    if rt.get("buffered") is not True:
+        raise ProtocolError("buffered telemetry should be advertised", rt=rt)
+    if rt.get("streamed") is not False:
+        raise ProtocolError("streamed telemetry is not carried today, so it "
+                            "must not be advertised as available", rt=rt)
+
+
 def test_buffered_chat_shape(client, report):
     r = client.chat(dict(BASE), name="buffered-chat").expect_status(200)
     d = r.json
