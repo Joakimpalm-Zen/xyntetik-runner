@@ -85,7 +85,7 @@ char *render_prompt_alloc(int tmpl, const chat_msg *msgs, int n_msgs,
 // dropped a turn out of the conversation and the request still answered 200.
 // The model then answers a different question than the one it was asked, and
 // nothing in the response says so.
-static char *message_text(jv *msg, int tmpl, bool *oom) {
+static char *message_text(jv *msg, int tmpl, bool replay_reason, bool *oom) {
     jv *content = jv_get(msg, "content");
     const char *role = jv_str(jv_get(msg, "role"), "user");
     const char *reason = jv_str(jv_get(msg, "reasoning_content"), NULL);
@@ -114,10 +114,13 @@ static char *message_text(jv *msg, int tmpl, bool *oom) {
         // a result is a <tool_response> block in a user turn, not a plain one
         tool_result_wrap(tmpl, txt.s ? txt.s : "", &b);
     } else {
-        // ornith opens an assistant turn with its (possibly empty) thought
-        // block; the calls and text follow it, which is why the block is
-        // written here and the assembler appends into the same buffer.
-        if (tmpl == TMPL_ORNITH && !strcmp(role, "assistant")) {
+        // Ornith opens every assistant turn with its (possibly empty) thought
+        // block. Qwen3 preserves reasoning only on the final historical
+        // assistant after the last user, which the caller selects explicitly.
+        // Calls and visible text follow the block in the same buffer.
+        if ((tmpl == TMPL_ORNITH ||
+             (tmpl == TMPL_CHATML_THINK && replay_reason)) &&
+            !strcmp(role, "assistant")) {
             sb_lit(&b, "<think>\n");
             if (reason) sb_put(&b, reason, strlen(reason));
             sb_lit(&b, "\n</think>\n\n");
@@ -321,7 +324,7 @@ static void handle_chat(slot_t *s, sock_t fd, jv *req) {
     bool ornith_merged_system = false;
     if (s->tmpl == TMPL_ORNITH && ts.n && msgs->n > 0 &&
         !strcmp(chat_role(msgs->items[0]), "system")) {
-        char *system = message_text(msgs->items[0], s->tmpl, &oom);
+        char *system = message_text(msgs->items[0], s->tmpl, false, &oom);
         if (system && system[0]) {
             sb_lit(&ts, "\n\n");
             sb_put(&ts, system, strlen(system));
@@ -361,6 +364,10 @@ static void handle_chat(slot_t *s, sock_t fd, jv *req) {
     int n_cm = 0, n_own = 0;
     if (ts.n)
         cm[n_cm++] = (chat_msg){ .role = "system", .content = ts.s };
+    int last_user = -1;
+    if (s->tmpl == TMPL_CHATML_THINK)
+        for (int i = 0; i < msgs->n; i++)
+            if (!strcmp(chat_role(msgs->items[i]), "user")) last_user = i;
     for (int i = 0; i < msgs->n; i++) {
         if (i == 0 && ornith_merged_system) continue;
         const char *role = chat_role(msgs->items[i]);
@@ -415,7 +422,7 @@ static void handle_chat(slot_t *s, sock_t fd, jv *req) {
                                         .channel = "analysis" };
                 total += strlen(reason) + 64;
             }
-            char *visible = message_text(msgs->items[i], s->tmpl, &oom);
+            char *visible = message_text(msgs->items[i], s->tmpl, false, &oom);
             if (oom) break;
             jv *calls = jv_get(msgs->items[i], "tool_calls");
             bool have_calls = calls && calls->type == J_ARR && calls->n;
@@ -440,7 +447,10 @@ static void handle_chat(slot_t *s, sock_t fd, jv *req) {
             }
             continue;
         }
-        char *content = message_text(msgs->items[i], s->tmpl, &oom);
+        bool replay_reason = s->tmpl == TMPL_CHATML_THINK &&
+                             i == msgs->n - 1 && i > last_user;
+        char *content = message_text(msgs->items[i], s->tmpl, replay_reason,
+                                     &oom);
         if (oom) break;
         if (!content) continue;
         owned[n_own++] = content;

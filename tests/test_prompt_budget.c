@@ -115,15 +115,20 @@ static char *bt_filler(size_t n) {
 
 // Run one request body through a route on a Harmony slot and capture the
 // prompt it would have generated from.
-static void bt_run(void (*route)(slot_t *, sock_t, jv *), const char *body) {
+static void bt_run_for(void (*route)(slot_t *, sock_t, jv *), const char *body,
+                       int tmpl) {
     free(bt_prompt);
     bt_prompt = NULL;
     jv *req = json_parse(body, strlen(body));
     assert(req);
     slot_t s = {0};
-    s.tmpl = TMPL_HARMONY;
+    s.tmpl = tmpl;
     route(&s, (sock_t)-1, req);
     jv_free(req);
+}
+
+static void bt_run(void (*route)(slot_t *, sock_t, jv *), const char *body) {
+    bt_run_for(route, body, TMPL_HARMONY);
 }
 
 // The three properties a complete Harmony prompt has. Any one of them missing
@@ -225,6 +230,19 @@ static void test_chat_replayed_reasoning(void) {
     free(body);
 }
 
+static void test_qwen3_replayed_reasoning_is_not_replaced_by_empty_thought(void) {
+    const char *body =
+        "{\"model\":\"m\",\"messages\":["
+        "{\"role\":\"user\",\"content\":\"question\"},"
+        "{\"role\":\"assistant\",\"reasoning_content\":\"private plan\","
+        "\"content\":\"answer\"}]}";
+    bt_run_for(handle_chat, body, TMPL_CHATML_THINK);
+    ck(bt_prompt != NULL, "qwen3 reasoning replay: a prompt was produced");
+    ck(bt_prompt && strstr(bt_prompt,
+       "<think>\nprivate plan\n</think>\n\nanswer") != NULL,
+       "qwen3 reasoning replay: reasoning_content survives in the thought block");
+}
+
 static void test_responses_big_tool_declaration(void) {
     char *body = bt_responses_body(BT_BIG);
     bt_run(handle_responses, body);
@@ -242,6 +260,7 @@ static void test_messages_big_tool_declaration(void) {
 int main(void) {
     test_chat_big_tool_declaration();
     test_chat_replayed_reasoning();
+    test_qwen3_replayed_reasoning_is_not_replaced_by_empty_thought();
     test_responses_big_tool_declaration();
     test_messages_big_tool_declaration();
     free(bt_prompt);
