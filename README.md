@@ -1290,6 +1290,9 @@ is the request-level form of `--think`/`--no-think`. Omitting it is not the
 same as sending `false`: an absent field renders whatever the model family's
 own reference template renders, and that default differs per family, so
 collapsing "unspecified" onto one of them would misrender the other.
+Qwen3 history also retains the reference template's empty
+`<think>\n\n</think>` block before a trailing historical assistant answer;
+this is replay framing, independent of whether the new turn enables thinking.
 
 ```python
 import openai

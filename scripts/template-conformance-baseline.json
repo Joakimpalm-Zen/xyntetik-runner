@@ -97,26 +97,5 @@
       "sha256": "66291cf0045c2425"
     }
   },
-  "known_differences": [
-    {
-      "id": "chatml-think/trailing-assistant+gen",
-      "status": "open",
-      "note": "Qwen3 emits '<think>\\n\\n</think>\\n\\n' in front of a HISTORICAL assistant message's content (its template strips reasoning out of history and leaves the empty block behind). Runner emits the content bare, so a replayed conversation does not look to the model like the ones it was trained on.",
-      "digest": "038faa5383849669",
-      "allowlist_applied": [],
-      "first_diff_at": 72,
-      "reference_excerpt": "'im_start|>assistant\\n<think>\\n\\n</think>\\n\\nBlue, because of Rayleigh scattering.<|im_end|>\\n<|i'",
-      "runner_excerpt": "'im_start|>assistant\\nBlue, because of Rayleigh scattering.<|im_end|>\\n<|im_start|>assistant\\n'"
-    },
-    {
-      "id": "chatml-think/trailing-assistant-nogen",
-      "status": "open",
-      "note": "Same bug as chatml-think/trailing-assistant+gen, without the generation prompt.",
-      "digest": "55f862a8ce6a9e6b",
-      "allowlist_applied": [],
-      "first_diff_at": 72,
-      "reference_excerpt": "'im_start|>assistant\\n<think>\\n\\n</think>\\n\\nBlue, because of Rayleigh scattering.<|im_end|>\\n'",
-      "runner_excerpt": "'im_start|>assistant\\nBlue, because of Rayleigh scattering.<|im_end|>\\n'"
-    }
-  ]
+  "known_differences": []
 }

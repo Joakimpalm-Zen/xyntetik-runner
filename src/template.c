@@ -1158,6 +1158,9 @@ size_t render_messages_with_tools(int tmpl, const chat_msg *msgs, int n_msgs,
     case TMPL_CHATML_THINK: {
         bool qwen_tools = tools && tools->type == J_ARR && tools->n > 0;
         int first = 0;
+        int last_user = -1;
+        for (int i = 0; i < n_msgs; i++)
+            if (!strcmp(msgs[i].role, "user")) last_user = i;
         if (qwen_tools) {
             off = emit(out, cap, off, "<|im_start|>system\n", NULL, NULL);
             if (n_msgs > 0 && !strcmp(msgs[0].role, "system")) {
@@ -1190,8 +1193,17 @@ size_t render_messages_with_tools(int tmpl, const chat_msg *msgs, int n_msgs,
                     off = emit(out, cap, off, "<|im_end|>\n", NULL, NULL);
                 continue;
             }
-            off = emit(out, cap, off, "<|im_start|>%s\n%s<|im_end|>\n",
-                       msgs[i].role, msgs[i].content);
+            bool qwen3_empty_think =
+                tmpl == TMPL_CHATML_THINK && i == n_msgs - 1 &&
+                i > last_user && !strcmp(msgs[i].role, "assistant") &&
+                strncmp(msgs[i].content, "<think>", 7);
+            off = emit(out, cap, off, "<|im_start|>%s\n", msgs[i].role,
+                       NULL);
+            if (qwen3_empty_think)
+                off = emit(out, cap, off, "<think>\n\n</think>\n\n",
+                           NULL, NULL);
+            off = emit(out, cap, off, "%s<|im_end|>\n", msgs[i].content,
+                       NULL);
         }
         if (add_assistant) {
             off = emit(out, cap, off, "<|im_start|>assistant\n", NULL, NULL);

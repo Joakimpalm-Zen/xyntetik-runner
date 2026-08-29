@@ -1788,6 +1788,35 @@ static void test_chatml_think_shape(void) {
     assert(strcmp(out, base) == 0);
 }
 
+// Qwen3 strips absent reasoning from the last historical assistant turn but
+// still emits the empty thought wrapper. That framing is part of the training
+// prompt whether or not another generation prompt follows it.
+static void test_chatml_think_trailing_history_keeps_empty_thought(void) {
+    const chat_msg msgs[] = {
+        { "user", "Why is the sky blue?" },
+        { "assistant", "Blue, because of Rayleigh scattering." },
+    };
+    char out[1024];
+    const char *history =
+        "<|im_start|>user\nWhy is the sky blue?<|im_end|>\n"
+        "<|im_start|>assistant\n<think>\n\n</think>\n\n"
+        "Blue, because of Rayleigh scattering.<|im_end|>\n";
+
+    render_messages(TMPL_CHATML_THINK, msgs, 2, false, THINK_DEFAULT,
+                    out, sizeof(out));
+    assert(strcmp(out, history) == 0);
+    render_messages(TMPL_CHATML_THINK, msgs, 2, true, THINK_DEFAULT,
+                    out, sizeof(out));
+    char want[1200];
+    snprintf(want, sizeof(want), "%s<|im_start|>assistant\n", history);
+    assert(strcmp(out, want) == 0);
+
+    // Qwen2.5 does not carry Qwen3's historical thinking convention.
+    render_messages(TMPL_CHATML, msgs, 2, false, THINK_DEFAULT,
+                    out, sizeof(out));
+    assert(strstr(out, "<think>") == NULL);
+}
+
 // A tool result is NOT a `tool` turn on ChatML. Every reference in the family
 // converts it into a USER turn wrapping the payload in <tool_response>, and
 // groups consecutive results under one turn:
@@ -2255,6 +2284,7 @@ int main(void) {
     test_gemma4_consecutive_assistant();
     test_gemma4_tool_turns();
     test_chatml_think_shape();
+    test_chatml_think_trailing_history_keeps_empty_thought();
     test_chatml_tool_result_renders_as_a_user_tool_response();
     test_muse_tools_and_result_golden();
     test_muse_tool_result_id_resolves_prior_name();
