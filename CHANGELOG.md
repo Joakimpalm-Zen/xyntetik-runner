@@ -233,6 +233,17 @@ None reachable on the current tree; each is a hole the next change falls into.
   notice says so at load. Both findings come from the first external
   hardware report (DGX Spark, 2026-08-29), which also confirmed the
   arm64 + CUDA combination works.
+- **Verification scope for the two items above, stated plainly.** The
+  NVFP4 decode is gated by an automated test (an independent
+  double-precision reference decode written from the format spec) and
+  runs on every platform. The CUDA-side changes are covered by no
+  automated test at all, because CI has no GPU. In particular the
+  integrated-device probe and the unified-pool budget cap have not yet
+  executed on integrated hardware: the field report that prompted them
+  was made against v0.4.1, so the fix has not been back-confirmed on the
+  machine that found the bug. Reasoned and reviewed, not yet run. Read
+  the unified-memory handling as a fix awaiting its first hardware
+  confirmation rather than one that has had it.
 
 ## v0.4.1 - 2026-08-28
 
