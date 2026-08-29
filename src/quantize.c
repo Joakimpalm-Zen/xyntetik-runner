@@ -1542,6 +1542,16 @@ static int quantize_gguf_plan_inner(const char *in_path, const char *out_path, i
     // result is visible in the log, not just in a header field.
     int *out_type = malloc(sizeof(int) * g.n_tensors);
     if (g.n_tensors > 0 && !out_type) w.ok = false;
+    // RI-3: a declined rule names the tensor and the type it asked for.
+    // An aggregate count told the author of a plan that something was dropped
+    // but not what, so the only way to find it was to diff the built histogram
+    // against the plan. A few names cost nothing and answer it directly; the
+    // cap keeps a MoE's hundreds of expert tensors from burying the summary,
+    // and the count still reports the true total.
+    #define DECLINE_NAMES 6
+    const char *decl_w_name[DECLINE_NAMES]; uint32_t decl_w_type[DECLINE_NAMES];
+    const char *decl_s_name[DECLINE_NAMES]; uint32_t decl_s_type[DECLINE_NAMES];
+    int n_decl_w = 0, n_decl_s = 0;
     uint64_t declined_width = 0;
     // Declines because the requested type is no SMALLER than the one already
     // there. That is usually the right call, but two pairs are exactly the
@@ -1570,11 +1580,21 @@ static int quantize_gguf_plan_inner(const char *in_path, const char *out_path, i
                 out_type[i] = t->type == T_F16 ? T_F16 : T_F32;
             } else if (!type_fits_row(want, t->ne[0])) {
                 out_type[i] = t->type;
+                if (n_decl_w < DECLINE_NAMES) {
+                    decl_w_name[n_decl_w] = t->name;
+                    decl_w_type[n_decl_w++] = (uint32_t)want;
+                }
                 declined_width++;
             } else if (ggml_row_size(t->type, t->ne[0]) <=
                        ggml_row_size(want, t->ne[0])) {
                 out_type[i] = t->type;   // never grow
-                if ((uint32_t)want != t->type) declined_size++;
+                if ((uint32_t)want != t->type) {
+                    if (n_decl_s < DECLINE_NAMES) {
+                        decl_s_name[n_decl_s] = t->name;
+                        decl_s_type[n_decl_s++] = (uint32_t)want;
+                    }
+                    declined_size++;
+                }
             } else {
                 out_type[i] = want;
             }
@@ -1589,6 +1609,10 @@ static int quantize_gguf_plan_inner(const char *in_path, const char *out_path, i
             else if (should_quantize(t) && !type_fits_row(target, t->ne[0])) {
                 out_type[i] = t->type;
                 filtered = true;          // and skip the never-grow rule below
+                if (n_decl_w < DECLINE_NAMES) {
+                    decl_w_name[n_decl_w] = t->name;
+                    decl_w_type[n_decl_w++] = (uint32_t)target;
+                }
                 declined_width++;
             } else
                 out_type[i] = should_quantize(t) ? target
@@ -1601,7 +1625,13 @@ static int quantize_gguf_plan_inner(const char *in_path, const char *out_path, i
             // not an accident.
             if (!filtered && !ms && should_quantize(t) && !getenv("RUNNER_FORCE_REQUANT") &&
                 ggml_row_size(t->type, t->ne[0]) <= ggml_row_size(target, t->ne[0])) {
-                if ((uint32_t)target != t->type) declined_size++;
+                if ((uint32_t)target != t->type) {
+                    if (n_decl_s < DECLINE_NAMES) {
+                        decl_s_name[n_decl_s] = t->name;
+                        decl_s_type[n_decl_s++] = (uint32_t)target;
+                    }
+                    declined_size++;
+                }
                 out_type[i] = t->type;
             }
         }
@@ -1624,15 +1654,29 @@ static int quantize_gguf_plan_inner(const char *in_path, const char *out_path, i
         quantize_plans_free(&plan, &tplan);
         return 1;
     }
-    if (w.ok && declined_width)
+    if (w.ok && declined_width) {
         fprintf(stderr, "quantize: %llu tensor(s) kept their own type — the "
                 "requested type's block does not divide their row width\n",
                 (unsigned long long)declined_width);
-    if (w.ok && declined_size)
+        for (int k = 0; k < n_decl_w; k++)
+            fprintf(stderr, "quantize:   %s wanted %s\n",
+                    decl_w_name[k], ggml_type_name(decl_w_type[k]));
+        if (declined_width > (uint64_t)n_decl_w)
+            fprintf(stderr, "quantize:   ... and %llu more\n",
+                    (unsigned long long)(declined_width - (uint64_t)n_decl_w));
+    }
+    if (w.ok && declined_size) {
         fprintf(stderr, "quantize: %llu tensor(s) kept their own type — the "
                 "requested type is not smaller than what they already carry "
                 "(set RUNNER_FORCE_REQUANT=1 to convert anyway)\n",
                 (unsigned long long)declined_size);
+        for (int k = 0; k < n_decl_s; k++)
+            fprintf(stderr, "quantize:   %s wanted %s\n",
+                    decl_s_name[k], ggml_type_name(decl_s_type[k]));
+        if (declined_size > (uint64_t)n_decl_s)
+            fprintf(stderr, "quantize:   ... and %llu more\n",
+                    (unsigned long long)(declined_size - (uint64_t)n_decl_s));
+    }
     uint32_t ftype_out = 0;
     if (w.ok && g.n_tensors > 0) {
         // dominant non-f32 output type -> its MOSTLY_* code. The K-quant
