@@ -61,7 +61,7 @@ static void turnbuf_free(turnbuf *t) {
 // The text of one tool_result block. Its `content` is a string or a block
 // list, and `is_error` is the one bit of the result the model needs to see
 // that plain text would otherwise lose.
-static char *anth_tool_result_text(jv *b) {
+static char *anth_tool_result_text(jv *b, char *err, int errcap) {
     sbuf r = {0};
     if (jv_bool(jv_get(b, "is_error"), false)) sb_lit(&r, "error: ");
     jv *c = jv_get(b, "content");
@@ -69,13 +69,38 @@ static char *anth_tool_result_text(jv *b) {
         sb_put(&r, c->str, strlen(c->str));
     } else if (c && c->type == J_ARR) {
         for (int i = 0; i < c->n; i++) {
-            const char *txt = jv_str(jv_get(c->items[i], "text"), NULL);
-            if (!txt) continue;
+            jv *part = c->items[i];
+            const char *type = part && part->type == J_OBJ
+                ? jv_str(jv_get(part, "type"), NULL) : NULL;
+            if (!type) {
+                snprintf(err, errcap,
+                         "tool_result.content[%d] must be a typed object", i);
+                free(r.s);
+                return NULL;
+            }
+            if (strcmp(type, "text")) {
+                snprintf(err, errcap,
+                         "tool_result.content[%d] type %s is unsupported; "
+                         "Runner accepts text tool results only", i, type);
+                free(r.s);
+                return NULL;
+            }
+            const char *txt = jv_str(jv_get(part, "text"), NULL);
+            if (!txt) {
+                snprintf(err, errcap,
+                         "tool_result.content[%d].text must be a string", i);
+                free(r.s);
+                return NULL;
+            }
             if (r.n) sb_lit(&r, "\n");
             sb_put(&r, txt, strlen(txt));
         }
     } else if (c && c->type != J_NULL) {
-        jv_dump(c, &r);
+        snprintf(err, errcap,
+                 "tool_result.content must be a string or an array of text "
+                 "blocks");
+        free(r.s);
+        return NULL;
     }
     // A builder that ran out returns NULL, not the empty string it would
     // otherwise be indistinguishable from: an empty tool result is a result the
@@ -205,8 +230,13 @@ static bool anth_blocks(jv *messages, int message_index, jv *msg,
             // the tool loop closing: a result is its own turn in the chat
             // vocabulary, so it is emitted ahead of whatever text accompanies
             // it in the same Anthropic message
-            char *result = anth_tool_result_text(b);
-            if (!result) { free(body.s); free(calls_json.s); t->failed = true; return true; }
+            char *result = anth_tool_result_text(b, err, errcap);
+            if (!result) {
+                free(body.s); free(calls_json.s);
+                if (err[0]) return false;
+                t->failed = true;
+                return true;
+            }
             const char *id = jv_str(jv_get(b, "tool_use_id"), NULL);
             const char *name = anth_call_name(messages, message_index, id);
             if (!name) name = sole_tool;

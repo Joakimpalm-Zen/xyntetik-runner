@@ -477,6 +477,23 @@ static void test_messages_resolvable_is_unchanged(void) {
     ta_expect_named("messages, resolvable tool_use_id", "get_time");
 }
 
+static void test_messages_refuses_nested_image_in_tool_result(void) {
+    ta_tmpl = TMPL_CHATML;
+    ta_run(handle_messages,
+           "{\"model\":\"m\",\"max_tokens\":16,\"messages\":["
+           "{\"role\":\"user\",\"content\":\"inspect this\"},"
+           "{\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\","
+           "\"id\":\"call_1\",\"name\":\"inspect\",\"input\":{}}]},"
+           "{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\","
+           "\"tool_use_id\":\"call_1\",\"content\":[{\"type\":\"image\","
+           "\"source\":{\"type\":\"base64\",\"media_type\":\"image/png\","
+           "\"data\":\"AA==\"}},{\"type\":\"text\","
+           "\"text\":\"visible result\"}]}]}]}"
+    );
+    ta_expect_bad_request("messages, nested image in tool result", "image");
+    ta_tmpl = TMPL_HARMONY;
+}
+
 // ---- /v1/chat/completions: the id-as-name variant. `name` is absent and the
 // tool_call_id matches nothing, so the id itself became the function name.
 
@@ -868,6 +885,7 @@ int main(void) {
     test_messages_orphan_result_two_tools();
     test_messages_orphan_result_one_tool();
     test_messages_resolvable_is_unchanged();
+    test_messages_refuses_nested_image_in_tool_result();
     test_chat_unmatched_id_two_tools();
     test_chat_unmatched_id_one_tool();
     test_chat_no_id_at_all();
