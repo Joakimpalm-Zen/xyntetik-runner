@@ -6,6 +6,38 @@ change between releases (the `-alpha` suffix was retired at v0.2.0 — the 0.x
 version already says what it needs to). Entries below the rename keep the
 names that were true when they were written.
 
+## v0.4.3 - 2026-08-29
+
+- **The integrated-device probe queried the wrong attribute, and every
+  display-attached NVIDIA GPU was reported as unified memory.**
+  `CU_DEV_ATTR_INTEGRATED` was defined as 17. In the CUDA driver API 17 is
+  `CU_DEVICE_ATTRIBUTE_KERNEL_EXEC_TIMEOUT`, which reads 1 on any GPU driving
+  a display (the WDDM/X watchdog); `CU_DEVICE_ATTRIBUTE_INTEGRATED` is 18. So
+  v0.4.2 answered `unified_memory: true` on ordinary discrete desktop cards,
+  printed the load-time unified-memory notice on them, and clamped the GPU
+  offload budget to OS-available RAM. Where free system RAM is below VRAM that
+  silently cuts the budget on hardware with its own dedicated pool. Measured
+  on an RTX 3070 with a display attached, against a known-correct anchor so
+  the numbering could not be assumed: attribute 16 `MULTIPROCESSOR_COUNT`
+  reads 46, which is a 3070's SM count, 17 reads 1, and 18 reads 0. The
+  off-by-one is quiet in the worst direction: a headless datacenter card reads
+  17 as 0 and looks correct, so it takes a desktop to fail.
+- **Releases now pass a CUDA smoke gate on real hardware.**
+  `scripts/cuda-smoke.py` runs against a live GPU and checks what CI cannot,
+  since GitHub runners have no device and `src/cuda.c` is compiled on three
+  platforms and executed by none. Its assertions are invariants rather than
+  expected constants, so one script covers a discrete desktop card, a headless
+  datacenter card and a unified-memory device like a DGX Spark. The central
+  one is coherence: `unified_memory` is a claim that VRAM and system RAM are
+  one pool, so it must agree with the sizes actually reported, and a device
+  claiming unified memory while its VRAM is plainly a separate pool fails
+  regardless of which attribute number the driver was asked for. It also
+  cross-checks the load-time notice against `--caps`, since those come from
+  different call sites and disagreeing is itself a defect.
+  `scripts/cuda-smoke-remote.sh` drives it over SSH and brings the evidence
+  back, and each release commits its report next to the compatibility report.
+  Verified red against the v0.4.2 binary before being trusted green.
+
 ## v0.4.2 - 2026-08-29
 
 ### Qwen models speak their own tool protocol
