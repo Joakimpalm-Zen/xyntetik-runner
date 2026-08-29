@@ -8,6 +8,85 @@ names that were true when they were written.
 
 ## Unreleased
 
+### Accepted-then-ignored, closed across the request surface
+
+A full-tree sweep plus an independent review found eight more request fields
+that were validated and then dropped, or normalized past the caller's
+mistake. Every one answered 200 while the thing the caller reached for did
+nothing. Same rule as the v0.4.1 prompt-control work: a field this engine
+cannot honor is an error, never a silent default.
+
+- **`seed: 0` is refused instead of silently randomizing.** The sampler's
+  xorshift64 has a fixed point at state 0, so the engine only adopted a seed
+  above zero and an explicit `0` left the inherited state: two identical
+  requests asking to be reproducible diverged. The CLI has refused `-s 0` by
+  name since that reasoning was first written down. Absent stays absent.
+- **Anthropic `thinking` now controls rendering.** `thinking.type` was
+  validated and then never read, so `{"type":"disabled"}` rendered exactly
+  like a request that said nothing: the surface's own control did nothing
+  while runner's `enable_thinking` extension was the only thing that worked.
+  `enabled`/`disabled`/`adaptive` now map to the renderer's tri-state, with
+  `enable_thinking` kept as the fallback. `budget_tokens` is validated for
+  shape and range; runner does not enforce it as a hard cap (nothing makes a
+  model stop reasoning at a token count) and now reports what was actually
+  spent instead, below.
+- **The request timeout covers prompt prefill.** The deadline was computed
+  before any work but handed only to the decode loop, so a long enough prompt
+  overran its own timeout by the entire prefill. It is now polled at each
+  complete prefill chunk. Expiry there answers `408` naming the prompt rather
+  than the `400 context overflow` a stopped prefill used to produce - the
+  prompt fits, the clock ran out.
+- **Responses tool history is validated.** `function_call_output.output` is
+  typed as a string by the item schema and anything else was JSON-dumped
+  straight into the prompt; `call_id` could be absent or a number on the
+  result side while the call side had always required it; and a wrong-typed
+  `function_call.name` took the deduce-from-the-sole-tool path, so a typo
+  came back as a successful call to whatever the one tool was.
+- **Replayed Anthropic reasoning follows the family.** A `thinking` block was
+  dropped from the prompt unconditionally, while `/v1/chat/completions`
+  replays Harmony reasoning on its analysis channel from `reasoning_content`
+  - the same model and conversation described two different ways depending on
+  which vocabulary the client spoke. Harmony now replays it on both surfaces;
+  every other family still strips prior thinking, which is what its own
+  template does. `redacted_thinking` is opaque and is replayed by neither.
+- **Wrong-typed tool declarations are refused.** A non-string `tools[].type`
+  was read as if absent and normalized to `"function"` on all three surfaces,
+  and a wrong-typed `description` silently vanished from the prompt. The
+  accessor that could not tell "absent" from "present with the wrong type" is
+  now explicit about the difference.
+- **Invalid Anthropic tool-result ordering is refused.** A `tool_result` after
+  a text block in the same user message was silently REORDERED - result
+  emitted first, text deferred - so an invalid conversation was answered 200
+  having been rewritten into a different one.
+- **Responses reports real reasoning-token usage.**
+  `usage.output_tokens_details.reasoning_tokens` was hard-coded to zero.
+  Counted per token now (a token that contributes any reasoning bytes is a
+  reasoning token), which is also what makes an unenforced thinking budget
+  visible to the caller.
+
+### Latent defects found by the sweep
+
+None reachable on the current tree; each is a hole the next change falls into.
+
+- **The scheduler pays back its wait count on every exit.** Leaving `SEQ_WAIT`
+  via the stop path did not decrement `n_wait`. Harmless while `stop` means
+  only shutdown, wrong the moment it means a drain.
+- **Metal checks its pipeline tables against the admission predicates.** The
+  two literal lists asserted 11 of the 16 types `gpu_type_ok` admits, and the
+  encoders index those tables with no nil check -
+  `setComputePipelineState:nil` raises rather than returning an error. A type
+  added to an allowlist without its kernel now fails the load loudly instead
+  of crashing mid-forward.
+- **A NUL byte in a request header is refused.** It hid the real terminator
+  from every NUL-terminated parse below it, and the slot then read to its
+  16 KB buffer or sat out the whole 10 s deadline before answering.
+- **Smaller:** `outside_reason` no longer adds a would-have-written count to a
+  length; a failed `strdup` no longer publishes an instance record with NULL
+  model names behind a non-zero count; `json_escape` no longer writes its
+  terminator under `cap 0`.
+
+### Also
+
 - **NVFP4 reads on the CPU.** NVIDIA's block-scaled FP4 (ggml type 40:
   E2M1 codes, one UE4M3 scale per 16-element sub-block, 36 bytes per
   64-element block — the format NVIDIA ModelOpt produces and the DGX Spark

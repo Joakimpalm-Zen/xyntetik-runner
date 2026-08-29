@@ -355,3 +355,132 @@ def test_context_overflow_is_a_typed_request_error(client):
     err = r.expect_error_envelope("context")
     assert err["param"] == "messages"
     assert err["code"] == "context_length_exceeded"
+
+
+# --------------------------------------------------- accepted-then-ignored
+#
+# The class this file exists for, found again by a full-tree sweep on
+# 2026-08-29. Each of these was answered 200 while the field the caller
+# reached for did nothing.
+
+def test_explicit_seed_zero_is_rejected(client):
+    """seed:0 asks for a reproducible run and did not get one.
+
+    The sampler's xorshift64 has a fixed point at state 0, so the engine only
+    adopts a seed above zero -- an explicit 0 left the inherited state and two
+    identical requests diverged. The CLI has refused -s 0 by name for exactly
+    this reason since the reasoning was first written down. Absent stays
+    absent: only a seed the caller actually sent is refused."""
+    client.expect_400(dict(CHAT, seed=0), name="seed-zero", contains="seed")
+
+
+def test_absent_seed_is_still_accepted(client):
+    r = client.raw("seed-absent", "POST", "/v1/chat/completions", CHAT)
+    r.expect_status(200)
+
+
+@pytest.mark.parametrize("path,payload", [
+    ("/v1/chat/completions",
+     {"messages": [{"role": "user", "content": "hi"}], "max_tokens": 4,
+      "tools": [{"type": 7, "function": {"name": "f", "parameters":
+                                         {"type": "object", "properties": {}}}}]}),
+    ("/v1/responses",
+     {"input": "hi", "max_output_tokens": 4,
+      "tools": [{"type": 7, "name": "f",
+                 "parameters": {"type": "object", "properties": {}}}]}),
+    ("/v1/messages",
+     {"max_tokens": 4, "messages": [{"role": "user", "content": "hi"}],
+      "tools": [{"type": 7, "name": "f",
+                 "input_schema": {"type": "object", "properties": {}}}]}),
+])
+def test_wrong_typed_tool_type_is_rejected(client, path, payload):
+    """A non-string tools[].type was read as if it were absent.
+
+    jv_str hands back the default for a wrong type as well as a missing one,
+    so `"type": 7` was normalised to "function" and the declaration accepted
+    on all three surfaces. Null still reads as absent, as everywhere else."""
+    client.expect_400(payload, name=f"tool-type-number{path.replace('/', '-')}",
+                      contains="type", path=path)
+
+
+def test_wrong_typed_tool_description_is_rejected(client):
+    """Same normalisation, one field over: the renderers read description with
+    a "" default, so a wrong-typed one silently vanished from the prompt."""
+    client.expect_400(
+        dict(CHAT, tools=[{"type": "function",
+                           "function": {"name": "f", "description": 7,
+                                        "parameters": {"type": "object",
+                                                       "properties": {}}}}]),
+        name="tool-description-number", contains="description")
+
+
+# ------------------------------------------- Responses tool-history shapes
+@pytest.mark.parametrize("item,label,contains", [
+    ({"type": "function_call_output", "call_id": "c1", "output": 7},
+     "output-number", "output"),
+    ({"type": "function_call_output", "call_id": "c1", "output": {"a": 1}},
+     "output-object", "output"),
+    ({"type": "function_call_output", "output": "ok"},
+     "missing-call-id", "call_id"),
+    ({"type": "function_call_output", "call_id": 7, "output": "ok"},
+     "numeric-call-id", "call_id"),
+])
+def test_malformed_function_call_output_is_rejected(client, item, label, contains):
+    """A tool result is only attributable through its call_id, and the item
+    schema types `output` as a string. Both were unchecked: a number, a bool
+    or an object was JSON-dumped straight into the prompt, and an absent or
+    wrongly typed call_id reported for whatever the fallback found."""
+    client.expect_400({"input": [{"type": "message", "role": "user",
+                                  "content": "hi"}, item],
+                       "max_output_tokens": 4},
+                      name=f"fco-{label}", contains=contains,
+                      path="/v1/responses")
+
+
+def test_wrong_typed_function_call_name_is_rejected(client):
+    """An absent name is deduced from a sole declared tool -- that is the
+    documented attribution rule. A wrong-typed one took the same path, so a
+    caller's typo came back as a successful call to whatever the one tool
+    was."""
+    client.expect_400(
+        {"input": [{"type": "message", "role": "user", "content": "hi"},
+                   {"type": "function_call", "call_id": "c1", "name": 7,
+                    "arguments": "{}"}],
+         "max_output_tokens": 4,
+         "tools": [{"type": "function", "name": "only_one",
+                    "parameters": {"type": "object", "properties": {}}}]},
+        name="fc-numeric-name", contains="name", path="/v1/responses")
+
+
+def test_tool_result_after_text_is_rejected(client):
+    """Anthropic puts tool_result blocks first in a user message. Because a
+    result becomes its own turn here, a message that put text ahead of one was
+    silently REORDERED -- result first, text deferred -- and answered 200
+    having been rewritten into a different conversation."""
+    client.expect_400(
+        {"max_tokens": 4,
+         "messages": [{"role": "user", "content": "go"},
+                      {"role": "assistant", "content": [
+                          {"type": "tool_use", "id": "toolu_1",
+                           "name": "f", "input": {}}]},
+                      {"role": "user", "content": [
+                          {"type": "text", "text": "before"},
+                          {"type": "tool_result", "tool_use_id": "toolu_1",
+                           "content": "done"}]}],
+         "tools": [{"name": "f", "input_schema": {"type": "object",
+                                                  "properties": {}}}]},
+        name="tool-result-after-text", contains="tool_result",
+        path="/v1/messages")
+
+
+@pytest.mark.parametrize("budget", [512, 1.5, "1024"])
+def test_thinking_budget_tokens_is_validated(client, budget):
+    """budget_tokens was neither checked nor honoured. Runner cannot enforce
+    it as a hard cap -- nothing makes a model stop reasoning at a token count
+    -- so it stays advisory, and usage.reasoning_tokens reports what the turn
+    actually spent. What it must not do is accept a malformed one."""
+    client.expect_400(
+        {"max_tokens": 4, "messages": [{"role": "user", "content": "hi"}],
+         "thinking": {"type": "disabled", "budget_tokens": budget}},
+        name=f"thinking-budget-{budget!r}", contains="budget_tokens",
+        path="/v1/messages")

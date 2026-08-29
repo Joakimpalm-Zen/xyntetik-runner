@@ -1,0 +1,43 @@
+{
+  "agent_profile": null,
+  "context": "<number>",
+  "features": {
+    "family_sampling_presets": true,
+    "forkable_prefixes": true,
+    "json_object": true,
+    "json_schema": true,
+    "messages_api": true,
+    "prefix_cache": true,
+    "prefix_cache_controls": true,
+    "repeat_penalty": true,
+    "request_telemetry": true,
+    "responses_api": true,
+    "schema_conditionals": true,
+    "schema_integer_bounds": true,
+    "schema_string_bounds": true,
+    "shared_prefix_cache": true,
+    "stop_sequences": true
+  },
+  "models": [
+    {
+      "id": "<redacted>",
+      "resident": true
+    }
+  ],
+  "mtp": {
+    "consumed": false,
+    "declared_layers": "<number>"
+  },
+  "object": "runner.capabilities",
+  "pid": "<redacted>",
+  "resident": null,
+  "sampling": {
+    "min_p": "<number>",
+    "preset": "<redacted>",
+    "repeat_penalty": "<number>",
+    "temperature": "<number>",
+    "top_k": "<number>",
+    "top_p": "<number>"
+  },
+  "swap": false
+}

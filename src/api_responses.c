@@ -37,6 +37,11 @@ static jv *responses_tools(jv *tools, char *err, int errcap, bool *oom) {
             free(b.s);
             return NULL;
         }
+        if (!jv_str_ok(jv_get(outer, "type"))) {
+            snprintf(err, errcap, "tools[].type must be a string");
+            free(b.s);
+            return NULL;
+        }
         const char *otype = jv_str(jv_get(outer, "type"), "function");
         jv *group = NULL;
         if (!strcmp(otype, "namespace")) {
@@ -56,6 +61,11 @@ static jv *responses_tools(jv *tools, char *err, int errcap, bool *oom) {
             jv *t = group ? group->items[k] : outer;
             if (!t || t->type != J_OBJ) {
                 snprintf(err, errcap, "each tools[] entry must be an object");
+                free(b.s);
+                return NULL;
+            }
+            if (!jv_str_ok(jv_get(t, "type"))) {
+                snprintf(err, errcap, "tools[].type must be a string");
                 free(b.s);
                 return NULL;
             }
@@ -399,6 +409,15 @@ static bool responses_validate_content_parts(jv *input, char *err,
                          "input[%d].call_id must be a non-empty string", i);
                 return false;
             }
+            // Absent is legitimate -- an unnamed call is deduced from a sole
+            // declared tool, which is the attribution rule this surface is
+            // tested on. A wrong TYPE is not: jv_str hands back NULL for it,
+            // so `"name": 7` took the deduction path and the caller's typo
+            // came back as a successful call to whatever the one tool was.
+            if (!jv_str_ok(jv_get(item, "name"))) {
+                snprintf(err, err_cap, "input[%d].name must be a string", i);
+                return false;
+            }
             jv *args = jv_get(item, "arguments");
             jv *parsed = args && args->type == J_STR
                 ? json_parse(args->str, strlen(args->str)) : NULL;
@@ -410,15 +429,42 @@ static bool responses_validate_content_parts(jv *input, char *err,
                          "JSON object", i);
                 return false;
             }
-        } else if (!jv_get(item, "output")) {
-            // An empty string is a real tool result; a missing member is not.
-            // responses_item_text used to collapse both to the same empty
-            // tool turn, so malformed agent history looked successfully
-            // accepted while giving the model an event that never happened.
-            snprintf(err, err_cap,
-                     "input[%d].output is required for function_call_output",
-                     i);
-            return false;
+        } else {
+            // function_call_output: the other half of the tool loop, and it
+            // was the least validated item on the surface.
+            jv *out_v = jv_get(item, "output");
+            if (!out_v) {
+                // An empty string is a real tool result; a missing member is
+                // not. responses_item_text used to collapse both to the same
+                // empty tool turn, so malformed agent history looked
+                // successfully accepted while giving the model an event that
+                // never happened.
+                snprintf(err, err_cap,
+                         "input[%d].output is required for function_call_output",
+                         i);
+                return false;
+            }
+            // The Responses item schema types `output` as a string, and
+            // responses_item_text jv_dump'ed anything else straight into the
+            // prompt: a number, a bool, a bare array all became prompt text
+            // the caller never chose the spelling of and cannot see. Say what
+            // to send instead of guessing on their behalf.
+            if (out_v->type != J_STR) {
+                snprintf(err, err_cap,
+                         "input[%d].output must be a string (serialize a "
+                         "structured tool result before sending it)", i);
+                return false;
+            }
+            // A result is only attributable through its call_id. The
+            // function_call branch above has always required a non-empty
+            // string here; the result side accepted an absent or wrongly
+            // typed one and then reported for whatever the fallback found.
+            jv *out_id = jv_get(item, "call_id");
+            if (!out_id || out_id->type != J_STR || !out_id->str[0]) {
+                snprintf(err, err_cap,
+                         "input[%d].call_id must be a non-empty string", i);
+                return false;
+            }
         }
         if (!content || content->type != J_ARR) continue;
         for (int k = 0; k < content->n; k++) {

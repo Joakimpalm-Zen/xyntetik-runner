@@ -980,9 +980,13 @@ cancellation signal.
 
 Every generating endpoint also accepts a per-request `"timeout"` in seconds
 (`0`–`86400`), which overrides `RUNNER_REQUEST_TIMEOUT` for that request; `0`
-means no limit and an out-of-range value is a `400`. Expiry is a truncation,
-not an error: generation ends, `finish_reason` is `"length"`, and constrained
-output is closed to a legal document exactly as a token-ceiling hit would be.
+means no limit and an out-of-range value is a `400`. The bound covers the
+whole request, prompt processing included: it is polled at each complete
+prefill chunk and at each decode step. Expiry during GENERATION is a
+truncation, not an error: generation ends, `finish_reason` is `"length"`, and
+constrained output is closed to a legal document exactly as a token-ceiling
+hit would be. Expiry during PREFILL has no tokens to truncate and answers
+`408` instead, naming the prompt as what to shorten.
 
 Prefix reuse lives in this process only. The cache is host RAM bounded by
 `RUNNER_PREFIX_CACHE_MB`, and it is released by `POST /unload`, by

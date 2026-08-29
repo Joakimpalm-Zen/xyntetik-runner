@@ -982,6 +982,90 @@ static void test_declaration_rendering_contract(void) {
 // 2026-08-29 fail-closed change refused it by mistake because attribution
 // consulted only tool_calls[] arrays.
 
+// ---- /v1/messages: replayed reasoning and surface parity.
+//
+// A thinking-capable client replays the assistant's `thinking` blocks in the
+// next turn. Whether those belong in the PROMPT is a per-family question, and
+// the two vocabularies must answer it the same way for the same model: chat
+// replays Harmony reasoning on the analysis channel out of reasoning_content,
+// so a Messages client replaying the equivalent block has to get the same
+// turn. Every other family strips prior thinking, which is what the python
+// conformance suite pins (its fixture model is not Harmony).
+
+static void test_messages_thinking_replays_on_harmony(void) {
+    ta_tmpl = TMPL_HARMONY;
+    ta_run(handle_messages,
+           "{\"model\":\"m\",\"max_tokens\":16,\"messages\":["
+           "{\"role\":\"user\",\"content\":\"hi\"},"
+           "{\"role\":\"assistant\",\"content\":[{\"type\":\"thinking\","
+           "\"thinking\":\"WEIGHING_THE_OPTIONS\",\"signature\":\"sig\"}]},"
+           "{\"role\":\"user\",\"content\":\"go on\"}]}");
+    ck(ta_prompt != NULL, "messages harmony thinking: a prompt was produced");
+    ck(ta_prompt && strstr(ta_prompt, "WEIGHING_THE_OPTIONS") != NULL,
+       "messages harmony thinking: the reasoning is replayed");
+    ck(ta_prompt && strstr(ta_prompt, "<|channel|>analysis") != NULL,
+       "messages harmony thinking: it is replayed on the analysis channel");
+}
+
+static void test_messages_thinking_dropped_off_harmony(void) {
+    ta_tmpl = TMPL_CHATML;
+    ta_run(handle_messages,
+           "{\"model\":\"m\",\"max_tokens\":16,\"messages\":["
+           "{\"role\":\"user\",\"content\":\"hi\"},"
+           "{\"role\":\"assistant\",\"content\":[{\"type\":\"thinking\","
+           "\"thinking\":\"WEIGHING_THE_OPTIONS\",\"signature\":\"sig\"}]},"
+           "{\"role\":\"user\",\"content\":\"go on\"}]}");
+    ck(ta_prompt != NULL, "messages chatml thinking: a prompt was produced");
+    ck(ta_prompt && strstr(ta_prompt, "WEIGHING_THE_OPTIONS") == NULL,
+       "messages chatml thinking: prior reasoning stays out of the prompt");
+    ta_tmpl = TMPL_HARMONY;
+}
+
+// redacted_thinking is an opaque blob: nothing to replay on any family, and
+// it must not become a turn of base64 the model reads as content.
+static void test_messages_redacted_thinking_never_replays(void) {
+    ta_tmpl = TMPL_HARMONY;
+    ta_run(handle_messages,
+           "{\"model\":\"m\",\"max_tokens\":16,\"messages\":["
+           "{\"role\":\"user\",\"content\":\"hi\"},"
+           "{\"role\":\"assistant\",\"content\":[{\"type\":"
+           "\"redacted_thinking\",\"data\":\"QUFBQWRHVnpkQT09\"}]},"
+           "{\"role\":\"user\",\"content\":\"go on\"}]}");
+    ck(ta_prompt != NULL, "messages redacted: a prompt was produced");
+    ck(ta_prompt && strstr(ta_prompt, "QUFBQWRHVnpkQT09") == NULL,
+       "messages redacted: the opaque blob never reaches the prompt");
+}
+
+// ---- /v1/messages: the surface's OWN thinking control must reach the
+// renderer. `thinking` was validated and then dropped: prompt construction
+// read only enable_thinking, so thinking:{"type":"disabled"} rendered exactly
+// like a request that said nothing about thinking at all. Under CHATML_THINK
+// the two are distinguishable in the bytes -- OFF appends the closed block
+// after the assistant header, DEFAULT (which is ON for this family) does not.
+
+static void test_messages_thinking_disabled_reaches_renderer(void) {
+    ta_tmpl = TMPL_CHATML_THINK;
+    ta_run(handle_messages,
+           "{\"model\":\"m\",\"max_tokens\":8,\"messages\":["
+           "{\"role\":\"user\",\"content\":\"hi\"}],"
+           "\"thinking\":{\"type\":\"disabled\"}}");
+    ck(ta_prompt && strstr(ta_prompt, "<think>") != NULL,
+       "messages thinking:disabled: the closed think block is rendered");
+    ta_run(handle_messages,
+           "{\"model\":\"m\",\"max_tokens\":8,\"messages\":["
+           "{\"role\":\"user\",\"content\":\"hi\"}]}");
+    ck(ta_prompt && strstr(ta_prompt, "<think>") == NULL,
+       "messages thinking absent: the family default is untouched");
+    // runner's cross-surface extension still works and is the fallback
+    ta_run(handle_messages,
+           "{\"model\":\"m\",\"max_tokens\":8,\"messages\":["
+           "{\"role\":\"user\",\"content\":\"hi\"}],"
+           "\"enable_thinking\":false}");
+    ck(ta_prompt && strstr(ta_prompt, "<think>") != NULL,
+       "messages enable_thinking:false: still honoured as the fallback");
+    ta_tmpl = TMPL_HARMONY;
+}
+
 static void test_chat_text_spelled_call_resolves(void) {
     ta_tmpl = TMPL_MUSE;
     ta_run(handle_chat,
@@ -1053,6 +1137,10 @@ int main(void) {
     test_responses_named_call_is_unchanged();
     test_responses_refuses_non_object_input_item();
     test_responses_refuses_unknown_input_item_type();
+    test_messages_thinking_disabled_reaches_renderer();
+    test_messages_thinking_replays_on_harmony();
+    test_messages_thinking_dropped_off_harmony();
+    test_messages_redacted_thinking_never_replays();
     test_chat_text_spelled_call_resolves();
     test_chat_text_spelled_positional();
     test_chat_text_spelled_exhausted_refuses();

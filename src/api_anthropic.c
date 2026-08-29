@@ -266,6 +266,21 @@ static bool anth_blocks(jv *messages, int message_index, jv *msg,
                 free(body.s); free(calls_json.s);
                 return false;
             }
+            // Anthropic's contract puts tool_result blocks FIRST in the user
+            // message. Because a result becomes its own turn here, a message
+            // that put text ahead of one was silently reordered -- the result
+            // emitted first and the text deferred behind it -- so an invalid
+            // conversation was answered 200 having been rewritten into a
+            // different one. Refuse it instead: reordering the caller's turns
+            // and not saying so is the failure mode this surface exists to
+            // avoid.
+            if (body.n) {
+                snprintf(err, errcap,
+                         "tool_result blocks must come before any text block "
+                         "in the same user message");
+                free(body.s); free(calls_json.s);
+                return false;
+            }
             const char *id = jv_str(jv_get(b, "tool_use_id"), NULL);
             if (!id || !id[0]) {
                 snprintf(err, errcap,
@@ -319,9 +334,32 @@ static bool anth_blocks(jv *messages, int message_index, jv *msg,
             }
         } else if (!strcmp(bt, "thinking") || !strcmp(bt, "redacted_thinking")) {
             // Replayed reasoning. Anthropic wants it back so *it* can verify a
-            // signature; there is nothing to verify locally, and it is the
-            // model's own scratch work rather than anything the user said, so
-            // it is not put back into the prompt.
+            // signature; there is nothing to verify locally.
+            //
+            // Whether it belongs in the PROMPT is a per-family question, and
+            // the answer has to match what /v1/chat/completions does for the
+            // same resident model -- otherwise the two vocabularies describe
+            // different conversations to the same weights, which is the one
+            // thing a translation layer must not do. Harmony authors prior
+            // reasoning on its own `analysis` channel and the chat surface
+            // replays it there out of `reasoning_content`, so a Messages
+            // client replaying a thinking block gets the same turn. Every
+            // other family's reference strips prior thinking from history
+            // (qwen3's template keeps it only for the live turn), so for
+            // those it stays dropped, which is what it always did.
+            //
+            // redacted_thinking is an opaque blob with no readable text, so
+            // there is nothing to replay in either case.
+            // On the TEMPLATE, not the tool protocol: `harmony` above means
+            // "this turn's tool envelope is Harmony", which is false whenever
+            // the request declared no tools -- and replaying reasoning has
+            // nothing to do with tools. chat keys the same replay off
+            // s->tmpl for that reason.
+            const char *think_txt = tmpl == TMPL_HARMONY && !strcmp(bt, "thinking")
+                ? jv_str(jv_get(b, "thinking"), NULL) : NULL;
+            if (think_txt && think_txt[0])
+                turn_add_native(t, "assistant", strdup(think_txt),
+                                NULL, "analysis");
             continue;
         } else {
             snprintf(err, errcap,
@@ -433,6 +471,11 @@ static jv *anth_tools(jv *tools, char *err, int errcap, bool *oom) {
         // named by its `type`; a client function tool has no type at all.
         // Saying so beats leaving the caller waiting for a call that can never
         // come from a runtime with no such capability.
+        if (!jv_str_ok(jv_get(t, "type"))) {
+            snprintf(err, errcap, "tools[].type must be a string");
+            free(b.s);
+            return NULL;
+        }
         const char *type = jv_str(jv_get(t, "type"), NULL);
         if (type && strcmp(type, "custom") != 0 && strcmp(type, "function") != 0) {
             snprintf(err, errcap,
@@ -580,8 +623,48 @@ static bool anth_reject_unsupported(slot_t *s, sock_t fd, jv *req) {
                        "thinking block could be returned.");
             return true;
         }
+        // budget_tokens is required alongside type:"enabled" and is bounded
+        // below by the API it comes from. Runner does NOT enforce it as a
+        // hard cap -- the engine cannot make a model stop reasoning and start
+        // answering at a token count -- so it is checked for shape and range
+        // and then treated as advisory. That limit is documented rather than
+        // silent: usage.output_tokens_details.reasoning_tokens reports what
+        // the turn actually spent, so a caller can see when a budget was
+        // exceeded even though it was not enforced.
+        jv *budget = jv_get(v, "budget_tokens");
+        if (budget && budget->type != J_NULL) {
+            if (budget->type != J_NUM || budget->num != floor(budget->num) ||
+                budget->num < 1024 || budget->num > (double)INT_MAX) {
+                send_error(fd, 400,
+                           "thinking.budget_tokens must be a whole number of "
+                           "1024 or more");
+                return true;
+            }
+        }
     }
     return false;
+}
+
+// The Anthropic surface's own thinking control, mapped onto the renderer's
+// tri-state. `thinking` is this API's vocabulary and wins where it is
+// present; enable_thinking is runner's cross-surface extension and remains
+// the fallback, so a client using either is honoured and one using both is
+// not silently given the other's answer.
+//
+// Until this existed the field was validated and then dropped: a request
+// carrying thinking:{"type":"disabled"} rendered exactly like one carrying no
+// thinking at all, so the control the caller reached for did nothing.
+// "adaptive" maps to DEFAULT deliberately -- letting the family's own
+// template decide is what adaptive asks for.
+static int messages_thinking_mode(jv *req) {
+    jv *v = jv_get(req, "thinking");
+    if (v && v->type == J_OBJ) {
+        const char *type = jv_str(jv_get(v, "type"), NULL);
+        if (type && !strcmp(type, "enabled"))  return THINK_ON;
+        if (type && !strcmp(type, "disabled")) return THINK_OFF;
+        if (type && !strcmp(type, "adaptive")) return THINK_DEFAULT;
+    }
+    return req_thinking_mode(req);
 }
 
 // Build the prompt one Messages request asks for. Shared by /v1/messages and
@@ -747,7 +830,7 @@ static char *messages_prompt(slot_t *s, sock_t fd, jv *req, tool_envelope *env,
         // t.total is the opening guess only -- under Harmony the tool
         // namespace it never counted is rendered into the prompt too.
         prompt = render_prompt_alloc(s->tmpl, t.cm, t.n, true,
-                                     req_thinking_mode(req),
+                                     messages_thinking_mode(req),
                                      native_tools, t.total + 256);
         if (!prompt) { oom = true; ok = false; }
     }

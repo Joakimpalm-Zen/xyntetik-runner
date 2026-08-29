@@ -2464,6 +2464,16 @@ static const char *tool_name_of(jv *tool, char *err, int errcap) {
         snprintf(err, errcap, "each tools[] entry must be an object");
         return NULL;
     }
+    // A wrong TYPE is not the same as an absent one. jv_str hands back the
+    // default for both, so `"type": 42` used to be read as "function" and the
+    // declaration was accepted -- the caller's mistake answered 200 and the
+    // model shown a tool the request never actually declared properly. Same
+    // rule the rest of the request surface already applies: null reads as
+    // absent, anything else of the wrong type is an error.
+    if (!jv_str_ok(jv_get(tool, "type"))) {
+        snprintf(err, errcap, "tools[].type must be a string");
+        return NULL;
+    }
     const char *type = jv_str(jv_get(tool, "type"), "function");
     if (strcmp(type, "function") != 0) {
         snprintf(err, errcap, "tools[].type must be \"function\"");
@@ -2472,6 +2482,14 @@ static const char *tool_name_of(jv *tool, char *err, int errcap) {
     jv *fn = jv_get(tool, "function");
     if (!fn || fn->type != J_OBJ) {
         snprintf(err, errcap, "tools[].function must be an object");
+        return NULL;
+    }
+    // The renderers below read description with a "" default, so a wrong type
+    // there silently dropped the description out of the prompt on some
+    // families and rendered it inconsistently on others. Refuse it once here
+    // rather than let each renderer decide what a number means.
+    if (!jv_str_ok(jv_get(fn, "description"))) {
+        snprintf(err, errcap, "tools[].function.description must be a string");
         return NULL;
     }
     const char *name = jv_str(jv_get(fn, "name"), NULL);

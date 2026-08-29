@@ -76,16 +76,39 @@ typedef struct {
     // At most 3 bytes can ever be pending: a 4-byte sequence missing one.
     char  u8_pend[2][4];
     int   u8_pend_n[2];
+    // Reasoning accounting for the Responses `usage` block. Counted per
+    // TOKEN, not per emit: one token can be split across channels by the
+    // think splitter, and a token that contributed any reasoning bytes is a
+    // reasoning token (the convention the field is read under). Counting
+    // emits instead would over-count a token that straddles the boundary.
+    int   reason_tokens;
+    bool  tok_had_reasoning;
 } gen_ctx;
 
 typedef struct {
     sock_t fd;
     bool  *dead; // shared with the write path's existing failure verdict
+    // The request's wall-clock bound, or 0. Prefill polls this predicate
+    // between chunks and decode polls it per step, so carrying the deadline
+    // here is what makes the timeout cover the WHOLE request rather than only
+    // the part after the prompt was processed: the bound was computed before
+    // any work but was previously handed only to the decode loop, so a long
+    // enough prompt overran its own timeout by the entire prefill.
+    double deadline;
+    bool   timed_out; // stopped by the deadline, not by a vanished client
 } client_stop;
 
-static bool client_disconnected(void *ud) {
+static bool request_should_stop(void *ud) {
     client_stop *s = ud;
     if (*s->dead) return true;
+    // Deadline before the peer probe: a timed-out request is answerable (the
+    // caller is still there and is owed a status), a disconnected one is not,
+    // and conflating them would answer a live client's timeout as if nobody
+    // were listening.
+    if (s->deadline > 0 && now_s() >= s->deadline) {
+        s->timed_out = true;
+        return true;
+    }
     if (sock_peer_closed(s->fd)) *s->dead = true;
     return *s->dead;
 }
@@ -642,6 +665,7 @@ typedef struct {
     jv         *calls;
     const char *text;   size_t text_n;
     const char *reason; size_t reason_n;
+    int         reason_tokens;
     bool        with_usage;
     int         n_prompt, n_gen, cached;
     // of `cached`, how many rows were forked out of the shared prefix cache
@@ -811,9 +835,10 @@ static void responses_body(sbuf *r, gen_ctx *g, const resp_doc *d) {
         sb_fmt(r, "{\"input_tokens\":%d,"
                   "\"input_tokens_details\":{\"cached_tokens\":%d},"
                   "\"output_tokens\":%d,"
-                  "\"output_tokens_details\":{\"reasoning_tokens\":0},"
+                  "\"output_tokens_details\":{\"reasoning_tokens\":%d},"
                   "\"total_tokens\":%d}",
-               d->n_prompt, d->cached, d->n_gen, d->n_prompt + d->n_gen);
+               d->n_prompt, d->cached, d->n_gen, d->reason_tokens,
+               d->n_prompt + d->n_gen);
         sb_lit(r, ",");
         telemetry_json(r, d);
     } else {
@@ -1218,12 +1243,19 @@ static int envelope_map_buffered(const tool_envelope *env, gen_ctx *g, sbuf *tc)
 static int gen_emit(void *ud, int reasoning, const char *bytes, int n) {
     gen_ctx *g = ud;
     if (!reasoning && g->n_stop) return stop_feed(g, bytes, n);
+    if (reasoning) ((gen_ctx *)ud)->tok_had_reasoning = true;
     return emit_channel(g, reasoning, bytes, n);
 }
 
 static int gen_collect(void *ud, const char *bytes, int n) {
     gen_ctx *g = ud;
-    return think_feed(&g->ts, bytes, n, gen_emit, g);
+    // One call per generated token, which is what makes this the right place
+    // to count reasoning tokens: gen_emit below can fire more than once for
+    // the same token when the splitter cuts it across channels.
+    g->tok_had_reasoning = false;
+    int r = think_feed(&g->ts, bytes, n, gen_emit, g);
+    if (g->tok_had_reasoning) g->reason_tokens++;
+    return r;
 }
 
 // A request field the server cannot use must be an error, never a silent
@@ -1481,6 +1513,22 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
         // Not "out of range": 2.5 is inside every bound top_k has, and saying
         // otherwise sends a caller hunting for a limit they never exceeded.
         send_error(fd, 400, "top_k and seed must be whole numbers");
+        return;
+    }
+    // An explicit seed:0 asks for a REPRODUCIBLE run and does not get one:
+    // the sampler's xorshift64 has a fixed point at state 0, so `seed > 0`
+    // below leaves the inherited state and two identical requests diverge.
+    // The CLI has refused -s 0 by name since the same reasoning was written
+    // down there; accepting it here and randomizing anyway is the
+    // accepted-then-ignored hazard, answered 200. Absent stays absent: the
+    // default 0 is indistinguishable from an explicit one by value alone,
+    // which is why this asks the request whether the member is there.
+    if (!absent(jv_get(req, "seed")) && seed == 0) {
+        send_error_detail(fd, 400,
+                          "seed 0 is not a usable seed: the sampler's RNG "
+                          "state 0 is a fixed point, so the run would not be "
+                          "reproducible. Use any other value, or omit seed.",
+                          "seed", "invalid_value");
         return;
     }
     uint64_t rng_state = s->smp.rng;
@@ -1847,7 +1895,8 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
     gen_ctx g = { .out = {0}, .fd = fd, .stream = stream, .api = api,
                   .stop_strs = stops, .n_stop = n_stops, .eng = e,
                   .created = (long)time(NULL) };
-    client_stop stop = { .fd = fd, .dead = &g.dead };
+    client_stop stop = { .fd = fd, .dead = &g.dead,
+                         .deadline = req_deadline };
     snprintf(g.id, sizeof(g.id), "%s", req_id);
     // Prefill is scheduled apart from decode: different kernel shape, and it
     // is this slot's own model_forward_batch, so it must not overlap a
@@ -1858,7 +1907,7 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
     // Yield the device turn between prefill chunks. Without it a long prompt
     // holds it for the whole prefill and every other slot waits: measured at
     // 26.2 s for a short request arriving during a 2,300-token prefill.
-    engine_set_stop(e, client_disconnected, &stop);
+    engine_set_stop(e, request_should_stop, &stop);
     engine_set_prefill_yield(e, prefill_yield_turn, NULL);
     sched_prefill_begin();
     if (cache_prompt && share_prefix)
@@ -1892,7 +1941,18 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
     free(toks);
     if (!logits) {
         completion_cleanup(e, schema, &g);
-        if (!g.dead)
+        // Three ways to get here and they are not the same answer. The
+        // deadline is checked first: it is the only one where the caller is
+        // still on the connection AND the prompt was fine, so reporting it as
+        // a context overflow would send them shortening a prompt that fits.
+        if (stop.timed_out)
+            send_error_detail(fd, 408,
+                              "request timed out while processing the prompt: "
+                              "prefill did not finish inside the request "
+                              "timeout. Send a shorter prompt, raise the "
+                              "timeout, or reuse a cached prefix.",
+                              NULL, "timeout");
+        else if (!g.dead)
             send_error_detail(fd, 400, "context overflow",
                               api == API_TEXT ? "prompt" :
                               api == API_RESPONSES ? "input" : "messages",
@@ -2247,6 +2307,7 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
                            .calls = call,
                            .text = g.out.s, .text_n = g.out.n,
                            .reason = g.reason.s, .reason_n = g.reason.n,
+                           .reason_tokens = g.reason_tokens,
                            .with_usage = true,
                            .n_prompt = n_prompt, .n_gen = n_gen, .cached = keep,
                            .forked = reuse.forked, .saved_s = reuse.saved_s,
@@ -2281,6 +2342,7 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
                            .calls = call,
                            .text = g.out.s, .text_n = g.out.n,
                            .reason = g.reason.s, .reason_n = g.reason.n,
+                           .reason_tokens = g.reason_tokens,
                            .with_usage = true,
                            .n_prompt = n_prompt, .n_gen = n_gen, .cached = keep,
                            .forked = reuse.forked, .saved_s = reuse.saved_s,

@@ -24,6 +24,12 @@ jv         *jv_get(jv *obj, const char *key);    // NULL if absent / not object
 const char *jv_str (jv *v, const char *dflt);
 double      jv_num (jv *v, double dflt);
 bool        jv_bool(jv *v, bool dflt);
+// jv_str's problem, for fields where a wrong type must be an error: it cannot
+// tell "absent" from "present but not a string", so both fall to the default
+// and a caller that sent `"type": 42` is answered as if it had sent nothing.
+// True when the member is absent, null, or a string (i.e. usable); false when
+// it is present with some other type. Read the value with jv_str as before.
+bool        jv_str_ok(jv *v);
 
 // escape s (n bytes) as JSON string content (no surrounding quotes);
 // returns bytes written, always NUL-terminates within cap

@@ -836,8 +836,12 @@ def test_cache_usage_fields_are_not_claimed(client):
 def test_replayed_reasoning_is_accepted(client, block, label):
     """A thinking-capable client replays the assistant's reasoning blocks in
     the next turn. Anthropic wants them back to verify a signature; there is
-    nothing to verify locally, so runner accepts and drops them. Refusing would
-    break the second turn of every such conversation."""
+    nothing to verify locally, so the block is always ACCEPTED. Whether it is
+    replayed into the prompt is per-family and matches what chat does for the
+    same model: Harmony gets it back on its analysis channel, every other
+    family strips prior thinking the way its own template does. This fixture
+    model is not Harmony, so here it is dropped; the Harmony side is pinned in
+    tests/test_tool_attribution.c, which can force the template."""
     r = client.messages(
         {"model": "local", "max_tokens": 8, "temperature": 0,
          "messages": [{"role": "user", "content": "hi"},
@@ -848,9 +852,10 @@ def test_replayed_reasoning_is_accepted(client, block, label):
 
 
 def test_replayed_reasoning_costs_nothing(client):
-    """Accepting the block is the weak half; not putting it in the prompt is
-    the half that matters, and a test that only checked for a 200 would pass
-    just as well if the scratch work were prepended to every turn.
+    """Accepting the block is the weak half; on THIS family (not Harmony) not
+    putting it in the prompt is the half that matters, and a test that only
+    checked for a 200 would pass just as well if the scratch work were
+    prepended to every turn.
 
     count_tokens makes it exact: an assistant turn carrying a long thinking
     block must count the same as the same turn without one, while the same text

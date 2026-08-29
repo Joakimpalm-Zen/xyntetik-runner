@@ -392,6 +392,9 @@ jv *jv_get(jv *obj, const char *key) {
 const char *jv_str(jv *v, const char *dflt) {
     return (v && v->type == J_STR) ? v->str : dflt;
 }
+bool jv_str_ok(jv *v) {
+    return !v || v->type == J_NULL || v->type == J_STR;
+}
 double jv_num(jv *v, double dflt) {
     return (v && v->type == J_NUM) ? v->num : dflt;
 }

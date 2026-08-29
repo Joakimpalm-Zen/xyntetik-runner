@@ -1,0 +1,13 @@
+{
+  "choices": [
+    {
+      "delta": {},
+      "finish_reason": "<redacted>",
+      "index": "<number>"
+    }
+  ],
+  "created": "<redacted>",
+  "id": "<redacted>",
+  "model": "<redacted>",
+  "object": "chat.completion.chunk"
+}
