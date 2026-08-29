@@ -109,8 +109,9 @@ static jv *responses_tools(jv *tools, char *err, int errcap, bool *oom) {
 // tool_choice, likewise: the named form is flat here and nested in chat.
 static jv *responses_tool_choice(jv *tc, char *err, int errcap, bool *oom) {
     if (!tc || tc->type != J_OBJ) return NULL; // strings pass through unchanged
+    const char *type = jv_str(jv_get(tc, "type"), NULL);
     const char *name = jv_str(jv_get(tc, "name"), NULL);
-    if (!name) {
+    if (!type || strcmp(type, "function") || !name || !name[0]) {
         snprintf(err, errcap,
                  "tool_choice object must be {\"type\":\"function\",\"name\":...}");
         return NULL;

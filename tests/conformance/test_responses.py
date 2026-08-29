@@ -270,6 +270,10 @@ def test_supported_stateless_forms_are_accepted(client):
     ({"input": "hi", "tools": [{"type": "web_search"}]}, "function"),
     ({"input": "hi", "tools": [{"type": "function", "name": "f"}],
       "tool_choice": {"type": "function"}}, "tool_choice"),
+    ({"input": "hi", "tools": [{"type": "function", "name": "f",
+                                    "parameters": {"type": "object"}}],
+      "tool_choice": {"type": "web_search_preview", "name": "f"}},
+     "tool_choice"),
     ({"input": "hi", "tools": [{"type": "function", "name": "f"}],
       "parallel_tool_calls": True}, "parallel"),
 ])
