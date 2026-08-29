@@ -2434,8 +2434,12 @@ void i8_quant_act(const float *x, void *dst, int n) {
 // 32 unsigned weight codes x 32 int8 activations -> 8 int32 partial sums.
 // VNNI does it in one instruction; the AVX2 fallback goes through maddubs,
 // which saturates its int16 intermediate — safe only while
-// max(code) * 127 * 2 <= 32767, i.e. codes up to 128. Q8_0 (codes to 255)
-// therefore does NOT use this helper; see dot_q8_0_i8_avx2 below.
+// max(code) * 127 * 2 <= 32767, i.e. codes up to 128.
+//
+// Every caller now passes MAGNITUDES (|w| <= 128, the sign moved onto the
+// activation by _mm256_sign_epi8), so the bound holds for all three formats
+// and both instruction paths compute the same exact int32. See i8_signed_mag
+// below for why that formulation replaced the unsigned-offset one.
 static inline __m256i i8_mac32(__m256i acc, __m256i wu, __m256i xq) {
 #if RUNNER_I8_VNNI
     return _mm256_dpbusd_epi32(acc, wu, xq);
@@ -2451,40 +2455,48 @@ static inline __m256i i8a_load32(const block_i8a *b) {
         _mm_loadu_si128((const __m128i *)b[1].qs), 1);
 }
 
+// Exact int32 dot of a SIGNED weight vector with the int8 activations.
+//
+// Both instructions here want an UNSIGNED first operand, and there are two
+// ways to give them one. The offset form makes the weights unsigned by adding
+// a constant (w+128 for q8_0, code for q4_0's w=code-8) and then subtracts
+// that constant's contribution — 128*sum(x), 8*sum(x) — back out in float at
+// the end. It is algebraically exact and numerically lossy: the accumulator
+// carries values far larger than the answer for the whole row and the
+// correction cancels them only at the return, so the result loses relative
+// precision exactly when the true dot is small, which is where this route's
+// near-tie argmax flips live.
+//
+// The magnitude form has no such term. |w| is the unsigned operand and the
+// sign rides on the activation (_mm256_sign_epi8 returns 0 where w is 0,
+// which is the right contribution anyway). Nothing is inflated and nothing
+// is cancelled. This is what llama.cpp's mul_sum_i8_pairs_float does for the
+// same reason; runner already used it on the AVX2 q8_0 arm and nowhere else.
+//
+// It also removes a REPRODUCIBILITY defect. While q8_0 used the offset form
+// under VNNI and the magnitude form under AVX2, the two builds returned
+// different floats for identical inputs — the one thing the activation
+// quantizer three functions above is careful never to do.
+static inline __m256i i8_signed_mag(__m256i w, __m256i x) {
+    return i8_mac32(_mm256_setzero_si256(), _mm256_abs_epi8(w),
+                    _mm256_sign_epi8(x, w));
+}
+
 static float dot_q8_0_i8(const block_q8_0 *b, const block_i8a *xq, int n) {
-    // (w + 128) is unsigned: w^0x80 for two's complement. dot(w+128, xq)
-    // = dot(w, xq) + 128*sumxq, so the offset comes straight back out.
-    const __m256i flip = _mm256_set1_epi8((char)0x80);
+    // Magnitude form on BOTH instruction paths, so a VNNI box and an AVX2 box
+    // return the same float for the same input. See i8_signed_mag.
     __m256 facc = _mm256_setzero_ps();
-    float mins = 0;
     for (int i = 0; i < n / QK; i++) {
-        __m256i wu = _mm256_xor_si256(
-            _mm256_loadu_si256((const __m256i *)b[i].qs), flip);
-        __m256i acc;
-#if RUNNER_I8_VNNI
-        acc = _mm256_dpbusd_epi32(_mm256_setzero_si256(), wu, i8a_load32(&xq[2*i]));
-#else
-        // codes reach 255 here, so maddubs would saturate: split the weight
-        // into magnitude (<=128, safe as the unsigned operand) and sign
         __m256i w = _mm256_loadu_si256((const __m256i *)b[i].qs);
-        __m256i mag = _mm256_abs_epi8(w);
-        __m256i sx  = _mm256_sign_epi8(i8a_load32(&xq[2*i]), w);
-        __m256i p16 = _mm256_maddubs_epi16(mag, sx);
-        acc = _mm256_madd_epi16(p16, _mm256_set1_epi16(1));
-        (void)wu;
-#endif
+        __m256i acc = i8_signed_mag(w, i8a_load32(&xq[2*i]));
         float ax0 = xq[2*i].d, ax1 = xq[2*i + 1].d;
         float dw = f16_to_f32(b[i].d);
         __m256 scale = _mm256_setr_ps(dw*ax0,dw*ax0,dw*ax0,dw*ax0,
                                       dw*ax1,dw*ax1,dw*ax1,dw*ax1);
         facc = _mm256_fmadd_ps(scale,
                                _mm256_cvtepi32_ps(acc), facc);
-#if RUNNER_I8_VNNI
-        mins -= dw * 128.0f * (ax0 * (float)xq[2*i].s +
-                                ax1 * (float)xq[2*i + 1].s);
-#endif
     }
-    return hsum8(facc) + mins;
+    return hsum8(facc);
 }
 
 static float dot_q4_0_i8(const block_q4_0 *b, const block_i8a *xq, int n) {
@@ -2493,23 +2505,24 @@ static float dot_q4_0_i8(const block_q4_0 *b, const block_i8a *xq, int n) {
     // [lo(16) | hi(16)] — one 128-bit load, two masks, one 256-bit insert.
     const __m128i mF = _mm_set1_epi8(0xF);
     __m256 facc = _mm256_setzero_ps();
-    float mins = 0;
     for (int i = 0; i < n / QK; i++) {
         __m128i q  = _mm_loadu_si128((const __m128i *)b[i].qs);
         __m128i lo = _mm_and_si128(q, mF);
         __m128i hi = _mm_and_si128(_mm_srli_epi16(q, 4), mF);
         __m256i wu = _mm256_inserti128_si256(_mm256_castsi128_si256(lo), hi, 1);
-        __m256i acc = i8_mac32(_mm256_setzero_si256(), wu, i8a_load32(&xq[2*i]));
+        // q4_0's stored weight is (code - 8). Subtracting the 8 HERE and
+        // dotting the signed value directly costs one vpsubb and removes the
+        // 8*sum(x) correction that used to cancel in float at the return.
+        __m256i w = _mm256_sub_epi8(wu, _mm256_set1_epi8(8));
+        __m256i acc = i8_signed_mag(w, i8a_load32(&xq[2*i]));
         float ax0 = xq[2*i].d, ax1 = xq[2*i + 1].d;
         float dw = f16_to_f32(b[i].d);
         __m256 scale = _mm256_setr_ps(dw*ax0,dw*ax0,dw*ax0,dw*ax0,
                                       dw*ax1,dw*ax1,dw*ax1,dw*ax1);
         facc = _mm256_fmadd_ps(scale,
                                _mm256_cvtepi32_ps(acc), facc);
-        mins -= dw * 8.0f * (ax0 * (float)xq[2*i].s +
-                              ax1 * (float)xq[2*i + 1].s);
     }
-    return hsum8(facc) + mins;
+    return hsum8(facc);
 }
 
 static float dot_q4_K_i8(const block_q4_K *b, const block_i8a *xq, int n) {
