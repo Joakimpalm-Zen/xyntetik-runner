@@ -2624,6 +2624,9 @@ void gpu_disable(model_t *m) {
 }
 
 // upload host KV rows [lo, hi) for every layer (CPU prompt processing wrote them)
+// Site 3 of 3 for the flat-row assumption (model.h, model_kv_byte_off): rows
+// [lo, hi) are mirrored at absolute offsets on both sides. It only runs on the
+// resync path of a PARTIAL split, so a full-offload sweep never exercises it.
 static bool kv_upload(gpu_t *g, model_t *m, int lo, int hi) {
     if (lo >= hi) return true;
     for (int l = 0; l < m->gpu_layers; l++) {

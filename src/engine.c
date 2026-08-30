@@ -172,6 +172,9 @@ static void spec_fold_sync(engine *e, const int32_t *d, int acc, int nd,
     }
 }
 
+// Site 2 of 3 for the flat-row assumption (model.h, model_kv_byte_off): a kept
+// prefix of `keep` tokens is assumed to still sit at rows [0, keep) of every
+// layer. Under a layout where a layer recycles rows, "keep" is not a rewind.
 int engine_rewind(engine *e, const int32_t *toks, int n) {
     int keep = 0;
     if (e->hist)
@@ -345,6 +348,9 @@ size_t prefix_cache_entry_bytes(const model_t *m, int n) {
     return t;
 }
 
+// Site 1 of 3 for the flat-row assumption (model.h, model_kv_byte_off): this
+// copies a contiguous [0, n) run per layer. A layer owning fewer than n_ctx
+// rows reads past its allocation here, and no one-shot -p run would notice.
 static void pfx_save(const model_t *m, uint8_t *dst, int n) {
     size_t off = 0;
     for (int l = 0; l < m->n_layer; l++) {
