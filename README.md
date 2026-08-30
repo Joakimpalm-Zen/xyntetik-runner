@@ -640,7 +640,7 @@ flags into unrelated feature sections.
 | `--version` | Print the version and exit. |
 | `-h`, `--help` | Print the option reference to stdout and exit `0`. Help asked for is written to stdout; help printed because something went wrong goes to stderr with a non-zero exit. |
 | `--parent-pid N` | Exit when process `N` dies; intended for supervisor cleanup. |
-| `-v` | Print verbose model and memory information. |
+| `-v` | Print verbose model and memory information. On a sliding-window model this includes a `kv reachable` line beside `kv cache`: every layer is allocated `n_ctx` rows, but a sliding layer never attends further back than its window, so the rest is written once and never read. The gap is large enough to decide a context length - gemma-3-4b at `-c 32768` allocates 4563 MB and can reach 793 MB of it - and it is a ceiling, not a correctness problem: answers are unaffected, the cache is simply bigger than the model can use. |
 
 #### Deciding before you download
 

@@ -542,6 +542,40 @@ static char *meta_printable(char *dst, size_t cap, const char *src) {
     return dst;
 }
 
+// How much of the allocated KV a run can ever READ back.
+//
+// Every layer is given n_ctx rows (see the kv_off loop), but a sliding layer
+// clamps its attention start to p - swa_window + 1, so rows older than the
+// window are written once and never read again. On a model whose sliding
+// layers are both more numerous and wider in KV than its full ones, that is
+// most of the cache: measured on gemma-4-31B, 91% of the KV budget serving a
+// 1024-token window, and 29.53 GB wanted at ctx 32k against 3.52 GB reachable.
+//
+// This is a CEILING, not a correctness bug: every answer is right, the run
+// just cannot reach a context the hardware could otherwise hold. Reporting it
+// is deliberately separate from fixing it, because the fix is a ring layout
+// and three call sites assume flat absolute rows (see model_kv_byte_off).
+size_t model_kv_reachable_bytes(const model_t *m) {
+    size_t total = 0;
+    for (int l = 0; l < m->n_layer; l++) {
+        if (model_kv_owner(m, l) != l) continue;   // shared-KV owns no rows
+        int rows = m->n_ctx;
+        if (m->l_is_swa && m->l_is_swa[l] && m->swa_window > 0 &&
+            m->swa_window < rows)
+            rows = m->swa_window;
+        total += (size_t)rows * model_kv_row_bytes(m, l);
+    }
+    return total;
+}
+
+int model_kv_swa_layers(const model_t *m) {
+    int n = 0;
+    if (!m->l_is_swa || m->swa_window <= 0) return 0;
+    for (int l = 0; l < m->n_layer; l++)
+        if (m->l_is_swa[l] && model_kv_owner(m, l) == l) n++;
+    return n;
+}
+
 bool model_fit_report(gguf_file *g, int n_ctx_want, model_fit *out) {
     memset(out, 0, sizeof(*out));
     char key[128];
@@ -3351,6 +3385,13 @@ static bool model_alloc_runtime(model_t *m, const model_params *p) {
         fprintf(stderr, "%-24s %d (train %d)\n", "context", m->n_ctx, m->n_ctx_train);
         fprintf(stderr, "%-24s %.1f MB (%s)\n", "kv cache", 2.0 * kv_bytes / 1e6,
                 m->kv_q8 ? "q8_0" : "fp16");
+        int n_swa = model_kv_swa_layers(m);
+        size_t reach = model_kv_reachable_bytes(m);
+        if (n_swa > 0 && reach < kv_bytes)
+            fprintf(stderr, "%-24s %.1f MB (%d of %d layers slide a %d-token "
+                    "window; the rest is written and never read back)\n",
+                    "kv reachable", 2.0 * reach / 1e6, n_swa, m->n_layer,
+                    m->swa_window);
         fprintf(stderr, "%-24s %d\n", "batch", m->n_batch);
         gguf_tensor *w0 = m->layers[0].recurrent ? m->layers[0].wqkv
                                                   : m->layers[0].wq;
