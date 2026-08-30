@@ -2436,10 +2436,16 @@ void i8_quant_act(const float *x, void *dst, int n) {
 // which saturates its int16 intermediate — safe only while
 // max(code) * 127 * 2 <= 32767, i.e. codes up to 128.
 //
-// Every caller now passes MAGNITUDES (|w| <= 128, the sign moved onto the
-// activation by _mm256_sign_epi8), so the bound holds for all three formats
-// and both instruction paths compute the same exact int32. See i8_signed_mag
-// below for why that formulation replaced the unsigned-offset one.
+// Both callers stay inside that bound, by different routes. q4_0 and q4_K pass
+// raw nibble codes (<= 15, so 15*127*2 = 3810) with the format's own offset
+// corrected in float afterwards. q8_0 passes MAGNITUDES through i8_signed_mag
+// (|w| <= 128, the sign moved onto the activation), because its codes reach
+// 255 and would saturate otherwise.
+//
+// Both paths compute the same exact int32 on VNNI and AVX2 for a given caller,
+// which Shade run 7's V1 verified directly by building this file twice on one
+// box with and without -mavx512vnni: bit-identical gate results, every field
+// to every printed digit.
 static inline __m256i i8_mac32(__m256i acc, __m256i wu, __m256i xq) {
 #if RUNNER_I8_VNNI
     return _mm256_dpbusd_epi32(acc, wu, xq);
@@ -2505,24 +2511,44 @@ static float dot_q4_0_i8(const block_q4_0 *b, const block_i8a *xq, int n) {
     // [lo(16) | hi(16)] — one 128-bit load, two masks, one 256-bit insert.
     const __m128i mF = _mm_set1_epi8(0xF);
     __m256 facc = _mm256_setzero_ps();
+    float mins = 0;
     for (int i = 0; i < n / QK; i++) {
         __m128i q  = _mm_loadu_si128((const __m128i *)b[i].qs);
         __m128i lo = _mm_and_si128(q, mF);
         __m128i hi = _mm_and_si128(_mm_srli_epi16(q, 4), mF);
         __m256i wu = _mm256_inserti128_si256(_mm256_castsi128_si256(lo), hi, 1);
-        // q4_0's stored weight is (code - 8). Subtracting the 8 HERE and
-        // dotting the signed value directly costs one vpsubb and removes the
-        // 8*sum(x) correction that used to cancel in float at the return.
-        __m256i w = _mm256_sub_epi8(wu, _mm256_set1_epi8(8));
-        __m256i acc = i8_signed_mag(w, i8a_load32(&xq[2*i]));
+        // REVERTED 2026-08-30 to the offset form. The magnitude form (subtract
+        // the 8 here, dot the signed value, drop the correction term) is still
+        // the cleaner arithmetic and it removed a real float cancellation --
+        // but measured against the promotion bar it did not remove FLIPS, it
+        // MOVED them: 3/64 -> 0/64 on one model and 1/64 -> 2/64 on another.
+        // Shade run 7's V1 then ruled out microarchitecture as the
+        // explanation by building both kernels on one box (VNNI vs
+        // -mno-avx512vnni, bit-identical results), so the split is
+        // model-dependent, which is exactly the shape of the 2026-08-21
+        // least-squares attempt that "traded which row fails".
+        //
+        // Two independent refinements have now each redistributed the error
+        // rather than reducing it, so the open question is whether 0/64 is
+        // reachable by refining this dot's arithmetic at all. Carrying an
+        // unpromotable variant while that is unanswered buys nothing, so this
+        // returns to the form the measurements were taken against.
+        //
+        // The q8_0 half of that change is NOT reverted: it fixed a
+        // cross-microarchitecture reproducibility defect at zero flip cost,
+        // and is independent of this.
+        __m256i acc = i8_mac32(_mm256_setzero_si256(), wu,
+                               i8a_load32(&xq[2*i]));
         float ax0 = xq[2*i].d, ax1 = xq[2*i + 1].d;
         float dw = f16_to_f32(b[i].d);
         __m256 scale = _mm256_setr_ps(dw*ax0,dw*ax0,dw*ax0,dw*ax0,
                                       dw*ax1,dw*ax1,dw*ax1,dw*ax1);
         facc = _mm256_fmadd_ps(scale,
                                _mm256_cvtepi32_ps(acc), facc);
+        mins -= dw * 8.0f * (ax0 * (float)xq[2*i].s +
+                              ax1 * (float)xq[2*i + 1].s);
     }
-    return hsum8(facc);
+    return hsum8(facc) + mins;
 }
 
 static float dot_q4_K_i8(const block_q4_K *b, const block_i8a *xq, int n) {
