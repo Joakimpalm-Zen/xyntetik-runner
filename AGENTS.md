@@ -108,6 +108,46 @@ Required behavior:
 Working rule: a mutation test proves nothing until the rebuild is proven, and
 an A/B proves nothing until the two binaries are shown to differ.
 
+### Every gate needs one absolute anchor
+
+A gate proves a system agrees with the instrument measuring it. That is not the
+same as proving the system is right, and the difference has cost this project
+real work three times:
+
+- An anchor comparing a build against itself proves the harness is
+  DETERMINISTIC, not CORRECT. A research run measured a model whose weights had
+  been silently mis-loaded and produced internally consistent numbers for two
+  full runs before an absolute check caught it.
+- A geometric proxy cannot detect it either: the same broken checkpoint ranked
+  its own layers almost identically to the corrected one.
+- `--caps` reported `unified_memory: true` on a discrete GPU for a week because
+  the code queried CUDA attribute 17 instead of 18. Every gate passed; none of
+  them knew what the right answer was.
+
+The general form, and the rule:
+
+> Every instrument is valid only inside a regime it cannot itself verify.
+> **No measurement chain is sound unless at least one link has a correct answer
+> known independently of the system under test.**
+
+Required behavior:
+
+- Every gate carries at least one assertion whose expected value comes from
+  OUTSIDE the system: a published constant, a hand-computed result, a
+  specification, a reference implementation, or a physical fact about the
+  hardware.
+- Prefer an anchor that fails loudly when the harness itself is wrong. Querying
+  a GPU's multiprocessor count and checking it against the part's published SM
+  count proves the enum numbering before anything reads a neighbouring
+  attribute; asserting only that two of our own builds agree proves nothing
+  about either.
+- When a gate cannot have an absolute anchor, say so where the gate lives.
+  A relative-only gate is still useful and its scope must be written down, not
+  assumed.
+
+Working rule: a green gate with no external anchor is evidence the system is
+self-consistent, and nothing more.
+
 ## 4. Grill Me Always
 
 Actively challenge unclear requirements until the work is understood.
