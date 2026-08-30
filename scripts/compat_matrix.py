@@ -411,10 +411,14 @@ def main(argv=None):
         # Reports are committed as public evidence. Absolute executable and
         # model paths only expose the machine's username/workspace layout;
         # the portable manifest name plus version/hash carry the identity.
+        # resolve() before probing: Path("./runner") stringifies to "runner",
+        # which is not on PATH, so a relative --runner silently recorded a null
+        # version and the report lost the one field identifying the binary.
         "runner": {"path": args.runner.name,
-                   "version": command_version(args.runner)},
+                   "version": command_version(args.runner.resolve())},
         "reference": {"path": args.reference.name if args.reference else None,
-                      "version": command_version(args.reference) if args.reference else None},
+                      "version": (command_version(args.reference.resolve())
+                                  if args.reference else None)},
         "models": [],
     }
     failed = False

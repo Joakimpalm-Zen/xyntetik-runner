@@ -94,8 +94,15 @@ names that were true when they were written.
   them; the server advertises every public route at startup and hardens its
   prefix-cache management routes; the Windows tray refuses a spawn whose
   command line does not fit rather than truncating it; expert-dimension
-  iteration in the quantizer is unsigned; and the build preflights its Python
-  test dependencies instead of failing halfway through a suite.
+  iteration in the quantizer is unsigned; the build preflights its Python
+  test dependencies instead of failing halfway through a suite; ring row
+  sizing saturates instead of overflowing signed arithmetic at the int
+  boundary; the GPU backend identity survives a release build's
+  command-line `CFLAGS`, which would otherwise have compiled the Metal
+  ring refusal out of the shipped binary; and `compat_matrix.py` resolves
+  the runner path before probing its version, since `Path("./runner")`
+  stringifies to `runner`, is not on PATH, and silently recorded a null
+  version in the committed evidence.
 - **NVFP4: the gate could not have caught the bug, and now says so.** v0.4.2
   claimed a decode gate that was a transcription of the implementation, so it
   proved the implementation agreed with itself. The changelog claim is
