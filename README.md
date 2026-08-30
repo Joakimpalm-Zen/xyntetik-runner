@@ -481,6 +481,22 @@ run on CPU; CUDA names and declines this layout because its MoE kernels require
 one model-wide expert count.
 `scripts/moe-prune-plan.py` can build a plan from calibration data.
 
+**A non-uniform prune produces a file that is correct in Runner and not
+portable, and an artifact built that way has to say so.** GGUF carries ONE
+`<arch>.expert_count` for the whole model and has no per-layer field. When a
+plan leaves every MoE layer at the same new count, that key is rewritten and
+the file describes itself completely. When a plan prunes layers to different
+counts, or leaves some layers unpruned, no single value can describe it: the
+key is deliberately left at the parent's number, which remains every layer's
+true ceiling but is no longer tight for the pruned ones. Runner loads such a
+file correctly because it resolves each layer's real expert count from that
+layer's own router tensor rather than from the global key. **An engine that
+trusts the global key will not.** So a published artifact from a non-uniform
+prune must state that it is Runner-correct and untested elsewhere, in the same
+place it states its fidelity; a uniform prune carries no such caveat. This is a
+format gap, not a defect in either engine, and closing it needs a per-layer
+expert-count convention that GGUF does not currently define.
+
 ### Published artifacts
 
 Artifacts produced by this project are published only after their stated gate
