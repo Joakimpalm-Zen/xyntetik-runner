@@ -3520,8 +3520,9 @@ static bool fwd_tile(gpu_t *g, model_t *m, const int32_t *tokens, int tn,
             // one thread per stored unit: per value for fp16, per 32-value
             // q8_0 block (the whole block shares one amax/scale)
             int units = q8 ? kv_dim / 32 : kv_dim;
+            int kring = model_kv_is_ring(m, l) ? m->kv_ring : 0;
             void *ps[] = { &g->kt, &g->vt, &g->kc, &g->vc, &kv_dim, &l_off,
-                           &g->pos_dev, &q8 };
+                           &g->pos_dev, &q8, &kring };
             ok = ok && launch(g, g->sw->f_store, (units + 63) / 64, tn, 1, 64, ps);
         }
     kv_done:
@@ -3535,7 +3536,8 @@ static bool fwd_tile(gpu_t *g, model_t *m, const int32_t *tokens, int tn,
             attn_args aa = { hd, m->n_head, n_kv, m->n_ctx,
                              (uint64_t)model_kv_byte_off(m, l),
                              model_attn_scale(m, l), q_dim, xdim,
-                             local ? m->swa_window : 0, m->kv_q8 };
+                             local ? m->swa_window : 0, m->kv_q8,
+                             model_kv_is_ring(m, l) ? m->kv_ring : 0 };
             // Decode (tn==1, one query, long KV): flash-decoding — split the KV
             // range across ATTN_SPLITS blocks/head (higher occupancy, coalesced)
             // then merge partials. Prefill (tn>1) already runs n_head*tn blocks,
@@ -4176,8 +4178,9 @@ static bool fwd_batch(gpu_batch *B, model_t *m, int tn) {
             uint64_t l_off = model_kv_byte_off(m, l);
             int q8 = m->kv_q8;
             int units = q8 ? kv_dim / 32 : kv_dim;
+            int kring = model_kv_is_ring(m, l) ? m->kv_ring : 0;
             void *ps[] = { &g->kt, &g->vt, &B->kcp_d, &B->vcp_d, &kv_dim,
-                           &l_off, &B->pos_d, &q8 };
+                           &l_off, &B->pos_d, &q8, &kring };
             ok = ok && launch(g, g->sw->f_store_seq, (units + 63) / 64, tn, 1, 64, ps);
         }
         }
@@ -4189,7 +4192,8 @@ static bool fwd_batch(gpu_batch *B, model_t *m, int tn) {
             attn_args aa = { hd, m->n_head, n_kv, m->n_ctx,
                              (uint64_t)model_kv_byte_off(m, l),
                              model_attn_scale(m, l), q_dim, xdim,
-                             local ? m->swa_window : 0, m->kv_q8 };
+                             local ? m->swa_window : 0, m->kv_q8,
+                             model_kv_is_ring(m, l) ? m->kv_ring : 0 };
             void *pd[] = { &g->q, &B->kcp_d, &B->vcp_d, &g->att, &g->attn_part,
                            &aa, &B->pos_d };
             ok = ok && launch(g, g->sw->f_attn_dec_seq, m->n_head, ATTN_SPLITS, tn, 128, pd);

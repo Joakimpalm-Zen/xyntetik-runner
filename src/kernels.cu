@@ -2008,17 +2008,27 @@ __device__ __forceinline__ float2 kv_pair(const unsigned char *row,
 extern "C" __global__ void k_store_kv(const float *k, const float *v,
                                       unsigned char *kc, unsigned char *vc,
                                       int kv_dim, ulong64 l_off,
-                                      const int *posp, int q8) {
+                                      const int *posp, int q8, int ring) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     int n = q8 ? kv_dim / 32 : kv_dim;
     if (i < n) {
         ulong64 row_b = KV_ROW_BYTES(kv_dim, q8);
-        ulong64 dst = l_off + (ulong64)(*posp + blockIdx.y) * row_b;
+        ulong64 dst = l_off + kv_slot(*posp + blockIdx.y, ring) * row_b;
         const float *ks = k + (ulong64)blockIdx.y * kv_dim;
         const float *vs = v + (ulong64)blockIdx.y * kv_dim;
         kv_store_row(kc + dst, ks, kv_dim, q8, i);
         kv_store_row(vc + dst, vs, kv_dim, q8, i);
     }
+}
+
+// Absolute position -> cache row. A ring layer owns `ring` rows and recycles
+// them, so position t lives at t % ring; ring == 0 is the flat layout where the
+// row IS the position. Every KV address in the attention kernels goes through
+// this: the CPU path proved bit-identical with the same mapping, and a kernel
+// that skipped it read a row holding a different token (nan, RTX 3070, partial
+// split, 2026-08-30).
+__device__ __forceinline__ ulong64 kv_slot(int t, int ring) {
+    return (ulong64)(ring > 0 ? t % ring : t);
 }
 
 // ---------------------------------------------------------------- attention
@@ -2060,7 +2070,7 @@ extern "C" __global__ void k_attn(const float *q, const unsigned char *kc,
     float *ah = att + ((ulong64)tk * a.n_head + h) * a.n_ctx;
 
     for (int t = t0 + tid; t <= pos; t += tpg)
-        ah[t] = kv_dot(kc + base + (ulong64)t * row_b, qh, hd, a.q8) * a.scale;
+        ah[t] = kv_dot(kc + base + kv_slot(t, a.ring) * row_b, qh, hd, a.q8) * a.scale;
     __syncthreads();
 
     // max
@@ -2109,7 +2119,7 @@ extern "C" __global__ void k_attn(const float *q, const unsigned char *kc,
     if (vchunk < nchunk && vlane < lanes) {
         float o0 = 0, o1 = 0;
         for (int t = t0 + vchunk; t <= pos; t += nchunk) {
-            float2 vf = kv_pair(vc + base + (ulong64)t * row_b, vlane, a.q8);
+            float2 vf = kv_pair(vc + base + kv_slot(t, a.ring) * row_b, vlane, a.q8);
             o0 += ah[t] * vf.x;
             o1 += ah[t] * vf.y;
         }
@@ -2130,7 +2140,7 @@ extern "C" __global__ void k_attn(const float *q, const unsigned char *kc,
         for (int i2 = tid; i2 < lanes; i2 += tpg) {
             float o0 = 0, o1 = 0;
             for (int t = t0; t <= pos; t++) {
-                float2 vf = kv_pair(vc + base + (ulong64)t * row_b, i2, a.q8);
+                float2 vf = kv_pair(vc + base + kv_slot(t, a.ring) * row_b, i2, a.q8);
                 o0 += ah[t] * vf.x;
                 o1 += ah[t] * vf.y;
             }
@@ -2196,7 +2206,7 @@ extern "C" __global__ void k_attn_dec(const float *q, const unsigned char *kc,
     float *ah = att + ((ulong64)tk * a.n_head + h) * a.n_ctx;
 
     for (int t = s0 + tid; t < s1; t += tpg)
-        ah[t] = kv_dot(kc + base + (ulong64)t * row_b, qh, hd, a.q8) * a.scale;
+        ah[t] = kv_dot(kc + base + kv_slot(t, a.ring) * row_b, qh, hd, a.q8) * a.scale;
     __syncthreads();
     float mx = -1e30f;
     for (int t = s0 + tid; t < s1; t += tpg) mx = fmaxf(mx, ah[t]);
@@ -2225,7 +2235,7 @@ extern "C" __global__ void k_attn_dec(const float *q, const unsigned char *kc,
     for (int i2 = tid; i2 < hd / 2; i2 += tpg) {
         float o0 = 0, o1 = 0;
         for (int t = s0; t < s1; t++) {
-            float2 vf = kv_pair(vc + base + (ulong64)t * row_b, i2, a.q8);
+            float2 vf = kv_pair(vc + base + kv_slot(t, a.ring) * row_b, i2, a.q8);
             o0 += ah[t] * vf.x;
             o1 += ah[t] * vf.y;
         }
@@ -2321,13 +2331,13 @@ extern "C" __global__ void k_rope_seq(float *v, const float *fr, rope_args a,
 extern "C" __global__ void k_store_kv_seq(const float *k, const float *v,
                                           const ulong64 *kcp, const ulong64 *vcp,
                                           int kv_dim, ulong64 l_off,
-                                          const int *posp, int q8) {
+                                          const int *posp, int q8, int ring) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     int n = q8 ? kv_dim / 32 : kv_dim;
     if (i < n) {
         int sq = blockIdx.y;
         ulong64 row_b = KV_ROW_BYTES(kv_dim, q8);
-        ulong64 dst = l_off + (ulong64)posp[sq] * row_b;
+        ulong64 dst = l_off + kv_slot(posp[sq], ring) * row_b;
         const float *ks = k + (ulong64)sq * kv_dim;
         const float *vs = v + (ulong64)sq * kv_dim;
         kv_store_row((unsigned char *)kcp[sq] + dst, ks, kv_dim, q8, i);
@@ -2373,7 +2383,7 @@ extern "C" __global__ void k_attn_dec_seq(const float *q, const ulong64 *kcp,
     float *ah = att + ((ulong64)tk * a.n_head + h) * a.n_ctx;
 
     for (int t = s0 + tid; t < s1; t += tpg)
-        ah[t] = kv_dot(kc + base + (ulong64)t * row_b, qh, hd, a.q8) * a.scale;
+        ah[t] = kv_dot(kc + base + kv_slot(t, a.ring) * row_b, qh, hd, a.q8) * a.scale;
     __syncthreads();
     float mx = -1e30f;
     for (int t = s0 + tid; t < s1; t += tpg) mx = fmaxf(mx, ah[t]);
@@ -2402,7 +2412,7 @@ extern "C" __global__ void k_attn_dec_seq(const float *q, const ulong64 *kcp,
     for (int i2 = tid; i2 < hd / 2; i2 += tpg) {
         float o0 = 0, o1 = 0;
         for (int t = s0; t < s1; t++) {
-            float2 vf = kv_pair(vc + base + (ulong64)t * row_b, i2, a.q8);
+            float2 vf = kv_pair(vc + base + kv_slot(t, a.ring) * row_b, i2, a.q8);
             o0 += ah[t] * vf.x;
             o1 += ah[t] * vf.y;
         }

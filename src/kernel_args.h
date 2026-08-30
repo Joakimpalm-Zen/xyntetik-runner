@@ -53,6 +53,13 @@ typedef struct {
     int    qs, os;   // q / out element stride per token column
     int    window;   // sliding-window size for this layer (0 = full)
     int    q8;       // cache rows are q8_0 blocks rather than fp16
+    int    ring;     // rows this layer owns when it recycles them (0 = flat
+                     // n_ctx rows indexed by absolute position). A sliding
+                     // layer reads at most `window` positions back, so it
+                     // needs only window + batch rows; every KV address in
+                     // the attention kernels goes through kv_slot() to honour
+                     // it. Host and device MUST agree here -- that is what
+                     // this header exists for.
 } attn_args;
 
 #endif // RUNNER_KERNEL_ARGS_H
