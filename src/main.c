@@ -603,6 +603,9 @@ static void usage_to(FILE *f, const char *prog) {
         "  --draft PATH   small same-vocab GGUF for speculative decoding\n"
         "                 (one-shot, chat, and single-model --serve)\n"
         "  --draft-k N    draft tokens per round (default 4)\n"
+        "  --draft-required  fail instead of decoding plain if --draft is\n"
+        "                 refused (one-shot only; serve mode reports\n"
+        "                 draft.active from /v1/capabilities)\n"
         "  --bench-json   run a small decode benchmark and print JSON metrics\n"
         "  --score        teacher-forced scoring: per-token log P(token|prefix)\n"
         "                 over the raw -p/-f text (no template, no sampling),\n"
@@ -789,6 +792,7 @@ int main(int argc, char **argv) {
     int port = 8080, parallel = 1, ttl = -1; // -1: 300 for swap mode, never for single
     long parent_pid = 0;
     const char *draft_path = NULL;
+    bool draft_required = false;
     int draft_k = 4;
     bool interactive = false, verbose = false, no_bos = false;
     bool seed_given = false;
@@ -896,6 +900,7 @@ int main(int argc, char **argv) {
             else { fprintf(stderr, "error: --moe-prefetch expects on, off or auto\n"); return 1; }
         }
         else if (!strcmp(a, "--draft"))   draft_path = NEXT;
+        else if (!strcmp(a, "--draft-required")) draft_required = true;
         else if (!strcmp(a, "--draft-k")) draft_k = (int)int_arg(a, NEXT, 1, 15);
         else if (!strcmp(a, "--bench-json")) bench_json = true;
         else if (!strcmp(a, "--score")) score = true;
@@ -983,6 +988,21 @@ int main(int argc, char **argv) {
         const char *flag = thinking == THINK_ON ? "--think" : "--no-think";
         fprintf(stderr, "error: %s is only valid with interactive chat (-i);"
                         " server requests use enable_thinking\n", flag);
+        return 1;
+    }
+    // A refused draft drops to plain decoding by design, and one-shot mode has
+    // no channel to say so: the note goes to stderr beside a zero exit, so a
+    // harness collecting stdout records the unaccelerated baseline and labels
+    // it speculative decoding. --draft-required makes that a failed run
+    // instead. Serve mode already answers the question over the wire, so the
+    // flag is refused there rather than accepted with no effect.
+    if (draft_required && !draft_path) {
+        fprintf(stderr, "error: --draft-required needs --draft PATH\n");
+        return 1;
+    }
+    if (draft_required && serve) {
+        fprintf(stderr, "error: --draft-required is a one-shot guard; in serve"
+                        " mode read draft.active from GET /v1/capabilities\n");
         return 1;
     }
     plat_parent_watch(parent_pid);
@@ -1618,6 +1638,11 @@ int main(int argc, char **argv) {
         if (e.dm) {
             fprintf(stderr, "draft: %s (%d tokens per round)\n", draft_path, draft_k);
             e.draft_k = draft_k;
+        } else if (draft_required) {
+            fprintf(stderr, "error: --draft-required: %s was refused above and"
+                            " the run would have decoded without it\n",
+                    draft_path);
+            CLI_FAIL;
         }
     }
     if (schema_file) {
