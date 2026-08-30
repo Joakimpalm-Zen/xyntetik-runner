@@ -408,6 +408,56 @@ are not just measurably different objects — they are measurably
 different *behaviors*, one level below where the eval saturates. Raw
 per-position score outputs are in the HF repo (`evals/logprob-study/`).
 
+## The predicted flip, found externally
+
+The section above ends on a prediction: the Q4-trained adapter's 0.146 mean
+|Δlogprob| gap "is the size of gap that flips answers" on a task whose
+decisions sit closer to zero margin. That was written as an expectation with
+no instance behind it.
+
+The instance came from outside. The same HF contributor whose reproduction
+scopes the determinism claims below built a **36-prompt tool-choice boundary
+bank** (five ambiguity families: `list_dir`/`search_files`,
+`read_file`/`search`, `read_file`/`write_file` multi-intent, config browsing,
+and available-tool/none), screened it for cases whose top1-top2 legal-choice
+margin sits at or under 3 nat, and compared the base and the BF16-, Q8- and
+Q4-trained adapters on the survivors, generating the full JSON
+deterministically wherever the branches disagreed.
+
+Seven cases passed the screen. **One split, and it survived full generation:**
+
+| prompt | base | BF16-ad | Q8-ad | Q4-ad |
+|---|---|---|---|---|
+| *tell me what README.md says and translate it* | `search_files` | `read_file` | `read_file` | **`none`** |
+
+Two caveats, both his, both load-bearing:
+
+- **This is an existence proof, not a rate.** One split out of seven selected
+  out of 36. The screen selects on the Q4 adapter's own margin, so the seven
+  cases cannot estimate any general margin distribution.
+- **There is no monotonic precision law here.** Several cases had smaller Q4
+  margins, not all did, and one case had **Q8** as the tightest condition. What
+  this supports is that some decision boundaries are far more sensitive to the
+  training precision path than others, and that the direction is not monotone
+  in bit width. It does not support "lower training precision degrades tool
+  choice", which his own data refutes.
+
+He also assigned no gold labels, deliberately, on the grounds that doing so
+would convert a decision-sensitivity probe into a quality benchmark and quietly
+change the question. That reasoning is adopted here.
+
+One methodological note worth carrying: his first version scored full tool-name
+sequences and was discarded once BPE merged punctuation across the apparent
+string boundary, which made the score invalid. Runner's `choice_logprobs` is
+not exposed to that failure mode, because it records the legal alternatives as
+the grammar defines them rather than as text.
+
+**Read against the merge study above, these are two different mechanisms and
+must not be collapsed into one claim.** Merging an adapter into a 4-bit base
+erases it, because the grid rounds the delta away. Training *through* a 4-bit
+base yields an adapter that is present and effective, and that picks a
+different branch at a tight boundary.
+
 ## Reproducibility, scoped by an external reproduction
 
 An independent reproduction (HF forum, 2026-08-23) confirmed the
