@@ -2003,6 +2003,16 @@ __device__ __forceinline__ float2 kv_pair(const unsigned char *row,
     return __half22float2(((const __half2 *)row)[i2]);
 }
 
+// Absolute position -> cache row. A ring layer owns `ring` rows and recycles
+// them, so position t lives at t % ring; ring == 0 is the flat layout where the
+// row IS the position. Every KV address in the attention kernels goes through
+// this: the CPU path proved bit-identical with the same mapping, and a kernel
+// that skipped it read a row holding a different token (nan, RTX 3070, partial
+// split, 2026-08-30).
+__device__ __forceinline__ ulong64 kv_slot(int t, int ring) {
+    return (ulong64)(ring > 0 ? t % ring : t);
+}
+
 // grid.y = token column; cache rows for consecutive positions are contiguous
 
 extern "C" __global__ void k_store_kv(const float *k, const float *v,
@@ -2019,16 +2029,6 @@ extern "C" __global__ void k_store_kv(const float *k, const float *v,
         kv_store_row(kc + dst, ks, kv_dim, q8, i);
         kv_store_row(vc + dst, vs, kv_dim, q8, i);
     }
-}
-
-// Absolute position -> cache row. A ring layer owns `ring` rows and recycles
-// them, so position t lives at t % ring; ring == 0 is the flat layout where the
-// row IS the position. Every KV address in the attention kernels goes through
-// this: the CPU path proved bit-identical with the same mapping, and a kernel
-// that skipped it read a row holding a different token (nan, RTX 3070, partial
-// split, 2026-08-30).
-__device__ __forceinline__ ulong64 kv_slot(int t, int ring) {
-    return (ulong64)(ring > 0 ? t % ring : t);
 }
 
 // ---------------------------------------------------------------- attention
