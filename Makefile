@@ -1,8 +1,14 @@
 CC      ?= cc
 # Probe by RUNNING the interpreter, not by looking it up: on Windows a
 # python3 "app execution alias" stub exists on PATH but exits non-zero with
-# a Store advert, so `command -v python3` picks an interpreter that cannot run
-PYTHON  ?= $(shell python3 -c "" >/dev/null 2>&1 && echo python3 || echo python)
+# a Store advert, so `command -v python3` picks an interpreter that cannot run.
+# Prefer an interpreter that can run the mandatory pytest gates; only fall
+# back to a merely runnable one so non-test targets retain their stdlib-only
+# dependency contract and `test-python-deps` can give one precise error.
+PYTHON  ?= $(shell if python3 -c "import pytest" >/dev/null 2>&1; then echo python3; \
+                    elif python -c "import pytest" >/dev/null 2>&1; then echo python; \
+                    elif python3 -c "" >/dev/null 2>&1; then echo python3; \
+                    else echo python; fi)
 # gnu11 (not c11): strict ISO mode hides M_PI and POSIX symbols on glibc/MinGW
 # -march=native unlocks the AVX2/FMA/F16C dot kernels in quants.c on x86;
 # other ISAs (ARM macs) compile the scalar fallbacks
@@ -1318,7 +1324,7 @@ else
 	@echo "metal SWA smoke skipped: macOS-only backend"
 endif
 
-test: $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSON_OOM) $(TEST_SCHEMA_OOM) $(TEST_SAMPLER) $(TEST_LORA_GRAD) $(TEST_MVT) \
+test: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSON_OOM) $(TEST_SCHEMA_OOM) $(TEST_SAMPLER) $(TEST_LORA_GRAD) $(TEST_MVT) \
       $(TEST_TOKENIZER) $(TEST_TOK_MERGE) $(TEST_TOKENIZER_OOM) $(TEST_TEMPLATE) \
       $(TEST_TEMPLATE_OOM) \
       $(TEST_TOOLS) $(TEST_SHARED) $(TEST_FILE_ID) $(TEST_BATCH) $(TEST_BIND) $(TEST_HOST_HEADER) \
@@ -1465,15 +1471,10 @@ test: $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSON_OOM) $(TEST_SCHEMA_OOM) 
 	$(MAKE) --no-print-directory test-metal-bind-failure
 	$(MAKE) --no-print-directory test-metal-multibuf
 	$(PYTHON) scripts/check-generated.py
-	@if $(PYTHON) -c "import pytest" >/dev/null 2>&1; then \
-		set -e; \
-		PYTHONPATH=python/src $(PYTHON) -m pytest python/tests/; \
-		$(PYTHON) -m pytest -q tests/test_fit_check.py tests/test_apertus.py tests/test_ornith_cpu.py tests/test_ornith_reference.py tests/test_compat_matrix.py tests/test_arch_admission.py tests/test_hybrid_admission.py tests/test_hostile_geometry.py tests/test_certify_envelope.py tests/test_cpu_cuda_margin.py tests/test_envelope_gate.py tests/test_envelope_swap.py tests/test_cli_files.py tests/test_chat_template_flag.py tests/test_split_gguf.py tests/test_metal_coverage.py tests/test_gpu_declines.py tests/test_caps.py tests/test_tool_info.py tests/test_bench_json.py tests/test_mtp_admission.py tests/test_compare_llamacpp.py tests/test_release_check.py tests/test_eseries.py tests/test_stress_models.py tests/test_moe_prune_plan.py tests/test_kld_compare.py tests/test_kld_margin.py tests/test_quant_fidelity.py tests/test_token_divergence.py tests/test_verify_gguf.py tests/test_type_plan_size.py tests/test_stress_context.py tests/test_cert_greedy_identity.py tests/test_tokenizer_corpus.py tests/test_batch_bench.py tests/test_spec_telemetry.py tests/test_request_disconnect.py tests/test_score.py tests/test_lora.py tests/test_train.py tests/test_merge.py tests/test_transcript.py; \
-		$(MAKE) --no-print-directory test-moe PYTHON="$(PYTHON)"; \
-		$(MAKE) --no-print-directory test-prune-experts PYTHON="$(PYTHON)"; \
-	else \
-		echo "Python client tests skipped: pytest is not installed; install it with '$(PYTHON) -m pip install pytest'"; \
-	fi
+	PYTHONPATH=python/src $(PYTHON) -m pytest python/tests/
+	$(PYTHON) -m pytest -q tests/test_fit_check.py tests/test_apertus.py tests/test_ornith_cpu.py tests/test_ornith_reference.py tests/test_compat_matrix.py tests/test_arch_admission.py tests/test_hybrid_admission.py tests/test_hostile_geometry.py tests/test_certify_envelope.py tests/test_cpu_cuda_margin.py tests/test_envelope_gate.py tests/test_envelope_swap.py tests/test_cli_files.py tests/test_chat_template_flag.py tests/test_split_gguf.py tests/test_metal_coverage.py tests/test_gpu_declines.py tests/test_caps.py tests/test_tool_info.py tests/test_bench_json.py tests/test_mtp_admission.py tests/test_compare_llamacpp.py tests/test_release_check.py tests/test_eseries.py tests/test_stress_models.py tests/test_moe_prune_plan.py tests/test_kld_compare.py tests/test_kld_margin.py tests/test_quant_fidelity.py tests/test_token_divergence.py tests/test_verify_gguf.py tests/test_type_plan_size.py tests/test_stress_context.py tests/test_cert_greedy_identity.py tests/test_tokenizer_corpus.py tests/test_batch_bench.py tests/test_spec_telemetry.py tests/test_request_disconnect.py tests/test_score.py tests/test_lora.py tests/test_train.py tests/test_merge.py tests/test_transcript.py
+	$(MAKE) --no-print-directory test-moe PYTHON="$(PYTHON)"
+	$(MAKE) --no-print-directory test-prune-experts PYTHON="$(PYTHON)"
 
 # --------------------------------------------------------------------------
 # Template conformance: runner's native C chat renderer vs the model's OWN
@@ -1715,6 +1716,14 @@ makefile-noop:
 FORCE:
 	@:
 
+test-python-deps:
+	@$(PYTHON) -c "import pytest" >/dev/null 2>&1 || { \
+		echo "error: make test requires pytest for $(PYTHON)"; \
+		echo "install it with '$(PYTHON) -m pip install pytest' or set PYTHON to an interpreter that already has it"; \
+		exit 1; \
+	}
+	@echo "python test dependencies ok ($(PYTHON))"
+
 test-makefile-sane:
 	@out=$$($(MAKE) -n --no-print-directory makefile-noop 2>&1); \
 	case "$$out" in \
@@ -1737,7 +1746,7 @@ test-makefile-sane:
 
 .PHONY: template-conformance template-conformance-refresh template-conformance-baseline template-conformance-harmony-oracle
 .PHONY: test-gpu-stub
-.PHONY: FORCE makefile-noop test-makefile-sane fixture-scale-note clean debug ptx test test-bare-invocation test-help-interface test-shader-embed test-metal-shader-gate test-apertus test-moe test-prune-experts test-metal-fallback test-metal-prefill test-metal-kquant test-metal-decode-only test-metal-split test-metal-bind-failure test-metal-kv-q8 test-metal-moe test-metal-gptoss-moe test-metal-gemma4-moe test-metal-gemma4-hetero test-metal-gelu-overflow test-metal-eseries test-metal-swa smoke release-check test-truncation fuzz fuzz-build fuzz-run test-shared-asan test-shared-noid test-split-guard test-swap-race
+.PHONY: FORCE makefile-noop test-python-deps test-makefile-sane fixture-scale-note clean debug ptx test test-bare-invocation test-help-interface test-shader-embed test-metal-shader-gate test-apertus test-moe test-prune-experts test-metal-fallback test-metal-prefill test-metal-kquant test-metal-decode-only test-metal-split test-metal-bind-failure test-metal-kv-q8 test-metal-moe test-metal-gptoss-moe test-metal-gemma4-moe test-metal-gemma4-hetero test-metal-gelu-overflow test-metal-eseries test-metal-swa smoke release-check test-truncation fuzz fuzz-build fuzz-run test-shared-asan test-shared-noid test-split-guard test-swap-race
 
 # Soak harness for the startup/SIGTERM race (test_signal_during_startup). Not
 # in `make test` — it is a diagnostic soak (thousands of spawns), run on demand
