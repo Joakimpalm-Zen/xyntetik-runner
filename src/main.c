@@ -604,7 +604,7 @@ static void usage_to(FILE *f, const char *prog) {
         "                 (one-shot, chat, and single-model --serve)\n"
         "  --draft-k N    draft tokens per round (default 4)\n"
         "  --draft-required  fail instead of decoding plain if --draft is\n"
-        "                 refused (one-shot only; serve mode reports\n"
+        "                 refused (local CLI only; serve mode reports\n"
         "                 draft.active from /v1/capabilities)\n"
         "  --bench-json   run a small decode benchmark and print JSON metrics\n"
         "  --score        teacher-forced scoring: per-token log P(token|prefix)\n"
@@ -990,18 +990,19 @@ int main(int argc, char **argv) {
                         " server requests use enable_thinking\n", flag);
         return 1;
     }
-    // A refused draft drops to plain decoding by design, and one-shot mode has
-    // no channel to say so: the note goes to stderr beside a zero exit, so a
-    // harness collecting stdout records the unaccelerated baseline and labels
-    // it speculative decoding. --draft-required makes that a failed run
-    // instead. Serve mode already answers the question over the wire, so the
-    // flag is refused there rather than accepted with no effect.
+    // A refused draft drops to plain decoding by design, and local CLI modes
+    // have no machine-readable channel to say so: the note goes to stderr
+    // beside a zero exit, so a harness collecting stdout records the
+    // unaccelerated baseline and labels it speculative decoding.
+    // --draft-required makes that a failed run instead. Serve mode already
+    // answers the question over the wire, so the flag is refused there rather
+    // than accepted with no effect.
     if (draft_required && !draft_path) {
         fprintf(stderr, "error: --draft-required needs --draft PATH\n");
         return 1;
     }
     if (draft_required && serve) {
-        fprintf(stderr, "error: --draft-required is a one-shot guard; in serve"
+        fprintf(stderr, "error: --draft-required is a local CLI guard; in serve"
                         " mode read draft.active from GET /v1/capabilities\n");
         return 1;
     }

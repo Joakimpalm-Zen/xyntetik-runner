@@ -5,13 +5,13 @@ target, a CUDA-resident recurrent state, an unreadable or unsupported file, or
 out of memory, and the run then continues WITHOUT it. That default is
 deliberate and documented, and it stays.
 
-The gap it leaves is machine-readability, and only in one-shot mode. In serve
-mode `GET /v1/capabilities` reports whether the draft is actually `active`, so
-a harness can tell speculative decoding from its fallback. One-shot mode has no
-such channel: the drop is a stderr line beside a successful exit, so a harness
-that collects stdout and checks the return code records the unaccelerated
-baseline and labels it speculative decoding. Measured externally 2026-08-30 on
-a draft Runner cannot run at all.
+The gap it leaves is machine-readability in the local CLI. In serve mode
+`GET /v1/capabilities` reports whether the draft is actually `active`, so a
+harness can tell speculative decoding from its fallback. One-shot and
+interactive modes have no such channel: the drop is a stderr line beside a
+successful exit, so automation that collects stdout and checks the return code
+records the unaccelerated baseline and labels it speculative decoding. Measured
+externally 2026-08-30 on a draft Runner cannot run at all.
 
 `--draft-required` is the opt-in that closes it: the run fails rather than
 silently measuring something else. The default is untouched, which is why the
@@ -93,6 +93,15 @@ def test_draft_required_without_a_draft_is_rejected(runner_bin, model):
     p = _run(runner_bin, model, ["--draft-required"])
     assert p.returncode != 0
     assert b"--draft" in p.stderr
+
+
+def test_draft_required_also_guards_interactive_chat(
+        runner_bin, model, unusable_draft):
+    """Chat is a local CLI mode with the same stderr-only fallback channel."""
+    p = _run(runner_bin, model,
+             ["-i", "--draft", str(unusable_draft), "--draft-required"])
+    assert p.returncode != 0
+    assert b"--draft-required" in p.stderr
 
 
 def test_draft_required_is_refused_in_serve_mode(runner_bin, model):
