@@ -1,6 +1,7 @@
 """Raw-wire request framing contracts for the loopback HTTP server."""
 
 import contextlib
+import json
 import os
 import socket
 import time
@@ -138,7 +139,12 @@ def test_compact_fastpath_request_closes_cleanly(server, request_bytes):
     assert status(bytes(response)) == 200
 
 
-@pytest.mark.parametrize("path", ["/health", "/v1/models", "/v1/capabilities"])
+@pytest.mark.parametrize("path", [
+    "/health",
+    "/v1/models",
+    "/v1/capabilities",
+    "/v1/runner/prefix-cache",
+])
 def test_fastpath_get_with_body_is_rejected_without_reset(server, path):
     """A fast-path GET with a body must reach a clean HTTP refusal.
 
@@ -163,6 +169,56 @@ def test_fastpath_get_with_body_is_rejected_without_reset(server, path):
                 break
             response += part
     assert status(bytes(response)) == 400
+
+
+def test_prefix_cache_clear_with_body_is_rejected_without_reset(server):
+    """The cache clear route has no payload contract, just like /unload.
+
+    A body must therefore be consumed and refused rather than silently ignored
+    while the state change still happens. Keep it larger than the accept-loop
+    peek so the response also proves that unread bytes cannot reset the socket.
+    """
+    body = b"x" * 4096
+    request = (b"POST /v1/runner/prefix-cache/clear HTTP/1.1\r\n"
+               b"Host: localhost\r\nContent-Length: 4096\r\n"
+               b"Connection: close\r\n\r\n" + body)
+    assert status(raw_request(server, request)) == 400
+
+
+@pytest.mark.parametrize("request_bytes,object_name", [
+    (b"GET /v1/runner/prefix-cache HTTP/1.1\r\n"
+     b"Host: localhost\r\nConnection: close\r\n\r\n",
+     "runner.prefix_cache"),
+    (b"POST /v1/runner/prefix-cache/clear HTTP/1.1\r\n"
+     b"Host: localhost\r\nContent-Length: 0\r\n"
+     b"Connection: close\r\n\r\n",
+     "runner.prefix_cache"),
+])
+def test_prefix_cache_management_does_not_queue_behind_a_slot(
+        request_bytes, object_name):
+    """Cache telemetry and release use their own lock, not an inference slot.
+
+    Pin the sole slot in the bounded request reader, then require both cache
+    management calls to answer through the accept path. The response object is
+    the independent protocol anchor: merely accepting a connection is not proof
+    that the intended handler ran.
+    """
+    model = os.environ.get("RUNNER_TEST_MODEL", os.path.join(ROOT, "test.gguf"))
+    with RunnerServer(find_runner(ROOT), model, ctx=1024, parallel=1,
+                      extra_args=["--gpu", "off"]) as srv:
+        stalled = socket.create_connection(("127.0.0.1", srv.port), timeout=5)
+        try:
+            stalled.sendall(b"POST /v1/chat/completions HTTP/1.1\r\n")
+            time.sleep(0.2)
+            started = time.monotonic()
+            response = raw_request(srv, request_bytes)
+            elapsed = time.monotonic() - started
+        finally:
+            stalled.close()
+    assert status(response) == 200
+    assert elapsed < 1.0, f"management request waited {elapsed:.3f}s for a slot"
+    body = response.split(b"\r\n\r\n", 1)[1]
+    assert json.loads(body)["object"] == object_name
 
 
 def test_nul_byte_in_header_is_bad_request(server):

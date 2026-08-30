@@ -1116,10 +1116,13 @@ static void handle_conn(slot_t *s, sock_t fd) {
     }
 
     bool bodyless_route = content_length > 0 &&
-        ((!strcmp(method, "POST") && !strcmp(path, "/unload")) ||
+        ((!strcmp(method, "POST") &&
+          (!strcmp(path, "/unload") ||
+           !strcmp(path, "/v1/runner/prefix-cache/clear"))) ||
          (!strcmp(method, "GET") &&
           (!strcmp(path, "/health") || !strcmp(path, "/v1/models") ||
-           !strcmp(path, "/v1/capabilities"))));
+           !strcmp(path, "/v1/capabilities") ||
+           !strcmp(path, "/v1/runner/prefix-cache"))));
     if (bodyless_route) {
         // These routes are normally served by accept_fastpath. A declared body
         // is deliberately deferred here so the slot can consume it before
@@ -1316,7 +1319,9 @@ static void *slot_worker(void *arg) {
 // live runner "unhealthy: timed out". POST /unload is answered here too — it
 // never frees anything a slot is using (handle_unload defers under an active
 // load or generation), and an operator reclaiming memory must not queue behind
-// the very work that holds it. Every other POST is handed to a slot untouched.
+// the very work that holds it. Prefix-cache telemetry and release have their
+// own mutex and likewise need no inference slot. Every other POST is handed to
+// a slot untouched.
 static bool accept_fastpath(sock_t fd) {
 #ifndef _WIN32
     // POSIX fd_set is a fixed-size bitmask indexed by fd value; FD_SET on an
@@ -1342,11 +1347,16 @@ static bool accept_fastpath(sock_t fd) {
     bool models = !strncmp(hdr, "GET /v1/models ", 15);
     bool caps = !strncmp(hdr, "GET /v1/capabilities ", 21);
     bool unload = !strncmp(hdr, "POST /unload ", 13);
+    bool pfx_stats = !strncmp(hdr, "GET /v1/runner/prefix-cache ",
+                              sizeof("GET /v1/runner/prefix-cache ") - 1);
+    bool pfx_clear = !strncmp(hdr, "POST /v1/runner/prefix-cache/clear ",
+                              sizeof("POST /v1/runner/prefix-cache/clear ") - 1);
     // The old spelling still has to reach a handler, or an operator's script
     // gets a 404 that says nothing. It is not answered here — it falls through
     // to the slot path, which replies 405 with the reason.
     if (!strncmp(hdr, "GET /unload ", 12)) return false;
-    if (!health && !models && !caps && !unload) return false;
+    if (!health && !models && !caps && !unload && !pfx_stats && !pfx_clear)
+        return false;
     // Keep the request untouched until framing says it is bodyless. A partial
     // header, an oversized header, malformed framing, and every declared body
     // are handed to a slot, whose bounded reader can consume the whole request
@@ -1374,10 +1384,16 @@ static bool accept_fastpath(sock_t fd) {
         if (r <= 0) { sock_close(fd); return true; }
         got += (size_t)r;
     }
-    if (health) send_health(fd);
-    else if (models) send_models(fd);
-    else if (unload) handle_unload(fd);
-    else        send_capabilities(fd);
+    if (health)          send_health(fd);
+    else if (models)     send_models(fd);
+    else if (unload)     handle_unload(fd);
+    else if (pfx_stats)  send_prefix_cache(fd);
+    else if (pfx_clear) {
+        prefix_cache_clear();
+        send_prefix_cache(fd);
+    } else {
+        send_capabilities(fd);
+    }
     sock_close(fd);
     return true;
 }

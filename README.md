@@ -963,8 +963,8 @@ non-loopback authorities.
 | `POST /v1/messages/count_tokens` | Token count for the matching Messages request. |
 | `GET /v1/models` | Registered models and current residency. |
 | `GET /v1/capabilities` | Server process ID, active model, sampling preset, optional Xyntetik agent profile, and the EFFECTIVE execution mode: `slots` (the slot count actually running) and `draft` (`requested`/`active`, plus a `reason` when a requested draft is not running). |
-| `GET /v1/runner/prefix-cache` | Prefix-cache size, limits, and counters. |
-| `POST /v1/runner/prefix-cache/clear` | Release cached prefixes without unloading the model. |
+| `GET /v1/runner/prefix-cache` | Prefix-cache size, limits, and counters. Takes no request body and remains available while inference is active. |
+| `POST /v1/runner/prefix-cache/clear` | Release cached prefixes without unloading the model. Takes no request body and remains available while inference is active. |
 | `GET /health` | Server and resident-model health, plus this process's `rss_bytes`/`peak_rss_bytes` and cumulative `tokens_prompt`, `tokens_generated`, `generate_seconds`, `batch_steps` and `batch_sequences`. |
 | `POST /unload` | Release resident model, draft and prefix-cache memory; the next request reloads on demand. Deferred to the next safe point while a load or generation is in flight (the reply says `"deferred":true`). Needs the registry: a server without one refuses with `409` rather than reporting a success it cannot deliver - see the residency note below. |
 
