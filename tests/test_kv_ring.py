@@ -15,9 +15,10 @@ The identity only means something if the ring actually WRAPS, so these tests
 assert the ring engaged and use a prompt many times longer than the window; a
 prompt shorter than the ring would pass without exercising a single modulo.
 
-Ring-off is the default and stays so: three call sites address KV as flat
-absolute rows (model.h, `model_kv_byte_off`) and refuse under a ring, costing a
-server its shared prefix cache and partial rewind. That is a real trade.
+Ring-off is the default and stays so: the prefix cache and partial rewind still
+address KV as flat absolute rows and refuse under a ring. CUDA's former two
+flat-copy sites now mirror a ring as a whole. Losing the server's shared prefix
+cache and partial rewind remains a real trade.
 """
 import json
 import os
@@ -63,7 +64,7 @@ def dense_model(tmp_path_factory):
     return _make(tmp_path_factory, "ringdense", [])
 
 
-def _run(runner_bin, model, ring, args):
+def _run(runner_bin, model, ring, args, gpu="off"):
     env = dict(os.environ)
     if ring:
         env["RUNNER_KV_RING"] = "1"
@@ -71,7 +72,7 @@ def _run(runner_bin, model, ring, args):
         env.pop("RUNNER_KV_RING", None)
     return subprocess.run(
         [runner_bin, "-m", str(model), "-c", str(N_CTX), "-t", "2",
-         "--gpu", "off", *args],
+         "--gpu", gpu, *args],
         cwd=ROOT, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         timeout=300)
 
@@ -150,30 +151,48 @@ def test_ring_actually_shrinks_the_allocation(runner_bin, swa_model):
     assert ring < flat, f"ring {ring} MB not smaller than flat {flat} MB"
 
 
-def test_ring_is_refused_when_the_gpu_is_in_play(runner_bin, swa_model):
-    """CPU-only, and refused rather than silently wrong.
+def test_ring_gpu_contract_matches_the_backend(runner_bin, swa_model,
+                                                tmp_path):
+    """CUDA must run the ring; Metal must explicitly refuse it.
 
-    The device attention kernels address the cache by absolute position
-    (`kc + base + t * row_b`, kernels.cu) and so does their row store, so a
-    ring layer on the GPU reads rows holding a different token. Measured on an
-    RTX 3070 partial split (20/34 layers, 2026-08-30): every scored position
-    came back nan, while the same build on the CPU path was bit-identical to
-    the flat allocation. A silent wrong answer is the one outcome this whole
-    change must not produce, so the ring says no and says why.
+    CUDA resolves every device cache address through ``kv_slot`` and is
+    expected to be bit-identical to its own flat allocation. Metal still uses
+    absolute rows, so engaging there would be a silent wrong-answer bug. A
+    machine without a device exercises the already-gated CPU fallback only.
     """
-    env = dict(os.environ, RUNNER_KV_RING="1")
-    p = subprocess.run(
-        [runner_bin, "-m", str(swa_model), "-c", str(N_CTX), "-t", "2",
-         "-v", "-p", "hi", "-n", "1"],
-        cwd=ROOT, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        timeout=300)
+    p = _run(runner_bin, swa_model, True,
+             ["-v", "-p", "hi", "-n", "1"], gpu="auto")
     err = p.stderr.decode(errors="replace")
     assert p.returncode == 0, err
-    # no --gpu off here: whatever backend this host has, the ring must either
-    # stay off or explain itself. It must never quietly engage beside a device.
     engaged = any(l.startswith("kv ring ") for l in err.splitlines())
     refused = "kv ring: refused" in err
-    assert refused or not engaged, err
+    caps = json.loads(subprocess.run(
+        [runner_bin, "--caps"], cwd=ROOT, check=True,
+        stdout=subprocess.PIPE).stdout)
+    backend = caps["gpu"]["backend"] if caps.get("gpu") else None
+
+    if backend == "metal":
+        assert refused and not engaged, err
+        return
+
+    assert engaged and not refused, err
+    if backend != "cuda":
+        return
+
+    # Absolute anchor: the shipped flat allocation is the reference, and the
+    # long prompt wraps this fixture's ring many times. CUDA must preserve each
+    # teacher-forced logprob exactly, not merely generate the same text.
+    pf = tmp_path / "gpu-prompt.txt"
+    pf.write_text(PROMPT)
+    args = ["--score", "-f", str(pf)]
+    flat = _run(runner_bin, swa_model, False, args, gpu="auto")
+    ring = _run(runner_bin, swa_model, True, args, gpu="auto")
+    assert b"CUDA backend" in flat.stderr + ring.stderr
+    assert flat.returncode == ring.returncode == 0
+    a, b = json.loads(flat.stdout), json.loads(ring.stdout)
+    assert a["n_scored"] > 8 * SWA_WINDOW
+    assert b["logprobs"] == a["logprobs"]
+    assert b["top1"] == a["top1"]
 
 
 def test_ring_leaves_a_model_without_sliding_layers_alone(

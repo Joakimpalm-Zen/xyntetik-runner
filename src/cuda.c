@@ -2624,10 +2624,9 @@ void gpu_disable(model_t *m) {
 }
 
 // upload host KV rows [lo, hi) for every layer (CPU prompt processing wrote them)
-// Sites 3 and 4 of 4 for the flat-row assumption (model.h, model_kv_byte_off):
-// rows [lo, hi) are mirrored at absolute offsets on both sides. They only run
-// on the resync path of a PARTIAL split, so a full-offload sweep never
-// exercises either.
+// Former flat-row sites (model.h, model_kv_byte_off): rows [lo, hi) are
+// mirrored at absolute offsets on both sides. They only run on the resync path
+// of a PARTIAL split, so a full-offload sweep never exercises either.
 //
 // A ring layer's rows are not addressed by absolute position, so [lo, hi) does
 // not name them and following it would read past the host allocation and write

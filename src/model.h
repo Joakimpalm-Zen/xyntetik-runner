@@ -518,33 +518,28 @@ static inline size_t model_kv_byte_off(const model_t *m, int l) {
     size_t e = m->kv_off[model_kv_owner(m, l)];
     return m->kv_q8 ? e / 32 * 34 : e * sizeof(f16_t);
 }
-// THE FLAT-ROW ASSUMPTION, and the three places that depend on it.
+// THE FLAT-ROW ASSUMPTION, and the two features that still depend on it.
 //
 // Every layer's cache is n_ctx rows indexed by ABSOLUTE position: row p of
 // layer l lives at model_kv_byte_off(m, l) + p * model_kv_row_bytes(m, l),
-// for every p in [0, n_ctx). Three call sites bake that in by copying a
+// for every p in [0, n_ctx). Two engine features bake that in by copying a
 // contiguous [0, n) run rather than asking per row:
 //
 //   1. pfx_save / pfx_load  (engine.c) -- prefix-cache snapshot and install
 //   2. engine_rewind        (engine.c) -- partial reuse of a slot's own KV
-//   3. kv_upload            (cuda.c)   -- host->device mirror of rows [lo, hi)
-//   4. kv_copyback          (cuda.c)   -- device->host readback of the same
 //
-// CORRECTED 2026-08-30: the external note named THREE. Implementing the ring
-// found a fourth, kv_copyback, with the identical shape and the identical
-// blind spot. That is the note working as intended, and a reminder that the
-// list is a starting point rather than a proof of completeness.
+// CUDA's kv_upload / kv_copyback used to be two more sites. Ring support made
+// them layout-aware: they mirror the whole ring rather than interpreting an
+// absolute [lo, hi) span. Keep enumerating backend mirrors when this layout
+// changes; their removal from the refusal list is not permission to skip them.
 //
 // A layout where a layer owns FEWER than n_ctx rows -- a sliding-window ring
 // being the obvious one, since a local layer can never read past swa_window
-// (see the t0 clamp in model.c's attention loop) -- breaks all three, and each
-// one hides in a path some runs never take: a one-shot -p never touches the
-// prefix cache, and kv_upload's resync only runs on a partial GPU split. An
-// external research branch hit exactly this in 2026-08-30, one crash at a
-// time, and the prefix-cache case was a memory-safety bug invisible to every
-// measurement it ran.
+// (see the t0 clamp in model.c's attention loop) -- breaks both unless they
+// refuse it. A one-shot -p never touches the prefix cache, so the memory-safety
+// bug is invisible to the most common smoke path.
 //
-// So: ANY change to KV row addressing enumerates these three first. Changing
+// So: ANY change to KV row addressing enumerates these features first. Changing
 // the allocation without changing them is not a partial implementation, it is
 // an out-of-bounds write that most test paths will not reach.
 // Bytes covering the first `l` layers' cache rows -- the raw cumulative

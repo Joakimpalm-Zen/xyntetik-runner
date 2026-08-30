@@ -553,8 +553,8 @@ static char *meta_printable(char *dst, size_t cap, const char *src) {
 //
 // This is a CEILING, not a correctness bug: every answer is right, the run
 // just cannot reach a context the hardware could otherwise hold. Reporting it
-// is deliberately separate from fixing it, because the fix is a ring layout
-// and three call sites assume flat absolute rows (see model_kv_byte_off).
+// is deliberately separate from opting into the ring layout; the prefix cache
+// and partial rewind still assume flat absolute rows (see model_kv_byte_off).
 size_t model_kv_reachable_bytes(const model_t *m) {
     size_t total = 0;
     for (int l = 0; l < m->n_layer; l++) {
@@ -3151,9 +3151,9 @@ static bool model_alloc_runtime(model_t *m, const model_params *p) {
     // first token still reads back to pos - swa_window + 1, so the live span is
     // swa_window + n_batch - 1; one spare row keeps the arithmetic obvious.
     //
-    // OPT-IN, and it is not free. Three call sites address KV as flat absolute
-    // rows (see model_kv_byte_off) and refuse under a ring rather than read out
-    // of bounds, so a server loses shared prefix caching and partial rewind.
+    // OPT-IN, and it is not free. Two engine features address KV as flat
+    // absolute rows (see model_kv_byte_off) and refuse under a ring rather than
+    // read out of bounds, so a server loses shared prefix caching and rewind.
     // That is a real trade, which is why the default stays flat.
     //
     // The device kernels must know the modulo too, or a ring layer on the GPU

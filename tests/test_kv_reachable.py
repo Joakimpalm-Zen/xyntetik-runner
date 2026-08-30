@@ -8,9 +8,9 @@ gemma-4-31B, 91% of the KV budget serving a 1024-token window, and 29.53 GB
 wanted at ctx 32k against 3.52 GB reachable, which is the difference between a
 4k toy and a 32k agentic context on a 24 GB device.
 
-This gate pins the REPORT, not a fix. The fix is a ring layout, and three call
-sites assume flat absolute rows (model.h, `model_kv_byte_off`), so measuring
-before changing the layout is deliberate rather than partial.
+This gate pins the REPORT independently of the opt-in ring layout. The prefix
+cache and partial rewind still assume flat absolute rows (model.h,
+`model_kv_byte_off`), so keeping the measurement separate remains deliberate.
 
 THE ANCHOR. The expected byte counts are computed here from the geometry the
 model itself publishes -- kv heads, head dim, context, window -- and the
