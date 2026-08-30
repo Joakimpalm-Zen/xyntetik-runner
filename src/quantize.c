@@ -1009,7 +1009,7 @@ static void expert_block_geometry(const gguf_tensor *t, int64_t *row_len, int64_
     // 2-D shapes are unchanged: the product degenerates to ne[1] and 1.
     *row_len = t->n_dims >= 2 ? t->ne[0] : 1;
     *rows = 1;
-    for (int d = 1; d < t->n_dims - 1; d++) *rows *= t->ne[d];
+    for (uint32_t d = 1; d + 1 < t->n_dims; d++) *rows *= t->ne[d];
 }
 
 // ---------------------------------------------------------------- lora merge
