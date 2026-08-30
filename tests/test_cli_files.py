@@ -80,6 +80,44 @@ def _chat(runner_bin, model, system, n_ctx, stdin=b"hello\n/exit\n"):
                           timeout=300)
 
 
+@pytest.mark.parametrize("mode,flag_args", [
+    (["-p", "hi"], ["--system", "SYS"]),
+    (["-p", "hi"], ["--think"]),
+    (["--serve"], ["--system", "SYS"]),
+    (["--serve"], ["--no-think"]),
+])
+def test_chat_only_flags_are_refused_outside_interactive_mode(
+        runner_bin, tmp_path, mode, flag_args):
+    """A parsed chat-only instruction must not disappear on another mode.
+
+    Use a missing model as the independent ordering anchor: the flag error has
+    to happen before model loading, or this only tests whichever failure was
+    reached first rather than proving mode validation exists.
+    """
+    missing = tmp_path / "missing.gguf"
+    proc = _run(runner_bin, missing, *mode, *flag_args, "--no-tray")
+    assert proc.returncode != 0
+    assert flag_args[0].encode() in proc.stderr, proc.stderr[-300:]
+    assert b"cannot open" not in proc.stderr, proc.stderr[-300:]
+
+
+@pytest.mark.parametrize("flag_args", [
+    ["--system", "SYS"],
+    ["--think"],
+    ["--no-think"],
+])
+def test_chat_only_flags_remain_valid_in_interactive_mode(
+        runner_bin, model, flag_args):
+    proc = subprocess.run(
+        [runner_bin, "-m", model, "--gpu", "off", "--no-tray", "-i",
+         *flag_args],
+        input=b"/exit\n", cwd=ROOT, stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE, timeout=60,
+    )
+    assert proc.returncode == 0, proc.stderr[-300:]
+    assert b"chat mode" in proc.stderr
+
+
 def test_interactive_prompt_is_rendered_whole_or_refused(runner_bin, model):
     """A long --system must never be silently shortened (carry-over from the
     server's own render_prompt_alloc rule).

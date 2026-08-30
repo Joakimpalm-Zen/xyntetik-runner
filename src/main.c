@@ -537,10 +537,10 @@ static void usage_to(FILE *f, const char *prog) {
         "                 otherwise auto-sized from free RAM: 64/256/512)\n"
         "  -t N           threads (default: physical cores, capped at 32)\n"
         "  -s N           RNG seed (default: time)\n"
-        "  --think        request the model family's thinking prompt shape\n"
-        "  --no-think     request its non-thinking shape; with neither flag\n"
+        "  --think        in -i chat, request the family's thinking prompt shape\n"
+        "  --no-think     in -i chat, request its non-thinking shape; otherwise\n"
         "                 runner renders what the family's own reference\n"
-        "                 template renders, which differs per family\n"
+        "                 template renders. Server requests use enable_thinking\n"
         "  --temp F       temperature (0 = greedy: returns the model's argmax\n"
         "                 with no repeat penalty applied)\n"
         "  --top-k N      top-k (0 = off)\n"
@@ -551,7 +551,7 @@ static void usage_to(FILE *f, const char *prog) {
         "                 published settings; see --caps for the preset table\n"
         "  --rope-scale F force linear rope position scaling by F\n"
         "  --rope-base F  override rope frequency base\n"
-        "  --system TEXT  system prompt for chat mode\n"
+        "  --system TEXT  system prompt for interactive chat (-i) only\n"
         "  --chat-template chatml|chatml-think|llama2|llama3|mistral|mistral-v1|\n"
         "                 mistral-nemo|zephyr|phi3|gemma|gemma4|gemma4-mainline|\n"
         "                 apertus|ornith|muse|granite|harmony|raw\n"
@@ -967,6 +967,23 @@ int main(int argc, char **argv) {
             return 0;
         }
         else { fprintf(stderr, "unknown option %s\n", a); usage(argv[0]); return 1; }
+    }
+
+    // These options shape render_messages() in the stateful chat loop below.
+    // A one-shot -p is deliberately raw, while server callers select thinking
+    // per request; accepting the process flags in either mode would promise a
+    // prompt change and then silently discard it. Validate before any model or
+    // fit-check I/O so the caller gets the actionable error they caused.
+    if (system_prompt && (!interactive || serve)) {
+        fprintf(stderr, "error: --system is only valid with interactive chat"
+                        " (-i), without --serve\n");
+        return 1;
+    }
+    if (thinking != THINK_DEFAULT && (!interactive || serve)) {
+        const char *flag = thinking == THINK_ON ? "--think" : "--no-think";
+        fprintf(stderr, "error: %s is only valid with interactive chat (-i);"
+                        " server requests use enable_thinking\n", flag);
+        return 1;
     }
     plat_parent_watch(parent_pid);
     if (n_threads <= 0 && reserve_cpu_pct > 0) {
