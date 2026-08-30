@@ -248,8 +248,16 @@ None reachable on the current tree; each is a hole the next change falls into.
   E2M1 codes, one UE4M3 scale per 16-element sub-block, 36 bytes per
   64-element block, the format NVIDIA ModelOpt produces and the DGX Spark
   ecosystem ships) now dequantizes and serves on the CPU path, gated
-  against an independent double-precision reference decode in
-  test_quants_simd. Scalar kernels only for now, and no GPU path: CUDA and
+  against a double-precision reference decode in test_quants_simd.
+  **CORRECTION 2026-08-30: read "independent" out of that sentence, it was
+  wrong.** The reference is a transcription of the implementation, so it
+  proves the implementation agrees with itself and cannot detect a wrong
+  element order or an ignored per-tensor scale. A DGX Spark field report
+  has an NVFP4 model loading cleanly and then decoding a single repeated
+  token; root cause is under investigation and NVFP4 output should not be
+  trusted until an external anchor exists. See the v0.4.3 release notes.
+  No other format is affected: every other type here is anchored by models
+  that demonstrably serve correctly. Scalar kernels only for now, and no GPU path: CUDA and
   Metal decline it by name via their own admission tests, so `--caps`
   advertises it under `quants` and not `gpu_quants`. Both backends'
   per-type kernel tables are also resized past the new highest loadable
