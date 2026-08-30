@@ -25,16 +25,24 @@ Three checks:
    any reference at all. This check also validates that the scales sit at the
    START of the block: a shifted read cannot produce a clean 1.000.
 
-2. WEIGHT MAGNITUDE. Decoded transformer weights have a standard deviation
-   around 0.01-0.05. A decode that produces 118.0 is wrong by a factor no
-   exponent-bias error can explain, and that is how the missing per-tensor
-   scale was found.
+2. WEIGHT MAGNITUDE. Reports the decoded standard deviation. NOTE, corrected
+   2026-08-30: a value around 118 here is NOT a decode error. llama.cpp's own
+   dequantization of the same tensor produces byte-identical values, verified
+   by re-emitting the model as F16 and diffing (std matched to six decimals,
+   same leading elements). The block decode is correct and INCOMPLETE at the
+   model level: the per-tensor scale is applied later, in the compute graph.
 
 3. COMPANION SCALES. NVFP4 is TWO-LEVEL: a per-sub-block UE4M3 scale AND a
-   per-tensor FP32 scale, shipped as a separate `<name>.scale` tensor. If those
-   companions exist and the decoder ignores them, every weight is off by that
-   constant. Reports them beside the magnitude so the two lines can be
-   multiplied by eye.
+   per-tensor FP32 scale shipped as a separate `<base>.scale` tensor. Those
+   companions SURVIVE requantization to F16, which is what proves they are
+   consumed at graph time rather than folded into the weights. An engine that
+   decodes the blocks correctly and never applies the companion is off by that
+   constant on every NVFP4 tensor, which is runner's bug.
+
+   `input_scale` is the activation-side scale and is NOT part of weight
+   reconstruction: `std x .scale` lands on a plausible weight distribution
+   (~0.016) while `std x .scale x .input_scale` gives ~0.0003, and a float
+   inference path never quantizes activations to FP4 in the first place.
 """
 
 import math
@@ -156,7 +164,8 @@ def main(argv):
         std = (sum((v - mean) ** 2 for v in vals) / len(vals)) ** 0.5
         print("2. decoded weight magnitude (block scales only)")
         print(f"   std = {std:.5f}   max|w| = {max(abs(v) for v in vals):.5f}")
-        print("   a transformer wants std around 0.01-0.05\n")
+        print("   this is EXPECTED to be large: the per-tensor scale below is")
+        print("   applied in the compute graph, not by the block decode\n")
 
         print("3. companion per-tensor scales")
         # the companion REPLACES the .weight suffix: blk.0.attn_gate.weight
