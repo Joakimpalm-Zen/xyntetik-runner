@@ -1888,17 +1888,18 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
     if (SV.n_reg > 0 && !SV.single)
         fprintf(stderr,
                 "server listening on http://127.0.0.1:%d — %d models, swap on demand"
-                " (ttl %ds)\n"
-                "  POST /v1/chat/completions | POST /v1/responses | POST /v1/completions\n"
-                "  GET /v1/models | GET /v1/capabilities | GET /health\n",
+                " (ttl %ds)\n",
                 port, SV.n_reg, SV.ttl);
     else
         fprintf(stderr,
-                "server listening on http://127.0.0.1:%d — %d slot%s x %d threads%s\n"
-                "  POST /v1/chat/completions | POST /v1/responses | POST /v1/completions\n"
-                "  GET /v1/models | GET /v1/capabilities | GET /health\n",
+                "server listening on http://127.0.0.1:%d — %d slot%s x %d threads%s\n",
                 port, parallel, parallel > 1 ? "s" : "", threads_per_slot,
                 batched ? ", continuous batching" : "");
+    fputs("  POST /v1/chat/completions | POST /v1/responses | POST /v1/completions\n"
+          "  POST /v1/embeddings | POST /v1/messages | POST /v1/messages/count_tokens\n"
+          "  GET /v1/models | GET /v1/capabilities | GET /health\n"
+          "  GET /v1/runner/prefix-cache | POST /v1/runner/prefix-cache/clear"
+          " | POST /unload\n", stderr);
 
     // Say it in the banner, not only at init.
     //
