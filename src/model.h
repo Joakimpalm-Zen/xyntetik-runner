@@ -504,6 +504,9 @@ long long model_autofit_tokens(uint64_t budget, uint64_t weights,
                                uint64_t head_per_seq, uint64_t kv_per_tok,
                                int n_seq);
 int       model_autofit_clamp(long long best, int n_ctx_train);
+// Ring row admission without signed overflow: returns n_ctx when the window
+// plus one in-flight batch would not make a smaller allocation.
+int       model_kv_ring_rows(int window, int batch, int n_ctx);
 // Whether to warn that the KV cache, not the model's own size, is what pushed
 // layers off the device -- the one case a smaller -c can take back.
 bool      model_kv_trade_note(int gpu_layers, int n_layer, uint64_t kv_dev,

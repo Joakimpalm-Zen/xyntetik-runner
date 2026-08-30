@@ -576,6 +576,15 @@ int model_kv_swa_layers(const model_t *m) {
     return n;
 }
 
+int model_kv_ring_rows(int window, int batch, int n_ctx) {
+    if (window <= 0 || batch <= 0 || n_ctx <= 0 || window >= n_ctx)
+        return n_ctx;
+    // Compare before adding: all three inputs are public int-range geometry,
+    // so `window + batch` itself is not safe at the upper boundary.
+    if (batch >= n_ctx - window) return n_ctx;
+    return window + batch;
+}
+
 bool model_fit_report(gguf_file *g, int n_ctx_want, model_fit *out) {
     memset(out, 0, sizeof(*out));
     char key[128];
@@ -3166,7 +3175,7 @@ static bool model_alloc_runtime(model_t *m, const model_params *p) {
     if (m->swa_window > 0 && m->l_is_swa) {
         const char *e = getenv("RUNNER_KV_RING");
         if (e && *e && strcmp(e, "0") != 0) {
-            int rows = m->swa_window + m->n_batch;
+            int rows = model_kv_ring_rows(m->swa_window, m->n_batch, n_ctx);
 #ifdef RUNNER_GPU_METAL
             if (p->gpu_mode != GPU_OFF) {
                 fprintf(stderr, "kv ring: refused — the Metal attention "

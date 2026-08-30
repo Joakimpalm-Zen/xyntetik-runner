@@ -18,6 +18,7 @@
 // count.
 #include <stdio.h>
 #include <stdint.h>
+#include <limits.h>
 #include "model.h"
 
 static int g_fail = 0;
@@ -145,12 +146,25 @@ static void test_kv_trade_note(void) {
        "an unmeasured weight size gets no note");
 }
 
+// Ring sizing is also admission arithmetic that real fixtures cannot safely
+// reach at its upper boundary: -c/-b and GGUF windows accept INT_MAX, while an
+// overflowing window + batch can turn negative before any allocation fails.
+static void test_kv_ring_rows(void) {
+    ck(model_kv_ring_rows(32, 64, 1024) == 96,
+       "a useful ring is window plus one in-flight batch");
+    ck(model_kv_ring_rows(900, 124, 1024) == 1024,
+       "a ring that saves no rows stays flat");
+    ck(model_kv_ring_rows(INT_MAX, INT_MAX, INT_MAX) == INT_MAX,
+       "ring sizing saturates before signed addition can overflow");
+}
+
 int main(void) {
     test_multislot_is_not_billed_once();
     test_budget_is_never_exceeded();
     test_degenerate_inputs();
     test_clamp();
     test_kv_trade_note();
+    test_kv_ring_rows();
     if (g_fail) { fprintf(stderr, "test-autofit FAILED\n"); return 1; }
     fprintf(stderr, "test-autofit: all checks passed\n");
     return 0;
