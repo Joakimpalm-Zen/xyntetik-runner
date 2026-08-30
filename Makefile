@@ -108,7 +108,10 @@ endif
 # Which GPU backend this build links. It was previously visible only to
 # test-split-guard, so source could not tell CUDA from Metal -- and the two
 # differ in what their attention kernels can address (see RUNNER_KV_RING).
-CFLAGS += $(GPU_BACKEND_DEF)
+# `override` is intentional and narrowly scoped to this required identity:
+# tagged releases set CFLAGS on make's command line, which otherwise suppresses
+# an ordinary `+=` and would compile out the Metal safety refusal.
+override CFLAGS += $(GPU_BACKEND_DEF)
 
 # same .exe suffix rule as every other test binary, without repeating the
 # three-way platform branch above
@@ -1745,6 +1748,12 @@ test-makefile-sane:
 	test -n "$$zline" || { echo "FAIL: quantize.c is not a separate translation unit"; exit 1; }; \
 	echo "$$zline" | grep -q -- ' -fno-fast-math ' || { echo "FAIL: quantize.c lacks -fno-fast-math"; exit 1; }; \
 	case "$$zline" in *" -ffast-math "*) echo "FAIL: quantize.c still has -ffast-math"; exit 1;; esac; \
+	bline=$$($(MAKE) -Bn --no-print-directory CFLAGS=-O0 runner | grep -- ' src/model.c '); \
+	test -n "$$bline" || { echo "FAIL: release-style build has no model.c compile line"; exit 1; }; \
+	echo "$$bline" | grep -q -- ' $(GPU_BACKEND_DEF) ' || { \
+		echo "FAIL: command-line CFLAGS dropped backend identity $(GPU_BACKEND_DEF)"; \
+		exit 1; \
+	}; \
 	if grep -q 'system(' src/tray.c src/tray_*.c src/tray_*.m; then echo "FAIL: tray launches through a shell"; exit 1; fi; \
 	echo "makefile ok (no discarded recipes)"
 
