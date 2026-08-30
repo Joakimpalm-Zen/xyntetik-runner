@@ -150,6 +150,32 @@ def test_ring_actually_shrinks_the_allocation(runner_bin, swa_model):
     assert ring < flat, f"ring {ring} MB not smaller than flat {flat} MB"
 
 
+def test_ring_is_refused_when_the_gpu_is_in_play(runner_bin, swa_model):
+    """CPU-only, and refused rather than silently wrong.
+
+    The device attention kernels address the cache by absolute position
+    (`kc + base + t * row_b`, kernels.cu) and so does their row store, so a
+    ring layer on the GPU reads rows holding a different token. Measured on an
+    RTX 3070 partial split (20/34 layers, 2026-08-30): every scored position
+    came back nan, while the same build on the CPU path was bit-identical to
+    the flat allocation. A silent wrong answer is the one outcome this whole
+    change must not produce, so the ring says no and says why.
+    """
+    env = dict(os.environ, RUNNER_KV_RING="1")
+    p = subprocess.run(
+        [runner_bin, "-m", str(swa_model), "-c", str(N_CTX), "-t", "2",
+         "-v", "-p", "hi", "-n", "1"],
+        cwd=ROOT, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        timeout=300)
+    err = p.stderr.decode(errors="replace")
+    assert p.returncode == 0, err
+    # no --gpu off here: whatever backend this host has, the ring must either
+    # stay off or explain itself. It must never quietly engage beside a device.
+    engaged = any(l.startswith("kv ring ") for l in err.splitlines())
+    refused = "kv ring: refused" in err
+    assert refused or not engaged, err
+
+
 def test_ring_leaves_a_model_without_sliding_layers_alone(
         runner_bin, dense_model):
     """Nothing to recycle: the flag must be inert, not merely harmless."""

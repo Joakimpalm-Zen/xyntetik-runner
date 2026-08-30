@@ -3155,12 +3155,26 @@ static bool model_alloc_runtime(model_t *m, const model_params *p) {
     // rows (see model_kv_byte_off) and refuse under a ring rather than read out
     // of bounds, so a server loses shared prefix caching and partial rewind.
     // That is a real trade, which is why the default stays flat.
+    //
+    // CPU ONLY, and this is measured rather than cautious. The device
+    // attention kernels index the cache by ABSOLUTE position
+    // (`kc + base + t * row_b`, kernels.cu) and so does their row store, so a
+    // ring layer on the GPU reads rows that hold a different token: on an
+    // RTX 3070 partial split (2026-08-30) it produced nan for every scored
+    // position while the same build on the CPU path was bit-identical to flat.
+    // Making it GPU-safe means teaching the kernels the modulo and rebuilding
+    // the embedded PTX, which is its own change. Until then this refuses.
     m->kv_ring = 0;
     if (m->swa_window > 0 && m->l_is_swa) {
         const char *e = getenv("RUNNER_KV_RING");
         if (e && *e && strcmp(e, "0") != 0) {
             int rows = m->swa_window + m->n_batch;
-            if (rows < n_ctx) m->kv_ring = rows;
+            if (p->gpu_mode != GPU_OFF)
+                fprintf(stderr, "kv ring: refused — the device attention "
+                        "kernels address KV by absolute position, so a ring "
+                        "is CPU-only for now; rerun with --gpu off to use it\n");
+            else if (rows < n_ctx)
+                m->kv_ring = rows;
         }
     }
     int q_dim = 0, kv_dim = 0;
