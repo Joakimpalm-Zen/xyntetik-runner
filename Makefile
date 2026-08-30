@@ -105,6 +105,11 @@ DIFFTOK = difftok
 TEST_BIND = test-bind
 endif
 
+# Which GPU backend this build links. It was previously visible only to
+# test-split-guard, so source could not tell CUDA from Metal -- and the two
+# differ in what their attention kernels can address (see RUNNER_KV_RING).
+CFLAGS += $(GPU_BACKEND_DEF)
+
 # same .exe suffix rule as every other test binary, without repeating the
 # three-way platform branch above
 TEST_PREFIX = $(TEST_BATCH:test-batch%=test-prefix%)
