@@ -535,7 +535,7 @@ static void usage_to(FILE *f, const char *prog) {
         "                 applied automatically\n"
         "  -b N           prompt batch size (default 64 with --gpu off;\n"
         "                 otherwise auto-sized from free RAM: 64/256/512)\n"
-        "  -t N           threads (default: physical cores, capped at 64)\n"
+        "  -t N           threads (default: physical cores, capped at 32)\n"
         "  -s N           RNG seed (default: time)\n"
         "  --think        request the model family's thinking prompt shape\n"
         "  --no-think     request its non-thinking shape; with neither flag\n"

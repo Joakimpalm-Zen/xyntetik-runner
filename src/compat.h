@@ -37,7 +37,21 @@ bool   plat_willneed_available(void);
 void   plat_munmap(void *p, size_t size);
 
 int         plat_cpu_count(void);
+// Ceiling on the DEFAULT thread count. Distinct from TP_MAX, which clamps an
+// explicit -t: a caller who asks for 64 still gets 64.
+//
+// The halving rule below approximates physical cores on an SMT machine and is
+// unmeasured; this ceiling is the measured part. Two independent sweeps found
+// decode PEAKS at 32 threads and regresses above it - tpbench on a 64-core
+// Zen 5 box (2026-08-13) and the Blackwell 128-core sweep (2026-08-29), where
+// both models peaked at t=32 and the previous default of 64 cost -41.0%
+// decode and -55.3% prefill on the smaller one. The heuristic was not wrong,
+// it lacked a ceiling.
+#define PLAT_THREAD_DEFAULT_MAX 32
 int         plat_default_thread_count(void);
+// The policy as a pure function of the logical CPU count, so the many-core
+// regime is testable on a machine that does not have many cores.
+int         plat_thread_default_for(int logical_cpus);
 uint64_t    plat_ram_bytes(void);
 
 // --- weight residency -----------------------------------------------------

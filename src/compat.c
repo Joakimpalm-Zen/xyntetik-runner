@@ -88,10 +88,7 @@ int plat_cpu_count(void) {
 }
 
 int plat_default_thread_count(void) {
-    int nc = plat_cpu_count();
-    int n = nc >= 4 ? nc / 2 : nc;
-    if (n > 64) n = 64;
-    return n > 0 ? n : 1;
+    return plat_thread_default_for(plat_cpu_count());
 }
 
 uint64_t plat_ram_bytes(void) {
@@ -423,12 +420,16 @@ int plat_default_thread_count(void) {
         perf_known = true;
     }
 #endif
-    int n = nc >= 4 ? nc / 2 : nc;
 #ifdef __APPLE__
-    if (perf_known) n = nc;
+    // Asymmetric cores: the performance cores ARE the answer, so the halving
+    // rule is skipped. The ceiling still applies, though no Apple part reaches
+    // it today.
+    if (perf_known) {
+        int n = nc > PLAT_THREAD_DEFAULT_MAX ? PLAT_THREAD_DEFAULT_MAX : nc;
+        return n > 0 ? n : 1;
+    }
 #endif
-    if (n > 64) n = 64;
-    return n > 0 ? n : 1;
+    return plat_thread_default_for(nc);
 }
 
 uint64_t plat_ram_bytes(void) {
@@ -819,6 +820,20 @@ char *plat_executable_path(void) {
 // let a typo disable a deadline or overflow a byte budget. Finiteness is tested
 // on the IEEE bits, not isfinite(), because the build uses -ffast-math.
 #include <errno.h>
+
+// One policy, both platforms, and a pure function so the many-core regime can
+// be tested on a machine that has few cores. See PLAT_THREAD_DEFAULT_MAX in
+// compat.h for why the ceiling is where it is.
+//
+// Only machines with MORE THAN 64 logical CPUs change behaviour here: at 64 the
+// halving already lands on the ceiling, and everything below it is untouched.
+// That is deliberate - the ceiling was measured in the many-core regime and
+// nowhere else, so it moves nothing that was not measured.
+int plat_thread_default_for(int nc) {
+    int n = nc >= 4 ? nc / 2 : nc;
+    if (n > PLAT_THREAD_DEFAULT_MAX) n = PLAT_THREAD_DEFAULT_MAX;
+    return n > 0 ? n : 1;
+}
 
 bool parse_i64(const char *s, long long lo, long long hi, long long *out) {
     if (!s || !*s) return false;
