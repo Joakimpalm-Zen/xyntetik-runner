@@ -408,49 +408,61 @@ are not just measurably different objects — they are measurably
 different *behaviors*, one level below where the eval saturates. Raw
 per-position score outputs are in the HF repo (`evals/logprob-study/`).
 
-## The predicted flip, found externally
+## Where that divergence lives, and where it flips
 
-The section above ends on a prediction: the Q4-trained adapter's 0.146 mean
-|Δlogprob| gap "is the size of gap that flips answers" on a task whose
-decisions sit closer to zero margin. That was written as an expectation with
-no instance behind it.
+Two refinements from the same external reviewer whose reproduction scopes the
+determinism claims below. The first changes how the table above should be read,
+and it belongs here rather than only on the artifact card.
 
-The instance came from outside. The same HF contributor whose reproduction
-scopes the determinism claims below built a **36-prompt tool-choice boundary
-bank** (five ambiguity families: `list_dir`/`search_files`,
-`read_file`/`search`, `read_file`/`write_file` multi-intent, config browsing,
-and available-tool/none), screened it for cases whose top1-top2 legal-choice
-margin sits at or under 3 nat, and compared the base and the BF16-, Q8- and
-Q4-trained adapters on the survivors, generating the full JSON
-deterministically wherever the branches disagreed.
+**The aggregate hides a split (2026-08-25).** Separating scored positions by
+prompt region versus gold-completion region changes what 0.146 is measuring. On
+the supervised completion region the three adapters nearly coincide: bf16 vs Q4
+mean |Δlogprob| is about **0.0003 nat**, with no position near 1 nat. Almost
+all of the 0.146 aggregate lives in the **unsupervised prompt region**. The
+honest reading is that the precision path leaves a real function-level
+fingerprint largely outside what the completion loss supervised, while the
+supervised decisions stay wide-margin. Those are two different observables, and
+the aggregate row above conflates them.
 
-Seven cases passed the screen. **One split, and it survived full generation:**
+**The fingerprint does cross a decision boundary (2026-08-25, systematized
+2026-08-30).** On a deliberately ambiguous request, *tell me what README.md
+says and translate it*, the bf16- and Q8-trained adapters call `read_file`
+(margins ~0.49 nat) while the Q4-trained adapter answers `none` (margin 2.17
+nat), and the split survives full deterministic JSON generation.
 
-| prompt | base | BF16-ad | Q8-ad | Q4-ad |
-|---|---|---|---|---|
-| *tell me what README.md says and translate it* | `search_files` | `read_file` | `read_file` | **`none`** |
+That began as one constructed case. It is now a screened one. The reviewer
+built a **36-prompt tool-choice boundary bank** across five ambiguity families
+(`list_dir`/`search_files`, `read_file`/`search`, `read_file`/`write_file`
+multi-intent, config browsing, and available-tool/none), kept the cases whose
+top1-top2 legal-choice margin sits at or under 3 nat, and compared base, bf16-,
+Q8- and Q4-trained adapters on the survivors, generating the full JSON
+deterministically wherever branches disagreed. Seven cases passed the screen,
+and the split above is the one that reproduced. Notebooks, clean and executed
+with reference outputs, are published at
+`huggingface.co/datasets/John6666/forum3` under
+`deterministic_GGUF_LoRA_training/`.
 
-Two caveats, both his, both load-bearing:
+Three constraints travel with it, all his:
 
-- **This is an existence proof, not a rate.** One split out of seven selected
-  out of 36. The screen selects on the Q4 adapter's own margin, so the seven
-  cases cannot estimate any general margin distribution.
-- **There is no monotonic precision law here.** Several cases had smaller Q4
-  margins, not all did, and one case had **Q8** as the tightest condition. What
-  this supports is that some decision boundaries are far more sensitive to the
-  training precision path than others, and that the direction is not monotone
-  in bit width. It does not support "lower training precision degrades tool
-  choice", which his own data refutes.
+- **Existence proof, not a rate.** One split out of seven selected out of 36,
+  and the screen selects on the Q4 adapter's own margin, so the seven cases
+  cannot estimate any general margin distribution.
+- **No monotonic precision law.** Several cases had smaller Q4 margins, not all
+  did, and one case had **Q8** as the tightest condition. What this supports is
+  that some decision boundaries are far more sensitive to the training
+  precision path than others, non-monotonically in bit width. It does not
+  support "lower training precision degrades tool choice", which his own data
+  refutes.
+- **No gold labels, deliberately.** Labeling would convert a
+  decision-sensitivity probe into a quality benchmark and quietly change the
+  question. That reasoning is adopted here.
 
-He also assigned no gold labels, deliberately, on the grounds that doing so
-would convert a decision-sensitivity probe into a quality benchmark and quietly
-change the question. That reasoning is adopted here.
-
-One methodological note worth carrying: his first version scored full tool-name
-sequences and was discarded once BPE merged punctuation across the apparent
-string boundary, which made the score invalid. Runner's `choice_logprobs` is
-not exposed to that failure mode, because it records the legal alternatives as
-the grammar defines them rather than as text.
+One methodological note worth carrying: an earlier version of his scorer ranked
+full tool-name sequences and was discarded once BPE merged punctuation across
+the apparent string boundary, which invalidated the score. Runner's
+`choice_logprobs` is not exposed to that failure mode, because it records the
+legal alternatives as the grammar defines them rather than as text. A native
+decision-boundary lane over `choice_logprobs` is the planned home for this bank.
 
 **Read against the merge study above, these are two different mechanisms and
 must not be collapsed into one claim.** Merging an adapter into a 4-bit base
