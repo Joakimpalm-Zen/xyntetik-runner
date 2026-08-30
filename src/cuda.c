@@ -2624,15 +2624,29 @@ void gpu_disable(model_t *m) {
 }
 
 // upload host KV rows [lo, hi) for every layer (CPU prompt processing wrote them)
-// Site 3 of 3 for the flat-row assumption (model.h, model_kv_byte_off): rows
-// [lo, hi) are mirrored at absolute offsets on both sides. It only runs on the
-// resync path of a PARTIAL split, so a full-offload sweep never exercises it.
+// Sites 3 and 4 of 4 for the flat-row assumption (model.h, model_kv_byte_off):
+// rows [lo, hi) are mirrored at absolute offsets on both sides. They only run
+// on the resync path of a PARTIAL split, so a full-offload sweep never
+// exercises either.
+//
+// A ring layer's rows are not addressed by absolute position, so [lo, hi) does
+// not name them and following it would read past the host allocation and write
+// past the device one. Mirror the WHOLE ring instead: both sides use identical
+// slot addressing, so it is byte-for-byte the same object, and it is small by
+// construction (that is the point of the ring).
+static void kv_span(const model_t *m, int l, int lo, int hi, int *o_lo, int *o_hi) {
+    if (model_kv_is_ring(m, l)) { *o_lo = 0; *o_hi = m->kv_ring; }
+    else                        { *o_lo = lo; *o_hi = hi; }
+}
+
 static bool kv_upload(gpu_t *g, model_t *m, int lo, int hi) {
     if (lo >= hi) return true;
     for (int l = 0; l < m->gpu_layers; l++) {
+        int llo, lhi;
+        kv_span(m, l, lo, hi, &llo, &lhi);
         size_t row = model_kv_row_bytes(m, l);
-        size_t off = model_kv_byte_off(m, l) + (size_t)lo * row;
-        size_t len = (size_t)(hi - lo) * row;
+        size_t off = model_kv_byte_off(m, l) + (size_t)llo * row;
+        size_t len = (size_t)(lhi - llo) * row;
         if (cu.MemcpyHtoD(g->kc + off, (uint8_t *)m->kcache + off, len) != 0 ||
             cu.MemcpyHtoD(g->vc + off, (uint8_t *)m->vcache + off, len) != 0)
             return false;
@@ -2644,9 +2658,11 @@ static bool kv_upload(gpu_t *g, model_t *m, int lo, int hi) {
 static bool kv_copyback(gpu_t *g, model_t *m, int lo, int hi) {
     if (lo >= hi) return true;
     for (int l = 0; l < m->gpu_layers; l++) {
+        int llo, lhi;
+        kv_span(m, l, lo, hi, &llo, &lhi);
         size_t row = model_kv_row_bytes(m, l);
-        size_t off = model_kv_byte_off(m, l) + (size_t)lo * row;
-        size_t len = (size_t)(hi - lo) * row;
+        size_t off = model_kv_byte_off(m, l) + (size_t)llo * row;
+        size_t len = (size_t)(lhi - llo) * row;
         if (cu.MemcpyDtoH((uint8_t *)m->kcache + off, g->kc + off, len) != 0 ||
             cu.MemcpyDtoH((uint8_t *)m->vcache + off, g->vc + off, len) != 0)
             return false;

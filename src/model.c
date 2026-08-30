@@ -3143,6 +3143,26 @@ static bool model_alloc_runtime(model_t *m, const model_params *p) {
     int batch_default = p->gpu_mode == GPU_AUTO ? model_gpu_batch_default() : 64;
     m->n_batch = p->n_batch > 0 ? p->n_batch : batch_default;
     if (m->n_batch > n_ctx) m->n_batch = n_ctx;
+
+    // A sliding layer clamps its attention start to p - swa_window + 1, so rows
+    // older than the window are written once and never read. RUNNER_KV_RING=1
+    // gives those layers only the rows they can reach and indexes them modulo
+    // that count. Size: the batch writes up to pos + n_batch - 1 while its
+    // first token still reads back to pos - swa_window + 1, so the live span is
+    // swa_window + n_batch - 1; one spare row keeps the arithmetic obvious.
+    //
+    // OPT-IN, and it is not free. Three call sites address KV as flat absolute
+    // rows (see model_kv_byte_off) and refuse under a ring rather than read out
+    // of bounds, so a server loses shared prefix caching and partial rewind.
+    // That is a real trade, which is why the default stays flat.
+    m->kv_ring = 0;
+    if (m->swa_window > 0 && m->l_is_swa) {
+        const char *e = getenv("RUNNER_KV_RING");
+        if (e && *e && strcmp(e, "0") != 0) {
+            int rows = m->swa_window + m->n_batch;
+            if (rows < n_ctx) m->kv_ring = rows;
+        }
+    }
     int q_dim = 0, kv_dim = 0;
     for (int l = 0; l < m->n_layer; l++) {
         if (model_q_dim(m, l) > q_dim)   q_dim  = model_q_dim(m, l);
@@ -3160,7 +3180,8 @@ static bool model_alloc_runtime(model_t *m, const model_params *p) {
         // A shared-KV layer reserves nothing: model_kv_byte_off resolves it to
         // its owner's rows. Its own kv_off entry is never read as a start.
         m->kv_off[l + 1] = m->kv_off[l] +
-            (model_kv_owner(m, l) == l ? (size_t)n_ctx * model_kv_dim(m, l) : 0);
+            (model_kv_owner(m, l) == l
+                 ? (size_t)model_kv_rows(m, l) * model_kv_dim(m, l) : 0);
     size_t kv_bytes = model_kv_boundary_bytes(m, m->n_layer);
     m->kcache = calloc(1, kv_bytes);
     m->vcache = calloc(1, kv_bytes);
@@ -3392,6 +3413,10 @@ static bool model_alloc_runtime(model_t *m, const model_params *p) {
                     "window; the rest is written and never read back)\n",
                     "kv reachable", 2.0 * reach / 1e6, n_swa, m->n_layer,
                     m->swa_window);
+        if (model_kv_ring_active(m))
+            fprintf(stderr, "%-24s %d rows on %d sliding layers "
+                    "(no prefix cache, no partial rewind)\n",
+                    "kv ring", m->kv_ring, n_swa);
         fprintf(stderr, "%-24s %d\n", "batch", m->n_batch);
         gguf_tensor *w0 = m->layers[0].recurrent ? m->layers[0].wqkv
                                                   : m->layers[0].wq;
@@ -3613,6 +3638,7 @@ typedef struct {
     int t0;                 // first attended position (sliding window)
     int hd, kv_dim;         // this layer's head dim / kv row width
     size_t row_b;           // bytes per cached row
+    int ring;               // row count when this layer recycles rows, else 0
     bool q8;                // rows are q8_0 blocks
     float scale;
     const float *sinks;     // gpt-oss per-head sink logits, or NULL
@@ -3633,7 +3659,10 @@ static void attn_heads(void *ctx, int h0, int h1) {
         size_t hoff = j->q8 ? (size_t)(kvh * hd / 32) * 34
                             : (size_t)kvh * hd * sizeof(f16_t);
         for (int t = j->t0; t <= j->pos; t++) {
-            const uint8_t *kt = j->kc + (size_t)t * j->row_b + hoff;
+            // att[] stays indexed by ABSOLUTE position (it is n_ctx wide and
+            // softmax works on the [t0, pos] span); only the cache row moves.
+            size_t slot = j->ring ? (size_t)(t % j->ring) : (size_t)t;
+            const uint8_t *kt = j->kc + slot * j->row_b + hoff;
             float s;
             if (j->q8) {
                 s = vec_dot(T_Q8_0, kt, qh, hd);
@@ -3649,7 +3678,8 @@ static void attn_heads(void *ctx, int h0, int h1) {
         float *out = j->out + h * hd;
         memset(out, 0, sizeof(float) * hd);
         for (int t = j->t0; t <= j->pos; t++) {
-            const uint8_t *vt = j->vc + (size_t)t * j->row_b + hoff;
+            size_t slot = j->ring ? (size_t)(t % j->ring) : (size_t)t;
+            const uint8_t *vt = j->vc + slot * j->row_b + hoff;
             float a = att[t];
             if (j->q8) {
                 q8_accum_row(vt, a, out, hd);
@@ -5722,7 +5752,8 @@ static bool lora_layer_bw(model_t *m, int l, const int32_t *toks, int T,
             lora_site_fw(m, l, LW_K, kt, x1, E, kv_dim);
         }
         attn_job aj = { m, kc_l, vc_l, qt, ao + (size_t)t * q_dim, t, 0,
-                       hd, kv_dim, row_b, false, scale, NULL };
+                       hd, kv_dim, row_b, model_kv_is_ring(m, l) ? m->kv_ring : 0,
+                       false, scale, NULL };
         tpool_run(m->tp, attn_heads, &aj, n_head);
         matvec_b(m->tp, tmpE, E, ly->wo, ao + (size_t)t * q_dim, q_dim,
                  q_dim, E, ly->bo, 1);
@@ -6436,8 +6467,9 @@ float *model_forward_batch(model_t *m, const int32_t *tokens, int n, int pos,
                         hd, m->rms_eps);
             if (model_layer_ropes(m, l))
                 rope_apply(m, m->k_tmp + (size_t)b * kv_dim, n_kv, pos + b, l);
-            uint8_t *kc = kc_l + (size_t)(pos + b) * row_b;
-            uint8_t *vc = vc_l + (size_t)(pos + b) * row_b;
+            size_t slot = (size_t)model_kv_row_at(m, l, pos + b);
+            uint8_t *kc = kc_l + slot * row_b;
+            uint8_t *vc = vc_l + slot * row_b;
             if (m->kv_q8) {
                 q8_quant_row(m->k_tmp + (size_t)b * kv_dim, kc, kv_dim);
                 q8_quant_row(m->v_tmp + (size_t)b * kv_dim, vc, kv_dim);
@@ -6454,10 +6486,11 @@ float *model_forward_batch(model_t *m, const int32_t *tokens, int n, int pos,
             dbg_stat("k-post-rope", l, m->k_tmp + (size_t)(n - 1) * kv_dim, kv_dim);
             dbg_stat("v-post-norm", l, m->v_tmp + (size_t)(n - 1) * kv_dim, kv_dim);
             if (!m->kv_q8) {
+                size_t dslot = (size_t)model_kv_row_at(m, l, pos + n - 1);
                 dbg_stat_f16("k-cached", l,
-                    (const f16_t *)(kc_l + (size_t)(pos + n - 1) * row_b), kv_dim);
+                    (const f16_t *)(kc_l + dslot * row_b), kv_dim);
                 dbg_stat_f16("v-cached", l,
-                    (const f16_t *)(vc_l + (size_t)(pos + n - 1) * row_b), kv_dim);
+                    (const f16_t *)(vc_l + dslot * row_b), kv_dim);
             }
         }
         for (int b = 0; b < n; b++) {
@@ -6465,7 +6498,8 @@ float *model_forward_batch(model_t *m, const int32_t *tokens, int n, int pos,
             int t0 = local && p - m->swa_window + 1 > 0 ? p - m->swa_window + 1 : 0;
             attn_job aj = { m, kc_l, vc_l, m->q + (size_t)b * q_dim,
                             m->xb2 + (size_t)b * xdim, p, t0, hd, kv_dim,
-                            row_b, m->kv_q8, scale, ly->attn_sinks };
+                            row_b, model_kv_is_ring(m, l) ? m->kv_ring : 0,
+                            m->kv_q8, scale, ly->attn_sinks };
             tpool_run(m->tp, attn_heads, &aj, m->n_head);
             if (m->qwen35 || (m->attn_out_gate && ly->wq_gate))
                 for (int i = 0; i < q_dim; i++) {

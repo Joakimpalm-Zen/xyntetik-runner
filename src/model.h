@@ -232,6 +232,7 @@ typedef struct {
     int      *l_head_dim;    // [n_layer] head dim per layer (K == V required)
     int      *l_rope_dim;    // [n_layer] rotated dims per layer
     bool     *l_is_swa;      // [n_layer] sliding-window layer flags
+    int       kv_ring;       // rows a sliding layer owns (0 = flat n_ctx rows)
     size_t   *kv_off;        // [n_layer+1] element offsets into kcache/vcache
     float     attn_scale;    // 0 = default 1/sqrt(head_dim(l)), else fixed
     int       ffn_act;       // ACT_SILU (default) or ACT_GELU (gemma)
@@ -461,6 +462,27 @@ static inline float model_rope_mscale(const model_t *m, int l) {
 static inline bool model_is_swa(const model_t *m, int l) {
     return m->l_is_swa != NULL && m->l_is_swa[l];
 }
+// Does this layer recycle its rows? Only sliding layers do, and only when the
+// ring is narrower than the context (otherwise it would save nothing).
+static inline bool model_kv_is_ring(const model_t *m, int l) {
+    return m->kv_ring > 0 && m->kv_ring < m->n_ctx && model_is_swa(m, l);
+}
+// Rows layer l owns. The ONE place that answers it; every size, offset and
+// index below is derived from this so a ring cannot be half-applied.
+static inline int model_kv_rows(const model_t *m, int l) {
+    return model_kv_is_ring(m, l) ? m->kv_ring : m->n_ctx;
+}
+// Where absolute position p lives in layer l's rows.
+static inline int model_kv_row_at(const model_t *m, int l, int p) {
+    return model_kv_is_ring(m, l) ? p % m->kv_ring : p;
+}
+// Is ANY layer ringed? The flat-row call sites (see model_kv_byte_off) use
+// this to refuse rather than to read past an allocation.
+static inline bool model_kv_ring_active(const model_t *m) {
+    if (m->kv_ring <= 0 || m->kv_ring >= m->n_ctx || !m->l_is_swa) return false;
+    for (int l = 0; l < m->n_layer; l++) if (m->l_is_swa[l]) return true;
+    return false;
+}
 static inline float model_attn_scale(const model_t *m, int l) {
     return m->attn_scale > 0 ? m->attn_scale
                              : 1.0f / sqrtf((float)model_head_dim(m, l));
@@ -506,6 +528,12 @@ static inline size_t model_kv_byte_off(const model_t *m, int l) {
 //   1. pfx_save / pfx_load  (engine.c) -- prefix-cache snapshot and install
 //   2. engine_rewind        (engine.c) -- partial reuse of a slot's own KV
 //   3. kv_upload            (cuda.c)   -- host->device mirror of rows [lo, hi)
+//   4. kv_copyback          (cuda.c)   -- device->host readback of the same
+//
+// CORRECTED 2026-08-30: the external note named THREE. Implementing the ring
+// found a fourth, kv_copyback, with the identical shape and the identical
+// blind spot. That is the note working as intended, and a reminder that the
+// list is a starting point rather than a proof of completeness.
 //
 // A layout where a layer owns FEWER than n_ctx rows -- a sliding-window ring
 // being the obvious one, since a local layer can never read past swa_window

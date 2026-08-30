@@ -193,6 +193,11 @@ int engine_rewind(engine *e, const int32_t *toks, int n) {
     //     for keep>0 on the recompute path is tracer 5 (prefix-cache), which
     //     stores the recurrent blob in the snapshot and drives this same
     //     restore. keep == e->pos is a pure extension: the fold is already right.
+    // A ring recycles rows, so "keep the first `keep` rows" names rows that
+    // have been overwritten. A pure EXTENSION is still fine (the ring holds
+    // exactly what the next step reads); any real rewind recomputes from 0,
+    // which is the recurrent path's own precedent two paragraphs down.
+    if (keep < e->pos && model_kv_ring_active(e->m)) keep = 0;
     if (model_has_recurrent(e->m) && keep < e->pos) {
         if (!model_recurrent_restore(e->m, keep)) {
             model_recurrent_reset(e->m);
@@ -500,6 +505,11 @@ void prefix_cache_stats_get(prefix_cache_stats *out) {
 }
 
 prefix_reuse engine_prefix_reuse(engine *e, const int32_t *toks, int n) {
+    // Ring layers own kv_ring rows, not n_ctx, and pfx_load installs a
+    // contiguous [0, n) run per layer: any prefix longer than the ring would
+    // write past the allocation. Refuse the whole mechanism rather than
+    // special-case it -- a snapshot of recycled rows is not a prefix.
+    if (model_kv_ring_active(e->m)) { prefix_reuse r = {0}; return r; }
     prefix_reuse r = { 0, 0, 0.0 };
     // the slot's own KV first: it is already in place and costs nothing
     r.keep = engine_rewind(e, toks, n);
@@ -576,6 +586,9 @@ prefix_reuse engine_prefix_reuse(engine *e, const int32_t *toks, int n) {
 
 void engine_prefix_publish(engine *e, const int32_t *toks, int n,
                            int fed, double prefill_s) {
+    // Same reason as engine_prefix_reuse: pfx_save copies a contiguous run
+    // the ring does not own. Publishing under a ring would read out of bounds.
+    if (model_kv_ring_active(e->m)) return;
     if (!e->hist || n < PFX_MIN_TOKENS || e->pos < n) return;
 
     pthread_mutex_lock(&PFX.mu);
