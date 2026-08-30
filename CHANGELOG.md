@@ -6,6 +6,110 @@ change between releases (the `-alpha` suffix was retired at v0.2.0 — the 0.x
 version already says what it needs to). Entries below the rename keep the
 names that were true when they were written.
 
+## v0.4.4 - 2026-08-30
+
+- **Sliding-window layers were allocated KV they can never read, and now there
+  is a way to stop paying for it.** Every layer gets `n_ctx` cache rows, but a
+  sliding layer clamps its attention start to `p - swa_window + 1`, so rows
+  older than the window are written once and never read again. On models whose
+  sliding layers are both more numerous and wider in KV than their full ones
+  that is most of the cache: gemma-3-4b at `-c 32768` allocates 4563 MB and can
+  reach 793 MB of it, and gemma-4-E4B 1879 MB against 558 MB. `-v` now reports
+  the reachable figure beside the allocated one, and `RUNNER_KV_RING=1` gives
+  those layers only the rows they can read, indexed modulo that count: 4563 MB
+  becomes 800 MB, within 1% of the floor. This is a ceiling rather than a
+  correctness bug -- answers were always right, the cache was simply larger
+  than the model could use -- and it is the difference between a 4k context and
+  a 32k one on a 24 GB device.
+  The gate is the flat allocation itself. A ring holds exactly the rows the
+  flat layout would have been read from, so the shipped unringed engine is the
+  reference implementation: verified bit-identical, max |Δlogprob| exactly 0,
+  on a CPU fixture and on an RTX 3070 at both a partial split (20 of 34 layers)
+  and a full offload, 2121 scored positions each.
+  **It is opt-in because it costs something.** The prefix cache and partial
+  rewind address KV as flat absolute rows, so both are refused while a ring is
+  active and a server loses shared-prompt reuse. Metal's attention kernels
+  address the cache by absolute position too and are not ring-aware, so a Metal
+  build refuses the ring with a message rather than returning wrong numbers.
+- **The KV cache is addressed as flat absolute rows in more places than anyone
+  had written down, and the count was wrong twice.** An external research
+  branch named three host sites -- `pfx_save`/`pfx_load`, `engine_rewind`,
+  `kv_upload` -- after hitting each one as a separate crash, including a
+  prefix-cache overrun that was a memory-safety bug no measurement in that
+  branch could see, because a one-shot `-p` never touches the prefix cache.
+  Implementing the ring found a fourth host site (`kv_copyback`, identical
+  shape, identical blind spot) and then a whole category the list omitted: the
+  CUDA attention kernels themselves, seven KV addresses plus both store
+  kernels, all indexing by absolute position. A first cut that fixed only the
+  host mirrors produced `nan` for every scored position on a partial GPU split
+  while the same build was bit-identical on the CPU path. Every device KV
+  address now resolves through one `kv_slot()` helper, `attn_args` carries the
+  ring, and the embedded PTX is regenerated. The canonical comment lives at
+  `model_kv_byte_off` and says the list is a starting point rather than a proof
+  of completeness, which is what it turned out to be.
+- **`--score` can now check itself.** It reported plausible-looking numbers for
+  models it could not score, with a correct `n_scored` and exit 0: every
+  validity assertion passed, because they test that the arm RAN, not that the
+  number is right. The response now carries `n_vocab` and the absolute
+  next-token `top1`/`top1_rate`, which are bounded by facts outside this
+  implementation -- a token with probability above 0.5 must be the argmax, and
+  an argmax token must carry at least `1/n_vocab` -- so a harness can bracket
+  the reported count from the reported logprobs and refuse a run that disagrees
+  with itself. It immediately earned its place: an anomaly that looked absent
+  on short factual English (`top1_rate` 0.707) reappeared at 0.136 on a mixed
+  corpus where four control models held 0.32-0.38, which `nll_mean` alone could
+  not have separated from corpus difficulty.
+- **A refused draft no longer exits 0 in the local CLI.** A draft is dropped on
+  a vocabulary mismatch, a fully offloaded target, an unsupported file or out
+  of memory, and the run continues without it. That default is deliberate and
+  unchanged, and serve mode already reports `draft.active` over
+  `/v1/capabilities`. One-shot and interactive chat had no such channel: the
+  drop was a stderr line beside a successful exit, so automation collecting
+  stdout recorded the unaccelerated baseline and labelled it speculative
+  decoding. `--draft-required` fails the run instead. It requires `--draft`,
+  and it is refused in serve mode rather than accepted with no effect, because
+  a guard against silent no-ops that was itself a silent no-op would be the
+  failure it exists to prevent.
+- **Qwen3 could not reason before calling a tool.** The constrained grammar
+  admitted `<tool_call>` but not `<think>`, so a thinking model asked for a
+  tool had its reasoning channel closed by the schema. The discriminator now
+  covers both openings, and `atem_seq_add` enforces its own capacity rather
+  than trusting its caller.
+- **The polish register lands: RI-2 through RI-6.** Capabilities report the
+  EFFECTIVE execution mode rather than the configured one, and qualify
+  `request_telemetry` per surface instead of advertising it flatly; a declined
+  type-plan rule names the tensor and type it declined rather than an aggregate
+  count; every refused sampling parameter names itself; and `--help` is an
+  answer on stdout rather than a diagnostic on stderr. Two of the five register
+  items turned out to have false premises on inspection and were split rather
+  than implemented as written -- one contradicted a recorded owner deferral,
+  the other a tested contract.
+- **Measured Shade findings land in the engine.** The default thread count
+  gains a ceiling of 32 (machines above 64 logical CPUs were spawning more
+  threads than the work could use), and the q4_0 half of the signed-weight dot
+  is reverted while the q8_0 half stays -- the q8_0 form is a
+  cross-microarchitecture reproducibility fix, the q4_0 form was not.
+- **Smaller correctness and hardening.** The CLI rejects chat-only flags
+  (`--system`, `--think`, `--no-think`) in modes that would silently discard
+  them; the server advertises every public route at startup and hardens its
+  prefix-cache management routes; the Windows tray refuses a spawn whose
+  command line does not fit rather than truncating it; expert-dimension
+  iteration in the quantizer is unsigned; and the build preflights its Python
+  test dependencies instead of failing halfway through a suite.
+- **NVFP4: the gate could not have caught the bug, and now says so.** v0.4.2
+  claimed a decode gate that was a transcription of the implementation, so it
+  proved the implementation agreed with itself. The changelog claim is
+  corrected, the limitation is recorded as a test, and `scripts/nvfp4-probe.py`
+  supplies the external anchor the unit test lacked: it validates the format
+  against properties the file must have, needing no reference decoder. The
+  probe also corrected its own first reading -- a large decoded standard
+  deviation is NOT a decode error, because the per-tensor scale is applied in
+  the compute graph rather than by the block decode.
+- **AGENTS.md gains the rule these releases keep re-learning:** every gate
+  needs at least one assertion whose expected value comes from outside the
+  system under test. A green gate with no external anchor is evidence the
+  system is self-consistent, and nothing more.
+
 ## v0.4.3 - 2026-08-29
 
 - **The integrated-device probe queried the wrong attribute, and every
