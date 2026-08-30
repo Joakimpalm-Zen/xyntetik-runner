@@ -2032,7 +2032,7 @@ int main(int argc, char **argv) {
             printf("%s%d", i ? "," : "", toks[i]);
         printf("],\"logprobs\":[");
         double total = 0;
-        int pos = 0, emitted = 0, fail = 0;
+        int pos = 0, emitted = 0, fail = 0, top1 = 0;
         while (pos < n_prompt - 1 && !fail) {
             int k = n_prompt - 1 - pos;
             int cap = m.spec_batch < m.n_batch ? m.spec_batch : m.n_batch;
@@ -2044,28 +2044,32 @@ int main(int argc, char **argv) {
                     // raw-logit log-softmax, the lp_capture_pre arithmetic:
                     // float max, double sum of expf, float result
                     float mx = lg[0];
+                    int arg = 0;
                     for (int i = 1; i < m.n_vocab; i++)
-                        if (lg[i] > mx) mx = lg[i];
+                        if (lg[i] > mx) { mx = lg[i]; arg = i; }
                     double sum = 0;
                     for (int i = 0; i < m.n_vocab; i++)
                         sum += expf(lg[i] - mx);
                     float lp = lg[toks[pos + b + 1]] - (mx + logf((float)sum));
                     printf("%s%.9g", emitted++ ? "," : "", (double)lp);
                     total += lp;
+                    if (arg == toks[pos + b + 1]) top1++;
                 }
                 pos += k;
             } else {
                 float *lg = model_forward(&m, toks[pos], pos);
                 if (!lg) { fail = 1; break; }
                 float mx = lg[0];
+                int arg = 0;
                 for (int i = 1; i < m.n_vocab; i++)
-                    if (lg[i] > mx) mx = lg[i];
+                    if (lg[i] > mx) { mx = lg[i]; arg = i; }
                 double sum = 0;
                 for (int i = 0; i < m.n_vocab; i++)
                     sum += expf(lg[i] - mx);
                 float lp = lg[toks[pos + 1]] - (mx + logf((float)sum));
                 printf("%s%.9g", emitted++ ? "," : "", (double)lp);
                 total += lp;
+                if (arg == toks[pos + 1]) top1++;
                 pos += 1;
             }
         }
@@ -2074,8 +2078,16 @@ int main(int argc, char **argv) {
             fprintf(stderr, "error: forward pass failed at position %d\n", pos);
             CLI_FAIL;
         }
+        // top1 is the self-check anchor: NLL alone cannot tell a working
+        // scorer from a broken one, because a wrong number is still a number.
+        // The absolute next-token argmax rate is bounded by facts outside this
+        // implementation - a token with p > 0.5 IS the argmax, and an argmax
+        // token has p >= 1/n_vocab - so a harness can bracket top1 from the
+        // logprobs alone and refuse a run that disagrees with itself.
         double nll = -total, mean = nll / (n_prompt - 1);
-        printf("],\"nll_total\":%.9g,\"nll_mean\":%.9g,\"ppl\":%.9g}\n",
+        printf("],\"n_vocab\":%d,\"top1\":%d,\"top1_rate\":%.9g,"
+               "\"nll_total\":%.9g,\"nll_mean\":%.9g,\"ppl\":%.9g}\n",
+               m.n_vocab, top1, (double)top1 / (n_prompt - 1),
                nll, mean, exp(mean));
         cli_cleanup(&e, toks, &tok, &m);
         free(owned_prompt);

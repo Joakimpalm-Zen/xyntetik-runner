@@ -81,6 +81,59 @@ def test_score_shape_and_invariants(runner_bin, models, kind):
 
 
 @pytest.mark.parametrize("kind", ["dense", "recurrent"])
+def test_score_top1_is_bounded_by_probability_theory(runner_bin, models, kind):
+    """The self-check anchor: --score reports absolute next-token top-1.
+
+    A scorer can return a plausible-looking NLL with a correct `n_scored` and
+    exit 0 while being catastrophically wrong (measured 2026-08-30: 161x off a
+    reference engine on one model family). Every validity assertion passed,
+    because they test that the arm RAN, not that the number is right.
+
+    `top1` fixes that because it is bounded by facts that hold OUTSIDE this
+    implementation, for any probability distribution whatsoever:
+
+      * at most one token can carry more than half the mass, so a position
+        whose scored token has p > 0.5 IS the argmax. Those positions are a
+        lower bound on top1.
+      * the largest probability in a distribution over V outcomes is at least
+        1/V, so an argmax position must have p >= 1/n_vocab. Positions below
+        that cannot be the argmax, giving an upper bound.
+
+    Neither bound comes from the scorer, so a scorer disagreeing with its own
+    logprobs fails here rather than reporting a confident wrong number.
+    """
+    out = json.loads(_score(runner_bin, models[kind]))
+    n_vocab = out["n_vocab"]
+    assert n_vocab > 1
+    top1 = out["top1"]
+    assert isinstance(top1, int)
+    assert 0 <= top1 <= out["n_scored"]
+    assert out["top1_rate"] == pytest.approx(top1 / out["n_scored"], rel=1e-6)
+
+    probs = [math.exp(lp) for lp in out["logprobs"]]
+    must_be_argmax = sum(1 for p in probs if p > 0.5)
+    could_be_argmax = sum(1 for p in probs if p >= 1.0 / n_vocab)
+    assert must_be_argmax <= top1 <= could_be_argmax, (
+        f"top1={top1} outside [{must_be_argmax}, {could_be_argmax}]")
+
+
+@pytest.mark.parametrize("kind", ["dense", "recurrent"])
+def test_score_chunked_agrees_with_solo_on_top1(runner_bin, models, kind):
+    """Both paths must agree on the discrete answer even where floats differ.
+
+    The logprob envelope above tolerates ~1e-6 drift between the batched and
+    solo forwards. An argmax is discrete: drift that small can only flip it at
+    a near-exact tie, so a disagreement here means a real batching fault (wrong
+    row, wrong position, stale fold) rather than reduction order.
+    """
+    solo = json.loads(_score(runner_bin, models[kind]))
+    chunked = json.loads(_score(runner_bin, models[kind],
+                                {"RUNNER_SCORE_CHUNKED": "1"}))
+    assert chunked["n_vocab"] == solo["n_vocab"]
+    assert chunked["top1"] == solo["top1"]
+
+
+@pytest.mark.parametrize("kind", ["dense", "recurrent"])
 def test_score_chunked_stays_inside_measured_envelope(runner_bin, models, kind):
     solo = json.loads(_score(runner_bin, models[kind]))
     chunked = json.loads(_score(runner_bin, models[kind],
