@@ -14,6 +14,14 @@
 
 #define FIXTURE "tests/fixtures/vocab-bpe-llama3.gguf"
 
+// Most template fixtures exercise only the ordinary role/content surface.
+// Spell those fields by name so additions to chat_msg remain zero-initialized
+// without turning every concise conversation fixture into compiler noise.
+#define CHAT_MSG(role_, content_) \
+    { .role = (role_), .content = (content_) }
+#define NAMED_CHAT_MSG(role_, content_, name_) \
+    { .role = (role_), .content = (content_), .name = (name_) }
+
 // Llama-2 and Mistral both frame turns with [INST], and runner used to send
 // both down the Llama-2 path. Mistral's own template accepts only user and
 // assistant roles and has no <<SYS>> block, so wrapping a system prompt in one
@@ -119,10 +127,10 @@ static void test_detect_mistral_variants(tokenizer *t) {
 // family's four-year-old rendering was.
 static void test_render_mistral_v1(void) {
     char out[512];
-    const chat_msg user[] = { { "user", "HI" } };
-    const chat_msg sys_user[] = { { "system", "SYS" }, { "user", "HI" } };
-    const chat_msg turns[] = { { "system", "SYS" }, { "user", "U1" },
-                               { "assistant", "A1" }, { "user", "U2" } };
+    const chat_msg user[] = { CHAT_MSG("user", "HI") };
+    const chat_msg sys_user[] = { CHAT_MSG("system", "SYS"), CHAT_MSG("user", "HI") };
+    const chat_msg turns[] = { CHAT_MSG("system", "SYS"), CHAT_MSG("user", "U1"),
+                               CHAT_MSG("assistant", "A1"), CHAT_MSG("user", "U2") };
 
     render_messages(TMPL_MISTRAL_V1, user, 1, true, THINK_DEFAULT,
                     out, sizeof(out));
@@ -141,10 +149,10 @@ static void test_render_mistral_v1(void) {
 
 static void test_render_mistral_v3(void) {
     char out[512];
-    const chat_msg user[] = { { "user", "HI" } };
-    const chat_msg sys_user[] = { { "system", "SYS" }, { "user", "HI" } };
-    const chat_msg turns[] = { { "system", "SYS" }, { "user", "U1" },
-                               { "assistant", "A1" }, { "user", "U2" } };
+    const chat_msg user[] = { CHAT_MSG("user", "HI") };
+    const chat_msg sys_user[] = { CHAT_MSG("system", "SYS"), CHAT_MSG("user", "HI") };
+    const chat_msg turns[] = { CHAT_MSG("system", "SYS"), CHAT_MSG("user", "U1"),
+                               CHAT_MSG("assistant", "A1"), CHAT_MSG("user", "U2") };
 
     render_messages(TMPL_MISTRAL, user, 1, true, THINK_DEFAULT,
                     out, sizeof(out));
@@ -162,14 +170,14 @@ static void test_render_mistral_v3(void) {
 
     // the assistant turn is ' ' + content|trim + eos in this form, so an empty
     // one is a bare ' </s>' and a padded one loses its padding
-    const chat_msg empty[] = { { "user", "U1" }, { "assistant", "" },
-                               { "user", "U2" } };
+    const chat_msg empty[] = { CHAT_MSG("user", "U1"), CHAT_MSG("assistant", ""),
+                               CHAT_MSG("user", "U2") };
     render_messages(TMPL_MISTRAL, empty, 3, true, THINK_DEFAULT,
                     out, sizeof(out));
     assert(strcmp(out, "[INST] U1[/INST] </s>[INST] U2[/INST]") == 0);
 
-    const chat_msg padded[] = { { "user", "U1" }, { "assistant", "  A1  " },
-                                { "user", "U2" } };
+    const chat_msg padded[] = { CHAT_MSG("user", "U1"), CHAT_MSG("assistant", "  A1  "),
+                                CHAT_MSG("user", "U2") };
     render_messages(TMPL_MISTRAL, padded, 3, true, THINK_DEFAULT,
                     out, sizeof(out));
     assert(strcmp(out, "[INST] U1[/INST] A1</s>[INST] U2[/INST]") == 0);
@@ -177,9 +185,9 @@ static void test_render_mistral_v3(void) {
 
 static void test_render_mistral_nemo(void) {
     char out[512];
-    const chat_msg user[] = { { "user", "HI" } };
-    const chat_msg turns[] = { { "system", "SYS" }, { "user", "U1" },
-                               { "assistant", "A1" }, { "user", "U2" } };
+    const chat_msg user[] = { CHAT_MSG("user", "HI") };
+    const chat_msg turns[] = { CHAT_MSG("system", "SYS"), CHAT_MSG("user", "U1"),
+                               CHAT_MSG("assistant", "A1"), CHAT_MSG("user", "U2") };
 
     render_messages(TMPL_MISTRAL_NEMO, user, 1, true, THINK_DEFAULT,
                     out, sizeof(out));
@@ -192,8 +200,8 @@ static void test_render_mistral_nemo(void) {
     // Nemo does NOT trim the assistant turn -- v0.3 does. Same conversation,
     // two different byte strings, which is the whole reason the variants are
     // separate renderers rather than one with a spacing switch.
-    const chat_msg padded[] = { { "user", "U1" }, { "assistant", "  A1  " },
-                                { "user", "U2" } };
+    const chat_msg padded[] = { CHAT_MSG("user", "U1"), CHAT_MSG("assistant", "  A1  "),
+                                CHAT_MSG("user", "U2") };
     render_messages(TMPL_MISTRAL_NEMO, padded, 3, true, THINK_DEFAULT,
                     out, sizeof(out));
     assert(strcmp(out, "[INST]U1[/INST]  A1  </s>[INST]U2[/INST]") == 0);
@@ -212,8 +220,8 @@ static void test_render_mistral_nemo(void) {
 // byte-identically to the reference; only the prefill shape differs, and it
 // differs by keeping a system prompt the caller sent rather than dropping it.
 static void test_render_mistral_keeps_system_on_a_prefill(void) {
-    const chat_msg msgs[] = { { "system", "SYS" }, { "user", "U1" },
-                              { "assistant", "A1" } };
+    const chat_msg msgs[] = { CHAT_MSG("system", "SYS"), CHAT_MSG("user", "U1"),
+                              CHAT_MSG("assistant", "A1") };
     char out[512];
 
     render_messages(TMPL_MISTRAL, msgs, 3, false, THINK_DEFAULT,
@@ -232,7 +240,7 @@ static void test_detect_zephyr_vs_phi3(tokenizer *t) {
     assert(template_detect(zephyr, t) == TMPL_ZEPHYR);
     assert(template_detect(phi3, t) == TMPL_PHI3);
 
-    const chat_msg msgs[] = { { "user", "HI" } };
+    const chat_msg msgs[] = { CHAT_MSG("user", "HI") };
     char out[512];
     render_messages(TMPL_PHI3, msgs, 1, true, THINK_DEFAULT, out, sizeof(out));
     assert(strcmp(out, "<|user|>\nHI<|end|>\n<|assistant|>\n") == 0);
@@ -257,7 +265,7 @@ static void test_detect_zephyr_vs_phi3(tokenizer *t) {
 // the generation prompt inside the loop and nothing at all otherwise
 // (HuggingFaceH4/zephyr-7b-beta), so the assertion below pins them apart.
 static void test_phi3_without_generation_prompt_ends_with_eos(void) {
-    const chat_msg msgs[] = { { "user", "HI" }, { "assistant", "YO" } };
+    const chat_msg msgs[] = { CHAT_MSG("user", "HI"), CHAT_MSG("assistant", "YO") };
     char out[512];
 
     render_messages(TMPL_PHI3, msgs, 2, false, THINK_DEFAULT, out, sizeof(out));
@@ -295,8 +303,8 @@ static void test_detect_and_render_apertus(tokenizer *t) {
     // The reference template always emits the developer block; with thinking
     // and tools off it is this exact constant.
     const chat_msg msgs[] = {
-        { "system", "SYS" }, { "user", "HI" },
-        { "assistant", "YO" }, { "user", "BYE" },
+        CHAT_MSG("system", "SYS"), CHAT_MSG("user", "HI"),
+        CHAT_MSG("assistant", "YO"), CHAT_MSG("user", "BYE"),
     };
     char out[1024];
     render_messages(TMPL_APERTUS, msgs, 4, true, THINK_DEFAULT, out, sizeof(out));
@@ -315,7 +323,7 @@ static void test_detect_and_render_apertus(tokenizer *t) {
 // it already omits Llama-3.2's "Cutting Knowledge Date" header, and emits the
 // developer block so the turn framing still matches.
 static void test_render_apertus_without_system(void) {
-    const chat_msg msgs[] = { { "user", "HI" } };
+    const chat_msg msgs[] = { CHAT_MSG("user", "HI") };
     char out[512];
     render_messages(TMPL_APERTUS, msgs, 1, true, THINK_DEFAULT, out, sizeof(out));
     assert(strcmp(out,
@@ -349,8 +357,8 @@ static void test_apertus_consecutive_assistant(void) {
 
     // mid-conversation: one turn, contents concatenated, closed by the user
     const chat_msg mid[] = {
-        { "system", "SYS" }, { "user", "HI" },
-        { "assistant", "YO" }, { "assistant", "AND" }, { "user", "BYE" },
+        CHAT_MSG("system", "SYS"), CHAT_MSG("user", "HI"),
+        CHAT_MSG("assistant", "YO"), CHAT_MSG("assistant", "AND"), CHAT_MSG("user", "BYE"),
     };
     render_messages(TMPL_APERTUS, mid, 5, true, THINK_DEFAULT, out, sizeof(out));
     snprintf(want, sizeof(want), "<|system_start|>SYS<|system_end|>%s"
@@ -361,8 +369,8 @@ static void test_apertus_consecutive_assistant(void) {
 
     // three in a row collapse just as two do
     const chat_msg three[] = {
-        { "system", "SYS" }, { "user", "HI" }, { "assistant", "YO" },
-        { "assistant", "AND" }, { "assistant", "ALSO" }, { "user", "BYE" },
+        CHAT_MSG("system", "SYS"), CHAT_MSG("user", "HI"), CHAT_MSG("assistant", "YO"),
+        CHAT_MSG("assistant", "AND"), CHAT_MSG("assistant", "ALSO"), CHAT_MSG("user", "BYE"),
     };
     render_messages(TMPL_APERTUS, three, 6, true, THINK_DEFAULT, out,
                     sizeof(out));
@@ -375,8 +383,8 @@ static void test_apertus_consecutive_assistant(void) {
     // trailing: the merged turn still CLOSES, and the generation prompt opens
     // the next one -- the reference's end-of-loop `{%- if ns.in_assistant ...`
     const chat_msg trail[] = {
-        { "system", "SYS" }, { "user", "HI" },
-        { "assistant", "YO" }, { "assistant", "AND" },
+        CHAT_MSG("system", "SYS"), CHAT_MSG("user", "HI"),
+        CHAT_MSG("assistant", "YO"), CHAT_MSG("assistant", "AND"),
     };
     render_messages(TMPL_APERTUS, trail, 4, true, THINK_DEFAULT, out,
                     sizeof(out));
@@ -395,7 +403,7 @@ static void test_apertus_consecutive_assistant(void) {
     // ...and consecutive USER turns are NOT merged: the reference has no
     // in_user state, so each one is its own <|user_start|>...<|user_end|>.
     const chat_msg uu[] = {
-        { "system", "SYS" }, { "user", "HI" }, { "user", "AGAIN" },
+        CHAT_MSG("system", "SYS"), CHAT_MSG("user", "HI"), CHAT_MSG("user", "AGAIN"),
     };
     render_messages(TMPL_APERTUS, uu, 3, true, THINK_DEFAULT, out, sizeof(out));
     snprintf(want, sizeof(want), "<|system_start|>SYS<|system_end|>%s"
@@ -426,7 +434,7 @@ static void test_apertus_tool_turns(void) {
 
     // Declared tools replace the disabled literal with render_tools(tools).
     const chat_msg declared[] = {
-        { "system", "SYS" }, { "user", "Weather in Oslo?" },
+        CHAT_MSG("system", "SYS"), CHAT_MSG("user", "Weather in Oslo?"),
     };
     char out[4096];
     render_messages_with_tools(TMPL_APERTUS, declared, 2, true,
@@ -454,9 +462,9 @@ static void test_apertus_tool_turns(void) {
     // A result has no role tokens of its own. It is a list appended inside the
     // assistant turn that made the call, then the completed turn closes.
     const chat_msg result[] = {
-        { "user", "Weather in Oslo?" },
-        { "assistant", call.s },
-        { "tool", "{\"temp_c\": -3}" },
+        CHAT_MSG("user", "Weather in Oslo?"),
+        CHAT_MSG("assistant", call.s),
+        CHAT_MSG("tool", "{\"temp_c\": -3}"),
     };
     render_messages(TMPL_APERTUS, result, 3, true, THINK_DEFAULT,
                     out, sizeof(out));
@@ -477,11 +485,11 @@ static void test_apertus_tool_turns(void) {
                            &spoke, NULL);
     assert(spoke.s != NULL);
     const chat_msg text_calls[] = {
-        { "user", "Weather in Oslo?" },
-        { "assistant", spoke.s },
-        { "tool", "{\"temp_c\": -3}" },
-        { "assistant", "It is -3 C in Oslo." },
-        { "user", "Coat?" },
+        CHAT_MSG("user", "Weather in Oslo?"),
+        CHAT_MSG("assistant", spoke.s),
+        CHAT_MSG("tool", "{\"temp_c\": -3}"),
+        CHAT_MSG("assistant", "It is -3 C in Oslo."),
+        CHAT_MSG("user", "Coat?"),
     };
     render_messages(TMPL_APERTUS, text_calls, 5, true, THINK_DEFAULT,
                     out, sizeof(out));
@@ -517,9 +525,9 @@ static void test_detect_and_render_ornith(tokenizer *t) {
     assert(template_detect(ornith, t) == TMPL_ORNITH);
 
     const chat_msg msgs[] = {
-        { "system", "SYS" },
-        { "user", "HI" },
-        { "assistant", "<think>\nPLAN\n</think>\n\nANSWER" },
+        CHAT_MSG("system", "SYS"),
+        CHAT_MSG("user", "HI"),
+        CHAT_MSG("assistant", "<think>\nPLAN\n</think>\n\nANSWER"),
     };
     char out[1024];
     render_messages(TMPL_ORNITH, msgs, 3, true, THINK_DEFAULT, out, sizeof(out));
@@ -551,7 +559,7 @@ static void test_detect_and_render_ornith(tokenizer *t) {
 // asserted too: the reference's `else` covers THINK_ON *and* the undefined
 // case, so neither may grow a closed block.
 static void test_ornith_thinking_off_closes_the_thought_block(void) {
-    const chat_msg msgs[] = { { "user", "HI" } };
+    const chat_msg msgs[] = { CHAT_MSG("user", "HI") };
     char out[512];
     const char *head = "<|im_start|>user\nHI<|im_end|>\n<|im_start|>assistant\n";
 
@@ -1400,10 +1408,10 @@ static void test_harmony_split_starts_inside_primed_analysis(void) {
 
 static void test_ornith_groups_consecutive_tool_responses(void) {
     const chat_msg msgs[] = {
-        { "user", "HI" },
-        { "assistant", "<think>\nPLAN\n</think>\n\n<tool_call>x</tool_call>" },
-        { "user", "<tool_response>\nONE\n</tool_response>" },
-        { "user", "<tool_response>\nTWO\n</tool_response>" },
+        CHAT_MSG("user", "HI"),
+        CHAT_MSG("assistant", "<think>\nPLAN\n</think>\n\n<tool_call>x</tool_call>"),
+        CHAT_MSG("user", "<tool_response>\nONE\n</tool_response>"),
+        CHAT_MSG("user", "<tool_response>\nTWO\n</tool_response>"),
     };
     char out[1024];
     render_messages(TMPL_ORNITH, msgs, 4, true, THINK_DEFAULT, out, sizeof(out));
@@ -1421,7 +1429,7 @@ static void test_ornith_groups_consecutive_tool_responses(void) {
 // the first user turn, which only the v0.1/v0.2 form does. With one user turn
 // first and last are the same turn, so what is left here is the spacing.
 static void test_render_system_prompt(void) {
-    const chat_msg msgs[] = { { "system", "SYS" }, { "user", "HI" } };
+    const chat_msg msgs[] = { CHAT_MSG("system", "SYS"), CHAT_MSG("user", "HI") };
     char out[1024];
 
     render_messages(TMPL_MISTRAL, msgs, 2, true, THINK_DEFAULT, out, sizeof(out));
@@ -1439,7 +1447,7 @@ static void test_render_system_prompt(void) {
 // one, and it is the reason the families need separate renderers rather than a
 // shared case with a system-block switch.
 static void test_render_without_system(void) {
-    const chat_msg msgs[] = { { "user", "HI" } };
+    const chat_msg msgs[] = { CHAT_MSG("user", "HI") };
     char mistral[512], llama2[512];
     render_messages(TMPL_MISTRAL, msgs, 1, true, THINK_DEFAULT, mistral, sizeof(mistral));
     render_messages(TMPL_LLAMA2, msgs, 1, true, THINK_DEFAULT, llama2, sizeof(llama2));
@@ -1473,7 +1481,7 @@ static void test_name_roundtrip(void) {
 // So the assertion that matters most is the NEGATIVE one: no thought block is
 // ever pre-seeded at generation time, whatever the caller asks for.
 static void test_gemma4_generation_prompt(void) {
-    const chat_msg msgs[] = { { "user", "HI" } };
+    const chat_msg msgs[] = { CHAT_MSG("user", "HI") };
     char out[512];
     const char *base = "<|turn>user\nHI<turn|>\n<|turn>model\n";
 
@@ -1505,7 +1513,7 @@ static void test_gemma4_generation_prompt(void) {
 
     // A system message already opens that turn: the marker goes INSIDE it,
     // above the system text, rather than creating a second system turn.
-    const chat_msg with_sys[] = { { "system", "BE BRIEF" }, { "user", "HI" } };
+    const chat_msg with_sys[] = { CHAT_MSG("system", "BE BRIEF"), CHAT_MSG("user", "HI") };
     render_messages(TMPL_GEMMA4, with_sys, 2, true, THINK_ON, out, sizeof(out));
     assert(strcmp(out, "<|turn>system\n<|think|>\nBE BRIEF<turn|>\n"
                        "<|turn>user\nHI<turn|>\n<|turn>model\n") == 0);
@@ -1539,7 +1547,7 @@ static void test_gemma4_mainline_variant(void) {
     assert(template_detect(mainline, NULL) == TMPL_GEMMA4_MAINLINE);
     assert(template_detect(eseries, NULL) == TMPL_GEMMA4);
 
-    const chat_msg msgs[] = { { "user", "HI" } };
+    const chat_msg msgs[] = { CHAT_MSG("user", "HI") };
     char out[512];
     const char *with_block =
         "<|turn>user\nHI<turn|>\n<|turn>model\n<|channel>thought\n<channel|>";
@@ -1592,8 +1600,8 @@ static void test_gemma4_consecutive_assistant(void) {
     char out[1024];
 
     const chat_msg mid[] = {
-        { "user", "HI" }, { "assistant", "YO" }, { "assistant", "AND" },
-        { "user", "BYE" },
+        CHAT_MSG("user", "HI"), CHAT_MSG("assistant", "YO"), CHAT_MSG("assistant", "AND"),
+        CHAT_MSG("user", "BYE"),
     };
     render_messages(TMPL_GEMMA4, mid, 4, true, THINK_DEFAULT, out, sizeof(out));
     assert(strcmp(out, "<|turn>user\nHI<turn|>\n"
@@ -1602,8 +1610,8 @@ static void test_gemma4_consecutive_assistant(void) {
 
     // three in a row collapse just as two do
     const chat_msg three[] = {
-        { "user", "HI" }, { "assistant", "YO" }, { "assistant", "AND" },
-        { "assistant", "ALSO" }, { "user", "BYE" },
+        CHAT_MSG("user", "HI"), CHAT_MSG("assistant", "YO"), CHAT_MSG("assistant", "AND"),
+        CHAT_MSG("assistant", "ALSO"), CHAT_MSG("user", "BYE"),
     };
     render_messages(TMPL_GEMMA4, three, 5, true, THINK_DEFAULT, out,
                     sizeof(out));
@@ -1614,7 +1622,7 @@ static void test_gemma4_consecutive_assistant(void) {
     // trailing: the merged turn still CLOSES (next_nt.role is None, so
     // continues_into_next is false) and the generation prompt opens a new one
     const chat_msg trail[] = {
-        { "user", "HI" }, { "assistant", "YO" }, { "assistant", "AND" },
+        CHAT_MSG("user", "HI"), CHAT_MSG("assistant", "YO"), CHAT_MSG("assistant", "AND"),
     };
     render_messages(TMPL_GEMMA4, trail, 3, true, THINK_DEFAULT, out,
                     sizeof(out));
@@ -1628,8 +1636,8 @@ static void test_gemma4_consecutive_assistant(void) {
     // the merge is independent of the thinking system turn, which is emitted
     // ahead of the loop and consumes messages[0]
     const chat_msg with_sys[] = {
-        { "system", "SYS" }, { "user", "HI" }, { "assistant", "YO" },
-        { "assistant", "AND" }, { "user", "BYE" },
+        CHAT_MSG("system", "SYS"), CHAT_MSG("user", "HI"), CHAT_MSG("assistant", "YO"),
+        CHAT_MSG("assistant", "AND"), CHAT_MSG("user", "BYE"),
     };
     render_messages(TMPL_GEMMA4, with_sys, 5, true, THINK_ON, out, sizeof(out));
     assert(strcmp(out, "<|turn>system\n<|think|>\nSYS<turn|>\n"
@@ -1639,7 +1647,7 @@ static void test_gemma4_consecutive_assistant(void) {
 
     // ...and consecutive USER turns are NOT merged: the reference continues
     // the MODEL role only.
-    const chat_msg uu[] = { { "user", "HI" }, { "user", "AGAIN" } };
+    const chat_msg uu[] = { CHAT_MSG("user", "HI"), CHAT_MSG("user", "AGAIN") };
     render_messages(TMPL_GEMMA4, uu, 2, true, THINK_DEFAULT, out, sizeof(out));
     assert(strcmp(out, "<|turn>user\nHI<turn|>\n"
                        "<|turn>user\nAGAIN<turn|>\n<|turn>model\n") == 0);
@@ -1674,7 +1682,7 @@ static void test_gemma4_tool_turns(void) {
     // and the generation prompt is suppressed too, because
     // ns.prev_message_type is 'tool_response'.
     const chat_msg call_result[] = {
-        { "user", "HI" }, { "assistant", call }, { "tool", "42", "t" },
+        CHAT_MSG("user", "HI"), CHAT_MSG("assistant", call), NAMED_CHAT_MSG("tool", "42", "t"),
     };
     render_messages(TMPL_GEMMA4, call_result, 3, true, THINK_DEFAULT,
                     out, sizeof(out));
@@ -1700,7 +1708,7 @@ static void test_gemma4_tool_turns(void) {
     //   {%- if ns.prev_message_type == 'tool_call' and not ns_tr_out.flag -%}
     //       {{- '<|tool_response>' -}}
     const chat_msg call_only[] = {
-        { "user", "HI" }, { "assistant", call },
+        CHAT_MSG("user", "HI"), CHAT_MSG("assistant", call),
     };
     render_messages(TMPL_GEMMA4, call_only, 2, true, THINK_DEFAULT,
                     out, sizeof(out));
@@ -1712,10 +1720,10 @@ static void test_gemma4_tool_turns(void) {
     // Two calls, two results: all four blocks in the one model turn, calls
     // before results.
     const chat_msg two[] = {
-        { "user", "HI" },
-        { "assistant", "<|tool_call>call:t{a:1}<tool_call|>"
-                       "<|tool_call>call:t{a:2}<tool_call|>" },
-        { "tool", "42", "t" }, { "tool", "43", "t" },
+        CHAT_MSG("user", "HI"),
+        CHAT_MSG("assistant", "<|tool_call>call:t{a:1}<tool_call|>"
+                              "<|tool_call>call:t{a:2}<tool_call|>"),
+        NAMED_CHAT_MSG("tool", "42", "t"), NAMED_CHAT_MSG("tool", "43", "t"),
     };
     render_messages(TMPL_GEMMA4, two, 4, true, THINK_DEFAULT, out, sizeof(out));
     assert(strcmp(out,
@@ -1731,8 +1739,8 @@ static void test_gemma4_tool_turns(void) {
     // skips over the tool messages, where runner's used to look at msgs[i-1]
     // and see `tool`.
     const chat_msg after[] = {
-        { "user", "HI" }, { "assistant", call }, { "tool", "42", "t" },
-        { "assistant", "DONE" }, { "user", "BYE" },
+        CHAT_MSG("user", "HI"), CHAT_MSG("assistant", call), NAMED_CHAT_MSG("tool", "42", "t"),
+        CHAT_MSG("assistant", "DONE"), CHAT_MSG("user", "BYE"),
     };
     render_messages(TMPL_GEMMA4, after, 5, true, THINK_DEFAULT, out,
                     sizeof(out));
@@ -1751,14 +1759,14 @@ static void test_gemma4_tool_turns(void) {
     // '<|turn>model' was suppressed after ANY trailing tool message), which
     // generalised the reference's 'tool_response' branch to a state a bare
     // tool message never reaches.
-    const chat_msg orphan[] = { { "user", "HI" }, { "tool", "42", "t" } };
+    const chat_msg orphan[] = { CHAT_MSG("user", "HI"), NAMED_CHAT_MSG("tool", "42", "t") };
     render_messages(TMPL_GEMMA4, orphan, 2, true, THINK_DEFAULT,
                     out, sizeof(out));
     assert(strcmp(out, "<|turn>user\nHI<turn|>\n<|turn>model\n") == 0);
 }
 
 static void test_chatml_think_shape(void) {
-    const chat_msg msgs[] = { { "user", "HI" } };
+    const chat_msg msgs[] = { CHAT_MSG("user", "HI") };
     char out[512];
     const char *base = "<|im_start|>user\nHI<|im_end|>\n<|im_start|>assistant\n";
 
@@ -1793,8 +1801,8 @@ static void test_chatml_think_shape(void) {
 // prompt whether or not another generation prompt follows it.
 static void test_chatml_think_trailing_history_keeps_empty_thought(void) {
     const chat_msg msgs[] = {
-        { "user", "Why is the sky blue?" },
-        { "assistant", "Blue, because of Rayleigh scattering." },
+        CHAT_MSG("user", "Why is the sky blue?"),
+        CHAT_MSG("assistant", "Blue, because of Rayleigh scattering."),
     };
     char out[1024];
     const char *history =
@@ -1842,8 +1850,8 @@ static void test_chatml_tool_result_renders_as_a_user_tool_response(void) {
     char out[1024];
 
     const chat_msg one[] = {
-        { "user", "Weather in Oslo?" },
-        { "tool", "{\"temp_c\": -3}" },
+        CHAT_MSG("user", "Weather in Oslo?"),
+        CHAT_MSG("tool", "{\"temp_c\": -3}"),
     };
     const char *want_one =
         "<|im_start|>user\nWeather in Oslo?<|im_end|>\n"
@@ -1866,10 +1874,10 @@ static void test_chatml_tool_result_renders_as_a_user_tool_response(void) {
 
     // consecutive results share ONE user turn, separated by a bare newline
     const chat_msg two[] = {
-        { "user", "Weather in Oslo?" },
-        { "tool", "{\"temp_c\": -3}" },
-        { "tool", "{\"temp_c\": 1}" },
-        { "user", "thanks" },
+        CHAT_MSG("user", "Weather in Oslo?"),
+        CHAT_MSG("tool", "{\"temp_c\": -3}"),
+        CHAT_MSG("tool", "{\"temp_c\": 1}"),
+        CHAT_MSG("user", "thanks"),
     };
     render_messages(TMPL_CHATML, two, 4, true, THINK_DEFAULT, out, sizeof(out));
     assert(strcmp(out,
