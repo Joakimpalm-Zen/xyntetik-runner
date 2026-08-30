@@ -265,6 +265,26 @@ static void ref_dq_mxfp4(const block_mxfp4 *b, double *y) {
 // bits biased 7, 3 mantissa bits, no sign; 0 and 0x7F decode to zero), E2M1
 // codes from the same table MXFP4 uses. Within sub-block s, byte j's low
 // nibble is element j and its high nibble element j+8.
+// SCOPE, stated where the gate lives (AGENTS.md, "every gate needs one absolute
+// anchor"): this reference is NOT independent of the implementation in the way
+// the others here are. For every other type the reference decodes a format whose
+// layout is pinned by models that demonstrably serve correctly, so a
+// disagreement means the fast path is wrong. NVFP4 arrived from a single field
+// report with no model in the lab, so BOTH this reference and dq_nvfp4 encode
+// the same reading of the format: 16-element sub-blocks, split-half nibbles
+// (elements 0-7 from low nibbles, 8-15 from high), UE4M3 scale with 0 and 0x7F
+// mapped to zero.
+//
+// What this pair therefore proves: the float implementation matches a double
+// implementation of that reading, so arithmetic and rounding are sound. What it
+// CANNOT prove: that the reading is right. A wrong element order or a missing
+// per-tensor scale is invisible here because both sides share the assumption.
+//
+// 2026-08-30: a DGX Spark user's Qwen3.8-27B NVFP4 model loads and then decodes
+// a single repeated token, which is the signature of correct shapes and wrong
+// values. This gate stayed green throughout. It needs an EXTERNAL anchor -
+// upstream test vectors, or a byte comparison against a decoder known to serve
+// this format correctly - before NVFP4 can be called verified.
 static void ref_dq_nvfp4(const block_nvfp4 *b, double *y) {
     for (int sub = 0; sub < QK_NVFP4 / QK_NVFP4_SUB; sub++) {
         uint8_t x = b->d[sub];
