@@ -4,6 +4,7 @@
 
 #include "runner.h"
 #include "kernels_metal.h"
+#include "kernels_tensor_metal.h"
 #include "compat.h"   // plat_ram_available_bytes: the residency guard below
 #include "metal_admission.h"
 
@@ -35,6 +36,7 @@ typedef struct {
     id<MTLComputePipelineState> p_moe_route, p_moe_actmul, p_moe_sum;
     id<MTLComputePipelineState> p_mv[METAL_TYPE_SLOTS];       // indexed by ggml type
     id<MTLComputePipelineState> p_mm[METAL_TYPE_SLOTS];       // tiled prefill GEMM
+    id<MTLComputePipelineState> p_tensor[METAL_TYPE_SLOTS];   // Metal 4 MPP prefill
     id<MTLComputePipelineState> p_mvf[METAL_TYPE_SLOTS];      // fast decode matvec
     id<MTLComputePipelineState> p_moe_mv[METAL_TYPE_SLOTS];   // indexed by ggml type
     // The model mmap, wrapped zero-copy. Usually ONE buffer; more when the file
@@ -199,7 +201,10 @@ static void gpu_release_state(gpu_t *g, int n_layer) {
                              g->agate };
     for (size_t i = 0; i < sizeof(bufs) / sizeof(*bufs); i++) [bufs[i] release];
     for (int i = 0; i < METAL_TYPE_SLOTS; i++) [g->p_mv[i] release];
-    for (int i = 0; i < METAL_TYPE_SLOTS; i++) [g->p_mm[i] release];
+    for (int i = 0; i < METAL_TYPE_SLOTS; i++) {
+        [g->p_mm[i] release];
+        [g->p_tensor[i] release];
+    }
     for (int i = 0; i < METAL_TYPE_SLOTS; i++) [g->p_mvf[i] release];
     for (int i = 0; i < METAL_TYPE_SLOTS; i++) [g->p_moe_mv[i] release];
     [g->p_rmsnorm release]; [g->p_qknorm release]; [g->p_headnorm release];
@@ -562,6 +567,69 @@ static id<MTLComputePipelineState> mk_pipeline(id<MTLDevice> dev,
     return p;
 }
 
+// Kept as a distinct lookup surface: test_metal_shaders scans mk_pipeline
+// calls against the baseline library, while test_metal_tensor owns this
+// separately compiled Metal 4 library.
+static id<MTLComputePipelineState> mk_tensor_pipeline(id<MTLDevice> dev,
+                                                      id<MTLLibrary> lib,
+                                                      NSString *name) {
+    return mk_pipeline(dev, lib, name);
+}
+
+// Absolute admission anchor: 64 rows of 256 unit Q4_K weights times 32
+// columns of unit activations must produce exactly 256 (within fp16/MPP
+// rounding). A pipeline that merely compiles is not enough—the LM Studio M5
+// regression was precisely a functional tensor self-test that failed later.
+static bool metal_tensor_self_test(id<MTLDevice> dev,
+                                   id<MTLComputePipelineState> p) {
+    enum { NI = 256, NOUT = 64, NC = 32, Q4K_ROW = 144, SHMEM = 128*64*2 };
+    uint8_t *wh = calloc(NOUT, Q4K_ROW);
+    float *xh = malloc((size_t)NC * NI * sizeof(float));
+    if (!wh || !xh) { free(wh); free(xh); return false; }
+    for (int r = 0; r < NOUT; r++) {
+        uint8_t *b = wh + r * Q4K_ROW;
+        b[0] = 0x00; b[1] = 0x3c;             // fp16 d = 1
+        for (int j = 0; j < 4; j++) b[4 + j] = 1;
+        for (int j = 0; j < 4; j++) b[12 + j] = 1;
+        memset(b + 16, 0x11, 128);             // both nibbles = 1
+    }
+    for (int i = 0; i < NC * NI; i++) xh[i] = 1.0f;
+    id<MTLBuffer> wb = [dev newBufferWithBytes:wh length:NOUT * Q4K_ROW
+                                       options:MTLResourceStorageModeShared];
+    id<MTLBuffer> xb = [dev newBufferWithBytes:xh length:(size_t)NC * NI * 4
+                                       options:MTLResourceStorageModeShared];
+    id<MTLBuffer> yb = [dev newBufferWithLength:(size_t)NC * NOUT * 4
+                                        options:MTLResourceStorageModeShared];
+    id<MTLBuffer> bb = [dev newBufferWithLength:NOUT * 4
+                                        options:MTLResourceStorageModeShared];
+    free(wh); free(xh);
+    if (!wb || !xb || !yb || !bb) {
+        [wb release]; [xb release]; [yb release]; [bb release]; return false;
+    }
+    id<MTLCommandQueue> q = [dev newCommandQueue];
+    id<MTLCommandBuffer> cb = [q commandBuffer];
+    id<MTLComputeCommandEncoder> e = [cb computeCommandEncoder];
+    mm_args a = { NI, NOUT, NC, 0, 0, NI, NOUT };
+    [e setComputePipelineState:p];
+    [e setBuffer:wb offset:0 atIndex:0]; [e setBuffer:xb offset:0 atIndex:1];
+    [e setBuffer:yb offset:0 atIndex:2]; [e setBytes:&a length:sizeof(a) atIndex:3];
+    [e setBuffer:bb offset:0 atIndex:4];
+    [e setThreadgroupMemoryLength:SHMEM atIndex:0];
+    [e dispatchThreadgroups:MTLSizeMake(1, 1, 1)
+      threadsPerThreadgroup:MTLSizeMake(128, 1, 1)];
+    [e endEncoding]; [cb commit]; [cb waitUntilCompleted];
+    bool ok = cb.status == MTLCommandBufferStatusCompleted;
+    if (ok) {
+        float *out = yb.contents;
+        for (int i = 0; i < NC * NOUT; i++)
+            if (!isfinite(out[i]) || fabsf(out[i] - 256.0f) > 0.5f) { ok = false; break; }
+    }
+    if (!ok) fprintf(stderr, "gpu: Metal 4 tensor self-test failed%s%s — using simdgroup GEMM\n",
+                     cb.error ? ": " : "", cb.error ? cb.error.localizedDescription.UTF8String : "");
+    [q release]; [wb release]; [xb release]; [yb release]; [bb release];
+    return ok;
+}
+
 static id<MTLBuffer> f32_buf(id<MTLDevice> dev, const float *src, size_t n) {
     if (!src) return nil;
     return [dev newBufferWithBytes:src length:n * sizeof(float)
@@ -593,14 +661,15 @@ static float *gpu_forward_native_batch(model_t *m, const int32_t *tokens,
 // 1 forces the tiled path wherever a kernel exists for the weight type.
 enum { MM_ENV_UNSET = -2 };
 static int g_mm_state = MM_ENV_UNSET;
+static int g_tensor_state = MM_ENV_UNSET;
+static unsigned long g_tc_dispatches = 0;
 
 void gpu_tc_force(int on) {
     g_mm_state = on < 0 ? MM_ENV_UNSET : (on != 0);
+    g_tensor_state = on < 0 ? MM_ENV_UNSET : (on != 0);
 }
 
-// Metal has no tensor-core GEMM; the counter exists so the gate links and can
-// state "never dispatched here" rather than failing to build.
-unsigned long gpu_tc_dispatches(void) { return 0; }
+unsigned long gpu_tc_dispatches(void) { return g_tc_dispatches; }
 
 static bool metal_mm_on(void) {
     if (g_mm_state == MM_ENV_UNSET) {
@@ -610,6 +679,24 @@ static bool metal_mm_on(void) {
     }
     if (g_mm_state >= 0) return g_mm_state != 0;
     return true;   // promoted: every type with a k_mm_* kernel, prefill only
+}
+
+// Metal 4 tensor operations are a separate, fail-closed rung above the
+// established simdgroup GEMM. They are M5-only: the API exists on M4 but is a
+// slower software path there. The tracer bullet stays opt-in until its real
+// model tolerance and >=1.2x prefill promotion bars pass.
+static bool metal_tensor_requested(void) {
+    if (g_tensor_state != MM_ENV_UNSET) return g_tensor_state != 0;
+    const char *e = getenv("RUNNER_METAL_TENSOR");
+    return e && *e && strcmp(e, "0") && strcmp(e, "off");
+}
+
+static bool metal_tensor_device_ok(id<MTLDevice> dev) {
+    if (!metal_tensor_requested()) return false;
+    if (![dev.name hasPrefix:@"Apple M5"] && ![dev.name hasPrefix:@"Apple M6"])
+        return false;
+    NSOperatingSystemVersion v = NSProcessInfo.processInfo.operatingSystemVersion;
+    return v.majorVersion > 26 || (v.majorVersion == 26 && v.minorVersion >= 2);
 }
 // Fast decode matvec (k_mvf_*): the reassociating twin of the identity matvec,
 // selected at n_col == 1 only. See the kernel-family comment in kernels.metal
@@ -1124,6 +1211,35 @@ bool gpu_init(model_t *m) {
     g->p_moe_mv[T_MXFP4] = mk_pipeline(dev, lib, @"k_moe_mv_mxfp4");
     [lib release];
     lib = nil;
+
+    if (metal_tensor_device_ok(dev)) {
+#if defined(MAC_OS_VERSION_26_0)
+        MTLCompileOptions *opts = [MTLCompileOptions new];
+        opts.languageVersion = MTLLanguageVersion4_0;
+        NSError *terr = nil;
+        id<MTLLibrary> tlib = [dev newLibraryWithSource:
+            [NSString stringWithUTF8String:k_metal_tensor_src]
+            options:opts error:&terr];
+        if (!tlib) {
+            fprintf(stderr, "gpu: Metal 4 tensor library unavailable: %s — using simdgroup GEMM\n",
+                    terr ? terr.localizedDescription.UTF8String : "unknown error");
+        } else {
+            id<MTLComputePipelineState> tp = mk_tensor_pipeline(dev, tlib, @"k_tensor_q4_K");
+            if (tp && metal_tensor_self_test(dev, tp)) {
+                g->p_tensor[T_Q4_K] = tp;
+                fprintf(stderr, "gpu: Metal 4 tensor GEMM admitted for Q4_K\n");
+            } else {
+                [tp release];
+            }
+            [tlib release];
+        }
+        [opts release];
+#else
+        fprintf(stderr, "gpu: this build SDK has no Metal 4 compiler — using simdgroup GEMM\n");
+#endif
+    } else if (metal_tensor_requested()) {
+        fprintf(stderr, "gpu: Metal 4 tensor GEMM requires M5+ and macOS 26.2+ — using simdgroup GEMM\n");
+    }
     if (!g->p_rmsnorm || !g->p_rope || !g->p_store || !g->p_attn ||
         !g->p_attn_chunk || !g->p_attn_comb ||
         !g->p_silu || !g->p_gelu || !g->p_add || !g->p_scale || !g->p_sigmul ||
@@ -1449,7 +1565,7 @@ bool gpu_init(model_t *m) {
 // encoding thread, which is the same thread for a whole command buffer, and
 // the alternative — a branch per dispatch — costs more than the increment.
 static struct {
-    unsigned long mm, mv, mvf, rmsnorm, qknorm, headnorm, rope, store,
+    unsigned long tensor, mm, mv, mvf, rmsnorm, qknorm, headnorm, rope, store,
                   attn, attn_chunk, elem, moe, ple;
     // KV bytes an attention dispatch will read, accumulated for DECODE only
     // (n == 1), split by whether the layer slides. Decode-only because at
@@ -1510,6 +1626,26 @@ static void enc_mv_n(gpu_t *g, id<MTLComputeCommandEncoder> e, model_t *m,
                      id<MTLBuffer> y, NSUInteger y_off,
                      int n_in, int n_out, id<MTLBuffer> bias,
                      int n_col, int x_stride, int y_stride) {
+    if (n_col > 1 && g->p_tensor[w->type] && n_in % 256 == 0) {
+        [e setComputePipelineState:g->p_tensor[w->type]];
+        mm_args ma = { n_in, n_out, n_col,
+                       metal_bind_weights(g, e,
+                           (uint64_t)((uint8_t *)w->data - (uint8_t *)m->gf.map),
+                           w->nbytes),
+                       bias != nil, x_stride, y_stride };
+        [e setBuffer:x offset:x_off atIndex:1];
+        [e setBuffer:y offset:y_off atIndex:2];
+        [e setBytes:&ma length:sizeof(ma) atIndex:3];
+        [e setBuffer:bias ? bias : g->dummy offset:0 atIndex:4];
+        [e setThreadgroupMemoryLength:128 * 64 * sizeof(uint16_t)
+                              atIndex:0];
+        g_disp.tensor++;
+        g_tc_dispatches++;
+        [e dispatchThreadgroups:MTLSizeMake((n_out + 127) / 128,
+                                            (n_col + 255) / 256, 1)
+          threadsPerThreadgroup:MTLSizeMake(128, 1, 1)];
+        return;
+    }
     // Tiled GEMM when this is a real batch and a kernel exists for the weight
     // type. n_in must be a whole number of k-steps (every real model's is) and
     // K-quant kernels index a 256-superblock, so require that too.
@@ -1534,6 +1670,7 @@ static void enc_mv_n(gpu_t *g, id<MTLComputeCommandEncoder> e, model_t *m,
         // are (see the struct comment above).
         enum { MM_TILE_M = 64, MM_TILE_N = 32 };
         g_disp.mm++;
+        g_tc_dispatches++;
         [e dispatchThreadgroups:MTLSizeMake((n_out + MM_TILE_M - 1) / MM_TILE_M,
                                             (n_col + MM_TILE_N - 1) / MM_TILE_N, 1)
           threadsPerThreadgroup:MTLSizeMake(128, 1, 1)];
@@ -2473,7 +2610,7 @@ static float *gpu_forward_native_batch(model_t *m, const int32_t *tokens,
     if (g->bind_failed) return NULL;
     metal_moe_route_trace(g, m, n);
     if (metal_env_on("RUNNER_METAL_STATS")) {
-        unsigned long tot = g_disp.mm + g_disp.mv + g_disp.mvf +
+        unsigned long tot = g_disp.tensor + g_disp.mm + g_disp.mv + g_disp.mvf +
                             g_disp.rmsnorm + g_disp.qknorm + g_disp.headnorm +
                             g_disp.rope + g_disp.store + g_disp.attn +
                             g_disp.attn_chunk + g_disp.elem + g_disp.moe;
@@ -2495,10 +2632,10 @@ static float *gpu_forward_native_batch(model_t *m, const int32_t *tokens,
                     "round-trips) = %.1f%% of KV read\n", g_disp.scores_bytes,
                     100.0 * (double)g_disp.scores_bytes
                         / (double)(g_disp.kv_swa + g_disp.kv_global));
-        fprintf(stderr, "metal-census n=%d total=%lu | mm=%lu mv=%lu mvf=%lu "
+        fprintf(stderr, "metal-census n=%d total=%lu | tensor=%lu mm=%lu mv=%lu mvf=%lu "
                 "rmsnorm=%lu qknorm=%lu headnorm=%lu rope=%lu store=%lu "
                 "attn=%lu attn_chunk=%lu(coop %lu) elem=%lu moe=%lu\n",
-                n, tot, g_disp.mm, g_disp.mv, g_disp.mvf, g_disp.rmsnorm,
+                n, tot, g_disp.tensor, g_disp.mm, g_disp.mv, g_disp.mvf, g_disp.rmsnorm,
                 g_disp.qknorm, g_disp.headnorm, g_disp.rope, g_disp.store,
                 g_disp.attn, g_disp.attn_chunk, g_coop_dispatches,
                 g_disp.elem, g_disp.moe);

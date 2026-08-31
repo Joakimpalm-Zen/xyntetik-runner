@@ -734,6 +734,15 @@ than binding weights it cannot place. The embedded shader
 gate compiles the library and verifies every kernel the backend looks up,
 reading that roster out of `src/metal.m` rather than restating it.
 
+On M5-class Macs running macOS 26.2 or newer, `RUNNER_METAL_TENSOR=1` opts
+Q4_K prefill into a separately compiled Metal 4 MPP tensor GEMM. Admission
+runs a hand-computable 256-wide matrix self-test before any model dispatch;
+compile, pipeline, or numeric failure falls back to the established
+simdgroup GEMM. The path is deliberately not the default: on the M5 Max gate
+it was numerically sound but only matched, rather than beating by the required
+1.2x, the existing kernel. M1-M4 never compile or dispatch it and retain the
+same default path and performance. `RUNNER_METAL_TENSOR=0` is the explicit pin.
+
 **CUDA:** Linux and Windows use the dynamically loaded driver API and embedded
 `sm_75` PTX. **The embedded PTX is built by the CUDA 13.0 toolchain (PTX ISA
 9.0), so GPU execution requires a driver with CUDA 13.0 support or newer (the
@@ -1065,6 +1074,7 @@ switches:
 | `RUNNER_ALLOW_UNKNOWN_ARCH` | unset | Admit a GGUF whose `general.architecture` this binary does not implement, running it through llama-style math. Unset, such a file is refused at load. Set, the load is attempted and a warning says the output may be silently wrong. Experimental, not a supported configuration. |
 | `RUNNER_VRAM_PRIORITY` | `0` | Baseline for `--vram-priority`; the flag overrides it. |
 | `RUNNER_KV_RING` | unset | Give sliding-window layers only the KV rows they can read, indexed modulo that count, instead of a full `n_ctx` rows each. A local layer never attends past its window, so the rest of its cache is written once and never read: on gemma-3-4b at `-c 32768` this takes the cache from 4563 MB to 800 MB, within 1% of the theoretical floor. Output is unchanged - the ring holds exactly the rows the flat allocation would have been read from, gated as bit-identical `--score` logprobs against the default path. Works on the CPU and CUDA paths: the CUDA attention kernels take the ring through `attn_args` and resolve every cache address through `kv_slot()`, verified bit-identical to the flat allocation on an RTX 3070 at both a partial split (20 of 34 layers) and a full offload, 2121 scored positions each, max |Δlogprob| exactly 0. Metal's kernels still address KV by absolute position, so a Metal build refuses the ring with a message rather than returning wrong numbers. **It is opt-in because it costs something:** the prefix cache and partial rewind also address KV as flat absolute rows, so both are refused while a ring is active and a server loses shared-prompt reuse. Worth it when context length is the binding constraint, not otherwise. Dense and full-attention-only models ignore it. |
+| `RUNNER_METAL_TENSOR` | unset/off | On M5+ with macOS 26.2+, opt Q4_K prefill into the separately admitted Metal 4 MPP tensor GEMM. Experimental and not promoted: the correctness gate passed, but its measured M5 performance did not clear the 1.2x default-promotion bar. Ignored on M1-M4. |
 
 Beyond these, the binary reads a number of development switches -
 `RUNNER_DEBUG_TOKENS`, `RUNNER_DEBUG_ACT`, `RUNNER_MOE_TRACE`,

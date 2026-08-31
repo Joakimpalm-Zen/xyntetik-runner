@@ -25,11 +25,13 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # (embed script, committed header) pairs
 TARGETS = [
     ("embed-metal.py", os.path.join("src", "kernels_metal.h")),
+    ("embed-metal-tensor.py", os.path.join("src", "kernels_tensor_metal.h")),
     ("embed-ptx.py", os.path.join("src", "kernels_ptx.h")),
 ]
 
 SOURCES = {
     "embed-metal.py": os.path.join("src", "kernels.metal"),
+    "embed-metal-tensor.py": os.path.join("src", "kernels_tensor.metal"),
     "embed-ptx.py": os.path.join("src", "kernels.ptx"),
 }
 

@@ -120,3 +120,42 @@ reference, not the provisional 7.1x inferred from the unmeasured 7,500 figure,
 and not the original ~13x trigger. The admission spike remains justified: the
 reference proves both that MPP works on this machine and that disabling it
 removes most of the reference's advantage over its own simdgroup path.
+
+## Runner Q4_K implementation verdict (completed later 2026-08-31)
+
+The prescribed tracer bullet now exists behind `RUNNER_METAL_TENSOR=1`:
+
+- a separate Metal 4 source library, so MPP failure cannot take down the
+  established Metal backend;
+- M5+/macOS 26.2+ admission and a functional 64x32 matrix anchor whose known
+  result is 256 in every output cell;
+- a Q4_K-only MPP `matmul2d` prefill dispatch above the existing simdgroup
+  GEMM, with decode and M1-M4 routing unchanged;
+- explicit engagement in `RUNNER_METAL_STATS` and the existing TC tolerance
+  harness.
+
+The first correct 64x32x32 tile was a negative result: 713-741 tok/s versus
+944-1,005 for the simdgroup baseline. Using llama.cpp `010be968` as the oracle
+identified the geometry difference. Runner then matched its 128x256x64 MPP
+tile, 16-value Q4_K dequant work partition, and direct device activation
+operand. That removed the regression but did not clear promotion:
+
+| interleaved round | simdgroup tok/s | Metal 4 tensor tok/s | ratio |
+|---:|---:|---:|---:|
+| 1 | 1007.20 | 932.05 | 0.93x |
+| 2 | 915.77 | 925.80 | 1.01x |
+| 3 | 874.10 | 892.12 | 1.02x |
+
+The 4,563-token arms used the same Gemma 3 4B Q4_K_M artifact, `-b 512`,
+`-c 5120`, and were interleaved baseline/tensor. The later rounds overlap;
+there is no defensible >=1.2x win.
+
+Correctness did clear its bar: `test-tc-tol` observed real tensor dispatches,
+0/64 teacher-forced top-1 flips, mean absolute logit delta 0.00005 of mean
+logit range (limit 0.005), and 32/32 free-running greedy tokens identical
+after a 128-token production-context prefill.
+
+**Verdict: implemented and retained opt-in, not promoted.** This is the
+spec's defined negative outcome. The existing simdgroup GEMM remains default
+on M5 as well as M1-M4; compile, pipeline, self-test, device, or OS admission
+failure falls to it rather than to matvec or CPU.

@@ -125,6 +125,7 @@ TEST_KV_TOL = $(TEST_BATCH:test-batch%=test-kv-tol%)
 TEST_QUANTS_SIMD = $(TEST_BATCH:test-batch%=test-quants-simd%)
 TEST_INSTANCES = $(TEST_BATCH:test-batch%=test-instances%)
 TEST_METAL_ADMISSION = $(TEST_BATCH:test-batch%=test-metal-admission%)
+TEST_METAL_TENSOR = $(TEST_BATCH:test-batch%=test-metal-tensor%)
 TEST_TRAY_CORE = $(TEST_BATCH:test-batch%=test-tray-core%)
 TEST_TC_TOL = $(TEST_BATCH:test-batch%=test-tc-tol%)
 TEST_I8_TOL = $(TEST_BATCH:test-batch%=test-i8-tol%)
@@ -222,7 +223,7 @@ SRC = src/gguf.c src/compat.c $(QUANTS_OBJ) src/instances.c src/tokenizer.c src/
 # kernels_ptx.h is embedded into the binary by cuda.c — a pull that changes
 # ONLY the regenerated PTX header must rebuild, or benchmarks silently run
 # yesterday's kernels (this bit a publication run on 2026-07-29).
-runner: $(SRC) $(HDR) src/kernels_ptx.h
+runner: $(SRC) $(HDR) src/kernels_ptx.h src/kernels_tensor_metal.h
 	$(CC) $(CFLAGS) $(SRC) -o $@ $(LDFLAGS)
 
 # Local negative controls for scripts/write-stall.py. These compile from the
@@ -914,6 +915,10 @@ $(TEST_METAL_KQUANTS): tests/test_metal_kquants.m src/kernels_metal.h $(QUANTS_O
 	    tests/test_metal_kquants.m $(QUANTS_OBJ) -o $@ -lm -lpthread \
 	    -framework Metal -framework Foundation
 
+$(TEST_METAL_TENSOR): tests/test_metal_tensor.m src/kernels_tensor_metal.h
+	$(CC) -std=gnu11 -Wall -Wextra tests/test_metal_tensor.m -o $@ \
+	    -framework Metal -framework Foundation
+
 # compat.c joins the link because the partial-offload residency guard in
 # metal.m calls plat_ram_available_bytes(): deciding whether a split pays
 # needs to know how much RAM the CPU tail would have to stream through.
@@ -925,9 +930,10 @@ $(TEST_METAL_OWNERSHIP): tests/test_metal_ownership.m src/metal.m src/compat.c $
 # run fall back to the CPU silently, which no correctness gate can see.
 test-metal-shader-gate:
 ifeq ($(shell uname -s),Darwin)
-	@$(MAKE) --no-print-directory $(TEST_METAL_SHADERS) $(TEST_METAL_KQUANTS) >/dev/null
+	@$(MAKE) --no-print-directory $(TEST_METAL_SHADERS) $(TEST_METAL_KQUANTS) $(TEST_METAL_TENSOR) >/dev/null
 	@./$(TEST_METAL_SHADERS)
 	@./$(TEST_METAL_KQUANTS)
+	@./$(TEST_METAL_TENSOR)
 else
 	@echo "metal shader gate skipped: macOS-only backend"
 endif
