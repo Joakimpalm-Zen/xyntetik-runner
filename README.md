@@ -1812,6 +1812,12 @@ during an authenticated evidence run.
   1,607.70/102.76 tok/s prefill/decode (752.65/102.27 with its tensor API
   disabled). Runner's 54.65/64.59 result makes the remaining limitation
   explicit: Metal MoE prefill grouping, not merely Metal 4 dense GEMM.
+- **Llama-3.3-70B-Instruct Q4_0 on Metal: validated 2026-08-31.** The complete
+  40,116,537,952-byte single-file artifact fully offloads all 80 layers on a
+  128 GB M5 Max. CPU/Metal identity passes over 3,078,144 logits at 0.0000139
+  of mean logit range (0.002 limit). A 731-token prefill plus 128-token greedy
+  decode ran coherently at 42.25/10.57 tok/s; swap ended at 0.25 MB. Evidence:
+  [docs/llama33-70b-metal-m5max-2026-08-31.md](docs/llama33-70b-metal-m5max-2026-08-31.md).
 - Gemma-4-26B-A4B QAT's old 16-token CPU/CUDA result is not a substitute for
   the manifest's pending 128-token re-verification.
 - **Gemma-4-26B-A4B on Metal: fixed 2026-08-31.** The routed-expert GELU
