@@ -1773,15 +1773,16 @@ during an authenticated evidence run.
   [docs/cuda-gptoss-divergence-2026-08-19.md](docs/cuda-gptoss-divergence-2026-08-19.md).
 - Gemma-4-26B-A4B QAT's old 16-token CPU/CUDA result is not a substitute for
   the manifest's pending 128-token re-verification.
-- **Gemma-4-26B-A4B does not generate correct output on Metal.** Measured
-  2026-08-31 on an Apple M5 Max (macOS 26.5): the real Q4_0 artifact emits
-  token id 0 at every position under `--gpu auto` while the CPU arm answers
-  correctly, at any `--gpu-layers` >= 4. `gpt-oss-20b-MXFP4` and dense
-  `gemma-3-4b` are byte-identical CPU/Metal on the same host, and every tiny
-  MoE fixture gate passes there, so this is specific to this architecture at
-  real expert-bundle geometry. Bisection and what it rules out:
+- **Gemma-4-26B-A4B on Metal: fixed 2026-08-31.** The routed-expert GELU
+  kernel (`k_moe_actmul`) computed `tanh()` without the overflow clamp its
+  dense twin `k_gelu_mul` already carried; under Metal's fast math that
+  reaches `inf/inf` = NaN, and the model emitted only token id 0 at every
+  position while the CPU arm was correct. First model in the set that both
+  routes through the MoE kernel and drives the gate hard enough to reach it.
+  No tiny fixture can reproduce it, which is why
+  `make test-metal-bigmodel BIGMODEL=<path.gguf>` exists; it takes
+  `BIGPROMPT=` to pin a prompt. Root cause and bisection:
   [docs/metal-gemma4-moe-divergence-2026-08-31.md](docs/metal-gemma4-moe-divergence-2026-08-31.md).
-  `make test-metal-bigmodel BIGMODEL=<path.gguf>` is the gate.
 - Numerically sensitive models may use a measured self-sensitivity floor
   instead of claiming cross-engine token identity.
 

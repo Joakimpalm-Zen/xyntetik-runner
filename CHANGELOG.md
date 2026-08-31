@@ -6,6 +6,38 @@ change between releases (the `-alpha` suffix was retired at v0.2.0 — the 0.x
 version already says what it needs to). Entries below the rename keep the
 names that were true when they were written.
 
+## Unreleased
+
+- **gemma-4-26B-A4B produced only token id 0 on Metal, and the fix was a clamp
+  that already existed six lines away.** `k_moe_actmul`'s GELU branch computed
+  `tanh(0.7978845608f * (x + 0.044715f*x^3))` unclamped. Metal compiles with
+  fast math, `tanh()` is evaluated through `exp(2a)`, and large |a| overflows
+  to inf where `inf/inf` is NaN. The dense twin `k_gelu_mul` already carried
+  `clamp(a, -16, 16)` for exactly this, added when gemma-3-4b's layer-0 gate
+  hit it -- the routed-expert copy was missed. gemma-4-26B-A4B is the first
+  model in the set that both routes through the MoE kernel and drives the gate
+  hard enough to reach the overflow, at layer 3; every generated token came
+  out as id 0 on Metal while the CPU arm answered correctly. tanh is exactly
+  +/-1.0f in fp32 well inside +/-16, so the clamp cannot change a
+  representable result.
+  Across eight realistic prompts CPU and Metal are now byte-identical on 7 of
+  8, against 0 of 8 before. The eighth answers correctly on both arms and
+  diverges at token 14 on adjacent ids inside a degenerate repetition loop,
+  where the CPU arm disagrees with ITSELF under `--kv q8` -- chaotic
+  amplification at a near-tie, not a wrong op.
+- **`make test-metal-bigmodel BIGMODEL=<path.gguf>`**: CPU/Metal token
+  identity on a real artifact, opt-in by path so a checkout without weights
+  stays green, `BIGPROMPT=` to pin a prompt. No fixture in the suite could
+  have found the bug above -- `test-metal-gelu-overflow` exists for that exact
+  hazard but exercises the dense kernel on a sub-1 MiB gemma3 fixture, which
+  cannot drive fp32 to overflow.
+- **`RUNNER_METAL_NAN_TRACE` now takes a level.** 1 keeps the per-layer
+  residual scan; 2 probes each stage within a layer, 3 inside the gemma MoE
+  FFN, 4 inside the expert matvecs. The Metal path has no `RUNNER_DEBUG_ACT`
+  equivalent, so before this a NaN could be attributed to a layer and no
+  further. It walked this bug from "layer 3" to "`exp:actmul[1882]`" in four
+  steps.
+
 ## v0.4.4 - 2026-08-30
 
 - **Sliding-window layers were allocated KV they can never read, and now there

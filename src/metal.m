@@ -1912,11 +1912,21 @@ static void enc_moe_experts_batch(gpu_t *g, id<MTLComputeCommandEncoder> e,
                 sel_off, n, xdim);
 }
 
+static int  metal_nan_stage(void);
+static bool metal_scan_bad(const float *p, int n, const char *what, int layer);
+
 static void enc_gemma_moe_experts_batch(gpu_t *g,
                                         id<MTLComputeCommandEncoder> e,
                                         model_t *m, layer_t *ly, int l,
                                         int n, int xdim,
-                                        NSUInteger sel_off) {
+                                        NSUInteger sel_off,
+                                        id<MTLCommandBuffer> *cbp,
+                                        id<MTLComputeCommandEncoder> *ep) {
+#define XP(BUF, CNT, WHAT) do { if (cbp && metal_nan_stage() >= 4) { \
+        [e endEncoding]; [*cbp commit]; [*cbp waitUntilCompleted]; \
+        metal_scan_bad((const float *)(BUF).contents, (int)(CNT), (WHAT), l); \
+        *cbp = [g->queue commandBuffer]; e = [*cbp computeCommandEncoder]; *ep = e; \
+    } } while (0)
     int n_embd = m->n_embd;
     int used = m->n_expert_used, slots = n * used;
     int nff = m->n_ff_exp;
@@ -1928,13 +1938,18 @@ static void enc_gemma_moe_experts_batch(gpu_t *g,
     enc_moe_mv(g, e, m, ly->ffn_gate_up_exps, gustride, g->xb2, 0,
                g->moe_hb, 0, n_embd, 2 * nff, slots, xdim, 2 * nff,
                nil, 0, sel_off, used);
+    XP(g->xb2, (size_t)n * xdim, "exp:in-xb2");
+    XP(g->moe_hb, (size_t)slots * 2 * nff, "exp:gate_up");
     enc_moe_actmul(g, e, g->moe_hb, 0, g->moe_hb, foff(nff),
                    nff, slots, 2 * nff, 2 * nff, ACT_GELU);
+    XP(g->moe_hb, (size_t)slots * 2 * nff, "exp:actmul");
     enc_moe_mv(g, e, m, ly->ffn_down_exps, dstride, g->moe_hb, 0,
                g->moe_eout, 0, nff, n_embd, slots, 2 * nff, n_embd,
                nil, 0, sel_off, 0);
+    XP(g->moe_eout, (size_t)slots * n_embd, "exp:down");
     enc_moe_sum(g, e, g->q, 0, n_embd, used, n_embd, g->gdsc[l],
                 sel_off, n, xdim);
+#undef XP
 }
 
 static void enc_moe_ffn_batch(gpu_t *g, id<MTLComputeCommandEncoder> e,
@@ -1961,7 +1976,14 @@ static void enc_moe_ffn_batch(gpu_t *g, id<MTLComputeCommandEncoder> e,
 
 static void enc_gemma_moe_ffn_batch(gpu_t *g, id<MTLComputeCommandEncoder> e,
                                     model_t *m, layer_t *ly, int l,
-                                    int n, int xdim) {
+                                    int n, int xdim,
+                                    id<MTLCommandBuffer> *cbp,
+                                    id<MTLComputeCommandEncoder> *ep) {
+#define GP(BUF, CNT, WHAT) do { if (cbp && metal_nan_stage() >= 3) { \
+        [e endEncoding]; [*cbp commit]; [*cbp waitUntilCompleted]; \
+        metal_scan_bad((const float *)(BUF).contents, (int)(CNT), (WHAT), l); \
+        *cbp = [g->queue commandBuffer]; e = [*cbp computeCommandEncoder]; *ep = e; \
+    } } while (0)
     int ne = m->n_expert, used = m->n_expert_used;
     int n_embd = m->n_embd, dff = m->n_ff;
 
@@ -1980,8 +2002,10 @@ static void enc_gemma_moe_ffn_batch(gpu_t *g, id<MTLComputeCommandEncoder> e,
         enc_mv(g, e, m, ly->w_down, g->hb, hbo, g->xb, xbo,
                dff, n_embd, nil);
     }
+    GP(g->xb, (size_t)n * xdim, "moe:dense-shared");
     enc_rmsnorm_n(g, e, g->xb, 0, g->xb, 0, g->gpn1[l],
                   n_embd, m->rms_eps, n, xdim, xdim);
+    GP(g->xb, (size_t)n * xdim, "moe:dense-gpn1");
 
     enc_rmsnorm_n(g, e, g->x, 0, g->xb2, 0, g->gprn2[l],
                   n_embd, m->rms_eps, n, n_embd, xdim);
@@ -2000,11 +2024,15 @@ static void enc_gemma_moe_ffn_batch(gpu_t *g, id<MTLComputeCommandEncoder> e,
                           foff((size_t)b * ne),
                           sel_off + foff((size_t)b * used));
     }
-    enc_gemma_moe_experts_batch(g, e, m, ly, l, n, xdim, sel_off);
+    GP(g->moe_logits, (size_t)n * ne, "moe:router-logits");
+    enc_gemma_moe_experts_batch(g, e, m, ly, l, n, xdim, sel_off, cbp, ep);
+    if (cbp && metal_nan_stage() >= 4) e = *ep;
+    GP(g->q, (size_t)n * xdim, "moe:experts-out");
     enc_rmsnorm_n(g, e, g->q, 0, g->q, 0, g->gpn2[l],
                   n_embd, m->rms_eps, n, xdim, xdim);
     enc_elem_n(g, e, g->p_add, g->xb, 0, g->q, 0,
                n_embd, n, xdim, xdim);
+#undef GP
 }
 
 // gemma-4 E-series per-layer embeddings, mirroring the CPU tail in model.c:
@@ -2042,6 +2070,16 @@ static bool metal_nan_trace(void) {
     static int on = -1;
     if (on < 0) { const char *v = getenv("RUNNER_METAL_NAN_TRACE"); on = v && *v && strcmp(v, "0"); }
     return on > 0;
+}
+
+// RUNNER_METAL_NAN_TRACE=2 additionally probes INSIDE the layer. The
+// per-layer form names the layer that first carries a NaN; it cannot say which
+// stage of that layer produced it, which is where a wrong op actually hides.
+// Costs one command buffer per probe, so it is strictly opt-in.
+static int metal_nan_stage(void) {
+    static int lvl = -1;
+    if (lvl < 0) { const char *v = getenv("RUNNER_METAL_NAN_TRACE"); lvl = v && *v ? atoi(v) : 0; }
+    return lvl;
 }
 
 static bool metal_scan_bad(const float *p, int n, const char *what, int layer) {
@@ -2107,6 +2145,7 @@ static float *gpu_forward_native_batch(model_t *m, const int32_t *tokens,
     }
 
     bool nantrace = metal_nan_trace();
+    int  nanstage = metal_nan_stage() >= 2;
     // RUNNER_METAL_TIMING=1: split a forward into the CPU time spent encoding
     // dispatches and the GPU time actually executing them. Decode on Metal is
     // slower than CPU on an M1 and the two candidate explanations -- encode
@@ -2120,6 +2159,12 @@ static float *gpu_forward_native_batch(model_t *m, const int32_t *tokens,
     double t_enc0 = timing ? CFAbsoluteTimeGetCurrent() : 0;
     id<MTLCommandBuffer> cb = [g->queue commandBuffer];
     id<MTLComputeCommandEncoder> e = [cb computeCommandEncoder];
+
+#define NAN_PROBE(BUF, CNT, WHAT) do { if (nanstage) { \
+        [e endEncoding]; [cb commit]; [cb waitUntilCompleted]; \
+        if (metal_scan_bad((const float *)(BUF).contents, (int)(CNT), (WHAT), l)) return NULL; \
+        cb = [g->queue commandBuffer]; e = [cb computeCommandEncoder]; \
+    } } while (0)
 
     // Partial split: only the leading gpu_layers run here.
     int n_gpu_layers = m->gpu_layers > 0 && m->gpu_layers < m->n_layer
@@ -2327,21 +2372,24 @@ static float *gpu_forward_native_batch(model_t *m, const int32_t *tokens,
             attn_done: ;
         }
 
+        NAN_PROBE(g->xb2, (size_t)n * xdim, "attn-out");
         if (m->attn_out_gate && ly->wq_gate)
             enc_elem_n(g, e, g->p_sigmul, g->xb2, 0, g->agate, 0,
                        q_dim_l, n, xdim, q_dim);
         enc_mv_n(g, e, m, ly->wo, g->xb2, 0, g->xb, 0,
                  q_dim_l, n_embd, g->bo[l], n, xdim, xdim);
+        NAN_PROBE(g->xb, (size_t)n * xdim, "attn-wo");
         if (g->pan[l])
             enc_rmsnorm_n(g, e, g->xb, 0, g->xb, 0, g->pan[l],
                           n_embd, m->post_norm_eps, n, xdim, xdim);
         if (m->resid_scale != 1.0f)  // granite muP branch scale
             enc_scale_n(g, e, g->xb, 0, n_embd, m->resid_scale, n, xdim);
         enc_elem_n(g, e, g->p_add, g->x, 0, g->xb, 0, n_embd, n, n_embd, xdim);
+        NAN_PROBE(g->x, (size_t)n * n_embd, "post-attn-resid");
 
         if (ly->moe_gemma || ly->is_moe) {
             if (ly->moe_gemma)
-                enc_gemma_moe_ffn_batch(g, e, m, ly, l, n, xdim);
+                enc_gemma_moe_ffn_batch(g, e, m, ly, l, n, xdim, &cb, &e);
             else
                 enc_moe_ffn_batch(g, e, m, ly, l, n, xdim);
         } else {
@@ -2361,6 +2409,7 @@ static float *gpu_forward_native_batch(model_t *m, const int32_t *tokens,
             enc_mv_n(g, e, m, ly->w_down, g->hb, 0, g->xb, 0,
                      nff_l, n_embd, nil, n, nff_l, xdim);
         }
+        NAN_PROBE(g->xb, (size_t)n * xdim, "ffn-out");
         if (g->pfn[l])
             enc_rmsnorm_n(g, e, g->xb, 0, g->xb, 0, g->pfn[l],
                           n_embd, m->post_norm_eps, n, xdim, xdim);
@@ -2395,6 +2444,8 @@ static float *gpu_forward_native_batch(model_t *m, const int32_t *tokens,
                    n_embd, m->n_vocab, nil);
         }
     }
+
+#undef NAN_PROBE
 
     [e endEncoding];
     double t_enc1 = timing ? CFAbsoluteTimeGetCurrent() : 0;

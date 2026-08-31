@@ -1250,7 +1250,14 @@ endif
 # docs/metal-gemma4-moe-divergence-2026-08-31.md. Opt-in by path, so a
 # checkout without weights stays green:
 #   make test-metal-bigmodel BIGMODEL=models/gpt-oss-20b-MXFP4.gguf
+# The prompt matters. A raw completion fed to an instruction-tuned model can
+# walk into a degenerate loop where adjacent logits tie, and token identity
+# there measures chaos rather than correctness: gemma-4-26B-A4B on
+# "The capital of France is" diverges at token 14 on a near-tie, and the CPU
+# arm disagrees with ITSELF on the same prompt under --kv q8. Default to a
+# realistic instruction, override for a specific investigation.
 BIGMODEL ?=
+BIGPROMPT ?= Explain photosynthesis in two sentences.
 test-metal-bigmodel: runner
 ifeq ($(shell uname -s),Darwin)
 	@set -e; \
@@ -1259,8 +1266,8 @@ ifeq ($(shell uname -s),Darwin)
 	elif [ ! -f "$(BIGMODEL)" ]; then \
 		echo "metal big-model identity skipped: $(BIGMODEL) not found"; \
 	elif ./$(RUNNER_EXE) --caps | $(PYTHON) -c "import json,sys; d=json.load(sys.stdin); sys.exit(0 if (d.get('gpu') or {}).get('backend') == 'metal' else 1)"; then \
-		./$(RUNNER_EXE) -m "$(BIGMODEL)" -p "The capital of France is" -n 32 --temp 0 --gpu off > metal-bigmodel-cpu.out 2>/dev/null; \
-		./$(RUNNER_EXE) -m "$(BIGMODEL)" -p "The capital of France is" -n 32 --temp 0 --gpu auto > metal-bigmodel-gpu.out 2>/dev/null; \
+		./$(RUNNER_EXE) -m "$(BIGMODEL)" -p "$(BIGPROMPT)" -n 32 --temp 0 --gpu off > metal-bigmodel-cpu.out 2>/dev/null; \
+		./$(RUNNER_EXE) -m "$(BIGMODEL)" -p "$(BIGPROMPT)" -n 32 --temp 0 --gpu auto > metal-bigmodel-gpu.out 2>/dev/null; \
 		if cmp -s metal-bigmodel-cpu.out metal-bigmodel-gpu.out; then \
 			echo "metal big-model identity ok: $(BIGMODEL)"; \
 		else \

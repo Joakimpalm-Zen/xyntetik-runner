@@ -1973,7 +1973,15 @@ kernel void k_moe_actmul(device float       *gbuf [[buffer(0)]],
     if (act == 2) {
         g[i] = swiglu_oai(x, u[i]);
     } else if (act == 1) {
-        float t = tanh(0.7978845608f * (x + 0.044715f * x * x * x));
+        // Same fast-math tanh overflow as k_gelu_mul, and the same fix. This
+        // kernel is the ROUTED-expert twin of that dense path: the clamp was
+        // applied there when gemma-3-4b's layer-0 gate produced NaN, but this
+        // copy was missed, so gemma-4-26B-A4B reached it at layer 3 and the
+        // model emitted only token 0 on Metal while the CPU arm was correct.
+        // tanh is already exactly +/-1.0f in fp32 well inside +/-16, so the
+        // clamp cannot change a representable result.
+        float t = tanh(clamp(0.7978845608f * (x + 0.044715f * x * x * x),
+                             -16.0f, 16.0f));
         g[i] = 0.5f * x * (1.0f + t) * u[i];
     } else {
         g[i] = (x / (1.0f + exp(-x))) * u[i];

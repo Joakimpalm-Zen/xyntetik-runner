@@ -1975,7 +1975,15 @@ static const char *k_metal_src =
     "    if (act == 2) {\n"
     "        g[i] = swiglu_oai(x, u[i]);\n"
     "    } else if (act == 1) {\n"
-    "        float t = tanh(0.7978845608f * (x + 0.044715f * x * x * x));\n"
+    "        // Same fast-math tanh overflow as k_gelu_mul, and the same fix. This\n"
+    "        // kernel is the ROUTED-expert twin of that dense path: the clamp was\n"
+    "        // applied there when gemma-3-4b's layer-0 gate produced NaN, but this\n"
+    "        // copy was missed, so gemma-4-26B-A4B reached it at layer 3 and the\n"
+    "        // model emitted only token 0 on Metal while the CPU arm was correct.\n"
+    "        // tanh is already exactly +/-1.0f in fp32 well inside +/-16, so the\n"
+    "        // clamp cannot change a representable result.\n"
+    "        float t = tanh(clamp(0.7978845608f * (x + 0.044715f * x * x * x),\n"
+    "                             -16.0f, 16.0f));\n"
     "        g[i] = 0.5f * x * (1.0f + t) * u[i];\n"
     "    } else {\n"
     "        g[i] = (x / (1.0f + exp(-x))) * u[i];\n"
@@ -2009,4 +2017,4 @@ static const char *k_metal_src =
     "\n"
 ;
 // SHA-256 of kernels.metal as embedded above.
-static const char *k_metal_sha = "a0a923b94b088c4601977afad9061864f59eebc6432d966c7d22963a7dc70cd0";
+static const char *k_metal_sha = "58992350f56e99e5a65426304fda487b3ad14d89455f72f15bfa66338097fbfa";

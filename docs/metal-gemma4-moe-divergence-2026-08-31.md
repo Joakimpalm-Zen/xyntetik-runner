@@ -1,4 +1,8 @@
-# gemma-4-26B-A4B generates token 0 on Metal while CPU is correct
+# gemma-4-26B-A4B generated token 0 on Metal: an unclamped GELU in the routed-expert kernel
+
+*Found, root-caused and FIXED 2026-08-31. The bisection below is kept because
+the fixture gates could not have found this and the reasoning is the reusable
+part.*
 
 Measured 2026-08-31 on an Apple M5 Max (18 cores, 128 GB unified, macOS 26.5
 build 25F71), the first Apple-silicon host in this project above the 8 GB M1
@@ -75,22 +79,73 @@ and `cpu_moe` appears **zero** times in `src/metal.m`. Running `--cpu-moe` on
 the Metal arm changed nothing because the flag is not wired to this backend at
 all. It is not evidence that the expert path is innocent.
 
-## Why this could not be bisected further here
+## Root cause: the clamp exists in one GELU kernel and was missed in its twin
 
-`RUNNER_DEBUG_ACT` instruments the CPU forward only. On the real model it emits
-522 `ACT` lines per forward (per-layer `q-raw`/`k-raw`/`v-raw`, post-rope,
-cached KV, `logits-raw`, `logits-final`, `top1`). The Metal arm emits the
-header line and nothing else — 8 lines total, none of them per-layer. There is
-therefore no activation-level A/B available on this backend, and the first
-diverging tensor cannot be named without adding Metal-side `ACT` instrumentation.
+Adding a staged probe to the Metal path (`RUNNER_METAL_NAN_TRACE=2/3/4`, this
+commit) walks the NaN inward in four steps:
 
-That instrumentation is the natural next slice, and it is the prerequisite for
-any fix attempt: without it, the boundary at layer 3 is the finest resolution
-the current tooling can reach.
+| level | first bad stage |
+|---|---|
+| 1 (per layer) | `L3 resid` |
+| 2 (per layer stage) | `L3 ffn-out` |
+| 3 (inside the MoE FFN) | `L3 moe:experts-out` |
+| 4 (inside the expert matvecs) | **`L3 exp:actmul[1882]`** |
+
+`exp:gate_up` is clean going in and `exp:actmul` comes out NaN, so the
+activation itself manufactured it. `k_moe_actmul`'s GELU branch computed
+
+```c
+float t = tanh(0.7978845608f * (x + 0.044715f * x * x * x));
+```
+
+with no clamp. The dense `k_gelu_mul` computes the same expression **with**
+`clamp(a, -16.0f, 16.0f)`, and carries a comment that describes this exact
+failure: Metal compiles with fast math, `tanh()` goes through `exp(2a)`, large
+|a| overflows to inf, `inf/inf` is NaN — and *"gemma-3-4b's layer-0 gate
+produced NaN logits here, and the model emitted only token 0."*
+
+That guard was added for the dense path. `k_moe_actmul` is its routed-expert
+twin and was missed. gemma-4-26B-A4B is the first model in this project's set
+that both routes through the MoE kernel and drives the gate hard enough to
+reach the overflow, which it does at layer 3. The reported symptom is
+identical to the one already written down for the dense kernel.
+
+The fix is the same clamp. tanh is exactly +/-1.0f in fp32 well inside +/-16,
+so it cannot change a representable result.
+
+## After the fix
+
+No NaN at any probe level. Across eight realistic prompts, CPU and Metal are
+byte-identical on **7 of 8** — before the fix the model produced only token 0
+on every one of them, so the correct baseline is 0/8.
+
+The eighth is `"The capital of France is"`, a raw completion handed to an
+instruction-tuned model. It answers `" Paris."` correctly on both arms and
+diverges at token 14, picking 236786 (CPU) vs 236787 (GPU) — adjacent ids in a
+degenerate date-repetition loop. This is chaotic amplification at a near-tie,
+not a wrong op, and the evidence is the repo's own test for it: **the CPU arm
+disagrees with itself** on that prompt under `--kv q8` (`"0.5"` against
+`"<|channel>3/2/2025 3/2"`), while `-t 3` reproduces the default exactly. Per
+the README's standing policy, a numerically sensitive model gets a measured
+self-sensitivity floor rather than a cross-engine token-identity claim.
+
+`test-metal-bigmodel` therefore defaults to a realistic instruction prompt and
+takes `BIGPROMPT=` for a specific investigation. All three real artifacts on
+this host — gpt-oss-20b-MXFP4, gemma-3-4b dense, gemma-4-26B-A4B — pass it.
+
+## What this says about fixture gates
+
+Every tiny MoE fixture passed throughout, including
+`test-metal-gemma4-moe`, and so did `test-metal-gelu-overflow` — which exists
+precisely to catch this hazard, but exercises the DENSE kernel on a gemma3
+fixture, not the routed-expert twin. A sub-1 MiB fixture cannot drive the gate
+into fp32 overflow, so no fixture in the suite could have found this. That is
+the argument for `test-metal-bigmodel` existing at all.
 
 ## Anchor
 
-Per AGENTS.md, the absolute anchor here is external to the runner: the CPU arm
-answers a general-knowledge question correctly (` Paris.`), and the same
-question is answered correctly by two other models on the same Metal backend
-on the same host. The comparison is not build-against-build.
+Per AGENTS.md, the absolute anchor is external to the runner: the CPU arm
+answers a general-knowledge question correctly (` Paris.`), two other models
+answer correctly on the same Metal backend on the same host, and the fix is
+validated against a documented property of tanh in fp32 rather than against
+another build of this code.
