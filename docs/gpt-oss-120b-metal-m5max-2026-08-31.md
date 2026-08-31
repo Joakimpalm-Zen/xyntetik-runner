@@ -25,3 +25,23 @@ decode tokens:
 This closes the previously 24-GB-MIG-blocked full-residency validation. It does
 not claim CPU/Metal byte identity: gpt-oss routing is sensitivity-gated, and
 the measured logit envelope is the existing correctness contract.
+
+## Same-process lifecycle
+
+A single `--serve` process was kept alive across load, a real 66+64-token
+request, `POST /unload`, and a second request that reloaded the same 59 GiB
+artifact. This distinguishes backend cleanup from the kernel reclaiming a
+dead process.
+
+- after the first request: 1,024 MB physical footprint, including 575 MB
+  IOAccelerator plus 232 MB owned unmapped graphics memory;
+- after `/unload`: 214 MB total, IOAccelerator down to 736 KB dirty plus
+  1,936 KB reclaimable, and `/health` reported `resident:null`;
+- the next request reloaded all 36 Metal layers and completed at 71.6 tok/s;
+- a second `/unload` completed cleanly;
+- swap remained exactly zero throughout.
+
+Both cold requests reported roughly 1.1-1.2 million major page-ins. That is
+file-backed weight demand paging, not swap, and is expected after load/reload;
+the important lifecycle result is that the Metal allocations and residency
+identity disappeared while the server process remained alive.
