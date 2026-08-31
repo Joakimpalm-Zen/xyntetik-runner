@@ -36,6 +36,18 @@ def shards(whole):
     return found
 
 
+@pytest.fixture(scope="module")
+def sparse_shards(whole):
+    """llama.cpp-style sets keep model metadata only in the first part."""
+    subprocess.run(
+        [sys.executable, ROOT / "scripts/gguf-split.py", str(whole),
+         str(whole.parent / "sparse"), str(N_SHARDS), "--sparse-metadata"],
+        check=True, cwd=ROOT, stdout=subprocess.DEVNULL)
+    found = sorted(whole.parent.glob("sparse-*-of-*.gguf"))
+    assert len(found) == N_SHARDS, found
+    return found
+
+
 def _run(runner_bin, model):
     return subprocess.run(
         [runner_bin, "-m", str(model), "-p", "hi", "-n", "4", "--temp", "0",
@@ -69,6 +81,15 @@ def test_missing_part_is_refused_loudly(runner_bin, shards):
 def test_parts_are_real_ggufs(shards):
     for shard in shards:
         assert shard.read_bytes()[:4] == b"GGUF"
+
+
+def test_standard_sparse_metadata_parts_load_the_complete_model(
+        runner_bin, whole, sparse_shards):
+    expected = _run(runner_bin, whole)
+    actual = _run(runner_bin, sparse_shards[0])
+    assert expected.returncode == 0, expected.stderr.decode(errors="replace")
+    assert actual.returncode == 0, actual.stderr.decode(errors="replace")
+    assert actual.stdout == expected.stdout
 
 
 def _quantize(runner_bin, src, dst):

@@ -1678,7 +1678,10 @@ experts), not missing quant support.
 A **sharded** GGUF is refused for Metal offload at load and runs on the CPU; a
 single file still offloads (`make test-metal-split`). Rewrite shards to one
 file with `--quantize OUT --quant keep`, which preserves the existing tensor
-types, before drawing any conclusion about Metal from a split artifact.
+types, before drawing any conclusion about Metal from a split artifact. The
+loader accepts both duplicated-metadata shards and the standard compact form
+where only part one carries model metadata; explicit contradictions between
+parts are still rejected.
 
 | GGUF `general.architecture` | Notes |
 |---|---|

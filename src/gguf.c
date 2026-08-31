@@ -376,9 +376,14 @@ bool gguf_open(gguf_file *g, const char *path) {
         const char *arch0 = gguf_get_str(&parts[0], "general.architecture", NULL);
         const char *archi = gguf_get_str(&parts[i], "general.architecture", NULL);
         uint32_t align0 = gguf_get_u32(&parts[0], "general.alignment", 32);
-        uint32_t aligni = gguf_get_u32(&parts[i], "general.alignment", 32);
+        // Standard split GGUFs may put the model metadata only in part zero;
+        // later parts then carry just split.no/count/tensors.count. Treat an
+        // omitted value as inherited, while still rejecting an explicit
+        // contradiction. The tensor table in each part remains independently
+        // bounds-checked by gguf_open_one above.
+        uint32_t aligni = gguf_get_u32(&parts[i], "general.alignment", align0);
         if (parts[i].version != parts[0].version ||
-            !arch0 || !archi || strcmp(arch0, archi) != 0 || align0 != aligni ||
+            !arch0 || (archi && strcmp(arch0, archi) != 0) || align0 != aligni ||
             no != i || nc != count || nt != expected ||
             parts[i].n_tensors > expected ||
             total > (uint64_t)expected - parts[i].n_tensors ||

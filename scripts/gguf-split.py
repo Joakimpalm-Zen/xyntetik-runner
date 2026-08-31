@@ -71,6 +71,7 @@ def s(x):
 def main():
     src, prefix = sys.argv[1], sys.argv[2]
     n_shards = int(sys.argv[3]) if len(sys.argv) > 3 else 2
+    sparse_metadata = "--sparse-metadata" in sys.argv[4:]
 
     raw = open(src, "rb").read()
     r = R(raw)
@@ -114,8 +115,10 @@ def main():
         extra = (s("split.no") + struct.pack("<IH", T_U16, i) +
                  s("split.count") + struct.pack("<IH", T_U16, n_shards) +
                  s("split.tensors.count") + struct.pack("<Ii", T_I32, n_tensors))
-        head = (b"GGUF" + struct.pack("<IQQ", version, len(g), n_kv + 3) +
-                meta + extra)
+        part_meta = meta if i == 0 or not sparse_metadata else b""
+        part_n_kv = n_kv if i == 0 or not sparse_metadata else 0
+        head = (b"GGUF" + struct.pack("<IQQ", version, len(g), part_n_kv + 3) +
+                part_meta + extra)
         info, off = b"", 0
         for name, ne, ttype, _, blob in g:
             info += s(name) + struct.pack("<I", len(ne))
