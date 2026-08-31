@@ -94,3 +94,29 @@ The LM Studio failure mode the spec cites (a shipped Metal 4 self-test that
 failed on real M5 Macs and silently fell back, costing 2-3x prefill with only
 a log line) remains the governing design constraint for the admission test:
 fail loud, at load, defaulting to the known-good path.
+
+## Same-host llama.cpp anchor (completed later 2026-08-31)
+
+The missing denominator is now measured on this host and exact GGUF. Official
+llama.cpp commit `010be9683afabe14ce299197b38c329f94bae568` was built Release,
+native arm64, Metal enabled, with AppleClang 21.0.0. Five repetitions through
+`llama-bench`, full GPU offload, batch 2048 / ubatch 512:
+
+| prompt tokens | tensor API tok/s | tensor disabled tok/s | tensor speedup |
+|---:|---:|---:|---:|
+| 128 | 3,066.21 | 1,784.18 | 1.72x |
+| 512 | 5,797.53 | 2,028.69 | 2.86x |
+| 1,024 | 5,660.47 | 2,003.44 | 2.83x |
+| 2,048 | 5,419.74 | 1,937.17 | 2.80x |
+
+The enabled run's device probe reports `has tensor = true`; the disabled arm
+uses llama.cpp's explicit `GGML_METAL_TENSOR_DISABLE=1` control and reports
+`has tensor = false`. This is a behavioral A/B of the same binary, model, and
+host—not a comparison across projects or artifacts.
+
+The tensor path is a real ~2.8x prefill lever at the saturated prompt sizes.
+Runner's measured ~1,060 tok/s is therefore about 5.1x behind the tensor-enabled
+reference, not the provisional 7.1x inferred from the unmeasured 7,500 figure,
+and not the original ~13x trigger. The admission spike remains justified: the
+reference proves both that MPP works on this machine and that disabling it
+removes most of the reference's advantage over its own simdgroup path.
