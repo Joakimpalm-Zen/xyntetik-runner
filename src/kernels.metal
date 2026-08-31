@@ -1739,6 +1739,13 @@ kernel void k_moe_route(device const float *logits [[buffer(0)]],
     for (int s = 0; s < used; s++) tw[s] /= denom;
 }
 
+kernel void k_trace_copy_f32(device const float *src [[buffer(0)]],
+                             device float       *dst [[buffer(1)]],
+                             constant int       &n   [[buffer(2)]],
+                             uint i [[thread_position_in_grid]]) {
+    if ((int)i < n) dst[i] = src[i];
+}
+
 struct moe_args {
     int   n_in;
     int   n_out;

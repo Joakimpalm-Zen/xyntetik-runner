@@ -36,7 +36,7 @@ def moe_fixture_prefix(tmp_path_factory):
 
 
 def _run(runner, model, gpu, *, stats=False, route_trace=False,
-         route_batch=True, nan_trace=None):
+         route_batch=True, nan_trace=None, full_trace=None):
     env = dict(os.environ, RUNNER_METAL_MM="0", RUNNER_METAL_ATTN_COOP="0")
     if stats:
         env["RUNNER_METAL_STATS"] = "1"
@@ -45,6 +45,8 @@ def _run(runner, model, gpu, *, stats=False, route_trace=False,
         env["RUNNER_METAL_MOE_BATCH"] = "1" if route_batch else "0"
     if nan_trace is not None:
         env["RUNNER_METAL_NAN_TRACE"] = str(nan_trace)
+    if full_trace is not None:
+        env["RUNNER_MOE_TRACE"] = str(full_trace)
     return subprocess.run(
         [runner, "-m", model, "-p", PROMPT, "-n", "1", "-b", "8",
          "--temp", "0", "--gpu", gpu],
@@ -80,6 +82,31 @@ def test_batched_routes_are_byte_identical_to_serial_routes(
     batched_routes = pattern.findall(batched.stderr)
     assert serial_routes, serial.stderr.decode(errors="replace")
     assert serial_routes == batched_routes
+
+
+def test_full_router_logits_survive_metal_layer_reuse(
+        runner_bin, moe_fixture_prefix, tmp_path):
+    model = pathlib.Path(f"{moe_fixture_prefix}.moe4.gguf")
+    trace = tmp_path / "routes.jsonl"
+    _run(runner_bin, model, "auto", full_trace=trace)
+    rows = [json.loads(line) for line in trace.read_text().splitlines()]
+    assert rows
+    positions = {row["pos"] for row in rows}
+    assert len(positions) >= 8
+    assert {(row["pos"], row["layer"]) for row in rows} == {
+        (pos, layer) for pos in positions for layer in range(2)
+    }
+    for row in rows:
+        assert len(row["logits"]) == 4
+        assert len(row["experts"]) == 2
+        assert len(row["gates"]) == 2
+        assert all(isinstance(value, float) for value in row["logits"])
+    # The two layers carry different routers. If the backend merely reads the
+    # reused live buffer after completion, every layer would contain the last
+    # layer's vector and this independent-lifetime assertion fails.
+    by_pos = {(row["pos"], row["layer"]): row for row in rows}
+    assert any(by_pos[pos, 0]["logits"] != by_pos[pos, 1]["logits"]
+               for pos in positions)
 
 
 @pytest.mark.parametrize("level", [3, 4])

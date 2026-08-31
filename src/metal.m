@@ -33,7 +33,7 @@ typedef struct {
     id<MTLComputePipelineState> p_attn_coop, p_attn_chunk_coop;  // cooperative KV score read
     id<MTLComputePipelineState> p_silu, p_gelu, p_add, p_scale;
     id<MTLComputePipelineState> p_sigmul;   // attention output gate (x *= sigmoid(g))
-    id<MTLComputePipelineState> p_moe_route, p_moe_actmul, p_moe_sum;
+    id<MTLComputePipelineState> p_moe_route, p_moe_actmul, p_moe_sum, p_trace_copy;
     id<MTLComputePipelineState> p_mv[METAL_TYPE_SLOTS];       // indexed by ggml type
     id<MTLComputePipelineState> p_mm[METAL_TYPE_SLOTS];       // tiled prefill GEMM
     id<MTLComputePipelineState> p_tensor[METAL_TYPE_SLOTS];   // Metal 4 MPP prefill
@@ -63,6 +63,7 @@ typedef struct {
     id<MTLBuffer> agate;             // [n][q_dim] attention output gate scratch
     id<MTLBuffer> att_acc, att_ms;   // chunked-decode partials
     id<MTLBuffer> moe_logits, moe_sel, moe_selw, moe_hb, moe_hb2, moe_eout;
+    id<MTLBuffer> moe_trace_logits;
     id<MTLBuffer> inv_freq, inv_freq_local, out_norm, dummy;
     id<MTLBuffer> *ppn;                 // gemma4 E-series per-layer post_norm
     id<MTLBuffer> ple, ple_tmp;         // [n][n_layer][P] slices, [n][P] gate
@@ -195,6 +196,7 @@ static void gpu_release_state(gpu_t *g, int n_layer) {
                              g->q, g->kt, g->vt, g->hb, g->hb2, g->att,
                              g->logits, g->att_acc, g->att_ms,
                              g->moe_logits, g->moe_sel, g->moe_selw,
+                             g->moe_trace_logits,
                              g->moe_hb, g->moe_hb2, g->moe_eout,
                              g->inv_freq, g->inv_freq_local, g->out_norm,
                              g->dummy, g->suppress, g->ple, g->ple_tmp,
@@ -214,7 +216,7 @@ static void gpu_release_state(gpu_t *g, int n_layer) {
     [g->p_sigmul release];
     [g->p_scale release];
     [g->p_moe_route release]; [g->p_moe_actmul release];
-    [g->p_moe_sum release];
+    [g->p_moe_sum release]; [g->p_trace_copy release];
     [g->queue release];
     [g->dev release];
     free(g);
@@ -319,6 +321,7 @@ static bool metal_ensure_batch(gpu_t *g, model_t *m, int n) {
     if (m->attn_out_gate)
         agate = new_f32_scratch(g->dev, nb * (size_t)q_dim);
     id<MTLBuffer> moe_logits = nil, moe_sel = nil, moe_selw = nil;
+    id<MTLBuffer> moe_trace_logits = nil;
     id<MTLBuffer> moe_hb = nil, moe_hb2 = nil, moe_eout = nil;
     if (m->n_expert > 0) {
         size_t route_slots = nb * (size_t)m->n_expert_used *
@@ -332,6 +335,9 @@ static bool metal_ensure_batch(gpu_t *g, model_t *m, int n) {
         moe_hb     = new_f32_scratch(g->dev, slots * moe_ff);
         moe_hb2    = new_f32_scratch(g->dev, slots * moe_ff);
         moe_eout   = new_f32_scratch(g->dev, slots * (size_t)m->n_embd);
+        if (getenv("RUNNER_MOE_TRACE"))
+            moe_trace_logits = new_f32_scratch(g->dev, nb * (size_t)m->n_layer *
+                                                        (size_t)m->n_expert);
     }
     if (!metal_buffer_ok(x) || !metal_buffer_ok(xb) || !metal_buffer_ok(xb2) ||
         !metal_buffer_ok(q) || !metal_buffer_ok(kt) || !metal_buffer_ok(vt) ||
@@ -342,13 +348,15 @@ static bool metal_ensure_batch(gpu_t *g, model_t *m, int n) {
         (m->n_expert > 0 &&
          (!metal_buffer_ok(moe_logits) || !metal_buffer_ok(moe_sel) ||
           !metal_buffer_ok(moe_selw) || !metal_buffer_ok(moe_hb) ||
-          !metal_buffer_ok(moe_hb2) || !metal_buffer_ok(moe_eout)))) {
+          !metal_buffer_ok(moe_hb2) || !metal_buffer_ok(moe_eout) ||
+          (getenv("RUNNER_MOE_TRACE") && !metal_buffer_ok(moe_trace_logits))))) {
         release_buf(x); release_buf(xb); release_buf(xb2); release_buf(q);
         release_buf(kt); release_buf(vt); release_buf(hb); release_buf(hb2);
         release_buf(att); release_buf(logits);
         release_buf(ple); release_buf(ple_tmp); release_buf(agate);
         release_buf(moe_logits); release_buf(moe_sel); release_buf(moe_selw);
         release_buf(moe_hb); release_buf(moe_hb2); release_buf(moe_eout);
+        release_buf(moe_trace_logits);
         return false;
     }
 
@@ -370,9 +378,11 @@ static bool metal_ensure_batch(gpu_t *g, model_t *m, int n) {
         release_buf(g->moe_logits); release_buf(g->moe_sel);
         release_buf(g->moe_selw); release_buf(g->moe_hb);
         release_buf(g->moe_hb2); release_buf(g->moe_eout);
+        release_buf(g->moe_trace_logits);
         g->moe_logits = moe_logits; g->moe_sel = moe_sel;
         g->moe_selw = moe_selw; g->moe_hb = moe_hb;
         g->moe_hb2 = moe_hb2; g->moe_eout = moe_eout;
+        g->moe_trace_logits = moe_trace_logits;
     }
     g->batch_cap = n;
     return true;
@@ -1166,6 +1176,7 @@ bool gpu_init(model_t *m) {
     g->p_moe_route    = mk_pipeline(dev, lib, @"k_moe_route");
     g->p_moe_actmul   = mk_pipeline(dev, lib, @"k_moe_actmul");
     g->p_moe_sum      = mk_pipeline(dev, lib, @"k_moe_sum");
+    g->p_trace_copy   = mk_pipeline(dev, lib, @"k_trace_copy_f32");
     g->p_mm[T_F32]   = mk_pipeline(dev, lib, @"k_mm_f32");
     g->p_mm[T_F16]   = mk_pipeline(dev, lib, @"k_mm_f16");
     g->p_mm[T_Q8_0]  = mk_pipeline(dev, lib, @"k_mm_q8_0");
@@ -1244,7 +1255,8 @@ bool gpu_init(model_t *m) {
         !g->p_attn_chunk || !g->p_attn_comb ||
         !g->p_silu || !g->p_gelu || !g->p_add || !g->p_scale || !g->p_sigmul ||
         !g->queue || !g->p_qknorm || !g->p_headnorm ||
-        !g->p_moe_route || !g->p_moe_actmul || !g->p_moe_sum)
+        !g->p_moe_route || !g->p_moe_actmul || !g->p_moe_sum ||
+        !g->p_trace_copy)
         return gpu_init_fail(m, g, lib, "pipeline allocation");
     // Admission and the pipeline tables must agree BY CONSTRUCTION rather than
     // by two hand-kept lists. enc_mv and enc_moe_mv index p_mv[]/p_moe_mv[] by
@@ -1848,6 +1860,21 @@ static void enc_moe_route(gpu_t *g, id<MTLComputeCommandEncoder> e,
       threadsPerThreadgroup:MTLSizeMake(32, 1, 1)];
 }
 
+static void enc_moe_trace_logits(gpu_t *g, id<MTLComputeCommandEncoder> e,
+                                 int layer, int tokens, int ne) {
+    if (!g->moe_trace_logits) return;
+    int count = tokens * ne;
+    [e setComputePipelineState:g->p_trace_copy];
+    [e setBuffer:g->moe_logits offset:0 atIndex:0];
+    [e setBuffer:g->moe_trace_logits
+          offset:(NSUInteger)((size_t)layer * (size_t)count * sizeof(float))
+          atIndex:1];
+    [e setBytes:&count length:sizeof(count) atIndex:2];
+    g_disp.moe++;
+    [e dispatchThreads:MTLSizeMake(count, 1, 1)
+      threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+}
+
 static void enc_moe_mv(gpu_t *g, id<MTLComputeCommandEncoder> e, model_t *m,
                        gguf_tensor *base, uint64_t estride,
                        id<MTLBuffer> x, NSUInteger x_off,
@@ -2099,6 +2126,7 @@ static void enc_moe_ffn_batch(gpu_t *g, id<MTLComputeCommandEncoder> e,
         enc_mv(g, e, m, ly->ffn_gate_inp, g->xb,
                foff((size_t)b * xdim), g->moe_logits,
                foff((size_t)b * ne), m->n_embd, ne, g->gib[l]);
+    enc_moe_trace_logits(g, e, l, n, ne);
     NSUInteger sel_off = foff((size_t)l * n * used);
     if (metal_moe_batch_on()) {
         enc_moe_route(g, e, ne, used, n, 0, sel_off);
@@ -2152,6 +2180,7 @@ static void enc_gemma_moe_ffn_batch(gpu_t *g, id<MTLComputeCommandEncoder> e,
         enc_mv(g, e, m, ly->ffn_gate_inp, g->q,
                foff((size_t)b * xdim), g->moe_logits,
                foff((size_t)b * ne), n_embd, ne, nil);
+    enc_moe_trace_logits(g, e, l, n, ne);
     NSUInteger sel_off = foff((size_t)l * n * used);
     if (metal_moe_batch_on()) {
         enc_moe_route(g, e, ne, used, n, 0, sel_off);
@@ -2256,6 +2285,44 @@ static void metal_moe_route_trace(gpu_t *g, model_t *m, int n) {
             fputc('\n', stderr);
         }
     }
+}
+
+static FILE *metal_moe_trace_file(void) {
+    static FILE *fp;
+    static int opened;
+    if (!opened) {
+        opened = 1;
+        const char *path = getenv("RUNNER_MOE_TRACE");
+        if (path && *path) {
+            fp = fopen(path, "a");
+            if (!fp) fprintf(stderr, "warning: RUNNER_MOE_TRACE=%s: could not open for append\n", path);
+        }
+    }
+    return fp;
+}
+
+static void metal_moe_full_trace(gpu_t *g, model_t *m, int n, int pos) {
+    FILE *fp = metal_moe_trace_file();
+    if (!fp || !g->moe_trace_logits || m->n_expert <= 0) return;
+    const float *logits = (const float *)g->moe_trace_logits.contents;
+    const int *sel = (const int *)g->moe_sel.contents;
+    const float *selw = (const float *)g->moe_selw.contents;
+    int ne = m->n_expert, used = m->n_expert_used;
+    for (int l = 0; l < m->gpu_layers; l++) {
+        if (!m->layers[l].is_moe && !m->layers[l].moe_gemma) continue;
+        for (int t = 0; t < n; t++) {
+            size_t lr = ((size_t)l * n + t) * ne;
+            size_t sr = ((size_t)l * n + t) * used;
+            fprintf(fp, "{\"pos\":%d,\"layer\":%d,\"experts\":[", pos + t, l);
+            for (int s = 0; s < used; s++) fprintf(fp, "%s%d", s ? "," : "", sel[sr + s]);
+            fprintf(fp, "],\"gates\":[");
+            for (int s = 0; s < used; s++) fprintf(fp, "%s%.9g", s ? "," : "", selw[sr + s]);
+            fprintf(fp, "],\"norms\":[],\"logits\":[");
+            for (int x = 0; x < ne; x++) fprintf(fp, "%s%.9g", x ? "," : "", logits[lr + x]);
+            fputs("]}\n", fp);
+        }
+    }
+    fflush(fp);
 }
 
 static float *gpu_forward_native_batch(model_t *m, const int32_t *tokens,
@@ -2609,6 +2676,7 @@ static float *gpu_forward_native_batch(model_t *m, const int32_t *tokens,
     // meaningless, including the ones written before the bad dispatch.
     if (g->bind_failed) return NULL;
     metal_moe_route_trace(g, m, n);
+    metal_moe_full_trace(g, m, n, pos);
     if (metal_env_on("RUNNER_METAL_STATS")) {
         unsigned long tot = g_disp.tensor + g_disp.mm + g_disp.mv + g_disp.mvf +
                             g_disp.rmsnorm + g_disp.qknorm + g_disp.headnorm +

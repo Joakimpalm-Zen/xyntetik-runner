@@ -1086,6 +1086,13 @@ or dump internals for the tools under `scripts/` (`moe-prune-plan.py` consumes
 not interface: names, formats and defaults change without notice, and nothing
 outside this repository should depend on them.
 
+On Metal, `RUNNER_MOE_TRACE=routes.jsonl` snapshots every MoE layer's complete
+pre-softmax router-logit vector on the device before the live scratch is reused,
+then writes it with the selected experts and gates after the command buffer
+finishes. Capture adds one device copy dispatch per MoE layer and a
+`batch × layers × experts` shared buffer only while enabled; the unset path
+allocates neither. This is an experiment instrument, not a serving default.
+
 GGUF exports may opt into the versioned `gridcore.agent.*` profile. Runner
 validates its protocol/tokenizer versions, schema identity, digest, and
 required runtime features before allocating model state; unknown requirements

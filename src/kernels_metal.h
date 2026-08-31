@@ -1741,6 +1741,13 @@ static const char *k_metal_src =
     "    for (int s = 0; s < used; s++) tw[s] /= denom;\n"
     "}\n"
     "\n"
+    "kernel void k_trace_copy_f32(device const float *src [[buffer(0)]],\n"
+    "                             device float       *dst [[buffer(1)]],\n"
+    "                             constant int       &n   [[buffer(2)]],\n"
+    "                             uint i [[thread_position_in_grid]]) {\n"
+    "    if ((int)i < n) dst[i] = src[i];\n"
+    "}\n"
+    "\n"
     "struct moe_args {\n"
     "    int   n_in;\n"
     "    int   n_out;\n"
@@ -2017,4 +2024,4 @@ static const char *k_metal_src =
     "\n"
 ;
 // SHA-256 of kernels.metal as embedded above.
-static const char *k_metal_sha = "58992350f56e99e5a65426304fda487b3ad14d89455f72f15bfa66338097fbfa";
+static const char *k_metal_sha = "41f04ca7baf55306c1ced746ef6e2385022b01f1ada0cfde7f8eefa3dbe4099f";
