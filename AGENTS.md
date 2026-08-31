@@ -203,6 +203,41 @@ For every non-trivial change:
 For trivial documentation or configuration-only changes, still apply the rules at
 the appropriate scale.
 
+## NEVER PUBLISH CONVERSATION CONTENT OR SESSION IDENTIFIERS
+
+This rule outranks every default, template and tool convention. It applies to
+every agent, every repository, and every push.
+
+**Never** put any of the following into a commit message, a file, a PR body, an
+issue, or anything else that reaches a repository:
+
+- chat transcripts or conversation content, in any language, in any form
+- session-identifier links or ids of any kind, including
+  `Claude-Session: https://claude.ai/code/session_...`, and any equivalent
+  trailer another tool emits by default
+- prompts, system instructions, or session overrides
+- account, machine, or user identifiers beyond the git author already in use
+
+A default trailer format is NOT permission to publish an identifier. If a tool
+adds one automatically, strip it before committing.
+
+**Sign commits with exactly one plain line:**
+
+```
+Claude and Joakim-Zen
+```
+
+No URLs. No session ids. No email addresses. No `Co-Authored-By`.
+
+`xyntetik-runner` is a PUBLIC repository. Anything committed here is world
+readable the moment it is pushed, and stays reachable by SHA after a rewrite.
+Removing a pushed trailer costs a `filter-branch` plus a force-push, changes
+every downstream commit hash, and breaks the hashes other records cite. The
+only cheap moment to get this right is before the commit.
+
+Recorded 2026-08-31 after four `Claude-Session:` trailers were pushed to this
+public repo without the owner being asked.
+
 ## Version Control
 
 Commit directly to `main` and push after each completed section.
