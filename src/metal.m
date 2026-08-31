@@ -2032,6 +2032,11 @@ static void enc_gemma_moe_ffn_batch(gpu_t *g, id<MTLComputeCommandEncoder> e,
                   n_embd, m->rms_eps, n, xdim, xdim);
     enc_elem_n(g, e, g->p_add, g->xb, 0, g->q, 0,
                n_embd, n, xdim, xdim);
+    // GP may end the encoder supplied by the caller and replace it. Hand the
+    // live encoder back before the caller emits the post-FFN probes/norms;
+    // otherwise trace levels 3 and 4 continue through an already-ended
+    // encoder even though ordinary inference (trace level 0) is unaffected.
+    if (ep && metal_nan_stage() >= 3) *ep = e;
 #undef GP
 }
 
