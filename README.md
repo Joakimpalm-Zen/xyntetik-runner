@@ -1818,6 +1818,12 @@ during an authenticated evidence run.
   of mean logit range (0.002 limit). A 731-token prefill plus 128-token greedy
   decode ran coherently at 42.25/10.57 tok/s; swap ended at 0.25 MB. Evidence:
   [docs/llama33-70b-metal-m5max-2026-08-31.md](docs/llama33-70b-metal-m5max-2026-08-31.md).
+- **Qwen3-30B-A3B Q8_0 on Metal: validated 2026-08-31.** All 48 layers and
+  the native 128-expert Q8_0 MoE route run on Metal. CPU/Metal identity passes
+  over 3,646,464 logits at 0.00109 of mean logit range (0.002 limit). A
+  732-token prefill plus 128-token greedy decode ran coherently at
+  183.39/65.45 tok/s with 0.25 MB swap. Evidence:
+  [docs/qwen3-30b-a3b-metal-m5max-2026-08-31.md](docs/qwen3-30b-a3b-metal-m5max-2026-08-31.md).
 - Gemma-4-26B-A4B QAT's old 16-token CPU/CUDA result is not a substitute for
   the manifest's pending 128-token re-verification.
 - **Gemma-4-26B-A4B on Metal: fixed 2026-08-31.** The routed-expert GELU
