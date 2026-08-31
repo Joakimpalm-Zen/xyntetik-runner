@@ -1243,6 +1243,39 @@ else
 	@echo "metal gemma4 hetero smoke skipped: macOS-only backend"
 endif
 
+# Big-model Metal identity. The fixture gates above prove the gemma4/gpt-oss
+# MoE wiring at sub-1 MiB geometry; they cannot prove the kernels at real
+# expert-bundle geometry. On 2026-08-31 a real artifact diverged on a host
+# where every fixture gate passed — see
+# docs/metal-gemma4-moe-divergence-2026-08-31.md. Opt-in by path, so a
+# checkout without weights stays green:
+#   make test-metal-bigmodel BIGMODEL=models/gpt-oss-20b-MXFP4.gguf
+BIGMODEL ?=
+test-metal-bigmodel: runner
+ifeq ($(shell uname -s),Darwin)
+	@set -e; \
+	if [ -z "$(BIGMODEL)" ]; then \
+		echo "metal big-model identity skipped: set BIGMODEL=<path.gguf>"; \
+	elif [ ! -f "$(BIGMODEL)" ]; then \
+		echo "metal big-model identity skipped: $(BIGMODEL) not found"; \
+	elif ./$(RUNNER_EXE) --caps | $(PYTHON) -c "import json,sys; d=json.load(sys.stdin); sys.exit(0 if (d.get('gpu') or {}).get('backend') == 'metal' else 1)"; then \
+		./$(RUNNER_EXE) -m "$(BIGMODEL)" -p "The capital of France is" -n 32 --temp 0 --gpu off > metal-bigmodel-cpu.out 2>/dev/null; \
+		./$(RUNNER_EXE) -m "$(BIGMODEL)" -p "The capital of France is" -n 32 --temp 0 --gpu auto > metal-bigmodel-gpu.out 2>/dev/null; \
+		if cmp -s metal-bigmodel-cpu.out metal-bigmodel-gpu.out; then \
+			echo "metal big-model identity ok: $(BIGMODEL)"; \
+		else \
+			echo "FAIL: CPU/Metal divergence on $(BIGMODEL)"; \
+			echo "  cpu: $$(head -c 120 metal-bigmodel-cpu.out)"; \
+			echo "  gpu: $$(head -c 120 metal-bigmodel-gpu.out)"; \
+			exit 1; \
+		fi; \
+	else \
+		echo "metal big-model identity skipped: no Metal device reported by --caps"; \
+	fi
+else
+	@echo "metal big-model identity skipped: macOS-only backend"
+endif
+
 test-metal-gelu-overflow: runner
 ifeq ($(shell uname -s),Darwin)
 	@set -e; \
@@ -1760,7 +1793,7 @@ test-makefile-sane:
 
 .PHONY: template-conformance template-conformance-refresh template-conformance-baseline template-conformance-harmony-oracle
 .PHONY: test-gpu-stub
-.PHONY: FORCE makefile-noop test-python-deps test-makefile-sane fixture-scale-note clean debug ptx test test-bare-invocation test-help-interface test-shader-embed test-metal-shader-gate test-apertus test-moe test-prune-experts test-metal-fallback test-metal-prefill test-metal-kquant test-metal-decode-only test-metal-split test-metal-bind-failure test-metal-kv-q8 test-metal-moe test-metal-gptoss-moe test-metal-gemma4-moe test-metal-gemma4-hetero test-metal-gelu-overflow test-metal-eseries test-metal-swa smoke release-check test-truncation fuzz fuzz-build fuzz-run test-shared-asan test-shared-noid test-split-guard test-swap-race
+.PHONY: FORCE makefile-noop test-python-deps test-makefile-sane fixture-scale-note clean debug ptx test test-bare-invocation test-help-interface test-shader-embed test-metal-shader-gate test-apertus test-moe test-prune-experts test-metal-fallback test-metal-prefill test-metal-kquant test-metal-decode-only test-metal-split test-metal-bind-failure test-metal-kv-q8 test-metal-moe test-metal-gptoss-moe test-metal-gemma4-moe test-metal-gemma4-hetero test-metal-bigmodel test-metal-gelu-overflow test-metal-eseries test-metal-swa smoke release-check test-truncation fuzz fuzz-build fuzz-run test-shared-asan test-shared-noid test-split-guard test-swap-race
 
 # Soak harness for the startup/SIGTERM race (test_signal_during_startup). Not
 # in `make test` — it is a diagnostic soak (thousands of spawns), run on demand
