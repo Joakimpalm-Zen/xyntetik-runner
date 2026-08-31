@@ -1833,6 +1833,80 @@ kernel void k_moe_mv_q4_0(MOE_MV_PARAMS) {
     MOE_MV_TAIL;
 }
 
+// q2_K uses the same quarter-superblock decomposition as k_mv_q2_K. Keeping
+// that layout here matters for narrow expert FFNs: a 1536-wide Qwen3 expert
+// has only six whole superblocks, but 24 independent quarters for the lanes.
+kernel void k_moe_mv_q2_K(MOE_MV_PARAMS) {
+    MOE_MV_HEAD;
+    int nb = a.n_in / 256;
+    device const uchar *rw = wbase + (ulong)row * nb * 84;
+    int nq = nb * 4;
+    for (int u = tiisg; u < nq; u += 32) {
+        int b = u >> 2, jj = u & 3;
+        device const uchar *blk = rw + (ulong)b * 84;
+        device const uchar *sc = blk + (jj >> 1) * 8 + (jj & 1) * 4;
+        device const uchar *q  = blk + 16 + (jj >> 1) * 32;
+        float d    = (float)*(device const half *)(blk + 80);
+        float dmin = (float)*(device const half *)(blk + 82);
+        device const float *xp = xp0 + b * 256 + jj * 64;
+        uchar sh0 = (uchar)((jj & 1) * 4), sh1 = (uchar)(sh0 + 2);
+        uchar c0 = sc[0], c1 = sc[1], c2 = sc[2], c3 = sc[3];
+        float d0 = d * (c0 & 0xF), m0 = dmin * (c0 >> 4);
+        float d1 = d * (c1 & 0xF), m1 = dmin * (c1 >> 4);
+        float d2 = d * (c2 & 0xF), m2 = dmin * (c2 >> 4);
+        float d3 = d * (c3 & 0xF), m3 = dmin * (c3 >> 4);
+        float t0 = 0, t1 = 0, t2 = 0, t3 = 0;
+        float sx0 = 0, sx1 = 0, sx2 = 0, sx3 = 0;
+        for (int l = 0; l < 16; l++) {
+            uchar qa = q[l], qb = q[l + 16];
+            float x0 = xp[l], x1 = xp[l + 16], x2 = xp[l + 32], x3 = xp[l + 48];
+            t0 += (float)((qa >> sh0) & 3) * x0; sx0 += x0;
+            t1 += (float)((qb >> sh0) & 3) * x1; sx1 += x1;
+            t2 += (float)((qa >> sh1) & 3) * x2; sx2 += x2;
+            t3 += (float)((qb >> sh1) & 3) * x3; sx3 += x3;
+        }
+        s += d0 * t0 - m0 * sx0 + d1 * t1 - m1 * sx1
+           + d2 * t2 - m2 * sx2 + d3 * t3 - m3 * sx3;
+    }
+    MOE_MV_TAIL;
+}
+
+kernel void k_moe_mv_q3_K(MOE_MV_PARAMS) {
+    MOE_MV_HEAD;
+    int nb = a.n_in / 256;
+    device const uchar *rw = wbase + (ulong)row * nb * 110;
+    int nq = nb * 4;
+    for (int u = tiisg; u < nq; u += 32) {
+        int b = u >> 2, jj = u & 3;
+        device const uchar *blk = rw + (ulong)b * 110;
+        device const uchar *hm  = blk;
+        device const uchar *q   = blk + 32 + (jj >> 1) * 32;
+        float d_all = (float)*(device const half *)(blk + 108);
+        char sc[16];
+        q3k_scales(blk + 96, sc);
+        device const float *xp = xp0 + b * 256 + jj * 64;
+        int si = (jj >> 1) * 8 + (jj & 1) * 4;
+        uchar sh0 = (uchar)((jj & 1) * 4), sh1 = (uchar)(sh0 + 2);
+        uchar m0 = (uchar)(1u << ((jj >> 1) * 4 + (jj & 1) * 2));
+        uchar m1 = (uchar)(m0 << 1);
+        float d0 = d_all * (float)((int)sc[si + 0] - 32);
+        float d1 = d_all * (float)((int)sc[si + 1] - 32);
+        float d2 = d_all * (float)((int)sc[si + 2] - 32);
+        float d3 = d_all * (float)((int)sc[si + 3] - 32);
+        float t0 = 0, t1 = 0, t2 = 0, t3 = 0;
+        for (int l = 0; l < 16; l++) {
+            uchar qa = q[l], qb = q[l + 16];
+            uchar ha = hm[l], hb = hm[l + 16];
+            t0 += (float)((int)((qa >> sh0) & 3) - ((ha & m0) ? 0 : 4)) * xp[l];
+            t1 += (float)((int)((qb >> sh0) & 3) - ((hb & m0) ? 0 : 4)) * xp[l + 16];
+            t2 += (float)((int)((qa >> sh1) & 3) - ((ha & m1) ? 0 : 4)) * xp[l + 32];
+            t3 += (float)((int)((qb >> sh1) & 3) - ((hb & m1) ? 0 : 4)) * xp[l + 48];
+        }
+        s += d0 * t0 + d1 * t1 + d2 * t2 + d3 * t3;
+    }
+    MOE_MV_TAIL;
+}
+
 // The MoE kernels are twins of the dense k_mv_* family and carried the same
 // occupancy defect: a whole 256-weight superblock per lane means nb =
 // n_in/256 lanes work, which is 11 of 32 for a 2816-wide expert. Same fix,

@@ -32,8 +32,17 @@ typedef struct {
     int has_bias, x_stride, y_stride;
 } mm_args_host;
 
+typedef struct {
+    int n_in, n_out;
+    uint64_t w_off, estride;
+    int xs, ys, has_bias, bias_stride, slots_per_token;
+} moe_args_host;
+
+typedef struct { int type; const char *suffix; } moe_kind;
+
 _Static_assert(sizeof(mv_args_host) == 40, "mv_args host/Metal layout drift");
 _Static_assert(sizeof(mm_args_host) == 40, "mm_args host/Metal layout drift");
+_Static_assert(sizeof(moe_args_host) == 48, "moe_args host/Metal layout drift");
 
 // The matvec dispatch geometry src/metal.m uses, restated here because a
 // Metal source embedded as a C string shares no header with its callers: one
@@ -262,6 +271,72 @@ done:
     free(weights_host); free(x_host); free(y_host); free(bias_host); free(decoded);
 }
 
+static void run_moe_case(id<MTLDevice> dev, id<MTLCommandQueue> queue,
+                         id<MTLComputePipelineState> pipeline, int type) {
+    const int n_in = 512, n_out = 13;
+    const size_t w_off = 32, row_size = ggml_row_size(type, n_in);
+    const size_t expert_size = row_size * n_out;
+    uint8_t *weights = calloc(1, w_off + 2 * expert_size);
+    float *x = calloc(n_in, sizeof(float));
+    float *decoded = malloc((size_t)n_in * sizeof(float));
+    float zero_bias[13] = {0};
+    int selected = 1;
+    CHECK(weights && x && decoded, "host MoE allocation for %s", ggml_type_name(type));
+    if (!weights || !x || !decoded) goto done;
+    make_weights(type, weights + w_off, n_in, n_out);
+    make_weights(type, weights + w_off + expert_size, n_in, n_out);
+    for (int i = 0; i < n_in; i++) x[i] = rnd_float();
+
+    id<MTLBuffer> wb = [dev newBufferWithBytes:weights length:w_off + 2 * expert_size
+                                        options:MTLResourceStorageModeShared];
+    id<MTLBuffer> xb = [dev newBufferWithBytes:x length:sizeof(float) * n_in
+                                        options:MTLResourceStorageModeShared];
+    id<MTLBuffer> yb = [dev newBufferWithLength:sizeof(float) * n_out
+                                        options:MTLResourceStorageModeShared];
+    id<MTLBuffer> sb = [dev newBufferWithBytes:&selected length:sizeof selected
+                                        options:MTLResourceStorageModeShared];
+    id<MTLBuffer> bb = [dev newBufferWithBytes:zero_bias length:sizeof zero_bias
+                                        options:MTLResourceStorageModeShared];
+    CHECK(wb && xb && yb && sb && bb, "Metal MoE buffers for %s", ggml_type_name(type));
+    if (wb && xb && yb && sb && bb) {
+        moe_args_host args = { n_in, n_out, w_off, expert_size,
+                               n_in, n_out, 0, n_out, 0 };
+        id<MTLCommandBuffer> cb = [queue commandBuffer];
+        id<MTLComputeCommandEncoder> enc = [cb computeCommandEncoder];
+        [enc setComputePipelineState:pipeline];
+        [enc setBuffer:wb offset:0 atIndex:0];
+        [enc setBuffer:xb offset:0 atIndex:1];
+        [enc setBuffer:yb offset:0 atIndex:2];
+        [enc setBytes:&args length:sizeof args atIndex:3];
+        [enc setBuffer:sb offset:0 atIndex:4];
+        [enc setBuffer:bb offset:0 atIndex:5];
+        [enc dispatchThreadgroups:MTLSizeMake((n_out + 3) / 4, 1, 1)
+          threadsPerThreadgroup:MTLSizeMake(128, 1, 1)];
+        [enc endEncoding];
+        [cb commit];
+        [cb waitUntilCompleted];
+        CHECK(cb.status != MTLCommandBufferStatusError, "Metal MoE dispatch for %s",
+              ggml_type_name(type));
+        const float *got = yb.contents;
+        for (int row = 0; row < n_out; row++) {
+            dequant_row(type, weights + w_off + expert_size + (size_t)row * row_size,
+                        decoded, n_in);
+            double ref = 0, mag = 0;
+            for (int k = 0; k < n_in; k++) {
+                double term = (double)decoded[k] * x[k];
+                ref += term; mag += fabs(term);
+            }
+            double tol = 5e-5 * mag + 2e-5;
+            CHECK(isfinite(got[row]) && fabs(got[row] - ref) <= tol,
+                  "%s moe row=%d got %.9g ref %.9g tol %.3g",
+                  ggml_type_name(type), row, got[row], ref, tol);
+        }
+    }
+    [wb release]; [xb release]; [yb release]; [sb release]; [bb release];
+done:
+    free(weights); free(x); free(decoded);
+}
+
 int main(void) {
     @autoreleasepool {
         f16_init();
@@ -316,6 +391,17 @@ int main(void) {
             }
             [mv release]; [mm release];
         }
+        const moe_kind moe_kinds[] = {
+            { T_Q2_K, "q2_K" }, { T_Q3_K, "q3_K" },
+        };
+        for (size_t i = 0; i < sizeof moe_kinds / sizeof *moe_kinds; i++) {
+            const moe_kind *k = &moe_kinds[i];
+            char name[32];
+            snprintf(name, sizeof name, "k_moe_mv_%s", k->suffix);
+            id<MTLComputePipelineState> moe = make_pipeline(dev, lib, name);
+            if (moe) run_moe_case(dev, queue, moe, k->type);
+            [moe release];
+        }
         [queue release];
         [lib release];
         [dev release];
@@ -325,6 +411,6 @@ int main(void) {
         return 1;
     }
     printf("metal kernels: q2_K/q3_K/q4_K/q6_K/q4_0/q8_0/f16/f32 "
-           "mv+mm shape sweep ok\n");
+           "mv+mm shape sweep; q2_K/q3_K MoE expert-offset parity ok\n");
     return 0;
 }

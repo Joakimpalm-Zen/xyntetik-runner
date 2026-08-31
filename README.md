@@ -1683,6 +1683,11 @@ loader accepts both duplicated-metadata shards and the standard compact form
 where only part one carries model metadata; explicit contradictions between
 parts are still rejected.
 
+Sparse-MoE expert matvec kernels cover `q2_K`, `q3_K`, `q4_0`, `q4_K`,
+`q5_K`, `q6_K`, `q8_0`, `mxfp4`, `f16`, and `f32`. This list is narrower than
+the dense quant list: a type needs a dedicated indirect expert kernel, not
+merely dense matvec/matmul support.
+
 | GGUF `general.architecture` | Notes |
 |---|---|
 | `llama`, `mistral`, `smollm`, `stablelm` | Llama-style dense families with family tokenizers/templates. |
@@ -1827,6 +1832,14 @@ during an authenticated evidence run.
   732-token prefill plus 128-token greedy decode ran coherently at
   183.39/65.45 tok/s with 0.25 MB swap. Evidence:
   [docs/qwen3-30b-a3b-metal-m5max-2026-08-31.md](docs/qwen3-30b-a3b-metal-m5max-2026-08-31.md).
+- **Qwen3-235B-A22B Q2_K mix on Metal: validated with caveat 2026-09-01.**
+  Runner merges the two standard compact-metadata shards into one 85.69 GB
+  file with `--quant keep`; Q2_K and Q3_K expert kernels then fully offload all
+  94 layers. Direct kernels match scalar dequantization, and a 732/128 run is
+  coherent at 24.31/21.07 tok/s with 1.12 MB swap. The broad CPU/Metal logit
+  gate does **not** pass (0.00332 versus 0.002) after a top-8 route first flips
+  at token 4/layer 12, so this is not claimed as cross-backend identity.
+  Evidence: [docs/qwen3-235b-metal-m5max-2026-09-01.md](docs/qwen3-235b-metal-m5max-2026-09-01.md).
 - Gemma-4-26B-A4B QAT's old 16-token CPU/CUDA result is not a substitute for
   the manifest's pending 128-token re-verification.
 - **Gemma-4-26B-A4B on Metal: fixed 2026-08-31.** The routed-expert GELU

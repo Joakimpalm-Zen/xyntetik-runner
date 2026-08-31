@@ -479,7 +479,8 @@ bool gpu_quant_ok(int type) { return gpu_type_ok(type); }
 static bool metal_moe_type_ok(int type) {
     switch (type) {
         case T_F32: case T_F16: case T_Q8_0: case T_Q4_0:
-        case T_Q4_K: case T_Q5_K: case T_Q6_K: case T_MXFP4:
+        case T_Q2_K: case T_Q3_K: case T_Q4_K: case T_Q5_K: case T_Q6_K:
+        case T_MXFP4:
             return true;
         default:
             return false;
@@ -1216,6 +1217,8 @@ bool gpu_init(model_t *m) {
     g->p_moe_mv[T_F16]  = mk_pipeline(dev, lib, @"k_moe_mv_f16");
     g->p_moe_mv[T_Q8_0] = mk_pipeline(dev, lib, @"k_moe_mv_q8_0");
     g->p_moe_mv[T_Q4_0] = mk_pipeline(dev, lib, @"k_moe_mv_q4_0");
+    g->p_moe_mv[T_Q2_K] = mk_pipeline(dev, lib, @"k_moe_mv_q2_K");
+    g->p_moe_mv[T_Q3_K] = mk_pipeline(dev, lib, @"k_moe_mv_q3_K");
     g->p_moe_mv[T_Q4_K] = mk_pipeline(dev, lib, @"k_moe_mv_q4_K");
     g->p_moe_mv[T_Q5_K] = mk_pipeline(dev, lib, @"k_moe_mv_q5_K");
     g->p_moe_mv[T_Q6_K] = mk_pipeline(dev, lib, @"k_moe_mv_q6_K");
