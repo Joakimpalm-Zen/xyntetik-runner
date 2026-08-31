@@ -984,11 +984,13 @@ endif
 # FAILURE, not a skip: a parity check with both sides on the CPU compares
 # nothing at all, which is the exact defect class the 2026-08-09 gate audit
 # found three times over.
-KQUANT_MODELS ?= $(wildcard models/tinyllama-q2k.gguf models/*Q2_K*.gguf \
-                   models/*q2_k*.gguf models/*IQ4_XS*.gguf models/*iq4xs*.gguf \
-                   models/*-f16*.gguf models/*-F16*.gguf \
-                   models/*_f16*.gguf models/*_F16*.gguf \
-                   models/*bf16*.gguf models/*BF16*.gguf)
+# Never glob every downloaded model into `make test`. A split part makes the
+# Metal arm fall back to CPU, a routed MoE may legitimately answer to a
+# sensitivity floor rather than byte identity, and a 235B checkpoint turns a
+# focused kernel smoke into an unbounded multi-hour gate. The small pinned
+# filename is the automatic fixture; operators can still opt a specific
+# standalone dense artifact in with KQUANT_MODELS=/path/model.gguf.
+KQUANT_MODELS ?= $(wildcard models/tinyllama-q2k.gguf)
 test-metal-kquant: runner
 ifeq ($(shell uname -s),Darwin)
 	@set -e; \
