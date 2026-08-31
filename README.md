@@ -1800,7 +1800,11 @@ during an authenticated evidence run.
   deviation against the 0.002 gate, 54.65 tok/s prefill and 64.59 tok/s
   sustained decode, with zero swap. See the
   [full bisection](docs/cuda-gptoss-divergence-2026-08-19.md) and the
-  [M5 evidence](docs/gpt-oss-120b-metal-m5max-2026-08-31.md).
+  [M5 evidence](docs/gpt-oss-120b-metal-m5max-2026-08-31.md). On the exact
+  same 120B GGUF and 715/128-token shape, llama.cpp `010be968` reaches
+  1,607.70/102.76 tok/s prefill/decode (752.65/102.27 with its tensor API
+  disabled). Runner's 54.65/64.59 result makes the remaining limitation
+  explicit: Metal MoE prefill grouping, not merely Metal 4 dense GEMM.
 - Gemma-4-26B-A4B QAT's old 16-token CPU/CUDA result is not a substitute for
   the manifest's pending 128-token re-verification.
 - **Gemma-4-26B-A4B on Metal: fixed 2026-08-31.** The routed-expert GELU

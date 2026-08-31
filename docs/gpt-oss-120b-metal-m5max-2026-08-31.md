@@ -45,3 +45,23 @@ Both cold requests reported roughly 1.1-1.2 million major page-ins. That is
 file-backed weight demand paging, not swap, and is expected after load/reload;
 the important lifecycle result is that the Metal allocations and residency
 identity disappeared while the server process remained alive.
+
+## Same-GGUF llama.cpp denominator
+
+Official llama.cpp `010be9683afabe14ce299197b38c329f94bae568`, Release/native
+Metal build, ran the exact artifact at 715 prompt and 128 decode tokens, three
+repetitions. Batch was 2048 and ubatch 512; all layers were on Metal.
+
+| engine/path | prefill tok/s | decode tok/s |
+|---|---:|---:|
+| Runner `86e47bd`, batch 512 | 54.65 | 64.59 |
+| llama.cpp Metal 4 tensor | 1,607.70 | 102.76 |
+| llama.cpp tensor disabled | 752.65 | 102.27 |
+
+The llama.cpp tensor API is a 2.14x prefill lever at 120B and effectively
+irrelevant to decode. More importantly, Runner trails llama.cpp's *non-tensor*
+prefill by 13.8x and its tensor path by 29.4x. Metal 4 cannot explain or close
+the dominant gap. Runner's Metal MoE prefill census still contains hundreds of
+matvec dispatches; batching/grouping expert work is therefore the next
+mechanism to investigate, rather than more dense Q4_K tensor tuning. Decode is
+closer but still 0.63x llama.cpp.
