@@ -1647,6 +1647,22 @@ entirely, so the certified greedy paths are unaffected either way.
 
 `runner --caps` publishes the architecture IDs admitted by the current binary:
 
+**Metal quant-type coverage.** Both a matvec and a matmul kernel exist for
+`q2_K`, `q3_K`, `q4_0`, `q4_K`, `q6_K`, `q8_0`, `iq4_nl`, `iq4_xs`, `mxfp4`,
+`f16`, `bf16` and `f32`. **`q4_1`, `q5_0`, `q5_1` and `q5_K` ship `k_mv_*`
+only** — they decode on Metal but have no `k_mm_*`, so prefill on those types
+does not use the Metal matmul path. Requantizing such a file to `q4_K` or
+`q8_0` (`--quantize OUT --quant q4_k`) is the fix when prompt throughput
+matters. Quantization changes only the weight encoding: it cannot give an
+architecture a Metal path it lacks, because those gaps are missing kernels for
+operations (SSM scan, Gated DeltaNet, weight-normed routers, gate-less shared
+experts), not missing quant support.
+
+A **sharded** GGUF is refused for Metal offload at load and runs on the CPU; a
+single file still offloads (`make test-metal-split`). Rewrite shards to one
+file with `--quantize OUT --quant keep`, which preserves the existing tensor
+types, before drawing any conclusion about Metal from a split artifact.
+
 | GGUF `general.architecture` | Notes |
 |---|---|
 | `llama`, `mistral`, `smollm`, `stablelm` | Llama-style dense families with family tokenizers/templates. |
