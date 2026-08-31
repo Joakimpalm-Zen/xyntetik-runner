@@ -1795,8 +1795,12 @@ during an authenticated evidence run.
   defect remains; gpt-oss is gated at its measured sensitivity floor, not at
   dense-model logit identity. `gpt-oss-120b-MXFP4` (63 GB, unable to fully
   offload on a 24 GB MIG) reproduces 0.00245 at 4 GPU layers - the same
-  amplification effect at greater depth. Full bisection:
-  [docs/cuda-gptoss-divergence-2026-08-19.md](docs/cuda-gptoss-divergence-2026-08-19.md).
+  amplification effect at greater depth. It is now also validated fully
+  resident on a 128 GB M5 Max: 36/36 Metal layers, 0.000215 mean logit-range
+  deviation against the 0.002 gate, 54.65 tok/s prefill and 64.59 tok/s
+  sustained decode, with zero swap. See the
+  [full bisection](docs/cuda-gptoss-divergence-2026-08-19.md) and the
+  [M5 evidence](docs/gpt-oss-120b-metal-m5max-2026-08-31.md).
 - Gemma-4-26B-A4B QAT's old 16-token CPU/CUDA result is not a substitute for
   the manifest's pending 128-token re-verification.
 - **Gemma-4-26B-A4B on Metal: fixed 2026-08-31.** The routed-expert GELU
