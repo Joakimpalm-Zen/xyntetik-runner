@@ -3595,4 +3595,3 @@ bool gpu_batch_decode(gpu_batch *b, const int *idx, const int32_t *tok,
         out[c] = (float *)b->logits_n.contents + (size_t)c * b->n_vocab;
     return true;
 }
-
