@@ -113,13 +113,16 @@ int main(int argc, char **argv) {
     if (argc > 3) g_n_batch = atoi(argv[3]) > 0 ? atoi(argv[3]) : N_BATCH;
 
     f16_init();
-    // Pin the identity route. The tiled prefill GEMM (RUNNER_METAL_MM) and the
-    // reassociating decode matvec (RUNNER_METAL_MV) are deliberately NOT
-    // byte-identical -- they answer to test_tc_tol.c and test_mv_tol.c. This
-    // gate is about the contract they are exceptions to, so it forces both
+    // Pin the identity route. The tiled prefill GEMM (RUNNER_METAL_MM), the
+    // reassociating decode matvec (RUNNER_METAL_MV), and the grouped-MMA MoE
+    // prefill (RUNNER_METAL_MOE_MM, default on since the 2026-09-01
+    // ratification) are deliberately NOT byte-identical -- they answer to
+    // test_tc_tol.c, test_mv_tol.c, and test_moe_mm_ab.c respectively. This
+    // gate is about the contract they are exceptions to, so it forces all
     // off; leaving them at their defaults would make it fail by design.
     gpu_tc_force(0);
     gpu_mv_force(0);
+    setenv("RUNNER_METAL_MOE_MM", "0", 1);
 
     gguf_file gf;
     if (!gguf_open(&gf, path)) { fprintf(stderr, "cannot open %s\n", path); return 1; }

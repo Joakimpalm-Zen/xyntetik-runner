@@ -43,8 +43,8 @@ static const char *TEXT =
 
 static float *run(const char *path, const char *mm_env, int *n_vocab_out,
                   bool *used_gpu, const int32_t *toks, int n_tok) {
-    if (mm_env) setenv("RUNNER_METAL_MOE_MM", mm_env, 1);
-    else        unsetenv("RUNNER_METAL_MOE_MM");
+    // the grouped path is DEFAULT ON, so the reference arm pins "0"
+    setenv("RUNNER_METAL_MOE_MM", mm_env ? mm_env : "0", 1);
     model_t m;
     memset(&m, 0, sizeof(m));
     model_params p;

@@ -780,7 +780,8 @@ attention-temperature fixtures - in both f16 and q8 KV cache formats, for a
 measured +3.0–4.3 % decode across 2.3k–8.1k token spans. So Metal decode at
 long context is a tolerance-gated route, not a byte-identical one.
 
-`RUNNER_CUDA_TC=0`, `RUNNER_METAL_MM=0` and `RUNNER_METAL_ATTN_COOP=0` pin the
+`RUNNER_CUDA_TC=0`, `RUNNER_METAL_MM=0`, `RUNNER_METAL_ATTN_COOP=0` and
+`RUNNER_METAL_MOE_MM=0` pin the
 byte-identical scalar paths for identity investigations; every CPU-vs-GPU byte
 comparison in the test suite sets them. `./test-attn-tol MODEL.gguf` is the
 attention gate.
@@ -813,23 +814,25 @@ the surviving MoE prefill lever is simdgroup-MMA tiling (llama.cpp's
 `mul_mat_id` shape), is
 [docs/negative-result-metal-moe-expert-major.md](docs/negative-result-metal-moe-expert-major.md).
 
-`RUNNER_METAL_MOE_MM=1` is that surviving lever, built: sort the batch's
-slots by expert on-GPU, run each expert's token group through the dense
-prefill GEMM tile structure with gathered columns and FLOAT-staged operands
-(q8_0 and mxfp4 so far — on Apple's simdgroup units float matmul runs
-within ~10% of half, so the usual half-staging economy buys nothing here
-and its rounding can simply be bought back). Measured: **+31% prefill on
-Qwen3-30B-A3B and +21% on gpt-oss-120b**, decode untouched, outputs
-bit-stable across runs. Still opt-in, and the reason is now fully measured
-rather than suspected: discrete top-k routing amplifies reassociation-scale
-perturbations into near-tie expert flips (4.6% of routing records, median
-flip margin 0.009, staging-invariant), which fails the dense-calibrated
-CPU/GPU logit bound while the model's actual output distribution stays at
-its own noise floor — held mv-vs-mm to the project's published fidelity bar
-by the purpose-built `test-moe-mm-ab` harness, every arm passes with 100%
-margin-qualified top-1 and mean KLD 5-5000x inside the bar, and
-`scripts/moe-mm-flips.py` carries the routing account. The full
-three-instrument case and the one policy question promotion still needs:
+Grouped-MMA MoE prefill is that surviving lever, built, measured, and
+**promoted to the default** (ratified 2026-09-01): the batch's slots are
+sorted by expert on-GPU and each expert's token group runs through the
+dense prefill GEMM tile structure with gathered columns and FLOAT-staged
+operands (on Apple's simdgroup units float matmul runs within ~10% of
+half, so the usual half-staging economy buys nothing here and its rounding
+is simply bought back). Measured: **+31% prefill on Qwen3-30B-A3B and +21%
+on gpt-oss-120b**, decode untouched, outputs bit-stable across runs.
+Because discrete top-k routing amplifies reassociation-scale perturbations
+into near-tie expert flips (4.6% of routing records, median flip margin
+0.009, staging-invariant — `scripts/moe-mm-flips.py` carries the account),
+this path is NOT held to the byte/logit identity contract: it answers to
+the project's published dual-column fidelity bar (margin-qualified top-1
+>= 97% AND mean KLD <= 0.05), enforced mv-vs-mm by the `test-moe-mm-ab`
+harness in `make test` — every measured model passes with 100%
+margin-qualified top-1 and mean KLD 5-5000x inside the bar.
+`RUNNER_METAL_MOE_MM=0` restores the slot-major matvec path (and is what
+every byte-identity gate pins); `=half` selects the half-staged
+comparison arm. The full three-instrument account:
 [docs/metal-moe-grouped-mma-2026-09-01.md](docs/metal-moe-grouped-mma-2026-09-01.md).
 
 `RUNNER_METAL_MV=1` opts into a reassociating Metal *decode* matvec (q4_0/q8_0,
@@ -1117,6 +1120,7 @@ switches:
 | `RUNNER_VRAM_PRIORITY` | `0` | Baseline for `--vram-priority`; the flag overrides it. |
 | `RUNNER_KV_RING` | unset | Give sliding-window layers only the KV rows they can read, indexed modulo that count, instead of a full `n_ctx` rows each. A local layer never attends past its window, so the rest of its cache is written once and never read: on gemma-3-4b at `-c 32768` this takes the cache from 4563 MB to 800 MB, within 1% of the theoretical floor. Output is unchanged - the ring holds exactly the rows the flat allocation would have been read from, gated as bit-identical `--score` logprobs against the default path. Works on the CPU and CUDA paths: the CUDA attention kernels take the ring through `attn_args` and resolve every cache address through `kv_slot()`, verified bit-identical to the flat allocation on an RTX 3070 at both a partial split (20 of 34 layers) and a full offload, 2121 scored positions each, max |Δlogprob| exactly 0. Metal's kernels still address KV by absolute position, so a Metal build refuses the ring with a message rather than returning wrong numbers. **It is opt-in because it costs something:** the prefix cache and partial rewind also address KV as flat absolute rows, so both are refused while a ring is active and a server loses shared-prompt reuse. Worth it when context length is the binding constraint, not otherwise. Dense and full-attention-only models ignore it. |
 | `RUNNER_TIEDV` | unset | Stop storing K rows for layers that ship no `attn_v.weight` (gemma-4's full-attention globals: V is the raw K projection, so K = rope(V·w) can be derived from the stored V at read time). On gemma-4-31B at `-c 32768` the K cache drops from 14.76 GB to 13.42 GB. This is a compute-for-memory trade and it is **not byte-identical**: the derived row replays the store path's arithmetic against the f16-rounded stored V, measured on the 31B as 100% f16 row agreement at short context (worst row 99.95%), teacher-forced mean \|Δlogprob\| 1.3e-3 with `nll_mean` moving 8.7e-5 and no top-1 change over 297 positions. CPU-only and f16-KV-only: a GPU run and a q8 cache both refuse loudly (the device kernels read stored K rows; a q8 cache would re-quantize the derived row), `--lora` refuses the combination (a K-side adapter delta would bypass the derived rows), and like `RUNNER_KV_RING` the asymmetric layout disables the shared prefix cache. Layers that carry a real `attn_v.weight` are untouched; models with no V-less layers ignore it. Gate: `tests/test_tiedv.py`; diagnostic: `RUNNER_TIEDV_CHECK=1` prints per-row derived-vs-stored K agreement while the flat cache still stores real K. |
+| `RUNNER_METAL_MOE_MM` | on | Grouped simdgroup-MMA MoE prefill (default since 2026-09-01): per-expert GEMM tiles over gathered token columns, float-staged operands, +21-31% measured prefill on 30B/120B-class MoE, decode untouched. Judged by the house fidelity bar (`test-moe-mm-ab`), not byte identity — top-k routing flips near-ties under any reassociation, so `0` restores the matvec path and is pinned by every byte-identity gate; `half` selects the half-staged comparison arm. Dense models unaffected. |
 | `RUNNER_METAL_TENSOR` | unset/off | On M5+ with macOS 26.2+, opt Q4_K prefill into the separately admitted Metal 4 MPP tensor GEMM. Experimental and not promoted: the correctness gate passed, but its measured M5 performance did not clear the 1.2x default-promotion bar. Ignored on M1-M4. |
 
 Beyond these, the binary reads a number of development switches -

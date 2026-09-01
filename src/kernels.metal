@@ -2512,6 +2512,125 @@ kernel void k_moe_mm_mxfp4(MOE_MM_PARAMS) {
     })
 }
 
+// The rest of the roster, ratified 2026-09-01 when the owner adopted the
+// house fidelity bar as the sparse-routing prefill instrument: each chunk is
+// its dense k_mm_* twin verbatim with the per-expert weight base. q5_K has no
+// dense mm chunk to twin, so it stays on the matvec path per-tensor.
+kernel void k_moe_mm_f32(MOE_MM_PARAMS) {
+    MOE_MM_BODY({
+        device const float *rw = (device const float *)(wb + w_off_ex)
+                               + (ulong)row * a.n_in + k0 + sub;
+        for (int j = 0; j < 8; j++) dst[j] = rw[j];
+    })
+}
+
+kernel void k_moe_mm_f16(MOE_MM_PARAMS) {
+    MOE_MM_BODY({
+        device const half *rw = (device const half *)(wb + w_off_ex)
+                              + (ulong)row * a.n_in + k0 + sub;
+        for (int j = 0; j < 8; j++) dst[j] = (float)rw[j];
+    })
+}
+
+kernel void k_moe_mm_q4_0(MOE_MM_PARAMS) {
+    MOE_MM_BODY({
+        int nb = a.n_in / 32;
+        device const uchar *blk = wb + w_off_ex + ((ulong)row * nb + k0 / 32) * 18;
+        float d = (float)*(device const half *)blk;
+        device const uchar *q = blk + 2;
+        for (int j = 0; j < 8; j++) {
+            int lane = sub + j;
+            int v = lane < 16 ? (int)(q[lane] & 0xF) : (int)(q[lane - 16] >> 4);
+            dst[j] = d * (float)(v - 8);
+        }
+    })
+}
+
+kernel void k_moe_mm_q2_K(MOE_MM_PARAMS) {
+    MOE_MM_BODY({
+        int k = k0 + sub, nsb = a.n_in / 256;
+        int sb = k >> 8, sbk = k & 255;
+        int h = sbk >> 7, rem = sbk & 127, j32 = rem >> 5, rem2 = rem & 31;
+        int g = rem2 >> 4, l0 = rem2 & 15;
+        device const uchar *blk = wb + w_off_ex + ((ulong)row * nsb + sb) * 84;
+        float d    = (float)*(device const half *)(blk + 80);
+        float dmin = (float)*(device const half *)(blk + 82);
+        uchar scb  = blk[h * 8 + j32 * 2 + g];
+        float dl = d * (scb & 0xF), ml = dmin * (scb >> 4);
+        device const uchar *q = blk + 16 + h * 32 + g * 16;
+        uchar shift = (uchar)(2 * j32);
+        for (int j = 0; j < 8; j++)
+            dst[j] = dl * (float)((q[l0 + j] >> shift) & 3) - ml;
+    })
+}
+
+kernel void k_moe_mm_q3_K(MOE_MM_PARAMS) {
+    MOE_MM_BODY({
+        int k = k0 + sub, nsb = a.n_in / 256;
+        int sb = k >> 8, sbk = k & 255;
+        int h = sbk >> 7, rem = sbk & 127, j32 = rem >> 5, rem2 = rem & 31;
+        int g = rem2 >> 4, l0 = rem2 & 15;
+        device const uchar *blk = wb + w_off_ex + ((ulong)row * nsb + sb) * 110;
+        float d_all = (float)*(device const half *)(blk + 108);
+        char sc[16];
+        q3k_scales(blk + 96, sc);
+        float dl = d_all * (float)((int)sc[h * 8 + j32 * 2 + g] - 32);
+        device const uchar *hm = blk + g * 16;
+        device const uchar *q  = blk + 32 + h * 32 + g * 16;
+        uchar shift = (uchar)(2 * j32);
+        uchar mbit  = (uchar)(1u << (h * 4 + j32));
+        for (int j = 0; j < 8; j++)
+            dst[j] = dl * (float)((int)((q[l0 + j] >> shift) & 3)
+                                  - ((hm[l0 + j] & mbit) ? 0 : 4));
+    })
+}
+
+kernel void k_moe_mm_q4_K(MOE_MM_PARAMS) {
+    MOE_MM_BODY({
+        int nsb = a.n_in / 256;
+        int sb  = k0 / 256;
+        int j32 = (k0 % 256) / 32;
+        device const uchar *blk = wb + w_off_ex + ((ulong)row * nsb + sb) * 144;
+        float dall = (float)*(device const half *)blk;
+        float dmin = (float)*(device const half *)(blk + 2);
+        device const uchar *sc = blk + 4;
+        uchar s1, m1;
+        get_scale_min_k4(j32, sc, &s1, &m1);
+        float d = dall * s1, mm2 = dmin * m1;
+        device const uchar *q = blk + 16 + (j32 / 2) * 32;
+        bool hi = (j32 & 1) != 0;
+        for (int j = 0; j < 8; j++) {
+            int lane = sub + j;
+            int v = hi ? (int)(q[lane] >> 4) : (int)(q[lane] & 0xF);
+            dst[j] = d * (float)v - mm2;
+        }
+    })
+}
+
+kernel void k_moe_mm_q6_K(MOE_MM_PARAMS) {
+    MOE_MM_BODY({
+        int nsb = a.n_in / 256;
+        int sb  = k0 / 256;
+        int off = k0 % 256;
+        device const uchar *blk = wb + w_off_ex + ((ulong)row * nsb + sb) * 210;
+        float dall = (float)*(device const half *)(blk + 208);
+        device const char *scs = (device const char *)(blk + 192);
+        int half_i = off / 128, within = off % 128;
+        device const uchar *ql = blk + half_i * 64;
+        device const uchar *qh = blk + 128 + half_i * 32;
+        device const char  *sc = scs + half_i * 8;
+        for (int j = 0; j < 8; j++) {
+            int lane = within + sub + j;
+            int l = lane % 32, grp = lane / 32;
+            int qb = (int)ql[l + (grp & 1) * 32];
+            int qlv = (grp >= 2) ? (qb >> 4) : (qb & 0xF);
+            int qhv = ((int)(qh[l] >> (grp * 2)) & 3) << 4;
+            int is = (l / 16) & 1;
+            dst[j] = dall * (float)sc[grp * 2 + is] * (float)((qlv | qhv) - 32);
+        }
+    })
+}
+
 kernel void k_moe_mmh_q8_0(MOE_MM_PARAMS) {
     MOE_MMH_BODY({
         int nb = a.n_in / 32;

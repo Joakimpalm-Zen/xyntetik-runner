@@ -35,9 +35,8 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 def run_arm(runner, model, text, ctx, batch, trace_path, mm_env):
     env = dict(os.environ)
-    env.pop("RUNNER_METAL_MOE_MM", None)
-    if mm_env:
-        env["RUNNER_METAL_MOE_MM"] = mm_env
+    # the grouped path is default-on; the reference arm pins it off
+    env["RUNNER_METAL_MOE_MM"] = mm_env if mm_env else "0"
     env["RUNNER_MOE_TRACE"] = str(trace_path)
     proc = subprocess.run(
         [runner, "-m", model, "-f", text, "-c", str(ctx), "-n", "1",

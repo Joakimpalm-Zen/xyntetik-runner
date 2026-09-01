@@ -275,13 +275,20 @@ static bool metal_moe_em_on(void) {
 // answers to the tolerance gates, never to byte identity. Opt-in until the
 // measured prefill win clears the bar recorded in
 // docs/negative-result-metal-moe-expert-major.md.
-// NOT cached: the mv-vs-mm harness toggles this between loads in one
-// process, and a getenv per MoE layer encode is noise. "half" selects the
-// half-staged twins (the dense-kernel economics) for measurement; any other
-// non-zero value selects the f32-staged default.
+// DEFAULT ON since 2026-09-01, when the owner ratified the house fidelity
+// bar (margin-qualified top-1 + mean KLD, test-moe-mm-ab) as the instrument
+// that judges reassociating prefill on sparse-routing models — the dense
+// logit-identity bound measures routing near-tie flips, which the flip
+// account (scripts/moe-mm-flips.py) shows are staging-invariant and which
+// the fidelity bar shows leave the output distribution at the model's own
+// noise floor. RUNNER_METAL_MOE_MM=0 restores the matvec path;
+// "half" selects the half-staged comparison twins. NOT cached: the
+// mv-vs-mm harness toggles this between loads in one process, and a getenv
+// per MoE layer encode is noise.
 static int metal_moe_mm_on(void) {
     const char *v = getenv("RUNNER_METAL_MOE_MM");
-    if (!v || !*v || !strcmp(v, "0") || !strcmp(v, "off")) return 0;
+    if (!v || !*v) return 1;
+    if (!strcmp(v, "0") || !strcmp(v, "off")) return 0;
     return strcmp(v, "half") == 0 ? 2 : 1;
 }
 
@@ -1322,6 +1329,13 @@ bool gpu_init(model_t *m) {
     g->p_moe_group        = mk_pipeline(dev, lib, @"k_moe_group");
     g->p_moe_mm[T_Q8_0]   = mk_pipeline(dev, lib, @"k_moe_mm_q8_0");
     g->p_moe_mm[T_MXFP4]  = mk_pipeline(dev, lib, @"k_moe_mm_mxfp4");
+    g->p_moe_mm[T_F32]    = mk_pipeline(dev, lib, @"k_moe_mm_f32");
+    g->p_moe_mm[T_F16]    = mk_pipeline(dev, lib, @"k_moe_mm_f16");
+    g->p_moe_mm[T_Q4_0]   = mk_pipeline(dev, lib, @"k_moe_mm_q4_0");
+    g->p_moe_mm[T_Q2_K]   = mk_pipeline(dev, lib, @"k_moe_mm_q2_K");
+    g->p_moe_mm[T_Q3_K]   = mk_pipeline(dev, lib, @"k_moe_mm_q3_K");
+    g->p_moe_mm[T_Q4_K]   = mk_pipeline(dev, lib, @"k_moe_mm_q4_K");
+    g->p_moe_mm[T_Q6_K]   = mk_pipeline(dev, lib, @"k_moe_mm_q6_K");
     g->p_moe_mmh[T_Q8_0]  = mk_pipeline(dev, lib, @"k_moe_mmh_q8_0");
     g->p_moe_mmh[T_MXFP4] = mk_pipeline(dev, lib, @"k_moe_mmh_mxfp4");
     [lib release];

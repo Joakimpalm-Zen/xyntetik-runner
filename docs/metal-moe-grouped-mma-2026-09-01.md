@@ -109,11 +109,26 @@ Opt-in, default off, with the complete three-instrument account on file:
 3. the house fidelity bar, held mv-vs-mm: PASS on every arm, 100%
    margin-qualified top-1, KLD 5x-5000x inside the bar.
 
-What promotion now needs is one owner decision, not more engineering:
+What promotion needed was one owner decision, not more engineering:
 ratify that sparse-routing models hold reassociating prefill to the house
 fidelity bar (`test-moe-mm-ab`, in `make test` at fixture scale and runnable
 against any real model) rather than to the dense logit bound — the
-routing-aware floor the 235B scalar FAIL already argued for, now with its
-measuring instrument built, unit-anchored, and applied. Ratified, the
-default flips on for prefill and `k_moe_mm` extends to q2_K/q3_K (the
-235B); declined, the lever stays opt-in with nothing hidden.
+routing-aware floor the 235B scalar FAIL already argued for, with its
+measuring instrument built, unit-anchored, and applied.
+
+**RATIFIED — owner, 2026-09-01, same day.** Grouped-MMA MoE prefill is the
+DEFAULT (`RUNNER_METAL_MOE_MM=0` restores the matvec path and is pinned by
+every byte-identity gate; `=half` keeps the comparison arm), and `k_moe_mm`
+extends to the rest of the roster — q2_K, q3_K, q4_0, q4_K, q6_K, f16, f32
+join q8_0 and mxfp4, each chunk its dense twin verbatim (q5_K has no dense
+mm chunk and stays on the matvec path per-tensor). The 235B measurement
+under the new default is recorded below.
+
+**Qwen3-235B-A22B Q2_K (merged), first run on the extended roster:**
+prefill 23.4 → **32.3 tok/s (+38%)** — the largest relative win of the
+three models — decode untouched, and the house bar held with the cleanest
+margin yet: 24/24 top-1 agreement, 100% margin-qualified, mean KLD
+**0.00026** (190x inside the bar), worst position 0.00498. Against the
+same-host llama.cpp `010be968` denominator the warm 120B non-tensor
+prefill gap narrows to roughly 8.7x (752.65 vs ~87) from the 9.8x this
+arc opened at — the remaining distance is the next arc's question.
