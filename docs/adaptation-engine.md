@@ -444,8 +444,9 @@ with reference outputs, are published at
 
 Three constraints travel with it, all his:
 
-- **Existence proof, not a rate.** One split out of seven selected out of 36,
-  and the screen selects on the Q4 adapter's own margin, so the seven cases
+- **Existence proof, not a rate.** One split out of seven selected out of 36
+  in the notebook (three out of 36 in the unscreened native pass below), and
+  the screen selects on the Q4 adapter's own margin, so the seven cases
   cannot estimate any general margin distribution.
 - **No monotonic precision law.** Several cases had smaller Q4 margins, not all
   did, and one case had **Q8** as the tightest condition. What this supports is
@@ -461,8 +462,29 @@ One methodological note worth carrying: an earlier version of his scorer ranked
 full tool-name sequences and was discarded once BPE merged punctuation across
 the apparent string boundary, which invalidated the score. Runner's
 `choice_logprobs` is not exposed to that failure mode, because it records the
-legal alternatives as the grammar defines them rather than as text. A native
-decision-boundary lane over `choice_logprobs` is the planned home for this bank.
+legal alternatives as the grammar defines them rather than as text. That lane
+now exists: `scripts/tool-choice-boundary.py` ships the bank byte-identical
+(MIT OR Apache-2.0, with credit) and records the tool decision as the grammar
+exposes it (`docs/tool-choice-boundary-lane.md`).
+
+**Migrated and extended (2026-09-01).** The seven screened cases rerun through
+the native lane agree with the notebook on the top branch at all 28
+case-conditions, and the split above reproduces through full deterministic
+generation. Then every prompt, unscreened, under all four conditions: **3 of
+36 split across the three adapters, all surviving full generation.** The two
+new cases are both `config_browse` (*show me the yaml files in config*, *list
+config and find yaml files*): BF16 and Q8 `list_dir`, Q4 `search_files` with a
+real pattern argument, and Q4 the MOST confident condition there (5.9 and 3.9
+nat). The Q4-margin screen could never have found them, because a screen
+that selects on one condition's uncertainty is blind to that condition being
+confident and different. Bank-wide the Q4-trained adapter carries the widest
+margins of the three (median 5.8 nat against 4.6 and 4.9; wider than both
+others on 22 of 36; Q8 tightest on 7), so the non-monotonic constraint holds
+on the whole bank, and "more decisive" is not "better": no labels, and the
+new cases are Q4 confidently taking the branch the other two decline. A
+cross-host anchor (the same rows on Apple M1 and x86, byte-identical text,
+margins within 0.007 nat) says the host is not a variable. Three of 36 is a
+property of this constructed bank, not a rate in traffic.
 
 **Read against the merge study above, these are two different mechanisms and
 must not be collapsed into one claim.** Merging an adapter into a 4-bit base

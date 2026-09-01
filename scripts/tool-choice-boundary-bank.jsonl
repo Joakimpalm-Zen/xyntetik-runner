@@ -1,0 +1,36 @@
+{"id":"ls_search_01","family":"list_vs_search","prompt":"show me the files in docs, especially markdown ones"}
+{"id":"ls_search_02","family":"list_vs_search","prompt":"show me markdown files in docs"}
+{"id":"ls_search_03","family":"list_vs_search","prompt":"show the contents of docs, focusing on .md files"}
+{"id":"ls_search_04","family":"list_vs_search","prompt":"list docs and filter for markdown files"}
+{"id":"ls_search_05","family":"list_vs_search","prompt":"what markdown files are in docs?"}
+{"id":"ls_search_06","family":"list_vs_search","prompt":"what is inside docs, only the markdown files"}
+{"id":"ls_search_07","family":"list_vs_search","prompt":"inspect docs: list it and pay attention to .md files"}
+{"id":"ls_search_08","family":"list_vs_search","prompt":"look in docs for markdown files"}
+{"id":"ls_search_09","family":"list_vs_search","prompt":"list the files in docs that end in .md"}
+{"id":"ls_search_10","family":"list_vs_search","prompt":"show docs; I only care about .md files"}
+{"id":"read_search_01","family":"read_vs_search","prompt":"show me README.md"}
+{"id":"read_search_02","family":"read_vs_search","prompt":"show me README.md from the project"}
+{"id":"read_search_03","family":"read_vs_search","prompt":"show README.md and anything similar in docs"}
+{"id":"read_search_04","family":"read_vs_search","prompt":"look at README.md"}
+{"id":"read_search_05","family":"read_vs_search","prompt":"inspect README.md"}
+{"id":"read_search_06","family":"read_vs_search","prompt":"show me the markdown file README.md"}
+{"id":"read_search_07","family":"read_vs_search","prompt":"show me markdown files, starting with README.md"}
+{"id":"read_search_08","family":"read_vs_search","prompt":"find README.md and show it"}
+{"id":"read_write_01","family":"read_vs_write","prompt":"open notes.txt; if it says TODO, change it to done"}
+{"id":"read_write_02","family":"read_vs_write","prompt":"check notes.txt and write done if needed"}
+{"id":"read_write_03","family":"read_vs_write","prompt":"make sure notes.txt contains done"}
+{"id":"read_write_04","family":"read_vs_write","prompt":"update notes.txt to done if necessary"}
+{"id":"read_write_05","family":"read_vs_write","prompt":"verify notes.txt says done"}
+{"id":"read_write_06","family":"read_vs_write","prompt":"ensure notes.txt says done"}
+{"id":"config_01","family":"config_browse","prompt":"inspect config for yaml files"}
+{"id":"config_02","family":"config_browse","prompt":"show me the yaml files in config"}
+{"id":"config_03","family":"config_browse","prompt":"show me config, especially yaml files"}
+{"id":"config_04","family":"config_browse","prompt":"what yaml files are inside config?"}
+{"id":"config_05","family":"config_browse","prompt":"look through config for yaml"}
+{"id":"config_06","family":"config_browse","prompt":"list config and find yaml files"}
+{"id":"none_tool_01","family":"tool_vs_none","prompt":"translate README.md to French"}
+{"id":"none_tool_02","family":"tool_vs_none","prompt":"summarize README.md"}
+{"id":"none_tool_03","family":"tool_vs_none","prompt":"tell me what README.md says and translate it"}
+{"id":"none_tool_04","family":"tool_vs_none","prompt":"email README.md to the team"}
+{"id":"none_tool_05","family":"tool_vs_none","prompt":"compress server.log"}
+{"id":"none_tool_06","family":"tool_vs_none","prompt":"find server.log and compress it"}

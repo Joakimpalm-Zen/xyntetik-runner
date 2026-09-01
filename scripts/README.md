@@ -122,6 +122,14 @@ Nothing here gates a merge; these are how a claim gets a number behind it.
 - **`cl-calibration.py`** — calibration report for `choice_logprobs` decision
   records: when a constrained decision point says 0.8, is it right 80% of the
   time?
+- **`tool-choice-boundary.py`** — the UNLABELED tool-choice decision-boundary
+  lane over `choice_logprobs`: runs a bank of ambiguous tool-choice prompts
+  under several serving conditions (base, adapters) and records the grammar
+  decision at which the tool is chosen, then `summarize` reports where the
+  conditions disagree and how tight the margins were. No gold labels, no
+  accuracy, by design; its records cannot feed `cl-calibration.py`. Ships
+  with John6666's 36-prompt bank (`tool-choice-boundary-bank.jsonl`, MIT OR
+  Apache-2.0, carried byte-identical). See `docs/tool-choice-boundary-lane.md`.
 - **`classify-grammar-trace.py`** — classifies grammar-draft rejection causes
   from a `RUNNER_GRAMMAR_TRACE` JSONL (tail-straddle, coarse-merge, fine-split,
   seam).

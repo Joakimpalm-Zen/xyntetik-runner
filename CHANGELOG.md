@@ -8,6 +8,21 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **`scripts/tool-choice-boundary.py`: an unlabeled tool-choice
+  decision-boundary lane over `choice_logprobs`.** Runs a bank of ambiguous
+  tool-choice prompts under several serving conditions (base, adapters), one
+  fresh serve each, and records per prompt the grammar decision at which the
+  tool is chosen: legal alternatives, top branch, runner-up read at the tool
+  level (a shorter piece of the same name is never the runner-up), raw-logprob
+  margin, coverage, the full deterministic call, and provenance (bank,
+  template, model and adapter sha256, runner version). `summarize` reports
+  where conditions disagree and how tight the margins were, with no accuracy
+  or label field anywhere (pinned by test; the records cannot feed
+  `cl-calibration.py`). Ships John6666's 36-prompt boundary bank
+  byte-identical under its MIT OR Apache-2.0 licence, with credit. Run
+  against the published precision-study artifacts: 3 of 36 prompts split
+  across the BF16/Q8/Q4-trained adapters, two of them newly found in a family
+  the original Q4-margin screen could not reach (`docs/tool-choice-boundary-lane.md`).
 - **`--yarn-factor F` overrides a model's native YaRN factor at runtime**,
   preserving its original context and correction parameters. Refuses models
   without YaRN metadata and conflicts with `--rope-scale` (which stays the

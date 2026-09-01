@@ -277,7 +277,7 @@ Measured, on a public artifact you can download and reproduce
 | training path | directly through the quantized inference artifact, CPU |
 | held-out tool-calling, exact call | **0.69 → 1.00** |
 | reproducibility | two independent runs → **byte-identical adapter** (same sha256) |
-| precision study | adapters trained through BF16 vs Q8_0: cosine 0.9998; through Q4_K_M: 0.9926 - measurably different objects, capability-equivalent **on this task's supervised decisions** (on the gold-completion region they coincide to ~0.0003 nat; the divergence lives in the unsupervised prompt region). Not equivalent everywhere: an external 36-prompt boundary bank found a tight-margin case where BF16 and Q8 pick `read_file` and Q4 picks `none`. One case, non-monotonic in bit width, [written up in full](docs/adaptation-engine.md) |
+| precision study | adapters trained through BF16 vs Q8_0: cosine 0.9998; through Q4_K_M: 0.9926 - measurably different objects, capability-equivalent **on this task's supervised decisions** (on the gold-completion region they coincide to ~0.0003 nat; the divergence lives in the unsupervised prompt region). Not equivalent everywhere: an external 36-prompt boundary bank, run in full through the native unlabeled lane (`scripts/tool-choice-boundary.py`), finds 3 of 36 prompts where the three adapters choose different tools and the disagreement survives deterministic generation (BF16 and Q8 `read_file`, Q4 `none`; twice BF16 and Q8 `list_dir`, Q4 `search_files`). Non-monotonic in bit width: the Q4-trained adapter carries the widest margins on that bank. A property of that bank, not a rate; [written up in full](docs/adaptation-engine.md) and [the lane](docs/tool-choice-boundary-lane.md) |
 | neutral-corpus drift | nll/token 4.063 → 4.026 (the adapter leaves unrelated text alone) |
 | merge study | `--merge-lora` into Q8_0/F16 keeps the 1.00 (verified in stock llama.cpp); merging into the 4-bit base **erases the fine-tune** - 0.69 again, 98.55% of weight bytes round back to the base's codes. Scale sweep: survival is monotone in delta magnitude (erased through 2×, partial at 4×, full at 8× - where the *exact* 8× adapter breaks the served model, the 4-bit grid filters it back to 1.00) |
 | interop | the adapter scores the same 1.00 served by stock llama.cpp; community F16 adapters load back into runner (measured on a third-party adapter, which also found and fixed the F32-only loader gap) |
@@ -315,9 +315,11 @@ The rest of what sets Runner apart, ordered by how much difference each makes:
   renormalized over them, and the probed probability mass - how confident the
   model was choosing one branch over another, which is what routing and
   calibrated classification actually need. The included calibration tool turns
-  labeled decisions into accuracy, Brier-score, and ECE gates. This is a
-  decision record rather than ordinary token logprobs, and a power-user feature:
-  most workloads will never reach for it.
+  labeled decisions into accuracy, Brier-score, and ECE gates; the included
+  boundary lane does the opposite job, recording where serving conditions
+  DISAGREE on a tool choice with no labels at all. This is a decision record
+  rather than ordinary token logprobs, and a power-user feature: most
+  workloads will never reach for it.
 - **A hardware switch has a correctness contract.** If you move a workload
   between backends and the output quietly changes, that is a bug, not a tuning
   artifact. CPU/GPU identity here belongs to an exact SHA-256-pinned model and
@@ -1419,7 +1421,9 @@ Constrained buffered requests can set `choice_logprobs:true`. Decision points
 then include legal alternatives, posterior probability over the probed legal
 set, raw logprobs, and coverage mass. `choice_logprobs_probe` defaults to 32
 and is capped at 64; `scripts/cl-calibration.py` turns labeled records into an
-ECE report.
+ECE report, and `scripts/tool-choice-boundary.py` runs an unlabeled
+tool-choice bank across serving conditions and reports where they disagree
+([docs/tool-choice-boundary-lane.md](docs/tool-choice-boundary-lane.md)).
 
 ### OpenAI Responses
 
