@@ -518,7 +518,9 @@ measurement:
   backward's dominant matvec (D8 slice 2), but the forward, the attention
   backward and the optimizer still run on the CPU — larger bases want a
   many-core box (the M1-class floor is ~2B models per the T0 memory
-  audit).
+  audit; a 128 GB M5 Max measures 8B at ~32 s/step with byte-identical
+  adapters across runs, and a 70B step at ~7.6 min —
+  `docs/training-floor-m5max-2026-09-01.md`).
 - The merge-survival threshold is measured for ONE adapter/task/base
   triple; the mechanism (delta vs grid step) is general, the numbers are
   not.
