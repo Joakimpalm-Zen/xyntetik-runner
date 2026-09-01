@@ -8,6 +8,26 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **`--yarn-factor F` overrides a model's native YaRN factor at runtime**,
+  preserving its original context and correction parameters. Refuses models
+  without YaRN metadata and conflicts with `--rope-scale` (which stays the
+  linear override). Fixture support and CLI tests included.
+- **`--context-surgery OUT` compiles `-c TARGET --yarn-factor F` into a
+  standalone native-YaRN GGUF** without touching a single weight: the target
+  must equal original context x factor and extend both source values, every
+  tensor payload is independently reparsed and byte-compared before the write
+  is accepted (a mismatch deletes the output), and an `OUT.context.json`
+  provenance record carries base/target sha256s and both parameter sets. This
+  is the instrument behind the gpt-oss-120b 262K/524K research artifacts,
+  which remain unqualified for long-context use.
+- **`scripts/kv-quality.py` stops trusting its own assumptions**: it now
+  discovers the served model id from `/v1/models` instead of hard-coding one,
+  and reserves its token budget for task answers by sending
+  `enable_thinking:false` - a Harmony model was previously spending the whole
+  24-token ceiling in `reasoning_content` and scoring 0/9 with empty answers
+  on a control that then scored 9/9. Both behaviors are pinned by regression
+  tests.
+
 - **`--gpu auto` ignored the KV ring when deciding how many layers fit.** The
   CUDA placement loop charged every layer `2 * n_ctx * row_bytes` while the
   allocation it was predicting is sized from `model_kv_boundary_bytes`, which
