@@ -24,6 +24,21 @@ void dequant_row(int type, const void *src, float *dst, int n) {
     abort();
 }
 
+uint64_t gguf_mapped_size(const gguf_file *g) {
+    (void)g;
+    abort();
+}
+
+uint32_t gguf_map_count(const gguf_file *g) {
+    (void)g;
+    abort();
+}
+
+void *gguf_map_part(const gguf_file *g, uint32_t i, size_t *size) {
+    (void)g; (void)i; (void)size;
+    abort();
+}
+
 void model_ple_prepass(model_t *m, const int32_t *tokens, int n,
                        const float *x, float *out, float *scratch) {
     (void)m; (void)tokens; (void)n; (void)x; (void)out; (void)scratch;
