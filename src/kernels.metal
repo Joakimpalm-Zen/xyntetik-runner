@@ -2267,6 +2267,174 @@ kernel void NAME(MOE_MV_PARAMS) { \
 MOE_EM8_KERNEL(k_moe_mv_em8_q8_0,  moe_dot8_q8_0)
 MOE_EM8_KERNEL(k_moe_mv_em8_mxfp4, moe_dot8_mxfp4)
 
+// ---------------------------------------- grouped simdgroup-MMA MoE prefill
+//
+// The third grouping shape, and the one that mirrors what dense prefill
+// already does: group the batch's slots by expert (k_moe_group), then run
+// each expert's token group through the SAME simdgroup-MMA tile structure as
+// k_mm_* — the x tile stage gathers columns through the group's slot map, and
+// the store scatters them back, so no physical repack of x ever happens.
+// Like dense k_mm this stages operands in half and reassociates the k-sum,
+// so it is NOT byte-identical to the matvec path: it answers to the
+// tolerance gates (test-moe-tol, test-gpu-identity), exactly as
+// RUNNER_METAL_MM did before its promotion.
+//
+// Column order within an expert's group comes from atomic appends and is not
+// deterministic — and does not need to be: every output column of a
+// simdgroup MMA is an independent dot in fixed k-order, so a slot's value is
+// the same wherever it lands in the tile, and zero-padded columns touch
+// nothing. Outputs are therefore bit-stable across runs even though the
+// grouping is not.
+
+kernel void k_moe_group(device const int *sel    [[buffer(0)]],
+                        device int       *colmap [[buffer(1)]],
+                        device int       *eoff   [[buffer(2)]],
+                        constant int     &ne     [[buffer(3)]],
+                        constant int     &nslots [[buffer(4)]],
+                        uint tid [[thread_position_in_threadgroup]],
+                        uint nth [[threads_per_threadgroup]]) {
+    threadgroup atomic_int hist[257];   // n_expert is admitted at <= 256
+    for (int e = (int)tid; e <= ne; e += (int)nth)
+        atomic_store_explicit(&hist[e], 0, memory_order_relaxed);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    for (int i = (int)tid; i < nslots; i += (int)nth)
+        atomic_fetch_add_explicit(&hist[sel[i]], 1, memory_order_relaxed);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (tid == 0) {   // exclusive scan; hist becomes the running cursors
+        int run = 0;
+        for (int e = 0; e < ne; e++) {
+            int c = atomic_load_explicit(&hist[e], memory_order_relaxed);
+            eoff[e] = run;
+            atomic_store_explicit(&hist[e], run, memory_order_relaxed);
+            run += c;
+        }
+        eoff[ne] = run;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    for (int i = (int)tid; i < nslots; i += (int)nth) {
+        int pos = atomic_fetch_add_explicit(&hist[sel[i]], 1,
+                                            memory_order_relaxed);
+        colmap[pos] = i;
+    }
+}
+
+struct moe_mm_args {
+    int   n_in, n_out;
+    ulong w_off, estride;
+    int   x_stride, y_stride, has_bias, bias_stride, slots_per_token;
+};
+
+#define MOE_MM_PARAMS \
+    device const uchar *wb     [[buffer(0)]], \
+    device const float *x      [[buffer(1)]], \
+    device float       *y      [[buffer(2)]], \
+    constant moe_mm_args &a    [[buffer(3)]], \
+    device const float *bias   [[buffer(4)]], \
+    device const int   *colmap [[buffer(5)]], \
+    device const int   *eoff   [[buffer(6)]], \
+    uint3 tgpig [[threadgroup_position_in_grid]], \
+    uint3 tpitg [[thread_position_in_threadgroup]], \
+    uint  sgitg [[simdgroup_index_in_threadgroup]]
+
+// MM_BODY with three substitutions: the weight base carries the expert's
+// stride, the x stage gathers its columns through the group map, and the
+// store scatters through the same map. Tile math is otherwise identical to
+// the dense kernel — same MM_TM/MM_TN/MM_TK, same half staging, same
+// mixed-precision accumulate.
+#define MOE_MM_BODY(...) \
+    const int ex   = (int)tgpig.z; \
+    const int cbeg = eoff[ex]; \
+    const int count = eoff[ex + 1] - cbeg; \
+    const int col0 = (int)tgpig.y * MM_TN; \
+    if (col0 >= count) return; \
+    const ulong w_off_ex = a.w_off + (ulong)ex * a.estride; \
+    threadgroup half  tg_w[MM_TM * MM_TK]; \
+    threadgroup half  tg_x[MM_TN * MM_TK]; \
+    threadgroup float tg_c[MM_TN * MM_TM]; \
+    const int row0 = (int)tgpig.x * MM_TM; \
+    const int tid  = (int)tpitg.x; \
+    simdgroup_float8x8 acc[MM_RPS][MM_CG]; \
+    for (int rg = 0; rg < MM_RPS; rg++) \
+        for (int cg = 0; cg < MM_CG; cg++) acc[rg][cg] = simdgroup_float8x8(0.0f); \
+    for (int k0 = 0; k0 < a.n_in; k0 += MM_TK) { \
+        for (int p = 0; p < MM_RPS; p++) { \
+            int r = p * 32 + (tid >> 2), sub = (tid & 3) * 8; \
+            int row = row0 + r; \
+            threadgroup half *dst = tg_w + r * MM_TK + sub; \
+            if (row < a.n_out) { __VA_ARGS__; } \
+            else { for (int j = 0; j < 8; j++) dst[j] = 0.0h; } \
+        } \
+        for (int i = tid * 4; i < MM_TN * MM_TK; i += 128 * 4) { \
+            for (int j = 0; j < 4; j++) { \
+                int idx = i + j, cc = idx / MM_TK, kk = idx % MM_TK; \
+                float v = 0.0f; \
+                if (col0 + cc < count) { \
+                    int slot = colmap[cbeg + col0 + cc]; \
+                    uint xrow = a.slots_per_token \
+                                    ? (uint)slot / a.slots_per_token \
+                                    : (uint)slot; \
+                    v = x[(ulong)xrow * a.x_stride + k0 + kk]; \
+                } \
+                tg_x[idx] = (half)v; \
+            } \
+        } \
+        threadgroup_barrier(mem_flags::mem_threadgroup); \
+        for (int kk = 0; kk < MM_TK / 8; kk++) { \
+            simdgroup_half8x8 acols[MM_CG]; \
+            for (int cg = 0; cg < MM_CG; cg++) \
+                simdgroup_load(acols[cg], tg_x + cg * 8 * MM_TK + kk * 8, MM_TK); \
+            for (int rg = 0; rg < MM_RPS; rg++) { \
+                simdgroup_half8x8 B; \
+                int wrg = (int)sgitg * MM_RPS + rg; \
+                simdgroup_load(B, tg_w + wrg * 8 * MM_TK + kk * 8, MM_TK, \
+                               ulong2(0, 0), true); \
+                for (int cg = 0; cg < MM_CG; cg++) \
+                    simdgroup_multiply_accumulate(acc[rg][cg], acols[cg], B, \
+                                                  acc[rg][cg]); \
+            } \
+        } \
+        threadgroup_barrier(mem_flags::mem_threadgroup); \
+    } \
+    for (int rg = 0; rg < MM_RPS; rg++) { \
+        int wrg = (int)sgitg * MM_RPS + rg; \
+        for (int cg = 0; cg < MM_CG; cg++) \
+            simdgroup_store(acc[rg][cg], tg_c + cg * 8 * MM_TM + wrg * 8, MM_TM); \
+    } \
+    threadgroup_barrier(mem_flags::mem_threadgroup); \
+    for (int idx = tid; idx < MM_TN * MM_TM; idx += 128) { \
+        int cc = idx / MM_TM, rr = idx % MM_TM; \
+        if (col0 + cc < count && row0 + rr < a.n_out) { \
+            int slot = colmap[cbeg + col0 + cc]; \
+            float v = tg_c[idx]; \
+            if (a.has_bias) v += bias[(ulong)ex * a.bias_stride + row0 + rr]; \
+            y[(ulong)slot * a.y_stride + row0 + rr] = v; \
+        } \
+    }
+
+kernel void k_moe_mm_q8_0(MOE_MM_PARAMS) {
+    MOE_MM_BODY({
+        int nb = a.n_in / 32;
+        device const uchar *blk = wb + w_off_ex + ((ulong)row * nb + k0 / 32) * 34;
+        float d = (float)*(device const half *)blk;
+        device const char *q = (device const char *)(blk + 2) + sub;
+        for (int j = 0; j < 8; j++) dst[j] = d * (float)q[j];
+    })
+}
+
+kernel void k_moe_mm_mxfp4(MOE_MM_PARAMS) {
+    MOE_MM_BODY({
+        int nb = a.n_in / 32;
+        device const uchar *blk = wb + w_off_ex + ((ulong)row * nb + k0 / 32) * 17;
+        float d = ldexp(1.0f, (int)blk[0] - 127);
+        device const uchar *q = blk + 1;
+        for (int j = 0; j < 8; j++) {
+            int lane = sub + j;
+            uchar nib = lane < 16 ? (q[lane] & 0xF) : (q[lane - 16] >> 4);
+            dst[j] = d * kv_mxfp4[nib];
+        }
+    })
+}
+
 MOE_EM_KERNEL(k_moe_mv_em_f32,   moe_dot_f32)
 MOE_EM_KERNEL(k_moe_mv_em_f16,   moe_dot_f16)
 MOE_EM_KERNEL(k_moe_mv_em_q8_0,  moe_dot_q8_0)

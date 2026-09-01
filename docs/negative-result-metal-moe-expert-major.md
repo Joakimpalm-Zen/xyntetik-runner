@@ -65,3 +65,8 @@ The expert-major kernels stay in the tree behind `RUNNER_METAL_MOE_EM`, off
 by default — a lever that has not cleared its bar on a machine is not a
 default anywhere, and the byte-identity gate they carry also locks the
 shared-dot refactor the next shape will build on.
+
+*Round 2 happened the same day and the surviving hypothesis held:
+per-expert simdgroup-MMA tiles measure **+33% (30B) / +24% (120B)**
+prefill — see `docs/metal-moe-grouped-mma-2026-09-01.md`, including the
+numerics question that keeps it opt-in.*

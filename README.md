@@ -813,6 +813,20 @@ the surviving MoE prefill lever is simdgroup-MMA tiling (llama.cpp's
 `mul_mat_id` shape), is
 [docs/negative-result-metal-moe-expert-major.md](docs/negative-result-metal-moe-expert-major.md).
 
+`RUNNER_METAL_MOE_MM=1` is that surviving lever, built: sort the batch's
+slots by expert on-GPU, run each expert's token group through the dense
+prefill GEMM tiles with gathered columns (q8_0 and mxfp4 so far). Measured
+**+33% prefill on Qwen3-30B-A3B and +24% on gpt-oss-120b** — and still
+opt-in, because it inherits dense-GEMM half-staging numerics that sparse
+top-k routing then amplifies through discrete expert flips: whole-model
+CPU/GPU deviation measures ~0.0044 of the logit range against the
+0.002 dense-calibrated bound. Decode is untouched, outputs are bit-stable
+across runs, and `make test-metal-moe-mm` gates engagement, fixture-scale
+agreement, and the bound. What promotion needs, and why the excess is
+attributed to routing amplification rather than a kernel defect, is
+measured out in
+[docs/metal-moe-grouped-mma-2026-09-01.md](docs/metal-moe-grouped-mma-2026-09-01.md).
+
 `RUNNER_METAL_MV=1` opts into a reassociating Metal *decode* matvec (q4_0/q8_0,
 float4 accumulation and the q4_0 zero-point factored out of the inner loop).
 It clears the 0/64 teacher-forced flip bar on both formats but measured

@@ -41,6 +41,8 @@ typedef struct {
     id<MTLComputePipelineState> p_moe_mv[METAL_TYPE_SLOTS];   // indexed by ggml type
     id<MTLComputePipelineState> p_moe_mv_em[METAL_TYPE_SLOTS]; // expert-major twin
     id<MTLComputePipelineState> p_moe_mv_em8[METAL_TYPE_SLOTS]; // + 8-column tiling
+    id<MTLComputePipelineState> p_moe_mm[METAL_TYPE_SLOTS];  // grouped MMA tiles
+    id<MTLComputePipelineState> p_moe_group;                 // slot-by-expert sort
     // The model mmap, wrapped zero-copy. Usually ONE buffer; more when the file
     // exceeds maxBufferLength, which on an M1 is 4.29 GB against a 5.73 GB
     // working set (0.75x) and is the ceiling that actually bites for a big
@@ -65,6 +67,7 @@ typedef struct {
     id<MTLBuffer> agate;             // [n][q_dim] attention output gate scratch
     id<MTLBuffer> att_acc, att_ms;   // chunked-decode partials
     id<MTLBuffer> moe_logits, moe_sel, moe_selw, moe_hb, moe_hb2, moe_eout;
+    id<MTLBuffer> moe_colmap, moe_eoff;   // grouped-MMA slot map + offsets
     id<MTLBuffer> moe_trace_logits;
     id<MTLBuffer> inv_freq, inv_freq_local, out_norm, dummy;
     id<MTLBuffer> *ppn;                 // gemma4 E-series per-layer post_norm
@@ -201,6 +204,7 @@ static void gpu_release_state(gpu_t *g, int n_layer) {
                              g->moe_logits, g->moe_sel, g->moe_selw,
                              g->moe_trace_logits,
                              g->moe_hb, g->moe_hb2, g->moe_eout,
+                             g->moe_colmap, g->moe_eoff,
                              g->inv_freq, g->inv_freq_local, g->out_norm,
                              g->dummy, g->suppress, g->ple, g->ple_tmp,
                              g->agate };
@@ -214,6 +218,8 @@ static void gpu_release_state(gpu_t *g, int n_layer) {
     for (int i = 0; i < METAL_TYPE_SLOTS; i++) [g->p_moe_mv[i] release];
     for (int i = 0; i < METAL_TYPE_SLOTS; i++) [g->p_moe_mv_em[i] release];
     for (int i = 0; i < METAL_TYPE_SLOTS; i++) [g->p_moe_mv_em8[i] release];
+    for (int i = 0; i < METAL_TYPE_SLOTS; i++) [g->p_moe_mm[i] release];
+    [g->p_moe_group release];
     [g->p_rmsnorm release]; [g->p_qknorm release]; [g->p_headnorm release];
     [g->p_rope release]; [g->p_store release]; [g->p_attn release];
     [g->p_attn_chunk release]; [g->p_attn_comb release];
@@ -255,6 +261,22 @@ static bool metal_moe_em_on(void) {
     static int on = -1;
     if (on < 0) {
         const char *v = getenv("RUNNER_METAL_MOE_EM");
+        on = v && *v && strcmp(v, "0") && strcmp(v, "off") ? 1 : 0;
+    }
+    return on > 0;
+}
+
+// RUNNER_METAL_MOE_MM=1: grouped simdgroup-MMA expert FFNs for prefill —
+// sort the batch's slots by expert on-GPU, run each expert's token group
+// through the dense k_mm tile structure with gathered columns. Same numerics
+// class as dense RUNNER_METAL_MM (half-staged operands, reassociated k-sum):
+// answers to the tolerance gates, never to byte identity. Opt-in until the
+// measured prefill win clears the bar recorded in
+// docs/negative-result-metal-moe-expert-major.md.
+static bool metal_moe_mm_on(void) {
+    static int on = -1;
+    if (on < 0) {
+        const char *v = getenv("RUNNER_METAL_MOE_MM");
         on = v && *v && strcmp(v, "0") && strcmp(v, "off") ? 1 : 0;
     }
     return on > 0;
@@ -345,6 +367,7 @@ static bool metal_ensure_batch(gpu_t *g, model_t *m, int n) {
     id<MTLBuffer> moe_logits = nil, moe_sel = nil, moe_selw = nil;
     id<MTLBuffer> moe_trace_logits = nil;
     id<MTLBuffer> moe_hb = nil, moe_hb2 = nil, moe_eout = nil;
+    id<MTLBuffer> moe_colmap = nil, moe_eoff = nil;
     if (m->n_expert > 0) {
         size_t route_slots = nb * (size_t)m->n_expert_used *
                              (size_t)m->n_layer;
@@ -357,6 +380,11 @@ static bool metal_ensure_batch(gpu_t *g, model_t *m, int n) {
         moe_hb     = new_f32_scratch(g->dev, slots * moe_ff);
         moe_hb2    = new_f32_scratch(g->dev, slots * moe_ff);
         moe_eout   = new_f32_scratch(g->dev, slots * (size_t)m->n_embd);
+        moe_colmap = [g->dev newBufferWithLength:sizeof(int) * slots
+                                         options:MTLResourceStorageModeShared];
+        moe_eoff   = [g->dev newBufferWithLength:sizeof(int) *
+                                                 ((size_t)m->n_expert + 1)
+                                         options:MTLResourceStorageModeShared];
         if (getenv("RUNNER_MOE_TRACE"))
             moe_trace_logits = new_f32_scratch(g->dev, nb * (size_t)m->n_layer *
                                                         (size_t)m->n_expert);
@@ -371,6 +399,7 @@ static bool metal_ensure_batch(gpu_t *g, model_t *m, int n) {
          (!metal_buffer_ok(moe_logits) || !metal_buffer_ok(moe_sel) ||
           !metal_buffer_ok(moe_selw) || !metal_buffer_ok(moe_hb) ||
           !metal_buffer_ok(moe_hb2) || !metal_buffer_ok(moe_eout) ||
+          !metal_buffer_ok(moe_colmap) || !metal_buffer_ok(moe_eoff) ||
           (getenv("RUNNER_MOE_TRACE") && !metal_buffer_ok(moe_trace_logits))))) {
         release_buf(x); release_buf(xb); release_buf(xb2); release_buf(q);
         release_buf(kt); release_buf(vt); release_buf(hb); release_buf(hb2);
@@ -378,6 +407,7 @@ static bool metal_ensure_batch(gpu_t *g, model_t *m, int n) {
         release_buf(ple); release_buf(ple_tmp); release_buf(agate);
         release_buf(moe_logits); release_buf(moe_sel); release_buf(moe_selw);
         release_buf(moe_hb); release_buf(moe_hb2); release_buf(moe_eout);
+        release_buf(moe_colmap); release_buf(moe_eoff);
         release_buf(moe_trace_logits);
         return false;
     }
@@ -400,10 +430,12 @@ static bool metal_ensure_batch(gpu_t *g, model_t *m, int n) {
         release_buf(g->moe_logits); release_buf(g->moe_sel);
         release_buf(g->moe_selw); release_buf(g->moe_hb);
         release_buf(g->moe_hb2); release_buf(g->moe_eout);
+        release_buf(g->moe_colmap); release_buf(g->moe_eoff);
         release_buf(g->moe_trace_logits);
         g->moe_logits = moe_logits; g->moe_sel = moe_sel;
         g->moe_selw = moe_selw; g->moe_hb = moe_hb;
         g->moe_hb2 = moe_hb2; g->moe_eout = moe_eout;
+        g->moe_colmap = moe_colmap; g->moe_eoff = moe_eoff;
         g->moe_trace_logits = moe_trace_logits;
     }
     g->batch_cap = n;
@@ -1284,6 +1316,9 @@ bool gpu_init(model_t *m) {
     g->p_moe_mv_em[T_MXFP4] = mk_pipeline(dev, lib, @"k_moe_mv_em_mxfp4");
     g->p_moe_mv_em8[T_Q8_0]  = mk_pipeline(dev, lib, @"k_moe_mv_em8_q8_0");
     g->p_moe_mv_em8[T_MXFP4] = mk_pipeline(dev, lib, @"k_moe_mv_em8_mxfp4");
+    g->p_moe_group        = mk_pipeline(dev, lib, @"k_moe_group");
+    g->p_moe_mm[T_Q8_0]   = mk_pipeline(dev, lib, @"k_moe_mm_q8_0");
+    g->p_moe_mm[T_MXFP4]  = mk_pipeline(dev, lib, @"k_moe_mm_mxfp4");
     [lib release];
     lib = nil;
 
@@ -2000,6 +2035,53 @@ static void enc_moe_mv(gpu_t *g, id<MTLComputeCommandEncoder> e, model_t *m,
       threadsPerThreadgroup:MTLSizeMake(128, 1, 1)];
 }
 
+// Group this layer's slots by expert: colmap gets the slot ids ordered by
+// expert, eoff the per-expert [begin, end) offsets. One threadgroup; the
+// buffers are hazard-tracked, so the mm dispatches below wait on it and the
+// next layer's grouping waits on them.
+static void enc_moe_group(gpu_t *g, id<MTLComputeCommandEncoder> e,
+                          int ne, int nslots, NSUInteger sel_off) {
+    [e setComputePipelineState:g->p_moe_group];
+    [e setBuffer:g->moe_sel offset:sel_off atIndex:0];
+    [e setBuffer:g->moe_colmap offset:0 atIndex:1];
+    [e setBuffer:g->moe_eoff offset:0 atIndex:2];
+    [e setBytes:&ne length:4 atIndex:3];
+    [e setBytes:&nslots length:4 atIndex:4];
+    g_disp.moe++;
+    [e dispatchThreadgroups:MTLSizeMake(1, 1, 1)
+      threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+}
+
+// Grouped simdgroup-MMA expert matmul: the dense k_mm tile shape over one
+// expert's gathered token columns, grid z spanning experts. Column tiles
+// beyond an expert's count exit on two int reads. Requires enc_moe_group to
+// have run for this layer's sel window.
+static void enc_moe_mm(gpu_t *g, id<MTLComputeCommandEncoder> e, model_t *m,
+                       gguf_tensor *base, uint64_t estride,
+                       id<MTLBuffer> x, id<MTLBuffer> y,
+                       int n_in, int n_out, int nslots, int xs, int ys,
+                       id<MTLBuffer> bias, int bias_stride,
+                       int slots_per_token) {
+    enum { MM_TILE_M = 64, MM_TILE_N = 32 };   // mirrors MM_TM/MM_TN
+    [e setComputePipelineState:g->p_moe_mm[base->type]];
+    struct { int n_in, n_out; uint64_t w_off, estride;
+             int xs, ys, has_bias, bias_stride, slots_per_token; } a = {
+        n_in, n_out,
+        metal_bind_weights(g, e, (uint64_t)(uintptr_t)base->data, base->nbytes),
+        estride, xs, ys, bias != nil, bias_stride, slots_per_token };
+    [e setBuffer:x offset:0 atIndex:1];
+    [e setBuffer:y offset:0 atIndex:2];
+    [e setBytes:&a length:sizeof(a) atIndex:3];
+    [e setBuffer:bias ? bias : g->dummy offset:0 atIndex:4];
+    [e setBuffer:g->moe_colmap offset:0 atIndex:5];
+    [e setBuffer:g->moe_eoff offset:0 atIndex:6];
+    g_disp.moe++;
+    [e dispatchThreadgroups:MTLSizeMake((n_out + MM_TILE_M - 1) / MM_TILE_M,
+                                        (nslots + MM_TILE_N - 1) / MM_TILE_N,
+                                        m->n_expert)
+      threadsPerThreadgroup:MTLSizeMake(128, 1, 1)];
+}
+
 static void enc_moe_actmul(gpu_t *g, id<MTLComputeCommandEncoder> e,
                            id<MTLBuffer> gbuf, NSUInteger goff,
                            id<MTLBuffer> ubuf, NSUInteger uoff,
@@ -2162,17 +2244,46 @@ static void enc_moe_experts_batch(gpu_t *g, id<MTLComputeCommandEncoder> e,
                        ggml_row_size(ly->ffn_down_exps->type, nff);
 
     int l = (int)(ly - m->layers);
-    enc_moe_mv(g, e, m, ly->ffn_gate_exps, gstride, g->xb, 0,
-               g->moe_hb, 0, n_embd, nff, slots, xdim, nff,
-               g->geb[l], nff, sel_off, used);
-    enc_moe_mv(g, e, m, ly->ffn_up_exps, ustride, g->xb, 0,
-               g->moe_hb2, 0, n_embd, nff, slots, xdim, nff,
-               g->ueb[l], nff, sel_off, used);
+    // Grouped-MMA route (RUNNER_METAL_MOE_MM): sort slots by expert once,
+    // then any expert tensor whose type has a k_moe_mm kernel runs as a real
+    // GEMM over its token group; the rest stay on the slot-major matvec.
+    bool mm = metal_moe_mm_on() && n > 1 &&
+              (g->p_moe_mm[ly->ffn_gate_exps->type] ||
+               g->p_moe_mm[ly->ffn_up_exps->type] ||
+               g->p_moe_mm[ly->ffn_down_exps->type]);
+    if (mm) {
+        static bool announced = false;
+        if (!announced) {
+            announced = true;
+            fprintf(stderr, "gpu: MoE grouped-MMA prefill kernels on "
+                    "(RUNNER_METAL_MOE_MM)\n");
+        }
+        enc_moe_group(g, e, m->n_expert, slots, sel_off);
+    }
+    if (mm && g->p_moe_mm[ly->ffn_gate_exps->type])
+        enc_moe_mm(g, e, m, ly->ffn_gate_exps, gstride, g->xb, g->moe_hb,
+                   n_embd, nff, slots, xdim, nff, g->geb[l], nff, used);
+    else
+        enc_moe_mv(g, e, m, ly->ffn_gate_exps, gstride, g->xb, 0,
+                   g->moe_hb, 0, n_embd, nff, slots, xdim, nff,
+                   g->geb[l], nff, sel_off, used);
+    if (mm && g->p_moe_mm[ly->ffn_up_exps->type])
+        enc_moe_mm(g, e, m, ly->ffn_up_exps, ustride, g->xb, g->moe_hb2,
+                   n_embd, nff, slots, xdim, nff, g->ueb[l], nff, used);
+    else
+        enc_moe_mv(g, e, m, ly->ffn_up_exps, ustride, g->xb, 0,
+                   g->moe_hb2, 0, n_embd, nff, slots, xdim, nff,
+                   g->ueb[l], nff, sel_off, used);
     enc_moe_actmul(g, e, g->moe_hb, 0, g->moe_hb2, 0,
                    nff, slots, nff, nff, m->ffn_act);
-    enc_moe_mv(g, e, m, ly->ffn_down_exps, dstride, g->moe_hb, 0,
-               g->moe_eout, 0, nff, n_embd, slots, nff, n_embd,
-               g->deb[l], n_embd, sel_off, 0);
+    if (mm && g->p_moe_mm[ly->ffn_down_exps->type])
+        enc_moe_mm(g, e, m, ly->ffn_down_exps, dstride, g->moe_hb,
+                   g->moe_eout, nff, n_embd, slots, nff, n_embd,
+                   g->deb[l], n_embd, 0);
+    else
+        enc_moe_mv(g, e, m, ly->ffn_down_exps, dstride, g->moe_hb, 0,
+                   g->moe_eout, 0, nff, n_embd, slots, nff, n_embd,
+                   g->deb[l], n_embd, sel_off, 0);
     enc_moe_sum(g, e, g->xb, 0, n_embd, used, n_embd, nil,
                 sel_off, n, xdim);
 }
