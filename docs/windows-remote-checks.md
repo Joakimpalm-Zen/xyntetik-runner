@@ -78,3 +78,28 @@ cost time every time they are rediscovered: the remote run redirects into a
 file as the SOLE command of its ssh invocation, because redirects do not
 survive `&` chaining and stderr is not forwarded; and `mkdir` in cmd.exe
 rejects forward slashes even though scp and python accept them.
+
+## Detached runs and building from cmd (added 2026-09-01)
+
+A run longer than one ssh call's patience has to be detached, and two ways
+that look right do not work: a PowerShell `Start-Process` launched over ssh
+dies with the session (zero-byte logs, no process left), and there is no
+`nohup` in cmd.exe. What works is a scheduled task. Write a `.bat` that
+`cd`s and runs the command with its own `> log 2>&1` redirect, then:
+
+    schtasks /create /tn <name> /tr C:\path\run.bat /sc once /st 00:00 /f & schtasks /run /tn <name>
+
+The `/ST is earlier than current time` warning is harmless; `/run` starts
+it now. Poll the log with `type` in separate calls and `schtasks /delete
+/tn <name> /f` when done. Use the full interpreter path in the `.bat`
+(`C:\Users\zen\AppData\Local\Programs\Python\Python312\python.exe -u`);
+the bare `python` is a Store alias that resolves for cmd but not reliably
+for a task.
+
+`make` invoked straight from cmd cannot find `uname` or `mkdir` and stops
+at the first object. Build from msys bash instead
+(`C:\msys64\usr\bin\bash.exe C:/path/build.sh`) with
+`PATH=/ucrt64/bin:/usr/bin:$PATH` exported inside the script, redirecting
+`make` output to a file there, and echo `$?` so the exit code comes back
+on stdout. A fresh checkout at `4731dc0` built this way in under a minute
+with `make OS=Windows_NT -j4 runner`.
