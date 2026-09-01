@@ -3206,8 +3206,52 @@ static bool model_alloc_runtime(model_t *m, const model_params *p) {
         m->kv_off[l + 1] = m->kv_off[l] +
             (model_kv_owner(m, l) == l
                  ? (size_t)model_kv_rows(m, l) * model_kv_dim(m, l) : 0);
+    // Tied-V (RUNNER_TIEDV=1): a gemma-4 layer with no attn_v.weight computes
+    // V as the raw K projection, so after the weightless V norm the stored V
+    // row already determines K: K = rope(V * knorm_w) — the same two steps the
+    // store path would have taken, replayed at read time. Such a layer needs
+    // no K rows at all. OPT-IN and CPU-only: the device kernels read a stored
+    // K row, and a q8 cache would re-quantize the derived row rather than
+    // read it, so both refuse loudly instead of engaging. Like the KV ring,
+    // the asymmetric layout breaks the flat-copy prefix snapshot, which
+    // fails closed in engine.c.
+    m->tied_v = false; m->kv_off_k = NULL;
+    {
+        const char *e = getenv("RUNNER_TIEDV");
+        if (e && *e && strcmp(e, "0") != 0) {
+            int n_tied = 0;
+            for (int l = 0; l < m->n_layer; l++)
+                if (model_kv_owner(m, l) == l && !m->layers[l].wv &&
+                    m->layers[l].knorm_w && m->v_rmsnorm &&
+                    model_head_dim(m, l) <= 1024)  // derivation stack buffer
+                    n_tied++;
+            if (n_tied > 0 && p->gpu_mode != GPU_OFF) {
+                fprintf(stderr, "kv: tied-V refused — the GPU attention "
+                        "kernels read a stored K row; rerun with --gpu off\n");
+            } else if (n_tied > 0 && m->kv_q8) {
+                fprintf(stderr, "kv: tied-V refused — a q8 cache would "
+                        "re-quantize the derived K row rather than read it; "
+                        "use the default f16 KV\n");
+            } else if (n_tied > 0) {
+                m->kv_off_k = malloc(sizeof(size_t) * (m->n_layer + 1));
+                if (!m->kv_off_k) return false;
+                m->tied_v = true;
+                m->kv_off_k[0] = 0;
+                for (int l = 0; l < m->n_layer; l++)
+                    m->kv_off_k[l + 1] = m->kv_off_k[l] +
+                        ((model_kv_owner(m, l) == l && !model_layer_tied_v(m, l))
+                             ? (size_t)model_kv_rows(m, l) * model_kv_dim(m, l)
+                             : 0);
+                fprintf(stderr, "kv: tied-V on — %d layers derive K from the "
+                        "stored V (K = rope(V*w)); K cache %zu -> %zu bytes\n",
+                        n_tied, model_kv_boundary_bytes(m, m->n_layer),
+                        model_k_boundary_bytes(m, m->n_layer));
+            }
+        }
+    }
     size_t kv_bytes = model_kv_boundary_bytes(m, m->n_layer);
-    m->kcache = calloc(1, kv_bytes);
+    size_t k_bytes  = model_k_boundary_bytes(m, m->n_layer);
+    m->kcache = calloc(1, k_bytes ? k_bytes : 1);
     m->vcache = calloc(1, kv_bytes);
     m->kv_owner = KV_OWNER_MALLOC;
     m->x      = malloc(sizeof(float) * (size_t)B * m->n_embd);
@@ -3467,7 +3511,7 @@ void model_free(model_t *m) {
     // auto-extension keys off the requested context and phi3 picks its
     // LongRoPE factor set the same way, so two slots of one file with
     // different -c legitimately want different tables.
-    free(m->kv_off); free(m->ple); free(m->ple_tmp);
+    free(m->kv_off); free(m->kv_off_k); free(m->ple); free(m->ple_tmp);
     free(m->rope_inv_freq);
     free(m->rope_inv_freq_local);
     if (m->kv_owner == KV_OWNER_MALLOC) {
@@ -3653,6 +3697,26 @@ static void rope_apply(model_t *m, float *v, int n_heads, int pos, int layer) {
     }
 }
 
+// Rope one head's slice in place. rope_apply() strides over n_heads of a full
+// row; the tied-V derivation needs exactly one head at one position, so this
+// is the same rotation with the head loop removed — one definition of the
+// angles, shared through the same tables.
+static void rope_head(const model_t *m, float *p, int layer, int pos) {
+    bool local = model_is_swa(m, layer);
+    int half   = model_rope_dim(m, layer) / 2;
+    const float *fr = local ? m->rope_inv_freq_local : m->rope_inv_freq;
+    float ms = model_rope_mscale(m, layer);
+    for (int j = 0; j < half; j++) {
+        float a = pos * fr[j];
+        float c = cosf(a) * ms, sn = sinf(a) * ms;
+        float *p0 = m->rope_neox ? p + j : p + 2 * j;
+        float *p1 = m->rope_neox ? p + j + half : p0 + 1;
+        float x0 = *p0, x1 = *p1;
+        *p0 = x0 * c - x1 * sn;
+        *p1 = x0 * sn + x1 * c;
+    }
+}
+
 typedef struct {
     model_t *m;
     const uint8_t *kc, *vc; // this layer's cache (f16 rows or q8_0 blocks)
@@ -3666,6 +3730,11 @@ typedef struct {
     bool q8;                // rows are q8_0 blocks
     float scale;
     const float *sinks;     // gpt-oss per-head sink logits, or NULL
+    // tied-V: this layer stores no K rows. K is derived per position from the
+    // stored V as rope(V * knw), which is what makes the K cache unnecessary.
+    bool         tied;
+    const float *knw;       // attn_k_norm weights [hd] (set when tied)
+    int          layer;
 } attn_job;
 
 static void attn_heads(void *ctx, int h0, int h1) {
@@ -3686,14 +3755,30 @@ static void attn_heads(void *ctx, int h0, int h1) {
             // att[] stays indexed by ABSOLUTE position (it is n_ctx wide and
             // softmax works on the [t0, pos] span); only the cache row moves.
             size_t slot = j->ring ? (size_t)(t % j->ring) : (size_t)t;
-            const uint8_t *kt = j->kc + slot * j->row_b + hoff;
             float s;
-            if (j->q8) {
-                s = vec_dot(T_Q8_0, kt, qh, hd);
-            } else {
-                const f16_t *kh = (const f16_t *)kt;
+            if (j->tied) {
+                // no K row exists: rebuild this head's K from the stored V.
+                // V is the weightless-normed raw projection, so K1 = V*w and
+                // K = rope(K1) — the same two steps the store path would have
+                // taken, replayed at read time against the cached V. (tied
+                // implies an f16 cache; q8 is refused at activation.)
+                float kb[1024];
+                const f16_t *vh0 = (const f16_t *)(j->vc + slot * j->row_b + hoff);
+                for (int i = 0; i < hd; i++)
+                    kb[i] = f16_load(vh0 + i) * j->knw[i];
+                if (model_layer_ropes(m, j->layer))
+                    rope_head(m, kb, j->layer, t);
                 s = 0;
-                for (int i = 0; i < hd; i++) s += qh[i] * f16_load(kh + i);
+                for (int i = 0; i < hd; i++) s += qh[i] * kb[i];
+            } else {
+                const uint8_t *kt = j->kc + slot * j->row_b + hoff;
+                if (j->q8) {
+                    s = vec_dot(T_Q8_0, kt, qh, hd);
+                } else {
+                    const f16_t *kh = (const f16_t *)kt;
+                    s = 0;
+                    for (int i = 0; i < hd; i++) s += qh[i] * f16_load(kh + i);
+                }
             }
             att[t] = s * scale;
         }
@@ -3720,6 +3805,14 @@ static void attn_heads(void *ctx, int h0, int h1) {
 // forward pass to stderr. Off by default; zero cost when unset (one cached
 // getenv + a predictable branch per dumped tensor).
 
+static bool tiedv_check(void) {
+    static int on = -1;
+    if (on < 0) {
+        const char *e = getenv("RUNNER_TIEDV_CHECK");
+        on = e && *e && strcmp(e, "0") != 0 ? 1 : 0;
+    }
+    return on != 0;
+}
 static int dbg_act_mode(void) {
     static int mode = -1;
     if (mode < 0) {
@@ -5176,6 +5269,14 @@ bool model_lora_load(model_t *m, const char *path, float user_scale) {
                 "dual-branch FFN yet\n");
         return false;
     }
+    if (m->tied_v) {
+        // A K-side adapter delta would be silently dropped at read time on a
+        // tied layer (K is derived from the stored V, which the hook never
+        // touched), so the combination refuses rather than degrades.
+        fprintf(stderr, "error: --lora cannot run with RUNNER_TIEDV — the "
+                "derived K rows bypass the adapter hooks; unset RUNNER_TIEDV\n");
+        return false;
+    }
     gguf_file g;
     if (!gguf_open(&g, path)) {
         fprintf(stderr, "error: cannot open adapter %s\n", path);
@@ -5719,8 +5820,8 @@ static bool lora_layer_bw(model_t *m, int l, const int32_t *toks, int T,
     int n_kv = kv_dim / hd, kv_mul = n_head / n_kv;
     int nff = ly->n_ff;
     float scale = model_attn_scale(m, l);
-    const uint8_t *kc_l = (const uint8_t *)m->kcache + model_kv_byte_off(m, l);
-    const uint8_t *vc_l = (const uint8_t *)m->vcache + model_kv_byte_off(m, l);
+    const uint8_t *kc_l = (const uint8_t *)m->kcache + model_k_byte_off(m, l);
+    const uint8_t *vc_l = (const uint8_t *)m->vcache + model_v_byte_off(m, l);
     size_t row_b = model_kv_row_bytes(m, l);
     const float *tape_x = m->tape + (size_t)l * m->tape_T * E;
 
@@ -5775,9 +5876,11 @@ static bool lora_layer_bw(model_t *m, int l, const int32_t *toks, int T,
             matvec_b(m->tp, kt, kv_dim, ly->wk, x1, E, E, kv_dim, ly->bk, 1);
             lora_site_fw(m, l, LW_K, kt, x1, E, kv_dim);
         }
+        // tied fields stay zero: lora_bw_supported refuses v_rmsnorm models,
+        // so a tied-V layer can never reach this recompute
         attn_job aj = { m, kc_l, vc_l, qt, ao + (size_t)t * q_dim, t, 0,
                        hd, kv_dim, row_b, model_kv_is_ring(m, l) ? m->kv_ring : 0,
-                       false, scale, NULL };
+                       false, scale, NULL, false, NULL, 0 };
         tpool_run(m->tp, attn_heads, &aj, n_head);
         matvec_b(m->tp, tmpE, E, ly->wo, ao + (size_t)t * q_dim, q_dim,
                  q_dim, E, ly->bo, 1);
@@ -6392,8 +6495,8 @@ float *model_forward_batch(model_t *m, const int32_t *tokens, int n, int pos,
             else
                 sim = false;
         }
-        uint8_t *kc_l = (uint8_t *)m->kcache + model_kv_byte_off(m, l);
-        uint8_t *vc_l = (uint8_t *)m->vcache + model_kv_byte_off(m, l);
+        uint8_t *kc_l = (uint8_t *)m->kcache + model_k_byte_off(m, l);
+        uint8_t *vc_l = (uint8_t *)m->vcache + model_v_byte_off(m, l);
         size_t row_b = model_kv_row_bytes(m, l);
 
         // attention
@@ -6491,16 +6594,46 @@ float *model_forward_batch(model_t *m, const int32_t *tokens, int n, int pos,
                         hd, m->rms_eps);
             if (model_layer_ropes(m, l))
                 rope_apply(m, m->k_tmp + (size_t)b * kv_dim, n_kv, pos + b, l);
+            // TIED-V CHECK (RUNNER_TIEDV_CHECK=1, diagnostic only), placed
+            // AFTER rope so both sides are the post-rope rows the cache
+            // actually stores: the derived rope(V*w) against the K the store
+            // path computed. Prints per-row f32/f16 agreement so a real model
+            // can certify the derivation before RUNNER_TIEDV trusts it.
+            if (!ly->wv && ly->knorm_w && m->v_rmsnorm && tiedv_check()
+                && kv_dim <= 8192) {
+                const float *V = m->v_tmp + (size_t)b * kv_dim;
+                const float *K = m->k_tmp + (size_t)b * kv_dim;   // post-rope
+                float drv[8192];
+                for (int i = 0; i < kv_dim; i++)
+                    drv[i] = V[i] * ly->knorm_w[i % hd];          // = K1
+                if (model_layer_ropes(m, l))
+                    rope_apply(m, drv, n_kv, pos + b, l);         // = rope(V*w)
+                double worst = 0; long same16 = 0, exact32 = 0;
+                for (int i = 0; i < kv_dim; i++) {
+                    if (drv[i] == K[i]) exact32++;
+                    if (f32_to_f16(drv[i]) == f32_to_f16(K[i])) same16++;
+                    double d = fabs((double)drv[i] - (double)K[i]);
+                    double den = fabs((double)K[i]);
+                    double rel = den > 0 ? d / den : d;
+                    if (rel > worst) worst = rel;
+                }
+                fprintf(stderr, "tiedv L%-2d pos%-5d: f32 %ld/%d exact, worst "
+                        "rel %.3e | f16 rows agree %ld/%d (%.4f%%)\n",
+                        l, pos + b, exact32, kv_dim, worst, same16, kv_dim,
+                        100.0 * (double)same16 / kv_dim);
+            }
             size_t slot = (size_t)model_kv_row_at(m, l, pos + b);
             uint8_t *kc = kc_l + slot * row_b;
             uint8_t *vc = vc_l + slot * row_b;
+            bool tied = model_layer_tied_v(m, l);
             if (m->kv_q8) {
                 q8_quant_row(m->k_tmp + (size_t)b * kv_dim, kc, kv_dim);
                 q8_quant_row(m->v_tmp + (size_t)b * kv_dim, vc, kv_dim);
             } else {
                 f16_t *kh = (f16_t *)kc, *vh = (f16_t *)vc;
                 for (int i = 0; i < kv_dim; i++) {
-                    kh[i] = f32_to_f16(m->k_tmp[(size_t)b * kv_dim + i]);
+                    if (!tied)   // a tied layer owns no K rows to write into
+                        kh[i] = f32_to_f16(m->k_tmp[(size_t)b * kv_dim + i]);
                     vh[i] = f32_to_f16(m->v_tmp[(size_t)b * kv_dim + i]);
                 }
             }
@@ -6511,8 +6644,9 @@ float *model_forward_batch(model_t *m, const int32_t *tokens, int n, int pos,
             dbg_stat("v-post-norm", l, m->v_tmp + (size_t)(n - 1) * kv_dim, kv_dim);
             if (!m->kv_q8) {
                 size_t dslot = (size_t)model_kv_row_at(m, l, pos + n - 1);
-                dbg_stat_f16("k-cached", l,
-                    (const f16_t *)(kc_l + dslot * row_b), kv_dim);
+                if (!model_layer_tied_v(m, l))
+                    dbg_stat_f16("k-cached", l,
+                        (const f16_t *)(kc_l + dslot * row_b), kv_dim);
                 dbg_stat_f16("v-cached", l,
                     (const f16_t *)(vc_l + dslot * row_b), kv_dim);
             }
@@ -6523,7 +6657,8 @@ float *model_forward_batch(model_t *m, const int32_t *tokens, int n, int pos,
             attn_job aj = { m, kc_l, vc_l, m->q + (size_t)b * q_dim,
                             m->xb2 + (size_t)b * xdim, p, t0, hd, kv_dim,
                             row_b, model_kv_is_ring(m, l) ? m->kv_ring : 0,
-                            m->kv_q8, scale, ly->attn_sinks };
+                            m->kv_q8, scale, ly->attn_sinks,
+                            model_layer_tied_v(m, l), ly->knorm_w, l };
             tpool_run(m->tp, attn_heads, &aj, m->n_head);
             if (m->qwen35 || (m->attn_out_gate && ly->wq_gate))
                 for (int i = 0; i < q_dim; i++) {

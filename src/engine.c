@@ -509,7 +509,11 @@ prefix_reuse engine_prefix_reuse(engine *e, const int32_t *toks, int n) {
     // contiguous [0, n) run per layer: any prefix longer than the ring would
     // write past the allocation. Refuse the whole mechanism rather than
     // special-case it -- a snapshot of recycled rows is not a prefix.
-    if (model_kv_ring_active(e->m)) { prefix_reuse r = {0}; return r; }
+    // Tied-V is the same shape from the other side: its K cache is smaller
+    // than kv_off describes, so the flat copy would read past kcache.
+    if (model_kv_ring_active(e->m) || e->m->tied_v) {
+        prefix_reuse r = {0}; return r;
+    }
     prefix_reuse r = { 0, 0, 0.0 };
     // the slot's own KV first: it is already in place and costs nothing
     r.keep = engine_rewind(e, toks, n);
@@ -587,8 +591,9 @@ prefix_reuse engine_prefix_reuse(engine *e, const int32_t *toks, int n) {
 void engine_prefix_publish(engine *e, const int32_t *toks, int n,
                            int fed, double prefill_s) {
     // Same reason as engine_prefix_reuse: pfx_save copies a contiguous run
-    // the ring does not own. Publishing under a ring would read out of bounds.
-    if (model_kv_ring_active(e->m)) return;
+    // the ring does not own (and under tied-V, K rows kv_off describes but
+    // kcache does not hold). Publishing would read out of bounds.
+    if (model_kv_ring_active(e->m) || e->m->tied_v) return;
     if (!e->hist || n < PFX_MIN_TOKENS || e->pos < n) return;
 
     pthread_mutex_lock(&PFX.mu);

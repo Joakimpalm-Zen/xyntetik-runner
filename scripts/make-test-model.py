@@ -40,6 +40,7 @@ ESERIES_SHARED_KV = 0
 ESERIES_PLE = 0
 FFN_WIDTHS = None  # per-layer FFN widths -> ARRAY-typed feed_forward_length
 G4HETERO = False   # gemma4 heterogeneous attention geometry (26B/12B shape)
+G4_HD32 = False    # --g4-hd32: widen every g4-hetero head to 32 (q8-able rows)
 ACT_OVERFLOW = 0   # scale on ffn_gate weights, to drive the activation extreme
 MUSE = False       # muse-glimmer: gated attention + QK/sandwich norms + NoPE
 MUSE_GATE_FLAT = False  # zero the attn_gate weights (sigmoid -> flat 0.5)
@@ -162,6 +163,12 @@ while i < len(args):
         # norms + per-layer output scale + logit softcap.
         G4HETERO = True
         ARCH = "gemma4"
+    elif a == "--g4-hd32":
+        # q8-able variant of --gemma4-hetero: every head 32 wide, so a q8_0
+        # KV cache can engage (blocks need row width % 32 == 0). The layer
+        # pattern, V-less full layers and per-layer KV head counts are
+        # unchanged — this exists so the tied-V x q8 refusal is testable.
+        G4_HD32 = True
     elif a == "--ffn-widths":
         # "W0,W1,..." one width per layer — emitted as an ARRAY-typed
         # feed_forward_length, the gemma-4 E2B export shape (real per-layer
@@ -203,7 +210,7 @@ def muse_swa(i):  return True if MUSE_ALL_SWA else (i % 4) != 3
 # head_dim 32 / 2 KV heads / no V tensor; sliding layers head_dim 16 /
 # 1 KV head / V present. Q width therefore varies 128 vs 64.
 def g4_swa(i):  return (i % 3) != 2
-def g4_hd(i):   return 16 if g4_swa(i) else 32
+def g4_hd(i):   return 32 if (G4_HD32 or not g4_swa(i)) else 16
 def g4_kv(i):   return 1 if g4_swa(i) else 2
 VOCAB = ["<unk>", "<s>", "</s>"] + [f"<0x{i:02X}>" for i in range(256)]
 TTYPE = [2, 3, 3] + [6] * 256  # unknown, control, control, bytes
@@ -324,7 +331,11 @@ for i in range(N_LAYER + MTP_LAYERS):
         head_dim = g4_hd(i) if G4HETERO else N_EMBD // N_HEAD
         tensors += [
             (f"blk.{i}.attn_q_norm.weight", [head_dim], ones(head_dim)),
-            (f"blk.{i}.attn_k_norm.weight", [head_dim], ones(head_dim)),
+            # G4HETERO varies the K-norm weights: the tied-V derivation
+            # multiplies the stored V by exactly these, so all-ones would let
+            # an implementation that forgets the multiply pass its gate.
+            (f"blk.{i}.attn_k_norm.weight", [head_dim],
+             tensor_data(head_dim) if G4HETERO else ones(head_dim)),
             (f"blk.{i}.post_attention_norm.weight", [N_EMBD], ones(N_EMBD)),
             (f"blk.{i}.post_ffw_norm.weight", [N_EMBD], ones(N_EMBD)),
             (f"blk.{i}.layer_output_scale.weight", [1],
@@ -426,13 +437,13 @@ if G4HETERO:
     pattern = [g4_swa(i) for i in range(N_LAYER)]
     meta_kvs += [
         kv_u32(f"{ARCH}.attention.key_length", 32),
-        kv_u32(f"{ARCH}.attention.key_length_swa", 16),
+        kv_u32(f"{ARCH}.attention.key_length_swa", 32 if G4_HD32 else 16),
         kv_arr_u32(f"{ARCH}.attention.head_count_kv",
                    [g4_kv(i) for i in range(N_LAYER)]),
         kv_u32(f"{ARCH}.attention.sliding_window", 32),
         kv_arr_bool(f"{ARCH}.attention.sliding_window_pattern", pattern),
         kv_u32(f"{ARCH}.rope.dimension_count", 32),
-        kv_u32(f"{ARCH}.rope.dimension_count_swa", 16),
+        kv_u32(f"{ARCH}.rope.dimension_count_swa", 32 if G4_HD32 else 16),
         kv_f32(f"{ARCH}.final_logit_softcapping", 30.0),
     ]
 if GRANITE:

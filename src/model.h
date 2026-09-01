@@ -233,7 +233,14 @@ typedef struct {
     int      *l_rope_dim;    // [n_layer] rotated dims per layer
     bool     *l_is_swa;      // [n_layer] sliding-window layer flags
     int       kv_ring;       // rows a sliding layer owns (0 = flat n_ctx rows)
-    size_t   *kv_off;        // [n_layer+1] element offsets into kcache/vcache
+    size_t   *kv_off;        // [n_layer+1] element offsets into VCACHE (and
+                             // into kcache too unless tied-V is on)
+    // [n_layer+1] element offsets into KCACHE. NULL means the two caches share
+    // kv_off. A tied-V layer (gemma-4 globals: no attn_v.weight, V is the raw
+    // K projection) reserves NOTHING here — its K is derived from the stored V
+    // as rope(V*w) at read time instead of being cached.
+    size_t   *kv_off_k;
+    bool      tied_v;        // the asymmetric layout above is in force
     float     attn_scale;    // 0 = default 1/sqrt(head_dim(l)), else fixed
     int       ffn_act;       // ACT_SILU (default) or ACT_GELU (gemma)
     bool      v_rmsnorm;     // weightless per-head RMS norm on V (gemma4)
@@ -519,6 +526,29 @@ static inline int model_kv_owner(const model_t *m, int l) {
 }
 static inline size_t model_kv_byte_off(const model_t *m, int l) {
     size_t e = m->kv_off[model_kv_owner(m, l)];
+    return m->kv_q8 ? e / 32 * 34 : e * sizeof(f16_t);
+}
+// Does layer l carry its V implicitly? gemma-4's full-attention layers ship no
+// attn_v.weight: V is the raw K projection, so after the weightless V norm
+// V = raw*r while the weighted K norm gives K1 = raw*r*w = V*w. One stored row
+// carries both, and K = rope(V*w) is derived at read time. tied_v is only set
+// when every precondition (CPU path, f16 cache, knorm present) held at alloc.
+static inline bool model_layer_tied_v(const model_t *m, int l) {
+    return m->tied_v && m->layers[l].wv == NULL
+        && m->layers[l].knorm_w != NULL && m->v_rmsnorm;
+}
+// Byte offset of layer l's rows in the K cache / in the V cache. These differ
+// only under tied-V, where a tied layer owns no K rows at all.
+static inline size_t model_k_byte_off(const model_t *m, int l) {
+    size_t e = (m->kv_off_k ? m->kv_off_k : m->kv_off)[model_kv_owner(m, l)];
+    return m->kv_q8 ? e / 32 * 34 : e * sizeof(f16_t);
+}
+static inline size_t model_v_byte_off(const model_t *m, int l) {
+    return model_kv_byte_off(m, l);
+}
+// Bytes covering the first `l` layers' K rows (== the V number unless tied-V).
+static inline size_t model_k_boundary_bytes(const model_t *m, int l) {
+    size_t e = (m->kv_off_k ? m->kv_off_k : m->kv_off)[l];
     return m->kv_q8 ? e / 32 * 34 : e * sizeof(f16_t);
 }
 // THE FLAT-ROW ASSUMPTION, and the two features that still depend on it.

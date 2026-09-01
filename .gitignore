@@ -200,3 +200,5 @@ test-lora-q8.*
 test-lora-qk.*
 test-qk.gguf
 test-mvt
+test-metal-tensor
+test-shared-asan-bin.dSYM/
