@@ -1309,7 +1309,8 @@ int quantize_type_from_name(const char *s) {
 
 static int quantize_gguf_plan_inner(const char *in_path, const char *out_path, int target,
                        const char *prune_path, const char *type_plan_path,
-                       merge_set_t *ms);
+                       merge_set_t *ms, uint32_t surgery_context,
+                       float surgery_factor, context_surgery_result *surgery_result);
 
 // FTZ/DAZ are process-wide (set by the engine's -ffast-math startup); clear
 // them around the quantize so a subnormal block scale matches ggml, and
@@ -1318,9 +1319,53 @@ int quantize_gguf_plan(const char *in_path, const char *out_path, int target,
                        const char *prune_path, const char *type_plan_path) {
     fp_denormal_state fpst = fp_denormals_disable();
     int rc = quantize_gguf_plan_inner(in_path, out_path, target, prune_path,
-                                      type_plan_path, NULL);
+                                      type_plan_path, NULL, 0, 0, NULL);
     fp_denormals_restore(fpst);
     return rc;
+}
+
+static bool tensor_payloads_equal(const char *a_path, const char *b_path) {
+    gguf_file a, b;
+    if (!gguf_open(&a, a_path)) return false;
+    if (!gguf_open(&b, b_path)) { gguf_close(&a); return false; }
+    bool same = a.n_tensors == b.n_tensors;
+    for (uint64_t i = 0; same && i < a.n_tensors; i++) {
+        const gguf_tensor *x = &a.tensors[i], *y = &b.tensors[i];
+        same = strcmp(x->name, y->name) == 0 && x->type == y->type &&
+               x->n_dims == y->n_dims && x->nbytes == y->nbytes &&
+               x->nbytes <= SIZE_MAX;
+        for (uint32_t d = 0; same && d < x->n_dims; d++)
+            same = x->ne[d] == y->ne[d];
+        if (same && x->nbytes)
+            same = memcmp(x->data, y->data, (size_t)x->nbytes) == 0;
+    }
+    gguf_close(&b);
+    gguf_close(&a);
+    return same;
+}
+
+int context_surgery_gguf(const char *in_path, const char *out_path,
+                         uint32_t target_context, float target_factor,
+                         context_surgery_result *result) {
+    context_surgery_result local = {0};
+    if (!result) result = &local;
+    memset(result, 0, sizeof(*result));
+    fp_denormal_state fpst = fp_denormals_disable();
+    int rc = quantize_gguf_plan_inner(in_path, out_path, T_KEEP, NULL, NULL,
+                                      NULL, target_context, target_factor,
+                                      result);
+    fp_denormals_restore(fpst);
+    if (rc != 0) return rc;
+    if (!tensor_payloads_equal(in_path, out_path)) {
+        fprintf(stderr, "error: context-surgery tensor-payload verification "
+                        "failed; refusing %s\n", out_path);
+        remove(out_path);
+        return 1;
+    }
+    result->tensors_byte_identical = true;
+    fprintf(stderr, "context-surgery: independently reparsed tensor payloads "
+                    "are byte-identical\n");
+    return 0;
 }
 
 // The adapter is resolved against a first open of the base, which then
@@ -1340,7 +1385,7 @@ int merge_lora_gguf(const char *in_path, const char *adapter_path,
     }
     fp_denormal_state fpst = fp_denormals_disable();
     int rc = quantize_gguf_plan_inner(in_path, out_path, target, NULL, NULL,
-                                      &ms);
+                                      &ms, 0, 0, NULL);
     fp_denormals_restore(fpst);
     merge_set_free(&ms);
     return rc;
@@ -1348,7 +1393,8 @@ int merge_lora_gguf(const char *in_path, const char *adapter_path,
 
 static int quantize_gguf_plan_inner(const char *in_path, const char *out_path, int target,
                        const char *prune_path, const char *type_plan_path,
-                       merge_set_t *ms) {
+                       merge_set_t *ms, uint32_t surgery_context,
+                       float surgery_factor, context_surgery_result *surgery_result) {
     if (target != T_KEEP && !quantize_row_writable(target)) {
         fprintf(stderr, "error: quantize target must be q8_0, q4_0, q3_k, "
                 "q4_k, q6_k, f16, or bf16\n");
@@ -1383,6 +1429,71 @@ static int quantize_gguf_plan_inner(const char *in_path, const char *out_path, i
         gguf_close(&g);
         quantize_plans_free(&plan, &tplan);
         return 1;
+    }
+
+    if (surgery_context) {
+        const char *arch = gguf_get_str(&g, "general.architecture", "");
+        char ctx_key[128], type_key[128], factor_key[128], orig_key[128];
+        snprintf(ctx_key, sizeof(ctx_key), "%s.context_length", arch);
+        snprintf(type_key, sizeof(type_key), "%s.rope.scaling.type", arch);
+        snprintf(factor_key, sizeof(factor_key), "%s.rope.scaling.factor", arch);
+        snprintf(orig_key, sizeof(orig_key),
+                 "%s.rope.scaling.original_context_length", arch);
+        gguf_kv *ctx = gguf_get(&g, ctx_key);
+        gguf_kv *fac = gguf_get(&g, factor_key);
+        uint32_t source_context = gguf_get_u32(&g, ctx_key, 0);
+        uint32_t original_context = gguf_get_u32(&g, orig_key, 0);
+        float source_factor = gguf_get_f32(&g, factor_key, 0);
+        const char *scaling_type = gguf_get_str(&g, type_key, "");
+        double implied = (double)original_context * (double)surgery_factor;
+        uint64_t implied_context = implied >= 0.0 ? (uint64_t)(implied + 0.5) : 0;
+        bool valid = arch[0] && ctx && ctx->type == GGUF_T_U32 &&
+                     fac && fac->type == GGUF_T_F32 &&
+                     strcmp(scaling_type, "yarn") == 0 &&
+                     original_context > 0 && source_context > 0 &&
+                     source_factor > 1.0f;
+        if (!valid) {
+            fprintf(stderr, "error: --context-surgery requires complete native "
+                            "YaRN metadata with u32 context/original context "
+                            "and f32 factor\n");
+            gguf_close(&g);
+            quantize_plans_free(&plan, &tplan);
+            return 1;
+        }
+        if (surgery_context <= source_context ||
+            surgery_factor <= source_factor) {
+            fprintf(stderr, "error: --context-surgery only extends context "
+                            "(source %u/x%.9g, requested %u/x%.9g)\n",
+                    source_context, (double)source_factor, surgery_context,
+                    (double)surgery_factor);
+            gguf_close(&g);
+            quantize_plans_free(&plan, &tplan);
+            return 1;
+        }
+        if (implied_context != surgery_context ||
+            fabs(implied - (double)surgery_context) > 0.0001) {
+            fprintf(stderr, "error: --context-surgery target %u conflicts "
+                            "with original context %u x YaRN factor %.9g "
+                            "(implies %.9g)\n", surgery_context,
+                    original_context, (double)surgery_factor, implied);
+            gguf_close(&g);
+            quantize_plans_free(&plan, &tplan);
+            return 1;
+        }
+        ctx->v.u64 = surgery_context;
+        uint32_t factor_bits;
+        memcpy(&factor_bits, &surgery_factor, sizeof(factor_bits));
+        fac->raw = factor_bits;
+        fac->v.f64 = surgery_factor;
+        if (surgery_result) {
+            surgery_result->source_context = source_context;
+            surgery_result->original_context = original_context;
+            surgery_result->source_factor = source_factor;
+            surgery_result->tensors_byte_identical = false;
+        }
+        fprintf(stderr, "context-surgery: %s %u -> %u; %s %.9g -> %.9g\n",
+                ctx_key, source_context, surgery_context, factor_key,
+                (double)source_factor, (double)surgery_factor);
     }
 
     // Prune-plan pre-pass: resolve every plan entry against its layer's own

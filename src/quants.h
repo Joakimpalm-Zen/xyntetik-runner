@@ -54,6 +54,19 @@ int   quantize_gguf(const char *in_path, const char *out_path, int target,
 // First matching rule wins. Passing NULL is exactly quantize_gguf.
 int   quantize_gguf_plan(const char *in_path, const char *out_path, int target,
                          const char *prune_path, const char *type_plan_path);
+// Compile a longer native-YaRN context contract into a standalone GGUF.
+// Only {arch}.context_length and {arch}.rope.scaling.factor may change; the
+// implementation reopens both files and byte-compares every tensor payload
+// before reporting success.
+typedef struct {
+    uint32_t source_context;
+    uint32_t original_context;
+    float    source_factor;
+    bool     tensors_byte_identical;
+} context_surgery_result;
+int   context_surgery_gguf(const char *in_path, const char *out_path,
+                           uint32_t target_context, float target_factor,
+                           context_surgery_result *result);
 // --merge-lora: rewrite the base GGUF with a LoRA adapter's delta folded
 // into its adapted projections (W' = W + (alpha/r)*user_scale*B·A), each
 // tensor requantized to its own type (target T_KEEP) or to `target`.

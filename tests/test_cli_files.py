@@ -7,6 +7,7 @@ places where main.c's own handling of input is the behaviour under test rather
 than the engine's.
 """
 import os
+import json
 import pathlib
 import re
 import subprocess
@@ -14,6 +15,8 @@ import sys
 import time
 
 import pytest
+
+from test_type_plan import read_tensors
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 
@@ -247,6 +250,59 @@ def test_yarn_factor_and_linear_scale_conflict(runner_bin, yarn_model):
                 "--rope-scale", "2", "-p", "hi", "-n", "1")
     assert proc.returncode != 0
     assert b"cannot be used together" in proc.stderr, proc.stderr[-300:]
+
+
+def test_context_surgery_rewrites_only_context_metadata(
+        runner_bin, yarn_model, tmp_path):
+    """Compile the exact runtime candidate into a standalone GGUF.
+
+    `read_tensors` parses both files independently from their GGUF headers;
+    equality therefore anchors the compiler's central promise more strongly
+    than loading the output or trusting its own success banner would.
+    """
+    out = tmp_path / "test-yarn-512.gguf"
+    proc = _run(runner_bin, yarn_model, "--context-surgery", str(out),
+                "-c", "512", "--yarn-factor", "64")
+    assert proc.returncode == 0, proc.stderr[-500:]
+    assert out.exists()
+    assert read_tensors(yarn_model) == read_tensors(out)
+
+    load = _run(runner_bin, out, "-c", "512", "-p", "hi", "-n", "1",
+                "--temp", "0")
+    assert load.returncode == 0, load.stderr[-500:]
+    assert b"YaRN scaling x64.00 (model metadata)" in load.stderr
+
+    manifest = json.loads(pathlib.Path(str(out) + ".context.json").read_text())
+    assert manifest["schema_version"] == "xyntetik.runner.context-surgery.v1"
+    assert manifest["source"]["context_length"] == 256
+    assert manifest["source"]["yarn_factor"] == 32
+    assert manifest["target"]["context_length"] == 512
+    assert manifest["target"]["yarn_factor"] == 64
+    assert manifest["tensor_payloads_byte_identical"] is True
+
+
+@pytest.mark.parametrize("extra,needle", [
+    (["--yarn-factor", "64"], b"requires -c TARGET"),
+    (["-c", "512"], b"requires -c TARGET"),
+    (["-c", "512", "--yarn-factor", "63"], b"conflicts with original context"),
+])
+def test_context_surgery_refuses_incomplete_or_inconsistent_contract(
+        runner_bin, yarn_model, tmp_path, extra, needle):
+    out = tmp_path / "must-not-exist.gguf"
+    proc = _run(runner_bin, yarn_model, "--context-surgery", str(out), *extra)
+    assert proc.returncode != 0
+    assert needle in proc.stderr, proc.stderr[-400:]
+    assert not out.exists()
+
+
+def test_context_surgery_refuses_non_yarn_source(
+        runner_bin, model, tmp_path):
+    out = tmp_path / "must-not-exist.gguf"
+    proc = _run(runner_bin, model, "--context-surgery", str(out),
+                "-c", "512", "--yarn-factor", "64")
+    assert proc.returncode != 0
+    assert b"requires complete native YaRN metadata" in proc.stderr
+    assert not out.exists()
 
 
 def _sampled(runner_bin, model, seed):

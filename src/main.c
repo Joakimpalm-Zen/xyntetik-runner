@@ -493,6 +493,8 @@ static void usage_to(FILE *f, const char *prog) {
         "  --json         constrain output to a single valid JSON object\n"
         "  --json-schema F constrain output to the JSON Schema in file F\n"
         "  --quantize OUT rewrite the model to OUT.gguf (see --quant) and exit\n"
+        "  --context-surgery OUT  compile -c/--yarn-factor into GGUF metadata;\n"
+        "                 tensor payloads are independently verified unchanged\n"
         "  --quant T      quantize target: q8_0 | q4_0 | q3_k | q4_k | q6_k |\n"
         "                 f16 | bf16 | keep (default q4_0, or keep if\n"
         "                 --prune-experts or --merge-lora is the reason to\n"
@@ -787,7 +789,7 @@ int main(int argc, char **argv) {
     char *owned_prompt = NULL;
     const char *tmpl_arg = NULL, *prompt_file = NULL, *schema_file = NULL;
     const char *quant_out = NULL, *quant_type = NULL, *prune_experts = NULL;
-    const char *type_plan = NULL, *merge_out = NULL;
+    const char *type_plan = NULL, *merge_out = NULL, *context_out = NULL;
     const char *transcript_path = NULL;
     const char *verify_path = NULL;
     int n_predict = 256, n_threads = 0, tmpl = -1, reserve_cpu_pct = 0;
@@ -864,6 +866,7 @@ int main(int argc, char **argv) {
         else if (!strcmp(a, "--json")) json_mode = true;
         else if (!strcmp(a, "--json-schema")) schema_file = NEXT;
         else if (!strcmp(a, "--quantize")) quant_out = NEXT;
+        else if (!strcmp(a, "--context-surgery")) context_out = NEXT;
         else if (!strcmp(a, "--merge-lora")) merge_out = NEXT;
         else if (!strcmp(a, "--transcript")) transcript_path = NEXT;
         else if (!strcmp(a, "--verify")) verify_path = NEXT;
@@ -1183,6 +1186,7 @@ int main(int argc, char **argv) {
         prompt = owned_prompt = fbuf;
     }
     if (!prompt && !interactive && !serve && !quant_out && !merge_out &&
+        !context_out &&
         !bench_json && !tool_info && !train_path && !verify_path) {
         fprintf(stderr, "error: need -p PROMPT, -i, or --serve\n");
         usage(argv[0]);
@@ -1412,6 +1416,52 @@ int main(int argc, char **argv) {
         }
         // A multi-model swap set cannot honour one global template; server_run
         // refuses that combination, where the parsed entry count is known.
+    }
+
+    if (context_out) {
+        if (quant_out || merge_out || prune_experts || type_plan || quant_type) {
+            fprintf(stderr, "error: --context-surgery does not combine with "
+                    "quantize, merge, prune, or type-plan operations\n");
+            return 1;
+        }
+        if (mp.n_ctx <= 0 || mp.yarn_factor <= 1.0f) {
+            fprintf(stderr, "error: --context-surgery requires -c TARGET and "
+                    "--yarn-factor FACTOR\n");
+            return 1;
+        }
+        context_surgery_result sr;
+        int rc = context_surgery_gguf(load_path, context_out,
+                                      (uint32_t)mp.n_ctx, mp.yarn_factor, &sr);
+        if (rc != 0) return rc;
+        char bsha[65] = "", osha[65] = "";
+        if (!envelope_file_sha256(load_path, bsha) ||
+            !envelope_file_sha256(context_out, osha)) {
+            fprintf(stderr, "error: cannot hash context-surgery artifacts "
+                    "for the provenance record\n");
+            return 1;
+        }
+        sbuf rec = {0};
+        sb_lit(&rec, "{\"schema_version\":\"xyntetik.runner.context-surgery.v1\","
+                     "\"runner\":\"");
+        sb_esc(&rec, RUNNER_VERSION, strlen(RUNNER_VERSION));
+        sb_lit(&rec, "\",\"base\":{\"path\":\"");
+        sb_esc(&rec, load_path, strlen(load_path));
+        sb_lit(&rec, "\",\"sha256\":\""); sb_lit(&rec, bsha);
+        sb_fmt(&rec, "\"},\"source\":{\"context_length\":%u,"
+                       "\"original_context_length\":%u,\"yarn_factor\":%.9g},",
+               sr.source_context, sr.original_context,
+               (double)sr.source_factor);
+        sb_fmt(&rec, "\"target\":{\"path\":\"");
+        sb_esc(&rec, context_out, strlen(context_out));
+        sb_fmt(&rec, "\",\"sha256\":\"%s\",\"context_length\":%d,"
+                       "\"original_context_length\":%u,\"yarn_factor\":%.9g},",
+               osha, mp.n_ctx, sr.original_context, (double)mp.yarn_factor);
+        sb_fmt(&rec, "\"tensor_payloads_byte_identical\":%s}\n",
+               sr.tensors_byte_identical ? "true" : "false");
+        bool wrote = write_provenance(context_out, ".context.json",
+                                      "context-surgery", &rec);
+        free(rec.s);
+        return wrote ? 0 : 1;
     }
 
     if (merge_out) {
