@@ -164,6 +164,14 @@ def run_chat(runner, model, params, timeout):
     cmd = [str(runner), "-m", str(model), "-i", "--no-tray", "--temp", "0",
            "--gpu", params.get("gpu", "auto"), "-n",
            str(params.get("max_tokens", 200)), "--wait-for-vram", "300"]
+    # The smoke asks whether the model answers and stops through its
+    # template. A thinking family left to its default spends the whole
+    # ceiling deliberating whether 2+2 might be in another base (Qwen3-30B,
+    # 2026-09-02) and fails as "hit_token_ceiling" without ever being asked
+    # the question the check poses. Families without a thinking prompt shape
+    # accept the flag and ignore it.
+    if not params.get("thinking", False):
+        cmd.append("--no-think")
     started = time.time()
     try:
         proc = run_group(cmd, timeout, stdin_text=f"{prompt}\n/exit\n",
@@ -351,6 +359,15 @@ def run_tokenizer(model, reference, corpus, timeout, reference_ids=None):
                 "tokenizer.json", "repository not found")):
             result["status"] = "not_executed"
             result["reason"] = "tokenizer_reference_unavailable"
+        elif any(marker in detail for marker in (
+                "calledprocesserror", "difftok harness failed",
+                "no such file or directory", "error 127")):
+            # The instrument itself did not build or run (no compiler on the
+            # matrix process's PATH, 2026-09-02: 16 rows came back "fail"
+            # having compared nothing). A tokenizer that was never compared
+            # is not a tokenizer that differs.
+            result["status"] = "not_executed"
+            result["reason"] = "tokenizer_tool_unavailable"
     return result
 
 

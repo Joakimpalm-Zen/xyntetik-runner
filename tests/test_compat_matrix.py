@@ -273,6 +273,24 @@ def test_unavailable_tokenizer_reference_is_skip_not_failure(tmp_path):
     assert result["reason"] == "tokenizer_reference_unavailable"
 
 
+def test_tokenizer_tool_that_cannot_build_is_skip_not_failure(tmp_path):
+    """A matrix process without a compiler on PATH produced 16 tokenizer
+    "fail" rows on 2026-09-02 that had compared nothing: difftok's helper
+    build died with `make: cc: No such file or directory`."""
+    module = load_module()
+    script = tmp_path / "difftok.py"
+    script.write_text(
+        "import sys\nprint('make: cc: No such file or directory\\n"
+        "make: *** [Makefile:214: .build/quants.o] Error 127', file=sys.stderr)\n"
+        "raise SystemExit(1)\n")
+    module.TOKENIZER_SCRIPT = script
+    result = module.run_tokenizer(
+        tmp_path / "model.gguf", "org/model",
+        ROOT / "tests/fixtures/tokenizer-corpus.txt", 10)
+    assert result["status"] == "not_executed"
+    assert result["reason"] == "tokenizer_tool_unavailable"
+
+
 def test_tokenizer_capture_is_replayed_without_network_reference(tmp_path):
     module = load_module()
     script = tmp_path / "difftok.py"
@@ -631,3 +649,24 @@ def test_a_timeout_kills_the_grandchildren_too(tmp_path):
     else:
         os.kill(grandchild, signal.SIGKILL)
         pytest.fail(f"grandchild {grandchild} outlived the timeout")
+
+
+def test_chat_smoke_asks_for_the_non_thinking_prompt_shape(monkeypatch, tmp_path):
+    """The chat smoke measures answer-and-stop, not deliberation budget."""
+    module = load_module()
+    seen = {}
+
+    class Proc:
+        returncode = 0
+        stdout = "4\n"
+        stderr = ""
+
+    def fake_run_group(cmd, timeout, **kw):
+        seen["cmd"] = cmd
+        return Proc()
+    monkeypatch.setattr(module, "run_group", fake_run_group)
+    r = module.run_chat(tmp_path / "runner", tmp_path / "m.gguf", {}, 10)
+    assert r["status"] == "pass"
+    assert "--no-think" in seen["cmd"]
+    module.run_chat(tmp_path / "runner", tmp_path / "m.gguf", {"thinking": True}, 10)
+    assert "--no-think" not in seen["cmd"]
