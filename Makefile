@@ -1291,6 +1291,45 @@ else
 	@echo "metal big-model identity skipped: macOS-only backend"
 endif
 
+# Multi-buffer wrap at real-checkpoint size. test-metal-multibuf forces the
+# split on sub-GB fixtures; this arm forces multi-GB buffers on a real model,
+# because the M5 Max measurement (2026-09-01) showed no on-disk artifact
+# crosses the real ceiling naturally: maxBufferLength there is 80.6 GiB and
+# the largest single file is 79.8 GiB. A 16 GiB forced cap on a 17 GB+ model
+# is the closest honest exercise: several real multi-GB wraps, cuts on real
+# tensor boundaries, byte-identical output demanded. Opt-in by path:
+#   make test-metal-bigmodel-multibuf BIGMODEL=models/Llama-3.3-70B-Instruct-Q4_0.gguf
+test-metal-bigmodel-multibuf: runner
+ifeq ($(shell uname -s),Darwin)
+	@set -e; \
+	if [ -z "$(BIGMODEL)" ]; then \
+		echo "metal big-model multibuf skipped: set BIGMODEL=<path.gguf>"; \
+	elif [ ! -f "$(BIGMODEL)" ]; then \
+		echo "metal big-model multibuf skipped: $(BIGMODEL) not found"; \
+	elif ./$(RUNNER_EXE) --caps | $(PYTHON) -c "import json,sys; d=json.load(sys.stdin); sys.exit(0 if (d.get('gpu') or {}).get('backend') == 'metal' else 1)"; then \
+		./$(RUNNER_EXE) -m "$(BIGMODEL)" -p "$(BIGPROMPT)" -n 32 --temp 0 \
+		  --gpu auto > metal-bigmb-one.out 2>/dev/null; \
+		RUNNER_METAL_MAX_BUF=17179869184 ./$(RUNNER_EXE) -m "$(BIGMODEL)" \
+		  -p "$(BIGPROMPT)" -n 32 --temp 0 --gpu auto \
+		  > metal-bigmb-many.out 2> metal-bigmb-many.err; \
+		grep -q "Metal backend" metal-bigmb-many.err || { \
+		  echo "FAIL: $(BIGMODEL) did not engage Metal under the 16 GiB cap"; exit 1; }; \
+		grep -q "weights copied" metal-bigmb-many.err && { \
+		  echo "FAIL: $(BIGMODEL) fell back to a copied buffer"; exit 1; }; \
+		n=$$(grep -oE "wrapped in [0-9]+" metal-bigmb-many.err | grep -oE "[0-9]+" | head -1); \
+		[ -n "$$n" ] && [ "$$n" -ge 2 ] || { \
+		  echo "FAIL: $(BIGMODEL) did not split (wrapped in $${n:-1})"; exit 1; }; \
+		cmp -s metal-bigmb-one.out metal-bigmb-many.out || { \
+		  echo "FAIL: $(BIGMODEL) output differs across a $$n-buffer split"; exit 1; }; \
+		echo "metal big-model multibuf ok ($(BIGMODEL), $$n buffers, byte-identical)"; \
+		rm -f metal-bigmb-one.out metal-bigmb-many.out metal-bigmb-many.err; \
+	else \
+		echo "metal big-model multibuf skipped: no Metal device reported by --caps"; \
+	fi
+else
+	@echo "metal big-model multibuf skipped: macOS-only backend"
+endif
+
 test-metal-gelu-overflow: runner
 ifeq ($(shell uname -s),Darwin)
 	@set -e; \
@@ -1808,7 +1847,7 @@ test-makefile-sane:
 
 .PHONY: template-conformance template-conformance-refresh template-conformance-baseline template-conformance-harmony-oracle
 .PHONY: test-gpu-stub
-.PHONY: FORCE makefile-noop test-python-deps test-makefile-sane fixture-scale-note clean debug ptx test test-bare-invocation test-help-interface test-shader-embed test-metal-shader-gate test-apertus test-moe test-prune-experts test-metal-fallback test-metal-prefill test-metal-kquant test-metal-decode-only test-metal-split test-metal-bind-failure test-metal-kv-q8 test-metal-moe test-metal-gptoss-moe test-metal-gemma4-moe test-metal-gemma4-hetero test-metal-bigmodel test-metal-gelu-overflow test-metal-eseries test-metal-swa smoke release-check test-truncation fuzz fuzz-build fuzz-run test-shared-asan test-shared-noid test-split-guard test-swap-race
+.PHONY: FORCE makefile-noop test-python-deps test-makefile-sane fixture-scale-note clean debug ptx test test-bare-invocation test-help-interface test-shader-embed test-metal-shader-gate test-apertus test-moe test-prune-experts test-metal-fallback test-metal-prefill test-metal-kquant test-metal-decode-only test-metal-split test-metal-bind-failure test-metal-kv-q8 test-metal-moe test-metal-gptoss-moe test-metal-gemma4-moe test-metal-gemma4-hetero test-metal-bigmodel test-metal-bigmodel-multibuf test-metal-gelu-overflow test-metal-eseries test-metal-swa smoke release-check test-truncation fuzz fuzz-build fuzz-run test-shared-asan test-shared-noid test-split-guard test-swap-race
 
 # Soak harness for the startup/SIGTERM race (test_signal_during_startup). Not
 # in `make test` — it is a diagnostic soak (thousands of spawns), run on demand

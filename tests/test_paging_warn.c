@@ -102,9 +102,12 @@ int main(int argc, char **argv) {
        !strstr(buf, "sparse MoE"),
        "hot == file falls back to the dense wording");
 
-    ck(model_residency_warning(need, 0, have, true, buf, sizeof(buf)) &&
-       !strstr(buf, "--mlock"),
-       "an already-locked model is not told to use --mlock");
+    // Found on the M5 Max wiring 85.7 GB: mlock succeeded over the whole map
+    // and the warning still predicted evictions and cold-expert disk reads —
+    // both impossible for wired pages. A successful lock is also proof the
+    // memory existed, whatever the instantaneous "available" figure said.
+    ck(!model_residency_warning(need, 0, have, true, buf, sizeof(buf)),
+       "wired weights cannot be evicted — a locked model gets no warning");
     ck(model_residency_warning(need, 0, have, false, buf, sizeof(buf)) &&
        strstr(buf, "--mlock"),
        "an unlocked model is told about --mlock");

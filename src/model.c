@@ -669,9 +669,13 @@ uint64_t model_hot_set_bytes(const model_t *m) {
 // experts per layer are ever touched.
 bool model_residency_warning(uint64_t need, uint64_t hot, uint64_t have,
                              bool locked, char *buf, size_t n) {
-    if (!need || !have || need <= have) return false;
-    const char *fix = locked ? ""
-        : " --mlock pins them; a smaller model is the other fix.";
+    // Wired weights cannot be evicted, so every prediction below is
+    // impossible for a locked model — and a successful mlock over the whole
+    // map is itself proof the memory existed, whatever the instantaneous
+    // "available" figure said (measured on an M5 Max: 85.7 GB wired while
+    // plat_ram_available_bytes reported 43.9 GB free).
+    if (!need || !have || need <= have || locked) return false;
+    const char *fix = " --mlock pins them; a smaller model is the other fix.";
     if (!hot || hot >= need) {                          // dense, or not sparse
         snprintf(buf, n,
                  "warning: weights are %.1f GB but only %.1f GB of RAM is"
