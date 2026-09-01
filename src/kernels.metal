@@ -1166,6 +1166,22 @@ struct rope_args {
     int   stride;     // elements between consecutive columns
 };
 
+// The rotation itself, factored so every kernel that ropes — k_rope, the
+// fused k_rope_store, the attention-front megakernel — computes the SAME
+// IEEE sequence. "Same expression, same contraction" is not a fact across
+// kernels: under fast math cos/sin inline as polynomial chains whose fma
+// contraction the compiler chooses per call site, and on M1 it chose
+// differently for k_rope and k_rope_store (M5 compiled them alike), which
+// broke the fusion byte-identity contract. precise::cos/sin compile to one
+// defined routine instead of a per-kernel polynomial, and the pragma pins
+// the rotation to two multiplies and a sub/add. Rope is a vanishing
+// fraction of a decode step, so precise trig costs nothing measurable.
+static inline float2 rope_rot(float x0, float x1, float ang, float mscale) {
+#pragma clang fp contract(off)
+    float c = precise::cos(ang) * mscale, s = precise::sin(ang) * mscale;
+    return float2(x0 * c - x1 * s, x0 * s + x1 * c);
+}
+
 kernel void k_rope(device float       *v_all [[buffer(0)]],
                    device const float *fr    [[buffer(1)]],
                    constant rope_args &a     [[buffer(2)]],
@@ -1173,14 +1189,13 @@ kernel void k_rope(device float       *v_all [[buffer(0)]],
     int j = gid.x, h = gid.y, col = gid.z;
     if (j >= a.half_dim || h >= a.n_heads) return;
     float ang = (a.pos + col) * fr[j];
-    float c = cos(ang) * a.mscale, s = sin(ang) * a.mscale;
     device float *v = v_all + (ulong)col * a.stride;
     device float *p = v + h * a.head_dim;
     int i0 = a.neox ? j : 2 * j;
     int i1 = a.neox ? j + a.half_dim : i0 + 1;
-    float x0 = p[i0], x1 = p[i1];
-    p[i0] = x0 * c - x1 * s;
-    p[i1] = x0 * s + x1 * c;
+    float2 y = rope_rot(p[i0], p[i1], ang, a.mscale);
+    p[i0] = y.x;
+    p[i1] = y.y;
 }
 
 // ---------------------------------------------------------------- kv store
@@ -1314,30 +1329,26 @@ kernel void k_rope_store(device float        *q    [[buffer(0)]],
     if (i < q_pairs) {
         int h = i / hf, j = i % hf;
         float ang = a.pos * fr[j];
-        float c = cos(ang) * a.mscale, s = sin(ang) * a.mscale;
         device float *p = q + a.q_off_e + h * hd;
         int i0 = a.neox ? j : 2 * j;
         int i1 = a.neox ? j + hf : i0 + 1;
-        float x0 = p[i0], x1 = p[i1];
-        p[i0] = x0 * c - x1 * s;
-        p[i1] = x0 * s + x1 * c;
+        float2 y = rope_rot(p[i0], p[i1], ang, a.mscale);
+        p[i0] = y.x;
+        p[i1] = y.y;
         return;
     }
     i -= q_pairs;
     if (i < k_pairs) {
         int h = i / hf, j = i % hf;
         float ang = a.pos * fr[j];
-        float c = cos(ang) * a.mscale, s = sin(ang) * a.mscale;
         device float *p = kt + a.k_off_e + h * hd;
         int i0 = a.neox ? j : 2 * j;
         int i1 = a.neox ? j + hf : i0 + 1;
-        float x0 = p[i0], x1 = p[i1];
-        float y0 = x0 * c - x1 * s;
-        float y1 = x0 * s + x1 * c;
-        p[i0] = y0;
-        p[i1] = y1;
-        kh[h * hd + i0] = (half)y0;
-        kh[h * hd + i1] = (half)y1;
+        float2 y = rope_rot(p[i0], p[i1], ang, a.mscale);
+        p[i0] = y.x;
+        p[i1] = y.y;
+        kh[h * hd + i0] = (half)y.x;
+        kh[h * hd + i1] = (half)y.y;
         return;
     }
     i -= k_pairs;
@@ -1581,29 +1592,25 @@ struct attn_front_args {
         if (a.has_qn) AF_QKNORM(q_out + head * hd, qnw) \
         for (int j = tid; j < hf; j += 256) { \
             float ang = a.pos * fr[j]; \
-            float c = cos(ang) * a.mscale, sn = sin(ang) * a.mscale; \
             device float *p = q_out + head * hd; \
             int i0 = a.neox ? j : 2 * j; \
             int i1 = a.neox ? j + hf : i0 + 1; \
-            float x0 = p[i0], x1 = p[i1]; \
-            p[i0] = x0 * c - x1 * sn; \
-            p[i1] = x0 * sn + x1 * c; \
+            float2 y = rope_rot(p[i0], p[i1], ang, a.mscale); \
+            p[i0] = y.x; \
+            p[i1] = y.y; \
         } \
     } else if (role == 1) { \
         if (a.has_kn) AF_QKNORM(kt + head * hd, knw) \
         for (int j = tid; j < hf; j += 256) { \
             float ang = a.pos * fr[j]; \
-            float c = cos(ang) * a.mscale, sn = sin(ang) * a.mscale; \
             device float *p = kt + head * hd; \
             int i0 = a.neox ? j : 2 * j; \
             int i1 = a.neox ? j + hf : i0 + 1; \
-            float x0 = p[i0], x1 = p[i1]; \
-            float y0 = x0 * c - x1 * sn; \
-            float y1 = x0 * sn + x1 * c; \
-            p[i0] = y0; \
-            p[i1] = y1; \
-            kh[head * hd + i0] = (half)y0; \
-            kh[head * hd + i1] = (half)y1; \
+            float2 y = rope_rot(p[i0], p[i1], ang, a.mscale); \
+            p[i0] = y.x; \
+            p[i1] = y.y; \
+            kh[head * hd + i0] = (half)y.x; \
+            kh[head * hd + i1] = (half)y.y; \
         } \
         for (int j = rd + tid; j < hd; j += 256) \
             kh[head * hd + j] = (half)kt[head * hd + j]; \

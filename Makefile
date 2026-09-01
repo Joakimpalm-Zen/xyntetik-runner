@@ -1403,6 +1403,11 @@ endif
 # gate, across the architecture roster (dense, swa, E-series, gpt-oss MoE
 # with biases and swiglu_oai, q8-requantized experts), with the engagement
 # grep keeping a fallen-back build from passing on self-agreement.
+# test-swa.gguf is otherwise generated inside the metal-swa recipe, which
+# leaves standalone `make test-metal-fuse` with a prerequisite and no rule.
+test-swa.gguf:
+	$(PYTHON) scripts/make-test-model.py --arch qwen3 --swa 8,2 test-swa.gguf
+
 test-metal-fuse: runner test-swa.gguf test-es.gguf test-moe-fixture.gptoss-mxfp4.gguf test-moe-fixture.gemma4-moe.gguf test-qk.gguf test-qkw.gguf
 ifeq ($(shell uname -s),Darwin)
 	@set -e; \
