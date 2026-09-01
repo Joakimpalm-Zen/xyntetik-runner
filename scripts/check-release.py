@@ -7,6 +7,7 @@ packaged README and workflow comments must not drift.
 """
 
 import argparse
+import json
 import re
 import subprocess
 import sys
@@ -189,15 +190,46 @@ def check(args):
         stem = f"{version}-"
         reports = (sorted(args.compat_reports.iterdir())
                    if args.compat_reports.is_dir() else [])
-        if not any(p.name.startswith(stem) and p.suffix == ".json"
-                   for p in reports):
+        mine = [p for p in reports
+                if p.name.startswith(stem) and p.suffix == ".json"]
+        if not mine:
             ok &= fail(
                 f"no compat report for {version} in {args.compat_reports} "
                 f"(expected {stem}<date>.json — run scripts/compat_matrix.py "
                 f"on a box that has the pinned models and commit the report)"
             )
+        # v0.4.5 shipped with a report that existed and measured nothing:
+        # 25 models, every check `not_executed`, because the release box had
+        # 2 of the 25 files. Existence is not evidence. A release needs at
+        # least one report for its version in which at least one check
+        # actually ran; `not_executed` rows stay honest, they just cannot be
+        # the whole ledger.
+        elif executed_checks(mine) == 0:
+            ok &= fail(
+                f"compat report(s) for {version} executed no check at all "
+                f"({', '.join(p.name for p in mine)}): every row is "
+                f"not_executed or the file is not a matrix report — run "
+                f"scripts/compat_matrix.py --execute-checks on a box that "
+                f"has the pinned models"
+            )
 
     return ok
+
+
+def executed_checks(reports):
+    """How many checks across these compat reports actually ran."""
+    n = 0
+    for path in reports:
+        try:
+            doc = json.loads(path.read_text())
+        except (OSError, ValueError):
+            continue
+        for model in (doc.get("models") or []) if isinstance(doc, dict) else []:
+            for check in (model.get("checks") or {}).values():
+                if isinstance(check, dict) and \
+                        check.get("status") not in (None, "not_executed"):
+                    n += 1
+    return n
 
 
 def main(argv=None):

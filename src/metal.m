@@ -609,7 +609,14 @@ static bool metal_moe_type_ok(int type) {
 }
 
 static bool metal_tensor_type_ok(const gguf_tensor *t, bool moe) {
-    if (!t || (moe ? metal_moe_type_ok(t->type) : gpu_type_ok(t->type)))
+    if (!t) return true;
+    if (t->scale != 1.0f) {
+        // see cuda.c: the companion is a host-seam operand, not a kernel input
+        fprintf(stderr, "gpu: tensor %s carries a per-tensor scale companion, "
+                "which no Metal kernel applies — using CPU\n", t->name);
+        return false;
+    }
+    if (moe ? metal_moe_type_ok(t->type) : gpu_type_ok(t->type))
         return true;
     fprintf(stderr, "gpu: tensor %s uses %s, which has no Metal%s kernel — "
             "using CPU\n", t->name, ggml_type_name(t->type),

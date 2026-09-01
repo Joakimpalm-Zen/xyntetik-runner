@@ -832,6 +832,7 @@ const char *model_fit_verdict(const model_fit *f);
 int      model_batch_default_for(uint64_t total_ram);
 bool     model_load_prefetch_wanted(uint64_t mapped, uint64_t available,
                                     bool locked, bool moe_prefetch);
+bool     model_paging_note_wanted(uint64_t faults, int tokens);
 bool     model_residency_warning(uint64_t need, uint64_t hot, uint64_t have,
                                  bool locked, char *buf, size_t n);
 // Advisory prefetch of the experts a router just selected. Fed by whichever

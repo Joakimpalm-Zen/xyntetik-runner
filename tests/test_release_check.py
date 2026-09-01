@@ -1,5 +1,6 @@
 import argparse
 import importlib.util
+import json
 import pathlib
 import subprocess
 
@@ -75,8 +76,19 @@ def report_dir(tmp_path, *names):
     for stale in d.iterdir():
         stale.unlink()
     for name in names:
-        write(d / name, "{}\n")
+        write(d / name, EXECUTED_REPORT)
     return d
+
+
+# The smallest matrix report in which one check actually ran. A placeholder
+# `{}` used to satisfy the gate, which is how v0.4.5 shipped a ledger that
+# measured nothing.
+EXECUTED_REPORT = json.dumps({"models": [{"id": "x", "checks": {
+    "load": {"status": "pass"}}}]}) + "\n"
+NOTHING_RAN_REPORT = json.dumps({"models": [{"id": "x", "checks": {
+    "load": {"status": "not_executed", "reason": "model_file_not_found"},
+    "chat": {"status": "not_executed", "reason": "model_file_not_found"}}}],
+    "complete": False}) + "\n"
 
 
 def test_release_check_accepts_consistent_artifacts(monkeypatch, tmp_path):
@@ -287,3 +299,33 @@ def test_scan_failure_modes_fail_closed_except_missing_git(monkeypatch, capsys):
     monkeypatch.setattr(check_release.subprocess, "run",
                         raising(subprocess.TimeoutExpired(cmd="git", timeout=60)))
     assert not check_release.private_reference_scan()      # fail closed
+
+
+def test_release_check_refuses_a_report_in_which_nothing_ran(
+        monkeypatch, tmp_path, capsys):
+    """Existence is not evidence: a report whose every check is
+    not_executed is a placeholder, and the gate names it as one."""
+    args = good_args(tmp_path)
+    args.compat_reports = report_dir(tmp_path, "0.1.3-alpha-2026-01-01.json")
+    write(args.compat_reports / "0.1.3-alpha-2026-01-01.json",
+          NOTHING_RAN_REPORT)
+    monkeypatch.setattr(
+        check_release, "binary_version", lambda _: "runner 0.1.3-alpha"
+    )
+    assert not check_release.check(args)
+    assert "executed no check" in capsys.readouterr().err
+
+
+def test_release_check_counts_executed_checks_across_all_dated_reports(
+        monkeypatch, tmp_path):
+    """An empty report beside a real one for the same version is fine: the
+    version has evidence somewhere in its ledger."""
+    args = good_args(tmp_path)
+    args.compat_reports = report_dir(
+        tmp_path, "0.1.3-alpha-2026-01-01.json", "0.1.3-alpha-2026-01-02.json")
+    write(args.compat_reports / "0.1.3-alpha-2026-01-01.json",
+          NOTHING_RAN_REPORT)
+    monkeypatch.setattr(
+        check_release, "binary_version", lambda _: "runner 0.1.3-alpha"
+    )
+    assert check_release.check(args)

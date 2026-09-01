@@ -2504,7 +2504,7 @@ done: ;
     uint64_t faults = plat_major_faults() - faults_at_start;
     char paging[80];
     paging[0] = '\0';
-    if (faults)
+    if (model_paging_note_wanted(faults, n_prompt + n_gen))
         snprintf(paging, sizeof(paging),
                  " [%llu page-ins — weights not resident]",
                  (unsigned long long)faults);

@@ -140,7 +140,12 @@ def main(argv):
         name, ne, _, off = nv[0]
         print(f"probing: {name} ne={ne}\n")
         f.seek(data_start + off)
-        nblk = 3000
+        # never read past this tensor: on a small file the bytes after it
+        # belong to the next tensor, and their "statistics" mean nothing
+        n_elems = 1
+        for d in ne:
+            n_elems *= d
+        nblk = min(3000, n_elems // QK)
         raw = f.read(BLOCK_BYTES * nblk)
 
         a = saturation(raw, nblk, slots_subblock)

@@ -726,12 +726,26 @@ layout, tensor type, runtime, or capacity is unsupported.
 
 | Backend | Tensor formats |
 |---|---|
-| CPU | F32, F16, BF16, Q8_0, Q4_0, Q4_1, Q5_0, Q5_1, Q2_K, Q3_K, Q4_K, Q5_K, Q6_K, IQ4_NL, IQ4_XS, MXFP4, plus the CPU-only codebook i-quants IQ1_S, IQ1_M, IQ2_XXS, IQ2_XS, IQ2_S, IQ3_XXS, IQ3_S |
-| Metal | The CPU list without the IQ1-IQ3 families |
-| CUDA | The CPU list without the IQ1-IQ3 families |
+| CPU | F32, F16, BF16, Q8_0, Q4_0, Q4_1, Q5_0, Q5_1, Q2_K, Q3_K, Q4_K, Q5_K, Q6_K, IQ4_NL, IQ4_XS, MXFP4, NVFP4, plus the CPU-only codebook i-quants IQ1_S, IQ1_M, IQ2_XXS, IQ2_XS, IQ2_S, IQ3_XXS, IQ3_S |
+| Metal | The CPU list without NVFP4 and the IQ1-IQ3 families |
+| CUDA | The CPU list without NVFP4 and the IQ1-IQ3 families |
 
-A model that carries even one IQ1-IQ3 tensor runs on the CPU as a whole:
-CUDA and Metal refuse it loudly, naming the tensor and type.
+A model that carries even one IQ1-IQ3 or NVFP4 tensor runs on the CPU as a
+whole: CUDA and Metal refuse it loudly, naming the tensor and type.
+
+**Per-tensor scale companions.** NVIDIA's ModelOpt NVFP4 export is two-level:
+a UE4M3 scale per 16 elements inside each block and one F32 `<base>.scale`
+tensor beside every `<base>.weight`, applied in the compute graph rather than
+by the block decode. Runner binds that companion by name at load and applies
+it at the CPU dot seam (the effective weight is stored x scale), for any
+weight type: the companion survives requantization, so an F16 or Q8_0
+re-export of such a file still carries it and still loads correctly.
+`<base>.input_scale` is the activation-side scale of a quantized-activation
+kernel and is deliberately not applied. A tensor carrying a companion is kept
+on the CPU by both GPU backends, and `--merge-lora` refuses to fold a delta
+into one. `scripts/nvfp4-probe.py` reads a file's own structure and reports
+the companions; `tests/test_nvfp4_scale.py` holds the gate against an F32
+anchor with the companion folded in.
 
 `runner --caps` is the live source of truth for a particular executable and
 machine. Architecture and MoE layout checks still happen at model load; a
@@ -794,8 +808,12 @@ long context is a tolerance-gated route, not a byte-identical one.
 
 `RUNNER_CUDA_TC=0`, `RUNNER_METAL_MM=0`, `RUNNER_METAL_ATTN_COOP=0` and
 `RUNNER_METAL_MOE_MM=0` pin the
-byte-identical scalar paths for identity investigations; every CPU-vs-GPU byte
-comparison in the test suite sets them. `./test-attn-tol MODEL.gguf` is the
+byte-identical scalar paths for identity investigations, and `RUNNER_MOE_EAGER=1`
+pins CUDA's eager MoE routing (the fused path's device `expf` differs from the
+host libm by 1-2 ulp by construction); every CPU-vs-GPU byte comparison in the
+test suite sets them. `RUNNER_CUDA_GRAPH_OFF=1` disables CUDA graph capture
+for decode steps, which isolates a kernel from the graph launch path when a
+result looks graph-dependent. `./test-attn-tol MODEL.gguf` is the
 attention gate.
 Weights are wrapped zero-copy from the model mmap. A file larger than the
 device's `maxBufferLength` - 4.29 GB on an M1, against a 5.73 GB working set -
@@ -1132,6 +1150,7 @@ switches:
 | `RUNNER_MOE_PREFETCH` | per-machine auto | Compatibility fallback for `--moe-prefetch`; the CLI flag has precedence. `0`/`off` disables it and other non-empty values enable it. |
 | `RUNNER_ALLOW_UNKNOWN_ARCH` | unset | Admit a GGUF whose `general.architecture` this binary does not implement, running it through llama-style math. Unset, such a file is refused at load. Set, the load is attempted and a warning says the output may be silently wrong. Experimental, not a supported configuration. |
 | `RUNNER_VRAM_PRIORITY` | `0` | Baseline for `--vram-priority`; the flag overrides it. |
+| `RUNNER_VRAM_REGISTRY_DIR` | the platform runtime dir | Where the cross-process VRAM ledger files live, one per GPU. Point every cooperating runner at the same directory when the default runtime directory is not shared between them (containers, service accounts); the tests use it to isolate a ledger. |
 | `RUNNER_KV_RING` | unset | Give sliding-window layers only the KV rows they can read, indexed modulo that count, instead of a full `n_ctx` rows each. A local layer never attends past its window, so the rest of its cache is written once and never read: on gemma-3-4b at `-c 32768` this takes the cache from 4563 MB to 800 MB, within 1% of the theoretical floor. Output is unchanged - the ring holds exactly the rows the flat allocation would have been read from, gated as bit-identical `--score` logprobs against the default path. Works on the CPU, CUDA and (since 2026-09-01) Metal paths: CUDA resolves every device cache address through `kv_slot()` (verified bit-identical on an RTX 3070 at a partial split and a full offload, 2121 scored positions each, max |Δlogprob| exactly 0), and Metal resolves the same modulo through `kv_row_off` in its store and attention kernels — gated bit-identical teacher-forced logprobs against the flat allocation across many ring wraps (`tests/test_kv_ring.py`, mutation-proven). **It is opt-in because it costs something:** the prefix cache and partial rewind also address KV as flat absolute rows, so both are refused while a ring is active and a server loses shared-prompt reuse. Worth it when context length is the binding constraint, not otherwise. Dense and full-attention-only models ignore it. |
 | `RUNNER_TIEDV` | unset | Stop storing K rows for layers that ship no `attn_v.weight` (gemma-4's full-attention globals: V is the raw K projection, so K = rope(V·w) can be derived from the stored V at read time). On gemma-4-31B at `-c 32768` the K cache drops from 14.76 GB to 13.42 GB. This is a compute-for-memory trade and it is **not byte-identical**: the derived row replays the store path's arithmetic against the f16-rounded stored V, measured on the 31B as 100% f16 row agreement at short context (worst row 99.95%), teacher-forced mean \|Δlogprob\| 1.3e-3 with `nll_mean` moving 8.7e-5 and no top-1 change over 297 positions. CPU-only and f16-KV-only: a GPU run and a q8 cache both refuse loudly (the device kernels read stored K rows; a q8 cache would re-quantize the derived row), `--lora` refuses the combination (a K-side adapter delta would bypass the derived rows), and like `RUNNER_KV_RING` the asymmetric layout disables the shared prefix cache. Layers that carry a real `attn_v.weight` are untouched; models with no V-less layers ignore it. Gate: `tests/test_tiedv.py`; diagnostic: `RUNNER_TIEDV_CHECK=1` prints per-row derived-vs-stored K agreement while the flat cache still stores real K. |
 | `RUNNER_PREFETCH` | unset/off | Opt-in: on load, hint the whole weight mapping to the OS (`madvise(MADV_WILLNEED)` / `PrefetchVirtualMemory`) when the model fits in available RAM. **Off by default because the measurement said so**: on an M5 Max the sweep made the cold 63 GB gpt-oss-120b load 60% *slower* than plain demand faulting (11.5 s vs 18.4 s, interleaved with eviction between arms) — macOS demand paging outruns its own WILLNEED readahead. Linux and Windows have prior art the other way (batched readahead, `PrefetchVirtualMemory`) and can measure on their own hardware before flipping it on. Pages stay fully evictable either way; suppressed under `--mlock` and for oversubscribed models. |
@@ -1141,7 +1160,11 @@ switches:
 
 Beyond these, the binary reads a number of development switches -
 `RUNNER_DEBUG_TOKENS`, `RUNNER_DEBUG_ACT`, `RUNNER_MOE_TRACE`,
-`RUNNER_LAYER_SIM`, `RUNNER_GRAMMAR_TRACE`, `RUNNER_SCHEMA_TRACE`, the
+`RUNNER_LAYER_SIM`, `RUNNER_GRAMMAR_TRACE`, `RUNNER_SCHEMA_TRACE`,
+`RUNNER_SCHEMA_ALLOW_WS` (the pre-fix whitespace behaviour, for A/B runs),
+`RUNNER_MOE_GROUPED` (the grouped CUDA MoE experiment, off by measurement),
+`RUNNER_REQUANT_ONLY` / `RUNNER_FORCE_REQUANT` (substring-scoped and
+size-check-bypassing requantization for experiments), the
 `RUNNER_METAL_*`/`RUNNER_CUDA_*` kernel knobs and failure injectors. They print
 or dump internals for the tools under `scripts/` (`moe-prune-plan.py` consumes
 `RUNNER_MOE_TRACE`, `classify-grammar-trace.py` consumes
@@ -1785,7 +1808,7 @@ silently dropped branch.
 |---|---|
 | File format | GGUF v2/v3, mmap/file-mapped host weights, including standard local multi-part sets. |
 | Tokenizers | SPM and byte-level BPE with llama, qwen2/qwen35, smollm, afmoe, tekken, llama4/gpt-4o, Gemma, and GPT-2-family pre-tokenization rules. |
-| Quantizations | `--caps` lists the admitted tensor formats: the k-quant and legacy families plus MXFP4 and the codebook i-quants (IQ1_S/M, IQ2_XXS/XS/S, IQ3_XXS/S, IQ4_NL/XS). The IQ1, IQ2 and IQ3 families are CPU-only with NEON/AVX2 dequant kernels; CUDA and Metal refuse them loudly, naming the exact tensor and type that caused the CPU fallback. |
+| Quantizations | `--caps` lists the admitted tensor formats: the k-quant and legacy families plus MXFP4, NVFP4 (two-level, with its per-tensor scale companion applied) and the codebook i-quants (IQ1_S/M, IQ2_XXS/XS/S, IQ3_XXS/S, IQ4_NL/XS). NVFP4 and the IQ1, IQ2 and IQ3 families are CPU-only; CUDA and Metal refuse them loudly, naming the exact tensor and type that caused the CPU fallback. |
 | Transformer | RMSNorm, adjacent-pair and NeoX RoPE, grouped-query attention, SwiGLU/GELU/xIELU family paths, tied embeddings, dense and selected sparse MoE. |
 | Sampling | Greedy, temperature, top-k, top-p, min-p, repeat penalty, stop strings, JSON/schema constraints, speculative decoding. |
 | Context | Batched prefill, f16/q8 KV, linear/YaRN/llama-3 scaling, automatic extension. |

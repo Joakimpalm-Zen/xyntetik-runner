@@ -152,6 +152,8 @@ static float *tensor_to_f32(gguf_tensor *t, int64_t need, bool *ok) {
             dequant_row(t->type, (uint8_t *)t->data + r * rs,
                         out + r * t->ne[0], (int)t->ne[0]);
     }
+    if (t->scale != 1.0f)
+        for (int64_t i = 0; i < n; i++) out[i] *= t->scale;
     return out;
 }
 
@@ -683,6 +685,17 @@ bool model_load_prefetch_wanted(uint64_t mapped, uint64_t available,
     // Sweeping a mapping larger than RAM is self-defeating: the head of the
     // readahead evicts its own tail. Only a model that FITS gets the hint.
     return mapped <= available;
+}
+
+// Whether a request's page-in count says the weights left RAM. On POSIX the
+// counter is hard faults only; on Windows it counts soft faults too, and a
+// request there shows a few hundred of them at full speed with the model
+// plainly resident. Evicted weights fault in by the gigabyte per token; below
+// 64 pages (256 KB) per token the disk was not what the time went to.
+bool model_paging_note_wanted(uint64_t faults, int tokens) {
+    if (faults == 0) return false;
+    uint64_t floor = 64ull * (uint64_t)(tokens > 0 ? tokens : 1);
+    return faults >= floor;
 }
 
 bool model_residency_warning(uint64_t need, uint64_t hot, uint64_t have,
@@ -3652,46 +3665,55 @@ static void mv_rows(void *ctx, int i0, int i1) {
     mv_job *j = ctx;
     const uint8_t *base = j->w->data;
     int type = j->w->type, n_in = j->n_in;
+    // A per-tensor scale companion (NVFP4's second level) is applied here, at
+    // the one seam every CPU projection passes through: a dot is linear in
+    // the weights, so dot(w * s, x) = s * dot(w, x), before the bias.
+    const float sc = j->w->scale;
 
     if (j->n_batch == 1) {
         if (j->xq) {
             for (int r = i0; r < i1; r++) {
-                float v = vec_dot_i8(type, base + (size_t)r * j->rsz, j->xq, n_in);
+                float v = vec_dot_i8(type, base + (size_t)r * j->rsz, j->xq, n_in) * sc;
                 j->y[r] = j->bias ? v + j->bias[r] : v;
             }
             return;
         }
         for (int r = i0; r < i1; r++) {
-            float v = vec_dot(type, base + (size_t)r * j->rsz, j->x, n_in);
+            float v = vec_dot(type, base + (size_t)r * j->rsz, j->x, n_in) * sc;
             j->y[r] = j->bias ? v + j->bias[r] : v;
         }
         return;
     }
     // batched: dequantize each weight row once, reuse for every token; the
     // multi-column dot shares each weight load across 4 activation columns
-    float *buf = type == T_F32 ? NULL : malloc(sizeof(float) * n_in);
+    float *buf = (type == T_F32 && sc == 1.0f) ? NULL : malloc(sizeof(float) * n_in);
     // If that scratch could not be allocated (OOM mid-inference), fall back to
     // the buffer-free fused dequant-and-dot used by the n_batch==1 path — one
     // column at a time. Slower, but never a NULL write and never silently
     // wrong output. This is the only in-band recovery a void thread-pool
     // worker has.
-    bool no_scratch = type != T_F32 && !buf;
+    bool no_scratch = (type != T_F32 || sc != 1.0f) && !buf;
     float outs[64];
     for (int r = i0; r < i1; r++) {
         float b0 = j->bias ? j->bias[r] : 0.0f;
         if (no_scratch) {
             for (int c = 0; c < j->n_batch; c++) {
                 float v = vec_dot(type, base + (size_t)r * j->rsz,
-                                  j->x + (size_t)c * j->x_stride, n_in);
+                                  j->x + (size_t)c * j->x_stride, n_in) * sc;
                 j->y[(size_t)c * j->y_stride + r] = v + b0;
             }
             continue;
         }
         const float *wrow;
-        if (type == T_F32) {
+        if (type == T_F32 && sc == 1.0f) {
             wrow = (const float *)(base + (size_t)r * j->rsz);
         } else {
-            dequant_row(type, base + (size_t)r * j->rsz, buf, n_in);
+            if (type == T_F32)
+                memcpy(buf, base + (size_t)r * j->rsz, sizeof(float) * n_in);
+            else
+                dequant_row(type, base + (size_t)r * j->rsz, buf, n_in);
+            if (sc != 1.0f)
+                for (int i = 0; i < n_in; i++) buf[i] *= sc;
             wrow = buf;
         }
         for (int c = 0; c < j->n_batch; c += 64) {
@@ -4683,6 +4705,8 @@ void model_ple_prepass(model_t *m, const int32_t *tokens, int n,
         dequant_row(m->ple_tok_embd->type,
                     (uint8_t *)m->ple_tok_embd->data + (size_t)id * ers,
                     scratch, (int)per_tok);
+        if (m->ple_tok_embd->scale != 1.0f)
+            for (int i = 0; i < (int)per_tok; i++) scratch[i] *= m->ple_tok_embd->scale;
         for (int l = 0; l < m->n_layer; l++) {
             float *slice = dst + (size_t)l * P;
             for (int i = 0; i < P; i++) slice[i] *= proj_scale;
@@ -5554,6 +5578,8 @@ static void mvt_worker(void *ctx, int k0, int k1) {
                 if (!decoded) {
                     dequant_row(jb->w->type, base + (size_t)j * jb->rs,
                                 slice, nsl);
+                    if (jb->w->scale != 1.0f)
+                        for (int i = 0; i < nsl; i++) slice[i] *= jb->w->scale;
                     decoded = true;
                 }
                 float *dxt = jb->dx + (size_t)t * jb->n_in + i0;
@@ -5586,7 +5612,9 @@ static void mvt_transpose_worker(void *ctx, int j0, int j1) {
 
 static bool matvec_t(model_t *m, const gguf_tensor *w, const float *dy,
                      float *dx, int n_in, int n_out, int nb) {
-    if (m->train_gpu && gpu_train_mvt(m, w, dy, dx, n_in, n_out, nb))
+    // the CUDA assist reads raw rows; a scaled tensor stays on the host path
+    if (m->train_gpu && w->scale == 1.0f &&
+        gpu_train_mvt(m, w, dy, dx, n_in, n_out, nb))
         return true;
     float *dyT = NULL;
     if (nb > 1) {
@@ -6471,6 +6499,9 @@ float *model_forward_batch(model_t *m, const int32_t *tokens, int n, int pos,
             dequant_row(m->tok_embd->type,
                         (uint8_t *)m->tok_embd->data + (size_t)id * ers,
                         m->x + (size_t)b * n_embd, n_embd);
+            if (m->tok_embd->scale != 1.0f)
+                for (int i = 0; i < n_embd; i++)
+                    m->x[(size_t)b * n_embd + i] *= m->tok_embd->scale;
             model_embd_transform(m, m->x + (size_t)b * n_embd);
         }
         model_ple_prepass(m, tokens, n, m->x, m->ple, m->ple_tmp);
@@ -6514,6 +6545,9 @@ float *model_forward_batch(model_t *m, const int32_t *tokens, int n, int pos,
             dequant_row(m->tok_embd->type,
                         (uint8_t *)m->tok_embd->data + (size_t)id * ers,
                         m->x + (size_t)b * n_embd, n_embd);
+            if (m->tok_embd->scale != 1.0f)
+                for (int i = 0; i < n_embd; i++)
+                    m->x[(size_t)b * n_embd + i] *= m->tok_embd->scale;
             model_embd_transform(m, m->x + (size_t)b * n_embd);
         }
         if (dbg) dbg_stat("post-embd", -1, m->x + (size_t)(n - 1) * n_embd, n_embd);

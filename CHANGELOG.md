@@ -8,6 +8,39 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **NVFP4 decodes correctly: the per-tensor scale companion is applied.**
+  NVIDIA's ModelOpt export is two-level (UE4M3 block scales inside the block,
+  one F32 `<base>.scale` beside the weight, applied in the graph); the block
+  decode was byte-identical to llama.cpp's from the start and the companion
+  was never read, so every NVFP4 weight served about 7,200x too large and a
+  model loaded, generated, and was wrong (the v0.4.3 known issue, field-
+  reported on a DGX Spark). The GGUF loader now binds `<base>.scale` by name
+  and shape for ANY weight type (the companion survives requantization; an
+  F16 re-export carries it too) and the CPU dot seam applies it; the training
+  transpose, embedding lookups and `tensor_to_f32` follow. `input_scale` is
+  deliberately not applied. Both GPU backends keep a companion-carrying tensor
+  on the CPU rather than run an unscaled device kernel, and `--merge-lora`
+  refuses a scaled base. Gate: `tests/test_nvfp4_scale.py`, a two-level NVFP4
+  fixture (`make-test-model.py --quant nvfp4`) scored against the same values
+  as F32 with the companion folded in (`--quant nvfp4-dequant`); the fixture
+  reproduced the 0.66-nat defect before the fix. Verified on a real 9B NVFP4
+  file against llama.cpp's completion of the same prompt.
+- **The release gate refuses a compat report in which nothing ran.** v0.4.5
+  shipped `docs/compat-reports/0.4.5-2026-09-01-macos.json` with 25 models and
+  every check `not_executed` (the release box had 2 of the 25 files);
+  `check-release.py` asked only that a dated file exist. It now requires at
+  least one executed check across the version's reports, and says so.
+- **The serve log's "weights not resident" note no longer fires on Windows
+  at full speed.** The Windows fault counter includes soft faults, and a
+  resident model showed a few hundred per request; the note now needs at
+  least 64 page-ins per token, the shape of real eviction (millions per
+  request on a paging M1), gated in `test-paging-warn`.
+- README: the backend tensor-format table names NVFP4 and the IQ1-IQ3
+  families as CPU-only instead of claiming the GPUs cover the full CPU list;
+  operator-facing `RUNNER_VRAM_REGISTRY_DIR`, `RUNNER_MOE_EAGER` and
+  `RUNNER_CUDA_GRAPH_OFF` documented; a per-tensor-scale-companions section.
+  `scripts/README.md` lists every script.
+
 - **`scripts/tool-choice-boundary.py`: an unlabeled tool-choice
   decision-boundary lane over `choice_logprobs`.** Runs a bank of ambiguous
   tool-choice prompts under several serving conditions (base, adapters), one

@@ -144,7 +144,7 @@ while i < len(args):
         # model the batch gate ran on was F32.
         i += 1
         QUANT = args[i].lower()
-        if QUANT not in ("q8_0", "bf16"):
+        if QUANT not in ("q8_0", "bf16", "nvfp4", "nvfp4-dequant"):
             sys.exit(f"--quant: unsupported type {QUANT!r} "
                      "(have: q8_0, bf16)")
     elif a == "--yarn":
@@ -550,6 +550,75 @@ def bf16_data(data):
     return struct.pack(f"<{len(words)}H", *(word >> 16 for word in words))
 
 
+# NVIDIA FP4 is TWO-LEVEL: a UE4M3 scale per 16 elements inside the block AND
+# a per-tensor F32 companion `<base>.scale` beside the weight (ModelOpt export
+# convention; llama.cpp applies the companion in the compute graph). A fixture
+# in this format is what proves the loader applies the companion: the same
+# LCG data written as `nvfp4-dequant` (F32 holding block-decode x companion)
+# must score identically, and a runner that skips the companion is off by 1/ts.
+GGML_NVFP4 = 40
+NVFP4_TS = 2.0 ** -8            # the companion scale every NVFP4 tensor carries
+E2M1 = [0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0]
+_UE4M3 = sorted({(m * 2.0 ** -9) for m in range(8)} |
+                {((1.0 + m / 8.0) * 2.0 ** (e - 7)) for e in range(1, 16) for m in range(8)})
+
+
+def ue4m3_byte(v):
+    """Encode v as the UE4M3 byte that decodes to it (v must be representable)."""
+    if v == 0.0:
+        return 0
+    for e in range(0, 16):
+        for m in range(8):
+            d = (m * 2.0 ** -9) if e == 0 else ((1.0 + m / 8.0) * 2.0 ** (e - 7))
+            if d == v:
+                return (e << 3) | m
+    raise ValueError(v)
+
+
+def nvfp4_encode_row(vals, ts):
+    """One row -> NVFP4 blocks (4 UE4M3 sub-block scales + 32 nibble bytes per
+    64), the values understood as code * sub-scale * ts."""
+    out = bytearray()
+    for b in range(0, len(vals), 64):
+        blk = vals[b:b + 64]
+        scales, nibbles = [], []
+        for sb in range(4):
+            sub = blk[sb * 16:(sb + 1) * 16]
+            amax = max(abs(v) for v in sub) / ts
+            d = 0.0 if amax == 0.0 else min(x for x in _UE4M3 if x > 0 and x * 6.0 >= amax)
+            scales.append(ue4m3_byte(d))
+            codes = []
+            for v in sub:
+                q = 0.0 if d == 0.0 else abs(v) / (ts * d)
+                k = min(range(8), key=lambda i: abs(E2M1[i] - q))
+                codes.append(k | (8 if v < 0 and k else 0))
+            nibbles += [codes[j] | (codes[j + 8] << 4) for j in range(8)]
+        out += bytes(scales) + bytes(nibbles)
+    return bytes(out)
+
+
+def nvfp4_decode_row(raw, n, ts):
+    """Mirror of the runner's dq_nvfp4 with the companion folded in."""
+    vals = []
+    for b in range(n // 64):
+        blk = raw[b * 36:(b + 1) * 36]
+        for sb in range(4):
+            x = blk[sb]
+            if x == 0 or x == 0x7F:
+                d = 0.0
+            else:
+                e, m = (x >> 3) & 0xF, x & 7
+                d = (m * 2.0 ** -9) if e == 0 else ((1.0 + m / 8.0) * 2.0 ** (e - 7))
+            q = blk[4 + sb * 8:4 + sb * 8 + 8]
+            lo = [E2M1[c & 7] * (-1.0 if c & 8 else 1.0) * d * ts for c in (x & 0xF for x in q)]
+            hi = [E2M1[c & 7] * (-1.0 if c & 8 else 1.0) * d * ts for c in (x >> 4 for x in q)]
+            vals += lo + hi
+    return vals
+
+
+_companions = []
+
+
 def quantize(name, ne, data):
     """(type, data) for one tensor under QUANT.
 
@@ -569,6 +638,18 @@ def quantize(name, ne, data):
         return GGML_F32, data
     if QUANT == "bf16":
         return GGML_BF16, bf16_data(data)
+    if QUANT in ("nvfp4", "nvfp4-dequant"):
+        if ne[0] % 64:
+            return GGML_F32, data
+        vals = struct.unpack(f"<{len(data) // 4}f", data)
+        rows = [nvfp4_encode_row(vals[r * ne[0]:(r + 1) * ne[0]], NVFP4_TS)
+                for r in range(ne[1])]
+        if QUANT == "nvfp4-dequant":
+            flat = [v for r in rows for v in nvfp4_decode_row(r, ne[0], NVFP4_TS)]
+            return GGML_F32, struct.pack(f"<{len(flat)}f", *flat)
+        base = name[:-len(".weight")]
+        _companions.append((base + ".scale", [1], struct.pack("<f", NVFP4_TS), GGML_F32))
+        return GGML_NVFP4, b"".join(rows)
     if ne[0] % 32:
         return GGML_F32, data
     vals = struct.unpack(f"<{len(data) // 4}f", data)
@@ -580,6 +661,10 @@ _typed = []
 for name, ne, data in tensors:
     ttype, data = quantize(name, ne, data)
     _typed.append((name, ne, data, ttype))
+_typed += _companions
+if QUANT in ("nvfp4", "nvfp4-dequant") and not any(
+        t[3] == GGML_NVFP4 for t in _typed) and QUANT == "nvfp4":
+    sys.exit("--quant nvfp4 produced no NVFP4 tensor")
 tensors = _typed
 if GPU_UNSUPPORTED and not any(t[0] == GPU_UNSUPPORTED for t in tensors):
     sys.exit(f"--gpu-unsupported tensor {GPU_UNSUPPORTED!r} was not generated")

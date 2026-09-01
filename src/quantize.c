@@ -1957,6 +1957,17 @@ static int quantize_gguf_plan_inner(const char *in_path, const char *out_path, i
             kept++;
             continue;
         }
+        if (mp && t->scale != 1.0f) {
+            // The base rows are stored unscaled with a `.scale` companion the
+            // loader applies; folding a delta into them would put the delta
+            // under that companion too. Refuse rather than write a merged
+            // file that is wrong by 1/scale on the adapted part.
+            fprintf(stderr, "error: %s carries a per-tensor scale companion; "
+                    "--merge-lora into a scaled base is not supported "
+                    "(serve base + --lora instead)\n", t->name);
+            w.ok = false;
+            break;
+        }
         for (uint64_t r = 0; r < rows; r++) {
             dequant_row(t->type, (uint8_t *)t->data + r * in_rs, rowf, (int)t->ne[0]);
             if (mp) merge_row(mp, r, rowf, (int)t->ne[0]);

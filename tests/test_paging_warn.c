@@ -112,6 +112,20 @@ int main(int argc, char **argv) {
        strstr(buf, "--mlock"),
        "an unlocked model is told about --mlock");
 
+    // --- per-request paging note ------------------------------------------
+    // The serve log tags a request "[N page-ins — weights not resident]" from
+    // the fault delta. On Windows that counter includes soft faults, and a
+    // resident model at full speed showed 297 of them per ~40-token request
+    // (2026-09-01, RTX 3070 box) — noise dressed as a disk. Evicted weights
+    // fault in by the gigabyte per token (the 8 GB M1 showed 1.8M for a
+    // 96-token request). Hand-computed floor: 64 pages per token.
+    ck(!model_paging_note_wanted(0, 10), "no faults, no note");
+    ck(!model_paging_note_wanted(297, 40), "a few hundred soft faults on a resident model: silent");
+    ck(model_paging_note_wanted(1805121, 96), "millions of faults on a paging model: the note fires");
+    ck(model_paging_note_wanted(64 * 5, 5), "exactly the floor fires");
+    ck(!model_paging_note_wanted(64 * 5 - 1, 5), "one below the floor is silent");
+    ck(model_paging_note_wanted(64, 0), "a zero-token request is floored at one token");
+
     // --- load-time prefetch decision -------------------------------------
     // Cold-start page-in of a big model arrives as ~16 KB synchronous faults
     // (1.1M+ of them for the 120B); a WILLNEED sweep batches them. The

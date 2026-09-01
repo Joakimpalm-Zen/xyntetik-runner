@@ -37,6 +37,10 @@ typedef struct {
     uint64_t ne[4];         // ne[0] = row length (fastest dim)
     void    *data;
     uint64_t nbytes;
+    float    scale;         // per-tensor companion `<base>.scale` (1.0 = none):
+                            // a graph-level operand some exports (NVIDIA
+                            // ModelOpt NVFP4) ship beside the weight; the
+                            // effective weight is stored * scale
 } gguf_tensor;
 
 typedef struct {

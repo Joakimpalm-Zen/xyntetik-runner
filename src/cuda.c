@@ -538,7 +538,16 @@ static bool gpu_type_ok(int type) {
 }
 
 static bool gpu_tensor_type_ok(const gguf_tensor *t) {
-    if (!t || gpu_type_ok(t->type)) return true;
+    if (!t) return true;
+    if (t->scale != 1.0f) {
+        // the per-tensor scale companion is applied on the host dot seam; a
+        // device kernel that read the raw rows would reintroduce the unscaled
+        // NVFP4 defect on one backend only
+        fprintf(stderr, "gpu: tensor %s carries a per-tensor scale companion, "
+                "which no CUDA kernel applies — using CPU\n", t->name);
+        return false;
+    }
+    if (gpu_type_ok(t->type)) return true;
     fprintf(stderr, "gpu: tensor %s uses %s, which has no CUDA kernel — "
             "using CPU\n", t->name, ggml_type_name(t->type));
     return false;

@@ -204,6 +204,7 @@ static bool gguf_open_one_x(gguf_file *g, const char *path, bool header_only) {
         t->ne[0] = t->ne[1] = t->ne[2] = t->ne[3] = 1;
         for (uint32_t d = 0; d < t->n_dims; d++) t->ne[d] = rd_u64(&c);
         t->type = rd_u32(&c);
+        t->scale = 1.0f;                  // bound after the data is mapped
         uint64_t off = rd_u64(&c);
         t->data = (void *)(uintptr_t)off; // fixed up below
     }
@@ -319,6 +320,45 @@ static bool gguf_open_one(gguf_file *g, const char *path) {
     return gguf_open_one_x(g, path, false);
 }
 
+// Per-tensor scale companions. NVIDIA's ModelOpt NVFP4 export is TWO-LEVEL:
+// a UE4M3 scale per 16 elements inside each block AND one F32 `<base>.scale`
+// tensor beside `<base>.weight`, applied in the compute graph rather than by
+// the block decode. The companion survives requantization (llama.cpp's F16
+// re-export of such a file still carries it), so it is bound by name and
+// shape, not by weight type: any `X.weight` whose sibling `X.scale` holds
+// exactly one F32 value is stored * that value. `X.input_scale` is the
+// activation-side scale of a quantized-activation kernel and is deliberately
+// NOT applied: a float inference path never quantizes activations, and
+// applying it puts the weights two orders of magnitude too small (measured
+// 2026-08-30). A file with no companions keeps every scale at 1.0, which is
+// exactly right for single-level NVFP4 written by llama.cpp's own quantizer.
+static void gguf_bind_scale_companions(gguf_file *g) {
+    static const char SUF[] = ".scale";
+    for (uint64_t i = 0; i < g->n_tensors; i++) {
+        gguf_tensor *c = &g->tensors[i];
+        size_t n = strlen(c->name);
+        if (n <= sizeof(SUF) - 1 || strcmp(c->name + n - (sizeof(SUF) - 1), SUF) != 0)
+            continue;
+        if (c->type != T_F32 || !c->data ||
+            c->ne[0] * c->ne[1] * c->ne[2] * c->ne[3] != 1)
+            continue;
+        char wname[128];
+        int base = (int)(n - (sizeof(SUF) - 1));
+        if (base + 7 >= (int)sizeof(wname)) continue;
+        snprintf(wname, sizeof(wname), "%.*s.weight", base, c->name);
+        gguf_tensor *w = gguf_find_tensor(g, wname);
+        if (!w) continue;
+        float v = *(const float *)c->data;
+        if (!(v > 0.0f) || !isfinite(v)) {
+            fprintf(stderr, "warning: %s holds %g, which is not a usable "
+                            "per-tensor scale; %s left unscaled\n",
+                    c->name, v, wname);
+            continue;
+        }
+        w->scale = v;
+    }
+}
+
 bool gguf_open_header(gguf_file *g, const char *path) {
     return gguf_open_one_x(g, path, true);
 }
@@ -339,7 +379,7 @@ bool gguf_open(gguf_file *g, const char *path) {
     gguf_file probe;
     if (!gguf_open_one(&probe, path)) return false;
     uint32_t count = gguf_get_u32(&probe, "split.count", 0);
-    if (count <= 1) { *g = probe; return true; }
+    if (count <= 1) { *g = probe; gguf_bind_scale_companions(g); return true; }
     uint32_t current = gguf_get_u32(&probe, "split.no", UINT32_MAX);
     uint32_t expected = gguf_get_u32(&probe, "split.tensors.count", UINT32_MAX);
     if (current >= count || expected == UINT32_MAX || expected > 100000 ||
@@ -448,6 +488,7 @@ bool gguf_open(gguf_file *g, const char *path) {
         free(names);
         if (d) { gguf_close(g); return false; }
     }
+    gguf_bind_scale_companions(g);
     return true;
 }
 
