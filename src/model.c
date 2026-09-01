@@ -6957,6 +6957,10 @@ model_batch *model_batch_create(model_t **seqs, int n) {
     return b;
 }
 
+bool model_batch_engaged(const model_batch *b) {
+    return b && b->gb;
+}
+
 void model_batch_free(model_batch *b) {
     if (!b) return;
     gpu_batch_free(b->gb);

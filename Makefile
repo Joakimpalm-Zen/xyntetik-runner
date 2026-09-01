@@ -135,6 +135,7 @@ TEST_MV_TOL = $(TEST_BATCH:test-batch%=test-mv-tol%)
 TEST_ATTN_TOL = $(TEST_BATCH:test-batch%=test-attn-tol%)
 TEST_GPU_ID = $(TEST_BATCH:test-batch%=test-gpu-identity%)
 TEST_MOE_MM_AB = $(TEST_BATCH:test-batch%=test-moe-mm-ab%)
+TEST_BATCH_ID = $(TEST_BATCH:test-batch%=test-batch-identity%)
 TEST_MOE_TOL = $(TEST_BATCH:test-batch%=test-moe-tol%)
 TEST_MOE_ROUTER = $(TEST_BATCH:test-batch%=test-moe-router%)
 TEST_PAGING_WARN = $(TEST_BATCH:test-batch%=test-paging-warn%)
@@ -657,6 +658,14 @@ TEST_MOE_MM_AB_SRC = tests/test_moe_mm_ab.c src/gguf.c src/compat.c $(QUANTS_OBJ
                      src/tokenizer.c src/model.c src/vramreg.c $(GPU_SRC)
 $(TEST_MOE_MM_AB): $(TEST_MOE_MM_AB_SRC) $(HDR)
 	$(CC) $(CFLAGS) -I src $(TEST_MOE_MM_AB_SRC) -o $@ $(LDFLAGS)
+
+# Metal microbatch decode vs sequential: byte identity or bust, with an
+# engagement check so a declined batch cannot pass by comparing the
+# sequential path against itself.
+TEST_BATCH_ID_SRC = tests/test_batch_identity.c src/gguf.c src/compat.c $(QUANTS_OBJ) \
+                    src/tokenizer.c src/model.c src/vramreg.c $(GPU_SRC)
+$(TEST_BATCH_ID): $(TEST_BATCH_ID_SRC) $(HDR)
+	$(CC) $(CFLAGS) -I src $(TEST_BATCH_ID_SRC) -o $@ $(LDFLAGS)
 
 # fused-vs-eager MoE routing tolerance: same full-engine link as tc-tol, and
 # the same self-skipping shape (no GPU / not MoE / no full offload / the fused
@@ -1516,7 +1525,7 @@ endif
 test: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSON_OOM) $(TEST_SCHEMA_OOM) $(TEST_SAMPLER) $(TEST_LORA_GRAD) $(TEST_MVT) \
       $(TEST_TOKENIZER) $(TEST_TOK_MERGE) $(TEST_TOKENIZER_OOM) $(TEST_TEMPLATE) \
       $(TEST_TEMPLATE_OOM) \
-      $(TEST_TOOLS) $(TEST_SHARED) $(TEST_FILE_ID) $(TEST_BATCH) $(TEST_BIND) $(TEST_HOST_HEADER) \
+      $(TEST_TOOLS) $(TEST_SHARED) $(TEST_FILE_ID) $(TEST_BATCH) $(TEST_BATCH_ID) $(TEST_BIND) $(TEST_HOST_HEADER) \
       $(TEST_PREFIX) $(TEST_GRAMMAR_FF) $(TEST_VRAMREG) $(TEST_KV_TOL) $(TEST_TC_TOL) $(TEST_I8_TOL) $(TEST_MV_TOL) $(TEST_ATTN_TOL) $(TEST_GPU_ID) $(TEST_MOE_TOL) $(TEST_MOE_ROUTER) $(TEST_PAGING_WARN) $(TEST_AUTOFIT) $(TEST_RESP_SM_DEP) \
       $(TEST_QUANTS_SIMD) $(TEST_INSTANCES) $(TEST_INSTANCES_OOM) $(TEST_METAL_ADMISSION) $(TEST_TRAY_CORE) \
       $(TEST_QUANTIZE) \
@@ -1661,6 +1670,7 @@ test: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSON_OOM) $(
 	$(MAKE) --no-print-directory test-metal-multibuf
 	$(MAKE) --no-print-directory test-metal-moe-em
 	$(MAKE) --no-print-directory test-metal-moe-mm
+	./$(TEST_BATCH_ID) test.gguf
 	$(PYTHON) scripts/check-generated.py
 	PYTHONPATH=python/src $(PYTHON) -m pytest python/tests/
 	$(PYTHON) -m pytest -q tests/test_fit_check.py tests/test_apertus.py tests/test_ornith_cpu.py tests/test_ornith_reference.py tests/test_compat_matrix.py tests/test_arch_admission.py tests/test_hybrid_admission.py tests/test_hostile_geometry.py tests/test_certify_envelope.py tests/test_cpu_cuda_margin.py tests/test_envelope_gate.py tests/test_envelope_swap.py tests/test_cli_files.py tests/test_chat_template_flag.py tests/test_server_banner.py tests/test_split_gguf.py tests/test_metal_coverage.py tests/test_gpu_declines.py tests/test_caps.py tests/test_tool_info.py tests/test_bench_json.py tests/test_mtp_admission.py tests/test_compare_llamacpp.py tests/test_release_check.py tests/test_eseries.py tests/test_stress_models.py tests/test_moe_prune_plan.py tests/test_kld_compare.py tests/test_kld_margin.py tests/test_quant_fidelity.py tests/test_token_divergence.py tests/test_verify_gguf.py tests/test_type_plan_size.py tests/test_stress_context.py tests/test_cert_greedy_identity.py tests/test_tokenizer_corpus.py tests/test_batch_bench.py tests/test_spec_telemetry.py tests/test_draft_required.py tests/test_kv_reachable.py tests/test_kv_ring.py tests/test_tiedv.py tests/test_moe_mm_flips.py tests/test_load_prefetch.py tests/test_request_disconnect.py tests/test_score.py tests/test_lora.py tests/test_train.py tests/test_merge.py tests/test_transcript.py

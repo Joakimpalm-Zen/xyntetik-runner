@@ -1769,6 +1769,12 @@ static int metal_col_tile(void) {
     return v;
 }
 
+static void enc_mv_cols(gpu_t *g, id<MTLComputeCommandEncoder> e,
+                        gguf_tensor *w, id<MTLBuffer> x, NSUInteger x_off,
+                        id<MTLBuffer> y, NSUInteger y_off,
+                        int n_in, int n_out, id<MTLBuffer> bias,
+                        int n_col, int x_stride, int y_stride);
+
 static void enc_mv_n(gpu_t *g, id<MTLComputeCommandEncoder> e, model_t *m,
                      gguf_tensor *w, id<MTLBuffer> x, NSUInteger x_off,
                      id<MTLBuffer> y, NSUInteger y_off,
@@ -1824,6 +1830,21 @@ static void enc_mv_n(gpu_t *g, id<MTLComputeCommandEncoder> e, model_t *m,
           threadsPerThreadgroup:MTLSizeMake(128, 1, 1)];
         return;
     }
+    enc_mv_cols(g, e, w, x, x_off, y, y_off, n_in, n_out, bias,
+                n_col, x_stride, y_stride);
+}
+
+// The identity matvec tail of enc_mv_n, callable directly: the microbatch
+// decode path (fwd_micro below) must stay BIT-IDENTICAL to sequential solo
+// decode, so it may never take the mm/tensor branches above — each column
+// here runs the exact k_mv dot the solo path runs, weights served from cache
+// across the columns. This is the same twin discipline CUDA's enc_mv_batch
+// enforces, arrived at from the other side.
+static void enc_mv_cols(gpu_t *g, id<MTLComputeCommandEncoder> e,
+                        gguf_tensor *w, id<MTLBuffer> x, NSUInteger x_off,
+                        id<MTLBuffer> y, NSUInteger y_off,
+                        int n_in, int n_out, id<MTLBuffer> bias,
+                        int n_col, int x_stride, int y_stride) {
     int col_tile = metal_col_tile();
     if (col_tile > n_col) col_tile = n_col;
     mv_args a = { n_in, n_out, 0,
@@ -2166,21 +2187,6 @@ void gpu_train_free(model_t *mm) { (void)mm; }
 bool gpu_train_mvt(model_t *mm, const gguf_tensor *w, const float *dy,
                    float *dx, int n_in, int n_out, int nb) {
     (void)mm; (void)w; (void)dy; (void)dx; (void)n_in; (void)n_out; (void)nb;
-    return false;
-}
-
-gpu_batch *gpu_batch_create(model_t **seqs, int n) {
-    (void)seqs; (void)n;
-    return NULL;
-}
-
-void gpu_batch_free(gpu_batch *b) {
-    (void)b;
-}
-
-bool gpu_batch_decode(gpu_batch *b, const int *idx, const int32_t *tok,
-                      const int *pos, int n, float **out) {
-    (void)b; (void)idx; (void)tok; (void)pos; (void)n; (void)out;
     return false;
 }
 
@@ -2949,3 +2955,285 @@ static float *gpu_forward_native_batch(model_t *m, const int32_t *tokens,
     }
     return (float *)g->logits.contents + (size_t)(n - 1) * m->n_vocab;
 }
+
+
+// default-ON env switch: unset means on; "0"/"off" disables.
+static bool metal_env_default_on(const char *name) {
+    const char *v = getenv(name);
+    return !v || !*v || (strcmp(v, "0") && strcmp(v, "off"));
+}
+
+// ---------------------------------------------------- Metal microbatch decode
+//
+// N server slots share one weight sweep per decode step. The projections run
+// as multi-column identity matvecs (enc_mv_cols — the exact k_mv dot the solo
+// path runs, per column, so the microbatch is BIT-IDENTICAL to sequential
+// decode; the weight rows are simply served from cache for columns 2..N).
+// Rope, KV store and attention stay one dispatch per column, because each
+// column has its own position and its own slot's KV buffers — those kernels
+// are the solo kernels applied to the solo data, encoder-ordered. Same twin
+// discipline as CUDA's fwd_batch, minus the upload/copyback half that unified
+// memory never needed.
+struct gpu_batch {
+    model_t     **seqs;    // borrowed
+    int           n;
+    gpu_t        *lead;    // whose queue/scratch encode the step
+    int           n_vocab, n_embd, xdim;
+    id<MTLBuffer> logits_n;   // [MODEL_BATCH_MAX][n_vocab]
+};
+
+// Dense gated transformers only, full offload, uniform engine config across
+// the slots. Everything else decodes sequentially — correctness first, and
+// the decline list mirrors CUDA's for the same reasons (no MoE/dual-branch
+// path here, no recurrent mixer, no output gate, no per-layer embeddings).
+static bool metal_batch_eligible(model_t **seqs, int n, gpu_t **lead_out) {
+    if (n < 2) return false;
+    if (!metal_env_default_on("RUNNER_METAL_BATCH")) return false;
+    model_t *m0 = seqs[0];
+    gpu_t *lead = NULL;
+    for (int i = 0; i < n; i++) {
+        model_t *m = seqs[i];
+        if (!m || !m->gpu) return false;
+        gpu_t *g = (gpu_t *)m->gpu;
+        if (m->gpu_layers < m->n_layer) return false;
+        if (m->n_expert > 0 || m->qwen35 || m->granite_hybrid ||
+            m->nemotron_h || m->attn_out_gate || m->n_embd_ple > 0)
+            return false;
+        for (int l = 0; l < m->n_layer; l++)
+            if (m->layers[l].moe_gemma || m->layers[l].is_moe ||
+                m->layers[l].recurrent || m->layers[l].skip_mixer)
+                return false;
+        if (model_kv_ring_active(m)) return false;
+        if (m->n_vocab != m0->n_vocab || m->n_embd != m0->n_embd ||
+            m->n_ctx != m0->n_ctx || m->kv_q8 != m0->kv_q8 ||
+            m->n_layer != m0->n_layer) return false;
+        // every projection this walk will hand to enc_mv_cols needs the
+        // identity matvec kernel for its type
+        const gguf_tensor *ws0[] = { m->output, m->tok_embd };
+        for (size_t k = 0; k < sizeof(ws0) / sizeof(*ws0); k++)
+            if (ws0[k] && !g->p_mv[ws0[k]->type]) return false;
+        for (int l = 0; l < m->n_layer; l++) {
+            const layer_t *ly = &m->layers[l];
+            if (!ly->wq || !ly->wo || !ly->w_gate || !ly->w_up || !ly->w_down)
+                return false;
+            const gguf_tensor *ws[] = { ly->wq, ly->wk, ly->wv, ly->wo,
+                                        ly->w_gate, ly->w_up, ly->w_down };
+            for (size_t k = 0; k < sizeof(ws) / sizeof(*ws); k++)
+                if (ws[k] && !g->p_mv[ws[k]->type]) return false;
+        }
+        if (!lead) lead = g;
+    }
+    *lead_out = lead;
+    return true;
+}
+
+gpu_batch *gpu_batch_create(model_t **seqs, int n) {
+    gpu_t *lead = NULL;
+    if (!metal_batch_eligible(seqs, n, &lead)) return NULL;
+    model_t *m0 = seqs[0];
+    gpu_batch *b = calloc(1, sizeof(gpu_batch));
+    if (!b) return NULL;
+    b->seqs = malloc(sizeof(model_t *) * (size_t)n);
+    if (!b->seqs) { free(b); return NULL; }
+    memcpy(b->seqs, seqs, sizeof(model_t *) * (size_t)n);
+    b->n = n;
+    b->lead = lead;
+    b->n_vocab = m0->n_vocab;
+    b->n_embd = m0->n_embd;
+    b->xdim = m0->n_embd;
+    for (int l = 0; l < m0->n_layer; l++)
+        if (model_q_dim(m0, l) > b->xdim) b->xdim = model_q_dim(m0, l);
+    b->logits_n = new_f32_scratch(lead->dev,
+                                  (size_t)MODEL_BATCH_MAX * b->n_vocab);
+    if (!metal_buffer_ok(b->logits_n)) {
+        fprintf(stderr, "gpu: Metal batch logits allocation failed — using "
+                "sequential GPU forwards\n");
+        gpu_batch_free(b);
+        return NULL;
+    }
+    fprintf(stderr, "gpu: Metal microbatch decode on for %d slots "
+            "(bit-identical to sequential; RUNNER_METAL_BATCH=0 disables)\n",
+            n);
+    return b;
+}
+
+void gpu_batch_free(gpu_batch *b) {
+    if (!b) return;
+    [b->logits_n release];
+    free(b->seqs);
+    free(b);
+}
+
+bool gpu_batch_decode(gpu_batch *b, const int *idx, const int32_t *tok,
+                      const int *pos, int n, float **out) {
+    if (!b || n < 1 || n > MODEL_BATCH_MAX) return false;
+    if (n < 2) return false;   // one column is just a solo forward
+    gpu_t *g = b->lead;
+    model_t *m0 = b->seqs[0];
+    int n_embd = b->n_embd;
+    int xdim   = b->xdim;
+
+    // The lead's scratch is sized by the largest n any forward has used —
+    // a slot that only ever decoded has batch_cap == 1, and writing column
+    // 1 into one-column buffers lands in whichever allocation the heap put
+    // next (found exactly that way: x's column 1 aliased xb). Grow first.
+    if (!metal_ensure_batch(g, m0, n)) return false;
+
+    // per-column embeds (CPU-side, exactly as the solo path does)
+    size_t ers = ggml_row_size(m0->tok_embd->type, n_embd);
+    for (int c = 0; c < n; c++) {
+        model_t *ms = b->seqs[idx[c]];
+        float *xp = (float *)g->x.contents + (size_t)c * n_embd;
+        dequant_row(ms->tok_embd->type,
+                    (uint8_t *)ms->tok_embd->data + (size_t)tok[c] * ers,
+                    xp, n_embd);
+        model_embd_transform(ms, xp);
+    }
+
+    id<MTLCommandBuffer> cb = [g->queue commandBuffer];
+    id<MTLComputeCommandEncoder> e = [cb computeCommandEncoder];
+
+    for (int l = 0; l < m0->n_layer; l++) {
+        layer_t *ly = &m0->layers[l];
+        int hd = model_head_dim(m0, l);
+        int n_kv = model_n_head_kv(m0, l);
+        int q_dim_l = model_q_dim(m0, l);
+        int kv_dim_l = model_kv_dim(m0, l);
+        int q_dim = m0->n_head * m0->head_dim;
+        int kv_dim = m0->n_head_kv * m0->head_dim;
+        int window = model_is_swa(m0, l) ? m0->swa_window : 0;
+        size_t row_b = model_kv_row_bytes(m0, l);
+        int q8 = m0->kv_q8;
+        int kv_units = q8 ? kv_dim_l / 32 : kv_dim_l;
+        bool owns_kv = model_kv_owner(m0, l) == l;
+
+        enc_rmsnorm_n(g, e, g->x, 0, g->xb, 0, g->attn_norm[l],
+                      n_embd, m0->rms_eps, n, n_embd, xdim);
+        enc_mv_cols(g, e, ly->wq, g->xb, 0, g->q, 0,
+                    n_embd, q_dim_l, g->bq[l], n, xdim, q_dim);
+        if (owns_kv) {
+            enc_mv_cols(g, e, ly->wk, g->xb, 0, g->kt, 0,
+                        n_embd, kv_dim_l, g->bk[l], n, xdim, kv_dim);
+            if (ly->wv)
+                enc_mv_cols(g, e, ly->wv, g->xb, 0, g->vt, 0,
+                            n_embd, kv_dim_l, g->bv[l], n, xdim, kv_dim);
+        }
+        if (g->qn[l])
+            enc_qknorm_n(g, e, m0, g->q, 0, g->qn[l], m0->n_head, hd, n, q_dim);
+        if (owns_kv) {
+            if (m0->v_rmsnorm)
+                enc_headnorm_n(g, e, m0, ly->wv ? g->vt : g->kt, 0,
+                               g->vt, 0, nil, n_kv, hd, n, kv_dim);
+            if (g->kn[l])
+                enc_qknorm_n(g, e, m0, g->kt, 0, g->kn[l], n_kv, hd, n, kv_dim);
+        }
+
+        // per column: rope at ITS position, store into ITS slot's cache,
+        // attend over ITS span — the solo kernels on the solo data
+        for (int c = 0; c < n; c++) {
+            model_t *ms = b->seqs[idx[c]];
+            gpu_t *gs = (gpu_t *)ms->gpu;
+            int p = pos[c];
+            if (model_layer_ropes(m0, l)) {
+                enc_rope_n(g, e, m0, g->q, foff((size_t)c * q_dim),
+                           m0->n_head, p, l, 1, q_dim);
+                if (owns_kv)
+                    enc_rope_n(g, e, m0, g->kt, foff((size_t)c * kv_dim),
+                               n_kv, p, l, 1, kv_dim);
+            } else if (m0->attn_temp_scale != 0.0f) {
+                float ts = model_attn_temp(m0, p);
+                if (ts != 1.0f)
+                    enc_scale(g, e, g->q, foff((size_t)c * q_dim), q_dim_l, ts);
+            }
+            if (owns_kv) {
+                store_args sa = { kv_dim_l, q8, kv_dim,
+                                  model_kv_byte_off(ms, l) + (uint64_t)p * row_b,
+                                  (uint64_t)row_b };
+                [e setComputePipelineState:g->p_store];
+                [e setBuffer:g->kt offset:foff((size_t)c * kv_dim) atIndex:0];
+                [e setBuffer:g->vt offset:foff((size_t)c * kv_dim) atIndex:1];
+                [e setBuffer:gs->kc offset:0 atIndex:2];
+                [e setBuffer:gs->vc offset:0 atIndex:3];
+                [e setBytes:&sa length:sizeof(sa) atIndex:4];
+                g_disp.store++;
+                [e dispatchThreads:MTLSizeMake(kv_units, 1, 1)
+                  threadsPerThreadgroup:MTLSizeMake(64, 1, 1)];
+            }
+
+            attn_args aa = { hd, m0->n_head, n_kv, m0->n_ctx, p,
+                             (uint64_t)model_kv_byte_off(ms, l),
+                             model_attn_scale(m0, l), q8, window,
+                             false, q_dim, m0->n_head * m0->n_ctx, xdim };
+            bool coop = metal_attn_coop_on() && g->p_attn_coop;
+            if (coop) g_coop_dispatches++;
+            [e setComputePipelineState:coop ? g->p_attn_coop : g->p_attn];
+            [e setBuffer:g->q   offset:foff((size_t)c * q_dim) atIndex:0];
+            [e setBuffer:gs->kc offset:0 atIndex:1];
+            [e setBuffer:gs->vc offset:0 atIndex:2];
+            [e setBuffer:g->att offset:0 atIndex:3];
+            [e setBuffer:g->xb2 offset:foff((size_t)c * xdim) atIndex:4];
+            [e setBytes:&aa length:sizeof(aa) atIndex:5];
+            [e setBuffer:g->dummy offset:0 atIndex:6];
+            NSUInteger amax = (coop ? g->p_attn_coop : g->p_attn)
+                                  .maxTotalThreadsPerThreadgroup;
+            if (amax > 256) amax = 256;
+            NSUInteger atpg = 1;
+            while (atpg * 2 <= amax) atpg *= 2;
+            g_disp.attn++;
+            [e dispatchThreadgroups:MTLSizeMake(m0->n_head, 1, 1)
+              threadsPerThreadgroup:MTLSizeMake(atpg, 1, 1)];
+        }
+
+        enc_mv_cols(g, e, ly->wo, g->xb2, 0, g->xb, 0,
+                    q_dim_l, n_embd, g->bo[l], n, xdim, xdim);
+        if (g->pan[l])
+            enc_rmsnorm_n(g, e, g->xb, 0, g->xb, 0, g->pan[l],
+                          n_embd, m0->post_norm_eps, n, xdim, xdim);
+        if (m0->resid_scale != 1.0f)
+            enc_scale_n(g, e, g->xb, 0, n_embd, m0->resid_scale, n, xdim);
+        enc_elem_n(g, e, g->p_add, g->x, 0, g->xb, 0, n_embd, n, n_embd, xdim);
+
+        int nff_l = ly->n_ff;
+        enc_rmsnorm_n(g, e, g->x, 0, g->xb, 0, g->ffn_norm[l],
+                      n_embd, m0->rms_eps, n, n_embd, xdim);
+        enc_mv_cols(g, e, ly->w_gate, g->xb, 0, g->hb, 0,
+                    n_embd, nff_l, nil, n, xdim, nff_l);
+        enc_mv_cols(g, e, ly->w_up, g->xb, 0, g->hb2, 0,
+                    n_embd, nff_l, nil, n, xdim, nff_l);
+        enc_elem(g, e, m0->ffn_act == ACT_GELU ? g->p_gelu : g->p_silu,
+                 g->hb, 0, g->hb2, 0, n * nff_l);
+        enc_mv_cols(g, e, ly->w_down, g->hb, 0, g->xb, 0,
+                    nff_l, n_embd, nil, n, nff_l, xdim);
+        if (g->pfn[l])
+            enc_rmsnorm_n(g, e, g->xb, 0, g->xb, 0, g->pfn[l],
+                          n_embd, m0->post_norm_eps, n, xdim, xdim);
+        if (m0->resid_scale != 1.0f)
+            enc_scale_n(g, e, g->xb, 0, n_embd, m0->resid_scale, n, xdim);
+        enc_elem_n(g, e, g->p_add, g->x, 0, g->xb, 0, n_embd, n, n_embd, xdim);
+        if (ly->out_scale != 1.0f && ly->out_scale != 0.0f)
+            enc_scale_n(g, e, g->x, 0, n_embd, ly->out_scale, n, n_embd);
+    }
+
+    // head, per column: every sequence needs its own logits
+    for (int c = 0; c < n; c++) {
+        enc_rmsnorm(g, e, g->x, foff((size_t)c * n_embd),
+                    g->xb, foff((size_t)c * xdim), g->out_norm,
+                    n_embd, m0->rms_eps);
+        enc_mv(g, e, m0, m0->output, g->xb, foff((size_t)c * xdim),
+               b->logits_n, foff((size_t)c * b->n_vocab),
+               n_embd, b->n_vocab, nil);
+    }
+
+    [e endEncoding];
+    [cb commit];
+    [cb waitUntilCompleted];
+    if (metal_command_failed(cb)) {
+        fprintf(stderr, "gpu: Metal microbatch command buffer failed — "
+                "falling back to sequential decode\n");
+        return false;
+    }
+    for (int c = 0; c < n; c++)
+        out[c] = (float *)b->logits_n.contents + (size_t)c * b->n_vocab;
+    return true;
+}
+

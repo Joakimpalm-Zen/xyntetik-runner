@@ -900,6 +900,10 @@ void         model_batch_free(model_batch *b);
 // one — see tests/test_batch.c, which is that claim as a test.
 //
 // Returns false only if a sequence could not be evaluated at all.
+// Did this batch get a backend microbatch? False means every decode falls
+// through to the sequential path — the identity gate uses this to refuse a
+// vacuous self-comparison.
+bool model_batch_engaged(const model_batch *b);
 bool model_batch_decode(model_batch *b, const int *idx, const int32_t *tok,
                         const int *pos, int n, float **out);
 

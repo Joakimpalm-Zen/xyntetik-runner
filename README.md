@@ -578,7 +578,7 @@ flags into unrelated feature sections.
 | `--tray` | Be the macOS/Windows tray controller instead of running a model. Required where there is no terminal. See [Desktop tray](#desktop-tray). |
 | `--no-tray` | Opt out of the tray everywhere, including the one that otherwise follows `--serve` and `-i`. |
 | `--port N` | Server port, default `8080`. |
-| `--parallel N` | Independent inference slots for a single-model server, default `1`. |
+| `--parallel N` | Independent inference slots for a single-model server, default `1`. On CUDA and (since 2026-09-01) Metal, ready slots decode as one microbatch sharing a single weight sweep per step — measured 1.45-1.47x aggregate decode at 4-8 slots on Metal/M5 Max, and **bit-identical to sequential decode** by twin-kernel construction, gated in `make test` (`test-batch-identity`). Dense models only; MoE/recurrent families decode sequentially. `RUNNER_METAL_BATCH=0` restores sequential on Metal. |
 | `--ttl N` | Swap-mode idle unload timeout, default `300`; `0` disables it. |
 | `--force-uncertified` | Load a model even when its measured-envelope sidecar records an `outside-envelope` verdict for this runtime (refused by default). See [Measured-envelope gate](#measured-envelope-gate). |
 | `--json` | Constrain output to one valid JSON object. |
