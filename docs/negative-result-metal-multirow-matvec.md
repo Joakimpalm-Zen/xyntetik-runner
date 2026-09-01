@@ -181,7 +181,15 @@ a KV/activation layout that reads less) and **dispatch** (fewer, larger command
 encodings). That is a genuinely useful narrowing: it retires a whole family of
 proposals.
 
-Not settled: the M5 Max 36 %-of-roofline measurement that started this. That
+~~Not settled~~ **Settled 2026-09-01, same answer.** The experiment below ran
+on an M5 Max exactly as scoped — `RUNNER_METAL_MV=1`, interleaved 3-rep decode
+A/B, `./test-mv-tol` — and measured **−0.6 % on e2b-q40 and −4 % on
+Llama-3.3-70B Q4_0**, tolerance still 0/64 flips. Several times the bandwidth
+and core count did not change the regime: M5-class decode is bound by bytes
+exactly as the M1's was, and the kernel stays opt-in on both. Original framing
+kept below for the record.
+
+The question as it stood: the M5 Max 36 %-of-roofline measurement that started this. That
 silicon has several times the bandwidth and core count, so the balance between
 resident simdgroups and per-lane fetch depth — and therefore whether it is
 issue-bound where the M1 is bandwidth-bound — is exactly what differs. The
