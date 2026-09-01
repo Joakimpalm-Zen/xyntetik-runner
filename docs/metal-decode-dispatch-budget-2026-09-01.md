@@ -185,3 +185,20 @@ exists as a permanent isolation lever. Also re-learned at CPU speed: a
 Metal-source error fails the LIBRARY, not the build — the day's fixture
 runs fell back to CPU silently until stderr was read. Check "Metal backend"
 in stderr before believing any Metal measurement.
+
+## Phase 6 — the load-widening probe: negative, and what it proves
+
+The last scalar-load dot bodies in the file (moe_dot_q8_0, moe_dot_mxfp4 —
+carrying the MoE flagships' ~2 GB/token) were load-widened to packed
+vector reads, accumulation order untouched, all byte gates green including
+CPU identity. Measured: 30B dead even (75.41 → 75.46), 120B consistently
+SLOWER (75.2 → 74.3). Reverted. The compiler was already coalescing these
+loads; source-level load shape is not where the 120B's milliseconds are.
+
+What this pins down for the bandwidth track: the token achieves ~200 GB/s
+against a ~5 ms weight floor that assumed ~480. llama.cpp's 9.7 ms is only
+~250 GB/s — BOTH engines sit far from peak at batch-1, so the remaining
+gap is latency structure (dispatch chain, inter-kernel serialization,
+in-flight depth), not per-kernel load emission. The honest instruments for
+the next attack are a per-kernel isolation bench (achieved GB/s per shape)
+and the concurrent-encoder track — not more source-level dot rewrites.
