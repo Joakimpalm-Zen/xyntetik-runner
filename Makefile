@@ -1394,6 +1394,39 @@ else
 	@echo "metal moe grouped-mma: SKIP (macOS-only backend)"
 endif
 
+# Decode fusion (RUNNER_METAL_FUSE): rope+store, add+norm and MoE
+# gate+up+act each fold into one dispatch on the decode path, and every one
+# of them claims BYTE IDENTITY against the unfused kernels — so that is the
+# gate, across the architecture roster (dense, swa, E-series, gpt-oss MoE
+# with biases and swiglu_oai, q8-requantized experts), with the engagement
+# grep keeping a fallen-back build from passing on self-agreement.
+test-metal-fuse: runner test-swa.gguf test-es.gguf test-moe-fixture.gptoss-mxfp4.gguf test-moe-fixture.gemma4-moe.gguf
+ifeq ($(shell uname -s),Darwin)
+	@set -e; \
+	if ! ./$(RUNNER_EXE) --caps | $(PYTHON) -c "import json,sys; d=json.load(sys.stdin); sys.exit(0 if (d.get('gpu') or {}).get('backend') == 'metal' else 1)"; then \
+	  echo "metal decode fusion: SKIP (no Metal device)"; exit 0; fi; \
+	prompt="The quick brown fox jumps over the lazy dog"; \
+	./$(RUNNER_EXE) -m test-moe-fixture.moe4.gguf \
+	  --quantize test-moe-fixture.moe4-q8.gguf --quant q8_0 >/dev/null 2>&1; \
+	for f in test.gguf test-swa.gguf test-es.gguf \
+	         test-moe-fixture.gptoss-mxfp4.gguf \
+	         test-moe-fixture.moe4-q8.gguf \
+	         test-moe-fixture.gemma4-moe.gguf; do \
+	  RUNNER_METAL_FUSE=0 ./$(RUNNER_EXE) -m $$f -p "$$prompt" -n 24 \
+	    --temp 0 --no-tray > fuse-off.out 2>/dev/null; \
+	  ./$(RUNNER_EXE) -m $$f -p "$$prompt" -n 24 --temp 0 --no-tray \
+	    > fuse-on.out 2> fuse-on.err; \
+	  grep -q "decode fusion on" fuse-on.err || { \
+	    echo "FAIL: $$f never dispatched a fused kernel — vacuous"; exit 1; }; \
+	  cmp -s fuse-off.out fuse-on.out || { \
+	    echo "FAIL: $$f fused decode differs from unfused"; exit 1; }; \
+	  echo "  metal decode fusion ok ($$f, byte-identical)"; \
+	done; \
+	rm -f fuse-off.out fuse-on.out fuse-on.err
+else
+	@echo "metal decode fusion: SKIP (macOS-only backend)"
+endif
+
 # Multi-buffer wrap at real-checkpoint size. test-metal-multibuf forces the
 # split on sub-GB fixtures; this arm forces multi-GB buffers on a real model,
 # because the M5 Max measurement (2026-09-01) showed no on-disk artifact
@@ -1670,6 +1703,7 @@ test: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSON_OOM) $(
 	$(MAKE) --no-print-directory test-metal-multibuf
 	$(MAKE) --no-print-directory test-metal-moe-em
 	$(MAKE) --no-print-directory test-metal-moe-mm
+	$(MAKE) --no-print-directory test-metal-fuse
 	./$(TEST_BATCH_ID) test.gguf
 	$(PYTHON) scripts/check-generated.py
 	PYTHONPATH=python/src $(PYTHON) -m pytest python/tests/
@@ -1953,7 +1987,7 @@ test-makefile-sane:
 
 .PHONY: template-conformance template-conformance-refresh template-conformance-baseline template-conformance-harmony-oracle
 .PHONY: test-gpu-stub
-.PHONY: FORCE makefile-noop test-python-deps test-makefile-sane fixture-scale-note clean debug ptx test test-bare-invocation test-help-interface test-shader-embed test-metal-shader-gate test-apertus test-moe test-prune-experts test-metal-fallback test-metal-prefill test-metal-kquant test-metal-decode-only test-metal-split test-metal-bind-failure test-metal-kv-q8 test-metal-moe test-metal-gptoss-moe test-metal-gemma4-moe test-metal-gemma4-hetero test-metal-bigmodel test-metal-bigmodel-multibuf test-metal-moe-em test-metal-moe-mm test-metal-gelu-overflow test-metal-eseries test-metal-swa smoke release-check test-truncation fuzz fuzz-build fuzz-run test-shared-asan test-shared-noid test-split-guard test-swap-race
+.PHONY: FORCE makefile-noop test-python-deps test-makefile-sane fixture-scale-note clean debug ptx test test-bare-invocation test-help-interface test-shader-embed test-metal-shader-gate test-apertus test-moe test-prune-experts test-metal-fallback test-metal-prefill test-metal-kquant test-metal-decode-only test-metal-split test-metal-bind-failure test-metal-kv-q8 test-metal-moe test-metal-gptoss-moe test-metal-gemma4-moe test-metal-gemma4-hetero test-metal-bigmodel test-metal-bigmodel-multibuf test-metal-moe-em test-metal-moe-mm test-metal-fuse test-metal-gelu-overflow test-metal-eseries test-metal-swa smoke release-check test-truncation fuzz fuzz-build fuzz-run test-shared-asan test-shared-noid test-split-guard test-swap-race
 
 # Soak harness for the startup/SIGTERM race (test_signal_during_startup). Not
 # in `make test` — it is a diagnostic soak (thousands of spawns), run on demand

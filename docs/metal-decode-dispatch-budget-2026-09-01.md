@@ -34,3 +34,27 @@ that was right; at 686 dispatches inside 13 ms on an M5 it is the lever.
 Nothing here is a defect: every dispatch computes what it should (the
 identity gates say so). It is architecture headroom, now measured well
 enough to be scheduled instead of guessed at.
+
+## Phase 1, executed same day (RUNNER_METAL_FUSE, default on)
+
+Three budget-line fusions, all in the byte-identity class, all landed:
+rope(q)+rope(k)+f16-store (−2/layer), residual-add+rmsnorm at both per-layer
+seams (−2/layer, the post-FFN add deferred into the next layer's attention
+norm), and MoE gate+up+activation (−2/layer, same dot bodies, same bias
+points, the actmul code verbatim including its mandated tanh clamp).
+
+Measured on the 120B: dispatches ~686 → ~480 per token (−30%), decode
+64.4 → 65.8 tok/s (**+2.1%**), byte-identical on the 120B, the 30B, and a
+six-architecture fixture roster (`test-metal-fuse`, in `make test`,
+engagement-checked; a 1% store perturbation is caught by the roster —
+fixture-scale f16 swallows anything under its ULP, which is itself a
+calibration note for future mutations). q8 caches, NoPE layers, sandwich
+norms, muP scales and the gemma dual branch all keep the unfused path by
+guard, and `RUNNER_METAL_FUSE=0` restores it everywhere.
+
+The honest ledger: the cheap third of the chain is gone and bought 2%, not
+the 3–6 ms projected for the full program — the remaining milliseconds sit
+inside the mv/moe dispatches themselves, which only the persistent
+layer-walk kernel (the summit item, the one llama.cpp's op-graph design
+cannot follow) can fold. That is now the measured next step, not this one
+re-run harder.

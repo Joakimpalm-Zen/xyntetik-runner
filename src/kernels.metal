@@ -1270,6 +1270,121 @@ kernel void k_store_kv(device const float *k_all [[buffer(0)]],
     }
 }
 
+// ------------------------------------------------- decode fusion (n == 1)
+//
+// The 120B decode budget (docs/metal-decode-dispatch-budget-2026-09-01.md)
+// measured 686 dispatches per token with a 3.4-4.8 us serialized chain cost
+// each. These kernels fold the per-layer chain: every fused form reproduces
+// the unfused kernels' arithmetic element for element — same expressions,
+// same order, same conversions — so the contract is BYTE IDENTITY against
+// the unfused path, gated, not argued. Justified by budget line items, not
+// by what any other engine does (each kernel's saving is printed in the
+// host comment beside its dispatch).
+
+// rope(q) + rope(k) + f16-store(k,v): three dispatches -> one. Thread roles
+// by flat index: q rope pairs, then k rope pairs (which also store the two
+// elements they produced), then unroped k tail elements (head_dim past the
+// roped span), then v pairs (straight f16 conversion). q8 caches keep the
+// unfused path: a rope PAIR spans block boundaries, and the 32-wide block
+// quant needs the whole roped row first.
+struct rope_store_args {
+    int   n_head, n_kv, head_dim, half_dim, pos, neox;
+    float mscale;
+    int   q_off_e, k_off_e, v_off_e;   // element offsets into the stage bufs
+    ulong kc_off, vc_off;              // byte offsets of this row in the cache
+};
+
+kernel void k_rope_store(device float        *q    [[buffer(0)]],
+                         device float        *kt   [[buffer(1)]],
+                         device const float  *vt   [[buffer(2)]],
+                         device uchar        *kc   [[buffer(3)]],
+                         device uchar        *vc   [[buffer(4)]],
+                         device const float  *fr   [[buffer(5)]],
+                         constant rope_store_args &a [[buffer(6)]],
+                         uint t [[thread_position_in_grid]]) {
+    int hd = a.head_dim, hf = a.half_dim;
+    int rd = 2 * hf;                         // roped dims per head
+    int q_pairs = a.n_head * hf;
+    int k_pairs = a.n_kv * hf;
+    int k_tail  = a.n_kv * (hd - rd);
+    int kv_dim  = a.n_kv * hd;
+    device half *kh = (device half *)(kc + a.kc_off);
+    device half *vh = (device half *)(vc + a.vc_off);
+    int i = (int)t;
+    if (i < q_pairs) {
+        int h = i / hf, j = i % hf;
+        float ang = a.pos * fr[j];
+        float c = cos(ang) * a.mscale, s = sin(ang) * a.mscale;
+        device float *p = q + a.q_off_e + h * hd;
+        int i0 = a.neox ? j : 2 * j;
+        int i1 = a.neox ? j + hf : i0 + 1;
+        float x0 = p[i0], x1 = p[i1];
+        p[i0] = x0 * c - x1 * s;
+        p[i1] = x0 * s + x1 * c;
+        return;
+    }
+    i -= q_pairs;
+    if (i < k_pairs) {
+        int h = i / hf, j = i % hf;
+        float ang = a.pos * fr[j];
+        float c = cos(ang) * a.mscale, s = sin(ang) * a.mscale;
+        device float *p = kt + a.k_off_e + h * hd;
+        int i0 = a.neox ? j : 2 * j;
+        int i1 = a.neox ? j + hf : i0 + 1;
+        float x0 = p[i0], x1 = p[i1];
+        float y0 = x0 * c - x1 * s;
+        float y1 = x0 * s + x1 * c;
+        p[i0] = y0;
+        p[i1] = y1;
+        kh[h * hd + i0] = (half)y0;
+        kh[h * hd + i1] = (half)y1;
+        return;
+    }
+    i -= k_pairs;
+    if (i < k_tail) {
+        int per = hd - rd;
+        int h = i / per, j = rd + i % per;
+        kh[h * hd + j] = (half)kt[a.k_off_e + h * hd + j];
+        return;
+    }
+    i -= k_tail;
+    if (2 * i < kv_dim) {
+        vh[2 * i]     = (half)vt[a.v_off_e + 2 * i];
+        if (2 * i + 1 < kv_dim)
+            vh[2 * i + 1] = (half)vt[a.v_off_e + 2 * i + 1];
+    }
+}
+
+// residual add + the FOLLOWING rmsnorm: two dispatches -> one. The add and
+// the reduction reproduce k_add and k_rmsnorm exactly (tid-strided square
+// sum, 256-slot tree, same rounding path); x is updated in place and the
+// normed row lands in y, exactly as the pair of kernels left them.
+struct add_norm_args { int n; float eps; };
+
+kernel void k_add_rmsnorm(device float       *x [[buffer(0)]],
+                          device const float *d [[buffer(1)]],
+                          device float       *y [[buffer(2)]],
+                          device const float *w [[buffer(3)]],
+                          constant add_norm_args &a [[buffer(4)]],
+                          uint3 tid3 [[thread_position_in_threadgroup]],
+                          uint3 tpg3 [[threads_per_threadgroup]]) {
+    threadgroup float red[256];
+    uint tid = tid3.x, tpg = tpg3.x;
+    int n = a.n;
+    for (int i = tid; i < n; i += tpg) x[i] += d[i];
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    float s = 0;
+    for (int i = tid; i < n; i += tpg) s += x[i] * x[i];
+    red[tid] = s;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    for (uint off = tpg / 2; off > 0; off >>= 1) {
+        if (tid < off) red[tid] += red[tid + off];
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+    float r = rsqrt(red[0] / n + a.eps);
+    for (int i = tid; i < n; i += tpg) y[i] = x[i] * r * w[i];
+}
+
 // ---------------------------------------------------------------- attention
 // One threadgroup per head: scores -> softmax -> weighted value sum.
 
@@ -2714,6 +2829,72 @@ kernel void k_moe_actmul(device float       *gbuf [[buffer(0)]],
         g[i] = (x / (1.0f + exp(-x))) * u[i];
     }
 }
+
+// gate-mv + up-mv + actmul: three dispatches -> one. Per (row, slot) one
+// simdgroup computes the gate dot and the up dot with the SAME per-type dot
+// bodies the separate matvecs use (same order, simd_sum reduction), adds the
+// per-expert biases exactly where the matvec tails added them, and applies
+// the activation copied verbatim from k_moe_actmul (including the tanh
+// clamp that kernel's history mandates). hb receives exactly the bytes the
+// three-kernel chain produced.
+struct moe_gua_args {
+    int   n_in, n_out;
+    ulong g_off, u_off, estride_g, estride_u;
+    int   xs, has_bias, act, slots_per_token, ys;
+};
+
+#define MOE_GUA_KERNEL(NAME, DOTFN) \
+kernel void NAME(device const uchar *wb    [[buffer(0)]], \
+                 device const float *x     [[buffer(1)]], \
+                 device float       *y     [[buffer(2)]], \
+                 constant moe_gua_args &a  [[buffer(3)]], \
+                 device const int   *sel   [[buffer(4)]], \
+                 device const float *gbias [[buffer(5)]], \
+                 device const float *ubias [[buffer(6)]], \
+                 uint  sgitg [[simdgroup_index_in_threadgroup]], \
+                 uint  tiisg [[thread_index_in_simdgroup]], \
+                 uint3 tgpig [[threadgroup_position_in_grid]], \
+                 uint3 ntg   [[threads_per_threadgroup]]) { \
+    uint row = tgpig.x * (ntg.x / 32) + sgitg; \
+    if (row >= (uint)a.n_out) return; \
+    uint slot = tgpig.y; \
+    int  ex = sel[slot]; \
+    uint xrow = a.slots_per_token ? slot / a.slots_per_token : slot; \
+    device const float *xp0 = x + (ulong)xrow * a.xs; \
+    float sg = DOTFN(wb + a.g_off + (ulong)ex * a.estride_g, row, a.n_in, \
+                     xp0, tiisg); \
+    float su = DOTFN(wb + a.u_off + (ulong)ex * a.estride_u, row, a.n_in, \
+                     xp0, tiisg); \
+    sg = simd_sum(sg); \
+    su = simd_sum(su); \
+    if (tiisg != 0) return; \
+    if (a.has_bias) { \
+        sg += gbias[(ulong)ex * a.n_out + row]; \
+        su += ubias[(ulong)ex * a.n_out + row]; \
+    } \
+    float out; \
+    if (a.act == 2) { \
+        out = swiglu_oai(sg, su); \
+    } else if (a.act == 1) { \
+        float t = tanh(clamp(0.7978845608f * (sg + 0.044715f * sg * sg * sg), \
+                             -16.0f, 16.0f)); \
+        out = 0.5f * sg * (1.0f + t) * su; \
+    } else { \
+        out = (sg / (1.0f + exp(-sg))) * su; \
+    } \
+    y[(ulong)slot * a.ys + row] = out; \
+}
+
+MOE_GUA_KERNEL(k_moe_gua_f32,   moe_dot_f32)
+MOE_GUA_KERNEL(k_moe_gua_f16,   moe_dot_f16)
+MOE_GUA_KERNEL(k_moe_gua_q8_0,  moe_dot_q8_0)
+MOE_GUA_KERNEL(k_moe_gua_q4_0,  moe_dot_q4_0)
+MOE_GUA_KERNEL(k_moe_gua_q2_K,  moe_dot_q2_K)
+MOE_GUA_KERNEL(k_moe_gua_q3_K,  moe_dot_q3_K)
+MOE_GUA_KERNEL(k_moe_gua_q4_K,  moe_dot_q4_K)
+MOE_GUA_KERNEL(k_moe_gua_q5_K,  moe_dot_q5_K)
+MOE_GUA_KERNEL(k_moe_gua_q6_K,  moe_dot_q6_K)
+MOE_GUA_KERNEL(k_moe_gua_mxfp4, moe_dot_mxfp4)
 
 kernel void k_moe_sum(device float       *out    [[buffer(0)]],
                       device const float *eout   [[buffer(1)]],
