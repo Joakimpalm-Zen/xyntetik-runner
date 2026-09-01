@@ -22,6 +22,19 @@ decode tokens:
 - decode: 64.59 tok/s
 - swap after completion: exactly 0
 
+*Addendum 2026-09-01 — the prefill figure above is cache-state-dependent and
+low.* Re-measured with the same command, three repetitions per arm, as an
+A/B over `iogpu.wired_limit_mb` (0 = default 107.5 GiB working set, vs
+120000 = 117.2 GiB): the sysctl changes **nothing** — prefill
+49.3/79.1/75.0 raised vs 50.0/79.8/74.8 default, decode 65.7 flat in all
+six runs. What the repetitions expose instead is that the first run after
+an idle gap re-faults evicted file pages and lands at ~50 tok/s while
+fully-warm runs land at **75–80 tok/s prefill / 65.7 decode**. The 54.65
+above was a single semi-warm measurement; warm-vs-warm, the llama.cpp
+non-tensor prefill gap in the table below is ~9.8x, not 13.8x. The raised
+wired limit is not needed for any model on this shelf and was reset to
+default.
+
 This closes the previously 24-GB-MIG-blocked full-residency validation. It does
 not claim CPU/Metal byte identity: gpt-oss routing is sensitivity-gated, and
 the measured logit envelope is the existing correctness contract.
