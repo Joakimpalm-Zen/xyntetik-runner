@@ -220,13 +220,18 @@ issue, or anything else that reaches a repository:
 A default trailer format is not permission to publish an identifier. If a tool
 adds one automatically, strip it before committing.
 
-**Sign commits with exactly one plain line:**
+**Sign commits with exactly one trailer line naming the agent and model that
+did the work, plus the owner:**
 
 ```
-Claude and Joakim-Zen
+Co-Authored-By: <Agent> (<Model>) & Joakimpalm-Zen
 ```
 
-No URLs. No session ids. No email addresses. No `Co-Authored-By`.
+Examples: `Co-Authored-By: Claude Code (Fable 5) & Joakimpalm-Zen`,
+`Co-Authored-By: Codex (GPT-5) & Joakimpalm-Zen`. Many agents and models work
+on this repo; the trailer records which one produced the commit.
+
+No URLs. No session ids. No email addresses.
 
 Check repository visibility before every push. `xyntetik-runner` is public:
 anything committed here is world readable the moment it is pushed, and stays
