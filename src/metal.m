@@ -43,6 +43,7 @@ typedef struct {
     id<MTLComputePipelineState> p_moe_mv_em8[METAL_TYPE_SLOTS]; // + 8-column tiling
     id<MTLComputePipelineState> p_moe_gua[METAL_TYPE_SLOTS]; // fused gate+up+act
     id<MTLComputePipelineState> p_rope_store, p_add_rmsnorm; // decode fusion
+    id<MTLComputePipelineState> p_attn_front_q8;             // front megakernel
     id<MTLComputePipelineState> p_moe_mm[METAL_TYPE_SLOTS];  // grouped MMA, f32-staged
     id<MTLComputePipelineState> p_moe_mmh[METAL_TYPE_SLOTS];  // half-staged twins
     id<MTLComputePipelineState> p_moe_group;                 // slot-by-expert sort
@@ -98,6 +99,11 @@ typedef struct { int n_head, n_kv, head_dim, half_dim, pos, neox;
                  float mscale; int q_off_e, k_off_e, v_off_e;
                  uint64_t kc_off, vc_off; } rope_store_args;
 typedef struct { int n; float eps; } add_norm_args;
+typedef struct { int n_embd, n_head, n_kv, head_dim, half_dim, pos, neox;
+                 float mscale, eps;
+                 uint64_t wq_off, wk_off, wv_off;
+                 int has_bq, has_bk, has_bv;
+                 uint64_t kc_off, vc_off; } attn_front_args;
 typedef struct { int n_in, n_out; uint64_t g_off, u_off, estride_g, estride_u;
                  int xs, has_bias, act, slots_per_token, ys; } moe_gua_args;
 typedef struct { int head_dim, n_heads, half_dim, pos, neox; float mscale; int stride; } rope_args;
@@ -229,6 +235,7 @@ static void gpu_release_state(gpu_t *g, int n_layer) {
     for (int i = 0; i < METAL_TYPE_SLOTS; i++) [g->p_moe_mv_em8[i] release];
     for (int i = 0; i < METAL_TYPE_SLOTS; i++) [g->p_moe_gua[i] release];
     [g->p_rope_store release]; [g->p_add_rmsnorm release];
+    [g->p_attn_front_q8 release];
     for (int i = 0; i < METAL_TYPE_SLOTS; i++) [g->p_moe_mm[i] release];
     for (int i = 0; i < METAL_TYPE_SLOTS; i++) [g->p_moe_mmh[i] release];
     [g->p_moe_group release];
@@ -754,6 +761,21 @@ static id<MTLBuffer> f32_buf_ones(id<MTLDevice> dev, const float *src, size_t n)
     return b;
 }
 
+
+// Static half of the attention-front admission: everything knowable
+// without resolving wrap buffers. Shared by the engage site and by F2b's
+// defer decision (a deferred add would starve the megakernel of a final x).
+static bool metal_front_capable(gpu_t *g, model_t *m, int l) {
+    if (l >= m->n_layer) return false;
+    layer_t *ly = &m->layers[l];
+    return g->p_attn_front_q8 && !m->kv_q8 &&
+           model_kv_owner(m, l) == l && model_layer_ropes(m, l) &&
+           !g->qn[l] && !g->kn[l] && !m->v_rmsnorm &&
+           !(m->attn_out_gate && ly->wq_gate) &&
+           m->n_embd <= 7936 && ly->wv && ly->wq && ly->wk &&
+           ly->wq->type == T_Q8_0 && ly->wk->type == T_Q8_0 &&
+           ly->wv->type == T_Q8_0;
+}
 
 static float *gpu_forward_native_batch(model_t *m, const int32_t *tokens,
                                        int n, int pos);
@@ -1358,6 +1380,7 @@ bool gpu_init(model_t *m) {
     g->p_moe_mv_em8[T_Q8_0]  = mk_pipeline(dev, lib, @"k_moe_mv_em8_q8_0");
     g->p_moe_mv_em8[T_MXFP4] = mk_pipeline(dev, lib, @"k_moe_mv_em8_mxfp4");
     g->p_rope_store       = mk_pipeline(dev, lib, @"k_rope_store");
+    g->p_attn_front_q8    = mk_pipeline(dev, lib, @"k_attn_front_q8_0");
     g->p_add_rmsnorm      = mk_pipeline(dev, lib, @"k_add_rmsnorm");
     g->p_moe_gua[T_F32]   = mk_pipeline(dev, lib, @"k_moe_gua_f32");
     g->p_moe_gua[T_F16]   = mk_pipeline(dev, lib, @"k_moe_gua_f16");
@@ -2747,15 +2770,68 @@ static float *gpu_forward_native_batch(model_t *m, const int32_t *tokens,
         // memory on the first token and cached for the rest. Per-token submits
         // instead re-streamed every weight matrix n times, which is why Metal
         // prefill used to run at decode speed. Bit-identical either way.
+        bool owns_kv = model_kv_owner(m, l) == l;
+        // The attention-front megakernel: norm + q/k/v + rope + store in ONE
+        // dispatch (kernels.metal explains why the walk is cut exactly
+        // here). Models it cannot serve byte-exactly stay on the split path.
+        bool front = n == 1 && metal_fuse_on() &&
+                     metal_front_capable(g, m, l);
+        uint64_t qw = 0, kw = 0, vw = 0;
+        id<MTLBuffer> qb = nil;
+        if (front) {
+            uint64_t kwo = 0, vwo = 0;
+            qb = metal_wbuf_for(g, (uint64_t)(uintptr_t)ly->wq->data,
+                                ly->wq->nbytes, &qw);
+            id<MTLBuffer> kb = metal_wbuf_for(g,
+                (uint64_t)(uintptr_t)ly->wk->data, ly->wk->nbytes, &kwo);
+            id<MTLBuffer> vb = metal_wbuf_for(g,
+                (uint64_t)(uintptr_t)ly->wv->data, ly->wv->nbytes, &vwo);
+            kw = kwo; vw = vwo;
+            if (!(qb && qb == kb && qb == vb)) front = false;
+        }
         if (fuse_pending_add) {
             // Fusion F2b: the previous layer deferred its post-FFN residual
             // add into this layer's attention norm (one dispatch, not two).
+            // F2b never defers INTO a front-capable layer, so front and
+            // pending are mutually exclusive here by construction.
             enc_add_rmsnorm(g, e, g->x, g->xb, g->xb, g->attn_norm[l],
                             n_embd, m->rms_eps);
             fuse_pending_add = false;
-        } else
-        enc_rmsnorm_n(g, e, g->x, 0, g->xb, 0, g->attn_norm[l],
-                      n_embd, m->rms_eps, n, n_embd, xdim);
+        } else if (!front)
+            enc_rmsnorm_n(g, e, g->x, 0, g->xb, 0, g->attn_norm[l],
+                          n_embd, m->rms_eps, n, n_embd, xdim);
+        if (front) {
+            metal_fuse_announce();
+            size_t frow_b = model_kv_row_bytes(m, l);
+            uint64_t roff = model_kv_byte_off(m, l) +
+                (uint64_t)model_kv_row_at(m, l, pos) * frow_b;
+            attn_front_args fa = {
+                n_embd, m->n_head, n_kv, hd, model_rope_dim(m, l) / 2,
+                pos, m->rope_neox, model_rope_mscale(m, l), m->rms_eps,
+                qw, kw, vw,
+                g->bq[l] != nil, g->bk[l] != nil, g->bv[l] != nil,
+                roff, roff };
+            bool local = model_is_swa(m, l);
+            [e setComputePipelineState:g->p_attn_front_q8];
+            [e setBuffer:qb offset:0 atIndex:0];
+            [e setBuffer:g->x  offset:0 atIndex:1];
+            [e setBuffer:g->attn_norm[l] offset:0 atIndex:2];
+            [e setBuffer:g->q  offset:0 atIndex:3];
+            [e setBuffer:g->kt offset:0 atIndex:4];
+            [e setBuffer:g->vt offset:0 atIndex:5];
+            [e setBuffer:g->kc offset:0 atIndex:6];
+            [e setBuffer:g->vc offset:0 atIndex:7];
+            [e setBuffer:(local && g->inv_freq_local) ? g->inv_freq_local
+                                                      : g->inv_freq
+                  offset:0 atIndex:8];
+            [e setBuffer:g->bq[l] ? g->bq[l] : g->dummy offset:0 atIndex:9];
+            [e setBuffer:g->bk[l] ? g->bk[l] : g->dummy offset:0 atIndex:10];
+            [e setBuffer:g->bv[l] ? g->bv[l] : g->dummy offset:0 atIndex:11];
+            [e setBytes:&fa length:sizeof(fa) atIndex:12];
+            g_disp.mv++;
+            [e dispatchThreadgroups:MTLSizeMake(m->n_head + 2 * n_kv, 1, 1)
+              threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+        } else {
         enc_mv_n(g, e, m, ly->wq, g->xb, 0, g->q,  0,
                  n_embd, q_dim_l,  g->bq[l], n, xdim, q_dim);
         // the output gate projects the same normed input as Q; xb is
@@ -2763,11 +2839,6 @@ static float *gpu_forward_native_batch(model_t *m, const int32_t *tokens,
         if (m->attn_out_gate && ly->wq_gate)
             enc_mv_n(g, e, m, ly->wq_gate, g->xb, 0, g->agate, 0,
                      n_embd, q_dim_l, nil, n, xdim, q_dim);
-        // gemma-4 E-series shared-KV layers project Q as usual but compute no
-        // K/V of their own: they attend over the cache an earlier layer filled,
-        // which model_kv_byte_off() below already aliases to. Projecting and
-        // storing here would overwrite that source layer's rows.
-        bool owns_kv = model_kv_owner(m, l) == l;
         if (owns_kv) {
             enc_mv_n(g, e, m, ly->wk, g->xb, 0, g->kt, 0,
                      n_embd, kv_dim_l, g->bk[l], n, xdim, kv_dim);
@@ -2776,6 +2847,7 @@ static float *gpu_forward_native_batch(model_t *m, const int32_t *tokens,
             if (ly->wv)
                 enc_mv_n(g, e, m, ly->wv, g->xb, 0, g->vt, 0,
                          n_embd, kv_dim_l, g->bv[l], n, xdim, kv_dim);
+        }
         }
 
         // Batched in grid.y rather than encoded once per token. Bit-identical:
@@ -2800,6 +2872,7 @@ static float *gpu_forward_native_batch(model_t *m, const int32_t *tokens,
             // kernels derive their column's position from pos + col, so every
             // token still rotates at, writes to, and attends over exactly the
             // range a per-token submit gave it.
+            if (front) goto rope_store_done;   // the megakernel already did it
             // Decode fusion F1: rope(q)+rope(k)+f16 store in ONE dispatch
             // (budget: -2 dispatches x n_layer per token). q8 caches and
             // prefill keep the split path; byte identity is the gate.
@@ -3045,7 +3118,8 @@ static float *gpu_forward_native_batch(model_t *m, const int32_t *tokens,
             m->resid_scale == 1.0f && !ly->ple_gate &&
             (ly->out_scale == 1.0f || ly->out_scale == 0.0f) &&
             !nantrace && !nanstage && l + 1 < n_gpu_layers &&
-            n_gpu_layers == m->n_layer)
+            n_gpu_layers == m->n_layer &&
+            !metal_front_capable(g, m, l + 1))
             fuse_pending_add = true;
         else
         enc_elem_n(g, e, g->p_add, g->x, 0, g->xb, 0, n_embd, n, n_embd, xdim);

@@ -58,3 +58,31 @@ inside the mv/moe dispatches themselves, which only the persistent
 layer-walk kernel (the summit item, the one llama.cpp's op-graph design
 cannot follow) can fold. That is now the measured next step, not this one
 re-run harder.
+
+## Phase 2 — the attention-front megakernel, same day
+
+The persistent layer walk, cut where Metal's execution model allows it. A
+literal single-dispatch layer needs cross-threadgroup synchronization Metal
+does not guarantee (no forward-progress contract; a stall is a GPU-watchdog
+event, which fails the fail-closed bar), so the walk fuses everything whose
+dependencies fit inside one threadgroup barrier scope: **residual-stream
+norm + Q/K/V matvecs + rope + f16 KV store, one dispatch**
+(`k_attn_front_q8_0`), whole heads per threadgroup, the normed row staged
+once in threadgroup memory and read by all three projections from SRAM.
+Byte identity throughout: the norm replays k_rmsnorm's 256-thread tree, the
+dots replay k_mv_q8_0's packed body, rope/store replay k_rope_store.
+
+Measured on the 120B: decode 64.5 → **67.6 tok/s (+4.8%)**, byte-identical;
+census ~370 dispatches/token. Program cumulative: **686 → ~370 dispatches
+(−46%), 64.4 → 67.6 tok/s (+5.0%)**, all of it byte-identity class.
+
+Admission is static and honest: uniform Q8_0 attention (both flagship MoE
+models), f16 KV, roped, no qk/v norms, no output gate, n_embd ≤ 7936 (the
+32 KB threadgroup budget — the 70B's 8192-wide rows keep the split path).
+The gate grew a logprob-level leg after a roped-K sign flip survived the
+token-level compare at fixture scale: `--score` teacher-forced logprobs,
+fused vs unfused, byte-equal — that leg catches it.
+
+Remaining on the 15 ms → 5 ms road: the o/down/router/attention dispatches
+and the ramp cost inside the heavy matvecs themselves; extending the front
+kernel to Q4_K/Q4_0 attention and qk-norm models widens its coverage.

@@ -1422,7 +1422,14 @@ ifeq ($(shell uname -s),Darwin)
 	    echo "FAIL: $$f fused decode differs from unfused"; exit 1; }; \
 	  echo "  metal decode fusion ok ($$f, byte-identical)"; \
 	done; \
-	rm -f fuse-off.out fuse-on.out fuse-on.err
+	RUNNER_METAL_FUSE=0 ./$(RUNNER_EXE) -m test-moe-fixture.moe4-q8.gguf \
+	  --score -p "$$prompt $$prompt $$prompt" --no-tray > fuse-sc-off.json 2>/dev/null; \
+	./$(RUNNER_EXE) -m test-moe-fixture.moe4-q8.gguf \
+	  --score -p "$$prompt $$prompt $$prompt" --no-tray > fuse-sc-on.json 2>/dev/null; \
+	cmp -s fuse-sc-off.json fuse-sc-on.json || { \
+	  echo "FAIL: fused teacher-forced logprobs differ from unfused"; exit 1; }; \
+	echo "  metal decode fusion ok (score logprobs byte-identical)"; \
+	rm -f fuse-off.out fuse-on.out fuse-on.err fuse-sc-off.json fuse-sc-on.json
 else
 	@echo "metal decode fusion: SKIP (macOS-only backend)"
 endif

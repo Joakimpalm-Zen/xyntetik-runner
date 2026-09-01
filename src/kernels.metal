@@ -1355,6 +1355,137 @@ kernel void k_rope_store(device float        *q    [[buffer(0)]],
     }
 }
 
+// The attention-front megakernel: residual-stream norm + Q/K/V matvecs +
+// rope + f16 KV store, ONE dispatch. This is the safe form of the
+// persistent layer walk on Metal: a literal whole-layer kernel needs
+// cross-threadgroup synchronization Metal does not guarantee (no
+// forward-progress contract; a deadlock is a GPU watchdog event), so the
+// walk is cut exactly where the data dependencies allow — whole heads per
+// threadgroup, every dependency inside one barrier scope. Byte identity
+// with the unfused chain is the gate: the norm replays k_rmsnorm's
+// 256-thread tree, the dots replay k_mv_q8_0's packed body (x served from
+// threadgroup memory — same values, same order, no device re-reads), rope
+// and store replay k_rope_store. n_embd caps at 7936 so the staged row and
+// the reduction tree fit the 32 KB threadgroup budget; wider models keep
+// the split path.
+struct attn_front_args {
+    int   n_embd, n_head, n_kv, head_dim, half_dim, pos, neox;
+    float mscale, eps;
+    ulong wq_off, wk_off, wv_off;
+    int   has_bq, has_bk, has_bv;
+    ulong kc_off, vc_off;
+};
+
+kernel void k_attn_front_q8_0(device const uchar *wb    [[buffer(0)]],
+                              device const float *x     [[buffer(1)]],
+                              device const float *nw    [[buffer(2)]],
+                              device float       *q_out [[buffer(3)]],
+                              device float       *kt    [[buffer(4)]],
+                              device float       *vt    [[buffer(5)]],
+                              device uchar       *kc    [[buffer(6)]],
+                              device uchar       *vc    [[buffer(7)]],
+                              device const float *fr    [[buffer(8)]],
+                              device const float *bq    [[buffer(9)]],
+                              device const float *bk    [[buffer(10)]],
+                              device const float *bv    [[buffer(11)]],
+                              constant attn_front_args &a [[buffer(12)]],
+                              uint3 tid3  [[thread_position_in_threadgroup]],
+                              uint3 tgpig [[threadgroup_position_in_grid]],
+                              uint  sgitg [[simdgroup_index_in_threadgroup]],
+                              uint  tiisg [[thread_index_in_simdgroup]]) {
+    threadgroup float xb[7936];
+    threadgroup float red[256];
+    uint tid = tid3.x;
+    int NE = a.n_embd;
+
+    // norm — k_rmsnorm's exact strided sum and 256-slot tree
+    float s0 = 0;
+    for (int i = tid; i < NE; i += 256) s0 += x[i] * x[i];
+    red[tid] = s0;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    for (uint off = 128; off > 0; off >>= 1) {
+        if (tid < off) red[tid] += red[tid + off];
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+    float r = rsqrt(red[0] / NE + a.eps);
+    for (int i = tid; i < NE; i += 256) xb[i] = x[i] * r * nw[i];
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    // which unit: q head, k head, or v head
+    int u = (int)tgpig.x, hd = a.head_dim;
+    int role, head;
+    if (u < a.n_head)               { role = 0; head = u; }
+    else if (u < a.n_head + a.n_kv) { role = 1; head = u - a.n_head; }
+    else                            { role = 2; head = u - a.n_head - a.n_kv; }
+    ulong w_off = role == 0 ? a.wq_off : role == 1 ? a.wk_off : a.wv_off;
+    device float *yout = role == 0 ? q_out : role == 1 ? kt : vt;
+    device const float *bias = role == 0 ? bq : role == 1 ? bk : bv;
+    int has_bias = role == 0 ? a.has_bq : role == 1 ? a.has_bk : a.has_bv;
+
+    // dots — k_mv_q8_0's packed body, x from threadgroup memory
+    int nb = NE / 32;
+    for (int rr = (int)sgitg; rr < hd; rr += 8) {
+        int row = head * hd + rr;
+        device const uchar *rw = wb + w_off + (ulong)row * nb * 34;
+        float s = 0;
+        for (int b = tiisg; b < nb; b += 32) {
+            device const uchar *blk = rw + (ulong)b * 34;
+            float d = (float)*(device const half *)blk;
+            device const packed_char4 *qq4 = (device const packed_char4 *)(blk + 2);
+            threadgroup const float *xp = xb + b * 32;
+            float t = 0;
+            for (int kk = 0; kk < 8; kk++) {
+                char4 qq = qq4[kk];
+                t += (float)qq.x * xp[4 * kk + 0];
+                t += (float)qq.y * xp[4 * kk + 1];
+                t += (float)qq.z * xp[4 * kk + 2];
+                t += (float)qq.w * xp[4 * kk + 3];
+            }
+            s += d * t;
+        }
+        s = simd_sum(s);
+        if (tiisg == 0) yout[row] = has_bias ? s + bias[row] : s;
+    }
+    threadgroup_barrier(mem_flags::mem_device);
+
+    // rope + store — k_rope_store's expressions, head-local
+    int hf = a.half_dim, rd = 2 * hf;
+    device half *kh = (device half *)(kc + a.kc_off);
+    device half *vh = (device half *)(vc + a.vc_off);
+    if (role == 0) {
+        for (int j = tid; j < hf; j += 256) {
+            float ang = a.pos * fr[j];
+            float c = cos(ang) * a.mscale, sn = sin(ang) * a.mscale;
+            device float *p = q_out + head * hd;
+            int i0 = a.neox ? j : 2 * j;
+            int i1 = a.neox ? j + hf : i0 + 1;
+            float x0 = p[i0], x1 = p[i1];
+            p[i0] = x0 * c - x1 * sn;
+            p[i1] = x0 * sn + x1 * c;
+        }
+    } else if (role == 1) {
+        for (int j = tid; j < hf; j += 256) {
+            float ang = a.pos * fr[j];
+            float c = cos(ang) * a.mscale, sn = sin(ang) * a.mscale;
+            device float *p = kt + head * hd;
+            int i0 = a.neox ? j : 2 * j;
+            int i1 = a.neox ? j + hf : i0 + 1;
+            float x0 = p[i0], x1 = p[i1];
+            float y0 = x0 * c - x1 * sn;
+            float y1 = x0 * sn + x1 * c;
+            p[i0] = y0;
+            p[i1] = y1;
+            kh[head * hd + i0] = (half)y0;
+            kh[head * hd + i1] = (half)y1;
+        }
+        for (int j = rd + tid; j < hd; j += 256)
+            kh[head * hd + j] = (half)kt[head * hd + j];
+    } else {
+        for (int j = tid; j < hd; j += 256)
+            vh[head * hd + j] = (half)vt[head * hd + j];
+    }
+}
+
 // residual add + the FOLLOWING rmsnorm: two dispatches -> one. The add and
 // the reduction reproduce k_add and k_rmsnorm exactly (tid-strided square
 // sum, 256-slot tree, same rounding path); x is updated in place and the
