@@ -161,7 +161,7 @@ def run_cpu_cuda(runner, model, params, timeout, report_dir=None, model_id=None)
 def run_chat(runner, model, params, timeout):
     """One-shot chat smoke: the model must answer, stop, and not leak markup."""
     prompt = params.get("prompt", "What is 2+2?")
-    cmd = [str(runner), "-m", str(model), "-i", "--temp", "0",
+    cmd = [str(runner), "-m", str(model), "-i", "--no-tray", "--temp", "0",
            "--gpu", params.get("gpu", "auto"), "-n",
            str(params.get("max_tokens", 200)), "--wait-for-vram", "300"]
     started = time.time()

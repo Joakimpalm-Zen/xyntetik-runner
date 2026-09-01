@@ -40,7 +40,8 @@ import urllib.request
 
 def start_server(runner, model, port):
     proc = subprocess.Popen(
-        [runner, "-m", model, "--serve", "--port", str(port), "--gpu", "off"],
+        [runner, "-m", model, "--serve", "--no-tray",
+         "--port", str(port), "--gpu", "off"],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     for _ in range(400):
         if proc.poll() is not None:

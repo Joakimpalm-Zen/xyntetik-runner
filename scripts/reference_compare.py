@@ -159,7 +159,8 @@ def main(argv=None):
     work = args.out.parent if args.out else ROOT / "tests/compatibility/out"
     work.mkdir(parents=True, exist_ok=True)
     runner_command = [str(args.runner.resolve()), "-m", str(args.model.resolve()),
-                      "--serve", "--port", str(port), "-c", str(args.ctx),
+                      "--serve", "--no-tray", "--port", str(port),
+                      "-c", str(args.ctx),
                       "--gpu", "off"]
     runner_outputs = collect(runner_command, work / "reference-runner.log",
                              PROMPTS, args.tokens, args.startup_timeout,

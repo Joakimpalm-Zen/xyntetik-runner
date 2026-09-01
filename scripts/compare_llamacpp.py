@@ -827,7 +827,8 @@ def fixture_report(args):
 
 def runtime_commands(args, runner_port, llama_port):
     runner_cmd = [str(args.runner.resolve()), "-m", str(args.model.resolve()),
-                  "--serve", "--port", str(runner_port), "-c", str(args.ctx),
+                  "--serve", "--no-tray", "--port", str(runner_port),
+                  "-c", str(args.ctx),
                   "--gpu", args.runner_gpu, "-n", str(args.tokens)]
     runner_cmd.extend(args.runner_arg or [])
     llama_cmd = [str(args.llamacpp.resolve()), "-m", str(args.model.resolve()),

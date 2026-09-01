@@ -63,7 +63,7 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-"$RUNNER_EXE" -m "$MODEL" --serve --port "$PORT" -c "$CTX" --parallel 2 \
+"$RUNNER_EXE" -m "$MODEL" --serve --no-tray --port "$PORT" -c "$CTX" --parallel 2 \
     > "$WORK/runner.log" 2>&1 &
 SRV=$!
 i=0

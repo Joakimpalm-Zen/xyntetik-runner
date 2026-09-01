@@ -42,7 +42,8 @@ def free_port():
 def one_spawn(exe, model, delay, timeout):
     """Spawn a server, SIGTERM it `delay` s later, return a survivor record or None."""
     proc = subprocess.Popen(
-        [exe, "-m", model, "--serve", "--port", str(free_port()),
+        [exe, "-m", model, "--serve", "--no-tray",
+         "--port", str(free_port()),
          "--parallel", "2", "-c", "1024", "--gpu", "off"],
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     try:
