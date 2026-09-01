@@ -718,7 +718,6 @@ void tray_ensure_running(void) {
 
     char exe[1200];
     self_exe(exe, sizeof exe);
-    char *argv[] = { exe, (char *)"--tray", NULL };
 
 #ifdef _WIN32
     char cmd[1400];
@@ -734,6 +733,7 @@ void tray_ensure_running(void) {
         CloseHandle(pi.hProcess);
     }
 #else
+    char *argv[] = { exe, (char *)"--tray", NULL };
     posix_spawn_file_actions_t fa;
     posix_spawn_file_actions_init(&fa);
     // stdio to /dev/null: the tray has nothing to say on a terminal it shares

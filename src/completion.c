@@ -1935,6 +1935,9 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
     // and choice-logprob capture deliberately select the solo walk, so record
     // the execution decision while those request flags are still installed.
     bool spec_used = engine_wants_spec(e);
+    // The dead-client exit below jumps to the shared logger. Keep every value
+    // that logger reads initialized before that first possible jump.
+    bool unmapped = false;
     double gtime;
     int n_gen = sched_generate(s, logits, max_tokens, gen_collect, &g, &gtime,
                                req_deadline);
@@ -1964,7 +1967,6 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
     // tool_stream_finish returns -1 for exactly that failure; any other
     // non-zero value came from a sink refusing to write, which IS the client
     // going away.
-    bool unmapped = false;
     if (g.tsx_on) {
         int fin = tool_stream_finish(&g.tsx);
         if (fin == -1)     unmapped = true;

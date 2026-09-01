@@ -128,6 +128,7 @@ def build_server_args(launch: ServerLaunch) -> list[str]:
     args = [
         str(launch.executable),
         "--serve",
+        "--no-tray",
         "--port", str(launch.port),
         "-c", "0" if launch.reserve_pct > 0 else str(launch.context_size),
         "-m", model,

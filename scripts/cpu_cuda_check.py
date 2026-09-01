@@ -244,8 +244,8 @@ def generate_all(runner, model, gpu, tokens, ctx, env, extra, timeout, log_path)
     """Load the model once on `gpu`, return the greedy text for every prompt."""
     port = free_port()
     base = f"http://127.0.0.1:{port}"
-    cmd = [str(runner), "-m", str(model), "--serve", "--port", str(port),
-           "-c", str(ctx), "--gpu", gpu, *extra]
+    cmd = [str(runner), "-m", str(model), "--serve", "--no-tray",
+           "--port", str(port), "-c", str(ctx), "--gpu", gpu, *extra]
     log = open(log_path, "w", encoding="utf-8")
     proc = subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT, env=env)
     try:

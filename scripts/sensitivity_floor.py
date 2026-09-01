@@ -125,7 +125,8 @@ def run_runner(args):
     try:
         for port, kv in ((18301, "f16"), (18302, "q8")):
             procs.append(subprocess.Popen(
-                [args.runner, "--serve", "-m", args.model, "-c", str(args.ctx),
+                [args.runner, "--serve", "--no-tray", "-m", args.model,
+                 "-c", str(args.ctx),
                  "--port", str(port), "--gpu", "off", "--kv", kv],
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
         for port in (18301, 18302):

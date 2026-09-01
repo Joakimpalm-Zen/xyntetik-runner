@@ -345,7 +345,7 @@ class Server:
         logdir = Path(os.environ.get("TMPDIR", "/tmp"))
         logpath = logdir / ("kvq-%s-%d.log" % (self.kv, self.port))
         self.log = open(logpath, "w")
-        cmd = [str(Path(self.binary).resolve()), "--serve",
+        cmd = [str(Path(self.binary).resolve()), "--serve", "--no-tray",
                "--port", str(self.port), "-m", str(self.model),
                "-c", str(self.ctx), "--kv", self.kv, "--gpu", self.gpu]
         if self.verbose:

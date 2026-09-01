@@ -116,9 +116,14 @@ def test_jsonl_mode_trains_with_prompt_masking(runner_bin, base, tmp_path):
 
 def test_provenance_record_escapes_data_and_output_paths(
         runner_bin, base, tmp_path):
-    data_name = 'corpus"quoted.txt'
+    # Quotes force JSON escaping on POSIX; Windows forbids them in file names,
+    # but its path separators exercise the backslash escaping instead.
+    data_name = ('corpus-windows.txt' if os.name == "nt"
+                 else 'corpus"quoted.txt')
     (base / data_name).write_text(CORPUS)
-    out = tmp_path / 'adapter"quoted.gguf'
+    out_name = ('adapter-windows.gguf' if os.name == "nt"
+                else 'adapter"quoted.gguf')
+    out = tmp_path / out_name
     _train(runner_bin, base, out, data=data_name, steps=1)
     record = pathlib.Path(f"{out}.train.json")
     rec = json.loads(record.read_text())

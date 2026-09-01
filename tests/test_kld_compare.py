@@ -97,7 +97,8 @@ def test_endpoint_mode_reuses_an_already_running_server(runner_bin, small_model,
     # kld-compare.py must also work against servers it didn't start itself
     # (Task 5a's pruned-vs-unpruned comparison will likely run this way).
     proc = subprocess.Popen(
-        [str(runner_bin), "-m", str(small_model), "--serve", "--port", "58705", "--gpu", "off"],
+        [str(runner_bin), "-m", str(small_model), "--serve", "--no-tray",
+         "--port", "58705", "--gpu", "off"],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:
         import time

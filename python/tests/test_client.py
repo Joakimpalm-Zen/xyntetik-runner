@@ -673,6 +673,7 @@ class LaunchTests(unittest.TestCase):
         args = build_server_args(launch)
 
         self.assertEqual(args[:2], ["runner.exe", "--serve"])
+        self.assertIn("--no-tray", args)
         self.assertEqual(args[args.index("-c") + 1], "0")
         self.assertEqual(args[args.index("--reserve") + 1], "55")
         self.assertEqual(args[args.index("--parent-pid") + 1], "1234")
