@@ -54,6 +54,12 @@ until token 4, layer 12, where the eighth selected expert changes from 20 to
 short free-running CPU/Metal generation remained byte-identical. These facts
 locate the full-model excess in discrete top-8 routing sensitivity, but no
 self-sensitivity-floor claim is made without a separate measurement.
+*(Addendum 2026-09-01: that measurement exists now — the 235B is
+self-identical on only 11/16 prompts within 16 greedy tokens under an
+f16-vs-q8 KV perturbation, placing it in the measured chaotic class. The
+identity row above stays FAIL against its stated bound; see
+`docs/sensitivity-floors-m5max-2026-09-01.md` for what the floor licenses
+and what it does not.)*
 
 A sustained batch-512 run used a 732-token engineering note and generated 128
 greedy tokens:

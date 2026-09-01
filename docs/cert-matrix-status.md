@@ -116,7 +116,11 @@ this architecture class carries prefix-cache-state-dependent variability in its
 own outputs (mean KLD moved in the fourth decimal across repeats of an identical
 command where dense models reproduce to the digit), so the self-floor for gpt-oss
 is plausibly below 6/6 and has never been measured. Measuring it is the honest
-next step for this row and is NOT done here.
+next step for this row and is NOT done here. *(Addendum 2026-09-01: measured —
+gpt-oss-20b is self-identical on 14/16 prompts and gpt-oss-120b on 11/16
+within 16 greedy tokens under an f16-vs-q8 KV perturbation, confirming the
+floor sits below strict identity; see
+`docs/sensitivity-floors-m5max-2026-09-01.md`.)*
 
 Verdict: row 1 stays **FAILED**, with tokenizer, chat and cpu_cuda now passing
 and the failure narrowed to cross-engine greedy identity alone.
