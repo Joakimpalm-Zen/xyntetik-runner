@@ -122,6 +122,14 @@ the machine is also your workstation, an engine that wires down half your
 RAM and ticks 160 times a second while idle is the reason you kill it
 every time - and the reason Runner does not need killing.
 
+The same lifecycle measured on a 128 GB M5 Max with gpt-oss-120b (63 GB)
+says abundance does not dissolve the difference, it scales it: loaded idle,
+llama-server (`010be968`) wires **+60.8 GB** — half the machine held by an
+idle process — against Runner's **+35 MB**, and `/unload` hands everything
+back (RSS 229 MB). The latency flip side scales identically: 0.25 s vs 10.1 s
+cold first token. Full table and method:
+[docs/idle-coexistence-120b-m5max-2026-09-01.md](docs/idle-coexistence-120b-m5max-2026-09-01.md).
+
 For release history and benchmark narratives, see [CHANGELOG.md](CHANGELOG.md)
 and [docs/benchmarks.md](docs/benchmarks.md).
 
