@@ -747,13 +747,15 @@ gate compiles the library and verifies every kernel the backend looks up,
 reading that roster out of `src/metal.m` rather than restating it.
 
 On M5-class Macs running macOS 26.2 or newer, `RUNNER_METAL_TENSOR=1` opts
-Q4_K prefill into a separately compiled Metal 4 MPP tensor GEMM. Admission
-runs a hand-computable 256-wide matrix self-test before any model dispatch;
-compile, pipeline, or numeric failure falls back to the established
-simdgroup GEMM. The path is deliberately not the default: on the M5 Max gate
-it was numerically sound but only matched, rather than beating by the required
-1.2x, the existing kernel. M1-M4 never compile or dispatch it and retain the
-same default path and performance. `RUNNER_METAL_TENSOR=0` is the explicit pin.
+Q4_K, Q8_0, and Q4_0 prefill into a separately compiled Metal 4 MPP tensor
+GEMM. Admission runs a hand-computable 256-wide matrix self-test per type
+before any model dispatch; compile, pipeline, or numeric failure falls back
+to the established simdgroup GEMM for that type. The path is deliberately
+not the default: on the M5 Max gate every admitted type was numerically
+sound but only matched, rather than beating by the required 1.2x, the
+existing kernel (Q8_0 measured 261 vs 265 tok/s prefill on a 30B, Q4_0
+parity on a 70B). M1-M4 never compile or dispatch it and retain the same
+default path and performance. `RUNNER_METAL_TENSOR=0` is the explicit pin.
 
 **CUDA:** Linux and Windows use the dynamically loaded driver API and embedded
 `sm_75` PTX. **The embedded PTX is built by the CUDA 13.0 toolchain (PTX ISA

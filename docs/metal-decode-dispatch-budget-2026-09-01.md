@@ -202,3 +202,37 @@ gap is latency structure (dispatch chain, inter-kernel serialization,
 in-flight depth), not per-kernel load emission. The honest instruments for
 the next attack are a per-kernel isolation bench (achieved GB/s per shape)
 and the concurrent-encoder track — not more source-level dot rewrites.
+
+## Phase 7 — spec decode measured, and the tensor roster extended
+
+**Metal-4 tensor GEMM: Q8_0 and Q4_0 join Q4_K** (macro-factored dequant
+blocks, per-type self-tests with unit-weight rows, harness checks all
+three pipelines). Measured at 2K-token prefill: 30B-Q8_0 264.9 simdgroup
+vs 261.2 tensor; 70B-Q4_0 parity within noise; temp-0 tokens identical
+both arms. The ≥1.2× promotion bar stays unmet on M5, so the whole path
+stays opt-in (RUNNER_METAL_TENSOR) — the tracer now covers the flagship
+types for the day an M6 or a better tile geometry changes the answer.
+(Build note: backslash-continued lines make a // comment swallow a whole
+macro body — the tensor library compiled to nothing until the comments
+moved out.)
+
+**Speculative decode on Metal: works, and loses on this hardware's pairs —
+root-caused.** The 70B + 1B-draft pair, byte-gated and healthy at 62–70%
+acceptance (3.5–4.9 tok/round), decodes SLOWER than plain: 12.0 plain vs
+9.3 best spec. The verify is one properly batched n=k+1 command buffer —
+and it costs a full plain step PER COLUMN (75 → 116 → 613 ms at n=1/2/8),
+because at batch-1 the 70B step is ~90% bandwidth-bound with the q4_0
+dequant ALU hidden under it; add columns and the per-column dequant ALU
+comes out from under the bandwidth floor as the new critical path. Weight
+amortization is real; ALU amortization does not exist on the identity-mv
+route, and RUNNER_METAL_COL_TILE (1/2/8) measurably does not matter.
+
+Two structural conclusions. (1) A winning verify needs a dequant-once
+route — a narrow GEMM tile (4–8 columns) that dequantizes each weight
+once into threadgroup memory — but that route is not byte-identical to
+the mv chain, and spec verify is currently GATED byte-identical against
+plain decode; admitting it is a fidelity-bar decision, not a kernel
+patch. (2) MoE targets are structurally weak for spec verify: each
+column routes to different experts, so even weight traffic fails to
+amortize. Both recorded here so the next session starts from the
+measurement, not the hope.

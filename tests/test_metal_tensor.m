@@ -24,19 +24,29 @@ int main(void) {
                     err ? err.localizedDescription.UTF8String : "unknown error");
             return 1;
         }
-        id<MTLFunction> fn = [lib newFunctionWithName:@"k_tensor_q4_K"];
-        if (!fn) { fputs("FAIL: k_tensor_q4_K missing\n", stderr); return 1; }
-        NSError *perr = nil;
-        id<MTLComputePipelineState> p =
-            [dev newComputePipelineStateWithFunction:fn error:&perr];
-        if (!p) {
-            fprintf(stderr, "FAIL: tensor pipeline: %s\n",
-                    perr ? perr.localizedDescription.UTF8String : "unknown error");
-            return 1;
+        const char *names[] = { "k_tensor_q4_K", "k_tensor_q8_0",
+                                "k_tensor_q4_0" };
+        for (int i = 0; i < 3; i++) {
+            id<MTLFunction> fn = [lib newFunctionWithName:
+                [NSString stringWithUTF8String:names[i]]];
+            if (!fn) {
+                fprintf(stderr, "FAIL: %s missing\n", names[i]);
+                return 1;
+            }
+            NSError *perr = nil;
+            id<MTLComputePipelineState> p =
+                [dev newComputePipelineStateWithFunction:fn error:&perr];
+            if (!p) {
+                fprintf(stderr, "FAIL: %s pipeline: %s\n", names[i],
+                        perr ? perr.localizedDescription.UTF8String
+                             : "unknown error");
+                return 1;
+            }
+            [p release]; [fn release];
         }
-        printf("metal tensor: source and Q4_K pipeline admitted on %s\n",
-               dev.name.UTF8String);
-        [p release]; [fn release]; [lib release]; [opts release]; [dev release];
+        printf("metal tensor: source and Q4_K/Q8_0/Q4_0 pipelines admitted "
+               "on %s\n", dev.name.UTF8String);
+        [lib release]; [opts release]; [dev release];
     }
     return 0;
 #endif

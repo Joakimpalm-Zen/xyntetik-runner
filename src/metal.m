@@ -712,21 +712,44 @@ static id<MTLComputePipelineState> mk_tensor_pipeline(id<MTLDevice> dev,
 // columns of unit activations must produce exactly 256 (within fp16/MPP
 // rounding). A pipeline that merely compiles is not enough—the LM Studio M5
 // regression was precisely a functional tensor self-test that failed later.
-static bool metal_tensor_self_test(id<MTLDevice> dev,
-                                   id<MTLComputePipelineState> p) {
-    enum { NI = 256, NOUT = 64, NC = 32, Q4K_ROW = 144, SHMEM = 128*64*2 };
-    uint8_t *wh = calloc(NOUT, Q4K_ROW);
-    float *xh = malloc((size_t)NC * NI * sizeof(float));
-    if (!wh || !xh) { free(wh); free(xh); return false; }
-    for (int r = 0; r < NOUT; r++) {
-        uint8_t *b = wh + r * Q4K_ROW;
-        b[0] = 0x00; b[1] = 0x3c;             // fp16 d = 1
+// Per-type self-test rows: unit weights whose dot with an all-ones input
+// is exactly NI, the same bar for every admitted type.
+static size_t metal_tensor_test_row(int type, uint8_t *b, int ni) {
+    if (type == T_Q4_K) {                      // 144 B / 256 weights
+        b[0] = 0x00; b[1] = 0x3c;              // fp16 d = 1
         for (int j = 0; j < 4; j++) b[4 + j] = 1;
         for (int j = 0; j < 4; j++) b[12 + j] = 1;
         memset(b + 16, 0x11, 128);             // both nibbles = 1
+        return 144;
     }
+    if (type == T_Q8_0) {                      // 34 B / 32 weights
+        for (int k = 0; k < ni / 32; k++) {
+            uint8_t *q = b + k * 34;
+            q[0] = 0x00; q[1] = 0x3c;
+            memset(q + 2, 1, 32);              // int8 quant = 1
+        }
+        return (size_t)(ni / 32) * 34;
+    }
+    // T_Q4_0: 18 B / 32 weights, nibble 9 -> 9 - 8 = 1
+    for (int k = 0; k < ni / 32; k++) {
+        uint8_t *q = b + k * 18;
+        q[0] = 0x00; q[1] = 0x3c;
+        memset(q + 2, 0x99, 16);
+    }
+    return (size_t)(ni / 32) * 18;
+}
+
+static bool metal_tensor_self_test(id<MTLDevice> dev,
+                                   id<MTLComputePipelineState> p, int type) {
+    enum { NI = 256, NOUT = 64, NC = 32, ROW_MAX = 288, SHMEM = 128*64*2 };
+    uint8_t *wh = calloc(NOUT, ROW_MAX);
+    float *xh = malloc((size_t)NC * NI * sizeof(float));
+    if (!wh || !xh) { free(wh); free(xh); return false; }
+    size_t row_b = metal_tensor_test_row(type, wh, NI);
+    for (int r = 1; r < NOUT; r++)
+        metal_tensor_test_row(type, wh + (size_t)r * row_b, NI);
     for (int i = 0; i < NC * NI; i++) xh[i] = 1.0f;
-    id<MTLBuffer> wb = [dev newBufferWithBytes:wh length:NOUT * Q4K_ROW
+    id<MTLBuffer> wb = [dev newBufferWithBytes:wh length:NOUT * ROW_MAX
                                        options:MTLResourceStorageModeShared];
     id<MTLBuffer> xb = [dev newBufferWithBytes:xh length:(size_t)NC * NI * 4
                                        options:MTLResourceStorageModeShared];
@@ -1479,9 +1502,23 @@ bool gpu_init(model_t *m) {
                     terr ? terr.localizedDescription.UTF8String : "unknown error");
         } else {
             id<MTLComputePipelineState> tp = mk_tensor_pipeline(dev, tlib, @"k_tensor_q4_K");
-            if (tp && metal_tensor_self_test(dev, tp)) {
+            if (tp && metal_tensor_self_test(dev, tp, T_Q4_K)) {
                 g->p_tensor[T_Q4_K] = tp;
-                fprintf(stderr, "gpu: Metal 4 tensor GEMM admitted for Q4_K\n");
+                id<MTLComputePipelineState> t8 =
+                    mk_tensor_pipeline(dev, tlib, @"k_tensor_q8_0");
+                if (t8 && metal_tensor_self_test(dev, t8, T_Q8_0))
+                    g->p_tensor[T_Q8_0] = t8;
+                else
+                    [t8 release];
+                id<MTLComputePipelineState> t4 =
+                    mk_tensor_pipeline(dev, tlib, @"k_tensor_q4_0");
+                if (t4 && metal_tensor_self_test(dev, t4, T_Q4_0))
+                    g->p_tensor[T_Q4_0] = t4;
+                else
+                    [t4 release];
+                fprintf(stderr, "gpu: Metal 4 tensor GEMM admitted for Q4_K%s%s\n",
+                        g->p_tensor[T_Q8_0] ? "/Q8_0" : "",
+                        g->p_tensor[T_Q4_0] ? "/Q4_0" : "");
             } else {
                 [tp release];
             }
