@@ -39,6 +39,8 @@ typedef struct {
     id<MTLComputePipelineState> p_tensor[METAL_TYPE_SLOTS];   // Metal 4 MPP prefill
     id<MTLComputePipelineState> p_mvf[METAL_TYPE_SLOTS];      // fast decode matvec
     id<MTLComputePipelineState> p_moe_mv[METAL_TYPE_SLOTS];   // indexed by ggml type
+    id<MTLComputePipelineState> p_moe_mv_em[METAL_TYPE_SLOTS]; // expert-major twin
+    id<MTLComputePipelineState> p_moe_mv_em8[METAL_TYPE_SLOTS]; // + 8-column tiling
     // The model mmap, wrapped zero-copy. Usually ONE buffer; more when the file
     // exceeds maxBufferLength, which on an M1 is 4.29 GB against a 5.73 GB
     // working set (0.75x) and is the ceiling that actually bites for a big
@@ -157,7 +159,8 @@ static int metal_attn_chunk_override(void) {
 }
 
 typedef struct { int n_in, n_out; uint64_t w_off, estride;
-                 int xs, ys, has_bias, bias_stride, slots_per_token; } moe_args;
+                 int xs, ys, has_bias, bias_stride, slots_per_token;
+                 int n_slots; } moe_args;   // n_slots: expert-major only
 
 static void gpu_release_state(gpu_t *g, int n_layer) {
     if (!g) return;
@@ -209,6 +212,8 @@ static void gpu_release_state(gpu_t *g, int n_layer) {
     }
     for (int i = 0; i < METAL_TYPE_SLOTS; i++) [g->p_mvf[i] release];
     for (int i = 0; i < METAL_TYPE_SLOTS; i++) [g->p_moe_mv[i] release];
+    for (int i = 0; i < METAL_TYPE_SLOTS; i++) [g->p_moe_mv_em[i] release];
+    for (int i = 0; i < METAL_TYPE_SLOTS; i++) [g->p_moe_mv_em8[i] release];
     [g->p_rmsnorm release]; [g->p_qknorm release]; [g->p_headnorm release];
     [g->p_rope release]; [g->p_store release]; [g->p_attn release];
     [g->p_attn_chunk release]; [g->p_attn_comb release];
@@ -236,6 +241,23 @@ static bool metal_env_on(const char *name) {
 static bool metal_moe_batch_on(void) {
     const char *v = getenv("RUNNER_METAL_MOE_BATCH");
     return !v || !*v || (strcmp(v, "0") && strcmp(v, "off"));
+}
+
+// RUNNER_METAL_MOE_EM=1: expert-major expert FFN kernels for large batches.
+// The slot-major default re-reads an expert's weight rows once per slot that
+// selected it; expert-major reads them once per threadgroup and walks the
+// expert's token list from threadgroup memory. Outputs are BIT-IDENTICAL to
+// slot-major (one shared dot body, one writer per (slot, row)) — the gate is
+// byte comparison, not tolerance. Opt-in until its measured prefill win
+// clears the promotion bar; it only engages when a dispatch carries at least
+// as many slots as experts, so decode always stays slot-major.
+static bool metal_moe_em_on(void) {
+    static int on = -1;
+    if (on < 0) {
+        const char *v = getenv("RUNNER_METAL_MOE_EM");
+        on = v && *v && strcmp(v, "0") && strcmp(v, "off") ? 1 : 0;
+    }
+    return on > 0;
 }
 
 
@@ -1250,6 +1272,18 @@ bool gpu_init(model_t *m) {
     g->p_moe_mv[T_Q5_K] = mk_pipeline(dev, lib, @"k_moe_mv_q5_K");
     g->p_moe_mv[T_Q6_K] = mk_pipeline(dev, lib, @"k_moe_mv_q6_K");
     g->p_moe_mv[T_MXFP4] = mk_pipeline(dev, lib, @"k_moe_mv_mxfp4");
+    g->p_moe_mv_em[T_F32]   = mk_pipeline(dev, lib, @"k_moe_mv_em_f32");
+    g->p_moe_mv_em[T_F16]   = mk_pipeline(dev, lib, @"k_moe_mv_em_f16");
+    g->p_moe_mv_em[T_Q8_0]  = mk_pipeline(dev, lib, @"k_moe_mv_em_q8_0");
+    g->p_moe_mv_em[T_Q4_0]  = mk_pipeline(dev, lib, @"k_moe_mv_em_q4_0");
+    g->p_moe_mv_em[T_Q2_K]  = mk_pipeline(dev, lib, @"k_moe_mv_em_q2_K");
+    g->p_moe_mv_em[T_Q3_K]  = mk_pipeline(dev, lib, @"k_moe_mv_em_q3_K");
+    g->p_moe_mv_em[T_Q4_K]  = mk_pipeline(dev, lib, @"k_moe_mv_em_q4_K");
+    g->p_moe_mv_em[T_Q5_K]  = mk_pipeline(dev, lib, @"k_moe_mv_em_q5_K");
+    g->p_moe_mv_em[T_Q6_K]  = mk_pipeline(dev, lib, @"k_moe_mv_em_q6_K");
+    g->p_moe_mv_em[T_MXFP4] = mk_pipeline(dev, lib, @"k_moe_mv_em_mxfp4");
+    g->p_moe_mv_em8[T_Q8_0]  = mk_pipeline(dev, lib, @"k_moe_mv_em8_q8_0");
+    g->p_moe_mv_em8[T_MXFP4] = mk_pipeline(dev, lib, @"k_moe_mv_em8_mxfp4");
     [lib release];
     lib = nil;
 
@@ -1930,20 +1964,39 @@ static void enc_moe_mv(gpu_t *g, id<MTLComputeCommandEncoder> e, model_t *m,
                        int n_in, int n_out, int nslots, int xs, int ys,
                        id<MTLBuffer> bias, int bias_stride,
                        NSUInteger sel_off, int slots_per_token) {
-    [e setComputePipelineState:g->p_moe_mv[base->type]];
+    // Expert-major pays only when experts are shared across slots: at
+    // nslots >= n_expert every expert averages a full token list, and the
+    // one-read-per-expert weight traffic beats slot-major's re-reads. Below
+    // that (decode: nslots == n_expert_used) slot-major stays.
+    id<MTLComputePipelineState> emp = nil;
+    if (metal_moe_em_on() && m->n_expert > 0 && nslots >= m->n_expert) {
+        emp = g->p_moe_mv_em8[base->type];       // column-tiled where it exists
+        if (!emp) emp = g->p_moe_mv_em[base->type];
+    }
+    bool em = emp != nil;
+    if (em) {
+        static bool announced = false;
+        if (!announced) {
+            announced = true;
+            fprintf(stderr, "gpu: MoE expert-major prefill kernels on "
+                    "(RUNNER_METAL_MOE_EM)\n");
+        }
+    }
+    [e setComputePipelineState:em ? emp : g->p_moe_mv[base->type]];
     moe_args a = { n_in, n_out,
                    metal_bind_weights(g, e,
                        (uint64_t)(uintptr_t)base->data,
                        base->nbytes),
                    estride, xs, ys, bias != nil, bias_stride,
-                   slots_per_token };
+                   slots_per_token, nslots };
     [e setBuffer:x offset:x_off atIndex:1];
     [e setBuffer:y offset:y_off atIndex:2];
     [e setBytes:&a length:sizeof(a) atIndex:3];
     [e setBuffer:g->moe_sel offset:sel_off atIndex:4];
     [e setBuffer:bias ? bias : g->dummy offset:0 atIndex:5];
     g_disp.moe++;
-    [e dispatchThreadgroups:MTLSizeMake((n_out + 3) / 4, nslots, 1)
+    [e dispatchThreadgroups:MTLSizeMake((n_out + 3) / 4,
+                                        em ? m->n_expert : nslots, 1)
       threadsPerThreadgroup:MTLSizeMake(128, 1, 1)];
 }
 

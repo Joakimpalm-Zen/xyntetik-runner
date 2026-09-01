@@ -1304,6 +1304,40 @@ else
 	@echo "metal big-model identity skipped: macOS-only backend"
 endif
 
+# Expert-major MoE kernels (RUNNER_METAL_MOE_EM): the twin family shares its
+# dot bodies with slot-major, so the contract is BYTE IDENTITY across the
+# whole run (prefill engages expert-major, the decode tail stays slot-major —
+# both shapes are exercised by one comparison). The engagement grep is what
+# keeps the gate non-vacuous: without it, a build whose expert-major
+# pipelines fail to compile would fall back to slot-major and pass on
+# self-agreement.
+test-metal-moe-em: runner test-moe-fixture.moe1.gguf test-moe-fixture.moe4.gguf test-moe-fixture.gptoss-mxfp4.gguf test-moe-fixture.gemma4-moe.gguf
+ifeq ($(shell uname -s),Darwin)
+	@set -e; \
+	if ! ./$(RUNNER_EXE) --caps | $(PYTHON) -c "import json,sys; d=json.load(sys.stdin); sys.exit(0 if (d.get('gpu') or {}).get('backend') == 'metal' else 1)"; then \
+	  echo "metal moe expert-major: SKIP (no Metal device)"; exit 0; fi; \
+	prompt="The quick brown fox jumps over the lazy dog again and again"; \
+	./$(RUNNER_EXE) -m test-moe-fixture.moe4.gguf \
+	  --quantize test-moe-fixture.moe4-q8.gguf --quant q8_0 >/dev/null 2>&1; \
+	for f in test-moe-fixture.moe1.gguf test-moe-fixture.moe4.gguf \
+	         test-moe-fixture.moe4-q8.gguf \
+	         test-moe-fixture.gptoss-mxfp4.gguf test-moe-fixture.gemma4-moe.gguf; do \
+	  ./$(RUNNER_EXE) -m $$f -p "$$prompt" -n 16 -b 32 --temp 0 --no-tray \
+	    > moe-em-off.out 2>/dev/null; \
+	  RUNNER_METAL_MOE_EM=1 ./$(RUNNER_EXE) -m $$f -p "$$prompt" -n 16 -b 32 \
+	    --temp 0 --no-tray > moe-em-on.out 2> moe-em-on.err; \
+	  grep -q "expert-major prefill kernels on" moe-em-on.err || { \
+	    echo "FAIL: $$f never dispatched the expert-major kernels — vacuous"; \
+	    exit 1; }; \
+	  cmp -s moe-em-off.out moe-em-on.out || { \
+	    echo "FAIL: $$f expert-major output differs from slot-major"; exit 1; }; \
+	  echo "  metal moe expert-major ok ($$f, byte-identical)"; \
+	done; \
+	rm -f moe-em-off.out moe-em-on.out moe-em-on.err
+else
+	@echo "metal moe expert-major: SKIP (macOS-only backend)"
+endif
+
 # Multi-buffer wrap at real-checkpoint size. test-metal-multibuf forces the
 # split on sub-GB fixtures; this arm forces multi-GB buffers on a real model,
 # because the M5 Max measurement (2026-09-01) showed no on-disk artifact
@@ -1578,6 +1612,7 @@ test: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSON_OOM) $(
 	$(MAKE) --no-print-directory test-metal-split
 	$(MAKE) --no-print-directory test-metal-bind-failure
 	$(MAKE) --no-print-directory test-metal-multibuf
+	$(MAKE) --no-print-directory test-metal-moe-em
 	$(PYTHON) scripts/check-generated.py
 	PYTHONPATH=python/src $(PYTHON) -m pytest python/tests/
 	$(PYTHON) -m pytest -q tests/test_fit_check.py tests/test_apertus.py tests/test_ornith_cpu.py tests/test_ornith_reference.py tests/test_compat_matrix.py tests/test_arch_admission.py tests/test_hybrid_admission.py tests/test_hostile_geometry.py tests/test_certify_envelope.py tests/test_cpu_cuda_margin.py tests/test_envelope_gate.py tests/test_envelope_swap.py tests/test_cli_files.py tests/test_chat_template_flag.py tests/test_server_banner.py tests/test_split_gguf.py tests/test_metal_coverage.py tests/test_gpu_declines.py tests/test_caps.py tests/test_tool_info.py tests/test_bench_json.py tests/test_mtp_admission.py tests/test_compare_llamacpp.py tests/test_release_check.py tests/test_eseries.py tests/test_stress_models.py tests/test_moe_prune_plan.py tests/test_kld_compare.py tests/test_kld_margin.py tests/test_quant_fidelity.py tests/test_token_divergence.py tests/test_verify_gguf.py tests/test_type_plan_size.py tests/test_stress_context.py tests/test_cert_greedy_identity.py tests/test_tokenizer_corpus.py tests/test_batch_bench.py tests/test_spec_telemetry.py tests/test_draft_required.py tests/test_kv_reachable.py tests/test_kv_ring.py tests/test_tiedv.py tests/test_request_disconnect.py tests/test_score.py tests/test_lora.py tests/test_train.py tests/test_merge.py tests/test_transcript.py
@@ -1860,7 +1895,7 @@ test-makefile-sane:
 
 .PHONY: template-conformance template-conformance-refresh template-conformance-baseline template-conformance-harmony-oracle
 .PHONY: test-gpu-stub
-.PHONY: FORCE makefile-noop test-python-deps test-makefile-sane fixture-scale-note clean debug ptx test test-bare-invocation test-help-interface test-shader-embed test-metal-shader-gate test-apertus test-moe test-prune-experts test-metal-fallback test-metal-prefill test-metal-kquant test-metal-decode-only test-metal-split test-metal-bind-failure test-metal-kv-q8 test-metal-moe test-metal-gptoss-moe test-metal-gemma4-moe test-metal-gemma4-hetero test-metal-bigmodel test-metal-bigmodel-multibuf test-metal-gelu-overflow test-metal-eseries test-metal-swa smoke release-check test-truncation fuzz fuzz-build fuzz-run test-shared-asan test-shared-noid test-split-guard test-swap-race
+.PHONY: FORCE makefile-noop test-python-deps test-makefile-sane fixture-scale-note clean debug ptx test test-bare-invocation test-help-interface test-shader-embed test-metal-shader-gate test-apertus test-moe test-prune-experts test-metal-fallback test-metal-prefill test-metal-kquant test-metal-decode-only test-metal-split test-metal-bind-failure test-metal-kv-q8 test-metal-moe test-metal-gptoss-moe test-metal-gemma4-moe test-metal-gemma4-hetero test-metal-bigmodel test-metal-bigmodel-multibuf test-metal-moe-em test-metal-gelu-overflow test-metal-eseries test-metal-swa smoke release-check test-truncation fuzz fuzz-build fuzz-run test-shared-asan test-shared-noid test-split-guard test-swap-race
 
 # Soak harness for the startup/SIGTERM race (test_signal_during_startup). Not
 # in `make test` — it is a diagnostic soak (thousands of spawns), run on demand

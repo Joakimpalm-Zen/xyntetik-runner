@@ -1756,7 +1756,65 @@ struct moe_args {
     int   has_bias;
     int   bias_stride;
     int   slots_per_token;
+    int   n_slots;   // total (token, selected-expert) slots; expert-major only
 };
+
+// One dot body per quant type, shared verbatim by BOTH dispatch shapes below
+// (slot-major k_moe_mv_* and expert-major k_moe_mv_em_*). One definition is
+// what makes the two shapes bit-identical: the per-(row, slot) arithmetic and
+// its accumulation order are the same instructions either way — only which
+// threadgroup executes them changes.
+
+static inline float moe_dot_f32(device const uchar *wbase, uint row, int n_in,
+                                device const float *xp0, uint tiisg) {
+    float s = 0;
+    device const float *rw = (device const float *)wbase + (ulong)row * n_in;
+    for (int i = tiisg; i < n_in; i += 32) s += rw[i] * xp0[i];
+    return s;
+}
+
+static inline float moe_dot_f16(device const uchar *wbase, uint row, int n_in,
+                                device const float *xp0, uint tiisg) {
+    float s = 0;
+    device const half *rw = (device const half *)wbase + (ulong)row * n_in;
+    for (int i = tiisg; i < n_in; i += 32) s += (float)rw[i] * xp0[i];
+    return s;
+}
+
+static inline float moe_dot_q8_0(device const uchar *wbase, uint row, int n_in,
+                                 device const float *xp0, uint tiisg) {
+    float s = 0;
+    int nb = n_in / 32;
+    device const uchar *rw = wbase + (ulong)row * nb * 34;
+    for (int b = tiisg; b < nb; b += 32) {
+        device const uchar *blk = rw + (ulong)b * 34;
+        float d = (float)*(device const half *)blk;
+        device const char *q = (device const char *)(blk + 2);
+        device const float *xp = xp0 + b * 32;
+        float t = 0;
+        for (int j = 0; j < 32; j++) t += (float)q[j] * xp[j];
+        s += d * t;
+    }
+    return s;
+}
+
+static inline float moe_dot_q4_0(device const uchar *wbase, uint row, int n_in,
+                                 device const float *xp0, uint tiisg) {
+    float s = 0;
+    int nb = n_in / 32;
+    device const uchar *rw = wbase + (ulong)row * nb * 18;
+    for (int b = tiisg; b < nb; b += 32) {
+        device const uchar *blk = rw + (ulong)b * 18;
+        float d = (float)*(device const half *)blk;
+        device const uchar *q = blk + 2;
+        device const float *xp = xp0 + b * 32;
+        float t = 0;
+        for (int j = 0; j < 16; j++)
+            t += ((int)(q[j] & 0xF) - 8) * xp[j] + ((int)(q[j] >> 4) - 8) * xp[j + 16];
+        s += d * t;
+    }
+    return s;
+}
 
 #define MOE_MV_HEAD \
     uint row = tgpig.x * (ntg.x / 32) + sgitg; \
@@ -1788,57 +1846,35 @@ struct moe_args {
 
 kernel void k_moe_mv_f32(MOE_MV_PARAMS) {
     MOE_MV_HEAD;
-    device const float *rw = (device const float *)wbase + (ulong)row * a.n_in;
-    for (int i = tiisg; i < a.n_in; i += 32) s += rw[i] * xp0[i];
+    s += moe_dot_f32(wbase, row, a.n_in, xp0, tiisg);
     MOE_MV_TAIL;
 }
 
 kernel void k_moe_mv_f16(MOE_MV_PARAMS) {
     MOE_MV_HEAD;
-    device const half *rw = (device const half *)wbase + (ulong)row * a.n_in;
-    for (int i = tiisg; i < a.n_in; i += 32) s += (float)rw[i] * xp0[i];
+    s += moe_dot_f16(wbase, row, a.n_in, xp0, tiisg);
     MOE_MV_TAIL;
 }
 
 kernel void k_moe_mv_q8_0(MOE_MV_PARAMS) {
     MOE_MV_HEAD;
-    int nb = a.n_in / 32;
-    device const uchar *rw = wbase + (ulong)row * nb * 34;
-    for (int b = tiisg; b < nb; b += 32) {
-        device const uchar *blk = rw + (ulong)b * 34;
-        float d = (float)*(device const half *)blk;
-        device const char *q = (device const char *)(blk + 2);
-        device const float *xp = xp0 + b * 32;
-        float t = 0;
-        for (int j = 0; j < 32; j++) t += (float)q[j] * xp[j];
-        s += d * t;
-    }
+    s += moe_dot_q8_0(wbase, row, a.n_in, xp0, tiisg);
     MOE_MV_TAIL;
 }
 
 kernel void k_moe_mv_q4_0(MOE_MV_PARAMS) {
     MOE_MV_HEAD;
-    int nb = a.n_in / 32;
-    device const uchar *rw = wbase + (ulong)row * nb * 18;
-    for (int b = tiisg; b < nb; b += 32) {
-        device const uchar *blk = rw + (ulong)b * 18;
-        float d = (float)*(device const half *)blk;
-        device const uchar *q = blk + 2;
-        device const float *xp = xp0 + b * 32;
-        float t = 0;
-        for (int j = 0; j < 16; j++)
-            t += ((int)(q[j] & 0xF) - 8) * xp[j] + ((int)(q[j] >> 4) - 8) * xp[j + 16];
-        s += d * t;
-    }
+    s += moe_dot_q4_0(wbase, row, a.n_in, xp0, tiisg);
     MOE_MV_TAIL;
 }
 
 // q2_K uses the same quarter-superblock decomposition as k_mv_q2_K. Keeping
 // that layout here matters for narrow expert FFNs: a 1536-wide Qwen3 expert
 // has only six whole superblocks, but 24 independent quarters for the lanes.
-kernel void k_moe_mv_q2_K(MOE_MV_PARAMS) {
-    MOE_MV_HEAD;
-    int nb = a.n_in / 256;
+static inline float moe_dot_q2_K(device const uchar *wbase, uint row, int n_in,
+                                 device const float *xp0, uint tiisg) {
+    float s = 0;
+    int nb = n_in / 256;
     device const uchar *rw = wbase + (ulong)row * nb * 84;
     int nq = nb * 4;
     for (int u = tiisg; u < nq; u += 32) {
@@ -1868,12 +1904,19 @@ kernel void k_moe_mv_q2_K(MOE_MV_PARAMS) {
         s += d0 * t0 - m0 * sx0 + d1 * t1 - m1 * sx1
            + d2 * t2 - m2 * sx2 + d3 * t3 - m3 * sx3;
     }
+    return s;
+}
+
+kernel void k_moe_mv_q2_K(MOE_MV_PARAMS) {
+    MOE_MV_HEAD;
+    s += moe_dot_q2_K(wbase, row, a.n_in, xp0, tiisg);
     MOE_MV_TAIL;
 }
 
-kernel void k_moe_mv_q3_K(MOE_MV_PARAMS) {
-    MOE_MV_HEAD;
-    int nb = a.n_in / 256;
+static inline float moe_dot_q3_K(device const uchar *wbase, uint row, int n_in,
+                                 device const float *xp0, uint tiisg) {
+    float s = 0;
+    int nb = n_in / 256;
     device const uchar *rw = wbase + (ulong)row * nb * 110;
     int nq = nb * 4;
     for (int u = tiisg; u < nq; u += 32) {
@@ -1904,6 +1947,12 @@ kernel void k_moe_mv_q3_K(MOE_MV_PARAMS) {
         }
         s += d0 * t0 + d1 * t1 + d2 * t2 + d3 * t3;
     }
+    return s;
+}
+
+kernel void k_moe_mv_q3_K(MOE_MV_PARAMS) {
+    MOE_MV_HEAD;
+    s += moe_dot_q3_K(wbase, row, a.n_in, xp0, tiisg);
     MOE_MV_TAIL;
 }
 
@@ -1913,9 +1962,10 @@ kernel void k_moe_mv_q3_K(MOE_MV_PARAMS) {
 // same units -- quarters for q4_K/q5_K, halves for q6_K -- chosen so no
 // weight byte is read twice. The dense side measured 5.43 -> 9.22 tok/s from
 // this plus vectorisation.
-kernel void k_moe_mv_q4_K(MOE_MV_PARAMS) {
-    MOE_MV_HEAD;
-    int nb = a.n_in / 256;
+static inline float moe_dot_q4_K(device const uchar *wbase, uint row, int n_in,
+                                 device const float *xp0, uint tiisg) {
+    float s = 0;
+    int nb = n_in / 256;
     device const uchar *rw = wbase + (ulong)row * nb * 144;
     int nq = nb * 4;
     for (int u = tiisg; u < nq; u += 32) {
@@ -1938,12 +1988,19 @@ kernel void k_moe_mv_q4_K(MOE_MV_PARAMS) {
         }
         s += d1 * t1 - mm1 * sx1 + d2 * t2 - mm2 * sx2;
     }
+    return s;
+}
+
+kernel void k_moe_mv_q4_K(MOE_MV_PARAMS) {
+    MOE_MV_HEAD;
+    s += moe_dot_q4_K(wbase, row, a.n_in, xp0, tiisg);
     MOE_MV_TAIL;
 }
 
-kernel void k_moe_mv_q5_K(MOE_MV_PARAMS) {
-    MOE_MV_HEAD;
-    int nb = a.n_in / 256;
+static inline float moe_dot_q5_K(device const uchar *wbase, uint row, int n_in,
+                                 device const float *xp0, uint tiisg) {
+    float s = 0;
+    int nb = n_in / 256;
     device const uchar *rw = wbase + (ulong)row * nb * 176;
     int nq = nb * 4;
     for (int u = tiisg; u < nq; u += 32) {
@@ -1966,12 +2023,19 @@ kernel void k_moe_mv_q5_K(MOE_MV_PARAMS) {
             s += (d2 * (float)((q[l] >> 4)  + ((qh[l] & u2) ? 16 : 0)) - mm2) * xp[l + 32];
         }
     }
+    return s;
+}
+
+kernel void k_moe_mv_q5_K(MOE_MV_PARAMS) {
+    MOE_MV_HEAD;
+    s += moe_dot_q5_K(wbase, row, a.n_in, xp0, tiisg);
     MOE_MV_TAIL;
 }
 
-kernel void k_moe_mv_q6_K(MOE_MV_PARAMS) {
-    MOE_MV_HEAD;
-    int nb = a.n_in / 256;
+static inline float moe_dot_q6_K(device const uchar *wbase, uint row, int n_in,
+                                 device const float *xp0, uint tiisg) {
+    float s = 0;
+    int nb = n_in / 256;
     device const uchar *rw = wbase + (ulong)row * nb * 210;
     int nh = nb * 2;
     for (int u = tiisg; u < nh; u += 32) {
@@ -2011,12 +2075,19 @@ kernel void k_moe_mv_q6_K(MOE_MV_PARAMS) {
         s += d * (sc[0] * t[0] + sc[2] * t[1] + sc[4] * t[2] + sc[6] * t[3] +
                   sc[1] * t[4] + sc[3] * t[5] + sc[5] * t[6] + sc[7] * t[7]);
     }
+    return s;
+}
+
+kernel void k_moe_mv_q6_K(MOE_MV_PARAMS) {
+    MOE_MV_HEAD;
+    s += moe_dot_q6_K(wbase, row, a.n_in, xp0, tiisg);
     MOE_MV_TAIL;
 }
 
-kernel void k_moe_mv_mxfp4(MOE_MV_PARAMS) {
-    MOE_MV_HEAD;
-    int nb = a.n_in / 32;
+static inline float moe_dot_mxfp4(device const uchar *wbase, uint row, int n_in,
+                                  device const float *xp0, uint tiisg) {
+    float s = 0;
+    int nb = n_in / 32;
     device const uchar *rw = wbase + (ulong)row * nb * 17;
     for (int b = tiisg; b < nb; b += 32) {
         device const uchar *blk = rw + (ulong)b * 17;
@@ -2030,8 +2101,182 @@ kernel void k_moe_mv_mxfp4(MOE_MV_PARAMS) {
         }
         s += d * t;
     }
+    return s;
+}
+
+kernel void k_moe_mv_mxfp4(MOE_MV_PARAMS) {
+    MOE_MV_HEAD;
+    s += moe_dot_mxfp4(wbase, row, a.n_in, xp0, tiisg);
     MOE_MV_TAIL;
 }
+
+// ------------------------------------------------ expert-major MoE matvec
+//
+// The slot-major family above runs one threadgroup row per (token, selected
+// expert) SLOT, so at prefill batch N every expert's weight rows are re-read
+// once per slot that selected it — ~N*used/n_expert redundant reads of the
+// dominant traffic. This family inverts the grid: one threadgroup row per
+// EXPERT. The threadgroup cooperatively compacts the slots routed to its
+// expert into threadgroup memory, then each simdgroup walks that list with
+// the SAME moe_dot_* body, reading the expert's weight rows once and reusing
+// them across every matching token from cache.
+//
+// Output placement is unchanged (y[slot * ys + row]) and each (slot, row) has
+// exactly one writer, so no atomics touch the results and the outputs are
+// bit-identical to the slot-major family — gated, not assumed. Cold experts
+// cost one compaction scan and exit before any weight byte is read.
+#define MOE_EM_CHUNK 1024
+
+#define MOE_EM_KERNEL(NAME, DOTFN) \
+kernel void NAME(MOE_MV_PARAMS) { \
+    uint row = tgpig.x * (ntg.x / 32) + sgitg; \
+    int  ex = (int)tgpig.y; \
+    uint tpitg = sgitg * 32 + tiisg; \
+    uint nth = ntg.x; \
+    threadgroup int list[MOE_EM_CHUNK]; \
+    threadgroup atomic_int cnt; \
+    device const uchar *wbase = wb + a.w_off + (ulong)ex * a.estride; \
+    for (int base = 0; base < a.n_slots; base += MOE_EM_CHUNK) { \
+        int lim = a.n_slots - base; \
+        if (lim > MOE_EM_CHUNK) lim = MOE_EM_CHUNK; \
+        if (tpitg == 0) \
+            atomic_store_explicit(&cnt, 0, memory_order_relaxed); \
+        threadgroup_barrier(mem_flags::mem_threadgroup); \
+        for (int i = (int)tpitg; i < lim; i += (int)nth) \
+            if (sel[base + i] == ex) { \
+                int k = atomic_fetch_add_explicit(&cnt, 1, \
+                                                  memory_order_relaxed); \
+                list[k] = base + i; \
+            } \
+        threadgroup_barrier(mem_flags::mem_threadgroup); \
+        int c = atomic_load_explicit(&cnt, memory_order_relaxed); \
+        if (row < (uint)a.n_out) \
+            for (int k = 0; k < c; k++) { \
+                int slot = list[k]; \
+                uint xrow = a.slots_per_token ? (uint)slot / a.slots_per_token \
+                                              : (uint)slot; \
+                device const float *xp0 = x + (ulong)xrow * a.xs; \
+                float s = DOTFN(wbase, row, a.n_in, xp0, tiisg); \
+                s = simd_sum(s); \
+                if (tiisg == 0) { \
+                    if (a.has_bias) \
+                        s += bias[(ulong)ex * a.bias_stride + row]; \
+                    y[(ulong)slot * a.ys + row] = s; \
+                } \
+            } \
+        threadgroup_barrier(mem_flags::mem_threadgroup); \
+    } \
+}
+
+// Column-tiled twins for the hottest expert quant types: one weight block
+// load feeds up to 8 gathered token columns, with a separate accumulator per
+// column so every (row, slot) dot keeps the exact block order and reduction
+// of the single-column body — still byte-identical, now with the weight
+// reuse in registers where the flat expert-major family measured that cache
+// alone does not pay.
+static inline void moe_dot8_q8_0(device const uchar *wbase, uint row, int n_in,
+                                 const thread device const float **xps,
+                                 int ncol, uint tiisg, thread float *acc) {
+    int nb = n_in / 32;
+    device const uchar *rw = wbase + (ulong)row * nb * 34;
+    for (int b = tiisg; b < nb; b += 32) {
+        device const uchar *blk = rw + (ulong)b * 34;
+        float d = (float)*(device const half *)blk;
+        device const char *q = (device const char *)(blk + 2);
+        for (int c = 0; c < ncol; c++) {
+            device const float *xp = xps[c] + b * 32;
+            float t = 0;
+            for (int j = 0; j < 32; j++) t += (float)q[j] * xp[j];
+            acc[c] += d * t;
+        }
+    }
+}
+
+static inline void moe_dot8_mxfp4(device const uchar *wbase, uint row, int n_in,
+                                  const thread device const float **xps,
+                                  int ncol, uint tiisg, thread float *acc) {
+    int nb = n_in / 32;
+    device const uchar *rw = wbase + (ulong)row * nb * 17;
+    for (int b = tiisg; b < nb; b += 32) {
+        device const uchar *blk = rw + (ulong)b * 17;
+        float d = ldexp(1.0f, (int)blk[0] - 127);
+        device const uchar *q = blk + 1;
+        for (int c = 0; c < ncol; c++) {
+            device const float *xp = xps[c] + b * 32;
+            float t = 0;
+            for (int j = 0; j < 16; j++) {
+                t += kv_mxfp4[q[j] & 0xF] * xp[j];
+                t += kv_mxfp4[q[j] >> 4]  * xp[j + 16];
+            }
+            acc[c] += d * t;
+        }
+    }
+}
+
+#define MOE_EM8_KERNEL(NAME, DOTFN8) \
+kernel void NAME(MOE_MV_PARAMS) { \
+    uint row = tgpig.x * (ntg.x / 32) + sgitg; \
+    int  ex = (int)tgpig.y; \
+    uint tpitg = sgitg * 32 + tiisg; \
+    uint nth = ntg.x; \
+    threadgroup int list[MOE_EM_CHUNK]; \
+    threadgroup atomic_int cnt; \
+    device const uchar *wbase = wb + a.w_off + (ulong)ex * a.estride; \
+    for (int base = 0; base < a.n_slots; base += MOE_EM_CHUNK) { \
+        int lim = a.n_slots - base; \
+        if (lim > MOE_EM_CHUNK) lim = MOE_EM_CHUNK; \
+        if (tpitg == 0) \
+            atomic_store_explicit(&cnt, 0, memory_order_relaxed); \
+        threadgroup_barrier(mem_flags::mem_threadgroup); \
+        for (int i = (int)tpitg; i < lim; i += (int)nth) \
+            if (sel[base + i] == ex) { \
+                int k = atomic_fetch_add_explicit(&cnt, 1, \
+                                                  memory_order_relaxed); \
+                list[k] = base + i; \
+            } \
+        threadgroup_barrier(mem_flags::mem_threadgroup); \
+        int c = atomic_load_explicit(&cnt, memory_order_relaxed); \
+        if (row < (uint)a.n_out) \
+            for (int k0 = 0; k0 < c; k0 += 8) { \
+                int ncol = c - k0 < 8 ? c - k0 : 8; \
+                device const float *xps[8]; \
+                int slots8[8]; \
+                for (int cc = 0; cc < ncol; cc++) { \
+                    int slot = list[k0 + cc]; \
+                    slots8[cc] = slot; \
+                    uint xrow = a.slots_per_token \
+                                    ? (uint)slot / a.slots_per_token \
+                                    : (uint)slot; \
+                    xps[cc] = x + (ulong)xrow * a.xs; \
+                } \
+                float acc[8] = {0, 0, 0, 0, 0, 0, 0, 0}; \
+                DOTFN8(wbase, row, a.n_in, xps, ncol, tiisg, acc); \
+                for (int cc = 0; cc < ncol; cc++) { \
+                    float s = simd_sum(acc[cc]); \
+                    if (tiisg == 0) { \
+                        if (a.has_bias) \
+                            s += bias[(ulong)ex * a.bias_stride + row]; \
+                        y[(ulong)slots8[cc] * a.ys + row] = s; \
+                    } \
+                } \
+            } \
+        threadgroup_barrier(mem_flags::mem_threadgroup); \
+    } \
+}
+
+MOE_EM8_KERNEL(k_moe_mv_em8_q8_0,  moe_dot8_q8_0)
+MOE_EM8_KERNEL(k_moe_mv_em8_mxfp4, moe_dot8_mxfp4)
+
+MOE_EM_KERNEL(k_moe_mv_em_f32,   moe_dot_f32)
+MOE_EM_KERNEL(k_moe_mv_em_f16,   moe_dot_f16)
+MOE_EM_KERNEL(k_moe_mv_em_q8_0,  moe_dot_q8_0)
+MOE_EM_KERNEL(k_moe_mv_em_q4_0,  moe_dot_q4_0)
+MOE_EM_KERNEL(k_moe_mv_em_q2_K,  moe_dot_q2_K)
+MOE_EM_KERNEL(k_moe_mv_em_q3_K,  moe_dot_q3_K)
+MOE_EM_KERNEL(k_moe_mv_em_q4_K,  moe_dot_q4_K)
+MOE_EM_KERNEL(k_moe_mv_em_q5_K,  moe_dot_q5_K)
+MOE_EM_KERNEL(k_moe_mv_em_q6_K,  moe_dot_q6_K)
+MOE_EM_KERNEL(k_moe_mv_em_mxfp4, moe_dot_mxfp4)
 
 static inline float swiglu_oai(float g, float u) {
     const float alpha = 1.702f, limit = 7.0f;

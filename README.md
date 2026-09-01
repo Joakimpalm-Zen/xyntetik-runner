@@ -802,6 +802,17 @@ lanes split `head_dim`, so a load covers 32 consecutive elements instead of 32
 rows. It reassociates the per-row dot into a `simd_sum`, which is why it
 answers to `./test-attn-tol` rather than to an identity claim.
 
+`RUNNER_METAL_MOE_EM=1` opts into expert-major MoE *prefill* kernels: one
+threadgroup row per expert instead of per (token, expert) slot, byte-identical
+to the default by construction (one shared dot body, one writer per output).
+Measured on 30B/120B/235B MoE at batch 512 they are 3-4% **slower** than
+slot-major — the cache already absorbs the redundant weight reads they
+eliminate — so they ship off by default as a measured negative result;
+`make test-metal-moe-em` keeps them byte-identical. The full writeup, and why
+the surviving MoE prefill lever is simdgroup-MMA tiling (llama.cpp's
+`mul_mat_id` shape), is
+[docs/negative-result-metal-moe-expert-major.md](docs/negative-result-metal-moe-expert-major.md).
+
 `RUNNER_METAL_MV=1` opts into a reassociating Metal *decode* matvec (q4_0/q8_0,
 float4 accumulation and the q4_0 zero-point factored out of the inner loop).
 It clears the 0/64 teacher-forced flip bar on both formats but measured
