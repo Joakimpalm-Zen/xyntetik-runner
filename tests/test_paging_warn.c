@@ -112,6 +112,42 @@ int main(int argc, char **argv) {
        strstr(buf, "--mlock"),
        "an unlocked model is told about --mlock");
 
+    // --- load-time prefetch decision -------------------------------------
+    // Cold-start page-in of a big model arrives as ~16 KB synchronous faults
+    // (1.1M+ of them for the 120B); a WILLNEED sweep batches them. The
+    // decision is pure arithmetic so it is gated here, hand-computed.
+    ck(model_load_prefetch_wanted(10, 100, false, false),
+       "a model that fits gets the prefetch hint");
+    ck(!model_load_prefetch_wanted(100, 10, false, false),
+       "an oversubscribed model is never swept — that is thrash, not warmth");
+    ck(!model_load_prefetch_wanted(10, 100, true, false),
+       "mlock already forces residency; a hint on top is noise");
+    ck(!model_load_prefetch_wanted(10, 100, false, true),
+       "the expert-prefetch path owns paging on oversubscribed MoE");
+    ck(!model_load_prefetch_wanted(10, 0, false, false),
+       "unknown available RAM means no guess");
+
+    // --- prompt-batch default --------------------------------------------
+    // The old default was sized from FREE RAM at launch, which made the
+    // sampled tokens of a reassociating prefill depend on what else the
+    // machine happened to be doing that day — an ambient input hiding inside
+    // "same executable and inputs". The default is now a pure function of
+    // TOTAL RAM, a fixed machine fact. Hand-computed cases:
+    ck(model_batch_default_for(0) == 512,
+       "unmeasurable total RAM assumes the modern default");
+    ck(model_batch_default_for((uint64_t)4 << 30) == 64,
+       "a 4 GB machine keeps the flat batch");
+    ck(model_batch_default_for((uint64_t)8 << 30) == 256,
+       "an 8 GB machine takes half the win, always the same half");
+    ck(model_batch_default_for((uint64_t)16 << 30) == 512,
+       "a 16 GB machine gets the full batch");
+    ck(model_batch_default_for(((uint64_t)6 << 30) - 1) == 64 &&
+       model_batch_default_for((uint64_t)6 << 30) == 256 &&
+       model_batch_default_for(((uint64_t)12 << 30) - 1) == 256 &&
+       model_batch_default_for((uint64_t)12 << 30) == 512,
+       "the 6 GB and 12 GB boundaries land exactly where documented");
+
+
     if (g_fail) { fprintf(stderr, "paging-warn: FAILED\n"); return 1; }
     puts("paging-warn ok");
     return 0;

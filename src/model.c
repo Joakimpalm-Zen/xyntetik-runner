@@ -667,6 +667,16 @@ uint64_t model_hot_set_bytes(const model_t *m) {
 // degree for a sparse MoE: gemma-4-26B-A4B was measured at 8+ tok/s on a 16 GB
 // Mac while being told every token would page, because only 8 of its 128
 // experts per layer are ever touched.
+bool model_load_prefetch_wanted(uint64_t mapped, uint64_t available,
+                                bool locked, bool moe_prefetch) {
+    if (locked) return false;        // mlock already forces residency
+    if (moe_prefetch) return false;  // oversubscribed MoE: expert path owns paging
+    if (!mapped || !available) return false;   // unknown figures: no guess
+    // Sweeping a mapping larger than RAM is self-defeating: the head of the
+    // readahead evicts its own tail. Only a model that FITS gets the hint.
+    return mapped <= available;
+}
+
 bool model_residency_warning(uint64_t need, uint64_t hot, uint64_t have,
                              bool locked, char *buf, size_t n) {
     // Wired weights cannot be evicted, so every prediction below is
@@ -1212,6 +1222,33 @@ bool model_load(model_t *m, const char *path, const model_params *p) {
     if (m->moe_prefetch)
         fprintf(stderr, "moe: prefetching routed experts as whole blocks "
                 "(--moe-prefetch off disables)\n");
+    // Whole-mapping WILLNEED sweep for a model that FITS — OPT-IN
+    // (RUNNER_PREFETCH=1), and the measurement that made it opt-in is the
+    // point: on the M5 Max the sweep made the cold 63 GB gpt-oss-120b load
+    // 60% SLOWER (11.5 s demand-faulted vs 18.4 s swept, interleaved,
+    // evicted between arms) — macOS demand paging already outruns its own
+    // WILLNEED readahead, the same shape as the 2026-08-31 mmap-vs-pread
+    // result. Linux batches faults under WILLNEED and Windows has
+    // PrefetchVirtualMemory, so the lever stays for those platforms to
+    // measure on their own boxes; a default is a measurement, not a hope.
+    {
+        const char *e = getenv("RUNNER_PREFETCH");
+        bool opt_in = e && *e && strcmp(e, "0") && strcmp(e, "off");
+        if (opt_in && plat_willneed_available() &&
+            model_load_prefetch_wanted(gguf_mapped_size(&m->gf),
+                                       plat_ram_available_bytes(),
+                                       locked, m->moe_prefetch)) {
+            uint32_t np = gguf_map_count(&m->gf);
+            for (uint32_t i = 0; i < np; i++) {
+                size_t sz;
+                void *mp = gguf_map_part(&m->gf, i, &sz);
+                if (mp && sz) plat_willneed(mp, sz);
+            }
+            fprintf(stderr, "prefetch: hinted %.1f GB of weights to the OS "
+                    "(RUNNER_PREFETCH opt-in)\n",
+                    (double)gguf_mapped_size(&m->gf) / 1e9);
+        }
+    }
     return true;
 }
 
@@ -3070,12 +3107,24 @@ int model_autofit_clamp(long long best, int n_ctx_train) {
 // unconditionally defaulting to 512 would be a real eviction risk exactly on
 // the machine this lever targets. Scale the default down instead of ignoring
 // the box's actual headroom.
-static int model_gpu_batch_default(void) {
-    uint64_t avail = plat_ram_available_bytes();
-    if (!avail) return 512;                       // unmeasurable: assume fine
-    if (avail < (uint64_t)1536 << 20) return 64;   // < 1.5 GB free: no change
-    if (avail < (uint64_t)4096 << 20) return 256;  // tight: half the win
+// Prompt-batch default as a pure function of TOTAL RAM. It used to be sized
+// from FREE RAM at launch, which made the sampled tokens of any reassociating
+// prefill path depend on what else the machine was doing that day — an
+// ambient input hiding inside "same executable and inputs". Total RAM is a
+// fixed machine fact, so the same command now picks the same batch on the
+// same machine, every day. The cost of determinism: a lightly-loaded small
+// machine no longer opportunistically takes 512 (the measured M1 win at 512
+// was +9% prompt tok/s over 64; a fixed 256 keeps most of it). -b overrides,
+// as ever. Gated in test_thread_default.c.
+int model_batch_default_for(uint64_t total_ram) {
+    if (!total_ram) return 512;                       // unmeasurable: modern default
+    if (total_ram < (uint64_t)6 << 30)  return 64;    // small machine, stay flat
+    if (total_ram < (uint64_t)12 << 30) return 256;   // 8 GB class: fixed half-win
     return 512;
+}
+
+static int model_gpu_batch_default(void) {
+    return model_batch_default_for(plat_ram_bytes());
 }
 
 static bool model_alloc_runtime(model_t *m, const model_params *p) {

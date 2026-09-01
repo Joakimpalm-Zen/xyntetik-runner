@@ -820,6 +820,15 @@ int         model_kv_swa_layers(const model_t *m);
 bool        model_fit_report(gguf_file *g, int n_ctx_want, model_fit *out);
 const char *model_fit_verdict(const model_fit *f);
 // residency warning text; false when no warning is warranted (see model.c)
+// Should a load hint the WHOLE weight mapping to the OS (WILLNEED sweep)?
+// Cold-start page-in otherwise arrives as ~16 KB synchronous faults — 1.1M+
+// of them for a 63 GB model. Pure arithmetic, gated in test_paging_warn.c;
+// evictability is untouched (a hint is not a lock).
+// Prompt-batch default from TOTAL RAM (a fixed machine fact, not the ambient
+// free figure — see the definition for why that distinction is determinism).
+int      model_batch_default_for(uint64_t total_ram);
+bool     model_load_prefetch_wanted(uint64_t mapped, uint64_t available,
+                                    bool locked, bool moe_prefetch);
 bool     model_residency_warning(uint64_t need, uint64_t hot, uint64_t have,
                                  bool locked, char *buf, size_t n);
 // Advisory prefetch of the experts a router just selected. Fed by whichever
