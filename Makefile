@@ -1082,16 +1082,18 @@ else
 endif
 
 # A split GGUF is mapped one region PER PART, and gguf.h is explicit that
-# `map`/`map_size` describe the FIRST part only. Every weight binding in
-# metal.m is a byte offset into that one mapping, and the zero-copy wrap covers
-# one contiguous range, so a tensor living in part two onwards has an offset
-# this backend cannot resolve. It used to notice at dispatch time, print
-# "results from this model are not trustworthy", bind buffer 0 anyway and
-# compute — on a real multi-GB split the bound bytes are somebody else's.
+# A split GGUF has one mapping PER PART, and the weight wraps are keyed by
+# host address, so each part's mapping gets its own tensor-boundary wraps and
+# a multi-part set takes a FULL Metal offload like a single file. What cannot
+# work is a partial layer split across parts (the prefix arithmetic is
+# file-offset-based and parts are separate mappings), so --gpu-layers on a
+# split set refuses to CPU rather than guessing.
 #
-# The gate is that the refusal happens at LOAD and the run lands on the CPU.
-# The single-file control in the same target is what stops the refusal from
-# quietly widening to every model.
+# The gate: the split set offloads and its output is byte-identical BOTH to
+# its own CPU run and to the single-file model it was split from — the same
+# weights through two mapping layouts must be the same model. The forced
+# --gpu-layers arm pins the loud refusal, and the single-file control keeps
+# the multi-part path from quietly widening.
 test-metal-split: runner
 ifeq ($(shell uname -s),Darwin)
 	@set -e; \
@@ -1105,17 +1107,28 @@ ifeq ($(shell uname -s),Darwin)
 		if grep -q "not trustworthy" metal-split-gpu.err; then \
 			echo "FAIL: the backend addressed weights it has not wrapped and computed anyway"; \
 			cat metal-split-gpu.err; exit 1; fi; \
-		grep -q "split GGUF" metal-split-gpu.err || { \
-			echo "FAIL: a split GGUF was accepted by the Metal backend without a refusal"; \
+		grep -q "Metal backend" metal-split-gpu.err || { \
+			echo "FAIL: a split GGUF did not engage the Metal backend"; \
 			cat metal-split-gpu.err; exit 1; }; \
+		grep -q "weights copied" metal-split-gpu.err && { \
+			echo "FAIL: the split set fell back to a copied buffer"; exit 1; }; \
 		cmp -s metal-split-cpu.out metal-split-gpu.out || { \
-			echo "FAIL: the CPU fallback for a split GGUF does not match --gpu off"; exit 1; }; \
+			echo "FAIL: split-set Metal output differs from --gpu off"; exit 1; }; \
 		./$(RUNNER_EXE) -m test-gguf-split/whole.gguf -p "hello" -n 12 --temp 0 --gpu auto \
 			> metal-split-whole.out 2> metal-split-whole.err; \
 		grep -q "Metal backend" metal-split-whole.err || { \
-			echo "FAIL: the refusal also caught the single-file model"; \
+			echo "FAIL: the single-file control did not offload"; \
 			cat metal-split-whole.err; exit 1; }; \
-		echo "metal split GGUF ok (refused at load, ran on the CPU; single file still offloads)"; \
+		cmp -s metal-split-gpu.out metal-split-whole.out || { \
+			echo "FAIL: the split set and the file it was split from disagree"; exit 1; }; \
+		./$(RUNNER_EXE) -m $$part -p "hello" -n 12 --temp 0 --gpu auto --gpu-layers 1 \
+			> metal-split-partial.out 2> metal-split-partial.err; \
+		grep -q "split GGUF" metal-split-partial.err || { \
+			echo "FAIL: --gpu-layers on a split set did not refuse by name"; \
+			cat metal-split-partial.err; exit 1; }; \
+		cmp -s metal-split-cpu.out metal-split-partial.out || { \
+			echo "FAIL: the partial-split refusal did not land on the CPU path"; exit 1; }; \
+		echo "metal split GGUF ok (full offload byte-identical to CPU and to the unsplit file; --gpu-layers refuses)"; \
 	else \
 		echo "metal split GGUF smoke skipped: no Metal device reported by --caps"; \
 	fi

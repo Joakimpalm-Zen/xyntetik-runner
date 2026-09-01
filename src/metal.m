@@ -52,8 +52,8 @@ typedef struct {
     // not; wrapping the same read-only pages twice costs a page of mapping and
     // keeps every tensor whole.
     id<MTLBuffer> wbuf[METAL_MAX_WBUF];
-    uint64_t      wbuf_base[METAL_MAX_WBUF];   // file offset of each wrap's byte 0
-    uint64_t      wbuf_end[METAL_MAX_WBUF];    // one past its last file offset
+    uint64_t      wbuf_base[METAL_MAX_WBUF];   // host address of each wrap's byte 0
+    uint64_t      wbuf_end[METAL_MAX_WBUF];    // one past its last byte's address
     int           n_wbuf;
     bool          weights_copied;
     // Sticky: a weight range no wrap holds ends the offload for this model.
@@ -834,21 +834,47 @@ static bool metal_wrap_weights(gpu_t *g, model_t *m, id<MTLDevice> dev,
     g->n_wbuf = 0;
     if (wlen == 0 || cap == 0) return false;
 
+    // Extents are HOST ADDRESSES: a split GGUF has one mapping per part, and
+    // an address is the one key valid across all of them. A wrap can never
+    // span two mappings (their address ranges are unrelated), so each extent
+    // remembers its part and the grouping below cuts on a part change.
+    uint32_t n_parts = gguf_map_count(&m->gf);
+    uint64_t pbase[64], pend[64];
+    if (n_parts == 0 || n_parts > 64) return false;
+    for (uint32_t p = 0; p < n_parts; p++) {
+        size_t psz;
+        void *pm = gguf_map_part(&m->gf, p, &psz);
+        if (!pm || !psz) return false;
+        pbase[p] = (uint64_t)(uintptr_t)pm;
+        pend[p]  = pbase[p] + psz;
+    }
+
     // Tensor extents inside the wrapped prefix, in file order. GGUF writes
     // them ascending, but nothing in the format promises it, and a descending
-    // file would silently produce overlapping groups -- so sort.
+    // file would silently produce overlapping groups -- so sort. The wlen
+    // prefix (a partial layer split) is a part-0 file-offset concept and a
+    // multi-part set never takes one: gpu_init refuses that combination.
     uint64_t n = m->gf.n_tensors;
-    typedef struct { uint64_t beg, end; } ext;
+    typedef struct { uint64_t beg, end; uint32_t part; } ext;
     ext *ex = calloc(n ? n : 1, sizeof(ext));
     if (!ex) return false;
     uint64_t n_ex = 0;
     for (uint64_t i = 0; i < n; i++) {
         gguf_tensor *t = &m->gf.tensors[i];
         if (!t->data) continue;
-        uint64_t beg = (uint64_t)((uint8_t *)t->data - (uint8_t *)m->gf.map);
+        uint64_t beg = (uint64_t)(uintptr_t)t->data;
         uint64_t end = beg + t->nbytes;
-        if (beg >= wlen) continue;          // beyond the wrapped prefix
-        if (end > wlen) end = wlen;
+        if (n_parts == 1) {
+            uint64_t off = beg - pbase[0];
+            if (off >= wlen) continue;      // beyond the wrapped prefix
+            if (off + t->nbytes > wlen) end = pbase[0] + wlen;
+            ex[n_ex].part = 0;
+        } else {
+            uint32_t p = 0;
+            while (p < n_parts && !(beg >= pbase[p] && end <= pend[p])) p++;
+            if (p == n_parts) { free(ex); return false; }  // outside every map
+            ex[n_ex].part = p;
+        }
         ex[n_ex].beg = beg;
         ex[n_ex].end = end;
         n_ex++;
@@ -870,7 +896,9 @@ static bool metal_wrap_weights(gpu_t *g, model_t *m, id<MTLDevice> dev,
             free(ex);
             return false;
         }
+        uint32_t part = ex[gi].part;
         uint64_t base = ex[gi].beg & ~(uint64_t)(page - 1);
+        if (base < pbase[part]) base = pbase[part];   // maps are page-aligned
         uint64_t last = ex[gi].end;
         if (last - base > cap) {
             // One tensor bigger than the ceiling. Nothing here can split it,
@@ -882,11 +910,12 @@ static bool metal_wrap_weights(gpu_t *g, model_t *m, id<MTLDevice> dev,
             return false;
         }
         uint64_t gj = gi + 1;
-        while (gj < n_ex && ex[gj].end - base <= cap) { last = ex[gj].end; gj++; }
+        while (gj < n_ex && ex[gj].part == part &&
+               ex[gj].end - base <= cap) { last = ex[gj].end; gj++; }
 
         uint64_t len = (last - base + page - 1) & ~(uint64_t)(page - 1);
-        if (base + len > m->gf.map_size) len = m->gf.map_size - base;
-        id<MTLBuffer> b = [dev newBufferWithBytesNoCopy:(uint8_t *)m->gf.map + base
+        if (base + len > pend[part]) len = pend[part] - base;
+        id<MTLBuffer> b = [dev newBufferWithBytesNoCopy:(uint8_t *)(uintptr_t)base
                                                  length:(NSUInteger)len
                                                 options:MTLResourceStorageModeShared
                                             deallocator:nil];
@@ -987,12 +1016,16 @@ static bool metal_wrap_check(gpu_t *g, model_t *m, uint64_t wlen) {
     for (uint64_t i = 0; i < m->gf.n_tensors; i++) {
         gguf_tensor *t = &m->gf.tensors[i];
         if (!t->data) continue;
-        uint64_t beg = (uint64_t)((uint8_t *)t->data - (uint8_t *)m->gf.map);
-        if (beg >= wlen) continue;
+        uint64_t addr = (uint64_t)(uintptr_t)t->data;
         uint64_t len = t->nbytes;
-        if (beg + len > wlen) len = wlen - beg;
+        if (gguf_map_count(&m->gf) == 1) {
+            // the wlen prefix (partial layer split) exists only single-map
+            uint64_t off = addr - (uint64_t)(uintptr_t)m->gf.map;
+            if (off >= wlen) continue;
+            if (off + len > wlen) len = wlen - off;
+        }
         uint64_t within;
-        if (!metal_wbuf_for(g, beg, len, &within)) {
+        if (!metal_wbuf_for(g, addr, len, &within)) {
             fprintf(stderr, "gpu: tensor %s straddles a weight-buffer boundary "
                     "— not wrapping\n", t->name);
             return false;
@@ -1069,19 +1102,13 @@ static int metal_fit_layers(model_t *m, uint64_t budget, int cap,
 }
 
 bool gpu_init(model_t *m) {
-    if (m->gf.n_maps > 1) {
-        // Every weight binding below is a byte offset into m->gf.map, and that
-        // is the FIRST part's mapping only (gguf.h says so). A tensor in part
-        // two onwards sits at an offset no wrap here can resolve, and a
-        // zero-copy wrap covers one contiguous range by construction. Until
-        // the bindings are keyed by host address instead of file offset, this
-        // has to fail closed: metal_bind_weights() otherwise reports that it
-        // cannot place the range, binds buffer 0 anyway and computes on
-        // whatever those bytes happen to be.
-        fprintf(stderr, "gpu: split GGUF (%u parts) is not on the metal "
-                "backend yet — using CPU\n", m->gf.n_maps);
-        return false;
-    }
+    // A split GGUF has one mapping per part. The weight wraps are keyed by
+    // HOST ADDRESS (not file offset), so each part's mapping gets its own
+    // tensor-boundary wraps and a multi-part set takes a full offload like a
+    // single file. What the separate mappings cannot express is a partial
+    // LAYER split: the prefix arithmetic in metal_fit_layers is file-offset
+    // arithmetic over one mapping, so that case refuses to CPU below rather
+    // than guessing.
     if (m->qwen35) {
         fprintf(stderr, "gpu: qwen35 hybrid path is not on the metal backend yet — using CPU\n");
         return false;
@@ -1290,9 +1317,13 @@ bool gpu_init(model_t *m) {
         return gpu_init_fail(m, g, lib, "injected state allocation failure");
 
     // weights: wrap the mmap zero-copy (page aligned; length page-rounded —
-    // mmap always maps whole pages, so the rounded tail is valid memory)
+    // mmap always maps whole pages, so the rounded tail is valid memory).
+    // wlen is a prefix limit in part-0 file-offset space; for a multi-part
+    // set it is never a prefix (full offload only) and wtotal carries the
+    // budget question across every part's mapping.
     size_t page = 16384;
     size_t wlen = (m->gf.map_size + page - 1) & ~(page - 1);
+    uint64_t wtotal = gguf_mapped_size(&m->gf);
 
     // Choose K. Full offload stays the default and the fast path; a partial
     // split is only entered when the whole file cannot be wrapped, because a
@@ -1321,7 +1352,15 @@ bool gpu_init(model_t *m) {
         };
         uint64_t budget = metal_full_weight_budget(limits, other);
         int cap = m->gpu_layers_override;
-        bool need_split = wlen > budget || (cap > 0 && cap < m->n_layer);
+        bool need_split = wtotal > budget || (cap > 0 && cap < m->n_layer);
+        if (need_split && m->gf.n_maps > 1) {
+            // Either the whole set exceeds the budget or a layer split was
+            // forced; both need the prefix arithmetic one mapping cannot span.
+            return gpu_init_fail(m, g, lib,
+                "a split GGUF takes a full Metal offload only — a partial "
+                "layer split cannot span its separate part mappings (merge "
+                "to one file with --quantize --quant keep for a split)");
+        }
         if (need_split) {
             bool layout_ok = false;
             uint64_t wrap_end = 0;
@@ -1365,14 +1404,20 @@ bool gpu_init(model_t *m) {
     }
 
     if (!metal_wrap_weights(g, m, dev, wlen, page)) {
+        if (m->gf.n_maps > 1)
+            // One copied buffer cannot stand in for several mappings, and
+            // copying parts separately would just re-implement the wrap that
+            // already failed. Refuse; the run continues on the CPU.
+            return gpu_init_fail(m, g, lib,
+                "could not wrap the split GGUF's part mappings");
         // fallback: copy (costs RAM but still works). One buffer by
         // definition -- a copy this large only happens for a model well under
         // the per-buffer ceiling, since the ceiling is what forced the split.
         g->wbuf[0] = [dev newBufferWithBytes:m->gf.map
                                       length:m->gf.map_size
                                      options:MTLResourceStorageModeShared];
-        g->wbuf_base[0] = 0;
-        g->wbuf_end[0] = m->gf.map_size;
+        g->wbuf_base[0] = (uint64_t)(uintptr_t)m->gf.map;
+        g->wbuf_end[0] = g->wbuf_base[0] + m->gf.map_size;
         g->n_wbuf = g->wbuf[0] ? 1 : 0;
         g->weights_copied = true;
         if (!g->wbuf[0]) {
@@ -1645,7 +1690,7 @@ static void enc_mv_n(gpu_t *g, id<MTLComputeCommandEncoder> e, model_t *m,
         [e setComputePipelineState:g->p_tensor[w->type]];
         mm_args ma = { n_in, n_out, n_col,
                        metal_bind_weights(g, e,
-                           (uint64_t)((uint8_t *)w->data - (uint8_t *)m->gf.map),
+                           (uint64_t)(uintptr_t)w->data,
                            w->nbytes),
                        bias != nil, x_stride, y_stride };
         [e setBuffer:x offset:x_off atIndex:1];
@@ -1671,7 +1716,7 @@ static void enc_mv_n(gpu_t *g, id<MTLComputeCommandEncoder> e, model_t *m,
         [e setComputePipelineState:g->p_mm[w->type]];
         mm_args ma = { n_in, n_out, n_col,
                        metal_bind_weights(g, e,
-                           (uint64_t)((uint8_t *)w->data - (uint8_t *)m->gf.map),
+                           (uint64_t)(uintptr_t)w->data,
                            w->nbytes),
                        bias != nil, x_stride, y_stride };
         [e setBuffer:x offset:x_off atIndex:1];
@@ -1711,7 +1756,7 @@ static void enc_mv_n(gpu_t *g, id<MTLComputeCommandEncoder> e, model_t *m,
     }
     [e setComputePipelineState:mv];
     a.w_off = metal_bind_weights(g, e,
-                  (uint64_t)((uint8_t *)w->data - (uint8_t *)m->gf.map),
+                  (uint64_t)(uintptr_t)w->data,
                   w->nbytes);
     [e setBuffer:x offset:x_off atIndex:1];
     [e setBuffer:y offset:y_off atIndex:2];
@@ -1888,7 +1933,7 @@ static void enc_moe_mv(gpu_t *g, id<MTLComputeCommandEncoder> e, model_t *m,
     [e setComputePipelineState:g->p_moe_mv[base->type]];
     moe_args a = { n_in, n_out,
                    metal_bind_weights(g, e,
-                       (uint64_t)((uint8_t *)base->data - (uint8_t *)m->gf.map),
+                       (uint64_t)(uintptr_t)base->data,
                        base->nbytes),
                    estride, xs, ys, bias != nil, bias_stride,
                    slots_per_token };

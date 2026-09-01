@@ -735,10 +735,14 @@ GEMMs. Full offload is the preferred and default shape. A file above
 tensor layout allows a contiguous prefix wrap *and* the whole model still fits
 in RAM; when it does not, the backend falls back to CPU rather than split,
 because pinning part of a model that does not fit measured 8–35x slower than
-CPU-only on an 8 GB M1. `--gpu-layers N` forces a split anyway. Multi-part (split)
-GGUF sets also run on the CPU: the zero-copy wrap addresses one mapping and a
-split set has one per part, so the backend declines the model at load rather
-than binding weights it cannot place. The embedded shader
+CPU-only on an 8 GB M1. `--gpu-layers N` forces a split anyway. Multi-part
+(split) GGUF sets take a **full Metal offload**: the weight wraps are keyed by
+host address, so each part's mapping gets its own tensor-boundary wraps, and a
+2-part 86 GB set measured byte-identical to the single file it was merged
+from. What a split set cannot take is a partial **layer** split (`--gpu-layers`
+below the layer count), whose prefix arithmetic cannot span separate
+mappings — that combination refuses loudly and runs on the CPU, as does a set
+whose whole size exceeds the Metal working-set budget. The embedded shader
 gate compiles the library and verifies every kernel the backend looks up,
 reading that roster out of `src/metal.m` rather than restating it.
 
@@ -1684,13 +1688,14 @@ architecture a Metal path it lacks, because those gaps are missing kernels for
 operations (SSM scan, Gated DeltaNet, weight-normed routers, gate-less shared
 experts), not missing quant support.
 
-A **sharded** GGUF is refused for Metal offload at load and runs on the CPU; a
-single file still offloads (`make test-metal-split`). Rewrite shards to one
-file with `--quantize OUT --quant keep`, which preserves the existing tensor
-types, before drawing any conclusion about Metal from a split artifact. The
-loader accepts both duplicated-metadata shards and the standard compact form
-where only part one carries model metadata; explicit contradictions between
-parts are still rejected.
+A **sharded** GGUF takes a full Metal offload directly: each part's mapping
+gets its own tensor-boundary wraps, gated byte-identical to both the CPU path
+and the single merged file (`make test-metal-split`; measured on a real
+2-part 86 GB set). A partial `--gpu-layers` split of a sharded set refuses to
+CPU — merge to one file with `--quantize OUT --quant keep` first if a layer
+split is what you need. The loader accepts both duplicated-metadata shards
+and the standard compact form where only part one carries model metadata;
+explicit contradictions between parts are still rejected.
 
 Sparse-MoE expert matvec kernels cover `q2_K`, `q3_K`, `q4_0`, `q4_K`,
 `q5_K`, `q6_K`, `q8_0`, `mxfp4`, `f16`, and `f32`. This list is narrower than
