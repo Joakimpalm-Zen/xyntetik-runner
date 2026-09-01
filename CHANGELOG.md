@@ -6,7 +6,125 @@ change between releases (the `-alpha` suffix was retired at v0.2.0 — the 0.x
 version already says what it needs to). Entries below the rename keep the
 names that were true when they were written.
 
-## Unreleased
+## v0.4.5 - 2026-09-01
+
+- **The fusion byte-identity contract was resting on a per-device codegen
+  coincidence, and the release gate on an M1 caught it.** Every rope-bearing
+  kernel (k_rope, the fused k_rope_store, the attention-front megakernel)
+  wrote the same rotation expressions, but under fast math cos/sin inline as
+  polynomial chains whose fma contraction the compiler chooses per call site:
+  the M5 Max this program was built on contracted them alike, the M1 running
+  the release gates did not, and fused decode diverged from unfused at ULP
+  scale - which made `test-batch-identity`, `test-metal-fuse` and the
+  `--score` byte-compare all honestly red on that machine. The rotation is now
+  one shared helper: `precise::cos`/`precise::sin` (one defined routine
+  instead of a per-kernel polynomial) with contraction pinned off across the
+  two multiplies and the sub/add. Byte identity across kernels now holds by
+  construction rather than by compiler luck, on every device. Metal rope
+  numerics shift at ULP scale relative to v0.4.4; every identity and
+  tolerance gate in `make test` passes on the changed arithmetic. The lesson
+  is the wide-front lesson again, one level down: "same expression, same
+  contraction" is not a fact the language guarantees, and only running the
+  gates on a SECOND device family made that visible.
+- **Decode on Metal was paying for 686 kernel dispatches per token, and now
+  pays for ~330.** The whole decode path was profiled to the microsecond class
+  on a 128 GB M5 Max (docs/metal-decode-dispatch-budget-2026-09-01.md) and the
+  dispatch chain cut in three phases: three budget-line fusions, then an
+  attention-front megakernel (norm + Q/K/V + qk-norm + rope + KV-store as one
+  dispatch, whole heads per threadgroup), then a widened front with the
+  post-FFN residual add folded into the MoE expert sum. Net: **-52% dispatches
+  per token, +5-6% decode on gpt-oss-120b and Qwen3-30B-A3B, byte-identical**,
+  gated across a six-architecture roster (`test-metal-fuse`). The megakernel
+  admits MoE models only: a fast dense model is matvec-bound and measured
+  slower under it. Honest cuts along the way: the wide no-staging front was
+  removed because fast-math fma contraction broke logprob identity on a real
+  70B, and the per-type logprob gates written for that hunt caught a latent
+  q4_0 front break before it shipped. `RUNNER_METAL_FUSE=0` restores the
+  unfused path everywhere; `RUNNER_METAL_FRONT=0` disables just the megakernel.
+- **`--parallel` slots on Metal now decode as one microbatch.** Ready slots
+  share a single weight sweep per step instead of paying one full sweep each,
+  measured 1.45-1.47x aggregate decode at 4-8 slots on an M5 Max, and
+  **bit-identical to sequential decode** by twin-kernel construction, gated in
+  `make test` (`test-batch-identity`) and mutation-proven. Dense models only;
+  MoE and recurrent families decode sequentially. `RUNNER_METAL_BATCH=0`
+  restores sequential.
+- **Grouped simdgroup-MMA MoE prefill is the new Metal default** (ratified
+  2026-09-01): the batch's slots are sorted by expert on-GPU and each expert's
+  token group runs through the dense GEMM tile structure with gathered columns
+  and float-staged operands. Measured **+31% prefill on Qwen3-30B-A3B and +21%
+  on gpt-oss-120b**, decode untouched. Because discrete top-k routing amplifies
+  reassociation-scale perturbations into near-tie expert flips (4.6% of routing
+  records, median flip margin 0.009), this path answers to the published
+  dual-column fidelity bar, not byte identity, enforced mv-vs-mm by
+  `test-moe-mm-ab` in `make test`; every measured model passes with 100%
+  margin-qualified top-1. `RUNNER_METAL_MOE_MM=0` restores the matvec path and
+  is pinned by every byte-identity gate. The expert-major alternative was
+  built, measured 3-4% slower, and ships off by default as a recorded negative
+  (`RUNNER_METAL_MOE_EM=1`, docs/negative-result-metal-moe-expert-major.md).
+- **The KV ring now runs on Metal.** v0.4.4 shipped `RUNNER_KV_RING` with a
+  Metal refusal; the store and attention kernels now resolve the same modulo
+  through `kv_row_off`, gated bit-identical teacher-forced logprobs against
+  the flat allocation across many ring wraps (`tests/test_kv_ring.py`,
+  mutation-proven). The ring's costs are unchanged: prefix cache and partial
+  rewind are refused while it is active.
+- **Speculative decoding now works on a fully offloaded Metal target** -
+  unified memory keeps the hidden work host-readable, so the old
+  discrete-VRAM refusal no longer applies there; verify is target-exact and
+  gated byte-identical against the plain path. Measure before relying on it:
+  on the M5 Max the batched verify costs roughly a full decode step per
+  column (the dequant ALU that hides under the bandwidth floor at batch 1
+  becomes the critical path), and the measured 70B+1B pair decoded slower
+  speculative than plain despite 62-70% acceptance.
+- **Sharded GGUF sets take a full Metal offload.** Weight wraps are keyed by
+  host address, so each part's mapping gets its own tensor-boundary wraps; a
+  real 2-part 86 GB set measured byte-identical to both the CPU path and the
+  single file it was merged from (`make test-metal-split`). A partial
+  `--gpu-layers` split of a sharded set still refuses to CPU. The loader also
+  accepts the standard compact-metadata shard form where only part one
+  carries model metadata, and gates the multi-GB buffer wrap that large parts
+  need. Q2_K and Q3_K sparse-expert kernels round out the low-bit roster;
+  together these took Qwen3-235B-A22B (85.69 GB merged) to a full 94-layer
+  Metal offload, validated with a stated caveat (the broad CPU/Metal logit
+  gate does not pass; a top-8 route first flips at token 4/layer 12).
+- **Four big-model Metal validations on a 128 GB M5 Max, evidence committed:**
+  gpt-oss-120b fully resident (36/36 layers, 0.000215 mean logit-range
+  deviation, 64.59 tok/s sustained decode, zero swap, anchored against
+  same-host llama.cpp with the remaining prefill gap stated: MoE prefill
+  grouping, not dense GEMM); Llama-3.3-70B Q4_0 (80/80 layers, 42.25/10.57
+  tok/s); Qwen3-30B-A3B Q8_0 (183.39/65.45 tok/s); gemma-4-31B Q4_0. Plus
+  measured self-sensitivity floors for the 235B and gpt-oss
+  (docs/sensitivity-floors-m5max-2026-09-01.md), idle coexistence at 120B
+  scale (llama-server wires +60.8 GB idle against Runner's +35 MB), and the
+  local training floor at 8B and 70B.
+- **`RUNNER_TIEDV` stops storing K rows the model can derive.** gemma-4's
+  full-attention globals ship no `attn_v.weight` (V is the raw K projection),
+  so K can be derived from the stored V at read time: on the 31B at
+  `-c 32768` the K cache drops 14.76 GB to 13.42 GB. A compute-for-memory
+  trade and **not byte-identical** (teacher-forced mean |dlogprob| 1.3e-3, no
+  top-1 change over 297 positions); CPU-only, f16-KV-only, refuses GPU, q8
+  cache and `--lora` loudly. Gate: `tests/test_tiedv.py`.
+- **`RUNNER_PREFETCH` ships as an opt-in carrying its own negative result.**
+  Hinting the whole weight mapping to the OS made the cold 63 GB 120B load
+  60% *slower* on macOS (demand paging outruns WILLNEED readahead), so it is
+  off by default and says why; Linux and Windows can measure before flipping
+  it on. Related determinism fix: the auto-sized `-b` default now reads
+  **total** RAM (512 at 12 GB+, 256 at 6 GB+) instead of free RAM, because
+  batch size changes how reassociating prefill paths tile their sums, and a
+  default read off ambient load would make the same command produce different
+  tokens on a busy day.
+- **`RUNNER_METAL_TENSOR=1` opts prefill into the Metal 4 MPP tensor GEMM on
+  M5-class hardware** (Q4_K/Q8_0/Q4_0, per-type self-test admission, failing
+  types fall back alone). Deliberately not the default: every admitted type
+  was numerically sound but measured only parity with the existing simdgroup
+  GEMM, short of the 1.2x promotion bar. M1-M4 never compile it.
+- **`RUNNER_MOE_TRACE=routes.jsonl` on Metal now snapshots every MoE layer's
+  complete pre-softmax router-logit vector** on-device before the scratch is
+  reused - an experiment instrument for offline routing analysis, allocating
+  nothing while unset.
+- **AGENTS.md gains the publication rule**: never commit conversation content
+  or session identifiers to anything that reaches a repository, and check
+  repository visibility before every push; commits are signed by one trailer
+  naming the agent and model that produced them.
 
 - **gemma-4-26B-A4B produced only token id 0 on Metal, and the fix was a clamp
   that already existed six lines away.** `k_moe_actmul`'s GELU branch computed
