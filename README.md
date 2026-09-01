@@ -104,8 +104,8 @@ On an 8 GB M1 (quiet machine), while loaded and idle:
 llama-server wires the whole model into unified memory and holds it until
 the process dies, and its idle loop ticks at ~160 Hz. Runner keeps weights
 as evictable zero-copy mappings the OS can reclaim whenever another app
-needs the RAM, wakes twice per second, and hands everything back on
-`/unload` (or automatically with `--ttl`). The flip side is real and we
+needs the RAM, wakes about once every two seconds, and hands everything
+back on `/unload` (or automatically with `--ttl`). The flip side is real and we
 report it: when llama-server is allowed to hold everything, its time to
 first token is faster (0.15 s vs 3.2 s on the pressured M1), because
 residency is exactly what it buys. On a discrete-GPU box (RTX 3070) the
@@ -363,8 +363,8 @@ shell, then run `make`.
 ### Container image
 
 Each release publishes a CPU image - the same binary on a distroless glibc base,
-nothing else - to `ghcr.io/joakimpalm-zen/xyntetik-runner:<version>` (and
-`:latest`). Build it yourself with `docker build -t runner .`.
+nothing else - to `ghcr.io/joakimpalm-zen/xyntetik-runner:v<version>` (the
+tag carries the `v`, e.g. `:v0.4.5`) and `:latest`. Build it yourself with `docker build -t runner .`.
 
 The server binds **loopback only** by design (there is no `--host`/`0.0.0.0`
 flag), so it never exposes itself to a network, even in a container - which
@@ -436,7 +436,8 @@ size. A partially downloaded GGUF can otherwise look like a model failure.
 
 ### Requantization and expert pruning
 
-Repack weight matrices to `q8_0`, `q4_0`, or `f16`:
+Repack weight matrices to `q8_0`, `q4_0`, `q3_k`, `q4_k`, `q6_k`, `f16`, or
+`bf16`:
 
 ```sh
 ./runner -m model-f16.gguf --quantize model-q4.gguf --quant q4_0
@@ -668,6 +669,8 @@ fit: Trinity-Nano-Preview-Q4_K_M.gguf
   kv cache      0.22 GiB at ctx 4096, f16   |  0.12 GiB with --kv q8
   available RAM 3.25 GiB right now
   verdict       FITS — 2.37 GiB to spare at ctx 4096
+  note          the verdict uses the hot set; a sparse MoE runs usefully while the file exceeds RAM
+  note          KV is an upper bound: models with per-layer KV geometry (shared KV, MLA) use less
 ```
 
 The verdict is `FITS`, `FITS WITH --kv q8`, or `PAGES`, always with the
@@ -723,9 +726,12 @@ layout, tensor type, runtime, or capacity is unsupported.
 
 | Backend | Tensor formats |
 |---|---|
-| CPU | F32, F16, BF16, Q8_0, Q4_0, Q4_1, Q5_0, Q5_1, Q2_K, Q3_K, Q4_K, Q5_K, Q6_K, IQ4_NL, IQ4_XS, MXFP4 |
-| Metal | The full CPU list |
-| CUDA | The full CPU list |
+| CPU | F32, F16, BF16, Q8_0, Q4_0, Q4_1, Q5_0, Q5_1, Q2_K, Q3_K, Q4_K, Q5_K, Q6_K, IQ4_NL, IQ4_XS, MXFP4, plus the CPU-only codebook i-quants IQ1_S, IQ1_M, IQ2_XXS, IQ2_XS, IQ2_S, IQ3_XXS, IQ3_S |
+| Metal | The CPU list without the IQ1-IQ3 families |
+| CUDA | The CPU list without the IQ1-IQ3 families |
+
+A model that carries even one IQ1-IQ3 tensor runs on the CPU as a whole:
+CUDA and Metal refuse it loudly, naming the tensor and type.
 
 `runner --caps` is the live source of truth for a particular executable and
 machine. Architecture and MoE layout checks still happen at model load; a
@@ -1760,8 +1766,8 @@ merely dense matvec/matmul support.
 | `gpt-oss` | Attention sinks, alpha-sigmoid GLU, expert biases, MXFP4 experts. Tokenizer exact (0/721 differential) and chat renders the real Harmony format (analysis channel as `reasoning_content`) as of 2026-08-14; cross-engine greedy identity remains inside the model's own measured KV-precision sensitivity envelope rather than certified. |
 | `apertus` | xIELU FFN; CPU and CUDA. |
 | `afmoe` | Arcee Trinity sparse MoE; CPU only. CUDA and Metal refuse it loudly as gated attention plus sparse MoE, rather than misreporting a quantization problem. |
-| `muse-glimmer` | Meta Muse Glimmer 30B, text path: gated attention, QK and sandwich norms, SWA with NoPE globals, softcapped logits. CPU, CUDA and Metal. Certified; evidence in `docs/muse-glimmer-cert-2026-08-11.md` and `docs/muse-atem-cert-2026-08-11.md`. No vision encoder. Native atem definitions/results, recipient-constrained generation, truncation recovery, multi-call mapping, and buffered/SSE parsing are implemented and selected automatically for tool requests. |
-| `granite` | IBM Granite dense (3.x/4.1): the four muP scalars (embedding, fixed attention, residual, divided logit). CPU, CUDA and Metal. Certified; evidence in `docs/granite-cert-2026-08-11.md`. granitemoe is a separate arch id and not admitted; granitehybrid is admitted separately, below. |
+| `muse-glimmer` | Meta Muse Glimmer 30B, text path: gated attention, QK and sandwich norms, SWA with NoPE globals, softcapped logits. CPU, CUDA and Metal. Measured 2026-08-11; evidence in `docs/muse-glimmer-cert-2026-08-11.md` and `docs/muse-atem-cert-2026-08-11.md`. No vision encoder. Native atem definitions/results, recipient-constrained generation, truncation recovery, multi-call mapping, and buffered/SSE parsing are implemented and selected automatically for tool requests. |
+| `granite` | IBM Granite dense (3.x/4.1): the four muP scalars (embedding, fixed attention, residual, divided logit). CPU, CUDA and Metal. Measured 2026-08-11; evidence in `docs/granite-cert-2026-08-11.md`. granitemoe is a separate arch id and not admitted; granitehybrid is admitted separately, below. |
 | `granitehybrid` | Granite-4 h-series: a Mamba-2 selective-SSD recurrence (causal conv1d + the input-dependent state-space scan, with the gated RMS norm) interleaved with GQA attention, the layer type read per-layer from the `attention.head_count_kv` array (0 ⇒ recurrent); the attention layers are NoPE (`rope.scaling.finetuned=false`); the four granite muP scalars. Both published FFN layouts are supported: dense h-micro has a gated MLP on every layer and runs on CPU and CUDA; sparse h-small has a routed MoE FFN plus an always-on shared expert and currently runs on CPU because those two branches have no device path. The dense h-micro CUDA path is CPU-token-identical over 600/600 greedy tokens with per-run mean |Δlp| ≤ 0.000024 (max per-position 0.000422); evidence and raw probes are in [`docs/compat-reports/cpu-cuda-hybrid-2026-08-21/`](docs/compat-reports/cpu-cuda-hybrid-2026-08-21/). The sparse h-small CPU path was verified against llama.cpp b10353 at both Q4_K_M and Q8_0: greedy output is token-identical on deterministic prompts (a 256-token completion matches byte-for-byte) and holds at the quantisation noise floor elsewhere, where the divergences are synonymous-phrasing near-ties, not wrong math. Re-verified at higher precision (Q8_0, 2026-08-19): the sole non-empty divergence is a single-token near-tie whose top-2 candidates the runner and llama.cpp rank identically to within ~0.03-0.09 nats (an argmax coin-flip), with the runner's full top-5 logit distribution matching the oracle's - so the Mamba-2 math is correct and the Q4_K misses were pure noise floor, the same envelope noted for gpt-oss. Chunked-scan prefill: the token axis is tiled into chunks (~256), the per-head SSD recurrence runs in parallel across heads within a chunk and the SSD state + conv ring are carried across chunk boundaries - bit-identical to the serial per-token sweep (a pinned `make test` gate holds chunked == serial across chunk sizes) and ~1.8x faster prompt throughput on a long prompt (measured on granite-4.0-h-small Q8_0, 264 tokens). `XR_SSM_SERIAL=1` forces the serial reference path. The recurrent-state cache seam is wired: the fixed-size fold is snapshotted/restored on a rewind, and stored beside the KV in the prefix cache so an exact CPU prompt-prefix hit restores it in a memcpy rather than recomputing the recurrent layers. CPU speculative decode and grammar fast-forward use a per-round fold checkpoint; a CUDA split is admitted only while every recurrent layer remains host-resident. Metal has no SSM path. |
 | `nemotron_h` | NVIDIA Nemotron-H (Nemotron-Nano-9B-v2): a Mamba-2 selective-SSD recurrence interleaved with GQA attention and dense MLP blocks, where each block is EXACTLY ONE of three kinds (SSM \| attention \| MLP), typed per-layer off `attention.head_count_kv` (0) and `feed_forward_length` (0). NON-MoE and no muP scalars - unlike granitehybrid; the MLP is a gate-less squared-ReLU FFN (`down(relu(up(x))^2)`), attention is NoPE (`rope.scaling.finetuned=false`), and the SSM uses a GROUPED scan (`ssm.group_count=8`): B/C are shared across groups of heads and broadcast (group g covers heads [g·H/G, (g+1)·H/G)) - the same grouped scan `nemotron_h_moe` (Nemotron-3.5 Lightning) also uses - here first proven WITHOUT MoE, and admitted WITH MoE in the row below. CPU and **CUDA**: the Mamba-2 SSD scan, causal conv1d, gated RMS norm and squared-ReLU FFN all have device kernels, and full 56-layer offload is **greedy byte-identical to the CPU path** on the real Nano-9B-v2 Q8_0 (3 prompts x 48 decode steps plus an 88-token multi-tile prefill; re-verified independently post-merge at 32 tokens). Device prefill currently runs the per-token loop (correct, unoptimized); no Metal SSM path. Verified against llama.cpp b10353 on the real Nemotron-Nano-9B-v2 at Q8_0 (same GGUF both engines, CPU): 5/6 greedy completions byte-identical (including both 256-token generations); the sole miss is a single-token near-tie where both engines share the same top-3 candidates and llama.cpp's own top-1/top-2 gap is ~0.075 nats (an FP-summation-order coin-flip), i.e. the quantisation noise floor, not wrong math. Chunked-scan prefill (the grouped scan tiled into chunks, parallel across heads within a chunk, SSD state + conv ring carried across chunk boundaries), bit-identical to the serial per-token sweep and pinned chunked == serial in `make test`; the recurrent-state cache seam is wired (fold snapshotted/restored on rewind, and stored beside the KV so an exact CPU prompt-prefix hit restores it in a memcpy). CPU speculative decode and grammar fast-forward use the per-round fold checkpoint; full GPU offload and partial splits with a CUDA-resident recurrent layer decline them. |
 | `nemotron_h_moe` | NVIDIA Nemotron-3.5-Lightning-30B-A3B: `nemotron_h` with the dense squared-ReLU MLP replaced by a gate-less squared-ReLU **MoE** (128 experts / 6 used, no gate branch) plus an always-on **gate-less shared expert**; the router reuses the general softmax/group/scale/norm path. Same three-way block typing, grouped scan (`n_group=8`), and NoPE attention as `nemotron_h`. Runs on CPU: the SSM scan has a device kernel, but this family's router (weight-normed, scaled) and gate-less shared expert have no device path, so the backend falls back to CPU there. Greedy vs llama.cpp `ea12b27` on the real Lightning-30B Q4_0 (CPU, 8 tok × 5 prompts): **4/5 byte-identical**, the one divergence a near-tie on an open-ended counting continuation (noise floor, not wrong math - the coherent `Paris. … Berlin.` completion matches exactly). Evidence: `docs/compat-reports/ssm-greedy-reference-2026-08-20/`. |
@@ -1811,7 +1817,7 @@ files by SHA-256 and declares checks independently:
 | `long_context` | A needle is retrieved from an extended context. |
 
 Being present in the manifest does not mean every check passed. Read each
-entry's declared checks and notes. Current high-signal caveats include:
+entry's declared checks and notes.
 
 Every release ships a schema-versioned report under `docs/compat-reports/`,
 and `scripts/check-release.py` enforces it: a tag whose version has no
@@ -1837,6 +1843,8 @@ revision, binds itself to the corpus SHA-256, and contains only token IDs - neve
 credentials or model weights. `scripts/difftok.py --ref-ids CAPTURE` is the
 standalone replay path; `--capture CAPTURE --ref-revision COMMIT` creates one
 during an authenticated evidence run.
+
+Current high-signal caveats include:
 
 - Qwen3-4B's 2026-08-03 scalar CPU/CUDA recheck passed only 4 of 5 prompts;
   **re-measured 2026-08-20 with the current gate: 9/9 prompts byte-exact at 128

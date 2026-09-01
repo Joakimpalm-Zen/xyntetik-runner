@@ -44,6 +44,30 @@ runner; several are load-bearing gates for changing it.
   one model: greedy CPU output must be byte-identical to greedy CUDA output
   over several prompts, with the eager router pinned (MoE byte identity is
   defined over that path).
+- **`cuda-smoke.py` / `cuda-smoke-remote.sh`** — the CUDA smoke gate CI cannot run
+  (it has no GPU): `--caps` coherence on real hardware, the invariant that
+  caught the v0.4.2 integrated-memory misreport, and a served generation. The
+  remote driver runs it on the lab's Windows RTX 3070 box and brings the JSON
+  report back for `docs/compat-reports/`; run it before tagging a release.
+- **`certify-envelope.py`** — assemble a measured-envelope manifest
+  (`<model>.envelope.json`) from evidence that already exists (`--caps`, a
+  compat report, gate outputs). It measures nothing itself; it is an index
+  over evidence, and the runner only ever reads the result.
+- **`idle_coexistence.py`** — what a resident server costs the machine while it
+  serves nothing: a four-state lifecycle (loaded idle, post-request idle, after
+  unload) reporting CPU seconds, RSS, threads and, on macOS, system wired
+  memory. Run one engine at a time on a quiet machine; the README's
+  coexistence tables come from it.
+- **`help-parity.py`** — mechanical parity between `runner --help` and the
+  README's option reference (every flag the binary accepts is documented, and
+  nothing documented has left the binary). Part of `make test`.
+- **`moe-mm-flips.py`** — routing-flip account for the grouped-MMA MoE prefill
+  path: how often discrete top-k routing flips at a near-tie under the
+  kernel's reassociation, and at what margin. The reason that path is judged
+  by the fidelity bar rather than byte identity.
+- **`nvfp4-probe.py`** — validate a GGUF's NVFP4 layout against the file's own
+  structure, written because the format shipped from a specification with no
+  model to test against and its unit test could not tell.
 - **`kv-quality.py`** — KV-cache quality gate: compares q8 KV against f16 on
   teacher-forced logits (the deeper version of `tests/test_kv_tol.c`'s gate).
 - **`verify-gguf.py`** — structural sanity check of a GGUF file (metadata,
@@ -119,6 +143,14 @@ Nothing here gates a merge; these are how a claim gets a number behind it.
   calling a cross-engine gap a bug.
 - **`gen-quality-metrics.py`** — collapse detection over generated text:
   n-gram repetition runs, blank fraction, length distribution. Stdlib only.
+- **`make-tooluse-data.py` / `eval-tooluse.py`** — the deterministic
+  tool-calling adaptation dataset (four tools, combinatorial requests, refusal
+  cases) and its greedy held-out eval (JSON parses / right tool / schema-shaped
+  args / exact call), the pair behind the published precision study.
+- **`train-grpo-lite.py`** — GRPO-lite reinforcement fine-tuning with zero
+  train/infer mismatch: sample K completions per prompt from the runner
+  itself, score them, turn group-relative advantages into weighted `--train`
+  examples. Seeded and replayable.
 - **`cl-calibration.py`** — calibration report for `choice_logprobs` decision
   records: when a constrained decision point says 0.8, is it right 80% of the
   time?
@@ -177,3 +209,19 @@ Nothing here gates a merge; these are how a claim gets a number behind it.
   `src/kernels_metal.h` (run manually on a Mac when `kernels.metal` changes;
   there is deliberately no Makefile target on non-Mac hosts).
 - **`conformance.sh`** — drives the agent-protocol conformance suite in CI.
+
+## Fixture generators and one-off reproducers
+
+- **`make-test-hybrid.py`**, **`make-test-nemotron.py`**, **`make-test-lora.py`**
+  — tiny GGUF fixtures for the Mamba-2 hybrid (`granitehybrid`), `nemotron_h`
+  and LoRA-adapter paths, beside `make-test-model.py`, `make-test-moe.py` and
+  `make-test-ornith.py`; `make test` builds them.
+- **`embed-metal-tensor.py`** — embeds the separately admitted Metal 4 tensor
+  source, the sibling of `embed-metal.py`; `check-generated.py` guards both.
+- **`repro-startup-signal.py`** — reproducer for the once-reported
+  SIGTERM-during-startup race that `test_signal_during_startup` chases.
+- **`bench.sh`** — three greedy decode runs, median tok/s plus output md5s that
+  must match the baseline. **`conformance.sh`** — the agent-protocol
+  conformance harness in one command. **`claude-code-e2e.sh`** — Claude Code
+  against a served runner end to end, the executable form of the README's
+  compatibility claim.
