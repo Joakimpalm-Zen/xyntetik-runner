@@ -550,6 +550,8 @@ static void usage_to(FILE *f, const char *prog) {
         "                 the five options above default to the model family's\n"
         "                 published settings; see --caps for the preset table\n"
         "  --rope-scale F force linear rope position scaling by F\n"
+        "  --yarn-factor F override a model's native YaRN factor; preserves\n"
+        "                 its original context and correction parameters\n"
         "  --rope-base F  override rope frequency base\n"
         "  --system TEXT  system prompt for interactive chat (-i) only\n"
         "  --chat-template chatml|chatml-think|llama2|llama3|mistral|mistral-v1|\n"
@@ -874,6 +876,7 @@ int main(int argc, char **argv) {
         else if (!strcmp(a, "--min-p")) { ov.min_p = (float)float_arg(a, NEXT, 0, 1); ov.has_min_p = true; }
         else if (!strcmp(a, "--repeat-penalty")) { ov.repeat_penalty = (float)float_arg(a, NEXT, FLT_MIN, FLT_MAX); ov.has_repeat_penalty = true; }
         else if (!strcmp(a, "--rope-scale")) mp.rope_scale = (float)float_arg(a, NEXT, 0, FLT_MAX);
+        else if (!strcmp(a, "--yarn-factor")) mp.yarn_factor = (float)float_arg(a, NEXT, 1, FLT_MAX);
         else if (!strcmp(a, "--rope-base")) mp.rope_base = (float)float_arg(a, NEXT, 0, FLT_MAX);
         else if (!strcmp(a, "--system")) system_prompt = NEXT;
         else if (!strcmp(a, "--chat-template")) tmpl_arg = NEXT;
@@ -1381,6 +1384,16 @@ int main(int argc, char **argv) {
                      eq_one[1] && !strchr(model_path, ',');
     const char *load_path = one_named ? eq_one + 1 : model_path;
     bool registry = serve && eq_one != NULL && !one_named;
+
+    if (mp.yarn_factor > 0 && mp.yarn_factor <= 1.0f) {
+        fprintf(stderr, "error: --yarn-factor must be greater than 1\n");
+        return 1;
+    }
+    if (mp.yarn_factor > 0 && mp.rope_scale > 0) {
+        fprintf(stderr, "error: --yarn-factor and --rope-scale cannot be "
+                        "used together\n");
+        return 1;
+    }
 
     // --chat-template resolves HERE, not down in the interactive-chat block.
     // It used to resolve only there, and server mode returns above it, so a

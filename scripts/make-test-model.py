@@ -48,6 +48,8 @@ MUSE_ALL_SWA = False    # pattern array all-sliding (every layer ropes)
 GRANITE = False    # granite: four muP scalars, tied embeddings
 GRANITE_RESID = 0.5  # residual_scale for the fixture (CLI-overridable)
 QUANT = None       # --quant q8_0/bf16: store the 2-D matmul weights converted
+YARN_FACTOR = None # optional native YaRN metadata for CLI/rope tests
+YARN_ORIG_CTX = 0
 QK_NORM = False    # --qk-norm: per-head attn_q_norm/attn_k_norm (qwen3-style)
 WIDE = False       # 256-wide rows, large enough for an i-quant test block
 GPU_UNSUPPORTED = None  # one named tensor stored as CPU-only IQ2_XXS
@@ -145,6 +147,12 @@ while i < len(args):
         if QUANT not in ("q8_0", "bf16"):
             sys.exit(f"--quant: unsupported type {QUANT!r} "
                      "(have: q8_0, bf16)")
+    elif a == "--yarn":
+        i += 1
+        YARN_FACTOR, YARN_ORIG_CTX = map(float, args[i].split(","))
+        if YARN_FACTOR <= 1 or YARN_ORIG_CTX < 1 or not YARN_ORIG_CTX.is_integer():
+            sys.exit("--yarn expects FACTOR>1,ORIGINAL_CONTEXT")
+        YARN_ORIG_CTX = int(YARN_ORIG_CTX)
     elif a == "--wide":
         WIDE = True
     elif a == "--gpu-unsupported":
@@ -401,6 +409,12 @@ meta_kvs = [
     kv_u32("tokenizer.ggml.eos_token_id", 2),
     kv_bool("tokenizer.ggml.add_bos_token", True),
 ]
+if YARN_FACTOR is not None:
+    meta_kvs += [
+        kv_str(f"{ARCH}.rope.scaling.type", "yarn"),
+        kv_f32(f"{ARCH}.rope.scaling.factor", YARN_FACTOR),
+        kv_u32(f"{ARCH}.rope.scaling.original_context_length", YARN_ORIG_CTX),
+    ]
 if ESERIES_SHARED_KV or ESERIES_PLE:
     # every third layer is a full-attention layer, the rest slide
     pattern = [(i % 3) != 2 for i in range(N_LAYER)]

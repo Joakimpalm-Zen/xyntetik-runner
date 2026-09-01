@@ -607,6 +607,7 @@ typedef struct {
     int   n_batch;     // prompt batch size, 0 = default 64
     float rope_base;   // >0 overrides model rope theta
     float rope_scale;  // >0 forces linear rope scaling by this factor
+    float yarn_factor; // >1 compounds a model's native YaRN scaling
     bool  verbose;
     // resource reservation: percentage of *total* VRAM / RAM this instance
     // may use (0 = unmanaged). With -c 0, the context window is sized to

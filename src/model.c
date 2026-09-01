@@ -276,7 +276,7 @@ static bool swa_pattern_array(gguf_file *g, const char *key, bool *out, int n) {
 }
 
 static bool rope_setup(model_t *m, gguf_file *g, const char *arch,
-                       float base_ovr, float scale_ovr) {
+                       float base_ovr, float scale_ovr, float yarn_ovr) {
     char key[128];
     #define RK(fmt) (snprintf(key, sizeof(key), "%s." fmt, arch), key)
     if (base_ovr > 0) m->rope_base = base_ovr;
@@ -321,7 +321,15 @@ static bool rope_setup(model_t *m, gguf_file *g, const char *arch,
     if (orig <= 0) orig = m->n_ctx_train;
 
     enum { RS_NONE, RS_LINEAR, RS_YARN } mode = RS_NONE;
-    if (scale_ovr > 0) {
+    if (yarn_ovr > 0 && strcmp(sct, "yarn") != 0) {
+        fprintf(stderr, "error: --yarn-factor requires model YaRN metadata "
+                        "(%s.rope.scaling.type=yarn)\n", arch);
+        return false;
+    }
+    if (yarn_ovr > 0) {
+        mode = RS_YARN; factor = yarn_ovr;
+        fprintf(stderr, "rope: forced YaRN scaling x%.2f\n", factor);
+    } else if (scale_ovr > 0) {
         mode = RS_LINEAR; factor = scale_ovr;
         fprintf(stderr, "rope: forced linear scaling x%.2f\n", factor);
     } else if (strcmp(sct, "linear") == 0 && factor > 1.0f) {
@@ -3475,7 +3483,8 @@ static bool model_alloc_runtime(model_t *m, const model_params *p) {
         fprintf(stderr, "error: cannot create thread pool\n");
         return false;
     }
-    if (!rope_setup(m, g, arch, p->rope_base, p->rope_scale)) return false;
+    if (!rope_setup(m, g, arch, p->rope_base, p->rope_scale,
+                    p->yarn_factor)) return false;
 
     if (p->gpu_mode == GPU_AUTO) {
         // Register the intended VRAM footprint before allocating any of it, so

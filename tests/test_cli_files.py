@@ -34,6 +34,14 @@ def model(tmp_path_factory):
     return m
 
 
+@pytest.fixture(scope="module")
+def yarn_model(tmp_path_factory):
+    m = tmp_path_factory.mktemp("yarn") / "test-yarn.gguf"
+    subprocess.run([sys.executable, ROOT / "scripts/make-test-model.py",
+                    "--yarn", "32,8", str(m)], check=True, cwd=ROOT)
+    return m
+
+
 def _run(runner_bin, model, *args):
     return subprocess.run([runner_bin, "-m", model, "--gpu", "off", *args],
                           cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -212,6 +220,33 @@ def test_quantize_still_accepts_all_three(runner_bin, model, tmp_path):
     proc = _run(runner_bin, model, "--quantize", str(out), "--quant", "q8_0")
     assert proc.returncode == 0, proc.stderr[-400:]
     assert out.exists()
+
+
+def test_yarn_factor_forces_yarn_without_changing_the_source(runner_bin, yarn_model):
+    """The public override compounds a model's YaRN regime; it is not an
+    alias for --rope-scale, whose contract is deliberately linear scaling.
+
+    The independently-authored fixture metadata anchors the expected source
+    factor at 32. The CLI must visibly select 64 as YaRN before inference.
+    """
+    proc = _run(runner_bin, yarn_model, "-c", "256", "--yarn-factor", "64",
+                "-p", "hi", "-n", "1", "--temp", "0")
+    assert proc.returncode == 0, proc.stderr[-400:]
+    assert b"forced YaRN scaling x64.00" in proc.stderr, proc.stderr[-400:]
+    assert b"forced linear" not in proc.stderr, proc.stderr[-400:]
+
+
+def test_yarn_factor_refuses_non_yarn_model(runner_bin, model):
+    proc = _run(runner_bin, model, "--yarn-factor", "64", "-p", "hi", "-n", "1")
+    assert proc.returncode != 0
+    assert b"requires model YaRN metadata" in proc.stderr, proc.stderr[-300:]
+
+
+def test_yarn_factor_and_linear_scale_conflict(runner_bin, yarn_model):
+    proc = _run(runner_bin, yarn_model, "--yarn-factor", "64",
+                "--rope-scale", "2", "-p", "hi", "-n", "1")
+    assert proc.returncode != 0
+    assert b"cannot be used together" in proc.stderr, proc.stderr[-300:]
 
 
 def _sampled(runner_bin, model, seed):

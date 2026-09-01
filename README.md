@@ -600,6 +600,7 @@ flags into unrelated feature sections.
 | `--min-p F` | Probability floor relative to the top candidate; `0` disables it. |
 | `--repeat-penalty F` | Recent-token penalty; `1` disables it. |
 | `--rope-scale F` | Force linear rope position scaling. |
+| `--yarn-factor F` | Override a model's native YaRN factor while preserving its original context and correction parameters. Refuses models without YaRN metadata and conflicts with `--rope-scale`. |
 | `--rope-base F` | Override the rope frequency base. |
 | `--system TEXT` | System prompt in interactive chat (`-i`) only; refused in raw one-shot and server modes. |
 | `--chat-template NAME` | Force `chatml`, `chatml-think`, `llama2`, `llama3`, `mistral`, `mistral-v1`, `mistral-nemo`, `zephyr`, `phi3`, `gemma`, `gemma4`, `gemma4-mainline`, `apertus`, `ornith`, `muse`, `granite`, `harmony`, or `raw`; default is auto-detection. The three Mistral framings are not interchangeable: `mistral` is the v0.3 / Mistral-Small-2409 form and the fallback for an unrecognised Mistral template, `mistral-v1` is v0.1/v0.2, `mistral-nemo` is Nemo-Instruct-2407. They differ by a space beside each `[INST]`/`[/INST]` marker and by which user turn carries the system prompt - one SentencePiece token per divergent space. gemma-4 likewise ships two chat-template revisions that auto-detect and are byte-exact to their own reference: `gemma4` is the E-series (E2B/E4B) form, `gemma4-mainline` is the 12B/26B-A4B/31B form, which pre-seeds an empty thought block on the thinking-off generation prompt where the E-series pre-seeds nothing. Applies to interactive chat and to `--serve`, including reloads after `/unload` or a `--ttl` expiry. An unrecognized name is an error, and the flag is refused with a swap set (`-m "name=path,name2=path2"`) because it names one template for a set of models that each detect their own - serve that model on its own instance instead. |
@@ -866,7 +867,9 @@ Vulkan is not implemented; AMD and Intel GPUs use the CPU path.
 
 - A requested context above the training length applies model metadata for
   linear/YaRN/llama-3 rope scaling, or automatic YaRN extension when metadata
-  does not supply a native scheme. `--rope-scale` and `--rope-base` override
+  does not supply a native scheme. `--yarn-factor` compounds a native YaRN
+  regime without changing its original context; `--rope-scale` remains a
+  linear override. `--rope-scale`, `--yarn-factor`, and `--rope-base` override
   that behavior.
 - `--kv q8` stores q8_0 blocks when every layer's head dimension is divisible
   by 32. It works on CPU, CUDA, and Metal, participates in capacity auto-fit,
