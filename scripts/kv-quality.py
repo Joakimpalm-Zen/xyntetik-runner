@@ -340,6 +340,7 @@ class Server:
         self.verbose = verbose
         self.proc = None
         self.log = None
+        self.model_id = None
 
     def __enter__(self):
         logdir = Path(os.environ.get("TMPDIR", "/tmp"))
@@ -359,9 +360,13 @@ class Server:
                 raise RuntimeError("server exited (%d):\n%s" % (
                     self.proc.returncode, logpath.read_text()[-2000:]))
             try:
-                with socket.create_connection(("127.0.0.1", self.port), 1):
+                models = self.get("/v1/models", timeout=1)
+                data = models.get("data") or []
+                model_id = data[0].get("id") if data else None
+                if isinstance(model_id, str) and model_id:
+                    self.model_id = model_id
                     return self
-            except OSError:
+            except (OSError, ValueError, urllib.error.URLError):
                 time.sleep(0.4)
         raise RuntimeError("server did not come up on port %d" % self.port)
 
@@ -382,6 +387,12 @@ class Server:
             self.log.close()
         return False
 
+    def get(self, path, timeout=3600):
+        with urllib.request.urlopen(
+                "http://127.0.0.1:%d%s" % (self.port, path),
+                timeout=timeout) as response:
+            return json.loads(response.read().decode())
+
     def post(self, path, body, timeout=3600):
         req = urllib.request.Request(
             "http://127.0.0.1:%d%s" % (self.port, path),
@@ -392,11 +403,11 @@ class Server:
 
     def count_tokens(self, messages):
         r = self.post("/v1/messages/count_tokens",
-                      {"model": "x", "messages": messages})
+                      {"model": self.model_id, "messages": messages})
         return r.get("input_tokens", 0)
 
     def chat(self, messages, tools=None, max_tokens=64):
-        body = {"model": "x", "messages": messages, "temperature": 0,
+        body = {"model": self.model_id, "messages": messages, "temperature": 0,
                 "max_tokens": max_tokens, "seed": 1234}
         if tools:
             body["tools"] = tools
