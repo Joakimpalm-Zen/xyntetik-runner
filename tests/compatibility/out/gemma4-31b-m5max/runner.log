@@ -1,0 +1,17 @@
+gemma4: dense variant verified against llama.cpp (token-identical greedy output on the official ggml-org GGUF); unofficial dequant conversions may still produce garbage — prefer official files
+rope: using model frequency factors (rope_freqs.weight)
+gpu: Metal backend on Apple M5 Max (zero-copy weights)
+loaded models/gemma-4-31B-it-Q4_0.gguf | gemma4 | 60 layers | ctx 2048 | 1 threads | 0.14s
+sampling: gemma3 (temp 1.00, top_p 0.95, top_k 64, min_p 0.00, repeat_penalty 1.10)
+server listening on http://127.0.0.1:52233 — 1 slot x 6 threads
+  POST /v1/chat/completions | POST /v1/responses | POST /v1/completions
+  POST /v1/embeddings | POST /v1/messages | POST /v1/messages/count_tokens
+  GET /v1/models | GET /v1/capabilities | GET /health
+  GET /v1/runner/prefix-cache | POST /v1/runner/prefix-cache/clear | POST /unload
+[slot 0] cmpl-0: start, 6 prompt (0 cached)
+[slot 0] cmpl-0: 6 prompt (0 cached) + 64 gen tok (24.0 tok/s)
+[slot 0] cmpl-1: start, 6 prompt (5 cached)
+[slot 0] cmpl-1: 6 prompt (5 cached) + 64 gen tok (23.5 tok/s)
+[slot 0] chatcmpl-2: start, 18 prompt (1 cached)
+[slot 0] chatcmpl-2: 18 prompt (1 cached) + 2 gen tok (23.6 tok/s)
+swap: unloading gemma-4-31B-it-Q4_0.gguf
