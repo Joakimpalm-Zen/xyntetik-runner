@@ -41,7 +41,8 @@ typedef struct {
     id<MTLComputePipelineState> p_moe_mv[METAL_TYPE_SLOTS];   // indexed by ggml type
     id<MTLComputePipelineState> p_moe_mv_em[METAL_TYPE_SLOTS]; // expert-major twin
     id<MTLComputePipelineState> p_moe_mv_em8[METAL_TYPE_SLOTS]; // + 8-column tiling
-    id<MTLComputePipelineState> p_moe_mm[METAL_TYPE_SLOTS];  // grouped MMA tiles
+    id<MTLComputePipelineState> p_moe_mm[METAL_TYPE_SLOTS];  // grouped MMA, f32-staged
+    id<MTLComputePipelineState> p_moe_mmh[METAL_TYPE_SLOTS];  // half-staged twins
     id<MTLComputePipelineState> p_moe_group;                 // slot-by-expert sort
     // The model mmap, wrapped zero-copy. Usually ONE buffer; more when the file
     // exceeds maxBufferLength, which on an M1 is 4.29 GB against a 5.73 GB
@@ -219,6 +220,7 @@ static void gpu_release_state(gpu_t *g, int n_layer) {
     for (int i = 0; i < METAL_TYPE_SLOTS; i++) [g->p_moe_mv_em[i] release];
     for (int i = 0; i < METAL_TYPE_SLOTS; i++) [g->p_moe_mv_em8[i] release];
     for (int i = 0; i < METAL_TYPE_SLOTS; i++) [g->p_moe_mm[i] release];
+    for (int i = 0; i < METAL_TYPE_SLOTS; i++) [g->p_moe_mmh[i] release];
     [g->p_moe_group release];
     [g->p_rmsnorm release]; [g->p_qknorm release]; [g->p_headnorm release];
     [g->p_rope release]; [g->p_store release]; [g->p_attn release];
@@ -273,13 +275,14 @@ static bool metal_moe_em_on(void) {
 // answers to the tolerance gates, never to byte identity. Opt-in until the
 // measured prefill win clears the bar recorded in
 // docs/negative-result-metal-moe-expert-major.md.
-static bool metal_moe_mm_on(void) {
-    static int on = -1;
-    if (on < 0) {
-        const char *v = getenv("RUNNER_METAL_MOE_MM");
-        on = v && *v && strcmp(v, "0") && strcmp(v, "off") ? 1 : 0;
-    }
-    return on > 0;
+// NOT cached: the mv-vs-mm harness toggles this between loads in one
+// process, and a getenv per MoE layer encode is noise. "half" selects the
+// half-staged twins (the dense-kernel economics) for measurement; any other
+// non-zero value selects the f32-staged default.
+static int metal_moe_mm_on(void) {
+    const char *v = getenv("RUNNER_METAL_MOE_MM");
+    if (!v || !*v || !strcmp(v, "0") || !strcmp(v, "off")) return 0;
+    return strcmp(v, "half") == 0 ? 2 : 1;
 }
 
 
@@ -1319,6 +1322,8 @@ bool gpu_init(model_t *m) {
     g->p_moe_group        = mk_pipeline(dev, lib, @"k_moe_group");
     g->p_moe_mm[T_Q8_0]   = mk_pipeline(dev, lib, @"k_moe_mm_q8_0");
     g->p_moe_mm[T_MXFP4]  = mk_pipeline(dev, lib, @"k_moe_mm_mxfp4");
+    g->p_moe_mmh[T_Q8_0]  = mk_pipeline(dev, lib, @"k_moe_mmh_q8_0");
+    g->p_moe_mmh[T_MXFP4] = mk_pipeline(dev, lib, @"k_moe_mmh_mxfp4");
     [lib release];
     lib = nil;
 
@@ -2057,13 +2062,14 @@ static void enc_moe_group(gpu_t *g, id<MTLComputeCommandEncoder> e,
 // beyond an expert's count exit on two int reads. Requires enc_moe_group to
 // have run for this layer's sel window.
 static void enc_moe_mm(gpu_t *g, id<MTLComputeCommandEncoder> e, model_t *m,
+                       id<MTLComputePipelineState> pso,
                        gguf_tensor *base, uint64_t estride,
                        id<MTLBuffer> x, id<MTLBuffer> y,
                        int n_in, int n_out, int nslots, int xs, int ys,
                        id<MTLBuffer> bias, int bias_stride,
                        int slots_per_token) {
     enum { MM_TILE_M = 64, MM_TILE_N = 32 };   // mirrors MM_TM/MM_TN
-    [e setComputePipelineState:g->p_moe_mm[base->type]];
+    [e setComputePipelineState:pso];
     struct { int n_in, n_out; uint64_t w_off, estride;
              int xs, ys, has_bias, bias_stride, slots_per_token; } a = {
         n_in, n_out,
@@ -2247,28 +2253,34 @@ static void enc_moe_experts_batch(gpu_t *g, id<MTLComputeCommandEncoder> e,
     // Grouped-MMA route (RUNNER_METAL_MOE_MM): sort slots by expert once,
     // then any expert tensor whose type has a k_moe_mm kernel runs as a real
     // GEMM over its token group; the rest stay on the slot-major matvec.
-    bool mm = metal_moe_mm_on() && n > 1 &&
-              (g->p_moe_mm[ly->ffn_gate_exps->type] ||
-               g->p_moe_mm[ly->ffn_up_exps->type] ||
-               g->p_moe_mm[ly->ffn_down_exps->type]);
+    int mm_mode = n > 1 ? metal_moe_mm_on() : 0;
+    id<MTLComputePipelineState> *mmp =
+        mm_mode == 2 ? g->p_moe_mmh : g->p_moe_mm;
+    bool mm = mm_mode &&
+              (mmp[ly->ffn_gate_exps->type] ||
+               mmp[ly->ffn_up_exps->type] ||
+               mmp[ly->ffn_down_exps->type]);
     if (mm) {
         static bool announced = false;
         if (!announced) {
             announced = true;
             fprintf(stderr, "gpu: MoE grouped-MMA prefill kernels on "
-                    "(RUNNER_METAL_MOE_MM)\n");
+                    "(%s-staged, RUNNER_METAL_MOE_MM)\n",
+                    mm_mode == 2 ? "half" : "f32");
         }
         enc_moe_group(g, e, m->n_expert, slots, sel_off);
     }
-    if (mm && g->p_moe_mm[ly->ffn_gate_exps->type])
-        enc_moe_mm(g, e, m, ly->ffn_gate_exps, gstride, g->xb, g->moe_hb,
+    if (mm && mmp[ly->ffn_gate_exps->type])
+        enc_moe_mm(g, e, m, mmp[ly->ffn_gate_exps->type],
+                   ly->ffn_gate_exps, gstride, g->xb, g->moe_hb,
                    n_embd, nff, slots, xdim, nff, g->geb[l], nff, used);
     else
         enc_moe_mv(g, e, m, ly->ffn_gate_exps, gstride, g->xb, 0,
                    g->moe_hb, 0, n_embd, nff, slots, xdim, nff,
                    g->geb[l], nff, sel_off, used);
-    if (mm && g->p_moe_mm[ly->ffn_up_exps->type])
-        enc_moe_mm(g, e, m, ly->ffn_up_exps, ustride, g->xb, g->moe_hb2,
+    if (mm && mmp[ly->ffn_up_exps->type])
+        enc_moe_mm(g, e, m, mmp[ly->ffn_up_exps->type],
+                   ly->ffn_up_exps, ustride, g->xb, g->moe_hb2,
                    n_embd, nff, slots, xdim, nff, g->ueb[l], nff, used);
     else
         enc_moe_mv(g, e, m, ly->ffn_up_exps, ustride, g->xb, 0,
@@ -2276,8 +2288,9 @@ static void enc_moe_experts_batch(gpu_t *g, id<MTLComputeCommandEncoder> e,
                    g->ueb[l], nff, sel_off, used);
     enc_moe_actmul(g, e, g->moe_hb, 0, g->moe_hb2, 0,
                    nff, slots, nff, nff, m->ffn_act);
-    if (mm && g->p_moe_mm[ly->ffn_down_exps->type])
-        enc_moe_mm(g, e, m, ly->ffn_down_exps, dstride, g->moe_hb,
+    if (mm && mmp[ly->ffn_down_exps->type])
+        enc_moe_mm(g, e, m, mmp[ly->ffn_down_exps->type],
+                   ly->ffn_down_exps, dstride, g->moe_hb,
                    g->moe_eout, nff, n_embd, slots, nff, n_embd,
                    g->deb[l], n_embd, 0);
     else

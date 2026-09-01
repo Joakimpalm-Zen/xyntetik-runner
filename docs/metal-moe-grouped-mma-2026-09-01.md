@@ -1,4 +1,4 @@
-# Grouped-MMA MoE prefill: the win, and what blocks its promotion — M5 Max, 2026-09-01
+# Grouped-MMA MoE prefill: the win, and the instrument that judges it — M5 Max, 2026-09-01
 
 Round 2 of the MoE prefill grouping arc
 (`docs/negative-result-metal-moe-expert-major.md` is round 1, which killed
@@ -11,8 +11,8 @@ it wins big. It is NOT promoted, for a reason worth stating precisely.
 `RUNNER_METAL_MOE_MM=1`. A one-threadgroup kernel (`k_moe_group`) counting-
 sorts the batch's (token, expert) slots by expert on-GPU; the expert matmuls
 (`k_moe_mm_q8_0`, `k_moe_mm_mxfp4` so far) then run the dense `k_mm` tile
-structure — same MM_TM/MM_TN/MM_TK, same half-staged operands, same
-mixed-precision `simdgroup_multiply_accumulate` — with the x tile *gathered*
+structure — same MM_TM/MM_TN/MM_TK — but with FLOAT-staged operands (see
+below for why that is nearly free on this hardware), the x tile *gathered*
 through the group's slot map and the outputs scattered back. No physical
 repack of x exists anywhere. Column tiles beyond an expert's count exit on
 two int reads; types without a `k_moe_mm` kernel stay on the matvec path
@@ -33,48 +33,87 @@ Interleaved warm A/B, 714-token prompt, batch 512, three reps per arm:
 
 Decode unchanged. Both clear round 1's recorded floor (+10%) severalfold.
 
-## Why it is not promoted: the identity bound, and what the excess is
+## The dense identity bound fails, and the harnesses say why
 
-`test-gpu-identity` (CPU vs GPU, whole model, 24 teacher-forced positions):
+`test-gpu-identity` (CPU vs GPU, the bound calibrated on dense models):
+~0.0044 of the mean logit range on BOTH models, against the 0.002 limit —
+and, decisively, **staging precision barely moves it**. The same session
+rebuilt the kernels with FLOAT-staged operands (an Apple-specific economy:
+fp16 simdgroup matmul runs only ~1.1x fp32 on M-series, per the community
+metal-benchmarks — the half staging was an NVIDIA-shaped assumption), which
+removes operand rounding entirely, leaving only k-tile summation order. The
+aggregate barely changed. So the excess was never the staging: it is the
+routing.
 
-| model | default path | grouped-MMA | limit |
-|---|---|---|---|
-| Qwen3-30B-A3B | 0.00109 | **0.00443** (worst 3.36) | 0.002 |
-| gpt-oss-120b | 0.000215 | **0.00442** (worst 2.07) | 0.002 |
+Two purpose-built harnesses now hold the account:
 
-Both FAIL the dense-calibrated bound. What the excess is NOT, established by
-isolation: not the down projection's post-activation dynamic range (mv-only
-down still measures 0.00427); not multi-k-tile, multi-row-tile, or
-multi-col-tile arithmetic (a widened fixture — 64-wide embed, 160-wide FF,
-700-token prompt — stays byte-identical to the matvec path through every
-tile boundary); not a scale or routing-map error (the mutation gates catch
-both). What remains is the compound of two known mechanisms: legitimate
-half-staging rounding — the same class dense `RUNNER_METAL_MM` carries
-inside the bound — **amplified by discrete top-k routing**: the router runs
-f32 on both sides, but its inputs carry the mm rounding of earlier layers,
-and a flipped near-tie expert selection swaps a whole FFN. This is the exact
-mechanism the 235B census located for the *scalar* cross-backend gap
-(0.00332 with no mm anywhere), and the worst-vs-mean shape here (3.36 vs
-0.167) is what a few discrete flips over mostly-tiny deltas look like.
+**Routing side — `scripts/moe-mm-flips.py`** (two traced prefills over the
+same prompt, matvec vs grouped-MMA, RUNNER_MOE_TRACE carrying per-record
+selected experts + full router logits; unit-gated on hand-computed margins).
+Qwen3-30B, 34,320 routing records:
 
-Plausible is not proven. The instrument that would prove it — a
-teacher-forced GPU-matvec vs GPU-MMA comparison with per-position deltas —
-**does not exist yet**: `--score` under `RUNNER_SCORE_CHUNKED` was measured
-here to never engage the grouped path (its chunks stay below the
-slots >= n_expert threshold), so scoring compares mv against mv and reads
-zero. Building that harness is the first step of any promotion pass.
+| | f32-staged | half-staged |
+|---|---|---|
+| top-k set flips | 1,566 (4.56%) | 1,606 (4.68%) |
+| router logit mean \|Δ\| | 0.0062 | 0.0073 |
+| router logit max \|Δ\| | 0.90 | 4.40 |
+| flip margin, median | 0.0091 | 0.0090 |
+| flip margin, max | 0.26 | 0.45 |
 
-## Standing
+The flip rate is staging-invariant: flips initiate where the boundary margin
+(median 0.057, p10 0.0085) sits below the accumulated reassociation
+perturbation (~0.006), then CASCADE — a flipped token's stream diverges, so
+deep-layer records compare two different computations, which is where the
+wide-margin tail lives. Conclusion: **no kernel precision fix can pass the
+dense bound for top-k MoE under any reassociating prefill.** The bound is
+the wrong instrument for sparse routing — the same reason the 235B fails it
+at 0.0033 with scalar kernels and no grouped path at all.
 
-Opt-in, default off — the same shelf `RUNNER_METAL_TENSOR` sits on, for the
-complementary reason (that one passed numerics and failed the perf bar;
-this one passes perf severalfold and has an open numerics question).
-Promotion needs, in order: the mv-vs-mm teacher-forced harness; a measured
-routing-flip account (how many selections move, at what margins); and a
-policy decision on whether sparse-routing models hold MMA prefill to the
-dense bound or to a routing-aware floor — the same question the 235B's
-scalar identity FAIL already put on the table. Gates in `make test`:
-`test-metal-moe-mm` (engagement + fixture-scale byte agreement with the
-matvec path + the identity bound on the mxfp4 fixture), mutation-proven
-against a wrong scale. Extending `k_moe_mm` to q2_K/q3_K (the 235B) is
-mechanical once promotion is settled.
+**Logit side — `test-moe-mm-ab`** (GPU-matvec vs GPU-grouped-MMA in one
+process, teacher-forced, scored on the project's own dual-column fidelity
+bar: margin-qualified top-1 >= 97% AND mean KLD <= 0.05, the
+`kld-compare-raw.py` v3 definitions every published artifact answers to):
+
+| model / arm | top-1 agree | margin-qualified | mean KLD | worst position |
+|---|---|---|---|---|
+| 30B, f32-staged | 24/24 | 100% | **0.00001** | 0.00007 |
+| 30B, half-staged | 24/24 | 100% | 0.00015 | 0.00331 |
+| 120B, f32-staged | 24/24 | 100% | **0.00987** | 0.06236 |
+| 120B, half-staged | 24/24 | 100% | 0.01506 | 0.11019 |
+
+**Every arm passes the house bar, most by orders of magnitude, with not one
+top-1 flip in 96 scored positions.** The route-flip literature explains why
+the two instruments disagree: flip damage is measured to be nearly
+symmetric (harmful and beneficial flips cancel to ~0.004 nats) and
+undetectable from router statistics, so flips inflate a logit-delta metric
+while leaving the distribution — the thing the fidelity bar measures — at
+the model's own noise floor.
+
+## Where the f32 staging leaves performance
+
+Warm interleaved, same protocol as above: 30B 170 → **225 tok/s (+31%)**,
+120B ~72 → **87 tok/s (+21%)** — two to three points under the half-staged
+figures, buying the 1.5-15x cleaner numerics above. On this backend that is
+the right trade, and f32 staging is the default arm of RUNNER_METAL_MOE_MM
+(`=half` keeps the comparison measurable).
+
+## Standing, and the promotion question as it now stands
+
+Opt-in, default off, with the complete three-instrument account on file:
+
+1. performance: +31% / +21% prefill, decode untouched;
+2. the dense identity bound: FAIL at ~0.0044, shown flip-dominated and
+   staging-invariant — an instrument mismatch, not a kernel defect
+   (mutation gates, fixture-scale byte identity through every tile
+   boundary, and the f32-staging null all bracket the kernel itself);
+3. the house fidelity bar, held mv-vs-mm: PASS on every arm, 100%
+   margin-qualified top-1, KLD 5x-5000x inside the bar.
+
+What promotion now needs is one owner decision, not more engineering:
+ratify that sparse-routing models hold reassociating prefill to the house
+fidelity bar (`test-moe-mm-ab`, in `make test` at fixture scale and runnable
+against any real model) rather than to the dense logit bound — the
+routing-aware floor the 235B scalar FAIL already argued for, now with its
+measuring instrument built, unit-anchored, and applied. Ratified, the
+default flips on for prefill and `k_moe_mm` extends to q2_K/q3_K (the
+235B); declined, the lever stays opt-in with nothing hidden.

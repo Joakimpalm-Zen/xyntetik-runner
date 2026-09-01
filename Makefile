@@ -134,6 +134,7 @@ TEST_MVT = $(TEST_BATCH:test-batch%=test-mvt%)
 TEST_MV_TOL = $(TEST_BATCH:test-batch%=test-mv-tol%)
 TEST_ATTN_TOL = $(TEST_BATCH:test-batch%=test-attn-tol%)
 TEST_GPU_ID = $(TEST_BATCH:test-batch%=test-gpu-identity%)
+TEST_MOE_MM_AB = $(TEST_BATCH:test-batch%=test-moe-mm-ab%)
 TEST_MOE_TOL = $(TEST_BATCH:test-batch%=test-moe-tol%)
 TEST_MOE_ROUTER = $(TEST_BATCH:test-batch%=test-moe-router%)
 TEST_PAGING_WARN = $(TEST_BATCH:test-batch%=test-paging-warn%)
@@ -649,6 +650,13 @@ TEST_GPU_ID_SRC = tests/test_gpu_identity.c src/gguf.c src/compat.c $(QUANTS_OBJ
                   src/tokenizer.c src/model.c src/vramreg.c $(GPU_SRC)
 $(TEST_GPU_ID): $(TEST_GPU_ID_SRC) $(HDR)
 	$(CC) $(CFLAGS) -I src $(TEST_GPU_ID_SRC) -o $@ $(LDFLAGS)
+
+# GPU-matvec vs GPU-grouped-MMA on the house fidelity columns (the routing
+# half of the account is scripts/moe-mm-flips.py). Same link as gpu-identity.
+TEST_MOE_MM_AB_SRC = tests/test_moe_mm_ab.c src/gguf.c src/compat.c $(QUANTS_OBJ) \
+                     src/tokenizer.c src/model.c src/vramreg.c $(GPU_SRC)
+$(TEST_MOE_MM_AB): $(TEST_MOE_MM_AB_SRC) $(HDR)
+	$(CC) $(CFLAGS) -I src $(TEST_MOE_MM_AB_SRC) -o $@ $(LDFLAGS)
 
 # fused-vs-eager MoE routing tolerance: same full-engine link as tc-tol, and
 # the same self-skipping shape (no GPU / not MoE / no full offload / the fused
@@ -1344,7 +1352,7 @@ endif
 # same deal dense RUNNER_METAL_MM already has. The gate runs the full-model
 # identity bound with the feature engaged (engagement grep keeps it
 # non-vacuous) plus a greedy smoke that must complete coherently.
-test-metal-moe-mm: runner $(TEST_GPU_ID) test-moe-fixture.gptoss-mxfp4.gguf
+test-metal-moe-mm: runner $(TEST_GPU_ID) $(TEST_MOE_MM_AB) test-moe-fixture.gptoss-mxfp4.gguf
 ifeq ($(shell uname -s),Darwin)
 	@set -e; \
 	if ! ./$(RUNNER_EXE) --caps | $(PYTHON) -c "import json,sys; d=json.load(sys.stdin); sys.exit(0 if (d.get('gpu') or {}).get('backend') == 'metal' else 1)"; then \
@@ -1367,7 +1375,9 @@ ifeq ($(shell uname -s),Darwin)
 	  exit 1; }; \
 	RUNNER_METAL_MOE_MM=1 ./$(TEST_GPU_ID) test-moe-fixture.gptoss-mxfp4.gguf || { \
 	  echo "FAIL: grouped-MMA breaches the identity bound"; exit 1; }; \
-	echo "  metal moe grouped-mma ok (engaged, fixture-identical, inside the identity bound)"; \
+	./$(TEST_MOE_MM_AB) test-moe-fixture.gptoss-mxfp4.gguf || { \
+	  echo "FAIL: grouped-MMA fails the house fidelity bar at fixture scale"; exit 1; }; \
+	echo "  metal moe grouped-mma ok (engaged, fixture-identical, house bar held)"; \
 	rm -f moe-mm.out moe-mm-ref.out moe-mm.err
 else
 	@echo "metal moe grouped-mma: SKIP (macOS-only backend)"
@@ -1651,7 +1661,7 @@ test: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSON_OOM) $(
 	$(MAKE) --no-print-directory test-metal-moe-mm
 	$(PYTHON) scripts/check-generated.py
 	PYTHONPATH=python/src $(PYTHON) -m pytest python/tests/
-	$(PYTHON) -m pytest -q tests/test_fit_check.py tests/test_apertus.py tests/test_ornith_cpu.py tests/test_ornith_reference.py tests/test_compat_matrix.py tests/test_arch_admission.py tests/test_hybrid_admission.py tests/test_hostile_geometry.py tests/test_certify_envelope.py tests/test_cpu_cuda_margin.py tests/test_envelope_gate.py tests/test_envelope_swap.py tests/test_cli_files.py tests/test_chat_template_flag.py tests/test_server_banner.py tests/test_split_gguf.py tests/test_metal_coverage.py tests/test_gpu_declines.py tests/test_caps.py tests/test_tool_info.py tests/test_bench_json.py tests/test_mtp_admission.py tests/test_compare_llamacpp.py tests/test_release_check.py tests/test_eseries.py tests/test_stress_models.py tests/test_moe_prune_plan.py tests/test_kld_compare.py tests/test_kld_margin.py tests/test_quant_fidelity.py tests/test_token_divergence.py tests/test_verify_gguf.py tests/test_type_plan_size.py tests/test_stress_context.py tests/test_cert_greedy_identity.py tests/test_tokenizer_corpus.py tests/test_batch_bench.py tests/test_spec_telemetry.py tests/test_draft_required.py tests/test_kv_reachable.py tests/test_kv_ring.py tests/test_tiedv.py tests/test_request_disconnect.py tests/test_score.py tests/test_lora.py tests/test_train.py tests/test_merge.py tests/test_transcript.py
+	$(PYTHON) -m pytest -q tests/test_fit_check.py tests/test_apertus.py tests/test_ornith_cpu.py tests/test_ornith_reference.py tests/test_compat_matrix.py tests/test_arch_admission.py tests/test_hybrid_admission.py tests/test_hostile_geometry.py tests/test_certify_envelope.py tests/test_cpu_cuda_margin.py tests/test_envelope_gate.py tests/test_envelope_swap.py tests/test_cli_files.py tests/test_chat_template_flag.py tests/test_server_banner.py tests/test_split_gguf.py tests/test_metal_coverage.py tests/test_gpu_declines.py tests/test_caps.py tests/test_tool_info.py tests/test_bench_json.py tests/test_mtp_admission.py tests/test_compare_llamacpp.py tests/test_release_check.py tests/test_eseries.py tests/test_stress_models.py tests/test_moe_prune_plan.py tests/test_kld_compare.py tests/test_kld_margin.py tests/test_quant_fidelity.py tests/test_token_divergence.py tests/test_verify_gguf.py tests/test_type_plan_size.py tests/test_stress_context.py tests/test_cert_greedy_identity.py tests/test_tokenizer_corpus.py tests/test_batch_bench.py tests/test_spec_telemetry.py tests/test_draft_required.py tests/test_kv_reachable.py tests/test_kv_ring.py tests/test_tiedv.py tests/test_moe_mm_flips.py tests/test_request_disconnect.py tests/test_score.py tests/test_lora.py tests/test_train.py tests/test_merge.py tests/test_transcript.py
 	$(MAKE) --no-print-directory test-moe PYTHON="$(PYTHON)"
 	$(MAKE) --no-print-directory test-prune-experts PYTHON="$(PYTHON)"
 

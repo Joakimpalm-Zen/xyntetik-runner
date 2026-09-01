@@ -815,16 +815,21 @@ the surviving MoE prefill lever is simdgroup-MMA tiling (llama.cpp's
 
 `RUNNER_METAL_MOE_MM=1` is that surviving lever, built: sort the batch's
 slots by expert on-GPU, run each expert's token group through the dense
-prefill GEMM tiles with gathered columns (q8_0 and mxfp4 so far). Measured
-**+33% prefill on Qwen3-30B-A3B and +24% on gpt-oss-120b** — and still
-opt-in, because it inherits dense-GEMM half-staging numerics that sparse
-top-k routing then amplifies through discrete expert flips: whole-model
-CPU/GPU deviation measures ~0.0044 of the logit range against the
-0.002 dense-calibrated bound. Decode is untouched, outputs are bit-stable
-across runs, and `make test-metal-moe-mm` gates engagement, fixture-scale
-agreement, and the bound. What promotion needs, and why the excess is
-attributed to routing amplification rather than a kernel defect, is
-measured out in
+prefill GEMM tile structure with gathered columns and FLOAT-staged operands
+(q8_0 and mxfp4 so far — on Apple's simdgroup units float matmul runs
+within ~10% of half, so the usual half-staging economy buys nothing here
+and its rounding can simply be bought back). Measured: **+31% prefill on
+Qwen3-30B-A3B and +21% on gpt-oss-120b**, decode untouched, outputs
+bit-stable across runs. Still opt-in, and the reason is now fully measured
+rather than suspected: discrete top-k routing amplifies reassociation-scale
+perturbations into near-tie expert flips (4.6% of routing records, median
+flip margin 0.009, staging-invariant), which fails the dense-calibrated
+CPU/GPU logit bound while the model's actual output distribution stays at
+its own noise floor — held mv-vs-mm to the project's published fidelity bar
+by the purpose-built `test-moe-mm-ab` harness, every arm passes with 100%
+margin-qualified top-1 and mean KLD 5-5000x inside the bar, and
+`scripts/moe-mm-flips.py` carries the routing account. The full
+three-instrument case and the one policy question promotion still needs:
 [docs/metal-moe-grouped-mma-2026-09-01.md](docs/metal-moe-grouped-mma-2026-09-01.md).
 
 `RUNNER_METAL_MV=1` opts into a reassociating Metal *decode* matvec (q4_0/q8_0,

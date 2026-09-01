@@ -2338,10 +2338,87 @@ struct moe_mm_args {
 
 // MM_BODY with three substitutions: the weight base carries the expert's
 // stride, the x stage gathers its columns through the group map, and the
-// store scatters through the same map. Tile math is otherwise identical to
-// the dense kernel — same MM_TM/MM_TN/MM_TK, same half staging, same
-// mixed-precision accumulate.
+// store scatters through the same map — plus one deliberate departure from
+// the dense kernel: operands stage in FLOAT, not half. The half staging is
+// an NVIDIA-shaped economy (their half tensor cores run 2x float); on
+// Apple's simdgroup units float matmul runs within ~10% of half (measured
+// across M1-M4 in the community metal-benchmarks), so on this backend the
+// operand-rounding term of the tolerance budget can simply be bought back.
+// What remains vs the matvec path is k-tile reduction order alone — the
+// class the identity gates are calibrated for. The half-staged twins are
+// kept selectable (RUNNER_METAL_MOE_MM=half) so the trade stays measurable.
 #define MOE_MM_BODY(...) \
+    const int ex   = (int)tgpig.z; \
+    const int cbeg = eoff[ex]; \
+    const int count = eoff[ex + 1] - cbeg; \
+    const int col0 = (int)tgpig.y * MM_TN; \
+    if (col0 >= count) return; \
+    const ulong w_off_ex = a.w_off + (ulong)ex * a.estride; \
+    threadgroup float tg_w[MM_TM * MM_TK]; \
+    threadgroup float tg_x[MM_TN * MM_TK]; \
+    threadgroup float tg_c[MM_TN * MM_TM]; \
+    const int row0 = (int)tgpig.x * MM_TM; \
+    const int tid  = (int)tpitg.x; \
+    simdgroup_float8x8 acc[MM_RPS][MM_CG]; \
+    for (int rg = 0; rg < MM_RPS; rg++) \
+        for (int cg = 0; cg < MM_CG; cg++) acc[rg][cg] = simdgroup_float8x8(0.0f); \
+    for (int k0 = 0; k0 < a.n_in; k0 += MM_TK) { \
+        for (int p = 0; p < MM_RPS; p++) { \
+            int r = p * 32 + (tid >> 2), sub = (tid & 3) * 8; \
+            int row = row0 + r; \
+            threadgroup float *dst = tg_w + r * MM_TK + sub; \
+            if (row < a.n_out) { __VA_ARGS__; } \
+            else { for (int j = 0; j < 8; j++) dst[j] = 0.0f; } \
+        } \
+        for (int i = tid * 4; i < MM_TN * MM_TK; i += 128 * 4) { \
+            for (int j = 0; j < 4; j++) { \
+                int idx = i + j, cc = idx / MM_TK, kk = idx % MM_TK; \
+                float v = 0.0f; \
+                if (col0 + cc < count) { \
+                    int slot = colmap[cbeg + col0 + cc]; \
+                    uint xrow = a.slots_per_token \
+                                    ? (uint)slot / a.slots_per_token \
+                                    : (uint)slot; \
+                    v = x[(ulong)xrow * a.x_stride + k0 + kk]; \
+                } \
+                tg_x[idx] = v; \
+            } \
+        } \
+        threadgroup_barrier(mem_flags::mem_threadgroup); \
+        for (int kk = 0; kk < MM_TK / 8; kk++) { \
+            simdgroup_float8x8 acols[MM_CG]; \
+            for (int cg = 0; cg < MM_CG; cg++) \
+                simdgroup_load(acols[cg], tg_x + cg * 8 * MM_TK + kk * 8, MM_TK); \
+            for (int rg = 0; rg < MM_RPS; rg++) { \
+                simdgroup_float8x8 B; \
+                int wrg = (int)sgitg * MM_RPS + rg; \
+                simdgroup_load(B, tg_w + wrg * 8 * MM_TK + kk * 8, MM_TK, \
+                               ulong2(0, 0), true); \
+                for (int cg = 0; cg < MM_CG; cg++) \
+                    simdgroup_multiply_accumulate(acc[rg][cg], acols[cg], B, \
+                                                  acc[rg][cg]); \
+            } \
+        } \
+        threadgroup_barrier(mem_flags::mem_threadgroup); \
+    } \
+    for (int rg = 0; rg < MM_RPS; rg++) { \
+        int wrg = (int)sgitg * MM_RPS + rg; \
+        for (int cg = 0; cg < MM_CG; cg++) \
+            simdgroup_store(acc[rg][cg], tg_c + cg * 8 * MM_TM + wrg * 8, MM_TM); \
+    } \
+    threadgroup_barrier(mem_flags::mem_threadgroup); \
+    for (int idx = tid; idx < MM_TN * MM_TM; idx += 128) { \
+        int cc = idx / MM_TM, rr = idx % MM_TM; \
+        if (col0 + cc < count && row0 + rr < a.n_out) { \
+            int slot = colmap[cbeg + col0 + cc]; \
+            float v = tg_c[idx]; \
+            if (a.has_bias) v += bias[(ulong)ex * a.bias_stride + row0 + rr]; \
+            y[(ulong)slot * a.y_stride + row0 + rr] = v; \
+        } \
+    }
+
+// The half-staged twins (dense-kernel economics), kept for measurement.
+#define MOE_MMH_BODY(...) \
     const int ex   = (int)tgpig.z; \
     const int cbeg = eoff[ex]; \
     const int count = eoff[ex + 1] - cbeg; \
@@ -2423,6 +2500,30 @@ kernel void k_moe_mm_q8_0(MOE_MM_PARAMS) {
 
 kernel void k_moe_mm_mxfp4(MOE_MM_PARAMS) {
     MOE_MM_BODY({
+        int nb = a.n_in / 32;
+        device const uchar *blk = wb + w_off_ex + ((ulong)row * nb + k0 / 32) * 17;
+        float d = ldexp(1.0f, (int)blk[0] - 127);
+        device const uchar *q = blk + 1;
+        for (int j = 0; j < 8; j++) {
+            int lane = sub + j;
+            uchar nib = lane < 16 ? (q[lane] & 0xF) : (q[lane - 16] >> 4);
+            dst[j] = d * kv_mxfp4[nib];
+        }
+    })
+}
+
+kernel void k_moe_mmh_q8_0(MOE_MM_PARAMS) {
+    MOE_MMH_BODY({
+        int nb = a.n_in / 32;
+        device const uchar *blk = wb + w_off_ex + ((ulong)row * nb + k0 / 32) * 34;
+        float d = (float)*(device const half *)blk;
+        device const char *q = (device const char *)(blk + 2) + sub;
+        for (int j = 0; j < 8; j++) dst[j] = d * (float)q[j];
+    })
+}
+
+kernel void k_moe_mmh_mxfp4(MOE_MM_PARAMS) {
+    MOE_MMH_BODY({
         int nb = a.n_in / 32;
         device const uchar *blk = wb + w_off_ex + ((ulong)row * nb + k0 / 32) * 17;
         float d = ldexp(1.0f, (int)blk[0] - 127);

@@ -203,3 +203,5 @@ test-mvt
 test-metal-tensor
 test-shared-asan-bin.dSYM/
 test-moe-fixture.moe4-q8.gguf
+test-moe-mm-ab
+test-moe-mm-ab.exe
