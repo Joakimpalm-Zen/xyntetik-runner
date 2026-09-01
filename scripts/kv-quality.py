@@ -408,7 +408,8 @@ class Server:
 
     def chat(self, messages, tools=None, max_tokens=64):
         body = {"model": self.model_id, "messages": messages, "temperature": 0,
-                "max_tokens": max_tokens, "seed": 1234}
+                "max_tokens": max_tokens, "seed": 1234,
+                "enable_thinking": False}
         if tools:
             body["tools"] = tools
             body["tool_choice"] = "auto"

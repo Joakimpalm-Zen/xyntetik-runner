@@ -59,3 +59,27 @@ def test_server_uses_the_model_id_advertised_by_runner(runner_bin, model):
     # explicit registry alias also proves the id came from GET /v1/models,
     # rather than being guessed from the path basename.
     assert count >= 1
+
+
+def test_quality_chat_disables_reasoning_that_can_consume_the_answer_budget():
+    kv_quality = _load_script()
+    captured = {}
+
+    class RecordingServer(kv_quality.Server):
+        # The HTTP transport is the boundary under test: no model inference is
+        # needed to assert the protocol field sent by the quality harness.
+        def post(self, path, body, timeout=3600):
+            captured.update(body)
+            return {
+                "choices": [{"message": {"content": "answer"}}],
+                "usage": {"prompt_tokens": 1},
+            }
+
+    server = RecordingServer("runner", "model", 64, "f16", 1)
+    server.model_id = "advertised-model"
+    server.chat([{"role": "user", "content": "retrieve the code"}], max_tokens=24)
+
+    # Context retrieval is the measured task. A reasoning model must not be
+    # allowed to spend the evaluator's entire short output budget on a hidden
+    # channel and turn correct retrieval into an apparent empty answer.
+    assert captured["enable_thinking"] is False

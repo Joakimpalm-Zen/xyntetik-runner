@@ -142,3 +142,21 @@ the expensive acceptance suite:
 - Target deployment evidence already in tree: Apple M5 Max, 128 GB unified
   memory, fully resident parent with zero swap.
 
+## Amendments after measurement began
+
+### 2026-09-01T16:57:15Z — invalid parent control, evaluator corrected
+
+The first 4K parent retrieval control returned empty visible content for all
+nine cases and is **invalid**, not a 0/9 model result. Every request generated
+exactly the evaluator's 24-token ceiling. Runner's documented Harmony mapping
+placed those tokens in `reasoning_content`; the unconstrained request exhausted
+its shared ceiling before reaching the final channel. The untouched raw record
+is `parent-retrieval-4k.json`, SHA-256
+`8ec4c41221cbce472ff15d47328d359e0602c3f2d0ce4067a0ab2e608e1e30ef`.
+
+Before viewing any candidate output, `scripts/kv-quality.py` was changed to
+send `enable_thinking:false`. Retrieval is the measured task and the 24-token
+budget is intended for its short answer, not hidden chain-of-thought. The
+parent control will be rerun under that fixed request shape. Hypotheses,
+lengths, seeds, depths, scoring, and kill thresholds are unchanged; the invalid
+record remains retained as an instrument correction.
