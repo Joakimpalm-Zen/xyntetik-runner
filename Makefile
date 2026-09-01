@@ -616,6 +616,9 @@ $(TEST_MVT): $(TEST_MVT_SRC) $(HDR) test.gguf test-q8.gguf test-bf16.gguf
 test-qk.gguf: scripts/make-test-model.py
 	$(PYTHON) scripts/make-test-model.py --qk-norm test-qk.gguf
 
+test-qkw.gguf: scripts/make-test-model.py
+	$(PYTHON) scripts/make-test-model.py --qk-norm --wide test-qkw.gguf
+
 test-lora-qk.full.gguf: test-qk.gguf scripts/make-test-lora.py
 	$(PYTHON) scripts/make-test-lora.py test-qk.gguf test-lora-qk
 
@@ -1400,7 +1403,7 @@ endif
 # gate, across the architecture roster (dense, swa, E-series, gpt-oss MoE
 # with biases and swiglu_oai, q8-requantized experts), with the engagement
 # grep keeping a fallen-back build from passing on self-agreement.
-test-metal-fuse: runner test-swa.gguf test-es.gguf test-moe-fixture.gptoss-mxfp4.gguf test-moe-fixture.gemma4-moe.gguf
+test-metal-fuse: runner test-swa.gguf test-es.gguf test-moe-fixture.gptoss-mxfp4.gguf test-moe-fixture.gemma4-moe.gguf test-qk.gguf test-qkw.gguf
 ifeq ($(shell uname -s),Darwin)
 	@set -e; \
 	if ! ./$(RUNNER_EXE) --caps | $(PYTHON) -c "import json,sys; d=json.load(sys.stdin); sys.exit(0 if (d.get('gpu') or {}).get('backend') == 'metal' else 1)"; then \
@@ -1429,6 +1432,40 @@ ifeq ($(shell uname -s),Darwin)
 	cmp -s fuse-sc-off.json fuse-sc-on.json || { \
 	  echo "FAIL: fused teacher-forced logprobs differ from unfused"; exit 1; }; \
 	echo "  metal decode fusion ok (score logprobs byte-identical)"; \
+	./$(RUNNER_EXE) -m test-qk.gguf \
+	  --quantize test-qk-q8.gguf --quant q8_0 >/dev/null 2>&1; \
+	./$(RUNNER_EXE) -m test-qkw.gguf \
+	  --quantize test-qkw-q4k.gguf --quant q4_k >/dev/null 2>&1; \
+	./$(RUNNER_EXE) -m test-qkw.gguf \
+	  --quantize test-qkw-q6k.gguf --quant q6_k >/dev/null 2>&1; \
+	./$(RUNNER_EXE) -m test-moe-fixture.moe4.gguf \
+	  --quantize test-moe-fixture.moe4-q4.gguf --quant q4_0 >/dev/null 2>&1; \
+	for spec in "test-qk-q8.gguf:(q8_0)" "test-qkw-q4k.gguf:(q4_k)" \
+	            "test-qkw-q6k.gguf:(q6_k)" \
+	            "test-moe-fixture.moe4-q4.gguf:(q4_0)"; do \
+	  f=$${spec%%:*}; want=$${spec##*:}; \
+	  RUNNER_METAL_FUSE=0 ./$(RUNNER_EXE) -m $$f -p "$$prompt" -n 24 \
+	    --temp 0 --no-tray > fuse-off.out 2>/dev/null; \
+	  RUNNER_METAL_FRONT=all ./$(RUNNER_EXE) -m $$f -p "$$prompt" -n 24 \
+	    --temp 0 --no-tray > fuse-on.out 2> fuse-on.err; \
+	  grep -qF "attention front on $$want" fuse-on.err || { \
+	    echo "FAIL: $$f never engaged the $$want front kernel — vacuous"; \
+	    exit 1; }; \
+	  cmp -s fuse-off.out fuse-on.out || { \
+	    echo "FAIL: $$f front-fused decode differs from unfused"; exit 1; }; \
+	  echo "  attention front ok ($$f $$want, byte-identical)"; \
+	done; \
+	./$(RUNNER_EXE) -m test-moe-fixture.moe4-q4.gguf -p "$$prompt" -n 4 \
+	  --temp 0 --no-tray 2> fuse-on.err >/dev/null; \
+	grep -qF "attention front on (q4_0)" fuse-on.err || { \
+	  echo "FAIL: MoE fixture no longer front-admitted by DEFAULT"; exit 1; }; \
+	RUNNER_METAL_FUSE=0 ./$(RUNNER_EXE) -m test-qkw-q4k.gguf \
+	  --score -p "$$prompt $$prompt $$prompt" --no-tray > fuse-sc-off.json 2>/dev/null; \
+	RUNNER_METAL_FRONT=all ./$(RUNNER_EXE) -m test-qkw-q4k.gguf \
+	  --score -p "$$prompt $$prompt $$prompt" --no-tray > fuse-sc-on.json 2>/dev/null; \
+	cmp -s fuse-sc-off.json fuse-sc-on.json || { \
+	  echo "FAIL: front (q4_k+qk-norm) teacher-forced logprobs differ"; exit 1; }; \
+	echo "  attention front ok (qk-norm score logprobs byte-identical)"; \
 	rm -f fuse-off.out fuse-on.out fuse-on.err fuse-sc-off.json fuse-sc-on.json
 else
 	@echo "metal decode fusion: SKIP (macOS-only backend)"

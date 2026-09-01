@@ -44,6 +44,8 @@ typedef struct {
     id<MTLComputePipelineState> p_moe_gua[METAL_TYPE_SLOTS]; // fused gate+up+act
     id<MTLComputePipelineState> p_rope_store, p_add_rmsnorm; // decode fusion
     id<MTLComputePipelineState> p_attn_front_q8;             // front megakernel
+    id<MTLComputePipelineState> p_attn_front_q40, p_attn_front_q4k;
+    id<MTLComputePipelineState> p_attn_front_q6k, p_attn_front_q4k6;
     id<MTLComputePipelineState> p_moe_mm[METAL_TYPE_SLOTS];  // grouped MMA, f32-staged
     id<MTLComputePipelineState> p_moe_mmh[METAL_TYPE_SLOTS];  // half-staged twins
     id<MTLComputePipelineState> p_moe_group;                 // slot-by-expert sort
@@ -103,7 +105,8 @@ typedef struct { int n_embd, n_head, n_kv, head_dim, half_dim, pos, neox;
                  float mscale, eps;
                  uint64_t wq_off, wk_off, wv_off;
                  int has_bq, has_bk, has_bv;
-                 uint64_t kc_off, vc_off; } attn_front_args;
+                 uint64_t kc_off, vc_off;
+                 int has_qn, has_kn; } attn_front_args;
 typedef struct { int n_in, n_out; uint64_t g_off, u_off, estride_g, estride_u;
                  int xs, has_bias, act, slots_per_token, ys; } moe_gua_args;
 typedef struct { int head_dim, n_heads, half_dim, pos, neox; float mscale; int stride; } rope_args;
@@ -236,6 +239,8 @@ static void gpu_release_state(gpu_t *g, int n_layer) {
     for (int i = 0; i < METAL_TYPE_SLOTS; i++) [g->p_moe_gua[i] release];
     [g->p_rope_store release]; [g->p_add_rmsnorm release];
     [g->p_attn_front_q8 release];
+    [g->p_attn_front_q40 release]; [g->p_attn_front_q4k release];
+    [g->p_attn_front_q6k release]; [g->p_attn_front_q4k6 release];
     for (int i = 0; i < METAL_TYPE_SLOTS; i++) [g->p_moe_mm[i] release];
     for (int i = 0; i < METAL_TYPE_SLOTS; i++) [g->p_moe_mmh[i] release];
     [g->p_moe_group release];
@@ -321,6 +326,20 @@ static void metal_fuse_announce(void) {
         fprintf(stderr, "gpu: decode fusion on "
                 "(byte-identical; RUNNER_METAL_FUSE=0 disables)\n");
     }
+}
+
+static void metal_front_announce(id<MTLComputePipelineState> pipe,
+                                 gpu_t *g) {
+    static bool told = false;
+    if (told) return;
+    told = true;
+    const char *name =
+        pipe == g->p_attn_front_q8   ? "q8_0"    :
+        pipe == g->p_attn_front_q40  ? "q4_0"    :
+        pipe == g->p_attn_front_q4k  ? "q4_k"    :
+        pipe == g->p_attn_front_q6k  ? "q6_k"    :
+        pipe == g->p_attn_front_q4k6 ? "q4k+q6k" : "?";
+    fprintf(stderr, "gpu: attention front on (%s)\n", name);
 }
 
 static int metal_moe_mm_on(void) {
@@ -763,18 +782,49 @@ static id<MTLBuffer> f32_buf_ones(id<MTLDevice> dev, const float *src, size_t n)
 
 
 // Static half of the attention-front admission: everything knowable
-// without resolving wrap buffers. Shared by the engage site and by F2b's
-// defer decision (a deferred add would starve the megakernel of a final x).
-static bool metal_front_capable(gpu_t *g, model_t *m, int l) {
-    if (l >= m->n_layer) return false;
+// without resolving wrap buffers, answered as the pipeline that will run
+// (nil = not front-capable). Shared by the engage site and by F2b's defer
+// decision (a deferred add would starve the megakernel of a final x).
+// qk-norm models are served (the kernel replays k_qknorm in-dispatch);
+// v_rmsnorm and gated attention are not. The staged row needs n_embd inside
+// the 32 KB threadgroup budget (<= 7936). Admission is MoE-only, from the
+// measurement, not the type roster: the front recovers dispatch-chain
+// latency, which is where MoE decode's milliseconds sit (120B +5.6%%, 30B
+// +6.0%%, both byte-identical), while a fast dense model is matvec-bound
+// and the head-partitioned grid starves the GPU that the split mv grid
+// fills (Qwen3-8B measured -8.4%%). RUNNER_METAL_FRONT=all (test-only)
+// lifts the MoE requirement so fixture-scale gates can pin every kernel.
+static bool metal_front_all(void) {
+    const char *v = getenv("RUNNER_METAL_FRONT");
+    return v && (!strcmp(v, "all") || !strcmp(v, "1"));
+}
+
+static id<MTLComputePipelineState> metal_front_pipe(gpu_t *g, model_t *m,
+                                                    int l) {
+    if (l >= m->n_layer) return nil;
     layer_t *ly = &m->layers[l];
-    return g->p_attn_front_q8 && !m->kv_q8 &&
-           model_kv_owner(m, l) == l && model_layer_ropes(m, l) &&
-           !g->qn[l] && !g->kn[l] && !m->v_rmsnorm &&
-           !(m->attn_out_gate && ly->wq_gate) &&
-           m->n_embd <= 7936 && ly->wv && ly->wq && ly->wk &&
-           ly->wq->type == T_Q8_0 && ly->wk->type == T_Q8_0 &&
-           ly->wv->type == T_Q8_0;
+    if (m->kv_q8 || model_kv_owner(m, l) != l || !model_layer_ropes(m, l) ||
+        m->v_rmsnorm || (m->attn_out_gate && ly->wq_gate) ||
+        !ly->wq || !ly->wk || !ly->wv ||
+        (m->n_expert <= 0 && !metal_front_all()) || m->n_embd > 7936)
+        return nil;
+    int tq = ly->wq->type, tk = ly->wk->type, tv = ly->wv->type;
+    if (tq == T_Q8_0 && tk == T_Q8_0 && tv == T_Q8_0 && m->n_embd % 32 == 0)
+        return g->p_attn_front_q8;
+    if (tq == T_Q4_0 && tk == T_Q4_0 && tv == T_Q4_0 && m->n_embd % 32 == 0)
+        return g->p_attn_front_q40;
+    if (m->n_embd % 256) return nil;
+    if (tq == T_Q4_K && tk == T_Q4_K && tv == T_Q4_K)
+        return g->p_attn_front_q4k;
+    if (tq == T_Q6_K && tk == T_Q6_K && tv == T_Q6_K)
+        return g->p_attn_front_q6k;
+    if (tq == T_Q4_K && tk == T_Q4_K && tv == T_Q6_K)
+        return g->p_attn_front_q4k6;
+    return nil;
+}
+
+static bool metal_front_capable(gpu_t *g, model_t *m, int l) {
+    return metal_front_pipe(g, m, l) != nil;
 }
 
 static float *gpu_forward_native_batch(model_t *m, const int32_t *tokens,
@@ -1381,6 +1431,10 @@ bool gpu_init(model_t *m) {
     g->p_moe_mv_em8[T_MXFP4] = mk_pipeline(dev, lib, @"k_moe_mv_em8_mxfp4");
     g->p_rope_store       = mk_pipeline(dev, lib, @"k_rope_store");
     g->p_attn_front_q8    = mk_pipeline(dev, lib, @"k_attn_front_q8_0");
+    g->p_attn_front_q40   = mk_pipeline(dev, lib, @"k_attn_front_q4_0");
+    g->p_attn_front_q4k   = mk_pipeline(dev, lib, @"k_attn_front_q4_k");
+    g->p_attn_front_q6k   = mk_pipeline(dev, lib, @"k_attn_front_q6_k");
+    g->p_attn_front_q4k6  = mk_pipeline(dev, lib, @"k_attn_front_q4k_q6k");
     g->p_add_rmsnorm      = mk_pipeline(dev, lib, @"k_add_rmsnorm");
     g->p_moe_gua[T_F32]   = mk_pipeline(dev, lib, @"k_moe_gua_f32");
     g->p_moe_gua[T_F16]   = mk_pipeline(dev, lib, @"k_moe_gua_f16");
@@ -2237,7 +2291,8 @@ static void enc_moe_actmul(gpu_t *g, id<MTLComputeCommandEncoder> e,
 static void enc_moe_sum(gpu_t *g, id<MTLComputeCommandEncoder> e,
                         id<MTLBuffer> out, NSUInteger out_off,
                         int n, int nslots, int es, id<MTLBuffer> dscale,
-                        NSUInteger sel_off, int tokens, int out_stride) {
+                        NSUInteger sel_off, int tokens, int out_stride,
+                        int fuse_add) {
     int has_dscale = dscale != nil;
     [e setComputePipelineState:g->p_moe_sum];
     [e setBuffer:out offset:out_off atIndex:0];
@@ -2251,6 +2306,7 @@ static void enc_moe_sum(gpu_t *g, id<MTLComputeCommandEncoder> e,
     [e setBytes:&has_dscale length:4 atIndex:8];
     [e setBytes:&tokens length:4 atIndex:9];
     [e setBytes:&out_stride length:4 atIndex:10];
+    [e setBytes:&fuse_add length:4 atIndex:11];
     g_disp.moe++;
     [e dispatchThreads:MTLSizeMake(n, tokens, 1)
       threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
@@ -2355,7 +2411,8 @@ static NSUInteger foff(size_t elems) {
 
 static void enc_moe_experts_batch(gpu_t *g, id<MTLComputeCommandEncoder> e,
                                   model_t *m, layer_t *ly,
-                                  int n, int xdim, NSUInteger sel_off) {
+                                  int n, int xdim, NSUInteger sel_off,
+                                  bool sum_add) {
     int n_embd = m->n_embd;
     int used = m->n_expert_used, slots = n * used;
     int nff = m->n_ff_exp;
@@ -2449,8 +2506,15 @@ static void enc_moe_experts_batch(gpu_t *g, id<MTLComputeCommandEncoder> e,
         enc_moe_mv(g, e, m, ly->ffn_down_exps, dstride, g->moe_hb, 0,
                    g->moe_eout, 0, nff, n_embd, slots, nff, n_embd,
                    g->deb[l], n_embd, sel_off, 0);
-    enc_moe_sum(g, e, g->xb, 0, n_embd, used, n_embd, nil,
-                sel_off, n, xdim);
+    // Decode fusion F5: fold the post-FFN residual add into the sum —
+    // write the residual stream directly (x[i] + s, k_add's expression).
+    if (sum_add) {
+        metal_fuse_announce();
+        enc_moe_sum(g, e, g->x, 0, n_embd, used, n_embd, nil,
+                    sel_off, n, n_embd, 1);
+    } else
+        enc_moe_sum(g, e, g->xb, 0, n_embd, used, n_embd, nil,
+                    sel_off, n, xdim, 0);
 }
 
 static int  metal_nan_stage(void);
@@ -2489,23 +2553,30 @@ static void enc_gemma_moe_experts_batch(gpu_t *g,
                nil, 0, sel_off, 0);
     XP(g->moe_eout, (size_t)slots * n_embd, "exp:down");
     enc_moe_sum(g, e, g->q, 0, n_embd, used, n_embd, g->gdsc[l],
-                sel_off, n, xdim);
+                sel_off, n, xdim, 0);
 #undef XP
 }
 
 static void enc_moe_ffn_batch(gpu_t *g, id<MTLComputeCommandEncoder> e,
                               model_t *m, layer_t *ly, int l,
-                              int n, int xdim, bool norm_done) {
+                              int n, int xdim, bool norm_done,
+                              bool sum_add) {
     int ne = m->n_expert, used = m->n_expert_used;
     if (!norm_done)
         enc_rmsnorm_n(g, e, g->x, 0, g->xb, 0, g->ffn_norm[l],
                       m->n_embd, m->rms_eps, n, m->n_embd, xdim);
+    NSUInteger sel_off = foff((size_t)l * n * used);
+    // A fused router matvec + route (single threadgroup) was built and
+    // measured 2026-09-01: byte-identical, and 30B decode COLLAPSED 77 -> 40
+    // tok/s — one threadgroup means one GPU core streaming the ~1 MB router
+    // matrix that the split mv grid spreads across the chip. Same lesson as
+    // the dense-model front admission, at matvec scale: never trade a
+    // parallel weight sweep for a dispatch. Removed; the split pair stays.
     for (int b = 0; b < n; b++)
         enc_mv(g, e, m, ly->ffn_gate_inp, g->xb,
                foff((size_t)b * xdim), g->moe_logits,
                foff((size_t)b * ne), m->n_embd, ne, g->gib[l]);
     enc_moe_trace_logits(g, e, l, n, ne);
-    NSUInteger sel_off = foff((size_t)l * n * used);
     if (metal_moe_batch_on()) {
         enc_moe_route(g, e, ne, used, n, 0, sel_off);
     } else {
@@ -2514,7 +2585,7 @@ static void enc_moe_ffn_batch(gpu_t *g, id<MTLComputeCommandEncoder> e,
                           foff((size_t)b * ne),
                           sel_off + foff((size_t)b * used));
     }
-    enc_moe_experts_batch(g, e, m, ly, n, xdim, sel_off);
+    enc_moe_experts_batch(g, e, m, ly, n, xdim, sel_off, sum_add);
 }
 
 static void enc_gemma_moe_ffn_batch(gpu_t *g, id<MTLComputeCommandEncoder> e,
@@ -2774,8 +2845,9 @@ static float *gpu_forward_native_batch(model_t *m, const int32_t *tokens,
         // The attention-front megakernel: norm + q/k/v + rope + store in ONE
         // dispatch (kernels.metal explains why the walk is cut exactly
         // here). Models it cannot serve byte-exactly stay on the split path.
-        bool front = n == 1 && metal_fuse_on() &&
-                     metal_front_capable(g, m, l);
+        id<MTLComputePipelineState> fpipe =
+            n == 1 && metal_fuse_on() ? metal_front_pipe(g, m, l) : nil;
+        bool front = fpipe != nil;
         uint64_t qw = 0, kw = 0, vw = 0;
         id<MTLBuffer> qb = nil;
         if (front) {
@@ -2802,6 +2874,7 @@ static float *gpu_forward_native_batch(model_t *m, const int32_t *tokens,
                           n_embd, m->rms_eps, n, n_embd, xdim);
         if (front) {
             metal_fuse_announce();
+            metal_front_announce(fpipe, g);
             size_t frow_b = model_kv_row_bytes(m, l);
             uint64_t roff = model_kv_byte_off(m, l) +
                 (uint64_t)model_kv_row_at(m, l, pos) * frow_b;
@@ -2810,9 +2883,10 @@ static float *gpu_forward_native_batch(model_t *m, const int32_t *tokens,
                 pos, m->rope_neox, model_rope_mscale(m, l), m->rms_eps,
                 qw, kw, vw,
                 g->bq[l] != nil, g->bk[l] != nil, g->bv[l] != nil,
-                roff, roff };
+                roff, roff,
+                g->qn[l] != nil, g->kn[l] != nil };
             bool local = model_is_swa(m, l);
-            [e setComputePipelineState:g->p_attn_front_q8];
+            [e setComputePipelineState:fpipe];
             [e setBuffer:qb offset:0 atIndex:0];
             [e setBuffer:g->x  offset:0 atIndex:1];
             [e setBuffer:g->attn_norm[l] offset:0 atIndex:2];
@@ -2828,6 +2902,8 @@ static float *gpu_forward_native_batch(model_t *m, const int32_t *tokens,
             [e setBuffer:g->bk[l] ? g->bk[l] : g->dummy offset:0 atIndex:10];
             [e setBuffer:g->bv[l] ? g->bv[l] : g->dummy offset:0 atIndex:11];
             [e setBytes:&fa length:sizeof(fa) atIndex:12];
+            [e setBuffer:g->qn[l] ? g->qn[l] : g->dummy offset:0 atIndex:13];
+            [e setBuffer:g->kn[l] ? g->kn[l] : g->dummy offset:0 atIndex:14];
             g_disp.mv++;
             [e dispatchThreadgroups:MTLSizeMake(m->n_head + 2 * n_kv, 1, 1)
               threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
@@ -2854,13 +2930,13 @@ static float *gpu_forward_native_batch(model_t *m, const int32_t *tokens,
         // each (head, column) pair was always an independent reduction, so
         // only the encoding changes. This was 65n of the 240n per-token
         // dispatches the census measured; the elementwise ops are the rest.
-        if (g->qn[l])
+        if (g->qn[l] && !front)
             enc_qknorm_n(g, e, m, g->q, 0, g->qn[l], m->n_head, hd, n, q_dim);
         if (owns_kv) {
             if (m->v_rmsnorm)
                 enc_headnorm_n(g, e, m, ly->wv ? g->vt : g->kt, 0,
                                g->vt, 0, nil, n_kv, hd, n, kv_dim);
-            if (g->kn[l])
+            if (g->kn[l] && !front)
                 enc_qknorm_n(g, e, m, g->kt, 0, g->kn[l], n_kv, hd, n, kv_dim);
         }
         {
@@ -3070,6 +3146,20 @@ static float *gpu_forward_native_batch(model_t *m, const int32_t *tokens,
         bool f2a = n == 1 && metal_fuse_on() && g->p_add_rmsnorm &&
                    !g->pan[l] && m->resid_scale == 1.0f && !nanstage &&
                    !ly->moe_gemma;
+        // Fusion F2b, decided BEFORE the FFN so F5 (sum+add) can take the
+        // layers F2b leaves behind: F2b defers the post-FFN add into the
+        // NEXT layer's attention norm; F5 folds it into THIS layer's
+        // expert sum. Mutually exclusive by construction.
+        bool f2b = n == 1 && metal_fuse_on() && g->p_add_rmsnorm &&
+                   !g->pfn[l] && m->resid_scale == 1.0f && !ly->ple_gate &&
+                   (ly->out_scale == 1.0f || ly->out_scale == 0.0f) &&
+                   !nantrace && !nanstage && l + 1 < n_gpu_layers &&
+                   n_gpu_layers == m->n_layer &&
+                   !metal_front_capable(g, m, l + 1);
+        bool sum_add = n == 1 && metal_fuse_on() && !f2b && ly->is_moe &&
+                       !ly->moe_gemma && !g->pfn[l] &&
+                       m->resid_scale == 1.0f && !ly->ple_gate &&
+                       !nantrace && !nanstage;
         if (!f2a)
             enc_elem_n(g, e, g->p_add, g->x, 0, g->xb, 0, n_embd, n, n_embd, xdim);
         NAN_PROBE(g->x, (size_t)n * n_embd, "post-attn-resid");
@@ -3083,7 +3173,7 @@ static float *gpu_forward_native_batch(model_t *m, const int32_t *tokens,
             if (ly->moe_gemma)
                 enc_gemma_moe_ffn_batch(g, e, m, ly, l, n, xdim, &cb, &e);
             else
-                enc_moe_ffn_batch(g, e, m, ly, l, n, xdim, f2a);
+                enc_moe_ffn_batch(g, e, m, ly, l, n, xdim, f2a, sum_add);
         } else {
             // gemma-4 E2B varies the FFN width per layer; hb/hb2 are sized
             // for the max, so pack the batch at THIS layer's width.
@@ -3112,16 +3202,12 @@ static float *gpu_forward_native_batch(model_t *m, const int32_t *tokens,
                           n_embd, m->post_norm_eps, n, xdim, xdim);
         if (m->resid_scale != 1.0f)
             enc_scale_n(g, e, g->xb, 0, n_embd, m->resid_scale, n, xdim);
-        // Fusion F2b: defer this add into the next layer's attention norm
-        // when nothing needs the summed residual before it gets there.
-        if (n == 1 && metal_fuse_on() && g->p_add_rmsnorm && !g->pfn[l] &&
-            m->resid_scale == 1.0f && !ly->ple_gate &&
-            (ly->out_scale == 1.0f || ly->out_scale == 0.0f) &&
-            !nantrace && !nanstage && l + 1 < n_gpu_layers &&
-            n_gpu_layers == m->n_layer &&
-            !metal_front_capable(g, m, l + 1))
+        // Fusion F2b (decided above): defer this add into the next layer's
+        // attention norm; F5 already folded it into the expert sum on the
+        // layers it took.
+        if (f2b)
             fuse_pending_add = true;
-        else
+        else if (!sum_add)
         enc_elem_n(g, e, g->p_add, g->x, 0, g->xb, 0, n_embd, n, n_embd, xdim);
         // Order matters: the E-series branch reads the post-FFN residual of
         // EVERY token, so it has to run before any token's output scale.

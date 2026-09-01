@@ -1356,135 +1356,289 @@ kernel void k_rope_store(device float        *q    [[buffer(0)]],
 }
 
 // The attention-front megakernel: residual-stream norm + Q/K/V matvecs +
-// rope + f16 KV store, ONE dispatch. This is the safe form of the
-// persistent layer walk on Metal: a literal whole-layer kernel needs
-// cross-threadgroup synchronization Metal does not guarantee (no
-// forward-progress contract; a deadlock is a GPU watchdog event), so the
+// (optional qwen-style qk-norm) + rope + f16 KV store, ONE dispatch. This is
+// the safe form of the persistent layer walk on Metal: a literal whole-layer
+// kernel needs cross-threadgroup synchronization Metal does not guarantee
+// (no forward-progress contract; a deadlock is a GPU watchdog event), so the
 // walk is cut exactly where the data dependencies allow — whole heads per
-// threadgroup, every dependency inside one barrier scope. Byte identity
-// with the unfused chain is the gate: the norm replays k_rmsnorm's
-// 256-thread tree, the dots replay k_mv_q8_0's packed body (x served from
-// threadgroup memory — same values, same order, no device re-reads), rope
-// and store replay k_rope_store. n_embd caps at 7936 so the staged row and
-// the reduction tree fit the 32 KB threadgroup budget; wider models keep
-// the split path.
+// threadgroup, every dependency inside one barrier scope. Byte identity with
+// the unfused chain is the gate: the norm replays k_rmsnorm's 256-thread
+// tree, the dots replay the k_mv_* packed bodies through AFX (x served from
+// threadgroup memory — same values, same order, no device re-reads), the
+// qk-norm replays k_qknorm at its dispatched 64-thread shape, rope and store
+// replay k_rope_store. n_embd caps at 7936 so the staged row and the
+// reduction tree fit the 32 KB threadgroup budget; wider models keep the
+// split path. A "wide" form that skipped staging and re-derived each normed
+// element inline (x[i]*r*nw[i]) was built and measured 2026-09-01: the
+// shader compiler contracts the inline renorm into the dot's fma chains, so
+// it is NOT byte-identical on real data (the 70B caught it; fixtures did
+// not — their small exact values round the same fused or not), and the 70B
+// is bandwidth-bound anyway (no speed to win). Removed, negative recorded
+// in docs/metal-decode-dispatch-budget-2026-09-01.md.
 struct attn_front_args {
     int   n_embd, n_head, n_kv, head_dim, half_dim, pos, neox;
     float mscale, eps;
     ulong wq_off, wk_off, wv_off;
     int   has_bq, has_bk, has_bv;
     ulong kc_off, vc_off;
+    int   has_qn, has_kn;
 };
 
-kernel void k_attn_front_q8_0(device const uchar *wb    [[buffer(0)]],
-                              device const float *x     [[buffer(1)]],
-                              device const float *nw    [[buffer(2)]],
-                              device float       *q_out [[buffer(3)]],
-                              device float       *kt    [[buffer(4)]],
-                              device float       *vt    [[buffer(5)]],
-                              device uchar       *kc    [[buffer(6)]],
-                              device uchar       *vc    [[buffer(7)]],
-                              device const float *fr    [[buffer(8)]],
-                              device const float *bq    [[buffer(9)]],
-                              device const float *bk    [[buffer(10)]],
-                              device const float *bv    [[buffer(11)]],
-                              constant attn_front_args &a [[buffer(12)]],
-                              uint3 tid3  [[thread_position_in_threadgroup]],
-                              uint3 tgpig [[threadgroup_position_in_grid]],
-                              uint  sgitg [[simdgroup_index_in_threadgroup]],
-                              uint  tiisg [[thread_index_in_simdgroup]]) {
-    threadgroup float xb[7936];
-    threadgroup float red[256];
-    uint tid = tid3.x;
-    int NE = a.n_embd;
+// Dot bodies: character-for-character the k_mv_* arithmetic with the
+// activation load abstracted as AFX(i). Every accumulation keeps its
+// original expression and order — that is the whole byte-identity argument.
+#define AF_DOT_Q8_0(SV) { \
+    int nb = NE / 32; \
+    device const uchar *rw = wb + w_off + (ulong)row * nb * 34; \
+    float s = 0; \
+    for (int b = tiisg; b < nb; b += 32) { \
+        device const uchar *blk = rw + (ulong)b * 34; \
+        float d = (float)*(device const half *)blk; \
+        device const packed_char4 *qq4 = (device const packed_char4 *)(blk + 2); \
+        float t = 0; \
+        for (int kk = 0; kk < 8; kk++) { \
+            char4 qq = qq4[kk]; \
+            t += (float)qq.x * AFX(b * 32 + 4 * kk + 0); \
+            t += (float)qq.y * AFX(b * 32 + 4 * kk + 1); \
+            t += (float)qq.z * AFX(b * 32 + 4 * kk + 2); \
+            t += (float)qq.w * AFX(b * 32 + 4 * kk + 3); \
+        } \
+        s += d * t; \
+    } \
+    SV = s; }
 
-    // norm — k_rmsnorm's exact strided sum and 256-slot tree
-    float s0 = 0;
-    for (int i = tid; i < NE; i += 256) s0 += x[i] * x[i];
-    red[tid] = s0;
-    threadgroup_barrier(mem_flags::mem_threadgroup);
-    for (uint off = 128; off > 0; off >>= 1) {
-        if (tid < off) red[tid] += red[tid + off];
-        threadgroup_barrier(mem_flags::mem_threadgroup);
-    }
-    float r = rsqrt(red[0] / NE + a.eps);
-    for (int i = tid; i < NE; i += 256) xb[i] = x[i] * r * nw[i];
-    threadgroup_barrier(mem_flags::mem_threadgroup);
+#define AF_DOT_Q4_0(SV) { \
+    int nb = NE / 32; \
+    device const uchar *rw = wb + w_off + (ulong)row * nb * 18; \
+    float s = 0; \
+    for (int b = tiisg; b < nb; b += 32) { \
+        device const uchar *blk = rw + (ulong)b * 18; \
+        float d = (float)*(device const half *)blk; \
+        device const packed_uchar4 *q4 = (device const packed_uchar4 *)(blk + 2); \
+        float t = 0; \
+        for (int kk = 0; kk < 4; kk++) { \
+            uchar4 qq = q4[kk]; \
+            int lo = b * 32 + 4 * kk, hi = lo + 16; \
+            t += ((int)(qq.x & 0xF) - 8) * AFX(lo + 0) + ((int)(qq.x >> 4) - 8) * AFX(hi + 0); \
+            t += ((int)(qq.y & 0xF) - 8) * AFX(lo + 1) + ((int)(qq.y >> 4) - 8) * AFX(hi + 1); \
+            t += ((int)(qq.z & 0xF) - 8) * AFX(lo + 2) + ((int)(qq.z >> 4) - 8) * AFX(hi + 2); \
+            t += ((int)(qq.w & 0xF) - 8) * AFX(lo + 3) + ((int)(qq.w >> 4) - 8) * AFX(hi + 3); \
+        } \
+        s += d * t; \
+    } \
+    SV = s; }
 
-    // which unit: q head, k head, or v head
-    int u = (int)tgpig.x, hd = a.head_dim;
-    int role, head;
-    if (u < a.n_head)               { role = 0; head = u; }
-    else if (u < a.n_head + a.n_kv) { role = 1; head = u - a.n_head; }
-    else                            { role = 2; head = u - a.n_head - a.n_kv; }
-    ulong w_off = role == 0 ? a.wq_off : role == 1 ? a.wk_off : a.wv_off;
-    device float *yout = role == 0 ? q_out : role == 1 ? kt : vt;
-    device const float *bias = role == 0 ? bq : role == 1 ? bk : bv;
-    int has_bias = role == 0 ? a.has_bq : role == 1 ? a.has_bk : a.has_bv;
+#define AF_DOT_Q4_K(SV) { \
+    int nb = NE / 256; \
+    device const uchar *rw = wb + w_off + (ulong)row * nb * 144; \
+    float s = 0; \
+    int nq = nb * 4; \
+    for (int uq = tiisg; uq < nq; uq += 32) { \
+        int b = uq >> 2, jj = uq & 3; \
+        device const uchar *blk = rw + (ulong)b * 144; \
+        float d    = (float)*(device const half *)blk; \
+        float dmin = (float)*(device const half *)(blk + 2); \
+        device const uchar *sc = blk + 4; \
+        device const packed_uchar4 *q4 = \
+            (device const packed_uchar4 *)(blk + 16 + jj * 32); \
+        int xo = b * 256 + jj * 64; \
+        uchar s1, m1, s2, m2; \
+        get_scale_min_k4(jj * 2 + 0, sc, &s1, &m1); \
+        get_scale_min_k4(jj * 2 + 1, sc, &s2, &m2); \
+        float d1 = d * s1, mm1 = dmin * m1; \
+        float d2 = d * s2, mm2 = dmin * m2; \
+        float t1 = 0, t2 = 0, sx1 = 0, sx2 = 0; \
+        for (int kk = 0; kk < 8; kk++) { \
+            uchar4 qq = q4[kk]; \
+            float xlv, xhv; \
+            xlv = AFX(xo + 4 * kk + 0); xhv = AFX(xo + 32 + 4 * kk + 0); \
+            t1 += (float)(qq.x & 0xF) * xlv;  sx1 += xlv; \
+            t2 += (float)(qq.x >> 4)  * xhv;  sx2 += xhv; \
+            xlv = AFX(xo + 4 * kk + 1); xhv = AFX(xo + 32 + 4 * kk + 1); \
+            t1 += (float)(qq.y & 0xF) * xlv;  sx1 += xlv; \
+            t2 += (float)(qq.y >> 4)  * xhv;  sx2 += xhv; \
+            xlv = AFX(xo + 4 * kk + 2); xhv = AFX(xo + 32 + 4 * kk + 2); \
+            t1 += (float)(qq.z & 0xF) * xlv;  sx1 += xlv; \
+            t2 += (float)(qq.z >> 4)  * xhv;  sx2 += xhv; \
+            xlv = AFX(xo + 4 * kk + 3); xhv = AFX(xo + 32 + 4 * kk + 3); \
+            t1 += (float)(qq.w & 0xF) * xlv;  sx1 += xlv; \
+            t2 += (float)(qq.w >> 4)  * xhv;  sx2 += xhv; \
+        } \
+        s += d1 * t1 - mm1 * sx1 + d2 * t2 - mm2 * sx2; \
+    } \
+    SV = s; }
 
-    // dots — k_mv_q8_0's packed body, x from threadgroup memory
-    int nb = NE / 32;
-    for (int rr = (int)sgitg; rr < hd; rr += 8) {
-        int row = head * hd + rr;
-        device const uchar *rw = wb + w_off + (ulong)row * nb * 34;
-        float s = 0;
-        for (int b = tiisg; b < nb; b += 32) {
-            device const uchar *blk = rw + (ulong)b * 34;
-            float d = (float)*(device const half *)blk;
-            device const packed_char4 *qq4 = (device const packed_char4 *)(blk + 2);
-            threadgroup const float *xp = xb + b * 32;
-            float t = 0;
-            for (int kk = 0; kk < 8; kk++) {
-                char4 qq = qq4[kk];
-                t += (float)qq.x * xp[4 * kk + 0];
-                t += (float)qq.y * xp[4 * kk + 1];
-                t += (float)qq.z * xp[4 * kk + 2];
-                t += (float)qq.w * xp[4 * kk + 3];
-            }
-            s += d * t;
-        }
-        s = simd_sum(s);
-        if (tiisg == 0) yout[row] = has_bias ? s + bias[row] : s;
-    }
-    threadgroup_barrier(mem_flags::mem_device);
+#define AF_DOT_Q6_K(SV) { \
+    int nb = NE / 256; \
+    device const uchar *rw = wb + w_off + (ulong)row * nb * 210; \
+    float s = 0; \
+    int nh = nb * 2; \
+    for (int uh = tiisg; uh < nh; uh += 32) { \
+        int b = uh >> 1, half_i = uh & 1; \
+        device const uchar *blk = rw + (ulong)b * 210; \
+        device const uchar *ql = blk + half_i * 64; \
+        device const uchar *qh = blk + 128 + half_i * 32; \
+        device const char  *sc = (device const char *)(blk + 192) + half_i * 8; \
+        float d = (float)*(device const half *)(blk + 208); \
+        int xo = b * 256 + half_i * 128; \
+        float t[8] = {0, 0, 0, 0, 0, 0, 0, 0}; \
+        for (int is = 0; is < 2; is++) { \
+            device const packed_uchar4 *l4  = (device const packed_uchar4 *)(ql + is * 16); \
+            device const packed_uchar4 *l4b = (device const packed_uchar4 *)(ql + 32 + is * 16); \
+            device const packed_uchar4 *h4  = (device const packed_uchar4 *)(qh + is * 16); \
+            float4 a0 = 0, a1 = 0, a2 = 0, a3 = 0; \
+            for (int kk = 0; kk < 4; kk++) { \
+                uchar4 lo = l4[kk], hi = l4b[kk], h = h4[kk]; \
+                int x0o = xo + is * 16 + 4 * kk; \
+                float4 xv0 = float4(AFX(x0o +  0), AFX(x0o +  1), AFX(x0o +  2), AFX(x0o +  3)); \
+                float4 xv1 = float4(AFX(x0o + 32), AFX(x0o + 33), AFX(x0o + 34), AFX(x0o + 35)); \
+                float4 xv2 = float4(AFX(x0o + 64), AFX(x0o + 65), AFX(x0o + 66), AFX(x0o + 67)); \
+                float4 xv3 = float4(AFX(x0o + 96), AFX(x0o + 97), AFX(x0o + 98), AFX(x0o + 99)); \
+                a0 += (float4(lo & 0xF) + float4((h >> 0) & 3) * 16.0f - 32.0f) * xv0; \
+                a1 += (float4(hi & 0xF) + float4((h >> 2) & 3) * 16.0f - 32.0f) * xv1; \
+                a2 += (float4(lo >> 4)  + float4((h >> 4) & 3) * 16.0f - 32.0f) * xv2; \
+                a3 += (float4(hi >> 4)  + float4((h >> 6) & 3) * 16.0f - 32.0f) * xv3; \
+            } \
+            t[is * 4 + 0] = a0.x + a0.y + a0.z + a0.w; \
+            t[is * 4 + 1] = a1.x + a1.y + a1.z + a1.w; \
+            t[is * 4 + 2] = a2.x + a2.y + a2.z + a2.w; \
+            t[is * 4 + 3] = a3.x + a3.y + a3.z + a3.w; \
+        } \
+        s += d * (sc[0] * t[0] + sc[2] * t[1] + sc[4] * t[2] + sc[6] * t[3] + \
+                  sc[1] * t[4] + sc[3] * t[5] + sc[5] * t[6] + sc[7] * t[7]); \
+    } \
+    SV = s; }
 
-    // rope + store — k_rope_store's expressions, head-local
-    int hf = a.half_dim, rd = 2 * hf;
-    device half *kh = (device half *)(kc + a.kc_off);
-    device half *vh = (device half *)(vc + a.vc_off);
-    if (role == 0) {
-        for (int j = tid; j < hf; j += 256) {
-            float ang = a.pos * fr[j];
-            float c = cos(ang) * a.mscale, sn = sin(ang) * a.mscale;
-            device float *p = q_out + head * hd;
-            int i0 = a.neox ? j : 2 * j;
-            int i1 = a.neox ? j + hf : i0 + 1;
-            float x0 = p[i0], x1 = p[i1];
-            p[i0] = x0 * c - x1 * sn;
-            p[i1] = x0 * sn + x1 * c;
-        }
-    } else if (role == 1) {
-        for (int j = tid; j < hf; j += 256) {
-            float ang = a.pos * fr[j];
-            float c = cos(ang) * a.mscale, sn = sin(ang) * a.mscale;
-            device float *p = kt + head * hd;
-            int i0 = a.neox ? j : 2 * j;
-            int i1 = a.neox ? j + hf : i0 + 1;
-            float x0 = p[i0], x1 = p[i1];
-            float y0 = x0 * c - x1 * sn;
-            float y1 = x0 * sn + x1 * c;
-            p[i0] = y0;
-            p[i1] = y1;
-            kh[head * hd + i0] = (half)y0;
-            kh[head * hd + i1] = (half)y1;
-        }
-        for (int j = rd + tid; j < hd; j += 256)
-            kh[head * hd + j] = (half)kt[head * hd + j];
-    } else {
-        for (int j = tid; j < hd; j += 256)
-            vh[head * hd + j] = (half)vt[head * hd + j];
-    }
+// k_qknorm replica at the shape enc_qknorm_n actually dispatches it: 64
+// threads, red tree from 32. All 256 threads reach every barrier (role and
+// has_qn/has_kn are threadgroup-uniform); only tid < 64 touch data, exactly
+// the lanes the unfused dispatch had.
+#define AF_QKNORM(P, W) { \
+    device float *pp = P; \
+    float sq = 0; \
+    if (tid < 64) { \
+        for (int i = tid; i < hd; i += 64) sq += pp[i] * pp[i]; \
+        red[tid] = sq; \
+    } \
+    threadgroup_barrier(mem_flags::mem_threadgroup); \
+    for (uint off = 32; off > 0; off >>= 1) { \
+        if (tid < off) red[tid] += red[tid + off]; \
+        threadgroup_barrier(mem_flags::mem_threadgroup); \
+    } \
+    float rq = rsqrt(red[0] / hd + a.eps); \
+    if (tid < 64) \
+        for (int i = tid; i < hd; i += 64) pp[i] = pp[i] * rq * W[i]; \
+    threadgroup_barrier(mem_flags::mem_device); \
 }
+
+#define AF_PARAMS \
+    device const uchar *wb    [[buffer(0)]], \
+    device const float *x     [[buffer(1)]], \
+    device const float *nw    [[buffer(2)]], \
+    device float       *q_out [[buffer(3)]], \
+    device float       *kt    [[buffer(4)]], \
+    device float       *vt    [[buffer(5)]], \
+    device uchar       *kc    [[buffer(6)]], \
+    device uchar       *vc    [[buffer(7)]], \
+    device const float *fr    [[buffer(8)]], \
+    device const float *bq    [[buffer(9)]], \
+    device const float *bk    [[buffer(10)]], \
+    device const float *bv    [[buffer(11)]], \
+    constant attn_front_args &a [[buffer(12)]], \
+    device const float *qnw   [[buffer(13)]], \
+    device const float *knw   [[buffer(14)]], \
+    uint3 tid3  [[thread_position_in_threadgroup]], \
+    uint3 tgpig [[threadgroup_position_in_grid]], \
+    uint  sgitg [[simdgroup_index_in_threadgroup]], \
+    uint  tiisg [[thread_index_in_simdgroup]]
+
+#define AF_BODY(DQ, DK, DV) \
+    int u = (int)tgpig.x, hd = a.head_dim; \
+    int role, head; \
+    if (u < a.n_head)               { role = 0; head = u; } \
+    else if (u < a.n_head + a.n_kv) { role = 1; head = u - a.n_head; } \
+    else                            { role = 2; head = u - a.n_head - a.n_kv; } \
+    ulong w_off = role == 0 ? a.wq_off : role == 1 ? a.wk_off : a.wv_off; \
+    device float *yout = role == 0 ? q_out : role == 1 ? kt : vt; \
+    device const float *bias = role == 0 ? bq : role == 1 ? bk : bv; \
+    int has_bias = role == 0 ? a.has_bq : role == 1 ? a.has_bk : a.has_bv; \
+    for (int rr = (int)sgitg; rr < hd; rr += 8) { \
+        int row = head * hd + rr; \
+        float sv = 0; \
+        if (role == 0)      DQ(sv) \
+        else if (role == 1) DK(sv) \
+        else                DV(sv) \
+        sv = simd_sum(sv); \
+        if (tiisg == 0) yout[row] = has_bias ? sv + bias[row] : sv; \
+    } \
+    threadgroup_barrier(mem_flags::mem_device); \
+    int hf = a.half_dim, rd = 2 * hf; \
+    device half *kh = (device half *)(kc + a.kc_off); \
+    device half *vh = (device half *)(vc + a.vc_off); \
+    if (role == 0) { \
+        if (a.has_qn) AF_QKNORM(q_out + head * hd, qnw) \
+        for (int j = tid; j < hf; j += 256) { \
+            float ang = a.pos * fr[j]; \
+            float c = cos(ang) * a.mscale, sn = sin(ang) * a.mscale; \
+            device float *p = q_out + head * hd; \
+            int i0 = a.neox ? j : 2 * j; \
+            int i1 = a.neox ? j + hf : i0 + 1; \
+            float x0 = p[i0], x1 = p[i1]; \
+            p[i0] = x0 * c - x1 * sn; \
+            p[i1] = x0 * sn + x1 * c; \
+        } \
+    } else if (role == 1) { \
+        if (a.has_kn) AF_QKNORM(kt + head * hd, knw) \
+        for (int j = tid; j < hf; j += 256) { \
+            float ang = a.pos * fr[j]; \
+            float c = cos(ang) * a.mscale, sn = sin(ang) * a.mscale; \
+            device float *p = kt + head * hd; \
+            int i0 = a.neox ? j : 2 * j; \
+            int i1 = a.neox ? j + hf : i0 + 1; \
+            float x0 = p[i0], x1 = p[i1]; \
+            float y0 = x0 * c - x1 * sn; \
+            float y1 = x0 * sn + x1 * c; \
+            p[i0] = y0; \
+            p[i1] = y1; \
+            kh[head * hd + i0] = (half)y0; \
+            kh[head * hd + i1] = (half)y1; \
+        } \
+        for (int j = rd + tid; j < hd; j += 256) \
+            kh[head * hd + j] = (half)kt[head * hd + j]; \
+    } else { \
+        for (int j = tid; j < hd; j += 256) \
+            vh[head * hd + j] = (half)vt[head * hd + j]; \
+    }
+
+// Staged form: k_rmsnorm's exact strided sum and 256-slot tree, normed row
+// parked in threadgroup memory for all three projections.
+#define AF_KERNEL(NAME, DQ, DK, DV) \
+kernel void NAME(AF_PARAMS) { \
+    threadgroup float xb[7936]; \
+    threadgroup float red[256]; \
+    uint tid = tid3.x; \
+    int NE = a.n_embd; \
+    float s0 = 0; \
+    for (int i = tid; i < NE; i += 256) s0 += x[i] * x[i]; \
+    red[tid] = s0; \
+    threadgroup_barrier(mem_flags::mem_threadgroup); \
+    for (uint off = 128; off > 0; off >>= 1) { \
+        if (tid < off) red[tid] += red[tid + off]; \
+        threadgroup_barrier(mem_flags::mem_threadgroup); \
+    } \
+    float r = rsqrt(red[0] / NE + a.eps); \
+    for (int i = tid; i < NE; i += 256) xb[i] = x[i] * r * nw[i]; \
+    threadgroup_barrier(mem_flags::mem_threadgroup); \
+    AF_BODY(DQ, DK, DV) \
+}
+
+#define AFX(i) xb[i]
+AF_KERNEL(k_attn_front_q8_0,    AF_DOT_Q8_0, AF_DOT_Q8_0, AF_DOT_Q8_0)
+AF_KERNEL(k_attn_front_q4_0,    AF_DOT_Q4_0, AF_DOT_Q4_0, AF_DOT_Q4_0)
+AF_KERNEL(k_attn_front_q4_k,    AF_DOT_Q4_K, AF_DOT_Q4_K, AF_DOT_Q4_K)
+AF_KERNEL(k_attn_front_q6_k,    AF_DOT_Q6_K, AF_DOT_Q6_K, AF_DOT_Q6_K)
+AF_KERNEL(k_attn_front_q4k_q6k, AF_DOT_Q4_K, AF_DOT_Q4_K, AF_DOT_Q6_K)
+#undef AFX
 
 // residual add + the FOLLOWING rmsnorm: two dispatches -> one. The add and
 // the reduction reproduce k_add and k_rmsnorm exactly (tid-strided square
@@ -3038,6 +3192,7 @@ kernel void k_moe_sum(device float       *out    [[buffer(0)]],
                       constant int       &has_dscale [[buffer(8)]],
                       constant int       &tokens [[buffer(9)]],
                       constant int       &out_stride [[buffer(10)]],
+                      constant int       &fuse_add   [[buffer(11)]],
                       uint2 gid [[thread_position_in_grid]]) {
     int i = gid.x, token = gid.y;
     if ((int)i >= n) return;
@@ -3049,5 +3204,10 @@ kernel void k_moe_sum(device float       *out    [[buffer(0)]],
         float w = selw[si] * (has_dscale ? dscale[sel[si]] : 1.0f);
         s += w * eout[(ulong)si * es + i];
     }
-    out[(ulong)token * out_stride + i] = s;
+    // Decode fusion F5: the post-FFN residual add folded into the expert
+    // sum — out IS the residual stream and x[i] + s is character for
+    // character what k_add computed from the stored sum. One fewer
+    // dispatch per layer; byte identity is the gate, as ever.
+    device float *o = out + (ulong)token * out_stride + i;
+    *o = fuse_add ? *o + s : s;
 }

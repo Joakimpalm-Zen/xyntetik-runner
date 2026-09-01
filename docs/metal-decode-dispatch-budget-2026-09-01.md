@@ -86,3 +86,72 @@ fused vs unfused, byte-equal — that leg catches it.
 Remaining on the 15 ms → 5 ms road: the o/down/router/attention dispatches
 and the ramp cost inside the heavy matvecs themselves; extending the front
 kernel to Q4_K/Q4_0 attention and qk-norm models widens its coverage.
+
+## Phase 3 — widening the front, same day: two wins, two honest refusals
+
+The front kernel grew from one shape to a roster — Q4_0, Q4_K, Q6_K and the
+Q4_K/Q6_K mix (the Q4_K_M attention layout) alongside Q8_0, each dot body a
+character-for-character replay of its k_mv_* twin behind one activation
+macro — and learned qwen-style qk-norm, replayed in-dispatch at exactly the
+64-thread shape enc_qknorm_n gives k_qknorm. Measured:
+
+- **Qwen3-30B-A3B-Q8_0 (qk-norm MoE): 72.8 → 77.1 tok/s (+6.0%),
+  teacher-forced logprobs byte-identical.**
+- 120B regression: byte-identical, 72.5 → 76.6 (+5.6% warm).
+
+And what measurement kept OUT:
+
+- **Dense models are not admitted.** Qwen3-8B-Q4_K_M ran the front
+  byte-identically — 8.4% SLOWER (84.3 → 77.2). The front recovers
+  dispatch-chain latency, which is where MoE decode's milliseconds sit; a
+  fast dense model is matvec-bound, and one-threadgroup-per-head (48 TGs)
+  starves a GPU the split mv grid fills. Admission is therefore MoE-only
+  (n_expert > 0), a measured criterion, not a type list.
+  RUNNER_METAL_FRONT=all lifts it for fixture-scale gates.
+- **The wide (no-staging) form is removed.** Built for the 70B's 8192-wide
+  rows: recompute the normed element inline as x[i]*r*nw[i] instead of
+  staging it. The expression is bit-exact; the COMPILER is not — it
+  contracts the inline renorm into the dot's fma chains, and the fused
+  product never rounds where the unfused path's store rounds it. Fixture
+  force-runs passed (small exact values round the same fused or not); the
+  real 70B's teacher-forced logprobs failed. And the 70B is
+  bandwidth-bound at 12 tok/s — dispatch latency isn't its problem, so
+  even a fixed wide form has nothing to win. Both facts are the negative.
+
+Gate mechanics that earned their keep: the qk-norm fixtures pin every new
+kernel byte-identically (q8_0, q4_0, q4_k, q6_k, forced via
+RUNNER_METAL_FRONT=all for the dense ones, with a default-admission MoE leg
+against vacuity), and the teacher-forced-logprob leg — added this morning
+after the rope-sign escape — caught BOTH planted mutations (qk-norm weight
+dropped; Q4_K dmin sign flipped) while every 24-token compare waved them
+through. Token-level fixture compares are officially not a gate for
+arithmetic inside the attention front; logprob bytes are.
+
+## Phase 4 — the layer tail, same day: one fold in, one fold out
+
+**In: F5, the post-FFN residual add folded into the expert sum.** k_moe_sum
+already visits every element of the summed expert output; it now writes the
+residual stream directly — `x[i] + s`, character for character what k_add
+computed from the stored sum — on exactly the layers whose add F2b was not
+already deferring (the two are decided together, before the FFN encodes, and
+are mutually exclusive by construction). One dispatch per MoE layer gone
+(−36/token on the 120B), byte-identical on the full fixture roster and on
+both flagships' teacher-forced logprobs; decode speed within noise on top of
+the megakernel (30B 75.5, 120B 75.3 tok/s in the same session-state run
+where unfused read 70.9/71.5). A dropped-residual mutation is caught by the
+plain moe4-q8 byte leg instantly.
+
+**Out: F4, the router matvec + route fused into one dispatch.** Built,
+byte-identical — and 30B decode COLLAPSED 77 → 40 tok/s. One threadgroup
+means one GPU core, and the router is a real matvec: ~1 MB of router weights
+per layer that the split mv grid streams across the whole chip were being
+pulled through a single core's load path. Same lesson as the dense-model
+front admission, at matvec scale, and it is now a rule: **never trade a
+parallel weight sweep for a dispatch.** The route kernel itself (a few
+hundred scalar ops) stays the one honest tiny dispatch in the tail.
+
+Program state after phases 1–4: **686 → ~330 dispatches per token (−52%)
+on the 120B, all byte-identity class**, decode +5–6% on both MoE flagships,
+and the negatives ledger (expert-major ×2, wide front, F4 router, dense
+admission) is as load-bearing as the wins — each one is a measured reason
+the shipped shape is what it is.
