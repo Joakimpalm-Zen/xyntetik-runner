@@ -160,3 +160,26 @@ budget is intended for its short answer, not hidden chain-of-thought. The
 parent control will be rerun under that fixed request shape. Hypotheses,
 lengths, seeds, depths, scoring, and kill thresholds are unchanged; the invalid
 record remains retained as an instrument correction.
+
+### 2026-09-01T18:45:07Z — short gate passed; CPU long gate stopped
+
+The corrected parent control passed 9/9 exact at 4K (SHA-256
+`4503aa4ccca721b5936f6991b4527005310f92ee71483021165684f3f5174279`).
+The x64/262K candidate then passed the same nine cells 9/9 with identical
+answers (SHA-256
+`78d35cb39a734f8ec302304bbfbdd9d27ea0af55c033deca99e337a78885db72`).
+
+The first 32K candidate request evaluated 32,743 prompt tokens and completed
+with two generated tokens; a second request began with 3,286 cached prompt
+tokens. The matrix was manually stopped after about 76 minutes of total server
+time because CPU-only turnaround was already hours for nine 32K cells and
+would be multi-day for the preregistered ladder. `kv-quality.py` writes JSON
+only after a suite completes, so the first cell's answer was not retained and
+is deliberately **unscored**. The server log is preserved as
+`long-context-attempt.log` in the artifact bundle. This is an unwanted
+operational result on this host, not a retrieval failure and not evidence that
+the candidate works at 32K.
+
+No 524K inference-quality run was started because the 262K candidate did not
+clear its intermediate retrieval gate. The 262K and 524K GGUFs remain
+mechanically valid research artifacts, not qualified releases.
