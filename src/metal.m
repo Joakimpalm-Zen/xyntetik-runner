@@ -91,12 +91,12 @@ typedef struct { int n_in, n_out; uint64_t w_off; int has_bias;
 typedef struct { int n_in, n_out, n_col; uint64_t w_off;
                  int has_bias, x_stride, y_stride; } mm_args;
 typedef struct { int n, x_stride, y_stride; float eps; } norm_args;
-typedef struct { int kv_dim, q8, stride; uint64_t off, row_b; } store_args;
+typedef struct { int kv_dim, q8, stride, pos, kv_rows; uint64_t off, row_b; } store_args;
 typedef struct { int head_dim, n_heads, half_dim, pos, neox; float mscale; int stride; } rope_args;
 typedef struct { int head_dim, n_head, n_head_kv, n_ctx, pos; uint64_t l_off; float scale; int q8, window, has_sinks;
-                 int q_stride, att_stride, out_stride; } attn_args;
+                 int q_stride, att_stride, out_stride, kv_rows; } attn_args;
 typedef struct { int head_dim, n_head, n_head_kv, n_ctx, pos; uint64_t l_off; float scale;
-                 int q8, window, chunk, n_chunks; } attn_chunk_args;
+                 int q8, window, chunk, n_chunks, kv_rows; } attn_chunk_args;
 typedef struct { int head_dim, n_head, n_chunks, has_sinks; } attn_comb_args;
 
 // Chunked decode attention. The split is chosen from the HEAD COUNT, not a
@@ -1780,6 +1780,19 @@ static void enc_mv_n(gpu_t *g, id<MTLComputeCommandEncoder> e, model_t *m,
                      id<MTLBuffer> y, NSUInteger y_off,
                      int n_in, int n_out, id<MTLBuffer> bias,
                      int n_col, int x_stride, int y_stride) {
+    // Small batches take the multi-column IDENTITY matvec, not the GEMM
+    // tiles: a 32-wide mm tile carrying 2 real columns is a full weight
+    // sweep through mostly-padding (measured on the 70B speculative verify:
+    // K=1 11.7 tok/s, K=2 through the mm path 2.2 tok/s). The identity
+    // matvec serves the weight row from cache across the columns instead —
+    // the same reasoning as CUDA's gemvb twins — and is bit-identical to
+    // n_col solo dispatches into the bargain. 16 covers the speculative
+    // window (spec_batch); real prefill batches go to the tiles as before.
+    if (n_col > 1 && n_col <= 16) {
+        enc_mv_cols(g, e, w, x, x_off, y, y_off, n_in, n_out, bias,
+                    n_col, x_stride, y_stride);
+        return;
+    }
     if (n_col > 1 && g->p_tensor[w->type] && n_in % 256 == 0) {
         [e setComputePipelineState:g->p_tensor[w->type]];
         mm_args ma = { n_in, n_out, n_col,
@@ -2701,9 +2714,9 @@ static float *gpu_forward_native_batch(model_t *m, const int32_t *tokens,
                 if (model_layer_ropes(m, l))
                     enc_rope_n(g, e, m, g->kt, 0, n_kv, pos, l, n, kv_dim);
 
-                store_args sa = { kv_dim_l, q8, kv_dim,
-                                  model_kv_byte_off(m, l) + (uint64_t)pos * row_b,
-                                  (uint64_t)row_b };
+                store_args sa = { kv_dim_l, q8, kv_dim, pos,
+                                  model_kv_is_ring(m, l) ? m->kv_ring : 0,
+                                  model_kv_byte_off(m, l), (uint64_t)row_b };
                 [e setComputePipelineState:g->p_store];
                 [e setBuffer:g->kt offset:0 atIndex:0];
                 [e setBuffer:g->vt offset:0 atIndex:1];
@@ -2754,7 +2767,8 @@ static float *gpu_forward_native_batch(model_t *m, const int32_t *tokens,
                 attn_chunk_args ca = { hd, m->n_head, n_kv, m->n_ctx, pos,
                                        (uint64_t)model_kv_byte_off(m, l),
                                        model_attn_scale(m, l), q8, window,
-                                       a_chunk, a_nch };
+                                       a_chunk, a_nch,
+                                       model_kv_is_ring(m, l) ? m->kv_ring : 0 };
                 bool coopc = metal_attn_coop_on() && g->p_attn_chunk_coop;
                 if (coopc) g_coop_dispatches++;
                 [e setComputePipelineState:coopc ? g->p_attn_chunk_coop
@@ -2788,7 +2802,8 @@ static float *gpu_forward_native_batch(model_t *m, const int32_t *tokens,
                              (uint64_t)model_kv_byte_off(m, l),
                              model_attn_scale(m, l), q8, window,
                              g->sinks[l] != nil,
-                             q_dim, m->n_head * m->n_ctx, xdim };
+                             q_dim, m->n_head * m->n_ctx, xdim,
+                             model_kv_is_ring(m, l) ? m->kv_ring : 0 };
             // Cooperative twin at decode only: the score loop is what
             // scatters, and at n > 1 each column has its own KV range, which
             // the coop form's simdgroup-per-row split does not describe.
@@ -2889,13 +2904,19 @@ static float *gpu_forward_native_batch(model_t *m, const int32_t *tokens,
         // below), and the vocab matmul is the widest in the model — doing it
         // for every prompt token was pure waste.
         if (l == m->n_layer - 1 && n_gpu_layers == m->n_layer) {
-            NSUInteger xo = foff((size_t)(n - 1) * n_embd);
-            NSUInteger xbo = foff((size_t)(n - 1) * xdim);
-            enc_rmsnorm(g, e, g->x, xo, g->xb, xbo, g->out_norm,
-                        n_embd, m->rms_eps);
-            enc_mv(g, e, m, m->output, g->xb, xbo, g->logits,
-                   foff((size_t)(n - 1) * m->n_vocab),
-                   n_embd, m->n_vocab, nil);
+            // Speculative verify (model_forward_batch_keep) needs EVERY
+            // column's logits — the head runs per column then. The normal
+            // path keeps the last-column-only economy.
+            int c0 = m->spec_want_all >= n ? 0 : n - 1;
+            for (int c = c0; c < n; c++) {
+                NSUInteger xo = foff((size_t)c * n_embd);
+                NSUInteger xbo = foff((size_t)c * xdim);
+                enc_rmsnorm(g, e, g->x, xo, g->xb, xbo, g->out_norm,
+                            n_embd, m->rms_eps);
+                enc_mv(g, e, m, m->output, g->xb, xbo, g->logits,
+                       foff((size_t)c * m->n_vocab),
+                       n_embd, m->n_vocab, nil);
+            }
         }
     }
 
@@ -3027,6 +3048,21 @@ static bool metal_batch_eligible(model_t **seqs, int n, gpu_t **lead_out) {
     return true;
 }
 
+// Unified memory: g->x and g->logits contents are host pointers, so the
+// speculative verify walk can read the batch's hidden work directly. The
+// forward emits per-column heads when model_forward_batch_keep asked for
+// them (m->spec_want_all), and row logits are just offsets into g->logits.
+bool gpu_spec_keep_ok(const model_t *m) {
+    (void)m;
+    return true;
+}
+
+float *gpu_spec_logits(model_t *mm, int row) {
+    gpu_t *g = (gpu_t *)mm->gpu;
+    if (!g || !g->logits) return NULL;
+    return (float *)g->logits.contents + (size_t)row * mm->n_vocab;
+}
+
 gpu_batch *gpu_batch_create(model_t **seqs, int n) {
     gpu_t *lead = NULL;
     if (!metal_batch_eligible(seqs, n, &lead)) return NULL;
@@ -3146,9 +3182,8 @@ bool gpu_batch_decode(gpu_batch *b, const int *idx, const int32_t *tok,
                     enc_scale(g, e, g->q, foff((size_t)c * q_dim), q_dim_l, ts);
             }
             if (owns_kv) {
-                store_args sa = { kv_dim_l, q8, kv_dim,
-                                  model_kv_byte_off(ms, l) + (uint64_t)p * row_b,
-                                  (uint64_t)row_b };
+                store_args sa = { kv_dim_l, q8, kv_dim, p, 0,
+                                  model_kv_byte_off(ms, l), (uint64_t)row_b };
                 [e setComputePipelineState:g->p_store];
                 [e setBuffer:g->kt offset:foff((size_t)c * kv_dim) atIndex:0];
                 [e setBuffer:g->vt offset:foff((size_t)c * kv_dim) atIndex:1];
@@ -3163,7 +3198,7 @@ bool gpu_batch_decode(gpu_batch *b, const int *idx, const int32_t *tok,
             attn_args aa = { hd, m0->n_head, n_kv, m0->n_ctx, p,
                              (uint64_t)model_kv_byte_off(ms, l),
                              model_attn_scale(m0, l), q8, window,
-                             false, q_dim, m0->n_head * m0->n_ctx, xdim };
+                             false, q_dim, m0->n_head * m0->n_ctx, xdim, 0 };
             bool coop = metal_attn_coop_on() && g->p_attn_coop;
             if (coop) g_coop_dispatches++;
             [e setComputePipelineState:coop ? g->p_attn_coop : g->p_attn];

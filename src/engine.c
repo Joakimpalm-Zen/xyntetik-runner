@@ -42,6 +42,7 @@ static void stop_add(engine *e, tokenizer *tok, const char *spelling) {
 }
 
 bool engine_init(engine *e, model_t *m, tokenizer *tok, sampler *smp) {
+    free(e->spec_logits_copy);
     free(e->hist); // slot engines are re-inited on model swap; e must be zeroed
     free(e->cdoc);
     memset(e, 0, sizeof(*e));
@@ -852,15 +853,15 @@ int prefix_cache_load(const char *path, const engine *e) {
 // must match modulo family padding. NULL (with a stderr note) = run plain.
 model_t *spec_draft_load(const char *path, const model_t *target,
                          const model_params *mp) {
-    if (target->gpu && target->gpu_layers >= target->n_layer) {
-        fprintf(stderr, "draft: target is fully GPU-offloaded — speculative "
-                "decoding needs the CPU verify path, ignoring --draft\n");
-        return NULL;
-    }
     if (!model_spec_verify_ok(target)) {
-        fprintf(stderr, "draft: target has CUDA-resident recurrent state — "
-                "speculative decoding needs host-visible fold rollback, "
-                "ignoring --draft\n");
+        // Covers both refusals with one capability question: a discrete-VRAM
+        // full offload (hidden states unreadable) and CUDA-resident
+        // recurrent state (no host-visible fold rollback). Unified-memory
+        // Metal full offload passes: the verify walk reads the backend's own
+        // buffers and the per-column heads the forward emits for it.
+        fprintf(stderr, "draft: this target's backend cannot serve the "
+                "speculative verify walk (discrete-VRAM offload or "
+                "device-resident recurrent state) — ignoring --draft\n");
         return NULL;
     }
     model_params dmp = *mp;
@@ -1713,6 +1714,24 @@ static int engine_generate_spec(engine *e, float *logits, int max_new,
             d[nd++] = best;
             st_drafted++;
             dl = model_forward(dm, best, e->dpos++);
+        }
+        // Full-offload verify (unified-memory GPU) writes the per-column
+        // heads into the SAME backend buffer the round-start `logits`
+        // pointer aliases — the previous forward's row is clobbered before
+        // the walk reads it. Snapshot it first. CPU targets never alias:
+        // their keep-forward computes no head at all. Found on the 70B as
+        // 0-of-128 acceptance with garbled fallback tokens; the fixture
+        // self-draft could not see it because its previous row happened to
+        // coincide with verify row 0's content only after a full accept.
+        if (nd && m->gpu && m->gpu_layers >= m->n_layer) {
+            if (!e->spec_logits_copy)
+                e->spec_logits_copy =
+                    malloc(sizeof(float) * (size_t)m->n_vocab);
+            if (e->spec_logits_copy && logits != e->spec_logits_copy) {
+                memcpy(e->spec_logits_copy, logits,
+                       sizeof(float) * (size_t)m->n_vocab);
+                logits = e->spec_logits_copy;
+            }
         }
         // Tracer 6: the batched verify below advances a recurrent TARGET's fold
         // through every draft; snapshot the round-start fold so a partially-

@@ -3229,14 +3229,11 @@ static bool model_alloc_runtime(model_t *m, const model_params *p) {
         const char *e = getenv("RUNNER_KV_RING");
         if (e && *e && strcmp(e, "0") != 0) {
             int rows = model_kv_ring_rows(m->swa_window, m->n_batch, n_ctx);
-#ifdef RUNNER_GPU_METAL
-            if (p->gpu_mode != GPU_OFF) {
-                fprintf(stderr, "kv ring: refused — the Metal attention "
-                        "kernels address KV by absolute position; rerun with "
-                        "--gpu off to use the ring\n");
-                rows = n_ctx;   // leave the flat layout in place
-            }
-#endif
+            // Metal joined the ring on 2026-09-01: its store and attention
+            // kernels resolve rows through the same modulo the CPU and CUDA
+            // paths use (kv_row_off / model_kv_row_at / kv_slot), so the
+            // former refusal here is gone. The microbatch decode declines
+            // ring members and falls back to sequential, which is ring-aware.
             if (rows < n_ctx) m->kv_ring = rows;
         }
     }
@@ -6882,7 +6879,9 @@ float *model_forward_batch(model_t *m, const int32_t *tokens, int n, int pos,
 // round snapshot/restore seam checkpoints the host fold, not CUDA's live fold.
 bool model_spec_verify_ok(const model_t *m) {
     if (!m->gpu) return true;
-    if (m->gpu_layers >= m->n_layer) return false;
+    // Full offload: only a backend whose hidden states and per-row logits
+    // are host-readable (unified memory) can serve the verify walk.
+    if (m->gpu_layers >= m->n_layer) return gpu_spec_keep_ok(m);
     for (int l = 0; l < m->gpu_layers; l++)
         if (m->layers[l].recurrent) return false;
     return true;
@@ -6897,7 +6896,9 @@ bool model_forward_batch_keep(model_t *m, const int32_t *tokens, int n, int pos)
     // draft window used to be clamped to spec_batch only — with a small -b
     // (n_batch < 16) that overflowed x by the difference.
     if (n > m->spec_batch || n > m->n_batch || !m->all_logits) return false;
+    m->spec_want_all = n;   // a full-offload backend emits every column's head
     model_forward_batch(m, tokens, n, pos, false); // leaves hidden states in x
+    m->spec_want_all = 0;
     return true;
 }
 
@@ -6906,6 +6907,17 @@ bool model_forward_batch_keep(model_t *m, const int32_t *tokens, int n, int pos)
 // lm_head is the single most expensive matvec in the model). Valid until
 // the next forward.
 float *model_spec_row_logits(model_t *m, int b) {
+    // Fully offloaded target on a unified-memory backend: the forward already
+    // emitted this row's head into the backend's logits buffer (spec_want_all)
+    // — apply the CPU-side head transforms and hand it back. Each row is read
+    // at most once per verify round, same as the lazy CPU contract.
+    if (m->gpu && m->gpu_layers >= m->n_layer) {
+        float *lg = gpu_spec_logits(m, b);
+        if (lg) {
+            apply_head_transforms(m, lg);
+            return lg;
+        }
+    }
     int n_embd = m->n_embd, xdim = m->xdim;   // cached at load (RNC-3)
     float *lg = m->all_logits + (size_t)b * m->n_vocab;
     rmsnorm(m->xb, m->x + (size_t)b * n_embd, m->out_norm_w, n_embd, m->rms_eps);

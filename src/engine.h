@@ -119,6 +119,9 @@ typedef struct {
     struct { int rounds, drafted, accepted,      // all drafts (either source)
                  gr_drafted, gr_accepted; }      // grammar-pinned drafts only
              spec_st;                            // reset per generation
+    float   *spec_logits_copy;   // round-start logits snapshot: a full-offload
+                                 // verify overwrites the backend row the live
+                                 // pointer aliases (lazily sized n_vocab)
     // JC-R2 Phase 0 trace (RUNNER_GRAMMAR_TRACE=path): the current grammar
     // round's pinned bytes + drafted ids, stashed at draft time and emitted
     // as one JSONL record when the verify walk resolves the round. Slot-safe

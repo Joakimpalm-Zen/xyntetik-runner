@@ -99,6 +99,9 @@ bool gpu_train_mvt(model_t *m, const gguf_tensor *w, const float *dy,
     return false;
 }
 
+bool gpu_spec_keep_ok(const model_t *m) { (void)m; return false; }
+float *gpu_spec_logits(model_t *m, int row) { (void)m; (void)row; return NULL; }
+
 gpu_batch *gpu_batch_create(model_t **seqs, int n) {
     (void)seqs; (void)n;
     return NULL;

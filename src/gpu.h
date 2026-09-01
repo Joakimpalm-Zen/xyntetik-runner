@@ -136,6 +136,15 @@ void   gpu_disable(model_t *m);
 typedef struct gpu_batch gpu_batch;
 // Group n sequences loaded from one file into a reusable microbatch context.
 // NULL = this backend/model cannot batch, and the caller decodes one by one.
+// Speculative verification on a fully offloaded target needs two things the
+// CPU path gets for free: readable post-final-layer hidden state (so the
+// per-row head can run) and per-row logits. A unified-memory backend can
+// provide both; a discrete one cannot without copies it does not have.
+// gpu_spec_keep_ok says whether THIS backend supports it; gpu_spec_logits
+// returns row b of the logits the last spec-flagged forward produced.
+bool       gpu_spec_keep_ok(const model_t *m);
+float     *gpu_spec_logits(model_t *m, int row);
+
 gpu_batch *gpu_batch_create(model_t **seqs, int n);
 void       gpu_batch_free(gpu_batch *b);
 // Evaluate one token for each of the n sequences named by idx (indices into

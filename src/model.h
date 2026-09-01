@@ -287,6 +287,8 @@ typedef struct {
     // ---- per-sequence: mutable state, one set per decoding stream ----
     tpool *tp;               // worker pool used by this instance
     int    n_ctx, n_batch;
+    int    spec_want_all;    // >0: the NEXT forward emits logits for every
+                             // column (speculative verify), not just the last
     f16_t *kcache, *vcache;  // [n_layer][n_ctx][kv_dim], fp16 (or q8_0 blocks
                              // when kv_q8 — treated as raw bytes then)
     kv_owner_t kv_owner;     // malloc on CPU/CUDA; backend-owned on Metal

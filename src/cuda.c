@@ -4016,6 +4016,12 @@ bool gpu_train_mvt(model_t *m, const gguf_tensor *w, const float *dy,
            cu.MemcpyDtoH(dx, t->d_dx, nx) == 0;
 }
 
+// Discrete VRAM: the hidden states and per-row logits live device-side and
+// the CPU verify walk cannot read them without copies the design does not
+// want on this path. Full-offload speculative decoding stays refused here.
+bool gpu_spec_keep_ok(const model_t *m) { (void)m; return false; }
+float *gpu_spec_logits(model_t *m, int row) { (void)m; (void)row; return NULL; }
+
 gpu_batch *gpu_batch_create(model_t **seqs, int n) {
     gpu_t *lead = NULL;
     if (!batch_eligible(seqs, n, &lead)) return NULL;

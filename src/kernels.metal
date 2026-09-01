@@ -1249,7 +1249,9 @@ static inline float2 kv_pair(device const uchar *row, int i2, int q8) {
 
 // off is the FIRST column's byte offset; column c lands row_b bytes further on,
 // so a prompt batch stores every token's K/V in one dispatch (grid.y = column).
-struct store_args { int kv_dim, q8, stride; ulong off, row_b; };
+// off is the LAYER's byte offset; the kernel places column c at position
+// pos + c, modulo kv_rows when a ring is active (0 = flat absolute rows).
+struct store_args { int kv_dim, q8, stride, pos, kv_rows; ulong off, row_b; };
 
 kernel void k_store_kv(device const float *k_all [[buffer(0)]],
                        device const float *v_all [[buffer(1)]],
@@ -1260,7 +1262,9 @@ kernel void k_store_kv(device const float *k_all [[buffer(0)]],
     int n = a.q8 ? a.kv_dim / 32 : a.kv_dim;
     uint i = gid.x, col = gid.y;
     if ((int)i < n) {
-        ulong off = a.off + (ulong)col * a.row_b;
+        int p = a.pos + (int)col;
+        if (a.kv_rows > 0) p %= a.kv_rows;
+        ulong off = a.off + (ulong)p * a.row_b;
         kv_store_row(kc + off, k_all + (ulong)col * a.stride, a.q8, i);
         kv_store_row(vc + off, v_all + (ulong)col * a.stride, a.q8, i);
     }
@@ -1281,7 +1285,15 @@ struct attn_args {
     int   window;     // sliding-window size for this layer (0 = full)
     int   has_sinks;  // gpt-oss: per-head sink joins softmax denominator only
     int   q_stride, att_stride, out_stride;
+    int   kv_rows;    // ring capacity for this layer's rows (0 = flat)
 };
+
+// Ring-aware KV row index: absolute position t lives at t % kv_rows when the
+// window-aware ring is on. Same arithmetic as the CPU's model_kv_row_at and
+// CUDA's kv_slot — three backends, one layout rule.
+static inline ulong kv_row_off(int t, int kv_rows, ulong row_b) {
+    return (ulong)(kv_rows > 0 ? t % kv_rows : t) * row_b;
+}
 
 // Cooperative-read variant of the K-score loop (RUNNER_METAL_ATTN_COOP=1).
 //
@@ -1390,7 +1402,7 @@ static inline float kv_dot_coop(device const uchar *row, device const float *qh,
     for (int i = tid; i < hd; i += tpg) { \
         float o = 0; \
         for (int t = t0; t <= pos; t++) \
-            o += ah[t] * kv_pair(vc + base + (ulong)t * row_b, i / 2, a.q8)[i & 1]; \
+            o += ah[t] * kv_pair(vc + base + kv_row_off(t, a.kv_rows, row_b), i / 2, a.q8)[i & 1]; \
         out[h * hd + i] = o / sum; \
     }
 
@@ -1406,7 +1418,7 @@ kernel void k_attn(device const float *q_all   [[buffer(0)]],
                    uint3 tpg3 [[threads_per_threadgroup]]) {
     ATTN_PROLOGUE
     for (int t = t0 + tid; t <= pos; t += tpg) {
-        ah[t] = kv_dot(kc + base + (ulong)t * row_b, qh, hd, a.q8) * a.scale;
+        ah[t] = kv_dot(kc + base + kv_row_off(t, a.kv_rows, row_b), qh, hd, a.q8) * a.scale;
     }
     threadgroup_barrier(mem_flags::mem_device);
     ATTN_EPILOGUE
@@ -1429,7 +1441,7 @@ kernel void k_attn_coop(device const float *q_all   [[buffer(0)]],
     {
         uint lane = tid & 31u, sg = tid >> 5, n_sg = tpg >> 5;
         for (int t = t0 + (int)sg; t <= pos; t += (int)n_sg) {
-            float sc = kv_dot_coop(kc + base + (ulong)t * row_b, qh, hd,
+            float sc = kv_dot_coop(kc + base + kv_row_off(t, a.kv_rows, row_b), qh, hd,
                                    a.q8, lane) * a.scale;
             if (lane == 0) ah[t] = sc;
         }
@@ -1462,6 +1474,7 @@ struct attn_chunk_args {
     int   window;
     int   chunk;       // positions per chunk
     int   n_chunks;
+    int   kv_rows;     // ring capacity (0 = flat); see kv_row_off
     // No column strides: the host takes this path at n == 1 only (see the
     // n == 1 guard on the chunk dispatch in metal.m), so q, att and the
     // partials are all indexed from column zero.
@@ -1530,7 +1543,7 @@ struct attn_chunk_args {
     for (int i = tid; i < hd; i += tpg) { \
         float o = 0; \
         for (int t = lo; t <= hi; t++) \
-            o += ah[t] * kv_pair(vc + base + (ulong)t * row_b, i / 2, a.q8)[i & 1]; \
+            o += ah[t] * kv_pair(vc + base + kv_row_off(t, a.kv_rows, row_b), i / 2, a.q8)[i & 1]; \
         acc[i] = o; \
     } \
     if (tid == 0) { ms[0] = mx; ms[1] = sum; }
@@ -1547,7 +1560,7 @@ kernel void k_attn_chunk(device const float *q_all   [[buffer(0)]],
                          uint3 tpg3  [[threads_per_threadgroup]]) {
     ATTNC_PROLOGUE
     for (int t = lo + (int)tid; t <= hi; t += tpg)
-        ah[t] = kv_dot(kc + base + (ulong)t * row_b, qh, hd, a.q8) * a.scale;
+        ah[t] = kv_dot(kc + base + kv_row_off(t, a.kv_rows, row_b), qh, hd, a.q8) * a.scale;
     threadgroup_barrier(mem_flags::mem_device);
     ATTNC_EPILOGUE
 }
@@ -1569,7 +1582,7 @@ kernel void k_attn_chunk_coop(device const float *q_all   [[buffer(0)]],
     {
         uint lane = tid & 31u, sg = tid >> 5, n_sg = tpg >> 5;
         for (int t = lo + (int)sg; t <= hi; t += (int)n_sg) {
-            float sc = kv_dot_coop(kc + base + (ulong)t * row_b, qh, hd,
+            float sc = kv_dot_coop(kc + base + kv_row_off(t, a.kv_rows, row_b), qh, hd,
                                    a.q8, lane) * a.scale;
             if (lane == 0) ah[t] = sc;
         }

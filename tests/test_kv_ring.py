@@ -153,11 +153,12 @@ def test_ring_actually_shrinks_the_allocation(runner_bin, swa_model):
 
 def test_ring_gpu_contract_matches_the_backend(runner_bin, swa_model,
                                                 tmp_path):
-    """CUDA must run the ring; Metal must explicitly refuse it.
+    """Every device backend must RUN the ring, bit-identically.
 
-    CUDA resolves every device cache address through ``kv_slot`` and is
-    expected to be bit-identical to its own flat allocation. Metal still uses
-    absolute rows, so engaging there would be a silent wrong-answer bug. A
+    CUDA resolves device cache addresses through ``kv_slot`` (2026-08-30);
+    Metal joined on 2026-09-01 with the same modulo through ``kv_row_off``
+    in its store and attention kernels — the former Metal refusal is gone,
+    and a reappearing refusal is a regression this asserts against. A
     machine without a device exercises the already-gated CPU fallback only.
     """
     p = _run(runner_bin, swa_model, True,
@@ -171,23 +172,21 @@ def test_ring_gpu_contract_matches_the_backend(runner_bin, swa_model,
         stdout=subprocess.PIPE).stdout)
     backend = caps["gpu"]["backend"] if caps.get("gpu") else None
 
-    if backend == "metal":
-        assert refused and not engaged, err
-        return
-
     assert engaged and not refused, err
-    if backend != "cuda":
+    if backend not in ("cuda", "metal"):
         return
 
     # Absolute anchor: the shipped flat allocation is the reference, and the
-    # long prompt wraps this fixture's ring many times. CUDA must preserve each
-    # teacher-forced logprob exactly, not merely generate the same text.
+    # long prompt wraps this fixture's ring many times. The device path must
+    # preserve each teacher-forced logprob exactly, not merely generate the
+    # same text.
     pf = tmp_path / "gpu-prompt.txt"
     pf.write_text(PROMPT)
     args = ["--score", "-f", str(pf)]
     flat = _run(runner_bin, swa_model, False, args, gpu="auto")
     ring = _run(runner_bin, swa_model, True, args, gpu="auto")
-    assert b"CUDA backend" in flat.stderr + ring.stderr
+    assert (b"CUDA backend" in flat.stderr + ring.stderr or
+            b"Metal backend" in flat.stderr + ring.stderr)
     assert flat.returncode == ring.returncode == 0
     a, b = json.loads(flat.stdout), json.loads(ring.stdout)
     assert a["n_scored"] > 8 * SWA_WINDOW
