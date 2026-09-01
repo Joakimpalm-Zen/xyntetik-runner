@@ -6,6 +6,22 @@ change between releases (the `-alpha` suffix was retired at v0.2.0 — the 0.x
 version already says what it needs to). Entries below the rename keep the
 names that were true when they were written.
 
+## Unreleased
+
+- **`--gpu auto` ignored the KV ring when deciding how many layers fit.** The
+  CUDA placement loop charged every layer `2 * n_ctx * row_bytes` while the
+  allocation it was predicting is sized from `model_kv_boundary_bytes`, which
+  already gives a ringed sliding layer its ring rows and a shared-KV layer
+  nothing beyond its owner's. So a ring run kept the flat split and left the
+  savings idle: field-reported on a 24 GB MIG (Gemma-4-31B at 16k: 44/60
+  layers with 9.8 GB unused), reproduced on an RTX 3070 (gemma-3-4b at 32k:
+  32/34 both ways, 3.31 GB idle under the ring). The estimator now charges
+  each layer its boundary delta - the same account MemAlloc reads - so the
+  ring run takes the full 34/34 offload with the estimate matching the
+  allocation, the flat split is byte-for-byte unchanged, and a shared-KV
+  layer is no longer double-charged. Verified on the 3070: identical greedy
+  output across arms, CUDA smoke green.
+
 ## v0.4.5 - 2026-09-01
 
 - **The fusion byte-identity contract was resting on a per-device codegen
