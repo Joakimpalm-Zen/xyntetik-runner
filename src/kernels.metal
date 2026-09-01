@@ -1419,10 +1419,12 @@ struct attn_front_args {
         for (int kk = 0; kk < 4; kk++) { \
             uchar4 qq = q4[kk]; \
             int lo = b * 32 + 4 * kk, hi = lo + 16; \
-            t += ((int)(qq.x & 0xF) - 8) * AFX(lo + 0) + ((int)(qq.x >> 4) - 8) * AFX(hi + 0); \
-            t += ((int)(qq.y & 0xF) - 8) * AFX(lo + 1) + ((int)(qq.y >> 4) - 8) * AFX(hi + 1); \
-            t += ((int)(qq.z & 0xF) - 8) * AFX(lo + 2) + ((int)(qq.z >> 4) - 8) * AFX(hi + 2); \
-            t += ((int)(qq.w & 0xF) - 8) * AFX(lo + 3) + ((int)(qq.w >> 4) - 8) * AFX(hi + 3); \
+            float4 xl = float4(AFX(lo + 0), AFX(lo + 1), AFX(lo + 2), AFX(lo + 3)); \
+            float4 xh = float4(AFX(hi + 0), AFX(hi + 1), AFX(hi + 2), AFX(hi + 3)); \
+            t += ((int)(qq.x & 0xF) - 8) * xl.x + ((int)(qq.x >> 4) - 8) * xh.x; \
+            t += ((int)(qq.y & 0xF) - 8) * xl.y + ((int)(qq.y >> 4) - 8) * xh.y; \
+            t += ((int)(qq.z & 0xF) - 8) * xl.z + ((int)(qq.z >> 4) - 8) * xh.z; \
+            t += ((int)(qq.w & 0xF) - 8) * xl.w + ((int)(qq.w >> 4) - 8) * xh.w; \
         } \
         s += d * t; \
     } \

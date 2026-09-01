@@ -155,3 +155,33 @@ on the 120B, all byte-identity class**, decode +5–6% on both MoE flagships,
 and the negatives ledger (expert-major ×2, wide front, F4 router, dense
 admission) is as load-bearing as the wins — each one is a measured reason
 the shipped shape is what it is.
+
+## Phase 5 — the down+sum fold, and the bug class it flushed out
+
+**F6 (down-projection + weighted sum + residual add, one dispatch) is a
+negative.** Byte-identical once its accumulate was pinned, and a CONSISTENT
+−0.5…−0.9% on both MoE flagships across six paired reps: collapsing the
+down matvec's (n_embd × slots) grid to n_embd rows narrows the heaviest
+weight sweep of the layer 4×, and that costs more than the one dispatch it
+saves. The mild corollary of the F4 rule — a fold that narrows the sweep is
+still a trade. Removed; F5 (which touches no sweep) stays.
+
+**What the hunt earned — a new bug class, twice confirmed and once latent:**
+per-inlining-site fp contraction. A `static inline` dot body shared verbatim
+between kernels does NOT guarantee identical arithmetic: each inlining site
+contracts multiply-add chains independently. F6's register-operand
+accumulate needed an explicit `fma` to match k_moe_sum's load-operand form;
+and the same disease was found LATENT in the morning's q4_0 attention-front
+kernel — an ULP off at teacher-forced-logprob level, invisible to every
+24-token compare, missed because only q4_k had a score leg. Fixed by
+composing float4s so the front's expression is verbatim k_mv_q4_0's (the
+codegen then matches; two hand-fma guesses did not).
+
+**The rule that falls out:** every fused kernel type joins its roster with
+a teacher-forced-logprob gate, not by analogy to a sibling type. The
+Makefile now score-gates every attention-front type (q8_0, q4_0, q4_k,
+q6_k; the q4_K+Q6_K mix verified live on the 8B), and RUNNER_METAL_FRONT=0
+exists as a permanent isolation lever. Also re-learned at CPU speed: a
+Metal-source error fails the LIBRARY, not the build — the day's fixture
+runs fell back to CPU silently until stderr was read. Check "Metal backend"
+in stderr before believing any Metal measurement.

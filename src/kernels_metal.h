@@ -1421,10 +1421,12 @@ static const char *k_metal_src =
     "        for (int kk = 0; kk < 4; kk++) { \\\n"
     "            uchar4 qq = q4[kk]; \\\n"
     "            int lo = b * 32 + 4 * kk, hi = lo + 16; \\\n"
-    "            t += ((int)(qq.x & 0xF) - 8) * AFX(lo + 0) + ((int)(qq.x >> 4) - 8) * AFX(hi + 0); \\\n"
-    "            t += ((int)(qq.y & 0xF) - 8) * AFX(lo + 1) + ((int)(qq.y >> 4) - 8) * AFX(hi + 1); \\\n"
-    "            t += ((int)(qq.z & 0xF) - 8) * AFX(lo + 2) + ((int)(qq.z >> 4) - 8) * AFX(hi + 2); \\\n"
-    "            t += ((int)(qq.w & 0xF) - 8) * AFX(lo + 3) + ((int)(qq.w >> 4) - 8) * AFX(hi + 3); \\\n"
+    "            float4 xl = float4(AFX(lo + 0), AFX(lo + 1), AFX(lo + 2), AFX(lo + 3)); \\\n"
+    "            float4 xh = float4(AFX(hi + 0), AFX(hi + 1), AFX(hi + 2), AFX(hi + 3)); \\\n"
+    "            t += ((int)(qq.x & 0xF) - 8) * xl.x + ((int)(qq.x >> 4) - 8) * xh.x; \\\n"
+    "            t += ((int)(qq.y & 0xF) - 8) * xl.y + ((int)(qq.y >> 4) - 8) * xh.y; \\\n"
+    "            t += ((int)(qq.z & 0xF) - 8) * xl.z + ((int)(qq.z >> 4) - 8) * xh.z; \\\n"
+    "            t += ((int)(qq.w & 0xF) - 8) * xl.w + ((int)(qq.w >> 4) - 8) * xh.w; \\\n"
     "        } \\\n"
     "        s += d * t; \\\n"
     "    } \\\n"
@@ -3216,4 +3218,4 @@ static const char *k_metal_src =
     "\n"
 ;
 // SHA-256 of kernels.metal as embedded above.
-static const char *k_metal_sha = "396301191b703030c80c86cbf233076bcafb387f4fb60ac165e9dd4784e9a5eb";
+static const char *k_metal_sha = "e5a3b3d03f1c046d3c14aae923a8d054bf6223e1fd5d5dd2a8ee9044b2e2ffc0";

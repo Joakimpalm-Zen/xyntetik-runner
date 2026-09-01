@@ -799,9 +799,14 @@ static bool metal_front_all(void) {
     return v && (!strcmp(v, "all") || !strcmp(v, "1"));
 }
 
+static bool metal_front_off(void) {
+    const char *v = getenv("RUNNER_METAL_FRONT");
+    return v && (!strcmp(v, "0") || !strcmp(v, "off"));
+}
+
 static id<MTLComputePipelineState> metal_front_pipe(gpu_t *g, model_t *m,
                                                     int l) {
-    if (l >= m->n_layer) return nil;
+    if (l >= m->n_layer || metal_front_off()) return nil;
     layer_t *ly = &m->layers[l];
     if (m->kv_q8 || model_kv_owner(m, l) != l || !model_layer_ropes(m, l) ||
         m->v_rmsnorm || (m->attn_out_gate && ly->wq_gate) ||
@@ -2497,6 +2502,13 @@ static void enc_moe_experts_batch(gpu_t *g, id<MTLComputeCommandEncoder> e,
     enc_moe_actmul(g, e, g->moe_hb, 0, g->moe_hb2, 0,
                    nff, slots, nff, nff, m->ffn_act);
     gua_done: ;
+    // A down-projection + weighted-sum fold (F6) was built and measured
+    // 2026-09-01: byte-identical (after pinning its accumulate to fma —
+    // see the per-inlining-site contraction note on the score gates) and a
+    // CONSISTENT -0.5..-0.9%% on both MoE flagships: collapsing the down
+    // matvec's (n_embd x slots) grid to n_embd rows narrows the heaviest
+    // weight sweep of the layer 4x, and that costs more than the one
+    // dispatch it saves. The mild corollary of the F4 rule. Removed.
     if (mm && mmp[ly->ffn_down_exps->type])
         enc_moe_mm(g, e, m, mmp[ly->ffn_down_exps->type],
                    ly->ffn_down_exps, dstride, g->moe_hb,

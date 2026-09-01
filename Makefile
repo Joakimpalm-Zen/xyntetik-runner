@@ -1466,6 +1466,21 @@ ifeq ($(shell uname -s),Darwin)
 	cmp -s fuse-sc-off.json fuse-sc-on.json || { \
 	  echo "FAIL: front (q4_k+qk-norm) teacher-forced logprobs differ"; exit 1; }; \
 	echo "  attention front ok (qk-norm score logprobs byte-identical)"; \
+	for spec in "test-moe-fixture.moe4-q4.gguf:" "test-qkw-q6k.gguf:all" \
+	            "test-moe-fixture.gptoss-mxfp4.gguf:"; do \
+	  f=$${spec%%:*}; fr=$${spec##*:}; \
+	  RUNNER_METAL_FUSE=0 ./$(RUNNER_EXE) -m $$f \
+	    --score -p "$$prompt $$prompt $$prompt" --no-tray \
+	    > fuse-sc-off.json 2>/dev/null; \
+	  RUNNER_METAL_FRONT=$$fr ./$(RUNNER_EXE) -m $$f \
+	    --score -p "$$prompt $$prompt $$prompt" --no-tray \
+	    > fuse-sc-on.json 2>/dev/null; \
+	  cmp -s fuse-sc-off.json fuse-sc-on.json || { \
+	    echo "FAIL: $$f fused teacher-forced logprobs differ (per-type"\
+	         "contraction — see the F6/front fma notes in kernels.metal)"; \
+	    exit 1; }; \
+	  echo "  fusion score ok ($$f, logprobs byte-identical)"; \
+	done; \
 	rm -f fuse-off.out fuse-on.out fuse-on.err fuse-sc-off.json fuse-sc-on.json
 else
 	@echo "metal decode fusion: SKIP (macOS-only backend)"
