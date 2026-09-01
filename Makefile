@@ -1408,7 +1408,15 @@ endif
 test-swa.gguf:
 	$(PYTHON) scripts/make-test-model.py --arch qwen3 --swa 8,2 test-swa.gguf
 
-test-metal-fuse: runner test-swa.gguf test-es.gguf test-moe-fixture.gptoss-mxfp4.gguf test-moe-fixture.gemma4-moe.gguf test-qk.gguf test-qkw.gguf
+# The fixture prerequisites are macOS-only: on Linux the recipe body is a
+# skip line, and naming Darwin fixtures as prerequisites there stops the
+# whole `make test` with "No rule to make target" instead of skipping.
+ifeq ($(shell uname -s),Darwin)
+TEST_METAL_FUSE_DEPS = test-swa.gguf test-es.gguf test-moe-fixture.gptoss-mxfp4.gguf test-moe-fixture.gemma4-moe.gguf test-qk.gguf test-qkw.gguf
+else
+TEST_METAL_FUSE_DEPS =
+endif
+test-metal-fuse: runner $(TEST_METAL_FUSE_DEPS)
 ifeq ($(shell uname -s),Darwin)
 	@set -e; \
 	if ! ./$(RUNNER_EXE) --caps | $(PYTHON) -c "import json,sys; d=json.load(sys.stdin); sys.exit(0 if (d.get('gpu') or {}).get('backend') == 'metal' else 1)"; then \
