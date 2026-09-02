@@ -1,3 +1,4 @@
+#define _CRT_RAND_S
 // runner — CLI: one-shot completion, interactive chat, and server launcher.
 #include "runner.h"
 #include "instances.h"
@@ -6,6 +7,7 @@
 #include "compat.h"
 #include "json.h"
 #include "envelope.h"
+#include "oms.h"
 #include "server.h"
 // for render_prompt_alloc: chat mode renders the same prompts the chat route
 // does, so it uses the same measured-size renderer rather than a second one
@@ -123,6 +125,29 @@ static bool record_hex(jv *v, const char **out, size_t *out_n) {
 // cap also keeps the later size arithmetic well clear of overflow. *out_len
 // gets the byte count (excluding the terminator).
 #define MAX_INPUT_FILE (256u * 1024u * 1024u)
+// Seed bytes for --keygen: the OS generator, never the C library's.
+static bool os_random(uint8_t *out, size_t n) {
+#ifdef _WIN32
+    for (size_t i = 0; i < n; i += 4) {
+        unsigned v;
+        if (rand_s(&v) != 0) return false;
+        for (size_t k = 0; k < 4 && i + k < n; k++)
+            out[i + k] = (uint8_t)(v >> (8 * k));
+    }
+    return true;
+#else
+    FILE *f = fopen("/dev/urandom", "rb");
+    if (!f) return false;
+    size_t r = fread(out, 1, n, f);
+    fclose(f);
+    return r == n;
+#endif
+}
+
+// The chain hash of a receipt on disk (its `chain.hash`), for linking the
+// next receipt to it and for checking a link.
+static bool receipt_chain_hash(const char *path, char out[65]);
+
 static char *read_file(const char *path, size_t *out_len) {
     FILE *f = fopen(path, "rb");
     if (!f) return NULL;
@@ -141,6 +166,20 @@ static char *read_file(const char *path, size_t *out_len) {
     buf[got] = 0;
     if (out_len) *out_len = got;
     return buf;
+}
+
+static bool receipt_chain_hash(const char *path, char out[65]) {
+    size_t n = 0;
+    char *buf = read_file(path, &n);
+    if (!buf) return false;
+    jv *j = json_parse(buf, n);
+    free(buf);
+    if (!j) return false;
+    const char *h = jv_str(jv_get(jv_get(j, "chain"), "hash"), NULL);
+    bool ok = h && strlen(h) == 64;
+    if (ok) memcpy(out, h, 65);
+    jv_free(j);
+    return ok;
 }
 
 // Write a machine-readable record beside an artifact. The document is built
@@ -512,6 +551,26 @@ static void usage_to(FILE *f, const char *prog) {
         "                 UNVERIFIABLE (exit 3: bad chain hash, wrong model\n"
         "                 sha, wrong adapter). The record's config and seed\n"
         "                 override CLI sampling flags\n"
+        "  --keygen F     write an Ed25519 receipt-signing key (xyntetik.runner\n"
+        "                 .signkey.v1) to F and print its public key; needs no -m\n"
+        "  --sign-key F   with --transcript: sign the receipt with the key in F\n"
+        "                 (an Ed25519 signature over every byte before the\n"
+        "                 ,\"signature\" key, chain hash included)\n"
+        "  --transcript-prev F  with --transcript: link the receipt to F (its\n"
+        "                 chain hash becomes this record's chain.prev); with\n"
+        "                 --verify: check that link (UNVERIFIABLE on a break)\n"
+        "  --require-signed  with --verify: an unsigned record is UNVERIFIABLE\n"
+        "  --trust-key HEX   with --verify: the record must be signed by this\n"
+        "                 Ed25519 public key (a signature by any other key is\n"
+        "                 UNVERIFIABLE)\n"
+        "  --model-sig F  OpenSSF Model Signing bundle for -m (default: -m's\n"
+        "                 path + .sig when it exists); verified against\n"
+        "                 --model-pubkey at load, key method only (P-256/384/521)\n"
+        "  --model-pubkey F  PEM public key the model signature must verify\n"
+        "                 with; an explicit --model-sig that does not verify\n"
+        "                 refuses the load\n"
+        "  --require-signed-model  refuse to load -m unless its OMS signature\n"
+        "                 verifies with --model-pubkey\n"
         "  --merge-lora OUT  fold --lora into the base weights and write\n"
         "                 OUT.gguf + an OUT.gguf.merge.json provenance record:\n"
         "                 W' = W + (alpha/r)*B*A per adapted projection, each\n"
@@ -792,6 +851,12 @@ int main(int argc, char **argv) {
     const char *quant_out = NULL, *quant_type = NULL, *prune_experts = NULL;
     const char *type_plan = NULL, *merge_out = NULL, *context_out = NULL;
     const char *transcript_path = NULL;
+    const char *transcript_prev = NULL, *sign_key = NULL, *keygen_path = NULL;
+    const char *trust_key = NULL, *model_sig = NULL, *model_pubkey = NULL;
+    bool require_signed = false, require_signed_model = false;
+    receipt_sig_state v_rsig = RSIG_NONE;   // --verify: the record's signature state
+    char v_rec_pub[65] = "";
+    char v_prev[65] = "";
     const char *verify_path = NULL;
     int n_predict = 256, n_threads = 0, tmpl = -1, reserve_cpu_pct = 0;
     int port = 8080, parallel = 1, ttl = -1; // -1: 300 for swap mode, never for single
@@ -872,6 +937,14 @@ int main(int argc, char **argv) {
         else if (!strcmp(a, "--merge-lora")) merge_out = NEXT;
         else if (!strcmp(a, "--transcript")) transcript_path = NEXT;
         else if (!strcmp(a, "--verify")) verify_path = NEXT;
+        else if (!strcmp(a, "--transcript-prev")) transcript_prev = NEXT;
+        else if (!strcmp(a, "--sign-key")) sign_key = NEXT;
+        else if (!strcmp(a, "--keygen")) keygen_path = NEXT;
+        else if (!strcmp(a, "--require-signed")) require_signed = true;
+        else if (!strcmp(a, "--trust-key")) trust_key = NEXT;
+        else if (!strcmp(a, "--model-sig")) model_sig = NEXT;
+        else if (!strcmp(a, "--model-pubkey")) model_pubkey = NEXT;
+        else if (!strcmp(a, "--require-signed-model")) require_signed_model = true;
         else if (!strcmp(a, "--quant")) quant_type = NEXT;
         else if (!strcmp(a, "--prune-experts")) prune_experts = NEXT;
         else if (!strcmp(a, "--type-plan")) type_plan = NEXT;
@@ -1006,6 +1079,24 @@ int main(int argc, char **argv) {
     // --draft-required makes that a failed run instead. Serve mode already
     // answers the question over the wire, so the flag is refused there rather
     // than accepted with no effect.
+    if (keygen_path) {
+        uint8_t seed[32];
+        char pub[65];
+        if (!os_random(seed, sizeof seed)) {
+            fprintf(stderr, "error: --keygen: the OS random generator is unavailable\n");
+            return 1;
+        }
+        if (!signkey_write(keygen_path, seed, pub)) {
+            fprintf(stderr, "error: --keygen: cannot write %s\n", keygen_path);
+            return 1;
+        }
+        memset(seed, 0, sizeof seed);
+        printf("{\"schema_version\":\"xyntetik.runner.signkey.v1\",\"algo\":\"ed25519\","
+               "\"public_key\":\"%s\"}\n", pub);
+        fprintf(stderr, "signing key -> %s (keep it private; the public key is %s)\n",
+                keygen_path, pub);
+        return 0;
+    }
     if (draft_required && !draft_path) {
         fprintf(stderr, "error: --draft-required needs --draft PATH\n");
         return 1;
@@ -1247,6 +1338,7 @@ int main(int argc, char **argv) {
         if (!cpos) { fprintf(stderr, "UNVERIFIABLE: no chain in record\n"); free(vbuf); return 3; }
         char want[65];
         envelope_data_sha256(vbuf, (size_t)(cpos - vbuf), want);
+        v_rsig = receipt_signature_check(vbuf, vlen, v_rec_pub);
         vrec = json_parse(vbuf, vlen);
         free(vbuf);
         if (!vrec) { fprintf(stderr, "UNVERIFIABLE: malformed record\n"); return 3; }
@@ -1259,6 +1351,39 @@ int main(int argc, char **argv) {
             fprintf(stderr, "UNVERIFIABLE: chain hash mismatch (record "
                     "altered after writing)\n");
             jv_free(vrec); return 3;
+        }
+        // Signature and chain link are checked before any replay: a forged
+        // or unsigned record must not even get the model loaded for it.
+        if (v_rsig == RSIG_BAD || v_rsig == RSIG_MALFORMED) {
+            fprintf(stderr, "UNVERIFIABLE: %s\n", v_rsig == RSIG_BAD
+                    ? "signature does not verify (record altered or forged)"
+                    : "malformed signature object");
+            jv_free(vrec); return 3;
+        }
+        if (require_signed && v_rsig != RSIG_OK) {
+            fprintf(stderr, "UNVERIFIABLE: --require-signed: the record carries "
+                    "no signature\n");
+            jv_free(vrec); return 3;
+        }
+        if (trust_key && (v_rsig != RSIG_OK || strcmp(trust_key, v_rec_pub) != 0)) {
+            fprintf(stderr, "UNVERIFIABLE: --trust-key: the record is %s\n",
+                    v_rsig == RSIG_OK ? "signed by a different key" : "unsigned");
+            jv_free(vrec); return 3;
+        }
+        snprintf(v_prev, sizeof v_prev, "%s",
+                 jv_str(jv_get(jv_get(vrec, "chain"), "prev"), ""));
+        if (transcript_prev) {
+            char ph[65];
+            if (!receipt_chain_hash(transcript_prev, ph)) {
+                fprintf(stderr, "UNVERIFIABLE: cannot read the chain hash of %s\n",
+                        transcript_prev);
+                jv_free(vrec); return 3;
+            }
+            if (strcmp(ph, v_prev) != 0) {
+                fprintf(stderr, "UNVERIFIABLE: chain link broken: the record's prev "
+                        "is not the chain hash of %s\n", transcript_prev);
+                jv_free(vrec); return 3;
+            }
         }
         jv *prof = jv_get(vrec, "profile"), *cfg = jv_get(vrec, "config");
         jv *ctx_v = jv_get(prof, "ctx"), *batch_v = jv_get(prof, "batch");
@@ -1570,6 +1695,7 @@ int main(int argc, char **argv) {
 
     model_t m;
     tokenizer tok;
+    char model_sig_json[512] = "";   // load-time OMS verdict for the receipt
     // A reservation is a budget for the whole server, so the -c 0 auto-fit has
     // to know how many slots will divide it. Set before the FIRST load, not
     // just for the slots server_run creates: slot 0 is this model, and a slot 0
@@ -1581,6 +1707,35 @@ int main(int argc, char **argv) {
     if (!registry) {
         double t1 = now_s();
         if (!model_load(&m, load_path, &mp)) return 1;
+        // OpenSSF Model Signing: an explicit --model-sig must verify; an
+        // auto-detected <model>.sig is verified when a key is given and
+        // reported either way; --require-signed-model needs a verified one.
+        {
+            char auto_sig[4096];
+            const char *sigp = model_sig;
+            if (!sigp) {
+                snprintf(auto_sig, sizeof auto_sig, "%s.sig", load_path);
+                FILE *pf = fopen(auto_sig, "rb");
+                if (pf) { fclose(pf); sigp = auto_sig; }
+            }
+            if (sigp) {
+                oms_result osr;
+                bool ok = oms_verify_file(sigp, model_pubkey, load_path, &osr);
+                fprintf(stderr, "model signature: %s (%s%s%s%s%s)\n", osr.status,
+                        osr.reason, osr.curve[0] ? "; " : "", osr.curve,
+                        osr.hash[0] ? "/" : "", osr.hash);
+                oms_result_json(&osr, model_sig_json, sizeof model_sig_json);
+                if (!ok && (model_sig || require_signed_model || model_pubkey)) {
+                    fprintf(stderr, "error: model signature: refusing to load %s: %s\n",
+                            load_path, osr.reason);
+                    return 1;
+                }
+            } else if (require_signed_model) {
+                fprintf(stderr, "error: --require-signed-model: no signature bundle "
+                                "for %s (pass --model-sig)\n", load_path);
+                return 1;
+            }
+        }
         if (lora_path && !model_lora_load(&m, lora_path, lora_scale))
             return 1;
         if (!tokenizer_init(&tok, &m.gf)) return 1;
@@ -2057,7 +2212,9 @@ int main(int argc, char **argv) {
         if (div_at < 0 && byte_div_at == SIZE_MAX) {
             printf("{\"schema_version\":\"xyntetik.runner.verify.v1\","
                    "\"verdict\":\"VERIFIED\",\"tier\":\"%s\","
-                   "\"tokens\":%d}\n", tier, n_gen);
+                   "\"tokens\":%d,\"signed\":%s,\"public_key\":\"%s\","
+                   "\"prev\":\"%s\"}\n", tier, n_gen,
+                   v_rsig == RSIG_OK ? "true" : "false", v_rec_pub, v_prev);
             fprintf(stderr, "VERIFIED (%s %s): %d output tokens replayed "
                     "identically\n", tier,
                     strcmp(tier, "T1") == 0 ? "same-binary"
@@ -2070,7 +2227,9 @@ int main(int argc, char **argv) {
             printf("{\"schema_version\":\"xyntetik.runner.verify.v1\","
                    "\"verdict\":\"DIVERGED\",\"unit\":\"token\","
                    "\"at\":%d,"
-                   "\"expected\":%d,\"got\":%d}\n", div_at, want, got);
+                   "\"expected\":%d,\"got\":%d,\"signed\":%s,"
+                   "\"public_key\":\"%s\"}\n", div_at, want, got,
+                   v_rsig == RSIG_OK ? "true" : "false", v_rec_pub);
             fprintf(stderr, "DIVERGED at token %d: record has %d, replay "
                     "produced %d\n", div_at, want, got);
             rc = 2;
@@ -2082,8 +2241,10 @@ int main(int argc, char **argv) {
                     ? (unsigned char)replay_out.buf[byte_div_at] : -1;
             printf("{\"schema_version\":\"xyntetik.runner.verify.v1\","
                    "\"verdict\":\"DIVERGED\",\"unit\":\"byte\","
-                   "\"at\":%zu,\"expected\":%d,\"got\":%d}\n",
-                   byte_div_at, want, got);
+                   "\"at\":%zu,\"expected\":%d,\"got\":%d,\"signed\":%s,"
+                   "\"public_key\":\"%s\"}\n",
+                   byte_div_at, want, got,
+                   v_rsig == RSIG_OK ? "true" : "false", v_rec_pub);
             fprintf(stderr, "DIVERGED at output byte %zu: record has %d, "
                     "replay produced %d\n", byte_div_at, want, got);
             rc = 2;
@@ -2321,6 +2482,13 @@ int main(int argc, char **argv) {
                 n_gen, n_gen / (gtime > 0 ? gtime : 1e-9));
         int t_rc = 0;
         if (transcript_path) {
+            char prev_hash[65] = "";
+            if (transcript_prev && !receipt_chain_hash(transcript_prev, prev_hash)) {
+                fprintf(stderr, "error: --transcript-prev: cannot read the chain "
+                                "hash of %s\n", transcript_prev);
+                t_rc = 1;
+                transcript_path = NULL;   // do not write an unlinked receipt
+            }
             char gname[128] = "";
             if (m.gpu) gpu_available(gname, sizeof gname);
             char *transcript_exe = plat_executable_path();
@@ -2359,6 +2527,9 @@ int main(int argc, char **argv) {
                 .output_text = ocap.buf, .output_text_len = ocap.n,
                 .output_tokens = e.hist + n_prompt, .n_output = n_gen,
                 .hit_stop = e.hit_stop,
+                .prev_hash = prev_hash[0] ? prev_hash : NULL,
+                .sign_key_path = sign_key,
+                .model_sig_json = model_sig_json[0] ? model_sig_json : NULL,
             };
             if (ocap.failed) {
                 fprintf(stderr, "error: transcript: out of memory capturing "

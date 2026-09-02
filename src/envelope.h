@@ -52,6 +52,8 @@ enum envelope_state {
 bool envelope_file_sha256(const char *path, char hex[65]);
 // sha256 of an in-memory buffer as lowercase hex (the transcript chain hash)
 void envelope_data_sha256(const void *data, size_t n, char hex[65]);
+// the same digest as raw bytes (signature inputs)
+void envelope_data_sha256_raw(const void *data, size_t n, uint8_t out[32]);
 
 // ---- notarized inference D1: xyntetik.runner.transcript.v1 ----------------
 // The record that makes one inference a REPLAYABLE COMPUTATION: everything a
@@ -86,7 +88,26 @@ typedef struct {
     const int32_t *output_tokens;
     int         n_output;
     bool        hit_stop;          // true = "stop", false = "length"
+    // Receipt chain and signature (both optional). prev_hash is the
+    // previous receipt's chain hash (64 hex) or NULL for a chain head;
+    // sign_key_path names an xyntetik.runner.signkey.v1 file whose Ed25519
+    // key signs every byte before the `,"signature"` key; model_sig_json is
+    // the load-time model-signature verdict object (oms_result_json) or NULL.
+    const char *prev_hash;
+    const char *sign_key_path;
+    const char *model_sig_json;
 } transcript_info;
+
+// Signing keys: xyntetik.runner.signkey.v1, an Ed25519 seed and its public
+// key as hex in a JSON object. signkey_write generates from `seed` (32 random
+// bytes the caller drew) and prints nothing; signkey_load parses one.
+bool signkey_write(const char *path, const uint8_t seed[32], char pub_hex[65]);
+bool signkey_load(const char *path, uint8_t sk[64], uint8_t pk[32]);
+// Verify the Ed25519 signature object of a receipt: `rec` is the whole file,
+// the signed bytes are everything before the last `,"signature"`. Fills
+// pub_hex with the embedded key on success.
+typedef enum { RSIG_NONE = 0, RSIG_OK = 1, RSIG_BAD = 2, RSIG_MALFORMED = 3 } receipt_sig_state;
+receipt_sig_state receipt_signature_check(const char *rec, size_t n, char pub_hex[65]);
 
 // Writes the transcript beside the run. Returns false (with the reason on
 // stderr) on any failure; a partial transcript is never left installed.

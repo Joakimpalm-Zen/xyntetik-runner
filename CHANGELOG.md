@@ -8,6 +8,24 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **Signed, chained receipts, and OpenSSF Model Signing verification at
+  load.** A transcript can now be signed (`--keygen` makes an Ed25519 key,
+  `--sign-key` signs every byte before the record's `,"signature"` key,
+  chain hash included) and linked (`--transcript-prev` puts the previous
+  receipt's chain hash in `chain.prev`), and `--verify` checks signature,
+  trust (`--trust-key`, `--require-signed`), link and replay under one exit
+  code, with `signed`, `public_key` and `prev` in the verdict JSON; every
+  forgery class is `UNVERIFIABLE` before the model is loaded. At load,
+  `--model-sig` / `--model-pubkey` / `--require-signed-model` verify an OMS
+  bundle for the GGUF: ECDSA (P-256/384/521, a plain Montgomery/Jacobian
+  verifier gated by RFC 6979 vectors) over the DSSE PAE, the in-toto
+  statement, and the file digest against the manifest; key method only,
+  certificate and keyless bundles are refused as unsupported. Anchors: the
+  Ed25519 module is TweetNaCl's public-domain signing subset gated by RFC
+  8032 vectors and cross-checked by an independent library in the tests;
+  the OMS verifier verifies bundles written by the reference signer
+  (`model_signing` 1.1.1). The receipt records the model-signature verdict.
+
 - **`--mtp` drafts from the model's own NextN/MTP predictor block.** An
   export that declares one predictor block (`<arch>.nextn_predict_layers = 1`,
   the MTP-preserved Qwen3.5/3.6 GGUFs) can now speculate without a second

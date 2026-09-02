@@ -174,6 +174,8 @@ TEST_GGUF_GETTERS = $(TEST_BATCH:test-batch%=test-gguf-getters%)
 TEST_GGUF_SPLIT = $(TEST_BATCH:test-batch%=test-gguf-split-load%)
 TEST_PARSE = $(TEST_BATCH:test-batch%=test-parse%)
 TEST_ENVELOPE = $(TEST_BATCH:test-batch%=test-envelope%)
+TEST_ED25519 = $(TEST_BATCH:test-batch%=test-ed25519%)
+TEST_ECDSA = $(TEST_BATCH:test-batch%=test-ecdsa%)
 TEST_METAL_OWNERSHIP = $(TEST_BATCH:test-batch%=test-metal-ownership%)
 TEST_METAL_SHADERS = $(TEST_BATCH:test-batch%=test-metal-shaders%)
 TEST_METAL_KQUANTS = $(TEST_BATCH:test-batch%=test-metal-kquants%)
@@ -219,7 +221,7 @@ $(QUANTIZE_OBJ): FORCE src/quantize.c $(HDR)
 
 SRC = src/gguf.c src/compat.c $(QUANTS_OBJ) src/instances.c src/tokenizer.c src/model.c src/sample.c \
       src/vramreg.c \
-      src/template.c src/jsonmode.c src/schema.c $(QUANTIZE_OBJ) src/engine.c src/json.c src/envelope.c src/http.c src/registry.c src/scheduler.c src/completion.c src/api_responses.c src/api_anthropic.c src/server.c \
+      src/template.c src/jsonmode.c src/schema.c $(QUANTIZE_OBJ) src/engine.c src/json.c src/envelope.c src/ed25519.c src/ecdsa.c src/oms.c src/http.c src/registry.c src/scheduler.c src/completion.c src/api_responses.c src/api_anthropic.c src/server.c \
       src/main.c $(GPU_SRC) $(TRAY_SRC)
 
 # kernels_ptx.h is embedded into the binary by cuda.c — a pull that changes
@@ -703,7 +705,7 @@ $(TEST_AUTOFIT): $(TEST_AUTOFIT_SRC) $(HDR)
 TEST_RESP_SM_SRC = tests/test_responses_sm.c src/gguf.c src/compat.c \
                   $(QUANTS_OBJ) src/tokenizer.c src/model.c src/sample.c \
                   src/jsonmode.c src/schema.c src/json.c src/engine.c \
-                  src/template.c src/vramreg.c src/http.c src/envelope.c src/registry.c src/scheduler.c $(GPU_SRC)
+                  src/template.c src/vramreg.c src/http.c src/envelope.c src/ed25519.c src/registry.c src/scheduler.c $(GPU_SRC)
 $(TEST_RESP_SM): $(TEST_RESP_SM_SRC) src/completion.c $(HDR)
 	$(CC) $(CFLAGS) -I src $(TEST_RESP_SM_SRC) -o $@ $(LDFLAGS)
 
@@ -714,7 +716,7 @@ $(TEST_RESP_SM): $(TEST_RESP_SM_SRC) src/completion.c $(HDR)
 TEST_STOP_CONSTRAINT_SRC = tests/test_stop_constraint.c src/gguf.c src/compat.c \
                   $(QUANTS_OBJ) src/tokenizer.c src/model.c src/sample.c \
                   src/jsonmode.c src/schema.c src/json.c src/engine.c \
-                  src/template.c src/vramreg.c src/http.c src/envelope.c src/registry.c \
+                  src/template.c src/vramreg.c src/http.c src/envelope.c src/ed25519.c src/registry.c \
                   src/scheduler.c $(GPU_SRC)
 $(TEST_STOP_CONSTRAINT): $(TEST_STOP_CONSTRAINT_SRC) src/completion.c $(HDR)
 	$(CC) $(CFLAGS) -I src $(TEST_STOP_CONSTRAINT_SRC) -o $@ $(LDFLAGS)
@@ -728,7 +730,7 @@ $(TEST_STOP_CONSTRAINT): $(TEST_STOP_CONSTRAINT_SRC) src/completion.c $(HDR)
 TEST_BUDGET_SRC = tests/test_prompt_budget.c src/gguf.c src/compat.c \
                   $(QUANTS_OBJ) src/tokenizer.c src/model.c src/sample.c \
                   src/jsonmode.c src/schema.c src/json.c src/engine.c \
-                  src/template.c src/vramreg.c src/http.c src/envelope.c src/registry.c \
+                  src/template.c src/vramreg.c src/http.c src/envelope.c src/ed25519.c src/registry.c \
                   src/scheduler.c src/api_responses.c src/api_anthropic.c \
                   $(GPU_SRC)
 $(TEST_BUDGET): $(TEST_BUDGET_SRC) src/server.c $(HDR)
@@ -742,7 +744,7 @@ $(TEST_BUDGET): $(TEST_BUDGET_SRC) src/server.c $(HDR)
 TEST_ATTRIB_SRC = tests/test_tool_attribution.c src/gguf.c src/compat.c \
                   $(QUANTS_OBJ) src/tokenizer.c src/model.c src/sample.c \
                   src/jsonmode.c src/schema.c src/json.c src/engine.c \
-                  src/template.c src/vramreg.c src/http.c src/envelope.c src/registry.c \
+                  src/template.c src/vramreg.c src/http.c src/envelope.c src/ed25519.c src/registry.c \
                   src/scheduler.c src/api_responses.c src/api_anthropic.c \
                   $(GPU_SRC)
 $(TEST_ATTRIB): $(TEST_ATTRIB_SRC) src/server.c $(HDR)
@@ -776,7 +778,7 @@ TMPL_CONF_RENDER_SRC = scripts/template-conformance-render.c src/gguf.c \
                   src/compat.c $(QUANTS_OBJ) src/tokenizer.c src/model.c \
                   src/sample.c src/jsonmode.c src/schema.c src/json.c \
                   src/engine.c src/template.c src/vramreg.c src/http.c \
-                  src/envelope.c src/registry.c src/scheduler.c $(GPU_SRC)
+                  src/envelope.c src/ed25519.c src/registry.c src/scheduler.c $(GPU_SRC)
 $(TMPL_CONF_RENDER): $(TMPL_CONF_RENDER_SRC) src/server.c $(HDR)
 	$(CC) $(CFLAGS) -I src $(TMPL_CONF_RENDER_SRC) -o $@ $(LDFLAGS)
 
@@ -786,7 +788,7 @@ TEST_RESTART = $(TEST_BATCH:test-batch%=test-server-restart%)
 TEST_RESTART_SRC = tests/test_server_restart.c src/gguf.c src/compat.c \
                    $(QUANTS_OBJ) src/tokenizer.c src/model.c src/sample.c \
                    src/jsonmode.c src/schema.c src/json.c src/engine.c \
-                   src/template.c src/vramreg.c src/http.c src/envelope.c src/registry.c \
+                   src/template.c src/vramreg.c src/http.c src/envelope.c src/ed25519.c src/registry.c \
                    src/scheduler.c src/completion.c src/api_responses.c \
                    src/api_anthropic.c src/server.c $(GPU_SRC)
 $(TEST_RESTART): $(TEST_RESTART_SRC) $(HDR)
@@ -800,7 +802,7 @@ $(TEST_RESTART): $(TEST_RESTART_SRC) $(HDR)
 TEST_SWAP_RACE_SRC = tests/test_swap_race.c src/gguf.c src/compat.c \
                      src/quants.c src/tokenizer.c src/model.c src/sample.c \
                      src/jsonmode.c src/schema.c src/json.c src/engine.c \
-                     src/template.c src/vramreg.c src/http.c src/envelope.c src/registry.c \
+                     src/template.c src/vramreg.c src/http.c src/envelope.c src/ed25519.c src/registry.c \
                      src/scheduler.c src/completion.c src/api_responses.c \
                      src/api_anthropic.c src/server.c $(GPU_SRC)
 test-swap-race: $(TEST_SWAP_RACE_SRC) $(HDR) test.gguf
@@ -821,7 +823,7 @@ TEST_SCHED_TURN = $(TEST_BATCH:test-batch%=test-sched-turn%)
 TEST_SCHED_TURN_SRC = tests/test_sched_turn.c src/gguf.c src/compat.c \
                       $(QUANTS_OBJ) src/tokenizer.c src/model.c src/sample.c \
                       src/jsonmode.c src/schema.c src/json.c src/engine.c \
-                      src/template.c src/vramreg.c src/http.c src/envelope.c src/registry.c $(GPU_SRC)
+                      src/template.c src/vramreg.c src/http.c src/envelope.c src/ed25519.c src/registry.c $(GPU_SRC)
 $(TEST_SCHED_TURN): $(TEST_SCHED_TURN_SRC) src/scheduler.c $(HDR)
 	$(CC) $(CFLAGS) -I src $(TEST_SCHED_TURN_SRC) -o $@ $(LDFLAGS)
 
@@ -849,8 +851,15 @@ $(TEST_GGUF_GETTERS): tests/test_gguf_getters.c src/gguf.c src/compat.c $(QUANTS
 $(TEST_PARSE): tests/test_parse.c src/compat.c src/compat.h
 	$(CC) $(CFLAGS) -I src tests/test_parse.c src/compat.c -o $@ $(LDFLAGS)
 
-$(TEST_ENVELOPE): tests/test_envelope.c src/envelope.c src/json.c src/envelope.h src/json.h src/runner.h
-	$(CC) $(CFLAGS) -I src tests/test_envelope.c src/envelope.c src/json.c -o $@ $(LDFLAGS)
+$(TEST_ENVELOPE): tests/test_envelope.c src/envelope.c src/ed25519.c src/json.c src/envelope.h src/json.h src/runner.h
+	$(CC) $(CFLAGS) -I src tests/test_envelope.c src/envelope.c src/ed25519.c src/json.c -o $@ $(LDFLAGS)
+
+# receipt and model-signature primitives: RFC 8032 / RFC 6979 known answers
+$(TEST_ED25519): tests/test_ed25519.c src/ed25519.c src/ed25519.h
+	$(CC) $(CFLAGS) -I src tests/test_ed25519.c src/ed25519.c -o $@ $(LDFLAGS)
+
+$(TEST_ECDSA): tests/test_ecdsa.c src/ecdsa.c src/ecdsa.h
+	$(CC) $(CFLAGS) -I src tests/test_ecdsa.c src/ecdsa.c -o $@ $(LDFLAGS)
 
 # quants.c joins for tpool_create/tpool_destroy: the test now also pins that an
 # over-large -t is clamped to TP_MAX rather than silently discarded.
@@ -1634,7 +1643,7 @@ test: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSON_OOM) $(
       $(TEST_PREFIX) $(TEST_GRAMMAR_FF) $(TEST_VRAMREG) $(TEST_KV_TOL) $(TEST_TC_TOL) $(TEST_I8_TOL) $(TEST_MV_TOL) $(TEST_ATTN_TOL) $(TEST_GPU_ID) $(TEST_MOE_TOL) $(TEST_MOE_ROUTER) $(TEST_PAGING_WARN) $(TEST_AUTOFIT) $(TEST_RESP_SM_DEP) \
       $(TEST_QUANTS_SIMD) $(TEST_INSTANCES) $(TEST_INSTANCES_OOM) $(TEST_METAL_ADMISSION) $(TEST_TRAY_CORE) \
       $(TEST_QUANTIZE) \
-      $(TEST_VRAM_ROLLBACK) $(TEST_GGUF_GETTERS) $(TEST_GGUF_SPLIT) $(TEST_PARSE) $(TEST_ENVELOPE) \
+      $(TEST_VRAM_ROLLBACK) $(TEST_GGUF_GETTERS) $(TEST_GGUF_SPLIT) $(TEST_PARSE) $(TEST_ENVELOPE) $(TEST_ED25519) $(TEST_ECDSA) \
       $(TEST_THREAD_DEFAULT) \
       $(TEST_MODEL_LOAD_FAILURE) $(TEST_RESTART) $(TEST_PFX_PERSIST) \
       $(TEST_SCHED_TURN) $(TEST_RESIDENCY) $(TEST_BUDGET) $(TEST_ATTRIB_DEP) \
@@ -1762,6 +1771,8 @@ test: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSON_OOM) $(
 	./$(TEST_GGUF_SPLIT) test-gguf-split/whole.gguf test-gguf-split/part-00001-of-00003.gguf
 	./$(TEST_PARSE)
 	./$(TEST_ENVELOPE)
+	./$(TEST_ED25519)
+	./$(TEST_ECDSA)
 	./$(TEST_THREAD_DEFAULT)
 	./$(TEST_MODEL_LOAD_FAILURE)
 	$(MAKE) --no-print-directory test-bare-invocation

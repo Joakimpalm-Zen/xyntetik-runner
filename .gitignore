@@ -208,3 +208,7 @@ test-shared-asan-bin.dSYM/
 test-moe-fixture.moe4-q8.gguf
 test-moe-mm-ab
 test-moe-mm-ab.exe
+test-ed25519
+test-ed25519.exe
+test-ecdsa
+test-ecdsa.exe

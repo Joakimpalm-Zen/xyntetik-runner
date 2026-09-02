@@ -1,5 +1,6 @@
 #include "envelope.h"
 #include "json.h"
+#include "ed25519.h"
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -123,6 +124,13 @@ bool envelope_file_sha256(const char *path, char hex[65]) {
     }
     hex[64] = 0;
     return true;
+}
+
+void envelope_data_sha256_raw(const void *data, size_t n, uint8_t out[32]) {
+    sha256_ctx c;
+    sha256_init(&c);
+    sha256_update(&c, (const uint8_t *)data, n);
+    sha256_final(&c, out);
 }
 
 void envelope_data_sha256(const void *data, size_t n, char hex[65]) {
@@ -300,6 +308,11 @@ bool transcript_write(const transcript_info *ti) {
             (double)ti->top_p, (double)ti->min_p,
             (double)ti->repeat_penalty, ti->n_predict,
             ti->bos ? "true" : "false");
+    if (ti->model_sig_json) {
+        tsb_put(&w, "\"model_signature\":", 18);
+        tsb_put(&w, ti->model_sig_json, strlen(ti->model_sig_json));
+        tsb_put(&w, ",", 1);
+    }
     tsb_fmt(&w, "\"generated_utc\":\"%s\",", utc);
     tsb_put(&w, "\"prompt\":{\"text\":", 17);
     tsb_json_str(&w, ti->prompt_text, strlen(ti->prompt_text));
@@ -331,9 +344,64 @@ bool transcript_write(const transcript_info *ti) {
     FILE *f = fopen(tmp, "wb");
     bool ok = f != NULL;
     if (ok) {
+        // The chain object closes the record; a signature, when a key was
+        // given, is appended INSIDE the object after the chain and covers
+        // every byte before its own key, chain included, so a verifier
+        // checks it with the file bytes alone (like the chain hash).
+        char prev[65];
+        if (ti->prev_hash && strlen(ti->prev_hash) == 64)
+            memcpy(prev, ti->prev_hash, 65);
+        else
+            snprintf(prev, sizeof prev, "%064d", 0);
         ok = fwrite(w.b, 1, w.n, f) == w.n &&
              fprintf(f, ",\"chain\":{\"algo\":\"sha256\",\"prev\":"
-                     "\"%064d\",\"hash\":\"%s\"}}\n", 0, chain) > 0;
+                     "\"%s\",\"hash\":\"%s\"}", prev, chain) > 0;
+        if (ok && ti->sign_key_path) {
+            uint8_t sk[64], pk[32], sig[64];
+            if (!signkey_load(ti->sign_key_path, sk, pk)) {
+                fprintf(stderr, "error: transcript: cannot load signing key %s\n",
+                        ti->sign_key_path);
+                ok = false;
+            } else {
+                // sign the bytes written so far: re-read is avoided by
+                // rebuilding them exactly (body + chain object)
+                // 33 + 64 + 10 + 64 + 2 = 173 bytes; sized with room so a
+                // truncated span can never be what gets signed
+                char chain_obj[256];
+                int cl = snprintf(chain_obj, sizeof chain_obj,
+                                  ",\"chain\":{\"algo\":\"sha256\",\"prev\":"
+                                  "\"%s\",\"hash\":\"%s\"}", prev, chain);
+                if (cl < 0 || cl >= (int)sizeof chain_obj) ok = false;
+                size_t sn = w.n + (size_t)(cl > 0 ? cl : 0);
+                uint8_t *signed_bytes = malloc(sn);
+                if (!signed_bytes) ok = false;
+                else {
+                    memcpy(signed_bytes, w.b, w.n);
+                    memcpy(signed_bytes + w.n, chain_obj, (size_t)cl);
+                    ok = ed25519_sign(sig, signed_bytes, sn, sk);
+                    free(signed_bytes);
+                }
+                if (ok) {
+                    static const char hexd[] = "0123456789abcdef";
+                    char pkh[65], sigh[129];
+                    for (int i = 0; i < 32; i++) {
+                        pkh[i * 2] = hexd[pk[i] >> 4];
+                        pkh[i * 2 + 1] = hexd[pk[i] & 15];
+                    }
+                    pkh[64] = 0;
+                    for (int i = 0; i < 64; i++) {
+                        sigh[i * 2] = hexd[sig[i] >> 4];
+                        sigh[i * 2 + 1] = hexd[sig[i] & 15];
+                    }
+                    sigh[128] = 0;
+                    ok = fprintf(f, ",\"signature\":{\"algo\":\"ed25519\","
+                                 "\"public_key\":\"%s\",\"sig\":\"%s\"}",
+                                 pkh, sigh) > 0;
+                }
+            }
+            memset(sk, 0, sizeof sk);
+        }
+        if (ok) ok = fputs("}\n", f) >= 0;
         ok = (fclose(f) == 0) && ok;
     }
     if (ok) ok = rename(tmp, ti->out_path) == 0;
@@ -345,6 +413,107 @@ bool transcript_write(const transcript_info *ti) {
     free(tmp);
     free(w.b);
     return ok;
+}
+
+
+// ---- receipt signing keys and signature check -------------------------------
+
+static bool hex_to_bytes(const char *h, size_t nh, uint8_t *out, size_t n) {
+    if (!h || nh != 2 * n) return false;
+    for (size_t i = 0; i < n; i++) {
+        int hi = -1, lo = -1;
+        char a = h[2 * i], b = h[2 * i + 1];
+        hi = a >= '0' && a <= '9' ? a - '0' : a >= 'a' && a <= 'f' ? a - 'a' + 10
+           : a >= 'A' && a <= 'F' ? a - 'A' + 10 : -1;
+        lo = b >= '0' && b <= '9' ? b - '0' : b >= 'a' && b <= 'f' ? b - 'a' + 10
+           : b >= 'A' && b <= 'F' ? b - 'A' + 10 : -1;
+        if (hi < 0 || lo < 0) return false;
+        out[i] = (uint8_t)(hi * 16 + lo);
+    }
+    return true;
+}
+
+static void bytes_to_hex(const uint8_t *b, size_t n, char *out) {
+    static const char hexd[] = "0123456789abcdef";
+    for (size_t i = 0; i < n; i++) {
+        out[i * 2] = hexd[b[i] >> 4];
+        out[i * 2 + 1] = hexd[b[i] & 15];
+    }
+    out[n * 2] = 0;
+}
+
+bool signkey_write(const char *path, const uint8_t seed[32], char pub_hex[65]) {
+    uint8_t pk[32], sk[64];
+    ed25519_keypair(pk, sk, seed);
+    char seed_hex[65];
+    bytes_to_hex(seed, 32, seed_hex);
+    bytes_to_hex(pk, 32, pub_hex);
+    FILE *f = fopen(path, "wb");
+    if (!f) return false;
+    bool ok = fprintf(f, "{\"schema_version\":\"xyntetik.runner.signkey.v1\","
+                      "\"algo\":\"ed25519\",\"seed\":\"%s\",\"public_key\":\"%s\"}\n",
+                      seed_hex, pub_hex) > 0;
+    ok = (fclose(f) == 0) && ok;
+    memset(sk, 0, sizeof sk);
+    memset(seed_hex, 0, sizeof seed_hex);
+    return ok;
+}
+
+bool signkey_load(const char *path, uint8_t sk[64], uint8_t pk[32]) {
+    FILE *f = fopen(path, "rb");
+    if (!f) return false;
+    char buf[1024];
+    size_t n = fread(buf, 1, sizeof buf - 1, f);
+    fclose(f);
+    buf[n] = 0;
+    jv *j = json_parse(buf, n);
+    if (!j) return false;
+    const char *sv = jv_str(jv_get(j, "schema_version"), "");
+    const char *algo = jv_str(jv_get(j, "algo"), "");
+    const char *seed_hex = jv_str(jv_get(j, "seed"), NULL);
+    uint8_t seed[32];
+    bool ok = strcmp(sv, "xyntetik.runner.signkey.v1") == 0 &&
+              strcmp(algo, "ed25519") == 0 && seed_hex &&
+              hex_to_bytes(seed_hex, strlen(seed_hex), seed, 32);
+    if (ok) {
+        ed25519_keypair(pk, sk, seed);
+        // a public_key field that disagrees with the seed is a corrupted file
+        const char *pub_hex = jv_str(jv_get(j, "public_key"), NULL);
+        uint8_t want[32];
+        if (pub_hex && (!hex_to_bytes(pub_hex, strlen(pub_hex), want, 32) ||
+                        memcmp(want, pk, 32) != 0))
+            ok = false;
+    }
+    memset(seed, 0, sizeof seed);
+    memset(buf, 0, sizeof buf);
+    jv_free(j);
+    return ok;
+}
+
+receipt_sig_state receipt_signature_check(const char *rec, size_t n, char pub_hex[65]) {
+    // the signed span ends at the LAST `,"signature"` key (the record's own
+    // JSON strings are escaped, so the key cannot appear inside a value)
+    const char *pos = NULL, *scan = rec;
+    while ((scan = strstr(scan, ",\"signature\"")) != NULL) { pos = scan; scan++; }
+    if (!pos) return RSIG_NONE;
+    if (pub_hex) pub_hex[0] = 0;
+    jv *j = json_parse(rec, n);
+    if (!j) return RSIG_MALFORMED;
+    jv *sg = jv_get(j, "signature");
+    const char *algo = jv_str(jv_get(sg, "algo"), "");
+    const char *pk_hex = jv_str(jv_get(sg, "public_key"), NULL);
+    const char *sig_hex = jv_str(jv_get(sg, "sig"), NULL);
+    uint8_t pk[32], sig[64];
+    if (!sg || strcmp(algo, "ed25519") != 0 || !pk_hex || !sig_hex ||
+        !hex_to_bytes(pk_hex, strlen(pk_hex), pk, 32) ||
+        !hex_to_bytes(sig_hex, strlen(sig_hex), sig, 64)) {
+        jv_free(j);
+        return RSIG_MALFORMED;
+    }
+    bool ok = ed25519_verify(sig, rec, (size_t)(pos - rec), pk);
+    if (ok && pub_hex) memcpy(pub_hex, pk_hex, 65);
+    jv_free(j);
+    return ok ? RSIG_OK : RSIG_BAD;
 }
 
 // Case-insensitive hex-string equality (a manifest sha may be written in any
