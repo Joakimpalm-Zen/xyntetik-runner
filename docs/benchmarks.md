@@ -21,6 +21,62 @@ fraction of the card's SMs. Absolute tok/s will differ on other hardware; the
 with the compute/bandwidth balance (the same kernels measured different ratios
 on an RTX 3070).
 
+## Results — 2026-09-02, three hosts, runner `6d705e9`
+
+Same method as the 2026-08-13 table on the MIG (`--bench-json -n 128 -b 64`,
+mean of 2; `llama-bench -p 512 -n 128 -ngl 99 -r 2`; full offload verified
+`full=1` on every row), plus two consumer hosts. Absolute numbers on the MIG
+box are lower than in August on BOTH sides (llama.cpp's Llama-3.2-3B decode
+reads 101.8 against 169.0 then) because the box carried a load average of 18
+from other work during the run and the driver moved to 610.43; the ratios are
+the result, as the setup section says.
+
+### MIG 1g.24gb, llama.cpp b10353 CUDA (same build as August)
+
+| model | quant | decode tok/s: runner / llama.cpp | prefill tok/s: runner / llama.cpp |
+|---|---|---|---|
+| Llama-3.2-3B | Q4_K_M | 87.9 / 101.8 (**86%**) | 525.7 / 6387.6 (8.2%) |
+| Phi-4-mini | Q8_0 | 53.8 / 57.7 (**93%**) | 355.6 / 5960.6 (6.0%) |
+| granite-3.3-8b | Q4_K_M | 39.7 / 45.4 (**87%**) | 220.5 / 2288.9 (9.6%) |
+| granite-4.1-8b | Q4_0 | 41.7 / 46.5 (**90%**) | 151.1 / 2359.2 (6.4%) |
+| Phi-3.5-mini | Q4_K_M | 72.0 / 83.2 (**87%**) | 284.9 / 5120.3 (5.6%) |
+| gemma-4-12B | Q4_K_M | 23.2 / 28.8 (**81%**) | 123.7 / 1439.2 (8.6%) |
+| Qwen3-30B-A3B (MoE) | Q4_K_M | 62.2 / 86.6 (**72%**) | 128.5 / 2326.3 (5.5%) |
+| gemma-4-26B-A4B (MoE) | Q4_0 | 23.3 / 56.2 (41%) | 34.3 / 2429.7 (1.4%) |
+| Qwen2.5-32B | Q3_K_S | 1.8 / 14.3 (13%) | 15.3 / 469.0 (3.3%) |
+
+Dense decode moved from 77-87% to 81-93% and the MoE rows from 67% and 22%
+to 72% and 41% (the KV-ring accounting fix and the August decode work);
+prefill is unchanged at 5-10% and stays the column that decides the next
+piece of work. The Q3_K row is still the naive token-identical kernel.
+
+### RTX 3070 8 GB (Windows 11, driver 596.36), llama.cpp b10754 CUDA 13.3 prebuilt
+
+| model | quant | decode tok/s: runner / llama.cpp | prefill tok/s: runner / llama.cpp |
+|---|---|---|---|
+| Qwen2.5-7B | Q4_K_M | 65.6 / 81.6 (**80%**) | 112.3 / 2224.5 (5.0%) |
+| granite-4.1-3b | Q8_0 | 78.6 / 94.3 (**83%**) | 493.5 / 5614.1 (8.8%) |
+| Qwen2.5-3B | Q4_K_M | 113.3 / 161.2 (**70%**) | 234.0 / 6069.9 (3.9%) |
+
+A desktop card with a display attached, a newer llama.cpp than the MIG
+table's, and the same shape of result: decode within 20-30%, prefill an
+order of magnitude behind.
+
+### Apple M1 8 GB, Metal, llama.cpp from Homebrew (ggml 0.22.0), 2026-09-02
+
+| model | quant | decode tok/s: runner / llama.cpp | prefill tok/s: runner / llama.cpp |
+|---|---|---|---|
+| granite-4.1-3b | Q8_0 | 11.6 / 14.4 (**80%**) | 47.8 / 266.5 (17.9%) |
+| gemma-3-4b | Q4_K_M | 8.4 / 20.3 (41%) | 62.9 / 250.3 (25.1%) |
+
+Measured with 1.3 GB of RAM available: the runner logged its own warning
+("weights are 3.6 GB but only 1.3 GB of RAM is available, expect the model to
+be evicted") and paged, while llama.cpp wires the model into memory. That is
+the coexistence trade the README describes, read from the losing side: on a
+pressured machine the resident engine decodes faster and the evictable one
+gives the memory back. The gemma row is that effect, not a kernel result;
+re-measure on a quiet M1 before reading it as one.
+
 ## Results — 2026-08-13, both sides re-measured on this box
 
 The 2026-07-29 table below is kept as history. It was taken before a CUDA

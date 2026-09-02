@@ -131,7 +131,8 @@ cold first token. Full table and method:
 [docs/idle-coexistence-120b-m5max-2026-09-01.md](docs/idle-coexistence-120b-m5max-2026-09-01.md).
 
 For release history and benchmark narratives, see [CHANGELOG.md](CHANGELOG.md)
-and [docs/benchmarks.md](docs/benchmarks.md).
+and [docs/benchmarks.md](docs/benchmarks.md) (last re-measured 2026-09-02 on three hosts:
+dense decode 81-93% of llama.cpp on the MIG, prefill 5-10%).
 
 <a id="build-from-source"></a>
 ## Quick start: source builds and model choice
@@ -492,21 +493,24 @@ run on CPU; CUDA names and declines this layout because its MoE kernels require
 one model-wide expert count.
 `scripts/moe-prune-plan.py` can build a plan from calibration data.
 
-**A non-uniform prune produces a file that is correct in Runner and not
-portable, and an artifact built that way has to say so.** GGUF carries ONE
-`<arch>.expert_count` for the whole model and has no per-layer field. When a
-plan leaves every MoE layer at the same new count, that key is rewritten and
-the file describes itself completely. When a plan prunes layers to different
-counts, or leaves some layers unpruned, no single value can describe it: the
-key is deliberately left at the parent's number, which remains every layer's
-true ceiling but is no longer tight for the pruned ones. Runner loads such a
-file correctly because it resolves each layer's real expert count from that
-layer's own router tensor rather than from the global key. **An engine that
-trusts the global key will not.** So a published artifact from a non-uniform
-prune must state that it is Runner-correct and untested elsewhere, in the same
-place it states its fidelity; a uniform prune carries no such caveat. This is a
-format gap, not a defect in either engine, and closing it needs a per-layer
-expert-count convention that GGUF does not currently define.
+**A non-uniform prune describes itself with a per-layer key, and an artifact
+built that way still has to say where it runs.** GGUF defines ONE
+`<arch>.expert_count` for the whole model. Every prune plan now also writes
+`<arch>.expert_count_per_layer`, a `u32` array with one entry per block (`0`
+for a non-MoE block) holding each layer's real post-prune count; a plain
+`--quantize` carries it through and a later plan re-authors it. When a plan
+leaves every MoE layer at the same new count, the global key is rewritten as
+well and both agree. When layers end at different counts, or some are left
+unpruned, the global key deliberately stays at the parent's number, which
+remains every layer's true ceiling, and the array is the exact description.
+At load Runner validates the array against every router tensor and refuses,
+by name, a header that disagrees with its tensors; a file without the array
+predates it and each layer's count comes from its router alone, as before.
+**An engine that reads only the global key still mis-sizes such a file**, so
+a published artifact from a non-uniform prune must state that it is
+Runner-correct and untested elsewhere, in the same place it states its
+fidelity; a uniform prune carries no such caveat. The key is a proposed
+convention, published here so other loaders can adopt it.
 
 ### Published artifacts
 
