@@ -364,10 +364,12 @@ def test_prune_nonuniform_leaves_expert_count_metadata_alone(runner_bin, prunepr
     pruned = tmp_path / "pruned.gguf"
     proc = _prune(runner_bin, pruneprobe_model, pruned, plan)
     assert proc.returncode == 0, proc.stderr.decode(errors="replace")
-    assert b"expert_count" not in proc.stderr, (
+    assert b"llama.expert_count 4 ->" not in proc.stderr, (
         "non-uniform prune must NOT rewrite the single global expert_count "
         "metadata (it can't honestly describe two different per-layer "
         "counts)\nstderr: " + proc.stderr.decode(errors="replace"))
+    # ...it declares the per-layer counts instead (see the tests below)
+    assert _scan_kv(pruned, "llama.expert_count")[0] == 4
 
 
 def test_prune_out_of_range_expert_id_is_rejected(runner_bin, pruneprobe_model, tmp_path):
@@ -438,3 +440,131 @@ def test_prune_with_quant_also_requantizes_survivors(runner_bin, pruneprobe_mode
     assert proc.returncode == 0, proc.stderr.decode(errors="replace")
     assert pruned.stat().st_size < pathlib.Path(pruneprobe_model).stat().st_size
     _generate(runner_bin, pruned)  # must still load and run
+
+
+# ---------------------------------------------------------- per-layer counts
+#
+# GGUF carries ONE <arch>.expert_count. A non-uniform prune leaves tensors with
+# different expert counts per layer while that key stays at the parent's value,
+# so the file did not describe itself: Runner read each layer's real count off
+# its router tensor, and any engine trusting the header mis-sized the model.
+# The pruner now writes <arch>.expert_count_per_layer (a u32 array, one entry
+# per block, 0 for a non-MoE block) whenever a prune plan applied, and the
+# loader validates it against the tensors so the header can never lie quietly.
+
+def _scan_kv(path, key):
+    """Return (value, value_offset) for one header KV. For an array the value
+    is a list and the offset points at its first element."""
+    with open(path, "rb") as f:
+        f.read(4); struct.unpack("<I", f.read(4))
+        n_tensors = struct.unpack("<Q", f.read(8))[0]
+        n_kv = struct.unpack("<Q", f.read(8))[0]
+        sizes = {0: "B", 1: "b", 2: "H", 3: "h", 4: "I", 5: "i", 6: "f", 7: "?", 10: "Q", 11: "q", 12: "d"}
+
+        def rd_str():
+            n = struct.unpack("<Q", f.read(8))[0]
+            return f.read(n).decode()
+
+        def rd_val(t):
+            if t == 8:
+                return rd_str()
+            if t == 9:
+                et = struct.unpack("<I", f.read(4))[0]
+                n = struct.unpack("<Q", f.read(8))[0]
+                return [rd_val(et) for _ in range(n)]
+            fmt = sizes[t]
+            return struct.unpack("<" + fmt, f.read(struct.calcsize(fmt)))[0]
+
+        for _ in range(n_kv):
+            k = rd_str()
+            t = struct.unpack("<I", f.read(4))[0]
+            if t == 9:
+                et = struct.unpack("<I", f.read(4))[0]
+                n = struct.unpack("<Q", f.read(8))[0]
+                off = f.tell()
+                vals = [rd_val(et) for _ in range(n)]
+                if k == key:
+                    return vals, off
+            else:
+                off = f.tell()
+                v = rd_val(t)
+                if k == key:
+                    return v, off
+    return None, None
+
+
+def test_nonuniform_prune_declares_per_layer_expert_counts(runner_bin, pruneprobe_model, tmp_path):
+    plan = tmp_path / "plan.json"
+    _write_plan(plan, {0: [0, 1]})           # blk.0 -> 2 experts, blk.1 keeps 4
+    pruned = tmp_path / "pruned.gguf"
+    proc = _prune(runner_bin, pruneprobe_model, pruned, plan)
+    assert proc.returncode == 0, proc.stderr.decode(errors="replace")
+    per_layer, _ = _scan_kv(pruned, "llama.expert_count_per_layer")
+    n_layer, _ = _scan_kv(pruned, "llama.block_count")
+    assert per_layer is not None, "non-uniform prune must declare per-layer counts"
+    assert len(per_layer) == n_layer
+    # every MoE block's declared count is exactly its router's expert axis
+    for l in range(n_layer):
+        r = _router_ne1(pruned, l)
+        assert per_layer[l] == (r if r is not None else 0), (l, per_layer, r)
+    assert per_layer[0] == 2 and per_layer[1] == 4
+    # the global key stays the true ceiling (the parent's count), not a lie
+    glob, _ = _scan_kv(pruned, "llama.expert_count")
+    assert glob == 4
+    assert b"expert_count_per_layer" in proc.stderr
+    _generate(runner_bin, pruned)
+
+
+def test_uniform_prune_declares_per_layer_counts_too(runner_bin, pruneprobe_model, tmp_path):
+    plan = tmp_path / "plan.json"
+    _write_plan(plan, {0: [0, 1], 1: [0, 1]})
+    pruned = tmp_path / "pruned.gguf"
+    proc = _prune(runner_bin, pruneprobe_model, pruned, plan)
+    assert proc.returncode == 0, proc.stderr.decode(errors="replace")
+    per_layer, _ = _scan_kv(pruned, "llama.expert_count_per_layer")
+    glob, _ = _scan_kv(pruned, "llama.expert_count")
+    assert per_layer[:2] == [2, 2] and glob == 2
+
+
+def test_tampered_per_layer_count_is_refused(runner_bin, pruneprobe_model, tmp_path):
+    """A declaration that disagrees with the tensors is the one thing this
+    key exists to make impossible to ignore: refused, by name."""
+    plan = tmp_path / "plan.json"
+    _write_plan(plan, {0: [0, 1]})
+    pruned = tmp_path / "pruned.gguf"
+    assert _prune(runner_bin, pruneprobe_model, pruned, plan).returncode == 0
+    _, off = _scan_kv(pruned, "llama.expert_count_per_layer")
+    tampered = tmp_path / "tampered.gguf"
+    data = bytearray(pruned.read_bytes())
+    struct.pack_into("<I", data, off + 4 * 1, 3)   # blk.1 declares 3, tensors say 4
+    tampered.write_bytes(data)
+    proc = subprocess.run(
+        [runner_bin, "-m", str(tampered), "-p", PROMPT, "-n", "2",
+         "--temp", "0", "--gpu", "off"],
+        cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60)
+    assert proc.returncode != 0
+    assert b"expert_count_per_layer" in proc.stderr, proc.stderr.decode(errors="replace")
+
+
+def test_plain_requant_of_a_pruned_file_keeps_the_declaration(runner_bin, pruneprobe_model, tmp_path):
+    """The declaration must survive a later --quantize with no plan (it is
+    carried through like every other KV), and a second prune must re-author
+    it rather than duplicate it."""
+    plan = tmp_path / "plan.json"
+    _write_plan(plan, {0: [0, 1]})
+    pruned = tmp_path / "pruned.gguf"
+    assert _prune(runner_bin, pruneprobe_model, pruned, plan).returncode == 0
+    requant = tmp_path / "requant.gguf"
+    proc = subprocess.run(
+        [runner_bin, "-m", str(pruned), "--quantize", str(requant), "--quant", "keep"],
+        cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60)
+    assert proc.returncode == 0, proc.stderr.decode(errors="replace")
+    assert _scan_kv(requant, "llama.expert_count_per_layer")[0][:2] == [2, 4]
+    plan2 = tmp_path / "plan2.json"
+    _write_plan(plan2, {1: [0, 1, 2]})
+    twice = tmp_path / "twice.gguf"
+    assert _prune(runner_bin, pruned, twice, plan2).returncode == 0
+    assert _scan_kv(twice, "llama.expert_count_per_layer")[0][:2] == [2, 3]
+    with open(twice, "rb") as f:
+        head = f.read(200000)
+    assert head.count(b"llama.expert_count_per_layer") == 1

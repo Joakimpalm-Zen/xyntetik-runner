@@ -249,6 +249,38 @@ static gguf_tensor *slice_rows(gguf_tensor *src, gguf_tensor *dst,
     return dst;
 }
 
+// <arch>.expert_count_per_layer: written by --prune-experts (one u32 per
+// block, 0 for a non-MoE block). When present it must agree with every
+// router tensor; a header that says one thing while the tensors say another
+// is exactly the silent mis-sizing this key exists to prevent, so a
+// disagreement refuses the load by name. Absent means the file predates the
+// key and each layer's count comes from its router alone, as before.
+static bool declared_layer_experts_ok(gguf_file *g, int layer, int have) {
+    const char *arch = gguf_get_str(g, "general.architecture", "");
+    char key[128];
+    snprintf(key, sizeof(key), "%s.expert_count_per_layer", arch);
+    gguf_kv *kv = gguf_get(g, key);
+    if (!kv) return true;
+    if (kv->type != GGUF_T_ARR || kv->arr_type != GGUF_T_U32 || !kv->arr_raw) {
+        fprintf(stderr, "error: %s must be an array of u32\n", key);
+        return false;
+    }
+    if ((uint64_t)layer >= kv->arr_n) {
+        fprintf(stderr, "error: %s has %llu entries but blk.%d is a MoE layer\n",
+                key, (unsigned long long)kv->arr_n, layer);
+        return false;
+    }
+    uint32_t declared;
+    memcpy(&declared, (const uint8_t *)kv->arr_raw + 4u * (uint64_t)layer, 4);
+    if ((int)declared != have) {
+        fprintf(stderr, "error: %s declares %u experts for blk.%d but its "
+                "router tensor carries %d; the header and the tensors "
+                "disagree\n", key, declared, layer, have);
+        return false;
+    }
+    return true;
+}
+
 static gguf_tensor *opt_tensor(gguf_file *g, const char *fmt, int i) {
     char name[128];
     snprintf(name, sizeof(name), fmt, i);
@@ -1373,6 +1405,7 @@ static bool nemotron_bind_layer(model_t *m, gguf_file *g, layer_t *l, int i) {
                 return false;
             }
             l->n_expert = (int)l->ffn_gate_inp->ne[1];
+            if (!declared_layer_experts_ok(g, i, l->n_expert)) return false;
             if (l->n_expert < m->n_expert_used || l->n_expert > m->n_expert) {
                 fprintf(stderr, "error: blk.%d declares %d experts via "
                         "ffn_gate_inp, outside [n_expert_used=%d, "
@@ -2322,6 +2355,16 @@ static bool model_bind_weights(model_t *m, const char *path, const model_params 
         return false;
     }
     m->n_expert = (int)n_expert_raw;
+    {
+        gguf_kv *pl = gguf_get(g, AK("expert_count_per_layer"));
+        if (pl && (pl->type != GGUF_T_ARR || pl->arr_type != GGUF_T_U32 ||
+                   pl->arr_n != (uint64_t)m->n_layer)) {
+            fprintf(stderr, "error: %s must be a u32 array with one entry per "
+                    "block (%d), got %llu\n", key, m->n_layer,
+                    (unsigned long long)(pl->type == GGUF_T_ARR ? pl->arr_n : 0));
+            return false;
+        }
+    }
     if (m->n_expert > 0 && !m->nemotron_h) {
         // sparse-MoE (Mixtral / Qwen3-MoE): softmax-over-all router, top-k
         // selection, renormalized weights, per-expert SwiGLU, weighted sum.
@@ -2762,6 +2805,7 @@ static bool model_bind_weights(model_t *m, const char *path, const model_params 
                 return false;
             }
             l->n_expert = (int)l->ffn_gate_inp->ne[1];
+            if (!declared_layer_experts_ok(g, i, l->n_expert)) return false;
             if (l->n_expert < m->n_expert_used || l->n_expert > m->n_expert) {
                 fprintf(stderr, "error: blk.%d declares %d experts via "
                         "ffn_gate_inp, outside [n_expert_used=%d, "

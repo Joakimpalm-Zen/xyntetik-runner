@@ -1505,7 +1505,22 @@ static int quantize_gguf_plan_inner(const char *in_path, const char *out_path, i
     // destination file at all.
     bool uniform_prune = false;
     int uniform_count = 0;
+    // Per-layer expert counts after the prune, authored into the header as
+    // <arch>.expert_count_per_layer (u32 per block, 0 for a non-MoE block).
+    // GGUF has one global expert_count; a non-uniform plan makes that key a
+    // ceiling rather than a description, and a consumer that trusts it
+    // mis-sizes the model. The array is what lets the file describe itself.
+    char pl_key[128] = "";
+    uint32_t *layer_counts = NULL;
+    uint64_t n_blocks = 0;
     if (plan.n > 0) {
+        const char *parch = gguf_get_str(&g, "general.architecture", "");
+        char bc_key[128];
+        snprintf(bc_key, sizeof(bc_key), "%s.block_count", parch);
+        snprintf(pl_key, sizeof(pl_key), "%s.expert_count_per_layer", parch);
+        n_blocks = gguf_get_u32(&g, bc_key, 0);
+        layer_counts = calloc(n_blocks ? n_blocks : 1, sizeof(uint32_t));
+        if (!layer_counts) { gguf_close(&g); quantize_plans_free(&plan, &tplan); return 1; }
         int n_moe_layers = 0, n_moe_seen = 0;
         bool any_pruned = false, all_equal = true;
         int first_count = -1;
@@ -1565,6 +1580,13 @@ static int quantize_gguf_plan_inner(const char *in_path, const char *out_path, i
             }
             if (first_count < 0) first_count = final_count;
             else if (final_count != first_count) all_equal = false;
+            if ((uint64_t)layer >= n_blocks) {
+                fprintf(stderr, "error: %s names block %d but %s.block_count is %llu\n",
+                        router->name, layer, parch, (unsigned long long)n_blocks);
+                gguf_close(&g); quantize_plans_free(&plan, &tplan); free(layer_counts);
+                return 1;
+            }
+            layer_counts[layer] = (uint32_t)final_count;
         }
         if (n_moe_seen < plan.n) {
             // at least one "layer_N" in the plan matched no MoE layer in
@@ -1832,21 +1854,38 @@ static int quantize_gguf_plan_inner(const char *in_path, const char *out_path, i
                                    (unsigned long long)counts[k]);
         fprintf(stderr, "\n");
     }
+    // A pruned source may already carry the per-layer declaration; a new
+    // plan re-authors it (never duplicates it), a plain requant copies it
+    // through like every other KV.
     uint64_t dropped_kv = 0;
     for (uint64_t i = 0; i < g.n_kv; i++)
-        if (kv_is_reauthored(g.kv[i].key)) dropped_kv++;
+        if (kv_is_reauthored(g.kv[i].key) ||
+            (layer_counts && !strcmp(g.kv[i].key, pl_key))) dropped_kv++;
 
     wr_u32(&w, 0x46554747);
     wr_u32(&w, 3);
     wr_u64(&w, g.n_tensors);
-    wr_u64(&w, g.n_kv - dropped_kv + 1);
+    wr_u64(&w, g.n_kv - dropped_kv + 1 + (layer_counts ? 1 : 0));
     for (uint64_t i = 0; i < g.n_kv; i++) {
-        if (kv_is_reauthored(g.kv[i].key)) continue;
+        if (kv_is_reauthored(g.kv[i].key) ||
+            (layer_counts && !strcmp(g.kv[i].key, pl_key))) continue;
         wr_kv(&w, &g.kv[i]);
     }
     wr_str(&w, "general.file_type", strlen("general.file_type"));
     wr_u32(&w, 4);            // GGUF_T_U32
     wr_u32(&w, ftype_out);
+    if (layer_counts) {
+        wr_str(&w, pl_key, strlen(pl_key));
+        wr_u32(&w, 9);        // GGUF_T_ARR
+        wr_u32(&w, 4);        // of GGUF_T_U32
+        wr_u64(&w, n_blocks);
+        for (uint64_t i = 0; i < n_blocks; i++) wr_u32(&w, layer_counts[i]);
+        fprintf(stderr, "quantize: %s written (%llu blocks; the global "
+                "expert_count stays the ceiling)\n",
+                pl_key, (unsigned long long)n_blocks);
+        free(layer_counts);
+        layer_counts = NULL;
+    }
 
     // tensor table with new types/offsets (data alignment `align`)
     uint64_t off = 0;

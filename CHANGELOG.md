@@ -8,6 +8,16 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **`--prune-experts` writes `<arch>.expert_count_per_layer`**, a u32 array
+  with one entry per block, whenever a plan applies (uniform or not), and the
+  loader validates it against every router tensor, refusing a header that
+  disagrees with the tensors by name. A non-uniform prune used to leave the
+  single global `expert_count` at the parent's value with nothing in the file
+  saying which layers carried fewer experts; Runner read the routers and was
+  correct, while any consumer trusting the header was mis-sized. A plain
+  requant carries the key through; a second plan re-authors it. Gated in
+  `tests/test_prune_experts.py`.
+
 - **NVFP4 decodes correctly: the per-tensor scale companion is applied.**
   NVIDIA's ModelOpt export is two-level (UE4M3 block scales inside the block,
   one F32 `<base>.scale` beside the weight, applied in the graph); the block
