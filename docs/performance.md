@@ -65,6 +65,14 @@ at `n_batch == 1` and never reaches the tile):
 | Apple M1 (NEON, 8 GB) | SmolLM2-135M Q8_0 | 287.7 tok/s | **473.5** | **+64.6%** |
 | i7-7700K (AVX2, 8 threads) | Qwen2.5-3B Q4_K_M | 23.1 | **31.6** | **+36.8%** |
 | i7-7700K (AVX2, 8 threads) | granite-4.1-3b Q8_0 | 16.8 | **22.0** | **+30.5%** |
+| Threadripper 9980X (AVX-512 build, 32 threads, box at load ~18) | Llama-3.2-3B Q4_K_M | 93.0 | **133.0** | **+43%** |
+| Threadripper 9980X (same) | granite-4.1-8b Q4_0 | 40.4 | **63.4** | **+57%** |
+
+The Threadripper rows were taken with other work on the box (load average
+18), so their decode arms moved by -4% and -9% between runs of the SAME code
+path; the M1 and the desktop, measured quiet, show decode within 0.2%. Read
+the Threadripper prefill gain as the direction and rough size, and the
+quiet-host rows as the number.
 
 **A 4x8 tile is slower than doing nothing.** It was measured first and lost:
 32 accumulator vectors plus 12 operand vectors exceed ARM64's 32 NEON

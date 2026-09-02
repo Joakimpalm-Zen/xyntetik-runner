@@ -14,7 +14,7 @@ names that were true when they were written.
   CPU prefill profile at 5578 of ~8000 samples. It now runs a 4x4 register
   tile over 16-column chunks, so 16 FMAs ride on 8 loads and the activation
   block stays in L1: **+64.6% on an M1 (NEON), +36.8% and +30.5% on an AVX2
-  desktop**, decode unchanged (decode never reaches the tile). Every output
+  desktop, +43% and +57% on a loaded AVX-512 Threadripper**, decode unchanged (decode never reaches the tile). Every output
   keeps one accumulator walking the row in one order, so results are
   bit-identical; `test-quants-simd` gates blocking-independence across every
   boundary and `kernel-verify.py` confirms token identity between binaries. A
