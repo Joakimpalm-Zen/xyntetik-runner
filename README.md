@@ -1873,7 +1873,16 @@ Current high-signal caveats include:
   **re-measured 2026-08-20 with the current gate: 9/9 prompts byte-exact at 128
   tokens, zero near-ties** (the intervening router-bias, tensor-core-identity
   and canonical-quantizer fixes resolved it). Per-row evidence:
-  `docs/compat-reports/cpu-cuda-128/qwen3-4b-q4km-2026-08-20.json`.
+  `docs/compat-reports/cpu-cuda-128/qwen3-4b-q4km-2026-08-20.json`. A
+  2026-09-02 rebuild on the same box with a newer compiler measured 8/9: one
+  prompt flips at token 40 on a 0.0013-nat near-tie, and it is the **CPU** arm
+  that moved (today's GPU text equals the 2026-08-20 text for both arms; the
+  2026-08-20 commit rebuilt today shows the same flip). That is the
+  build-reproducibility boundary [docs/determinism-scope.md](docs/determinism-scope.md)
+  already draws: same executable and inputs reproduce; independent rebuilds
+  need not, at the libm/codegen level. The dense-model identity gate stays
+  strict and the row is recorded as a fail in
+  `docs/compat-reports/0.4.5-2026-09-02-blackwell.json`.
 - Canonical gpt-oss-20b passed an earlier 5-of-5, 16-token partial-offload test
   on an RTX 3070, but failed CPU/CUDA identity and chat/tokenizer gates on the
   later Blackwell full-offload matrix. Hardware and test-contract scope matter.
@@ -1945,6 +1954,16 @@ Current high-signal caveats include:
   [docs/metal-gemma4-moe-divergence-2026-08-31.md](docs/metal-gemma4-moe-divergence-2026-08-31.md).
 - Numerically sensitive models may use a measured self-sensitivity floor
   instead of claiming cross-engine token identity.
+- **The 2026-09-02 Blackwell matrix** (`docs/compat-reports/0.4.5-2026-09-02-blackwell.json`,
+  all 25 pinned files present, every executable class run) is the current
+  ledger. Its executed tokenizer differentials pass on 7 models and differ
+  on 4: Mistral-7B-v0.3 (44/721, almost all leading-whitespace strings),
+  Phi-3.5-mini (2/721, around a literal `<s>` in text), Lucie-7B (190/721)
+  and Salamandra-7B (16/721, special-token spellings in plain text). Those
+  are tokenizer-fidelity gaps, recorded as failures and under investigation;
+  the chat and tool checks on the same models pass. Seven cross-engine greedy
+  misses and the Teuken/TildeOpen chat failures were already in the
+  2026-08-15 ledger.
 
 The full 2026-08-05 pass/fail/refusal matrix, including failed derivatives, is
 in [docs/cert-matrix-status.md](docs/cert-matrix-status.md). Architecture and
