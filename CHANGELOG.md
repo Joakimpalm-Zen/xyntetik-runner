@@ -6,7 +6,18 @@ change between releases (the `-alpha` suffix was retired at v0.2.0 — the 0.x
 version already says what it needs to). Entries below the rename keep the
 names that were true when they were written.
 
-## Unreleased
+## v0.4.6 - 2026-09-02
+
+- **The compat harness classifies an unbuilt tokenizer tool as `not_executed`**
+  (with the reason) instead of failing sixteen tokenizer rows, and its chat
+  smoke asks the model for no thinking unless the pinned params say
+  otherwise; the 2026-09-02 Blackwell matrix ran every executable class on
+  all 25 pinned files (`docs/compat-reports/0.4.5-2026-09-02-blackwell.json`).
+
+- **Benchmarks refreshed 2026-09-02 on three hosts** against current
+  llama.cpp builds (`docs/benchmarks.md`): MIG dense decode 81-93%, MoE
+  72%/41%, prefill 5-10%; RTX 3070 decode 70-83%, prefill 4-9%; M1 Metal
+  granite-3b decode 80% under memory pressure. Prefill is the column.
 
 - **Signed, chained receipts, and OpenSSF Model Signing verification at
   load.** A transcript can now be signed (`--keygen` makes an Ed25519 key,

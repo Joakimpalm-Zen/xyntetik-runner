@@ -1,0 +1,111 @@
+{
+  "schema_version": "xyntetik.runner.model-compat-report.v1",
+  "generated_utc": "2026-09-02T12:42:04Z",
+  "host": {
+    "os": "Linux",
+    "machine": "x86_64"
+  },
+  "runner": {
+    "path": "runner",
+    "version": "runner 0.4.6"
+  },
+  "reference": {
+    "path": null,
+    "version": null
+  },
+  "models": [
+    {
+      "id": "qwen3-30b-a3b-q4_k_m",
+      "architecture": "qwen3moe",
+      "file": "models/Qwen3-30B-A3B-Q4_K_M.gguf",
+      "expected_sha256": "0d003f6662faee786ed5da3e31b29c978de5ae5d275c8794c606a7f3c01aa8f5",
+      "checks": {
+        "load": {
+          "status": "pass",
+          "returncode": 0,
+          "elapsed_ms": 228.1,
+          "stderr_tail": "loaded /home/lab/workspace/models/Qwen3-30B-A3B-Q4_K_M/Qwen3-30B-A3B-Q4_K_M.gguf | qwen3moe | 48 layers | ctx 4096 | 32 threads | 0.01s\nsampling: qwen3 (temp 0.00 \u2014 greedy argmax; top_p/top_k/min_p/repeat_penalty inactive)\n\nprompt: 3 tok, 20.95 tok/s | gen: 1 tok, 28.58 tok/s\n"
+        },
+        "cpu_cuda": {
+          "status": "pass_margin_qualified",
+          "returncode": 0,
+          "elapsed_ms": 76726.96,
+          "pins": {
+            "RUNNER_CUDA_TC": "0",
+            "RUNNER_MOE_EAGER": "1"
+          },
+          "min_prompt_tokens": 85,
+          "cpu_cuda_identity": {
+            "result": "pass_margin_qualified",
+            "exact": "6/9",
+            "near_tie_tolerated": 3
+          },
+          "identical": "6/9",
+          "failed_prompts": [],
+          "report": "mtp/cpu_cuda/qwen3-30b-a3b-q4_k_m.json",
+          "output_tail": "ry published a revised catalogue listing 4218 objects, of which roughly one in nine turned out on later inspection to be a duplicate entry under a second designation. The correction'\n  near-tie flip @tok 49: cpu ' Index' vs gpu ' New' (margins 0.001/0.000 nats \u2264 0.5)\nok  : \"def parse_header(buf, size):\\n    if size < 8:\\n        raise ValueError('short header')\\n    magic, version = struct.unpack('<II', buf[:8])\\n    if magic != GGUF_MAGIC:\\n        raise ValueError('not a gguf file')\\n    return magic, version\\n\\n# The loader above rejects a truncated header before unpacking it, which\"\nTIE : 'The city of Lisbon sits on seven hills above the Tagus estuary, and its oldest quarter survived the 1755 earthquake largely intact because the bedrock there is firmer than the reclaimed ground downriver. Rebuilding the lower town took decades, and the grid of streets laid out afterwards was among the first in Europe designed with seismic loads in mind, which is why the district still reads as unusually regular to a visitor who'\n  near-tie flip @tok 53: cpu ' the' vs gpu ' much' (margins 0.016/0.128 nats \u2264 0.5)\n\ncpu_cuda: pass_margin_qualified \u2014 6/9 exact, 3 near-tie tolerated (eager routing)\n"
+        },
+        "chat": {
+          "status": "pass",
+          "returncode": 0,
+          "elapsed_ms": 1856.31,
+          "prompt": "What is 2+2?",
+          "failure_reasons": [],
+          "output_tail": "2 + 2 = 4.\n"
+        },
+        "tool": {
+          "status": "fail",
+          "returncode": 1,
+          "elapsed_ms": 21647.39,
+          "scenario_matrix": "agent-torture",
+          "totals": {
+            "requests": 8,
+            "passed": 2,
+            "failed": 6
+          },
+          "report": "mtp/tool/qwen3-30b-a3b-q4_k_m.json",
+          "output_tail": "report: mtp/tool/qwen3-30b-a3b-q4_k_m/report.json\nraw: mtp/tool/qwen3-30b-a3b-q4_k_m/raw.jsonl\nruntime=runner requests=8 passed=2 failed=6\n"
+        },
+        "greedy_reference": {
+          "status": "not_executed",
+          "reason": "reference_binary_not_provided"
+        },
+        "long_context": {
+          "status": "not_executed",
+          "reason": "check_class_not_executable"
+        }
+      },
+      "resolved_file": "models/Qwen3-30B-A3B-Q4_K_M.gguf",
+      "actual_sha256": "0d003f6662faee786ed5da3e31b29c978de5ae5d275c8794c606a7f3c01aa8f5",
+      "file_status": "pass",
+      "complete": false
+    }
+  ],
+  "complete": false,
+  "summary": {
+    "models": 1,
+    "files": {
+      "pass": 1
+    },
+    "checks": {
+      "load": {
+        "pass": 1
+      },
+      "cpu_cuda": {
+        "pass_margin_qualified": 1
+      },
+      "chat": {
+        "pass": 1
+      },
+      "tool": {
+        "fail": 1
+      },
+      "greedy_reference": {
+        "not_executed": 1
+      },
+      "long_context": {
+        "not_executed": 1
+      }
+    }
+  }
+}
