@@ -1357,13 +1357,135 @@ void dequant_row(int type, const void *src, float *dst, int n) {
 
 // ------------------------------------------------------------- batched dots
 
+// ---- the batched prefill tile ------------------------------------------
+//
+// out[r*out_stride + b] = dot(w[r], x + b*x_stride).
+//
+// The one-row kernel below is LOAD-BOUND, not latency-bound: it issues one
+// weight load and one activation load per FMA, so widening its column
+// blocking from 4 to 8 bought 3% on an M1 (measured 2026-09-02) even though
+// the kernel was 70% of a CPU prefill profile. A tile fixes the arithmetic
+// intensity instead: with R rows and C columns resident in registers, R*C
+// FMAs ride on R+C loads. At 4x8 that is 32 FMAs per 12 loads against 1 per
+// 2 in the row kernel.
+//
+// Bit-identity is preserved by construction: each output keeps ONE
+// accumulator walking i in the same order the single-column dot uses. The
+// tile changes which values sit in registers, never the order they are
+// summed in.
+// 4x4, not 4x8: ARM64 has 32 NEON registers and a 4x8 tile wants 32
+// accumulators plus 12 operand vectors, which spills and measured SLOWER
+// than the row kernel on an M1 (2026-09-02). 4x4 needs 16 + 8 and fits.
+enum { F32_TILE_ROWS = 4, F32_TILE_COLS = 4 };
+
+void vec_dot_f32_tile(const float *const *w, int nrow, const float *x,
+                      int x_stride, int nb, int n, float *out, int out_stride) {
+#if (defined(__AVX2__) && defined(__FMA__) && defined(__F16C__)) || \
+    (defined(__aarch64__) && defined(__ARM_NEON))
+    if (nrow == F32_TILE_ROWS) {
+        int b = 0;
+        for (; b + F32_TILE_COLS <= nb; b += F32_TILE_COLS) {
+            const float *xp[F32_TILE_COLS];
+            for (int c = 0; c < F32_TILE_COLS; c++)
+                xp[c] = x + (size_t)(b + c) * x_stride;
+#if defined(__AVX2__)
+            __m256 acc[F32_TILE_ROWS][F32_TILE_COLS];
+            for (int r = 0; r < F32_TILE_ROWS; r++)
+                for (int c = 0; c < F32_TILE_COLS; c++)
+                    acc[r][c] = _mm256_setzero_ps();
+            int i = 0;
+            for (; i + 8 <= n; i += 8) {
+                __m256 xv[F32_TILE_COLS];
+                for (int c = 0; c < F32_TILE_COLS; c++)
+                    xv[c] = _mm256_loadu_ps(xp[c] + i);
+                for (int r = 0; r < F32_TILE_ROWS; r++) {
+                    __m256 wv = _mm256_loadu_ps(w[r] + i);
+                    for (int c = 0; c < F32_TILE_COLS; c++)
+                        acc[r][c] = _mm256_fmadd_ps(wv, xv[c], acc[r][c]);
+                }
+            }
+            for (int r = 0; r < F32_TILE_ROWS; r++)
+                for (int c = 0; c < F32_TILE_COLS; c++) {
+                    __m128 l = _mm_add_ps(_mm256_castps256_ps128(acc[r][c]),
+                                          _mm256_extractf128_ps(acc[r][c], 1));
+                    l = _mm_add_ps(l, _mm_movehl_ps(l, l));
+                    l = _mm_add_ss(l, _mm_shuffle_ps(l, l, 1));
+                    float s = _mm_cvtss_f32(l);
+                    for (int t = i; t < n; t++) s += w[r][t] * xp[c][t];
+                    out[(size_t)r * out_stride + b + c] = s;
+                }
+#else
+            float32x4_t acc[F32_TILE_ROWS][F32_TILE_COLS];
+            for (int r = 0; r < F32_TILE_ROWS; r++)
+                for (int c = 0; c < F32_TILE_COLS; c++)
+                    acc[r][c] = vdupq_n_f32(0);
+            int i = 0;
+            for (; i + 4 <= n; i += 4) {
+                float32x4_t xv[F32_TILE_COLS];
+                for (int c = 0; c < F32_TILE_COLS; c++)
+                    xv[c] = vld1q_f32(xp[c] + i);
+                for (int r = 0; r < F32_TILE_ROWS; r++) {
+                    float32x4_t wv = vld1q_f32(w[r] + i);
+                    for (int c = 0; c < F32_TILE_COLS; c++)
+                        acc[r][c] = vfmaq_f32(acc[r][c], wv, xv[c]);
+                }
+            }
+            for (int r = 0; r < F32_TILE_ROWS; r++)
+                for (int c = 0; c < F32_TILE_COLS; c++) {
+                    float s = vaddvq_f32(acc[r][c]);
+                    for (int t = i; t < n; t++) s += w[r][t] * xp[c][t];
+                    out[(size_t)r * out_stride + b + c] = s;
+                }
+#endif
+        }
+        for (int r = 0; r < nrow; r++)
+            if (b < nb)
+                vec_dot_f32_multi(w[r], x + (size_t)b * x_stride, x_stride,
+                                  nb - b, n, out + (size_t)r * out_stride + b);
+        return;
+    }
+#endif
+    for (int r = 0; r < nrow; r++)
+        vec_dot_f32_multi(w[r], x, x_stride, nb, n, out + (size_t)r * out_stride);
+}
+
 // out[b] = dot(w, x + b*x_stride) for nb activation columns sharing one
 // dequantized weight row — the inner loop of batched prompt eval. Register
-// blocking (4 columns per pass) reuses each weight load four times.
+// blocking reuses each weight load across several columns.
+//
+// EIGHT columns per pass, not four. Each column keeps its OWN accumulator and
+// walks the row in the same order, so the widening is bit-identical to the
+// 4-column form and to the single-column dot (unrolling the REDUCTION instead
+// would not be, and is why that is not what this does). What it buys is
+// independent FMA chains: an M1 firing 4 FP pipes at ~3-cycle FMA latency
+// needs about a dozen in flight to saturate, and four chains left it
+// latency-bound — this kernel was 5578 of 8000 samples in a CPU prefill
+// profile (2026-09-02), the largest single item by far.
 void vec_dot_f32_multi(const float *w, const float *x, int x_stride,
                        int nb, int n, float *out) {
 #if defined(__AVX2__) && defined(__FMA__) && defined(__F16C__)
     int b = 0;
+    for (; b + 8 <= nb; b += 8) {
+        const float *xp[8];
+        for (int k = 0; k < 8; k++) xp[k] = x + (size_t)(b + k) * x_stride;
+        __m256 a[8];
+        for (int k = 0; k < 8; k++) a[k] = _mm256_setzero_ps();
+        int i = 0;
+        for (; i + 8 <= n; i += 8) {
+            __m256 wv = _mm256_loadu_ps(w + i);
+            for (int k = 0; k < 8; k++)
+                a[k] = _mm256_fmadd_ps(wv, _mm256_loadu_ps(xp[k] + i), a[k]);
+        }
+        for (int k = 0; k < 8; k++) {
+            __m128 l = _mm_add_ps(_mm256_castps256_ps128(a[k]),
+                                  _mm256_extractf128_ps(a[k], 1));
+            l = _mm_add_ps(l, _mm_movehl_ps(l, l));
+            l = _mm_add_ss(l, _mm_shuffle_ps(l, l, 1));
+            float s = _mm_cvtss_f32(l);
+            for (int t = i; t < n; t++) s += w[t] * xp[k][t];
+            out[b + k] = s;
+        }
+    }
     for (; b + 4 <= nb; b += 4) {
         const float *x0 = x + (size_t)b * x_stride;
         const float *x1 = x0 + x_stride, *x2 = x1 + x_stride, *x3 = x2 + x_stride;
@@ -1413,6 +1535,23 @@ void vec_dot_f32_multi(const float *w, const float *x, int x_stride,
     }
 #elif defined(__aarch64__) && defined(__ARM_NEON)
     int b = 0;
+    for (; b + 8 <= nb; b += 8) {
+        const float *xp[8];
+        for (int k = 0; k < 8; k++) xp[k] = x + (size_t)(b + k) * x_stride;
+        float32x4_t a[8];
+        for (int k = 0; k < 8; k++) a[k] = vdupq_n_f32(0);
+        int i = 0;
+        for (; i + 4 <= n; i += 4) {
+            float32x4_t wv = vld1q_f32(w + i);
+            for (int k = 0; k < 8; k++)
+                a[k] = vfmaq_f32(a[k], wv, vld1q_f32(xp[k] + i));
+        }
+        for (int k = 0; k < 8; k++) {
+            float s = vaddvq_f32(a[k]);
+            for (int t = i; t < n; t++) s += w[t] * xp[k][t];
+            out[b + k] = s;
+        }
+    }
     for (; b + 4 <= nb; b += 4) {
         const float *x0 = x + (size_t)b * x_stride;
         const float *x1 = x0 + x_stride, *x2 = x1 + x_stride, *x3 = x2 + x_stride;

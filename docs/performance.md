@@ -45,6 +45,48 @@ across thread counts. Scope a shared box with `--reserve-cpu` or pin with `-t`.
 The 100.5s SmolLM2 torture run would now be ~16s. GPU decode is **2.23s**
 (2.6x the fixed CPU), and CPU/GPU top-1 tokens match 0/64.
 
+## 2026-09-02 — the batched CPU prefill kernel was load-bound, and a 4x4 tile fixed it
+
+A CPU prefill profile on an M1 (`sample`, SmolLM2-135M Q8_0, 4k-token prompt)
+put **`vec_dot_f32_multi` at 5578 of ~8000 samples**, three times attention.
+That kernel dots one dequantized weight row against four activation columns,
+which issues one weight load and one activation load per FMA: it was
+**load-bound, not latency-bound**. Widening its register blocking from 4 to 8
+columns bought **+3%** and confirmed the diagnosis by not helping.
+
+The fix is arithmetic intensity. `vec_dot_f32_tile` holds **4 weight rows x 4
+activation columns** in registers, so 16 FMAs ride on 8 loads instead of 2 on
+4, and `mv_rows` walks the batch in **16-column chunks** so the activation
+block stays in L1. Measured, decode arm unchanged in every case (decode runs
+at `n_batch == 1` and never reaches the tile):
+
+| host | model | prefill before | after | change |
+|---|---|---:|---:|---:|
+| Apple M1 (NEON, 8 GB) | SmolLM2-135M Q8_0 | 287.7 tok/s | **473.5** | **+64.6%** |
+| i7-7700K (AVX2, 8 threads) | Qwen2.5-3B Q4_K_M | 23.1 | **31.6** | **+36.8%** |
+| i7-7700K (AVX2, 8 threads) | granite-4.1-3b Q8_0 | 16.8 | **22.0** | **+30.5%** |
+
+**A 4x8 tile is slower than doing nothing.** It was measured first and lost:
+32 accumulator vectors plus 12 operand vectors exceed ARM64's 32 NEON
+registers, and the spill cost more than the reuse saved. 4x4 needs 16 + 8 and
+fits. The negative is recorded because the next person to widen this kernel
+will reach for 8 columns first, as this one did.
+
+**Every output is bit-identical.** Each accumulates over the row in one order
+with one accumulator, so a column's result cannot depend on how many rows or
+columns travel with it. `test-quants-simd` gates that against the same column
+computed alone, over row lengths and column counts that straddle every
+blocking boundary, and `kernel-verify.py` confirms token identity between the
+two binaries end to end.
+
+**What the gate taught, and what it corrected in this file's assumptions:**
+the first version of that test asserted the multi-column kernel equals
+`vec_dot`'s single-column f32 dot. It does not, and never did — the two
+reduce with different accumulator layouts and differ in the last bits. Prefill
+uses one kernel and decode uses the other; each is internally stable, which is
+what "same executable, same tokens" requires. The invariant is
+blocking-independence, not cross-kernel agreement.
+
 ## Measured and rejected — CUDA virtual-arch bump
 
 The embedded PTX is built from `compute_75` and targets `sm_75`; the documented

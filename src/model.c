@@ -3728,8 +3728,52 @@ static void mv_rows(void *ctx, int i0, int i1) {
         }
         return;
     }
-    // batched: dequantize each weight row once, reuse for every token; the
-    // multi-column dot shares each weight load across 4 activation columns
+    // batched: dequantize weight rows once, reuse for every token, and run
+    // FOUR rows against EIGHT activation columns per register tile — the
+    // arithmetic-intensity fix for a prefill inner loop that was issuing one
+    // load per FMA (quants.c's vec_dot_f32_tile). Bit-identical per output.
+    enum { TROWS = 4 };
+    float *tbuf = NULL;
+    const float *trow[TROWS];
+    if (j->n_batch >= 8 && i1 - i0 >= TROWS)
+        tbuf = malloc(sizeof(float) * (size_t)n_in * TROWS);
+    if (tbuf) {
+        for (int r = i0; r + TROWS <= i1; r += TROWS) {
+            for (int k = 0; k < TROWS; k++) {
+                float *dst = tbuf + (size_t)k * n_in;
+                if (type == T_F32)
+                    memcpy(dst, base + (size_t)(r + k) * j->rsz,
+                           sizeof(float) * n_in);
+                else
+                    dequant_row(type, base + (size_t)(r + k) * j->rsz, dst, n_in);
+                if (sc != 1.0f)
+                    for (int i = 0; i < n_in; i++) dst[i] *= sc;
+                trow[k] = dst;
+            }
+            // one tile writes TROWS x n_batch outputs; y is column-major in
+            // slots of y_stride, so a row's outputs are strided by y_stride
+            // 16-column chunks, not 64: the activation block a tile pass
+            // walks must stay in L1 (16 x 4096 floats is 256 KB at the widest
+            // row this engine serves; 64 would be a megabyte and every row
+            // would re-stream it from L2).
+            enum { TCOLS = 16 };
+            for (int c = 0; c < j->n_batch; c += TCOLS) {
+                int nb = j->n_batch - c < TCOLS ? j->n_batch - c : TCOLS;
+                float tout[TROWS][TCOLS];
+                vec_dot_f32_tile(trow, TROWS, j->x + (size_t)c * j->x_stride,
+                                 j->x_stride, nb, n_in, &tout[0][0], TCOLS);
+                for (int k = 0; k < TROWS; k++) {
+                    float b0 = j->bias ? j->bias[r + k] : 0.0f;
+                    for (int b = 0; b < nb; b++)
+                        j->y[(size_t)(c + b) * j->y_stride + r + k] =
+                            tout[k][b] + b0;
+                }
+            }
+        }
+        i0 += ((i1 - i0) / TROWS) * TROWS;   // tail rows fall through below
+        free(tbuf);
+        if (i0 >= i1) return;
+    }
     float *buf = (type == T_F32 && sc == 1.0f) ? NULL : malloc(sizeof(float) * n_in);
     // If that scratch could not be allocated (OOM mid-inference), fall back to
     // the buffer-free fused dequant-and-dot used by the n_batch==1 path — one

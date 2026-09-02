@@ -8,6 +8,20 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **Batched CPU prefill is 30-65% faster, bit-identically.** The kernel that
+  dots a dequantized weight row against the batch's activation columns was
+  load-bound (one weight load and one activation load per FMA) and dominated a
+  CPU prefill profile at 5578 of ~8000 samples. It now runs a 4x4 register
+  tile over 16-column chunks, so 16 FMAs ride on 8 loads and the activation
+  block stays in L1: **+64.6% on an M1 (NEON), +36.8% and +30.5% on an AVX2
+  desktop**, decode unchanged (decode never reaches the tile). Every output
+  keeps one accumulator walking the row in one order, so results are
+  bit-identical; `test-quants-simd` gates blocking-independence across every
+  boundary and `kernel-verify.py` confirms token identity between binaries. A
+  4x8 tile was measured first and is SLOWER on ARM64 (32 accumulators plus
+  operands spill 32 NEON registers); the negative is in
+  `docs/performance.md`.
+
 - **`--prune-experts` writes `<arch>.expert_count_per_layer`**, a u32 array
   with one entry per block, whenever a plan applies (uniform or not), and the
   loader validates it against every router tensor, refusing a header that

@@ -81,6 +81,11 @@ int   quantize_type_from_name(const char *s);
 // dot(row, x) over n elements
 float vec_dot(int type, const void *row, const float *x, int n);
 // out[b] = dot(w, x + b*x_stride) for nb columns sharing one weight row
+// R dequantized weight rows x nb activation columns in one register tile.
+// Every output accumulates over the row in the same order as vec_dot, so the
+// result is bit-identical to calling the single-column dot R*nb times.
+void  vec_dot_f32_tile(const float *const *w, int nrow, const float *x,
+                       int x_stride, int nb, int n, float *out, int out_stride);
 void  vec_dot_f32_multi(const float *w, const float *x, int x_stride,
                         int nb, int n, float *out);
 void  q8_quant_row(const float *x, void *dst, int n); // n % 32 == 0

@@ -1107,6 +1107,76 @@ int main(void) {
           "a whole-block row is still admitted");
 #endif
 
+    // vec_dot_f32_multi: the batched prefill inner loop.
+    //
+    // The invariant is BLOCKING-INDEPENDENCE, not agreement with the
+    // single-column dot: each column keeps its own accumulator and walks the
+    // row in one order, so a column's result cannot depend on how many
+    // columns travel with it. (`dot_f32_row` reduces with a different
+    // accumulator layout and has always produced slightly different bits —
+    // measured here 2026-09-02 when a widening was first gated against it by
+    // mistake. Prefill uses this kernel and decode uses that one; each is
+    // internally stable, which is what "same executable, same tokens" needs.)
+    // This is what lets the register blocking widen or tile without touching
+    // the token contract. Widths straddle the 8- and 4-column blocks and
+    // their remainders; row lengths straddle the SIMD step and its tail.
+    {
+        enum { MAXN = 300, MAXB = 19 };
+        static float wv[MAXN], xv[MAXB * MAXN], got[MAXB];
+        for (int i = 0; i < MAXN; i++) wv[i] = frnd();
+        for (int i = 0; i < MAXB * MAXN; i++) xv[i] = frnd();
+        const int ns[] = { 1, 3, 4, 7, 8, 15, 16, 31, 32, 33, 64, 127, 256, 300 };
+        const int bs[] = { 1, 2, 3, 4, 5, 7, 8, 9, 12, 16, 17, 19 };
+        for (size_t ni = 0; ni < sizeof(ns) / sizeof(*ns); ni++) {
+            int n = ns[ni];
+            for (size_t bi = 0; bi < sizeof(bs) / sizeof(*bs); bi++) {
+                int nb = bs[bi];
+                for (int k = 0; k < nb; k++) got[k] = 1234.5f;
+                vec_dot_f32_multi(wv, xv, MAXN, nb, n, got);
+                for (int k = 0; k < nb; k++) {
+                    // the same column, computed one at a time (the narrowest
+                    // blocking the kernel has)
+                    float want = 1234.5f;
+                    vec_dot_f32_multi(wv, xv + (size_t)k * MAXN, MAXN, 1, n, &want);
+                    CHECK(got[k] == want,
+                          "vec_dot_f32_multi n=%d nb=%d col=%d: %.9g != %.9g",
+                          n, nb, k, (double)got[k], (double)want);
+                }
+            }
+        }
+    }
+
+    // and the 4-row tile it feeds: same contract, one accumulator per output
+    // walking the row in one order, so every element must equal that column
+    // computed alone.
+    {
+        enum { MAXN = 300, MAXB = 19, NROW = 4 };
+        static float wrows[NROW][MAXN], xv2[MAXB * MAXN], tout[NROW * MAXB];
+        const float *wp[NROW];
+        for (int r = 0; r < NROW; r++) {
+            for (int i = 0; i < MAXN; i++) wrows[r][i] = frnd();
+            wp[r] = wrows[r];
+        }
+        for (int i = 0; i < MAXB * MAXN; i++) xv2[i] = frnd();
+        const int ns2[] = { 1, 4, 7, 8, 16, 33, 64, 300 };
+        const int bs2[] = { 1, 4, 7, 8, 9, 16, 19 };
+        for (size_t ni = 0; ni < sizeof(ns2) / sizeof(*ns2); ni++)
+            for (size_t bi = 0; bi < sizeof(bs2) / sizeof(*bs2); bi++) {
+                int n = ns2[ni], nb = bs2[bi];
+                for (int k = 0; k < NROW * MAXB; k++) tout[k] = 4321.5f;
+                vec_dot_f32_tile(wp, NROW, xv2, MAXN, nb, n, tout, MAXB);
+                for (int r = 0; r < NROW; r++)
+                    for (int k = 0; k < nb; k++) {
+                        float want = 4321.5f;
+                        vec_dot_f32_multi(wrows[r], xv2 + (size_t)k * MAXN,
+                                          MAXN, 1, n, &want);
+                        CHECK(tout[r * MAXB + k] == want,
+                              "vec_dot_f32_tile n=%d nb=%d row=%d col=%d: %.9g != %.9g",
+                              n, nb, r, k, (double)tout[r * MAXB + k], (double)want);
+                    }
+            }
+    }
+
     if (g_fail) { fprintf(stderr, "test_quants_simd: %d FAILURES\n", g_fail); return 1; }
     printf("test_quants_simd: OK\n");
     return 0;
