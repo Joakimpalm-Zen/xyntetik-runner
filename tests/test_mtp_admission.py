@@ -66,7 +66,7 @@ def test_backbone_depth_excludes_the_predictor_blocks(runner_bin, models):
         line = [l for l in text.splitlines() if l.startswith("loaded ")][0]
         return int(line.split("|")[2].strip().split()[0])
     assert layers(two) == layers(plain), "MTP blocks must not inflate the depth"
-    assert "mtp: 2 predictor block(s) declared and excluded" in two
+    assert "mtp: 2 predictor block(s) declared, excluded from the backbone" in two
     assert "mtp:" not in plain, "a model without MTP must not mention it"
 
 

@@ -335,6 +335,17 @@ for i in range(N_LAYER + MTP_LAYERS):
         (f"blk.{i}.ffn_up.weight", [N_EMBD, N_FF_I], tensor_data(N_EMBD * N_FF_I)),
         (f"blk.{i}.ffn_down.weight", [N_FF_I, N_EMBD], tensor_data(N_FF_I * N_EMBD)),
     ]
+    if i >= N_LAYER:
+        # NextN/MTP predictor block: the backbone's block shape plus the
+        # head-only tensors (eh_proj over concat(enorm e, hnorm h), the two
+        # input norms, the head norm); embeddings and LM head are shared
+        tensors += [
+            (f"blk.{i}.nextn.eh_proj.weight", [2 * N_EMBD, N_EMBD],
+             tensor_data(2 * N_EMBD * N_EMBD)),
+            (f"blk.{i}.nextn.enorm.weight", [N_EMBD], ones(N_EMBD)),
+            (f"blk.{i}.nextn.hnorm.weight", [N_EMBD], ones(N_EMBD)),
+            (f"blk.{i}.nextn.shared_head_norm.weight", [N_EMBD], ones(N_EMBD)),
+        ]
     if ESERIES_SHARED_KV or ESERIES_PLE or G4HETERO:
         head_dim = g4_hd(i) if G4HETERO else N_EMBD // N_HEAD
         tensors += [

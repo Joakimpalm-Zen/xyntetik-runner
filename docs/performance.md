@@ -95,6 +95,79 @@ uses one kernel and decode uses the other; each is internally stable, which is
 what "same executable, same tokens" requires. The invariant is
 blocking-independence, not cross-kernel agreement.
 
+## 2026-09-02 - NextN/MTP head consumption, and what a speculative round costs on CPU
+
+`--mtp` runs the predictor block that MTP-preserved Qwen3.5/3.6 exports carry
+(`<arch>.nextn_predict_layers = 1`) as the draft source of the existing
+verify walk: one extra attention layer over its own KV region, input
+`eh_proj(concat(enorm(embed(x_p)), hnorm(h_{p-1})))` at position p, head norm
+and the shared LM head on top, chained proposals off the head's own hidden
+(the reference driver's convention). The walk verifies with the target, so
+output is token-identical to plain decoding; the fixture pins that at draft
+widths 1, 3 and 4 and the real-model anchor is the acceptance rate below,
+which a wrong concat order or norm would collapse.
+
+Box: Threadripper 9980X, 32 of 128 threads, load ~15 from another job, Qwen3.5-4B
+Q8_0, greedy, 128 tokens, two prompts (prose: a Roman-history continuation;
+code: `def fibonacci(n):`). Every `--mtp` row decoded the same bytes as its
+plain row.
+
+| route | prompt | plain | K=1 | K=2 | K=3 | K=4 |
+|---|---|---|---|---|---|---|
+| f32 (default) | prose | 21.05 | 21.29 | 15.60 | 13.88 | 13.12 |
+| f32 (default) | code | 20.93 | 24.45 | 23.53 | 20.62 | 21.51 |
+| `RUNNER_CPU_I8=1` | prose | 21.61 | 23.37 | 20.36 | 16.91 | - |
+| `RUNNER_CPU_I8=1` | code | 21.31 | 27.97 | 25.07 | 23.53 | - |
+
+tok/s decode. Acceptance: prose 53-56 of 72-74 first drafts (~75%), 73 of
+216 at K=4 (2.37 tok/round); code 61-62 of 65-66 (94%), 91 of 144 at K=4
+(3.56 tok/round). So the head is the trained one, and the win is bounded by
+what a round costs, not by what it proposes.
+
+Where a round goes (`RUNNER_SPEC_PROF=1`, i8 route, prose, whole 128-token run):
+
+| K | draft | verify | row logits | fold re-sync | total |
+|---|---|---|---|---|---|
+| 1 | 455 ms | 3299 ms | 647 ms | 694 ms | 5353 ms |
+| 3 | 1001 ms | 3284 ms | 656 ms | 1883 ms | 7071 ms |
+
+Reading it: a head step is ~7 ms (one layer plus the 0.64B-parameter LM
+head), a lazy row head ~5.6 ms, a 2-row verify ~46 ms against a ~40 ms solo
+forward. The item that scales worst is the fold re-sync: Qwen3.5 is a hybrid
+with three Gated DeltaNet layers in four, and every round that does not
+accept all its drafts restores the round-start fold and re-forwards the
+consumed prefix, a full extra weight pass. At K=1 that is 27% of rounds;
+at K=3 most of them. Per-row recurrent checkpoints inside the verify batch
+are the fix (one state copy per row instead of a forward per divergence)
+and are the next rung for hybrid targets.
+
+Two structural fixes were needed before any of this could break even, and
+both apply to draft models and grammar drafts as well:
+
+1. **The walk paid a solo forward per round.** The round-ending token (bonus
+   or mismatch) was forwarded alone, then the next round's drafts verified in
+   a second batched pass: two full weight passes per round. With NextN drafts
+   at 73% first-token acceptance the first build decoded at 12.2 tok/s against
+   21 plain. The pending token now rides as row 0 of the next verify batch;
+   generation end forwards the last pending token so the KV covers
+   `hist[0..pos)` exactly as before.
+2. **A 2-row batch cost two solo forwards.** Batches of 2-7 rows went through
+   the dequantize-to-f32 route, whose per-row dequant is the critical path at
+   those widths. They now take the solo step's native dot per column, rows
+   outer so a weight row is streamed once. Side effect worth more than the
+   speed: a verify row's logits are now bit-identical to the solo forward of
+   that token on the CPU path, so the walk's target-exact contract holds by
+   construction rather than at near-ties by luck.
+
+The negative: a 4-core AVX2 desktop (i7-7700K, Q4_K_M, 4 threads) is
+compute-bound in the dot itself, so every added column costs close to a full
+forward and `--mtp` decodes slower at every width (plain 5.78 tok/s; K=1
+4.35, K=2 3.29, K=3 2.49, K=4 2.12). Speculation of any kind needs a
+bandwidth-bound decode to pay, and on small-core CPUs Runner's decode is not
+there yet (the llama.cpp denominator sections above). The GPU backends,
+where the weight pass dominates even more, are where the head should pay
+most; they do not consume it yet (the hidden rows live on-device).
+
 ## Measured and rejected — CUDA virtual-arch bump
 
 The embedded PTX is built from `compute_75` and targets `sm_75`; the documented
@@ -444,7 +517,10 @@ are the honest next steps, scoped here rather than half-landed.
    2026-08-13 section above for the gate table and why nothing was promoted.
    **PREFILL is where the original premise still holds:** the batched path
    (`mv_rows`, `n_batch > 1`) does dequantize each weight row to an f32 buffer,
-   and it does not use the int8 kernels at all. That is the open remainder.
+   and it does not use the int8 kernels at all. That is the open remainder
+   (narrowed 2026-09-02: batches of 2-7 rows now take the solo step's native
+   dot per column, int8 included when `RUNNER_CPU_I8=1`; the f32 tile starts
+   at 8 rows).
 
 2. **GPU: tensor-core matmul — LANDED (2026-07-28/29), kept here for the
    history.** Phase 1 (WMMA `k_gemm_q4_K_tc`) was correct but ~7× slower than

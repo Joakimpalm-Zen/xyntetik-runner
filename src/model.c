@@ -889,6 +889,7 @@ const char *const *model_supported_archs(size_t *count) {
 static bool model_load_inner(model_t *m, const char *path, const model_params *p);
 static bool model_bind_weights(model_t *m, const char *path, const model_params *p);
 static bool model_alloc_runtime(model_t *m, const model_params *p);
+static bool model_mtp_bind(model_t *m, gguf_file *g);
 
 static bool profile_integer(const gguf_kv *kv) {
     if (!kv) return false;
@@ -1052,7 +1053,7 @@ static void model_free_weights(model_t *m) {
     // is allocated, so a load that fails in between (unsupported tensor
     // type, missing token_embd/output_norm, etc.) reaches here with
     // m->layers still NULL — guard against dereferencing it.
-    for (int i = 0; m->layers && i < m->n_layer; i++) {
+    for (int i = 0; m->layers && i < m->n_layer + 1; i++) {
         layer_t *l = &m->layers[i];
         free(l->attn_norm_w); free(l->ffn_norm_w);
         free(l->bq); free(l->bk); free(l->bv); free(l->bo);
@@ -2572,7 +2573,8 @@ static bool model_bind_weights(model_t *m, const char *path, const model_params 
         if (!ok) return false;
     }
 
-    m->layers = calloc(m->n_layer, sizeof(layer_t));
+    // one spare slot: block n_layer is the NextN/MTP head when consumed
+    m->layers = calloc(m->n_layer + 1, sizeof(layer_t));
     if (!m->layers) return false;
     // phi3 fuses Q/K/V into attn_qkv and gate/up into ffn_up: five slice
     // descriptors per layer, pointing into the mmapped weights
@@ -2581,7 +2583,28 @@ static bool model_bind_weights(model_t *m, const char *path, const model_params 
         m->fused_splits = calloc((size_t)m->n_layer * 5, sizeof(gguf_tensor));
         if (!m->fused_splits) return false;
     }
-    for (int i = 0; i < m->n_layer; i++) {
+    // NextN/MTP head consumption (model_params.mtp): block n_layer has the
+    // backbone's attention shape and is bound by this same loop, then the
+    // head-only tensors by model_mtp_bind. Fail closed on an explicit
+    // request the export or family cannot honour: a caller who asked for
+    // drafts must not silently get plain decoding.
+    bool bind_mtp = false;
+    if (p->mtp) {
+        const char *why = m->mtp_layers == 0 ? "the export declares no predictor block"
+                        : m->mtp_layers != 1 ? "only a single predictor block is consumable"
+                        : fused_qkv ? "fused-QKV families are not supported"
+                        : (m->n_expert > 0 || m->nemotron_h || m->granite_hybrid ||
+                           m->l_head_kv || m->l_head_dim || m->kv_src ||
+                           m->n_embd_ple > 0)
+                            ? "only dense attention or Gated DeltaNet backbones are supported"
+                        : NULL;
+        if (why) {
+            fprintf(stderr, "error: mtp: %s\n", why);
+            return false;
+        }
+        bind_mtp = true;
+    }
+    for (int i = 0; i < m->n_layer + (bind_mtp ? 1 : 0); i++) {
         layer_t *l = &m->layers[i];
         if (m->nemotron_h) {
             // Nemotron-H blocks are three mutually-exclusive kinds with a single
@@ -2609,7 +2632,8 @@ static bool model_bind_weights(model_t *m, const char *path, const model_params 
             l->attn_sinks = tensor_to_f32(
                 need_tensor(g, "blk.%d.attn_sinks.weight", i, &ok),
                 m->n_head, &ok);
-        l->recurrent = m->qwen35 ? ((i + 1) % m->full_attn_interval != 0)
+        l->recurrent = m->qwen35 ? (i < m->n_layer &&
+                                    (i + 1) % m->full_attn_interval != 0)
                      : m->granite_hybrid ? (m->l_head_kv && m->l_head_kv[i] == 0)
                      : false;
         if (l->recurrent && m->qwen35) {
@@ -3056,6 +3080,7 @@ static bool model_bind_weights(model_t *m, const char *path, const model_params 
             l->out_scale = ((const float *)osc->data)[0];
         if (!ok) return false;  // a norm/bias materialization OOMed this layer
     }
+    if (bind_mtp && !model_mtp_bind(m, g)) return false;
 
     // gemma4 dropped the plus-one norm convention (unlike gemma1-3): its
     // RMSNorm is the standard x_normed * weight, so norm weights are used raw.
@@ -3312,7 +3337,7 @@ static bool model_alloc_runtime(model_t *m, const model_params *p) {
     int B      = m->n_batch;
 
     // per-layer element offsets into the (possibly heterogeneous) KV cache
-    m->kv_off = malloc(sizeof(size_t) * (m->n_layer + 1));
+    m->kv_off = malloc(sizeof(size_t) * (m->n_layer + 2));
     if (!m->kv_off) return false;
     m->kv_off[0] = 0;
     for (int l = 0; l < m->n_layer; l++)
@@ -3321,6 +3346,12 @@ static bool model_alloc_runtime(model_t *m, const model_params *p) {
         m->kv_off[l + 1] = m->kv_off[l] +
             (model_kv_owner(m, l) == l
                  ? (size_t)model_kv_rows(m, l) * model_kv_dim(m, l) : 0);
+    // The NextN/MTP head owns one more attention-shaped region right after
+    // the backbone's. kv_off[n_layer] stays the backbone boundary every
+    // backend sizes its upload by; only the host cache grows.
+    m->kv_off[m->n_layer + 1] = m->kv_off[m->n_layer] +
+        (m->mtp_ready ? (size_t)model_kv_rows(m, m->n_layer) *
+                            model_kv_dim(m, m->n_layer) : 0);
     // Tied-V (RUNNER_TIEDV=1): a gemma-4 layer with no attn_v.weight computes
     // V as the raw K projection, so after the weightless V norm the stored V
     // row already determines K: K = rope(V * knorm_w) — the same two steps the
@@ -3340,7 +3371,10 @@ static bool model_alloc_runtime(model_t *m, const model_params *p) {
                     m->layers[l].knorm_w && m->v_rmsnorm &&
                     model_head_dim(m, l) <= 1024)  // derivation stack buffer
                     n_tied++;
-            if (n_tied > 0 && p->gpu_mode != GPU_OFF) {
+            if (n_tied > 0 && m->mtp_ready) {
+                fprintf(stderr, "kv: tied-V refused — the NextN/MTP head's "
+                        "KV region sits past the backbone's K table\n");
+            } else if (n_tied > 0 && p->gpu_mode != GPU_OFF) {
                 fprintf(stderr, "kv: tied-V refused — the GPU attention "
                         "kernels read a stored K row; rerun with --gpu off\n");
             } else if (n_tied > 0 && m->kv_q8) {
@@ -3364,8 +3398,11 @@ static bool model_alloc_runtime(model_t *m, const model_params *p) {
             }
         }
     }
-    size_t kv_bytes = model_kv_boundary_bytes(m, m->n_layer);
-    size_t k_bytes  = model_k_boundary_bytes(m, m->n_layer);
+    // the V table always spans the head's region too; the tied-V K table
+    // (kv_off_k, n_layer+1 entries) exists only when the head is refused
+    size_t kv_bytes = model_kv_boundary_bytes(m, m->n_layer + 1);
+    size_t k_bytes  = m->kv_off_k ? model_k_boundary_bytes(m, m->n_layer)
+                                  : model_k_boundary_bytes(m, m->n_layer + 1);
     m->kcache = calloc(1, k_bytes ? k_bytes : 1);
     m->vcache = calloc(1, kv_bytes);
     m->kv_owner = KV_OWNER_MALLOC;
@@ -3644,6 +3681,9 @@ void model_free(model_t *m) {
     free(m->ssm_conv_state); free(m->ssm_state_mem);
     free(m->ssm_conv_snap); free(m->ssm_state_snap);
     free(m->hb); free(m->hb2); free(m->att); free(m->logits); free(m->all_logits);
+    free(m->mtp_h); free(m->mtp_tok); free(m->mtp_pending); free(m->mtp_cat);
+    free(m->mtp_logits); free(m->mtp_hid);
+    free(m->mtp_enorm_w); free(m->mtp_hnorm_w); free(m->mtp_head_norm_w);
     free(m->shexp_in); free(m->shexp_o); free(m->shexp_g); free(m->shexp_u);
     free(m->moe_logits); free(m->moe_sel_scores); free(m->moe_group_score);
     free(m->moe_gate); free(m->moe_up);
@@ -3703,7 +3743,12 @@ typedef struct {
     int n_in, n_batch, x_stride, y_stride;
     size_t rsz;
     const void *xq;   // int8-quantized activations, or NULL for the f32 route
+    size_t xq_stride; // bytes between quantized columns (small batches)
 } mv_job;
+
+// Batches narrower than this take the per-column native dot (see mv_rows);
+// wider ones the dequantized f32 tile, whose row reuse only pays off there.
+enum { MV_SMALL_BATCH = 8 };
 
 static void mv_rows(void *ctx, int i0, int i1) {
     mv_job *j = ctx;
@@ -3714,17 +3759,27 @@ static void mv_rows(void *ctx, int i0, int i1) {
     // the weights, so dot(w * s, x) = s * dot(w, x), before the bias.
     const float sc = j->w->scale;
 
-    if (j->n_batch == 1) {
-        if (j->xq) {
-            for (int r = i0; r < i1; r++) {
-                float v = vec_dot_i8(type, base + (size_t)r * j->rsz, j->xq, n_in) * sc;
-                j->y[r] = j->bias ? v + j->bias[r] : v;
-            }
-            return;
-        }
+    if (j->n_batch < MV_SMALL_BATCH) {
+        // Solo step and small batches (the speculative verify, a few server
+        // slots decoding together): every column takes the SAME native dot
+        // the solo step takes, rows outer so a weight row is streamed from
+        // memory once and re-read from cache per column. Two things follow:
+        // a verify row's logits are bit-identical to the solo forward of
+        // that token (the walk's target-exact contract holds by construction
+        // on the CPU path, not by luck at near-ties), and a 2-row batch
+        // costs one weight pass plus a dot, not the dequantize-to-f32 route
+        // below, which at these widths cost about two solo forwards.
         for (int r = i0; r < i1; r++) {
-            float v = vec_dot(type, base + (size_t)r * j->rsz, j->x, n_in) * sc;
-            j->y[r] = j->bias ? v + j->bias[r] : v;
+            const void *row = base + (size_t)r * j->rsz;
+            float b0 = j->bias ? j->bias[r] : 0.0f;
+            for (int c = 0; c < j->n_batch; c++) {
+                float v = j->xq
+                    ? vec_dot_i8(type, row,
+                                 (const uint8_t *)j->xq + (size_t)c * j->xq_stride,
+                                 n_in)
+                    : vec_dot(type, row, j->x + (size_t)c * j->x_stride, n_in);
+                j->y[(size_t)c * j->y_stride + r] = v * sc + b0;
+            }
         }
         return;
     }
@@ -3829,12 +3884,18 @@ static void matvec_b(tpool *tp, float *y, int y_stride, const gguf_tensor *w,
                      const float *x, int x_stride, int n_in, int n_out,
                      const float *bias, int n_batch) {
     mv_job j = { w, x, bias, y, n_in, n_batch, x_stride, y_stride,
-                 ggml_row_size(w->type, n_in), NULL };
+                 ggml_row_size(w->type, n_in), NULL, 0 };
     void *xq = NULL;
-    if (n_batch == 1 && n_out >= I8_MIN_ROWS && i8_dot_enabled() &&
-        i8_dot_ok(w->type, n_in) && (xq = malloc(i8_act_size(n_in)))) {
-        i8_quant_act(x, xq, n_in);
-        j.xq = xq;
+    if (n_batch < MV_SMALL_BATCH && n_out >= I8_MIN_ROWS && i8_dot_enabled() &&
+        i8_dot_ok(w->type, n_in)) {
+        size_t asz = i8_act_size(n_in);
+        if ((xq = malloc(asz * (size_t)n_batch))) {
+            for (int c = 0; c < n_batch; c++)
+                i8_quant_act(x + (size_t)c * x_stride,
+                             (uint8_t *)xq + (size_t)c * asz, n_in);
+            j.xq = xq;
+            j.xq_stride = asz;
+        }
     }
     tpool_run(tp, mv_rows, &j, n_out);
     free(xq);
@@ -5404,7 +5465,8 @@ static void lora_apply(const struct lora_w *lw, float *y, int ys,
 
 // hook macro: cheap NULL check first, layer/slot lookup second
 #define LORA_HOOK(slot, y, ys, xin, xs, nin, nout, nb) \
-    do { if (m->lora) lora_apply(&m->lora[(size_t)l * LW_SLOTS + (slot)], \
+    do { if (m->lora && l < m->n_layer) \
+             lora_apply(&m->lora[(size_t)l * LW_SLOTS + (slot)], \
                                  (y), (ys), (xin), (xs), (nin), (nout), (nb)); \
     } while (0)
 
@@ -6537,6 +6599,356 @@ bool model_lora_save(model_t *m, const char *path) {
     return true;
 }
 
+// One transformer block over the n rows in m->x (positions pos..pos+n-1).
+// Extracted verbatim from model_forward_batch's layer loop so a block that
+// is not part of the backbone -- the NextN/MTP predictor at index n_layer,
+// which owns the KV region right after the backbone's -- runs exactly the
+// same code path. Per-layer tables are indexed through the model.h helpers,
+// which fall back to the model-wide value past n_layer.
+static void forward_layer(model_t *m, int l, int n, int pos, int dbg) {
+    const int n_embd = m->n_embd;
+    const int xdim = m->xdim;
+    // adaptation D3 tape: record the residual stream entering each layer
+    // (solo forwards only; the backward pass recomputes everything else
+    // from these checkpoints plus the KV cache)
+    if (m->tape && n == 1 && pos < m->tape_T && l < m->n_layer)
+        memcpy(m->tape + ((size_t)l * m->tape_T + pos) * m->n_embd,
+               m->x, sizeof(float) * (size_t)m->n_embd);
+    layer_t *ly = &m->layers[l];
+    bool local   = model_is_swa(m, l);
+    int hd       = model_head_dim(m, l);
+    int n_kv     = model_n_head_kv(m, l);
+    int q_dim    = model_q_dim(m, l);
+    int kv_dim   = model_kv_dim(m, l);
+    float scale  = model_attn_scale(m, l);
+    // RUNNER_LAYER_SIM=1: per-layer input/output cosine over the residual
+    // stream (ShortGPT-style block influence is 1 - cos). Diagnostic in
+    // the RUNNER_ACT family: measurement the depth-prune planning needs,
+    // printed per forward, aggregated by whoever is reading stderr.
+    static float *sim_snap;
+    static size_t sim_cap;
+    bool sim = getenv("RUNNER_LAYER_SIM") != NULL;
+    if (sim) {
+        size_t need = (size_t)n * n_embd;
+        if (need > sim_cap) {
+            free(sim_snap);
+            sim_snap = malloc(sizeof(float) * need);
+            sim_cap = sim_snap ? need : 0;
+        }
+        if (sim_snap)
+            memcpy(sim_snap, m->x, sizeof(float) * (size_t)n * n_embd);
+        else
+            sim = false;
+    }
+    uint8_t *kc_l = (uint8_t *)m->kcache + model_k_byte_off(m, l);
+    uint8_t *vc_l = (uint8_t *)m->vcache + model_v_byte_off(m, l);
+    size_t row_b = model_kv_row_bytes(m, l);
+
+    // attention
+    for (int b = 0; b < n; b++)
+        rmsnorm(m->xb + (size_t)b * xdim, m->x + (size_t)b * n_embd,
+                ly->attn_norm_w, n_embd, m->rms_eps);
+    if (dbg) {
+        fprintf(stderr, "ACT L%-3d cfg swa=%d hd=%d n_kv=%d q_dim=%d kv_dim=%d "
+                "scale=%.5f out_scale=%.6f wv=%d qn=%d kn=%d pan=%d pfn=%d "
+                "anorm[absmax]=", l, (int)local, hd, n_kv, q_dim, kv_dim, scale,
+                ly->out_scale, ly->wv != NULL, ly->qnorm_w != NULL,
+                ly->knorm_w != NULL, ly->post_attn_norm_w != NULL,
+                ly->post_ffn_norm_w != NULL);
+        float a = 0;
+        for (int i = 0; i < n_embd; i++) {
+            float t = ly->attn_norm_w[i] < 0 ? -ly->attn_norm_w[i] : ly->attn_norm_w[i];
+            if (t > a) a = t;
+        }
+        fprintf(stderr, "%.4g\n", a);
+        dbg_stat("post-attn-norm", l, m->xb + (size_t)(n - 1) * xdim, n_embd);
+    }
+    if (ly->skip_mixer) goto nemo_ffn;   // nemotron_h MLP-only block
+    if (ly->recurrent) {
+        if (m->granite_hybrid || m->nemotron_h)
+                               mamba2_ssd_step(m, ly, l, n, xdim);
+        else                   qwen35_linear(m, ly, l, n, xdim);
+    } else {
+    if (m->qwen35) {
+        matvec_b(m->tp, m->ssm_qkv, 2 * q_dim, ly->wq,
+                 m->xb, xdim, n_embd, 2 * q_dim, ly->bq, n);
+        for (int b = 0; b < n; b++)
+            for (int h = 0; h < m->n_head; h++) {
+                memcpy(m->q + (size_t)b * q_dim + h * hd,
+                       m->ssm_qkv + (size_t)b * 2 * q_dim + h * 2 * hd,
+                       sizeof(float) * hd);
+                memcpy(m->q_gate + (size_t)b * q_dim + h * hd,
+                       m->ssm_qkv + (size_t)b * 2 * q_dim + h * 2 * hd + hd,
+                       sizeof(float) * hd);
+            }
+    } else {
+        matvec_b(m->tp, m->q, q_dim, ly->wq, m->xb, xdim,
+                 n_embd, q_dim, ly->bq, n);
+        LORA_HOOK(LW_Q, m->q, q_dim, m->xb, xdim, n_embd, q_dim, n);
+        // afmoe output gate: projected from the SAME normed input as Q,
+        // consumed after attn_heads by the shared q_gate multiply below
+        if (m->attn_out_gate && ly->wq_gate)
+            matvec_b(m->tp, m->q_gate, q_dim, ly->wq_gate, m->xb, xdim,
+                     n_embd, q_dim, NULL, n);
+    }
+    // gemma4 E-series shared-KV layers project Q as usual but compute no
+    // K/V at all: they attend over the cache an earlier layer already
+    // filled (kc_l/vc_l above resolve to that layer's rows). Their wk/wv
+    // tensors exist in the file and are deliberately never read.
+    bool owns_kv = model_kv_owner(m, l) == l;
+    if (owns_kv) {
+        matvec_b(m->tp, m->k_tmp, kv_dim, ly->wk, m->xb, xdim, n_embd, kv_dim, ly->bk, n);
+        LORA_HOOK(LW_K, m->k_tmp, kv_dim, m->xb, xdim, n_embd, kv_dim, n);
+        if (ly->wv) {
+            matvec_b(m->tp, m->v_tmp, kv_dim, ly->wv, m->xb, xdim, n_embd, kv_dim, ly->bv, n);
+            LORA_HOOK(LW_V, m->v_tmp, kv_dim, m->xb, xdim, n_embd, kv_dim, n);
+        } else
+            // gemma4 global layers have no V projection: V is the raw K
+            memcpy(m->v_tmp, m->k_tmp, sizeof(float) * (size_t)n * kv_dim);
+    }
+    if (dbg) {
+        dbg_stat("q-raw", l, m->q + (size_t)(n - 1) * q_dim, q_dim);
+        if (owns_kv) {
+            dbg_stat("k-raw", l, m->k_tmp + (size_t)(n - 1) * kv_dim, kv_dim);
+            dbg_stat("v-raw", l, m->v_tmp + (size_t)(n - 1) * kv_dim, kv_dim);
+        } else {
+            fprintf(stderr, "ACT L%-3d shared-kv src=%d\n", l, model_kv_owner(m, l));
+        }
+    }
+    for (int b = 0; b < n; b++) {
+        if (ly->qnorm_w)
+            qk_norm(m->q + (size_t)b * q_dim, ly->qnorm_w, m->n_head,
+                    hd, m->rms_eps);
+        if (model_layer_ropes(m, l)) {
+            rope_apply(m, m->q + (size_t)b * q_dim, m->n_head, pos + b, l);
+        } else {
+            // NoPE layer: no rotation, and THIS is where the attention
+            // temperature applies — llama.cpp scales Q only on the layers
+            // that skipped rope, not on every layer.
+            float ts = model_attn_temp(m, pos + b);
+            if (ts != 1.0f)
+                for (int i = 0; i < q_dim; i++)
+                    m->q[(size_t)b * q_dim + i] *= ts;
+        }
+        if (!owns_kv) continue;
+        if (m->v_rmsnorm)
+            // gemma4: weightless per-head RMS norm on V (pre-K-norm values)
+            qk_norm(m->v_tmp + (size_t)b * kv_dim, NULL, n_kv, hd, m->rms_eps);
+        if (ly->knorm_w)
+            qk_norm(m->k_tmp + (size_t)b * kv_dim, ly->knorm_w, n_kv,
+                    hd, m->rms_eps);
+        if (model_layer_ropes(m, l))
+            rope_apply(m, m->k_tmp + (size_t)b * kv_dim, n_kv, pos + b, l);
+        // TIED-V CHECK (RUNNER_TIEDV_CHECK=1, diagnostic only), placed
+        // AFTER rope so both sides are the post-rope rows the cache
+        // actually stores: the derived rope(V*w) against the K the store
+        // path computed. Prints per-row f32/f16 agreement so a real model
+        // can certify the derivation before RUNNER_TIEDV trusts it.
+        if (!ly->wv && ly->knorm_w && m->v_rmsnorm && tiedv_check()
+            && kv_dim <= 8192) {
+            const float *V = m->v_tmp + (size_t)b * kv_dim;
+            const float *K = m->k_tmp + (size_t)b * kv_dim;   // post-rope
+            float drv[8192];
+            for (int i = 0; i < kv_dim; i++)
+                drv[i] = V[i] * ly->knorm_w[i % hd];          // = K1
+            if (model_layer_ropes(m, l))
+                rope_apply(m, drv, n_kv, pos + b, l);         // = rope(V*w)
+            double worst = 0; long same16 = 0, exact32 = 0;
+            for (int i = 0; i < kv_dim; i++) {
+                if (drv[i] == K[i]) exact32++;
+                if (f32_to_f16(drv[i]) == f32_to_f16(K[i])) same16++;
+                double d = fabs((double)drv[i] - (double)K[i]);
+                double den = fabs((double)K[i]);
+                double rel = den > 0 ? d / den : d;
+                if (rel > worst) worst = rel;
+            }
+            fprintf(stderr, "tiedv L%-2d pos%-5d: f32 %ld/%d exact, worst "
+                    "rel %.3e | f16 rows agree %ld/%d (%.4f%%)\n",
+                    l, pos + b, exact32, kv_dim, worst, same16, kv_dim,
+                    100.0 * (double)same16 / kv_dim);
+        }
+        size_t slot = (size_t)model_kv_row_at(m, l, pos + b);
+        uint8_t *kc = kc_l + slot * row_b;
+        uint8_t *vc = vc_l + slot * row_b;
+        bool tied = model_layer_tied_v(m, l);
+        if (m->kv_q8) {
+            q8_quant_row(m->k_tmp + (size_t)b * kv_dim, kc, kv_dim);
+            q8_quant_row(m->v_tmp + (size_t)b * kv_dim, vc, kv_dim);
+        } else {
+            f16_t *kh = (f16_t *)kc, *vh = (f16_t *)vc;
+            for (int i = 0; i < kv_dim; i++) {
+                if (!tied)   // a tied layer owns no K rows to write into
+                    kh[i] = f32_to_f16(m->k_tmp[(size_t)b * kv_dim + i]);
+                vh[i] = f32_to_f16(m->v_tmp[(size_t)b * kv_dim + i]);
+            }
+        }
+    }
+    if (dbg && owns_kv) {
+        dbg_stat("q-post-rope", l, m->q + (size_t)(n - 1) * q_dim, q_dim);
+        dbg_stat("k-post-rope", l, m->k_tmp + (size_t)(n - 1) * kv_dim, kv_dim);
+        dbg_stat("v-post-norm", l, m->v_tmp + (size_t)(n - 1) * kv_dim, kv_dim);
+        if (!m->kv_q8) {
+            size_t dslot = (size_t)model_kv_row_at(m, l, pos + n - 1);
+            if (!model_layer_tied_v(m, l))
+                dbg_stat_f16("k-cached", l,
+                    (const f16_t *)(kc_l + dslot * row_b), kv_dim);
+            dbg_stat_f16("v-cached", l,
+                (const f16_t *)(vc_l + dslot * row_b), kv_dim);
+        }
+    }
+    for (int b = 0; b < n; b++) {
+        int p = pos + b;
+        int t0 = local && p - m->swa_window + 1 > 0 ? p - m->swa_window + 1 : 0;
+        attn_job aj = { m, kc_l, vc_l, m->q + (size_t)b * q_dim,
+                        m->xb2 + (size_t)b * xdim, p, t0, hd, kv_dim,
+                        row_b, model_kv_is_ring(m, l) ? m->kv_ring : 0,
+                        m->kv_q8, scale, ly->attn_sinks,
+                        model_layer_tied_v(m, l), ly->knorm_w, l };
+        tpool_run(m->tp, attn_heads, &aj, m->n_head);
+        if (m->qwen35 || (m->attn_out_gate && ly->wq_gate))
+            for (int i = 0; i < q_dim; i++) {
+                float g = m->q_gate[(size_t)b * q_dim + i];
+                m->xb2[(size_t)b * xdim + i] *= 1.0f / (1.0f + expf(-g));
+            }
+    }
+    if (dbg) dbg_stat("attn-out", l, m->xb2 + (size_t)(n - 1) * xdim, q_dim);
+    matvec_b(m->tp, m->xb, xdim, ly->wo, m->xb2, xdim, q_dim, n_embd, ly->bo, n);
+    LORA_HOOK(LW_O, m->xb, xdim, m->xb2, xdim, q_dim, n_embd, n);
+    }
+    if (dbg) dbg_stat("wo-out", l, m->xb + (size_t)(n - 1) * xdim, n_embd);
+    if (ly->post_attn_norm_w)
+        for (int b = 0; b < n; b++)
+            rmsnorm(m->xb + (size_t)b * xdim, m->xb + (size_t)b * xdim,
+                    ly->post_attn_norm_w, n_embd, m->post_norm_eps);
+    if (m->resid_scale != 1.0f)
+        for (int b = 0; b < n; b++)
+            for (int i = 0; i < n_embd; i++)
+                m->xb[(size_t)b * xdim + i] *= m->resid_scale;
+    for (int b = 0; b < n; b++)
+        for (int i = 0; i < n_embd; i++)
+            m->x[(size_t)b * n_embd + i] += m->xb[(size_t)b * xdim + i];
+    if (dbg) {
+        dbg_stat("post-attn-res", l, m->x + (size_t)(n - 1) * n_embd, n_embd);
+    }
+
+    // feed-forward (gated: silu for llama-family, gelu for gemma). MoE
+    // layers route each token to a few experts instead of one dense FFN.
+    // gemma-4 MoE is a dual branch that does its own norms off m->x directly.
+nemo_ffn:
+    if (ly->skip_ffn) goto nemo_layer_end;   // nemotron_h SSM/attention block
+    if (ly->moe_gemma) {
+        gemma_moe_ffn(m, ly, n, xdim);  // reads m->x, writes dense⊕routed to m->xb
+        goto ffn_done;
+    }
+    for (int b = 0; b < n; b++)
+        rmsnorm(m->xb + (size_t)b * xdim, m->x + (size_t)b * n_embd,
+                ly->ffn_norm_w, n_embd, m->rms_eps);
+    if (ly->is_moe) {
+        if (ly->w_up_shexp)
+            for (int b = 0; b < n; b++)
+                memcpy(m->shexp_in + (size_t)b * n_embd,
+                       m->xb + (size_t)b * xdim,
+                       sizeof(float) * (size_t)n_embd);
+        moe_ffn(m, ly, n, xdim);   // reads normed m->xb, writes FFN out to m->xb
+        shexp_add(m, ly, m->shexp_in, n, xdim);
+    } else {
+    {
+    int nff = ly->n_ff;   // per-layer width (gemma-4 E2B varies it)
+    if (!ly->w_gate) {
+        // ungated MLP: up -> activation -> down, no gate branch
+        matvec_b(m->tp, m->hb, nff, ly->w_up, m->xb, xdim, n_embd, nff, NULL, n);
+        LORA_HOOK(LW_UP, m->hb, nff, m->xb, xdim, n_embd, nff, n);
+        if (m->ffn_relu2) {
+            // nemotron_h: gate-less squared ReLU, down(relu(up(x))^2)
+            for (size_t i = 0; i < (size_t)n * nff; i++) {
+                float r = m->hb[i] > 0.0f ? m->hb[i] : 0.0f;
+                m->hb[i] = r * r;
+            }
+        } else {
+            // Apertus xielu
+            int l_i = (int)(ly - m->layers);
+            float an = m->xielu_an[l_i], ap = m->xielu_ap[l_i];
+            float bb = m->xielu_b[l_i],  ep = m->xielu_eps[l_i];
+            for (size_t i = 0; i < (size_t)n * nff; i++)
+                m->hb[i] = xielu(m->hb[i], an, ap, bb, ep);
+        }
+    } else {
+    matvec_b(m->tp, m->hb,  nff, ly->w_gate, m->xb, xdim, n_embd, nff, NULL, n);
+    LORA_HOOK(LW_GATE, m->hb, nff, m->xb, xdim, n_embd, nff, n);
+    matvec_b(m->tp, m->hb2, nff, ly->w_up,   m->xb, xdim, n_embd, nff, NULL, n);
+    LORA_HOOK(LW_UP, m->hb2, nff, m->xb, xdim, n_embd, nff, n);
+    for (size_t i = 0; i < (size_t)n * nff; i++)
+        m->hb[i] = gated_act(m->ffn_act, m->hb[i], m->hb2[i]);
+    }
+    if (dbg) dbg_stat("ffn-act", l, m->hb + (size_t)(n - 1) * nff, nff);
+    matvec_b(m->tp, m->xb, xdim, ly->w_down, m->hb, nff, nff, n_embd, NULL, n);
+    LORA_HOOK(LW_DOWN, m->xb, xdim, m->hb, nff, nff, n_embd, n);
+    }
+    }
+    ffn_done:
+    if (dbg) dbg_stat("ffn-down", l, m->xb + (size_t)(n - 1) * xdim, n_embd);
+    if (ly->post_ffn_norm_w)
+        for (int b = 0; b < n; b++)
+            rmsnorm(m->xb + (size_t)b * xdim, m->xb + (size_t)b * xdim,
+                    ly->post_ffn_norm_w, n_embd, m->post_norm_eps);
+    if (m->resid_scale != 1.0f)
+        for (int b = 0; b < n; b++)
+            for (int i = 0; i < n_embd; i++)
+                m->xb[(size_t)b * xdim + i] *= m->resid_scale;
+    for (int b = 0; b < n; b++)
+        for (int i = 0; i < n_embd; i++)
+            m->x[(size_t)b * n_embd + i] += m->xb[(size_t)b * xdim + i];
+
+nemo_layer_end:;   // nemotron_h SSM/attention blocks land here (no FFN)
+    // Per-layer embedding branch (E-series). Runs on the post-FFN residual
+    // and before the layer output scale, matching gemma4.cpp's ordering.
+    // ple_tmp is free once the pre-pass is done, and xb once the FFN output
+    // has been added into x just above.
+    if (ly->ple_gate) {
+        int P = m->n_embd_ple;
+        size_t per_tok = (size_t)m->n_layer * P;
+        matvec_b(m->tp, m->ple_tmp, P, ly->ple_gate, m->x, n_embd,
+                 n_embd, P, NULL, n);
+        for (int b = 0; b < n; b++) {
+            const float *slice = m->ple + (size_t)b * per_tok + (size_t)l * P;
+            float *g = m->ple_tmp + (size_t)b * P;
+            for (int i = 0; i < P; i++)
+                g[i] = gated_act(ACT_GELU, g[i], slice[i]);
+        }
+        matvec_b(m->tp, m->xb, xdim, ly->ple_proj, m->ple_tmp, P,
+                 P, n_embd, NULL, n);
+        for (int b = 0; b < n; b++) {
+            float *u = m->xb + (size_t)b * xdim;
+            rmsnorm(u, u, ly->ple_post_norm, n_embd, m->rms_eps);
+            for (int i = 0; i < n_embd; i++)
+                m->x[(size_t)b * n_embd + i] += u[i];
+        }
+        if (dbg) dbg_stat("ple-out", l, m->xb + (size_t)(n - 1) * xdim, n_embd);
+    }
+
+    if (ly->out_scale != 1.0f && ly->out_scale != 0.0f)
+        // gemma4: whole-layer output scalar, applied after both residuals
+        for (int b = 0; b < n; b++)
+            for (int i = 0; i < n_embd; i++)
+                m->x[(size_t)b * n_embd + i] *= ly->out_scale;
+    if (dbg) dbg_stat("layer-out", l, m->x + (size_t)(n - 1) * n_embd, n_embd);
+    if (sim) {
+        double cs = 0;
+        for (int b = 0; b < n; b++) {
+            const float *pre = sim_snap + (size_t)b * n_embd;
+            const float *post = m->x + (size_t)b * n_embd;
+            double dp = 0, na = 0, nb2 = 0;
+            for (int i = 0; i < n_embd; i++) {
+                dp += (double)pre[i] * post[i];
+                na += (double)pre[i] * pre[i];
+                nb2 += (double)post[i] * post[i];
+            }
+            if (na > 0 && nb2 > 0) cs += dp / (sqrt(na) * sqrt(nb2));
+        }
+        fprintf(stderr, "LAYERSIM l=%d n=%d cos=%.6f\n", l, n, cs / n);
+    }
+}
+
 float *model_forward_batch(model_t *m, const int32_t *tokens, int n, int pos,
                            bool want_logits) {
     m->fwd_pos = pos;
@@ -6643,347 +7055,8 @@ float *model_forward_batch(model_t *m, const int32_t *tokens, int n, int pos,
             model_ple_prepass(m, tokens, n, m->x, m->ple, m->ple_tmp);
     }
 
-    for (int l = start; l < m->n_layer; l++) {
-        // adaptation D3 tape: record the residual stream entering each layer
-        // (solo forwards only; the backward pass recomputes everything else
-        // from these checkpoints plus the KV cache)
-        if (m->tape && n == 1 && pos < m->tape_T)
-            memcpy(m->tape + ((size_t)l * m->tape_T + pos) * m->n_embd,
-                   m->x, sizeof(float) * (size_t)m->n_embd);
-        layer_t *ly = &m->layers[l];
-        bool local   = model_is_swa(m, l);
-        int hd       = model_head_dim(m, l);
-        int n_kv     = model_n_head_kv(m, l);
-        int q_dim    = model_q_dim(m, l);
-        int kv_dim   = model_kv_dim(m, l);
-        float scale  = model_attn_scale(m, l);
-        // RUNNER_LAYER_SIM=1: per-layer input/output cosine over the residual
-        // stream (ShortGPT-style block influence is 1 - cos). Diagnostic in
-        // the RUNNER_ACT family: measurement the depth-prune planning needs,
-        // printed per forward, aggregated by whoever is reading stderr.
-        static float *sim_snap;
-        static size_t sim_cap;
-        bool sim = getenv("RUNNER_LAYER_SIM") != NULL;
-        if (sim) {
-            size_t need = (size_t)n * n_embd;
-            if (need > sim_cap) {
-                free(sim_snap);
-                sim_snap = malloc(sizeof(float) * need);
-                sim_cap = sim_snap ? need : 0;
-            }
-            if (sim_snap)
-                memcpy(sim_snap, m->x, sizeof(float) * (size_t)n * n_embd);
-            else
-                sim = false;
-        }
-        uint8_t *kc_l = (uint8_t *)m->kcache + model_k_byte_off(m, l);
-        uint8_t *vc_l = (uint8_t *)m->vcache + model_v_byte_off(m, l);
-        size_t row_b = model_kv_row_bytes(m, l);
-
-        // attention
-        for (int b = 0; b < n; b++)
-            rmsnorm(m->xb + (size_t)b * xdim, m->x + (size_t)b * n_embd,
-                    ly->attn_norm_w, n_embd, m->rms_eps);
-        if (dbg) {
-            fprintf(stderr, "ACT L%-3d cfg swa=%d hd=%d n_kv=%d q_dim=%d kv_dim=%d "
-                    "scale=%.5f out_scale=%.6f wv=%d qn=%d kn=%d pan=%d pfn=%d "
-                    "anorm[absmax]=", l, (int)local, hd, n_kv, q_dim, kv_dim, scale,
-                    ly->out_scale, ly->wv != NULL, ly->qnorm_w != NULL,
-                    ly->knorm_w != NULL, ly->post_attn_norm_w != NULL,
-                    ly->post_ffn_norm_w != NULL);
-            float a = 0;
-            for (int i = 0; i < n_embd; i++) {
-                float t = ly->attn_norm_w[i] < 0 ? -ly->attn_norm_w[i] : ly->attn_norm_w[i];
-                if (t > a) a = t;
-            }
-            fprintf(stderr, "%.4g\n", a);
-            dbg_stat("post-attn-norm", l, m->xb + (size_t)(n - 1) * xdim, n_embd);
-        }
-        if (ly->skip_mixer) goto nemo_ffn;   // nemotron_h MLP-only block
-        if (ly->recurrent) {
-            if (m->granite_hybrid || m->nemotron_h)
-                                   mamba2_ssd_step(m, ly, l, n, xdim);
-            else                   qwen35_linear(m, ly, l, n, xdim);
-        } else {
-        if (m->qwen35) {
-            matvec_b(m->tp, m->ssm_qkv, 2 * q_dim, ly->wq,
-                     m->xb, xdim, n_embd, 2 * q_dim, ly->bq, n);
-            for (int b = 0; b < n; b++)
-                for (int h = 0; h < m->n_head; h++) {
-                    memcpy(m->q + (size_t)b * q_dim + h * hd,
-                           m->ssm_qkv + (size_t)b * 2 * q_dim + h * 2 * hd,
-                           sizeof(float) * hd);
-                    memcpy(m->q_gate + (size_t)b * q_dim + h * hd,
-                           m->ssm_qkv + (size_t)b * 2 * q_dim + h * 2 * hd + hd,
-                           sizeof(float) * hd);
-                }
-        } else {
-            matvec_b(m->tp, m->q, q_dim, ly->wq, m->xb, xdim,
-                     n_embd, q_dim, ly->bq, n);
-            LORA_HOOK(LW_Q, m->q, q_dim, m->xb, xdim, n_embd, q_dim, n);
-            // afmoe output gate: projected from the SAME normed input as Q,
-            // consumed after attn_heads by the shared q_gate multiply below
-            if (m->attn_out_gate && ly->wq_gate)
-                matvec_b(m->tp, m->q_gate, q_dim, ly->wq_gate, m->xb, xdim,
-                         n_embd, q_dim, NULL, n);
-        }
-        // gemma4 E-series shared-KV layers project Q as usual but compute no
-        // K/V at all: they attend over the cache an earlier layer already
-        // filled (kc_l/vc_l above resolve to that layer's rows). Their wk/wv
-        // tensors exist in the file and are deliberately never read.
-        bool owns_kv = model_kv_owner(m, l) == l;
-        if (owns_kv) {
-            matvec_b(m->tp, m->k_tmp, kv_dim, ly->wk, m->xb, xdim, n_embd, kv_dim, ly->bk, n);
-            LORA_HOOK(LW_K, m->k_tmp, kv_dim, m->xb, xdim, n_embd, kv_dim, n);
-            if (ly->wv) {
-                matvec_b(m->tp, m->v_tmp, kv_dim, ly->wv, m->xb, xdim, n_embd, kv_dim, ly->bv, n);
-                LORA_HOOK(LW_V, m->v_tmp, kv_dim, m->xb, xdim, n_embd, kv_dim, n);
-            } else
-                // gemma4 global layers have no V projection: V is the raw K
-                memcpy(m->v_tmp, m->k_tmp, sizeof(float) * (size_t)n * kv_dim);
-        }
-        if (dbg) {
-            dbg_stat("q-raw", l, m->q + (size_t)(n - 1) * q_dim, q_dim);
-            if (owns_kv) {
-                dbg_stat("k-raw", l, m->k_tmp + (size_t)(n - 1) * kv_dim, kv_dim);
-                dbg_stat("v-raw", l, m->v_tmp + (size_t)(n - 1) * kv_dim, kv_dim);
-            } else {
-                fprintf(stderr, "ACT L%-3d shared-kv src=%d\n", l, model_kv_owner(m, l));
-            }
-        }
-        for (int b = 0; b < n; b++) {
-            if (ly->qnorm_w)
-                qk_norm(m->q + (size_t)b * q_dim, ly->qnorm_w, m->n_head,
-                        hd, m->rms_eps);
-            if (model_layer_ropes(m, l)) {
-                rope_apply(m, m->q + (size_t)b * q_dim, m->n_head, pos + b, l);
-            } else {
-                // NoPE layer: no rotation, and THIS is where the attention
-                // temperature applies — llama.cpp scales Q only on the layers
-                // that skipped rope, not on every layer.
-                float ts = model_attn_temp(m, pos + b);
-                if (ts != 1.0f)
-                    for (int i = 0; i < q_dim; i++)
-                        m->q[(size_t)b * q_dim + i] *= ts;
-            }
-            if (!owns_kv) continue;
-            if (m->v_rmsnorm)
-                // gemma4: weightless per-head RMS norm on V (pre-K-norm values)
-                qk_norm(m->v_tmp + (size_t)b * kv_dim, NULL, n_kv, hd, m->rms_eps);
-            if (ly->knorm_w)
-                qk_norm(m->k_tmp + (size_t)b * kv_dim, ly->knorm_w, n_kv,
-                        hd, m->rms_eps);
-            if (model_layer_ropes(m, l))
-                rope_apply(m, m->k_tmp + (size_t)b * kv_dim, n_kv, pos + b, l);
-            // TIED-V CHECK (RUNNER_TIEDV_CHECK=1, diagnostic only), placed
-            // AFTER rope so both sides are the post-rope rows the cache
-            // actually stores: the derived rope(V*w) against the K the store
-            // path computed. Prints per-row f32/f16 agreement so a real model
-            // can certify the derivation before RUNNER_TIEDV trusts it.
-            if (!ly->wv && ly->knorm_w && m->v_rmsnorm && tiedv_check()
-                && kv_dim <= 8192) {
-                const float *V = m->v_tmp + (size_t)b * kv_dim;
-                const float *K = m->k_tmp + (size_t)b * kv_dim;   // post-rope
-                float drv[8192];
-                for (int i = 0; i < kv_dim; i++)
-                    drv[i] = V[i] * ly->knorm_w[i % hd];          // = K1
-                if (model_layer_ropes(m, l))
-                    rope_apply(m, drv, n_kv, pos + b, l);         // = rope(V*w)
-                double worst = 0; long same16 = 0, exact32 = 0;
-                for (int i = 0; i < kv_dim; i++) {
-                    if (drv[i] == K[i]) exact32++;
-                    if (f32_to_f16(drv[i]) == f32_to_f16(K[i])) same16++;
-                    double d = fabs((double)drv[i] - (double)K[i]);
-                    double den = fabs((double)K[i]);
-                    double rel = den > 0 ? d / den : d;
-                    if (rel > worst) worst = rel;
-                }
-                fprintf(stderr, "tiedv L%-2d pos%-5d: f32 %ld/%d exact, worst "
-                        "rel %.3e | f16 rows agree %ld/%d (%.4f%%)\n",
-                        l, pos + b, exact32, kv_dim, worst, same16, kv_dim,
-                        100.0 * (double)same16 / kv_dim);
-            }
-            size_t slot = (size_t)model_kv_row_at(m, l, pos + b);
-            uint8_t *kc = kc_l + slot * row_b;
-            uint8_t *vc = vc_l + slot * row_b;
-            bool tied = model_layer_tied_v(m, l);
-            if (m->kv_q8) {
-                q8_quant_row(m->k_tmp + (size_t)b * kv_dim, kc, kv_dim);
-                q8_quant_row(m->v_tmp + (size_t)b * kv_dim, vc, kv_dim);
-            } else {
-                f16_t *kh = (f16_t *)kc, *vh = (f16_t *)vc;
-                for (int i = 0; i < kv_dim; i++) {
-                    if (!tied)   // a tied layer owns no K rows to write into
-                        kh[i] = f32_to_f16(m->k_tmp[(size_t)b * kv_dim + i]);
-                    vh[i] = f32_to_f16(m->v_tmp[(size_t)b * kv_dim + i]);
-                }
-            }
-        }
-        if (dbg && owns_kv) {
-            dbg_stat("q-post-rope", l, m->q + (size_t)(n - 1) * q_dim, q_dim);
-            dbg_stat("k-post-rope", l, m->k_tmp + (size_t)(n - 1) * kv_dim, kv_dim);
-            dbg_stat("v-post-norm", l, m->v_tmp + (size_t)(n - 1) * kv_dim, kv_dim);
-            if (!m->kv_q8) {
-                size_t dslot = (size_t)model_kv_row_at(m, l, pos + n - 1);
-                if (!model_layer_tied_v(m, l))
-                    dbg_stat_f16("k-cached", l,
-                        (const f16_t *)(kc_l + dslot * row_b), kv_dim);
-                dbg_stat_f16("v-cached", l,
-                    (const f16_t *)(vc_l + dslot * row_b), kv_dim);
-            }
-        }
-        for (int b = 0; b < n; b++) {
-            int p = pos + b;
-            int t0 = local && p - m->swa_window + 1 > 0 ? p - m->swa_window + 1 : 0;
-            attn_job aj = { m, kc_l, vc_l, m->q + (size_t)b * q_dim,
-                            m->xb2 + (size_t)b * xdim, p, t0, hd, kv_dim,
-                            row_b, model_kv_is_ring(m, l) ? m->kv_ring : 0,
-                            m->kv_q8, scale, ly->attn_sinks,
-                            model_layer_tied_v(m, l), ly->knorm_w, l };
-            tpool_run(m->tp, attn_heads, &aj, m->n_head);
-            if (m->qwen35 || (m->attn_out_gate && ly->wq_gate))
-                for (int i = 0; i < q_dim; i++) {
-                    float g = m->q_gate[(size_t)b * q_dim + i];
-                    m->xb2[(size_t)b * xdim + i] *= 1.0f / (1.0f + expf(-g));
-                }
-        }
-        if (dbg) dbg_stat("attn-out", l, m->xb2 + (size_t)(n - 1) * xdim, q_dim);
-        matvec_b(m->tp, m->xb, xdim, ly->wo, m->xb2, xdim, q_dim, n_embd, ly->bo, n);
-        LORA_HOOK(LW_O, m->xb, xdim, m->xb2, xdim, q_dim, n_embd, n);
-        }
-        if (dbg) dbg_stat("wo-out", l, m->xb + (size_t)(n - 1) * xdim, n_embd);
-        if (ly->post_attn_norm_w)
-            for (int b = 0; b < n; b++)
-                rmsnorm(m->xb + (size_t)b * xdim, m->xb + (size_t)b * xdim,
-                        ly->post_attn_norm_w, n_embd, m->post_norm_eps);
-        if (m->resid_scale != 1.0f)
-            for (int b = 0; b < n; b++)
-                for (int i = 0; i < n_embd; i++)
-                    m->xb[(size_t)b * xdim + i] *= m->resid_scale;
-        for (int b = 0; b < n; b++)
-            for (int i = 0; i < n_embd; i++)
-                m->x[(size_t)b * n_embd + i] += m->xb[(size_t)b * xdim + i];
-        if (dbg) {
-            dbg_stat("post-attn-res", l, m->x + (size_t)(n - 1) * n_embd, n_embd);
-        }
-
-        // feed-forward (gated: silu for llama-family, gelu for gemma). MoE
-        // layers route each token to a few experts instead of one dense FFN.
-        // gemma-4 MoE is a dual branch that does its own norms off m->x directly.
-    nemo_ffn:
-        if (ly->skip_ffn) goto nemo_layer_end;   // nemotron_h SSM/attention block
-        if (ly->moe_gemma) {
-            gemma_moe_ffn(m, ly, n, xdim);  // reads m->x, writes dense⊕routed to m->xb
-            goto ffn_done;
-        }
-        for (int b = 0; b < n; b++)
-            rmsnorm(m->xb + (size_t)b * xdim, m->x + (size_t)b * n_embd,
-                    ly->ffn_norm_w, n_embd, m->rms_eps);
-        if (ly->is_moe) {
-            if (ly->w_up_shexp)
-                for (int b = 0; b < n; b++)
-                    memcpy(m->shexp_in + (size_t)b * n_embd,
-                           m->xb + (size_t)b * xdim,
-                           sizeof(float) * (size_t)n_embd);
-            moe_ffn(m, ly, n, xdim);   // reads normed m->xb, writes FFN out to m->xb
-            shexp_add(m, ly, m->shexp_in, n, xdim);
-        } else {
-        {
-        int nff = ly->n_ff;   // per-layer width (gemma-4 E2B varies it)
-        if (!ly->w_gate) {
-            // ungated MLP: up -> activation -> down, no gate branch
-            matvec_b(m->tp, m->hb, nff, ly->w_up, m->xb, xdim, n_embd, nff, NULL, n);
-            LORA_HOOK(LW_UP, m->hb, nff, m->xb, xdim, n_embd, nff, n);
-            if (m->ffn_relu2) {
-                // nemotron_h: gate-less squared ReLU, down(relu(up(x))^2)
-                for (size_t i = 0; i < (size_t)n * nff; i++) {
-                    float r = m->hb[i] > 0.0f ? m->hb[i] : 0.0f;
-                    m->hb[i] = r * r;
-                }
-            } else {
-                // Apertus xielu
-                int l_i = (int)(ly - m->layers);
-                float an = m->xielu_an[l_i], ap = m->xielu_ap[l_i];
-                float bb = m->xielu_b[l_i],  ep = m->xielu_eps[l_i];
-                for (size_t i = 0; i < (size_t)n * nff; i++)
-                    m->hb[i] = xielu(m->hb[i], an, ap, bb, ep);
-            }
-        } else {
-        matvec_b(m->tp, m->hb,  nff, ly->w_gate, m->xb, xdim, n_embd, nff, NULL, n);
-        LORA_HOOK(LW_GATE, m->hb, nff, m->xb, xdim, n_embd, nff, n);
-        matvec_b(m->tp, m->hb2, nff, ly->w_up,   m->xb, xdim, n_embd, nff, NULL, n);
-        LORA_HOOK(LW_UP, m->hb2, nff, m->xb, xdim, n_embd, nff, n);
-        for (size_t i = 0; i < (size_t)n * nff; i++)
-            m->hb[i] = gated_act(m->ffn_act, m->hb[i], m->hb2[i]);
-        }
-        if (dbg) dbg_stat("ffn-act", l, m->hb + (size_t)(n - 1) * nff, nff);
-        matvec_b(m->tp, m->xb, xdim, ly->w_down, m->hb, nff, nff, n_embd, NULL, n);
-        LORA_HOOK(LW_DOWN, m->xb, xdim, m->hb, nff, nff, n_embd, n);
-        }
-        }
-        ffn_done:
-        if (dbg) dbg_stat("ffn-down", l, m->xb + (size_t)(n - 1) * xdim, n_embd);
-        if (ly->post_ffn_norm_w)
-            for (int b = 0; b < n; b++)
-                rmsnorm(m->xb + (size_t)b * xdim, m->xb + (size_t)b * xdim,
-                        ly->post_ffn_norm_w, n_embd, m->post_norm_eps);
-        if (m->resid_scale != 1.0f)
-            for (int b = 0; b < n; b++)
-                for (int i = 0; i < n_embd; i++)
-                    m->xb[(size_t)b * xdim + i] *= m->resid_scale;
-        for (int b = 0; b < n; b++)
-            for (int i = 0; i < n_embd; i++)
-                m->x[(size_t)b * n_embd + i] += m->xb[(size_t)b * xdim + i];
-
-    nemo_layer_end:;   // nemotron_h SSM/attention blocks land here (no FFN)
-        // Per-layer embedding branch (E-series). Runs on the post-FFN residual
-        // and before the layer output scale, matching gemma4.cpp's ordering.
-        // ple_tmp is free once the pre-pass is done, and xb once the FFN output
-        // has been added into x just above.
-        if (ly->ple_gate) {
-            int P = m->n_embd_ple;
-            size_t per_tok = (size_t)m->n_layer * P;
-            matvec_b(m->tp, m->ple_tmp, P, ly->ple_gate, m->x, n_embd,
-                     n_embd, P, NULL, n);
-            for (int b = 0; b < n; b++) {
-                const float *slice = m->ple + (size_t)b * per_tok + (size_t)l * P;
-                float *g = m->ple_tmp + (size_t)b * P;
-                for (int i = 0; i < P; i++)
-                    g[i] = gated_act(ACT_GELU, g[i], slice[i]);
-            }
-            matvec_b(m->tp, m->xb, xdim, ly->ple_proj, m->ple_tmp, P,
-                     P, n_embd, NULL, n);
-            for (int b = 0; b < n; b++) {
-                float *u = m->xb + (size_t)b * xdim;
-                rmsnorm(u, u, ly->ple_post_norm, n_embd, m->rms_eps);
-                for (int i = 0; i < n_embd; i++)
-                    m->x[(size_t)b * n_embd + i] += u[i];
-            }
-            if (dbg) dbg_stat("ple-out", l, m->xb + (size_t)(n - 1) * xdim, n_embd);
-        }
-
-        if (ly->out_scale != 1.0f && ly->out_scale != 0.0f)
-            // gemma4: whole-layer output scalar, applied after both residuals
-            for (int b = 0; b < n; b++)
-                for (int i = 0; i < n_embd; i++)
-                    m->x[(size_t)b * n_embd + i] *= ly->out_scale;
-        if (dbg) dbg_stat("layer-out", l, m->x + (size_t)(n - 1) * n_embd, n_embd);
-        if (sim) {
-            double cs = 0;
-            for (int b = 0; b < n; b++) {
-                const float *pre = sim_snap + (size_t)b * n_embd;
-                const float *post = m->x + (size_t)b * n_embd;
-                double dp = 0, na = 0, nb2 = 0;
-                for (int i = 0; i < n_embd; i++) {
-                    dp += (double)pre[i] * post[i];
-                    na += (double)pre[i] * pre[i];
-                    nb2 += (double)post[i] * post[i];
-                }
-                if (na > 0 && nb2 > 0) cs += dp / (sqrt(na) * sqrt(nb2));
-            }
-            fprintf(stderr, "LAYERSIM l=%d n=%d cos=%.6f\n", l, n, cs / n);
-        }
-    }
+    for (int l = start; l < m->n_layer; l++)
+        forward_layer(m, l, n, pos, dbg);
 
     if (m->tape && n == 1 && pos < m->tape_T)
         memcpy(m->tape + ((size_t)m->n_layer * m->tape_T + pos) * m->n_embd,
@@ -7057,6 +7130,165 @@ float *model_spec_row_logits(model_t *m, int b) {
     apply_head_transforms(m, lg);
     return lg;
 }
+
+const float *model_hidden_row(const model_t *m, int b) {
+    if (m->gpu && m->gpu_layers >= m->n_layer) return NULL;
+    return m->x + (size_t)b * m->n_embd;
+}
+
+// ---- NextN/MTP head ------------------------------------------------------
+// The head is the export's last block (index n_layer) run as an ordinary
+// attention layer over its own KV region, fed with
+//     eh_proj( concat( enorm(embed(x_p)), hnorm(h_{p-1}) ) )
+// at position p, followed by the head norm (nextn.shared_head_norm, or the
+// backbone's output norm) and the LM head (nextn.shared_head_head, or the
+// backbone's). Ordering and norms follow the reference graph for the
+// Qwen3.5/3.6 family; the fixture pins the byte-identity contract (drafts
+// never change the sampled stream) and the real-model acceptance rate is
+// the absolute anchor that the math is the trained head's.
+
+static bool model_mtp_bind(model_t *m, gguf_file *g) {
+    const int i = m->n_layer;
+    bool ok = true;
+    m->mtp_eh_proj = need_tensor(g, "blk.%d.nextn.eh_proj.weight", i, &ok);
+    gguf_tensor *en = need_tensor(g, "blk.%d.nextn.enorm.weight", i, &ok);
+    gguf_tensor *hn = need_tensor(g, "blk.%d.nextn.hnorm.weight", i, &ok);
+    if (!ok) return false;
+    if (!check_shape(m->mtp_eh_proj, 2 * m->n_embd, m->n_embd,
+                     "nextn.eh_proj", i))
+        return false;
+    m->mtp_enorm_w = tensor_to_f32(en, m->n_embd, &ok);
+    m->mtp_hnorm_w = tensor_to_f32(hn, m->n_embd, &ok);
+    gguf_tensor *shn = opt_tensor(g, "blk.%d.nextn.shared_head_norm.weight", i);
+    m->mtp_head_norm_w = shn ? tensor_to_f32(shn, m->n_embd, &ok) : NULL;
+    if (!ok) return false;
+    gguf_tensor *emb = opt_tensor(g, "blk.%d.nextn.embed_tokens.weight", i);
+    gguf_tensor *hd  = opt_tensor(g, "blk.%d.nextn.shared_head_head.weight", i);
+    if (emb && (!ggml_type_supported(emb->type) ||
+                !check_shape(emb, m->n_embd, m->n_vocab, "nextn.embed_tokens", i)))
+        return false;
+    if (hd && (!ggml_type_supported(hd->type) ||
+               !check_shape(hd, m->n_embd, m->n_vocab, "nextn.shared_head_head", i)))
+        return false;
+    m->mtp_embd = emb ? emb : m->tok_embd;
+    m->mtp_head = hd ? hd : m->output;
+    if (!m->layers[i].wq || !m->layers[i].wo) {
+        fprintf(stderr, "error: mtp: block %d is not an attention block\n", i);
+        return false;
+    }
+    m->mtp_logits_pos = -1;
+    m->mtp_ready = true;
+    return true;
+}
+
+static bool mtp_alloc(model_t *m) {
+    if (m->mtp_h) return true;
+    const size_t E = (size_t)m->n_embd, B = (size_t)m->n_batch;
+    m->mtp_h       = malloc(sizeof(float) * B * E);
+    m->mtp_tok     = malloc(sizeof(int32_t) * B);
+    m->mtp_pending = calloc(E, sizeof(float));
+    m->mtp_cat     = malloc(sizeof(float) * B * 2 * E);
+    m->mtp_logits  = malloc(sizeof(float) * (size_t)m->n_vocab);
+    m->mtp_hid     = malloc(sizeof(float) * E);
+    if (!m->mtp_h || !m->mtp_tok || !m->mtp_pending || !m->mtp_cat ||
+        !m->mtp_logits || !m->mtp_hid) {
+        fprintf(stderr, "mtp: out of memory for the head's buffers; drafts off\n");
+        m->mtp_ready = false;
+        return false;
+    }
+    m->mtp_logits_pos = -1;
+    return true;
+}
+
+bool model_mtp_ready(const model_t *m) {
+    // The head reads the backbone's residual rows out of m->x, which a GPU
+    // backend keeps on-device: CPU path only for now.
+    return m->mtp_ready && !m->gpu;
+}
+
+void model_mtp_reset(model_t *m, int pos) {
+    if (!m->mtp_ready || !mtp_alloc(m)) return;
+    m->mtp_qn = 0;
+    m->mtp_pos = pos;
+    m->mtp_logits_pos = -1;
+    // pos == 0: the first pair has no earlier position; its h is zero, as in
+    // the reference driver. pos > 0 (a rewind onto a kept prefix): the
+    // residual that produced position pos-1 went away with the forward that
+    // made it, so the pending h is whatever the previous run left -- one
+    // provisional-quality pair at position pos. Only acceptance can notice.
+    if (pos == 0) memset(m->mtp_pending, 0, sizeof(float) * (size_t)m->n_embd);
+}
+
+// Run n pairs (h rows, tokens) through the head at positions pos..pos+n-1,
+// writing their KV slots; want_logits computes the last row's head output.
+static bool mtp_run(model_t *m, const float *h, size_t h_stride,
+                    const int32_t *tok, int n, int pos, bool want_logits) {
+    const int E = m->n_embd;
+    if (n < 1 || n > m->n_batch || pos < 0 || pos + n > m->n_ctx) return false;
+    const size_t ers = ggml_row_size(m->mtp_embd->type, E);
+    for (int b = 0; b < n; b++) {
+        float *cat = m->mtp_cat + (size_t)b * 2 * E;
+        int32_t id = tok[b];
+        if (id < 0 || id >= m->n_vocab) id = 0;
+        dequant_row(m->mtp_embd->type,
+                    (const uint8_t *)m->mtp_embd->data + (size_t)id * ers, cat, E);
+        if (m->mtp_embd->scale != 1.0f)
+            for (int i = 0; i < E; i++) cat[i] *= m->mtp_embd->scale;
+        rmsnorm(cat, cat, m->mtp_enorm_w, E, m->rms_eps);
+        rmsnorm(cat + E, h + (size_t)b * h_stride, m->mtp_hnorm_w, E, m->rms_eps);
+    }
+    matvec_b(m->tp, m->x, E, m->mtp_eh_proj, m->mtp_cat, 2 * E, 2 * E, E,
+             NULL, n);
+    forward_layer(m, m->n_layer, n, pos, 0);
+    if (!want_logits) return true;
+    const float *hnw = m->mtp_head_norm_w ? m->mtp_head_norm_w : m->out_norm_w;
+    rmsnorm(m->mtp_hid, m->x + (size_t)(n - 1) * E, hnw, E, m->rms_eps);
+    matvec_b(m->tp, m->mtp_logits, m->n_vocab, m->mtp_head, m->mtp_hid, E, E,
+             m->n_vocab, NULL, 1);
+    m->mtp_logits_pos = pos + n;
+    return true;
+}
+
+static bool mtp_drain(model_t *m, bool want_logits) {
+    if (m->mtp_qn == 0) return true;
+    bool ok = mtp_run(m, m->mtp_h, (size_t)m->n_embd, m->mtp_tok, m->mtp_qn,
+                      m->mtp_pos, want_logits);
+    m->mtp_pos += m->mtp_qn;
+    m->mtp_qn = 0;
+    return ok;
+}
+
+bool model_mtp_feed(model_t *m, int32_t tok) {
+    if (!m->mtp_ready || !mtp_alloc(m)) return false;
+    if (m->mtp_qn == m->n_batch && !mtp_drain(m, false)) return false;
+    if (m->mtp_pos + m->mtp_qn >= m->n_ctx) return false;
+    memcpy(m->mtp_h + (size_t)m->mtp_qn * m->n_embd, m->mtp_pending,
+           sizeof(float) * (size_t)m->n_embd);
+    m->mtp_tok[m->mtp_qn++] = tok;
+    return true;
+}
+
+void model_mtp_note_hidden(model_t *m, const float *h) {
+    if (!m->mtp_ready || !h || !mtp_alloc(m)) return;
+    memcpy(m->mtp_pending, h, sizeof(float) * (size_t)m->n_embd);
+}
+
+const float *model_mtp_pending(const model_t *m) { return m->mtp_pending; }
+
+float *model_mtp_draft_logits(model_t *m) {
+    if (!model_mtp_ready(m) || !mtp_alloc(m)) return NULL;
+    if (m->mtp_qn > 0 && !mtp_drain(m, true)) return NULL;
+    return m->mtp_logits_pos == m->mtp_pos ? m->mtp_logits : NULL;
+}
+
+float *model_mtp_step(model_t *m, const float *h, int32_t tok, int pos) {
+    if (!model_mtp_ready(m) || !h || m->mtp_qn != 0) return NULL;
+    if (!mtp_run(m, h, 0, &tok, 1, pos, true)) return NULL;
+    return m->mtp_logits;
+}
+
+const float *model_mtp_hidden(const model_t *m) { return m->mtp_hid; }
+int model_mtp_position(const model_t *m) { return m->mtp_pos + m->mtp_qn; }
 
 float *model_forward(model_t *m, int token, int pos) {
     int32_t t = token;

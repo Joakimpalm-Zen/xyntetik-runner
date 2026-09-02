@@ -1808,6 +1808,15 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
                 s->e.dm = spec_draft_load(draft_path, s->m, &slot_mp);
                 if (s->e.dm) s->e.draft_k = draft_k;
             }
+            if (mp->mtp) {
+                if (!model_mtp_ready(s->m)) {
+                    fprintf(stderr, "error: --mtp: slot %d needs the CPU "
+                                    "path (rerun with --gpu off)\n", i);
+                    return 1;
+                }
+                s->e.mtp_on = true;
+                s->e.draft_k = draft_k;
+            }
         }
 
         if (parallel == 1) {

@@ -328,8 +328,30 @@ typedef struct {
     int    reserve_vram_pct; // VRAM cap for the GPU backend (0 = free VRAM)
     int    gpu_layers_override; // forced leading GPU layer count (0 = auto)
     int    mtp_layers;       // declared multi-token-prediction blocks excluded
-                             // from the backbone (training-only; consuming
-                             // them is a separate unimplemented feature)
+                             // from the backbone; dense decoding never runs
+                             // them. With model_params.mtp and exactly one
+                             // block, the head below is bound and consumed
+                             // by the speculative walk (CPU path).
+    // NextN/MTP predictor head: block n_layer bound as an ordinary attention
+    // layer (layers[n_layer], KV region kv_off[n_layer..n_layer+1]) plus the
+    // head-specific tensors. The head consumes pairs (h_{p-1}, x_p) at
+    // position p, where h is the backbone's final residual (pre-norm) and x
+    // the token, and predicts x_{p+1}; the target's verify walk keeps output
+    // token-identical to plain decoding.
+    bool   mtp_ready;        // head bound; drafts available on the CPU path
+    gguf_tensor *mtp_eh_proj;   // [2*n_embd, n_embd]  concat(enorm e, hnorm h)
+    float *mtp_enorm_w, *mtp_hnorm_w, *mtp_head_norm_w;
+    gguf_tensor *mtp_embd, *mtp_head; // per-head or the backbone's shared ones
+    float   *mtp_h;          // queue: [n_batch][n_embd] previous-position hidden
+    int32_t *mtp_tok;        // queue: [n_batch] tokens
+    int      mtp_qn;         // queued pairs not yet run through the head
+    int      mtp_pos;        // position the next queued pair lands at
+    float   *mtp_pending;    // h of the last fed position (next pair's h)
+    float   *mtp_cat;        // [n_batch][2*n_embd] head input scratch
+    float   *mtp_logits;     // [n_vocab] head logits of the last row run
+    int      mtp_logits_pos; // position those logits predict (-1 = none)
+    float   *mtp_hid;        // [n_embd] head hidden of the last row run
+                             // (post head norm) -- the chained draft's h
     // Gemma-4 E-series. n_embd_ple > 0 turns on per-layer embeddings;
     // kv_from_start < n_layer turns on shared KV, where every layer at or
     // past it computes no K/V of its own and reads kv_src[l] instead.
@@ -418,11 +440,13 @@ typedef struct {
 } model_t;
 // per-layer geometry accessors: uniform models keep the scalars, heterogeneous
 // archs (gemma4) override per layer
+// Per-layer tables have n_layer entries; the NextN/MTP head at index n_layer
+// takes the model-wide value (its block has the backbone's attention shape).
 static inline int model_head_dim(const model_t *m, int l) {
-    return m->l_head_dim ? m->l_head_dim[l] : m->head_dim;
+    return (m->l_head_dim && l < m->n_layer) ? m->l_head_dim[l] : m->head_dim;
 }
 static inline int model_n_head_kv(const model_t *m, int l) {
-    return m->l_head_kv ? m->l_head_kv[l] : m->n_head_kv;
+    return (m->l_head_kv && l < m->n_layer) ? m->l_head_kv[l] : m->n_head_kv;
 }
 static inline int model_kv_dim(const model_t *m, int l) {
     return model_n_head_kv(m, l) * model_head_dim(m, l);
@@ -431,7 +455,7 @@ static inline int model_q_dim(const model_t *m, int l) {
     return m->n_head * model_head_dim(m, l);
 }
 static inline int model_rope_dim(const model_t *m, int l) {
-    return m->l_rope_dim ? m->l_rope_dim[l] : m->rope_dim;
+    return (m->l_rope_dim && l < m->n_layer) ? m->l_rope_dim[l] : m->rope_dim;
 }
 // The YaRN magnitude factor for this layer. One definition, because the CPU
 // and CUDA rope paths both need it and a disagreement between them would be
@@ -469,7 +493,7 @@ static inline float model_rope_mscale(const model_t *m, int l) {
     return (local && !m->swa_rope_global) ? 1.0f : m->rope_mscale;
 }
 static inline bool model_is_swa(const model_t *m, int l) {
-    return m->l_is_swa != NULL && m->l_is_swa[l];
+    return m->l_is_swa != NULL && l < m->n_layer && m->l_is_swa[l];
 }
 // Does this layer recycle its rows? Only sliding layers do, and only when the
 // ring is narrower than the context (otherwise it would save nothing).
@@ -671,6 +695,7 @@ typedef struct {
     // on a hit releases it cleanly and logs why. Off by default: nothing
     // outside this process can make it give memory back except this flag.
     bool  yield_on_request;
+    bool  mtp;         // consume a declared NextN/MTP head (speculative drafts)
 } model_params;
 
 bool   model_load(model_t *m, const char *path, const model_params *p);
@@ -848,6 +873,31 @@ bool   model_forward_batch_keep(model_t *m, const int32_t *tokens, int n, int po
 // whether the batched verify path above can run at all for this model
 bool   model_spec_verify_ok(const model_t *m);
 float *model_spec_row_logits(model_t *m, int b);
+// Backbone final residual of verify/prefill row b (valid until the next
+// forward on the CPU path; NULL when the rows live on a GPU).
+const float *model_hidden_row(const model_t *m, int b);
+
+// NextN/MTP head consumption. The engine feeds every token the backbone
+// consumed, in order, and hands over the backbone hidden that token produced:
+//   model_mtp_feed(m, tok)      -- pair (pending h, tok) lands at mtp_pos
+//   model_mtp_note_hidden(m, h) -- h becomes the pending h for the next pair
+// Pairs queue up (at most n_batch) and run through the head in one batch when
+// the queue fills or a draft is requested. model_mtp_draft_logits runs the
+// queue and returns the head's logits for position mtp_pos (the next token);
+// model_mtp_step runs one chained row (h, tok) at `pos` (its KV slot is
+// provisional: the next true feed at that position overwrites it) and
+// returns the logits for pos+1; model_mtp_hidden is that row's head hidden,
+// the h for the following chained step. model_mtp_reset(pos) drops the queue
+// and restarts at `pos` (pos == 0 also zeroes the pending h).
+bool         model_mtp_ready(const model_t *m);
+int          model_mtp_position(const model_t *m); // pairs fed so far
+void         model_mtp_reset(model_t *m, int pos);
+bool         model_mtp_feed(model_t *m, int32_t tok);
+void         model_mtp_note_hidden(model_t *m, const float *h);
+const float *model_mtp_pending(const model_t *m);
+float       *model_mtp_draft_logits(model_t *m);
+float       *model_mtp_step(model_t *m, const float *h, int32_t tok, int pos);
+const float *model_mtp_hidden(const model_t *m);
 // mean-pooled L2-normalized embedding of toks; clobbers KV slots [0, n)
 bool   model_embed(model_t *m, const int32_t *toks, int n, float *out);
 // The per-row embedding transforms every forward path applies right after the

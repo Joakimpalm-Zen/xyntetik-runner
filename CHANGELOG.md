@@ -8,6 +8,41 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **`--mtp` drafts from the model's own NextN/MTP predictor block.** An
+  export that declares one predictor block (`<arch>.nextn_predict_layers = 1`,
+  the MTP-preserved Qwen3.5/3.6 GGUFs) can now speculate without a second
+  model: the block is bound as one more attention layer over its own KV
+  region, fed `eh_proj(concat(enorm(embed(x_p)), hnorm(h_{p-1})))` per
+  position with the reference graph's ordering, and its greedy proposals go
+  through the existing target-exact verify walk, so the sampled stream is
+  token-identical to plain decoding (fixture-gated at every draft width; the
+  real-model anchor is the measured acceptance, 75-94% for the first draft on
+  Qwen3.5-4B). CPU path only for now; an explicit `--mtp` fails closed on an
+  export without a consumable head or on a GPU-resident target. Without the
+  flag nothing changes. Measured 2026-09-02: 1.31x decode on code and 1.08x
+  on prose at `--draft-k 1` on a 32-thread AVX-512 box with
+  `RUNNER_CPU_I8=1`; a 4-core AVX2 desktop decodes slower at every width.
+  `docs/performance.md` has the numbers and the profile.
+
+- **The speculative walk no longer pays a solo forward per round.** The token
+  that ends a round (bonus or mismatch) used to be forwarded alone, then the
+  next round's drafts verified in a second batched pass: two full weight
+  passes per round, which on a memory-bound CPU decode ate the whole gain
+  (NextN drafts at 73% first-token acceptance decoded SLOWER than plain). The
+  pending token now rides as row 0 of the next verify batch, and generation
+  end forwards the last pending token so the KV covers `hist[0..pos)` exactly
+  as before. Applies to draft models and grammar drafts too. `RUNNER_SPEC_PROF=1`
+  prints the walk's per-phase time (draft, verify, row logits, recurrent
+  fold re-sync, tail).
+
+- **Small CPU batches (2-7 rows) take the solo step's native dot per column**
+  instead of the dequantize-to-f32 route, rows outer so a weight row is
+  streamed once and re-read from cache per column. A 2-row verify used to
+  cost about two solo forwards; it now costs one weight pass plus a dot. The
+  route also makes a verify row's logits bit-identical to the solo forward of
+  that token (previously the two paths accumulated differently and agreed at
+  near-ties only by luck). Batches of 8 and up keep the f32 tile.
+
 - **Batched CPU prefill is 30-65% faster, bit-identically.** The kernel that
   dots a dequantized weight row against the batch's activation columns was
   load-bound (one weight load and one activation load per FMA) and dominated a

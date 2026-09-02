@@ -195,6 +195,7 @@ Run a GGUF:
 ./runner -m model.gguf -p "Return a status object" --json
 ./runner -m model.gguf -f big-document.txt -c 8192 -n 200
 ./runner -m big.gguf --draft small.gguf -p "Continue this code"
+./runner -m qwen3.5-4b-mtp.gguf --mtp --gpu off -p "Continue this code"
 ```
 
 > **Pre-1.0 (`0.4.5`).** APIs, model coverage and certification envelopes may
@@ -632,7 +633,8 @@ flags into unrelated feature sections.
 | `--mlock` | Ask the OS to wire mapped weights into RAM; failure is non-fatal. |
 | `--moe-prefetch on\|off\|auto` | Prefetch routed expert blocks. Auto enables it only for measured oversubscribed Apple Silicon cases. |
 | `--draft PATH` | Same-vocabulary draft GGUF for speculative decoding in one-shot, chat, or single-model serve mode. A draft is refused at load on a vocabulary mismatch, a discrete-VRAM (CUDA) fully-offloaded target or CUDA-resident recurrent state (the verify walk needs host-readable hidden work; unified-memory Metal full offload qualifies since 2026-09-01 and speculates correctly, target-exact and gated byte-identical against the plain path — but measure before relying on it there: on an M5 Max the batched verify costs roughly a full decode step per column, because the dequant ALU that hides under the bandwidth floor at batch 1 becomes the critical path with columns added, and the measured 70B+1B pair decoded SLOWER speculative than plain despite 62-70% acceptance; the root-cause numbers are in docs/metal-decode-dispatch-budget-2026-09-01.md), or out of memory, and is dropped in swap mode; the run continues without it. In serve mode `GET /v1/capabilities` reports whether the draft is actually `active`, so a harness never measures the fallback as speculative decoding. |
-| `--draft-k N` | Draft tokens per speculative round, default `4`. |
+| `--draft-k N` | Draft tokens per speculative round, default `4`. Also the width for `--mtp`. |
+| `--mtp` | Draft from the model's own NextN/MTP predictor block instead of a second model. The export must declare exactly one block (`<arch>.nextn_predict_layers = 1`, as the MTP-preserved Qwen3.5/3.6 GGUFs do); the head runs on the CPU path only for now (`--gpu off`; a GPU-resident target is refused rather than silently decoded plain), on dense-attention or Gated DeltaNet backbones. Output is token-identical to plain decoding: the head only proposes, the target's verify walk decides, and on the CPU path a verify row is computed with the same dot the solo step uses, so the agreement is by construction. Measured 2026-09-02 on Qwen3.5-4B Q8_0 (32 threads, AVX-512): 1.31x decode on code and 1.08x on prose at `--draft-k 1` with `RUNNER_CPU_I8=1`, 1.17x and parity on the default f32 route, acceptance 75-94% for the first draft; wider windows lose on this hybrid model because every divergent round re-folds its recurrent state, and a 4-core AVX2 desktop is compute-bound in the dot itself and decodes SLOWER with `--mtp` at every width. Numbers, the profile, and the two walk fixes it took are in `docs/performance.md`. |
 | `--draft-required` | Fail the run instead of decoding plain when `--draft` is refused. The drop is deliberate and stays the default, but in local one-shot and interactive modes it is announced only on stderr beside a zero exit, so automation that collects stdout and checks the return code can record an unaccelerated run as speculative decoding. This flag closes that hole for benchmarks and scripted chat; it needs `--draft`, and it is refused in serve mode rather than accepted with no effect, because `GET /v1/capabilities` already reports whether the draft is `active` there. |
 
 ### Conversion, diagnostics, and integration
@@ -1165,6 +1167,8 @@ switches:
 Beyond these, the binary reads a number of development switches -
 `RUNNER_DEBUG_TOKENS`, `RUNNER_DEBUG_ACT`, `RUNNER_MOE_TRACE`,
 `RUNNER_LAYER_SIM`, `RUNNER_GRAMMAR_TRACE`, `RUNNER_SCHEMA_TRACE`,
+`RUNNER_SPEC_STATS` / `RUNNER_SPEC_PROF` (the speculative walk's round
+summary and per-phase timing),
 `RUNNER_SCHEMA_ALLOW_WS` (the pre-fix whitespace behaviour, for A/B runs),
 `RUNNER_MOE_GROUPED` (the grouped CUDA MoE experiment, off by measurement),
 `RUNNER_REQUANT_ONLY` / `RUNNER_FORCE_REQUANT` (substring-scoped and
@@ -1822,8 +1826,10 @@ silently dropped branch.
 Not implemented: Vulkan; TLS/auth; remote bind; remote/streamed GGUF parts; the
 `qwen2moe`/`deepseek2`/`kimi` architecture IDs (their shared-expert *layout* is
 implemented, as above - the architectures are not admitted) or MLA attention;
-Mamba/Jamba; MTP/NextN draft-head consumption (those tensors load and are
-skipped, so dense decoding is unchanged); full GBNF; image/document inputs;
+Mamba/Jamba; MTP/NextN draft-head consumption on the GPU backends or with more
+than one predictor block (`--mtp` serves the single-block CPU case; without
+the flag the tensors load and are skipped, so dense decoding is unchanged);
+full GBNF; image/document inputs;
 hosted tools; response persistence; or parallel tool calls on the Responses and
 Messages surfaces (Chat Completions supports it, buffered and streaming).
 

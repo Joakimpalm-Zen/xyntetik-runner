@@ -607,6 +607,7 @@ static void usage_to(FILE *f, const char *prog) {
         "  --draft PATH   small same-vocab GGUF for speculative decoding\n"
         "                 (one-shot, chat, and single-model --serve)\n"
         "  --draft-k N    draft tokens per round (default 4)\n"
+        "  --mtp          draft from the model's own NextN/MTP head (CPU path)\n"
         "  --draft-required  fail instead of decoding plain if --draft is\n"
         "                 refused (local CLI only; serve mode reports\n"
         "                 draft.active from /v1/capabilities)\n"
@@ -798,6 +799,7 @@ int main(int argc, char **argv) {
     const char *draft_path = NULL;
     bool draft_required = false;
     int draft_k = 4;
+    bool mtp_on = false;
     bool interactive = false, verbose = false, no_bos = false;
     bool seed_given = false;
     bool ignore_eos = false, json_mode = false, serve = false, caps = false;
@@ -908,6 +910,7 @@ int main(int argc, char **argv) {
         else if (!strcmp(a, "--draft"))   draft_path = NEXT;
         else if (!strcmp(a, "--draft-required")) draft_required = true;
         else if (!strcmp(a, "--draft-k")) draft_k = (int)int_arg(a, NEXT, 1, 15);
+        else if (!strcmp(a, "--mtp"))     { mp.mtp = true; mtp_on = true; }
         else if (!strcmp(a, "--bench-json")) bench_json = true;
         else if (!strcmp(a, "--score")) score = true;
         else if (!strcmp(a, "--lora")) lora_path = NEXT;
@@ -1641,9 +1644,10 @@ int main(int argc, char **argv) {
             atexit(instances_unregister);
         }
         if (m.mtp_layers)
-            fprintf(stderr, "mtp: %d predictor block(s) declared and excluded "
-                    "from the backbone (training-only; not consumed)\n",
-                    m.mtp_layers);
+            fprintf(stderr, "mtp: %d predictor block(s) declared, excluded from "
+                    "the backbone; %s\n", m.mtp_layers,
+                    m.mtp_ready ? "bound as the draft head (--mtp)"
+                                : "not consumed (pass --mtp to draft from it)");
         if (m.agent_profile)
             fprintf(stderr, "agent-profile: protocol=%u tokenizer=%u schema=%s digest=%s features=%llu\n",
                     m.agent_protocol_version, m.agent_tokenizer_version,
@@ -1708,6 +1712,17 @@ int main(int argc, char **argv) {
                     draft_path);
             CLI_FAIL;
         }
+    }
+    if (mtp_on) {
+        if (!model_mtp_ready(&m)) {
+            fprintf(stderr, "error: --mtp: the head is bound but drafts need "
+                            "the CPU path (rerun with --gpu off)\n");
+            CLI_FAIL;
+        }
+        e.mtp_on = true;
+        e.draft_k = draft_k;
+        fprintf(stderr, "mtp: drafting from the model's NextN head "
+                "(%d tokens per round)\n", draft_k);
     }
     if (schema_file) {
         size_t ssz = 0;
