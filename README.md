@@ -1,10 +1,22 @@
 # Xyntetik Runner
 
-One binary is the whole model runtime: it **serves, verifies, scores,
-adapts and trains** GGUF models - deterministically, with every claim tied
-to a measurement you can re-run. Written from scratch in plain C. No
-Python, no pip, no third-party runtime, no ggml. CPU (x86 AVX2/FMA, ARM
-NEON), CUDA, and Metal.
+Xyntetik Runner is a single-binary GGUF inference and LoRA training engine
+written from scratch in plain C: one binary **serves, verifies, scores,
+adapts and trains** GGUF models on CPU (x86 AVX2/FMA, ARM NEON), CUDA and
+Metal. It trains LoRA adapters directly through the same quantized GGUF
+weights it serves, with no separate FP16 training copy, and two runs with
+the same data, seed and config write a byte-identical adapter file. Every
+claim is tied to a measurement you can re-run, and every recorded run is a
+signed receipt that replays. No Python, no pip, no third-party runtime, no
+ggml. One caveat travels with the training claim: a quantized merge rounds
+the delta, and merging an adapter into a 4-bit base erases the fine-tune
+(8-bit and F16 keep it), so serve adapters with `--lora` or merge into
+Q8_0 or better.
+
+Three questions this engine answers, one page each:
+[train a LoRA on the quantized GGUF you serve](docs/train-lora-on-quantized-gguf.md),
+[reproducible LoRA training with receipts](docs/reproducible-lora-training-receipts.md),
+[tool calls that survive the token limit](docs/truncation-safe-tool-calling.md).
 
 ![Two independent training runs producing byte-identical adapters](docs/assets/deterministic-training.gif)
 
