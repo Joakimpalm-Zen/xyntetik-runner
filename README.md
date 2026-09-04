@@ -591,6 +591,16 @@ reported beside it).
   quantiser and verified **5/6 greedy token-identical vs llama.cpp b10353 at Q8_0**
   (the sole miss a quant-noise near-tie). NVIDIA Open Model License; the card leads
   with the tool-calling differentiator.
+- [gemma-4-31B-it, attention block 48 removed](https://huggingface.co/Joakimpalm-Zen/gemma-4-31B-it-attn48-removed-Q4_0-GGUF)
+  (17.58 GB, Q4_0) is the first **sublayer-removal** artifact: one attention
+  sublayer physically dropped from Google's QAT Q4_0 release, declared with
+  the per-block zeros of `--remove-sublayer`. It frees 64 MiB of KV cache at
+  4k context and 512 MiB at 32k, plus 74.3 MB of file, and tracks its parent
+  at clean KLD 0.0223 on 44,413 held-out positions (measured 2026-08-30 on
+  the identical zeroed form, carried over by bit identity 2026-09-04). It
+  loads only in this runner built from `main` after 2026-09-04 (the next
+  release carries it), CPU path, and llama.cpp refuses it by name; the card
+  says so beside the numbers.
 - Measurement reports over third-party artifacts, no weights republished,
   every measured file bound by SHA:
   [Hermes-4-14B quant fidelity](https://huggingface.co/Joakimpalm-Zen/Hermes-4-14B-quant-fidelity-report)
