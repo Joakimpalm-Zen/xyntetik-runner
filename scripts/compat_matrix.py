@@ -137,6 +137,18 @@ def run_cpu_cuda(runner, model, params, timeout, report_dir=None, model_id=None)
     verdict = re.search(r"cpu_cuda: (pass_margin_qualified|pass|fail) — "
                         r"(\d+)/(\d+) exact, (\d+) near-tie", out)
     failed_prompts = re.findall(r"^FAIL: (.+)$", out, re.M)
+    # A device that refused the load for a stated resource reason compared
+    # nothing: on 2026-09-04 the Qwen3-30B-A3B row read "fail" because the
+    # shared MIG slice had 16.2 GB free against 19.3 GB requested (another
+    # study held it). That is not_executed with the reason, never a failure
+    # of the identity, and never a pass.
+    vram = re.search(r"error: [^\n]*of VRAM requested[^\n]*", out) if not verdict else None
+    if vram:
+        return {"status": "not_executed", "reason": "insufficient_vram",
+                "detail": vram.group(0)[:300],
+                "elapsed_ms": round((time.time() - started) * 1000, 2),
+                "pins": params.get("pins") or {},
+                "report": str(report_path) if report_path else None}
     if verdict:
         status = verdict.group(1)          # pass | pass_margin_qualified | fail
         identity = {"result": status, "exact": f"{verdict.group(2)}/{verdict.group(3)}",
@@ -158,12 +170,19 @@ def run_cpu_cuda(runner, model, params, timeout, report_dir=None, model_id=None)
             "output_tail": out[-1200:]}
 
 
-def run_chat(runner, model, params, timeout):
-    """One-shot chat smoke: the model must answer, stop, and not leak markup."""
+def run_chat(runner, model, params, timeout, gpu_mode="auto"):
+    """One-shot chat smoke: the model must answer, stop, and not leak markup.
+
+    gpu_mode is the harness's own --gpu: a CPU-only matrix (--gpu off) runs the
+    smoke on the CPU path regardless of the row's pinned "auto". Before this the
+    pinned auto plus --wait-for-vram turned a shared, full device into a
+    300-second wait and a "chat_timeout" that had asked the model nothing
+    (2026-09-04)."""
     prompt = params.get("prompt", "What is 2+2?")
+    gpu = "off" if gpu_mode == "off" else params.get("gpu", "auto")
     cmd = [str(runner), "-m", str(model), "-i", "--no-tray", "--temp", "0",
-           "--gpu", params.get("gpu", "auto"), "-n",
-           str(params.get("max_tokens", 200)), "--wait-for-vram", "300"]
+           "--gpu", gpu, "-n", str(params.get("max_tokens", 200))] + \
+          (["--wait-for-vram", "300"] if gpu == "auto" else [])
     # The smoke asks whether the model answers and stops through its
     # template. A thinking family left to its default spends the whole
     # ceiling deliberating whether 2+2 might be in another base (Qwen3-30B,
@@ -194,7 +213,7 @@ def run_chat(runner, model, params, timeout):
     return {"status": "pass" if not reasons and proc.returncode == 0 else "fail",
             "returncode": proc.returncode,
             "elapsed_ms": round((time.time() - started) * 1000, 2),
-            "prompt": prompt, "failure_reasons": reasons,
+            "prompt": prompt, "gpu": gpu, "failure_reasons": reasons,
             "output_tail": out[-300:]}
 
 
@@ -499,7 +518,8 @@ def main(argv=None):
                     # hand them the ledger's directory and this model's id so it
                     # is written and referenced rather than truncated to a tail.
                     extra = ({"report_dir": report_dir, "model_id": entry["id"]}
-                             if fn in (run_cpu_cuda, run_tool) else {})
+                             if fn in (run_cpu_cuda, run_tool)
+                             else {"gpu_mode": args.gpu} if fn is run_chat else {})
                     item["checks"][cls] = fn(args.runner.resolve(), path.resolve(),
                                              cp, args.timeout, **extra)
                     failed |= item["checks"][cls]["status"] == "fail"

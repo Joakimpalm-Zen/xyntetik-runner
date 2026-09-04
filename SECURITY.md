@@ -1,6 +1,6 @@
 # Security Policy
 
-Runner is **pre-1.0** (`0.4.6`). Only the latest release is
+Runner is **pre-1.0** (`0.4.7`). Only the latest release is
 supported; there are no backports.
 
 ## Threat model
