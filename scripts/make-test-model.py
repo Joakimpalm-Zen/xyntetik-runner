@@ -44,6 +44,7 @@ G4_HD32 = False    # --g4-hd32: widen every g4-hetero head to 32 (q8-able rows)
 ACT_OVERFLOW = 0   # scale on ffn_gate weights, to drive the activation extreme
 MUSE = False       # muse-glimmer: gated attention + QK/sandwich norms + NoPE
 MUSE_GATE_FLAT = False  # zero the attn_gate weights (sigmoid -> flat 0.5)
+DECLARE_REMOVED = []    # --declare-removed: (part, block) pairs, see below
 MUSE_ALL_SWA = False    # pattern array all-sliding (every layer ropes)
 GRANITE = False    # granite: four muP scalars, tied embeddings
 GRANITE_RESID = 0.5  # residual_scale for the fixture (CLI-overridable)
@@ -122,6 +123,15 @@ while i < len(args):
         # untied output tensor.
         MUSE = True
         ARCH = "muse-glimmer"
+    elif a == "--declare-removed":
+        # HOSTILE fixture: "attn:N,mlp:M" zeros the per-layer head_count /
+        # head_count_kv / feed_forward_length entries for those blocks while
+        # every tensor stays in the file — the declaration and the bytes
+        # contradict, and the loader must refuse rather than pick one.
+        i += 1
+        for ent in args[i].split(","):
+            part, n = ent.split(":")
+            DECLARE_REMOVED.append((part, int(n)))
     elif a == "--muse-gate-flat":
         MUSE_GATE_FLAT = True
     elif a == "--muse-all-swa":
@@ -405,11 +415,24 @@ meta_kvs = [
     kv_u32(f"{ARCH}.block_count", N_LAYER + MTP_LAYERS),
     kv_u32(f"{ARCH}.context_length", 256),
     kv_u32(f"{ARCH}.embedding_length", N_EMBD),
-    (kv_arr_u32(f"{ARCH}.feed_forward_length", FFN_WIDTHS) if FFN_WIDTHS
+    (kv_arr_u32(f"{ARCH}.feed_forward_length",
+                [0 if ("mlp", l) in DECLARE_REMOVED else N_FF
+                 for l in range(N_LAYER + MTP_LAYERS)])
+     if any(p == "mlp" for p, _ in DECLARE_REMOVED) else
+     kv_arr_u32(f"{ARCH}.feed_forward_length", FFN_WIDTHS) if FFN_WIDTHS
      else kv_u32(f"{ARCH}.feed_forward_length", N_FF)),
-    kv_u32(f"{ARCH}.attention.head_count", N_HEAD),
+    (kv_arr_u32(f"{ARCH}.attention.head_count",
+                [0 if ("attn", l) in DECLARE_REMOVED else N_HEAD
+                 for l in range(N_LAYER + MTP_LAYERS)])
+     if any(p == "attn" for p, _ in DECLARE_REMOVED) else
+     kv_u32(f"{ARCH}.attention.head_count", N_HEAD)),
     # G4HETERO publishes head_count_kv as a per-layer ARRAY below instead
-    *([] if G4HETERO else [kv_u32(f"{ARCH}.attention.head_count_kv", N_KV)]),
+    *([] if G4HETERO else
+      [kv_arr_u32(f"{ARCH}.attention.head_count_kv",
+                  [0 if ("attn", l) in DECLARE_REMOVED else N_KV
+                   for l in range(N_LAYER + MTP_LAYERS)])
+       if any(p == "attn" for p, _ in DECLARE_REMOVED) else
+       kv_u32(f"{ARCH}.attention.head_count_kv", N_KV)]),
     kv_f32(f"{ARCH}.attention.layer_norm_rms_epsilon", 1e-5),
     kv_f32(f"{ARCH}.rope.freq_base", 10000.0),
     kv_str("tokenizer.ggml.model", "llama"),

@@ -1071,6 +1071,7 @@ static void model_free_weights(model_t *m) {
     }
     free(m->l_head_kv); free(m->l_head_dim); free(m->l_rope_dim);
     free(m->l_is_swa); free(m->suppress); free(m->kv_src);
+    free(m->l_no_attn); free(m->l_no_ffn);
     free(m->ple_proj_norm);
     free(m->xielu_an); free(m->xielu_ap); free(m->xielu_b); free(m->xielu_eps);
     free(m->layers);
@@ -1588,8 +1589,77 @@ static bool model_bind_weights(model_t *m, const char *path, const model_params 
     // "every layer owns its KV" is the default; only gemma4 E-series lowers it
     m->kv_from_start = m->n_layer;
     m->n_embd      = (int)gguf_get_u32(g, AK("embedding_length"), 0);
-    m->n_head      = (int)gguf_get_u32(g, AK("attention.head_count"), 0);
+    // The hybrid families type their blocks with zeros in the per-layer
+    // arrays (nemotron_h: head_count_kv / feed_forward_length; granitehybrid:
+    // head_count_kv). Their own blocks below read those arrays; the removal
+    // reading of a zero (this block's sublayer was dropped from the file)
+    // applies to every other architecture.
+    const bool hybrid_typed = strcmp(arch, "nemotron_h") == 0 ||
+                              strcmp(arch, "nemotron_h_moe") == 0 ||
+                              strcmp(arch, "granitehybrid") == 0;
+    // attention.head_count: a scalar in every export, or the per-layer
+    // array llama.cpp's own Nemotron-51B ("deci") files use, where a 0
+    // entry means "this block has no attention" (--remove-sublayer writes
+    // exactly that). The heads are one width everywhere else: a non-zero
+    // entry that differs from the rest is a geometry this engine has never
+    // run and is refused, not averaged.
+    m->n_head = (int)gguf_get_u32(g, AK("attention.head_count"), 0);
+    {
+        gguf_kv *hc = gguf_get(g, AK("attention.head_count"));
+        if (hc && hc->type == GGUF_T_ARR) {
+            if (hc->arr_n != (uint64_t)m->n_layer) {
+                fprintf(stderr, "error: %s.attention.head_count has %llu "
+                        "entries for %d blocks\n", arch,
+                        (unsigned long long)hc->arr_n, m->n_layer);
+                return false;
+            }
+            uint32_t mx = 0;
+            for (int i = 0; i < m->n_layer; i++) {
+                uint32_t v = gguf_get_u32_idx(g, AK("attention.head_count"),
+                                              (uint64_t)i, 0);
+                if (v > mx) mx = v;
+            }
+            for (int i = 0; i < m->n_layer; i++) {
+                uint32_t v = gguf_get_u32_idx(g, AK("attention.head_count"),
+                                              (uint64_t)i, 0);
+                if (v != 0 && v != mx) {
+                    fprintf(stderr, "error: %s.attention.head_count varies "
+                            "per block (%u at blk.%d, %u elsewhere) — "
+                            "heterogeneous head counts are not supported\n",
+                            arch, v, i, mx);
+                    return false;
+                }
+                if (v == 0) {
+                    if (!m->l_no_attn) {
+                        m->l_no_attn = calloc((size_t)m->n_layer, sizeof(bool));
+                        if (!m->l_no_attn) return false;
+                    }
+                    m->l_no_attn[i] = true;
+                    m->n_removed++;
+                }
+            }
+            m->n_head = (int)mx;
+        }
+    }
     m->n_head_kv   = (int)gguf_get_u32(g, AK("attention.head_count_kv"), m->n_head);
+    {
+        // An ARRAY head_count_kv on a non-hybrid, non-gemma4 file is either
+        // one width with zeros at the removed blocks (accepted) or a
+        // geometry this path cannot run (refused below at the removal
+        // gate). The scalar read above answered the default for an array;
+        // take the width from the entries instead.
+        gguf_kv *hk = gguf_get(g, AK("attention.head_count_kv"));
+        if (hk && hk->type == GGUF_T_ARR && !hybrid_typed &&
+            strcmp(arch, "gemma4") != 0) {
+            uint32_t mx = 0;
+            for (int i = 0; i < m->n_layer; i++) {
+                uint32_t v = gguf_get_u32_idx(g, AK("attention.head_count_kv"),
+                                              (uint64_t)i, 0);
+                if (v > mx) mx = v;
+            }
+            m->n_head_kv = (int)mx;
+        }
+    }
     // feed_forward_length is a scalar in almost every export, but gemma-4 E2B
     // publishes real per-layer width variation (6144/12288) as an ARRAY-typed
     // value. m->n_ff carries the MAX (scratch buffers size off it); the
@@ -1599,11 +1669,26 @@ static bool model_bind_weights(model_t *m, const char *path, const model_params 
     m->n_ff        = (int)gguf_get_u32(g, AK("feed_forward_length"), 0);
     m->ffn_var     = false;
     if (m->n_ff == 0 && m->n_layer > 0) {
+        // A 0 entry on a non-hybrid file is a REMOVED FFN (--remove-sublayer,
+        // the same reading llama.cpp's deci graph gives n_ff == 0); the
+        // hybrids' own blocks below re-derive n_ff from their typed arrays.
         uint32_t mx = 0, mn = UINT32_MAX;
         for (int i = 0; i < m->n_layer; i++) {
             uint32_t w = gguf_get_u32_idx(g, AK("feed_forward_length"),
                                           (uint64_t)i, 0);
-            if (w == 0) { mx = 0; break; }   // absent or malformed entry
+            if (w == 0) {
+                if (hybrid_typed) { mx = 0; break; }   // typed, not removed
+                gguf_kv *fk = gguf_get(g, AK("feed_forward_length"));
+                if (!fk || fk->type != GGUF_T_ARR ||
+                    fk->arr_n != (uint64_t)m->n_layer) { mx = 0; break; }
+                if (!m->l_no_ffn) {
+                    m->l_no_ffn = calloc((size_t)m->n_layer, sizeof(bool));
+                    if (!m->l_no_ffn) return false;
+                }
+                m->l_no_ffn[i] = true;
+                m->n_removed++;
+                continue;
+            }
             if (w > mx) mx = w;
             if (w < mn) mn = w;
         }
@@ -1951,11 +2036,17 @@ static bool model_bind_weights(model_t *m, const char *path, const model_params 
             // gate below bounds rope_dim against head_dim, but never saw
             // rope.dimension_count_swa against key_length_swa) — reject at
             // load instead.
-            if (m->l_head_dim[i] < 1 || m->l_head_kv[i] < 1 ||
+            // A removed attention (head_count 0 at this block) legitimately
+            // has head_count_kv 0 too; the removal gate below checks that
+            // pairing. Every other zero is the malformed geometry this
+            // rejects.
+            bool attn_gone = m->l_no_attn && m->l_no_attn[i] && m->l_head_kv[i] == 0;
+            if (!attn_gone &&
+               (m->l_head_dim[i] < 1 || m->l_head_kv[i] < 1 ||
                 m->n_head < 1 || m->l_head_kv[i] > m->n_head ||
                 m->n_head % m->l_head_kv[i] != 0 ||
                 m->l_rope_dim[i] < 0 || m->l_rope_dim[i] > m->l_head_dim[i] ||
-                (int64_t)m->n_head * m->l_head_dim[i] > MDL_DIM_MAX) {
+                (int64_t)m->n_head * m->l_head_dim[i] > MDL_DIM_MAX)) {
                 fprintf(stderr, "error: invalid gemma4 per-layer geometry at "
                         "blk.%d (head_dim=%d head_count_kv=%d rope_dim=%d, "
                         "n_head=%d)\n",
@@ -2477,6 +2568,73 @@ static bool model_bind_weights(model_t *m, const char *path, const model_params 
         fprintf(stderr, "error: missing model hyperparameters for arch '%s'\n", m->arch);
         return false;
     }
+    // Removed sublayers (--remove-sublayer). Admitted on the plain dense
+    // transformer path only; every family whose per-layer arrays already
+    // carry block typing, or whose blocks are coupled across layers, refuses
+    // by name rather than reinterpreting a zero.
+    {
+        gguf_kv *hk = gguf_get(g, AK("attention.head_count_kv"));
+        bool kv_arr = hk && hk->type == GGUF_T_ARR;
+        bool gemma4 = strcmp(arch, "gemma4") == 0;
+        if (kv_arr && !hybrid_typed && !gemma4) {
+            // The generic path runs one KV width. A zero entry is a removed
+            // attention only when head_count says so as well; alone it is
+            // llama.cpp's "linear attention" block, which this engine does
+            // not run.
+            for (int i = 0; i < m->n_layer; i++) {
+                uint32_t v = gguf_get_u32_idx(g, AK("attention.head_count_kv"),
+                                              (uint64_t)i, 0);
+                bool gone = m->l_no_attn && m->l_no_attn[i];
+                if (v == 0 && !gone) {
+                    fprintf(stderr, "error: %s.attention.head_count_kv is 0 at "
+                            "blk.%d but attention.head_count is not — linear "
+                            "attention blocks are not supported\n", arch, i);
+                    return false;
+                }
+                if (v != 0 && (int)v != m->n_head_kv) {
+                    fprintf(stderr, "error: %s.attention.head_count_kv varies "
+                            "per block (%u at blk.%d, %d elsewhere) — "
+                            "heterogeneous kv heads are not supported\n",
+                            arch, v, i, m->n_head_kv);
+                    return false;
+                }
+            }
+        }
+        if (m->n_removed > 0) {
+            const char *why = hybrid_typed || m->qwen35
+                ? "hybrid or recurrent block typing"
+                : (m->n_embd_ple > 0 || m->kv_from_start < m->n_layer)
+                ? "gemma-4 E-series per-layer embeddings or shared KV"
+                : NULL;
+            if (why) {
+                fprintf(stderr, "error: this file declares removed sublayers, "
+                        "which the %s path does not support (%s)\n", arch, why);
+                return false;
+            }
+            if (m->l_no_attn) {
+                if (!m->l_head_kv) {
+                    // scalar head_count_kv: per-layer table so the removed
+                    // block reserves no KV rows (model_kv_dim reads it)
+                    m->l_head_kv = calloc((size_t)m->n_layer, sizeof(int));
+                    if (!m->l_head_kv) return false;
+                    for (int i = 0; i < m->n_layer; i++)
+                        m->l_head_kv[i] = m->n_head_kv;
+                }
+                for (int i = 0; i < m->n_layer; i++) {
+                    if (!m->l_no_attn[i]) continue;
+                    uint32_t v = gguf_get_u32_idx(g, AK("attention.head_count_kv"),
+                                                  (uint64_t)i, 0);
+                    if (kv_arr && v != 0) {
+                        fprintf(stderr, "error: blk.%d declares head_count 0 "
+                                "(attention removed) but head_count_kv %u\n",
+                                i, v);
+                        return false;
+                    }
+                    m->l_head_kv[i] = 0;
+                }
+            }
+        }
+    }
     // context_length is read as a u32 into an int, so anything above INT_MAX
     // arrives NEGATIVE — and it caps the default window, sizes the cache, and
     // seeds the YaRN extension ratio. The load did fail, but with "cannot
@@ -2613,9 +2771,24 @@ static bool model_bind_weights(model_t *m, const char *path, const model_params 
             if (!nemotron_bind_layer(m, g, l, i)) return false;
             continue;
         }
+        // Removed sublayers (declared by the per-layer arrays, admitted at the
+        // geometry gate): the branch's tensors are absent from the file and
+        // its node is omitted from the forward pass. Norms stay in the file
+        // (kilobytes; they keep the residual plumbing identical to the
+        // zeroed form) and are bound as usual.
+        const bool no_attn = m->l_no_attn && i < m->n_layer && m->l_no_attn[i];
+        const bool no_ffn  = m->l_no_ffn  && i < m->n_layer && m->l_no_ffn[i];
+        l->skip_mixer = no_attn;
+        l->skip_ffn   = no_ffn;
+        if ((no_attn || no_ffn) && fused_qkv) {
+            fprintf(stderr, "error: blk.%d declares a removed sublayer, but "
+                    "fused-QKV families are not supported for removal\n", i);
+            return false;
+        }
         // per-layer FFN width: the ARRAY form answers per index, the scalar
         // form (every other export) answers every index with m->n_ff
-        l->n_ff = (int)gguf_get_u32_idx(g, AK("feed_forward_length"),
+        l->n_ff = no_ffn ? m->n_ff
+                : (int)gguf_get_u32_idx(g, AK("feed_forward_length"),
                                         (uint64_t)i, (uint32_t)m->n_ff);
         if (l->n_ff <= 0 || l->n_ff > m->n_ff) {
             fprintf(stderr, "error: layer %d FFN width %d outside (0, %d]\n",
@@ -2628,7 +2801,7 @@ static bool model_bind_weights(model_t *m, const char *path, const model_params 
         gguf_tensor *fn = (m->qwen35 || m->gptoss)
             ? need_tensor(g, "blk.%d.post_attention_norm.weight", i, &ok)
             : need_tensor(g, "blk.%d.ffn_norm.weight", i, &ok);
-        if (m->gptoss)
+        if (m->gptoss && !no_attn)
             l->attn_sinks = tensor_to_f32(
                 need_tensor(g, "blk.%d.attn_sinks.weight", i, &ok),
                 m->n_head, &ok);
@@ -2747,7 +2920,7 @@ static bool model_bind_weights(model_t *m, const char *path, const model_params 
                     return false;
             }
         }
-        if (!l->recurrent) {
+        if (!l->recurrent && !no_attn) {
         if (fused_qkv) {
             // phi3: [Q rows | K rows | V rows] in attn_qkv, and the FFN's
             // gate and up halves stacked in ffn_up (HF's gate_up_proj)
@@ -2778,15 +2951,6 @@ static bool model_bind_weights(model_t *m, const char *path, const model_params 
             l->wk     = need_tensor(g, "blk.%d.attn_k.weight", i, &ok);
             l->wv     = m->v_rmsnorm ? opt_tensor(g, "blk.%d.attn_v.weight", i)
                                      : need_tensor(g, "blk.%d.attn_v.weight", i, &ok);
-            if (m->n_expert == 0 || i < m->n_dense_lead) {
-                // Apertus has no ffn_gate: its MLP is up -> xielu -> down.
-                // Every other dense arch here is gated, so the tensor stays
-                // required unless the activation is the ungated one.
-                l->w_gate = m->ffn_act == ACT_XIELU
-                            ? opt_tensor(g, "blk.%d.ffn_gate.weight", i)
-                            : need_tensor(g, "blk.%d.ffn_gate.weight", i, &ok);
-                l->w_up   = need_tensor(g, "blk.%d.ffn_up.weight", i, &ok);
-            }
         }
         l->wo     = need_tensor(g, "blk.%d.attn_output.weight", i, &ok);
         if (m->attn_out_gate) {
@@ -2802,6 +2966,59 @@ static bool model_bind_weights(model_t *m, const char *path, const model_params 
             }
         }
         }  // end !l->recurrent attention binding
+        if (no_attn) {
+            // Declared absent: the file must not carry the branch it says it
+            // dropped. A projection that is present would run on the zeroed
+            // reading of the declaration (nothing) while the bytes say
+            // otherwise — refuse the contradiction by name.
+            static const char *const attn_names[] = {
+                "attn_q.weight", "attn_k.weight", "attn_v.weight",
+                "attn_output.weight", "attn_qkv.weight",
+            };
+            for (size_t k = 0; k < sizeof(attn_names) / sizeof(*attn_names); k++) {
+                char nm[128];
+                snprintf(nm, sizeof nm, "blk.%d.%s", i, attn_names[k]);
+                if (gguf_find_tensor(g, nm)) {
+                    fprintf(stderr, "error: blk.%d is declared without attention "
+                            "(attention.head_count 0) but the file carries %s\n",
+                            i, nm);
+                    return false;
+                }
+            }
+        }
+        if (!l->recurrent && !fused_qkv && !no_ffn &&
+            (m->n_expert == 0 || i < m->n_dense_lead)) {
+            // Apertus has no ffn_gate: its MLP is up -> xielu -> down.
+            // Every other dense arch here is gated, so the tensor stays
+            // required unless the activation is the ungated one.
+            l->w_gate = m->ffn_act == ACT_XIELU
+                        ? opt_tensor(g, "blk.%d.ffn_gate.weight", i)
+                        : need_tensor(g, "blk.%d.ffn_gate.weight", i, &ok);
+            l->w_up   = need_tensor(g, "blk.%d.ffn_up.weight", i, &ok);
+        }
+        if (no_ffn) {
+            static const char *const ffn_names[] = {
+                "ffn_gate.weight", "ffn_up.weight", "ffn_down.weight",
+                "ffn_gate_inp.weight", "ffn_gate_exps.weight",
+                "ffn_up_exps.weight", "ffn_down_exps.weight",
+                "ffn_gate_up_exps.weight",
+            };
+            for (size_t k = 0; k < sizeof(ffn_names) / sizeof(*ffn_names); k++) {
+                char nm[128];
+                snprintf(nm, sizeof nm, "blk.%d.%s", i, ffn_names[k]);
+                if (gguf_find_tensor(g, nm)) {
+                    fprintf(stderr, "error: blk.%d is declared without an FFN "
+                            "(feed_forward_length 0) but the file carries %s\n",
+                            i, nm);
+                    return false;
+                }
+            }
+            if (m->n_expert > 0 && i >= m->n_dense_lead) {
+                fprintf(stderr, "error: blk.%d declares its FFN removed, but "
+                        "MoE blocks are not supported for removal\n", i);
+                return false;
+            }
+        }
         if (m->n_expert > 0 && i >= m->n_dense_lead) {
             // sparse-MoE FFN: a router plus fused 3D expert tensors replace the
             // dense gate/up/down for this layer
@@ -2917,7 +3134,7 @@ static bool model_bind_weights(model_t *m, const char *path, const model_params 
                     }
                 }
             }
-        } else {
+        } else if (!no_ffn) {
             l->w_down = need_tensor(g, "blk.%d.ffn_down.weight", i, &ok);
         }
         if (!ok) return false;
@@ -3581,6 +3798,17 @@ static bool model_alloc_runtime(model_t *m, const model_params *p) {
                     p->yarn_factor)) return false;
 
     if (p->gpu_mode == GPU_AUTO) {
+        // A removed sublayer is omitted by the CPU forward only; the device
+        // decode loops still drive every block's attention and FFN. Refuse
+        // the offload by name rather than let a backend read a NULL weight.
+        char gname[128];
+        if (m->n_removed > 0 && gpu_available(gname, sizeof(gname))) {
+            fprintf(stderr, "error: this model has %d removed sublayer%s "
+                    "(--remove-sublayer); only the CPU path omits them today "
+                    "— rerun with --gpu off\n", m->n_removed,
+                    m->n_removed == 1 ? "" : "s");
+            return false;
+        }
         // Register the intended VRAM footprint before allocating any of it, so
         // a concurrent runner sees this claim rather than discovering it as a
         // mysteriously shrunken free figure. CPU-only runs never get here, so
@@ -3623,6 +3851,19 @@ static bool model_alloc_runtime(model_t *m, const model_params *p) {
         fprintf(stderr, "%-24s %d (%d kv)\n", "heads", m->n_head, m->n_head_kv);
         fprintf(stderr, "%-24s %d\n", "head dim", m->head_dim);
         fprintf(stderr, "%-24s %d\n", "ffn dim", m->n_ff);
+        if (m->n_removed > 0) {
+            // which blocks run without which sublayer (attn:N / mlp:N, the
+            // --remove-sublayer spelling), so the banner says what the file is
+            fprintf(stderr, "%-24s ", "sublayers removed");
+            int shown = 0;
+            for (int l = 0; l < m->n_layer; l++) {
+                if (m->l_no_attn && m->l_no_attn[l])
+                    fprintf(stderr, "%sattn:%d", shown++ ? ", " : "", l);
+                if (m->l_no_ffn && m->l_no_ffn[l])
+                    fprintf(stderr, "%smlp:%d", shown++ ? ", " : "", l);
+            }
+            fprintf(stderr, " (CPU path; the removed attention reserves no KV rows)\n");
+        }
         fprintf(stderr, "%-24s %d\n", "vocab", m->n_vocab);
         fprintf(stderr, "%-24s %d (train %d)\n", "context", m->n_ctx, m->n_ctx_train);
         fprintf(stderr, "%-24s %.1f MB (%s)\n", "kv cache", 2.0 * kv_bytes / 1e6,
@@ -5497,6 +5738,15 @@ bool model_lora_load(model_t *m, const char *path, float user_scale) {
                 "architectures yet (%s)\n", m->arch);
         return false;
     }
+    if (m->n_removed > 0) {
+        // The hook sites assume every dense projection exists in every
+        // block; an adapter targeting a removed projection would bind to
+        // nothing. Refused until the hooks learn the per-block absence.
+        fprintf(stderr, "error: --lora does not cover a model with removed "
+                "sublayers yet (%d removed by --remove-sublayer)\n",
+                m->n_removed);
+        return false;
+    }
     if (m->moe_gemma) {
         fprintf(stderr, "error: --lora does not cover the gemma-4 "
                 "dual-branch FFN yet\n");
@@ -5897,6 +6147,7 @@ static float silu_d(float g) {
 static bool lora_bw_supported(model_t *m, char *why, size_t cap) {
     const char *r = NULL;
     if (m->gpu) r = "GPU-resident model (run --gpu off)";
+    else if (m->n_removed > 0) r = "removed sublayers (--remove-sublayer artifact)";
     else if (m->qwen35 || m->granite_hybrid || m->nemotron_h)
         r = "recurrent architecture";
     else if (m->n_expert > 0 || m->moe_gemma) r = "MoE FFN";
@@ -6644,6 +6895,11 @@ static void forward_layer(model_t *m, int l, int n, int pos, int dbg) {
     uint8_t *vc_l = (uint8_t *)m->vcache + model_v_byte_off(m, l);
     size_t row_b = model_kv_row_bytes(m, l);
 
+    // No mixer at all (a nemotron_h MLP-only block, or an attention
+    // removed by --remove-sublayer): the residual passes straight to the
+    // FFN. The whole branch is omitted, not computed as zero and added.
+    if (ly->skip_mixer) goto nemo_ffn;
+
     // attention
     for (int b = 0; b < n; b++)
         rmsnorm(m->xb + (size_t)b * xdim, m->x + (size_t)b * n_embd,
@@ -6663,7 +6919,6 @@ static void forward_layer(model_t *m, int l, int n, int pos, int dbg) {
         fprintf(stderr, "%.4g\n", a);
         dbg_stat("post-attn-norm", l, m->xb + (size_t)(n - 1) * xdim, n_embd);
     }
-    if (ly->skip_mixer) goto nemo_ffn;   // nemotron_h MLP-only block
     if (ly->recurrent) {
         if (m->granite_hybrid || m->nemotron_h)
                                mamba2_ssd_step(m, ly, l, n, xdim);

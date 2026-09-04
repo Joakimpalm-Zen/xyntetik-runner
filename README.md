@@ -513,6 +513,49 @@ Runner-correct and untested elsewhere, in the same place it states its
 fidelity; a uniform prune carries no such caveat. The key is a proposed
 convention, published here so other loaders can adopt it.
 
+### Sublayer removal
+
+`--remove-sublayer` drops one block's attention or dense-FFN tensors from
+the file, so a surgery that found a block's attention dispensable saves the
+bytes and the KV cache instead of shipping a same-size file with zeroed
+weights. A mechanism, not a quality claim: which block can go is a
+measurement against the parent, made elsewhere.
+
+```sh
+# drop block 48's attention; survivors keep their bytes
+./runner -m model.gguf --quantize cut.gguf --remove-sublayer attn:48
+# several at once, and requantize the survivors in the same pass
+./runner -m model.gguf --quantize cut-q8.gguf \
+  --remove-sublayer attn:48,mlp:12 --quant q8_0
+```
+
+The absence is declared, not inferred: the writer turns the block-wide
+`<arch>.attention.head_count` and `head_count_kv` (or `feed_forward_length`)
+into per-block arrays with a `0` at the removed block. That is the reading
+llama.cpp's own Nemotron-51B ("deci") files already use for attention-free
+and FFN-free blocks, so the file describes itself in the format's existing
+vocabulary rather than a private key. What goes is the branch proper: every
+`blk.N.attn_*` tensor except the `attn_norm` pre-norm (projections, Q/K
+norms, sinks, gates, biases), or every `blk.N.ffn_*` tensor except
+`ffn_norm`. The kept norms cost kilobytes and leave the residual plumbing
+identical to the zeroed form, which is what the gate compares against: a
+removed block scores bit-identically to the parent with that block's output
+projection zeroed, and differs from the untouched parent. The writer prints
+exactly what it dropped, in tensors and bytes.
+
+At load the arrays are validated against the bytes in both directions: a
+tensor missing without a declaration is still `error: missing tensor`, and
+a declaration whose tensors are still present is refused by name. A removed
+attention reserves no KV rows, so the cache shrinks by that block's share at
+every context length (the `-v` banner lists `sublayers removed`). Limits,
+each refused rather than approximated: the CPU path only (the device decode
+loops still drive every block; pass `--gpu off`), dense blocks only (MoE
+FFNs, the hybrid SSM families, gemma-4 E-series shared-KV/per-layer
+embeddings, fused-QKV exports and NextN heads are declined by name), one
+head width across the file (a non-zero entry that differs from the rest is
+heterogeneous geometry, not a removal), and no `--lora` or `--train` on a
+removed file yet. `docs/sublayer-removal.md` has the design and the gates.
+
 ### Published artifacts
 
 Artifacts produced by this project are published only after their stated gate
@@ -647,6 +690,7 @@ flags into unrelated feature sections.
 | `--type-plan PLAN.json` | Per-tensor rewrite plan. First substring rule wins; types are `keep`, `q8_0`, `q4_0`, `q3_k`, `q4_k`, `q6_k`, `f16`, and `bf16`. Example: `{"default":"keep","rules":[{"match":"_exps.weight","type":"q3_k"}]}`. Requires `--quantize`. A rule that cannot be honoured for a tensor - the type's block does not divide the row width, or it would not make the tensor smaller - leaves that tensor at its source type and is reported on stderr BY NAME with the type it asked for, so the built file can differ from the plan as written. `scripts/type-plan-size.py` predicts the exact size and per-type histogram, including declines, before you build. |
 | `--merge-lora OUT` | Fold `--lora` into the base weights and write a standalone GGUF that runs in any GGUF runtime: `W' = W + (alpha/r)·B·A` per adapted projection, each tensor requantized to its own type (or `--quant T`), untouched tensors copied byte-verbatim, `OUT.merge.json` provenance (base/adapter/merged sha256s) written beside it. Deterministic: same inputs, byte-identical merged file. Merging into a quantized type rounds the delta through that type's grid - the merged artifact's fidelity is a measurement, not a given; `base + --lora` remains the exact form. |
 | `--prune-experts FILE` | Apply a per-layer MoE expert keep-list while rewriting. Requires `--quantize`. |
+| `--remove-sublayer attn:N[,mlp:M,...]` | Physically drop block N's attention (or block M's dense FFN) tensors while rewriting, declaring the absence with a `0` in the per-block `attention.head_count` / `head_count_kv` (or `feed_forward_length`) array, llama.cpp's own convention. The pre-norm stays. The runner omits the branch and reserves no KV rows for it; CPU path, dense blocks only. Requires `--quantize`. See "Sublayer removal" below. |
 | `--bench-json` | Run the built-in prompt/decode benchmark and print JSON metrics. |
 | `--lora FILE`, `--lora-scale F` | Load a LoRA adapter GGUF beside the frozen quantized base (llama.cpp adapter naming: `blk.N.<proj>.weight.lora_a/_b` + `adapter.lora.alpha`; F32, F16 or BF16 tensors - F16 is what llama.cpp's `convert_lora_to_gguf` emits, and a community adapter in that format loads and serves, measured). Interop runs the other way too: an adapter runner trained scores identically (1.000 on its held-out eval) when served by stock llama.cpp. Applied as `y += scale·B(Ax)` on the CPU dense projections (attention q/k/v/output, FFN gate/up/down) - the base weights and kernels are untouched, so every base identity gate still describes the adapted run's substrate. Fails closed by name on shape/rank mismatches, unknown targets, recurrent/gemma-4-MoE architectures, and GPU-resident models (CPU-only for now). A zero adapter is gated byte-identical to the bare base; a real adapter is gated against the merged-weights reference. The adapter id joins the engine's model identity, so cached prefixes never cross an adapter boundary. |
 | `--train FILE`, `--train-steps`, `--lr`, `--train-ctx`, `--train-out`, `--save-every`, `--lora-rank` | AdamW LoRA training in the serving binary (CPU path, position-batched and threaded under a byte-exact contract - 4B trains at ~20 s/step on a many-core host, 2.3× over the first release, with the adapter bytes gated invariant across binaries, thread counts and the optional `RUNNER_TRAIN_GPU=1` CUDA assist): plain-text corpora or `.jsonl` lines `{"prompt","completion","weight"}` with the prompt masked from the loss and per-example weights (the policy-gradient hook `scripts/train-grpo-lite.py` drives). Fresh adapters start as an exact no-op (A seeded, B zero); checkpoints are adapter GGUFs that `--lora` loads back. Deterministic by default: same data + same seed produce a byte-identical adapter file, gated in `make test`. Design, gates and measured results: [docs/adaptation-engine.md](docs/adaptation-engine.md). |

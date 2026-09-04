@@ -586,6 +586,15 @@ static void usage_to(FILE *f, const char *prog) {
         "                 the finest GGUF can\n"
         "                 express: experts are stored stacked, one tensor per\n"
         "                 layer, so per-EXPERT precision is not representable\n"
+        "  --remove-sublayer attn:N[,mlp:M,...]  drop block N's attention\n"
+        "                 (or block M's dense FFN) tensors while rewriting;\n"
+        "                 the absence is declared by a 0 in the per-block\n"
+        "                 attention.head_count / head_count_kv (or\n"
+        "                 feed_forward_length) array, llama.cpp's own\n"
+        "                 convention; the block's pre-norm stays. The runner\n"
+        "                 omits the branch and reserves no KV rows for it\n"
+        "                 (CPU path). A mechanism, not a quality claim:\n"
+        "                 measure the artifact against its parent\n"
         "  --prune-experts LIST.json  drop MoE experts per layer while\n"
         "                 rewriting: {\"layer_N\":[kept expert ids...]};\n"
         "                 a layer absent from the file keeps every expert.\n"
@@ -849,6 +858,7 @@ int main(int argc, char **argv) {
     char *owned_prompt = NULL;
     const char *tmpl_arg = NULL, *prompt_file = NULL, *schema_file = NULL;
     const char *quant_out = NULL, *quant_type = NULL, *prune_experts = NULL;
+    const char *remove_sublayer = NULL;
     const char *type_plan = NULL, *merge_out = NULL, *context_out = NULL;
     const char *transcript_path = NULL;
     const char *transcript_prev = NULL, *sign_key = NULL, *keygen_path = NULL;
@@ -947,6 +957,7 @@ int main(int argc, char **argv) {
         else if (!strcmp(a, "--require-signed-model")) require_signed_model = true;
         else if (!strcmp(a, "--quant")) quant_type = NEXT;
         else if (!strcmp(a, "--prune-experts")) prune_experts = NEXT;
+        else if (!strcmp(a, "--remove-sublayer")) remove_sublayer = NEXT;
         else if (!strcmp(a, "--type-plan")) type_plan = NEXT;
         else if (!strcmp(a, "--temp")) { ov.temp = (float)float_arg(a, NEXT, 0, FLT_MAX); ov.has_temp = true; }
         else if (!strcmp(a, "--top-k")) { ov.top_k = (int)int_arg(a, NEXT, 0, INT_MAX); ov.has_top_k = true; }
@@ -1547,7 +1558,8 @@ int main(int argc, char **argv) {
     }
 
     if (context_out) {
-        if (quant_out || merge_out || prune_experts || type_plan || quant_type) {
+        if (quant_out || merge_out || prune_experts || type_plan || quant_type ||
+            remove_sublayer) {
             fprintf(stderr, "error: --context-surgery does not combine with "
                     "quantize, merge, prune, or type-plan operations\n");
             return 1;
@@ -1597,7 +1609,7 @@ int main(int argc, char **argv) {
             fprintf(stderr, "error: --merge-lora requires --lora ADAPTER\n");
             return 1;
         }
-        if (quant_out || prune_experts || type_plan) {
+        if (quant_out || prune_experts || type_plan || remove_sublayer) {
             fprintf(stderr, "error: --merge-lora does not combine with "
                     "--quantize, --prune-experts or --type-plan\n");
             return 1;
@@ -1673,10 +1685,10 @@ int main(int argc, char **argv) {
             // No --quant given: --prune-experts alone means "just prune,
             // don't touch anyone's precision" (T_KEEP); with neither flag
             // this is plain --quantize, whose long-standing default is q4_0.
-            tt = prune_experts ? T_KEEP : T_Q4_0;
+            tt = (prune_experts || remove_sublayer) ? T_KEEP : T_Q4_0;
         }
         return quantize_gguf_plan(model_path, quant_out, tt, prune_experts,
-                                  type_plan);
+                                  type_plan, remove_sublayer);
     }
     // Every flag that only has meaning while rewriting a file. Reaching here
     // means --quantize was not given, and the block above is their only
@@ -1684,6 +1696,7 @@ int main(int argc, char **argv) {
     // silently dropped — the same discard --chat-template was fixed for, in a
     // place where the user believes they asked for a different file on disk.
     const char *orphan = prune_experts ? "--prune-experts"
+                       : remove_sublayer ? "--remove-sublayer"
                        : type_plan     ? "--type-plan"
                        : quant_type    ? "--quant"
                        : NULL;

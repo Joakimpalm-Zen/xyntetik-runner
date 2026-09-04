@@ -232,6 +232,15 @@ typedef struct {
     int      *l_head_dim;    // [n_layer] head dim per layer (K == V required)
     int      *l_rope_dim;    // [n_layer] rotated dims per layer
     bool     *l_is_swa;      // [n_layer] sliding-window layer flags
+    // Sublayer removal (--remove-sublayer): a block whose attention or FFN
+    // tensors were physically dropped from the file, declared the way
+    // llama.cpp's per-layer arrays declare it (a 0 in attention.head_count /
+    // head_count_kv, or in feed_forward_length, for that block). NULL when
+    // nothing is removed. The forward pass omits the branch (skip_mixer /
+    // skip_ffn on the layer) and a removed attention reserves no KV rows.
+    bool     *l_no_attn;     // [n_layer] attention removed
+    bool     *l_no_ffn;      // [n_layer] FFN removed
+    int       n_removed;     // removed sublayers in total (0 = a normal file)
     int       kv_ring;       // rows a sliding layer owns (0 = flat n_ctx rows)
     size_t   *kv_off;        // [n_layer+1] element offsets into VCACHE (and
                              // into kcache too unless tied-V is on)
