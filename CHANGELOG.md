@@ -6,6 +6,22 @@ change between releases (the `-alpha` suffix was retired at v0.2.0 — the 0.x
 version already says what it needs to). Entries below the rename keep the
 names that were true when they were written.
 
+## Unreleased
+
+- **`--remove-sublayer attn:N[,mlp:M,...]`: a block's attention or dense-FFN
+  tensors are physically dropped from the file, and the absence is declared
+  with a `0` in the per-block `attention.head_count` / `head_count_kv` (or
+  `feed_forward_length`) array, the convention llama.cpp's Nemotron-51B
+  ("deci") files already use. The loader omits the branch instead of failing
+  on a missing tensor, reserves no KV rows for a removed attention, refuses a
+  declaration whose tensors are still present, and keeps refusing an
+  undeclared missing tensor. Gated on bit-identity against the parent with
+  the block's output projection zeroed (an independent path through the full
+  math), exact byte accounting, and the KV cache halving on a two-block
+  fixture. CPU path and dense blocks only; MoE FFNs, hybrid families,
+  E-series, fused-QKV, NextN heads, `--lora` and `--train` are declined by
+  name. Norms stay (kilobytes; the residual plumbing is unchanged).
+
 ## v0.4.6 - 2026-09-02
 
 - **The compat harness classifies an unbuilt tokenizer tool as `not_executed`**

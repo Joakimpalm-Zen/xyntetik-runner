@@ -459,7 +459,7 @@ int main(void) {
             "{\"default\":\"keep\",\"rules\":[{\"match\":\"_exps.weight\",\"type\":\"q3_k\"}]}";
         assert(fwrite(plan_json, 1, sizeof(plan_json) - 1, pf) == sizeof(plan_json) - 1);
         fclose(pf);
-        assert(quantize_gguf_plan(q3in, q3out, T_KEEP, NULL, plan) == 0);
+        assert(quantize_gguf_plan(q3in, q3out, T_KEEP, NULL, plan, NULL) == 0);
         check_q3_plan_exact(q3out, expert, attention, Q3_N);
         remove(q3in); remove(q3out); remove(plan);
         printf("ok: Q3_K plan round-trips exactly and preserves unselected bytes\n");
@@ -490,7 +490,7 @@ int main(void) {
             "{\"default\":\"keep\",\"rules\":[{\"match\":\"_exps.weight\",\"type\":\"q3_k\"}]}";
         assert(fwrite(plan_json, 1, sizeof(plan_json) - 1, pf) == sizeof(plan_json) - 1);
         fclose(pf);
-        assert(quantize_gguf_plan(win, wout, T_KEEP, NULL, plan) == 0);
+        assert(quantize_gguf_plan(win, wout, T_KEEP, NULL, plan, NULL) == 0);
         gguf_file g;
         assert(gguf_open(&g, wout));        // the whole point: it must load
         gguf_tensor *w288 = gguf_find_tensor(&g, "blk.0.ffn_down_exps.weight");
@@ -558,7 +558,7 @@ int main(void) {
         const char plan_json[] = "{\"default\":\"keep\"}";
         assert(fwrite(plan_json, 1, sizeof(plan_json) - 1, pf) == sizeof(plan_json) - 1);
         fclose(pf);
-        assert(quantize_gguf_plan(kin, kout, T_KEEP, NULL, plan) == 0);
+        assert(quantize_gguf_plan(kin, kout, T_KEEP, NULL, plan, NULL) == 0);
         gguf_file g;
         assert(gguf_open(&g, kout));
         gguf_tensor *n1 = gguf_find_tensor(&g, "output_norm.weight");
@@ -802,7 +802,7 @@ int main(void) {
            sizeof(missing_plan_json) - 1);
     fclose(mpf);
     assert(quantize_gguf_plan("q_does_not_exist.gguf", dest, T_KEEP, NULL,
-                              missing_plan) != 0);
+                              missing_plan, NULL) != 0);
     remove(missing_plan);
     printf("ok: a missing input releases its parsed type plan\n");
 

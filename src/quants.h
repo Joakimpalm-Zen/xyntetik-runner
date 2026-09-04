@@ -52,8 +52,13 @@ int   quantize_gguf(const char *in_path, const char *out_path, int target,
 // representable without splitting tensors no loader expects).
 //   {"default":"keep","rules":[{"match":"_exps.weight","type":"q4_0"}]}
 // First matching rule wins. Passing NULL is exactly quantize_gguf.
+// remove_spec ("attn:N[,mlp:M,...]", or NULL) physically drops a block's
+// attention or dense-FFN tensors and declares the absence with a 0 in the
+// per-layer attention.head_count / head_count_kv or feed_forward_length
+// arrays, the reading llama.cpp's deci graph and this loader share.
 int   quantize_gguf_plan(const char *in_path, const char *out_path, int target,
-                         const char *prune_path, const char *type_plan_path);
+                         const char *prune_path, const char *type_plan_path,
+                         const char *remove_spec);
 // Compile a longer native-YaRN context contract into a standalone GGUF.
 // Only {arch}.context_length and {arch}.rope.scaling.factor may change; the
 // implementation reopens both files and byte-compares every tensor payload
