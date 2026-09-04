@@ -55,6 +55,8 @@ test-request-stop
 test-request-stop.exe
 test-grammar-ff
 test-grammar-ff.exe
+test-lookup-draft
+test-lookup-draft.exe
 test-moe-tol
 test-moe-tol.exe
 test-moe-fixture.*.gguf

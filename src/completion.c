@@ -674,6 +674,11 @@ typedef struct {
     double      saved_s;
     double      gtime;
     bool        schema, json_mode, spec;
+    // Speculation accounting for the `speculation` object, read from the
+    // engine only when spec is true (see telemetry_json)
+    const char *spec_source;
+    int         spec_rounds, spec_drafted, spec_accepted;
+    int         spec_lk_drafted, spec_lk_accepted;
     // Set when the OpenAI wire value was widened to a standard one (see
     // openai_finish): carries the reason we would otherwise have emitted.
     const char *finish_detail;
@@ -682,6 +687,16 @@ typedef struct {
     uint64_t    major_faults;
     jv         *req;         // echoed request fields
 } resp_doc;
+
+// The speculation fields of a resp_doc, from the engine that served the
+// request. One spelling for the four surfaces that build a resp_doc.
+#define SPEC_DOC_FIELDS(e) \
+    .spec_source = (e)->dm ? "model" : (e)->mtp_on ? "mtp" \
+                 : (e)->lookup_on ? "lookup" : NULL, \
+    .spec_rounds = (e)->spec_st.rounds, .spec_drafted = (e)->spec_st.drafted, \
+    .spec_accepted = (e)->spec_st.accepted, \
+    .spec_lk_drafted = (e)->spec_st.lk_drafted, \
+    .spec_lk_accepted = (e)->spec_st.lk_accepted
 
 // Cumulative work counters (declared in server_int.h). Microseconds rather
 // than a double because there is no portable atomic double, and this only
@@ -742,6 +757,18 @@ static void telemetry_json(sbuf *r, const resp_doc *d) {
     // Only present when the standard finish_reason lost a distinction, so
     // ordinary turns are byte-for-byte what they were before.
     if (d->finish_detail) sb_fmt(r, ",\"finish_detail\":\"%s\"", d->finish_detail);
+    // Only present when the request took the speculative walk, for the same
+    // reason: which source proposed, and what the walk did with it. Rounds,
+    // drafted and accepted are the totals /metrics accumulates; the lookup's
+    // share is broken out so a per-source acceptance rate is one division.
+    if (d->spec) {
+        sb_fmt(r, ",\"speculation\":{\"source\":\"%s\",\"rounds\":%d,"
+                  "\"drafted\":%d,\"accepted\":%d,\"lookup_drafted\":%d,"
+                  "\"lookup_accepted\":%d}",
+               d->spec_source ? d->spec_source : "grammar",
+               d->spec_rounds, d->spec_drafted, d->spec_accepted,
+               d->spec_lk_drafted, d->spec_lk_accepted);
+    }
     sb_lit(r, "}");
 }
 
@@ -2221,6 +2248,7 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
                            .gtime = gtime, .major_faults = plat_major_faults() - faults_at_start,
                            .schema = schema != NULL,
                            .json_mode = e->json_mode, .spec = spec_used,
+                           SPEC_DOC_FIELDS(e),
                            .req = req };
             sbuf f = {0};
             sb_lit(&f, ",\"response\":");
@@ -2409,6 +2437,7 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
                            .gtime = gtime, .major_faults = plat_major_faults() - faults_at_start,
                            .schema = schema != NULL,
                            .json_mode = e->json_mode, .spec = spec_used,
+                           SPEC_DOC_FIELDS(e),
                            .req = req };
             sbuf r = {0};
             anth_body(&r, &g, &d);
@@ -2444,6 +2473,7 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
                            .gtime = gtime, .major_faults = plat_major_faults() - faults_at_start,
                            .schema = schema != NULL,
                            .json_mode = e->json_mode, .spec = spec_used,
+                           SPEC_DOC_FIELDS(e),
                            .req = req };
             sbuf r = {0};
             responses_body(&r, &g, &d);
@@ -2537,7 +2567,8 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
                         .gtime = gtime, .major_faults = plat_major_faults() - faults_at_start,
                            .schema = schema != NULL,
                         .finish_detail = finish_detail_of(finish),
-                        .json_mode = e->json_mode, .spec = spec_used };
+                        .json_mode = e->json_mode, .spec = spec_used,
+                        SPEC_DOC_FIELDS(e) };
         telemetry_json(&r, &td);
         sb_lit(&r, "}");
         send_built(fd, &r);

@@ -92,6 +92,9 @@ typedef struct {
     // benchmark harness has to ask before it reports a number as speculative
     // decoding. draft_note names the reason when requested && !active.
     bool        draft_requested;
+    // the source behind draft.active: "model" (--draft), "mtp", "lookup";
+    // NULL when nothing is drafting
+    const char *draft_source;
     const char *draft_note;
     // sampling defaults come from the served model's family preset; the CLI
     // overrides are kept so a swapped-in model can be re-resolved against them
