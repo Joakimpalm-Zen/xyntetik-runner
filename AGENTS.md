@@ -250,12 +250,20 @@ is before the commit.
 
 ## Version Control
 
-Commit directly to `main` and push after each completed section.
+Work on a branch named for the plan item, merge to `main` when the work is
+good and done, then push. This is a public repository with CI on pull
+requests and on pushes to `main`.
 
 Required behavior:
 
-- Commit completed changes straight to `main`.
-- Push every commit to `origin` immediately after committing.
-- Do not create feature branches unless the project owner explicitly asks.
+- Branch from an up-to-date `main` (`git switch -c <item>-<slug>`).
+- Commit completed sections on the branch; push the branch and open a pull
+  request with `gh pr create`.
+- Wait for CI to be green on the pull request before merging; merge with
+  `gh pr merge <n> --merge --delete-branch`. Tag a release only after `main`
+  is green.
+- Never leave finished work unmerged on a branch: a branch is either merged
+  or its decline is written down.
 
-Working rule: small, frequent commits straight to `main`, each pushed.
+Working rule: branch, finish, CI green, merge to `main`, push (rule of
+2026-09-04; it replaced the earlier commit-straight-to-main rule).
