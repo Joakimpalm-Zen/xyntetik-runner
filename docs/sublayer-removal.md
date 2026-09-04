@@ -121,16 +121,32 @@ forms scored identically at float64 on all three fidelity metrics.
 
 A removed file loads only in a runtime that reads the per-layer zeros. Stock
 llama.cpp reads the arrays for every architecture, but only its deci graph
-honors a zero; for any other architecture it will fail to find the tensor and
-refuse the file, which is the right failure. State this on any card, in the
-same place as the fidelity number. Measured against llama.cpp: not yet
-(follow-up on the Blackwell, with the real 31B cut).
+honors a zero; for any other architecture it fails to find the tensor and
+refuses the file, which is the right failure. Measured 2026-09-04 on the
+real Gemma 4 31B cut: llama.cpp b10076, which loads the gemma4 parent,
+refuses the removed file with `llama_model_load: error loading model:
+missing tensor 'blk.48.attn_q.weight'`. It never loads it wrong. State this
+on any card, in the same place as the fidelity number.
+
+## Measured on the real file (2026-09-04)
+
+Gemma 4 31B Q4_0 (17,651,001,568 B), `--remove-sublayer attn:48`, CPU path
+on a 128-thread x86 host:
+
+| quantity | measured |
+|---|---|
+| tensor payload dropped | 74,319,872 B (six tensors), file 17,576,681,600 B |
+| survivors byte-identical to the parent | 827 of 827 |
+| KV freed at ctx 4,096 / 32,768 (f16) | 64.0 MiB / 512.0 MiB |
+| `--score` vs the same cut as a zeroed-weights file, 4,562 positions | max abs difference 0.0 |
+| raw-protocol KLD vs the parent, 400 positions | 0.0239, margin-qualified top-1 99.25% |
+
+The zeroed-weights file was built earlier by a different tool, so the
+bit-identity row is the fixture anchor at scale: the omitted branch and the
+computed-zero branch are the same function on a 60-block model.
 
 ## What remains
 
-- The Gemma 31B `attn:48` re-verdict with real bytes saved, on the Blackwell:
-  the expected number is 74,320,231 bytes of tensor data plus the directory
-  entries, and 64 MiB of KV at ctx 4096.
 - Device paths: CUDA already carries `skip_mixer` / `skip_ffn` for
   nemotron_h; the dense decode loops need the same checks before the GPU
   refusal can go. Metal has no per-block skip at all.
