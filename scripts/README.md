@@ -186,6 +186,13 @@ Nothing here gates a merge; these are how a claim gets a number behind it.
 - **`gguf-depth-slice.py`** - drop whole transformer layers and keep everything
   else: surviving layers keep their on-disk bytes, `blk.N` is renumbered
   densely, and per-layer metadata arrays are filtered to the survivors.
+- **`gguf-drop-shared-kv.py`** - rewrite a Gemma-4 E-series GGUF in the compact
+  shared-KV form: the layers at or past `block_count - shared_kv_layers`
+  compute no K/V, so their `attn_k`/`attn_v`/`attn_k_norm` are dropped (E4B:
+  666 tensors instead of 720, the shape every quantized export already ships).
+  The layer set comes from the file's own metadata, not from the command line,
+  and everything else is copied through byte for byte - so a correct engine
+  must score the two files identically.
 - **`make-bf16-fixture.py`** - rewrite a GGUF's F16 tensors as BF16 in place to
   get a valid BF16 fixture; both types are 2 bytes, so every offset stays put.
 

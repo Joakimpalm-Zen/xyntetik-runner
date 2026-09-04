@@ -38,6 +38,13 @@ SWA_WINDOW = 0
 SWA_PATTERN = 0
 ESERIES_SHARED_KV = 0
 ESERIES_PLE = 0
+# --drop-kv: omit attn_k.weight, attn_v.weight and attn_k_norm.weight from
+# some layers. "shared" is the shape every current Gemma-4 E-series export
+# takes -- a shared-KV layer computes no K/V at all, so the conversion leaves
+# the three tensors out (E4B: 666 tensors where the BF16 export has 720). A
+# comma-separated list of layer indices is the HOSTILE form: a layer that
+# OWNS a cache, missing the projections it is required to compute.
+DROP_KV = None
 FFN_WIDTHS = None  # per-layer FFN widths -> ARRAY-typed feed_forward_length
 G4HETERO = False   # gemma4 heterogeneous attention geometry (26B/12B shape)
 G4_HD32 = False    # --g4-hd32: widen every g4-hetero head to 32 (q8-able rows)
@@ -187,6 +194,10 @@ while i < len(args):
         # pattern, V-less full layers and per-layer KV head counts are
         # unchanged — this exists so the tied-V x q8 refusal is testable.
         G4_HD32 = True
+    elif a == "--drop-kv":
+        # "shared" (the real export shape) or "0,4,..." (hostile)
+        i += 1
+        DROP_KV = args[i]
     elif a == "--ffn-widths":
         # "W0,W1,..." one width per layer — emitted as an ARRAY-typed
         # feed_forward_length, the gemma-4 E2B export shape (real per-layer
@@ -230,6 +241,19 @@ def muse_swa(i):  return True if MUSE_ALL_SWA else (i % 4) != 3
 def g4_swa(i):  return (i % 3) != 2
 def g4_hd(i):   return 32 if (G4_HD32 or not g4_swa(i)) else 16
 def g4_kv(i):   return 1 if g4_swa(i) else 2
+
+# Layers whose K/V/K-norm tensors are left out of the file entirely.
+if DROP_KV is None:
+    DROPPED_KV = set()
+elif DROP_KV == "shared":
+    if not ESERIES_SHARED_KV:
+        sys.exit("--drop-kv shared needs --eseries SHARED_KV,PLE with "
+                 "SHARED_KV > 0")
+    DROPPED_KV = set(range(N_LAYER - ESERIES_SHARED_KV, N_LAYER))
+else:
+    DROPPED_KV = {int(x) for x in DROP_KV.split(",")}
+    if any(l < 0 or l >= N_LAYER for l in DROPPED_KV):
+        sys.exit(f"--drop-kv: layer index out of range for {N_LAYER} layers")
 VOCAB = ["<unk>", "<s>", "</s>"] + [f"<0x{i:02X}>" for i in range(256)]
 TTYPE = [2, 3, 3] + [6] * 256  # unknown, control, control, bytes
 if SPECIALS:
@@ -326,13 +350,24 @@ for i in range(N_LAYER + MTP_LAYERS):
         q_dim  = N_EMBD
         kv_dim = N_KV * (N_EMBD // N_HEAD)
     N_FF_I = FFN_WIDTHS[i] if FFN_WIDTHS else N_FF
+    # Draw the projection weights BEFORE deciding what to emit: the generator's
+    # LCG is one global stream, so skipping a draw would shift every later
+    # tensor in the file and make a --drop-kv fixture incomparable with the
+    # full one. Drawn in the emission order the file has always used.
+    q_data = tensor_data(N_EMBD * q_dim)
+    k_data = tensor_data(N_EMBD * kv_dim)
+    v_data = (None if (G4HETERO and not g4_swa(i))
+              else tensor_data(N_EMBD * kv_dim))
+    o_data = tensor_data(q_dim * N_EMBD)
+    drop_kv = i in DROPPED_KV
     tensors += [
         (f"blk.{i}.attn_norm.weight", [N_EMBD], ones(N_EMBD)),
-        (f"blk.{i}.attn_q.weight", [N_EMBD, q_dim], tensor_data(N_EMBD * q_dim)),
-        (f"blk.{i}.attn_k.weight", [N_EMBD, kv_dim], tensor_data(N_EMBD * kv_dim)),
-        *([] if (G4HETERO and not g4_swa(i)) else
-          [(f"blk.{i}.attn_v.weight", [N_EMBD, kv_dim], tensor_data(N_EMBD * kv_dim))]),
-        (f"blk.{i}.attn_output.weight", [q_dim, N_EMBD], tensor_data(q_dim * N_EMBD)),
+        (f"blk.{i}.attn_q.weight", [N_EMBD, q_dim], q_data),
+        *([] if drop_kv else
+          [(f"blk.{i}.attn_k.weight", [N_EMBD, kv_dim], k_data)]),
+        *([] if (v_data is None or drop_kv) else
+          [(f"blk.{i}.attn_v.weight", [N_EMBD, kv_dim], v_data)]),
+        (f"blk.{i}.attn_output.weight", [q_dim, N_EMBD], o_data),
         *([] if not QK_NORM else
           [(f"blk.{i}.attn_q_norm.weight", [N_EMBD // N_HEAD],
             tensor_data(N_EMBD // N_HEAD)),
@@ -358,13 +393,15 @@ for i in range(N_LAYER + MTP_LAYERS):
         ]
     if ESERIES_SHARED_KV or ESERIES_PLE or G4HETERO:
         head_dim = g4_hd(i) if G4HETERO else N_EMBD // N_HEAD
+        # G4HETERO varies the K-norm weights: the tied-V derivation
+        # multiplies the stored V by exactly these, so all-ones would let
+        # an implementation that forgets the multiply pass its gate.
+        # Drawn unconditionally, for the reason the projections are.
+        kn_data = tensor_data(head_dim) if G4HETERO else ones(head_dim)
         tensors += [
             (f"blk.{i}.attn_q_norm.weight", [head_dim], ones(head_dim)),
-            # G4HETERO varies the K-norm weights: the tied-V derivation
-            # multiplies the stored V by exactly these, so all-ones would let
-            # an implementation that forgets the multiply pass its gate.
-            (f"blk.{i}.attn_k_norm.weight", [head_dim],
-             tensor_data(head_dim) if G4HETERO else ones(head_dim)),
+            *([] if drop_kv else
+              [(f"blk.{i}.attn_k_norm.weight", [head_dim], kn_data)]),
             (f"blk.{i}.post_attention_norm.weight", [N_EMBD], ones(N_EMBD)),
             (f"blk.{i}.post_ffw_norm.weight", [N_EMBD], ones(N_EMBD)),
             (f"blk.{i}.layer_output_scale.weight", [1],

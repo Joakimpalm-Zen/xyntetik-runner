@@ -8,6 +8,38 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **Gemma 4 E-series: the current shared-KV exports load.** A layer at or
+  past `block_count - attention.shared_kv_layers` computes no K and no V - it
+  attends over the cache an earlier layer filled - so its `attn_k.weight`,
+  `attn_v.weight` and `attn_k_norm.weight` are unreachable, and every
+  quantized E-series export published since the BF16 one leaves them out
+  (E4B: 666 tensors where the BF16 export has 720; layers 24..41 carry 14
+  tensors each instead of 17). The loader demanded all three on every
+  attention layer, so 0.4.7 refused Google's own QAT Q4_0 release, the
+  ggml-org Q4_0 and the community QAT F16 conversion at load with
+  `error: missing tensor blk.24.attn_k.weight`. They are now optional on
+  exactly the shared-KV tail and still required on every KV-owning layer,
+  where a missing one is refused by name as before. The E4B file pinned in
+  the compat matrix is an older full-form conversion, which is why the matrix
+  never saw this.
+  Three gates, evidence in
+  `docs/compat-reports/eseries-shared-kv-2026-09-04/`. (1) The anchor:
+  `scripts/gguf-drop-shared-kv.py` (new) rewrote the local 720-tensor
+  Q4_K_M into the 666-tensor form, dropping exactly 54 tensors on layers
+  24..41 with all 666 survivors SHA-256 identical to their source blobs; the
+  two files then score byte-identically (`--score`, 36 positions solo and 159
+  chunked over the house corpus) and generate byte-identical greedy output.
+  Unreachable weights must move no bit. (2) Google's official QAT Q4_0
+  (`gemma-4-E4B_q4_0-it.gguf`, 5,154,941,280 bytes, 666 tensors) loads,
+  answers the chat smoke and scores `nll_mean` 3.53626308 / `ppl` 34.3383595
+  over the same 159 positions; it joins the pinned manifest as
+  `gemma-4-e4b-it-qat-q4_0` with a macOS CPU ledger row. Cross-engine
+  agreement was not measured for it and is not claimed. (3) The gate CI runs:
+  `scripts/make-test-model.py --drop-kv shared|<layers>` builds the same
+  shape at fixture scale, and `tests/test_eseries.py` pins that a compact
+  fixture loads, that it is bit-identical to the full one, and that a
+  KV-owning layer missing its K is still refused with the exact error text.
+
 - **`usage.prompt_tokens_details.cached_tokens`: the prefix-cache figure in
   the field a standard client reads.** Runner has always counted, per request,
   how many prompt rows it did not have to prefill, and reported it as

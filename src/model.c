@@ -2947,10 +2947,23 @@ static bool model_bind_weights(model_t *m, const char *path, const model_params 
             l->w_up   = slice_rows(gu,  &sl[4], (int64_t)gu->ne[1] / 2,
                                    (int64_t)gu->ne[1] / 2);
         } else {
+            // A gemma-4 E-series shared-KV layer (i at or past kv_from_start)
+            // computes no K and no V: it attends over the cache an earlier
+            // layer filled, so attn_k, attn_v and attn_k_norm are unreachable
+            // by construction. The BF16 export still carries them on every
+            // layer (E4B: 720 tensors); every quantized export published since
+            // leaves them out on exactly those layers (666), and demanding
+            // them by name refused Google's own QAT Q4_0 release at load.
+            // Optional here, required on every KV-OWNING layer: a file missing
+            // the K a layer must compute is broken, not compact.
+            bool shares_kv = i >= m->kv_from_start;
             l->wq     = need_tensor(g, "blk.%d.attn_q.weight", i, &ok);
-            l->wk     = need_tensor(g, "blk.%d.attn_k.weight", i, &ok);
-            l->wv     = m->v_rmsnorm ? opt_tensor(g, "blk.%d.attn_v.weight", i)
-                                     : need_tensor(g, "blk.%d.attn_v.weight", i, &ok);
+            l->wk     = shares_kv
+                        ? opt_tensor(g, "blk.%d.attn_k.weight", i)
+                        : need_tensor(g, "blk.%d.attn_k.weight", i, &ok);
+            l->wv     = (shares_kv || m->v_rmsnorm)
+                        ? opt_tensor(g, "blk.%d.attn_v.weight", i)
+                        : need_tensor(g, "blk.%d.attn_v.weight", i, &ok);
         }
         l->wo     = need_tensor(g, "blk.%d.attn_output.weight", i, &ok);
         if (m->attn_out_gate) {
@@ -6948,8 +6961,10 @@ static void forward_layer(model_t *m, int l, int n, int pos, int dbg) {
     }
     // gemma4 E-series shared-KV layers project Q as usual but compute no
     // K/V at all: they attend over the cache an earlier layer already
-    // filled (kc_l/vc_l above resolve to that layer's rows). Their wk/wv
-    // tensors exist in the file and are deliberately never read.
+    // filled (kc_l/vc_l above resolve to that layer's rows). Their wk/wv are
+    // never read: the current exports do not ship them at all (the loader
+    // binds them optionally on these layers, so both are NULL), and an older
+    // full-form file's copies are bound and then simply ignored.
     bool owns_kv = model_kv_owner(m, l) == l;
     if (owns_kv) {
         matvec_b(m->tp, m->k_tmp, kv_dim, ly->wk, m->xb, xdim, n_embd, kv_dim, ly->bk, n);
