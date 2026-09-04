@@ -212,3 +212,8 @@ test-ed25519
 test-ed25519.exe
 test-ecdsa
 test-ecdsa.exe
+
+# xyntetik.com is generated at build time (site/build_pages.py)
+site/runner/
+site/_includes/build.html
+site/_site/
