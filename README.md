@@ -1120,6 +1120,7 @@ non-loopback authorities.
 | `GET /v1/runner/prefix-cache` | Prefix-cache size, limits, and counters. Takes no request body and remains available while inference is active. |
 | `POST /v1/runner/prefix-cache/clear` | Release cached prefixes without unloading the model. Takes no request body and remains available while inference is active. |
 | `GET /health` | Server and resident-model health, plus this process's `rss_bytes`/`peak_rss_bytes` and cumulative `tokens_prompt`, `tokens_generated`, `generate_seconds`, `batch_steps` and `batch_sequences`. |
+| `GET /metrics` | The same process counters in Prometheus text exposition 0.0.4 (`text/plain; version=0.0.4`), under the `runner_` prefix, with the prefix-cache and speculation counters alongside. Always on with `--serve`, takes no request body, and remains available while inference is active. |
 | `POST /unload` | Release resident model, draft and prefix-cache memory; the next request reloads on demand. Deferred to the next safe point while a load or generation is in flight (the reply says `"deferred":true`). Needs the registry: a server without one refuses with `409` rather than reporting a success it cannot deliver - see the residency note below. |
 
 `GET /unload` is deliberately refused with `405`; unloading is a state change.
@@ -1136,6 +1137,18 @@ adjacent text is processed.
 Legacy Completions accepts neutral `echo:false` and `prompt_logprobs:null`, but
 rejects `echo:true` and non-null `prompt_logprobs` with HTTP 400 until Runner can
 return the requested prompt-side output. These controls are never ignored.
+
+The `usage` object carries OpenAI's cached-prompt breakdown:
+`usage.prompt_tokens_details.cached_tokens` on Chat Completions and legacy
+Completions (buffered, and in the `stream_options.include_usage` chunk), and
+`usage.input_tokens_details.cached_tokens` on Responses. It counts the prompt
+tokens served from a reused KV prefix, and it is INCLUDED in `prompt_tokens`
+exactly as OpenAI includes it, so a caller billing on `prompt_tokens` sees no
+change. Anthropic Messages deliberately does not carry it: `cache_read_input_tokens`
+describes Anthropic's own caching product, whose `input_tokens` EXCLUDES what
+it covers, so reporting Runner's figure there would misstate a client's
+accounting. Every surface reports the same number as
+`runner_telemetry.prompt_cached_tokens`.
 
 Buffered generation responses include `runner_telemetry` with prompt tokens
 reused/evaluated, generation timing, paging counters, and structured or
@@ -1698,6 +1711,21 @@ rate needs an averaging window, and the runner has no business choosing one for
 a consumer whose window differs. Difference them over your own interval. The
 endpoint does not count its own requests, so polling it on a timer does not
 show up as work.
+
+`GET /metrics` answers the same facts in Prometheus text exposition 0.0.4, so a
+monitoring stack ingests them without a translator. Every name carries the
+`runner_` prefix and every sample is preceded by its own `# HELP` and `# TYPE`:
+`runner_requests_total`, `runner_prompt_tokens_total`,
+`runner_prompt_cached_tokens_total`, `runner_generated_tokens_total`,
+`runner_generate_seconds_total`, `runner_batch_steps_total`,
+`runner_batch_sequences_total`, the six `runner_prefix_cache_*` counters and
+their three gauges, the three `runner_speculation_*` counters, and the gauges
+`runner_active_requests`, `runner_resident_memory_bytes` and
+`runner_peak_resident_memory_bytes`. It is on whenever `--serve` is, needs no
+flag, and computes nothing: there is no hit-rate and no tokens-per-second here
+for the same reason `/health` has none. Like `/health` it does not count its
+own requests, so a scraper on a timer does not measure itself.
+`GET /v1/capabilities` reports it as `features.prometheus_metrics`.
 
 "Loaded" and "running" are told apart by `active_requests` from `/health`,
 polled on the same 5-second timer that refreshes the icon - so a request

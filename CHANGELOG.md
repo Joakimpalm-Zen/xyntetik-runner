@@ -6,6 +6,34 @@ change between releases (the `-alpha` suffix was retired at v0.2.0 — the 0.x
 version already says what it needs to). Entries below the rename keep the
 names that were true when they were written.
 
+## Unreleased
+
+- **`usage.prompt_tokens_details.cached_tokens`: the prefix-cache figure in
+  the field a standard client reads.** Runner has always counted, per request,
+  how many prompt rows it did not have to prefill, and reported it as
+  `runner_telemetry.prompt_cached_tokens`, which no OpenAI-shaped client looks
+  at. It is now also carried where OpenAI carries it: on Chat Completions and
+  legacy Completions (buffered and in the `stream_options.include_usage`
+  chunk), and as `usage.input_tokens_details.cached_tokens` on Responses. The
+  three renderings come from one function, so a client that flips `stream` on
+  and off sees one shape. `prompt_tokens` keeps its meaning, cached tokens
+  included, as at OpenAI, so no caller's total moves. Anthropic Messages does
+  not gain it: `cache_read_input_tokens` describes Anthropic's product with
+  Anthropic's semantics, and that decision stays pinned by its own test.
+
+- **`GET /metrics`: Prometheus text exposition 0.0.4.** The counters `/health`
+  and `/v1/runner/prefix-cache` already answer, in the format a monitoring
+  stack ingests without a translator: requests, prompt/generated/cached
+  tokens, generation seconds, microbatch steps and sequences, the
+  prefix-cache hit/miss/store/eviction/reuse counters and its byte and entry
+  gauges, the speculation round/drafted/accepted counters, and the two RSS
+  gauges. Names carry the `runner_` prefix, each sample is preceded by its own
+  `# HELP` and `# TYPE`, and a body that would not fit its buffer is refused
+  rather than truncated - a half-written exposition reads to a scraper as
+  metrics that reset. On whenever `--serve` is, no flag, answered from the
+  accept thread with atomic loads only, and it does not count its own
+  requests. Advertised as `features.prometheus_metrics`.
+
 ## v0.4.7 - 2026-09-04
 
 The sublayer-removal release: the first artifact whose header says a block
