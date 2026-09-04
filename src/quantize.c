@@ -1540,9 +1540,14 @@ static int quantize_gguf_plan_inner(const char *in_path, const char *out_path, i
             (snprintf(key, sizeof key, "%s.ssm.conv_kernel", rarch),
              gguf_get(&g, key) != NULL))
             why = "hybrid or recurrent block typing";
+        // gemma-4 exports carry both E-series keys on every model, with 0
+        // on the dense ones (the 31B has embedding_length_per_layer_input
+        // = 0); it is the VALUE that makes a file E-series, as in the loader.
         else if ((snprintf(key, sizeof key, "%s.embedding_length_per_layer_input",
-                           rarch), gguf_get(&g, key) != NULL))
-            why = "gemma-4 E-series per-layer embeddings";
+                           rarch), gguf_get_u32(&g, key, 0) > 0) ||
+                 (snprintf(key, sizeof key, "%s.attention.shared_kv_layers",
+                           rarch), gguf_get_u32(&g, key, 0) > 0))
+            why = "gemma-4 E-series per-layer embeddings or shared KV";
         else if ((snprintf(key, sizeof key, "%s.nextn_predict_layers", rarch),
                   gguf_get_u32(&g, key, 0) > 0))
             why = "a declared NextN/MTP head";

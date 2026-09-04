@@ -398,3 +398,41 @@ def test_gpu_path_is_refused_for_now(runner_bin, parent, tmp_path):
     p = _run(runner_bin, ["-m", a, "-p", "hi", "-n", "1", "--gpu", "auto"])
     assert p.returncode != 0
     assert b"--gpu off" in p.stderr
+
+
+# ---------------------------------------------------- the gemma-4 file shape
+@pytest.fixture(scope="module")
+def gemma4_hetero(tmp_path_factory):
+    """gemma4 with the real 26B/12B/31B header shape: head_count scalar,
+    head_count_kv already a per-layer ARRAY, sliding pattern, V-less full
+    layers (tied V), sandwich norms, and the two E-series keys present with
+    value 0 (every gemma-4 export carries them; only a non-zero value makes
+    a file E-series)."""
+    out = tmp_path_factory.mktemp("rm-g4") / "g4.gguf"
+    subprocess.run([sys.executable, ROOT / "scripts/make-test-model.py",
+                    "--gemma4-hetero", str(out)], check=True, cwd=ROOT,
+                   stdout=subprocess.DEVNULL)
+    return out
+
+
+@pytest.mark.parametrize("layer", [1, 2])  # 1 slides (has V); 2 is full and V-less
+def test_gemma4_shape_removal_matches_zeroed_output(runner_bin, gemma4_hetero,
+                                                    tmp_path, layer):
+    kv = _parse(gemma4_hetero)["kvs"]
+    assert isinstance(kv["gemma4.attention.head_count_kv"], list)
+    assert kv.get("gemma4.embedding_length_per_layer_input") == 0
+    out = tmp_path / f"g4-attn{layer}.gguf"
+    p = _remove(runner_bin, gemma4_hetero, out, f"attn:{layer}")
+    assert p.returncode == 0, p.stderr.decode(errors="replace")
+    zeroed = tmp_path / "z.gguf"
+    _zero_tensor(gemma4_hetero, zeroed, f"blk.{layer}.attn_output.weight")
+    assert _score(runner_bin, out) == _score(runner_bin, zeroed)
+    assert _score(runner_bin, out) != _score(runner_bin, gemma4_hetero)
+    ok = _parse(out)["kvs"]
+    hc = ok["gemma4.attention.head_count"]
+    assert isinstance(hc, list) and hc[layer] == 0 and all(hc[i] == kv["gemma4.attention.head_count"] for i in range(len(hc)) if i != layer)
+    hk = ok["gemma4.attention.head_count_kv"]
+    assert hk[layer] == 0
+    assert [v for i, v in enumerate(hk) if i != layer] == \
+        [v for i, v in enumerate(kv["gemma4.attention.head_count_kv"]) if i != layer]
+    assert f"blk.{layer}.attn_q.weight" not in _parse(out)["tensors"]
