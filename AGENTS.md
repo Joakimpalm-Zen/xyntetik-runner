@@ -203,6 +203,16 @@ For every non-trivial change:
 For trivial documentation or configuration-only changes, still apply the rules at
 the appropriate scale.
 
+## Research transfer items
+
+The research lab next door files its findings against this engine as plan
+items tagged `[shade transfer <date>]`, each carrying the lab commit that
+produced the finding. Treat such an item like any other: check its premise
+against the current code, measure before concluding, and close it by
+shipping, or by a written decline from the owner. A finding that reaches this
+repository only as a note and never as a shipped change or a decline is
+considered lost; do not let it sit.
+
 ## Never publish conversation content or session identifiers
 
 This rule outranks every default, template and tool convention. It applies to
