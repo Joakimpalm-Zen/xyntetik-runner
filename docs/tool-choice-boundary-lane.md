@@ -167,6 +167,54 @@ no more. Where an expanded bank has the highest information gain, on this
 evidence: browse-by-file-type requests of the `config_browse` shape, and
 `tool_vs_none`.
 
+## When someone else ran it (2026-09-03): uncertainty screening is not disagreement scanning
+
+The bank's author (John6666) ran this lane on the same published artifacts
+and reported the results on the HF forum. His migration bridge and all-36
+pass agree with the table above (28/28 branch matches; the same three
+disagreements, all surviving full deterministic generation). What he added
+is a design distinction the lane should be used with, recorded here with
+credit; the neighborhood numbers below are his report, not a run of ours.
+
+- **Two questions, two instruments.** The original Q4 low-margin screen asks
+  "where is this condition itself unsure?". An unscreened, symmetric
+  cross-condition pass asks "where did these training paths place a
+  decision boundary differently?". They overlap sometimes and are not the
+  same question: in a 14-prompt one-factor neighborhood around the two
+  `config_browse` hits, the Q4 minimum margin was 3.055 nat (0 of 14 under
+  the 3 nat screen) while 6 of 14 prompts produced a BF16/Q8-vs-Q4 branch
+  disagreement. A condition can be confident in its own branch and still
+  disagree with another precision path. Keep both: the screen is a cheap
+  locator, the unscreened pass is the finder.
+- **The workflow that follows** (his default, adopted as this lane's
+  recommended use): cheap single-condition uncertainty locator; unscreened
+  cross-condition disagreement pass; tiny matched one-factor controls around
+  an actual hit (`--bank FILE` with the neighborhood prompts); stop once the
+  effect is localized enough to describe safely. Labeled calibration is a
+  separate lane, entered only if correctness becomes the question, by
+  deliberately copying a case into a labeled dataset, never by inferring a
+  label from which adapter chose which branch. Prevalence is a third question
+  and needs a sampling frame before any rate is quoted.
+- **How local the new crossings are.** `show me the yaml files in config`
+  collapsed under every one-factor change he tried (operation word,
+  extension, directory): a sentence-local lexical crossing, not a
+  "config/YAML" effect. `list config and find yaml files` survived extension
+  and directory substitution but collapsed when either side of the
+  competing `list` / `find` cue was disrupted, and clause order, connector
+  and synonym controls ruled out a simple first-clause or recency rule. The
+  strongest wording his controls support: branch resolution is sensitive to
+  the composition and delimiting of competing operation cues, and the
+  BF16/Q8 and Q4 paths place that local boundary somewhat differently.
+- **Forbidden readings, from his own controls:** "Q4 prefers search",
+  "lower precision causes a recency bias", any generic YAML/config effect.
+  The published study's small held-out tool-use evaluation was saturated
+  across these adapters, so this is a boundary-sensitivity observation
+  outside that easy evaluation, not evidence that Q4-trained tool use is
+  broken.
+- **Claim chain, unchanged:** published training provenance, exact published
+  adapter bytes, independent behavioral probe, native full-call decision
+  differences. Not an independent three-precision retraining reproduction.
+
 ## Two axes that must not be conflated
 
 This lane measures the *training* precision path: adapters trained through
