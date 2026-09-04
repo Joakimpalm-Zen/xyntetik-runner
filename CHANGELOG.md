@@ -6,7 +6,11 @@ change between releases (the `-alpha` suffix was retired at v0.2.0 — the 0.x
 version already says what it needs to). Entries below the rename keep the
 names that were true when they were written.
 
-## Unreleased
+## v0.4.7 - 2026-09-04
+
+The sublayer-removal release: the first artifact whose header says a block
+has no attention, and the loader that reads it.
+
 
 - **`--remove-sublayer attn:N[,mlp:M,...]`: a block's attention or dense-FFN
   tensors are physically dropped from the file, and the absence is declared
@@ -21,6 +25,20 @@ names that were true when they were written.
   fixture. CPU path and dense blocks only; MoE FFNs, hybrid families,
   E-series, fused-QKV, NextN heads, `--lora` and `--train` are declined by
   name. Norms stay (kilobytes; the residual plumbing is unchanged).
+  Measured on the real Gemma 4 31B Q4_0 (`docs/sublayer-removal.md`): the
+  `attn:48` cut drops 74,319,872 bytes of tensor data, frees 64 MiB of KV at
+  ctx 4,096 and 512 MiB at 32,768, scores bit-identically to the same cut as
+  a zeroed-weights file over 4,562 positions, and passes the raw-protocol
+  bar at KLD 0.0239; stock llama.cpp refuses the file by name, the intended
+  failure. The artifact is published as
+  `Joakimpalm-Zen/gemma-4-31B-it-attn48-removed-Q4_0-GGUF` and needs this
+  release or later to load.
+
+- **Gemma-4 E-series is a value, not a key.** Every gemma-4 export carries
+  `embedding_length_per_layer_input` and `attention.shared_kv_layers`; the
+  dense 12B/26B/31B files publish them as 0. The writer refused the 31B on
+  key presence and now refuses on a non-zero value, as the loader does. The
+  gemma4-hetero fixture carries both keys at 0.
 
 ## v0.4.6 - 2026-09-02
 
