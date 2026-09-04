@@ -768,7 +768,7 @@ static bool rm_suffix_in_scope(int part, const char *suffix) {
 
 // One re-authored u32-array header key: written after the copied keys,
 // replacing any same-named key in the source.
-typedef struct { char key[128]; uint32_t *vals; } reauth_arr_t;
+typedef struct { char key[160]; uint32_t *vals; } reauth_arr_t;
 
 // Fill `vals` (n_blocks entries) from the source key: an existing array
 // entry by entry, a scalar everywhere, `dflt` when the key is absent.
