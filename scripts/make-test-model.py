@@ -484,6 +484,11 @@ if ARCH == "gemma4" and not (ESERIES_SHARED_KV or ESERIES_PLE or G4HETERO):
 if G4HETERO:
     pattern = [g4_swa(i) for i in range(N_LAYER)]
     meta_kvs += [
+        # every gemma-4 export carries both E-series keys; the dense 12B/26B/
+        # 31B files publish them with value 0 (only a non-zero value makes a
+        # file E-series, and a loader or writer keying on presence is wrong)
+        kv_u32(f"{ARCH}.embedding_length_per_layer_input", 0),
+        kv_u32(f"{ARCH}.attention.shared_kv_layers", 0),
         kv_u32(f"{ARCH}.attention.key_length", 32),
         kv_u32(f"{ARCH}.attention.key_length_swa", 32 if G4_HD32 else 16),
         kv_arr_u32(f"{ARCH}.attention.head_count_kv",
