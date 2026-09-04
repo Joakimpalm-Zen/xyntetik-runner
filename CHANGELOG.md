@@ -40,6 +40,17 @@ has no attention, and the loader that reads it.
   key presence and now refuses on a non-zero value, as the loader does. The
   gemma4-hetero fixture carries both keys at 0.
 
+- **The compat harness tells "did not execute" from "failed" on a shared
+  device.** A CUDA side refused for a stated VRAM reason (`error: ... of
+  VRAM requested ... but only ... is available`) is recorded as
+  `not_executed` / `insufficient_vram` with the line, never as a failed
+  identity; `cpu_cuda_check.py` now surfaces the backend log's error lines
+  when the server dies during startup. A CPU-only matrix (`--gpu off`) runs
+  the chat smoke on the CPU path even where the row pins `auto`, instead of
+  waiting 300 s for VRAM and timing out without asking the question. Both
+  found on the 2026-09-04 Blackwell matrix, whose MIG slice was shared with
+  a running study.
+
 ## v0.4.6 - 2026-09-02
 
 - **The compat harness classifies an unbuilt tokenizer tool as `not_executed`**

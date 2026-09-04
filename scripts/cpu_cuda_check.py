@@ -211,7 +211,20 @@ def wait_ready(base, process, timeout):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if process.poll() is not None:
-            raise SystemExit(f"server exited during startup (rc={process.returncode})")
+            # The reason is in the backend log, not the exit code: a VRAM
+            # refusal on a shared device and a real crash both return 1, and
+            # the ledger needs to tell them apart. Surface the log's error
+            # line(s) in the message the harness reads.
+            why = ""
+            try:
+                log_path = getattr(process, "_runner_log_path", None)
+                if log_path:
+                    text = pathlib.Path(log_path).read_text(encoding="utf-8", errors="replace")
+                    errs = [ln for ln in text.splitlines() if ln.startswith("error:")]
+                    why = ": " + " | ".join(errs[-3:]) if errs else ""
+            except OSError:
+                pass
+            raise SystemExit(f"server exited during startup (rc={process.returncode}){why}")
         try:
             urllib.request.urlopen(base + "/health", timeout=2).read()
             return
@@ -249,6 +262,7 @@ def generate_all(runner, model, gpu, tokens, ctx, env, extra, timeout, log_path)
     log = open(log_path, "w", encoding="utf-8")
     proc = subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT, env=env)
     try:
+        proc._runner_log_path = str(log_path)
         wait_ready(base, proc, timeout)
         out = []
         for prompt in PROMPTS:

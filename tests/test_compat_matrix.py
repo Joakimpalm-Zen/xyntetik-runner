@@ -670,3 +670,47 @@ def test_chat_smoke_asks_for_the_non_thinking_prompt_shape(monkeypatch, tmp_path
     assert "--no-think" in seen["cmd"]
     module.run_chat(tmp_path / "runner", tmp_path / "m.gguf", {"thinking": True}, 10)
     assert "--no-think" not in seen["cmd"]
+
+
+def test_cpu_cuda_vram_refusal_is_not_executed_with_the_reason(monkeypatch, tmp_path):
+    """A shared device that refused the load compared nothing. On 2026-09-04
+    the Qwen3-30B-A3B row read "fail" because the MIG slice had 16.2 GB free
+    against 19.3 GB requested by the CUDA side; the identity was never run."""
+    module = load_module()
+
+    class Proc:
+        returncode = 1
+        stdout = "[off] 'prompt one' -> ' answer'\nloading CUDA backend...\n"
+        stderr = ("server exited during startup (rc=1): error: 19.3GB of VRAM "
+                  "requested on GPU-399a, but only 16.2GB is available\n")
+
+    monkeypatch.setattr(module, "run_group", lambda cmd, timeout, **kw: Proc())
+    r = module.run_cpu_cuda(tmp_path / "runner", tmp_path / "m.gguf",
+                            {"tokens": 128, "pins": {"RUNNER_MOE_EAGER": "1"}}, 60)
+    assert r["status"] == "not_executed"
+    assert r["reason"] == "insufficient_vram"
+    assert "16.2GB" in r["detail"]
+
+
+def test_chat_smoke_follows_a_cpu_only_matrix(monkeypatch, tmp_path):
+    """--gpu off on the harness means the smoke runs on the CPU path even when
+    the row pins "auto"; a pinned auto on a full shared device waited 300 s
+    for VRAM and timed out without asking the question (2026-09-04)."""
+    module = load_module()
+    seen = {}
+
+    class Proc:
+        returncode = 0
+        stdout = "4\n"
+        stderr = ""
+
+    monkeypatch.setattr(module, "run_group",
+                        lambda cmd, timeout, **kw: seen.__setitem__("cmd", cmd) or Proc())
+    r = module.run_chat(tmp_path / "runner", tmp_path / "m.gguf", {"gpu": "auto"}, 10,
+                        gpu_mode="off")
+    assert r["status"] == "pass" and r["gpu"] == "off"
+    assert seen["cmd"][seen["cmd"].index("--gpu") + 1] == "off"
+    assert "--wait-for-vram" not in seen["cmd"]
+    module.run_chat(tmp_path / "runner", tmp_path / "m.gguf", {"gpu": "auto"}, 10)
+    assert seen["cmd"][seen["cmd"].index("--gpu") + 1] == "auto"
+    assert "--wait-for-vram" in seen["cmd"]
