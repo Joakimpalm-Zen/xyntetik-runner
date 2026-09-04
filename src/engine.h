@@ -114,6 +114,15 @@ typedef struct {
     // The engine feeds the head every token the target consumes, so the
     // head's KV always covers hist[0..pos).
     bool     mtp_on;
+    // Prompt-lookup drafts (--draft-lookup): no weights, no draft forward.
+    // Each round the last n context tokens are searched for in the context
+    // itself (prompt plus everything generated so far) and the tokens that
+    // followed their most recent earlier occurrence are proposed, up to
+    // draft_k; no match proposes nothing, so that round costs one search.
+    // Exclusive with dm and mtp_on (one draft source per run); grammar
+    // fast-forward still preempts it under a constraint, as it does the
+    // others. See engine_lookup_draft.
+    bool     lookup_on;
     // JC-R2 grammar fast-forward: when the active constraint pins a unique
     // byte continuation, its tokenization is drafted for free (no draft
     // forwards) and verified by the target exactly like a draft-model
@@ -121,8 +130,9 @@ typedef struct {
     // Opt-in via RUNNER_GRAMMAR_FF=1 (see engine_init for the measured
     // reason); needs the batched verify path (not full GPU offload).
     bool     gram_ff;
-    struct { int rounds, drafted, accepted,      // all drafts (either source)
-                 gr_drafted, gr_accepted; }      // grammar-pinned drafts only
+    struct { int rounds, drafted, accepted,      // all drafts (every source)
+                 gr_drafted, gr_accepted,        // grammar-pinned drafts only
+                 lk_drafted, lk_accepted; }      // prompt-lookup drafts only
              spec_st;                            // reset per generation
     // JC-R2 Phase 0 trace (RUNNER_GRAMMAR_TRACE=path): the current grammar
     // round's pinned bytes + drafted ids, stashed at draft time and emitted
@@ -168,10 +178,30 @@ void engine_set_prefill_yield(engine *e, void (*yield)(void *ud), void *ud);
 // Unset is a no-op.
 void engine_set_stop(engine *e, bool (*stop)(void *ud), void *ud);
 
-// True when this request should take the speculative walk (a draft model
-// and/or grammar fast-forward under an active constraint) — shared by
-// engine_generate and the server's scheduler dispatch so they cannot drift.
+// True when this request should take the speculative walk (a draft model,
+// the MTP head, the prompt lookup, and/or grammar fast-forward under an
+// active constraint): shared by engine_generate and the server's scheduler
+// dispatch so they cannot drift.
 bool engine_wants_spec(const engine *e);
+
+// The prompt-lookup search, the whole of the fourth draft source. `hist` is
+// the context so far, hist[len-1] the token whose successors are wanted.
+// For n from ENGINE_LOOKUP_N_MAX down to ENGINE_LOOKUP_N_MIN, find the MOST
+// RECENT earlier occurrence of the last n tokens (an occurrence may overlap
+// the suffix, which is what a run of repeats looks like) and copy the k
+// tokens that followed it into `out`: the context after the occurrence,
+// then, past the context end, the proposal's own period (a match P tokens
+// back means the context has repeated with period P since, and the guess
+// is that it keeps doing so). The longest n that matches wins; returns k,
+// or 0 when nothing matched. Pure: no allocation, no state, O(len * n)
+// integer compares per call. Pinned against hand-computed proposals in
+// tests/test_lookup_draft.c.
+// N_MIN=3 by measurement (SmolLM2-135M, 2026-09-04): 2-gram matches were
+// mostly spurious (an unrelated prompt drafted 24 tokens and had 1 accepted;
+// at 3 it drafted 4), and each wrong draft is a wasted verify column, while
+// the input-grounded rows kept their drafts (99% and 80% acceptance).
+enum { ENGINE_LOOKUP_N_MIN = 3, ENGINE_LOOKUP_N_MAX = 5 };
+int engine_lookup_draft(const int32_t *hist, int len, int k, int32_t *out);
 
 // Returns false if the per-context history buffer could not be allocated;
 // the caller must not use the engine in that case.

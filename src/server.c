@@ -1052,11 +1052,21 @@ static void send_capabilities(sock_t fd) {
     // measure the fallback and publish it as the mode it asked for. `slots` is
     // what the scheduler actually runs, and `draft` separates what was asked
     // for from what is running.
+    // a draft MODEL is active only while loaded (/unload frees it with the
+    // target and the reload re-attaches it); the head and the lookup have no
+    // weights to lose
+    const char *dsrc = SV.draft_source;
+    if (dsrc && !strcmp(dsrc, "model") && !SV.draft) dsrc = NULL;
     sb_fmt(&r, ",\"slots\":%d,\"draft\":{\"requested\":%s,\"active\":%s",
            SV.n_slots,
            SV.draft_requested ? "true" : "false",
-           SV.draft ? "true" : "false");
-    if (SV.draft_requested && !SV.draft && SV.draft_note) {
+           dsrc ? "true" : "false");
+    if (dsrc) {
+        sb_lit(&r, ",\"source\":\"");
+        sb_lit(&r, dsrc);
+        sb_lit(&r, "\"");
+    }
+    if (SV.draft_requested && !dsrc && SV.draft_note) {
         sb_lit(&r, ",\"reason\":\"");
         sb_esc(&r, SV.draft_note, strlen(SV.draft_note));
         sb_lit(&r, "\"");
@@ -1648,7 +1658,8 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
                const model_params *mp, sampler defaults,
                const sampler_override *ov, int port, int parallel,
                int n_threads, int ttl, const char *draft_path, int draft_k,
-               bool ignore_eos, int tmpl_override, bool force_uncertified) {
+               bool draft_lookup, bool ignore_eos, int tmpl_override,
+               bool force_uncertified) {
     sock_init();
     // The shared server state gets a lifetime, and it is this call. Everything
     // below sets fields on SV and the teardown at the bottom releases them, but
@@ -1742,7 +1753,15 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
 
     bool swap_mode = strchr(model_path, '=') != NULL;
     if (ttl < 0) ttl = swap_mode ? 300 : 0; // single-model default: never unload
-    SV.draft_requested = draft_path != NULL;
+    SV.draft_requested = draft_path != NULL || mp->mtp || draft_lookup;
+    SV.draft_source = NULL;
+    if (draft_lookup && swap_mode) {
+        fprintf(stderr, "note: --draft-lookup needs a single served model; "
+                "ignoring it in swap mode\n");
+        SV.draft_note = "the prompt lookup needs a single served model; "
+                        "ignored in swap mode";
+        draft_lookup = false;
+    }
     if (draft_path && swap_mode) {
         fprintf(stderr, "note: --draft needs a single served model — "
                 "ignoring it in swap mode\n");
@@ -1966,6 +1985,16 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
                 s->e.mtp_on = true;
                 s->e.draft_k = draft_k;
             }
+            if (draft_lookup) {
+                if (!model_spec_verify_ok(s->m)) {
+                    fprintf(stderr, "error: --draft-lookup: slot %d needs "
+                                    "host-readable hidden work (rerun with "
+                                    "--gpu off)\n", i);
+                    return 1;
+                }
+                s->e.lookup_on = true;
+                s->e.draft_k = draft_k;
+            }
         }
 
         if (parallel == 1) {
@@ -1984,6 +2013,8 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
             SV.last_used = now_s();
             SV.draft = SV.slots[0].e.dm;
             SV.draft_k = draft_k;
+            SV.draft_source = SV.draft ? "model" : mp->mtp ? "mtp"
+                            : draft_lookup ? "lookup" : NULL;
             // a draft the gates rejected at startup stays rejected: only a
             // draft that actually served is worth reloading after /unload
             if (SV.draft) SV.draft_path = draft_path;

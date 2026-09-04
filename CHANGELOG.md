@@ -8,6 +8,31 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **`--draft-lookup`: prompt-lookup drafts, the fourth draft source.** The
+  verify walk that checks a draft model's proposals, the MTP head's and
+  grammar fast-forward's now also takes proposals from the context itself:
+  each round the last n tokens (n from 5 down to 3, longest match first) are
+  searched for in the prompt plus everything generated so far, and the tokens
+  that followed their most recent earlier occurrence are drafted, up to
+  `--draft-k`, continuing the match's own period past the context end. No
+  weights, no draft forward, and no match drafts nothing, so a round without
+  one costs plain decoding plus an integer search. Output stays
+  token-identical to plain decoding, greedy and seeded, because the target
+  decides every token; `make test` pins that on a repeating prompt, a prompt
+  with no repeats and a tool-echo chat, pins the search against hand-computed
+  proposals, and pins the accounting: `runner_telemetry.speculation` (source,
+  rounds, drafted, accepted, and the lookup's share), the transcript's
+  `speculation` object, `draft.source` in `GET /v1/capabilities`, and the
+  three `runner_speculation_*` counters on `/metrics`, which keep counting
+  every source. One draft source per run: `--draft-lookup` beside `--draft`
+  or `--mtp` is refused at startup. Measured 2026-09-04 on an M1 CPU
+  (`docs/context-drafts.md`, unrelated-prompt rows included): 1.47x on a
+  verbatim repeat and parity elsewhere on SmolLM2-135M Q8_0; a loss on every
+  row but the repeat on the compute-bound TinyLlama-1.1B Q2_K, since a
+  rejected draft is a wasted verify column. The bandwidth-bound 3B to 8B
+  Q8_0 case the source is meant for did not fit the 8 GB box resident that
+  day and is still to be measured.
+
 - **`usage.prompt_tokens_details.cached_tokens`: the prefix-cache figure in
   the field a standard client reads.** Runner has always counted, per request,
   how many prompt rows it did not have to prefill, and reported it as

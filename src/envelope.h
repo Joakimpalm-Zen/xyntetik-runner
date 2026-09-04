@@ -96,6 +96,14 @@ typedef struct {
     const char *prev_hash;
     const char *sign_key_path;
     const char *model_sig_json;
+    // Speculation accounting: spec_source names the draft source the run was
+    // configured with ("model" | "mtp" | "lookup") or NULL for plain
+    // decoding, in which case no "speculation" object is written and the
+    // record is byte-for-byte what it was. The walk is target-exact, so the
+    // verifier replays plain whatever this says; it is provenance.
+    const char *spec_source;
+    int         spec_rounds, spec_drafted, spec_accepted;
+    int         spec_lk_drafted, spec_lk_accepted;   // the lookup's share
 } transcript_info;
 
 // Signing keys: xyntetik.runner.signkey.v1, an Ed25519 seed and its public
