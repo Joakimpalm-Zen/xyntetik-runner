@@ -13,6 +13,7 @@
     "messages_api": true,
     "prefix_cache": true,
     "prefix_cache_controls": true,
+    "prometheus_metrics": true,
     "repeat_penalty": true,
     "request_telemetry": {
       "buffered": true,
@@ -23,7 +24,8 @@
     "schema_integer_bounds": true,
     "schema_string_bounds": true,
     "shared_prefix_cache": true,
-    "stop_sequences": true
+    "stop_sequences": true,
+    "usage_cached_tokens": true
   },
   "models": [
     {

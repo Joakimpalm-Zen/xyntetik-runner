@@ -62,6 +62,13 @@ typedef struct {
     model_params mp;
     pthread_mutex_t swap_mu;
     atomic_int  active_requests;
+    // Inference requests admitted since start, the monotonic counterpart of
+    // active_requests: incremented and decremented at the same two points, so
+    // "how many are running" and "how many have run" cannot describe different
+    // sets of requests. The management and telemetry routes are not counted,
+    // for the reason /health already documents about itself -- a dashboard
+    // polling on a timer must not measure its own polling.
+    atomic_ullong total_requests;
     // Loading state machine: swap_to releases swap_mu for the duration of the
     // actual model load (minutes for big files, up to --wait-for-vram longer),
     // so /unload and shutdown are never blocked behind a load. `loading` and
@@ -116,9 +123,32 @@ extern server_state SV;
 // Raw monotonic totals on purpose: a tok/s field would bake in an averaging
 // window the runner has no business choosing, and would be wrong for every
 // consumer whose window differs. The engine measures; the suite presents.
-void server_record_work(int n_prompt, int n_gen, double gen_seconds);
-void server_work_totals(unsigned long long *prompt_tokens,
-                        unsigned long long *gen_tokens, double *gen_seconds);
+//
+// One record per finished request, passed as a value rather than a widening
+// parameter list: every field here is a fact about the SAME turn, and a
+// six-argument call is how a caller comes to pass the cached count where the
+// generated one belongs.
+typedef struct {
+    int    n_prompt, n_gen;
+    // prompt rows this request did not have to prefill, from either cache
+    // tier. The same number the wire reports as cached_tokens.
+    int    n_cached;
+    // The speculative walk's own counters, and only when the walk actually
+    // ran: engine.spec_st is reset by engine_generate_spec, so a solo turn on
+    // a slot that speculated earlier still holds the earlier numbers and
+    // reading them unconditionally would count one walk many times.
+    int    spec_rounds, spec_drafted, spec_accepted;
+    double gen_seconds;
+} work_record;
+
+typedef struct {
+    unsigned long long prompt_tokens, gen_tokens, cached_tokens;
+    unsigned long long spec_rounds, spec_drafted, spec_accepted;
+    double gen_seconds;
+} work_totals;
+
+void server_record_work(const work_record *w);
+void server_work_totals(work_totals *out);
 
 // swap_to results below 0: the name matched no registry entry (a caller
 // typo -- 400) vs the entry exists but its model failed to load (a broken

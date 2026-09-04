@@ -688,23 +688,38 @@ typedef struct {
 // needs summing and one division at read time.
 static atomic_ullong g_total_prompt_tokens;
 static atomic_ullong g_total_gen_tokens;
+static atomic_ullong g_total_cached_tokens;
 static atomic_ullong g_total_gen_micros;
+static atomic_ullong g_total_spec_rounds;
+static atomic_ullong g_total_spec_drafted;
+static atomic_ullong g_total_spec_accepted;
 
-void server_record_work(int n_prompt, int n_gen, double gen_seconds) {
-    if (n_prompt > 0)
-        atomic_fetch_add(&g_total_prompt_tokens, (unsigned long long)n_prompt);
-    if (n_gen > 0)
-        atomic_fetch_add(&g_total_gen_tokens, (unsigned long long)n_gen);
-    if (gen_seconds > 0)
+void server_record_work(const work_record *w) {
+    if (w->n_prompt > 0)
+        atomic_fetch_add(&g_total_prompt_tokens, (unsigned long long)w->n_prompt);
+    if (w->n_gen > 0)
+        atomic_fetch_add(&g_total_gen_tokens, (unsigned long long)w->n_gen);
+    if (w->n_cached > 0)
+        atomic_fetch_add(&g_total_cached_tokens, (unsigned long long)w->n_cached);
+    if (w->gen_seconds > 0)
         atomic_fetch_add(&g_total_gen_micros,
-                         (unsigned long long)(gen_seconds * 1e6));
+                         (unsigned long long)(w->gen_seconds * 1e6));
+    if (w->spec_rounds > 0)
+        atomic_fetch_add(&g_total_spec_rounds, (unsigned long long)w->spec_rounds);
+    if (w->spec_drafted > 0)
+        atomic_fetch_add(&g_total_spec_drafted, (unsigned long long)w->spec_drafted);
+    if (w->spec_accepted > 0)
+        atomic_fetch_add(&g_total_spec_accepted, (unsigned long long)w->spec_accepted);
 }
 
-void server_work_totals(unsigned long long *prompt_tokens,
-                        unsigned long long *gen_tokens, double *gen_seconds) {
-    *prompt_tokens = atomic_load(&g_total_prompt_tokens);
-    *gen_tokens    = atomic_load(&g_total_gen_tokens);
-    *gen_seconds   = (double)atomic_load(&g_total_gen_micros) / 1e6;
+void server_work_totals(work_totals *out) {
+    out->prompt_tokens = atomic_load(&g_total_prompt_tokens);
+    out->gen_tokens    = atomic_load(&g_total_gen_tokens);
+    out->cached_tokens = atomic_load(&g_total_cached_tokens);
+    out->spec_rounds   = atomic_load(&g_total_spec_rounds);
+    out->spec_drafted  = atomic_load(&g_total_spec_drafted);
+    out->spec_accepted = atomic_load(&g_total_spec_accepted);
+    out->gen_seconds   = (double)atomic_load(&g_total_gen_micros) / 1e6;
 }
 
 // One rendering of runner_telemetry for every surface that carries it — chat,
@@ -728,6 +743,31 @@ static void telemetry_json(sbuf *r, const resp_doc *d) {
     // ordinary turns are byte-for-byte what they were before.
     if (d->finish_detail) sb_fmt(r, ",\"finish_detail\":\"%s\"", d->finish_detail);
     sb_lit(r, "}");
+}
+
+// The OpenAI `usage` object, rendered in one place for every surface that
+// speaks the chat dialect: the buffered chat body, the buffered legacy
+// completion body, and the opt-in `stream_options.include_usage` chunk. Three
+// copies of one token-accounting object is how two of them come to disagree,
+// and a client that flips `stream` on and off must see one shape.
+//
+// `cached` is this request's prefix-cache reuse, reported the way OpenAI
+// reports it: nested under prompt_tokens_details and INCLUDED in
+// prompt_tokens. The inclusion is the load-bearing half -- a caller billing
+// on prompt_tokens must not see its total move because the prompt happened to
+// be cheap to serve -- and it is why this is a breakdown of prompt_tokens
+// rather than a fourth number beside it. The Responses surface spells the
+// same fact `input_tokens_details.cached_tokens` (resp_body, its own
+// vocabulary); the Anthropic surface deliberately spells it nowhere, because
+// `cache_read_input_tokens` describes Anthropic's product with Anthropic's
+// semantics and reporting an unrelated figure there would misstate a client's
+// accounting rather than inform it. Every surface still carries the same
+// number as `runner_telemetry.prompt_cached_tokens`.
+static void openai_usage_json(sbuf *r, int n_prompt, int n_gen, int cached) {
+    sb_fmt(r, "\"usage\":{\"prompt_tokens\":%d,"
+              "\"prompt_tokens_details\":{\"cached_tokens\":%d},"
+              "\"completion_tokens\":%d,\"total_tokens\":%d}",
+           n_prompt, cached, n_gen, n_prompt + n_gen);
 }
 
 static void resp_echo(sbuf *r, jv *req, const char *key, const char *dflt) {
@@ -2084,8 +2124,17 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
     int n_gen = sched_generate(s, logits, max_tokens, gen_collect, &g, &gtime,
                                req_deadline);
     // The one place every surface's generation passes through, so /health's
-    // cumulative counters see chat, completions, responses and messages alike.
-    server_record_work(n_prompt, n_gen, gtime);
+    // and /metrics' cumulative counters see chat, completions, responses and
+    // messages alike. The speculation counters are read only when this request
+    // actually took the speculative walk (see work_record).
+    work_record work = { .n_prompt = n_prompt, .n_gen = n_gen,
+                         .n_cached = keep, .gen_seconds = gtime };
+    if (spec_used) {
+        work.spec_rounds   = e->spec_st.rounds;
+        work.spec_drafted  = e->spec_st.drafted;
+        work.spec_accepted = e->spec_st.accepted;
+    }
+    server_record_work(&work);
     // The socket probe and the streaming write path share g.dead. Whichever
     // learned the verdict first takes this same cleanup exit: no terminal
     // frame is owed to a peer already proven gone, and buffered responses must
@@ -2277,10 +2326,9 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
                        chat ? "chat.completion.chunk" : "text_completion",
                        g.created);
                 sb_esc(&u, SV.model_name, strlen(SV.model_name));
-                sb_fmt(&u, "\",\"choices\":[],"
-                           "\"usage\":{\"prompt_tokens\":%d,"
-                           "\"completion_tokens\":%d,\"total_tokens\":%d}}",
-                       n_prompt, n_gen, n_prompt + n_gen);
+                sb_lit(&u, "\",\"choices\":[],");
+                openai_usage_json(&u, n_prompt, n_gen, keep);
+                sb_lit(&u, "}");
                 ok = chunk_send(&g, &u) == 0;
             }
             if (ok) send_all(fd, "data: [DONE]\n\n", 14);
@@ -2481,10 +2529,9 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
             }
             sb_lit(&r, "],");
         }
-        sb_fmt(&r, "\"finish_reason\":\"%s\"}],"
-                   "\"usage\":{\"prompt_tokens\":%d,\"completion_tokens\":%d,"
-                   "\"total_tokens\":%d},",
-               openai_finish(finish), n_prompt, n_gen, n_prompt + n_gen);
+        sb_fmt(&r, "\"finish_reason\":\"%s\"}],", openai_finish(finish));
+        openai_usage_json(&r, n_prompt, n_gen, keep);
+        sb_lit(&r, ",");
         resp_doc td = { .n_prompt = n_prompt, .n_gen = n_gen, .cached = keep,
                         .forked = reuse.forked, .saved_s = reuse.saved_s,
                         .gtime = gtime, .major_faults = plat_major_faults() - faults_at_start,

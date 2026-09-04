@@ -87,15 +87,10 @@ bool request_keep_alive(jv *req, bool *present, int *seconds) {
 
 jv *request_schema(jv *req) { (void)req; return NULL; }
 
-void server_record_work(int n_prompt, int n_gen, double gen_seconds) {
-    (void)n_prompt; (void)n_gen; (void)gen_seconds;
-}
+void server_record_work(const work_record *w) { (void)w; }
 
-void server_work_totals(unsigned long long *prompt_tokens,
-                        unsigned long long *gen_tokens, double *gen_seconds) {
-    if (prompt_tokens) *prompt_tokens = 0;
-    if (gen_tokens)    *gen_tokens = 0;
-    if (gen_seconds)   *gen_seconds = 0;
+void server_work_totals(work_totals *out) {
+    if (out) memset(out, 0, sizeof(*out));
 }
 
 #include "../src/server.c"

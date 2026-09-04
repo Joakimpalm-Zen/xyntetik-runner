@@ -112,6 +112,7 @@ def test_fastpath_also_rejects_invalid_framing(server):
     b"GET /health HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
     b"GET /v1/models HTTP/1.1\r\nHost: [::1]\r\n\r\n",
     b"GET /v1/capabilities HTTP/1.1\r\nHost: localhost\r\n\r\n",
+    b"GET /metrics HTTP/1.1\r\nHost: localhost\r\n\r\n",
 ])
 def test_compact_fastpath_request_closes_cleanly(server, request_bytes):
     """A whole request that fits inside the accept loop's peek must still be
@@ -144,6 +145,7 @@ def test_compact_fastpath_request_closes_cleanly(server, request_bytes):
     "/v1/models",
     "/v1/capabilities",
     "/v1/runner/prefix-cache",
+    "/metrics",
 ])
 def test_fastpath_get_with_body_is_rejected_without_reset(server, path):
     """A fast-path GET with a body must reach a clean HTTP refusal.

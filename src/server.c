@@ -7,6 +7,7 @@
 //   GET  /v1/models             the loaded model
 //   GET  /v1/capabilities       registry + feature discovery
 //   GET  /health                liveness
+//   GET  /metrics               the same counters in Prometheus text format
 //
 // Swap-mode request bodies may carry "keep_alive" (seconds of idle before
 // the model unloads; 0 = unload now, negative = keep forever).
@@ -785,8 +786,8 @@ static void send_health(sock_t fd) {
     // allocator overhead -- which is the number a machine is sized against and
     // which no mapping-level measure accounts for. The token and second totals
     // are monotonic so a dashboard can difference them over its own window.
-    unsigned long long wp, wg; double ws;
-    server_work_totals(&wp, &wg, &ws);
+    work_totals wt;
+    server_work_totals(&wt);
     // How much of that work was batched. The scheduler already counts its
     // microbatch steps and the sequences cut into them; batch_sequences over
     // batch_steps is the mean batch size, and it is the only wire-visible
@@ -813,7 +814,7 @@ static void send_health(sock_t fd) {
              "\"batch_steps\":%llu,\"batch_sequences\":%llu",
              (unsigned long long)cur_rss,
              (unsigned long long)peak_rss,
-             wp, wg, ws, bs, bq);
+             wt.prompt_tokens, wt.gen_tokens, wt.gen_seconds, bs, bq);
 
     if (SV.n_reg > 0 && res >= 0) {
         // Registry names are char[64]. Match /v1/models' exact worst-case
@@ -881,6 +882,139 @@ static void send_prefix_cache(sock_t fd) {
         (unsigned long long)st.tokens_reused,
         st.saved_prefill_s, st.cost_per_token_s);
     send_response(fd, 200, "application/json", b, n);
+}
+
+// ------------------------------------------------------------------ /metrics
+//
+// The same facts /health and /v1/runner/prefix-cache already answer, in the
+// one format a monitoring stack ingests without a translator. Prometheus text
+// exposition 0.0.4: every sample is preceded by its own `# HELP` and `# TYPE`,
+// names carry the `runner_` prefix, and a counter's name ends in `_total`.
+//
+// It reports; it does not compute. There is no hit-RATE and no tokens-per-
+// SECOND here for the same reason /health has none: a rate needs an averaging
+// window, and the scraper owns that window. Every number below is either a
+// monotonic counter to be differenced or an instantaneous gauge.
+//
+// Read-only and lock-free apart from the prefix cache's own mutex, which
+// `GET /v1/runner/prefix-cache` already takes from the accept thread. Nothing
+// here reads the resident model, so unlike /v1/capabilities it needs no
+// swap_mu (see the note there) and is answered on the accept path with
+// atomic loads only.
+
+typedef struct { char *p; size_t cap, n; bool over; } mbuf;
+
+static void m_fmt(mbuf *b, const char *fmt, ...)
+    __attribute__((format(printf, 2, 3)));
+
+static void m_fmt(mbuf *b, const char *fmt, ...) {
+    if (b->over) return;
+    va_list ap;
+    va_start(ap, fmt);
+    int n = vsnprintf(b->p + b->n, b->cap - b->n, fmt, ap);
+    va_end(ap);
+    // A truncated exposition is not a smaller exposition: a scraper reads a
+    // missing metric as one that reset, and a half-written line as a parse
+    // error for the whole scrape. Refuse the body instead.
+    if (n < 0 || (size_t)n >= b->cap - b->n) b->over = true;
+    else b->n += (size_t)n;
+}
+
+static void metric_u64(mbuf *b, const char *name, const char *type,
+                       const char *help, unsigned long long v) {
+    m_fmt(b, "# HELP %s %s\n# TYPE %s %s\n%s %llu\n", name, help, name, type,
+          name, v);
+}
+
+static void metric_f64(mbuf *b, const char *name, const char *type,
+                       const char *help, double v) {
+    m_fmt(b, "# HELP %s %s\n# TYPE %s %s\n%s %.6f\n", name, help, name, type,
+          name, v);
+}
+
+static void send_metrics(sock_t fd) {
+    work_totals wt;
+    server_work_totals(&wt);
+    unsigned long long bs = 0, bq = 0;
+    sched_batch_totals(&bs, &bq);
+    prefix_cache_stats st;
+    prefix_cache_stats_get(&st);
+    // Same self-consistency fix /health applies, and for the same reason: the
+    // two readings come from different kernel counters whose split-RSS
+    // accounting can lag each other, and a peak below the current reading is
+    // an impossible pair to publish.
+    uint64_t cur_rss = plat_proc_rss_bytes();
+    uint64_t peak_rss = plat_proc_peak_rss_bytes();
+    if (peak_rss < cur_rss) peak_rss = cur_rss;
+
+    char buf[8192];
+    mbuf b = { buf, sizeof(buf), 0, false };
+
+    metric_u64(&b, "runner_requests_total", "counter",
+               "Inference requests admitted since start. Management and "
+               "telemetry routes are not counted.",
+               atomic_load(&SV.total_requests));
+    metric_u64(&b, "runner_prompt_tokens_total", "counter",
+               "Prompt tokens accepted across every API surface.",
+               wt.prompt_tokens);
+    metric_u64(&b, "runner_prompt_cached_tokens_total", "counter",
+               "Prompt tokens served from a reused KV prefix, included in "
+               "runner_prompt_tokens_total.", wt.cached_tokens);
+    metric_u64(&b, "runner_generated_tokens_total", "counter",
+               "Tokens generated across every API surface.", wt.gen_tokens);
+    metric_f64(&b, "runner_generate_seconds_total", "counter",
+               "Seconds spent in generation, for differencing against "
+               "runner_generated_tokens_total.", wt.gen_seconds);
+    metric_u64(&b, "runner_batch_steps_total", "counter",
+               "Scheduler microbatch steps.", bs);
+    metric_u64(&b, "runner_batch_sequences_total", "counter",
+               "Sequences cut into those microbatch steps.", bq);
+    metric_u64(&b, "runner_prefix_cache_hits_total", "counter",
+               "Shared prefix-cache lookups that forked a snapshot.", st.hits);
+    metric_u64(&b, "runner_prefix_cache_misses_total", "counter",
+               "Shared prefix-cache lookups that found nothing to fork.",
+               st.misses);
+    metric_u64(&b, "runner_prefix_cache_stores_total", "counter",
+               "Prefixes published to the shared store.", st.stores);
+    metric_u64(&b, "runner_prefix_cache_evictions_total", "counter",
+               "Prefixes dropped for budget or age.", st.evictions);
+    metric_u64(&b, "runner_prefix_cache_tokens_reused_total", "counter",
+               "Prompt tokens forked out of the shared store.",
+               st.tokens_reused);
+    metric_f64(&b, "runner_prefix_cache_saved_prefill_seconds_total", "counter",
+               "Prefill seconds those forks avoided, priced at this process's "
+               "measured seconds per token.", st.saved_prefill_s);
+    metric_u64(&b, "runner_speculation_rounds_total", "counter",
+               "Speculative verify rounds. Zero on a server with no draft, "
+               "no MTP head and no grammar fast-forward.", wt.spec_rounds);
+    metric_u64(&b, "runner_speculation_drafted_tokens_total", "counter",
+               "Tokens proposed by a draft source.", wt.spec_drafted);
+    metric_u64(&b, "runner_speculation_accepted_tokens_total", "counter",
+               "Proposed tokens the target model accepted.", wt.spec_accepted);
+    metric_u64(&b, "runner_active_requests", "gauge",
+               "Inference requests in flight right now.",
+               (unsigned long long)(long long)atomic_load(&SV.active_requests));
+    metric_u64(&b, "runner_resident_memory_bytes", "gauge",
+               "Resident set of this process: weights, KV cache, activations "
+               "and allocator overhead together.",
+               (unsigned long long)cur_rss);
+    metric_u64(&b, "runner_peak_resident_memory_bytes", "gauge",
+               "High-water mark of that resident set.",
+               (unsigned long long)peak_rss);
+    metric_u64(&b, "runner_prefix_cache_bytes", "gauge",
+               "Host memory the shared prefix store holds.",
+               (unsigned long long)st.bytes);
+    metric_u64(&b, "runner_prefix_cache_budget_bytes", "gauge",
+               "Its configured ceiling; 0 disables the shared tier.",
+               (unsigned long long)st.budget);
+    metric_u64(&b, "runner_prefix_cache_entries", "gauge",
+               "Snapshots currently held.", (unsigned long long)st.entries);
+
+    if (b.over) {
+        send_error(fd, 500, "metrics exposition did not fit its buffer");
+        return;
+    }
+    send_response(fd, 200, "text/plain; version=0.0.4", buf, b.n);
 }
 
 static void send_capabilities(sock_t fd) {
@@ -1003,6 +1137,15 @@ static void send_capabilities(sock_t fd) {
                // 2026-08-08 and still deferred; this fixes the CLAIM.
                "\"request_telemetry\":{\"buffered\":true,"
                                      "\"streamed\":false},"
+               // GET /metrics, in Prometheus text exposition 0.0.4. Named as
+               // a feature rather than assumed from the version, because a
+               // scraper's alternative is to poll /health and translate, and
+               // it needs to know which of the two it is talking to.
+               "\"prometheus_metrics\":true,"
+               // usage.prompt_tokens_details.cached_tokens on the OpenAI
+               // surfaces, usage.input_tokens_details.cached_tokens on
+               // Responses. Not on Messages: see the note in completion.c.
+               "\"usage_cached_tokens\":true,"
                "\"prefix_cache\":true,"
                "\"prefix_cache_controls\":true,"
                "\"shared_prefix_cache\":true,"
@@ -1121,7 +1264,7 @@ static void handle_conn(slot_t *s, sock_t fd) {
            !strcmp(path, "/v1/runner/prefix-cache/clear"))) ||
          (!strcmp(method, "GET") &&
           (!strcmp(path, "/health") || !strcmp(path, "/v1/models") ||
-           !strcmp(path, "/v1/capabilities") ||
+           !strcmp(path, "/v1/capabilities") || !strcmp(path, "/metrics") ||
            !strcmp(path, "/v1/runner/prefix-cache"))));
     if (bodyless_route) {
         // These routes are normally served by accept_fastpath. A declared body
@@ -1161,6 +1304,8 @@ static void handle_conn(slot_t *s, sock_t fd) {
         send_health(fd);
     } else if (!strcmp(method, "GET") && !strcmp(path, "/v1/models")) {
         send_models(fd);
+    } else if (!strcmp(method, "GET") && !strcmp(path, "/metrics")) {
+        send_metrics(fd);
     } else if (!strcmp(method, "GET") && !strcmp(path, "/v1/capabilities")) {
         send_capabilities(fd);
     } else if (!strcmp(method, "POST") &&
@@ -1223,6 +1368,7 @@ static void handle_conn(slot_t *s, sock_t fd) {
                 return;
             }
             atomic_fetch_add(&SV.active_requests, 1);
+            atomic_fetch_add(&SV.total_requests, 1);
             bool ok = true;
             if (SV.n_reg > 0) {
                 int sw = swap_to(jv_str(jv_get(req, "model"), NULL));
@@ -1351,11 +1497,13 @@ static bool accept_fastpath(sock_t fd) {
                               sizeof("GET /v1/runner/prefix-cache ") - 1);
     bool pfx_clear = !strncmp(hdr, "POST /v1/runner/prefix-cache/clear ",
                               sizeof("POST /v1/runner/prefix-cache/clear ") - 1);
+    bool metrics = !strncmp(hdr, "GET /metrics ", 13);
     // The old spelling still has to reach a handler, or an operator's script
     // gets a 404 that says nothing. It is not answered here — it falls through
     // to the slot path, which replies 405 with the reason.
     if (!strncmp(hdr, "GET /unload ", 12)) return false;
-    if (!health && !models && !caps && !unload && !pfx_stats && !pfx_clear)
+    if (!health && !models && !caps && !unload && !pfx_stats && !pfx_clear &&
+        !metrics)
         return false;
     // Keep the request untouched until framing says it is bodyless. A partial
     // header, an oversized header, malformed framing, and every declared body
@@ -1386,6 +1534,7 @@ static bool accept_fastpath(sock_t fd) {
     }
     if (health)          send_health(fd);
     else if (models)     send_models(fd);
+    else if (metrics)    send_metrics(fd);
     else if (unload)     handle_unload(fd);
     else if (pfx_stats)  send_prefix_cache(fd);
     else if (pfx_clear) {
@@ -1906,7 +2055,7 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
                 batched ? ", continuous batching" : "");
     fputs("  POST /v1/chat/completions | POST /v1/responses | POST /v1/completions\n"
           "  POST /v1/embeddings | POST /v1/messages | POST /v1/messages/count_tokens\n"
-          "  GET /v1/models | GET /v1/capabilities | GET /health\n"
+          "  GET /v1/models | GET /v1/capabilities | GET /health | GET /metrics\n"
           "  GET /v1/runner/prefix-cache | POST /v1/runner/prefix-cache/clear"
           " | POST /unload\n", stderr);
 
