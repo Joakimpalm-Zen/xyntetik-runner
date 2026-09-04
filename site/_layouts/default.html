@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{ page.title }}{% if page.title != site.title %} · {{ site.title }}{% endif %}</title>
+<meta name="description" content="{{ page.description | default: site.description }}">
+<link rel="canonical" href="{{ page.url | absolute_url }}">
+<style>
+:root{--fg:#111;--bg:#fff;--mute:#555;--line:#ddd;--code:#f4f4f4;--link:#0044aa}
+@media (prefers-color-scheme:dark){:root{--fg:#e6e6e6;--bg:#111;--mute:#aaa;--line:#333;--code:#1c1c1c;--link:#7fb0ff}}
+html{color-scheme:light dark}
+body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+header,main,footer{max-width:78ch;margin:0 auto;padding:0 1rem}
+header{padding-top:1rem;border-bottom:1px solid var(--line)}
+header nav a{margin-right:1rem;white-space:nowrap}
+header nav{display:flex;flex-wrap:wrap;gap:.25rem 0;padding-bottom:.75rem}
+main{padding:1.5rem 1rem 3rem}
+footer{border-top:1px solid var(--line);padding:1rem;color:var(--mute);font-size:.9em}
+a{color:var(--link)}
+h1,h2,h3{line-height:1.25}
+h1{font-size:1.6em;margin-top:0}
+code,pre{background:var(--code);font-family:inherit}
+code{padding:.05em .3em}
+pre{padding:.75rem;overflow-x:auto}
+pre code{padding:0;background:none}
+table{border-collapse:collapse;display:block;overflow-x:auto;max-width:100%}
+th,td{border:1px solid var(--line);padding:.3rem .6rem;text-align:left;vertical-align:top}
+img{max-width:100%;height:auto}
+blockquote{border-left:3px solid var(--line);margin:0;padding-left:1rem;color:var(--mute)}
+</style>
+</head>
+<body>
+<header>
+<nav>
+<a href="/">Xyntetik</a>
+<a href="/runner/">Runner</a>
+<a href="/runner/what-it-adds/">What it adds</a>
+<a href="/runner/benchmarks/">Benchmarks</a>
+<a href="/runner/train-lora-on-quantized-gguf/">Train LoRA on GGUF</a>
+<a href="/runner/reproducible-lora-training-receipts/">Receipts</a>
+<a href="/runner/truncation-safe-tool-calling/">Tool calling</a>
+<a href="/runner/models/">Models</a>
+<a href="/runner/support-matrix/">Support matrix</a>
+<a href="/runner/docs/">Docs</a>
+<a href="https://github.com/Joakimpalm-Zen/xyntetik-runner">GitHub</a>
+</nav>
+</header>
+<main>
+{{ content }}
+</main>
+<footer>
+Apache 2.0. Built in Sweden, runs on your hardware. Every number on this
+site carries the date it was measured; the source of every page is the
+<a href="https://github.com/Joakimpalm-Zen/xyntetik-runner">repository</a>.
+{% include build.html %}
+</footer>
+</body>
+</html>
