@@ -288,6 +288,28 @@ SRC = src/gguf.c src/compat.c $(QUANTS_OBJ) src/instances.c src/tokenizer.c src/
       src/template.c src/jsonmode.c src/schema.c $(QUANTIZE_OBJ) src/engine.c src/json.c src/envelope.c src/ed25519.c $(MLDSA_SRC) src/ecdsa.c src/oms.c src/http.c src/registry.c src/scheduler.c src/completion.c src/api_responses.c src/api_anthropic.c src/server.c \
       src/main.c $(GPU_SRC) $(TRAY_SRC)
 
+# Cross-compile a static riscv64 binary with zig (no toolchain install;
+# https://ziglang.org, `ZIG=path/to/zig`): the bit-exact configuration from
+# docs/portable-bitexact-2026-09-05.md, strict float, portable math and
+# canonical kernels, CUDA backend compiled in but dormant, tray stubbed.
+# Runs under qemu-riscv64 (user mode) or on an RVA20+ board; not a release
+# target. `make cross-riscv64 && qemu-riscv64 ./runner-riscv64 --help`.
+ZIG ?= zig
+CROSS_TARGET ?= riscv64-linux-musl
+CROSS_CFLAGS = -O3 -fno-fast-math -ffp-contract=off -std=gnu11 -Wno-unused-parameter \
+               -DRUNNER_GPU_CUDA -DRUNNER_PORTABLE_MATH -DRUNNER_CANON_KERNELS
+CROSS_SRC = $(filter-out $(GPU_SRC) $(TRAY_SRC),$(filter %.c,$(SRC))) \
+            src/quants.c src/quantize.c src/cuda.c src/tray.c src/tray_stub.c
+cross-riscv64:
+	@rm -rf .build/cross-$(CROSS_TARGET) && mkdir -p .build/cross-$(CROSS_TARGET)
+	@for f in $(CROSS_SRC); do \
+	  $(ZIG) cc -target $(CROSS_TARGET) $(CROSS_CFLAGS) -I src -c $$f \
+	    -o .build/cross-$(CROSS_TARGET)/$$(basename $$f .c).o || exit 1; done
+	$(ZIG) cc -target $(CROSS_TARGET) -static .build/cross-$(CROSS_TARGET)/*.o \
+	  -o runner-$(CROSS_TARGET:%-linux-musl=%) -lm -lpthread
+	@echo "runner-$(CROSS_TARGET:%-linux-musl=%): $$(wc -c < runner-$(CROSS_TARGET:%-linux-musl=%)) bytes"
+.PHONY: cross-riscv64
+
 # kernels_ptx.h is embedded into the binary by cuda.c — a pull that changes
 # ONLY the regenerated PTX header must rebuild, or benchmarks silently run
 # yesterday's kernels (this bit a publication run on 2026-07-29).

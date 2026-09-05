@@ -221,3 +221,4 @@ test-mldsa
 test-mldsa.exe
 test-canon-kernels
 test-canon-kernels.exe
+runner-riscv64
