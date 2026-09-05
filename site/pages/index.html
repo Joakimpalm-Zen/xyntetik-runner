@@ -1,0 +1,273 @@
+<!--meta
+title: Xyntetik Runner: local inference you can prove
+description: Runner is a single-binary GGUF inference and LoRA training engine in C for CPU, CUDA and Metal. Tool calls that survive the token limit, adapters trained through the quantized weights you serve, and signed receipts that replay. Every claim carries its measurement.
+path: /
+nav: home
+bare: yes
+-->
+<section class="hero">
+  <div class="wrap hero-grid">
+    <div>
+      <p class="eyebrow">Xyntetik Runner, a Zenova AB product</p>
+      <h1>Local inference you can prove.</h1>
+      <p class="lede">Runner is a single-binary engine in plain C that serves, scores and trains GGUF models on hardware you own. It closes tool calls that run out of tokens so they still parse, trains LoRA adapters through the same quantized weights it serves, and records any run as a signed receipt that replays.</p>
+      <p class="lede">Every number on this site names the document it comes from and the day it was measured, including the rows where Runner loses.</p>
+      <div class="btn-row">
+        <a class="btn btn-primary" href="/runner/#sixty-seconds">Sixty seconds to a served model</a>
+        <a class="btn" href="/evidence/">See the evidence</a>
+        <a class="btn" href="{{repo}}" rel="noopener">GitHub</a>
+      </div>
+      <div class="hero-facts">
+        <span>Apache 2.0, free forever</span>
+        <span>CPU, CUDA and Metal</span>
+        <span>No Python, no pip, no ggml</span>
+        <span>v0.4.8, released 2026-09-05</span>
+      </div>
+    </div>
+    <div class="hero-art" aria-hidden="true">
+      <svg class="hero-enso" viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
+        <defs><linearGradient id="hero-g" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#159A89"/><stop offset="1" stop-color="#2FD0B9"/></linearGradient></defs>
+        <path class="ring" d="M33.1 13.8 A40 40 0 1 0 70 15.4" fill="none" stroke="url(#hero-g)" stroke-width="9" stroke-linecap="round"/>
+        <circle class="dot" cx="70.5" cy="14.9" r="5.4" fill="#FF7A5C"/>
+        <circle class="dot dot2" cx="77.8" cy="9.2" r="2.7" fill="#FF9A80"/>
+        <circle class="dot dot3" cx="82.6" cy="4.8" r="1.6" fill="#FFBBA8"/>
+      </svg>
+    </div>
+  </div>
+</section>
+
+<section class="section" style="padding-top:0">
+  <div class="wrap">
+    <div class="proof-strip reveal">
+      <div>
+        <div class="value">1 of 6</div>
+        <div class="label">engines that return an executable tool call when the token budget cuts it short. Runner is the one.</div>
+        <span class="measured">measured 2026-08-19, vs vLLM, llama.cpp, Ollama, TensorRT-LLM, SGLang</span>
+      </div>
+      <div>
+        <div class="value">0.69 &rarr; 1.00</div>
+        <div class="label">held-out exact tool-call score after a LoRA trained directly through 4-bit serving weights.</div>
+        <span class="measured">measured 2026-08-22, Qwen3-4B Q4_K_M, public artifact</span>
+      </div>
+      <div>
+        <div class="value">byte-identical</div>
+        <div class="label">adapter file from two independent training runs with the same data, seed and config. Gated in CI by sha256.</div>
+        <span class="measured">same build; the claim boundary is written down</span>
+      </div>
+      <div>
+        <div class="value">+8 MB</div>
+        <div class="label">wired memory held while idle beside your work, against +3,819 MB for llama-server on the same 8 GB M1.</div>
+        <span class="measured">measured on an 8 GB M1, granite-4.1-3b Q8_0</span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="section" id="why">
+  <div class="wrap">
+    <div class="section-head reveal">
+      <p class="eyebrow">Why Runner exists</p>
+      <h2>Serving tokens locally is solved. Trusting what came out is not.</h2>
+      <p>Excellent local engines already exist and Runner rides their formats rather than competing with them. It exists because four things go wrong the moment a local model has to do real work, and none of them is a speed problem.</p>
+    </div>
+    <div class="grid-2">
+      <div class="card reveal">
+        <h3>An agent loop dies at the token budget</h3>
+        <p>When <code>max_tokens</code> runs out in the middle of a tool call's JSON, most engines hand back nothing usable: an empty call, framing leaked into the prose, or arguments that do not parse. On a local model, where context is tight and generation is slow, the agent retries from scratch and burns the window it was short of.</p>
+        <p>Runner closes the call to the smallest schema-legal document instead, so the arguments parse and the loop continues. <a href="/runner/truncation-safe-tool-calling/">How, and what six engines do</a></p>
+      </div>
+      <div class="card reveal">
+        <h3>What you trained is not what you ship</h3>
+        <p>The usual fine-tuning path trains through an FP16 copy and then serves a quantized file. Two numerical paths means the policy you sampled is not the policy you trained, and a 4-bit merge can quietly erase the adaptation while perplexity still looks fine.</p>
+        <p>Runner trains through the frozen quantized GGUF it serves. One codepath, and a reproducibility contract with named edges. <a href="/runner/train-lora-on-quantized-gguf/">The measured claim and its caveat</a></p>
+      </div>
+      <div class="card reveal">
+        <h3>A log is not evidence</h3>
+        <p>If you have to show what a model said, what it learned from, or which file you actually deployed, a printout of a chat is not going to hold. You need the model hash, the adapter hash, the binary, the seed, the exact bytes, and a way for someone else to replay them.</p>
+        <p>Runner writes that record as a signed, chained receipt, and a verifier answers VERIFIED, DIVERGED or UNVERIFIABLE with one exit code. <a href="/runner/reproducible-lora-training-receipts/">Receipts and the determinism scope</a></p>
+      </div>
+      <div class="card reveal">
+        <h3>The server takes over the workstation</h3>
+        <p>A resident inference server on the machine you also work on wires down gigabytes and ticks in the background while it serves nothing. That is the reason people kill it every time.</p>
+        <p>Runner keeps weights as evictable mappings the OS can reclaim, wakes about once every two seconds while idle, and hands everything back on <code>/unload</code>. The cost is a slower cold first token, and that cost is published. <a href="/runner/#coexistence">The idle measurement</a></p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="section tint" id="compare">
+  <div class="wrap">
+    <div class="section-head reveal">
+      <p class="eyebrow">Where it wins, where it does not</p>
+      <h2>Use llama.cpp. Then read this table.</h2>
+      <p>llama.cpp is the ecosystem, and if you want maximum architecture coverage and raw speed you should use it. Runner adds contracts the ecosystem does not make. Every row below is a measurement from the repository, and the comparison covers the engines and versions that were actually measured.</p>
+    </div>
+    <div class="table-wrap reveal">
+      <table class="data compare">
+        <thead>
+          <tr><th>Question</th><th>Runner</th><th>llama.cpp</th><th>vLLM, Ollama, TensorRT-LLM, SGLang</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>A tool call is cut short by <code>max_tokens</code>. What does the caller get?</td>
+            <td><span class="y win">Executable <code>tool_calls</code>, arguments parse, at every budget from 1 to 16 tokens</span></td>
+            <td><span class="n">No call, framing leaked into content; at 16 tokens a call whose arguments do not parse (b10488)</span></td>
+            <td><span class="n">No usable call at any truncated budget; Ollama returns HTTP 500 at 16 (versions on the evidence page)</span></td>
+          </tr>
+          <tr>
+            <td>Decode throughput, dense models, CUDA</td>
+            <td><span class="p">81 to 93% of llama.cpp on the same slice and files</span></td>
+            <td><span class="y win">Faster</span></td>
+            <td><span class="n">Not measured</span></td>
+          </tr>
+          <tr>
+            <td>Prefill throughput, CUDA</td>
+            <td><span class="n lose">5 to 10% of llama.cpp. Runner's honest weak column, and the next piece of work</span></td>
+            <td><span class="y win">An order of magnitude faster</span></td>
+            <td><span class="n">Not measured</span></td>
+          </tr>
+          <tr>
+            <td>Architecture coverage</td>
+            <td><span class="p">A named list; unknown architectures are refused by name, never guessed</span></td>
+            <td><span class="y win">The widest</span></td>
+            <td><span class="n">Not compared</span></td>
+          </tr>
+          <tr>
+            <td>Memory held while idle beside your other work</td>
+            <td><span class="y win">+8 MB wired on an 8 GB M1; +35 MB with a 63 GB model on a 128 GB M5 Max; <code>/unload</code> gives it all back</span></td>
+            <td><span class="n">+3,819 MB and +60.8 GB on the same two machines; no unload</span></td>
+            <td><span class="n">Not measured</span></td>
+          </tr>
+          <tr>
+            <td>Cold time to first token when the server is allowed to hold everything</td>
+            <td><span class="n lose">Slower: 3.2 s vs 0.15 s on the pressured M1, 10.1 s vs 0.25 s at 120B. Residency is what llama-server buys</span></td>
+            <td><span class="y win">Faster</span></td>
+            <td><span class="n">Not measured</span></td>
+          </tr>
+          <tr>
+            <td>Train a LoRA through the quantized file you serve, reproducibly</td>
+            <td><span class="y win">Yes. Same forward pass as serving; same data, seed and config write a byte-identical adapter</span></td>
+            <td><span class="p">Runner-trained adapters load and score identically in stock llama.cpp; community F16 adapters load back into Runner</span></td>
+            <td><span class="n">Not measured</span></td>
+          </tr>
+          <tr>
+            <td>Prove what ran: signed receipts, replay verdicts, model-signature checks</td>
+            <td><span class="y win">Ed25519-signed chained receipts, VERIFIED / DIVERGED / UNVERIFIABLE replay, OpenSSF Model Signing verification of the loaded GGUF</span></td>
+            <td><span class="n">Not claimed</span></td>
+            <td><span class="n">Not claimed</span></td>
+          </tr>
+          <tr>
+            <td>Vulkan, TLS, remote bind</td>
+            <td><span class="n lose">Not implemented. Loopback only by design; put a reverse proxy in front for anything else</span></td>
+            <td><span class="y">Vulkan available</span></td>
+            <td><span class="n">Not compared</span></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="small muted mt-1">Speed rows: MIG 1g.24gb slice, runner 6d705e9 vs llama.cpp b10353, 2026-09-02. Truncation row: 2026-08-19, granite-4.1-3b, versions named on the <a href="/evidence/#truncation">evidence page</a>. Idle rows: 2026-09-01 and the README's M1 measurement. Sources: <a href="{{repo}}/blob/main/docs/benchmarks.md">docs/benchmarks.md</a>, <a href="{{repo}}/blob/main/docs/truncation-benchmark.md">docs/truncation-benchmark.md</a>, <a href="{{repo}}/blob/main/docs/idle-coexistence-120b-m5max-2026-09-01.md">docs/idle-coexistence-120b-m5max-2026-09-01.md</a>.</p>
+    <div class="callout warn reveal">
+      <span class="t">Choose Runner for the contracts, not the speed.</span>
+      <p>If the machine is dedicated to inference and you want the fastest prefill and the widest model list, llama.cpp is the right call and we mean that sincerely. If you need an agent loop that finishes on a small budget, adapters trained on the exact file you deploy, receipts that a third party can replay, or an engine that can live on your workstation all day, that is what Runner is for.</p>
+    </div>
+  </div>
+</section>
+
+<section class="section" id="proof">
+  <div class="wrap">
+    <div class="section-head reveal">
+      <p class="eyebrow">Proof</p>
+      <h2>We tested this. Here is what happened.</h2>
+      <p>Three of the measurements the project rests on. Each figure names its source document and date; the raw responses, scripts and pinned files are in the repository, and the regression gates run on every release.</p>
+    </div>
+
+    <figure class="fig reveal">
+      <div class="legend">
+        <span><i class="ok"></i>executable tool call, arguments parse</span>
+        <span><i class="none"></i>no usable call (empty, leaked framing, unparseable arguments, or HTTP 500)</span>
+      </div>
+      {{chart:truncation}}
+      <figcaption><strong>Tool calls that survive the token limit.</strong> Same box, same tool schema and prompt, <code>tool_choice: required</code>, temperature 0, <code>max_tokens</code> from 1 to 64. The 64-token control proves the failure is truncation, not misconfiguration: every engine completes there. Runner 0.1.19-alpha, vLLM 0.27.1, llama.cpp b10488, Ollama 0.32.14, TensorRT-LLM 1.2.1, SGLang 0.5.17. <strong>&dagger;</strong> measured on a Qwen3-1.7B substitute because those registries did not carry granite-4.1-3b; recovery is a property of the runtime, so the substitution measures the engine. Measured 2026-08-19. Raw responses: <a href="{{repo}}/tree/main/tests/torture/truncation/2026-08-19-granite-4.1-3b">tests/torture/truncation/</a>. Method: <a href="{{repo}}/blob/main/docs/truncation-benchmark.md">docs/truncation-benchmark.md</a>.</figcaption>
+    </figure>
+
+    <div class="grid-2 mt-2">
+      <figure class="fig reveal">
+        {{chart:lora}}
+        <figcaption><strong>A LoRA trained through 4-bit serving weights, and what merging does to it.</strong> Held-out exact tool-call score on Qwen3-4B. The adapter served beside the base with <code>--lora</code> takes the score from 0.69 to 1.00, and the same 1.00 is reproduced in stock llama.cpp. Merging into F16 or Q8_0 keeps it. Merging into the 4-bit base erases it: 98.55% of weight bytes round back to the base's own codes. Measured 2026-08-22. Artifact: <a href="{{hf}}/Qwen3-4B-Runner-ToolUse-Q4_K_M">Qwen3-4B-Runner-ToolUse-Q4_K_M</a>. Method: <a href="{{repo}}/blob/main/docs/adaptation-engine.md">docs/adaptation-engine.md</a>.</figcaption>
+      </figure>
+      <figure class="fig reveal">
+        {{chart:speed}}
+        <figcaption><strong>Speed, including the rows Runner loses.</strong> Runner 6d705e9 vs llama.cpp b10353 CUDA on one MIG 1g.24gb slice, same GGUF files, full offload verified on every row, 512-token prefill and 128-token greedy decode. Dense decode sits at 81 to 93% of llama.cpp; prefill at 5 to 10% is the published weak column; the Q3_K row still runs a naive token-identical kernel. Absolute numbers depend on the slice, the ratios are the result. Measured 2026-09-02. Source: <a href="{{repo}}/blob/main/docs/benchmarks.md">docs/benchmarks.md</a>, with RTX 3070 and M1 tables.</figcaption>
+      </figure>
+    </div>
+    <div class="btn-row">
+      <a class="btn" href="/evidence/">All evidence: benchmarks, fidelity ladders, artifacts, negative results</a>
+    </div>
+  </div>
+</section>
+
+<section class="section tint" id="flagship">
+  <div class="wrap">
+    <div class="section-head reveal">
+      <p class="eyebrow">Three reasons to use Runner</p>
+      <h2>Inspectable, trainable, unbreakable under a budget.</h2>
+    </div>
+    <div class="grid-3">
+      <a class="card card-link accent reveal" href="/runner/reproducible-lora-training-receipts/">
+        <div class="icon"><svg viewBox="0 0 36 36" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 4h13l6 6v22H9z"/><path d="M22 4v6h6"/><path d="M13 20l3 3 7-7"/></svg></div>
+        <h3>Evidence and reproducibility</h3>
+        <p>Results you can inspect, test and replay rather than merely generate. Recorded runs are signed and chained; a one-exit-code verifier replays them; the determinism claim has named edges, including what is deliberately not promised.</p>
+        <span class="more">Receipts, replay tiers and the scope &rarr;</span>
+      </a>
+      <a class="card card-link accent reveal" href="/runner/train-lora-on-quantized-gguf/">
+        <div class="icon"><svg viewBox="0 0 36 36" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="8" width="26" height="20" rx="3"/><path d="M11 22l4-6 4 4 3-3 3 5"/></svg></div>
+        <h3>LoRA training on the file you serve</h3>
+        <p>Train adapters directly through the frozen quantized GGUF, with no FP16 training copy. Same data, seed and config write a byte-identical adapter with a provenance sidecar. Measured 0.69 to 1.00 on a public artifact, with the merge caveat stated beside it.</p>
+        <span class="more">The measured claim and how to run it &rarr;</span>
+      </a>
+      <a class="card card-link accent reveal" href="/runner/truncation-safe-tool-calling/">
+        <div class="icon"><svg viewBox="0 0 36 36" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 8H7v20h5"/><path d="M24 8h5v20h-5"/><path d="M15 18h6"/><path d="M18 15v6"/></svg></div>
+        <h3>Tool calls that survive the token limit</h3>
+        <p>When the budget expires mid-call, Runner emits the smallest schema-legal ending so the arguments still parse and the agent continues. Five other engines were measured on the same rungs; none of them closes the document.</p>
+        <span class="more">The problem, the mechanism, the six-engine table &rarr;</span>
+      </a>
+    </div>
+  </div>
+</section>
+
+<section class="section" id="artifacts">
+  <div class="wrap split">
+    <div class="reveal">
+      <p class="eyebrow">Published artifacts</p>
+      <h2>Sixteen repositories on Hugging Face, gated the same way.</h2>
+      <p>Nine carry weights, seven are measurement reports over third-party files with no weights republished. A derivative is published only after its stated gate against the named parent, and a near-miss stays published with its numbers in the open rather than being quietly removed.</p>
+      <div class="btn-row">
+        <a class="btn" href="{{hf}}" rel="noopener">Browse on Hugging Face</a>
+        <a class="btn" href="/evidence/#artifacts">The artifact ledger</a>
+      </div>
+    </div>
+    <ul class="ledger reveal">
+      <li><div><div class="t"><a href="{{hf}}/Qwen3-30B-A3B-selective-attnQ8_0-expQ4_0-GGUF">Qwen3-30B-A3B, selective precision</a></div><div class="d">Attention Q8_0, experts Q4_0, 17.99 GB. Passes the fidelity bar where the official uniform Q4_K_M fails it.</div></div><span class="pill pass">passes bar</span></li>
+      <li><div><div class="t"><a href="{{hf}}/Qwen3-4B-Runner-ToolUse-Q4_K_M">Qwen3-4B Runner ToolUse adapter</a></div><div class="d">The LoRA behind the 0.69 to 1.00 claim, produced twice with the same sha256; the card carries the sidecar and the training command.</div></div><span class="pill pass">reproduced</span></li>
+      <li><div><div class="t"><a href="{{hf}}/gemma-4-31B-it-attn48-removed-Q4_0-GGUF">gemma-4-31B-it, attention block 48 removed</a></div><div class="d">First sublayer-removal artifact: one attention sublayer physically dropped, 64 MiB of KV cache freed at 4k context, KLD 0.0223 on 44,413 held-out positions.</div></div><span class="pill pass">KLD 0.0223</span></li>
+      <li><div><div class="t"><a href="{{hf}}/gpt-oss-20b-keep30-MXFP4-GGUF">gpt-oss-20b keep-30</a></div><div class="d">Expert-pruned derivative whose originally published number did not reproduce. Kept published with the measured status at the top of the card.</div></div><span class="pill fail">fails current bar</span></li>
+    </ul>
+  </div>
+</section>
+
+<section class="section tint" id="about-teaser">
+  <div class="wrap grid-2">
+    <div class="card reveal">
+      <p class="eyebrow">About</p>
+      <h3>A Zenova AB product, built in Sweden</h3>
+      <p>Xyntetik is the program under which Zenova AB builds tooling for running capable models on hardware you already own. Runner is the released engine. Suite is the testing and evidence layer around it. Shade is the research lab that feeds both. The engine is free forever under Apache 2.0.</p>
+      <a class="more" href="/about/">Runner, Suite, Shade and the company behind them &rarr;</a>
+    </div>
+    <div class="card reveal">
+      <p class="eyebrow">Support the work</p>
+      <h3>Open infrastructure, funded in the open</h3>
+      <p>Runner is developed openly rather than around a subscription. Measurement time on real hardware, model hosting, cross-engine validation and the loaner machines behind the benchmark tables are what contributions pay for.</p>
+      <a class="more" href="/support/">What contributions enable &rarr;</a>
+    </div>
+  </div>
+</section>

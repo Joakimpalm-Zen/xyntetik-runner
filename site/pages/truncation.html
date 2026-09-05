@@ -1,0 +1,93 @@
+<!--meta
+title: Tool calls that survive the token limit
+description: When max_tokens runs out in the middle of a tool call, most engines return nothing usable. Xyntetik Runner closes the call to the smallest schema-legal document so the arguments still parse. The mechanism and the six-engine measurement.
+path: /runner/truncation-safe-tool-calling/
+nav: runner
+-->
+<section class="page-head">
+  <div class="wrap">
+    <p class="eyebrow">Truncation and constrained generation</p>
+    <h1>When the budget runs out mid-call, the call still parses.</h1>
+    <p class="lede">An agent asks a model to call a tool. The model starts writing the call as JSON. The token budget expires halfway through. In most engines the caller now holds a broken document: nothing to execute, nothing to parse, sometimes an HTTP 500. Runner finishes the document legally instead, and the agent loop continues.</p>
+  </div>
+</section>
+
+<section class="section">
+  <div class="wrap">
+    <div class="section-head">
+      <p class="eyebrow">The practical benefit first</p>
+      <h2>On a local model, a broken tool call is not an error. It is the whole retry budget.</h2>
+    </div>
+    <div class="grid-3">
+      <div class="card">
+        <h3>What a budget is</h3>
+        <p>Every request carries <code>max_tokens</code>, the most tokens the model may generate. Agents set it tight on purpose: local models are slow and context is scarce. A tool call is JSON, and JSON that stops early is not JSON.</p>
+      </div>
+      <div class="card">
+        <h3>What usually happens</h3>
+        <p>The engine returns <code>finish_reason: "length"</code> with an empty call, or leaks the model's tool-call framing into the assistant's prose, or hands back a <code>tool_calls</code> object whose arguments fail to parse. The agent cannot proceed. It retries from scratch, burning the tokens, the time and the context window it was already short of.</p>
+      </div>
+      <div class="card accent">
+        <h3>What Runner does</h3>
+        <p>Runner is already constraining the call to the tool's JSON schema as it decodes. When the budget expires, it emits the smallest schema-legal ending for the document that has been started, marks <code>finish_reason: "length"</code> so the caller knows the budget was hit, and returns a <code>tool_calls</code> entry whose arguments parse. The agent gets an executable call and a truthful signal, and continues.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="section tint">
+  <div class="wrap">
+    <div class="section-head">
+      <p class="eyebrow">Measured</p>
+      <h2>Same box, same schema, same prompt, six engines, seven budgets.</h2>
+      <p><code>tool_choice: required</code>, temperature 0, budgets 1, 2, 3, 5, 8, 16 and 64 tokens. The 64-token control proves the failure is truncation, not misconfiguration: every engine completes there. Below it, only Runner returns a parseable call.</p>
+    </div>
+    <figure class="fig">
+      <div class="legend">
+        <span><i class="ok"></i>executable tool call, arguments parse</span>
+        <span><i class="none"></i>no usable call</span>
+      </div>
+      {{chart:truncation}}
+      <figcaption>Measured 2026-08-19 on granite-4.1-3b. Runner c7d6c3d (0.1.19-alpha), vLLM 0.27.1, llama.cpp b10488, Ollama 0.32.14, TensorRT-LLM 1.2.1, SGLang 0.5.17. <strong>&dagger;</strong> measured on a Qwen3-1.7B substitute because those registries did not carry granite-4.1-3b; recovery is a property of the runtime, so the substitution measures the engine, not the model. The claim covers the engines and versions measured, not engines that were not.</figcaption>
+    </figure>
+    <div class="grid-2 mt-2">
+      <div class="card">
+        <h3>How the five failures differ</h3>
+        <p>They rank differently for a caller. An executable call beats a detectable empty or error response, which beats protocol rendered as prose, which beats a <code>tool_calls</code> object whose arguments silently fail to parse. vLLM and llama.cpp leak the framing into content; llama.cpp emits unparseable arguments at 16 tokens; Ollama hides the framing but returns HTTP 500 at 16; TensorRT-LLM and SGLang return an empty, callless message with HTTP 200. None of the five closes the document.</p>
+      </div>
+      <div class="card">
+        <h3>A gate, not a one-off</h3>
+        <p>The property is an engine guarantee, grammar plus closer, not model quality. It holds identically for the random two-layer CI fixture and for granite-4.1-3b, which is why <code>make test-truncation</code> runs on any CPU with no GPU and no competitor, on every release. The <a href="{{repo}}/blob/main/docs/agent-torture.md">agent-torture gate</a> tests the same failure inside multi-turn agent loops. Recipe, raw responses and the substitute-model notes: <a href="{{repo}}/blob/main/docs/truncation-benchmark.md">docs/truncation-benchmark.md</a>.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="section">
+  <div class="wrap split">
+    <div class="sticky">
+      <p class="eyebrow">The technical detail</p>
+      <h2>Forced-truncation recovery is not ordinary constrained decoding.</h2>
+      <p>Ordinary JSON-Schema constrained decoding restricts which token may come next, so the output is valid if it finishes. It says nothing about what happens when the output cannot finish. Runner's schema compiler produces a streaming validator that knows, at every byte, what the smallest legal completion of the document is: close the string the pattern still accepts, complete the number inside its declared range, supply the required properties, close the object. When the budget expires, that completion is emitted.</p>
+      <p>The same compiler backs <code>--json</code>, OpenAI <code>response_format</code>, Responses <code>text.format</code> and tool parameter schemas: objects, arrays, enums, const, type unions, numeric bounds, string lengths and anchored patterns, array counts, and the tool-discriminated union agent clients use. Unsupported or ambiguous constraints fail at compile time rather than being silently weakened.</p>
+    </div>
+    <div>
+<pre><code>./runner -m model.gguf --serve
+curl localhost:8080/v1/chat/completions -d '{
+  "messages":[{"role":"user","content":"Book a table for two at 19:00."}],
+  "tools":[{"type":"function","function":{"name":"book_table",
+    "parameters":{"type":"object","properties":{"people":{"type":"integer"},
+    "time":{"type":"string"}},"required":["people","time"]}}}],
+  "tool_choice":"required","max_tokens":8}'</code></pre>
+      <p class="small muted">The response carries a <code>tool_calls</code> entry whose <code>arguments</code> parse, and the usual <code>finish_reason: "length"</code> so the caller knows the budget was hit.</p>
+      <div class="callout">
+        <span class="t">Shape is guaranteed at any quantization. Contents are not.</span>
+        <p>Across a full quant ladder, constrained decoding held schema conformance and tool selection at 100% down to Q4_0 on two model families, while argument agreement with the Q8_0 reference decayed to 50%. The closer guarantees the call is well-formed and names the right tool; what goes in the arguments is still the model's. <a href="/evidence/#fidelity">The ladders</a>.</p>
+      </div>
+      <div class="callout">
+        <span class="t">Decisions with a confidence signal.</span>
+        <p>Because the validator knows the legal branches at a decision point, Runner can record <code>choice_logprobs</code>: each schema branch as a legal alternative, a posterior renormalized over them, and the probed probability mass. Routing and calibrated classification need that, and an included calibration tool turns labeled decisions into accuracy, Brier-score and ECE gates.</p>
+      </div>
+    </div>
+  </div>
+</section>

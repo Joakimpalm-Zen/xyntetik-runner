@@ -1,0 +1,117 @@
+<!--meta
+title: Receipts and reproducibility
+description: How Xyntetik Runner turns an inference or training run into a signed, chained receipt that a verifier can replay, and exactly what its determinism claim does and does not cover.
+path: /runner/reproducible-lora-training-receipts/
+nav: runner
+-->
+<section class="page-head">
+  <div class="wrap">
+    <p class="eyebrow">Evidence and reproducibility</p>
+    <h1>Results you can inspect, test and replay. Not merely generate.</h1>
+    <p class="lede">If a model's output ever has to be defended, a log is not enough. You need to show which model file, which adapter, which binary, which seed and which exact bytes, and a way for someone who was not in the room to check. Runner writes that record for every recorded run and every trained adapter, signs it, chains it, and ships the verifier in the same binary.</p>
+  </div>
+</section>
+
+<section class="section">
+  <div class="wrap">
+    <div class="section-head">
+      <p class="eyebrow">The practical benefit first</p>
+      <h2>Three things a receipt lets you do that a log does not.</h2>
+    </div>
+    <div class="grid-3">
+      <div class="card accent">
+        <h3>Prove what the model said</h3>
+        <p>A recorded run carries the prompt and output token ids and the exact streamed output bytes. Replay it on the same binary and the verifier reports VERIFIED, DIVERGED at a named token or byte, or UNVERIFIABLE. One exit code, so a script or a CI job can act on it.</p>
+      </div>
+      <div class="card accent">
+        <h3>Prove what it learned from</h3>
+        <p>Every adapter is written with a sidecar recording the base, data and adapter sha256, the seed, the full configuration, and the binary sha, compiler, OS and architecture that produced it. Same inputs on the same build reproduce the same adapter file byte for byte, gated in CI.</p>
+      </div>
+      <div class="card accent">
+        <h3>Prove what you actually shipped</h3>
+        <p>The loaded GGUF can be verified against an OpenSSF Model Signing bundle before it serves a token. Receipts chain to the previous receipt, so a sequence of runs is a sequence, not a pile.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="section tint">
+  <div class="wrap split">
+    <div class="sticky">
+      <p class="eyebrow">How it works</p>
+      <h2>Record, sign, chain, verify.</h2>
+      <p>All of it is flags on the same binary that serves the model. No sidecar service, no database.</p>
+    </div>
+    <div>
+      <div class="flow">
+        <div><strong>Record</strong><code>--transcript FILE</code> writes a one-shot run as a record: model, adapter and binary hashes, the effective execution profile, the exact seed and sampling configuration, prompt and output token ids, and the raw streamed bytes. Raw bytes are authoritative because a byte-token piece need not be valid UTF-8; a readable JSON string travels beside them.</div>
+        <div><strong>Sign and chain</strong><code>--keygen</code> makes an Ed25519 key you hold. <code>--sign-key</code> signs each receipt; <code>--transcript-prev</code> links it to the previous one so tampering with any link breaks the chain after it.</div>
+        <div><strong>Verify</strong><code>--verify FILE</code> replays the record and exits 0 for VERIFIED, 2 for DIVERGED at a token or output byte, 3 for UNVERIFIABLE (invalid record or an artifact whose hash does not match).</div>
+      </div>
+<pre class="mt-2"><code># record a run, signed and chained to the previous one
+./runner -m model.gguf --lora adapter.gguf -p "..." \
+    --transcript run-2.json --transcript-prev run-1.json --sign-key my.key
+
+# replay it later, anywhere: exit code 0, 2 or 3
+./runner -m model.gguf --verify run-2.json; echo $?
+
+# refuse to serve a model whose signature bundle does not verify
+./runner -m model.gguf --model-sig model.sig --model-pubkey signer.pub --serve</code></pre>
+      <p class="small muted">Flag rows for <code>--transcript</code>, <code>--verify</code>, <code>--keygen</code>, <code>--sign-key</code>, <code>--transcript-prev</code>, <code>--model-sig</code> and <code>--model-pubkey</code> are in the <a href="{{repo}}/blob/main/README.md#command-line-reference">command-line reference</a>. The signing code is the TweetNaCl Ed25519 subset, vendored as <code>src/ed25519.c</code>.</p>
+    </div>
+  </div>
+</section>
+
+<section class="section">
+  <div class="wrap split rev">
+    <div>
+      <div class="rows">
+        <div><span>Claimed, gated in CI</span><p><strong>Same executable, same inputs, same sampled tokens.</strong> One binary, one model file, one config and seed: emitted token ids are identical across runs and across thread counts. Exercised by the test suite on every change.</p></div>
+        <div><span></span><p><strong>Training byte-determinism, same build.</strong> <code>--train</code> with identical inputs reproduces the same adapter file, byte for byte, verified by sha256 in CI.</p></div>
+        <div><span></span><p><strong>Quantization determinism.</strong> <code>--quantize</code> and <code>--merge-lora</code> write the same output bytes for the same inputs on the same build.</p></div>
+        <div><span>Replay tiers</span><p><strong>T1, same binary:</strong> bit-exact replay; verified token ids and raw streamed bytes equal the record exactly. <strong>T2, cross-ISA:</strong> token-level replay on another machine or architecture; token ids must match, floating-point internals may not, and the boundary is libm.</p></div>
+        <div><span>Explicitly not claimed</span><p><strong>Independent rebuilds are not byte-identical.</strong> A different compiler, version or ISA legitimately produces a different floating-point sequence. Cross-build verification is what the T2 token tier is for.</p></div>
+        <div><span></span><p><strong>Cross-engine identity is not promised.</strong> Adapter files interoperate, measured; token streams do not.</p></div>
+        <div><span></span><p><strong>Numerical identity of hidden states is never promised.</strong> The contract is about emitted tokens and written artifacts, not intermediate activations.</p></div>
+        <div><span></span><p><strong>Timing, memory footprint and throughput are not part of the contract.</strong></p></div>
+      </div>
+    </div>
+    <div class="sticky">
+      <p class="eyebrow">The claim boundary</p>
+      <h2>Deterministic, with named edges.</h2>
+      <p>The boundary follows what a single binary controls. Inside one executable the instruction sequence is fixed, so accumulation order and math-library behaviour are fixed, and byte-identity is enforceable. Across builds, libm and codegen legitimately differ, so the honest cross-build claim is token identity under replay, which is what <code>--verify</code> implements.</p>
+      <p>Page titles elsewhere say "deterministic". The claim Runner makes is the narrower one: reproducible on the same build, and receipted so a later reader can check what ran. Claims stronger than the mechanism can enforce would eventually be false somewhere, and the project would rather have a narrower promise that is always true. Full text: <a href="{{repo}}/blob/main/docs/determinism-scope.md">docs/determinism-scope.md</a>.</p>
+    </div>
+  </div>
+</section>
+
+<section class="section tint">
+  <div class="wrap">
+    <div class="section-head">
+      <p class="eyebrow">Measured</p>
+      <h2>What has been checked, by whom, and where.</h2>
+    </div>
+    <div class="grid-2">
+      <div class="card">
+        <h3>The public adapter was produced twice</h3>
+        <p><a href="{{hf}}/Qwen3-4B-Runner-ToolUse-Q4_K_M">Qwen3-4B-Runner-ToolUse-Q4_K_M</a> was trained in two independent runs with the same sha256 on the adapter file, measured 2026-08-22. Its card carries the sidecar and the training command, so the third run can be yours.</p>
+      </div>
+      <div class="card">
+        <h3>An external reproduction on a Tesla T4</h3>
+        <p>An independent reproduction posted on the Hugging Face forum on 2026-08-23 confirmed the claim on hardware the project never touched, including the GPU-assisted backward on a Tesla T4: identical adapter sha256 and loss, CPU vs GPU, byte for byte. The same report contributed a finding the project had not measured: rebuilding from source under a different ISA profile changes the adapter bytes while behaviour is essentially unchanged. That finding is why the rebuild edge is written into the scope. Write-up: <a href="{{repo}}/blob/main/docs/adaptation-engine.md">docs/adaptation-engine.md</a>.</p>
+      </div>
+      <div class="card">
+        <h3>Blocking-independence by construction</h3>
+        <p>v0.4.8 found that GCC could contract the scalar tail of the CPU prefill dot differently per loop shape, one ulp between batch blockings on some hosts. Every f32 dot tail is now an explicit <code>fmaf</code>, which has exactly one admissible result, and a CI leg pins the SIMD gates at x86-64-v3 and v4. No shipped model could have been affected, and the changelog says exactly why. <a href="{{repo}}/blob/main/CHANGELOG.md">CHANGELOG, v0.4.8</a>.</p>
+      </div>
+      <div class="card">
+        <h3>Second device family as a gate</h3>
+        <p>Since v0.4.3 every release passes a CUDA smoke gate on real hardware, because GitHub runners have no GPU and the CUDA backend is compiled on three platforms and executed by none of them. Its assertions are invariants rather than expected constants, so one script covers a desktop card, a datacenter card and a unified-memory device. Compatibility reports that executed no check at all are refused by the release check.</p>
+      </div>
+    </div>
+    <div class="btn-row">
+      <a class="btn btn-primary" href="/evidence/">All evidence</a>
+      <a class="btn" href="/runner/train-lora-on-quantized-gguf/">LoRA on the file you serve</a>
+    </div>
+  </div>
+</section>

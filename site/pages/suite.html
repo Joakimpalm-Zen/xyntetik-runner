@@ -1,0 +1,45 @@
+<!--meta
+title: Suite
+description: Xyntetik Suite is the testing, evaluation and evidence layer around Runner. It is in private development and not released; this page says what it is for and what it is not yet.
+path: /suite/
+nav: about
+-->
+<section class="page-head">
+  <div class="wrap">
+    <p class="eyebrow">Xyntetik Suite <span class="pill note" style="margin-left:0.6rem">private, in development</span></p>
+    <h1>The layer between a running model and work you would trust.</h1>
+    <p class="lede">Suite is the testing, evaluation and evidence tooling that sits around Runner: the part that decides which model a machine can honestly run, gates what an agent may do, keeps a human in the loop without making them a bottleneck, and records where every claim came from. It is not released. This page exists so the word means something when it appears elsewhere on the site, not to sell it.</p>
+  </div>
+</section>
+
+<section class="section">
+  <div class="wrap">
+    <div class="section-head">
+      <p class="eyebrow">Why it exists</p>
+      <h2>Each part refuses one common failure.</h2>
+      <p>The engine measures; the suite decides, gates, records and presents. Each package in it opens by naming the failure it refuses.</p>
+    </div>
+    <div class="grid-2">
+      <div class="card"><h3>A diff is not a result</h3><p>An LLM that emits a code change is a demo. It reports success on having written the edit, not on the edit working. The suite treats "it works" as something to be proven by running it.</p></div>
+      <div class="card"><h3>Tool safety scattered is tool safety leaked</h3><p>When every new capability is a new place for the sandbox to leak, safety rules end up scattered across tools. The suite centralises the boundary so a capability is added without adding a hole.</p></div>
+      <div class="card"><h3>Removing the human, then discovering why they were there</h3><p>Most agent pipelines optimise for taking the human out. The suite keeps the human at defined decision points and records what they decided.</p></div>
+      <div class="card"><h3>A local model is a lifecycle, not a binary you launch</h3><p>Choosing a model that fits the machine instead of one that swaps, loading and unloading it around the person's real work, and knowing which file was actually deployed are lifecycle problems. Runner's <code>--caps</code>, <code>--fit</code>, <code>/unload</code> and receipts are the engine side of that; the suite is the decision side.</p></div>
+    </div>
+  </div>
+</section>
+
+<section class="section tint">
+  <div class="wrap split">
+    <div class="sticky">
+      <p class="eyebrow">Status, plainly</p>
+      <h2>What Suite is not yet.</h2>
+    </div>
+    <div class="rows">
+      <div><span>Released</span><p>No. The repository is private and there is no download.</p></div>
+      <div><span>Public artifacts</span><p>None yet. Suite gets its own public section when it has something a stranger can run or verify, and not before.</p></div>
+      <div><span>Relationship to Runner</span><p>Runner is free forever and complete on its own. Nothing in Runner is held back for the suite. The suite's product surface is being built as Runner's capabilities land, and it consumes Runner through the same loopback API anyone else can use.</p></div>
+      <div><span>Who it is for</span><p>Teams that need to run models on machines they own and show, later, what those models did and why a decision was allowed. The evidence and attestation thesis behind Runner's receipts is the thesis behind the suite.</p></div>
+      <div><span>How to follow it</span><p>Runner's <a href="{{repo}}/blob/main/CHANGELOG.md">changelog</a> is where suite-facing engine capabilities land first. Questions: <a href="mailto:hello@xyntetik.com">hello@xyntetik.com</a>.</p></div>
+    </div>
+  </div>
+</section>
