@@ -55,6 +55,8 @@ test-request-stop
 test-request-stop.exe
 test-grammar-ff
 test-grammar-ff.exe
+test-lookup-draft
+test-lookup-draft.exe
 test-moe-tol
 test-moe-tol.exe
 test-moe-fixture.*.gguf
@@ -212,3 +214,8 @@ test-ed25519
 test-ed25519.exe
 test-ecdsa
 test-ecdsa.exe
+
+# xyntetik.com is generated at build time (site/build_pages.py)
+site/runner/
+site/_includes/build.html
+site/_site/

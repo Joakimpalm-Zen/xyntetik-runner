@@ -271,6 +271,12 @@ int swap_to(const char *want) {
             s->e.dm = SV.draft;
             s->e.draft_k = SV.draft_k;
         }
+        if (SV.single && SV.draft_source && !strcmp(SV.draft_source, "lookup")) {
+            // the lookup has no state to reload: the same memset cleared
+            // the flag, and /v1/capabilities keeps reporting it active
+            s->e.lookup_on = true;
+            s->e.draft_k = SV.draft_k;
+        }
         resident_store(idx);
     }
     SV.model_name = SV.reg[idx].name;

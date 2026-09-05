@@ -676,6 +676,9 @@ static void usage_to(FILE *f, const char *prog) {
         "                 (one-shot, chat, and single-model --serve)\n"
         "  --draft-k N    draft tokens per round (default 4)\n"
         "  --mtp          draft from the model's own NextN/MTP head (CPU path)\n"
+        "  --draft-lookup draft from n-gram matches in the context itself\n"
+        "                 (prompt lookup: no weights, no draft forward; one\n"
+        "                 draft source per run, exclusive with --draft/--mtp)\n"
         "  --draft-required  fail instead of decoding plain if --draft is\n"
         "                 refused (local CLI only; serve mode reports\n"
         "                 draft.active from /v1/capabilities)\n"
@@ -874,7 +877,7 @@ int main(int argc, char **argv) {
     const char *draft_path = NULL;
     bool draft_required = false;
     int draft_k = 4;
-    bool mtp_on = false;
+    bool mtp_on = false, draft_lookup = false;
     bool interactive = false, verbose = false, no_bos = false;
     bool seed_given = false;
     bool ignore_eos = false, json_mode = false, serve = false, caps = false;
@@ -995,6 +998,7 @@ int main(int argc, char **argv) {
         else if (!strcmp(a, "--draft-required")) draft_required = true;
         else if (!strcmp(a, "--draft-k")) draft_k = (int)int_arg(a, NEXT, 1, 15);
         else if (!strcmp(a, "--mtp"))     { mp.mtp = true; mtp_on = true; }
+        else if (!strcmp(a, "--draft-lookup")) draft_lookup = true;
         else if (!strcmp(a, "--bench-json")) bench_json = true;
         else if (!strcmp(a, "--score")) score = true;
         else if (!strcmp(a, "--lora")) lora_path = NEXT;
@@ -1115,6 +1119,15 @@ int main(int argc, char **argv) {
     if (draft_required && serve) {
         fprintf(stderr, "error: --draft-required is a local CLI guard; in serve"
                         " mode read draft.active from GET /v1/capabilities\n");
+        return 1;
+    }
+    // One draft source per run. The walk takes one proposal per round and
+    // the counters attribute it to one source; a second source would either
+    // be silently ignored (the accepted-then-ignored shape this project
+    // refuses) or need a composition rule nobody has measured.
+    if (draft_lookup && (draft_path || mtp_on)) {
+        fprintf(stderr, "error: --draft-lookup: one draft source per run; drop "
+                        "--draft/--mtp to draft from the context\n");
         return 1;
     }
     plat_parent_watch(parent_pid);
@@ -1846,8 +1859,8 @@ int main(int argc, char **argv) {
         }
         int rc = server_run(registry ? NULL : &m, registry ? NULL : &tok,
                             model_path, &mp, smp, &ov, port, parallel, n_threads,
-                            ttl, draft_path, draft_k, ignore_eos, tmpl_override,
-                            force_uncertified);
+                            ttl, draft_path, draft_k, draft_lookup, ignore_eos,
+                            tmpl_override, force_uncertified);
         free(owned_prompt);
         return rc;
     }
@@ -1891,6 +1904,18 @@ int main(int argc, char **argv) {
         e.draft_k = draft_k;
         fprintf(stderr, "mtp: drafting from the model's NextN head "
                 "(%d tokens per round)\n", draft_k);
+    }
+    if (draft_lookup) {
+        if (!model_spec_verify_ok(&m)) {
+            fprintf(stderr, "error: --draft-lookup: the verify walk needs "
+                            "host-readable hidden work (rerun with --gpu off)\n");
+            CLI_FAIL;
+        }
+        e.lookup_on = true;
+        e.draft_k = draft_k;
+        fprintf(stderr, "lookup: drafting from the context (n-grams of %d..%d "
+                "tokens, up to %d per round)\n", ENGINE_LOOKUP_N_MIN,
+                ENGINE_LOOKUP_N_MAX, draft_k);
     }
     if (schema_file) {
         size_t ssz = 0;
@@ -2542,6 +2567,13 @@ int main(int argc, char **argv) {
                 .hit_stop = e.hit_stop,
                 .prev_hash = prev_hash[0] ? prev_hash : NULL,
                 .sign_key_path = sign_key,
+                .spec_source = e.dm ? "model" : e.mtp_on ? "mtp"
+                             : e.lookup_on ? "lookup" : NULL,
+                .spec_rounds = e.spec_st.rounds,
+                .spec_drafted = e.spec_st.drafted,
+                .spec_accepted = e.spec_st.accepted,
+                .spec_lk_drafted = e.spec_st.lk_drafted,
+                .spec_lk_accepted = e.spec_st.lk_accepted,
                 .model_sig_json = model_sig_json[0] ? model_sig_json : NULL,
             };
             if (ocap.failed) {

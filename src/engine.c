@@ -1729,17 +1729,22 @@ static int engine_generate_spec(engine *e, float *logits, int max_new,
     if (GK > m->n_batch - 1) GK = m->n_batch - 1; // same activation-buffer bound
     int st_rounds = 0, st_drafted = 0, st_accepted = 0;
     int st_gr_drafted = 0, st_gr_accepted = 0;
+    int st_lk_drafted = 0, st_lk_accepted = 0;
     #define SPEC_STATS() do { \
         e->spec_st.rounds = st_rounds; e->spec_st.drafted = st_drafted; \
         e->spec_st.accepted = st_accepted; \
         e->spec_st.gr_drafted = st_gr_drafted; \
         e->spec_st.gr_accepted = st_gr_accepted; \
-        if (dm || e->mtp_on || getenv("RUNNER_SPEC_STATS")) fprintf(stderr, \
+        e->spec_st.lk_drafted = st_lk_drafted; \
+        e->spec_st.lk_accepted = st_lk_accepted; \
+        if (dm || e->mtp_on || e->lookup_on || getenv("RUNNER_SPEC_STATS")) \
+            fprintf(stderr, \
             "spec: %d rounds, %d drafted, %d accepted (%.2f tok/round)" \
-            ", grammar %d/%d\n", \
+            ", grammar %d/%d, lookup %d/%d\n", \
             st_rounds, st_drafted, st_accepted, \
             st_rounds ? (double)n_gen / st_rounds : 0, \
-            st_gr_accepted, st_gr_drafted); } while (0)
+            st_gr_accepted, st_gr_drafted, \
+            st_lk_accepted, st_lk_drafted); } while (0)
     // RUNNER_SPEC_PROF=1: per-phase wall time of the walk, printed with the
     // round summary. Draft = head/draft-model work, verify = the batched
     // keep-forward, logits = lazy per-row heads, tail = the closing forward.
@@ -1783,7 +1788,7 @@ static int engine_generate_spec(engine *e, float *logits, int max_new,
         // token, cur) at position pos. A queue push; it runs with the draft.
         if (e->mtp_on) model_mtp_feed(m, cur);
         // a grammar-pinned run drafts for free and preempts the draft model
-        int nd = 0, gr = 0;
+        int nd = 0, gr = 0, lk = 0;
         if (e->gram_ff && constrained) {
             int cap = GK;
             if (max_new >= 0 && cap > max_new - n_gen) cap = max_new - n_gen;
@@ -1791,6 +1796,18 @@ static int engine_generate_spec(engine *e, float *logits, int max_new,
             if (cap > 0) nd = gr = grammar_draft(e, d, cap);
             st_drafted += nd; st_gr_drafted += nd;
         }
+        // prompt-lookup drafts: the context hist[0..pos] (the pending token
+        // included) is the only source; a miss drafts nothing and the round
+        // is a one-row verify, i.e. plain decoding plus the search
+        if (prof) tp = now_s();
+        if (!nd && e->lookup_on && e->hist) {
+            int cap = K;
+            if (max_new >= 0 && cap > max_new - n_gen) cap = max_new - n_gen;
+            if (cap > m->n_ctx - e->pos - 1) cap = m->n_ctx - e->pos - 1;
+            if (cap > 0) nd = lk = engine_lookup_draft(e->hist, e->pos + 1, cap, d);
+            st_drafted += nd; st_lk_drafted += nd;
+        }
+        if (prof) t_draft += now_s() - tp;
         // NextN/MTP head drafts (no draft model). The head holds the pair
         // for every token the target consumed plus the pending one; its
         // logits propose x_{pos+1}, then chained rows (the head's own hidden
@@ -1893,6 +1910,7 @@ static int engine_generate_spec(engine *e, float *logits, int max_new,
                 e->hist[e->pos + i + 1] = tok; // accepted: its KV is already right
                 st_accepted++;
                 if (gr) st_gr_accepted++;
+                if (lk) st_lk_accepted++;
                 if (e->mtp_on) model_mtp_feed(m, tok); // pair (h of row i, tok)
                 if (cdone) {
                     if (gr) gtrace_emit(e, i + 1, -1, -1, -1);
@@ -2112,8 +2130,35 @@ int engine_gen_end(engine *e, gen_cb cb, void *ud, double *gen_time) {
 // logprob/choice-logprob capture (both hook the solo step path).
 bool engine_wants_spec(const engine *e) {
     if (e->lp_cap || e->cl_cap) return false;
-    if (e->dm || e->mtp_on) return true;
+    if (e->dm || e->mtp_on || e->lookup_on) return true;
     return e->gram_ff && (e->schema || e->json_mode);
+}
+
+int engine_lookup_draft(const int32_t *hist, int len, int k, int32_t *out) {
+    if (!hist || !out || k <= 0) return 0;
+    for (int n = ENGINE_LOOKUP_N_MAX; n >= ENGINE_LOOKUP_N_MIN; n--) {
+        // an earlier occurrence starts at j, ends at j+n-1, and needs at
+        // least one token after it (j+n <= len-1) to propose; the suffix
+        // itself starts at len-n, so j <= len-n-1 also excludes it
+        if (len < n + 1) continue;
+        const int32_t *suf = hist + len - n;
+        for (int j = len - n - 1; j >= 0; j--) {
+            if (hist[j + n - 1] != suf[n - 1]) continue; // cheap reject first
+            int i = 0;
+            while (i < n - 1 && hist[j + i] == suf[i]) i++;
+            if (i < n - 1) continue;
+            // what followed the occurrence, through the context end; past
+            // it the proposal continues its own period (the occurrence sits
+            // P = len-(j+n) tokens before the suffix, so the context has
+            // repeated with period P since j and the guess is that it keeps
+            // doing so: a run "t t t t" proposes "t t t t", not one "t")
+            int nd = 0, P = len - (j + n);
+            for (int t = j + n; nd < k; t++, nd++)
+                out[nd] = t < len ? hist[t] : out[nd - P];
+            return nd;
+        }
+    }
+    return 0;
 }
 
 int engine_generate(engine *e, float *logits, int max_new,

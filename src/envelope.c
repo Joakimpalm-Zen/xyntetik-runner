@@ -313,6 +313,14 @@ bool transcript_write(const transcript_info *ti) {
         tsb_put(&w, ti->model_sig_json, strlen(ti->model_sig_json));
         tsb_put(&w, ",", 1);
     }
+    if (ti->spec_source) {
+        tsb_put(&w, "\"speculation\":{\"source\":", 24);
+        tsb_json_str(&w, ti->spec_source, strlen(ti->spec_source));
+        tsb_fmt(&w, ",\"rounds\":%d,\"drafted\":%d,\"accepted\":%d,"
+                    "\"lookup_drafted\":%d,\"lookup_accepted\":%d},",
+                ti->spec_rounds, ti->spec_drafted, ti->spec_accepted,
+                ti->spec_lk_drafted, ti->spec_lk_accepted);
+    }
     tsb_fmt(&w, "\"generated_utc\":\"%s\",", utc);
     tsb_put(&w, "\"prompt\":{\"text\":", 17);
     tsb_json_str(&w, ti->prompt_text, strlen(ti->prompt_text));
