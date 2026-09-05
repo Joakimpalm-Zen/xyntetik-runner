@@ -45,7 +45,7 @@ nav: runner
     <div>
       <div class="flow">
         <div><strong>Record</strong><code>--transcript FILE</code> writes a one-shot run as a record: model, adapter and binary hashes, the effective execution profile, the exact seed and sampling configuration, prompt and output token ids, and the raw streamed bytes. Raw bytes are authoritative because a byte-token piece need not be valid UTF-8; a readable JSON string travels beside them.</div>
-        <div><strong>Sign and chain</strong><code>--keygen</code> makes an Ed25519 key you hold. <code>--sign-key</code> signs each receipt; <code>--transcript-prev</code> links it to the previous one so tampering with any link breaks the chain after it.</div>
+        <div><strong>Sign and chain</strong><code>--keygen</code> makes an Ed25519 key you hold (or an ML-DSA-44 post-quantum key with <code>--keygen-algo</code>). <code>--sign-key</code> signs each receipt; <code>--transcript-prev</code> links it to the previous one so tampering with any link breaks the chain after it.</div>
         <div><strong>Verify</strong><code>--verify FILE</code> replays the record and exits 0 for VERIFIED, 2 for DIVERGED at a token or output byte, 3 for UNVERIFIABLE (invalid record or an artifact whose hash does not match).</div>
       </div>
 <pre class="mt-2"><code># record a run, signed and chained to the previous one

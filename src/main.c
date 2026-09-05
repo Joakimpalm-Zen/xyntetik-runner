@@ -21,6 +21,7 @@
 #include <float.h>
 #include <limits.h>
 #include <math.h>
+#include "pmath.h"
 
 // Bare-invocation tray launch needs to know whether a human is at the other
 // end: a piped/redirected probe (CI, scripts, `runner | head`) must get usage
@@ -126,6 +127,29 @@ static bool record_hex(jv *v, const char **out, size_t *out_n) {
 // gets the byte count (excluding the terminator).
 #define MAX_INPUT_FILE (256u * 1024u * 1024u)
 // Seed bytes for --keygen: the OS generator, never the C library's.
+// Build flavor: the portable bit-exact configuration (make T3=1) marks its
+// receipts and its --version so a verifier can tell which binary wrote a
+// record; the default build writes no flavor field at all.
+#ifdef RUNNER_T3_BUILD
+#define RUNNER_BUILD_FLAVOR "t3"
+#define RUNNER_BUILD_FLAVOR_STR "t3"
+#else
+#define RUNNER_BUILD_FLAVOR NULL
+#define RUNNER_BUILD_FLAVOR_STR ""
+#endif
+
+// Case-insensitive equality of two hex strings (a key pasted from another
+// tool may be upper case; the runner writes lower case).
+static bool hex_eq_nocase(const char *a, const char *b) {
+    for (;; a++, b++) {
+        int ca = (unsigned char)*a, cb = (unsigned char)*b;
+        if (ca >= 'A' && ca <= 'F') ca += 'a' - 'A';
+        if (cb >= 'A' && cb <= 'F') cb += 'a' - 'A';
+        if (ca != cb) return false;
+        if (!ca) return true;
+    }
+}
+
 static bool os_random(uint8_t *out, size_t n) {
 #ifdef _WIN32
     for (size_t i = 0; i < n; i += 4) {
@@ -551,11 +575,14 @@ static void usage_to(FILE *f, const char *prog) {
         "                 UNVERIFIABLE (exit 3: bad chain hash, wrong model\n"
         "                 sha, wrong adapter). The record's config and seed\n"
         "                 override CLI sampling flags\n"
-        "  --keygen F     write an Ed25519 receipt-signing key (xyntetik.runner\n"
-        "                 .signkey.v1) to F and print its public key; needs no -m\n"
+        "  --keygen F     write a receipt-signing key (xyntetik.runner.signkey\n"
+        "                 .v1) to F and print its public key; needs no -m\n"
+        "  --keygen-algo A  ed25519 (default; 32-byte key, 64-byte signature)\n"
+        "                 or ml-dsa-44 (FIPS 204 post-quantum; 1312-byte key,\n"
+        "                 2420-byte signature, deterministic)\n"
         "  --sign-key F   with --transcript: sign the receipt with the key in F\n"
-        "                 (an Ed25519 signature over every byte before the\n"
-        "                 ,\"signature\" key, chain hash included)\n"
+        "                 (a signature over every byte before the ,\"signature\"\n"
+        "                 key, chain hash included; the object names the algo)\n"
         "  --transcript-prev F  with --transcript: link the receipt to F (its\n"
         "                 chain hash becomes this record's chain.prev); with\n"
         "                 --verify: check that link (UNVERIFIABLE on a break)\n"
@@ -865,10 +892,11 @@ int main(int argc, char **argv) {
     const char *type_plan = NULL, *merge_out = NULL, *context_out = NULL;
     const char *transcript_path = NULL;
     const char *transcript_prev = NULL, *sign_key = NULL, *keygen_path = NULL;
+    const char *keygen_algo = SIGN_ALGO_ED25519;
     const char *trust_key = NULL, *model_sig = NULL, *model_pubkey = NULL;
     bool require_signed = false, require_signed_model = false;
     receipt_sig_state v_rsig = RSIG_NONE;   // --verify: the record's signature state
-    char v_rec_pub[65] = "";
+    char v_rec_pub[SIGN_PUBHEX_CAP] = "";
     char v_prev[65] = "";
     const char *verify_path = NULL;
     int n_predict = 256, n_threads = 0, tmpl = -1, reserve_cpu_pct = 0;
@@ -953,6 +981,7 @@ int main(int argc, char **argv) {
         else if (!strcmp(a, "--transcript-prev")) transcript_prev = NEXT;
         else if (!strcmp(a, "--sign-key")) sign_key = NEXT;
         else if (!strcmp(a, "--keygen")) keygen_path = NEXT;
+        else if (!strcmp(a, "--keygen-algo")) keygen_algo = NEXT;
         else if (!strcmp(a, "--require-signed")) require_signed = true;
         else if (!strcmp(a, "--trust-key")) trust_key = NEXT;
         else if (!strcmp(a, "--model-sig")) model_sig = NEXT;
@@ -1063,7 +1092,10 @@ int main(int argc, char **argv) {
         // the model, prints one JSON line, exits.
         else if (!strcmp(a, "--tool-info")) tool_info = true;
         else if (!strcmp(a, "--fit")) fit_path = NEXT;
-        else if (!strcmp(a, "--version")) { printf("runner %s\n", RUNNER_VERSION); return 0; }
+        else if (!strcmp(a, "--version")) {
+            printf("runner %s%s\n", RUNNER_VERSION, RUNNER_BUILD_FLAVOR ? " (" RUNNER_BUILD_FLAVOR_STR ")" : "");
+            return 0;
+        }
         else if (!strcmp(a, "-h") || !strcmp(a, "--help")) {
             usage_to(stdout, argv[0]);
             return 0;
@@ -1096,20 +1128,25 @@ int main(int argc, char **argv) {
     // than accepted with no effect.
     if (keygen_path) {
         uint8_t seed[32];
-        char pub[65];
+        char pub[SIGN_PUBHEX_CAP];
+        if (!sign_algo_known(keygen_algo)) {
+            fprintf(stderr, "error: --keygen-algo: unknown algorithm %s (ed25519 or "
+                    "ml-dsa-44)\n", keygen_algo);
+            return 1;
+        }
         if (!os_random(seed, sizeof seed)) {
             fprintf(stderr, "error: --keygen: the OS random generator is unavailable\n");
             return 1;
         }
-        if (!signkey_write(keygen_path, seed, pub)) {
+        if (!signkey_write(keygen_path, keygen_algo, seed, pub)) {
             fprintf(stderr, "error: --keygen: cannot write %s\n", keygen_path);
             return 1;
         }
         memset(seed, 0, sizeof seed);
-        printf("{\"schema_version\":\"xyntetik.runner.signkey.v1\",\"algo\":\"ed25519\","
-               "\"public_key\":\"%s\"}\n", pub);
-        fprintf(stderr, "signing key -> %s (keep it private; the public key is %s)\n",
-                keygen_path, pub);
+        printf("{\"schema_version\":\"xyntetik.runner.signkey.v1\",\"algo\":\"%s\","
+               "\"public_key\":\"%s\"}\n", keygen_algo, pub);
+        fprintf(stderr, "signing key -> %s (keep it private; the %s public key is %s)\n",
+                keygen_path, keygen_algo, pub);
         return 0;
     }
     if (draft_required && !draft_path) {
@@ -1389,7 +1426,27 @@ int main(int argc, char **argv) {
                     "no signature\n");
             jv_free(vrec); return 3;
         }
-        if (trust_key && (v_rsig != RSIG_OK || strcmp(trust_key, v_rec_pub) != 0)) {
+        // --trust-key takes the public key as hex, or "sha256:" + the hex
+        // SHA-256 of the key bytes (an ML-DSA-44 key is 2624 hex characters;
+        // its digest is what fits in a policy file or a command line)
+        bool trusted = v_rsig == RSIG_OK;
+        if (trusted && trust_key) {
+            if (strncmp(trust_key, "sha256:", 7) == 0) {
+                uint8_t pkb[SIGN_PK_MAX];
+                size_t hn = strlen(v_rec_pub);
+                char digest[65] = "";
+                for (size_t i = 0; i < hn / 2; i++) {
+                    unsigned v = 0;
+                    sscanf(v_rec_pub + 2 * i, "%2x", &v);
+                    pkb[i] = (uint8_t)v;
+                }
+                envelope_data_sha256(pkb, hn / 2, digest);
+                trusted = hex_eq_nocase(trust_key + 7, digest);
+            } else {
+                trusted = hex_eq_nocase(trust_key, v_rec_pub);
+            }
+        }
+        if (trust_key && !trusted) {
             fprintf(stderr, "UNVERIFIABLE: --trust-key: the record is %s\n",
                     v_rsig == RSIG_OK ? "signed by a different key" : "unsigned");
             jv_free(vrec); return 3;
@@ -2511,6 +2568,7 @@ int main(int argc, char **argv) {
                 .runner_version = RUNNER_VERSION,
                 .executable_path = transcript_exe,
                 .compiler = __VERSION__,
+                .build_flavor = RUNNER_BUILD_FLAVOR,
 #ifdef _WIN32
                 .os = "windows",
 #elif defined(__APPLE__)

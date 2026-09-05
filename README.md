@@ -366,6 +366,32 @@ Runner uses ordinary platform C, math, threading, mmap/file-mapping, and
 dynamic-loader libraries. GGUF is little-endian, so little-endian hosts are
 required.
 
+### The T3 build: same model, same bytes, any machine (opt-in)
+
+```sh
+make T3=1            # strict float, portable math, canonical-order kernels
+./runner --version   # runner vX.Y.Z (t3)
+```
+
+The default build uses fast-math and each ISA's own SIMD reduction order,
+so two machines agree on every sampled token (tier T2) but not on the last
+bits of the logits. `make T3=1` removes the three causes of that
+difference: it compiles without fast-math or fused-multiply-add
+contraction, replaces libm's `expf`, `logf`, `sinf`, `cosf`, `tanhf` and
+`powf` with implementations over IEEE add, multiply and divide only
+(`src/pmath.h`), and dispatches the F32, F16 and Q8_0 dot products to
+kernels that compute one fixed reduction tree on every target
+(`RUNNER_CANON_KERNELS`, gated bit for bit in `tests/test_canon_kernels.c`).
+Measured on a 165-token scoring run of the same Q8_0 model: 0 of 165
+positions bit-identical between an Apple M1 and an x86-64 box in the
+default build, 165 of 165 in the T3 build, and the same on riscv64 under
+qemu. Cost: 7% decode on x86-64, 17% on the M1, all of it the strict-float
+flags. A T3 receipt carries `"flavor":"t3"` in its `build` object. This is
+measured, not yet a claimed tier: the batched prefill tile, the k-quant
+formats, MoE and the GPU backends are not canonical yet. Details and
+tables in [docs/portable-bitexact-2026-09-05.md](docs/portable-bitexact-2026-09-05.md);
+`make cross-riscv64` builds the same configuration for riscv64 with zig.
+
 | Platform | Toolchain | Accelerated path |
 |---|---|---|
 | Linux x86_64 | GCC | AVX2/FMA; CUDA on NVIDIA Turing / compute capability 7.5 or newer, driver with CUDA 13.0+ support (R580 series) |
@@ -731,11 +757,12 @@ flags into unrelated feature sections.
 | `--score` | Teacher-forced scoring: per-token log P(token\|prefix) over the raw `-p`/`-f` text - no template, no sampling - printed as JSON (`xyntetik.runner.score.v1`) with per-position logprobs, NLL, perplexity, and the absolute next-token `top1`/`top1_rate` beside `n_vocab`. The default path scores one forward per position, the exact numerics the sampler sees at decode time; `RUNNER_SCORE_CHUNKED=1` opts into a faster batched pass whose deviation from solo is measured and test-pinned (max \|Δlogprob\| ~1e-6 on the fixtures - the CPU batched forward is not bit-identical to solo, and scoring defaults to exactness over speed). `top1` exists so a harness can check the run instead of trusting it: a token with probability above 0.5 must be the argmax and an argmax token must carry at least `1/n_vocab`, so the reported count is bracketed by the reported logprobs, and a scorer that disagrees with itself fails loudly rather than returning a confident wrong perplexity. |
 | `--transcript FILE` | Record a one-shot `-p` run as `xyntetik.runner.transcript.v1`: model, adapter and binary hashes; the effective execution profile (including fallback KV type and GPU layer count); the exact 64-bit seed and sampling config; prompt/output text and token ids; the exact streamed output bytes as `output.bytes_hex` (tokenizer pieces need not individually be valid UTF-8); a `speculation` object naming the draft source (`model`, `mtp` or `lookup`) with its round, drafted and accepted counts when one was configured (absent for plain decoding, so those records are unchanged); and a chain hash over the serialized record body. |
 | `--verify FILE` | Replay a transcript against `-m` and report `VERIFIED` (exit 0), `DIVERGED` at a token or output byte (exit 2), or `UNVERIFIABLE` for an invalid record or artifact mismatch (exit 3). The recorded replay settings override conflicting CLI values. See [the exact determinism scope](docs/determinism-scope.md). |
-| `--keygen FILE` | Write an Ed25519 receipt-signing key (`xyntetik.runner.signkey.v1`, the seed and public key as hex) to FILE and print the public key. Needs no `-m`; the seed comes from the OS generator. Keep the file private. |
-| `--sign-key FILE` | With `--transcript`: sign the receipt with the key in FILE. The signature object is appended inside the record after the chain and covers every byte before its own `,"signature"` key, chain hash included, so any Ed25519 library verifies it from the file bytes and the embedded public key alone. |
+| `--keygen FILE` | Write a receipt-signing key (`xyntetik.runner.signkey.v1`: `algo`, the 32-byte seed and the public key as hex) to FILE and print the public key. Needs no `-m`; the seed comes from the OS generator. Keep the file private. |
+| `--keygen-algo ALGO` | With `--keygen`: `ed25519` (default; RFC 8032, 32-byte key, 64-byte signature) or `ml-dsa-44` (FIPS 204, post-quantum; 1312-byte key, 2420-byte signature; deterministic keygen and signing, verified against the NIST ACVP known answers). Verification accepts both; the record's signature object names its algorithm. |
+| `--sign-key FILE` | With `--transcript`: sign the receipt with the key in FILE. The signature object is appended inside the record after the chain and covers every byte before its own `,"signature"` key, chain hash included, so any Ed25519 (or ML-DSA-44) library verifies it from the file bytes and the embedded public key alone. |
 | `--transcript-prev FILE` | With `--transcript`: link the new receipt to FILE (FILE's chain hash becomes this record's `chain.prev`; a chain head carries 64 zeros). With `--verify`: check that link, `UNVERIFIABLE` on a break. |
 | `--require-signed` | With `--verify`: an unsigned record is `UNVERIFIABLE`. Signature, trust and link checks all run before the model is loaded for the replay. |
-| `--trust-key HEX` | With `--verify`: the record must be signed by this Ed25519 public key; unsigned, or signed by any other key, is `UNVERIFIABLE`. The verdict JSON carries `signed`, `public_key` and `prev` either way. |
+| `--trust-key HEX` | With `--verify`: the record must be signed by this public key, given as its hex bytes or as `sha256:` plus the hex SHA-256 of those bytes (an ML-DSA-44 key is 2624 hex characters; its digest fits a policy file); unsigned, or signed by any other key, is `UNVERIFIABLE`. The verdict JSON carries `signed`, `public_key` and `prev` either way. |
 | `--model-sig FILE` | An OpenSSF Model Signing (OMS) bundle for `-m`, verified at load against `--model-pubkey`: the ECDSA signature over the DSSE pre-authentication encoding (P-256/384/521, SHA-256 first, then the curve-matched digest), the in-toto statement and predicate type, the `files`/`sha256` serialization, and the loaded file's digest against the manifest entry naming it (`.` for a single-file model). An explicit bundle that does not verify refuses the load. Without the flag, `<model>.sig` beside the model is picked up when it exists: verified when a key is given, reported as unverified otherwise. The receipt records the verdict as `model_signature`. Key method only; certificate and keyless bundles are refused as unsupported, never passed. Measured 2026-09-02 against bundles written by the reference signer (`model_signing` 1.1.1, key method, P-256) and against RFC 6979 vectors for all three curves. |
 | `--model-pubkey FILE` | The PEM `PUBLIC KEY` (EC, P-256/384/521) an OMS bundle must verify with. Given without `--model-sig`, it turns an auto-detected `<model>.sig` into a gate. |
 | `--require-signed-model` | Refuse to load `-m` unless an OMS bundle is present and verifies with `--model-pubkey`. The policy applies to named registry entries, every serving slot, and reloads after unload or TTL expiry. Registry refusals return HTTP 409 with `model_signature_refused`; the server stays available. Without `--model-sig`, each load discovers that model's own `.sig` sidecar. |
@@ -1943,7 +1970,7 @@ silently dropped branch.
 | Context | Batched prefill, f16/q8 KV, linear/YaRN/llama-3 scaling, automatic extension. |
 | Serving | Chat Completions, Responses, legacy completions, embeddings, Anthropic Messages, SSE, parallel slots, model swap, prefix reuse. |
 | Desktop | macOS menu bar and Windows notification-area controller. |
-| Provenance | Replay-verifiable transcripts; Ed25519-signed, chained receipts with a one-exit-code verifier; OpenSSF Model Signing verification of the loaded GGUF (key method, P-256/384/521). |
+| Provenance | Replay-verifiable transcripts; Ed25519- or ML-DSA-44-signed, chained receipts with a one-exit-code verifier; OpenSSF Model Signing verification of the loaded GGUF (key method, P-256/384/521). |
 
 Not implemented: Vulkan; TLS/auth; remote bind; remote/streamed GGUF parts; the
 `qwen2moe`/`deepseek2`/`kimi` architecture IDs (their shared-expert *layout* is
@@ -2151,4 +2178,7 @@ want to help fund the hardware and measurement time behind it, you can
 Third-party code: `src/ed25519.c` is the signing subset of TweetNaCl
 (Bernstein, van Gastel, Janssen, Lange, Schwabe, Smetsers), placed in the
 public domain by its authors; the file header records what was kept and what
-was changed.
+was changed. `src/mldsa/` is the ML-DSA-44 (FIPS 204) reference implementation
+from pq-crystals/dilithium (public domain / CC0, also Apache 2.0), pinned to the
+44 parameter set with two recorded changes: keys derive from a caller-supplied
+seed and signing is deterministic (`src/mldsa/sign.c` marks both).

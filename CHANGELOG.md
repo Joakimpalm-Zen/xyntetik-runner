@@ -8,6 +8,30 @@ names that were true when they were written.
 
 ## Unreleased
 
+- Receipts can be signed with a post-quantum key: `--keygen-algo ml-dsa-44`
+  writes an ML-DSA-44 (FIPS 204) key in the same `signkey.v1` file, the
+  record's signature object names its algorithm, and `--verify` accepts
+  both; Ed25519 stays the default and existing receipts and key files are
+  unchanged. `--trust-key sha256:<digest>` trusts a key by the digest of its
+  bytes (an ML-DSA-44 public key is 2624 hex characters). The primitive is
+  the pq-crystals reference under `src/mldsa/` (seeded key generation,
+  deterministic signing, both recorded in `src/mldsa/LICENSE`), anchored to
+  the NIST ACVP known answers in `tests/test_mldsa.c`. Receipt +7.3 KB,
+  binary +41 KB; sign and verify are faster than the in-tree Ed25519
+  (docs/postquantum-receipts-2026-09-05.md).
+- `make T3=1` builds the portable bit-exact configuration: strict float,
+  portable transcendental functions (`src/pmath.h`) and canonical-order dot
+  kernels (`RUNNER_CANON_KERNELS`, gated bit for bit against an independent
+  reference by `tests/test_canon_kernels.c`, now in `make test`). Measured
+  bit-identical decode log-probabilities across arm64, x86-64 and riscv64
+  at 7 to 17% decode cost; a T3 receipt carries `"flavor":"t3"` in its
+  build object and `--version` says `(t3)`. Not yet a claimed tier: prefill
+  tile, k-quants, MoE and GPU are not canonical
+  (docs/portable-bitexact-2026-09-05.md, docs/determinism-scope.md).
+- `make cross-riscv64` cross-compiles a static riscv64 binary with zig in
+  the T3 configuration; runs under qemu-riscv64 or on a board. Not a
+  release target.
+
 - The publication rule is enforced: `scripts/check-commit-hygiene.py` runs in
   a `commit-hygiene` workflow over every commit, title and body of a pull
   request (no path filter) and fails it on a session URL or id, an e-mail

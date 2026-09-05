@@ -279,8 +279,106 @@ int main(void) {
                       "compiler\nline") == 0);
         assert(strcmp(jv_str(jv_get(profile, "device"), ""),
                       "GPU \"quoted\"") == 0);
+        // the default build writes no build.flavor at all
+        assert(jv_get(build, "flavor") == NULL);
         jv_free(rv);
         remove(record_path);
+        // a T3 build marks its records
+        ti.build_flavor = "t3";
+        assert(transcript_write(&ti));
+        rf = fopen(record_path, "rb");
+        assert(rf);
+        rn = fread(record, 1, sizeof record, rf);
+        fclose(rf);
+        rv = json_parse(record, rn);
+        assert(rv);
+        assert(strcmp(jv_str(jv_get(jv_get(rv, "build"), "flavor"), ""), "t3") == 0);
+        jv_free(rv);
+        remove(record_path);
+    }
+
+    // Signed receipts under both key algorithms: the key file round-trips,
+    // the record's signature object names the algo and verifies, and one
+    // flipped byte anywhere in the signed span is RSIG_BAD. Both keys derive
+    // from the same fixed seed, so the ML-DSA-44 public key here is the ACVP
+    // vector's if the seed is theirs (tests/test_mldsa.c pins that); this
+    // test pins the receipt plumbing around the primitive.
+    {
+        static const char *algos[] = { SIGN_ALGO_ED25519, SIGN_ALGO_MLDSA44 };
+        static const size_t pk_len[] = { 32, 1312 }, sig_len[] = { 64, 2420 };
+        for (int ai = 0; ai < 2; ai++) {
+            char key_path[512], record_path[512];
+            snprintf(key_path, sizeof key_path, "%s.%s.signkey.json", MODEL, algos[ai]);
+            snprintf(record_path, sizeof record_path, "%s.%s.receipt.json", MODEL, algos[ai]);
+            uint8_t seed[32];
+            for (int i = 0; i < 32; i++) seed[i] = (uint8_t)(i * 7 + ai);
+            char pub[SIGN_PUBHEX_CAP];
+            assert(signkey_write(key_path, algos[ai], seed, pub));
+            assert(strlen(pub) == pk_len[ai] * 2);
+            signkey k;
+            assert(signkey_load(key_path, &k));
+            assert(strcmp(k.algo, algos[ai]) == 0 && k.pk_n == pk_len[ai] && k.sig_n == sig_len[ai]);
+            // the same seed derives the same key: deterministic keygen
+            signkey k2;
+            assert(signkey_load(key_path, &k2) && memcmp(k.pk, k2.pk, k.pk_n) == 0);
+
+            int32_t prompt_tok[] = { 1 };
+            int32_t output_tok[] = { 2 };
+            transcript_info ti = {
+                .out_path = record_path, .sign_key_path = key_path,
+                .runner_version = "t", .executable_path = MODEL,
+                .compiler = "c", .os = "o", .arch = "a", .device = "d",
+                .threads = 1, .n_ctx = 8, .n_batch = 1, .model_path = MODEL,
+                .seed = 1, .repeat_penalty = 1, .bos = true, .prompt_text = "p",
+                .prompt_tokens = prompt_tok, .n_prompt = 1,
+                .output_text = "x", .output_text_len = 1,
+                .output_tokens = output_tok, .n_output = 1,
+            };
+            assert(transcript_write(&ti));
+            FILE *rf = fopen(record_path, "rb");
+            assert(rf);
+            static char record[16384];
+            size_t rn = fread(record, 1, sizeof record - 1, rf);
+            fclose(rf);
+            record[rn] = 0;
+            char got_pub[SIGN_PUBHEX_CAP];
+            assert(receipt_signature_check(record, rn, got_pub) == RSIG_OK);
+            assert(strcmp(got_pub, pub) == 0);
+            jv *rv = json_parse(record, rn);
+            assert(rv);
+            assert(strcmp(jv_str(jv_get(jv_get(rv, "signature"), "algo"), ""), algos[ai]) == 0);
+            assert(strlen(jv_str(jv_get(jv_get(rv, "signature"), "sig"), "")) == sig_len[ai] * 2);
+            jv_free(rv);
+            // tamper inside the signed span (the seed field, before the chain)
+            char *seedpos = strstr(record, "\"seed\":1");
+            assert(seedpos);
+            seedpos[7] = '2';
+            assert(receipt_signature_check(record, rn, got_pub) == RSIG_BAD);
+            seedpos[7] = '1';
+            // tamper in the signature itself
+            char *sigpos = strstr(record, "\"sig\":\"");
+            assert(sigpos);
+            sigpos[7] = sigpos[7] == '0' ? '1' : '0';
+            assert(receipt_signature_check(record, rn, got_pub) == RSIG_BAD);
+            // an algo the verifier does not know is malformed, not accepted
+            char *algopos = strstr(record, ",\"signature\":{\"algo\":\"");
+            assert(algopos);
+            algopos[22] = 'X';
+            assert(receipt_signature_check(record, rn, got_pub) == RSIG_MALFORMED);
+            remove(record_path);
+            remove(key_path);
+        }
+        // a key file whose algo is unknown does not load
+        char key_path[512];
+        snprintf(key_path, sizeof key_path, "%s.bad.signkey.json", MODEL);
+        FILE *kf = fopen(key_path, "wb");
+        assert(kf);
+        fputs("{\"schema_version\":\"xyntetik.runner.signkey.v1\",\"algo\":\"rsa\","
+              "\"seed\":\"0000000000000000000000000000000000000000000000000000000000000000\"}", kf);
+        fclose(kf);
+        signkey k;
+        assert(!signkey_load(key_path, &k));
+        remove(key_path);
     }
 
     rm_model();

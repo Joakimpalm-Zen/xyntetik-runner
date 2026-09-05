@@ -1,9 +1,23 @@
+// RUNNER_NO_SIMD (cross-ISA bit-exactness experiment, R12.1): compile the
+// scalar reference kernels only, so the reduction order is the source order
+// on every ISA. The SIMD selection below is preprocessor-keyed on the
+// target's own macros; undefining them here is the whole switch.
+#ifdef RUNNER_NO_SIMD
+#undef __AVX2__
+#undef __FMA__
+#undef __F16C__
+#undef __AVX512F__
+#undef __AVX512VNNI__
+#undef __AVX512VL__
+#undef __ARM_NEON
+#endif
 // Quantization block formats (ggml-compatible), dot kernels, threadpool.
 #include "quants.h"
 #include "fp16.h"
 #include "tpool.h"
 
 #include <math.h>
+#include "pmath.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -2228,7 +2242,163 @@ static inline float dot_f32_row(const float *w, const float *x, int n) {
     return s;
 }
 
+// ---------------------------------------------------------------------------
+// Canonical-order kernels (RUNNER_CANON_KERNELS, the R12.1 experiment).
+//
+// The ISA-native kernels above are each correct on their own machine, but
+// arm64 and x86-64 reduce in different orders (4-lane vs 8-lane chains,
+// different horizontal sums), so the same model gives different last bits
+// on the two. These kernels fix ONE reduction tree per format and implement
+// that tree on every target: eight virtual lanes, lane i accumulating the
+// elements congruent to i mod 8 within a 32-wide step with fused
+// multiply-adds, then the tree ((l0+l4)+(l2+l6)) + ((l1+l5)+(l3+l7)). The
+// AVX2 kernels already have this shape (their hsum8 is that tree); the NEON
+// versions mirror it with two 4-lane registers per virtual 8-lane vector;
+// the scalar fallback mirrors it with fmaf, which is what a target without
+// SIMD (riscv64 today) computes. Same tree, same fused operations, same
+// bits, on every conforming IEEE-754 target, provided the file is compiled
+// with -fno-fast-math -ffp-contract=off (see pmath.h for the libm half).
+#ifdef RUNNER_CANON_KERNELS
+
+// ((l0+l4)+(l2+l6)) + ((l1+l5)+(l3+l7)), spelled out so no compiler or ISA
+// picks another association
+static inline float __attribute__((unused)) canon_tree8(const float l[8]) {
+    float c0 = l[0] + l[4], c1 = l[1] + l[5], c2 = l[2] + l[6], c3 = l[3] + l[7];
+    float d0 = c0 + c2, d1 = c1 + c3;
+    return d0 + d1;
+}
+
+#if RUNNER_AVX2
+// the native AVX2 kernels are the reference shape: mul, three fmadd, fmadd by
+// the block scale into an 8-lane accumulator, hsum8 (which is canon_tree8)
+static float canon_dot_q8_0(const block_q8_0 *b, const float *x, int n) { return dot_q8_0_avx2(b, x, n); }
+static float canon_dot_f16(const f16_t *w, const float *x, int n)        { return dot_f16_avx2(w, x, n); }
+static float canon_dot_f32(const float *w, const float *x, int n)        { return dot_f32_row(w, x, n); }
+#elif RUNNER_NEON
+// lanes 0..3 in A, lanes 4..7 in B; c = A + B then (c0+c2)+(c1+c3) is hsum8's tree
+static inline float canon_hsum8_neon(float32x4_t A, float32x4_t B) {
+    float32x4_t c = vaddq_f32(A, B);
+    float c0 = vgetq_lane_f32(c, 0), c1 = vgetq_lane_f32(c, 1);
+    float c2 = vgetq_lane_f32(c, 2), c3 = vgetq_lane_f32(c, 3);
+    float d0 = c0 + c2, d1 = c1 + c3;
+    return d0 + d1;
+}
+static float canon_dot_q8_0(const block_q8_0 *b, const float *x, int n) {
+    float32x4_t accA = vdupq_n_f32(0), accB = vdupq_n_f32(0);
+    for (int i = 0; i < n / QK; i++) {
+        float32x4_t fa[4], fb[4];
+        i8_to_f32x4(vld1q_s8(b[i].qs), fa);       // elements 0..15
+        i8_to_f32x4(vld1q_s8(b[i].qs + 16), fb);  // elements 16..31
+        const float *xp = x + i * QK;
+        // virtual lane i (<8) takes elements i, 8+i, 16+i, 24+i in that order
+        float32x4_t tA = vmulq_f32(fa[0], vld1q_f32(xp));           // 0..3
+        float32x4_t tB = vmulq_f32(fa[1], vld1q_f32(xp + 4));       // 4..7
+        tA = vfmaq_f32(tA, fa[2], vld1q_f32(xp + 8));               // 8..11
+        tB = vfmaq_f32(tB, fa[3], vld1q_f32(xp + 12));              // 12..15
+        tA = vfmaq_f32(tA, fb[0], vld1q_f32(xp + 16));              // 16..19
+        tB = vfmaq_f32(tB, fb[1], vld1q_f32(xp + 20));              // 20..23
+        tA = vfmaq_f32(tA, fb[2], vld1q_f32(xp + 24));              // 24..27
+        tB = vfmaq_f32(tB, fb[3], vld1q_f32(xp + 28));              // 28..31
+        float d = f16_to_f32(b[i].d);
+        accA = vfmaq_n_f32(accA, tA, d);
+        accB = vfmaq_n_f32(accB, tB, d);
+    }
+    return canon_hsum8_neon(accA, accB);
+}
+static float canon_dot_f16(const f16_t *w, const float *x, int n) {
+    // AVX2 shape: a0 <- elements i..i+7, a1 <- i+8..i+15, hsum8(a0 + a1)
+    float32x4_t a0 = vdupq_n_f32(0), a1 = vdupq_n_f32(0);   // a0 lanes 0..3, 4..7
+    float32x4_t b0 = vdupq_n_f32(0), b1 = vdupq_n_f32(0);   // a1 lanes 0..3, 4..7
+    int i = 0;
+    for (; i + 16 <= n; i += 16) {
+        uint16x8_t h0 = vld1q_u16(w + i), h1 = vld1q_u16(w + i + 8);
+        a0 = vfmaq_f32(a0, vcvt_f32_f16(vreinterpret_f16_u16(vget_low_u16(h0))),  vld1q_f32(x + i));
+        a1 = vfmaq_f32(a1, vcvt_f32_f16(vreinterpret_f16_u16(vget_high_u16(h0))), vld1q_f32(x + i + 4));
+        b0 = vfmaq_f32(b0, vcvt_f32_f16(vreinterpret_f16_u16(vget_low_u16(h1))),  vld1q_f32(x + i + 8));
+        b1 = vfmaq_f32(b1, vcvt_f32_f16(vreinterpret_f16_u16(vget_high_u16(h1))), vld1q_f32(x + i + 12));
+    }
+    float s = canon_hsum8_neon(vaddq_f32(a0, b0), vaddq_f32(a1, b1));
+    for (; i < n; i++) s += f16_to_f32(w[i]) * x[i];
+    return s;
+}
+static float canon_dot_f32(const float *w, const float *x, int n) {
+    // AVX2 shape: four 8-lane accumulators over 32-element steps,
+    // hsum8((a0 + a1) + (a2 + a3))
+    float32x4_t a0 = vdupq_n_f32(0), a1 = vdupq_n_f32(0), b0 = vdupq_n_f32(0), b1 = vdupq_n_f32(0);
+    float32x4_t c0 = vdupq_n_f32(0), c1 = vdupq_n_f32(0), d0 = vdupq_n_f32(0), d1 = vdupq_n_f32(0);
+    int i = 0;
+    for (; i + 32 <= n; i += 32) {
+        a0 = vfmaq_f32(a0, vld1q_f32(w + i),      vld1q_f32(x + i));
+        a1 = vfmaq_f32(a1, vld1q_f32(w + i + 4),  vld1q_f32(x + i + 4));
+        b0 = vfmaq_f32(b0, vld1q_f32(w + i + 8),  vld1q_f32(x + i + 8));
+        b1 = vfmaq_f32(b1, vld1q_f32(w + i + 12), vld1q_f32(x + i + 12));
+        c0 = vfmaq_f32(c0, vld1q_f32(w + i + 16), vld1q_f32(x + i + 16));
+        c1 = vfmaq_f32(c1, vld1q_f32(w + i + 20), vld1q_f32(x + i + 20));
+        d0 = vfmaq_f32(d0, vld1q_f32(w + i + 24), vld1q_f32(x + i + 24));
+        d1 = vfmaq_f32(d1, vld1q_f32(w + i + 28), vld1q_f32(x + i + 28));
+    }
+    float s = canon_hsum8_neon(vaddq_f32(vaddq_f32(a0, b0), vaddq_f32(c0, d0)),
+                               vaddq_f32(vaddq_f32(a1, b1), vaddq_f32(c1, d1)));
+    for (; i < n; i++) s += w[i] * x[i];
+    return s;
+}
+#else
+// no SIMD (riscv64, or RUNNER_NO_SIMD): the same eight-lane tree with fmaf
+static float canon_dot_q8_0(const block_q8_0 *b, const float *x, int n) {
+    float acc[8] = {0};
+    for (int i = 0; i < n / QK; i++) {
+        const int8_t *q = b[i].qs;
+        const float *xp = x + i * QK;
+        float d = f16_to_f32(b[i].d);
+        for (int l = 0; l < 8; l++) {
+            float t = (float)q[l] * xp[l];
+            t = fmaf((float)q[8 + l],  xp[8 + l],  t);
+            t = fmaf((float)q[16 + l], xp[16 + l], t);
+            t = fmaf((float)q[24 + l], xp[24 + l], t);
+            acc[l] = fmaf(d, t, acc[l]);
+        }
+    }
+    return canon_tree8(acc);
+}
+static float canon_dot_f16(const f16_t *w, const float *x, int n) {
+    float a[8] = {0}, b8[8] = {0};
+    int i = 0;
+    for (; i + 16 <= n; i += 16)
+        for (int l = 0; l < 8; l++) {
+            a[l]  = fmaf(f16_to_f32(w[i + l]),     x[i + l],     a[l]);
+            b8[l] = fmaf(f16_to_f32(w[i + 8 + l]), x[i + 8 + l], b8[l]);
+        }
+    float v[8];
+    for (int l = 0; l < 8; l++) v[l] = a[l] + b8[l];
+    float s = canon_tree8(v);
+    for (; i < n; i++) s += f16_to_f32(w[i]) * x[i];
+    return s;
+}
+static float canon_dot_f32(const float *w, const float *x, int n) {
+    float a[8] = {0}, b8[8] = {0}, c[8] = {0}, d[8] = {0};
+    int i = 0;
+    for (; i + 32 <= n; i += 32)
+        for (int l = 0; l < 8; l++) {
+            a[l]  = fmaf(w[i + l],      x[i + l],      a[l]);
+            b8[l] = fmaf(w[i + 8 + l],  x[i + 8 + l],  b8[l]);
+            c[l]  = fmaf(w[i + 16 + l], x[i + 16 + l], c[l]);
+            d[l]  = fmaf(w[i + 24 + l], x[i + 24 + l], d[l]);
+        }
+    float v[8];
+    for (int l = 0; l < 8; l++) { float ab = a[l] + b8[l], cd = c[l] + d[l]; v[l] = ab + cd; }
+    float s = canon_tree8(v);
+    for (; i < n; i++) s += w[i] * x[i];
+    return s;
+}
+#endif
+#endif // RUNNER_CANON_KERNELS
+
 float vec_dot(int type, const void *row, const float *x, int n) {
+#ifdef RUNNER_CANON_KERNELS
+    if (type == T_F32)  return canon_dot_f32(row, x, n);
+    if (type == T_F16)  return canon_dot_f16(row, x, n);
+    if (type == T_Q8_0) return canon_dot_q8_0(row, x, n);
+#endif
     switch (type) {
         case T_F32:
             return dot_f32_row(row, x, n);

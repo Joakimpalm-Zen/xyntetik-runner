@@ -21,9 +21,26 @@ does not make it, and the absence is deliberate.
     be valid UTF-8; the transcript also keeps a human-readable JSON string.
   - **T2, cross-ISA**: token-level replay on a different machine or
     architecture. Token ids must match; floating-point internals may
-    not, and the boundary is libm (`expf` differs between platforms).
+    not, and the boundary is libm (`expf` differs between platforms),
+    compiler reassociation under fast-math, and SIMD reduction order.
 - **Quantization determinism.** `--quantize` and `--merge-lora` write
   the same output bytes for the same inputs on the same build.
+
+## Measured, not yet claimed: T3, any machine, same bytes
+
+An opt-in build (`make T3=1`) compiles the engine with strict floating
+point (no fast-math, no fused-multiply-add contraction), portable
+transcendental functions (`src/pmath.h`, IEEE add, multiply and divide
+only) and canonical-order dot kernels that fix one reduction tree on every
+target. In that configuration the decode path produced bit-identical
+log-probabilities on arm64, x86-64 and riscv64 for every position of a
+165-token measurement (docs/portable-bitexact-2026-09-05.md), at a 7 to
+17% decode cost. It is not on the claimed list because the batched prefill
+tile, the k-quant formats, MoE experts and the GPU backends are not
+canonical yet, and no CI job runs the cross-ISA comparison. A T3 receipt
+records `"flavor":"t3"` in its build object so a verifier can tell which
+binary wrote it. When the coverage and the gate exist, T3 joins T1 and T2
+above as "another machine, same bytes".
 
 ## Explicitly not claimed
 

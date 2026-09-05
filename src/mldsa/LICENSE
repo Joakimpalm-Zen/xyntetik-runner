@@ -1,0 +1,18 @@
+Vendored from https://github.com/pq-crystals/dilithium (directory ref/) at commit
+d35ba3fe5449bee3e6d43e1f296c3ca818bd36be (2026-06-03), the FIPS 204 standard branch.
+
+Local changes, each marked with an 'Xyntetik' comment in sign.c and sign.h:
+  1. key generation takes a caller-supplied 32-byte seed (crypto_sign_keypair_seed);
+     no OS random source is consulted.
+  2. randomized (hedged) signing is compiled out; signing is deterministic.
+config.h pins DILITHIUM_MODE 2 (ML-DSA-44).
+
+Upstream license text follows.
+
+Public Domain (https://creativecommons.org/share-your-work/public-domain/cc0/);
+or Apache 2.0 License (https://www.apache.org/licenses/LICENSE-2.0.html) or GPL 2.0 License (http://www.gnu.org/licenses/gpl-2.0.html).
+
+For Keccak and the random number generator 
+we are using public-domain code from sources 
+and by authors listed in comments on top of 
+the respective files.

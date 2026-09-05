@@ -113,6 +113,20 @@ endif
 # an ordinary `+=` and would compile out the Metal safety refusal.
 override CFLAGS += $(GPU_BACKEND_DEF)
 
+# T3 build (opt-in, `make T3=1`): the portable bit-exact configuration from
+# docs/portable-bitexact-2026-09-05.md. Strict float (no fast-math, no
+# contraction), portable transcendental functions and canonical-order dot
+# kernels, so the decode path produces the same bytes on arm64, x86-64 and
+# riscv64 (measured 165/165 positions on three ISAs). Costs 7-17% decode;
+# the default build keeps fast-math. `override` for the same reason as the
+# backend define: a release sets CFLAGS on the command line. Objects land in
+# their own .build/ directory because BUILD_ID hashes the final flags.
+T3 ?= 0
+ifeq ($(T3),1)
+override CFLAGS := $(filter-out -ffast-math,$(CFLAGS)) -fno-fast-math -ffp-contract=off \
+                   -DRUNNER_PORTABLE_MATH -DRUNNER_CANON_KERNELS -DRUNNER_T3_BUILD
+endif
+
 # Objects are keyed by the exact compiler command prefix (see the object
 # layer below). Defined here, right after CFLAGS is final and BEFORE any rule
 # names $(OBJDIR): a target line expands immediately, and an empty BUILD_ID
@@ -185,6 +199,7 @@ TEST_GGUF_SPLIT = $(TEST_BATCH:test-batch%=test-gguf-split-load%)
 TEST_PARSE = $(TEST_BATCH:test-batch%=test-parse%)
 TEST_ENVELOPE = $(TEST_BATCH:test-batch%=test-envelope%)
 TEST_ED25519 = $(TEST_BATCH:test-batch%=test-ed25519%)
+TEST_MLDSA = $(TEST_BATCH:test-batch%=test-mldsa%)
 TEST_ECDSA = $(TEST_BATCH:test-batch%=test-ecdsa%)
 TEST_METAL_OWNERSHIP = $(TEST_BATCH:test-batch%=test-metal-ownership%)
 TEST_METAL_SHADERS = $(TEST_BATCH:test-batch%=test-metal-shaders%)
@@ -253,7 +268,7 @@ $(QUANTIZE_OBJ): src/quantize.c $(HDR)
 ENGINE_OBJ_NAMES = gguf compat instances tokenizer model sample vramreg template \
                    jsonmode schema engine json envelope ed25519 ecdsa oms http \
                    registry scheduler completion api_responses api_anthropic server
-ENGINE_OBJ = $(ENGINE_OBJ_NAMES:%=$(OBJDIR)/%.o)
+ENGINE_OBJ = $(ENGINE_OBJ_NAMES:%=$(OBJDIR)/%.o) $(MLDSA_OBJ)
 ifeq ($(GPU_SRC),src/metal.m)
 GPU_OBJ = $(OBJDIR)/metal.o
 else
@@ -261,6 +276,15 @@ GPU_OBJ = $(OBJDIR)/cuda.o
 endif
 
 $(OBJDIR)/%.o: src/%.c $(HDR)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -I src -c $< -o $@
+
+# ML-DSA-44 (FIPS 204) receipt signatures: the wrapper plus the vendored
+# pq-crystals reference under src/mldsa/ (integer-only code, so the float
+# flags of the engine objects do not touch its results)
+MLDSA_SRC = src/mldsa.c $(wildcard src/mldsa/*.c)
+MLDSA_OBJ = $(OBJDIR)/mldsa.o $(patsubst src/mldsa/%.c,$(OBJDIR)/mldsa_%.o,$(wildcard src/mldsa/*.c))
+$(OBJDIR)/mldsa_%.o: src/mldsa/%.c $(wildcard src/mldsa/*.h) src/mldsa.h
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -I src -c $< -o $@
 
@@ -275,8 +299,30 @@ $(OBJDIR)/metal.o: src/metal.m $(HDR) src/kernels_metal.h src/kernels_tensor_met
 
 SRC = src/gguf.c src/compat.c $(QUANTS_OBJ) src/instances.c src/tokenizer.c src/model.c src/sample.c \
       src/vramreg.c \
-      src/template.c src/jsonmode.c src/schema.c $(QUANTIZE_OBJ) src/engine.c src/json.c src/envelope.c src/ed25519.c src/ecdsa.c src/oms.c src/http.c src/registry.c src/scheduler.c src/completion.c src/api_responses.c src/api_anthropic.c src/server.c \
+      src/template.c src/jsonmode.c src/schema.c $(QUANTIZE_OBJ) src/engine.c src/json.c src/envelope.c src/ed25519.c $(MLDSA_SRC) src/ecdsa.c src/oms.c src/http.c src/registry.c src/scheduler.c src/completion.c src/api_responses.c src/api_anthropic.c src/server.c \
       src/main.c $(GPU_SRC) $(TRAY_SRC)
+
+# Cross-compile a static riscv64 binary with zig (no toolchain install;
+# https://ziglang.org, `ZIG=path/to/zig`): the bit-exact configuration from
+# docs/portable-bitexact-2026-09-05.md, strict float, portable math and
+# canonical kernels, CUDA backend compiled in but dormant, tray stubbed.
+# Runs under qemu-riscv64 (user mode) or on an RVA20+ board; not a release
+# target. `make cross-riscv64 && qemu-riscv64 ./runner-riscv64 --help`.
+ZIG ?= zig
+CROSS_TARGET ?= riscv64-linux-musl
+CROSS_CFLAGS = -O3 -fno-fast-math -ffp-contract=off -std=gnu11 -Wno-unused-parameter \
+               -DRUNNER_GPU_CUDA -DRUNNER_PORTABLE_MATH -DRUNNER_CANON_KERNELS
+CROSS_SRC = $(filter-out $(GPU_SRC) $(TRAY_SRC),$(filter %.c,$(SRC))) \
+            src/quants.c src/quantize.c src/cuda.c src/tray.c src/tray_stub.c
+cross-riscv64:
+	@rm -rf .build/cross-$(CROSS_TARGET) && mkdir -p .build/cross-$(CROSS_TARGET)
+	@for f in $(CROSS_SRC); do \
+	  $(ZIG) cc -target $(CROSS_TARGET) $(CROSS_CFLAGS) -I src -c $$f \
+	    -o .build/cross-$(CROSS_TARGET)/$$(basename $$f .c).o || exit 1; done
+	$(ZIG) cc -target $(CROSS_TARGET) -static .build/cross-$(CROSS_TARGET)/*.o \
+	  -o runner-$(CROSS_TARGET:%-linux-musl=%) -lm -lpthread
+	@echo "runner-$(CROSS_TARGET:%-linux-musl=%): $$(wc -c < runner-$(CROSS_TARGET:%-linux-musl=%)) bytes"
+.PHONY: cross-riscv64
 
 # kernels_ptx.h is embedded into the binary by cuda.c — a pull that changes
 # ONLY the regenerated PTX header must rebuild, or benchmarks silently run
@@ -620,6 +666,15 @@ TEST_QUANTS_SIMD_SRC = tests/test_quants_simd.c $(QUANTS_OBJ)
 $(TEST_QUANTS_SIMD): $(TEST_QUANTS_SIMD_SRC) $(HDR)
 	$(CC) $(QUANTS_CFLAGS) -I src $(TEST_QUANTS_SIMD_SRC) -o $@ -lm -lpthread
 
+# Canonical-order kernels (RUNNER_CANON_KERNELS, experiment R12.1): the
+# SIMD kernel on this host must equal the tree definition bit for bit. quants.c
+# is compiled here with the define, in the engine's strict float regime, not
+# taken from the shared object (which is built without it).
+TEST_CANON_KERNELS = $(TEST_BATCH:test-batch%=test-canon-kernels%)
+$(TEST_CANON_KERNELS): tests/test_canon_kernels.c src/quants.c $(HDR)
+	$(CC) $(QUANTS_CFLAGS) -ffp-contract=off -DRUNNER_CANON_KERNELS -I src \
+	    tests/test_canon_kernels.c src/quants.c -o $@ -lm -lpthread
+
 # discovery registry: pure-C, runs against a private HOME/APPDATA
 TEST_INSTANCES_SRC = tests/test_instances.c $(OBJDIR)/instances.o $(OBJDIR)/json.o $(OBJDIR)/compat.o
 $(TEST_INSTANCES): $(TEST_INSTANCES_SRC) $(HDR)
@@ -777,7 +832,7 @@ $(TEST_AUTOFIT): $(TEST_AUTOFIT_SRC) $(HDR)
 TEST_RESP_SM_SRC = tests/test_responses_sm.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o \
                   $(QUANTS_OBJ) $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(OBJDIR)/sample.o \
                   $(OBJDIR)/jsonmode.o $(OBJDIR)/schema.o $(OBJDIR)/json.o $(OBJDIR)/engine.o \
-                  $(OBJDIR)/template.o $(OBJDIR)/vramreg.o $(OBJDIR)/http.o $(OBJDIR)/envelope.o $(OBJDIR)/ed25519.o $(OBJDIR)/ecdsa.o $(OBJDIR)/oms.o $(OBJDIR)/registry.o $(OBJDIR)/scheduler.o $(GPU_OBJ)
+                  $(OBJDIR)/template.o $(OBJDIR)/vramreg.o $(OBJDIR)/http.o $(OBJDIR)/envelope.o $(OBJDIR)/ed25519.o $(MLDSA_OBJ) $(OBJDIR)/ecdsa.o $(OBJDIR)/oms.o $(OBJDIR)/registry.o $(OBJDIR)/scheduler.o $(GPU_OBJ)
 $(TEST_RESP_SM): $(TEST_RESP_SM_SRC) src/completion.c $(HDR)
 	$(CC) $(CFLAGS) -I src $(TEST_RESP_SM_SRC) -o $@ $(LDFLAGS)
 
@@ -788,7 +843,7 @@ $(TEST_RESP_SM): $(TEST_RESP_SM_SRC) src/completion.c $(HDR)
 TEST_STOP_CONSTRAINT_SRC = tests/test_stop_constraint.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o \
                   $(QUANTS_OBJ) $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(OBJDIR)/sample.o \
                   $(OBJDIR)/jsonmode.o $(OBJDIR)/schema.o $(OBJDIR)/json.o $(OBJDIR)/engine.o \
-                  $(OBJDIR)/template.o $(OBJDIR)/vramreg.o $(OBJDIR)/http.o $(OBJDIR)/envelope.o $(OBJDIR)/ed25519.o $(OBJDIR)/ecdsa.o $(OBJDIR)/oms.o $(OBJDIR)/registry.o \
+                  $(OBJDIR)/template.o $(OBJDIR)/vramreg.o $(OBJDIR)/http.o $(OBJDIR)/envelope.o $(OBJDIR)/ed25519.o $(MLDSA_OBJ) $(OBJDIR)/ecdsa.o $(OBJDIR)/oms.o $(OBJDIR)/registry.o \
                   $(OBJDIR)/scheduler.o $(GPU_OBJ)
 $(TEST_STOP_CONSTRAINT): $(TEST_STOP_CONSTRAINT_SRC) src/completion.c $(HDR)
 	$(CC) $(CFLAGS) -I src $(TEST_STOP_CONSTRAINT_SRC) -o $@ $(LDFLAGS)
@@ -802,7 +857,7 @@ $(TEST_STOP_CONSTRAINT): $(TEST_STOP_CONSTRAINT_SRC) src/completion.c $(HDR)
 TEST_BUDGET_SRC = tests/test_prompt_budget.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o \
                   $(QUANTS_OBJ) $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(OBJDIR)/sample.o \
                   $(OBJDIR)/jsonmode.o $(OBJDIR)/schema.o $(OBJDIR)/json.o $(OBJDIR)/engine.o \
-                  $(OBJDIR)/template.o $(OBJDIR)/vramreg.o $(OBJDIR)/http.o $(OBJDIR)/envelope.o $(OBJDIR)/ed25519.o $(OBJDIR)/ecdsa.o $(OBJDIR)/oms.o $(OBJDIR)/registry.o \
+                  $(OBJDIR)/template.o $(OBJDIR)/vramreg.o $(OBJDIR)/http.o $(OBJDIR)/envelope.o $(OBJDIR)/ed25519.o $(MLDSA_OBJ) $(OBJDIR)/ecdsa.o $(OBJDIR)/oms.o $(OBJDIR)/registry.o \
                   $(OBJDIR)/scheduler.o $(OBJDIR)/api_responses.o $(OBJDIR)/api_anthropic.o \
                   $(GPU_OBJ)
 $(TEST_BUDGET): $(TEST_BUDGET_SRC) src/server.c $(HDR)
@@ -816,7 +871,7 @@ $(TEST_BUDGET): $(TEST_BUDGET_SRC) src/server.c $(HDR)
 TEST_ATTRIB_SRC = tests/test_tool_attribution.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o \
                   $(QUANTS_OBJ) $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(OBJDIR)/sample.o \
                   $(OBJDIR)/jsonmode.o $(OBJDIR)/schema.o $(OBJDIR)/json.o $(OBJDIR)/engine.o \
-                  $(OBJDIR)/template.o $(OBJDIR)/vramreg.o $(OBJDIR)/http.o $(OBJDIR)/envelope.o $(OBJDIR)/ed25519.o $(OBJDIR)/ecdsa.o $(OBJDIR)/oms.o $(OBJDIR)/registry.o \
+                  $(OBJDIR)/template.o $(OBJDIR)/vramreg.o $(OBJDIR)/http.o $(OBJDIR)/envelope.o $(OBJDIR)/ed25519.o $(MLDSA_OBJ) $(OBJDIR)/ecdsa.o $(OBJDIR)/oms.o $(OBJDIR)/registry.o \
                   $(OBJDIR)/scheduler.o $(OBJDIR)/api_responses.o $(OBJDIR)/api_anthropic.o \
                   $(GPU_OBJ)
 $(TEST_ATTRIB): $(TEST_ATTRIB_SRC) src/server.c $(HDR)
@@ -850,7 +905,7 @@ TMPL_CONF_RENDER_SRC = scripts/template-conformance-render.c $(OBJDIR)/gguf.o \
                   $(OBJDIR)/compat.o $(QUANTS_OBJ) $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o \
                   $(OBJDIR)/sample.o $(OBJDIR)/jsonmode.o $(OBJDIR)/schema.o $(OBJDIR)/json.o \
                   $(OBJDIR)/engine.o $(OBJDIR)/template.o $(OBJDIR)/vramreg.o $(OBJDIR)/http.o \
-                  $(OBJDIR)/envelope.o $(OBJDIR)/ed25519.o $(OBJDIR)/ecdsa.o $(OBJDIR)/oms.o $(OBJDIR)/registry.o $(OBJDIR)/scheduler.o $(GPU_OBJ)
+                  $(OBJDIR)/envelope.o $(OBJDIR)/ed25519.o $(MLDSA_OBJ) $(OBJDIR)/ecdsa.o $(OBJDIR)/oms.o $(OBJDIR)/registry.o $(OBJDIR)/scheduler.o $(GPU_OBJ)
 $(TMPL_CONF_RENDER): $(TMPL_CONF_RENDER_SRC) src/server.c $(HDR)
 	$(CC) $(CFLAGS) -I src $(TMPL_CONF_RENDER_SRC) -o $@ $(LDFLAGS)
 
@@ -860,7 +915,7 @@ TEST_RESTART = $(TEST_BATCH:test-batch%=test-server-restart%)
 TEST_RESTART_SRC = tests/test_server_restart.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o \
                    $(QUANTS_OBJ) $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(OBJDIR)/sample.o \
                    $(OBJDIR)/jsonmode.o $(OBJDIR)/schema.o $(OBJDIR)/json.o $(OBJDIR)/engine.o \
-                   $(OBJDIR)/template.o $(OBJDIR)/vramreg.o $(OBJDIR)/http.o $(OBJDIR)/envelope.o $(OBJDIR)/ed25519.o $(OBJDIR)/ecdsa.o $(OBJDIR)/oms.o $(OBJDIR)/registry.o \
+                   $(OBJDIR)/template.o $(OBJDIR)/vramreg.o $(OBJDIR)/http.o $(OBJDIR)/envelope.o $(OBJDIR)/ed25519.o $(MLDSA_OBJ) $(OBJDIR)/ecdsa.o $(OBJDIR)/oms.o $(OBJDIR)/registry.o \
                    $(OBJDIR)/scheduler.o $(OBJDIR)/completion.o $(OBJDIR)/api_responses.o \
                    $(OBJDIR)/api_anthropic.o $(OBJDIR)/server.o $(GPU_OBJ)
 $(TEST_RESTART): $(TEST_RESTART_SRC) $(HDR)
@@ -874,7 +929,7 @@ $(TEST_RESTART): $(TEST_RESTART_SRC) $(HDR)
 TEST_SWAP_RACE_SRC = tests/test_swap_race.c src/gguf.c src/compat.c \
                      src/quants.c src/tokenizer.c src/model.c src/sample.c \
                      src/jsonmode.c src/schema.c src/json.c src/engine.c \
-                     src/template.c src/vramreg.c src/http.c src/envelope.c src/ed25519.c src/ecdsa.c src/oms.c src/registry.c \
+                     src/template.c src/vramreg.c src/http.c src/envelope.c src/ed25519.c $(MLDSA_SRC) src/ecdsa.c src/oms.c src/registry.c \
                      src/scheduler.c src/completion.c src/api_responses.c \
                      src/api_anthropic.c src/server.c $(GPU_SRC)
 test-swap-race: $(TEST_SWAP_RACE_SRC) $(HDR) test.gguf
@@ -895,7 +950,7 @@ TEST_SCHED_TURN = $(TEST_BATCH:test-batch%=test-sched-turn%)
 TEST_SCHED_TURN_SRC = tests/test_sched_turn.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o \
                       $(QUANTS_OBJ) $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(OBJDIR)/sample.o \
                       $(OBJDIR)/jsonmode.o $(OBJDIR)/schema.o $(OBJDIR)/json.o $(OBJDIR)/engine.o \
-                      $(OBJDIR)/template.o $(OBJDIR)/vramreg.o $(OBJDIR)/http.o $(OBJDIR)/envelope.o $(OBJDIR)/ed25519.o $(OBJDIR)/ecdsa.o $(OBJDIR)/oms.o $(OBJDIR)/registry.o $(GPU_OBJ)
+                      $(OBJDIR)/template.o $(OBJDIR)/vramreg.o $(OBJDIR)/http.o $(OBJDIR)/envelope.o $(OBJDIR)/ed25519.o $(MLDSA_OBJ) $(OBJDIR)/ecdsa.o $(OBJDIR)/oms.o $(OBJDIR)/registry.o $(GPU_OBJ)
 $(TEST_SCHED_TURN): $(TEST_SCHED_TURN_SRC) src/scheduler.c $(HDR)
 	$(CC) $(CFLAGS) -I src $(TEST_SCHED_TURN_SRC) -o $@ $(LDFLAGS)
 
@@ -923,12 +978,17 @@ $(TEST_GGUF_GETTERS): tests/test_gguf_getters.c $(OBJDIR)/gguf.o $(OBJDIR)/compa
 $(TEST_PARSE): tests/test_parse.c $(OBJDIR)/compat.o src/compat.h
 	$(CC) $(CFLAGS) -I src tests/test_parse.c $(OBJDIR)/compat.o -o $@ $(LDFLAGS)
 
-$(TEST_ENVELOPE): tests/test_envelope.c $(OBJDIR)/envelope.o $(OBJDIR)/ed25519.o $(OBJDIR)/json.o src/envelope.h src/json.h src/runner.h
-	$(CC) $(CFLAGS) -I src tests/test_envelope.c $(OBJDIR)/envelope.o $(OBJDIR)/ed25519.o $(OBJDIR)/json.o -o $@ $(LDFLAGS)
+$(TEST_ENVELOPE): tests/test_envelope.c $(OBJDIR)/envelope.o $(OBJDIR)/ed25519.o $(MLDSA_OBJ) $(OBJDIR)/json.o src/envelope.h src/json.h src/runner.h
+	$(CC) $(CFLAGS) -I src tests/test_envelope.c $(OBJDIR)/envelope.o $(OBJDIR)/ed25519.o $(MLDSA_OBJ) $(OBJDIR)/json.o -o $@ $(LDFLAGS)
 
 # receipt and model-signature primitives: RFC 8032 / RFC 6979 known answers
 $(TEST_ED25519): tests/test_ed25519.c $(OBJDIR)/ed25519.o src/ed25519.h
 	$(CC) $(CFLAGS) -I src tests/test_ed25519.c $(OBJDIR)/ed25519.o -o $@ $(LDFLAGS)
+
+# ML-DSA-44: NIST ACVP FIPS 204 known answers (key generation from a seed,
+# deterministic signature), then sign/verify/tamper on the wrapper
+$(TEST_MLDSA): tests/test_mldsa.c tests/mldsa_kat.h $(MLDSA_OBJ) src/mldsa.h
+	$(CC) $(CFLAGS) -I src -I tests tests/test_mldsa.c $(MLDSA_OBJ) -o $@ $(LDFLAGS)
 
 $(TEST_ECDSA): tests/test_ecdsa.c $(OBJDIR)/ecdsa.o src/ecdsa.h
 	$(CC) $(CFLAGS) -I src tests/test_ecdsa.c $(OBJDIR)/ecdsa.o -o $@ $(LDFLAGS)
@@ -1727,7 +1787,7 @@ test: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSON_OOM) $(
       $(TEST_PREFIX) $(TEST_GRAMMAR_FF) $(TEST_LOOKUP_DRAFT) $(TEST_VRAMREG) $(TEST_KV_TOL) $(TEST_TC_TOL) $(TEST_I8_TOL) $(TEST_MV_TOL) $(TEST_ATTN_TOL) $(TEST_GPU_ID) $(TEST_MOE_TOL) $(TEST_MOE_ROUTER) $(TEST_PAGING_WARN) $(TEST_AUTOFIT) $(TEST_RESP_SM_DEP) \
       $(TEST_QUANTS_SIMD) $(TEST_INSTANCES) $(TEST_INSTANCES_OOM) $(TEST_METAL_ADMISSION) $(TEST_TRAY_CORE) \
       $(TEST_QUANTIZE) \
-      $(TEST_VRAM_ROLLBACK) $(TEST_GGUF_GETTERS) $(TEST_GGUF_SPLIT) $(TEST_PARSE) $(TEST_ENVELOPE) $(TEST_ED25519) $(TEST_ECDSA) \
+      $(TEST_VRAM_ROLLBACK) $(TEST_GGUF_GETTERS) $(TEST_GGUF_SPLIT) $(TEST_PARSE) $(TEST_ENVELOPE) $(TEST_ED25519) $(TEST_MLDSA) $(TEST_ECDSA) $(TEST_CANON_KERNELS) \
       $(TEST_THREAD_DEFAULT) \
       $(TEST_MODEL_LOAD_FAILURE) $(TEST_RESTART) $(TEST_PFX_PERSIST) \
       $(TEST_SCHED_TURN) $(TEST_RESIDENCY) $(TEST_BUDGET) $(TEST_ATTRIB_DEP) \
@@ -1860,6 +1920,8 @@ test: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSON_OOM) $(
 	./$(TEST_PARSE)
 	./$(TEST_ENVELOPE)
 	./$(TEST_ED25519)
+	./$(TEST_MLDSA)
+	./$(TEST_CANON_KERNELS)
 	./$(TEST_ECDSA)
 	./$(TEST_THREAD_DEFAULT)
 	./$(TEST_MODEL_LOAD_FAILURE)
@@ -2160,7 +2222,12 @@ test-makefile-sane:
 		exit 1; \
 	}; \
 	if grep -q 'system(' src/tray.c src/tray_*.c src/tray_*.m; then echo "FAIL: tray launches through a shell"; exit 1; fi; \
-	echo "makefile ok (no discarded recipes)"
+	tline=$$($(MAKE) -Bn --no-print-directory T3=1 CFLAGS="-O3 -ffast-math" runner | grep -- ' src/model.c '); \
+	test -n "$$tline" || { echo "FAIL: T3 build has no model.c compile line"; exit 1; }; \
+	case "$$tline" in *" -ffast-math "*) echo "FAIL: T3=1 left -ffast-math in the engine build"; exit 1;; esac; \
+	for f in -fno-fast-math -ffp-contract=off -DRUNNER_PORTABLE_MATH -DRUNNER_CANON_KERNELS -DRUNNER_T3_BUILD; do \
+	  echo "$$tline" | grep -q -- " $$f " || { echo "FAIL: T3=1 build lacks $$f"; exit 1; }; done; \
+	echo "makefile ok (no discarded recipes; T3 switch reaches the engine)"
 
 
 .PHONY: template-conformance template-conformance-refresh template-conformance-baseline template-conformance-harmony-oracle
