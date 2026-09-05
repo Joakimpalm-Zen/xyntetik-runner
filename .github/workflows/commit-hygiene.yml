@@ -1,0 +1,41 @@
+name: commit-hygiene
+
+# The mechanical half of AGENTS.md "Never publish conversation content or
+# session identifiers": every commit in a pull request, plus its title and
+# body, is scanned for session URLs and ids, e-mail addresses and
+# non-conforming Co-Authored-By trailers. No path filter: the rule applies to
+# a docs-only change exactly as much as to an engine change.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  commit-hygiene:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+      - name: self-test the checker
+        run: python3 scripts/check-commit-hygiene.py --self-test
+      - name: commits and pull request text
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          printf '%s\n' "$PR_TITLE" > /tmp/pr-title.txt
+          printf '%s\n' "$PR_BODY" > /tmp/pr-body.txt
+          if [ -z "$BASE" ] || [ "$BASE" = "0000000000000000000000000000000000000000" ]; then
+            range="$HEAD~1..$HEAD"
+          else
+            range="$BASE..$HEAD"
+          fi
+          echo "checking $range"
+          python3 scripts/check-commit-hygiene.py --range "$range" \
+            --text /tmp/pr-title.txt --text /tmp/pr-body.txt
