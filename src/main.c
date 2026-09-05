@@ -127,6 +127,17 @@ static bool record_hex(jv *v, const char **out, size_t *out_n) {
 // gets the byte count (excluding the terminator).
 #define MAX_INPUT_FILE (256u * 1024u * 1024u)
 // Seed bytes for --keygen: the OS generator, never the C library's.
+// Build flavor: the portable bit-exact configuration (make T3=1) marks its
+// receipts and its --version so a verifier can tell which binary wrote a
+// record; the default build writes no flavor field at all.
+#ifdef RUNNER_T3_BUILD
+#define RUNNER_BUILD_FLAVOR "t3"
+#define RUNNER_BUILD_FLAVOR_STR "t3"
+#else
+#define RUNNER_BUILD_FLAVOR NULL
+#define RUNNER_BUILD_FLAVOR_STR ""
+#endif
+
 // Case-insensitive equality of two hex strings (a key pasted from another
 // tool may be upper case; the runner writes lower case).
 static bool hex_eq_nocase(const char *a, const char *b) {
@@ -1081,7 +1092,10 @@ int main(int argc, char **argv) {
         // the model, prints one JSON line, exits.
         else if (!strcmp(a, "--tool-info")) tool_info = true;
         else if (!strcmp(a, "--fit")) fit_path = NEXT;
-        else if (!strcmp(a, "--version")) { printf("runner %s\n", RUNNER_VERSION); return 0; }
+        else if (!strcmp(a, "--version")) {
+            printf("runner %s%s\n", RUNNER_VERSION, RUNNER_BUILD_FLAVOR ? " (" RUNNER_BUILD_FLAVOR_STR ")" : "");
+            return 0;
+        }
         else if (!strcmp(a, "-h") || !strcmp(a, "--help")) {
             usage_to(stdout, argv[0]);
             return 0;
@@ -2554,6 +2568,7 @@ int main(int argc, char **argv) {
                 .runner_version = RUNNER_VERSION,
                 .executable_path = transcript_exe,
                 .compiler = __VERSION__,
+                .build_flavor = RUNNER_BUILD_FLAVOR,
 #ifdef _WIN32
                 .os = "windows",
 #elif defined(__APPLE__)

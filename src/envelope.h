@@ -69,6 +69,9 @@ typedef struct {
     const char *runner_version;
     const char *executable_path;   // OS-resolved running image, hashed
     const char *compiler, *os, *arch;
+    // build flavor, or NULL for the default build: "t3" for the portable
+    // bit-exact configuration (make T3=1); written as build.flavor only when set
+    const char *build_flavor;
     const char *device;            // "cpu" | gpu device name
     bool        gpu;
     int         threads, n_ctx, n_batch, gpu_layers;

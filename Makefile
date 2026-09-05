@@ -113,6 +113,20 @@ endif
 # an ordinary `+=` and would compile out the Metal safety refusal.
 override CFLAGS += $(GPU_BACKEND_DEF)
 
+# T3 build (opt-in, `make T3=1`): the portable bit-exact configuration from
+# docs/portable-bitexact-2026-09-05.md. Strict float (no fast-math, no
+# contraction), portable transcendental functions and canonical-order dot
+# kernels, so the decode path produces the same bytes on arm64, x86-64 and
+# riscv64 (measured 165/165 positions on three ISAs). Costs 7-17% decode;
+# the default build keeps fast-math. `override` for the same reason as the
+# backend define: a release sets CFLAGS on the command line. Objects land in
+# their own .build/ directory because BUILD_ID hashes the final flags.
+T3 ?= 0
+ifeq ($(T3),1)
+override CFLAGS := $(filter-out -ffast-math,$(CFLAGS)) -fno-fast-math -ffp-contract=off \
+                   -DRUNNER_PORTABLE_MATH -DRUNNER_CANON_KERNELS -DRUNNER_T3_BUILD
+endif
+
 # Objects are keyed by the exact compiler command prefix (see the object
 # layer below). Defined here, right after CFLAGS is final and BEFORE any rule
 # names $(OBJDIR): a target line expands immediately, and an empty BUILD_ID
@@ -1773,7 +1787,7 @@ test: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSON_OOM) $(
       $(TEST_PREFIX) $(TEST_GRAMMAR_FF) $(TEST_LOOKUP_DRAFT) $(TEST_VRAMREG) $(TEST_KV_TOL) $(TEST_TC_TOL) $(TEST_I8_TOL) $(TEST_MV_TOL) $(TEST_ATTN_TOL) $(TEST_GPU_ID) $(TEST_MOE_TOL) $(TEST_MOE_ROUTER) $(TEST_PAGING_WARN) $(TEST_AUTOFIT) $(TEST_RESP_SM_DEP) \
       $(TEST_QUANTS_SIMD) $(TEST_INSTANCES) $(TEST_INSTANCES_OOM) $(TEST_METAL_ADMISSION) $(TEST_TRAY_CORE) \
       $(TEST_QUANTIZE) \
-      $(TEST_VRAM_ROLLBACK) $(TEST_GGUF_GETTERS) $(TEST_GGUF_SPLIT) $(TEST_PARSE) $(TEST_ENVELOPE) $(TEST_ED25519) $(TEST_MLDSA) $(TEST_ECDSA) \
+      $(TEST_VRAM_ROLLBACK) $(TEST_GGUF_GETTERS) $(TEST_GGUF_SPLIT) $(TEST_PARSE) $(TEST_ENVELOPE) $(TEST_ED25519) $(TEST_MLDSA) $(TEST_ECDSA) $(TEST_CANON_KERNELS) \
       $(TEST_THREAD_DEFAULT) \
       $(TEST_MODEL_LOAD_FAILURE) $(TEST_RESTART) $(TEST_PFX_PERSIST) \
       $(TEST_SCHED_TURN) $(TEST_RESIDENCY) $(TEST_BUDGET) $(TEST_ATTRIB_DEP) \
@@ -1907,6 +1921,7 @@ test: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSON_OOM) $(
 	./$(TEST_ENVELOPE)
 	./$(TEST_ED25519)
 	./$(TEST_MLDSA)
+	./$(TEST_CANON_KERNELS)
 	./$(TEST_ECDSA)
 	./$(TEST_THREAD_DEFAULT)
 	./$(TEST_MODEL_LOAD_FAILURE)
@@ -2207,7 +2222,12 @@ test-makefile-sane:
 		exit 1; \
 	}; \
 	if grep -q 'system(' src/tray.c src/tray_*.c src/tray_*.m; then echo "FAIL: tray launches through a shell"; exit 1; fi; \
-	echo "makefile ok (no discarded recipes)"
+	tline=$$($(MAKE) -Bn --no-print-directory T3=1 CFLAGS="-O3 -ffast-math" runner | grep -- ' src/model.c '); \
+	test -n "$$tline" || { echo "FAIL: T3 build has no model.c compile line"; exit 1; }; \
+	case "$$tline" in *" -ffast-math "*) echo "FAIL: T3=1 left -ffast-math in the engine build"; exit 1;; esac; \
+	for f in -fno-fast-math -ffp-contract=off -DRUNNER_PORTABLE_MATH -DRUNNER_CANON_KERNELS -DRUNNER_T3_BUILD; do \
+	  echo "$$tline" | grep -q -- " $$f " || { echo "FAIL: T3=1 build lacks $$f"; exit 1; }; done; \
+	echo "makefile ok (no discarded recipes; T3 switch reaches the engine)"
 
 
 .PHONY: template-conformance template-conformance-refresh template-conformance-baseline template-conformance-harmony-oracle

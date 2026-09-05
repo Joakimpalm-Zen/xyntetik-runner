@@ -366,6 +366,32 @@ Runner uses ordinary platform C, math, threading, mmap/file-mapping, and
 dynamic-loader libraries. GGUF is little-endian, so little-endian hosts are
 required.
 
+### The T3 build: same model, same bytes, any machine (opt-in)
+
+```sh
+make T3=1            # strict float, portable math, canonical-order kernels
+./runner --version   # runner vX.Y.Z (t3)
+```
+
+The default build uses fast-math and each ISA's own SIMD reduction order,
+so two machines agree on every sampled token (tier T2) but not on the last
+bits of the logits. `make T3=1` removes the three causes of that
+difference: it compiles without fast-math or fused-multiply-add
+contraction, replaces libm's `expf`, `logf`, `sinf`, `cosf`, `tanhf` and
+`powf` with implementations over IEEE add, multiply and divide only
+(`src/pmath.h`), and dispatches the F32, F16 and Q8_0 dot products to
+kernels that compute one fixed reduction tree on every target
+(`RUNNER_CANON_KERNELS`, gated bit for bit in `tests/test_canon_kernels.c`).
+Measured on a 165-token scoring run of the same Q8_0 model: 0 of 165
+positions bit-identical between an Apple M1 and an x86-64 box in the
+default build, 165 of 165 in the T3 build, and the same on riscv64 under
+qemu. Cost: 7% decode on x86-64, 17% on the M1, all of it the strict-float
+flags. A T3 receipt carries `"flavor":"t3"` in its `build` object. This is
+measured, not yet a claimed tier: the batched prefill tile, the k-quant
+formats, MoE and the GPU backends are not canonical yet. Details and
+tables in [docs/portable-bitexact-2026-09-05.md](docs/portable-bitexact-2026-09-05.md);
+`make cross-riscv64` builds the same configuration for riscv64 with zig.
+
 | Platform | Toolchain | Accelerated path |
 |---|---|---|
 | Linux x86_64 | GCC | AVX2/FMA; CUDA on NVIDIA Turing / compute capability 7.5 or newer, driver with CUDA 13.0+ support (R580 series) |
@@ -1944,7 +1970,7 @@ silently dropped branch.
 | Context | Batched prefill, f16/q8 KV, linear/YaRN/llama-3 scaling, automatic extension. |
 | Serving | Chat Completions, Responses, legacy completions, embeddings, Anthropic Messages, SSE, parallel slots, model swap, prefix reuse. |
 | Desktop | macOS menu bar and Windows notification-area controller. |
-| Provenance | Replay-verifiable transcripts; Ed25519-signed, chained receipts with a one-exit-code verifier; OpenSSF Model Signing verification of the loaded GGUF (key method, P-256/384/521). |
+| Provenance | Replay-verifiable transcripts; Ed25519- or ML-DSA-44-signed, chained receipts with a one-exit-code verifier; OpenSSF Model Signing verification of the loaded GGUF (key method, P-256/384/521). |
 
 Not implemented: Vulkan; TLS/auth; remote bind; remote/streamed GGUF parts; the
 `qwen2moe`/`deepseek2`/`kimi` architecture IDs (their shared-expert *layout* is

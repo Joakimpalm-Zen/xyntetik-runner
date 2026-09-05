@@ -280,6 +280,10 @@ bool transcript_write(const transcript_info *ti) {
     tsb_json_str(&w, ti->os, strlen(ti->os));
     tsb_put(&w, ",\"arch\":", sizeof ",\"arch\":" - 1);
     tsb_json_str(&w, ti->arch, strlen(ti->arch));
+    if (ti->build_flavor) {
+        tsb_put(&w, ",\"flavor\":", sizeof ",\"flavor\":" - 1);
+        tsb_json_str(&w, ti->build_flavor, strlen(ti->build_flavor));
+    }
     tsb_put(&w, "},\"profile\":{\"device\":",
             sizeof "},\"profile\":{\"device\":" - 1);
     tsb_json_str(&w, ti->device, strlen(ti->device));

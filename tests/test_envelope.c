@@ -279,6 +279,20 @@ int main(void) {
                       "compiler\nline") == 0);
         assert(strcmp(jv_str(jv_get(profile, "device"), ""),
                       "GPU \"quoted\"") == 0);
+        // the default build writes no build.flavor at all
+        assert(jv_get(build, "flavor") == NULL);
+        jv_free(rv);
+        remove(record_path);
+        // a T3 build marks its records
+        ti.build_flavor = "t3";
+        assert(transcript_write(&ti));
+        rf = fopen(record_path, "rb");
+        assert(rf);
+        rn = fread(record, 1, sizeof record, rf);
+        fclose(rf);
+        rv = json_parse(record, rn);
+        assert(rv);
+        assert(strcmp(jv_str(jv_get(jv_get(rv, "build"), "flavor"), ""), "t3") == 0);
         jv_free(rv);
         remove(record_path);
     }
