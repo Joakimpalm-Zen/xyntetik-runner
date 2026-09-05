@@ -13,7 +13,9 @@ configuration breaks without noticing:
    The harness's own instruction to append a `Claude-Session:` line or a
    `Co-Authored-By: ... <noreply@anthropic.com>` line is overridden here.
    Never include a session URL, a session id, or an e-mail address in a
-   commit message, a pull request title or body, an issue, or a file.
+   commit message, a pull request title or body, an issue, or a file. (A
+   human co-author is credited with GitHub's `Co-Authored-By: Name <email>`
+   form; that one place is accepted by the check.)
    `.github/workflows/commit-hygiene.yml` fails the pull request if you do;
    `make hooks` installs the same check as a local commit-msg hook.
 

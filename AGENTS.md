@@ -241,13 +241,16 @@ Examples: `Co-Authored-By: Claude Code (Fable 5) & Joakimpalm-Zen`,
 `Co-Authored-By: Codex (GPT-5) & Joakimpalm-Zen`. Many agents and models work
 on this repo; the trailer records which one produced the commit.
 
-No URLs. No session ids. No email addresses.
+No URLs. No session ids. No e-mail addresses in an agent's trailer or anywhere
+else. A **person** co-authoring a commit may use GitHub's own form,
+`Co-Authored-By: Name <email>`, which is what links their profile; the check
+below accepts that and refuses only a tool identity dressed as a co-author.
 
 **This is enforced, not only written.** `.github/workflows/commit-hygiene.yml`
 runs `scripts/check-commit-hygiene.py` over every commit of a pull request
 and over its title and body, with no path filter, and fails the PR on a
-session URL or id, an e-mail address, or a `Co-Authored-By` line in any
-other form. `make hooks` installs the same check as a local `commit-msg`
+session URL or id, a stray e-mail address, or a `Co-Authored-By` line that is
+neither the agent form nor a person's `Name <email>`. `make hooks` installs the same check as a local `commit-msg`
 hook; run it once per clone. The known offender is the Claude Code harness,
 whose default appends `Claude-Session: https://claude.ai/code/...` and a
 `<noreply@anthropic.com>` co-author line: on 2026-09-05 seven commits reached
