@@ -113,6 +113,15 @@ endif
 # an ordinary `+=` and would compile out the Metal safety refusal.
 override CFLAGS += $(GPU_BACKEND_DEF)
 
+# Objects are keyed by the exact compiler command prefix (see the object
+# layer below). Defined here, right after CFLAGS is final and BEFORE any rule
+# names $(OBJDIR): a target line expands immediately, and an empty BUILD_ID
+# at that point would have named `.build//quants.o`, leaving the real quant
+# object to the generic pattern rule -- with -ffast-math. test-makefile-sane
+# caught exactly that.
+BUILD_ID := $(firstword $(shell printf '%s' '$(CC) $(CFLAGS)' | cksum))
+OBJDIR = .build/$(BUILD_ID)
+
 # same .exe suffix rule as every other test binary, without repeating the
 # three-way platform branch above
 TEST_PREFIX = $(TEST_BATCH:test-batch%=test-prefix%)
@@ -192,7 +201,7 @@ HDR = $(wildcard src/*.h)
 # translation unit with fast-math explicitly disabled; the rest of the engine
 # retains -ffast-math.  The final -fno-fast-math also defeats a hostile or
 # distro-supplied CFLAGS that enabled it before our filtered flags.
-QUANTS_OBJ = .build/quants.o
+QUANTS_OBJ = $(OBJDIR)/quants.o
 QUANTS_CFLAGS = $(filter-out -ffast-math,$(CFLAGS)) -fno-fast-math
 
 # The offline GGUF quantizer (--quantize) is quant arithmetic too: its Q8_0
@@ -201,24 +210,68 @@ QUANTS_CFLAGS = $(filter-out -ffast-math,$(CFLAGS)) -fno-fast-math
 # Under -ffast-math the reciprocal id=1/d and the roundf boundary drifted,
 # tipping ~1-code-per-block differences vs ggml on identical input while the
 # fp16 block scale still matched. Build it fast-math-free, like quants.o.
-QUANTIZE_OBJ = .build/quantize.o
+QUANTIZE_OBJ = $(OBJDIR)/quantize.o
 
-# Rebuild on every invocation: the requested CC/CFLAGS are not encoded in the
-# object name, and reusing a native developer object in a portable release or
-# cross build would be a correctness bug.
+# These used to carry FORCE (rebuild on every invocation) because the
+# requested CC/CFLAGS were not encoded anywhere, and reusing a native
+# developer object in a portable release or cross build would be a
+# correctness bug. The object directory is now keyed by CC and CFLAGS (see
+# the object layer below; QUANTS_CFLAGS derives from CFLAGS), so a different
+# flag set is a different object and FORCE, which had each of `make test`'s
+# 17 sub-makes recompile both objects and relink `runner`, is not needed.
 #
 # .DEFAULT_GOAL, because this rule sits ABOVE `runner` and a rule is make's
 # default goal by position: without the pin, bare `make` built ONE object
 # file and exited 0. Local flows always name a target, so only CI's bare
 # `make` jobs (windows smoke, consumer-compatibility) caught it.
 .DEFAULT_GOAL := runner
-$(QUANTS_OBJ): FORCE src/quants.c $(HDR)
+$(QUANTS_OBJ): src/quants.c $(HDR)
 	mkdir -p $(dir $@)
 	$(CC) $(QUANTS_CFLAGS) -I src -c src/quants.c -o $@
 
-$(QUANTIZE_OBJ): FORCE src/quantize.c $(HDR)
+$(QUANTIZE_OBJ): src/quantize.c $(HDR)
 	mkdir -p $(dir $@)
 	$(CC) $(QUANTS_CFLAGS) -I src -c src/quantize.c -o $@
+
+# ---------------------------------------------------------------- object layer
+# Every test binary used to recompile the engine from source (model.c alone
+# 49 times per `make test`, ~13 of its 19 CI minutes). The shared engine
+# sources are now compiled ONCE with exactly $(CFLAGS) and the standard test
+# rules link the objects: the same flags, the same code, one compile.
+# What stays on sources, deliberately: `runner` itself and its -D test
+# variants (SRC), the sanitizer builds, the QUANTS_CFLAGS kernels, the tray
+# core (-DRUNNER_TEST_TRAY_HTTP) and the -O0 interface stub -- every rule
+# whose flags differ from $(CFLAGS) keeps compiling what it links.
+#
+# The objects live under a directory keyed by CC and CFLAGS (a cksum of the
+# exact command prefix), so a native developer build, a portable release
+# build and a cross build never share an object: a different flag set is a
+# different directory, not a timestamp comparison that GNU make 3.81 (the
+# macOS default) resolves to whole seconds. The hazard the quant objects'
+# old FORCE guarded is answered by construction rather than by rebuilding
+# them in every one of `make test`'s 17 sub-makes.
+ENGINE_OBJ_NAMES = gguf compat instances tokenizer model sample vramreg template \
+                   jsonmode schema engine json envelope ed25519 ecdsa oms http \
+                   registry scheduler completion api_responses api_anthropic server
+ENGINE_OBJ = $(ENGINE_OBJ_NAMES:%=$(OBJDIR)/%.o)
+ifeq ($(GPU_SRC),src/metal.m)
+GPU_OBJ = $(OBJDIR)/metal.o
+else
+GPU_OBJ = $(OBJDIR)/cuda.o
+endif
+
+$(OBJDIR)/%.o: src/%.c $(HDR)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -I src -c $< -o $@
+
+# cuda.c embeds kernels_ptx.h, metal.m the shader headers: a regenerated
+# header must rebuild the backend object (the same rule `runner` carries)
+$(OBJDIR)/cuda.o: src/cuda.c $(HDR) src/kernels_ptx.h
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -I src -c $< -o $@
+$(OBJDIR)/metal.o: src/metal.m $(HDR) src/kernels_metal.h src/kernels_tensor_metal.h
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -I src -c $< -o $@
 
 SRC = src/gguf.c src/compat.c $(QUANTS_OBJ) src/instances.c src/tokenizer.c src/model.c src/sample.c \
       src/vramreg.c \
@@ -246,51 +299,51 @@ debug: $(SRC) $(HDR)
 # $(CFLAGS), not a hand-rolled flag list: schema bounds compile in the same
 # -ffast-math configuration as the shipped binary. Building this test without
 # those flags once gated behavior in a configuration that does not ship.
-$(TEST_JSON_SCHEMA): tests/test_json_schema.c src/json.c src/jsonmode.c src/schema.c $(HDR)
-	$(CC) $(CFLAGS) -I src tests/test_json_schema.c src/json.c src/jsonmode.c src/schema.c -o $@ -lm
+$(TEST_JSON_SCHEMA): tests/test_json_schema.c $(OBJDIR)/json.o $(OBJDIR)/jsonmode.o $(OBJDIR)/schema.o $(HDR)
+	$(CC) $(CFLAGS) -I src tests/test_json_schema.c $(OBJDIR)/json.o $(OBJDIR)/jsonmode.o $(OBJDIR)/schema.o -o $@ -lm
 
-$(TEST_SVAL_WALK): tests/test_sval_walk.c src/json.c src/jsonmode.c src/schema.c $(HDR)
-	$(CC) $(CFLAGS) -I src tests/test_sval_walk.c src/json.c src/jsonmode.c src/schema.c -o $@ -lm
+$(TEST_SVAL_WALK): tests/test_sval_walk.c $(OBJDIR)/json.o $(OBJDIR)/jsonmode.o $(OBJDIR)/schema.o $(HDR)
+	$(CC) $(CFLAGS) -I src tests/test_sval_walk.c $(OBJDIR)/json.o $(OBJDIR)/jsonmode.o $(OBJDIR)/schema.o -o $@ -lm
 
 # quants.c is needed for the ggml_type_* helpers gguf.c links against; CFLAGS
 # (not the plainer flags above) so the AVX2 paths match a real build
-TEST_TOK_SRC = tests/test_tokenizer.c src/gguf.c src/tokenizer.c src/compat.c $(QUANTS_OBJ)
+TEST_TOK_SRC = tests/test_tokenizer.c $(OBJDIR)/gguf.o $(OBJDIR)/tokenizer.o $(OBJDIR)/compat.o $(QUANTS_OBJ)
 $(TEST_TOKENIZER): $(TEST_TOK_SRC) $(HDR)
 	$(CC) $(CFLAGS) -I src $(TEST_TOK_SRC) -o $@ -lm
 
 # the two merge implementations must agree on every input; see the test's header
 TEST_TOK_MERGE = $(TEST_BATCH:test-batch%=test-tokenizer-merge%)
-TEST_TOK_MERGE_SRC = tests/test_tokenizer_merge.c src/gguf.c src/tokenizer.c \
-                     src/compat.c $(QUANTS_OBJ)
+TEST_TOK_MERGE_SRC = tests/test_tokenizer_merge.c $(OBJDIR)/gguf.o $(OBJDIR)/tokenizer.o \
+                     $(OBJDIR)/compat.o $(QUANTS_OBJ)
 $(TEST_TOK_MERGE): $(TEST_TOK_MERGE_SRC) $(HDR)
 	$(CC) $(CFLAGS) -I src $(TEST_TOK_MERGE_SRC) -o $@ -lm
 
-$(TEST_GGUF_SPLIT): tests/test_gguf_split_load.c src/gguf.c src/compat.c $(QUANTS_OBJ) $(HDR)
-	$(CC) $(CFLAGS) -I src tests/test_gguf_split_load.c src/gguf.c src/compat.c $(QUANTS_OBJ) -o $@ $(LDFLAGS)
+$(TEST_GGUF_SPLIT): tests/test_gguf_split_load.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o $(QUANTS_OBJ) $(HDR)
+	$(CC) $(CFLAGS) -I src tests/test_gguf_split_load.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o $(QUANTS_OBJ) -o $@ $(LDFLAGS)
 
 # difftok: tokenizer differential harness. Not part of `make test` -- it needs a
 # real multi-GB model GGUF, which models/ is gitignored for. scripts/difftok.py
 # builds it on demand and compares against the HuggingFace reference.
-DIFFTOK_SRC = tests/difftok.c src/gguf.c src/tokenizer.c src/compat.c $(QUANTS_OBJ)
+DIFFTOK_SRC = tests/difftok.c $(OBJDIR)/gguf.o $(OBJDIR)/tokenizer.o $(OBJDIR)/compat.o $(QUANTS_OBJ)
 $(DIFFTOK): $(DIFFTOK_SRC) $(HDR)
 	$(CC) $(CFLAGS) -I src $(DIFFTOK_SRC) -o $@ -lm
 
-TEST_TMPL_SRC = tests/test_template.c src/gguf.c src/tokenizer.c src/template.c src/schema.c src/jsonmode.c \
-                src/json.c src/compat.c $(QUANTS_OBJ)
+TEST_TMPL_SRC = tests/test_template.c $(OBJDIR)/gguf.o $(OBJDIR)/tokenizer.o $(OBJDIR)/template.o $(OBJDIR)/schema.o $(OBJDIR)/jsonmode.o \
+                $(OBJDIR)/json.o $(OBJDIR)/compat.o $(QUANTS_OBJ)
 $(TEST_TEMPLATE): $(TEST_TMPL_SRC) $(HDR)
 	$(CC) $(CFLAGS) -I src $(TEST_TMPL_SRC) -o $@ -lm
 
 # the strict tool envelope is only meaningful if the schema engine enforces
 # it, so schema.c/jsonmode.c compile in and the tests drive the real validator
-TEST_TOOLS_SRC = tests/test_tools.c src/gguf.c src/tokenizer.c src/template.c \
-                 src/schema.c src/jsonmode.c src/json.c src/compat.c $(QUANTS_OBJ)
+TEST_TOOLS_SRC = tests/test_tools.c $(OBJDIR)/gguf.o $(OBJDIR)/tokenizer.o $(OBJDIR)/template.o \
+                 $(OBJDIR)/schema.o $(OBJDIR)/jsonmode.o $(OBJDIR)/json.o $(OBJDIR)/compat.o $(QUANTS_OBJ)
 $(TEST_TOOLS): $(TEST_TOOLS_SRC) $(HDR)
 	$(CC) $(CFLAGS) -I src $(TEST_TOOLS_SRC) -o $@ -lm
 
 # sampler presets and the greedy/penalty contract need no model, so the test
 # links src/sample.c alone
-$(TEST_SAMPLER): tests/test_sampler.c src/sample.c $(HDR)
-	$(CC) $(CFLAGS) -I src tests/test_sampler.c src/sample.c -o $@ -lm
+$(TEST_SAMPLER): tests/test_sampler.c $(OBJDIR)/sample.o $(HDR)
+	$(CC) $(CFLAGS) -I src tests/test_sampler.c $(OBJDIR)/sample.o -o $@ -lm
 
 # compiles src/json.c directly into the test with instrumented allocators
 $(TEST_JSON_OOM): tests/test_json_oom.c src/json.c src/json.h
@@ -298,21 +351,21 @@ $(TEST_JSON_OOM): tests/test_json_oom.c src/json.c src/json.h
 
 # compiles src/tokenizer.c into the test with instrumented allocators; gguf.c
 # and friends link normally so their allocations stay outside the failure window
-TEST_TOK_OOM_SRC = tests/test_tokenizer_oom.c src/gguf.c src/compat.c $(QUANTS_OBJ)
+TEST_TOK_OOM_SRC = tests/test_tokenizer_oom.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o $(QUANTS_OBJ)
 $(TEST_TOKENIZER_OOM): $(TEST_TOK_OOM_SRC) src/tokenizer.c $(HDR)
 	$(CC) $(CFLAGS) -I src $(TEST_TOK_OOM_SRC) -o $@ -lm
 
 # same shape for the renderer: json.c and template.c are compiled into the test
 # with instrumented allocators, tokenizer.c/gguf.c link normally
-TEST_TMPL_OOM_SRC = tests/test_template_oom.c src/tokenizer.c src/gguf.c \
-                    src/schema.c src/jsonmode.c src/compat.c $(QUANTS_OBJ)
+TEST_TMPL_OOM_SRC = tests/test_template_oom.c $(OBJDIR)/tokenizer.o $(OBJDIR)/gguf.o \
+                    $(OBJDIR)/schema.o $(OBJDIR)/jsonmode.o $(OBJDIR)/compat.o $(QUANTS_OBJ)
 $(TEST_TEMPLATE_OOM): $(TEST_TMPL_OOM_SRC) src/template.c src/json.c $(HDR)
 	$(CC) $(CFLAGS) -I src $(TEST_TMPL_OOM_SRC) -o $@ -lm
 
 # schema.c and json.c both compile into the test: enum/const literals are
 # serialised through jv_dump, so builder failures are schema failure paths
-$(TEST_SCHEMA_OOM): tests/test_schema_oom.c src/schema.c src/json.c src/jsonmode.c $(HDR)
-	$(CC) $(CFLAGS) -I src tests/test_schema_oom.c src/jsonmode.c -o $@ -lm
+$(TEST_SCHEMA_OOM): tests/test_schema_oom.c $(OBJDIR)/schema.o $(OBJDIR)/json.o $(OBJDIR)/jsonmode.o $(HDR)
+	$(CC) $(CFLAGS) -I src tests/test_schema_oom.c $(OBJDIR)/jsonmode.o -o $@ -lm
 
 # shared model weights: needs the real model + backend, so it links the same
 # sources the runner does minus the CLI/server front end
@@ -374,8 +427,8 @@ test-shared-noid: $(TEST_SHARED) fixture-scale-note
 # 5 GB file, because losing the identity is what silently unshares weights
 # (the fixture-scale gates can never see the >2 GB stat() cliff that did it)
 TEST_FILE_ID = $(TEST_BATCH:test-batch%=test-file-identity%)
-TEST_FILE_ID_SRC = tests/test_file_identity.c src/gguf.c src/compat.c \
-                   $(QUANTS_OBJ) src/model.c src/vramreg.c $(GPU_SRC)
+TEST_FILE_ID_SRC = tests/test_file_identity.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o \
+                   $(QUANTS_OBJ) $(OBJDIR)/model.o $(OBJDIR)/vramreg.o $(GPU_OBJ)
 $(TEST_FILE_ID): $(TEST_FILE_ID_SRC) $(HDR)
 	$(CC) $(CFLAGS) -I src $(TEST_FILE_ID_SRC) -o $@ $(LDFLAGS)
 
@@ -455,8 +508,8 @@ test-help-interface: runner
 # this goes red" could not go red, and `make test` never referenced it at all.
 # Windows was unaffected only because `test-batch.exe` yields a distinct name.
 TEST_SPLIT_GUARD = $(TEST_BATCH:test-batch%=test-split-guard-bin%)
-TEST_SPLIT_GUARD_SRC = tests/test_split_guard.c src/gguf.c src/compat.c \
-                       $(QUANTS_OBJ) src/model.c src/vramreg.c $(GPU_SRC)
+TEST_SPLIT_GUARD_SRC = tests/test_split_guard.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o \
+                       $(QUANTS_OBJ) $(OBJDIR)/model.o $(OBJDIR)/vramreg.o $(GPU_OBJ)
 $(TEST_SPLIT_GUARD): $(TEST_SPLIT_GUARD_SRC) $(HDR)
 	$(CC) $(CFLAGS) $(GPU_BACKEND_DEF) -I src $(TEST_SPLIT_GUARD_SRC) -o $@ $(LDFLAGS)
 
@@ -475,8 +528,8 @@ test-split-guard: $(TEST_SPLIT_GUARD) test.gguf
 
 # batched decode: same sources as the shared-weights test (real model +
 # backend), because the property under test is a backend property
-TEST_BATCH_SRC = tests/test_batch.c src/gguf.c src/compat.c \
-                 $(QUANTS_OBJ) src/model.c src/vramreg.c $(GPU_SRC)
+TEST_BATCH_SRC = tests/test_batch.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o \
+                 $(QUANTS_OBJ) $(OBJDIR)/model.o $(OBJDIR)/vramreg.o $(GPU_OBJ)
 $(TEST_BATCH): $(TEST_BATCH_SRC) $(HDR)
 	$(CC) $(CFLAGS) -I src $(TEST_BATCH_SRC) -o $@ $(LDFLAGS)
 
@@ -487,25 +540,25 @@ $(TEST_BATCH): $(TEST_BATCH_SRC) $(HDR)
 $(TEST_BIND): tests/test_bind.c src/server.c src/main.c
 	$(CC) $(CFLAGS) -I src tests/test_bind.c -o $@
 
-$(TEST_HOST_HEADER): tests/test_host_header.c src/http.c src/json.c src/compat.c $(HDR)
-	$(CC) $(CFLAGS) -I src tests/test_host_header.c src/http.c src/json.c \
-		src/compat.c -o $@ $(LDFLAGS)
+$(TEST_HOST_HEADER): tests/test_host_header.c $(OBJDIR)/http.o $(OBJDIR)/json.o $(OBJDIR)/compat.o $(HDR)
+	$(CC) $(CFLAGS) -I src tests/test_host_header.c $(OBJDIR)/http.o $(OBJDIR)/json.o \
+		$(OBJDIR)/compat.o -o $@ $(LDFLAGS)
 
 # forkable KV prefixes: needs the real model, the real tokenizer and the real
 # engine, because the property under test is that a forked cache produces the
 # same logits the model would have produced by prefilling
-TEST_PREFIX_SRC = tests/test_prefix.c src/gguf.c src/compat.c $(QUANTS_OBJ) \
-                  src/tokenizer.c src/model.c src/sample.c src/jsonmode.c \
-                  src/schema.c src/json.c src/engine.c src/vramreg.c $(GPU_SRC)
+TEST_PREFIX_SRC = tests/test_prefix.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o $(QUANTS_OBJ) \
+                  $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(OBJDIR)/sample.o $(OBJDIR)/jsonmode.o \
+                  $(OBJDIR)/schema.o $(OBJDIR)/json.o $(OBJDIR)/engine.o $(OBJDIR)/vramreg.o $(GPU_OBJ)
 $(TEST_PREFIX): $(TEST_PREFIX_SRC) $(HDR)
 	$(CC) $(CFLAGS) -I src $(TEST_PREFIX_SRC) -o $@ $(LDFLAGS)
 
 # recurrent-state cache seam (SSM tracer 4): same real-object link set as the
 # prefix gate, because the property under test is the same — bit-identical
 # logits — but on the recurrent (SSM) fold that a rewind must snapshot/restore.
-TEST_RECURRENT_SRC = tests/test_recurrent_rewind.c src/gguf.c src/compat.c $(QUANTS_OBJ) \
-                  src/tokenizer.c src/model.c src/sample.c src/jsonmode.c \
-                  src/schema.c src/json.c src/engine.c src/vramreg.c $(GPU_SRC)
+TEST_RECURRENT_SRC = tests/test_recurrent_rewind.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o $(QUANTS_OBJ) \
+                  $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(OBJDIR)/sample.o $(OBJDIR)/jsonmode.o \
+                  $(OBJDIR)/schema.o $(OBJDIR)/json.o $(OBJDIR)/engine.o $(OBJDIR)/vramreg.o $(GPU_OBJ)
 $(TEST_RECURRENT): $(TEST_RECURRENT_SRC) $(HDR)
 	$(CC) $(CFLAGS) -I src $(TEST_RECURRENT_SRC) -o $@ $(LDFLAGS)
 
@@ -513,29 +566,29 @@ $(TEST_RECURRENT): $(TEST_RECURRENT_SRC) $(HDR)
 # scheduler is included so its private batched loop is exercised without
 # widening that loop into a public test API; the generated recurrent fixture
 # makes stale-fold reuse observable as byte divergence.
-TEST_REQUEST_STOP_SRC = tests/test_request_stop.c src/gguf.c src/compat.c \
-                  $(QUANTS_OBJ) src/tokenizer.c src/model.c src/sample.c \
-                  src/jsonmode.c src/schema.c src/json.c src/engine.c \
-                  src/vramreg.c src/http.c $(GPU_SRC)
+TEST_REQUEST_STOP_SRC = tests/test_request_stop.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o \
+                  $(QUANTS_OBJ) $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(OBJDIR)/sample.o \
+                  $(OBJDIR)/jsonmode.o $(OBJDIR)/schema.o $(OBJDIR)/json.o $(OBJDIR)/engine.o \
+                  $(OBJDIR)/vramreg.o $(OBJDIR)/http.o $(GPU_OBJ)
 $(TEST_REQUEST_STOP): $(TEST_REQUEST_STOP_SRC) src/scheduler.c $(HDR) test-ornith.gguf test-ornith-draft.gguf
 	$(CC) $(CFLAGS) -I src $(TEST_REQUEST_STOP_SRC) -o $@ $(LDFLAGS)
 
 # grammar fast-forward: same full-engine link as the prefix test — the gate
 # is byte identity of a real constrained generation with the walk on and off
-TEST_GRAMMAR_FF_SRC = tests/test_grammar_ff.c src/gguf.c src/compat.c \
-                  $(QUANTS_OBJ) src/tokenizer.c src/model.c src/sample.c \
-                  src/jsonmode.c src/schema.c src/json.c src/engine.c \
-                  src/vramreg.c $(GPU_SRC)
+TEST_GRAMMAR_FF_SRC = tests/test_grammar_ff.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o \
+                  $(QUANTS_OBJ) $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(OBJDIR)/sample.o \
+                  $(OBJDIR)/jsonmode.o $(OBJDIR)/schema.o $(OBJDIR)/json.o $(OBJDIR)/engine.o \
+                  $(OBJDIR)/vramreg.o $(GPU_OBJ)
 $(TEST_GRAMMAR_FF): $(TEST_GRAMMAR_FF_SRC) $(HDR)
 	$(CC) $(CFLAGS) -I src $(TEST_GRAMMAR_FF_SRC) -o $@ $(LDFLAGS)
 
 # The prompt-lookup search pinned against hand-computed proposals (the
 # absolute anchor of --draft-lookup; the CLI identity gate is in
 # tests/test_draft_lookup.py). Links the engine, so it takes engine.c's deps.
-TEST_LOOKUP_DRAFT_SRC = tests/test_lookup_draft.c src/gguf.c src/compat.c \
-                  $(QUANTS_OBJ) src/tokenizer.c src/model.c src/sample.c \
-                  src/jsonmode.c src/schema.c src/json.c src/engine.c \
-                  src/vramreg.c $(GPU_SRC)
+TEST_LOOKUP_DRAFT_SRC = tests/test_lookup_draft.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o \
+                  $(QUANTS_OBJ) $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(OBJDIR)/sample.o \
+                  $(OBJDIR)/jsonmode.o $(OBJDIR)/schema.o $(OBJDIR)/json.o $(OBJDIR)/engine.o \
+                  $(OBJDIR)/vramreg.o $(GPU_OBJ)
 $(TEST_LOOKUP_DRAFT): $(TEST_LOOKUP_DRAFT_SRC) $(HDR)
 	$(CC) $(CFLAGS) -I src $(TEST_LOOKUP_DRAFT_SRC) -o $@ $(LDFLAGS)
 
@@ -543,13 +596,13 @@ $(TEST_LOOKUP_DRAFT): $(TEST_LOOKUP_DRAFT_SRC) $(HDR)
 # free-VRAM figure arrives through a callback, so the whole module is drivable
 # with synthetic numbers and the test needs no GPU, no model and no driver --
 # which is what lets it run in CI.
-$(TEST_VRAMREG): tests/test_vram_registry.c src/vramreg.c src/compat.c $(HDR)
-	$(CC) $(CFLAGS) -I src tests/test_vram_registry.c src/vramreg.c src/compat.c -o $@ $(LDFLAGS)
+$(TEST_VRAMREG): tests/test_vram_registry.c $(OBJDIR)/vramreg.o $(OBJDIR)/compat.o $(HDR)
+	$(CC) $(CFLAGS) -I src tests/test_vram_registry.c $(OBJDIR)/vramreg.o $(OBJDIR)/compat.o -o $@ $(LDFLAGS)
 
 # q8 KV tolerance gate: needs the tokenizer too, because it teacher-forces a
 # fixed piece of real text rather than synthetic token ids
-TEST_KV_TOL_SRC = tests/test_kv_tol.c src/gguf.c src/compat.c $(QUANTS_OBJ) \
-                  src/tokenizer.c src/model.c src/vramreg.c $(GPU_SRC)
+TEST_KV_TOL_SRC = tests/test_kv_tol.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o $(QUANTS_OBJ) \
+                  $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(OBJDIR)/vramreg.o $(GPU_OBJ)
 $(TEST_KV_TOL): $(TEST_KV_TOL_SRC) $(HDR)
 	$(CC) $(CFLAGS) -I src $(TEST_KV_TOL_SRC) -o $@ $(LDFLAGS)
 
@@ -568,7 +621,7 @@ $(TEST_QUANTS_SIMD): $(TEST_QUANTS_SIMD_SRC) $(HDR)
 	$(CC) $(QUANTS_CFLAGS) -I src $(TEST_QUANTS_SIMD_SRC) -o $@ -lm -lpthread
 
 # discovery registry: pure-C, runs against a private HOME/APPDATA
-TEST_INSTANCES_SRC = tests/test_instances.c src/instances.c src/json.c src/compat.c
+TEST_INSTANCES_SRC = tests/test_instances.c $(OBJDIR)/instances.o $(OBJDIR)/json.o $(OBJDIR)/compat.o
 $(TEST_INSTANCES): $(TEST_INSTANCES_SRC) $(HDR)
 	$(CC) $(CFLAGS) -I src $(TEST_INSTANCES_SRC) -o $@ -lm
 
@@ -576,8 +629,8 @@ $(TEST_INSTANCES): $(TEST_INSTANCES_SRC) $(HDR)
 # INTO the test (macro-substituted allocators), so it is deliberately absent
 # from the source list here.
 TEST_INSTANCES_OOM = $(TEST_BATCH:test-batch%=test-instances-oom%)
-$(TEST_INSTANCES_OOM): tests/test_instances_oom.c src/instances.c src/json.c src/compat.c $(HDR)
-	$(CC) $(CFLAGS) -I src tests/test_instances_oom.c src/json.c src/compat.c -o $@ -lm
+$(TEST_INSTANCES_OOM): tests/test_instances_oom.c $(OBJDIR)/instances.o $(OBJDIR)/json.o $(OBJDIR)/compat.o $(HDR)
+	$(CC) $(CFLAGS) -I src tests/test_instances_oom.c $(OBJDIR)/json.o $(OBJDIR)/compat.o -o $@ -lm
 
 # Pure policy seam: simulates a Mac whose model is larger than one MTLBuffer
 # but still inside the aggregate Metal working set.
@@ -600,16 +653,16 @@ $(TEST_TRAY_CORE): $(TEST_TRAY_CORE_SRC) $(HDR)
 
 # TC tolerance gate: same shape as the q8-KV gate — teacher-forced logits,
 # top-1 + bounded-deviation criteria, per (type, arch) via the model argument
-TEST_TC_TOL_SRC = tests/test_tc_tol.c src/gguf.c src/compat.c $(QUANTS_OBJ) \
-                  src/tokenizer.c src/model.c src/vramreg.c $(GPU_SRC)
+TEST_TC_TOL_SRC = tests/test_tc_tol.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o $(QUANTS_OBJ) \
+                  $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(OBJDIR)/vramreg.o $(GPU_OBJ)
 $(TEST_TC_TOL): $(TEST_TC_TOL_SRC) $(HDR)
 	$(CC) $(CFLAGS) -I src $(TEST_TC_TOL_SRC) -o $@ $(LDFLAGS)
 
 # adaptation D3: finite-difference gradient gate over the full-coverage
 # adapter fixture (rank-2 pairs on every hooked projection of every layer)
-TEST_LORA_GRAD_SRC = tests/test_lora_grad.c src/gguf.c src/compat.c \
-                  $(QUANTS_OBJ) src/tokenizer.c src/model.c src/vramreg.c \
-                  $(GPU_SRC)
+TEST_LORA_GRAD_SRC = tests/test_lora_grad.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o \
+                  $(QUANTS_OBJ) $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(OBJDIR)/vramreg.o \
+                  $(GPU_OBJ)
 $(TEST_LORA_GRAD): $(TEST_LORA_GRAD_SRC) $(HDR) test.gguf test-lora.full.gguf test-q8.gguf test-lora-q8.full.gguf test-qk.gguf test-lora-qk.full.gguf test-nope.gguf test-lora-nope.full.gguf
 	$(CC) $(CFLAGS) -I src $(TEST_LORA_GRAD_SRC) -o $@ $(LDFLAGS)
 
@@ -621,8 +674,8 @@ test-lora-q8.full.gguf: test-q8.gguf scripts/make-test-lora.py
 
 # D8 slice 1: device transposed matvec vs the CPU trainer's chain (skips
 # without a CUDA device; the three fixture runs cover F32, Q8_0 and BF16)
-TEST_MVT_SRC = tests/test_mvt.c src/gguf.c src/compat.c $(QUANTS_OBJ) \
-                  src/tokenizer.c src/model.c src/vramreg.c $(GPU_SRC)
+TEST_MVT_SRC = tests/test_mvt.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o $(QUANTS_OBJ) \
+                  $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(OBJDIR)/vramreg.o $(GPU_OBJ)
 $(TEST_MVT): $(TEST_MVT_SRC) $(HDR) test.gguf test-q8.gguf test-bf16.gguf
 	$(CC) $(CFLAGS) -I src $(TEST_MVT_SRC) -o $@ $(LDFLAGS)
 
@@ -646,23 +699,23 @@ test-lora-qk.full.gguf: test-qk.gguf scripts/make-test-lora.py
 # fused-int8 CPU dot tolerance gate: the CPU twin of the TC gate — teacher-
 # forced logits, 0/64 top-1 flips + bounded deviation, per (type, model) via
 # the model argument. CPU-only, so it needs no GPU backend to be meaningful.
-TEST_I8_TOL_SRC = tests/test_i8_tol.c src/gguf.c src/compat.c src/quants.c \
-                  src/tokenizer.c src/model.c src/vramreg.c $(GPU_SRC)
+TEST_I8_TOL_SRC = tests/test_i8_tol.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o src/quants.c \
+                  $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(OBJDIR)/vramreg.o $(GPU_OBJ)
 $(TEST_I8_TOL): $(TEST_I8_TOL_SRC) $(HDR)
 	$(CC) $(CFLAGS) -I src $(TEST_I8_TOL_SRC) -o $@ $(LDFLAGS)
 
 # tolerance-gated Metal decode matvec: the GPU twin of the i8 gate — teacher-
 # forced logits, 0/64 top-1 flips + bounded deviation, per (type, model) via
 # the model argument. Self-skips on backends with no fast matvec kernel.
-TEST_MV_TOL_SRC = tests/test_mv_tol.c src/gguf.c src/compat.c $(QUANTS_OBJ) \
-                  src/tokenizer.c src/model.c src/vramreg.c $(GPU_SRC)
+TEST_MV_TOL_SRC = tests/test_mv_tol.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o $(QUANTS_OBJ) \
+                  $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(OBJDIR)/vramreg.o $(GPU_OBJ)
 $(TEST_MV_TOL): $(TEST_MV_TOL_SRC) $(HDR)
 	$(CC) $(CFLAGS) -I src $(TEST_MV_TOL_SRC) -o $@ $(LDFLAGS)
 
 # cooperative-KV attention read: same shape as the fast-matvec gate, for the
 # other reassociating Metal route. Self-skips where it never dispatches.
-TEST_ATTN_TOL_SRC = tests/test_attn_tol.c src/gguf.c src/compat.c $(QUANTS_OBJ) \
-                    src/tokenizer.c src/model.c src/vramreg.c $(GPU_SRC)
+TEST_ATTN_TOL_SRC = tests/test_attn_tol.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o $(QUANTS_OBJ) \
+                    $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(OBJDIR)/vramreg.o $(GPU_OBJ)
 $(TEST_ATTN_TOL): $(TEST_ATTN_TOL_SRC) $(HDR)
 	$(CC) $(CFLAGS) -I src $(TEST_ATTN_TOL_SRC) -o $@ $(LDFLAGS)
 
@@ -671,60 +724,60 @@ $(TEST_ATTN_TOL): $(TEST_ATTN_TOL_SRC) $(HDR)
 # fixtures, where greedy argmax absorbs large numeric differences -- so a
 # fixture-scale backend feature could be wrong and pass everything. This
 # compares the logit vectors themselves.
-TEST_GPU_ID_SRC = tests/test_gpu_identity.c src/gguf.c src/compat.c $(QUANTS_OBJ) \
-                  src/tokenizer.c src/model.c src/vramreg.c $(GPU_SRC)
+TEST_GPU_ID_SRC = tests/test_gpu_identity.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o $(QUANTS_OBJ) \
+                  $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(OBJDIR)/vramreg.o $(GPU_OBJ)
 $(TEST_GPU_ID): $(TEST_GPU_ID_SRC) $(HDR)
 	$(CC) $(CFLAGS) -I src $(TEST_GPU_ID_SRC) -o $@ $(LDFLAGS)
 
 # GPU-matvec vs GPU-grouped-MMA on the house fidelity columns (the routing
 # half of the account is scripts/moe-mm-flips.py). Same link as gpu-identity.
-TEST_MOE_MM_AB_SRC = tests/test_moe_mm_ab.c src/gguf.c src/compat.c $(QUANTS_OBJ) \
-                     src/tokenizer.c src/model.c src/vramreg.c $(GPU_SRC)
+TEST_MOE_MM_AB_SRC = tests/test_moe_mm_ab.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o $(QUANTS_OBJ) \
+                     $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(OBJDIR)/vramreg.o $(GPU_OBJ)
 $(TEST_MOE_MM_AB): $(TEST_MOE_MM_AB_SRC) $(HDR)
 	$(CC) $(CFLAGS) -I src $(TEST_MOE_MM_AB_SRC) -o $@ $(LDFLAGS)
 
 # Metal microbatch decode vs sequential: byte identity or bust, with an
 # engagement check so a declined batch cannot pass by comparing the
 # sequential path against itself.
-TEST_BATCH_ID_SRC = tests/test_batch_identity.c src/gguf.c src/compat.c $(QUANTS_OBJ) \
-                    src/tokenizer.c src/model.c src/vramreg.c $(GPU_SRC)
+TEST_BATCH_ID_SRC = tests/test_batch_identity.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o $(QUANTS_OBJ) \
+                    $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(OBJDIR)/vramreg.o $(GPU_OBJ)
 $(TEST_BATCH_ID): $(TEST_BATCH_ID_SRC) $(HDR)
 	$(CC) $(CFLAGS) -I src $(TEST_BATCH_ID_SRC) -o $@ $(LDFLAGS)
 
 # fused-vs-eager MoE routing tolerance: same full-engine link as tc-tol, and
 # the same self-skipping shape (no GPU / not MoE / no full offload / the fused
 # router never engaged all skip rather than pass)
-TEST_MOE_TOL_SRC = tests/test_moe_tol.c src/gguf.c src/compat.c $(QUANTS_OBJ) \
-                  src/tokenizer.c src/model.c src/vramreg.c $(GPU_SRC)
+TEST_MOE_TOL_SRC = tests/test_moe_tol.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o $(QUANTS_OBJ) \
+                  $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(OBJDIR)/vramreg.o $(GPU_OBJ)
 $(TEST_MOE_TOL): $(TEST_MOE_TOL_SRC) $(HDR)
 	$(CC) $(CFLAGS) -I src $(TEST_MOE_TOL_SRC) -o $@ $(LDFLAGS)
 
-TEST_MOE_ROUTER_SRC = tests/test_moe_router.c src/gguf.c src/compat.c $(QUANTS_OBJ) \
-                  src/tokenizer.c src/model.c src/vramreg.c $(GPU_SRC)
+TEST_MOE_ROUTER_SRC = tests/test_moe_router.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o $(QUANTS_OBJ) \
+                  $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(OBJDIR)/vramreg.o $(GPU_OBJ)
 $(TEST_MOE_ROUTER): $(TEST_MOE_ROUTER_SRC) $(HDR)
 	$(CC) $(CFLAGS) -I src $(TEST_MOE_ROUTER_SRC) -o $@ $(LDFLAGS)
 
 # residency-warning wording: needs the loader (the hot-set estimate has to
 # agree with the actual tensor set), so it takes the same link as the two above
-TEST_PAGING_WARN_SRC = tests/test_paging_warn.c src/gguf.c src/compat.c $(QUANTS_OBJ) \
-                  src/tokenizer.c src/model.c src/vramreg.c $(GPU_SRC)
+TEST_PAGING_WARN_SRC = tests/test_paging_warn.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o $(QUANTS_OBJ) \
+                  $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(OBJDIR)/vramreg.o $(GPU_OBJ)
 $(TEST_PAGING_WARN): $(TEST_PAGING_WARN_SRC) $(HDR)
 	$(CC) $(CFLAGS) -I src $(TEST_PAGING_WARN_SRC) -o $@ $(LDFLAGS)
 # reservation auto-fit arithmetic: no model file, no GPU, no fixture -- the
 # regime it covers is unreachable on a dev machine, so it is fed real 7B/24 GB
 # numbers directly. See the header of tests/test_autofit.c.
-TEST_AUTOFIT_SRC = tests/test_autofit.c src/gguf.c src/compat.c $(QUANTS_OBJ) \
-                  src/tokenizer.c src/model.c src/vramreg.c $(GPU_SRC)
+TEST_AUTOFIT_SRC = tests/test_autofit.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o $(QUANTS_OBJ) \
+                  $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(OBJDIR)/vramreg.o $(GPU_OBJ)
 $(TEST_AUTOFIT): $(TEST_AUTOFIT_SRC) $(HDR)
 	$(CC) $(CFLAGS) -I src $(TEST_AUTOFIT_SRC) -o $@ $(LDFLAGS)
 # the Responses framing state machine, driven directly over a socketpair.
 # Includes completion.c (the framer is static there) and links the engine
 # around it — the runner's object set minus main.c, server.c and the file the
 # test itself includes.
-TEST_RESP_SM_SRC = tests/test_responses_sm.c src/gguf.c src/compat.c \
-                  $(QUANTS_OBJ) src/tokenizer.c src/model.c src/sample.c \
-                  src/jsonmode.c src/schema.c src/json.c src/engine.c \
-                  src/template.c src/vramreg.c src/http.c src/envelope.c src/ed25519.c src/ecdsa.c src/oms.c src/registry.c src/scheduler.c $(GPU_SRC)
+TEST_RESP_SM_SRC = tests/test_responses_sm.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o \
+                  $(QUANTS_OBJ) $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(OBJDIR)/sample.o \
+                  $(OBJDIR)/jsonmode.o $(OBJDIR)/schema.o $(OBJDIR)/json.o $(OBJDIR)/engine.o \
+                  $(OBJDIR)/template.o $(OBJDIR)/vramreg.o $(OBJDIR)/http.o $(OBJDIR)/envelope.o $(OBJDIR)/ed25519.o $(OBJDIR)/ecdsa.o $(OBJDIR)/oms.o $(OBJDIR)/registry.o $(OBJDIR)/scheduler.o $(GPU_OBJ)
 $(TEST_RESP_SM): $(TEST_RESP_SM_SRC) src/completion.c $(HDR)
 	$(CC) $(CFLAGS) -I src $(TEST_RESP_SM_SRC) -o $@ $(LDFLAGS)
 
@@ -732,11 +785,11 @@ $(TEST_RESP_SM): $(TEST_RESP_SM_SRC) src/completion.c $(HDR)
 # test above and for the same reason -- gen_ctx and stop_feed are static in
 # completion.c, and the property under test is that the engine's validator and
 # that sink agree on what the client received, so neither side may be stubbed.
-TEST_STOP_CONSTRAINT_SRC = tests/test_stop_constraint.c src/gguf.c src/compat.c \
-                  $(QUANTS_OBJ) src/tokenizer.c src/model.c src/sample.c \
-                  src/jsonmode.c src/schema.c src/json.c src/engine.c \
-                  src/template.c src/vramreg.c src/http.c src/envelope.c src/ed25519.c src/ecdsa.c src/oms.c src/registry.c \
-                  src/scheduler.c $(GPU_SRC)
+TEST_STOP_CONSTRAINT_SRC = tests/test_stop_constraint.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o \
+                  $(QUANTS_OBJ) $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(OBJDIR)/sample.o \
+                  $(OBJDIR)/jsonmode.o $(OBJDIR)/schema.o $(OBJDIR)/json.o $(OBJDIR)/engine.o \
+                  $(OBJDIR)/template.o $(OBJDIR)/vramreg.o $(OBJDIR)/http.o $(OBJDIR)/envelope.o $(OBJDIR)/ed25519.o $(OBJDIR)/ecdsa.o $(OBJDIR)/oms.o $(OBJDIR)/registry.o \
+                  $(OBJDIR)/scheduler.o $(GPU_OBJ)
 $(TEST_STOP_CONSTRAINT): $(TEST_STOP_CONSTRAINT_SRC) src/completion.c $(HDR)
 	$(CC) $(CFLAGS) -I src $(TEST_STOP_CONSTRAINT_SRC) -o $@ $(LDFLAGS)
 
@@ -746,12 +799,12 @@ $(TEST_STOP_CONSTRAINT): $(TEST_STOP_CONSTRAINT_SRC) src/completion.c $(HDR)
 # handle_chat is static in server.c, so that TU is #included by the test and
 # left out of the link; completion.c is out too, because the test captures the
 # prompt instead of generating from it.
-TEST_BUDGET_SRC = tests/test_prompt_budget.c src/gguf.c src/compat.c \
-                  $(QUANTS_OBJ) src/tokenizer.c src/model.c src/sample.c \
-                  src/jsonmode.c src/schema.c src/json.c src/engine.c \
-                  src/template.c src/vramreg.c src/http.c src/envelope.c src/ed25519.c src/ecdsa.c src/oms.c src/registry.c \
-                  src/scheduler.c src/api_responses.c src/api_anthropic.c \
-                  $(GPU_SRC)
+TEST_BUDGET_SRC = tests/test_prompt_budget.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o \
+                  $(QUANTS_OBJ) $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(OBJDIR)/sample.o \
+                  $(OBJDIR)/jsonmode.o $(OBJDIR)/schema.o $(OBJDIR)/json.o $(OBJDIR)/engine.o \
+                  $(OBJDIR)/template.o $(OBJDIR)/vramreg.o $(OBJDIR)/http.o $(OBJDIR)/envelope.o $(OBJDIR)/ed25519.o $(OBJDIR)/ecdsa.o $(OBJDIR)/oms.o $(OBJDIR)/registry.o \
+                  $(OBJDIR)/scheduler.o $(OBJDIR)/api_responses.o $(OBJDIR)/api_anthropic.o \
+                  $(GPU_OBJ)
 $(TEST_BUDGET): $(TEST_BUDGET_SRC) src/server.c $(HDR)
 	$(CC) $(CFLAGS) -I src $(TEST_BUDGET_SRC) -o $@ $(LDFLAGS)
 
@@ -760,12 +813,12 @@ $(TEST_BUDGET): $(TEST_BUDGET_SRC) src/server.c $(HDR)
 # static in server.c, so that TU is #included by the test and left out of the
 # link -- plus a socketpair, because half of what is asserted is the 400 a
 # request that cannot be attributed gets back.
-TEST_ATTRIB_SRC = tests/test_tool_attribution.c src/gguf.c src/compat.c \
-                  $(QUANTS_OBJ) src/tokenizer.c src/model.c src/sample.c \
-                  src/jsonmode.c src/schema.c src/json.c src/engine.c \
-                  src/template.c src/vramreg.c src/http.c src/envelope.c src/ed25519.c src/ecdsa.c src/oms.c src/registry.c \
-                  src/scheduler.c src/api_responses.c src/api_anthropic.c \
-                  $(GPU_SRC)
+TEST_ATTRIB_SRC = tests/test_tool_attribution.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o \
+                  $(QUANTS_OBJ) $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(OBJDIR)/sample.o \
+                  $(OBJDIR)/jsonmode.o $(OBJDIR)/schema.o $(OBJDIR)/json.o $(OBJDIR)/engine.o \
+                  $(OBJDIR)/template.o $(OBJDIR)/vramreg.o $(OBJDIR)/http.o $(OBJDIR)/envelope.o $(OBJDIR)/ed25519.o $(OBJDIR)/ecdsa.o $(OBJDIR)/oms.o $(OBJDIR)/registry.o \
+                  $(OBJDIR)/scheduler.o $(OBJDIR)/api_responses.o $(OBJDIR)/api_anthropic.o \
+                  $(GPU_OBJ)
 $(TEST_ATTRIB): $(TEST_ATTRIB_SRC) src/server.c $(HDR)
 	$(CC) $(CFLAGS) -I src $(TEST_ATTRIB_SRC) -o $@ $(LDFLAGS)
 
@@ -774,8 +827,8 @@ $(TEST_ATTRIB): $(TEST_ATTRIB_SRC) src/server.c $(HDR)
 # and api_anthropic.c are compiled INTO the test with substituted allocators.
 TEST_MSG_OOM = $(TEST_BATCH:test-batch%=test-prompt-oom%)
 TEST_MSG_OOM_SRC = tests/test_prompt_oom.c \
-                   $(filter-out src/api_anthropic.c src/api_responses.c \
-                                src/json.c,\
+                   $(filter-out $(OBJDIR)/api_anthropic.o $(OBJDIR)/api_responses.o \
+                                $(OBJDIR)/json.o,\
                      $(TEST_ATTRIB_SRC:tests/test_tool_attribution.c=))
 $(TEST_MSG_OOM): $(TEST_MSG_OOM_SRC) src/server.c src/api_anthropic.c \
                  src/api_responses.c src/json.c $(HDR)
@@ -793,23 +846,23 @@ $(TEST_MSG_OOM): $(TEST_MSG_OOM_SRC) src/server.c src/api_anthropic.c \
 # route table refers to them, the gate never reaches it, and dropping them
 # keeps the add_generation_prompt interception (see the driver's header
 # comment) confined to one translation unit.
-TMPL_CONF_RENDER_SRC = scripts/template-conformance-render.c src/gguf.c \
-                  src/compat.c $(QUANTS_OBJ) src/tokenizer.c src/model.c \
-                  src/sample.c src/jsonmode.c src/schema.c src/json.c \
-                  src/engine.c src/template.c src/vramreg.c src/http.c \
-                  src/envelope.c src/ed25519.c src/ecdsa.c src/oms.c src/registry.c src/scheduler.c $(GPU_SRC)
+TMPL_CONF_RENDER_SRC = scripts/template-conformance-render.c $(OBJDIR)/gguf.o \
+                  $(OBJDIR)/compat.o $(QUANTS_OBJ) $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o \
+                  $(OBJDIR)/sample.o $(OBJDIR)/jsonmode.o $(OBJDIR)/schema.o $(OBJDIR)/json.o \
+                  $(OBJDIR)/engine.o $(OBJDIR)/template.o $(OBJDIR)/vramreg.o $(OBJDIR)/http.o \
+                  $(OBJDIR)/envelope.o $(OBJDIR)/ed25519.o $(OBJDIR)/ecdsa.o $(OBJDIR)/oms.o $(OBJDIR)/registry.o $(OBJDIR)/scheduler.o $(GPU_OBJ)
 $(TMPL_CONF_RENDER): $(TMPL_CONF_RENDER_SRC) src/server.c $(HDR)
 	$(CC) $(CFLAGS) -I src $(TMPL_CONF_RENDER_SRC) -o $@ $(LDFLAGS)
 
 # server_run twice in one process: the property a once-per-process global can
 # hide forever, because nothing ever asks the state to come back.
 TEST_RESTART = $(TEST_BATCH:test-batch%=test-server-restart%)
-TEST_RESTART_SRC = tests/test_server_restart.c src/gguf.c src/compat.c \
-                   $(QUANTS_OBJ) src/tokenizer.c src/model.c src/sample.c \
-                   src/jsonmode.c src/schema.c src/json.c src/engine.c \
-                   src/template.c src/vramreg.c src/http.c src/envelope.c src/ed25519.c src/ecdsa.c src/oms.c src/registry.c \
-                   src/scheduler.c src/completion.c src/api_responses.c \
-                   src/api_anthropic.c src/server.c $(GPU_SRC)
+TEST_RESTART_SRC = tests/test_server_restart.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o \
+                   $(QUANTS_OBJ) $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(OBJDIR)/sample.o \
+                   $(OBJDIR)/jsonmode.o $(OBJDIR)/schema.o $(OBJDIR)/json.o $(OBJDIR)/engine.o \
+                   $(OBJDIR)/template.o $(OBJDIR)/vramreg.o $(OBJDIR)/http.o $(OBJDIR)/envelope.o $(OBJDIR)/ed25519.o $(OBJDIR)/ecdsa.o $(OBJDIR)/oms.o $(OBJDIR)/registry.o \
+                   $(OBJDIR)/scheduler.o $(OBJDIR)/completion.o $(OBJDIR)/api_responses.o \
+                   $(OBJDIR)/api_anthropic.o $(OBJDIR)/server.o $(GPU_OBJ)
 $(TEST_RESTART): $(TEST_RESTART_SRC) $(HDR)
 	$(CC) $(CFLAGS) -I src $(TEST_RESTART_SRC) -o $@ $(LDFLAGS)
 
@@ -833,61 +886,61 @@ test-swap-race: $(TEST_SWAP_RACE_SRC) $(HDR) test.gguf
 # the weight-residency platform layer: mlock, mincore, major faults, available
 # RAM. compat.c only -- these are platform shims, not engine code.
 TEST_RESIDENCY = $(TEST_BATCH:test-batch%=test-residency%)
-$(TEST_RESIDENCY): tests/test_residency.c src/compat.c $(HDR)
-	$(CC) $(CFLAGS) -I src tests/test_residency.c src/compat.c -o $@ $(LDFLAGS)
+$(TEST_RESIDENCY): tests/test_residency.c $(OBJDIR)/compat.o $(HDR)
+	$(CC) $(CFLAGS) -I src tests/test_residency.c $(OBJDIR)/compat.o -o $@ $(LDFLAGS)
 
 # the device turn is FIFO, not just exclusive. scheduler.c is #included by the
 # test (the turnstile is static) so it is NOT linked here.
 TEST_SCHED_TURN = $(TEST_BATCH:test-batch%=test-sched-turn%)
-TEST_SCHED_TURN_SRC = tests/test_sched_turn.c src/gguf.c src/compat.c \
-                      $(QUANTS_OBJ) src/tokenizer.c src/model.c src/sample.c \
-                      src/jsonmode.c src/schema.c src/json.c src/engine.c \
-                      src/template.c src/vramreg.c src/http.c src/envelope.c src/ed25519.c src/ecdsa.c src/oms.c src/registry.c $(GPU_SRC)
+TEST_SCHED_TURN_SRC = tests/test_sched_turn.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o \
+                      $(QUANTS_OBJ) $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(OBJDIR)/sample.o \
+                      $(OBJDIR)/jsonmode.o $(OBJDIR)/schema.o $(OBJDIR)/json.o $(OBJDIR)/engine.o \
+                      $(OBJDIR)/template.o $(OBJDIR)/vramreg.o $(OBJDIR)/http.o $(OBJDIR)/envelope.o $(OBJDIR)/ed25519.o $(OBJDIR)/ecdsa.o $(OBJDIR)/oms.o $(OBJDIR)/registry.o $(GPU_OBJ)
 $(TEST_SCHED_TURN): $(TEST_SCHED_TURN_SRC) src/scheduler.c $(HDR)
 	$(CC) $(CFLAGS) -I src $(TEST_SCHED_TURN_SRC) -o $@ $(LDFLAGS)
 
 # snapshot persistence: the round trip, and the refusals that matter more
 TEST_PFX_PERSIST = $(TEST_BATCH:test-batch%=test-prefix-persist%)
-TEST_PFX_PERSIST_SRC = tests/test_prefix_persist.c src/gguf.c src/compat.c \
-                       $(QUANTS_OBJ) src/tokenizer.c src/model.c src/sample.c \
-                       src/jsonmode.c src/schema.c src/json.c src/engine.c \
-                       src/vramreg.c $(GPU_SRC)
+TEST_PFX_PERSIST_SRC = tests/test_prefix_persist.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o \
+                       $(QUANTS_OBJ) $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(OBJDIR)/sample.o \
+                       $(OBJDIR)/jsonmode.o $(OBJDIR)/schema.o $(OBJDIR)/json.o $(OBJDIR)/engine.o \
+                       $(OBJDIR)/vramreg.o $(GPU_OBJ)
 $(TEST_PFX_PERSIST): $(TEST_PFX_PERSIST_SRC) $(HDR)
 	$(CC) $(CFLAGS) -I src $(TEST_PFX_PERSIST_SRC) -o $@ $(LDFLAGS)
 
-TEST_QUANTIZE_SRC = tests/test_quantize.c $(QUANTIZE_OBJ) src/gguf.c \
-                    src/compat.c $(QUANTS_OBJ) src/json.c
+TEST_QUANTIZE_SRC = tests/test_quantize.c $(QUANTIZE_OBJ) $(OBJDIR)/gguf.o \
+                    $(OBJDIR)/compat.o $(QUANTS_OBJ) $(OBJDIR)/json.o
 $(TEST_QUANTIZE): $(TEST_QUANTIZE_SRC) $(HDR)
 	$(CC) $(CFLAGS) -I src $(TEST_QUANTIZE_SRC) -o $@ $(LDFLAGS)
 
 # vramreg.c is #included (calloc-hooked) by the test, so it is not linked here
-$(TEST_VRAM_ROLLBACK): tests/test_vram_rollback.c src/compat.c $(HDR)
-	$(CC) $(CFLAGS) -I src tests/test_vram_rollback.c src/compat.c -o $@ $(LDFLAGS)
+$(TEST_VRAM_ROLLBACK): tests/test_vram_rollback.c $(OBJDIR)/compat.o $(HDR)
+	$(CC) $(CFLAGS) -I src tests/test_vram_rollback.c $(OBJDIR)/compat.o -o $@ $(LDFLAGS)
 
-$(TEST_GGUF_GETTERS): tests/test_gguf_getters.c src/gguf.c src/compat.c $(QUANTS_OBJ) $(HDR)
-	$(CC) $(CFLAGS) -I src tests/test_gguf_getters.c src/gguf.c src/compat.c $(QUANTS_OBJ) -o $@ $(LDFLAGS)
+$(TEST_GGUF_GETTERS): tests/test_gguf_getters.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o $(QUANTS_OBJ) $(HDR)
+	$(CC) $(CFLAGS) -I src tests/test_gguf_getters.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o $(QUANTS_OBJ) -o $@ $(LDFLAGS)
 
-$(TEST_PARSE): tests/test_parse.c src/compat.c src/compat.h
-	$(CC) $(CFLAGS) -I src tests/test_parse.c src/compat.c -o $@ $(LDFLAGS)
+$(TEST_PARSE): tests/test_parse.c $(OBJDIR)/compat.o src/compat.h
+	$(CC) $(CFLAGS) -I src tests/test_parse.c $(OBJDIR)/compat.o -o $@ $(LDFLAGS)
 
-$(TEST_ENVELOPE): tests/test_envelope.c src/envelope.c src/ed25519.c src/json.c src/envelope.h src/json.h src/runner.h
-	$(CC) $(CFLAGS) -I src tests/test_envelope.c src/envelope.c src/ed25519.c src/json.c -o $@ $(LDFLAGS)
+$(TEST_ENVELOPE): tests/test_envelope.c $(OBJDIR)/envelope.o $(OBJDIR)/ed25519.o $(OBJDIR)/json.o src/envelope.h src/json.h src/runner.h
+	$(CC) $(CFLAGS) -I src tests/test_envelope.c $(OBJDIR)/envelope.o $(OBJDIR)/ed25519.o $(OBJDIR)/json.o -o $@ $(LDFLAGS)
 
 # receipt and model-signature primitives: RFC 8032 / RFC 6979 known answers
-$(TEST_ED25519): tests/test_ed25519.c src/ed25519.c src/ed25519.h
-	$(CC) $(CFLAGS) -I src tests/test_ed25519.c src/ed25519.c -o $@ $(LDFLAGS)
+$(TEST_ED25519): tests/test_ed25519.c $(OBJDIR)/ed25519.o src/ed25519.h
+	$(CC) $(CFLAGS) -I src tests/test_ed25519.c $(OBJDIR)/ed25519.o -o $@ $(LDFLAGS)
 
-$(TEST_ECDSA): tests/test_ecdsa.c src/ecdsa.c src/ecdsa.h
-	$(CC) $(CFLAGS) -I src tests/test_ecdsa.c src/ecdsa.c -o $@ $(LDFLAGS)
+$(TEST_ECDSA): tests/test_ecdsa.c $(OBJDIR)/ecdsa.o src/ecdsa.h
+	$(CC) $(CFLAGS) -I src tests/test_ecdsa.c $(OBJDIR)/ecdsa.o -o $@ $(LDFLAGS)
 
 # quants.c joins for tpool_create/tpool_destroy: the test now also pins that an
 # over-large -t is clamped to TP_MAX rather than silently discarded.
-$(TEST_THREAD_DEFAULT): tests/test_thread_default.c src/compat.c src/compat.h $(QUANTS_OBJ)
-	$(CC) $(CFLAGS) -I src tests/test_thread_default.c src/compat.c $(QUANTS_OBJ) -o $@ $(LDFLAGS)
+$(TEST_THREAD_DEFAULT): tests/test_thread_default.c $(OBJDIR)/compat.o src/compat.h $(QUANTS_OBJ)
+	$(CC) $(CFLAGS) -I src tests/test_thread_default.c $(OBJDIR)/compat.o $(QUANTS_OBJ) -o $@ $(LDFLAGS)
 
-TEST_MODEL_LOAD_FAILURE_SRC = tests/test_model_load_failure.c src/gguf.c \
-                              src/compat.c $(QUANTS_OBJ) src/model.c \
-                              src/vramreg.c $(GPU_SRC)
+TEST_MODEL_LOAD_FAILURE_SRC = tests/test_model_load_failure.c $(OBJDIR)/gguf.o \
+                              $(OBJDIR)/compat.o $(QUANTS_OBJ) $(OBJDIR)/model.o \
+                              $(OBJDIR)/vramreg.o $(GPU_OBJ)
 $(TEST_MODEL_LOAD_FAILURE): $(TEST_MODEL_LOAD_FAILURE_SRC) $(HDR)
 	$(CC) $(CFLAGS) -I src $(TEST_MODEL_LOAD_FAILURE_SRC) -o $@ $(LDFLAGS)
 

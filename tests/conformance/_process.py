@@ -89,8 +89,13 @@ class RunnerServer:
                 "--port", str(self.port), "--parallel", str(self.parallel),
                 "-c", str(self.ctx)] + self.extra_args
         self._log = open(self.log_path, "wb") if self.log_path else subprocess.DEVNULL
+        # the reaper's 5 s poll is a wall-clock tax on every TTL/reload gate
+        # (32 tests, 3.8 min); a test that needs the shipped cadence passes
+        # env with its own RUNNER_TTL_POLL_S
+        env = dict(self.env if self.env is not None else os.environ)
+        env.setdefault("RUNNER_TTL_POLL_S", "0.25")
         self.proc = subprocess.Popen(argv, stdout=self._log,
-                                     stderr=subprocess.STDOUT, env=self.env)
+                                     stderr=subprocess.STDOUT, env=env)
         deadline = time.monotonic() + self.start_timeout
         while time.monotonic() < deadline:
             if self.proc.poll() is not None:
