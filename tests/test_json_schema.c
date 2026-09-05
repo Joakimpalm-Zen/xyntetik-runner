@@ -708,6 +708,20 @@ static void test_schema_rejects_misspelled_keyword_types(void) {
         // VALUES, so this compiled to the literal `1`
         { "{\"enum\":{\"a\":1}}", "enum" },
         { "{\"enum\":\"a\"}", "enum" },
+        // enum/const return before the ordinary typed compiler, so malformed
+        // type keywords beside them must still be rejected here
+        { "{\"type\":7,\"enum\":[1]}", "type" },
+        { "{\"type\":true,\"const\":1}", "type" },
+        { "{\"type\":[\"integer\",7],\"enum\":[1]}", "type" },
+        { "{\"type\":[],\"enum\":[1]}", "type" },
+        { "{\"type\":[\"integer\",\"mystery\"],\"enum\":[1]}",
+          "unsupported type" },
+        // JSON Schema nodes are objects or booleans. Explicit null is data,
+        // not the absent-schema sentinel used internally for unconstrained
+        // array items.
+        { "null", "schema node" },
+        { "{\"type\":\"object\",\"properties\":{\"x\":null}}",
+          "schema node" },
         // and a non-object `properties` fell through to the open-object
         // machine, which accepts any object at all -- the one outcome this
         // compiler exists to prevent
@@ -2759,6 +2773,12 @@ static void test_schema_sibling_constraints_are_not_dropped(void) {
     const char *ce = WRAP("{\"const\":2,\"enum\":[1,2]}");
     assert(accepts(ce, "{\"v\":2}"));
     assert(!accepts(ce, "{\"v\":1}"));
+    // Every scalar-const union alternative still carries its sibling
+    // constraints. The literal-only merge must not bypass them.
+    assert(!compiles("{\"anyOf\":[{\"type\":\"string\",\"const\":1},"
+                     "{\"const\":\"x\"}]}"));
+    assert(!compiles("{\"anyOf\":[{\"const\":1,\"minimum\":2},"
+                     "{\"const\":\"x\"}]}"));
     // type beside oneOf/anyOf is refused rather than ignored
     assert(!compiles("{\"type\":\"string\",\"anyOf\":[{\"type\":\"string\"},"
                      "{\"type\":\"integer\"}]}"));

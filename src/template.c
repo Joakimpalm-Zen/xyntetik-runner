@@ -2705,8 +2705,18 @@ const jv *tool_decl_native(int tmpl, bool strict, bool atem_tool_calling,
         env->proto = TP_QWEN;
         env->tools = tools;
     } else if (strict && tmpl == TMPL_MUSE) {
-        env->proto = atem_tool_calling ? TP_ATEM : TP_MUSE_USER;
+        env->proto = TP_MUSE_USER;
         env->tools = tools;
+        if (atem_tool_calling) {
+            char why[192];
+            if (!tools || schema_atem_constrainable(tools, why, sizeof(why))) {
+                env->proto = TP_ATEM;
+            } else {
+                fprintf(stderr, "tools: muse native atem syntax unavailable for "
+                                "this request (%s); using the generic envelope\n",
+                        why);
+            }
+        }
     } else if (strict && tmpl == TMPL_HARMONY) {
         env->proto = TP_HARMONY;
         env->tools = tools;

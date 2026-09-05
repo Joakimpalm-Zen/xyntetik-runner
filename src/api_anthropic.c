@@ -631,6 +631,28 @@ static bool anth_reject_unsupported(slot_t *s, sock_t fd, jv *req) {
                        "is \"enabled\"");
             return true;
         }
+        if (strcmp(type, "enabled") && budget_present &&
+            budget_present->type != J_NULL) {
+            send_error(fd, 400,
+                       "thinking.budget_tokens is only valid when thinking.type "
+                       "is \"enabled\"");
+            return true;
+        }
+        jv *display = jv_get(v, "display");
+        if (!strcmp(type, "disabled") && display && display->type != J_NULL) {
+            send_error(fd, 400,
+                       "thinking.display is not valid when thinking.type is "
+                       "\"disabled\"");
+            return true;
+        }
+        if (display && display->type != J_NULL &&
+            (display->type != J_STR ||
+             (strcmp(display->str, "summarized") &&
+              strcmp(display->str, "omitted")))) {
+            send_error(fd, 400,
+                       "thinking.display must be \"summarized\" or \"omitted\"");
+            return true;
+        }
         if (!strcmp(type, "enabled") && !s->m->think_open) {
             send_error(fd, 400,
                        "thinking:enabled is not supported by the resident "

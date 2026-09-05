@@ -26,6 +26,7 @@ typedef struct {
     bool  dead;         // client went away
     char  id[48];
     int   api;          // API_* — the dialect this response is framed in
+    bool  omit_reasoning; // Anthropic thinking.display == "omitted"
     think_split ts;     // thinking-tag splitter (pass-through when untagged)
     // OpenAI "stop" sequences: matched against the content channel only
     // (reasoning text must not trigger a client's stop strings)
@@ -249,6 +250,7 @@ static void completion_cleanup(engine *e, snode *schema, gen_ctx *g) {
 static int responses_text_delta(gen_ctx *g, int reasoning, const char *bytes,
                                 int n);
 static int anth_delta(gen_ctx *g, const char *kind, const char *bytes, int n);
+static int anth_open_block(gen_ctx *g, const char *kind);
 
 // How many trailing bytes of `s` begin a UTF-8 sequence that is not finished
 // yet — i.e. how much must be held back until the next token arrives. 0 when
@@ -333,6 +335,8 @@ static int send_text_delta_raw(gen_ctx *g, int reasoning, const char *bytes, int
     if (g->api == API_RESPONSES) return responses_text_delta(g, reasoning, bytes, n);
     // Anthropic separates reasoning into a `thinking` content block rather
     // than a field on the message, so the channel selects the block kind
+    if (g->api == API_MESSAGES && reasoning && g->omit_reasoning)
+        return anth_open_block(g, "thinking");
     if (g->api == API_MESSAGES)
         return anth_delta(g, reasoning ? "thinking" : "text", bytes, n);
     sbuf c = {0};
@@ -368,7 +372,6 @@ static int resp_open_item(gen_ctx *g, const char *kind);
 static int resp_delta(gen_ctx *g, const char *kind, const char *bytes, int n);
 static int resp_close_item(gen_ctx *g);
 
-static int anth_open_block(gen_ctx *g, const char *kind);
 static int anth_close_block(gen_ctx *g);
 
 static int sink_call_begin(void *ud, const char *name) {
@@ -1126,7 +1129,7 @@ static void anth_body(sbuf *r, gen_ctx *g, const resp_doc *d) {
             // reasoning is a block of its own here rather than a field on the
             // message, and it always precedes the answer
             sb_lit(r, "{\"type\":\"thinking\",\"thinking\":\"");
-            sb_esc(r, d->reason, d->reason_n);
+            if (!g->omit_reasoning) sb_esc(r, d->reason, d->reason_n);
             sb_lit(r, "\",\"signature\":\"\"}");
             idx++;
         }
@@ -2017,7 +2020,16 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
     // prompt still wants its own slot's cache, and one that wants fresh-prompt
     // telemetry wants neither. cache_prompt:false remains the full opt-out.
     prefix_reuse reuse = { 0, 0, 0.0 };
+    bool omit_reasoning = false;
+    if (api == API_MESSAGES) {
+        jv *thinking = jv_get(req, "thinking");
+        jv *display = thinking && thinking->type == J_OBJ
+                    ? jv_get(thinking, "display") : NULL;
+        omit_reasoning = display && display->type == J_STR &&
+                         !strcmp(display->str, "omitted");
+    }
     gen_ctx g = { .out = {0}, .fd = fd, .stream = stream, .api = api,
+                  .omit_reasoning = omit_reasoning,
                   .stop_strs = stops, .n_stop = n_stops, .eng = e,
                   .created = (long)time(NULL) };
     client_stop stop = { .fd = fd, .dead = &g.dead,

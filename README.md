@@ -1438,13 +1438,14 @@ For example, the usual OpenAI request needs no Runner-specific switch:
 }
 ```
 
-Muse's native atem format carries scalar parameter values as raw text rather
-than JSON strings. Consequently a scalar value cannot contain the literal
+Muse's native atem format carries string parameter values as raw text rather
+than JSON strings. Consequently a string value cannot contain the literal
 `</atem:parameter>` sequence: atem itself uses that sentinel as the value
 boundary and its reference template describes the output as regex-parsed,
-not XML-escaped. Declared parameters retain their schema optionality: members
-listed in `required` are forced, while other members may be omitted in their
-declared order.
+not XML-escaped. Numbers, booleans, null, arrays and objects retain their JSON
+spelling and are compiled against their declared types and bounds. Declared
+parameters retain their schema optionality: members listed in `required` are
+forced, while other members may be omitted in their declared order.
 
 For Muse, the recipient header is part of the constrained turn: `to=user`
 selects a plain answer and a declared tool recipient pins the matching
@@ -1453,11 +1454,14 @@ calls separated by `<|eom|>` into ordered OpenAI `tool_calls`; the separator
 is not treated as a global stop token.
 
 Native atem calling is selected automatically when a loaded Muse Glimmer
-model receives `tools`. Set `atem_tool_calling:false` on a Chat Completions
-request to use Runner's generic JSON-schema tool envelope instead; its payload
-is still constrained behind Muse's `to=user` recipient header, so the override
-does not leak prompt syntax into `content`. `tool_choice` (`auto`, `required`,
-named, and `none`) still controls the allowed recipients.
+model receives `tools` and every parameter constraint is representable in that
+syntax. Raw strings support the unconstrained and string-enum/const forms; a
+length, pattern, or otherwise unrepresentable string schema switches that
+request to Runner's generic JSON-schema envelope. Set `atem_tool_calling:false`
+on a Chat Completions request to select the same generic path explicitly. Its
+payload remains constrained behind Muse's `to=user` recipient header, so the
+override does not leak prompt syntax into `content`. `tool_choice` (`auto`,
+`required`, named, and `none`) still controls the allowed recipients.
 `parallel_tool_calls:true` with a required/named native choice constrains a
 bounded two-call turn. With native `tool_choice:"auto"`, the same flag retains
 the auto turn and therefore permits at most one call. Families without a native
@@ -1522,12 +1526,13 @@ prepended one - and calls them as `<|tool_call>call:NAME{city:<|"|>Oslo<|"|>}
 are compared against the reference template case by case in
 `scripts/template-conformance.py`.
 
-The native syntax does not cost the strict envelope. The generated turn is
-still constrained: the tool name comes from an enumeration of the declared
-functions, each argument key and type from that function's schema, and
-`tool_choice` (`auto`, `required`, named, `none`) selects which branches
-exist at all - `required` removes the prose branch, which is what enforcement
-means here. A call cut off by the token limit is closed to the smallest legal
+When the schema is representable in the native syntax, the generated turn
+remains constrained: the tool name comes from an enumeration of the declared
+functions, each argument key, type, literal and numeric/array bound comes from
+that function's schema, and `tool_choice` (`auto`, `required`, named, `none`)
+selects which branches exist at all - `required` removes the prose branch,
+which is what enforcement means here. A call cut off by the token limit is
+closed to the smallest legal
 ending and still reports `finish_reason:"length"`. What the client receives is
 ordinary JSON: `arguments` is translated out of gemma4's `<|"|>` spelling on
 both the buffered and the streamed path, so no native framing reaches an
@@ -1535,12 +1540,11 @@ OpenAI client.
 
 Declared parameters retain their schema optionality: members listed in
 `required` are forced, while other members may be omitted without changing
-gemma4's dict-sorted native order. One limit is worth knowing before you write
-a schema for this family: a parameter with no declared `type` is rejected with
-a 400 that names it. Gemma4's native call syntax has no spelling for a
-free-form value, and refusing is better than an unconstrained call the mapper
-may not be able to read back. This differs from the generic JSON envelope,
-which can represent a free JSON value.
+gemma4's dict-sorted native order. Gemma4's delimiter-based raw strings cannot
+enforce length or pattern constraints, and its native call syntax has no
+spelling for a free-form value. A request containing either uses the generic
+JSON envelope instead, switching the prompt declaration and output grammar
+together so the schema remains enforced.
 
 ### Apertus tool rendering
 
@@ -1640,6 +1644,11 @@ supports string or block-list system/content values, `tool_use`/`tool_result`,
 all tool-choice forms compatible with one call per turn, stop sequences,
 sampling controls, metadata, thinking-channel blocks, and Anthropic SSE event
 ordering. `max_tokens` is required.
+
+`thinking.type:"enabled"` requires `budget_tokens`; that field is rejected for
+`adaptive` and `disabled`. `thinking.display` accepts `summarized` or `omitted`
+with enabled/adaptive thinking. The omitted form keeps an empty thinking block
+while withholding reasoning text in buffered and SSE responses.
 
 Runner refuses hosted tools, MCP/container execution, image/document blocks,
 parallel tool use, `stop_sequences` sent alongside `tools` (see Chat

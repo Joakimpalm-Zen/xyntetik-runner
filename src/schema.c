@@ -878,24 +878,10 @@ static snode *compile_oneof(jv *alts, char *err, int errcap, int depth) {
             break;
         }
     }
-    if (all_scalar_const) {
-        if (alts->n <= 0 || alts->n > 60) {
-            snprintf(err, errcap, "enum size must be 1..60");
-            return NULL;
-        }
-        snode *n = sn_new(SN_ENUM);
-        if (!n) return NULL;
-        n->lits = calloc(alts->n, sizeof(char *));
-        if (!n->lits) { schema_free(n); return NULL; }
-        for (int i = 0; i < alts->n; i++) {
-            char *lit = sn_literal(jv_get(alts->items[i], "const"));
-            if (!lit) { schema_free(n); return NULL; }
-            n->lits[i] = lit;
-            n->n_lits++;
-        }
-        return n;
+    if (all_scalar_const && alts->n > 60) {
+        snprintf(err, errcap, "enum size must be 1..60");
+        return NULL;
     }
-
     bool matched = false;
     snode *disc = compile_discriminated_action(alts, err, errcap, depth, &matched);
     if (matched) return disc;
@@ -968,6 +954,14 @@ static bool literal_has_type_name(const jv *v, const char *t) {
     if (!strcmp(t, "integer")) return v->type == J_NUM && v->num == floor(v->num);
     return false; // object / array literals are refused as non-scalars anyway
 }
+
+static bool schema_type_name(const char *t) {
+    return !strcmp(t, "string") || !strcmp(t, "number") ||
+           !strcmp(t, "integer") || !strcmp(t, "boolean") ||
+           !strcmp(t, "null") || !strcmp(t, "array") ||
+           !strcmp(t, "object");
+}
+
 static bool literal_has_type(const jv *v, jv *ty) {
     if (ty->type == J_STR) return literal_has_type_name(v, ty->str);
     if (ty->type == J_ARR) {
@@ -997,15 +991,16 @@ static snode *compile_node(jv *s, char *err, int errcap, int depth) {
         snprintf(err, errcap, "boolean schema false admits no value");
         return NULL;
     }
-    if (!s || s->type == J_NULL || (s->type == J_OBJ && s->n == 0) ||
-        s->type == J_BOOL) // `true` / `{}` = anything
+    if (!s || (s->type == J_OBJ && s->n == 0) ||
+        s->type == J_BOOL) // absent / `true` / `{}` = anything
         return sn_new(SN_ANY);
     if (s->type != J_OBJ) { snprintf(err, errcap, "schema node must be an object"); return NULL; }
     if (!check_keywords(s, err, errcap)) return NULL;
 
     jv *one = jv_get(s, "oneOf");
     jv *any = jv_get(s, "anyOf");
-    if ((one || any) && jv_get(s, "type")) {
+    jv *ty = jv_get(s, "type");
+    if ((one || any) && ty) {
         // a sibling `type` must hold for every alternative; it was dropped,
         // so {"type":"string","anyOf":[...,{"type":"integer"}]} accepted 1
         snprintf(err, errcap, "'type' beside oneOf/anyOf is not supported: "
@@ -1013,6 +1008,34 @@ static snode *compile_node(jv *s, char *err, int errcap, int depth) {
         return NULL;
     }
     if (one || any) return compile_oneof(one ? one : any, err, errcap, depth);
+
+    // enum/const return before compile_typed, so validate the type keyword's
+    // shape here rather than relying on the typed path to catch it later.
+    if (ty && ty->type != J_STR && ty->type != J_ARR) {
+        snprintf(err, errcap, "bad 'type' value");
+        return NULL;
+    }
+    if (ty && ty->type == J_STR && !schema_type_name(ty->str)) {
+        snprintf(err, errcap, "unsupported type '%s'", ty->str);
+        return NULL;
+    }
+    if (ty && ty->type == J_ARR) {
+        if (ty->n <= 0) {
+            snprintf(err, errcap, "'type' array must list at least one type");
+            return NULL;
+        }
+        for (int i = 0; i < ty->n; i++) {
+            if (!ty->items[i] || ty->items[i]->type != J_STR) {
+                snprintf(err, errcap, "'type' array members must be strings");
+                return NULL;
+            }
+            if (!schema_type_name(ty->items[i]->str)) {
+                snprintf(err, errcap, "unsupported type '%s'",
+                         ty->items[i]->str);
+                return NULL;
+            }
+        }
+    }
 
     // enum / const dominate the type
     jv *en = jv_get(s, "enum");
@@ -1043,7 +1066,6 @@ static snode *compile_node(jv *s, char *err, int errcap, int depth) {
         // beside an enum must be one of its members. Before this,
         // {"type":"integer","enum":["bad",1]} accepted "bad" and
         // {"const":1,"enum":[2]} accepted 2.
-        jv *ty = jv_get(s, "type");
         jv *keep[60];
         int n_keep = 0;
         for (int i = 0; i < cnt; i++) {
@@ -1071,7 +1093,6 @@ static snode *compile_node(jv *s, char *err, int errcap, int depth) {
         return n;
     }
 
-    jv *ty = jv_get(s, "type");
     if (!ty) {
         if (jv_get(s, "properties")) return compile_typed(s, "object", err, errcap, depth);
         if (jv_get(s, "items"))      return compile_typed(s, "array", err, errcap, depth);
@@ -1079,14 +1100,6 @@ static snode *compile_node(jv *s, char *err, int errcap, int depth) {
     }
     if (ty->type == J_STR) return compile_typed(s, ty->str, err, errcap, depth);
     if (ty->type == J_ARR) { // union, e.g. ["string","null"]
-        // An empty list compiles to a union with no alternatives, which every
-        // consumer treats as "at least one exists": pick_alt matches nothing so
-        // sampling stalls, and the forced-completion path then reads alts[0]
-        // out of a zero-byte allocation. Reject it at compile time.
-        if (ty->n <= 0) {
-            snprintf(err, errcap, "'type' array must list at least one type");
-            return NULL;
-        }
         snode *n = sn_new(SN_UNION);
         if (!n) return NULL;
         n->alts = calloc(ty->n, sizeof(snode *));
@@ -1260,6 +1273,55 @@ static bool native_members_required(snode *n, jv *params, jv *props,
     return true;
 }
 
+// ATEM spells strings as raw bytes, without JSON quotes. A free string is
+// representable by SN_RAW and a string enum/const by an enum whose literals
+// are the decoded strings. Length/pattern constraints need a different raw
+// machine, so the native protocol declines them and its caller selects the
+// generic JSON envelope instead.
+static snode *atem_string_value(jv *schema, const char *name, bool *raw,
+                                char *err, int errcap) {
+    snode *json = compile_node(schema, err, errcap, 0);
+    if (!json) return NULL;
+    if (json->kind == SN_STR && json->min_items == 0 &&
+        json->max_items < 0 && json->n_pat == 0) {
+        schema_free(json);
+        *raw = true;
+        return atem_raw("</atem:parameter>");
+    }
+    if (json->kind != SN_ENUM) {
+        snprintf(err, errcap,
+                 "atem raw string parameter '%s' has constraints that native "
+                 "syntax cannot enforce", name);
+        schema_free(json);
+        return NULL;
+    }
+    snode *native = sn_new(SN_ENUM);
+    if (!native) { schema_free(json); return NULL; }
+    native->lits = calloc((size_t)json->n_lits, sizeof(*native->lits));
+    if (!native->lits) { schema_free(native); schema_free(json); return NULL; }
+    native->whitespace_significant = true;
+    for (int i = 0; i < json->n_lits; i++) {
+        jv *literal = json_parse(json->lits[i], strlen(json->lits[i]));
+        const char *text = jv_str(literal, NULL);
+        if (!text || !text[0] || strstr(text, "</atem:parameter>")) {
+            snprintf(err, errcap,
+                     "atem string enum parameter '%s' has an unrepresentable "
+                     "native value", name);
+            jv_free(literal); schema_free(native); schema_free(json);
+            return NULL;
+        }
+        native->lits[native->n_lits] = strdup(text);
+        jv_free(literal);
+        if (!native->lits[native->n_lits]) {
+            schema_free(native); schema_free(json); return NULL;
+        }
+        native->n_lits++;
+    }
+    schema_free(json);
+    *raw = false;
+    return native;
+}
+
 static snode *atem_tool_tail(jv *tool, char *err, int errcap) {
     jv *fn = jv_get(tool, "function");
     if (!fn) fn = tool;
@@ -1284,13 +1346,17 @@ static snode *atem_tool_tail(jv *tool, char *err, int errcap) {
         const char *type = jv_str(ty, "");
         sbuf open = {0};
         sb_fmt(&open, "<atem:parameter name=\"%s\">", props->keys[i]);
-        bool structured = !strcmp(type, "object") || !strcmp(type, "array");
-        snode *value = structured
+        bool json_spelled = !strcmp(type, "object") || !strcmp(type, "array") ||
+                            !strcmp(type, "integer") || !strcmp(type, "number") ||
+                            !strcmp(type, "boolean") || !strcmp(type, "null");
+        bool raw = false;
+        snode *value = json_spelled
                      ? compile_node(props->items[i], err, errcap, 0)
-                     : atem_raw("</atem:parameter>");
-        snode *tail = atem_seq(structured ? 3 : 2);
+                     : atem_string_value(props->items[i], props->keys[i], &raw,
+                                         err, errcap);
+        snode *tail = atem_seq(raw ? 2 : 3);
         if (open.failed || !value || !tail || !atem_seq_add(tail, value) ||
-            (structured &&
+            (!raw &&
              !atem_seq_add(tail, atem_lit("</atem:parameter>"))) ||
             !atem_seq_add(tail, atem_lit("\n")) ||
             !native_member_set(members, i, open.s, open.s, tail)) {
@@ -1359,6 +1425,13 @@ fail:
     if (!err[0]) snprintf(err, errcap, "out of memory compiling atem tools");
     schema_free(names); schema_free(choice); schema_free(root);
     return NULL;
+}
+
+bool schema_atem_constrainable(struct jv *tools, char *err, int errcap) {
+    snode *probe = schema_compile_atem_tools(tools, err, errcap);
+    if (!probe) return false;
+    schema_free(probe);
+    return true;
 }
 
 static snode *schema_compile_atem_turn_prefix(struct jv *tools, bool allow_user,
@@ -1987,11 +2060,20 @@ static snode *g4_array(jv *schema, const char *what, int depth, int *budget,
                  what);
         return NULL;
     }
-    double dmax = jv_num(jv_get(schema, "maxItems"), G4_MAX_ITEMS);
-    int max = dmax > 0 && dmax < G4_MAX_ITEMS ? (int)dmax : G4_MAX_ITEMS;
-    double dmin = jv_num(jv_get(schema, "minItems"), 0);
-    int min = dmin > 0 ? (int)dmin : 0;
-    if (min > max) min = max;
+    int declared_max, min;
+    if (!compile_bound(jv_get(schema, "maxItems"), G4_MAX_ITEMS,
+                       &declared_max) ||
+        !compile_bound(jv_get(schema, "minItems"), 0, &min)) {
+        snprintf(err, errcap,
+                 "gemma4 %s has invalid integer minItems/maxItems", what);
+        return NULL;
+    }
+    int max = declared_max < G4_MAX_ITEMS ? declared_max : G4_MAX_ITEMS;
+    if (min > max) {
+        snprintf(err, errcap,
+                 "gemma4 %s minItems exceeds its enforceable maxItems", what);
+        return NULL;
+    }
     snode *tail = atem_lit("]");
     if (!tail) return NULL;
     for (int i = max; i >= 1; i--) {
@@ -2120,10 +2202,11 @@ static snode *g4_value(jv *schema, const char *what, int depth, int *budget,
         // generic envelope admits it as free JSON, but format_argument has no
         // free-form spelling to constrain a native call to.
         jv *en = jv_get(schema, "enum");
+        jv *cn = jv_get(schema, "const");
         bool all_str = en && en->type == J_ARR && en->n > 0;
         for (int i = 0; all_str && i < en->n; i++)
             if (!en->items[i] || en->items[i]->type != J_STR) all_str = false;
-        if (all_str) type = "string";
+        if (all_str || (cn && cn->type == J_STR)) type = "string";
         else {
             snprintf(err, errcap,
                      "gemma4 %s has no declared `type`: this family's native "
@@ -2133,38 +2216,58 @@ static snode *g4_value(jv *schema, const char *what, int depth, int *budget,
         }
     }
     if (!strcmp(type, "string")) {
+        if (jv_get(schema, "minLength") || jv_get(schema, "maxLength") ||
+            jv_get(schema, "pattern")) {
+            snprintf(err, errcap,
+                     "gemma4 %s has string length/pattern constraints that its "
+                     "native delimiter syntax cannot enforce", what);
+            return NULL;
+        }
         jv *en = jv_get(schema, "enum");
-        if (en && en->type == J_ARR && en->n > 0 && en->n <= 60) {
+        jv *cn = jv_get(schema, "const");
+        if (en || cn) {
+            snode *json = compile_node(schema, err, errcap, 0);
+            if (!json) return NULL;
+            if (json->kind != SN_ENUM) {
+                snprintf(err, errcap,
+                         "gemma4 %s string literal schema did not compile to an enum",
+                         what);
+                schema_free(json);
+                return NULL;
+            }
             snode *n = sn_new(SN_ENUM);
-            if (!n) return NULL;
-            n->lits = calloc((size_t)en->n, sizeof(*n->lits));
-            if (!n->lits) { schema_free(n); return NULL; }
+            if (!n) { schema_free(json); return NULL; }
+            n->lits = calloc((size_t)json->n_lits, sizeof(*n->lits));
+            if (!n->lits) { schema_free(n); schema_free(json); return NULL; }
             n->whitespace_significant = true;
-            for (int i = 0; i < en->n; i++) {
-                const char *v = jv_str(en->items[i], NULL);
-                if (!v) {
+            for (int i = 0; i < json->n_lits; i++) {
+                jv *literal = json_parse(json->lits[i], strlen(json->lits[i]));
+                const char *v = jv_str(literal, NULL);
+                if (!v || strstr(v, "<|\"|>")) {
                     snprintf(err, errcap,
-                             "gemma4 %s has a non-string enum value", what);
-                    schema_free(n);
+                             "gemma4 %s has an unrepresentable native string "
+                             "literal", what);
+                    jv_free(literal); schema_free(n); schema_free(json);
                     return NULL;
                 }
                 sbuf lit = {0};
                 sb_fmt(&lit, "<|\"|>%s<|\"|>", v);
-                if (lit.failed) { free(lit.s); schema_free(n); return NULL; }
+                jv_free(literal);
+                if (lit.failed) {
+                    free(lit.s); schema_free(n); schema_free(json); return NULL;
+                }
                 n->lits[n->n_lits++] = lit.s;
             }
+            schema_free(json);
             return n;
         }
-        // The <|"|> delimiter is a reserved token, so the value between the
-        // two needs no escaping and is raw bytes up to the closer.
-        double dmax = jv_num(jv_get(schema, "maxLength"), -1);
+        // The <|"|> delimiter is a reserved token, so an unconstrained value
+        // between the two needs no escaping and is raw bytes up to the closer.
         snode *seq = atem_seq(2);
         // built only once there is a sequence to own it: the cleanup below
         // frees it through `seq`, so a body with no sequence is a leak (the
         // two other sites with this shape already guard it the same way)
-        snode *body = !seq ? NULL
-                    : dmax > 0 ? atem_raw_bounded("<|\"|>", (int)dmax)
-                               : atem_raw("<|\"|>");
+        snode *body = !seq ? NULL : atem_raw("<|\"|>");
         if (!seq || !body || !atem_seq_add(seq, atem_lit("<|\"|>")) ||
             !atem_seq_add(seq, body)) {
             if (seq && seq->n_props < 2) schema_free(body);
@@ -2176,17 +2279,15 @@ static snode *g4_value(jv *schema, const char *what, int depth, int *budget,
         return seq;
     }
     if (!strcmp(type, "boolean")) {
-        snode *n = sn_new(SN_ENUM);
-        if (!n) return NULL;
-        n->lits = calloc(2, sizeof(*n->lits));
-        if (!n->lits) { schema_free(n); return NULL; }
-        n->whitespace_significant = true;
-        n->lits[n->n_lits++] = strdup("true");
-        n->lits[n->n_lits++] = strdup("false");
-        if (!n->lits[0] || !n->lits[1]) { schema_free(n); return NULL; }
+        snode *n = compile_node(schema, err, errcap, 0);
+        if (n) n->whitespace_significant = true;
         return n;
     }
-    if (!strcmp(type, "null")) return atem_lit("null");
+    if (!strcmp(type, "null")) {
+        snode *n = compile_node(schema, err, errcap, 0);
+        if (n) n->whitespace_significant = true;
+        return n;
+    }
     if (!strcmp(type, "integer") || !strcmp(type, "number")) {
         // Numbers are spelled identically in JSON and in format_argument, so
         // the ordinary compiler's bounded node applies unchanged -- including

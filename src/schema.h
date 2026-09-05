@@ -49,9 +49,13 @@ struct snode {
 
 struct jv;
 snode *schema_compile(struct jv *schema, char *err, int errcap);
-// Compile OpenAI tools[] to Muse's native atem call block. Scalar parameter
-// values are added in S3; S2 admits structured JSON values.
+// Compile OpenAI tools[] to Muse's native atem call block. JSON-spelled values
+// use the ordinary schema compiler; free strings use ATEM's raw sentinel form.
 snode *schema_compile_atem_tools(struct jv *tools, char *err, int errcap);
+// True when Muse's native raw-string protocol can represent every declared
+// parameter constraint exactly. Callers fall back to the generic envelope
+// when it cannot, keeping the schema strict without changing the request.
+bool schema_atem_constrainable(struct jv *tools, char *err, int errcap);
 // Compile the recipient header together with the native call. The duplicated
 // invoke name is pinned by the header discriminator; `user` selects raw text
 // or final_schema when supplied.
