@@ -6,7 +6,13 @@ change between releases (the `-alpha` suffix was retired at v0.2.0 — the 0.x
 version already says what it needs to). Entries below the rename keep the
 names that were true when they were written.
 
-## Unreleased
+## v0.4.9 - 2026-09-05
+
+The review-and-gates release: ten defects from two outside reviews of the
+slot, schema, training and Messages paths, each fixed with a regression
+gate; `make test` rebuilt on a shared object layer (CI 18.8 min to 4.5
+with an identical gate list); the tray icon as the ensö; brand marks and
+a designed xyntetik.com.
 
 - `make test` builds its gates from a shared object layer instead of
   recompiling the engine into every test binary: the 23 shared sources are
