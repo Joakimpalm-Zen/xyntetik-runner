@@ -168,6 +168,32 @@ def test_lookup_is_exclusive_with_the_other_sources(runner_bin, model, mtp_model
     assert "one draft source per run" in both.stderr.decode(errors="replace")
 
 
+@pytest.mark.parametrize("source", ["lookup", "mtp", "model"])
+@pytest.mark.parametrize("limit", ["100", "-1"])
+def test_speculation_stops_at_context_boundary(runner_bin, mtp_model, tmp_path,
+                                             source, limit):
+    """A 32-position context has exactly 32 minus prompt-length output seats.
+    The final verify row must consume its pending token without emitting a
+    bonus outside that allocation; transcript writing reads those same seats.
+    """
+    flags = {"lookup": ["--draft-lookup"], "mtp": ["--mtp"],
+             "model": ["--draft", str(mtp_model)]}[source]
+    records = []
+    for name, extra in (("plain", []), (source, flags)):
+        path = tmp_path / f"{name}.json"
+        p = subprocess.run(
+            [runner_bin, "-m", str(mtp_model), "-p", "hello", "-c", "32",
+             "-n", limit, "--temp", "0", "--gpu", "off", "-t", "2",
+             "--ignore-eos", "--transcript", str(path), *extra],
+            cwd=ROOT, capture_output=True, timeout=60)
+        assert p.returncode == 0, p.stderr.decode(errors="replace")
+        rec = json.loads(path.read_bytes())
+        assert rec["output"]["n"] == 32 - len(rec["prompt"]["tokens"])
+        assert len(rec["output"]["tokens"]) == rec["output"]["n"]
+        records.append(rec)
+    assert records[0]["output"] == records[1]["output"]
+
+
 @pytest.mark.skipif(not SMOL.exists(), reason="SmolLM2-135M not present")
 def test_real_model_accepts_echoed_context(runner_bin):
     """The real-model anchor: a trained model continues a sentence it has

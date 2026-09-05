@@ -1,0 +1,61 @@
+<!--meta
+title: Support the work
+description: Xyntetik Runner is developed openly, free forever under Apache 2.0, and funded by consulting and by people who find it useful. What contributions pay for: measurement time on real hardware, model hosting, cross-engine validation and the machines behind the benchmark tables.
+path: /support/
+nav: support
+-->
+<section class="page-head">
+  <div class="wrap">
+    <p class="eyebrow">Support the work</p>
+    <h1>Open infrastructure, funded in the open.</h1>
+    <p class="lede">Runner is developed openly rather than around a subscription. The engine is free forever under Apache 2.0, and that is not a launch promise but a published rule: no priced engine feature, no claim weakened to sell something, no licence change. What keeps the project moving is measurement time on real hardware, and that is what a contribution buys.</p>
+    <div class="btn-row">
+      <a class="btn btn-primary" href="https://buy.stripe.com/9B69AUddpdx9auHgP27N600" rel="noopener">Contribute via Stripe</a>
+      <a class="btn" href="{{repo}}" rel="noopener">Star, fork or file an issue instead</a>
+    </div>
+    <p class="small muted mt-1">One-off contributions through Stripe, to Zenova AB. No tiers, no perks, no gated features; the receipts of what it bought are the evidence pages.</p>
+  </div>
+</section>
+
+<section class="section">
+  <div class="wrap">
+    <div class="section-head">
+      <p class="eyebrow">What contributions enable</p>
+      <h2>Every table on the evidence page cost hardware time.</h2>
+      <p>The project's distinguishing asset is that its numbers hold up, including the negative ones. Numbers that hold up come from running the same measurement on more than one machine, against the other engines, on the real files. That is the budget.</p>
+    </div>
+    <div class="grid-2">
+      <div class="card">
+        <h3>Measurement hardware</h3>
+        <p>The CUDA tables were measured on a Blackwell MIG slice and an RTX 3070; the Metal work on an 8 GB M1 and, for a two-day window, a loaned 128 GB M5 Max that produced the Metal dispatch work, the 120B idle-coexistence measurement and the big-model certification sweep. Loaner windows end. Owned hardware means a measurement can be repeated when a reader asks.</p>
+      </div>
+      <div class="card">
+        <h3>Cross-engine validation</h3>
+        <p>The truncation benchmark required standing up vLLM, llama.cpp, Ollama, TensorRT-LLM and SGLang on the same box, at pinned versions, and re-running the ladder. Every compatibility row pins a llama.cpp revision to compare greedy output against. That work is where most of the hours go, and it is the work that makes a comparison mean something.</p>
+      </div>
+      <div class="card">
+        <h3>Model hosting and artifacts</h3>
+        <p>Sixteen repositories on Hugging Face, several of them 17 to 18 GB files built, gated and re-measured when the bar changed. Publishing a derivative with its envelope, and keeping a near-miss published with its numbers, has a storage and bandwidth cost that a marketing page does not.</p>
+      </div>
+      <div class="card">
+        <h3>Independent reproduction</h3>
+        <p>Runner credits external reproductions in the docs, and the first one, on a Tesla T4 the project never touched, sharpened the determinism claim. Funding the hardware to reproduce a reader's finding, success or failure, is how the claim boundary stays honest.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="section tint">
+  <div class="wrap split">
+    <div class="sticky">
+      <p class="eyebrow">How the project is funded</p>
+      <h2>Three sources, none of them the engine.</h2>
+    </div>
+    <div class="rows">
+      <div><span>Consulting and enterprise work</span><p>Zenova AB takes engagements around local inference: private fine-tuning for data that cannot leave the building, with the receipts as the deliverable. This funds the hardware. The engine is never the thing being sold.</p></div>
+      <div><span>Contributions</span><p>One-off, through the Stripe link above. They go to measurement time, hosting and hardware, as described on this page.</p></div>
+      <div><span>Work in kind</span><p>A benchmark on hardware the project does not own, an unusual GGUF that fails to load, a coding agent that does not complete its loop, an independent run of the determinism claims. <a href="{{repo}}/issues">Open an issue</a> with <code>runner --version</code>, <code>runner --caps</code>, the exact filename and the load log. Reproductions are credited.</p></div>
+      <div><span>What it will not fund</span><p>Analytics on this site, a cookie banner, a paid tier of the engine, or a claim the repository does not make on the day the site is built.</p></div>
+    </div>
+  </div>
+</section>

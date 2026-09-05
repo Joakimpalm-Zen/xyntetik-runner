@@ -868,6 +868,7 @@ model_t *spec_draft_load(const char *path, const model_t *target,
         return NULL;
     }
     model_params dmp = *mp;
+    dmp.lora_path = NULL; // the target's adapter does not belong to the draft
     dmp.n_ctx = target->n_ctx; // draft must cover the target's positions
     // Draft KV may use the requested q8 storage too. It can change which
     // tokens the draft proposes (and therefore acceptance/throughput), but the
@@ -1878,6 +1879,11 @@ static int engine_generate_spec(engine *e, float *logits, int max_new,
         int i = 0;
         for (; i <= nd; i++) {
             if (max_new >= 0 && n_gen >= max_new) break;
+            // Row i consumes position pos+i and proposes pos+i+1. The
+            // final context row has no seat for its bonus token. Leave via
+            // the consumed-prefix cleanup below, keeping its KV but emitting
+            // nothing beyond hist's allocation (also read by transcripts).
+            if (e->pos + i + 1 >= m->n_ctx) break;
             if (e->stop && e->stop(e->stop_ud)) break;
             if (prof) tp = now_s();
             float *ti = (i == 0 && row0) ? row0 : model_spec_row_logits(m, i);

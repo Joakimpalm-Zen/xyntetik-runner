@@ -1,0 +1,108 @@
+<!--meta
+title: Train a LoRA on the quantized GGUF you serve
+description: Xyntetik Runner trains LoRA adapters directly through the frozen quantized GGUF it serves, with no FP16 training copy, and writes byte-identical adapters from the same data, seed and config. The measured claim, its caveat, and how to run it.
+path: /runner/train-lora-on-quantized-gguf/
+nav: runner
+-->
+<section class="page-head">
+  <div class="wrap">
+    <p class="eyebrow">LoRA training</p>
+    <h1>Train the file you actually ship.</h1>
+    <p class="lede">A LoRA adapter is a small set of extra weights that teaches an existing model a task without rewriting the whole model. Runner trains one directly through the quantized GGUF file used for inference, the same 4-bit or 8-bit file you will serve, on the CPU, with no separate full-precision copy and no training framework. Same data, same seed, same configuration: the same adapter, byte for byte.</p>
+  </div>
+</section>
+
+<section class="section">
+  <div class="wrap">
+    <div class="section-head">
+      <p class="eyebrow">Why this is unusual, and why it matters</p>
+      <h2>Two numerical paths is one too many.</h2>
+    </div>
+    <div class="grid-3">
+      <div class="card">
+        <h3>The usual pipeline</h3>
+        <p>Fine-tune through a 16-bit copy in a Python framework. Quantize the result to a 4-bit file. Serve that file in a different engine. Three tools, two numerical paths, and the thing you trained is never exactly the thing you sampled from in production.</p>
+      </div>
+      <div class="card accent">
+        <h3>What Runner does instead</h3>
+        <p>The serving forward pass is the training forward pass. The policy you sample is the policy you train, so the train/infer mismatch that silently breaks on-policy learning cannot occur between two codepaths that are one codepath. There is no FP16 copy to keep, and no framework to install.</p>
+      </div>
+      <div class="card accent">
+        <h3>Adaptation as an auditable artifact</h3>
+        <p>Every adapter is written beside a provenance record: base, data and adapter sha256, seed, full config, binary sha, compiler, OS and architecture. Two runs with the same inputs write the same file, gated in CI by sha256. That is a stronger statement than "repeatable within tolerance", and it is scoped to the same build on purpose.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="section tint">
+  <div class="wrap split">
+    <div class="sticky">
+      <p class="eyebrow">Measured</p>
+      <h2>0.69 to 1.00, on a file you can download.</h2>
+      <p>Measured 2026-08-22 on <a href="{{hf}}/Qwen3-4B-Runner-ToolUse-Q4_K_M">Qwen3-4B-Runner-ToolUse-Q4_K_M</a>, a public artifact whose card carries the sidecar and the training command. The claim scope is one base and one task. The 8B and 14B ladder is open work, and these numbers are not a promise about other families until they are measured.</p>
+    </div>
+    <div>
+      <figure class="fig">
+        {{chart:lora}}
+        <figcaption>Held-out exact tool-call score before training, with the adapter served beside the base, and after merging the adapter into three output types. Source: <a href="{{repo}}/blob/main/docs/adaptation-engine.md">docs/adaptation-engine.md</a>.</figcaption>
+      </figure>
+      <div class="rows mt-2">
+        <div><span>base</span><p>Qwen3-4B Q4_K_M, the frozen 4-bit serving weights</p></div>
+        <div><span>training path</span><p>directly through the quantized inference artifact, CPU</p></div>
+        <div><span>held-out tool calling, exact call</span><p>0.69 before, 1.00 after</p></div>
+        <div><span>reproducibility</span><p>two independent runs, same sha256 on the adapter file</p></div>
+        <div><span>precision study</span><p>adapters trained through BF16 and Q8_0: cosine 0.9998; through Q4_K_M: 0.9926. A measurably different object, capability-equivalent on this task's supervised decisions; on the gold-completion region they coincide to about 0.0003 nat. Not equivalent everywhere: an external 36-prompt boundary bank finds 3 of 36 prompts where the three adapters choose different tools, and the Q4-trained adapter carries the widest margins on that bank</p></div>
+        <div><span>neutral-corpus drift</span><p>nll per token 4.063 to 4.026: the adapter leaves unrelated text alone</p></div>
+        <div><span>interop</span><p>the adapter scores the same 1.00 served by stock llama.cpp; a community F16 adapter loads back into Runner</p></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="section">
+  <div class="wrap">
+    <div class="callout warn">
+      <span class="t">The caveat that travels with the claim: a 4-bit merge erases the fine-tune.</span>
+      <p><code>--merge-lora</code> folds an adapter into the base to produce a standalone GGUF any runtime can serve. Merging into Q8_0 or F16 keeps the 1.00, verified in stock llama.cpp. Merging into the 4-bit base returns the score to 0.69, the base's own number, because 98.55% of the weight bytes round back to the base's quantization grid. Perplexity still looks fine while it happens. A scale sweep shows survival is monotone in delta magnitude: erased through 2x, partial at 4x, full at 8x. Serve adapters with <code>--lora</code>, the exact form, or merge into 8-bit or better.</p>
+    </div>
+    <div class="grid-2 mt-2">
+      <figure class="fig">
+        <img src="/assets/deterministic-training.gif" alt="Terminal recording: two independent training runs print the same adapter sha256" loading="lazy" width="800" height="450">
+        <figcaption>Two independent runs, one sha256.</figcaption>
+      </figure>
+      <figure class="fig">
+        <img src="/assets/merge-erasure.gif" alt="Terminal recording: the 4-bit merge scores 0.69 like the base, the 8-bit merge scores 1.00" loading="lazy" width="800" height="450">
+        <figcaption>The 4-bit merge scores like the base; the 8-bit merge keeps the fine-tune.</figcaption>
+      </figure>
+    </div>
+  </div>
+</section>
+
+<section class="section tint">
+  <div class="wrap split rev">
+    <div>
+<pre><code># train through the quantized base you will serve
+./runner -m base-Q4_K_M.gguf --train data.jsonl --train-steps 200 \
+    --lora-rank 8 --train-out adapter.gguf
+# adapter.gguf.train.json now records base/data/adapter sha256, seed, config, binary
+
+# serve the adapter beside the frozen base (the exact form)
+./runner -m base-Q4_K_M.gguf --lora adapter.gguf --serve
+
+# fold it into a standalone file for any GGUF runtime: 8-bit or better
+./runner -m base-Q4_K_M.gguf --lora adapter.gguf \
+    --merge-lora merged-Q8_0.gguf --quant q8_0
+
+# teacher-forced logprobs for evals and rewards
+./runner -m base-Q4_K_M.gguf --lora adapter.gguf -f eval.txt --score</code></pre>
+      <p class="small muted">Flags: <code>--train</code>, <code>--train-steps</code>, <code>--lr</code>, <code>--train-ctx</code>, <code>--train-out</code>, <code>--save-every</code>, <code>--lora-rank</code>, <code>--lora</code>, <code>--lora-scale</code>, <code>--merge-lora</code>, <code>--score</code>. <a href="{{repo}}/blob/main/README.md#command-line-reference">Command-line reference</a>. <code>scripts/train-grpo-lite.py</code> closes the loop into seeded, replayable reinforcement fine-tuning.</p>
+    </div>
+    <div class="sticky">
+      <p class="eyebrow">Run it</p>
+      <h2>Three commands, one binary.</h2>
+      <p>Training runs on the CPU path. The dominant matvec of the backward runs on CUDA behind a flag, and CUDA training end to end is open work. Adapters follow llama.cpp's naming convention in both directions: F16 adapters from <code>convert_lora_to_gguf</code> load, and the adapters Runner writes load in llama.cpp.</p>
+      <p>Where the numbers come from, with design, gates and failure modes: <a href="{{repo}}/blob/main/docs/adaptation-engine.md">docs/adaptation-engine.md</a>. The reproducibility scope, with what is and is not claimed: <a href="/runner/reproducible-lora-training-receipts/">receipts and the determinism scope</a>. The external boundary bank and its lane: <a href="{{repo}}/blob/main/docs/tool-choice-boundary-lane.md">docs/tool-choice-boundary-lane.md</a>.</p>
+    </div>
+  </div>
+</section>

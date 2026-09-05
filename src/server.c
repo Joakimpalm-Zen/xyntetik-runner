@@ -1392,6 +1392,11 @@ static void handle_conn(slot_t *s, sock_t fd) {
                                "this runtime (see server log); start the server "
                                "with --force-uncertified to override");
                     ok = false;
+                } else if (sw == SWAP_SIGNATURE_REFUSED) {
+                    send_error_detail(fd, 409,
+                                      "model refused by signature policy (see server log)",
+                                      "model", "model_signature_refused");
+                    ok = false;
                 } else if (sw == SWAP_ABORTED) {
                     send_error(fd, 503,
                                "model load abandoned (unload or shutdown requested; retry)");
@@ -1659,7 +1664,7 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
                const sampler_override *ov, int port, int parallel,
                int n_threads, int ttl, const char *draft_path, int draft_k,
                bool draft_lookup, bool ignore_eos, int tmpl_override,
-               bool force_uncertified) {
+               bool force_uncertified, const oms_policy *signing) {
     sock_init();
     // The shared server state gets a lifetime, and it is this call. Everything
     // below sets fields on SV and the teardown at the bottom releases them, but
@@ -1692,6 +1697,7 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
     // the backend from each loaded model, since an available GPU may be unused
     // after --gpu off or a model-specific fallback.
     SV.force_uncertified = force_uncertified;
+    if (signing) SV.signing = *signing;
     // Set before anything can load a model: registry.c reads it on every swap
     // and reload, so a forced template survives /unload and --ttl instead of
     // being detected away at the next request.
@@ -1958,7 +1964,8 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
                     fprintf(stderr, "error: cannot allocate slot %d model\n", i);
                     return 1;
                 }
-                if (!model_load(s->m, model_path, &slot_mp)) {
+                if (!model_load(s->m, model_path, &slot_mp) ||
+                    !oms_check_model(model_path, &SV.signing, NULL)) {
                     fprintf(stderr, "error: failed to load slot %d\n", i);
                     return 1;
                 }

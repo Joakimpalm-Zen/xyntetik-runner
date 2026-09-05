@@ -1,0 +1,283 @@
+<!--meta
+title: Evidence
+description: The measurements behind Xyntetik Runner: six-engine truncation benchmark, CUDA and Metal throughput against llama.cpp, quantization fidelity ladders, the artifact ledger, receipts, compatibility gates and published negative results.
+path: /evidence/
+nav: evidence
+-->
+<section class="page-head">
+  <div class="wrap">
+    <p class="eyebrow">Evidence</p>
+    <h1>Every claim, with the measurement behind it.</h1>
+    <p class="lede">This page collects what has actually been measured, when, on what, and where the raw material lives. Results that went against the project are on it too. If a claim you find elsewhere is not backed here or in the repository, treat it as unproven.</p>
+    <nav class="toc" aria-label="On this page">
+      <a href="#truncation">Truncation, six engines</a>
+      <a href="#benchmarks">Throughput vs llama.cpp</a>
+      <a href="#fidelity">Quantization fidelity</a>
+      <a href="#training">Training</a>
+      <a href="#receipts">Receipts</a>
+      <a href="#compat">Compatibility gates</a>
+      <a href="#artifacts">Artifact ledger</a>
+      <a href="#negative">Negative results</a>
+      <a href="#external">External reproductions</a>
+    </nav>
+  </div>
+</section>
+
+<section class="section" id="truncation">
+  <div class="wrap">
+    <div class="section-head">
+      <p class="eyebrow">Truncation recovery</p>
+      <h2>Six engines, seven token budgets, one that closes the document.</h2>
+      <p>Claim under test: tool calls survive the token limit. Everything that could move a verdict is pinned as data in the probe: the tool schema (<code>get_weather(city, units)</code>, both required, no additional properties), the prompt, <code>tool_choice: required</code>, temperature 0, budgets 1, 2, 3, 5, 8, 16 and 64. The 64-token control must complete on every engine, which proves the small rungs measure truncation and not misconfiguration.</p>
+    </div>
+    <figure class="fig">
+      <div class="legend">
+        <span><i class="ok"></i>executable tool call, arguments parse</span>
+        <span><i class="none"></i>no usable call</span>
+      </div>
+      {{chart:truncation}}
+      <figcaption>Measured 2026-08-19 on granite-4.1-3b Q4_K_M (Runner and llama.cpp on CPU, Ollama on GPU from the same GGUF, vLLM from the HF safetensors on GPU). <strong>&dagger;</strong> TensorRT-LLM and SGLang on a Qwen3-1.7B substitute because their registries did not carry granite; SGLang on an RTX 3070 under WSL2. Runner c7d6c3d (0.1.19-alpha), vLLM 0.27.1 with xgrammar 0.2.3, llama.cpp b10488, Ollama 0.32.14, TensorRT-LLM 1.2.1, SGLang 0.5.17 with xgrammar 0.2.1.</figcaption>
+    </figure>
+    <details class="table-view">
+      <summary>What each engine hands the caller, rung by rung</summary>
+      <div class="table-wrap">
+        <table class="data">
+          <thead><tr><th class="num">max_tokens</th><th>Runner</th><th>vLLM</th><th>llama.cpp</th><th>Ollama</th><th>TensorRT-LLM &dagger;</th><th>SGLang &dagger;</th></tr></thead>
+          <tbody>
+            <tr><td class="num">1</td><td class="win">parses</td><td>none; leaks <code>&lt;tool_call&gt;</code> into content</td><td>none; leaks <code>&lt;tool_call&gt;</code> into content</td><td>none; empty content</td><td>none; leaks bare tag</td><td>none; leaks bare tag</td></tr>
+            <tr><td class="num">2</td><td class="win">parses</td><td>none; leak</td><td>none; leak</td><td>none; empty</td><td>none; empty</td><td>none; empty</td></tr>
+            <tr><td class="num">3</td><td class="win">parses</td><td>none; leaks <code>{"</code></td><td>none; leaks <code>{"</code></td><td>none; empty</td><td>none; empty</td><td>none; empty</td></tr>
+            <tr><td class="num">5</td><td class="win">parses</td><td>none; leaks <code>{"name":</code></td><td>none; leaks <code>{"name":</code></td><td>none; empty</td><td>none; empty</td><td>none; empty</td></tr>
+            <tr><td class="num">8</td><td class="win">parses</td><td>none; leaks <code>{"name": "get_weather</code></td><td>none; leaks <code>{"name": "get_weather</code></td><td>none; empty</td><td>none; empty</td><td>none; empty</td></tr>
+            <tr><td class="num">16</td><td class="win">parses</td><td>none; leaks <code>{"city": "</code></td><td class="lose"><code>tool_calls</code> present, arguments <code>{"city": "</code> do not parse</td><td class="lose">HTTP 500</td><td>none; empty</td><td>none; empty</td></tr>
+            <tr><td class="num">64</td><td>parses, completes</td><td>parses, completes</td><td>parses, completes</td><td>parses, completes</td><td>parses, completes</td><td>parses, completes</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </details>
+    <p class="mt-2">The property is an engine guarantee, grammar plus closer, not model quality: it holds identically for the random two-layer CI fixture and for granite-4.1-3b, which is why <code>make test-truncation</code> can run on any CPU with no GPU and no competitor, and does on every release. The claim covers the engines and versions measured, not engines that were not. Method, the substitute-model notes and the raw responses: <a href="{{repo}}/blob/main/docs/truncation-benchmark.md">docs/truncation-benchmark.md</a>, <a href="{{repo}}/tree/main/tests/torture/truncation/2026-08-19-granite-4.1-3b">tests/torture/truncation/2026-08-19-granite-4.1-3b/</a>. The <a href="{{repo}}/blob/main/docs/agent-torture.md">agent-torture gate</a> tests the same failure inside multi-turn loops.</p>
+  </div>
+</section>
+
+<section class="section tint" id="benchmarks">
+  <div class="wrap">
+    <div class="section-head">
+      <p class="eyebrow">Throughput</p>
+      <h2>Against llama.cpp, same files, same box, losing rows included.</h2>
+      <p>One machine, one method, both engines on the same GGUF files. Runner via <code>--bench-json -n 128 -b 64</code> (mean of 2), llama.cpp via <code>llama-bench -p 512 -n 128 -ngl 99 -r 2</code>, full GPU offload verified on every row. Absolute numbers depend on the hardware; the ratios are the result, and even those shift with the compute-to-bandwidth balance.</p>
+    </div>
+    <figure class="fig">
+      {{chart:speed}}
+      <figcaption>MIG 1g.24gb slice of an RTX PRO 6000 Blackwell, runner 6d705e9 vs llama.cpp b10353 CUDA, measured 2026-09-02. The box carried a load average of 18 from other work during this run, which lowered both sides' absolute numbers against August; the ratios are the result. Source: <a href="{{repo}}/blob/main/docs/benchmarks.md">docs/benchmarks.md</a>.</figcaption>
+    </figure>
+    <details class="table-view">
+      <summary>Tokens per second, all three hosts</summary>
+      <div class="table-wrap">
+        <table class="data">
+          <thead><tr><th>host, 2026-09-02</th><th>model</th><th class="num">decode runner / llama.cpp</th><th class="num">prefill runner / llama.cpp</th></tr></thead>
+          <tbody>
+            <tr><td rowspan="9">MIG 1g.24gb, llama.cpp b10353</td><td>Llama-3.2-3B Q4_K_M</td><td class="num">87.9 / 101.8 (86%)</td><td class="num">525.7 / 6387.6 (8.2%)</td></tr>
+            <tr><td>Phi-4-mini Q8_0</td><td class="num">53.8 / 57.7 (93%)</td><td class="num">355.6 / 5960.6 (6.0%)</td></tr>
+            <tr><td>granite-3.3-8b Q4_K_M</td><td class="num">39.7 / 45.4 (87%)</td><td class="num">220.5 / 2288.9 (9.6%)</td></tr>
+            <tr><td>granite-4.1-8b Q4_0</td><td class="num">41.7 / 46.5 (90%)</td><td class="num">151.1 / 2359.2 (6.4%)</td></tr>
+            <tr><td>Phi-3.5-mini Q4_K_M</td><td class="num">72.0 / 83.2 (87%)</td><td class="num">284.9 / 5120.3 (5.6%)</td></tr>
+            <tr><td>gemma-4-12B Q4_K_M</td><td class="num">23.2 / 28.8 (81%)</td><td class="num">123.7 / 1439.2 (8.6%)</td></tr>
+            <tr><td>Qwen3-30B-A3B Q4_K_M (MoE)</td><td class="num">62.2 / 86.6 (72%)</td><td class="num">128.5 / 2326.3 (5.5%)</td></tr>
+            <tr><td>gemma-4-26B-A4B Q4_0 (MoE)</td><td class="num">23.3 / 56.2 (41%)</td><td class="num">34.3 / 2429.7 (1.4%)</td></tr>
+            <tr><td>Qwen2.5-32B Q3_K_S</td><td class="num">1.8 / 14.3 (13%)</td><td class="num">15.3 / 469.0 (3.3%)</td></tr>
+            <tr><td rowspan="3">RTX 3070 8 GB, Windows 11, llama.cpp b10754 CUDA 13.3</td><td>Qwen2.5-7B Q4_K_M</td><td class="num">65.6 / 81.6 (80%)</td><td class="num">112.3 / 2224.5 (5.0%)</td></tr>
+            <tr><td>granite-4.1-3b Q8_0</td><td class="num">78.6 / 94.3 (83%)</td><td class="num">493.5 / 5614.1 (8.8%)</td></tr>
+            <tr><td>Qwen2.5-3B Q4_K_M</td><td class="num">113.3 / 161.2 (70%)</td><td class="num">234.0 / 6069.9 (3.9%)</td></tr>
+            <tr><td rowspan="2">Apple M1 8 GB, Metal, llama.cpp Homebrew ggml 0.22.0</td><td>granite-4.1-3b Q8_0</td><td class="num">11.6 / 14.4 (80%)</td><td class="num">47.8 / 266.5 (17.9%)</td></tr>
+            <tr><td>gemma-3-4b Q4_K_M</td><td class="num">8.4 / 20.3 (41%)</td><td class="num">62.9 / 250.3 (25.1%)</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </details>
+    <div class="grid-3 mt-2">
+      <div class="card">
+        <h3>Decode: parity is the physical target</h3>
+        <p>Single-stream decode is memory-bandwidth-bound on the slice; both engines read the same quantized weights per token. Dense decode moved from 73 to 79% in July to 81 to 93% in September through decode GEMV work and a KV-ring accounting fix.</p>
+      </div>
+      <div class="card">
+        <h3>Prefill: llama.cpp's win, published as such</h3>
+        <p>llama.cpp's prefill comes from a mature tensor-core GEMM stack across every quant. Runner's tensor-core path is held to a teacher-forced tolerance gate (0/64 top-1 flips, at most 0.012% mean logit deviation on every promoted row) and its tile is 64 columns wide. The gap is reported, not hidden.</p>
+      </div>
+      <div class="card">
+        <h3>The M1 rows show the coexistence trade from the losing side</h3>
+        <p>Measured with 1.3 GB of RAM available, Runner logged its own eviction warning and paged while llama.cpp wired the model in. The gemma row is that effect, not a kernel result, and the document says to re-measure on a quiet machine before reading it as one.</p>
+      </div>
+    </div>
+    <p class="small muted mt-2">A July table in the same document was taken before a CUDA prefill correctness bug (uninitialised shared memory for token columns 16 to 63) was found; it is kept as history and superseded by the August re-measurement on the fixed kernel. The benchmark's own control run also found one silent MoE GPU-to-CPU fallback, since fixed and guarded by a test.</p>
+  </div>
+</section>
+
+<section class="section" id="fidelity">
+  <div class="wrap">
+    <div class="section-head">
+      <p class="eyebrow">Quantization fidelity</p>
+      <h2>Constrained decoding guarantees the shape of a tool call at any quantization. Not its contents.</h2>
+      <p>A full quant ladder, one Q8_0 reference against several variants, 16 agent-torture requests at temperature 0, with a zero-point self-check that two independent reference spawns agree on every call at 0 KLD before anything is measured. Three axes: does the output validate against the schema, did the variant call the same function as the reference, and do the parsed arguments match exactly.</p>
+    </div>
+    <figure class="fig">
+      <div class="legend">
+        <span><i class="line1"></i>granite-4.1-3b, argument agreement</span>
+        <span><i class="line2"></i>Hermes-4-14B, argument agreement</span>
+        <span><i class="ref"></i>schema conformance and tool selection, both families</span>
+      </div>
+      {{chart:fidelity}}
+      <figcaption>granite-4.1-3b measured 2026-08-14; Hermes-4-14B (bartowski's ladder, hashes verified against the source repository) measured 2026-08-15. Schema conformance and tool selection held at 100% on every rung of both ladders; argument agreement decayed to 50% at Q4_0 on both. Source: <a href="{{repo}}/blob/main/docs/quant-fidelity.md">docs/quant-fidelity.md</a>.</figcaption>
+    </figure>
+    <div class="split mt-2">
+      <div>
+        <h3>Whole-model fidelity has a size threshold</h3>
+        <p>Mean KLD against the model's own reference at Q4_K_M, under the adopted bar (margin-qualified top-1 at least 97% and mean KLD at most 0.05 against the named parent, 400 teacher-forced positions). Below about 8B parameters, uniform 4-bit fails the bar; from 8B up it passes. That threshold, and not a blanket "4-bit is unshippable", is what the ladder found.</p>
+      </div>
+      <div class="table-wrap">
+        <table class="data">
+          <thead><tr><th>model at Q4_K_M</th><th>params</th><th class="num">mean KLD</th><th>verdict</th></tr></thead>
+          <tbody>
+            <tr><td>gemma-4-E2B</td><td>~5B MoE, 2B active</td><td class="num">0.3624</td><td><span class="pill fail">fail</span></td></tr>
+            <tr><td>granite-4.1-3b</td><td>3B</td><td class="num">0.1376</td><td><span class="pill fail">fail</span></td></tr>
+            <tr><td>Phi-4-mini</td><td>3.8B</td><td class="num">0.1258</td><td><span class="pill fail">fail</span></td></tr>
+            <tr><td>Qwen3-8B</td><td>8B</td><td class="num">0.0419</td><td><span class="pill pass">pass</span></td></tr>
+            <tr><td>Hermes-4-14B</td><td>14B</td><td class="num">0.0279</td><td><span class="pill pass">pass</span></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="section tint" id="training">
+  <div class="wrap">
+    <div class="section-head">
+      <p class="eyebrow">Training</p>
+      <h2>One base, one task, every number on a public artifact.</h2>
+    </div>
+    <div class="split">
+      <figure class="fig">
+        {{chart:lora}}
+        <figcaption>Held-out exact tool-call score, Qwen3-4B. Measured 2026-08-22. Artifact: <a href="{{hf}}/Qwen3-4B-Runner-ToolUse-Q4_K_M">Qwen3-4B-Runner-ToolUse-Q4_K_M</a>; design, gates and failure modes in <a href="{{repo}}/blob/main/docs/adaptation-engine.md">docs/adaptation-engine.md</a>.</figcaption>
+      </figure>
+      <div class="rows">
+        <div><span>base</span><p>Qwen3-4B Q4_K_M, the frozen 4-bit serving weights</p></div>
+        <div><span>training path</span><p>directly through the quantized inference artifact, on the CPU</p></div>
+        <div><span>held-out exact call</span><p>0.69 before, 1.00 after</p></div>
+        <div><span>reproducibility</span><p>two independent runs, same sha256 on the adapter file</p></div>
+        <div><span>precision study</span><p>adapters trained through BF16 and Q8_0: cosine 0.9998; through Q4_K_M: 0.9926. Measurably different objects, capability-equivalent on this task's supervised decisions. An external 36-prompt boundary bank finds 3 of 36 prompts where the three adapters choose different tools; a property of that bank, not a rate</p></div>
+        <div><span>neutral-corpus drift</span><p>nll per token 4.063 to 4.026, unrelated text left alone</p></div>
+        <div><span>merge study</span><p>into Q8_0 or F16 keeps the 1.00 (verified in stock llama.cpp); into the 4-bit base erases it, 0.69 again, 98.55% of weight bytes round back to the base's codes. Survival is monotone in delta magnitude: erased through 2x, partial at 4x, full at 8x</p></div>
+        <div><span>interop</span><p>the adapter scores the same 1.00 served by stock llama.cpp; a community F16 adapter loads back into Runner, which also found and fixed the F32-only loader gap</p></div>
+        <div><span>scope</span><p>one base, one task. The 8B and 14B ladder is open work and these numbers are not a promise about other families</p></div>
+      </div>
+    </div>
+    <div class="grid-2 mt-2">
+      <figure class="fig">
+        <img src="/assets/deterministic-training.gif" alt="Terminal recording: two independent training runs print the same adapter sha256" loading="lazy" width="800" height="450">
+        <figcaption>Two independent training runs producing byte-identical adapters. Recording from the repository README.</figcaption>
+      </figure>
+      <figure class="fig">
+        <img src="/assets/merge-erasure.gif" alt="Terminal recording: merging the adapter into the 4-bit base returns the base score; the 8-bit merge keeps it" loading="lazy" width="800" height="450">
+        <figcaption>Merging the adapter into the 4-bit base erases it; 8-bit keeps it. Recording from the repository README.</figcaption>
+      </figure>
+    </div>
+  </div>
+</section>
+
+<section class="section" id="receipts">
+  <div class="wrap split">
+    <div class="sticky">
+      <p class="eyebrow">Receipts</p>
+      <h2>A recorded run is a signed record, and a verifier answers with one exit code.</h2>
+      <p><code>--transcript</code> records model, adapter and binary hashes, the effective execution profile, seed and sampling configuration, prompt and output token ids and the exact streamed output bytes. <code>--verify</code> replays it: VERIFIED (0), DIVERGED at a token or output byte (2), UNVERIFIABLE for an invalid record or an artifact mismatch (3). Receipts chain, are signed with an Ed25519 key you generate, and the loaded model can be verified against an OpenSSF Model Signing bundle.</p>
+      <a class="btn" href="/runner/reproducible-lora-training-receipts/">Receipts and the determinism scope</a>
+    </div>
+    <div class="rows">
+      <div><span>Claimed, gated in CI</span><p>Same executable, same inputs, same sampled tokens, across runs and thread counts. Training byte-determinism on the same build. Quantize and merge write the same bytes for the same inputs on the same build.</p></div>
+      <div><span>Replay tiers</span><p>T1, same binary: bit-exact replay. T2, cross-ISA: token-level replay on another machine; floating-point internals may differ and the boundary is libm.</p></div>
+      <div><span>Explicitly not claimed</span><p>Independent rebuilds are not byte-identical. Cross-engine token identity is not promised. Numerical identity of hidden states is never promised. Timing and throughput are not part of the contract.</p></div>
+      <div><span>First external reproduction</span><p>Adapter byte-equality was reproduced independently on a Tesla T4 by a Hugging Face community tester and is credited in the docs.</p></div>
+    </div>
+  </div>
+</section>
+
+<section class="section tint" id="compat">
+  <div class="wrap">
+    <div class="section-head">
+      <p class="eyebrow">Compatibility gates</p>
+      <h2>Pinned files, declared checks, executed on every release.</h2>
+      <p>The machine-readable manifest <a href="{{repo}}/blob/main/tests/compatibility/models.json">tests/compatibility/models.json</a> pins files by SHA-256 and declares each check independently. The release check refuses a report with zero executed rows, and the CUDA smoke gate on a second device family is mandatory before a tag.</p>
+    </div>
+    <div class="grid-3">
+      <div class="card"><h3><code>load</code></h3><p>The pinned file hashes and loads.</p></div>
+      <div class="card"><h3><code>tokenizer</code></h3><p>The committed 721-string corpus is compared with the model's Hugging Face tokenizer; revision-bound captures make declared rows replayable offline.</p></div>
+      <div class="card"><h3><code>greedy_reference</code></h3><p>Greedy tokens are compared with a pinned llama.cpp revision.</p></div>
+      <div class="card"><h3><code>cpu_cuda</code></h3><p>CPU and CUDA scalar-path greedy output are compared; byte-identity is the contract on the scalar path.</p></div>
+      <div class="card"><h3><code>chat</code></h3><p>A real Chat Completions request answers through the model template.</p></div>
+      <div class="card"><h3>Cross-engine identity, stated with its envelope</h3><p>Nemotron-Nano-9B-v2 Q8_0: 5 of 6 greedy completions byte-identical to llama.cpp b10353, the miss a single-token near-tie. granite-4.0-h-small: token-identical on deterministic prompts, divergences at the quantisation noise floor. Nemotron-3.5-Lightning-30B: 4 of 5. Each envelope is published with the artifact, not rounded up.</p></div>
+    </div>
+    <p class="small muted mt-2">Method: <a href="{{repo}}/blob/main/docs/compatibility-program.md">docs/compatibility-program.md</a>; reports: <a href="{{repo}}/tree/main/docs/compat-reports">docs/compat-reports/</a>; measured-envelope convention: <a href="{{repo}}/blob/main/README.md#measured-envelope-gate">README</a>.</p>
+  </div>
+</section>
+
+<section class="section" id="artifacts">
+  <div class="wrap">
+    <div class="section-head">
+      <p class="eyebrow">Artifact ledger</p>
+      <h2>Published only after the stated gate. Kept published when the gate is missed.</h2>
+      <p>Every fidelity claim below is measured under the adopted dual-column bar: margin-qualified top-1 at least 97% and mean KLD at most 0.05 against the named parent over 400 teacher-forced positions, zero point exact, with plain top-1 always reported beside it. Read each card's provenance before treating a derivative as equivalent to an original checkpoint.</p>
+    </div>
+    <ul class="ledger">
+      <li><div><div class="t"><a href="{{hf}}/Qwen3-30B-A3B-selective-attnQ8_0-expQ4_0-GGUF">Qwen3-30B-A3B selective precision</a></div><div class="d">Attention Q8_0, experts Q4_0, 17.99 GB, from a byte-verified first-party Q8_0 source. Passes the bar where the official uniform Q4_K_M fails it. Built with <code>--type-plan</code>; the plan is on the card. The artifact class the project leads with.</div></div><span class="pill pass">passes bar</span></li>
+      <li><div><div class="t"><a href="{{hf}}/Qwen3-Coder-30B-A3B-Instruct-keep120-Q4_K_M-GGUF">Qwen3-Coder-30B keep-120</a></div><div class="d">Expert-pruned, 17.5 GB. Passes both the original and the current bar; the only published artifact to clear the original bar unaided.</div></div><span class="pill pass">passes bar</span></li>
+      <li><div><div class="t"><a href="{{hf}}/Qwen3-4B-Runner-ToolUse-Q4_K_M">Qwen3-4B Runner ToolUse adapter</a></div><div class="d">The LoRA behind the training claim, produced twice with the same sha256. Card carries the sidecar and the training command.</div></div><span class="pill pass">reproduced</span></li>
+      <li><div><div class="t"><a href="{{hf}}/gemma-4-31B-it-attn48-removed-Q4_0-GGUF">gemma-4-31B-it, attention block 48 removed</a></div><div class="d">17.58 GB Q4_0. One attention sublayer physically dropped from Google's QAT Q4_0 release with <code>--remove-sublayer</code>; frees 64 MiB of KV at 4k and 512 MiB at 32k plus 74.3 MB of file; tracks its parent at KLD 0.0223 on 44,413 held-out positions. Loads only in Runner 0.4.7 and later, CPU path; llama.cpp refuses it by name, and the card says so.</div></div><span class="pill pass">KLD 0.0223</span></li>
+      <li><div><div class="t"><a href="{{hf}}/Muse-Glimmer-30B-Surgical-Q4_K-GGUF">Muse-Glimmer-30B surgical, Q4_K</a> and <a href="{{hf}}/Muse-Glimmer-30B-Surgical-Q8_0-GGUF">Q8_0</a></div><div class="d">4.75% of the decoder removed, healed, quantised by Runner's own quantiser. The Q4_K cost was predicted to 0.6% before the file was built. Provenance and checksums in the repository; the <a href="{{hf}}/Muse-Glimmer-30B-surgery-report">surgery report</a> carries the method.</div></div><span class="pill pass">passes bar</span></li>
+      <li><div><div class="t"><a href="{{hf}}/NVIDIA-Nemotron-Nano-9B-v2-Q8_0-GGUF">NVIDIA-Nemotron-Nano-9B-v2 Q8_0</a></div><div class="d">Not a bar-gated derivative: the first Mamba-2 hybrid artifact Runner supports, a near-lossless Q8_0 of NVIDIA's base, 5 of 6 greedy token-identical vs llama.cpp b10353. NVIDIA Open Model License.</div></div><span class="pill note">support artifact</span></li>
+      <li><div><div class="t"><a href="{{hf}}/gemma-4-E2B-it-Q4_0-GGUF">gemma-4-E2B-it Q4_K_M/Q4_0 mix</a></div><div class="d">2.63 GB smoke-test artifact. Fails the fidelity bar, the card carries the dual-column numbers, and it remains the fastest way to try Runner on an 8 GB machine.</div></div><span class="pill fail">fails bar</span></li>
+      <li><div><div class="t"><a href="{{hf}}/gpt-oss-20b-keep30-MXFP4-GGUF">gpt-oss-20b keep-30 MXFP4</a></div><div class="d">11.5 GB, 32-to-30-expert derivative. Its originally published number did not reproduce; the card leads with the measured status. Kept as a near-miss with its numbers in the open.</div></div><span class="pill fail">fails current bar</span></li>
+      <li><div><div class="t">Measurement reports, no weights republished</div><div class="d"><a href="{{hf}}/Hermes-4-14B-quant-fidelity-report">Hermes-4-14B quant fidelity</a>, the <a href="{{hf}}/Qwen3-speculative-pair-report">Qwen3 speculative pair</a>, the <a href="{{hf}}/granite-4.0-h-small-runner-report">granite-4.0-h-small</a> and <a href="{{hf}}/Nemotron-3.5-Lightning-30B-A3B-runner-report">Nemotron-3.5-Lightning</a> support reports, and two frontier reports where nothing cleared the bar and beat upstream: the <a href="{{hf}}/Nemotron-3.5-Lightning-30B-A3B-prune-frontier-report">Lightning prune frontier</a> and the <a href="{{hf}}/Muse-Glimmer-30B-runner-quant-frontier-report">Muse-Glimmer quant frontier</a>, where Meta's own Q4_K_M passes and six Runner plans did not beat it, stated openly.</div></div><span class="pill note">reports</span></li>
+    </ul>
+  </div>
+</section>
+
+<section class="section tint" id="negative">
+  <div class="wrap split">
+    <div class="sticky">
+      <p class="eyebrow">Negative results</p>
+      <h2>Built, measured, rejected, and kept.</h2>
+      <p>Work that did not pay is written up so it is not attempted twice, and because where the cliff is happens to be exactly what someone with 8 to 16 GB needs to know.</p>
+    </div>
+    <ul class="ledger">
+      <li><div><div class="t"><a href="{{repo}}/blob/main/docs/negative-result-expert-cache.md">MoE expert caching</a></div><div class="d">An expert-residency cache tier for MoE models larger than RAM. Investigated, measured, rejected (2026-08-05); not in the product.</div></div><span class="pill note">rejected</span></li>
+      <li><div><div class="t"><a href="{{repo}}/blob/main/docs/negative-result-metal-multirow-matvec.md">Multi-row Metal decode matvec</a></div><div class="d">Rejected, and the write-up records what the CPU/GPU byte-identity contract costs in reachable GPU optimizations.</div></div><span class="pill note">rejected</span></li>
+      <li><div><div class="t"><a href="{{repo}}/blob/main/docs/negative-result-metal-gemm-occupancy.md">Metal GEMM occupancy</a>, <a href="{{repo}}/blob/main/docs/negative-result-metal-moe-expert-major.md">expert-major MoE layout</a></div><div class="d">A prefill tile sweep on the M1 where the shipped shape was already at a local optimum (2026-08-15), and two expert-grouping shapes for MoE prefill on the M5 Max that both lose (2026-09-01), kept so the third shape starts from evidence.</div></div><span class="pill note">rejected</span></li>
+      <li><div><div class="t"><a href="{{repo}}/blob/main/docs/negative-result-harmony-analysis-bound.md">Harmony analysis-channel bound</a></div><div class="d">Implemented, measured, reverted (2026-08-14), with a same-day correction recorded in place when the motivating symptom turned out to be gone.</div></div><span class="pill note">rejected</span></li>
+      <li><div><div class="t"><a href="{{repo}}/blob/main/docs/negative-result-muse-glimmer-selective-2026-08-20.md">Muse-Glimmer selective precision</a>, <a href="{{repo}}/blob/main/docs/negative-result-nemotron-lightning-artifacts-2026-08-20.md">Nemotron Lightning artifacts</a></div><div class="d">Six selective-precision candidates for Muse Glimmer built, gated and rejected (a Runner gap, not a Muse one); three of four planned Lightning derivatives rejected by cheap checks before being built. Published as reports rather than weights.</div></div><span class="pill note">no artifact</span></li>
+    </ul>
+  </div>
+</section>
+
+<section class="section" id="external">
+  <div class="wrap">
+    <div class="section-head">
+      <p class="eyebrow">External reproductions and third-party work</p>
+      <h2>What people outside the project have checked.</h2>
+    </div>
+    <div class="grid-3">
+      <div class="card">
+        <h3>Adapter byte-equality on a Tesla T4</h3>
+        <p>A Hugging Face community tester reproduced the byte-identical adapter result independently on a Tesla T4 and is credited in the documentation as the first external reproduction.</p>
+      </div>
+      <div class="card">
+        <h3>A 36-prompt tool-choice boundary bank</h3>
+        <p>The same tester published a reusable 36-prompt bank (MIT or Apache-2.0) probing where adapters trained through BF16, Q8_0 and Q4_K_M choose different tools. Run in full through Runner's unlabeled lane: 3 of 36 prompts split, and the Q4-trained adapter carries the widest margins on that bank. Method and scoping: <a href="{{repo}}/blob/main/docs/tool-choice-boundary-lane.md">docs/tool-choice-boundary-lane.md</a>.</p>
+      </div>
+      <div class="card">
+        <h3>A community adapter, loaded back</h3>
+        <p>A third-party F16 adapter in llama.cpp's convention loaded and served in Runner, and in doing so found and fixed the F32-only loader gap. Interop is measured in both directions.</p>
+      </div>
+    </div>
+  </div>
+</section>

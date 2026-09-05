@@ -3,6 +3,7 @@
 #define RUNNER_SERVER_H
 
 #include "runner.h"
+#include "oms.h"
 
 // `tmpl_override` is --chat-template resolved to a TMPL_* value, or -1 to
 // detect it from the model. It is a single model's template, so the caller
@@ -15,7 +16,8 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
                const sampler_override *ov, int port, int parallel,
                int n_threads, int ttl, const char *draft_path, int draft_k,
                bool draft_lookup,
-               bool ignore_eos, int tmpl_override, bool force_uncertified);
+               bool ignore_eos, int tmpl_override, bool force_uncertified,
+               const oms_policy *signing);
 
 // Request the same graceful stop as the platform's first SIGINT / console
 // control event. This closes the listener so a server_run blocked in accept()

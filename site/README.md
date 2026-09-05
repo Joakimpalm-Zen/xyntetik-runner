@@ -1,12 +1,24 @@
 # xyntetik.com
 
-The public site is generated from this repository: `build_pages.py` copies
-README sections and selected `docs/` pages into `runner/` at build time,
-rewriting relative links to site pages where they exist and to GitHub
-otherwise. The workflow `.github/workflows/pages.yml` runs the generator,
-builds the Jekyll source in this directory and publishes it to GitHub Pages
-on every push to `main` that touches `site/`, `docs/` or the README.
+The public site, built by `build.py` (standard library only) into `_site/`
+and published to GitHub Pages by `.github/workflows/pages.yml` on every push
+to `main` that touches `site/`.
 
-Nothing here may claim more than the repository does: the pages are copies.
-Layout and the umbrella `index.md` are the only hand-written files. Generated
-output (`runner/`, `_includes/build.html`) is ignored by git.
+- `pages/*.html`: one fragment per page with a leading `<!--meta -->` block
+  (title, description, path, nav). The shell (head, header, footer) is
+  applied by the generator.
+- `assets/`: stylesheet, the small script (menu, reveal-on-scroll), the
+  ensō mark, the Zenova star, favicon, and the two README recordings.
+- `{{chart:name}}` in a page renders an inline SVG from the data tables at
+  the top of `build.py`. Those tables are copies of numbers in the README
+  and `docs/`; every caption names the source document and the date.
+- `{{repo}}` and `{{hf}}` expand to the repository and Hugging Face URLs.
+
+Rules the build enforces: no em dashes anywhere in the output (public-prose
+rule), no placeholder tokens, no internal link without a page behind it.
+The rule it cannot enforce, and the one that matters most: nothing on the
+site may claim more than the README and docs do on the day it is built. If
+the site and the README disagree, the README is right and the site has a
+bug.
+
+Local preview: `python3 site/build.py && python3 -m http.server -d site/_site 8000`.

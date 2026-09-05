@@ -274,6 +274,47 @@ bool oms_verify_file(const char *bundle_path, const char *pubkey_pem_path,
     return ok;
 }
 
+bool oms_check_model(const char *model_path, const oms_policy *policy,
+                     oms_result *out) {
+    oms_result local = {0};
+    if (!out) out = &local;
+    memset(out, 0, sizeof(*out));
+    oms_policy empty = {0};
+    if (!policy) policy = &empty;
+    const char *sig = policy->bundle_path;
+    char *auto_sig = NULL;
+    if (!sig) {
+        size_t n = strlen(model_path);
+        auto_sig = malloc(n + sizeof(".sig"));
+        if (!auto_sig) {
+            set(out, "unverified", "out of memory locating signature bundle");
+            fprintf(stderr, "error: model signature: %s\n", out->reason);
+            return false;
+        }
+        memcpy(auto_sig, model_path, n);
+        memcpy(auto_sig + n, ".sig", sizeof(".sig"));
+        FILE *f = fopen(auto_sig, "rb");
+        if (f) { fclose(f); sig = auto_sig; }
+    }
+    bool allowed = true;
+    if (sig) {
+        bool verified = oms_verify_file(sig, policy->pubkey_path, model_path, out);
+        fprintf(stderr, "model signature: %s (%s%s%s%s%s)\n", out->status,
+                out->reason, out->curve[0] ? "; " : "", out->curve,
+                out->hash[0] ? "/" : "", out->hash);
+        allowed = verified || !(policy->bundle_path || policy->pubkey_path ||
+                                policy->required);
+    } else if (policy->required) {
+        set(out, "missing", "no signature bundle (pass --model-sig)");
+        allowed = false;
+    }
+    if (!allowed)
+        fprintf(stderr, "error: model signature: refusing to load %s: %s\n",
+                model_path, out->reason);
+    free(auto_sig);
+    return allowed;
+}
+
 int oms_result_json(const oms_result *r, char *buf, size_t cap) {
     return snprintf(buf, cap,
                     "{\"status\":\"%s\",\"subject_digest\":\"%s\",\"curve\":\"%s\","

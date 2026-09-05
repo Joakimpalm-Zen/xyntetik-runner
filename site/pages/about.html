@@ -1,0 +1,96 @@
+<!--meta
+title: About
+description: Xyntetik is a Zenova AB program for running capable models on hardware you own. Runner is the released engine; Suite is the testing and evidence layer; Shade is the research lab. What each is, how they relate, and what is and is not released.
+path: /about/
+nav: about
+-->
+<section class="page-head">
+  <div class="wrap">
+    <p class="eyebrow">About</p>
+    <h1>Local models on hardware you own, with the evidence attached.</h1>
+    <p class="lede">Xyntetik is the program under which Zenova AB builds tooling for running capable language models on ordinary laptops, desktops and workstations, and for proving what those models did. Runner is its released product. Two more parts exist and are described here as what they are: one in private development, one a research lab.</p>
+  </div>
+</section>
+
+<section class="section">
+  <div class="wrap">
+    <div class="company">
+      <img class="mark" src="/assets/zenova-star.svg" alt="Zenova star mark" width="72" height="72">
+      <div>
+        <p class="eyebrow">The company</p>
+        <h2>Runner is a Zenova AB product.</h2>
+        <p>Zenova AB is a Swedish company, independent and bootstrapped. It owns and funds the Xyntetik work and is the entity behind consulting and enterprise engagements around local inference: private fine-tuning for data that cannot leave the building, and the attestation that goes with it. Those engagements, and contributions from people who find the work useful, fund the hardware and the measurement time.</p>
+        <p>The commitment that does not move: <strong>the Runner engine is free forever under Apache 2.0.</strong> No feature of the engine will be sold, no claim on this site will be weakened to sell something else, and the licence will not change. Built in Sweden, inside the EU; your data never leaves the machine it runs on, which is stated here as a fact about the software rather than as a flag.</p>
+        <p class="small muted">Contact: <a href="mailto:hello@xyntetik.com">hello@xyntetik.com</a>. Security reports: <a href="{{repo}}/blob/main/SECURITY.md">SECURITY.md</a>.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="section tint">
+  <div class="wrap">
+    <div class="section-head">
+      <p class="eyebrow">Why Xyntetik exists</p>
+      <h2>The engine is the easy half.</h2>
+      <p>Serving tokens from a GGUF file is a solved problem. What is not solved is everything between a running model and work you would actually trust: choosing a model that fits the machine instead of one that swaps, giving an agent tools without opening a hole per tool, keeping a human in the loop without making them a bottleneck, proving a change works rather than reporting that it was written, and keeping a record of where every claim came from. Xyntetik is a program for that whole distance, built in the order the evidence allows.</p>
+    </div>
+    <div class="triad">
+      <div class="card accent">
+        <div class="icon"><span class="brand-mark" style="width:36px;height:36px;display:inline-block"><img src="/assets/enso.svg" alt="" width="36" height="36"></span></div>
+        <h3>Runner</h3>
+        <p><strong>Execution and inference runtime.</strong> A single binary in plain C that serves, verifies, scores, adapts and trains GGUF models on CPU, CUDA and Metal. Receipts, truncation-safe tool calls, LoRA through the served weights.</p>
+        <p class="status"><span class="pill pass">released, Apache 2.0</span></p>
+        <p>v0.4.8, 2026-09-05. Public repository, releases with checksums, every claim measured. The one part of Xyntetik whose job is to be understood by a stranger in sixty seconds.</p>
+        <a class="more" href="/runner/">Runner &rarr;</a>
+      </div>
+      <div class="card">
+        <div class="icon"><svg viewBox="0 0 36 36" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="6" width="26" height="24" rx="3"/><path d="M5 14h26"/><path d="M12 22l3 3 6-6"/></svg></div>
+        <h3>Suite</h3>
+        <p><strong>Testing, evaluation and evidence tooling.</strong> The layer that decides, gates, records and presents what the engine measures: model selection that respects the machine, tool sandboxing, human-in-the-loop boundaries, and an audit record of every claim.</p>
+        <p class="status"><span class="pill note">private, in development</span></p>
+        <p>Not released. Its product surface is being built as Runner's capabilities land, and it will get its own public section only when it has public artifacts to show.</p>
+        <a class="more" href="/suite/">What Suite is for &rarr;</a>
+      </div>
+      <div class="card">
+        <div class="icon"><svg viewBox="0 0 36 36" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 5h8v9l7 12a3 3 0 0 1-2.6 4.5H9.6A3 3 0 0 1 7 26l7-12z"/><path d="M11 22h14"/></svg></div>
+        <h3>Shade</h3>
+        <p><strong>Experimental research into models, architectures and inference.</strong> Quantisation, pruning, sublayer removal and evaluation methodology, run under a written charter: preregistration before measurement, corrections recorded in place.</p>
+        <p class="status"><span class="pill note">research, experimental</span></p>
+        <p>Private repository. Its public outputs are artifacts and reports on Hugging Face, and engine features that graduated from a finding. Shade discovers; Runner productizes.</p>
+        <a class="more" href="/shade/">What Shade has published &rarr;</a>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="section">
+  <div class="wrap split">
+    <div class="sticky">
+      <p class="eyebrow">How they relate</p>
+      <h2>The engine measures. The suite decides. The lab finds what the next measurement should be.</h2>
+    </div>
+    <div>
+      <div class="flow">
+        <div><strong>Shade finds a mechanism</strong>A study removes one attention sublayer from a 31B model and measures what it costs against the parent on a held-out split.</div>
+        <div><strong>Runner productizes it</strong>The finding becomes <code>--remove-sublayer</code> in Runner v0.4.7, with a bit-identity gate against the study's zeroed form, and the artifact is published with its numbers.</div>
+        <div><strong>Suite will gate it</strong>The evidence layer is where a derivative like that gets admitted or refused for a given machine and workload, with the receipt kept. That layer is in development.</div>
+      </div>
+      <p class="mt-2">Nothing crosses that pipeline without a measurement, and a measurement that goes the wrong way is published as a negative result rather than dropped. Two consequences follow. The audience arbitrates every ambiguous decision: what makes a local model usable on a modest machine wins over what is architecturally interesting. And correctness is a hard rule rather than a preference, because everything else relies on it; a faster wrong answer is a regression.</p>
+    </div>
+  </div>
+</section>
+
+<section class="section tint">
+  <div class="wrap">
+    <div class="section-head">
+      <p class="eyebrow">Rules for public claims</p>
+      <h2>What you can hold this site to.</h2>
+    </div>
+    <div class="grid-2">
+      <div class="card"><h3>Every number has a date and a document</h3><p>Measurements say when they were taken and on what, and link to the file in the repository or the card on Hugging Face where the raw material lives.</p></div>
+      <div class="card"><h3>Claims are scoped to what was measured</h3><p>A comparison covers the engines and versions that were run, not the ones that were not. A training result covers the base and task it was measured on. Titles may say "deterministic"; the claim text says reproducible on the same build, with the edges written down.</p></div>
+      <div class="card"><h3>Losing rows stay in the table</h3><p>Prefill throughput, cold time to first token, MoE decode on GPU, a published artifact that missed the bar: all on the evidence page, with the number.</p></div>
+      <div class="card"><h3>The site cannot outrun the repository</h3><p>The site source lives in the public Runner repository and is built from it; the footer names the commit. If this site and the README disagree, the README is right and the site has a bug.</p></div>
+    </div>
+  </div>
+</section>

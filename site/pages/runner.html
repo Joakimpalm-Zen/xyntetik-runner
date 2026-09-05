@@ -1,0 +1,242 @@
+<!--meta
+title: Runner
+description: What Xyntetik Runner is, how to serve a model in sixty seconds, the contracts it makes, what it supports, and where it does not win.
+path: /runner/
+nav: runner
+-->
+<section class="page-head">
+  <div class="wrap">
+    <p class="eyebrow">Runner</p>
+    <h1>One binary that serves, verifies, scores, adapts and trains GGUF models.</h1>
+    <p class="lede">Xyntetik Runner is written from scratch in plain C for CPU (x86 AVX2/FMA, ARM NEON), CUDA and Metal. No Python, no pip, no third-party runtime, no ggml. It speaks the OpenAI Chat Completions, Responses and Anthropic Messages APIs on a loopback port, reads the GGUF files the ecosystem already produces, and writes adapters the ecosystem can already load.</p>
+    <nav class="toc" aria-label="On this page">
+      <a href="#sixty-seconds">Sixty seconds</a>
+      <a href="#contracts">The contracts</a>
+      <a href="#coexistence">Designed to stay on</a>
+      <a href="#more">What else it adds</a>
+      <a href="#support">Support matrix</a>
+      <a href="#compare">Where it does not win</a>
+      <a href="#agents">Coding agents</a>
+      <a href="#how">How it is built</a>
+    </nav>
+  </div>
+</section>
+
+<section class="section" id="sixty-seconds">
+  <div class="wrap split">
+    <div class="sticky">
+      <p class="eyebrow">Try it</p>
+      <h2>Sixty seconds to a served model</h2>
+      <p>Download the binary and its checksum file, verify, fetch a model, serve. The checksum line is not decoration: this project's whole culture is receipts, and it starts at the download.</p>
+      <p class="small muted">The model below, granite-4.1-3b at Q8_0, is the smallest that passes the project's fidelity gate against its own BF16 parent. Alternatives and the reasoning are in the <a href="{{repo}}/blob/main/README.md#build-from-source">README quick start</a>.</p>
+    </div>
+    <div>
+<pre><code>curl -LO https://github.com/Joakimpalm-Zen/xyntetik-runner/releases/latest/download/runner-macos-arm64
+curl -LO https://github.com/Joakimpalm-Zen/xyntetik-runner/releases/latest/download/SHA256SUMS
+shasum -a 256 --check --ignore-missing SHA256SUMS
+chmod +x runner-macos-arm64 &amp;&amp; mv runner-macos-arm64 runner
+curl -L -o model.gguf https://huggingface.co/ibm-granite/granite-4.1-3b-GGUF/resolve/main/granite-4.1-3b-Q8_0.gguf
+./runner -m model.gguf --serve</code></pre>
+<pre><code>curl localhost:8080/v1/chat/completions \
+  -d '{"messages":[{"role":"user","content":"Say hello in one sentence."}]}'</code></pre>
+      <div class="rows">
+        <div><span>Linux</span><p>The asset is <code>runner-linux-x86_64</code>; check with <code>sha256sum -c --ignore-missing SHA256SUMS</code>.</p></div>
+        <div><span>Windows</span><p><code>runner-windows-x86_64.exe</code>, with a notification-area controller.</p></div>
+        <div><span>macOS note</span><p>The binaries are not yet notarized. A <code>curl</code> download runs as shown; a browser download gets quarantined by Gatekeeper. Clear it with <code>xattr -d com.apple.quarantine runner</code> or right-click and Open once.</p></div>
+        <div><span>From source</span><p><code>make</code> builds the release binary with no dependencies beyond a C compiler; CUDA and Metal kernels are embedded at build time. <a href="{{repo}}/blob/main/README.md#build-and-platforms">Build and platforms</a>.</p></div>
+        <div><span>Container</span><p>A Dockerfile ships in the repository. <a href="{{repo}}/blob/main/README.md#container-image">Container image</a>.</p></div>
+      </div>
+      <div class="callout mt-2">
+        <span class="t">Testing Runner?</span>
+        <p>The project is pre-1.0 and hardware coverage is still limited; that is an invitation, not an apology. An unusual GGUF, a coding agent, an NVIDIA or Apple setup, or a model family not in the support matrix: the result is wanted, success or failure alike. <a href="{{repo}}/issues">Open an issue</a> with <code>runner --version</code>, <code>runner --caps</code>, the model's exact filename and the load log. Independent reproductions of the determinism claims are credited in the docs, as the first one already is.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="section tint" id="contracts">
+  <div class="wrap">
+    <div class="section-head">
+      <p class="eyebrow">What Runner adds</p>
+      <h2>Not a longer feature list. A set of contracts.</h2>
+      <p>Runner deliberately rides llama.cpp's formats rather than competing with them: GGUF in, llama.cpp-convention adapter files in and out. An adapter Runner trains scores identically, 1.000 on its held-out eval, when served by stock llama.cpp, and community F16 adapters load straight back. Both measured, not assumed. What it adds on top are promises the ecosystem does not make.</p>
+    </div>
+    <div class="grid-3">
+      <div class="card">
+        <h3>Determinism as a hard promise</h3>
+        <p>The same executable and inputs reproduce the same sampled tokens across runs and thread counts. Training reproduces the same adapter file sha256. Both are gated in CI. Independent rebuilds are explicitly outside the byte-identity claim, because compilers and ISA libm differ, and the full boundary is one page: <a href="{{repo}}/blob/main/docs/determinism-scope.md">docs/determinism-scope.md</a>.</p>
+      </div>
+      <div class="card">
+        <h3>Scope as a promise</h3>
+        <p>Supported architectures are named. Unknown ones are refused by name rather than run on a guess. Every backend claim is tied to an executable gate and pinned model evidence, and a hardware switch has a correctness contract: CPU/GPU identity belongs to a SHA-256-pinned model and execution path, and faster kernels that reassociate sums pass tolerance gates rather than inherit correctness from the backend's name.</p>
+      </div>
+      <div class="card">
+        <h3>Honesty as an artifact</h3>
+        <p>The benchmark tables include the rows where Runner loses. Experiments that were built, measured and rejected are kept as negative-result documents so they are not attempted twice. A published artifact whose number did not reproduce stays published with the measured status at the top of its card.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="section" id="coexistence">
+  <div class="wrap split rev">
+    <div>
+      <div class="table-wrap">
+        <table class="data">
+          <thead><tr><th>while loaded and idle, 8 GB M1</th><th>Runner</th><th>llama-server b10639</th></tr></thead>
+          <tbody>
+            <tr><td>wired (unevictable) memory</td><td class="num win">+8 MB</td><td class="num">+3,819 MB</td></tr>
+            <tr><td>CPU wakeups per second</td><td class="num win">0.5</td><td class="num">161</td></tr>
+            <tr><td>CPU time per idle minute</td><td class="num win">~0.00 s</td><td class="num">0.2 to 0.3 s</td></tr>
+            <tr><td>give the memory back</td><td><code>POST /unload</code>, 360 MB to 24 MB</td><td>kill the process</td></tr>
+            <tr><td>cold time to first token, pressured machine</td><td class="num lose">3.2 s</td><td class="num">0.15 s</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="table-wrap mt-1">
+        <table class="data">
+          <thead><tr><th>128 GB M5 Max, gpt-oss-120b (63 GB), 2026-09-01</th><th>Runner 0.4.4</th><th>llama-server 010be968</th></tr></thead>
+          <tbody>
+            <tr><td>wired memory while loaded and idle</td><td class="num win">+35 MB</td><td class="num">+60.8 GB</td></tr>
+            <tr><td>after <code>/unload</code></td><td class="num">RSS 229 MB</td><td>no unload</td></tr>
+            <tr><td>cold first token</td><td class="num lose">10.1 s</td><td class="num">0.25 s</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="small muted mt-1">granite-4.1-3b Q8_0 at c=4096, stock defaults, engines run sequentially, four-state lifecycle. Reproduce with <a href="{{repo}}/blob/main/scripts/idle_coexistence.py">scripts/idle_coexistence.py</a>. Full 120B table and method: <a href="{{repo}}/blob/main/docs/idle-coexistence-120b-m5max-2026-09-01.md">docs/idle-coexistence-120b-m5max-2026-09-01.md</a>.</p>
+    </div>
+    <div class="sticky">
+      <p class="eyebrow">Designed to stay on</p>
+      <h2>What a resident server does while it serves nothing</h2>
+      <p>Benchmarks rarely show it, so it was measured. llama-server wires the whole model into unified memory, holds it until the process dies, and its idle loop ticks at about 160 Hz. Runner keeps weights as evictable zero-copy mappings the OS can reclaim when another app needs the RAM, wakes about once every two seconds, and hands everything back on <code>/unload</code> or automatically with <code>--ttl</code>.</p>
+      <p>The flip side is real and reported: when llama-server is allowed to hold everything, its cold time to first token is faster, because residency is exactly what it buys. These are different optimization goals, not a defect. A dedicated inference box should run llama.cpp. A machine that is also your workstation is what Runner is built for.</p>
+      <p>On a discrete GPU (RTX 3070) the footprint gap disappears, both engines hold about 4 GB of VRAM loaded, and the remaining differences are idle discipline and lifecycle control: <code>/unload</code> returned all 4 GB of VRAM; llama-server has no unload.</p>
+    </div>
+  </div>
+</section>
+
+<section class="section tint" id="more">
+  <div class="wrap">
+    <div class="section-head">
+      <p class="eyebrow">What else it adds</p>
+      <h2>Ordered by how much difference each makes in practice.</h2>
+    </div>
+    <div class="grid-2">
+      <div class="card">
+        <h3>A shared GPU stops being first-come, first-crash</h3>
+        <p>Runner processes on the same GPU share a VRAM registry. A refused load names every live holder by PID, model, bytes and uptime; <code>--wait-for-vram</code> turns the refusal into a bounded queue; records left by dead processes are reaped. A GPU becomes something you can schedule rather than something you hope fits.</p>
+      </div>
+      <div class="card">
+        <h3>Ask what fits before loading anything</h3>
+        <p><code>--caps</code> needs no model file and returns one JSON document with live RAM and VRAM, backend and GPU limits, admitted quant types and architectures, placement modes and model-count limits. <code>--fit</code> answers the same question for a specific file from its GGUF header, the first few megabytes, so a ranged read decides whether the rest of the download is worth starting.</p>
+      </div>
+      <div class="card">
+        <h3>Constrained decisions come with a confidence signal</h3>
+        <p><code>choice_logprobs</code> records each JSON-schema branch as legal alternatives, a posterior renormalized over them, and the probed probability mass. The included calibration tool turns labeled decisions into accuracy, Brier-score and ECE gates; the boundary lane records where serving conditions disagree on a tool choice with no labels at all. A power-user feature, and documented as one.</p>
+      </div>
+      <div class="card">
+        <h3>Model surgery, with provenance</h3>
+        <p><code>--quantize</code> with per-tensor type plans, <code>--prune-experts</code> for stacked MoE layouts, <code>--merge-lora</code> with a provenance record, <code>--context-surgery</code> to compile a YaRN target into a native GGUF, and <code>--remove-sublayer</code> to physically drop a block's attention or FFN and declare the absence in the header. Each rewrite is deterministic and reparsed before success.</p>
+      </div>
+      <div class="card">
+        <h3>Speculative decoding from four draft sources</h3>
+        <p>A draft model, an n-gram lookup, the model's own MTP head where a single-block export carries one (<code>--mtp</code>, token-identical, measured 1.31x on code on a Threadripper and a loss on a 4-core AVX2 box, both published), and context-grounded drafts that need no weights at all.</p>
+      </div>
+      <div class="card">
+        <h3>Structured output as a sampler guarantee</h3>
+        <p><code>--json</code> emits one valid JSON object. JSON-Schema, Responses <code>text.format</code> and tool parameter schemas compile to a streaming conformance validator covering objects, arrays, enums, unions, numeric bounds, string lengths and anchored patterns. Unsupported or ambiguous constraints fail at compile time rather than being silently weakened.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="section" id="support">
+  <div class="wrap">
+    <div class="section-head">
+      <p class="eyebrow">Support matrix</p>
+      <h2>Named, gated, and refused by name outside the list.</h2>
+      <p><code>runner --caps</code> publishes the architecture IDs the current binary admits. The full per-family notes, with the measured evidence behind each row, are in the <a href="{{repo}}/blob/main/README.md#support-matrix">README support matrix</a>. Summary as of v0.4.8:</p>
+    </div>
+    <div class="rows">
+      <div><span>Backends</span><p>CPU (x86 AVX2/FMA, ARM NEON), CUDA (driver API, embedded PTX), Metal (embedded shaders, unified memory). Linux x86_64, macOS arm64, Windows x86_64 release binaries.</p></div>
+      <div><span>Architectures</span><p><code>llama</code>, <code>mistral</code>, <code>smollm</code>, <code>stablelm</code>, <code>qwen2</code>, <code>qwen3</code>, <code>qwen35</code> (Gated DeltaNet hybrid), <code>qwen3moe</code>, <code>gemma3</code>, <code>gemma4</code> (dense, MoE, E-series, native tool protocol), <code>phi3</code>, <code>gpt-oss</code>, <code>apertus</code>, <code>afmoe</code>, <code>muse-glimmer</code>, <code>granite</code>, <code>granitehybrid</code> and <code>nemotron_h</code> (Mamba-2 hybrids), <code>nemotron_h_moe</code>. Admission is layout-specific: an unsupported tensor arrangement is refused even when the architecture ID is listed.</p></div>
+      <div><span>Formats</span><p>GGUF v2/v3, mmap host weights, standard multi-part sets. k-quants and legacy quants, MXFP4, NVFP4 with its per-tensor scale companion, the IQ1 to IQ4 codebook families. NVFP4 and IQ1 to IQ3 are CPU-only; CUDA and Metal refuse them loudly, naming the tensor and type.</p></div>
+      <div><span>Serving</span><p>OpenAI Chat Completions, Responses, legacy completions, embeddings, Anthropic Messages, SSE streaming, parallel slots, model swap and unload, prefix reuse, thinking budgets, native tool protocols for gemma4, Apertus, Harmony and atem.</p></div>
+      <div><span>Training</span><p>LoRA through the quantized base on the CPU path; the dominant backward matvec runs on CUDA behind a flag; CUDA training end to end is open work. Adapters served with <code>--lora</code> on CPU dense projections; GPU-resident models refuse an adapter by name.</p></div>
+      <div><span>Provenance</span><p>Replay-verifiable transcripts; Ed25519-signed, chained receipts with a one-exit-code verifier; OpenSSF Model Signing verification of the loaded GGUF by the key method.</p></div>
+      <div><span>Desktop</span><p>macOS menu bar and Windows notification-area controller.</p></div>
+      <div><span>Not implemented</span><p>Vulkan; TLS, auth and remote bind (loopback only, by design); remote or streamed GGUF parts; <code>qwen2moe</code>, <code>deepseek2</code>, <code>kimi</code> and MLA attention; Mamba and Jamba; MTP on GPU backends; OMS certificate and keyless signature methods; full GBNF; image and document inputs; hosted tools; response persistence; parallel tool calls on the Responses and Messages surfaces.</p></div>
+    </div>
+  </div>
+</section>
+
+<section class="section tint" id="compare">
+  <div class="wrap split">
+    <div class="sticky">
+      <p class="eyebrow">Where it does not win</p>
+      <h2>Published as such.</h2>
+      <p>The comparison on the <a href="/#compare">front page</a> has the full table. The short version of what to expect from Runner today, in its own words.</p>
+    </div>
+    <ul class="ledger">
+      <li><div><div class="t">Prefill throughput on CUDA is 5 to 10% of llama.cpp</div><div class="d">llama.cpp's prefill comes from a mature tensor-core GEMM stack across every quant type. Runner's tile is 64 columns wide, and prefill is the column that decides the next piece of work.</div></div><span class="pill fail">weak column</span></li>
+      <li><div><div class="t">MoE decode on GPU has known-slow rows</div><div class="d">Qwen3-30B-A3B decodes at 72% of llama.cpp; gemma-4-26B-A4B's dual-branch MoE at 41%; the Q3_K kernel is naive and token-identical at 13%. All three rows stay in the table.</div></div><span class="pill fail">tracked</span></li>
+      <li><div><div class="t">Cold first token is slower when the other engine may hold everything</div><div class="d">3.2 s vs 0.15 s on a pressured 8 GB M1; 10.1 s vs 0.25 s at 120B on a 128 GB M5 Max. Residency is what llama-server buys, and Runner chose not to.</div></div><span class="pill fail">by design</span></li>
+      <li><div><div class="t">Architecture coverage is a named list</div><div class="d">If your model is not on it, Runner refuses it by name. llama.cpp is the ecosystem and covers far more.</div></div><span class="pill note">scope</span></li>
+      <li><div><div class="t">No Vulkan, no TLS, no remote bind</div><div class="d">Loopback only. A reverse proxy in front is the intended route to anything else.</div></div><span class="pill note">not implemented</span></li>
+      <li><div><div class="t">The 8B and 14B training ladder is open work</div><div class="d">The LoRA claim is measured on one base and one task. It is not a promise about other families until they are measured.</div></div><span class="pill note">open</span></li>
+    </ul>
+  </div>
+</section>
+
+<section class="section" id="agents">
+  <div class="wrap split">
+    <div>
+      <p class="eyebrow">Coding agents</p>
+      <h2>Client compatibility is a dated observation, not an inference from an API name.</h2>
+      <p>The 2026-08-03/04 sweep recorded complete local file-read loops for OpenCode 1.18.4, Cline CLI 3.0.46, pi 0.81.1, Continue CLI 1.5.47, Claude Code 2.1.220 and a lean-tool-set Codex CLI 0.144.6. Aider 0.86.2 passed transport and inference under <code>--dry-run</code> but still needs a matching model edit profile. Exact request shapes and test scope: <a href="{{repo}}/blob/main/docs/agent-compatibility.md">docs/agent-compatibility.md</a>.</p>
+    </div>
+    <div>
+<pre><code># ~/.codex/config.toml
+model = "runner"
+model_provider = "runner"
+
+[model_providers.runner]
+name = "Xyntetik Runner"
+base_url = "http://127.0.0.1:8080/v1"
+wire_api = "responses"
+env_key = "RUNNER_API_KEY"</code></pre>
+<pre><code>export RUNNER_API_KEY=none
+./runner -m model.gguf --serve -c 16384
+codex "list the files here"</code></pre>
+      <p class="small muted">Codex's system prompt and tools consume roughly 10k input tokens before the user request, so use at least a 16k context. Runner does not implement a response store; clients send history each turn.</p>
+    </div>
+  </div>
+</section>
+
+<section class="section tint" id="how">
+  <div class="wrap split rev">
+    <div>
+<pre><code>src/gguf.c            GGUF metadata and tensor-table parser
+src/tokenizer.c       SPM/BPE tokenization and family pre-tokenizers
+src/quants.c          scalar, AVX2/FMA, and NEON quantized dot kernels
+src/model.c           tensor admission, weight wiring, and forward pass
+src/sample.c          sampling filters and token selection
+src/jsonmode.c        incremental JSON-prefix validation
+src/schema.c          JSON-Schema compiler and streaming validator
+src/template.c        chat templates, thinking channels, and tool syntax
+src/engine.c          prompt feeding, prefix cache, constrained sampling, speculative decode
+src/quantize.c        requantization and stacked-MoE expert pruning
+src/cuda.c            CUDA driver backend; kernels.cu becomes embedded PTX
+src/metal.m           Metal backend; kernels.metal is embedded at build time
+src/server.c          loopback HTTP server, slots, routing, and lifecycle
+src/vramreg.c         cross-process VRAM ownership and bounded waiting
+src/ed25519.c         signing subset of TweetNaCl (receipts)</code></pre>
+    </div>
+    <div class="sticky">
+      <p class="eyebrow">How it is built</p>
+      <h2>Readable in an afternoon.</h2>
+      <p>Host weights stay quantized in the mapped GGUF and are dequantized while computing. CUDA copies selected weights and compute buffers to VRAM; Metal wraps the mapped weights in unified memory. The load log and <code>--caps</code> are the sizing sources for an exact model and machine.</p>
+      <p>The complete map, the command-line reference and the compatibility evidence are in the <a href="{{repo}}/blob/main/README.md">README</a>; release history with each version's measurements is in the <a href="{{repo}}/blob/main/CHANGELOG.md">changelog</a>.</p>
+    </div>
+  </div>
+</section>

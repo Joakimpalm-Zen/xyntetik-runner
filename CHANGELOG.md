@@ -6,6 +6,21 @@ change between releases (the `-alpha` suffix was retired at v0.2.0 — the 0.x
 version already says what it needs to). Entries below the rename keep the
 names that were true when they were written.
 
+## Unreleased
+
+- Model signature policy is enforced on named registry loads and reloads,
+  as well as additional serving slots. A registry signature refusal returns
+  HTTP 409 with `model_signature_refused`. OpenSSL-signed HTTP gates cover
+  valid loads, missing signatures, tampered model bytes, and recovery.
+- LoRA adapter path and scale are preserved on every target model load:
+  additional serving slots, named registry entries, and reloads after unload
+  or TTL expiry. A failed adapter load refuses the target; draft models do
+  not inherit the target adapter. HTTP gates compare adapted and bare answers.
+- Speculative decoding stops at the context boundary for model, MTP and
+  lookup drafts, including unlimited generation. The final verify row no
+  longer emits an extra token that makes transcript writing read beyond the
+  history buffer. CLI gates pin the context arithmetic and transcript parity.
+
 ## v0.4.8 - 2026-09-05
 
 The E-series and contraction release: Gemma 4's current shared-KV exports
