@@ -315,8 +315,13 @@ bool validate_single_model_request(sock_t fd, jv *req) {
 // timeout or a POST /unload would.
 static void *ttl_reaper(void *arg) {
     (void)arg;
+    // RUNNER_TTL_POLL_S: how often the idle check runs. 5 s is the shipped
+    // cadence (a --ttl expires within 5 s of falling due); the knob exists
+    // so a test that waits for an expiry does not spend 5 s per reload on
+    // this sleep -- 32 such tests were 3.8 of make test's 4.5 pytest minutes.
+    double poll = env_f64("RUNNER_TTL_POLL_S", 0.05, 3600.0, 5.0);
+    struct timespec ts = { (time_t)poll, (long)((poll - (double)(time_t)poll) * 1e9) };
     while (!atomic_load(&SV.shutdown)) {
-        struct timespec ts = { 5, 0 };
         nanosleep(&ts, NULL);
         if (resident_load() < 0 || atomic_load(&SV.active_requests)) continue;
         if (pthread_mutex_trylock(&SV.swap_mu) != 0) continue;

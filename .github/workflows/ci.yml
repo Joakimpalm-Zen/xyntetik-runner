@@ -3,7 +3,17 @@ name: ci
 on:
   push:
     branches: [main]
+    # the site has its own workflow and nothing under docs/ is a test input
+    # (the release check reads README, CHANGELOG and SECURITY at the top
+    # level, which stay in scope); a site- or docs-only change does not
+    # need the engine's gates
+    paths-ignore:
+      - "site/**"
+      - "docs/**"
   pull_request:
+    paths-ignore:
+      - "site/**"
+      - "docs/**"
 
 jobs:
   unix:
@@ -497,7 +507,10 @@ jobs:
       - name: build
         run: make
       - name: make test
-        run: make test PYTHON=.venv/bin/python
+        # -j: the test binaries are independent builds and the Makefile's
+        # object layer makes each one a link; the recipe body (the gates
+        # themselves) still runs in order inside the one `test` rule
+        run: make -j"$(nproc)" test PYTHON=.venv/bin/python
 
   # The SIMD kernel gates at the two x86 ISA levels `make test` never names:
   # x86-64-v3, which the release binaries pin, and x86-64-v4 (AVX-512),

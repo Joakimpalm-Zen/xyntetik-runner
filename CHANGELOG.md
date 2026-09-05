@@ -8,6 +8,20 @@ names that were true when they were written.
 
 ## Unreleased
 
+- `make test` builds its gates from a shared object layer instead of
+  recompiling the engine into every test binary: the 23 shared sources are
+  compiled once into `.build/` with exactly `$(CFLAGS)` and the standard test
+  rules link the objects (model.c was compiled 49 times per run, 13 of the
+  19 CI minutes). A `.build/cflags.stamp` records CC and CFLAGS, so a flag
+  change rebuilds every object and the quant objects no longer need FORCE,
+  which had each of the 17 sub-makes recompile them and relink `runner`.
+  Rules whose flags differ from `$(CFLAGS)` (the runner and its `-D` test
+  variants, the sanitizer builds, the QUANTS_CFLAGS kernels, the tray core,
+  the `-O0` interface stub) still compile what they link. CI runs the target
+  with `-j`, and a site- or docs-only change no longer runs the engine's
+  gates. `RUNNER_TTL_POLL_S` sets the idle reaper's poll (default 5 s
+  unchanged); the test harness sets it to 0.25 s, since 32 reload gates were
+  spending 3.8 of the 4.5 pytest minutes asleep in that poll.
 - Six defects from a second outside review (2026-09-05), each with a gate:
   - LoRA training on NoPE layers: the backward's recompute applied rope and
     the adjoint reversed it on every layer, while the serving forward skips

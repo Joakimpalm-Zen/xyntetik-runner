@@ -1247,6 +1247,7 @@ switches:
 | `RUNNER_REQUEST_TIMEOUT` | `0` | Default generation wall-clock limit in seconds; `0` disables it. |
 | `RUNNER_PREFIX_CACHE_MB` | `512` | Host-RAM budget for shared prompt prefixes; `0` disables storage. |
 | `RUNNER_PREFIX_CACHE_TTL` | `600` | Prefix idle lifetime in seconds. |
+| `RUNNER_TTL_POLL_S` | `5` | How often the idle reaper checks `--ttl` and `--yield-on-request` (seconds, `0.05` to `3600`). A TTL expires within one poll of falling due. The test suite sets it low so reload gates do not wait five seconds per expiry. |
 | `RUNNER_MOE_PREFETCH` | per-machine auto | Compatibility fallback for `--moe-prefetch`; the CLI flag has precedence. `0`/`off` disables it and other non-empty values enable it. |
 | `RUNNER_ALLOW_UNKNOWN_ARCH` | unset | Admit a GGUF whose `general.architecture` this binary does not implement, running it through llama-style math. Unset, such a file is refused at load. Set, the load is attempted and a warning says the output may be silently wrong. Experimental, not a supported configuration. |
 | `RUNNER_VRAM_PRIORITY` | `0` | Baseline for `--vram-priority`; the flag overrides it. |
