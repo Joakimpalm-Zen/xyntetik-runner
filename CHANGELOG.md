@@ -8,6 +8,9 @@ names that were true when they were written.
 
 ## Unreleased
 
+- Single-model MTP serving restores the head and configured draft width after
+  explicit unload, `keep_alive: 0`, and TTL expiry. Reloads repeat the CPU
+  readiness gate instead of silently degrading to plain decoding.
 - Model signature policy is enforced on named registry loads and reloads,
   as well as additional serving slots. A registry signature refusal returns
   HTTP 409 with `model_signature_refused`. OpenSSL-signed HTTP gates cover

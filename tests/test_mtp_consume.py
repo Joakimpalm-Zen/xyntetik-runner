@@ -11,13 +11,18 @@ cannot stand in for):
   - an explicit `--mtp` fails closed on an export without a consumable head
     (none declared, or more than one block) and on a GPU-resident target.
 """
+import json
 import pathlib
 import subprocess
 import sys
+import time
+import urllib.request
 
 import pytest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "tests" / "conformance"))
+from harness import RunnerServer
 
 
 @pytest.fixture(scope="module")
@@ -112,3 +117,41 @@ def test_caps_reports_the_head_state(runner_bin, models):
     on = _run(runner_bin, models["mtp"], "--mtp", n=1)
     assert "not consumed" in off.stderr.decode(errors="replace")
     assert "bound as the draft head" in on.stderr.decode(errors="replace")
+
+
+def _http(server, path, payload=None):
+    data = b"" if path == "/unload" else (
+        json.dumps(payload).encode() if payload is not None else None)
+    req = urllib.request.Request(server.base_url + path, data=data,
+                                 headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=30) as response:
+        return json.load(response)
+
+
+@pytest.mark.parametrize("release", ["unload", "keep_alive", "ttl"])
+def test_mtp_resumes_after_reload(runner_bin, models, release):
+    """An explicitly enabled head must actually propose after each reload.
+    The configured width of one bounds drafts independently of telemetry's
+    own totals; identical greedy text is only the relative lifecycle check.
+    """
+    with RunnerServer(runner_bin, models["mtp"], ctx=256, extra_args=[
+            "--gpu", "off", "-t", "2", "--mtp", "--draft-k", "1",
+            "--ttl", "1" if release == "ttl" else "0"]) as srv:
+        payload = {"prompt": "hello there", "max_tokens": 24,
+                   "temperature": 0, "seed": 1}
+        before = _http(srv, "/v1/completions", {
+            **payload, **({"keep_alive": 0} if release == "keep_alive" else {})})
+        if release == "unload":
+            assert _http(srv, "/unload")["status"] == "ok"
+        deadline = time.monotonic() + 15
+        while _http(srv, "/v1/capabilities")["resident"] is not None:
+            assert time.monotonic() < deadline, "model did not unload"
+            time.sleep(0.1)
+        after = _http(srv, "/v1/completions", payload)
+        for response in (before, after):
+            telemetry = response["runner_telemetry"]
+            assert telemetry["speculative"] is True
+            spec = telemetry["speculation"]
+            assert spec["source"] == "mtp"
+            assert 0 < spec["drafted"] <= spec["rounds"]
+        assert after["choices"] == before["choices"]

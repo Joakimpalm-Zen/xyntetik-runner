@@ -169,6 +169,11 @@ int swap_to(const char *want) {
         bool sig_refused = model_ok &&
             !oms_check_model(SV.reg[idx].path, &SV.signing, NULL);
         bool tok_ok = model_ok && !sig_refused && tok && tokenizer_init(tok, &m->gf);
+        bool mtp_refused = model_ok && SV.single && SV.mp.mtp &&
+                           !model_mtp_ready(m);
+        if (mtp_refused)
+            fprintf(stderr, "error: --mtp: reloaded target needs the CPU "
+                            "path (rerun with --gpu off)\n");
 
         // Measured-envelope gate (slice 3b): a model that loads fine but whose
         // sidecar refuses this runtime is turned away per-request, so the server
@@ -193,7 +198,7 @@ int swap_to(const char *want) {
         SV.loading = false;
         bool discard = SV.pending_unload || atomic_load(&SV.load_cancel);
         SV.pending_unload = false;
-        if (!model_ok || !tok_ok || discard || env_refused) {
+        if (!model_ok || !tok_ok || mtp_refused || discard || env_refused) {
             if (discard)
                 fprintf(stderr, "swap: load of %s discarded (%s)\n",
                         SV.reg[idx].name, model_ok ? "unloaded while loading"
@@ -212,7 +217,7 @@ int swap_to(const char *want) {
             pthread_mutex_unlock(&SV.swap_mu);
             return discard          ? SWAP_ABORTED
                  : sig_refused      ? SWAP_SIGNATURE_REFUSED
-                 : (!model_ok || !tok_ok) ? SWAP_LOAD_FAILED
+                 : (!model_ok || !tok_ok || mtp_refused) ? SWAP_LOAD_FAILED
                  : SWAP_ENVELOPE_REFUSED;
         }
         slot_t *s = &SV.slots[0];
@@ -260,6 +265,12 @@ int swap_to(const char *want) {
             return SWAP_LOAD_FAILED;
         }
         s->e.ignore_eos = SV.ignore_eos;
+        if (SV.single && SV.mp.mtp) {
+            // engine_init resets execution flags. The head is reloaded by
+            // model_load, but it must also be reattached to the new engine.
+            s->e.mtp_on = true;
+            s->e.draft_k = SV.draft_k;
+        }
         context_store(s->m->n_ctx);
         if (SV.single && !SV.draft && SV.draft_path) {
             // /unload freed the draft with the target; a draft configured at
