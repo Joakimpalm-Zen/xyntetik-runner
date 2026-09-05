@@ -1,0 +1,104 @@
+{
+  "schema_version": "xyntetik.runner.model-compat-report.v1",
+  "generated_utc": "2026-09-05T07:40:45Z",
+  "host": {
+    "os": "Linux",
+    "machine": "x86_64"
+  },
+  "runner": {
+    "path": "runner",
+    "version": "runner 0.4.8"
+  },
+  "reference": {
+    "path": null,
+    "version": null
+  },
+  "models": [
+    {
+      "id": "qwen3-30b-a3b-q4_k_m",
+      "architecture": "qwen3moe",
+      "file": "models/Qwen3-30B-A3B-Q4_K_M.gguf",
+      "expected_sha256": "0d003f6662faee786ed5da3e31b29c978de5ae5d275c8794c606a7f3c01aa8f5",
+      "checks": {
+        "load": {
+          "status": "pass",
+          "returncode": 0,
+          "elapsed_ms": 186.0,
+          "stderr_tail": "loaded /home/lab/workspace/models/Qwen3-30B-A3B-Q4_K_M/Qwen3-30B-A3B-Q4_K_M.gguf | qwen3moe | 48 layers | ctx 4096 | 32 threads | 0.02s\nsampling: qwen3 (temp 0.00 \u2014 greedy argmax; top_p/top_k/min_p/repeat_penalty inactive)\n\nprompt: 3 tok, 23.17 tok/s | gen: 1 tok, 34.60 tok/s\n"
+        },
+        "cpu_cuda": {
+          "status": "not_executed",
+          "reason": "insufficient_vram",
+          "detail": "error: 19.3GB of VRAM requested on GPU-399aa5c7-bb47-5ccb-b688-54fefec06647, but only 9.6GB is available",
+          "elapsed_ms": 35588.94,
+          "pins": {
+            "RUNNER_CUDA_TC": "0",
+            "RUNNER_MOE_EAGER": "1"
+          },
+          "report": "/home/lab/workspace/.r41-runner/rel048/cpu_cuda/qwen3-30b-a3b-q4_k_m.json"
+        },
+        "chat": {
+          "status": "pass",
+          "returncode": 0,
+          "elapsed_ms": 567.31,
+          "prompt": "What is 2+2?",
+          "gpu": "off",
+          "failure_reasons": [],
+          "output_tail": "2 + 2 = 4.\n"
+        },
+        "tool": {
+          "status": "fail",
+          "returncode": 1,
+          "elapsed_ms": 20177.37,
+          "scenario_matrix": "agent-torture",
+          "totals": {
+            "requests": 8,
+            "passed": 2,
+            "failed": 6
+          },
+          "report": "/home/lab/workspace/.r41-runner/rel048/tool/qwen3-30b-a3b-q4_k_m.json",
+          "output_tail": "report: /home/lab/workspace/.r41-runner/rel048/tool/qwen3-30b-a3b-q4_k_m/report.json\nraw: /home/lab/workspace/.r41-runner/rel048/tool/qwen3-30b-a3b-q4_k_m/raw.jsonl\nruntime=runner requests=8 passed=2 failed=6\n"
+        },
+        "greedy_reference": {
+          "status": "not_executed",
+          "reason": "reference_binary_not_provided"
+        },
+        "long_context": {
+          "status": "not_executed",
+          "reason": "check_class_not_executable"
+        }
+      },
+      "resolved_file": "models/Qwen3-30B-A3B-Q4_K_M.gguf",
+      "actual_sha256": "0d003f6662faee786ed5da3e31b29c978de5ae5d275c8794c606a7f3c01aa8f5",
+      "file_status": "pass",
+      "complete": false
+    }
+  ],
+  "complete": false,
+  "summary": {
+    "models": 1,
+    "files": {
+      "pass": 1
+    },
+    "checks": {
+      "load": {
+        "pass": 1
+      },
+      "cpu_cuda": {
+        "not_executed": 1
+      },
+      "chat": {
+        "pass": 1
+      },
+      "tool": {
+        "fail": 1
+      },
+      "greedy_reference": {
+        "not_executed": 1
+      },
+      "long_context": {
+        "not_executed": 1
+      }
+    }
+  }
+}
