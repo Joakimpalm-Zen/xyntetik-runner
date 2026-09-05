@@ -8,6 +8,49 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **Batched prefill dot: blocking-independence by construction, not by
+  codegen luck.** The CPU prefill kernel (`vec_dot_f32_multi` and the 4x4
+  tile over it) promises that a column's bits do not depend on how many
+  columns travel with it; that is what lets one binary give the same
+  logits whatever batch shape the scheduler, the prefix cache or `-b`
+  hands it. The promise held on clang and broke on GCC hosts: the scalar
+  tail (the last n mod 8 elements of a row) was written `s += w[i] * x[i]`,
+  which GCC may contract into one fused multiply-add or round the product
+  first, and it decided per loop shape (`-ffp-contract=fast` is its gnu11
+  default, independent of `-ffast-math`, which the kernels are built
+  without). Measured with GCC 15 at `-march=x86-64-v3` and native on an
+  AVX-512 host: the 4-column block's tail compiled to `vmulps` plus
+  `vaddss`, the 1- and 8-column tails to a `vmulps` quad plus
+  `vfmadd231ss`, and the same column differed by one ulp between blockings
+  (14 pairs in the gate); the ubuntu-latest CI hosts (GCC at `-march=native`) split the 8-column block from
+  the 1-column path the same way (`make-test`, 2026-09-02). Every f32 dot
+  tail is now an explicit `fmaf`, which has exactly one admissible result,
+  so all blockings sum identically whatever the compiler unrolls or
+  vectorizes; the SIMD bodies (already FMA intrinsics) are unchanged and
+  the assembly shows no rounded product left in either kernel on GCC 15 or
+  clang 22 at native, v4 and v3. Exposure, precisely: the split is
+  the compiler's, not the ISA's. GCC 15 fails the old kernel at
+  `-march=x86-64-v3` too, the level the Linux and Windows release binaries
+  pin, so those builds carried the same tail codegen; clang builds (the
+  macOS release, a local clang `make`) did not. What it could have moved:
+  the row length here is a projection's input width, a multiple of 8 in
+  every family in the roster, so the tail never ran for a shipped model and
+  no token could have depended on batch shape; the hole was in the kernel
+  contract the register blocking rests on, which is exactly what the gate
+  pins so the blocking can widen without touching the token contract.
+  `make test` now compares every
+  column of every blocking against a fixed-order scalar reference (the
+  kernel's summation order written out with explicit `fmaf`, so the bits
+  come from a written order rather than from the kernel under another
+  blocking; it caught 358 cases on GCC where every blocking had drifted
+  together and the old relative check saw 14) and against an exactly
+  representable integer anchor; CI adds a `simd-isa-levels` job that builds
+  the gate at `ARCH_FLAGS=-march=x86-64-v3` (the release pin) and at
+  `-march=x86-64-v4` on purpose, the latter skipping with a printed reason
+  on a runner without AVX-512. Prefill throughput unchanged, as
+  the shape says it must be (a shipped model never runs the tail):
+  SmolLM2-135M Q8_0 on an M1 CPU, six interleaved runs each, median 463.8
+  prompt tok/s before and 463.9 after; greedy tokens identical.
 - **`--draft-lookup`: prompt-lookup drafts, the fourth draft source.** The
   verify walk that checks a draft model's proposals, the MTP head's and
   grammar fast-forward's now also takes proposals from the context itself:
