@@ -36,29 +36,31 @@ bare: yes
   </div>
 </section>
 
-<section class="section" style="padding-top:0">
+<section class="section" style="padding-top:0" id="should-not-work">
   <div class="wrap">
-    <div class="proof-strip reveal">
-      <div>
-        <div class="value">1 of 6</div>
-        <div class="label">engines that return an executable tool call when the token budget cuts it short. Runner is the one.</div>
-        <span class="measured">measured 2026-08-19, vs vLLM, llama.cpp, Ollama, TensorRT-LLM, SGLang</span>
-      </div>
-      <div>
-        <div class="value">0.69 &rarr; 1.00</div>
-        <div class="label">held-out exact tool-call score after a LoRA trained directly through 4-bit serving weights.</div>
-        <span class="measured">measured 2026-08-22, Qwen3-4B Q4_K_M, public artifact</span>
-      </div>
-      <div>
-        <div class="value">byte-identical</div>
-        <div class="label">adapter file from two independent training runs with the same data, seed and config. Gated in CI by sha256.</div>
-        <span class="measured">same build; the claim boundary is written down</span>
-      </div>
-      <div>
-        <div class="value">+8 MB</div>
-        <div class="label">wired memory held while idle beside your work, against +3,819 MB for llama-server on the same 8 GB M1.</div>
-        <span class="measured">measured on an 8 GB M1, granite-4.1-3b Q8_0</span>
-      </div>
+    <div class="section-head reveal">
+      <p class="eyebrow">Three things that should not work</p>
+      <h2>Each one breaks an assumption about local inference. Each one has the raw result underneath.</h2>
+    </div>
+    <div class="grid-3">
+      <a class="card card-link accent reveal" href="/runner/truncation-safe-tool-calling/">
+        <h3>Cut the model off in the middle of a tool call. It still returns a valid, executable call.</h3>
+        <p>Six engines, seven token budgets from 1 to 64. Below the control rung, five of them hand back nothing usable. Runner closes the JSON to the smallest schema-legal document and the agent keeps going.</p>
+        <p class="measured">measured 2026-08-19 vs vLLM, llama.cpp, Ollama, TensorRT-LLM, SGLang</p>
+        <span class="more">How that works &rarr;</span>
+      </a>
+      <a class="card card-link accent reveal" href="/runner/train-lora-on-quantized-gguf/">
+        <h3>Train the LoRA through the 4-bit file you actually deploy. Run it twice: the same adapter, byte for byte.</h3>
+        <p>No FP16 training copy. Held-out exact tool calling went from 0.69 to 1.00, two independent runs wrote the same sha256, and stock llama.cpp scores the adapter at the same 1.00.</p>
+        <p class="measured">measured 2026-08-22, Qwen3-4B Q4_K_M, public artifact</p>
+        <span class="more">How that works &rarr;</span>
+      </a>
+      <a class="card card-link accent reveal" href="/runner/#coexistence">
+        <h3>Serve a 63 GB model on your workstation. While it idles, the operating system can take the memory back.</h3>
+        <p>Loaded and idle, Runner holds +35 MB of wired memory against +60.8 GB for llama-server on the same 128 GB machine; on an 8 GB laptop it is +8 MB against +3,819 MB. The cost is a slower cold first token, and it is published.</p>
+        <p class="measured">measured 2026-09-01 (M5 Max, gpt-oss-120b) and on an 8 GB M1</p>
+        <span class="more">How that works &rarr;</span>
+      </a>
     </div>
   </div>
 </section>
