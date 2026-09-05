@@ -498,6 +498,31 @@
       }
     },
     {
+      "id": "gemma-4-e4b-it-qat-q4_0",
+      "architecture": "gemma4",
+      "family": "Gemma 4 E-series",
+      "file": "models/gemma-4-E4B_q4_0-it.gguf",
+      "sha256": "676c35070db6dbe52f93e9c864ee0fba4eddea94b9c875d9cb10daff453fbaee",
+      "checks": [
+        "load",
+        "chat"
+      ],
+      "notes": "Google's own QAT release (google/gemma-4-E4B-it-qat-q4_0-gguf/gemma-4-E4B_q4_0-it.gguf), 5,154,941,280 bytes, sha verified against the HF blob 2026-09-04. DISTINCT from gemma-4-e4b-it-q4_k_m: two publishers, two artifacts, two quantizations (Q4_0 with a Q6_K token_embd here; an imatrix Q4_K_M there). This row exists because of what its SHAPE is: a 666-tensor export whose 18 shared-KV layers (24..41) carry no attn_k, attn_v or attn_k_norm at all, since a layer at or past block_count - attention.shared_kv_layers computes no K/V. Runner 0.4.7 refused it at load with 'error: missing tensor blk.24.attn_k.weight'; the q4_k_m row above is an older full-form 720-tensor conversion, so the matrix could not see the defect. No llama.cpp reference is declared: nothing in this row was measured against a second engine, so greedy_reference and tokenizer are not claimed. cpu_cuda is not declared either - the row was added from a CPU-only macOS box (8 GB, so the weights page from disk and every check here is slow rather than wrong). Evidence: docs/compat-reports/0.4.7-2026-09-04-macos-eseries-qat.json.",
+      "check_params": {
+        "chat": {
+          "prompt": "What is 2+2?",
+          "max_tokens": 200,
+          "gpu": "off",
+          "expect_stop": true,
+          "expect_nonempty_content": true,
+          "forbid_substrings": [
+            "[/INST]",
+            "<<SYS>>"
+          ]
+        }
+      }
+    },
+    {
       "id": "gemma-4-26b-a4b-it-q4_0",
       "architecture": "gemma4-moe",
       "family": "Gemma 4 MoE",

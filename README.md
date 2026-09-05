@@ -1901,7 +1901,7 @@ merely dense matvec/matmul support.
 | `qwen35` | Dense Qwen3.5/Ornith Gated DeltaNet plus full attention; CPU and CUDA. CPU recurrent folds support speculative decode, grammar fast-forward, and exact shared-prefix restore. Any GPU-backed recurrent instance declines shared-prefix restore; a CUDA-resident recurrent layer also declines speculative decode and grammar fast-forward. |
 | `qwen3moe` | Fused and legacy split sparse-MoE layouts on CPU/CUDA; supported fused layouts on Metal. |
 | `gemma3` | Regular and QAT layouts, sliding-window attention, sandwich norms. |
-| `gemma4` | Heterogeneous attention, thinking channels, E-series, supported dense/MoE layouts, and the family's native tool protocol. |
+| `gemma4` | Heterogeneous attention, thinking channels, E-series, supported dense/MoE layouts, and the family's native tool protocol. Both E-series export shapes load. A layer at or past `block_count - attention.shared_kv_layers` computes no K and no V (it attends over the cache an earlier layer filled), so the current quantized exports - the ggml-org Q4_0, Google's own QAT Q4_0 and the community QAT F16 - omit `attn_k.weight`, `attn_v.weight` and `attn_k_norm.weight` on exactly those layers: 666 tensors on E4B where the BF16 export has 720. Those three are optional on the shared-KV tail and still required on every KV-owning layer, where a missing one is refused by name. |
 | `phi3` | Fused QKV and gate/up tensors, LongRoPE factors. |
 | `gpt-oss` | Attention sinks, alpha-sigmoid GLU, expert biases, MXFP4 experts. Tokenizer exact (0/721 differential) and chat renders the real Harmony format (analysis channel as `reasoning_content`) as of 2026-08-14; cross-engine greedy identity remains inside the model's own measured KV-precision sensitivity envelope rather than certified. |
 | `apertus` | xIELU FFN; CPU and CUDA. |
@@ -2077,9 +2077,9 @@ Current high-signal caveats include:
 - Numerically sensitive models may use a measured self-sensitivity floor
   instead of claiming cross-engine token identity.
 - **The 2026-09-02 Blackwell matrix** (`docs/compat-reports/0.4.5-2026-09-02-blackwell.json`,
-  all 25 pinned files present, every executable class run) is the current
-  ledger. Its executed tokenizer differentials pass on 7 models and differ
-  on 4: Mistral-7B-v0.3 (44/721, almost all leading-whitespace strings),
+  all 25 files then pinned present, every executable class run) is the
+  current ledger. Its executed tokenizer differentials pass on 7 models
+  and differ on 4: Mistral-7B-v0.3 (44/721, almost all leading-whitespace strings),
   Phi-3.5-mini (2/721, around a literal `<s>` in text), Lucie-7B (190/721)
   and Salamandra-7B (16/721, special-token spellings in plain text). Those
   are tokenizer-fidelity gaps, recorded as failures and under investigation;

@@ -266,3 +266,152 @@ def test_array_ffn_widths_on_gpu_are_identical_or_refused_loudly(runner_bin, tmp
         assert gpu.stdout == cpu.stdout, err
     else:
         assert "using CPU" in err or "no device path" in err, err
+
+
+# --- shared-KV layers that ship no K/V at all (the current export shape) ------
+#
+# The BF16 gemma-4-E4B export carries attn_k/attn_v/attn_k_norm on all 42
+# layers (720 tensors). Every quantized export published since does not: the
+# ggml-org Q4_0, the community QAT F16 conversion and Google's own QAT Q4_0
+# all drop those three tensors on the 18 shared-KV layers (24..41), 666
+# tensors. That is sound by construction - a layer at or past kv_from_start
+# computes no K/V and attends over the cache an earlier layer filled - but the
+# loader still demanded them by name, so runner 0.4.7 refused every one of
+# those files with `error: missing tensor blk.24.attn_k.weight`. The certified
+# file in the compat matrix is an older full-form conversion, which is why the
+# matrix never caught it.
+#
+# The fixture draws its random weights in the same order either way, so a
+# --drop-kv file's remaining tensors are byte-for-byte the full file's: the
+# identity assertion below is a real comparison, not two independently
+# generated models that happen to agree.
+
+
+def _make_dropped(path, spec, shared_kv=3, ple=16):
+    subprocess.run(
+        [sys.executable, ROOT / "scripts/make-test-model.py",
+         "--eseries", f"{shared_kv},{ple}", "--drop-kv", spec, str(path)],
+        check=True, cwd=ROOT, stdout=subprocess.DEVNULL)
+    return path
+
+
+def _tensor_names(path):
+    """Tensor directory of a GGUF, read without loading any weight bytes."""
+    import struct
+    with open(path, "rb") as f:
+        assert f.read(4) == b"GGUF"
+        struct.unpack("<I", f.read(4))
+        n_tensor = struct.unpack("<Q", f.read(8))[0]
+        n_kv = struct.unpack("<Q", f.read(8))[0]
+
+        def rd_str():
+            n = struct.unpack("<Q", f.read(8))[0]
+            return f.read(n).decode("utf-8", "replace")
+
+        def skip(t):
+            if t == 9:
+                et = struct.unpack("<I", f.read(4))[0]
+                for _ in range(struct.unpack("<Q", f.read(8))[0]):
+                    skip(et)
+            elif t == 8:
+                rd_str()
+            else:
+                f.read({0: 1, 1: 1, 2: 2, 3: 2, 4: 4, 5: 4, 6: 4, 7: 1,
+                        10: 8, 11: 8, 12: 8}[t])
+
+        for _ in range(n_kv):
+            rd_str()
+            skip(struct.unpack("<I", f.read(4))[0])
+        names = []
+        for _ in range(n_tensor):
+            names.append(rd_str())
+            nd = struct.unpack("<I", f.read(4))[0]
+            f.read(8 * nd + 4 + 8)
+        return names
+
+
+def test_the_dropped_fixture_really_is_missing_those_tensors(tmp_path):
+    """Guard the gate itself: if the generator quietly kept writing them, every
+    assertion below would pass against a file that proves nothing."""
+    full = _make(tmp_path / "full.gguf", shared_kv=3, ple=16)
+    dropped = _make_dropped(tmp_path / "dropped.gguf", "shared")
+    a, b = set(_tensor_names(full)), set(_tensor_names(dropped))
+    assert a - b == {
+        f"blk.{layer}.{part}"
+        for layer in range(N_LAYER - 3, N_LAYER)
+        for part in ("attn_k.weight", "attn_v.weight", "attn_k_norm.weight")}
+    assert not b - a
+
+
+def test_shared_kv_layers_may_omit_their_unread_kv_tensors(runner_bin, tmp_path):
+    model = _make_dropped(tmp_path / "loads.gguf", "shared")
+    proc = _run(runner_bin, model)
+    err = proc.stderr.decode(errors="replace")
+    assert proc.returncode == 0, err
+    assert "missing tensor" not in err, err
+    assert b"tok/s" in proc.stdout + proc.stderr
+
+
+def test_dropping_them_changes_nothing_the_model_computes(runner_bin, tmp_path):
+    """The absolute anchor for this whole change: those weights are unreachable
+    by construction, so removing them from the file must move no bit."""
+    full = _make(tmp_path / "id-full.gguf", shared_kv=3, ple=16)
+    dropped = _make_dropped(tmp_path / "id-drop.gguf", "shared")
+    a = _run(runner_bin, full, "--temp", "0", tokens=16, prompt=GPU_PROMPT)
+    b = _run(runner_bin, dropped, "--temp", "0", tokens=16, prompt=GPU_PROMPT)
+    assert a.returncode == 0 and b.returncode == 0
+    assert a.stdout == b.stdout
+    # and the same KV allocation: a shared layer reserved no rows either way
+    def kv_mb(proc):
+        match = re.search(r"kv cache\s+([\d.]+) MB",
+                          proc.stderr.decode(errors="replace"))
+        assert match
+        return match.group(1)
+    va = _run(runner_bin, full, "-v", tokens=1)
+    vb = _run(runner_bin, dropped, "-v", tokens=1)
+    assert kv_mb(va) == kv_mb(vb)
+
+
+@pytest.mark.parametrize("layer", [0, 1, 2])
+def test_a_kv_owning_layer_missing_its_k_is_still_refused(runner_bin, tmp_path,
+                                                          layer):
+    """The exemption is exactly the shared-KV tail. Below kv_from_start the
+    layer computes its own K, so a file without it is broken and must be
+    refused by name rather than run with whatever the pointer happened to be.
+    """
+    model = _make_dropped(tmp_path / f"bad{layer}.gguf", str(layer))
+    proc = _run(runner_bin, model)
+    err = proc.stderr.decode(errors="replace")
+    assert proc.returncode != 0, err
+    assert f"error: missing tensor blk.{layer}.attn_k.weight" in err, err
+
+
+def test_a_compact_fixture_runs_on_the_gpu_and_matches_the_cpu(runner_bin,
+                                                               tmp_path):
+    """Every backend binder has to tolerate the absent tensors too, not just
+    the loader: the device paths guard their K/V projections on `owns_kv`, and
+    a NULL weight reaching a kernel would be a crash or garbage, not a
+    refusal."""
+    _requires_gpu(runner_bin, tmp_path)
+    model = _make_dropped(tmp_path / "gpu-drop.gguf", "shared")
+    cpu = _run(runner_bin, model, "--temp", "0", tokens=12, prompt=GPU_PROMPT)
+    gpu = _gpu_run(runner_bin, model)
+    assert b"CUDA backend" in gpu.stderr or b"Metal" in gpu.stderr, \
+        "GPU silently fell back; this comparison would be vacuous"
+    assert gpu.stdout == cpu.stdout
+
+
+@pytest.mark.parametrize("gpu_layers", [2, 3, 4])
+def test_a_compact_fixture_splits_across_the_shared_kv_boundary(
+        runner_bin, tmp_path, gpu_layers):
+    """The split can land either side of layer 3, the first layer with no K/V
+    tensors at all, so a shared-KV layer ends up on a different device from
+    the layer whose rows it reads."""
+    _requires_gpu(runner_bin, tmp_path)
+    model = _make_dropped(tmp_path / "gpu-split.gguf", "shared")
+    cpu = _run(runner_bin, model, "--temp", "0", tokens=12, prompt=GPU_PROMPT)
+    gpu = _gpu_run(runner_bin, model, "--gpu-layers", str(gpu_layers))
+    err = gpu.stderr.decode(errors="replace")
+    assert "falling back to CPU" not in err, err
+    assert "not resident on the device" not in err, err
+    assert gpu.stdout == cpu.stdout
