@@ -17,10 +17,15 @@ import pathlib
 import shutil
 import subprocess
 import sys
+import urllib.error
+import urllib.request
 
 import pytest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "tests" / "conformance"))
+from harness import RunnerServer
+
 OPENSSL = shutil.which("openssl")
 
 
@@ -96,6 +101,59 @@ def _load(runner_bin, model, *extra, transcript=None):
         cmd += ["--transcript", str(transcript)]
     return subprocess.run(cmd, cwd=ROOT, stdout=subprocess.PIPE,
                           stderr=subprocess.PIPE, timeout=120)
+
+
+def _request(server, path, payload=None):
+    data = b"" if path == "/unload" else json.dumps(payload).encode()
+    req = urllib.request.Request(server.base_url + path, data=data,
+                                 headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            return r.status, json.load(r)
+    except urllib.error.HTTPError as r:
+        return r.code, json.load(r)
+
+
+def test_named_model_requires_a_signature(runner_bin, model):
+    # Absolute policy anchor: an unsigned file cannot satisfy "required".
+    with RunnerServer(runner_bin, f"named={model}", extra_args=[
+            "--gpu", "off", "-t", "2", "--require-signed-model"]) as srv:
+        status, body = _request(srv, "/v1/completions",
+                                {"prompt": "hi", "max_tokens": 2})
+        assert status == 409, body
+        assert body["error"]["code"] == "model_signature_refused"
+        srv.assert_alive()
+
+
+@pytest.mark.parametrize("named", [False, True])
+@pytest.mark.parametrize("explicit", [False, True])
+def test_signature_policy_rechecked_on_reload(runner_bin, model, p256, tmp_path,
+                                            named, explicit):
+    # The independent OpenSSL signature must cover the file being loaded,
+    # and a missing signature or changed model must never pass on reload.
+    m = tmp_path / "served.gguf"
+    shutil.copyfile(model, m)
+    sig = _openssl_bundle(p256[0], m, tmp_path / "served.gguf.sig")
+    signed = sig.read_bytes()
+    flags = ["--gpu", "off", "-t", "2", "--require-signed-model",
+             "--model-pubkey", str(p256[1])]
+    if explicit:
+        flags += ["--model-sig", str(sig)]
+    with RunnerServer(runner_bin, f"named={m}" if named else m,
+                      extra_args=flags) as srv:
+        payload = {"prompt": "hi", "max_tokens": 2, "temperature": 0}
+        assert _request(srv, "/v1/completions", payload)[0] == 200
+        assert _request(srv, "/unload")[0] == 200
+        sig.unlink()
+        assert _request(srv, "/v1/completions", payload)[0] == 409
+        sig.write_bytes(signed)
+        assert _request(srv, "/v1/completions", payload)[0] == 200
+        assert _request(srv, "/unload")[0] == 200
+        raw = bytearray(m.read_bytes())
+        raw[-1] ^= 1
+        m.write_bytes(raw)
+        assert _request(srv, "/v1/completions", payload)[0] == 409
+        srv.assert_alive()
 
 
 def test_openssl_bundle_verifies_and_gates(runner_bin, model, p256, tmp_path):

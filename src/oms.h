@@ -26,6 +26,18 @@ typedef struct {
     int  n_resources;
 } oms_result;
 
+typedef struct {
+    const char *bundle_path; // NULL: discover <model>.sig on each load
+    const char *pubkey_path;
+    bool required;
+} oms_policy;
+
+// Apply the operator's signature policy on every model load. Logs the
+// verdict; optional out has an empty status when no bundle was requested
+// or discovered. Policy paths are borrowed for the caller's lifetime.
+bool oms_check_model(const char *model_path, const oms_policy *policy,
+                     oms_result *out);
+
 // Verify `bundle_path` against the model file at `model_path` with the
 // trusted public key in `pubkey_pem_path` (PEM "PUBLIC KEY", EC only).
 // Returns true only when status is "verified"; `out` always describes why.

@@ -14,6 +14,7 @@
 
 #include "runner.h"
 #include "http.h"
+#include "oms.h"
 
 typedef struct {
     model_t   *m;         // slot 0 borrows the preloaded model
@@ -113,6 +114,7 @@ typedef struct {
     // is REFUSED per-request (never a process exit — the server keeps serving
     // its other models), unless force_uncertified was set at startup.
     bool        force_uncertified;
+    oms_policy  signing;      // same policy on initial and subsequent loads
 } server_state;
 
 extern server_state SV;
@@ -165,6 +167,7 @@ void server_work_totals(work_totals *out);
 // refusal (409), distinct from a broken model (5xx). --force-uncertified at
 // startup suppresses it.
 #define SWAP_ENVELOPE_REFUSED (-4)
+#define SWAP_SIGNATURE_REFUSED (-5)
 
 // ---- residency and admission (registry.c) ----
 

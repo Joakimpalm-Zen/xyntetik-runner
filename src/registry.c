@@ -166,7 +166,9 @@ int swap_to(const char *want) {
         model_t *m = calloc(1, sizeof(model_t));
         tokenizer *tok = calloc(1, sizeof(tokenizer));
         bool model_ok = m && model_load(m, SV.reg[idx].path, &SV.mp);
-        bool tok_ok = model_ok && tok && tokenizer_init(tok, &m->gf);
+        bool sig_refused = model_ok &&
+            !oms_check_model(SV.reg[idx].path, &SV.signing, NULL);
+        bool tok_ok = model_ok && !sig_refused && tok && tokenizer_init(tok, &m->gf);
 
         // Measured-envelope gate (slice 3b): a model that loads fine but whose
         // sidecar refuses this runtime is turned away per-request, so the server
@@ -209,6 +211,7 @@ int swap_to(const char *want) {
             free(m); free(tok);
             pthread_mutex_unlock(&SV.swap_mu);
             return discard          ? SWAP_ABORTED
+                 : sig_refused      ? SWAP_SIGNATURE_REFUSED
                  : (!model_ok || !tok_ok) ? SWAP_LOAD_FAILED
                  : SWAP_ENVELOPE_REFUSED;
         }

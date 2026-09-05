@@ -8,6 +8,10 @@ names that were true when they were written.
 
 ## Unreleased
 
+- Model signature policy is enforced on named registry loads and reloads,
+  as well as additional serving slots. A registry signature refusal returns
+  HTTP 409 with `model_signature_refused`. OpenSSL-signed HTTP gates cover
+  valid loads, missing signatures, tampered model bytes, and recovery.
 - LoRA adapter path and scale are preserved on every target model load:
   additional serving slots, named registry entries, and reloads after unload
   or TTL expiry. A failed adapter load refuses the target; draft models do

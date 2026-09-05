@@ -1721,6 +1721,7 @@ int main(int argc, char **argv) {
 
     model_t m;
     tokenizer tok;
+    oms_policy signing = { model_sig, model_pubkey, require_signed_model };
     char model_sig_json[512] = "";   // load-time OMS verdict for the receipt
     // A reservation is a budget for the whole server, so the -c 0 auto-fit has
     // to know how many slots will divide it. Set before the FIRST load, not
@@ -1735,35 +1736,10 @@ int main(int argc, char **argv) {
     if (!registry) {
         double t1 = now_s();
         if (!model_load(&m, load_path, &mp)) return 1;
-        // OpenSSF Model Signing: an explicit --model-sig must verify; an
-        // auto-detected <model>.sig is verified when a key is given and
-        // reported either way; --require-signed-model needs a verified one.
-        {
-            char auto_sig[4096];
-            const char *sigp = model_sig;
-            if (!sigp) {
-                snprintf(auto_sig, sizeof auto_sig, "%s.sig", load_path);
-                FILE *pf = fopen(auto_sig, "rb");
-                if (pf) { fclose(pf); sigp = auto_sig; }
-            }
-            if (sigp) {
-                oms_result osr;
-                bool ok = oms_verify_file(sigp, model_pubkey, load_path, &osr);
-                fprintf(stderr, "model signature: %s (%s%s%s%s%s)\n", osr.status,
-                        osr.reason, osr.curve[0] ? "; " : "", osr.curve,
-                        osr.hash[0] ? "/" : "", osr.hash);
-                oms_result_json(&osr, model_sig_json, sizeof model_sig_json);
-                if (!ok && (model_sig || require_signed_model || model_pubkey)) {
-                    fprintf(stderr, "error: model signature: refusing to load %s: %s\n",
-                            load_path, osr.reason);
-                    return 1;
-                }
-            } else if (require_signed_model) {
-                fprintf(stderr, "error: --require-signed-model: no signature bundle "
-                                "for %s (pass --model-sig)\n", load_path);
-                return 1;
-            }
-        }
+        oms_result osr;
+        if (!oms_check_model(load_path, &signing, &osr)) return 1;
+        if (osr.status[0])
+            oms_result_json(&osr, model_sig_json, sizeof model_sig_json);
         if (!tokenizer_init(&tok, &m.gf)) return 1;
         fprintf(stderr, "loaded %s | %s | %d layers | ctx %d | %d threads | %.2fs\n",
                 load_path, m.arch, m.n_layer, m.n_ctx, tpool_size(m.tp),
@@ -1860,7 +1836,7 @@ int main(int argc, char **argv) {
         int rc = server_run(registry ? NULL : &m, registry ? NULL : &tok,
                             model_path, &mp, smp, &ov, port, parallel, n_threads,
                             ttl, draft_path, draft_k, draft_lookup, ignore_eos,
-                            tmpl_override, force_uncertified);
+                            tmpl_override, force_uncertified, &signing);
         free(owned_prompt);
         return rc;
     }
