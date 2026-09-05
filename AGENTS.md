@@ -163,9 +163,13 @@ Required behavior:
 Working rule: never leave important behavior to chance. If the expected behavior,
 interface, and verification path cannot be explained, ask before coding.
 
-## 5. Keep the README Current
+## 5. Keep the README, xyntetik.com and the Hugging Face cards current
 
 Treat `README.md` as a tested public interface, not a historical summary.
+The same account is published in three places and they move together:
+the README, the site (`site/pages/`, built from this repository), and the
+model cards on Hugging Face. A change to one is a question about the other
+two, answered in the same change.
 
 Required behavior:
 
@@ -183,8 +187,19 @@ Required behavior:
 - Run the relevant README links, examples, and release consistency checks after
   editing it.
 
-Working rule: every completed change has an explicit README impact decision:
-updated now, or checked and still accurate.
+- **Every release cycle** (a runner tag) and **every Hugging Face cycle** (a
+  card published, re-gated or retired) includes the step "does xyntetik.com
+  need the same change?". The site takes the version and release date from
+  CHANGELOG at build time; its evidence figures, the comparison table, the
+  artifact ledger and the repository count are hand-written and drift
+  silently. `scripts/check-release.py` fails a release when the set of
+  Hugging Face repositories linked from README differs from the set linked
+  from `site/pages/`, in either direction, so a card without its README and
+  site entries blocks the next tag rather than the one after.
+
+Working rule: every completed change has an explicit README impact decision,
+and a release or card change has the same decision for the site: updated
+now, or checked and still accurate.
 
 ## Required Workflow
 
@@ -276,7 +291,8 @@ Required behavior:
   request with `gh pr create`.
 - Wait for CI to be green on the pull request before merging; merge with
   `gh pr merge <n> --merge --delete-branch`. Tag a release only after `main`
-  is green.
+  is green and `make release-check` passes, which includes the README/site
+  parity check on the Hugging Face artifact set (rule 5).
 - Never leave finished work unmerged on a branch: a branch is either merged
   or its decline is written down.
 

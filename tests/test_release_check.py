@@ -58,6 +58,7 @@ def good_args(tmp_path):
             tmp_path / "pyproject.toml",
             '[project]\nversion = "0.1.3a0"\n',
         ),
+        site_pages=None,
         commit="abc123",
         current_docs=[],
         compat_reports=report_dir(tmp_path, "0.1.3-alpha-2026-01-01.json"),
@@ -329,3 +330,34 @@ def test_release_check_counts_executed_checks_across_all_dated_reports(
         check_release, "binary_version", lambda _: "runner 0.1.3-alpha"
     )
     assert check_release.check(args)
+
+
+def test_release_check_requires_readme_and_site_to_link_the_same_hf_repos(
+        monkeypatch, tmp_path, capsys):
+    """A card published with a README entry and no site entry, or the reverse,
+    is the drift rule 5 names; the release refuses until both agree."""
+    args = good_args(tmp_path)
+    monkeypatch.setattr(
+        check_release, "binary_version", lambda _: "runner 0.1.3-alpha"
+    )
+    args.readme = write(
+        tmp_path / "README.md",
+        "Public alpha (`0.1.3-alpha`)\n"
+        "./runner --version   # -> runner 0.1.3-alpha\n"
+        "https://huggingface.co/Joakimpalm-Zen/Only-In-README\n"
+        "https://huggingface.co/Joakimpalm-Zen/Both-GGUF\n",
+    )
+    pages = tmp_path / "pages"
+    pages.mkdir()
+    write(pages / "evidence.html",
+          '<a href="{{hf}}/Both-GGUF">x</a> <a href="{{hf}}/Only-On-Site">y</a>')
+    args.site_pages = pages
+    assert check_release.check(args) is False
+    cap = capsys.readouterr()
+    out = cap.out + cap.err
+    assert "Only-In-README" in out and "Only-On-Site" in out
+    write(pages / "evidence.html",
+          '<a href="{{hf}}/Both-GGUF">x</a> '
+          '<a href="https://huggingface.co/Joakimpalm-Zen/Only-In-README">y</a>')
+    assert check_release.check(args) is True
+
