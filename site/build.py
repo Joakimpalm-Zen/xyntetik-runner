@@ -240,7 +240,34 @@ CHARTS = {
 
 # ----------------------------------------------------------------- shell --
 
-LOGO = (SITE / "assets" / "enso.svg").read_text(encoding="utf-8").strip()
+MARKS = SITE / "assets" / "marks"
+
+
+def mark(name: str, alt: str = "", size: int = 34) -> str:
+    """The light and dark variants of one mark; CSS shows the one that matches."""
+    return (f'<img class="mark-light" src="/assets/marks/{name}-light.svg" alt="{esc(alt)}" width="{size}" height="{size}">'
+            f'<img class="mark-dark" src="/assets/marks/{name}-dark.svg" alt="" width="{size}" height="{size}" aria-hidden="true">')
+
+
+def inline_mark(name: str) -> str:
+    """Both variants inlined once (the hero), with classes the draw-on animation hooks."""
+    out = []
+    for variant in ("light", "dark"):
+        svg = (MARKS / f"{name}-{variant}.svg").read_text(encoding="utf-8").strip()
+        svg = re.sub(r'\s(width|height)="512"', "", svg, count=2)
+        # both variants are inlined on one page and the hidden one would win
+        # the id lookup, so every id (gradients, filters) is suffixed
+        svg = re.sub(r'id="([a-z0-9]+)"', lambda m: f'id="{m.group(1)}-{variant}"', svg)
+        svg = re.sub(r'url\(#([a-z0-9]+)\)', lambda m: f'url(#{m.group(1)}-{variant})', svg)
+        # the main ring is the stroke-width 9 path; the glow (16, blurred) stays as is
+        svg = svg.replace('stroke-width="9" stroke-linecap="round"/>', 'stroke-width="9" stroke-linecap="round" class="ring"/>', 1)
+        svg = re.sub(r"<circle ", '<circle class="dot" ', svg)
+        svg = svg.replace("<svg ", f'<svg class="hero-mark mark-{variant}" aria-hidden="true" ', 1)
+        out.append(svg)
+    return "".join(out)
+
+
+LOGO = mark("xyntetik", "Xyntetik")
 
 
 def meta_block(text: str) -> tuple[dict, str]:
@@ -433,6 +460,8 @@ def main() -> int:
                 return CHARTS[name]()
             raise KeyError(kind)
         body = re.sub(r"\{\{(chart):([a-z_]+)\}\}", sub, body)
+        body = re.sub(r"\{\{mark:([a-z]+):(\d+)\}\}", lambda m: mark(m.group(1), "", int(m.group(2))), body)
+        body = re.sub(r"\{\{heromark:([a-z]+)\}\}", lambda m: inline_mark(m.group(1)), body)
         body = (body.replace("{{repo}}", REPO).replace("{{hf}}", HF)
                 .replace("{{version}}", version).replace("{{release_date}}", release_date))
         out = shell(meta, body, sha)

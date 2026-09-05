@@ -24,15 +24,16 @@ static tray_item g_items[TRAY_MAX_ITEMS];
 static int g_nitems;
 
 // ---------------------------------------------------------------- the icon
-// Same three-state glyph as macOS, painted white-on-black into a 16×16 HICON:
-// a rounded-square core, hollow when nothing is loaded, with two opposing
-// sweeps — or a four-segment ring while inference is in flight.
+// Same three states as macOS, painted white-on-black into a 16x16 HICON: the
+// bare ensö when nothing is loaded, the ensö with the spark on its end when a
+// model is resident, and the full Runner mark (ensö, spark, three streaks)
+// while inference is in flight. Geometry is the 100-unit brand mark scaled to
+// 16 units, so the taskbar glyph and the site's mark are the same drawing.
 //
 // GDI's Arc() always travels counter-clockwise from the start radial to the
 // end radial, and device y grows DOWNWARD. Negating the sine puts the glyph in
 // the same visual orientation as the macOS one; because both endpoints are
-// negated together, the sweep direction is preserved and Arc still traces the
-// short way between them rather than the complement.
+// negated together, the sweep direction is preserved.
 static void arc_seg(HDC dc, double cx, double cy, double r,
                     double mid_deg, double half_deg) {
     const double D2R = 3.14159265358979323846 / 180.0;
@@ -43,6 +44,13 @@ static void arc_seg(HDC dc, double cx, double cy, double r,
             (int)lround(cx + r * cos(a1)), (int)lround(cy - r * sin(a1)));
 }
 
+static HPEN round_pen(double w) {
+    LOGBRUSH lb = { BS_SOLID, RGB(255, 255, 255), 0 };
+    DWORD width = (DWORD)lround(w); if (width < 1) width = 1;
+    return ExtCreatePen(PS_GEOMETRIC | PS_SOLID | PS_ENDCAP_ROUND | PS_JOIN_ROUND,
+                        width, &lb, 0, NULL);
+}
+
 // Paint the glyph white-on-black into `dc` at size S. Geometry is authored in
 // 16-px units and scaled, so the notification-area icon and the review dump
 // are the same drawing rather than two that can drift.
@@ -51,31 +59,47 @@ static void paint_glyph(HDC dc, tray_icon_state st, int S) {
     RECT full = { 0, 0, S, S };
     FillRect(dc, &full, (HBRUSH)GetStockObject(BLACK_BRUSH));
 
-    int w = (int)lround(1.0 * s); if (w < 1) w = 1;
-    HPEN pen = CreatePen(PS_SOLID, w, RGB(255, 255, 255));
-    HGDIOBJ oldpen = SelectObject(dc, pen);
+    // the ring: from 115 degrees the long way round to 60, open at the top
+    // (mid 267.5, half 152.5 spans exactly that arc)
+    const double r = 6.2 * s;
+    HPEN ring = round_pen(1.5 * s);
+    HGDIOBJ oldpen = SelectObject(dc, ring);
+    HGDIOBJ oldbr = SelectObject(dc, GetStockObject(NULL_BRUSH));
+    arc_seg(dc, cx, cy, r, 267.5, 152.5);
 
-    // the core: a 6-unit rounded square, filled unless nothing is loaded
-    int l = (int)lround(5.0 * s), t = (int)lround(5.0 * s);
-    int r = (int)lround(11.0 * s), b = (int)lround(11.0 * s);
-    int rad = (int)lround(4.0 * s);
-    HGDIOBJ oldbr = SelectObject(dc, st == TRAY_ICON_IDLE
-                                     ? GetStockObject(NULL_BRUSH)
-                                     : GetStockObject(WHITE_BRUSH));
-    RoundRect(dc, l, t, r, b, rad, rad);
-    SelectObject(dc, oldbr);
-
-    // the sweeps, on a null brush so Arc does not close and fill them
-    SelectObject(dc, GetStockObject(NULL_BRUSH));
-    if (st == TRAY_ICON_RUNNING) {
-        for (int i = 0; i < 4; i++)
-            arc_seg(dc, cx, cy, 6.0 * s, 45.0 + i * 90.0, 32.0);
-    } else {
-        arc_seg(dc, cx, cy, 6.0 * s, 45.0, 30.0);
-        arc_seg(dc, cx, cy, 6.0 * s, 225.0, 30.0);
+    if (st != TRAY_ICON_IDLE) {
+        // the spark on the ring's upper-right end (y negated: device y is down)
+        const double D2R = 3.14159265358979323846 / 180.0;
+        double ex = cx + r * cos(60.0 * D2R), ey = cy - r * sin(60.0 * D2R);
+        double dr = 1.25 * s; if (dr < 1.0) dr = 1.0;
+        SelectObject(dc, GetStockObject(WHITE_BRUSH));
+        HPEN nopen = CreatePen(PS_NULL, 0, 0);
+        HGDIOBJ p2 = SelectObject(dc, nopen);
+        Ellipse(dc, (int)lround(ex - dr), (int)lround(ey - dr),
+                    (int)lround(ex + dr) + 1, (int)lround(ey + dr) + 1);
+        SelectObject(dc, p2);
+        DeleteObject(nopen);
+        SelectObject(dc, GetStockObject(NULL_BRUSH));
     }
+    if (st == TRAY_ICON_RUNNING) {
+        // the Runner streaks: three rows, the middle one longest
+        struct { double y, x0, x1, w; } rows[] = {
+            { cy - 1.84 * s, cx - 3.6 * s, cx + 2.0 * s, 0.85 * s },
+            { cy,            cx - 4.6 * s, cx + 3.5 * s, 1.1 * s },
+            { cy + 1.84 * s, cx - 3.4 * s, cx + 1.4 * s, 0.85 * s },
+        };
+        for (int i = 0; i < 3; i++) {
+            HPEN pen = round_pen(rows[i].w);
+            HGDIOBJ prev = SelectObject(dc, pen);
+            MoveToEx(dc, (int)lround(rows[i].x0), (int)lround(rows[i].y), NULL);
+            LineTo(dc, (int)lround(rows[i].x1), (int)lround(rows[i].y));
+            SelectObject(dc, prev);
+            DeleteObject(pen);
+        }
+    }
+    SelectObject(dc, oldbr);
     SelectObject(dc, oldpen);
-    DeleteObject(pen);
+    DeleteObject(ring);
 }
 
 static HICON grid_icon(tray_icon_state st) {
