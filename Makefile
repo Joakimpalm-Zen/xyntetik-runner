@@ -620,6 +620,15 @@ TEST_QUANTS_SIMD_SRC = tests/test_quants_simd.c $(QUANTS_OBJ)
 $(TEST_QUANTS_SIMD): $(TEST_QUANTS_SIMD_SRC) $(HDR)
 	$(CC) $(QUANTS_CFLAGS) -I src $(TEST_QUANTS_SIMD_SRC) -o $@ -lm -lpthread
 
+# Canonical-order kernels (RUNNER_CANON_KERNELS, experiment R12.1): the
+# SIMD kernel on this host must equal the tree definition bit for bit. quants.c
+# is compiled here with the define, in the engine's strict float regime, not
+# taken from the shared object (which is built without it).
+TEST_CANON_KERNELS = $(TEST_BATCH:test-batch%=test-canon-kernels%)
+$(TEST_CANON_KERNELS): tests/test_canon_kernels.c src/quants.c $(HDR)
+	$(CC) $(QUANTS_CFLAGS) -ffp-contract=off -DRUNNER_CANON_KERNELS -I src \
+	    tests/test_canon_kernels.c src/quants.c -o $@ -lm -lpthread
+
 # discovery registry: pure-C, runs against a private HOME/APPDATA
 TEST_INSTANCES_SRC = tests/test_instances.c $(OBJDIR)/instances.o $(OBJDIR)/json.o $(OBJDIR)/compat.o
 $(TEST_INSTANCES): $(TEST_INSTANCES_SRC) $(HDR)
