@@ -1376,6 +1376,34 @@ void dequant_row(int type, const void *src, float *dst, int n) {
 // 4x4, not 4x8: ARM64 has 32 NEON registers and a 4x8 tile wants 32
 // accumulators plus 12 operand vectors, which spills and measured SLOWER
 // than the row kernel on an M1 (2026-09-02). 4x4 needs 16 + 8 and fits.
+// The scalar tail every f32 dot kernel below ends with: the last n mod 8
+// (n mod 4 on NEON) elements, folded into the lane reduction one at a time.
+// An EXPLICIT fused multiply-add, not `s += w[i] * x[i]`, because the plain
+// form has two admissible roundings and the compiler picks per loop shape:
+// GCC contracts a*b+c into one FMA by default in gnu11 (-ffp-contract=fast,
+// independent of -ffast-math, which this file is built without) but only
+// where its unroller and SLP vectorizer leave the pattern intact. Measured
+// with GCC 15 at -march=x86-64-v3 and native (2026-09-05): the 4-column
+// block's tail came out as vmulps + vaddss (product rounded, then the add),
+// the 1- and 8-column tails as a vmulps quad followed by vfmadd231ss for
+// the rest, and the same column differed by one ulp depending on how many
+// columns travelled with it; the ubuntu-latest CI hosts (GCC, -march=native) split the 8-column block
+// from the 1-column path the same way. fmaf() has one admissible result, so
+// every blocking sums its tail identically by construction, whatever the
+// compiler unrolls or vectorizes, and blocking-independence no longer rests
+// on codegen luck. Nothing else in these kernels is contractable: the lane
+// bodies are FMA intrinsics and the reductions are bare adds.
+// Where the target has no FMA instruction there is nothing to contract
+// into and fmaf would be a libm call, so the plain form is exact there.
+static inline float f32_dot_tail(float s, const float *w, const float *x, int i, int n) {
+#if defined(__FMA__) || defined(__ARM_FEATURE_FMA)
+    for (; i < n; i++) s = fmaf(w[i], x[i], s);
+#else
+    for (; i < n; i++) s += w[i] * x[i];
+#endif
+    return s;
+}
+
 enum { F32_TILE_ROWS = 4, F32_TILE_COLS = 4 };
 
 void vec_dot_f32_tile(const float *const *w, int nrow, const float *x,
@@ -1411,7 +1439,7 @@ void vec_dot_f32_tile(const float *const *w, int nrow, const float *x,
                     l = _mm_add_ps(l, _mm_movehl_ps(l, l));
                     l = _mm_add_ss(l, _mm_shuffle_ps(l, l, 1));
                     float s = _mm_cvtss_f32(l);
-                    for (int t = i; t < n; t++) s += w[r][t] * xp[c][t];
+                    s = f32_dot_tail(s, w[r], xp[c], i, n);
                     out[(size_t)r * out_stride + b + c] = s;
                 }
 #else
@@ -1433,7 +1461,7 @@ void vec_dot_f32_tile(const float *const *w, int nrow, const float *x,
             for (int r = 0; r < F32_TILE_ROWS; r++)
                 for (int c = 0; c < F32_TILE_COLS; c++) {
                     float s = vaddvq_f32(acc[r][c]);
-                    for (int t = i; t < n; t++) s += w[r][t] * xp[c][t];
+                    s = f32_dot_tail(s, w[r], xp[c], i, n);
                     out[(size_t)r * out_stride + b + c] = s;
                 }
 #endif
@@ -1482,7 +1510,7 @@ void vec_dot_f32_multi(const float *w, const float *x, int x_stride,
             l = _mm_add_ps(l, _mm_movehl_ps(l, l));
             l = _mm_add_ss(l, _mm_shuffle_ps(l, l, 1));
             float s = _mm_cvtss_f32(l);
-            for (int t = i; t < n; t++) s += w[t] * xp[k][t];
+            s = f32_dot_tail(s, w, xp[k], i, n);
             out[b + k] = s;
         }
     }
@@ -1512,11 +1540,8 @@ void vec_dot_f32_multi(const float *w, const float *x, int x_stride,
             s0 = _mm_cvtss_f32(l0); s1 = _mm_cvtss_f32(l1);
             s2 = _mm_cvtss_f32(l2); s3 = _mm_cvtss_f32(l3);
         }
-        for (; i < n; i++) {
-            float wv = w[i];
-            s0 += wv * x0[i]; s1 += wv * x1[i];
-            s2 += wv * x2[i]; s3 += wv * x3[i];
-        }
+        s0 = f32_dot_tail(s0, w, x0, i, n); s1 = f32_dot_tail(s1, w, x1, i, n);
+        s2 = f32_dot_tail(s2, w, x2, i, n); s3 = f32_dot_tail(s3, w, x3, i, n);
         out[b] = s0; out[b + 1] = s1; out[b + 2] = s2; out[b + 3] = s3;
     }
     for (; b < nb; b++) {
@@ -1530,8 +1555,7 @@ void vec_dot_f32_multi(const float *w, const float *x, int x_stride,
         l = _mm_add_ps(l, _mm_movehl_ps(l, l));
         l = _mm_add_ss(l, _mm_shuffle_ps(l, l, 1));
         float s = _mm_cvtss_f32(l);
-        for (; i < n; i++) s += w[i] * xb[i];
-        out[b] = s;
+        out[b] = f32_dot_tail(s, w, xb, i, n);
     }
 #elif defined(__aarch64__) && defined(__ARM_NEON)
     int b = 0;
@@ -1548,7 +1572,7 @@ void vec_dot_f32_multi(const float *w, const float *x, int x_stride,
         }
         for (int k = 0; k < 8; k++) {
             float s = vaddvq_f32(a[k]);
-            for (int t = i; t < n; t++) s += w[t] * xp[k][t];
+            s = f32_dot_tail(s, w, xp[k], i, n);
             out[b + k] = s;
         }
     }
@@ -1567,11 +1591,8 @@ void vec_dot_f32_multi(const float *w, const float *x, int x_stride,
         }
         float s0 = vaddvq_f32(a0), s1 = vaddvq_f32(a1);
         float s2 = vaddvq_f32(a2), s3 = vaddvq_f32(a3);
-        for (; i < n; i++) {
-            float wv = w[i];
-            s0 += wv * x0[i]; s1 += wv * x1[i];
-            s2 += wv * x2[i]; s3 += wv * x3[i];
-        }
+        s0 = f32_dot_tail(s0, w, x0, i, n); s1 = f32_dot_tail(s1, w, x1, i, n);
+        s2 = f32_dot_tail(s2, w, x2, i, n); s3 = f32_dot_tail(s3, w, x3, i, n);
         out[b] = s0; out[b + 1] = s1; out[b + 2] = s2; out[b + 3] = s3;
     }
     for (; b < nb; b++) {
@@ -1581,15 +1602,12 @@ void vec_dot_f32_multi(const float *w, const float *x, int x_stride,
         for (; i + 4 <= n; i += 4)
             acc = vfmaq_f32(acc, vld1q_f32(w + i), vld1q_f32(xb + i));
         float s = vaddvq_f32(acc);
-        for (; i < n; i++) s += w[i] * xb[i];
-        out[b] = s;
+        out[b] = f32_dot_tail(s, w, xb, i, n);
     }
 #else
     for (int b = 0; b < nb; b++) {
         const float *xb = x + (size_t)b * x_stride;
-        float s = 0;
-        for (int i = 0; i < n; i++) s += w[i] * xb[i];
-        out[b] = s;
+        out[b] = f32_dot_tail(0.0f, w, xb, 0, n);
     }
 #endif
 }
