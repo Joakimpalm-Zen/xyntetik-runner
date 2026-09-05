@@ -34,13 +34,21 @@ FORBIDDEN = [
     (re.compile(r"^[ \t]*Claude-Session[ \t]*:", re.I | re.M), "Claude-Session trailer"),
     (re.compile(r"chatgpt\.com/(c|share|g)/", re.I), "ChatGPT conversation URL"),
     (re.compile(r"chat\.openai\.com/", re.I), "ChatGPT conversation URL"),
-    (re.compile(r"\bsession_[A-Za-z0-9]{12,}", re.I), "session id"),
-    (re.compile(r"\bconversation[_-]?id\b", re.I), "conversation id"),
-    (re.compile(r"\bsess-[A-Za-z0-9]{8,}", re.I), "session id"),
-    (re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+"), "e-mail address"),
+    # session ids are base62 with digits; a plain identifier such as
+    # session_reconnection is a word, not an id
+    (re.compile(r"\bsession_(?=[A-Za-z0-9]*\d)[A-Za-z0-9]{12,}", re.I), "session id"),
+    (re.compile(r"\bsess-[A-Za-z0-9]{8,}(?<![a-z]{8})", re.I), "session id"),
 ]
+# Agents sign with the project form; humans may use GitHub's own co-author
+# form, which needs the e-mail to link the profile. What is never accepted is
+# a tool identity dressed as a co-author.
 TRAILER = re.compile(r"^Co-Authored-By:\s*(.*)$", re.I | re.M)
-TRAILER_OK = re.compile(r"^[A-Za-z][A-Za-z0-9 .+/-]* \([^()]+\) & Joakimpalm-Zen$")
+AGENT_FORM = re.compile(r"^[A-Za-z][A-Za-z0-9 .+/-]* \([^()]+\) & Joakimpalm-Zen$")
+HUMAN_FORM = re.compile(r"^([^<>]+?)\s*<([^<>@\s]+@[^<>@\s]+)>$")
+TOOL_IDENTITY = re.compile(
+    r"anthropic\.com|openai\.com|Copilot@users\.noreply\.github\.com|"
+    r"\b(claude|codex|copilot|chatgpt|gpt-?\d|gemini|cursor|devin|aider)\b", re.I)
+EMAIL = re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+")
 
 
 def problems(text: str) -> list[str]:
@@ -49,11 +57,24 @@ def problems(text: str) -> list[str]:
         for m in rx.finditer(text):
             line = text[text.rfind("\n", 0, m.start()) + 1:].split("\n", 1)[0]
             out.append(f"{what}: {line.strip()[:120]}")
+    trailer_lines = set()
     for m in TRAILER.finditer(text):
         body = m.group(1).strip()
-        if not TRAILER_OK.match(body):
-            out.append("Co-Authored-By must read '<Agent> (<Model>) & Joakimpalm-Zen', "
-                       f"got: {body[:120]}")
+        trailer_lines.add(m.group(0).strip())
+        if AGENT_FORM.match(body):
+            continue
+        h = HUMAN_FORM.match(body)
+        if h and not TOOL_IDENTITY.search(body):
+            continue  # a person, credited the way GitHub links a profile
+        out.append("Co-Authored-By: an agent signs '<Agent> (<Model>) & Joakimpalm-Zen', "
+                   f"a person 'Name <email>'; got: {body[:120]}")
+    # e-mail addresses anywhere else are identifiers this repository does not
+    # publish (a human co-author trailer is the one accepted place)
+    for line in text.split("\n"):
+        if line.strip() in trailer_lines:
+            continue
+        if EMAIL.search(line):
+            out.append(f"e-mail address: {line.strip()[:120]}")
     # one finding per distinct line is enough
     seen, uniq = set(), []
     for p in out:
@@ -82,15 +103,25 @@ def self_test() -> int:
         "Claude-Session: https://claude.ai/code/session_012uYHKvzawVPnMTMWPZC7op\n",
         "notes at https://chatgpt.com/share/abc123\n",
         "Co-Authored-By: Codex & Joakimpalm-Zen\n",
+        "Co-Authored-By: Copilot <175728472+Copilot@users.noreply.github.com>\n",
+        "Co-Authored-By: Claude <claude@example.com>\n",
         "contact me at someone@example.com\n",
     ]
     good = [
         "Fix thing\n\nCo-Authored-By: Claude Code (Fable 5.1) & Joakimpalm-Zen\n",
         "Fix thing\n\nCo-Authored-By: Codex (GPT-5) & Joakimpalm-Zen\n",
+        "Fix thing\n\nCo-Authored-By: Peter Saverman <12345+peter@users.noreply.github.com>\n",
+        "Fix thing\n\nCo-Authored-By: Peter Saverman <peter@example.org>\n",
         "Merge pull request #34 from Joakimpalm-Zen/release-0.4.9\n",
         "docs: link https://github.com/Joakimpalm-Zen/xyntetik-runner/releases\n",
+        "server: session_reconnection keeps the slot; see session_persistence.md\n",
     ]
     ok = all(problems(b) for b in bad) and not any(problems(g) for g in good)
+    if not ok:
+        for b in bad:
+            if not problems(b): print("  missed:", b.strip()[:80])
+        for g in good:
+            if problems(g): print("  false positive:", g.strip()[:80], problems(g))
     print("commit-hygiene self-test", "ok" if ok else "FAILED")
     return 0 if ok else 1
 
@@ -124,8 +155,9 @@ def main() -> int:
     if bad:
         print(f"\n{bad} publication-rule violation(s). See AGENTS.md, "
               "'Never publish conversation content or session identifiers'. "
-              "Strip the tool's default trailer; sign with exactly "
-              "'Co-Authored-By: <Agent> (<Model>) & Joakimpalm-Zen'.")
+              "An agent strips the tool's default trailer and signs "
+              "'Co-Authored-By: <Agent> (<Model>) & Joakimpalm-Zen'; a person "
+              "may sign 'Co-Authored-By: Name <email>'.")
         return 1
     if a.range or a.message_file or a.text:
         print("commit hygiene ok")

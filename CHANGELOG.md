@@ -11,8 +11,8 @@ names that were true when they were written.
 - The publication rule is enforced: `scripts/check-commit-hygiene.py` runs in
   a `commit-hygiene` workflow over every commit, title and body of a pull
   request (no path filter) and fails it on a session URL or id, an e-mail
-  address, or a `Co-Authored-By` trailer in any form but
-  `<Agent> (<Model>) & Joakimpalm-Zen`. `make hooks` installs the same check
+  address, or a `Co-Authored-By` trailer that is neither the agent form
+  `<Agent> (<Model>) & Joakimpalm-Zen` nor a person's GitHub `Name <email>`. `make hooks` installs the same check
   as a local commit-msg hook, and `CLAUDE.md` states the rule where Claude
   Code reads it. Seven commits reached `main` on 2026-09-05 with the harness's
   default session trailer before this existed; history stays as it is.
