@@ -79,7 +79,7 @@ nav: runner
     <div class="sticky">
       <p class="eyebrow">The claim boundary</p>
       <h2>Deterministic, with named edges.</h2>
-      <p>The boundary follows what a single binary controls. Inside one executable the instruction sequence is fixed, so accumulation order and math-library behaviour are fixed, and byte-identity is enforceable. Across builds, libm and codegen legitimately differ, so the honest cross-build claim is token identity under replay, which is what <code>--verify</code> implements.</p>
+      <p>The boundary follows what a single binary controls. Inside one executable the instruction sequence is fixed, so accumulation order and math-library behavior are fixed, and byte-identity is enforceable. Across builds, libm and codegen legitimately differ, so the honest cross-build claim is token identity under replay, which is what <code>--verify</code> implements.</p>
       <p>Page titles elsewhere say "deterministic". The claim Runner makes is the narrower one: reproducible on the same build, and receipted so a later reader can check what ran. Claims stronger than the mechanism can enforce would eventually be false somewhere, and the project would rather have a narrower promise that is always true. Full text: <a href="{{repo}}/blob/main/docs/determinism-scope.md">docs/determinism-scope.md</a>.</p>
     </div>
   </div>
@@ -98,7 +98,7 @@ nav: runner
       </div>
       <div class="card">
         <h3>An external reproduction on a Tesla T4</h3>
-        <p>An independent reproduction posted on the Hugging Face forum on 2026-08-23 confirmed the claim on hardware the project never touched, including the GPU-assisted backward on a Tesla T4: identical adapter sha256 and loss, CPU vs GPU, byte for byte. The same report contributed a finding the project had not measured: rebuilding from source under a different ISA profile changes the adapter bytes while behaviour is essentially unchanged. That finding is why the rebuild edge is written into the scope. Write-up: <a href="{{repo}}/blob/main/docs/adaptation-engine.md">docs/adaptation-engine.md</a>.</p>
+        <p>An independent reproduction posted on the Hugging Face forum on 2026-08-23 confirmed the claim on hardware the project never touched, including the GPU-assisted backward on a Tesla T4: identical adapter sha256 and loss, CPU vs GPU, byte for byte. The same report contributed a finding the project had not measured: rebuilding from source under a different ISA profile changes the adapter bytes while behavior is essentially unchanged. That finding is why the rebuild edge is written into the scope. Write-up: <a href="{{repo}}/blob/main/docs/adaptation-engine.md">docs/adaptation-engine.md</a>.</p>
       </div>
       <div class="card">
         <h3>Blocking-independence by construction</h3>

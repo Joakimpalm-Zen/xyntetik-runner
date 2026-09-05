@@ -8,7 +8,7 @@ to `main` that touches `site/`.
   (title, description, path, nav). The shell (head, header, footer) is
   applied by the generator.
 - `assets/`: stylesheet, the small script (menu, reveal-on-scroll), the
-  ensō mark, the Zenova star, favicon, and the two README recordings.
+  Ensö mark, the Zenova star, favicon, and the two README recordings.
 - `{{chart:name}}` in a page renders an inline SVG from the data tables at
   the top of `build.py`. Those tables are copies of numbers in the README
   and `docs/`; every caption names the source document and the date.
