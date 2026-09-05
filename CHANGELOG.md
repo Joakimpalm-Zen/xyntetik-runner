@@ -8,6 +8,31 @@ names that were true when they were written.
 
 ## Unreleased
 
+- Four slot-state defects from an outside review (2026-09-05), each with an
+  HTTP regression gate on the CPU fixtures:
+  - A KV ring (`RUNNER_KV_RING=1`) or tied-V (`RUNNER_TIEDV=1`) refuses the
+    shared prefix tier, and that refusal returned before the slot's own
+    rewind, so with the default `cache_prompt` every request appended to the
+    previous one's context: identical prompts answered differently and the
+    third overflowed a 128-token context. The slot now rewinds first and only
+    the shared tier is skipped (`tests/test_rewind_under_refused_prefix.py`).
+  - The server captured its request-visible sampling defaults before
+    `engine_init` installed the stop-token repeat-penalty exemptions and
+    restored the whole struct per request, dropping them: prompt `</s>`,
+    top-k 1, penalty 100 stopped at once on the CLI and ran to `max_tokens`
+    over HTTP. The exemptions now survive the restore like the RNG does
+    (`tests/test_server_penalty_exemptions.py`).
+  - `adapter.lora.alpha` was not part of the adapter identity, so after a
+    TTL reload an adapter file rewritten with a different alpha hit the old
+    prefix snapshots (alpha 8 to 800 reused the whole prompt, logprobs off by
+    ~0.018). Alpha is hashed into the id; `scripts/make-test-lora.py` takes
+    `LORA_ALPHA` so a test can build the pair
+    (`tests/test_lora_identity_alpha.py`).
+  - TTL expiry and the VRAM-yield release unloaded the target but not the
+    draft, which stayed mapped with its KV (drafting still worked after the
+    draft file was deleted). Both idle paths now release the draft the way
+    `POST /unload` does; `swap_to` brings it back from `draft_path` with the
+    target (`tests/test_ttl_releases_draft.py`).
 - Capabilities report drafting from resident engines across all serving slots.
   Model, MTP and lookup drafts are reported active when loaded, inactive
   after unload, and refused drafts retain their reason with multiple slots.

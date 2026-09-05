@@ -1644,9 +1644,20 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
                           "seed", "invalid_value");
         return;
     }
+    // smp_base is the request-visible defaults, captured before engine_init
+    // installed the stop-token exemptions into the live sampler; restoring it
+    // wholesale dropped them, so over HTTP a repeat penalty could punish the
+    // model's own turn terminator (prompt </s>, top-k 1, penalty 100: the CLI
+    // stopped at once, the server ran to max_tokens). The RNG and the
+    // exemptions are engine state, not request defaults: both survive.
     uint64_t rng_state = s->smp.rng;
+    int32_t no_penalty[sizeof(s->smp.no_penalty) / sizeof(*s->smp.no_penalty)];
+    int n_no_penalty = s->smp.n_no_penalty;
+    memcpy(no_penalty, s->smp.no_penalty, sizeof(no_penalty));
     s->smp = s->smp_base;
     s->smp.rng = rng_state;
+    memcpy(s->smp.no_penalty, no_penalty, sizeof(no_penalty));
+    s->smp.n_no_penalty = n_no_penalty;
     s->smp.temp = (float)temp;
     s->smp.top_p = (float)top_p;
     s->smp.min_p = (float)min_p;

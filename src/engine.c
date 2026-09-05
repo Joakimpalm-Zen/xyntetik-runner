@@ -515,12 +515,17 @@ prefix_reuse engine_prefix_reuse(engine *e, const int32_t *toks, int n) {
     // special-case it -- a snapshot of recycled rows is not a prefix.
     // Tied-V is the same shape from the other side: its K cache is smaller
     // than kv_off describes, so the flat copy would read past kcache.
-    if (model_kv_ring_active(e->m) || e->m->tied_v) {
-        prefix_reuse r = {0}; return r;
-    }
+    // Refusing the shared tier must not skip the slot's own rewind: this is
+    // the only call between two requests that resets e->pos, and returning
+    // {0} here left the engine at the previous prompt's end, so the next
+    // prompt appended to stale context (identical 59-token prompts answered
+    // differently at c=128 and the third overflowed). keep is what
+    // engine_rewind says it is: 0 on a real rewind under a ring, a valid
+    // prefix under tied-V, where the K/V rows are still position-addressed.
     prefix_reuse r = { 0, 0, 0.0 };
     // the slot's own KV first: it is already in place and costs nothing
     r.keep = engine_rewind(e, toks, n);
+    if (model_kv_ring_active(e->m) || e->m->tied_v) return r;
     if (!e->hist || n < 2) return r;
 
     pthread_mutex_lock(&PFX.mu);

@@ -5899,6 +5899,15 @@ bool model_lora_load(model_t *m, const char *path, float user_scale) {
     model_lora_free(m);
     m->lora = tab;
     m->lora_alpha = alpha;
+    // alpha scales every delta, so two files that differ only in
+    // adapter.lora.alpha are different adapters; without it in the id the
+    // prefix cache served rows computed under the old alpha after a reload
+    // (alpha 8 -> 800 reused 58 tokens, logprobs off by ~0.018).
+    {
+        uint32_t abits;
+        memcpy(&abits, &alpha, 4);
+        id = (id ^ abits) * 0x100000001B3ull;
+    }
     m->lora_id = id ^ (uint64_t)(int64_t)(user_scale * 65536.0f);
     fprintf(stderr, "lora: %s — %d adapted projections, alpha %g, "
             "scale x%g\n", path, n_pairs, (double)alpha,
