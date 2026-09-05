@@ -2077,9 +2077,9 @@ Current high-signal caveats include:
 - Numerically sensitive models may use a measured self-sensitivity floor
   instead of claiming cross-engine token identity.
 - **The 2026-09-02 Blackwell matrix** (`docs/compat-reports/0.4.5-2026-09-02-blackwell.json`,
-  all 25 pinned files present, every executable class run) is the current
-  ledger. Its executed tokenizer differentials pass on 7 models and differ
-  on 4: Mistral-7B-v0.3 (44/721, almost all leading-whitespace strings),
+  all 25 files then pinned present, every executable class run) is the
+  current ledger. Its executed tokenizer differentials pass on 7 models
+  and differ on 4: Mistral-7B-v0.3 (44/721, almost all leading-whitespace strings),
   Phi-3.5-mini (2/721, around a literal `<s>` in text), Lucie-7B (190/721)
   and Salamandra-7B (16/721, special-token spellings in plain text). Those
   are tokenizer-fidelity gaps, recorded as failures and under investigation;
