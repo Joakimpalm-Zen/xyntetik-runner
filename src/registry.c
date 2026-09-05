@@ -324,6 +324,12 @@ static void *ttl_reaper(void *arg) {
         int ttl = SV.ttl;
         if (ttl > 0 && idx >= 0 && !atomic_load(&SV.active_requests) &&
             now_s() - SV.last_used > ttl) {
+            // the draft's weights and KV are idle memory too, and swap_to
+            // brings it back from draft_path with the target, exactly as
+            // after POST /unload; leaving it mapped here kept the old
+            // allocation alive across a TTL expiry (drafting still worked
+            // after the draft file was deleted)
+            unload_draft();
             unload_resident();
         } else if (SV.mp.yield_on_request && idx >= 0 &&
                    !atomic_load(&SV.active_requests)) {
@@ -337,6 +343,7 @@ static void *ttl_reaper(void *arg) {
                 // process loads next, and a stale sentinel would yield it
                 // right back out again on the very next idle poll.
                 vram_yield_clear(s->m->vram);
+                unload_draft();
                 unload_resident();
             }
         }

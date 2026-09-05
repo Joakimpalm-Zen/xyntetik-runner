@@ -22,11 +22,13 @@ Writes, next to the given output prefix:
 
 Usage: make-test-lora.py <base.gguf> <out-prefix>
 """
+import os
 import struct
 import sys
 
 BASE, OUT = sys.argv[1], sys.argv[2]
-ALPHA = 8.0
+# LORA_ALPHA lets a test build two adapters that differ only in alpha
+ALPHA = float(os.environ.get("LORA_ALPHA", "8.0"))
 RANK = 4
 
 U32, F32T, STR = 4, 6, 8
