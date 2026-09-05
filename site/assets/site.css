@@ -203,7 +203,10 @@ li { margin: 0.3rem 0; }
 .hero-grid { display: grid; grid-template-columns: minmax(0, 7fr) minmax(0, 5fr); gap: clamp(2rem, 6vw, 5rem); align-items: center; }
 .hero h1 { margin-bottom: 1rem; max-width: 16ch; }
 .hero .lede { margin-bottom: 0.5rem; }
-.hero-art { display: flex; justify-content: center; }
+.hero-art { display: flex; flex-direction: column; align-items: center; justify-content: center; }
+/* the ensö tidbit: a quiet caption, fades in after the ring has drawn */
+.hero-note { max-width: 36ch; margin: 1.2rem 0 0; text-align: center; font-size: 0.8rem; line-height: 1.55; color: var(--muted); opacity: 0; animation: fade 0.9s ease 1.9s forwards; }
+@keyframes fade { to { opacity: 1; } }
 .hero-art svg { width: min(100%, 380px); height: auto; }
 .hero-mark .ring { stroke-dasharray: 230; stroke-dashoffset: 230; animation: draw 1.6s cubic-bezier(0.4, 0, 0.2, 1) 0.2s forwards; }
 .hero-mark .dot { opacity: 0; animation: pop 0.5s ease 1.5s forwards; }
@@ -214,11 +217,15 @@ li { margin: 0.3rem 0; }
 @media (prefers-reduced-motion: reduce) {
   .hero-mark .ring { animation: none; stroke-dashoffset: 0; }
   .hero-mark .dot { animation: none; opacity: 1; }
+  .hero-note { animation: none; opacity: 1; }
 }
 @media (max-width: 900px) {
   .hero-grid { grid-template-columns: minmax(0, 1fr); }
-  .hero-art { order: -1; }
-  .hero-art svg { width: min(60%, 220px); }
+  /* the art wrapper dissolves into the grid: the mark goes above the title,
+     the ensö note below the facts, so the tidbit never pushes the headline down */
+  .hero-art { display: contents; }
+  .hero-art svg { order: -1; justify-self: center; width: min(60%, 220px); }
+  .hero-note { order: 1; justify-self: center; max-width: 40ch; font-size: 0.78rem; margin-top: 0.4rem; }
 }
 .hero-facts { display: flex; flex-wrap: wrap; gap: 0.5rem 1.4rem; margin-top: 1.6rem; font-size: 0.9rem; color: var(--muted); }
 .hero-facts span::before { content: ""; display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--teal); margin-right: 0.5rem; vertical-align: 2px; }
