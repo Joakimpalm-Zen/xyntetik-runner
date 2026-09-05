@@ -8,6 +8,7 @@
 #include "template.h"   // HARMONY_THINK_OPEN/CLOSE for the gpt-oss channel split
 
 #include <math.h>
+#include "pmath.h"
 #include <float.h>
 #include <pthread.h>
 #include <stdio.h>

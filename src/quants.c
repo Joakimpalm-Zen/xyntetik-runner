@@ -1,9 +1,23 @@
+// RUNNER_NO_SIMD (cross-ISA bit-exactness experiment, R12.1): compile the
+// scalar reference kernels only, so the reduction order is the source order
+// on every ISA. The SIMD selection below is preprocessor-keyed on the
+// target's own macros; undefining them here is the whole switch.
+#ifdef RUNNER_NO_SIMD
+#undef __AVX2__
+#undef __FMA__
+#undef __F16C__
+#undef __AVX512F__
+#undef __AVX512VNNI__
+#undef __AVX512VL__
+#undef __ARM_NEON
+#endif
 // Quantization block formats (ggml-compatible), dot kernels, threadpool.
 #include "quants.h"
 #include "fp16.h"
 #include "tpool.h"
 
 #include <math.h>
+#include "pmath.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

@@ -21,6 +21,7 @@
 #include <float.h>
 #include <limits.h>
 #include <math.h>
+#include "pmath.h"
 
 // Bare-invocation tray launch needs to know whether a human is at the other
 // end: a piped/redirected probe (CI, scripts, `runner | head`) must get usage
