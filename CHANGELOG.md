@@ -6,6 +6,13 @@ change between releases (the `-alpha` suffix was retired at v0.2.0 — the 0.x
 version already says what it needs to). Entries below the rename keep the
 names that were true when they were written.
 
+## Unreleased
+
+- Speculative decoding stops at the context boundary for model, MTP and
+  lookup drafts, including unlimited generation. The final verify row no
+  longer emits an extra token that makes transcript writing read beyond the
+  history buffer. CLI gates pin the context arithmetic and transcript parity.
+
 ## v0.4.8 - 2026-09-05
 
 The E-series and contraction release: Gemma 4's current shared-KV exports
