@@ -8,6 +8,10 @@ names that were true when they were written.
 
 ## Unreleased
 
+- Capabilities report drafting from resident engines across all serving slots.
+  Model, MTP and lookup drafts are reported active when loaded, inactive
+  after unload, and refused drafts retain their reason with multiple slots.
+  `mtp.consumed` reports actual head use instead of a constant false value.
 - Single-model MTP serving restores the head and configured draft width after
   explicit unload, `keep_alive: 0`, and TTL expiry. Reloads repeat the CPU
   readiness gate instead of silently degrading to plain decoding.

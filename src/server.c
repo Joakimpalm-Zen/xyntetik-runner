@@ -1052,11 +1052,20 @@ static void send_capabilities(sock_t fd) {
     // measure the fallback and publish it as the mode it asked for. `slots` is
     // what the scheduler actually runs, and `draft` separates what was asked
     // for from what is running.
-    // a draft MODEL is active only while loaded (/unload frees it with the
-    // target and the reload re-attaches it); the head and the lookup have no
-    // weights to lose
-    const char *dsrc = SV.draft_source;
-    if (dsrc && !strcmp(dsrc, "model") && !SV.draft) dsrc = NULL;
+    // Registry bookkeeping owns only the single-slot draft. Other slots own
+    // their drafts directly, so inspect the resident engines for all sources.
+    // swap_mu protects reloads; without a registry these fields stay fixed.
+    const char *dsrc = NULL;
+    bool mtp_consumed = false;
+    for (int i = 0; i < SV.n_slots; i++) {
+        const slot_t *slot = &SV.slots[i];
+        if (!slot->m) continue;
+        const engine *e = &slot->e;
+        mtp_consumed |= e->mtp_on;
+        if (!dsrc)
+            dsrc = e->dm ? "model" : e->mtp_on ? "mtp"
+                 : e->lookup_on ? "lookup" : NULL;
+    }
     sb_fmt(&r, ",\"slots\":%d,\"draft\":{\"requested\":%s,\"active\":%s",
            SV.n_slots,
            SV.draft_requested ? "true" : "false",
@@ -1105,11 +1114,9 @@ static void send_capabilities(sock_t fd) {
         }
         sb_lit(&r, "]}");
     }
-    // Admitted-but-unconsumed MTP heads: a controller can see that the export
-    // carries predictor blocks and that this build excluded them, rather than
-    // inferring it from a layer count that silently differs from the card.
-    sb_fmt(&r, ",\"mtp\":{\"declared_layers\":%d,\"consumed\":false}",
-           pm ? pm->mtp_layers : 0);
+    // A declared head is only consumed when a resident engine enables it.
+    sb_fmt(&r, ",\"mtp\":{\"declared_layers\":%d,\"consumed\":%s}",
+           pm ? pm->mtp_layers : 0, mtp_consumed ? "true" : "false");
     sb_lit(&r, ",\"sampling\":{\"preset\":");
     if (SV.preset_name) {
         sb_lit(&r, "\"");
@@ -2004,6 +2011,15 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
             }
         }
 
+        if (draft_path) {
+            bool any_draft = false;
+            for (int i = 0; i < parallel; i++)
+                any_draft |= SV.slots[i].e.dm != NULL;
+            if (!any_draft)
+                SV.draft_note = "the draft was refused at load; see the "
+                                "startup log for the gate that rejected it";
+        }
+
         if (parallel == 1) {
             // join the registry machinery so POST /unload frees the resident
             // model (the next request lazily reloads it) and --ttl works.
@@ -2025,9 +2041,6 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
             // a draft the gates rejected at startup stays rejected: only a
             // draft that actually served is worth reloading after /unload
             if (SV.draft) SV.draft_path = draft_path;
-            else if (draft_path)
-                SV.draft_note = "the draft was refused at load; see the "
-                                "startup log for the gate that rejected it";
             if (!init_swap_runtime(mp, threads_per_slot, ttl)) return 1;
         }
     }

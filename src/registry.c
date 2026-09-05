@@ -286,8 +286,8 @@ int swap_to(const char *want) {
             s->e.draft_k = SV.draft_k;
         }
         if (SV.single && SV.draft_source && !strcmp(SV.draft_source, "lookup")) {
-            // the lookup has no state to reload: the same memset cleared
-            // the flag, and /v1/capabilities keeps reporting it active
+            // The lookup has no weights to reload, but engine_init cleared
+            // its flag along with the target's previous execution state.
             s->e.lookup_on = true;
             s->e.draft_k = SV.draft_k;
         }
