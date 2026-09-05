@@ -67,6 +67,47 @@ static uint32_t rnd32(void) {
 static float frnd(void) { return (float)(int32_t)rnd32() / 2147483648.0f; } // [-1,1)
 static f16_t sane_f16(void) { return f32_to_f16(0.01f + 0.5f * fabsf(frnd())); }
 
+// ----------------------------------------- fixed-order f32 dot reference
+
+// The f32 dot's summation order, written out: one accumulator per SIMD lane
+// fed by an explicit fused multiply-add, the lanes folded in the tree the
+// kernel's intrinsics spell, then the tail folded into that scalar one
+// fused multiply-add at a time. Every operation here has exactly one
+// admissible rounding, so the compiler that builds this test cannot vary
+// the result by unrolling or contracting it; the expected bits come from a
+// written order, not from the kernel under another blocking. The lane
+// count is the ISA's and must be, for the bits to match; the ORDER is what
+// this pins.
+#if defined(__AVX2__) && defined(__FMA__) && defined(__F16C__)
+#define REF_F32_LANES 8
+#elif defined(__aarch64__) && defined(__ARM_NEON)
+#define REF_F32_LANES 4
+#else
+#define REF_F32_LANES 1
+#endif
+static float ref_dot_f32_fixed(const float *w, const float *x, int n) {
+    float a[REF_F32_LANES] = { 0 };
+    int i = 0;
+    for (; i + REF_F32_LANES <= n; i += REF_F32_LANES)
+        for (int l = 0; l < REF_F32_LANES; l++)
+            a[l] = fmaf(w[i + l], x[i + l], a[l]);
+#if REF_F32_LANES == 8
+    // _mm_add_ps(lo, hi); _mm_add_ps(l, movehl(l)); _mm_add_ss(l, shuffle(l, 1))
+    float s = ((a[0] + a[4]) + (a[2] + a[6])) + ((a[1] + a[5]) + (a[3] + a[7]));
+#elif REF_F32_LANES == 4
+    // vaddvq_f32: faddp, faddp
+    float s = (a[0] + a[1]) + (a[2] + a[3]);
+#else
+    float s = a[0];
+#endif
+#if defined(__FMA__) || defined(__ARM_FEATURE_FMA)
+    for (; i < n; i++) s = fmaf(w[i], x[i], s);
+#else
+    for (; i < n; i++) s += w[i] * x[i];
+#endif
+    return s;
+}
+
 // ------------------------------------------------- independent block decode
 
 static void ref_dq_iq2_xxs(const block_iq2_xxs *b, double *y) {
@@ -1141,6 +1182,43 @@ int main(void) {
                     CHECK(got[k] == want,
                           "vec_dot_f32_multi n=%d nb=%d col=%d: %.9g != %.9g",
                           n, nb, k, (double)got[k], (double)want);
+                    // ... and against the written order. The nb=1 check
+                    // proves the blockings agree with each other; this says
+                    // what they agree ON, and holds when every blocking
+                    // drifts together. It is what failed on GCC hosts before
+                    // the tail went to an explicit fmaf (2026-09-05): the
+                    // 4-column block's tail was compiled as a rounded
+                    // product plus an add, the 1-column tail as one fused
+                    // operation, and the same column differed by one ulp
+                    // depending on how many columns travelled with it.
+                    float spec = ref_dot_f32_fixed(wv, xv + (size_t)k * MAXN, n);
+                    CHECK(got[k] == spec,
+                          "vec_dot_f32_multi n=%d nb=%d col=%d: %.9g != fixed-order %.9g",
+                          n, nb, k, (double)got[k], (double)spec);
+                }
+            }
+        }
+        // Absolute anchor, independent of any summation order: w = 1..n and
+        // column k = k+1 give dot = (k+1) * n(n+1)/2, an integer below 2^24
+        // at every partial sum, so every rounding along the way is exact and
+        // any order must land on it. This is what catches a kernel that
+        // reads the wrong column or drops the tail while remaining
+        // perfectly self-consistent.
+        for (int i = 0; i < MAXN; i++) wv[i] = (float)(i + 1);
+        for (int k = 0; k < MAXB; k++)
+            for (int i = 0; i < MAXN; i++) xv[(size_t)k * MAXN + i] = (float)(k + 1);
+        for (size_t ni = 0; ni < sizeof(ns) / sizeof(*ns); ni++) {
+            int n = ns[ni];
+            for (size_t bi = 0; bi < sizeof(bs) / sizeof(*bs); bi++) {
+                int nb = bs[bi];
+                vec_dot_f32_multi(wv, xv, MAXN, nb, n, got);
+                for (int k = 0; k < nb; k++) {
+                    float exact = (float)((k + 1) * (n * (n + 1) / 2));
+                    CHECK(got[k] == exact,
+                          "vec_dot_f32_multi n=%d nb=%d col=%d: %.9g != exact %.9g",
+                          n, nb, k, (double)got[k], (double)exact);
+                    CHECK(ref_dot_f32_fixed(wv, xv + (size_t)k * MAXN, n) == exact,
+                          "fixed-order reference n=%d col=%d misses the exact sum", n, k);
                 }
             }
         }
@@ -1173,6 +1251,10 @@ int main(void) {
                         CHECK(tout[r * MAXB + k] == want,
                               "vec_dot_f32_tile n=%d nb=%d row=%d col=%d: %.9g != %.9g",
                               n, nb, r, k, (double)tout[r * MAXB + k], (double)want);
+                        float spec = ref_dot_f32_fixed(wrows[r], xv2 + (size_t)k * MAXN, n);
+                        CHECK(tout[r * MAXB + k] == spec,
+                              "vec_dot_f32_tile n=%d nb=%d row=%d col=%d: %.9g != fixed-order %.9g",
+                              n, nb, r, k, (double)tout[r * MAXB + k], (double)spec);
                     }
             }
     }

@@ -499,6 +499,40 @@ jobs:
       - name: make test
         run: make test PYTHON=.venv/bin/python
 
+  # The SIMD kernel gates at the two x86 ISA levels `make test` never names:
+  # x86-64-v3, which the release binaries pin, and x86-64-v4 (AVX-512),
+  # which this pool only sometimes provides. The batched f32 dot's
+  # blocking-independence contract failed in `make-test` on 2026-09-02 and
+  # passed on the next runner: `-march=native` compiles for whichever CPU
+  # the job lands on, and GCC's tail codegen split only on some of them.
+  # Building for a level by name makes each exposed configuration a
+  # deliberate leg instead of pool luck. A v4 binary cannot execute without
+  # AVX-512, so a host without it skips that step with a printed reason:
+  # a pool property, not a failure, and the v3 step still ran. The host
+  # line is printed so a failure carries the compiler and CPU it came from.
+  simd-isa-levels:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: host
+        run: |
+          cc --version | head -1
+          grep -m1 'model name' /proc/cpuinfo || true
+          echo "avx512f cores: $(grep -c avx512f /proc/cpuinfo || true)"
+      - name: SIMD gates at -march=x86-64-v3 (the release pin)
+        run: |
+          make test-quants-simd ARCH_FLAGS=-march=x86-64-v3
+          ./test-quants-simd
+      - name: SIMD gates at -march=x86-64-v4
+        run: |
+          if [ "$(grep -c avx512f /proc/cpuinfo || true)" = "0" ]; then
+            echo "skipped: this runner has no AVX-512, so an x86-64-v4 binary cannot execute here"
+            exit 0
+          fi
+          rm -f test-quants-simd .build/quants.o
+          make test-quants-simd ARCH_FLAGS=-march=x86-64-v4
+          ./test-quants-simd
+
   # libFuzzer harnesses for the hand-written parsers that eat untrusted input.
   # Bounded by design: this is a regression gate that has to finish in a couple
   # of minutes, not a fuzzing campaign. Long soaks belong on a schedule.
