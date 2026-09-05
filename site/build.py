@@ -363,6 +363,15 @@ def redirect_page(target: str) -> str:
 """
 
 
+def latest_release() -> tuple[str, str]:
+    """Version and date of the newest released entry in CHANGELOG.md."""
+    for line in (ROOT / "CHANGELOG.md").read_text(encoding="utf-8").splitlines():
+        m = re.match(r"## (v\S+)\s*[-\u2014]\s*(\d{4}-\d{2}-\d{2})", line)
+        if m:
+            return m.group(1), m.group(2)
+    raise SystemExit("no released version found in CHANGELOG.md")
+
+
 def build_revision() -> str:
     sha = os.environ.get("GITHUB_SHA")
     if not sha:
@@ -403,6 +412,7 @@ def check_page(path: str, out: str, known_paths: set[str]) -> list[str]:
 
 def main() -> int:
     sha = build_revision()
+    version, release_date = latest_release()
     if OUT.exists():
         shutil.rmtree(OUT)
     OUT.mkdir(parents=True)
@@ -423,7 +433,8 @@ def main() -> int:
                 return CHARTS[name]()
             raise KeyError(kind)
         body = re.sub(r"\{\{(chart):([a-z_]+)\}\}", sub, body)
-        body = body.replace("{{repo}}", REPO).replace("{{hf}}", HF)
+        body = (body.replace("{{repo}}", REPO).replace("{{hf}}", HF)
+                .replace("{{version}}", version).replace("{{release_date}}", release_date))
         out = shell(meta, body, sha)
         problems += check_page(meta["path"], out, known)
         target = OUT / meta["path"].lstrip("/") / "index.html"
