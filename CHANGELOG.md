@@ -6,7 +6,13 @@ change between releases (the `-alpha` suffix was retired at v0.2.0 — the 0.x
 version already says what it needs to). Entries below the rename keep the
 names that were true when they were written.
 
-## Unreleased
+## v0.4.8 - 2026-09-05
+
+The E-series and contraction release: Gemma 4's current shared-KV exports
+load, the CPU prefill dot gives one answer whatever the batch shape, and the
+serving surface gains `cached_tokens`, `GET /metrics` and a fourth draft
+source that needs no weights.
+
 
 - **Batched prefill dot: blocking-independence by construction, not by
   codegen luck.** The CPU prefill kernel (`vec_dot_f32_multi` and the 4x4

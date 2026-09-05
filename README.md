@@ -156,7 +156,7 @@ for Linux, macOS, or Windows, or build from source:
 git clone https://github.com/Joakimpalm-Zen/xyntetik-runner
 cd xyntetik-runner
 make
-./runner --version   # -> runner 0.4.7
+./runner --version   # -> runner 0.4.8
 ```
 
 CUDA builds and releases need only an NVIDIA driver at runtime. The CUDA
@@ -211,7 +211,7 @@ Run a GGUF:
 ./runner -m model.gguf --draft-lookup -f transcript.txt -p "Summarize the text above"
 ```
 
-> **Pre-1.0 (`0.4.7`).** APIs, model coverage and certification envelopes may
+> **Pre-1.0 (`0.4.8`).** APIs, model coverage and certification envelopes may
 > change between releases. CI builds and smoke-tests Linux, macOS, and
 > Windows, but the project still has limited hardware coverage. Include
 > `runner --version`, `runner --caps`, the model's exact filename, and the load
@@ -379,7 +379,7 @@ shell, then run `make`.
 
 Each release publishes a CPU image - the same binary on a distroless glibc base,
 nothing else - to `ghcr.io/joakimpalm-zen/xyntetik-runner:v<version>` (the
-tag carries the `v`, e.g. `:v0.4.7`) and `:latest`. Build it yourself with `docker build -t runner .`.
+tag carries the `v`, e.g. `:v0.4.8`) and `:latest`. Build it yourself with `docker build -t runner .`.
 
 The server binds **loopback only** by design (there is no `--host`/`0.0.0.0`
 flag), so it never exposes itself to a network, even in a container - which
@@ -611,8 +611,8 @@ reported beside it).
   4k context and 512 MiB at 32k, plus 74.3 MB of file, and tracks its parent
   at clean KLD 0.0223 on 44,413 held-out positions (measured 2026-08-30 on
   the identical zeroed form, carried over by bit identity 2026-09-04). It
-  loads only in this runner from v0.4.7 on, CPU path, and llama.cpp refuses
-  it by name; the card says so beside the numbers.
+  loads only in this runner from the 0.4.7 release on, CPU path, and
+  llama.cpp refuses it by name; the card says so beside the numbers.
 - Measurement reports over third-party artifacts, no weights republished,
   every measured file bound by SHA:
   [Hermes-4-14B quant fidelity](https://huggingface.co/Joakimpalm-Zen/Hermes-4-14B-quant-fidelity-report)
