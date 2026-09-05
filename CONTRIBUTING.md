@@ -91,3 +91,12 @@ mode, so architecture support is admitted by decision, not accumulation:
 
 Plain C11 (gnu11), zero dependencies beyond libc/pthreads. Comments state
 constraints the code can't show — not narration.
+
+## Commit hygiene
+
+Run `make hooks` once per clone. It points `core.hooksPath` at `.githooks/`,
+whose `commit-msg` hook refuses a message that carries a session URL or id,
+an e-mail address, or a `Co-Authored-By` trailer in any form other than
+`Co-Authored-By: <Agent> (<Model>) & Joakimpalm-Zen` (see AGENTS.md). CI runs
+the same check on every pull request, so the hook only moves the refusal
+earlier.

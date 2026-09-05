@@ -243,6 +243,18 @@ on this repo; the trailer records which one produced the commit.
 
 No URLs. No session ids. No email addresses.
 
+**This is enforced, not only written.** `.github/workflows/commit-hygiene.yml`
+runs `scripts/check-commit-hygiene.py` over every commit of a pull request
+and over its title and body, with no path filter, and fails the PR on a
+session URL or id, an e-mail address, or a `Co-Authored-By` line in any
+other form. `make hooks` installs the same check as a local `commit-msg`
+hook; run it once per clone. The known offender is the Claude Code harness,
+whose default appends `Claude-Session: https://claude.ai/code/...` and a
+`<noreply@anthropic.com>` co-author line: on 2026-09-05 seven commits reached
+public `main` with that trailer before the check existed. Claude Code reads
+`CLAUDE.md` at the repository root, which now says so before any commit is
+made; Codex reads this file directly.
+
 Check repository visibility before every push. `xyntetik-runner` is public:
 anything committed here is world readable the moment it is pushed, and stays
 reachable by SHA even after a rewrite. The only cheap moment to get this right

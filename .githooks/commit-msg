@@ -1,0 +1,6 @@
+#!/bin/sh
+# Local half of the publication rule (AGENTS.md): refuse a commit message that
+# carries a session identifier, an e-mail address or a non-conforming
+# Co-Authored-By trailer. Installed by `make hooks`; CI runs the same check on
+# every pull request, so this only moves the refusal earlier.
+exec python3 "$(git rev-parse --show-toplevel)/scripts/check-commit-hygiene.py" --message-file "$1"

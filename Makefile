@@ -2131,6 +2131,12 @@ test-python-deps:
 	}
 	@echo "python test dependencies ok ($(PYTHON))"
 
+# Local commit-msg hook for the publication rule (AGENTS.md); CI runs the same
+# script over every pull request, this only moves the refusal to commit time.
+hooks:
+	git config core.hooksPath .githooks
+	@echo "commit-msg hook installed (core.hooksPath = .githooks)"
+
 test-makefile-sane:
 	@out=$$($(MAKE) -n --no-print-directory makefile-noop 2>&1); \
 	case "$$out" in \
