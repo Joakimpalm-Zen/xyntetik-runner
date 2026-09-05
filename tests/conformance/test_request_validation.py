@@ -489,6 +489,29 @@ def test_thinking_budget_tokens_is_validated(client, budget):
         path="/v1/messages")
 
 
+def test_thinking_enabled_requires_budget_tokens(client):
+    """The API defines budget_tokens as required with type "enabled". The
+    code said so in a comment while checking it only when present, so
+    {"type":"enabled"} alone was answered 200 (outside review, 2026-09-05)."""
+    client.expect_400(
+        {"max_tokens": 4, "messages": [{"role": "user", "content": "hi"}],
+         "thinking": {"type": "enabled"}},
+        name="thinking-enabled-no-budget", contains="budget_tokens",
+        path="/v1/messages")
+
+
+@pytest.mark.parametrize("value", [{"type": "url", "url": "https://x"}, "x", 1])
+def test_malformed_mcp_servers_is_refused_too(client, value):
+    """The MCP refusal looked only at non-empty arrays; an object-shaped or
+    scalar mcp_servers was silently ignored and answered 200 although the
+    runtime cannot reach an MCP server in any shape."""
+    client.expect_400(
+        {"max_tokens": 4, "messages": [{"role": "user", "content": "hi"}],
+         "mcp_servers": value},
+        name=f"mcp-servers-malformed-{type(value).__name__}", contains="mcp",
+        path="/v1/messages")
+
+
 # ------------------------------------------------------- sampling parameters
 #
 # RI-5: a caller sending several sampling settings at once cannot act on

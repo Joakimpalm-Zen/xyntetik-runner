@@ -959,8 +959,44 @@ static snode *compile_oneof(jv *alts, char *err, int errcap, int depth) {
     return n;
 }
 
+// does scalar literal `v` satisfy the `type` keyword (a string or a list)?
+static bool literal_has_type_name(const jv *v, const char *t) {
+    if (!strcmp(t, "string"))  return v->type == J_STR;
+    if (!strcmp(t, "boolean")) return v->type == J_BOOL;
+    if (!strcmp(t, "null"))    return v->type == J_NULL;
+    if (!strcmp(t, "number"))  return v->type == J_NUM;
+    if (!strcmp(t, "integer")) return v->type == J_NUM && v->num == floor(v->num);
+    return false; // object / array literals are refused as non-scalars anyway
+}
+static bool literal_has_type(const jv *v, jv *ty) {
+    if (ty->type == J_STR) return literal_has_type_name(v, ty->str);
+    if (ty->type == J_ARR) {
+        for (int i = 0; i < ty->n; i++)
+            if (literal_has_type_name(v, jv_str(ty->items[i], "?"))) return true;
+        return false;
+    }
+    return true; // a malformed type keyword is reported by compile_typed
+}
+static bool literal_equal(const jv *a, const jv *b) {
+    if (a->type != b->type) return false;
+    switch (a->type) {
+        case J_NUM:  return a->num == b->num;
+        case J_STR:  return !strcmp(a->str, b->str);
+        case J_BOOL: return a->b == b->b;
+        case J_NULL: return true;
+        default:     return false;
+    }
+}
+
 static snode *compile_node(jv *s, char *err, int errcap, int depth) {
     if (depth > 24) { snprintf(err, errcap, "schema too deep"); return NULL; }
+    if (s && s->type == J_BOOL && !s->b) {
+        // `false` admits no value at all. It used to compile to ANY, the
+        // exact opposite, so {"properties":{"x":false},"required":["x"]}
+        // accepted {"x":42}. Refused rather than weakened.
+        snprintf(err, errcap, "boolean schema false admits no value");
+        return NULL;
+    }
     if (!s || s->type == J_NULL || (s->type == J_OBJ && s->n == 0) ||
         s->type == J_BOOL) // `true` / `{}` = anything
         return sn_new(SN_ANY);
@@ -969,6 +1005,13 @@ static snode *compile_node(jv *s, char *err, int errcap, int depth) {
 
     jv *one = jv_get(s, "oneOf");
     jv *any = jv_get(s, "anyOf");
+    if ((one || any) && jv_get(s, "type")) {
+        // a sibling `type` must hold for every alternative; it was dropped,
+        // so {"type":"string","anyOf":[...,{"type":"integer"}]} accepted 1
+        snprintf(err, errcap, "'type' beside oneOf/anyOf is not supported: "
+                 "declare the type on each alternative");
+        return NULL;
+    }
     if (one || any) return compile_oneof(one ? one : any, err, errcap, depth);
 
     // enum / const dominate the type
@@ -982,25 +1025,45 @@ static snode *compile_node(jv *s, char *err, int errcap, int depth) {
             snprintf(err, errcap, "enum must be an array");
             return NULL;
         }
-        snode *n = sn_new(SN_ENUM);
-        if (!n) return NULL;
         int cnt = en ? en->n : 1;
         if (cnt <= 0 || cnt > 60) {
             snprintf(err, errcap, "enum size must be 1..60");
-            schema_free(n);
             return NULL;
         }
-        n->lits = calloc(cnt, sizeof(char *));
-        if (!n->lits) { schema_free(n); return NULL; }
         for (int i = 0; i < cnt; i++) {
             jv *v = en ? en->items[i] : cn;
             if (v->type != J_STR && v->type != J_NUM &&
                 v->type != J_BOOL && v->type != J_NULL) {
                 snprintf(err, errcap, "enum values must be scalars");
-                schema_free(n);
                 return NULL;
             }
-            char *lit = sn_literal(v);
+        }
+        // Siblings intersect, they do not lose: an enum value outside the
+        // declared type is dropped (it could never validate), and a const
+        // beside an enum must be one of its members. Before this,
+        // {"type":"integer","enum":["bad",1]} accepted "bad" and
+        // {"const":1,"enum":[2]} accepted 2.
+        jv *ty = jv_get(s, "type");
+        jv *keep[60];
+        int n_keep = 0;
+        for (int i = 0; i < cnt; i++) {
+            jv *v = en ? en->items[i] : cn;
+            if (ty && !literal_has_type(v, ty)) continue;
+            if (en && cn && !literal_equal(v, cn)) continue;
+            keep[n_keep++] = v;
+        }
+        if (n_keep == 0) {
+            snprintf(err, errcap, en && cn
+                     ? "const is not one of the enum values"
+                     : "no enum value matches the declared type");
+            return NULL;
+        }
+        snode *n = sn_new(SN_ENUM);
+        if (!n) return NULL;
+        n->lits = calloc(n_keep, sizeof(char *));
+        if (!n->lits) { schema_free(n); return NULL; }
+        for (int i = 0; i < n_keep; i++) {
+            char *lit = sn_literal(keep[i]);
             if (!lit) { schema_free(n); return NULL; }
             n->lits[i] = lit;
             n->n_lits++;
@@ -1028,13 +1091,20 @@ static snode *compile_node(jv *s, char *err, int errcap, int depth) {
         if (!n) return NULL;
         n->alts = calloc(ty->n, sizeof(snode *));
         if (!n->alts) { schema_free(n); return NULL; }
+        // number|integer merge into one numeric alternative; it is "number"
+        // only when "number" is actually listed. ["integer","null"] used to
+        // widen to number because the list had more than one member, so
+        // 1.5 validated as an integer.
+        bool any_number = false;
+        for (int i = 0; i < ty->n; i++)
+            if (!strcmp(jv_str(ty->items[i], "?"), "number")) any_number = true;
         bool has_num = false;
         for (int i = 0; i < ty->n; i++) {
             const char *t = jv_str(ty->items[i], "?");
             if ((!strcmp(t, "number") || !strcmp(t, "integer"))) {
                 if (has_num) continue; // merge number|integer
                 has_num = true;
-                t = strcmp(t, "integer") == 0 && ty->n == 1 ? "integer" : "number";
+                t = any_number ? "number" : "integer";
             }
             snode *alt = compile_typed(s, t, err, errcap, depth + 1);
             if (!alt) { schema_free(n); return NULL; }

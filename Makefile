@@ -610,7 +610,7 @@ $(TEST_TC_TOL): $(TEST_TC_TOL_SRC) $(HDR)
 TEST_LORA_GRAD_SRC = tests/test_lora_grad.c src/gguf.c src/compat.c \
                   $(QUANTS_OBJ) src/tokenizer.c src/model.c src/vramreg.c \
                   $(GPU_SRC)
-$(TEST_LORA_GRAD): $(TEST_LORA_GRAD_SRC) $(HDR) test.gguf test-lora.full.gguf test-q8.gguf test-lora-q8.full.gguf test-qk.gguf test-lora-qk.full.gguf
+$(TEST_LORA_GRAD): $(TEST_LORA_GRAD_SRC) $(HDR) test.gguf test-lora.full.gguf test-q8.gguf test-lora-q8.full.gguf test-qk.gguf test-lora-qk.full.gguf test-nope.gguf test-lora-nope.full.gguf
 	$(CC) $(CFLAGS) -I src $(TEST_LORA_GRAD_SRC) -o $@ $(LDFLAGS)
 
 test-lora.full.gguf: test.gguf scripts/make-test-lora.py
@@ -628,6 +628,14 @@ $(TEST_MVT): $(TEST_MVT_SRC) $(HDR) test.gguf test-q8.gguf test-bf16.gguf
 
 test-qk.gguf: scripts/make-test-model.py
 	$(PYTHON) scripts/make-test-model.py --qk-norm test-qk.gguf
+
+# NoPE every layer with a live attention temperature (floor 1): the LoRA
+# backward must skip the rotation and apply the temperature's adjoint
+test-nope.gguf: scripts/make-test-model.py
+	$(PYTHON) scripts/make-test-model.py test-nope.gguf --attn-knobs 1,0.5,1
+
+test-lora-nope.full.gguf: test-nope.gguf scripts/make-test-lora.py
+	$(PYTHON) scripts/make-test-lora.py test-nope.gguf test-lora-nope
 
 test-qkw.gguf: scripts/make-test-model.py
 	$(PYTHON) scripts/make-test-model.py --qk-norm --wide test-qkw.gguf
@@ -1679,6 +1687,9 @@ test: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSON_OOM) $(
 	@# W^T dy through frozen Q8_0 rows) is the one genuinely new kernel
 	@# family here, so it gets its own gradient gate
 	./$(TEST_LORA_GRAD) test-q8.gguf test-lora-q8.full.gguf
+	@# and on NoPE layers with the attention temperature live: the recompute
+	@# and the backward must match the serving forward (no rope, Q scaled)
+	./$(TEST_LORA_GRAD) test-nope.gguf test-lora-nope.full.gguf
 	@# and with qwen3-style per-head QK norms in the layer: the norm adjoint
 	@# sits between the rope adjoint and the projection backward
 	./$(TEST_LORA_GRAD) test-qk.gguf test-lora-qk.full.gguf

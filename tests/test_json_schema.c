@@ -2718,7 +2718,63 @@ static void test_tojson_dump_matches_jinja(void) {
     puts("ok: jv_dump_tojson reproduces jinja's tojson; jv_dump stays compact");
 }
 
+// Sibling constraints intersect; they are never dropped (outside review,
+// 2026-09-05: four ways a schema was silently weakened at compile time).
+static snode *compile_src(const char *schema_src) {
+    jv *j = json_parse(schema_src, strlen(schema_src));
+    assert(j != NULL);
+    char err[256] = "";
+    snode *n = schema_compile(j, err, sizeof(err));
+    jv_free(j);
+    return n;
+}
+static bool compiles(const char *schema_src) {
+    snode *n = compile_src(schema_src);
+    if (n) schema_free(n);
+    return n != NULL;
+}
+static bool accepts(const char *schema_src, const char *doc) {
+    snode *n = compile_src(schema_src);
+    assert(n && "schema must compile for an acceptance check");
+    sval v; sval_init(&v, n);
+    bool ok = sval_feed(&v, doc, (int)strlen(doc)) && v.done;
+    schema_free(n);
+    return ok;
+}
+static void test_schema_sibling_constraints_are_not_dropped(void) {
+    // boolean false admits nothing: refused, never compiled to ANY
+    assert(!compiles("false"));
+    assert(!compiles("{\"type\":\"object\",\"properties\":{\"x\":false},"
+                     "\"required\":[\"x\"]}"));
+    assert(compiles("true"));
+    // enum intersects type: the off-type value is dropped, not admitted
+    // (numeric cases sit inside an object so the closing brace completes them)
+    #define WRAP(inner) "{\"type\":\"object\",\"properties\":{\"v\":" inner "},\"required\":[\"v\"]}"
+    const char *ie = WRAP("{\"type\":\"integer\",\"enum\":[\"bad\",1]}");
+    assert(accepts(ie, "{\"v\":1}"));
+    assert(!accepts(ie, "{\"v\":\"bad\"}"));
+    assert(!compiles("{\"type\":\"integer\",\"enum\":[\"bad\"]}"));
+    // const beside enum: must be a member, and then it is the only value
+    assert(!compiles("{\"const\":1,\"enum\":[2]}"));
+    const char *ce = WRAP("{\"const\":2,\"enum\":[1,2]}");
+    assert(accepts(ce, "{\"v\":2}"));
+    assert(!accepts(ce, "{\"v\":1}"));
+    // type beside oneOf/anyOf is refused rather than ignored
+    assert(!compiles("{\"type\":\"string\",\"anyOf\":[{\"type\":\"string\"},"
+                     "{\"type\":\"integer\"}]}"));
+    assert(compiles("{\"anyOf\":[{\"type\":\"string\"},{\"type\":\"integer\"}]}"));
+    // integer|null stays integer
+    const char *in = WRAP("{\"type\":[\"integer\",\"null\"]}");
+    assert(accepts(in, "{\"v\":1}"));
+    assert(accepts(in, "{\"v\":null}"));
+    assert(!accepts(in, "{\"v\":1.5}"));
+    // number|integer|null is still a number
+    assert(accepts(WRAP("{\"type\":[\"number\",\"integer\",\"null\"]}"), "{\"v\":1.5}"));
+    #undef WRAP
+}
+
 int main(void) {
+    test_schema_sibling_constraints_are_not_dropped();
     test_strict_bounded_numbers();
     test_json_rejects_unpaired_utf16_surrogates();
     test_json_rejects_ill_formed_raw_utf8();
