@@ -705,6 +705,11 @@ typedef struct {
     // outside this process can make it give memory back except this flag.
     bool  yield_on_request;
     bool  mtp;         // consume a declared NextN/MTP head (speculative drafts)
+    // Target adapter is part of the load contract, including server slot
+    // copies and lazy reloads. Path is borrowed for the params' lifetime;
+    // scale is explicit (0 is a valid no-op), ignored when path is NULL.
+    const char *lora_path;
+    float lora_scale;
 } model_params;
 
 bool   model_load(model_t *m, const char *path, const model_params *p);

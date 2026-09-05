@@ -1730,6 +1730,8 @@ int main(int argc, char **argv) {
     // force a second upload of the same weights.
     if (train_path) mp.gpu_mode = GPU_OFF;   // --train is the CPU path (v1)
     if (serve) mp.n_seq = parallel;
+    mp.lora_path = lora_path;
+    mp.lora_scale = lora_scale;
     if (!registry) {
         double t1 = now_s();
         if (!model_load(&m, load_path, &mp)) return 1;
@@ -1762,8 +1764,6 @@ int main(int argc, char **argv) {
                 return 1;
             }
         }
-        if (lora_path && !model_lora_load(&m, lora_path, lora_scale))
-            return 1;
         if (!tokenizer_init(&tok, &m.gf)) return 1;
         fprintf(stderr, "loaded %s | %s | %d layers | ctx %d | %d threads | %.2fs\n",
                 load_path, m.arch, m.n_layer, m.n_ctx, tpool_size(m.tp),

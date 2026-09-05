@@ -8,6 +8,10 @@ names that were true when they were written.
 
 ## Unreleased
 
+- LoRA adapter path and scale are preserved on every target model load:
+  additional serving slots, named registry entries, and reloads after unload
+  or TTL expiry. A failed adapter load refuses the target; draft models do
+  not inherit the target adapter. HTTP gates compare adapted and bare answers.
 - Speculative decoding stops at the context boundary for model, MTP and
   lookup drafts, including unlimited generation. The final verify row no
   longer emits an extra token that makes transcript writing read beyond the

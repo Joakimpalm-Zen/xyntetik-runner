@@ -17,10 +17,14 @@ import json
 import pathlib
 import subprocess
 import sys
+import urllib.request
 
 import pytest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "tests" / "conformance"))
+from harness import RunnerServer
+
 PROMPT = "the quick brown fox jumps over the lazy dog and keeps on running"
 
 
@@ -79,6 +83,43 @@ def test_real_adapter_changes_the_score_deterministically(runner_bin, fx):
     a2 = _score(runner_bin, fx["base"], lora=fx["adapter"])
     assert a1 != base
     assert a1 == a2
+
+
+def _completion(server):
+    req = urllib.request.Request(
+        server.base_url + "/v1/completions",
+        data=json.dumps({"prompt": "hello there", "max_tokens": 8,
+                         "temperature": 0, "seed": 1, "logprobs": 3,
+                         "cache_prompt": False, "prefix_cache": False}).encode(),
+        headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=30) as r:
+        return json.load(r)["choices"][0]
+
+
+@pytest.mark.parametrize("mode", ["reload", "parallel", "registry"])
+def test_served_adapter_survives_every_model_load(runner_bin, fx, mode):
+    """Relative lifecycle gate: every load must preserve the initially
+    adapted answer, and it must differ from the bare base. The adapter's
+    numerical anchor is test_adapter_matches_the_merged_reference below.
+    """
+    args = ["--gpu", "off", "-t", "2"]
+    with RunnerServer(runner_bin, fx["base"], extra_args=args) as srv:
+        bare = _completion(srv)
+    adapted_args = [*args, "--lora", str(fx["adapter"]), "--lora-scale", "100"]
+    with RunnerServer(runner_bin, fx["base"], extra_args=adapted_args) as srv:
+        expected = _completion(srv)
+        assert expected != bare, "the adapter must affect the answer"
+        if mode == "reload":
+            req = urllib.request.Request(srv.base_url + "/unload", data=b"")
+            with urllib.request.urlopen(req, timeout=30) as r:
+                assert json.load(r)["status"] == "ok"
+            assert _completion(srv) == expected
+            return
+    model = f"named={fx['base']}" if mode == "registry" else fx["base"]
+    with RunnerServer(runner_bin, model, parallel=2 if mode == "parallel" else 1,
+                      extra_args=adapted_args) as srv:
+        for _ in range(4):
+            assert _completion(srv) == expected
 
 
 def test_adapter_matches_the_merged_reference(runner_bin, fx):

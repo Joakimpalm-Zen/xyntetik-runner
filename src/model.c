@@ -1228,7 +1228,8 @@ bool model_load(model_t *m, const char *path, const model_params *p) {
     if (!m) return false;
     memset(m, 0, sizeof(*m));
     if (!path || !p) return false;
-    if (!model_load_inner(m, path, p)) {
+    if (!model_load_inner(m, path, p) ||
+        (p->lora_path && !model_lora_load(m, p->lora_path, p->lora_scale))) {
         model_free(m);
         return false;
     }

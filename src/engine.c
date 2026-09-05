@@ -868,6 +868,7 @@ model_t *spec_draft_load(const char *path, const model_t *target,
         return NULL;
     }
     model_params dmp = *mp;
+    dmp.lora_path = NULL; // the target's adapter does not belong to the draft
     dmp.n_ctx = target->n_ctx; // draft must cover the target's positions
     // Draft KV may use the requested q8 storage too. It can change which
     // tokens the draft proposes (and therefore acceptance/throughput), but the
