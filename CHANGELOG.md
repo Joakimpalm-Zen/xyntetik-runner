@@ -8,6 +8,23 @@ names that were true when they were written.
 
 ## Unreleased
 
+- Six defects from a second outside review (2026-09-05), each with a gate:
+  - LoRA training on NoPE layers: the backward's recompute applied rope and
+    the adjoint reversed it on every layer, while the serving forward skips
+    the rotation and scales Q by the attention temperature on NoPE layers.
+    Both now follow `model_layer_ropes`; a NoPE fixture with the temperature
+    live joins the finite-difference gate (worst relative error 1.7 before,
+    at the float floor after).
+  - The schema compiler no longer weakens what it is given: boolean `false`
+    is refused instead of compiling to "anything"; an enum value outside the
+    declared type is dropped and a const beside an enum must be a member; a
+    `type` beside oneOf/anyOf is refused rather than ignored; and
+    `["integer","null"]` stays integer instead of widening to number
+    (`tests/test_json_schema.c`).
+  - Anthropic Messages: `thinking.type:"enabled"` without `budget_tokens` is
+    400 as the API requires, and any `mcp_servers` value other than absent,
+    null or an empty list is refused, not only a non-empty array
+    (`tests/conformance/test_request_validation.py`).
 - The tray icon is the Xyntetik ensö in three states: the bare ensö when
   nothing is loaded, the ensö with the spark on its end when a model is
   resident, and the full Runner mark (ensö, spark, three streaks) while

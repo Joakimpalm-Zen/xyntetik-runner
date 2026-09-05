@@ -6381,7 +6381,17 @@ static bool lora_layer_bw(model_t *m, int l, const int32_t *toks, int T,
                    sizeof(float) * (size_t)q_dim);
             qk_norm(qt, ly->qnorm_w, n_head, hd_l, m->rms_eps);
         }
-        rope_apply(m, qt, n_head, t, l);
+        if (model_layer_ropes(m, l)) {
+            rope_apply(m, qt, n_head, t, l);
+        } else {
+            // NoPE layer: the serving forward skips the rotation and scales
+            // Q by the attention temperature instead; recomputing with rope
+            // here handed the adjoint a Q the model never used (NoPE
+            // fixture: FD worst relative error 1.7 before this branch)
+            float ts = model_attn_temp(m, t);
+            if (ts != 1.0f)
+                for (int i = 0; i < q_dim; i++) qt[i] *= ts;
+        }
         if (ly->knorm_w) {
             float *kt = kpre + (size_t)t * kv_dim;
             matvec_b(m->tp, kt, kv_dim, ly->wk, x1, E, E, kv_dim, ly->bk, 1);
@@ -6464,8 +6474,18 @@ static bool lora_layer_bw(model_t *m, int l, const int32_t *toks, int T,
     if (lprof) { double n2 = plat_now(); lbw_prof[2] += n2 - lt; lt = n2; }
     // ---- phase B2: projection backwards now that dK/dV are complete
     for (int t = 0; ok && t < T; t++) {
-        rope_unapply(m, dq + (size_t)t * q_dim, n_head, t, l);
-        rope_unapply(m, dk + (size_t)t * kv_dim, n_kv, t, l);
+        if (model_layer_ropes(m, l)) {
+            rope_unapply(m, dq + (size_t)t * q_dim, n_head, t, l);
+            rope_unapply(m, dk + (size_t)t * kv_dim, n_kv, t, l);
+        } else {
+            // a NoPE layer's only Q transform is the scalar temperature, whose
+            // adjoint is the same scalar; K is stored as projected (no rope)
+            float ts = model_attn_temp(m, t);
+            if (ts != 1.0f) {
+                float *dqt = dq + (size_t)t * q_dim;
+                for (int i = 0; i < q_dim; i++) dqt[i] *= ts;
+            }
+        }
         // per-head QK-norm adjoints (qwen3-style): the cached/roped values
         // are POST-norm, so the projection backward needs the pre-norm
         // gradient computed against the recomputed pre-norm activations

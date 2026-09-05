@@ -579,7 +579,10 @@ static jv *anth_tool_choice(jv *tc, char *err, int errcap, bool *oom) {
 // invariant: a client told 200 believes the thing it asked for happened.
 static bool anth_reject_unsupported(slot_t *s, sock_t fd, jv *req) {
     jv *v = jv_get(req, "mcp_servers");
-    if (v && v->type == J_ARR && v->n > 0) {
+    // anything but absent, null or an empty list is a request for MCP
+    // servers; a malformed value (an object, a string) used to slip past a
+    // check that only looked at non-empty arrays and was answered 200
+    if (v && v->type != J_NULL && !(v->type == J_ARR && v->n == 0)) {
         send_error(fd, 400,
                    "mcp_servers is not supported: this runtime cannot reach "
                    "remote MCP servers on your behalf. Run the tools locally "
@@ -614,6 +617,18 @@ static bool anth_reject_unsupported(slot_t *s, sock_t fd, jv *req) {
             send_error(fd, 400,
                        "thinking.type must be \"enabled\", \"disabled\" or "
                        "\"adaptive\"");
+            return true;
+        }
+        // the API defines budget_tokens as required with type "enabled"; the
+        // comment below said so while the code checked it only when present,
+        // so {"type":"enabled"} alone was answered 200. Shape first, then
+        // the per-model answer.
+        jv *budget_present = jv_get(v, "budget_tokens");
+        if (!strcmp(type, "enabled") &&
+            (!budget_present || budget_present->type == J_NULL)) {
+            send_error(fd, 400,
+                       "thinking.budget_tokens is required when thinking.type "
+                       "is \"enabled\"");
             return true;
         }
         if (!strcmp(type, "enabled") && !s->m->think_open) {
