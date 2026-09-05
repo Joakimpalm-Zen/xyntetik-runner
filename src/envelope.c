@@ -1,6 +1,7 @@
 #include "envelope.h"
 #include "json.h"
 #include "ed25519.h"
+#include "mldsa.h"
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -9,6 +10,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+
+static void bytes_to_hex(const uint8_t *b, size_t n, char *out);
 
 // ---- SHA-256 (FIPS 180-4) --------------------------------------------------
 // Used only to verify a sidecar's artifact.sha256 against the file that was
@@ -365,8 +368,9 @@ bool transcript_write(const transcript_info *ti) {
              fprintf(f, ",\"chain\":{\"algo\":\"sha256\",\"prev\":"
                      "\"%s\",\"hash\":\"%s\"}", prev, chain) > 0;
         if (ok && ti->sign_key_path) {
-            uint8_t sk[64], pk[32], sig[64];
-            if (!signkey_load(ti->sign_key_path, sk, pk)) {
+            signkey k;
+            uint8_t sig[SIGN_SIG_MAX];
+            if (!signkey_load(ti->sign_key_path, &k)) {
                 fprintf(stderr, "error: transcript: cannot load signing key %s\n",
                         ti->sign_key_path);
                 ok = false;
@@ -386,28 +390,23 @@ bool transcript_write(const transcript_info *ti) {
                 else {
                     memcpy(signed_bytes, w.b, w.n);
                     memcpy(signed_bytes + w.n, chain_obj, (size_t)cl);
-                    ok = ed25519_sign(sig, signed_bytes, sn, sk);
+                    ok = signkey_sign(&k, sig, signed_bytes, sn);
                     free(signed_bytes);
                 }
                 if (ok) {
-                    static const char hexd[] = "0123456789abcdef";
-                    char pkh[65], sigh[129];
-                    for (int i = 0; i < 32; i++) {
-                        pkh[i * 2] = hexd[pk[i] >> 4];
-                        pkh[i * 2 + 1] = hexd[pk[i] & 15];
+                    char *pkh = malloc(k.pk_n * 2 + 1), *sigh = malloc(k.sig_n * 2 + 1);
+                    if (!pkh || !sigh) ok = false;
+                    else {
+                        bytes_to_hex(k.pk, k.pk_n, pkh);
+                        bytes_to_hex(sig, k.sig_n, sigh);
+                        ok = fprintf(f, ",\"signature\":{\"algo\":\"%s\","
+                                     "\"public_key\":\"%s\",\"sig\":\"%s\"}",
+                                     k.algo, pkh, sigh) > 0;
                     }
-                    pkh[64] = 0;
-                    for (int i = 0; i < 64; i++) {
-                        sigh[i * 2] = hexd[sig[i] >> 4];
-                        sigh[i * 2 + 1] = hexd[sig[i] & 15];
-                    }
-                    sigh[128] = 0;
-                    ok = fprintf(f, ",\"signature\":{\"algo\":\"ed25519\","
-                                 "\"public_key\":\"%s\",\"sig\":\"%s\"}",
-                                 pkh, sigh) > 0;
+                    free(pkh); free(sigh);
                 }
             }
-            memset(sk, 0, sizeof sk);
+            memset(&k, 0, sizeof k);
         }
         if (ok) ok = fputs("}\n", f) >= 0;
         ok = (fclose(f) == 0) && ok;
@@ -450,27 +449,61 @@ static void bytes_to_hex(const uint8_t *b, size_t n, char *out) {
     out[n * 2] = 0;
 }
 
-bool signkey_write(const char *path, const uint8_t seed[32], char pub_hex[65]) {
-    uint8_t pk[32], sk[64];
-    ed25519_keypair(pk, sk, seed);
+bool sign_algo_known(const char *algo) {
+    return algo && (strcmp(algo, SIGN_ALGO_ED25519) == 0 ||
+                    strcmp(algo, SIGN_ALGO_MLDSA44) == 0);
+}
+
+// Derive a key pair from the seed under `algo`; false for an unknown algo.
+static bool signkey_derive(signkey *k, const char *algo, const uint8_t seed[32]) {
+    memset(k, 0, sizeof *k);
+    if (strcmp(algo, SIGN_ALGO_ED25519) == 0) {
+        k->algo = SIGN_ALGO_ED25519;
+        k->pk_n = 32; k->sk_n = 64; k->sig_n = 64;
+        ed25519_keypair(k->pk, k->sk, seed);
+        return true;
+    }
+    if (strcmp(algo, SIGN_ALGO_MLDSA44) == 0) {
+        k->algo = SIGN_ALGO_MLDSA44;
+        k->pk_n = MLDSA44_PUBLICKEYBYTES; k->sk_n = MLDSA44_SECRETKEYBYTES;
+        k->sig_n = MLDSA44_BYTES;
+        mldsa44_keypair(k->pk, k->sk, seed);
+        return true;
+    }
+    return false;
+}
+
+bool signkey_sign(const signkey *k, uint8_t *sig, const void *m, size_t n) {
+    if (strcmp(k->algo, SIGN_ALGO_ED25519) == 0) return ed25519_sign(sig, m, n, k->sk);
+    if (strcmp(k->algo, SIGN_ALGO_MLDSA44) == 0) return mldsa44_sign(sig, m, n, k->sk);
+    return false;
+}
+
+bool signkey_write(const char *path, const char *algo, const uint8_t seed[32],
+                   char pub_hex[SIGN_PUBHEX_CAP]) {
+    signkey k;
+    if (!signkey_derive(&k, algo, seed)) return false;
     char seed_hex[65];
     bytes_to_hex(seed, 32, seed_hex);
-    bytes_to_hex(pk, 32, pub_hex);
+    bytes_to_hex(k.pk, k.pk_n, pub_hex);
     FILE *f = fopen(path, "wb");
-    if (!f) return false;
-    bool ok = fprintf(f, "{\"schema_version\":\"xyntetik.runner.signkey.v1\","
-                      "\"algo\":\"ed25519\",\"seed\":\"%s\",\"public_key\":\"%s\"}\n",
-                      seed_hex, pub_hex) > 0;
-    ok = (fclose(f) == 0) && ok;
-    memset(sk, 0, sizeof sk);
+    bool ok = f != NULL;
+    if (ok) {
+        ok = fprintf(f, "{\"schema_version\":\"xyntetik.runner.signkey.v1\","
+                     "\"algo\":\"%s\",\"seed\":\"%s\",\"public_key\":\"%s\"}\n",
+                     k.algo, seed_hex, pub_hex) > 0;
+        ok = (fclose(f) == 0) && ok;
+    }
+    memset(&k, 0, sizeof k);
     memset(seed_hex, 0, sizeof seed_hex);
     return ok;
 }
 
-bool signkey_load(const char *path, uint8_t sk[64], uint8_t pk[32]) {
+bool signkey_load(const char *path, signkey *k) {
     FILE *f = fopen(path, "rb");
     if (!f) return false;
-    char buf[1024];
+    // seed (64 hex) + an ML-DSA-44 public key (2624 hex) + framing
+    char buf[4096];
     size_t n = fread(buf, 1, sizeof buf - 1, f);
     fclose(f);
     buf[n] = 0;
@@ -480,25 +513,26 @@ bool signkey_load(const char *path, uint8_t sk[64], uint8_t pk[32]) {
     const char *algo = jv_str(jv_get(j, "algo"), "");
     const char *seed_hex = jv_str(jv_get(j, "seed"), NULL);
     uint8_t seed[32];
-    bool ok = strcmp(sv, "xyntetik.runner.signkey.v1") == 0 &&
-              strcmp(algo, "ed25519") == 0 && seed_hex &&
-              hex_to_bytes(seed_hex, strlen(seed_hex), seed, 32);
+    bool ok = strcmp(sv, "xyntetik.runner.signkey.v1") == 0 && seed_hex &&
+              hex_to_bytes(seed_hex, strlen(seed_hex), seed, 32) &&
+              signkey_derive(k, algo, seed);
     if (ok) {
-        ed25519_keypair(pk, sk, seed);
         // a public_key field that disagrees with the seed is a corrupted file
         const char *pub_hex = jv_str(jv_get(j, "public_key"), NULL);
-        uint8_t want[32];
-        if (pub_hex && (!hex_to_bytes(pub_hex, strlen(pub_hex), want, 32) ||
-                        memcmp(want, pk, 32) != 0))
+        uint8_t want[SIGN_PK_MAX];
+        if (pub_hex && (strlen(pub_hex) != k->pk_n * 2 ||
+                        !hex_to_bytes(pub_hex, strlen(pub_hex), want, k->pk_n) ||
+                        memcmp(want, k->pk, k->pk_n) != 0))
             ok = false;
     }
+    if (!ok) memset(k, 0, sizeof *k);
     memset(seed, 0, sizeof seed);
     memset(buf, 0, sizeof buf);
     jv_free(j);
     return ok;
 }
 
-receipt_sig_state receipt_signature_check(const char *rec, size_t n, char pub_hex[65]) {
+receipt_sig_state receipt_signature_check(const char *rec, size_t n, char pub_hex[SIGN_PUBHEX_CAP]) {
     // the signed span ends at the LAST `,"signature"` key (the record's own
     // JSON strings are escaped, so the key cannot appear inside a value)
     const char *pos = NULL, *scan = rec;
@@ -511,15 +545,20 @@ receipt_sig_state receipt_signature_check(const char *rec, size_t n, char pub_he
     const char *algo = jv_str(jv_get(sg, "algo"), "");
     const char *pk_hex = jv_str(jv_get(sg, "public_key"), NULL);
     const char *sig_hex = jv_str(jv_get(sg, "sig"), NULL);
-    uint8_t pk[32], sig[64];
-    if (!sg || strcmp(algo, "ed25519") != 0 || !pk_hex || !sig_hex ||
-        !hex_to_bytes(pk_hex, strlen(pk_hex), pk, 32) ||
-        !hex_to_bytes(sig_hex, strlen(sig_hex), sig, 64)) {
+    size_t pk_n = 0, sig_n = 0;
+    if (strcmp(algo, SIGN_ALGO_ED25519) == 0) { pk_n = 32; sig_n = 64; }
+    else if (strcmp(algo, SIGN_ALGO_MLDSA44) == 0) { pk_n = MLDSA44_PUBLICKEYBYTES; sig_n = MLDSA44_BYTES; }
+    uint8_t pk[SIGN_PK_MAX], sig[SIGN_SIG_MAX];
+    if (!sg || pk_n == 0 || !pk_hex || !sig_hex ||
+        strlen(pk_hex) != pk_n * 2 || strlen(sig_hex) != sig_n * 2 ||
+        !hex_to_bytes(pk_hex, strlen(pk_hex), pk, pk_n) ||
+        !hex_to_bytes(sig_hex, strlen(sig_hex), sig, sig_n)) {
         jv_free(j);
         return RSIG_MALFORMED;
     }
-    bool ok = ed25519_verify(sig, rec, (size_t)(pos - rec), pk);
-    if (ok && pub_hex) memcpy(pub_hex, pk_hex, 65);
+    bool ok = pk_n == 32 ? ed25519_verify(sig, rec, (size_t)(pos - rec), pk)
+                         : mldsa44_verify(sig, rec, (size_t)(pos - rec), pk);
+    if (ok && pub_hex) memcpy(pub_hex, pk_hex, pk_n * 2 + 1);
     jv_free(j);
     return ok ? RSIG_OK : RSIG_BAD;
 }

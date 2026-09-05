@@ -106,16 +106,37 @@ typedef struct {
     int         spec_lk_drafted, spec_lk_accepted;   // the lookup's share
 } transcript_info;
 
-// Signing keys: xyntetik.runner.signkey.v1, an Ed25519 seed and its public
-// key as hex in a JSON object. signkey_write generates from `seed` (32 random
+// Signing keys: xyntetik.runner.signkey.v1, a 32-byte seed and the public
+// key it derives as hex in a JSON object, with an "algo" of "ed25519" (RFC
+// 8032, 32-byte key, 64-byte signature) or "ml-dsa-44" (FIPS 204, 1312-byte
+// key, 2420-byte signature, quantum-resistant; keys derive deterministically
+// from the seed and signing is deterministic, so a receipt re-signed with the
+// same key is byte-identical). signkey_write generates from `seed` (32 random
 // bytes the caller drew) and prints nothing; signkey_load parses one.
-bool signkey_write(const char *path, const uint8_t seed[32], char pub_hex[65]);
-bool signkey_load(const char *path, uint8_t sk[64], uint8_t pk[32]);
-// Verify the Ed25519 signature object of a receipt: `rec` is the whole file,
-// the signed bytes are everything before the last `,"signature"`. Fills
-// pub_hex with the embedded key on success.
+#define SIGN_ALGO_ED25519 "ed25519"
+#define SIGN_ALGO_MLDSA44 "ml-dsa-44"
+#define SIGN_PK_MAX  1312
+#define SIGN_SK_MAX  2560
+#define SIGN_SIG_MAX 2420
+#define SIGN_PUBHEX_CAP (2 * SIGN_PK_MAX + 1)   // hex of the largest public key
+typedef struct {
+    const char *algo;               // one of the SIGN_ALGO_* literals
+    size_t pk_n, sk_n, sig_n;
+    uint8_t pk[SIGN_PK_MAX];
+    uint8_t sk[SIGN_SK_MAX];
+} signkey;
+bool sign_algo_known(const char *algo);
+bool signkey_write(const char *path, const char *algo, const uint8_t seed[32],
+                   char pub_hex[SIGN_PUBHEX_CAP]);
+bool signkey_load(const char *path, signkey *k);
+// sig must hold k->sig_n bytes
+bool signkey_sign(const signkey *k, uint8_t *sig, const void *m, size_t n);
+// Verify the signature object of a receipt: `rec` is the whole file, the
+// signed bytes are everything before the last `,"signature"`; the object's
+// "algo" selects the primitive. Fills pub_hex with the embedded key on
+// success.
 typedef enum { RSIG_NONE = 0, RSIG_OK = 1, RSIG_BAD = 2, RSIG_MALFORMED = 3 } receipt_sig_state;
-receipt_sig_state receipt_signature_check(const char *rec, size_t n, char pub_hex[65]);
+receipt_sig_state receipt_signature_check(const char *rec, size_t n, char pub_hex[SIGN_PUBHEX_CAP]);
 
 // Writes the transcript beside the run. Returns false (with the reason on
 // stderr) on any failure; a partial transcript is never left installed.

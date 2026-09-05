@@ -217,3 +217,7 @@ test-ecdsa.exe
 
 # xyntetik.com is generated at build time (site/build.py)
 site/_site/
+test-mldsa
+test-mldsa.exe
+test-canon-kernels
+test-canon-kernels.exe
