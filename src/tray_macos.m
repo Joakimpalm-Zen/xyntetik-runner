@@ -21,19 +21,21 @@ extern char **environ;
 static NSStatusItem *g_status;
 
 // ---------------------------------------------------------------- the icon
-// One rounded-square core with a signal motif around it, drawn in code as a
-// template image so macOS recolors it for light and dark menu bars. Three
-// states, matching the three the core can actually distinguish:
+// The Xyntetik ensö, drawn in code as a template image so macOS recolors it
+// for light and dark menu bars. Three states, matching the three the core
+// can actually distinguish, and matching the brand marks one to one (the
+// site's marks/ set: an open ring, the spark at its end, the Runner streaks):
 //
-//   IDLE     hollow core, two sweeps      nothing loaded
-//   LOADED   solid core, two sweeps       model resident, waiting
-//   RUNNING  solid core, full broken ring inference in flight
+//   IDLE     the bare ensö                     nothing loaded
+//   LOADED   ensö + the spark at its end       model resident, waiting
+//   RUNNING  the full Runner mark: ensö,       inference in flight
+//            spark and three motion streaks
 //
-// The ring is segmented rather than continuous because a menu-bar template
-// image cannot animate: four gaps read as motion where a closed circle would
-// read as a static badge. Everything is drawn from the centre of an 18×18 box
-// so the three glyphs share an optical weight and the icon does not appear to
-// shift when the state changes.
+// Geometry is the 100-unit mark scaled to an 18-pt box (0.18) so the menu-bar
+// glyph and the site's mark are the same drawing: ring radius 40 -> 7.2, gap
+// at the top between the mark's end points (115 degrees upper-left, 60
+// degrees upper-right, in y-up terms), the spark on the upper-right end, the
+// streaks at the mark's three rows.
 static NSImage *core_icon_px(tray_icon_state st, CGFloat px) {
     const CGFloat s = px / 18.0;   // geometry below is authored in 18-pt units
     NSImage *img = [NSImage imageWithSize:NSMakeSize(px, px)
@@ -43,47 +45,43 @@ static NSImage *core_icon_px(tray_icon_state st, CGFloat px) {
         [[NSColor blackColor] setFill];
         [[NSColor blackColor] setStroke];
         const CGFloat cx = 9.0 * s, cy = 9.0 * s;
-
         NSPoint c = NSMakePoint(cx, cy);
-        void (^sweep)(CGFloat, CGFloat, CGFloat, CGFloat) =
-            ^(CGFloat r, CGFloat mid, CGFloat half, CGFloat w) {
-            NSBezierPath *p = [NSBezierPath bezierPath];
-            p.lineWidth = w;
-            p.lineCapStyle = NSLineCapStyleRound;
-            [p appendBezierPathWithArcWithCenter:c
-                                          radius:r
-                                      startAngle:mid - half
-                                        endAngle:mid + half];
-            [p stroke];
-        };
 
-        // the core
-        const CGFloat side = 7.2 * s;
-        if (st == TRAY_ICON_IDLE) {
-            // inset by half the line width so the hollow core keeps the solid
-            // one's outer edge instead of growing outward by half a stroke
-            const CGFloat w = 1.3 * s;
-            NSBezierPath *core = [NSBezierPath bezierPathWithRoundedRect:
-                NSMakeRect(cx - side / 2 + w / 2, cy - side / 2 + w / 2,
-                           side - w, side - w)
-                                                                xRadius:1.8 * s
-                                                                yRadius:1.8 * s];
-            core.lineWidth = w;
-            [core stroke];
-        } else {
-            [[NSBezierPath bezierPathWithRoundedRect:
-                NSMakeRect(cx - side / 2, cy - side / 2, side, side)
-                                             xRadius:2.2 * s
-                                             yRadius:2.2 * s] fill];
-        }
+        // the ring: the long way round from 115 to 60 degrees, open at the top
+        const CGFloat r = 7.0 * s;
+        NSBezierPath *ring = [NSBezierPath bezierPath];
+        ring.lineWidth = 1.7 * s;
+        ring.lineCapStyle = NSLineCapStyleRound;
+        [ring appendBezierPathWithArcWithCenter:c radius:r
+                                     startAngle:115.0 endAngle:60.0];
+        [ring stroke];
+
+        if (st == TRAY_ICON_IDLE) return YES;
+
+        // the spark: a dot on the ring's upper-right end
+        const CGFloat ex = cx + r * cos(60.0 * M_PI / 180.0);
+        const CGFloat ey = cy + r * sin(60.0 * M_PI / 180.0);
+        const CGFloat dr = 1.35 * s;
+        [[NSBezierPath bezierPathWithOvalInRect:
+            NSMakeRect(ex - dr, ey - dr, 2 * dr, 2 * dr)] fill];
 
         if (st == TRAY_ICON_RUNNING) {
-            for (int i = 0; i < 4; i++)
-                sweep(6.5 * s, 45.0 + i * 90.0, 32.0, 1.5 * s);
-        } else {
-            // two opposing sweeps: upper-right and lower-left
-            sweep(6.3 * s, 45.0, 30.0, 1.3 * s);
-            sweep(6.3 * s, 225.0, 30.0, 1.3 * s);
+            // the Runner streaks: three rows, the middle one longest, each a
+            // round-capped stroke tapering nowhere (a template image has no
+            // gradient to fade them with, so they are plain motion lines)
+            struct { CGFloat y, x0, x1, w; } rows[] = {
+                { cy + 2.07 * s, cx - 4.1 * s, cx + 2.3 * s, 0.95 * s },
+                { cy,            cx - 5.2 * s, cx + 4.0 * s, 1.2 * s },
+                { cy - 2.07 * s, cx - 3.8 * s, cx + 1.6 * s, 0.95 * s },
+            };
+            for (int i = 0; i < 3; i++) {
+                NSBezierPath *ln = [NSBezierPath bezierPath];
+                ln.lineWidth = rows[i].w;
+                ln.lineCapStyle = NSLineCapStyleRound;
+                [ln moveToPoint:NSMakePoint(rows[i].x0, rows[i].y)];
+                [ln lineToPoint:NSMakePoint(rows[i].x1, rows[i].y)];
+                [ln stroke];
+            }
         }
         return YES;
     }];

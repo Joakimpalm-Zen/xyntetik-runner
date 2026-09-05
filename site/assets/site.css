@@ -101,7 +101,14 @@ li { margin: 0.3rem 0; }
 .brand { display: inline-flex; align-items: center; gap: 0.6rem; color: var(--ink); }
 .brand:hover { text-decoration: none; }
 .brand-mark { display: inline-block; width: 34px; height: 34px; }
-.brand-mark svg { width: 100%; height: 100%; display: block; }
+.brand-mark img { width: 100%; height: 100%; display: block; }
+/* one of each mark pair is shown; !important because the size rules below
+   set display on the img and would otherwise win on specificity */
+.mark-dark { display: none !important; }
+@media (prefers-color-scheme: dark) {
+  .mark-light { display: none !important; }
+  .mark-dark { display: block !important; }
+}
 .brand-mark.small { width: 40px; height: 40px; margin-bottom: 0.6rem; }
 .brand-word { font-family: var(--display); font-weight: 600; font-size: 1.45rem; letter-spacing: -0.03em; line-height: 1; }
 .brand-word .x { color: var(--teal); }
@@ -155,6 +162,11 @@ li { margin: 0.3rem 0; }
 .card.accent { border-top: 3px solid var(--teal); }
 .card .icon { width: 36px; height: 36px; color: var(--teal); margin-bottom: 0.4rem; }
 .card .icon svg { width: 100%; height: 100%; }
+.card .icon.mark-icon { width: 44px; height: 44px; }
+.card .icon.mark-icon img { width: 44px; height: 44px; display: block; }
+.page-mark { margin-bottom: 1rem; }
+.page-mark img { width: 64px; height: 64px; display: block; }
+.company .mark img { width: 72px; height: 72px; display: block; }
 .card-link { color: inherit; }
 .card-link:hover { text-decoration: none; border-color: var(--line-strong); }
 .num { font-family: var(--mono); font-weight: 500; color: var(--ink); }
@@ -192,16 +204,16 @@ li { margin: 0.3rem 0; }
 .hero h1 { margin-bottom: 1rem; max-width: 16ch; }
 .hero .lede { margin-bottom: 0.5rem; }
 .hero-art { display: flex; justify-content: center; }
-.hero-art svg { width: min(100%, 360px); height: auto; }
-.hero-enso .ring { stroke-dasharray: 230; stroke-dashoffset: 230; animation: draw 1.6s cubic-bezier(0.4, 0, 0.2, 1) 0.2s forwards; }
-.hero-enso .dot { opacity: 0; animation: pop 0.5s ease 1.5s forwards; }
-.hero-enso .dot2 { animation-delay: 1.65s; }
-.hero-enso .dot3 { animation-delay: 1.8s; }
+.hero-art svg { width: min(100%, 380px); height: auto; }
+.hero-mark .ring { stroke-dasharray: 230; stroke-dashoffset: 230; animation: draw 1.6s cubic-bezier(0.4, 0, 0.2, 1) 0.2s forwards; }
+.hero-mark .dot { opacity: 0; animation: pop 0.5s ease 1.5s forwards; }
+.hero-mark .dot:nth-of-type(2) { animation-delay: 1.65s; }
+.hero-mark .dot:nth-of-type(3) { animation-delay: 1.8s; }
 @keyframes draw { to { stroke-dashoffset: 0; } }
 @keyframes pop { to { opacity: 1; } }
 @media (prefers-reduced-motion: reduce) {
-  .hero-enso .ring { animation: none; stroke-dashoffset: 0; }
-  .hero-enso .dot { animation: none; opacity: 1; }
+  .hero-mark .ring { animation: none; stroke-dashoffset: 0; }
+  .hero-mark .dot { animation: none; opacity: 1; }
 }
 @media (max-width: 900px) {
   .hero-grid { grid-template-columns: minmax(0, 1fr); }

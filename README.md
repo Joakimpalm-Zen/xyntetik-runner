@@ -1695,17 +1695,17 @@ Ctrl-C leaves the menu bar alone, and it outlives the run that raised it.
 
 ### Icon states
 
-A rounded-square core with a signal motif around it. On macOS it is a template
-image, so it follows light and dark menu bars.
+The Xyntetik ensö, the same drawing as the brand mark on xyntetik.com. On
+macOS it is a template image, so it follows light and dark menu bars.
 
 | State | Glyph | Meaning |
 |---|---|---|
-| Idle | hollow core, two opposing sweeps | No runner registered. |
-| Model loaded | solid core, two opposing sweeps | A runner is up with a model resident, nothing in flight. |
-| Running | solid core, four-segment ring | Inference is in flight. |
+| Idle | the bare ensö | No runner registered. |
+| Model loaded | ensö with the spark on its end | A runner is up with a model resident, nothing in flight. |
+| Running | the full Runner mark: ensö, spark and three streaks | Inference is in flight. |
 
-The ring is segmented rather than closed because a menu-bar template image
-cannot animate: four gaps read as motion where a circle reads as a badge.
+A menu-bar template image cannot animate, so the streaks are what says
+"moving": the ring itself is the same in every state.
 
 `/health` also carries what a supervisor needs to budget several runners on
 one machine. `rss_bytes` is this **process's** resident set - weights, KV

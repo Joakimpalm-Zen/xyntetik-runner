@@ -8,6 +8,14 @@ names that were true when they were written.
 
 ## Unreleased
 
+- The tray icon is the Xyntetik ensö in three states: the bare ensö when
+  nothing is loaded, the ensö with the spark on its end when a model is
+  resident, and the full Runner mark (ensö, spark, three streaks) while
+  inference is in flight. Same drawing on macOS (template image) and Windows
+  (16 px GDI), authored from the 100-unit brand mark; the review dump
+  (`XYNTETIK_TRAY_ICON_DUMP`) renders the new states. xyntetik.com carries the
+  v3 mark set (Xyntetik, Runner, Suite, Lab, Zenova; light and dark) in the
+  header, hero, About triad, page heads, favicon and preview image.
 - Four slot-state defects from an outside review (2026-09-05), each with an
   HTTP regression gate on the CPU fixtures:
   - A KV ring (`RUNNER_KV_RING=1`) or tied-V (`RUNNER_TIEDV=1`) refuses the

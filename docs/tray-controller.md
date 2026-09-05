@@ -79,10 +79,11 @@ Stop semantics: SIGTERM, 3 s grace, SIGKILL on macOS. On Windows v1 uses
 console process outside your own console group; the registry record is
 swept either way, and the server holds no state that outlives the process.
 
-The icon is a rounded-square core with a signal motif and carries three
-states, refreshed every 5 s: hollow core with two sweeps when no runner is
-registered, solid core with two sweeps when one is up with a model resident,
-and solid core with a four-segment ring while inference is in flight. The
+The icon is the Xyntetik ensö, the same drawing as the brand mark, and carries
+three states, refreshed every 5 s: the bare ensö when no runner is registered,
+the ensö with the spark on its end when one is up with a model resident, and
+the full Runner mark (ensö, spark and three streaks) while inference is in
+flight. The
 third is read from `active_requests` in `/health`; when it cannot be read the
 icon falls back to "model loaded", since an unreachable-but-live server still
 has a model resident. See the README's Desktop tray section for the table.
