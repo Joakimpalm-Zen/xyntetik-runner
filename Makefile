@@ -1423,10 +1423,22 @@ endif
 # gate, across the architecture roster (dense, swa, E-series, gpt-oss MoE
 # with biases and swiglu_oai, q8-requantized experts), with the engagement
 # grep keeping a fallen-back build from passing on self-agreement.
-# test-swa.gguf is otherwise generated inside the metal-swa recipe, which
-# leaves standalone `make test-metal-fuse` with a prerequisite and no rule.
+# test-swa.gguf and test-es.gguf are otherwise generated inside the metal-swa
+# and metal-eseries recipes, which leaves standalone `make test-metal-fuse`
+# with a prerequisite and no rule. Neither of those recipes runs in `make
+# test`, so on a fresh tree test-es.gguf never existed at all and `make test`
+# stopped here with "No rule to make target test-es.gguf".
 test-swa.gguf:
 	$(PYTHON) scripts/make-test-model.py --arch qwen3 --swa 8,2 test-swa.gguf
+
+# The E-series fixture the fuse roster (and the sanitizer fixture list in
+# tests/test_hostile_geometry.py) names by that exact path: shared_kv=3,
+# ple_dim=16, the richest of the three configs test-metal-eseries sweeps and
+# the one that recipe used to leave behind as its last iteration. The eseries
+# loop now writes its own scratch file, so this rule is the only producer of
+# test-es.gguf and its config cannot silently change under the fuse gate.
+test-es.gguf: scripts/make-test-model.py
+	$(PYTHON) scripts/make-test-model.py --eseries 3,16 test-es.gguf
 
 # The fixture prerequisites are macOS-only: on Linux the recipe body is a
 # skip line, and naming Darwin fixtures as prerequisites there stops the
@@ -1580,9 +1592,9 @@ ifeq ($(shell uname -s),Darwin)
 	@set -e; \
 	if ./$(RUNNER_EXE) --caps | $(PYTHON) -c "import json,sys; d=json.load(sys.stdin); sys.exit(0 if (d.get('gpu') or {}).get('backend') == 'metal' else 1)"; then \
 		for cfg in 0,16 3,0 3,16; do \
-		  $(PYTHON) scripts/make-test-model.py --eseries $$cfg test-es.gguf; \
-		  ./$(RUNNER_EXE) -m test-es.gguf -p "hello world" -n 8 --temp 0 --gpu off > metal-es-cpu.out 2>/dev/null; \
-		  env RUNNER_METAL_MM=0 RUNNER_METAL_ATTN_COOP=0 RUNNER_METAL_MOE_MM=0 ./$(RUNNER_EXE) -m test-es.gguf -p "hello world" -n 8 --temp 0 --gpu auto > metal-es-gpu.out 2> metal-es-gpu.err; \
+		  $(PYTHON) scripts/make-test-model.py --eseries $$cfg test-es-cfg.gguf; \
+		  ./$(RUNNER_EXE) -m test-es-cfg.gguf -p "hello world" -n 8 --temp 0 --gpu off > metal-es-cpu.out 2>/dev/null; \
+		  env RUNNER_METAL_MM=0 RUNNER_METAL_ATTN_COOP=0 RUNNER_METAL_MOE_MM=0 ./$(RUNNER_EXE) -m test-es-cfg.gguf -p "hello world" -n 8 --temp 0 --gpu auto > metal-es-gpu.out 2> metal-es-gpu.err; \
 		  cmp -s metal-es-cpu.out metal-es-gpu.out || { echo "eseries $$cfg differs"; exit 1; }; \
 		  grep -q "Metal backend" metal-es-gpu.err || { echo "eseries $$cfg: Metal never engaged"; exit 1; }; \
 		done; \
@@ -2015,6 +2027,7 @@ clean:
 	rm -f metal-gptoss-moe-cpu.out metal-gptoss-moe-gpu.out metal-gptoss-moe-gpu.err
 	rm -f metal-gemma4-moe-cpu.out metal-gemma4-moe-gpu.out metal-gemma4-moe-gpu.err
 	rm -f metal-swa-cpu.out metal-swa-gpu.out metal-swa-gpu.err test-swa.gguf
+	rm -f metal-es-cpu.out metal-es-gpu.out metal-es-gpu.err test-es.gguf test-es-cfg.gguf
 	rm -f $(addprefix fuzz-,$(FUZZ_TARGETS))
 	rm -rf fuzz-corpus
 
