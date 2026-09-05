@@ -113,6 +113,20 @@ they describe; they remain valid and reproducible. The promoted default is
 certified separately, per (type, arch), by the tolerance gate's recorded
 rows (see the TC spec).
 
+**The CPU side of that identity is the build, not only the source.** The
+0.4.9 release run produced two `cpu_cuda` failures (granite-4.1-8b 8/9,
+gemma-4-E4B 8/9, each a 0.001-nat near-tie flipping at one position) from a
+binary that was otherwise the same code that had passed 9/9 hours earlier on
+the same box. The difference was the compiler environment: `conda activate`
+exports a `CFLAGS` variable (`-march=nocona -mtune=haswell -fstack-protector-
+strong -fno-plt -O2 -ffunction-sections ...`) which the Makefile's `CFLAGS ?=`
+adopts before appending its own flags, and that codegen moves the CPU dot
+products by an ulp against the CUDA scalar kernel. A rebuild with `CFLAGS`
+unset passed 9/9 again, on both models. So: build the matrix binary with the
+Makefile's own flags (`unset CFLAGS` after activating the toolchain), and
+treat a near-tie flip in this check as a question about the build before
+a question about the code.
+
 Tokenizer references are exercised with the pinned `tokenizers` package and
 the committed 721-string corpus. Install
 `tests/compatibility/tokenizer-requirements.txt`, then run `scripts/difftok.py`
