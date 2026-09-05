@@ -138,6 +138,7 @@ def check(args):
     changelog = read(args.changelog)
     if not re.search(rf"^## v?{re.escape(version)}\b", changelog, re.M):
         ok &= fail(f"CHANGELOG has no section for {version}")
+    ok &= site_parity(readme, getattr(args, "site_pages", None))
 
     build_info = read(args.build_info)
     build_lines = build_info.splitlines()
@@ -216,6 +217,39 @@ def check(args):
     return ok
 
 
+HF_REPO = re.compile(r"https://huggingface\.co/Joakimpalm-Zen/([A-Za-z0-9._-]+)")
+
+
+def hf_repos(text):
+    """Repository names linked from `text`, in either the absolute or the
+    site's `{{hf}}/<name>` spelling."""
+    names = set(HF_REPO.findall(text))
+    names |= set(re.findall(r"\{\{hf\}\}/([A-Za-z0-9._-]+)", text))
+    return names
+
+
+def site_parity(readme, site_pages):
+    """README and xyntetik.com must link the same Hugging Face repositories.
+
+    The site is built from this repository but its artifact ledger is
+    hand-written, so a card published (or retired) with a README entry and no
+    site entry, or the reverse, is the drift this catches. Returns False on a
+    mismatch, naming the repositories on one side only.
+    """
+    if site_pages is None or not Path(site_pages).is_dir():
+        return True
+    in_site = set()
+    for page in sorted(Path(site_pages).glob("*.html")):
+        in_site |= hf_repos(read(page))
+    in_readme = hf_repos(readme)
+    ok = True
+    for name in sorted(in_readme - in_site):
+        ok &= fail(f"Hugging Face repository {name} is linked from README but not from the site")
+    for name in sorted(in_site - in_readme):
+        ok &= fail(f"Hugging Face repository {name} is linked from the site but not from README")
+    return ok
+
+
 def executed_checks(reports):
     """How many checks across these compat reports actually ran."""
     n = 0
@@ -250,6 +284,9 @@ def main(argv=None):
                              "version")
     parser.add_argument("--commit", required=True,
                         help="commit SHA expected in BUILD-INFO.txt")
+    parser.add_argument("--site-pages", type=Path, default=ROOT / "site" / "pages",
+                        help="xyntetik.com page sources; README and the site "
+                             "must link the same Hugging Face repositories")
     # No default here: argparse APPENDS to one, so a caller passing
     # --current-doc to NARROW the scan silently widened it instead -- and if
     # any of the three built-ins were ever deleted from the tree, the widened

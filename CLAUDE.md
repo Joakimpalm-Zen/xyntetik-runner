@@ -23,5 +23,13 @@ configuration breaks without noticing:
    conversation content reach it in any form (AGENTS.md, "Never publish
    conversation content or session identifiers").
 
+3. **Three public surfaces move together.** The README, xyntetik.com
+   (`site/pages/`, built from this repository) and the Hugging Face model
+   cards tell one account. A runner release and a Hugging Face card change
+   each end with the question "does the site need the same change?", answered
+   in the same pull request. `make release-check` refuses a release whose
+   README and site link different Hugging Face repositories (AGENTS.md,
+   rule 5).
+
 Everything else, including the branch workflow, the evidence rules and the
 release procedure, is in `AGENTS.md`.

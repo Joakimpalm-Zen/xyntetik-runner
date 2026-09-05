@@ -613,6 +613,17 @@ reported beside it).
   the identical zeroed form, carried over by bit identity 2026-09-04). It
   loads only in this runner from the 0.4.7 release on, CPU path, and
   llama.cpp refuses it by name; the card says so beside the numbers.
+- [Muse-Glimmer-30B surgical Q4_K](https://huggingface.co/Joakimpalm-Zen/Muse-Glimmer-30B-Surgical-Q4_K-GGUF)
+  (14.61 GB, 4.75% of the decoder removed and healed, quantised by the
+  runner's own quantiser) and
+  [surgical Q8_0](https://huggingface.co/Joakimpalm-Zen/Muse-Glimmer-30B-Surgical-Q8_0-GGUF)
+  (27.58 GB, 6.34% removed: the FFN sublayers of layers 4, 7, 9 and 48) both
+  **pass the bar** against the unmodified BF16 parent on a held-out split
+  (Q4_K 97.74% / 0.04810, Q8_0 98.34% / 0.03883). Their provenance and
+  method are the
+  [surgery report](https://huggingface.co/Joakimpalm-Zen/Muse-Glimmer-30B-surgery-report),
+  nine preregistered runs on one frozen 30B model; the cards say where the
+  fidelity bar does and does not transfer to public benchmarks.
 - Measurement reports over third-party artifacts, no weights republished,
   every measured file bound by SHA:
   [Hermes-4-14B quant fidelity](https://huggingface.co/Joakimpalm-Zen/Hermes-4-14B-quant-fidelity-report)
