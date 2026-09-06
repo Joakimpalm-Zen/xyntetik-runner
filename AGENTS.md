@@ -148,6 +148,56 @@ Required behavior:
 Working rule: a green gate with no external anchor is evidence the system is
 self-consistent, and nothing more.
 
+### The provider's reference implementation is the primary anchor
+
+Standing rule (owner, 2026-09-06). This runner is not a llama.cpp clone; it
+is meant to be the more accurate engine. That makes "agrees with llama.cpp"
+a ceiling, not a target, and the certification protocol anchors on the model
+publisher's own reference implementation, configuration, chat template and
+evaluation harness. llama.cpp is a second implementation and a valuable
+interoperability oracle; two implementations that copied the same assumption
+prove nothing by agreeing.
+
+The proof, measured the day the rule was written (Granite 4.2 3B,
+`docs/granite-42-qwen38-cert-2026-09-06.md`):
+
+- Against llama.cpp the strict greedy row read 0/6 and five divergences past
+  the tie bar. llama.cpp disagreed with ITSELF (flash attention on versus
+  off) by mean KLD 0.020, max 0.84 over 200 positions, more than it disagreed
+  with the runner (0.015, max 0.098). Its CPU flash-attention kernel
+  accumulates the attention output in f16; the runner accumulates in f32.
+- Against the publisher's reference in float32 (`scripts/gold-logits.py`,
+  transformers on the CPU from the published safetensors) the runner read
+  mean KLD 0.0016 with top-1 100% on bf16 weights, and at the served Q4_K_M
+  it was the closer engine, 0.109 against llama.cpp's 0.115 to 0.119. The
+  llama.cpp-only reading had the runner as the noisier engine; the truth was
+  the reverse.
+- The largest correctness defect of the same admission, Qwen 3.8 rendering
+  Qwen3's chat template instead of its own (20 of 21 reference cases
+  drifting), was invisible to every llama.cpp comparison and found only by
+  the publisher's template.
+
+Required behavior:
+
+- Every admission compares against the publisher's reference implementation
+  in float32 on at least the smallest member of the family (the check scales
+  with model size; llama.cpp remains the wide oracle for large files and
+  quants the gold check cannot afford). Both columns are reported; the gold
+  column is the headline.
+- Chat-template conformance against the publisher's template, token for
+  token, is an admission gate, not a finding
+  (`scripts/template-conformance.py --require-tokens`).
+- A strict greedy count against llama.cpp is never the headline metric. Report
+  it beside the tie-classified divergence (`scripts/token_divergence.py`) with
+  the reference's configuration recorded, because that configuration moves
+  the count both ways.
+- When the publisher's own artifacts disagree with each other (a GGUF
+  pre-tokenizer against the tokenizer.json it was converted from, as Ornith
+  does), record both, pick the one the model was trained with, and declare
+  the expected divergence in the manifest row.
+- Say which reference configuration was used (dtype, attention
+  implementation, device); "the reference" alone is not an anchor.
+
 ## 4. Grill Me Always
 
 Actively challenge unclear requirements until the work is understood.
