@@ -161,7 +161,7 @@ while i < len(args):
         # model the batch gate ran on was F32.
         i += 1
         QUANT = args[i].lower()
-        if QUANT not in ("q8_0", "bf16", "nvfp4", "nvfp4-dequant"):
+        if QUANT not in ("q8_0", "bf16", "nvfp4", "nvfp4-dequant", "nvfp4-fork40"):
             sys.exit(f"--quant: unsupported type {QUANT!r} "
                      "(have: q8_0, bf16)")
     elif a == "--yarn":
@@ -651,9 +651,18 @@ def ue4m3_byte(v):
     raise ValueError(v)
 
 
-def nvfp4_encode_row(vals, ts):
+def ue4m3_value(b):
+    if b == 0 or b == 0x7F: return 0.0
+    e, m = (b >> 3) & 0xF, b & 0x7
+    return m * 2.0 ** -9 if e == 0 else (1.0 + m / 8.0) * 2.0 ** (e - 7)
+
+
+def nvfp4_encode_row(vals, ts, fork40=False):
     """One row -> NVFP4 blocks (4 UE4M3 sub-block scales + 32 nibble bytes per
-    64), the values understood as code * sub-scale * ts."""
+    64), the values understood as code * sub-scale * ts. fork40 writes the
+    layout a third-party quantizer ships under the same type id: the four
+    sub-block scales as fp16 (8 bytes) before the 32 nibble bytes, 40 per
+    block, which the runner must refuse rather than decode as ggml's 36."""
     out = bytearray()
     for b in range(0, len(vals), 64):
         blk = vals[b:b + 64]
@@ -669,7 +678,10 @@ def nvfp4_encode_row(vals, ts):
                 k = min(range(8), key=lambda i: abs(E2M1[i] - q))
                 codes.append(k | (8 if v < 0 and k else 0))
             nibbles += [codes[j] | (codes[j + 8] << 4) for j in range(8)]
-        out += bytes(scales) + bytes(nibbles)
+        if fork40:
+            out += b"".join(struct.pack("<e", ue4m3_value(sc)) for sc in scales) + bytes(nibbles)
+        else:
+            out += bytes(scales) + bytes(nibbles)
     return bytes(out)
 
 
@@ -714,11 +726,11 @@ def quantize(name, ne, data):
         return GGML_F32, data
     if QUANT == "bf16":
         return GGML_BF16, bf16_data(data)
-    if QUANT in ("nvfp4", "nvfp4-dequant"):
+    if QUANT in ("nvfp4", "nvfp4-dequant", "nvfp4-fork40"):
         if ne[0] % 64:
             return GGML_F32, data
         vals = struct.unpack(f"<{len(data) // 4}f", data)
-        rows = [nvfp4_encode_row(vals[r * ne[0]:(r + 1) * ne[0]], NVFP4_TS)
+        rows = [nvfp4_encode_row(vals[r * ne[0]:(r + 1) * ne[0]], NVFP4_TS, QUANT == "nvfp4-fork40")
                 for r in range(ne[1])]
         if QUANT == "nvfp4-dequant":
             flat = [v for r in rows for v in nvfp4_decode_row(r, ne[0], NVFP4_TS)]
@@ -738,8 +750,8 @@ for name, ne, data in tensors:
     ttype, data = quantize(name, ne, data)
     _typed.append((name, ne, data, ttype))
 _typed += _companions
-if QUANT in ("nvfp4", "nvfp4-dequant") and not any(
-        t[3] == GGML_NVFP4 for t in _typed) and QUANT == "nvfp4":
+if QUANT in ("nvfp4", "nvfp4-fork40") and not any(
+        t[3] == GGML_NVFP4 for t in _typed):
     sys.exit("--quant nvfp4 produced no NVFP4 tensor")
 tensors = _typed
 if GPU_UNSUPPORTED and not any(t[0] == GPU_UNSUPPORTED for t in tensors):

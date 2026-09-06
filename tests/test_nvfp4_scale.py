@@ -29,7 +29,7 @@ def runner_bin():
 def fixtures(tmp_path_factory):
     d = tmp_path_factory.mktemp("nvfp4")
     out = {}
-    for mode in ("nvfp4", "nvfp4-dequant"):
+    for mode in ("nvfp4", "nvfp4-dequant", "nvfp4-fork40"):
         path = d / f"{mode}.gguf"
         subprocess.run([sys.executable, GEN, path, "--quant", mode],
                        check=True, cwd=ROOT)
@@ -93,3 +93,17 @@ def test_probe_reads_the_companion(fixtures):
                        capture_output=True, text=True, check=True)
     assert ".scale = 0.00390625" in r.stdout and "plausible" in r.stdout \
         and "NOT plausible" not in r.stdout, r.stdout
+
+
+def test_fork_layout_is_refused_by_name(runner_bin, fixtures):
+    """At least one third-party quantizer writes ggml type 40 with fp16
+    sub-block scales, 40 bytes per 64 elements, where ggml's block_nvfp4 is
+    36 (UE4M3 scales). Decoded as ggml's layout every row is misaligned and
+    the model answers NaN with no error (seen on a real 4B file, CPU and CUDA
+    alike). The loader measures the span between tensor offsets and refuses
+    the variant by name instead."""
+    r = subprocess.run([runner_bin, "-m", fixtures["nvfp4-fork40"], "-p", "hi", "-n", "1",
+                        "--gpu", "off", "--no-tray"], capture_output=True, text=True, timeout=120)
+    assert r.returncode != 0
+    assert "40 bytes per 64" in r.stderr and "fp16 sub-block scales" in r.stderr, r.stderr
+    assert "blk.0." in r.stderr, "the refusal must name the tensor"

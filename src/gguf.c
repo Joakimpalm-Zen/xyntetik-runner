@@ -300,6 +300,52 @@ static bool gguf_open_one_x(gguf_file *g, const char *path, bool header_only) {
         }
         t->data = (uint8_t *)g->map + (size_t)data_start + (size_t)off;
     }
+
+    // NVFP4 layout check. ggml's block_nvfp4 (type 40) is 36 bytes per 64
+    // elements: four UE4M3 sub-block scales and 32 packed nibbles. At least
+    // one third-party quantizer writes type 40 with fp16 sub-block scales, 40
+    // bytes per 64, under the same type id; decoded as ggml's layout every
+    // row is read misaligned and the model produces NaN with no error. The
+    // header cannot say which it is, but the byte span between a tensor's
+    // offset and the next tensor's can: refuse the variant by name rather
+    // than serve garbage from it.
+    if (!header_only && g->n_tensors > 0) {
+        uint64_t *order = malloc(sizeof(uint64_t) * g->n_tensors);
+        if (order) {
+            for (uint64_t i = 0; i < g->n_tensors; i++) order[i] = i;
+            // insertion sort by offset: n_tensors is at most a few thousand
+            for (uint64_t i = 1; i < g->n_tensors; i++) {
+                uint64_t k = order[i], j = i;
+                while (j > 0 && (uint64_t)(uintptr_t)g->tensors[order[j - 1]].data >
+                                (uint64_t)(uintptr_t)g->tensors[k].data) {
+                    order[j] = order[j - 1]; j--;
+                }
+                order[j] = k;
+            }
+            for (uint64_t i = 0; i < g->n_tensors; i++) {
+                gguf_tensor *t = &g->tensors[order[i]];
+                if (t->type != T_NVFP4 || t->nbytes == 0) continue;
+                uint64_t off = (uint64_t)(uintptr_t)t->data;
+                uint64_t next = i + 1 < g->n_tensors
+                              ? (uint64_t)(uintptr_t)g->tensors[order[i + 1]].data
+                              : g->map_size - data_start;
+                uint64_t span = next > off ? next - off : 0;
+                // 40 bytes per 64 elements, less the alignment slack a
+                // 36-byte layout could legitimately carry
+                uint64_t variant = t->nbytes / 36 * 40;
+                if (span >= variant && variant > t->nbytes + align) {
+                    fprintf(stderr, "error: tensor %s is NVFP4 with 40 bytes per 64 "
+                            "elements (fp16 sub-block scales, a third-party "
+                            "quantizer's layout); this runner decodes ggml's "
+                            "block_nvfp4 (36 bytes: UE4M3 scales) and would "
+                            "read this file as garbage\n", t->name);
+                    free(order);
+                    goto fail;
+                }
+            }
+            free(order);
+        }
+    }
     if (header_only) {
         uint64_t total;
         if (!checked_u64_add(data_start, g->data_bytes, &total)) goto invalid;
