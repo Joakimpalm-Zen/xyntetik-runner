@@ -281,3 +281,17 @@ def test_mldsa_forgeries_are_unverifiable_before_replay(runner_bin, base, pqkey,
     # an Ed25519 trust key against an ML-DSA record is a different key
     p = _verify(runner_bin, base, rec, "--trust-key", "00" * 32)
     assert p.returncode == 3 and b"signed by a different key" in p.stderr
+
+
+def test_recording_over_an_existing_receipt_replaces_it(runner_bin, base, tmp_path):
+    """The receipt is written to a .partial and renamed into place. On
+    Windows a plain rename refuses an existing destination, so the second
+    recording to the same path failed with "failed writing" and left the
+    old file; the writer now uses the platform replace (MoveFileEx with
+    REPLACE_EXISTING there), like --quantize does."""
+    rec = tmp_path / "same.json"
+    first = _record(runner_bin, base, rec, "-n", "3")
+    second = _record(runner_bin, base, rec, "-n", "5")
+    assert first != second
+    assert rec.read_bytes() == second
+    assert not (tmp_path / "same.json.partial").exists()
