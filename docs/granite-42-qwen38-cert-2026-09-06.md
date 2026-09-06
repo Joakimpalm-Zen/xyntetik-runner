@@ -288,6 +288,25 @@ where the model itself is confident (margin-qualified top-1 100%). That is
 the reading this document certifies: engine agreement inside the model's
 own numerical floor, with the floor measured rather than assumed.
 
+## Backends
+
+| model | CPU vs CUDA | CPU vs Metal |
+|---|---|---|
+| granite-4.2-3b Q4_K_M | **9/9 exact** at 128 tokens, Blackwell MIG slice, all 40 layers on the device | running on this M1 at the time of writing, at a crawl: the machine had about 60 MB free (a virtual machine holds 2.4 GB), so the 2.2 GB file pages per token; the result is appended when it lands. The `granite` Metal path is 4.1's, certified 2026-08-11, and 4.2 changes no tensor or operation. |
+| granite-4.2-8b Q4_K_M | 8/9 on the Blackwell, the flip at token 27 on a 0.0019-nat tie; **9/9 exact** on an RTX 3070 (ZEN-GAMING, this branch built there, 40 of 40 layers and the output projection on the device, `cpu_cuda-granite-4.2-8b-rtx3070.json`), a second CUDA device family | not run; the `granite` Metal path is 4.1's, certified 2026-08-11 |
+| Qwen3.8-27B UD-Q4_K_M | **not measurable on this file**: Unsloth's dynamic quant carries 4 IQ3_S tensors and the runner has no CUDA kernel for IQ3_S, so the whole model falls back to the CPU on a CUDA box (`gpu: tensor blk.11.ffn_gate.weight uses IQ3_S, which has no CUDA kernel`); a run that reported 9/9 was CPU against CPU and is not counted. The `qwen35` CUDA path was measured on the pure Q8_0 sibling instead: **9/9 exact** at 128 tokens with 10 of 64 layers (6.8 GB) on the Blackwell slice and the CPU running the rest, `RUNNER_CUDA_TC=0` (`cpu_cuda-qwen38-27b-q8_0.json`, its device log beside it). The plain **Q4_0** sibling (`unsloth/Qwen3.8-27B-GGUF`, sha ede16c7b, Q4_0/Q4_1/Q5_K only) reads **9/9 exact** with 22 of 64 layers (6.6 GB) on the device (`cpu_cuda-qwen38-27b-q4_0.json`). Both splits are real: the split line and the device log are kept beside each report. | no Metal path: the `qwen35` hybrid runs on the CPU on Apple silicon by design (`gpu: qwen35 hybrid path is not on the metal backend yet`) |
+
+The Qwen 3.8 CUDA rows needed a runner fix to run at all: the VRAM
+registry's ask estimated a full offload whatever `--gpu-layers` said, so
+an explicit split on a shared device was refused before placement. Fixed
+on this branch; the matrix row's own `cpu_cuda` check is still recorded as
+not executed because the matrix asks for full residency. Two lessons
+recorded on the way: a split that leaves no room for the recurrent state
+fails its device allocation and the whole model silently runs on the CPU
+(the check then reports a CPU-against-CPU 9/9, which is why the split line
+and the device log are kept beside every report), and a dynamic quant with
+CPU-only codebook tensors does the same on any CUDA box.
+
 ## Not measured
 
 - `cpu_cuda` on Qwen 3.8: the CUDA slice was occupied. The `qwen35`

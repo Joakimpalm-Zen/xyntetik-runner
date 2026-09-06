@@ -52,6 +52,19 @@ names that were true when they were written.
   sides) and `reasoning_effort` (top level or `chat_template_kwargs`) is
   honoured on the chat and Responses surfaces with the template's own
   vocabulary; other values are refused as the template refuses them.
+- **An explicit `--gpu-layers` split is no longer refused on a shared
+  device.** The VRAM registry ask estimated a full offload whatever
+  `--gpu-layers` said, so on a device whose free memory was smaller than
+  the file (a 27B beside a 15 GB neighbour on a 24 GB slice) every
+  explicit split was refused before the placement that would have
+  honoured it ran. The ask is now the leading layers' bytes.
+  `scripts/cpu_cuda_check.py --gpu-arm-arg` passes such a flag to the GPU
+  arm alone, and the split achieved is recorded in the report as before.
+  The check also refuses a GPU arm that never reached the device (a failed
+  device allocation, or a tensor type with no device kernel, makes the
+  runner fall back to the CPU and serve; the comparison then agrees with
+  itself and twice read 9/9 in one afternoon): no split line in the GPU
+  arm's log is a fail, recorded as `gpu_arm_on_cpu`.
 - `scripts/token_divergence.py` takes `--reference-args` and
   `--runner-args` and records them, because the reference's own
   configuration moves its logits at the order the gate classifies:

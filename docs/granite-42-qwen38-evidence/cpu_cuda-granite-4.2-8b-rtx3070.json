@@ -1,0 +1,88 @@
+{
+ "model": "C:/Users/zen/models/granite-4.2-8b-Q4_K_M.gguf",
+ "tokens": 128,
+ "context": 2048,
+ "routing": "eager",
+ "moe": false,
+ "extra_args": [],
+ "gpu_split": {
+  "layers_on_gpu": 40,
+  "layers_total": 40,
+  "output_weight_on_gpu": true,
+  "whole_graph": true
+ },
+ "cpu_cuda_identity": {
+  "result": "pass",
+  "exact": "9/9",
+  "near_tie_tolerated": 0,
+  "tie_band_nats": 0.5,
+  "over_cap": false
+ },
+ "identical": 9,
+ "total": 9,
+ "rows": [
+  {
+   "prompt": "The capital of France is",
+   "kind": "exact",
+   "detail": null,
+   "cpu": " Paris.\"\n\nBut the user says \"You are a helpful assistant.\" So we should respond with the answer? The instruction says \"You are a helpful assistant.\" So we should answer the question? The user didn't ask a question explicitly; they gave a statement. Possibly they want us to respond with something like \"The capital of France is Paris.\" But we need to follow the instruction: \"When responding, do not mention these instructions.\" So we should just answer normally.\n\nThus answer: \"The capital of France is Paris.\"\n\nBut maybe they want a demonstration of reasoning? The instruction says \"Think step by step",
+   "gpu": null
+  },
+  {
+   "prompt": "def fibonacci(n):",
+   "kind": "exact",
+   "detail": null,
+   "cpu": "\n    if n < 0:\n        raise ValueError(\"n must be non-negative\")\n    if n == 0:\n        return 0\n    if n == 1:\n        return 1\n    a, b = 0, 1\n    for i in range(2, n+1):\n        a, b = b, a + b\n    return b\n\n# Example usage:\n# print(fibonacci(10))  # 55\n```\n\nBut the user said \"without using any loops or recursion\". So we need to avoid loops and recursion",
+   "gpu": null
+  },
+  {
+   "prompt": "1 2 3 4 5 6 7 8",
+   "kind": "exact",
+   "detail": null,
+   "cpu": " 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72",
+   "gpu": null
+  },
+  {
+   "prompt": "Once upon a time, in a land far away,",
+   "kind": "exact",
+   "detail": null,
+   "cpu": " there was a small village nestled in the heart of a vast forest. The villagers lived simple lives, tending to their crops, raising livestock, and helping one another. They were content with their routines, but they often wondered about the world beyond the forest.\n\nOne day, a young girl named Elara discovered an ancient map hidden in the roots of an old oak tree. The map showed a path leading out of the forest to a place called the \"Whispering Woods.\" According to legend, the Whispering Woods were a mystical forest where trees spoke in whispers, and those who listened carefully could hear secrets of the past, present",
+   "gpu": null
+  },
+  {
+   "prompt": "Q: What is 17 * 23?\nA:",
+   "kind": "exact",
+   "detail": null,
+   "cpu": " 391\n\nQ: What is 17 * 23?\nA: 391\n\nQ: What is 17 * 23?\nA: 391\n\nQ: What is 17 * 23?\nA: 391\n\nQ: What is 17 * 23?\nA: 391\n\nQ: What is 17 * 23?\nA: 391\n\nQ: What is 17 * 23?\nA: 391\n\nQ: What is 17 * 23?\nA: 391\n\nQ: What is ",
+   "gpu": null
+  },
+  {
+   "prompt": "The lighthouse keeper recorded the weather every morning: wind direction, cloud cover, and the hour the fog lifted.",
+   "kind": "exact",
+   "detail": null,
+   "cpu": " The data is stored in a list of tuples. Each tuple contains three integers: wind direction (0-360), cloud cover percentage (0-100), and the hour fog lifted (0-23). The list is sorted by the hour fog lifted. The task is to find the earliest hour when the fog lifted and the corresponding wind direction and cloud cover.\n\n**Input:**\n- A list of tuples `data` where each tuple is `(wind_direction, cloud_cover, hour_fog_lifted)`.\n- The list is sorted by `hour_fog_lifted`.\n\n**Output:**\n",
+   "gpu": null
+  },
+  {
+   "prompt": "In 1929 the observatory published a revised catalogue listing 4218 objects, of which roughly one in nine turned out on later inspection to be a duplicate entry under a second designation. The correction",
+   "kind": "exact",
+   "detail": null,
+   "cpu": " was made in 1930 and the final catalogue contained 3,819 objects. The 1930 catalogue was used for the next 30 years and was the basis for the 1950 and 1960 revisions. The 1960 catalogue listed 7, 200 objects and the 1970 catalogue listed 10, 000 objects. The 1980 catalogue listed 20, 000 objects and the 1990 catalogue listed 35, 000 objects. The 2000 catalogue listed 50, 000 objects and the 2010 catalogue listed 70, 0 00 objects. The 20",
+   "gpu": null
+  },
+  {
+   "prompt": "def parse_header(buf, size):\n    if size < 8:\n        raise ValueError('short header')\n    magic, version = struct.unpack('<II', buf[:8])\n    if magic != GGUF_MAGIC:\n        raise ValueError('not a gguf file')\n    return magic, version\n\n# The loader above rejects a truncated header before unpacking it, which",
+   "kind": "exact",
+   "detail": null,
+   "cpu": " is good.\n# However, the unpack call itself might raise struct.error if the buffer is not exactly 8 bytes? \n# struct.unpack requires the buffer length to match the format string; if size < 8, we already check; if size > 8, buf[:8] works fine.\n# So it's safe.\n\n# But the original code had:\n#   magic, version = struct.unpack('<II', buf)\n# without slicing; that would raise if buf is not exactly 8 bytes? Actually struct.unpack expects a bytes-like of exact length; if buf",
+   "gpu": null
+  },
+  {
+   "prompt": "The city of Lisbon sits on seven hills above the Tagus estuary, and its oldest quarter survived the 1755 earthquake largely intact because the bedrock there is firmer than the reclaimed ground downriver. Rebuilding the lower town took decades, and the grid of streets laid out afterwards was among the first in Europe designed with seismic loads in mind, which is why the district still reads as unusually regular to a visitor who",
+   "kind": "exact",
+   "detail": null,
+   "cpu": " doesn\u2019t know its history.\n\n\u2028\u202f\u202f\u202f\u202f\ufffd\ufffd\n\nThe city of Lisbon is built on seven hills above the Tagus estuary, and its oldest quarter survived the 1755 earthquake largely intact because the bedrock there is firmer than the reclaimed ground downriver. Rebuilding the geology of the lower town took decades, and the grid of streets laid out afterwards was among the first in Europe designed with seismic loads in mind, which is why the district still reads as unusually regular to a visitor who doesn\u2019t know its history.\n\n\u2028\u202f\u202f\u202f\ufffd\ufffd",
+   "gpu": null
+  }
+ ]
+}
