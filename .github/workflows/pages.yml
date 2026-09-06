@@ -10,6 +10,8 @@ on:
     paths:
       - "site/**"
       - ".github/workflows/pages.yml"
+      # the site takes its version and release date from the changelog
+      - "CHANGELOG.md"
   workflow_dispatch:
 
 permissions:
