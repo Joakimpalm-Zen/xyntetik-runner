@@ -95,6 +95,18 @@ raw speed, use llama.cpp and we mean that sincerely. If you need to prove
 what your model said, what it learned from, or what you actually shipped -
 that is what this runtime is for.
 
+In one sentence: **Runner is slower on purpose.** It does the model's
+arithmetic without the shortcuts faster engines take (activations stay
+f32 instead of being rounded to 8 bits, attention accumulates in f32
+instead of f16), so its answers stay closer to what the model's makers
+built, and it can prove what it produced. Measured 2026-09-06 on Granite
+4.2 3B against IBM's own implementation in float32: mean KL 0.0016 with
+top-1 100% on bf16 weights, and at Q4_K_M the closer of the two engines
+(0.109 against 0.115 to 0.119); the faster engine disagreed with itself,
+flash attention on versus off, more than it disagreed with Runner. One
+family so far; the pass over every family is next. Evidence:
+[docs/granite-42-qwen38-cert-2026-09-06.md](docs/granite-42-qwen38-cert-2026-09-06.md).
+
 ### Designed to stay on
 
 There is a cost benchmarks rarely show: what a resident inference server

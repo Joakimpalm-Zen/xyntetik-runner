@@ -281,3 +281,31 @@ nav: evidence
     </div>
   </div>
 </section>
+
+<section class="section tint" id="gold">
+  <div class="wrap">
+    <div class="section-head">
+      <p class="eyebrow">Why Runner is slower, and why you want that</p>
+      <h2>Measured against the model's own implementation, not against another engine.</h2>
+      <p>Runner does the model's arithmetic without the shortcuts faster engines take: activations stay in 32-bit float instead of being rounded to 8 bits before every multiply, and attention accumulates in 32-bit float instead of 16. That costs speed where prefill is compute-bound. To see what it buys, the right yardstick is the model publisher's own reference implementation run in full precision, not a second engine that may have taken the same shortcuts.</p>
+    </div>
+    <details class="table-view" open>
+      <summary>Granite 4.2 3B against IBM's implementation in float32, 99 corpus positions, measured 2026-09-06</summary>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>weights</th><th>engine</th><th>mean KL from the reference</th><th>top-1 agreement</th></tr></thead>
+          <tbody>
+            <tr><td>bf16</td><td>Runner</td><td class="num">0.0016</td><td class="num">100%</td></tr>
+            <tr><td>bf16</td><td>the faster engine, flash attention off</td><td class="num">0.0016</td><td class="num">99.0%</td></tr>
+            <tr><td>bf16</td><td>the faster engine, flash attention on (its default)</td><td class="num">0.0018</td><td class="num">97.0%</td></tr>
+            <tr><td>Q4_K_M</td><td>Runner</td><td class="num">0.109</td><td class="num">87.9%</td></tr>
+            <tr><td>Q4_K_M</td><td>the faster engine, flash attention off</td><td class="num">0.119</td><td class="num">85.9%</td></tr>
+            <tr><td>Q4_K_M</td><td>the faster engine, flash attention on</td><td class="num">0.115</td><td class="num">88.9%</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </details>
+    <p class="mt-2">With unquantized weights Runner reproduces the reference to the noise of its own float arithmetic and picks the same token on every position. At the served 4-bit quant both engines sit about 0.11 from the reference, because quantization dominates, and Runner is the closer of the two. The faster engine disagreed with itself, flash attention on against off, by mean KL 0.020 over 200 positions, more than it disagreed with Runner (0.015). The same admission found a chat-template defect that no engine-to-engine comparison could see: the publisher's template is now the anchor for every family.</p>
+    <p class="small muted mt-1">One family so far; the pass over every admitted family is the next item. Method and raw outputs: <a href="{{repo}}/blob/main/docs/granite-42-qwen38-cert-2026-09-06.md">docs/granite-42-qwen38-cert-2026-09-06.md</a>, the gate <a href="{{repo}}/blob/main/scripts/gold-logits.py">scripts/gold-logits.py</a> (transformers 5.16, float32, eager attention, CPU). The full speed gap is in the benchmark section above, losing rows included.</p>
+  </div>
+</section>
