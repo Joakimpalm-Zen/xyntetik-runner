@@ -31,5 +31,16 @@ configuration breaks without noticing:
    README and site link different Hugging Face repositories (AGENTS.md,
    rule 5).
 
+4. **The provider's reference implementation is the primary anchor**
+   (owner, 2026-09-06, proven). This runner is meant to be more accurate
+   than llama.cpp, so "agrees with llama.cpp" is a ceiling, never the
+   headline. Every admission compares against the publisher's reference
+   in float32 (`scripts/gold-logits.py`, at least the family's smallest
+   member) and against the publisher's chat template token for token
+   (`scripts/template-conformance.py --require-tokens`) before any
+   llama.cpp column is read; the reference configuration is always
+   stated. Proof and required behavior: AGENTS.md, "The provider's
+   reference implementation is the primary anchor".
+
 Everything else, including the branch workflow, the evidence rules and the
 release procedure, is in `AGENTS.md`.
