@@ -194,6 +194,8 @@ typedef struct {
     float    *moe_up;      // [n_ff_exp]
     float    *moe_dexp;    // [n_embd] one expert's down output
     float    *moe_out;     // [n_embd] weighted expert-sum accumulator
+    float    *gemma_scr;   // [4][n_embd] gemma-4 MoE per-token scratch (rin, xn, mlp, xn2);
+                           // heap, not VLAs: the forward runs on 512 KB server threads
     // Grouped-by-expert prefill scratch (sized for a full prompt batch): route
     // all tokens, then run each expert once over ALL its routed tokens as a
     // batched matmul instead of one-at-a-time. Decode (n==1) never uses these.
