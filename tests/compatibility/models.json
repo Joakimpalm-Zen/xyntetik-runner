@@ -207,7 +207,7 @@
         "tool",
         "long_context"
       ],
-      "notes": "CPU + CUDA; 5/5 scalar-path CPU/CUDA identity over 128 tokens re-verified 2026-08-03",
+      "notes": "CPU + CUDA; 5/5 scalar-path CPU/CUDA identity over 128 tokens re-verified 2026-08-03 Tokenizer 3/721 since 2026-09-06 (Devanagari/Thai marks): the GGUF declares pre qwen35, whose regex keeps combining marks inside letter runs, while Ornith's own tokenizer.json still carries the Qwen3 regex that splits at them; the runner and llama.cpp master agree with each other on the qwen35 rule, the HF reference does not.",
       "check_params": {
         "cpu_cuda": {
           "pins": {
@@ -231,6 +231,9 @@
         "tool": {
           "scenario_matrix": "agent-torture",
           "cases": 8
+        },
+        "tokenizer": {
+          "expect_divergences": 3
         }
       }
     },
@@ -1114,6 +1117,132 @@
           "forbid_substrings": [
             "[/INST]",
             "<<SYS>>"
+          ]
+        }
+      }
+    },
+    {
+      "id": "granite-4.2-3b-q4_k_m",
+      "architecture": "granite",
+      "family": "IBM Granite 4.2",
+      "file": "models/granite-4.2-3b-Q4_K_M.gguf",
+      "sha256": "e0406663965846ae22a403456eb826ccce5f450840491f71952f18a7cb78e7d5",
+      "tokenizer_reference": "ibm-granite/granite-4.2-3b",
+      "reference": {
+        "implementation": "llama.cpp",
+        "revision": "master 73a43d1 (2026-09-06)"
+      },
+      "checks": [
+        "load",
+        "tokenizer",
+        "greedy_reference",
+        "cpu_cuda",
+        "chat"
+      ],
+      "notes": "Official IBM GGUF. Granite 4.2 is the granite arch with the muP scales at 1.0, pre-tokenizer granite-docling (plain GPT-2 rule) and a ChatML/<think> template with the function-XML tool format; admission 2026-09-06, evidence in docs/granite-42-qwen38-cert-2026-09-06.md.",
+      "check_params": {
+        "cpu_cuda": {
+          "pins": {
+            "RUNNER_CUDA_TC": "0"
+          },
+          "prompt_set": "cpu_cuda_check.PROMPTS",
+          "min_prompt_tokens": 85,
+          "tokens": 128
+        },
+        "chat": {
+          "prompt": "What is 2+2?",
+          "max_tokens": 200,
+          "gpu": "auto",
+          "expect_stop": true,
+          "expect_nonempty_content": true,
+          "forbid_substrings": [
+            "[/INST]",
+            "<<SYS>>",
+            "<|start_of_role|>"
+          ]
+        }
+      }
+    },
+    {
+      "id": "granite-4.2-8b-q4_k_m",
+      "architecture": "granite",
+      "family": "IBM Granite 4.2",
+      "file": "models/granite-4.2-8b-Q4_K_M.gguf",
+      "sha256": "16a9369d0805f80b7377d25d87f937a90c05dc04ad79173a52001e42c9aab311",
+      "tokenizer_reference": "ibm-granite/granite-4.2-8b",
+      "reference": {
+        "implementation": "llama.cpp",
+        "revision": "master 73a43d1 (2026-09-06)"
+      },
+      "checks": [
+        "load",
+        "tokenizer",
+        "greedy_reference",
+        "cpu_cuda",
+        "chat"
+      ],
+      "notes": "Official IBM GGUF. See granite-4.2-3b-q4_k_m; evidence in docs/granite-42-qwen38-cert-2026-09-06.md.",
+      "check_params": {
+        "cpu_cuda": {
+          "pins": {
+            "RUNNER_CUDA_TC": "0"
+          },
+          "prompt_set": "cpu_cuda_check.PROMPTS",
+          "min_prompt_tokens": 85,
+          "tokens": 128
+        },
+        "chat": {
+          "prompt": "What is 2+2?",
+          "max_tokens": 200,
+          "gpu": "auto",
+          "expect_stop": true,
+          "expect_nonempty_content": true,
+          "forbid_substrings": [
+            "[/INST]",
+            "<<SYS>>",
+            "<|start_of_role|>"
+          ]
+        }
+      }
+    },
+    {
+      "id": "qwen3.8-27b-ud-q4_k_m",
+      "architecture": "qwen35",
+      "family": "Qwen 3.8",
+      "file": "models/Qwen3.8-27B-UD-Q4_K_M.gguf",
+      "sha256": "322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482",
+      "tokenizer_reference": "Qwen/Qwen3.8-27B",
+      "reference": {
+        "implementation": "llama.cpp",
+        "revision": "master 73a43d1 (2026-09-06)"
+      },
+      "checks": [
+        "load",
+        "tokenizer",
+        "greedy_reference",
+        "cpu_cuda",
+        "chat"
+      ],
+      "notes": "Unsloth UD-Q4_K_M of Qwen/Qwen3.8-27B: the qwen35 layout (48 Gated DeltaNet + 16 full-attention blocks, one NextN/MTP block declared and excluded from the backbone; --mtp drafts from it). Pre-tokenizer qwen35 with [\\p{L}\\p{M}]+ runs. Admission 2026-09-06, evidence in docs/granite-42-qwen38-cert-2026-09-06.md.",
+      "check_params": {
+        "cpu_cuda": {
+          "pins": {
+            "RUNNER_CUDA_TC": "0"
+          },
+          "prompt_set": "cpu_cuda_check.PROMPTS",
+          "min_prompt_tokens": 85,
+          "tokens": 128
+        },
+        "chat": {
+          "prompt": "What is 2+2?",
+          "max_tokens": 200,
+          "gpu": "auto",
+          "expect_stop": true,
+          "expect_nonempty_content": true,
+          "forbid_substrings": [
+            "[/INST]",
+            "<<SYS>>",
+            "<|start_of_role|>"
           ]
         }
       }

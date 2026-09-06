@@ -362,14 +362,17 @@ def run_command(command, timeout):
     }
 
 
-def run_tokenizer(model, reference, corpus, timeout, reference_ids=None):
+def run_tokenizer(model, reference, corpus, timeout, reference_ids=None, expect=0):
     command = [sys.executable, str(TOKENIZER_SCRIPT),
                "--gguf", str(model)]
     if reference_ids is not None:
         command += ["--ref-ids", str(reference_ids)]
     else:
         command += ["--ref", reference]
-    command += ["--corpus", str(corpus), "--expect", "0"]
+    # `expect` is a row's declared, explained divergence count (Ornith: its
+    # own tokenizer.json predates the qwen35 regex its GGUF declares); 0
+    # otherwise.
+    command += ["--corpus", str(corpus), "--expect", str(int(expect))]
     result = run_command(command, timeout)
     if result["status"] == "fail" and "strings differ" not in result.get("stdout_tail", ""):
         detail = (result.get("stdout_tail", "") + result.get("stderr_tail", "")).lower()
@@ -501,7 +504,7 @@ def main(argv=None):
                     else:
                         item["checks"]["tokenizer"] = run_tokenizer(
                             path, tok_ref, corpus, args.timeout,
-                            reference_ids=tok_ids)
+                            reference_ids=tok_ids, expect=(entry.get("check_params", {}).get("tokenizer") or {}).get("expect_divergences", 0))
                         failed |= item["checks"]["tokenizer"]["status"] != "pass"
                 for cls, fn in (("cpu_cuda", run_cpu_cuda),
                                 ("chat", run_chat),
