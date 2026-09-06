@@ -29,7 +29,7 @@ def runner_bin():
 def fixtures(tmp_path_factory):
     d = tmp_path_factory.mktemp("nvfp4")
     out = {}
-    for mode in ("nvfp4", "nvfp4-dequant"):
+    for mode in ("nvfp4", "nvfp4-dequant", "nvfp4-fork40"):
         path = d / f"{mode}.gguf"
         subprocess.run([sys.executable, GEN, path, "--quant", mode],
                        check=True, cwd=ROOT)
@@ -56,12 +56,36 @@ def test_companion_scale_is_applied(runner_bin, fixtures):
     assert max(diffs) < 1e-4, max(diffs)
 
 
-def test_scaled_tensors_stay_on_the_cpu_under_gpu_auto(runner_bin, fixtures):
-    """No GPU kernel carries the companion. Under --gpu auto the run must be
-    the CPU run, not a silently unscaled device run."""
+def _gpu_backend(runner_bin):
+    caps = subprocess.run([runner_bin, "--caps"], capture_output=True,
+                          text=True, timeout=30, cwd=ROOT)
+    gpu = json.loads(caps.stdout).get("gpu") or {}
+    return gpu.get("backend")
+
+
+def test_gpu_auto_matches_the_cpu_and_says_which_path_ran(runner_bin, fixtures, tmp_path):
+    """CUDA applies the companion in its matvec tails, so under --gpu auto a
+    CUDA box must actually run the NVFP4 fixture on the device (gpu_layers in
+    the receipt profile) and agree with the CPU run to reduction-order
+    residue. Metal has no NVFP4 kernel and keeps the whole model on the CPU,
+    so there --gpu auto IS the CPU run, bit for bit; the same on a box with
+    no GPU at all. A silently unscaled device run would be off by 256x."""
     off, _ = score(runner_bin, fixtures["nvfp4"], gpu="off")
     auto, _ = score(runner_bin, fixtures["nvfp4"], gpu="auto")
-    assert off["logprobs"] == auto["logprobs"]
+    backend = _gpu_backend(runner_bin)
+    if backend == "cuda":
+        rec = tmp_path / "auto.json"
+        r = subprocess.run([runner_bin, "-m", fixtures["nvfp4"], "-p", "the quick",
+                            "-n", "2", "--temp", "0", "--gpu", "auto", "--no-tray",
+                            "--transcript", str(rec)],
+                           capture_output=True, text=True, timeout=120)
+        assert r.returncode == 0, r.stderr
+        prof = json.loads(rec.read_bytes())["profile"]
+        assert prof["gpu_layers"] > 0, "CUDA declined the NVFP4 fixture: " + r.stderr
+        diffs = [abs(a - b) for a, b in zip(off["logprobs"], auto["logprobs"])]
+        assert max(diffs) < 1e-3, max(diffs)
+    else:
+        assert off["logprobs"] == auto["logprobs"]
 
 
 def test_probe_reads_the_companion(fixtures):
@@ -69,3 +93,17 @@ def test_probe_reads_the_companion(fixtures):
                        capture_output=True, text=True, check=True)
     assert ".scale = 0.00390625" in r.stdout and "plausible" in r.stdout \
         and "NOT plausible" not in r.stdout, r.stdout
+
+
+def test_fork_layout_is_refused_by_name(runner_bin, fixtures):
+    """At least one third-party quantizer writes ggml type 40 with fp16
+    sub-block scales, 40 bytes per 64 elements, where ggml's block_nvfp4 is
+    36 (UE4M3 scales). Decoded as ggml's layout every row is misaligned and
+    the model answers NaN with no error (seen on a real 4B file, CPU and CUDA
+    alike). The loader measures the span between tensor offsets and refuses
+    the variant by name instead."""
+    r = subprocess.run([runner_bin, "-m", fixtures["nvfp4-fork40"], "-p", "hi", "-n", "1",
+                        "--gpu", "off", "--no-tray"], capture_output=True, text=True, timeout=120)
+    assert r.returncode != 0
+    assert "40 bytes per 64" in r.stderr and "fp16 sub-block scales" in r.stderr, r.stderr
+    assert "blk.0." in r.stderr, "the refusal must name the tensor"

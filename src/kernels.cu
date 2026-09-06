@@ -1911,6 +1911,73 @@ extern "C" __global__ void k_mv_mxfp4_b(MV_PARAMS) {
     MV_TAIL_B;
 }
 
+// NVFP4 (NVIDIA ModelOpt / llama.cpp type 40): a 36-byte super-block of four
+// 16-element sub-blocks, one UE4M3 scale byte each (d[4]), then 32 packed
+// E2M1 nibbles over the same signed codebook as MXFP4. Within sub-block s,
+// byte j's low nibble is element j and its high nibble element j+8. Decode
+// is 1:1 with ue4m3_to_fp32 / dq_nvfp4 in quants.c: the UE4M3 scale is
+// unsigned, 4 exponent bits biased by 7, 3 mantissa bits, 0x7F is NaN and
+// decodes to 0 like llama.cpp, and exponent 0 is subnormal (man * 2^-9).
+// The dot sums each sub-block's 16 products before scaling (s += d * t),
+// the same association as the CPU kernel. The per-tensor companion (the
+// export's second level, gguf_tensor.scale, 1.0 when the file has none) is
+// this kernel family's own trailing parameter, applied to the finished dot
+// before the bias exactly as the CPU seam does (dot(w*s, x) = s*dot(w, x)).
+// A parameter of these three kernels only, NOT a field of mv_args: widening
+// the shared struct re-lays the registers of every kernel that takes it,
+// and the committed PTX of kernels nobody touched must not move.
+static __device__ __forceinline__ float ue4m3f(uchar x) {
+    if (x == 0 || x == 0x7F) return 0.0f;
+    int e = (x >> 3) & 0xF, m = x & 0x7;
+    if (e == 0) return ldexpf((float)m, -9);
+    return ldexpf(1.0f + (float)m / 8.0f, e - 7);
+}
+
+extern "C" __global__ void k_mv_nvfp4(MV_PARAMS, float scale) {
+    MV_HEAD;
+    int nb = a.n_in / 64;
+    const uchar *rw = wb + a.w_off + (ulong64)row * nb * 36;
+    float s = 0;
+    for (int b = lane; b < nb; b += 32) {
+        const uchar *blk = rw + (ulong64)b * 36;
+        for (int sub = 0; sub < 4; sub++) {
+            float d = ue4m3f(blk[sub]);
+            const uchar *q = blk + 4 + sub * 8;
+            const float *xp = x + b * 64 + sub * 16;
+            float t = 0;
+            for (int j = 0; j < 8; j++) {
+                t += kv_mxfp4[q[j] & 0xF] * xp[j];
+                t += kv_mxfp4[q[j] >> 4]  * xp[j + 8];
+            }
+            s += d * t;
+        }
+    }
+    s = warp_sum(s) * scale;
+    if (lane == 0) y[row] = a.has_bias ? s + bias[row] : s;
+}
+
+extern "C" __global__ void k_mv_nvfp4_b(MV_PARAMS, float scale) {
+    MV_HEAD_B;
+    int nb = a.n_in / 64;
+    const uchar *rw = wb + a.w_off + (ulong64)row * nb * 36;
+    for (int b = lane; b < nb; b += 32) {
+        const uchar *blk = rw + (ulong64)b * 36;
+        for (int sub = 0; sub < 4; sub++) {
+            float d = ue4m3f(blk[sub]);
+            const uchar *q = blk + 4 + sub * 8;
+            ulong64 base = (ulong64)b * 64 + sub * 16;
+            for (int j = 0; j < 8; j++) {
+                MV_FMA(d * kv_mxfp4[q[j] & 0xF], base + j);
+                MV_FMA(d * kv_mxfp4[q[j] >> 4],  base + j + 8);
+            }
+        }
+    }
+    for (int t = 0; t < a.batch; t++) {
+        float r = warp_sum(s[t]) * scale;
+        if (lane == 0) y[(ulong64)t * a.ys + row] = a.has_bias ? r + bias[row] : r;
+    }
+}
+
 // ---------------------------------------------------------------- rope
 // grid: (ceil(half_dim/32), n_heads, batch); vs = element stride per column
 
@@ -3107,6 +3174,29 @@ extern "C" __global__ void k_moe_mv_mxfp4(MOE_MV_PARAMS) {
         s += d * t;
     }
     MOE_MV_TAIL;
+}
+
+// body of k_mv_nvfp4 (ModelOpt NVFP4 expert tensors)
+extern "C" __global__ void k_moe_mv_nvfp4(MOE_MV_PARAMS, float scale) {
+    MOE_MV_HEAD;
+    int nb = a.n_in / 64;
+    const uchar *rw = wbase + (ulong64)row * nb * 36;
+    for (int b = lane; b < nb; b += 32) {
+        const uchar *blk = rw + (ulong64)b * 36;
+        for (int sub = 0; sub < 4; sub++) {
+            float d = ue4m3f(blk[sub]);
+            const uchar *q = blk + 4 + sub * 8;
+            const float *xp = x + b * 64 + sub * 16;
+            float t = 0;
+            for (int j = 0; j < 8; j++) {
+                t += kv_mxfp4[q[j] & 0xF] * xp[j];
+                t += kv_mxfp4[q[j] >> 4]  * xp[j + 8];
+            }
+            s += d * t;
+        }
+    }
+    s = warp_sum(s) * scale;
+    if (lane == 0) y[(ulong64)blockIdx.y * a.ys + row] = s;
 }
 
 // body of k_gemv_q4_K

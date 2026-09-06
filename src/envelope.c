@@ -1,5 +1,6 @@
 #include "envelope.h"
 #include "json.h"
+#include "compat.h"
 #include "ed25519.h"
 #include "mldsa.h"
 
@@ -415,7 +416,10 @@ bool transcript_write(const transcript_info *ti) {
         if (ok) ok = fputs("}\n", f) >= 0;
         ok = (fclose(f) == 0) && ok;
     }
-    if (ok) ok = rename(tmp, ti->out_path) == 0;
+    // plat_replace_file, not rename: on Windows rename refuses an existing
+    // destination, so recording to the same path twice failed with
+    // "failed writing" while the .partial held a complete receipt
+    if (ok) ok = plat_replace_file(tmp, ti->out_path);
     if (!ok) {
         remove(tmp);
         fprintf(stderr, "error: transcript: failed writing %s\n",
