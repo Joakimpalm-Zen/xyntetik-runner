@@ -375,6 +375,8 @@ def shell(meta: dict, body: str, sha: str) -> str:
   </div>
 </footer>
 <script src="/assets/site.js?v={sha[:8]}" defer></script>
+<!-- Cloudflare Web Analytics: page views without cookies or identifiers; the token is a public site id -->
+<script type="module" src="https://static.cloudflareinsights.com/beacon.min.js" data-cf-beacon='{{"token": "509dac0492754411ade436a38283a388"}}'></script>
 </body>
 </html>
 """
