@@ -8,6 +8,16 @@ names that were true when they were written.
 
 ## Unreleased
 
+- A gemma-4 MoE forward no longer sizes stack arrays by the file's embedding
+  width: four per-token buffers (16 bytes per element, widths up to 2^20
+  admitted by the loader) were variable-length arrays on slot and scheduler
+  threads with 512 KB stacks, so a wide enough declared width crashed the
+  server mid-forward instead of failing at load. They are model-owned heap
+  scratch now, byte-identical output on the Gemma MoE fixtures, and
+  `test-makefile-sane` compiles every engine source with `-Werror=vla`.
+- Two left shifts of a negative value in the Ed25519 carry routines
+  (undefined behaviour, reported by UBSan on the envelope test) are
+  multiplications; the RFC 8032 known answers pin the bits.
 - Chat, Responses and Messages now reject malformed nested history fields
   instead of accepting and dropping or echoing them: assistant `content`,
   `reasoning_content`, tool-result `name`/`tool_call_id`, Responses reasoning

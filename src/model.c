@@ -3754,6 +3754,10 @@ static bool model_alloc_runtime(model_t *m, const model_params *p) {
         m->moe_up     = malloc(sizeof(float) * (size_t)m->n_ff_exp);
         m->moe_dexp   = malloc(sizeof(float) * (size_t)m->n_embd);
         m->moe_out    = malloc(sizeof(float) * (size_t)m->n_embd);
+        if (m->moe_gemma) {
+            m->gemma_scr = malloc(sizeof(float) * 4 * (size_t)m->n_embd);
+            if (!m->gemma_scr) return false;
+        }
         // grouped-by-expert prefill scratch (a whole batch at once)
         size_t nb = (size_t)m->n_batch, ne = (size_t)m->n_embd;
         size_t nf = (size_t)m->n_ff_exp, nu = (size_t)m->n_expert_used;
@@ -3944,6 +3948,7 @@ void model_free(model_t *m) {
     free(m->moe_logits); free(m->moe_sel_scores); free(m->moe_group_score);
     free(m->moe_gate); free(m->moe_up);
     free(m->moe_dexp); free(m->moe_out);
+    free(m->gemma_scr);
     free(m->moe_out_b); free(m->moe_gath); free(m->moe_gate_b);
     free(m->moe_up_b); free(m->moe_dexp_b); free(m->moe_sel);
     free(m->moe_selw); free(m->moe_trace_norms); free(m->moe_gidx); free(m->moe_gw);
@@ -5432,7 +5437,7 @@ static gguf_tensor gemma_gate_up_weight(const layer_t *ly, int e, int n_embd,
 static void gemma_route(model_t *m, const layer_t *ly, const float *h,
                          int n_embd, int ne, int used, int *sel, float *selw,
                          bool dbg_dump) {
-    float rin[n_embd];
+    float *rin = m->gemma_scr + 3 * (size_t)n_embd;
     float inv = 1.0f / sqrtf((float)n_embd);
     float rss = 0.0f;
     for (int i = 0; i < n_embd; i++) rss += h[i] * h[i];
@@ -5471,7 +5476,7 @@ static void gemma_moe_ffn(model_t *m, const layer_t *ly, int n, int xdim) {
     int layer_idx = (int)(ly - m->layers);
     for (int b = 0; b < n; b++) {
         const float *attn = m->x + (size_t)b * n_embd;
-        float xn[n_embd], mlp[n_embd], xn2[n_embd];
+        float *xn = m->gemma_scr, *mlp = xn + n_embd, *xn2 = mlp + n_embd;
         // --- dense shared MLP: rmsnorm(ffn_norm) -> GELU SwiGLU -> post_ffw_norm_1
         rmsnorm(xn, attn, ly->ffn_norm_w, n_embd, m->rms_eps);
         matvec_b(m->tp, m->hb,  dff, ly->w_gate, xn, n_embd, n_embd, dff, NULL, 1);

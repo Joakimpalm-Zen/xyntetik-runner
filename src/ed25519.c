@@ -75,7 +75,7 @@ sv car25519(gf o)
     o[i]+=(1LL<<16);
     c=o[i]>>16;
     o[(i+1)*(i<15)]+=c-1+37*(c-1)*(i==15);
-    o[i]-=c<<16;
+    o[i]-=c*65536;   /* not c<<16: c can be negative, and a left shift of a negative value is undefined in C (UBSan) */
   }
 }
 
@@ -387,7 +387,7 @@ sv modL(u8 *r,i64 x[64])
     for (j = i - 32;j < i - 12;++j) {
       x[j] += carry - 16 * x[i] * L[j - (i - 32)];
       carry = (x[j] + 128) >> 8;
-      x[j] -= carry << 8;
+      x[j] -= carry * 256;   /* not carry<<8: carry can be negative (see car25519) */
     }
     x[j] += carry;
     x[i] = 0;
