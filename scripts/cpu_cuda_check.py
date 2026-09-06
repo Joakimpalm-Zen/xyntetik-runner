@@ -303,6 +303,13 @@ def main():
     ap.add_argument("--fused", action="store_true",
                     help="do NOT pin the eager router (measures the fused "
                          "default, whose contract is weaker than identity)")
+    # Applied to the GPU arm only: a model larger than the free device
+    # memory is measured under an explicit split (`--gpu-layers N`), and the
+    # split it achieved is read back off the log into the report, so the
+    # comparison is never a full-offload claim it did not earn.
+    ap.add_argument("--gpu-arm-arg", action="append", default=[],
+                    help="extra runner flag for the GPU arm only, e.g. "
+                         "--gpu-arm-arg=--gpu-layers --gpu-arm-arg=28")
     ap.add_argument("--extra-arg", action="append", default=[],
                     help="extra flag passed to BOTH runs (e.g. --cpu-moe)")
     ap.add_argument("--out")
@@ -320,7 +327,8 @@ def main():
                        env, args.extra_arg, args.timeout, logs / "cpu_cuda-cpu.log")
     print("loading CUDA backend...", flush=True)
     gpu = generate_all(args.runner, args.model, "auto", args.tokens, args.ctx,
-                       env, args.extra_arg, args.timeout, gpu_log)
+                       env, args.extra_arg + args.gpu_arm_arg, args.timeout,
+                       gpu_log)
 
     # Dense models never get the near-tie tolerance (see is_moe): the
     # written policy always said so, but until 2026-08-20 nothing ENFORCED it —
