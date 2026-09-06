@@ -20,6 +20,7 @@ so the reference takes the same cold path every time.
 
 import argparse
 import json
+import shlex
 import subprocess
 import sys
 import time
@@ -212,18 +213,29 @@ def main():
     # A tie this narrow is quantisation noise, not an arithmetic fault: the
     # reference flips on gaps this size by itself when its prompt cache is warm.
     ap.add_argument("--tie-nats", type=float, default=0.25)
+    # Extra flags for either server, shell-split. The reference's own
+    # configuration (flash attention, batch sizes) moves its logits at the
+    # same order as the divergences this gate classifies, so a comparison
+    # is only meaningful with that configuration stated.
+    ap.add_argument("--reference-args", default="",
+                    help="extra llama-server flags, e.g. '-fa off'")
+    ap.add_argument("--runner-args", default="",
+                    help="extra runner flags, e.g. '-b 1'")
     args = ap.parse_args()
+    ref_extra = shlex.split(args.reference_args)
+    run_extra = shlex.split(args.runner_args)
 
     procs = []
     try:
         procs.append(subprocess.Popen(
             [args.runner, "--serve", "--no-tray", "-m", args.model,
              "-c", str(args.ctx),
-             "--port", "18201", "--gpu", "off"],
+             "--port", "18201", "--gpu", "off"] + run_extra,
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
         procs.append(subprocess.Popen(
             [args.reference, "-m", args.model, "-c", str(args.ctx),
-             "--port", "18202", "--host", "127.0.0.1", "-t", str(args.threads)],
+             "--port", "18202", "--host", "127.0.0.1", "-t", str(args.threads)]
+            + ref_extra,
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
         if not wait_ready(18201, "/v1/capabilities", 600):
             sys.exit("runner did not come up")
@@ -249,6 +261,8 @@ def main():
         "model": args.model,
         "tokens_per_prompt": args.tokens,
         "tie_threshold_nats": args.tie_nats,
+        "reference_args": ref_extra,
+        "runner_args": run_extra,
         "results": rows,
         "totals": {
             "prompts": len(rows),
