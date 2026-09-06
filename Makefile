@@ -979,8 +979,8 @@ $(TEST_GGUF_GETTERS): tests/test_gguf_getters.c $(OBJDIR)/gguf.o $(OBJDIR)/compa
 $(TEST_PARSE): tests/test_parse.c $(OBJDIR)/compat.o src/compat.h
 	$(CC) $(CFLAGS) -I src tests/test_parse.c $(OBJDIR)/compat.o -o $@ $(LDFLAGS)
 
-$(TEST_ENVELOPE): tests/test_envelope.c $(OBJDIR)/envelope.o $(OBJDIR)/ed25519.o $(MLDSA_OBJ) $(OBJDIR)/json.o src/envelope.h src/json.h src/runner.h
-	$(CC) $(CFLAGS) -I src tests/test_envelope.c $(OBJDIR)/envelope.o $(OBJDIR)/ed25519.o $(MLDSA_OBJ) $(OBJDIR)/json.o -o $@ $(LDFLAGS)
+$(TEST_ENVELOPE): tests/test_envelope.c $(OBJDIR)/envelope.o $(OBJDIR)/ed25519.o $(MLDSA_OBJ) $(OBJDIR)/json.o $(OBJDIR)/compat.o src/envelope.h src/json.h src/runner.h
+	$(CC) $(CFLAGS) -I src tests/test_envelope.c $(OBJDIR)/envelope.o $(OBJDIR)/ed25519.o $(MLDSA_OBJ) $(OBJDIR)/json.o $(OBJDIR)/compat.o -o $@ $(LDFLAGS)
 
 # receipt and model-signature primitives: RFC 8032 / RFC 6979 known answers
 $(TEST_ED25519): tests/test_ed25519.c $(OBJDIR)/ed25519.o src/ed25519.h
