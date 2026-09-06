@@ -2350,11 +2350,15 @@ static bool tc_on(const model_t *m, int type) {
 // batch, so a wider batch runs as ceil(batch/tile) launches of the proven
 // shape. k_gemm_q8_0 already did exactly this for its 8-column tile; this
 // generalises it so the buffer width and the tile width can move apart.
+// `scale` is passed as a sixth kernel parameter only when `scaled` is set:
+// the NVFP4 kernels take the per-tensor companion that way, every other
+// kernel keeps its five-parameter signature and its committed PTX.
 static bool launch_tiled(gpu_t *g, CUfunction f, unsigned grid, unsigned block,
                          CUdeviceptr weights, CUdeviceptr x, CUdeviceptr y,
-                         mv_args a, CUdeviceptr bias, int tile) {
+                         mv_args a, CUdeviceptr bias, int tile,
+                         bool scaled, float scale) {
     if (a.batch <= tile) {
-        void *p[] = { &weights, &x, &y, &a, &bias };
+        void *p[] = { &weights, &x, &y, &a, &bias, &scale };
         return launch(g, f, grid, 1, 1, block, p);
     }
     for (int off = 0; off < a.batch; off += tile) {
@@ -2362,9 +2366,10 @@ static bool launch_tiled(gpu_t *g, CUfunction f, unsigned grid, unsigned block,
         ai.batch = (a.batch - off) < tile ? (a.batch - off) : tile;
         CUdeviceptr xi = x + (CUdeviceptr)((uint64_t)off * (uint64_t)a.xs * sizeof(float));
         CUdeviceptr yi = y + (CUdeviceptr)((uint64_t)off * (uint64_t)a.ys * sizeof(float));
-        void *pi[] = { &weights, &xi, &yi, &ai, &bias };
+        void *pi[] = { &weights, &xi, &yi, &ai, &bias, &scale };
         if (!launch(g, f, grid, 1, 1, block, pi)) return false;
     }
+    (void)scaled;   // the extra entry is harmless for a five-parameter kernel
     return true;
 }
 
@@ -2378,7 +2383,7 @@ static bool enc_mv(gpu_t *g, model_t *m, gguf_tensor *w, CUdeviceptr x,
                         "(no binding covers it)", w->name);
         return false;
     }
-    mv_args a = { n_in, n_out, w_off, bias != 0, batch, xs, ys, w->scale };
+    mv_args a = { n_in, n_out, w_off, bias != 0, batch, xs, ys };
     CUdeviceptr b = bias ? bias : g->sw->dummy;
     void *p[] = { &weights, &x, &y, &a, &b };
     // Prefill (batch>1), tensor-core GEMM when promoted for this (type, arch)
@@ -2388,7 +2393,7 @@ static bool enc_mv(gpu_t *g, model_t *m, gguf_tensor *w, CUdeviceptr x,
         g_tc_dispatches++;
         return launch_tiled(g, g->sw->f_gemm_tc[w->type],
                             (n_out + TC_ROWS - 1) / TC_ROWS, 128,
-                            weights, x, y, a, b, TC_N);
+                            weights, x, y, a, b, TC_N, false, 1.0f);
     }
     // Prefill (batch>1) uses the tiled-GEMM variant where available (Q8_0/Q4_K):
     // GEMM_WARPS(=8) rows per block, 256 threads, x staged in shared memory.
@@ -2398,7 +2403,7 @@ static bool enc_mv(gpu_t *g, model_t *m, gguf_tensor *w, CUdeviceptr x,
         // slower — so a wider tile runs as two launches of the proven shape.
         return launch_tiled(g, g->sw->f_gemm[w->type], (n_out + 7) / 8, 8 * 32,
                             weights, x, y, a, b,
-                            w->type == T_Q8_0 ? Q8_COLS : MVT);
+                            w->type == T_Q8_0 ? Q8_COLS : MVT, false, 1.0f);
     }
     // Decode (batch==1) uses the coalesced lane-per-element GEMV where available
     // (Q8_0/Q4_K); same 4-rows/block shape, so capture-compatible with no
@@ -2409,7 +2414,8 @@ static bool enc_mv(gpu_t *g, model_t *m, gguf_tensor *w, CUdeviceptr x,
     // decoded weight to all columns, the single variant is faster at batch 1
     CUfunction f = batch > 1 ? g->sw->f_mvb[w->type] : g->sw->f_mv[w->type];
     return launch_tiled(g, f, (n_out + 3) / 4, 128, weights, x, y, a, b,
-                        batch > 1 ? MVT : MVB);
+                        batch > 1 ? MVT : MVB,
+                        w->type == T_NVFP4, w->scale);
 }
 
 static bool enc_qknorm(gpu_t *g, model_t *m, CUdeviceptr v, CUdeviceptr w,
@@ -2771,8 +2777,11 @@ static bool enc_moe_mv(gpu_t *g, model_t *m, gguf_tensor *base,
                         ggml_type_name(base->type));
         return false;
     }
-    moe_args a = { n_in, n_out, w_off, estride, xs, ys, base->scale };
-    void *p[] = { &weights, &x, &y, &a, &sel };
+    moe_args a = { n_in, n_out, w_off, estride, xs, ys };
+    // k_moe_mv_nvfp4 takes the per-tensor companion as a sixth parameter;
+    // the others read five and ignore the trailing entry
+    float scale = base->scale;
+    void *p[] = { &weights, &x, &y, &a, &sel, &scale };
     return launch(g, f, (n_out + 3) / 4, nslots, 1, 128, p);
 }
 
@@ -3874,7 +3883,7 @@ bool gpu_mvt(model_t *m, const gguf_tensor *w, const float *dy, float *dx,
     bool ok = cu.MemcpyHtoD(d_dy, dy, ny) == 0 &&
               cu.MemcpyHtoD(d_dx, dx, nx) == 0;
     if (ok) {
-        mv_args a = { n_in, n_out, w_off, 0, batch, n_out, n_in, 1.0f };
+        mv_args a = { n_in, n_out, w_off, 0, batch, n_out, n_in };
         CUdeviceptr bias = g->sw->dummy;
         void *p[] = { &weights, &d_dy, &d_dx, &a, &bias };
         int threads = 256;
@@ -4036,7 +4045,7 @@ bool gpu_train_mvt(model_t *m, const gguf_tensor *w, const float *dy,
     if (cu.MemcpyHtoD(t->d_dy, dy, ny) != 0 ||
         cu.MemcpyHtoD(t->d_dx, dx, nx) != 0)
         return false;
-    mv_args a = { n_in, n_out, 0, 0, nb, n_out, n_in, 1.0f };
+    mv_args a = { n_in, n_out, 0, 0, nb, n_out, n_in };
     void *p[] = { &weights, &t->d_dy, &t->d_dx, &a, &t->dummy };
     int threads = 256;
     unsigned blocks = (unsigned)((n_in + threads - 1) / threads);
@@ -4141,7 +4150,7 @@ static bool enc_mv_batch(gpu_t *g, model_t *m, gguf_tensor *w, CUdeviceptr x,
                         "(no binding covers it)", w->name);
         return false;
     }
-    mv_args a = { n_in, n_out, w_off, bias != 0, batch, xs, ys, w->scale };
+    mv_args a = { n_in, n_out, w_off, bias != 0, batch, xs, ys };
     CUdeviceptr bp = bias ? bias : g->sw->dummy;
     void *p[] = { &weights, &x, &y, &a, &bp };
     // GEMM-shaped twins stage x in shared memory and give 8 rows per block;

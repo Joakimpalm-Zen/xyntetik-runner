@@ -90,10 +90,8 @@ static __device__ __forceinline__ float warp_sum(float s) {
     unsigned lane = threadIdx.x & 31; \
     if (row >= (unsigned)a.n_out) return;
 
-// a.scale is the per-tensor companion (1.0 when none): applied to the
-// finished dot, before the bias, exactly as the CPU seam does
 #define MV_TAIL \
-    s = warp_sum(s) * a.scale; \
+    s = warp_sum(s); \
     if (lane == 0) y[row] = a.has_bias ? s + bias[row] : s;
 
 #define MV_HEAD_B \
@@ -109,7 +107,7 @@ static __device__ __forceinline__ float warp_sum(float s) {
 
 #define MV_TAIL_B \
     for (int t = 0; t < a.batch; t++) { \
-        float r = warp_sum(s[t]) * a.scale; \
+        float r = warp_sum(s[t]); \
         if (lane == 0) y[(ulong64)t * a.ys + row] = a.has_bias ? r + bias[row] : r; \
     }
 
@@ -1922,7 +1920,12 @@ extern "C" __global__ void k_mv_mxfp4_b(MV_PARAMS) {
 // decodes to 0 like llama.cpp, and exponent 0 is subnormal (man * 2^-9).
 // The dot sums each sub-block's 16 products before scaling (s += d * t),
 // the same association as the CPU kernel. The per-tensor companion (the
-// export's second level) is a.scale in the tail, not decoded here.
+// export's second level, gguf_tensor.scale, 1.0 when the file has none) is
+// this kernel family's own trailing parameter, applied to the finished dot
+// before the bias exactly as the CPU seam does (dot(w*s, x) = s*dot(w, x)).
+// A parameter of these three kernels only, NOT a field of mv_args: widening
+// the shared struct re-lays the registers of every kernel that takes it,
+// and the committed PTX of kernels nobody touched must not move.
 static __device__ __forceinline__ float ue4m3f(uchar x) {
     if (x == 0 || x == 0x7F) return 0.0f;
     int e = (x >> 3) & 0xF, m = x & 0x7;
@@ -1930,7 +1933,7 @@ static __device__ __forceinline__ float ue4m3f(uchar x) {
     return ldexpf(1.0f + (float)m / 8.0f, e - 7);
 }
 
-extern "C" __global__ void k_mv_nvfp4(MV_PARAMS) {
+extern "C" __global__ void k_mv_nvfp4(MV_PARAMS, float scale) {
     MV_HEAD;
     int nb = a.n_in / 64;
     const uchar *rw = wb + a.w_off + (ulong64)row * nb * 36;
@@ -1949,10 +1952,11 @@ extern "C" __global__ void k_mv_nvfp4(MV_PARAMS) {
             s += d * t;
         }
     }
-    MV_TAIL;
+    s = warp_sum(s) * scale;
+    if (lane == 0) y[row] = a.has_bias ? s + bias[row] : s;
 }
 
-extern "C" __global__ void k_mv_nvfp4_b(MV_PARAMS) {
+extern "C" __global__ void k_mv_nvfp4_b(MV_PARAMS, float scale) {
     MV_HEAD_B;
     int nb = a.n_in / 64;
     const uchar *rw = wb + a.w_off + (ulong64)row * nb * 36;
@@ -1968,7 +1972,10 @@ extern "C" __global__ void k_mv_nvfp4_b(MV_PARAMS) {
             }
         }
     }
-    MV_TAIL_B;
+    for (int t = 0; t < a.batch; t++) {
+        float r = warp_sum(s[t]) * scale;
+        if (lane == 0) y[(ulong64)t * a.ys + row] = a.has_bias ? r + bias[row] : r;
+    }
 }
 
 // ---------------------------------------------------------------- rope
@@ -3081,7 +3088,7 @@ extern "C" __global__ void k_moe_route(const float *logits, int *sel,
     float s = 0;
 
 #define MOE_MV_TAIL \
-    s = warp_sum(s) * a.scale; \
+    s = warp_sum(s); \
     if (lane == 0) y[(ulong64)blockIdx.y * a.ys + row] = s;
 
 #define MOE_MV_PARAMS \
@@ -3170,7 +3177,7 @@ extern "C" __global__ void k_moe_mv_mxfp4(MOE_MV_PARAMS) {
 }
 
 // body of k_mv_nvfp4 (ModelOpt NVFP4 expert tensors)
-extern "C" __global__ void k_moe_mv_nvfp4(MOE_MV_PARAMS) {
+extern "C" __global__ void k_moe_mv_nvfp4(MOE_MV_PARAMS, float scale) {
     MOE_MV_HEAD;
     int nb = a.n_in / 64;
     const uchar *rw = wbase + (ulong64)row * nb * 36;
@@ -3188,7 +3195,8 @@ extern "C" __global__ void k_moe_mv_nvfp4(MOE_MV_PARAMS) {
             s += d * t;
         }
     }
-    MOE_MV_TAIL;
+    s = warp_sum(s) * scale;
+    if (lane == 0) y[(ulong64)blockIdx.y * a.ys + row] = s;
 }
 
 // body of k_gemv_q4_K
