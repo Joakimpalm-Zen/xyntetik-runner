@@ -1,0 +1,9 @@
+starting server A: /home/lab/workspace/models/qwen3.8/Qwen3.8-27B-UD-Q4_K_M.gguf
+starting server B: /home/lab/workspace/models/qwen3.8/Qwen3.8-27B-Q8_0.gguf
+{
+  "positions_scored": 100,
+  "positions_failed": 0,
+  "mean_kld": 0.0015697803701570983,
+  "top1_agreement_pct": 100.0,
+  "mean_top8_overlap": 0.835
+}

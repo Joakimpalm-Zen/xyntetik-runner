@@ -1,0 +1,66 @@
+{
+  "n_pass": 3,
+  "n_total": 6,
+  "results": [
+    {
+      "tag": "a",
+      "n": 64,
+      "identical": false,
+      "first_divergent_byte": 238,
+      "ref_sha256": "0eacd83076b64c7c76146f93db60b46c203b6b74c5550acdf0ebd6843ab2a237",
+      "runner_sha256": "bccedf96d0423af3a964de114a1ab88c3537360b784616d96a92daa68a6de354",
+      "ref_tail": "hion, and art. Paris is the political, economic",
+      "runner_tail": "hion, and culture."
+    },
+    {
+      "tag": "b",
+      "n": 64,
+      "identical": true,
+      "first_divergent_byte": -1,
+      "ref_sha256": "4211bde04db43740b74d945439961f4a23b46b7b61bce58a6611c8cb1678edeb",
+      "runner_sha256": "4211bde04db43740b74d945439961f4a23b46b7b61bce58a6611c8cb1678edeb",
+      "ref_tail": "",
+      "runner_tail": ""
+    },
+    {
+      "tag": "c",
+      "n": 64,
+      "identical": true,
+      "first_divergent_byte": -1,
+      "ref_sha256": "fd28204f4acd3dfad7fe70b84edeb637944fb87c494edcb2945334b84216007f",
+      "runner_sha256": "fd28204f4acd3dfad7fe70b84edeb637944fb87c494edcb2945334b84216007f",
+      "ref_tail": "",
+      "runner_tail": ""
+    },
+    {
+      "tag": "d",
+      "n": 64,
+      "identical": false,
+      "first_divergent_byte": 48,
+      "ref_sha256": "f00ef94a6d2278e1938bc8e271e06ceadc5c635509142f056a6fabd71c4eeabe",
+      "runner_sha256": "78a1e9d4aeb7a726b627b5ad9577cfd3b712faba511c1c302c8b96f7c193c2ce",
+      "ref_tail": " glasbåge inriktad mot en glasbehållare som innehåller kvick",
+      "runner_tail": " glasbåge som innehåller en liten mängd kvicksilver. Kvicksi"
+    },
+    {
+      "tag": "b-long",
+      "n": 256,
+      "identical": false,
+      "first_divergent_byte": 976,
+      "ref_sha256": "ccf0de08d8484feaa6eaf655945cd07a0807fe008959f9ce793325c2d108829d",
+      "runner_sha256": "101a8f7a93a7903ea6037c5eaf5e6801a08d8630fb6d7d280eaa91bbb5789a8c",
+      "ref_tail": "ListNode(1)\n        head.next = ListNode(2)\n        head.nex",
+      "runner_tail": "ListNode(1, ListNode(2, ListNode(3)))\n        reversed_head "
+    },
+    {
+      "tag": "c-long",
+      "n": 256,
+      "identical": true,
+      "first_divergent_byte": -1,
+      "ref_sha256": "6c4840c7cb77495804c36d79e79a72d8c57fda89f4b5cc261dab8e33962d5381",
+      "runner_sha256": "6c4840c7cb77495804c36d79e79a72d8c57fda89f4b5cc261dab8e33962d5381",
+      "ref_tail": "",
+      "runner_tail": ""
+    }
+  ]
+}

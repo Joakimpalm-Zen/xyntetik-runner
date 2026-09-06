@@ -8,6 +8,41 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **Granite 4.2 (3B, 8B) admitted.** The architecture is 4.1's; the header
+  and the template are not. The `granite-docling` pre-tokenizer name maps
+  to the GPT-2 family rule, which now uses the regex's `\p{L}` letter class
+  rather than ASCII alphabetics (tokenizer differential 5/721 to 0/721 on
+  both sizes), and the new `granite42` chat template family renders the
+  model's own template: an always-present system turn, `<think></think>`
+  seeding and history truncation, the function-XML tool protocol with
+  grouped `<tool_response>` results, and `enable_thinking` on and off
+  (22/22 reference cases text- and token-identical through
+  `scripts/template-conformance.py --family granite42`). Detection keys on
+  the literal `<think></think>` that tells it from Ornith's otherwise
+  identical declaration text. Measured on the Blackwell against llama.cpp
+  master 73a43d1: 8B greedy divergences all at ties (0 real of 9, max 0.187
+  nats), same-file logits margin-qualified top-1 100% on both sizes,
+  Q4_K_M vs Q8_0 mean KLD 0.0036 / top-1 99.75%, cpu_cuda 9/9 on the 3B
+  and 8/9 on the 8B with the flip on a 0.0019-nat tie. The 3B's strict
+  identity row is 0/6 and is recorded that way; the certified
+  granite-4.1-3b run through the same gate the same afternoon reads the
+  same class, and the 4.2-3b's same-file logits are the cleaner of the
+  two. Evidence: `docs/granite-42-qwen38-cert-2026-09-06.md`.
+- **Qwen 3.8 27B admitted** on the `qwen35` path (48 Gated DeltaNet plus 16
+  full-attention blocks, one NextN block that `--mtp` drafts from). The
+  `qwen35` pre-tokenizer keeps combining marks inside letter runs, the
+  `[\p{L}\p{M}]+` class of the Qwen3.5 regex (3/721 to 0/721). Ornith's
+  GGUF declares `qwen35` while its own `tokenizer.json` carries the Qwen3
+  regex, so its differential against the Hugging Face reference now reads
+  3/721 on the same strings where the runner and llama.cpp master agree;
+  the manifest row declares that count (`check_params.tokenizer.
+  expect_divergences`) and `compat_matrix.py` passes it to `difftok.py`.
+  Greedy identity vs 73a43d1 4/6, same-file logits mean KLD 0.012. CPU only
+  in this window. Same evidence document.
+- New BPE fixture cases (curly apostrophe, Devanagari marks, digit runs)
+  for the GPT-2, llama3, qwen2 and qwen35 rules, and a
+  `vocab-bpe-granite-docling.gguf` fixture.
+
 ## v0.4.10 - 2026-09-06
 
 The NVFP4-on-CUDA release, with two bugfix rounds. NVIDIA's block-scaled FP4

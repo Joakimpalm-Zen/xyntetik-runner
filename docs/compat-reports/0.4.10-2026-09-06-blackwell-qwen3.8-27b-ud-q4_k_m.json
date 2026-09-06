@@ -1,0 +1,93 @@
+{
+  "schema_version": "xyntetik.runner.model-compat-report.v1",
+  "generated_utc": "2026-09-06T15:30:49Z",
+  "host": {
+    "os": "Linux",
+    "machine": "x86_64"
+  },
+  "runner": {
+    "path": "runner",
+    "version": "runner 0.4.10"
+  },
+  "reference": {
+    "path": "llama-server",
+    "version": "version: 0.4.0-dev (build 1, commit 73a43d1)"
+  },
+  "models": [
+    {
+      "id": "qwen3.8-27b-ud-q4_k_m",
+      "architecture": "qwen35",
+      "file": "models/Qwen3.8-27B-UD-Q4_K_M.gguf",
+      "expected_sha256": "322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482",
+      "checks": {
+        "load": {
+          "status": "pass",
+          "returncode": 0,
+          "elapsed_ms": 520.7,
+          "stderr_tail": "loaded /home/lab/workspace/models/qwen3.8/Qwen3.8-27B-UD-Q4_K_M.gguf | qwen35 | 64 layers | ctx 4096 | 32 threads | 0.02s\nmtp: 1 predictor block(s) declared, excluded from the backbone; not consumed (pass --mtp to draft from it)\nsampling: qwen3 (temp 0.00 \u2014 greedy argmax; top_p/top_k/min_p/repeat_penalty inactive)\n\nprompt: 3 tok, 9.92 tok/s | gen: 1 tok, 5.58 tok/s\n"
+        },
+        "tokenizer": {
+          "status": "pass",
+          "returncode": 0,
+          "elapsed_ms": 598.7,
+          "stdout_tail": "\n0/721 strings differ (0 of them begin with whitespace)\nOK\n",
+          "stderr_tail": "Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.\n"
+        },
+        "cpu_cuda": {
+          "status": "not_executed",
+          "reason": "insufficient_vram",
+          "detail": "error: 17.5GB of VRAM requested on GPU-399aa5c7-bb47-5ccb-b688-54fefec06647, but only 9.6GB is available",
+          "elapsed_ms": 200614.05,
+          "pins": {
+            "RUNNER_CUDA_TC": "0"
+          },
+          "report": "g42-evidence/cpu_cuda/qwen3.8-27b-ud-q4_k_m.json"
+        },
+        "chat": {
+          "status": "pass",
+          "returncode": 0,
+          "elapsed_ms": 2563.47,
+          "prompt": "What is 2+2?",
+          "gpu": "off",
+          "failure_reasons": [],
+          "output_tail": "2 + 2 = **4**\n"
+        },
+        "greedy_reference": {
+          "status": "pass",
+          "returncode": 0,
+          "elapsed_ms": 20018.7,
+          "stdout_tail": "{\n  \"schema_version\": \"xyntetik.runner.greedy-reference.v1\",\n  \"generated_utc\": \"2026-09-06T15:34:41Z\",\n  \"runner\": \"runner 0.4.10\",\n  \"reference\": \"version: 0.4.0-dev (build 1, commit 73a43d1)\",\n  \"model\": \"/home/lab/workspace/models/qwen3.8/Qwen3.8-27B-UD-Q4_K_M.gguf\",\n  \"tokens\": 8,\n  \"comparison\": \"exact generated UTF-8 text from /v1/completions at temperature 0\",\n  \"comparisons\": [\n    {\n      \"prompt\": \"The capital of France is\",\n      \"runner\": \" Paris.\\nThe capital of Germany is\",\n      \"reference\": \" Paris.\\nThe capital of Germany is\",\n      \"status\": \"pass\"\n    },\n    {\n      \"prompt\": \"def fibonacci(n):\",\n      \"runner\": \"\\n    if n <= 0:\",\n      \"reference\": \"\\n    if n <= 0:\",\n      \"status\": \"pass\"\n    },\n    {\n      \"prompt\": \"1 2 3 4 5 6 7 8\",\n      \"runner\": \" 9 10 11\",\n      \"reference\": \" 9 10 11\",\n      \"status\": \"pass\"\n    },\n    {\n      \"prompt\": \"Once upon a time, in a land far away,\",\n      \"runner\": \" there was a young adventurer named Lily.\",\n      \"reference\": \" there was a young adventurer named Lily.\",\n      \"status\": \"pass\"\n    },\n    {\n      \"prompt\": \"JSON example: {\\\"name\\\":\",\n      \"runner\": \" \\\"John\\\", \\\"age\\\": 3\",\n      \"reference\": \" \\\"John\\\", \\\"age\\\": 3\",\n      \"status\": \"pass\"\n    }\n  ],\n  \"totals\": {\n    \"passed\": 5,\n    \"failed\": 0\n  }\n}\n",
+          "stderr_tail": ""
+        }
+      },
+      "resolved_file": "models/Qwen3.8-27B-UD-Q4_K_M.gguf",
+      "actual_sha256": "322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482",
+      "file_status": "pass",
+      "complete": false
+    }
+  ],
+  "complete": false,
+  "summary": {
+    "models": 1,
+    "files": {
+      "pass": 1
+    },
+    "checks": {
+      "load": {
+        "pass": 1
+      },
+      "tokenizer": {
+        "pass": 1
+      },
+      "cpu_cuda": {
+        "not_executed": 1
+      },
+      "chat": {
+        "pass": 1
+      },
+      "greedy_reference": {
+        "pass": 1
+      }
+    }
+  }
+}
