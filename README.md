@@ -863,9 +863,16 @@ re-export of such a file still carries it and still loads correctly.
 `<base>.input_scale` is the activation-side scale of a quantized-activation
 kernel and is deliberately not applied. On CUDA the NVFP4 matvec kernels apply
 the companion in their tails, the same seam; verified against the CPU run on
-the two-level fixture and on a real 4B NVFP4 file (`make test-cuda-nvfp4`).
+the two-level fixture and on a real Qwen3.5-4B NVFP4 file (`make test-cuda-nvfp4`:
+token-identical to the CPU and to upstream llama.cpp, logprobs within 8e-5;
+RTX 3070 decode 18.3 tok/s against 1.4 on its CPU, prefill not yet accelerated).
 A companion on any other tensor type, and every companion on Metal, keeps that
-tensor on the CPU, and `--merge-lora` refuses to fold a delta into one. `scripts/nvfp4-probe.py` reads a file's own structure and reports
+tensor on the CPU, and `--merge-lora` refuses to fold a delta into one. One
+caveat on files in the wild: ggml's `block_nvfp4` is 36 bytes per 64 elements
+(UE4M3 sub-block scales), and that is what upstream llama.cpp and the
+most-downloaded NVFP4 repositories write; at least one third-party quantizer
+publishes type 40 with fp16 sub-block scales, 40 bytes per 64. Runner refuses
+that variant at load, naming the tensor, rather than decode it as NaN. `scripts/nvfp4-probe.py` reads a file's own structure and reports
 the companions; `tests/test_nvfp4_scale.py` holds the gate against an F32
 anchor with the companion folded in.
 

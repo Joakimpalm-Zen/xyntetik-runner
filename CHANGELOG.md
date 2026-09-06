@@ -21,7 +21,23 @@ names that were true when they were written.
   requires a CUDA box to put the NVFP4 fixture's layers on the device and
   agree with the CPU score; `make test-cuda-nvfp4` checks token identity
   and logprob agreement on the fixture and on a real file (`NVFP4_MODEL`).
-  Measured on an RTX 3070 (see below). Metal still has no NVFP4 kernel.
+  Measured on an RTX 3070 with a real upstream-format Qwen3.5-4B NVFP4 file
+  (2.5 GB of weights in VRAM, all 32 layers): CPU and CUDA greedy output
+  token-identical to each other and to upstream llama.cpp's on the same
+  file (the external anchor), logprobs within 7.8e-5 over the scored prompt
+  (1.4e-6 on the fixture), decode 18.3 tok/s against 1.4 on the same box's i7-7700K.
+  Prefill is 22 tok/s against the CPU's 20: the NVFP4 tile kernel is the
+  generic per-row one, and a coalesced GEMM for the format is the next
+  step. Metal still has no NVFP4 kernel.
+- **A 40-byte NVFP4 variant is refused by name, not decoded as NaN.** At
+  least one third-party quantizer publishes ggml type 40 with fp16
+  sub-block scales (40 bytes per 64 elements) where ggml's `block_nvfp4` is
+  36 (UE4M3 scales; upstream master and the most-downloaded NVFP4
+  repositories). Read as ggml's layout every row was misaligned and a real
+  4B file answered NaN with no error, on the CPU and on CUDA alike. The
+  loader measures the span between tensor offsets and refuses the variant,
+  naming the tensor and both layouts; `make-test-model.py --quant
+  nvfp4-fork40` writes it and `tests/test_nvfp4_scale.py` pins the refusal.
 - The T3 build's portable math (`src/pmath.h`) gives libm's answers at the
   edges: NaN in, NaN out (exp of NaN was an undefined int conversion), log of
   +inf is +inf (was 709.78), sin and cos of an infinity are NaN and of a huge
