@@ -31,6 +31,10 @@ typedef struct {
     int    has_bias;
     int    batch;    // 1..MVB token columns (k_mv_* ignores it)
     int    xs, ys;   // element stride between x / y columns
+    float  scale;    // per-tensor scale companion (gguf_tensor.scale; 1.0 =
+                     // none), applied in the kernel tail before the bias:
+                     // dot(w*s, x) = s*dot(w, x). Every launch site sets it;
+                     // a zero here would silence a projection.
 } mv_args;
 
 typedef struct {
@@ -39,6 +43,7 @@ typedef struct {
     ka_u64 w_off;      // fused expert tensor base byte offset
     ka_u64 estride;    // bytes per expert block within the fused tensor
     int    xs, ys;     // x / y element stride between expert slots
+    float  scale;      // per-tensor scale companion of the fused expert tensor
 } moe_args;
 
 typedef struct {

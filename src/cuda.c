@@ -531,20 +531,30 @@ static bool gpu_type_ok(int type) {
         case T_Q4_1: case T_Q5_0: case T_Q5_1: case T_Q2_K: case T_Q3_K:
         case T_Q4_K: case T_Q5_K:
         case T_Q6_K: case T_IQ4_NL: case T_IQ4_XS: case T_MXFP4:
+        case T_NVFP4:
             return true;
         default:
             return false;
     }
 }
 
+// Types whose EVERY device launch applies the per-tensor scale companion
+// (mv_args.scale in the k_mv_* / k_mv_*_b / k_moe_mv_* tails). The coalesced
+// GEMV, tiled GEMM and tensor-core kernels have their own tails without it,
+// so a companion on a type that can reach them stays on the CPU.
+static bool gpu_scale_companion_ok(int type) {
+    return type == T_NVFP4;
+}
+
 static bool gpu_tensor_type_ok(const gguf_tensor *t) {
     if (!t) return true;
-    if (t->scale != 1.0f) {
+    if (t->scale != 1.0f && !gpu_scale_companion_ok(t->type)) {
         // the per-tensor scale companion is applied on the host dot seam; a
         // device kernel that read the raw rows would reintroduce the unscaled
         // NVFP4 defect on one backend only
         fprintf(stderr, "gpu: tensor %s carries a per-tensor scale companion, "
-                "which no CUDA kernel applies — using CPU\n", t->name);
+                "which no CUDA kernel for %s applies — using CPU\n", t->name,
+                ggml_type_name(t->type));
         return false;
     }
     if (gpu_type_ok(t->type)) return true;
@@ -564,6 +574,7 @@ static bool moe_indirect_type_ok(int type) {
     switch (type) {
         case T_F32: case T_F16: case T_Q8_0: case T_Q4_0:
         case T_Q4_K: case T_Q5_K: case T_Q6_K: case T_MXFP4:
+        case T_NVFP4:
             return true;
         default:
             return false;
@@ -1288,6 +1299,7 @@ static gpu_weights *shared_build(model_t *m, size_t act_bytes, int max_hd,
             { &w->f_mv[T_BF16], "k_mv_bf16" },
             { &w->f_mv[T_IQ4_NL], "k_mv_iq4_nl" }, { &w->f_mv[T_IQ4_XS], "k_mv_iq4_xs" },
             { &w->f_mv[T_MXFP4], "k_mv_mxfp4" },
+            { &w->f_mv[T_NVFP4], "k_mv_nvfp4" },
             { &w->f_mvb[T_F32],  "k_mv_f32_b" },  { &w->f_mvb[T_F16],  "k_mv_f16_b" },
             { &w->f_mvb[T_Q8_0], "k_mv_q8_0_b" }, { &w->f_mvb[T_Q4_0], "k_mv_q4_0_b" },
             { &w->f_mvb[T_Q4_1], "k_mv_q4_1_b" }, { &w->f_mvb[T_Q5_0], "k_mv_q5_0_b" },
@@ -1298,6 +1310,7 @@ static gpu_weights *shared_build(model_t *m, size_t act_bytes, int max_hd,
             { &w->f_mvb[T_BF16], "k_mv_bf16_b" },
             { &w->f_mvb[T_IQ4_NL], "k_mv_iq4_nl_b" }, { &w->f_mvb[T_IQ4_XS], "k_mv_iq4_xs_b" },
             { &w->f_mvb[T_MXFP4], "k_mv_mxfp4_b" },
+            { &w->f_mvb[T_NVFP4], "k_mv_nvfp4_b" },
             // prefill tiled-GEMM variants (batch>1 fast path for these formats)
             { &w->f_gemm[T_Q8_0], "k_gemm_q8_0" },
             { &w->f_gemm[T_Q3_K], "k_gemm_q3_K" },
@@ -1341,6 +1354,7 @@ static gpu_weights *shared_build(model_t *m, size_t act_bytes, int max_hd,
             { &w->f_moe_mv[T_Q5_K],   "k_moe_mv_q5_K" },
             { &w->f_moe_mv[T_Q6_K],   "k_moe_mv_q6_K" },
             { &w->f_moe_mv[T_MXFP4],  "k_moe_mv_mxfp4" },
+            { &w->f_moe_mv[T_NVFP4],  "k_moe_mv_nvfp4" },
             // expert-grouped prefill glue
             { &w->f_moe_gather,       "k_moe_gather" },
             { &w->f_moe_scatter,      "k_moe_scatter_add" },
@@ -2364,13 +2378,13 @@ static bool enc_mv(gpu_t *g, model_t *m, gguf_tensor *w, CUdeviceptr x,
                         "(no binding covers it)", w->name);
         return false;
     }
-    mv_args a = { n_in, n_out, w_off, bias != 0, batch, xs, ys };
+    mv_args a = { n_in, n_out, w_off, bias != 0, batch, xs, ys, w->scale };
     CUdeviceptr b = bias ? bias : g->sw->dummy;
     void *p[] = { &weights, &x, &y, &a, &b };
     // Prefill (batch>1), tensor-core GEMM when promoted for this (type, arch)
     // or forced by RUNNER_CUDA_TC: the block dequantizes a 64-row fp16 weight
     // tile once and its four warps' MMAs share it (TC_ROWS/block, 128 threads).
-    if (batch > 1 && tc_on(m, w->type) && g->sw->f_gemm_tc[w->type]) {
+    if (batch > 1 && w->scale == 1.0f && tc_on(m, w->type) && g->sw->f_gemm_tc[w->type]) {
         g_tc_dispatches++;
         return launch_tiled(g, g->sw->f_gemm_tc[w->type],
                             (n_out + TC_ROWS - 1) / TC_ROWS, 128,
@@ -2378,7 +2392,7 @@ static bool enc_mv(gpu_t *g, model_t *m, gguf_tensor *w, CUdeviceptr x,
     }
     // Prefill (batch>1) uses the tiled-GEMM variant where available (Q8_0/Q4_K):
     // GEMM_WARPS(=8) rows per block, 256 threads, x staged in shared memory.
-    if (batch > 1 && g->sw->f_gemm[w->type]) {
+    if (batch > 1 && w->scale == 1.0f && g->sw->f_gemm[w->type]) {
         // k_gemm_q8_0 keeps a fixed 8-column tile — a 16-column f32 x-tile
         // exceeds shared memory, and every narrower restructure measured
         // slower — so a wider tile runs as two launches of the proven shape.
@@ -2389,7 +2403,7 @@ static bool enc_mv(gpu_t *g, model_t *m, gguf_tensor *w, CUdeviceptr x,
     // Decode (batch==1) uses the coalesced lane-per-element GEMV where available
     // (Q8_0/Q4_K); same 4-rows/block shape, so capture-compatible with no
     // host-side branching on per-token state.
-    if (batch == 1 && g->sw->f_gemv[w->type])
+    if (batch == 1 && w->scale == 1.0f && g->sw->f_gemv[w->type])
         return launch(g, g->sw->f_gemv[w->type], (n_out + 3) / 4, 1, 1, 128, p);
     // 128 threads = 4 warps = 4 rows per block; the tile variant applies each
     // decoded weight to all columns, the single variant is faster at batch 1
@@ -2704,6 +2718,8 @@ static bool stage_x(gpu_t *g, model_t *m, const int32_t *tokens, int tn) {
         dequant_row(m->tok_embd->type,
                     (uint8_t *)m->tok_embd->data + (size_t)tokens[b] * ers,
                     hx, m->n_embd);
+        if (m->tok_embd->scale != 1.0f)
+            for (int i = 0; i < m->n_embd; i++) hx[i] *= m->tok_embd->scale;
         model_embd_transform(m, hx);
     }
     if (cu.MemcpyHtoD(g->x, g->h_x, sizeof(float) * tn * m->n_embd) != 0)
@@ -2755,7 +2771,7 @@ static bool enc_moe_mv(gpu_t *g, model_t *m, gguf_tensor *base,
                         ggml_type_name(base->type));
         return false;
     }
-    moe_args a = { n_in, n_out, w_off, estride, xs, ys };
+    moe_args a = { n_in, n_out, w_off, estride, xs, ys, base->scale };
     void *p[] = { &weights, &x, &y, &a, &sel };
     return launch(g, f, (n_out + 3) / 4, nslots, 1, 128, p);
 }
@@ -3858,7 +3874,7 @@ bool gpu_mvt(model_t *m, const gguf_tensor *w, const float *dy, float *dx,
     bool ok = cu.MemcpyHtoD(d_dy, dy, ny) == 0 &&
               cu.MemcpyHtoD(d_dx, dx, nx) == 0;
     if (ok) {
-        mv_args a = { n_in, n_out, w_off, 0, batch, n_out, n_in };
+        mv_args a = { n_in, n_out, w_off, 0, batch, n_out, n_in, 1.0f };
         CUdeviceptr bias = g->sw->dummy;
         void *p[] = { &weights, &d_dy, &d_dx, &a, &bias };
         int threads = 256;
@@ -4020,7 +4036,7 @@ bool gpu_train_mvt(model_t *m, const gguf_tensor *w, const float *dy,
     if (cu.MemcpyHtoD(t->d_dy, dy, ny) != 0 ||
         cu.MemcpyHtoD(t->d_dx, dx, nx) != 0)
         return false;
-    mv_args a = { n_in, n_out, 0, 0, nb, n_out, n_in };
+    mv_args a = { n_in, n_out, 0, 0, nb, n_out, n_in, 1.0f };
     void *p[] = { &weights, &t->d_dy, &t->d_dx, &a, &t->dummy };
     int threads = 256;
     unsigned blocks = (unsigned)((n_in + threads - 1) / threads);
@@ -4125,7 +4141,7 @@ static bool enc_mv_batch(gpu_t *g, model_t *m, gguf_tensor *w, CUdeviceptr x,
                         "(no binding covers it)", w->name);
         return false;
     }
-    mv_args a = { n_in, n_out, w_off, bias != 0, batch, xs, ys };
+    mv_args a = { n_in, n_out, w_off, bias != 0, batch, xs, ys, w->scale };
     CUdeviceptr bp = bias ? bias : g->sw->dummy;
     void *p[] = { &weights, &x, &y, &a, &bp };
     // GEMM-shaped twins stage x in shared memory and give 8 rows per block;
