@@ -8,6 +8,19 @@ names that were true when they were written.
 
 ## Unreleased
 
+## v0.4.10 - 2026-09-06
+
+The NVFP4-on-CUDA release, with two bugfix rounds. NVIDIA's block-scaled FP4
+format now runs on the CUDA backend with the export's per-tensor scale
+companion applied in the kernel, verified on a real Qwen3.5-4B NVFP4 file
+against the CPU path and against upstream llama.cpp. Two sweeps of the tree
+under the static analyzer, sanitizers and mutation runs fixed a stack overflow
+class in the gemma-4 MoE forward, undefined behaviour in the Ed25519 carry
+code, five special-value defects in the T3 build's portable math, a Windows
+receipt-overwrite failure, and a silently-NaN NVFP4 variant that is now
+refused by name. Publication rule enforcement and the site's ensö note and
+analytics landed on the way.
+
 - **NVFP4 runs on CUDA.** Three kernels (`k_mv_nvfp4`, `k_mv_nvfp4_b`,
   `k_moe_mv_nvfp4`) decode ggml type 40 exactly as the CPU does (UE4M3
   sub-block scale, E2M1 codebook, sub-block sums before scaling), and the
@@ -97,6 +110,10 @@ names that were true when they were written.
   as a local commit-msg hook, and `CLAUDE.md` states the rule where Claude
   Code reads it. Seven commits reached `main` on 2026-09-05 with the harness's
   default session trailer before this existed; history stays as it is.
+
+## Evidence
+
+- (filled by the release run)
 
 ## v0.4.9 - 2026-09-05
 
