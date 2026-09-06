@@ -62,6 +62,18 @@ enum { TMPL_CHATML, TMPL_LLAMA2, TMPL_LLAMA3, TMPL_ZEPHYR, TMPL_GEMMA,
        // from it ONLY at that generation-prompt site. Every other tmpl branch
        // (tool protocol, sampler, parse) treats them the same via is_gemma4().
        TMPL_GEMMA4_MAINLINE,
+       // Granite 4.2 (ibm-granite/granite-4.2-*, chat_template.jinja of
+       // 2026-09-06): ChatML framing carrying the Qwen3-Coder function-XML
+       // tool protocol, which is ornith's wire shape but NOT ornith's
+       // renderer. The reference ALWAYS opens with a system turn (empty when
+       // none was given), accepts a system turn anywhere, seeds every
+       // assistant turn that carries no thought block with the CLOSED
+       // `<think></think>`, reduces the reasoning of assistant turns that
+       // precede the last user turn to that same closed block, and asks for
+       // no reasoning with `<think></think>` where ornith writes
+       // `<think>\n\n</think>\n\n`. Detected by that literal
+       // `<think></think>`, which ornith's template never carries.
+       TMPL_GRANITE42,
        // What template_detect returns when NOTHING matched. It renders
        // llama-2 markup, because changing what unrecognised models render is
        // a behavioural decision and not this constant's job -- but it is a

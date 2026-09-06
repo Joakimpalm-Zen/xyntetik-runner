@@ -240,6 +240,12 @@ FAMILIES = {
         thinking_var="enable_thinking",
         tokenizer=("Ornith-1.0-9B-Q4_K_M.gguf",),
         cannot={"system-mid-history": NO_MID_SYSTEM}),
+    "granite42": Family(
+        "granite42", ("hf", "ibm-granite/granite-4.2-3b"),
+        note="ornith's declaration text and call syntax under granite 4.2's "
+             "own renderer; docs/granite-42-qwen38-cert-2026-09-06.md",
+        tool_family=True, thinking_var="enable_thinking",
+        tokenizer=("granite-4.2-3b-Q4_K_M.gguf", "granite-4.2-8b-Q4_K_M.gguf")),
     "muse": Family(
         "muse", ("hf", "meta-models/Muse-Glimmer-30B"),
         note="src/template.c cites 'the model's OWN tokenizer.chat_template, "

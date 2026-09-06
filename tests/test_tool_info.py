@@ -54,6 +54,7 @@ def test_reports_family_and_native_flag(model):
     ("harmony", "harmony"),
     ("gemma4", "gemma4"),
     ("ornith", "qwen3_xml"),
+    ("granite42", "qwen3_xml"),
 ])
 def test_native_families_report_native(model, template, family):
     if not RUNNER.exists():

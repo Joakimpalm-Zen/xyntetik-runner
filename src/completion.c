@@ -1533,6 +1533,11 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
     bool harmony_primed_think = chat && s->tmpl == TMPL_HARMONY &&
                                 !(env && env->proto == TP_HARMONY) &&
                                 req_thinking_mode(req) != THINK_OFF;
+    // granite 4.2's generation prompt opens `<think>\n` in every mode but
+    // THINK_OFF, where it is the CLOSED `<think></think>` and the stream
+    // starts in content (template.c, TMPL_GRANITE42).
+    bool granite42_primed_think = chat && s->tmpl == TMPL_GRANITE42 &&
+                                  req_thinking_mode(req) != THINK_OFF;
     // gemma4's thought block is opened BY THE PROMPT on a tool-result
     // continuation with thinking on (template.c's g4_prev == 2 branch), so the
     // grammar must start inside it. Asked of the prompt itself rather than
@@ -2097,7 +2102,7 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
         return;
     }
     if ((chat && s->tmpl == TMPL_ORNITH) || muse_forced_think ||
-        harmony_primed_think)
+        harmony_primed_think || granite42_primed_think)
         engine_think_started(e);
 
     tool_envelope muse_plain_env = {.proto = TP_MUSE_PLAIN};
@@ -2105,7 +2110,7 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
     if (env && (env->proto == TP_HARMONY || env->proto == TP_GEMMA4))
         think_init(&g.ts, NULL, NULL);
     else if ((chat && s->tmpl == TMPL_ORNITH) || muse_forced_think ||
-        harmony_primed_think)
+        harmony_primed_think || granite42_primed_think)
         think_init_reasoning(&g.ts, m->think_open, m->think_close);
     else
         think_init(&g.ts, chat ? m->think_open : NULL, m->think_close);

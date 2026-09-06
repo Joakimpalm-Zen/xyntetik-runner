@@ -67,6 +67,12 @@ int template_detect(const char *meta_tmpl, tokenizer *tok) {
         // apertus first: its vocabulary inherits Mistral's [INST]/[/INST]
         // tokens, so the [INST] branch below would otherwise claim it
         if (strstr(meta_tmpl, "<|assistant_start|>")) return TMPL_APERTUS;
+        // granite 4.2 shares ornith's function-XML declaration text, so it
+        // is told apart FIRST, by the closed `<think></think>` its template
+        // writes and ornith's never does.
+        if (strstr(meta_tmpl, "<function=example_function_name>") &&
+            strstr(meta_tmpl, "<think></think>"))
+            return TMPL_GRANITE42;
         if (strstr(meta_tmpl, "<function=example_function_name>") &&
             strstr(meta_tmpl, "<think>"))
             return TMPL_ORNITH;
@@ -169,6 +175,7 @@ int template_from_name(const char *name) {
     if (!strcmp(name, "phi3"))    return TMPL_PHI3;
     if (!strcmp(name, "apertus")) return TMPL_APERTUS;
     if (!strcmp(name, "ornith")) return TMPL_ORNITH;
+    if (!strcmp(name, "granite42")) return TMPL_GRANITE42;
     if (!strcmp(name, "muse"))   return TMPL_MUSE;
     if (!strcmp(name, "harmony")) return TMPL_HARMONY;
     if (!strcmp(name, "granite")) return TMPL_GRANITE;
@@ -190,6 +197,7 @@ const char *template_name(int t) {
         case TMPL_PHI3:    return "phi3";
         case TMPL_APERTUS: return "apertus";
         case TMPL_ORNITH: return "ornith";
+        case TMPL_GRANITE42: return "granite42";
         case TMPL_MUSE:   return "muse";
         case TMPL_HARMONY: return "harmony";
         case TMPL_GRANITE: return "granite";
@@ -1215,6 +1223,87 @@ size_t render_messages_with_tools(int tmpl, const chat_msg *msgs, int n_msgs,
                                              : "<think>\n", NULL, NULL);
         }
         break;
+    case TMPL_GRANITE42: {
+        // ibm-granite/granite-4.2-3b chat_template.jinja (2026-09-06), see
+        // the enum comment. Line references below are into that file.
+        bool have_tools = tools && tools->type == J_ARR && tools->n > 0;
+        int first = n_msgs > 0 && !strcmp(msgs[0].role, "system") ? 1 : 0;
+        // The reference sets system_message to "" when messages[0] is not a
+        // system turn and then branches on `system_message is defined`,
+        // which is true either way: a system turn is ALWAYS emitted.
+        off = emit(out, cap, off, "<|im_start|>system\n", NULL, NULL);
+        if (first) off = emit(out, cap, off, "%s", msgs[0].content, NULL);
+        if (have_tools) {
+            if (first && msgs[0].content[0])
+                off = emit(out, cap, off, "\n\n", NULL, NULL);
+            sbuf decl = {0};
+            tools_render_for(tmpl, tools, &decl);
+            off = emit(out, cap, off, "%s", decl.s, NULL);
+            free(decl.s);
+        }
+        off = emit(out, cap, off, "<|im_end|>\n", NULL, NULL);
+        // last_user_idx is computed over loop_messages, i.e. after the
+        // leading system turn was split off; `i` below is the same index.
+        int last_user = -1;
+        for (int i = first; i < n_msgs; i++)
+            if (!strcmp(msgs[i].role, "user")) last_user = i;
+        for (int i = first; i < n_msgs; i++) {
+            const char *role = msgs[i].role;
+            const char *c = msgs[i].content;
+            if (!strcmp(role, "tool")) {
+                // consecutive results share one user turn; every result
+                // block ends in its own newline, unlike ornith's
+                bool prev_tool = i > first && !strcmp(msgs[i - 1].role, "tool");
+                bool next_tool = i + 1 < n_msgs &&
+                                 !strcmp(msgs[i + 1].role, "tool");
+                if (!prev_tool)
+                    off = emit(out, cap, off, "<|im_start|>user\n", NULL, NULL);
+                off = emit(out, cap, off,
+                           "<tool_response>\n%s\n</tool_response>\n", c, NULL);
+                if (!next_tool)
+                    off = emit(out, cap, off, "<|im_end|>\n", NULL, NULL);
+                continue;
+            }
+            if (strcmp(role, "assistant")) {
+                off = emit(out, cap, off, "<|im_start|>%s\n%s<|im_end|>\n",
+                           role, c);
+                continue;
+            }
+            // An assistant turn without a thought block is seeded with the
+            // closed one. A turn BEFORE the last user turn that carried a
+            // complete block keeps only what follows its last </think>,
+            // behind that same closed block (truncate_history_thinking,
+            // default true); the latest turn is replayed verbatim. Either
+            // way the result is `| trim`med as a whole, so a seeded body
+            // keeps its leading whitespace behind the seed.
+            const char *open = strstr(c, "<think>");
+            const char *close = strstr(c, "</think>");
+            const char *body = c;
+            bool seed = !open && !close;
+            if (i < last_user && open && close) {
+                const char *p = close, *q;
+                while ((q = strstr(p + 8, "</think>"))) p = q;
+                body = p + 8;
+                seed = true;
+            }
+            const char *end = body + strlen(body);
+            const char *b = seed ? body : trim_left(body, end);
+            const char *e = trim_right(b, end);
+            off = emit(out, cap, off, "<|im_start|>assistant\n%s",
+                       seed ? "<think></think>" : "", NULL);
+            off = emit_n(out, cap, off, b, (size_t)(e - b));
+            // a tool-call turn ends `</tool_call>\n` before <|im_end|>
+            // (chat_template.jinja:118); the trim above took that newline
+            if (e - b >= 12 && !strncmp(e - 12, "</tool_call>", 12))
+                off = emit(out, cap, off, "\n", NULL, NULL);
+            off = emit(out, cap, off, "<|im_end|>\n", NULL, NULL);
+        }
+        if (add_assistant)
+            off = emit(out, cap, off, "<|im_start|>assistant\n%s",
+                       thinking == THINK_OFF ? "<think></think>" : "<think>\n",
+                       NULL);
+        break;
+    }
     case TMPL_CHATML:
     case TMPL_CHATML_THINK: {
         bool qwen_tools = tools && tools->type == J_ARR && tools->n > 0;
@@ -2138,7 +2227,7 @@ void tools_render(const jv *tools, sbuf *out) {
 
 void tools_render_for(int tmpl, const jv *tools, sbuf *out) {
     bool qwen = tmpl == TMPL_CHATML || tmpl == TMPL_CHATML_THINK;
-    if (tmpl != TMPL_ORNITH && !qwen) {
+    if (tmpl != TMPL_ORNITH && tmpl != TMPL_GRANITE42 && !qwen) {
         tools_render(tools, out);
         return;
     }
@@ -2162,6 +2251,29 @@ void tools_render_for(int tmpl, const jv *tools, sbuf *out) {
     sb_lit(out, "# Tools\n\nYou have access to the following functions:\n\n<tools>");
     for (int i = 0; i < tools->n; i++) {
         sb_lit(out, "\n");
+        if (tmpl == TMPL_GRANITE42) {
+            // granite 4.2 unwraps the OpenAI envelope (`tool.function` when
+            // present) and writes the function object itself through its
+            // tool_to_json macro: `"key": value` members joined by ", ",
+            // minus `defer_loading` and `strict` (chat_template.jinja:1-11,
+            // 58-65). ornith writes the WRAPPED declaration below.
+            const jv *fn = jv_get(tools->items[i], "function");
+            if (!fn) fn = tools->items[i];
+            sb_lit(out, "{");
+            if (fn->type == J_OBJ) {
+                int first = 1;
+                for (int k = 0; k < fn->n; k++) {
+                    if (!strcmp(fn->keys[k], "defer_loading") ||
+                        !strcmp(fn->keys[k], "strict")) continue;
+                    if (!first) sb_lit(out, ", ");
+                    first = 0;
+                    sb_fmt(out, "\"%s\": ", fn->keys[k]);
+                    jv_dump_tojson(fn->items[k], out);
+                }
+            }
+            sb_lit(out, "}");
+            continue;
+        }
         // spaced for the same reason as muse above: ornith.jinja:50 is
         // `{{- tool | tojson }}`.
         jv_dump_tojson(tools->items[i], out);
@@ -2306,7 +2418,8 @@ void tool_history_render_for(int tmpl, const jv *calls,
             jv_free(g4);
             continue;
         }
-        if (tmpl != TMPL_ORNITH && tmpl != TMPL_MUSE) {
+        if (tmpl != TMPL_ORNITH && tmpl != TMPL_GRANITE42 &&
+            tmpl != TMPL_MUSE) {
             sb_fmt(out, "<|tool_call>call:%s%s<tool_call|>", name, args);
             continue;
         }
@@ -2335,7 +2448,16 @@ void tool_history_render_for(int tmpl, const jv *calls,
         // Runner emitted no separator at all, so two calls in one turn came
         // out as `</tool_call><tool_call>` -- a shape the reference never
         // writes.
-        if (orn_calls++) sb_lit(out, "\n");
+        if (tmpl == TMPL_GRANITE42) {
+            // granite 4.2 writes `(content | trim) ~ '\n'` and then every
+            // call as `<tool_call>...</tool_call>\n` (chat_template.jinja:
+            // 95-118), so the first call follows the trimmed text, or the
+            // seeded thought block, after exactly one newline.
+            if (!orn_calls++)
+                while (out->n && strchr(" \t\n\r\f\v", out->s[out->n - 1]))
+                    out->n--;
+            sb_lit(out, "\n");
+        } else if (orn_calls++) sb_lit(out, "\n");
         else if (turn_has_text) sb_lit(out, "\n\n");
         sb_fmt(out, "<tool_call>\n<function=%s>\n", name);
         if (obj && obj->type == J_OBJ) {
@@ -4325,7 +4447,8 @@ static int gemma4_tool_calls_parse(sbuf *content, sbuf *tc) {
 int tool_calls_parse_for(int tmpl, sbuf *content, sbuf *tc) {
     return (tmpl == TMPL_CHATML || tmpl == TMPL_CHATML_THINK)
                                ? qwen_tool_calls_parse(content, tc)
-         : tmpl == TMPL_ORNITH ? ornith_tool_calls_parse(content, tc)
+         : tmpl == TMPL_ORNITH ||
+           tmpl == TMPL_GRANITE42 ? ornith_tool_calls_parse(content, tc)
          : is_gemma4(tmpl)     ? gemma4_tool_calls_parse(content, tc)
                                : tool_calls_parse(content, tc);
 }
