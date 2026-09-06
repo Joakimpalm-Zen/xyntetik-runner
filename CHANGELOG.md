@@ -8,6 +8,20 @@ names that were true when they were written.
 
 ## Unreleased
 
+## v0.5.1 - 2026-09-06
+
+The new-model release. Granite 4.2 (3B, 8B) and Qwen 3.8 27B are admitted,
+each with its own chat template family rendered from the publisher's
+template and checked token for token, and each measured against the
+publisher's own implementation in float32 rather than only against a
+second engine. That measurement changed how this project certifies: the
+model publisher's reference is now the primary anchor (AGENTS.md), and the
+README and the site say in one sentence why Runner is slower than the
+fastest engines and why that is the point. Two runner fixes came out of
+measuring the backends: an explicit layer split is no longer refused on a
+shared GPU, and the CPU-vs-GPU identity check can no longer report a GPU
+arm that silently ran on the CPU as a pass.
+
 - **Granite 4.2 (3B, 8B) admitted.** The architecture is 4.1's; the header
   and the template are not. The `granite-docling` pre-tokenizer name maps
   to the GPT-2 family rule, which now uses the regex's `\p{L}` letter class
@@ -77,6 +91,20 @@ names that were true when they were written.
 - New BPE fixture cases (curly apostrophe, Devanagari marks, digit runs)
   for the GPT-2, llama3, qwen2 and qwen35 rules, and a
   `vocab-bpe-granite-docling.gguf` fixture.
+- **The provider's reference implementation is the primary anchor**
+  (standing rule, AGENTS.md, with the Granite 4.2 3B proof), and the
+  README's "why" section and the site's landing page carry the one-sentence
+  version: Runner is slower on purpose, it does the model's arithmetic
+  without the shortcuts faster engines take, so its answers stay closer to
+  what the model's makers built, and it can prove what it produced. The
+  evidence page carries the numbers behind that sentence.
+- Backends measured for both families: Granite 4.2 CPU vs CUDA on a
+  Blackwell MIG slice (3B 9/9, 8B 8/9 with the flip on a 0.0019-nat tie)
+  and on an RTX 3070 (8B 9/9, full offload), CPU vs Metal on an M1 (3B 8/9,
+  the flip on a 0.0008-nat tie); Qwen 3.8's `qwen35` CUDA path 9/9 on the
+  pure Q8_0 and plain Q4_0 siblings under explicit splits. The Unsloth
+  UD-Q4_K_M row carries IQ3_S tensors, a CPU-only type here, so a CUDA box
+  runs that file on the CPU; the row says so. `qwen35` has no Metal path.
 
 ## v0.4.10 - 2026-09-06
 
