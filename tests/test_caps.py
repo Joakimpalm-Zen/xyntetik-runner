@@ -1,10 +1,27 @@
 import json
+import os
 import pathlib
+import shlex
 import subprocess
 import sys
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
+
+
+def test_build_arch_names_riscv64():
+    """The cross target's compiler macros must produce its real receipt ISA."""
+    cc = shlex.split(os.environ.get("CC", "cc"))
+    p = subprocess.run(
+        cc + ["-E", "-P", "-x", "c", "-", "-I", str(ROOT / "src"),
+              "-U__aarch64__", "-U__arm64__", "-U_M_ARM64",
+              "-U__x86_64__", "-U_M_X64",
+              "-D__riscv=1", "-D__riscv_xlen=64"],
+        input=b'#include "build_arch.h"\nRUNNER_BUILD_ARCH\n',
+        cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    )
+    assert p.returncode == 0, p.stderr.decode(errors="replace")
+    assert p.stdout.decode().strip() == '"riscv64"'
 
 
 # What each backend is expected to have kernels for, stated here on purpose.

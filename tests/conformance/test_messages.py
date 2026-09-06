@@ -851,6 +851,24 @@ def test_replayed_reasoning_is_accepted(client, block, label):
     r.expect_status(200)
 
 
+@pytest.mark.parametrize("block,field", [
+    ({"type": "thinking", "thinking": 7, "signature": "sig"}, "thinking"),
+    ({"type": "thinking", "thinking": "scratch", "signature": False},
+     "signature"),
+    ({"type": "redacted_thinking", "data": 7}, "data"),
+])
+def test_replayed_reasoning_members_must_be_strings(client, block, field):
+    client.expect_400(
+        {"model": "local", "max_tokens": 8,
+         "messages": [
+             {"role": "user", "content": "hi"},
+             {"role": "assistant", "content": [block]},
+             {"role": "user", "content": "go on"},
+         ]},
+        name=f"messages-bad-replayed-{field}", contains=field,
+        path="/v1/messages")
+
+
 def test_replayed_reasoning_costs_nothing(client):
     """Accepting the block is the weak half; on THIS family (not Harmony) not
     putting it in the prompt is the half that matters, and a test that only

@@ -163,6 +163,18 @@ static bool validate_chat_messages(const jv *msgs, char *err, size_t err_cap) {
                      "assistant or tool", i);
             return false;
         }
+        jv *name_v = jv_get(msg, "name");
+        if (name_v && name_v->type != J_NULL && name_v->type != J_STR) {
+            snprintf(err, err_cap, "messages[%d].name must be a string", i);
+            return false;
+        }
+        jv *call_id_v = jv_get(msg, "tool_call_id");
+        if (call_id_v && call_id_v->type != J_NULL &&
+            call_id_v->type != J_STR) {
+            snprintf(err, err_cap,
+                     "messages[%d].tool_call_id must be a string", i);
+            return false;
+        }
         jv *calls = jv_get(msg, "tool_calls");
         if (calls && calls->type != J_NULL) {
             if (calls->type != J_ARR) {
@@ -225,14 +237,22 @@ static bool validate_chat_messages(const jv *msgs, char *err, size_t err_cap) {
                 }
             }
         }
-        const char *reason = jv_str(jv_get(msg, "reasoning_content"), NULL);
+        jv *reasoning = jv_get(msg, "reasoning_content");
+        if (reasoning && reasoning->type != J_NULL && reasoning->type != J_STR) {
+            snprintf(err, err_cap,
+                     "messages[%d].reasoning_content must be a string", i);
+            return false;
+        }
+        const char *reason = jv_str(reasoning, NULL);
         bool assistant_payload = !strcmp(role, "assistant") &&
             ((calls && calls->type == J_ARR && calls->n > 0) ||
              (reason && reason[0]));
         jv *content = jv_get(msg, "content");
         bool content_shape = content &&
                              (content->type == J_STR || content->type == J_ARR);
-        if (!content_shape && !assistant_payload) {
+        bool content_absent = !content || content->type == J_NULL;
+        if ((!content_shape && !content_absent) ||
+            (content_absent && !assistant_payload)) {
             snprintf(err, err_cap,
                      "messages[%d].content must be a string or an array", i);
             return false;

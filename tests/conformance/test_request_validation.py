@@ -223,6 +223,47 @@ def test_malformed_chat_messages_are_rejected(client, message, label, contains):
         name=f"bad-message-{label}", contains=contains)
 
 
+def test_assistant_payload_does_not_bypass_content_shape_validation(client):
+    client.expect_400(
+        {"messages": [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": 7,
+             "reasoning_content": "thought"},
+            {"role": "user", "content": "retained"},
+        ], "max_tokens": 4, "temperature": 0},
+        name="bad-assistant-content-with-reasoning", contains="content")
+
+
+def test_reasoning_content_must_be_a_string(client):
+    client.expect_400(
+        {"messages": [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "ok", "reasoning_content": 7},
+            {"role": "user", "content": "retained"},
+        ], "max_tokens": 4, "temperature": 0},
+        name="bad-reasoning-content-type", contains="reasoning_content")
+
+
+@pytest.mark.parametrize("result,field", [
+    ({"role": "tool", "content": "ok", "name": "f", "tool_call_id": 7},
+     "tool_call_id"),
+    ({"role": "tool", "content": "ok", "name": 7, "tool_call_id": "c1"},
+     "name"),
+])
+def test_tool_result_attribution_fields_must_be_strings(client, result, field):
+    client.expect_400(
+        {"messages": [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": None, "tool_calls": [{
+                "id": "c1", "type": "function",
+                "function": {"name": "f", "arguments": "{}"},
+            }]},
+            result,
+            {"role": "user", "content": "retained"},
+        ], "max_tokens": 4, "temperature": 0},
+        name=f"bad-tool-result-{field}", contains=field)
+
+
 def test_chat_rejects_image_parts_instead_of_answering_text_only(client):
     client.expect_400({
         "messages": [{"role": "user", "content": [

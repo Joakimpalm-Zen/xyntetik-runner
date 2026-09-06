@@ -8,6 +8,13 @@ names that were true when they were written.
 
 ## Unreleased
 
+- Chat, Responses and Messages now reject malformed nested history fields
+  instead of accepting and dropping or echoing them: assistant `content`,
+  `reasoning_content`, tool-result `name`/`tool_call_id`, Responses reasoning
+  hints, and Messages thinking blocks are type-checked at the HTTP boundary.
+  RISC-V builds now identify themselves as `riscv64` in `--caps`, inference
+  receipts and training provenance instead of falling through to `other` or
+  `x86_64`.
 - Receipts can be signed with a post-quantum key: `--keygen-algo ml-dsa-44`
   writes an ML-DSA-44 (FIPS 204) key in the same `signkey.v1` file, the
   record's signature object names its algorithm, and `--verify` accepts

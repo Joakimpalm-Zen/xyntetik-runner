@@ -355,6 +355,30 @@ static bool anth_blocks(jv *messages, int message_index, jv *msg,
             // the request declared no tools -- and replaying reasoning has
             // nothing to do with tools. chat keys the same replay off
             // s->tmpl for that reason.
+            if (!strcmp(bt, "thinking")) {
+                jv *thinking = jv_get(b, "thinking");
+                if (!thinking || thinking->type != J_STR) {
+                    snprintf(err, errcap,
+                             "a thinking block must carry a thinking string");
+                    free(body.s); free(calls_json.s);
+                    return false;
+                }
+                jv *signature = jv_get(b, "signature");
+                if (!signature || signature->type != J_STR) {
+                    snprintf(err, errcap,
+                             "a thinking block must carry a signature string");
+                    free(body.s); free(calls_json.s);
+                    return false;
+                }
+            } else {
+                jv *data = jv_get(b, "data");
+                if (!data || data->type != J_STR) {
+                    snprintf(err, errcap,
+                             "a redacted_thinking block must carry a data string");
+                    free(body.s); free(calls_json.s);
+                    return false;
+                }
+            }
             const char *think_txt = tmpl == TMPL_HARMONY && !strcmp(bt, "thinking")
                 ? jv_str(jv_get(b, "thinking"), NULL) : NULL;
             if (think_txt && think_txt[0])
