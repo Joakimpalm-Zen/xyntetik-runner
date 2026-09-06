@@ -240,6 +240,14 @@ FAMILIES = {
         thinking_var="enable_thinking",
         tokenizer=("Ornith-1.0-9B-Q4_K_M.gguf",),
         cannot={"system-mid-history": NO_MID_SYSTEM}),
+    "qwen38": Family(
+        "qwen38", ("hf", "Qwen/Qwen3.8-27B"),
+        note="Qwen 3.8's own template: reasoning-effort preamble, preserved "
+             "thinking, function-XML tools; docs/granite-42-qwen38-cert-"
+             "2026-09-06.md",
+        tool_family=True, thinking_var="enable_thinking",
+        tokenizer=("Qwen3.8-27B-UD-Q4_K_M.gguf",),
+        cannot={"system-mid-history": NO_MID_SYSTEM}),
     "granite42": Family(
         "granite42", ("hf", "ibm-granite/granite-4.2-3b"),
         note="ornith's declaration text and call syntax under granite 4.2's "

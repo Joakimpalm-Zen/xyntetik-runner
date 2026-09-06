@@ -1533,10 +1533,12 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
     bool harmony_primed_think = chat && s->tmpl == TMPL_HARMONY &&
                                 !(env && env->proto == TP_HARMONY) &&
                                 req_thinking_mode(req) != THINK_OFF;
-    // granite 4.2's generation prompt opens `<think>\n` in every mode but
-    // THINK_OFF, where it is the CLOSED `<think></think>` and the stream
-    // starts in content (template.c, TMPL_GRANITE42).
-    bool granite42_primed_think = chat && s->tmpl == TMPL_GRANITE42 &&
+    // granite 4.2's and Qwen 3.8's generation prompts open `<think>\n` in
+    // every mode but THINK_OFF, where the block is already closed and the
+    // stream starts in content (template.c, TMPL_GRANITE42 / TMPL_QWEN38).
+    bool granite42_primed_think = chat &&
+                                  (s->tmpl == TMPL_GRANITE42 ||
+                                   s->tmpl == TMPL_QWEN38) &&
                                   req_thinking_mode(req) != THINK_OFF;
     // gemma4's thought block is opened BY THE PROMPT on a tool-result
     // continuation with thinking on (template.c's g4_prev == 2 branch), so the

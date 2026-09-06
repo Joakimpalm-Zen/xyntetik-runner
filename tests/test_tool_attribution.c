@@ -843,6 +843,11 @@ static void test_history_serialization_contract(void) {
           "<tool_call>\n<function=get_weather>", "</tool_call>",
           "<tool_response>", "</tool_response>",
           "<|tool_call>call:get_weather" },
+        // qwen 3.8: ornith's shapes again, under its own renderer.
+        { "qwen38", TMPL_QWEN38,
+          "<tool_call>\n<function=get_weather>", "</tool_call>",
+          "<tool_response>", "</tool_response>",
+          "<|tool_call>call:get_weather" },
         // muse: the atem recipient/invoke block; result is a named tool_output.
         // The call marker is anchored to the recipient turn header so it pins
         // the REPLAYED call, not the identical-looking atem example inside the

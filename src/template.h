@@ -74,6 +74,18 @@ enum { TMPL_CHATML, TMPL_LLAMA2, TMPL_LLAMA3, TMPL_ZEPHYR, TMPL_GEMMA,
        // `<think>\n\n</think>\n\n`. Detected by that literal
        // `<think></think>`, which ornith's template never carries.
        TMPL_GRANITE42,
+       // Qwen 3.8 (Qwen/Qwen3.8-27B chat_template.jinja, 2026-09-06). Not
+       // Qwen3's template rendered by TMPL_CHATML_THINK, which is what the
+       // GGUF's own template was detected as until the conformance gate was
+       // pointed at it: Qwen 3.8 opens EVERY conversation with a reasoning
+       // effort preamble in the system turn (xhigh by default, low as an
+       // alternative, medium meaning none) whenever thinking is on, keeps
+       // the thought block of every historical assistant turn
+       // (preserve_thinking, default true), writes the function-XML tool
+       // protocol ornith inherited from Qwen3-Coder rather than Qwen3's
+       // JSON one, and trims every content it renders. Detected by that
+       // preamble's fixed text.
+       TMPL_QWEN38,
        // What template_detect returns when NOTHING matched. It renders
        // llama-2 markup, because changing what unrecognised models render is
        // a behavioural decision and not this constant's job -- but it is a
@@ -108,6 +120,14 @@ static inline bool is_gemma4(int tmpl) {
 // A single boolean cannot express that, which is why this is tri-state: the
 // absence of a request field has to mean "match the reference", not "false".
 enum { THINK_DEFAULT = 0, THINK_ON, THINK_OFF };
+// Reasoning effort, OR'd into the `thinking` argument by a caller whose
+// family renders it (today only TMPL_QWEN38, whose template names exactly
+// these three and raises on anything else). The low nibble stays the
+// THINK_* mode; every other family never sees these bits set.
+enum { THINK_EFFORT_XHIGH = 0, THINK_EFFORT_MEDIUM = 0x10,
+       THINK_EFFORT_LOW = 0x20, THINK_EFFORT_MASK = 0x30,
+       THINK_MODE_MASK = 0x0f };
+
 struct jv;
 typedef struct {
     const char *role, *content;
@@ -181,6 +201,10 @@ struct jv;
 // reference template would render
 bool req_thinking_mode_valid(struct jv *req);
 int req_thinking_mode(struct jv *req);
+// `reasoning_effort` from the request (top level or chat_template_kwargs):
+// THINK_EFFORT_* for xhigh (also absent), medium and low; -1 for any other
+// value, which the template itself rejects.
+int req_reasoning_effort(struct jv *req);
 // render OpenAI "tools" declarations as a system turn (no-op when absent)
 void tools_render(const struct jv *tools, struct sbuf *out);
 void tools_render_for(int tmpl, const struct jv *tools, struct sbuf *out);

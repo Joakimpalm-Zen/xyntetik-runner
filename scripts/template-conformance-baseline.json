@@ -38,7 +38,7 @@
     "in-progress": "someone is actively fixing this; see `note`"
   },
   "generated_by": "scripts/template-conformance.py --write-baseline",
-  "generated_at": "2026-09-06T15:25:13+00:00",
+  "generated_at": "2026-09-06T16:20:31+00:00",
   "oracles": {
     "apertus": {
       "source": "hf:swiss-ai/Apertus-8B-Instruct-2509",
@@ -95,6 +95,10 @@
     "phi3": {
       "source": "hf:microsoft/Phi-3.5-mini-instruct",
       "sha256": "78d976a442bcde2f"
+    },
+    "qwen38": {
+      "source": "hf:Qwen/Qwen3.8-27B",
+      "sha256": "c3cf9e34abf4f9e3"
     },
     "zephyr": {
       "source": "hf:HuggingFaceH4/zephyr-7b-beta",

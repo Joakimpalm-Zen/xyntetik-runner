@@ -124,7 +124,7 @@ static char *message_text(jv *msg, int tmpl, bool replay_reason, bool *oom) {
         // block. Qwen3 preserves reasoning only on the final historical
         // assistant after the last user, which the caller selects explicitly.
         // Calls and visible text follow the block in the same buffer.
-        if ((tmpl == TMPL_ORNITH ||
+        if ((tmpl == TMPL_ORNITH || tmpl == TMPL_QWEN38 ||
              (tmpl == TMPL_CHATML_THINK && replay_reason)) &&
             !strcmp(role, "assistant")) {
             sb_lit(&b, "<think>\n");
@@ -462,7 +462,7 @@ static void handle_chat(slot_t *s, sock_t fd, jv *req) {
     // Ornith is specifically trained on qwen3_xml. Keep its native protocol
     // instead of forcing the model into runner's generic JSON envelope.
     bool strict = rc == 1 && s->tmpl != TMPL_ORNITH &&
-                  s->tmpl != TMPL_GRANITE42;
+                  s->tmpl != TMPL_GRANITE42 && s->tmpl != TMPL_QWEN38;
     // When the strict envelope does not apply — no tools declared, or the
     // ornith template's native protocol — the flag is vacuous and stays
     // TOLERATED, exactly as before: ordinary OpenAI-shaped traffic sends
@@ -648,8 +648,23 @@ static void handle_chat(slot_t *s, sock_t fd, jv *req) {
     if (native_tools) jv_dump(tools, &tool_bytes);
     total += tool_bytes.n + 4096;
     free(tool_bytes.s);
+    int thinking = req_thinking_mode(req);
+    if (s->tmpl == TMPL_QWEN38) {
+        // the template's own contract: xhigh (default), medium or low,
+        // anything else is refused by the reference and so here
+        int effort = req_reasoning_effort(req);
+        if (effort < 0) {
+            for (int i = 0; i < n_own; i++) free(owned[i]);
+            free(owned); free(cm); free(ts.s);
+            tool_envelope_free(&env);
+            send_error(fd, 400, "reasoning_effort must be one of xhigh, "
+                                "medium, low for this model's template");
+            return;
+        }
+        thinking |= effort;
+    }
     char *prompt = render_prompt_alloc(s->tmpl, cm, n_cm, true,
-                                       req_thinking_mode(req), native_tools,
+                                       thinking, native_tools,
                                        total + 256);
     if (!prompt) {
         for (int i = 0; i < n_own; i++) free(owned[i]);
