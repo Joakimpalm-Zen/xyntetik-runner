@@ -559,6 +559,19 @@ void handle_responses(slot_t *s, sock_t fd, jv *req) {
         send_error(fd, 400, "reasoning must be an object");
         return;
     }
+    if (reasoning && reasoning->type == J_OBJ) {
+        static const char *fields[] = { "effort", "summary" };
+        for (size_t i = 0; i < sizeof(fields) / sizeof(fields[0]); i++) {
+            jv *v = jv_get(reasoning, fields[i]);
+            if (v && v->type != J_NULL && v->type != J_STR) {
+                char err[96];
+                snprintf(err, sizeof(err), "reasoning.%s must be a string",
+                         fields[i]);
+                send_error(fd, 400, err);
+                return;
+            }
+        }
+    }
 
     char terr[224];
     // Set where the refusal is the SERVER running out of memory rather than

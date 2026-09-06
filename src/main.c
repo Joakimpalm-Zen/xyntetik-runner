@@ -9,6 +9,7 @@
 #include "envelope.h"
 #include "oms.h"
 #include "server.h"
+#include "build_arch.h"
 // for render_prompt_alloc: chat mode renders the same prompts the chat route
 // does, so it uses the same measured-size renderer rather than a second one
 #include "api.h"
@@ -1187,13 +1188,7 @@ int main(int argc, char **argv) {
 #else
                "linux",
 #endif
-#if defined(__aarch64__) || defined(__arm64__)
-               "arm64",
-#elif defined(__x86_64__) || defined(_M_X64)
-               "x86_64",
-#else
-               "other",
-#endif
+               RUNNER_BUILD_ARCH,
                plat_cpu_count(), (unsigned long long)plat_ram_bytes(),
                // Not total RAM: "model file size <= RAM" is the test that
                // passes right before a machine starts thrashing. A launcher
@@ -2099,12 +2094,7 @@ int main(int argc, char **argv) {
 #endif
             sb_lit(&rec, build_os);
             sb_lit(&rec, "\",\"arch\":\"");
-            const char *build_arch =
-#if defined(__aarch64__) || defined(_M_ARM64)
-                    "arm64";
-#else
-                    "x86_64";
-#endif
+            const char *build_arch = RUNNER_BUILD_ARCH;
             sb_lit(&rec, build_arch);
             sb_lit(&rec, "\"},\"base\":{\"path\":\"");
             sb_esc(&rec, load_path, strlen(load_path));
@@ -2576,11 +2566,7 @@ int main(int argc, char **argv) {
 #else
                 .os = "linux",
 #endif
-#if defined(__aarch64__) || defined(_M_ARM64)
-                .arch = "arm64",
-#else
-                .arch = "x86_64",
-#endif
+                .arch = RUNNER_BUILD_ARCH,
                 .device = m.gpu ? gname : "cpu",
                 .gpu = m.gpu != NULL,
                 .gpu_layers = m.gpu_layers,

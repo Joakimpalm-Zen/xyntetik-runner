@@ -297,6 +297,18 @@ def test_reasoning_is_accepted_and_echoed(client):
                             got=d.get("reasoning"))
 
 
+@pytest.mark.parametrize("reasoning,field", [
+    ({"effort": 7}, "reasoning.effort"),
+    ({"summary": ["bad"]}, "reasoning.summary"),
+])
+def test_reasoning_members_must_be_strings(client, reasoning, field):
+    client.expect_400(
+        {"input": "hello", "max_output_tokens": 4,
+         "reasoning": reasoning},
+        name=f"responses-bad-{field}", contains=field,
+        path="/v1/responses")
+
+
 # ------------------------------------------------------------ text.format
 def test_text_format_json_schema_constrains_output(client, report):
     schema = {"type": "object",
