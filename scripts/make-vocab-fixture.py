@@ -140,15 +140,31 @@ def make_bpe_fixtures():
     """
     tokens = bpe_alphabet()
     merges = []
+    # byte-map a UTF-8 string the way the GPT-2 alphabet does, so pieces above
+    # ASCII can be named in plain text here
+    alphabet = bpe_alphabet()
+    bmap = lambda text: "".join(alphabet[b] for b in text.encode("utf-8"))
     # 'G' is U+0120 (byte-mapped space), 'C' is U+010A (byte-mapped newline)
     for piece in ["tokenization", "/end", "123", "456", "789",
-                  "ĊĊ", "ĠĠ", "'ll", "Ġgo", "Ġworld"]:
+                  "ĊĊ", "ĠĠ", "'ll", "Ġgo", "Ġworld",
+                  # granite-docling (plain GPT-2 rule) versus llama3 on the
+                  # curly apostrophe and Devanagari marks: GPT-2's \p{L} runs
+                  # stop at U+2019 and at the vowel signs / virama, llama3's
+                  # [^\r\n\p{L}\p{N}]?\p{L}+ absorbs the mark into the next run
+                  "don", bmap("’"), bmap("’t"), bmap("ि"), bmap("न")]:
         acc = piece[0]
         for ch in piece[1:]:
             merges.append(f"{acc} {ch}")
             acc += ch
             if acc not in tokens:
                 tokens.append(acc)
+    # "िन" (vowel sign + letter) as one piece via a merge of two existing
+    # pieces: llama3 joins the mark to the following letter run, GPT-2 does not
+    merges.append(f"{bmap('ि')} {bmap('न')}")
+    tokens.append(bmap("िन"))
+    merges.append(f"{bmap('न')} {bmap('ि')}")
+    tokens.append(bmap("नि"))
+
 
     common = [
         kv_str("general.architecture", "llama"),
@@ -164,7 +180,8 @@ def make_bpe_fixtures():
                       ("vocab-bpe-gpt4o.gguf", "gpt-4o"),
                       ("vocab-bpe-qwen2.gguf", "qwen2"),
                       ("vocab-bpe-qwen35.gguf", "qwen35"),
-                      ("vocab-bpe-smollm.gguf", "smollm")]:
+                      ("vocab-bpe-smollm.gguf", "smollm"),
+                      ("vocab-bpe-granite-docling.gguf", "granite-docling")]:
         write_gguf(os.path.join(OUTDIR, name),
                    common + [kv_str("tokenizer.ggml.pre", pre)])
 

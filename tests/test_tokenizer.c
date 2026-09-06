@@ -210,6 +210,49 @@ static void test_bpe_digits_bound_whitespace(tokenizer *t) {
     expect_pieces(t, "  12", want, 3);
 }
 
+// The plain GPT-2 rule (granite-docling, granite 4.2) against llama3 on two
+// strings the differential corpus caught: U+2019 RIGHT SINGLE QUOTATION MARK
+// and a Devanagari virama are [^\s\p{L}\p{N}] under both regexes, but only
+// llama3's [^\r\n\p{L}\p{N}]?\p{L}+ lets one of them lead the next letter
+// run. The pieces are byte-mapped UTF-8: "\xC3\xA2\xC4\xA2\xC4\xBB" is U+2019.
+static void test_bpe_curly_apostrophe_gpt2(tokenizer *t) {
+    static const char *const want[] = { "don", "\xC3\xA2\xC4\xA2\xC4\xBB", "t" };
+    expect_pieces(t, "don\xE2\x80\x99t", want, 3);
+}
+static void test_bpe_curly_apostrophe_llama3(tokenizer *t) {
+    static const char *const want[] = { "don", "\xC3\xA2\xC4\xA2\xC4\xBB\x74" };
+    expect_pieces(t, "don\xE2\x80\x99t", want, 2);
+}
+// "िन" (DEVANAGARI VOWEL SIGN I, then LETTER NA): the mark is
+// [^\s\p{L}\p{N}] under both regexes; llama3's [^\r\n\p{L}\p{N}]?\p{L}+ lets it
+// lead the letter run, GPT-2's " ?\p{L}+" does not. Pieces are byte-mapped UTF-8.
+static void test_bpe_devanagari_mark_gpt2(tokenizer *t) {
+    static const char *const want[] = { "\xC3\xA0\xC2\xA4\xC2\xBF", "\xC3\xA0\xC2\xA4\xC2\xA8" };
+    expect_pieces(t, "\xE0\xA4\xBF\xE0\xA4\xA8", want, 2);
+}
+static void test_bpe_devanagari_mark_llama3(tokenizer *t) {
+    static const char *const want[] = { "\xC3\xA0\xC2\xA4\xC2\xBF\xC3\xA0\xC2\xA4\xC2\xA8" };
+    expect_pieces(t, "\xE0\xA4\xBF\xE0\xA4\xA8", want, 1);
+}
+
+// "नि" (LETTER NA, then VOWEL SIGN I): under qwen35's [\p{L}\p{M}]+ the mark
+// stays inside the run, under qwen2's \p{L}+ it splits off.
+static void test_bpe_mark_inside_run_qwen35(tokenizer *t) {
+    static const char *const want[] = { "\xC3\xA0\xC2\xA4\xC2\xA8\xC3\xA0\xC2\xA4\xC2\xBF" };
+    expect_pieces(t, "\xE0\xA4\xA8\xE0\xA4\xBF", want, 1);
+}
+static void test_bpe_mark_inside_run_qwen2(tokenizer *t) {
+    static const char *const want[] = { "\xC3\xA0\xC2\xA4\xC2\xA8", "\xC3\xA0\xC2\xA4\xC2\xBF" };
+    expect_pieces(t, "\xE0\xA4\xA8\xE0\xA4\xBF", want, 2);
+}
+
+// GPT-2's \p{N}+ takes the whole digit run as one pre-token; the fixture
+// vocabulary then merges it the same way llama3's three-digit split does.
+static void test_bpe_digit_run_gpt2(tokenizer *t) {
+    static const char *const want[] = { "123", "456", "789", "0" };
+    expect_pieces(t, "1234567890", want, 4);
+}
+
 static void run_bpe_fixture(const char *path, int pre, void (*digits)(tokenizer *)) {
     current = path;
     gguf_file g;
@@ -225,15 +268,29 @@ static void run_bpe_fixture(const char *path, int pre, void (*digits)(tokenizer 
     assert(t.model == TOK_BPE);
     assert(t.pre == pre);
 
-    if (pre == TOK_PRE_SMOLLM) {
-        // smollm keeps the original GPT-2 rules; the others use the newer regex
+    if (pre == TOK_PRE_SMOLLM || pre == TOK_PRE_GPT2) {
+        // smollm and granite-docling keep the original GPT-2 rules; the others
+        // use the newer regex
         test_bpe_punct_stays_split(&t);
         test_bpe_newline_run_stays_split(&t);
-        test_bpe_digits_bound_whitespace(&t);
+        // smollm's single-digit rule; GPT-2's " ?\p{N}+" keeps " 12" together
+        if (pre == TOK_PRE_SMOLLM) test_bpe_digits_bound_whitespace(&t);
     } else {
         test_bpe_punct_leads_letters(&t);
         test_bpe_newline_run_is_one_token(&t);
     }
+    if (pre == TOK_PRE_GPT2) {
+        test_bpe_curly_apostrophe_gpt2(&t);
+        test_bpe_devanagari_mark_gpt2(&t);
+    } else if (pre == TOK_PRE_LLAMA3 || pre == TOK_PRE_QWEN35 || pre == TOK_PRE_QWEN2) {
+        // the same leading-character clause; qwen35 additionally keeps a mark
+        // INSIDE a letter run, which this pair does not distinguish (see
+        // test_bpe_mark_inside_run_*)
+        test_bpe_curly_apostrophe_llama3(&t);
+        test_bpe_devanagari_mark_llama3(&t);
+    }
+    if (pre == TOK_PRE_QWEN35) test_bpe_mark_inside_run_qwen35(&t);
+    else if (pre == TOK_PRE_QWEN2) test_bpe_mark_inside_run_qwen2(&t);
     test_bpe_contraction_and_space(&t);
     test_bpe_roundtrip_is_exact(&t);
     digits(&t);
@@ -449,6 +506,8 @@ int main(void) {
         gguf_close(&g);
     }
 
+    run_bpe_fixture("tests/fixtures/vocab-bpe-granite-docling.gguf",
+                    TOK_PRE_GPT2, test_bpe_digit_run_gpt2);
     run_bpe_fixture("tests/fixtures/vocab-bpe-llama3.gguf",
                     TOK_PRE_LLAMA3, test_bpe_digit_grouping_llama3);
     run_bpe_fixture("tests/fixtures/vocab-bpe-gpt4o.gguf",
@@ -456,7 +515,7 @@ int main(void) {
     run_bpe_fixture("tests/fixtures/vocab-bpe-qwen2.gguf",
                     TOK_PRE_QWEN2, test_bpe_digit_grouping_qwen2);
     run_bpe_fixture("tests/fixtures/vocab-bpe-qwen35.gguf",
-                    TOK_PRE_QWEN2, test_bpe_digit_grouping_qwen2);
+                    TOK_PRE_QWEN35, test_bpe_digit_grouping_qwen2);
     run_bpe_fixture("tests/fixtures/vocab-bpe-smollm.gguf",
                     TOK_PRE_SMOLLM, test_bpe_digit_grouping_qwen2);
 
