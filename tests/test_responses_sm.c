@@ -719,9 +719,63 @@ static void test_every_tool_call_reaches_the_typed_surfaces(void) {
     free(tc.s);
 }
 
+static void test_anthropic_omitted_thinking_hides_buffered_text(void) {
+    SV.model_name = "test-thinking-display";
+    gen_ctx g;
+    memset(&g, 0, sizeof(g));
+    g.omit_reasoning = true;
+    snprintf(g.id, sizeof(g.id), "msg_omit");
+    static const char SECRET[] = "private reasoning";
+    resp_doc d = { .with_output = true,
+                   .reason = SECRET, .reason_n = sizeof(SECRET) - 1,
+                   .text = "answer", .text_n = 6,
+                   .stop_reason = "end_turn" };
+    sbuf body = {0};
+    anth_body(&body, &g, &d);
+    ck(body.s && !strstr(body.s, SECRET),
+       "thinking.display omitted hides buffered reasoning text");
+    ck(body.s && strstr(body.s,
+       "{\"type\":\"thinking\",\"thinking\":\"\",\"signature\":\"\"}"),
+       "omitted reasoning keeps an empty continuity block");
+    free(body.s);
+}
+
+static void test_anthropic_omitted_thinking_hides_streamed_deltas(void) {
+    int sv[2];
+    if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv) != 0) {
+        ck(0, "socketpair for omitted thinking stream");
+        return;
+    }
+    gen_ctx g;
+    memset(&g, 0, sizeof(g));
+    g.fd = sv[0];
+    g.stream = true;
+    g.api = API_MESSAGES;
+    g.omit_reasoning = true;
+    static const char SECRET[] = "private reasoning";
+    ck(send_text_delta_raw(&g, 1, SECRET, sizeof(SECRET) - 1) == 0,
+       "omitted thinking stream opens without writing its text");
+    anth_close_block(&g);
+    shutdown(sv[0], SHUT_WR);
+    char wire[4096];
+    ssize_t n = recv(sv[1], wire, sizeof(wire) - 1, 0);
+    if (n < 0) n = 0;
+    wire[n] = 0;
+    ck(strstr(wire, "\"type\":\"thinking\"") != NULL,
+       "omitted thinking stream keeps the continuity block");
+    ck(strstr(wire, SECRET) == NULL &&
+       strstr(wire, "thinking_delta") == NULL,
+       "omitted thinking stream emits no reasoning delta");
+    close(sv[0]);
+    close(sv[1]);
+    free(g.item_text.s);
+}
+
 int main(int argc, char **argv) {
     if (argc > 1) g_model_path = argv[1];
     test_every_tool_call_reaches_the_typed_surfaces();
+    test_anthropic_omitted_thinking_hides_buffered_text();
+    test_anthropic_omitted_thinking_hides_streamed_deltas();
     test_utf8_tail_is_held_until_the_character_completes();
     test_a_failed_utf8_join_keeps_the_stream_in_order();
     test_message_item_order();

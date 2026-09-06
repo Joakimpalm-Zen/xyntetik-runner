@@ -113,6 +113,63 @@ static void test_atem_scalar_is_raw_until_parameter_close(void) {
     jv_free(tools);
 }
 
+static void test_atem_json_scalar_schemas_are_enforced(void) {
+    jv *tools = parse(
+        "[{\"type\":\"function\",\"function\":{\"name\":\"set\","
+        "\"parameters\":{\"type\":\"object\",\"properties\":{"
+        "\"level\":{\"type\":\"integer\",\"minimum\":5,\"maximum\":9},"
+        "\"enabled\":{\"type\":\"boolean\"}},"
+        "\"required\":[\"level\",\"enabled\"]}}}]"
+    );
+    char err[192];
+    snode *root = schema_compile_atem_tools(tools, err, sizeof(err));
+    if (!root) fprintf(stderr, "typed atem scalars did not compile: %s\n", err);
+    assert(root != NULL);
+    const char *head =
+        "<atem:function_calls>\n<atem:invoke name=\"set\">\n"
+        "<atem:parameter name=\"level\">";
+    const char *middle =
+        "</atem:parameter>\n<atem:parameter name=\"enabled\">";
+    const char *tail =
+        "</atem:parameter>\n</atem:invoke>\n</atem:function_calls>";
+    char doc[512];
+    snprintf(doc, sizeof(doc), "%s7%strue%s", head, middle, tail);
+    assert(accepts(root, doc));
+    snprintf(doc, sizeof(doc), "%s1.5%strue%s", head, middle, tail);
+    assert(!accepts(root, doc));
+    snprintf(doc, sizeof(doc), "%s100%strue%s", head, middle, tail);
+    assert(!accepts(root, doc));
+    snprintf(doc, sizeof(doc), "%s7%s1%s", head, middle, tail);
+    assert(!accepts(root, doc));
+    schema_free(root);
+    jv_free(tools);
+}
+
+static void test_atem_unrepresentable_string_schema_uses_generic_envelope(void) {
+    jv *tools = parse(
+        "[{\"type\":\"function\",\"function\":{\"name\":\"save\","
+        "\"parameters\":{\"type\":\"object\",\"properties\":{"
+        "\"text\":{\"type\":\"string\",\"minLength\":3}},"
+        "\"required\":[\"text\"]}}}]"
+    );
+    tool_envelope e = {0};
+    char err[192];
+    assert(tool_envelope_build(tools, NULL, NULL, &e, err, sizeof(err)) == 1);
+    bool skip_generic = true;
+    const jv *decl = tool_decl_native(TMPL_MUSE, true, true, tools, &e,
+                                      &skip_generic);
+    assert(decl == NULL);
+    assert(!skip_generic);
+    assert(e.proto == TP_MUSE_USER);
+    snode *root = compile(&e);
+    assert(root != NULL);
+    assert(accepts(root, "{\"tool\":\"save\",\"args\":{\"text\":\"abc\"}}"));
+    assert(!accepts(root, "{\"tool\":\"save\",\"args\":{\"text\":\"x\"}}"));
+    schema_free(root);
+    tool_envelope_free(&e);
+    jv_free(tools);
+}
+
 static void test_atem_truncation_closes_started_call(void) {
     jv *tools = parse(
         "[{\"type\":\"function\",\"function\":{\"name\":\"notes.save\","
@@ -2034,6 +2091,88 @@ static void test_gemma4_structured_arguments_round_trip(void) {
     jv_free(tools);
 }
 
+static void test_gemma4_zero_max_items_allows_only_empty_array(void) {
+    jv *tools = parse(
+        "[{\"type\":\"function\",\"function\":{\"name\":\"store\","
+        "\"parameters\":{\"type\":\"object\",\"properties\":{"
+        "\"values\":{\"type\":\"array\",\"maxItems\":0,"
+        "\"items\":{\"type\":\"integer\"}}},"
+        "\"required\":[\"values\"]}}}]"
+    );
+    char err[192];
+    snode *root = schema_compile_gemma4_turn(tools, false, NULL, NULL, false,
+                                             false, err, sizeof(err));
+    if (!root) fprintf(stderr, "zero-item gemma4 array: %s\n", err);
+    assert(root != NULL);
+    assert(accepts(root,
+        "<|tool_call>call:store{values:[]}<tool_call|>"));
+    assert(!accepts(root,
+        "<|tool_call>call:store{values:[1]}<tool_call|>"));
+    schema_free(root);
+    jv_free(tools);
+}
+
+static void test_gemma4_boolean_const_is_enforced(void) {
+    jv *tools = parse(
+        "[{\"type\":\"function\",\"function\":{\"name\":\"set\","
+        "\"parameters\":{\"type\":\"object\",\"properties\":{"
+        "\"enabled\":{\"type\":\"boolean\",\"const\":true}},"
+        "\"required\":[\"enabled\"]}}}]"
+    );
+    char err[192];
+    snode *root = schema_compile_gemma4_turn(tools, false, NULL, NULL, false,
+                                             false, err, sizeof(err));
+    assert(root != NULL);
+    assert(accepts(root, "<|tool_call>call:set{enabled:true}<tool_call|>"));
+    assert(!accepts(root, "<|tool_call>call:set{enabled:false}<tool_call|>"));
+    schema_free(root);
+    jv_free(tools);
+}
+
+static void test_gemma4_string_const_is_enforced(void) {
+    jv *tools = parse(
+        "[{\"type\":\"function\",\"function\":{\"name\":\"tag\","
+        "\"parameters\":{\"type\":\"object\",\"properties\":{"
+        "\"name\":{\"type\":\"string\",\"const\":\"fixed\"}},"
+        "\"required\":[\"name\"]}}}]"
+    );
+    char err[192];
+    snode *root = schema_compile_gemma4_turn(tools, false, NULL, NULL, false,
+                                             false, err, sizeof(err));
+    assert(root != NULL);
+    assert(accepts(root,
+        "<|tool_call>call:tag{name:<|\"|>fixed<|\"|>}<tool_call|>"));
+    assert(!accepts(root,
+        "<|tool_call>call:tag{name:<|\"|>other<|\"|>}<tool_call|>"));
+    schema_free(root);
+    jv_free(tools);
+}
+
+static void test_gemma4_unrepresentable_string_schema_uses_generic_envelope(void) {
+    jv *tools = parse(
+        "[{\"type\":\"function\",\"function\":{\"name\":\"save\","
+        "\"parameters\":{\"type\":\"object\",\"properties\":{"
+        "\"text\":{\"type\":\"string\",\"minLength\":3}},"
+        "\"required\":[\"text\"]}}}]"
+    );
+    tool_envelope e = {0};
+    char err[192];
+    assert(tool_envelope_build(tools, NULL, NULL, &e, err, sizeof(err)) == 1);
+    bool skip_generic = true;
+    const jv *decl = tool_decl_native(TMPL_GEMMA4, true, true, tools, &e,
+                                      &skip_generic);
+    assert(decl == NULL);
+    assert(!skip_generic);
+    assert(e.proto == TP_GENERIC);
+    snode *root = compile(&e);
+    assert(root != NULL);
+    assert(accepts(root, "{\"tool\":\"save\",\"args\":{\"text\":\"abc\"}}"));
+    assert(!accepts(root, "{\"tool\":\"save\",\"args\":{\"text\":\"x\"}}"));
+    schema_free(root);
+    tool_envelope_free(&e);
+    jv_free(tools);
+}
+
 static void test_gemma4_untyped_parameter_is_refused_not_guessed(void) {
     // The generic envelope admits an untyped parameter as free JSON. gemma4's
     // native syntax has no free-form spelling, so the choice is between an
@@ -2212,6 +2351,8 @@ int main(void) {
     test_buffered_mapper_rejects_invalid_arguments();
     test_atem_structured_tool_automaton();
     test_atem_scalar_is_raw_until_parameter_close();
+    test_atem_json_scalar_schemas_are_enforced();
+    test_atem_unrepresentable_string_schema_uses_generic_envelope();
     test_atem_truncation_closes_started_call();
     test_atem_truncation_inside_a_tool_name_picks_its_own_args();
     test_atem_buffered_maps_reasoning_and_multiple_calls();
@@ -2262,6 +2403,10 @@ int main(void) {
     test_gemma4_truncated_call_still_parses();
     test_gemma4_native_mapping_and_stream_boundaries();
     test_gemma4_structured_arguments_round_trip();
+    test_gemma4_zero_max_items_allows_only_empty_array();
+    test_gemma4_boolean_const_is_enforced();
+    test_gemma4_string_const_is_enforced();
+    test_gemma4_unrepresentable_string_schema_uses_generic_envelope();
     test_gemma4_untyped_parameter_is_refused_not_guessed();
     test_gemma4_nested_arrays_are_bounded_not_expanded();
     test_native_truncation_closes_to_a_legal_turn();

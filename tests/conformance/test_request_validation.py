@@ -500,6 +500,28 @@ def test_thinking_enabled_requires_budget_tokens(client):
         path="/v1/messages")
 
 
+@pytest.mark.parametrize("thinking", [
+    {"type": "adaptive", "display": "garbage"},
+    {"type": "adaptive", "display": 7},
+    {"type": "disabled", "display": "omitted"},
+])
+def test_thinking_display_matches_the_selected_mode(client, thinking):
+    client.expect_400(
+        {"max_tokens": 4, "messages": [{"role": "user", "content": "hi"}],
+         "thinking": thinking},
+        name=f"thinking-display-{thinking['type']}-{thinking['display']!r}",
+        contains="display", path="/v1/messages")
+
+
+@pytest.mark.parametrize("mode", ["adaptive", "disabled"])
+def test_thinking_budget_is_only_valid_in_enabled_mode(client, mode):
+    client.expect_400(
+        {"max_tokens": 4, "messages": [{"role": "user", "content": "hi"}],
+         "thinking": {"type": mode, "budget_tokens": 1024}},
+        name=f"thinking-budget-{mode}", contains="budget_tokens",
+        path="/v1/messages")
+
+
 @pytest.mark.parametrize("value", [{"type": "url", "url": "https://x"}, "x", 1])
 def test_malformed_mcp_servers_is_refused_too(client, value):
     """The MCP refusal looked only at non-empty arrays; an object-shaped or
