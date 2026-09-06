@@ -8,6 +8,19 @@ names that were true when they were written.
 
 ## Unreleased
 
+## v0.4.10 - 2026-09-06
+
+The NVFP4-on-CUDA release, with two bugfix rounds. NVIDIA's block-scaled FP4
+format now runs on the CUDA backend with the export's per-tensor scale
+companion applied in the kernel, verified on a real Qwen3.5-4B NVFP4 file
+against the CPU path and against upstream llama.cpp. Two sweeps of the tree
+under the static analyzer, sanitizers and mutation runs fixed a stack overflow
+class in the gemma-4 MoE forward, undefined behaviour in the Ed25519 carry
+code, five special-value defects in the T3 build's portable math, a Windows
+receipt-overwrite failure, and a silently-NaN NVFP4 variant that is now
+refused by name. Publication rule enforcement and the site's ensö note and
+analytics landed on the way.
+
 - **NVFP4 runs on CUDA.** Three kernels (`k_mv_nvfp4`, `k_mv_nvfp4_b`,
   `k_moe_mv_nvfp4`) decode ggml type 40 exactly as the CPU does (UE4M3
   sub-block scale, E2M1 codebook, sub-block sums before scaling), and the
@@ -97,6 +110,24 @@ names that were true when they were written.
   as a local commit-msg hook, and `CLAUDE.md` states the rule where Claude
   Code reads it. Seven commits reached `main` on 2026-09-05 with the harness's
   default session trailer before this existed; history stays as it is.
+
+## Evidence
+
+- CUDA smoke on an RTX 3070: PASS, 13 checks, runner 0.4.10
+  (`docs/compat-reports/cuda-smoke-0.4.10-2026-09-06-rtx3070.json`).
+- NVFP4 on CUDA, same box, release binary: fixture and real Qwen3.5-4B
+  NVFP4 file, CPU and CUDA token-identical, logprobs within 1.4e-6 and
+  7.8e-5 (`make test-cuda-nvfp4`).
+- Blackwell matrix with the Makefile's own flags (`CFLAGS` unset): granite-4.1-8b
+  load, tokenizer, cpu_cuda and chat pass; gemma-4-E4B complete with cpu_cuda
+  pass; Qwen3-30B-A3B on the CPU path, load and chat pass, tool 2/8
+  (pre-existing shape), cpu_cuda not executed: the other project's runner
+  holds 15.4 GB of the MIG slice, so the GPU load was refused with the VRAM
+  message rather than attempted.
+- Local: make test exit 0, conformance 451 passed and 17 skipped,
+  release-check 0.
+
+Binaries: `runner-linux-x86_64`, `runner-macos-arm64`, `runner-windows-x86_64.exe`, with `SHA256SUMS`. Container: `ghcr.io/joakimpalm-zen/xyntetik-runner:v0.4.10`.
 
 ## v0.4.9 - 2026-09-05
 
