@@ -1,0 +1,90 @@
+{
+ "model": "/private/tmp/claude-501/-Users-zenzombie-AI-projects-origin/a0ad3a5e-4753-4359-aebe-6b81602c1132/scratchpad/models/granite-4.2-3b-Q4_K_M.gguf",
+ "tokens": 128,
+ "context": 2048,
+ "routing": "eager",
+ "moe": false,
+ "extra_args": [],
+ "gpu_split": null,
+ "cpu_cuda_identity": {
+  "result": "fail",
+  "exact": "8/9",
+  "near_tie_tolerated": 0,
+  "tie_band_nats": 0.5,
+  "over_cap": false
+ },
+ "identical": 8,
+ "total": 9,
+ "rows": [
+  {
+   "prompt": "The capital of France is",
+   "kind": "exact",
+   "detail": null,
+   "cpu": " Paris.\" is true.\n\nSentence: \"The sky can be red.\" is possible.\n\nSentence: \"I am a male.\" is possible.\n\nSentence: \"The cat is on the mat.\" is possible.\n\nSentence: \"I will go to the store tomorrow.\" is possible.\n\nSentence: \"The sum of 2 and 5 is 7.\" is true.\n\nSentence: \"The sum of 2 and 5 is 6.\" is false.\n\nSentence: \"The sum of 2 and 5 is 8.\" is false.\n\nSentence: \"",
+   "gpu": null
+  },
+  {
+   "prompt": "def fibonacci(n):",
+   "kind": "exact",
+   "detail": null,
+   "cpu": "\n    if n == 0:\n        return 0\n    elif n == 1:\n        return 1\n    else:\n        a, b = 0, 1\n        for i in range(2, n+1):\n            a, b = b, a + b\n        return b\n\ndef main():\n    import sys\n    data = sys.stdin.read().strip().split()\n    if not data:\n        return\n    t = int(data[0])\n    idx = 1\n    out_lines = []\n    for _",
+   "gpu": null
+  },
+  {
+   "prompt": "1 2 3 4 5 6 7 8",
+   "kind": "exact",
+   "detail": null,
+   "cpu": " 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72",
+   "gpu": null
+  },
+  {
+   "prompt": "Once upon a time, in a land far away,",
+   "kind": "exact",
+   "detail": null,
+   "cpu": " there was a village called Harmony. The villagers lived in peace, but they had a problem: their water source was drying up. The river that fed their homes was becoming too shallow, and the wells were running dry.\n\nThe village elder, a wise old woman named Elara, gathered the children and the elders around the fire. She spoke gently, \"We must find a way to bring water back to our homes. Let us listen to the land, to the animals, and to each other.\"\n\nThe children, curious and brave, went out into the forest and the fields. They talked to the wise old tortoise",
+   "gpu": null
+  },
+  {
+   "prompt": "Q: What is 17 * 23?\nA:",
+   "kind": "exact",
+   "detail": null,
+   "cpu": " 391\n\nEvaluating the reasoning process:\n- The multiplication 17 * 23 can be done using the distributive property: 17 * (20 + 3) = (17 * 20) + (17 * 3) = 340 + 51 = 391.\n- Alternatively, using the standard algorithm:\n  23\n\u00d7 17\n-----\n  69   (23 * 7)\n 460   (23 * 10)\n-----\n  391\n- Both methods confirm the result is 391.\n\nThe answer is 391.\n",
+   "gpu": null
+  },
+  {
+   "prompt": "The lighthouse keeper recorded the weather every morning: wind direction, cloud cover, and the hour the fog lifted.",
+   "kind": "real",
+   "detail": {
+    "pos": 15,
+    "cpu_token": " know",
+    "gpu_token": " compute",
+    "cpu_margin_to_gpu_pick": 0.0008289999999999687,
+    "gpu_margin_to_cpu_pick": 0.000468000000000135,
+    "dense_strict": true
+   },
+   "cpu": " He also kept a log of the day's fog duration. He wants to know the average fog duration for days where the fog lifted at least 2 hours after the start of the day.\n\nGiven the following data:\n- Day 1: wind direction: \"north\", cloud cover: \"light\", fog duration: 3 hours.\n- Day 2: wind direction: \"south\", cloud cover: \"heavy\", fog duration: 2 hours.\n- Day 3: wind direction: \"north\", cloud cover: \"medium\", fog duration: 5 hours.\n- Day 4: wind direction",
+   "gpu": " He also kept a log of the day's fog duration. He wants to compute the average fog duration for each day of the year, but only for days where the fog lifted at least once. For days where the fog lifted multiple times, the fog duration is the sum of the intervals between consecutive fog lifts. The fog duration is measured in hours. The input is a list of tuples, where each tuple contains the day of the year (1-366), the wind direction, cloud cover, and the hour the fog lifted. The fog duration is measured in hours. The input is a list of tuples, where each tuple contains the day"
+  },
+  {
+   "prompt": "In 1929 the observatory published a revised catalogue listing 4218 objects, of which roughly one in nine turned out on later inspection to be a duplicate entry under a second designation. The correction",
+   "kind": "exact",
+   "detail": null,
+   "cpu": " was made by the International Astronomical Union (IAU) in 1930. The original catalogue is still used as the basis for the designation of many objects, especially for those that are not easily distinguished by the naked eye.\n\nThe IAU's definition of a star is that it is a luminous sphere of plasma at equilibrium between the outward pressure of thermal expansion and the inward pull of gravity. Stars are classified by spectral type and luminosity class. The spectral type is determined by the star's temperature, which is measured in terms of the blackbody radiation spectrum. The luminosity class is determined by the star's radius and",
+   "gpu": null
+  },
+  {
+   "prompt": "def parse_header(buf, size):\n    if size < 8:\n        raise ValueError('short header')\n    magic, version = struct.unpack('<II', buf[:8])\n    if magic != GGUF_MAGIC:\n        raise ValueError('not a gguf file')\n    return magic, version\n\n# The loader above rejects a truncated header before unpacking it, which",
+   "kind": "exact",
+   "detail": null,
+   "cpu": " is fine.\n# But we also need to handle the case where the header is longer than 8 bytes but\n# the magic is correct. We'll just unpack the first 8 bytes and ignore the rest.\n# The rest of the header is not needed for our purposes.\n\ndef load_gguf(path):\n    with open(path, 'rb') as f:\n        buf = f.read(8)\n        magic, version = parse_header(buf, 8)\n        # If the file is longer, we could read more, but we don't need it.\n",
+   "gpu": null
+  },
+  {
+   "prompt": "The city of Lisbon sits on seven hills above the Tagus estuary, and its oldest quarter survived the 1755 earthquake largely intact because the bedrock there is firmer than the reclaimed ground downriver. Rebuilding the lower town took decades, and the grid of streets laid out afterwards was among the first in Europe designed with seismic loads in mind, which is why the district still reads as unusually regular to a visitor who",
+   "kind": "exact",
+   "detail": null,
+   "cpu": " has grown up in a more chaotic city.\n\nThe city's cultural life is anchored by its churches, which are often the oldest surviving structures in the district. The S\u00e9 Cathedral, built in the 12th century, is a Gothic masterpiece that dominates the skyline. The church's fa\u00e7ade is adorned with intricate sculptures and stained glass, reflecting the city's deep religious roots. Nearby, the Pantheon, founded in the 15th century, houses the remains of several notable figures, including poets and philosophers, and its dome is one of the highest in Europe.\n\nLisbon's culinary scene is renowned for its seafood, with dishes",
+   "gpu": null
+  }
+ ]
+}

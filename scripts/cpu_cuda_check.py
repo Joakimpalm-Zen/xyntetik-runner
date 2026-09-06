@@ -371,7 +371,14 @@ def main():
     # then agrees with itself. Measured 2026-09-06 twice on one afternoon
     # (a recurrent-state allocation that did not fit beside the layers, a
     # dynamic quant with IQ3_S tensors); both read 9/9. That is not a pass.
-    gpu_fell_back = split is None
+    # Metal logs no split line (unified memory, every layer resident), so
+    # the backend banner counts as reaching the device too.
+    try:
+        gpu_text = pathlib.Path(gpu_log).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        gpu_text = ""
+    reached = re.search(r"^gpu: (Metal|CUDA) backend on ", gpu_text, re.M)
+    gpu_fell_back = split is None and reached is None
     if gpu_fell_back:
         result = "fail"
         print("cpu_cuda: the GPU arm ran on the CPU (no gpu-split line in "
