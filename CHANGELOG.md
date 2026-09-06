@@ -8,6 +8,20 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **NVFP4 runs on CUDA.** Three kernels (`k_mv_nvfp4`, `k_mv_nvfp4_b`,
+  `k_moe_mv_nvfp4`) decode ggml type 40 exactly as the CPU does (UE4M3
+  sub-block scale, E2M1 codebook, sub-block sums before scaling), and the
+  export's per-tensor `<base>.scale` companion rides in the kernel arguments
+  and is applied in every matvec tail before the bias, the CPU's own seam.
+  A tensor without a companion multiplies by 1.0, so existing kernels keep
+  their bits. Admission accepts the companion on NVFP4 only; the coalesced
+  GEMV, tiled GEMM and tensor-core paths, whose tails lack it, are bypassed
+  for a scaled tensor, and the CUDA embedding staging now applies the
+  token-embedding companion like the host path. Gates: `tests/test_nvfp4_scale.py`
+  requires a CUDA box to put the NVFP4 fixture's layers on the device and
+  agree with the CPU score; `make test-cuda-nvfp4` checks token identity
+  and logprob agreement on the fixture and on a real file (`NVFP4_MODEL`).
+  Measured on an RTX 3070 (see below). Metal still has no NVFP4 kernel.
 - The T3 build's portable math (`src/pmath.h`) gives libm's answers at the
   edges: NaN in, NaN out (exp of NaN was an undefined int conversion), log of
   +inf is +inf (was 709.78), sin and cos of an infinity are NaN and of a huge

@@ -1404,7 +1404,7 @@ test-cuda-nvfp4: runner
 		for f in test-nvfp4.gguf $(NVFP4_MODEL); do \
 		  ./$(RUNNER_EXE) -m $$f -p "The capital of France is" -n 16 --temp 0 --gpu off --no-tray > cuda-nvfp4-cpu.out 2>/dev/null; \
 		  ./$(RUNNER_EXE) -m $$f -p "The capital of France is" -n 16 --temp 0 --gpu auto --no-tray --transcript cuda-nvfp4-gpu.json > cuda-nvfp4-gpu.out 2>cuda-nvfp4-gpu.err; \
-		  cmp -s cuda-nvfp4-cpu.out cuda-nvfp4-gpu.out || { echo "FAIL: $$f CPU and CUDA tokens differ"; diff cuda-nvfp4-cpu.out cuda-nvfp4-gpu.out | head; exit 1; }; \
+		  $(PYTHON) -c "import sys; a=open('cuda-nvfp4-cpu.out','rb').read(); b=open('cuda-nvfp4-gpu.out','rb').read(); sys.exit(0 if a == b and a else 1)" || { echo "FAIL: $$f CPU and CUDA tokens differ"; cat cuda-nvfp4-cpu.out; echo; cat cuda-nvfp4-gpu.out; echo; exit 1; }; \
 		  $(PYTHON) -c "import json,sys; p=json.load(open('cuda-nvfp4-gpu.json'))['profile']; assert p['gpu_layers'] > 0, 'CUDA declined ' + sys.argv[1]" $$f; \
 		  ./$(RUNNER_EXE) -m $$f --score -p "The capital of France is Paris, and the runner trains the model on hardware you own." --gpu off --no-tray 2>/dev/null > cuda-nvfp4-cpu.score; \
 		  ./$(RUNNER_EXE) -m $$f --score -p "The capital of France is Paris, and the runner trains the model on hardware you own." --gpu auto --no-tray 2>/dev/null > cuda-nvfp4-gpu.score; \
