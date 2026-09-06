@@ -236,8 +236,13 @@ bool tokenizer_init(tokenizer *t, gguf_file *g) {
     const char *pre = gguf_get_str(g, "tokenizer.ggml.pre", "");
     if (strcmp(pre, "llama-bpe") == 0)   t->pre = TOK_PRE_LLAMA3;
     else if (strcmp(pre, "dbrx") == 0)   t->pre = TOK_PRE_LLAMA3; // llama.cpp: "same as llama3" (granite 4.1 ships this)
-    else if (strcmp(pre, "qwen2") == 0 ||
-             strcmp(pre, "qwen35") == 0) t->pre = TOK_PRE_QWEN2;
+    else if (strcmp(pre, "granite-docling") == 0) t->pre = TOK_PRE_GPT2; // llama.cpp: the plain GPT-2 regex (granite 4.2 ships this)
+    else if (strcmp(pre, "qwen2") == 0)  t->pre = TOK_PRE_QWEN2;
+    // qwen35 (Qwen 3.5, 3.6, 3.8, Ornith): the qwen2 regex with [\p{L}\p{M}]+
+    // in place of \p{L}+, so combining marks (Devanagari vowel signs and
+    // viramas, Thai vowels and tones) ride inside the letter run and are
+    // excluded from the symbol run; qwen2 (Qwen 3) splits at every mark
+    else if (strcmp(pre, "qwen35") == 0) t->pre = TOK_PRE_QWEN35;
     else if (strcmp(pre, "smollm") == 0) t->pre = TOK_PRE_SMOLLM;
     else if (strcmp(pre, "afmoe") == 0)  t->pre = TOK_PRE_AFMOE;
     else if (strcmp(pre, "tekken") == 0) t->pre = TOK_PRE_TEKKEN;
@@ -637,20 +642,27 @@ static int contraction_len(const uint32_t *cp, int i, int ncp) {
 // One pre-token of the newer BPE regex, returning the end index:
 //   (?i:'s|'t|'re|'ve|'m|'ll|'d) | [^\r\n\p{L}\p{N}]?\p{L}+ | \p{N}{1,max_digits}
 //   | ?[^\s\p{L}\p{N}]+[\r\n]* | \s*[\r\n]+ | \s+(?!\S) | \s+
-static int pre_split_next(const uint32_t *cp, int i, int ncp, int max_digits) {
+// marks_join: the letter class is [\p{L}\p{M}] (qwen35's regex) instead of
+// \p{L}, so a combining mark extends the run it follows and never starts a
+// symbol run; the leading-character clause is unchanged (a mark may still
+// lead, being [^\r\n\p{L}\p{N}]).
+static int pre_split_next(const uint32_t *cp, int i, int ncp, int max_digits,
+                          bool marks_join) {
     int adv = contraction_len(cp, i, ncp);
     if (adv) return i + adv;
+#define RUN_LETTER(c) (cp_letter(c) || (marks_join && cp_mark(c)))
+#define RUN_OTHER(c)  (!cp_space(c) && !RUN_LETTER(c) && !cp_digit(c))
 
     // a single non-letter, non-digit, non-newline character may lead a letter run
     if (!cp_letter(cp[i]) && !cp_digit(cp[i]) && cp[i] != '\r' && cp[i] != '\n' &&
-        i + 1 < ncp && cp_letter(cp[i + 1])) {
+        i + 1 < ncp && RUN_LETTER(cp[i + 1])) {
         int j = i + 1;
-        while (j < ncp && cp_letter(cp[j])) j++;
+        while (j < ncp && RUN_LETTER(cp[j])) j++;
         return j;
     }
-    if (cp_letter(cp[i])) {
+    if (RUN_LETTER(cp[i])) {
         int j = i;
-        while (j < ncp && cp_letter(cp[j])) j++;
+        while (j < ncp && RUN_LETTER(cp[j])) j++;
         return j;
     }
     if (cp_digit(cp[i])) {
@@ -659,13 +671,15 @@ static int pre_split_next(const uint32_t *cp, int i, int ncp, int max_digits) {
         return j;
     }
     {   // optional leading space, then a run of symbols/punctuation
-        int j = (cp[i] == ' ' && i + 1 < ncp && cp_other(cp[i + 1])) ? i + 1 : i;
-        if (j < ncp && cp_other(cp[j])) {
-            while (j < ncp && cp_other(cp[j])) j++;
+        int j = (cp[i] == ' ' && i + 1 < ncp && RUN_OTHER(cp[i + 1])) ? i + 1 : i;
+        if (j < ncp && RUN_OTHER(cp[j])) {
+            while (j < ncp && RUN_OTHER(cp[j])) j++;
             while (j < ncp && (cp[j] == '\r' || cp[j] == '\n')) j++;
             return j;
         }
     }
+#undef RUN_LETTER
+#undef RUN_OTHER
     {
         int j = i;
         while (j < ncp && cp_space(cp[j])) j++;
@@ -685,6 +699,19 @@ static int pre_split_next(const uint32_t *cp, int i, int ncp, int max_digits) {
 // restrict it to a segment:
 //   's|'t|'re|'ve|'m|'ll|'d| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+
 // The contractions are case-sensitive here, unlike the newer (?i:...) regexes.
+// The GPT-2 regex's classes: \p{L}, \p{N}, [^\s\p{L}\p{N}] and \s. The
+// same cp_letter the llama3 rule uses, so symbols (U+2019 RIGHT SINGLE
+// QUOTATION MARK in "don’t") and combining marks (Devanagari vowel signs and
+// viramas) are [^\s\p{L}\p{N}], not letters: the raw cp_class glued them onto
+// the adjacent letter run and granite 4.2 (pre "granite-docling", llama.cpp's
+// plain GPT-2 rule) tokenized "’s" and "नमस्ते" differently from the reference.
+static int gpt2_class(uint32_t c) {
+    if (cp_space(c)) return 3;
+    if (cp_digit(c)) return 1;
+    if (cp_letter(c)) return 0;
+    return 2;
+}
+
 static int gpt2_split_next(const uint32_t *cp, int i, int end) {
     if (cp[i] == '\'' && i + 1 < end) {
         uint32_t a = cp[i + 1], b = (i + 2 < end) ? cp[i + 2] : 0;
@@ -693,17 +720,17 @@ static int gpt2_split_next(const uint32_t *cp, int i, int end) {
             (a == 'l' && b == 'l')) return i + 3;
     }
     // an optional leading space joins a run of a single class
-    int j = (cp[i] == ' ' && i + 1 < end && cp_class(cp[i + 1]) != 3) ? i + 1 : i;
-    if (cp_class(cp[j]) != 3) {
-        int cls = cp_class(cp[j]);
+    int j = (cp[i] == ' ' && i + 1 < end && gpt2_class(cp[i + 1]) != 3) ? i + 1 : i;
+    if (gpt2_class(cp[j]) != 3) {
+        int cls = gpt2_class(cp[j]);
         int k = j;
-        while (k < end && cp_class(cp[k]) == cls) k++;
+        while (k < end && gpt2_class(cp[k]) == cls) k++;
         return k;
     }
     // \s+(?!\S) hands the final whitespace character to the next pre-token,
     // whatever that character is: "\t\tx" is "\t", "\t", "x", not "\t\t", "x"
     int k = i;
-    while (k < end && cp_class(cp[k]) == 3) k++;
+    while (k < end && gpt2_class(cp[k]) == 3) k++;
     if (k < end && k - i > 1) k--;
     return k;
 }
@@ -1145,11 +1172,13 @@ static int bpe_encode_text(tokenizer *t, const char *text, size_t n,
 
     // The split rules come from tokenizer.ggml.pre; anything unrecognised keeps
     // the original GPT-2 regex it has always used.
-    int max_digits = t->pre == TOK_PRE_LLAMA3 ? 3 : t->pre == TOK_PRE_QWEN2 ? 1 : 0;
+    int max_digits = t->pre == TOK_PRE_LLAMA3 ? 3
+                   : (t->pre == TOK_PRE_QWEN2 || t->pre == TOK_PRE_QWEN35) ? 1 : 0;
+    bool marks_join = t->pre == TOK_PRE_QWEN35;
     for (int i = 0; i < ncp; ) {
         int end = t->pre == TOK_PRE_TEKKEN    ? tekken_split_next(cp, i, ncp)
                 : t->pre == TOK_PRE_LLAMA4    ? llama4_split_next(cp, i, ncp)
-                : max_digits                  ? pre_split_next(cp, i, ncp, max_digits)
+                : max_digits                  ? pre_split_next(cp, i, ncp, max_digits, marks_join)
                 : t->pre == TOK_PRE_SMOLLM    ? smollm_split_next(cp, i, ncp)
                 : t->pre == TOK_PRE_AFMOE     ? afmoe_split_next(cp, i, ncp)
                                               : gpt2_split_next(cp, i, ncp);

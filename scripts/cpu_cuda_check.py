@@ -303,6 +303,13 @@ def main():
     ap.add_argument("--fused", action="store_true",
                     help="do NOT pin the eager router (measures the fused "
                          "default, whose contract is weaker than identity)")
+    # Applied to the GPU arm only: a model larger than the free device
+    # memory is measured under an explicit split (`--gpu-layers N`), and the
+    # split it achieved is read back off the log into the report, so the
+    # comparison is never a full-offload claim it did not earn.
+    ap.add_argument("--gpu-arm-arg", action="append", default=[],
+                    help="extra runner flag for the GPU arm only, e.g. "
+                         "--gpu-arm-arg=--gpu-layers --gpu-arm-arg=28")
     ap.add_argument("--extra-arg", action="append", default=[],
                     help="extra flag passed to BOTH runs (e.g. --cpu-moe)")
     ap.add_argument("--out")
@@ -320,7 +327,8 @@ def main():
                        env, args.extra_arg, args.timeout, logs / "cpu_cuda-cpu.log")
     print("loading CUDA backend...", flush=True)
     gpu = generate_all(args.runner, args.model, "auto", args.tokens, args.ctx,
-                       env, args.extra_arg, args.timeout, gpu_log)
+                       env, args.extra_arg + args.gpu_arm_arg, args.timeout,
+                       gpu_log)
 
     # Dense models never get the near-tie tolerance (see is_moe): the
     # written policy always said so, but until 2026-08-20 nothing ENFORCED it —
@@ -357,6 +365,25 @@ def main():
     over_cap = result == "fail" and real == 0   # failed purely on the near-tie cap
 
     split = read_split(gpu_log)
+    # A GPU arm whose log carries no split line never reached the device: a
+    # failed device allocation (or a tensor type with no device kernel)
+    # makes the runner fall back to the CPU and serve, and the comparison
+    # then agrees with itself. Measured 2026-09-06 twice on one afternoon
+    # (a recurrent-state allocation that did not fit beside the layers, a
+    # dynamic quant with IQ3_S tensors); both read 9/9. That is not a pass.
+    # Metal logs no split line (unified memory, every layer resident), so
+    # the backend banner counts as reaching the device too.
+    try:
+        gpu_text = pathlib.Path(gpu_log).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        gpu_text = ""
+    reached = re.search(r"^gpu: (Metal|CUDA) backend on ", gpu_text, re.M)
+    gpu_fell_back = split is None and reached is None
+    if gpu_fell_back:
+        result = "fail"
+        print("cpu_cuda: the GPU arm ran on the CPU (no gpu-split line in "
+              f"{gpu_log}); a comparison of the CPU with itself is not a "
+              "pass", flush=True)
     report = {"model": str(args.model), "tokens": args.tokens,
               "context": args.ctx,
               "routing": "fused" if args.fused else "eager",
@@ -364,6 +391,7 @@ def main():
               "extra_args": args.extra_arg,
               "gpu_split": split,
               "cpu_cuda_identity": {"result": result, "exact": f"{exact}/{total}",
+                                    "gpu_arm_on_cpu": gpu_fell_back,
                                     "near_tie_tolerated": near_tie,
                                     "tie_band_nats": DEFAULT_TIE_BAND,
                                     "over_cap": over_cap},

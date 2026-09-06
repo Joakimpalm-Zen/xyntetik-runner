@@ -1,0 +1,9 @@
+starting server A: /home/lab/workspace/models/granite-4.2/granite-4.2-8b-Q4_K_M.gguf
+starting server B: /home/lab/workspace/models/granite-4.2/granite-4.2-8b-Q8_0.gguf
+{
+  "positions_scored": 400,
+  "positions_failed": 0,
+  "mean_kld": 0.0035631445313191092,
+  "top1_agreement_pct": 99.75,
+  "mean_top8_overlap": 0.92125
+}

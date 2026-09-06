@@ -207,7 +207,7 @@
         "tool",
         "long_context"
       ],
-      "notes": "CPU + CUDA; 5/5 scalar-path CPU/CUDA identity over 128 tokens re-verified 2026-08-03",
+      "notes": "CPU + CUDA; 5/5 scalar-path CPU/CUDA identity over 128 tokens re-verified 2026-08-03 Tokenizer 3/721 since 2026-09-06 (Devanagari/Thai marks): the GGUF declares pre qwen35, whose regex keeps combining marks inside letter runs, while Ornith's own tokenizer.json still carries the Qwen3 regex that splits at them; the runner and llama.cpp master agree with each other on the qwen35 rule, the HF reference does not.",
       "check_params": {
         "cpu_cuda": {
           "pins": {
@@ -231,6 +231,9 @@
         "tool": {
           "scenario_matrix": "agent-torture",
           "cases": 8
+        },
+        "tokenizer": {
+          "expect_divergences": 3
         }
       }
     },
@@ -1114,6 +1117,132 @@
           "forbid_substrings": [
             "[/INST]",
             "<<SYS>>"
+          ]
+        }
+      }
+    },
+    {
+      "id": "granite-4.2-3b-q4_k_m",
+      "architecture": "granite",
+      "family": "IBM Granite 4.2",
+      "file": "models/granite-4.2-3b-Q4_K_M.gguf",
+      "sha256": "e0406663965846ae22a403456eb826ccce5f450840491f71952f18a7cb78e7d5",
+      "tokenizer_reference": "ibm-granite/granite-4.2-3b",
+      "reference": {
+        "implementation": "llama.cpp",
+        "revision": "master 73a43d1 (2026-09-06)"
+      },
+      "checks": [
+        "load",
+        "tokenizer",
+        "greedy_reference",
+        "cpu_cuda",
+        "chat"
+      ],
+      "notes": "Official IBM GGUF. Granite 4.2 is the granite arch with the muP scales at 1.0, pre-tokenizer granite-docling (the GPT-2 rule with the regex's letter class) and its own granite42 template (ChatML, <think>, function-XML tools; 22/22 conformance). Blackwell 2026-09-06 vs 73a43d1: tokenizer 0/721, cpu_cuda 9/9 exact at 128 tokens, chat clean; greedy 3/5 at 8 tokens and 0/6 on the six-prompt cert set (the certified granite-4.1-3b Q4_K_M control reads 3/6 there today), the 16-prompt divergence gate reading 5 identical / 6 ties / 5 past the 0.25-nat bar, which the certified granite-4.1-3b Q4_K_M control reproduces on the same gate (8 / 4 / 4); same-file kld-raw margin-qualified top-1 100%, max per-position KLD 0.098 (the 4.1-3b control: 0.212). Evidence in docs/granite-42-qwen38-cert-2026-09-06.md.",
+      "check_params": {
+        "cpu_cuda": {
+          "pins": {
+            "RUNNER_CUDA_TC": "0"
+          },
+          "prompt_set": "cpu_cuda_check.PROMPTS",
+          "min_prompt_tokens": 85,
+          "tokens": 128
+        },
+        "chat": {
+          "prompt": "What is 2+2?",
+          "max_tokens": 200,
+          "gpu": "auto",
+          "expect_stop": true,
+          "expect_nonempty_content": true,
+          "forbid_substrings": [
+            "[/INST]",
+            "<<SYS>>",
+            "<|start_of_role|>"
+          ]
+        }
+      }
+    },
+    {
+      "id": "granite-4.2-8b-q4_k_m",
+      "architecture": "granite",
+      "family": "IBM Granite 4.2",
+      "file": "models/granite-4.2-8b-Q4_K_M.gguf",
+      "sha256": "16a9369d0805f80b7377d25d87f937a90c05dc04ad79173a52001e42c9aab311",
+      "tokenizer_reference": "ibm-granite/granite-4.2-8b",
+      "reference": {
+        "implementation": "llama.cpp",
+        "revision": "master 73a43d1 (2026-09-06)"
+      },
+      "checks": [
+        "load",
+        "tokenizer",
+        "greedy_reference",
+        "cpu_cuda",
+        "chat"
+      ],
+      "notes": "Official IBM GGUF. See granite-4.2-3b-q4_k_m for the 4.2 header. Blackwell 2026-09-06 vs 73a43d1: tokenizer 0/721, greedy 5/5 at 8 tokens, chat clean, cpu_cuda 8/9 with the one flip at token 27 on a 0.0019-nat tie (dense rows are strict, so the row records a fail); token-divergence gate on 16 prompts x 32 tokens: 7 identical, 0 real of 9 divergences, max 0.187 nats. Q4_K_M vs Q8_0 bar PASS (400 positions, mean KLD 0.0036, top-1 99.75%). Evidence in docs/granite-42-qwen38-cert-2026-09-06.md.",
+      "check_params": {
+        "cpu_cuda": {
+          "pins": {
+            "RUNNER_CUDA_TC": "0"
+          },
+          "prompt_set": "cpu_cuda_check.PROMPTS",
+          "min_prompt_tokens": 85,
+          "tokens": 128
+        },
+        "chat": {
+          "prompt": "What is 2+2?",
+          "max_tokens": 200,
+          "gpu": "auto",
+          "expect_stop": true,
+          "expect_nonempty_content": true,
+          "forbid_substrings": [
+            "[/INST]",
+            "<<SYS>>",
+            "<|start_of_role|>"
+          ]
+        }
+      }
+    },
+    {
+      "id": "qwen3.8-27b-ud-q4_k_m",
+      "architecture": "qwen35",
+      "family": "Qwen 3.8",
+      "file": "models/Qwen3.8-27B-UD-Q4_K_M.gguf",
+      "sha256": "322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482",
+      "tokenizer_reference": "Qwen/Qwen3.8-27B",
+      "reference": {
+        "implementation": "llama.cpp",
+        "revision": "master 73a43d1 (2026-09-06)"
+      },
+      "checks": [
+        "load",
+        "tokenizer",
+        "greedy_reference",
+        "cpu_cuda",
+        "chat"
+      ],
+      "notes": "Unsloth UD-Q4_K_M of Qwen/Qwen3.8-27B: the qwen35 layout (48 Gated DeltaNet + 16 full-attention blocks, one NextN/MTP block declared and excluded from the backbone; --mtp drafts from it). Pre-tokenizer qwen35 with [\\p{L}\\p{M}]+ runs; its own qwen38 chat template (reasoning-effort preamble, preserved thinking, function-XML tools; 21/21 conformance, token-identical). CUDA: this dynamic quant carries 4 IQ3_S tensors, a CPU-only codebook type in the runner, so a CUDA box runs it on the CPU; the qwen35 CUDA path was measured on the pure Q8_0 and plain Q4_K_M siblings instead (see the evidence document). Blackwell 2026-09-06 vs 73a43d1 (the matrix row's own cpu_cuda check not_executed, full residency asked of a held slice): tokenizer 0/721, greedy 5/5 at 8 tokens (4/6 on the six-prompt cert set, the two 256-token runs part late), chat clean; UD-Q4_K_M vs Q8_0 bar PASS (100 positions, mean KLD 0.0016, top-1 100%). Evidence in docs/granite-42-qwen38-cert-2026-09-06.md.",
+      "check_params": {
+        "cpu_cuda": {
+          "pins": {
+            "RUNNER_CUDA_TC": "0"
+          },
+          "prompt_set": "cpu_cuda_check.PROMPTS",
+          "min_prompt_tokens": 85,
+          "tokens": 128
+        },
+        "chat": {
+          "prompt": "What is 2+2?",
+          "max_tokens": 200,
+          "gpu": "auto",
+          "expect_stop": true,
+          "expect_nonempty_content": true,
+          "forbid_substrings": [
+            "[/INST]",
+            "<<SYS>>",
+            "<|start_of_role|>"
           ]
         }
       }

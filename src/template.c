@@ -67,6 +67,16 @@ int template_detect(const char *meta_tmpl, tokenizer *tok) {
         // apertus first: its vocabulary inherits Mistral's [INST]/[/INST]
         // tokens, so the [INST] branch below would otherwise claim it
         if (strstr(meta_tmpl, "<|assistant_start|>")) return TMPL_APERTUS;
+        // Qwen 3.8 and granite 4.2 both share ornith's function-XML
+        // declaration text, so each is told apart FIRST by a phrase only
+        // its own template writes: Qwen 3.8's reasoning-effort preamble,
+        // granite 4.2's closed `<think></think>`.
+        if (strstr(meta_tmpl, "<function=example_function_name>") &&
+            strstr(meta_tmpl, "Reasoning effort is set to"))
+            return TMPL_QWEN38;
+        if (strstr(meta_tmpl, "<function=example_function_name>") &&
+            strstr(meta_tmpl, "<think></think>"))
+            return TMPL_GRANITE42;
         if (strstr(meta_tmpl, "<function=example_function_name>") &&
             strstr(meta_tmpl, "<think>"))
             return TMPL_ORNITH;
@@ -169,6 +179,8 @@ int template_from_name(const char *name) {
     if (!strcmp(name, "phi3"))    return TMPL_PHI3;
     if (!strcmp(name, "apertus")) return TMPL_APERTUS;
     if (!strcmp(name, "ornith")) return TMPL_ORNITH;
+    if (!strcmp(name, "granite42")) return TMPL_GRANITE42;
+    if (!strcmp(name, "qwen38")) return TMPL_QWEN38;
     if (!strcmp(name, "muse"))   return TMPL_MUSE;
     if (!strcmp(name, "harmony")) return TMPL_HARMONY;
     if (!strcmp(name, "granite")) return TMPL_GRANITE;
@@ -190,6 +202,8 @@ const char *template_name(int t) {
         case TMPL_PHI3:    return "phi3";
         case TMPL_APERTUS: return "apertus";
         case TMPL_ORNITH: return "ornith";
+        case TMPL_GRANITE42: return "granite42";
+        case TMPL_QWEN38: return "qwen38";
         case TMPL_MUSE:   return "muse";
         case TMPL_HARMONY: return "harmony";
         case TMPL_GRANITE: return "granite";
@@ -206,7 +220,8 @@ bool template_roles_valid(int tmpl, const char *const *roles, int n,
                                tmpl == TMPL_MISTRAL_V1 ||
                                tmpl == TMPL_MISTRAL_NEMO ||
                                tmpl == TMPL_APERTUS ||
-                               tmpl == TMPL_ORNITH;
+                               tmpl == TMPL_ORNITH ||
+                               tmpl == TMPL_QWEN38;
     if (!leading_system_only) return true;
     for (int i = 1; !allow_mid_system && i < n; i++) {
         if (!strcmp(roles[i], "system")) {
@@ -311,6 +326,21 @@ bool req_thinking_mode_valid(struct jv *req) {
     if (nested && nested->type != J_NULL && nested->type != J_BOOL) return false;
     if (top && top->type != J_NULL && top->type != J_BOOL) return false;
     return true;
+}
+
+int req_reasoning_effort(struct jv *req) {
+    if (!req) return THINK_EFFORT_XHIGH;
+    jv *kw = jv_get((jv *)req, "chat_template_kwargs");
+    jv *v  = kw ? jv_get(kw, "reasoning_effort") : NULL;
+    if (!v || v->type == J_NULL)
+        v = jv_get((jv *)req, "reasoning_effort");
+    if (!v || v->type == J_NULL) return THINK_EFFORT_XHIGH;
+    const char *s = jv_str(v, NULL);
+    if (!s) return -1;
+    if (!strcmp(s, "xhigh"))  return THINK_EFFORT_XHIGH;
+    if (!strcmp(s, "medium")) return THINK_EFFORT_MEDIUM;
+    if (!strcmp(s, "low"))    return THINK_EFFORT_LOW;
+    return -1;
 }
 
 int req_thinking_mode(struct jv *req) {
@@ -1215,6 +1245,207 @@ size_t render_messages_with_tools(int tmpl, const chat_msg *msgs, int n_msgs,
                                              : "<think>\n", NULL, NULL);
         }
         break;
+    case TMPL_QWEN38: {
+        // Qwen/Qwen3.8-27B chat_template.jinja (2026-09-06), see the enum
+        // comment. Every content the reference renders goes through
+        // `|trim`; the reasoning preamble depends on the effort bits.
+        int mode = thinking & THINK_MODE_MASK;
+        int effort = thinking & THINK_EFFORT_MASK;
+        const char *instr = NULL;
+        if (mode != THINK_OFF) {
+            if (effort == THINK_EFFORT_LOW)
+                instr = "Reasoning effort is set to low. Keep your thinking "
+                        "brief and focused, moving directly to the conclusion "
+                        "without unnecessary elaboration.";
+            else if (effort != THINK_EFFORT_MEDIUM)
+                instr = "Reasoning effort is set to xhigh. Please think "
+                        "carefully through the task, validate key "
+                        "assumptions, consider plausible alternatives, and "
+                        "prioritize correctness, consistency, and clarity in "
+                        "the final answer.";
+        }
+        bool have_tools = tools && tools->type == J_ARR && tools->n > 0;
+        int first = n_msgs > 0 && !strcmp(msgs[0].role, "system") ? 1 : 0;
+        const char *sc = first ? msgs[0].content : "";
+        const char *sc_e = trim_right(sc, sc + strlen(sc));
+        const char *sc_b = trim_left(sc, sc_e);
+        if (have_tools) {
+            // preamble, declarations, then the caller's system text
+            off = emit(out, cap, off, "<|im_start|>system\n", NULL, NULL);
+            if (instr) off = emit(out, cap, off, "%s\n\n", instr, NULL);
+            sbuf decl = {0};
+            tools_render_for(tmpl, tools, &decl);
+            off = emit(out, cap, off, "%s", decl.s, NULL);
+            free(decl.s);
+            if (sc_e > sc_b) {
+                off = emit(out, cap, off, "\n\n", NULL, NULL);
+                off = emit_n(out, cap, off, sc_b, (size_t)(sc_e - sc_b));
+            }
+            off = emit(out, cap, off, "<|im_end|>\n", NULL, NULL);
+        } else if (sc_e > sc_b) {
+            off = emit(out, cap, off, "<|im_start|>system\n", NULL, NULL);
+            if (instr) off = emit(out, cap, off, "%s\n\n", instr, NULL);
+            off = emit_n(out, cap, off, sc_b, (size_t)(sc_e - sc_b));
+            off = emit(out, cap, off, "<|im_end|>\n", NULL, NULL);
+        } else if (instr) {
+            off = emit(out, cap, off, "<|im_start|>system\n%s<|im_end|>\n",
+                       instr, NULL);
+        }
+        for (int i = first; i < n_msgs; i++) {
+            const char *role = msgs[i].role;
+            const char *c = msgs[i].content;
+            const char *e = trim_right(c, c + strlen(c));
+            const char *b = trim_left(c, e);
+            if (!strcmp(role, "tool")) {
+                bool prev_tool = i > first && !strcmp(msgs[i - 1].role, "tool");
+                bool next_tool = i + 1 < n_msgs &&
+                                 !strcmp(msgs[i + 1].role, "tool");
+                if (!prev_tool)
+                    off = emit(out, cap, off, "<|im_start|>user", NULL, NULL);
+                off = emit(out, cap, off, "\n<tool_response>\n", NULL, NULL);
+                off = emit_n(out, cap, off, b, (size_t)(e - b));
+                off = emit(out, cap, off, "\n</tool_response>", NULL, NULL);
+                if (!next_tool)
+                    off = emit(out, cap, off, "<|im_end|>\n", NULL, NULL);
+                continue;
+            }
+            if (strcmp(role, "assistant")) {
+                off = emit(out, cap, off, "<|im_start|>%s\n", role, NULL);
+                off = emit_n(out, cap, off, b, (size_t)(e - b));
+                off = emit(out, cap, off, "<|im_end|>\n", NULL, NULL);
+                continue;
+            }
+            // Every assistant turn carries its thought block
+            // (preserve_thinking defaults true): `<think>\n` reasoning
+            // `\n</think>\n\n` then the trimmed content and its calls. A
+            // caller that composed the block already (the chat surface
+            // does, from reasoning_content) is passed through with the
+            // reasoning and the content each trimmed; one that did not gets
+            // the empty block the reference writes for no reasoning.
+            off = emit(out, cap, off, "<|im_start|>assistant\n", NULL, NULL);
+            const char *rest = c;
+            if (!strncmp(c, "<think>\n", 8)) {
+                const char *close = strstr(c + 8, "\n</think>\n\n");
+                if (close) {
+                    const char *re = trim_right(c + 8, close);
+                    const char *rb = trim_left(c + 8, re);
+                    off = emit(out, cap, off, "<think>\n", NULL, NULL);
+                    off = emit_n(out, cap, off, rb, (size_t)(re - rb));
+                    off = emit(out, cap, off, "\n</think>\n\n", NULL, NULL);
+                    rest = close + 11;
+                } else {
+                    rest = NULL;   // an open block: replay verbatim
+                }
+            } else {
+                off = emit(out, cap, off, "<think>\n\n</think>\n\n", NULL, NULL);
+            }
+            if (!rest) {
+                off = emit(out, cap, off, "%s", c, NULL);
+            } else {
+                // the calls a turn carries end in `</tool_call>` and are
+                // not trimmed away with the content's own whitespace
+                const char *xe = rest + strlen(rest);
+                const char *tc = strstr(rest, "<tool_call>");
+                const char *ce = tc ? tc : xe;
+                const char *cend = trim_right(rest, ce);
+                const char *cb = trim_left(rest, cend);
+                off = emit_n(out, cap, off, cb, (size_t)(cend - cb));
+                if (tc) {
+                    // chat_template.jinja:140-147: the first call follows
+                    // spoken text after a blank line, nothing otherwise
+                    if (cend > cb) off = emit(out, cap, off, "\n\n", NULL, NULL);
+                    off = emit(out, cap, off, "%s", tc, NULL);
+                }
+            }
+            off = emit(out, cap, off, "<|im_end|>\n", NULL, NULL);
+        }
+        if (add_assistant)
+            off = emit(out, cap, off, "<|im_start|>assistant\n%s",
+                       mode == THINK_OFF ? "<think>\n\n</think>\n\n"
+                                         : "<think>\n", NULL);
+        break;
+    }
+    case TMPL_GRANITE42: {
+        // ibm-granite/granite-4.2-3b chat_template.jinja (2026-09-06), see
+        // the enum comment. Line references below are into that file.
+        bool have_tools = tools && tools->type == J_ARR && tools->n > 0;
+        int first = n_msgs > 0 && !strcmp(msgs[0].role, "system") ? 1 : 0;
+        // The reference sets system_message to "" when messages[0] is not a
+        // system turn and then branches on `system_message is defined`,
+        // which is true either way: a system turn is ALWAYS emitted.
+        off = emit(out, cap, off, "<|im_start|>system\n", NULL, NULL);
+        if (first) off = emit(out, cap, off, "%s", msgs[0].content, NULL);
+        if (have_tools) {
+            if (first && msgs[0].content[0])
+                off = emit(out, cap, off, "\n\n", NULL, NULL);
+            sbuf decl = {0};
+            tools_render_for(tmpl, tools, &decl);
+            off = emit(out, cap, off, "%s", decl.s, NULL);
+            free(decl.s);
+        }
+        off = emit(out, cap, off, "<|im_end|>\n", NULL, NULL);
+        // last_user_idx is computed over loop_messages, i.e. after the
+        // leading system turn was split off; `i` below is the same index.
+        int last_user = -1;
+        for (int i = first; i < n_msgs; i++)
+            if (!strcmp(msgs[i].role, "user")) last_user = i;
+        for (int i = first; i < n_msgs; i++) {
+            const char *role = msgs[i].role;
+            const char *c = msgs[i].content;
+            if (!strcmp(role, "tool")) {
+                // consecutive results share one user turn; every result
+                // block ends in its own newline, unlike ornith's
+                bool prev_tool = i > first && !strcmp(msgs[i - 1].role, "tool");
+                bool next_tool = i + 1 < n_msgs &&
+                                 !strcmp(msgs[i + 1].role, "tool");
+                if (!prev_tool)
+                    off = emit(out, cap, off, "<|im_start|>user\n", NULL, NULL);
+                off = emit(out, cap, off,
+                           "<tool_response>\n%s\n</tool_response>\n", c, NULL);
+                if (!next_tool)
+                    off = emit(out, cap, off, "<|im_end|>\n", NULL, NULL);
+                continue;
+            }
+            if (strcmp(role, "assistant")) {
+                off = emit(out, cap, off, "<|im_start|>%s\n%s<|im_end|>\n",
+                           role, c);
+                continue;
+            }
+            // An assistant turn without a thought block is seeded with the
+            // closed one. A turn BEFORE the last user turn that carried a
+            // complete block keeps only what follows its last </think>,
+            // behind that same closed block (truncate_history_thinking,
+            // default true); the latest turn is replayed verbatim. Either
+            // way the result is `| trim`med as a whole, so a seeded body
+            // keeps its leading whitespace behind the seed.
+            const char *open = strstr(c, "<think>");
+            const char *close = strstr(c, "</think>");
+            const char *body = c;
+            bool seed = !open && !close;
+            if (i < last_user && open && close) {
+                const char *p = close, *q;
+                while ((q = strstr(p + 8, "</think>"))) p = q;
+                body = p + 8;
+                seed = true;
+            }
+            const char *end = body + strlen(body);
+            const char *b = seed ? body : trim_left(body, end);
+            const char *e = trim_right(b, end);
+            off = emit(out, cap, off, "<|im_start|>assistant\n%s",
+                       seed ? "<think></think>" : "", NULL);
+            off = emit_n(out, cap, off, b, (size_t)(e - b));
+            // a tool-call turn ends `</tool_call>\n` before <|im_end|>
+            // (chat_template.jinja:118); the trim above took that newline
+            if (e - b >= 12 && !strncmp(e - 12, "</tool_call>", 12))
+                off = emit(out, cap, off, "\n", NULL, NULL);
+            off = emit(out, cap, off, "<|im_end|>\n", NULL, NULL);
+        }
+        if (add_assistant)
+            off = emit(out, cap, off, "<|im_start|>assistant\n%s",
+                       thinking == THINK_OFF ? "<think></think>" : "<think>\n",
+                       NULL);
+        break;
+    }
     case TMPL_CHATML:
     case TMPL_CHATML_THINK: {
         bool qwen_tools = tools && tools->type == J_ARR && tools->n > 0;
@@ -2138,7 +2369,8 @@ void tools_render(const jv *tools, sbuf *out) {
 
 void tools_render_for(int tmpl, const jv *tools, sbuf *out) {
     bool qwen = tmpl == TMPL_CHATML || tmpl == TMPL_CHATML_THINK;
-    if (tmpl != TMPL_ORNITH && !qwen) {
+    if (tmpl != TMPL_ORNITH && tmpl != TMPL_GRANITE42 &&
+        tmpl != TMPL_QWEN38 && !qwen) {
         tools_render(tools, out);
         return;
     }
@@ -2162,6 +2394,29 @@ void tools_render_for(int tmpl, const jv *tools, sbuf *out) {
     sb_lit(out, "# Tools\n\nYou have access to the following functions:\n\n<tools>");
     for (int i = 0; i < tools->n; i++) {
         sb_lit(out, "\n");
+        if (tmpl == TMPL_GRANITE42) {
+            // granite 4.2 unwraps the OpenAI envelope (`tool.function` when
+            // present) and writes the function object itself through its
+            // tool_to_json macro: `"key": value` members joined by ", ",
+            // minus `defer_loading` and `strict` (chat_template.jinja:1-11,
+            // 58-65). ornith writes the WRAPPED declaration below.
+            const jv *fn = jv_get(tools->items[i], "function");
+            if (!fn) fn = tools->items[i];
+            sb_lit(out, "{");
+            if (fn->type == J_OBJ) {
+                int first = 1;
+                for (int k = 0; k < fn->n; k++) {
+                    if (!strcmp(fn->keys[k], "defer_loading") ||
+                        !strcmp(fn->keys[k], "strict")) continue;
+                    if (!first) sb_lit(out, ", ");
+                    first = 0;
+                    sb_fmt(out, "\"%s\": ", fn->keys[k]);
+                    jv_dump_tojson(fn->items[k], out);
+                }
+            }
+            sb_lit(out, "}");
+            continue;
+        }
         // spaced for the same reason as muse above: ornith.jinja:50 is
         // `{{- tool | tojson }}`.
         jv_dump_tojson(tools->items[i], out);
@@ -2306,7 +2561,8 @@ void tool_history_render_for(int tmpl, const jv *calls,
             jv_free(g4);
             continue;
         }
-        if (tmpl != TMPL_ORNITH && tmpl != TMPL_MUSE) {
+        if (tmpl != TMPL_ORNITH && tmpl != TMPL_GRANITE42 &&
+            tmpl != TMPL_QWEN38 && tmpl != TMPL_MUSE) {
             sb_fmt(out, "<|tool_call>call:%s%s<tool_call|>", name, args);
             continue;
         }
@@ -2335,7 +2591,16 @@ void tool_history_render_for(int tmpl, const jv *calls,
         // Runner emitted no separator at all, so two calls in one turn came
         // out as `</tool_call><tool_call>` -- a shape the reference never
         // writes.
-        if (orn_calls++) sb_lit(out, "\n");
+        if (tmpl == TMPL_GRANITE42) {
+            // granite 4.2 writes `(content | trim) ~ '\n'` and then every
+            // call as `<tool_call>...</tool_call>\n` (chat_template.jinja:
+            // 95-118), so the first call follows the trimmed text, or the
+            // seeded thought block, after exactly one newline.
+            if (!orn_calls++)
+                while (out->n && strchr(" \t\n\r\f\v", out->s[out->n - 1]))
+                    out->n--;
+            sb_lit(out, "\n");
+        } else if (orn_calls++) sb_lit(out, "\n");
         else if (turn_has_text) sb_lit(out, "\n\n");
         sb_fmt(out, "<tool_call>\n<function=%s>\n", name);
         if (obj && obj->type == J_OBJ) {
@@ -2753,10 +3018,14 @@ const jv *tool_decl_native(int tmpl, bool strict, bool atem_tool_calling,
     // system turn, because that envelope is now its grammar.
     bool g4_native = is_gemma4(tmpl) &&
                      (env->proto == TP_GEMMA4 || !strict);
+    // Qwen 3.8's declarations sit between its reasoning preamble and the
+    // caller's system text, an order only its renderer can produce, so it
+    // takes the structured tools like the qwen families do (never strict:
+    // its native protocol is the function XML, parsed like ornith's).
     *skip_generic = qwen || g4_native || tmpl == TMPL_APERTUS ||
                     (tmpl == TMPL_MUSE && env->proto == TP_ATEM) ||
-                    tmpl == TMPL_HARMONY;
-    return qwen ||
+                    tmpl == TMPL_HARMONY || tmpl == TMPL_QWEN38;
+    return qwen || tmpl == TMPL_QWEN38 ||
            (tmpl == TMPL_MUSE && env->proto == TP_ATEM) ||
            (tmpl == TMPL_HARMONY && env->proto == TP_HARMONY) ||
            g4_native || tmpl == TMPL_APERTUS
@@ -4325,7 +4594,8 @@ static int gemma4_tool_calls_parse(sbuf *content, sbuf *tc) {
 int tool_calls_parse_for(int tmpl, sbuf *content, sbuf *tc) {
     return (tmpl == TMPL_CHATML || tmpl == TMPL_CHATML_THINK)
                                ? qwen_tool_calls_parse(content, tc)
-         : tmpl == TMPL_ORNITH ? ornith_tool_calls_parse(content, tc)
+         : tmpl == TMPL_ORNITH || tmpl == TMPL_QWEN38 ||
+           tmpl == TMPL_GRANITE42 ? ornith_tool_calls_parse(content, tc)
          : is_gemma4(tmpl)     ? gemma4_tool_calls_parse(content, tc)
                                : tool_calls_parse(content, tc);
 }

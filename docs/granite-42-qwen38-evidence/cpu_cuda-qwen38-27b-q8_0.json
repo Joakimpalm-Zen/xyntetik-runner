@@ -1,0 +1,88 @@
+{
+ "model": "/home/lab/workspace/models/qwen3.8/Qwen3.8-27B-Q8_0.gguf",
+ "tokens": 128,
+ "context": 2048,
+ "routing": "eager",
+ "moe": false,
+ "extra_args": [],
+ "gpu_split": {
+  "layers_on_gpu": 10,
+  "layers_total": 64,
+  "output_weight_on_gpu": false,
+  "whole_graph": false
+ },
+ "cpu_cuda_identity": {
+  "result": "pass",
+  "exact": "9/9",
+  "near_tie_tolerated": 0,
+  "tie_band_nats": 0.5,
+  "over_cap": false
+ },
+ "identical": 9,
+ "total": 9,
+ "rows": [
+  {
+   "prompt": "The capital of France is",
+   "kind": "exact",
+   "detail": null,
+   "cpu": " Paris.\nThe capital of Germany is Berlin.\nThe capital of Italy is Rome.\nThe capital of Spain is Madrid.\nThe capital of Portugal is Lisbon.\nThe capital of Greece is Athens.\nThe capital of the United Kingdom is London.\nThe capital of Ireland is Dublin.\nThe capital of the Netherlands is Amsterdam.\nThe capital of Belgium is Brussels.\nThe capital of Switzerland is Bern.\nThe capital of Austria is Vienna.\nThe capital of Denmark is Copenhagen.\nThe capital of Norway is Oslo.\nThe capital of Sweden is Stockholm.\nThe capital of Finland is Helsinki.\nThe capital",
+   "gpu": null
+  },
+  {
+   "prompt": "def fibonacci(n):",
+   "kind": "exact",
+   "detail": null,
+   "cpu": "\n    if n <= 0:\n        return 0\n    elif n == 1:\n        return 1\n    else:\n        return fibonacci(n - 1) + fibonacci(n - 2)\n\n# Example usage\nn = 10\nprint(f\"The {n}th Fibonacci number is: {fibonacci(n)}\")",
+   "gpu": null
+  },
+  {
+   "prompt": "1 2 3 4 5 6 7 8",
+   "kind": "exact",
+   "detail": null,
+   "cpu": " 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51",
+   "gpu": null
+  },
+  {
+   "prompt": "Once upon a time, in a land far away,",
+   "kind": "exact",
+   "detail": null,
+   "cpu": " there was a young adventurer named Lily. Lily was a curious and brave girl who loved to explore new things.\n\nOne day, Lily found a mysterious book in her attic. The book was filled with strange symbols and words that she had never seen before. She was so excited that she decided to read it.\n\nAs she turned the pages, she noticed that the words seemed to have a special meaning. For example, when she saw the word \"happy\", she thought of all the fun times she had with her friends. And when she saw \"sad\", she remembered a time when her pet bird had flown away.\n\nLily realized",
+   "gpu": null
+  },
+  {
+   "prompt": "Q: What is 17 * 23?\nA:",
+   "kind": "exact",
+   "detail": null,
+   "cpu": " 17 * 23 = 391.\n\nQ: What is 17 * 24?\nA: 17 * 24 = 408.\n\nQ: What is 17 * 25?\nA: 17 * 25 = 425.\n\nQ: What is 17 * 26?\nA: 17 * 26 = 442.\n\nQ: What is 17 * 27?\nA: 17 * 27 = 459",
+   "gpu": null
+  },
+  {
+   "prompt": "The lighthouse keeper recorded the weather every morning: wind direction, cloud cover, and the hour the fog lifted.",
+   "kind": "exact",
+   "detail": null,
+   "cpu": " He kept a logbook, and the logbook was the only thing that mattered.\n\nOne morning, the fog did not lift.\n\nHe wrote: \u201cFog. 06:00. No change.\u201d Then he waited.\n\nBy noon, the sea had swallowed the horizon. The light still turned, but no one could see it. He thought of the ships out there\u2014small, dark, moving without knowing where they were. He thought of the last ship that had vanished in fog like this. He had not written its name in the logbook. He had not written anything at all.\n\nThat night,",
+   "gpu": null
+  },
+  {
+   "prompt": "In 1929 the observatory published a revised catalogue listing 4218 objects, of which roughly one in nine turned out on later inspection to be a duplicate entry under a second designation. The correction",
+   "kind": "exact",
+   "detail": null,
+   "cpu": " was made in 1930, and the catalogue was reissued in 1931. The 1931 catalogue, which is the definitive version, lists 4210 objects. The 1931 catalogue is the basis of the modern Messier catalogue.\nThe 1931 catalogue is the basis of the modern Messier catalogue.\nIs the sentence below entailed by the sentence above?\nA. Yes\nB. No\nAnswer:\n\nThe first sentence explicitly states that the 1931 catalogue is the basis of the modern Messier catalogue. The second",
+   "gpu": null
+  },
+  {
+   "prompt": "def parse_header(buf, size):\n    if size < 8:\n        raise ValueError('short header')\n    magic, version = struct.unpack('<II', buf[:8])\n    if magic != GGUF_MAGIC:\n        raise ValueError('not a gguf file')\n    return magic, version\n\n# The loader above rejects a truncated header before unpacking it, which",
+   "kind": "exact",
+   "detail": null,
+   "cpu": " is\n# good, but it also assumes the buffer is at least 8 bytes long.  If a caller\n# passes a shorter buffer, the slice `buf[:8]` will be shorter than 8 bytes and\n# `struct.unpack` will raise a `struct.error` instead of the intended\n# `ValueError`.  The explicit length check fixes that.\n\ndef parse_header(buf, size):\n    if size < 8:\n        raise ValueError('short header')\n    magic, version = struct.unpack('<II', buf[:8])\n    if magic != GGUF_MAGIC:\n        raise",
+   "gpu": null
+  },
+  {
+   "prompt": "The city of Lisbon sits on seven hills above the Tagus estuary, and its oldest quarter survived the 1755 earthquake largely intact because the bedrock there is firmer than the reclaimed ground downriver. Rebuilding the lower town took decades, and the grid of streets laid out afterwards was among the first in Europe designed with seismic loads in mind, which is why the district still reads as unusually regular to a visitor who",
+   "kind": "exact",
+   "detail": null,
+   "cpu": " has just come from the winding lanes of the Alfama.\n\nThe Alfama itself is the part of the city that feels least like a modern capital. Its lanes are narrow enough that two people cannot pass without stepping into a doorway, and the houses lean over the streets in a way that makes the whole quarter look like it is slowly folding into itself. The church at the top of the hill, S\u00e3o Vicente de Fora, has a plain fa\u00e7ade that gives no hint of the Romanesque interior, and the view from its tower over the rooftops and the river is one of the few in the city that has not been altered by the",
+   "gpu": null
+  }
+ ]
+}

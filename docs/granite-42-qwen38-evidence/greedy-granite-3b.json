@@ -1,0 +1,66 @@
+{
+  "n_pass": 0,
+  "n_total": 6,
+  "results": [
+    {
+      "tag": "a",
+      "n": 64,
+      "identical": false,
+      "first_divergent_byte": 19,
+      "ref_sha256": "4baa0775869ff7e0c00f59c40398fb84c3f4a681a36d8c42bf872881a3dcf7d2",
+      "runner_sha256": "64f6d06b8459a0c9d67d1290bec1fa90cca3058c575b84bbdd442b3a3df2eea0",
+      "ref_tail": "is true.\n\nWe are also given the following knowledge about th",
+      "runner_tail": "is true.\n\nSentence: \"The sky can be red.\" is possible.\n\nSent"
+    },
+    {
+      "tag": "b",
+      "n": 64,
+      "identical": false,
+      "first_divergent_byte": 113,
+      "ref_sha256": "67cccf38249163ae4c8856346326aae559bc0f3bad6f67698f73a561624b71b9",
+      "runner_sha256": "8d78f5d9e0fcc2d1cd48a8a09d124767f45ee10c97c2fb0bf13cc84eac788894",
+      "ref_tail": "on should be efficient and handle edge cases.\"\n\nWe need to p",
+      "runner_tail": "on should handle edge cases such as empty list, single node,"
+    },
+    {
+      "tag": "c",
+      "n": 64,
+      "identical": false,
+      "first_divergent_byte": 47,
+      "ref_sha256": "1a8689b8867d9533eb4af2b954155039fbc5d4ae3e734b2803bdc98ed84dd9ac",
+      "runner_sha256": "c7a4c5f750bb41e8d286fd9eb1da4dc00ea0df8ffefcaf071880f2ed69c09d63",
+      "ref_tail": " Apollo 11 successfully landed on the Moon, marking a histor",
+      "runner_tail": " Apollo 11, the first crewed mission to land on the Moon, su"
+    },
+    {
+      "tag": "d",
+      "n": 64,
+      "identical": false,
+      "first_divergent_byte": 2,
+      "ref_sha256": "cd95d4f332ef5e18db68eb6529677062ff5eb191322b7d7efe81e76fe396f65b",
+      "runner_sha256": "e2c06f1740657c018bf78d2e4951b8fc40dcd95145cf7c9c115203b04234ef76",
+      "ref_tail": "\n\n<think></think>En kvicksilvertermometer fungerar g",
+      "runner_tail": "\n\nTranslate to English: \"Translate the following sen"
+    },
+    {
+      "tag": "b-long",
+      "n": 256,
+      "identical": false,
+      "first_divergent_byte": 113,
+      "ref_sha256": "bcfbb9af74b3a25808e3d48b31e0c012edbadc75bfc6e9406e49c69fb7882e23",
+      "runner_sha256": "812af86786b9944d6f3687fc5f79e8540ac7c74cb448742c853f1feb9216d8e1",
+      "ref_tail": "on should be efficient and handle edge cases.\"\n\nWe need to p",
+      "runner_tail": "on should handle edge cases such as empty list, single node,"
+    },
+    {
+      "tag": "c-long",
+      "n": 256,
+      "identical": false,
+      "first_divergent_byte": 47,
+      "ref_sha256": "351e2478e75d940918b99f29603ee3c3e936caa15a2ae4259125a8d99cfa0ae9",
+      "runner_sha256": "a4e62575727f30e034c6feeda1f90ea2d1c71f7a6404764c8352fde6509b7a1d",
+      "ref_tail": " Apollo 11 successfully landed on the Moon, marking a histor",
+      "runner_tail": " Apollo 11, the first crewed mission to land on the Moon, su"
+    }
+  ]
+}

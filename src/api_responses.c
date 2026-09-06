@@ -797,8 +797,23 @@ void handle_responses(slot_t *s, sock_t fd, jv *req) {
     // `total` is the opening guess only -- under Harmony the tool namespace
     // it never counted is rendered into the prompt too. render_prompt_alloc
     // measures the real size and grows to it.
+    int thinking = req_thinking_mode(req);
+    if (s->tmpl == TMPL_QWEN38) {
+        int effort = req_reasoning_effort(req);
+        if (effort < 0) {
+            for (int i = 0; i < n_own; i++) free(owned[i]);
+            free(owned); free(cm); free(ts.s);
+            tool_envelope_free(&env);
+            jv_free(tools);
+            jv_free(choice_owned);
+            send_error(fd, 400, "reasoning_effort must be one of xhigh, "
+                                "medium, low for this model's template");
+            return;
+        }
+        thinking |= effort;
+    }
     char *prompt = render_prompt_alloc(s->tmpl, cm, n_cm, true,
-                                       req_thinking_mode(req),
+                                       thinking,
                                        native_tools, total + 256);
     if (!prompt) {
         for (int i = 0; i < n_own; i++) free(owned[i]);

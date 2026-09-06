@@ -8,6 +8,76 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **Granite 4.2 (3B, 8B) admitted.** The architecture is 4.1's; the header
+  and the template are not. The `granite-docling` pre-tokenizer name maps
+  to the GPT-2 family rule, which now uses the regex's `\p{L}` letter class
+  rather than ASCII alphabetics (tokenizer differential 5/721 to 0/721 on
+  both sizes), and the new `granite42` chat template family renders the
+  model's own template: an always-present system turn, `<think></think>`
+  seeding and history truncation, the function-XML tool protocol with
+  grouped `<tool_response>` results, and `enable_thinking` on and off
+  (22/22 reference cases text- and token-identical through
+  `scripts/template-conformance.py --family granite42`). Detection keys on
+  the literal `<think></think>` that tells it from Ornith's otherwise
+  identical declaration text. Measured on the Blackwell against llama.cpp
+  master 73a43d1: 8B greedy divergences all at ties (0 real of 9, max 0.187
+  nats), same-file logits margin-qualified top-1 100% on both sizes,
+  Q4_K_M vs Q8_0 mean KLD 0.0036 / top-1 99.75%, cpu_cuda 9/9 on the 3B
+  and 8/9 on the 8B with the flip on a 0.0019-nat tie. The 3B's strict
+  identity row is 0/6 and is recorded that way; the certified
+  granite-4.1-3b run through the same gate the same afternoon reads the
+  same class, and the 4.2-3b's same-file logits are the cleaner of the
+  two. Evidence: `docs/granite-42-qwen38-cert-2026-09-06.md`.
+- **Qwen 3.8 27B admitted** on the `qwen35` path (48 Gated DeltaNet plus 16
+  full-attention blocks, one NextN block that `--mtp` drafts from). The
+  `qwen35` pre-tokenizer keeps combining marks inside letter runs, the
+  `[\p{L}\p{M}]+` class of the Qwen3.5 regex (3/721 to 0/721). Ornith's
+  GGUF declares `qwen35` while its own `tokenizer.json` carries the Qwen3
+  regex, so its differential against the Hugging Face reference now reads
+  3/721 on the same strings where the runner and llama.cpp master agree;
+  the manifest row declares that count (`check_params.tokenizer.
+  expect_divergences`) and `compat_matrix.py` passes it to `difftok.py`.
+  Greedy identity vs 73a43d1 4/6, same-file logits mean KLD 0.012. CPU only
+  in this window. Same evidence document.
+- **Qwen 3.8 renders its own chat template.** The GGUF's template was
+  detected as Qwen3's and rendered through the chatml-think family;
+  pointed at Qwen/Qwen3.8-27B, the conformance gate showed 20 of 21 cases
+  drifting. Qwen 3.8 opens every conversation with a reasoning-effort
+  preamble in the system turn whenever thinking is on (xhigh by default,
+  low as the alternative, medium meaning none), keeps every historical
+  assistant turn's thought block, puts tool declarations between that
+  preamble and the caller's system text, and uses the function-XML call
+  protocol rather than Qwen3's JSON one. The new `qwen38` family renders
+  all of that (21 of 21 conformant, system-mid-history refused on both
+  sides) and `reasoning_effort` (top level or `chat_template_kwargs`) is
+  honoured on the chat and Responses surfaces with the template's own
+  vocabulary; other values are refused as the template refuses them.
+- **An explicit `--gpu-layers` split is no longer refused on a shared
+  device.** The VRAM registry ask estimated a full offload whatever
+  `--gpu-layers` said, so on a device whose free memory was smaller than
+  the file (a 27B beside a 15 GB neighbour on a 24 GB slice) every
+  explicit split was refused before the placement that would have
+  honoured it ran. The ask is now the leading layers' bytes.
+  `scripts/cpu_cuda_check.py --gpu-arm-arg` passes such a flag to the GPU
+  arm alone, and the split achieved is recorded in the report as before.
+  The check also refuses a GPU arm that never reached the device (a failed
+  device allocation, or a tensor type with no device kernel, makes the
+  runner fall back to the CPU and serve; the comparison then agrees with
+  itself and twice read 9/9 in one afternoon): no split line in the GPU
+  arm's log is a fail, recorded as `gpu_arm_on_cpu`.
+- `scripts/token_divergence.py` takes `--reference-args` and
+  `--runner-args` and records them, because the reference's own
+  configuration moves its logits at the order the gate classifies:
+  llama.cpp's CPU flash-attention kernel accumulates the attention output
+  in f16, and on Granite 4.2 3B llama.cpp disagrees with itself (flash on
+  vs off, mean KLD 0.020, max 0.84 over 200 positions) more than it
+  disagrees with the runner (0.015, max 0.098). `scripts/gold-logits.py`
+  scores endpoints against the model's reference implementation in
+  float32 for the cases where two engines disagree.
+- New BPE fixture cases (curly apostrophe, Devanagari marks, digit runs)
+  for the GPT-2, llama3, qwen2 and qwen35 rules, and a
+  `vocab-bpe-granite-docling.gguf` fixture.
+
 ## v0.4.10 - 2026-09-06
 
 The NVFP4-on-CUDA release, with two bugfix rounds. NVIDIA's block-scaled FP4

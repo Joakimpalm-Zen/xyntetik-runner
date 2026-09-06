@@ -466,7 +466,10 @@ static const char *tool_family_for(int tmpl, bool *native) {
         case TP_GEMMA4:  *native = true; return "gemma4";
         default: break;
     }
-    if (tmpl == TMPL_ORNITH) { *native = true; return "qwen3_xml"; }
+    if (tmpl == TMPL_ORNITH || tmpl == TMPL_GRANITE42 || tmpl == TMPL_QWEN38) {
+        *native = true;
+        return "qwen3_xml";
+    }
     *native = false;
     return "generic";
 }

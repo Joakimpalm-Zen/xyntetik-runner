@@ -1,0 +1,191 @@
+{
+  "schema_version": "xyntetik.runner.token-divergence.v1",
+  "model": "/home/lab/workspace/models/granite-4.2/granite-4.2-3b-Q4_K_M.gguf",
+  "tokens_per_prompt": 32,
+  "tie_threshold_nats": 0.25,
+  "reference_args": [
+    "-fa",
+    "off",
+    "-ctk",
+    "f32",
+    "-ctv",
+    "f32"
+  ],
+  "runner_args": [],
+  "results": [
+    {
+      "prompt": "The capital of France is",
+      "status": "diverged",
+      "position": 7,
+      "matched_tokens": 7,
+      "runner_token": "Sentence",
+      "runner_id": 85664,
+      "reference_token": "We",
+      "reference_id": 1687,
+      "runner_gap_nats": 0.03934700000000002,
+      "reference_gap_nats": 0.5386848449707031,
+      "max_logprob_delta": 0.15131342421340943
+    },
+    {
+      "prompt": "def fibonacci(n):",
+      "status": "identical",
+      "matched_tokens": 32,
+      "max_logprob_delta": 0.03538534730911258
+    },
+    {
+      "prompt": "1 2 3 4 5 6 7 8",
+      "status": "identical",
+      "matched_tokens": 32,
+      "max_logprob_delta": 0.05689608771514898
+    },
+    {
+      "prompt": "Once upon a time, in a land far away,",
+      "status": "diverged",
+      "position": 12,
+      "matched_tokens": 12,
+      "runner_token": ",",
+      "runner_id": 11,
+      "reference_token": " and",
+      "reference_id": 323,
+      "runner_gap_nats": 0.09063699999999997,
+      "reference_gap_nats": 0.045627593994140625,
+      "max_logprob_delta": 0.17500287746429444
+    },
+    {
+      "prompt": "JSON example: {\"name\":",
+      "status": "diverged",
+      "position": 17,
+      "matched_tokens": 17,
+      "runner_token": "\n\n",
+      "runner_id": 271,
+      "reference_token": "\n",
+      "reference_id": 198,
+      "runner_gap_nats": 0.2039700000000001,
+      "reference_gap_nats": 0.0971527099609375,
+      "max_logprob_delta": 0.11202809989166262
+    },
+    {
+      "prompt": "The three laws of thermodynamics are",
+      "status": "diverged",
+      "position": 24,
+      "matched_tokens": 24,
+      "runner_token": " direction",
+      "runner_id": 5216,
+      "reference_token": " behavior",
+      "reference_id": 7865,
+      "runner_gap_nats": 0.19143500000000002,
+      "reference_gap_nats": 0.26709747314453125,
+      "max_logprob_delta": 0.10940149469947813
+    },
+    {
+      "prompt": "import numpy as np\n",
+      "status": "diverged",
+      "position": 2,
+      "matched_tokens": 2,
+      "runner_token": " compute",
+      "runner_id": 12849,
+      "reference_token": " solve",
+      "reference_id": 11886,
+      "runner_gap_nats": 0.00354999999999972,
+      "reference_gap_nats": 0.07723045349121094,
+      "max_logprob_delta": 0.10659496821594239
+    },
+    {
+      "prompt": "Q: What is 17 * 23?\nA:",
+      "status": "diverged",
+      "position": 4,
+      "matched_tokens": 4,
+      "runner_token": "E",
+      "runner_id": 36,
+      "reference_token": "B",
+      "reference_id": 33,
+      "runner_gap_nats": 0.6340409999999999,
+      "reference_gap_nats": 0.4953824281692505,
+      "max_logprob_delta": 0.06148484243011476
+    },
+    {
+      "prompt": "The quick brown fox",
+      "status": "identical",
+      "matched_tokens": 32,
+      "max_logprob_delta": 0.1155045116386414
+    },
+    {
+      "prompt": "class Stack:\n    def __init__(self):",
+      "status": "identical",
+      "matched_tokens": 32,
+      "max_logprob_delta": 0.07039718346595764
+    },
+    {
+      "prompt": "In 1969, humans first",
+      "status": "diverged",
+      "position": 12,
+      "matched_tokens": 12,
+      "runner_token": " included",
+      "runner_id": 5343,
+      "reference_token": " carried",
+      "reference_id": 11953,
+      "runner_gap_nats": 0.11680800000000002,
+      "reference_gap_nats": 0.045703887939453125,
+      "max_logprob_delta": 0.13862413101959237
+    },
+    {
+      "prompt": "SELECT name, age FROM users WHERE",
+      "status": "diverged",
+      "position": 3,
+      "matched_tokens": 3,
+      "runner_token": "18",
+      "runner_id": 972,
+      "reference_token": "30",
+      "reference_id": 966,
+      "runner_gap_nats": 0.0827159999999999,
+      "reference_gap_nats": 0.09295088052749634,
+      "max_logprob_delta": 0.015176943836688994
+    },
+    {
+      "prompt": "The mitochondria is the",
+      "status": "identical",
+      "matched_tokens": 32,
+      "max_logprob_delta": 0.2484948395690918
+    },
+    {
+      "prompt": "for i in range(10):\n    print(",
+      "status": "diverged",
+      "position": 13,
+      "matched_tokens": 13,
+      "runner_token": " current",
+      "runner_id": 1510,
+      "reference_token": " (",
+      "reference_id": 320,
+      "runner_gap_nats": 0.146633,
+      "reference_gap_nats": 0.09919559955596924,
+      "max_logprob_delta": 0.14799905253601064
+    },
+    {
+      "prompt": "Water boils at",
+      "status": "diverged",
+      "position": 18,
+      "matched_tokens": 18,
+      "runner_token": " because",
+      "runner_id": 1606,
+      "reference_token": ".",
+      "reference_id": 13,
+      "runner_gap_nats": 0.038038000000000016,
+      "reference_gap_nats": 0.32757383584976196,
+      "max_logprob_delta": 0.11951941579437259
+    },
+    {
+      "prompt": "A haiku about autumn:\n",
+      "status": "identical",
+      "matched_tokens": 32,
+      "max_logprob_delta": 0.2392892606811523
+    }
+  ],
+  "totals": {
+    "prompts": 16,
+    "identical": 6,
+    "length_mismatch": 0,
+    "diverged_at_a_tie": 6,
+    "diverged_for_real": 4,
+    "max_logprob_delta": 0.2484948395690918
+  }
+}

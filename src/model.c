@@ -789,6 +789,30 @@ void model_moe_place_host(model_t *m, int host_layers) {
 
 static uint64_t model_cuda_weight_estimate(const model_t *m,
                                            const model_params *p) {
+    // An explicit --gpu-layers N puts N leading layers on the device and
+    // nothing else (the embeddings and output projection only when N is
+    // every layer), so the ask is those layers' bytes. It was the whole file
+    // until 2026-09-06, which refused every explicit split on a shared
+    // device whose free memory was smaller than the model: a 27B under
+    // --gpu-layers 28 beside a 15 GB neighbour asked for 17.5 GB of a 9.6 GB
+    // remainder and never reached the placement that would have honoured
+    // the split. Expert banks under --cpu-moe keep their own estimate below.
+    if (p->gpu_layers_override > 0 && (!p->cpu_moe || m->n_expert <= 0)) {
+        int G = p->gpu_layers_override;
+        if (G > m->n_layer) G = m->n_layer;
+        uint64_t total = 0;
+        for (uint64_t i = 0; i < m->gf.n_tensors; i++) {
+            const gguf_tensor *t = &m->gf.tensors[i];
+            int l = -1;
+            char c = 0;
+            if (sscanf(t->name, "blk.%d.%c", &l, &c) == 2) {
+                if (l < G) total += t->nbytes;
+            } else if (G == m->n_layer) {
+                total += t->nbytes;
+            }
+        }
+        return total;
+    }
     if (!p->cpu_moe || m->n_expert <= 0) return gguf_mapped_size(&m->gf);
     // An explicit partial split leaves some expert banks device-resident, so
     // the estimate cannot assume every expert stays on the host. AUTO fits

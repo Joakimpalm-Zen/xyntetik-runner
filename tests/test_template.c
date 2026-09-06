@@ -1460,7 +1460,7 @@ static void test_name_roundtrip(void) {
     static const char *const names[] = {
         "chatml", "llama2", "llama3", "zephyr", "gemma", "gemma4", "mistral",
         "mistral-v1", "mistral-nemo",
-        "phi3", "apertus", "ornith", "raw",
+        "phi3", "apertus", "ornith", "granite42", "qwen38", "raw",
     };
     for (size_t i = 0; i < sizeof(names) / sizeof(*names); i++) {
         int id = template_from_name(names[i]);
@@ -2120,6 +2120,223 @@ static void test_ornith_first_call_is_framed_by_whether_the_turn_spoke(void) {
     jv_free(calls);
 }
 
+// ibm-granite/granite-4.2-3b chat_template.jinja (2026-09-06), rendered
+// through jinja2: the granite42 rows of the conformance gate. The family
+// shares ornith's declaration text and call syntax, so detection keys on the
+// closed `<think></think>` only granite 4.2 writes.
+static void test_detect_and_render_granite42(tokenizer *t) {
+    const char *g42 =
+        "{%- set content = \"<think></think>\" ~ content -%}"
+        "<tool_call>\\n<function=example_function_name>"
+        "{{- '<|im_start|>assistant\\n<think>\\n' }}";
+    assert(template_detect(g42, t) == TMPL_GRANITE42);
+
+    // No system turn given: the reference still opens with an EMPTY one
+    // (system_message is "" and therefore defined). Thinking on/default
+    // opens the block; off seeds the closed one; no generation prompt, none.
+    const chat_msg one[] = { CHAT_MSG("user", "HI") };
+    char out[2048];
+    const char *head = "<|im_start|>system\n<|im_end|>\n"
+                       "<|im_start|>user\nHI<|im_end|>\n";
+    char want[512];
+    render_messages(TMPL_GRANITE42, one, 1, true, THINK_DEFAULT, out, sizeof(out));
+    snprintf(want, sizeof(want), "%s<|im_start|>assistant\n<think>\n", head);
+    assert(strcmp(out, want) == 0);
+    render_messages(TMPL_GRANITE42, one, 1, true, THINK_ON, out, sizeof(out));
+    assert(strcmp(out, want) == 0);
+    render_messages(TMPL_GRANITE42, one, 1, true, THINK_OFF, out, sizeof(out));
+    snprintf(want, sizeof(want), "%s<|im_start|>assistant\n<think></think>", head);
+    assert(strcmp(out, want) == 0);
+    render_messages(TMPL_GRANITE42, one, 1, false, THINK_OFF, out, sizeof(out));
+    assert(strcmp(out, head) == 0);
+
+    // History: a complete thought block BEFORE the last user turn is reduced
+    // to the closed block plus what followed it (leading whitespace kept,
+    // the whole trimmed); a turn without a block is seeded; the latest turn
+    // is verbatim; a system turn is representable mid-conversation.
+    const chat_msg msgs[] = {
+        CHAT_MSG("system", "SYS"),
+        CHAT_MSG("user", "Q1"),
+        CHAT_MSG("assistant", "<think>\nPLAN\n</think>\n\nA1"),
+        CHAT_MSG("user", "Q2"),
+        CHAT_MSG("assistant", "A2 \n"),
+        CHAT_MSG("system", "MID"),
+        CHAT_MSG("user", "Q3"),
+        CHAT_MSG("assistant", "<think>\nPLAN3\n</think>\n\nA3"),
+    };
+    render_messages(TMPL_GRANITE42, msgs, 8, true, THINK_DEFAULT, out, sizeof(out));
+    assert(strcmp(out,
+        "<|im_start|>system\nSYS<|im_end|>\n"
+        "<|im_start|>user\nQ1<|im_end|>\n"
+        "<|im_start|>assistant\n<think></think>\n\nA1<|im_end|>\n"
+        "<|im_start|>user\nQ2<|im_end|>\n"
+        "<|im_start|>assistant\n<think></think>A2<|im_end|>\n"
+        "<|im_start|>system\nMID<|im_end|>\n"
+        "<|im_start|>user\nQ3<|im_end|>\n"
+        "<|im_start|>assistant\n<think>\nPLAN3\n</think>\n\nA3<|im_end|>\n"
+        "<|im_start|>assistant\n<think>\n") == 0);
+    char err[128];
+    const char *const roles[] = { "system", "user", "assistant", "system" };
+    assert(template_roles_valid(TMPL_GRANITE42, roles, 4, false, err, sizeof(err)));
+}
+
+// Qwen/Qwen3.8-27B chat_template.jinja (2026-09-06), rendered through
+// jinja2: the qwen38 rows of the conformance gate.
+static void test_detect_and_render_qwen38(tokenizer *t) {
+    const char *q38 =
+        "{%- set reasoning_instructions = 'Reasoning effort is set to xhigh.' %}"
+        "<tool_call>\\n<function=example_function_name>"
+        "{{- '<|im_start|>assistant\\n<think>\\n' }}";
+    assert(template_detect(q38, t) == TMPL_QWEN38);
+
+    const char *xhigh =
+        "Reasoning effort is set to xhigh. Please think carefully through the "
+        "task, validate key assumptions, consider plausible alternatives, and "
+        "prioritize correctness, consistency, and clarity in the final answer.";
+    const char *low =
+        "Reasoning effort is set to low. Keep your thinking brief and focused, "
+        "moving directly to the conclusion without unnecessary elaboration.";
+    char out[4096], want[2048];
+
+    // no system turn: the preamble alone is the system turn while thinking
+    // is on (default or explicit); thinking off drops it and closes the
+    // generation block; medium effort means no preamble at all
+    const chat_msg one[] = { CHAT_MSG("user", " HI ") };
+    render_messages(TMPL_QWEN38, one, 1, true, THINK_DEFAULT, out, sizeof(out));
+    snprintf(want, sizeof(want),
+             "<|im_start|>system\n%s<|im_end|>\n"
+             "<|im_start|>user\nHI<|im_end|>\n"
+             "<|im_start|>assistant\n<think>\n", xhigh);
+    assert(strcmp(out, want) == 0);
+    render_messages(TMPL_QWEN38, one, 1, true, THINK_ON, out, sizeof(out));
+    assert(strcmp(out, want) == 0);
+    render_messages(TMPL_QWEN38, one, 1, true, THINK_OFF, out, sizeof(out));
+    assert(strcmp(out, "<|im_start|>user\nHI<|im_end|>\n"
+                       "<|im_start|>assistant\n<think>\n\n</think>\n\n") == 0);
+    render_messages(TMPL_QWEN38, one, 1, true,
+                    THINK_DEFAULT | THINK_EFFORT_MEDIUM, out, sizeof(out));
+    assert(strcmp(out, "<|im_start|>user\nHI<|im_end|>\n"
+                       "<|im_start|>assistant\n<think>\n") == 0);
+    render_messages(TMPL_QWEN38, one, 1, true,
+                    THINK_ON | THINK_EFFORT_LOW, out, sizeof(out));
+    snprintf(want, sizeof(want),
+             "<|im_start|>system\n%s<|im_end|>\n"
+             "<|im_start|>user\nHI<|im_end|>\n"
+             "<|im_start|>assistant\n<think>\n", low);
+    assert(strcmp(out, want) == 0);
+
+    // a system turn follows the preamble after a blank line; every
+    // historical assistant turn keeps its block (an empty one when none was
+    // composed), contents are trimmed
+    const chat_msg msgs[] = {
+        CHAT_MSG("system", "SYS "),
+        CHAT_MSG("user", "Q1"),
+        CHAT_MSG("assistant", "<think>\n PLAN \n</think>\n\n A1 "),
+        CHAT_MSG("user", "Q2"),
+        CHAT_MSG("assistant", "A2"),
+    };
+    render_messages(TMPL_QWEN38, msgs, 5, true, THINK_DEFAULT, out, sizeof(out));
+    snprintf(want, sizeof(want),
+             "<|im_start|>system\n%s\n\nSYS<|im_end|>\n"
+             "<|im_start|>user\nQ1<|im_end|>\n"
+             "<|im_start|>assistant\n<think>\nPLAN\n</think>\n\nA1<|im_end|>\n"
+             "<|im_start|>user\nQ2<|im_end|>\n"
+             "<|im_start|>assistant\n<think>\n\n</think>\n\nA2<|im_end|>\n"
+             "<|im_start|>assistant\n<think>\n", xhigh);
+    assert(strcmp(out, want) == 0);
+    char err[128];
+    const char *const roles[] = { "system", "user", "assistant", "system" };
+    assert(!template_roles_valid(TMPL_QWEN38, roles, 4, false, err, sizeof(err)));
+}
+
+static void test_qwen38_tool_turns(void) {
+    // chat_template.jinja:139-158: a call turn is the block, the trimmed
+    // content, a blank line when it spoke, then each call; results share one
+    // user turn of <tool_response> blocks. Declarations sit between the
+    // preamble and the caller's system text.
+    const char *src =
+        "[{\"type\":\"function\",\"function\":{\"name\":\"get_weather\","
+        "\"arguments\":\"{\\\"city\\\":\\\"Oslo\\\"}\"}}]";
+    jv *calls = json_parse(src, strlen(src));
+    assert(calls != NULL);
+    const char *xml = "<tool_call>\n<function=get_weather>\n<parameter=city>\n"
+                      "Oslo\n</parameter>\n</function>\n</tool_call>";
+    sbuf quiet = {0};
+    assistant_calls_render(TMPL_QWEN38, "", calls, &quiet, NULL);
+    assert(quiet.s && !strcmp(quiet.s, xml));
+    sbuf spoke = {0};
+    assistant_calls_render(TMPL_QWEN38, "Sure.", calls, &spoke, NULL);
+    assert(spoke.s && !strncmp(spoke.s, "Sure.\n\n<tool_call>", 18));
+
+    chat_msg msgs[] = {
+        CHAT_MSG("user", "W?"),
+        { .role = "assistant", .content = spoke.s },
+        CHAT_MSG("tool", "R1"),
+        CHAT_MSG("tool", "R2"),
+    };
+    char out[4096], want[2048];
+    render_messages(TMPL_QWEN38, msgs, 4, true, THINK_OFF, out, sizeof(out));
+    snprintf(want, sizeof(want),
+        "<|im_start|>user\nW?<|im_end|>\n"
+        "<|im_start|>assistant\n<think>\n\n</think>\n\nSure.\n\n%s<|im_end|>\n"
+        "<|im_start|>user\n<tool_response>\nR1\n</tool_response>"
+        "\n<tool_response>\nR2\n</tool_response><|im_end|>\n"
+        "<|im_start|>assistant\n<think>\n\n</think>\n\n", xml);
+    assert(strcmp(out, want) == 0);
+
+    sbuf w = {0};
+    assert(!strcmp(tool_result_wrap(TMPL_QWEN38, "R", &w), "tool"));
+    free(w.s); free(quiet.s); free(spoke.s);
+    jv_free(calls);
+}
+
+static void test_granite42_tool_turns(void) {
+    // chat_template.jinja:95-118 and 137-149: a call turn is the trimmed
+    // content (the seeded block when the turn said nothing), one newline,
+    // each call ending in its own newline; results share one user turn and
+    // every <tool_response> block ends in a newline of its own.
+    const char *src =
+        "[{\"type\":\"function\",\"function\":{\"name\":\"get_weather\","
+        "\"arguments\":\"{\\\"city\\\":\\\"Oslo\\\"}\"}}]";
+    jv *calls = json_parse(src, strlen(src));
+    assert(calls != NULL);
+    const char *xml = "<tool_call>\n<function=get_weather>\n<parameter=city>\n"
+                      "Oslo\n</parameter>\n</function>\n</tool_call>";
+
+    sbuf quiet = {0};
+    assistant_calls_render(TMPL_GRANITE42, "", calls, &quiet, NULL);
+    assert(quiet.s && quiet.s[0] == '\n' && !strcmp(quiet.s + 1, xml));
+    sbuf spoke = {0};
+    assistant_calls_render(TMPL_GRANITE42, "Sure. \n", calls, &spoke, NULL);
+    assert(spoke.s && !strncmp(spoke.s, "Sure.\n<tool_call>", 17));
+
+    chat_msg msgs[] = {
+        CHAT_MSG("user", "W?"),
+        { .role = "assistant", .content = quiet.s },
+        CHAT_MSG("tool", "R1"),
+        CHAT_MSG("tool", "R2"),
+    };
+    char out[2048];
+    render_messages(TMPL_GRANITE42, msgs, 4, true, THINK_DEFAULT, out, sizeof(out));
+    char want[1024];
+    snprintf(want, sizeof(want),
+        "<|im_start|>system\n<|im_end|>\n"
+        "<|im_start|>user\nW?<|im_end|>\n"
+        "<|im_start|>assistant\n<think></think>\n%s\n<|im_end|>\n"
+        "<|im_start|>user\n<tool_response>\nR1\n</tool_response>\n"
+        "<tool_response>\nR2\n</tool_response>\n<|im_end|>\n"
+        "<|im_start|>assistant\n<think>\n", xml);
+    assert(strcmp(out, want) == 0);
+
+    // a result is filed under role "tool" and carried plain: the renderer
+    // frames it, unlike ornith's caller-side wrap
+    sbuf w = {0};
+    assert(!strcmp(tool_result_wrap(TMPL_GRANITE42, "R", &w), "tool"));
+    assert(w.s && !strcmp(w.s, "R"));
+    free(w.s); free(quiet.s); free(spoke.s);
+    jv_free(calls);
+}
+
 static void test_llama2_bos_per_turn_and_the_fallback_that_must_not_get_it(void) {
     // Reference: bos_token + '[INST] ' + content.strip() + ' [/INST]' on EVERY
     // user turn. The leading BOS comes from the tokenizer, so only turns 2+
@@ -2278,6 +2495,10 @@ int main(void) {
     test_ornith_groups_consecutive_tool_responses();
     test_ornith_thinking_off_closes_the_thought_block();
     test_ornith_split_starts_inside_prompted_think();
+    test_detect_and_render_granite42(&t);
+    test_granite42_tool_turns();
+    test_detect_and_render_qwen38(&t);
+    test_qwen38_tool_turns();
     test_muse_split_closes_on_fed_reasoning_boundary();
     test_muse_plain_thinking_close_leaves_no_recipient_residue();
     test_detect_and_render_apertus(&t);

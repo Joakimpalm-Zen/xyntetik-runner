@@ -1,0 +1,66 @@
+{
+  "n_pass": 1,
+  "n_total": 6,
+  "results": [
+    {
+      "tag": "a",
+      "n": 64,
+      "identical": false,
+      "first_divergent_byte": 122,
+      "ref_sha256": "9fa4c54c961002e8bf39dc2d9414bf8d3d22196302febce24cfcb9eea37fa076",
+      "runner_sha256": "c5031e630e30134c8be3a95234a319677b1d4e949b801df6ef3067637a7429b2",
+      "ref_tail": " says \"Your task is to output the answer to the question.\" S",
+      "runner_tail": " says \"You are a helpful assistant.\" So we should answer the"
+    },
+    {
+      "tag": "b",
+      "n": 64,
+      "identical": true,
+      "first_divergent_byte": -1,
+      "ref_sha256": "d44d908536d10ba300c9c1357701872f100f1cab9d9b34ae2e42bc57343500d2",
+      "runner_sha256": "d44d908536d10ba300c9c1357701872f100f1cab9d9b34ae2e42bc57343500d2",
+      "ref_tail": "",
+      "runner_tail": ""
+    },
+    {
+      "tag": "c",
+      "n": 64,
+      "identical": false,
+      "first_divergent_byte": 62,
+      "ref_sha256": "bef13bb7287168a95a1e59c42f6e3a5c45629fcac49cd47a659e4511e7c7b577",
+      "runner_sha256": "65ccf6c03fdb7ede4e75a08f5d3b0557f9c7bb7f57a1c9eceb1db513298777d2",
+      "ref_tail": " the Moon in 1969, had exactly 1,234,567 people watching the",
+      "runner_tail": " the Moon on July 20, 1969, was watched by exactly 1234567 p"
+    },
+    {
+      "tag": "d",
+      "n": 64,
+      "identical": false,
+      "first_divergent_byte": 20,
+      "ref_sha256": "3d1588df94a6fc0af41fbb93b3c83ad6a1abe9405104de41fe5991e4861dc4b4",
+      "runner_sha256": "ad6f4122f69dfdb0b2b036605614d7ac04e9c1eb433c4ba92f784bf668559b79",
+      "ref_tail": "ar:****  \nKvicksilvertermometer består av en tunna glasbehål",
+      "runner_tail": "ar:****  \nEn kvicksilvertermometer består av en tunn glaset "
+    },
+    {
+      "tag": "b-long",
+      "n": 256,
+      "identical": false,
+      "first_divergent_byte": 562,
+      "ref_sha256": "24448999d9de6455eff21dedb697b71e7b966cc80d6fa53506393173423b53bc",
+      "runner_sha256": "7fbe428970813bf4b336b7eecce1268889864871e6261be3d7d16eb2f046be3b",
+      "ref_tail": "hree nodes with duplicate values: `1 -> 1 -> 1 -> None`\n\n**C",
+      "runner_tail": "hree nodes: `1 -> 2 -> 3 -> None`\n\n**Constraints:**\n- The li"
+    },
+    {
+      "tag": "c-long",
+      "n": 256,
+      "identical": false,
+      "first_divergent_byte": 62,
+      "ref_sha256": "15848c580b0c1c73ec581963736ea10e6557cedff4f2f7058fece738203fa300",
+      "runner_sha256": "6e8d87aa34fce6f184d3698d5e4e30a358fdd3b5fc40841c56bdf0d24af2613f",
+      "ref_tail": " the Moon in 1969, had exactly 1,234,567 people watching the",
+      "runner_tail": " the Moon on July 20, 1969, was watched by exactly 1234567 p"
+    }
+  ]
+}
