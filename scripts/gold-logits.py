@@ -38,9 +38,13 @@ def query(endpoint, model_name, prompt, top_n=20):
     with urllib.request.urlopen(req, timeout=600) as r:
         d = json.load(r)
     lp = d["choices"][0]["logprobs"]
-    top = lp["top_logprobs"][0]
-    if isinstance(top, list):
-        top = {t["token"]: t["logprob"] for t in top}
+    if "content" in lp:  # llama.cpp's OpenAI-style schema
+        step = lp["content"][0]
+        top = {e["token"]: e["logprob"] for e in step["top_logprobs"]}
+        top[step["token"]] = step["logprob"]
+    else:  # the runner's schema: parallel arrays, top_logprobs a dict
+        top = dict(lp["top_logprobs"][0])
+        top[lp["tokens"][0]] = lp["token_logprobs"][0]
     return top
 
 
