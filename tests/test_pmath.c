@@ -53,7 +53,9 @@ int main(void) {
     sweep("cosf",  p_cosf,  cosf,  -1000.0f, 1000.0f, 2, 0);
     sweep("sinf",  p_sinf,  sinf,  -1e5f, 1e5f, -1, 1.2e-7);
     sweep("cosf",  p_cosf,  cosf,  -1e5f, 1e5f, -1, 1.2e-7);
-    sweep("tanhf", p_tanhf, tanhf, -30.0f, 30.0f, 1, 0);
+    // 2, not 1: glibc's tanhf is itself up to 1 ulp off the correctly
+    // rounded value (Apple's is not), and the two errors add
+    sweep("tanhf", p_tanhf, tanhf, -30.0f, 30.0f, 2, 0);
     sweep("tanhf", p_tanhf, tanhf, -1e-3f, 1e-3f, 1, 0);
     {
         long mx = 0;

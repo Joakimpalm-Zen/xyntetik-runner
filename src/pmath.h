@@ -10,8 +10,9 @@
 // same bits on arm64, x86-64 and riscv64.
 //
 // Accuracy, measured against libm over two million random inputs per range
-// (tests/test_pmath.c pins the bounds): expf, logf, tanhf and powf within
-// 1 ulp; sinf and cosf within 2 ulp for |x| <= 1000 and within 1.2e-7
+// (tests/test_pmath.c pins the bounds): expf, logf and powf within 1 ulp,
+// tanhf within 2 (glibc's own tanhf is 1 ulp off in places); sinf and cosf
+// within 2 ulp for |x| <= 1000 and within 1.2e-7
 // absolute (2 ulp of a value near 1) for |x| <= 1e5: rope angles are
 // position times an inverse frequency, so a long context reaches the tens
 // of thousands, and near a zero crossing the relative figure is the wrong
