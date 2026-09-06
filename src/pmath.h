@@ -9,9 +9,16 @@
 // reassociates nor fuses them; under those flags the same source gives the
 // same bits on arm64, x86-64 and riscv64.
 //
-// Accuracy: double intermediates with the reductions below keep the float
-// result within one ulp of the correctly rounded value over the ranges the
-// engine uses (softmax arguments, rope angles, rmsnorm, GELU/SiLU tails).
+// Accuracy, measured against libm over two million random inputs per range
+// (tests/test_pmath.c pins the bounds): expf, logf and powf within 1 ulp,
+// tanhf within 2 (glibc's own tanhf is 1 ulp off in places); sinf and cosf
+// within 2 ulp for |x| <= 1000 and within 1.2e-7
+// absolute (2 ulp of a value near 1) for |x| <= 1e5: rope angles are
+// position times an inverse frequency, so a long context reaches the tens
+// of thousands, and near a zero crossing the relative figure is the wrong
+// measure (41 ulp of a value of 1e-6 is 2e-12).
+// Special values follow libm: NaN in, NaN out; log of +inf is +inf; sin
+// and cos of an infinity are NaN; tanh of a subnormal is the subnormal.
 // They are NOT libm-compatible (a result can differ from libm in the last
 // bit); the property they buy is sameness across machines, not agreement
 // with any one platform's libm.
@@ -21,6 +28,7 @@
 #ifndef RUNNER_PMATH_H
 #define RUNNER_PMATH_H
 
+#include <math.h>
 #include <stdint.h>
 #include <string.h>
 
@@ -35,6 +43,7 @@ static inline double pm_ldexp2(double x, int k) {
 
 static inline double pm_exp_d(double x) {
     // exp(x) = 2^k * exp(r), r = x - k*ln2 in [-ln2/2, ln2/2]
+    if (x != x) return x;                 // NaN: the int conversion below is undefined on it
     if (x > 709.0) return 1.0 / 0.0;
     if (x < -745.0) return 0.0;
     const double ln2_hi = 6.93147180369123816490e-01;
@@ -63,7 +72,9 @@ static inline double pm_exp_d(double x) {
 
 static inline double pm_log_d(double x) {
     // log(x) = k*ln2 + 2*atanh(s), s = (m-1)/(m+1), m in [sqrt(1/2), sqrt(2))
+    if (x != x) return x;                       // NaN in, NaN out
     if (x <= 0.0) return x == 0.0 ? -1.0 / 0.0 : 0.0 / 0.0;
+    if (x > 1.7976931348623157e308) return x;   // +inf: the exponent field is not a number
     union { double d; uint64_t u; } v = { x };
     int k = (int)((v.u >> 52) & 0x7ff) - 1023;
     v.u = (v.u & 0x000fffffffffffffULL) | 0x3ff0000000000000ULL; // m in [1,2)
@@ -91,6 +102,18 @@ static inline void pm_sincos_d(double x, double *sn, double *cs) {
     // reduce by pi/2: x = k*(pi/2) + r, |r| <= pi/4, then Taylor on r
     const double pio2_hi = 1.57079632679489655800e+00;
     const double pio2_lo = 6.12323399573676603587e-17;
+    if (!(x < 1e15 && x > -1e15)) {
+        // NaN or infinity: no angle. A finite value this large has no
+        // fractional radian left in a float anyway (the engine's angles are
+        // position times an inverse frequency, at most a few hundred
+        // thousand); reduce it with fmod, which is exact in IEEE 754 and so
+        // identical on every target, before the two-part reduction below.
+        if (!(x == x) || x > 1.7976931348623157e308 || x < -1.7976931348623157e308) {
+            *sn = *cs = 0.0 / 0.0;
+            return;
+        }
+        x = fmod(x, 6.28318530717958647693);
+    }
     double kd = x * 6.36619772367581382433e-01; // 2/pi
     long long k = (long long)(kd >= 0 ? kd + 0.5 : kd - 0.5);
     double r = (x - (double)k * pio2_hi) - (double)k * pio2_lo;
@@ -130,6 +153,10 @@ static inline float p_tanhf(float x) {
     double xd = (double)x;
     if (xd > 20.0) return 1.0f;
     if (xd < -20.0) return -1.0f;
+    // near zero exp(2x) rounds to 1 and (e-1)/(e+1) collapses to 0 where
+    // tanh x is x; the odd series is exact to double there
+    // written as x*(1 - x^2/3), not x - x^3/3: the latter turns -0 into +0
+    if (xd < 1e-4 && xd > -1e-4) return (float)(xd * (1.0 - xd * xd * (1.0 / 3.0)));
     double e = pm_exp_d(2.0 * xd);
     return (float)((e - 1.0) / (e + 1.0));
 }

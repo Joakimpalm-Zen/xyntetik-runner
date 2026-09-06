@@ -8,6 +8,13 @@ names that were true when they were written.
 
 ## Unreleased
 
+- The T3 build's portable math (`src/pmath.h`) gives libm's answers at the
+  edges: NaN in, NaN out (exp of NaN was an undefined int conversion), log of
+  +inf is +inf (was 709.78), sin and cos of an infinity are NaN and of a huge
+  finite angle are finite (were infinities), and tanh of a subnormal is the
+  subnormal with the sign of zero kept. In-range accuracy is unchanged and
+  now pinned by `tests/test_pmath.c` in `make test`: 1 ulp for exp, log
+  and pow, 2 for tanh, sin and cos to 1000, 1.2e-7 absolute to 1e5.
 - A gemma-4 MoE forward no longer sizes stack arrays by the file's embedding
   width: four per-token buffers (16 bytes per element, widths up to 2^20
   admitted by the loader) were variable-length arrays on slot and scheduler

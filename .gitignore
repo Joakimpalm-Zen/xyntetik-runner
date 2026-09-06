@@ -222,3 +222,5 @@ test-mldsa.exe
 test-canon-kernels
 test-canon-kernels.exe
 runner-riscv64
+test-pmath
+test-pmath.exe

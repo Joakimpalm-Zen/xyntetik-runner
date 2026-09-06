@@ -200,6 +200,7 @@ TEST_PARSE = $(TEST_BATCH:test-batch%=test-parse%)
 TEST_ENVELOPE = $(TEST_BATCH:test-batch%=test-envelope%)
 TEST_ED25519 = $(TEST_BATCH:test-batch%=test-ed25519%)
 TEST_MLDSA = $(TEST_BATCH:test-batch%=test-mldsa%)
+TEST_PMATH = $(TEST_BATCH:test-batch%=test-pmath%)
 TEST_ECDSA = $(TEST_BATCH:test-batch%=test-ecdsa%)
 TEST_METAL_OWNERSHIP = $(TEST_BATCH:test-batch%=test-metal-ownership%)
 TEST_METAL_SHADERS = $(TEST_BATCH:test-batch%=test-metal-shaders%)
@@ -984,6 +985,11 @@ $(TEST_ENVELOPE): tests/test_envelope.c $(OBJDIR)/envelope.o $(OBJDIR)/ed25519.o
 # receipt and model-signature primitives: RFC 8032 / RFC 6979 known answers
 $(TEST_ED25519): tests/test_ed25519.c $(OBJDIR)/ed25519.o src/ed25519.h
 	$(CC) $(CFLAGS) -I src tests/test_ed25519.c $(OBJDIR)/ed25519.o -o $@ $(LDFLAGS)
+
+# portable math (T3) against libm: accuracy bounds and special values; built
+# without RUNNER_PORTABLE_MATH so both implementations are visible
+$(TEST_PMATH): tests/test_pmath.c src/pmath.h
+	$(CC) -O2 -fno-fast-math -ffp-contract=off -std=gnu11 -Wall -I src tests/test_pmath.c -o $@ -lm
 
 # ML-DSA-44: NIST ACVP FIPS 204 known answers (key generation from a seed,
 # deterministic signature), then sign/verify/tamper on the wrapper
@@ -1787,7 +1793,7 @@ test: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSON_OOM) $(
       $(TEST_PREFIX) $(TEST_GRAMMAR_FF) $(TEST_LOOKUP_DRAFT) $(TEST_VRAMREG) $(TEST_KV_TOL) $(TEST_TC_TOL) $(TEST_I8_TOL) $(TEST_MV_TOL) $(TEST_ATTN_TOL) $(TEST_GPU_ID) $(TEST_MOE_TOL) $(TEST_MOE_ROUTER) $(TEST_PAGING_WARN) $(TEST_AUTOFIT) $(TEST_RESP_SM_DEP) \
       $(TEST_QUANTS_SIMD) $(TEST_INSTANCES) $(TEST_INSTANCES_OOM) $(TEST_METAL_ADMISSION) $(TEST_TRAY_CORE) \
       $(TEST_QUANTIZE) \
-      $(TEST_VRAM_ROLLBACK) $(TEST_GGUF_GETTERS) $(TEST_GGUF_SPLIT) $(TEST_PARSE) $(TEST_ENVELOPE) $(TEST_ED25519) $(TEST_MLDSA) $(TEST_ECDSA) $(TEST_CANON_KERNELS) \
+      $(TEST_VRAM_ROLLBACK) $(TEST_GGUF_GETTERS) $(TEST_GGUF_SPLIT) $(TEST_PARSE) $(TEST_ENVELOPE) $(TEST_ED25519) $(TEST_MLDSA) $(TEST_PMATH) $(TEST_ECDSA) $(TEST_CANON_KERNELS) \
       $(TEST_THREAD_DEFAULT) \
       $(TEST_MODEL_LOAD_FAILURE) $(TEST_RESTART) $(TEST_PFX_PERSIST) \
       $(TEST_SCHED_TURN) $(TEST_RESIDENCY) $(TEST_BUDGET) $(TEST_ATTRIB_DEP) \
@@ -1922,6 +1928,7 @@ test: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSON_OOM) $(
 	./$(TEST_ED25519)
 	./$(TEST_MLDSA)
 	./$(TEST_CANON_KERNELS)
+	./$(TEST_PMATH)
 	./$(TEST_ECDSA)
 	./$(TEST_THREAD_DEFAULT)
 	./$(TEST_MODEL_LOAD_FAILURE)
