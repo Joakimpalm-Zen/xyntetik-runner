@@ -365,6 +365,18 @@ def main():
     over_cap = result == "fail" and real == 0   # failed purely on the near-tie cap
 
     split = read_split(gpu_log)
+    # A GPU arm whose log carries no split line never reached the device: a
+    # failed device allocation (or a tensor type with no device kernel)
+    # makes the runner fall back to the CPU and serve, and the comparison
+    # then agrees with itself. Measured 2026-09-06 twice on one afternoon
+    # (a recurrent-state allocation that did not fit beside the layers, a
+    # dynamic quant with IQ3_S tensors); both read 9/9. That is not a pass.
+    gpu_fell_back = split is None
+    if gpu_fell_back:
+        result = "fail"
+        print("cpu_cuda: the GPU arm ran on the CPU (no gpu-split line in "
+              f"{gpu_log}); a comparison of the CPU with itself is not a "
+              "pass", flush=True)
     report = {"model": str(args.model), "tokens": args.tokens,
               "context": args.ctx,
               "routing": "fused" if args.fused else "eager",
@@ -372,6 +384,7 @@ def main():
               "extra_args": args.extra_arg,
               "gpu_split": split,
               "cpu_cuda_identity": {"result": result, "exact": f"{exact}/{total}",
+                                    "gpu_arm_on_cpu": gpu_fell_back,
                                     "near_tie_tolerated": near_tie,
                                     "tie_band_nats": DEFAULT_TIE_BAND,
                                     "over_cap": over_cap},
