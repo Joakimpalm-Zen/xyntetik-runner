@@ -1,0 +1,103 @@
+{
+  "schema_version": "xyntetik.runner.model-compat-report.v1",
+  "generated_utc": "2026-09-06T19:49:43Z",
+  "host": {
+    "os": "Linux",
+    "machine": "x86_64"
+  },
+  "runner": {
+    "path": "runner",
+    "version": "runner 0.5.1"
+  },
+  "reference": {
+    "path": "llama-server",
+    "version": "version: 0.4.0-dev (build 1, commit 73a43d1)"
+  },
+  "models": [
+    {
+      "id": "granite-4.2-8b-q4_k_m",
+      "architecture": "granite",
+      "file": "models/granite-4.2-8b-Q4_K_M.gguf",
+      "expected_sha256": "16a9369d0805f80b7377d25d87f937a90c05dc04ad79173a52001e42c9aab311",
+      "checks": {
+        "load": {
+          "status": "pass",
+          "returncode": 0,
+          "elapsed_ms": 1369.4,
+          "stderr_tail": "gpu-split: budget=9.55GB fixed=0.81GB G=40/40 full=1 used=6.26GB\ngpu: CUDA backend on NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb (5.3 GB weights in VRAM)\ngpu: VRAM 3.47 GB free of 25.37 GB after init (kv 0.67 GB + scratch 0.05 GB this instance)\nloaded /home/lab/workspace/models/granite-4.2/granite-4.2-8b-Q4_K_M.gguf | granite | 40 layers | ctx 4096 | 32 threads | 0.96s\nsampling: generic (temp 0.00 \u2014 greedy argmax; top_p/top_k/min_p/repeat_penalty inactive)\n\nprompt: 3 tok, 11.33 tok/s | gen: 1 tok, 26.21 tok/s\n"
+        },
+        "tokenizer": {
+          "status": "pass",
+          "returncode": 0,
+          "elapsed_ms": 519.3,
+          "stdout_tail": "\n0/721 strings differ (0 of them begin with whitespace)\nOK\n",
+          "stderr_tail": "Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.\n"
+        },
+        "cpu_cuda": {
+          "status": "fail",
+          "returncode": 1,
+          "elapsed_ms": 111233.77,
+          "pins": {
+            "RUNNER_CUDA_TC": "0"
+          },
+          "min_prompt_tokens": 85,
+          "cpu_cuda_identity": {
+            "result": "fail",
+            "exact": "8/9",
+            "near_tie_tolerated": 0
+          },
+          "identical": "8/9",
+          "failed_prompts": [
+            "'The capital of France is'"
+          ],
+          "report": "docs/compat-reports/cpu_cuda/granite-4.2-8b-q4_k_m.json",
+          "output_tail": "'\nok  : 'Q: What is 17 * 23?\\nA:'\nok  : 'The lighthouse keeper recorded the weather every morning: wind direction, cloud cover, and the hour the fog lifted.'\nok  : 'In 1929 the observatory published a revised catalogue listing 4218 objects, of which roughly one in nine turned out on later inspection to be a duplicate entry under a second designation. The correction'\nok  : \"def parse_header(buf, size):\\n    if size < 8:\\n        raise ValueError('short header')\\n    magic, version = struct.unpack('<II', buf[:8])\\n    if magic != GGUF_MAGIC:\\n        raise ValueError('not a gguf file')\\n    return magic, version\\n\\n# The loader above rejects a truncated header before unpacking it, which\"\nok  : 'The city of Lisbon sits on seven hills above the Tagus estuary, and its oldest quarter survived the 1755 earthquake largely intact because the bedrock there is firmer than the reclaimed ground downriver. Rebuilding the lower town took decades, and the grid of streets laid out afterwards was among the first in Europe designed with seismic loads in mind, which is why the district still reads as unusually regular to a visitor who'\n\ncpu_cuda: fail \u2014 8/9 exact, 0 near-tie tolerated (eager routing)\n"
+        },
+        "chat": {
+          "status": "pass",
+          "returncode": 0,
+          "elapsed_ms": 1707.66,
+          "prompt": "What is 2+2?",
+          "gpu": "auto",
+          "failure_reasons": [],
+          "output_tail": "2 + 2 = 4.\n"
+        },
+        "greedy_reference": {
+          "status": "pass",
+          "returncode": 0,
+          "elapsed_ms": 8292.7,
+          "stdout_tail": "{\n  \"schema_version\": \"xyntetik.runner.greedy-reference.v1\",\n  \"generated_utc\": \"2026-09-06T19:51:49Z\",\n  \"runner\": \"runner 0.5.1\",\n  \"reference\": \"version: 0.4.0-dev (build 1, commit 73a43d1)\",\n  \"model\": \"/home/lab/workspace/models/granite-4.2/granite-4.2-8b-Q4_K_M.gguf\",\n  \"tokens\": 8,\n  \"comparison\": \"exact generated UTF-8 text from /v1/completions at temperature 0\",\n  \"comparisons\": [\n    {\n      \"prompt\": \"The capital of France is\",\n      \"runner\": \" Paris.\\\"\\n\\nBut the user says\",\n      \"reference\": \" Paris.\\\"\\n\\nBut the user says\",\n      \"status\": \"pass\"\n    },\n    {\n      \"prompt\": \"def fibonacci(n):\",\n      \"runner\": \"\\n    if n < 0:\",\n      \"reference\": \"\\n    if n < 0:\",\n      \"status\": \"pass\"\n    },\n    {\n      \"prompt\": \"1 2 3 4 5 6 7 8\",\n      \"runner\": \" 9 10 11 12\",\n      \"reference\": \" 9 10 11 12\",\n      \"status\": \"pass\"\n    },\n    {\n      \"prompt\": \"Once upon a time, in a land far away,\",\n      \"runner\": \" there was a small village nestled in the\",\n      \"reference\": \" there was a small village nestled in the\",\n      \"status\": \"pass\"\n    },\n    {\n      \"prompt\": \"JSON example: {\\\"name\\\":\",\n      \"runner\": \" \\\"John\\\", \\\"age\\\": 30\",\n      \"reference\": \" \\\"John\\\", \\\"age\\\": 30\",\n      \"status\": \"pass\"\n    }\n  ],\n  \"totals\": {\n    \"passed\": 5,\n    \"failed\": 0\n  }\n}\n",
+          "stderr_tail": ""
+        }
+      },
+      "resolved_file": "models/granite-4.2-8b-Q4_K_M.gguf",
+      "actual_sha256": "16a9369d0805f80b7377d25d87f937a90c05dc04ad79173a52001e42c9aab311",
+      "file_status": "pass",
+      "complete": false
+    }
+  ],
+  "complete": false,
+  "summary": {
+    "models": 1,
+    "files": {
+      "pass": 1
+    },
+    "checks": {
+      "load": {
+        "pass": 1
+      },
+      "tokenizer": {
+        "pass": 1
+      },
+      "cpu_cuda": {
+        "fail": 1
+      },
+      "chat": {
+        "pass": 1
+      },
+      "greedy_reference": {
+        "pass": 1
+      }
+    }
+  }
+}
