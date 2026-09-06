@@ -1392,6 +1392,29 @@ else
 	@echo "metal gpt-oss MoE smoke skipped: macOS-only backend"
 endif
 
+# CUDA NVFP4 (ModelOpt two-level export): the device kernels and the companion
+# scale in their tails against the CPU seam. Token identity on a generated
+# fixture and on any real NVFP4 file named in NVFP4_MODEL, logprob agreement
+# to reduction-order residue, and proof the device actually ran the layers.
+# Skips itself on a box whose --caps report no CUDA device.
+test-cuda-nvfp4: runner
+	@set -e; \
+	if ./$(RUNNER_EXE) --caps | $(PYTHON) -c "import json,sys; d=json.load(sys.stdin); sys.exit(0 if (d.get('gpu') or {}).get('backend') == 'cuda' else 1)"; then \
+		$(PYTHON) scripts/make-test-model.py test-nvfp4.gguf --quant nvfp4 > /dev/null; \
+		for f in test-nvfp4.gguf $(NVFP4_MODEL); do \
+		  ./$(RUNNER_EXE) -m $$f -p "The capital of France is" -n 16 --temp 0 --gpu off --no-tray > cuda-nvfp4-cpu.out 2>/dev/null; \
+		  ./$(RUNNER_EXE) -m $$f -p "The capital of France is" -n 16 --temp 0 --gpu auto --no-tray --transcript cuda-nvfp4-gpu.json > cuda-nvfp4-gpu.out 2>cuda-nvfp4-gpu.err; \
+		  cmp -s cuda-nvfp4-cpu.out cuda-nvfp4-gpu.out || { echo "FAIL: $$f CPU and CUDA tokens differ"; diff cuda-nvfp4-cpu.out cuda-nvfp4-gpu.out | head; exit 1; }; \
+		  $(PYTHON) -c "import json,sys; p=json.load(open('cuda-nvfp4-gpu.json'))['profile']; assert p['gpu_layers'] > 0, 'CUDA declined ' + sys.argv[1]" $$f; \
+		  ./$(RUNNER_EXE) -m $$f --score -p "The capital of France is Paris, and the runner trains the model on hardware you own." --gpu off --no-tray 2>/dev/null > cuda-nvfp4-cpu.score; \
+		  ./$(RUNNER_EXE) -m $$f --score -p "The capital of France is Paris, and the runner trains the model on hardware you own." --gpu auto --no-tray 2>/dev/null > cuda-nvfp4-gpu.score; \
+		  $(PYTHON) -c "import json,sys; a=json.load(open('cuda-nvfp4-cpu.score'))['logprobs']; b=json.load(open('cuda-nvfp4-gpu.score'))['logprobs']; d=max(abs(x-y) for x,y in zip(a,b)); assert len(a)==len(b)>3 and d < 2e-2, (len(a), len(b), d); print(sys.argv[1], 'cpu/cuda logprob max diff %.2e over %d positions' % (d, len(a)))" $$f; \
+		done; \
+		echo "cuda nvfp4 ok"; \
+	else \
+		echo "cuda nvfp4 smoke skipped: no CUDA device reported by --caps"; \
+	fi
+
 test-metal-gemma4-moe: runner
 ifeq ($(shell uname -s),Darwin)
 	@set -e; \
@@ -2241,7 +2264,7 @@ test-makefile-sane:
 
 
 .PHONY: template-conformance template-conformance-refresh template-conformance-baseline template-conformance-harmony-oracle
-.PHONY: test-gpu-stub
+.PHONY: test-gpu-stub test-cuda-nvfp4
 .PHONY: FORCE makefile-noop test-python-deps test-makefile-sane fixture-scale-note clean debug ptx test test-bare-invocation test-help-interface test-shader-embed test-metal-shader-gate test-apertus test-moe test-prune-experts test-metal-fallback test-metal-prefill test-metal-kquant test-metal-decode-only test-metal-split test-metal-bind-failure test-metal-kv-q8 test-metal-moe test-metal-gptoss-moe test-metal-gemma4-moe test-metal-gemma4-hetero test-metal-bigmodel test-metal-bigmodel-multibuf test-metal-moe-em test-metal-moe-mm test-metal-fuse test-metal-gelu-overflow test-metal-eseries test-metal-swa smoke release-check test-truncation fuzz fuzz-build fuzz-run test-shared-asan test-shared-noid test-split-guard test-swap-race
 
 # Soak harness for the startup/SIGTERM race (test_signal_during_startup). Not
