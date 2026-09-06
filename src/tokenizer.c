@@ -236,6 +236,7 @@ bool tokenizer_init(tokenizer *t, gguf_file *g) {
     const char *pre = gguf_get_str(g, "tokenizer.ggml.pre", "");
     if (strcmp(pre, "llama-bpe") == 0)   t->pre = TOK_PRE_LLAMA3;
     else if (strcmp(pre, "dbrx") == 0)   t->pre = TOK_PRE_LLAMA3; // llama.cpp: "same as llama3" (granite 4.1 ships this)
+    else if (strcmp(pre, "granite-docling") == 0) t->pre = TOK_PRE_GPT2; // llama.cpp: the plain GPT-2 regex (granite 4.2 ships this)
     else if (strcmp(pre, "qwen2") == 0 ||
              strcmp(pre, "qwen35") == 0) t->pre = TOK_PRE_QWEN2;
     else if (strcmp(pre, "smollm") == 0) t->pre = TOK_PRE_SMOLLM;
@@ -685,6 +686,19 @@ static int pre_split_next(const uint32_t *cp, int i, int ncp, int max_digits) {
 // restrict it to a segment:
 //   's|'t|'re|'ve|'m|'ll|'d| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+
 // The contractions are case-sensitive here, unlike the newer (?i:...) regexes.
+// The GPT-2 regex's classes: \p{L}, \p{N}, [^\s\p{L}\p{N}] and \s. The
+// same cp_letter the llama3 rule uses, so symbols (U+2019 RIGHT SINGLE
+// QUOTATION MARK in "don’t") and combining marks (Devanagari vowel signs and
+// viramas) are [^\s\p{L}\p{N}], not letters: the raw cp_class glued them onto
+// the adjacent letter run and granite 4.2 (pre "granite-docling", llama.cpp's
+// plain GPT-2 rule) tokenized "’s" and "नमस्ते" differently from the reference.
+static int gpt2_class(uint32_t c) {
+    if (cp_space(c)) return 3;
+    if (cp_digit(c)) return 1;
+    if (cp_letter(c)) return 0;
+    return 2;
+}
+
 static int gpt2_split_next(const uint32_t *cp, int i, int end) {
     if (cp[i] == '\'' && i + 1 < end) {
         uint32_t a = cp[i + 1], b = (i + 2 < end) ? cp[i + 2] : 0;
@@ -693,17 +707,17 @@ static int gpt2_split_next(const uint32_t *cp, int i, int end) {
             (a == 'l' && b == 'l')) return i + 3;
     }
     // an optional leading space joins a run of a single class
-    int j = (cp[i] == ' ' && i + 1 < end && cp_class(cp[i + 1]) != 3) ? i + 1 : i;
-    if (cp_class(cp[j]) != 3) {
-        int cls = cp_class(cp[j]);
+    int j = (cp[i] == ' ' && i + 1 < end && gpt2_class(cp[i + 1]) != 3) ? i + 1 : i;
+    if (gpt2_class(cp[j]) != 3) {
+        int cls = gpt2_class(cp[j]);
         int k = j;
-        while (k < end && cp_class(cp[k]) == cls) k++;
+        while (k < end && gpt2_class(cp[k]) == cls) k++;
         return k;
     }
     // \s+(?!\S) hands the final whitespace character to the next pre-token,
     // whatever that character is: "\t\tx" is "\t", "\t", "x", not "\t\t", "x"
     int k = i;
-    while (k < end && cp_class(cp[k]) == 3) k++;
+    while (k < end && gpt2_class(cp[k]) == 3) k++;
     if (k < end && k - i > 1) k--;
     return k;
 }
