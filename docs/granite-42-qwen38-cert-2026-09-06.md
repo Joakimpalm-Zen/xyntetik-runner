@@ -58,7 +58,7 @@ slice was held by another project's job for the whole window, so the
 | token divergence vs reference (tie bar 0.25 nats, 16 prompts x 32 tokens) | 5 identical, 6 at a tie, **5 real** (see below) | 7 identical, **9 at a tie, 0 real**, max 0.187 | 13 identical, **3 at a tie, 0 real**, max 0.129 |
 | cross-engine logits, same file (kld-raw, 100+ positions) | mean 0.0146, top-1 90.5%, margin-qualified 100% | mean 0.012, top-1 94.5%, margin-qualified 100% | mean 0.012, top-1 94%, margin-qualified 100% |
 | quant bar vs Q8_0 (top-1 >= 97%, mean KLD <= 0.05) | not run | **PASS**: 400 positions, mean KLD 0.0036, top-1 99.75%, top-8 overlap 0.921 | **PASS**: 100 positions, mean KLD 0.0016, top-1 100%, top-8 overlap 0.835 |
-| chat template conformance (jinja2 reference) | **22/22 text and token identical** | same template | Qwen3 `chatml-think` family, already conformant |
+| chat template conformance (jinja2 reference) | **22/22 text and token identical** | same template | **21/21 text and token identical** under the new `qwen38` family (its own template, not Qwen3's; see below) |
 | compat-matrix row (Blackwell) | load, tokenizer, **cpu_cuda 9/9**, chat pass; greedy 3/5 at 8 tokens (both partings at ties) | load, tokenizer, **greedy 5/5**, chat pass; cpu_cuda 8/9, one flip at token 27 on a 0.0019-nat tie | load, tokenizer, **greedy 5/5**, chat pass; cpu_cuda not executed (insufficient VRAM) |
 
 For scale, the certified granite-4.1-3b measured on the same kld-raw gate
@@ -176,6 +176,101 @@ reading this document records is therefore the 4.1 certification's:
 engine agreement inside the model's own numerical floor, that floor now
 measured on a certified sibling rather than assumed, and the 8B on the
 identical code reading 0 real of 9.
+
+## The reference's own configuration, and a gold reference
+
+Every identity number above compares the runner with llama.cpp, and
+llama.cpp is a second implementation, not the truth. Two things were
+measured on the 3B to say what the strict counts are counting
+(`docs/granite-42-qwen38-evidence/`, all on the Blackwell, 2026-09-06).
+
+**The reference's flash attention.** llama.cpp's CPU flash-attention
+kernel (ggml-cpu/ops.cpp at 73a43d1, `flash_attn_ext_f16_one_chunk`)
+converts Q to f16 for the K dot and accumulates the attention output in
+f16 (`ggml_vec_mad_f16` into `VKQ16`) whenever the V cache is f16, which is
+the default; the runner keeps Q and both accumulators in f32 over the f16
+cache. With `-fa auto` the CPU build enables it. The gate's reference ran
+that way, so `scripts/token_divergence.py` gained `--reference-args` and
+the 3B was re-run:
+
+| reference configuration | identical | at a tie | real | max delta |
+|---|---|---|---|---|
+| default (`-fa auto`, f16 KV) | 5 | 6 | 5 | 0.265 |
+| `-fa off` | 9 | 4 | 3 | 0.229 |
+| `-fa off -ctk f32 -ctv f32` | 6 | 6 | 4 | 0.248 |
+| bf16 weights, `-fa off` | **16** | 0 | **0** | **0.020** |
+
+The 8B under `-fa off` reads 13 / 2 / 1 (from 7 / 9 / 0), and the greedy
+sets move without improving: 3B 0/6 either way, 8B 1/6 either way, Qwen
+3.8 3/6 with flash off against 4/6 with it on. llama.cpp against itself,
+flash on versus off, on the 3B over 200 corpus positions: mean KLD
+**0.020**, max **0.84**, top-1 90.5%, which is more than it disagrees with
+the runner (0.015, max 0.098). The runner against itself, batched prefill
+versus one token at a time: mean KLD 0.00003, top-1 100%, max 0.005. The
+strict counts on this model are counting the reference's configuration.
+
+**A gold reference.** With the weights unquantized (IBM's own bf16 GGUF)
+the two engines agree on all 16 prompts to 0.02 nats, so everything above
+that is the two engines' different Q4_K arithmetic (llama.cpp quantizes
+the activations to 8 bits per 256-block for the dot; the runner's dot
+takes the f32 activations). Which arithmetic is closer to the model is a
+question for the model's own implementation: `scripts/gold-logits.py`
+runs transformers 5.16 in float32 on the CPU from IBM's safetensors and
+scores both engines against it, 99 corpus positions:
+
+| weights | engine | mean KLD vs fp32 | max | top-1 | margin-qualified |
+|---|---|---|---|---|---|
+| bf16 | runner | **0.0016** | 0.149 | **100%** | 100% |
+| bf16 | llama.cpp `-fa off` | 0.0016 | 0.150 | 99.0% | 100% |
+| bf16 | llama.cpp `-fa on` | 0.0018 | 0.151 | 97.0% | 100% |
+| Q4_K_M | runner | **0.109** | 0.499 | 87.9% | 94.7% |
+| Q4_K_M | llama.cpp `-fa off` | 0.119 | 0.613 | 85.9% | 97.3% |
+| Q4_K_M | llama.cpp `-fa on` | 0.115 | 0.549 | 88.9% | 97.3% |
+
+At bf16 the runner reproduces the reference implementation to the noise of
+its own float arithmetic and picks its token on every position; at the
+served quant the runner is the closer of the two engines to the model.
+That is the reading this document records for the 3B: the architecture
+is right on both engines, the residual is the quantization each engine
+performs, and the runner's is the smaller.
+
+## What the model authors say
+
+- **IBM, Granite 4.2** (model card): `temperature=1.0` and `top_p=0.95`
+  "across all tasks and serving backends", `do_sample=True`; thinking on
+  by default, `enable_thinking=False` for direct answers,
+  `low_effort=True` for brief reasoning; historical thinking stripped
+  (`truncate_history_thinking`). The muP scalars, the attention scale
+  (`attention_multiplier` used as the score scale, 1/64 on the 3B and
+  1/128 on the 8B, in place of 1/sqrt(d)), the residual and embedding
+  multipliers and the division by `logits_scaling` are what
+  transformers' `modeling_granite.py` does and what both engines read
+  from the header. The GGUF carries the same values as `config.json`
+  (`rope_theta` 1e7, no rope scaling, untied embeddings, bos 100283).
+- **Qwen, Qwen 3.8** (model card): thinking mode `temperature=1.0`,
+  `top_p=0.95`, `top_k=20`, `min_p=0`; instruct mode `temperature=0.7`,
+  `top_p=0.8`, `presence_penalty=1.5`; thinking on and `preserve_thinking`
+  on by default; `reasoning_effort` xhigh (default), medium, low. The
+  architecture in `config.json` (`qwen3_5_text`: Gated DeltaNet with
+  L2-normalised q/k, `g = -exp(A_log) * softplus(a + dt_bias)`, sigmoid
+  beta, a sigmoid output gate on attention, partial rotary 0.25 with
+  interleaved multimodal rope sections, one MTP layer) is what
+  llama.cpp's `qwen35.cpp` builds (`ggml_l2_norm`, `ggml_softplus`,
+  `ggml_sigmoid` gate, `ggml_rope_multi` with the sections) and what the
+  runner's `qwen35` path was measured against.
+- **Qwen 3.8's chat template is not Qwen3's.** The GGUF's template was
+  detected as Qwen3's and rendered through the `chatml-think` family;
+  pointed at `Qwen/Qwen3.8-27B`, the conformance gate showed 20 of 21
+  cases drifting. The template opens every conversation with a
+  reasoning-effort preamble in the system turn whenever thinking is on,
+  keeps every historical assistant turn's thought block, places tool
+  declarations between the preamble and the caller's system text, and
+  uses the function-XML call protocol. The new `qwen38` family renders
+  all of that: 21 of 21 cases text- and token-identical
+  (`conformance-qwen38-granite42-tokens.txt`), `reasoning_effort`
+  honoured on the chat and Responses surfaces with the template's own
+  three values. The Qwen 3.8 matrix row was re-run under it (chat pass,
+  greedy 5/5; `docs/compat-reports/0.4.10-2026-09-06-blackwell-qwen3.8-27b-ud-q4_k_m.json`).
 
 ## Reading the greedy numbers
 

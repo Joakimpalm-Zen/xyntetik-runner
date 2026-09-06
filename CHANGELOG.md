@@ -39,6 +39,28 @@ names that were true when they were written.
   expect_divergences`) and `compat_matrix.py` passes it to `difftok.py`.
   Greedy identity vs 73a43d1 4/6, same-file logits mean KLD 0.012. CPU only
   in this window. Same evidence document.
+- **Qwen 3.8 renders its own chat template.** The GGUF's template was
+  detected as Qwen3's and rendered through the chatml-think family;
+  pointed at Qwen/Qwen3.8-27B, the conformance gate showed 20 of 21 cases
+  drifting. Qwen 3.8 opens every conversation with a reasoning-effort
+  preamble in the system turn whenever thinking is on (xhigh by default,
+  low as the alternative, medium meaning none), keeps every historical
+  assistant turn's thought block, puts tool declarations between that
+  preamble and the caller's system text, and uses the function-XML call
+  protocol rather than Qwen3's JSON one. The new `qwen38` family renders
+  all of that (21 of 21 conformant, system-mid-history refused on both
+  sides) and `reasoning_effort` (top level or `chat_template_kwargs`) is
+  honoured on the chat and Responses surfaces with the template's own
+  vocabulary; other values are refused as the template refuses them.
+- `scripts/token_divergence.py` takes `--reference-args` and
+  `--runner-args` and records them, because the reference's own
+  configuration moves its logits at the order the gate classifies:
+  llama.cpp's CPU flash-attention kernel accumulates the attention output
+  in f16, and on Granite 4.2 3B llama.cpp disagrees with itself (flash on
+  vs off, mean KLD 0.020, max 0.84 over 200 positions) more than it
+  disagrees with the runner (0.015, max 0.098). `scripts/gold-logits.py`
+  scores endpoints against the model's reference implementation in
+  float32 for the cases where two engines disagree.
 - New BPE fixture cases (curly apostrophe, Devanagari marks, digit runs)
   for the GPT-2, llama3, qwen2 and qwen35 rules, and a
   `vocab-bpe-granite-docling.gguf` fixture.

@@ -1,0 +1,117 @@
+{
+  "schema_version": "xyntetik.runner.token-divergence.v1",
+  "model": "/home/lab/workspace/models/granite-4.2/granite-4.2-3b-bf16.gguf",
+  "tokens_per_prompt": 32,
+  "tie_threshold_nats": 0.25,
+  "reference_args": [
+    "-fa",
+    "off"
+  ],
+  "runner_args": [],
+  "results": [
+    {
+      "prompt": "The capital of France is",
+      "status": "identical",
+      "matched_tokens": 32,
+      "max_logprob_delta": 0.015774797855377165
+    },
+    {
+      "prompt": "def fibonacci(n):",
+      "status": "identical",
+      "matched_tokens": 32,
+      "max_logprob_delta": 0.005191316669464152
+    },
+    {
+      "prompt": "1 2 3 4 5 6 7 8",
+      "status": "identical",
+      "matched_tokens": 32,
+      "max_logprob_delta": 0.006498129657745322
+    },
+    {
+      "prompt": "Once upon a time, in a land far away,",
+      "status": "identical",
+      "matched_tokens": 32,
+      "max_logprob_delta": 0.013621448646545353
+    },
+    {
+      "prompt": "JSON example: {\"name\":",
+      "status": "identical",
+      "matched_tokens": 32,
+      "max_logprob_delta": 0.015166163528442356
+    },
+    {
+      "prompt": "The three laws of thermodynamics are",
+      "status": "identical",
+      "matched_tokens": 32,
+      "max_logprob_delta": 0.012467142311096246
+    },
+    {
+      "prompt": "import numpy as np\n",
+      "status": "identical",
+      "matched_tokens": 32,
+      "max_logprob_delta": 0.007075270706176973
+    },
+    {
+      "prompt": "Q: What is 17 * 23?\nA:",
+      "status": "identical",
+      "matched_tokens": 32,
+      "max_logprob_delta": 0.017996644874572754
+    },
+    {
+      "prompt": "The quick brown fox",
+      "status": "identical",
+      "matched_tokens": 32,
+      "max_logprob_delta": 0.015470901504516688
+    },
+    {
+      "prompt": "class Stack:\n    def __init__(self):",
+      "status": "identical",
+      "matched_tokens": 32,
+      "max_logprob_delta": 0.005915650524139449
+    },
+    {
+      "prompt": "In 1969, humans first",
+      "status": "identical",
+      "matched_tokens": 32,
+      "max_logprob_delta": 0.014533078636169483
+    },
+    {
+      "prompt": "SELECT name, age FROM users WHERE",
+      "status": "identical",
+      "matched_tokens": 32,
+      "max_logprob_delta": 0.01873669576263426
+    },
+    {
+      "prompt": "The mitochondria is the",
+      "status": "identical",
+      "matched_tokens": 32,
+      "max_logprob_delta": 0.014759126647949206
+    },
+    {
+      "prompt": "for i in range(10):\n    print(",
+      "status": "identical",
+      "matched_tokens": 32,
+      "max_logprob_delta": 0.013708791027069123
+    },
+    {
+      "prompt": "Water boils at",
+      "status": "identical",
+      "matched_tokens": 32,
+      "max_logprob_delta": 0.01454246356201172
+    },
+    {
+      "prompt": "A haiku about autumn:\n",
+      "status": "identical",
+      "matched_tokens": 32,
+      "max_logprob_delta": 0.020136187652587845
+    }
+  ],
+  "totals": {
+    "prompts": 16,
+    "identical": 16,
+    "length_mismatch": 0,
+    "diverged_at_a_tie": 0,
+    "diverged_for_real": 0,
+    "max_logprob_delta": 0.020136187652587845
+  }
+}

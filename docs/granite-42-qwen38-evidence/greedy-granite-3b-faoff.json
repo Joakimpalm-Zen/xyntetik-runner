@@ -1,0 +1,66 @@
+{
+  "n_pass": 0,
+  "n_total": 6,
+  "results": [
+    {
+      "tag": "a",
+      "n": 64,
+      "identical": false,
+      "first_divergent_byte": 19,
+      "ref_sha256": "012eb9b08f8e1cd5facaffcb459f4e2fb9d6fcad93596a72d47ef8a2c3f4593d",
+      "runner_sha256": "64f6d06b8459a0c9d67d1290bec1fa90cca3058c575b84bbdd442b3a3df2eea0",
+      "ref_tail": "is true.\n\nWe need to produce a response that follows the ins",
+      "runner_tail": "is true.\n\nSentence: \"The sky can be red.\" is possible.\n\nSent"
+    },
+    {
+      "tag": "b",
+      "n": 64,
+      "identical": false,
+      "first_divergent_byte": 230,
+      "ref_sha256": "81b49bd5c8ba5b0824943769d1d7f30ef3a3c58c26209794f007f271a1a322e1",
+      "runner_sha256": "8d78f5d9e0fcc2d1cd48a8a09d124767f45ee10c97c2fb0bf13cc84eac788894",
+      "ref_tail": " use O(1) space complexity.\"\n\nWe need to produce a Python fu",
+      "runner_tail": " use O(1) extra space.\"\n\nWe need to produce a Python functio"
+    },
+    {
+      "tag": "c",
+      "n": 64,
+      "identical": false,
+      "first_divergent_byte": 47,
+      "ref_sha256": "a56f87bc5aca44542c44e686128f35ab106cc4bfafe739e8ee38ebe936001695",
+      "runner_sha256": "c7a4c5f750bb41e8d286fd9eb1da4dc00ea0df8ffefcaf071880f2ed69c09d63",
+      "ref_tail": " Apollo 11 successfully landed on the Moon, marking humanity",
+      "runner_tail": " Apollo 11, the first crewed mission to land on the Moon, su"
+    },
+    {
+      "tag": "d",
+      "n": 64,
+      "identical": false,
+      "first_divergent_byte": 2,
+      "ref_sha256": "b9e30652519bf02dfa374e1fa6337890ba281522bba445116f01d8a348587cd8",
+      "runner_sha256": "e2c06f1740657c018bf78d2e4951b8fc40dcd95145cf7c9c115203b04234ef76",
+      "ref_tail": "\n\nWhich language? The user wrote in Swedish: \"Kvicks",
+      "runner_tail": "\n\nTranslate to English: \"Translate the following sen"
+    },
+    {
+      "tag": "b-long",
+      "n": 256,
+      "identical": false,
+      "first_divergent_byte": 230,
+      "ref_sha256": "cdad314cc07457a3f8da6ef357af05d46d451b9c933e277dde017e674d0563ba",
+      "runner_sha256": "812af86786b9944d6f3687fc5f79e8540ac7c74cb448742c853f1feb9216d8e1",
+      "ref_tail": " use O(1) space complexity.\"\n\nWe need to produce a Python fu",
+      "runner_tail": " use O(1) extra space.\"\n\nWe need to produce a Python functio"
+    },
+    {
+      "tag": "c-long",
+      "n": 256,
+      "identical": false,
+      "first_divergent_byte": 47,
+      "ref_sha256": "e75c447d1c51c0bbc7baea8a2ffb3cc11b015546949250ac453794c64e67bc88",
+      "runner_sha256": "a4e62575727f30e034c6feeda1f90ea2d1c71f7a6404764c8352fde6509b7a1d",
+      "ref_tail": " Apollo 11 successfully landed on the Moon, marking humanity",
+      "runner_tail": " Apollo 11, the first crewed mission to land on the Moon, su"
+    }
+  ]
+}

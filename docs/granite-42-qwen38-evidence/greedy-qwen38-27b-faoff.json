@@ -1,0 +1,66 @@
+{
+  "n_pass": 3,
+  "n_total": 6,
+  "results": [
+    {
+      "tag": "a",
+      "n": 64,
+      "identical": false,
+      "first_divergent_byte": 191,
+      "ref_sha256": "00289456cf02e93df61e2723787c42ab3e015543e0e6e584f64341ed39110d61",
+      "runner_sha256": "b0ff20f2404e61e385c428b25a2b6f415a9bb9703fb29305fa875fbfa0909d01",
+      "ref_tail": "al of the Netherlands is Amsterdam.\nThe capital of Belgium i",
+      "runner_tail": "al of the United Kingdom is London.\nThe capital of Ireland i"
+    },
+    {
+      "tag": "b",
+      "n": 64,
+      "identical": true,
+      "first_divergent_byte": -1,
+      "ref_sha256": "5575a2c61498485493001c7154c0580973385ac8b3aa56ba935d4a98e8495fd0",
+      "runner_sha256": "5575a2c61498485493001c7154c0580973385ac8b3aa56ba935d4a98e8495fd0",
+      "ref_tail": "",
+      "runner_tail": ""
+    },
+    {
+      "tag": "c",
+      "n": 64,
+      "identical": true,
+      "first_divergent_byte": -1,
+      "ref_sha256": "3af9e0a64e76770e29d519bff0f02dc655a28655f56c161c2752e12058be37f3",
+      "runner_sha256": "3af9e0a64e76770e29d519bff0f02dc655a28655f56c161c2752e12058be37f3",
+      "ref_tail": "",
+      "runner_tail": ""
+    },
+    {
+      "tag": "d",
+      "n": 64,
+      "identical": true,
+      "first_divergent_byte": -1,
+      "ref_sha256": "375daf5083d5568a68a44afedda3d4e67d2a41a0d0ec6f4618b580349123e50a",
+      "runner_sha256": "375daf5083d5568a68a44afedda3d4e67d2a41a0d0ec6f4618b580349123e50a",
+      "ref_tail": "",
+      "runner_tail": ""
+    },
+    {
+      "tag": "b-long",
+      "n": 256,
+      "identical": false,
+      "first_divergent_byte": 483,
+      "ref_sha256": "63e0c04b54a07b61406e7a19597fc4280178c5c2f68ec3eb47609a086a3de120",
+      "runner_sha256": "bcec51489e7470be77f5338371f8484ffddacbbf31f15ffa60041b679f04c130",
+      "ref_tail": "t, next\n- Traverse the list, reversing each node's next poin",
+      "runner_tail": "t, next\n- Iterate through the list, reversing each node's ne"
+    },
+    {
+      "tag": "c-long",
+      "n": 256,
+      "identical": false,
+      "first_divergent_byte": 398,
+      "ref_sha256": "f597359d174bd190f1dbb8e2b75502c7fea6d3e854c16b2aca14cd4f33e0db5e",
+      "runner_sha256": "1696999d7bda3dc59e52c411d6112c0ea2aff0c34be4702d96f1783458e657ea",
+      "ref_tail": "tched the live broadcast of the moon landing, making it one ",
+      "runner_tail": "tched the event live on television, making it one of the mos"
+    }
+  ]
+}
