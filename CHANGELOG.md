@@ -120,7 +120,10 @@ analytics landed on the way.
   7.8e-5 (`make test-cuda-nvfp4`).
 - Blackwell matrix with the Makefile's own flags (`CFLAGS` unset): granite-4.1-8b
   load, tokenizer, cpu_cuda and chat pass; gemma-4-E4B complete with cpu_cuda
-  pass; Qwen3-30B-A3B: MOE_ROW.
+  pass; Qwen3-30B-A3B on the CPU path, load and chat pass, tool 2/8
+  (pre-existing shape), cpu_cuda not executed: the other project's runner
+  holds 15.4 GB of the MIG slice, so the GPU load was refused with the VRAM
+  message rather than attempted.
 - Local: make test exit 0, conformance 451 passed and 17 skipped,
   release-check 0.
 
