@@ -74,13 +74,26 @@ def main():
     ap.add_argument("--top-n", type=int, default=20)
     ap.add_argument("--threads", type=int, default=32)
     ap.add_argument("--out")
+    ap.add_argument("--trust-remote-code", action="store_true",
+                    help="the publisher ships its own modeling code")
     args = ap.parse_args()
 
     import torch
     from transformers import AutoModelForCausalLM, AutoTokenizer
     torch.set_num_threads(args.threads)
-    tok = AutoTokenizer.from_pretrained(args.hf)
-    model = AutoModelForCausalLM.from_pretrained(args.hf, dtype=torch.float32)
+    tok = AutoTokenizer.from_pretrained(args.hf, trust_remote_code=args.trust_remote_code)
+    # A publisher whose top-level class is multimodal (Qwen3.5, Gemma 4,
+    # Muse Glimmer) still answers text through the same language model;
+    # the causal-LM auto class refuses those configs, so fall back to the
+    # image-text class and drive it with text only. The config name is
+    # printed so the report says which class produced the gold.
+    kw = dict(dtype=torch.float32, trust_remote_code=args.trust_remote_code)
+    try:
+        model = AutoModelForCausalLM.from_pretrained(args.hf, **kw)
+    except (ValueError, KeyError, OSError):
+        from transformers import AutoModelForImageTextToText
+        model = AutoModelForImageTextToText.from_pretrained(args.hf, **kw)
+    print("reference class:", type(model).__name__, file=sys.stderr)
     model.eval()
 
     text = open(args.corpus, encoding="utf-8").read()
@@ -117,6 +130,8 @@ def main():
             for k in row if k in ("a", "b")), file=sys.stderr)
 
     summary = {"positions": len(rows), "hf": args.hf, "corpus": args.corpus,
+               "reference_class": type(model).__name__,
+               "reference_dtype": "float32", "reference_device": "cpu",
                "sides": {}}
     for name, ep, mn in sides:
         ks = [r[name]["kld"] for r in rows]
