@@ -1,0 +1,91 @@
+{
+  "schema": "xyntetik.runner.device-evidence.v1",
+  "policy": {
+    "why": "CI proves what CI can reach. These are the device classes it cannot: they are physical machines in a lab, and nothing watches how long it has been since one of them last ran the gates. The Windows suite went nineteen days and eight failures before anybody noticed. A class belongs here only if a hosted runner cannot verify it; everything else belongs in .github/workflows/ci.yml.",
+    "gate": "scripts/check-release.py refuses a tag while any class here is STALE, FAILING or NEVER, the same way it refuses a README and site that link different Hugging Face repositories.",
+    "recording": "Rows are written by scripts/device-evidence.py --record from the runner's own --caps output on the machine in question, and the class's `expect` block refuses a recording made on the wrong one. A row is a machine's statement about a machine, not a line somebody typed.",
+    "default_max_age_days": 45
+  },
+  "classes": [
+    {
+      "id": "windows-x86_64-cuda",
+      "claimed_by": "README platform table, row 3: Windows x86_64, MinGW-w64 via MSYS2, CUDA on Turing or newer",
+      "covers": "the MinGW build, every Windows-only path in the harness, and the only display-attached NVIDIA card in the lab, which is a test surface a headless datacenter GPU does not have (v0.4.2 reported every desktop card as unified memory and a headless box would have passed it)",
+      "host": "ZEN-GAMING, RTX 3070 8 GB, CUDA 13.3, MSYS2 UCRT64",
+      "max_age_days": 30,
+      "expect": {
+        "os": "windows",
+        "arch": "x86_64",
+        "gpu_backend": "cuda"
+      },
+      "last_verified": {
+        "date": "2026-09-07",
+        "commit": "835400fc5fb13d5ca0df4cdf86c160ef16d96c1b",
+        "ran": "make OS=Windows_NT -j2 test (pass) and scripts/cuda-smoke-remote.sh (13 checks, 0 warnings)",
+        "result": "pass",
+        "caps": {
+          "version": "0.5.1",
+          "os": "windows",
+          "arch": "x86_64",
+          "cpu_cores": 8,
+          "gpu_backend": "cuda",
+          "gpu_name": "NVIDIA GeForce RTX 3070"
+        },
+        "evidence": "docs/compat-reports/cuda-smoke-0.5.1-2026-09-07-rtx3070.json"
+      }
+    },
+    {
+      "id": "linux-x86_64-cuda",
+      "claimed_by": "README platform table, row 1: Linux x86_64, CUDA on Turing or newer",
+      "covers": "the datacenter CUDA path: large models, MIG slices, the compatibility ledger and the KLD/divergence runs that need more VRAM than a consumer card has",
+      "host": "the Blackwell measurement box (RTX PRO 6000, MIG)",
+      "max_age_days": 45,
+      "expect": {
+        "os": "linux",
+        "arch": "x86_64",
+        "gpu_backend": "cuda"
+      },
+      "last_verified": {
+        "date": "2026-09-06",
+        "commit": null,
+        "ran": "scripts/compat_matrix.py (see the report)",
+        "result": "pass",
+        "caps": {
+          "version": "runner 0.5.1",
+          "os": "linux",
+          "arch": "x86_64",
+          "gpu_backend": "cuda",
+          "gpu_name": null
+        },
+        "evidence": "docs/compat-reports/0.5.1-2026-09-06-blackwell-granite-4.2-3b-q4_k_m.json",
+        "source": "backfilled from a committed report, not written by --record"
+      }
+    },
+    {
+      "id": "macos-arm64-metal",
+      "claimed_by": "README platform table, row 2: macOS arm64, Metal on Apple Silicon",
+      "covers": "the Metal backend and the second device family that is itself a gate (the M1 caught the M5's fast-math rope contraction bug). GitHub's macOS runner builds this configuration on every push but is not where the Metal gates are trusted from.",
+      "host": "the lab M1, and whichever Apple Silicon box is on loan",
+      "max_age_days": 45,
+      "expect": {
+        "os": "macos",
+        "arch": "arm64",
+        "gpu_backend": "metal"
+      },
+      "last_verified": {
+        "date": "2026-09-07",
+        "commit": "835400fc5fb13d5ca0df4cdf86c160ef16d96c1b",
+        "ran": "make test (exit 0, the widened list including the thirteen files nothing used to run)",
+        "result": "pass",
+        "caps": {
+          "version": "0.5.1",
+          "os": "macos",
+          "arch": "arm64",
+          "cpu_cores": 8,
+          "gpu_backend": "metal",
+          "gpu_name": "Apple M1"
+        }
+      }
+    }
+  ]
+}
