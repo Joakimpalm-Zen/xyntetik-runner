@@ -8,6 +8,23 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **A forward matvec on CUDA that is bit-identical to the CPU, not close to
+  it (R8.7.1 slice 1).** `gpu_mvcanon` computes `y = W.x` in exactly the
+  association `vec_dot` uses under `RUNNER_CANON_KERNELS`, gated by `memcmp`
+  rather than a tolerance, because a tolerance would pass the ordinary
+  CPU/GPU divergence this exists to remove. It is affordable because the work
+  was done for another reason: R12.1 defined the canonical reduction as an
+  eight-lane tree so a CPU could be bit-exact across ISAs, and eight lanes
+  with a three-step tree is a shape a warp runs natively. Three
+  `__shfl_down_sync` steps at width 8 ARE `canon_tree8`, and lane l reading
+  element l of each eight-wide group makes the eight lanes of a row read 32
+  contiguous bytes. Measured on an RTX 3070, Qwen3-0.6B Q8_0 lm head
+  [1024 x 151936]: byte-identical to the host on every element, 0.611 ms
+  against 11.682 ms for one host thread doing the same association, which is
+  165.3 MB at 270 GB/s of the card's 448. The exact order is not what limits
+  the kernel; memory is. F32, F16 and Q8_0 have a canonical order and are
+  what this covers; the k-quants do not yet and are refused by name.
+
 - **A refused run no longer leaves a tray behind.** The tray is detached, so
   one raised by a process that then exits outlives it and holds the executable
   open against the next relink, which this project has already fixed once from

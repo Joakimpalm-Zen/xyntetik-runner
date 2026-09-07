@@ -155,6 +155,7 @@ TEST_TC_TOL = $(TEST_BATCH:test-batch%=test-tc-tol%)
 TEST_I8_TOL = $(TEST_BATCH:test-batch%=test-i8-tol%)
 TEST_LORA_GRAD = $(TEST_BATCH:test-batch%=test-lora-grad%)
 TEST_MVT = $(TEST_BATCH:test-batch%=test-mvt%)
+TEST_MVCANON = $(TEST_BATCH:test-batch%=test-mvcanon%)
 TEST_MV_TOL = $(TEST_BATCH:test-batch%=test-mv-tol%)
 TEST_ATTN_TOL = $(TEST_BATCH:test-batch%=test-attn-tol%)
 TEST_GPU_ID = $(TEST_BATCH:test-batch%=test-gpu-identity%)
@@ -734,6 +735,17 @@ TEST_MVT_SRC = tests/test_mvt.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o $(QUANTS_OBJ
                   $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(OBJDIR)/vramreg.o $(GPU_OBJ)
 $(TEST_MVT): $(TEST_MVT_SRC) $(HDR) test.gguf test-q8.gguf test-bf16.gguf
 	$(CC) $(CFLAGS) -I src $(TEST_MVT_SRC) -o $@ $(LDFLAGS)
+
+# The canonical-order forward (R8.7.1 slice 1). quants.c is compiled in HERE
+# with RUNNER_CANON_KERNELS and the strict float regime -- not taken from the
+# shared object, which is built without it and would answer a different
+# question -- for the same reason test-canon-kernels does it that way.
+TEST_MVCANON_SRC = tests/test_mvcanon.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o \
+                   $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(OBJDIR)/vramreg.o \
+                   $(GPU_OBJ)
+$(TEST_MVCANON): $(TEST_MVCANON_SRC) src/quants.c $(HDR) test.gguf test-q8.gguf
+	$(CC) $(CFLAGS) -ffp-contract=off -DRUNNER_CANON_KERNELS -I src \
+	    $(TEST_MVCANON_SRC) src/quants.c -o $@ $(LDFLAGS)
 
 test-qk.gguf: scripts/make-test-model.py
 	$(PYTHON) scripts/make-test-model.py --qk-norm test-qk.gguf
@@ -1809,7 +1821,7 @@ else
 	@echo "metal SWA smoke skipped: macOS-only backend"
 endif
 
-test: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSON_OOM) $(TEST_SCHEMA_OOM) $(TEST_SAMPLER) $(TEST_LORA_GRAD) $(TEST_MVT) \
+test: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSON_OOM) $(TEST_SCHEMA_OOM) $(TEST_SAMPLER) $(TEST_LORA_GRAD) $(TEST_MVT) $(TEST_MVCANON) \
       $(TEST_TOKENIZER) $(TEST_TOK_MERGE) $(TEST_TOKENIZER_OOM) $(TEST_TEMPLATE) \
       $(TEST_TEMPLATE_OOM) \
       $(TEST_TOOLS) $(TEST_SHARED) $(TEST_FILE_ID) $(TEST_BATCH) $(TEST_BATCH_ID) $(TEST_BIND) $(TEST_HOST_HEADER) \
@@ -1838,6 +1850,8 @@ test: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSON_OOM) $(
 	./$(TEST_MVT)
 	./$(TEST_MVT) test-q8.gguf
 	./$(TEST_MVT) test-bf16.gguf
+	./$(TEST_MVCANON)
+	./$(TEST_MVCANON) test-q8.gguf
 	./$(TEST_BIND)
 	./$(TEST_HOST_HEADER)
 	./$(TEST_RESIDENCY)

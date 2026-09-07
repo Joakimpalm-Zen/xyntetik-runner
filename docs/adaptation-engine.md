@@ -422,7 +422,7 @@ the CUDA inference path is not bit-identical to the CPU one. Moving it is
 a T1-to-T2 trade (token-exact rather than byte-exact), not an
 optimization, and it belongs to the owner rather than to a profile.
 
-## D8 slice 5, priced not built: the forward is the whole remaining bill
+## D8 slice 5: the forward, and a device dot that is bit-identical to the host
 
 After slice 4, a training step is not backward-bound. Measured on the same
 RTX 3070 box (Qwen2.5-7B Q4_K_M, rank 8, ctx 128, `RUNNER_TRAIN_PROF=1`), the
@@ -469,8 +469,56 @@ are two ways to spend it and they are genuinely different products:
 Slice 1 already established the harder half of the second option: a GPU
 kernel bit-identical to a CPU reference, on seven weight types. It is a
 stronger property than the same-device reproducibility the literature aims
-at, and it is the one this engine is for. Which option to take is the
-owner's, and the number above is what it is being spent on.
+at, and it is the one this engine is for.
+
+### The owner took T1 (2026-09-07), and here is the primitive
+
+`gpu_mvcanon` computes `y = W·x` in **exactly** the association `vec_dot`
+uses under `RUNNER_CANON_KERNELS`, so the device answer is bit-identical to
+the host's rather than close to it. `memcmp`, not a tolerance: a tolerance
+would pass the ordinary CPU/GPU divergence this exists to remove.
+
+The reason it is affordable is that the work was already done for a different
+reason. R12.1 defined the canonical reduction as an **eight-lane tree**, so
+that a CPU could be bit-exact across ISAs:
+
+```
+c[l] = acc[l] + acc[l+4]        (l < 4)
+d0 = c0 + c2,  d1 = c1 + c3
+out = d0 + d1
+```
+
+Eight lanes with a three-step tree is a shape a warp runs natively. Three
+`__shfl_down_sync` steps at width 8 ARE `canon_tree8`, not an approximation
+of it, and lane `l` reading element `l` of each eight-wide group means the
+eight lanes of a row read 32 contiguous bytes. The order that makes the CPU
+portable is the order that makes the GPU coalesce.
+
+Measured on the RTX 3070, Qwen3-0.6B Q8_0, the lm head `[1024 x 151936]`:
+
+| | |
+|---|---|
+| device vs canonical host dot | **byte-identical**, every element, both runs |
+| device | 0.611 ms |
+| host, one thread, same association | 11.682 ms |
+| effective bandwidth | 165.3 MB in 0.611 ms = **270 GB/s** of the card's 448 |
+
+The fixed per-call cost (allocation, transfers, synchronize) measures 0.05 ms
+on the tiny fixture, so the kernel itself runs near 72% of peak bandwidth.
+That is the answer to the question the tier choice turned on: **the exact
+association is not what limits this kernel, memory is.** The published price
+of deterministic GPU inference is batch-invariant kernels at roughly 61.5% of
+throughput; nothing like that is being paid here, because a batch-1 forward
+was never reduction-bound in the first place.
+
+Scope, stated rather than implied: F32, F16 and Q8_0 have a canonical order
+today and are what this covers. The k-quants do not have one yet, and
+`gpu_mvcanon` refuses them by name instead of inventing one. Defining the
+canonical order for a k-quant is R12.1's work, not this slice's, and the
+trainer's forward cannot move for a Q4_K_M base until it exists. The
+integration -- taping through the device forward, and the direct comparison
+against the non-canonical GEMV -- is the next slice, exactly as `gpu_mvt`
+was a gated primitive for three slices before the trainer consumed it.
 
 ## D9 — `--merge-lora`: folding the adapter into the base
 

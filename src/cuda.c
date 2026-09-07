@@ -301,6 +301,7 @@ typedef struct gpu_weights {
     CUfunction  f_mv[KT_N], f_mvb[KT_N];// indexed by ggml type; _b = tile variant
     CUfunction  f_mvt[KT_N];            // transposed matvec (training backward)
     CUfunction  f_lora_a, f_lora_b;     // adapter at inference (D2 on CUDA)
+    CUfunction  f_mvcanon[KT_N];        // canonical-order forward (R8.7.1)
     CUfunction  f_gemm[KT_N];           // prefill tiled-GEMM variants (Q8_0/Q4_K)
     CUfunction  f_gemm_tc[KT_N];        // tensor-core prefill GEMM (opt-in, Q4_K)
     CUfunction  f_gemv[KT_N];           // decode coalesced GEMV variants (Q8_0/Q4_K)
@@ -1308,6 +1309,9 @@ static gpu_weights *shared_build(model_t *m, size_t act_bytes, int max_hd,
             { &w->f_mv[T_Q3_K], "k_mv_q3_K" },
             { &w->f_lora_a,      "k_lora_a" },
             { &w->f_lora_b,      "k_lora_b" },
+            { &w->f_mvcanon[T_F32],  "k_mvcanon_f32" },
+            { &w->f_mvcanon[T_F16],  "k_mvcanon_f16" },
+            { &w->f_mvcanon[T_Q8_0], "k_mvcanon_q8_0" },
             { &w->f_mvt[T_F32],  "k_mvt_f32" },
             { &w->f_mvt[T_F16],  "k_mvt_f16" },
             { &w->f_mvt[T_BF16], "k_mvt_bf16" },
@@ -4038,6 +4042,46 @@ void gpu_lora_unbind(model_t *m) {
     if (g->lora_a || g->lora_b || g->lora_t) cu.CtxSetCurrent(g->sw->ctx);
     lora_dev_release(g);
     g->graph_bad = true;
+}
+
+// ------------------- canonical-order forward matvec (R8.7.1 slice 1)
+// y[row] = dot(W[row], x) in EXACTLY the association vec_dot uses under
+// RUNNER_CANON_KERNELS, so the two agree bit for bit rather than closely.
+// Synchronous and allocating its own scratch: this is the correctness and
+// throughput primitive, not the integrated training forward, the same way
+// gpu_mvt was before slices 2 to 4 consumed it.
+//
+// false = no backend, no kernel for this type (only F32/F16/Q8_0 have a
+// canonical order defined today), or the tensor is not device-resident.
+bool gpu_mvcanon(model_t *m, const gguf_tensor *w, const float *x, float *y,
+                 int n_in, int n_out) {
+    gpu_t *g = m->gpu;
+    if (!g || !w || w->type >= KT_N || !g->sw->f_mvcanon[w->type]) return false;
+    if (w->scale != 1.0f) return false;   // a scaled tensor is not this path
+    CUdeviceptr weights = 0;
+    uint64_t w_off = 0;
+    if (!binding_find(g->sw, m, w, &weights, &w_off)) return false;
+    if (cu.CtxSetCurrent(g->sw->ctx) != 0) return false;
+    CUdeviceptr d_x = 0, d_y = 0;
+    if (cu.MemAlloc(&d_x, sizeof(float) * (size_t)n_in) != 0) return false;
+    if (cu.MemAlloc(&d_y, sizeof(float) * (size_t)n_out) != 0) {
+        cu.MemFree(d_x);
+        return false;
+    }
+    int row_bytes = (int)ggml_row_size(w->type, n_in);
+    bool ok = cu.MemcpyHtoD(d_x, x, sizeof(float) * (size_t)n_in) == 0;
+    if (ok) {
+        void *p[] = { &weights, &d_x, &d_y, &n_in, &n_out, &w_off, &row_bytes };
+        // 8 lanes per row, 256 threads = 32 rows per block
+        int threads = 256, rows = threads / 8;
+        unsigned blocks = (unsigned)((n_out + rows - 1) / rows);
+        ok = launch(g, g->sw->f_mvcanon[w->type], blocks, 1, 1, threads, p) &&
+             cu.CtxSynchronize() == 0 &&
+             cu.MemcpyDtoH(y, d_y, sizeof(float) * (size_t)n_out) == 0;
+    }
+    cu.MemFree(d_x);
+    cu.MemFree(d_y);
+    return ok;
 }
 
 // ------------------- transposed matvec for training (adaptation D8 slice 1)
