@@ -120,8 +120,9 @@ rather than the engine:
 | `conformance/test_prefill_deadline.py` | a test-supplied `env` replaced the inherited one; without `SystemRoot` a process cannot initialise Winsock and exits 1 before printing anything |
 | `test_caps.py` | `--caps` has advertised NVFP4 on CUDA since 2026-09-06 and the expected list had not admitted it (the check only runs where a backend exists, and CI has no GPU) |
 
-All fixed the same day; the suite reads **1130 passed, 67 skipped, 0 failed**
-here now. The general lesson is the one worth keeping: **CI builds Windows and
+All fixed the same day. `make OS=Windows_NT -j2 test` **exits 0** here again
+(C gates plus 525 + 47 + 28 + 20 passed across the Python legs), and the
+Python suite on its own reads **1130 passed, 67 skipped, 0 failed**. The general lesson is the one worth keeping: **CI builds Windows and
 never runs the suite there**, so a Windows-only harness defect is invisible
 until somebody uses this box, and this box is the only CUDA device in the lab.
 Whether that becomes a CI job or a scheduled run on the box is open (suite

@@ -24,8 +24,10 @@ names that were true when they were written.
   `tests/test_lora.py`, self-skipping without a device. Deleting one of the
   seven hooks leaves every relative gate green and only the merged-weights
   comparison red, which is why that one is the anchor.
-- **The suite is green on Windows.** It had not been run there in a while and
-  read 8 failed / 1 error, all of them the harness rather than the engine, and
+- **The suite is green on Windows.** `make OS=Windows_NT -j2 test` exits 0 on
+  the CUDA box again, and the Python suite reads 1130 passed / 67 skipped / 0
+  failed. It had not been run there since 2026-08-13 and read 8 failed / 1
+  error, all of them the harness rather than the engine, and
   all invisible to CI, which builds Windows and does not run `make test`
   there. That box is also the lab's only CUDA device, so the CUDA gates were
   unreachable behind them.
