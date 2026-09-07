@@ -147,6 +147,7 @@ int json_escape_close(uint8_t *sub, uint16_t *esc, uint16_t hi,
 
 void jsonv_init(jsonv *v) {
     v->depth = 0;
+    v->depth_floor = 0;
     v->st = S_START;
     v->sub = 0;
     v->lit = 0;
@@ -163,6 +164,15 @@ void jsonv_init_any(jsonv *v) {
     v->st = S_VALUE;
 }
 
+void jsonv_init_nested(jsonv *v, bool object_rooted, int outer_containers) {
+    if (object_rooted) jsonv_init(v);
+    else               jsonv_init_any(v);
+    if (outer_containers < 0) outer_containers = 0;
+    if (outer_containers > (int)sizeof(v->stack))
+        outer_containers = (int)sizeof(v->stack);
+    v->depth_floor = (uint8_t)outer_containers;
+}
+
 bool jsonv_value_end(const jsonv *v) {
     if (v->done) return true;
     return v->depth == 0 && (v->st == S_NUM_ZERO || v->st == S_NUM_INT ||
@@ -174,7 +184,9 @@ static bool is_ws(uint8_t c) {
 }
 
 static bool push(jsonv *v, uint8_t c) {
-    if (v->depth >= (int)sizeof(v->stack)) return false;
+    // against the TOTAL depth, so a submachine cannot spend a budget its
+    // parent has already spent (see depth_floor)
+    if (v->depth + (int)v->depth_floor >= (int)sizeof(v->stack)) return false;
     v->stack[v->depth++] = c;
     return true;
 }
@@ -555,6 +567,9 @@ void jsonv_snapshot(jsonv *dst, const jsonv *src) {
     else if (d > (int)sizeof(src->stack)) d = (int)sizeof(src->stack);
     memcpy(dst->stack, src->stack, (size_t)d);
     dst->depth = src->depth;
+    dst->depth_floor = src->depth_floor;   // part of the live state: a copy
+                                           // that forgot it would answer a
+                                           // future push differently
     dst->st = src->st;
     dst->sub = src->sub;
     dst->lit = src->lit;

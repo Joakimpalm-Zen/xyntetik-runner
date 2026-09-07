@@ -102,4 +102,27 @@ void jv_dump_tojson(const jv *v, sbuf *o);
 // order is by LOWERCASED key with ties left in insertion order.
 void jv_dictsort(const jv *obj, int *order);
 
+// The deepest container nesting this project's JSON goes to, stated ONCE
+// because two modules enforce it and they disagreed. json_parse refuses past
+// it; jsonmode's streaming validator sizes its container stack to it and so
+// cannot accept a document the parser would then refuse.
+//
+// They used to be 128 and 200, and the gap was reachable: a document nested
+// between 129 and 200 levels was accepted by the validator, closed by
+// sval_close, and then rejected by json_parse -- which is precisely the
+// closer's published guarantee ("what went on the wire parses") failing. The
+// fuzzer found it on 2026-09-07 (tests/fuzz/corpus/sval_trial/seed-deep-nesting).
+// Refusing early is the fail-closed direction: the engine never emits a
+// document it cannot itself read.
+//
+// The two counts are not the same count, which is the part that makes a
+// single number wrong: json_parse charges a level to EVERY value, containers
+// and scalars alike, so the scalar inside N nested containers is parsed at
+// depth N+1. The validator's stack holds containers only. Sizing it to the
+// parser's bound therefore still admits one document the parser refuses --
+// the one whose innermost container holds a scalar -- which is exactly the
+// case the fuzzer produced (123 arrays around a `true`).
+#define JSON_MAX_DEPTH 128                            // parser: any value
+#define JSON_MAX_CONTAINER_DEPTH (JSON_MAX_DEPTH - 1) // validator: containers
+
 #endif

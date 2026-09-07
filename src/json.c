@@ -345,7 +345,7 @@ fail:
 }
 
 static jv *parse_value(jcur *c) {
-    if (++c->depth > 128) { c->depth--; return NULL; }
+    if (++c->depth > JSON_MAX_DEPTH) { c->depth--; return NULL; }
     skip_ws(c);
     jv *r = NULL;
     if (c->p < c->end) {
