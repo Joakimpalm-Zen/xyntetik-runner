@@ -235,7 +235,10 @@ every run and it was left out of the first draft of this table. It is in
 the table now, and it does not tell the same story.
 
 On the 22 rows above, margin-qualified top-1 splits **four to the runner,
-five to llama.cpp, thirteen tied**. The runner takes Qwen2.5 0.5B,
+five to llama.cpp, thirteen tied**, and the section after next shows that
+none of those nine differences except StableLM is distinguishable from
+noise at this corpus size. The split is reported here because it is what
+the measure says, not because it is a finding. The runner takes Qwen2.5 0.5B,
 Qwen3 4B and Gemma 3 4B at Q4_K_M and Apertus 8B; llama.cpp takes
 Granite 4.0-h micro at Q4_K_M, Trinity Nano at both weights, Gemma 4 E2B
 at Q4_0, and StableLM. Every one of the thirteen ties is a row where both
@@ -265,13 +268,78 @@ three configurations on the same file.
 | Q4_K_M | llama.cpp `-fa off` | 0.119 | 85.9% | **97.3%** |
 | Q4_K_M | llama.cpp `-fa on` | 0.115 | **88.9%** | **97.3%** |
 
-With flash attention on, llama.cpp is ahead of the runner on top-1 and on
-margin-qualified, and it clears this project's own 97% bar on that family
-at that quant while the runner does not. The runner keeps only the mean
-KL column. The 22-row table above therefore reports llama.cpp in its
-weaker 4-bit configuration, and re-running the served tier with
-`-fa on` is filed as R6.7.7 before any of these numbers are quoted
-comparatively again.
+Read the table carefully, because a first pass over it (including the
+first version of this section) gets the causation wrong. **Flash
+attention does not move the margin-qualified column at all**: llama.cpp
+reads 97.3% with the kernel on and 97.3% with it off. What the kernel
+changes is mean KL and plain top-1. So llama.cpp clears this project's
+97% bar on that family at that quant in either configuration, and the
+runner does not in either. Turning the kernel on is still the right
+thing to measure, because it closes the runner's mean-KL lead (see the
+significance table below), but it is not the reason llama.cpp is ahead
+on the bar we gate on. Re-running the served tier with `-fa on` is
+filed as R6.7.7.
+
+### How much of this is real: n=100 is too small to say
+
+Every comparison above rests on 100 corpus positions, of which 61 to 84
+qualify for the margin-qualified column. At that size **one position is
+worth 1.2 to 1.6 percentage points**, so every headline gap in this
+report is a handful of tokens. Written out as counts rather than
+percentages:
+
+| family, served tier | qualified | runner hits | llama.cpp hits | gap | McNemar exact p |
+|---|---|---|---|---|---|
+| Apertus 8B | 70 | **68** | 65 | 3 to runner | 0.250 |
+| Gemma 3 4B | 81 | **74** | 72 | 2 to runner | 0.500 |
+| Qwen2.5 0.5B | 61 | **60** | 59 | 1 to runner | 1.000 |
+| Qwen3 4B | 72 | **68** | 67 | 1 to runner | 1.000 |
+| Gemma 4 E2B | 84 | 57 | **58** | 1 to llama.cpp | 1.000 |
+| Granite 4.0-h micro | 67 | 59 | **60** | 1 to llama.cpp | 1.000 |
+| Trinity Nano | 65 | 59 | **61** | 2 to llama.cpp | 0.500 |
+| Granite 4.2 3B (`-fa on`) | 75 | 71 | **73** | 2 to llama.cpp | 0.500 |
+| StableLM 2 1.6B | 70 | 47 | **70** | 23 to llama.cpp | <0.001 |
+
+**Not one of these differences reaches significance except StableLM.**
+The 4 / 5 / 13 split reported above is a tally of coin flips. That
+includes the rows the runner wins: Apertus at p=0.250 is our best result
+in the table and it is not a result. And it includes the Granite 4.2
+flash-attention row that prompted this section, at two positions and
+p=0.500.
+
+The continuous measure has roughly ten times the power, because it uses
+every position instead of only the ones where the argmax flips. A
+Wilcoxon signed-rank test on the per-position KL difference does find
+real structure:
+
+| | families |
+|---|---|
+| runner genuinely closer (p<0.05) | SmolLM2, Qwen2.5 0.5B, Qwen3.5 0.8B, Gemma 3 4B, Apertus 8B, Nemotron Nano 9B, Granite 4.0-h and Granite 4.2 3B at bf16 |
+| no measurable difference | Granite 4.0-h at Q4_K_M, Gemma 4 E2B at Q4_0, Qwen3 4B at Q4_K_M, Qwen3 0.6B at Q4_0, Granite 4.2 3B at Q4_K_M with `-fa on` |
+| **llama.cpp genuinely closer** | **Trinity Nano (afmoe) at bf16 p=0.012 and at Q8_0 p=0.012**, StableLM p<0.001 |
+
+Three conclusions follow, and they are not the ones the percentage
+tables suggested.
+
+1. **There is no general 4-bit deficit.** What quantization does to the
+   runner is erase its advantage, not reverse it. Five served rows move
+   from "genuinely closer" at bf16 to "no measurable difference" at the
+   pinned quant, and none moves to "genuinely worse". The f32 activation
+   and f32 attention accumulation buy a real edge that weight-rounding
+   error then swamps.
+2. **afmoe is a second defect, not a lost coin flip.** Trinity Nano is
+   the only family besides StableLM where llama.cpp is genuinely closer,
+   and it is genuinely closer **at bf16**, where no quantization is
+   involved. That makes it arithmetic, in the same class as StableLM and
+   an order of magnitude smaller. This report previously listed it as
+   "behind at its served quant", which understated it. Filed as R4.24.
+3. **The instrument needs a bigger corpus before any of this is quoted
+   comparatively.** At the observed discordance rate of about 2.7% of
+   qualified positions, 100 positions has a power of 0.02 to detect the
+   gap it appears to show. 1,000 positions reaches 0.54 and 2,000 reaches
+   0.88 for a lopsided true effect, less for a moderate one. **2,000
+   positions is the floor for a comparative claim** and is a few hours of
+   Blackwell time, not a research program. Filed as R6.7.9.
 
 ### StableLM is wrong, and this is the pass's most important result
 

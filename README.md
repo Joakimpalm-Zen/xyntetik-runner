@@ -115,16 +115,23 @@ and it is the second one a user notices.
 Three things make the honest reading narrower still. The KL margin is
 small next to what quantization costs: at 4 bits both engines sit
 roughly 0.06 to 0.35 from the reference and are separated from each
-other by 0.004 to 0.008. The golden pass scored the other engine with
-its flash-attention kernel off, which is its weaker configuration at 4
-bits; with that kernel on, the Granite 4.2 3B certification puts it at
-97.3% margin-qualified against Runner's 94.7%, so it clears our own bar
-there and Runner does not. And **StableLM is a defect on our side**,
-where the other engine reproduces the reference almost exactly and
-Runner does not: that architecture was named as supported here with no
-pinned file and therefore no gate, which is how it survived. Trinity
-Nano also goes to the other engine on both measures. All of it is being
-fixed and all of it is written down first. Evidence:
+other by 0.004 to 0.008. Most of the margin-qualified split is not
+measurable: at 100 corpus positions one token is worth about 1.3 points,
+so every gap in that column except StableLM is one to three tokens, and
+none of them survives a significance test, the ones Runner wins
+included. And **StableLM is a defect on our side**, where the other
+engine reproduces the reference almost exactly and Runner does not: that
+architecture was named as supported here with no pinned file and
+therefore no gate, which is how it survived. Trinity Nano is a second,
+much smaller defect of the same kind, measurable at unquantized weights
+where no rounding is involved.
+
+The one thing that does hold across the whole table: quantization does
+not put Runner behind, it puts Runner level. Five families move from
+"measurably closer to the reference" at bf16 to "no measurable
+difference" at the pinned quant, and none moves to measurably worse. The
+32-bit arithmetic buys a real edge that weight rounding then swamps. All
+of it is being fixed and all of it is written down first. Evidence:
 [docs/golden-pass-2026-09-07.md](docs/golden-pass-2026-09-07.md).
 
 ### Designed to stay on
