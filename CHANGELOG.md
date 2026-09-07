@@ -8,6 +8,22 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **The closer could emit a document the engine cannot parse.** The fuzzer
+  found it on 2026-09-07 and it is the one thing the closer's published
+  guarantee says cannot happen. `sval` delegates an open `{}` schema node to a
+  `jsonv` submachine, and the two container stacks each counted from zero:
+  48 schema frames plus 127 generic containers were accepted at a combined
+  depth `json_parse` refuses at 128, so `sval_close` closed a document the
+  engine could not read back. Reachable from a client-supplied JSON schema or
+  a model's own constrained output. Every push is now charged against the
+  total (`jsonv.depth_floor`, carried through `jsonv_snapshot` because a copy
+  that forgot it answers a future probe wrong), and the two bounds are stated
+  once as `JSON_MAX_DEPTH` / `JSON_MAX_CONTAINER_DEPTH` rather than as 128 in
+  one file and 200 in another. Note the two counts are not the same count:
+  `json_parse` charges a level to every value, so a scalar inside N containers
+  sits at N+1, and the validator's stack is one shorter than the parser's
+  bound. Gated in `test-sval-walk` over depths 100 to 160, which is red on the
+  previous code at depth 127, and the crash input is committed as a fuzz seed.
 - **The device classes CI cannot reach now have a ledger and a gate.** Hosted
   runners build three platforms and run the suite on machines with no GPU;
   nothing could say when a claimed device last ran the gates, and nothing was

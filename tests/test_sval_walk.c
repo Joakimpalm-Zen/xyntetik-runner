@@ -174,6 +174,62 @@ static void walk(const snode *schema, int si, uint64_t seed) {
     }
 }
 
+// The nesting bound, which the random walk cannot reach: it would have to
+// draw '[' a hundred and thirty times in a row.
+//
+// sval delegates an open `{}` schema node to a jsonv submachine, and the two
+// stacks used to count from zero independently -- 48 sval frames plus 127
+// jsonv containers, accepted at a total json_parse refuses at 128. The closer
+// then emitted a document the engine could not read, which is the one thing
+// its published guarantee says cannot happen. The fuzzer found it on
+// 2026-09-07; this is the same case as a bounded assertion, so a future
+// change to either bound has to keep them in agreement.
+static void deep_nesting_closes_into_something_parseable(void) {
+    static const char SCHEMA[] =
+        "{\"type\":\"object\",\"properties\":{\"f\":{}}}";
+    jv *j = json_parse(SCHEMA, strlen(SCHEMA));
+    assert(j);
+    char err[256];
+    snode *schema = schema_compile(j, err, (int)sizeof(err));
+    assert(schema);
+
+    int checked = 0;
+    for (int n = 100; n <= 160; n++) {
+        char doc[1200];
+        int k = snprintf(doc, sizeof doc, "{\"f\":");
+        for (int i = 0; i < n && k < (int)sizeof(doc) - 2; i++) doc[k++] = '[';
+        doc[k++] = '1';
+
+        sval v;
+        sval_init(&v, schema);
+        char acc[2400];
+        size_t n_acc = 0;
+        for (int i = 0; i < k; i++) {
+            if (!sval_feed(&v, &doc[i], 1)) break;
+            acc[n_acc++] = doc[i];
+            if (v.done) break;
+        }
+        char out[2400];
+        sval closing = v;
+        int wrote = sval_close(&closing, out, (int)sizeof out);
+        assert(wrote >= 0);
+        if (!v.done && wrote == 0) continue;      // the fabrication line
+        memcpy(acc + n_acc, out, (size_t)wrote);
+        jv *parsed = json_parse(acc, n_acc + (size_t)wrote);
+        if (!parsed) {
+            fprintf(stderr, "FAIL: %d nested arrays closed into %zu bytes "
+                    "that json_parse refuses\n", n, n_acc + (size_t)wrote);
+            exit(1);
+        }
+        jv_free(parsed);
+        checked++;
+    }
+    schema_free(schema);
+    jv_free(j);
+    assert(checked > 0);
+    printf("sval nesting: %d depths close into parseable documents\n", checked);
+}
+
 int main(void) {
     const char *env = getenv("RUNNER_SVAL_WALK_SEEDS");
     int n_seeds = env ? atoi(env) : DEFAULT_SEEDS;
@@ -195,5 +251,6 @@ int main(void) {
     }
     printf("sval walk: %d schemas x %d seeds, all probes agree\n",
            N_SCHEMAS, n_seeds);
+    deep_nesting_closes_into_something_parseable();
     return 0;
 }

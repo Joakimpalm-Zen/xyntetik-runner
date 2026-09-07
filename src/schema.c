@@ -2916,8 +2916,11 @@ static int feed_byte(sval *v, uint8_t c) {
     if (n->kind == SN_ANY) {
         if (f->phase == P_START) {
             if (is_ws(c)) return leading_ws_ok(v);
-            if (n->min_items) jsonv_init(&v->any);      // object-rooted
-            else              jsonv_init_any(&v->any);  // any value
+            // v->depth over-estimates the containers open above (a number
+            // or string frame is not a container), which is the fail-closed
+            // direction: the submachine gets a budget no larger than what is
+            // actually left, never larger.
+            jsonv_init_nested(&v->any, n->min_items != 0, v->depth);
             f->phase = P_STR; // "running"
         }
         if (v->any.done) { frame_done(v); return 1; }

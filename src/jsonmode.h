@@ -5,6 +5,8 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+#include "json.h"   // JSON_MAX_DEPTH: the nesting bound both halves must share
+
 // incremental validator: accepts byte strings only while they remain a valid
 // prefix of a single JSON object; small and memcpy-copyable for lookahead
 // Duplicate-key guard capacity, shared with schema.c's map guard: hashes of
@@ -20,8 +22,19 @@
 #define JSON_KEY_SEEN_MAX 24
 
 typedef struct {
-    uint8_t stack[200];     // container nesting: 'O' object, 'A' array
+    // container nesting: 'O' object, 'A' array. Sized to the PARSER's bound,
+    // not to a number of its own: anything this validator accepts has to be
+    // something json_parse will read back, or sval_close emits a document the
+    // engine cannot parse (it did, between depth 129 and 200).
+    uint8_t stack[JSON_MAX_CONTAINER_DEPTH];
     int16_t depth;
+    // Containers already open ABOVE this machine when it is a submachine.
+    // schema.c's sval delegates open `{}` schema nodes to a jsonv, and the
+    // two stacks each counted from zero, so a document could be 48 sval
+    // frames deep AND 127 jsonv containers deep and be accepted at a total
+    // json_parse would refuse. The closer then emitted it. Every push is
+    // charged against the TOTAL. Zero for a standalone validator.
+    uint8_t depth_floor;
     uint8_t st, sub, lit;   // micro-state, escape/digit progress, literal id
     uint8_t utf8;           // pending raw UTF-8 scalar (see json_utf8_byte)
     bool    done;           // a complete top-level object has been parsed
@@ -78,6 +91,10 @@ int  json_utf8_close(uint8_t *state, char out[3]);
 
 void jsonv_init(jsonv *v);      // accept exactly one JSON object
 void jsonv_init_any(jsonv *v);  // accept exactly one JSON value of any kind
+// As above, for a machine running UNDER `outer_containers` already-open
+// containers: its own nesting budget is what they leave. Fail-closed on the
+// count being an over-estimate, which is the safe direction.
+void jsonv_init_nested(jsonv *v, bool object_rooted, int outer_containers);
 bool jsonv_feed(jsonv *v, const char *s, int n);
 // Copy only the LIVE part of `src` into `dst`: the container stack above
 // `depth` is never read before it is written, so copying those bytes is pure
