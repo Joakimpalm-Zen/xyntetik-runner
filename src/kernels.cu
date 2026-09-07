@@ -1632,6 +1632,60 @@ extern "C" __global__ void k_gemm_q3_K(MV_PARAMS) {
 #define MVT_T_LOOP \
     for (int t = (int)blockIdx.y; t < a.batch; t += (int)gridDim.y)
 
+// ---------------------------------------------------------------------------
+// LoRA at inference on the device (adaptation D2 on CUDA, R8.7.2):
+// y[b][j] += scale * sum_k B[j][k] * (sum_i A[k][i] * x[b][i]).
+//
+// Two launches rather than one fused kernel: the inner projection is r
+// reductions over n_in and the outer is n_out independent dot products over
+// r, so their natural grids have nothing in common. A and B are F32 (the
+// adapter loader converts F16/BF16 at load), and the rank is bounded by
+// LORA_R_MAX, which is what lets the second kernel stage the whole inner
+// vector in static shared memory.
+//
+// This is not the CPU hook's arithmetic: the reduction below is a warp tree
+// where the CPU walks a serial fmaf chain. That difference is the ordinary
+// CPU/GPU one and is bounded by the same merged-reference gate the CPU hook
+// answers to. What IS exact either way: a zero B, or a zero scale,
+// contributes fmaf(scale, 0, y) == y, so an unadapted answer stays
+// bit-for-bit unadapted.
+
+#define LORA_R_MAX_DEV 512   // keep in sync with LORA_R_MAX in model.c
+
+// t[b][k] = sum_i A[k][i] * x[b][i]; one 128-thread block per (k, position)
+extern "C" __global__ void k_lora_a(const float *A, const float *x, float *t,
+                                    int n_in, int r, int xs) {
+    int k = (int)blockIdx.x, b = (int)blockIdx.y;
+    const float *ar = A + (ulong64)k * n_in;
+    const float *xr = x + (ulong64)b * xs;
+    float s = 0.0f;
+    for (int i = (int)threadIdx.x; i < n_in; i += (int)blockDim.x)
+        s = fmaf(ar[i], xr[i], s);
+    __shared__ float part[4];
+    s = warp_sum(s);
+    unsigned lane = threadIdx.x & 31, w = threadIdx.x >> 5;
+    if (lane == 0) part[w] = s;
+    __syncthreads();
+    if (threadIdx.x == 0)
+        t[(ulong64)b * r + k] = (part[0] + part[1]) + (part[2] + part[3]);
+}
+
+// y[b][j] += scale * sum_k B[j][k] * t[b][k]; one thread per output element
+extern "C" __global__ void k_lora_b(const float *B, const float *t, float *y,
+                                    int n_out, int r, int ys, float scale) {
+    __shared__ float ts[LORA_R_MAX_DEV];
+    int b = (int)blockIdx.y;
+    for (int k = (int)threadIdx.x; k < r; k += (int)blockDim.x)
+        ts[k] = t[(ulong64)b * r + k];
+    __syncthreads();
+    int j = (int)(blockIdx.x * blockDim.x + threadIdx.x);
+    if (j >= n_out) return;
+    const float *br = B + (ulong64)j * r;
+    float acc = 0.0f;
+    for (int k = 0; k < r; k++) acc = fmaf(br[k], ts[k], acc);
+    y[(ulong64)b * ys + j] = fmaf(scale, acc, y[(ulong64)b * ys + j]);
+}
+
 extern "C" __global__ void k_mvt_f32(MV_PARAMS) {
     MVT_HEAD;
     MVT_T_LOOP {

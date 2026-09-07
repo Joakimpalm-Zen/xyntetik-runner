@@ -31,6 +31,19 @@
 #include <stdlib.h>
 #include <string.h>
 
+// MinGW has no setenv; the two-argument shim is the same idiom
+// tests/test_instances.c uses. Without it this file does not compile on
+// Windows, which is where the CUDA gates run (CI builds Windows but does not
+// run `make test` there, so it went unseen).
+#ifdef _WIN32
+#include <stdlib.h>
+#define setenv_compat(k, v) _putenv_s(k, v)
+#else
+#include <stdlib.h>
+#define setenv_compat(k, v) setenv(k, v, 1)
+#endif
+
+
 enum { STEPS = 24, MAX_TOK = 96, N_BATCH = 32 };
 
 #define BAR_MQT1 0.97
@@ -44,7 +57,7 @@ static const char *TEXT =
 static float *run(const char *path, const char *mm_env, int *n_vocab_out,
                   bool *used_gpu, const int32_t *toks, int n_tok) {
     // the grouped path is DEFAULT ON, so the reference arm pins "0"
-    setenv("RUNNER_METAL_MOE_MM", mm_env ? mm_env : "0", 1);
+    setenv_compat("RUNNER_METAL_MOE_MM", mm_env ? mm_env : "0");
     model_t m;
     memset(&m, 0, sizeof(m));
     model_params p;

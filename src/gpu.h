@@ -108,6 +108,17 @@ void   gpu_train_free(model_t *m);
 bool   gpu_train_mvt(model_t *m, const gguf_tensor *w, const float *dy,
                      float *dx, int n_in, int n_out, int nb);
 
+// D2 on the device (R8.7.2): place the loaded adapter's A/B in VRAM for every
+// GPU-resident layer, so an offloaded projection gets the same y += scale*B(Ax)
+// the host hook applies to a CPU-resident one. Called once, after the adapter
+// is parsed and before any forward. false = this backend cannot apply adapters
+// on the device (no kernels, no VRAM, a rank past the kernel's bound), and the
+// CALLER MUST REFUSE the combination: serving an unadapted model quietly is
+// invisible in the output and reads as a weak adapter. Returns true having
+// done nothing when the split left every adapted layer on the host.
+bool   gpu_lora_bind(model_t *m);
+void   gpu_lora_unbind(model_t *m);
+
 bool   gpu_forward_batch(model_t *m, const int32_t *tokens, int n, int pos,
                          bool want_logits, float **logits);
 void   gpu_free(model_t *m); // releases GPU buffers; KV pointers become invalid

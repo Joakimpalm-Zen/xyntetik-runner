@@ -12,6 +12,12 @@ comparison of exact numerics:
     definition of what applying a LoRA means;
   * hostile adapters (shape mismatch, half a pair) are refused with the
     offending tensor named — never silently skipped.
+
+The same three numerical gates run again on the device arm (R8.7.2), where
+the adapter is applied by the CUDA kernels rather than the host hook. They
+self-skip on a machine whose backend has no adapter path, and they are the
+reason a GPU-resident model may load an adapter at all: without them the
+failure mode is a model that quietly ignored it.
 """
 import json
 import pathlib
@@ -54,9 +60,9 @@ def fx(tmp_path_factory):
             "f16": d / "fx.f16.gguf"}
 
 
-def _score(runner_bin, model, lora=None, scale=None):
+def _score(runner_bin, model, lora=None, scale=None, gpu=False):
     cmd = [runner_bin, "-m", str(model), "--score", "-p", PROMPT,
-           "-t", "2", "--gpu", "off"]
+           "-t", "2", "--gpu", "auto" if gpu else "off"]
     if lora:
         cmd += ["--lora", str(lora)]
     if scale is not None:
@@ -65,6 +71,66 @@ def _score(runner_bin, model, lora=None, scale=None):
                        stderr=subprocess.PIPE, timeout=120)
     assert p.returncode == 0, p.stderr.decode(errors="replace")
     return p.stdout
+
+
+def _gpu_or_skip(runner_bin, fx):
+    """Skip unless a backend actually applies the adapter on the device.
+
+    Two ways to be absent, both a skip and not a pass: no GPU at all (the
+    load line never mentions a backend), and a backend without adapter
+    kernels (model_lora_load refuses, which is the point of the refusal).
+    """
+    cmd = [runner_bin, "-m", str(fx["base"]), "--score", "-p", "hi",
+           "-t", "2", "--gpu", "auto", "--lora", str(fx["zero"])]
+    p = subprocess.run(cmd, cwd=ROOT, stdout=subprocess.PIPE,
+                       stderr=subprocess.PIPE, timeout=120)
+    err = p.stderr.decode(errors="replace")
+    if p.returncode != 0:
+        pytest.skip("no device adapter path: " + err.strip().splitlines()[-1])
+    if "adapter on device" not in err:
+        pytest.skip("no GPU backend engaged for this model")
+
+
+def test_zero_adapter_is_byte_identical_to_base_on_device(runner_bin, fx):
+    """The exactness anchor of the device path: a zero B contributes
+    fmaf(scale, 0, y), which is y, so the adapted and unadapted GPU runs
+    must agree BIT for bit. A misplaced hook, a wrong stride or a scratch
+    read from the previous site all break this before they break tolerance.
+    """
+    _gpu_or_skip(runner_bin, fx)
+    assert (_score(runner_bin, fx["base"], gpu=True)
+            == _score(runner_bin, fx["base"], lora=fx["zero"], gpu=True))
+
+
+def test_scale_zero_is_byte_identical_to_base_on_device(runner_bin, fx):
+    _gpu_or_skip(runner_bin, fx)
+    assert (_score(runner_bin, fx["base"], gpu=True)
+            == _score(runner_bin, fx["base"], lora=fx["adapter"], scale=0,
+                      gpu=True))
+
+
+def test_device_adapter_matches_the_merged_reference(runner_bin, fx):
+    """The absolute anchor: the merged model is W += (alpha/r)BA baked into
+    the weights by a separate script, so it knows nothing about the kernel
+    under test. Agreeing with it is agreeing with the definition of applying
+    a LoRA, not with our own other implementation.
+    """
+    _gpu_or_skip(runner_bin, fx)
+    adapted = json.loads(_score(runner_bin, fx["base"], lora=fx["adapter"],
+                                gpu=True))
+    merged = json.loads(_score(runner_bin, fx["merged"], gpu=True))
+    deltas = [abs(a - b) for a, b in
+              zip(adapted["logprobs"], merged["logprobs"])]
+    assert max(deltas) <= 5e-4, max(deltas)
+
+
+def test_device_adapter_changes_the_score_deterministically(runner_bin, fx):
+    _gpu_or_skip(runner_bin, fx)
+    base = _score(runner_bin, fx["base"], gpu=True)
+    a1 = _score(runner_bin, fx["base"], lora=fx["adapter"], gpu=True)
+    a2 = _score(runner_bin, fx["base"], lora=fx["adapter"], gpu=True)
+    assert a1 != base
+    assert a1 == a2
 
 
 def test_zero_adapter_is_byte_identical_to_base(runner_bin, fx):

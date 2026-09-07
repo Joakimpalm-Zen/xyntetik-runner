@@ -300,6 +300,7 @@ typedef struct gpu_weights {
     #define KT_N (T_NVFP4 + 1)
     CUfunction  f_mv[KT_N], f_mvb[KT_N];// indexed by ggml type; _b = tile variant
     CUfunction  f_mvt[KT_N];            // transposed matvec (training backward)
+    CUfunction  f_lora_a, f_lora_b;     // adapter at inference (D2 on CUDA)
     CUfunction  f_gemm[KT_N];           // prefill tiled-GEMM variants (Q8_0/Q4_K)
     CUfunction  f_gemm_tc[KT_N];        // tensor-core prefill GEMM (opt-in, Q4_K)
     CUfunction  f_gemv[KT_N];           // decode coalesced GEMV variants (Q8_0/Q4_K)
@@ -382,6 +383,18 @@ typedef struct {
     CUdeviceptr mamba_proj, mamba_xBC, mamba_y;         // per-tile scratch
     CUdeviceptr mamba_conv, mamba_state;                // persistent conv ring + SSD state
     CUdeviceptr mamba_conv_prev, mamba_state_prev;      // pre-forward rollback snapshot
+    // R8.7.2, the loaded adapter on the device: lora_a/lora_b are
+    // [n_layer * LW_SLOTS] device pointers (0 = no adapter on that slot, or
+    // the layer is CPU-resident and the host hook covers it), lora_t the
+    // [MVB][lora_r] inner-projection scratch. Per sequence rather than in the
+    // shared-weights record: two slots can serve the same file with different
+    // adapters, and 45 MB at rank 8 on a 7B is not worth sharing wrong.
+    CUdeviceptr *lora_a, *lora_b;
+    int          lora_n;                // table length (n_layer * LW_SLOTS)
+    int         *lora_r_of;             // per-slot rank
+    float       *lora_scale;            // per-slot (alpha/r) * user scale
+    CUdeviceptr  lora_t;
+    int          lora_r;                // widest rank bound, 0 = no adapter
     float       *h_x, *h_logits, *h_moe_logits; // host staging
     float       *h_ple, *h_ple_tmp;             // E-series pre-pass staging
     int          last_pos;              // -2 = nothing synced yet
@@ -395,6 +408,11 @@ typedef struct {
 
 // max tokens per matvec tile — must match MVB in kernels.cu; every activation
 // buffer is allocated this many columns wide
+// The adapter rank the device path can stage in k_lora_b's shared vector
+// (LORA_R_MAX_DEV there, LORA_R_MAX in model.c). All three are 512; the
+// runtime check exists so raising one alone is refused rather than silently
+// reading past the shared array.
+#define LORA_R_DEV_MAX 512
 #define MVB 64   // activation buffer columns (keep in sync with kernels.cu)
 #define MVT 16   // scalar-kernel fixed tile (keep in sync with MVT there)
 #define TC_N    64   // tensor-core GEMM token tile (keep in sync)
@@ -1288,6 +1306,8 @@ static gpu_weights *shared_build(model_t *m, size_t act_bytes, int max_hd,
             { &w->f_mv[T_Q5_1], "k_mv_q5_1" },   { &w->f_mv[T_Q4_K], "k_mv_q4_K" },
             { &w->f_mv[T_Q5_K], "k_mv_q5_K" },   { &w->f_mv[T_Q6_K], "k_mv_q6_K" },
             { &w->f_mv[T_Q3_K], "k_mv_q3_K" },
+            { &w->f_lora_a,      "k_lora_a" },
+            { &w->f_lora_b,      "k_lora_b" },
             { &w->f_mvt[T_F32],  "k_mvt_f32" },
             { &w->f_mvt[T_F16],  "k_mvt_f16" },
             { &w->f_mvt[T_BF16], "k_mvt_bf16" },
@@ -2418,6 +2438,32 @@ static bool enc_mv(gpu_t *g, model_t *m, gguf_tensor *w, CUdeviceptr x,
                         w->type == T_NVFP4, w->scale);
 }
 
+// ------------------------------------------- adapter at a projection site
+// y += scale * B(Ax), the device twin of model.c's LORA_HOOK. The host hook
+// runs beside the CPU projections; on a GPU-resident layer the activations
+// never reach the host, so the same delta runs here from device-resident A
+// and B. Returns true unchanged when this (layer, slot) carries no adapter,
+// which is every site of an unadapted model and the whole cost of the check.
+//
+// Capture-safe: the only host-side branch is on the rank, which is fixed for
+// the model's lifetime, so a decode graph captured with an adapter replays
+// with the same launches.
+static bool enc_lora(gpu_t *g, int l, int slot, CUdeviceptr x, CUdeviceptr y,
+                     int n_in, int n_out, int batch, int xs, int ys) {
+    if (!g->lora_a) return true;
+    size_t idx = (size_t)l * LW_SLOTS + (size_t)slot;
+    CUdeviceptr A = g->lora_a[idx], B = g->lora_b[idx];
+    if (!A || !B) return true;
+    int r = g->lora_r_of[idx];
+    float scale = g->lora_scale[idx];
+    void *pa[] = { &A, &x, &g->lora_t, &n_in, &r, &xs };
+    if (!launch(g, g->sw->f_lora_a, (unsigned)r, (unsigned)batch, 1, 128, pa))
+        return false;
+    void *pb[] = { &B, &g->lora_t, &y, &n_out, &r, &ys, &scale };
+    return launch(g, g->sw->f_lora_b, (unsigned)((n_out + 127) / 128),
+                  (unsigned)batch, 1, 128, pb);
+}
+
 static bool enc_qknorm(gpu_t *g, model_t *m, CUdeviceptr v, CUdeviceptr w,
                        int n_heads, int hd, int batch, int vs) {
     float eps = m->rms_eps;
@@ -2526,10 +2572,29 @@ static bool enc_xielu(gpu_t *g, CUdeviceptr x, int n,
 // Per-sequence teardown. The shared weights are not touched here beyond
 // dropping this instance's reference: another slot may still be decoding
 // against them, and only the last release frees them.
+// The adapter's device copy, released by BOTH the public unbind (an adapter
+// dropped from a live model) and context teardown (the model going away, where
+// m->gpu is already NULL and the public entry point cannot reach it).
+static void lora_dev_release(gpu_t *g) {
+    for (int i = 0; i < g->lora_n; i++) {
+        if (g->lora_a && g->lora_a[i]) cu.MemFree(g->lora_a[i]);
+        if (g->lora_b && g->lora_b[i]) cu.MemFree(g->lora_b[i]);
+    }
+    if (g->lora_t) cu.MemFree(g->lora_t);
+    free(g->lora_a);     g->lora_a = NULL;
+    free(g->lora_b);     g->lora_b = NULL;
+    free(g->lora_r_of);  g->lora_r_of = NULL;
+    free(g->lora_scale); g->lora_scale = NULL;
+    g->lora_t = 0;
+    g->lora_r = 0;
+    g->lora_n = 0;
+}
+
 static void gpu_ctx_free(model_t *m, gpu_t *g) {
     (void)m;
     if (!g) return;
     if (g->sw && g->sw->ctx) cu.CtxSetCurrent(g->sw->ctx);
+    lora_dev_release(g);
     if (g->gexec && cu.GraphExecDestroy) cu.GraphExecDestroy(g->gexec);
     if (g->graph && cu.GraphDestroy) cu.GraphDestroy(g->graph);
     if (g->stream && cu.StreamDestroy) cu.StreamDestroy(g->stream);
@@ -3522,7 +3587,9 @@ static bool fwd_tile(gpu_t *g, model_t *m, const int32_t *tokens, int tn,
                               tn, 1, 256, ps);
         } else {
             ok = ok && enc_mv(g, m, ly->wq, g->xb, g->q, n_embd, q_dim,
-                              g->sw->bq[l], tn, xdim, q_dim);
+                              g->sw->bq[l], tn, xdim, q_dim)
+                    && enc_lora(g, l, LW_Q, g->xb, g->q, n_embd, q_dim,
+                                tn, xdim, q_dim);
             // the output gate projects the same normed input as Q, and xb is
             // overwritten by wo below, so this must run before attention
             if (m->attn_out_gate && ly->wq_gate)
@@ -3534,9 +3601,11 @@ static bool fwd_tile(gpu_t *g, model_t *m, const int32_t *tokens, int tn,
         // aliased model_kv_byte_off() below already resolves to.
         bool owns_kv = model_kv_owner(m, l) == l;
         if (!owns_kv) goto kv_done;
-        ok = ok && enc_mv(g, m, ly->wk, g->xb, g->kt, n_embd, kv_dim, g->sw->bk[l], tn, xdim, kv_dim);
+        ok = ok && enc_mv(g, m, ly->wk, g->xb, g->kt, n_embd, kv_dim, g->sw->bk[l], tn, xdim, kv_dim)
+                && enc_lora(g, l, LW_K, g->xb, g->kt, n_embd, kv_dim, tn, xdim, kv_dim);
         if (ly->wv) {
-            ok = ok && enc_mv(g, m, ly->wv, g->xb, g->vt, n_embd, kv_dim, g->sw->bv[l], tn, xdim, kv_dim);
+            ok = ok && enc_mv(g, m, ly->wv, g->xb, g->vt, n_embd, kv_dim, g->sw->bv[l], tn, xdim, kv_dim)
+                    && enc_lora(g, l, LW_V, g->xb, g->vt, n_embd, kv_dim, tn, xdim, kv_dim);
         } else {
             // gemma4 global layers have no V projection: V is the raw K
             // (zero + add = device-side copy with the kernels we have)
@@ -3609,7 +3678,8 @@ static bool fwd_tile(gpu_t *g, model_t *m, const int32_t *tokens, int tn,
                               tn, 1, 256, pg);
         }
 
-        ok = ok && enc_mv(g, m, ly->wo, g->xb2, g->xb, q_dim, n_embd, g->sw->bo[l], tn, xdim, xdim);
+        ok = ok && enc_mv(g, m, ly->wo, g->xb2, g->xb, q_dim, n_embd, g->sw->bo[l], tn, xdim, xdim)
+                && enc_lora(g, l, LW_O, g->xb2, g->xb, q_dim, n_embd, tn, xdim, xdim);
         prof_mark(g, PH_MATVEC);
     attention_done:
         if (g->sw->pan[l])
@@ -3653,7 +3723,9 @@ static bool fwd_tile(gpu_t *g, model_t *m, const int32_t *tokens, int tn,
         } else {
         if (!ly->w_gate) {
             ok = ok && enc_mv(g, m, ly->w_up, g->xb, g->hb,
-                              n_embd, m->n_ff, 0, tn, xdim, m->n_ff);
+                              n_embd, m->n_ff, 0, tn, xdim, m->n_ff)
+                    && enc_lora(g, l, LW_UP, g->xb, g->hb, n_embd, m->n_ff,
+                                tn, xdim, m->n_ff);
             prof_mark(g, PH_MATVEC);
             if (m->ffn_relu2)
                 ok = ok && enc_relu2(g, g->hb, tn * m->n_ff);
@@ -3664,14 +3736,19 @@ static bool fwd_tile(gpu_t *g, model_t *m, const int32_t *tokens, int tn,
             prof_mark(g, PH_ELEM);
         } else {
             ok = ok && enc_mv(g, m, ly->w_gate, g->xb, g->hb,
-                              n_embd, m->n_ff, 0, tn, xdim, m->n_ff);
+                              n_embd, m->n_ff, 0, tn, xdim, m->n_ff)
+                    && enc_lora(g, l, LW_GATE, g->xb, g->hb, n_embd, m->n_ff,
+                                tn, xdim, m->n_ff);
             ok = ok && enc_mv(g, m, ly->w_up, g->xb, g->hb2,
-                              n_embd, m->n_ff, 0, tn, xdim, m->n_ff);
+                              n_embd, m->n_ff, 0, tn, xdim, m->n_ff)
+                    && enc_lora(g, l, LW_UP, g->xb, g->hb2, n_embd, m->n_ff,
+                                tn, xdim, m->n_ff);
             prof_mark(g, PH_MATVEC);
             ok = ok && enc_actmul(g, m, g->hb, g->hb2, tn * m->n_ff);
             prof_mark(g, PH_ELEM);
         }
-        ok = ok && enc_mv(g, m, ly->w_down, g->hb, g->xb, m->n_ff, n_embd, 0, tn, m->n_ff, xdim);
+        ok = ok && enc_mv(g, m, ly->w_down, g->hb, g->xb, m->n_ff, n_embd, 0, tn, m->n_ff, xdim)
+                && enc_lora(g, l, LW_DOWN, g->hb, g->xb, m->n_ff, n_embd, tn, m->n_ff, xdim);
         prof_mark(g, PH_MATVEC);
         }
     ffn_done:
@@ -3833,6 +3910,11 @@ static bool batch_eligible(model_t **seqs, int n, gpu_t **lead_out) {
             m->granite_hybrid || m->nemotron_h ||
             m->attn_out_gate || m->nope_on_full ||
             m->no_rope_layer_step > 0) return false;
+        // fwd_batch has its own projection sites and does not carry the
+        // adapter hooks (R8.7.2 wired fwd_tile only), so an adapted model
+        // declines the multi-sequence batch and decodes sequentially rather
+        // than losing its adapter on the batched path.
+        if (m->lora) return false;
         if (!g->sw->f_rope_seq || !g->sw->f_store_seq || !g->sw->f_attn_dec_seq)
             return false;
         // every tensor fwd_batch hands to enc_mv_batch must have a real twin
@@ -3870,6 +3952,92 @@ static bool batch_eligible(model_t **seqs, int n, gpu_t **lead_out) {
 // 65535; a window past that is covered by the stride.
 static unsigned mvt_grid_y(int batch) {
     return batch > 65535 ? 65535u : (unsigned)(batch < 1 ? 1 : batch);
+}
+
+// ------------------------------------- adapter residency (D2 on CUDA, R8.7.2)
+//
+// Called once, after model_lora_load has parsed the adapter and before any
+// forward. Uploads A and B for every GPU-resident (layer, slot) that carries
+// one and allocates the inner-projection scratch. A layer the split left on
+// the host is skipped: its host hook already applies the same delta.
+//
+// Fails loudly rather than quietly serving an unadapted model, because that
+// failure is invisible in the output and looks exactly like a weak adapter.
+bool gpu_lora_bind(model_t *m) {
+    gpu_t *g = m->gpu;
+    if (!g) return false;
+    if (!g->sw->f_lora_a || !g->sw->f_lora_b) {
+        fprintf(stderr, "error: this build's embedded kernels have no "
+                "adapter path; run with --gpu off\n");
+        return false;
+    }
+    if (cu.CtxSetCurrent(g->sw->ctx) != 0) return false;
+    size_t n = (size_t)m->n_layer * LW_SLOTS;
+    g->lora_n = (int)n;
+    g->lora_a = calloc(n, sizeof(*g->lora_a));
+    g->lora_b = calloc(n, sizeof(*g->lora_b));
+    g->lora_r_of = calloc(n, sizeof(*g->lora_r_of));
+    g->lora_scale = calloc(n, sizeof(*g->lora_scale));
+    if (!g->lora_a || !g->lora_b || !g->lora_r_of || !g->lora_scale) {
+        gpu_lora_unbind(m);
+        return false;
+    }
+    int G = m->gpu_layers < m->n_layer ? m->gpu_layers : m->n_layer;
+    size_t bytes = 0;
+    for (int l = 0; l < G; l++) {
+        for (int sl = 0; sl < LW_SLOTS; sl++) {
+            const float *a = NULL, *b = NULL;
+            int r = 0, n_in = 0, n_out = 0;
+            float scale = 0.0f;
+            if (!model_lora_slot(m, l, sl, &a, &b, &r, &scale, &n_in, &n_out))
+                continue;
+            if (r > LORA_R_DEV_MAX) {
+                fprintf(stderr, "error: adapter rank %d exceeds the device "
+                        "path's %d; run with --gpu off\n", r, LORA_R_DEV_MAX);
+                gpu_lora_unbind(m);
+                return false;
+            }
+            size_t na = sizeof(float) * (size_t)r * (size_t)n_in;
+            size_t nb = sizeof(float) * (size_t)n_out * (size_t)r;
+            size_t idx = (size_t)l * LW_SLOTS + (size_t)sl;
+            if (cu.MemAlloc(&g->lora_a[idx], na) != 0 ||
+                cu.MemcpyHtoD(g->lora_a[idx], a, na) != 0 ||
+                cu.MemAlloc(&g->lora_b[idx], nb) != 0 ||
+                cu.MemcpyHtoD(g->lora_b[idx], b, nb) != 0) {
+                fprintf(stderr, "error: cannot place the adapter in VRAM "
+                        "(%.1f MB placed); run with --gpu off\n", bytes / 1e6);
+                gpu_lora_unbind(m);
+                return false;
+            }
+            g->lora_r_of[idx] = r;
+            g->lora_scale[idx] = scale;
+            if (r > g->lora_r) g->lora_r = r;
+            bytes += na + nb;
+        }
+    }
+    if (!g->lora_r) {          // adapter loaded, nothing on the device half
+        gpu_lora_unbind(m);
+        return true;
+    }
+    if (cu.MemAlloc(&g->lora_t,
+                    sizeof(float) * (size_t)MVB * (size_t)g->lora_r) != 0) {
+        fprintf(stderr, "error: cannot place the adapter scratch in VRAM; "
+                "run with --gpu off\n");
+        gpu_lora_unbind(m);
+        return false;
+    }
+    g->graph_bad = true;       // any captured decode graph predates the adapter
+    fprintf(stderr, "gpu: adapter on device for %d block%s (%.1f MB VRAM)\n",
+            G, G == 1 ? "" : "s", bytes / 1e6);
+    return true;
+}
+
+void gpu_lora_unbind(model_t *m) {
+    gpu_t *g = m ? m->gpu : NULL;
+    if (!g) return;
+    if (g->lora_a || g->lora_b || g->lora_t) cu.CtxSetCurrent(g->sw->ctx);
+    lora_dev_release(g);
+    g->graph_bad = true;
 }
 
 // ------------------- transposed matvec for training (adaptation D8 slice 1)

@@ -8,6 +8,35 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **`--lora` runs on the GPU (R8.7.2).** An offloaded block's activations
+  never reach the host, so the adapter used to refuse a GPU-resident model
+  outright. Two kernels now apply the same `y += scale*B(Ax)` on the device
+  from adapter weights uploaded once at load (36.9 MB at rank 8 on a 1.5B),
+  at each of the seven projection sites the host hook covers; a partial split
+  needs no special case, since the blocks left on the host keep the host hook.
+  Measured on an RTX 3070 with Qwen2.5-1.5B Q4_K_M fully offloaded, the
+  CPU-versus-GPU gap with the adapter is no wider than without it (max
+  |dlogprob| 1.110e-3 with, 1.255e-3 without). Refuses rather than degrades:
+  a backend with no adapter kernels (Metal today), a rank past the kernel's
+  bound and a failed VRAM placement each fail the load with that sentence,
+  and an adapted model declines the multi-sequence batched decode instead of
+  losing its adapter there. Four device gates beside the CPU ones in
+  `tests/test_lora.py`, self-skipping without a device. Deleting one of the
+  seven hooks leaves every relative gate green and only the merged-weights
+  comparison red, which is why that one is the anchor.
+- **`make test` builds on Windows again.** `tests/test_gpu_identity.c` and
+  `tests/test_moe_mm_ab.c` called `setenv`, which MinGW does not have, so the
+  suite stopped at a compile error on the box that runs the CUDA gates. Both
+  now use the `setenv_compat` shim the other tests use. CI builds Windows but
+  does not run `make test` there, which is why it went unseen.
+- **`scripts/ptx-attribute.py`.** Regenerating the PTX header renumbers
+  registers, labels and local depots across the whole file, so the diff cannot
+  say which kernels actually changed. The script normalizes that numbering and
+  reports added, removed and changed entry points, with `--expect` to fail when
+  anything else moved. It is the check
+  `docs/cuda-microbatch-identity-2026-08-18.md` requires, done the same way
+  every time.
+
 - **CUDA LoRA training: the device assist is now the faster arm (D8 slice 4).**
   The backward's transposed-matvec kernels parallelized over the input width
   alone, so a 1,536-wide projection was six 256-thread blocks on a 46-SM card

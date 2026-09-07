@@ -1,12 +1,13 @@
 # The adaptation engine: scoring, adapters, and training in the serving binary
 
-*2026-08-22, CUDA slice 4 added 2026-09-07. Status: D1–D9 built and gated
-(scoring, adapters, backward, training, GRPO-lite, CUDA slices 1–4, the
-position-batched backward (slice 3), merge). Position-batched and threaded
-under a byte-exact contract, on the CPU or with the device assist, which
-since slice 4 is the faster of the two on a consumer GPU. Everything below
-with a number attached was measured, and the gates named here run in
-`make test`.*
+*2026-08-22, the CUDA training grid and the CUDA adapter path added
+2026-09-07. Status: D1–D9 built and gated (scoring, adapters, backward,
+training, GRPO-lite, CUDA slices 1–4, the position-batched backward
+(slice 3), merge). Training is position-batched and threaded under a
+byte-exact contract, on the CPU or with the device assist, which since
+slice 4 is the faster of the two on a consumer GPU; serving an adapter runs
+on the CPU or on CUDA. Everything below with a number attached was measured,
+and the gates named here run in `make test`.*
 
 The runner can now score, adapt, and train — narrowly scoped as **LoRA
 adaptation of a frozen quantized base, in the same binary, on the same
@@ -44,14 +45,68 @@ word-shuffled anagram scores 1818 (SmolLM2-135M Q8_0).
 
 llama.cpp adapter-GGUF naming (`blk.N.<proj>.weight.lora_a/_b`,
 `adapter.lora.alpha`), f32 deltas applied as `y += scale·B(Ax)` beside the
-untouched base matvecs on the CPU dense projections (attention
-q/k/v/output, FFN gate/up/down). Fails closed by name on shape/rank
-mismatches, unknown targets, unsupported architectures, and GPU-resident
-models. Gated through `--score`: a zero adapter is byte-identical to the
+untouched base matvecs on the dense projections (attention q/k/v/output,
+FFN gate/up/down), on the CPU and, since R8.7.2, on CUDA. Fails closed by
+name on shape/rank mismatches, unknown targets, unsupported architectures,
+and a backend with no adapter path. Gated through `--score`: a zero adapter is byte-identical to the
 bare base; a real adapter matches the merged-weights reference model within
 the float summation-order envelope (5e-4). The adapter id joins the engine's
 model identity, so a cached prefix can never serve across an adapter
 boundary.
+
+### D2 on the device (R8.7.2): the same delta where the activations are
+
+A GPU-resident block's activations never reach the host, so the host hook
+cannot see them and `--lora` used to refuse an offloaded model outright.
+The delta now runs on the device instead: `k_lora_a` reduces the r inner
+projections, `k_lora_b` accumulates `y += scale·B·t`, both from A and B
+uploaded once when the adapter loads, at each of the seven projection sites
+the host hook covers. A partial split needs no special case, because the
+blocks the split left on the host keep the host hook and the two halves
+apply the same definition.
+
+Not the same arithmetic, and the doc says so rather than implying otherwise:
+the inner reduction is a warp tree where the CPU walks a serial fmaf chain,
+which is the engine's ordinary CPU-versus-GPU difference and is bounded by
+the same merged-reference gate. Exact either way: a zero B or a zero scale
+contributes `fmaf(scale, 0, y)`, which is `y`, so an unadapted answer is
+bit-for-bit unadapted on both paths.
+
+Refuses rather than degrades, in four places. A backend with no adapter
+kernels (Metal today) fails the load with that sentence instead of serving a
+model that ignored the adapter on every offloaded block. A rank past the
+kernel's shared-memory bound, and a VRAM placement that fails, do the same.
+And a model with an adapter declines the multi-sequence batched decode
+(`fwd_batch` has its own projection sites and did not get the hooks), so it
+decodes sequentially rather than losing the adapter for batched requests.
+
+Gated on the CUDA box, four arms beside the CPU ones and self-skipping
+without a device (`tests/test_lora.py`): zero adapter byte-identical to the
+bare base, `--lora-scale 0` likewise, a real adapter deterministic and
+different from the base, and the merged-weights reference matched inside
+5e-4. **The mutation is the part worth keeping.** Deleting one of the seven
+hooks (the down projection) left the zero-adapter gate green, the scale-zero
+gate green and the "a real adapter changes the score" gate green: six of
+seven sites still move the output, so every relative check passes a model
+that silently dropped a seventh of its adapter. Only the merged-weights
+comparison went red. A gate that compares the system against itself would
+have shipped that.
+
+Measured at real width, Qwen2.5-1.5B-Instruct Q4_K_M fully offloaded to an
+RTX 3070, 28 blocks and 196 adapted projections, 36.9 MB of VRAM for the
+adapter, against the same run on 8 CPU threads, as max |Δlogprob| over the
+scored positions:
+
+| | CPU vs GPU |
+|---|---|
+| base, no adapter | 1.255e-3 |
+| adapter at its own scale | 1.110e-3 |
+| adapter at `--lora-scale 40` | 3.718e-3 |
+
+The middle row is the result: applying the adapter on the device does not
+widen the gap between the two paths beyond what the two paths already have
+without it. The third row is honest about what a deliberately loud scale
+does, and is read next to the delta it applies, 11.67 nats.
 
 ## D3 — the backward pass
 
