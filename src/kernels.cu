@@ -1633,6 +1633,114 @@ extern "C" __global__ void k_gemm_q3_K(MV_PARAMS) {
     for (int t = (int)blockIdx.y; t < a.batch; t += (int)gridDim.y)
 
 // ---------------------------------------------------------------------------
+// Canonical-order forward matvec (R8.7.1 slice 1): y[row] = dot(W[row], x)
+// computed in EXACTLY the association `vec_dot` uses under
+// RUNNER_CANON_KERNELS, so the device result is bit-identical to the host's
+// rather than merely close.
+//
+// Why this is not the usual determinism trade. The published cost of
+// deterministic GPU inference is batch-invariant kernels, which give up
+// tiling and split reductions and lose most of the throughput. This gives up
+// neither: the canonical order is ALREADY an eight-lane tree, so the shape
+// the CPU must use for cross-ISA bit-exactness is a shape a warp runs
+// natively. Eight lanes hold the eight accumulators and three shuffles are
+// canon_tree8:
+//
+//     c[l] = acc[l] + acc[l+4]      shfl_down 4   (l < 4)
+//     d0   = c0 + c2, d1 = c1 + c3  shfl_down 2
+//     out  = d0 + d1                shfl_down 1
+//
+// which is that function's association written out, not an approximation of
+// it. Lane l reads element l of each eight-wide group, so the eight lanes of
+// a row read 32 contiguous bytes: coalesced, and every weight byte is read
+// once.
+//
+// The tail (n not a multiple of the group) is summed by lane 0 alone, in
+// ascending order with `+` rather than fma, because that is what the scalar
+// tail does after the tree.
+
+#define CANON_LANES 8
+
+// the three-step reduction, in canon_tree8's exact association
+static __device__ __forceinline__ float canon_tree8_warp(float v) {
+    float c = v + __shfl_down_sync(0xffffffffu, v, 4, CANON_LANES);
+    float d = c + __shfl_down_sync(0xffffffffu, c, 2, CANON_LANES);
+    return d + __shfl_down_sync(0xffffffffu, d, 1, CANON_LANES);
+}
+
+#define CANON_HEAD(ROWBYTES) \
+    int lane = (int)(threadIdx.x & (CANON_LANES - 1)); \
+    int row  = (int)((blockIdx.x * blockDim.x + threadIdx.x) / CANON_LANES); \
+    if (row >= n_out) return; \
+    const uchar *rw = wb + w_off + (ulong64)row * (ulong64)(ROWBYTES);
+
+// canon_dot_q8_0: per 32-element block, lane l takes elements l, 8+l, 16+l,
+// 24+l -- a multiply then three fmaf -- and the block scale folds in with a
+// fourth fmaf into the lane accumulator.
+extern "C" __global__ void k_mvcanon_q8_0(const uchar *wb, const float *x,
+                                          float *y, int n_in, int n_out,
+                                          ulong64 w_off, int row_bytes) {
+    CANON_HEAD(row_bytes);
+    int nb = n_in / 32;
+    float acc = 0.0f;
+    for (int b = 0; b < nb; b++) {
+        const uchar *blk = rw + (ulong64)b * 34;
+        float d = f16f(blk);
+        const signed char *q = (const signed char *)(blk + 2);
+        const float *xp = x + b * 32;
+        float t = (float)q[lane] * xp[lane];
+        t = fmaf((float)q[8 + lane],  xp[8 + lane],  t);
+        t = fmaf((float)q[16 + lane], xp[16 + lane], t);
+        t = fmaf((float)q[24 + lane], xp[24 + lane], t);
+        acc = fmaf(d, t, acc);
+    }
+    float s = canon_tree8_warp(acc);
+    if (lane == 0) y[row] = s;
+}
+
+// canon_dot_f32: four accumulators over a 32-element stride, combined as
+// (a+b) + (c+d) per lane before the tree, then a scalar tail.
+extern "C" __global__ void k_mvcanon_f32(const uchar *wb, const float *x,
+                                         float *y, int n_in, int n_out,
+                                         ulong64 w_off, int row_bytes) {
+    CANON_HEAD(row_bytes);
+    const float *w = (const float *)rw;
+    float a = 0.0f, b = 0.0f, c = 0.0f, d = 0.0f;
+    int i = 0;
+    for (; i + 32 <= n_in; i += 32) {
+        a = fmaf(w[i + lane],      x[i + lane],      a);
+        b = fmaf(w[i + 8 + lane],  x[i + 8 + lane],  b);
+        c = fmaf(w[i + 16 + lane], x[i + 16 + lane], c);
+        d = fmaf(w[i + 24 + lane], x[i + 24 + lane], d);
+    }
+    float ab = a + b, cd = c + d;
+    float s = canon_tree8_warp(ab + cd);
+    if (lane == 0) {
+        for (int j = i; j < n_in; j++) s += w[j] * x[j];
+        y[row] = s;
+    }
+}
+
+// canon_dot_f16: two accumulators over a 16-element stride, a+b per lane
+// before the tree, then a scalar tail.
+extern "C" __global__ void k_mvcanon_f16(const uchar *wb, const float *x,
+                                         float *y, int n_in, int n_out,
+                                         ulong64 w_off, int row_bytes) {
+    CANON_HEAD(row_bytes);
+    float a = 0.0f, b = 0.0f;
+    int i = 0;
+    for (; i + 16 <= n_in; i += 16) {
+        a = fmaf(f16f(rw + (ulong64)(i + lane) * 2),     x[i + lane],     a);
+        b = fmaf(f16f(rw + (ulong64)(i + 8 + lane) * 2), x[i + 8 + lane], b);
+    }
+    float s = canon_tree8_warp(a + b);
+    if (lane == 0) {
+        for (int j = i; j < n_in; j++) s += f16f(rw + (ulong64)j * 2) * x[j];
+        y[row] = s;
+    }
+}
+
+// ---------------------------------------------------------------------------
 // LoRA at inference on the device (adaptation D2 on CUDA, R8.7.2):
 // y[b][j] += scale * sum_k B[j][k] * (sum_i A[k][i] * x[b][i]).
 //

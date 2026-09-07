@@ -95,6 +95,17 @@ bool   gpu_init(model_t *m);                     // false = unsupported, use CPU
 bool   gpu_mvt(model_t *m, const gguf_tensor *w, const float *dy, float *dx,
                int n_in, int n_out, int batch);
 
+// Forward matvec in the CANONICAL order (R8.7.1 slice 1): y = W·x associated
+// exactly the way vec_dot associates it under RUNNER_CANON_KERNELS, so the
+// device answer is bit-identical to the host's instead of close to it. The
+// point is the trainer's forward, which is 80% of a training step and stays
+// on the CPU today only because moving it would cost the byte contract.
+// false = no backend, no kernel for the type (F32/F16/Q8_0 have a canonical
+// order; the k-quants do not yet), a scaled tensor, or a tensor that is not
+// device-resident.
+bool   gpu_mvcanon(model_t *m, const gguf_tensor *w, const float *x, float *y,
+                   int n_in, int n_out);
+
 // D8 slice 2: the standalone training context. --train keeps the model
 // CPU-resident (m->gpu stays NULL); this context owns its own CUDA state,
 // uploads each weight tensor ONCE on first use, and runs the backward's

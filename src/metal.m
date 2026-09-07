@@ -2387,6 +2387,12 @@ bool gpu_mvt(model_t *mm, const gguf_tensor *w, const float *dy, float *dx,
 // Metal has no adapter kernels yet: refusing here is what turns --lora on a
 // Metal-offloaded model into a named error instead of a silently unadapted
 // answer (R8.7.2 shipped the CUDA half only).
+bool gpu_mvcanon(model_t *mm, const gguf_tensor *w, const float *x, float *y,
+                 int n_in, int n_out) {
+    (void)mm; (void)w; (void)x; (void)y; (void)n_in; (void)n_out;
+    return false;   // no canonical-order shaders yet
+}
+
 bool gpu_lora_bind(model_t *mm) {
     (void)mm;
     fprintf(stderr, "error: the Metal backend has no adapter kernels yet, so "
