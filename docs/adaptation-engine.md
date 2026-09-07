@@ -27,6 +27,20 @@ discipline from "prove what it said" to "prove what it learned from."
 
 Both claims are gated, not asserted (see D5 below).
 
+**The scope of the first claim, stated because it narrowed.** "One codepath"
+means the CPU codepath: the trainer keeps the model CPU-resident and unbound,
+so the forward it tapes is the CPU forward. Serving that adapter on the CPU
+is the case the claim covers exactly. Serving it on CUDA is not: the device
+forward reduces in a different order, measured at 1.255e-3 max |Δlogprob| on
+Qwen2.5-1.5B Q4_K_M against the host path, adapter or no adapter. That gap
+was unreachable while `--lora` refused a GPU-resident model; R8.7.2 made the
+combination possible, so the limit is written here rather than implied. It is
+a property of the base forward, not of the adapter: an adapter trained on the
+CPU and served on CUDA is as correct as the engine's CPU/GPU agreement, which
+is measured and bounded, and is NOT the by-construction identity above.
+Closing it means moving the trainer's forward onto the device, which is a
+separate piece of work with its own reproducibility question.
+
 ## D1 — `--score`: teacher-forced logprobs
 
 Per-token log P(token | prefix) over raw text, plus NLL and perplexity, as
@@ -137,7 +151,11 @@ adjoint fails at relative error 1.36.
 
 Declared scope, fail-closed by property: CPU, dense SiLU transformers, f16
 KV. Recurrent architectures, MoE, sliding windows, per-head norms and head
-transforms refuse with a named reason.
+transforms refuse with a named reason. The CPU in that list is the backward's
+own host, and it is also what scopes the train/infer identity claim above: an
+adapter this backward produced is bit-for-bit the policy a CPU forward
+samples, and within the engine's measured CPU/GPU envelope of the policy a
+CUDA forward samples.
 
 ## D4 — `--train`: the loop
 
@@ -403,6 +421,56 @@ because the forward it tapes has to be the forward inference runs, and
 the CUDA inference path is not bit-identical to the CPU one. Moving it is
 a T1-to-T2 trade (token-exact rather than byte-exact), not an
 optimization, and it belongs to the owner rather than to a profile.
+
+## D8 slice 5, priced not built: the forward is the whole remaining bill
+
+After slice 4, a training step is not backward-bound. Measured on the same
+RTX 3070 box (Qwen2.5-7B Q4_K_M, rank 8, ctx 128, `RUNNER_TRAIN_PROF=1`), the
+64.8 s step is 31.8 s taped forward plus 20.0 s recompute, both of them on
+the CPU because the trainer keeps the model unbound, and 12.8 s of everything
+else. The attention backward is 0.88 s of it and the AdamW step 0.04 s, so
+the piece a plan would naturally reach for next is worth about 1%.
+
+What the device would buy was measured rather than estimated, using `--score`
+as the instrument: its default path runs ONE SOLO FORWARD PER POSITION, which
+is exactly what the tape does, and `RUNNER_SCORE_CHUNKED=1` runs the batched
+pass the recompute resembles. 152 positions, same file, same host, two runs
+each:
+
+| phase, and its proxy | CPU, 8 threads | RTX 3070 | ratio |
+|---|---:|---:|---:|
+| solo forwards (the tape) | 36 s | 5 s | **7.3x** |
+| batched forward (the recompute) | 13 s | 4.5 s | **2.9x** |
+
+Scaled onto the 128-position step: the taped forward would go 31.8 s to about
+4.2 s and the recompute 20.0 s to about 6 s, putting a step near **23 s**,
+which is 2.8x today's GPU-assisted 64.8 s and 3.3x the 76.5 s CPU-only run.
+Both proxies include model load and are therefore conservative.
+
+That prize is not free, and the cost is the reproducibility tier rather than
+the work. The trainer's forward is CPU-resident on purpose (see the scope
+note at the top), and the device forward reduces in a different order. There
+are two ways to spend it and they are genuinely different products:
+
+- **Take T2.** Use the shipped CUDA forward. Adapters stop being byte-identical
+  to a CPU run and become token-exact instead. The identity claim moves from
+  the CPU to CUDA, which is where a GPU owner serves anyway.
+- **Keep T1.** Build a reference-exact forward the way slices 1 and 4 built
+  the backward's: a serial fmaf chain per output element, parallelised over
+  the dimensions that are free (output rows, and positions where the call has
+  them), tiled through shared memory so the global loads still coalesce. The
+  reason to expect this to cost little is that a batch-1 forward is
+  bandwidth-bound, not reduction-bound: a 7B Q4_K_M forward reads about 4.4 GB
+  of weights, so 128 of them move ~560 GB, and the 3070's 448 GB/s puts the
+  floor near 1.3 s whatever order the accumulation runs in. The industry's
+  determinism tax (batch-invariant kernels, roughly 61.5% of throughput) is a
+  large-batch serving number and does not obviously apply here.
+
+Slice 1 already established the harder half of the second option: a GPU
+kernel bit-identical to a CPU reference, on seven weight types. It is a
+stronger property than the same-device reproducibility the literature aims
+at, and it is the one this engine is for. Which option to take is the
+owner's, and the number above is what it is being spent on.
 
 ## D9 — `--merge-lora`: folding the adapter into the base
 
