@@ -9,13 +9,43 @@
 #include <stdlib.h>
 #include <string.h>
 
-static const char *MODEL = "/tmp/xyntetik-envelope-test.gguf";
+// Fixture paths, built at run time rather than baked in. They used to be
+// "/tmp/..." literals, which on Windows resolve to C:\tmp -- a directory that
+// happens to exist on the lab box and does not on a fresh CI runner, so
+// `assert(f)` in write_manifest fired and the whole suite stopped at exit 127.
+// Every sibling test here (instances, instances_oom, tray_core, vram_rollback)
+// already branches on TEMP; this file was the one that did not.
+static char MODEL[512];
+static char RECORD_PATH[512];
+
+static void init_paths(void) {
+    const char *base = NULL;
+#ifdef _WIN32
+    base = getenv("TEMP");
+    if (!base || !*base) base = getenv("TMP");
+    const char sep = '\\';
+#else
+    base = getenv("TMPDIR");
+    if (!base || !*base) base = "/tmp";
+    const char sep = '/';
+#endif
+    // "." is always writable where the other fixtures already live, and is
+    // the honest fallback rather than a path that may not exist
+    if (!base || !*base) base = ".";
+    snprintf(MODEL, sizeof MODEL, "%s%cxyntetik-envelope-test.gguf", base, sep);
+    snprintf(RECORD_PATH, sizeof RECORD_PATH,
+             "%s%cxyntetik-transcript-test.json", base, sep);
+}
 
 static void write_manifest(const char *body) {
     char path[512];
     snprintf(path, sizeof path, "%s.envelope.json", MODEL);
     FILE *f = fopen(path, "wb");
-    assert(f);
+    if (!f) {
+        fprintf(stderr, "cannot write %s: the fixture directory is not "
+                "writable\n", path);
+        abort();
+    }
     fputs(body, f);
     fclose(f);
 }
@@ -67,6 +97,7 @@ static const char *ZERO_SHA =
 
 int main(void) {
     char out[256];
+    init_paths();
 
     // No sidecar -> silent, unclassified (transitional/legacy, not experimental).
     rm_manifest();
@@ -246,7 +277,7 @@ int main(void) {
     // grammar. A quote/control byte there must be escaped like paths and
     // prompt text or a successful run writes an unparsable transcript.
     {
-        static const char *record_path = "/tmp/xyntetik-transcript-test.json";
+        const char *record_path = RECORD_PATH;
         int32_t prompt_tok[] = { 1 };
         int32_t output_tok[] = { 2 };
         transcript_info ti = {
