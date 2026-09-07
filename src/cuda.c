@@ -3862,6 +3862,16 @@ static bool batch_eligible(model_t **seqs, int n, gpu_t **lead_out) {
     return true;
 }
 
+// D8 slice 4: the position grid. The mvt kernels parallelize over n_in
+// alone, so a 1536-wide projection is six 256-thread blocks and most of the
+// device idles; positions are the free second dimension, and the kernel's
+// strided t loop makes ANY gridDim.y produce the same bytes, so this is a
+// scheduling choice and never a numerical one. CUDA's grid.y limit is
+// 65535; a window past that is covered by the stride.
+static unsigned mvt_grid_y(int batch) {
+    return batch > 65535 ? 65535u : (unsigned)(batch < 1 ? 1 : batch);
+}
+
 // ------------------- transposed matvec for training (adaptation D8 slice 1)
 // dx[t][i] += sum_j W[j][i]*dy[t][j] on the device, with the accumulator
 // chain identical to the CPU trainer (start from dx, serial j, skip zero
@@ -3888,7 +3898,8 @@ bool gpu_mvt(model_t *m, const gguf_tensor *w, const float *dy, float *dx,
         void *p[] = { &weights, &d_dy, &d_dx, &a, &bias };
         int threads = 256;
         int blocks = (n_in + threads - 1) / threads;
-        ok = launch(g, g->sw->f_mvt[w->type], blocks, 1, 1, threads, p) &&
+        ok = launch(g, g->sw->f_mvt[w->type], blocks, mvt_grid_y(batch), 1,
+                    threads, p) &&
              cu.CtxSynchronize() == 0 &&
              cu.MemcpyDtoH(dx, d_dx, nx) == 0;
     }
@@ -4049,8 +4060,8 @@ bool gpu_train_mvt(model_t *m, const gguf_tensor *w, const float *dy,
     void *p[] = { &weights, &t->d_dy, &t->d_dx, &a, &t->dummy };
     int threads = 256;
     unsigned blocks = (unsigned)((n_in + threads - 1) / threads);
-    if (cu.LaunchKernel(t->f_mvt[w->type], blocks, 1, 1, (unsigned)threads,
-                        1, 1, 0, NULL, p, NULL) != 0)
+    if (cu.LaunchKernel(t->f_mvt[w->type], blocks, mvt_grid_y(nb), 1,
+                        (unsigned)threads, 1, 1, 0, NULL, p, NULL) != 0)
         return false;
     return cu.CtxSynchronize() == 0 &&
            cu.MemcpyDtoH(dx, t->d_dx, nx) == 0;

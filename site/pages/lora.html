@@ -8,7 +8,7 @@ nav: runner
   <div class="wrap">
     <p class="eyebrow">LoRA training</p>
     <h1>Train the file you actually ship.</h1>
-    <p class="lede">A LoRA adapter is a small set of extra weights that teaches an existing model a task without rewriting the whole model. Runner trains one directly through the quantized GGUF file used for inference, the same 4-bit or 8-bit file you will serve, on the CPU, with no separate full-precision copy and no training framework. Same data, same seed, same configuration: the same adapter, byte for byte.</p>
+    <p class="lede">A LoRA adapter is a small set of extra weights that teaches an existing model a task without rewriting the whole model. Runner trains one directly through the quantized GGUF file used for inference, the same 4-bit or 8-bit file you will serve, on the CPU or with the backward on a CUDA device, with no separate full-precision copy and no training framework. Same data, same seed, same configuration: the same adapter, byte for byte.</p>
   </div>
 </section>
 
@@ -49,7 +49,7 @@ nav: runner
       </figure>
       <div class="rows mt-2">
         <div><span>base</span><p>Qwen3-4B Q4_K_M, the frozen 4-bit serving weights</p></div>
-        <div><span>training path</span><p>directly through the quantized inference artifact, CPU</p></div>
+        <div><span>training path</span><p>directly through the quantized inference artifact, CPU or CUDA-assisted</p></div>
         <div><span>held-out tool calling, exact call</span><p>0.69 before, 1.00 after</p></div>
         <div><span>reproducibility</span><p>two independent runs, same sha256 on the adapter file</p></div>
         <div><span>precision study</span><p>adapters trained through BF16 and Q8_0: cosine 0.9998; through Q4_K_M: 0.9926. A measurably different object, capability-equivalent on this task's supervised decisions; on the gold-completion region they coincide to about 0.0003 nat. Not equivalent everywhere: an external 36-prompt boundary bank finds 3 of 36 prompts where the three adapters choose different tools, and the Q4-trained adapter carries the widest margins on that bank</p></div>
@@ -101,7 +101,7 @@ nav: runner
     <div class="sticky">
       <p class="eyebrow">Run it</p>
       <h2>Three commands, one binary.</h2>
-      <p>Training runs on the CPU path. The dominant matvec of the backward runs on CUDA behind a flag, and CUDA training end to end is open work. Adapters follow llama.cpp's naming convention in both directions: F16 adapters from <code>convert_lora_to_gguf</code> load, and the adapters Runner writes load in llama.cpp.</p>
+      <p>Training is hosted on the CPU. The backward's transposed matvecs run on CUDA behind <code>RUNNER_TRAIN_GPU=1</code>, which since its position grid is the faster arm on a consumer card and writes the same adapter bytes either way: Qwen2.5-7B Q4_K_M at 64.8 s/step against 76.5 on 8 CPU threads, RTX 3070, measured 2026-09-07. The forward pass is still CPU-hosted, so CUDA training end to end is open work. Adapters follow llama.cpp's naming convention in both directions: F16 adapters from <code>convert_lora_to_gguf</code> load, and the adapters Runner writes load in llama.cpp.</p>
       <p>Where the numbers come from, with design, gates and failure modes: <a href="{{repo}}/blob/main/docs/adaptation-engine.md">docs/adaptation-engine.md</a>. The reproducibility scope, with what is and is not claimed: <a href="/runner/reproducible-lora-training-receipts/">receipts and the determinism scope</a>. The external boundary bank and its lane: <a href="{{repo}}/blob/main/docs/tool-choice-boundary-lane.md">docs/tool-choice-boundary-lane.md</a>.</p>
     </div>
   </div>

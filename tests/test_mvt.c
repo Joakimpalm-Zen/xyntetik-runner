@@ -79,7 +79,10 @@ int main(int argc, char **argv) {
         model_free(&m);
         return 0;
     }
-    enum { BATCH = 3 };
+    // 37 positions: a real position grid (slice 4 makes t the grid's
+    // second dimension) and not a multiple of the block width, so an
+    // off-by-one in the stride leaves a tail behind.
+    enum { BATCH = 37 };
     int tested = 0;
     for (int l = 0; l < m.n_layer && l < 2; l++) {
         gguf_tensor *ws[] = { m.layers[l].wq, m.layers[l].w_down };
@@ -88,22 +91,26 @@ int main(int argc, char **argv) {
             if (!w) continue;
             int n_in = (int)w->ne[0], n_out = (int)w->ne[1];
             float *dy = malloc(sizeof(float) * BATCH * (size_t)n_out);
+            float *dx_seed = malloc(sizeof(float) * BATCH * (size_t)n_in);
             float *dx_cpu = malloc(sizeof(float) * BATCH * (size_t)n_in);
             float *dx_gpu = malloc(sizeof(float) * BATCH * (size_t)n_in);
             float *dx_gpu2 = malloc(sizeof(float) * BATCH * (size_t)n_in);
+            float *dx_solo = malloc(sizeof(float) * (size_t)n_in);
             for (int i = 0; i < BATCH * n_out; i++)
                 dy[i] = (i % 7 == 0) ? 0.0f : frnd();  // exercise the skip
             for (int i = 0; i < BATCH * n_in; i++)
-                dx_cpu[i] = frnd();
-            memcpy(dx_gpu, dx_cpu, sizeof(float) * BATCH * (size_t)n_in);
-            memcpy(dx_gpu2, dx_cpu, sizeof(float) * BATCH * (size_t)n_in);
+                dx_seed[i] = frnd();
+            memcpy(dx_cpu, dx_seed, sizeof(float) * BATCH * (size_t)n_in);
+            memcpy(dx_gpu, dx_seed, sizeof(float) * BATCH * (size_t)n_in);
+            memcpy(dx_gpu2, dx_seed, sizeof(float) * BATCH * (size_t)n_in);
             if (!gpu_mvt(&m, w, dy, dx_gpu, n_in, n_out, BATCH)) {
                 // a backend without training kernels (Metal today) skips the
                 // whole gate rather than failing it; the CUDA runs are where
                 // this gate asserts
                 printf("mvt: %s — no device kernel (type %d), skipping\n",
                        w->name, w->type);
-                free(dy); free(dx_cpu); free(dx_gpu); free(dx_gpu2);
+                free(dy); free(dx_seed); free(dx_cpu); free(dx_gpu);
+                free(dx_gpu2); free(dx_solo);
                 continue;
             }
             cpu_mvt(w, dy, dx_cpu, n_in, n_out, BATCH);
@@ -114,8 +121,22 @@ int main(int argc, char **argv) {
                   memcmp(dx_gpu, dx_gpu2,
                          sizeof(float) * BATCH * (size_t)n_in) == 0,
                   "%s: GPU result not deterministic across runs", w->name);
+            // A position's result must not depend on how many positions
+            // shared the launch. Slice 4 spreads t over the grid's second
+            // dimension; the last position of the window is the one a
+            // wrong stride or a clamped grid.y silently drops.
+            const int last = BATCH - 1;
+            memcpy(dx_solo, dx_seed + (size_t)last * n_in,
+                   sizeof(float) * (size_t)n_in);
+            CHECK(gpu_mvt(&m, w, dy + (size_t)last * n_out, dx_solo,
+                          n_in, n_out, 1) &&
+                  memcmp(dx_solo, dx_gpu + (size_t)last * n_in,
+                         sizeof(float) * (size_t)n_in) == 0,
+                  "%s: position %d differs between a solo call and the "
+                  "%d-position batch", w->name, last, BATCH);
             tested++;
-            free(dy); free(dx_cpu); free(dx_gpu); free(dx_gpu2);
+            free(dy); free(dx_seed); free(dx_cpu); free(dx_gpu);
+            free(dx_gpu2); free(dx_solo);
         }
     }
     if (!tested) {
