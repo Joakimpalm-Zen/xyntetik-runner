@@ -1808,8 +1808,12 @@ int main(int argc, char **argv) {
                                           "tokenizer.chat_template", NULL), &tok);
             bool native = false;
             const char *fam = tool_family_for(ti_tmpl, &native);
-            printf("{\"tool_family\":\"%s\",\"native_tool_protocol\":%s}\n",
-                   fam, native ? "true" : "false");
+            // The template family is named too: which renderer the chat
+            // surface would use is the first question a golden pass asks of
+            // a file, and a fallback is a finding, not a default.
+            printf("{\"tool_family\":\"%s\",\"native_tool_protocol\":%s,"
+                   "\"template\":\"%s\"}\n",
+                   fam, native ? "true" : "false", template_name(ti_tmpl));
             cli_cleanup(NULL, NULL, &tok, &m);
             return 0;
         }
