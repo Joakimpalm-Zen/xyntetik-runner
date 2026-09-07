@@ -20,8 +20,8 @@
       },
       "last_verified": {
         "date": "2026-09-07",
-        "commit": "835400fc5fb13d5ca0df4cdf86c160ef16d96c1b",
-        "ran": "make OS=Windows_NT -j2 test (pass) and scripts/cuda-smoke-remote.sh (13 checks, 0 warnings)",
+        "commit": "92ff27563f8d5bc1b1d2d9bc307661d843c30d00",
+        "ran": "make OS=Windows_NT -j2 test (exit 0), including test-mvcanon on real Q8_0 weights",
         "result": "pass",
         "caps": {
           "version": "0.5.1",
