@@ -114,7 +114,16 @@ def main():
     # (qwen3 and granite, whose tokenizers add nothing, read 0.0000). The
     # special prefix is taken from the tokenizer itself and prepended once;
     # position `pos` of the body is then row len(special) + pos - 1.
-    special = tok("", add_special_tokens=True)["input_ids"]
+    # Taken by DIFFERENCE on a real word, not from the empty string: some
+    # tokenizers add nothing to "" yet prepend BOS to any real input, and
+    # measured 2026-09-07 that is exactly what Phi-3.5 and Gemma 4 do, which
+    # left them reading mean KL around 2 and 5 after the first version of
+    # this fix had already repaired Gemma 3.
+    _probe = "word"
+    _with = tok(_probe, add_special_tokens=True)["input_ids"]
+    _without = tok(_probe, add_special_tokens=False)["input_ids"]
+    n_special = len(_with) - len(_without)
+    special = _with[:n_special] if n_special > 0 else []
     span = list(special) + list(body)
     with torch.no_grad():
         out = model(torch.tensor([span]))
