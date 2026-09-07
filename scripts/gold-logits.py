@@ -37,7 +37,13 @@ def query(endpoint, model_name, prompt, top_n=20):
         headers={"Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=600) as r:
         d = json.load(r)
-    lp = d["choices"][0]["logprobs"]
+    lp = d["choices"][0].get("logprobs")
+    # A server may answer a position with no logprobs at all (measured
+    # 2026-09-07 on SmolLM2: the request whose next token is the end of
+    # text comes back without the block). That is a position this gate
+    # cannot score, not a reason to lose the whole family.
+    if not lp:
+        return None
     if "content" in lp:  # llama.cpp's OpenAI-style schema
         step = lp["content"][0]
         top = {e["token"]: e["logprob"] for e in step["top_logprobs"]}
@@ -115,6 +121,7 @@ def main():
     logp = torch.log_softmax(out.logits[0].float(), dim=-1)
 
     rows = []
+    skipped = 0
     sides = [("a", args.endpoint_a, args.model_name_a)]
     if args.endpoint_b:
         sides.append(("b", args.endpoint_b, args.model_name_b))
@@ -130,8 +137,12 @@ def main():
         gold_top1 = tok.decode([int(top.indices[0])])
         row = {"pos": pos, "gold_top1": gold_top1, "gold_margin":
                float(top.values[0] - top.values[1])}
+        got = {name: query(ep, mn, prefix, args.top_n) for name, ep, mn in sides}
+        if any(v is None for v in got.values()):
+            skipped += 1
+            continue
         for name, ep, mn in sides:
-            other = query(ep, mn, prefix, args.top_n)
+            other = got[name]
             o_top1 = max(other, key=other.get)
             row[name] = {"kld": kld(gold, other), "top1": o_top1,
                          "agree": o_top1 == gold_top1}
@@ -143,6 +154,7 @@ def main():
     summary = {"positions": len(rows), "hf": args.hf, "corpus": args.corpus,
                "reference_class": type(model).__name__,
                "special_prefix_tokens": len(special),
+               "positions_skipped_no_logprobs": skipped,
                "reference_dtype": "float32", "reference_device": "cpu",
                "sides": {}}
     for name, ep, mn in sides:
