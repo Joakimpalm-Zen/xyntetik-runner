@@ -13,6 +13,15 @@ the KL divergence and top-1 agreement of each endpoint against the gold
 distribution. Run it on an unquantized (bf16/f16) GGUF so weight rounding
 is the same on every side and only the arithmetic differs.
 
+Serve both sides at a context the model was TRAINED for. The runner
+applies YaRN automatically when `-c` exceeds the training context and says
+so on stderr ("requested ctx N > training ctx M"); llama.cpp does not. A
+run that crosses that line measures the scaling, not the arithmetic:
+measured 2026-09-07 on StableLM 2 1.6B (training context 4096), the same
+binary on the same file read mean KL 0.1056 at `-c 8192` and 0.0001 at
+`-c 4096`. Cap `--max-positions * --stride` below the training context too,
+for the same reason.
+
     gold-logits.py --hf /path/to/hf-model --corpus tests/fixtures/mixed-corpus.txt \\
         --endpoint-a http://127.0.0.1:58631 --model-name-a X.gguf \\
         --endpoint-b http://127.0.0.1:58632 --model-name-b X.gguf \\
@@ -37,7 +46,13 @@ def query(endpoint, model_name, prompt, top_n=20):
         headers={"Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=600) as r:
         d = json.load(r)
-    lp = d["choices"][0]["logprobs"]
+    lp = d["choices"][0].get("logprobs")
+    # A server may answer a position with no logprobs at all (measured
+    # 2026-09-07 on SmolLM2: the request whose next token is the end of
+    # text comes back without the block). That is a position this gate
+    # cannot score, not a reason to lose the whole family.
+    if not lp:
+        return None
     if "content" in lp:  # llama.cpp's OpenAI-style schema
         step = lp["content"][0]
         top = {e["token"]: e["logprob"] for e in step["top_logprobs"]}
@@ -60,6 +75,56 @@ def kld(gold, other):
     return sum(math.exp(x - gz) * ((x - gz) - (y - oz)) for x, y in zip(g, o))
 
 
+def mcnemar_exact(b, c):
+    """Two-sided exact binomial test on discordant pairs.
+
+    b = positions the first side got right and the second wrong, c the
+    reverse. Concordant positions carry no information. Reported because a
+    percentage-point gap at 100 positions is one or two tokens: measured
+    2026-09-07, every margin-qualified difference in the golden pass except
+    stablelm's had p >= 0.25, our own wins included.
+    """
+    n = b + c
+    if n == 0:
+        return 1.0
+    tail = sum(math.comb(n, k) for k in range(0, min(b, c) + 1))
+    return min(1.0, 2.0 * tail / 2.0 ** n)
+
+
+def wilcoxon_signed_rank(diffs):
+    """Two-sided normal-approximation Wilcoxon on paired per-position KL.
+
+    `diffs` are (side b) - (side a), so a positive statistic means side a is
+    closer to the reference. This uses every position rather than only the
+    ones where the argmax flips, which measured 2026-09-07 gives it roughly
+    ten times the power of the top-1 comparison at the same corpus size.
+    Returns (z, p, n_nonzero) or None when there is too little to test.
+    """
+    d = [x for x in diffs if x != 0.0]
+    n = len(d)
+    if n < 5:
+        return None
+    order = sorted(range(n), key=lambda i: abs(d[i]))
+    ranks = [0.0] * n
+    i = 0
+    while i < n:
+        j = i
+        while j + 1 < n and abs(d[order[j + 1]]) == abs(d[order[i]]):
+            j += 1
+        r = (i + j) / 2.0 + 1.0
+        for k in range(i, j + 1):
+            ranks[order[k]] = r
+        i = j + 1
+    w = sum(ranks[i] for i in range(n) if d[i] > 0)
+    mu = n * (n + 1) / 4.0
+    sd = math.sqrt(n * (n + 1) * (2 * n + 1) / 24.0)
+    if sd == 0:
+        return None
+    z = (w - mu) / sd
+    p = math.erfc(abs(z) / math.sqrt(2.0))
+    return z, p, n
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--hf", required=True, help="HF model directory")
@@ -74,40 +139,89 @@ def main():
     ap.add_argument("--top-n", type=int, default=20)
     ap.add_argument("--threads", type=int, default=32)
     ap.add_argument("--out")
+    ap.add_argument("--trust-remote-code", action="store_true",
+                    help="the publisher ships its own modeling code")
+    ap.add_argument("--force-bos", action="store_true",
+                    help="prepend the tokenizer's BOS to the reference even "
+                         "when the HF tokenizer does not add one. Needed "
+                         "where the SERVED artifact declares add_bos_token "
+                         "but the publisher's loaded tokenizer does not add "
+                         "it (measured 2026-09-07 on Gemma 4 E2B): the "
+                         "endpoints follow the artifact, so the reference "
+                         "must see the same prefix or the two are compared "
+                         "across a one-token offset.")
     args = ap.parse_args()
 
     import torch
     from transformers import AutoModelForCausalLM, AutoTokenizer
     torch.set_num_threads(args.threads)
-    tok = AutoTokenizer.from_pretrained(args.hf)
-    model = AutoModelForCausalLM.from_pretrained(args.hf, dtype=torch.float32)
+    tok = AutoTokenizer.from_pretrained(args.hf, trust_remote_code=args.trust_remote_code)
+    # A publisher whose top-level class is multimodal (Qwen3.5, Gemma 4,
+    # Muse Glimmer) still answers text through the same language model;
+    # the causal-LM auto class refuses those configs, so fall back to the
+    # image-text class and drive it with text only. The config name is
+    # printed so the report says which class produced the gold.
+    kw = dict(dtype=torch.float32, trust_remote_code=args.trust_remote_code)
+    try:
+        model = AutoModelForCausalLM.from_pretrained(args.hf, **kw)
+    except (ValueError, KeyError, OSError):
+        from transformers import AutoModelForImageTextToText
+        model = AutoModelForImageTextToText.from_pretrained(args.hf, **kw)
+    print("reference class:", type(model).__name__, file=sys.stderr)
     model.eval()
 
     text = open(args.corpus, encoding="utf-8").read()
     ids = tok(text, add_special_tokens=False)["input_ids"]
-    span = ids[: args.min_prefix + args.max_positions * args.stride + 1]
+    body = ids[: args.min_prefix + args.max_positions * args.stride + 1]
+    # The serving endpoints tokenize the prefix TEXT, so a family whose
+    # tokenizer prepends BOS gives the model one more token than a reference
+    # scored on the bare ids. Measured 2026-09-07: without this the gemma-3,
+    # gemma-4 and Phi-3.5 rows read mean KL around 2 to 5 with both engines
+    # agreeing with each other and disagreeing with the reference, which is
+    # the signature of a broken instrument rather than a broken engine
+    # (qwen3 and granite, whose tokenizers add nothing, read 0.0000). The
+    # special prefix is taken from the tokenizer itself and prepended once;
+    # position `pos` of the body is then row len(special) + pos - 1.
+    # Taken by DIFFERENCE on a real word, not from the empty string: some
+    # tokenizers add nothing to "" yet prepend BOS to any real input, and
+    # measured 2026-09-07 that is exactly what Phi-3.5 and Gemma 4 do, which
+    # left them reading mean KL around 2 and 5 after the first version of
+    # this fix had already repaired Gemma 3.
+    _probe = "word"
+    _with = tok(_probe, add_special_tokens=True)["input_ids"]
+    _without = tok(_probe, add_special_tokens=False)["input_ids"]
+    n_special = len(_with) - len(_without)
+    special = _with[:n_special] if n_special > 0 else []
+    if args.force_bos and not special and tok.bos_token_id is not None:
+        special = [tok.bos_token_id]
+    span = list(special) + list(body)
     with torch.no_grad():
         out = model(torch.tensor([span]))
     logp = torch.log_softmax(out.logits[0].float(), dim=-1)
 
     rows = []
+    skipped = 0
     sides = [("a", args.endpoint_a, args.model_name_a)]
     if args.endpoint_b:
         sides.append(("b", args.endpoint_b, args.model_name_b))
     for n in range(args.max_positions):
         pos = args.min_prefix + n * args.stride
-        prefix = tok.decode(span[:pos])
+        prefix = tok.decode(body[:pos])
         # the decoded prefix must re-tokenize to the same ids, or the sides
         # would be scored on different contexts
-        if tok(prefix, add_special_tokens=False)["input_ids"] != span[:pos]:
+        if tok(prefix, add_special_tokens=False)["input_ids"] != body[:pos]:
             continue
-        top = torch.topk(logp[pos - 1], args.top_n)
+        top = torch.topk(logp[len(special) + pos - 1], args.top_n)
         gold = {tok.decode([int(i)]): float(v) for v, i in zip(top.values, top.indices)}
         gold_top1 = tok.decode([int(top.indices[0])])
         row = {"pos": pos, "gold_top1": gold_top1, "gold_margin":
                float(top.values[0] - top.values[1])}
+        got = {name: query(ep, mn, prefix, args.top_n) for name, ep, mn in sides}
+        if any(v is None for v in got.values()):
+            skipped += 1
+            continue
         for name, ep, mn in sides:
-            other = query(ep, mn, prefix, args.top_n)
+            other = got[name]
             o_top1 = max(other, key=other.get)
             row[name] = {"kld": kld(gold, other), "top1": o_top1,
                          "agree": o_top1 == gold_top1}
@@ -117,6 +231,11 @@ def main():
             for k in row if k in ("a", "b")), file=sys.stderr)
 
     summary = {"positions": len(rows), "hf": args.hf, "corpus": args.corpus,
+               "reference_class": type(model).__name__,
+               "special_prefix_tokens": len(special),
+               "special_prefix_forced": bool(args.force_bos and special),
+               "positions_skipped_no_logprobs": skipped,
+               "reference_dtype": "float32", "reference_device": "cpu",
                "sides": {}}
     for name, ep, mn in sides:
         ks = [r[name]["kld"] for r in rows]
@@ -129,7 +248,28 @@ def main():
                 r[name]["agree"] for r in rows if r["gold_margin"] > 0.5)
             / max(1, sum(1 for r in rows if r["gold_margin"] > 0.5)),
         }
-    report = {"schema_version": "xyntetik.runner.gold-logits.v1",
+    # Whether any of the above is distinguishable from noise. Both sides
+    # see the same positions, so the comparison is paired.
+    if len(sides) == 2:
+        qual = [r for r in rows if r["gold_margin"] > 0.5]
+        a_only = sum(1 for r in qual if r["a"]["agree"] and not r["b"]["agree"])
+        b_only = sum(1 for r in qual if r["b"]["agree"] and not r["a"]["agree"])
+        w = wilcoxon_signed_rank([r["b"]["kld"] - r["a"]["kld"] for r in rows])
+        summary["significance"] = {
+            "qualified_positions": len(qual),
+            "margin_qualified_hits_a": sum(1 for r in qual if r["a"]["agree"]),
+            "margin_qualified_hits_b": sum(1 for r in qual if r["b"]["agree"]),
+            "discordant_a_only": a_only,
+            "discordant_b_only": b_only,
+            "mcnemar_exact_p": mcnemar_exact(a_only, b_only),
+            "kld_wilcoxon_z": None if w is None else w[0],
+            "kld_wilcoxon_p": None if w is None else w[1],
+            "kld_wilcoxon_n": None if w is None else w[2],
+            "verdict": (
+                "not distinguishable" if w is None or w[1] >= 0.05
+                else ("a closer" if w[0] > 0 else "b closer")),
+        }
+    report = {"schema_version": "xyntetik.runner.gold-logits.v2",
               "summary": summary, "rows": rows}
     print(json.dumps(summary, indent=2))
     if args.out:

@@ -116,6 +116,10 @@ typedef struct {
     float       *gate_inp_scale;         // [n_embd] router-input scale (gemma-4)
     float       *ffn_pre_norm2_w, *ffn_post_norm1_w, *ffn_post_norm2_w; // gemma-4 MoE branch norms
     float       *attn_norm_w, *ffn_norm_w; // norm weights as f32
+    // LayerNorm biases, non-NULL only for a layer_norm arch (stablelm). The
+    // GGUF carries them as blk.N.attn_norm.bias / blk.N.ffn_norm.bias; an
+    // RMSNorm family has no such tensor and leaves these NULL.
+    float       *attn_norm_b, *ffn_norm_b;
     float       *qnorm_w, *knorm_w;      // per-head Q/K norms (qwen3, gemma3/4)
     float       *post_attn_norm_w, *post_ffn_norm_w; // gemma sandwich norms
     float        out_scale;              // whole-layer output scalar (gemma4; 1.0 = off)
@@ -288,6 +292,13 @@ typedef struct {
     gguf_tensor *tok_embd;
     gguf_tensor *output;     // may equal tok_embd (tied)
     float       *out_norm_w;
+    float       *out_norm_b;             // output LayerNorm bias (stablelm)
+    // The family normalises with LayerNorm (subtract the mean, divide by the
+    // standard deviation, scale, then add a bias) rather than RMSNorm. Set
+    // from the architecture, and the reason the `stablelm` path was wrong
+    // until 2026-09-07: RMSNorm neither centres nor adds the bias, and the
+    // GGUF's norm bias tensors were being loaded by nobody.
+    bool         norm_layernorm;
     layer_t     *layers;
     // phi3 fuses Q/K/V and the FFN gate/up into single tensors; these are the
     // sliced descriptors the layers point at, owned here so they outlive init

@@ -98,14 +98,44 @@ that is what this runtime is for.
 In one sentence: **Runner is slower on purpose.** It does the model's
 arithmetic without the shortcuts faster engines take (activations stay
 f32 instead of being rounded to 8 bits, attention accumulates in f32
-instead of f16), so its answers stay closer to what the model's makers
-built, and it can prove what it produced. Measured 2026-09-06 on Granite
-4.2 3B against IBM's own implementation in float32: mean KL 0.0016 with
-top-1 100% on bf16 weights, and at Q4_K_M the closer of the two engines
-(0.109 against 0.115 to 0.119); the faster engine disagreed with itself,
-flash attention on versus off, more than it disagreed with Runner. One
-family so far; the pass over every family is next. Evidence:
-[docs/granite-42-qwen38-cert-2026-09-06.md](docs/granite-42-qwen38-cert-2026-09-06.md).
+instead of f16), so it can prove exactly what it produced.
+
+Whether that arithmetic also makes Runner the *more accurate* engine
+depends on which question you ask, and both answers belong here. Twelve
+families were scored against their publishers' implementations in float32
+on 2026-09-07, both tiers, 2,000 corpus positions each, with the other
+engine given its stronger configuration at each tier.
+
+On how close the whole output distribution is to the reference, Runner
+wins twenty-one of twenty-two rows, at p-values that leave no room for
+luck. On how often each engine picks the reference's token where the
+reference had a clear preference, Runner is ahead or level on twenty of
+twenty-two, but only one of those leads is big enough to be a real
+difference rather than chance: Apertus 8B at four bits, 1343 tokens
+against 1321 of 1369. Both things are true. Runner reproduces the
+reference distribution measurably better, essentially everywhere, and that
+advantage moves the winning token rarely enough that it takes well over a
+thousand qualified positions to see it once.
+
+There is no four-bit deficit. Not one row has the other engine
+significantly ahead on the token measure. The one row where it is
+genuinely closer in distribution is Gemma 4 E2B at four bits, and even
+there Runner leads the token column.
+
+**What this cost us to learn is worth stating.** An earlier version of
+this section reported the same comparisons over 100 positions, where one
+token moved the number by more than a percentage point. Nearly every
+difference it showed was noise, in both directions, including one that
+appeared to put the other engine ahead on Granite 4.2 at four bits;
+measured properly Runner leads that row. **StableLM was the exception and
+it was a real defect of ours**: the architecture normalises with LayerNorm
+and Runner was applying RMSNorm, and its pre-tokenizer had no entry so a
+third of the corpus tokenized differently from the publisher's own
+tokenizer. Both are fixed and the family now reproduces the reference
+exactly. It survived because it was named as supported here with no pinned
+file and therefore no gate, so there is now a test that fails whenever an
+architecture is claimed without one. It found four more. Evidence:
+[docs/golden-pass-2026-09-07.md](docs/golden-pass-2026-09-07.md).
 
 ### Designed to stay on
 

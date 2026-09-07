@@ -1,0 +1,617 @@
+Write a detailed, friendly explanation for a curious teenager of how a modern
+large language model turns a sequence of words into a prediction of the next
+word. Cover tokenization, embeddings, attention, and why the model needs so
+much training data. Use a couple of everyday analogies.
+
+Berätta sedan på svenska, med samma vänliga och pedagogiska ton, hur en dator
+kan lära sig ett sådant språkmönster genom att läsa enorma mängder text. Ta
+upp varför flerspråkiga modeller ibland blandar ihop grammatik mellan språk,
+och ge ett konkret exempel på svenska.
+
+Finally, switch back to English and give a short recipe for a simple weekday
+dinner, followed by three follow-up questions a beginner cook might ask about
+substituting ingredients.
+# Gridcore Runner
+
+A compact **local LLM inference engine written from scratch in plain C** — no
+third-party runtime dependencies or ggml, one `make`, one binary. It uses only
+the platform C/math/threading/dynamic-loader libraries, loads
+standard **GGUF** models and runs them on **CPU (AVX2), CUDA, or Metal**, with
+an OpenAI-compatible server and sampler-level JSON-schema enforcement.
+
+**In 0.1.6 — `--parallel` on Windows serves real checkpoints correctly, and
+the multi-slot server got a hardening pass.** MinGW's 32-bit `stat()` was
+silently unsharing weights for any file past 2 GB: every slot re-decided its
+own CPU/GPU split under the previous slot's VRAM footprint, and the same
+greedy request could get a different answer depending on which slot took it.
+Files are now keyed by their native 64-bit identity, a guard reports any
+silent split disagreement loudly, and the fix is pinned at real-checkpoint
+scale. Also in: **Apertus on CUDA** with its tokenizer fixed (721-prompt
+mismatches 3 → 0), speculative drafts honoring `--kv q8`, `/v1/embeddings`
+working with the official OpenAI SDK, prefix snapshots that survive a
+restart, a long prefill no longer blocking the other slots, the write-side
+stall reproduced and gated for real, and a corrected published comparison —
+vLLM scores **80/105**, not the 20/100 a misconfigured run reported. Where a
+model is too numerically sensitive for token-identity to mean anything,
+agreement is measured against its own floor: `scripts/sensitivity_floor.py` reports
+what a given model does to a small numeric change, and
+`scripts/token_divergence.py` reports where two engines first disagree and by
+how much.
+
+Earlier, in 0.1.4: the tensor-core prefill GEMM became the default on
+tolerance-gated dense Q4_K models (**+47–77% prefill**, decode unchanged),
+dense decode reached **73–79% of llama.cpp** on the reference box with the
+head-to-head numbers published, losing rows included
+([docs/benchmarks.md](docs/benchmarks.md)), and six European models joined the
+pinned compatibility manifest under the [Europe & US model
+scope](docs/model-scope.md). See [CHANGELOG.md](CHANGELOG.md).
+
+## Quick start
+
+Download a prebuilt binary from the [latest release](../../releases/latest)
+(Linux / macOS / Windows), **or** build from source — CUDA needs only the
+NVIDIA driver, no toolkit; offload requires NVIDIA Turing / compute capability
+7.5 or newer:
+
+```
+git clone https://github.com/Joakimpalm-Zen/gridcore-runner && cd gridcore-runner
+make                 # produces ./runner (GPU auto-detected at runtime)
+./runner --version   # -> runner 0.1.6-alpha
+```
+
+Then point it at any GGUF model:
+
+```
+./runner -m model.gguf -i                                   # interactive chat
+./runner -m Qwen3-30B-A3B-Q4_K_M.gguf -p "..." --gpu auto   # sparse MoE on the GPU
+./runner -m model.gguf --serve --parallel 2                 # OpenAI-compatible API server
+./runner -m model.gguf -p "..." --json                      # guaranteed-valid JSON output
+./runner -m model.gguf -f big-document.txt -c 8192 -n 200   # 4x the training context
+./runner -m big.gguf --draft small.gguf -p "..."            # speculative decoding
+```
+
+> **Public alpha (`0.1.6-alpha`).** CI-tested on Linux/macOS/Windows and
+> daily-driven by the rest of the Gridcore stack, but it has met few machines
+> other than ours — which is what an alpha is for. Run your GGUF models and
+> [open an issue](../../issues) for anything that crashes, misbehaves, or
+> underperforms (`runner --version` and `runner --caps` make a report
+> actionable). Threat model: [SECURITY.md](SECURITY.md); the correctness gates
+> every change must hold: [CONTRIBUTING.md](CONTRIBUTING.md).
+
+## Why runner
+
+**Tool calls that still parse when the budget runs out.** Constrained decoding
+is not novel — llama.cpp compiles JSON Schema to GBNF behind `response_format`,
+Ollama takes a schema in `format`. The difference is where it sits: runner's
+validator drives sampling on the path a tool call actually takes, so properties
+emit in declared order, unknown keys are impossible, and **a call truncated
+mid-emission still parses**. On the [agent-torture suite](docs/agent-torture.md)
+— same model, same box, each runtime a `--runtime` target — that is **12/12
+valid tool calls against 5/12 for llama.cpp and Ollama**, and the gap is
+entirely the hard cases: deep nesting and truncation. On a model small enough
+that llama.cpp's template path lands *no* parseable call (3/12), runner still
+returns 12/12. Bring your nastiest schema; the suite exists to be contested.
+
+**Small enough to own outright.** One C codebase, one `make`, no ggml split, no
+CMake, no submodules — readable in a sitting, changeable the same afternoon.
+`/health` in the accept loop, `--parent-pid` supervisor lifetime, speculative
+decoding under `--serve`: each was an afternoon here and would be a feature
+request against a 300k-line upstream. llama.cpp is broader and faster; runner is
+for when the engine is load-bearing and you need to read it to the last line.
+
+**One file to ship, and enough information to place it.** llamafile reached
+driver-only GPU first by bundling tinyBLAS beside the model; runner embeds the
+**PTX in the executable** instead — no toolkit, no cuBLAS, no DLLs to version
+alongside. Copy it to a node with a Turing-or-newer NVIDIA GPU and a driver and
+it offloads; anything else runs the CPU path. Then the half nobody ships:
+`--caps` reports cores, RAM, GPU, compute capability and the quant lists CPU and
+GPU each support, so a scheduler can decide *before* dispatching; `--reserve P`
+caps the process at a percentage of total VRAM and RAM with the context auto-fit
+to the remainder; `--parent-pid` ties its life to its supervisor. (Swapping
+models is table stakes — Ollama does it natively and better. Placement is the
+harder half.)
+
+**No `--host` flag to get wrong.** runner binds `127.0.0.1` with no override —
+no flag, no environment variable, no config key. llama-server and Ollama default
+to loopback too; they just kept the escape hatch. [SentinelLABS and Censys
+reported](https://www.sentinelone.com/labs/silent-brothers-ollama-hosts-form-anonymous-ai-network-beyond-platform-guardrails/)
+**175,108 unique internet-reachable Ollama hosts** across 130 countries from
+their 293-day scan ending in January 2026, nearly half with tool-calling
+capability. Exposed stock Ollama APIs have no authentication. One afternoon's
+`0.0.0.0` at a time. Here it is a gate, not a
+hope: `tests/test_bind.c` and `tests/conformance/test_loopback_bind.py` fail the
+build if the bind ever moves. Remote access belongs behind a reverse proxy, an
+SSH tunnel or Tailscale, where auth and TLS already live.
+
+**The trade, and how it is checked.** llama.cpp wins on raw speed, exotic quants
+(IQ2/IQ3, Vulkan) and architecture breadth: runner does Mixtral/Qwen3 top-k MoE,
+gemma-4's dual-branch GELU MoE and gpt-oss's MXFP4 experts, but skips
+shared-expert MoE and most SSMs. What it does support answers to gates rather
+than adjectives — GPU output verified token-identical to CPU wherever tensor
+cores are not promoted, the promoted prefill path held to a measured tolerance
+gate (`test-tc-tol`, run by `make test`) instead of an identity claim it cannot
+have, certified architectures carrying pinned llama.cpp reference runs. And
+where a model is too numerically unstable for token identity to mean anything —
+a KV-precision change inside one build moving its output further than switching
+engines does — that gets measured and stated, not waved at
+(`scripts/sensitivity_floor.py`).
+
+## Build and platform support
+
+```
+make          # produces ./runner
+make debug    # ASan/UBSan build for development
+```
+
+Plain C with a small platform layer (`src/compat.c`) and no third-party runtime
+libraries. The executable uses ordinary platform libraries (including C, math,
+threading and dynamic loading where applicable). CI builds and smoke-tests every
+push on:
+
+| Platform | Toolchain | GPU |
+|---|---|---|
+| Linux (x86_64) | gcc | CUDA (NVIDIA Turing / compute capability 7.5 or newer; driver only, no toolkit needed) |
+| macOS (arm64) | Apple clang | Metal |
+| Windows (x86_64) | MinGW-w64 via MSYS2 (`pacman -S make mingw-w64-ucrt-x86_64-gcc`, then `make`) | CUDA (NVIDIA Turing / compute capability 7.5 or newer; driver only, no toolkit needed) |
+
+The fp16 kernels use ARM hardware half-floats when available and fall back to
+portable table lookups elsewhere. Little-endian hosts only (GGUF is
+little-endian; every mainstream x86/ARM/RISC-V system qualifies).
+
+## Get and fit a model
+
+Two ways:
+
+1. **`./download-model.sh`** fetches a small test model.
+2. **Any GGUF from Hugging Face**, e.g.:
+   ```
+   curl -L -O "https://huggingface.co/bartowski/SmolLM2-135M-Instruct-GGUF/resolve/main/SmolLM2-135M-Instruct-Q8_0.gguf"
+   ```
+   **Check the byte size afterwards.** `download-model.sh` does; a hand-rolled
+   wrapper usually does not. A reported 8B download was cut off at 290 MB by an
+   HF-CDN `Connection reset by peer` — `curl` exited 56, but the surrounding
+   compound command still returned 0, so nothing noticed until the load failed.
+   `$?` of a pipeline is not a download check.
+
+Note: safetensors checkpoints must be converted to GGUF first — runner runs
+the converted GGUF.
+
+### Requantizing to fit a machine
+
+```
+./runner -m model-f16.gguf --quantize model-q4.gguf --quant q4_0
+```
+
+Rewrites a GGUF with its weight matrices converted to `q8_0`, `q4_0`, or
+`f16` — one downloaded model can be re-packed to fit each node's RAM/VRAM
+(258 MB f16 → 138 MB q8_0 → 74 MB q4_0 for a 135M model). Norms, biases and
+rope factors stay f32; tensors already smaller than the target are kept;
+metadata is copied verbatim. Output verified against reference quantizations
+of the same model.
+
+## Usage
+
+`runner --help` is the complete, authoritative option list — it ships with the
+binary you are actually running, so it cannot drift from it. What follows is
+the behaviour that a one-line flag description cannot carry.
+
+**Sampling defaults come from the model.** `--temp`, `--top-k`, `--top-p`,
+`--min-p` and `--repeat-penalty` default to the served family's published
+recommended settings, chosen from the GGUF's architecture and name and logged
+at load. `runner --caps` prints the whole preset table with a source for each
+entry; passing an option explicitly always overrides its preset.
+
+**`--gpu-layers` is a manual override, not the auto-fit knob.** Omit it and
+runner fits as many layers as the budget allows; `--gpu-layers 0` means *no
+GPU*, exactly like `--gpu off`.
+
+**Chat mode is stateful and auto-templated.** It keeps the KV cache across
+turns (no re-processing of history) and auto-detects the chat template (ChatML, Llama-2/3, Mistral, Zephyr, Phi-3,
+Gemma, Gemma-4) from the model's metadata and vocabulary. Mistral and Llama-2
+both frame turns with `[INST]`, and Phi-3 and Zephyr both use `<|role|>`, so
+detection keys on the terminator each one actually uses — a Mistral model gets
+no `<<SYS>>` block, which its own template rejects. Thinking-tuned models show their
+reasoning between `[thinking]` markers. The server additionally reuses the
+KV cache for the longest shared prompt prefix across requests, so repeated
+system/template prefixes skip prompt evaluation entirely.
+
+## GPU
+
+Two backends implement the same small interface (`src/gpu_none.c` documents
+it); `--gpu auto` (the default) uses one whenever the model's quant formats
+have kernels (F32, F16, Q8_0, Q4_0/1, Q5_0/1, Q3_K, Q4_K, Q5_K, Q6_K, IQ4_NL,
+IQ4_XS); anything
+else falls back to CPU with a message, as does any GPU runtime failure or a
+model that does not fit. GPU output is verified token-identical to the CPU
+path across every supported quant on both backends — on the scalar kernels.
+Since 2026-07-29 the tensor-core prefill GEMM is the *default* on gated dense
+(Q4_K, arch) combos (+47–77% prefill): that path is fp16-tile arithmetic,
+covered by a teacher-forced tolerance gate (0/64 top-1 flips on every
+promoted row; the `test-tc-tol` gate in `make test`) instead of byte identity. Set
+`RUNNER_CUDA_TC=0` to pin the byte-identical scalar path everywhere.
+
+**Metal (Apple Silicon):** model weights are wrapped **zero-copy** from the
+mmap (no extra RAM), the KV cache lives in unified memory shared with the
+CPU, and each generated token is a single GPU command buffer. On
+unified-memory Macs single-token generation is memory-bandwidth-bound, so
+the GPU gives modest speedups (~15–20% on a 1.1B) — its real value is
+freeing the CPU cores and growing headroom on bigger GPUs. Runtime failure
+fallback keeps Metal-owned KV buffers alive for CPU recovery; the lifecycle and
+remaining hardware-only validation are documented in
+[docs/metal-fallback.md](docs/metal-fallback.md).
+
+**CUDA (NVIDIA, Linux/Windows):** the driver API is loaded dynamically
+(`nvcuda.dll` / `libcuda.so.1`) and kernels ship as embedded PTX, so neither
+building nor running needs the CUDA toolkit — a machine without an NVIDIA
+driver just uses the CPU. The embedded PTX target is `sm_75`, so GPU offload is
+supported on NVIDIA Turing / compute capability 7.5 or newer; older or
+unsupported NVIDIA GPUs fall back to CPU. Weights are copied to VRAM once, the
+KV cache (fp16 or q8_0, see `--kv`) lives in VRAM with the
+host copy kept authoritative, and prompt batches run as 16-token tiles that
+decode each weight once for all tokens. A model too large for VRAM is
+**partially offloaded** — as many leading layers as fit run on the GPU and
+the CPU finishes the rest, so oversized models still get a speedup instead
+of falling all the way back to CPU (the `--reserve-vram` cap sets how deep
+the split goes). Sparse MoE models also support `--cpu-moe`: attention and
+other retained dense tensors stay on CUDA while only the expert FFNs execute
+from system RAM. This avoids uploading the inactive expert bank and is the
+recommended placement for Qwen3-30B-A3B-class models on 8 GB cards.
+The placement is per-layer: `--cpu-moe auto` fills whatever VRAM the
+attention split leaves with whole expert banks and hosts only the remainder
+(the split line reports `experts N/M layers on GPU`), and `--cpu-moe N`
+pins exactly the deepest N expert layers to the host. A bare `--cpu-moe`
+keeps every bank on the host, as before. Partial placement matters on
+cards with headroom: all-or-nothing left 8.8 GB of a 12 GB card idle, and
+moving just 3 of 48 banks onto a heavily-occupied 24 GB slice measured
++7% prompt and +7% decode on Qwen3-Coder-30B. Measured
+on an RTX 3070: 6–36 tok/s generation
+across 1.5B–8B quantized models (5–8× the same box's CPU) and 2–3× CPU
+prompt evaluation. Regenerate the PTX header after kernel changes with
+`make ptx` (needs a CUDA toolkit at development time only).
+
+Vulkan (AMD/Intel) is not written yet — those machines run the CPU path.
+
+## Sharing a machine
+
+Three pieces cover the case where runner is not the only thing on the box:
+a VRAM/RAM budget, one server that swaps between models, and a report a
+scheduler can read.
+
+### Resource reservations
+
+```
+./runner --serve -m model.gguf -c 0 --reserve 50
+```
+
+`--reserve P` caps runner at P% of **total** VRAM and RAM (override each with
+`--reserve-vram` / `--reserve-ram`; `--reserve-cpu P` sizes the thread count
+as P% of cores). With `-c 0`, the context window is auto-fit to whatever the
+reservation leaves after the weights — a small model grows its window into
+the reserved room (capped at its training context), a big one gets what fits,
+and one that cannot fit at all falls back per the normal rules.
+
+`POST /unload` frees the resident model's memory (single-model serve included)
+so the machine can be reclaimed without stopping the server; the next request
+reloads it transparently. **It was a `GET` in alphas before 0.1.5**, which made it
+reachable from any page a user was visiting — `<img src="http://127.0.0.1:PORT/
+unload">` needs no preflight and no DNS rebinding, because binding to loopback
+does not stop a b
+## Notes from a week of measurement
+
+The hardest part of benchmarking an inference engine is not running the
+benchmark. It is deciding, before you look at the number, what result would
+change your mind. A gate that cannot fail is a decoration, and a comparison
+whose loser was chosen in advance is an advertisement. Write down the bar,
+then measure, then publish whichever way it fell.
+
+Consider a small worked example. Two engines answer the same prompt with the
+same weights on the same machine. Engine A picks the reference token on
+seventy-one of seventy-five positions where the reference had a clear
+preference; engine B picks it on seventy-three. The difference is two tokens.
+A reader who sees ninety-four point seven percent against ninety-seven point
+three percent will read a gap. A reader who sees "two tokens out of
+seventy-five" will ask, correctly, whether the same two tokens would fall the
+same way on a different paragraph. They usually will not.
+
+### En kort utvikning på svenska
+
+Det svåraste med att mäta en inferensmotor är inte att köra mätningen. Det är
+att bestämma i förväg vilket resultat som skulle få dig att ändra dig. En
+kontroll som aldrig kan misslyckas är en dekoration. Skriv ner gränsen först,
+mät sedan, och publicera oavsett åt vilket håll det föll.
+
+Ett exempel: två motorer svarar på samma fråga med samma vikter på samma
+maskin. Skillnaden mellan dem är två tokens av sjuttiofem. Det är ingen
+skillnad alls, det är brus, och den som rapporterar det som procenttal döljer
+just den saken. Räkna hellre i antal än i procent när underlaget är litet.
+
+Auf Deutsch gesagt: ein Maß, das man nur deshalb wählt, weil es einem
+schmeichelt, ist kein Maß, sondern eine Behauptung. Man veröffentlicht beide
+Spalten oder gar keine.
+
+En français, la même idée: publier la mesure qui vous arrange et taire celle
+qui vous dérange, ce n'est pas mesurer, c'est plaider.
+
+## A short program, for tokenizer variety
+
+```python
+from math import comb
+
+def mcnemar_exact(b: int, c: int) -> float:
+    """Two-sided exact test on discordant pairs.
+
+    b = cases the first engine got right and the second got wrong,
+    c = the reverse. Concordant pairs carry no information here.
+    """
+    n = b + c
+    if n == 0:
+        return 1.0
+    tail = sum(comb(n, k) for k in range(0, min(b, c) + 1))
+    return min(1.0, 2 * tail / 2 ** n)
+
+
+def power_curve(rate, split, sizes, trials=4000):
+    import random
+    for n in sizes:
+        hits = 0
+        for _ in range(trials):
+            discordant = sum(1 for _ in range(n) if random.random() < rate)
+            c = sum(1 for _ in range(discordant) if random.random() < split)
+            if mcnemar_exact(discordant - c, c) < 0.05:
+                hits += 1
+        yield n, hits / trials
+```
+
+The same thing in C, because the tokenizer should see both:
+
+```c
+static double kl_divergence(const float *p, const float *q, size_t n)
+{
+    double acc = 0.0;
+    for (size_t i = 0; i < n; i++) {
+        if (p[i] <= 0.0f) continue;
+        acc += (double)p[i] * (log((double)p[i]) - log((double)q[i]));
+    }
+    return acc;
+}
+
+/* Accumulate in double even though the tensors are f32: the sum is long,
+ * the terms alternate in sign, and the answer is compared against another
+ * engine's answer at four decimal places. Cheap insurance. */
+```
+
+And a fragment of SQL, plus some JSON, for good measure:
+
+```sql
+SELECT family, weights,
+       AVG(kld_runner) AS runner_kl,
+       AVG(kld_llama)  AS llama_kl,
+       COUNT(*) FILTER (WHERE gold_margin > 0.5) AS qualified
+  FROM gold_positions
+ GROUP BY family, weights
+ HAVING COUNT(*) > 500
+ ORDER BY runner_kl ASC;
+```
+
+```json
+{
+  "schema_version": 3,
+  "positions": 2000,
+  "reference": {"class": "GraniteMoeHybridForCausalLM", "dtype": "float32"},
+  "sides": {
+    "a": {"mean_kld": 0.1006, "top1_pct": 78.0, "margin_qualified_pct": 88.1},
+    "b": {"mean_kld": 0.1078, "top1_pct": 79.0, "margin_qualified_pct": 89.6}
+  },
+  "notes": ["one token is worth 1.3 points at n=100", "report counts too"]
+}
+```
+
+## On quantization, plainly
+
+Rounding a weight matrix to four bits does two things at once, and they are
+easy to confuse. It makes every individual product slightly wrong, and it
+makes the errors correlated across a block, because a block shares a scale.
+The first effect looks like noise and mostly cancels. The second does not
+cancel, and it is why a model at four bits is not simply a noisier version of
+itself at sixteen.
+
+An engine that keeps its activations in thirty-two bits is fixing the first
+kind of error and can do nothing about the second. That is the whole shape of
+the result: at unquantized weights the careful engine is measurably closer to
+the reference, and at four bits the two engines converge, because the term
+that now dominates is one neither of them controls. It is a satisfying
+finding precisely because nobody designed it that way.
+
+The practical consequence is a choice about where to spend bits rather than
+where to spend flops. Attention projections and the output head decide which
+token wins; the expert banks mostly decide how confident it was. Spending the
+bits on the former and saving them on the latter is not a compromise, it is a
+better allocation of the same budget, and it is measurable against the
+publisher's own implementation rather than against a rival engine.
+
+## A dialogue
+
+"So we are slower and no more accurate?"
+
+"We are slower and measurably closer at full precision, and level at four
+bits. Those are different sentences."
+
+"Which one goes on the website?"
+
+"Neither, on the front page. Put what the thing does on the front page and
+put both numbers on the evidence page, with the test that says whether the
+difference is real."
+
+"That is less exciting."
+
+"It is also true, and the people we want will check."
+
+## Miscellany, for lexical spread
+
+Seventeen thousand four hundred and six. 3.14159265358979. 0x7fffffff.
+2026-09-07T09:14:00Z. ¥1,200, €38.50, £19.99, $0.0031 per thousand tokens.
+naïve, façade, jalapeño, Zürich, Kraków, Ǎorāngi, Ōsaka, Владивосток,
+Ελλάδα, العربية, 日本語のテキスト, 한국어 문장, מִבְטָא.
+Emoji do appear in real prompts: ✅ ⚠️ 🔬 🧮 🛠️.
+
+Lists behave differently from prose under a tokenizer:
+
+- alpha
+- beta
+- gamma
+- delta
+- epsilon
+
+| column | value |
+|---|---|
+| positions | 2000 |
+| stride | 3 |
+| qualified | 1487 |
+
+The quick brown fox jumps over the lazy dog. Pack my box with five dozen
+liquor jugs. How razorback-jumping frogs can level six piqued gymnasts.
+Sphinx of black quartz, judge my vow. Jackdaws love my big sphinx of quartz.
+
+Finally, a paragraph of ordinary narrative, because most text is ordinary
+narrative and a corpus of nothing but code and tables measures the wrong
+thing. The train was late again, which surprised nobody who took it often,
+and the platform filled slowly with the particular patience of people who
+have already decided not to be annoyed. A woman near the end of the platform
+read a paperback with the cover folded back, turning pages with her thumb.
+Someone's dog, small and entirely unbothered, sat down in the exact centre of
+the yellow line and refused every reasonable argument to move. When the train
+finally came it was almost empty, and everyone found a seat, and the delay
+became one of those small shared inconveniences that turn briefly into a kind
+of goodwill among strangers who will never speak to each other again.
+
+## Second half: more of the same, deliberately varied
+
+An inference engine is mostly a memory system wearing a costume. The
+arithmetic is simple and well understood; what separates a fast engine from a
+slow one is almost entirely how many times a byte of weight crosses a bus.
+Decode is bandwidth bound at batch one, which is why a machine that doubles
+its floating point throughput and keeps its memory bandwidth will produce
+almost exactly the same tokens per second, to the mild disappointment of
+whoever bought it. Prefill is the opposite: the same weight serves many
+positions, so the arithmetic becomes the wall, and tiling the multiplication
+so each weight is decoded once for a batch of columns is worth more than any
+kernel micro-optimization.
+
+That asymmetry has an unhappy consequence for benchmarks. A number quoted as
+"tokens per second" is two different measurements averaged by an unstated
+ratio, and the ratio depends on how long the prompt was. Publish prefill and
+decode separately, say how long the prompt was, and say what the context
+window was set to, because a bigger window changes the cache footprint and
+therefore the bandwidth story even when nothing else changed.
+
+### Om minnesbandbredd, på svenska igen
+
+Avkodning är begränsad av minnesbandbredd, inte av flyttalsprestanda. Det
+betyder att en maskin med dubbelt så snabb aritmetik men samma minnesbuss ger
+nästan exakt lika många tokens per sekund. Det är sällan vad köparen
+förväntade sig. Förifyllnad är tvärtom räknebegränsad, eftersom samma vikt
+används för många positioner samtidigt.
+
+Rapportera därför de två faserna var för sig, och skriv ut hur långt
+promptet var. En siffra som slår ihop dem döljer mer än den visar.
+
+## Three small algorithms
+
+Kahan summation, which trades a few operations for a great deal of accuracy
+in a long reduction:
+
+```c
+double kahan_sum(const double *x, size_t n)
+{
+    double sum = 0.0, comp = 0.0;
+    for (size_t i = 0; i < n; i++) {
+        double y = x[i] - comp;
+        double t = sum + y;
+        comp = (t - sum) - y;
+        sum = t;
+    }
+    return sum;
+}
+```
+
+A binary search that is correct at the boundaries, which most are not:
+
+```python
+def lower_bound(xs, target):
+    lo, hi = 0, len(xs)
+    while lo < hi:
+        mid = (lo + hi) // 2
+        if xs[mid] < target:
+            lo = mid + 1
+        else:
+            hi = mid
+    return lo
+```
+
+And the Wilcoxon signed-rank statistic, which is what actually settled the
+question this corpus was extended for:
+
+```python
+def signed_rank(diffs):
+    d = [x for x in diffs if x != 0]
+    order = sorted(range(len(d)), key=lambda i: abs(d[i]))
+    ranks = [0.0] * len(d)
+    i = 0
+    while i < len(d):
+        j = i
+        while j + 1 < len(d) and abs(d[order[j + 1]]) == abs(d[order[i]]):
+            j += 1
+        for k in range(i, j + 1):
+            ranks[order[k]] = (i + j) / 2 + 1
+        i = j + 1
+    return sum(ranks[i] for i in range(len(d)) if d[i] > 0)
+```
+
+## Questions a careful reader asks
+
+1. What would have falsified this?
+2. How many independent observations are behind the headline number?
+3. Was the comparison configured the same way on both sides?
+4. If the effect is real, how large is it in units a user would notice?
+5. Who chose the metric, and when, and did they see the data first?
+6. What is missing from the table, and why is it missing?
+7. Which rows were dropped, and were they dropped before or after inspection?
+
+The sixth question is the one that catches most published comparisons,
+including several of ours. A table with no losing rows is not a table of
+results; it is a table of the results that survived an unstated filter.
+
+## Recipe, because the corpus should not be all one register
+
+Sear the mushrooms in a dry pan until they squeak and give up their water,
+then add the butter, not before. Salt at the end. The whole trick is that
+mushrooms are mostly water and butter will not brown anything that is still
+boiling. Serve on toast with a great deal of black pepper and a squeeze of
+lemon, which sounds wrong and is not.
+
+Substitutions a beginner might ask about: olive oil for butter changes the
+flavour but not the method; shallots for garlic is fine and milder; dried
+mushrooms need soaking and their soaking liquid is the best part, so do not
+pour it away. If the pan is crowded the mushrooms will steam instead of
+browning, which is the single most common failure and has nothing to do with
+the recipe.
+
+## Closing miscellany
+
+Numbers again, for spread: 1,048,576. 2**53 = 9007199254740992. One in
+three hundred and eighty-four. Ninety-five percent confidence. p < 0.001.
+0.0007 against 0.6099. Twenty-three positions out of seventy.
+
+Hex and identifiers: 0xdeadbeef, sha256:9f86d081884c7d65, commit 046e8d7,
+issue #52, RFC 8259, ISO 8601, UTF-8, sm_75, Q4_K_M, bf16, f32, ML-DSA-44.
+
+More scripts, since tokenizers differ most on rare ones: Ἀριστοτέλης,
+Ἰλιάς, ᚠᚢᚦᚨᚱᚲ, བོད་སྐད།, ភាសាខ្មែរ, ትግርኛ, ᐃᓄᒃᑎᑐᑦ.
+
+And one last plain paragraph. The measurement finished around nine in the
+morning, which is the wrong time to discover that a number you published the
+night before was an artefact of the corpus being too small to see anything at
+all. The right response is not to argue with it. The right response is to
+write down what the instrument can and cannot resolve, publish that beside
+the number, and then go and make the instrument better, which is duller work
+than arguing and considerably more useful.

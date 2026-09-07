@@ -1,0 +1,920 @@
+  chatml        user-only+gen              ok (-qwen-default-system)
+  chatml        user-only-nogen            ok (-qwen-default-system)
+  chatml        system+user+gen            ok
+  chatml        system+multiturn+gen       ok
+  chatml        multiturn+gen              ok (-qwen-default-system)
+  chatml        multiturn-nogen            ok (-qwen-default-system)
+  chatml        trailing-assistant+gen     ok (-qwen-default-system)
+  chatml        trailing-assistant-nogen   ok (-qwen-default-system)
+  chatml        consecutive-user           ok (-qwen-default-system)
+  chatml        consecutive-assistant      ok (-qwen-default-system)
+  chatml        system-mid-history         ok (-qwen-default-system)
+  chatml        content-array              ok
+  chatml        empty-assistant-content    ok (-qwen-default-system)
+  chatml        empty-user-content         ok
+  chatml        unicode-emoji              ok
+  chatml        long-content               ok
+  chatml        tool-call+result           ok
+  chatml        multi-tool-call            ok
+  chatml        tool-call-with-text        ok
+  chatml        tool-then-conversation     ok
+  chatml-think  user-only+gen              ok
+  chatml-think  user-only-nogen            ok
+  chatml-think  system+user+gen            ok
+  chatml-think  system+multiturn+gen       ok
+  chatml-think  multiturn+gen              ok
+  chatml-think  multiturn-nogen            ok
+  chatml-think  trailing-assistant+gen     ok
+  chatml-think  trailing-assistant-nogen   ok
+  chatml-think  consecutive-user           ok
+  chatml-think  consecutive-assistant      ok
+  chatml-think  system-mid-history         ok
+  chatml-think  content-array              ok
+  chatml-think  empty-assistant-content    ok
+  chatml-think  empty-user-content         ok
+  chatml-think  unicode-emoji              ok
+  chatml-think  long-content               ok
+  chatml-think  think-on                   ok
+  chatml-think  think-off                  ok
+  chatml-think  tool-call+result           ok
+  chatml-think  multi-tool-call            ok
+  chatml-think  tool-call-with-text        ok
+  chatml-think  tool-then-conversation     ok
+  llama2        user-only+gen              ok (-bos)
+  llama2        user-only-nogen            ok (-bos)
+  llama2        system+user+gen            ok (-bos)
+  llama2        system+multiturn+gen       ok (-bos)
+  llama2        multiturn+gen              ok (-bos)
+  llama2        multiturn-nogen            ok (-bos)
+  llama2        trailing-assistant+gen     ok (-bos)
+  llama2        trailing-assistant-nogen   ok (-bos)
+  llama2        consecutive-user           cannot-express  reference refuses: the template raises: 'Conversation roles must alternate user/assistant/user/assistant/...'. The family has no rendering for this conversation at all, so there is nothing to conform to
+  llama2        consecutive-assistant      cannot-express  reference refuses: the template raises: 'Conversation roles must alternate user/assistant/user/assistant/...'. The family has no rendering for this conversation at all, so there is nothing to conform to
+  llama2        system-mid-history         cannot-express  reference refuses: the template raises: 'Conversation roles must alternate user/assistant/user/assistant/...'. The family has no rendering for this conversation at all, so there is nothing to conform to
+  llama2        content-array              ok (-bos)
+  llama2        empty-assistant-content    ok (-bos)
+  llama2        empty-user-content         ok (-bos)
+  llama2        unicode-emoji              ok (-bos)
+  llama2        long-content               ok (-bos)
+  llama3        user-only+gen              ok (-bos,cutting-knowledge-header,empty-system-turn)
+  llama3        user-only-nogen            ok (-bos,cutting-knowledge-header,empty-system-turn)
+  llama3        system+user+gen            ok (-bos,cutting-knowledge-header)
+  llama3        system+multiturn+gen       ok (-bos,cutting-knowledge-header)
+  llama3        multiturn+gen              ok (-bos,cutting-knowledge-header,empty-system-turn)
+  llama3        multiturn-nogen            ok (-bos,cutting-knowledge-header,empty-system-turn)
+  llama3        trailing-assistant+gen     ok (-bos,cutting-knowledge-header,empty-system-turn)
+  llama3        trailing-assistant-nogen   ok (-bos,cutting-knowledge-header,empty-system-turn)
+  llama3        consecutive-user           ok (-bos,cutting-knowledge-header,empty-system-turn)
+  llama3        consecutive-assistant      ok (-bos,cutting-knowledge-header,empty-system-turn)
+  llama3        system-mid-history         ok (-bos,cutting-knowledge-header,empty-system-turn)
+  llama3        content-array              ok (-bos,cutting-knowledge-header)
+  llama3        empty-assistant-content    ok (-bos,cutting-knowledge-header,empty-system-turn)
+  llama3        empty-user-content         ok (-bos,cutting-knowledge-header)
+  llama3        unicode-emoji              ok (-bos,cutting-knowledge-header)
+  llama3        long-content               ok (-bos,cutting-knowledge-header)
+  zephyr        user-only+gen              ok
+  zephyr        user-only-nogen            ok
+  zephyr        system+user+gen            ok
+  zephyr        system+multiturn+gen       ok
+  zephyr        multiturn+gen              ok
+  zephyr        multiturn-nogen            ok
+  zephyr        trailing-assistant+gen     ok
+  zephyr        trailing-assistant-nogen   ok
+  zephyr        consecutive-user           ok
+  zephyr        consecutive-assistant      ok
+  zephyr        system-mid-history         ok
+  zephyr        content-array              ok
+  zephyr        empty-assistant-content    ok
+  zephyr        empty-user-content         ok
+  zephyr        unicode-emoji              ok
+  zephyr        long-content               ok
+  gemma         user-only+gen              ok (-bos)
+  gemma         user-only-nogen            ok (-bos)
+  gemma         system+user+gen            ok (-bos)
+  gemma         system+multiturn+gen       ok (-bos)
+  gemma         multiturn+gen              ok (-bos)
+  gemma         multiturn-nogen            ok (-bos)
+  gemma         trailing-assistant+gen     ok (-bos)
+  gemma         trailing-assistant-nogen   ok (-bos)
+  gemma         consecutive-user           cannot-express  reference refuses: the template raises: 'Conversation roles must alternate user/assistant/user/assistant/...'. The family has no rendering for this conversation at all, so there is nothing to conform to
+  gemma         consecutive-assistant      cannot-express  reference refuses: the template raises: 'Conversation roles must alternate user/assistant/user/assistant/...'. The family has no rendering for this conversation at all, so there is nothing to conform to
+  gemma         system-mid-history         cannot-express  reference refuses: the template raises: 'Conversation roles must alternate user/assistant/user/assistant/...'. The family has no rendering for this conversation at all, so there is nothing to conform to
+  gemma         content-array              ok (-bos)
+  gemma         empty-assistant-content    ok (-bos)
+  gemma         empty-user-content         ok (-bos)
+  gemma         unicode-emoji              ok (-bos)
+  gemma         long-content               ok (-bos)
+  gemma4-mainline user-only+gen              ok (-bos)
+  gemma4-mainline user-only-nogen            ok (-bos)
+  gemma4-mainline system+user+gen            ok (-bos)
+  gemma4-mainline system+multiturn+gen       ok (-bos)
+  gemma4-mainline multiturn+gen              ok (-bos)
+  gemma4-mainline multiturn-nogen            ok (-bos)
+  gemma4-mainline trailing-assistant+gen     ok (-bos)
+  gemma4-mainline trailing-assistant-nogen   ok (-bos)
+  gemma4-mainline consecutive-user           ok (-bos)
+  gemma4-mainline consecutive-assistant      ok (-bos)
+  gemma4-mainline system-mid-history         ok (-bos)
+  gemma4-mainline content-array              ok (-bos)
+  gemma4-mainline empty-assistant-content    ok (-bos)
+  gemma4-mainline empty-user-content         ok (-bos)
+  gemma4-mainline unicode-emoji              ok (-bos)
+  gemma4-mainline long-content               ok (-bos)
+  gemma4-mainline think-on                   ok (-bos)
+  gemma4-mainline think-off                  ok (-bos)
+  gemma4-mainline tool-call+result           ok (-bos)
+  gemma4-mainline multi-tool-call            ok (-bos)
+  gemma4-mainline tool-call-with-text        ok (-bos)
+  gemma4-mainline tool-then-conversation     ok (-bos)
+  mistral       user-only+gen              ok (-bos)
+  mistral       user-only-nogen            ok (-bos)
+  mistral       system+user+gen            ok (-bos)
+  mistral       system+multiturn+gen       ok (-bos)
+  mistral       multiturn+gen              ok (-bos)
+  mistral       multiturn-nogen            ok (-bos)
+  mistral       trailing-assistant+gen     ok (-bos)
+  mistral       trailing-assistant-nogen   ok (-bos)
+  mistral       consecutive-user           cannot-express  reference refuses: the template raises: 'After the optional system message, conversation roles must alternate user/assistant/user/assistant/...'
+  mistral       consecutive-assistant      cannot-express  reference refuses: the template raises: 'After the optional system message, conversation roles must alternate user/assistant/user/assistant/...'
+  mistral       system-mid-history         cannot-express  reference refuses: the template raises: 'After the optional system message, conversation roles must alternate user/assistant/user/assistant/...'
+  mistral       content-array              ok (-bos)
+  mistral       empty-assistant-content    ok (-bos)
+  mistral       empty-user-content         ok (-bos)
+  mistral       unicode-emoji              ok (-bos)
+  mistral       long-content               ok (-bos)
+  phi3          user-only+gen              ok
+  phi3          user-only-nogen            ok
+  phi3          system+user+gen            ok
+  phi3          system+multiturn+gen       ok
+  phi3          multiturn+gen              ok
+  phi3          multiturn-nogen            ok
+  phi3          trailing-assistant+gen     ok
+  phi3          trailing-assistant-nogen   ok
+  phi3          consecutive-user           ok
+  phi3          consecutive-assistant      ok
+  phi3          system-mid-history         ok
+  phi3          content-array              ok
+  phi3          empty-assistant-content    ok
+  phi3          empty-user-content         ok
+  phi3          unicode-emoji              ok
+  phi3          long-content               ok
+  apertus       user-only+gen              ok (-bos,default-system-with-live-date)
+  apertus       user-only-nogen            ok (-bos,default-system-with-live-date)
+  apertus       system+user+gen            ok (-bos)
+  apertus       system+multiturn+gen       ok (-bos)
+  apertus       multiturn+gen              ok (-bos,default-system-with-live-date)
+  apertus       multiturn-nogen            ok (-bos,default-system-with-live-date)
+  apertus       trailing-assistant+gen     ok (-bos,default-system-with-live-date)
+  apertus       trailing-assistant-nogen   ok (-bos,default-system-with-live-date)
+  apertus       consecutive-user           ok (-bos,default-system-with-live-date)
+  apertus       consecutive-assistant      ok (-bos,default-system-with-live-date)
+  apertus       system-mid-history         cannot-express  reference refuses: the template raises 'Invalid message role': a system turn is only a role this template knows in first position
+  apertus       content-array              ok (-bos)
+  apertus       empty-assistant-content    ok (-bos,default-system-with-live-date)
+  apertus       empty-user-content         ok (-bos)
+  apertus       unicode-emoji              ok (-bos)
+  apertus       long-content               ok (-bos)
+  apertus       tool-call+result           ok (-bos)
+  apertus       multi-tool-call            ok (-bos)
+  apertus       tool-call-with-text        ok (-bos)
+  apertus       tool-then-conversation     ok (-bos)
+  ornith        user-only+gen              ok
+  ornith        user-only-nogen            ok
+  ornith        system+user+gen            ok
+  ornith        system+multiturn+gen       ok
+  ornith        multiturn+gen              ok
+  ornith        multiturn-nogen            ok
+  ornith        trailing-assistant+gen     ok
+  ornith        trailing-assistant-nogen   ok
+  ornith        consecutive-user           ok
+  ornith        consecutive-assistant      ok
+  ornith        system-mid-history         cannot-express  reference refuses: the template raises: 'System message must be at the beginning.'
+  ornith        content-array              ok
+  ornith        empty-assistant-content    ok
+  ornith        empty-user-content         ok
+  ornith        unicode-emoji              ok
+  ornith        long-content               ok
+  ornith        think-on                   ok
+  ornith        think-off                  ok
+  ornith        tool-call+result           ok
+  ornith        multi-tool-call            ok
+  ornith        tool-call-with-text        ok
+  ornith        tool-then-conversation     ok
+  qwen38        user-only+gen              ok
+  qwen38        user-only-nogen            ok
+  qwen38        system+user+gen            ok
+  qwen38        system+multiturn+gen       ok
+  qwen38        multiturn+gen              ok
+  qwen38        multiturn-nogen            ok
+  qwen38        trailing-assistant+gen     ok
+  qwen38        trailing-assistant-nogen   ok
+  qwen38        consecutive-user           ok
+  qwen38        consecutive-assistant      ok
+  qwen38        system-mid-history         cannot-express  reference refuses: the template raises: 'System message must be at the beginning.'
+  qwen38        content-array              ok
+  qwen38        empty-assistant-content    ok
+  qwen38        empty-user-content         ok
+  qwen38        unicode-emoji              ok
+  qwen38        long-content               ok
+  qwen38        think-on                   ok
+  qwen38        think-off                  ok
+  qwen38        tool-call+result           ok
+  qwen38        multi-tool-call            ok
+  qwen38        tool-call-with-text        ok
+  qwen38        tool-then-conversation     ok
+  granite42     user-only+gen              ok
+  granite42     user-only-nogen            ok
+  granite42     system+user+gen            ok
+  granite42     system+multiturn+gen       ok
+  granite42     multiturn+gen              ok
+  granite42     multiturn-nogen            ok
+  granite42     trailing-assistant+gen     ok
+  granite42     trailing-assistant-nogen   ok
+  granite42     consecutive-user           ok
+  granite42     consecutive-assistant      ok
+  granite42     system-mid-history         ok
+  granite42     content-array              ok
+  granite42     empty-assistant-content    ok
+  granite42     empty-user-content         ok
+  granite42     unicode-emoji              ok
+  granite42     long-content               ok
+  granite42     think-on                   ok
+  granite42     think-off                  ok
+  granite42     tool-call+result           ok
+  granite42     multi-tool-call            ok
+  granite42     tool-call-with-text        ok
+  granite42     tool-then-conversation     ok
+  muse          user-only+gen              ok (-bos,current-date)
+  muse          user-only-nogen            ok (-bos,current-date)
+  muse          system+user+gen            ok (-bos)
+  muse          system+multiturn+gen       ok (-bos)
+  muse          multiturn+gen              ok (-bos,current-date)
+  muse          multiturn-nogen            ok (-bos,current-date)
+  muse          trailing-assistant+gen     ok (-bos,current-date)
+  muse          trailing-assistant-nogen   ok (-bos,current-date)
+  muse          consecutive-user           ok (-bos,current-date)
+  muse          consecutive-assistant      ok (-bos,current-date)
+  muse          system-mid-history         ok (-bos)
+  muse          content-array              ok (-bos)
+  muse          empty-assistant-content    ok (-bos,current-date)
+  muse          empty-user-content         ok (-bos)
+  muse          unicode-emoji              ok (-bos)
+  muse          long-content               ok (-bos)
+  muse          tool-call+result           ok (-bos)
+  muse          multi-tool-call            ok (-bos)
+  muse          tool-call-with-text        ok (-bos)
+  muse          tool-then-conversation     ok (-bos)
+  trinity       user-only+gen              NOT-CHECKED  reference refused
+  trinity       user-only-nogen            NOT-CHECKED  reference refused
+  trinity       system+user+gen            NOT-CHECKED  reference refused
+  trinity       system+multiturn+gen       NOT-CHECKED  reference refused
+  trinity       multiturn+gen              NOT-CHECKED  reference refused
+  trinity       multiturn-nogen            NOT-CHECKED  reference refused
+  trinity       trailing-assistant+gen     NOT-CHECKED  reference refused
+  trinity       trailing-assistant-nogen   NOT-CHECKED  reference refused
+  trinity       consecutive-user           NOT-CHECKED  reference refused
+  trinity       consecutive-assistant      NOT-CHECKED  reference refused
+  trinity       system-mid-history         NOT-CHECKED  reference refused
+  trinity       content-array              NOT-CHECKED  reference refused
+  trinity       empty-assistant-content    NOT-CHECKED  reference refused
+  trinity       empty-user-content         NOT-CHECKED  reference refused
+  trinity       unicode-emoji              NOT-CHECKED  reference refused
+  trinity       long-content               NOT-CHECKED  reference refused
+  trinity       tool-call+result           NOT-CHECKED  reference refused
+  trinity       multi-tool-call            NOT-CHECKED  reference refused
+  trinity       tool-call-with-text        NOT-CHECKED  reference refused
+  trinity       tool-then-conversation     NOT-CHECKED  reference refused
+  smollm2       user-only+gen              NEW-DRIFT at byte 12  tokens -21 (ref 36, first differs at 1)
+      reference: '<|im_start|>system\nYou are a helpful AI assistant named SmolLM, trained by Hugging Face<|i'
+      runner   : '<|im_start|>user\nWhat color is the sky?<|im_end|>\n<|im_start|>assistant\n'
+  smollm2       user-only-nogen            NEW-DRIFT at byte 12  tokens -21 (ref 32, first differs at 1)
+      reference: '<|im_start|>system\nYou are a helpful AI assistant named SmolLM, trained by Hugging Face<|i'
+      runner   : '<|im_start|>user\nWhat color is the sky?<|im_end|>\n'
+  smollm2       system+user+gen            ok
+  smollm2       system+multiturn+gen       ok
+  smollm2       multiturn+gen              NEW-DRIFT at byte 12  tokens -21 (ref 59, first differs at 1)
+      reference: '<|im_start|>system\nYou are a helpful AI assistant named SmolLM, trained by Hugging Face<|i'
+      runner   : '<|im_start|>user\nWhat color is the sky?<|im_end|>\n<|im_start|>assistant\nBlue, because of R'
+  smollm2       multiturn-nogen            NEW-DRIFT at byte 12  tokens -21 (ref 55, first differs at 1)
+      reference: '<|im_start|>system\nYou are a helpful AI assistant named SmolLM, trained by Hugging Face<|i'
+      runner   : '<|im_start|>user\nWhat color is the sky?<|im_end|>\n<|im_start|>assistant\nBlue, because of R'
+  smollm2       trailing-assistant+gen     NEW-DRIFT at byte 12  tokens -21 (ref 50, first differs at 1)
+      reference: '<|im_start|>system\nYou are a helpful AI assistant named SmolLM, trained by Hugging Face<|i'
+      runner   : '<|im_start|>user\nWhat color is the sky?<|im_end|>\n<|im_start|>assistant\nBlue, because of R'
+  smollm2       trailing-assistant-nogen   NEW-DRIFT at byte 12  tokens -21 (ref 46, first differs at 1)
+      reference: '<|im_start|>system\nYou are a helpful AI assistant named SmolLM, trained by Hugging Face<|i'
+      runner   : '<|im_start|>user\nWhat color is the sky?<|im_end|>\n<|im_start|>assistant\nBlue, because of R'
+  smollm2       consecutive-user           NEW-DRIFT at byte 12  tokens -21 (ref 45, first differs at 1)
+      reference: '<|im_start|>system\nYou are a helpful AI assistant named SmolLM, trained by Hugging Face<|i'
+      runner   : '<|im_start|>user\nWhat color is the sky?<|im_end|>\n<|im_start|>user\nAnd at sunset?<|im_end|'
+  smollm2       consecutive-assistant      NEW-DRIFT at byte 12  tokens -21 (ref 76, first differs at 1)
+      reference: '<|im_start|>system\nYou are a helpful AI assistant named SmolLM, trained by Hugging Face<|i'
+      runner   : '<|im_start|>user\nWhat color is the sky?<|im_end|>\n<|im_start|>assistant\nBlue, because of R'
+  smollm2       system-mid-history         NEW-DRIFT at byte 12  tokens -21 (ref 72, first differs at 1)
+      reference: '<|im_start|>system\nYou are a helpful AI assistant named SmolLM, trained by Hugging Face<|i'
+      runner   : '<|im_start|>user\nWhat color is the sky?<|im_end|>\n<|im_start|>assistant\nBlue, because of R'
+  smollm2       content-array              ok
+  smollm2       empty-assistant-content    NEW-DRIFT at byte 12  tokens -21 (ref 51, first differs at 1)
+      reference: '<|im_start|>system\nYou are a helpful AI assistant named SmolLM, trained by Hugging Face<|i'
+      runner   : '<|im_start|>user\nWhat color is the sky?<|im_end|>\n<|im_start|>assistant\n<|im_end|>\n<|im_st'
+  smollm2       empty-user-content         ok
+  smollm2       unicode-emoji              ok
+  smollm2       long-content               ok
+  hermes4       user-only+gen              NEW-DRIFT at byte 12  tokens -14 (ref 28, first differs at 1)
+      reference: '<|im_start|>system\nYou are Hermes, created by Nous Research.<|im_end|>\n<|im_start|>user\nWh'
+      runner   : '<|im_start|>user\nWhat color is the sky?<|im_end|>\n<|im_start|>assistant\n'
+  hermes4       user-only-nogen            NEW-DRIFT at byte 12  tokens -14 (ref 25, first differs at 1)
+      reference: '<|im_start|>system\nYou are Hermes, created by Nous Research.<|im_end|>\n<|im_start|>user\nWh'
+      runner   : '<|im_start|>user\nWhat color is the sky?<|im_end|>\n'
+  hermes4       system+user+gen            ok
+  hermes4       system+multiturn+gen       ok
+  hermes4       multiturn+gen              NEW-DRIFT at byte 12  tokens -14 (ref 50, first differs at 1)
+      reference: '<|im_start|>system\nYou are Hermes, created by Nous Research.<|im_end|>\n<|im_start|>user\nWh'
+      runner   : '<|im_start|>user\nWhat color is the sky?<|im_end|>\n<|im_start|>assistant\nBlue, because of R'
+  hermes4       multiturn-nogen            NEW-DRIFT at byte 12  tokens -14 (ref 47, first differs at 1)
+      reference: '<|im_start|>system\nYou are Hermes, created by Nous Research.<|im_end|>\n<|im_start|>user\nWh'
+      runner   : '<|im_start|>user\nWhat color is the sky?<|im_end|>\n<|im_start|>assistant\nBlue, because of R'
+  hermes4       trailing-assistant+gen     NEW-DRIFT at byte 12  tokens -10 (ref 41, first differs at 1)
+      reference: '<|im_start|>system\nYou are Hermes, created by Nous Research.<|im_end|>\n<|im_start|>user\nWh'
+      runner   : '<|im_start|>user\nWhat color is the sky?<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n'
+  hermes4       trailing-assistant-nogen   NEW-DRIFT at byte 12  tokens -10 (ref 38, first differs at 1)
+      reference: '<|im_start|>system\nYou are Hermes, created by Nous Research.<|im_end|>\n<|im_start|>user\nWh'
+      runner   : '<|im_start|>user\nWhat color is the sky?<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n'
+  hermes4       consecutive-user           NEW-DRIFT at byte 12  tokens -14 (ref 37, first differs at 1)
+      reference: '<|im_start|>system\nYou are Hermes, created by Nous Research.<|im_end|>\n<|im_start|>user\nWh'
+      runner   : '<|im_start|>user\nWhat color is the sky?<|im_end|>\n<|im_start|>user\nAnd at sunset?<|im_end|'
+  hermes4       consecutive-assistant      NEW-DRIFT at byte 12  tokens -14 (ref 66, first differs at 1)
+      reference: '<|im_start|>system\nYou are Hermes, created by Nous Research.<|im_end|>\n<|im_start|>user\nWh'
+      runner   : '<|im_start|>user\nWhat color is the sky?<|im_end|>\n<|im_start|>assistant\nBlue, because of R'
+  hermes4       system-mid-history         NEW-DRIFT at byte 12  tokens -14 (ref 63, first differs at 1)
+      reference: '<|im_start|>system\nYou are Hermes, created by Nous Research.<|im_end|>\n<|im_start|>user\nWh'
+      runner   : '<|im_start|>user\nWhat color is the sky?<|im_end|>\n<|im_start|>assistant\nBlue, because of R'
+  hermes4       content-array              ok
+  hermes4       empty-assistant-content    NEW-DRIFT at byte 12  tokens -11 (ref 39, first differs at 1)
+      reference: '<|im_start|>system\nYou are Hermes, created by Nous Research.<|im_end|>\n<|im_start|>user\nWh'
+      runner   : '<|im_start|>user\nWhat color is the sky?<|im_end|>\n<|im_start|>assistant\n<|im_end|>\n<|im_st'
+  hermes4       empty-user-content         ok
+  hermes4       unicode-emoji              ok
+  hermes4       long-content               ok
+  hermes4       think-on                   ok
+  hermes4       think-off                  NEW-DRIFT at byte 130  tokens +4 (ref 25, first differs at 25)
+      reference: 'im_start|>assistant\n'
+      runner   : 'im_start|>assistant\n<think>\n\n</think>\n\n'
+  hermes4       tool-call+result           NEW-DRIFT at byte 62  tokens -8 (ref 213, first differs at 13)
+      reference: 'tant.\n\n# Tools\n\nYou are a function calling AI model. You may call one or more functions to'
+      runner   : 'tant.\n\n# Tools\n\nYou may call one or more functions to assist with the user query.\n\nYou are'
+  hermes4       multi-tool-call            NEW-DRIFT at byte 62  tokens -8 (ref 248, first differs at 13)
+      reference: 'tant.\n\n# Tools\n\nYou are a function calling AI model. You may call one or more functions to'
+      runner   : 'tant.\n\n# Tools\n\nYou may call one or more functions to assist with the user query.\n\nYou are'
+  hermes4       tool-call-with-text        NEW-DRIFT at byte 62  tokens -8 (ref 219, first differs at 13)
+      reference: 'tant.\n\n# Tools\n\nYou are a function calling AI model. You may call one or more functions to'
+      runner   : 'tant.\n\n# Tools\n\nYou may call one or more functions to assist with the user query.\n\nYou are'
+  hermes4       tool-then-conversation     NEW-DRIFT at byte 62  tokens -8 (ref 237, first differs at 13)
+      reference: 'tant.\n\n# Tools\n\nYou are a function calling AI model. You may call one or more functions to'
+      runner   : 'tant.\n\n# Tools\n\nYou may call one or more functions to assist with the user query.\n\nYou are'
+  phi4mini      user-only+gen              NEW-DRIFT at byte 8  tokens +3 (ref 9, first differs at 1)
+      reference: '<|user|>What color is the sky?<|end|><|assistant|>'
+      runner   : '<|user|>\nWhat color is the sky?<|end|>\n<|assistant|>\n'
+  phi4mini      user-only-nogen            NEW-DRIFT at byte 8  tokens +2 (ref 9, first differs at 1)
+      reference: '<|user|>What color is the sky?<|end|><|endoftext|>'
+      runner   : '<|user|>\nWhat color is the sky?<|end|>\n<|endoftext|>'
+  phi4mini      system+user+gen            NEW-DRIFT at byte 10  tokens +5 (ref 17, first differs at 1)
+      reference: '<|system|>You are a helpful assistant.<|end|><|user|>What color is the sky?<|end|><|assist'
+      runner   : '<|system|>\nYou are a helpful assistant.<|end|>\n<|user|>\nWhat color is the sky?<|end|>\n<|as'
+  phi4mini      system+multiturn+gen       NEW-DRIFT at byte 10  tokens +9 (ref 33, first differs at 1)
+      reference: '<|system|>You are a helpful assistant.<|end|><|user|>What color is the sky?<|end|><|assist'
+      runner   : '<|system|>\nYou are a helpful assistant.<|end|>\n<|user|>\nWhat color is the sky?<|end|>\n<|as'
+  phi4mini      multiturn+gen              NEW-DRIFT at byte 8  tokens +7 (ref 25, first differs at 1)
+      reference: '<|user|>What color is the sky?<|end|><|assistant|>Blue, because of Rayleigh scattering.<|e'
+      runner   : '<|user|>\nWhat color is the sky?<|end|>\n<|assistant|>\nBlue, because of Rayleigh scattering.'
+  phi4mini      multiturn-nogen            NEW-DRIFT at byte 8  tokens +6 (ref 25, first differs at 1)
+      reference: '<|user|>What color is the sky?<|end|><|assistant|>Blue, because of Rayleigh scattering.<|e'
+      runner   : '<|user|>\nWhat color is the sky?<|end|>\n<|assistant|>\nBlue, because of Rayleigh scattering.'
+  phi4mini      trailing-assistant+gen     NEW-DRIFT at byte 8  tokens +5 (ref 19, first differs at 1)
+      reference: '<|user|>What color is the sky?<|end|><|assistant|>Blue, because of Rayleigh scattering.<|e'
+      runner   : '<|user|>\nWhat color is the sky?<|end|>\n<|assistant|>\nBlue, because of Rayleigh scattering.'
+  phi4mini      trailing-assistant-nogen   NEW-DRIFT at byte 8  tokens +4 (ref 19, first differs at 1)
+      reference: '<|user|>What color is the sky?<|end|><|assistant|>Blue, because of Rayleigh scattering.<|e'
+      runner   : '<|user|>\nWhat color is the sky?<|end|>\n<|assistant|>\nBlue, because of Rayleigh scattering.'
+  phi4mini      consecutive-user           NEW-DRIFT at byte 8  tokens +5 (ref 15, first differs at 1)
+      reference: '<|user|>What color is the sky?<|end|><|user|>And at sunset?<|end|><|assistant|>'
+      runner   : '<|user|>\nWhat color is the sky?<|end|>\n<|user|>\nAnd at sunset?<|end|>\n<|assistant|>\n'
+  phi4mini      consecutive-assistant      NEW-DRIFT at byte 8  tokens +9 (ref 38, first differs at 1)
+      reference: '<|user|>What color is the sky?<|end|><|assistant|>Blue, because of Rayleigh scattering.<|e'
+      runner   : '<|user|>\nWhat color is the sky?<|end|>\n<|assistant|>\nBlue, because of Rayleigh scattering.'
+  phi4mini      system-mid-history         NEW-DRIFT at byte 8  tokens +9 (ref 35, first differs at 1)
+      reference: '<|user|>What color is the sky?<|end|><|assistant|>Blue, because of Rayleigh scattering.<|e'
+      runner   : '<|user|>\nWhat color is the sky?<|end|>\n<|assistant|>\nBlue, because of Rayleigh scattering.'
+  phi4mini      content-array              NEW-DRIFT at byte 10  tokens +5 (ref 20, first differs at 1)
+      reference: '<|system|>You are a helpful assistant.<|end|><|user|>What color is the sky?\nAnswer briefly'
+      runner   : '<|system|>\nYou are a helpful assistant.<|end|>\n<|user|>\nWhat color is the sky?\nAnswer brie'
+  phi4mini      empty-assistant-content    NEW-DRIFT at byte 8  tokens +7 (ref 17, first differs at 1)
+      reference: '<|user|>What color is the sky?<|end|><|assistant|><|end|><|user|>And at sunset?<|end|><|as'
+      runner   : '<|user|>\nWhat color is the sky?<|end|>\n<|assistant|>\n<|end|>\n<|user|>\nAnd at sunset?<|end|'
+  phi4mini      empty-user-content         NEW-DRIFT at byte 10  tokens +5 (ref 11, first differs at 1)
+      reference: '<|system|>You are a helpful assistant.<|end|><|user|><|end|><|assistant|>'
+      runner   : '<|system|>\nYou are a helpful assistant.<|end|>\n<|user|>\n<|end|>\n<|assistant|>\n'
+  phi4mini      unicode-emoji              NEW-DRIFT at byte 10  tokens +9 (ref 109, first differs at 1)
+      reference: '<|system|>You are a helpful assistant.<|end|><|user|>Færre "smutthull" \\ 100 % — kombinert'
+      runner   : '<|system|>\nYou are a helpful assistant.<|end|>\n<|user|>\nFærre "smutthull" \\ 100 % — kombin'
+  phi4mini      long-content               NEW-DRIFT at byte 10  tokens +5 (ref 4211, first differs at 1)
+      reference: '<|system|>You are a helpful assistant.<|end|><|user|>Consider the following at length. Con'
+      runner   : '<|system|>\nYou are a helpful assistant.<|end|>\n<|user|>\nConsider the following at length. '
+  phi4mini      tool-call+result           NEW-DRIFT at byte 10  tokens +161 (ref 26, first differs at 1)
+      reference: '<|system|>You are a helpful assistant.<|end|><|user|>Weather in Oslo?<|end|><|assistant|><'
+      runner   : '<|system|>\nReply with exactly one JSON object and nothing else.\nTo answer the user directl'
+  phi4mini      multi-tool-call            NEW-DRIFT at byte 10  tokens +182 (ref 37, first differs at 1)
+      reference: '<|system|>You are a helpful assistant.<|end|><|user|>Weather in Oslo and Bergen?<|end|><|a'
+      runner   : '<|system|>\nReply with exactly one JSON object and nothing else.\nTo answer the user directl'
+  phi4mini      tool-call-with-text        NEW-DRIFT at byte 10  tokens +160 (ref 32, first differs at 1)
+      reference: '<|system|>You are a helpful assistant.<|end|><|user|>Weather in Oslo?<|end|><|assistant|>L'
+      runner   : '<|system|>\nReply with exactly one JSON object and nothing else.\nTo answer the user directl'
+  phi4mini      tool-then-conversation     NEW-DRIFT at byte 10  tokens +165 (ref 44, first differs at 1)
+      reference: '<|system|>You are a helpful assistant.<|end|><|user|>Weather in Oslo?<|end|><|assistant|><'
+      runner   : '<|system|>\nReply with exactly one JSON object and nothing else.\nTo answer the user directl'
+  granite40h    user-only+gen              NEW-DRIFT at byte 17  tokens -22 (ref 36, first differs at 1)
+      reference: '<|start_of_role|>system<|end_of_role|>You are a helpful assistant. Please ensure responses'
+      runner   : '<|start_of_role|>user<|end_of_role|>What color is the sky?<|end_of_text|>\n<|start_of_role|'
+  granite40h    user-only-nogen            NEW-DRIFT at byte 17  tokens -22 (ref 33, first differs at 1)
+      reference: '<|start_of_role|>system<|end_of_role|>You are a helpful assistant. Please ensure responses'
+      runner   : '<|start_of_role|>user<|end_of_role|>What color is the sky?<|end_of_text|>\n'
+  granite40h    system+user+gen            ok
+  granite40h    system+multiturn+gen       ok
+  granite40h    multiturn+gen              NEW-DRIFT at byte 17  tokens -22 (ref 58, first differs at 1)
+      reference: '<|start_of_role|>system<|end_of_role|>You are a helpful assistant. Please ensure responses'
+      runner   : '<|start_of_role|>user<|end_of_role|>What color is the sky?<|end_of_text|>\n<|start_of_role|'
+  granite40h    multiturn-nogen            NEW-DRIFT at byte 17  tokens -22 (ref 55, first differs at 1)
+      reference: '<|start_of_role|>system<|end_of_role|>You are a helpful assistant. Please ensure responses'
+      runner   : '<|start_of_role|>user<|end_of_role|>What color is the sky?<|end_of_text|>\n<|start_of_role|'
+  granite40h    trailing-assistant+gen     NEW-DRIFT at byte 17  tokens -22 (ref 49, first differs at 1)
+      reference: '<|start_of_role|>system<|end_of_role|>You are a helpful assistant. Please ensure responses'
+      runner   : '<|start_of_role|>user<|end_of_role|>What color is the sky?<|end_of_text|>\n<|start_of_role|'
+  granite40h    trailing-assistant-nogen   NEW-DRIFT at byte 17  tokens -22 (ref 46, first differs at 1)
+      reference: '<|start_of_role|>system<|end_of_role|>You are a helpful assistant. Please ensure responses'
+      runner   : '<|start_of_role|>user<|end_of_role|>What color is the sky?<|end_of_text|>\n<|start_of_role|'
+  granite40h    consecutive-user           NEW-DRIFT at byte 17  tokens -22 (ref 45, first differs at 1)
+      reference: '<|start_of_role|>system<|end_of_role|>You are a helpful assistant. Please ensure responses'
+      runner   : '<|start_of_role|>user<|end_of_role|>What color is the sky?<|end_of_text|>\n<|start_of_role|'
+  granite40h    consecutive-assistant      NEW-DRIFT at byte 17  tokens -22 (ref 74, first differs at 1)
+      reference: '<|start_of_role|>system<|end_of_role|>You are a helpful assistant. Please ensure responses'
+      runner   : '<|start_of_role|>user<|end_of_role|>What color is the sky?<|end_of_text|>\n<|start_of_role|'
+  granite40h    system-mid-history         NEW-DRIFT at byte 17  tokens -22 (ref 71, first differs at 1)
+      reference: '<|start_of_role|>system<|end_of_role|>You are a helpful assistant. Please ensure responses'
+      runner   : '<|start_of_role|>user<|end_of_role|>What color is the sky?<|end_of_text|>\n<|start_of_role|'
+  granite40h    content-array              ok
+  granite40h    empty-assistant-content    NEW-DRIFT at byte 17  tokens -22 (ref 50, first differs at 1)
+      reference: '<|start_of_role|>system<|end_of_role|>You are a helpful assistant. Please ensure responses'
+      runner   : '<|start_of_role|>user<|end_of_role|>What color is the sky?<|end_of_text|>\n<|start_of_role|'
+  granite40h    empty-user-content         ok
+  granite40h    unicode-emoji              ok
+  granite40h    long-content               ok
+  granite40h    tool-call+result           NEW-DRIFT at byte 38  tokens -48 (ref 240, first differs at 3)
+      reference: 'ystem<|end_of_role|>You are a helpful assistant.\n\nYou are a helpful assistant with access '
+      runner   : 'ystem<|end_of_role|>Reply with exactly one JSON object and nothing else.\nTo answer the use'
+  granite40h    multi-tool-call            NEW-DRIFT at byte 38  tokens -49 (ref 275, first differs at 3)
+      reference: 'ystem<|end_of_role|>You are a helpful assistant.\n\nYou are a helpful assistant with access '
+      runner   : 'ystem<|end_of_role|>Reply with exactly one JSON object and nothing else.\nTo answer the use'
+  granite40h    tool-call-with-text        NEW-DRIFT at byte 38  tokens -49 (ref 246, first differs at 3)
+      reference: 'ystem<|end_of_role|>You are a helpful assistant.\n\nYou are a helpful assistant with access '
+      runner   : 'ystem<|end_of_role|>Reply with exactly one JSON object and nothing else.\nTo answer the use'
+  granite40h    tool-then-conversation     NEW-DRIFT at byte 38  tokens -48 (ref 264, first differs at 3)
+      reference: 'ystem<|end_of_role|>You are a helpful assistant.\n\nYou are a helpful assistant with access '
+      runner   : 'ystem<|end_of_role|>Reply with exactly one JSON object and nothing else.\nTo answer the use'
+  qwen35-4b     user-only+gen              ok
+  qwen35-4b     user-only-nogen            ok
+  qwen35-4b     system+user+gen            ok
+  qwen35-4b     system+multiturn+gen       NEW-DRIFT at byte 130  tokens +4 (ref 49, first differs at 25)
+      reference: 'im_start|>assistant\nBlue, because of Rayleigh scattering.<|im_end|>\n<|im_start|>user\nAnd a'
+      runner   : 'im_start|>assistant\n<think>\n\n</think>\n\nBlue, because of Rayleigh scattering.<|im_end|>\n<|i'
+  qwen35-4b     multiturn+gen              NEW-DRIFT at byte 72  tokens +4 (ref 38, first differs at 14)
+      reference: 'im_start|>assistant\nBlue, because of Rayleigh scattering.<|im_end|>\n<|im_start|>user\nAnd a'
+      runner   : 'im_start|>assistant\n<think>\n\n</think>\n\nBlue, because of Rayleigh scattering.<|im_end|>\n<|i'
+  qwen35-4b     multiturn-nogen            NEW-DRIFT at byte 72  tokens +4 (ref 33, first differs at 14)
+      reference: 'im_start|>assistant\nBlue, because of Rayleigh scattering.<|im_end|>\n<|im_start|>user\nAnd a'
+      runner   : 'im_start|>assistant\n<think>\n\n</think>\n\nBlue, because of Rayleigh scattering.<|im_end|>\n<|i'
+  qwen35-4b     trailing-assistant+gen     ok
+  qwen35-4b     trailing-assistant-nogen   ok
+  qwen35-4b     consecutive-user           ok
+  qwen35-4b     consecutive-assistant      NEW-DRIFT at byte 72  tokens +8 (ref 54, first differs at 14)
+      reference: 'im_start|>assistant\nBlue, because of Rayleigh scattering.<|im_end|>\n<|im_start|>assistant\n'
+      runner   : 'im_start|>assistant\n<think>\n\n</think>\n\nBlue, because of Rayleigh scattering.<|im_end|>\n<|i'
+  qwen35-4b     system-mid-history         cannot-express  reference refuses: the template raises: 'System message must be at the beginning.'
+  qwen35-4b     content-array              ok
+  qwen35-4b     empty-assistant-content    NEW-DRIFT at byte 73  tokens +4 (ref 30, first differs at 14)
+      reference: 'm_start|>assistant\n<|im_end|>\n<|im_start|>user\nAnd at sunset?<|im_end|>\n<|im_start|>assist'
+      runner   : 'm_start|>assistant\n<think>\n\n</think>\n\n<|im_end|>\n<|im_start|>user\nAnd at sunset?<|im_end|>'
+  qwen35-4b     empty-user-content         ok
+  qwen35-4b     unicode-emoji              NEW-DRIFT at byte 189  tokens +4 (ref 133, first differs at 67)
+      reference: 'im_start|>assistant\nJa. Færre "smutthull" \\ 100 % — kombinert: é, emoji: 🌀 👩\u200d💻, RTL: שלום'
+      runner   : 'im_start|>assistant\n<think>\n\n</think>\n\nJa. Færre "smutthull" \\ 100 % — kombinert: é, emoj'
+  qwen35-4b     long-content               ok
+  qwen35-4b     think-on                   ok
+  qwen35-4b     think-off                  ok
+  qwen35-4b     tool-call+result           ok
+  qwen35-4b     multi-tool-call            ok
+  qwen35-4b     tool-call-with-text        ok
+  qwen35-4b     tool-then-conversation     NEW-DRIFT at byte 1256  tokens +8 (ref 358, first differs at 285)
+      reference: '_start|>assistant\n<tool_call>\n<function=get_weather>\n<parameter=city>\nOslo\n</parameter>\n</'
+      runner   : '_start|>assistant\n<think>\n\n</think>\n\n<tool_call>\n<function=get_weather>\n<parameter=city>\nO'
+  qwen35-0.8b   user-only+gen              NEW-DRIFT at byte 80  tokens -2 (ref 18, first differs at 15)
+      reference: '|>assistant\n<think>\n\n</think>\n\n'
+      runner   : '|>assistant\n<think>\n'
+  qwen35-0.8b   user-only-nogen            ok
+  qwen35-0.8b   system+user+gen            NEW-DRIFT at byte 138  tokens -2 (ref 29, first differs at 26)
+      reference: '|>assistant\n<think>\n\n</think>\n\n'
+      runner   : '|>assistant\n<think>\n'
+  qwen35-0.8b   system+multiturn+gen       NEW-DRIFT at byte 130  tokens +2 (ref 51, first differs at 25)
+      reference: 'im_start|>assistant\nBlue, because of Rayleigh scattering.<|im_end|>\n<|im_start|>user\nAnd a'
+      runner   : 'im_start|>assistant\n<think>\n\n</think>\n\nBlue, because of Rayleigh scattering.<|im_end|>\n<|i'
+  qwen35-0.8b   multiturn+gen              NEW-DRIFT at byte 72  tokens +2 (ref 40, first differs at 14)
+      reference: 'im_start|>assistant\nBlue, because of Rayleigh scattering.<|im_end|>\n<|im_start|>user\nAnd a'
+      runner   : 'im_start|>assistant\n<think>\n\n</think>\n\nBlue, because of Rayleigh scattering.<|im_end|>\n<|i'
+  qwen35-0.8b   multiturn-nogen            NEW-DRIFT at byte 72  tokens +4 (ref 33, first differs at 14)
+      reference: 'im_start|>assistant\nBlue, because of Rayleigh scattering.<|im_end|>\n<|im_start|>user\nAnd a'
+      runner   : 'im_start|>assistant\n<think>\n\n</think>\n\nBlue, because of Rayleigh scattering.<|im_end|>\n<|i'
+  qwen35-0.8b   trailing-assistant+gen     NEW-DRIFT at byte 169  tokens -2 (ref 35, first differs at 32)
+      reference: '|>assistant\n<think>\n\n</think>\n\n'
+      runner   : '|>assistant\n<think>\n'
+  qwen35-0.8b   trailing-assistant-nogen   ok
+  qwen35-0.8b   consecutive-user           NEW-DRIFT at byte 122  tokens -2 (ref 27, first differs at 24)
+      reference: '|>assistant\n<think>\n\n</think>\n\n'
+      runner   : '|>assistant\n<think>\n'
+  qwen35-0.8b   consecutive-assistant      NEW-DRIFT at byte 72  tokens +6 (ref 56, first differs at 14)
+      reference: 'im_start|>assistant\nBlue, because of Rayleigh scattering.<|im_end|>\n<|im_start|>assistant\n'
+      runner   : 'im_start|>assistant\n<think>\n\n</think>\n\nBlue, because of Rayleigh scattering.<|im_end|>\n<|i'
+  qwen35-0.8b   system-mid-history         cannot-express  reference refuses: the template raises: 'System message must be at the beginning.'
+  qwen35-0.8b   content-array              NEW-DRIFT at byte 154  tokens -2 (ref 33, first differs at 30)
+      reference: '|>assistant\n<think>\n\n</think>\n\n'
+      runner   : '|>assistant\n<think>\n'
+  qwen35-0.8b   empty-assistant-content    NEW-DRIFT at byte 73  tokens +2 (ref 32, first differs at 14)
+      reference: 'm_start|>assistant\n<|im_end|>\n<|im_start|>user\nAnd at sunset?<|im_end|>\n<|im_start|>assist'
+      runner   : 'm_start|>assistant\n<think>\n\n</think>\n\n<|im_end|>\n<|im_start|>user\nAnd at sunset?<|im_end|>'
+  qwen35-0.8b   empty-user-content         NEW-DRIFT at byte 116  tokens -2 (ref 23, first differs at 20)
+      reference: '|>assistant\n<think>\n\n</think>\n\n'
+      runner   : '|>assistant\n<think>\n'
+  qwen35-0.8b   unicode-emoji              NEW-DRIFT at byte 189  tokens +2 (ref 135, first differs at 67)
+      reference: 'im_start|>assistant\nJa. Færre "smutthull" \\ 100 % — kombinert: é, emoji: 🌀 👩\u200d💻, RTL: שלום'
+      runner   : 'im_start|>assistant\n<think>\n\n</think>\n\nJa. Færre "smutthull" \\ 100 % — kombinert: é, emoj'
+  qwen35-0.8b   long-content               NEW-DRIFT at byte 23915  tokens -2 (ref 4223, first differs at 4220)
+      reference: '|>assistant\n<think>\n\n</think>\n\n'
+      runner   : '|>assistant\n<think>\n'
+  qwen35-0.8b   think-on                   ok
+  qwen35-0.8b   think-off                  ok
+  qwen35-0.8b   tool-call+result           NEW-DRIFT at byte 1483  tokens -2 (ref 340, first differs at 337)
+      reference: '|>assistant\n<think>\n\n</think>\n\n'
+      runner   : '|>assistant\n<think>\n'
+  qwen35-0.8b   multi-tool-call            NEW-DRIFT at byte 1638  tokens -2 (ref 381, first differs at 378)
+      reference: '|>assistant\n<think>\n\n</think>\n\n'
+      runner   : '|>assistant\n<think>\n'
+  qwen35-0.8b   tool-call-with-text        NEW-DRIFT at byte 1505  tokens -2 (ref 347, first differs at 344)
+      reference: '|>assistant\n<think>\n\n</think>\n\n'
+      runner   : '|>assistant\n<think>\n'
+  qwen35-0.8b   tool-then-conversation     NEW-DRIFT at byte 1256  tokens +6 (ref 360, first differs at 285)
+      reference: '_start|>assistant\n<tool_call>\n<function=get_weather>\n<parameter=city>\nOslo\n</parameter>\n</'
+      runner   : '_start|>assistant\n<think>\n\n</think>\n\n<tool_call>\n<function=get_weather>\n<parameter=city>\nO'
+  lucie         user-only+gen              NEW-DRIFT at byte 1  tokens -1 (ref 51, first differs at 1)
+      reference: '<s><|start_header_id|>user<|end_header_id|>\n\nWhat color is the sky?<|eot_id|><|start_heade'
+      runner   : '<|start_header_id|>user<|end_header_id|>\n\nWhat color is the sky?<|eot_id|><|start_header_i'
+  lucie         user-only-nogen            NEW-DRIFT at byte 1  tokens -1 (ref 30, first differs at 1)
+      reference: '<s><|start_header_id|>user<|end_header_id|>\n\nWhat color is the sky?<|eot_id|>'
+      runner   : '<|start_header_id|>user<|end_header_id|>\n\nWhat color is the sky?<|eot_id|>'
+  lucie         system+user+gen            NEW-DRIFT at byte 1  tokens -1 (ref 79, first differs at 1)
+      reference: '<s><|start_header_id|>system<|end_header_id|>\n\nYou are a helpful assistant.<|eot_id|><|sta'
+      runner   : '<|start_header_id|>system<|end_header_id|>\n\nYou are a helpful assistant.<|eot_id|><|start_'
+  lucie         system+multiturn+gen       NEW-DRIFT at byte 1  tokens -1 (ref 136, first differs at 1)
+      reference: '<s><|start_header_id|>system<|end_header_id|>\n\nYou are a helpful assistant.<|eot_id|><|sta'
+      runner   : '<|start_header_id|>system<|end_header_id|>\n\nYou are a helpful assistant.<|eot_id|><|start_'
+  lucie         multiturn+gen              NEW-DRIFT at byte 1  tokens -1 (ref 108, first differs at 1)
+      reference: '<s><|start_header_id|>user<|end_header_id|>\n\nWhat color is the sky?<|eot_id|><|start_heade'
+      runner   : '<|start_header_id|>user<|end_header_id|>\n\nWhat color is the sky?<|eot_id|><|start_header_i'
+  lucie         multiturn-nogen            NEW-DRIFT at byte 1  tokens -1 (ref 87, first differs at 1)
+      reference: '<s><|start_header_id|>user<|end_header_id|>\n\nWhat color is the sky?<|eot_id|><|start_heade'
+      runner   : '<|start_header_id|>user<|end_header_id|>\n\nWhat color is the sky?<|eot_id|><|start_header_i'
+  lucie         trailing-assistant+gen     NEW-DRIFT at byte 1  tokens -1 (ref 82, first differs at 1)
+      reference: '<s><|start_header_id|>user<|end_header_id|>\n\nWhat color is the sky?<|eot_id|><|start_heade'
+      runner   : '<|start_header_id|>user<|end_header_id|>\n\nWhat color is the sky?<|eot_id|><|start_header_i'
+  lucie         trailing-assistant-nogen   NEW-DRIFT at byte 1  tokens -1 (ref 61, first differs at 1)
+      reference: '<s><|start_header_id|>user<|end_header_id|>\n\nWhat color is the sky?<|eot_id|><|start_heade'
+      runner   : '<|start_header_id|>user<|end_header_id|>\n\nWhat color is the sky?<|eot_id|><|start_header_i'
+  lucie         consecutive-user           NEW-DRIFT at byte 1  tokens -1 (ref 77, first differs at 1)
+      reference: '<s><|start_header_id|>user<|end_header_id|>\n\nWhat color is the sky?<|eot_id|><|start_heade'
+      runner   : '<|start_header_id|>user<|end_header_id|>\n\nWhat color is the sky?<|eot_id|><|start_header_i'
+  lucie         consecutive-assistant      NEW-DRIFT at byte 1  tokens -1 (ref 142, first differs at 1)
+      reference: '<s><|start_header_id|>user<|end_header_id|>\n\nWhat color is the sky?<|eot_id|><|start_heade'
+      runner   : '<|start_header_id|>user<|end_header_id|>\n\nWhat color is the sky?<|eot_id|><|start_header_i'
+  lucie         system-mid-history         NEW-DRIFT at byte 1  tokens -1 (ref 139, first differs at 1)
+      reference: '<s><|start_header_id|>user<|end_header_id|>\n\nWhat color is the sky?<|eot_id|><|start_heade'
+      runner   : '<|start_header_id|>user<|end_header_id|>\n\nWhat color is the sky?<|eot_id|><|start_header_i'
+  lucie         content-array              NEW-DRIFT at byte 1  tokens -1 (ref 83, first differs at 1)
+      reference: '<s><|start_header_id|>system<|end_header_id|>\n\nYou are a helpful assistant.<|eot_id|><|sta'
+      runner   : '<|start_header_id|>system<|end_header_id|>\n\nYou are a helpful assistant.<|eot_id|><|start_'
+  lucie         empty-assistant-content    NEW-DRIFT at byte 1  tokens -1 (ref 99, first differs at 1)
+      reference: '<s><|start_header_id|>user<|end_header_id|>\n\nWhat color is the sky?<|eot_id|><|start_heade'
+      runner   : '<|start_header_id|>user<|end_header_id|>\n\nWhat color is the sky?<|eot_id|><|start_header_i'
+  lucie         empty-user-content         NEW-DRIFT at byte 1  tokens -1 (ref 72, first differs at 1)
+      reference: '<s><|start_header_id|>system<|end_header_id|>\n\nYou are a helpful assistant.<|eot_id|><|sta'
+      runner   : '<|start_header_id|>system<|end_header_id|>\n\nYou are a helpful assistant.<|eot_id|><|start_'
+  lucie         unicode-emoji              NEW-DRIFT at byte 1  tokens -1 (ref 273, first differs at 1)
+      reference: '<s><|start_header_id|>system<|end_header_id|>\n\nYou are a helpful assistant.<|eot_id|><|sta'
+      runner   : '<|start_header_id|>system<|end_header_id|>\n\nYou are a helpful assistant.<|eot_id|><|start_'
+  lucie         long-content               NEW-DRIFT at byte 1  tokens -1 (ref 4273, first differs at 1)
+      reference: '<s><|start_header_id|>system<|end_header_id|>\n\nYou are a helpful assistant.<|eot_id|><|sta'
+      runner   : '<|start_header_id|>system<|end_header_id|>\n\nYou are a helpful assistant.<|eot_id|><|start_'
+  mistral-nemo  user-only+gen              NEW-DRIFT at byte 0  tokens -1 (ref 10, first differs at 1)
+      reference: '<s>[INST]What color is the sky?[/INST]'
+      runner   : '[INST] What color is the sky?[/INST]'
+  mistral-nemo  user-only-nogen            NEW-DRIFT at byte 0  tokens -1 (ref 10, first differs at 1)
+      reference: '<s>[INST]What color is the sky?[/INST]'
+      runner   : '[INST] What color is the sky?[/INST]'
+  mistral-nemo  system+user+gen            NEW-DRIFT at byte 0  tokens -1 (ref 16, first differs at 1)
+      reference: '<s>[INST]You are a helpful assistant.\n\nWhat color is the sky?[/INST]'
+      runner   : '[INST] You are a helpful assistant.\n\nWhat color is the sky?[/INST]'
+  mistral-nemo  system+multiturn+gen       NEW-DRIFT at byte 0  tokens -1 (ref 31, first differs at 1)
+      reference: '<s>[INST]What color is the sky?[/INST]Blue, because of Rayleigh scattering.</s>[INST]You a'
+      runner   : '[INST] What color is the sky?[/INST] Blue, because of Rayleigh scattering.</s>[INST] You a'
+  mistral-nemo  multiturn+gen              NEW-DRIFT at byte 0  tokens -1 (ref 25, first differs at 1)
+      reference: '<s>[INST]What color is the sky?[/INST]Blue, because of Rayleigh scattering.</s>[INST]And a'
+      runner   : '[INST] What color is the sky?[/INST] Blue, because of Rayleigh scattering.</s>[INST] And a'
+  mistral-nemo  multiturn-nogen            NEW-DRIFT at byte 0  tokens -1 (ref 25, first differs at 1)
+      reference: '<s>[INST]What color is the sky?[/INST]Blue, because of Rayleigh scattering.</s>[INST]And a'
+      runner   : '[INST] What color is the sky?[/INST] Blue, because of Rayleigh scattering.</s>[INST] And a'
+  mistral-nemo  trailing-assistant+gen     NEW-DRIFT at byte 0  tokens -1 (ref 19, first differs at 1)
+      reference: '<s>[INST]What color is the sky?[/INST]Blue, because of Rayleigh scattering.</s>'
+      runner   : '[INST] What color is the sky?[/INST] Blue, because of Rayleigh scattering.</s>'
+  mistral-nemo  trailing-assistant-nogen   NEW-DRIFT at byte 0  tokens -1 (ref 19, first differs at 1)
+      reference: '<s>[INST]What color is the sky?[/INST]Blue, because of Rayleigh scattering.</s>'
+      runner   : '[INST] What color is the sky?[/INST] Blue, because of Rayleigh scattering.</s>'
+  mistral-nemo  consecutive-user           cannot-express  reference refuses: the template raises: 'After the optional system message, conversation roles must alternate user/assistant/user/assistant/...'
+  mistral-nemo  consecutive-assistant      cannot-express  reference refuses: the template raises: 'After the optional system message, conversation roles must alternate user/assistant/user/assistant/...'
+  mistral-nemo  system-mid-history         cannot-express  reference refuses: the template raises: 'After the optional system message, conversation roles must alternate user/assistant/user/assistant/...'
+  mistral-nemo  content-array              NEW-DRIFT at byte 0  tokens -1 (ref 19, first differs at 1)
+      reference: '<s>[INST]You are a helpful assistant.\n\nWhat color is the sky?\nAnswer briefly.[/INST]'
+      runner   : '[INST] You are a helpful assistant.\n\nWhat color is the sky?\nAnswer briefly.[/INST]'
+  mistral-nemo  empty-assistant-content    NEW-DRIFT at byte 0  tokens +0 (ref 17, first differs at 1)
+      reference: '<s>[INST]What color is the sky?[/INST]</s>[INST]And at sunset?[/INST]'
+      runner   : '[INST] What color is the sky?[/INST] </s>[INST] And at sunset?[/INST]'
+  mistral-nemo  empty-user-content         NEW-DRIFT at byte 0  tokens -1 (ref 10, first differs at 1)
+      reference: '<s>[INST]You are a helpful assistant.\n\n[/INST]'
+      runner   : '[INST] You are a helpful assistant.\n\n[/INST]'
+  mistral-nemo  unicode-emoji              NEW-DRIFT at byte 0  tokens -1 (ref 123, first differs at 1)
+      reference: '<s>[INST]Færre "smutthull" \\ 100 % — kombinert: é, emoji: 🌀 👩\u200d💻, RTL: שלום, CJK: 漢字、أهلاً'
+      runner   : '[INST] Færre "smutthull" \\ 100 % — kombinert: é, emoji: 🌀 👩\u200d💻, RTL: שלום, CJK: 漢字、أهلاً[/'
+  mistral-nemo  long-content               NEW-DRIFT at byte 0  tokens -1 (ref 4210, first differs at 1)
+      reference: '<s>[INST]You are a helpful assistant.\n\nConsider the following at length. Consider the foll'
+      runner   : '[INST] You are a helpful assistant.\n\nConsider the following at length. Consider the follow'
+  mistral-nemo  tool-call+result           NOT-CHECKED  reference refused
+  mistral-nemo  multi-tool-call            NOT-CHECKED  reference refused
+  mistral-nemo  tool-call-with-text        NOT-CHECKED  reference refused
+  mistral-nemo  tool-then-conversation     NOT-CHECKED  reference refused
+  mistral-file  user-only+gen              NEW-DRIFT at byte 0  tokens +0 (ref 11, first differs at 1)
+      reference: '<s>[INST] What color is the sky? [/INST]'
+      runner   : ' [INST] What color is the sky? [/INST]'
+  mistral-file  user-only-nogen            NEW-DRIFT at byte 0  tokens +0 (ref 11, first differs at 1)
+      reference: '<s>[INST] What color is the sky? [/INST]'
+      runner   : ' [INST] What color is the sky? [/INST]'
+  mistral-file  system+user+gen            NOT-CHECKED  reference refused
+  mistral-file  system+multiturn+gen       NOT-CHECKED  reference refused
+  mistral-file  multiturn+gen              NEW-DRIFT at byte 0  tokens +1 (ref 29, first differs at 1)
+      reference: '<s>[INST] What color is the sky? [/INST]Blue, because of Rayleigh scattering.</s>[INST] An'
+      runner   : ' [INST] What color is the sky? [/INST] Blue, because of Rayleigh scattering.</s> [INST] An'
+  mistral-file  multiturn-nogen            NEW-DRIFT at byte 0  tokens +1 (ref 29, first differs at 1)
+      reference: '<s>[INST] What color is the sky? [/INST]Blue, because of Rayleigh scattering.</s>[INST] An'
+      runner   : ' [INST] What color is the sky? [/INST] Blue, because of Rayleigh scattering.</s> [INST] An'
+  mistral-file  trailing-assistant+gen     NEW-DRIFT at byte 0  tokens +0 (ref 21, first differs at 1)
+      reference: '<s>[INST] What color is the sky? [/INST]Blue, because of Rayleigh scattering.</s>'
+      runner   : ' [INST] What color is the sky? [/INST] Blue, because of Rayleigh scattering.</s>'
+  mistral-file  trailing-assistant-nogen   NEW-DRIFT at byte 0  tokens +0 (ref 21, first differs at 1)
+      reference: '<s>[INST] What color is the sky? [/INST]Blue, because of Rayleigh scattering.</s>'
+      runner   : ' [INST] What color is the sky? [/INST] Blue, because of Rayleigh scattering.</s>'
+  mistral-file  consecutive-user           cannot-express  reference refuses: the template raises: 'Conversation roles must alternate user/assistant/user/assistant/...'. The family has no rendering for this conversation at all, so there is nothing to conform to
+  mistral-file  consecutive-assistant      cannot-express  reference refuses: the template raises: 'Conversation roles must alternate user/assistant/user/assistant/...'. The family has no rendering for this conversation at all, so there is nothing to conform to
+  mistral-file  system-mid-history         cannot-express  reference refuses: the template raises: 'Conversation roles must alternate user/assistant/user/assistant/...'. The family has no rendering for this conversation at all, so there is nothing to conform to
+  mistral-file  content-array              NOT-CHECKED  reference refused
+  mistral-file  empty-assistant-content    NEW-DRIFT at byte 0  tokens +2 (ref 20, first differs at 1)
+      reference: '<s>[INST] What color is the sky? [/INST]</s>[INST] And at sunset? [/INST]'
+      runner   : ' [INST] What color is the sky? [/INST] </s> [INST] And at sunset? [/INST]'
+  mistral-file  empty-user-content         NOT-CHECKED  reference refused
+  mistral-file  unicode-emoji              NOT-CHECKED  reference refused
+  mistral-file  long-content               NOT-CHECKED  reference refused
+  nemotron-nano user-only+gen              NEW-DRIFT at byte 0  tokens -9 (ref 19, first differs at 1)
+      reference: '<SPECIAL_10>System\n\n<SPECIAL_11>User\nWhat color is the sky?\n<SPECIAL_11>Assistant\n<think>\n'
+      runner   : '[INST] What color is the sky? [/INST]'
+  nemotron-nano user-only-nogen            NEW-DRIFT at byte 0  tokens -3 (ref 13, first differs at 1)
+      reference: '<SPECIAL_10>System\n\n<SPECIAL_11>User\nWhat color is the sky?\n'
+      runner   : '[INST] What color is the sky? [/INST]'
+  nemotron-nano system+user+gen            NEW-DRIFT at byte 0  tokens +1 (ref 25, first differs at 1)
+      reference: '<SPECIAL_10>System\nYou are a helpful assistant.\n<SPECIAL_11>User\nWhat color is the sky?\n<S'
+      runner   : '[INST] <<SYS>>\nYou are a helpful assistant.\n<</SYS>>\n\nWhat color is the sky? [/INST]'
+  nemotron-nano system+multiturn+gen       NEW-DRIFT at byte 0  tokens -1 (ref 45, first differs at 1)
+      reference: '<SPECIAL_10>System\nYou are a helpful assistant.\n<SPECIAL_11>User\nWhat color is the sky?\n<S'
+      runner   : '[INST] <<SYS>>\nYou are a helpful assistant.\n<</SYS>>\n\nWhat color is the sky? [/INST] Blue,'
+  nemotron-nano multiturn+gen              NEW-DRIFT at byte 0  tokens -11 (ref 39, first differs at 1)
+      reference: '<SPECIAL_10>System\n\n<SPECIAL_11>User\nWhat color is the sky?\n<SPECIAL_11>Assistant\nBlue, be'
+      runner   : '[INST] What color is the sky? [/INST] Blue, because of Rayleigh scattering. </s><s>[INST] '
+  nemotron-nano multiturn-nogen            NEW-DRIFT at byte 0  tokens -5 (ref 33, first differs at 1)
+      reference: '<SPECIAL_10>System\n\n<SPECIAL_11>User\nWhat color is the sky?\n<SPECIAL_11>Assistant\nBlue, be'
+      runner   : '[INST] What color is the sky? [/INST] Blue, because of Rayleigh scattering. </s><s>[INST] '
+  nemotron-nano trailing-assistant+gen     NEW-DRIFT at byte 0  tokens -7 (ref 27, first differs at 1)
+      reference: '<SPECIAL_10>System\n\n<SPECIAL_11>User\nWhat color is the sky?\n<SPECIAL_11>Assistant\n<think>\n'
+      runner   : '[INST] What color is the sky? [/INST] Blue, because of Rayleigh scattering. </s>'
+  nemotron-nano trailing-assistant-nogen   NEW-DRIFT at byte 0  tokens -9 (ref 29, first differs at 1)
+      reference: '<SPECIAL_10>System\n\n<SPECIAL_11>User\nWhat color is the sky?\n<SPECIAL_11>Assistant\n<think>\n'
+      runner   : '[INST] What color is the sky? [/INST] Blue, because of Rayleigh scattering. </s>'
+  nemotron-nano consecutive-user           NOT-CHECKED  runner refused
+  nemotron-nano consecutive-assistant      NOT-CHECKED  runner refused
+  nemotron-nano system-mid-history         NOT-CHECKED  runner refused
+  nemotron-nano content-array              NEW-DRIFT at byte 0  tokens +1 (ref 28, first differs at 1)
+      reference: '<SPECIAL_10>System\nYou are a helpful assistant.\n<SPECIAL_11>User\nWhat color is the sky?\nAn'
+      runner   : '[INST] <<SYS>>\nYou are a helpful assistant.\n<</SYS>>\n\nWhat color is the sky?\nAnswer briefl'
+  nemotron-nano empty-assistant-content    NEW-DRIFT at byte 0  tokens -11 (ref 31, first differs at 1)
+      reference: '<SPECIAL_10>System\n\n<SPECIAL_11>User\nWhat color is the sky?\n<SPECIAL_11>Assistant\n\n<SPECIA'
+      runner   : '[INST] What color is the sky? [/INST]  </s><s>[INST] And at sunset? [/INST]'
+  nemotron-nano empty-user-content         NEW-DRIFT at byte 0  tokens +0 (ref 19, first differs at 1)
+      reference: '<SPECIAL_10>System\nYou are a helpful assistant.\n<SPECIAL_11>User\n\n<SPECIAL_11>Assistant\n<t'
+      runner   : '[INST] <<SYS>>\nYou are a helpful assistant.\n<</SYS>> [/INST]'
+  nemotron-nano unicode-emoji              NEW-DRIFT at byte 0  tokens -3 (ref 139, first differs at 1)
+      reference: '<SPECIAL_10>System\nYou are a helpful assistant.\n<SPECIAL_11>User\nFærre "smutthull" \\ 100 %'
+      runner   : '[INST] <<SYS>>\nYou are a helpful assistant.\n<</SYS>>\n\nFærre "smutthull" \\ 100 % — kombiner'
+  nemotron-nano long-content               NEW-DRIFT at byte 0  tokens +1 (ref 4219, first differs at 1)
+      reference: '<SPECIAL_10>System\nYou are a helpful assistant.\n<SPECIAL_11>User\nConsider the following at'
+      runner   : '[INST] <<SYS>>\nYou are a helpful assistant.\n<</SYS>>\n\nConsider the following at length. Co'
+  nemotron-nano think-on                   NEW-DRIFT at byte 0  tokens +1 (ref 25, first differs at 1)
+      reference: '<SPECIAL_10>System\nYou are a helpful assistant.\n<SPECIAL_11>User\nWhat color is the sky?\n<S'
+      runner   : '[INST] <<SYS>>\nYou are a helpful assistant.\n<</SYS>>\n\nWhat color is the sky? [/INST]'
+  nemotron-nano think-off                  NEW-DRIFT at byte 0  tokens +1 (ref 25, first differs at 1)
+      reference: '<SPECIAL_10>System\nYou are a helpful assistant.\n<SPECIAL_11>User\nWhat color is the sky?\n<S'
+      runner   : '[INST] <<SYS>>\nYou are a helpful assistant.\n<</SYS>>\n\nWhat color is the sky? [/INST]'
+  nemotron-nano tool-call+result           NEW-DRIFT at byte 0  tokens -246 (ref 302, first differs at 1)
+      reference: '<SPECIAL_10>System\nYou are a helpful assistant.\n\nYou can use the following tools to assist'
+      runner   : '[INST] <<SYS>>\nYou are a helpful assistant.\n<</SYS>>\n\nWeather in Oslo? [/INST] <|tool_call'
+  nemotron-nano multi-tool-call            NEW-DRIFT at byte 0  tokens -243 (ref 330, first differs at 1)
+      reference: '<SPECIAL_10>System\nYou are a helpful assistant.\n\nYou can use the following tools to assist'
+      runner   : '[INST] <<SYS>>\nYou are a helpful assistant.\n<</SYS>>\n\nWeather in Oslo and Bergen? [/INST] '
+  nemotron-nano tool-call-with-text        NEW-DRIFT at byte 0  tokens -247 (ref 308, first differs at 1)
+      reference: '<SPECIAL_10>System\nYou are a helpful assistant.\n\nYou can use the following tools to assist'
+      runner   : '[INST] <<SYS>>\nYou are a helpful assistant.\n<</SYS>>\n\nWeather in Oslo? [/INST] Let me look'
+  nemotron-nano tool-then-conversation     NEW-DRIFT at byte 0  tokens -248 (ref 324, first differs at 1)
+      reference: '<SPECIAL_10>System\nYou are a helpful assistant.\n\nYou can use the following tools to assist'
+      runner   : '[INST] <<SYS>>\nYou are a helpful assistant.\n<</SYS>>\n\nWeather in Oslo? [/INST] <|tool_call'
+  nemotron-lightning user-only+gen              ok
+  nemotron-lightning user-only-nogen            ok
+  nemotron-lightning system+user+gen            ok
+  nemotron-lightning system+multiturn+gen       ok
+  nemotron-lightning multiturn+gen              ok
+  nemotron-lightning multiturn-nogen            ok
+  nemotron-lightning trailing-assistant+gen     ok
+  nemotron-lightning trailing-assistant-nogen   ok
+  nemotron-lightning consecutive-user           ok
+  nemotron-lightning consecutive-assistant      ok
+  nemotron-lightning system-mid-history         ok
+  nemotron-lightning content-array              ok
+  nemotron-lightning empty-assistant-content    ok
+  nemotron-lightning empty-user-content         ok
+  nemotron-lightning unicode-emoji              ok
+  nemotron-lightning long-content               ok
+  nemotron-lightning think-on                   ok
+  nemotron-lightning think-off                  ok
+  nemotron-lightning tool-call+result           NEW-DRIFT at byte 111  tokens -26 (ref 377, first differs at 29)
+      reference: 'functions:\n\n<tools>\n<function>\n<name>get_weather</name>\n<description>Get the current weath'
+      runner   : 'functions:\n\n<tools>\n{"name": "get_weather", "description": "Get the current weather for a '
+  nemotron-lightning multi-tool-call            NEW-DRIFT at byte 111  tokens -26 (ref 421, first differs at 29)
+      reference: 'functions:\n\n<tools>\n<function>\n<name>get_weather</name>\n<description>Get the current weath'
+      runner   : 'functions:\n\n<tools>\n{"name": "get_weather", "description": "Get the current weather for a '
+  nemotron-lightning tool-call-with-text        NEW-DRIFT at byte 111  tokens -26 (ref 383, first differs at 29)
+      reference: 'functions:\n\n<tools>\n<function>\n<name>get_weather</name>\n<description>Get the current weath'
+      runner   : 'functions:\n\n<tools>\n{"name": "get_weather", "description": "Get the current weather for a '
+  nemotron-lightning tool-then-conversation     NEW-DRIFT at byte 111  tokens -26 (ref 404, first differs at 29)
+      reference: 'functions:\n\n<tools>\n<function>\n<name>get_weather</name>\n<description>Get the current weath'
+      runner   : 'functions:\n\n<tools>\n{"name": "get_weather", "description": "Get the current weather for a '
+  eurollm       user-only+gen              ok
+  eurollm       user-only-nogen            ok
+  eurollm       system+user+gen            ok
+  eurollm       system+multiturn+gen       ok
+  eurollm       multiturn+gen              ok
+  eurollm       multiturn-nogen            ok
+  eurollm       trailing-assistant+gen     ok
+  eurollm       trailing-assistant-nogen   ok
+  eurollm       consecutive-user           ok
+  eurollm       consecutive-assistant      ok
+  eurollm       system-mid-history         ok
+  eurollm       content-array              ok
+  eurollm       empty-assistant-content    ok
+  eurollm       empty-user-content         ok
+  eurollm       unicode-emoji              ok
+  eurollm       long-content               ok
+  granite       user-only+gen              ok
+  granite       user-only-nogen            ok
+  granite       system+user+gen            ok
+  granite       system+multiturn+gen       ok
+  granite       multiturn+gen              ok
+  granite       multiturn-nogen            ok
+  granite       trailing-assistant+gen     ok
+  granite       trailing-assistant-nogen   ok
+  granite       consecutive-user           ok
+  granite       consecutive-assistant      ok
+  granite       system-mid-history         ok
+  granite       content-array              ok
+  granite       empty-assistant-content    ok
+  granite       empty-user-content         ok
+  granite       unicode-emoji              ok
+  granite       long-content               ok
+  harmony       user-only+gen              ok (-primed-analysis-channel)
+  harmony       user-only-nogen            ok
+  harmony       system+user+gen            ok (-primed-analysis-channel)
+  harmony       system+multiturn+gen       ok (-primed-analysis-channel)
+  harmony       multiturn+gen              ok (-primed-analysis-channel)
+  harmony       multiturn-nogen            ok
+  harmony       trailing-assistant+gen     ok (-primed-analysis-channel)
+  harmony       trailing-assistant-nogen   ok
+  harmony       consecutive-user           ok (-primed-analysis-channel)
+  harmony       consecutive-assistant      ok (-primed-analysis-channel)
+  harmony       system-mid-history         ok (-primed-analysis-channel)
+  harmony       content-array              ok (-primed-analysis-channel)
+  harmony       empty-assistant-content    ok (-primed-analysis-channel)
+  harmony       empty-user-content         ok (-primed-analysis-channel)
+  harmony       unicode-emoji              ok (-primed-analysis-channel)
+  harmony       long-content               ok (-primed-analysis-channel)
+  harmony       tool-call+result           ok
+  harmony       multi-tool-call            ok
+  harmony       tool-call-with-text        ok
+  harmony       tool-then-conversation     ok
+
+chatml          CLEAN                          [hf:Qwen/Qwen2.5-7B-Instruct cd8e9439f0570856] tok:Qwen2.5-7B-Instruct-Q4_K_M.gguf
+chatml-think    CLEAN                          [hf:Qwen/Qwen3-4B a55ee1b1660128b7] tok:Qwen3-4B-Q4_K_M.gguf
+llama2          CLEAN (3 n/a)                  [hf:unsloth/llama-2-7b-chat e8d5b5a546d3f19d] tok:tinyllama-q2k.gguf
+llama3          CLEAN                          [hf:unsloth/Llama-3.2-3B-Instruct 5816fce10444e03c] tok:Llama-3.2-3B-Instruct-Q4_K_M.gguf
+zephyr          CLEAN                          [hf:HuggingFaceH4/zephyr-7b-beta 66291cf0045c2425] tok:NOT-CHECKED
+gemma           CLEAN (3 n/a)                  [gguf:models/google_gemma-3-4b-it-Q4_K_M.gguf 7de1c58e208eda46] tok:google_gemma-3-4b-it-Q4_K_M.gguf
+gemma4-mainline CLEAN                          [gguf:models/gemma-4-12B-it-Q4_K_M.gguf ae53464bf3be2580] tok:gemma-4-12B-it-Q4_K_M.gguf
+mistral         CLEAN (3 n/a)                  [hf:mistralai/Mistral-7B-Instruct-v0.3 e16746b40344d6c5] tok:Mistral-7B-Instruct-v0.3-Q4_K_M.gguf
+phi3            CLEAN                          [hf:microsoft/Phi-3.5-mini-instruct 78d976a442bcde2f] tok:Phi-3.5-mini-instruct-Q4_K_M.gguf
+apertus         CLEAN (1 n/a)                  [hf:swiss-ai/Apertus-8B-Instruct-2509 56f72c27fa2e5653] tok:Apertus-8B-Instruct-2509-Q4_K_M.gguf
+ornith          CLEAN (1 n/a)                  [hf:ornith-ai/Ornith-1.0-9B 8b4d21a1e70ccbc8] tok:Ornith-1.0-9B-Q4_K_M.gguf
+qwen38          CLEAN (1 n/a)                  [hf:Qwen/Qwen3.8-27B c3cf9e34abf4f9e3] tok:Qwen3.8-27B-UD-Q4_K_M.gguf
+granite42       CLEAN                          [hf:ibm-granite/granite-4.2-3b f0ba43f79b3cabca] tok:granite-4.2-3b-Q4_K_M.gguf
+muse            CLEAN                          [hf:meta-models/Muse-Glimmer-30B cfc67e5f349f3769] tok:Muse-Glimmer-30B-Q4_K_M.gguf
+trinity         CLEAN                          [hf:arcee-ai/Trinity-Nano-Preview c295e73aea820982] tok:Trinity-Nano-Preview-Q8_0.gguf
+smollm2         10 NEEDS ATTENTION, 0 known    [hf:HuggingFaceTB/SmolLM2-135M-Instruct 872be49dbb638044] tok:SmolLM2-135M-Instruct-Q8_0.gguf
+hermes4         15 NEEDS ATTENTION, 0 known    [hf:NousResearch/Hermes-4-14B 6a0543ce2179f4b1] tok:NousResearch_Hermes-4-14B-Q4_K_M.gguf
+phi4mini        20 NEEDS ATTENTION, 0 known    [hf:microsoft/Phi-4-mini-instruct febf589225c9728a] tok:Phi-4-mini-instruct-q4_0.gguf
+granite40h      14 NEEDS ATTENTION, 0 known    [hf:ibm-granite/granite-4.0-h-small 9524df67b77a7b25] tok:granite-4.0-h-small-Q4_K_M.gguf
+qwen35-4b       7 NEEDS ATTENTION, 0 known (1 n/a) [hf:Qwen/Qwen3.5-4B a4aee8afcf2e0711] tok:Qwen3.5-4B-Q4_K_M.gguf
+qwen35-0.8b     17 NEEDS ATTENTION, 0 known (1 n/a) [hf:Qwen/Qwen3.5-0.8B 273d8e0e683b8850] tok:Qwen3.5-0.8B-Q4_K_M.gguf
+lucie           16 NEEDS ATTENTION, 0 known    [hf:OpenLLM-France/Lucie-7B-Instruct-v1.1 e9d57fea777237fa] tok:Lucie-7B-Instruct-Q4_K_M.gguf
+mistral-nemo    13 NEEDS ATTENTION, 0 known (3 n/a) [hf:mistralai/Mistral-Nemo-Instruct-2407 e4676cb56dffea77] tok:Mistral-Nemo-Instruct-2407-Q4_K_M.gguf
+mistral-file    7 NEEDS ATTENTION, 0 known (3 n/a) [gguf:models/Mistral-7B-Instruct-v0.3-Q4_K_M.gguf 26a59556925c9873] tok:Mistral-7B-Instruct-v0.3-Q4_K_M.gguf
+nemotron-nano   19 NEEDS ATTENTION, 0 known    [hf:nvidia/NVIDIA-Nemotron-Nano-9B-v2 b7a3a520a4bc1bea] tok:NVIDIA-Nemotron-Nano-9B-v2-Q8_0.gguf
+nemotron-lightning 4 NEEDS ATTENTION, 0 known     [gguf:models/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-Q4_0.gguf 58933db77d3099b4] tok:NVIDIA-Nemotron-3.5-Lightning-30B-A3B-Q4_0.gguf
+eurollm         CLEAN                          [gguf:models/EuroLLM-9B-Instruct-Q4_K_M.gguf 9850c24e4c4adc21] tok:EuroLLM-9B-Instruct-Q4_K_M.gguf
+granite         CLEAN                          [gguf:models/granite-4.1-8b-Q4_0.gguf fed2756d2d24e127] tok:granite-4.1-8b-Q4_0.gguf
+harmony         CLEAN                          [fixture:openai-harmony 0.0.8 1a21593bf6554bfb] tok:gpt-oss-20b-MXFP4.gguf
+raw             no upstream oracle             TMPL_RAW is runner's own no-framing mode: it concatenates message contents and has no upstream template to conform to.
+
+503 cases compared, 0 known-bug differences (backlog), 142 new, 0 changed, 0 fixed-but-still-listed, 20 not expressible by the family
+token-level: 487 cases checked (345 identical, 142 differing), 16 NOT CHECKED for want of a tokenizer
+             136 differing case(s) change the PROMPT LENGTH: granite40h/consecutive-assistant -22, granite40h/consecutive-user -22, granite40h/empty-assistant-content -22, granite40h/multi-tool-call -49, granite40h/multiturn+gen -22, granite40h/multiturn-nogen -22 ...
+
+NOT CHECKED (34) -- these produced no comparison at all:
+  gemma4                   no chat_template at gguf:models/e2b-q40.gguf
+  trinity/user-only+gen    reference refused: TemplateSyntaxError: Encountered unknown tag 'generation'. Jinja was looking for the following tags: 'elif' or 'else' or 'endif'. The innermost block that needs to be closed is 'if'.
+  trinity/user-only-nogen  reference refused: TemplateSyntaxError: Encountered unknown tag 'generation'. Jinja was looking for the following tags: 'elif' or 'else' or 'endif'. The innermost block that needs to be closed is 'if'.
+  trinity/system+user+gen  reference refused: TemplateSyntaxError: Encountered unknown tag 'generation'. Jinja was looking for the following tags: 'elif' or 'else' or 'endif'. The innermost block that needs to be closed is 'if'.
+  trinity/system+multiturn+gen reference refused: TemplateSyntaxError: Encountered unknown tag 'generation'. Jinja was looking for the following tags: 'elif' or 'else' or 'endif'. The innermost block that needs to be closed is 'if'.
+  trinity/multiturn+gen    reference refused: TemplateSyntaxError: Encountered unknown tag 'generation'. Jinja was looking for the following tags: 'elif' or 'else' or 'endif'. The innermost block that needs to be closed is 'if'.
+  trinity/multiturn-nogen  reference refused: TemplateSyntaxError: Encountered unknown tag 'generation'. Jinja was looking for the following tags: 'elif' or 'else' or 'endif'. The innermost block that needs to be closed is 'if'.
+  trinity/trailing-assistant+gen reference refused: TemplateSyntaxError: Encountered unknown tag 'generation'. Jinja was looking for the following tags: 'elif' or 'else' or 'endif'. The innermost block that needs to be closed is 'if'.
+  trinity/trailing-assistant-nogen reference refused: TemplateSyntaxError: Encountered unknown tag 'generation'. Jinja was looking for the following tags: 'elif' or 'else' or 'endif'. The innermost block that needs to be closed is 'if'.
+  trinity/consecutive-user reference refused: TemplateSyntaxError: Encountered unknown tag 'generation'. Jinja was looking for the following tags: 'elif' or 'else' or 'endif'. The innermost block that needs to be closed is 'if'.
+  trinity/consecutive-assistant reference refused: TemplateSyntaxError: Encountered unknown tag 'generation'. Jinja was looking for the following tags: 'elif' or 'else' or 'endif'. The innermost block that needs to be closed is 'if'.
+  trinity/system-mid-history reference refused: TemplateSyntaxError: Encountered unknown tag 'generation'. Jinja was looking for the following tags: 'elif' or 'else' or 'endif'. The innermost block that needs to be closed is 'if'.
+  trinity/content-array    reference refused: TemplateSyntaxError: Encountered unknown tag 'generation'. Jinja was looking for the following tags: 'elif' or 'else' or 'endif'. The innermost block that needs to be closed is 'if'.
+  trinity/empty-assistant-content reference refused: TemplateSyntaxError: Encountered unknown tag 'generation'. Jinja was looking for the following tags: 'elif' or 'else' or 'endif'. The innermost block that needs to be closed is 'if'.
+  trinity/empty-user-content reference refused: TemplateSyntaxError: Encountered unknown tag 'generation'. Jinja was looking for the following tags: 'elif' or 'else' or 'endif'. The innermost block that needs to be closed is 'if'.
+  trinity/unicode-emoji    reference refused: TemplateSyntaxError: Encountered unknown tag 'generation'. Jinja was looking for the following tags: 'elif' or 'else' or 'endif'. The innermost block that needs to be closed is 'if'.
+  trinity/long-content     reference refused: TemplateSyntaxError: Encountered unknown tag 'generation'. Jinja was looking for the following tags: 'elif' or 'else' or 'endif'. The innermost block that needs to be closed is 'if'.
+  trinity/tool-call+result reference refused: TemplateSyntaxError: Encountered unknown tag 'generation'. Jinja was looking for the following tags: 'elif' or 'else' or 'endif'. The innermost block that needs to be closed is 'if'.
+  trinity/multi-tool-call  reference refused: TemplateSyntaxError: Encountered unknown tag 'generation'. Jinja was looking for the following tags: 'elif' or 'else' or 'endif'. The innermost block that needs to be closed is 'if'.
+  trinity/tool-call-with-text reference refused: TemplateSyntaxError: Encountered unknown tag 'generation'. Jinja was looking for the following tags: 'elif' or 'else' or 'endif'. The innermost block that needs to be closed is 'if'.
+  trinity/tool-then-conversation reference refused: TemplateSyntaxError: Encountered unknown tag 'generation'. Jinja was looking for the following tags: 'elif' or 'else' or 'endif'. The innermost block that needs to be closed is 'if'.
+  mistral-nemo/tool-call+result reference refused: TemplateError: Tool call IDs should be alphanumeric strings with length 9!
+  mistral-nemo/multi-tool-call reference refused: TemplateError: Tool call IDs should be alphanumeric strings with length 9!
+  mistral-nemo/tool-call-with-text reference refused: TemplateError: Tool call IDs should be alphanumeric strings with length 9!
+  mistral-nemo/tool-then-conversation reference refused: TemplateError: Tool call IDs should be alphanumeric strings with length 9!
+  mistral-file/system+user+gen reference refused: TemplateError: Conversation roles must alternate user/assistant/user/assistant/...
+  mistral-file/system+multiturn+gen reference refused: TemplateError: Conversation roles must alternate user/assistant/user/assistant/...
+  mistral-file/content-array reference refused: TemplateError: Conversation roles must alternate user/assistant/user/assistant/...
+  mistral-file/empty-user-content reference refused: TemplateError: Conversation roles must alternate user/assistant/user/assistant/...
+  mistral-file/unicode-emoji reference refused: TemplateError: Conversation roles must alternate user/assistant/user/assistant/...
+  mistral-file/long-content reference refused: TemplateError: Conversation roles must alternate user/assistant/user/assistant/...
+  nemotron-nano/consecutive-user runner refused: messages must alternate user and assistant roles for the llama2 template (messages[1] must be assistant)
+  nemotron-nano/consecutive-assistant runner refused: messages must alternate user and assistant roles for the llama2 template (messages[2] must be user)
+  nemotron-nano/system-mid-history runner refused: messages[2].role system is not representable by the llama2 template after history has started
+
+TOKENS NOT CHECKED (1 families) -- the text was compared, the token sequence was NOT:
+  zephyr        no GGUF carrying the zephyr tokenizer on the model shelf (looked for zephyr-7b-beta-Q4_K_M.gguf in /home/lab/workspace/runner-gold/models). The text comparison ran; the TOKEN comparison did not.
+  A whitespace-only text difference can still change the token sequence the model reads, so this is a real gap, not a formality. --require-tokens turns it into exit 2.
+
+FAIL: 142 new, 0 changed, 0 fixed-but-still-listed.
+      New/changed differences are drift: fix the renderer, or -- if the deviation is deliberate and citable -- add it to the allowlist.
+      Once you have decided, re-record the backlog:
+        make template-conformance-baseline

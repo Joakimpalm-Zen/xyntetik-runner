@@ -238,6 +238,13 @@ bool tokenizer_init(tokenizer *t, gguf_file *g) {
     else if (strcmp(pre, "dbrx") == 0)   t->pre = TOK_PRE_LLAMA3; // llama.cpp: "same as llama3" (granite 4.1 ships this)
     else if (strcmp(pre, "granite-docling") == 0) t->pre = TOK_PRE_GPT2; // llama.cpp: the plain GPT-2 regex (granite 4.2 ships this)
     else if (strcmp(pre, "qwen2") == 0)  t->pre = TOK_PRE_QWEN2;
+    // stablelm2: llama.cpp puts LLAMA_VOCAB_PRE_TYPE_STABLELM2 in the same
+    // case as QWEN2, so it is the qwen2 regex, whose \p{N} matches ONE digit.
+    // Without this row the file fell through to the plain GPT-2 default, which
+    // puts no cap on a digit run, and 259 of 721 corpus strings tokenized
+    // differently from the publisher's own tokenizer: "1234567890" came out as
+    // 123/456/78/90 where the reference gives ten single digits (2026-09-07).
+    else if (strcmp(pre, "stablelm2") == 0) t->pre = TOK_PRE_QWEN2;
     // qwen35 (Qwen 3.5, 3.6, 3.8, Ornith): the qwen2 regex with [\p{L}\p{M}]+
     // in place of \p{L}+, so combining marks (Devanagari vowel signs and
     // viramas, Thai vowels and tones) ride inside the letter run and are

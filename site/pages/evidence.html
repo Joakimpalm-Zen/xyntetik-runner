@@ -285,27 +285,45 @@ nav: evidence
 <section class="section tint" id="gold">
   <div class="wrap">
     <div class="section-head">
-      <p class="eyebrow">Why Runner is slower, and why you want that</p>
-      <h2>Measured against the model's own implementation, not against another engine.</h2>
-      <p>Runner does the model's arithmetic without the shortcuts faster engines take: activations stay in 32-bit float instead of being rounded to 8 bits before every multiply, and attention accumulates in 32-bit float instead of 16. That costs speed where prefill is compute-bound. To see what it buys, the right yardstick is the model publisher's own reference implementation run in full precision, not a second engine that may have taken the same shortcuts.</p>
+      <p class="eyebrow">Why Runner is slower, and what that does and does not buy</p>
+      <h2>Measured against each model's own implementation, not against another engine.</h2>
+      <p>Runner does the model's arithmetic without the shortcuts faster engines take: activations stay in 32-bit float instead of being rounded to 8 bits before every multiply, and attention accumulates in 32-bit float instead of 16. That costs speed where prefill is compute-bound. To see what it buys, the yardstick is the model publisher's own reference implementation run in full precision, not a second engine that may have taken the same shortcuts.</p>
     </div>
     <details class="table-view" open>
-      <summary>Granite 4.2 3B against IBM's implementation in float32, 99 corpus positions, measured 2026-09-06</summary>
+      <summary>Twelve families against their publishers' implementations in float32, both tiers, 2,000 corpus positions each, measured 2026-09-07</summary>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>weights</th><th>engine</th><th>mean KL from the reference</th><th>top-1 agreement</th></tr></thead>
+          <thead><tr><th>family</th><th>weights</th><th>Runner, tokens right</th><th>other engine, tokens right</th><th>of</th><th>Runner mean KL</th><th>other engine mean KL</th><th>difference real?</th></tr></thead>
           <tbody>
-            <tr><td>bf16</td><td>Runner</td><td class="num">0.0016</td><td class="num">100%</td></tr>
-            <tr><td>bf16</td><td>the faster engine, flash attention off</td><td class="num">0.0016</td><td class="num">99.0%</td></tr>
-            <tr><td>bf16</td><td>the faster engine, flash attention on (its default)</td><td class="num">0.0018</td><td class="num">97.0%</td></tr>
-            <tr><td>Q4_K_M</td><td>Runner</td><td class="num">0.109</td><td class="num">87.9%</td></tr>
-            <tr><td>Q4_K_M</td><td>the faster engine, flash attention off</td><td class="num">0.119</td><td class="num">85.9%</td></tr>
-            <tr><td>Q4_K_M</td><td>the faster engine, flash attention on</td><td class="num">0.115</td><td class="num">88.9%</td></tr>
+            <tr><td>SmolLM2 135M</td><td>bf16</td><td class="num">1310</td><td class="num">1310</td><td class="num">1310</td><td class="num">0.0007</td><td class="num">0.0037</td><td>no</td></tr>
+            <tr><td>SmolLM2 135M</td><td>Q8_0</td><td class="num">1310</td><td class="num">1309</td><td class="num">1310</td><td class="num">0.0080</td><td class="num">0.0164</td><td>no</td></tr>
+            <tr><td>Qwen2.5 0.5B</td><td>bf16</td><td class="num">1342</td><td class="num">1342</td><td class="num">1342</td><td class="num">0.0003</td><td class="num">0.0015</td><td>no</td></tr>
+            <tr><td>Qwen2.5 0.5B</td><td>Q4_K_M</td><td class="num">1328</td><td class="num">1326</td><td class="num">1342</td><td class="num">0.0474</td><td class="num">0.0518</td><td>no</td></tr>
+            <tr><td>Qwen3 0.6B</td><td>bf16</td><td class="num">1387</td><td class="num">1387</td><td class="num">1387</td><td class="num">0.0001</td><td class="num">0.0007</td><td>no</td></tr>
+            <tr><td>Qwen3 0.6B</td><td>Q4_0</td><td class="num">1128</td><td class="num">1123</td><td class="num">1387</td><td class="num">0.3041</td><td class="num">0.3061</td><td>no</td></tr>
+            <tr><td>Qwen3.5 0.8B</td><td>bf16</td><td class="num">1356</td><td class="num">1356</td><td class="num">1356</td><td class="num">0.0004</td><td class="num">0.0011</td><td>no</td></tr>
+            <tr><td>Qwen3.5 0.8B</td><td>Q4_K_M</td><td class="num">1325</td><td class="num">1323</td><td class="num">1356</td><td class="num">0.0636</td><td class="num">0.0702</td><td>no</td></tr>
+            <tr><td>StableLM 2 1.6B</td><td>bf16</td><td class="num">1335</td><td class="num">1335</td><td class="num">1335</td><td class="num">0.0002</td><td class="num">0.0009</td><td>no</td></tr>
+            <tr><td>Granite 4.0-h micro</td><td>bf16</td><td class="num">1437</td><td class="num">1437</td><td class="num">1437</td><td class="num">0.0033</td><td class="num">0.0040</td><td>no</td></tr>
+            <tr><td>Granite 4.0-h micro</td><td>Q4_K_M</td><td class="num">1356</td><td class="num">1346</td><td class="num">1437</td><td class="num">0.0974</td><td class="num">0.1063</td><td>no</td></tr>
+            <tr><td>Granite 4.2 3B</td><td>bf16</td><td class="num">1429</td><td class="num">1428</td><td class="num">1429</td><td class="num">0.0006</td><td class="num">0.0012</td><td>no</td></tr>
+            <tr><td>Granite 4.2 3B</td><td>Q4_K_M</td><td class="num">1304</td><td class="num">1301</td><td class="num">1429</td><td class="num">0.1638</td><td class="num">0.1707</td><td>no</td></tr>
+            <tr><td>Trinity Nano</td><td>bf16</td><td class="num">1340</td><td class="num">1341</td><td class="num">1360</td><td class="num">0.0454</td><td class="num">0.0450</td><td>no</td></tr>
+            <tr><td>Trinity Nano</td><td>Q8_0</td><td class="num">1326</td><td class="num">1330</td><td class="num">1361</td><td class="num">0.0633</td><td class="num">0.0616</td><td>no</td></tr>
+            <tr><td>Gemma 3 4B</td><td>bf16</td><td class="num">1550</td><td class="num">1550</td><td class="num">1550</td><td class="num">0.0001</td><td class="num">0.0005</td><td>no</td></tr>
+            <tr><td>Gemma 3 4B</td><td>Q4_K_M</td><td class="num">1491</td><td class="num">1482</td><td class="num">1550</td><td class="num">0.0669</td><td class="num">0.0764</td><td>no</td></tr>
+            <tr><td>Gemma 4 E2B</td><td>bf16</td><td class="num">1610</td><td class="num">1610</td><td class="num">1610</td><td class="num">0.0014</td><td class="num">0.0019</td><td>no</td></tr>
+            <tr><td>Gemma 4 E2B</td><td>Q4_0</td><td class="num">1118</td><td class="num">1108</td><td class="num">1610</td><td class="num">0.8134</td><td class="num">0.8016</td><td>no</td></tr>
+            <tr><td>Qwen3 4B</td><td>bf16</td><td class="num">1516</td><td class="num">1516</td><td class="num">1516</td><td class="num">0.0001</td><td class="num">0.0004</td><td>no</td></tr>
+            <tr><td>Qwen3 4B</td><td>Q4_K_M</td><td class="num">1396</td><td class="num">1388</td><td class="num">1516</td><td class="num">0.1398</td><td class="num">0.1434</td><td>no</td></tr>
+            <tr><td>Apertus 8B</td><td>Q4_K_M</td><td class="num">1343</td><td class="num">1321</td><td class="num">1369</td><td class="num">0.0509</td><td class="num">0.0790</td><td>yes</td></tr>
           </tbody>
         </table>
       </div>
     </details>
-    <p class="mt-2">With unquantized weights Runner reproduces the reference to the noise of its own float arithmetic and picks the same token on every position. At the served 4-bit quant both engines sit about 0.11 from the reference, because quantization dominates, and Runner is the closer of the two. The faster engine disagreed with itself, flash attention on against off, by mean KL 0.020 over 200 positions, more than it disagreed with Runner (0.015). The same admission found a chat-template defect that no engine-to-engine comparison could see: the publisher's template is now the anchor for every family.</p>
-    <p class="small muted mt-1">One family so far; the pass over every admitted family is the next item. Method and raw outputs: <a href="{{repo}}/blob/main/docs/granite-42-qwen38-cert-2026-09-06.md">docs/granite-42-qwen38-cert-2026-09-06.md</a>, the gate <a href="{{repo}}/blob/main/scripts/gold-logits.py">scripts/gold-logits.py</a> (transformers 5.16, float32, eager attention, CPU). The full speed gap is in the benchmark section above, losing rows included.</p>
+    <p class="mt-2"><strong>Runner reproduces the reference distribution more closely, almost everywhere.</strong> On the measure that uses every position, Runner is closer on twenty-one of these twenty-two rows, at odds no honest reading calls luck. The single exception is Gemma 4 E2B at four bits.</p>
+    <p class="mt-1"><strong>That advantage rarely changes which token wins.</strong> The right-hand columns count how often each engine picked the reference's token where the reference had a clear preference. Runner is ahead or level on twenty of twenty-two rows, but only one of those leads is large enough to be a real difference rather than chance: Apertus 8B at four bits, 1343 tokens against 1321. Both statements are true at once, and together they are the honest claim: closer in distribution, near-identical at the token you actually receive.</p>
+    <p class="mt-1"><strong>What this table cost us to learn.</strong> An earlier version of this page reported these comparisons over 100 positions instead of 2,000, and at that size a single token moved the number by more than a percentage point. Nearly every difference it showed was noise, including one that appeared to put the other engine ahead on Granite 4.2 at four bits; measured properly, Runner leads that row. <strong>StableLM was the exception and it was a real defect of ours</strong>, two of them: the architecture normalises with LayerNorm and Runner was applying RMSNorm, and its pre-tokenizer had no entry so a third of the corpus tokenized differently. Both are fixed, the family now reads 100% here, and a test was added that fails whenever an architecture is claimed without a gate behind it. It found four more.</p>
+    <p class="small muted mt-1">Method and raw outputs: <a href="{{repo}}/blob/main/docs/golden-pass-2026-09-07.md">docs/golden-pass-2026-09-07.md</a>, the gate <a href="{{repo}}/blob/main/scripts/gold-logits.py">scripts/gold-logits.py</a> (transformers 5.16, float32, eager attention, CPU). Three faults in that harness were found and fixed before any of these numbers counted; they are described in the report. Two families cannot be measured this way yet and are named there rather than scored. The full speed gap is in the benchmark section above, losing rows included.</p>
   </div>
 </section>

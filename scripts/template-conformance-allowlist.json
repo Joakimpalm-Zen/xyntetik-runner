@@ -41,7 +41,7 @@
       },
       "corroborating_cite": {
         "file": "src/tokenizer.c",
-        "lines": "1230-1235",
+        "lines": "1237-1242",
         "anchor": "if (add_bos && t->add_bos && t->bos_id >= 0 && n_out < cap)"
       },
       "patch": {
@@ -59,7 +59,7 @@
       },
       "corroborating_cite": {
         "file": "src/tokenizer.c",
-        "lines": "1230-1235",
+        "lines": "1237-1242",
         "anchor": "if (add_bos && t->add_bos && t->bos_id >= 0 && n_out < cap)"
       },
       "patch": {
@@ -106,7 +106,7 @@
       },
       "corroborating_cite": {
         "file": "src/tokenizer.c",
-        "lines": "1230-1235",
+        "lines": "1237-1242",
         "anchor": "if (add_bos && t->add_bos && t->bos_id >= 0 && n_out < cap)"
       },
       "patch": {
@@ -124,7 +124,7 @@
       },
       "corroborating_cite": {
         "file": "src/tokenizer.c",
-        "lines": "1230-1235",
+        "lines": "1237-1242",
         "anchor": "if (add_bos && t->add_bos && t->bos_id >= 0 && n_out < cap)"
       },
       "patch": {
@@ -142,7 +142,7 @@
       },
       "corroborating_cite": {
         "file": "src/tokenizer.c",
-        "lines": "1230-1235",
+        "lines": "1237-1242",
         "anchor": "if (add_bos && t->add_bos && t->bos_id >= 0 && n_out < cap)"
       },
       "patch": {
@@ -160,7 +160,7 @@
       },
       "corroborating_cite": {
         "file": "src/tokenizer.c",
-        "lines": "1230-1235",
+        "lines": "1237-1242",
         "anchor": "if (add_bos && t->add_bos && t->bos_id >= 0 && n_out < cap)"
       },
       "patch": {
@@ -178,7 +178,7 @@
       },
       "corroborating_cite": {
         "file": "src/tokenizer.c",
-        "lines": "1230-1235",
+        "lines": "1237-1242",
         "anchor": "if (add_bos && t->add_bos && t->bos_id >= 0 && n_out < cap)"
       },
       "patch": {
@@ -211,7 +211,7 @@
       },
       "corroborating_cite": {
         "file": "src/tokenizer.c",
-        "lines": "1230-1235",
+        "lines": "1237-1242",
         "anchor": "if (add_bos && t->add_bos && t->bos_id >= 0 && n_out < cap)"
       },
       "patch": {
@@ -258,6 +258,24 @@
       "patch": {
         "op": "drop-first-match",
         "pattern": "^<\\|im_start\\|>system\nYou are Qwen, created by Alibaba Cloud\\. You are a helpful assistant\\.<\\|im_end\\|>\n"
+      }
+    },
+    {
+      "id": "lucie/bos",
+      "family": "lucie",
+      "why": "BOS is not spelled into runner's templates at all: the tokenizer prepends it at encode time from tokenizer.ggml.add_bos_token, so a template that also emitted it would double it.",
+      "cite": {
+        "file": "src/template.c",
+        "lines": "1553-1559",
+        "anchor": "BOS is added by the tokenizer,"
+      },
+      "corroborating_cite": {
+        "file": "src/tokenizer.c",
+        "lines": "1237-1242",
+        "anchor": "if (add_bos && t->add_bos && t->bos_id >= 0 && n_out < cap)"
+      },
+      "patch": {
+        "op": "strip-bos"
       }
     }
   ]
