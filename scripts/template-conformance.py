@@ -260,6 +260,84 @@ FAMILIES = {
              "read from the official meta-models GGUF'",
         tool_family=True,
         tokenizer=("Muse-Glimmer-30B-Q4_K_M.gguf",)),
+    # ---- the golden pass, R6.7 (2026-09-07): every admitted family's own
+    # publisher template, or the template embedded in the pinned file where
+    # the publisher page is gated. The runner name is what template_detect
+    # picks for that file (`--tool-info` names it), so a drifting row here
+    # is the renderer the model is actually served with.
+    "trinity": Family(
+        "chatml", ("hf", "arcee-ai/Trinity-Nano-Preview"),
+        note="afmoe; ChatML with its own tools section and no default system",
+        tool_family=True, tokenizer=("Trinity-Nano-Preview-Q8_0.gguf",)),
+    "smollm2": Family(
+        "chatml", ("hf", "HuggingFaceTB/SmolLM2-135M-Instruct"),
+        note="the smollm pre-tokenizer family; plain ChatML",
+        tokenizer=("SmolLM2-135M-Instruct-Q8_0.gguf",)),
+    "hermes4": Family(
+        "chatml-think", ("hf", "NousResearch/Hermes-4-14B"),
+        note="ChatML with <think> and Hermes tools; detected as chatml-think",
+        tool_family=True, thinking_var="enable_thinking",
+        tokenizer=("NousResearch_Hermes-4-14B-Q4_K_M.gguf",)),
+    "phi4mini": Family(
+        "phi3", ("hf", "microsoft/Phi-4-mini-instruct"),
+        note="phi3 framing plus a <|tool|> block on the system turn",
+        tool_family=True, tokenizer=("Phi-4-mini-instruct-q4_0.gguf",)),
+    "granite40h": Family(
+        "granite", ("hf", "ibm-granite/granite-4.0-h-small"),
+        note="granitehybrid; the 4.0 template with its tools section",
+        tool_family=True, tokenizer=("granite-4.0-h-small-Q4_K_M.gguf",)),
+    "qwen35-4b": Family(
+        "ornith", ("hf", "Qwen/Qwen3.5-4B"),
+        note="Qwen 3.5 detected as ornith; its template keeps the thought "
+             "block only after the last user query",
+        tool_family=True, thinking_var="enable_thinking",
+        tokenizer=("Qwen3.5-4B-Q4_K_M.gguf",),
+        cannot={"system-mid-history": NO_MID_SYSTEM}),
+    "qwen35-0.8b": Family(
+        "ornith", ("hf", "Qwen/Qwen3.5-0.8B"),
+        note="the small Qwen 3.5 defaults thinking OFF in its template",
+        tool_family=True, thinking_var="enable_thinking",
+        tokenizer=("Qwen3.5-0.8B-Q4_K_M.gguf",),
+        cannot={"system-mid-history": NO_MID_SYSTEM}),
+    "lucie": Family(
+        "llama3", ("hf", "OpenLLM-France/Lucie-7B-Instruct-v1.1"),
+        note="llama3 framing with a leading bos and trimmed content",
+        tokenizer=("Lucie-7B-Instruct-Q4_K_M.gguf",)),
+    "mistral-nemo": Family(
+        "mistral", ("hf", "mistralai/Mistral-Nemo-Instruct-2407"),
+        note="detected as mistral (the v0.3 form) on the pinned file; the "
+             "runner also has a mistral-nemo family",
+        tool_family=True,
+        tokenizer=("Mistral-Nemo-Instruct-2407-Q4_K_M.gguf",),
+        cannot={"consecutive-user": ALTERNATE_AFTER_SYS,
+                "consecutive-assistant": ALTERNATE_AFTER_SYS,
+                "system-mid-history": ALTERNATE_AFTER_SYS}),
+    "mistral-file": Family(
+        "mistral-v1", ("gguf", "models/Mistral-7B-Instruct-v0.3-Q4_K_M.gguf"),
+        note="the template EMBEDDED in the pinned v0.3 file, which the "
+             "runner detects as the v0.1 framing; the hf row above is the "
+             "publisher's current template",
+        tokenizer=("Mistral-7B-Instruct-v0.3-Q4_K_M.gguf",),
+        cannot={"consecutive-user": ALTERNATE,
+                "consecutive-assistant": ALTERNATE,
+                "system-mid-history": ALTERNATE}),
+    "nemotron-nano": Family(
+        "llama2", ("hf", "nvidia/NVIDIA-Nemotron-Nano-9B-v2"),
+        note="NOT RECOGNISED by the runner (falls back to llama2 markup); "
+             "the row measures the size of that defect",
+        tool_family=True, thinking_var="enable_thinking",
+        tokenizer=("NVIDIA-Nemotron-Nano-9B-v2-Q8_0.gguf",)),
+    "nemotron-lightning": Family(
+        "granite42", ("gguf", "models/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-Q4_0.gguf"),
+        note="detected as granite42 because its template carries the "
+             "function-XML marker and the closed think block; the row "
+             "measures how far that renderer is from the file's own",
+        tool_family=True, thinking_var="enable_thinking",
+        tokenizer=("NVIDIA-Nemotron-3.5-Lightning-30B-A3B-Q4_0.gguf",)),
+    "eurollm": Family(
+        "chatml", ("gguf", "models/EuroLLM-9B-Instruct-Q4_K_M.gguf"),
+        note="publisher page gated; the file's embedded template",
+        tokenizer=("EuroLLM-9B-Instruct-Q4_K_M.gguf",)),
     "granite": Family(
         "granite", ("gguf", "models/granite-4.1-8b-Q4_0.gguf"),
         note="src/template.c cites 'the model's OWN tokenizer.chat_template'; "
