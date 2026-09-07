@@ -143,7 +143,7 @@ bare: yes
           </tr>
           <tr>
             <td>Train a LoRA through the quantized file you serve, reproducibly</td>
-            <td><span class="y win">Yes. Same forward pass as serving; same data, seed and config write a byte-identical adapter</span></td>
+            <td><span class="y win">Yes. Same forward pass as serving on the CPU, and within the measured CPU/GPU envelope on CUDA; same data, seed and config write a byte-identical adapter</span></td>
             <td><span class="p">Runner-trained adapters load and score identically in stock llama.cpp; community F16 adapters load back into Runner</span></td>
             <td><span class="n">Not measured</span></td>
           </tr>

@@ -318,7 +318,10 @@ used for inference**. There is no FP16 training copy and no separate
 training framework: the serving forward pass is the training forward pass,
 so **the policy you sample is the policy you train** - the train/infer
 numerical mismatch that silently breaks on-policy learning cannot occur
-between two codepaths that are one codepath. And training is deterministic
+between two codepaths that are one codepath. That identity is the CPU
+codepath's: the trainer tapes the host forward, so it holds exactly for an
+adapter served on the CPU, and within the engine's measured CPU/GPU envelope
+(1.255e-3 max \|Δlogprob\| on Qwen2.5-1.5B Q4_K_M) for one served on CUDA. And training is deterministic
 in the strongest sense: same data + same seed + same config produce a
 **byte-identical adapter file**, with a machine-written provenance record
 (base/data/adapter sha256s, seed, full config) beside every adapter -

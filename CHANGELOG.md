@@ -8,6 +8,23 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **The train/infer identity claim is scoped, because shipping `--lora` on the
+  GPU narrowed it.** "The policy you sample is the policy you train, by
+  construction" is the CPU codepath's property: the trainer tapes the host
+  forward. Serving that adapter on CUDA is a different forward, agreeing to
+  within the engine's measured envelope (1.255e-3 max |dlogprob| on
+  Qwen2.5-1.5B Q4_K_M) rather than by construction. The combination was
+  impossible while `--lora` refused a GPU-resident model; it is possible now,
+  so the limit is written down on all three surfaces instead of implied.
+- **The remaining CUDA training work is priced.** After the position grid, a
+  7B step is 31.8 s taped forward plus 20.0 s recompute of 64.8 s, both on the
+  CPU; the attention backward is 0.88 s and the optimizer 0.04 s. Measured
+  with `--score` as the instrument (its default path is one solo forward per
+  position, which is what the tape does): the solo forward is 7.3x faster on
+  an RTX 3070 than on 8 CPU threads, the batched forward 2.9x, which puts a
+  step near 23 s. `docs/adaptation-engine.md` carries the table and the two
+  ways to spend it.
+
 - **`--lora` runs on the GPU (R8.7.2).** An offloaded block's activations
   never reach the host, so the adapter used to refuse a GPU-resident model
   outright. Two kernels now apply the same `y += scale*B(Ax)` on the device
