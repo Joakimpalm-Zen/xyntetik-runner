@@ -208,6 +208,7 @@ nav: evidence
       <p class="eyebrow">Compatibility gates</p>
       <h2>Pinned files, declared checks, executed on every release.</h2>
       <p>The machine-readable manifest <a href="{{repo}}/blob/main/tests/compatibility/models.json">tests/compatibility/models.json</a> pins files by SHA-256 and declares each check independently. The release check refuses a report with zero executed rows, and the CUDA smoke gate on a second device family is mandatory before a tag.</p>
+      <p class="mt-2">Hosted CI has no GPU, so it cannot say when a claimed device last ran the gates. <a href="{{repo}}/blob/main/docs/device-evidence.json">docs/device-evidence.json</a> records that per device class, written from the runner's own <code>--caps</code> on the machine in question rather than typed by hand, and the release check refuses a tag while one of them is stale. The gap it exists to close was real: the Windows suite went nineteen days and eight failures before anybody looked.</p>
     </div>
     <div class="grid-3">
       <div class="card"><h3><code>load</code></h3><p>The pinned file hashes and loads.</p></div>

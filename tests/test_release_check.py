@@ -62,7 +62,32 @@ def good_args(tmp_path):
         commit="abc123",
         current_docs=[],
         compat_reports=report_dir(tmp_path, "0.1.3-alpha-2026-01-01.json"),
+        device_evidence=device_ledger(tmp_path),
     )
+
+
+def device_ledger(tmp_path, days_ago=1, result="pass"):
+    """A ledger with one class, verified `days_ago` days ago.
+
+    The real one lives in docs/ and describes real hardware; a test that read
+    it would pass or fail on whether somebody had run the lab's Windows box
+    this month, which is not what any of these tests are about.
+    """
+    import datetime
+    when = (datetime.datetime.now(datetime.timezone.utc).date()
+            - datetime.timedelta(days=days_ago))
+    path = tmp_path / "device-evidence.json"
+    write(path, json.dumps({
+        "schema": "xyntetik.runner.device-evidence.v1",
+        "policy": {"default_max_age_days": 45},
+        "classes": [{
+            "id": "test-class",
+            "max_age_days": 45,
+            "last_verified": {"date": when.isoformat(), "commit": "abc123",
+                              "ran": "make test", "result": result},
+        }],
+    }) + "\n")
+    return path
 
 
 def report_dir(tmp_path, *names):
@@ -361,3 +386,42 @@ def test_release_check_requires_readme_and_site_to_link_the_same_hf_repos(
           '<a href="https://huggingface.co/Joakimpalm-Zen/Only-In-README">y</a>')
     assert check_release.check(args) is True
 
+
+def _pinned(monkeypatch):
+    monkeypatch.setattr(
+        check_release, "binary_version", lambda _: "runner 0.1.3-alpha"
+    )
+
+
+def test_release_check_refuses_stale_device_evidence(monkeypatch, tmp_path):
+    """The classes CI cannot reach are the ones that rot unseen.
+
+    Nineteen days passed between Windows runs before anybody noticed, and
+    nothing in the release path asked. It asks now.
+    """
+    _pinned(monkeypatch)
+    args = good_args(tmp_path)
+    args.device_evidence = device_ledger(tmp_path, days_ago=200)
+    assert check_release.check(args) is False
+
+
+def test_release_check_refuses_a_failing_device_class(monkeypatch, tmp_path):
+    _pinned(monkeypatch)
+    args = good_args(tmp_path)
+    args.device_evidence = device_ledger(tmp_path, days_ago=1, result="fail")
+    assert check_release.check(args) is False
+
+
+def test_release_check_refuses_a_missing_device_ledger(monkeypatch, tmp_path):
+    """Naming a ledger that is not there must not read as "nothing to check"."""
+    _pinned(monkeypatch)
+    args = good_args(tmp_path)
+    args.device_evidence = tmp_path / "gone.json"
+    assert check_release.check(args) is False
+
+
+def test_release_check_accepts_fresh_device_evidence(monkeypatch, tmp_path):
+    _pinned(monkeypatch)
+    args = good_args(tmp_path)
+    args.device_evidence = device_ledger(tmp_path, days_ago=3)
+    assert check_release.check(args) is True

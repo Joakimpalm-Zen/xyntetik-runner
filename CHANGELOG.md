@@ -8,6 +8,36 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **The device classes CI cannot reach now have a ledger and a gate.** Hosted
+  runners build three platforms and run the suite on machines with no GPU;
+  nothing could say when a claimed device last ran the gates, and nothing was
+  watching when the Windows suite went nineteen days and eight failures.
+  `docs/device-evidence.json` records, per device class, when it was last run
+  and what ran, written by `scripts/device-evidence.py --record` from the
+  runner's own `--caps` on the machine in question, with the class refusing a
+  recording made on the wrong one. `make release-check` refuses a tag while a
+  class is stale, failing or never recorded, the same refusal shape it already
+  uses for README/site parity. A class belongs there only if CI cannot verify
+  it; anything a hosted runner proves every push belongs in CI.
+- **Thirteen test files were run by nothing at all, and now cannot be.**
+  Chasing why the Windows job missed five files turned up the root of it: the
+  `test` target enumerates its pytest files too, and thirteen files under
+  `tests/` were named in neither the Makefile nor any workflow.
+  `tests/test_receipts.py` was one of them. All thirteen pass; they are in the
+  gate now, and `tests/test_gate_coverage.py` fails on a test file nothing
+  invokes, so the next one is caught the day it is written rather than
+  whenever somebody needs the feature it covers. That is the third instance
+  of one shape in one day: a hand-kept list of what to check drifting from
+  what exists (the others being `test_caps.py`'s format list and the Windows
+  job's smoke selection). Fixing the instances does not fix the shape; this
+  gate is for the shape.
+- **The whole suite runs on Windows in CI, nightly and on every push to
+  `main`.** The per-pull-request Windows job is a hand-picked list of smokes,
+  and a hand-picked list drifts from what exists: five test files it had never
+  named were where the Windows-only defects accumulated. The new
+  `windows-suite` job runs `make test`, off the pull-request path so it costs
+  minutes where they do not block anyone.
+
 - **The train/infer identity claim is scoped, because shipping `--lora` on the
   GPU narrowed it.** "The policy you sample is the policy you train, by
   construction" is the CPU codepath's property: the trainer tapes the host

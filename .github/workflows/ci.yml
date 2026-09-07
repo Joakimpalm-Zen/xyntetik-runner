@@ -1,6 +1,11 @@
 name: ci
 
 on:
+  schedule:
+    # 04:23 UTC daily, for the jobs that are too slow to sit on a pull request
+    # but whose absence is what let the Windows suite rot for nineteen days
+    # (2026-08-13 to 2026-09-07, eight failures, all of them the harness).
+    - cron: "23 4 * * *"
   push:
     branches: [main]
     # the site has its own workflow and nothing under docs/ is a test input
@@ -886,3 +891,38 @@ jobs:
         with:
           name: template-oracles
           path: .build/template-oracles/
+
+  # The whole suite on Windows, which the per-pull-request `windows` job above
+  # does NOT run: that job is a hand-picked list of smokes, and a hand-picked
+  # list is exactly what drifts away from what exists. Five test files it had
+  # never named accumulated Windows-only defects (os.pread, Unix-only mmap
+  # arguments, os.killpg, a CRLF hash, an env replacement that dropped
+  # SystemRoot) and nothing could see them, because the only machine that runs
+  # this suite on Windows is a desk in the lab.
+  #
+  # Off the pull-request path on purpose: it is minutes, not seconds, and the
+  # value is "main is never red for more than a day", not "every PR waits".
+  # No GPU here, so the CUDA gates self-skip; the device half is covered by
+  # docs/device-evidence.json and the release check that reads it.
+  windows-suite:
+    if: github.event_name != 'pull_request'
+    runs-on: windows-latest
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: false
+          install: >-
+            make
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-python
+            mingw-w64-ucrt-x86_64-python-pytest
+      - name: make test
+        env:
+          PYTHONUTF8: "1"
+        run: make OS=Windows_NT -j2 test

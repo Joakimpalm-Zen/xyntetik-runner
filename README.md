@@ -443,6 +443,13 @@ tables in [docs/portable-bitexact-2026-09-05.md](docs/portable-bitexact-2026-09-
 | macOS arm64 | Apple Clang | ARM NEON; Metal on Apple Silicon |
 | Windows x86_64 | MinGW-w64 via MSYS2 | AVX2/FMA; CUDA on NVIDIA Turing / compute capability 7.5 or newer, driver with CUDA 13.0+ support (R580 series) |
 
+CI builds all three and runs the suite on hosted machines, which have no GPU.
+The accelerated halves of that table are verified on physical hardware, and
+[docs/device-evidence.json](docs/device-evidence.json) records when each was
+last run, written from the runner's own `--caps` on the machine in question.
+`make release-check` refuses a tag while one of them is stale, so the table
+above is a claim somebody re-checks rather than one that decays quietly.
+
 On Windows, install `make` and `mingw-w64-ucrt-x86_64-gcc` from an MSYS2 UCRT64
 shell, then run `make`.
 
