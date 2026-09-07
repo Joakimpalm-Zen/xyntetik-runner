@@ -8,6 +8,18 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **A refused run no longer leaves a tray behind.** The tray is detached, so
+  one raised by a process that then exits outlives it and holds the executable
+  open against the next relink, which this project has already fixed once from
+  a different direction. The raise sat above `-s 0`, the yarn-factor conflicts
+  and the unknown-`--chat-template` check, all of which refuse a serve or
+  interactive run after it; it now sits after every argument check such a run
+  can still fail. Deliberately not moved further: a run that fails later,
+  when a model or a draft will not load, still raises one, because moving past
+  that would delay the icon by a whole model load for every run that works.
+  Gated through the instance registry a raised tray writes into, under a pty
+  because the raise is gated on a terminal, and proven red on the old order.
+
 - **The closer could emit a document the engine cannot parse.** The fuzzer
   found it on 2026-09-07 and it is the one thing the closer's published
   guarantee says cannot happen. `sval` delegates an open `{}` schema node to a

@@ -885,7 +885,9 @@ requests.
 On macOS and Windows, a session you sit with - a bare invocation, `--serve`, or
 `-i` - also raises the desktop tray, which is left running afterwards. One-shot
 `-p` runs, tooling modes, pipes, scripts, CI, and Linux keep text-mode
-behavior, and `--no-tray` opts out everywhere. See [Desktop tray](#desktop-tray).
+behavior, and `--no-tray` opts out everywhere. A run refused by an argument
+check raises nothing: the tray is detached, so one spawned by a process that
+then exits would outlive it. See [Desktop tray](#desktop-tray).
 
 ## Runtime and hardware
 

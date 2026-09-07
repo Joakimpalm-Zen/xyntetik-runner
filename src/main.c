@@ -1345,25 +1345,6 @@ int main(int argc, char **argv) {
         usage(argv[0]);
         return 1;
     }
-    // The tray follows a session a person will sit with — a server or an
-    // interactive chat — and is left running afterwards so the next model can
-    // be loaded from it. One-shot -p runs and tooling modes (--caps,
-    // --quantize, --bench-json) deliberately raise nothing: a two-second
-    // process should not leave a menu-bar icon behind it.
-    //
-    // A terminal on EITHER stdin or stdout counts as "a person launched this".
-    // Requiring both, the way the bare-invocation guard above does, would drop
-    // the most ordinary case there is — `runner --serve > server.log` — while
-    // CI and pipes typically have neither and stay unaffected. --no-tray is the
-    // explicit escape for a wrapper that wants the guarantee in writing.
-#if defined(__APPLE__) || defined(_WIN32)
-    if (!no_tray && (serve || interactive) &&
-        (RUNNER_TTY(stdin) || RUNNER_TTY(stdout)))
-        tray_ensure_running();
-#else
-    (void)no_tray;
-#endif
-
     // The sampler's xorshift64 has a fixed point at state 0: it stays 0 and
     // every draw comes back 0.0. So 0 is not a usable seed — but the old
     // `if (rng == 0) rng = time(...)` said that by silently substituting the
@@ -1624,6 +1605,37 @@ int main(int argc, char **argv) {
         // A multi-model swap set cannot honour one global template; server_run
         // refuses that combination, where the parsed entry count is known.
     }
+
+    // The tray follows a session a person will sit with — a server or an
+    // interactive chat — and is left running afterwards so the next model can
+    // be loaded from it. One-shot -p runs and tooling modes (--caps,
+    // --quantize, --bench-json) deliberately raise nothing: a two-second
+    // process should not leave a menu-bar icon behind it.
+    //
+    // A terminal on EITHER stdin or stdout counts as "a person launched this".
+    // Requiring both, the way the bare-invocation guard above does, would drop
+    // the most ordinary case there is — `runner --serve > server.log` — while
+    // CI and pipes typically have neither and stay unaffected. --no-tray is the
+    // explicit escape for a wrapper that wants the guarantee in writing.
+    //
+    // It sits HERE, after every argument check a serve or interactive run can
+    // still fail, rather than up beside the mode guard where it used to.
+    // Raised earlier it outlived the process that raised it: `-s 0`, a
+    // yarn-factor conflict and an unknown --chat-template all refuse AFTER
+    // that point, and the detached tray they had already spawned held the
+    // executable open against the next relink. That is the "two-second
+    // process" the paragraph above says must not leave an icon behind, and it
+    // was leaving one. The bound stops at argument checks on purpose: a run
+    // that fails LATER, when a model or a draft will not load, still raises
+    // one, because moving past that would delay the icon by a whole model
+    // load for every run that works (suite plan R8.7.6).
+#if defined(__APPLE__) || defined(_WIN32)
+    if (!no_tray && (serve || interactive) &&
+        (RUNNER_TTY(stdin) || RUNNER_TTY(stdout)))
+        tray_ensure_running();
+#else
+    (void)no_tray;
+#endif
 
     if (context_out) {
         if (quant_out || merge_out || prune_experts || type_plan || quant_type ||
