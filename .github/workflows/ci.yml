@@ -1,6 +1,9 @@
 name: ci
 
 on:
+  # runnable on demand, on any branch: windows-suite is off the pull-request
+  # path, so without this the only way to exercise it is to merge and find out
+  workflow_dispatch:
   schedule:
     # 04:23 UTC daily, for the jobs that are too slow to sit on a pull request
     # but whose absence is what let the Windows suite rot for nineteen days

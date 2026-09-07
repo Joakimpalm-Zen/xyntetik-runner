@@ -20,6 +20,12 @@
 // occupies [0, e->pos). engine_rewind and the prefix cache both trust that,
 // and it used to be false on the context-overflow path.
 #include "runner.h"
+#include "compat.h"
+
+#ifdef _WIN32
+#include <io.h>
+#include <windows.h>
+#endif
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -352,8 +358,50 @@ static bool flip_unsampled_weight_byte(const char *path) {
     if (fseek(f, off, SEEK_SET) != 0) { fclose(f); return false; }
     unsigned char b = (unsigned char)c ^ 1u;
     bool ok = fwrite(&b, 1, 1, f) == 1;
+    // Commit it before anyone asks the OS about the file. NTFS updates a
+    // directory entry's last-write time lazily, so a fresh handle opened
+    // right after this can still read the pre-edit timestamp -- and the
+    // identity this test is about is built from that timestamp. Flushing
+    // makes the test ask about the engine rather than about how busy the
+    // filesystem was.
+    if (ok) ok = fflush(f) == 0;
+#ifdef _WIN32
+    if (ok) {
+        HANDLE h = (HANDLE)_get_osfhandle(_fileno(f));
+        if (h != INVALID_HANDLE_VALUE) FlushFileBuffers(h);
+    }
+#endif
     fclose(f);
     return ok;
+}
+
+// Windows stamps a file's last-write time from the cached system time, which
+// advances on the timer tick (about 15.6 ms), so two writes inside one tick
+// share a timestamp to the last bit. The identity is (size, file index,
+// mtime, ctime) and an in-place edit moves only the write time, so an edit
+// made in the same tick as the copy that preceded it is invisible to it.
+//
+// That is a fact about the clock, not about the engine, and it is why this
+// check passed on one Windows machine and failed on a faster one: on the
+// slower box the model load between the copy and the edit crossed a tick.
+// Edit, then wait for the stamp to actually move, writing again if the wait
+// alone did not do it. What is being tested is whether the engine notices a
+// file whose recorded state has changed.
+static bool edit_until_the_stamp_moves(const char *path) {
+    uint64_t sz = 0, ino = 0;
+    int64_t before = 0, ct = 0;
+    if (!model_file_identity(path, NULL, &sz, &ino, &before, &ct)) return false;
+    for (int attempt = 0; attempt < 20; attempt++) {
+        if (!flip_unsampled_weight_byte(path)) return false;
+        for (int wait = 0; wait < 10; wait++) {
+            int64_t now = 0;
+            if (model_file_identity(path, NULL, &sz, &ino, &now, &ct) &&
+                now != before)
+                return true;
+            plat_sleep_ms(5);
+        }
+    }
+    return false;
 }
 
 static void test_key_changes_after_in_place_weight_edit(void) {
@@ -376,12 +424,29 @@ static void test_key_changes_after_in_place_weight_edit(void) {
     uint64_t old_key = before.e.model_key;
     slot_close(&before);
 
-    ck(flip_unsampled_weight_byte(tmp), "edit an unsampled weight byte in place");
+    ck(edit_until_the_stamp_moves(tmp),
+       "edit an unsampled weight byte in place, and see the stamp move");
 
     slot after;
     if (slot_open(&after, &p)) {
-        ck(after.e.model_key != old_key,
-           "model identity changes after an in-place weight edit");
+        bool changed = after.e.model_key != old_key;
+        if (!changed) {
+            // Name what the OS actually reported rather than leaving the
+            // reader to guess which of the four inputs went stale. The
+            // identity is (size, file index, mtime, ctime); a byte edited in
+            // place moves none of them except the write time.
+            uint64_t sz = 0, ino = 0;
+            int64_t mt = 0, ct = 0;
+            if (model_file_identity(tmp, NULL, &sz, &ino, &mt, &ct))
+                fprintf(stderr, "  identity after the edit: size=%llu "
+                        "ino=%llu mtime=%lld ctime=%lld (key unchanged at "
+                        "%llu)\n", (unsigned long long)sz,
+                        (unsigned long long)ino, (long long)mt, (long long)ct,
+                        (unsigned long long)old_key);
+            else
+                fprintf(stderr, "  model_file_identity() refused the file\n");
+        }
+        ck(changed, "model identity changes after an in-place weight edit");
         slot_close(&after);
     } else {
         ck(0, "load identity fixture after edit");

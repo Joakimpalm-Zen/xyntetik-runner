@@ -1,0 +1,22 @@
+# Files whose BYTES are the point.
+#
+# git's Windows checkout translates LF to CRLF for anything it decides is
+# text, which changes the bytes on disk. Most of the time that is harmless.
+# It is not harmless where a test asserts a sha256, because the file then
+# fails to be itself on one platform and passes on another -- which is what
+# stopped the suite the first time it ran on a GitHub Windows runner
+# (2026-09-07), with the external boundary bank hashing to the wrong value
+# through no fault of anyone who touched it.
+#
+# `-text` means: never translate, in either direction. The rule is narrow on
+# purpose. A file belongs here when something compares it byte for byte,
+# not merely because it is data.
+
+# The John6666 boundary bank, asserted byte-for-byte against upstream
+# (tests/test_tool_choice_boundary.py::test_bank_is_the_upstream_bank_byte_for_byte).
+scripts/tool-choice-boundary-bank.jsonl -text
+
+# Fuzz corpora and crash reproductions are raw byte sequences by definition;
+# a translated one is a different input and stops reproducing what it was
+# saved for.
+tests/fuzz/corpus/** -text

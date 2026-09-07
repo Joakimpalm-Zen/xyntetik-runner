@@ -129,9 +129,20 @@ def record(doc, cls_id, ran, result, caps_path, evidence, now):
                 "refusing to record %s: --caps came from the wrong machine (%s)"
                 % (cls_id, ", ".join("%s is %r, expected %r" % (k, got, exp)
                                      for k, (got, exp) in wrong.items())))
-    commit = subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT,
-                            stdout=subprocess.PIPE, text=True,
-                            check=True).stdout.strip()
+    # The commit is provenance, not the point: the row's claim is that THIS
+    # machine ran THAT command and passed, which the caps fingerprint and the
+    # date carry. A recording made where git is not on PATH (an msys2 shell
+    # without it, a release tarball) records a null commit and says so, rather
+    # than refusing to record anything at all.
+    commit = None
+    try:
+        r = subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT,
+                           stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                           text=True)
+        if r.returncode == 0:
+            commit = r.stdout.strip() or None
+    except (OSError, subprocess.SubprocessError):
+        commit = None
     cls["last_verified"] = {
         "date": now.isoformat(),
         "commit": commit,

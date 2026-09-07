@@ -36,6 +36,22 @@ SOURCES = {
 }
 
 
+def _normalized(data: bytes) -> bytes:
+    """Line endings are the checkout's business, not staleness.
+
+    The embed scripts always write LF (`newline="\n"`), while a Windows
+    checkout with core.autocrlf=true has the COMMITTED header on disk as
+    CRLF. Comparing raw bytes then reports permanent drift on any such
+    machine, which is what it did the first time this suite ran on a
+    GitHub Windows runner: two headers whose content is identical and whose
+    line endings are not.
+
+    Normalizing cannot hide the thing this check is for. A source that
+    actually changed produces different CONTENT, and content survives this.
+    """
+    return data.replace(b"\r\n", b"\n")
+
+
 def check(script: str, header: str) -> bool:
     committed = os.path.join(ROOT, header)
     if not os.path.exists(committed):
@@ -52,9 +68,9 @@ def check(script: str, header: str) -> bool:
         subprocess.run([sys.executable, os.path.join(ROOT, "scripts", script)],
                        check=True, cwd=ROOT, env=env, stdout=subprocess.DEVNULL)
         with open(tmp_path, "rb") as f:
-            regenerated = f.read()
+            regenerated = _normalized(f.read())
         with open(committed, "rb") as f:
-            on_disk = f.read()
+            on_disk = _normalized(f.read())
     finally:
         os.unlink(tmp_path)
     if regenerated != on_disk:
