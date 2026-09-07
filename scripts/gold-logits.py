@@ -98,7 +98,18 @@ def main():
 
     text = open(args.corpus, encoding="utf-8").read()
     ids = tok(text, add_special_tokens=False)["input_ids"]
-    span = ids[: args.min_prefix + args.max_positions * args.stride + 1]
+    body = ids[: args.min_prefix + args.max_positions * args.stride + 1]
+    # The serving endpoints tokenize the prefix TEXT, so a family whose
+    # tokenizer prepends BOS gives the model one more token than a reference
+    # scored on the bare ids. Measured 2026-09-07: without this the gemma-3,
+    # gemma-4 and Phi-3.5 rows read mean KL around 2 to 5 with both engines
+    # agreeing with each other and disagreeing with the reference, which is
+    # the signature of a broken instrument rather than a broken engine
+    # (qwen3 and granite, whose tokenizers add nothing, read 0.0000). The
+    # special prefix is taken from the tokenizer itself and prepended once;
+    # position `pos` of the body is then row len(special) + pos - 1.
+    special = tok("", add_special_tokens=True)["input_ids"]
+    span = list(special) + list(body)
     with torch.no_grad():
         out = model(torch.tensor([span]))
     logp = torch.log_softmax(out.logits[0].float(), dim=-1)
@@ -109,12 +120,12 @@ def main():
         sides.append(("b", args.endpoint_b, args.model_name_b))
     for n in range(args.max_positions):
         pos = args.min_prefix + n * args.stride
-        prefix = tok.decode(span[:pos])
+        prefix = tok.decode(body[:pos])
         # the decoded prefix must re-tokenize to the same ids, or the sides
         # would be scored on different contexts
-        if tok(prefix, add_special_tokens=False)["input_ids"] != span[:pos]:
+        if tok(prefix, add_special_tokens=False)["input_ids"] != body[:pos]:
             continue
-        top = torch.topk(logp[pos - 1], args.top_n)
+        top = torch.topk(logp[len(special) + pos - 1], args.top_n)
         gold = {tok.decode([int(i)]): float(v) for v, i in zip(top.values, top.indices)}
         gold_top1 = tok.decode([int(top.indices[0])])
         row = {"pos": pos, "gold_top1": gold_top1, "gold_margin":
@@ -131,6 +142,7 @@ def main():
 
     summary = {"positions": len(rows), "hf": args.hf, "corpus": args.corpus,
                "reference_class": type(model).__name__,
+               "special_prefix_tokens": len(special),
                "reference_dtype": "float32", "reference_device": "cpu",
                "sides": {}}
     for name, ep, mn in sides:
