@@ -30,6 +30,7 @@ nav: runner
       <div class="card accent">
         <h3>What Runner does</h3>
         <p>Runner is already constraining the call to the tool's JSON schema as it decodes. When the budget expires, it emits the smallest schema-legal ending for the document that has been started, marks <code>finish_reason: "length"</code> so the caller knows the budget was hit, and returns a <code>tool_calls</code> entry whose arguments parse. The agent gets an executable call and a truthful signal, and continues.</p>
+        <p class="mt-2">"Arguments parse" is a bound the engine holds, not a hope. The streaming validator refuses to nest a document deeper than the parser can read back, so a close can never produce something the engine itself would reject. That was not always true: the fuzzer found a band where the two disagreed, and the fix was to make the validator refuse early rather than to widen the parser, because refusing is the direction that cannot ship a broken document.</p>
       </div>
     </div>
   </div>
