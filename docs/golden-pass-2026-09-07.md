@@ -335,13 +335,17 @@ Both halves matter, so both are stated.
   both engines sit 0.06 to 0.35 from the reference and are separated from
   each other by 0.004 to 0.008. The runner is the closer engine on that
   measure; it is not a close engine.
-- The comparative claim on the landing page. It read that the runner
+- The whole accuracy pitch on the landing page. It read that the runner
   "comes out the closer of the two engines", which was true of the
   measure this report led with and not of the measure this project gates
-  on. It was removed from the hero the same day this column was added,
-  and the comparison now lives on the evidence page with both columns
-  beside it. The lesson is the ordinary one: the metric that flatters you
-  is the one you must publish last, not first.
+  on. The comparative clause went first, and then the owner removed the
+  paragraph outright the same day: a claim that needs a column selected
+  to hold is not a reason anyone lands on the page. The hero is back to
+  what the runner is and what it records; the accuracy comparison lives
+  on the evidence page with both columns beside it, where a reader who
+  wants it can weigh it. The lesson is the ordinary one, and it has two
+  halves: the metric that flatters you is published last, and a claim
+  that only survives one metric does not belong in the first screen.
 - Three rows where the runner is behind: afmoe at its served quant and on
   top-1 at both, Gemma 4 E2B at Q4_0, and `stablelm` badly.
 - Roughly a day of measurement to three harness faults, one of which
