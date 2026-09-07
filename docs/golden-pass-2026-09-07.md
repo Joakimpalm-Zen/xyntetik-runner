@@ -170,33 +170,35 @@ often the engine picks the reference's token. `bf16` is the publisher's
 own weights converted without quantization, so it isolates arithmetic;
 `served` is the quantized file the manifest pins.
 
-| family | weights | runner KL | runner top-1 | llama.cpp KL | llama.cpp top-1 |
-|---|---|---|---|---|---|
-| SmolLM2 135M | bf16 | **0.0000** | 100% | 0.0168 | 100% |
-| SmolLM2 135M | Q8_0 | **0.0095** | 98.98% | 0.0338 | 95.92% |
-| Qwen2.5 0.5B | bf16 | **0.0004** | 100% | 0.0017 | 100% |
-| Qwen2.5 0.5B | Q4_K_M | **0.0694** | 88% | 0.0762 | 87% |
-| Qwen3 0.6B | bf16 | **0.0000** | 100% | 0.0009 | 100% |
-| Qwen3 0.6B | Q4_0 | **0.3535** | 58% | 0.3582 | 58% |
-| Qwen3 4B | bf16 | **0.0000** | 100% | 0.0002 | 100% |
-| Qwen3 4B | Q4_K_M | **0.1278** | 81% | 0.1315 | 82% |
-| Qwen3.5 0.8B | bf16 | **0.0015** | 100% | 0.0023 | 99% |
-| Qwen3.5 0.8B | Q4_K_M | **0.0659** | 87% | 0.0730 | 89% |
-| Granite 4.0-h micro | bf16 | **0.0000** | 100% | 0.0005 | 100% |
-| Granite 4.0-h micro | Q4_K_M | **0.1006** | 78% | 0.1078 | 79% |
-| Gemma 3 4B | bf16 | **0.0000** | 100% | 0.0001 | 100% |
-| Gemma 3 4B | Q4_K_M | **0.0607** | 85% | 0.0685 | 81% |
-| Trinity Nano (afmoe) | bf16 | 0.1100 | 81.82% | **0.1105** | 83.84% |
-| Trinity Nano (afmoe) | Q8_0 | 0.1491 | 80% | **0.1223** | 82% |
-| Gemma 4 E2B | bf16 | **0.0009** | 100% | 0.0012 | 100% |
-| Gemma 4 E2B | Q4_0 | 0.8558 | 61% | **0.8252** | 62% |
-| Apertus 8B | Q4_K_M | **0.0467** | 90% | 0.0849 | 84% |
-| Nemotron Nano 9B v2 | bf16 | **0.0027** | 98% | 0.0031 | 98% |
-| Nemotron Nano 9B v2 | Q8_0 | **0.0041** | 97% | 0.0054 | 95% |
-| StableLM 2 1.6B | bf16 | 0.6099 | 55% | **0.0007** | **100%** |
+| family | weights | runner KL | runner top-1 | runner mq | llama.cpp KL | llama.cpp top-1 | llama.cpp mq |
+|---|---|---|---|---|---|---|---|
+| SmolLM2 135M | bf16 | **0.0000** | 100% | 100.0% | 0.0168 | 100% | 100.0% |
+| SmolLM2 135M | Q8_0 | **0.0095** | 98.98% | 100.0% | 0.0338 | 95.92% | 100.0% |
+| Qwen2.5 0.5B | bf16 | **0.0004** | 100% | 100.0% | 0.0017 | 100% | 100.0% |
+| Qwen2.5 0.5B | Q4_K_M | **0.0694** | 88% | **98.4%** | 0.0762 | 87% | 96.7% |
+| Qwen3 0.6B | bf16 | **0.0000** | 100% | 100.0% | 0.0009 | 100% | 100.0% |
+| Qwen3 0.6B | Q4_0 | **0.3535** | 58% | 69.8% | 0.3582 | 58% | 69.8% |
+| Qwen3 4B | bf16 | **0.0000** | 100% | 100.0% | 0.0002 | 100% | 100.0% |
+| Qwen3 4B | Q4_K_M | **0.1278** | 81% | **94.4%** | 0.1315 | 82% | 93.1% |
+| Qwen3.5 0.8B | bf16 | **0.0015** | 100% | 100.0% | 0.0023 | 99% | 100.0% |
+| Qwen3.5 0.8B | Q4_K_M | **0.0659** | 87% | 98.4% | 0.0730 | 89% | 98.4% |
+| Granite 4.0-h micro | bf16 | **0.0000** | 100% | 100.0% | 0.0005 | 100% | 100.0% |
+| Granite 4.0-h micro | Q4_K_M | **0.1006** | 78% | 88.1% | 0.1078 | 79% | **89.6%** |
+| Gemma 3 4B | bf16 | **0.0000** | 100% | 100.0% | 0.0001 | 100% | 100.0% |
+| Gemma 3 4B | Q4_K_M | **0.0607** | 85% | **91.4%** | 0.0685 | 81% | 88.9% |
+| Trinity Nano (afmoe) | bf16 | 0.1100 | 81.82% | 92.2% | **0.1105** | 83.84% | **93.8%** |
+| Trinity Nano (afmoe) | Q8_0 | 0.1491 | 80% | 90.8% | **0.1223** | 82% | **93.8%** |
+| Gemma 4 E2B | bf16 | **0.0009** | 100% | 100.0% | 0.0012 | 100% | 100.0% |
+| Gemma 4 E2B | Q4_0 | 0.8558 | 61% | 67.9% | **0.8252** | 62% | **69.0%** |
+| Apertus 8B | Q4_K_M | **0.0467** | 90% | **97.1%** | 0.0849 | 84% | 92.9% |
+| Nemotron Nano 9B v2 | bf16 | **0.0027** | 98% | 100.0% | 0.0031 | 98% | 100.0% |
+| Nemotron Nano 9B v2 | Q8_0 | **0.0041** | 97% | 100.0% | 0.0054 | 95% | 100.0% |
+| StableLM 2 1.6B | bf16 | 0.6099 | 55% | 67.1% | **0.0007** | **100%** | **100.0%** |
 
 Granite 4.2 3B, measured the day before under the same gate, reads 0.0016
-at bf16 with top-1 100% and is the closer engine at Q4_K_M.
+at bf16 with top-1 100%. At Q4_K_M it has the lower KL, 0.109 against
+0.115, and it loses both of the other two columns: see "The column this
+report nearly buried" below.
 
 **The pattern holds and it is narrow.** The runner is the closer engine on
 **ten of eleven** families at bf16 and **nine of eleven** at the served
@@ -211,14 +213,65 @@ absolute terms, and at the quant people actually serve, quantization
 dominates both engines by one to two orders of magnitude: on Qwen3 4B the
 two engines sit 0.128 and 0.132 from the reference, a gap of 0.004
 between them inside a 0.13 gap to the model. The honest form of the
-public claim is that the runner is the closer of the two engines, not
-that it is close to the model at 4 bits.
+public claim is that the runner is the closer of the two engines *on
+this measure*, not that it is close to the model at 4 bits, and not that
+it is the more accurate engine at the token a user receives. The next
+section is why that last qualifier is there.
 
 **And three rows go the other way.** Trinity Nano (afmoe) at its served
 Q8_0, 0.1223 against the runner's 0.1491, with better top-1 at both
 weights; Gemma 4 E2B at Q4_0, 0.8252 against 0.8558; and `stablelm`,
 which is not a near-miss but a defect and has its own section below.
 Recorded, not smoothed over.
+
+### The column this report nearly buried
+
+Every sentence above is about mean KL, and mean KL is the measure that
+favours the runner. This project's own quality bar is not mean KL. It is
+**margin-qualified top-1**: the share of positions where the reference
+had a clear preference (its top two tokens separated by more than the
+0.5-nat tie band) and the engine picked it. That column was measured in
+every run and it was left out of the first draft of this table. It is in
+the table now, and it does not tell the same story.
+
+On the 22 rows above, margin-qualified top-1 splits **four to the runner,
+five to llama.cpp, thirteen tied**. The runner takes Qwen2.5 0.5B,
+Qwen3 4B and Gemma 3 4B at Q4_K_M and Apertus 8B; llama.cpp takes
+Granite 4.0-h micro at Q4_K_M, Trinity Nano at both weights, Gemma 4 E2B
+at Q4_0, and StableLM. Every one of the thirteen ties is a row where both
+engines score 100% except Qwen3 0.6B at Q4_0 and Qwen3.5 0.8B at Q4_K_M,
+so the disagreements are the whole signal.
+
+The two measures disagree for a reason that is worth stating rather than
+explaining away. The runner's f32 activations and f32 attention
+accumulation move the *whole distribution* slightly closer to the
+reference, which is what mean KL rewards. They do not reliably change
+*which token comes out on top*, which is what a user sees and what
+margin-qualified top-1 measures. A defensible claim from this table is
+that the runner reproduces the reference distribution more closely. The
+claim that it is the more accurate engine at the token a user receives
+is not supported by these 22 rows.
+
+**Flash attention makes it narrower still.** llama.cpp was run here with
+its flash-attention kernel off, on the reasoning that the f16 accumulation
+in that kernel is one of the shortcuts this report is about. At 4 bits
+that reasoning is wrong in llama.cpp's favour: turning the kernel on
+improves it. The Granite 4.2 3B certification of 2026-09-06 measured all
+three configurations on the same file.
+
+| weights | engine | mean KL | top-1 | margin-qualified |
+|---|---|---|---|---|
+| Q4_K_M | runner | **0.109** | 87.9% | 94.7% |
+| Q4_K_M | llama.cpp `-fa off` | 0.119 | 85.9% | **97.3%** |
+| Q4_K_M | llama.cpp `-fa on` | 0.115 | **88.9%** | **97.3%** |
+
+With flash attention on, llama.cpp is ahead of the runner on top-1 and on
+margin-qualified, and it clears this project's own 97% bar on that family
+at that quant while the runner does not. The runner keeps only the mean
+KL column. The 22-row table above therefore reports llama.cpp in its
+weaker 4-bit configuration, and re-running the served tier with
+`-fa on` is filed as R6.7.7 before any of these numbers are quoted
+comparatively again.
 
 ### StableLM is wrong, and this is the pass's most important result
 
@@ -256,11 +309,11 @@ Both halves matter, so both are stated.
 
 **Gained.**
 
-- A measured, repeatable statement of the thing the site now claims: on
-  unquantized weights the runner reproduces seven publishers' own
-  implementations to 0.0000 or near it, and is the closer of the two
-  engines on every one of those families. That was one family yesterday
-  and is eight today.
+- A measured, repeatable statement of what the runner's arithmetic
+  actually does: on unquantized weights it reproduces seven publishers'
+  own implementations to 0.0000 or near it, and has the lower KL from
+  the reference on every one of those families. That was one family
+  yesterday and is eight today.
 - Ten genuine chat-template defects across four mechanisms, none of which
   any engine-to-engine comparison could have surfaced, on families that
   were all considered admitted. One of them, Qwen 3.5, is what the
@@ -280,9 +333,15 @@ Both halves matter, so both are stated.
   fine, they are unmeasured. The word did less work than it appeared to.
 - Any claim to be close to the model at the quant people serve. At 4 bits
   both engines sit 0.06 to 0.35 from the reference and are separated from
-  each other by 0.004 to 0.008. The runner is the closer engine; it is
-  not a close engine. The hero sentence on the site is defensible as
-  written, and the evidence page should carry this caveat beside it.
+  each other by 0.004 to 0.008. The runner is the closer engine on that
+  measure; it is not a close engine.
+- The comparative claim on the landing page. It read that the runner
+  "comes out the closer of the two engines", which was true of the
+  measure this report led with and not of the measure this project gates
+  on. It was removed from the hero the same day this column was added,
+  and the comparison now lives on the evidence page with both columns
+  beside it. The lesson is the ordinary one: the metric that flatters you
+  is the one you must publish last, not first.
 - Three rows where the runner is behind: afmoe at its served quant and on
   top-1 at both, Gemma 4 E2B at Q4_0, and `stablelm` badly.
 - Roughly a day of measurement to three harness faults, one of which

@@ -98,24 +98,33 @@ that is what this runtime is for.
 In one sentence: **Runner is slower on purpose.** It does the model's
 arithmetic without the shortcuts faster engines take (activations stay
 f32 instead of being rounded to 8 bits, attention accumulates in f32
-instead of f16), so it can prove exactly what it produced and, measured
-against the model makers' own code, comes out the closer of the two
-engines.
+instead of f16), so it can prove exactly what it produced.
 
-That second half is measured, and its size is worth stating plainly.
-Across eleven families scored against their publishers' implementations
-in float32 on 2026-09-07, Runner is the closer engine on ten of eleven
-with unquantized weights and nine of eleven at the pinned quant, usually
-reproducing the reference to the noise of its own float arithmetic. But
-the margin is small next to what quantization costs: at 4 bits both
-engines sit roughly 0.06 to 0.35 from the reference and are separated
-from each other by 0.004 to 0.008. Runner is the closer of the two
-engines; it is not a close engine. And it does not hold everywhere:
-Trinity Nano is closer on the other engine, and **StableLM is a defect on
-our side**, where the other engine reproduces the reference almost
-exactly and Runner does not. That architecture was named as supported
-here with no pinned file and therefore no gate, which is how it survived;
-it is being fixed and it is written down first. Evidence:
+Whether that arithmetic also makes Runner the *more accurate* engine
+depends on which measure you read, and both measures belong on this
+page. Across eleven families scored against their publishers'
+implementations in float32 on 2026-09-07, Runner has the lower KL
+divergence from the reference on ten of eleven with unquantized weights
+and nine of eleven at the pinned quant. On margin-qualified top-1, which
+is the bar this project sets for itself, the same runs split five to
+Runner, seven to the other engine and fourteen tied. The two measures
+disagree because Runner's edge is a small shift across the whole
+distribution while the other engine's is in which token ends up on top,
+and it is the second one a user notices.
+
+Three things make the honest reading narrower still. The KL margin is
+small next to what quantization costs: at 4 bits both engines sit
+roughly 0.06 to 0.35 from the reference and are separated from each
+other by 0.004 to 0.008. The golden pass scored the other engine with
+its flash-attention kernel off, which is its weaker configuration at 4
+bits; with that kernel on, the Granite 4.2 3B certification puts it at
+97.3% margin-qualified against Runner's 94.7%, so it clears our own bar
+there and Runner does not. And **StableLM is a defect on our side**,
+where the other engine reproduces the reference almost exactly and
+Runner does not: that architecture was named as supported here with no
+pinned file and therefore no gate, which is how it survived. Trinity
+Nano also goes to the other engine on both measures. All of it is being
+fixed and all of it is written down first. Evidence:
 [docs/golden-pass-2026-09-07.md](docs/golden-pass-2026-09-07.md).
 
 ### Designed to stay on

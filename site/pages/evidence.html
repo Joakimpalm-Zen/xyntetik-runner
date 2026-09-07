@@ -290,29 +290,39 @@ nav: evidence
       <p>Runner does the model's arithmetic without the shortcuts faster engines take: activations stay in 32-bit float instead of being rounded to 8 bits before every multiply, and attention accumulates in 32-bit float instead of 16. That costs speed where prefill is compute-bound. To see what it buys, the yardstick is the model publisher's own reference implementation run in full precision, not a second engine that may have taken the same shortcuts.</p>
     </div>
     <details class="table-view" open>
-      <summary>Eleven families against their publishers' implementations in float32, 100 corpus positions each, measured 2026-09-07</summary>
+      <summary>Eleven families against their publishers' implementations in float32, both tiers, 100 corpus positions each, measured 2026-09-07</summary>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>family</th><th>weights</th><th>Runner, mean KL from the reference</th><th>the faster engine</th></tr></thead>
+          <thead><tr><th>family</th><th>weights</th><th>Runner, mean KL</th><th>other engine, mean KL</th><th>Runner, margin-qualified top-1</th><th>other engine, margin-qualified top-1</th></tr></thead>
           <tbody>
-            <tr><td>SmolLM2 135M</td><td>bf16</td><td class="num">0.0000</td><td class="num">0.0168</td></tr>
-            <tr><td>Qwen2.5 0.5B</td><td>bf16</td><td class="num">0.0004</td><td class="num">0.0017</td></tr>
-            <tr><td>Qwen3 0.6B</td><td>bf16</td><td class="num">0.0000</td><td class="num">0.0009</td></tr>
-            <tr><td>Qwen3 4B</td><td>bf16</td><td class="num">0.0000</td><td class="num">0.0002</td></tr>
-            <tr><td>Qwen3.5 0.8B</td><td>bf16</td><td class="num">0.0015</td><td class="num">0.0023</td></tr>
-            <tr><td>Granite 4.0-h micro</td><td>bf16</td><td class="num">0.0000</td><td class="num">0.0005</td></tr>
-            <tr><td>Gemma 3 4B</td><td>bf16</td><td class="num">0.0000</td><td class="num">0.0001</td></tr>
-            <tr><td>Gemma 4 E2B</td><td>bf16</td><td class="num">0.0009</td><td class="num">0.0012</td></tr>
-            <tr><td>Nemotron Nano 9B v2</td><td>bf16</td><td class="num">0.0027</td><td class="num">0.0031</td></tr>
-            <tr><td>Apertus 8B</td><td>Q4_K_M</td><td class="num">0.0467</td><td class="num">0.0849</td></tr>
-            <tr><td>Trinity Nano</td><td>Q8_0</td><td class="num">0.1491</td><td class="num">0.1223</td></tr>
-            <tr><td>StableLM 2 1.6B</td><td>bf16</td><td class="num">0.6099</td><td class="num">0.0007</td></tr>
+            <tr><td>SmolLM2 135M</td><td>bf16</td><td class="num">0.0000</td><td class="num">0.0168</td><td class="num">100%</td><td class="num">100%</td></tr>
+            <tr><td>SmolLM2 135M</td><td>Q8_0</td><td class="num">0.0095</td><td class="num">0.0338</td><td class="num">100%</td><td class="num">100%</td></tr>
+            <tr><td>Qwen2.5 0.5B</td><td>bf16</td><td class="num">0.0004</td><td class="num">0.0017</td><td class="num">100%</td><td class="num">100%</td></tr>
+            <tr><td>Qwen2.5 0.5B</td><td>Q4_K_M</td><td class="num">0.0694</td><td class="num">0.0762</td><td class="num">98.4%</td><td class="num">96.7%</td></tr>
+            <tr><td>Qwen3 0.6B</td><td>bf16</td><td class="num">0.0000</td><td class="num">0.0009</td><td class="num">100%</td><td class="num">100%</td></tr>
+            <tr><td>Qwen3 0.6B</td><td>Q4_0</td><td class="num">0.3535</td><td class="num">0.3582</td><td class="num">69.8%</td><td class="num">69.8%</td></tr>
+            <tr><td>Qwen3 4B</td><td>bf16</td><td class="num">0.0000</td><td class="num">0.0002</td><td class="num">100%</td><td class="num">100%</td></tr>
+            <tr><td>Qwen3 4B</td><td>Q4_K_M</td><td class="num">0.1278</td><td class="num">0.1315</td><td class="num">94.4%</td><td class="num">93.1%</td></tr>
+            <tr><td>Qwen3.5 0.8B</td><td>bf16</td><td class="num">0.0015</td><td class="num">0.0023</td><td class="num">100%</td><td class="num">100%</td></tr>
+            <tr><td>Qwen3.5 0.8B</td><td>Q4_K_M</td><td class="num">0.0659</td><td class="num">0.0730</td><td class="num">98.4%</td><td class="num">98.4%</td></tr>
+            <tr><td>Granite 4.0-h micro</td><td>bf16</td><td class="num">0.0000</td><td class="num">0.0005</td><td class="num">100%</td><td class="num">100%</td></tr>
+            <tr><td>Granite 4.0-h micro</td><td>Q4_K_M</td><td class="num">0.1006</td><td class="num">0.1078</td><td class="num">88.1%</td><td class="num">89.6%</td></tr>
+            <tr><td>Gemma 3 4B</td><td>bf16</td><td class="num">0.0000</td><td class="num">0.0001</td><td class="num">100%</td><td class="num">100%</td></tr>
+            <tr><td>Gemma 3 4B</td><td>Q4_K_M</td><td class="num">0.0607</td><td class="num">0.0685</td><td class="num">91.4%</td><td class="num">88.9%</td></tr>
+            <tr><td>Gemma 4 E2B</td><td>bf16</td><td class="num">0.0009</td><td class="num">0.0012</td><td class="num">100%</td><td class="num">100%</td></tr>
+            <tr><td>Gemma 4 E2B</td><td>Q4_0</td><td class="num">0.8558</td><td class="num">0.8252</td><td class="num">67.9%</td><td class="num">69.0%</td></tr>
+            <tr><td>Trinity Nano</td><td>bf16</td><td class="num">0.1100</td><td class="num">0.1105</td><td class="num">92.2%</td><td class="num">93.8%</td></tr>
+            <tr><td>Trinity Nano</td><td>Q8_0</td><td class="num">0.1491</td><td class="num">0.1223</td><td class="num">90.8%</td><td class="num">93.8%</td></tr>
+            <tr><td>Apertus 8B</td><td>Q4_K_M</td><td class="num">0.0467</td><td class="num">0.0849</td><td class="num">97.1%</td><td class="num">92.9%</td></tr>
+            <tr><td>Nemotron Nano 9B v2</td><td>bf16</td><td class="num">0.0027</td><td class="num">0.0031</td><td class="num">100%</td><td class="num">100%</td></tr>
+            <tr><td>Nemotron Nano 9B v2</td><td>Q8_0</td><td class="num">0.0041</td><td class="num">0.0054</td><td class="num">100%</td><td class="num">100%</td></tr>
+            <tr><td>StableLM 2 1.6B</td><td>bf16</td><td class="num">0.6099</td><td class="num">0.0007</td><td class="num">67.1%</td><td class="num">100%</td></tr>
           </tbody>
         </table>
       </div>
     </details>
-    <p class="mt-2">Runner is the closer engine on ten of eleven families with unquantized weights and nine of eleven at the quant the manifest pins, and on most of them it reproduces the reference to the noise of its own float arithmetic.</p>
-    <p class="mt-1"><strong>Two things that number does not say.</strong> First, the margin is small next to what quantization costs: at 4 bits both engines sit roughly 0.06 to 0.35 from the reference and are separated from each other by 0.004 to 0.008. Runner is the closer of the two engines; it is not a close engine. Second, it does not hold everywhere. Trinity Nano is closer on the other engine, and <strong>StableLM is a defect on our side</strong>: the other engine reproduces the reference almost exactly and Runner does not. It is named in our own architecture list, it had no pinned file and therefore no gate, and this pass is what found it. It is being fixed, and it is on this page before it is.</p>
+    <p class="mt-2"><strong>Two measures, and they disagree.</strong> On mean KL, which asks how close the whole output distribution is to the reference, Runner is ahead on ten of eleven families with unquantized weights and nine of eleven at the quant the manifest pins. On margin-qualified top-1, which asks how often the engine picks the reference's token when the reference had a clear preference, the same 22 rows split four to Runner, five to the other engine and thirteen tied. Runner's 32-bit arithmetic moves the whole distribution slightly closer to the reference. It does not reliably change which token comes out on top, and that is the one a user sees.</p>
+    <p class="mt-1"><strong>Three things this table does not say.</strong> The margin is small next to what quantization costs: at 4 bits both engines sit roughly 0.06 to 0.35 from the reference and are separated from each other by 0.004 to 0.008. The other engine was run with its flash-attention kernel off, which is its weaker configuration at 4 bits; on Granite 4.2 3B, where all three configurations were measured, turning that kernel on puts it at 97.3% margin-qualified against Runner's 94.7%. And <strong>StableLM is a defect on our side</strong>: the other engine reproduces the reference almost exactly and Runner does not. It is named in our own architecture list, it had no pinned file and therefore no gate, and this pass is what found it. It is being fixed, and it is on this page before it is.</p>
     <p class="small muted mt-1">Method and raw outputs: <a href="{{repo}}/blob/main/docs/golden-pass-2026-09-07.md">docs/golden-pass-2026-09-07.md</a>, the gate <a href="{{repo}}/blob/main/scripts/gold-logits.py">scripts/gold-logits.py</a> (transformers 5.16, float32, eager attention, CPU). Three faults in that harness were found and fixed before any of these numbers counted; they are described in the report. Two families cannot be measured this way yet and are named there rather than scored. The full speed gap is in the benchmark section above, losing rows included.</p>
   </div>
 </section>
