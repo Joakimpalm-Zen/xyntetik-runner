@@ -66,6 +66,56 @@ def kld(gold, other):
     return sum(math.exp(x - gz) * ((x - gz) - (y - oz)) for x, y in zip(g, o))
 
 
+def mcnemar_exact(b, c):
+    """Two-sided exact binomial test on discordant pairs.
+
+    b = positions the first side got right and the second wrong, c the
+    reverse. Concordant positions carry no information. Reported because a
+    percentage-point gap at 100 positions is one or two tokens: measured
+    2026-09-07, every margin-qualified difference in the golden pass except
+    stablelm's had p >= 0.25, our own wins included.
+    """
+    n = b + c
+    if n == 0:
+        return 1.0
+    tail = sum(math.comb(n, k) for k in range(0, min(b, c) + 1))
+    return min(1.0, 2.0 * tail / 2.0 ** n)
+
+
+def wilcoxon_signed_rank(diffs):
+    """Two-sided normal-approximation Wilcoxon on paired per-position KL.
+
+    `diffs` are (side b) - (side a), so a positive statistic means side a is
+    closer to the reference. This uses every position rather than only the
+    ones where the argmax flips, which measured 2026-09-07 gives it roughly
+    ten times the power of the top-1 comparison at the same corpus size.
+    Returns (z, p, n_nonzero) or None when there is too little to test.
+    """
+    d = [x for x in diffs if x != 0.0]
+    n = len(d)
+    if n < 5:
+        return None
+    order = sorted(range(n), key=lambda i: abs(d[i]))
+    ranks = [0.0] * n
+    i = 0
+    while i < n:
+        j = i
+        while j + 1 < n and abs(d[order[j + 1]]) == abs(d[order[i]]):
+            j += 1
+        r = (i + j) / 2.0 + 1.0
+        for k in range(i, j + 1):
+            ranks[order[k]] = r
+        i = j + 1
+    w = sum(ranks[i] for i in range(n) if d[i] > 0)
+    mu = n * (n + 1) / 4.0
+    sd = math.sqrt(n * (n + 1) * (2 * n + 1) / 24.0)
+    if sd == 0:
+        return None
+    z = (w - mu) / sd
+    p = math.erfc(abs(z) / math.sqrt(2.0))
+    return z, p, n
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--hf", required=True, help="HF model directory")
@@ -189,7 +239,28 @@ def main():
                 r[name]["agree"] for r in rows if r["gold_margin"] > 0.5)
             / max(1, sum(1 for r in rows if r["gold_margin"] > 0.5)),
         }
-    report = {"schema_version": "xyntetik.runner.gold-logits.v1",
+    # Whether any of the above is distinguishable from noise. Both sides
+    # see the same positions, so the comparison is paired.
+    if len(sides) == 2:
+        qual = [r for r in rows if r["gold_margin"] > 0.5]
+        a_only = sum(1 for r in qual if r["a"]["agree"] and not r["b"]["agree"])
+        b_only = sum(1 for r in qual if r["b"]["agree"] and not r["a"]["agree"])
+        w = wilcoxon_signed_rank([r["b"]["kld"] - r["a"]["kld"] for r in rows])
+        summary["significance"] = {
+            "qualified_positions": len(qual),
+            "margin_qualified_hits_a": sum(1 for r in qual if r["a"]["agree"]),
+            "margin_qualified_hits_b": sum(1 for r in qual if r["b"]["agree"]),
+            "discordant_a_only": a_only,
+            "discordant_b_only": b_only,
+            "mcnemar_exact_p": mcnemar_exact(a_only, b_only),
+            "kld_wilcoxon_z": None if w is None else w[0],
+            "kld_wilcoxon_p": None if w is None else w[1],
+            "kld_wilcoxon_n": None if w is None else w[2],
+            "verdict": (
+                "not distinguishable" if w is None or w[1] >= 0.05
+                else ("a closer" if w[0] > 0 else "b closer")),
+        }
+    report = {"schema_version": "xyntetik.runner.gold-logits.v2",
               "summary": summary, "rows": rows}
     print(json.dumps(summary, indent=2))
     if args.out:
