@@ -2384,6 +2384,17 @@ bool gpu_mvt(model_t *mm, const gguf_tensor *w, const float *dy, float *dx,
     return false;   // no Metal training path yet
 }
 
+// Metal has no adapter kernels yet: refusing here is what turns --lora on a
+// Metal-offloaded model into a named error instead of a silently unadapted
+// answer (R8.7.2 shipped the CUDA half only).
+bool gpu_lora_bind(model_t *mm) {
+    (void)mm;
+    fprintf(stderr, "error: the Metal backend has no adapter kernels yet, so "
+            "an offloaded block would ignore --lora; run with --gpu off\n");
+    return false;
+}
+void gpu_lora_unbind(model_t *mm) { (void)mm; }
+
 bool gpu_train_init(model_t *mm) { (void)mm; return false; }
 void gpu_train_free(model_t *mm) { (void)mm; }
 bool gpu_train_mvt(model_t *mm, const gguf_tensor *w, const float *dy,

@@ -8,7 +8,7 @@ nav: runner
   <div class="wrap">
     <p class="eyebrow">LoRA training</p>
     <h1>Train the file you actually ship.</h1>
-    <p class="lede">A LoRA adapter is a small set of extra weights that teaches an existing model a task without rewriting the whole model. Runner trains one directly through the quantized GGUF file used for inference, the same 4-bit or 8-bit file you will serve, on the CPU or with the backward on a CUDA device, with no separate full-precision copy and no training framework. Same data, same seed, same configuration: the same adapter, byte for byte.</p>
+    <p class="lede">A LoRA adapter is a small set of extra weights that teaches an existing model a task without rewriting the whole model. Runner trains one directly through the quantized GGUF file used for inference, the same 4-bit or 8-bit file you will serve, on the CPU or on a CUDA device, with no separate full-precision copy and no training framework. Same data, same seed, same configuration: the same adapter, byte for byte.</p>
   </div>
 </section>
 
@@ -101,7 +101,7 @@ nav: runner
     <div class="sticky">
       <p class="eyebrow">Run it</p>
       <h2>Three commands, one binary.</h2>
-      <p>Training is hosted on the CPU. The backward's transposed matvecs run on CUDA behind <code>RUNNER_TRAIN_GPU=1</code>, which since its position grid is the faster arm on a consumer card and writes the same adapter bytes either way: Qwen2.5-7B Q4_K_M at 64.8 s/step against 76.5 on 8 CPU threads, RTX 3070, measured 2026-09-07. The forward pass is still CPU-hosted, so CUDA training end to end is open work. Adapters follow llama.cpp's naming convention in both directions: F16 adapters from <code>convert_lora_to_gguf</code> load, and the adapters Runner writes load in llama.cpp.</p>
+      <p>Serving an adapter runs on the CPU or on CUDA: an offloaded block applies the delta from adapter weights held in VRAM, and the CPU-versus-GPU gap with the adapter is no wider than without it. Metal has no adapter kernels yet and says so instead of quietly ignoring the adapter. Training is hosted on the CPU. The backward's transposed matvecs run on CUDA behind <code>RUNNER_TRAIN_GPU=1</code>, which since its position grid is the faster arm on a consumer card and writes the same adapter bytes either way: Qwen2.5-7B Q4_K_M at 64.8 s/step against 76.5 on 8 CPU threads, RTX 3070, measured 2026-09-07. The forward pass is still CPU-hosted, so CUDA training end to end is open work. Adapters follow llama.cpp's naming convention in both directions: F16 adapters from <code>convert_lora_to_gguf</code> load, and the adapters Runner writes load in llama.cpp.</p>
       <p>Where the numbers come from, with design, gates and failure modes: <a href="{{repo}}/blob/main/docs/adaptation-engine.md">docs/adaptation-engine.md</a>. The reproducibility scope, with what is and is not claimed: <a href="/runner/reproducible-lora-training-receipts/">receipts and the determinism scope</a>. The external boundary bank and its lane: <a href="{{repo}}/blob/main/docs/tool-choice-boundary-lane.md">docs/tool-choice-boundary-lane.md</a>.</p>
     </div>
   </div>

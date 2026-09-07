@@ -38,6 +38,19 @@
 #include <stdlib.h>
 #include <string.h>
 
+// MinGW has no setenv; the two-argument shim is the same idiom
+// tests/test_instances.c uses. Without it this file does not compile on
+// Windows, which is where the CUDA gates run (CI builds Windows but does not
+// run `make test` there, so it went unseen).
+#ifdef _WIN32
+#include <stdlib.h>
+#define setenv_compat(k, v) _putenv_s(k, v)
+#else
+#include <stdlib.h>
+#define setenv_compat(k, v) setenv(k, v, 1)
+#endif
+
+
 enum { STEPS = 24, MAX_TOK = 96, N_BATCH = 32 };
 
 // Prefill batch. Settable because "every forward this backend ever sees is a
@@ -122,7 +135,7 @@ int main(int argc, char **argv) {
     // off; leaving them at their defaults would make it fail by design.
     gpu_tc_force(0);
     gpu_mv_force(0);
-    setenv("RUNNER_METAL_MOE_MM", "0", 1);
+    setenv_compat("RUNNER_METAL_MOE_MM", "0");
 
     gguf_file gf;
     if (!gguf_open(&gf, path)) { fprintf(stderr, "cannot open %s\n", path); return 1; }

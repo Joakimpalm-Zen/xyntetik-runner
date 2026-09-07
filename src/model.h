@@ -759,6 +759,17 @@ bool   model_lora_adam_step(model_t *m, float lr, float beta1, float beta2,
                             float eps, float wd, int step);
 bool   model_lora_save(model_t *m, const char *path);
 void   model_lora_grad_zero(model_t *m);
+// The adapted projection sites, in the order every consumer walks them. A
+// backend applying the adapter itself (cuda.c) needs to name them, so the
+// enum is public rather than private to model.c.
+enum { LW_Q, LW_K, LW_V, LW_O, LW_GATE, LW_UP, LW_DOWN, LW_SLOTS };
+// What a backend needs to apply the adapter at one projection site: the f32
+// A [r][n_in] and B [n_out][r] host buffers, the rank, and the scale already
+// folded to (alpha/r) * user scale. false = no adapter on that (layer, slot),
+// which is the common case and not an error.
+bool   model_lora_slot(const model_t *m, int layer, int slot,
+                       const float **a, const float **b, int *r, float *scale,
+                       int *n_in, int *n_out);
 // FD-test access: the parameter / gradient buffer for (layer, slot, which)
 // where slot indexes [q,k,v,o,gate,up,down] and which is 0=A 1=B; returns
 // NULL if that slot has no adapter. *count = element count.

@@ -5761,7 +5761,6 @@ bool model_recurrent_blob_load(model_t *m, const uint8_t *src) {
 // projections as y += scale * B(Ax) right after each base matvec — the base
 // weights and their kernels are untouched, which is what keeps every existing
 // identity gate meaningful for adapted runs too.
-enum { LW_Q, LW_K, LW_V, LW_O, LW_GATE, LW_UP, LW_DOWN, LW_SLOTS };
 #define LORA_R_MAX 512
 struct lora_w {
     float *a, *b;   // a: [r][n_in] row-major, b: [n_out][r] row-major
@@ -5777,6 +5776,7 @@ static const char *const lora_slot_name[LW_SLOTS] = {
 };
 
 void model_lora_free(model_t *m) {
+    if (m->gpu) gpu_lora_unbind(m);
     if (!m->lora) return;
     for (int l = 0; l < m->n_layer; l++)
         for (int s = 0; s < LW_SLOTS; s++) {
@@ -5840,14 +5840,33 @@ static gguf_tensor *lora_slot_base(const model_t *m, int l, int s) {
     return NULL;
 }
 
+bool model_lora_slot(const model_t *m, int layer, int slot,
+                     const float **a, const float **b, int *r, float *scale,
+                     int *n_in, int *n_out) {
+    if (!m->lora || layer < 0 || layer >= m->n_layer ||
+        slot < 0 || slot >= LW_SLOTS)
+        return false;
+    const struct lora_w *lw = &m->lora[(size_t)layer * LW_SLOTS + slot];
+    if (!lw->r || !lw->a || !lw->b) return false;
+    // the base projection the adapter was validated against at load, which is
+    // where the site's dimensions live; a slot with no base cannot have an
+    // adapter, so this cannot be NULL here
+    const gguf_tensor *w = lora_slot_base(m, layer, slot);
+    if (!w) return false;
+    *a = lw->a;
+    *b = lw->b;
+    *r = lw->r;
+    *scale = lw->scale;
+    *n_in = (int)w->ne[0];
+    *n_out = (int)w->ne[1];
+    return true;
+}
+
 bool model_lora_load(model_t *m, const char *path, float user_scale) {
     // v1 scope, refused by property rather than allowed by accident: the
-    // hooks live on the CPU dense-transformer projection sites only.
-    if (m->gpu) {
-        fprintf(stderr, "error: --lora is CPU-only for now — run with "
-                "--gpu off\n");
-        return false;
-    }
+    // hooks live on the dense-transformer projection sites. The offloaded
+    // half is bound at the end of this function, once the adapter has
+    // parsed, and a backend that cannot apply it refuses there.
     if (m->qwen35 || m->granite_hybrid || m->nemotron_h) {
         fprintf(stderr, "error: --lora does not cover recurrent "
                 "architectures yet (%s)\n", m->arch);
@@ -6013,6 +6032,14 @@ bool model_lora_load(model_t *m, const char *path, float user_scale) {
     fprintf(stderr, "lora: %s — %d adapted projections, alpha %g, "
             "scale x%g\n", path, n_pairs, (double)alpha,
             (double)user_scale);
+    // The offloaded blocks apply the adapter on the device; the host hooks
+    // cover whatever the split left behind. A backend without an adapter
+    // path says so and the load fails, because the alternative is serving a
+    // model that quietly ignored the adapter on most of its layers.
+    if (m->gpu && !gpu_lora_bind(m)) {
+        model_lora_free(m);   // owns tab now; ok stays false
+        goto done;
+    }
     ok = true;
     goto done;
 fail_tab:
