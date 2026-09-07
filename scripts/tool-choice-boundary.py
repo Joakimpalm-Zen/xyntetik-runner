@@ -247,6 +247,10 @@ def cmd_run(args):
         template = open(args.template, encoding="utf-8").read()
         if template.count("%s") != 1:
             sys.exit("--template must contain exactly one %s for the request")
+    # The sha of the template TEXT, not of the file's bytes: the prompt is
+    # built from the decoded string, so two files differing only in line
+    # endings produce the same prompt and must record the same sha. A file
+    # hash would make a record's identity depend on how git checked it out.
     template_sha = hashlib.sha256(template.encode()).hexdigest()
     version = runner_version(args.runner) if args.runner else None
     hashes = {}

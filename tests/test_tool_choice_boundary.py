@@ -194,8 +194,11 @@ def test_run_records_every_prompt_per_condition(runner_bin, model, tmp_path):
         assert x["model"] == "test.gguf"
         assert x["runner_version"].startswith("runner ")
         assert x["tools"] == m.TOOLS
+        # the decoded text, which is what the prompt is built from, not the
+        # file bytes: on Windows write_text() lands CRLF and the two differ
+        # while the prompt does not
         assert x["template_sha256"] == hashlib.sha256(
-            template.read_bytes()).hexdigest()
+            template.read_text().encode()).hexdigest()
         assert isinstance(x["all_decisions"], list)
         assert x["n_decisions"] == len(x["all_decisions"])
         assert "decision" in x and "full_call" in x

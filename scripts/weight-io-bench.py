@@ -38,15 +38,47 @@ import time
 
 DEFAULT_SLICE = 8 * 1024 * 1024
 F_NOCACHE = 48  # <sys/fcntl.h>, macOS only
+# Windows opens in text mode by default, which would translate CRLF inside
+# binary weights and make every byte count a lie rather than an error.
+O_BINARY = getattr(os, "O_BINARY", 0)
 
 
 def page_size():
+    """Fault granularity: what one page fault brings in."""
     return mmap.PAGESIZE
+
+
+def map_alignment():
+    """What a mapping offset must be a multiple of.
+
+    The same as the page size everywhere except Windows, where a mapping
+    starts on a 64 KB allocation granule. Both measured paths use offsets
+    aligned to this, because the comparison is only meaningful if the two
+    read the same regions.
+    """
+    return mmap.ALLOCATIONGRANULARITY
+
+
+if hasattr(os, "pread"):
+    READ_CALL = "pread"
+
+    def positioned_read(fd, want, at):
+        return os.pread(fd, want, at)
+else:
+    # No pread on Windows. A seek plus a read is the same bytes from the same
+    # place for this single-threaded loop; it is one extra syscall per part,
+    # which the output names so a cross-platform diff is not read as a
+    # storage difference.
+    READ_CALL = "lseek+read"
+
+    def positioned_read(fd, want, at):
+        os.lseek(fd, at, os.SEEK_SET)
+        return os.read(fd, want)
 
 
 def open_uncached(path):
     """Open for reading and ask the OS not to cache, where that is supported."""
-    fd = os.open(path, os.O_RDONLY | getattr(os, "O_CLOEXEC", 0))
+    fd = os.open(path, os.O_RDONLY | O_BINARY | getattr(os, "O_CLOEXEC", 0))
     uncached = False
     if sys.platform == "darwin":
         try:
@@ -57,22 +89,35 @@ def open_uncached(path):
     return fd, uncached
 
 
+def map_slice(fd, length, offset):
+    """One read-only private mapping of [offset, offset+length).
+
+    The keyword arguments are not portable: Unix takes flags/prot, Windows
+    takes access. ACCESS_READ is the private read-only mapping on both.
+    """
+    return mmap.mmap(fd, length, access=mmap.ACCESS_READ, offset=offset)
+
+
 def offsets(size, slice_bytes, count, stride_seed):
-    """Deterministic page-aligned offsets that do not repeat or cross EOF.
+    """Deterministic aligned offsets that do not repeat or cross EOF.
 
     Scattered rather than sequential, because a run of adjacent reads lets
     readahead answer most of them and measures the cache instead of the device.
     An odd stride coprime with the position count walks the whole file without
     revisiting one, and stays reproducible so a number can be re-derived.
+
+    Aligned to map_alignment() rather than the page size: the mapped path
+    cannot start anywhere else on Windows, and the two paths have to sample
+    the same offsets for their ratio to mean anything.
     """
     span = size - slice_bytes
     if span <= 0:
         raise SystemExit(
             f"file is {size} B, smaller than one {slice_bytes} B slice")
-    page = page_size()
+    page = map_alignment()
     positions = span // page
     if positions < 1:
-        raise SystemExit("file leaves no page-aligned slice offsets")
+        raise SystemExit("file leaves no aligned slice offsets")
     step = stride_seed % positions or 1
     while positions > 1 and _gcd(step, positions) != 1:
         step += 1
@@ -126,7 +171,7 @@ def measure_read(path, slice_bytes, samples, warmup, stride_seed, parts):
                 want = part_bytes
                 at = offset + part * part_bytes
                 while want:
-                    chunk = os.pread(fd, want, at)
+                    chunk = positioned_read(fd, want, at)
                     if not chunk:
                         raise SystemExit(f"short read at offset {at}")
                     buffer[got:got + len(chunk)] = chunk
@@ -139,7 +184,8 @@ def measure_read(path, slice_bytes, samples, warmup, stride_seed, parts):
     finally:
         os.close(fd)
     return _summarize(durations, slice_bytes,
-                      {"parts_per_slice": parts, "uncached": uncached})
+                      {"parts_per_slice": parts, "uncached": uncached,
+                       "read_call": READ_CALL})
 
 
 def measure_faults(path, slice_bytes, samples, warmup, stride_seed):
@@ -147,13 +193,12 @@ def measure_faults(path, slice_bytes, samples, warmup, stride_seed):
     size = os.path.getsize(path)
     page = page_size()
     durations = []
-    fd = os.open(path, os.O_RDONLY | getattr(os, "O_CLOEXEC", 0))
+    fd = os.open(path, os.O_RDONLY | O_BINARY | getattr(os, "O_CLOEXEC", 0))
     try:
         for index, offset in enumerate(
                 offsets(size, slice_bytes, samples + warmup, stride_seed)):
             start = time.perf_counter()
-            view = mmap.mmap(fd, slice_bytes, flags=mmap.MAP_PRIVATE,
-                             prot=mmap.PROT_READ, offset=offset)
+            view = map_slice(fd, slice_bytes, offset)
             try:
                 total = 0
                 for at in range(0, slice_bytes, page):
@@ -191,7 +236,7 @@ def main():
                         help="any large file; a GGUF weight file is typical")
     parser.add_argument("--slice-bytes", type=int, default=DEFAULT_SLICE)
     parser.add_argument("--parts", type=int, default=1,
-                        help="split each slice into N pread calls")
+                        help="split each slice into N positioned reads")
     parser.add_argument("--samples", type=int, default=200)
     parser.add_argument("--warmup", type=int, default=8)
     parser.add_argument("--stride-seed", type=int, default=104729)
@@ -210,6 +255,7 @@ def main():
         "file_bytes": os.path.getsize(args.file),
         "slice_bytes": args.slice_bytes,
         "page_bytes": page_size(),
+        "map_alignment_bytes": map_alignment(),
         "platform": sys.platform,
         "cache_probe": cache_probe(args.file, args.slice_bytes, args.parts),
         "read_path": measure_read(args.file, args.slice_bytes, args.samples,

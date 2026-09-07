@@ -92,7 +92,21 @@ class RunnerServer:
         # the reaper's 5 s poll is a wall-clock tax on every TTL/reload gate
         # (32 tests, 3.8 min); a test that needs the shipped cadence passes
         # env with its own RUNNER_TTL_POLL_S
-        env = dict(self.env if self.env is not None else os.environ)
+        # A caller-supplied env REPLACES the inherited one, so a test can pin
+        # exactly the RUNNER_* variables it means. Windows needs a handful of
+        # its own regardless: without SystemRoot the process cannot initialise
+        # Winsock and exits 1 before printing anything, which reads as "the
+        # server is broken here" rather than "the environment was too empty".
+        if self.env is not None:
+            env = dict(self.env)
+            if os.name == "nt":
+                for key in ("SystemRoot", "SystemDrive", "windir", "COMSPEC",
+                            "PATH", "PATHEXT", "TEMP", "TMP",
+                            "NUMBER_OF_PROCESSORS"):
+                    if key not in env and key in os.environ:
+                        env[key] = os.environ[key]
+        else:
+            env = dict(os.environ)
         env.setdefault("RUNNER_TTL_POLL_S", "0.25")
         self.proc = subprocess.Popen(argv, stdout=self._log,
                                      stderr=subprocess.STDOUT, env=env)

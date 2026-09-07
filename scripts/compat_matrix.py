@@ -36,7 +36,17 @@ SCHEMA_VERSIONS = ("xyntetik.runner.model-compat.v1",
 def _kill_group(pid, grace=2.0):
     """Kill one process GROUP, servers included."""
     if os.name == "nt":
-        return                       # no process groups; Popen.kill is all there is
+        # No process groups to signal, but the grandchildren are the whole
+        # point: `taskkill /T` walks the tree, and without it a timeout on
+        # this box leaks a served runner exactly the way the docstring below
+        # describes for POSIX (observed 2026-09-07: three resident servers).
+        try:
+            subprocess.run(["taskkill", "/T", "/F", "/PID", str(pid)],
+                           stdout=subprocess.DEVNULL,
+                           stderr=subprocess.DEVNULL, timeout=30)
+        except (OSError, subprocess.SubprocessError):
+            pass
+        return
     for sig in (signal.SIGTERM, signal.SIGKILL):
         try:
             os.killpg(os.getpgid(pid), sig)

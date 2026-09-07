@@ -24,11 +24,40 @@ names that were true when they were written.
   `tests/test_lora.py`, self-skipping without a device. Deleting one of the
   seven hooks leaves every relative gate green and only the merged-weights
   comparison red, which is why that one is the anchor.
-- **`make test` builds on Windows again.** `tests/test_gpu_identity.c` and
-  `tests/test_moe_mm_ab.c` called `setenv`, which MinGW does not have, so the
-  suite stopped at a compile error on the box that runs the CUDA gates. Both
-  now use the `setenv_compat` shim the other tests use. CI builds Windows but
-  does not run `make test` there, which is why it went unseen.
+- **The suite is green on Windows.** It had not been run there in a while and
+  read 8 failed / 1 error, all of them the harness rather than the engine, and
+  all invisible to CI, which builds Windows and does not run `make test`
+  there. That box is also the lab's only CUDA device, so the CUDA gates were
+  unreachable behind them.
+  - `tests/test_gpu_identity.c` and `tests/test_moe_mm_ab.c` called `setenv`,
+    which MinGW does not have, so the suite stopped at a compile error before
+    running anything. Both now use the `setenv_compat` shim the other tests
+    use.
+  - `scripts/weight-io-bench.py` used `os.pread`, `mmap`'s Unix-only
+    `flags`/`prot` arguments, and page-aligned mapping offsets. It now uses a
+    positioned-read shim that names itself in the output (`read_call`), the
+    portable `access=ACCESS_READ` mapping, `O_BINARY` so a weight file is not
+    newline-translated, and offsets aligned to the mapping granularity, which
+    is 64 KB on Windows and the page size everywhere else, so both measured
+    paths still sample the same regions.
+  - `scripts/kv-quality.py` reached for `os.killpg` in its server teardown.
+    That raises `AttributeError` on Windows, which the `OSError` handler
+    beside it did not catch, so the teardown failed instead of falling back.
+    It now stops the tree with `taskkill /T` there, and writes its log to
+    `tempfile.gettempdir()` rather than `/tmp`. `scripts/compat_matrix.py`
+    had the same gap as a documented no-op, which leaks a served runner per
+    timeout on exactly that box (three were found resident); it uses the same
+    tree kill now.
+  - The conformance harness treated a test-supplied `env` as a full
+    replacement. On Windows a process without `SystemRoot` cannot initialise
+    Winsock and exits 1 before printing anything, so `test_prefill_deadline`
+    read as a broken server. A replaced environment now still carries what
+    the platform requires.
+  - `tool-choice-boundary.py` records the sha of the template TEXT, and the
+    test compared it against the file's BYTES, which differ under CRLF. The
+    text hash is the right one (the prompt is built from the decoded string,
+    so a checkout that rewrote line endings must not change a record's
+    identity); the test and the script now say so.
 - **`scripts/ptx-attribute.py`.** Regenerating the PTX header renumbers
   registers, labels and local depots across the whole file, so the diff cannot
   say which kernels actually changed. The script normalizes that numbering and
