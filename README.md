@@ -98,14 +98,25 @@ that is what this runtime is for.
 In one sentence: **Runner is slower on purpose.** It does the model's
 arithmetic without the shortcuts faster engines take (activations stay
 f32 instead of being rounded to 8 bits, attention accumulates in f32
-instead of f16), so its answers stay closer to what the model's makers
-built, and it can prove what it produced. Measured 2026-09-06 on Granite
-4.2 3B against IBM's own implementation in float32: mean KL 0.0016 with
-top-1 100% on bf16 weights, and at Q4_K_M the closer of the two engines
-(0.109 against 0.115 to 0.119); the faster engine disagreed with itself,
-flash attention on versus off, more than it disagreed with Runner. One
-family so far; the pass over every family is next. Evidence:
-[docs/granite-42-qwen38-cert-2026-09-06.md](docs/granite-42-qwen38-cert-2026-09-06.md).
+instead of f16), so it can prove exactly what it produced and, measured
+against the model makers' own code, comes out the closer of the two
+engines.
+
+That second half is measured, and its size is worth stating plainly.
+Across eleven families scored against their publishers' implementations
+in float32 on 2026-09-07, Runner is the closer engine on ten of eleven
+with unquantized weights and nine of eleven at the pinned quant, usually
+reproducing the reference to the noise of its own float arithmetic. But
+the margin is small next to what quantization costs: at 4 bits both
+engines sit roughly 0.06 to 0.35 from the reference and are separated
+from each other by 0.004 to 0.008. Runner is the closer of the two
+engines; it is not a close engine. And it does not hold everywhere:
+Trinity Nano is closer on the other engine, and **StableLM is a defect on
+our side**, where the other engine reproduces the reference almost
+exactly and Runner does not. That architecture was named as supported
+here with no pinned file and therefore no gate, which is how it survived;
+it is being fixed and it is written down first. Evidence:
+[docs/golden-pass-2026-09-07.md](docs/golden-pass-2026-09-07.md).
 
 ### Designed to stay on
 
