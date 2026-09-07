@@ -136,3 +136,14 @@ the interactive ssh session instead, and detach only what is genuinely long.
 And check for a leftover `runner.exe` before trusting a conformance failure:
 an interrupted run leaves a server holding its port, and the next run reports
 `runner exited during startup` with an empty log.
+
+One such leftover was not an interrupted run. `tests/test_draft_required.py`
+exercises `-i --draft-required`, and an interactive run whose stdin is a
+terminal raises the detached tray at `main.c`'s `tray_ensure_running()`
+BEFORE the check that refuses the flag combination, so a run that failed its
+own arguments left a `runner --tray` resident, holding the executable open
+against the next relink. The test now passes `--no-tray` like every other. The
+ordering itself is an engine question and is filed rather than changed here:
+the comment beside that call already says a process that is about to be short
+should not leave a menu-bar icon behind it, and a refused invocation is the
+shortest one there is. It only shows on a tty, so CI cannot see it either.
