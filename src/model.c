@@ -1013,6 +1013,14 @@ bool model_file_identity(const char *path, const char *registry,
     // are whole seconds, which can alias two GGUF revisions written in the
     // same second. Native file information gives the stable 64-bit file index
     // and the filesystem's 100 ns timestamps without hashing multi-GB files.
+    //
+    // The residual, accepted rather than hashed away: Windows stamps the write
+    // time from the cached system time, which advances on the timer tick
+    // (about 15.6 ms), so two writes inside one tick share a timestamp to the
+    // last bit and this identity cannot tell them apart. Reading the file to
+    // distinguish them is the thing this function exists to avoid. Found
+    // 2026-09-07, when the same check passed on one Windows machine and
+    // failed on a faster one.
     HANDLE h = CreateFileA(path, FILE_READ_ATTRIBUTES,
                            FILE_SHARE_READ | FILE_SHARE_WRITE |
                            FILE_SHARE_DELETE, NULL, OPEN_EXISTING,
