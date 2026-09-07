@@ -275,7 +275,10 @@ usable, or truncated JSON the caller cannot parse and has to repair or retry.
 Runner closes the call to the smallest schema-legal document instead, so the
 arguments still parse. This is **forced-truncation recovery**, not ordinary
 JSON-Schema constrained decoding: once a document starts, Runner emits a legal
-ending when the budget expires. On local models, where context is tight and
+ending when the budget expires. "Still parse" is a bound the engine holds
+rather than a hope: the streaming validator refuses to nest a document deeper
+than the parser can read back (127 containers), so a close can never produce
+something the engine itself would reject. On local models, where context is tight and
 generation is slow, it is the difference between an agent loop that finishes and
 one that retries from scratch - burning tokens, time, and context window.
 
