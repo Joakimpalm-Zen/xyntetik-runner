@@ -53,9 +53,15 @@ def unusable_draft(tmp_path_factory):
 
 
 def _run(runner_bin, model, extra):
+    # --no-tray: one of these runs is interactive (-i), and an interactive
+    # run whose stdin is a terminal raises the detached tray BEFORE the
+    # --draft-required check refuses it. Under an ssh session with a tty that
+    # left a `runner --tray` resident after the suite, holding the executable
+    # open against the next relink. The ordering is the engine's to fix; these
+    # tests never wanted a tray.
     return subprocess.run(
         [runner_bin, "-m", str(model), "-p", PROMPT, "-n", "1",
-         "-t", "2", "--gpu", "off", *extra],
+         "-t", "2", "--gpu", "off", "--no-tray", *extra],
         cwd=ROOT, env=dict(os.environ),
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120)
 
