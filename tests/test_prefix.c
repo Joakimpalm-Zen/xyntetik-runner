@@ -20,6 +20,7 @@
 // occupies [0, e->pos). engine_rewind and the prefix cache both trust that,
 // and it used to be false on the context-overflow path.
 #include "runner.h"
+#include "compat.h"
 
 #ifdef _WIN32
 #include <io.h>
@@ -374,6 +375,35 @@ static bool flip_unsampled_weight_byte(const char *path) {
     return ok;
 }
 
+// Windows stamps a file's last-write time from the cached system time, which
+// advances on the timer tick (about 15.6 ms), so two writes inside one tick
+// share a timestamp to the last bit. The identity is (size, file index,
+// mtime, ctime) and an in-place edit moves only the write time, so an edit
+// made in the same tick as the copy that preceded it is invisible to it.
+//
+// That is a fact about the clock, not about the engine, and it is why this
+// check passed on one Windows machine and failed on a faster one: on the
+// slower box the model load between the copy and the edit crossed a tick.
+// Edit, then wait for the stamp to actually move, writing again if the wait
+// alone did not do it. What is being tested is whether the engine notices a
+// file whose recorded state has changed.
+static bool edit_until_the_stamp_moves(const char *path) {
+    uint64_t sz = 0, ino = 0;
+    int64_t before = 0, ct = 0;
+    if (!model_file_identity(path, NULL, &sz, &ino, &before, &ct)) return false;
+    for (int attempt = 0; attempt < 20; attempt++) {
+        if (!flip_unsampled_weight_byte(path)) return false;
+        for (int wait = 0; wait < 10; wait++) {
+            int64_t now = 0;
+            if (model_file_identity(path, NULL, &sz, &ino, &now, &ct) &&
+                now != before)
+                return true;
+            plat_sleep_ms(5);
+        }
+    }
+    return false;
+}
+
 static void test_key_changes_after_in_place_weight_edit(void) {
     const char *orig = g_path;
     const char *tmp = "prefix-key-replaced.gguf";
@@ -394,7 +424,8 @@ static void test_key_changes_after_in_place_weight_edit(void) {
     uint64_t old_key = before.e.model_key;
     slot_close(&before);
 
-    ck(flip_unsampled_weight_byte(tmp), "edit an unsampled weight byte in place");
+    ck(edit_until_the_stamp_moves(tmp),
+       "edit an unsampled weight byte in place, and see the stamp move");
 
     slot after;
     if (slot_open(&after, &p)) {
