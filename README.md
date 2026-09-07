@@ -101,37 +101,40 @@ f32 instead of being rounded to 8 bits, attention accumulates in f32
 instead of f16), so it can prove exactly what it produced.
 
 Whether that arithmetic also makes Runner the *more accurate* engine
-depends on which measure you read, and both measures belong on this
-page. Across eleven families scored against their publishers'
-implementations in float32 on 2026-09-07, Runner has the lower KL
-divergence from the reference on ten of eleven with unquantized weights
-and nine of eleven at the pinned quant. On margin-qualified top-1, which
-is the bar this project sets for itself, the same runs split five to
-Runner, seven to the other engine and fourteen tied. The two measures
-disagree because Runner's edge is a small shift across the whole
-distribution while the other engine's is in which token ends up on top,
-and it is the second one a user notices.
+depends on which question you ask, and both answers belong here. Twelve
+families were scored against their publishers' implementations in float32
+on 2026-09-07, both tiers, 2,000 corpus positions each, with the other
+engine given its stronger configuration at each tier.
 
-Three things make the honest reading narrower still. The KL margin is
-small next to what quantization costs: at 4 bits both engines sit
-roughly 0.06 to 0.35 from the reference and are separated from each
-other by 0.004 to 0.008. Most of the margin-qualified split is not
-measurable: at 100 corpus positions one token is worth about 1.3 points,
-so every gap in that column except StableLM is one to three tokens, and
-none of them survives a significance test, the ones Runner wins
-included. And **StableLM is a defect on our side**, where the other
-engine reproduces the reference almost exactly and Runner does not: that
-architecture was named as supported here with no pinned file and
-therefore no gate, which is how it survived. Trinity Nano is a second,
-much smaller defect of the same kind, measurable at unquantized weights
-where no rounding is involved.
+On how close the whole output distribution is to the reference, Runner
+wins twenty-one of twenty-two rows, at p-values that leave no room for
+luck. On how often each engine picks the reference's token where the
+reference had a clear preference, Runner is ahead or level on twenty of
+twenty-two, but only one of those leads is big enough to be a real
+difference rather than chance: Apertus 8B at four bits, 1343 tokens
+against 1321 of 1369. Both things are true. Runner reproduces the
+reference distribution measurably better, essentially everywhere, and that
+advantage moves the winning token rarely enough that it takes well over a
+thousand qualified positions to see it once.
 
-The one thing that does hold across the whole table: quantization does
-not put Runner behind, it puts Runner level. Five families move from
-"measurably closer to the reference" at bf16 to "no measurable
-difference" at the pinned quant, and none moves to measurably worse. The
-32-bit arithmetic buys a real edge that weight rounding then swamps. All
-of it is being fixed and all of it is written down first. Evidence:
+There is no four-bit deficit. Not one row has the other engine
+significantly ahead on the token measure. The one row where it is
+genuinely closer in distribution is Gemma 4 E2B at four bits, and even
+there Runner leads the token column.
+
+**What this cost us to learn is worth stating.** An earlier version of
+this section reported the same comparisons over 100 positions, where one
+token moved the number by more than a percentage point. Nearly every
+difference it showed was noise, in both directions, including one that
+appeared to put the other engine ahead on Granite 4.2 at four bits;
+measured properly Runner leads that row. **StableLM was the exception and
+it was a real defect of ours**: the architecture normalises with LayerNorm
+and Runner was applying RMSNorm, and its pre-tokenizer had no entry so a
+third of the corpus tokenized differently from the publisher's own
+tokenizer. Both are fixed and the family now reproduces the reference
+exactly. It survived because it was named as supported here with no pinned
+file and therefore no gate, so there is now a test that fails whenever an
+architecture is claimed without one. It found four more. Evidence:
 [docs/golden-pass-2026-09-07.md](docs/golden-pass-2026-09-07.md).
 
 ### Designed to stay on

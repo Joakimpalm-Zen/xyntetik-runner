@@ -1,0 +1,59 @@
+=== smollm2-135m
+  bf16    fa=off n=1983  runner kld  0.0007 mq 100.00%  |  llama kld  0.0037 mq 100.00%  |  McNemar p=1.000  Wilcoxon p=8.58e-304  a closer
+  (73s)
+  served  fa=on n=1983  runner kld  0.0080 mq 100.00%  |  llama kld  0.0164 mq  99.92%  |  McNemar p=1.000  Wilcoxon p=2.93e-220  a closer
+  (65s)
+=== qwen2.5-0.5b
+  bf16    fa=off n=1999  runner kld  0.0003 mq 100.00%  |  llama kld  0.0015 mq 100.00%  |  McNemar p=1.000  Wilcoxon p=2.50e-303  a closer
+  (105s)
+  served  fa=on n=2000  runner kld  0.0474 mq  98.96%  |  llama kld  0.0518 mq  98.81%  |  McNemar p=0.754  Wilcoxon p=1.38e-57  a closer
+  (84s)
+=== qwen3-0.6b
+  bf16    fa=off n=2000  runner kld  0.0001 mq 100.00%  |  llama kld  0.0007 mq 100.00%  |  McNemar p=1.000  Wilcoxon p=3.15e-305  a closer
+  (166s)
+  served  fa=on n=2000  runner kld  0.3041 mq  81.33%  |  llama kld  0.3061 mq  80.97%  |  McNemar p=0.302  Wilcoxon p=7.34e-03  a closer
+  (123s)
+=== qwen3.5-0.8b
+  bf16    fa=off n=2000  runner kld  0.0004 mq 100.00%  |  llama kld  0.0011 mq 100.00%  |  McNemar p=1.000  Wilcoxon p=3.90e-314  a closer
+  (163s)
+  served  fa=on n=2000  runner kld  0.0636 mq  97.71%  |  llama kld  0.0702 mq  97.57%  |  McNemar p=0.791  Wilcoxon p=7.04e-39  a closer
+  (119s)
+=== stablelm-2-1.6b
+  bf16    fa=off n=2000  runner kld  0.5916 mq  66.89%  |  llama kld  0.0009 mq 100.00%  |  McNemar p=0.000  Wilcoxon p=-1.00e+00  b closer
+  (249s)
+  served: no file
+=== granite-4.0-h-micro
+  bf16    fa=off n=2000  runner kld  0.0033 mq 100.00%  |  llama kld  0.0040 mq 100.00%  |  McNemar p=1.000  Wilcoxon p=1.31e-314  a closer
+  (648s)
+  served  fa=on n=1999  runner kld  0.0974 mq  94.36%  |  llama kld  0.1063 mq  93.67%  |  McNemar p=0.132  Wilcoxon p=3.23e-42  a closer
+  (277s)
+=== granite-4.2-3b
+  bf16    fa=off n=1983  runner kld  0.0006 mq 100.00%  |  llama kld  0.0012 mq  99.93%  |  McNemar p=1.000  Wilcoxon p=1.29e-293  a closer
+  (462s)
+  served  fa=on n=1984  runner kld  0.1638 mq  91.25%  |  llama kld  0.1707 mq  91.04%  |  McNemar p=0.743  Wilcoxon p=3.66e-19  a closer
+  (258s)
+=== trinity-nano
+  bf16    fa=off n=1999  runner kld  0.0454 mq  98.53%  |  llama kld  0.0450 mq  98.60%  |  McNemar p=1.000  Wilcoxon p=6.96e-01  not distinguishable
+  (404s)
+  served  fa=on n=2000  runner kld  0.0633 mq  97.43%  |  llama kld  0.0616 mq  97.72%  |  McNemar p=0.608  Wilcoxon p=2.07e-03  a closer
+  (291s)
+=== gemma-3-4b-it
+  bf16    fa=off n=2000  runner kld  0.0001 mq 100.00%  |  llama kld  0.0005 mq 100.00%  |  McNemar p=1.000  Wilcoxon p=5.81e-310  a closer
+  (656s)
+  served  fa=on n=2000  runner kld  0.0669 mq  96.19%  |  llama kld  0.0764 mq  95.61%  |  McNemar p=0.122  Wilcoxon p=3.20e-31  a closer
+  (361s)
+=== gemma-4-e2b-it-forcebos
+  bf16    fa=off n=2000  runner kld  0.0014 mq 100.00%  |  llama kld  0.0019 mq 100.00%  |  McNemar p=1.000  Wilcoxon p=2.44e-311  a closer
+  (394s)
+  served  fa=on n=2000  runner kld  0.8134 mq  69.44%  |  llama kld  0.8016 mq  68.82%  |  McNemar p=0.314  Wilcoxon p=3.32e-07  b closer
+  (181s)
+=== qwen3-4b
+  bf16    fa=off n=2000  runner kld  0.0001 mq 100.00%  |  llama kld  0.0004 mq 100.00%  |  McNemar p=1.000  Wilcoxon p=6.77e-317  a closer
+  (538s)
+  served  fa=on n=2000  runner kld  0.1398 mq  92.08%  |  llama kld  0.1434 mq  91.56%  |  McNemar p=0.077  Wilcoxon p=3.31e-11  a closer
+  (279s)
+=== apertus-8b
+  bf16 FAILED, servers did not come up
+  served  fa=on n=2000  runner kld  0.0509 mq  98.10%  |  llama kld  0.0790 mq  96.49%  |  McNemar p=0.000  Wilcoxon p=7.99e-176  a closer
+  (469s)
+=== nemotron-nano-9b-v2

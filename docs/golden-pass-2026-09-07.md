@@ -339,9 +339,94 @@ tables suggested.
    gap it appears to show. 1,000 positions reaches 0.54 and 2,000 reaches
    0.88 for a lopsided true effect, less for a moderate one. **2,000
    positions is the floor for a comparative claim** and is a few hours of
-   Blackwell time, not a research program. Filed as R6.7.9.
+   Blackwell time, not a research program. Filed as R6.7.9, **done the
+   same day, and the next section is what it found. Conclusions 1 and 2
+   above did not survive it. This one did.**
 
-### StableLM is wrong, and this is the pass's most important result
+### The rerun at 2,000 positions, and what it overturns
+
+R6.7.9 said the instrument could not resolve what the report was claiming.
+It could not. The pass was rerun on 2026-09-07 on a purpose-built corpus
+(`tests/fixtures/gold-corpus-2k.txt`, the old one verbatim as its prefix
+plus about 1,800 more tokens of the same mixed character), 2,000 positions
+at stride 1, both engines served at a context every model was trained for,
+and llama.cpp given its stronger configuration at each tier: `-fa off` at
+bf16 and `-fa on` at the served quant, which is R6.7.7 discharged.
+
+Twelve families, twenty-two rows, roughly fourteen times the qualified
+positions per row. Counts in brackets are hits out of the qualified column.
+
+| family | weights | runner mq | llama.cpp mq | qualified | McNemar p | KL Wilcoxon p | closer |
+|---|---|---|---|---|---|---|---|
+| SmolLM2 135M | bf16 | **100.00%** (1310) | **100.00%** (1310) | 1310 | 1.000 | 9e-304 | **runner** |
+| SmolLM2 135M | served | **100.00%** (1310) | 99.92% (1309) | 1310 | 1.000 | 3e-220 | **runner** |
+| Qwen2.5 0.5B | bf16 | **100.00%** (1342) | **100.00%** (1342) | 1342 | 1.000 | 2e-303 | **runner** |
+| Qwen2.5 0.5B | served | **98.96%** (1328) | 98.81% (1326) | 1342 | 0.754 | 1e-57 | **runner** |
+| Qwen3 0.6B | bf16 | **100.00%** (1387) | **100.00%** (1387) | 1387 | 1.000 | 3e-305 | **runner** |
+| Qwen3 0.6B | served | **81.33%** (1128) | 80.97% (1123) | 1387 | 0.302 | 7e-03 | **runner** |
+| Qwen3.5 0.8B | bf16 | **100.00%** (1356) | **100.00%** (1356) | 1356 | 1.000 | 4e-314 | **runner** |
+| Qwen3.5 0.8B | served | **97.71%** (1325) | 97.57% (1323) | 1356 | 0.791 | 7e-39 | **runner** |
+| StableLM 2 1.6B | bf16 | **100.00%** (1335) | **100.00%** (1335) | 1335 | 1.000 | 2e-288 | **runner** |
+| Granite 4.0-h micro | bf16 | **100.00%** (1437) | **100.00%** (1437) | 1437 | 1.000 | 1e-314 | **runner** |
+| Granite 4.0-h micro | served | **94.36%** (1356) | 93.67% (1346) | 1437 | 0.132 | 3e-42 | **runner** |
+| Granite 4.2 3B | bf16 | **100.00%** (1429) | 99.93% (1428) | 1429 | 1.000 | 1e-293 | **runner** |
+| Granite 4.2 3B | served | **91.25%** (1304) | 91.04% (1301) | 1429 | 0.743 | 4e-19 | **runner** |
+| Trinity Nano (afmoe) | bf16 | 98.53% (1340) | **98.60%** (1341) | 1360 | 1.000 | 7e-01 | neither |
+| Trinity Nano (afmoe) | served | 97.43% (1326) | **97.72%** (1330) | 1361 | 0.608 | 2e-03 | **runner** |
+| Gemma 3 4B | bf16 | **100.00%** (1550) | **100.00%** (1550) | 1550 | 1.000 | 6e-310 | **runner** |
+| Gemma 3 4B | served | **96.19%** (1491) | 95.61% (1482) | 1550 | 0.122 | 3e-31 | **runner** |
+| Gemma 4 E2B | bf16 | **100.00%** (1610) | **100.00%** (1610) | 1610 | 1.000 | 2e-311 | **runner** |
+| Gemma 4 E2B | served | **69.44%** (1118) | 68.82% (1108) | 1610 | 0.314 | 3e-07 | llama.cpp |
+| Qwen3 4B | bf16 | **100.00%** (1516) | **100.00%** (1516) | 1516 | 1.000 | 7e-317 | **runner** |
+| Qwen3 4B | served | **92.08%** (1396) | 91.56% (1388) | 1516 | 0.077 | 3e-11 | **runner** |
+| Apertus 8B | served | **98.10%** (1343) | 96.49% (1321) | 1369 | 0.000 | 8e-176 | **runner** |
+
+Nemotron Nano 9B is still measuring at the time of writing and is the one
+row where the small-corpus pass had both engines tied at 100%, so nothing
+above turns on it. Apertus at bf16 cannot be measured: llama.cpp refuses
+that file over a Jinja chat-template error and needs `--no-jinja`, which
+is also why the original pass reported it as a startup failure.
+
+**What this overturns.**
+
+1. **The 4 / 5 / 13 split is gone.** On margin-qualified top-1 the runner
+   is ahead or level on twenty of twenty-two rows. llama.cpp leads on two,
+   Trinity Nano at bf16 by one position and at Q8_0 by four, neither
+   significant. Every single reversal at n=100 reversed back.
+2. **The row that started this reverses too.** Granite 4.2 3B at Q4_K_M
+   with llama.cpp's flash attention ON reads **91.25% against 91.04%, the
+   runner ahead by three positions, p=0.743.** At 100 positions the same
+   comparison read 94.7% against 97.3% with llama.cpp ahead and clearing
+   the project's 97% bar where the runner did not. That gap was two
+   tokens out of seventy-five.
+3. **There is no 4-bit deficit to fix.** Not one row has llama.cpp
+   significantly ahead on margin-qualified. The only row where llama.cpp
+   is genuinely closer on any measure is Gemma 4 E2B at Q4_0, on KL
+   (p=3e-07), and even there the runner leads the margin-qualified column.
+4. **One result got stronger, and it is ours.** Apertus 8B at Q4_K_M is
+   the only margin-qualified difference in the table that reaches
+   significance: 1343 hits against 1321 of 1369, p<0.001. At 100
+   positions it was p=0.250 and unreportable.
+5. **afmoe was noise too.** Trinity Nano at bf16 now reads p=0.70 on the
+   KL test where 100 positions read p=0.012 with llama.cpp ahead. R4.24's
+   premise, which this report asserted twice today, does not survive its
+   own instrument. What remains real about afmoe is that **both** engines
+   sit 0.045 from the publisher at bf16 where every other family reads
+   0.0001 to 0.003, which is a shared reproduction gap and not a gap
+   between the engines.
+
+**And the finding that was there all along, now with power behind it.**
+The KL test says "runner closer" on twenty-one of twenty-two rows, at
+p-values between 1e-2 and 1e-317. The margin-qualified test says
+"indistinguishable" on twenty-one of twenty-two. Those are not in
+conflict: the runner reproduces the reference **distribution** measurably
+better, essentially everywhere, and that advantage moves the **argmax**
+rarely enough that it takes 1,369 qualified positions to see it once
+(Apertus). That is the honest shape of the claim, and it is a better
+claim than the one this report opened with, because it now has an
+instrument behind it that can fail.
+
+### StableLM was wrong, and this was the pass's most important result
 
 On unquantized StableLM 2 1.6B weights, through the same harness, on the
 same file, in the same run:
@@ -370,6 +455,53 @@ ever run against it. It was claimed and never gated. That is the failure
 mode the compatibility program exists to prevent, and the golden pass
 found it in an afternoon because it was the first time the architecture
 was measured against anything other than itself.
+
+**Found and fixed the same day.** Two defects, both in the runner, and
+neither exotic.
+
+1. **StableLM normalises with LayerNorm and the runner applied RMSNorm.**
+   The GGUF says so twice: it carries `blk.N.attn_norm.bias`,
+   `blk.N.ffn_norm.bias` and `output_norm.bias`, and it declares its
+   epsilon under `attention.layer_norm_epsilon` rather than the
+   `_rms_` key every other family uses. The runner had no LayerNorm
+   anywhere: it centred nothing and dropped all three biases.
+2. **`tokenizer.ggml.pre = stablelm2` had no row**, so the file fell
+   through to the plain GPT-2 regex, which puts no cap on a digit run.
+   llama.cpp puts STABLELM2 in the same case as QWEN2, whose `\p{N}`
+   matches exactly one digit. 259 of 721 corpus strings tokenized
+   differently; "1234567890" came out 123/456/78/90 against the
+   reference's ten single digits.
+
+| stage | mean KL | top-1 | margin-qualified |
+|---|---|---|---|
+| as published above | 0.6099 | 55% | 67.1% |
+| LayerNorm fix | 0.4942 | 72% | 82.9% |
+| + pre-tokenizer fix | **0.0001** | **99%** | **100%** |
+| llama.cpp, same file | 0.0007 | 100% | 100% |
+
+Confirmed at 2,000 positions in the rerun above: 0.0002 against
+llama.cpp's 0.0009, both at 100% margin-qualified, KL Wilcoxon p=2e-288
+with the runner closer. The tokenizer differential is 0/721. GPU offload
+is now refused by name for a LayerNorm architecture, because every device
+norm kernel is an RMSNorm and offloading would put the same defect back
+silently.
+
+**A third factor was measurement, and it is the reusable part.** The first
+check script served both engines at `-c 8192` on a model trained at 4096.
+The runner applies YaRN automatically above the training context and
+llama.cpp does not, so that alone read 0.1056 instead of 0.0001 for a
+reason unrelated to either defect. The runner announces it on stderr and
+nobody was reading the log. `scripts/gold-logits.py` now carries the rule
+in its header.
+
+**And the structural fix, which matters more than either defect.**
+`tests/test_arch_admission.py` now fails when an architecture the runner
+admits has neither a manifest row nor a written reason. Run for the first
+time it found **6 of 19 unaccounted**: `mistral` and `smollm` are covered
+in practice by files that convert to arch llama, and `stablelm`,
+`granitehybrid`, `nemotron_h` and `nemotron_h_moe` are genuinely ungated.
+Nemotron Nano 9B is in this very report's roster and is not in the
+compatibility manifest at all.
 
 ## What we gained and what we lost
 
