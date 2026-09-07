@@ -1,10 +1,12 @@
 # The adaptation engine: scoring, adapters, and training in the serving binary
 
-*2026-08-22. Status: D1–D9 built and gated (scoring, adapters, backward,
-training, GRPO-lite, CUDA slices 1–2, the position-batched backward
-(slice 3), merge). CPU-hosted training, position-batched and threaded
-under a byte-exact contract, with an opt-in device assist. Everything below with a number attached was
-measured, and the gates named here run in `make test`.*
+*2026-08-22, CUDA slice 4 added 2026-09-07. Status: D1–D9 built and gated
+(scoring, adapters, backward, training, GRPO-lite, CUDA slices 1–4, the
+position-batched backward (slice 3), merge). Position-batched and threaded
+under a byte-exact contract, on the CPU or with the device assist, which
+since slice 4 is the faster of the two on a consumer GPU. Everything below
+with a number attached was measured, and the gates named here run in
+`make test`.*
 
 The runner can now score, adapt, and train — narrowly scoped as **LoRA
 adaptation of a frozen quantized base, in the same binary, on the same
@@ -269,7 +271,83 @@ orders of magnitude under GPU occupancy. The remaining GPU slice is a
 kernel-side batch grid (positions as blocks), which needs a PTX
 regeneration; it is deprioritized while the CPU path is the one winning,
 and RUNNER_TRAIN_GPU=1 stays an opt-in that changes step time, never
-bytes.
+bytes. **Slice 4 took that slice and the assist now wins; the paragraph
+above is kept as the diagnosis it was.**
+
+## D8 slice 4 - the position grid: the assist wins, on a consumer GPU
+
+Slice 3 named the ceiling and slice 4 is that one change: the `k_mvt_*`
+kernels get the grid's second dimension, positions. Nothing else moves.
+A 1,536-wide projection was six 256-thread blocks, six of an RTX 3070's
+46 SMs, with the kernel walking the window's positions one after another
+inside each thread; it is now six blocks per position.
+
+The change is scheduling, not arithmetic, and structurally so. Each
+`dx[t][i]` starts from its own incoming value and advances j serially,
+so the t iterations touch disjoint outputs and read nothing another t
+writes: spreading them across blocks cannot move a bit. The kernel loop
+is strided (`t = blockIdx.y; t += gridDim.y`), which keeps it correct for
+any `gridDim.y`, including the 1 the pre-slice-4 host launched and the
+clamp a window longer than CUDA's 65,535-row grid limit would need.
+
+Measured on ZEN-GAMING, a consumer desktop rather than a server: RTX 3070
+(8 GB, CUDA 13.3, driver 596.36) and 8 CPU threads, so both columns are
+the machine somebody would actually train on at home. Qwen2.5-Instruct
+Q4_K_M, rank-8 adapters on every projection, ctx 128, `--lr 1e-4`, the
+median of three steps.
+
+| Qwen2.5-1.5B | s/step | fw | head | recompute | sites | attn | B2/B3 |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| CPU, 8 threads | 18.7 | 7.44 | 2.41 | 4.22 | 3.78 | 0.47 | 0.31 |
+| `RUNNER_TRAIN_GPU=1`, before | 59.8 | 7.60 | 14.51 | 4.25 | 31.2 | 0.49 | 1.67 |
+| `RUNNER_TRAIN_GPU=1`, after | **16.5** | 7.37 | 1.93 | 4.23 | 2.21 | 0.48 | 0.22 |
+
+| Qwen2.5-7B | s/step | fw | head | recompute | sites | attn | B2/B3 |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| CPU, 8 threads | 76.5 | 31.6 | 6.02 | 19.8 | 16.9 | 0.79 | 1.31 |
+| `RUNNER_TRAIN_GPU=1`, before | 145.7 | 32.2 | 15.71 | 20.0 | 70.5 | 0.88 | 6.32 |
+| `RUNNER_TRAIN_GPU=1`, after | **64.8** | 31.8 | 3.33 | 20.0 | 7.82 | 0.88 | 0.70 |
+
+The three offloaded phases at 7B: sites 70.5 to 7.82 (9.0x), the head
+backward 15.71 to 3.33 (4.7x), B2/B3 6.32 to 0.70 (9.0x). Against the CPU
+they now win 2.2x, 1.8x and 1.9x, where before they lost 4.2x, 2.6x and
+4.8x. The step as a whole goes from **1.9x slower than the CPU to 1.18x
+faster** at 7B and from 3.2x slower to 1.13x faster at 1.5B.
+
+The bytes did not move, which is the only result that makes the speed
+one usable. At 7B all five runs of the A/B (CPU, two before-runs, two
+after-runs, interleaved, from two binaries proven distinct by hash before
+any number was read) wrote the same adapter,
+`2efdd297...` sha256, with identical loss trajectories; at 1.5B the same
+across CPU, before and after (`7db88c6d...`). `test-mvt` now runs a
+37-position batch, a real position grid rather than the old 3, and adds
+one assertion the grid could break on its own: a position computed alone
+must equal its slice of the batched call. The gate was proven red by
+sabotage on the box (stride `gridDim.y` replaced by 1, so every block
+walks every position): all three assertions fired on all four tensors,
+with the rebuild confirmed by a changed binary hash both ways.
+
+The PTX is regenerated on that box, whose CUDA 13.3 (V13.3.73, build
+CL-38244171) is the toolchain stamped in the committed header. Attributed
+the way `docs/cuda-microbatch-identity-2026-08-18.md` requires, against a
+baseline regeneration from the unmodified `kernels.cu` on the SAME box
+rather than against the committed header: of 107 kernels, exactly the
+seven `k_mvt_*` instruction streams differ and nothing else does. Two
+regenerations of the fixed source were byte-identical to each other.
+
+**What is left, and it is not what the plan item said.** With sites, head
+and B2/B3 on the device, the training step is now 80% CPU forward at 7B
+(taped forward 31.8 + recompute 20.0 of 64.8) and 70% at 1.5B. The
+attention backward is 0.88 s of 64.8, and the AdamW step does not
+register in the profile at all: at 7B, step time minus the three printed
+phases is 0.04 s. Porting the attention backward and the optimizer to
+CUDA, the next step as written, is worth about 1% of a step. The lever
+that is left is the forward itself, and it is a different kind of
+question: the trainer keeps the model CPU-resident and unbound on purpose,
+because the forward it tapes has to be the forward inference runs, and
+the CUDA inference path is not bit-identical to the CPU one. Moving it is
+a T1-to-T2 trade (token-exact rather than byte-exact), not an
+optimization, and it belongs to the owner rather than to a profile.
 
 ## D9 — `--merge-lora`: folding the adapter into the base
 

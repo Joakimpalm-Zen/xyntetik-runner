@@ -8,6 +8,28 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **CUDA LoRA training: the device assist is now the faster arm (D8 slice 4).**
+  The backward's transposed-matvec kernels parallelized over the input width
+  alone, so a 1,536-wide projection was six 256-thread blocks on a 46-SM card
+  and `RUNNER_TRAIN_GPU=1` was slower than the CPU it was assisting. Positions
+  are now the grid's second dimension. The kernel's position loop is strided
+  over `gridDim.y`, so it is correct for any grid shape and each `dx[t][i]`
+  keeps its own serial-j fmaf chain: the change is scheduling and cannot move a
+  bit. Measured on a consumer desktop (RTX 3070, 8 CPU threads, Qwen2.5
+  Q4_K_M, rank 8, ctx 128, median of three steps): 7B goes 145.7 s/step to
+  64.8 against 76.5 on the CPU, and 1.5B goes 59.8 to 16.5 against 18.7, so
+  the assist moves from 1.9x slower than the CPU to 1.18x faster. The adapter
+  bytes are unchanged: five interleaved 7B runs from two binaries proven
+  distinct by hash wrote one sha256, and the same held at 1.5B across CPU,
+  before and after. `test-mvt` now runs a 37-position batch and asserts that a
+  position computed alone equals its slice of the batched call; the gate was
+  proven red by sabotaging the stride. PTX regenerated on the CUDA 13.3
+  toolchain stamped in the committed header and attributed against a baseline
+  regeneration from the same box: of 107 kernels exactly the seven `k_mvt_*`
+  differ. With sites, head and B2/B3 on the device a training step is now 80%
+  CPU forward at 7B, and the attention backward and the AdamW step together
+  are about 1% of it. See `docs/adaptation-engine.md`.
+
 ## v0.5.1 - 2026-09-06
 
 The new-model release. Granite 4.2 (3B, 8B) and Qwen 3.8 27B are admitted,

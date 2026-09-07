@@ -1610,8 +1610,9 @@ extern "C" __global__ void k_gemm_q3_K(MV_PARAMS) {
 // dy[t][j], computed as the EXACT fmaf chain the CPU trainer runs — the
 // accumulator STARTS from dx's incoming value, j advances serially per output
 // element, and a zero dy[j] is skipped before the fmaf exactly as the CPU
-// path skips it. One thread per output element i: outputs are independent,
-// the serial-j reduction order is fixed, so the result is deterministic and
+// path skips it. One thread per output element i and one grid row per
+// position t: outputs are independent, the serial-j reduction order is
+// fixed, so the result is deterministic and
 // byte-comparable against the CPU chain. Adjacent threads read adjacent
 // elements of each weight row (coalesced) and share the row's block headers
 // through L2. Reuses mv_args: x = dy [batch][xs], y = dx in-out [batch][ys].
@@ -1621,9 +1622,19 @@ extern "C" __global__ void k_gemm_q3_K(MV_PARAMS) {
     if (i >= a.n_in) return; \
     (void)bias;
 
+// Positions are the grid's second dimension (D8 slice 4). Every dx[t][i]
+// starts from its own incoming value and advances j serially, so the t
+// iterations touch disjoint outputs and depend on nothing the other t's
+// write: spreading them over blocks cannot move a bit, and the strided
+// form stays correct for ANY gridDim.y, including the 1 the pre-slice-4
+// host used. What it buys is occupancy — a projection with n_in 1536 is
+// six 256-thread blocks, six of the 3070's 46 SMs, until t widens it.
+#define MVT_T_LOOP \
+    for (int t = (int)blockIdx.y; t < a.batch; t += (int)gridDim.y)
+
 extern "C" __global__ void k_mvt_f32(MV_PARAMS) {
     MVT_HEAD;
-    for (int t = 0; t < a.batch; t++) {
+    MVT_T_LOOP {
         float acc = y[(ulong64)t * a.ys + i];
         for (int j = 0; j < a.n_out; j++) {
             float v = x[(ulong64)t * a.xs + j];
@@ -1638,7 +1649,7 @@ extern "C" __global__ void k_mvt_f32(MV_PARAMS) {
 
 extern "C" __global__ void k_mvt_f16(MV_PARAMS) {
     MVT_HEAD;
-    for (int t = 0; t < a.batch; t++) {
+    MVT_T_LOOP {
         float acc = y[(ulong64)t * a.ys + i];
         for (int j = 0; j < a.n_out; j++) {
             float v = x[(ulong64)t * a.xs + j];
@@ -1652,7 +1663,7 @@ extern "C" __global__ void k_mvt_f16(MV_PARAMS) {
 
 extern "C" __global__ void k_mvt_bf16(MV_PARAMS) {
     MVT_HEAD;
-    for (int t = 0; t < a.batch; t++) {
+    MVT_T_LOOP {
         float acc = y[(ulong64)t * a.ys + i];
         for (int j = 0; j < a.n_out; j++) {
             float v = x[(ulong64)t * a.xs + j];
@@ -1670,7 +1681,7 @@ extern "C" __global__ void k_mvt_q8_0(MV_PARAMS) {
     MVT_HEAD;
     int nb = a.n_in / 32;
     int bi = i >> 5, el = i & 31;
-    for (int t = 0; t < a.batch; t++) {
+    MVT_T_LOOP {
         float acc = y[(ulong64)t * a.ys + i];
         for (int j = 0; j < a.n_out; j++) {
             float v = x[(ulong64)t * a.xs + j];
@@ -1689,7 +1700,7 @@ extern "C" __global__ void k_mvt_q4_0(MV_PARAMS) {
     MVT_HEAD;
     int nb = a.n_in / 32;
     int bi = i >> 5, el = i & 31;
-    for (int t = 0; t < a.batch; t++) {
+    MVT_T_LOOP {
         float acc = y[(ulong64)t * a.ys + i];
         for (int j = 0; j < a.n_out; j++) {
             float v = x[(ulong64)t * a.xs + j];
@@ -1710,7 +1721,7 @@ extern "C" __global__ void k_mvt_q6_K(MV_PARAMS) {
     int nb = a.n_in / 256;
     int bi = i >> 8, e = i & 255;
     int half = e >> 7, r = e & 127, seg = r >> 5, l = r & 31, is = l >> 4;
-    for (int t = 0; t < a.batch; t++) {
+    MVT_T_LOOP {
         float acc = y[(ulong64)t * a.ys + i];
         for (int j = 0; j < a.n_out; j++) {
             float v = x[(ulong64)t * a.xs + j];
@@ -1751,7 +1762,7 @@ extern "C" __global__ void k_mvt_q4_K(MV_PARAMS) {
     int w32 = e & 31;
     int pair = g >> 1;        // qs stores groups in nibble pairs
     int hi = g & 1;
-    for (int t = 0; t < a.batch; t++) {
+    MVT_T_LOOP {
         float acc = y[(ulong64)t * a.ys + i];
         for (int j = 0; j < a.n_out; j++) {
             float v = x[(ulong64)t * a.xs + j];
