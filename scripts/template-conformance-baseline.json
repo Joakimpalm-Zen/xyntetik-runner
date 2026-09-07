@@ -38,7 +38,7 @@
     "in-progress": "someone is actively fixing this; see `note`"
   },
   "generated_by": "scripts/template-conformance.py --write-baseline",
-  "generated_at": "2026-09-06T16:20:31+00:00",
+  "generated_at": "2026-09-07T08:24:16+00:00",
   "oracles": {
     "apertus": {
       "source": "hf:swiss-ai/Apertus-8B-Instruct-2509",
@@ -52,25 +52,41 @@
       "source": "hf:Qwen/Qwen3-4B",
       "sha256": "a55ee1b1660128b7"
     },
+    "eurollm": {
+      "source": "gguf:models/EuroLLM-9B-Instruct-Q4_K_M.gguf",
+      "sha256": "9850c24e4c4adc21"
+    },
     "gemma": {
       "source": "gguf:models/google_gemma-3-4b-it-Q4_K_M.gguf",
       "sha256": "7de1c58e208eda46"
     },
     "gemma4": {
-      "source": "gguf:models/e2b-q40.gguf",
-      "sha256": "0a2c8073c878ab1d"
+      "source": "gguf:models/e4b-q4km.gguf",
+      "sha256": "241c50d86bdfe5e4"
+    },
+    "gemma4-mainline": {
+      "source": "gguf:models/gemma-4-12B-it-Q4_K_M.gguf",
+      "sha256": "ae53464bf3be2580"
     },
     "granite": {
       "source": "gguf:models/granite-4.1-8b-Q4_0.gguf",
       "sha256": "fed2756d2d24e127"
+    },
+    "granite40h": {
+      "source": "hf:ibm-granite/granite-4.0-h-small",
+      "sha256": "9524df67b77a7b25"
     },
     "granite42": {
       "source": "hf:ibm-granite/granite-4.2-3b",
       "sha256": "f0ba43f79b3cabca"
     },
     "harmony": {
-      "source": "lib:openai-harmony 0.0.8",
+      "source": "fixture:openai-harmony 0.0.8",
       "sha256": "1a21593bf6554bfb"
+    },
+    "hermes4": {
+      "source": "hf:NousResearch/Hermes-4-14B",
+      "sha256": "6a0543ce2179f4b1"
     },
     "llama2": {
       "source": "hf:unsloth/llama-2-7b-chat",
@@ -80,13 +96,33 @@
       "source": "hf:unsloth/Llama-3.2-3B-Instruct",
       "sha256": "5816fce10444e03c"
     },
+    "lucie": {
+      "source": "hf:OpenLLM-France/Lucie-7B-Instruct-v1.1",
+      "sha256": "e9d57fea777237fa"
+    },
     "mistral": {
       "source": "hf:mistralai/Mistral-7B-Instruct-v0.3",
       "sha256": "e16746b40344d6c5"
     },
+    "mistral-file": {
+      "source": "gguf:models/Mistral-7B-Instruct-v0.3-Q4_K_M.gguf",
+      "sha256": "26a59556925c9873"
+    },
+    "mistral-nemo": {
+      "source": "hf:mistralai/Mistral-Nemo-Instruct-2407",
+      "sha256": "e4676cb56dffea77"
+    },
     "muse": {
       "source": "hf:meta-models/Muse-Glimmer-30B",
       "sha256": "cfc67e5f349f3769"
+    },
+    "nemotron-lightning": {
+      "source": "gguf:models/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-Q4_0.gguf",
+      "sha256": "58933db77d3099b4"
+    },
+    "nemotron-nano": {
+      "source": "hf:nvidia/NVIDIA-Nemotron-Nano-9B-v2",
+      "sha256": "b7a3a520a4bc1bea"
     },
     "ornith": {
       "source": "hf:ornith-ai/Ornith-1.0-9B",
@@ -96,14 +132,1421 @@
       "source": "hf:microsoft/Phi-3.5-mini-instruct",
       "sha256": "78d976a442bcde2f"
     },
+    "phi4mini": {
+      "source": "hf:microsoft/Phi-4-mini-instruct",
+      "sha256": "febf589225c9728a"
+    },
+    "qwen35-0.8b": {
+      "source": "hf:Qwen/Qwen3.5-0.8B",
+      "sha256": "273d8e0e683b8850"
+    },
+    "qwen35-4b": {
+      "source": "hf:Qwen/Qwen3.5-4B",
+      "sha256": "a4aee8afcf2e0711"
+    },
     "qwen38": {
       "source": "hf:Qwen/Qwen3.8-27B",
       "sha256": "c3cf9e34abf4f9e3"
+    },
+    "smollm2": {
+      "source": "hf:HuggingFaceTB/SmolLM2-135M-Instruct",
+      "sha256": "872be49dbb638044"
+    },
+    "trinity": {
+      "source": "hf:arcee-ai/Trinity-Nano-Preview",
+      "sha256": "c295e73aea820982"
     },
     "zephyr": {
       "source": "hf:HuggingFaceH4/zephyr-7b-beta",
       "sha256": "66291cf0045c2425"
     }
   },
-  "known_differences": []
+  "known_differences": [
+    {
+      "id": "granite40h/consecutive-assistant",
+      "status": "open",
+      "note": "",
+      "digest": "c158c4cca27b67b4",
+      "allowlist_applied": [],
+      "first_diff_at": 17,
+      "reference_excerpt": "'<|start_of_role|>system<|end_of_role|>You are a helpful assistant. Please ensure responses'",
+      "runner_excerpt": "'<|start_of_role|>user<|end_of_role|>What color is the sky?<|end_of_text|>\\n<|start_of_role|'",
+      "token_delta": -22
+    },
+    {
+      "id": "granite40h/consecutive-user",
+      "status": "open",
+      "note": "",
+      "digest": "376d883e23e3d4ac",
+      "allowlist_applied": [],
+      "first_diff_at": 17,
+      "reference_excerpt": "'<|start_of_role|>system<|end_of_role|>You are a helpful assistant. Please ensure responses'",
+      "runner_excerpt": "'<|start_of_role|>user<|end_of_role|>What color is the sky?<|end_of_text|>\\n<|start_of_role|'",
+      "token_delta": -22
+    },
+    {
+      "id": "granite40h/empty-assistant-content",
+      "status": "open",
+      "note": "",
+      "digest": "931e36a21b756c0c",
+      "allowlist_applied": [],
+      "first_diff_at": 17,
+      "reference_excerpt": "'<|start_of_role|>system<|end_of_role|>You are a helpful assistant. Please ensure responses'",
+      "runner_excerpt": "'<|start_of_role|>user<|end_of_role|>What color is the sky?<|end_of_text|>\\n<|start_of_role|'",
+      "token_delta": -22
+    },
+    {
+      "id": "granite40h/multi-tool-call",
+      "status": "open",
+      "note": "",
+      "digest": "7b232d0a78a1eae8",
+      "allowlist_applied": [],
+      "first_diff_at": 38,
+      "reference_excerpt": "'ystem<|end_of_role|>You are a helpful assistant.\\n\\nYou are a helpful assistant with access '",
+      "runner_excerpt": "'ystem<|end_of_role|>Reply with exactly one JSON object and nothing else.\\nTo answer the use'",
+      "token_delta": -49
+    },
+    {
+      "id": "granite40h/multiturn+gen",
+      "status": "open",
+      "note": "",
+      "digest": "75a2f762121b6e95",
+      "allowlist_applied": [],
+      "first_diff_at": 17,
+      "reference_excerpt": "'<|start_of_role|>system<|end_of_role|>You are a helpful assistant. Please ensure responses'",
+      "runner_excerpt": "'<|start_of_role|>user<|end_of_role|>What color is the sky?<|end_of_text|>\\n<|start_of_role|'",
+      "token_delta": -22
+    },
+    {
+      "id": "granite40h/multiturn-nogen",
+      "status": "open",
+      "note": "",
+      "digest": "97b2abc23cef850b",
+      "allowlist_applied": [],
+      "first_diff_at": 17,
+      "reference_excerpt": "'<|start_of_role|>system<|end_of_role|>You are a helpful assistant. Please ensure responses'",
+      "runner_excerpt": "'<|start_of_role|>user<|end_of_role|>What color is the sky?<|end_of_text|>\\n<|start_of_role|'",
+      "token_delta": -22
+    },
+    {
+      "id": "granite40h/system-mid-history",
+      "status": "open",
+      "note": "",
+      "digest": "5cef287e9b48bf7f",
+      "allowlist_applied": [],
+      "first_diff_at": 17,
+      "reference_excerpt": "'<|start_of_role|>system<|end_of_role|>You are a helpful assistant. Please ensure responses'",
+      "runner_excerpt": "'<|start_of_role|>user<|end_of_role|>What color is the sky?<|end_of_text|>\\n<|start_of_role|'",
+      "token_delta": -22
+    },
+    {
+      "id": "granite40h/tool-call+result",
+      "status": "open",
+      "note": "",
+      "digest": "44a6ef240d2806e4",
+      "allowlist_applied": [],
+      "first_diff_at": 38,
+      "reference_excerpt": "'ystem<|end_of_role|>You are a helpful assistant.\\n\\nYou are a helpful assistant with access '",
+      "runner_excerpt": "'ystem<|end_of_role|>Reply with exactly one JSON object and nothing else.\\nTo answer the use'",
+      "token_delta": -48
+    },
+    {
+      "id": "granite40h/tool-call-with-text",
+      "status": "open",
+      "note": "",
+      "digest": "60171f33aee6b80d",
+      "allowlist_applied": [],
+      "first_diff_at": 38,
+      "reference_excerpt": "'ystem<|end_of_role|>You are a helpful assistant.\\n\\nYou are a helpful assistant with access '",
+      "runner_excerpt": "'ystem<|end_of_role|>Reply with exactly one JSON object and nothing else.\\nTo answer the use'",
+      "token_delta": -49
+    },
+    {
+      "id": "granite40h/tool-then-conversation",
+      "status": "open",
+      "note": "",
+      "digest": "9b91f79a7cadeef4",
+      "allowlist_applied": [],
+      "first_diff_at": 38,
+      "reference_excerpt": "'ystem<|end_of_role|>You are a helpful assistant.\\n\\nYou are a helpful assistant with access '",
+      "runner_excerpt": "'ystem<|end_of_role|>Reply with exactly one JSON object and nothing else.\\nTo answer the use'",
+      "token_delta": -48
+    },
+    {
+      "id": "granite40h/trailing-assistant+gen",
+      "status": "open",
+      "note": "",
+      "digest": "c8516f95b7bfb7aa",
+      "allowlist_applied": [],
+      "first_diff_at": 17,
+      "reference_excerpt": "'<|start_of_role|>system<|end_of_role|>You are a helpful assistant. Please ensure responses'",
+      "runner_excerpt": "'<|start_of_role|>user<|end_of_role|>What color is the sky?<|end_of_text|>\\n<|start_of_role|'",
+      "token_delta": -22
+    },
+    {
+      "id": "granite40h/trailing-assistant-nogen",
+      "status": "open",
+      "note": "",
+      "digest": "2fa3436190123b4b",
+      "allowlist_applied": [],
+      "first_diff_at": 17,
+      "reference_excerpt": "'<|start_of_role|>system<|end_of_role|>You are a helpful assistant. Please ensure responses'",
+      "runner_excerpt": "'<|start_of_role|>user<|end_of_role|>What color is the sky?<|end_of_text|>\\n<|start_of_role|'",
+      "token_delta": -22
+    },
+    {
+      "id": "granite40h/user-only+gen",
+      "status": "open",
+      "note": "",
+      "digest": "a8678ab0a6df4ee6",
+      "allowlist_applied": [],
+      "first_diff_at": 17,
+      "reference_excerpt": "'<|start_of_role|>system<|end_of_role|>You are a helpful assistant. Please ensure responses'",
+      "runner_excerpt": "'<|start_of_role|>user<|end_of_role|>What color is the sky?<|end_of_text|>\\n<|start_of_role|'",
+      "token_delta": -22
+    },
+    {
+      "id": "granite40h/user-only-nogen",
+      "status": "open",
+      "note": "",
+      "digest": "9a3df75d8e695d85",
+      "allowlist_applied": [],
+      "first_diff_at": 17,
+      "reference_excerpt": "'<|start_of_role|>system<|end_of_role|>You are a helpful assistant. Please ensure responses'",
+      "runner_excerpt": "'<|start_of_role|>user<|end_of_role|>What color is the sky?<|end_of_text|>\\n'",
+      "token_delta": -22
+    },
+    {
+      "id": "hermes4/consecutive-assistant",
+      "status": "open",
+      "note": "",
+      "digest": "a258ec9dec6791ed",
+      "allowlist_applied": [],
+      "first_diff_at": 12,
+      "reference_excerpt": "'<|im_start|>system\\nYou are Hermes, created by Nous Research.<|im_end|>\\n<|im_start|>user\\nWh'",
+      "runner_excerpt": "'<|im_start|>user\\nWhat color is the sky?<|im_end|>\\n<|im_start|>assistant\\nBlue, because of R'",
+      "token_delta": -14
+    },
+    {
+      "id": "hermes4/consecutive-user",
+      "status": "open",
+      "note": "",
+      "digest": "9674200e20f5bd6c",
+      "allowlist_applied": [],
+      "first_diff_at": 12,
+      "reference_excerpt": "'<|im_start|>system\\nYou are Hermes, created by Nous Research.<|im_end|>\\n<|im_start|>user\\nWh'",
+      "runner_excerpt": "'<|im_start|>user\\nWhat color is the sky?<|im_end|>\\n<|im_start|>user\\nAnd at sunset?<|im_end|'",
+      "token_delta": -14
+    },
+    {
+      "id": "hermes4/empty-assistant-content",
+      "status": "open",
+      "note": "",
+      "digest": "853c0cec19596b2b",
+      "allowlist_applied": [],
+      "first_diff_at": 12,
+      "reference_excerpt": "'<|im_start|>system\\nYou are Hermes, created by Nous Research.<|im_end|>\\n<|im_start|>user\\nWh'",
+      "runner_excerpt": "'<|im_start|>user\\nWhat color is the sky?<|im_end|>\\n<|im_start|>assistant\\n<|im_end|>\\n<|im_st'",
+      "token_delta": -11
+    },
+    {
+      "id": "hermes4/multi-tool-call",
+      "status": "open",
+      "note": "",
+      "digest": "1914e764a5dcc17e",
+      "allowlist_applied": [],
+      "first_diff_at": 62,
+      "reference_excerpt": "'tant.\\n\\n# Tools\\n\\nYou are a function calling AI model. You may call one or more functions to'",
+      "runner_excerpt": "'tant.\\n\\n# Tools\\n\\nYou may call one or more functions to assist with the user query.\\n\\nYou are'",
+      "token_delta": -8
+    },
+    {
+      "id": "hermes4/multiturn+gen",
+      "status": "open",
+      "note": "",
+      "digest": "f0eaf2e2c1ce1304",
+      "allowlist_applied": [],
+      "first_diff_at": 12,
+      "reference_excerpt": "'<|im_start|>system\\nYou are Hermes, created by Nous Research.<|im_end|>\\n<|im_start|>user\\nWh'",
+      "runner_excerpt": "'<|im_start|>user\\nWhat color is the sky?<|im_end|>\\n<|im_start|>assistant\\nBlue, because of R'",
+      "token_delta": -14
+    },
+    {
+      "id": "hermes4/multiturn-nogen",
+      "status": "open",
+      "note": "",
+      "digest": "0a3ff288f85eebbd",
+      "allowlist_applied": [],
+      "first_diff_at": 12,
+      "reference_excerpt": "'<|im_start|>system\\nYou are Hermes, created by Nous Research.<|im_end|>\\n<|im_start|>user\\nWh'",
+      "runner_excerpt": "'<|im_start|>user\\nWhat color is the sky?<|im_end|>\\n<|im_start|>assistant\\nBlue, because of R'",
+      "token_delta": -14
+    },
+    {
+      "id": "hermes4/system-mid-history",
+      "status": "open",
+      "note": "",
+      "digest": "a87c516697f72140",
+      "allowlist_applied": [],
+      "first_diff_at": 12,
+      "reference_excerpt": "'<|im_start|>system\\nYou are Hermes, created by Nous Research.<|im_end|>\\n<|im_start|>user\\nWh'",
+      "runner_excerpt": "'<|im_start|>user\\nWhat color is the sky?<|im_end|>\\n<|im_start|>assistant\\nBlue, because of R'",
+      "token_delta": -14
+    },
+    {
+      "id": "hermes4/think-off",
+      "status": "open",
+      "note": "",
+      "digest": "8363b3bc0d53a7df",
+      "allowlist_applied": [],
+      "first_diff_at": 130,
+      "reference_excerpt": "'im_start|>assistant\\n'",
+      "runner_excerpt": "'im_start|>assistant\\n<think>\\n\\n</think>\\n\\n'",
+      "token_delta": 4
+    },
+    {
+      "id": "hermes4/tool-call+result",
+      "status": "open",
+      "note": "",
+      "digest": "700ee9d55932a6a9",
+      "allowlist_applied": [],
+      "first_diff_at": 62,
+      "reference_excerpt": "'tant.\\n\\n# Tools\\n\\nYou are a function calling AI model. You may call one or more functions to'",
+      "runner_excerpt": "'tant.\\n\\n# Tools\\n\\nYou may call one or more functions to assist with the user query.\\n\\nYou are'",
+      "token_delta": -8
+    },
+    {
+      "id": "hermes4/tool-call-with-text",
+      "status": "open",
+      "note": "",
+      "digest": "06ff7822a0ac2dc2",
+      "allowlist_applied": [],
+      "first_diff_at": 62,
+      "reference_excerpt": "'tant.\\n\\n# Tools\\n\\nYou are a function calling AI model. You may call one or more functions to'",
+      "runner_excerpt": "'tant.\\n\\n# Tools\\n\\nYou may call one or more functions to assist with the user query.\\n\\nYou are'",
+      "token_delta": -8
+    },
+    {
+      "id": "hermes4/tool-then-conversation",
+      "status": "open",
+      "note": "",
+      "digest": "2ab8c415e0a92d09",
+      "allowlist_applied": [],
+      "first_diff_at": 62,
+      "reference_excerpt": "'tant.\\n\\n# Tools\\n\\nYou are a function calling AI model. You may call one or more functions to'",
+      "runner_excerpt": "'tant.\\n\\n# Tools\\n\\nYou may call one or more functions to assist with the user query.\\n\\nYou are'",
+      "token_delta": -8
+    },
+    {
+      "id": "hermes4/trailing-assistant+gen",
+      "status": "open",
+      "note": "",
+      "digest": "fb34487818938186",
+      "allowlist_applied": [],
+      "first_diff_at": 12,
+      "reference_excerpt": "'<|im_start|>system\\nYou are Hermes, created by Nous Research.<|im_end|>\\n<|im_start|>user\\nWh'",
+      "runner_excerpt": "'<|im_start|>user\\nWhat color is the sky?<|im_end|>\\n<|im_start|>assistant\\n<think>\\n\\n</think>\\n'",
+      "token_delta": -10
+    },
+    {
+      "id": "hermes4/trailing-assistant-nogen",
+      "status": "open",
+      "note": "",
+      "digest": "f91df5739c858858",
+      "allowlist_applied": [],
+      "first_diff_at": 12,
+      "reference_excerpt": "'<|im_start|>system\\nYou are Hermes, created by Nous Research.<|im_end|>\\n<|im_start|>user\\nWh'",
+      "runner_excerpt": "'<|im_start|>user\\nWhat color is the sky?<|im_end|>\\n<|im_start|>assistant\\n<think>\\n\\n</think>\\n'",
+      "token_delta": -10
+    },
+    {
+      "id": "hermes4/user-only+gen",
+      "status": "open",
+      "note": "",
+      "digest": "6af2fcb08df3ec29",
+      "allowlist_applied": [],
+      "first_diff_at": 12,
+      "reference_excerpt": "'<|im_start|>system\\nYou are Hermes, created by Nous Research.<|im_end|>\\n<|im_start|>user\\nWh'",
+      "runner_excerpt": "'<|im_start|>user\\nWhat color is the sky?<|im_end|>\\n<|im_start|>assistant\\n'",
+      "token_delta": -14
+    },
+    {
+      "id": "hermes4/user-only-nogen",
+      "status": "open",
+      "note": "",
+      "digest": "f43228d3ad6539e2",
+      "allowlist_applied": [],
+      "first_diff_at": 12,
+      "reference_excerpt": "'<|im_start|>system\\nYou are Hermes, created by Nous Research.<|im_end|>\\n<|im_start|>user\\nWh'",
+      "runner_excerpt": "'<|im_start|>user\\nWhat color is the sky?<|im_end|>\\n'",
+      "token_delta": -14
+    },
+    {
+      "id": "mistral-file/empty-assistant-content",
+      "status": "open",
+      "note": "",
+      "digest": "08334c77ea9757a2",
+      "allowlist_applied": [],
+      "first_diff_at": 0,
+      "reference_excerpt": "'<s>[INST] What color is the sky? [/INST]</s>[INST] And at sunset? [/INST]'",
+      "runner_excerpt": "' [INST] What color is the sky? [/INST] </s> [INST] And at sunset? [/INST]'",
+      "token_delta": 2
+    },
+    {
+      "id": "mistral-file/multiturn+gen",
+      "status": "open",
+      "note": "",
+      "digest": "aa2af7cadf367b8a",
+      "allowlist_applied": [],
+      "first_diff_at": 0,
+      "reference_excerpt": "'<s>[INST] What color is the sky? [/INST]Blue, because of Rayleigh scattering.</s>[INST] An'",
+      "runner_excerpt": "' [INST] What color is the sky? [/INST] Blue, because of Rayleigh scattering.</s> [INST] An'",
+      "token_delta": 1
+    },
+    {
+      "id": "mistral-file/multiturn-nogen",
+      "status": "open",
+      "note": "",
+      "digest": "aa2af7cadf367b8a",
+      "allowlist_applied": [],
+      "first_diff_at": 0,
+      "reference_excerpt": "'<s>[INST] What color is the sky? [/INST]Blue, because of Rayleigh scattering.</s>[INST] An'",
+      "runner_excerpt": "' [INST] What color is the sky? [/INST] Blue, because of Rayleigh scattering.</s> [INST] An'",
+      "token_delta": 1
+    },
+    {
+      "id": "mistral-file/trailing-assistant+gen",
+      "status": "open",
+      "note": "",
+      "digest": "c363493621d20388",
+      "allowlist_applied": [],
+      "first_diff_at": 0,
+      "reference_excerpt": "'<s>[INST] What color is the sky? [/INST]Blue, because of Rayleigh scattering.</s>'",
+      "runner_excerpt": "' [INST] What color is the sky? [/INST] Blue, because of Rayleigh scattering.</s>'",
+      "token_delta": 0
+    },
+    {
+      "id": "mistral-file/trailing-assistant-nogen",
+      "status": "open",
+      "note": "",
+      "digest": "c363493621d20388",
+      "allowlist_applied": [],
+      "first_diff_at": 0,
+      "reference_excerpt": "'<s>[INST] What color is the sky? [/INST]Blue, because of Rayleigh scattering.</s>'",
+      "runner_excerpt": "' [INST] What color is the sky? [/INST] Blue, because of Rayleigh scattering.</s>'",
+      "token_delta": 0
+    },
+    {
+      "id": "mistral-file/user-only+gen",
+      "status": "open",
+      "note": "",
+      "digest": "aaf330e37db049d1",
+      "allowlist_applied": [],
+      "first_diff_at": 0,
+      "reference_excerpt": "'<s>[INST] What color is the sky? [/INST]'",
+      "runner_excerpt": "' [INST] What color is the sky? [/INST]'",
+      "token_delta": 0
+    },
+    {
+      "id": "mistral-file/user-only-nogen",
+      "status": "open",
+      "note": "",
+      "digest": "aaf330e37db049d1",
+      "allowlist_applied": [],
+      "first_diff_at": 0,
+      "reference_excerpt": "'<s>[INST] What color is the sky? [/INST]'",
+      "runner_excerpt": "' [INST] What color is the sky? [/INST]'",
+      "token_delta": 0
+    },
+    {
+      "id": "mistral-nemo/content-array",
+      "status": "open",
+      "note": "",
+      "digest": "66645bd148a46368",
+      "allowlist_applied": [],
+      "first_diff_at": 0,
+      "reference_excerpt": "'<s>[INST]You are a helpful assistant.\\n\\nWhat color is the sky?\\nAnswer briefly.[/INST]'",
+      "runner_excerpt": "'[INST] You are a helpful assistant.\\n\\nWhat color is the sky?\\nAnswer briefly.[/INST]'",
+      "token_delta": -1
+    },
+    {
+      "id": "mistral-nemo/empty-assistant-content",
+      "status": "open",
+      "note": "",
+      "digest": "35a8cfcd7c386ed1",
+      "allowlist_applied": [],
+      "first_diff_at": 0,
+      "reference_excerpt": "'<s>[INST]What color is the sky?[/INST]</s>[INST]And at sunset?[/INST]'",
+      "runner_excerpt": "'[INST] What color is the sky?[/INST] </s>[INST] And at sunset?[/INST]'",
+      "token_delta": 0
+    },
+    {
+      "id": "mistral-nemo/empty-user-content",
+      "status": "open",
+      "note": "",
+      "digest": "359ea8b73eaf4b8d",
+      "allowlist_applied": [],
+      "first_diff_at": 0,
+      "reference_excerpt": "'<s>[INST]You are a helpful assistant.\\n\\n[/INST]'",
+      "runner_excerpt": "'[INST] You are a helpful assistant.\\n\\n[/INST]'",
+      "token_delta": -1
+    },
+    {
+      "id": "mistral-nemo/long-content",
+      "status": "open",
+      "note": "",
+      "digest": "d042cf66c88d213f",
+      "allowlist_applied": [],
+      "first_diff_at": 0,
+      "reference_excerpt": "'<s>[INST]You are a helpful assistant.\\n\\nConsider the following at length. Consider the foll'",
+      "runner_excerpt": "'[INST] You are a helpful assistant.\\n\\nConsider the following at length. Consider the follow'",
+      "token_delta": -1
+    },
+    {
+      "id": "mistral-nemo/multiturn+gen",
+      "status": "open",
+      "note": "",
+      "digest": "a9e934db58c492aa",
+      "allowlist_applied": [],
+      "first_diff_at": 0,
+      "reference_excerpt": "'<s>[INST]What color is the sky?[/INST]Blue, because of Rayleigh scattering.</s>[INST]And a'",
+      "runner_excerpt": "'[INST] What color is the sky?[/INST] Blue, because of Rayleigh scattering.</s>[INST] And a'",
+      "token_delta": -1
+    },
+    {
+      "id": "mistral-nemo/multiturn-nogen",
+      "status": "open",
+      "note": "",
+      "digest": "a9e934db58c492aa",
+      "allowlist_applied": [],
+      "first_diff_at": 0,
+      "reference_excerpt": "'<s>[INST]What color is the sky?[/INST]Blue, because of Rayleigh scattering.</s>[INST]And a'",
+      "runner_excerpt": "'[INST] What color is the sky?[/INST] Blue, because of Rayleigh scattering.</s>[INST] And a'",
+      "token_delta": -1
+    },
+    {
+      "id": "mistral-nemo/system+multiturn+gen",
+      "status": "open",
+      "note": "",
+      "digest": "927f834f305c65fb",
+      "allowlist_applied": [],
+      "first_diff_at": 0,
+      "reference_excerpt": "'<s>[INST]What color is the sky?[/INST]Blue, because of Rayleigh scattering.</s>[INST]You a'",
+      "runner_excerpt": "'[INST] What color is the sky?[/INST] Blue, because of Rayleigh scattering.</s>[INST] You a'",
+      "token_delta": -1
+    },
+    {
+      "id": "mistral-nemo/system+user+gen",
+      "status": "open",
+      "note": "",
+      "digest": "40b04c3570f6d912",
+      "allowlist_applied": [],
+      "first_diff_at": 0,
+      "reference_excerpt": "'<s>[INST]You are a helpful assistant.\\n\\nWhat color is the sky?[/INST]'",
+      "runner_excerpt": "'[INST] You are a helpful assistant.\\n\\nWhat color is the sky?[/INST]'",
+      "token_delta": -1
+    },
+    {
+      "id": "mistral-nemo/trailing-assistant+gen",
+      "status": "open",
+      "note": "",
+      "digest": "cac98a998b5b85b2",
+      "allowlist_applied": [],
+      "first_diff_at": 0,
+      "reference_excerpt": "'<s>[INST]What color is the sky?[/INST]Blue, because of Rayleigh scattering.</s>'",
+      "runner_excerpt": "'[INST] What color is the sky?[/INST] Blue, because of Rayleigh scattering.</s>'",
+      "token_delta": -1
+    },
+    {
+      "id": "mistral-nemo/trailing-assistant-nogen",
+      "status": "open",
+      "note": "",
+      "digest": "cac98a998b5b85b2",
+      "allowlist_applied": [],
+      "first_diff_at": 0,
+      "reference_excerpt": "'<s>[INST]What color is the sky?[/INST]Blue, because of Rayleigh scattering.</s>'",
+      "runner_excerpt": "'[INST] What color is the sky?[/INST] Blue, because of Rayleigh scattering.</s>'",
+      "token_delta": -1
+    },
+    {
+      "id": "mistral-nemo/unicode-emoji",
+      "status": "open",
+      "note": "",
+      "digest": "f8271018dcee3786",
+      "allowlist_applied": [],
+      "first_diff_at": 0,
+      "reference_excerpt": "'<s>[INST]F\u00e6rre \"smutthull\" \\\\ 100 % \u2014 kombinert: e\u0301, emoji: \ud83c\udf00 \ud83d\udc69\\u200d\ud83d\udcbb, RTL: \u05e9\u05dc\u05d5\u05dd, CJK: \u6f22\u5b57\u3001\u0623\u0647\u0644\u0627\u064b'",
+      "runner_excerpt": "'[INST] F\u00e6rre \"smutthull\" \\\\ 100 % \u2014 kombinert: e\u0301, emoji: \ud83c\udf00 \ud83d\udc69\\u200d\ud83d\udcbb, RTL: \u05e9\u05dc\u05d5\u05dd, CJK: \u6f22\u5b57\u3001\u0623\u0647\u0644\u0627\u064b[/'",
+      "token_delta": -1
+    },
+    {
+      "id": "mistral-nemo/user-only+gen",
+      "status": "open",
+      "note": "",
+      "digest": "819c68648619e958",
+      "allowlist_applied": [],
+      "first_diff_at": 0,
+      "reference_excerpt": "'<s>[INST]What color is the sky?[/INST]'",
+      "runner_excerpt": "'[INST] What color is the sky?[/INST]'",
+      "token_delta": -1
+    },
+    {
+      "id": "mistral-nemo/user-only-nogen",
+      "status": "open",
+      "note": "",
+      "digest": "819c68648619e958",
+      "allowlist_applied": [],
+      "first_diff_at": 0,
+      "reference_excerpt": "'<s>[INST]What color is the sky?[/INST]'",
+      "runner_excerpt": "'[INST] What color is the sky?[/INST]'",
+      "token_delta": -1
+    },
+    {
+      "id": "nemotron-lightning/multi-tool-call",
+      "status": "open",
+      "note": "",
+      "digest": "6f245a22517c9d43",
+      "allowlist_applied": [],
+      "first_diff_at": 111,
+      "reference_excerpt": "'functions:\\n\\n<tools>\\n<function>\\n<name>get_weather</name>\\n<description>Get the current weath'",
+      "runner_excerpt": "'functions:\\n\\n<tools>\\n{\"name\": \"get_weather\", \"description\": \"Get the current weather for a '",
+      "token_delta": -26
+    },
+    {
+      "id": "nemotron-lightning/tool-call+result",
+      "status": "open",
+      "note": "",
+      "digest": "352de6a543501c10",
+      "allowlist_applied": [],
+      "first_diff_at": 111,
+      "reference_excerpt": "'functions:\\n\\n<tools>\\n<function>\\n<name>get_weather</name>\\n<description>Get the current weath'",
+      "runner_excerpt": "'functions:\\n\\n<tools>\\n{\"name\": \"get_weather\", \"description\": \"Get the current weather for a '",
+      "token_delta": -26
+    },
+    {
+      "id": "nemotron-lightning/tool-call-with-text",
+      "status": "open",
+      "note": "",
+      "digest": "8d5b3b05dfdc2113",
+      "allowlist_applied": [],
+      "first_diff_at": 111,
+      "reference_excerpt": "'functions:\\n\\n<tools>\\n<function>\\n<name>get_weather</name>\\n<description>Get the current weath'",
+      "runner_excerpt": "'functions:\\n\\n<tools>\\n{\"name\": \"get_weather\", \"description\": \"Get the current weather for a '",
+      "token_delta": -26
+    },
+    {
+      "id": "nemotron-lightning/tool-then-conversation",
+      "status": "open",
+      "note": "",
+      "digest": "76f571a7c9633580",
+      "allowlist_applied": [],
+      "first_diff_at": 111,
+      "reference_excerpt": "'functions:\\n\\n<tools>\\n<function>\\n<name>get_weather</name>\\n<description>Get the current weath'",
+      "runner_excerpt": "'functions:\\n\\n<tools>\\n{\"name\": \"get_weather\", \"description\": \"Get the current weather for a '",
+      "token_delta": -26
+    },
+    {
+      "id": "nemotron-nano/content-array",
+      "status": "open",
+      "note": "",
+      "digest": "29cd8966c31083b9",
+      "allowlist_applied": [],
+      "first_diff_at": 0,
+      "reference_excerpt": "'<SPECIAL_10>System\\nYou are a helpful assistant.\\n<SPECIAL_11>User\\nWhat color is the sky?\\nAn'",
+      "runner_excerpt": "'[INST] <<SYS>>\\nYou are a helpful assistant.\\n<</SYS>>\\n\\nWhat color is the sky?\\nAnswer briefl'",
+      "token_delta": 1
+    },
+    {
+      "id": "nemotron-nano/empty-assistant-content",
+      "status": "open",
+      "note": "",
+      "digest": "42eecee0fb3b017d",
+      "allowlist_applied": [],
+      "first_diff_at": 0,
+      "reference_excerpt": "'<SPECIAL_10>System\\n\\n<SPECIAL_11>User\\nWhat color is the sky?\\n<SPECIAL_11>Assistant\\n\\n<SPECIA'",
+      "runner_excerpt": "'[INST] What color is the sky? [/INST]  </s><s>[INST] And at sunset? [/INST]'",
+      "token_delta": -11
+    },
+    {
+      "id": "nemotron-nano/empty-user-content",
+      "status": "open",
+      "note": "",
+      "digest": "d4504883156d8e33",
+      "allowlist_applied": [],
+      "first_diff_at": 0,
+      "reference_excerpt": "'<SPECIAL_10>System\\nYou are a helpful assistant.\\n<SPECIAL_11>User\\n\\n<SPECIAL_11>Assistant\\n<t'",
+      "runner_excerpt": "'[INST] <<SYS>>\\nYou are a helpful assistant.\\n<</SYS>> [/INST]'",
+      "token_delta": 0
+    },
+    {
+      "id": "nemotron-nano/long-content",
+      "status": "open",
+      "note": "",
+      "digest": "4daf432688962601",
+      "allowlist_applied": [],
+      "first_diff_at": 0,
+      "reference_excerpt": "'<SPECIAL_10>System\\nYou are a helpful assistant.\\n<SPECIAL_11>User\\nConsider the following at'",
+      "runner_excerpt": "'[INST] <<SYS>>\\nYou are a helpful assistant.\\n<</SYS>>\\n\\nConsider the following at length. Co'",
+      "token_delta": 1
+    },
+    {
+      "id": "nemotron-nano/multi-tool-call",
+      "status": "open",
+      "note": "",
+      "digest": "ff03947e3474f314",
+      "allowlist_applied": [],
+      "first_diff_at": 0,
+      "reference_excerpt": "'<SPECIAL_10>System\\nYou are a helpful assistant.\\n\\nYou can use the following tools to assist'",
+      "runner_excerpt": "'[INST] <<SYS>>\\nYou are a helpful assistant.\\n<</SYS>>\\n\\nWeather in Oslo and Bergen? [/INST] '",
+      "token_delta": -243
+    },
+    {
+      "id": "nemotron-nano/multiturn+gen",
+      "status": "open",
+      "note": "",
+      "digest": "b68824b307cea532",
+      "allowlist_applied": [],
+      "first_diff_at": 0,
+      "reference_excerpt": "'<SPECIAL_10>System\\n\\n<SPECIAL_11>User\\nWhat color is the sky?\\n<SPECIAL_11>Assistant\\nBlue, be'",
+      "runner_excerpt": "'[INST] What color is the sky? [/INST] Blue, because of Rayleigh scattering. </s><s>[INST] '",
+      "token_delta": -11
+    },
+    {
+      "id": "nemotron-nano/multiturn-nogen",
+      "status": "open",
+      "note": "",
+      "digest": "c9f986710242af98",
+      "allowlist_applied": [],
+      "first_diff_at": 0,
+      "reference_excerpt": "'<SPECIAL_10>System\\n\\n<SPECIAL_11>User\\nWhat color is the sky?\\n<SPECIAL_11>Assistant\\nBlue, be'",
+      "runner_excerpt": "'[INST] What color is the sky? [/INST] Blue, because of Rayleigh scattering. </s><s>[INST] '",
+      "token_delta": -5
+    },
+    {
+      "id": "nemotron-nano/system+multiturn+gen",
+      "status": "open",
+      "note": "",
+      "digest": "72b3b5c13c82dc69",
+      "allowlist_applied": [],
+      "first_diff_at": 0,
+      "reference_excerpt": "'<SPECIAL_10>System\\nYou are a helpful assistant.\\n<SPECIAL_11>User\\nWhat color is the sky?\\n<S'",
+      "runner_excerpt": "'[INST] <<SYS>>\\nYou are a helpful assistant.\\n<</SYS>>\\n\\nWhat color is the sky? [/INST] Blue,'",
+      "token_delta": -1
+    },
+    {
+      "id": "nemotron-nano/system+user+gen",
+      "status": "open",
+      "note": "",
+      "digest": "6f918deb966b9752",
+      "allowlist_applied": [],
+      "first_diff_at": 0,
+      "reference_excerpt": "'<SPECIAL_10>System\\nYou are a helpful assistant.\\n<SPECIAL_11>User\\nWhat color is the sky?\\n<S'",
+      "runner_excerpt": "'[INST] <<SYS>>\\nYou are a helpful assistant.\\n<</SYS>>\\n\\nWhat color is the sky? [/INST]'",
+      "token_delta": 1
+    },
+    {
+      "id": "nemotron-nano/think-off",
+      "status": "open",
+      "note": "",
+      "digest": "6f918deb966b9752",
+      "allowlist_applied": [],
+      "first_diff_at": 0,
+      "reference_excerpt": "'<SPECIAL_10>System\\nYou are a helpful assistant.\\n<SPECIAL_11>User\\nWhat color is the sky?\\n<S'",
+      "runner_excerpt": "'[INST] <<SYS>>\\nYou are a helpful assistant.\\n<</SYS>>\\n\\nWhat color is the sky? [/INST]'",
+      "token_delta": 1
+    },
+    {
+      "id": "nemotron-nano/think-on",
+      "status": "open",
+      "note": "",
+      "digest": "6f918deb966b9752",
+      "allowlist_applied": [],
+      "first_diff_at": 0,
+      "reference_excerpt": "'<SPECIAL_10>System\\nYou are a helpful assistant.\\n<SPECIAL_11>User\\nWhat color is the sky?\\n<S'",
+      "runner_excerpt": "'[INST] <<SYS>>\\nYou are a helpful assistant.\\n<</SYS>>\\n\\nWhat color is the sky? [/INST]'",
+      "token_delta": 1
+    },
+    {
+      "id": "nemotron-nano/tool-call+result",
+      "status": "open",
+      "note": "",
+      "digest": "80482fa09b7f95b8",
+      "allowlist_applied": [],
+      "first_diff_at": 0,
+      "reference_excerpt": "'<SPECIAL_10>System\\nYou are a helpful assistant.\\n\\nYou can use the following tools to assist'",
+      "runner_excerpt": "'[INST] <<SYS>>\\nYou are a helpful assistant.\\n<</SYS>>\\n\\nWeather in Oslo? [/INST] <|tool_call'",
+      "token_delta": -246
+    },
+    {
+      "id": "nemotron-nano/tool-call-with-text",
+      "status": "open",
+      "note": "",
+      "digest": "0667a576231e545e",
+      "allowlist_applied": [],
+      "first_diff_at": 0,
+      "reference_excerpt": "'<SPECIAL_10>System\\nYou are a helpful assistant.\\n\\nYou can use the following tools to assist'",
+      "runner_excerpt": "'[INST] <<SYS>>\\nYou are a helpful assistant.\\n<</SYS>>\\n\\nWeather in Oslo? [/INST] Let me look'",
+      "token_delta": -247
+    },
+    {
+      "id": "nemotron-nano/tool-then-conversation",
+      "status": "open",
+      "note": "",
+      "digest": "0921c4e91b9371ea",
+      "allowlist_applied": [],
+      "first_diff_at": 0,
+      "reference_excerpt": "'<SPECIAL_10>System\\nYou are a helpful assistant.\\n\\nYou can use the following tools to assist'",
+      "runner_excerpt": "'[INST] <<SYS>>\\nYou are a helpful assistant.\\n<</SYS>>\\n\\nWeather in Oslo? [/INST] <|tool_call'",
+      "token_delta": -248
+    },
+    {
+      "id": "nemotron-nano/trailing-assistant+gen",
+      "status": "open",
+      "note": "",
+      "digest": "515008b8d6ed3bc2",
+      "allowlist_applied": [],
+      "first_diff_at": 0,
+      "reference_excerpt": "'<SPECIAL_10>System\\n\\n<SPECIAL_11>User\\nWhat color is the sky?\\n<SPECIAL_11>Assistant\\n<think>\\n'",
+      "runner_excerpt": "'[INST] What color is the sky? [/INST] Blue, because of Rayleigh scattering. </s>'",
+      "token_delta": -7
+    },
+    {
+      "id": "nemotron-nano/trailing-assistant-nogen",
+      "status": "open",
+      "note": "",
+      "digest": "f6009927b2535e09",
+      "allowlist_applied": [],
+      "first_diff_at": 0,
+      "reference_excerpt": "'<SPECIAL_10>System\\n\\n<SPECIAL_11>User\\nWhat color is the sky?\\n<SPECIAL_11>Assistant\\n<think>\\n'",
+      "runner_excerpt": "'[INST] What color is the sky? [/INST] Blue, because of Rayleigh scattering. </s>'",
+      "token_delta": -9
+    },
+    {
+      "id": "nemotron-nano/unicode-emoji",
+      "status": "open",
+      "note": "",
+      "digest": "a2725ff17fb6f0b6",
+      "allowlist_applied": [],
+      "first_diff_at": 0,
+      "reference_excerpt": "'<SPECIAL_10>System\\nYou are a helpful assistant.\\n<SPECIAL_11>User\\nF\u00e6rre \"smutthull\" \\\\ 100 %'",
+      "runner_excerpt": "'[INST] <<SYS>>\\nYou are a helpful assistant.\\n<</SYS>>\\n\\nF\u00e6rre \"smutthull\" \\\\ 100 % \u2014 kombiner'",
+      "token_delta": -3
+    },
+    {
+      "id": "nemotron-nano/user-only+gen",
+      "status": "open",
+      "note": "",
+      "digest": "6bc765d5a0fe03af",
+      "allowlist_applied": [],
+      "first_diff_at": 0,
+      "reference_excerpt": "'<SPECIAL_10>System\\n\\n<SPECIAL_11>User\\nWhat color is the sky?\\n<SPECIAL_11>Assistant\\n<think>\\n'",
+      "runner_excerpt": "'[INST] What color is the sky? [/INST]'",
+      "token_delta": -9
+    },
+    {
+      "id": "nemotron-nano/user-only-nogen",
+      "status": "open",
+      "note": "",
+      "digest": "3251e4fccbc18c80",
+      "allowlist_applied": [],
+      "first_diff_at": 0,
+      "reference_excerpt": "'<SPECIAL_10>System\\n\\n<SPECIAL_11>User\\nWhat color is the sky?\\n'",
+      "runner_excerpt": "'[INST] What color is the sky? [/INST]'",
+      "token_delta": -3
+    },
+    {
+      "id": "phi4mini/consecutive-assistant",
+      "status": "open",
+      "note": "",
+      "digest": "305fe0cc67bbb5b1",
+      "allowlist_applied": [],
+      "first_diff_at": 8,
+      "reference_excerpt": "'<|user|>What color is the sky?<|end|><|assistant|>Blue, because of Rayleigh scattering.<|e'",
+      "runner_excerpt": "'<|user|>\\nWhat color is the sky?<|end|>\\n<|assistant|>\\nBlue, because of Rayleigh scattering.'",
+      "token_delta": 9
+    },
+    {
+      "id": "phi4mini/consecutive-user",
+      "status": "open",
+      "note": "",
+      "digest": "2bf44e08912aa511",
+      "allowlist_applied": [],
+      "first_diff_at": 8,
+      "reference_excerpt": "'<|user|>What color is the sky?<|end|><|user|>And at sunset?<|end|><|assistant|>'",
+      "runner_excerpt": "'<|user|>\\nWhat color is the sky?<|end|>\\n<|user|>\\nAnd at sunset?<|end|>\\n<|assistant|>\\n'",
+      "token_delta": 5
+    },
+    {
+      "id": "phi4mini/content-array",
+      "status": "open",
+      "note": "",
+      "digest": "6feb5ba22cec15e3",
+      "allowlist_applied": [],
+      "first_diff_at": 10,
+      "reference_excerpt": "'<|system|>You are a helpful assistant.<|end|><|user|>What color is the sky?\\nAnswer briefly'",
+      "runner_excerpt": "'<|system|>\\nYou are a helpful assistant.<|end|>\\n<|user|>\\nWhat color is the sky?\\nAnswer brie'",
+      "token_delta": 5
+    },
+    {
+      "id": "phi4mini/empty-assistant-content",
+      "status": "open",
+      "note": "",
+      "digest": "e578294afacbf867",
+      "allowlist_applied": [],
+      "first_diff_at": 8,
+      "reference_excerpt": "'<|user|>What color is the sky?<|end|><|assistant|><|end|><|user|>And at sunset?<|end|><|as'",
+      "runner_excerpt": "'<|user|>\\nWhat color is the sky?<|end|>\\n<|assistant|>\\n<|end|>\\n<|user|>\\nAnd at sunset?<|end|'",
+      "token_delta": 7
+    },
+    {
+      "id": "phi4mini/empty-user-content",
+      "status": "open",
+      "note": "",
+      "digest": "6c4ee96a90fd1da8",
+      "allowlist_applied": [],
+      "first_diff_at": 10,
+      "reference_excerpt": "'<|system|>You are a helpful assistant.<|end|><|user|><|end|><|assistant|>'",
+      "runner_excerpt": "'<|system|>\\nYou are a helpful assistant.<|end|>\\n<|user|>\\n<|end|>\\n<|assistant|>\\n'",
+      "token_delta": 5
+    },
+    {
+      "id": "phi4mini/long-content",
+      "status": "open",
+      "note": "",
+      "digest": "991717a9002a9888",
+      "allowlist_applied": [],
+      "first_diff_at": 10,
+      "reference_excerpt": "'<|system|>You are a helpful assistant.<|end|><|user|>Consider the following at length. Con'",
+      "runner_excerpt": "'<|system|>\\nYou are a helpful assistant.<|end|>\\n<|user|>\\nConsider the following at length. '",
+      "token_delta": 5
+    },
+    {
+      "id": "phi4mini/multi-tool-call",
+      "status": "open",
+      "note": "",
+      "digest": "0ad00ea0204f6b9e",
+      "allowlist_applied": [],
+      "first_diff_at": 10,
+      "reference_excerpt": "'<|system|>You are a helpful assistant.<|end|><|user|>Weather in Oslo and Bergen?<|end|><|a'",
+      "runner_excerpt": "'<|system|>\\nReply with exactly one JSON object and nothing else.\\nTo answer the user directl'",
+      "token_delta": 182
+    },
+    {
+      "id": "phi4mini/multiturn+gen",
+      "status": "open",
+      "note": "",
+      "digest": "25ee7b44a8165f8b",
+      "allowlist_applied": [],
+      "first_diff_at": 8,
+      "reference_excerpt": "'<|user|>What color is the sky?<|end|><|assistant|>Blue, because of Rayleigh scattering.<|e'",
+      "runner_excerpt": "'<|user|>\\nWhat color is the sky?<|end|>\\n<|assistant|>\\nBlue, because of Rayleigh scattering.'",
+      "token_delta": 7
+    },
+    {
+      "id": "phi4mini/multiturn-nogen",
+      "status": "open",
+      "note": "",
+      "digest": "8aec3d8c6fa069d9",
+      "allowlist_applied": [],
+      "first_diff_at": 8,
+      "reference_excerpt": "'<|user|>What color is the sky?<|end|><|assistant|>Blue, because of Rayleigh scattering.<|e'",
+      "runner_excerpt": "'<|user|>\\nWhat color is the sky?<|end|>\\n<|assistant|>\\nBlue, because of Rayleigh scattering.'",
+      "token_delta": 6
+    },
+    {
+      "id": "phi4mini/system+multiturn+gen",
+      "status": "open",
+      "note": "",
+      "digest": "ee92ebf7aca0b4f0",
+      "allowlist_applied": [],
+      "first_diff_at": 10,
+      "reference_excerpt": "'<|system|>You are a helpful assistant.<|end|><|user|>What color is the sky?<|end|><|assist'",
+      "runner_excerpt": "'<|system|>\\nYou are a helpful assistant.<|end|>\\n<|user|>\\nWhat color is the sky?<|end|>\\n<|as'",
+      "token_delta": 9
+    },
+    {
+      "id": "phi4mini/system+user+gen",
+      "status": "open",
+      "note": "",
+      "digest": "f6657dc6a2ea790c",
+      "allowlist_applied": [],
+      "first_diff_at": 10,
+      "reference_excerpt": "'<|system|>You are a helpful assistant.<|end|><|user|>What color is the sky?<|end|><|assist'",
+      "runner_excerpt": "'<|system|>\\nYou are a helpful assistant.<|end|>\\n<|user|>\\nWhat color is the sky?<|end|>\\n<|as'",
+      "token_delta": 5
+    },
+    {
+      "id": "phi4mini/system-mid-history",
+      "status": "open",
+      "note": "",
+      "digest": "1325720204ee904d",
+      "allowlist_applied": [],
+      "first_diff_at": 8,
+      "reference_excerpt": "'<|user|>What color is the sky?<|end|><|assistant|>Blue, because of Rayleigh scattering.<|e'",
+      "runner_excerpt": "'<|user|>\\nWhat color is the sky?<|end|>\\n<|assistant|>\\nBlue, because of Rayleigh scattering.'",
+      "token_delta": 9
+    },
+    {
+      "id": "phi4mini/tool-call+result",
+      "status": "open",
+      "note": "",
+      "digest": "689bfd70dd220aad",
+      "allowlist_applied": [],
+      "first_diff_at": 10,
+      "reference_excerpt": "'<|system|>You are a helpful assistant.<|end|><|user|>Weather in Oslo?<|end|><|assistant|><'",
+      "runner_excerpt": "'<|system|>\\nReply with exactly one JSON object and nothing else.\\nTo answer the user directl'",
+      "token_delta": 161
+    },
+    {
+      "id": "phi4mini/tool-call-with-text",
+      "status": "open",
+      "note": "",
+      "digest": "102c82ec69fe2a3e",
+      "allowlist_applied": [],
+      "first_diff_at": 10,
+      "reference_excerpt": "'<|system|>You are a helpful assistant.<|end|><|user|>Weather in Oslo?<|end|><|assistant|>L'",
+      "runner_excerpt": "'<|system|>\\nReply with exactly one JSON object and nothing else.\\nTo answer the user directl'",
+      "token_delta": 160
+    },
+    {
+      "id": "phi4mini/tool-then-conversation",
+      "status": "open",
+      "note": "",
+      "digest": "66c1c40ccc9a6032",
+      "allowlist_applied": [],
+      "first_diff_at": 10,
+      "reference_excerpt": "'<|system|>You are a helpful assistant.<|end|><|user|>Weather in Oslo?<|end|><|assistant|><'",
+      "runner_excerpt": "'<|system|>\\nReply with exactly one JSON object and nothing else.\\nTo answer the user directl'",
+      "token_delta": 165
+    },
+    {
+      "id": "phi4mini/trailing-assistant+gen",
+      "status": "open",
+      "note": "",
+      "digest": "5c3d2a71a8f4d6b2",
+      "allowlist_applied": [],
+      "first_diff_at": 8,
+      "reference_excerpt": "'<|user|>What color is the sky?<|end|><|assistant|>Blue, because of Rayleigh scattering.<|e'",
+      "runner_excerpt": "'<|user|>\\nWhat color is the sky?<|end|>\\n<|assistant|>\\nBlue, because of Rayleigh scattering.'",
+      "token_delta": 5
+    },
+    {
+      "id": "phi4mini/trailing-assistant-nogen",
+      "status": "open",
+      "note": "",
+      "digest": "1b1752515a5c084c",
+      "allowlist_applied": [],
+      "first_diff_at": 8,
+      "reference_excerpt": "'<|user|>What color is the sky?<|end|><|assistant|>Blue, because of Rayleigh scattering.<|e'",
+      "runner_excerpt": "'<|user|>\\nWhat color is the sky?<|end|>\\n<|assistant|>\\nBlue, because of Rayleigh scattering.'",
+      "token_delta": 4
+    },
+    {
+      "id": "phi4mini/unicode-emoji",
+      "status": "open",
+      "note": "",
+      "digest": "b990cbce733c4915",
+      "allowlist_applied": [],
+      "first_diff_at": 10,
+      "reference_excerpt": "'<|system|>You are a helpful assistant.<|end|><|user|>F\u00e6rre \"smutthull\" \\\\ 100 % \u2014 kombinert'",
+      "runner_excerpt": "'<|system|>\\nYou are a helpful assistant.<|end|>\\n<|user|>\\nF\u00e6rre \"smutthull\" \\\\ 100 % \u2014 kombin'",
+      "token_delta": 9
+    },
+    {
+      "id": "phi4mini/user-only+gen",
+      "status": "open",
+      "note": "",
+      "digest": "7fa81bf2e4e908f7",
+      "allowlist_applied": [],
+      "first_diff_at": 8,
+      "reference_excerpt": "'<|user|>What color is the sky?<|end|><|assistant|>'",
+      "runner_excerpt": "'<|user|>\\nWhat color is the sky?<|end|>\\n<|assistant|>\\n'",
+      "token_delta": 3
+    },
+    {
+      "id": "phi4mini/user-only-nogen",
+      "status": "open",
+      "note": "",
+      "digest": "f9b458992581991f",
+      "allowlist_applied": [],
+      "first_diff_at": 8,
+      "reference_excerpt": "'<|user|>What color is the sky?<|end|><|endoftext|>'",
+      "runner_excerpt": "'<|user|>\\nWhat color is the sky?<|end|>\\n<|endoftext|>'",
+      "token_delta": 2
+    },
+    {
+      "id": "qwen35-0.8b/consecutive-assistant",
+      "status": "open",
+      "note": "",
+      "digest": "c7ef5b56961ddfa9",
+      "allowlist_applied": [],
+      "first_diff_at": 72,
+      "reference_excerpt": "'im_start|>assistant\\nBlue, because of Rayleigh scattering.<|im_end|>\\n<|im_start|>assistant\\n'",
+      "runner_excerpt": "'im_start|>assistant\\n<think>\\n\\n</think>\\n\\nBlue, because of Rayleigh scattering.<|im_end|>\\n<|i'",
+      "token_delta": 6
+    },
+    {
+      "id": "qwen35-0.8b/consecutive-user",
+      "status": "open",
+      "note": "",
+      "digest": "6c2e54965a4c77fc",
+      "allowlist_applied": [],
+      "first_diff_at": 122,
+      "reference_excerpt": "'|>assistant\\n<think>\\n\\n</think>\\n\\n'",
+      "runner_excerpt": "'|>assistant\\n<think>\\n'",
+      "token_delta": -2
+    },
+    {
+      "id": "qwen35-0.8b/content-array",
+      "status": "open",
+      "note": "",
+      "digest": "9eaf8926cdd3f0df",
+      "allowlist_applied": [],
+      "first_diff_at": 154,
+      "reference_excerpt": "'|>assistant\\n<think>\\n\\n</think>\\n\\n'",
+      "runner_excerpt": "'|>assistant\\n<think>\\n'",
+      "token_delta": -2
+    },
+    {
+      "id": "qwen35-0.8b/empty-assistant-content",
+      "status": "open",
+      "note": "",
+      "digest": "c542aaa1f56e97ae",
+      "allowlist_applied": [],
+      "first_diff_at": 73,
+      "reference_excerpt": "'m_start|>assistant\\n<|im_end|>\\n<|im_start|>user\\nAnd at sunset?<|im_end|>\\n<|im_start|>assist'",
+      "runner_excerpt": "'m_start|>assistant\\n<think>\\n\\n</think>\\n\\n<|im_end|>\\n<|im_start|>user\\nAnd at sunset?<|im_end|>'",
+      "token_delta": 2
+    },
+    {
+      "id": "qwen35-0.8b/empty-user-content",
+      "status": "open",
+      "note": "",
+      "digest": "29cbfb56988a2b68",
+      "allowlist_applied": [],
+      "first_diff_at": 116,
+      "reference_excerpt": "'|>assistant\\n<think>\\n\\n</think>\\n\\n'",
+      "runner_excerpt": "'|>assistant\\n<think>\\n'",
+      "token_delta": -2
+    },
+    {
+      "id": "qwen35-0.8b/long-content",
+      "status": "open",
+      "note": "",
+      "digest": "0b54a26f3a819462",
+      "allowlist_applied": [],
+      "first_diff_at": 23915,
+      "reference_excerpt": "'|>assistant\\n<think>\\n\\n</think>\\n\\n'",
+      "runner_excerpt": "'|>assistant\\n<think>\\n'",
+      "token_delta": -2
+    },
+    {
+      "id": "qwen35-0.8b/multi-tool-call",
+      "status": "open",
+      "note": "",
+      "digest": "aade8de3c6673533",
+      "allowlist_applied": [],
+      "first_diff_at": 1638,
+      "reference_excerpt": "'|>assistant\\n<think>\\n\\n</think>\\n\\n'",
+      "runner_excerpt": "'|>assistant\\n<think>\\n'",
+      "token_delta": -2
+    },
+    {
+      "id": "qwen35-0.8b/multiturn+gen",
+      "status": "open",
+      "note": "",
+      "digest": "9072657aac4135f8",
+      "allowlist_applied": [],
+      "first_diff_at": 72,
+      "reference_excerpt": "'im_start|>assistant\\nBlue, because of Rayleigh scattering.<|im_end|>\\n<|im_start|>user\\nAnd a'",
+      "runner_excerpt": "'im_start|>assistant\\n<think>\\n\\n</think>\\n\\nBlue, because of Rayleigh scattering.<|im_end|>\\n<|i'",
+      "token_delta": 2
+    },
+    {
+      "id": "qwen35-0.8b/multiturn-nogen",
+      "status": "open",
+      "note": "",
+      "digest": "6c1a9ed7e3b6d29d",
+      "allowlist_applied": [],
+      "first_diff_at": 72,
+      "reference_excerpt": "'im_start|>assistant\\nBlue, because of Rayleigh scattering.<|im_end|>\\n<|im_start|>user\\nAnd a'",
+      "runner_excerpt": "'im_start|>assistant\\n<think>\\n\\n</think>\\n\\nBlue, because of Rayleigh scattering.<|im_end|>\\n<|i'",
+      "token_delta": 4
+    },
+    {
+      "id": "qwen35-0.8b/system+multiturn+gen",
+      "status": "open",
+      "note": "",
+      "digest": "652b769eecdf4077",
+      "allowlist_applied": [],
+      "first_diff_at": 130,
+      "reference_excerpt": "'im_start|>assistant\\nBlue, because of Rayleigh scattering.<|im_end|>\\n<|im_start|>user\\nAnd a'",
+      "runner_excerpt": "'im_start|>assistant\\n<think>\\n\\n</think>\\n\\nBlue, because of Rayleigh scattering.<|im_end|>\\n<|i'",
+      "token_delta": 2
+    },
+    {
+      "id": "qwen35-0.8b/system+user+gen",
+      "status": "open",
+      "note": "",
+      "digest": "2975efee04c7b8f7",
+      "allowlist_applied": [],
+      "first_diff_at": 138,
+      "reference_excerpt": "'|>assistant\\n<think>\\n\\n</think>\\n\\n'",
+      "runner_excerpt": "'|>assistant\\n<think>\\n'",
+      "token_delta": -2
+    },
+    {
+      "id": "qwen35-0.8b/tool-call+result",
+      "status": "open",
+      "note": "",
+      "digest": "6fa8d24654c70158",
+      "allowlist_applied": [],
+      "first_diff_at": 1483,
+      "reference_excerpt": "'|>assistant\\n<think>\\n\\n</think>\\n\\n'",
+      "runner_excerpt": "'|>assistant\\n<think>\\n'",
+      "token_delta": -2
+    },
+    {
+      "id": "qwen35-0.8b/tool-call-with-text",
+      "status": "open",
+      "note": "",
+      "digest": "376432fcd72feeff",
+      "allowlist_applied": [],
+      "first_diff_at": 1505,
+      "reference_excerpt": "'|>assistant\\n<think>\\n\\n</think>\\n\\n'",
+      "runner_excerpt": "'|>assistant\\n<think>\\n'",
+      "token_delta": -2
+    },
+    {
+      "id": "qwen35-0.8b/tool-then-conversation",
+      "status": "open",
+      "note": "",
+      "digest": "662c6b68aeed096f",
+      "allowlist_applied": [],
+      "first_diff_at": 1256,
+      "reference_excerpt": "'_start|>assistant\\n<tool_call>\\n<function=get_weather>\\n<parameter=city>\\nOslo\\n</parameter>\\n</'",
+      "runner_excerpt": "'_start|>assistant\\n<think>\\n\\n</think>\\n\\n<tool_call>\\n<function=get_weather>\\n<parameter=city>\\nO'",
+      "token_delta": 6
+    },
+    {
+      "id": "qwen35-0.8b/trailing-assistant+gen",
+      "status": "open",
+      "note": "",
+      "digest": "25cda7bb86231e57",
+      "allowlist_applied": [],
+      "first_diff_at": 169,
+      "reference_excerpt": "'|>assistant\\n<think>\\n\\n</think>\\n\\n'",
+      "runner_excerpt": "'|>assistant\\n<think>\\n'",
+      "token_delta": -2
+    },
+    {
+      "id": "qwen35-0.8b/unicode-emoji",
+      "status": "open",
+      "note": "",
+      "digest": "4c0be3d6fb4ffc69",
+      "allowlist_applied": [],
+      "first_diff_at": 189,
+      "reference_excerpt": "'im_start|>assistant\\nJa. F\u00e6rre \"smutthull\" \\\\ 100 % \u2014 kombinert: e\u0301, emoji: \ud83c\udf00 \ud83d\udc69\\u200d\ud83d\udcbb, RTL: \u05e9\u05dc\u05d5\u05dd'",
+      "runner_excerpt": "'im_start|>assistant\\n<think>\\n\\n</think>\\n\\nJa. F\u00e6rre \"smutthull\" \\\\ 100 % \u2014 kombinert: e\u0301, emoj'",
+      "token_delta": 2
+    },
+    {
+      "id": "qwen35-0.8b/user-only+gen",
+      "status": "open",
+      "note": "",
+      "digest": "20c444bb32fd0a8c",
+      "allowlist_applied": [],
+      "first_diff_at": 80,
+      "reference_excerpt": "'|>assistant\\n<think>\\n\\n</think>\\n\\n'",
+      "runner_excerpt": "'|>assistant\\n<think>\\n'",
+      "token_delta": -2
+    },
+    {
+      "id": "qwen35-4b/consecutive-assistant",
+      "status": "open",
+      "note": "",
+      "digest": "aafd56b38ee6540d",
+      "allowlist_applied": [],
+      "first_diff_at": 72,
+      "reference_excerpt": "'im_start|>assistant\\nBlue, because of Rayleigh scattering.<|im_end|>\\n<|im_start|>assistant\\n'",
+      "runner_excerpt": "'im_start|>assistant\\n<think>\\n\\n</think>\\n\\nBlue, because of Rayleigh scattering.<|im_end|>\\n<|i'",
+      "token_delta": 8
+    },
+    {
+      "id": "qwen35-4b/empty-assistant-content",
+      "status": "open",
+      "note": "",
+      "digest": "395ba50b80ed5387",
+      "allowlist_applied": [],
+      "first_diff_at": 73,
+      "reference_excerpt": "'m_start|>assistant\\n<|im_end|>\\n<|im_start|>user\\nAnd at sunset?<|im_end|>\\n<|im_start|>assist'",
+      "runner_excerpt": "'m_start|>assistant\\n<think>\\n\\n</think>\\n\\n<|im_end|>\\n<|im_start|>user\\nAnd at sunset?<|im_end|>'",
+      "token_delta": 4
+    },
+    {
+      "id": "qwen35-4b/multiturn+gen",
+      "status": "open",
+      "note": "",
+      "digest": "8e92259def40cb50",
+      "allowlist_applied": [],
+      "first_diff_at": 72,
+      "reference_excerpt": "'im_start|>assistant\\nBlue, because of Rayleigh scattering.<|im_end|>\\n<|im_start|>user\\nAnd a'",
+      "runner_excerpt": "'im_start|>assistant\\n<think>\\n\\n</think>\\n\\nBlue, because of Rayleigh scattering.<|im_end|>\\n<|i'",
+      "token_delta": 4
+    },
+    {
+      "id": "qwen35-4b/multiturn-nogen",
+      "status": "open",
+      "note": "",
+      "digest": "6c1a9ed7e3b6d29d",
+      "allowlist_applied": [],
+      "first_diff_at": 72,
+      "reference_excerpt": "'im_start|>assistant\\nBlue, because of Rayleigh scattering.<|im_end|>\\n<|im_start|>user\\nAnd a'",
+      "runner_excerpt": "'im_start|>assistant\\n<think>\\n\\n</think>\\n\\nBlue, because of Rayleigh scattering.<|im_end|>\\n<|i'",
+      "token_delta": 4
+    },
+    {
+      "id": "qwen35-4b/system+multiturn+gen",
+      "status": "open",
+      "note": "",
+      "digest": "09ed50732db1e7ce",
+      "allowlist_applied": [],
+      "first_diff_at": 130,
+      "reference_excerpt": "'im_start|>assistant\\nBlue, because of Rayleigh scattering.<|im_end|>\\n<|im_start|>user\\nAnd a'",
+      "runner_excerpt": "'im_start|>assistant\\n<think>\\n\\n</think>\\n\\nBlue, because of Rayleigh scattering.<|im_end|>\\n<|i'",
+      "token_delta": 4
+    },
+    {
+      "id": "qwen35-4b/tool-then-conversation",
+      "status": "open",
+      "note": "",
+      "digest": "9606ceb4d85f6c16",
+      "allowlist_applied": [],
+      "first_diff_at": 1256,
+      "reference_excerpt": "'_start|>assistant\\n<tool_call>\\n<function=get_weather>\\n<parameter=city>\\nOslo\\n</parameter>\\n</'",
+      "runner_excerpt": "'_start|>assistant\\n<think>\\n\\n</think>\\n\\n<tool_call>\\n<function=get_weather>\\n<parameter=city>\\nO'",
+      "token_delta": 8
+    },
+    {
+      "id": "qwen35-4b/unicode-emoji",
+      "status": "open",
+      "note": "",
+      "digest": "4e452c7077e56113",
+      "allowlist_applied": [],
+      "first_diff_at": 189,
+      "reference_excerpt": "'im_start|>assistant\\nJa. F\u00e6rre \"smutthull\" \\\\ 100 % \u2014 kombinert: e\u0301, emoji: \ud83c\udf00 \ud83d\udc69\\u200d\ud83d\udcbb, RTL: \u05e9\u05dc\u05d5\u05dd'",
+      "runner_excerpt": "'im_start|>assistant\\n<think>\\n\\n</think>\\n\\nJa. F\u00e6rre \"smutthull\" \\\\ 100 % \u2014 kombinert: e\u0301, emoj'",
+      "token_delta": 4
+    },
+    {
+      "id": "smollm2/consecutive-assistant",
+      "status": "open",
+      "note": "",
+      "digest": "c75d86754388a230",
+      "allowlist_applied": [],
+      "first_diff_at": 12,
+      "reference_excerpt": "'<|im_start|>system\\nYou are a helpful AI assistant named SmolLM, trained by Hugging Face<|i'",
+      "runner_excerpt": "'<|im_start|>user\\nWhat color is the sky?<|im_end|>\\n<|im_start|>assistant\\nBlue, because of R'",
+      "token_delta": -21
+    },
+    {
+      "id": "smollm2/consecutive-user",
+      "status": "open",
+      "note": "",
+      "digest": "03e48fcb5e9c18ae",
+      "allowlist_applied": [],
+      "first_diff_at": 12,
+      "reference_excerpt": "'<|im_start|>system\\nYou are a helpful AI assistant named SmolLM, trained by Hugging Face<|i'",
+      "runner_excerpt": "'<|im_start|>user\\nWhat color is the sky?<|im_end|>\\n<|im_start|>user\\nAnd at sunset?<|im_end|'",
+      "token_delta": -21
+    },
+    {
+      "id": "smollm2/empty-assistant-content",
+      "status": "open",
+      "note": "",
+      "digest": "2673731e9d7eacdf",
+      "allowlist_applied": [],
+      "first_diff_at": 12,
+      "reference_excerpt": "'<|im_start|>system\\nYou are a helpful AI assistant named SmolLM, trained by Hugging Face<|i'",
+      "runner_excerpt": "'<|im_start|>user\\nWhat color is the sky?<|im_end|>\\n<|im_start|>assistant\\n<|im_end|>\\n<|im_st'",
+      "token_delta": -21
+    },
+    {
+      "id": "smollm2/multiturn+gen",
+      "status": "open",
+      "note": "",
+      "digest": "604d2cb64afb2ab2",
+      "allowlist_applied": [],
+      "first_diff_at": 12,
+      "reference_excerpt": "'<|im_start|>system\\nYou are a helpful AI assistant named SmolLM, trained by Hugging Face<|i'",
+      "runner_excerpt": "'<|im_start|>user\\nWhat color is the sky?<|im_end|>\\n<|im_start|>assistant\\nBlue, because of R'",
+      "token_delta": -21
+    },
+    {
+      "id": "smollm2/multiturn-nogen",
+      "status": "open",
+      "note": "",
+      "digest": "666afb4e2f5249d9",
+      "allowlist_applied": [],
+      "first_diff_at": 12,
+      "reference_excerpt": "'<|im_start|>system\\nYou are a helpful AI assistant named SmolLM, trained by Hugging Face<|i'",
+      "runner_excerpt": "'<|im_start|>user\\nWhat color is the sky?<|im_end|>\\n<|im_start|>assistant\\nBlue, because of R'",
+      "token_delta": -21
+    },
+    {
+      "id": "smollm2/system-mid-history",
+      "status": "open",
+      "note": "",
+      "digest": "d2a82cda7d880a9f",
+      "allowlist_applied": [],
+      "first_diff_at": 12,
+      "reference_excerpt": "'<|im_start|>system\\nYou are a helpful AI assistant named SmolLM, trained by Hugging Face<|i'",
+      "runner_excerpt": "'<|im_start|>user\\nWhat color is the sky?<|im_end|>\\n<|im_start|>assistant\\nBlue, because of R'",
+      "token_delta": -21
+    },
+    {
+      "id": "smollm2/trailing-assistant+gen",
+      "status": "open",
+      "note": "",
+      "digest": "bf913a60c3f42ae6",
+      "allowlist_applied": [],
+      "first_diff_at": 12,
+      "reference_excerpt": "'<|im_start|>system\\nYou are a helpful AI assistant named SmolLM, trained by Hugging Face<|i'",
+      "runner_excerpt": "'<|im_start|>user\\nWhat color is the sky?<|im_end|>\\n<|im_start|>assistant\\nBlue, because of R'",
+      "token_delta": -21
+    },
+    {
+      "id": "smollm2/trailing-assistant-nogen",
+      "status": "open",
+      "note": "",
+      "digest": "eef3d890ee0cdc33",
+      "allowlist_applied": [],
+      "first_diff_at": 12,
+      "reference_excerpt": "'<|im_start|>system\\nYou are a helpful AI assistant named SmolLM, trained by Hugging Face<|i'",
+      "runner_excerpt": "'<|im_start|>user\\nWhat color is the sky?<|im_end|>\\n<|im_start|>assistant\\nBlue, because of R'",
+      "token_delta": -21
+    },
+    {
+      "id": "smollm2/user-only+gen",
+      "status": "open",
+      "note": "",
+      "digest": "e5ec5818519981d7",
+      "allowlist_applied": [],
+      "first_diff_at": 12,
+      "reference_excerpt": "'<|im_start|>system\\nYou are a helpful AI assistant named SmolLM, trained by Hugging Face<|i'",
+      "runner_excerpt": "'<|im_start|>user\\nWhat color is the sky?<|im_end|>\\n<|im_start|>assistant\\n'",
+      "token_delta": -21
+    },
+    {
+      "id": "smollm2/user-only-nogen",
+      "status": "open",
+      "note": "",
+      "digest": "aa5e8dca4bbe1dd8",
+      "allowlist_applied": [],
+      "first_diff_at": 12,
+      "reference_excerpt": "'<|im_start|>system\\nYou are a helpful AI assistant named SmolLM, trained by Hugging Face<|i'",
+      "runner_excerpt": "'<|im_start|>user\\nWhat color is the sky?<|im_end|>\\n'",
+      "token_delta": -21
+    }
+  ]
 }
