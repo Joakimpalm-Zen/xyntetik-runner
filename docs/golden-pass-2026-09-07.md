@@ -165,10 +165,145 @@ Transformers 5.16, float32, eager attention, on the Blackwell's CPUs,
 from each publisher's safetensors. llama.cpp 73a43d1 with flash attention
 off is scored on the same file beside the runner. 100 corpus positions.
 
-GOLDTABLE
+Mean KL from the reference distribution, lower is closer; top-1 is how
+often the engine picks the reference's token. `bf16` is the publisher's
+own weights converted without quantization, so it isolates arithmetic;
+`served` is the quantized file the manifest pins.
+
+| family | weights | runner KL | runner top-1 | llama.cpp KL | llama.cpp top-1 |
+|---|---|---|---|---|---|
+| SmolLM2 135M | bf16 | **0.0000** | 100% | 0.0168 | 100% |
+| SmolLM2 135M | Q8_0 | **0.0095** | 98.98% | 0.0338 | 95.92% |
+| Qwen2.5 0.5B | bf16 | **0.0004** | 100% | 0.0017 | 100% |
+| Qwen2.5 0.5B | Q4_K_M | **0.0694** | 88% | 0.0762 | 87% |
+| Qwen3 0.6B | bf16 | **0.0000** | 100% | 0.0009 | 100% |
+| Qwen3 0.6B | Q4_0 | **0.3535** | 58% | 0.3582 | 58% |
+| Qwen3 4B | bf16 | **0.0000** | 100% | 0.0002 | 100% |
+| Qwen3 4B | Q4_K_M | **0.1278** | 81% | 0.1315 | 82% |
+| Qwen3.5 0.8B | bf16 | **0.0015** | 100% | 0.0023 | 99% |
+| Qwen3.5 0.8B | Q4_K_M | **0.0659** | 87% | 0.0730 | 89% |
+| Granite 4.0-h micro | bf16 | **0.0000** | 100% | 0.0005 | 100% |
+| Granite 4.0-h micro | Q4_K_M | **0.1006** | 78% | 0.1078 | 79% |
+| Gemma 3 4B | bf16 | **0.0000** | 100% | 0.0001 | 100% |
+| Gemma 3 4B | Q4_K_M | **0.0607** | 85% | 0.0685 | 81% |
+| Trinity Nano (afmoe) | bf16 | 0.1100 | 81.82% | **0.1105** | 83.84% |
+| Trinity Nano (afmoe) | Q8_0 | 0.1491 | 80% | **0.1223** | 82% |
+| Gemma 4 E2B | bf16 | **0.0009** | 100% | 0.0012 | 100% |
+| Gemma 4 E2B | Q4_0 | 0.8558 | 61% | **0.8252** | 62% |
+| Apertus 8B | Q4_K_M | **0.0467** | 90% | 0.0849 | 84% |
+| Nemotron Nano 9B v2 | bf16 | **0.0027** | 98% | 0.0031 | 98% |
+| Nemotron Nano 9B v2 | Q8_0 | **0.0041** | 97% | 0.0054 | 95% |
+| StableLM 2 1.6B | bf16 | 0.6099 | 55% | **0.0007** | **100%** |
+
+Granite 4.2 3B, measured the day before under the same gate, reads 0.0016
+at bf16 with top-1 100% and is the closer engine at Q4_K_M.
+
+**The pattern holds and it is narrow.** The runner is the closer engine on
+**ten of eleven** families at bf16 and **nine of eleven** at the served
+quant, and on unquantized weights it reproduces the publisher's own
+implementation to 0.0000 or near it on eight of them. Apertus is the widest margin at the served quant,
+0.0467 against 0.0849, and Nemotron Nano 9B is worth naming twice: its
+numerics are among the best in the table while its chat template is one
+the runner does not recognise at all. The arithmetic and the protocol
+fail independently, which is the argument for measuring both. That is the f32 activation and f32 attention accumulation showing
+up as a measurable thing rather than a claim. But the margin is small in
+absolute terms, and at the quant people actually serve, quantization
+dominates both engines by one to two orders of magnitude: on Qwen3 4B the
+two engines sit 0.128 and 0.132 from the reference, a gap of 0.004
+between them inside a 0.13 gap to the model. The honest form of the
+public claim is that the runner is the closer of the two engines, not
+that it is close to the model at 4 bits.
+
+**And three rows go the other way.** Trinity Nano (afmoe) at its served
+Q8_0, 0.1223 against the runner's 0.1491, with better top-1 at both
+weights; Gemma 4 E2B at Q4_0, 0.8252 against 0.8558; and `stablelm`,
+which is not a near-miss but a defect and has its own section below.
+Recorded, not smoothed over.
+
+### StableLM is wrong, and this is the pass's most important result
+
+On unquantized StableLM 2 1.6B weights, through the same harness, on the
+same file, in the same run:
+
+| engine | mean KL from the reference | top-1 |
+|---|---|---|
+| llama.cpp | **0.0007** | **100%** |
+| Runner | **0.6099** | **55%** |
+
+llama.cpp reproduces the publisher's implementation essentially exactly.
+The runner does not, and not subtly: at corpus position 110 the reference
+and llama.cpp both predict ` token` and the runner predicts ` fö`, a KL of
+7.27 at that position; at 185 the reference says a paragraph break and the
+runner says a line break; at 191 the reference says ` language` and the
+runner says ` runner`. The runner loads the file as `stablelm`, 24 layers,
+with no warning of any kind.
+
+Because llama.cpp is exact on the same file through the same instrument,
+this cannot be the harness and it cannot be the artifact. It is the
+runner's `stablelm` path.
+
+`stablelm` is named as supported in the README's architecture table and
+has **no row in the compatibility manifest**, so no pinned file, no
+tokenizer differential, no greedy check, no CPU/GPU identity check has
+ever run against it. It was claimed and never gated. That is the failure
+mode the compatibility program exists to prevent, and the golden pass
+found it in an afternoon because it was the first time the architecture
+was measured against anything other than itself.
+
+## What we gained and what we lost
+
+Both halves matter, so both are stated.
+
+**Gained.**
+
+- A measured, repeatable statement of the thing the site now claims: on
+  unquantized weights the runner reproduces seven publishers' own
+  implementations to 0.0000 or near it, and is the closer of the two
+  engines on every one of those families. That was one family yesterday
+  and is eight today.
+- Ten genuine chat-template defects across four mechanisms, none of which
+  any engine-to-engine comparison could have surfaced, on families that
+  were all considered admitted. One of them, Qwen 3.5, is what the
+  survivor suite is built around.
+- One numerical defect, `stablelm`, where the runner is plainly wrong and
+  llama.cpp is right.
+- The structural lesson behind it: an architecture can be named as
+  supported in the README with no manifest row and therefore no gate at
+  all. That gap is now a rule to close, not an accident to repeat.
+- A gold harness that three separate faults made honest, and which now
+  refuses to read a report it did not just write.
+
+**Lost.**
+
+- The standing of "admitted". Eleven of twenty-nine families needed
+  attention, and the ones this pass could not measure are not thereby
+  fine, they are unmeasured. The word did less work than it appeared to.
+- Any claim to be close to the model at the quant people serve. At 4 bits
+  both engines sit 0.06 to 0.35 from the reference and are separated from
+  each other by 0.004 to 0.008. The runner is the closer engine; it is
+  not a close engine. The hero sentence on the site is defensible as
+  written, and the evidence page should carry this caveat beside it.
+- Three rows where the runner is behind: afmoe at its served quant and on
+  top-1 at both, Gemma 4 E2B at Q4_0, and `stablelm` badly.
+- Roughly a day of measurement to three harness faults, one of which
+  (the stale report) would have published false numbers had the corrected
+  run not reproduced the uncorrected one digit for digit.
+- Two families the instrument still cannot measure, diagnosed but not
+  fixed: Phi-3.5 and Mistral v0.3 declare `add_space_prefix`, so the
+  servers prepend a space token the reference never sees, and both read
+  around 1.6 to 2.0 with the two engines agreeing to four decimals (on
+  Mistral, to all four: 1.6114 and 1.6114). That is the instrument, not
+  the engines, and it is filed rather than reported as fidelity. Phi-3.5
+  has a second obstacle worth its own note: its publisher's modeling code
+  does not run on transformers 5.16 (`DynamicCache.from_legacy_cache` is
+  gone), so for that family the reference implementation the standing
+  rule points at is not currently runnable at all.
 
 ## What this pass did not measure
 
+- Phi-3.5 and Mistral v0.3, for the space-prefix reason above, and the
+  Apertus bf16 tier, whose two 16 GB servers did not come up inside the
+  30-minute window (its served tier did, and is in the table).
 - Families whose smallest published member is too large for a float32
   reference on this box: gpt-oss (120B and 20B), Muse Glimmer 30B,
   Nemotron 3.5 Lightning 30B. gpt-oss is anchored on OpenAI's own
