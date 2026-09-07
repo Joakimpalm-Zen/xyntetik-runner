@@ -15,8 +15,12 @@
 // `assert(f)` in write_manifest fired and the whole suite stopped at exit 127.
 // Every sibling test here (instances, instances_oom, tray_core, vram_rollback)
 // already branches on TEMP; this file was the one that did not.
-static char MODEL[512];
-static char RECORD_PATH[512];
+// 256, not 512: every derived path is `char[512]` and the compiler has to be
+// able to PROVE the suffix fits (the Windows build is -Werror=format-truncation).
+// A 512-byte source into a 512-byte destination is not provable; a 256-byte
+// one plus a 17-character suffix is.
+static char MODEL[256];
+static char RECORD_PATH[256];
 
 static void init_paths(void) {
     const char *base = NULL;
