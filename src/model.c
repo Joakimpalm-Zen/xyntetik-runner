@@ -1725,6 +1725,16 @@ static bool model_bind_weights(model_t *m, const char *path, const model_params 
                                        m->n_head ? m->n_embd / m->n_head : 0);
     m->rope_dim    = (int)gguf_get_u32(g, AK("rope.dimension_count"), m->head_dim);
     m->rms_eps     = gguf_get_f32(g, AK("attention.layer_norm_rms_epsilon"), 1e-5f);
+    // stablelm normalises with LayerNorm, not RMSNorm, and says so twice: it
+    // declares `attention.layer_norm_epsilon` instead of the `_rms_` key read
+    // above, and it ships a bias beside every norm weight. Reading the wrong
+    // key left the epsilon at the 1e-5 default (right by luck for this file,
+    // wrong in principle) and applying the wrong norm left the model's output
+    // measurably wrong: 0.6099 mean KL against the publisher's implementation
+    // where llama.cpp on the same file read 0.0007 (2026-09-07, R4.23).
+    m->norm_layernorm = strcmp(arch, "stablelm") == 0;
+    if (m->norm_layernorm)
+        m->rms_eps = gguf_get_f32(g, AK("attention.layer_norm_epsilon"), 1e-5f);
     m->rope_base   = gguf_get_f32(g, AK("rope.freq_base"), 10000.0f);
     // llama-arch GGUFs have Q/K permuted at conversion for adjacent-pair rope;
     // qwen2 (and other HF-layout archs) need NeoX-style half-split rotation
@@ -2713,6 +2723,8 @@ static bool model_bind_weights(model_t *m, const char *path, const model_params 
     gguf_tensor *out_norm = need_tensor(g, "output_norm.weight", 0, &ok);
     if (!ok) return false;
     m->out_norm_w = tensor_to_f32(out_norm, m->n_embd, &ok);
+    m->out_norm_b = tensor_to_f32(gguf_find_tensor(g, "output_norm.bias"),
+                                  m->n_embd, &ok);
     if (!ok) return false;
 
     m->output = gguf_find_tensor(g, "output.weight");
@@ -3290,6 +3302,13 @@ static bool model_bind_weights(model_t *m, const char *path, const model_params 
         int qd_l = model_q_dim(m, i), kd_l = model_kv_dim(m, i);
         l->attn_norm_w = tensor_to_f32(an, m->n_embd, &ok);
         l->ffn_norm_w  = tensor_to_f32(fn, m->n_embd, &ok);
+        // LayerNorm families (stablelm) carry a bias beside each norm weight.
+        // opt_tensor returns NULL for an RMSNorm family, which is exactly what
+        // xnorm() wants, so this is unconditional.
+        l->attn_norm_b = tensor_to_f32(opt_tensor(g, "blk.%d.attn_norm.bias", i),
+                                       m->n_embd, &ok);
+        l->ffn_norm_b  = tensor_to_f32(opt_tensor(g, "blk.%d.ffn_norm.bias", i),
+                                       m->n_embd, &ok);
         l->bq = tensor_to_f32(opt_tensor(g, "blk.%d.attn_q.bias", i),
                               m->qwen35 ? 2 * (int64_t)qd_l : qd_l, &ok);
         l->bk = tensor_to_f32(opt_tensor(g, "blk.%d.attn_k.bias", i), kd_l, &ok);
@@ -3852,6 +3871,17 @@ static bool model_alloc_runtime(model_t *m, const model_params *p) {
                     m->n_removed == 1 ? "" : "s");
             return false;
         }
+        // Every device norm kernel is an RMSNorm. A LayerNorm family offloaded
+        // onto one would centre nothing and drop its bias, which is exactly
+        // the defect this arch was carrying on the CPU until 2026-09-07 and is
+        // not worth reintroducing on the GPU silently. Refuse by name; the CPU
+        // path is correct and is what `--gpu off` selects.
+        if (m->norm_layernorm && gpu_available(gname, sizeof(gname))) {
+            fprintf(stderr, "error: %s normalises with LayerNorm and the GPU "
+                    "backends implement RMSNorm only, so offload would be "
+                    "silently wrong. Rerun with --gpu off\n", m->arch);
+            return false;
+        }
         // Register the intended VRAM footprint before allocating any of it, so
         // a concurrent runner sees this claim rather than discovering it as a
         // mysteriously shrunken free figure. CPU-only runs never get here, so
@@ -3996,6 +4026,47 @@ static void rmsnorm(float *o, const float *x, const float *w, int n, float eps) 
     float r = 1.0f / sqrtf(ss / n + eps);
     if (w) for (int i = 0; i < n; i++) o[i] = x[i] * r * w[i];
     else   for (int i = 0; i < n; i++) o[i] = x[i] * r;      // weightless (gemma4 V)
+}
+
+// Standard LayerNorm: centre on the mean, divide by the standard deviation,
+// scale, add a bias. Not the same operation as rmsnorm() above, which does
+// neither the centring nor the bias.
+//
+// This exists because `stablelm` was admitted as if it were an RMSNorm family
+// and it is not. StableLM 2's GGUF carries blk.N.attn_norm.bias,
+// blk.N.ffn_norm.bias and output_norm.bias, and declares its epsilon under
+// `attention.layer_norm_epsilon` rather than `attention.layer_norm_rms_epsilon`.
+// The runner read none of that: it applied rmsnorm with a default epsilon and
+// dropped the biases on the floor. Measured 2026-09-07 against
+// stabilityai/stablelm-2-1_6b-chat in float32, that read mean KL 0.6099 with
+// top-1 55% where llama.cpp on the same file read 0.0007 and 100%.
+//
+// The variance is the biased (population) one, /n not /(n-1), which is what
+// torch.nn.LayerNorm computes. Accumulated in double: n_embd is a few thousand
+// terms and the result is compared with a reference implementation at four
+// decimal places.
+static void layernorm(float *o, const float *x, const float *w,
+                      const float *b, int n, float eps) {
+    double sum = 0;
+    for (int i = 0; i < n; i++) sum += x[i];
+    float mean = (float)(sum / n);
+    double var = 0;
+    for (int i = 0; i < n; i++) { double d = x[i] - mean; var += d * d; }
+    float r = 1.0f / sqrtf((float)(var / n) + eps);
+    for (int i = 0; i < n; i++) {
+        float v = (x[i] - mean) * r;
+        if (w) v *= w[i];
+        if (b) v += b[i];
+        o[i] = v;
+    }
+}
+
+// The norm this model's architecture actually uses. Every dense-path norm
+// site goes through here so a family cannot silently get the wrong one.
+static inline void xnorm(const model_t *m, float *o, const float *x,
+                         const float *w, const float *b, int n, float eps) {
+    if (m->norm_layernorm) layernorm(o, x, w, b, n, eps);
+    else                   rmsnorm(o, x, w, n, eps);
 }
 
 // Attention softmax with a learned sink logit (gpt-oss). Transcribed from
@@ -6402,7 +6473,7 @@ static bool lora_layer_bw(model_t *m, int l, const int32_t *toks, int T,
     for (int t = 0; ok && t < T; t++) {
         const float *xt = tape_x + (size_t)t * E;
         float *x1 = xn1 + (size_t)t * E;
-        rmsnorm(x1, xt, ly->attn_norm_w, E, m->rms_eps);
+        xnorm(m, x1, xt, ly->attn_norm_w, ly->attn_norm_b, E, m->rms_eps);
         float *qt = q + (size_t)t * q_dim;
         matvec_b(m->tp, qt, q_dim, ly->wq, x1, E, E, q_dim, ly->bq, 1);
         lora_site_fw(m, l, LW_Q, qt, x1, E, q_dim);
@@ -6439,7 +6510,7 @@ static bool lora_layer_bw(model_t *m, int l, const int32_t *toks, int T,
         float *xat = xa + (size_t)t * E;
         for (int i = 0; i < E; i++) xat[i] = xt[i] + tmpE[i];
         float *x2 = xn2 + (size_t)t * E;
-        rmsnorm(x2, xat, ly->ffn_norm_w, E, m->rms_eps);
+        xnorm(m, x2, xat, ly->ffn_norm_w, ly->ffn_norm_b, E, m->rms_eps);
         matvec_b(m->tp, g + (size_t)t * nff, nff, ly->w_gate, x2, E, E, nff,
                  NULL, 1);
         lora_site_fw(m, l, LW_GATE, g + (size_t)t * nff, x2, E, nff);
@@ -6640,7 +6711,7 @@ bool model_lora_backward_w(model_t *m, const int32_t *toks, int T,
         if (!pos_w || pos_w[t] != 0.0f) {
             const float *h = m->tape + ((size_t)L * T + t) * E;
             float *pr = probs + (size_t)nc * V;
-            rmsnorm(hn, h, m->out_norm_w, E, m->rms_eps);
+            xnorm(m, hn, h, m->out_norm_w, m->out_norm_b, E, m->rms_eps);
             matvec_b(m->tp, pr, V, m->output, hn, E, E, V, NULL, 1);
             softmax(pr, V);
             pr[toks[t + 1]] -= 1.0f;
@@ -6975,8 +7046,8 @@ static void forward_layer(model_t *m, int l, int n, int pos, int dbg) {
 
     // attention
     for (int b = 0; b < n; b++)
-        rmsnorm(m->xb + (size_t)b * xdim, m->x + (size_t)b * n_embd,
-                ly->attn_norm_w, n_embd, m->rms_eps);
+        xnorm(m, m->xb + (size_t)b * xdim, m->x + (size_t)b * n_embd,
+              ly->attn_norm_w, ly->attn_norm_b, n_embd, m->rms_eps);
     if (dbg) {
         fprintf(stderr, "ACT L%-3d cfg swa=%d hd=%d n_kv=%d q_dim=%d kv_dim=%d "
                 "scale=%.5f out_scale=%.6f wv=%d qn=%d kn=%d pan=%d pfn=%d "
@@ -7171,8 +7242,8 @@ nemo_ffn:
         goto ffn_done;
     }
     for (int b = 0; b < n; b++)
-        rmsnorm(m->xb + (size_t)b * xdim, m->x + (size_t)b * n_embd,
-                ly->ffn_norm_w, n_embd, m->rms_eps);
+        xnorm(m, m->xb + (size_t)b * xdim, m->x + (size_t)b * n_embd,
+              ly->ffn_norm_w, ly->ffn_norm_b, n_embd, m->rms_eps);
     if (ly->is_moe) {
         if (ly->w_up_shexp)
             for (int b = 0; b < n; b++)
@@ -7392,7 +7463,8 @@ float *model_forward_batch(model_t *m, const int32_t *tokens, int n, int pos,
         memcpy(m->tape + ((size_t)m->n_layer * m->tape_T + pos) * m->n_embd,
                m->x, sizeof(float) * (size_t)m->n_embd);
     if (!want_logits) return NULL;
-    rmsnorm(m->xb, m->x + (size_t)(n - 1) * n_embd, m->out_norm_w, n_embd, m->rms_eps);
+    xnorm(m, m->xb, m->x + (size_t)(n - 1) * n_embd, m->out_norm_w,
+          m->out_norm_b, n_embd, m->rms_eps);
     if (dbg) dbg_stat("final-norm", m->n_layer, m->xb, n_embd);
     matvec_b(m->tp, m->logits, m->n_vocab, m->output, m->xb, xdim, n_embd, m->n_vocab, NULL, 1);
     if (dbg) dbg_stat("logits-raw", m->n_layer, m->logits, m->n_vocab);
@@ -7454,7 +7526,8 @@ float *model_spec_row_logits(model_t *m, int b) {
     }
     int n_embd = m->n_embd, xdim = m->xdim;   // cached at load (RNC-3)
     float *lg = m->all_logits + (size_t)b * m->n_vocab;
-    rmsnorm(m->xb, m->x + (size_t)b * n_embd, m->out_norm_w, n_embd, m->rms_eps);
+    xnorm(m, m->xb, m->x + (size_t)b * n_embd, m->out_norm_w,
+          m->out_norm_b, n_embd, m->rms_eps);
     matvec_b(m->tp, lg, m->n_vocab, m->output, m->xb, xdim, n_embd,
              m->n_vocab, NULL, 1);
     apply_head_transforms(m, lg);
@@ -7725,8 +7798,8 @@ bool model_embed(model_t *m, const int32_t *toks, int n, float *out) {
         int chunk = n - i < m->n_batch ? n - i : m->n_batch;
         model_forward_batch(m, toks + i, chunk, i, false);
         for (int b = 0; b < chunk; b++) {
-            rmsnorm(tmp, m->x + (size_t)b * m->n_embd, m->out_norm_w,
-                    m->n_embd, m->rms_eps);
+            xnorm(m, tmp, m->x + (size_t)b * m->n_embd, m->out_norm_w,
+                  m->out_norm_b, m->n_embd, m->rms_eps);
             for (int j = 0; j < m->n_embd; j++) out[j] += tmp[j];
         }
         i += chunk;
