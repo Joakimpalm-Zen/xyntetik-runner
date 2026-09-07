@@ -13,6 +13,15 @@ the KL divergence and top-1 agreement of each endpoint against the gold
 distribution. Run it on an unquantized (bf16/f16) GGUF so weight rounding
 is the same on every side and only the arithmetic differs.
 
+Serve both sides at a context the model was TRAINED for. The runner
+applies YaRN automatically when `-c` exceeds the training context and says
+so on stderr ("requested ctx N > training ctx M"); llama.cpp does not. A
+run that crosses that line measures the scaling, not the arithmetic:
+measured 2026-09-07 on StableLM 2 1.6B (training context 4096), the same
+binary on the same file read mean KL 0.1056 at `-c 8192` and 0.0001 at
+`-c 4096`. Cap `--max-positions * --stride` below the training context too,
+for the same reason.
+
     gold-logits.py --hf /path/to/hf-model --corpus tests/fixtures/mixed-corpus.txt \\
         --endpoint-a http://127.0.0.1:58631 --model-name-a X.gguf \\
         --endpoint-b http://127.0.0.1:58632 --model-name-b X.gguf \\
