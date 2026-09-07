@@ -25,6 +25,8 @@ spec.loader.exec_module(bench)
 @pytest.fixture
 def sample(tmp_path):
     path = tmp_path / "weights.bin"
+    # comfortably larger than one mapping granule on every platform, so both
+    # paths have offsets to scatter over
     path.write_bytes(os.urandom(4 * 1024 * 1024))
     return path
 
@@ -42,9 +44,12 @@ def test_offsets_are_page_aligned_and_in_bounds():
 
 def test_offsets_do_not_repeat_while_positions_remain():
     # A stride sharing a factor with the position count revisits a handful of
-    # offsets and would measure a warm cache instead of the device.
-    page = bench.page_size()
-    got = bench.offsets(80 * page, 4 * page, 30, 8)
+    # offsets and would measure a warm cache instead of the device. Sized in
+    # mapping granules, not pages: on Windows a granule is 64 KB, and a file
+    # sized in 4 KB pages leaves too few positions for the property to be
+    # about the stride at all.
+    granule = bench.map_alignment()
+    got = bench.offsets(80 * granule, 4 * granule, 30, 8)
     assert len(set(got)) == len(got)
 
 
@@ -56,6 +61,8 @@ def test_offsets_refuse_a_file_smaller_than_one_slice():
 def test_read_path_reports_consistent_totals(sample):
     result = bench.measure_read(str(sample), 64 * 1024, 5, 1, 104729, 1)
     assert result["samples"] == 5
+    # names which call shape produced the number, since Windows has no pread
+    assert result["read_call"] in ("pread", "lseek+read")
     assert result["total_bytes"] == 5 * 64 * 1024
     assert result["min_bytes_per_second"] <= result["p50_bytes_per_second"]
     assert result["p50_bytes_per_second"] <= result["max_bytes_per_second"]

@@ -103,3 +103,36 @@ at the first object. Build from msys bash instead
 `make` output to a file there, and echo `$?` so the exit code comes back
 on stdout. A fresh checkout at `4731dc0` built this way in under a minute
 with `make OS=Windows_NT -j4 runner`.
+
+## The suite on this box, 2026-09-07
+
+Ran again for the first time since 2026-08-13 and it did not build: `setenv`
+is not in MinGW, so `tests/test_gpu_identity.c` and `tests/test_moe_mm_ab.c`
+stopped `make test` at a compile error. Past that, the Python half read
+**1107 passed, 8 failed, 1 error** on `main`, every one of them the harness
+rather than the engine:
+
+| what | why it is Windows-only |
+|---|---|
+| `test_weight_io_bench.py` x5 | `os.pread` does not exist; `mmap`'s `flags`/`prot` are Unix-only; a mapping offset must be 64 KB-aligned, not page-aligned; `os.open` needs `O_BINARY` or a weight file is newline-translated |
+| `test_kv_quality.py` | `os.killpg` does not exist, and it raises `AttributeError`, which the `OSError` fallback beside it did not catch |
+| `test_tool_choice_boundary.py` | the record hashes the template TEXT, the test hashed the file BYTES, and `write_text` lands CRLF |
+| `conformance/test_prefill_deadline.py` | a test-supplied `env` replaced the inherited one; without `SystemRoot` a process cannot initialise Winsock and exits 1 before printing anything |
+| `test_caps.py` | `--caps` has advertised NVFP4 on CUDA since 2026-09-06 and the expected list had not admitted it (the check only runs where a backend exists, and CI has no GPU) |
+
+All fixed the same day. `make OS=Windows_NT -j2 test` **exits 0** here again
+(C gates plus 525 + 47 + 28 + 20 passed across the Python legs), and the
+Python suite on its own reads **1130 passed, 67 skipped, 0 failed**. The general lesson is the one worth keeping: **CI builds Windows and
+never runs the suite there**, so a Windows-only harness defect is invisible
+until somebody uses this box, and this box is the only CUDA device in the lab.
+Whether that becomes a CI job or a scheduled run on the box is open (suite
+plan R8.7.4).
+
+Two operational notes from the same session. Running the suite under
+`schtasks` fails wholesale: the task's session cannot create
+`%LOCALAPPDATA%\Temp\pytest-of-zen`, so every `tmp_path` test errors
+(363 of them) for a reason that has nothing to do with the code. Run it from
+the interactive ssh session instead, and detach only what is genuinely long.
+And check for a leftover `runner.exe` before trusting a conformance failure:
+an interrupted run leaves a server holding its port, and the next run reports
+`runner exited during startup` with an empty log.

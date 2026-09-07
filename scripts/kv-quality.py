@@ -47,6 +47,7 @@ import signal
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -333,6 +334,37 @@ def score_tool_call(call, want_name, want_args):
 
 # -------------------------------------------------------------------- http
 
+def stop_tree(proc, hard):
+    """Stop a served runner and anything it spawned.
+
+    POSIX: the child was given its own session, so signalling the group
+    reaches grandchildren a bare terminate() would orphan. Windows has no
+    process groups to signal and no killpg to call at all -- reaching for it
+    there raised AttributeError, which the OSError handler below did not
+    catch, so the teardown failed instead of falling back. `taskkill /T`
+    walks the tree; terminate()/kill() is the last resort.
+    """
+    if hasattr(os, "killpg") and hasattr(os, "getpgid"):
+        try:
+            os.killpg(os.getpgid(proc.pid),
+                      signal.SIGKILL if hard else signal.SIGTERM)
+            return
+        except OSError:
+            pass
+    else:
+        try:
+            subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)],
+                           stdout=subprocess.DEVNULL,
+                           stderr=subprocess.DEVNULL, timeout=30)
+            return
+        except (OSError, subprocess.SubprocessError):
+            pass
+    if hard:
+        proc.kill()
+    else:
+        proc.terminate()
+
+
 class Server:
     def __init__(self, binary, model, ctx, kv, port, gpu="auto", verbose=False):
         self.binary, self.model, self.ctx = binary, model, ctx
@@ -343,7 +375,7 @@ class Server:
         self.model_id = None
 
     def __enter__(self):
-        logdir = Path(os.environ.get("TMPDIR", "/tmp"))
+        logdir = Path(os.environ.get("TMPDIR") or tempfile.gettempdir())
         logpath = logdir / ("kvq-%s-%d.log" % (self.kv, self.port))
         self.log = open(logpath, "w")
         cmd = [str(Path(self.binary).resolve()), "--serve", "--no-tray",
@@ -372,17 +404,11 @@ class Server:
 
     def __exit__(self, *exc):
         if self.proc and self.proc.poll() is None:
-            try:
-                os.killpg(os.getpgid(self.proc.pid), signal.SIGTERM)
-            except OSError:
-                self.proc.terminate()
+            stop_tree(self.proc, hard=False)
             try:
                 self.proc.wait(timeout=60)
             except subprocess.TimeoutExpired:
-                try:
-                    os.killpg(os.getpgid(self.proc.pid), signal.SIGKILL)
-                except OSError:
-                    self.proc.kill()
+                stop_tree(self.proc, hard=True)
         if self.log:
             self.log.close()
         return False
