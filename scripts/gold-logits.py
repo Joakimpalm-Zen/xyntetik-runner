@@ -82,6 +82,15 @@ def main():
     ap.add_argument("--out")
     ap.add_argument("--trust-remote-code", action="store_true",
                     help="the publisher ships its own modeling code")
+    ap.add_argument("--force-bos", action="store_true",
+                    help="prepend the tokenizer's BOS to the reference even "
+                         "when the HF tokenizer does not add one. Needed "
+                         "where the SERVED artifact declares add_bos_token "
+                         "but the publisher's loaded tokenizer does not add "
+                         "it (measured 2026-09-07 on Gemma 4 E2B): the "
+                         "endpoints follow the artifact, so the reference "
+                         "must see the same prefix or the two are compared "
+                         "across a one-token offset.")
     args = ap.parse_args()
 
     import torch
@@ -124,6 +133,8 @@ def main():
     _without = tok(_probe, add_special_tokens=False)["input_ids"]
     n_special = len(_with) - len(_without)
     special = _with[:n_special] if n_special > 0 else []
+    if args.force_bos and not special and tok.bos_token_id is not None:
+        special = [tok.bos_token_id]
     span = list(special) + list(body)
     with torch.no_grad():
         out = model(torch.tensor([span]))
@@ -163,6 +174,7 @@ def main():
     summary = {"positions": len(rows), "hf": args.hf, "corpus": args.corpus,
                "reference_class": type(model).__name__,
                "special_prefix_tokens": len(special),
+               "special_prefix_forced": bool(args.force_bos and special),
                "positions_skipped_no_logprobs": skipped,
                "reference_dtype": "float32", "reference_device": "cpu",
                "sides": {}}
