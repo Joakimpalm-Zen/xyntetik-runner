@@ -79,6 +79,17 @@ NO_MID_SYSTEM_ROLE = (
     "reference",
     "the template raises 'Invalid message role': a system turn is only a role "
     "this template knows in first position")
+TOOL_CALL_ID_9 = (
+    "reference",
+    "the template raises: 'Tool call IDs should be alphanumeric strings with "
+    "length 9!'. The harness's fixture ids are `call_1`/`call_2`, which this "
+    "family will not render at all")
+LLAMA2_FALLBACK_ALTERNATE = (
+    "runner",
+    "the runner does not recognise this family's template and falls back to "
+    "llama2 markup, whose renderer refuses a conversation that does not "
+    "alternate. The fallback IS the finding (R4.22); these three cases "
+    "cannot be compared while it stands")
 NO_MID_SYSTEM = (
     "reference",
     "the template raises: 'System message must be at the beginning.'")
@@ -315,7 +326,11 @@ FAMILIES = {
         tokenizer=("Mistral-Nemo-Instruct-2407-Q4_K_M.gguf",),
         cannot={"consecutive-user": ALTERNATE_AFTER_SYS,
                 "consecutive-assistant": ALTERNATE_AFTER_SYS,
-                "system-mid-history": ALTERNATE_AFTER_SYS}),
+                "system-mid-history": ALTERNATE_AFTER_SYS,
+                "tool-call+result": TOOL_CALL_ID_9,
+                "multi-tool-call": TOOL_CALL_ID_9,
+                "tool-call-with-text": TOOL_CALL_ID_9,
+                "tool-then-conversation": TOOL_CALL_ID_9}),
     "mistral-file": Family(
         "mistral-v1", ("gguf", "models/Mistral-7B-Instruct-v0.3-Q4_K_M.gguf"),
         note="the template EMBEDDED in the pinned v0.3 file, which the "
@@ -324,13 +339,22 @@ FAMILIES = {
         tokenizer=("Mistral-7B-Instruct-v0.3-Q4_K_M.gguf",),
         cannot={"consecutive-user": ALTERNATE,
                 "consecutive-assistant": ALTERNATE,
-                "system-mid-history": ALTERNATE}),
+                "system-mid-history": ALTERNATE,
+                "system+user+gen": ALTERNATE,
+                "system+multiturn+gen": ALTERNATE,
+                "content-array": ALTERNATE,
+                "empty-user-content": ALTERNATE,
+                "unicode-emoji": ALTERNATE,
+                "long-content": ALTERNATE}),
     "nemotron-nano": Family(
         "llama2", ("hf", "nvidia/NVIDIA-Nemotron-Nano-9B-v2"),
         note="NOT RECOGNISED by the runner (falls back to llama2 markup); "
              "the row measures the size of that defect",
         tool_family=True, thinking_var="enable_thinking",
-        tokenizer=("NVIDIA-Nemotron-Nano-9B-v2-Q8_0.gguf",)),
+        tokenizer=("NVIDIA-Nemotron-Nano-9B-v2-Q8_0.gguf",),
+        cannot={"consecutive-user": LLAMA2_FALLBACK_ALTERNATE,
+                "consecutive-assistant": LLAMA2_FALLBACK_ALTERNATE,
+                "system-mid-history": LLAMA2_FALLBACK_ALTERNATE}),
     "nemotron-lightning": Family(
         "granite42", ("gguf", "models/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-Q4_0.gguf"),
         note="detected as granite42 because its template carries the "
