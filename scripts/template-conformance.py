@@ -168,8 +168,12 @@ FAMILIES = {
         cannot={"consecutive-user": ALTERNATE,
                 "consecutive-assistant": ALTERNATE,
                 "system-mid-history": ALTERNATE}),
+    # e2b-q40.gguf carries NO chat template, so this row was the one family
+    # the 2026-09-07 golden pass could not compare at all. Pointed at the
+    # E4B file, whose template is the E-series one (18810 bytes, distinct
+    # from the mainline's 18683).
     "gemma4": Family(
-        "gemma4", ("gguf", "models/e2b-q40.gguf"),
+        "gemma4", ("gguf", "models/e4b-q4km.gguf"),
         note="src/template.h cites 'gemma-4 tokenizer.chat_template (read "
              "from the GGUF)'; byte-identical to google/gemma-4-E2B-it's "
              "chat_template.jinja on HF",
@@ -888,6 +892,12 @@ def jinja_env():
     def strftime_now(fmt):
         return datetime.datetime.now().strftime(fmt)
 
+    # `{% generation %}` / `{% endgeneration %}` are HuggingFace's
+    # assistant-masking markers (they tell a trainer which span is the
+    # assistant's, and transformers installs an extension for them). They
+    # emit nothing, so stripping them leaves the rendered bytes unchanged
+    # and lets plain jinja2 parse templates that use them. Without this,
+    # Trinity Nano's 21 cases are NOT CHECKED rather than compared.
     env = ImmutableSandboxedEnvironment(trim_blocks=True, lstrip_blocks=True,
                                         extensions=[jinja2.ext.loopcontrols])
     env.filters["tojson"] = tojson
@@ -905,6 +915,7 @@ def render_reference(env, tmpl_src, meta, msgs, add_gen, thinking,
         kwargs["tools"] = tools
     if thinking_var and thinking != "default":
         kwargs[thinking_var] = (thinking == "on")
+    tmpl_src = re.sub(r"\{%-?\s*(end)?generation\s*-?%\}", "", tmpl_src)
     return env.from_string(tmpl_src).render(**kwargs)
 
 
