@@ -331,6 +331,18 @@ in the strongest sense: same data + same seed + same config produce a
 adaptation as an auditable artifact, not a run that is merely repeatable
 "within tolerance."
 
+What the backward covers is the dense gated-SiLU transformer in its
+shapes: Llama, Mistral, Qwen2.5 and Granite 4.x dense (muP scalars, tied
+output), and since 2026-09-08 the head transforms (logit scale, softcap,
+suppressed tokens), the afmoe and Muse-Glimmer attention output gate, the
+sandwich norms, the per-layer output scale and sliding-window attention.
+The training gate names what it still refuses: GELU FFNs (Gemma 4), the
+weightless V norm, tied or absent V, per-layer embeddings, attention sinks,
+MoE experts, and recurrent or hybrid blocks. Every covered shape is pinned
+by the finite-difference gate in `make test` on a fixture that carries it,
+and by a directional derivative over the whole adapter that averages out
+the f16 cache staircase.
+
 Measured, on a public artifact you can download and reproduce
 ([Qwen3-4B-Runner-ToolUse-Q4_K_M](https://huggingface.co/Joakimpalm-Zen/Qwen3-4B-Runner-ToolUse-Q4_K_M)):
 

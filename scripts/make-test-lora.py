@@ -27,6 +27,7 @@ import struct
 import sys
 
 BASE, OUT = sys.argv[1], sys.argv[2]
+BASE_ARCH = "llama"
 # LORA_ALPHA lets a test build two adapters that differ only in alpha
 ALPHA = float(os.environ.get("LORA_ALPHA", "8.0"))
 RANK = 4
@@ -98,10 +99,16 @@ def read_base(path):
         else:
             off += sizes[t]
 
+    global BASE_ARCH
     for _ in range(n_kv):
-        rstr()
+        key = rstr()
         t = struct.unpack_from("<I", d, off)[0]
         off += 4
+        if key == "general.architecture" and t == STR:
+            # the adapter must name the base's architecture (the loader
+            # refuses a mismatch); granite and muse-glimmer fixtures are not llama
+            n = struct.unpack_from("<Q", d, off)[0]
+            BASE_ARCH = d[off + 8:off + 8 + n].decode("utf-8")
         skip_val(t)
     tens = []
     for _ in range(n_t):
@@ -146,7 +153,7 @@ def adapter_tensors(zero_b):
     return out
 
 
-meta = [ks("general.architecture", "llama"), ks("general.type", "adapter"),
+meta = [ks("general.architecture", BASE_ARCH), ks("general.type", "adapter"),
         ks("adapter.type", "lora"), kf("adapter.lora.alpha", ALPHA)]
 
 _seed = 0x1234
