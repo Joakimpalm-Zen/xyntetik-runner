@@ -403,3 +403,16 @@ def test_probe_speed_and_the_fit_floor(tmp_path: Path, monkeypatch: Any, capsys:
     rc = main(["replay", "--out", str(tmp_path), "--endpoint", "http://x", "--min-tps", "15"])
     assert rc == 2
     assert "fit-first" in capsys.readouterr().err
+
+
+def test_edit_file_replaces_one_exact_occurrence(tmp_path: Path) -> None:
+    ws = Workspace(tmp_path, visible_tests=(), pythonpath=(), python=sys.executable, budget=Budget())
+    (tmp_path / "a.py").write_text("x = 1\ny = 2\nx = 1\n")
+    assert ws.edit_file("a.py", "x = 1", "x = 9").startswith("error: old_text occurs 2")
+    assert ws.edit_file("a.py", "nope", "x").startswith("error: old_text not found")
+    assert ws.edit_file("../a.py", "y", "z").startswith("error")
+    assert ws.edit_file("a.py", "y = 2", "y = 3").startswith("edited a.py")
+    assert (tmp_path / "a.py").read_text() == "x = 1\ny = 3\nx = 1\n"
+    chat = scripted({"content": "", "tool_calls": [call("edit_file", path="a.py", old_text="x = 1\ny = 3", new_text="x = 0\ny = 0"), call("finish")]})
+    r = attempt("t", ws, chat)
+    assert r.finished and (tmp_path / "a.py").read_text() == "x = 0\ny = 0\nx = 1\n"
