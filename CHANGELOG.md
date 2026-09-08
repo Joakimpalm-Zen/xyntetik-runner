@@ -8,6 +8,15 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **`shadow install`: the harness wiring as one explicit opt-in.** Merges
+  the prompt and stop capture hooks into the Claude Code user settings
+  beside whatever is there (backup beside the file, idempotent), writes a
+  `/shadow` skill that shows the ledger and the capture summary from
+  inside a session, and a `/shadow` prompt for Codex, which has no
+  prompt-time hook. `uninstall` removes exactly that and nothing else;
+  `capture --summary` prints the counts the commands show. Nothing runs
+  until a prompt is submitted, and the hooks can never block one.
+
 - **The scaffold artifact (R15.0): a learned, hashed, model-agnostic
   layer between the model and the harness, before any weight moves.**
   `xyntetik_runner.shadow.scaffold.Scaffold` is a versioned JSON document

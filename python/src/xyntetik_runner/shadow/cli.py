@@ -34,6 +34,7 @@ from xyntetik_runner.shadow.evidence import (
     summarize,
 )
 from xyntetik_runner.shadow.importer import CAPTURE_FILE, Episode, read_episodes, scan_all, write_episodes
+from xyntetik_runner.shadow.install import install, uninstall
 from xyntetik_runner.shadow.bank import build_bank
 from xyntetik_runner.shadow.optimize import (
     TaskOutcome,
@@ -385,13 +386,31 @@ def cmd_capture(args: argparse.Namespace) -> int:
     """Append one prompt or stop line from a hook. Reads the hook's JSON on
     stdin (Claude Code passes ``session_id``, ``cwd`` and, on prompt
     submission, ``prompt``); records the request, the directory, the time
-    and the repository HEAD, and nothing the assistant produced."""
+    and the repository HEAD, and nothing the assistant produced.
+    ``--summary`` prints counts over the capture file instead."""
+    if args.summary:
+        path = Path(args.file) if args.file else Path.home() / CAPTURE_FILE
+        rows: list[dict[str, Any]] = []
+        if path.is_file():
+            for line in path.read_text(encoding="utf-8").splitlines():
+                try:
+                    rows.append(json.loads(line))
+                except ValueError:
+                    continue
+        prompts = [r for r in rows if r.get("event") == "prompt"]
+        with_heads = sum(1 for r in prompts if r.get("heads"))
+        print(f"captured: {len(rows)} lines, {len(prompts)} prompts, {with_heads} with repository "
+              f"heads, {len({r.get('session_id') for r in rows})} sessions ({path})")
+        return 0
     try:
         data = json.loads(sys.stdin.read() or "{}")
     except ValueError:
         data = {}
     if not isinstance(data, dict):
         data = {}
+    if args.event not in ("prompt", "stop"):
+        print("error: --event prompt|stop is required (or --summary)", file=sys.stderr)
+        return 2
     cwd = str(args.cwd or data.get("cwd") or Path.cwd())
     head = subprocess.run(["git", "-C", cwd, "rev-parse", "HEAD"], capture_output=True,
                           text=True).stdout.strip()
@@ -412,6 +431,27 @@ def cmd_capture(args: argparse.Namespace) -> int:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as f:
         f.write(json.dumps(rec, sort_keys=True) + "\n")
+    return 0
+
+
+def cmd_install(args: argparse.Namespace) -> int:
+    home = Path(args.home) if args.home else Path.home()
+    done = install(home, python=args.python, pythonpath=args.pythonpath or None, out=args.out,
+                   claude=not args.no_claude, codex=not args.no_codex)
+    if done.settings:
+        print(f"claude code: {done.hooks_added} hook(s) added to {done.settings} "
+              f"(backup beside it); skill {done.claude_skill}")
+    if done.codex_prompt:
+        print(f"codex: prompt {done.codex_prompt}")
+    print("nothing runs until a prompt is submitted; the hooks never block one; "
+          "'shadow uninstall' removes exactly this")
+    return 0
+
+
+def cmd_uninstall(args: argparse.Namespace) -> int:
+    home = Path(args.home) if args.home else Path.home()
+    done = uninstall(home)
+    print(f"removed {-done.hooks_added} hook(s), the /shadow skill and the codex prompt")
     return 0
 
 
@@ -512,13 +552,26 @@ def main(argv: list[str] | None = None) -> int:
                    help="skip tasks with more failing-at-base tests than this")
     p.set_defaults(fn=cmd_optimize)
     p = sub.add_parser("capture", help="append a prompt or stop event from an agent hook")
-    p.add_argument("--event", choices=["prompt", "stop"], required=True)
+    p.add_argument("--event", choices=["prompt", "stop"], default="")
+    p.add_argument("--summary", action="store_true", help="print counts over the capture file")
     p.add_argument("--tool", default="claude_code")
     p.add_argument("--cwd", default="")
     p.add_argument("--session", default="")
     p.add_argument("--prompt", default="")
     p.add_argument("--file", default="")
     p.set_defaults(fn=cmd_capture)
+    p = sub.add_parser("install", help="wire the hooks and a /shadow command into the harnesses "
+                                       "(explicit opt-in; reversible with uninstall)")
+    p.add_argument("--home", default="")
+    p.add_argument("--python", default=sys.executable)
+    p.add_argument("--pythonpath", default="", help="set when the client is not installed")
+    p.add_argument("--out", default="~/.xyntetik/shadow")
+    p.add_argument("--no-claude", action="store_true")
+    p.add_argument("--no-codex", action="store_true")
+    p.set_defaults(fn=cmd_install)
+    p = sub.add_parser("uninstall", help="remove exactly what install wrote")
+    p.add_argument("--home", default="")
+    p.set_defaults(fn=cmd_uninstall)
     p = sub.add_parser("report", help="counts and both denominators")
     p.add_argument("--out", default=str(DEFAULT_OUT))
     p.add_argument("--by-reason", action="store_true")
