@@ -76,22 +76,34 @@ def test_json_round_trip() -> None:
     assert EpisodeEvidence.from_json(r.to_json()) == r
 
 
-def test_summary_counts_both_denominators_and_withholds_the_percentage() -> None:
-    recs = [record(Disposition.VERIFIED_LOCAL_ATTEMPT, passing(), episode_id=f"v{i}")
-            for i in range(4)]
-    recs += [record(Disposition.LOCAL_FAILED, passing(passed=False, failed=1), episode_id=f"f{i}")
-             for i in range(2)]
+def test_summary_is_per_episode_and_per_cohort_and_withholds_the_percentage() -> None:
+    other = Identity(**{**IDENT.__dict__, "model_sha256": "o" * 64})
+    # per-task identity fields differ between episodes; the row is per stack
+    def ident_for(i: int, base: Identity) -> Identity:
+        return Identity(**{**base.__dict__, "verifier_id": f"commit-tests:t{i}", "project": f"p{i}"})
+    recs = [record(Disposition.VERIFIED_LOCAL_ATTEMPT, passing(), episode_id=f"v{i}",
+                   identity=ident_for(i, IDENT)) for i in range(4)]
+    recs += [record(Disposition.LOCAL_FAILED, passing(passed=False, failed=1), episode_id=f"f{i}",
+                    identity=ident_for(10 + i, IDENT)) for i in range(2)]
+    # the same episodes attempted by a second stack: still six episodes
+    recs += [record(Disposition.LOCAL_FAILED, passing(passed=False, failed=1), episode_id=f"v{i}",
+                    identity=ident_for(i, other)) for i in range(4)]
     recs += [record(Disposition.INELIGIBLE, None, episode_id="i0"),
              record(Disposition.UNREPLAYABLE, None, episode_id="u0"),
              record(Disposition.VERIFIER_INCONCLUSIVE, None, episode_id="q0"),
              record(Disposition.AGREEMENT_ONLY, None, episode_id="a0"),
-             record(Disposition.NOT_ATTEMPTED_RESOURCE, None, episode_id="n0")]
+             record(Disposition.NOT_ATTEMPTED_RESOURCE, None, episode_id="n0"),
+             record(Disposition.NOT_ATTEMPTED_RESOURCE, None, episode_id="v0")]
     s = summarize(recs)
-    assert (s.observed, s.eligible, s.attempted, s.checked, s.verified, s.failed) == (11, 9, 8, 6, 4, 2)
-    assert s.inconclusive == 1 and s.agreement_only == 1 and s.cohorts == 1
+    assert (s.observed, s.eligible, s.unattempted, s.agreement_only) == (11, 9, 1, 1)
+    assert s.by_disposition["verified_local_attempt"] == 4 and s.by_disposition["local_failed"] == 2
+    rows = {c.model: c for c in s.cohorts}
+    assert len(rows) == 2, "one row per model stack, not per task"
+    assert rows["m" * 64].verified == 4 and rows["m" * 64].failed == 2
+    assert rows["o" * 64].verified == 0 and rows["o" * 64].attempted == 4
     text = render(s)
-    assert "verified over eligible: 4 of 9" in text
-    assert "verified over observed: 4 of 11" in text
+    assert "11 episodes observed" in text and "9 eligible for replay" in text
+    assert "verified over eligible 4 of 9; verified over observed 4 of 11" in text
     assert "%" not in text.split("(no percentage")[0]
     assert f"no percentage before {HEADLINE_MIN_EPISODES}" in text
 
@@ -101,6 +113,6 @@ def test_percentage_appears_only_at_the_floor_and_only_over_eligible() -> None:
             for i in range(HEADLINE_MIN_EPISODES)]
     recs += [record(Disposition.INELIGIBLE, None, episode_id=f"i{i}") for i in range(10)]
     text = render(summarize(recs))
-    assert f"verified over eligible: {HEADLINE_MIN_EPISODES} of {HEADLINE_MIN_EPISODES} (100%)" in text
-    assert f"verified over observed: {HEADLINE_MIN_EPISODES} of {HEADLINE_MIN_EPISODES + 10}\n" in text + "\n"
+    assert f"verified over eligible {HEADLINE_MIN_EPISODES} of {HEADLINE_MIN_EPISODES} (100%)" in text
+    assert f"verified over observed {HEADLINE_MIN_EPISODES} of {HEADLINE_MIN_EPISODES + 10}" in text
     assert "no percentage" not in text

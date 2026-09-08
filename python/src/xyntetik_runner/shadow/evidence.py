@@ -74,7 +74,17 @@ class Identity:
     adapter_scale: float | None = None
 
     def cohort_key(self) -> str:
+        """The full partition: a new task class, verifier or context band is
+        a new cohort for evidence purposes."""
         return json.dumps(asdict(self), sort_keys=True, separators=(",", ":"))
+
+    def stack_key(self) -> str:
+        """The model stack alone (model, quant, adapter, runner build, backend,
+        harness): the unit a report row is about, across tasks."""
+        keep = ("model_sha256", "quant", "adapter_sha256", "adapter_scale", "runner_build",
+                "backend", "harness_version", "environment_id")
+        return json.dumps({k: getattr(self, k) for k in keep}, sort_keys=True,
+                          separators=(",", ":"))
 
 
 @dataclass(frozen=True)
@@ -159,17 +169,29 @@ class EpisodeEvidence:
 
 
 @dataclass(frozen=True)
-class Summary:
-    observed: int
-    eligible: int
+class CohortSummary:
+    """One model stack's results over the eligible episodes."""
+
+    cohort: str
+    model: str
     attempted: int
-    checked: int
     verified: int
     failed: int
     inconclusive: int
+
+
+@dataclass(frozen=True)
+class Summary:
+    """Per episode, never per record: an episode attempted by two stacks is
+    one episode with two cohort rows. ``eligible`` is the instrument's
+    count of episodes that could be replayed at all."""
+
+    observed: int
+    eligible: int
+    unattempted: int
     agreement_only: int
-    cohorts: int
     by_disposition: Mapping[str, int]
+    cohorts: tuple[CohortSummary, ...]
 
     @property
     def headline_allowed(self) -> bool:
@@ -177,48 +199,75 @@ class Summary:
 
 
 def summarize(records: Iterable[EpisodeEvidence]) -> Summary:
-    by: dict[str, int] = {d.value: 0 for d in Disposition}
-    cohorts: set[str] = set()
-    n = 0
+    by_episode: dict[str, list[EpisodeEvidence]] = {}
     for r in records:
-        n += 1
-        by[r.disposition.value] += 1
-        cohorts.add(r.identity.cohort_key())
-    count = {d: by[d.value] for d in Disposition}
-    return Summary(
-        observed=n,
-        eligible=sum(count[d] for d in ELIGIBLE),
-        attempted=sum(count[d] for d in ATTEMPTED),
-        checked=sum(count[d] for d in CHECKED),
-        verified=count[Disposition.VERIFIED_LOCAL_ATTEMPT],
-        failed=count[Disposition.LOCAL_FAILED],
-        inconclusive=count[Disposition.VERIFIER_INCONCLUSIVE],
-        agreement_only=count[Disposition.AGREEMENT_ONLY],
-        cohorts=len(cohorts),
-        by_disposition=by,
-    )
+        by_episode.setdefault(r.episode_id, []).append(r)
+    by: dict[str, int] = {d.value: 0 for d in Disposition}
+    eligible = unattempted = agreement = 0
+    per_cohort: dict[str, dict[str, Any]] = {}
+    for recs in by_episode.values():
+        # The instrument's disposition for the episode: verified beats
+        # failed beats inconclusive beats not-attempted, across cohorts.
+        dispositions = {r.disposition for r in recs}
+        if Disposition.VERIFIED_LOCAL_ATTEMPT in dispositions:
+            top = Disposition.VERIFIED_LOCAL_ATTEMPT
+        elif Disposition.LOCAL_FAILED in dispositions:
+            top = Disposition.LOCAL_FAILED
+        elif Disposition.VERIFIER_INCONCLUSIVE in dispositions:
+            top = Disposition.VERIFIER_INCONCLUSIVE
+        else:
+            top = recs[0].disposition
+        by[top.value] += 1
+        if top in ELIGIBLE:
+            eligible += 1
+        if top is Disposition.NOT_ATTEMPTED_RESOURCE:
+            unattempted += 1
+        if top is Disposition.AGREEMENT_ONLY:
+            agreement += 1
+        for r in recs:
+            if r.verifier is None:
+                continue
+            key = r.identity.stack_key()
+            row = per_cohort.setdefault(key, {"model": r.identity.model_sha256, "attempted": 0,
+                                              "verified": 0, "failed": 0, "inconclusive": 0})
+            row["attempted"] += 1
+            if r.disposition is Disposition.VERIFIED_LOCAL_ATTEMPT:
+                row["verified"] += 1
+            elif r.disposition is Disposition.LOCAL_FAILED:
+                row["failed"] += 1
+            else:
+                row["inconclusive"] += 1
+    cohorts = tuple(sorted(
+        (CohortSummary(cohort=k, model=str(v["model"]), attempted=int(v["attempted"]),
+                       verified=int(v["verified"]), failed=int(v["failed"]),
+                       inconclusive=int(v["inconclusive"])) for k, v in per_cohort.items()),
+        key=lambda c: c.model))
+    return Summary(observed=len(by_episode), eligible=eligible, unattempted=unattempted,
+                   agreement_only=agreement, by_disposition=by, cohorts=cohorts)
 
 
 def render(s: Summary) -> str:
-    """Counts first, both denominators, no percentage before the floor."""
+    """Counts first, both denominators, no percentage before the floor, one
+    row per model stack."""
     lines = [
         f"{s.observed} episodes observed",
         f"{s.eligible} eligible for replay",
-        f"{s.attempted} attempted",
-        f"{s.verified} passed independent checks",
-        f"{s.failed} failed checks",
-        f"{s.inconclusive} could not be evaluated",
-        f"{s.agreement_only} agreement only (not evidence)",
         f"{s.observed - s.eligible} outside this evaluation's scope",
-        f"{s.cohorts} identity cohorts",
+        f"{s.unattempted} eligible and not attempted yet",
+        f"{s.agreement_only} agreement only (not evidence)",
     ]
-    if s.eligible:
-        ratio = f"verified over eligible: {s.verified} of {s.eligible}"
-        if s.headline_allowed:
-            ratio += f" ({100 * s.verified / s.eligible:.0f}%)"
-        lines.append(ratio)
-    if s.observed:
-        lines.append(f"verified over observed: {s.verified} of {s.observed}")
+    for c in s.cohorts:
+        model = c.model.split(":", 1)[-1]
+        row = (f"{model}: attempted {c.attempted}, verified {c.verified}, failed {c.failed}, "
+               f"inconclusive {c.inconclusive}")
+        if s.eligible:
+            row += f"; verified over eligible {c.verified} of {s.eligible}"
+            if s.headline_allowed:
+                row += f" ({100 * c.verified / s.eligible:.0f}%)"
+        row += f"; verified over observed {c.verified} of {s.observed}"
+        lines.append(row)
+    if not s.cohorts:
+        lines.append("no attempts recorded")
     if not s.headline_allowed:
         lines.append(f"(no percentage before {HEADLINE_MIN_EPISODES} independent eligible episodes)")
     return "\n".join(lines)

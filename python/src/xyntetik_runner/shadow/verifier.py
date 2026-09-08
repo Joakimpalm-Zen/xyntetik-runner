@@ -117,6 +117,18 @@ class ProtectedTests:
         return tuple(sorted({rel for rel, _ in self.expected}))
 
 
+def fixed_ids(protected: ProtectedTests, outcome_ids: Sequence[str], tree: Path, *,
+              timeout_s: float = 600.0, python: str = sys.executable,
+              pythonpath: Sequence[str] = ()) -> tuple[str, ...]:
+    """Which of ``outcome_ids`` (``file::name``) pass on ``tree`` now. A second
+    run, kept separate from ``verify`` so the verdict stays one run."""
+    run = _run_protected(protected, tree, timeout_s=timeout_s, python=python,
+                         pythonpath=pythonpath)
+    want = set(outcome_ids)
+    return tuple(f"{rel}::{name}" for rel, name in protected.expected
+                 if f"{rel}::{name}" in want and run.outcomes.get(_key(rel, name)) == "passed")
+
+
 @dataclass(frozen=True)
 class _Run:
     outcomes: Mapping[tuple[str, str], str]
@@ -144,7 +156,7 @@ def _kill(proc: subprocess.Popen[bytes]) -> None:
 
 
 def _run_protected(protected: ProtectedTests, tree: Path, *, timeout_s: float,
-                   python: str) -> _Run:
+                   python: str, pythonpath: Sequence[str] = ()) -> _Run:
     scratch = Path(tempfile.mkdtemp(prefix="xyntetik-shadow-"))
     try:
         ws = scratch / "ws"
@@ -168,8 +180,11 @@ def _run_protected(protected: ProtectedTests, tree: Path, *, timeout_s: float,
         cmd = [python, "-m", "pytest", "-q", "-p", "no:cacheprovider", "-c", VERIFIER_INI_NAME,
                "-o", "junit_family=xunit2", "--junit-xml", str(report), *protected.test_files]
         env = {k: os.environ[k] for k in _ENV_PASSTHROUGH if k in os.environ}
+        # Import roots are workspace-relative and resolved inside the scratch
+        # copy, so a test can never import the original tree by accident.
+        roots = [str(ws)] + [str(ws / rel) for rel in pythonpath]
         env.update({"HOME": str(scratch), "PYTHONDONTWRITEBYTECODE": "1",
-                    "PYTHONPATH": str(ws)})
+                    "PYTHONPATH": os.pathsep.join(roots)})
         t0 = time.monotonic()
         proc = subprocess.Popen(cmd, cwd=ws, env=env, stdout=subprocess.PIPE,
                                 stderr=subprocess.STDOUT,
@@ -201,10 +216,20 @@ def _run_protected(protected: ProtectedTests, tree: Path, *, timeout_s: float,
         shutil.rmtree(scratch, ignore_errors=True)
 
 
+def _key(rel: str, name: str) -> tuple[str, str]:
+    """JUnit keys a test by (classname, name): the module dotted path, plus
+    the class chain for methods. An expected id ``Class::test`` therefore
+    joins its class onto the module classname."""
+    if "::" in name:
+        cls, _, leaf = name.rpartition("::")
+        return (_classname(rel) + "." + cls.replace("::", "."), leaf)
+    return (_classname(rel), name)
+
+
 def _judge(protected: ProtectedTests, run: _Run) -> tuple[int, int, int, int]:
     passed = failed = skipped = missing = 0
     for rel, name in protected.expected:
-        state = run.outcomes.get((_classname(rel), name))
+        state = run.outcomes.get(_key(rel, name))
         if state == "passed":
             passed += 1
         elif state == "failed":
@@ -222,13 +247,18 @@ class Calibration:
     passing: int
     missing: int
     report_sha256: str
+    failing_ids: tuple[str, ...] = ()
+    """``file::name`` of every expected test that failed or did not run on the
+    baseline: the tests a fix has to turn green."""
 
 
 def calibrate(protected: ProtectedTests, baseline_root: Path, *, timeout_s: float = 600.0,
-              python: str = sys.executable) -> Calibration:
+              python: str = sys.executable, pythonpath: Sequence[str] = ()) -> Calibration:
     """Prove the instrument can fail: the frozen tests must not pass on the
-    untouched baseline. Raises ``InstrumentError`` otherwise."""
-    run = _run_protected(protected, baseline_root, timeout_s=timeout_s, python=python)
+    untouched baseline. Raises ``InstrumentError`` otherwise. ``pythonpath``
+    lists workspace-relative import roots (``python/src``, ``packages/x/src``)."""
+    run = _run_protected(protected, baseline_root, timeout_s=timeout_s, python=python,
+                         pythonpath=pythonpath)
     if run.timed_out:
         raise InstrumentError(f"protected tests timed out on the baseline after {timeout_s}s")
     passed, failed, skipped, missing = _judge(protected, run)
@@ -241,13 +271,42 @@ def calibrate(protected: ProtectedTests, baseline_root: Path, *, timeout_s: floa
     if run.returncode == 0:
         raise InstrumentError("pytest exited 0 on the baseline while the report shows failures; "
                               "the report and the process disagree")
+    ids = tuple(f"{rel}::{name}" for rel, name in protected.expected
+                if run.outcomes.get(_key(rel, name)) != "passed")
     return Calibration(failing=failed, passing=passed, missing=missing,
-                       report_sha256=run.report_sha256)
+                       report_sha256=run.report_sha256, failing_ids=ids)
+
+
+def check(tree: Path, protected: ProtectedTests, *, timeout_s: float = 600.0,
+          python: str = sys.executable, pythonpath: Sequence[str] = ()) -> VerifierOutcome:
+    """The frozen tests on a tree with no baseline: no no-op or tamper logic.
+    This is the admission check on a known solution, not a verdict on an
+    attempt; ``verify`` is the verdict."""
+    run = _run_protected(protected, tree, timeout_s=timeout_s, python=python,
+                         pythonpath=pythonpath)
+    passed, failed, skipped, missing = _judge(protected, run)
+    if run.timed_out:
+        return VerifierOutcome(verifier_id=protected.verifier_id, passed=None,
+                               expected=len(protected.expected), passed_count=passed,
+                               failed=failed, skipped=skipped, missing=missing,
+                               reasons=(f"timeout after {timeout_s:g}s",),
+                               output_sha256=run.report_sha256,
+                               duration_s=round(run.duration_s, 3))
+    ok = failed == 0 and skipped == 0 and missing == 0
+    reasons = tuple(r for r, n in ((f"{failed} expected test(s) failed", failed),
+                                   (f"{skipped} expected test(s) skipped", skipped),
+                                   (f"{missing} expected test(s) not run", missing)) if n)
+    return VerifierOutcome(verifier_id=protected.verifier_id, passed=ok,
+                           expected=len(protected.expected), passed_count=passed, failed=failed,
+                           skipped=skipped, missing=missing, reasons=reasons,
+                           output_sha256=run.report_sha256, duration_s=round(run.duration_s, 3))
 
 
 def verify(workspace: Path, protected: ProtectedTests, baseline: Baseline, *,
-           timeout_s: float = 600.0, python: str = sys.executable) -> VerifierOutcome:
-    """Verdict on the workspace as it stands, against its baseline."""
+           timeout_s: float = 600.0, python: str = sys.executable,
+           pythonpath: Sequence[str] = ()) -> VerifierOutcome:
+    """Verdict on the workspace as it stands, against its baseline.
+    ``pythonpath`` lists workspace-relative import roots for the tests."""
     changes = baseline.changes(workspace)
     n_expected = len(protected.expected)
     if not changes:
@@ -261,7 +320,8 @@ def verify(workspace: Path, protected: ProtectedTests, baseline: Baseline, *,
             tamper.append(f"protected test file changed: {rel}")
         elif Path(rel).name in CONFIG_BASENAMES:
             tamper.append(f"test configuration changed: {rel}")
-    run = _run_protected(protected, workspace, timeout_s=timeout_s, python=python)
+    run = _run_protected(protected, workspace, timeout_s=timeout_s, python=python,
+                         pythonpath=pythonpath)
     passed, failed, skipped, missing = _judge(protected, run)
     reasons: list[str] = []
     verdict: bool | None

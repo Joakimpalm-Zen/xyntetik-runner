@@ -18,6 +18,7 @@ from xyntetik_runner.shadow.baseline import Baseline, Changes, file_sha256, tree
 from xyntetik_runner.shadow.evidence import (
     HEADLINE_MIN_EPISODES,
     SCHEMA_VERSION,
+    CohortSummary,
     Disposition,
     EpisodeEvidence,
     Identity,
@@ -32,6 +33,8 @@ from xyntetik_runner.shadow.verifier import (
     InstrumentError,
     ProtectedTests,
     calibrate,
+    check,
+    fixed_ids,
     verify,
 )
 
@@ -42,6 +45,7 @@ __all__ = [
     "Baseline",
     "Calibration",
     "Changes",
+    "CohortSummary",
     "Disposition",
     "EpisodeEvidence",
     "Identity",
@@ -50,6 +54,8 @@ __all__ = [
     "Summary",
     "VerifierOutcome",
     "calibrate",
+    "check",
+    "fixed_ids",
     "file_sha256",
     "render",
     "summarize",

@@ -8,6 +8,43 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **Shadow mode runs end to end (R14.2 to R14.5): `python -m
+  xyntetik_runner.shadow import | replay | report`.** The importer reads the
+  Codex and Claude Code session files already on the machine and takes from
+  each task boundary the working directory, the timestamps and the user's
+  own request; it never reads an assistant message, a tool argument or a
+  tool result, and a record that loaded frontier content is refused by the
+  contract. The repository, not the trace, supplies the task: the commits
+  in the episode's window (in any repository at or under the working
+  directory) give a pre-state, a post-state and the touched files; a fix
+  commit is attributed to one prompt, the repository's own over a parent
+  directory, then the latest before the fix. A task is admitted when the
+  range touched pytest test files and Python source and nothing that needs
+  a build, the post-state's test files collect and pass on the post-state
+  tree, and the same frozen files fail on the pre-state tree; every other
+  episode gets its disposition and reason in the ledger first, so the
+  denominator is complete before any model runs. The attempt harness gives
+  the model a scratch worktree at the pre-state, the request, the names of
+  the visible test files, and five tools (list, read, write, run the
+  visible tests, finish), no shell, every path confined to the copy, and a
+  budget on turns, tool calls, wall clock and test runs; it keeps the
+  transcript and final diff beside the task. `tool_choice` is required on
+  every turn, because without it Qwen2.5-Coder wrote its calls as JSON
+  code blocks and made none. The verdict is the frozen tests, all or
+  nothing; beside it the record says how many of the tests that failed at
+  base the attempt turned green, which is the number a reader wants.
+  `report` prints counts, both denominators and no percentage before
+  thirty independent eligible episodes; `--tasks` lists each admitted task
+  with its request and every attempt on it. Not a sandbox: the attempt's
+  test runs and the verifier run as the calling user with the network
+  reachable; OS isolation is a separate story. Found on the way: JUnit
+  keys methods by `module.Class`, so an expected `Class::test` id must be
+  joined the same way or whole suites read as missing; a solution's own
+  test edits are not tampering, so admission checks the post-state without
+  the baseline logic; and the first pairing heuristic gave one task a
+  request about a planning document, which is why attribution is now by
+  closest prompt and fixed-at-base counts are reported.
+
 - **Shadow mode, the instrument half (R14.1): an evidence contract and a
   protected verifier in the Python client.** `xyntetik_runner.shadow` is
   stdlib-only and answers one question about a local model honestly: did an
