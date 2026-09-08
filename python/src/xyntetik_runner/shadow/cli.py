@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any
 
 from xyntetik_runner.endpoint import RunnerEndpoint
-from xyntetik_runner.shadow.attempt import Budget, Workspace, attempt, runner_chat
+from xyntetik_runner.shadow.attempt import Budget, Workspace, attempt, probe_speed, runner_chat
 from xyntetik_runner.shadow.baseline import Baseline
 from xyntetik_runner.shadow.evidence import (
     Disposition,
@@ -34,7 +34,15 @@ from xyntetik_runner.shadow.evidence import (
     summarize,
 )
 from xyntetik_runner.shadow.importer import CAPTURE_FILE, Episode, read_episodes, scan_all, write_episodes
-from xyntetik_runner.shadow.tasks import Candidate, RepairTask, Rejection, build_task, choose, pair
+from xyntetik_runner.shadow.tasks import (
+    Candidate,
+    RepairTask,
+    Rejection,
+    build_task,
+    choose,
+    pair,
+    repos_under,
+)
 from xyntetik_runner.shadow.verifier import ProtectedTests, fixed_ids, verify
 
 HARNESS_VERSION = "shadow-0.1"
@@ -173,6 +181,15 @@ def cmd_replay(args: argparse.Namespace) -> int:
         return 2
     budget = Budget(max_turns=args.max_turns, wall_s=args.wall, max_tokens=args.max_tokens,
                     test_runs=args.test_runs)
+    # Fit first: a model that crawls has spilled the device, and an attempt
+    # at that speed measures the wall clock, not the model. Refuse it.
+    tps = probe_speed(endpoint.post_json, model)
+    print(f"probe: {model} decodes at {tps:.1f} tok/s (floor {args.min_tps:g})", flush=True)
+    if tps < args.min_tps:
+        print(f"error: fit-first: {tps:.1f} tok/s is below the floor of {args.min_tps:g}; "
+              "serve a model and context that fit the device (see runner --fit) or lower "
+              "--min-tps", file=sys.stderr)
+        return 2
     base_identity = Identity(
         project="", task_class="repair", context_band="", tool_set=(),
         verifier_id="", environment_id=f"{platform.node()}|{args.endpoint}",
@@ -200,7 +217,7 @@ def cmd_replay(args: argparse.Namespace) -> int:
             ws = Workspace(ws_dir, visible_tests=task.visible_test_files,
                            pythonpath=task.pythonpath, python=args.python, budget=budget)
             chat = runner_chat(endpoint.post_json, model, max_tokens=budget.max_tokens)
-            result = attempt(task.request, ws, chat, budget=budget)
+            result = attempt(task.request, ws, chat, budget=budget, context=task.context)
             protected = ProtectedTests.load(Path(task.protected_dir))
             outcome = verify(ws_dir, protected, baseline, timeout_s=args.timeout,
                              python=args.python, pythonpath=task.pythonpath)
@@ -226,7 +243,7 @@ def cmd_replay(args: argparse.Namespace) -> int:
                            "turns": float(result.turns), "tool_calls": float(result.tool_calls),
                            "test_runs": float(result.test_runs),
                            "failing_at_base": float(len(task.failing_at_base)),
-                           "fixed": float(len(fixed))},
+                           "fixed": float(len(fixed)), "probe_tps": round(tps, 2)},
                 reasons=(f"attempt: {result.stop_reason}",
                          f"fixed {len(fixed)} of {len(task.failing_at_base)} failing at base",
                          *outcome.reasons))
@@ -270,9 +287,17 @@ def cmd_capture(args: argparse.Namespace) -> int:
     cwd = str(args.cwd or data.get("cwd") or Path.cwd())
     head = subprocess.run(["git", "-C", cwd, "rev-parse", "HEAD"], capture_output=True,
                           text=True).stdout.strip()
+    # Every repository at or under the directory, so a session started from a
+    # parent directory still yields exact ranges for the repositories inside.
+    heads = {}
+    for repo in repos_under(Path(cwd)):
+        sha = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"], capture_output=True,
+                             text=True).stdout.strip()
+        if sha:
+            heads[str(repo)] = sha
     rec: dict[str, Any] = {"event": args.event, "timestamp": _now(),
                            "session_id": str(args.session or data.get("session_id") or ""),
-                           "cwd": cwd, "head": head, "tool": args.tool}
+                           "cwd": cwd, "head": head, "heads": heads, "tool": args.tool}
     if args.event == "prompt":
         rec["prompt"] = str(data.get("prompt") or args.prompt or "")
     path = Path(args.file) if args.file else Path.home() / CAPTURE_FILE
@@ -343,6 +368,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--max-tokens", type=int, default=1500)
     p.add_argument("--test-runs", type=int, default=4)
     p.add_argument("--wall", type=float, default=900.0)
+    p.add_argument("--min-tps", type=float, default=15.0,
+                   help="refuse a model that decodes slower than this (fit-first)")
     p.set_defaults(fn=cmd_replay)
     p = sub.add_parser("capture", help="append a prompt or stop event from an agent hook")
     p.add_argument("--event", choices=["prompt", "stop"], required=True)

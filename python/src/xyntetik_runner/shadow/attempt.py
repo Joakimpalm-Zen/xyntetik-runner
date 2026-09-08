@@ -224,11 +224,15 @@ def _name(call: dict[str, Any]) -> str:
     return str(_fn(call).get("name") or "")
 
 
-def attempt(request: str, workspace: Workspace, chat: ChatFn, *, budget: Budget | None = None
-            ) -> AttemptResult:
+def attempt(request: str, workspace: Workspace, chat: ChatFn, *, budget: Budget | None = None,
+            context: Sequence[str] = ()) -> AttemptResult:
     budget = budget or workspace.budget
     listing = workspace.list_files("*")
-    user = (f"Task:\n{request.strip()}\n\nVisible test files: "
+    earlier = ""
+    if context:
+        joined = "\n\n".join(f"- {c.strip()}" for c in context)
+        earlier = f"Earlier requests in this session, oldest first:\n{joined}\n\n"
+    user = (f"{earlier}Task:\n{request.strip()}\n\nVisible test files: "
             f"{', '.join(workspace.visible_tests) or '(none at this state; look for tests/)'}\n\n"
             f"Top-level files:\n{listing}")
     messages: list[dict[str, Any]] = [{"role": "system", "content": SYSTEM_PROMPT},
@@ -301,6 +305,23 @@ def _done(turns: int, calls: int, ws: Workspace, ptoks: int, ctoks: int, t0: flo
                          wall_s=round(time.monotonic() - t0, 3), stop_reason=reason,
                          finished=finished, summary=summary, tool_names=tuple(sorted(set(names))),
                          transcript=tuple(messages))
+
+
+def probe_speed(post_json: Callable[..., dict[str, Any]], model: str, *, tokens: int = 64
+                ) -> float:
+    """Decode speed in tokens per second from one short generation: the
+    fit-first rule measured rather than assumed. A model whose weights or
+    context spilled the device shows up here as a crawl."""
+    payload = {"model": model, "messages": [{"role": "user", "content":
+               "Write the numbers from one to two hundred as words, separated by commas."}],
+               "max_tokens": tokens, "temperature": 0}
+    t0 = time.monotonic()
+    data = post_json("/v1/chat/completions", payload)
+    wall = max(time.monotonic() - t0, 1e-6)
+    usage_raw = data.get("usage")
+    usage: dict[str, Any] = usage_raw if isinstance(usage_raw, dict) else {}
+    generated = int(usage.get("completion_tokens", 0) or 0)
+    return generated / wall if generated else 0.0
 
 
 def runner_chat(post_json: Callable[..., dict[str, Any]], model: str, *, max_tokens: int,

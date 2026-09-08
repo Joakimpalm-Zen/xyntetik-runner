@@ -8,6 +8,22 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **Shadow mode, three small items after the first pilot.** The capture
+  hook now records the HEAD of every repository at or under the working
+  directory, not only the directory's own, so a session started from a
+  parent directory still yields exact commit ranges for the repositories
+  inside it (the owner's own habit, and the reason the first captured
+  turns would have fallen back to time windows). Earlier requests of the
+  same session, the user's own words and never a harness command, travel
+  with the request as context, at most three turns and four thousand
+  characters, because the one genuinely attributed pilot task failed on a
+  request ("check why CI fails and fix") that carried no failing signal on
+  its own. And `replay` probes decode speed with one short generation
+  before any attempt and refuses a model below `--min-tps` (default 15):
+  the fit-first rule measured rather than assumed, after an 8B at a 16K
+  context spilled an 8 GB card and ran at 4.5 tokens per second into the
+  wall clock on every task. The probe speed is recorded on every record.
+
 - **Shadow mode runs end to end (R14.2 to R14.5): `python -m
   xyntetik_runner.shadow import | replay | report`.** The importer reads the
   Codex and Claude Code session files already on the machine and takes from

@@ -309,3 +309,89 @@ def test_capture_with_unmoved_head_is_unreplayable(repo: Path, tmp_path: Path) -
     e = episode(repo, source="capture", head_start=head, head_end=head)
     r = pair(e)
     assert isinstance(r, Rejection) and r.disposition is Disposition.UNREPLAYABLE
+
+
+def test_capture_from_a_parent_directory_records_every_repo_head(repo: Path, tmp_path: Path, monkeypatch: Any) -> None:
+    """The owner starts sessions from a parent directory whose own HEAD never
+    moves; the hook records the HEADs of the repositories inside it and the
+    task range is still exact."""
+    from xyntetik_runner.shadow.importer import scan_capture
+    from xyntetik_runner.shadow.tasks import pair
+    base = git(repo, "rev-parse", "HEAD^")
+    fix = git(repo, "rev-parse", "HEAD")
+    cap = tmp_path / "capture.jsonl"
+    parent = repo.parent  # tmp_path itself, not a repository
+    git(repo, "checkout", "-q", base)
+    monkeypatch.setattr("sys.stdin", __import__("io").StringIO(json.dumps(
+        {"session_id": "cap2", "cwd": str(parent), "prompt": "first ask"})))
+    assert main(["capture", "--event", "prompt", "--file", str(cap)]) == 0
+    git(repo, "checkout", "-q", fix)
+    monkeypatch.setattr("sys.stdin", __import__("io").StringIO(json.dumps(
+        {"session_id": "cap2", "cwd": str(parent), "prompt": "fix parse_amount now"})))
+    assert main(["capture", "--event", "prompt", "--file", str(cap)]) == 0
+    lines = [json.loads(l) for l in cap.read_text().splitlines()]
+    assert lines[0]["head"] == "" and lines[0]["heads"] == {str(repo): base}
+    assert lines[1]["heads"] == {str(repo): fix}
+    eps = scan_capture(cap).episodes
+    assert len(eps) == 2
+    first = eps[0]
+    assert first.request == "first ask" and dict(first.heads_start) == {str(repo): base}
+    paired = pair(first)
+    assert not isinstance(paired, Rejection) and paired[0].shas == (fix,) and paired[0].repo == repo
+    # the second prompt carries the first as context
+    assert eps[1].context == ("first ask",)
+
+
+def test_context_reaches_the_attempt_and_the_task(repo: Path, tmp_path: Path) -> None:
+    from xyntetik_runner.shadow.tasks import RepairTask
+    e = episode(repo, context=("we saw CI fail on parse_amount", "thousands separators break"))
+    task = admit(e, out_dir=tmp_path / "t", python=sys.executable)
+    assert isinstance(task, RepairTask) and task.context == e.context
+    assert RepairTask.load(tmp_path / "t" / task.task_id / "task.json").context == e.context
+    seen: list[str] = []
+
+    def chat(messages: list[dict[str, Any]], tools: list[dict[str, Any]]) -> dict[str, Any]:
+        seen.append(messages[1]["content"])
+        return {"content": "", "tool_calls": [call("finish")]}
+    ws = Workspace(repo, visible_tests=(), pythonpath=(), python=sys.executable, budget=Budget())
+    attempt(task.request, ws, chat, context=task.context)
+    assert "Earlier requests in this session" in seen[0]
+    assert "- we saw CI fail on parse_amount" in seen[0] and "Task:\n" in seen[0]
+
+
+def test_claude_code_context_skips_commands_and_caps_turns(tmp_path: Path) -> None:
+    proj = tmp_path / "projects" / "p"
+    proj.mkdir(parents=True)
+    recs = []
+    for i, text in enumerate(["one", "<command-name>/x</command-name>", "two", "three", "four", "five"]):
+        recs.append({"type": "user", "sessionId": "s", "cwd": "/w",
+                     "timestamp": f"2026-09-01T10:{i:02d}:00Z", "message": {"content": text}})
+    (proj / "s.jsonl").write_text("\n".join(json.dumps(r) for r in recs) + "\n")
+    eps = scan_claude_code(tmp_path / "projects").episodes
+    assert eps[-1].request == "five" and eps[-1].context == ("two", "three", "four")
+    assert eps[2].context == ("one",), "the command turn is not context"
+
+
+def test_probe_speed_and_the_fit_floor(tmp_path: Path, monkeypatch: Any, capsys: Any) -> None:
+    from xyntetik_runner.shadow import cli
+    from xyntetik_runner.shadow.attempt import probe_speed
+
+    class Slow:
+        def __init__(self, *a: Any, **k: Any) -> None:
+            pass
+
+        def capabilities(self) -> dict[str, Any]:
+            return {"models": [{"id": "crawler.gguf"}], "version": "t"}
+
+        def post_json(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
+            import time
+            time.sleep(0.2)
+            return {"choices": [{"message": {"content": "x"}}],
+                    "usage": {"completion_tokens": 2}}
+    tps = probe_speed(Slow().post_json, "crawler.gguf")
+    assert 0 < tps < 15
+    monkeypatch.setattr(cli, "RunnerEndpoint", Slow)
+    (tmp_path / "tasks").mkdir()
+    rc = main(["replay", "--out", str(tmp_path), "--endpoint", "http://x", "--min-tps", "15"])
+    assert rc == 2
+    assert "fit-first" in capsys.readouterr().err
