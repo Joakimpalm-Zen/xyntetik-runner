@@ -38,7 +38,7 @@ from xyntetik_runner.shadow.evidence import (
 )
 from xyntetik_runner.shadow.importer import CAPTURE_FILE, Episode, read_episodes, scan_all, write_episodes
 from xyntetik_runner.shadow import adapt
-from xyntetik_runner.shadow import tandem
+from xyntetik_runner.shadow import receipt, tandem
 from xyntetik_runner.shadow.install import (harness_present, install, read_config, render_candidates,
                                             set_config_adapter, set_config_key, suggest_model, uninstall)
 from xyntetik_runner.process import spawn_detached
@@ -825,8 +825,28 @@ def cmd_delegate(args: argparse.Namespace) -> int:
             state.status, state.error, state.ended_at = "error", str(e), __import__("time").time()
             state.save(home)
         return 2
-    _record_delegation(Path(out), d, model_path=str(cfg.get("model") or ""), caps=caps,
-                       endpoint_label=endpoint.base_url, budget_turns=args.max_turns, budget_wall=args.wall)
+    rec_path = _record_delegation(Path(out), d, model_path=str(cfg.get("model") or ""), caps=caps,
+                                  endpoint_label=endpoint.base_url, budget_turns=args.max_turns,
+                                  budget_wall=args.wall)
+    signed: receipt.Signed | None = None
+    key = home / receipt.SIGNKEY_REL
+    runner_exe = str(cfg.get("runner") or "runner")
+    if key.is_file():
+        try:
+            body = receipt.statement(
+                repo=d.repo, head=d.head, request=d.request, patch_path=d.patch_path,
+                patch_sha256=receipt.sha256_file(Path(d.patch_path)) if Path(d.patch_path).is_file() else "",
+                changed_paths=d.changed_paths, verdict=d.verdict, tests_exit=d.tests_exit,
+                task_class=d.task_class, model=str(cfg.get("model") or d.model),
+                model_sha256=_model_sha(str(cfg.get("model") or "")) if cfg.get("model") else "",
+                adapter_sha256=receipt.sha256_file(Path(str(cfg.get("adapter")))) if cfg.get("adapter") and Path(str(cfg.get("adapter"))).is_file() else "",
+                runner_build=str(caps.get("version") or "unknown"), backend=str(caps.get("backend") or "unknown"),
+                budget_turns=args.max_turns, budget_wall_s=args.wall, turns=d.attempt.turns,
+                tool_calls=d.attempt.tool_calls, wall_s=d.wall_s, stop_reason=d.attempt.stop_reason,
+                observed_at=_now())
+            signed = receipt.write_receipt(home, body, runner=runner_exe, key=key)
+        except (RuntimeError, OSError, ValueError) as e:
+            print(f"receipt: not written: {e}", file=sys.stderr)
     if state is not None:
         state.status, state.verdict, state.patch_path = "done", d.verdict, d.patch_path
         state.changed_paths, state.tests_exit, state.task_class = d.changed_paths, d.tests_exit, d.task_class
@@ -835,6 +855,8 @@ def cmd_delegate(args: argparse.Namespace) -> int:
     if args.json:
         print(d.to_json())
         return 0
+    if signed is not None:
+        print(f"receipt: {signed.path} (chain {signed.chain_hash[:12]}, signed by {signed.public_key[:12]}...)")
     print(f"model: {d.model}; attempt: {d.attempt.stop_reason}, {d.attempt.turns} turns, "
           f"{d.attempt.tool_calls} calls, {d.wall_s:.0f}s")
     print(f"changed: {', '.join(d.changed_paths) or '(nothing)'}")
@@ -1038,7 +1060,7 @@ def cmd_server(args: argparse.Namespace) -> int:
 
 
 def _record_delegation(out: Path, d: Any, *, model_path: str, caps: dict[str, Any],
-                       endpoint_label: str, budget_turns: int = 0, budget_wall: float = 0.0) -> None:
+                       endpoint_label: str, budget_turns: int = 0, budget_wall: float = 0.0) -> Path:
     """A delegation is an attempt with a verdict on the user's own request:
     it joins the ledger under its own verifier id (the repository's tests
     at HEAD, not frozen tests), verified only when they passed and no test
@@ -1074,6 +1096,34 @@ def _record_delegation(out: Path, d: Any, *, model_path: str, caps: dict[str, An
                           reasons=(f"attempt: {d.attempt.stop_reason}", d.verdict))
     out.mkdir(parents=True, exist_ok=True)
     _append(out / "evidence.jsonl", rec)
+    return out / "evidence.jsonl"
+
+
+def cmd_keygen(args: argparse.Namespace) -> int:
+    home = Path(args.home) if args.home else Path.home()
+    cfg = read_config(home)
+    runner_exe = str(args.runner or cfg.get("runner") or "runner")
+    try:
+        key = receipt.keygen(home, runner_exe)
+    except RuntimeError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
+    pub = ""
+    try:
+        pub = str(json.loads(key.read_text(encoding="utf-8")).get("public_key") or "")
+    except (OSError, ValueError):
+        pass
+    print(f"signing key: {key}\npublic key: {pub}\nevery delegation now writes a signed receipt under "
+          f"{receipt.receipts_dir(home)}; 'shadow receipts --check' verifies them")
+    return 0
+
+
+def cmd_receipts(args: argparse.Namespace) -> int:
+    home = Path(args.home) if args.home else Path.home()
+    cfg = read_config(home)
+    runner_exe = str(args.runner or cfg.get("runner") or "runner")
+    print(receipt.render_receipts(home, runner=runner_exe, check=args.check))
+    return 0
 
 
 def cmd_delegations(args: argparse.Namespace) -> int:
@@ -1306,6 +1356,15 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--session", default="", help="with --background: the harness session id")
     p.add_argument("--record", default="", help=argparse.SUPPRESS)
     p.set_defaults(fn=cmd_delegate)
+    p = sub.add_parser("keygen", help="make the signing key; every delegation then writes a signed receipt")
+    p.add_argument("--home", default="")
+    p.add_argument("--runner", default="")
+    p.set_defaults(fn=cmd_keygen)
+    p = sub.add_parser("receipts", help="the signed delegation receipts, newest last")
+    p.add_argument("--home", default="")
+    p.add_argument("--runner", default="")
+    p.add_argument("--check", action="store_true", help="verify each signature through the runner")
+    p.set_defaults(fn=cmd_receipts)
     p = sub.add_parser("delegations", help="background delegations and their verdicts")
     p.add_argument("--home", default="")
     p.add_argument("--session", default="")

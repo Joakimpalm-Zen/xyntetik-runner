@@ -644,6 +644,9 @@ static void usage_to(FILE *f, const char *prog) {
         "                 UNVERIFIABLE (exit 3: bad chain hash, wrong model\n"
         "                 sha, wrong adapter). The record's config and seed\n"
         "                 override CLI sampling flags\n"
+        "  --sign-record F  sign any JSON object file in place with --sign-key,\n"
+        "                 the transcript's chain + signature (--record-prev P\n"
+        "                 links it to record P); --check-record F verifies one\n"
         "  --keygen F     write a receipt-signing key (xyntetik.runner.signkey\n"
         "                 .v1) to F and print its public key; needs no -m\n"
         "  --keygen-algo A  ed25519 (default; 32-byte key, 64-byte signature)\n"
@@ -1051,6 +1054,7 @@ int main(int argc, char **argv) {
     const char *type_plan = NULL, *merge_out = NULL, *context_out = NULL;
     const char *transcript_path = NULL;
     const char *transcript_prev = NULL, *sign_key = NULL, *keygen_path = NULL;
+    const char *sign_record = NULL, *record_prev = NULL, *check_record = NULL;
     const char *keygen_algo = SIGN_ALGO_ED25519;
     const char *trust_key = NULL, *model_sig = NULL, *model_pubkey = NULL;
     bool require_signed = false, require_signed_model = false;
@@ -1142,6 +1146,9 @@ int main(int argc, char **argv) {
         else if (!strcmp(a, "--transcript-prev")) transcript_prev = NEXT;
         else if (!strcmp(a, "--sign-key")) sign_key = NEXT;
         else if (!strcmp(a, "--keygen")) keygen_path = NEXT;
+        else if (!strcmp(a, "--sign-record")) sign_record = NEXT;
+        else if (!strcmp(a, "--record-prev")) record_prev = NEXT;
+        else if (!strcmp(a, "--check-record")) check_record = NEXT;
         else if (!strcmp(a, "--keygen-algo")) keygen_algo = NEXT;
         else if (!strcmp(a, "--require-signed")) require_signed = true;
         else if (!strcmp(a, "--trust-key")) trust_key = NEXT;
@@ -1294,6 +1301,14 @@ int main(int argc, char **argv) {
     // --draft-required makes that a failed run instead. Serve mode already
     // answers the question over the wire, so the flag is refused there rather
     // than accepted with no effect.
+    if (sign_record) {
+        if (!sign_key) {
+            fprintf(stderr, "error: --sign-record needs --sign-key FILE\n");
+            return 1;
+        }
+        return record_sign(sign_record, sign_key, record_prev) ? 0 : 1;
+    }
+    if (check_record) return record_check(check_record, trust_key);
     if (keygen_path) {
         uint8_t seed[32];
         char pub[SIGN_PUBHEX_CAP];

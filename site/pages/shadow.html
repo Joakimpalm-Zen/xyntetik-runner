@@ -1,0 +1,99 @@
+<!--meta
+title: Shadow mode
+description: Keep your coding assistant and your frontier model; let Xyntetik Runner prove, on your own work, what a local model can do, and offload only where the evidence says so.
+path: /runner/shadow-mode/
+nav: runner
+-->
+<section class="page-head">
+  <div class="wrap">
+    <p class="eyebrow">Shadow mode</p>
+    <h1>Keep your assistant. Let the runner prove what a local model could have done.</h1>
+    <p class="lede">One command wires Claude Code or Codex to the runner. From then on your own work is the benchmark: every request you type and every commit you make becomes a task a local model is tried on, under your repository's own tests, and nothing is claimed that the tests did not pass. Offloading starts only where the evidence says it can, and every patch is yours to apply.</p>
+  </div>
+</section>
+
+<section class="section">
+  <div class="wrap">
+    <div class="section-head">
+      <p class="eyebrow">Sixty seconds</p>
+      <h2>Install, keep working, ask.</h2>
+    </div>
+    <pre><code>runner --shadow-mode -m ~/models/your-model.gguf</code></pre>
+    <div class="grid-3">
+      <div class="card">
+        <h3>It asks first</h3>
+        <p>The command says exactly what it will write: two capture hooks and a <code>/shadow</code> skill for Claude Code, a <code>/shadow</code> prompt for Codex, whichever is on the machine, and the model it will serve. Without <code>-m</code> it looks for a model on disk that fits and proposes it. Nothing runs until you submit a prompt, and a hook can never block one.</p>
+      </div>
+      <div class="card accent">
+        <h3>Only your own words are recorded</h3>
+        <p>The hooks note your request, the directory, the time and the repository's commit. Nothing the assistant produces is ever read: the evidence contract refuses a record that loaded assistant content. Your frontier model's output is not the runner's business.</p>
+      </div>
+      <div class="card accent">
+        <h3>Counts before rates</h3>
+        <p><code>/shadow</code> shows how many tasks were captured, how many could be replayed, how many the local model attempted and how many were verified by the frozen tests. No percentage appears before thirty eligible episodes, and no claim of success without a passing verifier.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="section tint">
+  <div class="wrap">
+    <div class="section-head">
+      <p class="eyebrow">How offloading opens</p>
+      <h2>The harness routes. The runner proves.</h2>
+    </div>
+    <div class="grid-3">
+      <div class="card">
+        <h3>1. The ledger fills</h3>
+        <p>Each <code>/shadow</code> imports what the hooks captured and admits the tasks whose tests can be frozen. When you say so, the local model replays them on scratch copies, function-sized tasks first, and the verdicts land in the ledger with the model's hash, the quantization, the runner build and the verifier version.</p>
+      </div>
+      <div class="card">
+        <h3>2. A class qualifies</h3>
+        <p>A printed rule, never a hidden one: a task class qualifies when the local model has at least three attempts, at least one verified, and half or better verified. From then on the runner works in tandem: a background attempt on a scratch copy while your assistant works, and a verified patch offered to you once, never applied.</p>
+      </div>
+      <div class="card">
+        <h3>3. Runner first</h3>
+        <p>Where the record is strong, at least five attempts and four in five verified, the assistant is told to wait for the local result and to do the work itself only if that result is not verified. The more the local model proves, the more is funneled to it; nothing routes without a record.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="section">
+  <div class="wrap split">
+    <div class="sticky">
+      <p class="eyebrow">Adapt overnight</p>
+      <h2>The ledger is training data, and the verifier is the gate.</h2>
+      <p>The ledger never holds frontier content, so its completions are your own commits. <code>shadow adapt</code> trains the model's adapter on the functions your fixes changed, holds out a slice it never trains on, evaluates base and adapter on it under the frozen tests, and keeps the adapter only if the held-out verified count rises. A rise on the training slice alone is reported as memorization and discarded. Every run is recorded with its numbers, kept or not.</p>
+    </div>
+    <div>
+      <div class="callout warn">
+        <span class="t">What the numbers said the day this shipped.</span>
+        <p>Five consumer models from 1.5B to 8B, 260 samples over 13 function units drawn from two public repositories: zero verified. The human's own function verified 13 of 13. The instrument works; the models on hand did not clear the bar on that sample, and the site says so rather than the other thing.</p>
+      </div>
+      <div class="callout mt-2">
+        <span class="t">Receipts.</span>
+        <p>With a signing key (<code>shadow keygen</code>), every delegation writes a receipt: an in-toto statement naming the patch and the commit by digest, the request only by hash, the verdict, the model and the runner build, signed and chained by the runner and checked by the same code path that checks a notarized run.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="section tint">
+  <div class="wrap">
+    <div class="section-head">
+      <p class="eyebrow">What to know before you install</p>
+      <h2>Two limits, stated up front.</h2>
+    </div>
+    <div class="grid-2">
+      <div class="card">
+        <h3>Codex has no hooks</h3>
+        <p>In Claude Code the capture and the tandem attempt are automatic, through hooks. Codex has no hook mechanism, so there the <code>/shadow</code> prompt asks the assistant to run the same commands at the start and end of a task. It works when the assistant follows its prompt; it is not enforced by the runner.</p>
+      </div>
+      <div class="card">
+        <h3>Python repositories today</h3>
+        <p>The frozen verifier is pytest-shaped: a task is admitted when its tests can be frozen and keyed per test. TypeScript and JavaScript through their JUnit reporters are next; a generic pass-or-fail command mode after that. A repository without such tests yields no units, and the ledger says so.</p>
+      </div>
+    </div>
+  </div>
+</section>

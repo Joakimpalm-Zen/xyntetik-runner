@@ -8,6 +8,26 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **Delegation receipts (R14.6), and a generic record signer.** With a
+  signing key (`shadow keygen`, made by the runner), every delegation
+  writes a receipt: an in-toto Statement whose subjects are the patch and
+  the commit by digest, whose predicate carries the request only as a
+  hash, the model and adapter by hash, the verdict, the budget and the
+  runner build, signed in place by the runner and chained to the previous
+  receipt. `runner --sign-record FILE --sign-key KEY [--record-prev PREV]`
+  appends the transcript's chain and signature objects to any JSON object
+  file, `--check-record FILE [--trust-key HEX]` verifies one through the
+  same code path that verifies a notarized run, and a second signing is
+  refused. `shadow receipts [--check]` lists them. The suite's vault
+  records the promotion decision for a kept adapter as a governed fact
+  (a claim accepted by a reviewer, rolled back by a later accepted claim),
+  and `apply` writes only the runner's shadow config.
+- **The site's shadow-mode page**, drafted for launch: what is recorded
+  and what never is, how offloading opens, the tandem rule, adaptation
+  with the verifier as the gate, the day-one numbers, and the two limits
+  stated up front (Codex has no hooks; the verifier is pytest-shaped
+  today).
+
 - **Training: an opt-in end-of-turn token, and a loader that never
   truncates.** `--train-eot` appends the model's own turn terminator
   (`<|im_end|>`, `<|eot_id|>`, `<end_of_turn>`, `<|eot|>`, `<|end|>`,

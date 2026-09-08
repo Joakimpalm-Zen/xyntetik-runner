@@ -235,3 +235,72 @@ def test_recorded_delegation_joins_the_ledger_with_its_class(repo: Path, tmp_pat
     assert main(["delegations", "--home", str(home), "--wait", "d1"]) == 0
     assert "git apply" in capsys.readouterr().out
     assert main(["delegations", "--home", str(home), "--wait", "missing"]) == 2
+
+
+def test_delegation_writes_a_signed_receipt_when_a_key_exists(repo: Path, tmp_path: Path, capsys: Any, monkeypatch: Any) -> None:
+    from xyntetik_runner.shadow import cli, receipt
+    home = tmp_path / "home"
+    out = tmp_path / "out"
+    model = tmp_path / "coder.gguf"
+    model.write_bytes(b"GGUF")
+    write_config(home, model=str(model), runner="fake-runner", ctx=4096, gpu="auto", threads=0, out=str(out))
+
+    class Fixer:
+        def __init__(self, url: str, **k: Any) -> None:
+            self.base_url = url
+            self.n = 0
+
+        def capabilities(self, **k: Any) -> dict[str, Any]:
+            return {"models": [{"id": "coder.gguf"}], "version": "t", "backend": "cpu"}
+
+        def post_json(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
+            self.n += 1
+            if self.n == 1:
+                return {"choices": [{"message": {"content": "", "tool_calls": [
+                    {"id": "1", "function": {"name": "write_file", "arguments": json.dumps(
+                        {"path": "calc/money.py", "content": CORRECT})}}]}}]}
+            return {"choices": [{"message": {"content": "", "tool_calls": [
+                {"id": "2", "function": {"name": "finish", "arguments": "{}"}}]}}]}
+    monkeypatch.setattr(cli, "RunnerEndpoint", Fixer)
+    # no key: no receipt, and nothing said about one
+    rc = main(["delegate", "--repo", str(repo), "--request", "fix parse_amount", "--endpoint", "http://x",
+               "--python", sys.executable, "--home", str(home), "--out", str(out)])
+    assert rc == 0 and "receipt:" not in capsys.readouterr().out
+    assert not receipt.receipts_dir(home).exists()
+    # a key: the runner would sign; here a stand-in appends what the runner appends
+    key = home / receipt.SIGNKEY_REL
+    key.parent.mkdir(parents=True, exist_ok=True)
+    key.write_text(json.dumps({"algo": "ed25519", "public_key": "ab" * 32, "seed": "00" * 32}), encoding="utf-8")
+    signed_calls: list[tuple[str, Path, Path, Path | None]] = []
+
+    def fake_sign(runner: str, path: Path, k: Path, prev: Path | None) -> receipt.Signed:
+        signed_calls.append((runner, path, k, prev))
+        rec = json.loads(path.read_text(encoding="utf-8"))
+        body = json.dumps(rec, sort_keys=True)
+        chain = receipt.sha256_text(body)
+        rec["chain"] = {"algo": "sha256", "prev": json.loads(prev.read_text(encoding="utf-8"))["chain"]["hash"] if prev else "", "hash": chain}
+        rec["signature"] = {"algo": "ed25519", "public_key": "ab" * 32, "sig": "cd" * 64}
+        path.write_text(json.dumps(rec, indent=2) + "\n", encoding="utf-8")
+        return receipt.Signed(path, chain, "ab" * 32)
+    monkeypatch.setattr(receipt, "sign_with_runner", fake_sign)
+    rc = main(["delegate", "--repo", str(repo), "--request", "fix parse_amount", "--endpoint", "http://x",
+               "--python", sys.executable, "--home", str(home), "--out", str(out)])
+    text = capsys.readouterr().out
+    assert rc == 0 and "receipt:" in text, text
+    assert len(signed_calls) == 1 and signed_calls[0][0] == "fake-runner" and signed_calls[0][3] is None
+    files = sorted(receipt.receipts_dir(home).glob("*.json"))
+    assert len(files) == 1
+    rec = json.loads(files[0].read_text(encoding="utf-8"))
+    assert rec["_type"] == receipt.STATEMENT_TYPE and rec["predicateType"] == receipt.PREDICATE_TYPE
+    assert rec["subject"][1]["digest"]["gitCommit"] == git(repo, "rev-parse", "HEAD")
+    assert rec["predicate"]["verdict"] == "tests passed on the scratch copy"
+    assert rec["predicate"]["request_sha256"] == receipt.sha256_text("fix parse_amount")
+    assert "fix parse_amount" not in files[0].read_text(encoding="utf-8"), "the request is never in the receipt"
+    assert rec["predicate"]["budget"] == {"turns": 12, "wall_s": 900.0}
+    # the second receipt links to the first
+    rc = main(["delegate", "--repo", str(repo), "--request", "fix parse_amount again", "--endpoint", "http://x",
+               "--python", sys.executable, "--home", str(home), "--out", str(out)])
+    assert rc == 0 and signed_calls[1][3] == files[0]
+    assert main(["receipts", "--home", str(home)]) == 0
+    listing = capsys.readouterr().out
+    assert listing.count("| proj |") == 2 and rec["chain"]["hash"][:12] in listing

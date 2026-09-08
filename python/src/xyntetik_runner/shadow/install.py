@@ -309,6 +309,10 @@ report withholds.
 {prefix}{python} -m xyntetik_runner.shadow capture --summary
 ```
 
+If receipts exist (`shadow keygen` makes the key; every delegation then
+writes a signed receipt), `{prefix}{python} -m xyntetik_runner.shadow receipts`
+lists them, `--check` verifies each through the runner.
+
 `sync` imports what the hooks captured since last time, admits the tasks
 that can be replayed, and says how many wait for the local model. If any
 wait, offer to replay them now: `sync --replay N` runs up to N of them

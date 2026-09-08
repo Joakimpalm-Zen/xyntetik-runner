@@ -903,3 +903,159 @@ bool envelope_gate(const char *model_path, const char *runtime_version,
     jv_free(m);
     return allow;
 }
+
+
+// ---- generic signed records (R14.6) ---------------------------------------
+//
+// Any JSON object file can carry the transcript's chain and signature: the
+// body (everything before the closing brace) is hashed, the chain object
+// names the previous record's hash, and the signature covers body + chain.
+// receipt_signature_check verifies it exactly as it verifies a transcript,
+// so a delegation receipt, an adaptation run record or a promotion record
+// is checked by the same code path a notarized run is. The record is
+// replaced atomically; a failure leaves the original untouched.
+
+static char *record_read(const char *path, size_t *n_out) {
+    FILE *f = fopen(path, "rb");
+    if (!f) return NULL;
+    size_t cap = 1 << 16, n = 0;
+    char *buf = malloc(cap);
+    if (!buf) { fclose(f); return NULL; }
+    size_t r;
+    while ((r = fread(buf + n, 1, cap - n, f)) > 0) {
+        n += r;
+        if (n == cap) {
+            if (cap > (64u << 20)) { free(buf); fclose(f); return NULL; }
+            char *nb = realloc(buf, cap * 2);
+            if (!nb) { free(buf); fclose(f); return NULL; }
+            buf = nb; cap *= 2;
+        }
+    }
+    fclose(f);
+    *n_out = n;
+    return buf;
+}
+
+// the chain hash of a signed record, or "" when it has none
+bool record_chain_hash(const char *path, char hex[65]) {
+    hex[0] = 0;
+    size_t n = 0;
+    char *buf = record_read(path, &n);
+    if (!buf) return false;
+    jv *j = json_parse(buf, n);
+    const char *h = j ? jv_str(jv_get(jv_get(j, "chain"), "hash"), NULL) : NULL;
+    bool ok = h && strlen(h) == 64;
+    if (ok) memcpy(hex, h, 65);
+    jv_free(j);
+    free(buf);
+    return ok;
+}
+
+bool record_sign(const char *path, const char *sign_key_path, const char *prev_path) {
+    size_t n = 0;
+    char *buf = record_read(path, &n);
+    if (!buf) {
+        fprintf(stderr, "error: sign-record: cannot read %s\n", path);
+        return false;
+    }
+    // an already-signed record is refused: signing twice would bury the
+    // first signature inside a body the second one covers
+    jv *j = json_parse(buf, n);
+    if (!j || j->type != J_OBJ) {
+        fprintf(stderr, "error: sign-record: %s is not a JSON object\n", path);
+        jv_free(j); free(buf);
+        return false;
+    }
+    if (jv_get(j, "signature") || jv_get(j, "chain")) {
+        fprintf(stderr, "error: sign-record: %s already carries a chain or signature\n", path);
+        jv_free(j); free(buf);
+        return false;
+    }
+    jv_free(j);
+    while (n > 0 && (buf[n - 1] == '\n' || buf[n - 1] == '\r' || buf[n - 1] == ' ' ||
+                     buf[n - 1] == '\t')) n--;
+    if (n < 2 || buf[n - 1] != '}') {
+        fprintf(stderr, "error: sign-record: %s does not end in a closing brace\n", path);
+        free(buf);
+        return false;
+    }
+    size_t body_n = n - 1;   // everything before the closing brace
+    char prev[65] = "";
+    if (prev_path && !record_chain_hash(prev_path, prev)) {
+        fprintf(stderr, "error: sign-record: %s carries no chain hash to link to\n", prev_path);
+        free(buf);
+        return false;
+    }
+    char chain[65];
+    envelope_data_sha256(buf, body_n, chain);
+    char chain_obj[256];
+    int cl = snprintf(chain_obj, sizeof chain_obj,
+                      ",\"chain\":{\"algo\":\"sha256\",\"prev\":\"%s\",\"hash\":\"%s\"}",
+                      prev, chain);
+    if (cl < 0 || cl >= (int)sizeof chain_obj) { free(buf); return false; }
+    signkey k;
+    if (!signkey_load(sign_key_path, &k)) {
+        fprintf(stderr, "error: sign-record: cannot load signing key %s\n", sign_key_path);
+        free(buf);
+        return false;
+    }
+    size_t sn = body_n + (size_t)cl;
+    uint8_t *signed_bytes = malloc(sn);
+    uint8_t sig[SIGN_SIG_MAX];
+    bool ok = signed_bytes != NULL;
+    if (ok) {
+        memcpy(signed_bytes, buf, body_n);
+        memcpy(signed_bytes + body_n, chain_obj, (size_t)cl);
+        ok = signkey_sign(&k, sig, signed_bytes, sn);
+    }
+    free(signed_bytes);
+    char *pkh = ok ? malloc(k.pk_n * 2 + 1) : NULL;
+    char *sigh = ok ? malloc(k.sig_n * 2 + 1) : NULL;
+    if (ok && (!pkh || !sigh)) ok = false;
+    char tmp_path[4096];
+    if (ok) {
+        bytes_to_hex(k.pk, k.pk_n, pkh);
+        bytes_to_hex(sig, k.sig_n, sigh);
+        int tl = snprintf(tmp_path, sizeof tmp_path, "%s.partial", path);
+        ok = tl > 0 && tl < (int)sizeof tmp_path;
+    }
+    FILE *f = ok ? fopen(tmp_path, "wb") : NULL;
+    if (ok && !f) ok = false;
+    if (ok) {
+        ok = fwrite(buf, 1, body_n, f) == body_n &&
+             fwrite(chain_obj, 1, (size_t)cl, f) == (size_t)cl &&
+             fprintf(f, ",\"signature\":{\"algo\":\"%s\",\"public_key\":\"%s\",\"sig\":\"%s\"}}\n",
+                     k.algo, pkh, sigh) > 0;
+        ok = (fclose(f) == 0) && ok;
+        if (ok) ok = plat_replace_file(tmp_path, path);
+        if (!ok) remove(tmp_path);
+    }
+    memset(&k, 0, sizeof k);
+    free(pkh); free(sigh); free(buf);
+    if (!ok) fprintf(stderr, "error: sign-record: cannot write %s\n", path);
+    return ok;
+}
+
+// 0: signed and the signature verifies (and matches trust_hex when given);
+// 1: unsigned; 2: bad or malformed signature, or another key than trusted
+int record_check(const char *path, const char *trust_hex) {
+    size_t n = 0;
+    char *buf = record_read(path, &n);
+    if (!buf) {
+        printf("UNVERIFIABLE: cannot read %s\n", path);
+        return 2;
+    }
+    char pub[SIGN_PUBHEX_CAP] = "";
+    receipt_sig_state st = receipt_signature_check(buf, n, pub);
+    char chain[65] = "";
+    record_chain_hash(path, chain);
+    free(buf);
+    if (st == RSIG_NONE) { printf("UNSIGNED: %s\n", path); return 1; }
+    if (st != RSIG_OK) { printf("BAD SIGNATURE: %s\n", path); return 2; }
+    if (trust_hex && *trust_hex && strcmp(trust_hex, pub) != 0) {
+        printf("UNTRUSTED KEY: %s signed by %s, expected %s\n", path, pub, trust_hex);
+        return 2;
+    }
+    printf("OK: %s signed by %s chain %s\n", path, pub, chain);
+    return 0;
+}
