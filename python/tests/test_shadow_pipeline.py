@@ -166,6 +166,20 @@ def test_admit_rejects_harness_commands_and_dedupes_commit_ranges(repo: Path, tm
     assert isinstance(again, Rejection) and "same fix commit" in again.reason
 
 
+def test_choose_attributes_a_fix_to_the_closest_prompt_in_the_repo(repo: Path) -> None:
+    from xyntetik_runner.shadow.tasks import choose, pair
+    early_parent = pair(episode(repo.parent, turn=1, started_at="2026-09-01T10:00:00Z"))
+    late_parent = pair(episode(repo.parent, turn=2, started_at="2026-09-01T11:45:00Z"))
+    in_repo = pair(episode(repo, turn=3, started_at="2026-09-01T11:20:00Z"))
+    assert not isinstance(early_parent, Rejection) and not isinstance(late_parent, Rejection)
+    assert not isinstance(in_repo, Rejection)
+    chosen = choose([*early_parent, *late_parent, *in_repo])
+    assert len(chosen) == 1
+    assert next(iter(chosen.values())).episode.turn == 3, "the repo's own prompt wins over a parent"
+    chosen = choose([*early_parent, *late_parent])
+    assert next(iter(chosen.values())).episode.turn == 2, "then the latest prompt before the fix"
+
+
 def scripted(*steps: dict[str, Any]) -> Any:
     it = iter(steps)
 
@@ -199,12 +213,16 @@ def test_attempt_confines_paths_and_verifies_a_scripted_fix(repo: Path, tmp_path
         {"content": "", "tool_calls": [call("run_tests"), call("finish", summary="done")]},
         {"content": "", "tool_calls": []},
     )
+    assert len(task.failing_at_base) == 3 and all("::" in i for i in task.failing_at_base)
     result = attempt(task.request, ws, chat)
     assert result.finished and result.stop_reason == "finish" and result.test_runs == 2
     assert result.tool_names == ("finish", "read_file", "run_tests", "write_file")
     outcome = verify(ws_dir, ProtectedTests.load(Path(task.protected_dir)), baseline,
                      python=sys.executable, pythonpath=task.pythonpath)
     assert outcome.passed is True and outcome.passed_count == 6
+    from xyntetik_runner.shadow import fixed_ids
+    assert set(fixed_ids(ProtectedTests.load(Path(task.protected_dir)), task.failing_at_base, ws_dir,
+                         python=sys.executable, pythonpath=task.pythonpath)) == set(task.failing_at_base)
     subprocess.run(["git", "-C", str(repo), "worktree", "remove", "--force", str(ws_dir)], check=True)
 
 
@@ -248,3 +266,5 @@ def test_cli_import_and_report_on_a_synthetic_home(repo: Path, tmp_path: Path, c
     assert "3 episodes observed" not in text  # the admitted one has no record until replayed
     assert "2 episodes observed" in text and "no percentage" in text
     assert "ineligible: no git repository" in text and "unreplayable: no commit" in text
+    task = RepairTask.load(tasks[0])
+    assert task.episode_id.endswith(":1"), "the prompt before the fix, not the thanks after it"

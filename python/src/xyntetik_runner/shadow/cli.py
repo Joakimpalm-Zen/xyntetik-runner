@@ -34,8 +34,8 @@ from xyntetik_runner.shadow.evidence import (
     summarize,
 )
 from xyntetik_runner.shadow.importer import Episode, read_episodes, scan_all, write_episodes
-from xyntetik_runner.shadow.tasks import RepairTask, Rejection, admit
-from xyntetik_runner.shadow.verifier import ProtectedTests, verify
+from xyntetik_runner.shadow.tasks import Candidate, RepairTask, Rejection, build_task, choose, pair
+from xyntetik_runner.shadow.verifier import ProtectedTests, fixed_ids, verify
 
 HARNESS_VERSION = "shadow-0.1"
 DEFAULT_OUT = Path.home() / ".xyntetik" / "shadow"
@@ -84,13 +84,44 @@ def cmd_import(args: argparse.Namespace) -> int:
           f"{n} episodes", flush=True)
     evidence = out / "evidence.jsonl"
     known = {r.episode_id for r in _read_records(evidence)}
-    seen: set[tuple[str, str]] = set()
     counts: dict[str, int] = {}
     admitted = 0
+
+    def record(e: Episode, rej: Rejection) -> None:
+        _append(evidence, EpisodeEvidence(
+            episode_id=e.episode_id, source=e.source, observed_at=e.started_at,
+            disposition=rej.disposition, identity=_instrument_identity("none"),
+            baseline_sha256="", patch_sha256=None, changed_paths=(), verifier=None, wall_s=0.0,
+            reasons=(rej.reason,)))
+        counts[rej.disposition.value] = counts.get(rej.disposition.value, 0) + 1
+
+    # Pass 1: pair every episode; pass 2: one episode per fix commit.
+    candidates: list[Candidate] = []
     for e in episodes:
         if e.episode_id in known:
             continue
-        result = admit(e, out_dir=tasks_dir, python=args.python, timeout_s=args.timeout, seen=seen)
+        paired = pair(e)
+        if isinstance(paired, Rejection):
+            record(e, paired)
+        else:
+            candidates.extend(paired)
+    chosen = choose(candidates)
+    chosen_ids = {(c.episode.episode_id, c.solution) for c in chosen.values()}
+    attributed: set[str] = set()
+    for c in candidates:
+        if (c.episode.episode_id, c.solution) in chosen_ids or c.episode.episode_id in attributed:
+            continue
+        if not any(x.episode.episode_id == c.episode.episode_id for x in chosen.values()):
+            attributed.add(c.episode.episode_id)
+            record(c.episode, Rejection(Disposition.INELIGIBLE,
+                                        "fix commit attributed to a closer prompt"))
+    built: set[str] = set()
+    for c in chosen.values():
+        if c.episode.episode_id in built:
+            continue
+        built.add(c.episode.episode_id)
+        result = build_task(c.episode, c.repo, list(c.shas), out_dir=tasks_dir,
+                            python=args.python, timeout_s=args.timeout)
         if isinstance(result, RepairTask):
             admitted += 1
             counts["admitted"] = counts.get("admitted", 0) + 1
@@ -98,13 +129,7 @@ def cmd_import(args: argparse.Namespace) -> int:
                   f"{result.baseline_failing} fail at base, {result.src_files} source file(s)",
                   flush=True)
             continue
-        rec = EpisodeEvidence(
-            episode_id=e.episode_id, source=e.source, observed_at=e.started_at,
-            disposition=result.disposition, identity=_instrument_identity("none"),
-            baseline_sha256="", patch_sha256=None, changed_paths=(), verifier=None, wall_s=0.0,
-            reasons=(result.reason,))
-        _append(evidence, rec)
-        counts[result.disposition.value] = counts.get(result.disposition.value, 0) + 1
+        record(c.episode, result)
     print("dispositions at import:", json.dumps(counts, sort_keys=True), flush=True)
     print(f"{admitted} task(s) admitted under {tasks_dir}", flush=True)
     return 0
@@ -174,6 +199,10 @@ def cmd_replay(args: argparse.Namespace) -> int:
             outcome = verify(ws_dir, protected, baseline, timeout_s=args.timeout,
                              python=args.python, pythonpath=task.pythonpath)
             changes = baseline.changes(ws_dir)
+            fixed: tuple[str, ...] = ()
+            if changes and task.failing_at_base and outcome.passed is not None:
+                fixed = fixed_ids(protected, task.failing_at_base, ws_dir, timeout_s=args.timeout,
+                                  python=args.python, pythonpath=task.pythonpath)
             if outcome.passed is True:
                 disposition = Disposition.VERIFIED_LOCAL_ATTEMPT
             elif outcome.passed is False:
@@ -189,13 +218,18 @@ def cmd_replay(args: argparse.Namespace) -> int:
                 resources={"prompt_tokens": float(result.prompt_tokens),
                            "completion_tokens": float(result.completion_tokens),
                            "turns": float(result.turns), "tool_calls": float(result.tool_calls),
-                           "test_runs": float(result.test_runs)},
-                reasons=(f"attempt: {result.stop_reason}", *outcome.reasons))
+                           "test_runs": float(result.test_runs),
+                           "failing_at_base": float(len(task.failing_at_base)),
+                           "fixed": float(len(fixed))},
+                reasons=(f"attempt: {result.stop_reason}",
+                         f"fixed {len(fixed)} of {len(task.failing_at_base)} failing at base",
+                         *outcome.reasons))
             _append(evidence, rec)
             _keep_attempt(out, task, ident, result, ws_dir)
             print(f"[{task.task_id}] {disposition.value}: {result.stop_reason}, "
                   f"{result.turns} turns, {result.tool_calls} calls, {result.wall_s:.0f}s; "
-                  f"verifier {outcome.passed_count}/{outcome.expected}"
+                  f"fixed {len(fixed)}/{len(task.failing_at_base)}, verifier "
+                  f"{outcome.passed_count}/{outcome.expected}"
                   f"{' tamper' if outcome.tamper else ''}", flush=True)
         finally:
             _drop(task, ws_dir)
@@ -217,8 +251,30 @@ def _keep_attempt(out: Path, task: RepairTask, ident: Identity, result: Any, ws_
 
 
 def cmd_report(args: argparse.Namespace) -> int:
-    records = _read_records(Path(args.out) / "evidence.jsonl")
+    out = Path(args.out)
+    records = _read_records(out / "evidence.jsonl")
     print(render(summarize(records)))
+    if args.tasks:
+        by_episode: dict[str, list[EpisodeEvidence]] = {}
+        for r in records:
+            if r.verifier is not None:
+                by_episode.setdefault(r.episode_id, []).append(r)
+        print()
+        for task in _tasks(out, None):
+            head = " ".join(task.request.split())[:72]
+            print(f"{task.task_id}  ({task.expected_tests} frozen tests, "
+                  f"{task.baseline_failing} fail at base, {task.src_files} src file(s))")
+            print(f"    request: {head}")
+            for r in by_episode.get(task.episode_id, []):
+                v = r.verifier
+                assert v is not None
+                model = r.identity.model_sha256.split(":", 1)[-1]
+                fixed = int(r.resources.get("fixed", 0))
+                print(f"    {r.disposition.value:24s} {model[:40]:40s} fixed "
+                      f"{fixed}/{task.baseline_failing}, verifier {v.passed_count}/{v.expected}"
+                      f"{' tamper' if v.tamper else ''}  {r.reasons[0][:40]}")
+            if not by_episode.get(task.episode_id):
+                print("    (not attempted yet)")
     if args.by_reason:
         reasons: dict[str, int] = {}
         for r in records:
@@ -259,6 +315,7 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("report", help="counts and both denominators")
     p.add_argument("--out", default=str(DEFAULT_OUT))
     p.add_argument("--by-reason", action="store_true")
+    p.add_argument("--tasks", action="store_true", help="one block per admitted task")
     p.set_defaults(fn=cmd_report)
     args = ap.parse_args(argv)
     fn: Any = args.fn

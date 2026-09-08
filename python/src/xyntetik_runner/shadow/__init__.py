@@ -33,6 +33,7 @@ from xyntetik_runner.shadow.verifier import (
     ProtectedTests,
     calibrate,
     check,
+    fixed_ids,
     verify,
 )
 
@@ -52,6 +53,7 @@ __all__ = [
     "VerifierOutcome",
     "calibrate",
     "check",
+    "fixed_ids",
     "file_sha256",
     "render",
     "summarize",

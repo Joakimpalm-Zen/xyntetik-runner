@@ -117,6 +117,18 @@ class ProtectedTests:
         return tuple(sorted({rel for rel, _ in self.expected}))
 
 
+def fixed_ids(protected: ProtectedTests, outcome_ids: Sequence[str], tree: Path, *,
+              timeout_s: float = 600.0, python: str = sys.executable,
+              pythonpath: Sequence[str] = ()) -> tuple[str, ...]:
+    """Which of ``outcome_ids`` (``file::name``) pass on ``tree`` now. A second
+    run, kept separate from ``verify`` so the verdict stays one run."""
+    run = _run_protected(protected, tree, timeout_s=timeout_s, python=python,
+                         pythonpath=pythonpath)
+    want = set(outcome_ids)
+    return tuple(f"{rel}::{name}" for rel, name in protected.expected
+                 if f"{rel}::{name}" in want and run.outcomes.get(_key(rel, name)) == "passed")
+
+
 @dataclass(frozen=True)
 class _Run:
     outcomes: Mapping[tuple[str, str], str]
@@ -235,6 +247,9 @@ class Calibration:
     passing: int
     missing: int
     report_sha256: str
+    failing_ids: tuple[str, ...] = ()
+    """``file::name`` of every expected test that failed or did not run on the
+    baseline: the tests a fix has to turn green."""
 
 
 def calibrate(protected: ProtectedTests, baseline_root: Path, *, timeout_s: float = 600.0,
@@ -256,8 +271,10 @@ def calibrate(protected: ProtectedTests, baseline_root: Path, *, timeout_s: floa
     if run.returncode == 0:
         raise InstrumentError("pytest exited 0 on the baseline while the report shows failures; "
                               "the report and the process disagree")
+    ids = tuple(f"{rel}::{name}" for rel, name in protected.expected
+                if run.outcomes.get(_key(rel, name)) != "passed")
     return Calibration(failing=failed, passing=passed, missing=missing,
-                       report_sha256=run.report_sha256)
+                       report_sha256=run.report_sha256, failing_ids=ids)
 
 
 def check(tree: Path, protected: ProtectedTests, *, timeout_s: float = 600.0,

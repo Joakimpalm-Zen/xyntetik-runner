@@ -57,6 +57,7 @@ class RepairTask:
     protected_dir: str
     expected_tests: int
     baseline_failing: int
+    failing_at_base: tuple[str, ...] = ()
 
     def to_json(self) -> str:
         return json.dumps(asdict(self), sort_keys=True, indent=2)
@@ -64,8 +65,8 @@ class RepairTask:
     @classmethod
     def load(cls, path: Path) -> RepairTask:
         data = json.loads(path.read_text(encoding="utf-8"))
-        for key in ("test_files", "visible_test_files", "pythonpath"):
-            data[key] = tuple(data[key])
+        for key in ("test_files", "visible_test_files", "pythonpath", "failing_at_base"):
+            data[key] = tuple(data.get(key) or ())
         return cls(**data)
 
 
@@ -232,7 +233,7 @@ def build_task(episode: Episode, repo: Path, shas: Sequence[str], *, out_dir: Pa
             solution_sha=solution, request=episode.request, request_sha256=episode.request_sha256,
             test_files=tuple(present), visible_test_files=visible, src_files=len(src),
             pythonpath=roots, protected_dir=str(protected), expected_tests=len(frozen.expected),
-            baseline_failing=cal.failing + cal.missing)
+            baseline_failing=cal.failing + cal.missing, failing_at_base=cal.failing_ids)
         (task_dir / "task.json").write_text(task.to_json() + "\n", encoding="utf-8")
         admitted = True
         return task
@@ -247,10 +248,20 @@ def build_task(episode: Episode, repo: Path, shas: Sequence[str], *, out_dir: Pa
             shutil.rmtree(task_dir, ignore_errors=True)
 
 
-def admit(episode: Episode, *, out_dir: Path, python: str = sys.executable,
-          timeout_s: float = 600.0, seen: set[tuple[str, str]] | None = None
-          ) -> RepairTask | Rejection:
-    """Pair an episode with its repository and commit range, then build."""
+@dataclass(frozen=True)
+class Candidate:
+    episode: Episode
+    repo: Path
+    shas: tuple[str, ...]
+
+    @property
+    def solution(self) -> str:
+        return self.shas[0]
+
+
+def pair(episode: Episode) -> list[Candidate] | Rejection:
+    """The (repository, commit range) pairs an episode's window covers, or
+    why it has none."""
     if episode.is_command:
         return Rejection(Disposition.INELIGIBLE, "harness-injected turn, not a request")
     if not episode.request.strip():
@@ -260,12 +271,43 @@ def admit(episode: Episode, *, out_dir: Path, python: str = sys.executable,
         return Rejection(Disposition.INELIGIBLE, "no git repository at or under the working directory")
     start = datetime.fromisoformat(episode.started_at.replace("Z", "+00:00"))
     end = datetime.fromisoformat(episode.ended_at.replace("Z", "+00:00"))
-    candidates = [(repo, commits_in_window(repo, start, end)) for repo in repos]
-    candidates = [(r, s) for r, s in candidates if s]
-    if not candidates:
+    found = [Candidate(episode, repo, tuple(commits_in_window(repo, start, end))) for repo in repos]
+    found = [c for c in found if c.shas]
+    if not found:
         return Rejection(Disposition.UNREPLAYABLE, "no commit in the task window")
+    return found
+
+
+def choose(candidates: Iterable[Candidate]) -> dict[str, Candidate]:
+    """One episode per fix commit: the one whose working directory is the
+    repository itself over a parent, then the latest prompt before the
+    fix. A commit reachable from two clones is still one fix."""
+    best: dict[str, Candidate] = {}
+    for c in candidates:
+        depth = 0 if Path(c.episode.cwd).resolve() == c.repo.resolve() else 1
+        key = (depth, -datetime.fromisoformat(c.episode.started_at.replace("Z", "+00:00")).timestamp())
+        cur = best.get(c.solution)
+        if cur is None:
+            best[c.solution] = c
+            continue
+        cur_depth = 0 if Path(cur.episode.cwd).resolve() == cur.repo.resolve() else 1
+        cur_key = (cur_depth, -datetime.fromisoformat(cur.episode.started_at.replace("Z", "+00:00")).timestamp())
+        if key < cur_key:
+            best[c.solution] = c
+    return best
+
+
+def admit(episode: Episode, *, out_dir: Path, python: str = sys.executable,
+          timeout_s: float = 600.0, seen: set[tuple[str, str]] | None = None
+          ) -> RepairTask | Rejection:
+    """Pair one episode with its repository and commit range, then build.
+    For a whole trace use ``pair`` + ``choose`` so overlapping windows are
+    attributed once; this per-episode path keys duplicates on the fix sha."""
+    paired = pair(episode)
+    if isinstance(paired, Rejection):
+        return paired
     last: RepairTask | Rejection = Rejection(Disposition.INELIGIBLE, "no candidate")
-    for repo, shas in candidates:
+    for repo, shas in ((c.repo, list(c.shas)) for c in paired):
         # One fix commit is one task, whichever clone it is reachable from and
         # however many turns' windows overlap it: the key is the solution sha.
         key = ("solution", shas[0])
