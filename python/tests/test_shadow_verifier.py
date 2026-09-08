@@ -189,3 +189,32 @@ def test_pythonpath_roots_resolve_inside_the_scratch_copy(tmp_path: Path) -> Non
     assert without.passed is False and without.missing == 6, "no root: the tests cannot import calc"
     with_root = verify(ws, protected, base, pythonpath=("src",))
     assert with_root.passed is True and with_root.passed_count == 6
+
+
+def test_hashes_fold_crlf_so_a_windows_checkout_still_loads(tmp_path: Path) -> None:
+    """The fixture was frozen on a machine that writes LF; a git checkout on
+    Windows rewrites it with CRLF. The manifest must still load, the tree
+    must still count as unchanged, and a CR split across a read chunk must
+    not change the answer."""
+    from xyntetik_runner.shadow import file_sha256
+    lf = tmp_path / "lf.py"
+    crlf = tmp_path / "crlf.py"
+    text = "x = 1\n" * 20000  # well past one 64 KiB read chunk
+    lf.write_bytes(text.encode())
+    crlf.write_bytes(text.replace("\n", "\r\n").encode())
+    assert file_sha256(lf) == file_sha256(crlf)
+    lone_cr = tmp_path / "cr.py"
+    lone_cr.write_bytes(b"a\rb\n")
+    assert file_sha256(lone_cr) != file_sha256(lf), "a lone CR is content, not a line ending"
+    src = tmp_path / "protected"
+    shutil.copytree(FIXTURE / "protected", src)
+    f = src / "tests" / "test_money.py"
+    f.write_bytes(f.read_bytes().replace(b"\n", b"\r\n"))
+    protected = ProtectedTests.load(src)  # would raise InstrumentError on a byte comparison
+    assert protected.expected
+    ws = tmp_path / "ws"
+    shutil.copytree(FIXTURE / "workspace", ws)
+    base = Baseline.capture(ws)
+    money = ws / "calc" / "money.py"
+    money.write_bytes(money.read_bytes().replace(b"\n", b"\r\n"))
+    assert not base.changes(ws), "line endings alone are not a change"

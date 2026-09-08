@@ -20,3 +20,10 @@ scripts/tool-choice-boundary-bank.jsonl -text
 # a translated one is a different input and stops reproducing what it was
 # saved for.
 tests/fuzz/corpus/** -text
+
+# Shadow mode's frozen repair task: the protected manifest records the sha256
+# of each test file and refuses a file that differs. The hash folds CRLF to LF
+# (python/src/xyntetik_runner/shadow/baseline.py), so a translated checkout
+# still loads; this rule keeps the bytes stable on top of that, the way the
+# rest of this file treats anything a test hashes.
+python/tests/fixtures/** -text
