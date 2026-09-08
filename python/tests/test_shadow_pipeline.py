@@ -114,8 +114,8 @@ def test_claude_code_scan_turns_end_at_the_next_prompt(tmp_path: Path) -> None:
 
 
 def test_repos_under_finds_nested_repositories(repo: Path) -> None:
-    assert repos_under(repo.parent) == [repo]
-    assert repos_under(repo) == [repo]
+    assert repos_under(repo.parent) == [repo.resolve()]
+    assert repos_under(repo) == [repo.resolve()]
 
 
 def test_repos_under_descends_through_an_umbrella_repository(repo: Path) -> None:
@@ -123,7 +123,7 @@ def test_repos_under_descends_through_an_umbrella_repository(repo: Path) -> None
     with the real projects untracked inside it. Both are found."""
     git(repo.parent, "init", "-q", "-b", "main", str(repo.parent))
     found = repos_under(repo.parent)
-    assert found == sorted([repo.parent, repo])
+    assert found == sorted([repo.parent.resolve(), repo.resolve()])
 
 
 def test_admit_builds_a_calibrated_task(repo: Path, tmp_path: Path) -> None:
@@ -338,14 +338,16 @@ def test_capture_from_a_parent_directory_records_every_repo_head(repo: Path, tmp
         {"session_id": "cap2", "cwd": str(parent), "prompt": "fix parse_amount now"})))
     assert main(["capture", "--event", "prompt", "--file", str(cap)]) == 0
     lines = [json.loads(l) for l in cap.read_text().splitlines()]
-    assert lines[0]["head"] == "" and lines[0]["heads"] == {str(repo): base}
-    assert lines[1]["heads"] == {str(repo): fix}
+    key = str(repo.resolve())
+    assert lines[0]["head"] == "" and lines[0]["heads"] == {key: base}
+    assert lines[1]["heads"] == {key: fix}
     eps = scan_capture(cap).episodes
     assert len(eps) == 2
     first = eps[0]
-    assert first.request == "first ask" and dict(first.heads_start) == {str(repo): base}
+    assert first.request == "first ask" and dict(first.heads_start) == {key: base}
     paired = pair(first)
-    assert not isinstance(paired, Rejection) and paired[0].shas == (fix,) and paired[0].repo == repo
+    assert not isinstance(paired, Rejection) and paired[0].shas == (fix,)
+    assert paired[0].repo.resolve() == repo.resolve()
     # the second prompt carries the first as context
     assert eps[1].context == ("first ask",)
 

@@ -86,7 +86,11 @@ def repos_under(cwd: Path, *, depth: int = 2) -> list[Path]:
     out: list[Path] = []
     if not cwd.is_dir():
         return out
-    stack: list[tuple[Path, int]] = [(cwd, 0)]
+    # Resolved paths throughout: a walked path carries the platform's
+    # separator while a caller's may not (pytest's temp paths on Windows
+    # keep forward slashes), and two spellings of one directory must be one
+    # repository in every set and dict keyed on it.
+    stack: list[tuple[Path, int]] = [(cwd.resolve(), 0)]
     while stack:
         here, d = stack.pop()
         if (here / ".git").exists():

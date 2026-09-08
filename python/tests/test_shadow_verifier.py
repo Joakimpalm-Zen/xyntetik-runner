@@ -59,7 +59,10 @@ def visible_tests_pass(ws: Path) -> bool:
     env = {k: v for k, v in os.environ.items() if k in ("PATH", "SYSTEMROOT", "SystemRoot")}
     env["PYTHONPATH"] = str(ws)
     r = subprocess.run([sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", "tests"],
-                       cwd=ws, capture_output=True, env=env)
+                       cwd=ws, capture_output=True, env=env, text=True)
+    if r.returncode != 0:
+        # printed so a failing control explains itself in the CI log
+        print(f"visible tests exit {r.returncode}:\n{r.stdout[-2500:]}\n{r.stderr[-800:]}")
     return r.returncode == 0
 
 
