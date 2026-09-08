@@ -17,18 +17,21 @@ import shutil
 import subprocess
 import sys
 import tempfile
-from dataclasses import replace
+import re
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from xyntetik_runner.endpoint import RunnerEndpoint
+from xyntetik_runner.process import ManagedRunner, ServerLaunch
 from xyntetik_runner.shadow.attempt import Budget, Workspace, attempt, probe_speed, runner_chat
-from xyntetik_runner.shadow.baseline import Baseline
+from xyntetik_runner.shadow.baseline import Baseline, file_sha256
 from xyntetik_runner.shadow.evidence import (
     Disposition,
     EpisodeEvidence,
     Identity,
+    Summary,
     VerifierOutcome,
     render,
     summarize,
@@ -210,47 +213,64 @@ def _drop(task: RepairTask, d: Path) -> None:
     shutil.rmtree(d, ignore_errors=True)
 
 
-def cmd_replay(args: argparse.Namespace) -> int:
-    out = Path(args.out)
+@dataclass(frozen=True)
+class ReplayOptions:
+    python: str
+    timeout: float
+    max_turns: int = 12
+    max_tokens: int = 1500
+    test_runs: int = 4
+    wall: float = 900.0
+    min_tps: float = 15.0
+    scaffold_path: str = ""
+    model_sha256: str = ""
+    quant: str = ""
+    task: str = ""
+    limit: int = 0
+    endpoint_label: str = ""
+
+
+def run_replay(out: Path, endpoint: RunnerEndpoint, opts: ReplayOptions, *,
+               model: str = "") -> tuple[int, float, str]:
+    """Attempt every admitted task under ``out`` against ``endpoint`` and
+    record the verdicts; returns (attempts recorded, probe tok/s, model id).
+    Raises ``RuntimeError`` when the endpoint has no model or the fit probe
+    is below the floor, so a caller can report and move on."""
     evidence = out / "evidence.jsonl"
-    endpoint = RunnerEndpoint(args.endpoint, timeout=args.request_timeout)
     caps = endpoint.capabilities()
     models = [m.get("id") for m in caps.get("models", []) if isinstance(m, dict)]
-    model = args.model or (str(models[0]) if models else "")
+    model = model or (str(models[0]) if models else "")
     if not model:
-        print("error: the endpoint reports no model; pass --model", file=sys.stderr)
-        return 2
-    budget = Budget(max_turns=args.max_turns, wall_s=args.wall, max_tokens=args.max_tokens,
-                    test_runs=args.test_runs)
-    scaffold = Scaffold.load(Path(args.scaffold)) if args.scaffold else Scaffold.base()
-    scaffold_id = "base" if not args.scaffold else scaffold.sha256
+        raise RuntimeError("the endpoint reports no model; pass --model")
+    budget = Budget(max_turns=opts.max_turns, wall_s=opts.wall, max_tokens=opts.max_tokens,
+                    test_runs=opts.test_runs)
+    scaffold = Scaffold.load(Path(opts.scaffold_path)) if opts.scaffold_path else Scaffold.base()
+    scaffold_id = "base" if not opts.scaffold_path else scaffold.sha256
     print(f"scaffold: {scaffold.name} ({scaffold_id[:12]})", flush=True)
     # Fit first: a model that crawls has spilled the device, and an attempt
     # at that speed measures the wall clock, not the model. Refuse it.
     tps = probe_speed(endpoint.post_json, model)
-    print(f"probe: {model} decodes at {tps:.1f} tok/s (floor {args.min_tps:g})", flush=True)
-    if tps < args.min_tps:
-        print(f"error: fit-first: {tps:.1f} tok/s is below the floor of {args.min_tps:g}; "
-              "serve a model and context that fit the device (see runner --fit) or lower "
-              "--min-tps", file=sys.stderr)
-        return 2
+    print(f"probe: {model} decodes at {tps:.1f} tok/s (floor {opts.min_tps:g})", flush=True)
+    if tps < opts.min_tps:
+        raise RuntimeError(f"fit-first: {tps:.1f} tok/s is below the floor of {opts.min_tps:g}; "
+                           "serve a model and context that fit the device (see runner --fit) "
+                           "or lower --min-tps")
     base_identity = Identity(
-        project="", task_class="repair", context_band="", tool_set=(),
-        verifier_id="", environment_id=f"{platform.node()}|{args.endpoint}",
-        model_sha256=args.model_sha256 or f"unknown:{model}", quant=args.quant or "unknown",
+        project="", task_class="file", context_band="", tool_set=(),
+        verifier_id="", environment_id=f"{platform.node()}|{opts.endpoint_label or endpoint.base_url}",
+        model_sha256=opts.model_sha256 or f"unknown:{model}", quant=opts.quant or "unknown",
         template_sha256="unknown", runner_build=str(caps.get("version") or "unknown"),
         backend=str(caps.get("backend") or "unknown"), harness_version=HARNESS_VERSION,
         scaffold_sha256=scaffold_id)
     done = {(r.episode_id, r.identity.model_sha256, r.identity.scaffold_sha256)
             for r in _read_records(evidence) if r.verifier is not None}
-    # A resumed import must not re-import an admitted episode as a new one.
     ran = 0
-    for task in _tasks(out, args.task):
-        if args.limit and ran >= args.limit:
+    for task in _tasks(out, opts.task):
+        if opts.limit and ran >= opts.limit:
             break
-        ident = replace(base_identity, project=Path(task.repo).name,
+        ident = replace(base_identity, project=Path(task.repo).name, task_class=task.task_class,
                         context_band=_band(len(task.request)),
-                        tool_set=("list_files", "read_file", "write_file", "run_tests"),
+                        tool_set=("list_files", "read_file", "write_file", "edit_file", "run_tests"),
                         verifier_id=f"commit-tests:{task.task_id}")
         if (task.episode_id, ident.model_sha256, ident.scaffold_sha256) in done:
             continue
@@ -260,18 +280,18 @@ def cmd_replay(args: argparse.Namespace) -> int:
         try:
             baseline = Baseline.capture(ws_dir)
             ws = Workspace(ws_dir, visible_tests=task.visible_test_files,
-                           pythonpath=task.pythonpath, python=args.python, budget=budget)
+                           pythonpath=task.pythonpath, python=opts.python, budget=budget)
             chat = runner_chat(endpoint.post_json, model, max_tokens=budget.max_tokens)
             result = attempt(task.request, ws, chat, budget=budget, context=task.context,
                              scaffold=scaffold)
             protected = ProtectedTests.load(Path(task.protected_dir))
-            outcome = verify(ws_dir, protected, baseline, timeout_s=args.timeout,
-                             python=args.python, pythonpath=task.pythonpath)
+            outcome = verify(ws_dir, protected, baseline, timeout_s=opts.timeout,
+                             python=opts.python, pythonpath=task.pythonpath)
             changes = baseline.changes(ws_dir)
             fixed: tuple[str, ...] = ()
             if changes and task.failing_at_base and outcome.passed is not None:
-                fixed = fixed_ids(protected, task.failing_at_base, ws_dir, timeout_s=args.timeout,
-                                  python=args.python, pythonpath=task.pythonpath)
+                fixed = fixed_ids(protected, task.failing_at_base, ws_dir, timeout_s=opts.timeout,
+                                  python=opts.python, pythonpath=task.pythonpath)
             if outcome.passed is True:
                 disposition = Disposition.VERIFIED_LOCAL_ATTEMPT
             elif outcome.passed is False:
@@ -303,7 +323,137 @@ def cmd_replay(args: argparse.Namespace) -> int:
         finally:
             _drop(task, ws_dir)
     print(f"{ran} attempt(s) recorded in {evidence}", flush=True)
+    return ran, tps, model
+
+
+def cmd_replay(args: argparse.Namespace) -> int:
+    opts = ReplayOptions(python=args.python, timeout=args.timeout, max_turns=args.max_turns,
+                         max_tokens=args.max_tokens, test_runs=args.test_runs, wall=args.wall,
+                         min_tps=args.min_tps, scaffold_path=args.scaffold,
+                         model_sha256=args.model_sha256, quant=args.quant, task=args.task,
+                         limit=args.limit, endpoint_label=args.endpoint)
+    try:
+        run_replay(Path(args.out), RunnerEndpoint(args.endpoint, timeout=args.request_timeout),
+                   opts, model=args.model)
+    except RuntimeError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
     return 0
+
+
+def cmd_bench(args: argparse.Namespace) -> int:
+    """R14.5.3: bank + fit probe + replay per model + the verified table."""
+    out = Path(args.out)
+    (out / "tasks").mkdir(parents=True, exist_ok=True)
+    if not _tasks(out, None):
+        if not args.repo:
+            print("error: no tasks under", out / "tasks", "and no --repo to build them from",
+                  file=sys.stderr)
+            return 2
+        entries = build_bank(Path(args.repo), out_dir=out / "tasks", python=args.python,
+                             limit=args.limit, max_commits=args.max_commits,
+                             max_src_files=args.max_src_files, timeout_s=args.timeout)
+        print(f"bank: {sum(1 for e in entries if e.task)} task(s) from {len(entries)} commits",
+              flush=True)
+    tasks = _tasks(out, None)
+    if not tasks:
+        print("error: the repository yielded no verifiable task", file=sys.stderr)
+        return 2
+    classes: dict[str, int] = {}
+    for t in tasks:
+        classes[t.task_class] = classes.get(t.task_class, 0) + 1
+    print(f"{len(tasks)} task(s): " + ", ".join(f"{k} {v}" for k, v in sorted(classes.items())),
+          flush=True)
+    opts = ReplayOptions(python=args.python, timeout=args.timeout, max_turns=args.max_turns,
+                         max_tokens=args.max_tokens, test_runs=args.test_runs, wall=args.wall,
+                         min_tps=args.min_tps, scaffold_path=args.scaffold)
+    rows: list[dict[str, Any]] = []
+    arms: list[tuple[str, str]] = [("endpoint", u) for u in args.endpoints.split(",") if u]
+    arms += [("model", m) for m in args.models.split(",") if m]
+    if not arms:
+        print("error: pass --models a.gguf,b.gguf (with --runner) or --endpoints url,url",
+              file=sys.stderr)
+        return 2
+    for kind, target in arms:
+        label = target
+        managed: ManagedRunner | None = None
+        try:
+            if kind == "model":
+                path = Path(target)
+                if not path.is_file():
+                    rows.append({"model": label, "error": "no such file"})
+                    continue
+                sha = file_sha256(path)
+                port = _free_port()
+                launch = ServerLaunch(executable=args.runner, model=path, port=port,
+                                      context_size=args.ctx, gpu=args.gpu,
+                                      threads=args.threads or None,
+                                      extra_args=tuple(a for a in args.runner_args.split() if a))
+                managed = ManagedRunner(launch)
+                print(f"[{path.name}] starting runner on port {port} ...", flush=True)
+                if not managed.start(timeout=args.start_timeout):
+                    rows.append({"model": label, "error": "runner did not start"})
+                    continue
+                endpoint = RunnerEndpoint(managed.base_url, timeout=args.request_timeout)
+                run_opts = replace(opts, model_sha256=sha, quant=_quant_from_name(path.name),
+                                   endpoint_label=path.name)
+            else:
+                endpoint = RunnerEndpoint(target, timeout=args.request_timeout)
+                run_opts = replace(opts, endpoint_label=target)
+            ran, tps, model = run_replay(out, endpoint, run_opts)
+            rows.append({"model": model, "model_sha256": run_opts.model_sha256 or f"unknown:{model}",
+                         "tps": round(tps, 1), "attempts": ran})
+        except RuntimeError as e:
+            rows.append({"model": label, "error": str(e)})
+            print(f"[{label}] {e}", flush=True)
+        finally:
+            if managed is not None:
+                managed.stop()
+    summary = summarize(_read_records(out / "evidence.jsonl"))
+    table = _bench_table(summary, rows, len(tasks), classes)
+    (out / "bench.md").write_text(table + "\n", encoding="utf-8")
+    (out / "bench.json").write_text(json.dumps({"tasks": len(tasks), "classes": classes,
+                                                "arms": rows, "report": render(summary)},
+                                               indent=2) + "\n", encoding="utf-8")
+    print(table, flush=True)
+    print(f"written {out / 'bench.md'} and bench.json", flush=True)
+    return 0
+
+
+def _free_port() -> int:
+    import socket
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return int(s.getsockname()[1])
+
+
+def _quant_from_name(name: str) -> str:
+    m = re.search(r"(IQ\d_\w+|Q\d_K_[MSL]|Q\d_K|Q\d_\d|F16|BF16|F32|NVFP4|MXFP4)", name, re.I)
+    return m.group(1).upper() if m else "unknown"
+
+
+def _bench_table(summary: Summary, rows: list[dict[str, Any]], n_tasks: int,
+                 classes: dict[str, int]) -> str:
+    lines = [f"# Local capability bench: {n_tasks} verified tasks "
+             f"({', '.join(f'{v} {k}' for k, v in sorted(classes.items()))})", "",
+             "| model | quant | tok/s | attempted | verified | failed | per class |",
+             "|---|---|---:|---:|---:|---:|---|"]
+    by_stack = {c.model: c for c in summary.cohorts}
+    for r in rows:
+        if "error" in r:
+            lines.append(f"| {r['model']} | | | | | | refused: {r['error']} |")
+            continue
+        c = by_stack.get(r["model_sha256"])
+        if c is None:
+            lines.append(f"| {r['model']} | | {r['tps']} | 0 | 0 | 0 | |")
+            continue
+        per = "; ".join(f"{k}: {v}/{a}" for k, a, v, _f in c.classes)
+        lines.append(f"| {r['model']} | {_quant_from_name(r['model'])} | {r['tps']} | {c.attempted} | "
+                     f"{c.verified} | {c.failed} | {per} |")
+    lines += ["", "Counts before rates: verified is all frozen tests passing; per class is "
+              "verified over attempted for that task class. No percentage before thirty "
+              "independent eligible tasks."]
+    return "\n".join(lines)
 
 
 def _keep_attempt(out: Path, task: RepairTask, ident: Identity, result: Any, ws_dir: Path) -> None:
@@ -560,6 +710,31 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--prompt", default="")
     p.add_argument("--file", default="")
     p.set_defaults(fn=cmd_capture)
+    p = sub.add_parser("bench", help="bank + fit probe + replay per model + the verified table, "
+                                     "on your own repository")
+    p.add_argument("--repo", default="", help="repository to build tasks from (if none yet)")
+    p.add_argument("--out", default=str(DEFAULT_OUT.parent / "shadow-bench"))
+    p.add_argument("--models", default="", help="comma-separated GGUF paths, served one at a time")
+    p.add_argument("--endpoints", default="", help="comma-separated running runner URLs")
+    p.add_argument("--runner", default="runner", help="runner executable for --models")
+    p.add_argument("--runner-args", default="", help="extra runner flags, e.g. '--cpu-moe'")
+    p.add_argument("--ctx", type=int, default=8192)
+    p.add_argument("--gpu", default="auto")
+    p.add_argument("--threads", type=int, default=0)
+    p.add_argument("--start-timeout", type=float, default=600.0)
+    p.add_argument("--limit", type=int, default=20)
+    p.add_argument("--max-commits", type=int, default=400)
+    p.add_argument("--max-src-files", type=int, default=3)
+    p.add_argument("--python", default=sys.executable)
+    p.add_argument("--timeout", type=float, default=600.0)
+    p.add_argument("--request-timeout", type=float, default=900.0)
+    p.add_argument("--max-turns", type=int, default=10)
+    p.add_argument("--max-tokens", type=int, default=1500)
+    p.add_argument("--test-runs", type=int, default=3)
+    p.add_argument("--wall", type=float, default=600.0)
+    p.add_argument("--min-tps", type=float, default=15.0)
+    p.add_argument("--scaffold", default="")
+    p.set_defaults(fn=cmd_bench)
     p = sub.add_parser("install", help="wire the hooks and a /shadow command into the harnesses "
                                        "(explicit opt-in; reversible with uninstall)")
     p.add_argument("--home", default="")

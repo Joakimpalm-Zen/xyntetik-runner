@@ -181,6 +181,8 @@ class CohortSummary:
     verified: int
     failed: int
     inconclusive: int
+    classes: tuple[tuple[str, int, int, int], ...] = ()
+    """(task class, attempted, verified, failed) rows under this stack."""
 
 
 @dataclass(frozen=True)
@@ -233,19 +235,28 @@ def summarize(records: Iterable[EpisodeEvidence]) -> Summary:
             key = r.identity.stack_key()
             row = per_cohort.setdefault(key, {"model": r.identity.model_sha256,
                                               "scaffold": r.identity.scaffold_sha256, "attempted": 0,
-                                              "verified": 0, "failed": 0, "inconclusive": 0})
+                                              "verified": 0, "failed": 0, "inconclusive": 0,
+                                              "classes": {}})
             row["attempted"] += 1
+            classes: dict[str, list[int]] = row["classes"]
+            cl = classes.setdefault(r.identity.task_class, [0, 0, 0])
+            cl[0] += 1
             if r.disposition is Disposition.VERIFIED_LOCAL_ATTEMPT:
                 row["verified"] += 1
+                cl[1] += 1
             elif r.disposition is Disposition.LOCAL_FAILED:
                 row["failed"] += 1
+                cl[2] += 1
             else:
                 row["inconclusive"] += 1
     cohorts = tuple(sorted(
         (CohortSummary(cohort=k, model=str(v["model"]), scaffold=str(v["scaffold"]),
                        attempted=int(v["attempted"]),
                        verified=int(v["verified"]), failed=int(v["failed"]),
-                       inconclusive=int(v["inconclusive"])) for k, v in per_cohort.items()),
+                       inconclusive=int(v["inconclusive"]),
+                       classes=tuple(sorted((c, n[0], n[1], n[2])
+                                            for c, n in v["classes"].items())))
+         for k, v in per_cohort.items()),
         key=lambda c: (c.model, c.scaffold)))
     return Summary(observed=len(by_episode), eligible=eligible, unattempted=unattempted,
                    agreement_only=agreement, by_disposition=by, cohorts=cohorts)
@@ -272,6 +283,8 @@ def render(s: Summary) -> str:
                 row += f" ({100 * c.verified / s.eligible:.0f}%)"
         row += f"; verified over observed {c.verified} of {s.observed}"
         lines.append(row)
+        for klass, att, ver, fai in c.classes:
+            lines.append(f"    {klass}: attempted {att}, verified {ver}, failed {fai}")
     if not s.cohorts:
         lines.append("no attempts recorded")
     if not s.headline_allowed:

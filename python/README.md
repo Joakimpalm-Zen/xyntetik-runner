@@ -86,6 +86,10 @@ The negative controls that prove the verifier can fail live in
   `shadow optimize` runs it against a runner endpoint with the local model as
   its own reflector and writes `scaffolds/best.json` and `optimize.json`.
 
+- `bench`: `shadow bench --repo . --models a.gguf,b.gguf --runner ./runner` (or
+  `--endpoints url,url`) = bank + fit probe + replay per model + `bench.md` /
+  `bench.json`, one row per model stack with verified over attempted per task
+  class. `tasks.change_class` gives each task `function`, `file` or `multi-file`.
 - `install`: `shadow install [--pythonpath P] [--out DIR]` merges the two capture
   hooks into `~/.claude/settings.json`, writes the `/shadow` skill and the Codex
   `/shadow` prompt; `uninstall` reverses exactly that; `capture --summary` counts

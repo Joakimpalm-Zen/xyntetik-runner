@@ -8,6 +8,21 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **`shadow bench`: the local capability bench as one command, and a
+  function-level task class.** `python -m xyntetik_runner.shadow bench
+  --repo . --models a.gguf,b.gguf --runner ./runner` builds the bank from
+  the repository's own history, serves each model in turn through the
+  client's managed launch, probes it for fit, replays every task, and
+  writes `bench.md` and `bench.json`: one row per model with the model's
+  sha256 in the identity, attempted, verified, failed, and verified over
+  attempted per task class. `--endpoints` benches running servers instead.
+  Tasks now carry a class from the diff and the post-state's own syntax
+  tree: `function` when every changed source line sits inside one function
+  or method (an import the fix needed does not break it), `file` beyond
+  that, `multi-file` otherwise; the report shows per-class rows under each
+  model stack, because the class a person delegates is the first one and
+  the whole-commit repairs of a mature library are not it.
+
 - **`shadow install`: the harness wiring as one explicit opt-in.** Merges
   the prompt and stop capture hooks into the Claude Code user settings
   beside whatever is there (backup beside the file, idempotent), writes a
