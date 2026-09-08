@@ -32,9 +32,9 @@
 #define RUNNER_TTY(f) _isatty(_fileno(f))
 #else
 #include <unistd.h>
-#include <sys/stat.h>
 #define RUNNER_TTY(f) isatty(fileno(f))
 #endif
+#include <sys/stat.h>
 
 // quantize_gguf is declared in runner.h
 
@@ -902,6 +902,15 @@ static int run_fit_check(const char *path, int n_ctx_want) {
 #endif
 static int run_shadow_mode(const char *model, bool yes) {
     char *exe = plat_executable_path();
+#ifndef _WIN32
+    // Linux answers "/proc/self/exe": a link, whose directory is /proc/self.
+    // The client lives beside the real binary, and the recorded runner path
+    // must outlive this process, so resolve the link first.
+    if (exe) {
+        char *real = realpath(exe, NULL);
+        if (real) { free(exe); exe = real; }
+    }
+#endif
     char client[4096] = "";
     if (exe) {
         const char *slash = strrchr(exe, '/');
