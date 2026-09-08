@@ -152,11 +152,20 @@ def hook_prompt(home: Path, *, session_id: str, cwd: str, prompt: str, repo: Pat
                 state.ended_at = time.time()
                 state.save(home)
             else:
-                notes.append(f"shadow: the local model ({Path(model).name}) is attempting this request in "
-                             f"the background on a scratch copy of {repo.name}, because it has "
-                             f"{route.verified} verified of {route.attempted} attempts on record for "
-                             f"{route.task_class} tasks here (delegation {state.id}). Work as usual; if "
-                             f"it ends verified you will be told. `shadow delegations` shows it.")
+                if route.strong:
+                    notes.append(f"shadow: runner first. The local model ({Path(model).name}) has "
+                                 f"{route.verified} verified of {route.attempted} attempts on record for "
+                                 f"{route.task_class} tasks in {repo.name}, so it is attempting this request now "
+                                 f"on a scratch copy (delegation {state.id}). Before doing the work yourself, "
+                                 f"wait for it: run `{python} -m xyntetik_runner.shadow delegations --wait {state.id}`. "
+                                 "If it ends verified, show the patch in one line, offer `git apply <patch>` and "
+                                 "stop; if not, do the work as usual.")
+                else:
+                    notes.append(f"shadow: the local model ({Path(model).name}) is attempting this request in "
+                                 f"the background on a scratch copy of {repo.name}, because it has "
+                                 f"{route.verified} verified of {route.attempted} attempts on record for "
+                                 f"{route.task_class} tasks here (delegation {state.id}). Work as usual; if "
+                                 f"it ends verified you will be told. `shadow delegations` shows it.")
     if not notes:
         return None
     return {"hookSpecificOutput": {"hookEventName": "UserPromptSubmit",
@@ -176,6 +185,24 @@ def hook_stop(home: Path, *, session_id: str) -> dict[str, Any] | None:
                                    f"Patch: {s.patch_path}. Tell the user in one line and offer "
                                    f"`git apply {s.patch_path}`; never apply it yourself. Then stop.")}
     return None
+
+
+def wait_for(home: Path, delegation_id: str, *, timeout_s: float = RUNNING_WALL_S,
+             poll_s: float = 5.0, sleep: Callable[[float], None] = time.sleep) -> DelegationState | None:
+    """Block until the delegation ends or the wall passes; the ended state,
+    or the running one when the wall passed, or None if unknown."""
+    deadline = time.time() + timeout_s
+    while True:
+        found = [s for s in states(home) if s.id == delegation_id]
+        if not found:
+            return None
+        s = found[0]
+        if s.status != "running" or time.time() >= deadline or not s.running:
+            if s.status != "running":
+                s.surfaced = True
+                s.save(home)
+            return s
+        sleep(poll_s)
 
 
 def render_delegations(home: Path, *, session_id: str = "") -> str:

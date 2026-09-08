@@ -78,6 +78,33 @@ def test_gate_opens_only_on_this_repository_and_model() -> None:
     assert tandem.looks_like_a_task("fix parse_amount so thousands separators work")
 
 
+def test_strong_record_asks_for_runner_first_and_wait_returns_the_verdict(repo: Path, tmp_path: Path) -> None:
+    from xyntetik_runner.shadow.routes import Route
+    assert Route("function", "m", 5, 4).strong and not Route("function", "m", 5, 3).strong
+    assert not Route("function", "m", 4, 4).strong and Route("function", "m", 4, 4).qualifies
+    home = tmp_path / "home"
+    spawned: list[list[str]] = []
+    recs = [record("proj", "sha1", True)] * 4 + [record("proj", "sha1", False)]
+    out = tandem.hook_prompt(home, session_id="s1", cwd=str(repo), prompt="make parse_amount handle currency",
+                             repo=repo, records=recs, model="/m/coder.gguf", model_sha256="sha1", python="py",
+                             out=str(tmp_path / "out"), spawn=spawned.append)
+    assert out is not None
+    ctx = out["hookSpecificOutput"]["additionalContext"]
+    assert "runner first" in ctx and "delegations --wait" in ctx and "4 verified of 5" in ctx
+    st = tandem.states(home)[0]
+    # wait: the delegation ends while waiting; the verdict comes back and counts as surfaced
+    ticks: list[float] = []
+
+    def sleep(sec: float) -> None:
+        ticks.append(sec)
+        st.status, st.tests_exit, st.changed_paths, st.patch_path = "done", 0, ("calc/money.py",), "/p/y.patch"
+        st.save(home)
+    done = tandem.wait_for(home, st.id, sleep=sleep)
+    assert done is not None and done.verified and done.surfaced and len(ticks) == 1
+    assert tandem.wait_for(home, "nope") is None
+    assert tandem.hook_stop(home, session_id="s1") is None, "already surfaced by the wait"
+
+
 def test_prompt_hook_starts_a_background_attempt_and_the_stop_hook_surfaces_it_once(repo: Path, tmp_path: Path) -> None:
     home = tmp_path / "home"
     spawned: list[list[str]] = []
@@ -205,3 +232,6 @@ def test_recorded_delegation_joins_the_ledger_with_its_class(repo: Path, tmp_pat
     assert "started delegation" in capsys.readouterr().out and len(spawned) == 1 and "--record" in spawned[0]
     assert main(["delegations", "--home", str(home), "--session", "s9"]) == 0
     assert "| running |" in capsys.readouterr().out
+    assert main(["delegations", "--home", str(home), "--wait", "d1"]) == 0
+    assert "git apply" in capsys.readouterr().out
+    assert main(["delegations", "--home", str(home), "--wait", "missing"]) == 2

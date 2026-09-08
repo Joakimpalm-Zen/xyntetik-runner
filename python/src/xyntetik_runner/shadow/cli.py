@@ -792,7 +792,8 @@ def cmd_delegate(args: argparse.Namespace) -> int:
                         "--request", args.request, "--home", str(home), "--python", args.python,
                         "--out", out, "--record", bg.id])
         print(f"started delegation {bg.id} in the background ({route.task_class}: {route.verified} verified "
-              f"of {route.attempted} on record); 'shadow delegations' shows it")
+              f"of {route.attempted} on record{'; strong: wait for it first' if route.strong else ''}); "
+              f"'shadow delegations --wait {bg.id}' waits for it")
         return 0
     state: tandem.DelegationState | None = None
     if args.record:
@@ -1073,6 +1074,20 @@ def _record_delegation(out: Path, d: Any, *, model_path: str, caps: dict[str, An
 
 def cmd_delegations(args: argparse.Namespace) -> int:
     home = Path(args.home) if args.home else Path.home()
+    if args.wait:
+        st = tandem.wait_for(home, args.wait, timeout_s=args.timeout)
+        if st is None:
+            print(f"error: no delegation {args.wait}", file=sys.stderr)
+            return 2
+        if st.status == "running":
+            print(f"still running after {int(args.timeout)}s: do the work yourself; 'shadow delegations' later")
+            return 1
+        print(f"delegation {st.id}: {st.status}; verdict: {st.verdict or st.error}; class: {st.task_class}")
+        if st.verified:
+            print(f"verified: tests passed on the scratch copy; patch: {st.patch_path}")
+            print(f"apply with: git apply {st.patch_path}   (the user's call; the working tree is untouched)")
+            return 0
+        return 1
     print(tandem.render_delegations(home, session_id=args.session))
     return 0
 
@@ -1283,6 +1298,8 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("delegations", help="background delegations and their verdicts")
     p.add_argument("--home", default="")
     p.add_argument("--session", default="")
+    p.add_argument("--wait", default="", help="block until this delegation ends, then print its verdict")
+    p.add_argument("--timeout", type=float, default=tandem.RUNNING_WALL_S)
     p.set_defaults(fn=cmd_delegations)
     p = sub.add_parser("tandem", help="show or set whether prompts get a background local attempt")
     p.add_argument("state", nargs="?", choices=("on", "off"), default="")

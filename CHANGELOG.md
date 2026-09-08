@@ -20,7 +20,11 @@ names that were true when they were written.
   tests at HEAD; verified only when they passed and no test file was
   touched), so the funnel widens by evidence alone and an adapter that
   raised the held-out count raises these counts too. One delegation at a
-  time; never where the ledger is silent; `shadow tandem off` stops it,
+  time; never where the ledger is silent. Where the record is strong (at
+  least 5 attempts, at least 4 in 5 verified) the hook says "runner
+  first": the harness waits for the local result (`shadow delegations
+  --wait ID`) and does the work itself only if that result is not
+  verified. `shadow tandem off` stops it,
   `shadow delegations` lists them, `delegate --background` is the same
   gate for Codex, which has no hooks. Nothing runs where no model is
   configured.

@@ -323,8 +323,14 @@ every request long enough to be work also starts a background attempt on
 a scratch copy while you work on it; the prompt hook tells you so, and a
 verified result is surfaced once at the end of a turn or the start of the
 next. Show it in one line and offer `git apply <patch>`; never apply it.
-`shadow delegations` lists them; `shadow tandem off` stops it. The funnel
-widens by evidence alone: every attempt is recorded in the ledger.
+Where the record is strong (at least 5 attempts, at least 4 in 5
+verified) the hook says "runner first": wait for the delegation with
+`shadow delegations --wait <id>` before doing the work yourself, and do
+it yourself only if the local result is not verified. `shadow
+delegations` lists them; `shadow tandem off` stops it. The funnel widens
+by evidence alone: every attempt is recorded in the ledger, so each
+cycle of adaptation that raises what the local model proves funnels
+more requests to it.
 
 ## Offload a task to the local model (when the user asks for it)
 
@@ -416,7 +422,9 @@ successes on record, run
 and before you finish run
 {prefix}{python} -m xyntetik_runner.shadow delegations
 ; a verified result is shown in one line with `git apply <patch>` offered,
-never applied. `shadow tandem off` stops this.
+never applied. When `delegate --background` says the record is strong,
+wait for it first (`delegations --wait <id>`) and do the work yourself
+only if the local result is not verified. `shadow tandem off` stops this.
 
 Offload a task to the local model (only when the user asks): first
 {prefix}{python} -m xyntetik_runner.shadow routes --out {out}

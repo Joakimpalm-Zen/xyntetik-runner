@@ -36,6 +36,8 @@ from xyntetik_runner.shadow.tasks import class_from_diff, classify, import_roots
 MIN_ATTEMPTS = 3
 MIN_VERIFIED = 1
 MIN_FRACTION = 0.5
+STRONG_ATTEMPTS = 5
+STRONG_FRACTION = 0.8
 
 
 @dataclass(frozen=True)
@@ -49,6 +51,15 @@ class Route:
     def qualifies(self) -> bool:
         return (self.attempted >= MIN_ATTEMPTS and self.verified >= MIN_VERIFIED
                 and self.verified / self.attempted >= MIN_FRACTION)
+
+    @property
+    def strong(self) -> bool:
+        """Runner first: enough attempts and a high enough verified share
+        that the harness should wait for the local result before doing the
+        work itself. The rule is printed with the numbers, never applied
+        silently."""
+        return (self.qualifies and self.attempted >= STRONG_ATTEMPTS
+                and self.verified / self.attempted >= STRONG_FRACTION)
 
 
 def route_table(records: Iterable[EpisodeEvidence]) -> list[Route]:
