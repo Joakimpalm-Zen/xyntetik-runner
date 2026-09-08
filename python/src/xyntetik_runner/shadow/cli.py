@@ -48,6 +48,7 @@ from xyntetik_runner.shadow.tasks import (
     Rejection,
     build_task,
     choose,
+    canonical,
     pair,
     repos_under,
 )
@@ -401,7 +402,7 @@ def cmd_capture(args: argparse.Namespace) -> int:
         sha = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"], capture_output=True,
                              text=True).stdout.strip()
         if sha:
-            heads[str(repo)] = sha
+            heads[str(canonical(repo))] = sha
     rec: dict[str, Any] = {"event": args.event, "timestamp": _now(),
                            "session_id": str(args.session or data.get("session_id") or ""),
                            "cwd": cwd, "head": head, "heads": heads, "tool": args.tool}

@@ -17,6 +17,7 @@ and the names of the visible test files as they were at the pre-state.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -72,6 +73,14 @@ class RepairTask:
         return cls(**data)
 
 
+def canonical(path: Path | str) -> Path:
+    """One spelling per directory. ``Path.resolve`` is not enough on every
+    Python: a Windows build can keep the separator a path was created with,
+    so ``C:/x/proj`` and ``C:/x\\proj`` compare unequal while naming one
+    directory. normpath fixes the separators and dots, normcase the case."""
+    return Path(os.path.normcase(os.path.normpath(os.path.realpath(str(path)))))
+
+
 def _git(repo: str, *args: str) -> str:
     proc = subprocess.run(["git", "-C", repo, *args], capture_output=True, text=True)
     return proc.stdout
@@ -90,11 +99,11 @@ def repos_under(cwd: Path, *, depth: int = 2) -> list[Path]:
     # separator while a caller's may not (pytest's temp paths on Windows
     # keep forward slashes), and two spellings of one directory must be one
     # repository in every set and dict keyed on it.
-    stack: list[tuple[Path, int]] = [(cwd.resolve(), 0)]
+    stack: list[tuple[Path, int]] = [(canonical(cwd), 0)]
     while stack:
         here, d = stack.pop()
         if (here / ".git").exists():
-            out.append(here)
+            out.append(canonical(here))
         if d >= depth:
             continue
         try:
@@ -323,13 +332,13 @@ def choose(candidates: Iterable[Candidate]) -> dict[str, Candidate]:
     fix. A commit reachable from two clones is still one fix."""
     best: dict[str, Candidate] = {}
     for c in candidates:
-        depth = 0 if Path(c.episode.cwd).resolve() == c.repo.resolve() else 1
+        depth = 0 if canonical(c.episode.cwd) == canonical(c.repo) else 1
         key = (depth, -datetime.fromisoformat(c.episode.started_at.replace("Z", "+00:00")).timestamp())
         cur = best.get(c.solution)
         if cur is None:
             best[c.solution] = c
             continue
-        cur_depth = 0 if Path(cur.episode.cwd).resolve() == cur.repo.resolve() else 1
+        cur_depth = 0 if canonical(cur.episode.cwd) == canonical(cur.repo) else 1
         cur_key = (cur_depth, -datetime.fromisoformat(cur.episode.started_at.replace("Z", "+00:00")).timestamp())
         if key < cur_key:
             best[c.solution] = c
