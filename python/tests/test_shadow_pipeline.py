@@ -263,8 +263,8 @@ def test_cli_import_and_report_on_a_synthetic_home(repo: Path, tmp_path: Path, c
     assert len(tasks) == 1
     assert main(["report", "--out", str(out), "--by-reason"]) == 0
     text = capsys.readouterr().out
-    assert "3 episodes observed" not in text  # the admitted one has no record until replayed
-    assert "2 episodes observed" in text and "no percentage" in text
+    assert "3 episodes observed" in text and "1 eligible for replay" in text
+    assert "1 eligible and not attempted yet" in text and "no percentage" in text
     assert "ineligible: no git repository" in text and "unreplayable: no commit" in text
     task = RepairTask.load(tasks[0])
     assert task.episode_id.endswith(":1"), "the prompt before the fix, not the thanks after it"

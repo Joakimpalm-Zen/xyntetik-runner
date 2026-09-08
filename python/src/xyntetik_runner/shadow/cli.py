@@ -84,6 +84,7 @@ def cmd_import(args: argparse.Namespace) -> int:
           f"{n} episodes", flush=True)
     evidence = out / "evidence.jsonl"
     known = {r.episode_id for r in _read_records(evidence)}
+    known |= {t.episode_id for t in _tasks(out, None)}
     counts: dict[str, int] = {}
     admitted = 0
 
@@ -125,6 +126,10 @@ def cmd_import(args: argparse.Namespace) -> int:
         if isinstance(result, RepairTask):
             admitted += 1
             counts["admitted"] = counts.get("admitted", 0) + 1
+            # Eligible and waiting for a model: the record exists now so the
+            # denominator is complete before any replay.
+            record(c.episode, Rejection(Disposition.NOT_ATTEMPTED_RESOURCE,
+                                        f"admitted as {result.task_id}; not attempted yet"))
             print(f"  admitted {result.task_id}: {result.expected_tests} frozen tests, "
                   f"{result.baseline_failing} fail at base, {result.src_files} source file(s)",
                   flush=True)
@@ -176,6 +181,7 @@ def cmd_replay(args: argparse.Namespace) -> int:
         backend=str(caps.get("backend") or "unknown"), harness_version=HARNESS_VERSION)
     done = {(r.episode_id, r.identity.model_sha256) for r in _read_records(evidence)
             if r.verifier is not None}
+    # A resumed import must not re-import an admitted episode as a new one.
     ran = 0
     for task in _tasks(out, args.task):
         if args.limit and ran >= args.limit:
