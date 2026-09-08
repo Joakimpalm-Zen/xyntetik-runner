@@ -1807,6 +1807,15 @@ verdict for you to apply with `git apply`; the working tree is never
 touched and nothing is applied silently. You keep your harness and your
 frontier model; the runner takes what the evidence says it can.
 
+The ledger fills through `sync`, which `/shadow` runs on every status:
+it imports what the hooks captured since last time, admits the tasks
+that can be replayed, and says how many wait for the local model. When
+you say so, `sync --replay N` runs the next N of them against the local
+model; nothing replays by itself. The runner these commands use stays
+warm between them, unloads by itself when idle, and is listed and ended
+by `shadow server`, so a second delegation a minute after the first does
+not pay the model load again.
+
 Without `-m`, `--shadow-mode` looks for GGUF files under the usual
 directories, asks the runner's own `--fit` about each, and proposes the
 largest that fits at the offload context; the list it looked at is

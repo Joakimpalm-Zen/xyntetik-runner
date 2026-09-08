@@ -114,7 +114,8 @@ class ServerLaunch:
     reserve_pct: int = 0
     threads: int | None = None
     gpu: str = "auto"
-    parent_pid: int = field(default_factory=os.getpid)
+    parent_pid: int | None = field(default_factory=os.getpid)
+    """None: no parent watch; the child outlives the process that started it."""
     ttl: int | None = None
     extra_args: tuple[str, ...] = ()
 
@@ -132,8 +133,9 @@ def build_server_args(launch: ServerLaunch) -> list[str]:
         "--port", str(launch.port),
         "-c", "0" if launch.reserve_pct > 0 else str(launch.context_size),
         "-m", model,
-        "--parent-pid", str(launch.parent_pid),
     ]
+    if launch.parent_pid is not None:
+        args += ["--parent-pid", str(launch.parent_pid)]
     if launch.reserve_pct > 0:
         args += ["--reserve", str(launch.reserve_pct)]
     if launch.threads is not None:

@@ -171,7 +171,7 @@ def test_adapt_end_to_end_keeps_the_adapter_only_on_a_held_out_rise(tmp_path: Pa
 
     class FakeEndpoint:
         def __init__(self, url: str, **k: Any) -> None:
-            pass
+            self.base_url = url
 
         def capabilities(self, **k: Any) -> dict[str, Any]:
             return {"models": [{"id": "coder.gguf"}]}

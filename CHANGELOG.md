@@ -8,6 +8,18 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **`shadow sync` and a warm runner: the loop the hooks feed now
+  closes.** `sync` imports what the capture hooks recorded, admits the
+  replayable tasks, says how many wait for the configured model, and
+  with `--replay N` runs the next N against it; the `/shadow` skill and
+  prompt run it on every status and offer the replay as the user's to
+  start. `delegate`, `sync` and `adapt` share one runner that is started
+  detached with the runner's own idle unload and recorded in
+  `~/.xyntetik/shadow/server.json`; only a live runner whose pid and
+  model match is reused, `shadow server` lists it and `--stop` ends it,
+  and `uninstall` ends it too. `ServerLaunch.parent_pid` may now be
+  `None` for a child meant to outlive the process that started it.
+
 - **`shadow adapt`: overnight adaptation from the ledger, kept only on a
   held-out verified rise.** The data is the repository's own commits at
   the function unit (the prompt is the request, the visible tests and the

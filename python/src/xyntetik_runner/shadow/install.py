@@ -217,9 +217,17 @@ sentences of reading. Counts before rates; never invent a percentage the
 report withholds.
 
 ```
+{prefix}{python} -m xyntetik_runner.shadow sync --out {out}
 {prefix}{python} -m xyntetik_runner.shadow report --out {out} --tasks
 {prefix}{python} -m xyntetik_runner.shadow capture --summary
 ```
+
+`sync` imports what the hooks captured since last time, admits the tasks
+that can be replayed, and says how many wait for the local model. If any
+wait, offer to replay them now: `sync --replay N` runs up to N of them
+against the local model (up to 15 minutes each, the fit probe first) and
+it is the user's to start, in their own words. That is how the ledger
+fills; nothing replays by itself.
 
 ## Offload a task to the local model (when the user asks for it)
 
@@ -239,9 +247,11 @@ and never applied silently.
    ```
    {prefix}{python} -m xyntetik_runner.shadow delegate --repo . --request "<the user's request, verbatim>"
    ```
-   It starts the runner with the configured model if none is running,
-   runs the bounded attempt, runs the repository's tests on the scratch
-   copy, and prints the verdict, the diff and a patch path.
+   It reuses the warm runner shadow mode keeps (or starts one, which
+   then stays warm and unloads by itself when idle; `shadow server`
+   shows it, `shadow server --stop` ends it), runs the bounded attempt,
+   runs the repository's tests on the scratch copy, and prints the
+   verdict, the diff and a patch path.
 3. Show the diff and the test verdict. If the tests passed, offer
    `git apply <patch>`; the user applies it, you do not. If they failed,
    say so and continue with the frontier model as usual.
@@ -281,8 +291,13 @@ def codex_prompt_text(python: str, pythonpath: str | None, out: str) -> str:
 
 Status (default): run and show verbatim, counts before rates, never a
 percentage the report withholds:
+{prefix}{python} -m xyntetik_runner.shadow sync --out {out}
 {prefix}{python} -m xyntetik_runner.shadow report --out {out} --tasks
 {prefix}{python} -m xyntetik_runner.shadow capture --summary
+sync imports what the hooks captured, admits the replayable tasks and says
+how many wait for the local model; if any wait, offer `sync --replay N`
+(up to 15 minutes each) and let the user start it in their own words.
+Nothing replays by itself.
 
 Offload a task to the local model (only when the user asks): first
 {prefix}{python} -m xyntetik_runner.shadow routes --out {out}
@@ -290,8 +305,9 @@ which says per task class whether the local model has verified successes.
 If the task's class qualifies:
 {prefix}{python} -m xyntetik_runner.shadow delegate --repo . --request "<the request verbatim>"
 runs a bounded attempt on a scratch worktree (the working tree is never
-touched), runs the repository's tests there, and prints the verdict, the
-diff and a patch path. Show both; if the tests passed offer `git apply
+touched) against the warm runner shadow mode keeps (`shadow server` shows
+it, `--stop` ends it), runs the repository's tests there, and prints the
+verdict, the diff and a patch path. Show both; if the tests passed offer `git apply
 <patch>` and let the user apply it; if they failed, say so and continue
 with the frontier model. If no class qualifies, say so and offer the bench.
 
