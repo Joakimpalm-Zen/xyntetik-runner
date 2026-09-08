@@ -38,6 +38,11 @@ class Episode:
     request_sha256: str
     tool_names: tuple[str, ...] = ()
     trace_path: str = ""
+    head_start: str = ""
+    head_end: str = ""
+    """Repository HEAD when the request was made and when the turn ended,
+    known only for prospectively captured episodes (``source == "capture"``);
+    with both, the task's commit range is exact instead of a time window."""
 
     @property
     def episode_id(self) -> str:
@@ -172,12 +177,61 @@ def _claude_file(path: Path) -> list[Episode]:
     return out
 
 
+CAPTURE_FILE = Path(".xyntetik") / "shadow" / "capture.jsonl"
+
+
+def scan_capture(path: Path) -> ScanReport:
+    """The prospective path: lines written by ``shadow capture`` from a
+    prompt hook and a stop hook. A ``prompt`` line carries the request and
+    the repository HEAD at that moment; the next ``stop`` line for the same
+    session carries HEAD at the end. Only the user's request is recorded."""
+    if not path.is_file():
+        return ScanReport((), 0, ())
+    open_turns: dict[str, dict[str, object]] = {}
+    turns: dict[str, int] = {}
+    episodes: list[Episode] = []
+    try:
+        for rec in _records(path):
+            sid = str(rec.get("session_id") or "")
+            event = rec.get("event")
+            if not sid:
+                continue
+            if event == "prompt":
+                # A prompt while one is open closes the earlier one at this time.
+                if sid in open_turns:
+                    episodes.append(_close(open_turns.pop(sid), rec, path))
+                open_turns[sid] = rec
+            elif event == "stop" and sid in open_turns:
+                episodes.append(_close(open_turns.pop(sid), rec, path))
+    except (OSError, ValueError, KeyError, TypeError):
+        return ScanReport(tuple(episodes), 0, (str(path),))
+    for sid, rec in open_turns.items():
+        started = _iso(str(rec["timestamp"]))
+        episodes.append(_close(rec, {"timestamp": _fmt(started + CLAUDE_TURN_CAP), "head": ""}, path))
+    for i, e in enumerate(episodes):
+        turns[e.session_id] = turns.get(e.session_id, 0) + 1
+        episodes[i] = Episode(**{**e.__dict__, "turn": turns[e.session_id]})
+    return ScanReport(tuple(episodes), 1, ())
+
+
+def _close(start: dict[str, object], end: dict[str, object], path: Path) -> Episode:
+    request = str(start.get("prompt") or "")
+    return Episode(
+        source="capture", session_id=str(start["session_id"]), turn=0,
+        cwd=str(start.get("cwd") or ""), started_at=_fmt(_iso(str(start["timestamp"]))),
+        ended_at=_fmt(_iso(str(end["timestamp"]))), request=request,
+        request_sha256=_sha(request), trace_path=str(path),
+        head_start=str(start.get("head") or ""), head_end=str(end.get("head") or ""))
+
+
 def scan_all(home: Path | None = None) -> ScanReport:
     home = home or Path.home()
     a = scan_codex(home / ".codex" / "sessions")
     b = scan_claude_code(home / ".claude" / "projects")
-    return ScanReport(a.episodes + b.episodes, a.files_read + b.files_read,
-                      a.files_skipped + b.files_skipped)
+    c = scan_capture(home / CAPTURE_FILE)
+    return ScanReport(a.episodes + b.episodes + c.episodes,
+                      a.files_read + b.files_read + c.files_read,
+                      a.files_skipped + b.files_skipped + c.files_skipped)
 
 
 def write_episodes(episodes: Iterable[Episode], path: Path) -> int:

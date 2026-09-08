@@ -269,6 +269,18 @@ def pair(episode: Episode) -> list[Candidate] | Rejection:
     repos = repos_under(Path(episode.cwd))
     if not repos:
         return Rejection(Disposition.INELIGIBLE, "no git repository at or under the working directory")
+    if episode.head_start and episode.head_end:
+        # Prospective capture: the exact commits between the two HEADs, in the
+        # repository whose history contains both; no time window at all.
+        if episode.head_start == episode.head_end:
+            return Rejection(Disposition.UNREPLAYABLE, "HEAD did not move during the turn")
+        for repo in repos:
+            shas = _git(str(repo), "rev-list", "--no-merges",
+                        f"{episode.head_start}..{episode.head_end}").split()
+            if shas:
+                return [Candidate(episode, repo, tuple(shas))]
+        return Rejection(Disposition.UNREPLAYABLE,
+                         "captured HEADs are not an ancestry range in any repository here")
     start = datetime.fromisoformat(episode.started_at.replace("Z", "+00:00"))
     end = datetime.fromisoformat(episode.ended_at.replace("Z", "+00:00"))
     found = [Candidate(episode, repo, tuple(commits_in_window(repo, start, end))) for repo in repos]

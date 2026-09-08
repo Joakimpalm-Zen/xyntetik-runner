@@ -33,7 +33,7 @@ from xyntetik_runner.shadow.evidence import (
     render,
     summarize,
 )
-from xyntetik_runner.shadow.importer import Episode, read_episodes, scan_all, write_episodes
+from xyntetik_runner.shadow.importer import CAPTURE_FILE, Episode, read_episodes, scan_all, write_episodes
 from xyntetik_runner.shadow.tasks import Candidate, RepairTask, Rejection, build_task, choose, pair
 from xyntetik_runner.shadow.verifier import ProtectedTests, fixed_ids, verify
 
@@ -250,6 +250,32 @@ def _keep_attempt(out: Path, task: RepairTask, ident: Identity, result: Any, ws_
     (d / f"{stem}.diff").write_text(diff.stdout, encoding="utf-8")
 
 
+def cmd_capture(args: argparse.Namespace) -> int:
+    """Append one prompt or stop line from a hook. Reads the hook's JSON on
+    stdin (Claude Code passes ``session_id``, ``cwd`` and, on prompt
+    submission, ``prompt``); records the request, the directory, the time
+    and the repository HEAD, and nothing the assistant produced."""
+    try:
+        data = json.loads(sys.stdin.read() or "{}")
+    except ValueError:
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    cwd = str(args.cwd or data.get("cwd") or Path.cwd())
+    head = subprocess.run(["git", "-C", cwd, "rev-parse", "HEAD"], capture_output=True,
+                          text=True).stdout.strip()
+    rec: dict[str, Any] = {"event": args.event, "timestamp": _now(),
+                           "session_id": str(args.session or data.get("session_id") or ""),
+                           "cwd": cwd, "head": head, "tool": args.tool}
+    if args.event == "prompt":
+        rec["prompt"] = str(data.get("prompt") or args.prompt or "")
+    path = Path(args.file) if args.file else Path.home() / CAPTURE_FILE
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(rec, sort_keys=True) + "\n")
+    return 0
+
+
 def cmd_report(args: argparse.Namespace) -> int:
     out = Path(args.out)
     records = _read_records(out / "evidence.jsonl")
@@ -312,6 +338,14 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--test-runs", type=int, default=4)
     p.add_argument("--wall", type=float, default=900.0)
     p.set_defaults(fn=cmd_replay)
+    p = sub.add_parser("capture", help="append a prompt or stop event from an agent hook")
+    p.add_argument("--event", choices=["prompt", "stop"], required=True)
+    p.add_argument("--tool", default="claude_code")
+    p.add_argument("--cwd", default="")
+    p.add_argument("--session", default="")
+    p.add_argument("--prompt", default="")
+    p.add_argument("--file", default="")
+    p.set_defaults(fn=cmd_capture)
     p = sub.add_parser("report", help="counts and both denominators")
     p.add_argument("--out", default=str(DEFAULT_OUT))
     p.add_argument("--by-reason", action="store_true")

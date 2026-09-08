@@ -268,3 +268,44 @@ def test_cli_import_and_report_on_a_synthetic_home(repo: Path, tmp_path: Path, c
     assert "ineligible: no git repository" in text and "unreplayable: no commit" in text
     task = RepairTask.load(tasks[0])
     assert task.episode_id.endswith(":1"), "the prompt before the fix, not the thanks after it"
+
+
+def test_capture_hook_path_gives_an_exact_range(repo: Path, tmp_path: Path, monkeypatch: Any) -> None:
+    """Prompt and stop hooks record HEAD at both ends; the task is built from
+    the exact ancestry range, no time window, and the request is the one
+    typed at the prompt."""
+    from xyntetik_runner.shadow.importer import scan_capture
+    from xyntetik_runner.shadow.tasks import choose, pair
+    base = git(repo, "rev-parse", "HEAD^")
+    fix = git(repo, "rev-parse", "HEAD")
+    cap = tmp_path / "capture.jsonl"
+    # a prompt at the buggy state ...
+    git(repo, "checkout", "-q", base)
+    monkeypatch.setattr("sys.stdin", __import__("io").StringIO(json.dumps(
+        {"session_id": "cap1", "cwd": str(repo), "prompt": "fix parse_amount"})))
+    assert main(["capture", "--event", "prompt", "--file", str(cap)]) == 0
+    # ... and a stop after the fix landed
+    git(repo, "checkout", "-q", fix)
+    monkeypatch.setattr("sys.stdin", __import__("io").StringIO(json.dumps(
+        {"session_id": "cap1", "cwd": str(repo)})))
+    assert main(["capture", "--event", "stop", "--file", str(cap)]) == 0
+    lines = [json.loads(l) for l in cap.read_text().splitlines()]
+    assert [l["event"] for l in lines] == ["prompt", "stop"]
+    assert lines[0]["head"] == base and lines[1]["head"] == fix and "prompt" not in lines[1]
+    eps = scan_capture(cap).episodes
+    assert len(eps) == 1 and eps[0].source == "capture" and eps[0].request == "fix parse_amount"
+    assert (eps[0].head_start, eps[0].head_end) == (base, fix)
+    paired = pair(eps[0])
+    assert not isinstance(paired, Rejection) and paired[0].shas == (fix,)
+    chosen = choose(paired)
+    task = admit(eps[0], out_dir=tmp_path / "t", python=sys.executable)
+    assert isinstance(task, RepairTask) and task.base_sha == base and task.solution_sha == fix
+    assert len(chosen) == 1
+
+
+def test_capture_with_unmoved_head_is_unreplayable(repo: Path, tmp_path: Path) -> None:
+    from xyntetik_runner.shadow.tasks import pair
+    head = git(repo, "rev-parse", "HEAD")
+    e = episode(repo, source="capture", head_start=head, head_end=head)
+    r = pair(e)
+    assert isinstance(r, Rejection) and r.disposition is Disposition.UNREPLAYABLE
