@@ -1807,6 +1807,33 @@ verdict for you to apply with `git apply`; the working tree is never
 touched and nothing is applied silently. You keep your harness and your
 frontier model; the runner takes what the evidence says it can.
 
+Without `-m`, `--shadow-mode` looks for GGUF files under the usual
+directories, asks the runner's own `--fit` about each, and proposes the
+largest that fits at the offload context; the list it looked at is
+printed, and `-m` always wins.
+
+The ledger can also improve the local model, overnight and only where it
+can be proven. `/shadow` can show the plan for an adaptation run and,
+once you say so in your own words, start it:
+
+```sh
+python -m xyntetik_runner.shadow adapt --dry-run   # the plan, nothing trained
+python -m xyntetik_runner.shadow adapt --yes       # hours; the log path is printed
+python -m xyntetik_runner.shadow adapt --status    # every run and its verdict
+```
+
+The data is the repository's own commits, never a frontier transcript:
+for every admitted task whose fix changed one function, the prompt is
+the request, the visible tests and that function before the fix, the
+completion is the function after it, and the human's own function is
+spliced back and verified before the task is used at all. A seeded slice
+is held out and never trained on. The run evaluates base and adapter on
+it with the protected tests and keeps the adapter only if the held-out
+verified count rises; a rise on the training slice alone is reported as
+memorization and discarded. A kept adapter is served by the next
+delegation by itself, through `--lora`; every run, kept or not, is
+recorded with its numbers.
+
 To measure first, the bench runs the models on your disk against your own
 repository's history:
 

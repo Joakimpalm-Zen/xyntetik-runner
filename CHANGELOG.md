@@ -8,6 +8,26 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **`shadow adapt`: overnight adaptation from the ledger, kept only on a
+  held-out verified rise.** The data is the repository's own commits at
+  the function unit (the prompt is the request, the visible tests and the
+  function before the fix; the completion is the function after it),
+  rendered through the model's own chat template read from the GGUF
+  header (ChatML and Llama 3; others are refused, since the prompt at
+  training must match the prompt at serving). Every unit is self-checked
+  first: the human's function spliced over the pre-state must be verified.
+  A seeded slice is held out; the run serves the base, evaluates, trains
+  through `--train`, serves the adapter with `--lora`, evaluates again, and
+  keeps the adapter only if the held-out verified count rises; a rise on
+  the training slice alone is reported as memorization. Runs are recorded
+  under `~/.xyntetik/shadow/adapters/`, a kept adapter is served by the
+  next delegation, and the `/shadow` skill and prompt offer the run as an
+  explicit, confirmed action that shows its plan first.
+- **`--shadow-mode` without `-m` proposes a model.** It looks for GGUF
+  files under the usual directories, asks `--fit` about each at the
+  offload context, prints what it looked at, and proposes the largest
+  that fits; with none fitting it installs without a model and says so.
+
 - **`runner --shadow-mode -m MODEL`: shadow mode as a runner command, with
   the harness offload it enables.** The binary finds the stdlib-only
   Python client beside itself (`python/src`, now carried in the release

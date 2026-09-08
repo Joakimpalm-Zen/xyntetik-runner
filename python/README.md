@@ -95,6 +95,10 @@ The negative controls that prove the verifier can fail live in
   --request ...`: one bounded attempt on a detached worktree at HEAD, the
   repository's tests on the copy, the diff as a patch file, the verdict; starts
   the configured runner when no `--endpoint` is given.
+- `adapt`: overnight adaptation from the ledger's own commits at the function
+  unit; base and adapter evaluated on a held-out slice with the protected
+  tests, the adapter kept only on a held-out verified rise; `--dry-run` shows
+  the plan, `--status` the recorded runs.
 - `install`: `shadow install [--pythonpath P] [--out DIR]` merges the two capture
   hooks into `~/.claude/settings.json`, writes the `/shadow` skill and the Codex
   `/shadow` prompt; `uninstall` reverses exactly that; `capture --summary` counts
