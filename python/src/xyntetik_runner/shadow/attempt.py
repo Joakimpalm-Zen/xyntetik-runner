@@ -22,11 +22,12 @@ import signal
 import subprocess
 import time
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
 from xyntetik_runner.shadow.baseline import IGNORED_DIRS
+from xyntetik_runner.shadow.scaffold import BASE_SYSTEM, Scaffold
 
 ChatFn = Callable[[list[dict[str, Any]], list[dict[str, Any]]], dict[str, Any]]
 """``chat(messages, tools) -> assistant message`` (``content``, optional
@@ -61,12 +62,7 @@ TOOLS: list[dict[str, Any]] = [
                        "required": []}}},
 ]
 
-SYSTEM_PROMPT = (
-    "You are a software engineer fixing a repository checked out at the workspace root. "
-    "Work only through the tools. Read before you edit, change only what the task needs, "
-    "write complete files, run the tests to check your work, and call finish when the "
-    "tests pass or you cannot make further progress. Never ask the user questions."
-)
+SYSTEM_PROMPT = BASE_SYSTEM
 
 
 @dataclass(frozen=True)
@@ -224,9 +220,23 @@ def _name(call: dict[str, Any]) -> str:
     return str(_fn(call).get("name") or "")
 
 
+def budget_with(scaffold: Scaffold, budget: Budget) -> Budget:
+    """The budget with the scaffold's overrides, bounded above by the caller's
+    so a scaffold can spend less, never more."""
+    fields = {k: v for k, v in scaffold.budget.items() if hasattr(budget, k)}
+    kw: dict[str, Any] = {}
+    for k, v in fields.items():
+        cur = getattr(budget, k)
+        kw[k] = type(cur)(min(v, cur))
+    return replace(budget, **kw)
+
+
 def attempt(request: str, workspace: Workspace, chat: ChatFn, *, budget: Budget | None = None,
-            context: Sequence[str] = ()) -> AttemptResult:
-    budget = budget or workspace.budget
+            context: Sequence[str] = (), scaffold: Scaffold | None = None) -> AttemptResult:
+    scaffold = scaffold or Scaffold.base()
+    budget = budget_with(scaffold, budget or workspace.budget)
+    workspace.budget = budget
+    tools = scaffold.apply_tools(TOOLS)
     listing = workspace.list_files("*")
     earlier = ""
     if context:
@@ -235,7 +245,7 @@ def attempt(request: str, workspace: Workspace, chat: ChatFn, *, budget: Budget 
     user = (f"{earlier}Task:\n{request.strip()}\n\nVisible test files: "
             f"{', '.join(workspace.visible_tests) or '(none at this state; look for tests/)'}\n\n"
             f"Top-level files:\n{listing}")
-    messages: list[dict[str, Any]] = [{"role": "system", "content": SYSTEM_PROMPT},
+    messages: list[dict[str, Any]] = [{"role": "system", "content": scaffold.system_text()},
                                       {"role": "user", "content": user}]
     t0 = time.monotonic()
     turns = calls = ptoks = ctoks = 0
@@ -250,7 +260,7 @@ def attempt(request: str, workspace: Workspace, chat: ChatFn, *, budget: Budget 
                          messages=messages)
         turns += 1
         try:
-            reply = chat(messages, TOOLS)
+            reply = chat(messages, tools)
         except Exception as e:  # the model side failed; the tree is still judged
             return _done(turns, calls, workspace, ptoks, ctoks, t0,
                          f"model error: {type(e).__name__}", False, names, messages=messages)

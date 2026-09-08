@@ -27,6 +27,7 @@ from xyntetik_runner.shadow.evidence import (
     render,
     summarize,
 )
+from xyntetik_runner.shadow.scaffold import SCAFFOLD_SCHEMA, Scaffold
 from xyntetik_runner.shadow.verifier import (
     CONFIG_BASENAMES,
     Calibration,
@@ -41,6 +42,7 @@ from xyntetik_runner.shadow.verifier import (
 __all__ = [
     "CONFIG_BASENAMES",
     "HEADLINE_MIN_EPISODES",
+    "SCAFFOLD_SCHEMA",
     "SCHEMA_VERSION",
     "Baseline",
     "Calibration",
@@ -51,6 +53,7 @@ __all__ = [
     "Identity",
     "InstrumentError",
     "ProtectedTests",
+    "Scaffold",
     "Summary",
     "VerifierOutcome",
     "calibrate",

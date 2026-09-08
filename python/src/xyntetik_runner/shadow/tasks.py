@@ -199,7 +199,9 @@ def build_task(episode: Episode, repo: Path, shas: Sequence[str], *, out_dir: Pa
     if build:
         return Rejection(Disposition.INELIGIBLE, f"range touches {len(build)} file(s) that need a build")
     solution = shas[0]
-    base = _git(str(repo), "rev-parse", f"{shas[-1]}^").strip()
+    # --verify: without it git echoes an unresolvable "<sha>^" back on stdout
+    # and a root commit would reach git worktree as an invalid reference.
+    base = _git(str(repo), "rev-parse", "--verify", "--quiet", f"{shas[-1]}^").strip()
     if not base:
         return Rejection(Disposition.UNREPLAYABLE, "first commit in the range has no parent")
     task_id = f"{repo.name}-{base[:8]}-{solution[:8]}"

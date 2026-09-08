@@ -34,6 +34,14 @@ from xyntetik_runner.shadow.evidence import (
     summarize,
 )
 from xyntetik_runner.shadow.importer import CAPTURE_FILE, Episode, read_episodes, scan_all, write_episodes
+from xyntetik_runner.shadow.bank import build_bank
+from xyntetik_runner.shadow.optimize import (
+    TaskOutcome,
+    optimize,
+    result_json,
+    runner_reflect,
+)
+from xyntetik_runner.shadow.scaffold import Scaffold
 from xyntetik_runner.shadow.tasks import (
     Candidate,
     RepairTask,
@@ -44,6 +52,37 @@ from xyntetik_runner.shadow.tasks import (
     repos_under,
 )
 from xyntetik_runner.shadow.verifier import ProtectedTests, fixed_ids, verify
+
+
+def _run_attempt_factory(args: argparse.Namespace, endpoint: RunnerEndpoint, model: str,
+                         budget: Budget) -> Any:
+    """One attempt plus verification on a scratch worktree, as the optimizer's
+    reward function: fixed count, verdict and the failure text."""
+    def run(task: RepairTask, scaffold: Scaffold) -> TaskOutcome:
+        ws_dir = _worktree(task)
+        try:
+            baseline = Baseline.capture(ws_dir)
+            ws = Workspace(ws_dir, visible_tests=task.visible_test_files,
+                           pythonpath=task.pythonpath, python=args.python, budget=budget)
+            chat = runner_chat(endpoint.post_json, model, max_tokens=budget.max_tokens)
+            result = attempt(task.request, ws, chat, budget=budget, context=task.context,
+                             scaffold=scaffold)
+            protected = ProtectedTests.load(Path(task.protected_dir))
+            outcome = verify(ws_dir, protected, baseline, timeout_s=args.timeout,
+                             python=args.python, pythonpath=task.pythonpath)
+            fixed: tuple[str, ...] = ()
+            if baseline.changes(ws_dir) and task.failing_at_base and outcome.passed is not None:
+                fixed = fixed_ids(protected, task.failing_at_base, ws_dir, timeout_s=args.timeout,
+                                  python=args.python, pythonpath=task.pythonpath)
+            tail = [m for m in result.transcript if m.get("role") == "tool"][-2:]
+            feedback = (f"stop: {result.stop_reason}; verifier: {'; '.join(outcome.reasons)}\n"
+                        + "\n".join(str(m.get("content", ""))[-600:] for m in tail))
+            return TaskOutcome(task_id=task.task_id, fixed=len(fixed),
+                               failing_at_base=len(task.failing_at_base),
+                               verified=outcome.passed is True, feedback=feedback)
+        finally:
+            _drop(task, ws_dir)
+    return run
 
 HARNESS_VERSION = "shadow-0.1"
 DEFAULT_OUT = Path.home() / ".xyntetik" / "shadow"
@@ -181,6 +220,9 @@ def cmd_replay(args: argparse.Namespace) -> int:
         return 2
     budget = Budget(max_turns=args.max_turns, wall_s=args.wall, max_tokens=args.max_tokens,
                     test_runs=args.test_runs)
+    scaffold = Scaffold.load(Path(args.scaffold)) if args.scaffold else Scaffold.base()
+    scaffold_id = "base" if not args.scaffold else scaffold.sha256
+    print(f"scaffold: {scaffold.name} ({scaffold_id[:12]})", flush=True)
     # Fit first: a model that crawls has spilled the device, and an attempt
     # at that speed measures the wall clock, not the model. Refuse it.
     tps = probe_speed(endpoint.post_json, model)
@@ -195,9 +237,10 @@ def cmd_replay(args: argparse.Namespace) -> int:
         verifier_id="", environment_id=f"{platform.node()}|{args.endpoint}",
         model_sha256=args.model_sha256 or f"unknown:{model}", quant=args.quant or "unknown",
         template_sha256="unknown", runner_build=str(caps.get("version") or "unknown"),
-        backend=str(caps.get("backend") or "unknown"), harness_version=HARNESS_VERSION)
-    done = {(r.episode_id, r.identity.model_sha256) for r in _read_records(evidence)
-            if r.verifier is not None}
+        backend=str(caps.get("backend") or "unknown"), harness_version=HARNESS_VERSION,
+        scaffold_sha256=scaffold_id)
+    done = {(r.episode_id, r.identity.model_sha256, r.identity.scaffold_sha256)
+            for r in _read_records(evidence) if r.verifier is not None}
     # A resumed import must not re-import an admitted episode as a new one.
     ran = 0
     for task in _tasks(out, args.task):
@@ -207,7 +250,7 @@ def cmd_replay(args: argparse.Namespace) -> int:
                         context_band=_band(len(task.request)),
                         tool_set=("list_files", "read_file", "write_file", "run_tests"),
                         verifier_id=f"commit-tests:{task.task_id}")
-        if (task.episode_id, ident.model_sha256) in done:
+        if (task.episode_id, ident.model_sha256, ident.scaffold_sha256) in done:
             continue
         ran += 1
         print(f"[{task.task_id}] attempt with {model} ...", flush=True)
@@ -217,7 +260,8 @@ def cmd_replay(args: argparse.Namespace) -> int:
             ws = Workspace(ws_dir, visible_tests=task.visible_test_files,
                            pythonpath=task.pythonpath, python=args.python, budget=budget)
             chat = runner_chat(endpoint.post_json, model, max_tokens=budget.max_tokens)
-            result = attempt(task.request, ws, chat, budget=budget, context=task.context)
+            result = attempt(task.request, ws, chat, budget=budget, context=task.context,
+                             scaffold=scaffold)
             protected = ProtectedTests.load(Path(task.protected_dir))
             outcome = verify(ws_dir, protected, baseline, timeout_s=args.timeout,
                              python=args.python, pythonpath=task.pythonpath)
@@ -265,12 +309,71 @@ def _keep_attempt(out: Path, task: RepairTask, ident: Identity, result: Any, ws_
     model's own words and edits, which the evidence record summarizes."""
     d = out / "attempts" / task.task_id
     d.mkdir(parents=True, exist_ok=True)
-    stem = f"{_now().replace(':', '')}-{ident.model_sha256[-12:].replace(':', '_')}"
+    stem = (f"{_now().replace(':', '')}-{ident.model_sha256[-12:].replace(':', '_')}"
+            f"-{ident.scaffold_sha256[:8]}")
     with (d / f"{stem}.transcript.jsonl").open("w", encoding="utf-8") as f:
         for m in result.transcript:
             f.write(json.dumps(m, sort_keys=True) + "\n")
     diff = subprocess.run(["git", "-C", str(ws_dir), "diff"], capture_output=True, text=True)
     (d / f"{stem}.diff").write_text(diff.stdout, encoding="utf-8")
+
+
+def cmd_bank(args: argparse.Namespace) -> int:
+    out = Path(args.out)
+    (out / "tasks").mkdir(parents=True, exist_ok=True)
+    entries = build_bank(Path(args.repo), out_dir=out / "tasks", python=args.python,
+                         limit=args.limit, max_commits=args.max_commits,
+                         max_src_files=args.max_src_files, timeout_s=args.timeout)
+    admitted = [e for e in entries if e.task is not None]
+    for e in admitted:
+        assert e.task is not None
+        print(f"  admitted {e.task.task_id}: {e.task.expected_tests} frozen tests, "
+              f"{e.task.baseline_failing} fail at base", flush=True)
+    reasons: dict[str, int] = {}
+    for e in entries:
+        if e.task is None:
+            key = e.reason.split(":")[0]
+            reasons[key] = reasons.get(key, 0) + 1
+    print(f"{len(admitted)} task(s) admitted from {len(entries)} commits; rejected:",
+          json.dumps(reasons, sort_keys=True), flush=True)
+    return 0
+
+
+def cmd_optimize(args: argparse.Namespace) -> int:
+    out = Path(args.out)
+    tasks = _tasks(out, None)
+    if not tasks:
+        print("error: no tasks under", out / "tasks", file=sys.stderr)
+        return 2
+    endpoint = RunnerEndpoint(args.endpoint, timeout=args.request_timeout)
+    caps = endpoint.capabilities()
+    models = [m.get("id") for m in caps.get("models", []) if isinstance(m, dict)]
+    model = args.model or (str(models[0]) if models else "")
+    if not model:
+        print("error: the endpoint reports no model; pass --model", file=sys.stderr)
+        return 2
+    tps = probe_speed(endpoint.post_json, model)
+    print(f"probe: {model} decodes at {tps:.1f} tok/s (floor {args.min_tps:g})", flush=True)
+    if tps < args.min_tps:
+        print("error: fit-first: below the floor; serve a model and context that fit",
+              file=sys.stderr)
+        return 2
+    budget = Budget(max_turns=args.max_turns, wall_s=args.wall, max_tokens=args.max_tokens,
+                    test_runs=args.test_runs)
+    base = Scaffold.load(Path(args.scaffold)) if args.scaffold else Scaffold.base()
+    save_dir = out / "scaffolds"
+    run = _run_attempt_factory(args, endpoint, model, budget)
+    reflect = runner_reflect(endpoint.post_json, model)
+    result = optimize(tasks, base, run, reflect, generations=args.generations, batch=args.batch,
+                      holdout_fraction=args.holdout, seed=args.seed,
+                      rollout_budget=args.rollout_budget, save_dir=save_dir,
+                      log=lambda s: print(s, flush=True))
+    (out / "optimize.json").write_text(result_json(result) + "\n", encoding="utf-8")
+    best_path = save_dir / "best.json"
+    result.best.save(best_path)
+    print(f"best scaffold {result.best.sha256[:12]} ({result.best.name}) -> {best_path}; "
+          f"rollouts {result.rollouts}; held-out gain: {result.held_out_gain}", flush=True)
+    return 0
 
 
 def cmd_capture(args: argparse.Namespace) -> int:
@@ -327,6 +430,7 @@ def cmd_report(args: argparse.Namespace) -> int:
                 assert v is not None
                 model = r.identity.model_sha256.split(":", 1)[-1]
                 fixed = int(r.resources.get("fixed", 0))
+                model = f"{model[:28]} +{r.identity.scaffold_sha256[:8]}"
                 print(f"    {r.disposition.value:24s} {model[:40]:40s} fixed "
                       f"{fixed}/{task.baseline_failing}, verifier {v.passed_count}/{v.expected}"
                       f"{' tamper' if v.tamper else ''}  {r.reasons[0][:40]}")
@@ -370,7 +474,36 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--wall", type=float, default=900.0)
     p.add_argument("--min-tps", type=float, default=15.0,
                    help="refuse a model that decodes slower than this (fit-first)")
+    p.add_argument("--scaffold", default="", help="scaffold JSON; default is the base scaffold")
     p.set_defaults(fn=cmd_replay)
+    p = sub.add_parser("bank", help="build repair tasks from a public repository's history")
+    p.add_argument("--repo", required=True)
+    p.add_argument("--out", default=str(DEFAULT_OUT.parent / "shadow-bank"))
+    p.add_argument("--python", default=sys.executable)
+    p.add_argument("--limit", type=int, default=20)
+    p.add_argument("--max-commits", type=int, default=400)
+    p.add_argument("--max-src-files", type=int, default=3)
+    p.add_argument("--timeout", type=float, default=600.0)
+    p.set_defaults(fn=cmd_bank)
+    p = sub.add_parser("optimize", help="evolve a scaffold against the tasks under --out")
+    p.add_argument("--out", default=str(DEFAULT_OUT.parent / "shadow-bank"))
+    p.add_argument("--endpoint", default="http://127.0.0.1:8080")
+    p.add_argument("--model", default="")
+    p.add_argument("--scaffold", default="", help="starting scaffold; default base")
+    p.add_argument("--generations", type=int, default=4)
+    p.add_argument("--batch", type=int, default=4)
+    p.add_argument("--holdout", type=float, default=0.3)
+    p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--rollout-budget", type=int, default=200)
+    p.add_argument("--python", default=sys.executable)
+    p.add_argument("--timeout", type=float, default=600.0)
+    p.add_argument("--request-timeout", type=float, default=900.0)
+    p.add_argument("--max-turns", type=int, default=10)
+    p.add_argument("--max-tokens", type=int, default=1500)
+    p.add_argument("--test-runs", type=int, default=3)
+    p.add_argument("--wall", type=float, default=600.0)
+    p.add_argument("--min-tps", type=float, default=15.0)
+    p.set_defaults(fn=cmd_optimize)
     p = sub.add_parser("capture", help="append a prompt or stop event from an agent hook")
     p.add_argument("--event", choices=["prompt", "stop"], required=True)
     p.add_argument("--tool", default="claude_code")
