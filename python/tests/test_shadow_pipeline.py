@@ -20,9 +20,9 @@ from xyntetik_runner.shadow.importer import Episode, read_episodes, scan_claude_
 from xyntetik_runner.shadow.tasks import RepairTask, Rejection, admit, repos_under
 
 FIXTURE = Path(__file__).parent / "fixtures" / "repair_task_v1"
-BUGGY = (FIXTURE / "workspace" / "calc" / "money.py").read_text()
-VISIBLE = (FIXTURE / "workspace" / "tests" / "test_money.py").read_text()
-SOLUTION_TESTS = (FIXTURE / "protected" / "tests" / "test_money.py").read_text()
+BUGGY = (FIXTURE / "workspace" / "calc" / "money.py").read_text(encoding="utf-8")
+VISIBLE = (FIXTURE / "workspace" / "tests" / "test_money.py").read_text(encoding="utf-8")
+SOLUTION_TESTS = (FIXTURE / "protected" / "tests" / "test_money.py").read_text(encoding="utf-8")
 CORRECT = '''"""Money parsing for the ledger importer."""
 from decimal import ROUND_HALF_UP, Decimal
 
@@ -49,13 +49,13 @@ def repo(tmp_path: Path) -> Path:
     (r / "calc").mkdir(parents=True)
     (r / "tests").mkdir()
     git(tmp_path, "init", "-q", "-b", "main", str(r))
-    (r / "calc" / "__init__.py").write_text("")
-    (r / "calc" / "money.py").write_text(BUGGY)
-    (r / "tests" / "test_money.py").write_text(VISIBLE)
+    (r / "calc" / "__init__.py").write_text("", encoding="utf-8")
+    (r / "calc" / "money.py").write_text(BUGGY, encoding="utf-8")
+    (r / "tests" / "test_money.py").write_text(VISIBLE, encoding="utf-8")
     git(r, "add", "-A")
     git(r, "commit", "-q", "-m", "buggy", date="2026-09-01T11:00:00+00:00")
-    (r / "calc" / "money.py").write_text(CORRECT)
-    (r / "tests" / "test_money.py").write_text(SOLUTION_TESTS)
+    (r / "calc" / "money.py").write_text(CORRECT, encoding="utf-8")
+    (r / "tests" / "test_money.py").write_text(SOLUTION_TESTS, encoding="utf-8")
     git(r, "add", "-A")
     git(r, "commit", "-q", "-m", "fix", date="2026-09-01T12:00:00+00:00")
     return r
@@ -83,7 +83,7 @@ def test_codex_scan_reads_boundaries_and_never_the_answer(tmp_path: Path) -> Non
                                               "arguments": "{\"cmd\": \"THE PATCH\"}"}},
         {"timestamp": "2026-09-01T10:05:00Z", "type": "event_msg", "payload": {"type": "task_complete"}},
     ]
-    (sessions / "a.jsonl").write_text("\n".join(json.dumps(r) for r in recs) + "\n")
+    (sessions / "a.jsonl").write_text("\n".join(json.dumps(r) for r in recs) + "\n", encoding="utf-8")
     (sessions / "broken.jsonl").write_bytes(b"\xff\xfe not json")
     report = scan_codex(tmp_path / "sessions")
     assert len(report.episodes) == 1 and report.files_read == 2
@@ -106,7 +106,7 @@ def test_claude_code_scan_turns_end_at_the_next_prompt(tmp_path: Path) -> None:
         {"type": "user", "sessionId": "s", "cwd": "/w", "timestamp": "2026-09-01T11:00:00Z",
          "message": {"content": "<command-name>/model</command-name>"}},
     ]
-    (proj / "s.jsonl").write_text("\n".join(json.dumps(r) for r in recs) + "\n")
+    (proj / "s.jsonl").write_text("\n".join(json.dumps(r) for r in recs) + "\n", encoding="utf-8")
     eps = scan_claude_code(tmp_path / "projects").episodes
     assert [e.turn for e in eps] == [1, 2]
     assert eps[0].ended_at == "2026-09-01T11:00:00Z" and eps[1].is_command
@@ -114,16 +114,18 @@ def test_claude_code_scan_turns_end_at_the_next_prompt(tmp_path: Path) -> None:
 
 
 def test_repos_under_finds_nested_repositories(repo: Path) -> None:
-    assert repos_under(repo.parent) == [repo]
-    assert repos_under(repo) == [repo]
+    from xyntetik_runner.shadow.tasks import canonical
+    assert repos_under(repo.parent) == [canonical(repo)]
+    assert repos_under(repo) == [canonical(repo)]
 
 
 def test_repos_under_descends_through_an_umbrella_repository(repo: Path) -> None:
     """The owner's layout: a parent directory that is itself a repository,
     with the real projects untracked inside it. Both are found."""
     git(repo.parent, "init", "-q", "-b", "main", str(repo.parent))
+    from xyntetik_runner.shadow.tasks import canonical
     found = repos_under(repo.parent)
-    assert found == sorted([repo.parent, repo])
+    assert found == sorted([canonical(repo.parent), canonical(repo)])
 
 
 def test_admit_builds_a_calibrated_task(repo: Path, tmp_path: Path) -> None:
@@ -150,12 +152,12 @@ def test_admit_rejects_a_commit_whose_tests_pass_before_the_fix(tmp_path: Path) 
     (r / "pkg").mkdir(parents=True)
     (r / "tests").mkdir()
     git(tmp_path, "init", "-q", "-b", "main", str(r))
-    (r / "pkg" / "__init__.py").write_text("X = 1\n")
-    (r / "tests" / "test_x.py").write_text("from pkg import X\n\n\ndef test_x():\n    assert X == 1\n")
+    (r / "pkg" / "__init__.py").write_text("X = 1\n", encoding="utf-8")
+    (r / "tests" / "test_x.py").write_text("from pkg import X\n\n\ndef test_x():\n    assert X == 1\n", encoding="utf-8")
     git(r, "add", "-A")
     git(r, "commit", "-q", "-m", "a", date="2026-09-01T11:00:00+00:00")
-    (r / "pkg" / "__init__.py").write_text("X = 1\nY = 2\n")
-    (r / "tests" / "test_x.py").write_text("from pkg import X\n\n\ndef test_x():\n    assert X == 1\n\n\ndef test_y():\n    assert True\n")
+    (r / "pkg" / "__init__.py").write_text("X = 1\nY = 2\n", encoding="utf-8")
+    (r / "tests" / "test_x.py").write_text("from pkg import X\n\n\ndef test_x():\n    assert X == 1\n\n\ndef test_y():\n    assert True\n", encoding="utf-8")
     git(r, "add", "-A")
     git(r, "commit", "-q", "-m", "b", date="2026-09-01T12:00:00+00:00")
     res = admit(episode(r), out_dir=tmp_path / "t", python=sys.executable)
@@ -247,7 +249,7 @@ def test_attempt_stops_on_budget_and_no_tool_calls(repo: Path, tmp_path: Path) -
                     {"content": "", "tool_calls": []})
     r = attempt("x", Workspace(tmp_path, visible_tests=(), pythonpath=(), python=sys.executable,
                                budget=Budget()), chat)
-    assert (tmp_path / "a").read_text() == "b"
+    assert (tmp_path / "a").read_text(encoding="utf-8") == "b"
 
 
 def test_cli_import_and_report_on_a_synthetic_home(repo: Path, tmp_path: Path, capsys: Any) -> None:
@@ -262,7 +264,7 @@ def test_cli_import_and_report_on_a_synthetic_home(repo: Path, tmp_path: Path, c
         {"type": "user", "sessionId": "s", "cwd": "/nonexistent", "timestamp": "2026-09-01T13:00:00Z",
          "message": {"content": "unrelated"}},
     ]
-    (proj / "s.jsonl").write_text("\n".join(json.dumps(r) for r in recs) + "\n")
+    (proj / "s.jsonl").write_text("\n".join(json.dumps(r) for r in recs) + "\n", encoding="utf-8")
     out = tmp_path / "out"
     assert main(["import", "--out", str(out), "--home", str(home), "--python", sys.executable]) == 0
     eps = read_episodes(out / "episodes.jsonl")
@@ -297,7 +299,7 @@ def test_capture_hook_path_gives_an_exact_range(repo: Path, tmp_path: Path, monk
     monkeypatch.setattr("sys.stdin", __import__("io").StringIO(json.dumps(
         {"session_id": "cap1", "cwd": str(repo)})))
     assert main(["capture", "--event", "stop", "--file", str(cap)]) == 0
-    lines = [json.loads(l) for l in cap.read_text().splitlines()]
+    lines = [json.loads(l) for l in cap.read_text(encoding="utf-8").splitlines()]
     assert [l["event"] for l in lines] == ["prompt", "stop"]
     assert lines[0]["head"] == base and lines[1]["head"] == fix and "prompt" not in lines[1]
     eps = scan_capture(cap).episodes
@@ -337,15 +339,18 @@ def test_capture_from_a_parent_directory_records_every_repo_head(repo: Path, tmp
     monkeypatch.setattr("sys.stdin", __import__("io").StringIO(json.dumps(
         {"session_id": "cap2", "cwd": str(parent), "prompt": "fix parse_amount now"})))
     assert main(["capture", "--event", "prompt", "--file", str(cap)]) == 0
-    lines = [json.loads(l) for l in cap.read_text().splitlines()]
-    assert lines[0]["head"] == "" and lines[0]["heads"] == {str(repo): base}
-    assert lines[1]["heads"] == {str(repo): fix}
+    from xyntetik_runner.shadow.tasks import canonical
+    lines = [json.loads(l) for l in cap.read_text(encoding="utf-8").splitlines()]
+    key = str(canonical(repo))
+    assert lines[0]["head"] == "" and lines[0]["heads"] == {key: base}
+    assert lines[1]["heads"] == {key: fix}
     eps = scan_capture(cap).episodes
     assert len(eps) == 2
     first = eps[0]
-    assert first.request == "first ask" and dict(first.heads_start) == {str(repo): base}
+    assert first.request == "first ask" and dict(first.heads_start) == {key: base}
     paired = pair(first)
-    assert not isinstance(paired, Rejection) and paired[0].shas == (fix,) and paired[0].repo == repo
+    assert not isinstance(paired, Rejection) and paired[0].shas == (fix,)
+    assert canonical(paired[0].repo) == canonical(repo)
     # the second prompt carries the first as context
     assert eps[1].context == ("first ask",)
 
@@ -374,7 +379,7 @@ def test_claude_code_context_skips_commands_and_caps_turns(tmp_path: Path) -> No
     for i, text in enumerate(["one", "<command-name>/x</command-name>", "two", "three", "four", "five"]):
         recs.append({"type": "user", "sessionId": "s", "cwd": "/w",
                      "timestamp": f"2026-09-01T10:{i:02d}:00Z", "message": {"content": text}})
-    (proj / "s.jsonl").write_text("\n".join(json.dumps(r) for r in recs) + "\n")
+    (proj / "s.jsonl").write_text("\n".join(json.dumps(r) for r in recs) + "\n", encoding="utf-8")
     eps = scan_claude_code(tmp_path / "projects").episodes
     assert eps[-1].request == "five" and eps[-1].context == ("two", "three", "four")
     assert eps[2].context == ("one",), "the command turn is not context"
@@ -407,12 +412,12 @@ def test_probe_speed_and_the_fit_floor(tmp_path: Path, monkeypatch: Any, capsys:
 
 def test_edit_file_replaces_one_exact_occurrence(tmp_path: Path) -> None:
     ws = Workspace(tmp_path, visible_tests=(), pythonpath=(), python=sys.executable, budget=Budget())
-    (tmp_path / "a.py").write_text("x = 1\ny = 2\nx = 1\n")
+    (tmp_path / "a.py").write_text("x = 1\ny = 2\nx = 1\n", encoding="utf-8")
     assert ws.edit_file("a.py", "x = 1", "x = 9").startswith("error: old_text occurs 2")
     assert ws.edit_file("a.py", "nope", "x").startswith("error: old_text not found")
     assert ws.edit_file("../a.py", "y", "z").startswith("error")
     assert ws.edit_file("a.py", "y = 2", "y = 3").startswith("edited a.py")
-    assert (tmp_path / "a.py").read_text() == "x = 1\ny = 3\nx = 1\n"
+    assert (tmp_path / "a.py").read_text(encoding="utf-8") == "x = 1\ny = 3\nx = 1\n"
     chat = scripted({"content": "", "tool_calls": [call("edit_file", path="a.py", old_text="x = 1\ny = 3", new_text="x = 0\ny = 0"), call("finish")]})
     r = attempt("t", ws, chat)
-    assert r.finished and (tmp_path / "a.py").read_text() == "x = 0\ny = 0\nx = 1\n"
+    assert r.finished and (tmp_path / "a.py").read_text(encoding="utf-8") == "x = 0\ny = 0\nx = 1\n"

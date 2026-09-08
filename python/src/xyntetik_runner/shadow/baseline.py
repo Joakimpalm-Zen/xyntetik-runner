@@ -22,10 +22,23 @@ IGNORED_DIRS = frozenset({".git", "__pycache__", ".pytest_cache", ".mypy_cache",
 
 
 def file_sha256(path: Path) -> str:
+    """Content identity with CRLF folded to LF.
+
+    A git checkout on Windows translates line endings, so the same file has
+    different bytes on two machines. A protected manifest frozen on one and
+    loaded on the other must still agree, and a patch that changes nothing
+    but line endings is not a change. Hashing the newline-normalized bytes
+    makes both true; nothing here ever compares raw bytes.
+    """
     h = hashlib.sha256()
     with path.open("rb") as f:
+        pending = b""
         for chunk in iter(lambda: f.read(1 << 16), b""):
-            h.update(chunk)
+            data = pending + chunk
+            # a chunk boundary may split a CRLF pair; hold a trailing CR back
+            pending = data[-1:] if data.endswith(b"\r") else b""
+            h.update(data[: len(data) - len(pending)].replace(b"\r\n", b"\n"))
+        h.update(pending)
     return h.hexdigest()
 
 
