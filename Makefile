@@ -720,7 +720,7 @@ $(TEST_TC_TOL): $(TEST_TC_TOL_SRC) $(HDR)
 TEST_LORA_GRAD_SRC = tests/test_lora_grad.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o \
                   $(QUANTS_OBJ) $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(OBJDIR)/vramreg.o \
                   $(GPU_OBJ)
-$(TEST_LORA_GRAD): $(TEST_LORA_GRAD_SRC) $(HDR) test.gguf test-lora.full.gguf test-q8.gguf test-lora-q8.full.gguf test-qk.gguf test-lora-qk.full.gguf test-nope.gguf test-lora-nope.full.gguf
+$(TEST_LORA_GRAD): $(TEST_LORA_GRAD_SRC) $(HDR) test.gguf test-lora.full.gguf test-q8.gguf test-lora-q8.full.gguf test-qk.gguf test-lora-qk.full.gguf test-nope.gguf test-lora-nope.full.gguf test-granite.gguf test-lora-granite.full.gguf test-muse.gguf test-lora-muse.full.gguf
 	$(CC) $(CFLAGS) -I src $(TEST_LORA_GRAD_SRC) -o $@ $(LDFLAGS)
 
 test-lora.full.gguf: test.gguf scripts/make-test-lora.py
@@ -757,6 +757,23 @@ test-nope.gguf: scripts/make-test-model.py
 
 test-lora-nope.full.gguf: test-nope.gguf scripts/make-test-lora.py
 	$(PYTHON) scripts/make-test-lora.py test-nope.gguf test-lora-nope
+
+# R8.9.4 dense-shape variants in the backward: granite's muP scalars
+# (embedding, fixed attention, residual and divided logit scale, tied
+# embeddings) and muse-glimmer's attention output gate, QK and sandwich
+# norms, 3-local:1-global sliding pattern with NoPE full layers, scaled and
+# softcapped logits
+test-granite.gguf: scripts/make-test-model.py
+	$(PYTHON) scripts/make-test-model.py --granite test-granite.gguf
+
+test-lora-granite.full.gguf: test-granite.gguf scripts/make-test-lora.py
+	$(PYTHON) scripts/make-test-lora.py test-granite.gguf test-lora-granite
+
+test-muse.gguf: scripts/make-test-model.py
+	$(PYTHON) scripts/make-test-model.py --muse-glimmer test-muse.gguf
+
+test-lora-muse.full.gguf: test-muse.gguf scripts/make-test-lora.py
+	$(PYTHON) scripts/make-test-lora.py test-muse.gguf test-lora-muse
 
 test-qkw.gguf: scripts/make-test-model.py
 	$(PYTHON) scripts/make-test-model.py --qk-norm --wide test-qkw.gguf
@@ -1844,6 +1861,11 @@ test: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSON_OOM) $(
 	@# and on NoPE layers with the attention temperature live: the recompute
 	@# and the backward must match the serving forward (no rope, Q scaled)
 	./$(TEST_LORA_GRAD) test-nope.gguf test-lora-nope.full.gguf
+	@# R8.9.4: granite's muP scalars (residual and logit scale, fixed
+	@# attention scale, tied output) and muse-glimmer's output gate, sandwich
+	@# norms, sliding window and softcapped head, all through the adjoint
+	./$(TEST_LORA_GRAD) test-granite.gguf test-lora-granite.full.gguf
+	./$(TEST_LORA_GRAD) test-muse.gguf test-lora-muse.full.gguf
 	@# and with qwen3-style per-head QK norms in the layer: the norm adjoint
 	@# sits between the rope adjoint and the projection backward
 	./$(TEST_LORA_GRAD) test-qk.gguf test-lora-qk.full.gguf

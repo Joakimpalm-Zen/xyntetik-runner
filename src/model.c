@@ -6201,10 +6201,10 @@ static void rmsnorm_bw(const float *x, const float *w, const float *dy,
     float ss = 0.0f, dot = 0.0f;
     for (int i = 0; i < n; i++) ss = fmaf(x[i], x[i], ss);
     float r = 1.0f / sqrtf(ss / (float)n + eps);
-    for (int i = 0; i < n; i++) dot = fmaf(w[i] * dy[i], x[i], dot);
+    for (int i = 0; i < n; i++) dot = fmaf((w ? w[i] : 1.0f) * dy[i], x[i], dot);
     float c = r * r * r / (float)n * dot;
     for (int i = 0; i < n; i++)
-        dx[i] += r * w[i] * dy[i] - c * x[i];
+        dx[i] += r * (w ? w[i] : 1.0f) * dy[i] - c * x[i];
 }
 
 // adapter backward at one projection site, batched over the window: given
@@ -6312,21 +6312,20 @@ static bool lora_bw_supported(model_t *m, char *why, size_t cap) {
     else if (m->n_expert > 0 || m->moe_gemma) r = "MoE FFN";
     else if (m->kv_q8) r = "q8 KV cache (use --kv f16)";
     else if (m->ffn_act != ACT_SILU) r = "non-SiLU FFN activation";
-    else if (m->logit_softcap != 0.0f || m->n_suppress > 0)
-        r = "head transforms (softcap/suppress)";
-    else if (m->logit_scale != 1.0f) r = "scaled logits";
-    else if (m->embd_scale != 1.0f || m->resid_scale != 1.0f ||
-             m->embd_norm) r = "muP/embedding scaling";
-    else if (m->attn_out_gate) r = "attention output gate";
+    // R8.9.4 (2026-09-08): head transforms (logit scale, softcap, suppress),
+    // muP scalars and the embedding norm, the attention output gate, the
+    // sandwich norms, the per-layer output scale and sliding-window
+    // attention are in the backward now, each pinned by the finite-
+    // difference gate on the granite and muse-glimmer fixtures. Still out:
+    // the weightless V norm (only gemma-4 carries it, behind the GELU
+    // refusal above), tied or absent V, PLE, sinks, ungated FFNs.
     else if (m->v_rmsnorm) r = "V-projection rmsnorm";
     else if (m->ple) r = "per-layer embeddings";
     for (int l = 0; !r && l < m->n_layer; l++) {
         const layer_t *ly = &m->layers[l];
-        if (model_is_swa(m, l)) r = "sliding-window attention";
+        if (model_kv_is_ring(m, l)) r = "recycled KV rows (RUNNER_KV_RING)";
         else if (!ly->wv) r = "shared/absent V projection";
         else if (!ly->w_gate || !ly->w_up) r = "ungated FFN";
-        else if (ly->post_attn_norm_w || ly->post_ffn_norm_w)
-            r = "post-block norms";
         else if (ly->attn_sinks) r = "attention sinks";
         else if (model_rope_dim(m, l) != model_head_dim(m, l))
             r = "partial-dimension rope";
@@ -6384,7 +6383,13 @@ typedef struct {
     int T, n_head, kv_mul, hd, q_dim, kv_dim;
     size_t row_b;
     float scale;
+    int swa;               // window rows on a sliding layer, else 0
 } attn_bw_job;
+
+// first attended position of t: the forward's own rule (attn_job.t0)
+static inline int attn_window_start(int swa, int t) {
+    return swa > 0 && t - swa + 1 > 0 ? t - swa + 1 : 0;
+}
 
 static void attn_bw_worker(void *ctx, int g0, int g1) {
     attn_bw_job *jb = (attn_bw_job *)ctx;
@@ -6396,10 +6401,11 @@ static void attn_bw_worker(void *ctx, int g0, int g1) {
             const float *daot = jb->dao + (size_t)t * jb->q_dim;
             const float *qt = jb->q + (size_t)t * jb->q_dim;
             float *dqt = jb->dq + (size_t)t * jb->q_dim;
+            int t0 = attn_window_start(jb->swa, t);
             for (int h = kvh * kv_mul; h < (kvh + 1) * kv_mul; h++) {
                 const float *qh = qt + (size_t)h * hd;
                 const float *daoh = daot + (size_t)h * hd;
-                for (int s = 0; s <= t; s++) {
+                for (int s = t0; s <= t; s++) {
                     const f16_t *kh = (const f16_t *)(jb->kc_l +
                                       (size_t)s * jb->row_b + hoff);
                     float sc = 0;
@@ -6407,9 +6413,9 @@ static void attn_bw_worker(void *ctx, int g0, int g1) {
                         sc += qh[i] * f16_load(kh + i);
                     p[s] = sc * jb->scale;
                 }
-                softmax(p, t + 1);
+                softmax(p + t0, t - t0 + 1);
                 float sum_pd = 0.0f;
-                for (int s = 0; s <= t; s++) {
+                for (int s = t0; s <= t; s++) {
                     const f16_t *vh = (const f16_t *)(jb->vc_l +
                                       (size_t)s * jb->row_b + hoff);
                     float dp = 0.0f;
@@ -6418,7 +6424,7 @@ static void attn_bw_worker(void *ctx, int g0, int g1) {
                     // two passes: first accumulate sum_pd
                     sum_pd = fmaf(p[s], dp, sum_pd);
                 }
-                for (int s = 0; s <= t; s++) {
+                for (int s = t0; s <= t; s++) {
                     const f16_t *kh = (const f16_t *)(jb->kc_l +
                                       (size_t)s * jb->row_b + hoff);
                     const f16_t *vh = (const f16_t *)(jb->vc_l +
@@ -6500,9 +6506,31 @@ static bool lora_layer_bw(model_t *m, int l, const int32_t *toks, int T,
     float *dao  = calloc((size_t)T * q_dim, sizeof(float));
     float *tmpE = malloc(sizeof(float) * (size_t)E);
     float *p    = malloc(sizeof(float) * (size_t)T * n_kv);  // per-group rows
+    // R8.9.4 shapes: the attention output gate keeps its pre-activation and
+    // the ungated attention output; the sandwich norms keep each branch's
+    // pre-norm output; the residual scale and the per-layer output scale are
+    // scalars applied where the forward applies them.
+    bool gate = m->attn_out_gate && ly->wq_gate;
+    float rs = m->resid_scale != 0.0f ? m->resid_scale : 1.0f;
+    float os = ly->out_scale != 0.0f ? ly->out_scale : 1.0f;
+    int swa = model_is_swa(m, l) ? m->swa_window : 0;
+    float *gpre  = gate ? malloc(sizeof(float) * (size_t)T * q_dim) : NULL;
+    float *aopre = gate ? malloc(sizeof(float) * (size_t)T * q_dim) : NULL;
+    float *dg    = gate ? malloc(sizeof(float) * (size_t)T * q_dim) : NULL;
+    float *dxg   = gate ? calloc((size_t)T * E, sizeof(float)) : NULL;
+    float *opre  = ly->post_attn_norm_w ? malloc(szE) : NULL;
+    float *fpre  = ly->post_ffn_norm_w ? malloc(szE) : NULL;
+    float *dbr   = malloc(szE);   // a branch output's gradient, per window
+    float *dyb   = malloc(sizeof(float) * (size_t)E);  // one scaled row
     bool ok = xn1 && xa && xn2 && q && ao && g && u && dxn1 && dxa && dq &&
               dk && dv && hact && dhact && dgu && dxn2 && dao && tmpE && p &&
+              dbr && dyb && (!gate || (gpre && aopre && dg && dxg)) &&
+              (!ly->post_attn_norm_w || opre) && (!ly->post_ffn_norm_w || fpre) &&
               (!ly->qnorm_w || qpre) && (!ly->knorm_w || kpre);
+    // the per-layer output scale multiplies the whole residual stream after
+    // the layer, so every gradient inside the layer carries it
+    if (ok && os != 1.0f)
+        for (size_t i = 0; i < (size_t)T * E; i++) dx[i] *= os;
 
     // ---- phase R: recompute forward internals from the tape
     for (int t = 0; ok && t < T; t++) {
@@ -6535,15 +6563,30 @@ static bool lora_layer_bw(model_t *m, int l, const int32_t *toks, int T,
         }
         // tied fields stay zero: lora_bw_supported refuses v_rmsnorm models,
         // so a tied-V layer can never reach this recompute
-        attn_job aj = { m, kc_l, vc_l, qt, ao + (size_t)t * q_dim, t, 0,
-                       hd, kv_dim, row_b, model_kv_is_ring(m, l) ? m->kv_ring : 0,
-                       false, scale, NULL, false, NULL, 0 };
+        attn_job aj = { m, kc_l, vc_l, qt, ao + (size_t)t * q_dim, t,
+                       attn_window_start(swa, t),
+                       hd, kv_dim, row_b, 0,
+                       false, scale, NULL, false, NULL, l };
         tpool_run(m->tp, attn_heads, &aj, n_head);
+        if (gate) {
+            // afmoe/muse: sigmoid gate from its own frozen projection of the
+            // normed input, applied element-wise to the attention output
+            float *gt = gpre + (size_t)t * q_dim;
+            float *aot = ao + (size_t)t * q_dim;
+            matvec_b(m->tp, gt, q_dim, ly->wq_gate, x1, E, E, q_dim, NULL, 1);
+            memcpy(aopre + (size_t)t * q_dim, aot, sizeof(float) * (size_t)q_dim);
+            for (int i = 0; i < q_dim; i++)
+                aot[i] *= 1.0f / (1.0f + expf(-gt[i]));
+        }
         matvec_b(m->tp, tmpE, E, ly->wo, ao + (size_t)t * q_dim, q_dim,
                  q_dim, E, ly->bo, 1);
         lora_site_fw(m, l, LW_O, tmpE, ao + (size_t)t * q_dim, q_dim, E);
+        if (ly->post_attn_norm_w) {
+            memcpy(opre + (size_t)t * E, tmpE, sizeof(float) * (size_t)E);
+            rmsnorm(tmpE, tmpE, ly->post_attn_norm_w, E, m->post_norm_eps);
+        }
         float *xat = xa + (size_t)t * E;
-        for (int i = 0; i < E; i++) xat[i] = xt[i] + tmpE[i];
+        for (int i = 0; i < E; i++) xat[i] = xt[i] + rs * tmpE[i];
         float *x2 = xn2 + (size_t)t * E;
         xnorm(m, x2, xat, ly->ffn_norm_w, ly->ffn_norm_b, E, m->rms_eps);
         matvec_b(m->tp, g + (size_t)t * nff, nff, ly->w_gate, x2, E, E, nff,
@@ -6566,7 +6609,24 @@ static bool lora_layer_bw(model_t *m, int l, const int32_t *toks, int T,
         float *ht = hact + (size_t)t * nff;
         for (int i = 0; i < nff; i++) ht[i] = silu_f(gt[i]) * ut[i];
     }
-    ok = ok && lora_site_bw(m, l, LW_DOWN, ly->w_down, hact, dx, dhact,
+    // the FFN branch's output gradient: the residual scale, then the
+    // sandwich norm's adjoint against the recomputed pre-norm output
+    for (int t = 0; ok && t < T; t++) {
+        const float *dxt = dx + (size_t)t * E;
+        float *dbt = dbr + (size_t)t * E;
+        if (ly->post_ffn_norm_w) {
+            float *ft = fpre + (size_t)t * E;
+            matvec_b(m->tp, ft, E, ly->w_down, hact + (size_t)t * nff, nff,
+                     nff, E, NULL, 1);
+            lora_site_fw(m, l, LW_DOWN, ft, hact + (size_t)t * nff, nff, E);
+            for (int i = 0; i < E; i++) dyb[i] = rs * dxt[i];
+            memset(dbt, 0, sizeof(float) * (size_t)E);
+            rmsnorm_bw(ft, ly->post_ffn_norm_w, dyb, dbt, E, m->post_norm_eps);
+        } else {
+            for (int i = 0; i < E; i++) dbt[i] = rs * dxt[i];
+        }
+    }
+    ok = ok && lora_site_bw(m, l, LW_DOWN, ly->w_down, hact, dbr, dhact,
                             nff, E, T);
     for (int t = 0; ok && t < T; t++) {
         const float *gt = g + (size_t)t * nff, *ut = u + (size_t)t * nff;
@@ -6591,8 +6651,35 @@ static bool lora_layer_bw(model_t *m, int l, const int32_t *toks, int T,
         rmsnorm_bw(xa + (size_t)t * E, ly->ffn_norm_w, dxn2 + (size_t)t * E,
                    dxat, E, m->rms_eps);
     }
-    // attention output projection, whole window at once
-    ok = ok && lora_site_bw(m, l, LW_O, ly->wo, ao, dxa, dao, q_dim, E, T);
+    // attention output projection, whole window at once, fed by the branch
+    // gradient (residual scale, then the sandwich norm's adjoint)
+    for (int t = 0; ok && t < T; t++) {
+        const float *dxat = dxa + (size_t)t * E;
+        float *dbt = dbr + (size_t)t * E;
+        if (ly->post_attn_norm_w) {
+            for (int i = 0; i < E; i++) dyb[i] = rs * dxat[i];
+            memset(dbt, 0, sizeof(float) * (size_t)E);
+            rmsnorm_bw(opre + (size_t)t * E, ly->post_attn_norm_w, dyb, dbt, E,
+                       m->post_norm_eps);
+        } else {
+            for (int i = 0; i < E; i++) dbt[i] = rs * dxat[i];
+        }
+    }
+    ok = ok && lora_site_bw(m, l, LW_O, ly->wo, ao, dbr, dao, q_dim, E, T);
+    if (ok && gate) {
+        // out = pre * sigmoid(g): d pre = dao * s; d g = dao * pre * s(1-s);
+        // the gate projection is frozen, so its adjoint lands on the normed
+        // input through one transposed matvec of the base weight
+        for (int t = 0; t < T; t++)
+            for (int i = 0; i < q_dim; i++) {
+                size_t k = (size_t)t * q_dim + i;
+                float sg = 1.0f / (1.0f + expf(-gpre[k]));
+                dg[k] = dao[k] * aopre[k] * sg * (1.0f - sg);
+                dao[k] *= sg;
+            }
+        ok = matvec_t(m, ly->wq_gate, dg, dxg, E, q_dim, T);
+        for (size_t i = 0; ok && i < (size_t)T * E; i++) dxn1[i] += dxg[i];
+    }
     if (lprof) { double n2 = plat_now(); lbw_prof[1] += n2 - lt; lt = n2; }
     // score/softmax backward, threaded over KV-HEAD GROUPS (slice 3): each
     // dq element belongs to one (t,h) and each dk/dv element to one
@@ -6603,7 +6690,7 @@ static bool lora_layer_bw(model_t *m, int l, const int32_t *toks, int T,
     // (the f16-rounded values the forward attended over).
     if (ok) {
         attn_bw_job aj = { kc_l, vc_l, q, dao, dq, dk, dv, p, T, n_head,
-                           kv_mul, hd, q_dim, kv_dim, row_b, scale };
+                           kv_mul, hd, q_dim, kv_dim, row_b, scale, swa };
         tpool_run(m->tp, attn_bw_worker, &aj, n_kv);
     }
 
@@ -6668,6 +6755,8 @@ static bool lora_layer_bw(model_t *m, int l, const int32_t *toks, int T,
     free(xn1); free(xa); free(xn2); free(q); free(ao); free(g); free(u);
     free(dxn1); free(dxa); free(dq); free(dk); free(dv); free(hact);
     free(dhact); free(dgu); free(dxn2); free(dao); free(tmpE); free(p);
+    free(gpre); free(aopre); free(dg); free(dxg); free(opre); free(fpre);
+    free(dbr); free(dyb);
     return ok;
 }
 
@@ -6736,9 +6825,12 @@ bool model_lora_backward_w(model_t *m, const int32_t *toks, int T,
     float *probs  = malloc(sizeof(float) * (size_t)HEAD_CHUNK * V);
     float *hn     = malloc(sizeof(float) * (size_t)E);
     float *dhn    = malloc(sizeof(float) * (size_t)HEAD_CHUNK * E);
+    // softcap adjoint needs tanh(z/c) per logit of the chunk
+    float *thb    = m->logit_softcap > 0
+                    ? malloc(sizeof(float) * (size_t)HEAD_CHUNK * V) : NULL;
     int tmap[HEAD_CHUNK];
-    if (!dx || !probs || !hn || !dhn) {
-        free(dx); free(probs); free(hn); free(dhn);
+    if (!dx || !probs || !hn || !dhn || (m->logit_softcap > 0 && !thb)) {
+        free(dx); free(probs); free(hn); free(dhn); free(thb);
         goto fail;
     }
     int nc = 0;
@@ -6748,16 +6840,37 @@ bool model_lora_backward_w(model_t *m, const int32_t *toks, int T,
             float *pr = probs + (size_t)nc * V;
             xnorm(m, hn, h, m->out_norm_w, m->out_norm_b, E, m->rms_eps);
             matvec_b(m->tp, pr, V, m->output, hn, E, E, V, NULL, 1);
+            // the head transforms exactly as the forward applies them
+            // (apply_head_transforms): scale, softcap, suppress
+            float ls = m->logit_scale != 0.0f ? m->logit_scale : 1.0f;
+            if (ls != 1.0f)
+                for (int i = 0; i < V; i++) pr[i] *= ls;
+            float *th = thb ? thb + (size_t)nc * V : NULL;
+            if (th) {
+                float c = m->logit_softcap;
+                for (int i = 0; i < V; i++) {
+                    th[i] = tanhf(pr[i] / c);
+                    pr[i] = c * th[i];
+                }
+            }
+            if (m->n_suppress) suppress_logits(m, pr);
             softmax(pr, V);
             pr[toks[t + 1]] -= 1.0f;
             if (pos_w)
                 for (int i = 0; i < V; i++) pr[i] *= pos_w[t];
+            // and their adjoints in reverse: a suppressed logit is a
+            // constant, the softcap's slope is 1 - tanh^2, the scale is itself
+            for (int i = 0; i < m->n_suppress; i++) pr[m->suppress[i]] = 0.0f;
+            if (th)
+                for (int i = 0; i < V; i++) pr[i] *= 1.0f - th[i] * th[i];
+            if (ls != 1.0f)
+                for (int i = 0; i < V; i++) pr[i] *= ls;
             tmap[nc++] = t;
         }
         if (nc == HEAD_CHUNK || (t == T - 2 && nc > 0)) {
             memset(dhn, 0, sizeof(float) * (size_t)nc * E);
             if (!matvec_t(m, m->output, probs, dhn, E, V, nc)) {
-                free(dhn); free(dx); free(probs); free(hn); goto fail;
+                free(dhn); free(dx); free(probs); free(hn); free(thb); goto fail;
             }
             for (int c = 0; c < nc; c++) {
                 const float *hc = m->tape + ((size_t)L * T + tmap[c]) * E;
@@ -6767,7 +6880,7 @@ bool model_lora_backward_w(model_t *m, const int32_t *toks, int T,
             nc = 0;
         }
     }
-    free(dhn);
+    free(dhn); free(thb);
     if (prof) { pt_head = plat_now(); }
     // layers in reverse
     bool ok = true;

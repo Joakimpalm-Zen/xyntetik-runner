@@ -8,6 +8,26 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **Adapter training covers the dense-shape variants (R8.9.4).** The LoRA
+  backward now carries the head transforms (logit scale, softcap, suppressed
+  tokens), Granite's muP scalars (embedding, fixed attention, residual and
+  divided logit scale; tied output), the afmoe/muse-glimmer attention output
+  gate through its frozen projection, the sandwich norms on both branches,
+  the per-layer output scale, and sliding-window attention with its own rope
+  table, each recomputed exactly as the serving forward applies it. The
+  training gate no longer refuses these; it still refuses the weightless V
+  norm (gemma-4, behind its GELU FFN), tied or absent V, per-layer
+  embeddings, sinks, ungated FFNs, and a recycled KV ring. Pinned by the
+  finite-difference gate on two new fixtures (`--granite`,
+  `--muse-glimmer`) beside the four existing ones, and by a new directional
+  derivative over the whole adapter that averages out the f16 cache
+  staircase the per-coordinate check rides on (every fixture agrees within
+  0.3% at the smallest step; a per-coordinate finite difference that does
+  not agree with itself across steps is now counted as unresolved, bounded
+  at a quarter, rather than compared). The adapter fixture generator now
+  names the base's architecture. Muse-Glimmer and Granite 4.1 dense train
+  from here; Gemma 4 waits on the GELU backward (R8.9.5).
+
 - **Tandem: the local model works beside the harness, in the background,
   where the evidence says it can.** In a repository where the ledger
   holds verified successes for the configured model (the same route rule

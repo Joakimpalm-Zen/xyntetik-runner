@@ -35,6 +35,7 @@ ATTN_TEMP_SCALE = 0.0
 # the temperature is actually live at position 0.
 ATTN_TEMP_FLOOR = 8192
 SWA_WINDOW = 0
+POST_NORMS = False
 SWA_PATTERN = 0
 ESERIES_SHARED_KV = 0
 ESERIES_PLE = 0
@@ -101,6 +102,11 @@ while i < len(args):
         ATTN_NOPE_STEP, ATTN_TEMP_SCALE = int(_st), float(_ts)
         if len(_parts) > 2:
             ATTN_TEMP_FLOOR = int(_parts[2])
+    elif a == "--post-norms":
+        # sandwich norms on a plain llama fixture: post_attention_norm and
+        # post_ffw_norm with non-trivial weights, read by every arch but
+        # qwen35/gptoss, so the adjoint is testable without Gemma's GELU
+        POST_NORMS = True
     elif a == "--swa":
         # "WINDOW,PATTERN" — every PATTERN-th layer is full attention, the
         # others slide. This is intentionally arch-neutral so small Qwen-style
@@ -406,6 +412,12 @@ for i in range(N_LAYER + MTP_LAYERS):
             (f"blk.{i}.post_ffw_norm.weight", [N_EMBD], ones(N_EMBD)),
             (f"blk.{i}.layer_output_scale.weight", [1],
              struct.pack("<f", 0.91 + 0.02 * i) if G4HETERO else ones(1)),
+        ]
+    if POST_NORMS:
+        pw = struct.pack("<%df" % N_EMBD, *[0.8 + 0.4 * ((j * 7) % 5) / 4.0 for j in range(N_EMBD)])
+        tensors += [
+            (f"blk.{i}.post_attention_norm.weight", [N_EMBD], pw),
+            (f"blk.{i}.post_ffw_norm.weight", [N_EMBD], pw),
         ]
     if MUSE:
         tensors += [
