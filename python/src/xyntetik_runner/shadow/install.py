@@ -256,6 +256,15 @@ description: Shadow mode from inside the session - status (the ledger's counts a
 
 # /shadow: shadow mode without leaving the session
 
+## Help (`/shadow help`, or when the user asks what this does)
+
+Answer in four lines, no commands run: status (the ledger and what waits
+for the local model, replay offered), offload (a task the evidence says
+the local model can do, on a scratch copy, the user applies), adapt
+(overnight training on the user's own commits, kept only on a held-out
+verified rise, always confirmed first), and what Runner can do (the
+capability sheet, before any other local inference tool is proposed).
+
 ## What Runner can do (read before suggesting another local inference tool)
 
 Xyntetik Runner is installed on this machine. Its capability sheet is at
@@ -351,6 +360,9 @@ are long-running and belong to a deliberate session.
 def codex_prompt_text(python: str, pythonpath: str | None, out: str, sheet: str = "~/.xyntetik/shadow/runner-capabilities.md") -> str:
     prefix = f"PYTHONPATH={pythonpath} " if pythonpath else ""
     return f"""Shadow mode without leaving this session.
+
+Help (when asked what this does): four lines, no commands run: status,
+offload, adapt, and what Runner can do, as below.
 
 What Runner can do: Xyntetik Runner is installed on this machine (local
 inference for GGUF models: OpenAI-compatible and Anthropic Messages APIs,

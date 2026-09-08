@@ -472,6 +472,7 @@ def test_install_is_explicit_idempotent_and_reversible(tmp_path: Path, capsys: A
     prompt = home / ".codex" / "prompts" / "shadow.md"
     assert "report --out /o --tasks" in skill.read_text(encoding="utf-8")
     assert "Never run `replay`" in skill.read_text(encoding="utf-8")
+    assert "## Help (`/shadow help`" in skill.read_text(encoding="utf-8")
     assert "shadow routes" in skill.read_text(encoding="utf-8") and "git apply" in skill.read_text(encoding="utf-8")
     assert "capture --summary" in prompt.read_text(encoding="utf-8") and "delegate --repo ." in prompt.read_text(encoding="utf-8")
     # the harnesses are told Runner is here and what it can do, in their own instruction files
