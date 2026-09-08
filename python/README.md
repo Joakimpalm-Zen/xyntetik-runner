@@ -102,6 +102,8 @@ The negative controls that prove the verifier can fail live in
   unit; base and adapter evaluated on a held-out slice with the protected
   tests, the adapter kept only on a held-out verified rise; `--dry-run` shows
   the plan, `--status` the recorded runs.
+- `install` also writes `~/.xyntetik/shadow/runner-capabilities.md` and a marked note
+  in `~/.claude/CLAUDE.md` and `~/.codex/AGENTS.md` pointing at it.
 - `install`: `shadow install [--pythonpath P] [--out DIR]` merges the two capture
   hooks into `~/.claude/settings.json`, writes the `/shadow` skill and the Codex
   `/shadow` prompt; `uninstall` reverses exactly that; `capture --summary` counts

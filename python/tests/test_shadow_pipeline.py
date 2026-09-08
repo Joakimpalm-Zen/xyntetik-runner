@@ -430,6 +430,7 @@ def test_install_is_explicit_idempotent_and_reversible(tmp_path: Path, capsys: A
     settings = home / ".claude" / "settings.json"
     settings.write_text(json.dumps({"model": "x", "hooks": {"Stop": [{"hooks": [
         {"type": "command", "command": "echo mine"}]}]}}), encoding="utf-8")
+    (home / ".codex" / "AGENTS.md").write_text("# my rules\n\nbe brief\n", encoding="utf-8")
     assert main(["install", "--home", str(home), "--python", "py", "--pythonpath", "/src",
                  "--out", "/o", "--yes"]) == 0
     data = json.loads(settings.read_text(encoding="utf-8"))
@@ -473,6 +474,17 @@ def test_install_is_explicit_idempotent_and_reversible(tmp_path: Path, capsys: A
     assert "Never run `replay`" in skill.read_text(encoding="utf-8")
     assert "shadow routes" in skill.read_text(encoding="utf-8") and "git apply" in skill.read_text(encoding="utf-8")
     assert "capture --summary" in prompt.read_text(encoding="utf-8") and "delegate --repo ." in prompt.read_text(encoding="utf-8")
+    # the harnesses are told Runner is here and what it can do, in their own instruction files
+    sheet = home / ".xyntetik" / "shadow" / "runner-capabilities.md"
+    assert sheet.is_file() and "OpenAI-compatible" in sheet.read_text(encoding="utf-8")
+    assert "`--fit`" in sheet.read_text(encoding="utf-8") and "runner --help" in sheet.read_text(encoding="utf-8")
+    claude_md = home / ".claude" / "CLAUDE.md"
+    agents_md = home / ".codex" / "AGENTS.md"
+    for note, cmd in ((claude_md, "/shadow"), (agents_md, "the shadow prompt")):
+        text = note.read_text(encoding="utf-8")
+        assert text.count("<!-- xyntetik-shadow:begin -->") == 1 and str(sheet) in text and cmd in text
+    assert str(sheet) in skill.read_text(encoding="utf-8") and "ollama" in skill.read_text(encoding="utf-8")
+    assert "vLLM" in skill.read_text(encoding="utf-8").split("---")[1], "the description triggers on local-inference questions"
     assert not (home / ".codex").exists() or True
     # idempotent
     assert main(["install", "--home", str(home), "--python", "py", "--yes"]) == 0
@@ -483,6 +495,9 @@ def test_install_is_explicit_idempotent_and_reversible(tmp_path: Path, capsys: A
     data = json.loads(settings.read_text(encoding="utf-8"))
     assert data["hooks"] == {"Stop": [{"hooks": [{"type": "command", "command": "echo mine"}]}]}
     assert not skill.exists() and not prompt.exists() and not launcher.exists()
+    assert not (home / ".xyntetik" / "shadow" / "runner-capabilities.md").exists()
+    assert not (home / ".claude" / "CLAUDE.md").exists()
+    assert (home / ".codex" / "AGENTS.md").read_text(encoding="utf-8") == "# my rules\n\nbe brief\n"
     out = capsys.readouterr().out
     assert "2 hook(s) added" in out and "removed 2 hook(s)" in out
     assert "what happens next:" in out and "ask /shadow in Claude Code (the shadow prompt in Codex)" in out
@@ -494,6 +509,7 @@ def test_install_is_explicit_idempotent_and_reversible(tmp_path: Path, capsys: A
     assert len(stop) == 1 and stop[0]["hooks"][0]["command"] == f'"py" "{launcher}" stop', "upgraded in place"
     assert main(["uninstall", "--home", str(home)]) == 0
     assert "hooks" not in json.loads(settings.read_text(encoding="utf-8"))
+    assert (home / ".codex" / "AGENTS.md").read_text(encoding="utf-8") == "# my rules\n\nbe brief\n", "the user's own rules survive"
 
 
 def test_capture_summary_counts_the_file(tmp_path: Path, capsys: Any) -> None:
