@@ -1818,6 +1818,15 @@ verdict for you to apply with `git apply`; the working tree is never
 touched and nothing is applied silently. You keep your harness and your
 frontier model; the runner takes what the evidence says it can.
 
+Once the ledger holds verified successes for a repository, the local
+model works in tandem: each request that is work also starts a bounded
+attempt on a scratch copy in the background while your assistant works
+on it, and a verified result is offered to you as a patch, once, never
+applied. Every such attempt joins the ledger with the class its diff had,
+so the more the local model proves, and the more an adapter raises what
+it proves, the more requests are funneled to it. `shadow tandem off`
+stops it; `shadow delegations` lists them.
+
 The ledger fills through `sync`, which `/shadow` runs on every status:
 it imports what the hooks captured since last time, admits the tasks
 that can be replayed, and says how many wait for the local model. When

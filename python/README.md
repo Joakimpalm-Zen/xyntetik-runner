@@ -95,6 +95,9 @@ The negative controls that prove the verifier can fail live in
   --request ...`: one bounded attempt on a detached worktree at HEAD, the
   repository's tests on the copy, the diff as a patch file, the verdict; starts
   the configured runner when no `--endpoint` is given.
+- `tandem on|off`, `delegations`, `delegate --background`: the background attempt the
+  prompt hook starts where the ledger shows verified successes for the repository;
+  a verified patch is surfaced once through the hooks, never applied.
 - `sync`: import what the hooks captured, admit the replayable tasks, count what
   waits for the configured model, `--replay N` runs the next N; `server`: the
   warm runner shadow mode keeps between commands (`--stop` ends it).

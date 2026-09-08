@@ -8,6 +8,27 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **Tandem: the local model works beside the harness, in the background,
+  where the evidence says it can.** In a repository where the ledger
+  holds verified successes for the configured model (the same route rule
+  as offloading, per repository), the prompt hook starts a bounded
+  delegation on a scratch copy while the frontier model works, and tells
+  the harness so through the hook's own channel; a verified result is
+  surfaced once, at the end of the turn or the start of the next, as a
+  patch to offer, never applied. Every delegation joins the ledger with
+  the class its own diff had, under its own verifier id (the repository's
+  tests at HEAD; verified only when they passed and no test file was
+  touched), so the funnel widens by evidence alone and an adapter that
+  raised the held-out count raises these counts too. One delegation at a
+  time; never where the ledger is silent. Where the record is strong (at
+  least 5 attempts, at least 4 in 5 verified) the hook says "runner
+  first": the harness waits for the local result (`shadow delegations
+  --wait ID`) and does the work itself only if that result is not
+  verified. `shadow tandem off` stops it,
+  `shadow delegations` lists them, `delegate --background` is the same
+  gate for Codex, which has no hooks. Nothing runs where no model is
+  configured.
+
 - **The harnesses are told what Runner can do.** A coding assistant that
   does not know the runner is installed reaches for another local
   inference tool, or a hosted API, for a job the runner already does on

@@ -50,8 +50,22 @@ def write_config(home: Path, *, model: str, runner: str, ctx: int, gpu: str,
     the serving knobs. Plain JSON the user can read and edit."""
     path = home / CONFIG_REL
     path.parent.mkdir(parents=True, exist_ok=True)
-    data = {"model": model, "runner": runner, "ctx": ctx, "gpu": gpu, "threads": threads,
-            "out": out}
+    data: dict[str, object] = {"model": model, "runner": runner, "ctx": ctx, "gpu": gpu,
+                               "threads": threads, "out": out}
+    old = read_config(home)
+    for key in ("adapter", "tandem"):
+        if key in old:
+            data[key] = old[key]
+    data.setdefault("tandem", True)
+    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    return path
+
+
+def set_config_key(home: Path, key: str, value: object) -> Path:
+    path = home / CONFIG_REL
+    data = read_config(home)
+    data[key] = value
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
     return path
 
@@ -173,7 +187,8 @@ import os
 import sys
 
 try:
-    sys.stdout = open(os.devnull, "w")
+    # stdout is the hook's channel back to the harness (one JSON line at
+    # most); stderr is noise the user must never see
     sys.stderr = open(os.devnull, "w")
     if {pythonpath!r}:
         sys.path.insert(0, {pythonpath!r})
@@ -301,6 +316,22 @@ against the local model (up to 15 minutes each, the fit probe first) and
 it is the user's to start, in their own words. That is how the ledger
 fills; nothing replays by itself.
 
+## Tandem (automatic, in the background, evidence-gated)
+
+In a repository where the local model has verified successes on record,
+every request long enough to be work also starts a background attempt on
+a scratch copy while you work on it; the prompt hook tells you so, and a
+verified result is surfaced once at the end of a turn or the start of the
+next. Show it in one line and offer `git apply <patch>`; never apply it.
+Where the record is strong (at least 5 attempts, at least 4 in 5
+verified) the hook says "runner first": wait for the delegation with
+`shadow delegations --wait <id>` before doing the work yourself, and do
+it yourself only if the local result is not verified. `shadow
+delegations` lists them; `shadow tandem off` stops it. The funnel widens
+by evidence alone: every attempt is recorded in the ledger, so each
+cycle of adaptation that raises what the local model proves funnels
+more requests to it.
+
 ## Offload a task to the local model (when the user asks for it)
 
 The harness routes; the runner proves. Offloading is explicit, evidence-gated
@@ -382,6 +413,18 @@ sync imports what the hooks captured, admits the replayable tasks and says
 how many wait for the local model; if any wait, offer `sync --replay N`
 (up to 15 minutes each) and let the user start it in their own words.
 Nothing replays by itself.
+
+Tandem (Codex has no hooks, so this is yours to do): at the start of a
+request that is work, in a repository where the local model has verified
+successes on record, run
+{prefix}{python} -m xyntetik_runner.shadow delegate --repo . --request "<the request verbatim>" --background
+(it returns at once with an id, or says the repository does not qualify)
+and before you finish run
+{prefix}{python} -m xyntetik_runner.shadow delegations
+; a verified result is shown in one line with `git apply <patch>` offered,
+never applied. When `delegate --background` says the record is strong,
+wait for it first (`delegations --wait <id>`) and do the work yourself
+only if the local result is not verified. `shadow tandem off` stops this.
 
 Offload a task to the local model (only when the user asks): first
 {prefix}{python} -m xyntetik_runner.shadow routes --out {out}

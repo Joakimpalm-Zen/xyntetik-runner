@@ -553,7 +553,7 @@ def test_install_confirms_detects_harnesses_and_records_the_model(tmp_path: Path
     rc = main(["install", "--home", str(home), "--python", "py", "--model", str(model), "--runner", "/bin/runner", "--yes"])
     assert rc == 0
     assert (home / ".codex" / "prompts" / "shadow.md").exists() and not (home / ".claude" / "settings.json").exists()
-    assert read_config(home) == {"model": str(model), "runner": "/bin/runner", "ctx": 8192, "gpu": "auto", "threads": 0, "out": "~/.xyntetik/shadow"}
+    assert read_config(home) == {"model": str(model), "runner": "/bin/runner", "ctx": 8192, "gpu": "auto", "threads": 0, "out": "~/.xyntetik/shadow", "tandem": True}
     # nothing at all present and nothing forced: a clear refusal
     empty = tmp_path / "empty"
     empty.mkdir()
