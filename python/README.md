@@ -62,9 +62,14 @@ The negative controls that prove the verifier can fail live in
   pass on the post-state and fail on the pre-state, and writes a `RepairTask`
   that records which tests fail at base. The source diff is never given to
   the attempt.
+- `importer` also carries `heads_start` / `heads_end` (every repository HEAD
+  the capture hook saw at both ends) and `context` (earlier requests of the
+  session, the user's words only).
 - `attempt`: `Workspace` confines paths to a scratch worktree and offers
   `list_files`, `read_file`, `write_file`, `run_tests`; `attempt` drives a
-  model through `finish` under a `Budget` and keeps the transcript.
+  model through `finish` under a `Budget` and keeps the transcript;
+  `probe_speed` measures decode speed for the fit-first floor that
+  `replay --min-tps` applies before any attempt.
 - `cli`: `python -m xyntetik_runner.shadow import --out DIR --python PY` scans
   and admits; `replay --out DIR --endpoint URL` attempts each admitted task
   against a runner and verifies it; `report --out DIR [--by-reason] [--tasks]`
