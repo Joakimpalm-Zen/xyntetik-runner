@@ -21,6 +21,9 @@ from pathlib import Path
 from typing import Sequence
 
 MARK = "xyntetik_runner.shadow capture"
+HOOK_NAME = "xyntetik-shadow-capture-hook.py"
+MARKS = (MARK, HOOK_NAME)  # ours, this version and the one before it
+HOOK_REL = Path(".xyntetik") / "shadow" / HOOK_NAME
 SKILL_NAME = "shadow"
 
 
@@ -145,19 +148,53 @@ def harness_present(home: Path) -> tuple[bool, bool]:
     return (home / ".claude").is_dir(), (home / ".codex").is_dir()
 
 
-def hook_command(event: str, python: str, pythonpath: str | None) -> str:
-    prefix = f"PYTHONPATH={pythonpath} " if pythonpath else ""
-    return (f"{prefix}{python} -m xyntetik_runner.shadow capture --event {event} "
-            f"2>/dev/null || true")
+def client_pythonpath() -> str:
+    """Where this client's package lives, for a process that does not
+    inherit our PYTHONPATH: the hooks, the skill's commands, the prompt."""
+    return str(Path(__file__).resolve().parents[2])
+
+
+def write_hook_launcher(home: Path, pythonpath: str | None) -> Path:
+    """The file the hooks run: a stdlib launcher that puts the client on the
+    path, runs the capture, and swallows everything else. No shell syntax
+    is needed, so the same hook line works under sh, cmd and PowerShell,
+    and a Python path with spaces is quoted once, here."""
+    path = home / HOOK_REL
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(f'''# Written by `shadow install`; `shadow uninstall` removes it.
+# Records the request, directory, time and repository HEAD of a prompt or
+# stop event; never anything the assistant produced. It can never block a
+# prompt: every failure is swallowed and the exit code is always 0.
+import os
+import sys
+
+try:
+    sys.stdout = open(os.devnull, "w")
+    sys.stderr = open(os.devnull, "w")
+    if {pythonpath!r}:
+        sys.path.insert(0, {pythonpath!r})
+    from xyntetik_runner.shadow.cli import main
+    main(["capture", "--event", sys.argv[1]])
+except BaseException:
+    pass
+os._exit(0)
+''', encoding="utf-8")
+    return path
+
+
+def hook_command(event: str, python: str, launcher: Path) -> str:
+    return f'"{python}" "{launcher}" {event}'
 
 
 def _hook_entry(command: str) -> dict[str, object]:
     return {"hooks": [{"type": "command", "timeout": 10, "command": command}]}
 
 
-def install_claude_hooks(settings: Path, *, python: str, pythonpath: str | None) -> int:
+def install_claude_hooks(settings: Path, *, python: str, pythonpath: str | None,
+                         home: Path | None = None) -> int:
     """Merge the two hooks into ``settings`` (created if absent); idempotent.
     Returns how many hooks were added. A backup sits beside the file."""
+    launcher = write_hook_launcher(home if home is not None else settings.parent.parent, pythonpath)
     data: dict[str, object] = {}
     if settings.is_file():
         data = json.loads(settings.read_text(encoding="utf-8") or "{}")
@@ -168,10 +205,15 @@ def install_claude_hooks(settings: Path, *, python: str, pythonpath: str | None)
     for event, name in (("prompt", "UserPromptSubmit"), ("stop", "Stop")):
         entries = hooks.setdefault(name, [])
         assert isinstance(entries, list)
-        present = any(MARK in json.dumps(e) for e in entries)
+        # an entry in the previous shell-line form is replaced by the launcher
+        # form; one in the launcher form is left alone
+        kept = [e for e in entries if not (MARK in json.dumps(e) and HOOK_NAME not in json.dumps(e))]
+        upgraded = len(entries) - len(kept)
+        entries[:] = kept
+        present = any(HOOK_NAME in json.dumps(e) for e in entries)
         if not present:
-            entries.append(_hook_entry(hook_command(event, python, pythonpath)))
-            added += 1
+            entries.append(_hook_entry(hook_command(event, python, launcher)))
+            added += 1 if not upgraded else 0
     settings.parent.mkdir(parents=True, exist_ok=True)
     settings.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
     return added
@@ -189,7 +231,7 @@ def uninstall_claude_hooks(settings: Path) -> int:
         entries = hooks.get(name)
         if not isinstance(entries, list):
             continue
-        kept = [e for e in entries if MARK not in json.dumps(e)]
+        kept = [e for e in entries if not any(m in json.dumps(e) for m in MARKS)]
         removed += len(entries) - len(kept)
         if kept:
             hooks[name] = kept
@@ -331,6 +373,9 @@ def install(home: Path, *, python: str = sys.executable, pythonpath: str | None 
             out: str = "~/.xyntetik/shadow", claude: bool = True, codex: bool = True,
             model: str = "", runner: str = "runner", ctx: int = 8192, gpu: str = "auto",
             threads: int = 0) -> Installed:
+    # the hooks and the skill run in processes that do not inherit this
+    # one's PYTHONPATH; they always get the client's own location
+    pythonpath = pythonpath or client_pythonpath()
     settings = skill = prompt = config = None
     added = 0
     if model:
@@ -338,7 +383,7 @@ def install(home: Path, *, python: str = sys.executable, pythonpath: str | None 
                               threads=threads, out=out)
     if claude:
         settings = home / ".claude" / "settings.json"
-        added = install_claude_hooks(settings, python=python, pythonpath=pythonpath)
+        added = install_claude_hooks(settings, python=python, pythonpath=pythonpath, home=home)
         skill = home / ".claude" / "skills" / SKILL_NAME / "SKILL.md"
         skill.parent.mkdir(parents=True, exist_ok=True)
         skill.write_text(skill_text(python, pythonpath, out), encoding="utf-8")
@@ -355,7 +400,7 @@ def uninstall(home: Path) -> Installed:
     removed = uninstall_claude_hooks(settings)
     skill = home / ".claude" / "skills" / SKILL_NAME / "SKILL.md"
     prompt = home / ".codex" / "prompts" / f"{SKILL_NAME}.md"
-    for p in (skill, prompt):
+    for p in (skill, prompt, home / HOOK_REL):
         if p.is_file():
             p.unlink()
     if skill.parent.is_dir() and not any(skill.parent.iterdir()):

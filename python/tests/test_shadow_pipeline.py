@@ -436,8 +436,36 @@ def test_install_is_explicit_idempotent_and_reversible(tmp_path: Path, capsys: A
     assert data["model"] == "x", "existing settings survive"
     stop = data["hooks"]["Stop"]
     assert stop[0]["hooks"][0]["command"] == "echo mine", "existing hooks survive"
-    assert "capture --event stop 2>/dev/null || true" in stop[1]["hooks"][0]["command"]
-    assert "PYTHONPATH=/src py -m" in data["hooks"]["UserPromptSubmit"][0]["hooks"][0]["command"]
+    launcher = home / ".xyntetik" / "shadow" / "xyntetik-shadow-capture-hook.py"
+    assert stop[1]["hooks"][0]["command"] == f'"py" "{launcher}" stop'
+    assert data["hooks"]["UserPromptSubmit"][0]["hooks"][0]["command"] == f'"py" "{launcher}" prompt'
+    assert "sys.path.insert(0, '/src')" in launcher.read_text(encoding="utf-8")
+    # without --pythonpath the launcher and the skill carry the client's own location
+    from xyntetik_runner.shadow.install import client_pythonpath
+    home_b = tmp_path / "home_b"
+    (home_b / ".claude").mkdir(parents=True)
+    assert main(["install", "--home", str(home_b), "--python", "py", "--yes"]) == 0
+    launcher_b = home_b / ".xyntetik" / "shadow" / "xyntetik-shadow-capture-hook.py"
+    assert f"sys.path.insert(0, {client_pythonpath()!r})" in launcher_b.read_text(encoding="utf-8")
+    assert f"PYTHONPATH={client_pythonpath()} py -m" in (home_b / ".claude" / "skills" / "shadow" / "SKILL.md").read_text(encoding="utf-8")
+    assert (Path(client_pythonpath()) / "xyntetik_runner" / "shadow" / "cli.py").is_file()
+    # the launcher records a prompt through the real capture, exits 0, prints nothing
+    import subprocess as sp
+    from xyntetik_runner.shadow import cli as _cli
+    real = home / ".xyntetik" / "shadow" / "xyntetik-shadow-capture-hook.py"
+    from xyntetik_runner.shadow.install import write_hook_launcher
+    write_hook_launcher(home, str(Path(_cli.__file__).resolve().parents[2]))
+    env = {**os.environ, "HOME": str(home), "USERPROFILE": str(home)}
+    env.pop("PYTHONPATH", None)
+    proc = sp.run([sys.executable, str(real), "prompt"], input=json.dumps(
+        {"session_id": "s", "cwd": str(tmp_path), "prompt": "hi"}), capture_output=True, text=True, env=env)
+    assert proc.returncode == 0 and proc.stdout == "" and proc.stderr == ""
+    cap = home / ".xyntetik" / "shadow" / "capture.jsonl"
+    assert cap.is_file() and '"prompt": "hi"' in cap.read_text(encoding="utf-8")
+    # ... and never fails a prompt, whatever it is fed
+    proc = sp.run([sys.executable, str(real), "prompt"], input="not json", capture_output=True, text=True, env=env)
+    assert proc.returncode == 0 and proc.stdout == ""
+    write_hook_launcher(home, "/src")
     assert settings.with_suffix(".json.bak-shadow").is_file()
     skill = home / ".claude" / "skills" / "shadow" / "SKILL.md"
     prompt = home / ".codex" / "prompts" / "shadow.md"
@@ -454,9 +482,18 @@ def test_install_is_explicit_idempotent_and_reversible(tmp_path: Path, capsys: A
     assert main(["uninstall", "--home", str(home)]) == 0
     data = json.loads(settings.read_text(encoding="utf-8"))
     assert data["hooks"] == {"Stop": [{"hooks": [{"type": "command", "command": "echo mine"}]}]}
-    assert not skill.exists() and not prompt.exists()
+    assert not skill.exists() and not prompt.exists() and not launcher.exists()
     out = capsys.readouterr().out
     assert "2 hook(s) added" in out and "removed 2 hook(s)" in out
+    assert "what happens next:" in out and "ask /shadow in Claude Code (the shadow prompt in Codex)" in out
+    # hooks written by the previous version are still recognised and removed
+    settings.write_text(json.dumps({"hooks": {"Stop": [{"hooks": [{"type": "command",
+        "command": "PYTHONPATH=/x py -m xyntetik_runner.shadow capture --event stop 2>/dev/null || true"}]}]}}), encoding="utf-8")
+    assert main(["install", "--home", str(home), "--python", "py", "--yes"]) == 0
+    stop = json.loads(settings.read_text(encoding="utf-8"))["hooks"]["Stop"]
+    assert len(stop) == 1 and stop[0]["hooks"][0]["command"] == f'"py" "{launcher}" stop', "upgraded in place"
+    assert main(["uninstall", "--home", str(home)]) == 0
+    assert "hooks" not in json.loads(settings.read_text(encoding="utf-8"))
 
 
 def test_capture_summary_counts_the_file(tmp_path: Path, capsys: Any) -> None:

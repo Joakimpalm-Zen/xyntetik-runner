@@ -8,6 +8,19 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **Shadow mode, three rough edges for a first-time user.** (1) `install`
+  ends with "what happens next": what the hooks note, when to ask
+  `/shadow`, and what it will offer. (2) The capture hooks now run a
+  small stdlib launcher written under `~/.xyntetik/shadow/` instead of a
+  shell line, so the same hook works under sh, cmd and PowerShell, a
+  Python path with spaces is quoted once, and a hook can never fail a
+  prompt (every error is swallowed, exit code always 0); hooks written by
+  the previous form are still recognised and removed by `uninstall`. (3)
+  A limited replay (`sync --replay N`, `replay --limit N`) spends its
+  wall clock where a verified success is likeliest and shortest:
+  function-class tasks first, then file, then multi-file, fewest failing
+  tests first; `sync` says the waiting count per class.
+
 - **`shadow sync` and a warm runner: the loop the hooks feed now
   closes.** `sync` imports what the capture hooks recorded, admits the
   replayable tasks, says how many wait for the configured model, and
