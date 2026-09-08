@@ -32,6 +32,7 @@
 #define RUNNER_TTY(f) _isatty(_fileno(f))
 #else
 #include <unistd.h>
+#include <sys/stat.h>
 #define RUNNER_TTY(f) isatty(fileno(f))
 #endif
 
@@ -730,6 +731,9 @@ static void usage_to(FILE *f, const char *prog) {
         "  --lora-rank R  fresh-adapter rank when no --lora is given (8)\n"
         "  --caps         print machine capabilities as JSON and exit\n"
         "  --tool-info    load -m MODEL and print its native tool-call protocol\n"
+        "  --shadow-mode  install shadow mode for Claude Code and Codex if present\n"
+        "                 (asks first; --yes skips the question); -m MODEL names\n"
+        "                 the model the /shadow offload will serve\n"
         "                 as one JSON line, then exit\n"
         "  --fit PATH     estimate whether a GGUF fits this machine and exit;\n"
         "                 reads only the header, so a partial download works\n"
@@ -887,6 +891,82 @@ static int run_fit_check(const char *path, int n_ctx_want) {
     return 0;
 }
 
+
+// --shadow-mode: exec the Python client's `shadow install`. The client is
+// stdlib-only and lives at <exe dir>/python/src in the source tree and in the
+// release archive, so PYTHONPATH gets that directory when it exists; an
+// installed package is found by Python itself otherwise. Everything the user
+// is asked, and everything written, is the Python side's, which has the tests.
+#ifdef _WIN32
+#include <process.h>
+#endif
+static int run_shadow_mode(const char *model, bool yes) {
+    char *exe = plat_executable_path();
+    char client[4096] = "";
+    if (exe) {
+        const char *slash = strrchr(exe, '/');
+#ifdef _WIN32
+        const char *bslash = strrchr(exe, '\\');
+        if (!slash || (bslash && bslash > slash)) slash = bslash;
+#endif
+        size_t dir_len = slash ? (size_t)(slash - exe) : 0;
+        if (dir_len && dir_len < sizeof client - 32) {
+            memcpy(client, exe, dir_len);
+            client[dir_len] = '\0';
+            strcat(client, "/python/src");
+            char probe[4096];
+            snprintf(probe, sizeof probe, "%s/xyntetik_runner/shadow/cli.py", client);
+            struct stat st;
+            if (stat(probe, &st) != 0) client[0] = '\0';
+        }
+    }
+    if (client[0]) {
+        const char *old = getenv("PYTHONPATH");
+        char joined[8192];
+#ifdef _WIN32
+        const char *sep = ";";
+#else
+        const char *sep = ":";
+#endif
+        if (old && *old) snprintf(joined, sizeof joined, "%s%s%s", client, sep, old);
+        else snprintf(joined, sizeof joined, "%s", client);
+#ifdef _WIN32
+        _putenv_s("PYTHONPATH", joined);
+#else
+        setenv("PYTHONPATH", joined, 1);
+#endif
+    }
+    const char *argv[16];
+    int n = 0;
+    argv[n++] = "python3";
+    argv[n++] = "-m";
+    argv[n++] = "xyntetik_runner.shadow";
+    argv[n++] = "install";
+    argv[n++] = "--runner";
+    argv[n++] = exe ? exe : "runner";
+    if (model) { argv[n++] = "--model"; argv[n++] = model; }
+    if (yes) argv[n++] = "--yes";
+    argv[n] = NULL;
+#ifdef _WIN32
+    argv[0] = "python";
+    intptr_t rc = _spawnvp(_P_WAIT, "python", argv);
+    if (rc == -1) { argv[0] = "py"; rc = _spawnvp(_P_WAIT, "py", argv); }
+    if (rc == -1) {
+        fprintf(stderr, "error: --shadow-mode needs Python 3 on PATH (python or py); "
+                        "the client is stdlib-only and ships beside this binary\n");
+        return 2;
+    }
+    return (int)rc;
+#else
+    execvp("python3", (char *const *)argv);
+    argv[0] = "python";
+    execvp("python", (char *const *)argv);
+    fprintf(stderr, "error: --shadow-mode needs python3 on PATH; the client is "
+                    "stdlib-only and ships beside this binary (python/src)\n");
+    return 2;
+#endif
+}
+
 int main(int argc, char **argv) {
     const char *model_path = NULL, *prompt = NULL, *system_prompt = NULL;
     char *owned_prompt = NULL;
@@ -914,6 +994,7 @@ int main(int argc, char **argv) {
     bool seed_given = false;
     bool ignore_eos = false, json_mode = false, serve = false, caps = false;
     bool tool_info = false;
+    bool shadow_mode = false, shadow_yes = false;
     const char *fit_path = NULL;
     bool no_tray = false;
     bool force_uncertified = false;
@@ -1091,6 +1172,12 @@ int main(int argc, char **argv) {
         else if (!strcmp(a, "--yield-on-request")) mp.yield_on_request = true;
         else if (!strcmp(a, "--parent-pid")) parent_pid = (long)int_arg(a, NEXT, 1, LONG_MAX);
         else if (!strcmp(a, "--caps")) caps = true;
+        // --shadow-mode: hand off to the Python client's `shadow install`
+        // (confirmation, hooks, the /shadow skill and prompt, the model to
+        // serve for offloading). The client ships beside the binary in the
+        // release archive and in the source tree; nothing is downloaded.
+        else if (!strcmp(a, "--shadow-mode")) shadow_mode = true;
+        else if (!strcmp(a, "--yes")) shadow_yes = true;
         // Per-MODEL evidence: the native tool-call protocol resolved from this
         // model's chat template (a build property --caps cannot carry). Loads
         // the model, prints one JSON line, exits.
@@ -1178,6 +1265,7 @@ int main(int argc, char **argv) {
     }
     if (fit_path) return run_fit_check(fit_path, mp.n_ctx);
 
+    if (shadow_mode) return run_shadow_mode(model_path, shadow_yes);
     if (caps) {
         char gname[128];
         bool has_gpu = gpu_available(gname, sizeof(gname));

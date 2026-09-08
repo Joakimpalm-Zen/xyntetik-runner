@@ -90,6 +90,11 @@ The negative controls that prove the verifier can fail live in
   `--endpoints url,url`) = bank + fit probe + replay per model + `bench.md` /
   `bench.json`, one row per model stack with verified over attempted per task
   class. `tasks.change_class` gives each task `function`, `file` or `multi-file`.
+- `routes`: per task class and model stack, attempted and verified counts and
+  whether the class qualifies for offloading (printed rule); `delegate --repo .
+  --request ...`: one bounded attempt on a detached worktree at HEAD, the
+  repository's tests on the copy, the diff as a patch file, the verdict; starts
+  the configured runner when no `--endpoint` is given.
 - `install`: `shadow install [--pythonpath P] [--out DIR]` merges the two capture
   hooks into `~/.claude/settings.json`, writes the `/shadow` skill and the Codex
   `/shadow` prompt; `uninstall` reverses exactly that; `capture --summary` counts
