@@ -8,6 +8,30 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **Training: an opt-in end-of-turn token, and a loader that never
+  truncates.** `--train-eot` appends the model's own turn terminator
+  (`<|im_end|>`, `<|eot_id|>`, `<end_of_turn>`, `<|eot|>`, `<|end|>`,
+  `<|return|>` by template family, else the declared EOS) to every
+  completion as one more target, and a jsonl line can set
+  `"end_of_turn": true` on its own; the provenance record carries
+  `end_of_turn` and `eot_id`. Without it an adapter trained on turn-shaped
+  data could never learn to stop. Found on the way: the jsonl loader sized
+  its token buffer at one token per byte and `tok_encode` truncates
+  silently at capacity, so a SentencePiece vocabulary with byte fallback
+  (the test fixture: 68 tokens for 52 bytes) lost the tail of every
+  example without a word. The buffer now grows until the encoding fits
+  with room to spare, and a line that still fills it is refused.
+- **Shadow mode, three small things measured rather than guessed.** An
+  attempt that ended on a server error now records the server's reason,
+  not the exception class (every Muse attempt on 2026-09-08 said
+  `RunnerHttpError` where the context had overflowed). The tandem
+  attempt's budget is 6 turns and 300 s by default, from the 26 attempts
+  with a verdict on two ledgers (turns median 5 and 7, wall median 345 s
+  and 166 s), set with `shadow tandem --turns N --wall S`, and written
+  into every delegation record so a budget that cuts a would-be success
+  shows in the ledger. Qwen 3.8 met the training gate: it ships under
+  the Qwen3.5 architecture id and is refused as recurrent.
+
 - **Adapter training covers the dense-shape variants (R8.9.4).** The LoRA
   backward now carries the head transforms (logit scale, softcap, suppressed
   tokens), Granite's muP scalars (embedding, fixed attention, residual and

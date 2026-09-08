@@ -621,7 +621,9 @@ def cmd_capture(args: argparse.Namespace) -> int:
                 tandem.emit(tandem.hook_prompt(home, session_id=rec["session_id"], cwd=cwd,
                                                prompt=rec["prompt"], repo=repo_or_none, records=records,
                                                model=model, model_sha256=_model_sha(model),
-                                               python=args.python or sys.executable, out=out))
+                                               python=args.python or sys.executable, out=out,
+                                               turns=int(str(cfg.get("tandem_turns") or tandem.DEFAULT_TURNS)),
+                                               wall_s=float(str(cfg.get("tandem_wall") or tandem.DEFAULT_WALL_S))))
             else:
                 tandem.emit(tandem.hook_stop(home, session_id=rec["session_id"]))
     except Exception:  # noqa: BLE001 - a hook must never fail the prompt
@@ -824,7 +826,7 @@ def cmd_delegate(args: argparse.Namespace) -> int:
             state.save(home)
         return 2
     _record_delegation(Path(out), d, model_path=str(cfg.get("model") or ""), caps=caps,
-                       endpoint_label=endpoint.base_url)
+                       endpoint_label=endpoint.base_url, budget_turns=args.max_turns, budget_wall=args.wall)
     if state is not None:
         state.status, state.verdict, state.patch_path = "done", d.verdict, d.patch_path
         state.changed_paths, state.tests_exit, state.task_class = d.changed_paths, d.tests_exit, d.task_class
@@ -1036,7 +1038,7 @@ def cmd_server(args: argparse.Namespace) -> int:
 
 
 def _record_delegation(out: Path, d: Any, *, model_path: str, caps: dict[str, Any],
-                       endpoint_label: str) -> None:
+                       endpoint_label: str, budget_turns: int = 0, budget_wall: float = 0.0) -> None:
     """A delegation is an attempt with a verdict on the user's own request:
     it joins the ledger under its own verifier id (the repository's tests
     at HEAD, not frozen tests), verified only when they passed and no test
@@ -1066,7 +1068,9 @@ def _record_delegation(out: Path, d: Any, *, model_path: str, caps: dict[str, An
                           observed_at=_now(), disposition=disposition, identity=ident, baseline_sha256="",
                           patch_sha256=None, changed_paths=d.changed_paths, verifier=verifier,
                           wall_s=d.wall_s, resources={"turns": float(d.attempt.turns),
-                                                      "tool_calls": float(d.attempt.tool_calls)},
+                                                      "tool_calls": float(d.attempt.tool_calls),
+                                                      "budget_turns": float(budget_turns),
+                                                      "budget_wall_s": float(budget_wall)},
                           reasons=(f"attempt: {d.attempt.stop_reason}", d.verdict))
     out.mkdir(parents=True, exist_ok=True)
     _append(out / "evidence.jsonl", rec)
@@ -1095,12 +1099,19 @@ def cmd_delegations(args: argparse.Namespace) -> int:
 def cmd_tandem(args: argparse.Namespace) -> int:
     home = Path(args.home) if args.home else Path.home()
     cfg = read_config(home)
+    if args.turns is not None:
+        set_config_key(home, "tandem_turns", int(args.turns))
+    if args.wall is not None:
+        set_config_key(home, "tandem_wall", float(args.wall))
     if args.state in ("on", "off"):
         set_config_key(home, "tandem", args.state == "on")
         print(f"tandem {args.state}")
         return 0
+    cfg = read_config(home)
     print("tandem " + ("on" if cfg.get("tandem", True) and cfg.get("model") else "off")
-          + ("" if cfg.get("model") else " (no model configured)"))
+          + ("" if cfg.get("model") else " (no model configured)")
+          + f"; budget {cfg.get('tandem_turns', tandem.DEFAULT_TURNS)} turns, "
+          f"{cfg.get('tandem_wall', tandem.DEFAULT_WALL_S):g}s (measured default; see tandem.py)")
     return 0
 
 
@@ -1304,6 +1315,8 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("tandem", help="show or set whether prompts get a background local attempt")
     p.add_argument("state", nargs="?", choices=("on", "off"), default="")
     p.add_argument("--home", default="")
+    p.add_argument("--turns", type=int, default=None, help="background attempt budget in turns")
+    p.add_argument("--wall", type=float, default=None, help="background attempt budget in seconds")
     p.set_defaults(fn=cmd_tandem)
     p = sub.add_parser("adapt", help="overnight: train the configured model's adapter on the ledger's "
                                      "own commits, keep it only on a held-out verified rise")

@@ -230,3 +230,31 @@ def test_seed_changes_the_adapter(runner_bin, base, tmp_path):
     _train(runner_bin, base, a1, steps=4, extra=("-s", "7"))
     _train(runner_bin, base, a2, steps=4, extra=("-s", "8"))
     assert a1.read_bytes() != a2.read_bytes()
+
+
+def test_end_of_turn_token_is_opt_in_and_recorded(runner_bin, base, tmp_path):
+    """--train-eot appends the family's turn terminator (the llama fixture
+    declares no ChatML/Llama-3 terminator, so it is the EOS) as one more
+    completion target on every line; a jsonl line can ask for it alone;
+    the provenance record says which id was used."""
+    def tokens_of(extra, data="data.jsonl"):
+        p = _run_train(runner_bin, base, tmp_path / "eot.gguf", data, extra=extra)
+        assert p.returncode == 0, p.stderr.decode(errors="replace")
+        return [json.loads(l)["tokens"] for l in p.stdout.splitlines() if l.startswith(b"{")]
+    plain = tokens_of(())
+    with_eot = tokens_of(("--train-eot",))
+    assert with_eot[0] == plain[0] + 1
+    rec = json.loads((tmp_path / "eot.gguf.train.json").read_text(encoding="utf-8"))
+    assert rec["end_of_turn"] is True and isinstance(rec["eot_id"], int) and rec["eot_id"] >= 0
+    (base / "eot-line.jsonl").write_text(
+        json.dumps({"prompt": "the runner trains", "completion": " the adapter", "end_of_turn": True}) + "\n",
+        encoding="utf-8")
+    (base / "plain-line.jsonl").write_text(
+        json.dumps({"prompt": "the runner trains", "completion": " the adapter"}) + "\n", encoding="utf-8")
+    assert tokens_of((), "eot-line.jsonl")[0] == tokens_of((), "plain-line.jsonl")[0] + 1
+    rec = json.loads((tmp_path / "eot.gguf.train.json").read_text(encoding="utf-8"))
+    assert rec["end_of_turn"] is False, "the flag was not given; the line asked"
+    (base / "bad-line.jsonl").write_text(
+        json.dumps({"prompt": "x", "completion": " y", "end_of_turn": "yes"}) + "\n", encoding="utf-8")
+    p = _run_train(runner_bin, base, tmp_path / "bad.gguf", "bad-line.jsonl")
+    assert p.returncode != 0 and b"end_of_turn must be true or false" in p.stderr

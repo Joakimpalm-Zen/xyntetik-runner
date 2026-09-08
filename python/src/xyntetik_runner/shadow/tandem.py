@@ -32,6 +32,16 @@ from xyntetik_runner.shadow.routes import Route, route_table
 STATE_DIR_REL = Path(".xyntetik") / "shadow" / "delegations"
 RUNNING_WALL_S = 1200.0  # a delegation older than this without an end is treated as dead
 MIN_REQUEST_CHARS = 24
+# The background attempt's budget. Measured 2026-09-08 over every attempt
+# with a verdict on two ledgers (26, all failed; no tool-harness attempt has
+# verified anywhere yet): turns median 5 and 7, p90 9; wall median 345 s and
+# 166 s, p90 1,044 s and 419 s. A tandem attempt runs on the user's machine
+# while the frontier model works, so it stops at the median, not the p90;
+# the budget is written into every record so the day a budget cuts a
+# would-be success, the ledger shows it (stop reason "turn budget" or
+# "wall"). Override with `shadow tandem --turns N --wall S`.
+DEFAULT_TURNS = 6
+DEFAULT_WALL_S = 300.0
 
 
 @dataclass
@@ -120,7 +130,8 @@ def looks_like_a_task(prompt: str) -> bool:
 
 def hook_prompt(home: Path, *, session_id: str, cwd: str, prompt: str, repo: Path | None,
                 records: Sequence[EpisodeEvidence], model: str, model_sha256: str, python: str,
-                out: str, spawn: Callable[[list[str]], Any] | None = None) -> dict[str, Any] | None:
+                out: str, spawn: Callable[[list[str]], Any] | None = None,
+                turns: int = DEFAULT_TURNS, wall_s: float = DEFAULT_WALL_S) -> dict[str, Any] | None:
     """Decide and start; return the hook's JSON for the harness, or None."""
     spawn = spawn or spawn_detached  # resolved at call time, so a test can stand in
     notes: list[str] = []
@@ -143,7 +154,7 @@ def hook_prompt(home: Path, *, session_id: str, cwd: str, prompt: str, repo: Pat
             state.save(home)
             argv = [python, "-m", "xyntetik_runner.shadow", "delegate", "--repo", str(repo),
                     "--request", prompt, "--home", str(home), "--python", python, "--out", out,
-                    "--record", state.id]
+                    "--record", state.id, "--max-turns", str(turns), "--wall", str(wall_s)]
             try:
                 spawn(argv)
             except OSError as e:

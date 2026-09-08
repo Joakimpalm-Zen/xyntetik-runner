@@ -271,8 +271,29 @@ static bool train_example_append(train_ex **exs, int *n_ex,
 // A JSONL example is tokenized in full before its length is compared with the
 // requested training context: using the context as tok_encode's output cap
 // would silently turn an over-long completion into a shorter training target.
+// The token that ends an assistant turn in the model's own template, or
+// the declared EOS when the template has no separate terminator (llama2,
+// mistral, zephyr, granite, apertus, ornith, raw). -1 when even that is
+// missing. Mirrors the strings the engine stops on (engine.c) so an adapter
+// taught to end its turn ends it on the token serving stops at.
+static int train_eot_id(tokenizer *tok, int tmpl) {
+    const char *s = NULL;
+    switch (tmpl) {
+    case TMPL_CHATML: case TMPL_CHATML_THINK: case TMPL_QWEN38: s = "<|im_end|>"; break;
+    case TMPL_LLAMA3: s = "<|eot_id|>"; break;
+    case TMPL_GEMMA: case TMPL_GEMMA4: case TMPL_GEMMA4_MAINLINE: s = "<end_of_turn>"; break;
+    case TMPL_MUSE: s = "<|eot|>"; break;
+    case TMPL_PHI3: s = "<|end|>"; break;
+    case TMPL_HARMONY: s = "<|return|>"; break;
+    default: break;
+    }
+    int id = s ? tok_find(tok, s) : -1;
+    return id >= 0 ? id : tok->eos_id;
+}
+
 static bool train_examples_load(tokenizer *tok, const char *path, bool no_bos,
-                                int wctx, train_ex **out, int *out_n) {
+                                int wctx, int eot_id, bool eot_all,
+                                train_ex **out, int *out_n) {
     size_t data_n = 0;
     char *data = read_file(path, &data_n);
     if (!data) {
@@ -307,6 +328,27 @@ static bool train_examples_load(tokenizer *tok, const char *path, bool no_bos,
                 jv_free(v);
                 goto fail;
             }
+            // "end_of_turn": true appends the template's turn terminator to
+            // the completion as one more target; --train-eot does it for
+            // every line. Opt-in, since a completion that is a file or a
+            // code fragment must not learn to end a turn after it.
+            jv *ev = jv_get(v, "end_of_turn");
+            bool eot = eot_all;
+            if (ev) {
+                if (ev->type != J_BOOL) {
+                    fprintf(stderr, "error: %s line %d end_of_turn must be true or false\n",
+                            path, line_no);
+                    jv_free(v);
+                    goto fail;
+                }
+                eot = ev->b;
+            }
+            if (eot && eot_id < 0) {
+                fprintf(stderr, "error: %s line %d asks for an end-of-turn token but "
+                        "this model declares none\n", path, line_no);
+                jv_free(v);
+                goto fail;
+            }
             jv *wv = jv_get(v, "weight");
             double weight = 1.0;
             if (wv) {
@@ -329,20 +371,42 @@ static bool train_examples_load(tokenizer *tok, const char *path, bool no_bos,
                 jv_free(v);
                 goto fail;
             }
-            // One token per input byte plus BOS is the tokenizer's worst case;
-            // the spare room makes capacity truncation impossible here.
-            int cap = (int)(prompt_n + completion_n + 8);
-            int32_t *tokens = malloc(sizeof(*tokens) * (size_t)cap);
+            // tok_encode truncates silently at its capacity, and "one token
+            // per byte" is not a bound: a SentencePiece vocabulary with byte
+            // fallback and segment normalization emitted 68 tokens for 52
+            // bytes on the test fixture, which the old fixed-size buffer cut
+            // to 60 without a word. So the buffer grows until the encoding
+            // fits with room to spare (the end-of-turn slot included), and a
+            // line that still fills it is refused rather than truncated.
+            size_t bytes = prompt_n + completion_n;
+            int cap = (int)(2 * bytes + 32);
+            int32_t *tokens = NULL;
+            int np = -1, nc = -1;
+            for (int attempt = 0; attempt < 6; attempt++) {
+                free(tokens);
+                tokens = malloc(sizeof(*tokens) * (size_t)cap);
+                if (!tokens) break;
+                np = tok_encode(tok, prompt, tokens, cap, !no_bos, true);
+                nc = np >= 0 ? tok_encode(tok, completion, tokens + np, cap - np,
+                                          false, false) : -1;
+                if (np < 0 || nc < 0 || np + nc + 1 < cap) break;   // fits, or failed
+                if (cap > INT_MAX / 2) break;
+                cap *= 2;
+            }
             if (!tokens) {
                 fprintf(stderr, "error: out of memory loading %s line %d\n",
                         path, line_no);
                 jv_free(v);
                 goto fail;
             }
-            int np = tok_encode(tok, prompt, tokens, cap, !no_bos, true);
-            int nc = np >= 0
-                ? tok_encode(tok, completion, tokens + np, cap - np,
-                             false, false) : -1;
+            if (np >= 0 && nc >= 0 && np + nc + 1 >= cap) {
+                fprintf(stderr, "error: %s line %d tokenizes past %d tokens for %zu bytes; "
+                        "refusing to truncate it\n", path, line_no, cap, bytes);
+                free(tokens);
+                jv_free(v);
+                goto fail;
+            }
+            if (eot && np >= 0 && nc >= 0) tokens[np + nc++] = eot_id;
             int total = np >= 0 && nc >= 0 ? np + nc : -1;
             if (np < 1 || nc < 1 || total > wctx) {
                 if (total > wctx)
@@ -725,6 +789,8 @@ static void usage_to(FILE *f, const char *prog) {
         "                 lines {\"prompt\",\"completion\",\"weight\"} with the\n"
         "                 prompt masked from the loss. Deterministic by\n"
         "                 default: same data + seed -> byte-identical adapter\n"
+        "  --train-eot    append the template's end-of-turn token to every\n"
+        "                 completion (a jsonl line can set \"end_of_turn\")\n"
         "  --train-steps N --lr F --train-ctx N --save-every N\n"
         "                 training-loop knobs (defaults 100, 1e-4, 128, 0)\n"
         "  --train-out F  adapter GGUF to write (default adapter-out.gguf)\n"
@@ -1014,6 +1080,7 @@ int main(int argc, char **argv) {
     float lora_scale = 1.0f;
     const char *train_path = NULL, *train_out = "adapter-out.gguf";
     int train_steps = 100, train_ctx = 128, lora_rank = 8, save_every = 0;
+    bool train_eot = false;
     float train_lr = 1e-4f;
     model_params mp = {0};
     // RUNNER_VRAM_PRIORITY sets the baseline; --vram-priority (parsed below)
@@ -1128,6 +1195,7 @@ int main(int argc, char **argv) {
         else if (!strcmp(a, "--lora-scale"))
             lora_scale = (float)float_arg(a, NEXT, 0, FLT_MAX);
         else if (!strcmp(a, "--train")) train_path = NEXT;
+        else if (!strcmp(a, "--train-eot")) train_eot = true;
         else if (!strcmp(a, "--train-steps"))
             train_steps = (int)int_arg(a, NEXT, 1, INT_MAX);
         else if (!strcmp(a, "--train-out")) train_out = NEXT;
@@ -2123,7 +2191,9 @@ int main(int argc, char **argv) {
         train_ex *exs = NULL;
         int n_ex = 0;
         int wctx = train_ctx < m.n_ctx ? train_ctx : m.n_ctx;
-        if (!train_examples_load(&tok, train_path, no_bos, wctx,
+        int train_tmpl = template_detect(gguf_get_str(&m.gf, "tokenizer.chat_template", NULL), &tok);
+        int eot_id = train_eot_id(&tok, train_tmpl);
+        if (!train_examples_load(&tok, train_path, no_bos, wctx, eot_id, train_eot,
                                  &exs, &n_ex)) CLI_FAIL;
 #define TRAIN_FAIL do { train_examples_free(exs, n_ex); CLI_FAIL; } while (0)
         fprintf(stderr, "train: %d example%s, %d steps, lr %g, ctx %d\n",
@@ -2221,13 +2291,15 @@ int main(int argc, char **argv) {
             sb_fmt(&rec,
                     "\"},\"seed\":%llu,\"lora_rank\":%d,\"alpha\":%g,"
                     "\"lr\":%g,\"steps\":%d,\"ctx\":%d,"
+                    "\"end_of_turn\":%s,\"eot_id\":%d,"
                     "\"adamw\":{\"beta1\":0.9,\"beta2\":0.999,"
                     "\"eps\":1e-8,\"weight_decay\":0.01},"
                     "\"loss_first\":%.6f,\"loss_last\":%.6f,"
                     "\"adapter\":{\"path\":\"",
                     (unsigned long long)(seed_given ? smp.rng : 0),
                     lora_rank, (double)m.lora_alpha, (double)train_lr,
-                    train_steps, wctx, first_loss, last_loss);
+                    train_steps, wctx, train_eot ? "true" : "false", eot_id,
+                    first_loss, last_loss);
             sb_esc(&rec, train_out, strlen(train_out));
             sb_lit(&rec, "\",\"sha256\":\""); sb_lit(&rec, asha);
             sb_lit(&rec, "\"}}\n");

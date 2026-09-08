@@ -296,7 +296,8 @@ def attempt(request: str, workspace: Workspace, chat: ChatFn, *, budget: Budget 
             reply = chat(messages, tools)
         except Exception as e:  # the model side failed; the tree is still judged
             return _done(turns, calls, workspace, ptoks, ctoks, t0,
-                         f"model error: {type(e).__name__}", False, names, messages=messages)
+                         f"model error: {type(e).__name__}: {str(e)[:240]}", False, names,
+                         messages=messages)
         usage_raw = reply.get("usage")
         usage: dict[str, Any] = usage_raw if isinstance(usage_raw, dict) else {}
         ptoks += int(usage.get("prompt_tokens", 0) or 0)
