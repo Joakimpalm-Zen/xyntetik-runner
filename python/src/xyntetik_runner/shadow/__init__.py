@@ -32,6 +32,7 @@ from xyntetik_runner.shadow.verifier import (
     InstrumentError,
     ProtectedTests,
     calibrate,
+    check,
     verify,
 )
 
@@ -50,6 +51,7 @@ __all__ = [
     "Summary",
     "VerifierOutcome",
     "calibrate",
+    "check",
     "file_sha256",
     "render",
     "summarize",

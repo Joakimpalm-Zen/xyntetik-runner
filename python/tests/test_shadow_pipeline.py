@@ -1,0 +1,250 @@
+"""Importer, task builder, attempt harness and CLI, end to end on synthetic
+traces and a synthetic repository. No model: the attempt is driven by a
+scripted chat function, which is enough to prove the plumbing and the
+confinement; the model's competence is what the pilot measures."""
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+from xyntetik_runner.shadow import Baseline, Disposition, ProtectedTests, verify
+from xyntetik_runner.shadow.attempt import Budget, Workspace, attempt
+from xyntetik_runner.shadow.cli import main
+from xyntetik_runner.shadow.importer import Episode, read_episodes, scan_claude_code, scan_codex
+from xyntetik_runner.shadow.tasks import RepairTask, Rejection, admit, repos_under
+
+FIXTURE = Path(__file__).parent / "fixtures" / "repair_task_v1"
+BUGGY = (FIXTURE / "workspace" / "calc" / "money.py").read_text()
+VISIBLE = (FIXTURE / "workspace" / "tests" / "test_money.py").read_text()
+SOLUTION_TESTS = (FIXTURE / "protected" / "tests" / "test_money.py").read_text()
+CORRECT = '''"""Money parsing for the ledger importer."""
+from decimal import ROUND_HALF_UP, Decimal
+
+
+def parse_amount(text: str) -> int:
+    cleaned = "".join(ch for ch in text if ch.isdigit() or ch in "-.")
+    return int((Decimal(cleaned) * 100).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+'''
+
+
+def git(repo: Path, *args: str, date: str = "2026-09-01T12:00:00+00:00") -> str:
+    env = {**os.environ, "GIT_AUTHOR_DATE": date, "GIT_COMMITTER_DATE": date,
+           "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@x", "GIT_COMMITTER_NAME": "t",
+           "GIT_COMMITTER_EMAIL": "t@x"}
+    return subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True,
+                          env=env, check=True).stdout.strip()
+
+
+@pytest.fixture
+def repo(tmp_path: Path) -> Path:
+    """A repository with the buggy state committed at 11:00 and the fix,
+    with its stronger tests, committed at 12:00."""
+    r = tmp_path / "proj"
+    (r / "calc").mkdir(parents=True)
+    (r / "tests").mkdir()
+    git(tmp_path, "init", "-q", "-b", "main", str(r))
+    (r / "calc" / "__init__.py").write_text("")
+    (r / "calc" / "money.py").write_text(BUGGY)
+    (r / "tests" / "test_money.py").write_text(VISIBLE)
+    git(r, "add", "-A")
+    git(r, "commit", "-q", "-m", "buggy", date="2026-09-01T11:00:00+00:00")
+    (r / "calc" / "money.py").write_text(CORRECT)
+    (r / "tests" / "test_money.py").write_text(SOLUTION_TESTS)
+    git(r, "add", "-A")
+    git(r, "commit", "-q", "-m", "fix", date="2026-09-01T12:00:00+00:00")
+    return r
+
+
+def episode(cwd: Path, **kw: Any) -> Episode:
+    base = dict(source="claude_code", session_id="abcdef123456", turn=1, cwd=str(cwd),
+                started_at="2026-09-01T11:30:00Z", ended_at="2026-09-01T12:10:00Z",
+                request="make parse_amount handle thousands separators, currency and rounding",
+                request_sha256="x" * 64)
+    base.update(kw)
+    return Episode(**base)  # type: ignore[arg-type]
+
+
+def test_codex_scan_reads_boundaries_and_never_the_answer(tmp_path: Path) -> None:
+    sessions = tmp_path / "sessions" / "2026"
+    sessions.mkdir(parents=True)
+    recs = [
+        {"type": "session_meta", "payload": {"id": "s1", "cwd": "/w"}},
+        {"timestamp": "2026-09-01T10:00:00Z", "type": "event_msg", "payload": {"type": "task_started"}},
+        {"type": "event_msg", "payload": {"type": "user_message", "message": "fix the parser"}},
+        {"type": "response_item", "payload": {"type": "message", "role": "assistant",
+                                              "content": "THE ANSWER"}},
+        {"type": "response_item", "payload": {"type": "function_call", "name": "shell",
+                                              "arguments": "{\"cmd\": \"THE PATCH\"}"}},
+        {"timestamp": "2026-09-01T10:05:00Z", "type": "event_msg", "payload": {"type": "task_complete"}},
+    ]
+    (sessions / "a.jsonl").write_text("\n".join(json.dumps(r) for r in recs) + "\n")
+    (sessions / "broken.jsonl").write_bytes(b"\xff\xfe not json")
+    report = scan_codex(tmp_path / "sessions")
+    assert len(report.episodes) == 1 and report.files_read == 2
+    e = report.episodes[0]
+    assert (e.cwd, e.request, e.tool_names) == ("/w", "fix the parser", ("shell",))
+    assert e.started_at == "2026-09-01T10:00:00Z" and e.ended_at == "2026-09-01T10:05:00Z"
+    dumped = json.dumps(e.__dict__)
+    assert "THE ANSWER" not in dumped and "THE PATCH" not in dumped
+
+
+def test_claude_code_scan_turns_end_at_the_next_prompt(tmp_path: Path) -> None:
+    proj = tmp_path / "projects" / "p"
+    proj.mkdir(parents=True)
+    recs = [
+        {"type": "user", "sessionId": "s", "cwd": "/w", "timestamp": "2026-09-01T10:00:00Z",
+         "message": {"content": "do A"}},
+        {"type": "assistant", "message": {"content": "THE ANSWER"}},
+        {"type": "user", "sessionId": "s", "cwd": "/w", "timestamp": "2026-09-01T10:20:00Z",
+         "message": {"content": [{"type": "tool_result", "content": "THE OUTPUT"}]}},
+        {"type": "user", "sessionId": "s", "cwd": "/w", "timestamp": "2026-09-01T11:00:00Z",
+         "message": {"content": "<command-name>/model</command-name>"}},
+    ]
+    (proj / "s.jsonl").write_text("\n".join(json.dumps(r) for r in recs) + "\n")
+    eps = scan_claude_code(tmp_path / "projects").episodes
+    assert [e.turn for e in eps] == [1, 2]
+    assert eps[0].ended_at == "2026-09-01T11:00:00Z" and eps[1].is_command
+    assert "THE ANSWER" not in json.dumps([e.__dict__ for e in eps])
+
+
+def test_repos_under_finds_nested_repositories(repo: Path) -> None:
+    assert repos_under(repo.parent) == [repo]
+    assert repos_under(repo) == [repo]
+
+
+def test_admit_builds_a_calibrated_task(repo: Path, tmp_path: Path) -> None:
+    out = tmp_path / "tasks"
+    out.mkdir()
+    result = admit(episode(repo.parent), out_dir=out, python=sys.executable)
+    assert isinstance(result, RepairTask), result
+    assert result.expected_tests == 6 and result.baseline_failing >= 1
+    assert result.visible_test_files == ("tests/test_money.py",)
+    assert Path(result.protected_dir, "manifest.json").is_file()
+    assert RepairTask.load(out / result.task_id / "task.json") == result
+    # the solution is recorded for provenance, never given to the attempt
+    assert result.solution_sha != result.base_sha
+
+
+def test_admit_rejects_when_no_commit_in_window(repo: Path, tmp_path: Path) -> None:
+    r = admit(episode(repo, started_at="2026-09-02T00:00:00Z", ended_at="2026-09-02T01:00:00Z"),
+              out_dir=tmp_path, python=sys.executable)
+    assert isinstance(r, Rejection) and r.disposition is Disposition.UNREPLAYABLE
+
+
+def test_admit_rejects_a_commit_whose_tests_pass_before_the_fix(tmp_path: Path) -> None:
+    r = tmp_path / "proj"
+    (r / "pkg").mkdir(parents=True)
+    (r / "tests").mkdir()
+    git(tmp_path, "init", "-q", "-b", "main", str(r))
+    (r / "pkg" / "__init__.py").write_text("X = 1\n")
+    (r / "tests" / "test_x.py").write_text("from pkg import X\n\n\ndef test_x():\n    assert X == 1\n")
+    git(r, "add", "-A")
+    git(r, "commit", "-q", "-m", "a", date="2026-09-01T11:00:00+00:00")
+    (r / "pkg" / "__init__.py").write_text("X = 1\nY = 2\n")
+    (r / "tests" / "test_x.py").write_text("from pkg import X\n\n\ndef test_x():\n    assert X == 1\n\n\ndef test_y():\n    assert True\n")
+    git(r, "add", "-A")
+    git(r, "commit", "-q", "-m", "b", date="2026-09-01T12:00:00+00:00")
+    res = admit(episode(r), out_dir=tmp_path / "t", python=sys.executable)
+    assert isinstance(res, Rejection) and res.disposition is Disposition.UNREPLAYABLE
+    assert "instrument" in res.reason
+
+
+def test_admit_rejects_harness_commands_and_dedupes_commit_ranges(repo: Path, tmp_path: Path) -> None:
+    seen: set[tuple[str, str]] = set()
+    assert isinstance(admit(episode(repo, request="<command-name>/x</command-name>"),
+                             out_dir=tmp_path, python=sys.executable), Rejection)
+    first = admit(episode(repo), out_dir=tmp_path, python=sys.executable, seen=seen)
+    assert isinstance(first, RepairTask)
+    again = admit(episode(repo, turn=2, started_at="2026-09-01T10:30:00Z"), out_dir=tmp_path,
+                  python=sys.executable, seen=seen)
+    assert isinstance(again, Rejection) and "same fix commit" in again.reason
+
+
+def scripted(*steps: dict[str, Any]) -> Any:
+    it = iter(steps)
+
+    def chat(messages: list[dict[str, Any]], tools: list[dict[str, Any]]) -> dict[str, Any]:
+        assert messages[0]["role"] == "system" and any(t["function"]["name"] == "finish" for t in tools)
+        return next(it)
+    return chat
+
+
+def call(name: str, **args: Any) -> dict[str, Any]:
+    return {"id": f"c-{name}", "type": "function",
+            "function": {"name": name, "arguments": json.dumps(args)}}
+
+
+def test_attempt_confines_paths_and_verifies_a_scripted_fix(repo: Path, tmp_path: Path) -> None:
+    task = admit(episode(repo), out_dir=tmp_path / "t", python=sys.executable)
+    assert isinstance(task, RepairTask)
+    ws_dir = tmp_path / "ws"
+    subprocess.run(["git", "-C", str(repo), "worktree", "add", "--detach", "-q", str(ws_dir),
+                    task.base_sha], check=True)
+    ws = Workspace(ws_dir, visible_tests=task.visible_test_files, pythonpath=task.pythonpath,
+                   python=sys.executable, budget=Budget(test_runs=2))
+    assert ws.read_file("../outside.txt").startswith("error")
+    assert ws.write_file("/tmp/x", "y").startswith("error")
+    assert ws.list_files("../*").startswith("error")
+    baseline = Baseline.capture(ws_dir)
+    chat = scripted(
+        {"content": "", "tool_calls": [call("read_file", path="calc/money.py"), call("run_tests")]},
+        {"content": "", "tool_calls": [call("write_file", path="calc/money.py", content=CORRECT),
+                                       call("run_tests")]},
+        {"content": "", "tool_calls": [call("run_tests"), call("finish", summary="done")]},
+        {"content": "", "tool_calls": []},
+    )
+    result = attempt(task.request, ws, chat)
+    assert result.finished and result.stop_reason == "finish" and result.test_runs == 2
+    assert result.tool_names == ("finish", "read_file", "run_tests", "write_file")
+    outcome = verify(ws_dir, ProtectedTests.load(Path(task.protected_dir)), baseline,
+                     python=sys.executable, pythonpath=task.pythonpath)
+    assert outcome.passed is True and outcome.passed_count == 6
+    subprocess.run(["git", "-C", str(repo), "worktree", "remove", "--force", str(ws_dir)], check=True)
+
+
+def test_attempt_stops_on_budget_and_no_tool_calls(repo: Path, tmp_path: Path) -> None:
+    ws = Workspace(repo, visible_tests=(), pythonpath=(), python=sys.executable,
+                   budget=Budget(max_turns=2))
+    chat = scripted({"content": "I think..."}, {"content": "still thinking"})
+    r = attempt("x", ws, chat)
+    assert not r.finished and r.stop_reason == "no tool call" and r.turns == 2
+    chat = scripted(*[{"content": "", "tool_calls": [call("list_files")]}] * 3)
+    r = attempt("x", ws, chat, budget=Budget(max_turns=2))
+    assert r.stop_reason == "turn budget" and r.tool_calls == 2
+    chat = scripted({"content": "", "tool_calls": [call("write_file", path="a", content="b")]},
+                    {"content": "", "tool_calls": []})
+    r = attempt("x", Workspace(tmp_path, visible_tests=(), pythonpath=(), python=sys.executable,
+                               budget=Budget()), chat)
+    assert (tmp_path / "a").read_text() == "b"
+
+
+def test_cli_import_and_report_on_a_synthetic_home(repo: Path, tmp_path: Path, capsys: Any) -> None:
+    home = tmp_path / "home"
+    proj = home / ".claude" / "projects" / "p"
+    proj.mkdir(parents=True)
+    recs = [
+        {"type": "user", "sessionId": "s", "cwd": str(repo.parent), "timestamp": "2026-09-01T11:30:00Z",
+         "message": {"content": "fix parse_amount for thousands separators and currency"}},
+        {"type": "user", "sessionId": "s", "cwd": str(repo.parent), "timestamp": "2026-09-01T12:10:00Z",
+         "message": {"content": "thanks"}},
+        {"type": "user", "sessionId": "s", "cwd": "/nonexistent", "timestamp": "2026-09-01T13:00:00Z",
+         "message": {"content": "unrelated"}},
+    ]
+    (proj / "s.jsonl").write_text("\n".join(json.dumps(r) for r in recs) + "\n")
+    out = tmp_path / "out"
+    assert main(["import", "--out", str(out), "--home", str(home), "--python", sys.executable]) == 0
+    eps = read_episodes(out / "episodes.jsonl")
+    assert len(eps) == 3
+    tasks = list((out / "tasks").glob("*/task.json"))
+    assert len(tasks) == 1
+    assert main(["report", "--out", str(out), "--by-reason"]) == 0
+    text = capsys.readouterr().out
+    assert "3 episodes observed" not in text  # the admitted one has no record until replayed
+    assert "2 episodes observed" in text and "no percentage" in text
+    assert "ineligible: no git repository" in text and "unreplayable: no commit" in text

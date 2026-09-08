@@ -166,3 +166,26 @@ def test_scratch_copy_leaves_the_workspace_untouched(task: tuple[Path, Baseline,
     verify(ws, protected, base)
     assert Baseline.capture(ws) == before
     assert not (ws / "report.xml").exists() and not (ws / "verifier.ini").exists()
+
+
+def test_pythonpath_roots_resolve_inside_the_scratch_copy(tmp_path: Path) -> None:
+    """A src-layout workspace: the package lives under src/, so the tests only
+    import when the verifier adds that root, and they must import the COPY."""
+    ws = tmp_path / "ws"
+    (ws / "src" / "calc").mkdir(parents=True)
+    (ws / "tests").mkdir()
+    (ws / "src" / "calc" / "__init__.py").write_text("")
+    (ws / "src" / "calc" / "money.py").write_text(WRONG)
+    (ws / "tests" / "test_money.py").write_text("def test_plain():\n    assert True\n")
+    src = tmp_path / "protected"
+    (src / "tests").mkdir(parents=True)
+    shutil.copyfile(FIXTURE / "protected" / "tests" / "test_money.py", src / "tests" / "test_money.py")
+    protected = ProtectedTests.freeze(src, {"tests/test_money.py": [
+        "test_plain", "test_thousands_separator", "test_float_trap", "test_negative",
+        "test_currency_prefix", "test_whitespace"]})
+    base = Baseline.capture(ws)
+    (ws / "src" / "calc" / "money.py").write_text(CORRECT)
+    without = verify(ws, protected, base)
+    assert without.passed is False and without.missing == 6, "no root: the tests cannot import calc"
+    with_root = verify(ws, protected, base, pythonpath=("src",))
+    assert with_root.passed is True and with_root.passed_count == 6
