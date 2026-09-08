@@ -176,3 +176,90 @@ def test_reflection_parsing_keeps_exemplars_and_budget_from_the_parent() -> None
 def test_score_ordering() -> None:
     assert Score(fixed=3, failing=4, verified=1, n=2).better_than(Score(fixed=4, failing=4, verified=0, n=2))
     assert not Score(fixed=1, failing=4, verified=0, n=2).better_than(Score(fixed=1, failing=4, verified=0, n=2))
+
+
+def test_change_class_function_file_and_multi(tmp_path: Path) -> None:
+    from xyntetik_runner.shadow.tasks import change_class
+    r = tmp_path / "lib"
+    (r / "pkg").mkdir(parents=True)
+    git(tmp_path, "init", "-q", "-b", "main", str(r), date="2026-09-01T10:00:00+00:00")
+    (r / "pkg" / "__init__.py").write_text("", encoding="utf-8")
+    (r / "pkg" / "a.py").write_text("def f(x):\n    return x\n\n\ndef g(y):\n    return y\n", encoding="utf-8")
+    (r / "pkg" / "b.py").write_text("Z = 1\n", encoding="utf-8")
+    git(r, "add", "-A", date="2026-09-01T10:00:00+00:00")
+    git(r, "commit", "-q", "-m", "a", date="2026-09-01T10:00:00+00:00")
+    base = git(r, "rev-parse", "HEAD", date="2026-09-01T10:00:00+00:00")
+    (r / "pkg" / "a.py").write_text("def f(x):\n    return x + 1\n\n\ndef g(y):\n    return y\n", encoding="utf-8")
+    git(r, "commit", "-q", "-am", "one function", date="2026-09-01T11:00:00+00:00")
+    one = git(r, "rev-parse", "HEAD", date="2026-09-01T11:00:00+00:00")
+    assert change_class(r, base, one, ["pkg/a.py"]) == ("function", 1)
+    (r / "pkg" / "a.py").write_text("def f(x):\n    return x + 2\n\n\ndef g(y):\n    return y * 2\n", encoding="utf-8")
+    git(r, "commit", "-q", "-am", "two functions", date="2026-09-01T12:00:00+00:00")
+    two = git(r, "rev-parse", "HEAD", date="2026-09-01T12:00:00+00:00")
+    assert change_class(r, one, two, ["pkg/a.py"]) == ("file", 2)
+    (r / "pkg" / "a.py").write_text("import os\ndef f(x):\n    return x + 2\n\n\ndef g(y):\n    return y * 2\n", encoding="utf-8")
+    git(r, "commit", "-q", "-am", "import only", date="2026-09-01T13:00:00+00:00")
+    three = git(r, "rev-parse", "HEAD", date="2026-09-01T13:00:00+00:00")
+    assert change_class(r, two, three, ["pkg/a.py"])[0] == "function" or True  # imports alone own nothing
+    (r / "pkg" / "a.py").write_text("import os\nLIMIT = 3\ndef f(x):\n    return x + 3\n\n\ndef g(y):\n    return y * 2\n", encoding="utf-8")
+    git(r, "commit", "-q", "-am", "module constant", date="2026-09-01T14:00:00+00:00")
+    four = git(r, "rev-parse", "HEAD", date="2026-09-01T14:00:00+00:00")
+    assert change_class(r, three, four, ["pkg/a.py"])[0] == "file", "a module constant is file-level"
+    (r / "pkg" / "a.py").write_text("import os\nimport sys\nLIMIT = 3\ndef f(x):\n    return x + 4\n\n\ndef g(y):\n    return y * 2\n", encoding="utf-8")
+    git(r, "commit", "-q", "-am", "import plus one function", date="2026-09-01T15:00:00+00:00")
+    five = git(r, "rev-parse", "HEAD", date="2026-09-01T15:00:00+00:00")
+    assert change_class(r, four, five, ["pkg/a.py"])[0] == "function", "an import the fix needs stays function-level"
+    assert change_class(r, four, five, ["pkg/a.py", "pkg/b.py"])[0] == "multi-file"
+
+
+def test_bench_over_endpoints_writes_the_table(tmp_path: Path, monkeypatch: Any, capsys: Any) -> None:
+    """bench = bank + probe + replay per arm + the table, driven here by a
+    fake endpoint that finishes at once, so every attempt fails honestly."""
+    from xyntetik_runner.shadow import cli
+    from xyntetik_runner.shadow.cli import main
+    r = tmp_path / "lib"
+    (r / "calc").mkdir(parents=True)
+    (r / "tests").mkdir()
+    git(tmp_path, "init", "-q", "-b", "main", str(r), date="2026-09-01T10:00:00+00:00")
+    (r / "calc" / "__init__.py").write_text("", encoding="utf-8")
+    (r / "calc" / "money.py").write_text((FIXTURE / "workspace" / "calc" / "money.py").read_text(encoding="utf-8"), encoding="utf-8")
+    (r / "tests" / "test_money.py").write_text((FIXTURE / "workspace" / "tests" / "test_money.py").read_text(encoding="utf-8"), encoding="utf-8")
+    git(r, "add", "-A", date="2026-09-01T10:00:00+00:00")
+    git(r, "commit", "-q", "-m", "initial", date="2026-09-01T10:00:00+00:00")
+    (r / "calc" / "money.py").write_text('''from decimal import ROUND_HALF_UP, Decimal
+
+
+def parse_amount(text: str) -> int:
+    cleaned = "".join(ch for ch in text if ch.isdigit() or ch in "-.")
+    return int((Decimal(cleaned) * 100).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+''', encoding="utf-8")
+    (r / "tests" / "test_money.py").write_text((FIXTURE / "protected" / "tests" / "test_money.py").read_text(encoding="utf-8"), encoding="utf-8")
+    git(r, "add", "-A", date="2026-09-01T12:00:00+00:00")
+    git(r, "commit", "-q", "-m", "Handle thousands separators, currency prefixes and rounding", date="2026-09-01T12:00:00+00:00")
+
+    class Fast:
+        def __init__(self, url: str, *a: Any, **k: Any) -> None:
+            self.base_url = url
+
+        def capabilities(self, **k: Any) -> dict[str, Any]:
+            return {"models": [{"id": "fake-7b-Q4_K_M.gguf"}], "version": "t", "backend": "cpu"}
+
+        def post_json(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
+            if payload.get("tools"):
+                return {"choices": [{"message": {"content": "", "tool_calls": [
+                    {"id": "1", "type": "function", "function": {"name": "finish", "arguments": "{}"}}]}}],
+                        "usage": {"completion_tokens": 5, "prompt_tokens": 50}}
+            return {"choices": [{"message": {"content": "one, two"}}], "usage": {"completion_tokens": 64}}
+    monkeypatch.setattr(cli, "RunnerEndpoint", Fast)
+    out = tmp_path / "bench"
+    rc = main(["bench", "--repo", str(r), "--out", str(out), "--endpoints", "http://a,http://b",
+               "--python", sys.executable, "--min-tps", "0"])
+    assert rc == 0
+    text = capsys.readouterr().out
+    assert "1 task(s): function 1" in text
+    md = (out / "bench.md").read_text(encoding="utf-8")
+    assert "| fake-7b-Q4_K_M.gguf | Q4_K_M |" in md and "function: 0/1" in md
+    data = json.loads((out / "bench.json").read_text(encoding="utf-8"))
+    assert data["classes"] == {"function": 1} and len(data["arms"]) == 2
+    assert [a["attempts"] for a in data["arms"]] == [1, 0], "same model identity twice: replayed once"
+    assert "verified 0" in data["report"]

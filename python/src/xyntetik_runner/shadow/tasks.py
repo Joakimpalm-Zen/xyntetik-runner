@@ -16,8 +16,10 @@ and the names of the visible test files as they were at the pre-state.
 
 from __future__ import annotations
 
+import ast
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -60,6 +62,11 @@ class RepairTask:
     expected_tests: int
     baseline_failing: int
     failing_at_base: tuple[str, ...] = ()
+    task_class: str = "file"
+    """``function`` when every changed source line sits inside one function
+    or method; ``file`` for one file beyond that; ``multi-file`` otherwise.
+    The class a person delegates is the first one."""
+    changed_lines: int = 0
 
     def to_json(self) -> str:
         return json.dumps(asdict(self), sort_keys=True, indent=2)
@@ -202,6 +209,54 @@ def collect_tests(tree: Path, files: Sequence[str], roots: Sequence[str], *, pyt
     return expected
 
 
+_HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
+
+
+def change_class(repo: Path, base: str, solution: str, src: Sequence[str]) -> tuple[str, int]:
+    """(class, changed source lines) for the range, from the diff and the
+    post-state's own syntax tree: ``function`` when every changed line of
+    the one changed file falls inside one function or method."""
+    if len(src) != 1:
+        return ("multi-file" if len(src) > 1 else "file", 0)
+    rel = src[0]
+    diff = _git(str(repo), "diff", "-U0", base, solution, "--", rel)
+    ranges: list[tuple[int, int]] = []
+    changed = 0
+    for line in diff.split("\n"):
+        m = _HUNK.match(line)
+        if not m:
+            continue
+        start = int(m.group(1))
+        count = int(m.group(2)) if m.group(2) is not None else 1
+        changed += count
+        ranges.append((start, start + max(count, 1) - 1))
+    if not ranges:
+        return ("file", 0)
+    text = _git(str(repo), "show", f"{solution}:{rel}")
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return ("file", changed)
+    spans: list[tuple[int, int, str]] = []
+    imports: list[tuple[int, int]] = []
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.end_lineno:
+            spans.append((node.lineno, node.end_lineno, node.name))
+        elif isinstance(node, (ast.Import, ast.ImportFrom)) and node.end_lineno:
+            imports.append((node.lineno, node.end_lineno))
+    owners: set[str] = set()
+    for a, b in ranges:
+        # an import the fix needed does not make it a file-level change
+        if any(i0 <= a and b <= i1 for i0, i1 in imports):
+            continue
+        inside = [s for s in spans if s[0] <= a and b <= s[1]]
+        if not inside:
+            return ("file", changed)
+        innermost = min(inside, key=lambda s: s[1] - s[0])
+        owners.add(f"{innermost[2]}@{innermost[0]}")
+    return ("function" if len(owners) == 1 else "file", changed)
+
+
 def build_task(episode: Episode, repo: Path, shas: Sequence[str], *, out_dir: Path,
                python: str = sys.executable, timeout_s: float = 600.0) -> RepairTask | Rejection:
     """Admit or reject one (episode, repository, commit range)."""
@@ -247,12 +302,14 @@ def build_task(episode: Episode, repo: Path, shas: Sequence[str], *, out_dir: Pa
         except InstrumentError as e:
             return Rejection(Disposition.UNREPLAYABLE, f"instrument: {e}")
         visible = tuple(t for t in present if (pre / t).is_file())
+        klass, changed = change_class(repo, base, solution, src)
         task = RepairTask(
             task_id=task_id, episode_id=episode.episode_id, repo=str(repo), base_sha=base,
             solution_sha=solution, request=episode.request, request_sha256=episode.request_sha256,
             context=episode.context, test_files=tuple(present), visible_test_files=visible, src_files=len(src),
             pythonpath=roots, protected_dir=str(protected), expected_tests=len(frozen.expected),
-            baseline_failing=cal.failing + cal.missing, failing_at_base=cal.failing_ids)
+            baseline_failing=cal.failing + cal.missing, failing_at_base=cal.failing_ids,
+            task_class=klass, changed_lines=changed)
         (task_dir / "task.json").write_text(task.to_json() + "\n", encoding="utf-8")
         admitted = True
         return task

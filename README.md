@@ -1791,11 +1791,19 @@ attempt turned green.
 
 ```sh
 pip install ./python                                   # the client package
-python -m xyntetik_runner.shadow import --python "$(which python3)"
-runner -m model.gguf --serve --port 8080 --no-tray     # any supported model
-python -m xyntetik_runner.shadow replay --endpoint http://127.0.0.1:8080
-python -m xyntetik_runner.shadow report --tasks
+python -m xyntetik_runner.shadow bench --repo . \
+    --models ~/models/a.gguf,~/models/b.gguf --runner ./runner
 ```
+
+One command: the bank is built from your repository's own history (commits
+that touched tests and source, whose tests fail before the fix and pass
+after it, classified `function`, `file` or `multi-file` by where the change
+sits), each model is served in turn, probed for fit, and replayed over every
+task, and the result is a table per model with the receipt identity on each
+row: attempted, verified, failed, and verified over attempted per task
+class. Counts before rates; no percentage before thirty independent tasks.
+The longer road (`import` your frontier history, `replay`, `report`) is
+the same machinery over the tasks your own sessions produced.
 
 The report prints counts and both denominators (verified over the episodes
 that could be replayed, and over everything observed) and refuses to print
