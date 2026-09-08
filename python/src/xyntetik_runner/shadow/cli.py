@@ -341,10 +341,14 @@ def cmd_bank(args: argparse.Namespace) -> int:
 
 def cmd_optimize(args: argparse.Namespace) -> int:
     out = Path(args.out)
-    tasks = _tasks(out, None)
+    tasks = [t for t in _tasks(out, None)
+             if t.baseline_failing <= args.max_failing and t.baseline_failing < t.expected_tests]
+    # A task where everything fails at base (a test-suite move, a refactor)
+    # carries no gradient for any scaffold; the band keeps the signal.
     if not tasks:
-        print("error: no tasks under", out / "tasks", file=sys.stderr)
+        print("error: no tasks under", out / "tasks", "within --max-failing", file=sys.stderr)
         return 2
+    print(f"{len(tasks)} task(s) in the difficulty band", flush=True)
     endpoint = RunnerEndpoint(args.endpoint, timeout=args.request_timeout)
     caps = endpoint.capabilities()
     models = [m.get("id") for m in caps.get("models", []) if isinstance(m, dict)]
@@ -503,6 +507,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--test-runs", type=int, default=3)
     p.add_argument("--wall", type=float, default=600.0)
     p.add_argument("--min-tps", type=float, default=15.0)
+    p.add_argument("--max-failing", type=int, default=30,
+                   help="skip tasks with more failing-at-base tests than this")
     p.set_defaults(fn=cmd_optimize)
     p = sub.add_parser("capture", help="append a prompt or stop event from an agent hook")
     p.add_argument("--event", choices=["prompt", "stop"], required=True)

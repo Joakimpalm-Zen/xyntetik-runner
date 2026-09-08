@@ -52,6 +52,13 @@ TOOLS: list[dict[str, Any]] = [
             "path": {"type": "string"}, "content": {"type": "string"}},
             "required": ["path", "content"]}}},
     {"type": "function", "function": {
+        "name": "edit_file", "description": "Replace one exact, unique occurrence of old_text in "
+        "a workspace file with new_text. Use this for large files instead of rewriting them; "
+        "old_text must match exactly once.",
+        "parameters": {"type": "object", "properties": {
+            "path": {"type": "string"}, "old_text": {"type": "string"},
+            "new_text": {"type": "string"}}, "required": ["path", "old_text", "new_text"]}}},
+    {"type": "function", "function": {
         "name": "run_tests", "description": "Run the visible test files with pytest and return "
         "the tail of the output.",
         "parameters": {"type": "object", "properties": {}, "required": []}}},
@@ -62,7 +69,7 @@ TOOLS: list[dict[str, Any]] = [
                        "required": []}}},
 ]
 
-SYSTEM_PROMPT = BASE_SYSTEM
+SYSTEM_PROMPT = BASE_SYSTEM  # the base scaffold; tools are listed in TOOLS
 
 
 @dataclass(frozen=True)
@@ -166,6 +173,32 @@ class Workspace:
         except OSError as e:
             return f"error: {e}"
         return f"wrote {len(content)} chars to {path}"
+
+    def edit_file(self, path: str, old_text: str, new_text: str) -> str:
+        try:
+            target = self.resolve(path)
+        except ValueError as e:
+            return f"error: {e}"
+        if not target.is_file():
+            return "error: no such file"
+        if not isinstance(old_text, str) or not old_text:
+            return "error: old_text must be a non-empty string"
+        if not isinstance(new_text, str):
+            return "error: new_text must be a string"
+        try:
+            text = target.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as e:
+            return f"error: {e}"
+        n = text.count(old_text)
+        if n == 0:
+            return "error: old_text not found; read the file and copy the exact text"
+        if n > 1:
+            return f"error: old_text occurs {n} times; include more surrounding lines"
+        try:
+            target.write_text(text.replace(old_text, new_text, 1), encoding="utf-8")
+        except OSError as e:
+            return f"error: {e}"
+        return f"edited {path}: replaced {len(old_text)} chars with {len(new_text)}"
 
     def run_tests(self) -> str:
         if self.test_runs >= self.budget.test_runs:
@@ -299,6 +332,9 @@ def attempt(request: str, workspace: Workspace, chat: ChatFn, *, budget: Budget 
                 result = workspace.read_file(str(args.get("path") or ""), int(args.get("offset") or 0))
             elif name == "write_file":
                 result = workspace.write_file(str(args.get("path") or ""), args.get("content"))  # type: ignore[arg-type]
+            elif name == "edit_file":
+                result = workspace.edit_file(str(args.get("path") or ""), args.get("old_text"),  # type: ignore[arg-type]
+                                             args.get("new_text"))  # type: ignore[arg-type]
             elif name == "run_tests":
                 result = workspace.run_tests()
             else:
