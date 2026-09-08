@@ -162,6 +162,21 @@ def test_sync_imports_counts_and_replays_when_told(repo: Path, tmp_path: Path, c
     assert server.read_state(home) is None
 
 
+def test_replay_order_spends_the_budget_on_function_tasks_first() -> None:
+    from dataclasses import replace as _replace
+    from xyntetik_runner.shadow.cli import replay_order
+    from xyntetik_runner.shadow.tasks import RepairTask
+    base = RepairTask(task_id="t", episode_id="e", repo="r", base_sha="a", solution_sha="b", request="q",
+                      request_sha256="0" * 64, context=(), test_files=(), visible_test_files=(), src_files=1,
+                      pythonpath=(), protected_dir="p", expected_tests=3, baseline_failing=1)
+    tasks = [_replace(base, task_id="multi", task_class="multi-file", src_files=3),
+             _replace(base, task_id="file-hard", task_class="file", baseline_failing=5),
+             _replace(base, task_id="fn-b", task_class="function", baseline_failing=2),
+             _replace(base, task_id="file-easy", task_class="file", baseline_failing=1),
+             _replace(base, task_id="fn-a", task_class="function", baseline_failing=1)]
+    assert [t.task_id for t in replay_order(tasks)] == ["fn-a", "fn-b", "file-easy", "file-hard", "multi"]
+
+
 def test_warm_runner_is_replaced_when_stale_or_serving_another_model(tmp_path: Path, monkeypatch: Any) -> None:
     home = tmp_path / "home"
     cfg = {"model": str(tmp_path / "coder.gguf"), "runner": "r", "ctx": 4096, "gpu": "auto", "threads": 0}

@@ -243,6 +243,17 @@ class ReplayOptions:
     endpoint_label: str = ""
 
 
+_CLASS_RANK = {"function": 0, "file": 1, "multi-file": 2}
+
+
+def replay_order(tasks: list[RepairTask]) -> list[RepairTask]:
+    """Cheapest evidence first: the class a person delegates (function),
+    then file, then multi-file; within a class the fewest failing tests.
+    A limited replay therefore spends its wall clock where a verified
+    success is likeliest and shortest."""
+    return sorted(tasks, key=lambda t: (_CLASS_RANK.get(t.task_class, 3), t.baseline_failing, t.task_id))
+
+
 def run_replay(out: Path, endpoint: RunnerEndpoint, opts: ReplayOptions, *,
                model: str = "") -> tuple[int, float, str]:
     """Attempt every admitted task under ``out`` against ``endpoint`` and
@@ -278,7 +289,7 @@ def run_replay(out: Path, endpoint: RunnerEndpoint, opts: ReplayOptions, *,
     done = {(r.episode_id, r.identity.model_sha256, r.identity.scaffold_sha256)
             for r in _read_records(evidence) if r.verifier is not None}
     ran = 0
-    for task in _tasks(out, opts.task):
+    for task in replay_order(_tasks(out, opts.task)):
         if opts.limit and ran >= opts.limit:
             break
         ident = replace(base_identity, project=Path(task.repo).name, task_class=task.task_class,
@@ -661,6 +672,17 @@ def cmd_install(args: argparse.Namespace) -> int:
         print(f"codex: prompt {done.codex_prompt}")
     print("nothing runs until a prompt is submitted; the hooks never block one; "
           "'shadow uninstall' removes exactly this")
+    print()
+    print("what happens next:")
+    print("  1. keep working as you do; each prompt and each finished turn is noted with the")
+    print("     directory, the time and the repository's commit id, nothing else")
+    print("  2. after a few sessions, ask /shadow" + (" in Claude Code" if claude else "") +
+          (" (the shadow prompt in Codex)" if codex else "") + ": it imports what you did, says how")
+    print("     many tasks the local model can be tried on, and offers to run them; say yes")
+    print("  3. once a task class shows verified successes, /shadow can offload such a task to")
+    print("     the local model and show you the diff and the test verdict; you apply it")
+    if not (args.model or picked):
+        print("  the offload needs a model: 'runner --shadow-mode -m MODEL.gguf' when you have one")
     return 0
 
 
@@ -860,7 +882,12 @@ def cmd_sync(args: argparse.Namespace) -> int:
     done = {r.episode_id for r in records if r.verifier is not None and r.identity.model_sha256 == sha}
     waiting = [t for t in _tasks(out, None) if t.episode_id not in done]
     name = Path(model_path).name if model_path else "(no model configured)"
-    print(f"sync: {admitted} task(s) admitted now; {len(waiting)} waiting for a replay with {name}")
+    by_class: dict[str, int] = {}
+    for t in waiting:
+        by_class[t.task_class] = by_class.get(t.task_class, 0) + 1
+    detail = ", ".join(f"{n} {c}" for c, n in sorted(by_class.items(), key=lambda kv: _CLASS_RANK.get(kv[0], 3)))
+    print(f"sync: {admitted} task(s) admitted now; {len(waiting)} waiting for a replay with {name}"
+          + (f" ({detail}; function first)" if detail else ""))
     if not args.replay or not waiting:
         if waiting and model_path:
             print(f"  'shadow sync --replay {min(len(waiting), 5)}' runs the next ones; each takes up to "

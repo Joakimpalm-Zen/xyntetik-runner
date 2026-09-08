@@ -1798,7 +1798,10 @@ That one command finds the stdlib-only Python client beside the binary (it
 ships in the release archive), tells you exactly what it will write, and
 asks before writing: the two capture hooks and a `/shadow` skill for Claude
 Code, a `/shadow` prompt for Codex, whichever of the two is on the machine,
-and the model the `/shadow` offload will serve. `--yes` skips the question
+and the model the `/shadow` offload will serve. It ends by saying what
+happens next. The hooks run a small launcher file, not a shell line, so
+they work the same under sh, cmd and PowerShell and can never fail a
+prompt: every error is swallowed and the exit code is always zero. `--yes` skips the question
 for scripts. Inside either harness, `/shadow` then shows the ledger, and
 when you ask it to offload a task, reads where the local model has verified
 successes (`shadow routes`), runs the task on a scratch worktree with the
