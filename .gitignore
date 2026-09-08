@@ -201,6 +201,10 @@ test-template.dSYM/
 test-template-oom.dSYM/
 test-lora.*
 test-lora-grad
+test-mvcanon
+test-mvcanon.exe
+test-mvt
+test-mvt.exe
 test-lora-q8.*
 test-lora-qk.*
 test-qk.gguf
