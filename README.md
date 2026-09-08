@@ -1823,7 +1823,14 @@ the task's commit range is exact.
     "command": "python3 -m xyntetik_runner.shadow capture --event stop"}]}]}}
 ```
 
-Only your request, the directory, the time and the commit ids are written
+`python -m xyntetik_runner.shadow install` writes exactly this for you:
+the two hooks merged into your Claude Code settings beside whatever is
+there (a backup sits next to the file), a `/shadow` skill that shows the
+ledger from inside a Claude Code session, and a `/shadow` prompt for
+Codex, which has no prompt-time hook and stays on its session files. It
+is an explicit opt-in, nothing runs until you submit a prompt, and
+`uninstall` removes exactly what it wrote. Only your request, the
+directory, the time and the commit ids are written
 (the HEAD of every repository at or under the directory, so a session
 started from a parent directory still gets exact ranges); the file is
 `~/.xyntetik/shadow/capture.jsonl` and `import` reads it beside the

@@ -421,3 +421,44 @@ def test_edit_file_replaces_one_exact_occurrence(tmp_path: Path) -> None:
     chat = scripted({"content": "", "tool_calls": [call("edit_file", path="a.py", old_text="x = 1\ny = 3", new_text="x = 0\ny = 0"), call("finish")]})
     r = attempt("t", ws, chat)
     assert r.finished and (tmp_path / "a.py").read_text(encoding="utf-8") == "x = 0\ny = 0\nx = 1\n"
+
+
+def test_install_is_explicit_idempotent_and_reversible(tmp_path: Path, capsys: Any) -> None:
+    home = tmp_path / "home"
+    (home / ".claude").mkdir(parents=True)
+    settings = home / ".claude" / "settings.json"
+    settings.write_text(json.dumps({"model": "x", "hooks": {"Stop": [{"hooks": [
+        {"type": "command", "command": "echo mine"}]}]}}), encoding="utf-8")
+    assert main(["install", "--home", str(home), "--python", "py", "--pythonpath", "/src",
+                 "--out", "/o"]) == 0
+    data = json.loads(settings.read_text(encoding="utf-8"))
+    assert data["model"] == "x", "existing settings survive"
+    stop = data["hooks"]["Stop"]
+    assert stop[0]["hooks"][0]["command"] == "echo mine", "existing hooks survive"
+    assert "capture --event stop 2>/dev/null || true" in stop[1]["hooks"][0]["command"]
+    assert "PYTHONPATH=/src py -m" in data["hooks"]["UserPromptSubmit"][0]["hooks"][0]["command"]
+    assert settings.with_suffix(".json.bak-shadow").is_file()
+    skill = home / ".claude" / "skills" / "shadow" / "SKILL.md"
+    prompt = home / ".codex" / "prompts" / "shadow.md"
+    assert "report --out /o --tasks" in skill.read_text(encoding="utf-8")
+    assert "Never run `replay`" in skill.read_text(encoding="utf-8")
+    assert "capture --summary" in prompt.read_text(encoding="utf-8")
+    # idempotent
+    assert main(["install", "--home", str(home), "--python", "py"]) == 0
+    data = json.loads(settings.read_text(encoding="utf-8"))
+    assert len(data["hooks"]["Stop"]) == 2 and len(data["hooks"]["UserPromptSubmit"]) == 1
+    # reversible: exactly what install wrote, nothing else
+    assert main(["uninstall", "--home", str(home)]) == 0
+    data = json.loads(settings.read_text(encoding="utf-8"))
+    assert data["hooks"] == {"Stop": [{"hooks": [{"type": "command", "command": "echo mine"}]}]}
+    assert not skill.exists() and not prompt.exists()
+    out = capsys.readouterr().out
+    assert "2 hook(s) added" in out and "removed 2 hook(s)" in out
+
+
+def test_capture_summary_counts_the_file(tmp_path: Path, capsys: Any) -> None:
+    cap = tmp_path / "c.jsonl"
+    cap.write_text('{"event":"prompt","session_id":"a","heads":{"/r":"x"}}\n{"event":"stop","session_id":"a"}\n'
+                   '{"event":"prompt","session_id":"b","heads":{}}\n', encoding="utf-8")
+    assert main(["capture", "--summary", "--file", str(cap)]) == 0
+    assert "3 lines, 2 prompts, 1 with repository heads, 2 sessions" in capsys.readouterr().out

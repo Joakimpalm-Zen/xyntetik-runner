@@ -86,6 +86,11 @@ The negative controls that prove the verifier can fail live in
   `shadow optimize` runs it against a runner endpoint with the local model as
   its own reflector and writes `scaffolds/best.json` and `optimize.json`.
 
+- `install`: `shadow install [--pythonpath P] [--out DIR]` merges the two capture
+  hooks into `~/.claude/settings.json`, writes the `/shadow` skill and the Codex
+  `/shadow` prompt; `uninstall` reverses exactly that; `capture --summary` counts
+  the capture file.
+
 The pipeline is exercised without a model in `python/tests/test_shadow_pipeline.py`
 on synthetic traces and a synthetic repository; a scripted chat function
 proves the plumbing and the confinement, the pilot measures the model.
