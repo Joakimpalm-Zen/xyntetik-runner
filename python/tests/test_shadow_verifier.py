@@ -70,7 +70,7 @@ def test_manifest_is_frozen_and_checked(tmp_path: Path) -> None:
     src = tmp_path / "protected"
     shutil.copytree(FIXTURE / "protected", src)
     ProtectedTests.load(src)
-    (src / "tests" / "test_money.py").write_text("def test_plain():\n    assert True\n")
+    (src / "tests" / "test_money.py").write_text("def test_plain():\n    assert True\n", encoding="utf-8")
     with pytest.raises(InstrumentError, match="differs from its manifest"):
         ProtectedTests.load(src)
 
@@ -87,7 +87,7 @@ def test_calibration_refuses_a_protected_set_that_cannot_fail(tmp_path: Path) ->
     src = tmp_path / "protected"
     (src / "tests").mkdir(parents=True)
     (src / "tests" / "test_money.py").write_text(
-        "from calc.money import parse_amount\n\n\ndef test_plain():\n    assert parse_amount('12.34') == 1234\n")
+        "from calc.money import parse_amount\n\n\ndef test_plain():\n    assert parse_amount('12.34') == 1234\n", encoding="utf-8")
     protected = ProtectedTests.freeze(src, {"tests/test_money.py": ["test_plain"]})
     with pytest.raises(InstrumentError, match="cannot reject a no-op"):
         calibrate(protected, ws)
@@ -95,7 +95,7 @@ def test_calibration_refuses_a_protected_set_that_cannot_fail(tmp_path: Path) ->
 
 def test_correct_patch_is_verified(task: tuple[Path, Baseline, ProtectedTests]) -> None:
     ws, base, protected = task
-    (ws / "calc" / "money.py").write_text(CORRECT)
+    (ws / "calc" / "money.py").write_text(CORRECT, encoding="utf-8")
     out = verify(ws, protected, base)
     assert out.passed is True and out.passed_count == 6 and not out.tamper and not out.reasons
     assert out.output_sha256 and out.duration_s > 0
@@ -104,7 +104,7 @@ def test_correct_patch_is_verified(task: tuple[Path, Baseline, ProtectedTests]) 
 
 def test_wrong_patch_passes_visible_tests_and_fails_protected(task: tuple[Path, Baseline, ProtectedTests]) -> None:
     ws, base, protected = task
-    (ws / "calc" / "money.py").write_text(WRONG)
+    (ws / "calc" / "money.py").write_text(WRONG, encoding="utf-8")
     assert visible_tests_pass(ws), "the control must fool the attempt's own tests"
     out = verify(ws, protected, base)
     assert out.passed is False and out.failed >= 2 and not out.tamper
@@ -119,7 +119,7 @@ def test_no_op_is_rejected_without_running(task: tuple[Path, Baseline, Protected
 
 def test_tampered_test_file_is_flagged_and_frozen_copy_runs(task: tuple[Path, Baseline, ProtectedTests]) -> None:
     ws, base, protected = task
-    (ws / "tests" / "test_money.py").write_text("def test_plain():\n    assert True\n")
+    (ws / "tests" / "test_money.py").write_text("def test_plain():\n    assert True\n", encoding="utf-8")
     assert visible_tests_pass(ws)
     out = verify(ws, protected, base)
     assert out.passed is False
@@ -129,7 +129,7 @@ def test_tampered_test_file_is_flagged_and_frozen_copy_runs(task: tuple[Path, Ba
 
 def test_conftest_injection_is_flagged_even_though_it_would_pass(task: tuple[Path, Baseline, ProtectedTests]) -> None:
     ws, base, protected = task
-    (ws / "tests" / "conftest.py").write_text(MONKEYPATCH_CONFTEST)
+    (ws / "tests" / "conftest.py").write_text(MONKEYPATCH_CONFTEST, encoding="utf-8")
     assert visible_tests_pass(ws), "the control must fool a naive verifier"
     out = verify(ws, protected, base)
     assert out.passed is False
@@ -139,8 +139,8 @@ def test_conftest_injection_is_flagged_even_though_it_would_pass(task: tuple[Pat
 
 def test_config_injection_is_flagged(task: tuple[Path, Baseline, ProtectedTests]) -> None:
     ws, base, protected = task
-    (ws / "calc" / "money.py").write_text(CORRECT)
-    (ws / "pytest.ini").write_text("[pytest]\naddopts = -k nothing_matches_this\n")
+    (ws / "calc" / "money.py").write_text(CORRECT, encoding="utf-8")
+    (ws / "pytest.ini").write_text("[pytest]\naddopts = -k nothing_matches_this\n", encoding="utf-8")
     out = verify(ws, protected, base)
     assert out.passed is False and "test configuration changed: pytest.ini" in out.tamper
     assert out.passed_count == 6, "the verifier's own ini was used, the injected one ignored"
@@ -149,14 +149,14 @@ def test_config_injection_is_flagged(task: tuple[Path, Baseline, ProtectedTests]
 def test_skip_cannot_count_as_success(task: tuple[Path, Baseline, ProtectedTests]) -> None:
     ws, base, protected = task
     (ws / "calc" / "money.py").write_text(
-        'import pytest\npytest.skip("skipping the module under test", allow_module_level=True)\n')
+        'import pytest\npytest.skip("skipping the module under test", allow_module_level=True)\n', encoding="utf-8")
     out = verify(ws, protected, base)
     assert out.passed is False and (out.skipped + out.missing) == out.expected
 
 
 def test_timeout_is_inconclusive_never_a_pass(task: tuple[Path, Baseline, ProtectedTests]) -> None:
     ws, base, protected = task
-    (ws / "calc" / "money.py").write_text("import time\ntime.sleep(60)\n")
+    (ws / "calc" / "money.py").write_text("import time\ntime.sleep(60)\n", encoding="utf-8")
     out = verify(ws, protected, base, timeout_s=3)
     assert out.passed is None and out.reasons == ("timeout after 3s",)
     assert out.duration_s < 30
@@ -164,7 +164,7 @@ def test_timeout_is_inconclusive_never_a_pass(task: tuple[Path, Baseline, Protec
 
 def test_scratch_copy_leaves_the_workspace_untouched(task: tuple[Path, Baseline, ProtectedTests]) -> None:
     ws, base, protected = task
-    (ws / "calc" / "money.py").write_text(CORRECT)
+    (ws / "calc" / "money.py").write_text(CORRECT, encoding="utf-8")
     before = Baseline.capture(ws)
     verify(ws, protected, base)
     assert Baseline.capture(ws) == before
@@ -177,9 +177,9 @@ def test_pythonpath_roots_resolve_inside_the_scratch_copy(tmp_path: Path) -> Non
     ws = tmp_path / "ws"
     (ws / "src" / "calc").mkdir(parents=True)
     (ws / "tests").mkdir()
-    (ws / "src" / "calc" / "__init__.py").write_text("")
-    (ws / "src" / "calc" / "money.py").write_text(WRONG)
-    (ws / "tests" / "test_money.py").write_text("def test_plain():\n    assert True\n")
+    (ws / "src" / "calc" / "__init__.py").write_text("", encoding="utf-8")
+    (ws / "src" / "calc" / "money.py").write_text(WRONG, encoding="utf-8")
+    (ws / "tests" / "test_money.py").write_text("def test_plain():\n    assert True\n", encoding="utf-8")
     src = tmp_path / "protected"
     (src / "tests").mkdir(parents=True)
     shutil.copyfile(FIXTURE / "protected" / "tests" / "test_money.py", src / "tests" / "test_money.py")
@@ -187,7 +187,7 @@ def test_pythonpath_roots_resolve_inside_the_scratch_copy(tmp_path: Path) -> Non
         "test_plain", "test_thousands_separator", "test_float_trap", "test_negative",
         "test_currency_prefix", "test_whitespace"]})
     base = Baseline.capture(ws)
-    (ws / "src" / "calc" / "money.py").write_text(CORRECT)
+    (ws / "src" / "calc" / "money.py").write_text(CORRECT, encoding="utf-8")
     without = verify(ws, protected, base)
     assert without.passed is False and without.missing == 6, "no root: the tests cannot import calc"
     with_root = verify(ws, protected, base, pythonpath=("src",))

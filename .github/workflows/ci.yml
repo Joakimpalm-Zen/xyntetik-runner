@@ -653,6 +653,10 @@ jobs:
             src/json.c src/compat.c src/quants.c -o test-tools.exe -lm
           ./test-tools.exe
       - name: python client tests
+        # UTF-8 regardless of the runner's locale: the shadow fixtures carry
+        # non-ASCII text and a cp1252 default turns them into a SyntaxError
+        env:
+          PYTHONUTF8: "1"
         run: PYTHONPATH=python/src python3 -m pytest python/tests/
       - name: smoke test (completion)
         run: ./runner.exe -m test.gguf -p "hello" -n 8 --temp 0

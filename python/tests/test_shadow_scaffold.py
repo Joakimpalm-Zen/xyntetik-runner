@@ -86,12 +86,12 @@ def test_bank_builds_tasks_from_a_public_history(tmp_path: Path) -> None:
     (r / "calc").mkdir(parents=True)
     (r / "tests").mkdir()
     git(tmp_path, "init", "-q", "-b", "main", str(r), date="2026-09-01T10:00:00+00:00")
-    (r / "calc" / "__init__.py").write_text("")
-    (r / "calc" / "money.py").write_text((FIXTURE / "workspace" / "calc" / "money.py").read_text())
-    (r / "tests" / "test_money.py").write_text((FIXTURE / "workspace" / "tests" / "test_money.py").read_text())
+    (r / "calc" / "__init__.py").write_text("", encoding="utf-8")
+    (r / "calc" / "money.py").write_text((FIXTURE / "workspace" / "calc" / "money.py").read_text(), encoding="utf-8")
+    (r / "tests" / "test_money.py").write_text((FIXTURE / "workspace" / "tests" / "test_money.py").read_text(), encoding="utf-8")
     git(r, "add", "-A", date="2026-09-01T10:00:00+00:00")
     git(r, "commit", "-q", "-m", "initial", date="2026-09-01T10:00:00+00:00")
-    (r / "README.md").write_text("docs only\n")
+    (r / "README.md").write_text("docs only\n", encoding="utf-8")
     git(r, "add", "-A", date="2026-09-01T11:00:00+00:00")
     git(r, "commit", "-q", "-m", "docs", date="2026-09-01T11:00:00+00:00")
     (r / "calc" / "money.py").write_text('''from decimal import ROUND_HALF_UP, Decimal
@@ -100,8 +100,8 @@ def test_bank_builds_tasks_from_a_public_history(tmp_path: Path) -> None:
 def parse_amount(text: str) -> int:
     cleaned = "".join(ch for ch in text if ch.isdigit() or ch in "-.")
     return int((Decimal(cleaned) * 100).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
-''')
-    (r / "tests" / "test_money.py").write_text((FIXTURE / "protected" / "tests" / "test_money.py").read_text())
+''', encoding="utf-8")
+    (r / "tests" / "test_money.py").write_text((FIXTURE / "protected" / "tests" / "test_money.py").read_text(), encoding="utf-8")
     git(r, "add", "-A", date="2026-09-01T12:00:00+00:00")
     git(r, "commit", "-q", "-m", "Handle thousands separators, currency prefixes and rounding\n\nFixes #7",
         date="2026-09-01T12:00:00+00:00")
