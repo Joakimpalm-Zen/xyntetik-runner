@@ -79,7 +79,10 @@ def _git(repo: str, *args: str) -> str:
 
 def repos_under(cwd: Path, *, depth: int = 2) -> list[Path]:
     """Git repositories at or under ``cwd``, at most ``depth`` levels down,
-    so a session run from a parent directory still finds its repositories."""
+    so a session run from a parent directory still finds its repositories.
+    A repository that contains other repositories (an umbrella checkout
+    with the real projects untracked inside it) yields all of them: the
+    walk does not stop at the first ``.git``."""
     out: list[Path] = []
     if not cwd.is_dir():
         return out
@@ -88,7 +91,6 @@ def repos_under(cwd: Path, *, depth: int = 2) -> list[Path]:
         here, d = stack.pop()
         if (here / ".git").exists():
             out.append(here)
-            continue
         if d >= depth:
             continue
         try:

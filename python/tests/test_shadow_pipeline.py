@@ -118,6 +118,14 @@ def test_repos_under_finds_nested_repositories(repo: Path) -> None:
     assert repos_under(repo) == [repo]
 
 
+def test_repos_under_descends_through_an_umbrella_repository(repo: Path) -> None:
+    """The owner's layout: a parent directory that is itself a repository,
+    with the real projects untracked inside it. Both are found."""
+    git(repo.parent, "init", "-q", "-b", "main", str(repo.parent))
+    found = repos_under(repo.parent)
+    assert found == sorted([repo.parent, repo])
+
+
 def test_admit_builds_a_calibrated_task(repo: Path, tmp_path: Path) -> None:
     out = tmp_path / "tasks"
     out.mkdir()
