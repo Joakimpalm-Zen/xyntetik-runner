@@ -74,7 +74,17 @@ class Identity:
     adapter_scale: float | None = None
 
     def cohort_key(self) -> str:
+        """The full partition: a new task class, verifier or context band is
+        a new cohort for evidence purposes."""
         return json.dumps(asdict(self), sort_keys=True, separators=(",", ":"))
+
+    def stack_key(self) -> str:
+        """The model stack alone (model, quant, adapter, runner build, backend,
+        harness): the unit a report row is about, across tasks."""
+        keep = ("model_sha256", "quant", "adapter_sha256", "adapter_scale", "runner_build",
+                "backend", "harness_version", "environment_id")
+        return json.dumps({k: getattr(self, k) for k in keep}, sort_keys=True,
+                          separators=(",", ":"))
 
 
 @dataclass(frozen=True)
@@ -217,7 +227,7 @@ def summarize(records: Iterable[EpisodeEvidence]) -> Summary:
         for r in recs:
             if r.verifier is None:
                 continue
-            key = r.identity.cohort_key()
+            key = r.identity.stack_key()
             row = per_cohort.setdefault(key, {"model": r.identity.model_sha256, "attempted": 0,
                                               "verified": 0, "failed": 0, "inconclusive": 0})
             row["attempted"] += 1

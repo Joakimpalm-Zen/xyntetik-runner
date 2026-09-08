@@ -78,13 +78,16 @@ def test_json_round_trip() -> None:
 
 def test_summary_is_per_episode_and_per_cohort_and_withholds_the_percentage() -> None:
     other = Identity(**{**IDENT.__dict__, "model_sha256": "o" * 64})
-    recs = [record(Disposition.VERIFIED_LOCAL_ATTEMPT, passing(), episode_id=f"v{i}")
-            for i in range(4)]
-    recs += [record(Disposition.LOCAL_FAILED, passing(passed=False, failed=1), episode_id=f"f{i}")
-             for i in range(2)]
+    # per-task identity fields differ between episodes; the row is per stack
+    def ident_for(i: int, base: Identity) -> Identity:
+        return Identity(**{**base.__dict__, "verifier_id": f"commit-tests:t{i}", "project": f"p{i}"})
+    recs = [record(Disposition.VERIFIED_LOCAL_ATTEMPT, passing(), episode_id=f"v{i}",
+                   identity=ident_for(i, IDENT)) for i in range(4)]
+    recs += [record(Disposition.LOCAL_FAILED, passing(passed=False, failed=1), episode_id=f"f{i}",
+                    identity=ident_for(10 + i, IDENT)) for i in range(2)]
     # the same episodes attempted by a second stack: still six episodes
     recs += [record(Disposition.LOCAL_FAILED, passing(passed=False, failed=1), episode_id=f"v{i}",
-                    identity=other) for i in range(4)]
+                    identity=ident_for(i, other)) for i in range(4)]
     recs += [record(Disposition.INELIGIBLE, None, episode_id="i0"),
              record(Disposition.UNREPLAYABLE, None, episode_id="u0"),
              record(Disposition.VERIFIER_INCONCLUSIVE, None, episode_id="q0"),
@@ -95,6 +98,7 @@ def test_summary_is_per_episode_and_per_cohort_and_withholds_the_percentage() ->
     assert (s.observed, s.eligible, s.unattempted, s.agreement_only) == (11, 9, 1, 1)
     assert s.by_disposition["verified_local_attempt"] == 4 and s.by_disposition["local_failed"] == 2
     rows = {c.model: c for c in s.cohorts}
+    assert len(rows) == 2, "one row per model stack, not per task"
     assert rows["m" * 64].verified == 4 and rows["m" * 64].failed == 2
     assert rows["o" * 64].verified == 0 and rows["o" * 64].attempted == 4
     text = render(s)

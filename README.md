@@ -1772,6 +1772,62 @@ the user request, so use at least a 16k context for that workflow. Runner does
 not implement a response store; clients must send history each turn rather
 than use `previous_response_id`.
 
+## Shadow mode: what could your local model have done?
+
+`python -m xyntetik_runner.shadow` answers one question about the coding
+work you already paid a frontier agent for: given the same request and the
+same repository state, could a local model have done it, judged by tests it
+could not see or change. It reads the Codex and Claude Code session files
+already on your machine, takes from each task only the working directory,
+the timestamps and your own request (never the assistant's answer, tool
+arguments or tool results), pairs the task with the commits it produced,
+freezes the tests those commits added or changed as the verifier, and
+requires them to fail before the fix and pass after it. A local model then
+gets a scratch copy at the pre-fix state, your request, and five tools
+(list, read, write, run the visible tests, finish), with no shell and every
+path confined to the copy. The frozen tests decide, all or nothing, and the
+record also says how many of the tests that failed before the fix the
+attempt turned green.
+
+```sh
+pip install ./python                                   # the client package
+python -m xyntetik_runner.shadow import --python "$(which python3)"
+runner -m model.gguf --serve --port 8080 --no-tray     # any supported model
+python -m xyntetik_runner.shadow replay --endpoint http://127.0.0.1:8080
+python -m xyntetik_runner.shadow report --tasks
+```
+
+The report prints counts and both denominators (verified over the episodes
+that could be replayed, and over everything observed) and refuses to print
+a percentage before thirty independent eligible episodes, because a
+percentage over a handful of tasks is not a measurement. What this is not:
+a router, a training loop, or a sandbox. The attempt's test runs and the
+verifier run as you, with the network reachable; treat the scratch copy as
+you would any code you run locally.
+
+Two limits found on the first real run, both properties of history rather
+than of any model. Agentic sessions commit many turns after the request,
+so the last prompt before a commit is often a side remark and the fix
+cannot be attributed to its request from the timeline alone. And a terse
+request ("check why CI fails and fix it") carries no failing signal the
+model can see, because the tests that fail at the pre-fix state are the
+new ones. Both are addressed by capturing prospectively: a prompt hook and
+a stop hook record the request with the repository HEAD at both ends, so
+the task's commit range is exact.
+
+```json
+{"hooks": {
+  "UserPromptSubmit": [{"hooks": [{"type": "command",
+    "command": "python3 -m xyntetik_runner.shadow capture --event prompt"}]}],
+  "Stop": [{"hooks": [{"type": "command",
+    "command": "python3 -m xyntetik_runner.shadow capture --event stop"}]}]}}
+```
+
+Only your request, the directory, the time and the commit id are written;
+the file is `~/.xyntetik/shadow/capture.jsonl` and `import` reads it beside
+the session files. Design, gates and the negative controls that prove the
+verifier can fail: [python/README.md](python/README.md).
+
 ## Desktop tray
 
 macOS and Windows ship a menu-bar / notification-area controller. It lists
