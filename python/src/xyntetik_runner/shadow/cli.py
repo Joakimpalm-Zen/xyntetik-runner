@@ -41,6 +41,8 @@ from xyntetik_runner.shadow import adapt
 from xyntetik_runner.shadow.install import (harness_present, install, read_config, render_candidates,
                                             set_config_adapter, suggest_model, uninstall)
 from xyntetik_runner.shadow.routes import delegate, render_routes, route_table
+from xyntetik_runner.shadow.server import (DEFAULT_TTL, render_status as server_status, served_runner,
+                                           stop_server)
 from xyntetik_runner.shadow.bank import build_bank
 from xyntetik_runner.shadow.optimize import (
     TaskOutcome,
@@ -128,12 +130,20 @@ def _read_records(path: Path) -> list[EpisodeEvidence]:
 
 
 def cmd_import(args: argparse.Namespace) -> int:
-    out = Path(args.out)
+    do_import(Path(args.out), home=Path(args.home) if args.home else None, source=args.source,
+              python=args.python, timeout=args.timeout)
+    return 0
+
+
+def do_import(out: Path, *, home: Path | None, source: str = "", python: str = sys.executable,
+              timeout: float = 600.0) -> int:
+    """Scan the harness traces and the capture file, pair, choose, build the
+    tasks; returns how many were admitted this time."""
     out.mkdir(parents=True, exist_ok=True)
     tasks_dir = out / "tasks"
     tasks_dir.mkdir(exist_ok=True)
-    report = scan_all(Path(args.home) if args.home else None)
-    episodes = [e for e in report.episodes if not args.source or e.source == args.source]
+    report = scan_all(home)
+    episodes = [e for e in report.episodes if not source or e.source == source]
     n = write_episodes(episodes, out / "episodes.jsonl")
     print(f"scanned {report.files_read} trace files ({len(report.files_skipped)} unreadable), "
           f"{n} episodes", flush=True)
@@ -177,7 +187,7 @@ def cmd_import(args: argparse.Namespace) -> int:
             continue
         built.add(c.episode.episode_id)
         result = build_task(c.episode, c.repo, list(c.shas), out_dir=tasks_dir,
-                            python=args.python, timeout_s=args.timeout)
+                            python=python, timeout_s=timeout)
         if isinstance(result, RepairTask):
             admitted += 1
             counts["admitted"] = counts.get("admitted", 0) + 1
@@ -192,7 +202,7 @@ def cmd_import(args: argparse.Namespace) -> int:
         record(c.episode, result)
     print("dispositions at import:", json.dumps(counts, sort_keys=True), flush=True)
     print(f"{admitted} task(s) admitted under {tasks_dir}", flush=True)
-    return 0
+    return admitted
 
 
 def _tasks(out: Path, only: str | None) -> list[RepairTask]:
@@ -668,32 +678,17 @@ def cmd_routes(args: argparse.Namespace) -> int:
 def cmd_delegate(args: argparse.Namespace) -> int:
     home = Path(args.home) if args.home else Path.home()
     cfg = read_config(home)
-    managed: ManagedRunner | None = None
     try:
         if args.endpoint:
             endpoint = RunnerEndpoint(args.endpoint, timeout=args.request_timeout)
         else:
-            model_path = str(args.model or cfg.get("model") or "")
-            if not model_path:
-                print("error: no --endpoint and no model in the shadow config; run "
-                      "'runner --shadow-mode -m MODEL.gguf' first", file=sys.stderr)
-                return 2
-            ctx = int(str(cfg.get("ctx") or 8192))
-            threads = int(str(cfg.get("threads") or 0))
-            adapter = str(cfg.get("adapter") or "")
-            extra = ("--lora", adapter) if adapter and Path(adapter).is_file() else ()
-            launch = ServerLaunch(executable=str(cfg.get("runner") or "runner"), model=model_path,
-                                  port=_free_port(), context_size=ctx,
-                                  gpu=str(cfg.get("gpu") or "auto"), threads=threads or None,
-                                  extra_args=extra)
-            managed = ManagedRunner(launch)
-            print(f"starting {launch.executable} with {Path(model_path).name}"
-                  f"{' + adapter ' + Path(adapter).name if extra else ''} ...", flush=True)
-            if not managed.start(timeout=args.start_timeout):
-                print("error: the runner did not start; check the model path and 'runner --fit'",
-                      file=sys.stderr)
-                return 2
-            endpoint = RunnerEndpoint(managed.base_url, timeout=args.request_timeout)
+            endpoint, started = served_runner(home, cfg, model=args.model,
+                                              start_timeout=args.start_timeout,
+                                              request_timeout=args.request_timeout,
+                                              managed_factory=ManagedRunner,
+                                              endpoint_factory=RunnerEndpoint)
+            print(f"{'started' if started else 'reusing'} the runner at {endpoint.base_url} "
+                  f"(warm for {DEFAULT_TTL}s; 'shadow server --stop' ends it)", flush=True)
         caps = endpoint.capabilities()
         models = [m.get("id") for m in caps.get("models", []) if isinstance(m, dict)]
         model = str(models[0]) if models else "model"
@@ -703,9 +698,6 @@ def cmd_delegate(args: argparse.Namespace) -> int:
     except RuntimeError as e:
         print(f"error: {e}", file=sys.stderr)
         return 2
-    finally:
-        if managed is not None:
-            managed.stop()
     if args.json:
         print(d.to_json())
         return 0
@@ -797,6 +789,7 @@ def cmd_adapt(args: argparse.Namespace) -> int:
         if input("Start the adaptation run now? [y/N] ").strip().lower() not in ("y", "yes"):
             print("not started")
             return 1
+    stop_server(home)  # the warm runner holds the device the training needs
     stamp = _now().replace(":", "").replace("-", "")[:15]
     run_dir = adapt.adapters_dir(home) / stamp
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -853,6 +846,58 @@ def cmd_adapt(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_sync(args: argparse.Namespace) -> int:
+    """The loop the hooks feed: import what was captured, say how many tasks
+    wait for the configured model, and replay some of them when told to."""
+    home = Path(args.home) if args.home else Path.home()
+    out = Path(args.out).expanduser()
+    cfg = read_config(home)
+    model_path = str(args.model or cfg.get("model") or "")
+    admitted = do_import(out, home=home if args.home else None, python=args.python, timeout=args.timeout)
+    evidence = out / "evidence.jsonl"
+    records = _read_records(evidence)
+    sha = file_sha256(Path(model_path)) if model_path and Path(model_path).is_file() else ""
+    done = {r.episode_id for r in records if r.verifier is not None and r.identity.model_sha256 == sha}
+    waiting = [t for t in _tasks(out, None) if t.episode_id not in done]
+    name = Path(model_path).name if model_path else "(no model configured)"
+    print(f"sync: {admitted} task(s) admitted now; {len(waiting)} waiting for a replay with {name}")
+    if not args.replay or not waiting:
+        if waiting and model_path:
+            print(f"  'shadow sync --replay {min(len(waiting), 5)}' runs the next ones; each takes up to "
+                  f"{int(args.wall)}s and the fit probe runs first")
+        elif waiting:
+            print("  no model configured: run 'runner --shadow-mode -m MODEL.gguf' first")
+        print(render_routes(route_table(records)))
+        return 0
+    try:
+        endpoint, started = served_runner(home, cfg, model=args.model, start_timeout=args.start_timeout,
+                                          request_timeout=args.request_timeout,
+                                          managed_factory=ManagedRunner, endpoint_factory=RunnerEndpoint)
+        print(f"{'started' if started else 'reusing'} the runner at {endpoint.base_url}", flush=True)
+        opts = ReplayOptions(python=args.python, timeout=args.timeout, wall=args.wall,
+                             min_tps=args.min_tps, model_sha256=sha,
+                             quant=_quant_from_name(Path(model_path).name), limit=args.replay,
+                             endpoint_label=endpoint.base_url)
+        ran, _tps, _model = run_replay(out, endpoint, opts)
+    except RuntimeError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
+    records = _read_records(evidence)
+    left = len(waiting) - ran
+    print(f"sync: {ran} replayed, {max(left, 0)} still waiting")
+    print(render_routes(route_table(records)))
+    return 0
+
+
+def cmd_server(args: argparse.Namespace) -> int:
+    home = Path(args.home) if args.home else Path.home()
+    if args.stop:
+        print("warm runner stopped" if stop_server(home) else "no warm runner was running")
+        return 0
+    print(server_status(home))
+    return 0
+
+
 def _served_model(endpoint: RunnerEndpoint) -> str:
     caps = endpoint.capabilities()
     models = [m.get("id") for m in caps.get("models", []) if isinstance(m, dict)]
@@ -861,6 +906,8 @@ def _served_model(endpoint: RunnerEndpoint) -> str:
 
 def cmd_uninstall(args: argparse.Namespace) -> int:
     home = Path(args.home) if args.home else Path.home()
+    if stop_server(home):
+        print("warm runner stopped")
     done = uninstall(home)
     print(f"removed {-done.hooks_added} hook(s), the /shadow skill and the codex prompt")
     return 0
@@ -1058,6 +1105,23 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
     p.add_argument("--status", action="store_true", help="list the recorded runs and their verdicts")
     p.set_defaults(fn=cmd_adapt)
+    p = sub.add_parser("sync", help="import what the hooks captured, count the tasks waiting for the "
+                                    "configured model, replay some when asked")
+    p.add_argument("--out", default=str(DEFAULT_OUT))
+    p.add_argument("--home", default="")
+    p.add_argument("--model", default="", help="default: the shadow config's model")
+    p.add_argument("--replay", type=int, default=0, help="replay up to N waiting tasks now")
+    p.add_argument("--python", default=sys.executable)
+    p.add_argument("--timeout", type=float, default=600.0)
+    p.add_argument("--wall", type=float, default=900.0)
+    p.add_argument("--min-tps", type=float, default=15.0)
+    p.add_argument("--start-timeout", type=float, default=600.0)
+    p.add_argument("--request-timeout", type=float, default=900.0)
+    p.set_defaults(fn=cmd_sync)
+    p = sub.add_parser("server", help="the warm runner shadow mode keeps for delegations")
+    p.add_argument("--home", default="")
+    p.add_argument("--stop", action="store_true")
+    p.set_defaults(fn=cmd_server)
     p = sub.add_parser("uninstall", help="remove exactly what install wrote")
     p.add_argument("--home", default="")
     p.set_defaults(fn=cmd_uninstall)

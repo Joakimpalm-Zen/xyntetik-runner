@@ -95,6 +95,9 @@ The negative controls that prove the verifier can fail live in
   --request ...`: one bounded attempt on a detached worktree at HEAD, the
   repository's tests on the copy, the diff as a patch file, the verdict; starts
   the configured runner when no `--endpoint` is given.
+- `sync`: import what the hooks captured, admit the replayable tasks, count what
+  waits for the configured model, `--replay N` runs the next N; `server`: the
+  warm runner shadow mode keeps between commands (`--stop` ends it).
 - `adapt`: overnight adaptation from the ledger's own commits at the function
   unit; base and adapter evaluated on a held-out slice with the protected
   tests, the adapter kept only on a held-out verified rise; `--dry-run` shows
