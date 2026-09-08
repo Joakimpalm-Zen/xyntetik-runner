@@ -1801,7 +1801,15 @@ Code, a `/shadow` prompt for Codex, whichever of the two is on the machine,
 and the model the `/shadow` offload will serve. It ends by saying what
 happens next. The hooks run a small launcher file, not a shell line, so
 they work the same under sh, cmd and PowerShell and can never fail a
-prompt: every error is swallowed and the exit code is always zero. `--yes` skips the question
+prompt: every error is swallowed and the exit code is always zero.
+
+It also tells the harness what Runner can do. A capability sheet is
+written beside the ledger, and a short marked note goes into the
+harness's own instruction file (`~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md`)
+so that when you ask for something a local model could do, the assistant
+reads the sheet before proposing another local inference tool or a hosted
+API, and uses Runner where Runner does it. Your own instructions in those
+files are kept; `shadow uninstall` removes exactly the block. `--yes` skips the question
 for scripts. Inside either harness, `/shadow` then shows the ledger, and
 when you ask it to offload a task, reads where the local model has verified
 successes (`shadow routes`), runs the task on a scratch worktree with the

@@ -8,6 +8,23 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **The harnesses are told what Runner can do.** A coding assistant that
+  does not know the runner is installed reaches for another local
+  inference tool, or a hosted API, for a job the runner already does on
+  the machine. `install` now writes a capability sheet
+  (`~/.xyntetik/shadow/runner-capabilities.md`: the curated capability
+  list with its flags and README sections, this machine's facts from
+  `--caps`, the README's location) and a short marked note into
+  `~/.claude/CLAUDE.md` and `~/.codex/AGENTS.md` that points at it and
+  says: if Runner does it, use Runner. The `/shadow` skill carries the
+  headline list and its description now triggers on questions about
+  running a model locally, local APIs, quantizing or fine-tuning a GGUF,
+  or installing ollama, llama.cpp, LM Studio or vLLM. Everything the user's
+  own instruction files held is kept, and `uninstall` removes exactly the
+  block. A root test checks every flag the sheet names against
+  `runner --help` and every section it cites against the README, so the
+  sheet cannot promise what the binary lacks.
+
 - **Shadow mode, three rough edges for a first-time user.** (1) `install`
   ends with "what happens next": what the hooks note, when to ask
   `/shadow`, and what it will offer. (2) The capture hooks now run a

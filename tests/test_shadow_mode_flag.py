@@ -49,3 +49,18 @@ def test_codex_present_gets_the_prompt_and_the_config_names_this_binary(tmp_path
 def test_help_names_the_flag():
     proc = subprocess.run([str(RUNNER), "--help"], capture_output=True, text=True, cwd=ROOT)
     assert "--shadow-mode" in proc.stdout + proc.stderr
+
+
+def test_capability_sheet_names_only_flags_the_binary_has():
+    """The sheet the harnesses read is curated; every flag it names must be
+    in this binary's --help, so it can never promise what runner lacks."""
+    sys.path.insert(0, str(ROOT / "python" / "src"))
+    from xyntetik_runner.shadow.capabilities import CAPABILITIES, render_sheet
+    proc = subprocess.run([str(RUNNER), "--help"], capture_output=True, text=True, cwd=ROOT)
+    help_text = proc.stdout + proc.stderr
+    missing = [f for c in CAPABILITIES for f in c.flags if f"  {f}" not in help_text and f" {f} " not in help_text]
+    assert not missing, missing
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    absent = [c.readme_section for c in CAPABILITIES if c.readme_section not in readme]
+    assert not absent, absent
+    assert "OpenAI-compatible" in render_sheet(str(RUNNER))

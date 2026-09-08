@@ -625,9 +625,14 @@ def cmd_install(args: argparse.Namespace) -> int:
     plan = []
     if claude:
         plan.append(f"Claude Code: prompt and stop capture hooks merged into {home / '.claude' / 'settings.json'} "
-                    "(backup beside it) and a /shadow skill")
+                    "(backup beside it), a /shadow skill, and a marked note in "
+                    f"{home / '.claude' / 'CLAUDE.md'} saying Runner is here and what it can do")
     if codex:
-        plan.append(f"Codex: a /shadow prompt under {home / '.codex' / 'prompts'}")
+        plan.append(f"Codex: a /shadow prompt under {home / '.codex' / 'prompts'} and a marked note in "
+                    f"{home / '.codex' / 'AGENTS.md'} saying Runner is here and what it can do")
+    plan.append(f"a capability sheet at {home / '.xyntetik' / 'shadow' / 'runner-capabilities.md'} "
+                "(from 'runner --help', '--caps' and the README) the assistants read before "
+                "proposing another local inference tool")
     picked = ""
     if args.model:
         plan.append(f"model for offloading: {args.model} (served by {args.runner} when asked)")
@@ -670,6 +675,8 @@ def cmd_install(args: argparse.Namespace) -> int:
               f"(backup beside it); skill {done.claude_skill}")
     if done.codex_prompt:
         print(f"codex: prompt {done.codex_prompt}")
+    if done.sheet:
+        print(f"capabilities: {done.sheet}; noted in {', '.join(str(n) for n in done.notes)}")
     print("nothing runs until a prompt is submitted; the hooks never block one; "
           "'shadow uninstall' removes exactly this")
     print()
@@ -936,7 +943,8 @@ def cmd_uninstall(args: argparse.Namespace) -> int:
     if stop_server(home):
         print("warm runner stopped")
     done = uninstall(home)
-    print(f"removed {-done.hooks_added} hook(s), the /shadow skill and the codex prompt")
+    print(f"removed {-done.hooks_added} hook(s), the /shadow skill, the codex prompt, the capability "
+          "sheet and the notes in CLAUDE.md and AGENTS.md")
     return 0
 
 
