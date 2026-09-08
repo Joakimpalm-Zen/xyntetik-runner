@@ -43,6 +43,14 @@ class Episode:
     """Repository HEAD when the request was made and when the turn ended,
     known only for prospectively captured episodes (``source == "capture"``);
     with both, the task's commit range is exact instead of a time window."""
+    heads_start: tuple[tuple[str, str], ...] = ()
+    heads_end: tuple[tuple[str, str], ...] = ()
+    """(repository path, HEAD) for every repository at or under the working
+    directory at the two ends, so a session started from a parent directory
+    still gets exact ranges for the repositories inside it."""
+    context: tuple[str, ...] = ()
+    """Earlier requests of the same session, the user's own words, oldest
+    first, for the attempt to read beside the request (R14.4.2)."""
 
     @property
     def episode_id(self) -> str:
@@ -101,12 +109,31 @@ def scan_codex(root: Path) -> ScanReport:
     return ScanReport(tuple(episodes), len(files) - len(skipped), tuple(skipped))
 
 
+CONTEXT_TURNS = 3
+CONTEXT_CHARS = 4000
+
+
+def _context(prior: list[str]) -> tuple[str, ...]:
+    """The last few earlier requests, newest last, within a character cap."""
+    out: list[str] = []
+    total = 0
+    for text in reversed(prior[-CONTEXT_TURNS:]):
+        if not text.strip() or text.lstrip().startswith("<"):
+            continue
+        if total + len(text) > CONTEXT_CHARS:
+            break
+        out.append(text)
+        total += len(text)
+    return tuple(reversed(out))
+
+
 def _codex_file(path: Path) -> list[Episode]:
     out: list[Episode] = []
     cwd = session_id = None
     started: str | None = None
     request = ""
     tools: list[str] = []
+    prior: list[str] = []
     turn = 0
     for rec in _records(path):
         kind = rec.get("type")
@@ -132,7 +159,9 @@ def _codex_file(path: Path) -> list[Episode]:
                     source="codex", session_id=session_id, turn=turn, cwd=cwd,
                     started_at=_fmt(_iso(started)), ended_at=_fmt(_iso(str(rec["timestamp"]))),
                     request=request, request_sha256=_sha(request),
-                    tool_names=tuple(sorted(set(tools))), trace_path=str(path)))
+                    tool_names=tuple(sorted(set(tools))), trace_path=str(path),
+                    context=_context(prior)))
+                prior.append(request)
                 started = None
         elif kind == "response_item" and payload.get("type") == "function_call":
             name = payload.get("name")
@@ -173,7 +202,8 @@ def _claude_file(path: Path) -> list[Episode]:
         out.append(Episode(
             source="claude_code", session_id=sid, turn=i + 1, cwd=cwd,
             started_at=_fmt(start), ended_at=_fmt(end), request=text,
-            request_sha256=_sha(text), trace_path=str(path)))
+            request_sha256=_sha(text), trace_path=str(path),
+            context=_context([t[3] for t in turns[:i]])))
     return out
 
 
@@ -188,6 +218,7 @@ def scan_capture(path: Path) -> ScanReport:
     if not path.is_file():
         return ScanReport((), 0, ())
     open_turns: dict[str, dict[str, object]] = {}
+    prior: dict[str, list[str]] = {}
     turns: dict[str, int] = {}
     episodes: list[Episode] = []
     try:
@@ -199,29 +230,41 @@ def scan_capture(path: Path) -> ScanReport:
             if event == "prompt":
                 # A prompt while one is open closes the earlier one at this time.
                 if sid in open_turns:
-                    episodes.append(_close(open_turns.pop(sid), rec, path))
+                    episodes.append(_close(open_turns.pop(sid), rec, path, prior.get(sid, [])))
+                    prior.setdefault(sid, []).append(str(episodes[-1].request))
                 open_turns[sid] = rec
             elif event == "stop" and sid in open_turns:
-                episodes.append(_close(open_turns.pop(sid), rec, path))
+                episodes.append(_close(open_turns.pop(sid), rec, path, prior.get(sid, [])))
+                prior.setdefault(sid, []).append(str(episodes[-1].request))
     except (OSError, ValueError, KeyError, TypeError):
         return ScanReport(tuple(episodes), 0, (str(path),))
     for sid, rec in open_turns.items():
         started = _iso(str(rec["timestamp"]))
-        episodes.append(_close(rec, {"timestamp": _fmt(started + CLAUDE_TURN_CAP), "head": ""}, path))
+        episodes.append(_close(rec, {"timestamp": _fmt(started + CLAUDE_TURN_CAP), "head": ""},
+                               path, prior.get(sid, [])))
     for i, e in enumerate(episodes):
         turns[e.session_id] = turns.get(e.session_id, 0) + 1
         episodes[i] = Episode(**{**e.__dict__, "turn": turns[e.session_id]})
     return ScanReport(tuple(episodes), 1, ())
 
 
-def _close(start: dict[str, object], end: dict[str, object], path: Path) -> Episode:
+def _heads(rec: dict[str, object]) -> tuple[tuple[str, str], ...]:
+    raw = rec.get("heads")
+    if not isinstance(raw, dict):
+        return ()
+    return tuple(sorted((str(k), str(v)) for k, v in raw.items() if v))
+
+
+def _close(start: dict[str, object], end: dict[str, object], path: Path,
+           prior: list[str]) -> Episode:
     request = str(start.get("prompt") or "")
     return Episode(
         source="capture", session_id=str(start["session_id"]), turn=0,
         cwd=str(start.get("cwd") or ""), started_at=_fmt(_iso(str(start["timestamp"]))),
         ended_at=_fmt(_iso(str(end["timestamp"]))), request=request,
         request_sha256=_sha(request), trace_path=str(path),
-        head_start=str(start.get("head") or ""), head_end=str(end.get("head") or ""))
+        head_start=str(start.get("head") or ""), head_end=str(end.get("head") or ""),
+        heads_start=_heads(start), heads_end=_heads(end), context=_context(prior))
 
 
 def scan_all(home: Path | None = None) -> ScanReport:
@@ -247,5 +290,10 @@ def read_episodes(path: Path) -> list[Episode]:
     out: list[Episode] = []
     for rec in _records(path):
         rec["tool_names"] = tuple(rec.get("tool_names") or ())  # type: ignore[arg-type]
+        rec["context"] = tuple(rec.get("context") or ())  # type: ignore[arg-type]
+        for key in ("heads_start", "heads_end"):
+            raw = rec.get(key)
+            pairs = raw if isinstance(raw, list) else []
+            rec[key] = tuple((str(a), str(b)) for a, b in pairs)
         out.append(Episode(**rec))  # type: ignore[arg-type]
     return out

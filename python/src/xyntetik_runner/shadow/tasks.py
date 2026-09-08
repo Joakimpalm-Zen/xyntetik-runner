@@ -50,6 +50,7 @@ class RepairTask:
     solution_sha: str
     request: str
     request_sha256: str
+    context: tuple[str, ...]
     test_files: tuple[str, ...]
     visible_test_files: tuple[str, ...]
     src_files: int
@@ -65,7 +66,8 @@ class RepairTask:
     @classmethod
     def load(cls, path: Path) -> RepairTask:
         data = json.loads(path.read_text(encoding="utf-8"))
-        for key in ("test_files", "visible_test_files", "pythonpath", "failing_at_base"):
+        for key in ("test_files", "visible_test_files", "pythonpath", "failing_at_base",
+                    "context"):
             data[key] = tuple(data.get(key) or ())
         return cls(**data)
 
@@ -231,7 +233,7 @@ def build_task(episode: Episode, repo: Path, shas: Sequence[str], *, out_dir: Pa
         task = RepairTask(
             task_id=task_id, episode_id=episode.episode_id, repo=str(repo), base_sha=base,
             solution_sha=solution, request=episode.request, request_sha256=episode.request_sha256,
-            test_files=tuple(present), visible_test_files=visible, src_files=len(src),
+            context=episode.context, test_files=tuple(present), visible_test_files=visible, src_files=len(src),
             pythonpath=roots, protected_dir=str(protected), expected_tests=len(frozen.expected),
             baseline_failing=cal.failing + cal.missing, failing_at_base=cal.failing_ids)
         (task_dir / "task.json").write_text(task.to_json() + "\n", encoding="utf-8")
@@ -269,16 +271,33 @@ def pair(episode: Episode) -> list[Candidate] | Rejection:
     repos = repos_under(Path(episode.cwd))
     if not repos:
         return Rejection(Disposition.INELIGIBLE, "no git repository at or under the working directory")
-    if episode.head_start and episode.head_end:
-        # Prospective capture: the exact commits between the two HEADs, in the
-        # repository whose history contains both; no time window at all.
-        if episode.head_start == episode.head_end:
-            return Rejection(Disposition.UNREPLAYABLE, "HEAD did not move during the turn")
-        for repo in repos:
-            shas = _git(str(repo), "rev-list", "--no-merges",
-                        f"{episode.head_start}..{episode.head_end}").split()
+    if episode.source == "capture":
+        # Prospective capture: the exact commits between the two HEADs of
+        # every repository the hook saw at both ends; no time window at all.
+        before = dict(episode.heads_start)
+        after = dict(episode.heads_end)
+        if episode.head_start and episode.head_end:
+            before.setdefault(episode.cwd, episode.head_start)
+            after.setdefault(episode.cwd, episode.head_end)
+        found: list[Candidate] = []
+        moved = False
+        for repo_path, start_sha in before.items():
+            end_sha = after.get(repo_path)
+            if not end_sha or end_sha == start_sha:
+                continue
+            moved = True
+            repo = Path(repo_path)
+            if not (repo / ".git").exists():
+                continue
+            shas = _git(str(repo), "rev-list", "--no-merges", f"{start_sha}..{end_sha}").split()
             if shas:
-                return [Candidate(episode, repo, tuple(shas))]
+                found.append(Candidate(episode, repo, tuple(shas)))
+        if found:
+            return found
+        if not before:
+            return Rejection(Disposition.UNREPLAYABLE, "capture recorded no repository HEAD")
+        if not moved:
+            return Rejection(Disposition.UNREPLAYABLE, "HEAD did not move during the turn")
         return Rejection(Disposition.UNREPLAYABLE,
                          "captured HEADs are not an ancestry range in any repository here")
     start = datetime.fromisoformat(episode.started_at.replace("Z", "+00:00"))

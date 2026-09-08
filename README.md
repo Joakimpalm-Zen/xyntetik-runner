@@ -1823,9 +1823,14 @@ the task's commit range is exact.
     "command": "python3 -m xyntetik_runner.shadow capture --event stop"}]}]}}
 ```
 
-Only your request, the directory, the time and the commit id are written;
-the file is `~/.xyntetik/shadow/capture.jsonl` and `import` reads it beside
-the session files. Design, gates and the negative controls that prove the
+Only your request, the directory, the time and the commit ids are written
+(the HEAD of every repository at or under the directory, so a session
+started from a parent directory still gets exact ranges); the file is
+`~/.xyntetik/shadow/capture.jsonl` and `import` reads it beside the
+session files. Earlier requests of the same session travel with a task as
+context. `replay` probes decode speed first and refuses a model below
+`--min-tps` (default 15 tokens per second): serve something that fits the
+card, at an 8K context for coding attempts. Design, gates and the negative controls that prove the
 verifier can fail: [python/README.md](python/README.md).
 
 ## Desktop tray
