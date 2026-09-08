@@ -823,6 +823,7 @@ flags into unrelated feature sections.
 | `--require-signed-model` | Refuse to load `-m` unless an OMS bundle is present and verifies with `--model-pubkey`. The policy applies to named registry entries, every serving slot, and reloads after unload or TTL expiry. Registry refusals return HTTP 409 with `model_signature_refused`; the server stays available. Without `--model-sig`, each load discovers that model's own `.sig` sidecar. |
 | `--caps` | Print machine, backend, quant, architecture, placement, and sampling capabilities as JSON. |
 | `--tool-info` | With `-m`, print the model's tool-call protocol as JSON (`{"tool_family":…,"native_tool_protocol":…}`) and exit. No manifest required. |
+| `--shadow-mode` | Install shadow mode for Claude Code and Codex if present, asking first (`--yes` skips the question); `-m MODEL` names the model the `/shadow` offload serves. Hands off to the stdlib-only Python client beside the binary (`python/src`); see the shadow-mode section. |
 | `--fit PATH` | Estimate whether a GGUF fits this machine and exit. Reads only the header, so a partial download answers the question. |
 | `--version` | Print the version and exit. |
 | `-h`, `--help` | Print the option reference to stdout and exit `0`. Help asked for is written to stdout; help printed because something went wrong goes to stderr with a non-zero exit. |
@@ -1790,7 +1791,26 @@ record also says how many of the tests that failed before the fix the
 attempt turned green.
 
 ```sh
-pip install ./python                                   # the client package
+runner --shadow-mode -m ~/models/a.gguf     # asks first, then wires Claude Code and Codex
+```
+
+That one command finds the stdlib-only Python client beside the binary (it
+ships in the release archive), tells you exactly what it will write, and
+asks before writing: the two capture hooks and a `/shadow` skill for Claude
+Code, a `/shadow` prompt for Codex, whichever of the two is on the machine,
+and the model the `/shadow` offload will serve. `--yes` skips the question
+for scripts. Inside either harness, `/shadow` then shows the ledger, and
+when you ask it to offload a task, reads where the local model has verified
+successes (`shadow routes`), runs the task on a scratch worktree with the
+repository's own tests (`shadow delegate`), and shows the diff and the
+verdict for you to apply with `git apply`; the working tree is never
+touched and nothing is applied silently. You keep your harness and your
+frontier model; the runner takes what the evidence says it can.
+
+To measure first, the bench runs the models on your disk against your own
+repository's history:
+
+```sh
 python -m xyntetik_runner.shadow bench --repo . \
     --models ~/models/a.gguf,~/models/b.gguf --runner ./runner
 ```

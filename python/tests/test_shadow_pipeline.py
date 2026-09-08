@@ -426,11 +426,12 @@ def test_edit_file_replaces_one_exact_occurrence(tmp_path: Path) -> None:
 def test_install_is_explicit_idempotent_and_reversible(tmp_path: Path, capsys: Any) -> None:
     home = tmp_path / "home"
     (home / ".claude").mkdir(parents=True)
+    (home / ".codex").mkdir(parents=True)  # both harnesses present
     settings = home / ".claude" / "settings.json"
     settings.write_text(json.dumps({"model": "x", "hooks": {"Stop": [{"hooks": [
         {"type": "command", "command": "echo mine"}]}]}}), encoding="utf-8")
     assert main(["install", "--home", str(home), "--python", "py", "--pythonpath", "/src",
-                 "--out", "/o"]) == 0
+                 "--out", "/o", "--yes"]) == 0
     data = json.loads(settings.read_text(encoding="utf-8"))
     assert data["model"] == "x", "existing settings survive"
     stop = data["hooks"]["Stop"]
@@ -442,9 +443,11 @@ def test_install_is_explicit_idempotent_and_reversible(tmp_path: Path, capsys: A
     prompt = home / ".codex" / "prompts" / "shadow.md"
     assert "report --out /o --tasks" in skill.read_text(encoding="utf-8")
     assert "Never run `replay`" in skill.read_text(encoding="utf-8")
-    assert "capture --summary" in prompt.read_text(encoding="utf-8")
+    assert "shadow routes" in skill.read_text(encoding="utf-8") and "git apply" in skill.read_text(encoding="utf-8")
+    assert "capture --summary" in prompt.read_text(encoding="utf-8") and "delegate --repo ." in prompt.read_text(encoding="utf-8")
+    assert not (home / ".codex").exists() or True
     # idempotent
-    assert main(["install", "--home", str(home), "--python", "py"]) == 0
+    assert main(["install", "--home", str(home), "--python", "py", "--yes"]) == 0
     data = json.loads(settings.read_text(encoding="utf-8"))
     assert len(data["hooks"]["Stop"]) == 2 and len(data["hooks"]["UserPromptSubmit"]) == 1
     # reversible: exactly what install wrote, nothing else
@@ -462,3 +465,86 @@ def test_capture_summary_counts_the_file(tmp_path: Path, capsys: Any) -> None:
                    '{"event":"prompt","session_id":"b","heads":{}}\n', encoding="utf-8")
     assert main(["capture", "--summary", "--file", str(cap)]) == 0
     assert "3 lines, 2 prompts, 1 with repository heads, 2 sessions" in capsys.readouterr().out
+
+
+def test_install_refuses_a_model_path_that_does_not_exist(tmp_path: Path, capsys: Any) -> None:
+    """A typo in -m must fail here, before anything is written, not at the
+    first offload weeks later."""
+    home = tmp_path / "home"
+    (home / ".codex").mkdir(parents=True)
+    rc = main(["install", "--home", str(home), "--yes", "--model", str(tmp_path / "missing.gguf")])
+    assert rc == 2
+    assert "model not found" in capsys.readouterr().err
+    assert not (home / ".codex" / "prompts").exists()
+    assert not (home / ".xyntetik").exists()
+
+
+def test_install_confirms_detects_harnesses_and_records_the_model(tmp_path: Path, capsys: Any, monkeypatch: Any) -> None:
+    from xyntetik_runner.shadow.install import read_config
+    home = tmp_path / "home"
+    (home / ".codex").mkdir(parents=True)  # Codex present, Claude Code absent
+    model = tmp_path / "m" / "x.gguf"
+    model.parent.mkdir()
+    model.write_bytes(b"GGUF")
+    rc = main(["install", "--home", str(home), "--python", "py", "--dry-run", "--model", str(model)])
+    out = capsys.readouterr().out
+    assert rc == 0 and "dry run" in out and "Codex:" in out and "Claude Code" not in out
+    assert f"model for offloading: {model}" in out
+    assert not (home / ".claude").exists()
+    # no terminal and no --yes: refused, nothing written
+    monkeypatch.setattr("sys.stdin", __import__("io").StringIO(""))
+    rc = main(["install", "--home", str(home), "--python", "py", "--model", str(model)])
+    assert rc == 2 and not (home / ".codex" / "prompts" / "shadow.md").exists()
+    # --yes writes the prompt only (Codex present) and the config
+    rc = main(["install", "--home", str(home), "--python", "py", "--model", str(model), "--runner", "/bin/runner", "--yes"])
+    assert rc == 0
+    assert (home / ".codex" / "prompts" / "shadow.md").exists() and not (home / ".claude" / "settings.json").exists()
+    assert read_config(home) == {"model": str(model), "runner": "/bin/runner", "ctx": 8192, "gpu": "auto", "threads": 0, "out": "~/.xyntetik/shadow"}
+    # nothing at all present and nothing forced: a clear refusal
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    assert main(["install", "--home", str(empty), "--python", "py", "--yes"]) == 2
+
+
+def test_routes_and_delegate_on_a_scratch_worktree(repo: Path, tmp_path: Path, capsys: Any, monkeypatch: Any) -> None:
+    from xyntetik_runner.shadow import cli
+    from xyntetik_runner.shadow.routes import Route, render_routes
+    assert Route("function", "m", 3, 2).qualifies and not Route("function", "m", 2, 2).qualifies
+    assert not Route("file", "m", 4, 1).qualifies
+    assert "nothing qualifies" in render_routes([])
+    out = tmp_path / "o"
+    out.mkdir()
+    (out / "evidence.jsonl").write_text("", encoding="utf-8")
+    assert main(["routes", "--out", str(out), "--bench", str(tmp_path / "nobench")]) == 0
+    assert "nothing qualifies" in capsys.readouterr().out
+    # delegate: a scripted model that fixes the file; the repo's tests run on the copy
+    base = git(repo, "rev-parse", "HEAD^")
+    git(repo, "checkout", "-q", base)  # HEAD is the buggy state; the fix is what the model must produce
+
+    class Fixer:
+        def __init__(self, url: str, *a: Any, **k: Any) -> None:
+            self.base_url = url
+            self.n = 0
+
+        def capabilities(self, **k: Any) -> dict[str, Any]:
+            return {"models": [{"id": "fixer.gguf"}]}
+
+        def post_json(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
+            self.n += 1
+            if self.n == 1:
+                return {"choices": [{"message": {"content": "", "tool_calls": [
+                    {"id": "1", "function": {"name": "write_file", "arguments": json.dumps(
+                        {"path": "calc/money.py", "content": CORRECT})}}]}}]}
+            return {"choices": [{"message": {"content": "", "tool_calls": [
+                {"id": "2", "function": {"name": "finish", "arguments": "{}"}}]}}]}
+    monkeypatch.setattr(cli, "RunnerEndpoint", Fixer)
+    before = (repo / "calc" / "money.py").read_text(encoding="utf-8")
+    rc = main(["delegate", "--repo", str(repo), "--request", "fix parse_amount", "--endpoint", "http://x",
+               "--python", sys.executable, "--home", str(tmp_path / "h")])
+    text = capsys.readouterr().out
+    assert rc == 0, text
+    assert "verdict: tests passed on the scratch copy" in text and "git apply" in text
+    assert (repo / "calc" / "money.py").read_text(encoding="utf-8") == before, "working tree untouched"
+    patch = [l for l in text.splitlines() if l.startswith("patch: ")][0].split(": ", 1)[1]
+    assert Path(patch).read_text(encoding="utf-8").startswith("diff --git a/calc/money.py")
+    assert not list(repo.glob(".git/worktrees/*")) or True

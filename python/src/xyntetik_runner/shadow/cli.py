@@ -37,7 +37,8 @@ from xyntetik_runner.shadow.evidence import (
     summarize,
 )
 from xyntetik_runner.shadow.importer import CAPTURE_FILE, Episode, read_episodes, scan_all, write_episodes
-from xyntetik_runner.shadow.install import install, uninstall
+from xyntetik_runner.shadow.install import harness_present, install, read_config, uninstall
+from xyntetik_runner.shadow.routes import delegate, render_routes, route_table
 from xyntetik_runner.shadow.bank import build_bank
 from xyntetik_runner.shadow.optimize import (
     TaskOutcome,
@@ -586,8 +587,48 @@ def cmd_capture(args: argparse.Namespace) -> int:
 
 def cmd_install(args: argparse.Namespace) -> int:
     home = Path(args.home) if args.home else Path.home()
+    if args.model and not Path(args.model).expanduser().is_file():
+        print(f"error: model not found: {args.model}\n"
+              "  --shadow-mode -m takes the path of a GGUF file on this machine; nothing was written",
+              file=sys.stderr)
+        return 2
+    has_claude, has_codex = harness_present(home)
+    claude = not args.no_claude and (has_claude or args.claude)
+    codex = not args.no_codex and (has_codex or args.codex)
+    plan = []
+    if claude:
+        plan.append(f"Claude Code: prompt and stop capture hooks merged into {home / '.claude' / 'settings.json'} "
+                    "(backup beside it) and a /shadow skill")
+    if codex:
+        plan.append(f"Codex: a /shadow prompt under {home / '.codex' / 'prompts'}")
+    if args.model:
+        plan.append(f"model for offloading: {args.model} (served by {args.runner} when asked)")
+    if not plan:
+        print("nothing to install: neither ~/.claude nor ~/.codex exists here "
+              "(pass --claude or --codex to force)", file=sys.stderr)
+        return 2
+    print("shadow mode will write:")
+    for line in plan:
+        print(f"  - {line}")
+    print("  Only your own requests, directories, times and commit ids are ever recorded; "
+          "nothing the assistant produces. Nothing runs until you submit a prompt, and the "
+          "hooks can never block one. 'shadow uninstall' removes exactly this.")
+    if args.dry_run:
+        print("dry run: nothing written")
+        return 0
+    if not args.yes:
+        if not sys.stdin.isatty():
+            print("error: not a terminal; pass --yes to confirm", file=sys.stderr)
+            return 2
+        answer = input("Install shadow mode now? [y/N] ").strip().lower()
+        if answer not in ("y", "yes"):
+            print("not installed")
+            return 1
     done = install(home, python=args.python, pythonpath=args.pythonpath or None, out=args.out,
-                   claude=not args.no_claude, codex=not args.no_codex)
+                   claude=claude, codex=codex, model=args.model, runner=args.runner, ctx=args.ctx,
+                   gpu=args.gpu, threads=args.threads)
+    if done.config:
+        print(f"config: {done.config}")
     if done.settings:
         print(f"claude code: {done.hooks_added} hook(s) added to {done.settings} "
               f"(backup beside it); skill {done.claude_skill}")
@@ -596,6 +637,70 @@ def cmd_install(args: argparse.Namespace) -> int:
     print("nothing runs until a prompt is submitted; the hooks never block one; "
           "'shadow uninstall' removes exactly this")
     return 0
+
+
+def cmd_routes(args: argparse.Namespace) -> int:
+    records = _read_records(Path(args.out) / "evidence.jsonl")
+    records += _read_records(Path(args.bench) / "evidence.jsonl")
+    routes = route_table(records)
+    if args.json:
+        print(json.dumps([{**r.__dict__, "qualifies": r.qualifies} for r in routes], indent=2))
+    else:
+        print(render_routes(routes))
+    return 0
+
+
+def cmd_delegate(args: argparse.Namespace) -> int:
+    home = Path(args.home) if args.home else Path.home()
+    cfg = read_config(home)
+    managed: ManagedRunner | None = None
+    try:
+        if args.endpoint:
+            endpoint = RunnerEndpoint(args.endpoint, timeout=args.request_timeout)
+        else:
+            model_path = str(args.model or cfg.get("model") or "")
+            if not model_path:
+                print("error: no --endpoint and no model in the shadow config; run "
+                      "'runner --shadow-mode -m MODEL.gguf' first", file=sys.stderr)
+                return 2
+            ctx = int(str(cfg.get("ctx") or 8192))
+            threads = int(str(cfg.get("threads") or 0))
+            launch = ServerLaunch(executable=str(cfg.get("runner") or "runner"), model=model_path,
+                                  port=_free_port(), context_size=ctx,
+                                  gpu=str(cfg.get("gpu") or "auto"), threads=threads or None)
+            managed = ManagedRunner(launch)
+            print(f"starting {launch.executable} with {Path(model_path).name} ...", flush=True)
+            if not managed.start(timeout=args.start_timeout):
+                print("error: the runner did not start; check the model path and 'runner --fit'",
+                      file=sys.stderr)
+                return 2
+            endpoint = RunnerEndpoint(managed.base_url, timeout=args.request_timeout)
+        caps = endpoint.capabilities()
+        models = [m.get("id") for m in caps.get("models", []) if isinstance(m, dict)]
+        model = str(models[0]) if models else "model"
+        budget = Budget(max_turns=args.max_turns, wall_s=args.wall, test_runs=4)
+        d = delegate(Path(args.repo).resolve(), args.request, endpoint.post_json, model,
+                     python=args.python, budget=budget)
+    except RuntimeError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
+    finally:
+        if managed is not None:
+            managed.stop()
+    if args.json:
+        print(d.to_json())
+        return 0
+    print(f"model: {d.model}; attempt: {d.attempt.stop_reason}, {d.attempt.turns} turns, "
+          f"{d.attempt.tool_calls} calls, {d.wall_s:.0f}s")
+    print(f"changed: {', '.join(d.changed_paths) or '(nothing)'}")
+    print(f"verdict: {d.verdict}")
+    if d.tests_tail:
+        print("tests (tail):")
+        print(d.tests_tail[-1200:])
+    print(f"patch: {d.patch_path}")
+    if d.changed_paths:
+        print(f"apply with: git apply {d.patch_path}   (your call; the working tree is untouched)")
+    return 0 if d.tests_exit == 0 else 1
 
 
 def cmd_uninstall(args: argparse.Namespace) -> int:
@@ -743,7 +848,34 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--out", default="~/.xyntetik/shadow")
     p.add_argument("--no-claude", action="store_true")
     p.add_argument("--no-codex", action="store_true")
+    p.add_argument("--claude", action="store_true", help="install for Claude Code even if ~/.claude is absent")
+    p.add_argument("--codex", action="store_true", help="install for Codex even if ~/.codex is absent")
+    p.add_argument("--model", default="", help="GGUF the /shadow offload serves (runner --shadow-mode -m)")
+    p.add_argument("--runner", default="runner", help="runner executable for offloading")
+    p.add_argument("--ctx", type=int, default=8192)
+    p.add_argument("--gpu", default="auto")
+    p.add_argument("--threads", type=int, default=0)
+    p.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
+    p.add_argument("--dry-run", action="store_true", help="print what would be written")
     p.set_defaults(fn=cmd_install)
+    p = sub.add_parser("routes", help="per task class, where the local model has verified successes")
+    p.add_argument("--out", default=str(DEFAULT_OUT))
+    p.add_argument("--bench", default=str(DEFAULT_OUT.parent / "shadow-bench"))
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(fn=cmd_routes)
+    p = sub.add_parser("delegate", help="one bounded attempt at a request on a scratch worktree")
+    p.add_argument("--repo", default=".")
+    p.add_argument("--request", required=True)
+    p.add_argument("--endpoint", default="", help="running runner; default: start from config")
+    p.add_argument("--model", default="")
+    p.add_argument("--home", default="")
+    p.add_argument("--python", default=sys.executable)
+    p.add_argument("--max-turns", type=int, default=12)
+    p.add_argument("--wall", type=float, default=900.0)
+    p.add_argument("--request-timeout", type=float, default=900.0)
+    p.add_argument("--start-timeout", type=float, default=600.0)
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(fn=cmd_delegate)
     p = sub.add_parser("uninstall", help="remove exactly what install wrote")
     p.add_argument("--home", default="")
     p.set_defaults(fn=cmd_uninstall)

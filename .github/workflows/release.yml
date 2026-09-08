@@ -81,10 +81,15 @@ jobs:
             --commit "${GITHUB_SHA}"
           if [ "${{ matrix.os }}" = "windows-latest" ]; then
             # zip is the archive Windows users can open without extra tools
-            powershell -Command "Compress-Archive -Path '${{ matrix.artifact }}','BUILD-INFO.txt','README.md','LICENSE' -DestinationPath '${{ matrix.artifact }}.zip' -Force"
+            # python/ carries the stdlib-only client, so `runner --shadow-mode`
+            # works from the unpacked archive without a pip install
+            Remove-Item -Recurse -Force python/src/xyntetik_runner/__pycache__,python/src/xyntetik_runner/shadow/__pycache__ -ErrorAction SilentlyContinue
+            powershell -Command "Compress-Archive -Path '${{ matrix.artifact }}','BUILD-INFO.txt','README.md','LICENSE','python' -DestinationPath '${{ matrix.artifact }}.zip' -Force"
             ARCHIVE="${{ matrix.artifact }}.zip"
           else
-            tar -czf "${{ matrix.artifact }}.tar.gz" "${{ matrix.artifact }}" BUILD-INFO.txt README.md LICENSE
+            # python/src carries the stdlib-only client, so `runner --shadow-mode`
+            # works from the unpacked archive without a pip install
+            tar --exclude='__pycache__' -czf "${{ matrix.artifact }}.tar.gz" "${{ matrix.artifact }}" BUILD-INFO.txt README.md LICENSE python/src python/README.md python/pyproject.toml
             ARCHIVE="${{ matrix.artifact }}.tar.gz"
           fi
           # one checksum file per artifact; the release job concatenates them

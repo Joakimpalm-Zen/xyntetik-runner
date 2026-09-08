@@ -8,6 +8,24 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **`runner --shadow-mode -m MODEL`: shadow mode as a runner command, with
+  the harness offload it enables.** The binary finds the stdlib-only
+  Python client beside itself (`python/src`, now carried in the release
+  archives), tells the user exactly what will be written, asks before
+  writing (`--yes` skips it), and installs for whichever of Claude Code
+  and Codex is present: the capture hooks and a `/shadow` skill, a
+  `/shadow` prompt, and a config naming the model and this binary. The
+  skill and prompt gained an offload mode: `shadow routes` reads the
+  ledger and the bench per task class and prints where the local model
+  has verified successes under a plain, printed rule (at least three
+  attempts, at least one verified, verified over attempted at least one
+  half); `shadow delegate --request ...` starts the configured runner if
+  none is running, runs one bounded attempt on a detached worktree at
+  HEAD, runs the repository's own tests on the copy, and prints the
+  verdict, the diff and a patch path. The working tree is never touched
+  and nothing is applied silently: `git apply` is the user's act. The
+  harness routes; the runner proves.
+
 - **`shadow bench`: the local capability bench as one command, and a
   function-level task class.** `python -m xyntetik_runner.shadow bench
   --repo . --models a.gguf,b.gguf --runner ./runner` builds the bank from
