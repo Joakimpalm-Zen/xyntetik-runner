@@ -38,8 +38,10 @@ from xyntetik_runner.shadow.evidence import (
 )
 from xyntetik_runner.shadow.importer import CAPTURE_FILE, Episode, read_episodes, scan_all, write_episodes
 from xyntetik_runner.shadow import adapt
+from xyntetik_runner.shadow import tandem
 from xyntetik_runner.shadow.install import (harness_present, install, read_config, render_candidates,
-                                            set_config_adapter, suggest_model, uninstall)
+                                            set_config_adapter, set_config_key, suggest_model, uninstall)
+from xyntetik_runner.process import spawn_detached
 from xyntetik_runner.shadow.routes import delegate, render_routes, route_table
 from xyntetik_runner.shadow.server import (DEFAULT_TTL, render_status as server_status, served_runner,
                                            stop_server)
@@ -605,7 +607,58 @@ def cmd_capture(args: argparse.Namespace) -> int:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as f:
         f.write(json.dumps(rec, sort_keys=True) + "\n")
+    # tandem: a background attempt where the evidence allows it, and the
+    # harness told; every failure here is swallowed, a hook never blocks
+    try:
+        home = Path(args.home) if args.home else Path.home()
+        cfg = read_config(home)
+        model = str(cfg.get("model") or "")
+        if cfg.get("tandem", True) and model and Path(model).is_file():
+            out = str(Path(str(cfg.get("out") or DEFAULT_OUT)).expanduser())
+            if args.event == "prompt":
+                repo_or_none = _repo_of(Path(cwd))
+                records = _read_records(Path(out) / "evidence.jsonl")
+                tandem.emit(tandem.hook_prompt(home, session_id=rec["session_id"], cwd=cwd,
+                                               prompt=rec["prompt"], repo=repo_or_none, records=records,
+                                               model=model, model_sha256=_model_sha(model),
+                                               python=args.python or sys.executable, out=out))
+            else:
+                tandem.emit(tandem.hook_stop(home, session_id=rec["session_id"]))
+    except Exception:  # noqa: BLE001 - a hook must never fail the prompt
+        pass
     return 0
+
+
+def _repo_of(cwd: Path) -> Path | None:
+    top = subprocess.run(["git", "-C", str(cwd), "rev-parse", "--show-toplevel"], capture_output=True,
+                         text=True).stdout.strip()
+    return Path(top) if top else None
+
+
+_MODEL_SHA_CACHE: dict[str, tuple[float, str]] = {}
+
+
+def _model_sha(model: str) -> str:
+    """sha256 of the model file, cached on mtime so a hook does not hash
+    gigabytes on every prompt."""
+    try:
+        mtime = Path(model).stat().st_mtime
+    except OSError:
+        return ""
+    cache = Path.home() / ".xyntetik" / "shadow" / "model-sha.json"
+    try:
+        d = json.loads(cache.read_text(encoding="utf-8"))
+        if d.get("model") == model and d.get("mtime") == mtime:
+            return str(d.get("sha256") or "")
+    except (OSError, ValueError):
+        pass
+    sha = file_sha256(Path(model))
+    try:
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        cache.write_text(json.dumps({"model": model, "mtime": mtime, "sha256": sha}), encoding="utf-8")
+    except OSError:
+        pass
+    return sha
 
 
 def cmd_install(args: argparse.Namespace) -> int:
@@ -630,6 +683,10 @@ def cmd_install(args: argparse.Namespace) -> int:
     if codex:
         plan.append(f"Codex: a /shadow prompt under {home / '.codex' / 'prompts'} and a marked note in "
                     f"{home / '.codex' / 'AGENTS.md'} saying Runner is here and what it can do")
+    if not args.no_tandem:
+        plan.append("tandem: in a repository where the local model has verified successes on record, "
+                    "each request also gets a background local attempt on a scratch copy; a verified "
+                    "patch is offered, never applied ('shadow tandem off' stops it)")
     plan.append(f"a capability sheet at {home / '.xyntetik' / 'shadow' / 'runner-capabilities.md'} "
                 "(from 'runner --help', '--caps' and the README) the assistants read before "
                 "proposing another local inference tool")
@@ -669,6 +726,8 @@ def cmd_install(args: argparse.Namespace) -> int:
                    claude=claude, codex=codex, model=args.model or picked, runner=args.runner, ctx=args.ctx,
                    gpu=args.gpu, threads=args.threads)
     if done.config:
+        if args.no_tandem:
+            set_config_key(home, "tandem", False)
         print(f"config: {done.config}")
     if done.settings:
         print(f"claude code: {done.hooks_added} hook(s) added to {done.settings} "
@@ -707,6 +766,39 @@ def cmd_routes(args: argparse.Namespace) -> int:
 def cmd_delegate(args: argparse.Namespace) -> int:
     home = Path(args.home) if args.home else Path.home()
     cfg = read_config(home)
+    out = str(Path(args.out or str(cfg.get("out") or DEFAULT_OUT)).expanduser())
+    if args.background:
+        model = str(args.model or cfg.get("model") or "")
+        if not model:
+            print("error: no model in the shadow config", file=sys.stderr)
+            return 2
+        repo = _repo_of(Path(args.repo).resolve())
+        if repo is None:
+            print(f"error: {args.repo} is not inside a git repository", file=sys.stderr)
+            return 2
+        records = _read_records(Path(out) / "evidence.jsonl")
+        route = tandem.qualifies(records, repo.name, _model_sha(model))
+        if route is None:
+            print(f"not started: no task class qualifies for {repo.name} with {Path(model).name} yet "
+                  "('shadow routes' shows the counts)")
+            return 1
+        if any(st.running for st in tandem.states(home)):
+            print("not started: a delegation is already running ('shadow delegations')")
+            return 1
+        bg = tandem.DelegationState(id=tandem.new_id(), session_id=args.session, request=args.request,
+                                    repo=str(repo), started_at=__import__("time").time(), model=model)
+        bg.save(home)
+        spawn_detached([args.python, "-m", "xyntetik_runner.shadow", "delegate", "--repo", str(repo),
+                        "--request", args.request, "--home", str(home), "--python", args.python,
+                        "--out", out, "--record", bg.id])
+        print(f"started delegation {bg.id} in the background ({route.task_class}: {route.verified} verified "
+              f"of {route.attempted} on record); 'shadow delegations' shows it")
+        return 0
+    state: tandem.DelegationState | None = None
+    if args.record:
+        for st in tandem.states(home):
+            if st.id == args.record:
+                state = st
     try:
         if args.endpoint:
             endpoint = RunnerEndpoint(args.endpoint, timeout=args.request_timeout)
@@ -726,7 +818,17 @@ def cmd_delegate(args: argparse.Namespace) -> int:
                      python=args.python, budget=budget)
     except RuntimeError as e:
         print(f"error: {e}", file=sys.stderr)
+        if state is not None:
+            state.status, state.error, state.ended_at = "error", str(e), __import__("time").time()
+            state.save(home)
         return 2
+    _record_delegation(Path(out), d, model_path=str(cfg.get("model") or ""), caps=caps,
+                       endpoint_label=endpoint.base_url)
+    if state is not None:
+        state.status, state.verdict, state.patch_path = "done", d.verdict, d.patch_path
+        state.changed_paths, state.tests_exit, state.task_class = d.changed_paths, d.tests_exit, d.task_class
+        state.ended_at = __import__("time").time()
+        state.save(home)
     if args.json:
         print(d.to_json())
         return 0
@@ -932,6 +1034,61 @@ def cmd_server(args: argparse.Namespace) -> int:
     return 0
 
 
+def _record_delegation(out: Path, d: Any, *, model_path: str, caps: dict[str, Any],
+                       endpoint_label: str) -> None:
+    """A delegation is an attempt with a verdict on the user's own request:
+    it joins the ledger under its own verifier id (the repository's tests
+    at HEAD, not frozen tests), verified only when they passed and no test
+    file was touched, so the funnel widens on evidence and never on a
+    weakened test."""
+    passed = d.tests_exit == 0 if d.tests_exit is not None else None
+    tamper = tuple(d.test_files_changed)
+    verifier: VerifierOutcome | None
+    if not d.changed_paths or passed is None:
+        disposition, verifier = Disposition.VERIFIER_INCONCLUSIVE, None
+    elif passed and not tamper:
+        disposition = Disposition.VERIFIED_LOCAL_ATTEMPT
+        verifier = VerifierOutcome("repo-tests", True, 0, 0, 0, 0, 0, reasons=("repository tests passed at HEAD",))
+    else:
+        disposition = Disposition.LOCAL_FAILED
+        verifier = VerifierOutcome("repo-tests", passed, 0, 0, 0 if passed else 1, 0, 0, tamper=tamper,
+                                   reasons=(("test files changed by the attempt",) if tamper else ("repository tests failed",)))
+    sha = _model_sha(model_path) if model_path else f"unknown:{d.model}"
+    ident = Identity(project=Path(d.repo).name, task_class=d.task_class, context_band=_band(len(d.request)),
+                     tool_set=("list_files", "read_file", "write_file", "edit_file", "run_tests"),
+                     verifier_id="repo-tests", environment_id=f"{platform.node()}|{endpoint_label}",
+                     model_sha256=sha, quant=_quant_from_name(Path(model_path).name) if model_path else "unknown",
+                     template_sha256="unknown", runner_build=str(caps.get("version") or "unknown"),
+                     backend=str(caps.get("backend") or "unknown"), harness_version=HARNESS_VERSION,
+                     scaffold_sha256="base")
+    rec = EpisodeEvidence(episode_id=f"delegation:{Path(d.patch_path).stem}", source="delegation",
+                          observed_at=_now(), disposition=disposition, identity=ident, baseline_sha256="",
+                          patch_sha256=None, changed_paths=d.changed_paths, verifier=verifier,
+                          wall_s=d.wall_s, resources={"turns": float(d.attempt.turns),
+                                                      "tool_calls": float(d.attempt.tool_calls)},
+                          reasons=(f"attempt: {d.attempt.stop_reason}", d.verdict))
+    out.mkdir(parents=True, exist_ok=True)
+    _append(out / "evidence.jsonl", rec)
+
+
+def cmd_delegations(args: argparse.Namespace) -> int:
+    home = Path(args.home) if args.home else Path.home()
+    print(tandem.render_delegations(home, session_id=args.session))
+    return 0
+
+
+def cmd_tandem(args: argparse.Namespace) -> int:
+    home = Path(args.home) if args.home else Path.home()
+    cfg = read_config(home)
+    if args.state in ("on", "off"):
+        set_config_key(home, "tandem", args.state == "on")
+        print(f"tandem {args.state}")
+        return 0
+    print("tandem " + ("on" if cfg.get("tandem", True) and cfg.get("model") else "off")
+          + ("" if cfg.get("model") else " (no model configured)"))
+    return 0
+
+
 def _served_model(endpoint: RunnerEndpoint) -> str:
     caps = endpoint.capabilities()
     models = [m.get("id") for m in caps.get("models", []) if isinstance(m, dict)]
@@ -1052,6 +1209,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--session", default="")
     p.add_argument("--prompt", default="")
     p.add_argument("--file", default="")
+    p.add_argument("--home", default="")
+    p.add_argument("--python", default="")
     p.set_defaults(fn=cmd_capture)
     p = sub.add_parser("bench", help="bank + fit probe + replay per model + the verified table, "
                                      "on your own repository")
@@ -1094,6 +1253,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--gpu", default="auto")
     p.add_argument("--threads", type=int, default=0)
     p.add_argument("--no-pick", action="store_true", help="without -m, do not look for a model on disk")
+    p.add_argument("--no-tandem", action="store_true", help="no background attempts on prompts")
     p.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
     p.add_argument("--dry-run", action="store_true", help="print what would be written")
     p.set_defaults(fn=cmd_install)
@@ -1114,7 +1274,20 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--request-timeout", type=float, default=900.0)
     p.add_argument("--start-timeout", type=float, default=600.0)
     p.add_argument("--json", action="store_true")
+    p.add_argument("--out", default="", help="ledger directory (default: the shadow config's)")
+    p.add_argument("--background", action="store_true",
+                   help="start detached where the evidence allows it and return at once")
+    p.add_argument("--session", default="", help="with --background: the harness session id")
+    p.add_argument("--record", default="", help=argparse.SUPPRESS)
     p.set_defaults(fn=cmd_delegate)
+    p = sub.add_parser("delegations", help="background delegations and their verdicts")
+    p.add_argument("--home", default="")
+    p.add_argument("--session", default="")
+    p.set_defaults(fn=cmd_delegations)
+    p = sub.add_parser("tandem", help="show or set whether prompts get a background local attempt")
+    p.add_argument("state", nargs="?", choices=("on", "off"), default="")
+    p.add_argument("--home", default="")
+    p.set_defaults(fn=cmd_tandem)
     p = sub.add_parser("adapt", help="overnight: train the configured model's adapter on the ledger's "
                                      "own commits, keep it only on a held-out verified rise")
     p.add_argument("--out", default=str(DEFAULT_OUT))

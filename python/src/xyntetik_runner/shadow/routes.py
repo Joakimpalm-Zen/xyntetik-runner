@@ -1,8 +1,10 @@
 """Where the local model has verified successes (the route table), and
 delegation of one request on a scratch worktree.
 
-The route table is the bench and the ledger read per task class: attempted
-and verified counts for the model stacks recorded, and a qualification rule
+The route table is the bench, the ledger and the recorded delegations read
+per task class: attempted and verified counts for the model stacks recorded
+(a delegation counts as verified only when the repository's tests passed
+and no test file was touched), and a qualification rule
 that is deliberately plain and printed with the numbers, never applied
 silently: a class qualifies when it has at least three attempts and at
 least one verified success, and verified over attempted is at least one
@@ -29,7 +31,7 @@ from xyntetik_runner.shadow.attempt import AttemptResult, Budget, Workspace, att
 from xyntetik_runner.shadow.baseline import Baseline
 from xyntetik_runner.shadow.evidence import Disposition, EpisodeEvidence
 from xyntetik_runner.shadow.scaffold import Scaffold
-from xyntetik_runner.shadow.tasks import import_roots
+from xyntetik_runner.shadow.tasks import class_from_diff, classify, import_roots
 
 MIN_ATTEMPTS = 3
 MIN_VERIFIED = 1
@@ -93,6 +95,8 @@ class Delegation:
     attempt: AttemptResult
     model: str
     wall_s: float
+    task_class: str = "file"
+    test_files_changed: tuple[str, ...] = ()
 
     @property
     def verdict(self) -> str:
@@ -143,6 +147,16 @@ def delegate(repo: Path, request: str, post_json: Any, model: str, *, python: st
             tests_exit = int(first.split()[-1]) if first.startswith("exit code") else None
         diff = subprocess.run(["git", "-C", str(ws_dir), "diff"], capture_output=True,
                               text=True).stdout
+        _tests, src, _other = classify(changes.paths)
+        task_class, _n = ("multi-file" if len(src) > 1 else "file", 0)
+        if len(src) == 1:
+            u0 = subprocess.run(["git", "-C", str(ws_dir), "diff", "-U0", "--", src[0]],
+                                capture_output=True, text=True).stdout
+            try:
+                post = (ws_dir / src[0]).read_text(encoding="utf-8")
+            except OSError:
+                post = ""
+            task_class, _n = class_from_diff(u0, post)
         out_dir = out_dir or (Path.home() / ".xyntetik" / "shadow" / "delegations")
         out_dir.mkdir(parents=True, exist_ok=True)
         stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
@@ -151,7 +165,8 @@ def delegate(repo: Path, request: str, post_json: Any, model: str, *, python: st
         return Delegation(request=request, repo=str(repo), head=head, patch_path=str(patch),
                           changed_paths=changes.paths, tests_exit=tests_exit,
                           tests_tail=tail[-2000:], attempt=result, model=model,
-                          wall_s=round(time.monotonic() - t0, 1))
+                          wall_s=round(time.monotonic() - t0, 1), task_class=task_class,
+                          test_files_changed=tuple(_tests))
     finally:
         subprocess.run(["git", "-C", str(repo), "worktree", "remove", "--force", str(ws_dir)],
                        capture_output=True)

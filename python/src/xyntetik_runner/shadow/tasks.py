@@ -220,6 +220,13 @@ def change_class(repo: Path, base: str, solution: str, src: Sequence[str]) -> tu
         return ("multi-file" if len(src) > 1 else "file", 0)
     rel = src[0]
     diff = _git(str(repo), "diff", "-U0", base, solution, "--", rel)
+    return class_from_diff(diff, _git(str(repo), "show", f"{solution}:{rel}"))
+
+
+def class_from_diff(diff: str, post_text: str) -> tuple[str, int]:
+    """The class of one file's change from its unified diff (zero context)
+    and the file's post-state text; shared by the committed range and the
+    uncommitted scratch worktree of a delegation."""
     ranges: list[tuple[int, int]] = []
     changed = 0
     for line in diff.split("\n"):
@@ -232,9 +239,8 @@ def change_class(repo: Path, base: str, solution: str, src: Sequence[str]) -> tu
         ranges.append((start, start + max(count, 1) - 1))
     if not ranges:
         return ("file", 0)
-    text = _git(str(repo), "show", f"{solution}:{rel}")
     try:
-        tree = ast.parse(text)
+        tree = ast.parse(post_text)
     except SyntaxError:
         return ("file", changed)
     spans: list[tuple[int, int, str]] = []
