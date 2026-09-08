@@ -76,6 +76,16 @@ The negative controls that prove the verifier can fail live in
   prints counts and both denominators. Pass `--python` the interpreter that
   can run the repositories' tests.
 
+- `scaffold`: `Scaffold` (system, procedure, tool descriptions, budget,
+  exemplars; sha256; `base()` is the harness's original prompt and the
+  control arm of every comparison). `attempt(..., scaffold=)` consumes it;
+  `Identity.scaffold_sha256` names it in every record.
+- `bank`: `build_bank(repo)` turns a public repository's history into repair
+  tasks with the commit message as the request; `shadow bank --repo`.
+- `optimize`: `optimize(tasks, base, run, reflect)` is the reflective loop;
+  `shadow optimize` runs it against a runner endpoint with the local model as
+  its own reflector and writes `scaffolds/best.json` and `optimize.json`.
+
 The pipeline is exercised without a model in `python/tests/test_shadow_pipeline.py`
 on synthetic traces and a synthetic repository; a scripted chat function
 proves the plumbing and the confinement, the pilot measures the model.

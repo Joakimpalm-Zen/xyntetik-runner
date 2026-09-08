@@ -8,6 +8,33 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **The scaffold artifact (R15.0): a learned, hashed, model-agnostic
+  layer between the model and the harness, before any weight moves.**
+  `xyntetik_runner.shadow.scaffold.Scaffold` is a versioned JSON document
+  the attempt harness consumes: system text, a numbered procedure, tool
+  descriptions, budget overrides (a scaffold may spend less than the
+  caller's budget, never more) and exemplars. The model stays untouched,
+  so one scaffold runs on every family the runner serves, including the
+  ones the LoRA backward refuses; its sha256 sits in the evidence identity
+  and the report's stack key, so a row names the model with its scaffold,
+  and `replay --scaffold` selects one. `shadow bank --repo` builds repair
+  tasks from a public repository's commit history under the same
+  admission rule as the personal ledger (post-state tests pass, frozen
+  tests fail on the parent), with the commit message as the request, so
+  scaffold learning needs none of the owner's entitled episodes. `shadow
+  optimize` is the simplest reflective loop (after GEPA, 2025): score the
+  best scaffold on a minibatch of bank tasks, hand the failure text to
+  the local model, take its JSON child through the runner's schema-
+  constrained output, score the child on the same minibatch, keep it only
+  if better; a seeded held-out slice decides against the base scaffold at
+  the end, and the kill gate is no held-out gain within the rollout
+  budget. The optimizer never writes exemplars: exemplars are content and
+  the training-data firewall applies to them. Prior art named, not
+  claimed: DSPy, GEPA, OPRO, PromptBreeder, ADAS, Ornith. Found on the
+  way: `git rev-parse` echoes an unresolvable `<sha>^` to stdout, so a
+  root commit reached `git worktree add` as an invalid reference;
+  `--verify --quiet` is the fix.
+
 - **Shadow mode, three small items after the first pilot.** The capture
   hook now records the HEAD of every repository at or under the working
   directory, not only the directory's own, so a session started from a
