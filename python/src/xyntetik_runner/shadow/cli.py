@@ -587,6 +587,11 @@ def cmd_capture(args: argparse.Namespace) -> int:
 
 def cmd_install(args: argparse.Namespace) -> int:
     home = Path(args.home) if args.home else Path.home()
+    if args.model and not Path(args.model).expanduser().is_file():
+        print(f"error: model not found: {args.model}\n"
+              "  --shadow-mode -m takes the path of a GGUF file on this machine; nothing was written",
+              file=sys.stderr)
+        return 2
     has_claude, has_codex = harness_present(home)
     claude = not args.no_claude and (has_claude or args.claude)
     codex = not args.no_codex and (has_codex or args.codex)

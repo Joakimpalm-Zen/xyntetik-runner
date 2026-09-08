@@ -467,24 +467,39 @@ def test_capture_summary_counts_the_file(tmp_path: Path, capsys: Any) -> None:
     assert "3 lines, 2 prompts, 1 with repository heads, 2 sessions" in capsys.readouterr().out
 
 
+def test_install_refuses_a_model_path_that_does_not_exist(tmp_path: Path, capsys: Any) -> None:
+    """A typo in -m must fail here, before anything is written, not at the
+    first offload weeks later."""
+    home = tmp_path / "home"
+    (home / ".codex").mkdir(parents=True)
+    rc = main(["install", "--home", str(home), "--yes", "--model", str(tmp_path / "missing.gguf")])
+    assert rc == 2
+    assert "model not found" in capsys.readouterr().err
+    assert not (home / ".codex" / "prompts").exists()
+    assert not (home / ".xyntetik").exists()
+
+
 def test_install_confirms_detects_harnesses_and_records_the_model(tmp_path: Path, capsys: Any, monkeypatch: Any) -> None:
     from xyntetik_runner.shadow.install import read_config
     home = tmp_path / "home"
     (home / ".codex").mkdir(parents=True)  # Codex present, Claude Code absent
-    rc = main(["install", "--home", str(home), "--python", "py", "--dry-run", "--model", "/m/x.gguf"])
+    model = tmp_path / "m" / "x.gguf"
+    model.parent.mkdir()
+    model.write_bytes(b"GGUF")
+    rc = main(["install", "--home", str(home), "--python", "py", "--dry-run", "--model", str(model)])
     out = capsys.readouterr().out
     assert rc == 0 and "dry run" in out and "Codex:" in out and "Claude Code" not in out
-    assert "model for offloading: /m/x.gguf" in out
+    assert f"model for offloading: {model}" in out
     assert not (home / ".claude").exists()
     # no terminal and no --yes: refused, nothing written
     monkeypatch.setattr("sys.stdin", __import__("io").StringIO(""))
-    rc = main(["install", "--home", str(home), "--python", "py", "--model", "/m/x.gguf"])
+    rc = main(["install", "--home", str(home), "--python", "py", "--model", str(model)])
     assert rc == 2 and not (home / ".codex" / "prompts" / "shadow.md").exists()
     # --yes writes the prompt only (Codex present) and the config
-    rc = main(["install", "--home", str(home), "--python", "py", "--model", "/m/x.gguf", "--runner", "/bin/runner", "--yes"])
+    rc = main(["install", "--home", str(home), "--python", "py", "--model", str(model), "--runner", "/bin/runner", "--yes"])
     assert rc == 0
     assert (home / ".codex" / "prompts" / "shadow.md").exists() and not (home / ".claude" / "settings.json").exists()
-    assert read_config(home) == {"model": "/m/x.gguf", "runner": "/bin/runner", "ctx": 8192, "gpu": "auto", "threads": 0, "out": "~/.xyntetik/shadow"}
+    assert read_config(home) == {"model": str(model), "runner": "/bin/runner", "ctx": 8192, "gpu": "auto", "threads": 0, "out": "~/.xyntetik/shadow"}
     # nothing at all present and nothing forced: a clear refusal
     empty = tmp_path / "empty"
     empty.mkdir()

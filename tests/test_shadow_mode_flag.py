@@ -36,6 +36,7 @@ def test_codex_present_gets_the_prompt_and_the_config_names_this_binary(tmp_path
     home = tmp_path / "home"
     (home / ".codex").mkdir(parents=True)
     model = tmp_path / "m.gguf"
+    model.write_bytes(b"GGUF")
     proc = _run(home, "-m", str(model), "--yes")
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert (home / ".codex" / "prompts" / "shadow.md").is_file()
