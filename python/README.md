@@ -25,3 +25,29 @@ Transport-level breakage is translated too: a peer holding the port that is not
 speaking HTTP, or a body cut short mid-stream, raises `RunnerProtocolError`
 rather than a raw `http.client` exception — so `RunnerEndpoint.healthy()` reports
 False for a squatting service instead of raising through `ManagedRunner.start()`.
+
+## Shadow mode: `xyntetik_runner.shadow`
+
+The instrument half of shadow mode (plan epic R14), stdlib only. It does not
+route requests, train, or sandbox.
+
+- `evidence`: one `EpisodeEvidence` record per observed episode with a
+  `Disposition` from a closed list, an `Identity` of the whole measured stack
+  and a `VerifierOutcome`. A record cannot claim `verified_local_attempt`
+  without a passing verifier outcome and cannot carry frontier content;
+  both are refused in `__post_init__`. `summarize` and `render` print counts
+  first and both denominators, and no percentage before thirty independent
+  eligible episodes.
+- `baseline`: `Baseline.capture` hashes a tree; `changes` and `patch_sha256`
+  give a patch its identity against that baseline.
+- `verifier`: `ProtectedTests.freeze` / `load` keep the deciding tests outside
+  the workspace under a hashed manifest; `calibrate` refuses a protected set
+  that passes on the untouched baseline; `verify` runs the frozen tests over a
+  scratch copy of the workspace with the verifier's own pytest configuration
+  and returns a `VerifierOutcome`. A no-op, a changed protected test file, a
+  changed `conftest.py` or pytest configuration file, a skipped or missing
+  expected test cannot pass; a timeout is `passed=None`.
+
+The negative controls that prove the verifier can fail live in
+`python/tests/test_shadow_verifier.py` against the frozen repair task in
+`python/tests/fixtures/repair_task_v1`.

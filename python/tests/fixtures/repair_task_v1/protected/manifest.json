@@ -1,0 +1,17 @@
+{
+  "expected": {
+    "tests/test_money.py": [
+      "test_plain",
+      "test_thousands_separator",
+      "test_float_trap",
+      "test_negative",
+      "test_currency_prefix",
+      "test_whitespace"
+    ]
+  },
+  "files": {
+    "tests/test_money.py": "87acbf8adf6a1fc3933e60b89aaa712e41c0c06b338f569a49fe5f9a98e9d23b"
+  },
+  "schema_version": "xyntetik.shadow.protected.v1",
+  "verifier_id": "repair_task_v1"
+}

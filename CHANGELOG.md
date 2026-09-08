@@ -8,6 +8,38 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **Shadow mode, the instrument half (R14.1): an evidence contract and a
+  protected verifier in the Python client.** `xyntetik_runner.shadow` is
+  stdlib-only and answers one question about a local model honestly: did an
+  attempt independently pass checks it could not see or change. The contract
+  gives every observed episode one disposition from a closed list
+  (`ineligible`, `not_attempted_resource`, `unreplayable`,
+  `verifier_inconclusive`, `local_failed`, `verified_local_attempt`,
+  `agreement_only`) and an identity partition of the whole stack (model
+  hash, quant, adapter, runner build, backend, harness, verifier,
+  environment), and it refuses by construction a record that claims
+  `verified_local_attempt` without a passing verifier outcome, or one that
+  loaded frontier content. The summary prints counts first and both
+  denominators (verified over eligible, verified over observed) and prints
+  no percentage before thirty independent eligible episodes. The verifier
+  keeps its tests outside the workspace under a hashed manifest, copies the
+  workspace to a scratch directory, writes the frozen tests over whatever is
+  there, runs pytest under its own configuration file, and reads a JUnit
+  report; a no-op, a changed protected test, a changed `conftest.py` or
+  pytest configuration, a skip, or a missing test cannot count as success,
+  and a timeout is inconclusive rather than a pass. Calibration is the gate
+  on the gate: a protected set that passes on the untouched baseline is
+  refused as an instrument. Proven red on a frozen repair task
+  (`python/tests/fixtures/repair_task_v1`): a wrong patch that passes the
+  visible tests, a rewritten test file, a monkeypatching `conftest.py` that
+  fools both the visible and the frozen tests, an injected `pytest.ini`, a
+  module-level skip and a hang are each rejected for the stated reason,
+  and the one correct patch is verified. Found on the way: pytest builds
+  JUnit classnames from the `-c` file's directory, so the verifier's ini
+  sits at the workspace root or every expected test reads as missing. Not a
+  sandbox: the tests run as the calling user with the network reachable;
+  OS isolation is a separate story.
+
 - **A forward matvec on CUDA that is bit-identical to the CPU, not close to
   it (R8.7.1 slice 1).** `gpu_mvcanon` computes `y = W.x` in exactly the
   association `vec_dot` uses under `RUNNER_CANON_KERNELS`, gated by `memcmp`
