@@ -37,7 +37,9 @@ from xyntetik_runner.shadow.evidence import (
     summarize,
 )
 from xyntetik_runner.shadow.importer import CAPTURE_FILE, Episode, read_episodes, scan_all, write_episodes
-from xyntetik_runner.shadow.install import harness_present, install, read_config, uninstall
+from xyntetik_runner.shadow import adapt
+from xyntetik_runner.shadow.install import (harness_present, install, read_config, render_candidates,
+                                            set_config_adapter, suggest_model, uninstall)
 from xyntetik_runner.shadow.routes import delegate, render_routes, route_table
 from xyntetik_runner.shadow.bank import build_bank
 from xyntetik_runner.shadow.optimize import (
@@ -595,18 +597,31 @@ def cmd_install(args: argparse.Namespace) -> int:
     has_claude, has_codex = harness_present(home)
     claude = not args.no_claude and (has_claude or args.claude)
     codex = not args.no_codex and (has_codex or args.codex)
+    if not (claude or codex):
+        print("nothing to install: neither ~/.claude nor ~/.codex exists here "
+              "(pass --claude or --codex to force)", file=sys.stderr)
+        return 2
     plan = []
     if claude:
         plan.append(f"Claude Code: prompt and stop capture hooks merged into {home / '.claude' / 'settings.json'} "
                     "(backup beside it) and a /shadow skill")
     if codex:
         plan.append(f"Codex: a /shadow prompt under {home / '.codex' / 'prompts'}")
+    picked = ""
     if args.model:
         plan.append(f"model for offloading: {args.model} (served by {args.runner} when asked)")
-    if not plan:
-        print("nothing to install: neither ~/.claude nor ~/.codex exists here "
-              "(pass --claude or --codex to force)", file=sys.stderr)
-        return 2
+    elif not args.no_pick:
+        best, cands = suggest_model(args.runner, home, ctx=args.ctx)
+        if best is not None:
+            picked = str(best.path)
+            plan.append(f"model for offloading: {picked} (found on disk, the largest that fits at "
+                        f"ctx {args.ctx} by 'runner --fit'; pass -m to choose another)")
+        else:
+            plan.append("no model for offloading yet: " + ("none of the GGUF files found fits at "
+                        f"ctx {args.ctx}" if cands else "no GGUF file found") +
+                        "; run 'runner --shadow-mode -m MODEL.gguf' later")
+        print("models looked at:")
+        print(render_candidates(cands))
     print("shadow mode will write:")
     for line in plan:
         print(f"  - {line}")
@@ -625,7 +640,7 @@ def cmd_install(args: argparse.Namespace) -> int:
             print("not installed")
             return 1
     done = install(home, python=args.python, pythonpath=args.pythonpath or None, out=args.out,
-                   claude=claude, codex=codex, model=args.model, runner=args.runner, ctx=args.ctx,
+                   claude=claude, codex=codex, model=args.model or picked, runner=args.runner, ctx=args.ctx,
                    gpu=args.gpu, threads=args.threads)
     if done.config:
         print(f"config: {done.config}")
@@ -665,11 +680,15 @@ def cmd_delegate(args: argparse.Namespace) -> int:
                 return 2
             ctx = int(str(cfg.get("ctx") or 8192))
             threads = int(str(cfg.get("threads") or 0))
+            adapter = str(cfg.get("adapter") or "")
+            extra = ("--lora", adapter) if adapter and Path(adapter).is_file() else ()
             launch = ServerLaunch(executable=str(cfg.get("runner") or "runner"), model=model_path,
                                   port=_free_port(), context_size=ctx,
-                                  gpu=str(cfg.get("gpu") or "auto"), threads=threads or None)
+                                  gpu=str(cfg.get("gpu") or "auto"), threads=threads or None,
+                                  extra_args=extra)
             managed = ManagedRunner(launch)
-            print(f"starting {launch.executable} with {Path(model_path).name} ...", flush=True)
+            print(f"starting {launch.executable} with {Path(model_path).name}"
+                  f"{' + adapter ' + Path(adapter).name if extra else ''} ...", flush=True)
             if not managed.start(timeout=args.start_timeout):
                 print("error: the runner did not start; check the model path and 'runner --fit'",
                       file=sys.stderr)
@@ -701,6 +720,143 @@ def cmd_delegate(args: argparse.Namespace) -> int:
     if d.changed_paths:
         print(f"apply with: git apply {d.patch_path}   (your call; the working tree is untouched)")
     return 0 if d.tests_exit == 0 else 1
+
+
+def _serve_for(cfg: dict[str, object], model_path: str, *, extra: tuple[str, ...],
+               start_timeout: float, request_timeout: float) -> tuple[ManagedRunner, RunnerEndpoint]:
+    launch = ServerLaunch(executable=str(cfg.get("runner") or "runner"), model=model_path,
+                          port=_free_port(), context_size=int(str(cfg.get("ctx") or 8192)),
+                          gpu=str(cfg.get("gpu") or "auto"),
+                          threads=int(str(cfg.get("threads") or 0)) or None, extra_args=extra)
+    managed = ManagedRunner(launch)
+    if not managed.start(timeout=start_timeout):
+        raise RuntimeError("the runner did not start; check the model path and 'runner --fit'")
+    return managed, RunnerEndpoint(managed.base_url, timeout=request_timeout)
+
+
+def cmd_adapt(args: argparse.Namespace) -> int:
+    home = Path(args.home) if args.home else Path.home()
+    if args.status:
+        print(adapt.render_status(home))
+        return 0
+    cfg = read_config(home)
+    model_path = str(args.model or cfg.get("model") or "")
+    runner = str(args.runner or cfg.get("runner") or "runner")
+    if not model_path:
+        print("error: no model in the shadow config; run 'runner --shadow-mode -m MODEL.gguf' first",
+              file=sys.stderr)
+        return 2
+    if not Path(model_path).is_file():
+        print(f"error: model not found: {model_path}", file=sys.stderr)
+        return 2
+    try:
+        meta = adapt.gguf_meta(Path(model_path))
+    except (OSError, ValueError) as e:
+        print(f"error: cannot read the model header: {e}", file=sys.stderr)
+        return 2
+    family = adapt.template_family(str(meta.get("tokenizer.chat_template") or ""))
+    if family is None:
+        print("error: this model's chat template is not one adapt can render for training "
+              "(ChatML or Llama 3); the prompt at training must match the prompt at serving",
+              file=sys.stderr)
+        return 2
+    tasks: list[RepairTask] = []
+    for d in [Path(args.out).expanduser()] + [Path(b).expanduser() for b in args.bank.split(",") if b]:
+        if (d / "tasks").is_dir():
+            tasks += _tasks(d, None)
+    tasks = [t for t in tasks if t.baseline_failing <= args.max_failing and t.baseline_failing < t.expected_tests]
+    if not tasks:
+        print("error: no admitted tasks under --out or --bank; capture work or run 'shadow bank'",
+              file=sys.stderr)
+        return 2
+    log = lambda s: print(s, flush=True)  # noqa: E731
+    print(f"{len(tasks)} task(s); model {Path(model_path).name} ({family} template); "
+          f"self-checking the function units ...", flush=True)
+    ds = adapt.build_dataset(tasks, family=family, ctx=args.ctx, python=args.python, seed=args.seed,
+                             holdout_fraction=args.holdout_fraction, log=log)
+    n_units = len(ds.dev) + len(ds.holdout)
+    print(f"units: {n_units} (development {len(ds.dev)}, held out {len(ds.holdout)}); "
+          f"examples: {len(ds.examples)}; dropped: {len(ds.dropped)}")
+    for dropped in ds.dropped:
+        print(f"  drop {dropped['task_id']}: {dropped['why']}")
+    if n_units < adapt.MIN_UNITS or not ds.examples or not ds.holdout:
+        print(f"too few units to adapt: at least {adapt.MIN_UNITS} verified function units are "
+              "needed, one to train on and one to hold out; the bench and captured work add units")
+        return 1
+    steps = args.epochs * len(ds.examples)
+    print(f"plan: train {len(ds.examples)} example(s) for {steps} step(s) (rank {args.rank}, "
+          f"lr {args.lr}, ctx {args.ctx}); evaluate base and adapter on {len(ds.holdout)} held-out "
+          f"unit(s) with K {args.k}; keep the adapter only if held-out verified rises")
+    if args.dry_run:
+        print("dry run: nothing trained")
+        return 0
+    if not args.yes:
+        if not sys.stdin.isatty():
+            print("error: not a terminal; pass --yes to confirm", file=sys.stderr)
+            return 2
+        if input("Start the adaptation run now? [y/N] ").strip().lower() not in ("y", "yes"):
+            print("not started")
+            return 1
+    stamp = _now().replace(":", "").replace("-", "")[:15]
+    run_dir = adapt.adapters_dir(home) / stamp
+    run_dir.mkdir(parents=True, exist_ok=True)
+    data = ds.write(run_dir)
+    print(f"run: {run_dir}", flush=True)
+    managed: ManagedRunner | None = None
+    try:
+        print("serving the base for its evaluation ...", flush=True)
+        managed, endpoint = _serve_for(cfg | {"runner": runner}, model_path, extra=(),
+                                       start_timeout=args.start_timeout,
+                                       request_timeout=args.request_timeout)
+        model_id = _served_model(endpoint)
+        base_hold = adapt.evaluate(ds.holdout, endpoint.post_json, model_id, label="base held-out",
+                                   k=args.k, python=args.python, log=log)
+        base_dev = adapt.evaluate(ds.dev, endpoint.post_json, model_id, label="base development",
+                                  k=args.k, python=args.python, log=log)
+        managed.stop()
+        managed = None
+        print(f"base: held-out {base_hold.verified_samples}/{base_hold.samples} verified, "
+              f"development {base_dev.verified_samples}/{base_dev.samples}", flush=True)
+        adapter = run_dir / "adapter.gguf"
+        print(f"training {steps} step(s); log {run_dir / 'train.log'} ...", flush=True)
+        trained = adapt.train(runner, model_path, data, adapter, ctx=args.ctx, steps=steps, lr=args.lr,
+                              rank=args.rank, threads=args.threads, log_path=run_dir / "train.log",
+                              gpu=not args.cpu_train, log=log)
+        if trained.returncode != 0 or not adapter.is_file():
+            print(f"error: training failed (exit {trained.returncode}); see {trained.log}",
+                  file=sys.stderr)
+            return 2
+        print("serving the adapter for its evaluation ...", flush=True)
+        managed, endpoint = _serve_for(cfg | {"runner": runner}, model_path,
+                                       extra=("--lora", str(adapter)),
+                                       start_timeout=args.start_timeout,
+                                       request_timeout=args.request_timeout)
+        model_id = _served_model(endpoint)
+        ada_hold = adapt.evaluate(ds.holdout, endpoint.post_json, model_id, label="adapter held-out",
+                                  k=args.k, python=args.python, log=log)
+        ada_dev = adapt.evaluate(ds.dev, endpoint.post_json, model_id, label="adapter development",
+                                 k=args.k, python=args.python, log=log)
+    except RuntimeError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
+    finally:
+        if managed is not None:
+            managed.stop()
+    verdict = adapt.decide(base_hold, ada_hold, base_dev, ada_dev)
+    adapt.record_run(home, stamp, dataset=ds, base_hold=base_hold, ada_hold=ada_hold, base_dev=base_dev,
+                     ada_dev=ada_dev, trained=trained, verdict=verdict, model=model_path)
+    if verdict.promoted:
+        set_config_adapter(home, str(adapter))
+        print(f"kept: {verdict.reason}; the next delegation serves {adapter}")
+    else:
+        print(f"not kept: {verdict.reason}; recorded under {run_dir}")
+    return 0
+
+
+def _served_model(endpoint: RunnerEndpoint) -> str:
+    caps = endpoint.capabilities()
+    models = [m.get("id") for m in caps.get("models", []) if isinstance(m, dict)]
+    return str(models[0]) if models else "model"
 
 
 def cmd_uninstall(args: argparse.Namespace) -> int:
@@ -855,6 +1011,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--ctx", type=int, default=8192)
     p.add_argument("--gpu", default="auto")
     p.add_argument("--threads", type=int, default=0)
+    p.add_argument("--no-pick", action="store_true", help="without -m, do not look for a model on disk")
     p.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
     p.add_argument("--dry-run", action="store_true", help="print what would be written")
     p.set_defaults(fn=cmd_install)
@@ -876,6 +1033,31 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--start-timeout", type=float, default=600.0)
     p.add_argument("--json", action="store_true")
     p.set_defaults(fn=cmd_delegate)
+    p = sub.add_parser("adapt", help="overnight: train the configured model's adapter on the ledger's "
+                                     "own commits, keep it only on a held-out verified rise")
+    p.add_argument("--out", default=str(DEFAULT_OUT))
+    p.add_argument("--bank", default=str(DEFAULT_OUT.parent / "shadow-bank"),
+                   help="comma-separated task directories to add (the bench bank)")
+    p.add_argument("--home", default="")
+    p.add_argument("--model", default="", help="default: the shadow config's model")
+    p.add_argument("--runner", default="", help="default: the shadow config's runner")
+    p.add_argument("--python", default=sys.executable)
+    p.add_argument("--ctx", type=int, default=4096, help="training window")
+    p.add_argument("--epochs", type=int, default=3)
+    p.add_argument("--lr", type=float, default=1e-4)
+    p.add_argument("--rank", type=int, default=8)
+    p.add_argument("--threads", type=int, default=0)
+    p.add_argument("--k", type=int, default=4, help="samples per unit in each evaluation")
+    p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--holdout-fraction", type=float, default=0.3)
+    p.add_argument("--max-failing", type=int, default=30)
+    p.add_argument("--cpu-train", action="store_true", help="do not ask for the GPU training path")
+    p.add_argument("--start-timeout", type=float, default=600.0)
+    p.add_argument("--request-timeout", type=float, default=900.0)
+    p.add_argument("--dry-run", action="store_true", help="print the plan; train nothing")
+    p.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
+    p.add_argument("--status", action="store_true", help="list the recorded runs and their verdicts")
+    p.set_defaults(fn=cmd_adapt)
     p = sub.add_parser("uninstall", help="remove exactly what install wrote")
     p.add_argument("--home", default="")
     p.set_defaults(fn=cmd_uninstall)

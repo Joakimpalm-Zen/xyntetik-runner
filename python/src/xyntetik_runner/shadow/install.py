@@ -14,9 +14,11 @@ from __future__ import annotations
 
 import json
 import shutil
+import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Sequence
 
 MARK = "xyntetik_runner.shadow capture"
 SKILL_NAME = "shadow"
@@ -45,6 +47,86 @@ def write_config(home: Path, *, model: str, runner: str, ctx: int, gpu: str,
             "out": out}
     path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
     return path
+
+
+def set_config_adapter(home: Path, adapter: str) -> Path:
+    """Record (or clear, with "") the promoted adapter the offload serves."""
+    path = home / CONFIG_REL
+    data = read_config(home)
+    if adapter:
+        data["adapter"] = adapter
+    else:
+        data.pop("adapter", None)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    return path
+
+
+MODEL_DIRS = ("models", "Models", ".cache/lm-studio/models", ".lmstudio/models",
+              ".cache/huggingface/hub")
+
+
+@dataclass(frozen=True)
+class Candidate:
+    path: Path
+    size: int
+    verdict: str
+
+    @property
+    def fits(self) -> bool:
+        return self.verdict.startswith("FITS")
+
+
+def fit_verdict(runner: str, model: Path, ctx: int) -> str:
+    """The runner's own `--fit` verdict word(s) for ``model`` at ``ctx``, or
+    "unknown" when the runner could not be asked."""
+    try:
+        proc = subprocess.run([runner, "--fit", str(model), "-c", str(ctx)], capture_output=True,
+                              text=True, encoding="utf-8", errors="replace", timeout=60)
+    except (OSError, subprocess.TimeoutExpired):
+        return "unknown"
+    for line in (proc.stdout + proc.stderr).splitlines():
+        stripped = line.strip()
+        if stripped.startswith("verdict"):
+            rest = stripped[len("verdict"):].strip()
+            return rest.split(" \u2014 ")[0].split(" - ")[0].strip() or "unknown"
+    return "unknown"
+
+
+def find_models(home: Path, *, cwd: Path | None = None, dirs: Sequence[str] = MODEL_DIRS,
+                depth: int = 3) -> list[Path]:
+    """GGUF files under the usual places, largest first, no duplicates."""
+    roots = [home / d for d in dirs] + ([cwd] if cwd else [])
+    seen: dict[tuple[int, int], tuple[Path, int]] = {}
+    for root in roots:
+        if not root.is_dir():
+            continue
+        for path in root.rglob("*.gguf"):
+            if len(path.relative_to(root).parts) > depth or not path.is_file():
+                continue
+            # one entry per file: ~/models and ~/Models are the same directory
+            # on a case-folding filesystem, and both are looked at
+            st = path.stat()
+            key = (st.st_dev, st.st_ino)
+            if key not in seen:
+                seen[key] = (path, st.st_size)
+    return [q for q, _ in sorted(seen.values(), key=lambda v: -v[1])]
+
+
+def suggest_model(runner: str, home: Path, *, ctx: int = 8192, cwd: Path | None = None
+                  ) -> tuple[Candidate | None, list[Candidate]]:
+    """The largest GGUF on disk the runner says fits at ``ctx``, and every
+    candidate it looked at. The first thing the flow needs is a model that
+    fits; the bench decides which one is any good."""
+    cands = [Candidate(m, m.stat().st_size, fit_verdict(runner, m, ctx)) for m in find_models(home, cwd=cwd)]
+    fitting = [c for c in cands if c.fits]
+    return (fitting[0] if fitting else None), cands
+
+
+def render_candidates(cands: Sequence[Candidate]) -> str:
+    if not cands:
+        return "no GGUF files found under " + ", ".join("~/" + d for d in MODEL_DIRS)
+    return "\n".join(f"  {c.path.name}  {c.size / 2**30:.1f} GiB  {c.verdict}" for c in cands)
 
 
 def read_config(home: Path) -> dict[str, object]:
@@ -164,6 +246,30 @@ and never applied silently.
    `git apply <patch>`; the user applies it, you do not. If they failed,
    say so and continue with the frontier model as usual.
 
+## Adapt overnight (only when the user asks for it, always confirmed)
+
+The ledger's admitted tasks and the bench bank hold the repository's own
+commits; `adapt` trains the configured model's adapter on the ones whose
+fix changed one function, evaluates base and adapter on a held-out slice
+with the protected tests, and keeps the adapter only if the held-out
+verified count rises. It runs for hours. Never start it on your own.
+
+1. Show the plan and nothing else:
+   ```
+   {prefix}{python} -m xyntetik_runner.shadow adapt --out {out} --dry-run
+   ```
+   It prints the units, how many are held out, and the examples. If it
+   says there are too few units, say so; the bench (`shadow bench`) and
+   more captured work are what add units.
+2. Only after the user confirms in their own words, start it:
+   ```
+   {prefix}{python} -m xyntetik_runner.shadow adapt --out {out} --yes
+   ```
+   and tell them where the log is. When it finishes, show
+   `{prefix}{python} -m xyntetik_runner.shadow adapt --status`
+   verbatim. A kept adapter is served by the next delegation by itself; a
+   discarded one is still recorded, with its numbers.
+
 Never run `replay`, `optimize`, `bank` or `import` from this command; they
 are long-running and belong to a deliberate session.
 """
@@ -188,6 +294,17 @@ touched), runs the repository's tests there, and prints the verdict, the
 diff and a patch path. Show both; if the tests passed offer `git apply
 <patch>` and let the user apply it; if they failed, say so and continue
 with the frontier model. If no class qualifies, say so and offer the bench.
+
+Adapt overnight (only when the user asks, always confirmed): show the plan
+{prefix}{python} -m xyntetik_runner.shadow adapt --out {out} --dry-run
+(units from the repository's own commits, the held-out count, the
+examples). Only after the user confirms in their own words, start
+{prefix}{python} -m xyntetik_runner.shadow adapt --out {out} --yes
+which trains the configured model's adapter for hours, evaluates base and
+adapter on the held-out slice with the protected tests, and keeps the
+adapter only if held-out verified rises. Afterwards show
+{prefix}{python} -m xyntetik_runner.shadow adapt --status
+verbatim. A kept adapter is served by the next delegation by itself.
 
 Do not run replay, optimize, bank or import from here; they are long-running
 and belong to a deliberate session.
