@@ -72,6 +72,7 @@ class Identity:
     harness_version: str
     adapter_sha256: str | None = None
     adapter_scale: float | None = None
+    scaffold_sha256: str = "base"
 
     def cohort_key(self) -> str:
         """The full partition: a new task class, verifier or context band is
@@ -82,7 +83,7 @@ class Identity:
         """The model stack alone (model, quant, adapter, runner build, backend,
         harness): the unit a report row is about, across tasks."""
         keep = ("model_sha256", "quant", "adapter_sha256", "adapter_scale", "runner_build",
-                "backend", "harness_version", "environment_id")
+                "backend", "harness_version", "environment_id", "scaffold_sha256")
         return json.dumps({k: getattr(self, k) for k in keep}, sort_keys=True,
                           separators=(",", ":"))
 
@@ -154,6 +155,7 @@ class EpisodeEvidence:
         data: dict[str, Any] = json.loads(text)
         ident = data.pop("identity")
         ident["tool_set"] = tuple(ident["tool_set"])
+        ident.setdefault("scaffold_sha256", "base")
         ver = data.pop("verifier")
         if ver is not None:
             ver["tamper"] = tuple(ver["tamper"])
@@ -174,6 +176,7 @@ class CohortSummary:
 
     cohort: str
     model: str
+    scaffold: str
     attempted: int
     verified: int
     failed: int
@@ -228,7 +231,8 @@ def summarize(records: Iterable[EpisodeEvidence]) -> Summary:
             if r.verifier is None:
                 continue
             key = r.identity.stack_key()
-            row = per_cohort.setdefault(key, {"model": r.identity.model_sha256, "attempted": 0,
+            row = per_cohort.setdefault(key, {"model": r.identity.model_sha256,
+                                              "scaffold": r.identity.scaffold_sha256, "attempted": 0,
                                               "verified": 0, "failed": 0, "inconclusive": 0})
             row["attempted"] += 1
             if r.disposition is Disposition.VERIFIED_LOCAL_ATTEMPT:
@@ -238,10 +242,11 @@ def summarize(records: Iterable[EpisodeEvidence]) -> Summary:
             else:
                 row["inconclusive"] += 1
     cohorts = tuple(sorted(
-        (CohortSummary(cohort=k, model=str(v["model"]), attempted=int(v["attempted"]),
+        (CohortSummary(cohort=k, model=str(v["model"]), scaffold=str(v["scaffold"]),
+                       attempted=int(v["attempted"]),
                        verified=int(v["verified"]), failed=int(v["failed"]),
                        inconclusive=int(v["inconclusive"])) for k, v in per_cohort.items()),
-        key=lambda c: c.model))
+        key=lambda c: (c.model, c.scaffold)))
     return Summary(observed=len(by_episode), eligible=eligible, unattempted=unattempted,
                    agreement_only=agreement, by_disposition=by, cohorts=cohorts)
 
@@ -258,8 +263,9 @@ def render(s: Summary) -> str:
     ]
     for c in s.cohorts:
         model = c.model.split(":", 1)[-1]
-        row = (f"{model}: attempted {c.attempted}, verified {c.verified}, failed {c.failed}, "
-               f"inconclusive {c.inconclusive}")
+        scaffold = c.scaffold if c.scaffold == "base" else c.scaffold[:12]
+        row = (f"{model} + scaffold {scaffold}: attempted {c.attempted}, verified {c.verified}, "
+               f"failed {c.failed}, inconclusive {c.inconclusive}")
         if s.eligible:
             row += f"; verified over eligible {c.verified} of {s.eligible}"
             if s.headline_allowed:
