@@ -219,7 +219,8 @@ def test_adapt_end_to_end_keeps_the_adapter_only_on_a_held_out_rise(tmp_path: Pa
     assert rec["adapter_holdout"]["summary"]["verified_samples"] == 2 and rec["dataset"]["examples"] == 1
     assert (runs[0].parent / "train.jsonl").is_file() and (runs[0].parent / "manifest.json").is_file()
     # a second run whose adapter is no better is recorded and not kept; the config keeps the first
-    behaviour["adapter_answer"] = BUGGY_FN
+    # (its answer differs from the base's, or the run would be "not measured" rather than a verdict)
+    behaviour["adapter_answer"] = BUGGY_FN + "  # still wrong\n"
     assert main(common + ["--yes"]) == 0
     text = capsys.readouterr().out
     assert "not kept: held-out verified 0 -> 0: no rise" in text, text
