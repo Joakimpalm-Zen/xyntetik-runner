@@ -1102,6 +1102,30 @@ static void test_qwen_native_stream_boundaries(void) {
         assert(!strcmp(log.content.s, "ordinary answer"));
         log_free(&log);
     }
+    // the reference spelling after a thought is "</think>\n\n<tool_call>":
+    // the content channel then starts with the blank lines, which the
+    // buffered parser trims. The stream reads through them to the call, or
+    // the same turn is a tool call buffered and plain text streamed.
+    const char *spaced =
+        "\n\n<tool_call>\n{\"name\": \"get_weather\", \"arguments\": "
+        "{\"city\":\"Oslo\",\"units\":\"c\"}}\n</tool_call>";
+    for (size_t step = 1; step <= strlen(spaced); step++) {
+        demux_log log;
+        demux_step(&e, spaced, step, &log);
+        assert(log.called && log.begins == 1 && log.ends == 1);
+        assert(!strcmp(log.name, "get_weather"));
+        assert(log.content.n == 0);
+        log_free(&log);
+    }
+    // whitespace that is not followed by a call stays text
+    const char *spaced_text = "\n\nordinary answer<|im_end|>";
+    for (size_t step = 1; step <= strlen(spaced_text); step++) {
+        demux_log log;
+        demux_step(&e, spaced_text, step, &log);
+        assert(!log.called);
+        assert(!strcmp(log.content.s, "\n\nordinary answer"));
+        log_free(&log);
+    }
     tool_envelope_free(&e);
     jv_free(tools);
 }

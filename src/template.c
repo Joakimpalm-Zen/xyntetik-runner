@@ -4065,15 +4065,24 @@ static int ts_qwen(tool_stream *s, const char *bytes, int n) {
     for (;;) {
         switch (s->state) {
         case TS_DONE: return 0;
-        case TS_QWEN_START:
+        case TS_QWEN_START: {
             if (!s->head_n) return 0;
-            if (ts_starts(s, QWEN_CALL_OPEN)) {
+            // whitespace may precede the first call (the reference spelling
+            // after a thought is "</think>\n\n<tool_call>"); the buffered
+            // parser trims it, so the stream must read through it too, or
+            // the same turn is a tool call buffered and plain text streamed
+            size_t ws = 0;
+            while (ws < s->head_n && ts_ws(s->head[ws])) ws++;
+            size_t rest = s->head_n - ws, ln = strlen(QWEN_CALL_OPEN);
+            if (rest >= ln && !memcmp(s->head + ws, QWEN_CALL_OPEN, ln)) {
+                if (ws) head_drop(s, ws);
                 s->state = TS_QWEN_CALLS;
                 break;
             }
-            if (ts_partial(s, QWEN_CALL_OPEN)) return 0;
+            if (rest < ln && !memcmp(s->head + ws, QWEN_CALL_OPEN, rest)) return 0;  // could still be one
             s->state = TS_QWEN_TEXT;
             break;
+        }
         case TS_QWEN_CALLS: {
             size_t ws = 0;
             while (ws < s->head_n && ts_ws(s->head[ws])) ws++;
