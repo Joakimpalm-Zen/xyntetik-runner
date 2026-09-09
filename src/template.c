@@ -261,6 +261,8 @@ bool template_roles_valid(int tmpl, const char *const *roles, int n,
     return true;
 }
 
+static const char *mark_fmt(const char *fmt, char *buf, size_t cap);
+
 static size_t emit(char *out, size_t cap, size_t off, const char *fmt,
                    const char *a, const char *b) {
     // The family preambles are assembled in an sbuf and then formatted through
