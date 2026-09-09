@@ -49,7 +49,7 @@ from .verifier import ProtectedTests, fixed_ids, verify
 SYSTEM = ("You are a software engineer. You receive a change request, the tests, and the "
           "current source of one function. Output the complete new source of that function "
           "and nothing else: no explanation, no code fence, no other code.")
-PROTOCOLS = ("edits", "whole")
+PROTOCOLS = ("edits", "numbered", "whole")
 DEFAULT_PROTOCOL = "edits"  # measured 2026-09-09: the whole-function answer verified nothing in 52 7B samples
 CHARS_PER_TOKEN = 4.2  # measured 4.6 to 4.7 on code with the Qwen2.5 tokenizer; kept conservative
 MIN_UNITS = 2  # one to train on, one to hold out; anything less has no gate
@@ -220,16 +220,23 @@ def function_unit(task: RepairTask) -> FunctionUnit | str:
 def system_for(protocol: str) -> str:
     if protocol not in PROTOCOLS:
         raise ValueError(f"unknown protocol {protocol!r}")
-    return edits_protocol.SYSTEM if protocol == "edits" else SYSTEM
+    if protocol == "edits":
+        return edits_protocol.SYSTEM
+    if protocol == "numbered":
+        return edits_protocol.NUMBERED_SYSTEM
+    return SYSTEM
 
 
 def unit_prompt(task: RepairTask, u: FunctionUnit, *, protocol: str = DEFAULT_PROTOCOL,
                 test_chars: int = 6000) -> str:
     visible = "".join(_git(task.repo, "show", f"{task.base_sha}:{vt}")[:test_chars]
                       for vt in task.visible_test_files)
-    ask = edits_protocol.ASK if protocol == "edits" else f"Output the complete new source of {u.name}."
+    ask = (edits_protocol.ASK if protocol == "edits"
+           else edits_protocol.NUMBERED_ASK if protocol == "numbered"
+           else f"Output the complete new source of {u.name}.")
+    shown = edits_protocol.numbered_view(u.base_fn) if protocol == "numbered" else u.base_fn
     return (f"Change request:\n{task.request.strip()}\n\nCurrent tests ({', '.join(task.visible_test_files)}):\n"
-            f"{visible}\n\nCurrent source of {u.name} in {u.rel}:\n{u.base_fn}\n\n{ask}")
+            f"{visible}\n\nCurrent source of {u.name} in {u.rel}:\n{shown}\n\n{ask}")
 
 
 def splice(text: str, span: tuple[int, int], new_fn: str) -> str:
@@ -360,8 +367,8 @@ def build_dataset(tasks: Sequence[RepairTask], *, family: str, ctx: int, python:
     kept: list[tuple[RepairTask, FunctionUnit]] = []
     for task, u in dev:
         prompt = render_prompt(family, system, unit_prompt(task, u, protocol=protocol))
-        if protocol == "edits":
-            d = edits_protocol.derive(u.base_fn, u.sol_fn)
+        if protocol in ("edits", "numbered"):
+            d = (edits_protocol.derive if protocol == "edits" else edits_protocol.derive_numbered)(u.base_fn, u.sol_fn)
             if d.reason:
                 dropped.append({"task_id": task.task_id, "why": f"not expressible as edits: {d.reason}"})
                 continue
@@ -431,9 +438,9 @@ def evaluate(units: Sequence[tuple[RepairTask, FunctionUnit]],
                     {"role": "user", "content": unit_prompt(task, u, protocol=protocol)}]
         payload: dict[str, Any] = {"model": model, "messages": messages, "max_tokens": max_tokens,
                                    "temperature": temperature}
-        if protocol == "edits":
-            payload["response_format"] = {"type": "json_schema",
-                                          "json_schema": {"name": "edits", "schema": edits_protocol.schema(u.base_fn)}}
+        if protocol in ("edits", "numbered"):
+            sch = (edits_protocol.schema if protocol == "edits" else edits_protocol.numbered_schema)(u.base_fn)
+            payload["response_format"] = {"type": "json_schema", "json_schema": {"name": "edits", "schema": sch}}
         samples: list[dict[str, Any]] = []
         for i in range(k):
             t0 = time.monotonic()
@@ -443,6 +450,8 @@ def evaluate(units: Sequence[tuple[RepairTask, FunctionUnit]],
             rejected = ""
             if protocol == "edits":
                 new_fn, rejected = edits_protocol.apply(u.base_fn, text)
+            elif protocol == "numbered":
+                new_fn, rejected = edits_protocol.apply_numbered(u.base_fn, text)
             else:
                 new_fn = strip_fence(text)
             if rejected:

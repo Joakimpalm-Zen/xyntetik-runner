@@ -465,3 +465,48 @@ def test_edits_schema_past_the_decoder_enum_cap_keeps_the_shape() -> None:
     assert edits.apply(fn, json.dumps({"edits": [{"line": "nope", "until": "nope", "mode": "replace", "text": "x"}]}))[1].startswith("line occurs 0")
     small = "def f(x):\n    return x"
     assert "enum" in edits.schema(small)["properties"]["edits"]["items"]["properties"]["line"]
+
+
+def test_numbered_protocol_schema_apply_and_derive() -> None:
+    view = edits.numbered_view(BUGGY_FN)
+    assert view.startswith("1| def parse_amount") and "| " in view.split("\n")[1]
+    sch = edits.numbered_schema(BUGGY_FN)
+    num = sch["properties"]["edits"]["items"]["properties"]["line"]
+    assert num == {"type": "integer", "minimum": 1, "maximum": len(BUGGY_FN.split("\n"))}
+    d = edits.derive_numbered(BUGGY_FN, CORRECT_FN)
+    assert d.reason == "" and d.text == CORRECT_FN and all(isinstance(e["line"], int) for e in d.edits)
+    got, why = edits.apply_numbered(BUGGY_FN, edits.render(d.edits))
+    assert why == "" and got == CORRECT_FN
+    n = len(BUGGY_FN.split("\n"))
+    assert edits.apply_numbered(BUGGY_FN, json.dumps({"edits": [{"line": n + 1, "until": n + 1, "mode": "replace", "text": "x"}]}))[1].startswith(f"line {n + 1} is outside")
+    assert edits.apply_numbered(BUGGY_FN, json.dumps({"edits": [{"line": "a", "until": 1, "mode": "replace", "text": "x"}]}))[1] == "line and until must be integers"
+    # blank and repeated lines are addressable, so a change there derives exactly
+    dup = "def g(x):\n    if x:\n        return\n\n    if x > 1:\n        return\n    return 3"
+    new = "def g(x):\n    if x:\n        return\n\n    if x > 1:\n        return 2\n    return 3"
+    d = edits.derive_numbered(dup, new)
+    assert d.reason == "" and d.text == new and d.edits == [{"line": 6, "until": 6, "mode": "replace", "text": "        return 2"}]
+    # an insertion before the first line becomes a replace of that line with the new text and itself
+    d = edits.derive_numbered("def h():\n    return 1", "@deco\ndef h():\n    return 1")
+    assert d.reason == "" and d.text == "@deco\ndef h():\n    return 1" and d.edits[0]["line"] == 1
+
+
+def test_adapt_numbered_protocol_wires_through_build_and_evaluate(tmp_path: Path) -> None:
+    from xyntetik_runner.shadow.tasks import RepairTask
+    out = tmp_path / "out"
+    (out / "tasks").mkdir(parents=True)
+    tasks = admitted(tmp_path, out / "tasks", ("alpha", "beta"))
+    ds = adapt.build_dataset(tasks, family="chatml", ctx=4096, python=sys.executable, protocol="numbered")
+    assert ds.protocol == "numbered" and len(ds.examples) == 1
+    ex = ds.examples[0]
+    assert "1| def parse_amount" in str(ex["prompt"]) and edits.NUMBERED_ASK in str(ex["prompt"])
+    assert json.loads(str(ex["completion"]))["edits"][0]["line"] == 3 or isinstance(json.loads(str(ex["completion"]))["edits"][0]["line"], int)
+    seen: list[dict[str, Any]] = []
+    fix = edits.render(edits.derive_numbered(BUGGY_FN, CORRECT_FN).edits)
+
+    def post_json(path: str, payload: dict[str, Any]) -> dict[str, Any]:
+        seen.append(payload)
+        return {"choices": [{"message": {"content": fix}}]}
+    ev = adapt.evaluate(ds.holdout, post_json, "m", label="x", k=1, python=sys.executable, protocol="numbered")
+    assert ev.verified_samples == 1 and ev.rejected == 0
+    assert seen[0]["response_format"]["json_schema"]["schema"]["properties"]["edits"]["items"]["properties"]["line"]["type"] == "integer"
+    assert seen[0]["messages"][0]["content"] == edits.NUMBERED_SYSTEM

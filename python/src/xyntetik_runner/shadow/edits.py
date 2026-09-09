@@ -227,3 +227,118 @@ def render(edits: list[dict[str, str]]) -> str:
     """The completion text a training example carries: the same compact JSON
     the decoder produces."""
     return json.dumps({"edits": edits}, separators=(",", ":"), ensure_ascii=False)
+
+
+# ---------------------------------------------------------------- numbered lines
+#
+# The same edit, anchored by line NUMBER instead of line text: the function
+# is shown with numbers, the schema bounds `line` and `until` as integers
+# between 1 and the function's length, so an invented anchor is impossible
+# for a function of any length and no enum is needed. Every line is
+# addressable, blank and repeated ones included, so a human change derives
+# exactly. What it asks of the model is to read a number off the margin
+# rather than copy a line; which of the two a model does better is
+# measured, not assumed (R15.10).
+
+NUMBERED_SYSTEM = ("You are a software engineer. You receive a change request, the tests, and the current "
+                   "source of one function with a line number in front of every line. Make the smallest "
+                   "change that satisfies the request: answer with a JSON object {\"edits\": [{\"line\": "
+                   "<the number of the first line the edit covers>, \"until\": <the number of the last line "
+                   "it covers; the same number for a one-line edit>, \"mode\": \"replace\" or "
+                   "\"insert_after\", \"text\": <the new text without line numbers: for replace it takes "
+                   "the place of lines line through until and may be empty to delete them; for insert_after "
+                   "it is added after line>}]}. Change as few lines as possible.")
+NUMBERED_ASK = "Answer with the edits object; line and until are the numbers in the margin."
+
+
+def numbered_view(fn_text: str) -> str:
+    lines = fn_text.split("\n")
+    w = len(str(len(lines)))
+    return "\n".join(f"{i:{w}d}| {ln}" for i, ln in enumerate(lines, 1))
+
+
+def numbered_schema(fn_text: str, *, max_edits: int = MAX_EDITS) -> dict[str, Any]:
+    n = len(fn_text.split("\n"))
+    num = {"type": "integer", "minimum": 1, "maximum": n}
+    edit = {"type": "object",
+            "properties": {"line": num, "until": dict(num),
+                           "mode": {"type": "string", "enum": ["replace", "insert_after"]},
+                           "text": {"type": "string"}},
+            "required": ["line", "until", "mode", "text"]}
+    return {"type": "object",
+            "properties": {"edits": {"type": "array", "minItems": 1, "maxItems": max_edits, "items": edit}},
+            "required": ["edits"]}
+
+
+def apply_numbered(fn_text: str, reply: str) -> tuple[str, str]:
+    """Apply numbered edits; (new text, reason). Numbers are 1-based and must
+    lie inside the function; a range may be named in either order; edits may
+    not overlap."""
+    try:
+        edits = json.loads(reply)["edits"]
+        if not isinstance(edits, list):
+            raise TypeError
+    except (ValueError, KeyError, TypeError):
+        return fn_text, "reply is not the edits object"
+    if not edits:
+        return fn_text, "no edits"
+    lines = fn_text.split("\n")
+    n = len(lines)
+    ops: list[tuple[int, int, dict[str, Any]]] = []
+    for e in edits:
+        if not isinstance(e, dict):
+            return fn_text, "an edit is not an object"
+        try:
+            i = int(e.get("line"))
+            j = int(e.get("until", i)) if e.get("mode", "replace") == "replace" else i
+        except (TypeError, ValueError):
+            return fn_text, "line and until must be integers"
+        if not (1 <= i <= n) or not (1 <= j <= n):
+            return fn_text, f"line {i if not 1 <= i <= n else j} is outside 1..{n}"
+        if j < i:
+            i, j = j, i
+        ops.append((i - 1, j - 1, e))
+    ops.sort(key=lambda t: t[0])
+    for (_, e1, _), (i2, _, _) in zip(ops, ops[1:]):
+        if i2 <= e1:
+            return fn_text, "edits overlap"
+    out = list(lines)
+    for i, j, e in sorted(ops, key=lambda t: -t[0]):
+        body = str(e.get("text", ""))
+        if e.get("mode", "replace") == "replace":
+            out[i:j + 1] = _lines_for(body, _indent(lines[i]))
+        else:
+            indent = _indent(lines[i])
+            nxt = next((x for x in lines[i + 1:] if x.strip()), "")
+            if lines[i].rstrip().endswith(":") and nxt:
+                indent = _indent(nxt)
+            out[i + 1:i + 1] = _lines_for(body, indent)
+    return "\n".join(out), ""
+
+
+def derive_numbered(base_fn: str, sol_fn: str, *, max_edits: int = MAX_EDITS) -> Derived:
+    """The human's change as numbered edits: one replace per changed region
+    (an insertion after a line is an insert_after; before the first line,
+    a replace of that line with the new text and itself)."""
+    b, s = base_fn.split("\n"), sol_fn.split("\n")
+    ops = difflib.SequenceMatcher(None, b, s, autojunk=False).get_opcodes()
+    if all(tag == "equal" for tag, *_ in ops):
+        return Derived([], base_fn, "no change")
+    edits: list[dict[str, Any]] = []
+    for tag, i1, i2, j1, j2 in ops:
+        if tag == "equal":
+            continue
+        if tag == "insert":
+            if i1 == 0:
+                edits.append({"line": 1, "until": 1, "mode": "replace", "text": "\n".join(s[j1:j2] + [b[0]])})
+            else:
+                edits.append({"line": i1, "until": i1, "mode": "insert_after", "text": "\n".join(s[j1:j2])})
+            continue
+        edits.append({"line": i1 + 1, "until": i2, "mode": "replace",
+                      "text": "\n".join(s[j1:j2]) if tag == "replace" else ""})
+    if len(edits) > max_edits:
+        return Derived([], base_fn, f"needs {len(edits)} edits, the schema allows {max_edits}")
+    got, why = apply_numbered(base_fn, json.dumps({"edits": edits}))
+    if why:
+        return Derived([], base_fn, why)
+    return Derived(edits, got, "")
