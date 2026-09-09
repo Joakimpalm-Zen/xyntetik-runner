@@ -998,10 +998,10 @@ bool record_sign(const char *path, const char *sign_key_path, const char *prev_p
         return false;
     }
     size_t body_n = n - 1;   // everything before the closing brace
-    size_t k = body_n;
-    while (k > 0 && (buf[k - 1] == '\n' || buf[k - 1] == '\r' || buf[k - 1] == ' ' ||
-                     buf[k - 1] == '\t')) k--;
-    if (k == 0 || buf[k - 1] == '{') {
+    size_t tail_n = body_n;
+    while (tail_n > 0 && (buf[tail_n - 1] == '\n' || buf[tail_n - 1] == '\r' ||
+                          buf[tail_n - 1] == ' ' || buf[tail_n - 1] == '\t')) tail_n--;
+    if (tail_n == 0 || buf[tail_n - 1] == '{') {
         fprintf(stderr, "error: sign-record: %s is an empty object; nothing to sign\n", path);
         free(buf);
         return false;
