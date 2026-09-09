@@ -1092,7 +1092,8 @@ static snode *compile_node(jv *s, char *err, int errcap, int depth) {
         // beside an enum must be one of its members. Before this,
         // {"type":"integer","enum":["bad",1]} accepted "bad" and
         // {"const":1,"enum":[2]} accepted 2.
-        jv *keep[60];
+        jv **keep = malloc(sizeof(jv *) * (size_t)cnt);   // cnt <= SCHEMA_ENUM_MAX
+        if (!keep) return NULL;
         int n_keep = 0;
         for (int i = 0; i < cnt; i++) {
             jv *v = en ? en->items[i] : cn;
@@ -1104,18 +1105,20 @@ static snode *compile_node(jv *s, char *err, int errcap, int depth) {
             snprintf(err, errcap, en && cn
                      ? "const is not one of the enum values"
                      : "no enum value matches the declared type");
+            free(keep);
             return NULL;
         }
         snode *n = sn_new(SN_ENUM);
-        if (!n) return NULL;
+        if (!n) { free(keep); return NULL; }
         n->lits = calloc(n_keep, sizeof(char *));
-        if (!n->lits) { schema_free(n); return NULL; }
+        if (!n->lits) { schema_free(n); free(keep); return NULL; }
         for (int i = 0; i < n_keep; i++) {
             char *lit = sn_literal(keep[i]);
-            if (!lit) { schema_free(n); return NULL; }
+            if (!lit) { schema_free(n); free(keep); return NULL; }
             n->lits[i] = lit;
             n->n_lits++;
         }
+        free(keep);
         if (!enum_index(n)) { schema_free(n); return NULL; }
         return n;
     }
