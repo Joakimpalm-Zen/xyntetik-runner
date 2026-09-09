@@ -831,6 +831,7 @@ static void harmony_render_tool_defs(const jv *tools, sbuf *out) {
 static const char *g4_calls_end(const char *s) {
     static const char OPEN[] = "<|tool_call>";
     static const char CLOSE[] = "<tool_call|>";
+    while (is_mark(*s)) s++;   // the builder's mark around its own syntax
     if (strncmp(s, OPEN, sizeof(OPEN) - 1)) return NULL;
     const char *last = NULL, *p = s;
     for (;;) {
@@ -845,7 +846,7 @@ static const char *g4_calls_end(const char *s) {
 // `captured_content | trim | length > 0` on the reference's side.
 static bool g4_has_text(const char *s) {
     for (; *s; s++)
-        if (!strchr(" \t\n\r\f\v", *s)) return true;
+        if (!strchr(" \t\n\r\f\v", *s) && !is_mark(*s)) return true;
     return false;
 }
 
