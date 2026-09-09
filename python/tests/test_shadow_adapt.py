@@ -407,3 +407,48 @@ def test_strip_note_ends_when_the_end_marker_precedes_the_begin() -> None:
     out = _strip_note(text)  # must return, never loop
     assert NOTE_BEGIN in out and out.startswith("a\n")
     assert _strip_note(f"x\n{NOTE_BEGIN}\nnote\n{NOTE_END}\ny\n") == "x\ny\n"
+
+
+def test_adapt_identical_adapter_samples_are_not_a_verdict(tmp_path: Path, capsys: Any, monkeypatch: Any) -> None:
+    from xyntetik_runner.shadow import cli
+    home = tmp_path / "home"
+    out = tmp_path / "out"
+    (out / "tasks").mkdir(parents=True)
+    admitted(tmp_path, out / "tasks", ("alpha", "beta"))
+    model = tmp_path / "coder.gguf"
+    write_gguf(model, [("tokenizer.chat_template", "<|im_start|>x")])
+    write_config(home, model=str(model), runner="fake-runner", ctx=4096, gpu="auto", threads=0, out=str(out))
+
+    class FakeManaged:
+        def __init__(self, launch: Any, **k: Any) -> None:
+            self.base_url = "http://fake"
+
+        def start(self, **k: Any) -> bool:
+            return True
+
+        def stop(self, **k: Any) -> None:
+            pass
+
+    noop = json.dumps({"edits": [{"line": BUGGY_LINE, "until": BUGGY_LINE, "mode": "replace", "text": BUGGY_LINE}]})
+
+    class FakeEndpoint:  # answers the same whether or not the adapter is served
+        def __init__(self, url: str, **k: Any) -> None:
+            self.base_url = url
+
+        def capabilities(self, **k: Any) -> dict[str, Any]:
+            return {"models": [{"id": "coder.gguf"}]}
+
+        def post_json(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
+            return {"choices": [{"message": {"content": noop}}]}
+
+    def fake_train(runner: str, model_path: str, data: Path, adapter: Path, **k: Any) -> adapt.TrainResult:
+        adapter.write_bytes(b"GGUF-adapter")
+        return adapt.TrainResult(adapter, k["steps"], 0, k["log_path"], 12.5, 0.5, 0.1)
+    monkeypatch.setattr(cli, "ManagedRunner", FakeManaged)
+    monkeypatch.setattr(cli, "RunnerEndpoint", FakeEndpoint)
+    monkeypatch.setattr(adapt, "train", fake_train)
+    rc = main(["adapt", "--out", str(out), "--bank", "", "--home", str(home), "--python", sys.executable,
+               "--k", "2", "--yes"])
+    err = capsys.readouterr().err
+    assert rc == 2 and "byte-identical" in err and "not measured" in err
+    assert not list(adapt.adapters_dir(home).glob("*/run.json")), "no verdict is recorded"

@@ -538,6 +538,17 @@ def decide(base_hold: Evaluation, ada_hold: Evaluation, base_dev: Evaluation,
     return Verdict(False, hb, ha, db, da, f"held-out verified {hb} -> {ha}: no rise, not kept")
 
 
+def identical_samples(a: Evaluation, b: Evaluation) -> bool:
+    """True when every sample of ``a`` is byte-identical to its counterpart
+    in ``b``. An adapter evaluation identical to the base's means the adapter
+    was not what answered (a stale server on the port, a bind that failed):
+    the verdict is then not measured, never "no rise". Measured 2026-09-09
+    on a 14B: 44 of 44 identical, the base server still held the port."""
+    ha = [x.get("completion_sha256") for t in a.tasks for x in t["samples"]]
+    hb = [x.get("completion_sha256") for t in b.tasks for x in t["samples"]]
+    return bool(ha) and ha == hb
+
+
 def adapters_dir(home: Path) -> Path:
     return home / ".xyntetik" / "shadow" / "adapters"
 

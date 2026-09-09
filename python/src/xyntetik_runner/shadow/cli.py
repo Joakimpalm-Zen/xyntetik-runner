@@ -1000,6 +1000,11 @@ def cmd_adapt(args: argparse.Namespace) -> int:
     finally:
         if managed is not None:
             managed.stop()
+    if adapt.identical_samples(base_hold, ada_hold) and adapt.identical_samples(base_dev, ada_dev):
+        print("error: the adapter's samples are byte-identical to the base's on every unit: the adapter "
+              "was not what answered (a stale server on the port, or the adapter did not load); "
+              f"not measured, no verdict recorded; see {run_dir}", file=sys.stderr)
+        return 2
     verdict = adapt.decide(base_hold, ada_hold, base_dev, ada_dev)
     adapt.record_run(home, stamp, dataset=ds, base_hold=base_hold, ada_hold=ada_hold, base_dev=base_dev,
                      ada_dev=ada_dev, trained=trained, verdict=verdict, model=model_path)
