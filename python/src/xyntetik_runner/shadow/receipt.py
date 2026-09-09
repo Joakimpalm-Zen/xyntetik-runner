@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import subprocess
 import time
 from dataclasses import dataclass
@@ -105,8 +106,11 @@ def keygen(home: Path, runner: str) -> Path:
     key.parent.mkdir(parents=True, exist_ok=True)
     if key.is_file():
         return key
-    proc = subprocess.run([runner, "--keygen", str(key)], capture_output=True, text=True,
-                          encoding="utf-8", errors="replace", timeout=60)
+    try:
+        proc = subprocess.run([runner, "--keygen", str(key)], capture_output=True, text=True,
+                              encoding="utf-8", errors="replace", timeout=60)
+    except OSError as e:
+        raise RuntimeError(f"cannot run {runner}: {e}") from e
     if proc.returncode != 0 or not key.is_file():
         raise RuntimeError(f"runner --keygen failed: {(proc.stderr or proc.stdout).strip()[:200]}")
     return key
@@ -118,8 +122,11 @@ def sign_with_runner(runner: str, path: Path, key: Path, prev: Path | None) -> S
     args = [runner, "--sign-record", str(path), "--sign-key", str(key)]
     if prev is not None:
         args += ["--record-prev", str(prev)]
-    proc = subprocess.run(args, capture_output=True, text=True, encoding="utf-8", errors="replace",
-                          timeout=60)
+    try:
+        proc = subprocess.run(args, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                              timeout=60)
+    except OSError as e:
+        raise RuntimeError(f"cannot run {runner}: {e}") from e
     if proc.returncode != 0:
         raise RuntimeError(f"runner --sign-record failed: {(proc.stderr or proc.stdout).strip()[:200]}")
     rec = json.loads(path.read_text(encoding="utf-8"))
@@ -133,27 +140,38 @@ def write_receipt(home: Path, body: dict[str, Any], *, runner: str, key: Path,
     d = receipts_dir(home)
     d.mkdir(parents=True, exist_ok=True)
     stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+    # a numbered suffix on every name, so receipts of one second sort in the
+    # order they were written and the chain never forks
     n = 0
-    path = d / f"{stamp}.json"
+    path = d / f"{stamp}-{n:03d}.json"
     while path.exists():
         n += 1
-        path = d / f"{stamp}-{n}.json"
+        path = d / f"{stamp}-{n:03d}.json"
     prev = latest(home)
-    path.write_text(json.dumps(body, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    # written and signed under a dot-name, which latest() never returns, so a
+    # kill between the write and the signature leaves nothing the next
+    # receipt would try to link to
+    draft = d / f".{path.name}"
+    draft.write_text(json.dumps(body, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     sign = signer or sign_with_runner
     try:
-        return sign(runner, path, key, prev)
+        signed = sign(runner, draft, key, prev)
     except Exception:
-        path.unlink(missing_ok=True)
+        draft.unlink(missing_ok=True)
         raise
+    os.replace(draft, path)
+    return Signed(path, signed.chain_hash, signed.public_key)
 
 
 def check_with_runner(runner: str, path: Path, trust_key: str = "") -> tuple[int, str]:
     args = [runner, "--check-record", str(path)]
     if trust_key:
         args += ["--trust-key", trust_key]
-    proc = subprocess.run(args, capture_output=True, text=True, encoding="utf-8", errors="replace",
-                          timeout=60)
+    try:
+        proc = subprocess.run(args, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                              timeout=60)
+    except OSError as e:
+        return 2, f"UNVERIFIABLE: cannot run {runner}: {e}"
     return proc.returncode, (proc.stdout or proc.stderr).strip()
 
 

@@ -304,3 +304,33 @@ def test_delegation_writes_a_signed_receipt_when_a_key_exists(repo: Path, tmp_pa
     assert main(["receipts", "--home", str(home)]) == 0
     listing = capsys.readouterr().out
     assert listing.count("| proj |") == 2 and rec["chain"]["hash"][:12] in listing
+
+
+def test_receipts_of_one_second_chain_in_order_and_a_draft_is_never_linked(tmp_path: Path) -> None:
+    from xyntetik_runner.shadow import receipt
+    home = tmp_path
+    calls: list[tuple[str, str | None]] = []
+
+    def fake_sign(runner: str, path: Path, k: Path, prev: Path | None) -> receipt.Signed:
+        assert path.name.startswith("."), "signed under a dot-name, which latest() never returns"
+        calls.append((path.name, prev.name if prev else None))
+        body = path.read_text(encoding="utf-8")
+        path.write_text(body, encoding="utf-8")
+        return receipt.Signed(path, receipt.sha256_text(body), "pk")
+
+    key = home / "key.json"
+    for i in range(3):
+        s = receipt.write_receipt(home, {"predicate": {"i": i}}, runner="r", key=key, signer=fake_sign)
+        assert not s.path.name.startswith(".") and s.path.is_file()
+    names = sorted(p.name for p in receipt.receipts_dir(home).glob("*.json"))
+    assert len(names) == 3 and names == [c[0].lstrip(".") for c in calls]
+    # each receipt links to the one written just before it, same second or not
+    assert [c[1] for c in calls] == [None, names[0], names[1]]
+    # a signing failure leaves no file behind, and the next receipt links to the last good one
+    def failing(runner: str, path: Path, k: Path, prev: Path | None) -> receipt.Signed:
+        raise RuntimeError("runner --sign-record failed")
+    with pytest.raises(RuntimeError):
+        receipt.write_receipt(home, {"predicate": {"i": 9}}, runner="r", key=key, signer=failing)
+    assert sorted(p.name for p in receipt.receipts_dir(home).glob("*.json")) == names
+    assert not list(receipt.receipts_dir(home).glob(".*"))
+    assert receipt.latest(home) is not None and receipt.latest(home).name == names[-1]

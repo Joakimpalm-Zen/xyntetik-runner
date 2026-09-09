@@ -281,7 +281,8 @@ static int train_eot_id(tokenizer *tok, int tmpl) {
     switch (tmpl) {
     case TMPL_CHATML: case TMPL_CHATML_THINK: case TMPL_QWEN38: s = "<|im_end|>"; break;
     case TMPL_LLAMA3: s = "<|eot_id|>"; break;
-    case TMPL_GEMMA: case TMPL_GEMMA4: case TMPL_GEMMA4_MAINLINE: s = "<end_of_turn>"; break;
+    case TMPL_GEMMA: s = "<end_of_turn>"; break;
+    case TMPL_GEMMA4: case TMPL_GEMMA4_MAINLINE: s = "<turn|>"; break;
     case TMPL_MUSE: s = "<|eot|>"; break;
     case TMPL_PHI3: s = "<|end|>"; break;
     case TMPL_HARMONY: s = "<|return|>"; break;
@@ -390,7 +391,7 @@ static bool train_examples_load(tokenizer *tok, const char *path, bool no_bos,
                 nc = np >= 0 ? tok_encode(tok, completion, tokens + np, cap - np,
                                           false, false) : -1;
                 if (np < 0 || nc < 0 || np + nc + 1 < cap) break;   // fits, or failed
-                if (cap > INT_MAX / 2) break;
+                if (attempt == 5 || cap > INT_MAX / 2) break;      // cap stays the allocation
                 cap *= 2;
             }
             if (!tokens) {
@@ -2206,7 +2207,8 @@ int main(int argc, char **argv) {
         train_ex *exs = NULL;
         int n_ex = 0;
         int wctx = train_ctx < m.n_ctx ? train_ctx : m.n_ctx;
-        int train_tmpl = template_detect(gguf_get_str(&m.gf, "tokenizer.chat_template", NULL), &tok);
+        int train_tmpl = tmpl_override >= 0 ? tmpl_override
+                         : template_detect(gguf_get_str(&m.gf, "tokenizer.chat_template", NULL), &tok);
         int eot_id = train_eot_id(&tok, train_tmpl);
         if (!train_examples_load(&tok, train_path, no_bos, wctx, eot_id, train_eot,
                                  &exs, &n_ex)) CLI_FAIL;

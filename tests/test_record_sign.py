@@ -50,6 +50,18 @@ def test_sign_check_tamper_and_chain(tmp_path):
     c = tmp_path / "c.json"
     c.write_text("[1,2]\n", encoding="utf-8")
     assert run("--sign-record", str(c), "--sign-key", str(key)).returncode == 1
+    # an empty object is refused (it would sign to invalid JSON)
+    e = tmp_path / "e.json"
+    e.write_text("{}\n", encoding="utf-8")
+    assert run("--sign-record", str(e), "--sign-key", str(key)).returncode == 1
+    # bytes appended after the signature are covered by nothing: not OK
+    good = b.read_text(encoding="utf-8").rstrip()
+    assert good.endswith("}}")
+    b.write_text(good[:-1] + ',"note":"forged"}\n', encoding="utf-8")
+    forged = run("--check-record", str(b))
+    assert forged.returncode == 2 and "after its signature" in forged.stdout
+    b.write_text(good + "\n", encoding="utf-8")
+    assert run("--check-record", str(b)).returncode == 0
 
 
 def test_delegation_receipt_round_trip_through_the_binary(tmp_path):

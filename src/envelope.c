@@ -932,8 +932,26 @@ static char *record_read(const char *path, size_t *n_out) {
         }
     }
     fclose(f);
+    buf[n] = 0;   // the loop grows at n == cap, so a spare byte always exists
     *n_out = n;
     return buf;
+}
+
+// a signed record ends with its signature object and the closing brace:
+// bytes after the signature are covered by nothing, so a record that carries
+// any is not "OK", whatever the signature says about the rest
+static bool record_tail_clean(const char *buf, size_t n) {
+    const char *sig = NULL, *p = buf;
+    while ((p = strstr(p, ",\"signature\"")) != NULL) { sig = p; p++; }
+    if (!sig) return false;
+    const char *close = strchr(sig, '}');   // its values are hex and a name, never braces
+    if (!close) return false;
+    const char *q = close + 1;
+    while (*q == ' ' || *q == '\n' || *q == '\r' || *q == '\t') q++;
+    if (*q != '}') return false;
+    for (q++; *q; q++)
+        if (!(*q == ' ' || *q == '\n' || *q == '\r' || *q == '\t')) return false;
+    return (size_t)(q - buf) == n;
 }
 
 // the chain hash of a signed record, or "" when it has none
@@ -980,6 +998,14 @@ bool record_sign(const char *path, const char *sign_key_path, const char *prev_p
         return false;
     }
     size_t body_n = n - 1;   // everything before the closing brace
+    size_t k = body_n;
+    while (k > 0 && (buf[k - 1] == '\n' || buf[k - 1] == '\r' || buf[k - 1] == ' ' ||
+                     buf[k - 1] == '\t')) k--;
+    if (k == 0 || buf[k - 1] == '{') {
+        fprintf(stderr, "error: sign-record: %s is an empty object; nothing to sign\n", path);
+        free(buf);
+        return false;
+    }
     char prev[65] = "";
     if (prev_path && !record_chain_hash(prev_path, prev)) {
         fprintf(stderr, "error: sign-record: %s carries no chain hash to link to\n", prev_path);
@@ -1047,11 +1073,13 @@ int record_check(const char *path, const char *trust_hex) {
     }
     char pub[SIGN_PUBHEX_CAP] = "";
     receipt_sig_state st = receipt_signature_check(buf, n, pub);
+    bool tail_ok = record_tail_clean(buf, n);
     char chain[65] = "";
     record_chain_hash(path, chain);
     free(buf);
     if (st == RSIG_NONE) { printf("UNSIGNED: %s\n", path); return 1; }
     if (st != RSIG_OK) { printf("BAD SIGNATURE: %s\n", path); return 2; }
+    if (!tail_ok) { printf("BAD SIGNATURE: %s carries bytes after its signature\n", path); return 2; }
     if (trust_hex && *trust_hex && strcmp(trust_hex, pub) != 0) {
         printf("UNTRUSTED KEY: %s signed by %s, expected %s\n", path, pub, trust_hex);
         return 2;
