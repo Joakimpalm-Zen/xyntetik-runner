@@ -43,6 +43,15 @@ SYSTEM = ("You are a software engineer. You receive a change request, the tests,
           "insert_after it is added after line>}]}. Change as few lines as possible.")
 MAX_EDITS = 12
 ASK = "Answer with the edits object."
+# The runner's schema decoder tracks the live candidates of an enum in a
+# 64-bit mask and refuses more than 60 values. A function with more distinct
+# lines than that cannot have its anchors enumerated; its schema keeps the
+# shape and lets `line` be any string, and apply() refuses an anchor that
+# is not in the function, so an invented anchor is measured as a rejection
+# rather than decoded away. Measured 2026-09-09 on the wide bank: the long
+# functions are where the enum mattered most, so this is a limit to lift in
+# the decoder (a wider candidate set), not a design.
+ENUM_CAP = 60
 
 
 def anchor_lines(fn_text: str) -> list[str]:
@@ -60,9 +69,10 @@ def anchor_lines(fn_text: str) -> list[str]:
 def schema(fn_text: str, *, max_edits: int = MAX_EDITS) -> dict[str, Any]:
     """The JSON schema the runner decodes the reply under."""
     anchors = anchor_lines(fn_text)
+    line = {"type": "string", "enum": anchors} if len(anchors) <= ENUM_CAP else {"type": "string"}
     edit = {"type": "object",
-            "properties": {"line": {"type": "string", "enum": anchors},
-                           "until": {"type": "string", "enum": anchors},
+            "properties": {"line": line,
+                           "until": dict(line),
                            "mode": {"type": "string", "enum": ["replace", "insert_after"]},
                            "text": {"type": "string"}},
             "required": ["line", "until", "mode", "text"]}
