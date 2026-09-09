@@ -125,9 +125,16 @@ def _read_records(path: Path) -> list[EpisodeEvidence]:
     if not path.is_file():
         return []
     out: list[EpisodeEvidence] = []
+    skipped = 0
     for line in path.read_text(encoding="utf-8").splitlines():
-        if line.strip():
+        if not line.strip():
+            continue
+        try:
             out.append(EpisodeEvidence.from_json(line))
+        except (ValueError, KeyError, TypeError):
+            skipped += 1  # a line cut short by a kill mid-append; the ledger is still readable
+    if skipped:
+        print(f"warning: {skipped} unreadable line(s) in {path} skipped", file=sys.stderr)
     return out
 
 
@@ -814,8 +821,9 @@ def cmd_delegate(args: argparse.Namespace) -> int:
             print(f"{'started' if started else 'reusing'} the runner at {endpoint.base_url} "
                   f"(warm for {DEFAULT_TTL}s; 'shadow server --stop' ends it)", flush=True)
         caps = endpoint.capabilities()
-        models = [m.get("id") for m in caps.get("models", []) if isinstance(m, dict)]
-        model = str(models[0]) if models else "model"
+        models = [str(m.get("id")) for m in caps.get("models", []) if isinstance(m, dict)]
+        wanted = Path(args.model).name if args.model else ""
+        model = wanted if wanted in models else (models[0] if models else "model")
         budget = Budget(max_turns=args.max_turns, wall_s=args.wall, test_runs=4)
         d = delegate(Path(args.repo).resolve(), args.request, endpoint.post_json, model,
                      python=args.python, budget=budget)

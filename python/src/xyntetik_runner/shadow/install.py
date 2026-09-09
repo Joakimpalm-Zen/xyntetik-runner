@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Sequence
 
+from .server import atomic_write_text
 from .capabilities import SHEET_REL, harness_note, remove_note, upsert_note, write_sheet
 
 MARK = "xyntetik_runner.shadow capture"
@@ -57,7 +58,7 @@ def write_config(home: Path, *, model: str, runner: str, ctx: int, gpu: str,
         if key in old:
             data[key] = old[key]
     data.setdefault("tandem", True)
-    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    atomic_write_text(path, json.dumps(data, indent=2) + "\n")
     return path
 
 
@@ -66,7 +67,7 @@ def set_config_key(home: Path, key: str, value: object) -> Path:
     data = read_config(home)
     data[key] = value
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    atomic_write_text(path, json.dumps(data, indent=2) + "\n")
     return path
 
 
@@ -79,7 +80,7 @@ def set_config_adapter(home: Path, adapter: str) -> Path:
     else:
         data.pop("adapter", None)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    atomic_write_text(path, json.dumps(data, indent=2) + "\n")
     return path
 
 

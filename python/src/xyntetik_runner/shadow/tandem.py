@@ -28,6 +28,7 @@ from typing import Any, Callable, Sequence
 from xyntetik_runner.process import spawn_detached
 from xyntetik_runner.shadow.evidence import EpisodeEvidence
 from xyntetik_runner.shadow.routes import Route, route_table
+from xyntetik_runner.shadow.server import atomic_write_text
 
 STATE_DIR_REL = Path(".xyntetik") / "shadow" / "delegations"
 RUNNING_WALL_S = 1200.0  # a delegation older than this without an end is treated as dead
@@ -75,7 +76,7 @@ class DelegationState:
         d = home / STATE_DIR_REL
         d.mkdir(parents=True, exist_ok=True)
         path = d / f"{self.id}.json"
-        path.write_text(json.dumps(asdict(self), indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        atomic_write_text(path, json.dumps(asdict(self), indent=2, sort_keys=True) + "\n")
         return path
 
     @classmethod

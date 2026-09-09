@@ -221,3 +221,18 @@ def test_hashes_fold_crlf_so_a_windows_checkout_still_loads(tmp_path: Path) -> N
     money = ws / "calc" / "money.py"
     money.write_bytes(money.read_bytes().replace(b"\n", b"\r\n"))
     assert not base.changes(ws), "line endings alone are not a change"
+
+
+def test_a_pytest_shim_in_the_workspace_never_runs_the_verifier(task: tuple[Path, Baseline, ProtectedTests]) -> None:
+    """The verifier runs the interpreter isolated: a pytest.py the attempt
+    wrote into the workspace is not what `-m pytest` imports."""
+    ws, baseline, protected = task
+    (ws / "pytest.py").write_text(
+        "import sys\n"
+        "i = sys.argv.index('--junit-xml')\n"
+        "open(sys.argv[i + 1], 'w').write('<testsuites><testsuite name=\"pytest\" tests=\"1\" failures=\"0\">"
+        "<testcase classname=\"tests.test_money\" name=\"test_plain\"/></testsuite></testsuites>')\n"
+        "sys.exit(0)\n", encoding="utf-8")
+    (ws / "sitecustomize.py").write_text("import atexit, sys\natexit.register(lambda: None)\n", encoding="utf-8")
+    out = verify(ws, protected, baseline, timeout_s=120, python=sys.executable)
+    assert out.passed is False, out

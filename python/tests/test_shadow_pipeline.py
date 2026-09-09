@@ -604,3 +604,39 @@ def test_routes_and_delegate_on_a_scratch_worktree(repo: Path, tmp_path: Path, c
     patch = [l for l in text.splitlines() if l.startswith("patch: ")][0].split(": ", 1)[1]
     assert Path(patch).read_text(encoding="utf-8").startswith("diff --git a/calc/money.py")
     assert not list(repo.glob(".git/worktrees/*")) or True
+
+
+def test_collect_tests_pins_rootdir_to_the_tree(tmp_path: Path) -> None:
+    """A repository whose Python lives in a subdirectory with its own
+    pyproject.toml reports nodeids relative to the tree, not to that file."""
+    from xyntetik_runner.shadow.tasks import collect_tests
+    tree = tmp_path / "repo"
+    (tree / "python" / "tests").mkdir(parents=True)
+    (tree / "python" / "pyproject.toml").write_text("[project]\nname='x'\nversion='0'\n", encoding="utf-8")
+    (tree / "python" / "tests" / "test_a.py").write_text("def test_one():\n    assert True\n", encoding="utf-8")
+    got = collect_tests(tree, ["python/tests/test_a.py"], ("python/src",), python=sys.executable, timeout_s=120)
+    assert got == {"python/tests/test_a.py": ["test_one"]}
+
+
+def test_list_files_refuses_a_bad_pattern_instead_of_raising(tmp_path: Path) -> None:
+    ws = Workspace(tmp_path, visible_tests=(), pythonpath=(), python=sys.executable, budget=Budget())
+    (tmp_path / "a.py").write_text("x = 1\n", encoding="utf-8")
+    assert ws.list_files(".").startswith("error: bad pattern")
+    assert "a.py" in ws.list_files("*.py")
+
+
+def test_harness_meta_records_are_not_requests(tmp_path: Path) -> None:
+    from xyntetik_runner.shadow.importer import _claude_file
+    f = tmp_path / "s.jsonl"
+    rows = [
+        {"type": "user", "message": {"content": "fix the parser"}, "timestamp": "2026-09-01T10:00:00Z",
+         "cwd": str(tmp_path), "sessionId": "s"},
+        {"type": "user", "isMeta": True, "message": {"content": "Stop hook feedback: keep going"},
+         "timestamp": "2026-09-01T10:00:05Z", "cwd": str(tmp_path), "sessionId": "s"},
+        {"type": "user", "message": {"content": "now the tests"}, "timestamp": "2026-09-01T10:30:00Z",
+         "cwd": str(tmp_path), "sessionId": "s"},
+    ]
+    f.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+    eps = _claude_file(f)
+    assert [e.request for e in eps] == ["fix the parser", "now the tests"]
+    assert eps[0].ended_at.startswith("2026-09-01T10:30")

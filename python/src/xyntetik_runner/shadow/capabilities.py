@@ -234,9 +234,16 @@ def remove_note(path: Path) -> bool:
 
 
 def _strip_note(text: str) -> str:
-    while NOTE_BEGIN in text and NOTE_END in text:
+    while NOTE_BEGIN in text:
         a = text.index(NOTE_BEGIN)
-        b = text.index(NOTE_END) + len(NOTE_END)
-        text = text[:a].rstrip("\n") + text[b:].lstrip("\n")
+        b = text.find(NOTE_END, a)   # an end marker before the begin is not this note's
+        if b < 0:
+            break
+        b += len(NOTE_END)
+        before = text
+        head, tail = text[:a].rstrip("\n"), text[b:].lstrip("\n")
+        text = head + ("\n" if head and tail else "") + tail   # the lines around the note stay lines
         text = text if text.endswith("\n") or not text else text + "\n"
+        if len(text) >= len(before):
+            break
     return text

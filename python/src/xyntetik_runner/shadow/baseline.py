@@ -54,8 +54,8 @@ def tree_hashes(root: Path, *, ignored_dirs: Iterable[str] = IGNORED_DIRS) -> di
         if path.is_symlink() or not path.is_file():
             continue
         rel = path.relative_to(root)
-        if any(part in ignored for part in rel.parts[:-1]):
-            continue
+        if any(part in ignored for part in rel.parts[:-1]) or rel.parts[0] in ignored:
+            continue  # the second clause: a worktree's root .git is a file, not a directory
         out[rel.as_posix()] = file_sha256(path)
     return out
 

@@ -187,8 +187,8 @@ def scan_claude_code(root: Path) -> ScanReport:
 def _claude_file(path: Path) -> list[Episode]:
     turns: list[tuple[str, str, datetime, str]] = []
     for rec in _records(path):
-        if rec.get("type") != "user":
-            continue
+        if rec.get("type") != "user" or rec.get("isMeta") or rec.get("isCompactSummary"):
+            continue  # hook feedback, images and summaries are the harness's words, not the user's
         msg = rec.get("message")
         content = msg.get("content") if isinstance(msg, dict) else None
         stamp = rec.get("timestamp")

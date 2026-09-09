@@ -32,6 +32,7 @@ from xyntetik_runner.shadow.baseline import Baseline
 from xyntetik_runner.shadow.evidence import Disposition, EpisodeEvidence
 from xyntetik_runner.shadow.scaffold import Scaffold
 from xyntetik_runner.shadow.tasks import class_from_diff, classify, import_roots
+from xyntetik_runner.shadow.verifier import CONFIG_BASENAMES
 
 MIN_ATTEMPTS = 3
 MIN_VERIFIED = 1
@@ -177,7 +178,8 @@ def delegate(repo: Path, request: str, post_json: Any, model: str, *, python: st
                           changed_paths=changes.paths, tests_exit=tests_exit,
                           tests_tail=tail[-2000:], attempt=result, model=model,
                           wall_s=round(time.monotonic() - t0, 1), task_class=task_class,
-                          test_files_changed=tuple(_tests))
+                          test_files_changed=tuple(p for p in changes.paths
+                                                   if p in _tests or Path(p).name in CONFIG_BASENAMES))
     finally:
         subprocess.run(["git", "-C", str(repo), "worktree", "remove", "--force", str(ws_dir)],
                        capture_output=True)

@@ -399,3 +399,11 @@ def test_adapt_edits_protocol_trains_on_derived_edits_and_decodes_under_the_sche
     assert rec["base_holdout"]["summary"]["verified_samples"] == 0
     assert rec["adapter_holdout"]["summary"]["verified_samples"] == 2
     assert all("response_format" in p for p in seen)
+
+
+def test_strip_note_ends_when_the_end_marker_precedes_the_begin() -> None:
+    from xyntetik_runner.shadow.capabilities import NOTE_BEGIN, NOTE_END, _strip_note
+    text = f"a\n{NOTE_END}\nb\n{NOTE_BEGIN}\nnote\n"
+    out = _strip_note(text)  # must return, never loop
+    assert NOTE_BEGIN in out and out.startswith("a\n")
+    assert _strip_note(f"x\n{NOTE_BEGIN}\nnote\n{NOTE_END}\ny\n") == "x\ny\n"

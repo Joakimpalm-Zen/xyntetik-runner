@@ -128,7 +128,11 @@ class Workspace:
         if pattern.startswith(("/", "\\")) or ".." in pattern:
             return "error: pattern must be relative and may not contain .."
         out: list[str] = []
-        for p in sorted(self.root.glob(pattern)):
+        try:
+            found = sorted(self.root.glob(pattern))
+        except (ValueError, NotImplementedError) as e:
+            return f"error: bad pattern: {e}"
+        for p in found:
             rel = p.relative_to(self.root)
             if any(part in IGNORED_DIRS for part in rel.parts):
                 continue
@@ -325,10 +329,10 @@ def attempt(request: str, workspace: Workspace, chat: ChatFn, *, budget: Budget 
                              "the tests, then call finish."})
             continue
         for call in tool_calls:
-            calls += 1
-            if calls > budget.max_tool_calls:
+            if calls >= budget.max_tool_calls:
                 return _done(turns, calls, workspace, ptoks, ctoks, t0, "tool-call budget", False,
                              names, messages=messages)
+            calls += 1
             name, args = _name(call), _args(call)
             names.append(name)
             if name == "finish":
@@ -337,7 +341,12 @@ def attempt(request: str, workspace: Workspace, chat: ChatFn, *, budget: Budget 
             if name == "list_files":
                 result = workspace.list_files(str(args.get("pattern") or "**/*"))
             elif name == "read_file":
-                result = workspace.read_file(str(args.get("path") or ""), int(args.get("offset") or 0))
+                try:
+                    offset = int(float(args.get("offset") or 0))
+                except (TypeError, ValueError):
+                    offset = -1
+                result = ("error: offset must be an integer line number" if offset < 0
+                          else workspace.read_file(str(args.get("path") or ""), offset))
             elif name == "write_file":
                 result = workspace.write_file(str(args.get("path") or ""), args.get("content"))  # type: ignore[arg-type]
             elif name == "edit_file":

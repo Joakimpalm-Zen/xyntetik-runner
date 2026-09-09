@@ -135,8 +135,10 @@ def commits_in_window(repo: Path, start: datetime, end: datetime,
 def touched_files(repo: Path, shas: Iterable[str]) -> set[str]:
     files: set[str] = set()
     for sha in shas:
-        text = _git(str(repo), "show", "--name-only", "--format=", "--no-renames", sha)
-        files.update(x for x in text.split("\n") if x)
+        # -z: names come NUL-separated and unquoted, so a non-ASCII path is
+        # the path and not git's C-quoted rendering of it
+        text = _git(str(repo), "show", "--name-only", "--format=", "--no-renames", "-z", sha)
+        files.update(x for x in text.split("\0") if x)
     return files
 
 
@@ -193,9 +195,13 @@ def collect_tests(tree: Path, files: Sequence[str], roots: Sequence[str], *, pyt
     env.update({"HOME": str(tree), "PYTHONDONTWRITEBYTECODE": "1",
                 "PYTHONPATH": os.pathsep.join([str(tree)] + [str(tree / r) for r in roots])})
     try:
+        # rootdir pinned to the tree: pytest otherwise takes the nearest
+        # pyproject.toml above a test file, and a repository whose Python
+        # lives in a subdirectory then reports nodeids relative to that
+        # subdirectory, which never match the paths admitted here
         proc = subprocess.run([python, "-m", "pytest", "-p", "no:cacheprovider", "--collect-only",
-                               "-q", *files], cwd=tree, env=env, capture_output=True, text=True,
-                              timeout=timeout_s)
+                               "-q", "--rootdir", str(Path(tree).resolve()), *files], cwd=tree, env=env,
+                              capture_output=True, text=True, timeout=timeout_s)
     except subprocess.TimeoutExpired:
         return {}
     expected: dict[str, list[str]] = {}

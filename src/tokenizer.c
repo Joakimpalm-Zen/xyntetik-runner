@@ -1134,6 +1134,7 @@ static int bpe_word(tokenizer *t, const char *w, int n, int32_t *out, int cap, i
             // stays unreachable there.
             for (int j = 0; j < ln[i]; ) {
                 int l = u8_len((uint8_t)w[st[i] + j]);
+                if (j + l > ln[i]) l = ln[i] - j;   /* a lead byte cut by the segment end */
                 int cid = hmap_get(&t->vocab, w + st[i] + j, l);
                 if (cid >= 0) {
                     if (n_out < cap) out[n_out++] = cid;

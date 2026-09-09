@@ -379,6 +379,7 @@ static bool compile_ascii_pattern(jv *s, snode *n, char *err, int errcap) {
                 if (lo >= 128 || hi >= 128 || hi < lo) goto bad;
                 for (unsigned c = lo; c <= hi; c++) g->ascii[c] = true;
             }
+            if (rb == lb + 1) goto bad;   /* an empty class matches nothing: unsatisfiable */
             quant = rb + 1;
         }
         long min = 0, max = -1;

@@ -48,7 +48,7 @@ MANIFEST = "manifest.json"
 MANIFEST_SCHEMA = "xyntetik.shadow.protected.v1"
 CONFIG_BASENAMES = frozenset({"conftest.py", "pytest.ini", ".pytest.ini", "pyproject.toml",
                               "setup.cfg", "tox.ini"})
-VERIFIER_INI = "[pytest]\naddopts =\n"
+VERIFIER_INI = "[pytest]\naddopts =\n"  # plus a pythonpath line per run, see _run_protected
 VERIFIER_INI_NAME = ".xyntetik-shadow-verifier.ini"
 _ENV_PASSTHROUGH = ("PATH", "LANG", "LC_ALL", "SYSTEMROOT", "SystemRoot", "TEMP", "TMP",
                     "PYTHONIOENCODING")
@@ -175,16 +175,20 @@ def _run_protected(protected: ProtectedTests, tree: Path, *, timeout_s: float,
         ini = ws / VERIFIER_INI_NAME
         if ini.exists():
             raise InstrumentError(f"workspace already contains {VERIFIER_INI_NAME}")
-        ini.write_text(VERIFIER_INI, encoding="utf-8")
+        # Import roots are workspace-relative and go through the ini's own
+        # pythonpath, resolved by pytest inside the scratch copy, so a test can
+        # never import the original tree by accident. The interpreter runs
+        # isolated (-I): the workspace directory is not on sys.path and no
+        # PYTHON* variable is read, so a pytest.py, a sitecustomize.py or a
+        # pytest package the attempt wrote into the workspace is never the
+        # thing `-m pytest` imports; the real pytest runs the frozen tests.
+        roots = ["."] + [str(rel) for rel in pythonpath]
+        ini.write_text(VERIFIER_INI + "pythonpath = " + " ".join(roots) + "\n", encoding="utf-8")
         report = scratch / "report.xml"
-        cmd = [python, "-m", "pytest", "-q", "-p", "no:cacheprovider", "-c", VERIFIER_INI_NAME,
+        cmd = [python, "-I", "-B", "-m", "pytest", "-q", "-p", "no:cacheprovider", "-c", VERIFIER_INI_NAME,
                "-o", "junit_family=xunit2", "--junit-xml", str(report), *protected.test_files]
         env = {k: os.environ[k] for k in _ENV_PASSTHROUGH if k in os.environ}
-        # Import roots are workspace-relative and resolved inside the scratch
-        # copy, so a test can never import the original tree by accident.
-        roots = [str(ws)] + [str(ws / rel) for rel in pythonpath]
-        env.update({"HOME": str(scratch), "PYTHONDONTWRITEBYTECODE": "1",
-                    "PYTHONPATH": os.pathsep.join(roots)})
+        env.update({"HOME": str(scratch), "PYTHONDONTWRITEBYTECODE": "1"})
         t0 = time.monotonic()
         proc = subprocess.Popen(cmd, cwd=ws, env=env, stdout=subprocess.PIPE,
                                 stderr=subprocess.STDOUT,

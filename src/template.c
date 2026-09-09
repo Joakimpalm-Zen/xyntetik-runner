@@ -2778,7 +2778,8 @@ static int tool_choice_kind(jv *choice, const char **named, char *err, int errca
         if (!strcmp(choice->str, "none"))     return TCH_NONE;
         if (!strcmp(choice->str, "required")) return TCH_REQUIRED;
     } else if (choice->type == J_OBJ) {
-        const char *type = jv_str(jv_get(choice, "type"), "function");
+        jv *tv = jv_get(choice, "type");
+        const char *type = tv ? jv_str(tv, "") : "function";   /* absent is "function"; a wrong type is not */
         const char *name = jv_str(jv_get(jv_get(choice, "function"), "name"), NULL);
         if (!strcmp(type, "function") && name && name[0]) {
             *named = name;
