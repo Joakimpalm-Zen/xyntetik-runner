@@ -191,7 +191,14 @@ class Workspace:
             return f"error: {e}"
         n = text.count(old_text)
         if n == 0:
-            return "error: old_text not found; read the file and copy the exact text"
+            # the anchor was invented (measured: 17 of 52 edit answers quote text
+            # that is not in the file); name the file's nearest lines so the
+            # next call copies one instead of guessing again
+            import difflib
+            want = next((x.strip() for x in old_text.split("\n") if x.strip()), old_text.strip())
+            near = difflib.get_close_matches(want, [x.strip() for x in text.split("\n") if x.strip()], n=3, cutoff=0.5)
+            hint = ("; the nearest lines in the file are: " + " | ".join(repr(x) for x in near)) if near else ""
+            return f"error: old_text not found; read the file and copy the exact text{hint}"
         if n > 1:
             return f"error: old_text occurs {n} times; include more surrounding lines"
         try:

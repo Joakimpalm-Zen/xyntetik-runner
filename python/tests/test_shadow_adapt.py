@@ -14,7 +14,7 @@ from typing import Any
 
 import pytest
 
-from xyntetik_runner.shadow import adapt
+from xyntetik_runner.shadow import adapt, edits
 from xyntetik_runner.shadow.cli import main
 from xyntetik_runner.shadow.importer import Episode
 from xyntetik_runner.shadow.install import (Candidate, fit_verdict, read_config, suggest_model,
@@ -124,12 +124,18 @@ def test_function_unit_self_check_and_split(tmp_path: Path) -> None:
     assert adapt.judge(tasks[0], u, u.sol_fn, python=sys.executable).verified
     j = adapt.judge(tasks[0], u, u.base_fn, python=sys.executable)
     assert not j.verified and j.fixed == 0 and j.failing >= 1
-    ds = adapt.build_dataset(tasks, family="chatml", ctx=4096, python=sys.executable)
+    ds = adapt.build_dataset(tasks, family="chatml", ctx=4096, python=sys.executable, protocol="whole")
     assert len(ds.dev) == 1 and len(ds.holdout) == 1 and len(ds.examples) == 1 and not ds.dropped
     ex = ds.examples[0]
     assert str(ex["prompt"]).startswith("<|im_start|>system\n") and str(ex["prompt"]).endswith("<|im_start|>assistant\n")
     assert "Current source of parse_amount in calc/money.py" in str(ex["prompt"])
-    assert ex["completion"] == CORRECT_FN and ex["weight"] == 1.0
+    assert ex["completion"] == CORRECT_FN and ex["weight"] == 1.0 and ex["end_of_turn"] is True
+    # the default protocol trains on the human's change as anchored edits, the prompt asking for them
+    ds = adapt.build_dataset(tasks, family="chatml", ctx=4096, python=sys.executable)
+    assert ds.protocol == "edits" and len(ds.examples) == 1 and not ds.dropped
+    ex = ds.examples[0]
+    assert ex["completion"] == edits.render(edits.derive(BUGGY_FN, CORRECT_FN).edits)
+    assert str(ex["prompt"]).startswith("<|im_start|>system\n" + edits.SYSTEM) and edits.ASK in str(ex["prompt"])
     # a task whose fix is not one function is named, not silently dropped
     two = tmp_path / "gamma"
     make_repo(tmp_path, "gamma", tag="g")
@@ -190,7 +196,8 @@ def test_adapt_end_to_end_keeps_the_adapter_only_on_a_held_out_rise(tmp_path: Pa
     monkeypatch.setattr(cli, "ManagedRunner", FakeManaged)
     monkeypatch.setattr(cli, "RunnerEndpoint", FakeEndpoint)
     monkeypatch.setattr(adapt, "train", fake_train)
-    common = ["adapt", "--out", str(out), "--bank", "", "--home", str(home), "--python", sys.executable, "--k", "2"]
+    common = ["adapt", "--out", str(out), "--bank", "", "--home", str(home), "--python", sys.executable, "--k", "2",
+              "--protocol", "whole"]
     # the plan first, nothing trained
     assert main(common + ["--dry-run"]) == 0
     text = capsys.readouterr().out
@@ -274,3 +281,120 @@ def test_install_picks_the_largest_gguf_that_fits(tmp_path: Path, capsys: Any, m
         a[0], 0, "fit: x\n  weights 1 GiB\n  verdict       FITS — 2.37 GiB to spare at ctx 8192\n", ""))
     assert fit_verdict("runner", Path("x.gguf"), 8192) == "FITS"
     assert Candidate(Path("x"), 1, "FITS WITH --kv q8").fits and not Candidate(Path("x"), 1, "PAGES").fits
+
+
+BUGGY_LINE = "return int(float(text) * 100)"
+
+
+def test_edits_protocol_schema_apply_and_derive() -> None:
+    # the schema names only the function's own distinct lines; the buggy line is one of them
+    sch = edits.schema(BUGGY_FN)
+    anchors = sch["properties"]["edits"]["items"]["properties"]["line"]["enum"]
+    assert BUGGY_LINE in anchors and "" not in anchors
+    assert sch["properties"]["edits"]["items"]["required"] == ["line", "until", "mode", "text"]
+    # the human's change derives to edits that reproduce the human's function exactly
+    d = edits.derive(BUGGY_FN, CORRECT_FN)
+    assert d.reason == "" and len(d.edits) == 1 and d.edits[0]["mode"] == "replace"
+    assert d.edits[0]["line"] == BUGGY_LINE and d.text == CORRECT_FN
+    got, why = edits.apply(BUGGY_FN, edits.render(d.edits))
+    assert why == "" and got == CORRECT_FN
+    # an anchor that is not in the function, an until before its line, and overlapping edits are refused
+    assert edits.apply(BUGGY_FN, json.dumps({"edits": [{"line": "return 0", "until": "return 0",
+                                                        "mode": "replace", "text": "x"}]}))[1].startswith("line occurs 0")
+    first = BUGGY_FN.split("\n")[0].strip()
+    assert edits.apply(BUGGY_FN, json.dumps({"edits": [{"line": BUGGY_LINE, "until": first, "mode": "replace",
+                                                        "text": "x"}]}))[1] == "until precedes line"
+    assert edits.apply(BUGGY_FN, json.dumps({"edits": [
+        {"line": first, "until": BUGGY_LINE, "mode": "replace", "text": "x"},
+        {"line": BUGGY_LINE, "until": BUGGY_LINE, "mode": "replace", "text": "y"}]}))[1] == "edits overlap"
+    assert edits.apply(BUGGY_FN, "not json")[1] == "reply is not the edits object"
+    # dedented text is re-indented to the anchor; text with its own indentation is taken as written
+    fn = "def f(x):\n    if x:\n        return 1\n    return 2"
+    got, why = edits.apply(fn, json.dumps({"edits": [{"line": "return 2", "until": "return 2", "mode": "replace",
+                                                     "text": "if x < 0:\n    return -1\nreturn 2"}]}))
+    assert why == "" and got == "def f(x):\n    if x:\n        return 1\n    if x < 0:\n        return -1\n    return 2"
+    got, why = edits.apply(fn, json.dumps({"edits": [{"line": "if x:", "until": "if x:", "mode": "insert_after",
+                                                     "text": "x = int(x)"}]}))
+    assert why == "" and got == "def f(x):\n    if x:\n        x = int(x)\n        return 1\n    return 2"
+    # a deletion, and an insertion after a repeated line reaching through its neighbours
+    got, why = edits.apply(fn, json.dumps({"edits": [{"line": "if x:", "until": "return 1", "mode": "replace",
+                                                     "text": ""}]}))
+    assert why == "" and got == "def f(x):\n    return 2"
+    dup = "def g(x):\n    if x:\n        return\n    if x > 1:\n        return\n    return 3"
+    d = edits.derive(dup, "def g(x):\n    if x:\n        return\n    if x > 1:\n        return\n    x += 1\n    return 3")
+    assert d.reason == "" and len(d.edits) == 1 and d.edits[0]["line"] == "if x > 1:" and d.edits[0]["until"] == "return 3"
+    assert d.text.endswith("    x += 1\n    return 3")
+    assert edits.derive(fn, fn).reason == "no change"
+
+
+def test_adapt_edits_protocol_trains_on_derived_edits_and_decodes_under_the_schema(
+        tmp_path: Path, capsys: Any, monkeypatch: Any) -> None:
+    from xyntetik_runner.shadow import cli
+    home = tmp_path / "home"
+    out = tmp_path / "out"
+    (out / "tasks").mkdir(parents=True)
+    admitted(tmp_path, out / "tasks", ("alpha", "beta"))
+    model = tmp_path / "coder.gguf"
+    write_gguf(model, [("tokenizer.chat_template", "<|im_start|>x")])
+    write_config(home, model=str(model), runner="fake-runner", ctx=4096, gpu="auto", threads=0, out=str(out))
+    served: dict[str, Any] = {"lora": False}
+    seen: list[dict[str, Any]] = []
+
+    class FakeManaged:
+        def __init__(self, launch: Any, **k: Any) -> None:
+            served["lora"] = "--lora" in launch.extra_args
+            self.base_url = "http://fake"
+
+        def start(self, **k: Any) -> bool:
+            return True
+
+        def stop(self, **k: Any) -> None:
+            pass
+
+    fix = edits.render(edits.derive(BUGGY_FN, CORRECT_FN).edits)
+    # the base answers a well-formed edit that changes nothing (the runner's decoder could never
+    # produce an invented anchor), except its second sample, which is not applicable
+    noop = json.dumps({"edits": [{"line": BUGGY_LINE, "until": BUGGY_LINE, "mode": "replace", "text": BUGGY_LINE}]})
+
+    class FakeEndpoint:
+        def __init__(self, url: str, **k: Any) -> None:
+            self.base_url = url
+
+        def capabilities(self, **k: Any) -> dict[str, Any]:
+            return {"models": [{"id": "coder.gguf"}]}
+
+        def post_json(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
+            assert path == "/v1/chat/completions" and payload["messages"][0]["content"] == edits.SYSTEM
+            schema = payload["response_format"]["json_schema"]["schema"]
+            assert BUGGY_LINE in schema["properties"]["edits"]["items"]["properties"]["line"]["enum"]
+            seen.append(payload)
+            if served["lora"]:
+                answer = fix
+            else:
+                answer = noop if payload["seed"] == 1000 else "{\"edits\": []}"
+            return {"choices": [{"message": {"content": answer}}]}
+
+    def fake_train(runner: str, model_path: str, data: Path, adapter: Path, **k: Any) -> adapt.TrainResult:
+        lines = Path(data).read_text(encoding="utf-8").splitlines()
+        assert len(lines) == 1
+        ex = json.loads(lines[0])
+        assert ex["completion"] == fix and ex["end_of_turn"] is True
+        assert ex["prompt"].endswith(edits.ASK + "<|im_end|>\n<|im_start|>assistant\n")
+        adapter.write_bytes(b"GGUF-adapter")
+        return adapt.TrainResult(adapter, k["steps"], 0, k["log_path"], 12.5, 0.5, 0.1)
+    monkeypatch.setattr(cli, "ManagedRunner", FakeManaged)
+    monkeypatch.setattr(cli, "RunnerEndpoint", FakeEndpoint)
+    monkeypatch.setattr(adapt, "train", fake_train)
+    common = ["adapt", "--out", str(out), "--bank", "", "--home", str(home), "--python", sys.executable, "--k", "2"]
+    assert main(common + ["--dry-run"]) == 0
+    assert "edits protocol" in capsys.readouterr().out
+    assert main(common + ["--yes"]) == 0
+    text = capsys.readouterr().out
+    assert "kept: held-out verified rose 0 -> 2 of 2 samples" in text, text
+    assert "rejected (no edits)" in text
+    rec = json.loads(sorted(adapt.adapters_dir(home).glob("*/run.json"))[0].read_text(encoding="utf-8"))
+    assert rec["dataset"]["protocol"] == "edits" and rec["dataset"]["examples"] == 1
+    assert rec["base_holdout"]["summary"]["rejected"] == 1 and rec["adapter_holdout"]["summary"]["rejected"] == 0
+    assert rec["base_holdout"]["summary"]["verified_samples"] == 0
+    assert rec["adapter_holdout"]["summary"]["verified_samples"] == 2
+    assert all("response_format" in p for p in seen)

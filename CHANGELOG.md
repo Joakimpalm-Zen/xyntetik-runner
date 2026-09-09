@@ -8,6 +8,21 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **The function unit as anchored edits (R15.2.3).** `shadow adapt` and its
+  evaluations now ask the model for edits, not a rewrite: each edit names an
+  existing line of the function (and the last line it covers), and the
+  runner decodes the reply under a schema built from the function's own
+  lines, so an invented anchor cannot be decoded at all. Measured on the
+  public bank with a 7B at 4-bit before this change: the whole-function
+  answer verified 0 of 52 samples; edits verified the first samples any
+  consumer model has on that bank, and the schema took the answers rejected
+  for invented anchors from 22 of 52 to 0. Training completions are the
+  human's change expressed as the same edits (a unit whose expressed change
+  is not verified by the tests is dropped and named), with the turn
+  terminator taught. `--protocol whole` keeps the old shape; the run record
+  carries the protocol and the rejected count. The delegate's `edit_file`
+  tool names the file's nearest lines when the text it was given is not in
+  the file.
 - **Delegation receipts (R14.6), and a generic record signer.** With a
   signing key (`shadow keygen`, made by the runner), every delegation
   writes a receipt: an in-toto Statement whose subjects are the patch and

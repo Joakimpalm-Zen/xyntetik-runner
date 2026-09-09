@@ -921,7 +921,7 @@ def cmd_adapt(args: argparse.Namespace) -> int:
     print(f"{len(tasks)} task(s); model {Path(model_path).name} ({family} template); "
           f"self-checking the function units ...", flush=True)
     ds = adapt.build_dataset(tasks, family=family, ctx=args.ctx, python=args.python, seed=args.seed,
-                             holdout_fraction=args.holdout_fraction, log=log)
+                             holdout_fraction=args.holdout_fraction, protocol=args.protocol, log=log)
     n_units = len(ds.dev) + len(ds.holdout)
     print(f"units: {n_units} (development {len(ds.dev)}, held out {len(ds.holdout)}); "
           f"examples: {len(ds.examples)}; dropped: {len(ds.dropped)}")
@@ -933,8 +933,9 @@ def cmd_adapt(args: argparse.Namespace) -> int:
         return 1
     steps = args.epochs * len(ds.examples)
     print(f"plan: train {len(ds.examples)} example(s) for {steps} step(s) (rank {args.rank}, "
-          f"lr {args.lr}, ctx {args.ctx}); evaluate base and adapter on {len(ds.holdout)} held-out "
-          f"unit(s) with K {args.k}; keep the adapter only if held-out verified rises")
+          f"lr {args.lr}, ctx {args.ctx}, {args.protocol} protocol); evaluate base and adapter on "
+          f"{len(ds.holdout)} held-out unit(s) with K {args.k}; keep the adapter only if held-out "
+          "verified rises")
     if args.dry_run:
         print("dry run: nothing trained")
         return 0
@@ -958,9 +959,9 @@ def cmd_adapt(args: argparse.Namespace) -> int:
                                        start_timeout=args.start_timeout,
                                        request_timeout=args.request_timeout)
         model_id = _served_model(endpoint)
-        base_hold = adapt.evaluate(ds.holdout, endpoint.post_json, model_id, label="base held-out",
+        base_hold = adapt.evaluate(ds.holdout, endpoint.post_json, model_id, label="base held-out", protocol=ds.protocol,
                                    k=args.k, python=args.python, log=log)
-        base_dev = adapt.evaluate(ds.dev, endpoint.post_json, model_id, label="base development",
+        base_dev = adapt.evaluate(ds.dev, endpoint.post_json, model_id, label="base development", protocol=ds.protocol,
                                   k=args.k, python=args.python, log=log)
         managed.stop()
         managed = None
@@ -981,9 +982,9 @@ def cmd_adapt(args: argparse.Namespace) -> int:
                                        start_timeout=args.start_timeout,
                                        request_timeout=args.request_timeout)
         model_id = _served_model(endpoint)
-        ada_hold = adapt.evaluate(ds.holdout, endpoint.post_json, model_id, label="adapter held-out",
+        ada_hold = adapt.evaluate(ds.holdout, endpoint.post_json, model_id, label="adapter held-out", protocol=ds.protocol,
                                   k=args.k, python=args.python, log=log)
-        ada_dev = adapt.evaluate(ds.dev, endpoint.post_json, model_id, label="adapter development",
+        ada_dev = adapt.evaluate(ds.dev, endpoint.post_json, model_id, label="adapter development", protocol=ds.protocol,
                                  k=args.k, python=args.python, log=log)
     except RuntimeError as e:
         print(f"error: {e}", file=sys.stderr)
@@ -1394,6 +1395,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--k", type=int, default=4, help="samples per unit in each evaluation")
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--holdout-fraction", type=float, default=0.3)
+    p.add_argument("--protocol", choices=adapt.PROTOCOLS, default=adapt.DEFAULT_PROTOCOL,
+                   help="what the model answers with: anchored edits decoded under the unit's own "
+                        "schema (default), or the whole new function")
     p.add_argument("--max-failing", type=int, default=30)
     p.add_argument("--cpu-train", action="store_true", help="do not ask for the GPU training path")
     p.add_argument("--start-timeout", type=float, default=600.0)

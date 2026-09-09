@@ -41,6 +41,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
+from . import edits as edits_protocol
 from .baseline import Baseline
 from .tasks import RepairTask, classify, touched_files
 from .verifier import ProtectedTests, fixed_ids, verify
@@ -48,6 +49,8 @@ from .verifier import ProtectedTests, fixed_ids, verify
 SYSTEM = ("You are a software engineer. You receive a change request, the tests, and the "
           "current source of one function. Output the complete new source of that function "
           "and nothing else: no explanation, no code fence, no other code.")
+PROTOCOLS = ("edits", "whole")
+DEFAULT_PROTOCOL = "edits"  # measured 2026-09-09: the whole-function answer verified nothing in 52 7B samples
 CHARS_PER_TOKEN = 4.2  # measured 4.6 to 4.7 on code with the Qwen2.5 tokenizer; kept conservative
 MIN_UNITS = 2  # one to train on, one to hold out; anything less has no gate
 _HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
@@ -214,12 +217,19 @@ def function_unit(task: RepairTask) -> FunctionUnit | str:
     return FunctionUnit(task.task_id, rel, name, (b0, b1), base_fn, sol_fn)
 
 
-def unit_prompt(task: RepairTask, u: FunctionUnit, *, test_chars: int = 6000) -> str:
+def system_for(protocol: str) -> str:
+    if protocol not in PROTOCOLS:
+        raise ValueError(f"unknown protocol {protocol!r}")
+    return edits_protocol.SYSTEM if protocol == "edits" else SYSTEM
+
+
+def unit_prompt(task: RepairTask, u: FunctionUnit, *, protocol: str = DEFAULT_PROTOCOL,
+                test_chars: int = 6000) -> str:
     visible = "".join(_git(task.repo, "show", f"{task.base_sha}:{vt}")[:test_chars]
                       for vt in task.visible_test_files)
+    ask = edits_protocol.ASK if protocol == "edits" else f"Output the complete new source of {u.name}."
     return (f"Change request:\n{task.request.strip()}\n\nCurrent tests ({', '.join(task.visible_test_files)}):\n"
-            f"{visible}\n\nCurrent source of {u.name} in {u.rel}:\n{u.base_fn}\n\n"
-            f"Output the complete new source of {u.name}.")
+            f"{visible}\n\nCurrent source of {u.name} in {u.rel}:\n{u.base_fn}\n\n{ask}")
 
 
 def splice(text: str, span: tuple[int, int], new_fn: str) -> str:
@@ -297,11 +307,12 @@ class Dataset:
     dev: list[tuple[RepairTask, FunctionUnit]]
     holdout: list[tuple[RepairTask, FunctionUnit]]
     dropped: list[dict[str, str]] = field(default_factory=list)
+    protocol: str = DEFAULT_PROTOCOL
 
     def manifest(self) -> dict[str, Any]:
         return {"schema": "xyntetik.shadow.adapt.v1", "unit": "function", "family": self.family,
-                "ctx": self.ctx, "chars_per_token": CHARS_PER_TOKEN,
-                "system_sha256": hashlib.sha256(SYSTEM.encode()).hexdigest(),
+                "protocol": self.protocol, "ctx": self.ctx, "chars_per_token": CHARS_PER_TOKEN,
+                "system_sha256": hashlib.sha256(system_for(self.protocol).encode()).hexdigest(),
                 "dev": [{"task_id": t.task_id, "function": u.name, "rel": u.rel} for t, u in self.dev],
                 "holdout": [{"task_id": t.task_id, "function": u.name, "rel": u.rel}
                             for t, u in self.holdout],
@@ -318,11 +329,14 @@ class Dataset:
 
 
 def build_dataset(tasks: Sequence[RepairTask], *, family: str, ctx: int, python: str,
-                  seed: int = 0, holdout_fraction: float = 0.3,
+                  seed: int = 0, holdout_fraction: float = 0.3, protocol: str = DEFAULT_PROTOCOL,
                   log: Callable[[str], None] = lambda s: None) -> Dataset:
     """Units for every task that has one and whose human function passes the
     self-check, split into development and held-out; the development units
-    that fit the window become training examples."""
+    that fit the window become training examples. Under the edits protocol
+    the completion is the human's change expressed as anchored edits, and
+    the function those edits produce must itself pass the verifier."""
+    system = system_for(protocol)
     units: list[tuple[RepairTask, FunctionUnit]] = []
     dropped: list[dict[str, str]] = []
     for task in tasks:
@@ -345,14 +359,29 @@ def build_dataset(tasks: Sequence[RepairTask], *, family: str, ctx: int, python:
     examples: list[dict[str, object]] = []
     kept: list[tuple[RepairTask, FunctionUnit]] = []
     for task, u in dev:
-        prompt = render_prompt(family, SYSTEM, unit_prompt(task, u))
-        if len(prompt) + len(u.sol_fn) > budget:
+        prompt = render_prompt(family, system, unit_prompt(task, u, protocol=protocol))
+        if protocol == "edits":
+            d = edits_protocol.derive(u.base_fn, u.sol_fn)
+            if d.reason:
+                dropped.append({"task_id": task.task_id, "why": f"not expressible as edits: {d.reason}"})
+                continue
+            if d.text != u.sol_fn:
+                j = judge(task, u, d.text, python=python)
+                if not j.verified:
+                    dropped.append({"task_id": task.task_id,
+                                    "why": "the human's change expressed as edits is not verified: "
+                                           + "; ".join(j.reasons)})
+                    continue
+            completion = edits_protocol.render(d.edits)
+        else:
+            completion = u.sol_fn
+        if len(prompt) + len(completion) > budget:
             dropped.append({"task_id": task.task_id,
-                            "why": f"{len(prompt) + len(u.sol_fn)} chars over the {budget} window budget"})
+                            "why": f"{len(prompt) + len(completion)} chars over the {budget} window budget"})
             continue
-        examples.append({"prompt": prompt, "completion": u.sol_fn, "weight": 1.0})
+        examples.append({"prompt": prompt, "completion": completion, "weight": 1.0, "end_of_turn": True})
         kept.append((task, u))
-    return Dataset(family, ctx, examples, kept, holdout, dropped)
+    return Dataset(family, ctx, examples, kept, holdout, dropped, protocol)
 
 
 # ---------------------------------------------------------------- evaluation
@@ -375,37 +404,57 @@ class Evaluation:
     def samples(self) -> int:
         return sum(len(t["samples"]) for t in self.tasks)
 
+    @property
+    def rejected(self) -> int:
+        """Samples that never reached the verifier: the reply was not an
+        applicable set of edits."""
+        return sum(1 for t in self.tasks for s in t["samples"] if s.get("rejected"))
+
     def to_dict(self) -> dict[str, Any]:
         return {"label": self.label, "k": self.k, "tasks": self.tasks,
                 "summary": {"tasks": len(self.tasks), "samples": self.samples,
                             "verified_samples": self.verified_samples,
-                            "verified_tasks": self.verified_tasks}}
+                            "verified_tasks": self.verified_tasks, "rejected": self.rejected}}
 
 
 def evaluate(units: Sequence[tuple[RepairTask, FunctionUnit]],
              post_json: Callable[[str, dict[str, Any]], dict[str, Any]], model: str, *,
              label: str, k: int, python: str, temperature: float = 0.8, max_tokens: int = 1500,
-             log: Callable[[str], None] = lambda s: None) -> Evaluation:
-    """K samples per unit through the served model, each spliced and judged."""
+             protocol: str = DEFAULT_PROTOCOL, log: Callable[[str], None] = lambda s: None) -> Evaluation:
+    """K samples per unit through the served model, each applied to the unit
+    and judged. Under the edits protocol the reply is decoded by the runner
+    under the unit's own schema and applied; a reply that still cannot be
+    applied is recorded as rejected and never judged."""
     rows: list[dict[str, Any]] = []
     for task, u in units:
-        messages = [{"role": "system", "content": SYSTEM},
-                    {"role": "user", "content": unit_prompt(task, u)}]
+        messages = [{"role": "system", "content": system_for(protocol)},
+                    {"role": "user", "content": unit_prompt(task, u, protocol=protocol)}]
+        payload: dict[str, Any] = {"model": model, "messages": messages, "max_tokens": max_tokens,
+                                   "temperature": temperature}
+        if protocol == "edits":
+            payload["response_format"] = {"type": "json_schema",
+                                          "json_schema": {"name": "edits", "schema": edits_protocol.schema(u.base_fn)}}
         samples: list[dict[str, Any]] = []
         for i in range(k):
             t0 = time.monotonic()
-            resp = post_json("/v1/chat/completions", {
-                "model": model, "messages": messages, "max_tokens": max_tokens,
-                "temperature": temperature, "seed": 1000 + i})
+            resp = post_json("/v1/chat/completions", payload | {"seed": 1000 + i})
             text = str((resp.get("choices") or [{}])[0].get("message", {}).get("content") or "")
             wall = time.monotonic() - t0
-            new_fn = strip_fence(text)
-            j = judge(task, u, new_fn, python=python)
+            rejected = ""
+            if protocol == "edits":
+                new_fn, rejected = edits_protocol.apply(u.base_fn, text)
+            else:
+                new_fn = strip_fence(text)
+            if rejected:
+                j = Judgement(False, 0, len(task.failing_at_base), (rejected,))
+            else:
+                j = judge(task, u, new_fn, python=python)
             samples.append({"i": i, "verified": j.verified, "fixed": j.fixed, "failing": j.failing,
-                            "gen_wall_s": round(wall, 2), "chars": len(new_fn),
-                            "completion_sha256": hashlib.sha256(new_fn.encode("utf-8")).hexdigest()})
-            log(f"  {label} {task.task_id} {u.name} sample {i}: verified {j.verified}, "
-                f"fixed {j.fixed}/{j.failing}, {wall:.0f}s")
+                            "rejected": rejected, "gen_wall_s": round(wall, 2), "chars": len(text),
+                            "completion_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest()})
+            log(f"  {label} {task.task_id} {u.name} sample {i}: "
+                + (f"rejected ({rejected})" if rejected else f"verified {j.verified}, fixed {j.fixed}/{j.failing}")
+                + f", {wall:.0f}s")
         rows.append({"task_id": task.task_id, "function": u.name, "samples": samples})
     return Evaluation(label, k, rows)
 

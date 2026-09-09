@@ -415,6 +415,8 @@ def test_edit_file_replaces_one_exact_occurrence(tmp_path: Path) -> None:
     (tmp_path / "a.py").write_text("x = 1\ny = 2\nx = 1\n", encoding="utf-8")
     assert ws.edit_file("a.py", "x = 1", "x = 9").startswith("error: old_text occurs 2")
     assert ws.edit_file("a.py", "nope", "x").startswith("error: old_text not found")
+    # an invented anchor near a real line names the real line, so the next call copies it
+    assert "'y = 2'" in ws.edit_file("a.py", "y = 20", "y = 3")
     assert ws.edit_file("../a.py", "y", "z").startswith("error")
     assert ws.edit_file("a.py", "y = 2", "y = 3").startswith("edited a.py")
     assert (tmp_path / "a.py").read_text(encoding="utf-8") == "x = 1\ny = 3\nx = 1\n"
