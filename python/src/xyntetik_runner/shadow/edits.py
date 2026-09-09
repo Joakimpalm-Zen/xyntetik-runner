@@ -90,8 +90,8 @@ def _lines_for(body: str, indent: str) -> list[str]:
 
 def apply(fn_text: str, reply: str) -> tuple[str, str]:
     """Apply a reply's edits to the function; (new text, reason), the reason
-    empty on success. Every anchor must name exactly one line, ``until``
-    may not precede ``line``, and edits may not overlap."""
+    empty on success. Every anchor must name exactly one line, a range may
+    be named in either order, and edits may not overlap."""
     try:
         edits = json.loads(reply)["edits"]
         if not isinstance(edits, list):
@@ -120,8 +120,8 @@ def apply(fn_text: str, reply: str) -> tuple[str, str]:
             j = locate(e.get("until"))
             if isinstance(j, str):
                 return fn_text, j
-            if j < i:
-                return fn_text, "until precedes line"
+            if j < i:  # the range named backwards is the same range
+                i, j = j, i
         ops.append((i, j, e))
     ops.sort(key=lambda t: t[0])
     for (_, e1, _), (i2, _, _) in zip(ops, ops[1:]):

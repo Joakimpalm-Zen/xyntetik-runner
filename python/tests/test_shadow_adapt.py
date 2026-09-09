@@ -302,8 +302,9 @@ def test_edits_protocol_schema_apply_and_derive() -> None:
     assert edits.apply(BUGGY_FN, json.dumps({"edits": [{"line": "return 0", "until": "return 0",
                                                         "mode": "replace", "text": "x"}]}))[1].startswith("line occurs 0")
     first = BUGGY_FN.split("\n")[0].strip()
-    assert edits.apply(BUGGY_FN, json.dumps({"edits": [{"line": BUGGY_LINE, "until": first, "mode": "replace",
-                                                        "text": "x"}]}))[1] == "until precedes line"
+    backwards = edits.apply(BUGGY_FN, json.dumps({"edits": [{"line": BUGGY_LINE, "until": first, "mode": "replace",
+                                                             "text": "x"}]}))
+    assert backwards == ("x", "")  # the range named backwards is the same range
     assert edits.apply(BUGGY_FN, json.dumps({"edits": [
         {"line": first, "until": BUGGY_LINE, "mode": "replace", "text": "x"},
         {"line": BUGGY_LINE, "until": BUGGY_LINE, "mode": "replace", "text": "y"}]}))[1] == "edits overlap"
