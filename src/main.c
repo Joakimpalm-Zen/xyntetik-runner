@@ -2858,8 +2858,8 @@ int main(int argc, char **argv) {
             fprintf(stderr, "[out of memory rendering the prompt — turn skipped]\n");
             continue;
         }
-        n_prompt = tok_encode(&tok, rendered, toks, (int)tok_cap,
-                              first_turn && !no_bos, true);
+        n_prompt = tok_encode_prompt(&tok, rendered, toks, (int)tok_cap,
+                                     first_turn && !no_bos);
         free(rendered);
         first_turn = false;
 

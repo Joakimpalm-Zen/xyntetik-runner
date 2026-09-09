@@ -1231,23 +1231,27 @@ static int bpe_spm_encode_text(tokenizer *t, const char *text, size_t n,
 
 // ---------------------------------------------------------------- public api
 
-int tok_encode(tokenizer *t, const char *text, int32_t *out, int cap,
-               bool add_bos, bool parse_special) {
+// The encoder proper. `raw_run`, when given, holds for every byte the length
+// of the template-owned run starting there (0 for caller text), and a
+// special token is recognized only when it lies entirely inside such a run.
+static int encode_core(tokenizer *t, const char *text, size_t n,
+                       const size_t *raw_run, int32_t *out, int cap,
+                       bool add_bos, bool parse_special) {
     int n_out = 0;
     t->encode_oom = false;   // set by a helper that had to drop a segment
     if (add_bos && t->add_bos && t->bos_id >= 0 && n_out < cap)
         out[n_out++] = t->bos_id;
 
-    size_t n = strlen(text);
     size_t seg = 0;   // start of pending plain-text segment
     bool first = true;
     for (size_t i = 0; i < n; ) {
         int matched = -1;
-        if (parse_special) {
+        if (parse_special && (!raw_run || raw_run[i] > 0)) {
             int b0 = (uint8_t)text[i];
             for (int s = t->sb_off[b0]; s < t->sb_off[b0 + 1]; s++) {
                 gg_str *tok = &t->tokens[t->special_ids[s]];
-                if (tok->n <= n - i && memcmp(text + i, tok->s, tok->n) == 0) {
+                if (tok->n <= n - i && memcmp(text + i, tok->s, tok->n) == 0 &&
+                    (!raw_run || tok->n <= raw_run[i])) {
                     matched = t->special_ids[s];
                     break;
                 }
@@ -1280,6 +1284,53 @@ int tok_encode(tokenizer *t, const char *text, int32_t *out, int cap,
     // to return a silently truncated tokenization.
     if (t->encode_oom) return -1;
     return n_out;
+}
+
+int tok_encode(tokenizer *t, const char *text, int32_t *out, int cap,
+               bool add_bos, bool parse_special) {
+    return encode_core(t, text, strlen(text), NULL, out, cap, add_bos, parse_special);
+}
+
+size_t tok_strip_marks(char *s) {
+    size_t w = 0;
+    for (size_t r = 0; s[r]; r++)
+        if (s[r] != PROMPT_RAW_OPEN && s[r] != PROMPT_RAW_CLOSE) s[w++] = s[r];
+    s[w] = 0;
+    return w;
+}
+
+// A rendered prompt: the marks are lifted out, the text between them is
+// tokenized as one contiguous piece (so every merge sees exactly the bytes
+// the model would see), and a special token is recognized only inside a
+// template-owned run. Text with no marks at all is entirely caller text.
+int tok_encode_prompt(tokenizer *t, const char *text, int32_t *out, int cap,
+                      bool add_bos) {
+    size_t n = strlen(text);
+    char *clean = malloc(n + 1);
+    unsigned char *own = malloc(n + 1);
+    size_t *run = malloc(sizeof(size_t) * (n + 1));
+    if (!clean || !own || !run) {
+        free(clean); free(own); free(run);
+        t->encode_oom = true;
+        return -1;
+    }
+    size_t m = 0;
+    bool raw = false;
+    for (size_t i = 0; i < n; i++) {
+        if (text[i] == PROMPT_RAW_OPEN) { raw = true; continue; }
+        if (text[i] == PROMPT_RAW_CLOSE) { raw = false; continue; }
+        own[m] = raw;
+        clean[m++] = text[i];
+    }
+    clean[m] = 0;
+    size_t acc = 0;   // run[i]: template-owned bytes from i onward, 0 for text
+    for (size_t i = m; i-- > 0; ) {
+        acc = own[i] ? acc + 1 : 0;
+        run[i] = acc;
+    }
+    int r = encode_core(t, clean, m, run, out, cap, add_bos, true);
+    free(clean); free(own); free(run);
+    return r;
 }
 
 bool tok_is_control(tokenizer *t, int id) {

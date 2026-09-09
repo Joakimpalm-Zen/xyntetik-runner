@@ -11,6 +11,7 @@
 #include <limits.h>
 #include <string.h>
 #include <math.h>
+#include <stdarg.h>
 
 // Which of the three Mistral instruction framings a [INST] template writes.
 //
@@ -275,8 +276,95 @@ static size_t emit(char *out, size_t cap, size_t off, const char *fmt,
     if (!a) a = "";
     if (!b) b = "";
     if (off >= cap) return off;
-    int n = snprintf(out + off, cap - off, fmt, a, b);
+    char f2[768];
+    int n = snprintf(out + off, cap - off, mark_fmt(fmt, f2, sizeof f2), a, b);
     return n > 0 ? off + (size_t)n : off;
+}
+
+// Every byte a renderer writes is template scaffolding or caller text, and
+// the tokenizer has to know which (PROMPT_RAW_OPEN in tokenizer.h): a control
+// token is recognized only inside template-owned bytes, so `<|im_end|>`
+// typed into a message stays text. An emit() format string is the
+// template's, its arguments are the caller's: mark_fmt() brackets each
+// literal run of the format with the marks, so they land around exactly the
+// template's bytes. A format too long for the scratch is passed unmarked:
+// its scaffolding then reads as text and the template visibly stops working,
+// which is the loud failure; caller text reading as control tokens would be
+// the silent one.
+static const char *mark_fmt(const char *fmt, char *buf, size_t cap) {
+    size_t o = 0;
+    bool open = false;
+    for (const char *p = fmt; *p; p++) {
+        if (*p == '%' && p[1] != '%') {
+            if (open) {
+                if (o + 1 >= cap) return fmt;
+                buf[o++] = PROMPT_RAW_CLOSE;
+                open = false;
+            }
+            const char *q = p;
+            while (*q && !strchr("sdiuxXc", *q)) q++;   // to the conversion char
+            if (!*q || o + (size_t)(q - p) + 2 >= cap) return fmt;
+            memcpy(buf + o, p, (size_t)(q - p) + 1);
+            o += (size_t)(q - p) + 1;
+            p = q;
+            continue;
+        }
+        if (!open) {
+            if (o + 1 >= cap) return fmt;
+            buf[o++] = PROMPT_RAW_OPEN;
+            open = true;
+        }
+        if (o + 2 >= cap) return fmt;
+        buf[o++] = *p;
+        if (*p == '%') buf[o++] = *++p;   // "%%" is a literal percent
+    }
+    if (open) {
+        if (o + 1 >= cap) return fmt;
+        buf[o++] = PROMPT_RAW_CLOSE;
+    }
+    buf[o] = 0;
+    return buf;
+}
+
+// emit() for a call whose ARGUMENTS are the template's own (a role name the
+// request validator admitted, a family constant): the whole output is
+// template-owned.
+static size_t emit_raw(char *out, size_t cap, size_t off, const char *fmt,
+                       const char *a, const char *b) {
+    if (!a) a = "";
+    if (!b) b = "";
+    if (off >= cap) return off;
+    char f2[768];
+    int fl = snprintf(f2, sizeof f2, "%c%s%c", PROMPT_RAW_OPEN, fmt, PROMPT_RAW_CLOSE);
+    const char *mf = fl > 0 && fl < (int)sizeof f2 ? f2 : fmt;
+    int n = snprintf(out + off, cap - off, mf, a, b);
+    return n > 0 ? off + (size_t)n : off;
+}
+
+// The same discipline for the preambles assembled in an sbuf: pl_lit puts a
+// template literal, pl_fmt a template format with caller arguments.
+#define pl_lit(b, lit) do { \
+        char pl_o_ = PROMPT_RAW_OPEN, pl_c_ = PROMPT_RAW_CLOSE; \
+        sb_put((b), &pl_o_, 1); sb_put((b), (lit), strlen(lit)); sb_put((b), &pl_c_, 1); \
+    } while (0)
+
+static void pl_fmt(sbuf *b, const char *fmt, ...) {
+    char f2[768];
+    const char *mf = mark_fmt(fmt, f2, sizeof f2);
+    char tmp[1024];
+    va_list ap;
+    va_start(ap, fmt);
+    int n = vsnprintf(tmp, sizeof tmp, mf, ap);
+    va_end(ap);
+    if (n < 0) { b->failed = true; return; }
+    if ((size_t)n < sizeof tmp) { sb_put(b, tmp, (size_t)n); return; }
+    char *big = malloc((size_t)n + 1);
+    if (!big) { b->failed = true; return; }
+    va_start(ap, fmt);
+    vsnprintf(big, (size_t)n + 1, mf, ap);
+    va_end(ap);
+    sb_put(b, big, (size_t)n);
+    free(big);
 }
 
 // The first n bytes of s. Same would-have-written accounting as emit(), so a
@@ -302,7 +390,8 @@ static size_t emit_trimmed(char *out, size_t cap, size_t off, const char *pre,
         while (n && strchr(" \t\n\r\f\v", *s)) { s++; n--; }
     }
     if (off >= cap) return off;
-    int k = snprintf(out + off, cap - off, "%s%.*s%s", pre, (int)n, s, post);
+    int k = snprintf(out + off, cap - off, "%c%s%c%.*s%c%s%c", PROMPT_RAW_OPEN, pre,
+                     PROMPT_RAW_CLOSE, (int)n, s, PROMPT_RAW_OPEN, post, PROMPT_RAW_CLOSE);
     return k > 0 ? off + (size_t)k : off;
 }
 
@@ -380,7 +469,7 @@ static bool muse_namespace_seen(const jv *tools, int before,
 
 static void muse_render_tool_defs(const jv *tools, sbuf *b) {
     if (!tools || tools->type != J_ARR || tools->n == 0) return;
-    sb_lit(b,
+    pl_lit(b,
         "In this environment you have access to a set of tools you can use to answer the user's question.\n\n"
         "You can invoke a function by writing a \"<atem:function_calls>\" block like the following:\n"
         "<atem:function_calls>\n<atem:invoke name=\"$FUNCTION_NAME\">\n"
@@ -394,25 +483,25 @@ static void muse_render_tool_defs(const jv *tools, sbuf *b) {
         const char *dot = strchr(name, '.');
         size_t nsn = dot ? (size_t)(dot - name) : strlen(name);
         if (muse_namespace_seen(tools, i, name, nsn)) continue;
-        sb_lit(b, "{\"name\": \""); sb_esc(b, name, nsn);
-        sb_lit(b, "\", \"description\": \"\"}\n");
+        pl_lit(b, "{\"name\": \""); sb_esc(b, name, nsn);
+        pl_lit(b, "\", \"description\": \"\"}\n");
     }
-    sb_lit(b, "// Function schemas");
+    pl_lit(b, "// Function schemas");
     for (int i = 0; i < tools->n; i++) {
         jv *fn = muse_tool_fn(tools->items[i]);
-        sb_lit(b, "\n{\"name\": ");
+        pl_lit(b, "\n{\"name\": ");
         muse_json_string(b, jv_str(jv_get(fn, "name"), ""));
-        sb_lit(b, ", \"description\": ");
+        pl_lit(b, ", \"description\": ");
         muse_json_string(b, jv_str(jv_get(fn, "description"), ""));
-        sb_lit(b, ", \"parameters\": ");
+        pl_lit(b, ", \"parameters\": ");
         jv *params = jv_get(fn, "parameters");
         // spaced, not compact: muse.jinja:73 renders this through jinja's
         // `tojson`, whose default separators are `, ` and `: `. Same JSON,
         // different tokens, therefore a different prompt.
-        if (params) jv_dump_tojson(params, b); else sb_lit(b, "{}");
-        sb_lit(b, "}");
+        if (params) jv_dump_tojson(params, b); else pl_lit(b, "{}");
+        pl_lit(b, "}");
     }
-    sb_lit(b,
+    pl_lit(b,
         "\n\nHere's an example of how to call a function in the tool set:\n"
         "(If the tool namespace is not specified, invoke the function directly as `example_function_name` rather than `example_tool_name.example_function_name`)\n\n"
         "to=example_tool_name.example_function_name\n\n"
@@ -459,9 +548,9 @@ static void harmony_comment_lines(sbuf *out, const char *indent,
     const char *p = text;
     for (;;) {
         const char *nl = strchr(p, '\n');
-        sb_fmt(out, "%s// ", indent);
+        pl_fmt(out, "%s// ", indent);
         sb_put(out, p, nl ? (size_t)(nl - p) : strlen(p));
-        sb_lit(out, "\n");
+        pl_lit(out, "\n");
         if (!nl) break;
         p = nl + 1;
     }
@@ -473,7 +562,7 @@ static void harmony_comment_lines(sbuf *out, const char *indent,
 static void harmony_comment_once(sbuf *out, const char *indent,
                                  const char *text) {
     if (!text || !*text) return;
-    sb_fmt(out, "%s// %s\n", indent, text);
+    pl_fmt(out, "%s// %s\n", indent, text);
 }
 
 static void harmony_schema_ts(jv *schema, const char *indent, sbuf *out);
@@ -501,9 +590,9 @@ static bool harmony_has_enum(jv *schema) {
 // oneOf the reference skips that enum case, so `enum_bare` selects which of
 // the two spellings this call site uses.
 static void harmony_default_text(sbuf *out, jv *dflt, jv *owner, bool enum_bare) {
-    sb_lit(out, "default: ");
+    pl_lit(out, "default: ");
     if (enum_bare && dflt->type == J_STR && harmony_has_enum(owner))
-        sb_fmt(out, "%s", dflt->str);
+        pl_fmt(out, "%s", dflt->str);
     else
         jv_dump(dflt, out);
 }
@@ -517,7 +606,7 @@ static void harmony_type_nullable(jv *schema, const char *indent, sbuf *out) {
     if (!jv_bool(jv_get(schema, "nullable"), false)) return;
     if (out->failed || !out->s) return;
     if (strstr(out->s + mark, "null")) return;
-    sb_lit(out, " | null");
+    pl_lit(out, " | null");
 }
 
 // The trailing `// <description> default: <value>` that follows a oneOf
@@ -527,14 +616,14 @@ static void harmony_variant_comment(sbuf *out, jv *variant, const char *desc,
                                     bool enum_bare) {
     jv *dflt = jv_get(variant, "default");
     if (!desc && !dflt) return;
-    sb_lit(out, " // ");
-    if (desc) sb_fmt(out, "%s", desc);
-    if (desc && dflt) sb_lit(out, " ");
+    pl_lit(out, " // ");
+    if (desc) pl_fmt(out, "%s", desc);
+    if (desc && dflt) pl_lit(out, " ");
     if (dflt) harmony_default_text(out, dflt, variant, enum_bare);
 }
 
 static void harmony_schema_ts(jv *schema, const char *indent, sbuf *out) {
-    if (!schema || schema->type != J_OBJ) { sb_lit(out, "any"); return; }
+    if (!schema || schema->type != J_OBJ) { pl_lit(out, "any"); return; }
     jv *one = jv_get(schema, "oneOf");
     if (one && one->type == J_ARR && one->n) {
         // Every alternative, the first one included, is introduced by
@@ -544,7 +633,7 @@ static void harmony_schema_ts(jv *schema, const char *indent, sbuf *out) {
         char *vi = harmony_indent(indent, 3);
         for (int i = 0; i < one->n; i++) {
             jv *v = one->items[i];
-            sb_fmt(out, "\n%s | ", indent);
+            pl_fmt(out, "\n%s | ", indent);
             harmony_type_nullable(v, vi ? vi : indent, out);
             harmony_variant_comment(out, v,
                                     jv_str(jv_get(v, "description"), NULL),
@@ -558,24 +647,24 @@ static void harmony_schema_ts(jv *schema, const char *indent, sbuf *out) {
         bool any = false;
         for (int i = 0; i < tv->n; i++) {
             if (tv->items[i]->type != J_STR) continue;
-            if (any) sb_lit(out, " | ");
+            if (any) pl_lit(out, " | ");
             const char *t = tv->items[i]->str;
             sb_lit(out, !strcmp(t, "integer") ? "number" : t);
             any = true;
         }
-        if (!any) sb_lit(out, "any");
+        if (!any) pl_lit(out, "any");
         return;
     }
     const char *type = jv_str(tv, "any");
     if (!strcmp(type, "object")) {
         const char *desc = jv_str(jv_get(schema, "description"), NULL);
         if (desc) harmony_comment_once(out, indent, desc);
-        sb_lit(out, "{\n");
+        pl_lit(out, "{\n");
         jv *props = jv_get(schema, "properties");
         if (props && props->type == J_OBJ) {
             size_t il = strlen(indent);
             char *child = malloc(il + 5);
-            if (!child) { sb_lit(out, "}"); return; }
+            if (!child) { pl_lit(out, "}"); return; }
             memcpy(child, indent, il);
             memcpy(child + il, "    ", 5);
             for (int i = 0; i < props->n; i++) {
@@ -586,21 +675,21 @@ static void harmony_schema_ts(jv *schema, const char *indent, sbuf *out) {
                 const char *title = jv_str(jv_get(p, "title"), NULL);
                 if (title) {
                     harmony_comment_once(out, indent, title);
-                    sb_fmt(out, "%s//\n", indent);
+                    pl_fmt(out, "%s//\n", indent);
                 }
                 const char *pd = jv_str(jv_get(p, "description"), NULL);
                 if (pd && !pone)
                     harmony_comment_once(out, indent, pd);
                 jv *examples = jv_get(p, "examples");
                 if (examples && examples->type == J_ARR && examples->n) {
-                    sb_fmt(out, "%s// Examples:\n", indent);
+                    pl_fmt(out, "%s// Examples:\n", indent);
                     for (int k = 0; k < examples->n; k++) {
                         // the reference lists string examples only, but still
                         // opens the block for a non-string-only list
                         if (examples->items[k]->type != J_STR) continue;
-                        sb_fmt(out, "%s// - ", indent);
+                        pl_fmt(out, "%s// - ", indent);
                         jv_dump(examples->items[k], out);
-                        sb_lit(out, "\n");
+                        pl_lit(out, "\n");
                     }
                 }
                 jv *dflt = jv_get(p, "default");
@@ -615,15 +704,15 @@ static void harmony_schema_ts(jv *schema, const char *indent, sbuf *out) {
                     bool desc_above = pd && !(v0d && !strcmp(pd, v0d));
                     if (desc_above) harmony_comment_once(out, indent, pd);
                     if (dflt) {
-                        sb_fmt(out, "%s// ", indent);
+                        pl_fmt(out, "%s// ", indent);
                         harmony_default_text(out, dflt, p, true);
-                        sb_lit(out, "\n");
+                        pl_lit(out, "\n");
                     }
-                    sb_fmt(out, "%s%s%s:\n", indent, props->keys[i], opt);
+                    pl_fmt(out, "%s%s%s:\n", indent, props->keys[i], opt);
                     char *vi = harmony_indent(indent, 3);
                     for (int k = 0; k < pone->n; k++) {
                         jv *v = pone->items[k];
-                        sb_fmt(out, "%s | ", indent);
+                        pl_fmt(out, "%s | ", indent);
                         harmony_type_nullable(v, vi ? vi : indent, out);
                         // the first alternative says nothing the property
                         // description above it has not already said
@@ -632,24 +721,24 @@ static void harmony_schema_ts(jv *schema, const char *indent, sbuf *out) {
                             (vd && pd && !strcmp(vd, pd)))
                             vd = NULL;
                         harmony_variant_comment(out, v, vd, true);
-                        sb_lit(out, "\n");
+                        pl_lit(out, "\n");
                     }
                     free(vi);
-                    sb_fmt(out, "%s,\n", indent);
+                    pl_fmt(out, "%s,\n", indent);
                     continue;
                 }
-                sb_fmt(out, "%s%s%s: ", indent, props->keys[i], opt);
+                pl_fmt(out, "%s%s%s: ", indent, props->keys[i], opt);
                 harmony_type_nullable(p, child, out);
-                sb_lit(out, ",");
+                pl_lit(out, ",");
                 if (dflt && !pone) {
-                    sb_lit(out, " // ");
+                    pl_lit(out, " // ");
                     harmony_default_text(out, dflt, p, true);
                 }
-                sb_lit(out, "\n");
+                pl_lit(out, "\n");
             }
             free(child);
         }
-        sb_fmt(out, "%s}", indent);
+        pl_fmt(out, "%s}", indent);
     } else if (!strcmp(type, "string")) {
         jv *vals = jv_get(schema, "enum");
         bool any = false;
@@ -658,47 +747,47 @@ static void harmony_schema_ts(jv *schema, const char *indent, sbuf *out) {
             // enum with nothing left to offer falls back to plain string
             for (int i = 0; i < vals->n; i++) {
                 if (vals->items[i]->type != J_STR) continue;
-                if (any) sb_lit(out, " | ");
+                if (any) pl_lit(out, " | ");
                 jv_dump(vals->items[i], out);
                 any = true;
             }
         }
-        if (!any) sb_lit(out, "string");
+        if (!any) pl_lit(out, "string");
     } else if (!strcmp(type, "integer") || !strcmp(type, "number")) {
-        sb_lit(out, "number");
+        pl_lit(out, "number");
     } else if (!strcmp(type, "boolean")) {
-        sb_lit(out, "boolean");
+        pl_lit(out, "boolean");
     } else if (!strcmp(type, "array")) {
         jv *items = jv_get(schema, "items");
-        if (items) { harmony_schema_ts(items, indent, out); sb_lit(out, "[]"); }
-        else sb_lit(out, "Array<any>");
+        if (items) { harmony_schema_ts(items, indent, out); pl_lit(out, "[]"); }
+        else pl_lit(out, "Array<any>");
     } else {
         // every remaining type name, "null" among them, is `any`: the
         // reference has no TypeScript spelling for a null-only parameter
-        sb_lit(out, "any");
+        pl_lit(out, "any");
     }
 }
 
 static void harmony_render_tool_defs(const jv *tools, sbuf *out) {
     if (!tools || tools->type != J_ARR || tools->n == 0) return;
-    sb_lit(out, "# Tools\n\n## functions\n\nnamespace functions {\n");
+    pl_lit(out, "# Tools\n\n## functions\n\nnamespace functions {\n");
     for (int i = 0; i < tools->n; i++) {
         jv *fn = jv_get(tools->items[i], "function");
         const char *name = jv_str(jv_get(fn, "name"), "");
         const char *desc = jv_str(jv_get(fn, "description"), "");
-        sb_lit(out, "\n");
+        pl_lit(out, "\n");
         harmony_comment_lines(out, "", desc);
-        sb_fmt(out, "type %s = ", name);
+        pl_fmt(out, "type %s = ", name);
         jv *params = jv_get(fn, "parameters");
         if (params) {
-            sb_lit(out, "(_: ");
+            pl_lit(out, "(_: ");
             harmony_schema_ts(params, "", out);
-            sb_lit(out, ") => any;\n");
+            pl_lit(out, ") => any;\n");
         } else {
-            sb_lit(out, "() => any;\n");
+            pl_lit(out, "() => any;\n");
         }
     }
-    sb_lit(out, "\n} // namespace functions");
+    pl_lit(out, "\n} // namespace functions");
 }
 
 // ---------------------------------------------------------------- gemma4
@@ -785,47 +874,47 @@ static void g4_upper(sbuf *o, const char *s) {
 static void g4_number(sbuf *o, double d) {
     if (d >= (double)LLONG_MIN && d < 9223372036854775808.0 &&
         d == (double)(long long)d)
-        sb_fmt(o, "%lld", (long long)d);
+        pl_fmt(o, "%lld", (long long)d);
     else
-        sb_fmt(o, "%.10g", d);
+        pl_fmt(o, "%.10g", d);
 }
 
 // jinja:124-155. `escape_keys` wraps object KEYS in <|"|> as well as values;
 // the call blocks pass False, the declaration's `enum:` passes the default.
 static void g4_format_argument(const jv *v, bool escape_keys, sbuf *o) {
-    if (!v || v->type == J_NULL) { sb_lit(o, "null"); return; }
+    if (!v || v->type == J_NULL) { pl_lit(o, "null"); return; }
     switch (v->type) {
     case J_STR:
-        sb_lit(o, "<|\"|>"); sb_lit(o, v->str); sb_lit(o, "<|\"|>");
+        pl_lit(o, "<|\"|>"); sb_lit(o, v->str); pl_lit(o, "<|\"|>");
         break;
     case J_BOOL: sb_lit(o, v->b ? "true" : "false"); break;
     case J_NUM:  g4_number(o, v->num); break;
     case J_OBJ: {
-        sb_lit(o, "{");
+        pl_lit(o, "{");
         int *order = malloc(sizeof(int) * (size_t)(v->n > 0 ? v->n : 1));
-        if (!order) { o->failed = true; sb_lit(o, "}"); return; }
+        if (!order) { o->failed = true; pl_lit(o, "}"); return; }
         jv_dictsort(v, order);
         for (int i = 0; i < v->n; i++) {
-            if (i) sb_lit(o, ",");
+            if (i) pl_lit(o, ",");
             const char *k = v->keys[order[i]];
-            if (escape_keys) { sb_lit(o, "<|\"|>"); sb_lit(o, k); sb_lit(o, "<|\"|>"); }
+            if (escape_keys) { pl_lit(o, "<|\"|>"); sb_lit(o, k); pl_lit(o, "<|\"|>"); }
             else sb_lit(o, k);
-            sb_lit(o, ":");
+            pl_lit(o, ":");
             g4_format_argument(v->items[order[i]], escape_keys, o);
         }
-        sb_lit(o, "}");
+        pl_lit(o, "}");
         free(order);
         break;
     }
     case J_ARR:
-        sb_lit(o, "[");
+        pl_lit(o, "[");
         for (int i = 0; i < v->n; i++) {
-            if (i) sb_lit(o, ",");
+            if (i) pl_lit(o, ",");
             g4_format_argument(v->items[i], escape_keys, o);
         }
-        sb_lit(o, "]");
+        pl_lit(o, "]");
         break;
-    default: sb_lit(o, "null"); break;
+    default: pl_lit(o, "null"); break;
     }
 }
 
@@ -834,10 +923,10 @@ static void g4_format_argument(const jv *v, bool escape_keys, sbuf *o) {
 static void g4_required_list(const jv *req, sbuf *o) {
     if (!req || req->type != J_ARR) return;
     for (int i = 0; i < req->n; i++) {
-        if (i) sb_lit(o, ",");
-        sb_lit(o, "<|\"|>");
+        if (i) pl_lit(o, ",");
+        pl_lit(o, "<|\"|>");
         sb_lit(o, jv_str(req->items[i], ""));
-        sb_lit(o, "<|\"|>");
+        pl_lit(o, "<|\"|>");
     }
 }
 
@@ -845,47 +934,47 @@ static void g4_format_parameters(const jv *props, bool filter_keys, sbuf *o);
 
 // The `type: ARRAY` sub-block, jinja:26-58.
 static void g4_array_items(const jv *items, sbuf *o) {
-    sb_lit(o, "items:{");
+    pl_lit(o, "items:{");
     int *order = malloc(sizeof(int) * (size_t)(items->n > 0 ? items->n : 1));
-    if (!order) { o->failed = true; sb_lit(o, "}"); return; }
+    if (!order) { o->failed = true; pl_lit(o, "}"); return; }
     jv_dictsort(items, order);
     bool first = true;
     for (int i = 0; i < items->n; i++) {
         const char *k = items->keys[order[i]];
         jv *val = items->items[order[i]];
         if (!val || val->type == J_NULL) continue;   // `is not none`
-        if (!first) sb_lit(o, ",");
+        if (!first) pl_lit(o, ",");
         first = false;
         if (!strcmp(k, "properties")) {
-            sb_lit(o, "properties:{");
+            pl_lit(o, "properties:{");
             if (val->type == J_OBJ) g4_format_parameters(val, false, o);
-            sb_lit(o, "}");
+            pl_lit(o, "}");
         } else if (!strcmp(k, "required")) {
-            sb_lit(o, "required:[");
+            pl_lit(o, "required:[");
             g4_required_list(val, o);
-            sb_lit(o, "]");
+            pl_lit(o, "]");
         } else if (!strcmp(k, "type")) {
-            sb_lit(o, "type:");
+            pl_lit(o, "type:");
             if (val->type == J_STR) {
-                sb_lit(o, "<|\"|>"); g4_upper(o, val->str); sb_lit(o, "<|\"|>");
+                pl_lit(o, "<|\"|>"); g4_upper(o, val->str); pl_lit(o, "<|\"|>");
             } else if (val->type == J_ARR) {
-                sb_lit(o, "[");
+                pl_lit(o, "[");
                 for (int j = 0; j < val->n; j++) {
-                    if (j) sb_lit(o, ",");
-                    sb_lit(o, "<|\"|>");
+                    if (j) pl_lit(o, ",");
+                    pl_lit(o, "<|\"|>");
                     g4_upper(o, jv_str(val->items[j], ""));
-                    sb_lit(o, "<|\"|>");
+                    pl_lit(o, "<|\"|>");
                 }
-                sb_lit(o, "]");
+                pl_lit(o, "]");
             } else {
                 g4_format_argument(val, true, o);
             }
         } else {
-            sb_lit(o, k); sb_lit(o, ":");
+            sb_lit(o, k); pl_lit(o, ":");
             g4_format_argument(val, true, o);
         }
     }
-    sb_lit(o, "}");
+    pl_lit(o, "}");
     free(order);
 }
 
@@ -908,15 +997,15 @@ static void g4_format_parameters(const jv *props, bool filter_keys, sbuf *o) {
                 if (!strcmp(key, STANDARD[k])) { standard = true; break; }
             if (standard) continue;
         }
-        if (found_first) sb_lit(o, ",");
+        if (found_first) pl_lit(o, ",");
         found_first = true;
-        sb_lit(o, key); sb_lit(o, ":{");
+        sb_lit(o, key); pl_lit(o, ":{");
         bool add_comma = false;
         jv *desc = jv_get(val, "description");
         if (g4_truthy(desc)) {
-            sb_lit(o, "description:<|\"|>");
+            pl_lit(o, "description:<|\"|>");
             sb_lit(o, jv_str(desc, ""));
-            sb_lit(o, "<|\"|>");
+            pl_lit(o, "<|\"|>");
             add_comma = true;
         }
         jv *type = jv_get(val, "type");
@@ -927,51 +1016,51 @@ static void g4_format_parameters(const jv *props, bool filter_keys, sbuf *o) {
         if (!strcmp(utype, "STRING")) {
             jv *en = jv_get(val, "enum");
             if (g4_truthy(en)) {
-                if (add_comma) sb_lit(o, ",");
+                if (add_comma) pl_lit(o, ",");
                 add_comma = true;
-                sb_lit(o, "enum:");
+                pl_lit(o, "enum:");
                 g4_format_argument(en, true, o);
             }
         } else if (!strcmp(utype, "ARRAY")) {
             jv *items = jv_get(val, "items");
             if (items && items->type == J_OBJ && items->n > 0) {
-                if (add_comma) sb_lit(o, ",");
+                if (add_comma) pl_lit(o, ",");
                 add_comma = true;
                 g4_array_items(items, o);
             }
         }
         if (g4_truthy(jv_get(val, "nullable"))) {
-            if (add_comma) sb_lit(o, ",");
+            if (add_comma) pl_lit(o, ",");
             add_comma = true;
-            sb_lit(o, "nullable:true");
+            pl_lit(o, "nullable:true");
         }
         if (!strcmp(utype, "OBJECT")) {
             jv *sub = jv_get(val, "properties");
             if (sub && sub->type == J_OBJ) {
-                if (add_comma) sb_lit(o, ",");
+                if (add_comma) pl_lit(o, ",");
                 add_comma = true;
-                sb_lit(o, "properties:{");
+                pl_lit(o, "properties:{");
                 g4_format_parameters(sub, false, o);
-                sb_lit(o, "}");
+                pl_lit(o, "}");
             } else if (val && val->type == J_OBJ) {
-                if (add_comma) sb_lit(o, ",");
+                if (add_comma) pl_lit(o, ",");
                 add_comma = true;
-                sb_lit(o, "properties:{");
+                pl_lit(o, "properties:{");
                 g4_format_parameters(val, true, o);
-                sb_lit(o, "}");
+                pl_lit(o, "}");
             }
             if (g4_truthy(jv_get(val, "required"))) {
-                if (add_comma) sb_lit(o, ",");
+                if (add_comma) pl_lit(o, ",");
                 add_comma = true;
-                sb_lit(o, "required:[");
+                pl_lit(o, "required:[");
                 g4_required_list(jv_get(val, "required"), o);
-                sb_lit(o, "]");
+                pl_lit(o, "]");
             }
         }
-        if (add_comma) sb_lit(o, ",");
-        sb_lit(o, "type:<|\"|>");
+        if (add_comma) pl_lit(o, ",");
+        pl_lit(o, "type:<|\"|>");
         sb_lit(o, utype);
-        sb_lit(o, "<|\"|>}");
+        pl_lit(o, "<|\"|>}");
         free(up.s);
     }
     free(order);
@@ -981,50 +1070,50 @@ static void g4_format_parameters(const jv *props, bool filter_keys, sbuf *o) {
 static void g4_format_declaration(const jv *tool, sbuf *o) {
     jv *fn = jv_get((jv *)tool, "function");
     if (!fn) fn = (jv *)tool;
-    sb_lit(o, "declaration:");
+    pl_lit(o, "declaration:");
     sb_lit(o, jv_str(jv_get(fn, "name"), ""));
-    sb_lit(o, "{description:<|\"|>");
+    pl_lit(o, "{description:<|\"|>");
     sb_lit(o, jv_str(jv_get(fn, "description"), ""));
-    sb_lit(o, "<|\"|>");
+    pl_lit(o, "<|\"|>");
     jv *params = jv_get(fn, "parameters");
     if (g4_truthy(params)) {
-        sb_lit(o, ",parameters:{");
+        pl_lit(o, ",parameters:{");
         jv *props = jv_get(params, "properties");
         if (g4_truthy(props)) {
-            sb_lit(o, "properties:{");
+            pl_lit(o, "properties:{");
             g4_format_parameters(props, false, o);
-            sb_lit(o, "},");
+            pl_lit(o, "},");
         }
         jv *req = jv_get(params, "required");
         if (g4_truthy(req)) {
-            sb_lit(o, "required:[");
+            pl_lit(o, "required:[");
             g4_required_list(req, o);
-            sb_lit(o, "],");
+            pl_lit(o, "],");
         }
         jv *pt = jv_get(params, "type");
         if (g4_truthy(pt)) {
-            sb_lit(o, "type:<|\"|>");
+            pl_lit(o, "type:<|\"|>");
             g4_upper(o, jv_str(pt, ""));
-            sb_lit(o, "<|\"|>}");
+            pl_lit(o, "<|\"|>}");
         }
         // no `type`: `parameters:{` stays open. See the header comment.
     }
     jv *resp = jv_get(fn, "response");
     if (resp) {
-        sb_lit(o, ",response:{");
+        pl_lit(o, ",response:{");
         jv *rd = jv_get(resp, "description");
         if (g4_truthy(rd)) {
-            sb_lit(o, "description:<|\"|>");
+            pl_lit(o, "description:<|\"|>");
             sb_lit(o, jv_str(rd, ""));
-            sb_lit(o, "<|\"|>,");
+            pl_lit(o, "<|\"|>,");
         }
         sbuf rup = {0};
         g4_upper(&rup, jv_str(jv_get(resp, "type"), ""));
         if (rup.s && !strcmp(rup.s, "OBJECT"))
-            sb_lit(o, "type:<|\"|>OBJECT<|\"|>}");
+            pl_lit(o, "type:<|\"|>OBJECT<|\"|>}");
         free(rup.s);
     }
-    sb_lit(o, "}");
+    pl_lit(o, "}");
 }
 
 // jinja:206-212: every declaration goes in the FIRST system turn, each in its
@@ -1032,9 +1121,9 @@ static void g4_format_declaration(const jv *tool, sbuf *o) {
 static void g4_render_tool_defs(const jv *tools, sbuf *o) {
     if (!tools || tools->type != J_ARR || tools->n == 0) return;
     for (int i = 0; i < tools->n; i++) {
-        sb_lit(o, "<|tool>");
+        pl_lit(o, "<|tool>");
         g4_format_declaration(tools->items[i], o);
-        sb_lit(o, "<tool|>");
+        pl_lit(o, "<tool|>");
     }
 }
 
@@ -1054,40 +1143,40 @@ static bool apertus_required(const jv *schema, const char *name) {
 }
 
 static void apertus_ts_type(const jv *schema, sbuf *o) {
-    if (!schema || schema->type != J_OBJ) { sb_lit(o, "any"); return; }
+    if (!schema || schema->type != J_OBJ) { pl_lit(o, "any"); return; }
     jv *tv = jv_get((jv *)schema, "type");
     const char *type = jv_str(tv, NULL);
     if (type && !strcmp(type, "array")) {
         jv *items = jv_get((jv *)schema, "items");
         if (g4_truthy(items)) {
             const char *it = jv_str(jv_get(items, "type"), NULL);
-            if (it && !strcmp(it, "string")) sb_lit(o, "string[]");
+            if (it && !strcmp(it, "string")) pl_lit(o, "string[]");
             else if (it && (!strcmp(it, "number") || !strcmp(it, "integer")))
-                sb_lit(o, "number[]");
-            else if (it && !strcmp(it, "boolean")) sb_lit(o, "boolean[]");
+                pl_lit(o, "number[]");
+            else if (it && !strcmp(it, "boolean")) pl_lit(o, "boolean[]");
             else {
                 sbuf inner = {0};
                 apertus_ts_type(items, &inner);
                 if (inner.failed) o->failed = true;
                 if (!inner.s || !strcmp(inner.s, "object | object") ||
                     inner.n > 50)
-                    sb_lit(o, "any[]");
+                    pl_lit(o, "any[]");
                 else {
                     sb_put(o, inner.s, inner.n);
-                    sb_lit(o, "[]");
+                    pl_lit(o, "[]");
                 }
                 free(inner.s);
             }
         } else {
-            sb_lit(o, "any[]");
+            pl_lit(o, "any[]");
         }
         if (g4_truthy(jv_get((jv *)schema, "nullable")))
-            sb_lit(o, " | null");
+            pl_lit(o, " | null");
         return;
     }
     if (tv && tv->type == J_ARR && tv->n > 0) {
         for (int i = 0; i < tv->n; i++) {
-            if (i) sb_lit(o, " | ");
+            if (i) pl_lit(o, " | ");
             sb_lit(o, jv_str(tv->items[i], ""));
         }
         return;
@@ -1098,15 +1187,15 @@ static void apertus_ts_type(const jv *schema, sbuf *o) {
         for (int i = 0; i < one->n; i++)
             if (!strcmp(jv_str(jv_get(one->items[i], "type"), ""), "object"))
                 object_variant = true;
-        if (object_variant && one->n > 1) { sb_lit(o, "any"); return; }
+        if (object_variant && one->n > 1) { pl_lit(o, "any"); return; }
         for (int i = 0; i < one->n; i++) {
-            if (i) sb_lit(o, " | ");
+            if (i) pl_lit(o, " | ");
             apertus_ts_type(one->items[i], o);
             const char *desc = jv_str(jv_get(one->items[i], "description"), NULL);
-            if (desc) sb_fmt(o, "// %s", desc);
+            if (desc) pl_fmt(o, "// %s", desc);
             jv *dflt = jv_get(one->items[i], "default");
             if (dflt) {
-                sb_lit(o, "// default: ");
+                pl_lit(o, "// default: ");
                 jv_dump_tojson(dflt, o);
             }
         }
@@ -1119,37 +1208,37 @@ static void apertus_ts_type(const jv *schema, sbuf *o) {
                 sb_lit(o, i ? "\" | \"" : "\"");
                 sb_lit(o, jv_str(en->items[i], ""));
             }
-            sb_lit(o, "\"");
+            pl_lit(o, "\"");
         } else {
-            sb_lit(o, "string");
+            pl_lit(o, "string");
             if (g4_truthy(jv_get((jv *)schema, "nullable")))
-                sb_lit(o, " | null");
+                pl_lit(o, " | null");
         }
         return;
     }
     if (type && (!strcmp(type, "number") || !strcmp(type, "integer"))) {
-        sb_lit(o, "number");
+        pl_lit(o, "number");
         return;
     }
-    if (type && !strcmp(type, "boolean")) { sb_lit(o, "boolean"); return; }
+    if (type && !strcmp(type, "boolean")) { pl_lit(o, "boolean"); return; }
     if (type && !strcmp(type, "object")) {
         jv *props = jv_get((jv *)schema, "properties");
         if (!g4_truthy(props) || props->type != J_OBJ) {
-            sb_lit(o, "object");
+            pl_lit(o, "object");
             return;
         }
-        sb_lit(o, "{\n");
+        pl_lit(o, "{\n");
         for (int i = 0; i < props->n; i++) {
             sb_lit(o, props->keys[i]);
-            if (!apertus_required(schema, props->keys[i])) sb_lit(o, "?");
-            sb_lit(o, ": ");
+            if (!apertus_required(schema, props->keys[i])) pl_lit(o, "?");
+            pl_lit(o, ": ");
             apertus_ts_type(props->items[i], o);
-            if (i + 1 < props->n) sb_lit(o, ", ");
+            if (i + 1 < props->n) pl_lit(o, ", ");
         }
-        sb_lit(o, "}");
+        pl_lit(o, "}");
         return;
     }
-    sb_lit(o, "any");
+    pl_lit(o, "any");
 }
 
 static void apertus_render_tools(const jv *tools, sbuf *o) {
@@ -1157,41 +1246,41 @@ static void apertus_render_tools(const jv *tools, sbuf *o) {
     for (int i = 0; i < tools->n; i++) {
         jv *fn = jv_get(tools->items[i], "function");
         if (!fn) fn = tools->items[i];
-        sb_fmt(o, "// %s\ntype %s = ",
+        pl_fmt(o, "// %s\ntype %s = ",
                jv_str(jv_get(fn, "description"), ""),
                jv_str(jv_get(fn, "name"), ""));
         jv *params = jv_get(fn, "parameters");
         jv *props = jv_get(params, "properties");
         if (!g4_truthy(params) || !g4_truthy(props) || props->type != J_OBJ) {
-            sb_lit(o, "() => any;");
+            pl_lit(o, "() => any;");
         } else {
-            sb_lit(o, "(_: {\n");
+            pl_lit(o, "(_: {\n");
             for (int k = 0; k < props->n; k++) {
                 jv *spec = props->items[k];
                 const char *desc = jv_str(jv_get(spec, "description"), NULL);
-                if (desc) sb_fmt(o, "// %s\n", desc);
+                if (desc) pl_fmt(o, "// %s\n", desc);
                 sb_lit(o, props->keys[k]);
-                if (!apertus_required(params, props->keys[k])) sb_lit(o, "?");
-                sb_lit(o, ": ");
+                if (!apertus_required(params, props->keys[k])) pl_lit(o, "?");
+                pl_lit(o, ": ");
                 apertus_ts_type(spec, o);
                 jv *dflt = jv_get(spec, "default");
                 if (dflt) {
                     if (g4_truthy(jv_get(spec, "enum"))) {
-                        sb_lit(o, ", // default: ");
+                        pl_lit(o, ", // default: ");
                         sb_lit(o, jv_str(dflt, ""));
                     } else if (g4_truthy(jv_get(spec, "oneOf"))) {
-                        sb_lit(o, "// default: ");
+                        pl_lit(o, "// default: ");
                         sb_lit(o, jv_str(dflt, ""));
                     } else {
-                        sb_lit(o, ", // default: ");
+                        pl_lit(o, ", // default: ");
                         jv_dump_tojson(dflt, o);
                     }
                 }
                 sb_lit(o, k + 1 < props->n ? ",\n" : "\n");
             }
-            sb_lit(o, "}) => any;");
+            pl_lit(o, "}) => any;");
         }
-        if (i + 1 < tools->n) sb_lit(o, "\n");
+        if (i + 1 < tools->n) pl_lit(o, "\n");
     }
 }
 
@@ -1272,7 +1361,7 @@ size_t render_messages_with_tools(int tmpl, const chat_msg *msgs, int n_msgs,
         if (have_tools) {
             // preamble, declarations, then the caller's system text
             off = emit(out, cap, off, "<|im_start|>system\n", NULL, NULL);
-            if (instr) off = emit(out, cap, off, "%s\n\n", instr, NULL);
+            if (instr) off = emit_raw(out, cap, off, "%s\n\n", instr, NULL);
             sbuf decl = {0};
             tools_render_for(tmpl, tools, &decl);
             off = emit(out, cap, off, "%s", decl.s, NULL);
@@ -1284,12 +1373,12 @@ size_t render_messages_with_tools(int tmpl, const chat_msg *msgs, int n_msgs,
             off = emit(out, cap, off, "<|im_end|>\n", NULL, NULL);
         } else if (sc_e > sc_b) {
             off = emit(out, cap, off, "<|im_start|>system\n", NULL, NULL);
-            if (instr) off = emit(out, cap, off, "%s\n\n", instr, NULL);
+            if (instr) off = emit_raw(out, cap, off, "%s\n\n", instr, NULL);
             off = emit_n(out, cap, off, sc_b, (size_t)(sc_e - sc_b));
             off = emit(out, cap, off, "<|im_end|>\n", NULL, NULL);
         } else if (instr) {
-            off = emit(out, cap, off, "<|im_start|>system\n%s<|im_end|>\n",
-                       instr, NULL);
+            off = emit_raw(out, cap, off, "<|im_start|>system\n%s<|im_end|>\n",
+                           instr, NULL);
         }
         for (int i = first; i < n_msgs; i++) {
             const char *role = msgs[i].role;
@@ -1521,16 +1610,20 @@ size_t render_messages_with_tools(int tmpl, const chat_msg *msgs, int n_msgs,
         break;
     case TMPL_ZEPHYR:
         for (int i = 0; i < n_msgs; i++)
-            off = emit(out, cap, off, "<|%s|>\n%s</s>\n",
-                       msgs[i].role, msgs[i].content);
+        {   // the role sits inside the control token: template-owned
+            off = emit_raw(out, cap, off, "<|%s|>\n", msgs[i].role, NULL);
+            off = emit(out, cap, off, "%s</s>\n", msgs[i].content, NULL);
+        }
         if (add_assistant)
             off = emit(out, cap, off, "<|assistant|>\n", NULL, NULL);
         break;
     case TMPL_PHI3:
         // same <|role|> framing as zephyr, but turns end with <|end|>
         for (int i = 0; i < n_msgs; i++)
-            off = emit(out, cap, off, "<|%s|>\n%s<|end|>\n",
-                       msgs[i].role, msgs[i].content);
+        {
+            off = emit_raw(out, cap, off, "<|%s|>\n", msgs[i].role, NULL);
+            off = emit(out, cap, off, "%s<|end|>\n", msgs[i].content, NULL);
+        }
         // ...and, unlike zephyr, its reference has an `else` arm: with no
         // generation prompt the render ends with the eos token
         // (microsoft/Phi-3.5-mini-instruct spells it '<|endoftext|>').
@@ -1618,9 +1711,9 @@ size_t render_messages_with_tools(int tmpl, const chat_msg *msgs, int n_msgs,
                 waiting_for_outputs = false;
                 off = emit(out, cap, off, "%s", msgs[i].content, NULL);
             } else {
-                off = emit(out, cap, off, "<|%s_start|>%s", role,
-                           msgs[i].content);
-                off = emit(out, cap, off, "<|%s_end|>", role, NULL);
+                off = emit_raw(out, cap, off, "<|%s_start|>", role, NULL);
+                off = emit(out, cap, off, "%s", msgs[i].content, NULL);
+                off = emit_raw(out, cap, off, "<|%s_end|>", role, NULL);
             }
         }
         if (in_tool) off = emit(out, cap, off, "]", NULL, NULL);
@@ -1654,7 +1747,7 @@ size_t render_messages_with_tools(int tmpl, const chat_msg *msgs, int n_msgs,
         // side-effect of omitting the date, not a decision.
         bool have_tools = tools && tools->type == J_ARR && tools->n;
         sbuf system = {0};
-        sb_lit(&system, "<|start|>system<|message|>You are ChatGPT, a large "
+        pl_lit(&system, "<|start|>system<|message|>You are ChatGPT, a large "
                         "language model trained by OpenAI.\n"
                         "Knowledge cutoff: 2024-06\n\nReasoning: medium");
         // The channel list is a CONSTANT in the reference, not a function of
@@ -1663,7 +1756,7 @@ size_t render_messages_with_tools(int tmpl, const chat_msg *msgs, int n_msgs,
         // the model's own GGUF jinja template writes the same three as a
         // literal. commentary is where the model puts a user-visible preamble
         // before a tool call, so it is legal even with nothing to call.
-        sb_lit(&system, "\n\n# Valid channels: analysis, commentary, final. "
+        pl_lit(&system, "\n\n# Valid channels: analysis, commentary, final. "
                         "Channel must be included for every message.");
         // Declared function tools add one routing line to the SYSTEM turn.
         // The reference gates it on the CONVERSATION carrying a developer
@@ -1671,9 +1764,9 @@ size_t render_messages_with_tools(int tmpl, const chat_msg *msgs, int n_msgs,
         // turn's own contents (encoding.rs:175-194 feeds
         // RenderOptions::conversation_has_function_tools, consumed at :996).
         if (have_tools)
-            sb_lit(&system, "\nCalls to these tools must go to the commentary "
+            pl_lit(&system, "\nCalls to these tools must go to the commentary "
                             "channel: 'functions'.");
-        sb_lit(&system, "<|end|>");
+        pl_lit(&system, "<|end|>");
         if (system.failed) {
             free(system.s);
             return SIZE_MAX;
@@ -1700,10 +1793,10 @@ size_t render_messages_with_tools(int tmpl, const chat_msg *msgs, int n_msgs,
             if (strcmp(msgs[i].role, "system")) continue;
             // fold every system message into one instructions block, in order
             sb_lit(&dev, dev.n ? "\n\n" : "# Instructions\n\n");
-            sb_fmt(&dev, "%s", msgs[i].content);
+            pl_fmt(&dev, "%s", msgs[i].content);
         }
         if (have_tools) {
-            if (dev.n) sb_lit(&dev, "\n\n");
+            if (dev.n) pl_lit(&dev, "\n\n");
             harmony_render_tool_defs(tools, &dev);
         }
         if (dev.failed) {
@@ -1780,7 +1873,7 @@ size_t render_messages_with_tools(int tmpl, const chat_msg *msgs, int n_msgs,
                 : thinking == THINK_OFF
                     ? "<|start|>assistant<|channel|>final<|message|>"
                     : "<|start|>assistant<|channel|>analysis<|message|>";
-            off = emit(out, cap, off, "%s", head, NULL);
+            off = emit_raw(out, cap, off, "%s", head, NULL);
         }
         break;
     }
@@ -1802,12 +1895,12 @@ size_t render_messages_with_tools(int tmpl, const chat_msg *msgs, int n_msgs,
         // Structured tools are rendered below with the model's native atem
         // declaration macro; the legacy wrapper passes NULL and stays plain.
         sbuf muse_tail = {0};
-        sb_lit(&muse_tail, "\n\nReasoning strength: high.");
+        pl_lit(&muse_tail, "\n\nReasoning strength: high.");
         if (tools && tools->type == J_ARR && tools->n) {
-            sb_lit(&muse_tail, "\n\n");
+            pl_lit(&muse_tail, "\n\n");
             muse_render_tool_defs(tools, &muse_tail);
         }
-        sb_lit(&muse_tail, "\n\n# Valid recipients: \"self\"");
+        pl_lit(&muse_tail, "\n\n# Valid recipients: \"self\"");
         if (tools && tools->type == J_ARR) {
             for (int i = 0; i < tools->n; i++) {
                 jv *fn = muse_tool_fn(tools->items[i]);
@@ -1815,11 +1908,11 @@ size_t render_messages_with_tools(int tmpl, const chat_msg *msgs, int n_msgs,
                 const char *dot = strchr(name, '.');
                 size_t nsn = dot ? (size_t)(dot - name) : strlen(name);
                 if (muse_namespace_seen(tools, i, name, nsn)) continue;
-                sb_lit(&muse_tail, ", \""); sb_put(&muse_tail, name, nsn);
-                sb_lit(&muse_tail, ".*\"");
+                pl_lit(&muse_tail, ", \""); sb_put(&muse_tail, name, nsn);
+                pl_lit(&muse_tail, ".*\"");
             }
         }
-        sb_lit(&muse_tail, ", \"user\".<|eot|>");
+        pl_lit(&muse_tail, ", \"user\".<|eot|>");
         bool has_system = false;
         for (int i = 0; i < n_msgs; i++)
             if (!strcmp(msgs[i].role, "system")) has_system = true;
@@ -1867,7 +1960,7 @@ size_t render_messages_with_tools(int tmpl, const chat_msg *msgs, int n_msgs,
                          : thinking == THINK_OFF && !have_tools
                          ? "<|start|>assistant to=user<|message|>"
                          : "<|start|>assistant";
-            off = emit(out, cap, off, "%s", head, NULL);
+            off = emit_raw(out, cap, off, "%s", head, NULL);
         }
         free(muse_tail.s);
         break;
@@ -2143,9 +2236,9 @@ size_t render_messages_with_tools(int tmpl, const chat_msg *msgs, int n_msgs,
             if (!strcmp(m->role, "user")) {
                 sbuf c = {0};
                 if (sys) {
-                    sb_lit(&c, "<<SYS>>\n");
+                    pl_lit(&c, "<<SYS>>\n");
                     sb_put(&c, sys, strlen(sys));
-                    sb_lit(&c, "\n<</SYS>>\n\n");
+                    pl_lit(&c, "\n<</SYS>>\n\n");
                     sys = NULL;
                 }
                 sb_put(&c, m->content, strlen(m->content));
@@ -2228,12 +2321,14 @@ size_t render_messages_with_tools(int tmpl, const chat_msg *msgs, int n_msgs,
                     // no <<SYS>> block anywhere in this family: its template
                     // accepts only user and assistant, so the system text
                     // leads the turn's content
-                    off = emit(out, cap, off, "%s%s", open, sys);
+                    off = emit_raw(out, cap, off, "%s", open, NULL);
+                    off = emit(out, cap, off, "%s", sys, NULL);
                     off = emit(out, cap, off, "\n\n%s", m->content, NULL);
                 } else {
-                    off = emit(out, cap, off, "%s%s", open, m->content);
+                    off = emit_raw(out, cap, off, "%s", open, NULL);
+                    off = emit(out, cap, off, "%s", m->content, NULL);
                 }
-                off = emit(out, cap, off, "%s", close, NULL);
+                off = emit_raw(out, cap, off, "%s", close, NULL);
             } else { // assistant
                 off = emit_trimmed(out, cap, off, nemo ? "" : " ", m->content,
                                    tmpl == TMPL_MISTRAL, "</s>");
@@ -2252,8 +2347,12 @@ size_t render_messages_with_tools(int tmpl, const chat_msg *msgs, int n_msgs,
 size_t render_messages(int tmpl, const chat_msg *msgs, int n_msgs,
                        bool add_assistant, int thinking,
                        char *out, size_t cap) {
-    return render_messages_with_tools(tmpl, msgs, n_msgs, add_assistant,
-                                      thinking, NULL, out, cap);
+    // the legacy entry is the one the byte-comparing tests use: a complete
+    // render is handed back as the text the model reads, marks lifted
+    size_t n = render_messages_with_tools(tmpl, msgs, n_msgs, add_assistant,
+                                          thinking, NULL, out, cap);
+    if (n != SIZE_MAX && n < cap) tok_strip_marks(out);
+    return n;
 }
 
 // ------------------------------------------------- thinking-tag splitter
@@ -2361,7 +2460,7 @@ int think_finish(think_split *t, think_cb cb, void *ud) {
 // declaration macros are more elaborate; this works in practice.
 void tools_render(const jv *tools, sbuf *out) {
     if (!tools || tools->type != J_ARR || tools->n == 0) return;
-    sb_lit(out, "You have these tools available. To call one, reply with "
+    pl_lit(out, "You have these tools available. To call one, reply with "
                 "exactly <|tool_call>call:NAME{json arguments}<tool_call|> "
                 "and nothing else. Tools:\n");
     jv_dump(tools, out);
@@ -2376,24 +2475,24 @@ void tools_render_for(int tmpl, const jv *tools, sbuf *out) {
     }
     if (!tools || tools->type != J_ARR || tools->n == 0) return;
     if (qwen) {
-        sb_lit(out,
+        pl_lit(out,
             "# Tools\n\nYou may call one or more functions to assist with the "
             "user query.\n\nYou are provided with function signatures within "
             "<tools></tools> XML tags:\n<tools>");
         for (int i = 0; i < tools->n; i++) {
-            sb_lit(out, "\n");
+            pl_lit(out, "\n");
             jv_dump_tojson(tools->items[i], out);
         }
-        sb_lit(out,
+        pl_lit(out,
             "\n</tools>\n\nFor each function call, return a json object with "
             "function name and arguments within <tool_call></tool_call> XML "
             "tags:\n<tool_call>\n{\"name\": <function-name>, \"arguments\": "
             "<args-json-object>}\n</tool_call>");
         return;
     }
-    sb_lit(out, "# Tools\n\nYou have access to the following functions:\n\n<tools>");
+    pl_lit(out, "# Tools\n\nYou have access to the following functions:\n\n<tools>");
     for (int i = 0; i < tools->n; i++) {
-        sb_lit(out, "\n");
+        pl_lit(out, "\n");
         if (tmpl == TMPL_GRANITE42) {
             // granite 4.2 unwraps the OpenAI envelope (`tool.function` when
             // present) and writes the function object itself through its
@@ -2402,19 +2501,19 @@ void tools_render_for(int tmpl, const jv *tools, sbuf *out) {
             // 58-65). ornith writes the WRAPPED declaration below.
             const jv *fn = jv_get(tools->items[i], "function");
             if (!fn) fn = tools->items[i];
-            sb_lit(out, "{");
+            pl_lit(out, "{");
             if (fn->type == J_OBJ) {
                 int first = 1;
                 for (int k = 0; k < fn->n; k++) {
                     if (!strcmp(fn->keys[k], "defer_loading") ||
                         !strcmp(fn->keys[k], "strict")) continue;
-                    if (!first) sb_lit(out, ", ");
+                    if (!first) pl_lit(out, ", ");
                     first = 0;
-                    sb_fmt(out, "\"%s\": ", fn->keys[k]);
+                    pl_fmt(out, "\"%s\": ", fn->keys[k]);
                     jv_dump_tojson(fn->items[k], out);
                 }
             }
-            sb_lit(out, "}");
+            pl_lit(out, "}");
             continue;
         }
         // spaced for the same reason as muse above: ornith.jinja:50 is
@@ -2430,7 +2529,7 @@ void tools_render_for(int tmpl, const jv *tools, sbuf *out) {
     // (the shortened `value_2` taught the opposite by omission), and its
     // reminder list is four explicit rules where the paraphrase was three
     // clauses that dropped the "no function call available" case entirely.
-    sb_lit(out,
+    pl_lit(out,
         "\n</tools>\n\nIf you choose to call a function ONLY reply in the "
         "following format with NO suffix:\n\n<tool_call>\n"
         "<function=example_function_name>\n"
@@ -2525,25 +2624,25 @@ void tool_history_render_for(int tmpl, const jv *calls,
         const char *args = jv_str(jv_get(fn, "arguments"), "{}");
         if (!name) continue;
         if (tmpl == TMPL_CHATML || tmpl == TMPL_CHATML_THINK) {
-            if (qwen_calls++ || turn_has_text) sb_lit(out, "\n");
-            sb_lit(out, "<tool_call>\n{\"name\": \"");
+            if (qwen_calls++ || turn_has_text) pl_lit(out, "\n");
+            pl_lit(out, "<tool_call>\n{\"name\": \"");
             sb_esc(out, name, strlen(name));
-            sb_lit(out, "\", \"arguments\": ");
+            pl_lit(out, "\", \"arguments\": ");
             jv *obj = json_parse(args, strlen(args));
             if (obj) jv_dump_tojson(obj, out);
-            else sb_lit(out, "{}");
+            else pl_lit(out, "{}");
             jv_free(obj);
-            sb_lit(out, "}\n</tool_call>");
+            pl_lit(out, "}\n</tool_call>");
             continue;
         }
         if (tmpl == TMPL_APERTUS) {
-            if (!ap_calls++) sb_lit(out, "<|tools_prefix|>[");
-            else sb_lit(out, ", ");
-            sb_lit(out, "{\"");
+            if (!ap_calls++) pl_lit(out, "<|tools_prefix|>[");
+            else pl_lit(out, ", ");
+            pl_lit(out, "{\"");
             sb_esc(out, name, strlen(name));
-            sb_lit(out, "\": ");
+            pl_lit(out, "\": ");
             sb_lit(out, args);
-            sb_lit(out, "}");
+            pl_lit(out, "}");
             continue;
         }
         if (is_gemma4(tmpl)) {
@@ -2554,37 +2653,37 @@ void tool_history_render_for(int tmpl, const jv *calls,
             // model's own template never writes: `{"city": "Oslo"}` where the
             // reference writes `{city:<|"|>Oslo<|"|>}`.
             jv *g4 = json_parse(args, strlen(args));
-            sb_fmt(out, "<|tool_call>call:%s", name);
+            pl_fmt(out, "<|tool_call>call:%s", name);
             if (g4 && g4->type == J_OBJ) g4_format_argument(g4, false, out);
-            else sb_lit(out, "{}");
-            sb_lit(out, "<tool_call|>");
+            else pl_lit(out, "{}");
+            pl_lit(out, "<tool_call|>");
             jv_free(g4);
             continue;
         }
         if (tmpl != TMPL_ORNITH && tmpl != TMPL_GRANITE42 &&
             tmpl != TMPL_QWEN38 && tmpl != TMPL_MUSE) {
-            sb_fmt(out, "<|tool_call>call:%s%s<tool_call|>", name, args);
+            pl_fmt(out, "<|tool_call>call:%s%s<tool_call|>", name, args);
             continue;
         }
         jv *obj = json_parse(args, strlen(args));
         if (tmpl == TMPL_MUSE) {
             if (muse_calls++)
-                sb_fmt(out, "<|eom|><|start|>assistant to=%s<|message|>",
+                pl_fmt(out, "<|eom|><|start|>assistant to=%s<|message|>",
                        name);
-            sb_fmt(out, "<atem:function_calls>\n<atem:invoke name=\"%s\">\n",
+            pl_fmt(out, "<atem:function_calls>\n<atem:invoke name=\"%s\">\n",
                    name);
             if (obj && obj->type == J_OBJ) {
                 for (int k = 0; k < obj->n; k++) {
-                    sb_fmt(out, "<atem:parameter name=\"%s\">", obj->keys[k]);
+                    pl_fmt(out, "<atem:parameter name=\"%s\">", obj->keys[k]);
                     if (obj->items[k]->type == J_STR)
                         sb_put(out, obj->items[k]->str,
                                strlen(obj->items[k]->str));
                     else
                         jv_dump(obj->items[k], out);
-                    sb_lit(out, "</atem:parameter>\n");
+                    pl_lit(out, "</atem:parameter>\n");
                 }
             }
-            sb_lit(out, "</atem:invoke>\n</atem:function_calls>");
+            pl_lit(out, "</atem:invoke>\n</atem:function_calls>");
             jv_free(obj);
             continue;
         }
@@ -2599,25 +2698,25 @@ void tool_history_render_for(int tmpl, const jv *calls,
             if (!orn_calls++)
                 while (out->n && strchr(" \t\n\r\f\v", out->s[out->n - 1]))
                     out->n--;
-            sb_lit(out, "\n");
-        } else if (orn_calls++) sb_lit(out, "\n");
-        else if (turn_has_text) sb_lit(out, "\n\n");
-        sb_fmt(out, "<tool_call>\n<function=%s>\n", name);
+            pl_lit(out, "\n");
+        } else if (orn_calls++) pl_lit(out, "\n");
+        else if (turn_has_text) pl_lit(out, "\n\n");
+        pl_fmt(out, "<tool_call>\n<function=%s>\n", name);
         if (obj && obj->type == J_OBJ) {
             for (int k = 0; k < obj->n; k++) {
-                sb_fmt(out, "<parameter=%s>\n", obj->keys[k]);
+                pl_fmt(out, "<parameter=%s>\n", obj->keys[k]);
                 if (obj->items[k]->type == J_STR)
                     sb_put(out, obj->items[k]->str, strlen(obj->items[k]->str));
                 else
                     jv_dump(obj->items[k], out);
-                sb_lit(out, "\n</parameter>\n");
+                pl_lit(out, "\n</parameter>\n");
             }
         }
-        sb_lit(out, "</function>\n</tool_call>");
+        pl_lit(out, "</function>\n</tool_call>");
         jv_free(obj);
     }
     if (tmpl == TMPL_APERTUS && ap_calls)
-        sb_lit(out, "]<|tools_suffix|>");
+        pl_lit(out, "]<|tools_suffix|>");
 }
 
 // True when `text` holds anything the model would read as content, i.e. a
@@ -2689,9 +2788,9 @@ void assistant_calls_render(int tmpl, const char *text, const jv *calls,
 // surfaces so a result is framed the same way whatever surface replayed it.
 const char *tool_result_wrap(int tmpl, const char *result, sbuf *out) {
     if (tmpl == TMPL_ORNITH) {
-        sb_lit(out, "<tool_response>\n");
+        pl_lit(out, "<tool_response>\n");
         if (result) sb_put(out, result, strlen(result));
-        sb_lit(out, "\n</tool_response>");
+        pl_lit(out, "\n</tool_response>");
         return "user";
     }
     if (result) sb_put(out, result, strlen(result));

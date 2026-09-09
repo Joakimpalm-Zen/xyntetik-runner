@@ -49,6 +49,21 @@ void tokenizer_free(tokenizer *t);
 // returns number of tokens written to out (capacity cap); add_bos per call
 int  tok_encode(tokenizer *t, const char *text, int32_t *out, int cap,
                 bool add_bos, bool parse_special);
+
+// Prompt marks. A rendered chat prompt is template scaffolding around caller
+// text, and the two are not the same kind of bytes: `<|im_end|>` typed into a
+// message is text, `<|im_end|>` the template wrote is a control token. The
+// renderer brackets every byte it owns in PROMPT_RAW_OPEN/CLOSE, two values
+// valid UTF-8 never contains (json.c refuses anything above 0xF4), and
+// tok_encode_prompt recognizes a special token only inside those brackets;
+// everything else, whatever it spells, is text. The marks are never
+// tokenized and tok_strip_marks removes them where a prompt is shown or
+// compared as text.
+#define PROMPT_RAW_OPEN  ((char)0xFD)
+#define PROMPT_RAW_CLOSE ((char)0xFC)
+int    tok_encode_prompt(tokenizer *t, const char *text, int32_t *out, int cap,
+                         bool add_bos);
+size_t tok_strip_marks(char *s);
 // raw-byte encode without BOS/specials/segment normalization (see tokenizer.c)
 int  tok_encode_raw(tokenizer *t, const char *text, int n,
                     int32_t *out, int cap);

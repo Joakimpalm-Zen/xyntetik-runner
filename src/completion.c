@@ -1954,7 +1954,12 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
     // -1 from tok_encode is an allocation failure mid-encode (a dropped
     // segment); a NULL toks is the same class. Both are 500s, never a prompt
     // silently short by the missing piece.
-    int n_prompt = toks ? tok_encode(s->tok, prompt, toks, (int)cap, true, true) : -1;
+    // a chat prompt is a render: the tokenizer recognizes control tokens
+    // only in the template's own bytes, never in message content; a raw
+    // completion prompt is the caller's to compose, specials and all
+    int n_prompt = !toks ? -1
+                 : chat ? tok_encode_prompt(s->tok, prompt, toks, (int)cap, true)
+                        : tok_encode(s->tok, prompt, toks, (int)cap, true, true);
     if (n_prompt < 0) {
         free(toks);
         completion_cleanup(e, schema, NULL);

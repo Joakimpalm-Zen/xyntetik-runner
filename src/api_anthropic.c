@@ -942,7 +942,7 @@ void handle_count_tokens(slot_t *s, sock_t fd, jv *req) {
     if (!prompt) return;
     size_t cap = strlen(prompt) + 16;
     int32_t *toks = malloc(sizeof(int32_t) * cap);
-    int n = toks ? tok_encode(s->tok, prompt, toks, (int)cap, true, true) : -1;
+    int n = toks ? tok_encode_prompt(s->tok, prompt, toks, (int)cap, true) : -1;
     free(toks);
     free(prompt);
     tool_envelope_free(&env);

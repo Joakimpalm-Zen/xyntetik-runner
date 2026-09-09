@@ -45,6 +45,7 @@ TEST_JSON_SCHEMA = test-json-schema.exe
 TEST_SVAL_WALK = test-sval-walk.exe
 TEST_TOKENIZER = test-tokenizer.exe
 TEST_TEMPLATE = test-template.exe
+TEST_PROMPT_MARKS = test-prompt-marks.exe
 TEST_TOOLS = test-tools.exe
 TEST_JSON_OOM = test-json-oom.exe
 TEST_TOKENIZER_OOM = test-tokenizer-oom.exe
@@ -73,6 +74,7 @@ TEST_JSON_SCHEMA = test-json-schema
 TEST_SVAL_WALK = test-sval-walk
 TEST_TOKENIZER = test-tokenizer
 TEST_TEMPLATE = test-template
+TEST_PROMPT_MARKS = test-prompt-marks
 TEST_TOOLS = test-tools
 TEST_JSON_OOM = test-json-oom
 TEST_TOKENIZER_OOM = test-tokenizer-oom
@@ -93,6 +95,7 @@ TEST_JSON_SCHEMA = test-json-schema
 TEST_SVAL_WALK = test-sval-walk
 TEST_TOKENIZER = test-tokenizer
 TEST_TEMPLATE = test-template
+TEST_PROMPT_MARKS = test-prompt-marks
 TEST_TOOLS = test-tools
 TEST_JSON_OOM = test-json-oom
 TEST_TOKENIZER_OOM = test-tokenizer-oom
@@ -380,6 +383,11 @@ TEST_TMPL_SRC = tests/test_template.c $(OBJDIR)/gguf.o $(OBJDIR)/tokenizer.o $(O
                 $(OBJDIR)/json.o $(OBJDIR)/compat.o $(QUANTS_OBJ)
 $(TEST_TEMPLATE): $(TEST_TMPL_SRC) $(HDR)
 	$(CC) $(CFLAGS) -I src $(TEST_TMPL_SRC) -o $@ -lm
+
+TEST_PROMPT_MARKS_SRC = tests/test_prompt_marks.c $(OBJDIR)/gguf.o $(OBJDIR)/tokenizer.o $(OBJDIR)/template.o $(OBJDIR)/schema.o $(OBJDIR)/jsonmode.o \
+                $(OBJDIR)/json.o $(OBJDIR)/compat.o $(QUANTS_OBJ)
+$(TEST_PROMPT_MARKS): $(TEST_PROMPT_MARKS_SRC) $(HDR)
+	$(CC) $(CFLAGS) -I src $(TEST_PROMPT_MARKS_SRC) -o $@ -lm
 
 # the strict tool envelope is only meaningful if the schema engine enforces
 # it, so schema.c/jsonmode.c compile in and the tests drive the real validator
@@ -1839,7 +1847,7 @@ else
 endif
 
 test: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSON_OOM) $(TEST_SCHEMA_OOM) $(TEST_SAMPLER) $(TEST_LORA_GRAD) $(TEST_MVT) $(TEST_MVCANON) \
-      $(TEST_TOKENIZER) $(TEST_TOK_MERGE) $(TEST_TOKENIZER_OOM) $(TEST_TEMPLATE) \
+      $(TEST_TOKENIZER) $(TEST_TOK_MERGE) $(TEST_TOKENIZER_OOM) $(TEST_TEMPLATE) $(TEST_PROMPT_MARKS) \
       $(TEST_TEMPLATE_OOM) \
       $(TEST_TOOLS) $(TEST_SHARED) $(TEST_FILE_ID) $(TEST_BATCH) $(TEST_BATCH_ID) $(TEST_BIND) $(TEST_HOST_HEADER) \
       $(TEST_PREFIX) $(TEST_GRAMMAR_FF) $(TEST_LOOKUP_DRAFT) $(TEST_VRAMREG) $(TEST_KV_TOL) $(TEST_TC_TOL) $(TEST_I8_TOL) $(TEST_MV_TOL) $(TEST_ATTN_TOL) $(TEST_GPU_ID) $(TEST_MOE_TOL) $(TEST_MOE_ROUTER) $(TEST_PAGING_WARN) $(TEST_AUTOFIT) $(TEST_RESP_SM_DEP) \
@@ -1890,6 +1898,7 @@ test: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSON_OOM) $(
 	./$(TEST_TOK_MERGE)
 	./$(TEST_TOKENIZER_OOM)
 	./$(TEST_TEMPLATE)
+	./$(TEST_PROMPT_MARKS) test.gguf
 	./$(TEST_TEMPLATE_OOM)
 	./$(TEST_TOOLS)
 	./$(TEST_BUDGET)
@@ -2193,7 +2202,7 @@ clean:
 	rm -f test-moe-fixture.*.gguf test-q8.gguf test-bf16.gguf runner runner-debug $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSON_OOM) \
 		$(TEST_TEMPLATE_OOM) \
 	      $(TEST_SCHEMA_OOM) $(TEST_SAMPLER) $(TEST_TOKENIZER) \
-	      $(TEST_TOKENIZER_OOM) $(TEST_TEMPLATE) $(TEST_SHARED) \
+	      $(TEST_TOKENIZER_OOM) $(TEST_TEMPLATE) $(TEST_PROMPT_MARKS) $(TEST_SHARED) \
 	      $(TEST_BATCH) $(TEST_BIND) $(TEST_HOST_HEADER) $(TEST_VRAMREG) test-shared-asan-bin \
 	      $(TEST_KV_TOL) $(TEST_TC_TOL) $(TEST_I8_TOL) $(TEST_MV_TOL) $(TEST_ATTN_TOL) $(TEST_GPU_ID) $(TEST_MOE_TOL) $(TEST_MOE_ROUTER) $(TEST_PAGING_WARN) $(TEST_AUTOFIT) $(TEST_RESP_SM) $(TEST_PREFIX) $(TEST_GRAMMAR_FF) $(TEST_TOOLS) $(DIFFTOK) \
 	      $(TEST_QUANTS_SIMD) $(TEST_INSTANCES) $(TEST_INSTANCES_OOM) $(TEST_METAL_ADMISSION) $(TEST_TRAY_CORE) \
