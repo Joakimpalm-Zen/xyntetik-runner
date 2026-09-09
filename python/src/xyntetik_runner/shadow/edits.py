@@ -43,15 +43,14 @@ SYSTEM = ("You are a software engineer. You receive a change request, the tests,
           "insert_after it is added after line>}]}. Change as few lines as possible.")
 MAX_EDITS = 12
 ASK = "Answer with the edits object."
-# The runner's schema decoder tracks the live candidates of an enum in a
-# 64-bit mask and refuses more than 60 values. A function with more distinct
-# lines than that cannot have its anchors enumerated; its schema keeps the
-# shape and lets `line` be any string, and apply() refuses an anchor that
-# is not in the function, so an invented anchor is measured as a rejection
-# rather than decoded away. Measured 2026-09-09 on the wide bank: the long
-# functions are where the enum mattered most, so this is a limit to lift in
-# the decoder (a wider candidate set), not a design.
-ENUM_CAP = 60
+# The runner's schema decoder caps an enum's size. A function with more
+# distinct lines than that cannot have its anchors enumerated; its schema
+# keeps the shape and lets `line` be any string, and apply() refuses an
+# anchor that is not in the function, so an invented anchor is measured as a
+# rejection rather than decoded away. The cap was 60 (a 64-bit candidate
+# mask) until 2026-09-09, when 5 of 39 held-out functions of the wide bank
+# hit it; the walker now keeps a sorted range and takes 4096.
+ENUM_CAP = 4096   # the decoder's cap since the walker keeps a sorted range (runner 7cd780b); 60 before
 
 
 def anchor_lines(fn_text: str) -> list[str]:

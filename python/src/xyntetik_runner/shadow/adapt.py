@@ -444,11 +444,16 @@ def evaluate(units: Sequence[tuple[RepairTask, FunctionUnit]],
         samples: list[dict[str, Any]] = []
         for i in range(k):
             t0 = time.monotonic()
-            resp = post_json("/v1/chat/completions", payload | {"seed": 1000 + i})
-            text = str((resp.get("choices") or [{}])[0].get("message", {}).get("content") or "")
-            wall = time.monotonic() - t0
             rejected = ""
-            if protocol == "edits":
+            try:
+                resp = post_json("/v1/chat/completions", payload | {"seed": 1000 + i})
+                text = str((resp.get("choices") or [{}])[0].get("message", {}).get("content") or "")
+            except Exception as e:  # a refused request is one unit's sample, never the run's end
+                text, rejected = "", f"server error: {type(e).__name__}: {str(e)[:200]}"
+            wall = time.monotonic() - t0
+            if rejected:
+                pass
+            elif protocol == "edits":
                 new_fn, rejected = edits_protocol.apply(u.base_fn, text)
             elif protocol == "numbered":
                 new_fn, rejected = edits_protocol.apply_numbered(u.base_fn, text)

@@ -456,7 +456,7 @@ def test_adapt_identical_adapter_samples_are_not_a_verdict(tmp_path: Path, capsy
 
 
 def test_edits_schema_past_the_decoder_enum_cap_keeps_the_shape() -> None:
-    fn = "def big(x):\n" + "".join(f"    y{i} = x + {i}\n" for i in range(70)) + "    return x"
+    fn = "def big(x):\n" + "".join(f"    y{i} = x + {i}\n" for i in range(edits.ENUM_CAP + 10)) + "    return x"
     sch = edits.schema(fn)
     props = sch["properties"]["edits"]["items"]["properties"]
     assert "enum" not in props["line"] and props["line"]["type"] == "string"
