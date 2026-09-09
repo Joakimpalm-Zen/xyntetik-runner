@@ -24,6 +24,7 @@ typedef struct snode snode;
 struct snode {
     int     kind;
     char  **lits; int n_lits;                       // enum literals (JSON text)
+    int    *order;                                  //   their indices in sorted order (see enum_index)
     char  **keys; int *key_len; snode **props;      // object properties
     bool   *req;  int n_props;                      //   (declared order)
     int     n_props_cap;                            // SN_SEQ: allocated slots

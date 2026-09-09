@@ -36,10 +36,33 @@ static char *sn_literal(const jv *v) {
     return lit.s;
 }
 
+// An enum may be as long as a function has lines (the anchored-edit protocol
+// enumerates them), so the walker cannot keep one bit per literal. It keeps a
+// RANGE over the literals in sorted order instead: the candidates that match
+// a prefix are always contiguous there. `order` is that permutation; the
+// literal index the walker reports stays the declared one, which the
+// discriminated tool action depends on.
+#define SCHEMA_ENUM_MAX 4096
+static bool enum_index(snode *n) {
+    free(n->order);
+    n->order = malloc(sizeof(int) * (size_t)(n->n_lits > 0 ? n->n_lits : 1));
+    if (!n->order) return false;
+    for (int i = 0; i < n->n_lits; i++) {   // insertion sort: compile-time, small n
+        int k = i;
+        while (k > 0 && strcmp(n->lits[n->order[k - 1]], n->lits[i]) > 0) {
+            n->order[k] = n->order[k - 1];
+            k--;
+        }
+        n->order[k] = i;
+    }
+    return true;
+}
+
 void schema_free(snode *n) {
     if (!n) return;
     for (int i = 0; i < n->n_lits; i++) free(n->lits[i]);
     free(n->lits);
+    free(n->order);
     for (int i = 0; i < n->n_pat; i++) free(n->pat[i].prefix);
     free(n->pat);
     free(n->sentinel);
@@ -620,6 +643,7 @@ static snode *compile_discriminated_action(jv *alts, char *err, int errcap,
         }
         tool->lits[tool->n_lits++] = lit;
     }
+    if (!enum_index(tool)) { schema_free(tool); schema_free(n); return NULL; }
     n->props[tool_i] = tool;
 
     snode *args = sn_new(SN_COND);
@@ -879,8 +903,8 @@ static snode *compile_oneof(jv *alts, char *err, int errcap, int depth) {
             break;
         }
     }
-    if (all_scalar_const && alts->n > 60) {
-        snprintf(err, errcap, "enum size must be 1..60");
+    if (all_scalar_const && alts->n > SCHEMA_ENUM_MAX) {
+        snprintf(err, errcap, "enum size must be 1..%d", SCHEMA_ENUM_MAX);
         return NULL;
     }
     bool matched = false;
@@ -904,7 +928,7 @@ static snode *compile_oneof(jv *alts, char *err, int errcap, int depth) {
         if (n->alts[i]->kind != SN_ENUM) { all_literals = false; break; }
         literal_count += n->alts[i]->n_lits;
     }
-    if (all_literals && literal_count > 0 && literal_count <= 60) {
+    if (all_literals && literal_count > 0 && literal_count <= SCHEMA_ENUM_MAX) {
         snode *merged = sn_new(SN_ENUM);
         if (!merged) { schema_free(n); return NULL; }
         merged->lits = calloc((size_t)literal_count, sizeof(char *));
@@ -916,6 +940,7 @@ static snode *compile_oneof(jv *alts, char *err, int errcap, int depth) {
                 a->lits[j] = NULL;
             }
         }
+        if (!enum_index(merged)) { schema_free(merged); schema_free(n); return NULL; }
         schema_free(n);
         return merged;
     }
@@ -1050,8 +1075,8 @@ static snode *compile_node(jv *s, char *err, int errcap, int depth) {
             return NULL;
         }
         int cnt = en ? en->n : 1;
-        if (cnt <= 0 || cnt > 60) {
-            snprintf(err, errcap, "enum size must be 1..60");
+        if (cnt <= 0 || cnt > SCHEMA_ENUM_MAX) {
+            snprintf(err, errcap, "enum size must be 1..%d", SCHEMA_ENUM_MAX);
             return NULL;
         }
         for (int i = 0; i < cnt; i++) {
@@ -1091,6 +1116,7 @@ static snode *compile_node(jv *s, char *err, int errcap, int depth) {
             n->lits[i] = lit;
             n->n_lits++;
         }
+        if (!enum_index(n)) { schema_free(n); return NULL; }
         return n;
     }
 
@@ -1161,6 +1187,7 @@ static snode *atem_lit(const char *s) {
     n->lits[0] = strdup(s);
     if (!n->lits[0]) { schema_free(n); return NULL; }
     n->n_lits = 1;
+    if (!enum_index(n)) { schema_free(n); return NULL; }
     n->whitespace_significant = true;
     return n;
 }
@@ -2379,6 +2406,7 @@ static snode *g4_call(jv *tools, const char *only_tool, bool lead,
         if (!choice->alts[choice->n_alts]) goto fail;
         choice->n_alts++;
     }
+    if (!enum_index(names)) goto fail;
     if (!atem_seq_add(root, names)) goto fail;
     names = NULL;
     if (!atem_seq_add(root, choice)) goto fail;
@@ -2473,6 +2501,7 @@ snode *schema_compile_gemma4_turn(jv *tools, bool allow_final,
     disc->lits[disc->n_lits++] = strdup("<|channel>thought\n");
     disc->lits[disc->n_lits++] = strdup("<|tool_call>call:");
     if (!disc->lits[0] || !disc->lits[1]) goto fail;
+    if (!enum_index(disc)) goto fail;
     thought = atem_seq(2);
     snode *after = thought ? g4_body(tools, allow_final, only_tool,
                                      final_schema, &budget, err, errcap) : NULL;
@@ -2987,7 +3016,14 @@ static int feed_byte(sval *v, uint8_t c) {
             f->lit_pos = 0;
             f->sub = 0;
             if (n->kind == SN_ENUM) {
-                f->alive = (n->n_lits >= 64 ? ~0ull : (1ull << n->n_lits) - 1);
+                // a builder that filled the literals without indexing them
+                // (the node is the grammar's own, mutable in fact)
+                if (!n->order && !enum_index((snode *)n)) return -1;
+                // the live candidates of an enum are a RANGE of its sorted
+                // literals (enum_index), packed lo | hi << 32; every literal
+                // is live at the start, none has completed (idx 0)
+                f->alive = (uint64_t)(uint32_t)n->n_lits << 32;
+                f->idx = 0;
             } else {
                 f->alive = n->kind == SN_BOOL ? 3 : 1; // true/false or null
             }
@@ -3071,12 +3107,47 @@ static int feed_byte(sval *v, uint8_t c) {
     }
 
     case P_LIT: {
-        // match against alive literal candidates
+        if (n->kind == SN_ENUM) {
+            // The literals whose prefix matches the bytes so far are one
+            // contiguous run of the sorted order, and a literal that ends
+            // here sorts first in that run (a prefix sorts before what
+            // extends it). So the frame carries a range, not a bit per
+            // literal, and an enum can be as long as a function has lines.
+            int lo = (int)(uint32_t)f->alive, hi = (int)(f->alive >> 32);
+            int completed = -1, nlo = -1, nhi = -1;
+            bool in_run = false;
+            for (int k = lo; k < hi; k++) {
+                const char *L = n->lits[n->order[k]];
+                if (L[f->lit_pos] != (char)c) { if (in_run) break; continue; }
+                in_run = true;
+                if (L[f->lit_pos + 1] == 0) { completed = n->order[k]; continue; }
+                if (nlo < 0) nlo = k;
+                nhi = k + 1;
+            }
+            int pending_completed = f->idx > 0 ? f->idx - 1 : -1;
+            if (completed >= 0 && nlo < 0) {
+                v->last_enum = completed;
+                frame_done(v);
+                return 0;
+            }
+            if (nlo < 0) {
+                if (pending_completed >= 0) {
+                    v->last_enum = pending_completed;
+                    frame_done(v);
+                    return 1;
+                }
+                return -1;
+            }
+            f->alive = (uint64_t)(uint32_t)nlo | ((uint64_t)(uint32_t)nhi << 32);
+            f->idx = completed >= 0 ? completed + 1 : 0;
+            f->lit_pos++;
+            return 0;
+        }
+        // bool / null: two literals or one, as a mask
         static const char *bools[] = { "true", "false" };
         static const char *nulls[] = { "null" };
-        const char *const *lits = n->kind == SN_ENUM ? (const char *const *)n->lits :
-                                  n->kind == SN_BOOL ? bools : nulls;
-        int cnt = n->kind == SN_ENUM ? n->n_lits : (n->kind == SN_BOOL ? 2 : 1);
+        const char *const *lits = n->kind == SN_BOOL ? bools : nulls;
+        int cnt = n->kind == SN_BOOL ? 2 : 1;
         uint64_t next = 0;
         int completed = -1;
         int pending_completed = f->sub ? f->sub - 1 : -1;
@@ -3855,8 +3926,11 @@ int sval_close(sval *v, char *out, int cap) {
                                       n->kind == SN_BOOL ? bools : nulls;
             int cnt = n->kind == SN_ENUM ? n->n_lits : (n->kind == SN_BOOL ? 2 : 1);
             int pick = -1;
-            if (n->kind == SN_ENUM && f->sub) {
-                pick = f->sub - 1;
+            if (n->kind == SN_ENUM) {
+                // the completed literal if one is pending, else the first
+                // live one in sorted order (the range the walker carries)
+                int lo = (int)(uint32_t)f->alive, hi = (int)(f->alive >> 32);
+                pick = f->idx > 0 ? f->idx - 1 : (lo < hi ? (n->order ? n->order[lo] : lo) : -1);
             } else {
                 for (int i = 0; i < cnt; i++)
                     if (f->alive & (1ull << i)) { pick = i; break; }

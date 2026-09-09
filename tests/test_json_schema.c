@@ -2793,6 +2793,42 @@ static void test_schema_sibling_constraints_are_not_dropped(void) {
     #undef WRAP
 }
 
+
+// An enum as long as a function has lines: the anchored-edit protocol puts
+// every distinct line of a function in one, and the walker used to keep one
+// bit per literal, 64 at most. Prefix-shaped members ("ab" beside "abc"),
+// shared prefixes, and the reconsume path all have to hold past that.
+static void test_enum_past_sixty_literals(void) {
+    enum { N = 300 };
+    static char schema[N * 24 + 64];
+    size_t o = (size_t)snprintf(schema, sizeof schema, "{\"enum\":[");
+    for (int i = 0; i < N; i++) {
+        // shared prefixes in blocks of ten; every tenth value is a prefix of the next
+        o += (size_t)snprintf(schema + o, sizeof schema - o, "%s\"line %03d%s\"", i ? "," : "",
+                              i / 10, (i % 10) ? (const char[]){'-', (char)('a' + i % 10), 0} : "");
+    }
+    snprintf(schema + o, sizeof schema - o, "]}");
+    assert(compiles(schema));
+    assert(accepts(schema, "\"line 000\""));        // a value that is a prefix of others
+    assert(accepts(schema, "\"line 000-c\""));      // one that extends it
+    assert(accepts(schema, "\"line 029-j\""));      // the last block
+    assert(!accepts(schema, "\"line 030\""));       // past the set
+    assert(!accepts(schema, "\"line 000-k\""));     // an extension that is not a member
+    assert(!accepts(schema, "\"lin\""));            // a strict prefix of every member
+    // inside an object with the shape the edit protocol uses
+    static char obj[N * 24 + 256];
+    snprintf(obj, sizeof obj, "{\"type\":\"object\",\"properties\":{\"line\":%s,\"text\":{\"type\":\"string\"}},"
+                              "\"required\":[\"line\",\"text\"]}", schema);
+    assert(accepts(obj, "{\"line\":\"line 017-d\",\"text\":\"x\"}"));
+    assert(!accepts(obj, "{\"line\":\"line 017-z\",\"text\":\"x\"}"));
+    // beyond the new cap is still a refusal, not a silent truncation
+    static char huge[5000 * 12 + 64];
+    o = (size_t)snprintf(huge, sizeof huge, "{\"enum\":[");
+    for (int i = 0; i < 4097; i++) o += (size_t)snprintf(huge + o, sizeof huge - o, "%s\"v%04d\"", i ? "," : "", i);
+    snprintf(huge + o, sizeof huge - o, "]}");
+    assert(!compiles(huge));
+}
+
 int main(void) {
     test_schema_sibling_constraints_are_not_dropped();
     test_strict_bounded_numbers();
@@ -2864,6 +2900,7 @@ int main(void) {
     test_schema_nested_tool_key_keeps_discriminator();
     test_schema_close_mid_discriminator_matches_args();
     test_schema_rejects_discriminator_after_conditional_args();
+    test_enum_past_sixty_literals();
     test_escape_replaces_ill_formed_utf8();
     test_tojson_dump_matches_jinja();
     puts("json/schema tests ok");
