@@ -379,10 +379,26 @@ static void pl_fmt(sbuf *b, const char *fmt, ...) {
 
 // The first n bytes of s. Same would-have-written accounting as emit(), so a
 // truncated render still reports the size the caller has to grow to.
+static bool is_mark(char c);
+
+// Is position `p` inside a template-owned span? Marks are balanced and never
+// nest, so the answer is whether the next mark at or after p is a close.
+static bool raw_at(const char *p) {
+    for (; *p; p++)
+        if (is_mark(*p)) return *p == PROMPT_RAW_CLOSE;
+    return false;
+}
+
 static size_t emit_n(char *out, size_t cap, size_t off, const char *s,
                      size_t n) {
     if (off >= cap) return off;
-    int k = snprintf(out + off, cap - off, "%.*s", (int)n, s);
+    // a span cut out of a marked string (trimmed, split at a tag) is emitted
+    // with the raw state it starts in and the one it ends in made explicit,
+    // so the tokenizer sees exactly the template-owned bytes it should
+    bool open_b = raw_at(s), open_e = raw_at(s + n);
+    int k = snprintf(out + off, cap - off, "%s%.*s%s",
+                     open_b ? (char[]){PROMPT_RAW_OPEN, 0} : "", (int)n, s,
+                     open_e ? (char[]){PROMPT_RAW_CLOSE, 0} : "");
     return k > 0 ? off + (size_t)k : off;
 }
 
@@ -396,13 +412,13 @@ static size_t emit_trimmed(char *out, size_t cap, size_t off, const char *pre,
                            const char *s, bool trim, const char *post) {
     size_t n = strlen(s);
     if (trim) {
-        while (n && strchr(" \t\n\r\f\v", s[n - 1])) n--;
-        while (n && strchr(" \t\n\r\f\v", *s)) { s++; n--; }
+        while (n && (strchr(" \t\n\r\f\v", s[n - 1]) || is_mark(s[n - 1]))) n--;
+        while (n && (strchr(" \t\n\r\f\v", *s) || is_mark(*s))) { s++; n--; }
     }
     if (off >= cap) return off;
-    int k = snprintf(out + off, cap - off, "%c%s%c%.*s%c%s%c", PROMPT_RAW_OPEN, pre,
-                     PROMPT_RAW_CLOSE, (int)n, s, PROMPT_RAW_OPEN, post, PROMPT_RAW_CLOSE);
-    return k > 0 ? off + (size_t)k : off;
+    off = emit_raw(out, cap, off, "%s", pre, NULL);
+    off = emit_n(out, cap, off, s, n);
+    return emit_raw(out, cap, off, "%s", post, NULL);
 }
 
 // Per-request opt-in for the thinking shape. Accepted at the top level and
@@ -4532,14 +4548,20 @@ int tool_calls_parse(sbuf *content, sbuf *tc) {
     return n_calls;
 }
 
+// Whitespace trimming with the prompt marks transparent: a builder's mark
+// around a literal newline must not keep that newline from being trimmed
+// the way the reference template trims it. emit_n() restores the mark the
+// trim stepped over, so the span it emits stays balanced.
+static bool is_mark(char c) { return c == PROMPT_RAW_OPEN || c == PROMPT_RAW_CLOSE; }
+
 static const char *trim_left(const char *p, const char *end) {
-    while (p < end && (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n')) p++;
+    while (p < end && (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n' || is_mark(*p))) p++;
     return p;
 }
 
 static const char *trim_right(const char *p, const char *end) {
     while (end > p && (end[-1] == ' ' || end[-1] == '\t' ||
-                       end[-1] == '\r' || end[-1] == '\n')) end--;
+                       end[-1] == '\r' || end[-1] == '\n' || is_mark(end[-1]))) end--;
     return end;
 }
 
