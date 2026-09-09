@@ -8,6 +8,33 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **Message content is text; control tokens come only from the template.**
+  Every chat surface tokenized the rendered prompt with special tokens
+  parsed anywhere, so a message spelling `<|im_end|>` followed by a system
+  header forged a system turn at the token level (llama.cpp does the same).
+  The renderer now marks the bytes it owns, and the tokenizer recognizes a
+  control token only inside those marks; everything a caller supplies is
+  tokenized as text, as one contiguous piece. Raw completion prompts are
+  unchanged: the caller composes them, control tokens included. The byte
+  and token conformance gate is unchanged across every family it can check
+  (`tests/test_prompt_marks.c` probes the attack on the fixture vocabulary).
+- **Review fixes across the engine and the shadow client.** Engine: nothing
+  after a matched stop sequence reaches the client on thinking-tag models;
+  the streamed Qwen thought-then-call turn is a tool call, as the buffered
+  path already returned; a temperature below 1e-6 is argmax rather than a
+  NaN walk that picked the least likely token; an empty bracket class in a
+  `pattern` is refused; `response_format: null` reads as absent; a
+  `tool_choice` whose type is not a string is not a named call;
+  `--check-record` refuses bytes appended after the signature and
+  `--sign-record` refuses an empty object; `--train-eot` gives Gemma 4 its
+  own turn terminator and honours `--chat-template`. Client: the protected
+  verifier runs the interpreter isolated, so a `pytest.py` the attempt wrote
+  into the workspace is never the pytest that judges it; collection pins its
+  rootdir, so a repository whose Python lives in a subdirectory admits;
+  a delegation's tamper set includes conftest and ini files; receipts of one
+  second chain in order and an interrupted signing leaves nothing behind;
+  harness-injected records are not requests; state files are written
+  atomically; a bad tool argument is a tool error, not a crash.
 - **The function unit as anchored edits (R15.2.3).** `shadow adapt` and its
   evaluations now ask the model for edits, not a rewrite: each edit names an
   existing line of the function (and the last line it covers), and the
