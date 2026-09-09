@@ -2092,10 +2092,14 @@ static void test_schema_oneof_const_numeric_prefixes(void) {
     jv_free(schema_json);
 }
 
+static bool accepts(const char *schema_src, const char *doc);
+
 static void test_schema_rejects_oversized_oneof_const_scalars(void) {
-    char src[4096];
+    // 65 scalar consts compiled to one enum; the cap is now 4096 (the walker
+    // keeps a sorted range, not one bit per literal), so oversized is past that
+    static char src[4097 * 16 + 64];
     int n = snprintf(src, sizeof(src), "{\"oneOf\":[");
-    for (int i = 0; i < 65; i++)
+    for (int i = 0; i < 4097; i++)
         n += snprintf(src + n, sizeof(src) - (size_t)n,
                       "%s{\"const\":%d}", i ? "," : "", i);
     snprintf(src + n, sizeof(src) - (size_t)n, "]}");
@@ -2106,6 +2110,13 @@ static void test_schema_rejects_oversized_oneof_const_scalars(void) {
     assert(schema == NULL);
     assert(strstr(err, "enum size") != NULL);
     jv_free(schema_json);
+    // sixty-five, which the old mask refused, is an ordinary enum now
+    char small[2048];
+    n = snprintf(small, sizeof(small), "{\"oneOf\":[");
+    for (int i = 0; i < 65; i++)
+        n += snprintf(small + n, sizeof(small) - (size_t)n, "%s{\"const\":%d}", i ? "," : "", i);
+    snprintf(small + n, sizeof(small) - (size_t)n, "]}");
+    assert(accepts(small, "64") && !accepts(small, "65"));
 }
 
 static void test_schema_string_length_bounds_close_and_reject(void) {
