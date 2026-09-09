@@ -263,6 +263,14 @@ bool template_roles_valid(int tmpl, const char *const *roles, int n,
 
 static const char *mark_fmt(const char *fmt, char *buf, size_t cap);
 
+// Does a message's text begin with `lit`, looking past the prompt marks a
+// builder (tool_result_wrap, assistant_calls_render) put around its own
+// scaffolding? The renderers decide turn folding on that prefix.
+static bool content_starts(const char *s, const char *lit) {
+    while (*s == PROMPT_RAW_OPEN || *s == PROMPT_RAW_CLOSE) s++;
+    return strncmp(s, lit, strlen(lit)) == 0;
+}
+
 static size_t emit(char *out, size_t cap, size_t off, const char *fmt,
                    const char *a, const char *b) {
     // The family preambles are assembled in an sbuf and then formatted through
@@ -1301,16 +1309,13 @@ size_t render_messages_with_tools(int tmpl, const chat_msg *msgs, int n_msgs,
         for (int i = 0; i < n_msgs; i++) {
             bool tool_response =
                 !strcmp(msgs[i].role, "user") &&
-                !strncmp(msgs[i].content, "<tool_response>",
-                         strlen("<tool_response>"));
+                content_starts(msgs[i].content, "<tool_response>");
             bool prev_tool_response = i > 0 &&
                 !strcmp(msgs[i - 1].role, "user") &&
-                !strncmp(msgs[i - 1].content, "<tool_response>",
-                         strlen("<tool_response>"));
+                content_starts(msgs[i - 1].content, "<tool_response>");
             bool next_tool_response = i + 1 < n_msgs &&
                 !strcmp(msgs[i + 1].role, "user") &&
-                !strncmp(msgs[i + 1].content, "<tool_response>",
-                         strlen("<tool_response>"));
+                content_starts(msgs[i + 1].content, "<tool_response>");
             if (tool_response) {
                 if (!prev_tool_response)
                     off = emit(out, cap, off, "<|im_start|>user\n", NULL, NULL);
@@ -2238,9 +2243,9 @@ size_t render_messages_with_tools(int tmpl, const chat_msg *msgs, int n_msgs,
             if (!strcmp(m->role, "user")) {
                 sbuf c = {0};
                 if (sys) {
-                    pl_lit(&c, "<<SYS>>\n");
+                    sb_lit(&c, "<<SYS>>\n");    // text in this vocabulary; the turn is trimmed after assembly
                     sb_put(&c, sys, strlen(sys));
-                    pl_lit(&c, "\n<</SYS>>\n\n");
+                    sb_lit(&c, "\n<</SYS>>\n\n");
                     sys = NULL;
                 }
                 sb_put(&c, m->content, strlen(m->content));
