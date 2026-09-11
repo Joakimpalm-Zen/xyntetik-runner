@@ -36,6 +36,7 @@ from xyntetik_runner.shadow.evidence import (
     render,
     summarize,
 )
+from xyntetik_runner.shadow import recurring
 from xyntetik_runner.shadow.importer import CAPTURE_FILE, Episode, read_episodes, scan_all, write_episodes
 from xyntetik_runner.shadow import adapt
 from xyntetik_runner.shadow import receipt, tandem
@@ -1132,6 +1133,21 @@ def cmd_keygen(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_recurring(args: argparse.Namespace) -> int:
+    home = Path(args.home) if args.home else Path.home()
+    roots = ([Path(r).expanduser() for r in args.sessions.split(",") if r]
+             if args.sessions else recurring.default_roots(home))
+    missing = [r for r in roots if not r.is_dir()]
+    obs = recurring.observe(roots, min_chars=args.min_chars)
+    if args.project:
+        obs = [o for o in obs if args.project in o.project or args.project in o.session]
+    print(recurring.render(obs, sessions=len({o.session for o in obs})))
+    if missing:
+        print("\nnot found, so nothing was read from: " + ", ".join(str(m) for m in missing),
+              file=sys.stderr)
+    return 0
+
+
 def cmd_receipts(args: argparse.Namespace) -> int:
     home = Path(args.home) if args.home else Path.home()
     cfg = read_config(home)
@@ -1374,6 +1390,15 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--home", default="")
     p.add_argument("--runner", default="")
     p.set_defaults(fn=cmd_keygen)
+    p = sub.add_parser("recurring", help="what your work has been, grouped by what it produced")
+    p.add_argument("--home", default="")
+    p.add_argument("--sessions", default="", help="comma-separated session directories; "
+                                                  "default: the harnesses' own")
+    p.add_argument("--min-chars", type=int, default=60,
+                   help="ignore requests shorter than this: continuations like 'go ahead' "
+                        "inherit their kind from the conversation and describe no work")
+    p.add_argument("--project", default="", help="only sessions or requests naming this string")
+    p.set_defaults(fn=cmd_recurring)
     p = sub.add_parser("receipts", help="the signed delegation receipts, newest last")
     p.add_argument("--home", default="")
     p.add_argument("--runner", default="")

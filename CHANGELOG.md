@@ -8,6 +8,19 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **`shadow recurring`: what your work has been, grouped by what it
+  produced.** Measured first, then built: by wording a developer's requests
+  are a long tail, with 1,580 of 1,644 clusters singletons, but by effect
+  they concentrate, and on a real ledger the largest single kind of work
+  was editing documents and committing them. The inventory groups by the
+  effect on the repository and the machine, never by which tool did it, so
+  a file edited with an edit tool and one written by a shell heredoc count
+  as the same work. Delegation and commits are recorded as attributes for
+  the same reason. Harness text is excluded, as it is at capture. Counts
+  come before rates and no share is printed below thirty episodes. It is
+  explicitly retrospective and says so in its own output: a companion
+  measurement found the kind of work a request becomes is not predictable
+  from the request, so this may not be used to route one.
 - **Message content is text; control tokens come only from the template.**
   Every chat surface tokenized the rendered prompt with special tokens
   parsed anywhere, so a message spelling `<|im_end|>` followed by a system
