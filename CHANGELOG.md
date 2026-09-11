@@ -8,6 +8,23 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **A frozen command as the verifier (R14.4.4, the cheap half).** The
+  per-test verifier admitted four tasks from 2,602 real captured episodes.
+  The largest addressable reason for the rest was that the commit touched
+  no pytest test file, 348 episodes, plus 25 whose commits needed a build;
+  everything else was structurally unverifiable, with no repository, no
+  commit, or no request. So a repository's own check can now be the
+  verifier: `make test`, `npm test`, `cargo test`, `go test` or pytest,
+  discovered only when the marker file is plainly present and never
+  invented. The rules that make a verdict mean something are unchanged,
+  because they are the product's contract rather than pytest's: the check
+  is frozen outside the workspace and restored over it, it must fail on
+  the untouched baseline or the instrument is refused, an unchanged
+  workspace is a no-op rather than a pass, and a changed frozen file or
+  test configuration is tamper. The trade is stated rather than hidden: a
+  whole-suite command returns one bit, so `fixed N of M` is gone and the
+  record never invents a tally, while the verdict itself is harder to game
+  because one run decides it.
 - **`shadow recurring`: what your work has been, grouped by what it
   produced.** Measured first, then built: by wording a developer's requests
   are a long tail, with 1,580 of 1,644 clusters singletons, but by effect
