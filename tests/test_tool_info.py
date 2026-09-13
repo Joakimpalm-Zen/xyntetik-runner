@@ -56,6 +56,12 @@ def test_reports_family_and_native_flag(model):
     ("ornith", "qwen3_xml"),
     ("granite42", "qwen3_xml"),
     ("qwen38", "qwen3_xml"),
+    # ChatML on a Qwen2.5/Qwen3 checkpoint is the JSON `<tool_call>` protocol
+    # the chat surface actually selects (TP_QWEN); it read generic here while
+    # the surfaces served native calls, which is the wrong answer to the one
+    # question this flag exists to answer.
+    ("chatml", "qwen_json"),
+    ("qwen3-coder", "qwen3_xml"),
 ])
 def test_native_families_report_native(model, template, family):
     if not RUNNER.exists():
@@ -66,8 +72,10 @@ def test_native_families_report_native(model, template, family):
 
 
 def test_generic_family_is_not_native(model):
+    """A family with no native protocol of its own (Llama 3 renders the
+    generic declarations and envelope) stays generic and not native."""
     if not RUNNER.exists():
         pytest.skip("runner not built")
-    info = _tool_info(model, "--chat-template", "chatml")
+    info = _tool_info(model, "--chat-template", "llama3")
     assert info["tool_family"] == "generic"
     assert info["native_tool_protocol"] is False
