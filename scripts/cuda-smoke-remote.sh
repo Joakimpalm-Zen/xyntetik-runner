@@ -17,7 +17,9 @@
 # Exit 0 means the gate passed on real hardware.
 set -eu
 
-HOST=${HOST:-zen@192.168.1.123}
+# No default: a public repository is not the place to record whose machine
+# this is or where it sits on a private network.
+HOST=${HOST:?set HOST=user@host for the Windows CUDA box}
 REMOTE_DIR=${REMOTE_DIR:-C:/Users/zen/cuda-smoke}
 BINARY=""
 MODEL=""

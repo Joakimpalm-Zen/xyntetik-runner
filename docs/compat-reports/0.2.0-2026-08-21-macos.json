@@ -258,7 +258,7 @@
           "status": "pass",
           "returncode": 0,
           "elapsed_ms": 12436.5,
-          "stderr_tail": "rope: linear scaling x8.00 (model metadata)\nwarning: weights are 2.5 GB but only 1.5 GB of RAM is available \u2014 expect the model to be evicted and every token to page from disk. --mlock pins them; a smaller model is the other fix.\nloaded /Users/zenzombie/AI_projects/origin/xyntetik-runner/models/google_gemma-3-4b-it-Q4_K_M.gguf | gemma3 | 34 layers | ctx 4096 | 4 threads | 0.07s\nsampling: gemma3 (temp 0.00 \u2014 greedy argmax; top_p/top_k/min_p/repeat_penalty inactive)\n\nprompt: 4 tok, 0.65 tok/s | gen: 1 tok, 0.16 tok/s\n"
+          "stderr_tail": "rope: linear scaling x8.00 (model metadata)\nwarning: weights are 2.5 GB but only 1.5 GB of RAM is available \u2014 expect the model to be evicted and every token to page from disk. --mlock pins them; a smaller model is the other fix.\nloaded models/google_gemma-3-4b-it-Q4_K_M.gguf | gemma3 | 34 layers | ctx 4096 | 4 threads | 0.07s\nsampling: gemma3 (temp 0.00 \u2014 greedy argmax; top_p/top_k/min_p/repeat_penalty inactive)\n\nprompt: 4 tok, 0.65 tok/s | gen: 1 tok, 0.16 tok/s\n"
         },
         "tokenizer": {
           "status": "not_executed",
@@ -285,7 +285,7 @@
           "reason": "check_not_requested"
         }
       },
-      "resolved_file": "/Users/zenzombie/AI_projects/origin/xyntetik-runner/models/google_gemma-3-4b-it-Q4_K_M.gguf",
+      "resolved_file": "models/google_gemma-3-4b-it-Q4_K_M.gguf",
       "actual_sha256": "4996030242583a40aa151ff93f49ed787ac8c25e4120c3ae4588b2e2a7d1ae94",
       "file_status": "pass",
       "complete": false
@@ -466,7 +466,7 @@
           "status": "pass",
           "returncode": 0,
           "elapsed_ms": 10865.9,
-          "stderr_tail": "rope: YaRN scaling x32.00 (model metadata)\nwarning: weights are 12.1 GB but only 1.4 GB of RAM is available, and even the 3.2 GB this sparse MoE touches per token does not fit \u2014 expect every token to page from disk. --mlock pins them; a smaller model is the other fix.\nmoe: prefetching routed experts as whole blocks (--moe-prefetch off disables)\nloaded /Users/zenzombie/AI_projects/origin/xyntetik-runner/models/gpt-oss-20b-MXFP4.gguf | gpt-oss | 24 layers | ctx 4096 | 4 threads | 0.22s\nsampling: gpt-oss (temp 0.00 \u2014 greedy argmax; top_p/top_k/min_p/repeat_penalty inactive)\n\nprompt: 3 tok, 0.48 tok/s | gen: 1 tok, 0.23 tok/s\n"
+          "stderr_tail": "rope: YaRN scaling x32.00 (model metadata)\nwarning: weights are 12.1 GB but only 1.4 GB of RAM is available, and even the 3.2 GB this sparse MoE touches per token does not fit \u2014 expect every token to page from disk. --mlock pins them; a smaller model is the other fix.\nmoe: prefetching routed experts as whole blocks (--moe-prefetch off disables)\nloaded models/gpt-oss-20b-MXFP4.gguf | gpt-oss | 24 layers | ctx 4096 | 4 threads | 0.22s\nsampling: gpt-oss (temp 0.00 \u2014 greedy argmax; top_p/top_k/min_p/repeat_penalty inactive)\n\nprompt: 3 tok, 0.48 tok/s | gen: 1 tok, 0.23 tok/s\n"
         },
         "cpu_cuda": {
           "status": "not_executed",
@@ -477,7 +477,7 @@
           "reason": "check_not_requested"
         }
       },
-      "resolved_file": "/Users/zenzombie/AI_projects/origin/xyntetik-runner/models/gpt-oss-20b-MXFP4.gguf",
+      "resolved_file": "models/gpt-oss-20b-MXFP4.gguf",
       "actual_sha256": "27cd6c432c7672cb812a92f611cf3ba7bbc35928262bb1e1253ff4ee6ae35901",
       "file_status": "pass",
       "complete": false
@@ -753,7 +753,7 @@
           "status": "pass",
           "returncode": 0,
           "elapsed_ms": 2927.1,
-          "stderr_tail": "warning: weights are 6.5 GB but only 1.5 GB of RAM is available. This is a sparse MoE and touches about 1.1 GB per token, which does fit \u2014 expect a slow start and disk reads whenever routing reaches a cold expert, not a stall on every token.\nmoe: prefetching routed experts as whole blocks (--moe-prefetch off disables)\nloaded /Users/zenzombie/AI_projects/origin/xyntetik-runner/models/Trinity-Nano-Preview-Q8_0.gguf | afmoe | 56 layers | ctx 4096 | 4 threads | 0.10s\nsampling: generic (temp 0.00 \u2014 greedy argmax; top_p/top_k/min_p/repeat_penalty inactive)\n\nprompt: 3 tok, 1.27 tok/s | gen: 1 tok, 3.15 tok/s\n"
+          "stderr_tail": "warning: weights are 6.5 GB but only 1.5 GB of RAM is available. This is a sparse MoE and touches about 1.1 GB per token, which does fit \u2014 expect a slow start and disk reads whenever routing reaches a cold expert, not a stall on every token.\nmoe: prefetching routed experts as whole blocks (--moe-prefetch off disables)\nloaded models/Trinity-Nano-Preview-Q8_0.gguf | afmoe | 56 layers | ctx 4096 | 4 threads | 0.10s\nsampling: generic (temp 0.00 \u2014 greedy argmax; top_p/top_k/min_p/repeat_penalty inactive)\n\nprompt: 3 tok, 1.27 tok/s | gen: 1 tok, 3.15 tok/s\n"
         },
         "tokenizer": {
           "status": "not_executed",
@@ -764,7 +764,7 @@
           "reason": "check_not_requested"
         }
       },
-      "resolved_file": "/Users/zenzombie/AI_projects/origin/xyntetik-runner/models/Trinity-Nano-Preview-Q8_0.gguf",
+      "resolved_file": "models/Trinity-Nano-Preview-Q8_0.gguf",
       "actual_sha256": "5fcc2428c325e8b2035d280ff28c4c659ea240ce317a9536f230acfc352b79d1",
       "file_status": "pass",
       "complete": false
@@ -810,7 +810,7 @@
           "status": "pass",
           "returncode": 0,
           "elapsed_ms": 25473.2,
-          "stderr_tail": "warning: weights are 5.1 GB but only 1.5 GB of RAM is available \u2014 expect the model to be evicted and every token to page from disk. --mlock pins them; a smaller model is the other fix.\nloaded /Users/zenzombie/AI_projects/origin/xyntetik-runner/models/granite-4.1-8b-Q4_0.gguf | granite | 40 layers | ctx 4096 | 4 threads | 0.06s\nsampling: generic (temp 0.00 \u2014 greedy argmax; top_p/top_k/min_p/repeat_penalty inactive)\n\nprompt: 3 tok, 0.22 tok/s | gen: 1 tok, 0.08 tok/s\n"
+          "stderr_tail": "warning: weights are 5.1 GB but only 1.5 GB of RAM is available \u2014 expect the model to be evicted and every token to page from disk. --mlock pins them; a smaller model is the other fix.\nloaded models/granite-4.1-8b-Q4_0.gguf | granite | 40 layers | ctx 4096 | 4 threads | 0.06s\nsampling: generic (temp 0.00 \u2014 greedy argmax; top_p/top_k/min_p/repeat_penalty inactive)\n\nprompt: 3 tok, 0.22 tok/s | gen: 1 tok, 0.08 tok/s\n"
         },
         "tokenizer": {
           "status": "not_executed",
@@ -829,7 +829,7 @@
           "reason": "check_not_requested"
         }
       },
-      "resolved_file": "/Users/zenzombie/AI_projects/origin/xyntetik-runner/models/granite-4.1-8b-Q4_0.gguf",
+      "resolved_file": "models/granite-4.1-8b-Q4_0.gguf",
       "actual_sha256": "5adf9b6b78921093bd4a805e1060f85d7f744c3eafc14d1ca449364d1e721a1a",
       "file_status": "pass",
       "complete": false

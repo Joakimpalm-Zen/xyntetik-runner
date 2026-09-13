@@ -100,7 +100,9 @@ def commits(rng: str) -> list[tuple[str, str]]:
 def self_test() -> int:
     bad = [
         "Fix thing\n\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>\n"
-        "Claude-Session: https://claude.ai/code/session_012uYHKvzawVPnMTMWPZC7op\n",
+        # a synthetic id: this file must not be the one place in a public
+        # repository where a real session identifier is published
+        "Claude-Session: https://claude.ai/code/session_000000000000000000000000\n",
         "notes at https://chatgpt.com/share/abc123\n",
         "Co-Authored-By: Codex & Joakimpalm-Zen\n",
         "Co-Authored-By: Copilot <175728472+Copilot@users.noreply.github.com>\n",
