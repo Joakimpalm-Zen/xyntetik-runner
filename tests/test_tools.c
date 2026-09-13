@@ -16,6 +16,26 @@
 #include <stdlib.h>
 #include <string.h>
 
+// Builder output carries prompt marks (tokenizer.h, PROMPT_RAW_OPEN): these
+// tests compare the text the model reads, so every builder call is wrapped
+// to lift the marks first. `(f)(...)` calls the real function past the macro.
+static void strip_sb_(sbuf *b) { if (b && b->s) b->n = tok_strip_marks(b->s); }
+static const char *tool_result_wrap_s_(int t, const char *r, sbuf *o) {
+    const char *k = (tool_result_wrap)(t, r, o); strip_sb_(o); return k;
+}
+static size_t render_mwt_s_(int t, const chat_msg *m, int n, bool a, int th, const jv *tl,
+                            char *o, size_t c) {
+    size_t k = (render_messages_with_tools)(t, m, n, a, th, tl, o, c);
+    if (k != SIZE_MAX && k < c) tok_strip_marks(o);
+    return k;
+}
+#define assistant_calls_render(t, x, c, o, e) ((assistant_calls_render)(t, x, c, o, e), strip_sb_(o))
+#define tool_history_render_for(t, c, s, o) ((tool_history_render_for)(t, c, s, o), strip_sb_(o))
+#define tools_render_for(t, tl, o) ((tools_render_for)(t, tl, o), strip_sb_(o))
+#define tools_render(tl, o) ((tools_render)(tl, o), strip_sb_(o))
+#define tool_result_wrap(t, r, o) tool_result_wrap_s_(t, r, o)
+#define render_messages_with_tools(t, m, n, a, th, tl, o, c) render_mwt_s_(t, m, n, a, th, tl, o, c)
+
 static jv *parse(const char *s) {
     jv *v = json_parse(s, strlen(s));
     assert(v != NULL);
@@ -1100,6 +1120,30 @@ static void test_qwen_native_stream_boundaries(void) {
         demux_step(&e, answer, step, &log);
         assert(!log.called);
         assert(!strcmp(log.content.s, "ordinary answer"));
+        log_free(&log);
+    }
+    // the reference spelling after a thought is "</think>\n\n<tool_call>":
+    // the content channel then starts with the blank lines, which the
+    // buffered parser trims. The stream reads through them to the call, or
+    // the same turn is a tool call buffered and plain text streamed.
+    const char *spaced =
+        "\n\n<tool_call>\n{\"name\": \"get_weather\", \"arguments\": "
+        "{\"city\":\"Oslo\",\"units\":\"c\"}}\n</tool_call>";
+    for (size_t step = 1; step <= strlen(spaced); step++) {
+        demux_log log;
+        demux_step(&e, spaced, step, &log);
+        assert(log.called && log.begins == 1 && log.ends == 1);
+        assert(!strcmp(log.name, "get_weather"));
+        assert(log.content.n == 0);
+        log_free(&log);
+    }
+    // whitespace that is not followed by a call stays text
+    const char *spaced_text = "\n\nordinary answer<|im_end|>";
+    for (size_t step = 1; step <= strlen(spaced_text); step++) {
+        demux_log log;
+        demux_step(&e, spaced_text, step, &log);
+        assert(!log.called);
+        assert(!strcmp(log.content.s, "\n\nordinary answer"));
         log_free(&log);
     }
     tool_envelope_free(&e);

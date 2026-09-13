@@ -8,6 +8,13 @@ names that were true when they were written.
 
 ## Unreleased
 
+- Template control markers remain distinct from message content; schema enum
+  handling and tool parsing carry regression tests for the corrected boundaries.
+- Generic JSON record signing and verification support chained delegation receipts.
+- Training JSONL buffers grow without truncating large examples; `--train-eot`
+  optionally includes end-of-turn targets and signed weights keep consistent
+  reported loss normalization.
+
 - **Adapter training covers the dense-shape variants (R8.9.4).** The LoRA
   backward now carries the head transforms (logit scale, softcap, suppressed
   tokens), Granite's muP scalars (embedding, fixed attention, residual and

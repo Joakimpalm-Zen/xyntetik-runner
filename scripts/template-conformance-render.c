@@ -392,6 +392,7 @@ static int do_cases(jv *cases, sbuf *out) {
         sb_lit(out, "{");
         emit_str(out, "id", id);
         sb_lit(out, ",");
+        if (rc == 0 && prompt) tok_strip_marks(prompt);   // compared as text
         emit_str(out, "prompt", rc == 0 ? prompt : NULL);
         sb_lit(out, ",");
         emit_str(out, "error", rc == 0 ? NULL : err);

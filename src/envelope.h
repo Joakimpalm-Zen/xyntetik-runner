@@ -140,6 +140,12 @@ bool signkey_sign(const signkey *k, uint8_t *sig, const void *m, size_t n);
 // success.
 typedef enum { RSIG_NONE = 0, RSIG_OK = 1, RSIG_BAD = 2, RSIG_MALFORMED = 3 } receipt_sig_state;
 receipt_sig_state receipt_signature_check(const char *rec, size_t n, char pub_hex[SIGN_PUBHEX_CAP]);
+// Generic signed records (R14.6): sign any JSON object file in place with
+// the transcript's chain and signature objects (prev_path links the chain,
+// NULL starts one); check prints OK/UNSIGNED/BAD and returns 0/1/2.
+bool record_sign(const char *path, const char *sign_key_path, const char *prev_path);
+int  record_check(const char *path, const char *trust_hex);
+bool record_chain_hash(const char *path, char hex[65]);
 
 // Writes the transcript beside the run. Returns false (with the reason on
 // stderr) on any failure; a partial transcript is never left installed.

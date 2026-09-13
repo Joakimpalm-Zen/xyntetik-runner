@@ -176,8 +176,11 @@ int sample_pick(sampler *s, float *logits, int n_vocab, sample_ok_fn ok, void *u
         }
     }
 
-    // fast paths that avoid sorting the whole vocabulary
-    if (s->temp <= 0) {
+    // fast paths that avoid sorting the whole vocabulary. A temperature so
+    // small that logits/temp overflows float (below ~1e-37) is argmax in
+    // intent and would otherwise turn every candidate into NaN, which the
+    // cumulative walk answers with the LEAST likely token.
+    if (s->temp <= 0 || s->temp < 1e-6f) {
         int best = 0;
         for (int i = 1; i < n_vocab; i++) if (logits[i] > logits[best]) best = i;
         if (!ok || ok(ud, best)) return best;

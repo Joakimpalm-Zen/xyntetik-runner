@@ -1,5 +1,5 @@
 rope: requested ctx 1024 > training ctx 256 — applying YaRN x4.00
-loaded /Users/zenzombie/AI_projects/origin/xyntetik-runner/test.gguf | llama | 2 layers | ctx 1024 | 1 threads | 0.00s
+loaded test.gguf | llama | 2 layers | ctx 1024 | 1 threads | 0.00s
 sampling: generic (temp 0.80, top_p 0.95, top_k 40, min_p 0.05, repeat_penalty 1.10)
 rope: requested ctx 1024 > training ctx 256 — applying YaRN x4.00
 server listening on http://127.0.0.1:54268 — 2 slots x 2 threads, continuous batching
