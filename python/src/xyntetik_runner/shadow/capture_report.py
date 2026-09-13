@@ -229,6 +229,7 @@ def reproduce_verification(home: Path, thread: list[dict[str, Any]],
       `not_attempted`   -- no verification, or the state could not be rebuilt
       `instrument_error`-- the command could not run at all (exit 2-5, timeout)
     """
+    import shutil
     import subprocess
     import tempfile
     out = []
@@ -272,7 +273,13 @@ def reproduce_verification(home: Path, thread: list[dict[str, Any]],
                     out.append(row)
                     continue
                 tree = max(candidates, key=lambda item: item[0])[1]
-                pr = subprocess.run(["bash", "-lc", str(v["command"])],
+                # A bare `bash` is resolved by CreateProcess on Windows, which
+                # searches System32 before PATH and finds the WSL launcher
+                # there: with no distribution installed it exits 1, and that
+                # read as a failed verification. Resolve through PATH instead,
+                # where the shell that recorded the command comes first.
+                shell = shutil.which("bash") or "bash"
+                pr = subprocess.run([shell, "-lc", str(v["command"])],
                                     cwd=str(tree), capture_output=True, text=True,
                                     timeout=timeout_s)
                 got = {0: "passed", 1: "failed"}.get(pr.returncode)

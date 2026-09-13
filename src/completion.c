@@ -1200,18 +1200,20 @@ static int emit_channel(gen_ctx *g, int reasoning, const char *bytes, int n) {
 // g->hold so a stop spanning token boundaries still matches, and only the
 // tail that could still begin a stop is withheld from the client
 static int stop_feed(gen_ctx *g, const char *bytes, int n) {
-    // Nothing after a matched stop reaches the client: the think splitter's
-    // held-back tail is flushed through here at the end of generation, and
-    // on a thinking-tag model that tail is the text that followed the stop.
-    if (g->stopped) return 1;
     // A stop sequence is a rule about the MODEL's visible text. The tail the
     // engine synthesizes to close a truncated constrained document is not
     // that — it is the server making the client's copy legal — and filtering
     // it eats exactly the bytes that do the work: closing `{"a":"xx` yields
     // `","b":""}`, and `"}"` or `"\n\n"` are ordinary stops that match a
-    // closer even when the model never produced one.
+    // closer even when the model never produced one. It arrives AFTER the
+    // stop matched, so this bypass must precede the guard below.
     if (g->eng && g->eng->constraint_closing)
         return emit_channel(g, 0, bytes, n);
+    // Nothing else after a matched stop reaches the client: the think
+    // splitter's held-back tail is flushed through here at the end of
+    // generation, and on a thinking-tag model that tail is the text that
+    // followed the stop.
+    if (g->stopped) return 1;
     sb_put(&g->hold, bytes, n);
     size_t at = 0, hit_len = 0;
     for (size_t i = 0; !hit_len && i < g->hold.n; i++)

@@ -65,6 +65,10 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
     (void)s; (void)fd; (void)api; (void)req; (void)env;
     free(ta_prompt);
     ta_prompt = prompt ? strdup(prompt) : NULL;
+    // Every check below reads the prompt as text: the literal native blocks
+    // are spelled without the tokenizer's ownership marks, and the three
+    // surfaces share one renderer, so the marks carry no extra signal here.
+    if (ta_prompt) tok_strip_marks(ta_prompt);
 }
 
 // completion.c's request readers, stubbed: the fields they read are absent

@@ -108,7 +108,8 @@ static void slot_close(slot *s) {
 
 // The server's own generation sink, set up the way handle_completion sets it
 // up for a buffered request carrying `stop`.
-static void sink_open(gen_ctx *g, engine *e, const char **stops, int n_stops) {
+static void sink_open(gen_ctx *g, engine *e, const char **stops, int n_stops,
+                      const char *think_open, const char *think_close) {
     memset(g, 0, sizeof(*g));
     g->fd = -1;
     g->stream = false;
@@ -116,7 +117,7 @@ static void sink_open(gen_ctx *g, engine *e, const char **stops, int n_stops) {
     g->stop_strs = stops;
     g->n_stop = n_stops;
     g->eng = e;
-    think_init(&g->ts, NULL, NULL);
+    think_init(&g->ts, think_open, think_close);
 }
 
 // the two post-generation steps handle_completion performs, then hand back the
@@ -150,7 +151,7 @@ static bool run_turn(slot *s, snode *schema, bool spec,
     engine_reset(&s->e);
 
     gen_ctx g;
-    sink_open(&g, &s->e, stops, n_stops);
+    sink_open(&g, &s->e, stops, n_stops, NULL, NULL);
 
     int32_t prompt[4] = { 1, 20, 30, 40 };
     float *logits = engine_feed(&s->e, prompt, 4);
@@ -167,11 +168,24 @@ static bool run_turn(slot *s, snode *schema, bool spec,
 // Returns false if the run could not be scripted (the vocabulary could not
 // spell the text, or the constraint vetoed a token) — never silently degrades
 // to something else.
+static bool run_scripted_as(slot *s, const char *text, bool json_mode,
+                            const char *think_open, const char *think_close,
+                            const char **stops, int n_stops,
+                            char *out, int cap, bool *stopped, const char **hit);
+
 static bool run_scripted(slot *s, const char *text,
                          const char **stops, int n_stops,
                          char *out, int cap, bool *stopped, const char **hit) {
+    return run_scripted_as(s, text, true, NULL, NULL, stops, n_stops,
+                           out, cap, stopped, hit);
+}
+
+static bool run_scripted_as(slot *s, const char *text, bool json_mode,
+                            const char *think_open, const char *think_close,
+                            const char **stops, int n_stops,
+                            char *out, int cap, bool *stopped, const char **hit) {
     s->e.schema = NULL;
-    s->e.json_mode = true;
+    s->e.json_mode = json_mode;
     s->e.gram_ff = false;
     engine_reset(&s->e);
 
@@ -186,7 +200,7 @@ static bool run_scripted(slot *s, const char *text,
     if (!logits) return false;
 
     gen_ctx g;
-    sink_open(&g, &s->e, stops, n_stops);
+    sink_open(&g, &s->e, stops, n_stops, think_open, think_close);
 
     bool scripted = true;
     engine_gen_begin(&s->e, n_ids);
@@ -356,12 +370,39 @@ static void test_closer_survives_an_unmatched_stop(void) {
     slot_close(&s);
 }
 
+// A thinking-tag model puts a splitter between the engine and the stop
+// filter, and the splitter holds back strlen(open)-1 bytes of content at all
+// times in case they begin a tag. When the stop matches, those bytes are
+// the text that FOLLOWED it; they used to be flushed to the client at the
+// end of generation as if they were ordinary output.
+static void test_stop_drops_the_think_splitters_tail(void) {
+    slot s;
+    if (!slot_open(&s)) { ck(0, "fixture model loads"); return; }
+
+    static const char *stops[1] = { "STOP" };
+    const char *hit = NULL;
+    char doc[512];
+    bool stopped = false;
+    bool scripted = run_scripted_as(&s, "hello.STOP.world.and.more", false,
+                                    "<think>", "</think>", stops, 1,
+                                    doc, sizeof(doc), &stopped, &hit);
+    fprintf(stderr, "   thinking-tag stopped text: [%s]\n", doc);
+    ck(scripted, "the thinking-tag turn generated exactly the scripted tokens");
+    ck(stopped && hit && !strcmp(hit, "STOP"),
+       "the stop sequence matched behind the think splitter");
+    ck(!strcmp(doc, "hello."),
+       "nothing after a matched stop reaches the client on a thinking-tag model");
+
+    slot_close(&s);
+}
+
 int main(int argc, char **argv) {
     if (argc > 1) g_path = argv[1];
     test_stop_under_schema();
     test_stop_under_json_mode();
     test_closer_survives_an_unmatched_stop();
     test_stop_under_schema_speculative();
+    test_stop_drops_the_think_splitters_tail();
     if (!g_fail) fprintf(stderr, "all stop/constraint tests passed\n");
     return g_fail;
 }
