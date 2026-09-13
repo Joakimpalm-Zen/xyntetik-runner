@@ -8,6 +8,12 @@ names that were true when they were written.
 
 ## Unreleased
 
+- Optional native DPO objective: `--train-dpo` reads preference pairs and
+  compares the adapter against its frozen base without a second model copy.
+  The CPU path has an independent finite-difference gradient gate; bypassing
+  a device-bound adapter is refused. This adds a training operation, not a
+  claim of task-quality gains or an automatic Shadow training loop.
+
 - Shadow learning recipes moved to the optional Shade tools. `shadow adapt`
   and `shadow optimize` return migration instructions without training or
   changing the configured adapter. Runner retains native training and serving.

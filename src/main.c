@@ -1,5 +1,6 @@
 #define _CRT_RAND_S
 // runner — CLI: one-shot completion, interactive chat, and server launcher.
+#include "dpo.h"
 #include "runner.h"
 #include "instances.h"
 #include "tray.h"
@@ -290,6 +291,150 @@ static int train_eot_id(tokenizer *tok, int tmpl) {
     }
     int id = s ? tok_find(tok, s) : -1;
     return id >= 0 ? id : tok->eos_id;
+}
+
+// One DPO pair: the same prompt with two completions, tokenized, each with a
+// transition mask that is 1 over its own completion and 0 over the shared
+// prompt. Two token arrays rather than one shared prefix, because
+// model_lora_backward_w teacher-forces from position 0 and owns the KV rows.
+typedef struct { int32_t *tw, *tl; float *mw, *ml; int nw, nl, np; } dpo_pair;
+
+static void dpo_pairs_free(dpo_pair *ps, int n) {
+    for (int i = 0; i < n; i++) {
+        free(ps[i].tw); free(ps[i].tl); free(ps[i].mw); free(ps[i].ml);
+    }
+    free(ps);
+}
+
+// Tokenize prompt+completion into one buffer, growing until it fits. Same
+// discipline as the JSONL branch of train_examples_load and for the same
+// measured reason: tok_encode truncates silently at its capacity, and "one
+// token per byte" is not a bound on a SentencePiece vocabulary with byte
+// fallback.
+static bool dpo_tokenize(tokenizer *tok, const char *prompt, const char *completion,
+                         bool no_bos, int eot_id, bool eot,
+                         int32_t **out, int *out_np, int *out_n) {
+    size_t pn = strlen(prompt), cn = strlen(completion);
+    if (pn > SIZE_MAX - cn - 8 || pn + cn + 8 > INT_MAX) return false;
+    int cap = (int)(2 * (pn + cn) + 32);
+    int32_t *t = NULL;
+    int np = -1, nc = -1;
+    for (int attempt = 0; attempt < 6; attempt++) {
+        free(t);
+        t = malloc(sizeof(*t) * (size_t)cap);
+        if (!t) return false;
+        np = tok_encode(tok, prompt, t, cap, !no_bos, true);
+        nc = np >= 0 ? tok_encode(tok, completion, t + np, cap - np, false, false) : -1;
+        if (np < 0 || nc < 0 || np + nc + 1 < cap) break;
+        if (attempt == 5 || cap > INT_MAX / 2) break;
+        cap *= 2;
+    }
+    if (!t) return false;
+    if (np < 0 || nc < 0 || np + nc + 1 >= cap) { free(t); return false; }
+    if (eot) t[np + nc++] = eot_id;
+    *out = t; *out_np = np; *out_n = np + nc;
+    return true;
+}
+
+static bool dpo_pairs_load(tokenizer *tok, const char *path, bool no_bos,
+                           int wctx, int eot_id, bool eot_all,
+                           dpo_pair **out, int *out_n) {
+    size_t data_n = 0;
+    char *data = read_file(path, &data_n);
+    if (!data) {
+        fprintf(stderr, "error: cannot read %s\n", path);
+        return false;
+    }
+    dpo_pair *ps = NULL;
+    int n = 0;
+    size_t off = 0;
+    int line_no = 0;
+    while (off < data_n) {
+        const char *line = data + off;
+        const char *nl = memchr(line, '\n', data_n - off);
+        size_t line_n = nl ? (size_t)(nl - line) : data_n - off;
+        off += line_n + (nl != NULL);
+        line_no++;
+        if (train_line_blank(line, line_n)) continue;
+        jv *v = json_parse(line, line_n);
+        const char *prompt = v && v->type == J_OBJ ? jv_str(jv_get(v, "prompt"), NULL) : NULL;
+        const char *chosen = v && v->type == J_OBJ ? jv_str(jv_get(v, "chosen"), NULL) : NULL;
+        const char *rejected = v && v->type == J_OBJ ? jv_str(jv_get(v, "rejected"), NULL) : NULL;
+        if (!prompt || !chosen || !rejected) {
+            fprintf(stderr, "error: %s line %d needs a JSON object with string "
+                    "{\"prompt\",\"chosen\",\"rejected\"}\n", path, line_no);
+            jv_free(v); goto fail;
+        }
+        jv *ev = jv_get(v, "end_of_turn");
+        bool eot = eot_all;
+        if (ev) {
+            if (ev->type != J_BOOL) {
+                fprintf(stderr, "error: %s line %d end_of_turn must be true or false\n",
+                        path, line_no);
+                jv_free(v); goto fail;
+            }
+            eot = ev->b;
+        }
+        if (eot && eot_id < 0) {
+            fprintf(stderr, "error: %s line %d asks for an end-of-turn token but this "
+                    "model declares none\n", path, line_no);
+            jv_free(v); goto fail;
+        }
+        dpo_pair q = {0};
+        int npw = 0, npl = 0;
+        if (!dpo_tokenize(tok, prompt, chosen, no_bos, eot_id, eot, &q.tw, &npw, &q.nw) ||
+            !dpo_tokenize(tok, prompt, rejected, no_bos, eot_id, eot, &q.tl, &npl, &q.nl)) {
+            fprintf(stderr, "error: %s line %d could not be tokenized without "
+                    "truncation\n", path, line_no);
+            free(q.tw); free(q.tl); jv_free(v); goto fail;
+        }
+        jv_free(v);
+        // A pair whose two halves tokenize the shared prompt differently is
+        // not a pair over the same input, and the margin would then measure
+        // the prompt as well as the completion. Refuse it by name.
+        if (npw != npl || memcmp(q.tw, q.tl, sizeof(int32_t) * (size_t)npw) != 0) {
+            fprintf(stderr, "error: %s line %d: the two completions do not share an "
+                    "identical prompt encoding (%d vs %d tokens)\n", path, line_no, npw, npl);
+            free(q.tw); free(q.tl); goto fail;
+        }
+        q.np = npw;
+        if (q.nw < 2 || q.nl < 2) {
+            fprintf(stderr, "error: %s line %d: a completion is empty\n", path, line_no);
+            free(q.tw); free(q.tl); goto fail;
+        }
+        if (q.nw > wctx || q.nl > wctx) {
+            fprintf(stderr, "error: %s line %d needs %d/%d tokens, past the %d-token "
+                    "training context; raise --train-ctx or shorten it\n",
+                    path, line_no, q.nw, q.nl, wctx);
+            free(q.tw); free(q.tl); goto fail;
+        }
+        // transition t scores toks[t+1], so the completion's first target is
+        // transition np-1
+        q.mw = malloc(sizeof(float) * (size_t)(q.nw - 1));
+        q.ml = malloc(sizeof(float) * (size_t)(q.nl - 1));
+        if (!q.mw || !q.ml) {
+            free(q.tw); free(q.tl); free(q.mw); free(q.ml); goto fail;
+        }
+        for (int i = 0; i < q.nw - 1; i++) q.mw[i] = i >= q.np - 1 ? 1.0f : 0.0f;
+        for (int i = 0; i < q.nl - 1; i++) q.ml[i] = i >= q.np - 1 ? 1.0f : 0.0f;
+        if (n == INT_MAX) { free(q.tw); free(q.tl); free(q.mw); free(q.ml); goto fail; }
+        dpo_pair *grown = realloc(ps, sizeof(*ps) * ((size_t)n + 1));
+        if (!grown) { free(q.tw); free(q.tl); free(q.mw); free(q.ml); goto fail; }
+        ps = grown;
+        ps[n++] = q;
+    }
+    free(data);
+    if (!n) {
+        fprintf(stderr, "error: %s has no pairs\n", path);
+        dpo_pairs_free(ps, n);
+        return false;
+    }
+    *out = ps; *out_n = n;
+    return true;
+fail:
+    free(data);
+    dpo_pairs_free(ps, n);
+    return false;
 }
 
 static bool train_examples_load(tokenizer *tok, const char *path, bool no_bos,
@@ -795,6 +940,11 @@ static void usage_to(FILE *f, const char *prog) {
         "                 default: same data + seed -> byte-identical adapter\n"
         "  --train-eot    append the template's end-of-turn token to every\n"
         "                 completion (a jsonl line can set \"end_of_turn\")\n"
+        "  --train-dpo F  preference pairs .jsonl {\"prompt\",\"chosen\",\n"
+        "                 \"rejected\"}: DPO (arXiv 2305.18290) over the\n"
+        "                 adapter; the reference policy is these same weights\n"
+        "                 with the adapter bypassed, so it costs no second copy\n"
+        "  --dpo-beta F   DPO beta, the reference-deviation weight (0.1)\n"
         "  --train-steps N --lr F --train-ctx N --save-every N\n"
         "                 training-loop knobs (defaults 100, 1e-4, 128, 0)\n"
         "  --train-out F  adapter GGUF to write (default adapter-out.gguf)\n"
@@ -1084,9 +1234,11 @@ int main(int argc, char **argv) {
     const char *lora_path = NULL;
     float lora_scale = 1.0f;
     const char *train_path = NULL, *train_out = "adapter-out.gguf";
+    const char *dpo_path = NULL;
     int train_steps = 100, train_ctx = 128, lora_rank = 8, save_every = 0;
     bool train_eot = false;
     float train_lr = 1e-4f;
+    float dpo_beta = 0.1f;
     model_params mp = {0};
     // RUNNER_VRAM_PRIORITY sets the baseline; --vram-priority (parsed below)
     // overrides it, same precedence as every other env/flag pair in runner.
@@ -1203,6 +1355,9 @@ int main(int argc, char **argv) {
         else if (!strcmp(a, "--lora-scale"))
             lora_scale = (float)float_arg(a, NEXT, 0, FLT_MAX);
         else if (!strcmp(a, "--train")) train_path = NEXT;
+        else if (!strcmp(a, "--train-dpo")) dpo_path = NEXT;
+        else if (!strcmp(a, "--dpo-beta"))
+            dpo_beta = (float)float_arg(a, NEXT, 0, FLT_MAX);
         else if (!strcmp(a, "--train-eot")) train_eot = true;
         else if (!strcmp(a, "--train-steps"))
             train_steps = (int)int_arg(a, NEXT, 1, INT_MAX);
@@ -1521,7 +1676,7 @@ int main(int argc, char **argv) {
     }
     if (!prompt && !interactive && !serve && !quant_out && !merge_out &&
         !context_out &&
-        !bench_json && !tool_info && !train_path && !verify_path) {
+        !bench_json && !tool_info && !train_path && !dpo_path && !verify_path) {
         fprintf(stderr, "error: need -p PROMPT, -i, or --serve\n");
         usage(argv[0]);
         return 1;
@@ -2167,7 +2322,12 @@ int main(int argc, char **argv) {
     double ptime, gtime, t0;
     int n_prompt, n_gen;
 
-    if (train_path) {
+    if (train_path && dpo_path) {
+        fprintf(stderr, "error: --train and --train-dpo are different "
+                "objectives; pass one\n");
+        CLI_FAIL;
+    }
+    if (train_path || dpo_path) {
         // --train (adaptation D4): AdamW LoRA training in the serving binary,
         // CPU reference. Two data modes: plain text (tokenize, fixed windows,
         // cycle) and .jsonl lines {"prompt","completion","weight"} — prompt
@@ -2206,17 +2366,78 @@ int main(int argc, char **argv) {
         }
         train_ex *exs = NULL;
         int n_ex = 0;
+        dpo_pair *pairs = NULL;
+        int n_pair = 0;
         int wctx = train_ctx < m.n_ctx ? train_ctx : m.n_ctx;
         int train_tmpl = tmpl_override >= 0 ? tmpl_override
                          : template_detect(gguf_get_str(&m.gf, "tokenizer.chat_template", NULL), &tok);
         int eot_id = train_eot_id(&tok, train_tmpl);
-        if (!train_examples_load(&tok, train_path, no_bos, wctx, eot_id, train_eot,
-                                 &exs, &n_ex)) CLI_FAIL;
-#define TRAIN_FAIL do { train_examples_free(exs, n_ex); CLI_FAIL; } while (0)
+        if (dpo_path) {
+            if (!dpo_pairs_load(&tok, dpo_path, no_bos, wctx, eot_id, train_eot,
+                                &pairs, &n_pair)) CLI_FAIL;
+        } else if (!train_examples_load(&tok, train_path, no_bos, wctx, eot_id, train_eot,
+                                        &exs, &n_ex)) CLI_FAIL;
+#define TRAIN_FAIL do { train_examples_free(exs, n_ex); \
+                        dpo_pairs_free(pairs, n_pair); CLI_FAIL; } while (0)
+        double first_loss = 0, last_loss = 0;
+        if (dpo_path) {
+            // DPO (arXiv 2305.18290 eq. 7). pi_ref is this same model with the
+            // adapter bypassed, so the reference costs no second copy of the
+            // weights; see src/dpo.c for why the gradient is a scalar multiple
+            // of a difference of two weighted-CE gradients and therefore needs
+            // no new kernel. The objective and its gradient are gated against
+            // an independent numerical reference by tests/test_dpo_grad.c
+            // (independent loss formula, the gradient identity, and a
+            // directional derivative against central differences) because an
+            // unchecked loss that merely descends is indistinguishable from a
+            // checked one until the adapter is useless.
+            fprintf(stderr, "train-dpo: %d pair%s, %d steps, lr %g, beta %g, ctx %d\n",
+                    n_pair, n_pair == 1 ? "" : "s", train_steps, (double)train_lr,
+                    (double)dpo_beta, wctx);
+            double acc_sum = 0, margin_sum = 0;
+            for (int step = 1; step <= train_steps; step++) {
+                dpo_pair *q = &pairs[(step - 1) % n_pair];
+                double step_t0 = plat_now();
+                dpo_step d;
+                if (!dpo_accumulate(&m, (double)dpo_beta, q->tw, q->nw, q->mw,
+                                    q->tl, q->nl, q->ml, &d)) {
+                    fprintf(stderr, "error: DPO step failed\n");
+                    TRAIN_FAIL;
+                }
+                if (!model_lora_adam_step(&m, train_lr, 0.9f, 0.999f, 1e-8f,
+                                          0.01f, step)) {
+                    fprintf(stderr, "error: cannot allocate optimizer state\n");
+                    TRAIN_FAIL;
+                }
+                if (step == 1) first_loss = d.loss;
+                last_loss = d.loss;
+                acc_sum += d.acc;
+                margin_sum += d.margin;
+                double step_s = plat_now() - step_t0;
+                // margin and acc are the fields that say whether the objective
+                // is doing anything: a run whose loss falls while the margin
+                // stays at zero has learned to shrink the reference gap rather
+                // than to prefer the chosen completion.
+                printf("{\"step\":%d,\"pair\":%d,\"tokens\":%d,"
+                       "\"loss\":%.6f,\"margin\":%.6f,\"acc\":%.0f,"
+                       "\"coeff\":%.6g,\"logp_w\":%.4f,\"logp_l\":%.4f,"
+                       "\"logp_ref_w\":%.4f,\"logp_ref_l\":%.4f,"
+                       "\"step_s\":%.2f}\n",
+                       step, (step - 1) % n_pair, q->nw + q->nl,
+                       d.loss, d.margin, d.acc, d.coeff,
+                       d.logp_w, d.logp_l, d.logp_ref_w, d.logp_ref_l, step_s);
+                fflush(stdout);
+                if (save_every > 0 && step % save_every == 0 &&
+                    !model_lora_save(&m, train_out))
+                    TRAIN_FAIL;
+            }
+            fprintf(stderr, "train-dpo: mean margin %.6f, accuracy %.3f over "
+                    "%d steps\n", margin_sum / train_steps,
+                    acc_sum / train_steps, train_steps);
+        } else {
         fprintf(stderr, "train: %d example%s, %d steps, lr %g, ctx %d\n",
                 n_ex, n_ex == 1 ? "" : "s", train_steps, (double)train_lr,
                 wctx);
-        double first_loss = 0, last_loss = 0;
         for (int step = 1; step <= train_steps; step++) {
             train_ex *ex = &exs[(step - 1) % n_ex];
             double loss = 0;
@@ -2261,14 +2482,16 @@ int main(int argc, char **argv) {
                 !model_lora_save(&m, train_out))
                 TRAIN_FAIL;
         }
+        }
         if (!model_lora_save(&m, train_out)) TRAIN_FAIL;
         {
             // D7: the provenance record, written beside every adapter — the
             // reproducibility claim in checkable form. Two runs with the same
             // base/data/seed/config must produce the same adapter_sha256.
             char bsha[65] = "", dsha[65] = "", asha[65] = "", xsha[65] = "";
+            const char *data_path = dpo_path ? dpo_path : train_path;
             bool hash_ok = envelope_file_sha256(load_path, bsha) &&
-                           envelope_file_sha256(train_path, dsha) &&
+                           envelope_file_sha256(data_path, dsha) &&
                            envelope_file_sha256(train_out, asha);
             // The running binary's own hash + build identity, so a
             // reproduction report can distinguish "same executable" from
@@ -2312,8 +2535,12 @@ int main(int argc, char **argv) {
             sb_lit(&rec, "\"},\"base\":{\"path\":\"");
             sb_esc(&rec, load_path, strlen(load_path));
             sb_lit(&rec, "\",\"sha256\":\""); sb_lit(&rec, bsha);
-            sb_lit(&rec, "\"},\"data\":{\"path\":\"");
-            sb_esc(&rec, train_path, strlen(train_path));
+            sb_lit(&rec, "\"},\"objective\":\"");
+            sb_lit(&rec, dpo_path ? "dpo" : "weighted-cross-entropy");
+            if (dpo_path) sb_fmt(&rec, "\",\"dpo_beta\":%g", (double)dpo_beta);
+            else sb_lit(&rec, "\"");
+            sb_lit(&rec, ",\"data\":{\"path\":\"");
+            sb_esc(&rec, data_path, strlen(data_path));
             sb_lit(&rec, "\",\"sha256\":\""); sb_lit(&rec, dsha);
             sb_fmt(&rec,
                     "\"},\"seed\":%llu,\"lora_rank\":%d,\"alpha\":%g,"
@@ -2339,6 +2566,7 @@ int main(int argc, char **argv) {
         fprintf(stderr, "train: done — first-step loss %.4f, last-step "
                 "%.4f, adapter -> %s\n", first_loss, last_loss, train_out);
         train_examples_free(exs, n_ex);
+        dpo_pairs_free(pairs, n_pair);
 #undef TRAIN_FAIL
         cli_cleanup(&e, toks, &tok, &m);
         free(owned_prompt);
