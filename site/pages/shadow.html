@@ -22,11 +22,11 @@ nav: runner
     <div class="grid-3">
       <div class="card">
         <h3>It asks first</h3>
-        <p>The command says exactly what it will write: two capture hooks and a <code>/shadow</code> skill for Claude Code, a <code>/shadow</code> prompt for Codex, whichever is on the machine, and the model it will serve. Without <code>-m</code> it looks for a model on disk that fits and proposes it. Nothing runs until you submit a prompt, and a hook can never block one.</p>
+        <p>The command says exactly what it will write: two capture hooks and a <code>/shadow</code> skill for Claude Code, a <code>/shadow</code> prompt for Codex, whichever is on the machine, and the model it will serve. Without <code>-m</code> it looks for a model on disk that fits and proposes it. Prompt-time work has a time budget; model attempts run in the background.</p>
       </div>
       <div class="card accent">
-        <h3>Only your own words are recorded</h3>
-        <p>The hooks note your request, the directory, the time and the repository's commit. Nothing the assistant produces is ever read: the evidence contract refuses a record that loaded assistant content. Your frontier model's output is not the runner's business.</p>
+        <h3>Captured content stays local</h3>
+        <p>Capture v2 retains raw hook payloads and bounded workspace snapshots. Payloads can contain agent text and tool data. Records and content blobs stay on the machine; partial snapshots and uncertain task associations are reported. The installer describes this before writing hooks.</p>
       </div>
       <div class="card accent">
         <h3>Counts before rates</h3>
@@ -62,14 +62,14 @@ nav: runner
 <section class="section">
   <div class="wrap split">
     <div class="sticky">
-      <p class="eyebrow">Adapt overnight</p>
+      <p class="eyebrow">Optional learning</p>
       <h2>Evidence first. Learning is a separate experiment.</h2>
       <p>Shadow records attempts, provenance and verification outcomes. Capture v2 stores raw hook payloads and bounded workspace content locally, and reports partial snapshots and uncertain attribution. Training recipes and scaffold optimization live in the optional Shade tools. They produce candidate artifacts and evaluation evidence without changing Shadow's serving configuration. Runner continues to provide inference, low-level training and adapter serving.</p>
     </div>
     <div>
       <div class="callout warn">
-        <span class="t">What the numbers said the day this shipped.</span>
-        <p>Five consumer models from 1.5B to 8B, 260 samples over 13 function units drawn from two public repositories: zero verified. The human's own function verified 13 of 13. The instrument works; the models on hand did not clear the bar on that sample, and the site says so rather than the other thing.</p>
+        <span class="t">Capture is not a capability result.</span>
+        <p>A complete record establishes what was captured. A passing verifier establishes its own checks on that task. Neither establishes that training improves later tasks or reduces frontier usage; those require separate evaluations.</p>
       </div>
       <div class="callout mt-2">
         <span class="t">Receipts.</span>
@@ -87,12 +87,12 @@ nav: runner
     </div>
     <div class="grid-2">
       <div class="card">
-        <h3>Codex has no hooks</h3>
-        <p>In Claude Code the capture and the tandem attempt are automatic, through hooks. Codex has no hook mechanism, so there the <code>/shadow</code> prompt asks the assistant to run the same commands at the start and end of a task. It works when the assistant follows its prompt; it is not enforced by the runner.</p>
+        <h3>Codex integration is prompt driven</h3>
+        <p>This installer wires Claude Code through prompt and stop hooks. Its Codex integration installs a <code>/shadow</code> prompt asking the assistant to run the same commands. That path depends on the assistant following the prompt; Runner does not enforce it.</p>
       </div>
       <div class="card">
         <h3>Python repositories today</h3>
-        <p>The frozen verifier is pytest-shaped: a task is admitted when its tests can be frozen and keyed per test. TypeScript and JavaScript through their JUnit reporters are next; a generic pass-or-fail command mode after that. A repository without such tests yields no units, and the ledger says so.</p>
+        <p>The frozen verifier is pytest-shaped: a task is admitted when its tests can be frozen and keyed per test. Capturing another repository does not make it eligible for this repair recipe. Verification events must be supplied explicitly; the default installer does not discover a verifier or install a verification hook.</p>
       </div>
     </div>
   </div>
