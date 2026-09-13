@@ -6,6 +6,7 @@
 #include "instances.h"
 #include "tray.h"
 
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -73,6 +74,92 @@ static void pin_mtime(const char *path, time_t stamp) {
     CHECK(utime(path, &t) == 0, "test fixture pins config mtime");
 #endif
 }
+
+// The rasterized glyph, on every platform: the Windows icon and its review
+// dump are drawn from it. Geometry is the macOS mark's, so the pixel probes
+// below are the mark's own points: the ring's bottom at (9, 9-7) in y-up
+// 18-unit space, the gap at the top (90 degrees is inside the 60..115 gap),
+// the spark on the ring's 60-degree end, the middle streak at the centre.
+// the strongest alpha in the 3x3 pixels around a point: a stroke 1.5 px wide
+// lands partly in whichever pixel a point falls in, so "solid here" is a
+// question about the neighbourhood
+static int glyph_max_alpha(unsigned char *bgra, int size, double ux, double uy) {
+    double s = size / 18.0;
+    int col = (int)(ux * s), row = (int)((18.0 - uy) * s), best = 0;
+    for (int dr = -1; dr <= 1; dr++)
+        for (int dc = -1; dc <= 1; dc++) {
+            int r = row + dr, c = col + dc;
+            if (r < 0 || c < 0 || r >= size || c >= size) continue;
+            int a = bgra[((size_t)r * size + c) * 4 + 3];
+            if (a > best) best = a;
+        }
+    return best;
+}
+
+static void check_glyph_raster(void) {
+    static const int sizes[] = { 16, 24, 32 };
+    const double PI = 3.14159265358979323846;
+    for (size_t k = 0; k < sizeof sizes / sizeof *sizes; k++) {
+        int size = sizes[k];
+        unsigned char *idle = malloc((size_t)size * size * 4);
+        unsigned char *loaded = malloc((size_t)size * size * 4);
+        unsigned char *running = malloc((size_t)size * size * 4);
+        CHECK(tray_glyph_render(TRAY_ICON_IDLE, size, 0xFFFFFF, idle), "idle renders");
+        CHECK(tray_glyph_render(TRAY_ICON_LOADED, size, 0xFFFFFF, loaded), "loaded renders");
+        CHECK(tray_glyph_render(TRAY_ICON_RUNNING, size, 0xFFFFFF, running), "running renders");
+        // transparent background: every corner has alpha 0, and no colour
+        // where there is no coverage (premultiplied)
+        int corners[4] = { 0, size - 1, (size - 1) * size, size * size - 1 };
+        for (int i = 0; i < 4; i++) {
+            const unsigned char *c = idle + (size_t)corners[i] * 4;
+            CHECK(c[3] == 0 && c[0] == 0 && c[1] == 0 && c[2] == 0,
+                  "corner is transparent and colourless");
+        }
+        // the ring's bottom is solid; the top gap is empty
+        CHECK(glyph_max_alpha(idle, size, 9.0, 2.0) >= 240, "ring bottom is opaque");
+        CHECK(glyph_max_alpha(idle, size, 9.0, 16.0) == 0, "the ring is open at the top");
+        // premultiplied: no channel exceeds alpha, and white where solid
+        int partial = 0;
+        for (int i = 0; i < size * size; i++) {
+            const unsigned char *c = idle + (size_t)i * 4;
+            CHECK(c[0] <= c[3] && c[1] <= c[3] && c[2] <= c[3], "premultiplied channels");
+            if (c[3] > 0 && c[3] < 255) partial++;
+            if (c[3] == 255) CHECK(c[0] == 255 && c[1] == 255 && c[2] == 255, "solid is the glyph colour");
+        }
+        CHECK(partial > 0, "edges are antialiased (some partial coverage)");
+        // The spark adds coverage on the ring's upper-right end and nowhere
+        // else: LOADED minus IDLE is positive in the pixels around the
+        // 60-degree end point and zero at the ring's bottom. A pixel probe
+        // cannot say that at 16 px, where the spark reaches half a pixel
+        // past the ring; the difference of the two renders can.
+        double sx = 9.0 + 7.0 * cos(60.0 * PI / 180.0), sy = 9.0 + 7.0 * sin(60.0 * PI / 180.0);
+        double s18 = size / 18.0;
+        int scol = (int)(sx * s18), srow = (int)((18.0 - sy) * s18);
+        long added_near = 0, added_far = 0, removed = 0;
+        for (int r = 0; r < size; r++)
+            for (int c = 0; c < size; c++) {
+                int d = (int)loaded[((size_t)r * size + c) * 4 + 3] - idle[((size_t)r * size + c) * 4 + 3];
+                if (d < 0) removed -= d;
+                int reach = (int)(1.35 * s18) + 2;   // the spark's radius in pixels, plus antialiasing
+                bool close_by = abs(r - srow) <= reach && abs(c - scol) <= reach;
+                if (close_by) added_near += d; else added_far += d;
+            }
+        CHECK(added_near > 0, "the spark adds coverage at the ring's end when loaded");
+        CHECK(added_far == 0 && removed == 0, "the spark changes nothing elsewhere");
+        // the middle streak crosses the centre in RUNNING only
+        CHECK(glyph_max_alpha(running, size, 9.0, 9.0) >= 200, "middle streak when running");
+        CHECK(glyph_max_alpha(loaded, size, 9.0, 9.0) == 0, "centre empty when loaded");
+        // a black glyph for a light taskbar
+        CHECK(tray_glyph_render(TRAY_ICON_IDLE, size, 0x000000, idle), "black renders");
+        CHECK(glyph_max_alpha(idle, size, 9.0, 2.0) >= 240, "black glyph is opaque");
+        for (int i = 0; i < size * size; i++)
+            CHECK(idle[(size_t)i * 4] == 0 && idle[(size_t)i * 4 + 2] == 0, "black glyph carries no colour");
+        free(idle); free(loaded); free(running);
+    }
+    unsigned char tiny[8 * 8 * 4];
+    CHECK(!tray_glyph_render(TRAY_ICON_IDLE, 4, 0xFFFFFF, tiny), "below 8 px is refused");
+}
+
 
 #ifndef _WIN32
 static void check_tray_http_short_write(void) {
@@ -147,6 +234,7 @@ int main(int argc, char **argv) {
         return 0;
     }
 
+    check_glyph_raster();
 #ifndef _WIN32
     check_tray_http_short_write();
 #endif

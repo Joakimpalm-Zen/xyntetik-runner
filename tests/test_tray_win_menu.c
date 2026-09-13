@@ -1,5 +1,5 @@
 // Windows only: the tray's popup menu carries the core's UTF-8 labels as
-// UTF-16. The ANSI entry points read `Configure default runner…` and the
+// UTF-16, and its icon is a 32-bit alpha bitmap of the rasterized ensö. The ANSI entry points read `Configure default runner…` and the
 // `●` of the managed row in the console code page, and the menu showed
 // each byte of those glyphs as its own character. The anchor is the wide
 // literal the menu must read back, spelled by code point and independent
@@ -48,8 +48,61 @@ int main(void) {
         fails++;
     }
     DestroyMenu(m);
+
+    // The icon: a 32-bit colour bitmap whose alpha channel is the glyph's
+    // coverage, so the taskbar shows the ensö and nothing else. Version 1
+    // handed the shell an opaque 16 px black square with the glyph on it.
+    // Read the bitmap back through the same API the shell uses.
+    for (int st = 0; st < 3; st++) {
+        const int px = 24;
+        HICON ic = grid_icon_px((tray_icon_state)st, px);
+        if (!ic) { fprintf(stderr, "FAIL: no icon for state %d\n", st); fails++; continue; }
+        ICONINFO info;
+        if (!GetIconInfo(ic, &info) || !info.hbmColor) {
+            fprintf(stderr, "FAIL: icon %d carries no colour bitmap\n", st); fails++; DestroyIcon(ic); continue;
+        }
+        BITMAP bm;
+        GetObject(info.hbmColor, sizeof bm, &bm);
+        if (bm.bmBitsPixel != 32 || bm.bmWidth != px || bm.bmHeight != px) {
+            fprintf(stderr, "FAIL: icon %d colour bitmap is %d bpp %ldx%ld, want 32 bpp %dx%d\n",
+                    st, (int)bm.bmBitsPixel, (long)bm.bmWidth, (long)bm.bmHeight, px, px);
+            fails++;
+        }
+        BITMAPINFO bi;
+        memset(&bi, 0, sizeof bi);
+        bi.bmiHeader.biSize = sizeof bi.bmiHeader;
+        bi.bmiHeader.biWidth = px; bi.bmiHeader.biHeight = -px;   // top-down
+        bi.bmiHeader.biPlanes = 1; bi.bmiHeader.biBitCount = 32;
+        bi.bmiHeader.biCompression = BI_RGB;
+        unsigned char *bits = calloc((size_t)px * px * 4, 1);
+        HDC dc = GetDC(NULL);
+        int rows = GetDIBits(dc, info.hbmColor, 0, (UINT)px, bits, &bi, DIB_RGB_COLORS);
+        ReleaseDC(NULL, dc);
+        if (rows != px) { fprintf(stderr, "FAIL: icon %d bits unreadable (%d rows)\n", st, rows); fails++; }
+        int corner = bits[3], solid = 0, partial = 0;
+        for (int i = 0; i < px * px; i++) {
+            int a = bits[(size_t)i * 4 + 3];
+            if (a == 255) solid++;
+            else if (a > 0) partial++;
+        }
+        if (corner != 0 || !solid || !partial) {
+            fprintf(stderr, "FAIL: icon %d alpha: corner %d, %d solid, %d partial pixels\n",
+                    st, corner, solid, partial);
+            fails++;
+        }
+        free(bits);
+        DeleteObject(info.hbmColor);
+        if (info.hbmMask) DeleteObject(info.hbmMask);
+        DestroyIcon(ic);
+    }
+    // the shell's small-icon size is what the tray renders at
+    if (icon_px() < 16) { fprintf(stderr, "FAIL: icon size %d\n", icon_px()); fails++; }
+    unsigned rgb = glyph_rgb();
+    if (rgb != 0xFFFFFFu && rgb != 0x000000u) { fprintf(stderr, "FAIL: glyph colour %06x\n", rgb); fails++; }
+
     if (fails) return 1;
     printf("tray win menu: ok\n");
+    printf("tray win icon: ok\n");
     return 0;
 }
 #else

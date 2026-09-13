@@ -6,6 +6,7 @@
 #include "runner.h"
 
 #include <errno.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -813,6 +814,124 @@ static int fetch_active_requests(int port) {
     int active = (int)jv_num(jv_get(v, "active_requests"), 0);
     jv_free(v);
     return active;
+}
+
+// ------------------------------------------------------------ the glyph
+//
+// The ensö as pixels, for backends that cannot hand the OS a template image
+// (macOS can, and draws the same geometry with NSBezierPath). Coverage
+// sampling rather than a GDI or Cairo stroke: sixteen by sixteen samples per
+// pixel through an exact inside test for each shape, which is antialiased
+// by construction, needs no library, and reads the same on every platform.
+// The mark is authored in the macOS drawing's 18-unit y-up box (ring centre
+// (9, 9), radius 7, width 1.7, open at the top between 60 and 115 degrees;
+// the spark on the 60-degree end; three round-capped streaks), so the two
+// backends are one drawing.
+
+static double glyph_dist2(double x, double y, double px, double py) {
+    return (x - px) * (x - px) + (y - py) * (y - py);
+}
+
+// distance squared from (x,y) to the horizontal segment (x0..x1, sy)
+static double glyph_seg_dist2(double x, double y, double x0, double x1, double sy) {
+    double cx = x < x0 ? x0 : x > x1 ? x1 : x;
+    return glyph_dist2(x, y, cx, sy);
+}
+
+typedef struct { double y, x0, x1, w; } glyph_row;
+
+// Weights below the authored ones would vanish in a taskbar: the ring is
+// never thinner than 2 px and the spark never smaller than 1.75 px in
+// radius, which at 16 and 20 px is the difference between a glyph and a
+// thin grey circle with a bump on it. From 24 px up the authored weights
+// are the heavier ones and apply unchanged.
+static double glyph_ring_w(double px) { double w = 2.0 / px; return w > 1.7 ? w : 1.7; }
+static double glyph_spark_r(double px) { double r = 1.75 / px; return r > 1.35 ? r : 1.35; }
+
+static bool glyph_inside(tray_icon_state st, double x, double y,
+                         const glyph_row rows[3], double px) {
+    const double PI = 3.14159265358979323846;
+    const double cx = 9.0, cy = 9.0, r = 7.0, w = glyph_ring_w(px);
+    // the ring: |d - r| <= w/2 over the arc from 115 degrees the long way
+    // round to 60, plus a round cap at each end
+    double dx = x - cx, dy = y - cy;
+    double d = sqrt(dx * dx + dy * dy);
+    double a = atan2(dy, dx) * 180.0 / PI;          // (-180, 180]
+    if (a < 0) a += 360.0;                           // [0, 360)
+    bool on_arc = fabs(d - r) <= w / 2 && (a >= 115.0 || a <= 60.0);
+    double e0x = cx + r * cos(115.0 * PI / 180.0), e0y = cy + r * sin(115.0 * PI / 180.0);
+    double e1x = cx + r * cos(60.0 * PI / 180.0),  e1y = cy + r * sin(60.0 * PI / 180.0);
+    if (on_arc || glyph_dist2(x, y, e0x, e0y) <= (w / 2) * (w / 2) ||
+        glyph_dist2(x, y, e1x, e1y) <= (w / 2) * (w / 2))
+        return true;
+    if (st == TRAY_ICON_IDLE) return false;
+    // the spark: a dot on the ring's upper-right end
+    const double dr = glyph_spark_r(px);
+    if (glyph_dist2(x, y, e1x, e1y) <= dr * dr) return true;
+    if (st != TRAY_ICON_RUNNING) return false;
+    for (int i = 0; i < 3; i++)
+        if (glyph_seg_dist2(x, y, rows[i].x0, rows[i].x1, rows[i].y) <=
+            (rows[i].w / 2) * (rows[i].w / 2))
+            return true;
+    return false;
+}
+
+// The Runner streaks, hinted to the pixel grid. Authored they are three
+// rows 2.07 units apart, 0.95 and 1.2 units wide (the middle one longest);
+// at 16 px that is 1.84 px apart and under a pixel wide, and three such
+// strokes through coverage sampling are one grey band. So each row's centre
+// snaps to a pixel centre and each width to whole pixels (at least one),
+// the spacing to whole pixels (at least two), which keeps three crisp lines
+// at every size the shell asks for. The ring keeps its exact geometry: an
+// arc has no grid to agree with, and 1.5 px antialiased reads as a ring.
+static void glyph_rows(int size, glyph_row rows[3]) {
+    const double px = size / 18.0;                    // pixels per unit
+    static const double x0s[3] = { 9.0 - 4.1, 9.0 - 5.2, 9.0 - 3.8 };
+    static const double x1s[3] = { 9.0 + 2.3, 9.0 + 4.0, 9.0 + 1.6 };
+    int gap = (int)lround(2.07 * px); if (gap < 2) gap = 2;
+    int w_out = (int)lround(0.95 * px); if (w_out < 1) w_out = 1;
+    int w_mid = (int)lround(1.2 * px);  if (w_mid < 1) w_mid = 1;
+    // the middle row on the pixel centre nearest the mark's centre
+    // (device row size/2 for an even size sits on a boundary; the row
+    // below it is the centre pixel), in top-down device rows
+    double mid_dev = (int)(9.0 * px) + 0.5;
+    double dev[3] = { mid_dev - gap, mid_dev, mid_dev + gap };   // top, middle, bottom
+    int ws[3] = { w_out, w_mid, w_out };
+    for (int i = 0; i < 3; i++) {
+        rows[i].y = 18.0 - dev[i] / px;               // back to y-up units
+        rows[i].x0 = x0s[i]; rows[i].x1 = x1s[i];
+        rows[i].w = ws[i] / px;
+    }
+}
+
+bool tray_glyph_render(tray_icon_state st, int size, unsigned rgb,
+                       unsigned char *bgra) {
+    if (!bgra || size < 8 || size > 512) return false;
+    enum { SS = 16 };                       // samples per axis per pixel
+    const double s = 18.0 / size;           // pixel -> 18-unit box
+    const unsigned R = (rgb >> 16) & 255, G = (rgb >> 8) & 255, B = rgb & 255;
+    glyph_row rows[3];
+    glyph_rows(size, rows);
+    for (int row = 0; row < size; row++) {
+        for (int col = 0; col < size; col++) {
+            int hit = 0;
+            for (int j = 0; j < SS; j++) {
+                for (int i = 0; i < SS; i++) {
+                    double x = (col + (i + 0.5) / SS) * s;
+                    double y = 18.0 - (row + (j + 0.5) / SS) * s;   // y-up
+                    hit += glyph_inside(st, x, y, rows, 1.0 / s);
+                }
+            }
+            // coverage -> alpha, colour premultiplied by it
+            unsigned a = (unsigned)((hit * 255 + (SS * SS) / 2) / (SS * SS));
+            unsigned char *px = bgra + ((size_t)row * size + col) * 4;
+            px[0] = (unsigned char)((B * a + 127) / 255);
+            px[1] = (unsigned char)((G * a + 127) / 255);
+            px[2] = (unsigned char)((R * a + 127) / 255);
+            px[3] = (unsigned char)a;
+        }
+    }
+    return true;
 }
 
 tray_icon_state tray_icon(void) {

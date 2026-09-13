@@ -94,6 +94,15 @@ tray_icon_state tray_icon(void);
 // renderer return false.
 bool tray_platform_icon_dump(const char *dir, int px);
 
+// The glyph itself, rasterized: `size` by `size` pixels of premultiplied
+// BGRA (a Windows DIB row, top-down), coverage-antialiased, on a fully
+// transparent background, in colour `rgb` (0xRRGGBB). The geometry is the
+// macOS drawing's (the 100-unit mark in an 18-unit box), so every backend
+// that cannot hand the OS a template image draws the same mark. `bgra` holds
+// size*size*4 bytes. Returns false for a size below 8 or above 512.
+bool tray_glyph_render(tray_icon_state st, int size, unsigned rgb,
+                       unsigned char *bgra);
+
 // True when the platform loop should exit (set by TRAY_ACT_QUIT).
 bool tray_should_quit(void);
 
