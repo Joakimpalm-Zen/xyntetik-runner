@@ -8,6 +8,7 @@ that property true.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -136,6 +137,59 @@ def test_the_snapshot_is_content_not_a_commit(tmp_path: Path) -> None:
     assert d["head"] and d["head_role"] == "storage_reference"
     # and the CONTENT is recoverable, which a head cannot do for dirty work
     assert C.get_blob(home, d["files"]["pkg/a.py"]["sha256"]) == b"def f():\n    return 2\n"
+
+
+def test_snapshot_keeps_a_non_ascii_path_and_its_content(tmp_path: Path) -> None:
+    """git status quotes any path outside ASCII as C escapes ("caf\\303\\251.txt"),
+    and a parser that only strips the quotes looks the escaped spelling up
+    on disk, finds nothing, and records the file as deleted: its content,
+    the whole point of the snapshot, is lost. The NUL-separated form has no
+    quoting, and a round trip through rebuild proves the content survives."""
+    from xyntetik_runner.shadow import capture_report as R
+    r = _repo(tmp_path)
+    home = tmp_path / "home"
+    name = "caf\u00e9 na\u00efve.txt"
+    (r / name).write_text("SENTINEL\n", encoding="utf-8", newline="\n")
+    s = C.snapshot(r, home)
+    d = s.to_dict()
+    assert name in d["files"], d["files"]
+    entry = d["files"][name]
+    assert not entry.get("deleted") and entry.get("blob") is True
+    assert C.get_blob(home, entry["sha256"]) == b"SENTINEL\n"
+    rb = R.rebuild(home, C.snapshot_all(r, home), tmp_path / "rebuilt")
+    try:
+        assert rb["unrestorable"] == []
+        tree = Path(next(iter(rb["repos"].values()))["worktree"])
+        assert (tree / name).read_text(encoding="utf-8") == "SENTINEL\n"
+    finally:
+        R.rebuild_cleanup(rb)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks need a privilege on Windows")
+def test_snapshot_records_a_symlink_without_following_it(tmp_path: Path) -> None:
+    """A link is a path, and git stores it as one. Reading through it would
+    copy whatever it points at, inside the repository or not, into the blob
+    store: an untracked link to a key file is not workspace content. The
+    target is recorded, the link is rebuilt as a link, no blob is stored."""
+    from xyntetik_runner.shadow import capture_report as R
+    r = _repo(tmp_path)
+    home = tmp_path / "home"
+    outside = tmp_path / "outside.secret"
+    outside.write_bytes(b"NOT WORKSPACE CONTENT\n")
+    (r / "link.txt").symlink_to(outside)
+    s = C.snapshot(r, home)
+    entry = s.to_dict()["files"]["link.txt"]
+    assert entry.get("symlink") == str(outside) and entry.get("blob") is False
+    import hashlib
+    assert C.get_blob(home, hashlib.sha256(b"NOT WORKSPACE CONTENT\n").hexdigest()) is None
+    rb = R.rebuild(home, C.snapshot_all(r, home), tmp_path / "rebuilt")
+    try:
+        assert rb["unrestorable"] == []
+        tree = Path(next(iter(rb["repos"].values()))["worktree"])
+        assert (tree / "link.txt").is_symlink()
+        assert os.readlink(tree / "link.txt") == str(outside)
+    finally:
+        R.rebuild_cleanup(rb)
 
 
 def test_snapshot_uses_native_paths_when_git_reports_a_foreign_absolute_root(

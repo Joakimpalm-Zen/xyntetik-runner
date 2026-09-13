@@ -258,3 +258,25 @@ def test_end_of_turn_token_is_opt_in_and_recorded(runner_bin, base, tmp_path):
         json.dumps({"prompt": "x", "completion": " y", "end_of_turn": "yes"}) + "\n", encoding="utf-8")
     p = _run_train(runner_bin, base, tmp_path / "bad.gguf", "bad-line.jsonl")
     assert p.returncode != 0 and b"end_of_turn must be true or false" in p.stderr
+
+
+def test_text_corpus_is_not_truncated_by_its_byte_count(runner_bin, base, tmp_path):
+    """The fixture's vocabulary spells a space as three byte-fallback tokens,
+    so a text of one-letter words tokenizes to about twice its byte count.
+    The text branch sized its buffer at bytes + 8 and tok_encode stops
+    silently at its cap, so most of such a corpus never reached the
+    optimizer. The jsonl branch regrows until the encoding fits; the text
+    branch must too. --score on the same text is the independent count."""
+    text = " ".join("abcdefghijklmnopqrst")
+    (base / "short-words.txt").write_text(text, encoding="utf-8")
+    p = subprocess.run([runner_bin, "-m", str(base / "base.gguf"), "--score",
+                        "-p", text, "-t", "2", "--gpu", "off"], cwd=ROOT,
+                       stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120)
+    assert p.returncode == 0, p.stderr.decode(errors="replace")
+    n_tokens = json.loads(p.stdout)["n_tokens"]
+    assert n_tokens > len(text.encode()) + 8, "the probe must exceed the old cap"
+    q = _run_train(runner_bin, base, tmp_path / "words.gguf", "short-words.txt",
+                   extra=("--train-ctx", "128"))
+    assert q.returncode == 0, q.stderr.decode(errors="replace")
+    steps = [json.loads(l)["tokens"] for l in q.stdout.splitlines() if l.startswith(b"{")]
+    assert steps[0] == n_tokens, (steps[0], n_tokens)

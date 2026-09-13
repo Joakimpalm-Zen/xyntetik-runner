@@ -90,3 +90,21 @@ def test_capabilities_report_resident_drafting(tmp_path, parallel, source):
             loaded = _http(srv, "/v1/capabilities")
             loaded["draft"].pop("reason", None)
             assert loaded["draft"] == expected
+
+
+def test_two_slots_of_an_mtp_model_shut_down_cleanly(tmp_path):
+    """The head's norm conversions are made once, in the shared bind phase,
+    and every slot holds the same pointers; freeing them per slot freed them
+    twice, and the abort came after every request had already been answered,
+    where no server test was looking. The harness now reads the exit code of
+    a stop; this test says so explicitly for the shape that crashed."""
+    model = tmp_path / "model.gguf"
+    subprocess.run([sys.executable, ROOT / "scripts/make-test-model.py",
+                    "--mtp-layers", "1", str(model)], check=True,
+                   stdout=subprocess.DEVNULL)
+    srv = RunnerServer(find_runner(ROOT), model, ctx=256, parallel=2,
+                       extra_args=["--gpu", "off", "-t", "2", "--mtp"])
+    srv.start()
+    assert _http(srv, "/v1/capabilities")["mtp"]["consumed"] is True
+    srv.stop()
+    assert srv.exit_code == 0, srv.exit_code

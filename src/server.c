@@ -768,9 +768,10 @@ static void handle_embeddings(slot_t *s, sock_t fd, jv *req) {
     for (int k = 0; k < n_in && ok; k++) {
         const char *txt = one ? one : jv_str(input->items[k], NULL);
         if (!txt) { err_code = 400; err_msg = "input must be strings"; ok = false; break; }
-        size_t cap = strlen(txt) + 16;
-        int32_t *toks = malloc(sizeof(int32_t) * cap);
-        int n = toks ? tok_encode(s->tok, txt, toks, (int)cap, true, true) : -1;
+        // an embedding input has no template: every byte is the caller's
+        // text, and a control token spelled in it is those characters
+        int32_t *toks = NULL;
+        int n = tok_encode_fit(s->tok, txt, true, TOK_TEXT, 0, &toks);
         if (n < 0) {
             free(toks);
             err_code = 500; err_msg = "out of memory tokenizing input";

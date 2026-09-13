@@ -940,9 +940,8 @@ void handle_count_tokens(slot_t *s, sock_t fd, jv *req) {
     bool strict = false;
     char *prompt = messages_prompt(s, fd, req, &env, &strict);
     if (!prompt) return;
-    size_t cap = strlen(prompt) + 16;
-    int32_t *toks = malloc(sizeof(int32_t) * cap);
-    int n = toks ? tok_encode_prompt(s->tok, prompt, toks, (int)cap, true) : -1;
+    int32_t *toks = NULL;
+    int n = tok_encode_fit(s->tok, prompt, true, TOK_PROMPT, 0, &toks);
     free(toks);
     free(prompt);
     tool_envelope_free(&env);

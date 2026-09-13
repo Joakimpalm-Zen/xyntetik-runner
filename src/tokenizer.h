@@ -64,6 +64,19 @@ int  tok_encode(tokenizer *t, const char *text, int32_t *out, int cap,
 int    tok_encode_prompt(tokenizer *t, const char *text, int32_t *out, int cap,
                          bool add_bos);
 size_t tok_strip_marks(char *s);
+
+// The encoders above write at most `cap` tokens and say nothing about the
+// rest, and no byte count bounds a token count: a byte-fallback vocabulary
+// spells the test fixture's space as three tokens, 81 for a 39-byte text.
+// This one sizes the buffer to the text, growing until the encoding fits
+// with `spare` slots after it. TOK_TEXT is caller text (no control tokens),
+// TOK_RAW a caller-composed prompt (specials recognized anywhere), TOK_PROMPT
+// a rendered prompt (control tokens inside the marks only). Returns the
+// token count with the buffer in *out, the caller's to free, or -1 on
+// allocation failure (*out NULL).
+typedef enum { TOK_TEXT, TOK_RAW, TOK_PROMPT } tok_mode;
+int    tok_encode_fit(tokenizer *t, const char *text, bool add_bos, tok_mode mode,
+                      int spare, int32_t **out);
 // raw-byte encode without BOS/specials/segment normalization (see tokenizer.c)
 int  tok_encode_raw(tokenizer *t, const char *text, int n,
                     int32_t *out, int cap);

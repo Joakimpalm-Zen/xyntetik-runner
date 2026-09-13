@@ -70,6 +70,8 @@ class RunnerServer:
         self.proc = None
         self._log = None
         self.peak_rss_kb = None
+        self.exit_code = None
+        self.killed = False
 
     @property
     def base_url(self):
@@ -80,7 +82,9 @@ class RunnerServer:
         return self
 
     def __exit__(self, *exc):
-        self.stop()
+        # a crash on shutdown is a crash: reported unless the block is
+        # already unwinding an exception of its own
+        self.stop(strict=exc[0] is None)
         return False
 
     def start(self):
@@ -136,20 +140,33 @@ class RunnerServer:
             raise TransportError("runner died mid-suite",
                                  returncode=self.proc.returncode, log=self._tail())
 
-    def stop(self):
+    def stop(self, strict=False):
+        """SIGTERM, wait, and record how the runner went. A server that had
+        become healthy exits 0 on SIGTERM; anything else after a normal stop
+        is a shutdown defect (a double free at exit passed every server test
+        for as long as nothing looked). ``strict`` raises on it; a stop that
+        had to escalate to kill is recorded, not raised, since the wait is
+        a wall clock. Windows terminates rather than signals, so its exit
+        code says nothing and is not judged."""
         if not self.proc:
             return
         self.sample_rss()
+        self.killed = False
         if self.proc.poll() is None:
             self.proc.send_signal(signal.SIGTERM if not WINDOWS else signal.SIGTERM)
             try:
                 self.proc.wait(timeout=10)
             except subprocess.TimeoutExpired:
+                self.killed = True
                 self.proc.kill()
                 self.proc.wait(timeout=10)
+        self.exit_code = self.proc.returncode
         if self._log not in (None, subprocess.DEVNULL):
             self._log.close()
         self._log = None
+        if strict and not WINDOWS and not self.killed and self.exit_code != 0:
+            raise TransportError("runner exited uncleanly on stop",
+                                 returncode=self.exit_code, log=self._tail())
 
     # ------------------------------------------------------------------
     def _health_ok(self):

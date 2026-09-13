@@ -36,6 +36,29 @@ names that were true when they were written.
 - Verification replay resolves its shell through PATH: a bare `bash` on
   Windows found the WSL launcher in System32 first, which read as a failed
   verification wherever no distribution is installed.
+- **Bug sweep before 0.5.2.** Two slots of a model with an MTP head crashed
+  at shutdown: the head's norm conversions are made once in the shared bind
+  phase and were freed once per slot; they belong to the shared release now,
+  beside `output_norm.bias`, which was never freed at all. No server test
+  had noticed because none read the exit code of a stop; the test harness
+  now fails a server that exits uncleanly. No byte count bounds a token
+  count (this vocabulary spells a space as three byte-fallback tokens: 81
+  tokens for a 39-byte text), yet the chat and completions prompt, Anthropic
+  `count_tokens`, `/v1/embeddings` and the text branch of `--train` all
+  sized their token buffer at "bytes plus a little" and `tok_encode` stops
+  silently at its capacity: a prompt past the context window could be cut
+  to fit and answered 200, and a training text lost its tail. All of them
+  size the buffer to the text now (`tok_encode_fit`), and a prompt that does
+  not fit is refused. `/v1/embeddings` treats its input as text, so a
+  control token spelled in it is those characters and never the token (the
+  rule the chat surfaces already follow). Shadow capture reads `git status`
+  in its NUL-separated form: the line form C-quotes any path outside ASCII
+  and the file was recorded as deleted, its content lost; a symlink is
+  recorded by its target and rebuilt as a link rather than read through,
+  so an untracked link to a file outside the repository no longer copies
+  that file into the ledger. The transcript signer's truncated-chain guard
+  was overwritten by the signature call that followed it (unreachable with
+  fixed-size hashes, now enforced).
 
 
 - **Adapter training covers the dense-shape variants (R8.9.4).** The LoRA

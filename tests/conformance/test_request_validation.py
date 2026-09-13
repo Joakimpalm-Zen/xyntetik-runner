@@ -63,6 +63,28 @@ def test_unsupported_schema_construct_is_rejected(client):
 
 
 # ----------------------------------------------------- scalar parameters
+def test_prompt_token_count_is_not_bounded_by_its_byte_count(client):
+    """No byte count bounds a token count: the fixture's vocabulary spells a
+    space as three byte-fallback tokens, so a prompt of one-letter words is
+    about two tokens per byte. The prompt buffer was sized "bytes plus 16"
+    and tok_encode stops silently at its capacity, so such a prompt past the
+    context window was cut to fit and answered 200 instead of refused. The
+    served context is 1024: 300 words are 599 bytes and about 1200 tokens."""
+    prompt = " ".join("a" for _ in range(300))
+    r = client.completion({"prompt": prompt, "max_tokens": 1},
+                          name="prompt-longer-in-tokens-than-bytes")
+    if r.status != 400:
+        raise ProtocolError("a prompt past the context window was served",
+                            status=r.status, usage=r.json.get("usage") if r.status == 200 else None)
+    r = client.completion({"prompt": " ".join("a" for _ in range(60)), "max_tokens": 1},
+                          name="prompt-longer-in-tokens-than-bytes-fits")
+    r.expect_status(200)
+    n = r.usage["prompt_tokens"]
+    if n <= 60 * 2 - 1 + 16:
+        raise ProtocolError("the prompt's token count was capped by its byte count",
+                            prompt_tokens=n)
+
+
 @pytest.mark.parametrize("field,value,contains", [
     ("stream", "true", "stream"),
     ("stream", 1, "stream"),

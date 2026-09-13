@@ -5,6 +5,7 @@ Learning-method eligibility is owned by Shade, which consumes these records.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -141,6 +142,16 @@ def rebuild(home: Path, ws: dict[str, Any], dest: Path) -> dict[str, Any]:
             if e.get("deleted"):
                 try:
                     target.unlink()
+                    wrote += 1
+                except Exception:
+                    missed.append(rel)
+                continue
+            if e.get("symlink") is not None:
+                try:
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    if target.is_symlink() or target.exists():
+                        target.unlink()
+                    os.symlink(e["symlink"], target)
                     wrote += 1
                 except Exception:
                     missed.append(rel)
