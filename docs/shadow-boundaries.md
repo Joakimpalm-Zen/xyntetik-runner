@@ -7,8 +7,11 @@ training run. The standard-library Python client ships beside Runner.
 ## Learning command migration
 
 `shadow adapt` and `shadow optimize` now return exit code 2 with migration
-instructions. They do not import Shade or start a subprocess. Install the
-optional Shade tools to use `python -m xyntetik_shade.shadow adapt` or `optimize`.
+instructions. They do not import Shade or start a subprocess. Exit code 2 is
+the client's usage-error code, the same one an unknown subcommand gets from
+argparse; it is not the verification-replay convention, where 2-5 means the
+recorded command could not run. Install the optional Shade tools to use
+`python -m xyntetik_shade.shadow adapt` or `optimize`.
 Shade produces candidates and evaluation records; selecting a candidate does
 not activate it in Shadow. Existing configured adapters and Runner's `--lora`
 interface continue to work. Runner's native training commands remain available.
