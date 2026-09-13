@@ -315,13 +315,13 @@ def snapshot(cwd: Path, home: Path, *, deadline_s: float = SNAPSHOT_DEADLINE_S) 
     difference between evidence and a guess.
     """
     t0 = time.monotonic()
-    top = _git(cwd, "rev-parse", "--show-toplevel").strip()
-    if not top:
+    from .tasks import repository_root
+    repo = repository_root(cwd)
+    if repo is None:
         s = Snapshot(repo=None, head=None, branch=None)
         s.wall_s = time.monotonic() - t0
         s.skipped.append({"path": str(cwd), "why": "not a git repository"})
         return s
-    repo = Path(top)
     head = _git(repo, "rev-parse", "HEAD").strip() or None
     branch = _git(repo, "rev-parse", "--abbrev-ref", "HEAD").strip() or None
     s = Snapshot(repo=str(repo), head=head, branch=branch)

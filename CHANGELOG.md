@@ -18,6 +18,8 @@ names that were true when they were written.
   are cached outside the prompt-time path; delegation output respects its caller.
 - Route counts separate repositories and model stacks, including adapters and
   scaffolds. Invalid file patterns return tool errors on Python 3.12 as well.
+- Capture and routing resolve native repository paths with MSYS Git, so Windows
+  files are captured rather than mistaken for deletions.
 - Template-generated control markers remain distinct from message text; tool
   parsing and schema enum handling include the corresponding regression gates.
 - Training JSONL records grow beyond the old fixed buffer, end-of-turn targets
