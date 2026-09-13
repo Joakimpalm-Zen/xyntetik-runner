@@ -243,7 +243,7 @@ def reproduce_verification(home: Path, thread: list[dict[str, Any]],
         state = next((s for s in states if bound and
                       s["state"]["workspace"].get("combined_sha256") == bound), None)
         ws = state["state"]["workspace"] if state else None
-        if ws is None or replay(home, state)["outcome"] != "reconstructed":
+        if state is None or ws is None or replay(home, state)["outcome"] != "reconstructed":
             row.update(outcome="not_attempted", why="the bound state is absent, partial or broken")
             out.append(row)
             continue
