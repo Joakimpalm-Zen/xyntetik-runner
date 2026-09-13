@@ -46,19 +46,19 @@
         "gpu_backend": "cuda"
       },
       "last_verified": {
-        "date": "2026-09-13",
-        "commit": "a19a26689cbc338525fb2603bcc4e0abff51ea57",
-        "ran": "scripts/compat_matrix.py --gpu off --execute-checks --verify-files, granite-4.2-3b row (load, tokenizer, cpu_cuda, chat pass)",
+        "date": "2026-09-14",
+        "commit": "89397eb78f2e16c210bd4e55f5d18a21f382f561",
+        "ran": "scripts/compat_matrix.py --gpu auto --execute-checks --verify-files, granite-4.2-3b row (load, tokenizer, cpu_cuda, chat pass, 40/40 layers on the MIG slice); scripts/cpu_cuda_check.py on the GSQ-RCO Qwen3.8 27B (9/9 exact, 40/64 layers) and test-gpu-identity on the seven i-quant fixtures",
         "result": "pass",
         "caps": {
-          "version": "0.5.2",
+          "version": "0.5.3",
           "os": "linux",
           "arch": "x86_64",
           "cpu_cores": 128,
           "gpu_backend": "cuda",
           "gpu_name": "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb"
         },
-        "evidence": "docs/compat-reports/0.5.2-2026-09-13-blackwell-granite-4.2-3b-q4_k_m.json"
+        "evidence": "docs/compat-reports/0.5.3-2026-09-14-blackwell-granite-4.2-3b-q4_k_m.json"
       }
     },
     {
@@ -73,12 +73,12 @@
         "gpu_backend": "metal"
       },
       "last_verified": {
-        "date": "2026-09-13",
-        "commit": "a19a26689cbc338525fb2603bcc4e0abff51ea57",
+        "date": "2026-09-14",
+        "commit": "89397eb78f2e16c210bd4e55f5d18a21f382f561",
         "ran": "make test (exit 0) and scripts/conformance.sh (453 passed, 17 skipped)",
         "result": "pass",
         "caps": {
-          "version": "0.5.2",
+          "version": "0.5.3",
           "os": "macos",
           "arch": "arm64",
           "cpu_cores": 8,
