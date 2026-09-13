@@ -90,9 +90,12 @@ def test_disconnect_stops_prefill_without_false_cancellation(tmp_path):
     model = os.path.join(ROOT, "test.gguf")
     assert os.path.exists(model), "build the generated fixture with make test.gguf"
     log = tmp_path / "disconnect-server.log"
-    # Byte-fallback tokenization keeps this below 32k context while making a
-    # batch-one prefill much longer than one cancellation poll on CI CPUs.
-    long_body = _body("x " * 8000)
+    # Byte-fallback tokenization makes this about 16k tokens (four per word
+    # on the fixture's vocabulary), a batch-one prefill much longer than one
+    # cancellation poll on CI CPUs and inside the reader's 60 s on an old
+    # desktop. Twice the words used to read the same, because the prompt
+    # buffer was cut at bytes plus sixteen tokens; now it is encoded in full.
+    long_body = _body("x " * 4000)
     short_body = _body("slot reuse", max_tokens=4)
 
     with RunnerServer(find_runner(ROOT), model, ctx=32768, parallel=1,
