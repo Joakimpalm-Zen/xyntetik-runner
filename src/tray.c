@@ -677,8 +677,12 @@ int tray_menu_build(tray_item *it, int cap) {
                  st == MG_EXITED ? "Restart" : "Start",
                  base_name(g_cfg.last_model));
     } else {
+        // This row is about the tray's OWN saved default, and the rows above
+        // list every runner on the machine however it was started: a label
+        // saying "no model configured" beside a running server read as a
+        // contradiction. Name the act instead.
         PUT(.kind = TRAY_K_ACTION, .action = TRAY_ACT_PICK_MODEL);
-        snprintf(row->label, sizeof row->label, "Start… (no model configured)");
+        snprintf(row->label, sizeof row->label, "Configure default runner…");
     }
     PUT(.kind = TRAY_K_ACTION, .action = TRAY_ACT_PICK_MODEL);
     snprintf(row->label, sizeof row->label, "Choose model…");

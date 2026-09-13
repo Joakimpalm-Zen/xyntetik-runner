@@ -616,6 +616,12 @@ jobs:
           gcc -std=gnu11 -Wall -Wextra -Wno-unused-parameter -I src tests/test_bind.c \
             -o test-bind.exe
           ./test-bind.exe
+      # the tray's popup menu carries UTF-8 labels as UTF-16: read back
+      # through GetMenuStringW, which only this job can call
+      - name: tray menu text
+        run: |
+          make OS=Windows_NT test-tray-win-menu.exe
+          ./test-tray-win-menu.exe
       - name: make test model
         run: python3 scripts/make-test-model.py test.gguf
       - name: focused json/schema tests

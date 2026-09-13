@@ -53,9 +53,11 @@ loaded or the call fails.
   tray-managed instance). Its submenu lists the model names and a **Stop**
   item. The tray itself is never listed — only things you can manage are.
 - **Start default runner** — spawns `runner --serve -m <last_model> --port
-  <port> <last_args>` as a detached child. With no model configured the row
-  reads `Start… (no model configured)` and opens the native file picker
-  (filtered to `*.gguf`); the choice is saved and the server starts.
+  <port> <last_args>` as a detached child. With no default configured the
+  row reads `Configure default runner…` (it is about the tray's own saved
+  default; the servers listed above it run whatever they were started with)
+  and opens the native file picker (filtered to `*.gguf`); the choice is
+  saved and the server starts.
 
 The managed instance always shows its lifecycle explicitly — reopen the
 menu to see the current state:
