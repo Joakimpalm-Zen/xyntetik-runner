@@ -8,6 +8,37 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **Qwen3-Coder's native tool protocol, and calls after prose.** The
+  Coder checkpoint has no thinking markers, so template detection fell
+  through to ChatML and selected Qwen's JSON calls where the model was
+  trained on function/parameter XML. It is its own family now
+  (`qwen3-coder`): declarations, calls and grouped results rendered from
+  the publisher's template (20 of 20 reference cases token-identical with
+  the checkpoint's tokenizer), a call grammar built from the declared
+  parameter schemas (raw strings for string parameters, JSON for typed
+  ones), and a parser that assembles the OpenAI `tool_calls` arguments in
+  the declared order and refuses undeclared or missing required members.
+  Both Qwen protocols now recognise a call that follows prose: the buffered
+  mapper keeps the leading text as content and the stream machine scans
+  for the opener across chunks and holds a call until it is complete; the
+  free-text grammar hands off to the constrained call at the full opener,
+  so a later purported call can no longer bypass the constraint, and the
+  turn admits as many calls as `parallel_tool_calls` allows (one without
+  it) before it must end. Gated over HTTP on the three surfaces in both
+  modes, with a chunk-boundary sweep and a truncation-prefix sweep.
+- **`--tool-info` reports the Qwen protocols.** It answered generic and
+  not native for a ChatML Qwen file while the surfaces served JSON calls;
+  it now says `qwen_json` there and `qwen3_xml` for Qwen3-Coder, both
+  native; a family with no native protocol (Llama 3) stays generic.
+- **Windows tray: menu text as UTF-16, and the default-runner row names
+  the act.** Labels are UTF-8 (the `●` of the managed instance, the `…`
+  of every row that opens something) and went through the ANSI menu entry
+  points, which drew each byte as its own character; they go through the
+  wide ones now, gated by a `GetMenuStringW` readback on the Windows job.
+  The row that used to read `Start… (no model configured)` beside a list of
+  running servers reads `Configure default runner…`: it is about the tray's
+  own saved default, not about any model being loaded.
+
 ## v0.5.2 - 2026-09-13
 
 The shadow-mode release. `runner --shadow-mode -m MODEL` wires Claude Code
