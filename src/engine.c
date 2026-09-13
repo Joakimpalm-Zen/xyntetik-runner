@@ -1757,7 +1757,7 @@ static int engine_generate_spec(engine *e, float *logits, int max_new,
     // round summary. Draft = head/draft-model work, verify = the batched
     // keep-forward, logits = lazy per-row heads, tail = the closing forward.
     const bool prof = getenv("RUNNER_SPEC_PROF") != NULL;
-    double t_draft = 0, t_verify = 0, t_logits = 0, t_tail = 0, t_sync = 0, tp;
+    double t_draft = 0, t_verify = 0, t_logits = 0, t_tail = 0, t_sync = 0, tp = 0;
     int cur = -1;   // emitted token at hist[pos] awaiting its forward
     while ((max_new < 0 || n_gen < max_new) && e->pos < m->n_ctx) {
         if (e->stop && e->stop(e->stop_ud)) break;
