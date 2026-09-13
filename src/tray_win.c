@@ -24,159 +24,129 @@ static tray_item g_items[TRAY_MAX_ITEMS];
 static int g_nitems;
 
 // ---------------------------------------------------------------- the icon
-// Same three states as macOS, painted white-on-black into a 16x16 HICON: the
-// bare ensö when nothing is loaded, the ensö with the spark on its end when a
-// model is resident, and the full Runner mark (ensö, spark, three streaks)
-// while inference is in flight. Geometry is the 100-unit brand mark scaled to
-// 16 units, so the taskbar glyph and the site's mark are the same drawing.
+// The ensö, rasterized by the core (tray_glyph_render: the macOS drawing's
+// geometry, coverage-antialiased, premultiplied BGRA on a transparent
+// background) into a 32-bit DIB with an alpha channel, at the size the
+// shell asks for. Version 1 painted a 16 px white-on-black square with GDI
+// strokes: on a light taskbar the square showed, on any display above 100%
+// the shell scaled the 16 px up, and the strokes had no antialiasing at all.
 //
-// GDI's Arc() always travels counter-clockwise from the start radial to the
-// end radial, and device y grows DOWNWARD. Negating the sine puts the glyph in
-// the same visual orientation as the macOS one; because both endpoints are
-// negated together, the sweep direction is preserved.
-static void arc_seg(HDC dc, double cx, double cy, double r,
-                    double mid_deg, double half_deg) {
-    const double D2R = 3.14159265358979323846 / 180.0;
-    double a0 = (mid_deg - half_deg) * D2R, a1 = (mid_deg + half_deg) * D2R;
-    Arc(dc, (int)lround(cx - r), (int)lround(cy - r),
-            (int)lround(cx + r), (int)lround(cy + r),
-            (int)lround(cx + r * cos(a0)), (int)lround(cy - r * sin(a0)),
-            (int)lround(cx + r * cos(a1)), (int)lround(cy - r * sin(a1)));
-}
-
-static HPEN round_pen(double w) {
-    LOGBRUSH lb = { BS_SOLID, RGB(255, 255, 255), 0 };
-    DWORD width = (DWORD)lround(w); if (width < 1) width = 1;
-    return ExtCreatePen(PS_GEOMETRIC | PS_SOLID | PS_ENDCAP_ROUND | PS_JOIN_ROUND,
-                        width, &lb, 0, NULL);
-}
-
-// Paint the glyph white-on-black into `dc` at size S. Geometry is authored in
-// 16-px units and scaled, so the notification-area icon and the review dump
-// are the same drawing rather than two that can drift.
-static void paint_glyph(HDC dc, tray_icon_state st, int S) {
-    const double s = S / 16.0, cx = 8.0 * s, cy = 8.0 * s;
-    RECT full = { 0, 0, S, S };
-    FillRect(dc, &full, (HBRUSH)GetStockObject(BLACK_BRUSH));
-
-    // the ring: from 115 degrees the long way round to 60, open at the top
-    // (mid 267.5, half 152.5 spans exactly that arc)
-    const double r = 6.2 * s;
-    HPEN ring = round_pen(1.5 * s);
-    HGDIOBJ oldpen = SelectObject(dc, ring);
-    HGDIOBJ oldbr = SelectObject(dc, GetStockObject(NULL_BRUSH));
-    arc_seg(dc, cx, cy, r, 267.5, 152.5);
-
-    if (st != TRAY_ICON_IDLE) {
-        // the spark on the ring's upper-right end (y negated: device y is down)
-        const double D2R = 3.14159265358979323846 / 180.0;
-        double ex = cx + r * cos(60.0 * D2R), ey = cy - r * sin(60.0 * D2R);
-        double dr = 1.25 * s; if (dr < 1.0) dr = 1.0;
-        SelectObject(dc, GetStockObject(WHITE_BRUSH));
-        HPEN nopen = CreatePen(PS_NULL, 0, 0);
-        HGDIOBJ p2 = SelectObject(dc, nopen);
-        Ellipse(dc, (int)lround(ex - dr), (int)lround(ey - dr),
-                    (int)lround(ex + dr) + 1, (int)lround(ey + dr) + 1);
-        SelectObject(dc, p2);
-        DeleteObject(nopen);
-        SelectObject(dc, GetStockObject(NULL_BRUSH));
+// White on the dark taskbar, black on the light one: Windows has no template
+// image the shell recolours, so the colour is read from the personalization
+// key the shell itself reads, on every refresh (a theme change while the
+// tray runs is picked up within a badge tick).
+static unsigned glyph_rgb(void) {
+    HKEY k;
+    DWORD light = 0, n = sizeof light, type = 0;
+    if (RegOpenKeyExA(HKEY_CURRENT_USER,
+                      "Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
+                      0, KEY_READ, &k) == ERROR_SUCCESS) {
+        if (RegQueryValueExA(k, "SystemUsesLightTheme", NULL, &type,
+                             (BYTE *)&light, &n) != ERROR_SUCCESS || type != REG_DWORD)
+            light = 0;
+        RegCloseKey(k);
     }
-    if (st == TRAY_ICON_RUNNING) {
-        // the Runner streaks: three rows, the middle one longest
-        struct { double y, x0, x1, w; } rows[] = {
-            { cy - 1.84 * s, cx - 3.6 * s, cx + 2.0 * s, 0.85 * s },
-            { cy,            cx - 4.6 * s, cx + 3.5 * s, 1.1 * s },
-            { cy + 1.84 * s, cx - 3.4 * s, cx + 1.4 * s, 0.85 * s },
-        };
-        for (int i = 0; i < 3; i++) {
-            HPEN pen = round_pen(rows[i].w);
-            HGDIOBJ prev = SelectObject(dc, pen);
-            MoveToEx(dc, (int)lround(rows[i].x0), (int)lround(rows[i].y), NULL);
-            LineTo(dc, (int)lround(rows[i].x1), (int)lround(rows[i].y));
-            SelectObject(dc, prev);
-            DeleteObject(pen);
-        }
-    }
-    SelectObject(dc, oldbr);
-    SelectObject(dc, oldpen);
-    DeleteObject(ring);
+    return light ? 0x000000u : 0xFFFFFFu;
 }
 
-static HICON grid_icon(tray_icon_state st) {
-    enum { S = 16 };
-    HDC screen = GetDC(NULL);
-    HDC dc = CreateCompatibleDC(screen);
-    HBITMAP color = CreateCompatibleBitmap(screen, S, S);
-    // Explicit all-zero AND mask (opaque everywhere): CreateBitmap leaves the
-    // bits undefined when passed NULL, so relying on a zeroed mask was relying
-    // on the pages happening to come up zeroed. 1bpp rows are word-aligned:
-    // S/8 rounded up to 2 bytes, times S rows.
-    unsigned char mask_bits[((S + 15) / 16) * 2 * S];
-    memset(mask_bits, 0, sizeof mask_bits);
-    HBITMAP mask = CreateBitmap(S, S, 1, 1, mask_bits);
-    ReleaseDC(NULL, screen);
+// The notification area's small icon size for this process's DPI: 16 px at
+// 100%, 20 at 125%, 24 at 150%, 32 at 200%. Meaningful only once the process
+// is DPI aware (tray_platform_run sets that before creating its window);
+// an unaware process is told 16 and the shell stretches it.
+static int icon_px(void) {
+    int px = GetSystemMetrics(SM_CXSMICON);
+    return px >= 8 ? px : 16;
+}
 
-    HGDIOBJ old = SelectObject(dc, color);
-    paint_glyph(dc, st, S);
-    SelectObject(dc, old);
+// A 32-bit top-down DIB the glyph is rendered into; the caller owns it.
+static HBITMAP glyph_dib(tray_icon_state st, int px, unsigned rgb, void **bits_out) {
+    BITMAPV5HEADER bi;
+    memset(&bi, 0, sizeof bi);
+    bi.bV5Size = sizeof bi;
+    bi.bV5Width = px;
+    bi.bV5Height = -px;                 // top-down, the raster's row order
+    bi.bV5Planes = 1;
+    bi.bV5BitCount = 32;
+    bi.bV5Compression = BI_BITFIELDS;
+    bi.bV5RedMask = 0x00FF0000; bi.bV5GreenMask = 0x0000FF00;
+    bi.bV5BlueMask = 0x000000FF; bi.bV5AlphaMask = 0xFF000000;
+    void *bits = NULL;
+    HBITMAP bm = CreateDIBSection(NULL, (BITMAPINFO *)&bi, DIB_RGB_COLORS, &bits, NULL, 0);
+    if (!bm || !bits) { if (bm) DeleteObject(bm); return NULL; }
+    if (!tray_glyph_render(st, px, rgb, (unsigned char *)bits)) { DeleteObject(bm); return NULL; }
+    if (bits_out) *bits_out = bits;
+    return bm;
+}
 
-    // mask: all zeros = fully opaque square; the black background reads as
-    // transparent enough on the taskbar and keeps v1 free of alpha plumbing
-    ICONINFO ii = { TRUE, 0, 0, mask, color };
-    HICON icon = CreateIconIndirect(&ii);
+static HICON grid_icon_px(tray_icon_state st, int px) {
+    HBITMAP color = glyph_dib(st, px, glyph_rgb(), NULL);
+    if (!color) return NULL;
+    // The AND mask is all zeros (nothing masked): with a 32-bit colour
+    // bitmap the shell composites by the alpha channel, and the mask only
+    // has to exist. 1bpp rows are word-aligned.
+    size_t stride = (((size_t)px + 15) / 16) * 2;
+    unsigned char *mask_bits = calloc(stride * (size_t)px, 1);
+    HBITMAP mask = mask_bits ? CreateBitmap(px, px, 1, 1, mask_bits) : NULL;
+    HICON icon = NULL;
+    if (mask) {
+        ICONINFO ii = { TRUE, 0, 0, mask, color };
+        icon = CreateIconIndirect(&ii);
+        DeleteObject(mask);
+    }
+    free(mask_bits);
     DeleteObject(color);
-    DeleteObject(mask);
-    DeleteDC(dc);
     return icon;
 }
 
-// Design-review seam (see tray.h). Writes 32-bit bottom-up BMPs, because they
-// need no encoder and every Windows viewer opens them.
+static HICON grid_icon(tray_icon_state st) {
+    return grid_icon_px(st, icon_px());
+}
+
+// Design-review seam (see tray.h). Writes 32-bit top-down BMPs with an
+// alpha channel (a V4 header names the masks), because they need no encoder
+// and every Windows viewer opens them; viewers that ignore alpha show the
+// glyph on black, the premultiplied colour.
 bool tray_platform_icon_dump(const char *dir, int px) {
     const char *names[] = { "idle", "loaded", "running" };
-    HDC screen = GetDC(NULL);
+    if (px < 8 || px > 512) return false;
     bool ok = true;
     for (int i = 0; i < 3 && ok; i++) {
-        HDC dc = CreateCompatibleDC(screen);
-        HBITMAP bm = CreateCompatibleBitmap(screen, px, px);
-        HGDIOBJ old = SelectObject(dc, bm);
-        paint_glyph(dc, (tray_icon_state)i, px);
-        SelectObject(dc, old);
-
-        BITMAPINFO bi = {0};
-        bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-        bi.bmiHeader.biWidth = px;
-        bi.bmiHeader.biHeight = px;          // positive = bottom-up
-        bi.bmiHeader.biPlanes = 1;
-        bi.bmiHeader.biBitCount = 32;
-        bi.bmiHeader.biCompression = BI_RGB;
-        DWORD nbytes = (DWORD)px * (DWORD)px * 4;
-        void *bits = malloc(nbytes);
-        if (!bits || !GetDIBits(dc, bm, 0, (UINT)px, bits, &bi, DIB_RGB_COLORS)) {
+        size_t nbytes = (size_t)px * (size_t)px * 4;
+        unsigned char *bits = malloc(nbytes);
+        if (!bits || !tray_glyph_render((tray_icon_state)i, px, 0xFFFFFFu, bits)) {
+            free(bits);
+            ok = false;
+            break;
+        }
+        BITMAPV4HEADER bi;
+        memset(&bi, 0, sizeof bi);
+        bi.bV4Size = sizeof bi;
+        bi.bV4Width = px;
+        bi.bV4Height = -px;             // top-down, as rendered
+        bi.bV4Planes = 1;
+        bi.bV4BitCount = 32;
+        bi.bV4V4Compression = BI_BITFIELDS;
+        bi.bV4RedMask = 0x00FF0000; bi.bV4GreenMask = 0x0000FF00;
+        bi.bV4BlueMask = 0x000000FF; bi.bV4AlphaMask = 0xFF000000;
+        bi.bV4CSType = 0x73524742;      // "sRGB"
+        char path[1200];
+        snprintf(path, sizeof path, "%s\\tray-%s.bmp", dir, names[i]);
+        FILE *f = fopen(path, "wb");
+        if (!f) {
             ok = false;
         } else {
-            char path[1200];
-            snprintf(path, sizeof path, "%s\\tray-%s.bmp", dir, names[i]);
-            FILE *f = fopen(path, "wb");
-            if (!f) {
-                ok = false;
-            } else {
-                BITMAPFILEHEADER fh = {0};
-                fh.bfType = 0x4D42;   // "BM"
-                fh.bfOffBits = sizeof fh + sizeof(BITMAPINFOHEADER);
-                fh.bfSize = fh.bfOffBits + nbytes;
-                fwrite(&fh, sizeof fh, 1, f);
-                fwrite(&bi.bmiHeader, sizeof(BITMAPINFOHEADER), 1, f);
-                fwrite(bits, 1, nbytes, f);
-                fclose(f);
-                printf("wrote %s\n", path);
-            }
+            BITMAPFILEHEADER fh = {0};
+            fh.bfType = 0x4D42;   // "BM"
+            fh.bfOffBits = sizeof fh + sizeof bi;
+            fh.bfSize = fh.bfOffBits + (DWORD)nbytes;
+            fwrite(&fh, sizeof fh, 1, f);
+            fwrite(&bi, sizeof bi, 1, f);
+            fwrite(bits, 1, nbytes, f);
+            fclose(f);
+            printf("wrote %s\n", path);
         }
         free(bits);
-        DeleteObject(bm);
-        DeleteDC(dc);
     }
-    ReleaseDC(NULL, screen);
     return ok;
 }
 
@@ -375,6 +345,16 @@ bool tray_platform_autostart_set(bool on) {
 int tray_platform_run(void) {
     migrate_old_autostart();
     FreeConsole();  // detach from any console we were launched from
+
+    // Per-monitor DPI awareness, before any window exists: the shell then
+    // asks this process for an icon at the size it will draw (SM_CXSMICON
+    // follows the DPI) instead of stretching a 16 px one. Resolved at run
+    // time so the binary still starts on a Windows without the entry point.
+    HMODULE user32 = GetModuleHandleA("user32.dll");
+    typedef BOOL (WINAPI *set_ctx_fn)(HANDLE);
+    set_ctx_fn set_ctx = user32
+        ? (set_ctx_fn)(void *)GetProcAddress(user32, "SetProcessDpiAwarenessContext") : NULL;
+    if (set_ctx) set_ctx((HANDLE)-4);   // DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2
 
     WNDCLASSA wc = { .lpfnWndProc = wndproc,
                      .hInstance = GetModuleHandleA(NULL),

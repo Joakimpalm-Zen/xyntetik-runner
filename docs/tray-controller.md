@@ -133,8 +133,14 @@ Nothing else is written anywhere (`managed.log` lives inside the same
 ## v1 simplifications (documented, deliberate)
 
 - Windows stop is `TerminateProcess` (no `WM_CLOSE`/console-ctrl attempt).
-- The Windows icon is drawn white-on-black regardless of taskbar theme
-  (macOS uses a template image and adapts automatically).
+- The Windows icon is rasterized by the tray core (coverage-antialiased,
+  transparent background, at the size the shell asks for under per-monitor
+  DPI awareness) and coloured by the `SystemUsesLightTheme` personalization
+  value read at each refresh: white on the dark taskbar, black on the light
+  one. macOS hands the OS a template image and adapts automatically. Below
+  24 px the ring is never thinner than 2 px and the spark never smaller than
+  1.75 px in radius, and the three streaks snap to whole pixel rows; those
+  weights are the taskbar's, the geometry is the mark's.
 - No load/unload of individual models from the menu — the runner has no
   unload API; you stop the instance instead.
 - Registry refresh is poll-on-open plus a 5 s badge timer, not a
@@ -149,7 +155,8 @@ this output; the human checklist only has to confirm the pixels.
 
 `XYNTETIK_TRAY_ICON_DUMP=<dir> runner --tray` is the icon sibling: it renders
 all three states to `<dir>/tray-{idle,loaded,running}` and exits — PNG on
-macOS, BMP on Windows. Eighteen pixels of arcs cannot be reviewed by reading
-the drawing code, so a design change is checked by looking at these. Both
-backends paint from one geometry scaled to the requested size, so the review
-render and the live icon are the same drawing rather than two that can drift.
+macOS, 32-bit BMP with an alpha channel on Windows. Eighteen pixels of arcs
+cannot be reviewed by reading the drawing code, so a design change is checked
+by looking at these. Both backends paint from one geometry scaled to the
+requested size, so the review render and the live icon are the same drawing
+rather than two that can drift.

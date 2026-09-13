@@ -8,6 +8,19 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **Windows tray: the ensö on a transparent background, antialiased, at the
+  size the taskbar draws.** The icon was a 16 px opaque black square with
+  aliased GDI strokes on it, stretched by the shell on any display above
+  100%. The tray core now rasterizes the mark itself (the macOS drawing's
+  geometry, coverage sampling, premultiplied alpha), the Windows backend
+  hands the shell a 32-bit alpha icon at its own small-icon size under
+  per-monitor DPI awareness, white on a dark taskbar and black on a light
+  one (the personalization value the shell reads, checked each refresh),
+  and below 24 px the ring keeps at least 2 px of weight, the spark 1.75 px
+  of radius and the three streaks snap to pixel rows, so the three states
+  read at 16 px. The review dump writes 32-bit BMPs with alpha. Gated by
+  the raster's own probes on every platform and by a readback of the icon's
+  colour bitmap on the Windows job.
 - **Qwen3-Coder's native tool protocol, and calls after prose.** The
   Coder checkpoint has no thinking markers, so template detection fell
   through to ChatML and selected Qwen's JSON calls where the model was
