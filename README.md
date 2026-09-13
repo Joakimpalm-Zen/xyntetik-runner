@@ -198,7 +198,7 @@ for Linux, macOS, or Windows, or build from source:
 git clone https://github.com/Joakimpalm-Zen/xyntetik-runner
 cd xyntetik-runner
 make
-./runner --version   # -> runner 0.5.1
+./runner --version   # -> runner 0.5.2
 ```
 
 CUDA builds and releases need only an NVIDIA driver at runtime. The CUDA
@@ -253,7 +253,7 @@ Run a GGUF:
 ./runner -m model.gguf --draft-lookup -f transcript.txt -p "Summarize the text above"
 ```
 
-> **Pre-1.0 (`0.5.1`).** APIs, model coverage and certification envelopes may
+> **Pre-1.0 (`0.5.2`).** APIs, model coverage and certification envelopes may
 > change between releases. CI builds and smoke-tests Linux, macOS, and
 > Windows, but the project still has limited hardware coverage. Include
 > `runner --version`, `runner --caps`, the model's exact filename, and the load
@@ -364,8 +364,14 @@ serves any adapter back, `--merge-lora` folds an adapter into the base for
 a standalone GGUF any runtime can serve (with its own provenance record -
 and the honest caveat that a quantized merge rounds the delta; `--lora` is
 the exact form), and `scripts/train-grpo-lite.py` closes the loop into
-seeded, replayable reinforcement fine-tuning. Design, gates, failure
-modes and every number above: [docs/adaptation-engine.md](docs/adaptation-engine.md).
+seeded, replayable reinforcement fine-tuning. `--train-dpo` trains from
+`prompt`/`chosen`/`rejected` pairs against the frozen base as the reference
+(no second model copy: the adapter is bypassed for the reference pass),
+gated on the gradient's identity with two weighted cross-entropy backwards
+and on a directional derivative against central differences; on the
+Blackwell box a 14B pair of about 4,000 tokens is a step of just under an
+hour, so read the measured cost before starting a run. Design, gates,
+failure modes and every number above: [docs/adaptation-engine.md](docs/adaptation-engine.md).
 
 The rest of what sets Runner apart, ordered by how much difference each makes:
 
@@ -472,7 +478,7 @@ shell, then run `make`.
 
 Each release publishes a CPU image - the same binary on a distroless glibc base,
 nothing else - to `ghcr.io/joakimpalm-zen/xyntetik-runner:v<version>` (the
-tag carries the `v`, e.g. `:v0.5.1`) and `:latest`. Build it yourself with `docker build -t runner .`.
+tag carries the `v`, e.g. `:v0.5.2`) and `:latest`. Build it yourself with `docker build -t runner .`.
 
 The server binds **loopback only** by design (there is no `--host`/`0.0.0.0`
 flag), so it never exposes itself to a network, even in a container - which
@@ -1912,16 +1918,19 @@ the task's commit range is exact.
     "command": "python3 -m xyntetik_runner.shadow capture --event stop"}]}]}}
 ```
 
-`python -m xyntetik_runner.shadow install` writes exactly this for you:
+`python -m xyntetik_runner.shadow install` writes the equivalent for you
+(the hooks call a small launcher file rather than this shell line):
 the two hooks merged into your Claude Code settings beside whatever is
 there (a backup sits next to the file), a `/shadow` skill that shows the
 ledger from inside a Claude Code session, and a `/shadow` prompt for
 Codex, which has no prompt-time hook and stays on its session files. It
 is an explicit opt-in, nothing runs until you submit a prompt, and
-`uninstall` removes exactly what it wrote. Only your request, the
-directory, the time and the commit ids are written
+`uninstall` removes exactly what it wrote. A prompt event records your
+request, the directory, the time and the commit ids
 (the HEAD of every repository at or under the directory, so a session
-started from a parent directory still gets exact ranges); the file is
+started from a parent directory still gets exact ranges), and capture v2
+adds the raw hook payload and a bounded snapshot of the changed files, all
+of it local, as described above; the file is
 `~/.xyntetik/shadow/capture.jsonl` and `import` reads it beside the
 session files. Earlier requests of the same session travel with a task as
 context. `replay` probes decode speed first and refuses a model below

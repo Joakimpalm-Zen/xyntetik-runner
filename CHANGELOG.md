@@ -8,6 +8,24 @@ names that were true when they were written.
 
 ## Unreleased
 
+## v0.5.2 - 2026-09-13
+
+The shadow-mode release. `runner --shadow-mode -m MODEL` wires Claude Code
+or Codex to a local model and then measures what that model can do on your
+own repository instead of assuming it: capture hooks record each request
+with the repository heads at both ends, `sync` admits the tasks whose tests
+fail before the recorded fix and pass after it, bounded attempts run on
+scratch worktrees against the repository's own tests, and a verified patch
+is offered for `git apply`, never applied. Where the ledger shows verified
+successes the local model works in tandem in the background; where it is
+silent nothing runs. The learning recipes moved out to the optional Shade
+tools, so the runtime that records evidence never imports the code that
+trains on it. Underneath: adapters serve on CUDA, the LoRA backward covers
+the dense-shape variants, a native DPO objective with a measured step cost,
+and the engine treats message content as text. A bug sweep before the tag
+found six defects, one of them a crash at shutdown that every server test
+had been passing.
+
 - Optional native DPO objective: `--train-dpo` reads preference pairs and
   compares the adapter against its frozen base without a second model copy.
   The CPU path has an independent finite-difference gradient gate; bypassing

@@ -107,4 +107,7 @@ def test_two_slots_of_an_mtp_model_shut_down_cleanly(tmp_path):
     srv.start()
     assert _http(srv, "/v1/capabilities")["mtp"]["consumed"] is True
     srv.stop()
-    assert srv.exit_code == 0, srv.exit_code
+    # Windows terminates rather than signals, so its exit code says nothing
+    # about the shutdown path; the harness does not judge it there either.
+    if sys.platform != "win32":
+        assert srv.exit_code == 0, srv.exit_code
