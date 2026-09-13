@@ -6,7 +6,21 @@ change between releases (the `-alpha` suffix was retired at v0.2.0 — the 0.x
 version already says what it needs to). Entries below the rename keep the
 names that were true when they were written.
 
-## Unreleased
+## v0.5.3 - 2026-09-14
+
+The codebook release. Every format the loader admits now has a CUDA
+kernel: the seven codebook i-quants (IQ1_S, IQ1_M, IQ2_XXS, IQ2_XS,
+IQ2_S, IQ3_XXS, IQ3_S) join NVFP4 on the device, so a mixed-type file
+such as the GSQ-RCO Qwen3.8 27B or an Unsloth dynamic quant is admitted
+whole instead of falling to the CPU on its first IQ tensor. The kernels
+are device twins of the runner's own decoders, measured against the CPU
+path at logit precision on both CUDA device families and on the real
+file. The i-quant parity gate that should have been watching those
+decoders since August turned out to be measuring IQ4_NL against IQ4_NL
+and was rebuilt. Beside it: Qwen3-Coder's native function/parameter XML
+tool protocol with calls after prose on both Qwen protocols, and the
+Windows tray drawn as it should be, the ensö antialiased on a transparent
+background at the taskbar's own size, with its menu text in UTF-16.
 
 - **CUDA serves the codebook i-quants: IQ1_S, IQ1_M, IQ2_XXS, IQ2_XS,
   IQ2_S, IQ3_XXS and IQ3_S.** A model that carried even one such tensor
