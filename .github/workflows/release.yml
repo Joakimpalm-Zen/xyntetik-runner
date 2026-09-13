@@ -83,7 +83,8 @@ jobs:
             # zip is the archive Windows users can open without extra tools
             # python/ carries the stdlib-only client, so `runner --shadow-mode`
             # works from the unpacked archive without a pip install
-            Remove-Item -Recurse -Force python/src/xyntetik_runner/__pycache__,python/src/xyntetik_runner/shadow/__pycache__ -ErrorAction SilentlyContinue
+            # this step runs in the msys2 shell: PowerShell only through `powershell -Command`
+            find python -name __pycache__ -type d -prune -exec rm -rf {} +
             powershell -Command "Compress-Archive -Path '${{ matrix.artifact }}','BUILD-INFO.txt','README.md','LICENSE','python' -DestinationPath '${{ matrix.artifact }}.zip' -Force"
             ARCHIVE="${{ matrix.artifact }}.zip"
           else

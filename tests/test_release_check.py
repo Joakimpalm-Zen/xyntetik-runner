@@ -425,3 +425,26 @@ def test_release_check_accepts_fresh_device_evidence(monkeypatch, tmp_path):
     args = good_args(tmp_path)
     args.device_evidence = device_ledger(tmp_path, days_ago=3)
     assert check_release.check(args) is True
+
+
+# The release workflow's Windows job runs its steps in the msys2 shell, so a
+# PowerShell cmdlet on its own line is "command not found" and the build
+# fails at packaging, after the binary was built and checked. The first tag
+# after the python client joined the archive found `Remove-Item` there: the
+# release job never ran, on a commit every CI job had passed, because CI never
+# runs these steps. The steps are shell; PowerShell is called explicitly.
+POWERSHELL_CMDLETS = ("Remove-Item", "Compress-Archive", "Copy-Item",
+                      "Get-ChildItem", "New-Item", "Move-Item", "Expand-Archive")
+
+
+def test_release_workflow_steps_are_shell_not_powershell():
+    text = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
+    offenders = []
+    for n, line in enumerate(text.splitlines(), 1):
+        stripped = line.strip()
+        if stripped.startswith("#"):
+            continue
+        for cmdlet in POWERSHELL_CMDLETS:
+            if stripped.startswith(cmdlet) or stripped.startswith(f"{cmdlet} "):
+                offenders.append(f"{n}: {stripped[:70]}")
+    assert not offenders, "PowerShell cmdlet on a shell step (wrap it in `powershell -Command`):\n" + "\n".join(offenders)
