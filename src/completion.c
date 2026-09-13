@@ -1205,9 +1205,15 @@ static int stop_feed(gen_ctx *g, const char *bytes, int n) {
     // that — it is the server making the client's copy legal — and filtering
     // it eats exactly the bytes that do the work: closing `{"a":"xx` yields
     // `","b":""}`, and `"}"` or `"\n\n"` are ordinary stops that match a
-    // closer even when the model never produced one.
+    // closer even when the model never produced one. It arrives AFTER the
+    // stop matched, so this bypass must precede the guard below.
     if (g->eng && g->eng->constraint_closing)
         return emit_channel(g, 0, bytes, n);
+    // Nothing else after a matched stop reaches the client: the think
+    // splitter's held-back tail is flushed through here at the end of
+    // generation, and on a thinking-tag model that tail is the text that
+    // followed the stop.
+    if (g->stopped) return 1;
     sb_put(&g->hold, bytes, n);
     size_t at = 0, hit_len = 0;
     for (size_t i = 0; !hit_len && i < g->hold.n; i++)
@@ -1828,7 +1834,7 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
         return;
     }
     jv *rf = jv_get(req, "response_format");
-    if (rf) {
+    if (rf && rf->type != J_NULL) {   // null reads as absent, as everywhere else
         // An unrecognised or malformed response_format used to fall through to
         // unconstrained decoding while still answering 200, so a caller asking
         // for guaranteed structure silently got none.
@@ -1950,7 +1956,12 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
     // -1 from tok_encode is an allocation failure mid-encode (a dropped
     // segment); a NULL toks is the same class. Both are 500s, never a prompt
     // silently short by the missing piece.
-    int n_prompt = toks ? tok_encode(s->tok, prompt, toks, (int)cap, true, true) : -1;
+    // a chat prompt is a render: the tokenizer recognizes control tokens
+    // only in the template's own bytes, never in message content; a raw
+    // completion prompt is the caller's to compose, specials and all
+    int n_prompt = !toks ? -1
+                 : chat ? tok_encode_prompt(s->tok, prompt, toks, (int)cap, true)
+                        : tok_encode(s->tok, prompt, toks, (int)cap, true, true);
     if (n_prompt < 0) {
         free(toks);
         completion_cleanup(e, schema, NULL);

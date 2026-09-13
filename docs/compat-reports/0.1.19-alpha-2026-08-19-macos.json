@@ -6,7 +6,7 @@
     "machine": "arm64"
   },
   "runner": {
-    "path": "/Users/zenzombie/AI_projects/origin/xyntetik-runner/runner",
+    "path": "runner",
     "version": "runner 0.1.19-alpha"
   },
   "reference": {
@@ -283,7 +283,7 @@
           "reason": "check_not_requested"
         }
       },
-      "resolved_file": "/Users/zenzombie/AI_projects/origin/xyntetik-runner/models/google_gemma-3-4b-it-Q4_K_M.gguf",
+      "resolved_file": "models/google_gemma-3-4b-it-Q4_K_M.gguf",
       "actual_sha256": "4996030242583a40aa151ff93f49ed787ac8c25e4120c3ae4588b2e2a7d1ae94",
       "file_status": "pass",
       "complete": false
@@ -450,7 +450,7 @@
           "reason": "check_not_requested"
         }
       },
-      "resolved_file": "/Users/zenzombie/AI_projects/origin/xyntetik-runner/models/gpt-oss-20b-MXFP4.gguf",
+      "resolved_file": "models/gpt-oss-20b-MXFP4.gguf",
       "actual_sha256": "27cd6c432c7672cb812a92f611cf3ba7bbc35928262bb1e1253ff4ee6ae35901",
       "file_status": "pass",
       "complete": false
@@ -735,7 +735,7 @@
           "reason": "check_not_requested"
         }
       },
-      "resolved_file": "/Users/zenzombie/AI_projects/origin/xyntetik-runner/models/Trinity-Nano-Preview-Q8_0.gguf",
+      "resolved_file": "models/Trinity-Nano-Preview-Q8_0.gguf",
       "actual_sha256": "5fcc2428c325e8b2035d280ff28c4c659ea240ce317a9536f230acfc352b79d1",
       "file_status": "pass",
       "complete": false
@@ -798,7 +798,7 @@
           "reason": "check_not_requested"
         }
       },
-      "resolved_file": "/Users/zenzombie/AI_projects/origin/xyntetik-runner/models/granite-4.1-8b-Q4_0.gguf",
+      "resolved_file": "models/granite-4.1-8b-Q4_0.gguf",
       "actual_sha256": "5adf9b6b78921093bd4a805e1060f85d7f744c3eafc14d1ca449364d1e721a1a",
       "file_status": "pass",
       "complete": false

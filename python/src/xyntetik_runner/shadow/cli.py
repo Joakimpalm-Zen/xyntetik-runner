@@ -36,22 +36,17 @@ from xyntetik_runner.shadow.evidence import (
     render,
     summarize,
 )
+from xyntetik_runner.shadow import recurring
 from xyntetik_runner.shadow.importer import CAPTURE_FILE, Episode, read_episodes, scan_all, write_episodes
-from xyntetik_runner.shadow import adapt
-from xyntetik_runner.shadow import tandem
+from xyntetik_runner.shadow import receipt, tandem
 from xyntetik_runner.shadow.install import (harness_present, install, read_config, render_candidates,
-                                            set_config_adapter, set_config_key, suggest_model, uninstall)
+                                            set_config_key, suggest_model, uninstall)
 from xyntetik_runner.process import spawn_detached
 from xyntetik_runner.shadow.routes import delegate, render_routes, route_table
 from xyntetik_runner.shadow.server import (DEFAULT_TTL, render_status as server_status, served_runner,
                                            stop_server)
 from xyntetik_runner.shadow.bank import build_bank
-from xyntetik_runner.shadow.optimize import (
-    TaskOutcome,
-    optimize,
-    result_json,
-    runner_reflect,
-)
+
 from xyntetik_runner.shadow.scaffold import Scaffold
 from xyntetik_runner.shadow.tasks import (
     Candidate,
@@ -60,44 +55,23 @@ from xyntetik_runner.shadow.tasks import (
     build_task,
     choose,
     canonical,
+    repository_root,
     pair,
     repos_under,
 )
 from xyntetik_runner.shadow.verifier import ProtectedTests, fixed_ids, verify
 
 
-def _run_attempt_factory(args: argparse.Namespace, endpoint: RunnerEndpoint, model: str,
-                         budget: Budget) -> Any:
-    """One attempt plus verification on a scratch worktree, as the optimizer's
-    reward function: fixed count, verdict and the failure text."""
-    def run(task: RepairTask, scaffold: Scaffold) -> TaskOutcome:
-        ws_dir = _worktree(task)
-        try:
-            baseline = Baseline.capture(ws_dir)
-            ws = Workspace(ws_dir, visible_tests=task.visible_test_files,
-                           pythonpath=task.pythonpath, python=args.python, budget=budget)
-            chat = runner_chat(endpoint.post_json, model, max_tokens=budget.max_tokens)
-            result = attempt(task.request, ws, chat, budget=budget, context=task.context,
-                             scaffold=scaffold)
-            protected = ProtectedTests.load(Path(task.protected_dir))
-            outcome = verify(ws_dir, protected, baseline, timeout_s=args.timeout,
-                             python=args.python, pythonpath=task.pythonpath)
-            fixed: tuple[str, ...] = ()
-            if baseline.changes(ws_dir) and task.failing_at_base and outcome.passed is not None:
-                fixed = fixed_ids(protected, task.failing_at_base, ws_dir, timeout_s=args.timeout,
-                                  python=args.python, pythonpath=task.pythonpath)
-            tail = [m for m in result.transcript if m.get("role") == "tool"][-2:]
-            feedback = (f"stop: {result.stop_reason}; verifier: {'; '.join(outcome.reasons)}\n"
-                        + "\n".join(str(m.get("content", ""))[-600:] for m in tail))
-            return TaskOutcome(task_id=task.task_id, fixed=len(fixed),
-                               failing_at_base=len(task.failing_at_base),
-                               verified=outcome.passed is True, feedback=feedback)
-        finally:
-            _drop(task, ws_dir)
-    return run
 
 HARNESS_VERSION = "shadow-0.1"
-DEFAULT_OUT = Path.home() / ".xyntetik" / "shadow"
+def default_out() -> Path:
+    """Where a user's shadow state lives when they name no other place.
+
+    A function and not a constant: a module-level ``Path.home()`` is bound
+    at import, which is before a test session can redirect HOME, so the
+    suite wrote its fixtures into the developer's own ~/.xyntetik for
+    three days without anyone noticing."""
+    return Path.home() / ".xyntetik" / "shadow"
 
 
 def _now() -> str:
@@ -125,9 +99,16 @@ def _read_records(path: Path) -> list[EpisodeEvidence]:
     if not path.is_file():
         return []
     out: list[EpisodeEvidence] = []
+    skipped = 0
     for line in path.read_text(encoding="utf-8").splitlines():
-        if line.strip():
+        if not line.strip():
+            continue
+        try:
             out.append(EpisodeEvidence.from_json(line))
+        except (ValueError, KeyError, TypeError):
+            skipped += 1  # a line cut short by a kill mid-append; the ledger is still readable
+    if skipped:
+        print(f"warning: {skipped} unreadable line(s) in {path} skipped", file=sys.stderr)
     return out
 
 
@@ -517,53 +498,14 @@ def cmd_bank(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_optimize(args: argparse.Namespace) -> int:
-    out = Path(args.out)
-    tasks = [t for t in _tasks(out, None)
-             if t.baseline_failing <= args.max_failing and t.baseline_failing < t.expected_tests]
-    # A task where everything fails at base (a test-suite move, a refactor)
-    # carries no gradient for any scaffold; the band keeps the signal.
-    if not tasks:
-        print("error: no tasks under", out / "tasks", "within --max-failing", file=sys.stderr)
-        return 2
-    print(f"{len(tasks)} task(s) in the difficulty band", flush=True)
-    endpoint = RunnerEndpoint(args.endpoint, timeout=args.request_timeout)
-    caps = endpoint.capabilities()
-    models = [m.get("id") for m in caps.get("models", []) if isinstance(m, dict)]
-    model = args.model or (str(models[0]) if models else "")
-    if not model:
-        print("error: the endpoint reports no model; pass --model", file=sys.stderr)
-        return 2
-    tps = probe_speed(endpoint.post_json, model)
-    print(f"probe: {model} decodes at {tps:.1f} tok/s (floor {args.min_tps:g})", flush=True)
-    if tps < args.min_tps:
-        print("error: fit-first: below the floor; serve a model and context that fit",
-              file=sys.stderr)
-        return 2
-    budget = Budget(max_turns=args.max_turns, wall_s=args.wall, max_tokens=args.max_tokens,
-                    test_runs=args.test_runs)
-    base = Scaffold.load(Path(args.scaffold)) if args.scaffold else Scaffold.base()
-    save_dir = out / "scaffolds"
-    run = _run_attempt_factory(args, endpoint, model, budget)
-    reflect = runner_reflect(endpoint.post_json, model)
-    result = optimize(tasks, base, run, reflect, generations=args.generations, batch=args.batch,
-                      holdout_fraction=args.holdout, seed=args.seed,
-                      rollout_budget=args.rollout_budget, save_dir=save_dir,
-                      log=lambda s: print(s, flush=True))
-    (out / "optimize.json").write_text(result_json(result) + "\n", encoding="utf-8")
-    best_path = save_dir / "best.json"
-    result.best.save(best_path)
-    print(f"best scaffold {result.best.sha256[:12]} ({result.best.name}) -> {best_path}; "
-          f"rollouts {result.rollouts}; held-out gain: {result.held_out_gain}", flush=True)
-    return 0
 
 
 def cmd_capture(args: argparse.Namespace) -> int:
-    """Append one prompt or stop line from a hook. Reads the hook's JSON on
-    stdin (Claude Code passes ``session_id``, ``cwd`` and, on prompt
-    submission, ``prompt``); records the request, the directory, the time
-    and the repository HEAD, and nothing the assistant produced.
-    ``--summary`` prints counts over the capture file instead."""
+    """Capture local raw events, bounded state and provenance; summarize on request.
+
+    Verification events record a post-command snapshot, not an atomic execution
+    snapshot. Reports keep that association separate from reproduced outcomes.
+    """
     if args.summary:
         path = Path(args.file) if args.file else Path.home() / CAPTURE_FILE
         rows: list[dict[str, Any]] = []
@@ -578,16 +520,67 @@ def cmd_capture(args: argparse.Namespace) -> int:
         print(f"captured: {len(rows)} lines, {len(prompts)} prompts, {with_heads} with repository "
               f"heads, {len({r.get('session_id') for r in rows})} sessions ({path})")
         return 0
+    if getattr(args, "report", False):
+        from . import capture_report
+        home = Path(args.home) if args.home else Path.home()
+        report_path = Path(args.file) if args.file else None
+        rep = capture_report.report(home, report_path)
+        print(json.dumps(rep, indent=1, default=str) if args.json
+              else capture_report.render(rep))
+        return 0
     try:
         data = json.loads(sys.stdin.read() or "{}")
     except ValueError:
         data = {}
     if not isinstance(data, dict):
         data = {}
-    if args.event not in ("prompt", "stop"):
-        print("error: --event prompt|stop is required (or --summary)", file=sys.stderr)
+    if args.event not in ("prompt", "stop", "verify"):
+        print("error: --event prompt|stop|verify is required (or --summary)", file=sys.stderr)
         return 2
     cwd = str(args.cwd or data.get("cwd") or Path.cwd())
+    home_p = Path(args.home) if args.home else Path.home()
+    session = str(args.session or data.get("session_id") or "")
+
+    # ---- v2 (capture.py): raw payload preserved, provenance labelled and linked,
+    # the actual dirty workspace snapshotted, verification bound to that state.
+    # Wrapped whole: a hook must never fail a prompt, and a v2 defect must never
+    # cost the v1 record that is still this project's only continuous series.
+    def _v2() -> None:
+        from . import capture as cap
+        verification = None
+        if args.event == "verify":
+            ti = data.get("tool_input") or {}
+            tr = data.get("tool_response") or {}
+            command = str(ti.get("command") or "")
+            if not cap.looks_like_verification(command):
+                return
+            snap = cap.snapshot_all(Path(cwd), home_p)
+            rc = tr.get("exit_code")
+            if rc is None:
+                rc = tr.get("returncode")
+            if rc is None and isinstance(tr.get("interrupted"), bool):
+                rc = None
+            tail = str(tr.get("stdout") or tr.get("output") or tr.get("stderr") or "")
+            verification = cap.verification_record(
+                command=command,
+                exit_code=int(rc) if isinstance(rc, (int, float)) else None,
+                output_tail=tail, manifest_sha256=snap.get("combined_sha256", ""),
+                cwd=cwd)
+            rec2 = cap.build("verify", payload=data, cwd=Path(cwd), home=home_p,
+                             tool=args.tool, session_id=session, snap=snap,
+                             verification=verification)
+        else:
+            snap = cap.snapshot_all(Path(cwd), home_p)
+            rec2 = cap.build(args.event, payload=data, cwd=Path(cwd), home=home_p,
+                             tool=args.tool, session_id=session, snap=snap)
+        cap.append(home_p, rec2)
+
+    if args.v2_only or args.event == "verify":
+        try:
+            _v2()
+        except Exception:  # noqa: BLE001 - a hook never fails the prompt
+            pass
+        return 0
     head = subprocess.run(["git", "-C", cwd, "rev-parse", "HEAD"], capture_output=True,
                           text=True).stdout.strip()
     # Every repository at or under the directory, so a session started from a
@@ -607,6 +600,12 @@ def cmd_capture(args: argparse.Namespace) -> int:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as f:
         f.write(json.dumps(rec, sort_keys=True) + "\n")
+    # v1 is written first and unchanged, so the continuous series since
+    # 2026-09-08 stays comparable; v2 is additive.
+    try:
+        _v2()
+    except Exception:  # noqa: BLE001 - a hook never fails the prompt
+        pass
     # tandem: a background attempt where the evidence allows it, and the
     # harness told; every failure here is swallowed, a hook never blocks
     try:
@@ -614,14 +613,17 @@ def cmd_capture(args: argparse.Namespace) -> int:
         cfg = read_config(home)
         model = str(cfg.get("model") or "")
         if cfg.get("tandem", True) and model and Path(model).is_file():
-            out = str(Path(str(cfg.get("out") or DEFAULT_OUT)).expanduser())
+            out = str(Path(str(cfg.get("out") or default_out())).expanduser())
             if args.event == "prompt":
                 repo_or_none = _repo_of(Path(cwd))
                 records = _read_records(Path(out) / "evidence.jsonl")
                 tandem.emit(tandem.hook_prompt(home, session_id=rec["session_id"], cwd=cwd,
                                                prompt=rec["prompt"], repo=repo_or_none, records=records,
-                                               model=model, model_sha256=_model_sha(model),
-                                               python=args.python or sys.executable, out=out))
+                                               model=model, model_sha256=_model_sha(model, compute=False, home=home),
+                                               adapter_sha256=_adapter_sha(cfg, home, compute=False),
+                                               python=args.python or sys.executable, out=out,
+                                               turns=int(str(cfg.get("tandem_turns") or tandem.DEFAULT_TURNS)),
+                                               wall_s=float(str(cfg.get("tandem_wall") or tandem.DEFAULT_WALL_S))))
             else:
                 tandem.emit(tandem.hook_stop(home, session_id=rec["session_id"]))
     except Exception:  # noqa: BLE001 - a hook must never fail the prompt
@@ -630,28 +632,51 @@ def cmd_capture(args: argparse.Namespace) -> int:
 
 
 def _repo_of(cwd: Path) -> Path | None:
-    top = subprocess.run(["git", "-C", str(cwd), "rev-parse", "--show-toplevel"], capture_output=True,
-                         text=True).stdout.strip()
-    return Path(top) if top else None
+    return repository_root(cwd)
 
 
 _MODEL_SHA_CACHE: dict[str, tuple[float, str]] = {}
 
 
-def _model_sha(model: str) -> str:
-    """sha256 of the model file, cached on mtime so a hook does not hash
-    gigabytes on every prompt."""
+def _adapter_sha(cfg: dict[str, object], home: Path, *, compute: bool = True) -> str | None:
+    adapter = str(cfg.get("adapter") or "")
+    if not adapter:
+        return None
+    return (_model_sha(adapter, home=home, compute=compute, cache_name="adapter-sha.json")
+            or "unknown:configured-adapter")
+
+
+def _model_sha(model: str, *, compute: bool = True, home: Path | None = None,
+               cache_name: str = "model-sha.json") -> str:
+    """sha256 of the model file, cached on mtime.
+
+    ``compute=False`` is the hook path and it never reads the model. Hashing
+    a GGUF is seconds of CPU per gigabyte, a hook runs under a timeout of
+    ten seconds, and the two together are a trap: the hash does not finish,
+    the process is killed before it can write the cache, so the next prompt
+    hashes from scratch and is killed too. The user pays it on every prompt
+    and sees a timeout warning for a hook that was supposed to be free.
+    Measured here: 3.6 GB, 9.4 s of CPU, every prompt, never cached.
+
+    So the foreground commands warm this cache (`shadow install` at the end
+    of installation, `shadow sync` before it counts) and the hook takes the
+    warm value or nothing. Nothing is the honest answer: an empty sha does
+    not match any record's model identity, so tandem simply does not fire
+    this turn, which is what should happen when we cannot say which model
+    the evidence was about."""
     try:
         mtime = Path(model).stat().st_mtime
     except OSError:
         return ""
-    cache = Path.home() / ".xyntetik" / "shadow" / "model-sha.json"
+    cache = (home or Path.home()) / ".xyntetik" / "shadow" / cache_name
     try:
         d = json.loads(cache.read_text(encoding="utf-8"))
         if d.get("model") == model and d.get("mtime") == mtime:
             return str(d.get("sha256") or "")
     except (OSError, ValueError):
         pass
+    if not compute:
+        return ""
     sha = file_sha256(Path(model))
     try:
         cache.parent.mkdir(parents=True, exist_ok=True)
@@ -708,9 +733,9 @@ def cmd_install(args: argparse.Namespace) -> int:
     print("shadow mode will write:")
     for line in plan:
         print(f"  - {line}")
-    print("  Only your own requests, directories, times and commit ids are ever recorded; "
-          "nothing the assistant produces. Nothing runs until you submit a prompt, and the "
-          "hooks can never block one. 'shadow uninstall' removes exactly this.")
+    print("  Capture retains raw hook payloads and bounded workspace contents locally, "
+          "including agent text or tool data present in events. No data is uploaded. "
+          "The hooks start after installation; 'shadow uninstall' removes the integration.")
     if args.dry_run:
         print("dry run: nothing written")
         return 0
@@ -736,12 +761,16 @@ def cmd_install(args: argparse.Namespace) -> int:
         print(f"codex: prompt {done.codex_prompt}")
     if done.sheet:
         print(f"capabilities: {done.sheet}; noted in {', '.join(str(n) for n in done.notes)}")
+    # Warm the model hash here, where there is no timeout. The prompt hook
+    # reads this cache and never computes it.
+    if done.config and (args.model or picked):
+        _model_sha(str(args.model or picked), home=home)
     print("nothing runs until a prompt is submitted; the hooks never block one; "
           "'shadow uninstall' removes exactly this")
     print()
     print("what happens next:")
     print("  1. keep working as you do; each prompt and each finished turn is noted with the")
-    print("     directory, the time and the repository's commit id, nothing else")
+    print("     raw event, task provenance and bounded local workspace snapshot")
     print("  2. after a few sessions, ask /shadow" + (" in Claude Code" if claude else "") +
           (" (the shadow prompt in Codex)" if codex else "") + ": it imports what you did, says how")
     print("     many tasks the local model can be tried on, and offers to run them; say yes")
@@ -766,7 +795,7 @@ def cmd_routes(args: argparse.Namespace) -> int:
 def cmd_delegate(args: argparse.Namespace) -> int:
     home = Path(args.home) if args.home else Path.home()
     cfg = read_config(home)
-    out = str(Path(args.out or str(cfg.get("out") or DEFAULT_OUT)).expanduser())
+    out = str(Path(args.out or str(cfg.get("out") or default_out())).expanduser())
     if args.background:
         model = str(args.model or cfg.get("model") or "")
         if not model:
@@ -777,7 +806,8 @@ def cmd_delegate(args: argparse.Namespace) -> int:
             print(f"error: {args.repo} is not inside a git repository", file=sys.stderr)
             return 2
         records = _read_records(Path(out) / "evidence.jsonl")
-        route = tandem.qualifies(records, repo.name, _model_sha(model))
+        route = tandem.qualifies(records, repo.name, _model_sha(model, home=home),
+                                 adapter_sha256=_adapter_sha(cfg, home))
         if route is None:
             print(f"not started: no task class qualifies for {repo.name} with {Path(model).name} yet "
                   "('shadow routes' shows the counts)")
@@ -812,19 +842,41 @@ def cmd_delegate(args: argparse.Namespace) -> int:
             print(f"{'started' if started else 'reusing'} the runner at {endpoint.base_url} "
                   f"(warm for {DEFAULT_TTL}s; 'shadow server --stop' ends it)", flush=True)
         caps = endpoint.capabilities()
-        models = [m.get("id") for m in caps.get("models", []) if isinstance(m, dict)]
-        model = str(models[0]) if models else "model"
+        models = [str(m.get("id")) for m in caps.get("models", []) if isinstance(m, dict)]
+        wanted = Path(args.model).name if args.model else ""
+        model = wanted if wanted in models else (models[0] if models else "model")
         budget = Budget(max_turns=args.max_turns, wall_s=args.wall, test_runs=4)
         d = delegate(Path(args.repo).resolve(), args.request, endpoint.post_json, model,
-                     python=args.python, budget=budget)
+                     python=args.python, out_dir=Path(out) / "delegations", budget=budget)
     except RuntimeError as e:
         print(f"error: {e}", file=sys.stderr)
         if state is not None:
             state.status, state.error, state.ended_at = "error", str(e), __import__("time").time()
             state.save(home)
         return 2
-    _record_delegation(Path(out), d, model_path=str(cfg.get("model") or ""), caps=caps,
-                       endpoint_label=endpoint.base_url)
+    rec_path = _record_delegation(Path(out), d, model_path=str(cfg.get("model") or ""), caps=caps,
+                                  adapter_sha256=(_adapter_sha(cfg, home) if not args.endpoint else "unknown:external"),
+                                  endpoint_label=endpoint.base_url, budget_turns=args.max_turns,
+                                  budget_wall=args.wall)
+    signed: receipt.Signed | None = None
+    key = home / receipt.SIGNKEY_REL
+    runner_exe = str(cfg.get("runner") or "runner")
+    if key.is_file():
+        try:
+            body = receipt.statement(
+                repo=d.repo, head=d.head, request=d.request, patch_path=d.patch_path,
+                patch_sha256=receipt.sha256_file(Path(d.patch_path)) if Path(d.patch_path).is_file() else "",
+                changed_paths=d.changed_paths, verdict=d.verdict, tests_exit=d.tests_exit,
+                task_class=d.task_class, model=str(cfg.get("model") or d.model),
+                model_sha256=_model_sha(str(cfg.get("model") or "")) if cfg.get("model") else "",
+                adapter_sha256=receipt.sha256_file(Path(str(cfg.get("adapter")))) if cfg.get("adapter") and Path(str(cfg.get("adapter"))).is_file() else "",
+                runner_build=str(caps.get("version") or "unknown"), backend=str(caps.get("backend") or "unknown"),
+                budget_turns=args.max_turns, budget_wall_s=args.wall, turns=d.attempt.turns,
+                tool_calls=d.attempt.tool_calls, wall_s=d.wall_s, stop_reason=d.attempt.stop_reason,
+                observed_at=_now())
+            signed = receipt.write_receipt(home, body, runner=runner_exe, key=key)
+        except (RuntimeError, OSError, ValueError) as e:
+            print(f"receipt: not written: {e}", file=sys.stderr)
     if state is not None:
         state.status, state.verdict, state.patch_path = "done", d.verdict, d.patch_path
         state.changed_paths, state.tests_exit, state.task_class = d.changed_paths, d.tests_exit, d.task_class
@@ -833,6 +885,8 @@ def cmd_delegate(args: argparse.Namespace) -> int:
     if args.json:
         print(d.to_json())
         return 0
+    if signed is not None:
+        print(f"receipt: {signed.path} (chain {signed.chain_hash[:12]}, signed by {signed.public_key[:12]}...)")
     print(f"model: {d.model}; attempt: {d.attempt.stop_reason}, {d.attempt.turns} turns, "
           f"{d.attempt.tool_calls} calls, {d.wall_s:.0f}s")
     print(f"changed: {', '.join(d.changed_paths) or '(nothing)'}")
@@ -846,136 +900,8 @@ def cmd_delegate(args: argparse.Namespace) -> int:
     return 0 if d.tests_exit == 0 else 1
 
 
-def _serve_for(cfg: dict[str, object], model_path: str, *, extra: tuple[str, ...],
-               start_timeout: float, request_timeout: float) -> tuple[ManagedRunner, RunnerEndpoint]:
-    launch = ServerLaunch(executable=str(cfg.get("runner") or "runner"), model=model_path,
-                          port=_free_port(), context_size=int(str(cfg.get("ctx") or 8192)),
-                          gpu=str(cfg.get("gpu") or "auto"),
-                          threads=int(str(cfg.get("threads") or 0)) or None, extra_args=extra)
-    managed = ManagedRunner(launch)
-    if not managed.start(timeout=start_timeout):
-        raise RuntimeError("the runner did not start; check the model path and 'runner --fit'")
-    return managed, RunnerEndpoint(managed.base_url, timeout=request_timeout)
 
 
-def cmd_adapt(args: argparse.Namespace) -> int:
-    home = Path(args.home) if args.home else Path.home()
-    if args.status:
-        print(adapt.render_status(home))
-        return 0
-    cfg = read_config(home)
-    model_path = str(args.model or cfg.get("model") or "")
-    runner = str(args.runner or cfg.get("runner") or "runner")
-    if not model_path:
-        print("error: no model in the shadow config; run 'runner --shadow-mode -m MODEL.gguf' first",
-              file=sys.stderr)
-        return 2
-    if not Path(model_path).is_file():
-        print(f"error: model not found: {model_path}", file=sys.stderr)
-        return 2
-    try:
-        meta = adapt.gguf_meta(Path(model_path))
-    except (OSError, ValueError) as e:
-        print(f"error: cannot read the model header: {e}", file=sys.stderr)
-        return 2
-    family = adapt.template_family(str(meta.get("tokenizer.chat_template") or ""))
-    if family is None:
-        print("error: this model's chat template is not one adapt can render for training "
-              "(ChatML or Llama 3); the prompt at training must match the prompt at serving",
-              file=sys.stderr)
-        return 2
-    tasks: list[RepairTask] = []
-    for d in [Path(args.out).expanduser()] + [Path(b).expanduser() for b in args.bank.split(",") if b]:
-        if (d / "tasks").is_dir():
-            tasks += _tasks(d, None)
-    tasks = [t for t in tasks if t.baseline_failing <= args.max_failing and t.baseline_failing < t.expected_tests]
-    if not tasks:
-        print("error: no admitted tasks under --out or --bank; capture work or run 'shadow bank'",
-              file=sys.stderr)
-        return 2
-    log = lambda s: print(s, flush=True)  # noqa: E731
-    print(f"{len(tasks)} task(s); model {Path(model_path).name} ({family} template); "
-          f"self-checking the function units ...", flush=True)
-    ds = adapt.build_dataset(tasks, family=family, ctx=args.ctx, python=args.python, seed=args.seed,
-                             holdout_fraction=args.holdout_fraction, log=log)
-    n_units = len(ds.dev) + len(ds.holdout)
-    print(f"units: {n_units} (development {len(ds.dev)}, held out {len(ds.holdout)}); "
-          f"examples: {len(ds.examples)}; dropped: {len(ds.dropped)}")
-    for dropped in ds.dropped:
-        print(f"  drop {dropped['task_id']}: {dropped['why']}")
-    if n_units < adapt.MIN_UNITS or not ds.examples or not ds.holdout:
-        print(f"too few units to adapt: at least {adapt.MIN_UNITS} verified function units are "
-              "needed, one to train on and one to hold out; the bench and captured work add units")
-        return 1
-    steps = args.epochs * len(ds.examples)
-    print(f"plan: train {len(ds.examples)} example(s) for {steps} step(s) (rank {args.rank}, "
-          f"lr {args.lr}, ctx {args.ctx}); evaluate base and adapter on {len(ds.holdout)} held-out "
-          f"unit(s) with K {args.k}; keep the adapter only if held-out verified rises")
-    if args.dry_run:
-        print("dry run: nothing trained")
-        return 0
-    if not args.yes:
-        if not sys.stdin.isatty():
-            print("error: not a terminal; pass --yes to confirm", file=sys.stderr)
-            return 2
-        if input("Start the adaptation run now? [y/N] ").strip().lower() not in ("y", "yes"):
-            print("not started")
-            return 1
-    stop_server(home)  # the warm runner holds the device the training needs
-    stamp = _now().replace(":", "").replace("-", "")[:15]
-    run_dir = adapt.adapters_dir(home) / stamp
-    run_dir.mkdir(parents=True, exist_ok=True)
-    data = ds.write(run_dir)
-    print(f"run: {run_dir}", flush=True)
-    managed: ManagedRunner | None = None
-    try:
-        print("serving the base for its evaluation ...", flush=True)
-        managed, endpoint = _serve_for(cfg | {"runner": runner}, model_path, extra=(),
-                                       start_timeout=args.start_timeout,
-                                       request_timeout=args.request_timeout)
-        model_id = _served_model(endpoint)
-        base_hold = adapt.evaluate(ds.holdout, endpoint.post_json, model_id, label="base held-out",
-                                   k=args.k, python=args.python, log=log)
-        base_dev = adapt.evaluate(ds.dev, endpoint.post_json, model_id, label="base development",
-                                  k=args.k, python=args.python, log=log)
-        managed.stop()
-        managed = None
-        print(f"base: held-out {base_hold.verified_samples}/{base_hold.samples} verified, "
-              f"development {base_dev.verified_samples}/{base_dev.samples}", flush=True)
-        adapter = run_dir / "adapter.gguf"
-        print(f"training {steps} step(s); log {run_dir / 'train.log'} ...", flush=True)
-        trained = adapt.train(runner, model_path, data, adapter, ctx=args.ctx, steps=steps, lr=args.lr,
-                              rank=args.rank, threads=args.threads, log_path=run_dir / "train.log",
-                              gpu=not args.cpu_train, log=log)
-        if trained.returncode != 0 or not adapter.is_file():
-            print(f"error: training failed (exit {trained.returncode}); see {trained.log}",
-                  file=sys.stderr)
-            return 2
-        print("serving the adapter for its evaluation ...", flush=True)
-        managed, endpoint = _serve_for(cfg | {"runner": runner}, model_path,
-                                       extra=("--lora", str(adapter)),
-                                       start_timeout=args.start_timeout,
-                                       request_timeout=args.request_timeout)
-        model_id = _served_model(endpoint)
-        ada_hold = adapt.evaluate(ds.holdout, endpoint.post_json, model_id, label="adapter held-out",
-                                  k=args.k, python=args.python, log=log)
-        ada_dev = adapt.evaluate(ds.dev, endpoint.post_json, model_id, label="adapter development",
-                                 k=args.k, python=args.python, log=log)
-    except RuntimeError as e:
-        print(f"error: {e}", file=sys.stderr)
-        return 2
-    finally:
-        if managed is not None:
-            managed.stop()
-    verdict = adapt.decide(base_hold, ada_hold, base_dev, ada_dev)
-    adapt.record_run(home, stamp, dataset=ds, base_hold=base_hold, ada_hold=ada_hold, base_dev=base_dev,
-                     ada_dev=ada_dev, trained=trained, verdict=verdict, model=model_path)
-    if verdict.promoted:
-        set_config_adapter(home, str(adapter))
-        print(f"kept: {verdict.reason}; the next delegation serves {adapter}")
-    else:
-        print(f"not kept: {verdict.reason}; recorded under {run_dir}")
-    return 0
 
 
 def cmd_sync(args: argparse.Namespace) -> int:
@@ -988,7 +914,8 @@ def cmd_sync(args: argparse.Namespace) -> int:
     admitted = do_import(out, home=home if args.home else None, python=args.python, timeout=args.timeout)
     evidence = out / "evidence.jsonl"
     records = _read_records(evidence)
-    sha = file_sha256(Path(model_path)) if model_path and Path(model_path).is_file() else ""
+    # also warms the cache the prompt hook reads: the hook must never hash
+    sha = _model_sha(model_path, home=home) if model_path and Path(model_path).is_file() else ""
     done = {r.episode_id for r in records if r.verifier is not None and r.identity.model_sha256 == sha}
     waiting = [t for t in _tasks(out, None) if t.episode_id not in done]
     name = Path(model_path).name if model_path else "(no model configured)"
@@ -1036,7 +963,7 @@ def cmd_server(args: argparse.Namespace) -> int:
 
 
 def _record_delegation(out: Path, d: Any, *, model_path: str, caps: dict[str, Any],
-                       endpoint_label: str) -> None:
+                       endpoint_label: str, adapter_sha256: str | None = None, budget_turns: int = 0, budget_wall: float = 0.0) -> Path:
     """A delegation is an attempt with a verdict on the user's own request:
     it joins the ledger under its own verifier id (the repository's tests
     at HEAD, not frozen tests), verified only when they passed and no test
@@ -1061,15 +988,60 @@ def _record_delegation(out: Path, d: Any, *, model_path: str, caps: dict[str, An
                      model_sha256=sha, quant=_quant_from_name(Path(model_path).name) if model_path else "unknown",
                      template_sha256="unknown", runner_build=str(caps.get("version") or "unknown"),
                      backend=str(caps.get("backend") or "unknown"), harness_version=HARNESS_VERSION,
-                     scaffold_sha256="base")
+                     scaffold_sha256="base", adapter_sha256=adapter_sha256)
     rec = EpisodeEvidence(episode_id=f"delegation:{Path(d.patch_path).stem}", source="delegation",
                           observed_at=_now(), disposition=disposition, identity=ident, baseline_sha256="",
                           patch_sha256=None, changed_paths=d.changed_paths, verifier=verifier,
                           wall_s=d.wall_s, resources={"turns": float(d.attempt.turns),
-                                                      "tool_calls": float(d.attempt.tool_calls)},
+                                                      "tool_calls": float(d.attempt.tool_calls),
+                                                      "budget_turns": float(budget_turns),
+                                                      "budget_wall_s": float(budget_wall)},
                           reasons=(f"attempt: {d.attempt.stop_reason}", d.verdict))
     out.mkdir(parents=True, exist_ok=True)
     _append(out / "evidence.jsonl", rec)
+    return out / "evidence.jsonl"
+
+
+def cmd_keygen(args: argparse.Namespace) -> int:
+    home = Path(args.home) if args.home else Path.home()
+    cfg = read_config(home)
+    runner_exe = str(args.runner or cfg.get("runner") or "runner")
+    try:
+        key = receipt.keygen(home, runner_exe)
+    except RuntimeError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
+    pub = ""
+    try:
+        pub = str(json.loads(key.read_text(encoding="utf-8")).get("public_key") or "")
+    except (OSError, ValueError):
+        pass
+    print(f"signing key: {key}\npublic key: {pub}\nevery delegation now writes a signed receipt under "
+          f"{receipt.receipts_dir(home)}; 'shadow receipts --check' verifies them")
+    return 0
+
+
+def cmd_recurring(args: argparse.Namespace) -> int:
+    home = Path(args.home) if args.home else Path.home()
+    roots = ([Path(r).expanduser() for r in args.sessions.split(",") if r]
+             if args.sessions else recurring.default_roots(home))
+    missing = [r for r in roots if not r.is_dir()]
+    obs = recurring.observe(roots, min_chars=args.min_chars)
+    if args.project:
+        obs = [o for o in obs if args.project in o.project or args.project in o.session]
+    print(recurring.render(obs, sessions=len({o.session for o in obs})))
+    if missing:
+        print("\nnot found, so nothing was read from: " + ", ".join(str(m) for m in missing),
+              file=sys.stderr)
+    return 0
+
+
+def cmd_receipts(args: argparse.Namespace) -> int:
+    home = Path(args.home) if args.home else Path.home()
+    cfg = read_config(home)
+    runner_exe = str(args.runner or cfg.get("runner") or "runner")
+    print(receipt.render_receipts(home, runner=runner_exe, check=args.check))
+    return 0
 
 
 def cmd_delegations(args: argparse.Namespace) -> int:
@@ -1095,12 +1067,19 @@ def cmd_delegations(args: argparse.Namespace) -> int:
 def cmd_tandem(args: argparse.Namespace) -> int:
     home = Path(args.home) if args.home else Path.home()
     cfg = read_config(home)
+    if args.turns is not None:
+        set_config_key(home, "tandem_turns", int(args.turns))
+    if args.wall is not None:
+        set_config_key(home, "tandem_wall", float(args.wall))
     if args.state in ("on", "off"):
         set_config_key(home, "tandem", args.state == "on")
         print(f"tandem {args.state}")
         return 0
+    cfg = read_config(home)
     print("tandem " + ("on" if cfg.get("tandem", True) and cfg.get("model") else "off")
-          + ("" if cfg.get("model") else " (no model configured)"))
+          + ("" if cfg.get("model") else " (no model configured)")
+          + f"; budget {cfg.get('tandem_turns', tandem.DEFAULT_TURNS)} turns, "
+          f"{cfg.get('tandem_wall', tandem.DEFAULT_WALL_S):g}s (measured default; see tandem.py)")
     return 0
 
 
@@ -1157,18 +1136,24 @@ def cmd_report(args: argparse.Namespace) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if argv and argv[0] in ("adapt", "optimize"):
+        print(f"shadow {argv[0]} moved to the optional Shade learning tools. "
+              f"Use python -m xyntetik_shade.shadow {argv[0]}. "
+              "No training was started and the serving configuration is unchanged.", file=sys.stderr)
+        return 2
     ap = argparse.ArgumentParser(prog="python -m xyntetik_runner.shadow", description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("import", help="scan traces, admit verifiable tasks, record the rest")
-    p.add_argument("--out", default=str(DEFAULT_OUT))
+    p.add_argument("--out", default=str(default_out()))
     p.add_argument("--home", default="")
     p.add_argument("--source", choices=["codex", "claude_code"], default="")
     p.add_argument("--python", default=sys.executable, help="interpreter that runs the tests")
     p.add_argument("--timeout", type=float, default=600.0)
     p.set_defaults(fn=cmd_import)
     p = sub.add_parser("replay", help="attempt each admitted task and verify it")
-    p.add_argument("--out", default=str(DEFAULT_OUT))
+    p.add_argument("--out", default=str(default_out()))
     p.add_argument("--endpoint", default="http://127.0.0.1:8080")
     p.add_argument("--model", default="")
     p.add_argument("--model-sha256", default="")
@@ -1188,37 +1173,21 @@ def main(argv: list[str] | None = None) -> int:
     p.set_defaults(fn=cmd_replay)
     p = sub.add_parser("bank", help="build repair tasks from a public repository's history")
     p.add_argument("--repo", required=True)
-    p.add_argument("--out", default=str(DEFAULT_OUT.parent / "shadow-bank"))
+    p.add_argument("--out", default=str(default_out().parent / "shadow-bank"))
     p.add_argument("--python", default=sys.executable)
     p.add_argument("--limit", type=int, default=20)
     p.add_argument("--max-commits", type=int, default=400)
     p.add_argument("--max-src-files", type=int, default=3)
     p.add_argument("--timeout", type=float, default=600.0)
     p.set_defaults(fn=cmd_bank)
-    p = sub.add_parser("optimize", help="evolve a scaffold against the tasks under --out")
-    p.add_argument("--out", default=str(DEFAULT_OUT.parent / "shadow-bank"))
-    p.add_argument("--endpoint", default="http://127.0.0.1:8080")
-    p.add_argument("--model", default="")
-    p.add_argument("--scaffold", default="", help="starting scaffold; default base")
-    p.add_argument("--generations", type=int, default=4)
-    p.add_argument("--batch", type=int, default=4)
-    p.add_argument("--holdout", type=float, default=0.3)
-    p.add_argument("--seed", type=int, default=0)
-    p.add_argument("--rollout-budget", type=int, default=200)
-    p.add_argument("--python", default=sys.executable)
-    p.add_argument("--timeout", type=float, default=600.0)
-    p.add_argument("--request-timeout", type=float, default=900.0)
-    p.add_argument("--max-turns", type=int, default=10)
-    p.add_argument("--max-tokens", type=int, default=1500)
-    p.add_argument("--test-runs", type=int, default=3)
-    p.add_argument("--wall", type=float, default=600.0)
-    p.add_argument("--min-tps", type=float, default=15.0)
-    p.add_argument("--max-failing", type=int, default=30,
-                   help="skip tasks with more failing-at-base tests than this")
-    p.set_defaults(fn=cmd_optimize)
     p = sub.add_parser("capture", help="append a prompt or stop event from an agent hook")
-    p.add_argument("--event", choices=["prompt", "stop"], default="")
+    p.add_argument("--event", choices=["prompt", "stop", "verify"], default="")
     p.add_argument("--summary", action="store_true", help="print counts over the capture file")
+    p.add_argument("--v2-only", action="store_true",
+                   help="write only the v2 record (the verify event has no v1 form)")
+    p.add_argument("--report", action="store_true",
+                   help="capture completeness, workspace reconstruction and verification binding")
+    p.add_argument("--json", action="store_true", help="--report as JSON")
     p.add_argument("--tool", default="claude_code")
     p.add_argument("--cwd", default="")
     p.add_argument("--session", default="")
@@ -1230,7 +1199,7 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("bench", help="bank + fit probe + replay per model + the verified table, "
                                      "on your own repository")
     p.add_argument("--repo", default="", help="repository to build tasks from (if none yet)")
-    p.add_argument("--out", default=str(DEFAULT_OUT.parent / "shadow-bench"))
+    p.add_argument("--out", default=str(default_out().parent / "shadow-bench"))
     p.add_argument("--models", default="", help="comma-separated GGUF paths, served one at a time")
     p.add_argument("--endpoints", default="", help="comma-separated running runner URLs")
     p.add_argument("--runner", default="runner", help="runner executable for --models")
@@ -1273,8 +1242,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--dry-run", action="store_true", help="print what would be written")
     p.set_defaults(fn=cmd_install)
     p = sub.add_parser("routes", help="per task class, where the local model has verified successes")
-    p.add_argument("--out", default=str(DEFAULT_OUT))
-    p.add_argument("--bench", default=str(DEFAULT_OUT.parent / "shadow-bench"))
+    p.add_argument("--out", default=str(default_out()))
+    p.add_argument("--bench", default=str(default_out().parent / "shadow-bench"))
     p.add_argument("--json", action="store_true")
     p.set_defaults(fn=cmd_routes)
     p = sub.add_parser("delegate", help="one bounded attempt at a request on a scratch worktree")
@@ -1295,6 +1264,24 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--session", default="", help="with --background: the harness session id")
     p.add_argument("--record", default="", help=argparse.SUPPRESS)
     p.set_defaults(fn=cmd_delegate)
+    p = sub.add_parser("keygen", help="make the signing key; every delegation then writes a signed receipt")
+    p.add_argument("--home", default="")
+    p.add_argument("--runner", default="")
+    p.set_defaults(fn=cmd_keygen)
+    p = sub.add_parser("recurring", help="what your work has been, grouped by what it produced")
+    p.add_argument("--home", default="")
+    p.add_argument("--sessions", default="", help="comma-separated session directories; "
+                                                  "default: the harnesses' own")
+    p.add_argument("--min-chars", type=int, default=60,
+                   help="ignore requests shorter than this: continuations like 'go ahead' "
+                        "inherit their kind from the conversation and describe no work")
+    p.add_argument("--project", default="", help="only sessions or requests naming this string")
+    p.set_defaults(fn=cmd_recurring)
+    p = sub.add_parser("receipts", help="the signed delegation receipts, newest last")
+    p.add_argument("--home", default="")
+    p.add_argument("--runner", default="")
+    p.add_argument("--check", action="store_true", help="verify each signature through the runner")
+    p.set_defaults(fn=cmd_receipts)
     p = sub.add_parser("delegations", help="background delegations and their verdicts")
     p.add_argument("--home", default="")
     p.add_argument("--session", default="")
@@ -1304,35 +1291,12 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("tandem", help="show or set whether prompts get a background local attempt")
     p.add_argument("state", nargs="?", choices=("on", "off"), default="")
     p.add_argument("--home", default="")
+    p.add_argument("--turns", type=int, default=None, help="background attempt budget in turns")
+    p.add_argument("--wall", type=float, default=None, help="background attempt budget in seconds")
     p.set_defaults(fn=cmd_tandem)
-    p = sub.add_parser("adapt", help="overnight: train the configured model's adapter on the ledger's "
-                                     "own commits, keep it only on a held-out verified rise")
-    p.add_argument("--out", default=str(DEFAULT_OUT))
-    p.add_argument("--bank", default=str(DEFAULT_OUT.parent / "shadow-bank"),
-                   help="comma-separated task directories to add (the bench bank)")
-    p.add_argument("--home", default="")
-    p.add_argument("--model", default="", help="default: the shadow config's model")
-    p.add_argument("--runner", default="", help="default: the shadow config's runner")
-    p.add_argument("--python", default=sys.executable)
-    p.add_argument("--ctx", type=int, default=4096, help="training window")
-    p.add_argument("--epochs", type=int, default=3)
-    p.add_argument("--lr", type=float, default=1e-4)
-    p.add_argument("--rank", type=int, default=8)
-    p.add_argument("--threads", type=int, default=0)
-    p.add_argument("--k", type=int, default=4, help="samples per unit in each evaluation")
-    p.add_argument("--seed", type=int, default=0)
-    p.add_argument("--holdout-fraction", type=float, default=0.3)
-    p.add_argument("--max-failing", type=int, default=30)
-    p.add_argument("--cpu-train", action="store_true", help="do not ask for the GPU training path")
-    p.add_argument("--start-timeout", type=float, default=600.0)
-    p.add_argument("--request-timeout", type=float, default=900.0)
-    p.add_argument("--dry-run", action="store_true", help="print the plan; train nothing")
-    p.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
-    p.add_argument("--status", action="store_true", help="list the recorded runs and their verdicts")
-    p.set_defaults(fn=cmd_adapt)
     p = sub.add_parser("sync", help="import what the hooks captured, count the tasks waiting for the "
                                     "configured model, replay some when asked")
-    p.add_argument("--out", default=str(DEFAULT_OUT))
+    p.add_argument("--out", default=str(default_out()))
     p.add_argument("--home", default="")
     p.add_argument("--model", default="", help="default: the shadow config's model")
     p.add_argument("--replay", type=int, default=0, help="replay up to N waiting tasks now")
@@ -1351,7 +1315,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--home", default="")
     p.set_defaults(fn=cmd_uninstall)
     p = sub.add_parser("report", help="counts and both denominators")
-    p.add_argument("--out", default=str(DEFAULT_OUT))
+    p.add_argument("--out", default=str(default_out()))
     p.add_argument("--by-reason", action="store_true")
     p.add_argument("--tasks", action="store_true", help="one block per admitted task")
     p.set_defaults(fn=cmd_report)

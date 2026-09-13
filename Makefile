@@ -45,6 +45,7 @@ TEST_JSON_SCHEMA = test-json-schema.exe
 TEST_SVAL_WALK = test-sval-walk.exe
 TEST_TOKENIZER = test-tokenizer.exe
 TEST_TEMPLATE = test-template.exe
+TEST_PROMPT_MARKS = test-prompt-marks.exe
 TEST_TOOLS = test-tools.exe
 TEST_JSON_OOM = test-json-oom.exe
 TEST_TOKENIZER_OOM = test-tokenizer-oom.exe
@@ -73,6 +74,7 @@ TEST_JSON_SCHEMA = test-json-schema
 TEST_SVAL_WALK = test-sval-walk
 TEST_TOKENIZER = test-tokenizer
 TEST_TEMPLATE = test-template
+TEST_PROMPT_MARKS = test-prompt-marks
 TEST_TOOLS = test-tools
 TEST_JSON_OOM = test-json-oom
 TEST_TOKENIZER_OOM = test-tokenizer-oom
@@ -93,6 +95,7 @@ TEST_JSON_SCHEMA = test-json-schema
 TEST_SVAL_WALK = test-sval-walk
 TEST_TOKENIZER = test-tokenizer
 TEST_TEMPLATE = test-template
+TEST_PROMPT_MARKS = test-prompt-marks
 TEST_TOOLS = test-tools
 TEST_JSON_OOM = test-json-oom
 TEST_TOKENIZER_OOM = test-tokenizer-oom
@@ -380,6 +383,11 @@ TEST_TMPL_SRC = tests/test_template.c $(OBJDIR)/gguf.o $(OBJDIR)/tokenizer.o $(O
                 $(OBJDIR)/json.o $(OBJDIR)/compat.o $(QUANTS_OBJ)
 $(TEST_TEMPLATE): $(TEST_TMPL_SRC) $(HDR)
 	$(CC) $(CFLAGS) -I src $(TEST_TMPL_SRC) -o $@ -lm
+
+TEST_PROMPT_MARKS_SRC = tests/test_prompt_marks.c $(OBJDIR)/gguf.o $(OBJDIR)/tokenizer.o $(OBJDIR)/template.o $(OBJDIR)/schema.o $(OBJDIR)/jsonmode.o \
+                $(OBJDIR)/json.o $(OBJDIR)/compat.o $(QUANTS_OBJ)
+$(TEST_PROMPT_MARKS): $(TEST_PROMPT_MARKS_SRC) $(HDR)
+	$(CC) $(CFLAGS) -I src $(TEST_PROMPT_MARKS_SRC) -o $@ -lm
 
 # the strict tool envelope is only meaningful if the schema engine enforces
 # it, so schema.c/jsonmode.c compile in and the tests drive the real validator
@@ -1839,7 +1847,7 @@ else
 endif
 
 test: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSON_OOM) $(TEST_SCHEMA_OOM) $(TEST_SAMPLER) $(TEST_LORA_GRAD) $(TEST_MVT) $(TEST_MVCANON) \
-      $(TEST_TOKENIZER) $(TEST_TOK_MERGE) $(TEST_TOKENIZER_OOM) $(TEST_TEMPLATE) \
+      $(TEST_TOKENIZER) $(TEST_TOK_MERGE) $(TEST_TOKENIZER_OOM) $(TEST_TEMPLATE) $(TEST_PROMPT_MARKS) \
       $(TEST_TEMPLATE_OOM) \
       $(TEST_TOOLS) $(TEST_SHARED) $(TEST_FILE_ID) $(TEST_BATCH) $(TEST_BATCH_ID) $(TEST_BIND) $(TEST_HOST_HEADER) \
       $(TEST_PREFIX) $(TEST_GRAMMAR_FF) $(TEST_LOOKUP_DRAFT) $(TEST_VRAMREG) $(TEST_KV_TOL) $(TEST_TC_TOL) $(TEST_I8_TOL) $(TEST_MV_TOL) $(TEST_ATTN_TOL) $(TEST_GPU_ID) $(TEST_MOE_TOL) $(TEST_MOE_ROUTER) $(TEST_PAGING_WARN) $(TEST_AUTOFIT) $(TEST_RESP_SM_DEP) \
@@ -1890,6 +1898,7 @@ test: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSON_OOM) $(
 	./$(TEST_TOK_MERGE)
 	./$(TEST_TOKENIZER_OOM)
 	./$(TEST_TEMPLATE)
+	./$(TEST_PROMPT_MARKS) test.gguf
 	./$(TEST_TEMPLATE_OOM)
 	./$(TEST_TOOLS)
 	./$(TEST_BUDGET)
@@ -2006,7 +2015,7 @@ test: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSON_OOM) $(
 	./$(TEST_BATCH_ID) test.gguf
 	$(PYTHON) scripts/check-generated.py
 	PYTHONPATH=python/src $(PYTHON) -m pytest python/tests/
-	$(PYTHON) -m pytest -q tests/test_fit_check.py tests/test_apertus.py tests/test_ornith_cpu.py tests/test_ornith_reference.py tests/test_compat_matrix.py tests/test_arch_admission.py tests/test_hybrid_admission.py tests/test_hostile_geometry.py tests/test_certify_envelope.py tests/test_cpu_cuda_margin.py tests/test_envelope_gate.py tests/test_envelope_swap.py tests/test_cli_files.py tests/test_chat_template_flag.py tests/test_server_banner.py tests/test_split_gguf.py tests/test_metal_coverage.py tests/test_gpu_declines.py tests/test_caps.py tests/test_tool_info.py tests/test_bench_json.py tests/test_mtp_admission.py tests/test_mtp_consume.py tests/test_compare_llamacpp.py tests/test_release_check.py tests/test_eseries.py tests/test_stress_models.py tests/test_moe_prune_plan.py tests/test_kld_compare.py tests/test_kld_margin.py tests/test_quant_fidelity.py tests/test_token_divergence.py tests/test_verify_gguf.py tests/test_type_plan_size.py tests/test_stress_context.py tests/test_cert_greedy_identity.py tests/test_tokenizer_corpus.py tests/test_batch_bench.py tests/test_spec_telemetry.py tests/test_draft_required.py tests/test_draft_lookup.py tests/test_kv_reachable.py tests/test_kv_ring.py tests/test_tiedv.py tests/test_moe_mm_flips.py tests/test_load_prefetch.py tests/test_spec_gpu.py tests/test_request_disconnect.py tests/test_score.py tests/test_lora.py tests/test_train.py tests/test_merge.py tests/test_transcript.py tests/test_oms.py tests/test_kv_quality.py tests/test_tool_choice_boundary.py tests/test_nvfp4_scale.py tests/test_remove_sublayer.py tests/test_rewind_under_refused_prefix.py tests/test_server_penalty_exemptions.py tests/test_lora_identity_alpha.py tests/test_ttl_releases_draft.py tests/test_depth_slice.py tests/test_device_evidence.py tests/test_difftok.py tests/test_gate_coverage.py tests/test_gemma4_untyped_fallback.py tests/test_gen_quality_metrics.py tests/test_granite.py tests/test_iquants.py tests/test_metal_moe_batch.py tests/test_muse_glimmer.py tests/test_receipts.py tests/test_truncation_benchmark.py tests/test_type_plan.py tests/test_unload_honesty.py tests/test_tray_not_raised_on_refusal.py tests/test_shadow_mode_flag.py
+	$(PYTHON) -m pytest -q tests/test_fit_check.py tests/test_apertus.py tests/test_ornith_cpu.py tests/test_ornith_reference.py tests/test_compat_matrix.py tests/test_arch_admission.py tests/test_hybrid_admission.py tests/test_hostile_geometry.py tests/test_certify_envelope.py tests/test_cpu_cuda_margin.py tests/test_envelope_gate.py tests/test_envelope_swap.py tests/test_cli_files.py tests/test_chat_template_flag.py tests/test_server_banner.py tests/test_split_gguf.py tests/test_metal_coverage.py tests/test_gpu_declines.py tests/test_caps.py tests/test_tool_info.py tests/test_bench_json.py tests/test_mtp_admission.py tests/test_mtp_consume.py tests/test_compare_llamacpp.py tests/test_release_check.py tests/test_eseries.py tests/test_stress_models.py tests/test_moe_prune_plan.py tests/test_kld_compare.py tests/test_kld_margin.py tests/test_quant_fidelity.py tests/test_token_divergence.py tests/test_verify_gguf.py tests/test_type_plan_size.py tests/test_stress_context.py tests/test_cert_greedy_identity.py tests/test_tokenizer_corpus.py tests/test_batch_bench.py tests/test_spec_telemetry.py tests/test_draft_required.py tests/test_draft_lookup.py tests/test_kv_reachable.py tests/test_kv_ring.py tests/test_tiedv.py tests/test_moe_mm_flips.py tests/test_load_prefetch.py tests/test_spec_gpu.py tests/test_request_disconnect.py tests/test_score.py tests/test_lora.py tests/test_train.py tests/test_merge.py tests/test_transcript.py tests/test_oms.py tests/test_kv_quality.py tests/test_tool_choice_boundary.py tests/test_nvfp4_scale.py tests/test_remove_sublayer.py tests/test_rewind_under_refused_prefix.py tests/test_server_penalty_exemptions.py tests/test_lora_identity_alpha.py tests/test_ttl_releases_draft.py tests/test_depth_slice.py tests/test_device_evidence.py tests/test_difftok.py tests/test_gate_coverage.py tests/test_gemma4_untyped_fallback.py tests/test_gen_quality_metrics.py tests/test_granite.py tests/test_iquants.py tests/test_metal_moe_batch.py tests/test_muse_glimmer.py tests/test_receipts.py tests/test_truncation_benchmark.py tests/test_type_plan.py tests/test_unload_honesty.py tests/test_tray_not_raised_on_refusal.py tests/test_shadow_mode_flag.py tests/test_record_sign.py
 	$(MAKE) --no-print-directory test-moe PYTHON="$(PYTHON)"
 	$(MAKE) --no-print-directory test-prune-experts PYTHON="$(PYTHON)"
 
@@ -2193,7 +2202,7 @@ clean:
 	rm -f test-moe-fixture.*.gguf test-q8.gguf test-bf16.gguf runner runner-debug $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSON_OOM) \
 		$(TEST_TEMPLATE_OOM) \
 	      $(TEST_SCHEMA_OOM) $(TEST_SAMPLER) $(TEST_TOKENIZER) \
-	      $(TEST_TOKENIZER_OOM) $(TEST_TEMPLATE) $(TEST_SHARED) \
+	      $(TEST_TOKENIZER_OOM) $(TEST_TEMPLATE) $(TEST_PROMPT_MARKS) $(TEST_SHARED) \
 	      $(TEST_BATCH) $(TEST_BIND) $(TEST_HOST_HEADER) $(TEST_VRAMREG) test-shared-asan-bin \
 	      $(TEST_KV_TOL) $(TEST_TC_TOL) $(TEST_I8_TOL) $(TEST_MV_TOL) $(TEST_ATTN_TOL) $(TEST_GPU_ID) $(TEST_MOE_TOL) $(TEST_MOE_ROUTER) $(TEST_PAGING_WARN) $(TEST_AUTOFIT) $(TEST_RESP_SM) $(TEST_PREFIX) $(TEST_GRAMMAR_FF) $(TEST_TOOLS) $(DIFFTOK) \
 	      $(TEST_QUANTS_SIMD) $(TEST_INSTANCES) $(TEST_INSTANCES_OOM) $(TEST_METAL_ADMISSION) $(TEST_TRAY_CORE) \

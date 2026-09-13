@@ -228,3 +228,7 @@ test-canon-kernels.exe
 runner-riscv64
 test-pmath
 test-pmath.exe
+
+# Native control-token regression gate
+test-prompt-marks
+test-prompt-marks.exe

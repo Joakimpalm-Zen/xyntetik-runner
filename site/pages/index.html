@@ -44,6 +44,12 @@ bare: yes
         <p class="measured">measured 2026-08-19 vs vLLM, llama.cpp, Ollama, TensorRT-LLM, SGLang</p>
         <span class="more">How that works &rarr;</span>
       </a>
+      <a class="card card-link accent reveal" href="/runner/shadow-mode/">
+        <h3>Keep your coding assistant. Let the runner prove, on your own work, what a local model can do.</h3>
+        <p>One command wires Claude Code or Codex to the runner. Your requests and commits become tasks a local model is tried on under your repository's own tests; offloading opens only where the evidence says so, and every patch is yours to apply.</p>
+        <p class="measured">measured 2026-09-08: five consumer models, 260 samples, zero verified; the instrument verified the human's own fixes 13 of 13</p>
+        <span class="more">How shadow mode works &rarr;</span>
+      </a>
       <a class="card card-link accent reveal" href="/runner/train-lora-on-quantized-gguf/">
         <h3>Train the LoRA through the 4-bit file you actually deploy. Run it twice: the same adapter, byte for byte.</h3>
         <p>No FP16 training copy. Held-out exact tool calling went from 0.69 to 1.00, two independent runs wrote the same sha256, and stock llama.cpp scores the adapter at the same 1.00.</p>

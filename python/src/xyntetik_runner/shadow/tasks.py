@@ -93,6 +93,20 @@ def _git(repo: str, *args: str) -> str:
     return proc.stdout
 
 
+def repository_root(cwd: Path) -> Path | None:
+    """Resolve Git's relative root against a native path, including with MSYS Git."""
+    try:
+        proc = subprocess.run(["git", "-C", str(cwd), "rev-parse", "--show-cdup"],
+                              capture_output=True, text=True, timeout=5.0)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if proc.returncode != 0:
+        return None
+    # --show-toplevel may be /drive/... while Python expects Drive:/... .
+    # The relative path is valid in both path namespaces; empty means cwd.
+    return canonical(cwd / proc.stdout.strip())
+
+
 def repos_under(cwd: Path, *, depth: int = 2) -> list[Path]:
     """Git repositories at or under ``cwd``, at most ``depth`` levels down,
     so a session run from a parent directory still finds its repositories.
@@ -135,8 +149,10 @@ def commits_in_window(repo: Path, start: datetime, end: datetime,
 def touched_files(repo: Path, shas: Iterable[str]) -> set[str]:
     files: set[str] = set()
     for sha in shas:
-        text = _git(str(repo), "show", "--name-only", "--format=", "--no-renames", sha)
-        files.update(x for x in text.split("\n") if x)
+        # -z: names come NUL-separated and unquoted, so a non-ASCII path is
+        # the path and not git's C-quoted rendering of it
+        text = _git(str(repo), "show", "--name-only", "--format=", "--no-renames", "-z", sha)
+        files.update(x for x in text.split("\0") if x)
     return files
 
 
@@ -193,9 +209,13 @@ def collect_tests(tree: Path, files: Sequence[str], roots: Sequence[str], *, pyt
     env.update({"HOME": str(tree), "PYTHONDONTWRITEBYTECODE": "1",
                 "PYTHONPATH": os.pathsep.join([str(tree)] + [str(tree / r) for r in roots])})
     try:
+        # rootdir pinned to the tree: pytest otherwise takes the nearest
+        # pyproject.toml above a test file, and a repository whose Python
+        # lives in a subdirectory then reports nodeids relative to that
+        # subdirectory, which never match the paths admitted here
         proc = subprocess.run([python, "-m", "pytest", "-p", "no:cacheprovider", "--collect-only",
-                               "-q", *files], cwd=tree, env=env, capture_output=True, text=True,
-                              timeout=timeout_s)
+                               "-q", "--rootdir", str(Path(tree).resolve()), *files], cwd=tree, env=env,
+                              capture_output=True, text=True, timeout=timeout_s)
     except subprocess.TimeoutExpired:
         return {}
     expected: dict[str, list[str]] = {}

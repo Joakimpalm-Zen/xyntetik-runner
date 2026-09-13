@@ -128,7 +128,11 @@ class Workspace:
         if pattern.startswith(("/", "\\")) or ".." in pattern:
             return "error: pattern must be relative and may not contain .."
         out: list[str] = []
-        for p in sorted(self.root.glob(pattern)):
+        try:
+            found = sorted(self.root.glob(pattern))
+        except (ValueError, NotImplementedError, IndexError) as e:
+            return f"error: bad pattern: {e}"
+        for p in found:
             rel = p.relative_to(self.root)
             if any(part in IGNORED_DIRS for part in rel.parts):
                 continue
@@ -191,7 +195,14 @@ class Workspace:
             return f"error: {e}"
         n = text.count(old_text)
         if n == 0:
-            return "error: old_text not found; read the file and copy the exact text"
+            # the anchor was invented (measured: 17 of 52 edit answers quote text
+            # that is not in the file); name the file's nearest lines so the
+            # next call copies one instead of guessing again
+            import difflib
+            want = next((x.strip() for x in old_text.split("\n") if x.strip()), old_text.strip())
+            near = difflib.get_close_matches(want, [x.strip() for x in text.split("\n") if x.strip()], n=3, cutoff=0.5)
+            hint = ("; the nearest lines in the file are: " + " | ".join(repr(x) for x in near)) if near else ""
+            return f"error: old_text not found; read the file and copy the exact text{hint}"
         if n > 1:
             return f"error: old_text occurs {n} times; include more surrounding lines"
         try:
@@ -296,7 +307,8 @@ def attempt(request: str, workspace: Workspace, chat: ChatFn, *, budget: Budget 
             reply = chat(messages, tools)
         except Exception as e:  # the model side failed; the tree is still judged
             return _done(turns, calls, workspace, ptoks, ctoks, t0,
-                         f"model error: {type(e).__name__}", False, names, messages=messages)
+                         f"model error: {type(e).__name__}: {str(e)[:240]}", False, names,
+                         messages=messages)
         usage_raw = reply.get("usage")
         usage: dict[str, Any] = usage_raw if isinstance(usage_raw, dict) else {}
         ptoks += int(usage.get("prompt_tokens", 0) or 0)
@@ -317,10 +329,10 @@ def attempt(request: str, workspace: Workspace, chat: ChatFn, *, budget: Budget 
                              "the tests, then call finish."})
             continue
         for call in tool_calls:
-            calls += 1
-            if calls > budget.max_tool_calls:
+            if calls >= budget.max_tool_calls:
                 return _done(turns, calls, workspace, ptoks, ctoks, t0, "tool-call budget", False,
                              names, messages=messages)
+            calls += 1
             name, args = _name(call), _args(call)
             names.append(name)
             if name == "finish":
@@ -329,7 +341,12 @@ def attempt(request: str, workspace: Workspace, chat: ChatFn, *, budget: Budget 
             if name == "list_files":
                 result = workspace.list_files(str(args.get("pattern") or "**/*"))
             elif name == "read_file":
-                result = workspace.read_file(str(args.get("path") or ""), int(args.get("offset") or 0))
+                try:
+                    offset = int(float(args.get("offset") or 0))
+                except (TypeError, ValueError):
+                    offset = -1
+                result = ("error: offset must be an integer line number" if offset < 0
+                          else workspace.read_file(str(args.get("path") or ""), offset))
             elif name == "write_file":
                 result = workspace.write_file(str(args.get("path") or ""), args.get("content"))  # type: ignore[arg-type]
             elif name == "edit_file":

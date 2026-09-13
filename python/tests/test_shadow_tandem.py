@@ -66,6 +66,20 @@ def record(project: str, sha: str, verified: bool, task_class: str = "function")
                            verifier=v, wall_s=1.0)
 
 
+def test_route_successes_do_not_transfer_between_adapters_or_scaffolds() -> None:
+    from dataclasses import replace
+    from xyntetik_runner.shadow.routes import route_table
+    base = record("proj", "m1", True)
+    adapter = replace(base, identity=replace(base.identity, adapter_sha256="adapter-a"))
+    scaffold = replace(base, identity=replace(base.identity, scaffold_sha256="scaffold-a"))
+    rows = route_table([base, adapter, scaffold])
+    assert len(rows) == 3
+    assert not any(r.qualifies for r in rows)
+    assert tandem.qualifies([adapter] * 3, "proj", "m1") is None
+    assert tandem.qualifies([scaffold] * 3, "proj", "m1") is None
+    assert tandem.qualifies([adapter] * 3, "proj", "m1", adapter_sha256="adapter-a") is not None
+
+
 def test_gate_opens_only_on_this_repository_and_model() -> None:
     recs = [record("proj", "m1", True), record("proj", "m1", True), record("proj", "m1", False),
             record("other", "m1", True), record("other", "m1", True), record("other", "m1", True),
@@ -76,6 +90,7 @@ def test_gate_opens_only_on_this_repository_and_model() -> None:
     assert tandem.qualifies(recs[:2], "proj", "m1") is None, "two attempts are not evidence"
     assert not tandem.looks_like_a_task("/shadow") and not tandem.looks_like_a_task("yes")
     assert tandem.looks_like_a_task("fix parse_amount so thousands separators work")
+    assert not tandem.looks_like_a_task("<task-notification>background job has completed successfully</task-notification>")
 
 
 def test_strong_record_asks_for_runner_first_and_wait_returns_the_verdict(repo: Path, tmp_path: Path) -> None:
@@ -155,7 +170,7 @@ def test_capture_hook_emits_json_only_when_tandem_applies(repo: Path, tmp_path: 
     cap = home / ".xyntetik" / "shadow" / "capture.jsonl"
     spawned: list[list[str]] = []
     monkeypatch.setattr(tandem, "spawn_detached", spawned.append)
-    monkeypatch.setattr(cli, "_model_sha", lambda m: "sha1")
+    monkeypatch.setattr(cli, "_model_sha", lambda m, **kw: "sha1")
     stdin = lambda d: monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(d)))  # noqa: E731
     # no evidence yet: the hook records and prints nothing
     stdin({"session_id": "s1", "cwd": str(repo), "prompt": "make parse_amount handle thousands separators"})
@@ -218,14 +233,14 @@ def test_recorded_delegation_joins_the_ledger_with_its_class(repo: Path, tmp_pat
     assert recs[0].identity.project == "proj" and recs[0].identity.task_class == "function"
     assert recs[0].identity.verifier_id == "repo-tests" and recs[0].source == "delegation"
     # the background entry point refuses without evidence, and starts when it has some
-    monkeypatch.setattr(cli, "_model_sha", lambda m: recs[0].identity.model_sha256)
+    monkeypatch.setattr(cli, "_model_sha", lambda m, **kwargs: recs[0].identity.model_sha256)
     spawned: list[list[str]] = []
     monkeypatch.setattr(cli, "spawn_detached", spawned.append)
     assert main(["delegate", "--repo", str(repo), "--request", "another change, long enough to count",
                  "--home", str(home), "--out", str(out), "--background", "--python", "py"]) == 1
     assert "not started: no task class qualifies" in capsys.readouterr().out
     with (out / "evidence.jsonl").open("a", encoding="utf-8") as f:
-        for r in [record("proj", recs[0].identity.model_sha256, True)] * 2:
+        for r in [record("proj", recs[0].identity.model_sha256, True)] * 3:
             f.write(r.to_json() + "\n")
     assert main(["delegate", "--repo", str(repo), "--request", "another change, long enough to count",
                  "--home", str(home), "--out", str(out), "--background", "--python", "py", "--session", "s9"]) == 0
@@ -235,3 +250,131 @@ def test_recorded_delegation_joins_the_ledger_with_its_class(repo: Path, tmp_pat
     assert main(["delegations", "--home", str(home), "--wait", "d1"]) == 0
     assert "git apply" in capsys.readouterr().out
     assert main(["delegations", "--home", str(home), "--wait", "missing"]) == 2
+
+
+def test_delegation_writes_a_signed_receipt_when_a_key_exists(repo: Path, tmp_path: Path, capsys: Any, monkeypatch: Any) -> None:
+    from xyntetik_runner.shadow import cli, receipt
+    home = tmp_path / "home"
+    out = tmp_path / "out"
+    model = tmp_path / "coder.gguf"
+    model.write_bytes(b"GGUF")
+    write_config(home, model=str(model), runner="fake-runner", ctx=4096, gpu="auto", threads=0, out=str(out))
+
+    class Fixer:
+        def __init__(self, url: str, **k: Any) -> None:
+            self.base_url = url
+            self.n = 0
+
+        def capabilities(self, **k: Any) -> dict[str, Any]:
+            return {"models": [{"id": "coder.gguf"}], "version": "t", "backend": "cpu"}
+
+        def post_json(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
+            self.n += 1
+            if self.n == 1:
+                return {"choices": [{"message": {"content": "", "tool_calls": [
+                    {"id": "1", "function": {"name": "write_file", "arguments": json.dumps(
+                        {"path": "calc/money.py", "content": CORRECT})}}]}}]}
+            return {"choices": [{"message": {"content": "", "tool_calls": [
+                {"id": "2", "function": {"name": "finish", "arguments": "{}"}}]}}]}
+    monkeypatch.setattr(cli, "RunnerEndpoint", Fixer)
+    # no key: no receipt, and nothing said about one
+    rc = main(["delegate", "--repo", str(repo), "--request", "fix parse_amount", "--endpoint", "http://x",
+               "--python", sys.executable, "--home", str(home), "--out", str(out)])
+    assert rc == 0 and "receipt:" not in capsys.readouterr().out
+    assert not receipt.receipts_dir(home).exists()
+    # a key: the runner would sign; here a stand-in appends what the runner appends
+    key = home / receipt.SIGNKEY_REL
+    key.parent.mkdir(parents=True, exist_ok=True)
+    key.write_text(json.dumps({"algo": "ed25519", "public_key": "ab" * 32, "seed": "00" * 32}), encoding="utf-8")
+    signed_calls: list[tuple[str, Path, Path, Path | None]] = []
+
+    def fake_sign(runner: str, path: Path, k: Path, prev: Path | None) -> receipt.Signed:
+        signed_calls.append((runner, path, k, prev))
+        rec = json.loads(path.read_text(encoding="utf-8"))
+        body = json.dumps(rec, sort_keys=True)
+        chain = receipt.sha256_text(body)
+        rec["chain"] = {"algo": "sha256", "prev": json.loads(prev.read_text(encoding="utf-8"))["chain"]["hash"] if prev else "", "hash": chain}
+        rec["signature"] = {"algo": "ed25519", "public_key": "ab" * 32, "sig": "cd" * 64}
+        path.write_text(json.dumps(rec, indent=2) + "\n", encoding="utf-8")
+        return receipt.Signed(path, chain, "ab" * 32)
+    monkeypatch.setattr(receipt, "sign_with_runner", fake_sign)
+    rc = main(["delegate", "--repo", str(repo), "--request", "fix parse_amount", "--endpoint", "http://x",
+               "--python", sys.executable, "--home", str(home), "--out", str(out)])
+    text = capsys.readouterr().out
+    assert rc == 0 and "receipt:" in text, text
+    assert len(signed_calls) == 1 and signed_calls[0][0] == "fake-runner" and signed_calls[0][3] is None
+    files = sorted(receipt.receipts_dir(home).glob("*.json"))
+    assert len(files) == 1
+    rec = json.loads(files[0].read_text(encoding="utf-8"))
+    assert rec["_type"] == receipt.STATEMENT_TYPE and rec["predicateType"] == receipt.PREDICATE_TYPE
+    assert rec["subject"][1]["digest"]["gitCommit"] == git(repo, "rev-parse", "HEAD")
+    assert rec["predicate"]["verdict"] == "tests passed on the scratch copy"
+    assert rec["predicate"]["request_sha256"] == receipt.sha256_text("fix parse_amount")
+    assert "fix parse_amount" not in files[0].read_text(encoding="utf-8"), "the request is never in the receipt"
+    assert rec["predicate"]["budget"] == {"turns": 12, "wall_s": 900.0}
+    # the second receipt links to the first
+    rc = main(["delegate", "--repo", str(repo), "--request", "fix parse_amount again", "--endpoint", "http://x",
+               "--python", sys.executable, "--home", str(home), "--out", str(out)])
+    assert rc == 0 and signed_calls[1][3] == files[0]
+    assert main(["receipts", "--home", str(home)]) == 0
+    listing = capsys.readouterr().out
+    assert listing.count("| proj |") == 2 and rec["chain"]["hash"][:12] in listing
+
+
+def test_receipts_of_one_second_chain_in_order_and_a_draft_is_never_linked(tmp_path: Path) -> None:
+    from xyntetik_runner.shadow import receipt
+    home = tmp_path
+    calls: list[tuple[str, str | None]] = []
+
+    def fake_sign(runner: str, path: Path, k: Path, prev: Path | None) -> receipt.Signed:
+        assert path.name.startswith("."), "signed under a dot-name, which latest() never returns"
+        calls.append((path.name, prev.name if prev else None))
+        body = path.read_text(encoding="utf-8")
+        path.write_text(body, encoding="utf-8")
+        return receipt.Signed(path, receipt.sha256_text(body), "pk")
+
+    key = home / "key.json"
+    for i in range(3):
+        s = receipt.write_receipt(home, {"predicate": {"i": i}}, runner="r", key=key, signer=fake_sign)
+        assert not s.path.name.startswith(".") and s.path.is_file()
+    names = sorted(p.name for p in receipt.receipts_dir(home).glob("*.json"))
+    assert len(names) == 3 and names == [c[0].lstrip(".") for c in calls]
+    # each receipt links to the one written just before it, same second or not
+    assert [c[1] for c in calls] == [None, names[0], names[1]]
+    # a signing failure leaves no file behind, and the next receipt links to the last good one
+    def failing(runner: str, path: Path, k: Path, prev: Path | None) -> receipt.Signed:
+        raise RuntimeError("runner --sign-record failed")
+    with pytest.raises(RuntimeError):
+        receipt.write_receipt(home, {"predicate": {"i": 9}}, runner="r", key=key, signer=failing)
+    assert sorted(p.name for p in receipt.receipts_dir(home).glob("*.json")) == names
+    assert not list(receipt.receipts_dir(home).glob(".*"))
+    assert receipt.latest(home) is not None and receipt.latest(home).name == names[-1]
+
+
+def test_the_prompt_hook_never_hashes_the_model(tmp_path: Path, monkeypatch: Any) -> None:
+    """A hook runs under a ten-second timeout and a GGUF is gigabytes. If the
+    hook hashes it, the hash does not finish, the process is killed before it
+    can cache the result, and every later prompt pays it again and warns
+    again. Measured in the field: 3.6 GB, 9.4 s of CPU, on every prompt.
+
+    So the hook reads the cache or gives up, and the foreground commands are
+    what fill the cache."""
+    from xyntetik_runner.shadow import cli
+    home = tmp_path / "home"
+    model = tmp_path / "big.gguf"
+    model.write_bytes(b"GGUF" * 64)
+    refuse = lambda p: pytest.fail(f"the hook hashed {p}")  # noqa: E731
+    monkeypatch.setattr(cli, "file_sha256", refuse)
+    assert cli._model_sha(str(model), compute=False, home=home) == "", "cold cache: no value, no hash"
+
+    # a foreground command may hash, and what it writes is what the hook reads
+    monkeypatch.undo()
+    warm = cli._model_sha(str(model), home=home)
+    assert warm and cli._model_sha(str(model), compute=False, home=home) == warm
+    monkeypatch.setattr(cli, "file_sha256", refuse)
+    assert cli._model_sha(str(model), compute=False, home=home) == warm, "warm cache: still no hash"
+
+    # the model changed under the cache: the hook says nothing rather than stalling
+    model.write_bytes(b"GGUF" * 65)
+    os.utime(model, (0, 0))
+    assert cli._model_sha(str(model), compute=False, home=home) == ""

@@ -1,6 +1,6 @@
 # Windows remote-check protocol (learned the hard way, 2026-08-10)
 
-`ssh zen@192.168.1.123` reaches ZEN-GAMING and runs cmd.exe, but **stderr from
+`ssh $HOST` reaches the Windows box and runs cmd.exe, but **stderr from
 the remote process is not forwarded**. `gcc --version` (stdout) comes back;
 compiler diagnostics (stderr) do not, and neither does `> file 2>&1` reliably
 when chained.

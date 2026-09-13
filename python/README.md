@@ -82,9 +82,13 @@ The negative controls that prove the verifier can fail live in
   `Identity.scaffold_sha256` names it in every record.
 - `bank`: `build_bank(repo)` turns a public repository's history into repair
   tasks with the commit message as the request; `shadow bank --repo`.
-- `optimize`: `optimize(tasks, base, run, reflect)` is the reflective loop;
-  `shadow optimize` runs it against a runner endpoint with the local model as
-  its own reflector and writes `scaffolds/best.json` and `optimize.json`.
+- Learning recipes (`adapt`, scaffold `optimize`, accumulator policy and
+  per-method training eligibility) live in `xyntetik_shade.shadow`. Runner
+  exposes capture, verification, attempts and artifact serving without a
+  dependency on Shade. Old learning CLI commands return a migration message.
+- `capture` / `capture_report`: versioned local events and content blobs,
+  provenance, bounded snapshots, reconstruction and verification binding.
+  `shadow capture --report --json` reports recorder facts, not training policy.
 
 - `bench`: `shadow bench --repo . --models a.gguf,b.gguf --runner ./runner` (or
   `--endpoints url,url`) = bank + fit probe + replay per model + `bench.md` /

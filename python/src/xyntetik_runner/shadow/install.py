@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Sequence
 
+from .server import atomic_write_text
 from .capabilities import SHEET_REL, harness_note, remove_note, upsert_note, write_sheet
 
 MARK = "xyntetik_runner.shadow capture"
@@ -57,7 +58,7 @@ def write_config(home: Path, *, model: str, runner: str, ctx: int, gpu: str,
         if key in old:
             data[key] = old[key]
     data.setdefault("tandem", True)
-    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    atomic_write_text(path, json.dumps(data, indent=2) + "\n")
     return path
 
 
@@ -66,7 +67,7 @@ def set_config_key(home: Path, key: str, value: object) -> Path:
     data = read_config(home)
     data[key] = value
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    atomic_write_text(path, json.dumps(data, indent=2) + "\n")
     return path
 
 
@@ -79,7 +80,7 @@ def set_config_adapter(home: Path, adapter: str) -> Path:
     else:
         data.pop("adapter", None)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    atomic_write_text(path, json.dumps(data, indent=2) + "\n")
     return path
 
 
@@ -275,9 +276,8 @@ description: Shadow mode from inside the session - status (the ledger's counts a
 
 Answer in four lines, no commands run: status (the ledger and what waits
 for the local model, replay offered), offload (a task the evidence says
-the local model can do, on a scratch copy, the user applies), adapt
-(overnight training on the user's own commits, kept only on a held-out
-verified rise, always confirmed first), and what Runner can do (the
+the local model can do, on a scratch copy, the user applies), learning
+(optional Shade tools; experiments do not activate adapters), and what Runner can do (the
 capability sheet, before any other local inference tool is proposed).
 
 ## What Runner can do (read before suggesting another local inference tool)
@@ -309,6 +309,10 @@ report withholds.
 {prefix}{python} -m xyntetik_runner.shadow capture --summary
 ```
 
+If receipts exist (`shadow keygen` makes the key; every delegation then
+writes a signed receipt), `{prefix}{python} -m xyntetik_runner.shadow receipts`
+lists them, `--check` verifies each through the runner.
+
 `sync` imports what the hooks captured since last time, admits the tasks
 that can be replayed, and says how many wait for the local model. If any
 wait, offer to replay them now: `sync --replay N` runs up to N of them
@@ -328,9 +332,7 @@ verified) the hook says "runner first": wait for the delegation with
 `shadow delegations --wait <id>` before doing the work yourself, and do
 it yourself only if the local result is not verified. `shadow
 delegations` lists them; `shadow tandem off` stops it. The funnel widens
-by evidence alone: every attempt is recorded in the ledger, so each
-cycle of adaptation that raises what the local model proves funnels
-more requests to it.
+by evidence alone: every attempt is recorded in the ledger, and routes distinguish repositories, adapters and scaffolds.
 
 ## Offload a task to the local model (when the user asks for it)
 
@@ -359,29 +361,13 @@ and never applied silently.
    `git apply <patch>`; the user applies it, you do not. If they failed,
    say so and continue with the frontier model as usual.
 
-## Adapt overnight (only when the user asks for it, always confirmed)
+## Learning experiments
 
-The ledger's admitted tasks and the bench bank hold the repository's own
-commits; `adapt` trains the configured model's adapter on the ones whose
-fix changed one function, evaluates base and adapter on a held-out slice
-with the protected tests, and keeps the adapter only if the held-out
-verified count rises. It runs for hours. Never start it on your own.
-
-1. Show the plan and nothing else:
-   ```
-   {prefix}{python} -m xyntetik_runner.shadow adapt --out {out} --dry-run
-   ```
-   It prints the units, how many are held out, and the examples. If it
-   says there are too few units, say so; the bench (`shadow bench`) and
-   more captured work are what add units.
-2. Only after the user confirms in their own words, start it:
-   ```
-   {prefix}{python} -m xyntetik_runner.shadow adapt --out {out} --yes
-   ```
-   and tell them where the log is. When it finishes, show
-   `{prefix}{python} -m xyntetik_runner.shadow adapt --status`
-   verbatim. A kept adapter is served by the next delegation by itself; a
-   discarded one is still recorded, with its numbers.
+Training recipes and scaffold optimization live in the optional Shade tools:
+`python -m xyntetik_shade.shadow --help`. Shadow captures evidence and serves
+configured artifacts; it does not train or activate candidates automatically.
+Use Shade only when installed and the user has requested an experiment.
+Existing adapters remain loadable by Runner with `--lora`.
 
 Never run `replay`, `optimize`, `bank` or `import` from this command; they
 are long-running and belong to a deliberate session.
@@ -393,7 +379,7 @@ def codex_prompt_text(python: str, pythonpath: str | None, out: str, sheet: str 
     return f"""Shadow mode without leaving this session.
 
 Help (when asked what this does): four lines, no commands run: status,
-offload, adapt, and what Runner can do, as below.
+offload, learning, and what Runner can do, as below.
 
 What Runner can do: Xyntetik Runner is installed on this machine (local
 inference for GGUF models: OpenAI-compatible and Anthropic Messages APIs,
@@ -438,16 +424,9 @@ verdict, the diff and a patch path. Show both; if the tests passed offer `git ap
 <patch>` and let the user apply it; if they failed, say so and continue
 with the frontier model. If no class qualifies, say so and offer the bench.
 
-Adapt overnight (only when the user asks, always confirmed): show the plan
-{prefix}{python} -m xyntetik_runner.shadow adapt --out {out} --dry-run
-(units from the repository's own commits, the held-out count, the
-examples). Only after the user confirms in their own words, start
-{prefix}{python} -m xyntetik_runner.shadow adapt --out {out} --yes
-which trains the configured model's adapter for hours, evaluates base and
-adapter on the held-out slice with the protected tests, and keeps the
-adapter only if held-out verified rises. Afterwards show
-{prefix}{python} -m xyntetik_runner.shadow adapt --status
-verbatim. A kept adapter is served by the next delegation by itself.
+Learning: recipes and scaffold optimization moved to the optional Shade tools
+(python -m xyntetik_shade.shadow --help). Experiments leave the serving
+configuration unchanged. Shadow still serves configured adapters through --lora.
 
 Do not run replay, optimize, bank or import from here; they are long-running
 and belong to a deliberate session.
