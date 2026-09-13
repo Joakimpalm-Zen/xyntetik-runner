@@ -1789,20 +1789,21 @@ than use `previous_response_id`.
 
 ## Shadow mode: what could your local model have done?
 
-`python -m xyntetik_runner.shadow` answers one question about the coding
-work you already paid a frontier agent for: given the same request and the
-same repository state, could a local model have done it, judged by tests it
-could not see or change. It reads the Codex and Claude Code session files
-already on your machine, takes from each task only the working directory,
-the timestamps and your own request (never the assistant's answer, tool
-arguments or tool results), pairs the task with the commits it produced,
-freezes the tests those commits added or changed as the verifier, and
-requires them to fail before the fix and pass after it. A local model then
-gets a scratch copy at the pre-fix state, your request, and five tools
-(list, read, write, run the visible tests, finish), with no shell and every
-path confined to the copy. The frozen tests decide, all or nothing, and the
-record also says how many of the tests that failed before the fix the
-attempt turned green.
+`python -m xyntetik_runner.shadow` records evidence about local coding attempts.
+It imports replayable tasks from local agent sessions and repository history,
+checks that their protected tests fail before the recorded fix and pass after
+it, and runs bounded local attempts in scratch worktrees. The protected tests
+are outside the model's editable workspace. Results distinguish verified fixes,
+failures, no-ops and inconclusive verification; a passing result is scoped to
+the tests that ran.
+
+Capture v2 also retains raw hook payloads, task provenance and bounded workspace
+snapshots in local storage under `~/.xyntetik/shadow`. Payloads may contain agent
+text and tool data. Content blobs supplement recorded Git heads; replay still
+requires the referenced repositories and Git objects. Capture reports expose
+partial snapshots and uncertain attribution. See [capture and learning
+boundaries](docs/shadow-boundaries.md) for limits and the optional verification
+event. These local records are not uploaded by Shadow.
 
 ```sh
 runner --shadow-mode -m ~/models/a.gguf     # asks first, then wires Claude Code and Codex
@@ -1837,8 +1838,8 @@ model works in tandem: each request that is work also starts a bounded
 attempt on a scratch copy in the background while your assistant works
 on it, and a verified result is offered to you as a patch, once, never
 applied. Every such attempt joins the ledger with the class its diff had,
-so the more the local model proves, and the more an adapter raises what
-it proves, the more requests are funneled to it. `shadow tandem off`
+Routes keep repository and model-stack evidence separate, including adapter
+and scaffold identity; results from one stack do not qualify another. `shadow tandem off`
 stops it; `shadow delegations` lists them.
 
 The ledger fills through `sync`, which `/shadow` runs on every status:
@@ -1855,27 +1856,15 @@ directories, asks the runner's own `--fit` about each, and proposes the
 largest that fits at the offload context; the list it looked at is
 printed, and `-m` always wins.
 
-The ledger can also improve the local model, overnight and only where it
-can be proven. `/shadow` can show the plan for an adaptation run and,
-once you say so in your own words, start it:
-
-```sh
-python -m xyntetik_runner.shadow adapt --dry-run   # the plan, nothing trained
-python -m xyntetik_runner.shadow adapt --yes       # hours; the log path is printed
-python -m xyntetik_runner.shadow adapt --status    # every run and its verdict
-```
-
-The data is the repository's own commits, never a frontier transcript:
-for every admitted task whose fix changed one function, the prompt is
-the request, the visible tests and that function before the fix, the
-completion is the function after it, and the human's own function is
-spliced back and verified before the task is used at all. A seeded slice
-is held out and never trained on. The run evaluates base and adapter on
-it with the protected tests and keeps the adapter only if the held-out
-verified count rises; a rise on the training slice alone is reported as
-memorization and discarded. A kept adapter is served by the next
-delegation by itself, through `--lora`; every run, kept or not, is
-recorded with its numbers.
+Learning recipes and scaffold optimization belong to the optional Shade tools.
+The former `shadow adapt` and `shadow optimize` commands now print a migration
+message and exit without running. With Shade installed, their equivalents are
+`python -m xyntetik_shade.shadow adapt` and
+`python -m xyntetik_shade.shadow optimize`. Learning experiments produce candidate
+artifacts and evaluation records; they do not change Shadow's serving
+configuration. Existing configured adapters remain loadable through Runner's
+`--lora` support. Runner's low-level training and scoring commands remain part
+of the engine.
 
 To measure first, the bench runs the models on your disk against your own
 repository's history:

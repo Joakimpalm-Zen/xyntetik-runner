@@ -1,17 +1,9 @@
-"""Shadow mode (plan epic R14): evidence about what a local model can do.
+"""Shadow execution and evidence contracts.
 
-Two things live here and nothing else. The evidence contract
-(`evidence`): one record per observed episode with a disposition from a
-closed list, an identity partition, and a verifier outcome, plus a summary
-that shows counts and both denominators and refuses a headline percentage
-before thirty independent eligible episodes. The protected verifier
-(`verifier`): frozen tests that live outside the workspace, run on a fresh
-copy of it, and cannot be satisfied by a no-op, a tampered test file, an
-injected pytest configuration or a skip.
-
-Stdlib only. This package does not route requests, does not train, and
-does not sandbox: the verifier runs the workspace's tests on the host in a
-scratch copy, and OS isolation is a separate story (R14.3).
+Capture, replay, verification, delegation and configured artifact serving use
+only the standard library. Learning recipes are optional consumers in Shade.
+Scratch worktrees are not an OS security sandbox; repository tests run on the
+host with the operator's permissions.
 """
 
 from xyntetik_runner.shadow.baseline import Baseline, Changes, file_sha256, tree_hashes, tree_sha256

@@ -32,6 +32,7 @@ from xyntetik_runner.shadow.baseline import Baseline
 from xyntetik_runner.shadow.evidence import Disposition, EpisodeEvidence
 from xyntetik_runner.shadow.scaffold import Scaffold
 from xyntetik_runner.shadow.tasks import class_from_diff, classify, import_roots
+from xyntetik_runner.shadow.verifier import CONFIG_BASENAMES
 
 MIN_ATTEMPTS = 3
 MIN_VERIFIED = 1
@@ -46,6 +47,10 @@ class Route:
     model: str
     attempted: int
     verified: int
+    project: str = ""
+    stack: str = ""
+    adapter_sha256: str | None = None
+    scaffold_sha256: str = "base"
 
     @property
     def qualifies(self) -> bool:
@@ -63,17 +68,24 @@ class Route:
 
 
 def route_table(records: Iterable[EpisodeEvidence]) -> list[Route]:
-    counts: dict[tuple[str, str], list[int]] = {}
+    counts: dict[tuple[str, str, str, str], list[int]] = {}
+    subjects: dict[tuple[str, str, str, str], Any] = {}
     for r in records:
         if r.verifier is None:
             continue
-        key = (r.identity.task_class, r.identity.model_sha256)
+        ident = r.identity
+        key = (ident.project, ident.task_class, ident.stack_key(), ident.template_sha256)
+        subjects[key] = ident
         c = counts.setdefault(key, [0, 0])
         c[0] += 1
         if r.disposition is Disposition.VERIFIED_LOCAL_ATTEMPT:
             c[1] += 1
-    return sorted((Route(k[0], k[1], v[0], v[1]) for k, v in counts.items()),
-                  key=lambda x: (x.task_class, x.model))
+    rows = []
+    for key, (attempted, verified) in counts.items():
+        ident = subjects[key]
+        rows.append(Route(ident.task_class, ident.model_sha256, attempted, verified,
+                          ident.project, key[2], ident.adapter_sha256, ident.scaffold_sha256))
+    return sorted(rows, key=lambda x: (x.project, x.task_class, x.model, x.stack))
 
 
 def render_routes(routes: list[Route]) -> str:
@@ -82,11 +94,12 @@ def render_routes(routes: list[Route]) -> str:
                 "(shadow bench --repo . --models ...) to find out.")
     lines = [f"rule: a class qualifies with >= {MIN_ATTEMPTS} attempts, >= {MIN_VERIFIED} verified, "
              f"verified/attempted >= {MIN_FRACTION:g}", "",
-             "| class | model | attempted | verified | qualifies |", "|---|---|---:|---:|---|"]
+             "| class | model | attempted | verified | qualifies | project | adapter | scaffold |", "|---|---|---:|---:|---|---|---|---|"]
     for r in routes:
         model = r.model.split(":", 1)[-1][:40]
         lines.append(f"| {r.task_class} | {model} | {r.attempted} | {r.verified} | "
-                     f"{'yes' if r.qualifies else 'no'} |")
+                     f"{'yes' if r.qualifies else 'no'} | {r.project} | "
+                     f"{(r.adapter_sha256 or 'base')[:16]} | {r.scaffold_sha256[:16]} |")
     good = [r for r in routes if r.qualifies]
     lines.append("")
     lines.append("qualifying classes: " + (", ".join(sorted({r.task_class for r in good}))
@@ -127,10 +140,18 @@ class Delegation:
 
 
 def delegate(repo: Path, request: str, post_json: Any, model: str, *, python: str,
-             budget: Budget | None = None, scaffold: Scaffold | None = None,
-             context: tuple[str, ...] = (), out_dir: Path | None = None) -> Delegation:
+             out_dir: Path, budget: Budget | None = None, scaffold: Scaffold | None = None,
+             context: tuple[str, ...] = ()) -> Delegation:
     """One bounded attempt at ``request`` on a detached worktree of ``repo``
-    at HEAD; the working tree is never touched."""
+    at HEAD; the working tree is never touched.
+
+    ``out_dir`` is where the patch is written and it has no default on
+    purpose. It used to fall back to ``Path.home()``, which meant the
+    library wrote into the real user's home whatever the caller had been
+    told: the configured ``--out`` was ignored in production, and the test
+    suite quietly deposited 127 fixture patches in a developer's own
+    ~/.xyntetik. A function that writes files takes the directory from its
+    caller."""
     head = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"], capture_output=True,
                           text=True).stdout.strip()
     if not head:
@@ -168,7 +189,6 @@ def delegate(repo: Path, request: str, post_json: Any, model: str, *, python: st
             except OSError:
                 post = ""
             task_class, _n = class_from_diff(u0, post)
-        out_dir = out_dir or (Path.home() / ".xyntetik" / "shadow" / "delegations")
         out_dir.mkdir(parents=True, exist_ok=True)
         stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
         patch = out_dir / f"{stamp}-{head[:8]}.patch"
@@ -177,7 +197,8 @@ def delegate(repo: Path, request: str, post_json: Any, model: str, *, python: st
                           changed_paths=changes.paths, tests_exit=tests_exit,
                           tests_tail=tail[-2000:], attempt=result, model=model,
                           wall_s=round(time.monotonic() - t0, 1), task_class=task_class,
-                          test_files_changed=tuple(_tests))
+                          test_files_changed=tuple(p for p in changes.paths
+                                                   if p in _tests or Path(p).name in CONFIG_BASENAMES))
     finally:
         subprocess.run(["git", "-C", str(repo), "worktree", "remove", "--force", str(ws_dir)],
                        capture_output=True)

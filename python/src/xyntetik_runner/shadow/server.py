@@ -40,6 +40,14 @@ class ServerState:
         return f"http://127.0.0.1:{self.port}"
 
 
+def atomic_write_text(path: Path, text: str) -> None:
+    """Write through a sibling temporary file and rename, so a kill mid-write
+    leaves the previous file, never a truncated one."""
+    tmp = path.with_name(f".{path.name}.tmp")
+    tmp.write_text(text, encoding="utf-8")
+    os.replace(tmp, path)
+
+
 def read_state(home: Path) -> ServerState | None:
     path = home / STATE_REL
     if not path.is_file():
@@ -55,7 +63,7 @@ def read_state(home: Path) -> ServerState | None:
 def write_state(home: Path, state: ServerState) -> Path:
     path = home / STATE_REL
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(state.__dict__, indent=2) + "\n", encoding="utf-8")
+    atomic_write_text(path, json.dumps(state.__dict__, indent=2) + "\n")
     return path
 
 

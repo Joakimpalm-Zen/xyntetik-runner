@@ -8,12 +8,21 @@ names that were true when they were written.
 
 ## Unreleased
 
-- Template control markers remain distinct from message content; schema enum
-  handling and tool parsing carry regression tests for the corrected boundaries.
-- Generic JSON record signing and verification support chained delegation receipts.
-- Training JSONL buffers grow without truncating large examples; `--train-eot`
-  optionally includes end-of-turn targets and signed weights keep consistent
-  reported loss normalization.
+- Shadow learning recipes moved to the optional Shade tools. `shadow adapt`
+  and `shadow optimize` return migration instructions without training or
+  changing the configured adapter. Runner retains native training and serving.
+- Capture v2 retains local raw events and bounded workspace content, records
+  task provenance, and reports completeness, reconstruction and verification
+  association separately. Learning-method eligibility is reported by Shade.
+- Delegation receipts use Runner's generic record signatures. Hook model hashes
+  are cached outside the prompt-time path; delegation output respects its caller.
+- Route counts separate repositories and model stacks, including adapters and
+  scaffolds. Invalid file patterns return tool errors on Python 3.12 as well.
+- Template-generated control markers remain distinct from message text; tool
+  parsing and schema enum handling include the corresponding regression gates.
+- Training JSONL records grow beyond the old fixed buffer, end-of-turn targets
+  are opt-in, and negative weights retain consistent reported loss normalization.
+
 
 - **Adapter training covers the dense-shape variants (R8.9.4).** The LoRA
   backward now carries the head transforms (logit scale, softcap, suppressed
