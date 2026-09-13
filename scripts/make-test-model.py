@@ -179,9 +179,10 @@ while i < len(args):
     elif a == "--wide":
         WIDE = True
     elif a == "--gpu-unsupported":
-        # Admission-diagnostic fixture: IQ2_XXS is a supported CPU type but
-        # intentionally has no CUDA/Metal kernel. Its 256-value block also
-        # forces --wide, keeping the generated file structurally valid.
+        # Admission-diagnostic fixture: IQ2_XXS is a supported CPU type with
+        # no Metal kernel (CUDA has one since 2026-09-14; there the test
+        # names the type through RUNNER_CUDA_INIT_INJECT_FAILURE). Its
+        # 256-value block also forces --wide, keeping the file valid.
         i += 1
         GPU_UNSUPPORTED = args[i]
         WIDE = True

@@ -1,0 +1,29 @@
+gpu-split: budget=12.13GB fixed=1.40GB G=40/64 full=0 used=11.98GB
+gpu: CUDA backend on NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb (40/64 layers, 7.4 GB in VRAM; CPU runs the rest)
+gpu: VRAM 3.95 GB free of 25.37 GB after init (kv 0.34 GB + scratch 0.46 GB this instance)
+loaded /home/lab/workspace/models/Qwen3.8-27B-GSQ-RCO-IQ3_S-recovered/Qwen3.8-27B-GSQ-RCO-IQ3_S-recovered.gguf | qwen35 | 64 layers | ctx 2048 | 32 threads | 2.73s
+sampling: qwen3 (temp 0.60, top_p 0.95, top_k 20, min_p 0.00, repeat_penalty 1.00)
+server listening on http://127.0.0.1:38999 — 1 slot x 32 threads
+  POST /v1/chat/completions | POST /v1/responses | POST /v1/completions
+  POST /v1/embeddings | POST /v1/messages | POST /v1/messages/count_tokens
+  GET /v1/models | GET /v1/capabilities | GET /health | GET /metrics
+  GET /v1/runner/prefix-cache | POST /v1/runner/prefix-cache/clear | POST /unload
+[slot 0] cmpl-0: start, 5 prompt (0 cached)
+[slot 0] cmpl-0: 5 prompt (0 cached) + 128 gen tok (1.5 tok/s)
+[slot 0] cmpl-1: start, 4 prompt (0 cached)
+[slot 0] cmpl-1: 4 prompt (0 cached) + 74 gen tok (1.6 tok/s)
+[slot 0] cmpl-2: start, 15 prompt (0 cached)
+[slot 0] cmpl-2: 15 prompt (0 cached) + 128 gen tok (1.6 tok/s)
+[slot 0] cmpl-3: start, 11 prompt (0 cached)
+[slot 0] cmpl-3: 11 prompt (0 cached) + 128 gen tok (1.5 tok/s)
+[slot 0] cmpl-4: start, 15 prompt (0 cached)
+[slot 0] cmpl-4: 15 prompt (0 cached) + 92 gen tok (1.6 tok/s)
+[slot 0] cmpl-5: start, 23 prompt (0 cached)
+[slot 0] cmpl-5: 23 prompt (0 cached) + 128 gen tok (1.6 tok/s)
+[slot 0] cmpl-6: start, 44 prompt (0 cached)
+[slot 0] cmpl-6: 44 prompt (0 cached) + 128 gen tok (1.6 tok/s)
+[slot 0] cmpl-7: start, 79 prompt (0 cached)
+[slot 0] cmpl-7: 79 prompt (0 cached) + 128 gen tok (1.6 tok/s)
+[slot 0] cmpl-8: start, 87 prompt (0 cached)
+[slot 0] cmpl-8: 87 prompt (0 cached) + 128 gen tok (1.6 tok/s)
+swap: unloading Qwen3.8-27B-GSQ-RCO-IQ3_S-recovered.gguf

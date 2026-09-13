@@ -1,0 +1,29 @@
+gpu-split: budget=7.46GB fixed=1.40GB G=28/64 full=0 used=7.37GB
+gpu: CUDA backend on NVIDIA GeForce RTX 3070 (28/64 layers, 5.3 GB in VRAM; CPU runs the rest)
+gpu: VRAM 1.16 GB free of 8.59 GB after init (kv 0.23 GB + scratch 0.46 GB this instance)
+warning: weights are 11.8 GB but only 5.9 GB of RAM is available — expect the model to be evicted and every token to page from disk. --mlock pins them; a smaller model is the other fix.
+loaded C:\Users\zen\models\Qwen3.8-27B-GSQ-RCO-IQ3_S-recovered.gguf | qwen35 | 64 layers | ctx 2048 | 4 threads | 9.06s
+sampling: qwen3 (temp 0.60, top_p 0.95, top_k 20, min_p 0.00, repeat_penalty 1.00)
+server listening on http://127.0.0.1:57841 — 1 slot x 4 threads
+  POST /v1/chat/completions | POST /v1/responses | POST /v1/completions
+  POST /v1/embeddings | POST /v1/messages | POST /v1/messages/count_tokens
+  GET /v1/models | GET /v1/capabilities | GET /health | GET /metrics
+  GET /v1/runner/prefix-cache | POST /v1/runner/prefix-cache/clear | POST /unload
+[slot 0] cmpl-0: start, 5 prompt (0 cached)
+[slot 0] cmpl-0: 5 prompt (0 cached) + 32 gen tok (0.6 tok/s) [2254917 page-ins — weights not resident]
+[slot 0] cmpl-1: start, 4 prompt (0 cached)
+[slot 0] cmpl-1: 4 prompt (0 cached) + 32 gen tok (0.6 tok/s) [7701 page-ins — weights not resident]
+[slot 0] cmpl-2: start, 15 prompt (0 cached)
+[slot 0] cmpl-2: 15 prompt (0 cached) + 32 gen tok (0.6 tok/s)
+[slot 0] cmpl-3: start, 11 prompt (0 cached)
+[slot 0] cmpl-3: 11 prompt (0 cached) + 32 gen tok (0.6 tok/s)
+[slot 0] cmpl-4: start, 15 prompt (0 cached)
+[slot 0] cmpl-4: 15 prompt (0 cached) + 32 gen tok (0.6 tok/s)
+[slot 0] cmpl-5: start, 23 prompt (0 cached)
+[slot 0] cmpl-5: 23 prompt (0 cached) + 32 gen tok (0.6 tok/s) [55210 page-ins — weights not resident]
+[slot 0] cmpl-6: start, 44 prompt (0 cached)
+[slot 0] cmpl-6: 44 prompt (0 cached) + 32 gen tok (0.6 tok/s) [59270 page-ins — weights not resident]
+[slot 0] cmpl-7: start, 79 prompt (0 cached)
+[slot 0] cmpl-7: 79 prompt (0 cached) + 32 gen tok (0.6 tok/s) [62447 page-ins — weights not resident]
+[slot 0] cmpl-8: start, 87 prompt (0 cached)
+[slot 0] cmpl-8: 87 prompt (0 cached) + 32 gen tok (0.6 tok/s) [58921 page-ins — weights not resident]

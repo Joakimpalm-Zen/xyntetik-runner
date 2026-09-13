@@ -8,6 +8,32 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **CUDA serves the codebook i-quants: IQ1_S, IQ1_M, IQ2_XXS, IQ2_XS,
+  IQ2_S, IQ3_XXS and IQ3_S.** A model that carried even one such tensor
+  ran on the CPU as a whole on a CUDA box, which is what the mixed-type
+  files do: the GSQ-RCO Qwen3.8 27B (IQ3_S, IQ3_XXS, IQ2_S, IQ2_XS,
+  IQ2_XXS and one IQ1_M tensor beside Q2_K, Q4_K, IQ4_XS and BF16) and
+  Unsloth's dynamic quants (four IQ3_S tensors in the UD-Q4_K_M, recorded
+  as "not measurable" in the 2026-09-06 admission report). The device
+  kernels are twins of the runner's own CPU decoders in the shape of the
+  existing warp-per-row matvecs (single-column and prefill-tile variants);
+  the codebook grids are the formats' own tables, copied from
+  `quants_iq_grids.h` and held equal by a test, and the 7-bit sign index
+  expands arithmetically (the sign table is its index with an odd-parity
+  bit, checked exhaustively). Every format the loader reads now has a CUDA
+  kernel, so the "no CUDA kernel" diagnostic is reached through an
+  admission tracer in CI. Gates: CPU/GPU logit identity on llama-quantize
+  fixtures of all seven types on an RTX 3070 and a Blackwell slice (worst
+  relative deviation 2.5e-6, the reduction residue), and the real file
+  above CPU vs CUDA, 9/9 prompts exact at 128 tokens on the Blackwell
+  and at 32 tokens on the RTX 3070. The i-quant parity
+  gate itself was found vacuous and rebuilt: on the default 64-wide
+  fixture llama-quantize had silently substituted IQ4_NL and Q4_0 for
+  every "i-quant" tensor, so it now quantizes the 256-wide fixture,
+  checks the real tensor types of each file, and compares per-position
+  teacher-forced logprobs against llama-server's raw logits instead of
+  greedy text (which llama-server refuses to return when the argmax on a
+  random fixture is a lone byte).
 - **Windows tray: the ensö on a transparent background, antialiased, at the
   size the taskbar draws.** The icon was a 16 px opaque black square with
   aliased GDI strokes on it, stretched by the shell on any display above
