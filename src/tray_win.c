@@ -189,24 +189,42 @@ static void set_icon(void) {
 
 // -------------------------------------------------------------- popup menu
 
-static HMENU build_menu(void) {
-    g_nitems = tray_menu_build(g_items, TRAY_MAX_ITEMS);
+// The core writes its labels in UTF-8 (the ● that marks the managed
+// instance, the … on every row that opens something). The ANSI menu entry
+// points read them in the console code page and drew each byte of those
+// glyphs as its own character. Every label goes through the wide entry
+// points, converted here; a label that will not convert is shown as its
+// raw bytes rather than dropped, so a row is never missing from the menu.
+static const wchar_t *menu_wide(const char *utf8, wchar_t *buf, int cap) {
+    int n = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, utf8, -1, buf, cap);
+    if (n > 0) return buf;
+    n = MultiByteToWideChar(CP_ACP, 0, utf8, -1, buf, cap);
+    if (n > 0) return buf;
+    buf[0] = 0;
+    return buf;
+}
+
+// The menu for a row list, separated from the core call so a test can hand
+// it labels and read them back with GetMenuStringW. Item ids count from
+// MENU_ID_BASE by row index, which the command handler reverses.
+static HMENU menu_from_items(const tray_item *items, int n) {
     HMENU root = CreatePopupMenu();
     HMENU cur = root;
     HMENU stack_parent = NULL;
     int last_pos = -1;
+    wchar_t wide[512];
 
-    for (int i = 0; i < g_nitems; i++) {
-        tray_item *t = &g_items[i];
+    for (int i = 0; i < n; i++) {
+        const tray_item *t = &items[i];
         switch (t->kind) {
         case TRAY_K_SEP:
-            AppendMenuA(cur, MF_SEPARATOR, 0, NULL);
+            AppendMenuW(cur, MF_SEPARATOR, 0, NULL);
             break;
         case TRAY_K_SUB_BEGIN: {
             HMENU sub = CreatePopupMenu();
             if (last_pos >= 0)
-                ModifyMenuA(cur, (UINT)last_pos, MF_BYPOSITION | MF_POPUP | MF_STRING,
-                            (UINT_PTR)sub, g_items[i - 1].label);
+                ModifyMenuW(cur, (UINT)last_pos, MF_BYPOSITION | MF_POPUP | MF_STRING,
+                            (UINT_PTR)sub, menu_wide(items[i - 1].label, wide, 512));
             stack_parent = cur;
             cur = sub;
             break;
@@ -219,13 +237,18 @@ static HMENU build_menu(void) {
             UINT_PTR id = (UINT_PTR)(MENU_ID_BASE + i);
             if (t->kind == TRAY_K_LABEL) { flags |= MF_GRAYED; id = 0; }
             if (t->kind == TRAY_K_CHECK && t->checked) flags |= MF_CHECKED;
-            AppendMenuA(cur, flags, id, t->label);
+            AppendMenuW(cur, flags, id, menu_wide(t->label, wide, 512));
             last_pos = GetMenuItemCount(cur) - 1;
             break;
         }
         }
     }
     return root;
+}
+
+static HMENU build_menu(void) {
+    g_nitems = tray_menu_build(g_items, TRAY_MAX_ITEMS);
+    return menu_from_items(g_items, g_nitems);
 }
 
 static void pick_model(void) {

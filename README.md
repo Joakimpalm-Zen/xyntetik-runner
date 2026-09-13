@@ -786,7 +786,7 @@ flags into unrelated feature sections.
 | `--yarn-factor F` | Override a model's native YaRN factor while preserving its original context and correction parameters. Refuses models without YaRN metadata and conflicts with `--rope-scale`. |
 | `--rope-base F` | Override the rope frequency base. |
 | `--system TEXT` | System prompt in interactive chat (`-i`) only; refused in raw one-shot and server modes. |
-| `--chat-template NAME` | Force `chatml`, `chatml-think`, `llama2`, `llama3`, `mistral`, `mistral-v1`, `mistral-nemo`, `zephyr`, `phi3`, `gemma`, `gemma4`, `gemma4-mainline`, `apertus`, `ornith`, `granite42`, `qwen38`, `muse`, `granite`, `harmony`, or `raw`; default is auto-detection. The three Mistral framings are not interchangeable: `mistral` is the v0.3 / Mistral-Small-2409 form and the fallback for an unrecognised Mistral template, `mistral-v1` is v0.1/v0.2, `mistral-nemo` is Nemo-Instruct-2407. They differ by a space beside each `[INST]`/`[/INST]` marker and by which user turn carries the system prompt - one SentencePiece token per divergent space. gemma-4 likewise ships two chat-template revisions that auto-detect and are byte-exact to their own reference: `gemma4` is the E-series (E2B/E4B) form, `gemma4-mainline` is the 12B/26B-A4B/31B form, which pre-seeds an empty thought block on the thinking-off generation prompt where the E-series pre-seeds nothing. Applies to interactive chat and to `--serve`, including reloads after `/unload` or a `--ttl` expiry. An unrecognized name is an error, and the flag is refused with a swap set (`-m "name=path,name2=path2"`) because it names one template for a set of models that each detect their own - serve that model on its own instance instead. |
+| `--chat-template NAME` | Force `chatml`, `chatml-think`, `llama2`, `llama3`, `mistral`, `mistral-v1`, `mistral-nemo`, `zephyr`, `phi3`, `gemma`, `gemma4`, `gemma4-mainline`, `apertus`, `ornith`, `granite42`, `qwen38`, `qwen3-coder`, `muse`, `granite`, `harmony`, or `raw`; default is auto-detection. The three Mistral framings are not interchangeable: `mistral` is the v0.3 / Mistral-Small-2409 form and the fallback for an unrecognised Mistral template, `mistral-v1` is v0.1/v0.2, `mistral-nemo` is Nemo-Instruct-2407. They differ by a space beside each `[INST]`/`[/INST]` marker and by which user turn carries the system prompt - one SentencePiece token per divergent space. gemma-4 likewise ships two chat-template revisions that auto-detect and are byte-exact to their own reference: `gemma4` is the E-series (E2B/E4B) form, `gemma4-mainline` is the 12B/26B-A4B/31B form, which pre-seeds an empty thought block on the thinking-off generation prompt where the E-series pre-seeds nothing. Applies to interactive chat and to `--serve`, including reloads after `/unload` or a `--ttl` expiry. An unrecognized name is an error, and the flag is refused with a swap set (`-m "name=path,name2=path2"`) because it names one template for a set of models that each detect their own - serve that model on its own instance instead. |
 | `--no-bos` | Do not add the beginning-of-sequence token. |
 | `--ignore-eos` | Continue generation past end-of-text tokens. |
 
@@ -1649,6 +1649,26 @@ continues that same assistant turn. The conformance gate proves these rendered
 bytes against the upstream template. No Apertus checkpoint/tokenizer was
 available for this change, so token identity and checkpoint behavior remain
 unmeasured.
+
+### Qwen3-Coder native tool calling
+
+`Qwen/Qwen3-Coder-30B-A3B-Instruct` is detected as its own template family
+(`qwen3-coder`): non-thinking ChatML whose tool declarations and calls are
+the publisher's function/parameter XML, rendered from its
+`tokenizer_config.json` template (20 of 20 reference cases text- and
+token-identical against the checkpoint's own tokenizer). A call is
+constrained by a grammar built from the declared parameter schemas, so a
+string parameter is raw text (a value spelled `001` stays the string `001`)
+and a typed one is JSON, and parsed back into the OpenAI `tool_calls`
+shape by those same declarations: parameters in any order, undeclared or
+missing required ones refused, framing never reaching the content. Prose
+before a call is kept as content and a call after prose is still a call,
+on the Chat, Responses and Anthropic surfaces, buffered and streamed;
+the same holds for Qwen2.5/Qwen3's JSON `<tool_call>` protocol, whose
+grammar hands off from free text to a constrained call at the full opener
+and admits as many calls as `parallel_tool_calls` allows. `--tool-info`
+reports `qwen3_xml` for this family and `qwen_json` for the ChatML JSON
+protocol, both native. Not measured here: any checkpoint's task quality.
 
 `enable_thinking`, either at the top level or inside `chat_template_kwargs`,
 is the request-level form of `--think`/`--no-think`. Omitting it is not the

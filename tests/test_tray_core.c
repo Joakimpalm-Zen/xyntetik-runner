@@ -164,9 +164,24 @@ int main(int argc, char **argv) {
 #endif
     setenv_compat("XYNTETIK_TEST_HOME", g_home);
 
-    // The core re-reads config.json whenever it has changed on disk, but the
-    // file must still exist BEFORE the first menu build for the start row to
-    // be offered. instances_dir() is <root>/instances; config.json is a sibling.
+    // 0. no config at all: the default-runner row names the act (configure
+    // the tray's own default), not a missing model, because the rows above
+    // list every runner on the machine and "no model configured" beside a
+    // running one read as a contradiction.
+    {
+        tray_item first[128];
+        int f0 = tray_menu_build(first, 128);
+        CHECK(f0 > 0, "menu builds with no config");
+        CHECK(menu_has(first, f0, "Configure default runner"),
+              "unconfigured row names the act");
+        CHECK(!menu_has(first, f0, "no model configured"),
+              "unconfigured row no longer claims a missing model");
+    }
+
+    // The core re-reads config.json whenever it has changed on disk (a file
+    // that appears after the first build is picked up: its stamp differs
+    // from the never-loaded one). instances_dir() is <root>/instances;
+    // config.json is a sibling.
     char cfg[700];
     const char *idir = instances_dir();
     CHECK(idir != NULL, "instances dir resolves under fake HOME");

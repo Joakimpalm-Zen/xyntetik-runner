@@ -154,6 +154,7 @@ TEST_INSTANCES = $(TEST_BATCH:test-batch%=test-instances%)
 TEST_METAL_ADMISSION = $(TEST_BATCH:test-batch%=test-metal-admission%)
 TEST_METAL_TENSOR = $(TEST_BATCH:test-batch%=test-metal-tensor%)
 TEST_TRAY_CORE = $(TEST_BATCH:test-batch%=test-tray-core%)
+TEST_TRAY_WIN = $(TEST_BATCH:test-batch%=test-tray-win-menu%)
 TEST_TC_TOL = $(TEST_BATCH:test-batch%=test-tc-tol%)
 TEST_I8_TOL = $(TEST_BATCH:test-batch%=test-i8-tol%)
 TEST_LORA_GRAD = $(TEST_BATCH:test-batch%=test-lora-grad%)
@@ -182,6 +183,9 @@ TMPL_CONF_RENDER = $(TEST_BATCH:test-batch%=template-conformance-render%)
 # on the POSIX dev boxes) rather than shimming the transport under the test.
 # test_tool_attribution reads its refusals back off the same kind of pair, so
 # it skips on the same terms.
+# test_tray_win_menu is the inverse case: it reads the popup menu back through
+# the Win32 API (GetMenuStringW), which exists nowhere else, so POSIX skips
+# it loudly and the Windows job and the Windows box run it.
 ifeq ($(OS),Windows_NT)
 TEST_RESP_SM_DEP =
 TEST_RESP_SM_RUN = @echo "skip: test-responses-sm (POSIX socketpair; covered by Linux CI)"
@@ -189,6 +193,8 @@ TEST_ATTRIB_DEP =
 TEST_ATTRIB_RUN = @echo "skip: test-tool-attribution (POSIX socketpair; covered by Linux CI)"
 TEST_MSG_OOM_DEP =
 TEST_MSG_OOM_RUN = @echo "skip: test-prompt-oom (POSIX socketpair; covered by Linux CI)"
+TEST_TRAY_WIN_DEP = $(TEST_TRAY_WIN)
+TEST_TRAY_WIN_RUN = ./$(TEST_TRAY_WIN)
 else
 TEST_RESP_SM_DEP = $(TEST_RESP_SM)
 TEST_RESP_SM_RUN = ./$(TEST_RESP_SM)
@@ -196,6 +202,8 @@ TEST_ATTRIB_DEP = $(TEST_ATTRIB)
 TEST_ATTRIB_RUN = ./$(TEST_ATTRIB)
 TEST_MSG_OOM_DEP = $(TEST_MSG_OOM)
 TEST_MSG_OOM_RUN = ./$(TEST_MSG_OOM)
+TEST_TRAY_WIN_DEP =
+TEST_TRAY_WIN_RUN = @echo "skip: test-tray-win-menu (Win32 menu readback; covered by the Windows job)"
 endif
 TEST_QUANTIZE = $(TEST_BATCH:test-batch%=test-quantize%)
 TEST_VRAM_ROLLBACK = $(TEST_BATCH:test-batch%=test-vram-rollback%)
@@ -716,6 +724,15 @@ TEST_TRAY_CORE_SRC = tests/test_tray_core.c src/tray.c src/tray_stub.c \
 $(TEST_TRAY_CORE): $(TEST_TRAY_CORE_SRC) $(HDR)
 	$(CC) $(CFLAGS) -DRUNNER_TEST_TRAY_HTTP -I src $(TEST_TRAY_CORE_SRC) \
 		-o $@ -lm $(TRAY_TEST_LIBS)
+
+# The Win32 backend's menu, read back through GetMenuStringW: the test
+# includes src/tray_win.c and links the core it calls into. Windows only;
+# the POSIX suite skips it by name (see TEST_TRAY_WIN_RUN).
+TEST_TRAY_WIN_SRC = tests/test_tray_win_menu.c src/tray.c src/instances.c \
+                    src/json.c src/compat.c
+$(TEST_TRAY_WIN): $(TEST_TRAY_WIN_SRC) src/tray_win.c $(HDR)
+	$(CC) $(CFLAGS) -I src $(TEST_TRAY_WIN_SRC) -o $@ -lm \
+		-lws2_32 -lpsapi -lshell32 -lgdi32 -lcomdlg32 -ladvapi32
 
 # TC tolerance gate: same shape as the q8-KV gate — teacher-forced logits,
 # top-1 + bounded-deviation criteria, per (type, arch) via the model argument
@@ -1862,7 +1879,7 @@ test: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSON_OOM) $(
       $(TEST_TEMPLATE_OOM) \
       $(TEST_TOOLS) $(TEST_SHARED) $(TEST_FILE_ID) $(TEST_BATCH) $(TEST_BATCH_ID) $(TEST_BIND) $(TEST_HOST_HEADER) \
       $(TEST_PREFIX) $(TEST_GRAMMAR_FF) $(TEST_LOOKUP_DRAFT) $(TEST_VRAMREG) $(TEST_KV_TOL) $(TEST_TC_TOL) $(TEST_I8_TOL) $(TEST_MV_TOL) $(TEST_ATTN_TOL) $(TEST_GPU_ID) $(TEST_MOE_TOL) $(TEST_MOE_ROUTER) $(TEST_PAGING_WARN) $(TEST_AUTOFIT) $(TEST_RESP_SM_DEP) \
-      $(TEST_QUANTS_SIMD) $(TEST_INSTANCES) $(TEST_INSTANCES_OOM) $(TEST_METAL_ADMISSION) $(TEST_TRAY_CORE) \
+      $(TEST_QUANTS_SIMD) $(TEST_INSTANCES) $(TEST_INSTANCES_OOM) $(TEST_METAL_ADMISSION) $(TEST_TRAY_CORE) $(TEST_TRAY_WIN_DEP) \
       $(TEST_QUANTIZE) \
       $(TEST_VRAM_ROLLBACK) $(TEST_GGUF_GETTERS) $(TEST_GGUF_SPLIT) $(TEST_PARSE) $(TEST_ENVELOPE) $(TEST_ED25519) $(TEST_MLDSA) $(TEST_PMATH) $(TEST_ECDSA) $(TEST_CANON_KERNELS) \
       $(TEST_THREAD_DEFAULT) \
@@ -1952,6 +1969,7 @@ test: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSON_OOM) $(
 	./$(TEST_INSTANCES_OOM)
 	./$(TEST_METAL_ADMISSION)
 	./$(TEST_TRAY_CORE)
+	$(TEST_TRAY_WIN_RUN)
 	@# the CPU-only backend stub, which no platform branch ever builds
 	$(MAKE) --no-print-directory test-gpu-stub
 	@# The split guard was absent from this list entirely, which is how a
@@ -2027,7 +2045,7 @@ test: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSON_OOM) $(
 	./$(TEST_BATCH_ID) test.gguf
 	$(PYTHON) scripts/check-generated.py
 	PYTHONPATH=python/src $(PYTHON) -m pytest python/tests/
-	$(PYTHON) -m pytest -q tests/test_fit_check.py tests/test_apertus.py tests/test_ornith_cpu.py tests/test_ornith_reference.py tests/test_compat_matrix.py tests/test_arch_admission.py tests/test_hybrid_admission.py tests/test_hostile_geometry.py tests/test_certify_envelope.py tests/test_cpu_cuda_margin.py tests/test_envelope_gate.py tests/test_envelope_swap.py tests/test_cli_files.py tests/test_chat_template_flag.py tests/test_server_banner.py tests/test_split_gguf.py tests/test_metal_coverage.py tests/test_gpu_declines.py tests/test_caps.py tests/test_tool_info.py tests/test_bench_json.py tests/test_mtp_admission.py tests/test_mtp_consume.py tests/test_compare_llamacpp.py tests/test_release_check.py tests/test_eseries.py tests/test_stress_models.py tests/test_moe_prune_plan.py tests/test_kld_compare.py tests/test_kld_margin.py tests/test_quant_fidelity.py tests/test_token_divergence.py tests/test_verify_gguf.py tests/test_type_plan_size.py tests/test_stress_context.py tests/test_cert_greedy_identity.py tests/test_tokenizer_corpus.py tests/test_batch_bench.py tests/test_spec_telemetry.py tests/test_draft_required.py tests/test_draft_lookup.py tests/test_kv_reachable.py tests/test_kv_ring.py tests/test_tiedv.py tests/test_moe_mm_flips.py tests/test_load_prefetch.py tests/test_spec_gpu.py tests/test_request_disconnect.py tests/test_score.py tests/test_lora.py tests/test_train.py tests/test_merge.py tests/test_transcript.py tests/test_oms.py tests/test_kv_quality.py tests/test_tool_choice_boundary.py tests/test_nvfp4_scale.py tests/test_remove_sublayer.py tests/test_rewind_under_refused_prefix.py tests/test_server_penalty_exemptions.py tests/test_lora_identity_alpha.py tests/test_ttl_releases_draft.py tests/test_depth_slice.py tests/test_device_evidence.py tests/test_difftok.py tests/test_gate_coverage.py tests/test_gemma4_untyped_fallback.py tests/test_gen_quality_metrics.py tests/test_granite.py tests/test_iquants.py tests/test_metal_moe_batch.py tests/test_muse_glimmer.py tests/test_receipts.py tests/test_truncation_benchmark.py tests/test_type_plan.py tests/test_unload_honesty.py tests/test_tray_not_raised_on_refusal.py tests/test_shadow_mode_flag.py tests/test_record_sign.py
+	$(PYTHON) -m pytest -q tests/test_fit_check.py tests/test_apertus.py tests/test_ornith_cpu.py tests/test_ornith_reference.py tests/test_compat_matrix.py tests/test_arch_admission.py tests/test_hybrid_admission.py tests/test_hostile_geometry.py tests/test_certify_envelope.py tests/test_cpu_cuda_margin.py tests/test_envelope_gate.py tests/test_envelope_swap.py tests/test_cli_files.py tests/test_chat_template_flag.py tests/test_server_banner.py tests/test_split_gguf.py tests/test_metal_coverage.py tests/test_gpu_declines.py tests/test_caps.py tests/test_tool_info.py tests/test_bench_json.py tests/test_mtp_admission.py tests/test_mtp_consume.py tests/test_compare_llamacpp.py tests/test_release_check.py tests/test_eseries.py tests/test_stress_models.py tests/test_moe_prune_plan.py tests/test_kld_compare.py tests/test_kld_margin.py tests/test_quant_fidelity.py tests/test_token_divergence.py tests/test_verify_gguf.py tests/test_type_plan_size.py tests/test_stress_context.py tests/test_cert_greedy_identity.py tests/test_tokenizer_corpus.py tests/test_batch_bench.py tests/test_spec_telemetry.py tests/test_draft_required.py tests/test_draft_lookup.py tests/test_kv_reachable.py tests/test_kv_ring.py tests/test_tiedv.py tests/test_moe_mm_flips.py tests/test_load_prefetch.py tests/test_spec_gpu.py tests/test_request_disconnect.py tests/test_score.py tests/test_lora.py tests/test_train.py tests/test_merge.py tests/test_transcript.py tests/test_oms.py tests/test_kv_quality.py tests/test_tool_choice_boundary.py tests/test_nvfp4_scale.py tests/test_remove_sublayer.py tests/test_rewind_under_refused_prefix.py tests/test_server_penalty_exemptions.py tests/test_lora_identity_alpha.py tests/test_ttl_releases_draft.py tests/test_depth_slice.py tests/test_device_evidence.py tests/test_difftok.py tests/test_gate_coverage.py tests/test_gemma4_untyped_fallback.py tests/test_gen_quality_metrics.py tests/test_granite.py tests/test_iquants.py tests/test_metal_moe_batch.py tests/test_muse_glimmer.py tests/test_receipts.py tests/test_truncation_benchmark.py tests/test_type_plan.py tests/test_unload_honesty.py tests/test_tray_not_raised_on_refusal.py tests/test_shadow_mode_flag.py tests/test_record_sign.py tests/test_qwen3_coder_tools.py
 	$(MAKE) --no-print-directory test-moe PYTHON="$(PYTHON)"
 	$(MAKE) --no-print-directory test-prune-experts PYTHON="$(PYTHON)"
 

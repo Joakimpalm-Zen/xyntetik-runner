@@ -280,7 +280,7 @@ static bool train_example_append(train_ex **exs, int *n_ex,
 static int train_eot_id(tokenizer *tok, int tmpl) {
     const char *s = NULL;
     switch (tmpl) {
-    case TMPL_CHATML: case TMPL_CHATML_THINK: case TMPL_QWEN38: s = "<|im_end|>"; break;
+    case TMPL_CHATML: case TMPL_CHATML_THINK: case TMPL_QWEN38: case TMPL_QWEN3_CODER: s = "<|im_end|>"; break;
     case TMPL_LLAMA3: s = "<|eot_id|>"; break;
     case TMPL_GEMMA: s = "<end_of_turn>"; break;
     case TMPL_GEMMA4: case TMPL_GEMMA4_MAINLINE: s = "<turn|>"; break;
@@ -698,9 +698,14 @@ static const char *tool_family_for(int tmpl, bool *native) {
     // protocol tool_decl_native selects is the one this model was trained on.
     tool_decl_native(tmpl, true, true, NULL, &env, &skip_generic);
     switch (env.proto) {
-        case TP_ATEM:    *native = true; return "atem";
-        case TP_HARMONY: *native = true; return "harmony";
-        case TP_GEMMA4:  *native = true; return "gemma4";
+        case TP_ATEM:     *native = true; return "atem";
+        case TP_HARMONY:  *native = true; return "harmony";
+        case TP_GEMMA4:   *native = true; return "gemma4";
+        // Qwen2.5/Qwen3 ChatML: `<tool_call>{JSON}</tool_call>`, the protocol
+        // the chat surface selects for these files; it read generic here.
+        case TP_QWEN:     *native = true; return "qwen_json";
+        // Qwen3-Coder: the function/parameter XML, ornith's family
+        case TP_QWEN_XML: *native = true; return "qwen3_xml";
         default: break;
     }
     if (tmpl == TMPL_ORNITH || tmpl == TMPL_GRANITE42 || tmpl == TMPL_QWEN38) {
@@ -897,7 +902,8 @@ static void usage_to(FILE *f, const char *prog) {
         "  --system TEXT  system prompt for interactive chat (-i) only\n"
         "  --chat-template chatml|chatml-think|llama2|llama3|mistral|mistral-v1|\n"
         "                 mistral-nemo|zephyr|phi3|gemma|gemma4|gemma4-mainline|\n"
-        "                 apertus|ornith|muse|granite|harmony|raw\n"
+        "                 apertus|ornith|granite42|qwen38|qwen3-coder|muse|granite|\n"
+        "                 harmony|raw\n"
         "                 (default: auto). Applies to chat and --serve; not\n"
         "                 valid with a multi-model -m swap set\n"
         "  --no-bos       do not add BOS token\n"

@@ -1703,9 +1703,40 @@ static snode *qwen_or_final(snode *body, jv *final_schema,
     return root;
 }
 
+// Free assistant text with a native-call handoff. Unlike a catch-all final
+// branch, seeing the FULL opener commits to the tool grammar even after prose.
+// SN_RAW owns one optional marker/continuation pair (lits[0], alts[0]).
+static snode *qwen_text_handoff(snode *call) {
+    snode *raw=atem_raw("<|im_end|>");
+    if (!raw) { schema_free(call); return NULL; }
+    raw->lits=calloc(1,sizeof(*raw->lits));
+    raw->alts=calloc(1,sizeof(*raw->alts));
+    if (!raw->lits || !raw->alts) { schema_free(call);schema_free(raw);return NULL; }
+    raw->lits[0]=strdup("<tool_call>");raw->n_lits=1;
+    raw->alts[0]=call;raw->n_alts=1;
+    if (!raw->lits[0] || !call) { schema_free(raw);return NULL; }
+    raw->whitespace_significant=true;
+    return raw;
+}
+
+static snode *qwen_text_calls(jv *tools, const char *only_tool, int remaining,
+                              char *err, int errcap) {
+    // past the last admitted call the turn ends: raw text there would let
+    // an unvalidated call through the mapper
+    if (!remaining) return atem_lit("<|im_end|>");
+    snode *seq=atem_seq(2);
+    snode *call=qwen_call(tools,only_tool,false,err,errcap);
+    snode *tail=call ? qwen_text_calls(tools,only_tool,remaining-1,err,errcap) : NULL;
+    if (!seq || !call || !tail) {
+        schema_free(seq);schema_free(call);schema_free(tail);return NULL;
+    }
+    atem_seq_add(seq,call);atem_seq_add(seq,tail);
+    return qwen_text_handoff(seq);
+}
+
 snode *schema_compile_qwen_turn(jv *tools, bool allow_final,
                                 const char *only_tool, jv *final_schema,
-                                bool allow_reasoning,
+                                bool allow_reasoning, bool parallel,
                                 char *err, int errcap) {
     err[0] = 0;
     if (!tools || tools->type != J_ARR || tools->n <= 0 || tools->n > 60) {
@@ -1713,6 +1744,10 @@ snode *schema_compile_qwen_turn(jv *tools, bool allow_final,
                  "Qwen tools must be a non-empty array of at most 60 tools");
         return NULL;
     }
+    // free text with calls: as many as the envelope admits (its max_calls,
+    // 8 in parallel and 1 without), then the turn ends
+    if (allow_final && !final_schema)
+        return qwen_text_calls(tools, only_tool, parallel ? 8 : 1, err, errcap);
     if (!allow_reasoning) {
         snode *call = qwen_call(tools, only_tool, true, err, errcap);
         if (!call || !allow_final) return call;
@@ -1742,7 +1777,7 @@ snode *schema_compile_qwen_turn(jv *tools, bool allow_final,
     // newlines the reference template writes after `</think>`, which is also
     // the form runner emits itself for enable_thinking=false.
     after = schema_compile_qwen_turn(tools, allow_final, only_tool,
-                                     final_schema, false, err, errcap);
+                                     final_schema, false, parallel, err, errcap);
     thought = atem_seq(2);
     if (!thought || !after ||
         !atem_seq_add(thought, atem_raw("</think>\n\n")) ||
@@ -1788,6 +1823,122 @@ snode *schema_compile_qwen_parallel(jv *tools, const char *only_tool,
     }
     root->whitespace_significant = true;
     return root;
+}
+
+// XML parameter lists use the existing ordered native-member automaton.
+// Strings are raw text; all other values retain JSON's own schema machine.
+static snode *coder_call_tail(jv *tool, char *err, int errcap) {
+    jv *fn=jv_get(tool,"function");if (!fn) fn=tool;
+    jv *params=jv_get(fn,"parameters"), *props=jv_get(params,"properties");
+    if (props && (props->type!=J_OBJ || props->n>60)) {
+        snprintf(err,errcap,"Qwen3-Coder parameters must be an object with at most 60 properties");return NULL;
+    }
+    snode *seq=atem_seq(2), *members=native_members_new(props?props->n:0,"</function>\n</tool_call>");
+    if (!seq || !members) { schema_free(seq);schema_free(members);return NULL; }
+    for (int i=0;props && i<props->n;i++) {
+        jv *spec=props->items[i];
+        const char *type=jv_str(jv_get(spec,"type"),"");
+        bool raw=false;
+        snode *value=NULL;
+        if (!strcmp(type,"string")) {
+            value=atem_string_value(spec,props->keys[i],&raw,err,errcap);
+            // the raw-string helper is atem's and names atem in its refusal;
+            // this family's syntax has the same limit, stated in its own name
+            if (!value && !strncmp(err,"atem raw string",15))
+                snprintf(err,errcap,"Qwen3-Coder string parameter '%s' carries a "
+                         "length or pattern constraint its raw-text syntax cannot "
+                         "enforce",props->keys[i]);
+            if (value && raw) {
+                free(value->sentinel);value->sentinel=strdup("\n</parameter>");
+                value->sentinel_len=13;
+                if (!value->sentinel) { schema_free(value);value=NULL; }
+            } else if (value) {
+                // an enum-valued string is spelled exactly, no JSON
+                // whitespace before it: the parser reads the bytes as written
+                value->whitespace_significant=true;
+                for (int j=0;j<value->n_lits;j++)
+                    if (strstr(value->lits[j],"</parameter>")) {
+                        snprintf(err,errcap,"Qwen3-Coder string enum contains its closing delimiter");
+                        schema_free(value);value=NULL;break;
+                    }
+            }
+        } else value=compile_node(spec,err,errcap,0);
+        snode *tail=atem_seq(raw?2:3);
+        sbuf open={0};sb_fmt(&open,"<parameter=%s>\n",props->keys[i]);
+        if (!tail || !value || open.failed || !atem_seq_add(tail,value) ||
+            (!raw && !atem_seq_add(tail,atem_lit("\n</parameter>"))) ||
+            !atem_seq_add(tail,atem_lit("\n")) ||
+            !native_member_set(members,i,open.s,open.s,tail)) {
+            if (!tail || !tail->n_props) schema_free(value);
+            schema_free(tail);free(open.s);schema_free(members);schema_free(seq);return NULL;
+        }
+        free(open.s);
+    }
+    if (props && !native_members_required(members,params,props,NULL,err,errcap)) {
+        schema_free(members);schema_free(seq);return NULL;
+    }
+    if (!atem_seq_add(seq,atem_lit(">\n"))) { schema_free(members);schema_free(seq);return NULL; }
+    atem_seq_add(seq,members);return seq;
+}
+
+static snode *coder_call(jv *tools, const char *only, bool lead, char *err, int errcap) {
+    snode *seq=atem_seq(3), *names=sn_new(SN_ENUM), *choice=sn_new(SN_COND);
+    if (!seq || !names || !choice) goto bad;
+    names->lits=calloc((size_t)tools->n,sizeof(*names->lits));
+    choice->alts=calloc((size_t)tools->n,sizeof(*choice->alts));
+    if (!names->lits || !choice->alts) goto bad;
+    // no insignificant whitespace anywhere in the native syntax: the walker
+    // would otherwise take a newline after the name for JSON whitespace at
+    // the node that follows it (the choice), and `<function=f\n>` is not a
+    // declaration the parser knows
+    names->min_items=1;names->whitespace_significant=true;choice->whitespace_significant=true;
+    for (int i=0;i<tools->n;i++) {
+        jv *fn=jv_get(tools->items[i],"function");if (!fn) fn=tools->items[i];
+        const char *name=jv_str(jv_get(fn,"name"),NULL);
+        if (!name || !*name || strchr(name,'>') || strchr(name,'\n')) {
+            snprintf(err,errcap,"invalid Qwen3-Coder function name");goto bad;
+        }
+        if (only && strcmp(only,name)) continue;
+        names->lits[names->n_lits]=strdup(name);
+        if (!names->lits[names->n_lits++]) goto bad;
+        snode *tail=coder_call_tail(tools->items[i],err,errcap);
+        if (!tail) goto bad;
+        choice->alts[choice->n_alts++]=tail;
+    }
+    if (!names->n_lits) { snprintf(err,errcap,"named Qwen3-Coder tool is not declared");goto bad; }
+    if (!enum_index(names) || !atem_seq_add(seq,atem_lit(lead?"<tool_call>\n<function=":"\n<function="))) goto bad;
+    atem_seq_add(seq,names);atem_seq_add(seq,choice);return seq;
+bad:
+    schema_free(seq);schema_free(names);schema_free(choice);
+    if (!err[0]) snprintf(err,errcap,"out of memory compiling Qwen3-Coder call");
+    return NULL;
+}
+
+static snode *coder_text_calls(jv *tools, const char *only, int left, char *err, int errcap) {
+    if (!left) return atem_lit("<|im_end|>");
+    snode *seq=atem_seq(2), *call=coder_call(tools,only,false,err,errcap);
+    snode *tail=call ? coder_text_calls(tools,only,left-1,err,errcap) : NULL;
+    if (!seq || !call || !tail) { schema_free(seq);schema_free(call);schema_free(tail);return NULL; }
+    atem_seq_add(seq,call);atem_seq_add(seq,tail);return qwen_text_handoff(seq);
+}
+
+snode *schema_compile_qwen_xml_turn(jv *tools, bool allow_final,
+                                    const char *only, jv *final_schema,
+                                    bool parallel, char *err, int errcap) {
+    err[0]=0;
+    if (!tools || tools->type!=J_ARR || !tools->n || tools->n>60) {
+        snprintf(err,errcap,"Qwen3-Coder requires 1..60 tool declarations");return NULL;
+    }
+    if (allow_final && !final_schema) return coder_text_calls(tools,only,parallel?8:1,err,errcap);
+    snode *call=coder_call(tools,only,true,err,errcap);
+    if (!call) return NULL;
+    if (allow_final) return qwen_or_final(call,final_schema,err,errcap);
+    if (!parallel) return call;
+    snode *seq=atem_seq(3), *second=coder_call(tools,only,true,err,errcap);
+    if (!seq || !second) { schema_free(seq);schema_free(call);schema_free(second);return NULL; }
+    atem_seq_add(seq,call);
+    if (!atem_seq_add(seq,atem_lit("\n"))) { schema_free(seq);schema_free(second);return NULL; }
+    atem_seq_add(seq,second);return seq;
 }
 
 snode *schema_compile_muse_user_payload(struct jv *schema,
@@ -2599,6 +2750,14 @@ enum {
 
 // number micro-states (frame->sub)
 enum { N_START, N_MINUS, N_ZERO, N_INT, N_FRAC0, N_FRAC, N_EXP0, N_EXP1, N_EXP };
+
+static int raw_prefix(const char *marker, int pos, uint8_t c) {
+    if ((uint8_t)marker[pos]==c) return pos+1;
+    int k=pos;
+    while (k>0 && !(marker[k-1]==(char)c &&
+           !memcmp(marker,marker+pos+1-k,(size_t)(k-1)))) k--;
+    return k;
+}
 
 static bool is_ws(uint8_t c) {
     return c == ' ' || c == '\t' || c == '\n' || c == '\r';
@@ -3415,6 +3574,16 @@ static int feed_byte(sval *v, uint8_t c) {
     }
 
     case P_RAW: {
+        if (n->n_lits && n->n_alts) {
+            int matched=raw_prefix(n->lits[0],f->sub,c);
+            if ((size_t)matched==strlen(n->lits[0])) {
+                // Replace the raw frame in place; the marker was consumed,
+                // and the next byte belongs to the constrained call body.
+                *f=(sframe){.node=n->alts[0],.phase=P_SEQ};
+                return 0;
+            }
+            f->sub=(uint8_t)matched;
+        }
         const char *sentinel = n->sentinel;
         int pos = f->lit_pos;
         if (c == (uint8_t)sentinel[pos]) {
@@ -4079,7 +4248,10 @@ int sval_close(sval *v, char *out, int cap) {
             // Bytes already matching the sentinel are part of the generated
             // prefix; append only the unmatched suffix, then the enclosing
             // sequence contributes its fixed newline/invoke/calls closes.
-            eq_put(&q, n->sentinel + f->lit_pos);
+            if (n->n_lits && n->n_alts && f->sub > f->lit_pos) {
+                eq_put(&q,n->lits[0]+f->sub);
+                emit_min_choice(&q,n->alts[0],0,choice);
+            } else eq_put(&q, n->sentinel + f->lit_pos);
             break;
         }
         v->depth--;

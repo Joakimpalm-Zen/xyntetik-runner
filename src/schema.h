@@ -43,6 +43,8 @@ struct snode {
     // the segment holding byte `p` follows from `p` alone and the enforced
     // language is still exactly the declared one -- see compile_pattern.
     pat_seg *pat; int n_pat;
+    // SN_RAW may also carry one marker/continuation in lits[0]/alts[0].
+    // Its complete marker replaces the raw frame with the continuation.
     // SN_RAW's terminator. Its own field: this used to borrow the pattern
     // prefix, which tied two unrelated features to one pointer.
     char   *sentinel; int sentinel_len;
@@ -72,6 +74,10 @@ snode *schema_compile_atem_turn(struct jv *tools, bool allow_user,
                                 char *err, int errcap);
 snode *schema_compile_atem_parallel(struct jv *tools, const char *only_tool,
                                     char *err, int errcap);
+// Qwen3-Coder's function/parameter XML, with schema-checked parameter values.
+snode *schema_compile_qwen_xml_turn(struct jv *tools, bool allow_final,
+                                    const char *only_tool, struct jv *final_schema,
+                                    bool parallel, char *err, int errcap);
 // Compile Qwen2.5/Qwen3's native JSON call block. Auto mode may emit a plain
 // or schema-constrained final answer; named/required mode admits calls only.
 // allow_reasoning admits Qwen3's leading <think>...</think> block before the
@@ -80,7 +86,7 @@ snode *schema_compile_atem_parallel(struct jv *tools, const char *only_tool,
 snode *schema_compile_qwen_turn(struct jv *tools, bool allow_final,
                                 const char *only_tool,
                                 struct jv *final_schema,
-                                bool allow_reasoning,
+                                bool allow_reasoning, bool parallel,
                                 char *err, int errcap);
 snode *schema_compile_qwen_parallel(struct jv *tools, const char *only_tool,
                                     char *err, int errcap);

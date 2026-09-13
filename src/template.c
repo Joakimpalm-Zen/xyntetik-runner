@@ -81,6 +81,9 @@ int template_detect(const char *meta_tmpl, tokenizer *tok) {
         if (strstr(meta_tmpl, "<function=example_function_name>") &&
             strstr(meta_tmpl, "<think>"))
             return TMPL_ORNITH;
+        if (strstr(meta_tmpl, "<|im_start|>") &&
+            strstr(meta_tmpl, "<function=") && strstr(meta_tmpl, "<parameter="))
+            return TMPL_QWEN3_CODER;
         // Harmony (gpt-oss): <|channel|> plus <|return|> is the pair no other
         // family carries. Checked before muse because both use <|start|>role
         // <|message|> framing; muse additionally requires <|eot|>, which
@@ -181,6 +184,7 @@ int template_from_name(const char *name) {
     if (!strcmp(name, "apertus")) return TMPL_APERTUS;
     if (!strcmp(name, "ornith")) return TMPL_ORNITH;
     if (!strcmp(name, "granite42")) return TMPL_GRANITE42;
+    if (!strcmp(name, "qwen3-coder")) return TMPL_QWEN3_CODER;
     if (!strcmp(name, "qwen38")) return TMPL_QWEN38;
     if (!strcmp(name, "muse"))   return TMPL_MUSE;
     if (!strcmp(name, "harmony")) return TMPL_HARMONY;
@@ -205,6 +209,7 @@ const char *template_name(int t) {
         case TMPL_ORNITH: return "ornith";
         case TMPL_GRANITE42: return "granite42";
         case TMPL_QWEN38: return "qwen38";
+        case TMPL_QWEN3_CODER: return "qwen3-coder";
         case TMPL_MUSE:   return "muse";
         case TMPL_HARMONY: return "harmony";
         case TMPL_GRANITE: return "granite";
@@ -1358,6 +1363,37 @@ size_t render_messages_with_tools(int tmpl, const chat_msg *msgs, int n_msgs,
                                              : "<think>\n", NULL, NULL);
         }
         break;
+    case TMPL_QWEN3_CODER: {
+        // Qwen/Qwen3-Coder-30B-A3B-Instruct tokenizer_config.json.
+        bool have_tools = tools && tools->type == J_ARR && tools->n;
+        int first = n_msgs && !strcmp(msgs[0].role, "system") ? 1 : 0;
+        if (first || have_tools) {
+            off = emit(out, cap, off, "<|im_start|>system\n%s",
+                       first ? msgs[0].content : "You are Qwen, a helpful AI assistant that can interact with a computer to solve tasks.", NULL);
+            if (have_tools) {
+                sbuf decl = {0};
+                tools_render_for(tmpl, tools, &decl);
+                if (decl.failed) { free(decl.s); return SIZE_MAX; }
+                off = emit(out, cap, off, "\n\n%s", decl.s, NULL);
+                free(decl.s);
+            }
+            off = emit(out, cap, off, "<|im_end|>\n", NULL, NULL);
+        }
+        for (int i = first; i < n_msgs; i++) {
+            if (!strcmp(msgs[i].role, "tool")) {
+                if (i > first && strcmp(msgs[i-1].role, "tool"))
+                    off = emit(out, cap, off, "<|im_start|>user\n", NULL, NULL);
+                off = emit(out, cap, off, "<tool_response>\n%s\n</tool_response>\n", msgs[i].content, NULL);
+                if (i+1 == n_msgs || strcmp(msgs[i+1].role, "tool"))
+                    off = emit(out, cap, off, "<|im_end|>\n", NULL, NULL);
+            } else {
+                off = emit(out, cap, off, "<|im_start|>%s\n%s<|im_end|>\n", msgs[i].role, msgs[i].content);
+            }
+        }
+        if (add_assistant)
+            off = emit(out, cap, off, "<|im_start|>assistant\n", NULL, NULL);
+        break;
+    }
     case TMPL_QWEN38: {
         // Qwen/Qwen3.8-27B chat_template.jinja (2026-09-06), see the enum
         // comment. Every content the reference renders goes through
@@ -2490,10 +2526,70 @@ void tools_render(const jv *tools, sbuf *out) {
     jv_dump(tools, out);
 }
 
+// Jinja's string filter for scalar values; collections use tojson.
+static void coder_value(const jv *v, sbuf *out) {
+    if (!v) return;
+    if (v->type == J_STR) sb_lit(out, v->str);
+    else if (v->type == J_BOOL) sb_lit(out, v->b ? "True" : "False");
+    else if (v->type == J_NULL) sb_lit(out, "None");
+    else jv_dump_tojson(v, out);
+}
+
+static void coder_field(const char *key, const jv *v, bool trim, sbuf *out) {
+    if (!v) return;
+    pl_fmt(out, "\n<%s>", key);
+    if (trim && v->type == J_STR) {
+        const char *e = trim_right(v->str, v->str + strlen(v->str));
+        const char *b = trim_left(v->str, e);
+        sb_put(out, b, (size_t)(e-b));
+    } else coder_value(v, out);
+    pl_fmt(out, "</%s>", key);
+}
+
+static void coder_extra(const jv *v, const char *handled, sbuf *out) {
+    if (!v || v->type != J_OBJ) return;
+    for (int i = 0; i < v->n; i++) {
+        // Each handled name is delimited, so a key such as "typename"
+        // cannot be confused with the handled "type".
+        bool skip = false;
+        const char *p = handled;
+        while (*p) {
+            const char *e = strchr(p, '|');
+            if (!e) e = p + strlen(p);
+            if (strlen(v->keys[i]) == (size_t)(e-p) && !strncmp(v->keys[i],p,e-p)) skip = true;
+            p = *e ? e+1 : e;
+        }
+        if (!skip) coder_field(v->keys[i], v->items[i], false, out);
+    }
+}
+
+static void coder_declaration(jv *tool, sbuf *out) {
+    jv *fn = jv_get(tool, "function");
+    if (!fn) fn = tool;
+    pl_lit(out, "<function>");
+    coder_field("name", jv_get(fn,"name"), false, out);
+    coder_field("description", jv_get(fn,"description"), true, out);
+    pl_lit(out, "\n<parameters>");
+    jv *params = jv_get(fn,"parameters");
+    jv *props = jv_get(params,"properties");
+    for (int i=0; props && props->type == J_OBJ && i<props->n; i++) {
+        jv *spec = props->items[i];
+        pl_fmt(out, "\n<parameter>\n<name>%s</name>",props->keys[i]);
+        coder_field("type",jv_get(spec,"type"),false,out);
+        coder_field("description",jv_get(spec,"description"),true,out);
+        coder_extra(spec,"name|type|description",out);
+        pl_lit(out,"\n</parameter>");
+    }
+    coder_extra(params,"type|properties",out);
+    pl_lit(out,"\n</parameters>");
+    coder_extra(fn,"type|name|description|parameters",out);
+    pl_lit(out,"\n</function>");
+}
+
 void tools_render_for(int tmpl, const jv *tools, sbuf *out) {
     bool qwen = tmpl == TMPL_CHATML || tmpl == TMPL_CHATML_THINK;
     if (tmpl != TMPL_ORNITH && tmpl != TMPL_GRANITE42 &&
-        tmpl != TMPL_QWEN38 && !qwen) {
+        tmpl != TMPL_QWEN38 && tmpl != TMPL_QWEN3_CODER && !qwen) {
         tools_render(tools, out);
         return;
     }
@@ -2517,6 +2613,10 @@ void tools_render_for(int tmpl, const jv *tools, sbuf *out) {
     pl_lit(out, "# Tools\n\nYou have access to the following functions:\n\n<tools>");
     for (int i = 0; i < tools->n; i++) {
         pl_lit(out, "\n");
+        if (tmpl == TMPL_QWEN3_CODER) {
+            coder_declaration(tools->items[i], out);
+            continue;
+        }
         if (tmpl == TMPL_GRANITE42) {
             // granite 4.2 unwraps the OpenAI envelope (`tool.function` when
             // present) and writes the function object itself through its
@@ -2685,7 +2785,7 @@ void tool_history_render_for(int tmpl, const jv *calls,
             continue;
         }
         if (tmpl != TMPL_ORNITH && tmpl != TMPL_GRANITE42 &&
-            tmpl != TMPL_QWEN38 && tmpl != TMPL_MUSE) {
+            tmpl != TMPL_QWEN38 && tmpl != TMPL_QWEN3_CODER && tmpl != TMPL_MUSE) {
             pl_fmt(out, "<|tool_call>call:%s%s<tool_call|>", name, args);
             continue;
         }
@@ -2731,6 +2831,8 @@ void tool_history_render_for(int tmpl, const jv *calls,
                 pl_fmt(out, "<parameter=%s>\n", obj->keys[k]);
                 if (obj->items[k]->type == J_STR)
                     sb_put(out, obj->items[k]->str, strlen(obj->items[k]->str));
+                else if (tmpl == TMPL_QWEN3_CODER)
+                    coder_value(obj->items[k], out);
                 else
                     jv_dump(obj->items[k], out);
                 pl_lit(out, "\n</parameter>\n");
@@ -2795,7 +2897,13 @@ void assistant_calls_render(int tmpl, const char *text, const jv *calls,
     bool muse_calls = tmpl == TMPL_MUSE && calls && calls->type == J_ARR &&
                       calls->n > 0;
     if (is_gemma4(tmpl)) tool_history_render_for(tmpl, calls, has_text, out);
-    if (!muse_calls && text) sb_put(out, text, strlen(text));
+    if (!muse_calls && text) {
+        const char *b = text, *e = text + strlen(text);
+        if (tmpl == TMPL_QWEN3_CODER && calls && calls->type == J_ARR && calls->n) {
+            e = trim_right(b,e); b = trim_left(b,e);
+        }
+        sb_put(out,b,(size_t)(e-b));
+    }
     if (!is_gemma4(tmpl)) tool_history_render_for(tmpl, calls, has_text, out);
     if (muse_calls && turn_name) {
         jv *fn = jv_get(calls->items[0], "function");
@@ -3090,7 +3198,10 @@ void tool_envelope_free(tool_envelope *e) {
 const jv *tool_decl_native(int tmpl, bool strict, bool atem_tool_calling,
                            jv *tools, tool_envelope *env, bool *skip_generic) {
     bool qwen = tmpl == TMPL_CHATML || tmpl == TMPL_CHATML_THINK;
-    if (strict && qwen) {
+    if (strict && tmpl == TMPL_QWEN3_CODER) {
+        env->proto = TP_QWEN_XML;
+        env->tools = tools;
+    } else if (strict && qwen) {
         env->proto = TP_QWEN;
         env->tools = tools;
     } else if (strict && tmpl == TMPL_MUSE) {
@@ -3148,8 +3259,8 @@ const jv *tool_decl_native(int tmpl, bool strict, bool atem_tool_calling,
     // its native protocol is the function XML, parsed like ornith's).
     *skip_generic = qwen || g4_native || tmpl == TMPL_APERTUS ||
                     (tmpl == TMPL_MUSE && env->proto == TP_ATEM) ||
-                    tmpl == TMPL_HARMONY || tmpl == TMPL_QWEN38;
-    return qwen || tmpl == TMPL_QWEN38 ||
+                    tmpl == TMPL_HARMONY || tmpl == TMPL_QWEN38 || tmpl == TMPL_QWEN3_CODER;
+    return qwen || tmpl == TMPL_QWEN38 || tmpl == TMPL_QWEN3_CODER ||
            (tmpl == TMPL_MUSE && env->proto == TP_ATEM) ||
            (tmpl == TMPL_HARMONY && env->proto == TP_HARMONY) ||
            g4_native || tmpl == TMPL_APERTUS
@@ -3493,10 +3604,17 @@ static bool qwen_one_call(const char **pp, const char *end, int index,
     if ((size_t)(end - p) < sizeof(OPEN) - 1 ||
         memcmp(p, OPEN, sizeof(OPEN) - 1)) return false;
     const char *body = trim_left(p + sizeof(OPEN) - 1, end);
-    const char *close = strstr(body, CLOSE);
-    if (!close || close > end) return false;
-    const char *body_end = trim_right(body, close);
-    jv *call = json_parse(body, (size_t)(body_end - body));
+    // A string argument may spell the closing tag; the tag that closes the
+    // call is the first one after which the body is a JSON document.
+    const char *close = atem_find(body, end, CLOSE);
+    jv *call = NULL;
+    while (close) {
+        const char *body_end = trim_right(body, close);
+        call = json_parse(body, (size_t)(body_end - body));
+        if (call) break;
+        close = atem_find(close + sizeof(CLOSE) - 1, end, CLOSE);
+    }
+    if (!close) return false;
     const char *name = call && call->type == J_OBJ
         ? jv_str(jv_get(call, "name"), NULL) : NULL;
     jv *args = call && call->type == J_OBJ ? jv_get(call, "arguments") : NULL;
@@ -3692,28 +3810,163 @@ static int gemma4_map(const tool_envelope *e, const char *doc, size_t n,
     return content->failed ? -1 : 0;
 }
 
+// Parse a complete native XML call using the declared types. In particular,
+// raw strings are never guessed to be JSON. Malformed members reject the
+// whole call; a partial argument list must not become an executable call.
+static bool coder_one_call(const tool_envelope *env, const char **pp,
+                           const char *end, int index, sbuf *tc) {
+    const char *p = *pp;
+    if (end-p < 11 || memcmp(p,"<tool_call>",11)) return false;
+    p = trim_left(p+11,end);
+    if (end-p < 10 || memcmp(p,"<function=",10)) return false;
+    const char *name = p+10, *ne = memchr(name,'>',(size_t)(end-name));
+    if (!ne || ne == name) return false;
+    jv *fn = NULL;
+    for (int i=0; env->tools && i<env->tools->n; i++) {
+        jv *f = jv_get(env->tools->items[i],"function");
+        if (!f) f = env->tools->items[i];
+        const char *n = jv_str(jv_get(f,"name"),"");
+        if (strlen(n)==(size_t)(ne-name) && !memcmp(n,name,(size_t)(ne-name))) { fn=f; break; }
+    }
+    if (!fn) return false;
+    jv *props = jv_get(jv_get(fn,"parameters"),"properties");
+    // One member per parameter, assembled below in the DECLARED order: the
+    // validator accepts an object in its schema's property order, and the
+    // parser must not lean on the grammar to have produced that order.
+    // Undeclared parameters follow the declared ones and fail the schema
+    // check, never the ordering.
+    enum { CODER_MAX_PARAMS = 64 };
+    struct { const char *key; size_t key_n; sbuf json; int declared; } mem[CODER_MAX_PARAMS];
+    int n_mem = 0;
+    sbuf args = {0};
+    p=trim_left(ne+1,end);
+    while (end-p >= 11 && !memcmp(p,"<parameter=",11)) {
+        const char *key=p+11, *ke=memchr(key,'>',(size_t)(end-key));
+        const char *ve=ke ? atem_find(ke+1,end,"</parameter>") : NULL;
+        if (!ke || ke==key || !ve || n_mem == CODER_MAX_PARAMS) goto bad;
+        jv *spec=NULL; int declared = INT_MAX;
+        for (int i=0; props && props->type==J_OBJ && i<props->n; i++)
+            if (strlen(props->keys[i])==(size_t)(ke-key) && !memcmp(props->keys[i],key,(size_t)(ke-key))) { spec=props->items[i]; declared = i; }
+        const char *type=jv_str(jv_get(spec,"type"),"");
+        mem[n_mem].key = key; mem[n_mem].key_n = (size_t)(ke-key);
+        mem[n_mem].declared = declared;
+        sbuf *val = &mem[n_mem].json; memset(val, 0, sizeof *val);
+        n_mem++;
+        const char *v=ke+1, *e=ve;
+        // Remove only the template's framing newline, preserving spaces and
+        // interior newlines in file contents and shell commands.
+        if (v<e && *v=='\r') v++;
+        if (v<e && *v=='\n') v++;
+        if (e>v && e[-1]=='\n') { e--; if (e>v && e[-1]=='\r') e--; }
+        if (!strcmp(type,"string")) {
+            sb_lit(val,"\""); sb_esc(val,v,(int)(e-v)); sb_lit(val,"\"");
+        } else {
+            const char *b=trim_left(v,e), *z=trim_right(b,e);
+            jv *value=json_parse(b,(size_t)(z-b));
+            if (!value && z-b==4 && !memcmp(b,"True",4)) value=json_parse("true",4);
+            if (!value && z-b==5 && !memcmp(b,"False",5)) value=json_parse("false",5);
+            if (!value && z-b==4 && !memcmp(b,"None",4)) value=json_parse("null",4);
+            if (value) { jv_dump(value,val); jv_free(value); }
+            else if (!type[0]) { sb_lit(val,"\""); sb_esc(val,v,(int)(e-v)); sb_lit(val,"\""); }
+            else goto bad;
+        }
+        if (val->failed) goto bad;
+        p=trim_left(ve+12,end);
+    }
+    if (end-p<11 || memcmp(p,"</function>",11)) goto bad;
+    p=trim_left(p+11,end);
+    if (end-p<12 || memcmp(p,"</tool_call>",12)) goto bad;
+    // declared members by declaration index, then the undeclared in the
+    // order they came; a stable selection over at most 64 entries
+    sb_lit(&args,"{");
+    bool used[CODER_MAX_PARAMS] = {0};
+    for (int k = 0; k < n_mem; k++) {
+        int pick = -1;
+        for (int i = 0; i < n_mem; i++)
+            if (!used[i] && (pick < 0 || mem[i].declared < mem[pick].declared)) pick = i;
+        used[pick] = true;
+        if (k) sb_lit(&args,",");
+        sb_lit(&args,"\""); sb_esc(&args,mem[pick].key,(int)mem[pick].key_n); sb_lit(&args,"\":");
+        sb_put(&args, mem[pick].json.s ? mem[pick].json.s : "", mem[pick].json.n);
+    }
+    sb_lit(&args,"}");
+    for (int i = 0; i < n_mem; i++) free(mem[i].json.s);
+    n_mem = 0;
+    if (args.failed) goto bad;
+    // json_parse also rejects duplicate keys. The public schema compiler
+    // supplies the same required/type/bound checks as constrained decoding.
+    jv *obj=json_parse(args.s,args.n);
+    if (!obj) goto bad;
+    jv_free(obj);
+    jv *params=jv_get(fn,"parameters");
+    if (params) {
+        char err[192]; snode *schema=schema_compile(params,err,sizeof err);
+        if (!schema) goto bad;
+        sval state; sval_init(&state,schema);
+        bool ok=sval_feed(&state,args.s,(int)args.n) && state.done;
+        schema_free(schema);
+        if (!ok) goto bad;
+    }
+    if (env->kind==TCH_NAMED && (!env->named || strlen(env->named)!=(size_t)(ne-name) || memcmp(env->named,name,(size_t)(ne-name)))) goto bad;
+    sb_fmt(tc,"{\"id\":\"call_%d\",\"type\":\"function\",\"function\":{\"name\":\"",index);
+    sb_esc(tc,name,(int)(ne-name));sb_lit(tc,"\",\"arguments\":\"");
+    sb_esc(tc,args.s,(int)args.n);sb_lit(tc,"\"}}");
+    *pp=p+12;free(args.s);return !tc->failed;
+bad:
+    for (int i = 0; i < n_mem; i++) free(mem[i].json.s);
+    free(args.s);return false;
+}
+
+static bool qwen_call_for(const tool_envelope *e, const char **p,
+                          const char *end, int index, sbuf *tc) {
+    return e->proto==TP_QWEN_XML ? coder_one_call(e,p,end,index,tc)
+                               : qwen_one_call(p,end,index,tc);
+}
+
+// RUNNER_TOOL_TRACE=1: the document a native-protocol mapper was handed
+// and its verdict, on stderr. The buffered turn's bytes are otherwise
+// invisible once the demultiplexer refuses them (the client sees only
+// finish_reason "error"), and reading the code alone did not say which
+// byte a fixture model's constrained call had put where.
+static bool tool_trace_on(void) {
+    static int on = -1;
+    if (on < 0) {
+        const char *v = getenv("RUNNER_TOOL_TRACE");
+        on = v && *v && strcmp(v, "0") ? 1 : 0;
+    }
+    return on == 1;
+}
+
 static int qwen_map(const tool_envelope *e, const char *doc, size_t n,
                     sbuf *content, sbuf *tc) {
-    (void)e;
-    const char *p = doc, *end = doc + n;
-    int calls = 0;
-    while (p < end) {
-        p = trim_left(p, end);
-        const char *at = p;
-        size_t before = tc->n;
-        if (calls) sb_lit(tc, ",");
-        if (!qwen_one_call(&at, end, calls, tc)) {
-            tc->n = before;
-            if (tc->s) tc->s[tc->n] = 0;
+    const char *p=doc, *end=doc+n;
+    int calls=0;
+    if (tool_trace_on())
+        fprintf(stderr, "tool-trace: %s document (%zu bytes):\n%.*s\n",
+                e->proto == TP_QWEN_XML ? "qwen3-coder" : "qwen", n, (int)n, doc);
+    while (p<end) {
+        const char *open=atem_find(p,end,"<tool_call>");
+        const char *stop=atem_find(p,end,"<|im_end|>");
+        if (!open || (stop && stop<open)) {
+            if (!calls) sb_put(content,p,(size_t)((stop?stop:end)-p));
             break;
         }
-        calls++;
-        p = at;
+        if (!calls && trim_left(p,open)<open) sb_put(content,p,(size_t)(open-p));
+        // the envelope's contract: max_calls per turn (1 unless parallel);
+        // the grammar enforces it, and a document past it is not a turn
+        if (calls >= e->max_calls) {
+            if (tool_trace_on()) fprintf(stderr, "tool-trace: refused, call %d past max_calls %d\n", calls + 1, e->max_calls);
+            return -1;
+        }
+        const char *at=open;
+        if (calls) sb_lit(tc,",");
+        if (!qwen_call_for(e,&at,end,calls,tc)) {
+            if (tool_trace_on()) fprintf(stderr, "tool-trace: refused, call %d does not parse against its declaration\n", calls + 1);
+            return -1;
+        }
+        calls++;p=at;
     }
-    if (calls) return tc->failed ? -1 : calls;
-    const char *stop = atem_find(doc, end, "<|im_end|>");
-    sb_put(content, doc, (size_t)((stop ? stop : end) - doc));
-    return content->failed ? -1 : 0;
+    return tc->failed || content->failed ? -1 : calls;
 }
 
 int tool_envelope_map_channels(const tool_envelope *e, const char *doc,
@@ -3722,7 +3975,7 @@ int tool_envelope_map_channels(const tool_envelope *e, const char *doc,
     if (!e || !doc || !content || !tc) return -1;
     if (e->proto == TP_HARMONY) return harmony_map(e, doc, n, reasoning, content, tc);
     if (e->proto == TP_GEMMA4) return gemma4_map(e, doc, n, reasoning, content, tc);
-    if (e->proto == TP_QWEN) return qwen_map(e, doc, n, content, tc);
+    if (e->proto == TP_QWEN || e->proto == TP_QWEN_XML) return qwen_map(e, doc, n, content, tc);
     return tool_envelope_map(e, doc, n, content, tc);
 }
 
@@ -3731,7 +3984,7 @@ int tool_envelope_map(const tool_envelope *e, const char *doc, size_t n,
     if (!e || !doc || !content || !tc) return -1;
     if (e->proto == TP_HARMONY) return harmony_map(e, doc, n, NULL, content, tc);
     if (e->proto == TP_GEMMA4) return gemma4_map(e, doc, n, NULL, content, tc);
-    if (e->proto == TP_QWEN) return qwen_map(e, doc, n, content, tc);
+    if (e->proto == TP_QWEN || e->proto == TP_QWEN_XML) return qwen_map(e, doc, n, content, tc);
     if (e->proto == TP_ATEM) return atem_map(e, doc, n, content, tc);
     if (e->proto == TP_MUSE_USER) {
         const char *end = doc + n;
@@ -4096,7 +4349,7 @@ void tool_stream_init(tool_stream *s, const tool_envelope *e,
     if (sink) s->sink = *sink;
     s->state = e && e->proto == TP_HARMONY ? TS_HARMONY
              : e && e->proto == TP_GEMMA4 ? TS_G4_START
-             : e && e->proto == TP_QWEN ? TS_QWEN_START
+             : e && (e->proto == TP_QWEN || e->proto == TP_QWEN_XML) ? TS_QWEN_START
              : e && e->proto == TP_ATEM ? TS_ATEM
              : e && e->proto == TP_MUSE_PLAIN ? TS_MUSE_HEADER : TS_TOOL;
 }
@@ -4184,95 +4437,74 @@ static bool ts_starts(const tool_stream *s, const char *lit) {
 #define QWEN_TURN_END  "<|im_end|>"
 
 static int ts_qwen(tool_stream *s, const char *bytes, int n) {
-    head_put(s, bytes, (size_t)n);
+    head_put(s,bytes,(size_t)n);
     for (;;) {
-        switch (s->state) {
-        case TS_DONE: return 0;
-        case TS_QWEN_START: {
-            if (!s->head_n) return 0;
-            // whitespace may precede the first call (the reference spelling
-            // after a thought is "</think>\n\n<tool_call>"); the buffered
-            // parser trims it, so the stream must read through it too, or
-            // the same turn is a tool call buffered and plain text streamed
-            size_t ws = 0;
-            while (ws < s->head_n && ts_ws(s->head[ws])) ws++;
-            size_t rest = s->head_n - ws, ln = strlen(QWEN_CALL_OPEN);
-            if (rest >= ln && !memcmp(s->head + ws, QWEN_CALL_OPEN, ln)) {
-                if (ws) head_drop(s, ws);
-                s->state = TS_QWEN_CALLS;
-                break;
-            }
-            if (rest < ln && !memcmp(s->head + ws, QWEN_CALL_OPEN, rest)) return 0;  // could still be one
-            s->state = TS_QWEN_TEXT;
-            break;
-        }
-        case TS_QWEN_CALLS: {
-            size_t ws = 0;
-            while (ws < s->head_n && ts_ws(s->head[ws])) ws++;
-            if (ws) head_drop(s, ws);
-            if (!s->head_n) return 0;
-            if (!ts_starts(s, QWEN_CALL_OPEN)) {
-                if (ts_partial(s, QWEN_CALL_OPEN)) return 0;
-                s->state = TS_DONE;
-                return 0;
-            }
-            const char *close = strstr(s->head, QWEN_CALL_END);
+        if (s->state==TS_DONE || !s->head_n) return 0;
+        if (s->state==TS_QWEN_CALLS) {
+            // Hold the whole native call until its arguments are complete.
+            // Never emit a callable event for malformed or partial XML.
+            const char *close=strstr(s->head,QWEN_CALL_END);
             if (!close) return 0;
-            size_t block_n = (size_t)(close - s->head) + strlen(QWEN_CALL_END);
-            const char *at = s->head;
-            sbuf tc = {0}, wrapped = {0};
-            int rc = 0;
-            if (qwen_one_call(&at, s->head + block_n, 0, &tc) && !tc.failed) {
-                sb_lit(&wrapped, "["); sb_put(&wrapped, tc.s, tc.n);
-                sb_lit(&wrapped, "]");
-                jv *arr = json_parse(wrapped.s, wrapped.n);
-                jv *fn = arr && arr->type == J_ARR && arr->n == 1
-                           ? jv_get(arr->items[0], "function") : NULL;
-                const char *name = jv_str(jv_get(fn, "name"), NULL);
-                const char *args = jv_str(jv_get(fn, "arguments"), NULL);
-                if (name && args) {
-                    s->called = true;
-                    s->any_called = true;
-                    if (s->sink.call_begin)
-                        rc = s->sink.call_begin(s->sink.ud, name);
-                    if (!rc && s->sink.call_args)
-                        rc = s->sink.call_args(s->sink.ud, args,
-                                               (int)strlen(args));
-                    if (!rc && s->sink.call_end)
-                        rc = s->sink.call_end(s->sink.ud);
-                }
-                jv_free(arr);
+            const char *at=s->head;
+            sbuf tc={0}, wrapped={0};
+            if (!qwen_call_for(s->env,&at,s->head+s->head_n,0,&tc)) {
+                free(tc.s);return 0;
             }
-            free(tc.s); free(wrapped.s);
-            head_drop(s, block_n);
-            if (rc) return rc;
-            break;
-        }
-        case TS_QWEN_TEXT: {
-            const char *at = s->head ? strstr(s->head, QWEN_TURN_END) : NULL;
-            size_t emit_n = s->head_n;
-            bool done = false;
-            if (at) {
-                emit_n = (size_t)(at - s->head);
-                done = true;
-            } else {
-                size_t keep = strlen(QWEN_TURN_END) - 1;
-                if (keep > emit_n) keep = emit_n;
-                for (; keep > 0; keep--)
-                    if (!memcmp(s->head + emit_n - keep,
-                                QWEN_TURN_END, keep)) break;
-                emit_n -= keep;
+            sb_lit(&wrapped,"[");sb_put(&wrapped,tc.s,tc.n);sb_lit(&wrapped,"]");
+            jv *arr=json_parse(wrapped.s,wrapped.n);
+            jv *fn=arr && arr->n==1 ? jv_get(arr->items[0],"function") : NULL;
+            const char *name=jv_str(jv_get(fn,"name"),NULL);
+            const char *args=jv_str(jv_get(fn,"arguments"),NULL);
+            int rc=0;
+            if (!name || !args) rc=-1;
+            else {
+                s->called=s->any_called=true;
+                if (s->sink.call_begin) rc=s->sink.call_begin(s->sink.ud,name);
+                if (!rc && s->sink.call_args) rc=s->sink.call_args(s->sink.ud,args,(int)strlen(args));
+                if (!rc && s->sink.call_end) rc=s->sink.call_end(s->sink.ud);
             }
-            int rc = emit_n && s->sink.content
-                       ? s->sink.content(s->sink.ud, s->head, (int)emit_n) : 0;
-            head_drop(s, done ? emit_n + strlen(QWEN_TURN_END) : emit_n);
-            if (done) s->state = TS_DONE;
+            jv_free(arr);free(tc.s);free(wrapped.s);
+            head_drop(s,(size_t)(at-s->head));
+            s->state=TS_QWEN_TEXT;
             if (rc) return rc;
-            if (!done) return 0;
-            break;
+            continue;
         }
-        default: return 0;
+        const char *open=strstr(s->head,QWEN_CALL_OPEN);
+        const char *stop=strstr(s->head,QWEN_TURN_END);
+        if (stop && (!open || stop<open)) {
+            int rc=!s->any_called && stop>s->head && s->sink.content
+                ? s->sink.content(s->sink.ud,s->head,(int)(stop-s->head)) : 0;
+            s->state=TS_DONE;s->head_n=0;return rc;
         }
+        if (open) {
+            size_t prefix=(size_t)(open-s->head);
+            // Leading whitespace alone is framing, as on the buffered path.
+            bool white=true;
+            for (size_t i=0;i<prefix;i++) if (!ts_ws(s->head[i])) white=false;
+            int rc=prefix && !s->any_called && s->sink.content &&
+                   !(s->state==TS_QWEN_START && white)
+                ? s->sink.content(s->sink.ud,s->head,(int)prefix) : 0;
+            head_drop(s,prefix);s->state=TS_QWEN_CALLS;
+            if (rc) return rc;
+            continue;
+        }
+        size_t keep=0;
+        const char *markers[]={QWEN_CALL_OPEN,QWEN_TURN_END};
+        for (int m=0;m<2;m++) {
+            size_t k=strlen(markers[m])-1;
+            if (k>s->head_n) k=s->head_n;
+            while (k && memcmp(s->head+s->head_n-k,markers[m],k)) k--;
+            if (k>keep) keep=k;
+        }
+        size_t emit=s->head_n-keep;
+        if (s->state==TS_QWEN_START) {
+            bool white=true;
+            for (size_t i=0;i<emit;i++) if (!ts_ws(s->head[i])) white=false;
+            if (white) return 0;
+        }
+        int rc=emit && !s->any_called && s->sink.content
+            ? s->sink.content(s->sink.ud,s->head,(int)emit) : 0;
+        head_drop(s,emit);s->state=TS_QWEN_TEXT;return rc;
     }
 }
 
@@ -4413,7 +4645,7 @@ int tool_stream_finish(tool_stream *s) {
     // call is not a call.
     if (s->state == TS_QWEN_START || s->state == TS_QWEN_CALLS ||
         s->state == TS_QWEN_TEXT) {
-        int rc = 0;
+        int rc = s->state == TS_QWEN_CALLS ? -1 : 0;
         bool framing = s->state == TS_QWEN_CALLS ||
                        (s->state == TS_QWEN_START &&
                         ts_partial(s, QWEN_CALL_OPEN));
