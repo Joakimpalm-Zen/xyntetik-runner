@@ -241,6 +241,72 @@ model, and the stabilization it needed is the standard one, arrived at by
 measurement. A product-grade recipe (KL anchoring, bigger prompt sets,
 harder rewards) is future work, not engine work.
 
+## D7 — `--train-dpo`: the pairwise objective, and what it costs today
+
+Direct Preference Optimization (arXiv 2305.18290) over the adapter, as one
+pairwise step. The gradient needs no new kernel: with `CE(y) = -log pi(y|x)` the
+published form rearranges to
+
+    grad L_DPO = beta * sigma(r_l - r_w) * ( grad CE(y_w) - grad CE(y_l) )
+
+a scalar multiple of a **difference of two weighted cross-entropy gradients**,
+and `model_lora_backward_w`'s `pos_w` is linear including negatives. So a pair is
+two backward calls into one gradient buffer (the rejected half with a negated
+mask) and one buffer multiply by a scalar known only after both.
+
+The reference policy costs nothing either. The adapter applies as
+`fmaf(scale, acc, y)`, so `model_lora_bypass` zeroes every slot scale and pi_ref
+is these same weights: no second copy and no second load. It **refuses a
+device-bound adapter**, because those scales are host-side and a GPU-resident
+reference would silently equal the trained policy — every margin exactly zero
+while the loss fell.
+
+### The gate
+
+`tests/test_dpo_grad.c`, four checks, because a loss that merely descends looks
+exactly like a correct one until the adapter is useless:
+
+- a **zero adapter** (B=0, so pi_theta is identical to pi_ref) must give margin
+  exactly `0` and loss exactly `log 2`. It does.
+- the loss and coefficient against an independently written formula: agree to
+  < 1e-9.
+- the gradient against the identity it claims to be, assembled by hand from two
+  separate backward calls: worst 1.28e-08 on a scale of 0.124.
+- the **directional derivative** against central differences of the actual loss,
+  the only check touching none of the gradient machinery: **0.78%**, inside the
+  1% band, on both macOS/arm64 and Windows/x86-64.
+
+### Measured cost, and read this before starting a run
+
+On the Blackwell measurement box — a **MIG 1g.24gb** slice, `--gpu off` (the
+forward is CPU; `--train` refuses a GPU model), `RUNNER_TRAIN_GPU=1` so only the
+backward's transposed matvec is on the device, 32 threads, Hermes-4-14B-Q4_K_M,
+`-c 8192 --train-ctx 8192`, pairs of **4,110 / 6,803 / 3,423 tokens**:
+
+| step | tokens | loss | margin | step time |
+|---:|---:|---:|---:|---:|
+| 1 | 4,110 | 0.693147 | **0.000000** | 2,856 s |
+| 2 | 6,803 | 0.592574 | 0.212404 | 5,553 s |
+| 3 | 3,423 | 0.554414 | 0.299862 | 2,327 s |
+
+**Mean 3,579 s per step — just under an hour.** A 116-pair dataset is therefore
+about **115 hours**. For comparison the plain `--train` SFT step on the same
+model and box is ~1,051 s median, so a DPO step is about **3.4x** an SFT step:
+a pair carries two sequences, the step does two reference forwards and two
+backwards against SFT's one backward, and attention is quadratic in a length
+that is already 2,314 tokens at the median.
+
+Step 1's `margin 0.000000` with `logp_w == logp_ref_w` is the zero-adapter
+identity from the gate, visible in production. **It is the line to read first on
+any run**: a non-zero margin at step 1 from a fresh adapter means the reference
+is wrong.
+
+This cost is a property of **this hardware and these sequence lengths**, not of
+the objective. Three things move it, none of them a different method: putting the
+**forward** on the device (three of the four passes are CPU today), **shorter
+sequences** (a retrieved context rather than a whole function cuts a quadratic
+term), or a larger slice than the 14.7 GB budget the trainer reports.
+
 ## D8 slice 1 — the transposed matvec on device
 
 The deterministic-training claim extends to the GPU only if the GPU produces
