@@ -300,11 +300,38 @@ class Snapshot:
 
 
 def _git(repo: Path, *args: str, timeout: float = 5.0) -> str:
+    # git writes paths as the bytes it has; decoded as UTF-8 with the
+    # undecodable byte kept (surrogateescape), never the console's codec,
+    # which on Windows is a single-byte page that cannot spell them
     try:
         return subprocess.run(["git", "-C", str(repo), *args], capture_output=True,
-                              text=True, timeout=timeout).stdout
+                              text=True, encoding="utf-8", errors="surrogateescape",
+                              timeout=timeout).stdout
     except Exception:
         return ""
+
+
+def _status_entries(repo: Path) -> list[tuple[str, str]]:
+    """(status, path) for every changed file, from the NUL-separated form.
+
+    The line form C-quotes any path outside ASCII ("caf\\303\\251.txt"), and a
+    parser that strips the quotes then looks the escaped spelling up on disk,
+    finds nothing, and records the file as deleted. With -z there is no
+    quoting; a rename or copy carries its origin as a second field, dropped
+    here because the destination is what exists."""
+    parts = _git(repo, "status", "--porcelain", "-uall", "-z").split("\0")
+    entries: list[tuple[str, str]] = []
+    i = 0
+    while i < len(parts):
+        rec = parts[i]
+        i += 1
+        if len(rec) < 4:
+            continue
+        xy, rel = rec[:2], rec[3:]
+        if "R" in xy or "C" in xy:
+            i += 1                              # the origin path; not a file of the tree
+        entries.append((xy.strip(), rel))
+    return entries
 
 
 def snapshot(cwd: Path, home: Path, *, deadline_s: float = SNAPSHOT_DEADLINE_S) -> Snapshot:
@@ -327,25 +354,33 @@ def snapshot(cwd: Path, home: Path, *, deadline_s: float = SNAPSHOT_DEADLINE_S) 
     s = Snapshot(repo=str(repo), head=head, branch=branch)
     # --porcelain respects .gitignore; -uall so a new file in a new directory is
     # seen individually rather than as a directory entry.
-    porcelain = _git(repo, "status", "--porcelain", "-uall")
     total = 0
-    for line in porcelain.splitlines():
+    for status, rel in _status_entries(repo):
         if time.monotonic() - t0 > deadline_s:
             s.truncated = True
             s.skipped.append({"path": "(remaining)", "why": f"snapshot deadline {deadline_s}s"})
             break
-        if len(line) < 4:
-            continue
-        status, rel = line[:2].strip(), line[3:]
-        if " -> " in rel:                      # a rename: record the destination
-            rel = rel.split(" -> ", 1)[1]
-        rel = rel.strip().strip('"')
         if len(s.files) >= MAX_FILES:
             s.truncated = True
             s.skipped.append({"path": rel, "why": f"over {MAX_FILES} changed files"})
             continue
         p = repo / rel
         entry: dict[str, Any] = {"status": status}
+        if p.is_symlink():
+            # a link is a path, and git stores it as one: reading through it
+            # would copy whatever it points at, inside the repository or
+            # not, into the blob store. The target is the content.
+            try:
+                target = os.readlink(p)
+            except OSError:
+                s.skipped.append({"path": rel, "why": "cannot read link"})
+                continue
+            entry["symlink"] = target
+            entry["sha256"] = hashlib.sha256(target.encode("utf-8", "surrogateescape")).hexdigest()
+            entry["blob"] = False
+            s.skipped.append({"path": rel, "why": "symlink, target recorded not followed"})
+            s.files[rel] = entry
+            continue
         if status == "D" or not p.exists():
             entry["deleted"] = True
             s.files[rel] = entry

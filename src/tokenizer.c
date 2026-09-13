@@ -1333,6 +1333,27 @@ int tok_encode_prompt(tokenizer *t, const char *text, int32_t *out, int cap,
     return r;
 }
 
+int tok_encode_fit(tokenizer *t, const char *text, bool add_bos, tok_mode mode,
+                   int spare, int32_t **out) {
+    *out = NULL;
+    size_t n = strlen(text);
+    if (spare < 0) spare = 0;
+    if (n > (size_t)INT_MAX / 4) return -1;
+    int cap = (int)(n + 16 + (size_t)spare);
+    for (;;) {
+        int32_t *buf = malloc(sizeof(int32_t) * (size_t)cap);
+        if (!buf) return -1;
+        int k = mode == TOK_PROMPT ? tok_encode_prompt(t, text, buf, cap, add_bos)
+              : tok_encode(t, text, buf, cap, add_bos, mode == TOK_RAW);
+        if (k < 0) { free(buf); return -1; }
+        // fits with the spare slots free: the encoder did not stop short
+        if (k + spare < cap) { *out = buf; return k; }
+        free(buf);
+        if (cap > INT_MAX / 2) return -1;
+        cap *= 2;
+    }
+}
+
 bool tok_is_control(tokenizer *t, int id) {
     if (id < 0 || id >= t->n_vocab) return false;
     int tt = t->ttype ? t->ttype[id] : TT_NORMAL;

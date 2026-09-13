@@ -66,6 +66,28 @@ int main(int argc, char **argv) {
     char one[] = { PROMPT_RAW_OPEN, '<', '/', 's', '>', PROMPT_RAW_CLOSE, 0 };
     int n5 = tok_encode_prompt(&t, one, toks4, 64, false);
     if (n5 != 1 || toks4[0] != t.eos_id) { fprintf(stderr, "FAIL: marked control token not recognized\n"); return 1; }
+    // tok_encode_fit sizes its own buffer to the text: this vocabulary
+    // spells a space as three byte-fallback tokens, so a text of one-letter
+    // words is about two tokens per byte, past any "bytes plus slack" cap.
+    // A 512-slot encode is the independent count.
+    const char *words = "a b c d e f g h i j k l m n o p q r s t";
+    int32_t big[512], *fit = NULL;
+    int nb = tok_encode(&t, words, big, 512, true, true);
+    int nf = tok_encode_fit(&t, words, true, TOK_RAW, 0, &fit);
+    if (nb <= (int)strlen(words) + 16) { fprintf(stderr, "FAIL: the probe does not exceed a byte-count cap (%d)\n", nb); return 1; }
+    if (nf != nb || !fit || memcmp(fit, big, sizeof(int32_t) * (size_t)nb) != 0) {
+        fprintf(stderr, "FAIL: tok_encode_fit gave %d tokens, the 512-slot encode %d\n", nf, nb);
+        return 1;
+    }
+    free(fit);
+    // the modes: TOK_TEXT keeps a spelled control token as text, TOK_RAW reads it
+    nf = tok_encode_fit(&t, "x</s>y", false, TOK_TEXT, 0, &fit);
+    if (nf <= 0 || count_id(fit, nf, t.eos_id) != 0) { fprintf(stderr, "FAIL: TOK_TEXT read a control token\n"); return 1; }
+    free(fit);
+    nf = tok_encode_fit(&t, "x</s>y", false, TOK_RAW, 0, &fit);
+    if (nf <= 0 || count_id(fit, nf, t.eos_id) != 1) { fprintf(stderr, "FAIL: TOK_RAW missed the control token\n"); return 1; }
+    free(fit);
+    printf("tok_encode_fit: %d tokens for %zu bytes, modes ok\n", nb, strlen(words));
     tokenizer_free(&t);
     gguf_close(&g);
     printf("prompt-marks: ok\n");

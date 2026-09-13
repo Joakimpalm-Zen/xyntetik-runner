@@ -593,13 +593,39 @@ static bool train_examples_load(tokenizer *tok, const char *path, bool no_bos,
                     path);
             goto fail;
         }
-        size_t cap_n = data_n + 8;
-        int32_t *all = malloc(sizeof(*all) * cap_n);
+        // The same growth discipline as the JSONL branch, for the same
+        // reason: tok_encode stops silently at its capacity, and a vocabulary
+        // with byte fallback spells a space as three tokens, so "one token
+        // per byte" cut a text of short words to half its length without a
+        // word. Grow until the encoding fits with room to spare; refuse a
+        // text that still fills the buffer rather than train on a prefix.
+        if (data_n > (size_t)INT_MAX / 4) {
+            fprintf(stderr, "error: training text %s is too large\n", path);
+            goto fail;
+        }
+        int cap_n = (int)(2 * data_n + 32);
+        int32_t *all = NULL;
+        int ntok = -1;
+        for (int attempt = 0; attempt < 6; attempt++) {
+            free(all);
+            all = malloc(sizeof(*all) * (size_t)cap_n);
+            if (!all) break;
+            ntok = tok_encode(tok, data, all, cap_n, !no_bos, true);
+            if (ntok < 0 || ntok + 1 < cap_n) break;   // fits, or failed
+            if (attempt == 5 || cap_n > INT_MAX / 2) break;
+            cap_n *= 2;
+        }
         if (!all) {
             fprintf(stderr, "error: out of memory loading training data\n");
             goto fail;
         }
-        int ntok = tok_encode(tok, data, all, (int)cap_n, !no_bos, true);
+        if (ntok >= 0 && ntok + 1 >= cap_n) {
+            fprintf(stderr, "error: training text %s tokenizes past %d tokens "
+                    "for %zu bytes; refusing to truncate it\n", path, cap_n,
+                    data_n);
+            free(all);
+            goto fail;
+        }
         if (ntok < 2) {
             fprintf(stderr, "error: training text tokenizes to %d tokens\n",
                     ntok);

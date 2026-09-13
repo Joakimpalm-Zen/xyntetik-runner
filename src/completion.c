@@ -1951,17 +1951,15 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
     e->emit_think_prelude = chat && m->think_open != NULL &&
                             !(env && env->proto == TP_HARMONY);
 
-    size_t cap = strlen(prompt) + 16;
-    int32_t *toks = malloc(sizeof(int32_t) * cap);
-    // -1 from tok_encode is an allocation failure mid-encode (a dropped
-    // segment); a NULL toks is the same class. Both are 500s, never a prompt
-    // silently short by the missing piece.
-    // a chat prompt is a render: the tokenizer recognizes control tokens
+    // -1 is an allocation failure (a dropped segment, or no buffer): a 500,
+    // never a prompt silently short by the missing piece. The buffer is
+    // sized to the text, not guessed from its byte count (tok_encode_fit).
+    // A chat prompt is a render: the tokenizer recognizes control tokens
     // only in the template's own bytes, never in message content; a raw
-    // completion prompt is the caller's to compose, specials and all
-    int n_prompt = !toks ? -1
-                 : chat ? tok_encode_prompt(s->tok, prompt, toks, (int)cap, true)
-                        : tok_encode(s->tok, prompt, toks, (int)cap, true, true);
+    // completion prompt is the caller's to compose, specials and all.
+    int32_t *toks = NULL;
+    int n_prompt = tok_encode_fit(s->tok, prompt, true,
+                                  chat ? TOK_PROMPT : TOK_RAW, 0, &toks);
     if (n_prompt < 0) {
         free(toks);
         completion_cleanup(e, schema, NULL);

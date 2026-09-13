@@ -191,6 +191,25 @@ def test_embeddings_shape(client, report):
     report.check_fixture("embeddings", d)
 
 
+def test_embeddings_input_is_text_not_control_tokens(client):
+    """An embedding input has no template, so every byte of it is the
+    caller's text: a control token spelled in it (the fixture's `</s>` is
+    its EOS) is those characters, never the token. The chat surfaces got
+    this rule first (message content is text); this is the one route that
+    still parsed specials out of caller text. As text the spelling costs
+    more than the one token the control token would."""
+    base = client.embeddings({"input": "x"}, name="embeddings-text-base")
+    base.expect_status(200)
+    spelled = client.embeddings({"input": "x</s>"}, name="embeddings-text-spelled")
+    spelled.expect_status(200)
+    n_base = base.json["usage"]["prompt_tokens"]
+    n_spelled = spelled.json["usage"]["prompt_tokens"]
+    if n_spelled <= n_base + 1:
+        raise ProtocolError("an embedding input spelling a control token was "
+                            "tokenized as the control token",
+                            base=n_base, spelled=n_spelled)
+
+
 def test_embeddings_are_l2_normalised(client):
     """Runner documents mean-pooled, L2-normed vectors. A caller doing cosine
     similarity by dot product depends on it."""

@@ -388,15 +388,19 @@ bool transcript_write(const transcript_info *ti) {
                 int cl = snprintf(chain_obj, sizeof chain_obj,
                                   ",\"chain\":{\"algo\":\"sha256\",\"prev\":"
                                   "\"%s\",\"hash\":\"%s\"}", prev, chain);
+                // a truncated chain object is not signed: the verdict set
+                // here used to be overwritten by the signing call below
                 if (cl < 0 || cl >= (int)sizeof chain_obj) ok = false;
-                size_t sn = w.n + (size_t)(cl > 0 ? cl : 0);
-                uint8_t *signed_bytes = malloc(sn);
-                if (!signed_bytes) ok = false;
                 else {
-                    memcpy(signed_bytes, w.b, w.n);
-                    memcpy(signed_bytes + w.n, chain_obj, (size_t)cl);
-                    ok = signkey_sign(&k, sig, signed_bytes, sn);
-                    free(signed_bytes);
+                    size_t sn = w.n + (size_t)cl;
+                    uint8_t *signed_bytes = malloc(sn);
+                    if (!signed_bytes) ok = false;
+                    else {
+                        memcpy(signed_bytes, w.b, w.n);
+                        memcpy(signed_bytes + w.n, chain_obj, (size_t)cl);
+                        ok = signkey_sign(&k, sig, signed_bytes, sn);
+                        free(signed_bytes);
+                    }
                 }
                 if (ok) {
                     char *pkh = malloc(k.pk_n * 2 + 1), *sigh = malloc(k.sig_n * 2 + 1);

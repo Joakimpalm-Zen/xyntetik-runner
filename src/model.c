@@ -1110,7 +1110,8 @@ static void model_free_weights(model_t *m) {
     free(m->layers);
     free(m->path);
     free(m->fused_splits);
-    free(m->out_norm_w);
+    free(m->out_norm_w); free(m->out_norm_b);
+    free(m->mtp_enorm_w); free(m->mtp_hnorm_w); free(m->mtp_head_norm_w);
     // Unlock before unmapping, and only the mapping this model_t actually
     // locked: with shared weights several model_t alias one map, and munlock
     // on a mapping we never locked is a silent no-op that would hide a failed
@@ -4005,7 +4006,8 @@ void model_free(model_t *m) {
     free(m->hb); free(m->hb2); free(m->att); free(m->logits); free(m->all_logits);
     free(m->mtp_h); free(m->mtp_tok); free(m->mtp_pending); free(m->mtp_cat);
     free(m->mtp_logits); free(m->mtp_hid);
-    free(m->mtp_enorm_w); free(m->mtp_hnorm_w); free(m->mtp_head_norm_w);
+    // the MTP head's norm conversions are bind-phase material and belong to
+    // the shared half below: freeing them here freed them once per slot
     free(m->shexp_in); free(m->shexp_o); free(m->shexp_g); free(m->shexp_u);
     free(m->moe_logits); free(m->moe_sel_scores); free(m->moe_group_score);
     free(m->moe_gate); free(m->moe_up);
