@@ -46,19 +46,19 @@
         "gpu_backend": "cuda"
       },
       "last_verified": {
-        "date": "2026-09-06",
-        "commit": null,
-        "ran": "scripts/compat_matrix.py (see the report)",
+        "date": "2026-09-13",
+        "commit": "a19a26689cbc338525fb2603bcc4e0abff51ea57",
+        "ran": "scripts/compat_matrix.py --gpu off --execute-checks --verify-files, granite-4.2-3b row (load, tokenizer, cpu_cuda, chat pass)",
         "result": "pass",
         "caps": {
-          "version": "runner 0.5.1",
+          "version": "0.5.2",
           "os": "linux",
           "arch": "x86_64",
+          "cpu_cores": 128,
           "gpu_backend": "cuda",
-          "gpu_name": null
+          "gpu_name": "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb"
         },
-        "evidence": "docs/compat-reports/0.5.1-2026-09-06-blackwell-granite-4.2-3b-q4_k_m.json",
-        "source": "backfilled from a committed report, not written by --record"
+        "evidence": "docs/compat-reports/0.5.2-2026-09-13-blackwell-granite-4.2-3b-q4_k_m.json"
       }
     },
     {
@@ -73,12 +73,12 @@
         "gpu_backend": "metal"
       },
       "last_verified": {
-        "date": "2026-09-07",
-        "commit": "835400fc5fb13d5ca0df4cdf86c160ef16d96c1b",
-        "ran": "make test (exit 0, the widened list including the thirteen files nothing used to run)",
+        "date": "2026-09-13",
+        "commit": "a19a26689cbc338525fb2603bcc4e0abff51ea57",
+        "ran": "make test (exit 0) and scripts/conformance.sh (453 passed, 17 skipped)",
         "result": "pass",
         "caps": {
-          "version": "0.5.1",
+          "version": "0.5.2",
           "os": "macos",
           "arch": "arm64",
           "cpu_cores": 8,
