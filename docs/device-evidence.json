@@ -19,19 +19,19 @@
         "gpu_backend": "cuda"
       },
       "last_verified": {
-        "date": "2026-09-07",
-        "commit": "92ff27563f8d5bc1b1d2d9bc307661d843c30d00",
-        "ran": "make OS=Windows_NT -j2 test (exit 0), including test-mvcanon on real Q8_0 weights",
+        "date": "2026-09-13",
+        "commit": "1d5a9ccb1dc900002443e749e7000f226721377c",
+        "ran": "make OS=Windows_NT -j2 test (exit 0, 81 native gates and the Python suite) and scripts/cuda-smoke-remote.sh (13 checks)",
         "result": "pass",
         "caps": {
-          "version": "0.5.1",
+          "version": "0.5.2",
           "os": "windows",
           "arch": "x86_64",
           "cpu_cores": 8,
           "gpu_backend": "cuda",
           "gpu_name": "NVIDIA GeForce RTX 3070"
         },
-        "evidence": "docs/compat-reports/cuda-smoke-0.5.1-2026-09-07-rtx3070.json"
+        "evidence": "docs/compat-reports/cuda-smoke-0.5.2-2026-09-13-rtx3070.json"
       }
     },
     {
