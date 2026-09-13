@@ -57,7 +57,11 @@ four IQ2_S ones). Two legs per file:
 (7.4 GB) on the Blackwell slice and the CPU running the rest: **9/9 exact,
 0 near-ties tolerated** (`cuda-iquants-evidence/cpu_cuda-qwen38-27b-gsq-rco-iq3s-blackwell.json`,
 device log beside it). The split is real and recorded; a full-offload claim
-is not made.
+is not made. The same file on the RTX 3070 (8 GB, Windows), 28 of 64
+layers (5.3 GB) on the device and the rest paging through 16 GB of RAM:
+**9/9 exact at 32 tokens** (`cpu_cuda-qwen38-27b-gsq-rco-iq3s-rtx3070-32tok.json`),
+a smoke at a quarter of the contract's length, run that short because the
+CPU arm on four cores with the weights not resident decodes at 0.2 tok/s.
 
 ## The gate that was vacuous
 

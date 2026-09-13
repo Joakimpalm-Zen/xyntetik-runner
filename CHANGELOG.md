@@ -25,7 +25,8 @@ names that were true when they were written.
   admission tracer in CI. Gates: CPU/GPU logit identity on llama-quantize
   fixtures of all seven types on an RTX 3070 and a Blackwell slice (worst
   relative deviation 2.5e-6, the reduction residue), and the real file
-  above CPU vs CUDA at 128 tokens on the Blackwell. The i-quant parity
+  above CPU vs CUDA, 9/9 prompts exact at 128 tokens on the Blackwell
+  and at 32 tokens on the RTX 3070. The i-quant parity
   gate itself was found vacuous and rebuilt: on the default 64-wide
   fixture llama-quantize had silently substituted IQ4_NL and Q4_0 for
   every "i-quant" tensor, so it now quantizes the 256-wide fixture,

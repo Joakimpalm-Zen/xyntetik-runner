@@ -1,0 +1,89 @@
+{
+ "model": "C:\\Users\\zen\\models\\Qwen3.8-27B-GSQ-RCO-IQ3_S-recovered.gguf",
+ "tokens": 32,
+ "context": 2048,
+ "routing": "eager",
+ "moe": false,
+ "extra_args": [],
+ "gpu_split": {
+  "layers_on_gpu": 28,
+  "layers_total": 64,
+  "output_weight_on_gpu": false,
+  "whole_graph": false
+ },
+ "cpu_cuda_identity": {
+  "result": "pass",
+  "exact": "9/9",
+  "gpu_arm_on_cpu": false,
+  "near_tie_tolerated": 0,
+  "tie_band_nats": 0.5,
+  "over_cap": false
+ },
+ "identical": 9,
+ "total": 9,
+ "rows": [
+  {
+   "prompt": "The capital of France is",
+   "kind": "exact",
+   "detail": null,
+   "cpu": " Paris.\nThe capital of Germany is Berlin.\nThe capital of Italy is Rome.\nThe capital of Spain is Madrid.\nThe capital of Portugal is",
+   "gpu": null
+  },
+  {
+   "prompt": "def fibonacci(n):",
+   "kind": "exact",
+   "detail": null,
+   "cpu": "\n    if n <= 0:\n        return 0\n    elif n == 1:\n        return 1\n    else:\n       ",
+   "gpu": null
+  },
+  {
+   "prompt": "1 2 3 4 5 6 7 8",
+   "kind": "exact",
+   "detail": null,
+   "cpu": " 9 10 11 12 13 14 15 16 17 18 19",
+   "gpu": null
+  },
+  {
+   "prompt": "Once upon a time, in a land far away,",
+   "kind": "exact",
+   "detail": null,
+   "cpu": " there was a young adventurer named Tom. Tom was on a quest to discover the secrets of a mysterious place called the Land of Knowledge.\n\nOne day, Tom",
+   "gpu": null
+  },
+  {
+   "prompt": "Q: What is 17 * 23?\nA:",
+   "kind": "exact",
+   "detail": null,
+   "cpu": "\n\nTo calculate the product of 17 and 23, you can break down the multiplication:\n\n$$17 \\times 23 = ",
+   "gpu": null
+  },
+  {
+   "prompt": "The lighthouse keeper recorded the weather every morning: wind direction, cloud cover, and the hour the fog lifted.",
+   "kind": "exact",
+   "detail": null,
+   "cpu": " He kept a logbook, and the entries were precise, almost clinical. But the logbook was not the point. The point was the light itself.\n\n",
+   "gpu": null
+  },
+  {
+   "prompt": "In 1929 the observatory published a revised catalogue listing 4218 objects, of which roughly one in nine turned out on later inspection to be a duplicate entry under a second designation. The correction",
+   "kind": "exact",
+   "detail": null,
+   "cpu": " was made in 1930, and the final version of the catalogue, containing 4093 objects, was published in 193",
+   "gpu": null
+  },
+  {
+   "prompt": "def parse_header(buf, size):\n    if size < 8:\n        raise ValueError('short header')\n    magic, version = struct.unpack('<II', buf[:8])\n    if magic != GGUF_MAGIC:\n        raise ValueError('not a gguf file')\n    return magic, version\n\n# The loader above rejects a truncated header before unpacking it, which",
+   "kind": "exact",
+   "detail": null,
+   "cpu": " is\n# good, but it also assumes the buffer is at least 8 bytes long.  If a caller\n# passes a shorter buffer, the unpack",
+   "gpu": null
+  },
+  {
+   "prompt": "The city of Lisbon sits on seven hills above the Tagus estuary, and its oldest quarter survived the 1755 earthquake largely intact because the bedrock there is firmer than the reclaimed ground downriver. Rebuilding the lower town took decades, and the grid of streets laid out afterwards was among the first in Europe designed with seismic loads in mind, which is why the district still reads as unusually regular to a visitor who",
+   "kind": "exact",
+   "detail": null,
+   "cpu": " has just come from the irregular lanes of the old town.\n\nThe Alfama district, on the eastern side of the city, is the oldest continuously inhabited part",
+   "gpu": null
+  }
+ ]
+}
