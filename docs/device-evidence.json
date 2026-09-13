@@ -19,19 +19,19 @@
         "gpu_backend": "cuda"
       },
       "last_verified": {
-        "date": "2026-09-13",
-        "commit": "1d5a9ccb1dc900002443e749e7000f226721377c",
-        "ran": "make OS=Windows_NT -j2 test (exit 0, 81 native gates and the Python suite) and scripts/cuda-smoke-remote.sh (13 checks)",
+        "date": "2026-09-14",
+        "commit": "eff108f995a106a08bf77a6de00f5a878dfeacf4",
+        "ran": "make OS=Windows_NT -j4 test (exit 0, the native gates and the Python suite), scripts/cuda-smoke-remote.sh (13 checks), make test-cuda-nvfp4 on the real NVFP4 file, test-gpu-identity on the seven i-quant fixtures, and scripts/cpu_cuda_check.py on the GSQ-RCO Qwen3.8 27B (9/9 exact at 32 tokens, 28/64 layers)",
         "result": "pass",
         "caps": {
-          "version": "0.5.2",
+          "version": "0.5.3",
           "os": "windows",
           "arch": "x86_64",
           "cpu_cores": 8,
           "gpu_backend": "cuda",
           "gpu_name": "NVIDIA GeForce RTX 3070"
         },
-        "evidence": "docs/compat-reports/cuda-smoke-0.5.2-2026-09-13-rtx3070.json"
+        "evidence": "docs/compat-reports/cuda-smoke-0.5.3-2026-09-14-rtx3070.json"
       }
     },
     {
