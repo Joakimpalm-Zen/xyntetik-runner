@@ -925,13 +925,12 @@ layout, tensor type, runtime, or capacity is unsupported.
 
 | Backend | Tensor formats |
 |---|---|
-| CPU | F32, F16, BF16, Q8_0, Q4_0, Q4_1, Q5_0, Q5_1, Q2_K, Q3_K, Q4_K, Q5_K, Q6_K, IQ4_NL, IQ4_XS, MXFP4, NVFP4, plus the CPU-only codebook i-quants IQ1_S, IQ1_M, IQ2_XXS, IQ2_XS, IQ2_S, IQ3_XXS, IQ3_S |
+| CPU | F32, F16, BF16, Q8_0, Q4_0, Q4_1, Q5_0, Q5_1, Q2_K, Q3_K, Q4_K, Q5_K, Q6_K, IQ4_NL, IQ4_XS, MXFP4, NVFP4, and the codebook i-quants IQ1_S, IQ1_M, IQ2_XXS, IQ2_XS, IQ2_S, IQ3_XXS, IQ3_S |
+| CUDA | The whole CPU list (NVFP4 with its per-tensor scale companion applied in the kernel; the codebook i-quants with device twins of the CPU decoders, so a mixed-type file such as a GSQ-RCO or Unsloth dynamic quant is admitted whole) |
 | Metal | The CPU list without NVFP4 and the IQ1-IQ3 families |
-| CUDA | The CPU list without the IQ1-IQ3 families (NVFP4 included, with its per-tensor scale companion applied in the kernel) |
 
-A model that carries even one IQ1-IQ3 tensor runs on the CPU as a whole, and
-so does an NVFP4 model on Metal: the backend refuses it loudly, naming the
-tensor and type. CUDA serves NVFP4.
+On Metal a model that carries even one IQ1-IQ3 or NVFP4 tensor runs on the
+CPU as a whole: the backend refuses it loudly, naming the tensor and type.
 
 **Per-tensor scale companions.** NVIDIA's ModelOpt NVFP4 export is two-level:
 a UE4M3 scale per 16 elements inside each block and one F32 `<base>.scale`
@@ -2226,7 +2225,7 @@ silently dropped branch.
 |---|---|
 | File format | GGUF v2/v3, mmap/file-mapped host weights, including standard local multi-part sets. |
 | Tokenizers | SPM and byte-level BPE with llama, qwen2/qwen35, smollm, afmoe, tekken, llama4/gpt-4o, Gemma, and GPT-2-family (including `granite-docling`) pre-tokenization rules. |
-| Quantizations | `--caps` lists the admitted tensor formats: the k-quant and legacy families plus MXFP4, NVFP4 (two-level, with its per-tensor scale companion applied) and the codebook i-quants (IQ1_S/M, IQ2_XXS/XS/S, IQ3_XXS/S, IQ4_NL/XS). NVFP4 and the IQ1, IQ2 and IQ3 families are CPU-only; CUDA and Metal refuse them loudly, naming the exact tensor and type that caused the CPU fallback. |
+| Quantizations | `--caps` lists the admitted tensor formats: the k-quant and legacy families plus MXFP4, NVFP4 (two-level, with its per-tensor scale companion applied) and the codebook i-quants (IQ1_S/M, IQ2_XXS/XS/S, IQ3_XXS/S, IQ4_NL/XS). CUDA serves every one of them; on Metal, NVFP4 and the IQ1, IQ2 and IQ3 families are CPU-only and the backend refuses them loudly, naming the exact tensor and type that caused the CPU fallback. |
 | Transformer | RMSNorm, adjacent-pair and NeoX RoPE, grouped-query attention, SwiGLU/GELU/xIELU family paths, tied embeddings, dense and selected sparse MoE. |
 | Sampling | Greedy, temperature, top-k, top-p, min-p, repeat penalty, stop strings, JSON/schema constraints, speculative decoding. |
 | Context | Batched prefill, f16/q8 KV, linear/YaRN/llama-3 scaling, automatic extension. |

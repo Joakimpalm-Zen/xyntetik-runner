@@ -550,7 +550,8 @@ static bool gpu_type_ok(int type) {
         case T_Q4_1: case T_Q5_0: case T_Q5_1: case T_Q2_K: case T_Q3_K:
         case T_Q4_K: case T_Q5_K:
         case T_Q6_K: case T_IQ4_NL: case T_IQ4_XS: case T_MXFP4:
-        case T_NVFP4:
+        case T_NVFP4: case T_IQ1_S: case T_IQ1_M: case T_IQ2_XXS:
+        case T_IQ2_XS: case T_IQ2_S: case T_IQ3_XXS: case T_IQ3_S:
             return true;
         default:
             return false;
@@ -565,6 +566,18 @@ static bool gpu_scale_companion_ok(int type) {
     return type == T_NVFP4;
 }
 
+// Deterministic tracer for the "no CUDA kernel for this type" diagnostic.
+// Every format the loader reads now has a CUDA kernel, so nothing in the tree
+// can reach that message naturally; CPU-only CI holds its contract (the
+// tensor and type are named, the run falls back to the CPU) by naming a type
+// here, RUNNER_CUDA_INIT_INJECT_FAILURE=no-kernel:IQ2_XXS, the same mechanism
+// as the shared-pointer-tables injection in gpu_init.
+static bool inject_no_kernel(int type) {
+    const char *inj = getenv("RUNNER_CUDA_INIT_INJECT_FAILURE");
+    return inj && !strncmp(inj, "no-kernel:", 10) &&
+           !strcmp(inj + 10, ggml_type_name(type));
+}
+
 static bool gpu_tensor_type_ok(const gguf_tensor *t) {
     if (!t) return true;
     if (t->scale != 1.0f && !gpu_scale_companion_ok(t->type)) {
@@ -576,7 +589,7 @@ static bool gpu_tensor_type_ok(const gguf_tensor *t) {
                 ggml_type_name(t->type));
         return false;
     }
-    if (gpu_type_ok(t->type)) return true;
+    if (gpu_type_ok(t->type) && !inject_no_kernel(t->type)) return true;
     fprintf(stderr, "gpu: tensor %s uses %s, which has no CUDA kernel — "
             "using CPU\n", t->name, ggml_type_name(t->type));
     return false;
@@ -1324,6 +1337,10 @@ static gpu_weights *shared_build(model_t *m, size_t act_bytes, int max_hd,
             { &w->f_mv[T_IQ4_NL], "k_mv_iq4_nl" }, { &w->f_mv[T_IQ4_XS], "k_mv_iq4_xs" },
             { &w->f_mv[T_MXFP4], "k_mv_mxfp4" },
             { &w->f_mv[T_NVFP4], "k_mv_nvfp4" },
+            { &w->f_mv[T_IQ2_XXS], "k_mv_iq2_xxs" }, { &w->f_mv[T_IQ2_XS], "k_mv_iq2_xs" },
+            { &w->f_mv[T_IQ2_S], "k_mv_iq2_s" },     { &w->f_mv[T_IQ3_XXS], "k_mv_iq3_xxs" },
+            { &w->f_mv[T_IQ3_S], "k_mv_iq3_s" },     { &w->f_mv[T_IQ1_S], "k_mv_iq1_s" },
+            { &w->f_mv[T_IQ1_M], "k_mv_iq1_m" },
             { &w->f_mvb[T_F32],  "k_mv_f32_b" },  { &w->f_mvb[T_F16],  "k_mv_f16_b" },
             { &w->f_mvb[T_Q8_0], "k_mv_q8_0_b" }, { &w->f_mvb[T_Q4_0], "k_mv_q4_0_b" },
             { &w->f_mvb[T_Q4_1], "k_mv_q4_1_b" }, { &w->f_mvb[T_Q5_0], "k_mv_q5_0_b" },
@@ -1335,6 +1352,10 @@ static gpu_weights *shared_build(model_t *m, size_t act_bytes, int max_hd,
             { &w->f_mvb[T_IQ4_NL], "k_mv_iq4_nl_b" }, { &w->f_mvb[T_IQ4_XS], "k_mv_iq4_xs_b" },
             { &w->f_mvb[T_MXFP4], "k_mv_mxfp4_b" },
             { &w->f_mvb[T_NVFP4], "k_mv_nvfp4_b" },
+            { &w->f_mvb[T_IQ2_XXS], "k_mv_iq2_xxs_b" }, { &w->f_mvb[T_IQ2_XS], "k_mv_iq2_xs_b" },
+            { &w->f_mvb[T_IQ2_S], "k_mv_iq2_s_b" },     { &w->f_mvb[T_IQ3_XXS], "k_mv_iq3_xxs_b" },
+            { &w->f_mvb[T_IQ3_S], "k_mv_iq3_s_b" },     { &w->f_mvb[T_IQ1_S], "k_mv_iq1_s_b" },
+            { &w->f_mvb[T_IQ1_M], "k_mv_iq1_m_b" },
             // prefill tiled-GEMM variants (batch>1 fast path for these formats)
             { &w->f_gemm[T_Q8_0], "k_gemm_q8_0" },
             { &w->f_gemm[T_Q3_K], "k_gemm_q3_K" },

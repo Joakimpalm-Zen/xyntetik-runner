@@ -74,8 +74,15 @@ def test_unsupported_tensor_names_itself(runner_bin, tmp_path, flags, tensor):
          "--gpu-unsupported", tensor, str(model)],
         check=True, cwd=ROOT, stdout=subprocess.DEVNULL)
 
+    # Metal still has no IQ2_XXS kernel, so the fixture's tensor declines
+    # there on its own. CUDA gained the codebook i-quants on 2026-09-14 and
+    # now covers every format the loader reads, so on that backend (and in
+    # CPU-only CI, which compiles it) the diagnostic is reached through the
+    # admission tracer, which names the type to refuse.
+    env = {**os.environ,
+           "RUNNER_CUDA_INIT_INJECT_FAILURE": "no-kernel:IQ2_XXS"}
     cpu = _run(runner_bin, model, "off")
-    auto = _run(runner_bin, model, "auto")
+    auto = _run(runner_bin, model, "auto", env=env)
     assert cpu.returncode == 0, cpu.stderr.decode(errors="replace")
     assert auto.returncode == 0, auto.stderr.decode(errors="replace")
     assert cpu.stdout, "CPU produced no output; fallback comparison is vacuous"
