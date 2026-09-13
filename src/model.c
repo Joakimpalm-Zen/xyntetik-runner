@@ -5776,6 +5776,7 @@ struct lora_w {
     float *ma, *va, *mb, *vb;  // D4 AdamW first/second moments (lazy)
     int    r;       // 0 = no adapter on this slot
     float  scale;   // (alpha / r) * user scale, folded at load
+    float  scale_saved;  // model_lora_bypass parks `scale` here
 };
 
 static const char *const lora_slot_name[LW_SLOTS] = {
@@ -6370,6 +6371,75 @@ float *model_lora_gradbuf(model_t *m, int layer, int slot, int which,
     if (count) *count = which ? (int)(base->ne[1] * lw->r)
                               : (int)(lw->r * base->ne[0]);
     return which ? lw->gb : lw->ga;
+}
+
+// The adapter's contribution is applied as fmaf(lw->scale, acc, yr[j]), so a
+// zero scale is an exact bypass: the forward becomes the frozen base model's
+// own. That is the whole implementation of pi_ref for a DPO step, and it is
+// why the reference policy costs no second copy of the weights.
+//
+// Idempotent in both directions, because a step calls it around each of two
+// reference forwards and a mismatched pair would silently train against the
+// wrong reference.
+bool model_lora_bypass(model_t *m, bool on) {
+    if (!m || !m->lora) return false;
+    if (m->gpu) {
+        fprintf(stderr, "error: the adapter bypass is host-side, and this "
+                "model's adapter is bound on the device — a GPU-resident "
+                "reference policy would silently equal the trained one\n");
+        return false;
+    }
+    for (int l = 0; l < m->n_layer; l++)
+        for (int s = 0; s < LW_SLOTS; s++) {
+            struct lora_w *lw = &m->lora[(size_t)l * LW_SLOTS + s];
+            if (!lw->r) continue;
+            if (on) {
+                if (lw->scale != 0.0f) { lw->scale_saved = lw->scale; lw->scale = 0.0f; }
+            } else if (lw->scale == 0.0f && lw->scale_saved != 0.0f) {
+                lw->scale = lw->scale_saved;
+            }
+        }
+    return true;
+}
+
+void model_lora_grad_scale(model_t *m, float f) {
+    if (!m || !m->lora) return;
+    for (int l = 0; l < m->n_layer; l++)
+        for (int s = 0; s < LW_SLOTS; s++)
+            for (int w = 0; w < 2; w++) {
+                int cnt = 0;
+                float *g = model_lora_gradbuf(m, l, s, w, &cnt);
+                if (!g) continue;
+                for (int i = 0; i < cnt; i++) g[i] *= f;
+            }
+}
+
+// Deliberately the same arithmetic, in the same order, as the scoring half of
+// model_lora_backward_w's taped forward: max-subtracted logsumexp minus the
+// target logit, accumulated in double. If these two ever disagree the DPO
+// loss and its gradient are computed against different policies, which is a
+// silent wrong answer rather than a failure, so the duplication is on purpose
+// and this comment is the reason it is not refactored into a shared helper
+// that could acquire a divergent fast path.
+bool model_seq_nll(model_t *m, const int32_t *toks, int T,
+                   const float *mask, double *nll_out) {
+    if (!m || T < 2 || T > m->n_ctx) return false;
+    int V = m->n_vocab;
+    double nll = 0.0;
+    for (int t = 0; t < T; t++) {
+        float *lg = model_forward(m, toks[t], t);
+        if (!lg) return false;
+        if (t < T - 1 && (!mask || mask[t] != 0.0f)) {
+            float mx = lg[0];
+            for (int i = 1; i < V; i++) if (lg[i] > mx) mx = lg[i];
+            double sum = 0;
+            for (int i = 0; i < V; i++) sum += expf(lg[i] - mx);
+            double w = mask ? (double)mask[t] : 1.0;
+            nll += w * ((double)(mx + logf((float)sum)) - (double)lg[toks[t + 1]]);
+        }
+    }
+    if (nll_out) *nll_out = nll;
+    return true;
 }
 
 // attention score/softmax backward for a range of kv-head groups — the

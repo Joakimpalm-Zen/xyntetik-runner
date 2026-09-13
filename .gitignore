@@ -232,3 +232,6 @@ test-pmath.exe
 # Native control-token regression gate
 test-prompt-marks
 test-prompt-marks.exe
+
+/test-dpo-grad
+/test-dpo-grad.exe

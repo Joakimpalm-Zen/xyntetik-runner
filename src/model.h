@@ -778,6 +778,34 @@ float *model_lora_param(model_t *m, int layer, int slot, int which,
 float *model_lora_gradbuf(model_t *m, int layer, int slot, int which,
                           int *count);
 
+// --- pairwise (DPO) support. Three small primitives, no new kernel: a DPO
+// step's gradient is beta*sigmoid(r_l - r_w) times the DIFFERENCE of two
+// weighted-CE gradients, and model_lora_backward_w already supplies those
+// with a sign (pos_w is linear, negatives included).
+//
+// The reference policy is these same weights with the adapter bypassed, so
+// pi_ref needs no second model in memory: bypass(true) stashes every slot
+// scale and zeroes it, bypass(false) restores.
+//
+// REFUSES a GPU-resident model, and that refusal is the point. These are the
+// HOST scales; a device-bound adapter carries its own cached copy, so on the
+// GPU path the bypass would change nothing, pi_ref would silently equal
+// pi_theta, every margin would be exactly 0, and a DPO run would report a
+// falling loss while learning nothing. --train is CPU-only today so the
+// situation cannot arise, which is precisely why it has to fail loudly the
+// day that changes rather than train against the wrong reference.
+bool   model_lora_bypass(model_t *m, bool on);
+// Forward-only weighted NLL over exactly the transitions
+// model_lora_backward_w scores, with no tape and no reverse sweep: what a
+// reference log-probability costs when no gradient is wanted. mask NULL =
+// all ones; a zero entry drops that transition.
+bool   model_seq_nll(model_t *m, const int32_t *toks, int n,
+                     const float *mask, double *nll_out);
+// Multiply every gradient buffer by f. The DPO scalar is only known after
+// both halves of the pair have been accumulated, so it is applied here
+// rather than folded into pos_w.
+void   model_lora_grad_scale(model_t *m, float f);
+
 // The identity a shared-weights record is keyed on: which file this actually
 // is, beyond the path it was spelled with. Every keyed view of a file — the
 // host parse in model.c, the device upload in cuda.c, and the prefix-cache key

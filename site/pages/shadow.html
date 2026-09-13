@@ -97,3 +97,9 @@ nav: runner
     </div>
   </div>
 </section>
+
+<section class="section">
+  <div class="wrap"><h2>Optional native preference training</h2>
+    <p>Runner also exposes <code>--train-dpo</code> for chosen/rejected JSONL pairs. It trains an adapter on the CPU path against the frozen base, without a second model copy. A gradient gate checks the objective; task-quality gains require a separate evaluation. Shadow does not start this operation automatically.</p>
+  </div>
+</section>
