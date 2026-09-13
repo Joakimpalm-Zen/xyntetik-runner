@@ -50,6 +50,9 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
     (void)s; (void)fd; (void)api; (void)req; (void)env;
     free(bt_prompt);
     bt_prompt = prompt ? strdup(prompt) : NULL;
+    // Compare rendered text, not the tokenizer's internal ownership marks.
+    // Removing marks cannot restore a truncated turn or generation header.
+    if (bt_prompt) tok_strip_marks(bt_prompt);
 }
 
 // completion.c's request readers, stubbed: the fields they read are absent

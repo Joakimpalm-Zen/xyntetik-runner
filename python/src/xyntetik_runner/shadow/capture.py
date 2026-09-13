@@ -18,7 +18,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 SCHEMA = "xyntetik.shadow.capture.v2"
 CAPTURE2_FILE = ".xyntetik/shadow/capture2.jsonl"
@@ -136,7 +136,7 @@ def notification_task_ids(text: str) -> list[str]:
 def _read_threads(home: Path) -> dict[str, Any]:
     p = home / THREADS_FILE
     try:
-        return json.loads(p.read_text(encoding="utf-8"))
+        return cast(dict[str, Any], json.loads(p.read_text(encoding="utf-8")))
     except Exception:
         return {}
 
@@ -154,7 +154,7 @@ def _write_threads(home: Path, d: dict[str, Any]) -> None:
 
 def _read_jobs(home: Path) -> dict[str, Any]:
     try:
-        return json.loads((home / JOBS_FILE).read_text(encoding="utf-8"))
+        return cast(dict[str, Any], json.loads((home / JOBS_FILE).read_text(encoding="utf-8")))
     except Exception:
         return {}
 
@@ -315,13 +315,13 @@ def snapshot(cwd: Path, home: Path, *, deadline_s: float = SNAPSHOT_DEADLINE_S) 
     difference between evidence and a guess.
     """
     t0 = time.monotonic()
-    top = _git(cwd, "rev-parse", "--show-toplevel").strip()
-    if not top:
+    from .tasks import repository_root
+    repo = repository_root(cwd)
+    if repo is None:
         s = Snapshot(repo=None, head=None, branch=None)
         s.wall_s = time.monotonic() - t0
         s.skipped.append({"path": str(cwd), "why": "not a git repository"})
         return s
-    repo = Path(top)
     head = _git(repo, "rev-parse", "HEAD").strip() or None
     branch = _git(repo, "rev-parse", "--abbrev-ref", "HEAD").strip() or None
     s = Snapshot(repo=str(repo), head=head, branch=branch)

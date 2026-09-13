@@ -24,10 +24,18 @@ names that were true when they were written.
   are cached outside the prompt-time path; delegation output respects its caller.
 - Route counts separate repositories and model stacks, including adapters and
   scaffolds. Invalid file patterns return tool errors on Python 3.12 as well.
+- Capture and routing resolve native repository paths with MSYS Git, so Windows
+  files are captured rather than mistaken for deletions.
 - Template-generated control markers remain distinct from message text; tool
   parsing and schema enum handling include the corresponding regression gates.
 - Training JSONL records grow beyond the old fixed buffer, end-of-turn targets
   are opt-in, and negative weights retain consistent reported loss normalization.
+- A client `stop` sequence on a thinking-tag model no longer leaks the text
+  that followed the match (the splitter's held-back tail); the closer of a
+  truncated constrained document still reaches the client after a stop.
+- Verification replay resolves its shell through PATH: a bare `bash` on
+  Windows found the WSL launcher in System32 first, which read as a failed
+  verification wherever no distribution is installed.
 
 
 - **Adapter training covers the dense-shape variants (R8.9.4).** The LoRA

@@ -24,8 +24,8 @@ def _repo(tmp: Path) -> Path:
     subprocess.run(["git", "init", "-q", str(r)], check=True)
     subprocess.run(["git", "-C", str(r), "config", "user.email", "t@t"], check=True)
     subprocess.run(["git", "-C", str(r), "config", "user.name", "t"], check=True)
-    (r / "pkg" / "a.py").write_text("def f():\n    return 1\n")
-    (r / "keep.txt").write_text("x\n")
+    (r / "pkg" / "a.py").write_text("def f():\n    return 1\n", newline="\n")
+    (r / "keep.txt").write_text("x\n", newline="\n")
     subprocess.run(["git", "-C", str(r), "add", "-A"], check=True)
     subprocess.run(["git", "-C", str(r), "commit", "-qm", "init"], check=True)
     return r
@@ -124,8 +124,8 @@ def test_identity_never_invents_a_parent() -> None:
 def test_the_snapshot_is_content_not_a_commit(tmp_path: Path) -> None:
     r = _repo(tmp_path)
     home = tmp_path / "home"
-    (r / "pkg" / "a.py").write_text("def f():\n    return 2\n")   # dirty, uncommitted
-    (r / "new.py").write_text("fresh\n")
+    (r / "pkg" / "a.py").write_text("def f():\n    return 2\n", newline="\n")   # dirty, uncommitted
+    (r / "new.py").write_text("fresh\n", newline="\n")
     s = C.snapshot(r, home)
     d = s.to_dict()
     assert d["clean"] is False
@@ -138,11 +138,32 @@ def test_the_snapshot_is_content_not_a_commit(tmp_path: Path) -> None:
     assert C.get_blob(home, d["files"]["pkg/a.py"]["sha256"]) == b"def f():\n    return 2\n"
 
 
+def test_snapshot_uses_native_paths_when_git_reports_a_foreign_absolute_root(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """MSYS Git can report /drive/... to a native Windows Python process."""
+    r = _repo(tmp_path)
+    wanted = b"def f():\n    return 2\n"
+    (r / "pkg" / "a.py").write_bytes(wanted)
+    run = subprocess.run
+
+    def foreign_root(argv: list[str], **kwargs: Any) -> Any:
+        result = run(argv, **kwargs)
+        if "--show-toplevel" in argv and result.returncode == 0:
+            result.stdout = "/unmapped-git-root/repo\n"
+        return result
+
+    monkeypatch.setattr(subprocess, "run", foreign_root)
+    home = tmp_path / "home"
+    snap = C.snapshot(r / "pkg", home)
+    assert snap.repo is not None and Path(snap.repo).samefile(r)
+    assert C.get_blob(home, snap.files["pkg/a.py"]["sha256"]) == wanted
+
+
 def test_gitignored_files_stay_out(tmp_path: Path) -> None:
     r = _repo(tmp_path)
     home = tmp_path / "home"
-    (r / ".gitignore").write_text("junk.log\n")
-    (r / "junk.log").write_text("noise\n")
+    (r / ".gitignore").write_text("junk.log\n", newline="\n")
+    (r / "junk.log").write_text("noise\n", newline="\n")
     s = C.snapshot(r, home)
     assert "junk.log" not in s.files
     assert ".gitignore" in s.files
@@ -165,7 +186,7 @@ def test_a_spent_deadline_marks_the_snapshot_truncated(tmp_path: Path) -> None:
     r = _repo(tmp_path)
     home = tmp_path / "home"
     for i in range(8):
-        (r / f"f{i}.txt").write_text(f"{i}\n")
+        (r / f"f{i}.txt").write_text(f"{i}\n", newline="\n")
     s = C.snapshot(r, home, deadline_s=0.0)
     assert s.truncated is True
     assert any("deadline" in k["why"] for k in s.skipped)
@@ -193,11 +214,11 @@ def test_the_change_set_covers_dirty_to_dirty(tmp_path: Path) -> None:
     """A commit range cannot express this: both states are uncommitted."""
     r = _repo(tmp_path)
     home = tmp_path / "home"
-    (r / "pkg" / "a.py").write_text("v2\n")
-    (r / "gone.py").write_text("temp\n")
+    (r / "pkg" / "a.py").write_text("v2\n", newline="\n")
+    (r / "gone.py").write_text("temp\n", newline="\n")
     before = C.snapshot(r, home)
-    (r / "pkg" / "a.py").write_text("v3\n")
-    (r / "added.py").write_text("new\n")
+    (r / "pkg" / "a.py").write_text("v3\n", newline="\n")
+    (r / "added.py").write_text("new\n", newline="\n")
     (r / "gone.py").unlink()
     after = C.snapshot(r, home)
     cs = C.change_set(before, after)
@@ -220,7 +241,7 @@ def test_nested_repositories_are_all_snapshotted(tmp_path: Path) -> None:
     subprocess.run(["git", "-C", str(outer), "config", "user.name", "t"], check=True)
     inner = _repo(outer)
     home = tmp_path / "home"
-    (inner / "pkg" / "a.py").write_text("changed inside the nested repo\n")
+    (inner / "pkg" / "a.py").write_text("changed inside the nested repo\n", newline="\n")
     sa = C.snapshot_all(outer, home)
     assert sa["repo_count"] >= 2
     keys = {Path(k).name for k in sa["repos"]}
@@ -243,7 +264,7 @@ def test_change_set_all_reports_per_repository(tmp_path: Path) -> None:
     inner = _repo(outer)
     home = tmp_path / "home"
     before = C.snapshot_all(outer, home)
-    (inner / "pkg" / "a.py").write_text("moved\n")
+    (inner / "pkg" / "a.py").write_text("moved\n", newline="\n")
     after = C.snapshot_all(outer, home)
     cs = C.change_set_all(before, after)
     assert cs["count"] == 1
@@ -278,7 +299,7 @@ def test_only_real_test_runners_count_as_verification() -> None:
 def test_completeness_is_measured_per_record(tmp_path: Path) -> None:
     r = _repo(tmp_path)
     home = tmp_path / "home"
-    (r / "pkg" / "a.py").write_text("dirty\n")
+    (r / "pkg" / "a.py").write_text("dirty\n", newline="\n")
     snap = C.snapshot_all(r, home)
     rec = C.build("prompt", payload={"prompt": "do the thing", "transcript_path": "/t.jsonl"},
                   cwd=r, home=home, tool="claude_code", session_id="s1", snap=snap)
@@ -321,7 +342,7 @@ def test_a_record_plus_the_blob_store_rebuilds_the_pre_state(tmp_path: Path) -> 
         "pkg/b.py": "SENTINEL = 1\n",
     }
     for rel, body in wanted.items():
-        (r / rel).write_text(body)
+        (r / rel).write_text(body, newline="\n")
     snap = C.snapshot_all(r, home)
     rec = C.build("prompt", payload={"prompt": "fix f"}, cwd=r, home=home,
                   session_id="s1", snap=snap)
@@ -329,7 +350,7 @@ def test_a_record_plus_the_blob_store_rebuilds_the_pre_state(tmp_path: Path) -> 
 
     # the work continues and overwrites the captured state entirely
     for rel in wanted:
-        (r / rel).write_text("LATER, and the earlier content is gone from disk\n")
+        (r / rel).write_text("LATER, and the earlier content is gone from disk\n", newline="\n")
 
     # now rebuild from the record alone
     on_disk = json.loads((home / "cap.jsonl").read_text().splitlines()[0])
@@ -385,10 +406,10 @@ def test_the_report_keeps_completeness_replay_and_eligibility_separate(tmp_path:
     from xyntetik_runner.shadow import capture_report as R
     r = _repo(tmp_path)
     home = tmp_path / "home"
-    (r / "pkg" / "a.py").write_text("def f():\n    return 1  # before\n")
+    (r / "pkg" / "a.py").write_text("def f():\n    return 1  # before\n", newline="\n")
     _fire(home, r, "prompt", {"prompt": "fix f", "session_id": "s1",
                               "transcript_path": "/t.jsonl"})
-    (r / "pkg" / "a.py").write_text("def f():\n    return 2  # after\n")
+    (r / "pkg" / "a.py").write_text("def f():\n    return 2  # after\n", newline="\n")
     _fire(home, r, "verify", {"session_id": "s1", "_verification":
                               C.verification_record(command="pytest -q", exit_code=0,
                                                     output_tail="1 passed",
@@ -413,7 +434,7 @@ def test_replay_calls_a_missing_blob_broken_not_partial(tmp_path: Path) -> None:
     from xyntetik_runner.shadow import capture_report as R
     r = _repo(tmp_path)
     home = tmp_path / "home"
-    (r / "pkg" / "a.py").write_text("content that will be lost\n")
+    (r / "pkg" / "a.py").write_text("content that will be lost\n", newline="\n")
     rec = _fire(home, r, "prompt", {"prompt": "x", "session_id": "s"})
     assert R.replay(home, rec)["outcome"] in ("reconstructed", "partial")
     # evict every blob
@@ -480,8 +501,8 @@ def test_reconstruction_and_reproduction_are_reported_separately(tmp_path: Path)
     r = _repo(tmp_path)
     home = tmp_path / "home"
     # a test that passes only with the dirty content in place
-    (r / "check.sh").write_text("#!/bin/sh\ngrep -q SENTINEL pkg/a.py\n")
-    (r / "pkg" / "a.py").write_text("SENTINEL = 1\n")
+    (r / "check.sh").write_text("#!/bin/sh\ngrep -q SENTINEL pkg/a.py\n", newline="\n")
+    (r / "pkg" / "a.py").write_text("SENTINEL = 1\n", newline="\n")
     _fire(home, r, "prompt", {"prompt": "add the sentinel", "session_id": "s1"})
     v = C.verification_record(command="sh check.sh", exit_code=0, output_tail="",
                               manifest_sha256=C.snapshot_all(r, home)["combined_sha256"], cwd=str(r))
@@ -505,12 +526,12 @@ def test_reproduction_requires_the_bound_state_and_uses_its_recorded_directory(t
     from xyntetik_runner.shadow import capture_report as R
     r = _repo(tmp_path)
     home = tmp_path / "home"
-    (r / "pkg" / "check.sh").write_text("grep -q 'return 1' a.py\n")
+    (r / "pkg" / "check.sh").write_text("grep -q 'return 1' a.py\n", newline="\n")
     before = _fire(home, r, "prompt", {"prompt": "change the return value", "session_id": "s"})
     v = C.verification_record(command="sh check.sh", exit_code=0, output_tail="",
                               manifest_sha256=before["state"]["workspace"]["combined_sha256"],
                               cwd=str(r / "pkg"))
-    (r / "pkg" / "a.py").write_text("def f():\n    return 2\n")
+    (r / "pkg" / "a.py").write_text("def f():\n    return 2\n", newline="\n")
     after = _fire(home, r, "verify", {"session_id": "s", "_verification": v})
     result = R.reproduce_verification(home, [before, after])
     assert result[0]["outcome"] == "reproduced", result
@@ -526,8 +547,8 @@ def test_reproduction_can_fail_while_reconstruction_succeeds(tmp_path: Path) -> 
     from xyntetik_runner.shadow import capture_report as R
     r = _repo(tmp_path)
     home = tmp_path / "home"
-    (r / "check.sh").write_text("#!/bin/sh\ngrep -q SENTINEL pkg/a.py\n")
-    (r / "pkg" / "a.py").write_text("no sentinel here\n")
+    (r / "check.sh").write_text("#!/bin/sh\ngrep -q SENTINEL pkg/a.py\n", newline="\n")
+    (r / "pkg" / "a.py").write_text("no sentinel here\n", newline="\n")
     _fire(home, r, "prompt", {"prompt": "x", "session_id": "s1"})
     # the record CLAIMS it passed, which the reconstruction will contradict
     v = C.verification_record(command="sh check.sh", exit_code=0, output_tail="",
@@ -546,14 +567,14 @@ def test_the_binding_names_which_state_and_flags_a_mismatch(tmp_path: Path) -> N
     from xyntetik_runner.shadow import capture_report as R
     r = _repo(tmp_path)
     home = tmp_path / "home"
-    (r / "pkg" / "a.py").write_text("one\n")
+    (r / "pkg" / "a.py").write_text("one\n", newline="\n")
     pre = _fire(home, r, "prompt", {"prompt": "x", "session_id": "s1"})
     pre_m = pre["state"]["workspace"]["combined_sha256"]
     # the workspace MOVES after the prompt, so pre and post are different states
     # and a verification still bound to `pre` is a genuine before/after mismatch.
     # Without this edit pre == post and there is nothing to flag, which is the
     # correct behaviour and was the bug in the first version of this test.
-    (r / "pkg" / "a.py").write_text("two\n")
+    (r / "pkg" / "a.py").write_text("two\n", newline="\n")
     v = C.verification_record(command="pytest -q", exit_code=0, output_tail="",
                               manifest_sha256=pre_m, cwd=str(r))
     _fire(home, r, "verify", {"session_id": "s1", "_verification": v})

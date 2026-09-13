@@ -55,6 +55,7 @@ from xyntetik_runner.shadow.tasks import (
     build_task,
     choose,
     canonical,
+    repository_root,
     pair,
     repos_under,
 )
@@ -522,8 +523,8 @@ def cmd_capture(args: argparse.Namespace) -> int:
     if getattr(args, "report", False):
         from . import capture_report
         home = Path(args.home) if args.home else Path.home()
-        path = Path(args.file) if args.file else None
-        rep = capture_report.report(home, path)
+        report_path = Path(args.file) if args.file else None
+        rep = capture_report.report(home, report_path)
         print(json.dumps(rep, indent=1, default=str) if args.json
               else capture_report.render(rep))
         return 0
@@ -631,9 +632,7 @@ def cmd_capture(args: argparse.Namespace) -> int:
 
 
 def _repo_of(cwd: Path) -> Path | None:
-    top = subprocess.run(["git", "-C", str(cwd), "rev-parse", "--show-toplevel"], capture_output=True,
-                         text=True).stdout.strip()
-    return Path(top) if top else None
+    return repository_root(cwd)
 
 
 _MODEL_SHA_CACHE: dict[str, tuple[float, str]] = {}
