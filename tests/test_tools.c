@@ -77,6 +77,16 @@ static bool accepts(const snode *root, const char *doc) {
     return v.done || sval_at_raw_tail(&v);
 }
 
+// every byte admitted, complete or not: the negative form of accepts()
+// for a prefix the grammar must refuse somewhere inside it
+static bool feeds(const snode *root, const char *doc) {
+    sval v;
+    sval_init(&v, root);
+    for (int i = 0; doc[i]; i++)
+        if (!sval_feed(&v, doc + i, 1)) return false;
+    return true;
+}
+
 static void test_atem_structured_tool_automaton(void) {
     jv *tools = parse(
         "[{\"type\":\"function\",\"function\":{\"name\":\"data.store\","
@@ -684,7 +694,7 @@ static void test_qwen_native_turn_constrains_and_maps_calls(void) {
     jv *tools = parse(TOOLS);
     char err[192];
     snode *root = schema_compile_qwen_turn(
-        tools, true, NULL, NULL, /*allow_reasoning=*/false, err, sizeof(err));
+        tools, true, NULL, NULL, /*allow_reasoning=*/false, true, err, sizeof(err));
     if (!root) fprintf(stderr, "qwen native turn: %s\n", err);
     assert(root != NULL);
     const char *doc =
@@ -1008,7 +1018,7 @@ static void test_qwen_think_then_call_is_legal(void) {
     jv *tools = parse(TOOLS);
     char err[192];
     snode *root = schema_compile_qwen_turn(
-        tools, true, NULL, NULL, /*thinking=*/true, err, sizeof(err));
+        tools, true, NULL, NULL, /*thinking=*/true, true, err, sizeof(err));
     assert(root != NULL);
 
     // reason first, then call: the ordinary Qwen3 agentic turn
@@ -1051,7 +1061,7 @@ static void test_qwen_truncation_stays_executable(void) {
     jv *tools = parse(TOOLS);
     char err[192];
     snode *root = schema_compile_qwen_turn(
-        tools, true, NULL, NULL, /*allow_reasoning=*/false, err, sizeof(err));
+        tools, true, NULL, NULL, /*allow_reasoning=*/false, true, err, sizeof(err));
     assert(root != NULL);
 
     tool_envelope e;
@@ -2391,7 +2401,136 @@ static void test_buffered_mapper_rejects_invalid_arguments(void) {
     assert(tool_envelope_map(&e, doc, strlen(doc), &content, NULL) == -1);
 }
 
+
+// The publisher's function-XML wire format carries raw string values. A
+// string resembling JSON must remain a string, not become a number/bool.
+static void test_coder_native_calls(void) {
+    jv *tools = parse("[{\"type\":\"function\",\"function\":{\"name\":\"save\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}}}]");
+    tool_envelope e; char err[192]; bool skip = false;
+    assert(tool_envelope_build(tools, NULL, NULL, &e, err, sizeof err) == 1);
+    tool_decl_native(TMPL_QWEN3_CODER, true, true, tools, &e, &skip);
+    const char *doc = "Checking.\n<tool_call>\n<function=save>\n<parameter=text>\n001\n</parameter>\n</function>\n</tool_call>";
+    sbuf out = {0}, tc = {0};
+    assert(tool_envelope_map(&e, doc, strlen(doc), &out, &tc) == 1);
+    assert(!strcmp(out.s, "Checking.\n"));
+    sbuf wrapped = {0}; sb_lit(&wrapped,"[");sb_put(&wrapped,tc.s,tc.n);sb_lit(&wrapped,"]");
+    jv *calls = parse(wrapped.s);
+    assert(!strcmp(jv_str(jv_get(jv_get(calls->items[0],"function"),"arguments"),""), "{\"text\":\"001\"}"));
+    jv_free(calls);free(wrapped.s);free(out.s);free(tc.s);
+    for (size_t step=1;step<=strlen(doc);step++) {
+        demux_log log;demux_step(&e,doc,step,&log);
+        assert(log.begins==1 && log.ends==1);
+        assert(!strcmp(log.content.s,"Checking.\n"));
+        assert(!strcmp(log.args.s,"{\"text\":\"001\"}"));
+        log_free(&log);
+    }
+    tool_envelope_free(&e);jv_free(tools);
+}
+
+// The parser does not depend on the grammar's member order: parameters
+// arrive in any order and the arguments object is assembled in the declared
+// one, which is the order the schema validator accepts. Unknown parameters
+// stay refused by the schema check, not by the ordering.
+static void test_coder_parameters_in_any_order(void) {
+    jv *tools = parse(TOOLS);
+    tool_envelope e; char err[192]; bool skip = false;
+    assert(tool_envelope_build(tools, NULL, NULL, &e, err, sizeof err) == 1);
+    tool_decl_native(TMPL_QWEN3_CODER, true, true, tools, &e, &skip);
+    const char *doc = "<tool_call>\n<function=add>\n<parameter=b>\n2\n</parameter>\n<parameter=a>\n1\n</parameter>\n</function>\n</tool_call>";
+    sbuf out = {0}, tc = {0};
+    assert(tool_envelope_map(&e, doc, strlen(doc), &out, &tc) == 1);
+    sbuf wrapped = {0}; sb_lit(&wrapped, "["); sb_put(&wrapped, tc.s, tc.n); sb_lit(&wrapped, "]");
+    jv *calls = parse(wrapped.s);
+    assert(!strcmp(jv_str(jv_get(jv_get(calls->items[0], "function"), "arguments"), ""), "{\"a\":1,\"b\":2}"));
+    jv_free(calls); free(wrapped.s); free(out.s); free(tc.s);
+    const char *unknown = "<tool_call>\n<function=add>\n<parameter=a>\n1\n</parameter>\n<parameter=zz>\n1\n</parameter>\n</function>\n</tool_call>";
+    sbuf out2 = {0}, tc2 = {0};
+    assert(tool_envelope_map(&e, unknown, strlen(unknown), &out2, &tc2) < 0);
+    free(out2.s); free(tc2.s);
+    tool_envelope_free(&e); jv_free(tools);
+}
+
+// A JSON call whose string argument spells the closing tag: the first
+// `</tool_call>` in the bytes is inside the string, and cutting there hands
+// the parser half a document. The tag that closes the call is the first one
+// after which the body parses.
+static void test_qwen_json_closing_tag_inside_a_string(void) {
+    jv *tools = parse("[{\"type\":\"function\",\"function\":{\"name\":\"save\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}}}]");
+    tool_envelope e; char err[192]; bool skip = false;
+    assert(tool_envelope_build(tools, NULL, NULL, &e, err, sizeof err) == 1);
+    tool_decl_native(TMPL_CHATML, true, true, tools, &e, &skip);
+    assert(e.proto == TP_QWEN);
+    const char *doc = "<tool_call>\n{\"name\": \"save\", \"arguments\": {\"text\": \"the tag </tool_call> is text\"}}\n</tool_call>";
+    sbuf out = {0}, tc = {0};
+    assert(tool_envelope_map(&e, doc, strlen(doc), &out, &tc) == 1);
+    sbuf wrapped = {0}; sb_lit(&wrapped, "["); sb_put(&wrapped, tc.s, tc.n); sb_lit(&wrapped, "]");
+    jv *calls = parse(wrapped.s);
+    assert(calls && calls->n == 1);
+    assert(!strcmp(jv_str(jv_get(jv_get(calls->items[0], "function"), "arguments"), ""), "{\"text\":\"the tag </tool_call> is text\"}"));
+    jv_free(calls); free(wrapped.s); free(out.s); free(tc.s);
+    tool_envelope_free(&e); jv_free(tools);
+}
+
+// The native syntax has no insignificant whitespace: a newline between the
+// function name and its `>` or before an enum-valued string parameter was
+// grammatical (the walker took it for JSON whitespace at the node that
+// follows the names), and the parser, which reads the syntax as written,
+// then found no declaration named `f\n`. Every node of the call grammar is
+// whitespace-significant; the JSON values keep JSON's own rule.
+static void test_coder_grammar_has_no_insignificant_whitespace(void) {
+    jv *tools = parse("[{\"type\":\"function\",\"function\":{\"name\":\"f\",\"parameters\":{\"type\":\"object\",\"properties\":{\"s\":{\"type\":\"string\",\"enum\":[\"a\",\"b\"]},\"n\":{\"type\":\"integer\"}},\"required\":[\"s\"]}}}]");
+    char err[192];
+    snode *root = schema_compile_qwen_xml_turn(tools, false, NULL, NULL, false, err, sizeof err);
+    assert(root);
+    assert(accepts(root, "<tool_call>\n<function=f>\n<parameter=s>\na\n</parameter>\n</function>\n</tool_call>"));
+    assert(feeds(root, "<tool_call>\n<function=f>\n<parameter=s>\na"));
+    assert(!feeds(root, "<tool_call>\n<function=f\n"));
+    assert(!feeds(root, "<tool_call>\n<function=f>\n<parameter=s>\n\na"));
+    assert(!feeds(root, "<tool_call>\n<function=f>\n<parameter=s>\n a"));
+    // a JSON-typed value keeps JSON's whitespace rule and the parser trims it
+    assert(accepts(root, "<tool_call>\n<function=f>\n<parameter=s>\na\n</parameter>\n<parameter=n>\n\n7\n</parameter>\n</function>\n</tool_call>"));
+    schema_free(root); jv_free(tools);
+}
+
+static void test_qwen_prose_still_constrains_calls(void) {
+    jv *tools=parse(TOOLS);char err[192];
+    snode *root=schema_compile_qwen_turn(tools,true,NULL,NULL,false,true,err,sizeof err);
+    assert(root);
+    assert(!accepts(root,"Checking. <tool_call>\n{\"name\": \"undeclared\", \"arguments\": {}}\n</tool_call>"));
+    schema_free(root);jv_free(tools);
+}
+
+static void test_coder_constrained_turn(void) {
+    jv *tools=parse(TOOLS);char err[192];
+    snode *root=schema_compile_qwen_xml_turn(tools,true,NULL,NULL,false,err,sizeof err);
+    assert(root);
+    const char *doc="Checking.\n<tool_call>\n<function=add>\n<parameter=a>\n1\n</parameter>\n<parameter=b>\n2\n</parameter>\n</function>\n</tool_call><|im_end|>";
+    assert(accepts(root,doc));
+    assert(!accepts(root,"Checking. <tool_call>\n<function=undeclared>"));
+    assert(!accepts(root,"<tool_call>\n<function=add>\n</function>\n</tool_call>"));
+    tool_envelope e;bool skip=false;
+    assert(tool_envelope_build(tools,NULL,NULL,&e,err,sizeof err)==1);
+    tool_decl_native(TMPL_QWEN3_CODER,true,true,tools,&e,&skip);
+    for (size_t cut=0;cut<=strlen(doc);cut++) {
+        sval v;sval_init(&v,root);
+        if (!sval_feed(&v,doc,(int)cut)) continue;
+        char close[16384];size_t n=sval_close(&v,close,sizeof close);
+        assert(n!=SIZE_MAX);
+        sbuf whole={0},out={0},tc={0};sb_put(&whole,doc,cut);sb_put(&whole,close,n);
+        int calls=tool_envelope_map(&e,whole.s,whole.n,&out,&tc);
+        assert(calls>=0);
+        free(whole.s);free(out.s);free(tc.s);
+    }
+    tool_envelope_free(&e);schema_free(root);jv_free(tools);
+}
+
 int main(void) {
+    test_coder_constrained_turn();
+    test_qwen_prose_still_constrains_calls();
+    test_coder_native_calls();
+    test_coder_parameters_in_any_order();
+    test_coder_grammar_has_no_insignificant_whitespace();
+    test_qwen_json_closing_tag_inside_a_string();
     test_buffered_mapper_rejects_invalid_arguments();
     test_atem_structured_tool_automaton();
     test_atem_scalar_is_raw_until_parameter_close();

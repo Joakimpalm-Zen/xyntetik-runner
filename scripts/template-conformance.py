@@ -139,6 +139,10 @@ class Family:
 
 
 FAMILIES = {
+    "qwen3-coder": Family(
+        "qwen3-coder", ("hf", "Qwen/Qwen3-Coder-30B-A3B-Instruct"),
+        tool_family=True,
+        tokenizer=("Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf",)),
     "chatml": Family(
         "chatml", ("hf", "Qwen/Qwen2.5-7B-Instruct"),
         note="generic ChatML; Qwen2.5 is the concrete checkpoint the repo "

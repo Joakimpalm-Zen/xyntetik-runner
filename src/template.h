@@ -86,6 +86,8 @@ enum { TMPL_CHATML, TMPL_LLAMA2, TMPL_LLAMA3, TMPL_ZEPHYR, TMPL_GEMMA,
        // JSON one, and trims every content it renders. Detected by that
        // preamble's fixed text.
        TMPL_QWEN38,
+       // Qwen3-Coder: non-thinking ChatML with function/parameter XML.
+       TMPL_QWEN3_CODER,
        // What template_detect returns when NOTHING matched. It renders
        // llama-2 markup, because changing what unrecognised models render is
        // a behavioural decision and not this constant's job -- but it is a
@@ -267,6 +269,7 @@ enum tool_proto {
     TP_HARMONY,       // gpt-oss native channels + functions recipient
     TP_GEMMA4,        // gemma4 native <|tool_call>call:NAME{...}
     TP_QWEN,          // Qwen2.5/Qwen3 native <tool_call>{JSON}</tool_call>
+    TP_QWEN_XML,      // Qwen3-Coder function/parameter XML
     TP_MUSE_PLAIN,    // Muse: stream a schema payload after a to=user header
 };
 

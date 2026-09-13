@@ -2490,7 +2490,15 @@ static void test_muse_user_payload_strip_removes_only_recipient_header(void) {
     free(payload.s);
 }
 
+// Qwen/Qwen3-Coder-30B-A3B-Instruct tokenizer_config.json: function XML,
+// ChatML framing, and no thinking branch. Detection must not use the arch.
+static void test_detect_qwen3_coder(void) {
+    const char *native = "<|im_start|> <function=example_function_name> <parameter=example_parameter_1>";
+    assert(!strcmp(template_name(template_detect(native, NULL)), "qwen3-coder"));
+}
+
 int main(void) {
+    test_detect_qwen3_coder();
     gguf_file g;
     if (!gguf_open(&g, FIXTURE)) {
         fprintf(stderr, "cannot open %s (run from the repo root)\n", FIXTURE);

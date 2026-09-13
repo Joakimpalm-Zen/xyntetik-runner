@@ -280,7 +280,7 @@ static bool train_example_append(train_ex **exs, int *n_ex,
 static int train_eot_id(tokenizer *tok, int tmpl) {
     const char *s = NULL;
     switch (tmpl) {
-    case TMPL_CHATML: case TMPL_CHATML_THINK: case TMPL_QWEN38: s = "<|im_end|>"; break;
+    case TMPL_CHATML: case TMPL_CHATML_THINK: case TMPL_QWEN38: case TMPL_QWEN3_CODER: s = "<|im_end|>"; break;
     case TMPL_LLAMA3: s = "<|eot_id|>"; break;
     case TMPL_GEMMA: s = "<end_of_turn>"; break;
     case TMPL_GEMMA4: case TMPL_GEMMA4_MAINLINE: s = "<turn|>"; break;
