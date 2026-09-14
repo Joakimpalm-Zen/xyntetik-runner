@@ -327,3 +327,68 @@ def test_iquant_gpu_matches_cpu(runner_bin, gpu_identity_bin, iq_files, t):
         unavailable("gpu", f"{t}: the gate skipped (no device, or CPU fallback)")
     assert p.returncode == 0, log
     assert "gpu-identity: ok" in log, log
+
+
+@pytest.fixture(scope="module")
+def tc_tol_bin():
+    exe = ROOT / ("test-tc-tol.exe" if sys.platform == "win32" else "test-tc-tol")
+    if not exe.exists():
+        unavailable("tc", "test-tc-tol not built (make test-tc-tol)")
+    return exe
+
+
+# The codebook formats whose prefill is claimed to run on the tensor
+# cores. A type listed here must dispatch its batched GEMM in the forced-on
+# arm of the tolerance gate on every fixture file that carries it in a
+# block, and the gate's numbers must pass; a type not listed is the scalar
+# path's and is not asked to. Empty until the first IQ tensor-core kernel
+# lands; the leg still runs the gate wherever a file's other block types
+# (Q6_K, Q5_K on these fixtures) have one.
+IQ_TC_TYPES = []
+
+
+@pytest.mark.parametrize("t", IQ_TYPES)
+def test_iquant_tc_matches_scalar(runner_bin, tc_tol_bin, iq_files, t):
+    """The forced-tensor-core gate (tests/test_tc_tol.c) on each fixture:
+    a separate gate from the scalar identity above, which pins TC off. The
+    backend's own kernel table decides which of the file's block types
+    must dispatch; the gate then requires every one of them to have run in
+    the forced-on arm and none in the forced-off arms, and holds the logits
+    to its tolerance and the free-running greedy text to identity."""
+    caps = json.loads(subprocess.run(
+        [runner_bin, "--caps"], cwd=ROOT, stdout=subprocess.PIPE,
+        check=True).stdout)
+    if not caps.get("gpu"):
+        unavailable("tc", "no GPU backend on this machine")
+    model, types = iq_files[t]
+    lacking = sorted(types - set(caps.get("gpu_quants", [])))
+    if lacking:
+        unavailable("tc", f"{t}: {lacking} have no kernel on the "
+                    f"{caps['gpu'].get('backend')} backend")
+    backend_tc = set(subprocess.run(
+        [tc_tol_bin, "--types"], cwd=ROOT, stdout=subprocess.PIPE, check=True,
+        text=True).stdout.split()[1:])
+    claimed = sorted(set(IQ_TC_TYPES) & types)
+    not_carried = [x for x in claimed if x not in backend_tc]
+    assert not not_carried, (
+        f"{t}: {not_carried} are claimed tensor-core formats but the "
+        f"{caps['gpu'].get('backend')} backend's kernel table lacks them "
+        f"(it lists {sorted(backend_tc)})")
+    p = subprocess.run([tc_tol_bin, model], cwd=ROOT,
+                       stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                       timeout=900)
+    log = p.stdout.decode(errors="replace")
+    if "no block tensor of a type this backend has a batched GEMM" in log:
+        # the file's only TC-capable tensor sits outside the blocks (the
+        # Q6_K embedding on these fixtures), which the gate rightly does
+        # not count; a claimed format IS a block type here, so it may not
+        # be the reason
+        assert not claimed, f"{t}: {claimed} present yet the gate found no eligible block type\n{log}"
+        pytest.skip(f"{t}: no block type of this file has a batched GEMM")
+    if "GPU or config unavailable" in log:
+        unavailable("tc", f"{t}: the gate could not load the model on the device")
+    assert p.returncode == 0 and "tc-tol: ok" in log, log
+    assert "ok (skipped)" not in log, log
+    for x in claimed:
+        assert re.search(rf"tc-b64\s+TC dispatches:.*\b{x}=[1-9]", log), (
+            f"{t}: {x} never dispatched its tensor-core GEMM in the forced-on arm\n{log}")
