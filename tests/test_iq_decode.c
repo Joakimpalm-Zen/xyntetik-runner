@@ -109,20 +109,129 @@ static void iq3s_known_block(void) {
     stage_block_matches(T_IQ3_S, blk, stage_iq3s, "IQ3_S known block");
 }
 
-static void iq3s_random_blocks(void) {
-    iq_byte blk[110];
+// 500 random blocks of a format plus the scale corners (zero, the smallest
+// subnormal, the largest half, both signs), each held to dequant_row
+static void random_blocks(int type, size_t nbytes, stage64_fn stage, const char *name) {
+    iq_byte blk[160];
+    char what[64];
+    snprintf(what, sizeof what, "%s random block", name);
     for (int n = 0; n < 500; n++) {
-        for (size_t i = 0; i < sizeof blk; i++) blk[i] = (iq_byte)rnd();
+        for (size_t i = 0; i < nbytes; i++) blk[i] = (iq_byte)rnd();
         put_f16(blk, rnd_f16_scale());
-        if (!stage_block_matches(T_IQ3_S, blk, stage_iq3s, "IQ3_S random block")) return;
+        if (!stage_block_matches(type, blk, stage, what)) return;
     }
-    // the scale corners: zero, the smallest subnormal, the largest half
     static const unsigned corners[] = { 0x0000, 0x0001, 0x7bff, 0x8001, 0xfbff };
+    snprintf(what, sizeof what, "%s scale corner", name);
     for (size_t c = 0; c < sizeof corners / sizeof *corners; c++) {
-        for (size_t i = 0; i < sizeof blk; i++) blk[i] = (iq_byte)rnd();
+        for (size_t i = 0; i < nbytes; i++) blk[i] = (iq_byte)rnd();
         put_f16(blk, corners[c]);
-        if (!stage_block_matches(T_IQ3_S, blk, stage_iq3s, "IQ3_S scale corner")) return;
+        if (!stage_block_matches(type, blk, stage, what)) return;
     }
+}
+
+// the host tables are uint64_t, which glibc spells unsigned long; the
+// device header's iq_u64 is unsigned long long. Same width, same bytes.
+_Static_assert(sizeof(iq_u64) == sizeof(uint64_t), "iq_u64 is a 64-bit word");
+#define G64(t) ((const iq_u64 *)(t))
+static void stage_iq3xxs(float *dst, const iq_byte *blk, int seg) { iq3xxs_stage64(dst, blk, seg, iq3xxs_grid); }
+static void stage_iq2s(float *dst, const iq_byte *blk, int seg)   { iq2s_stage64(dst, blk, seg, G64(iq2s_grid)); }
+static void stage_iq2xs(float *dst, const iq_byte *blk, int seg)  { iq2xs_stage64(dst, blk, seg, G64(iq2xs_grid)); }
+static void stage_iq2xxs(float *dst, const iq_byte *blk, int seg) { iq2xxs_stage64(dst, blk, seg, G64(iq2xxs_grid)); }
+
+static float mag8(iq_u64 g, int j) { return (float)((g >> (8 * j)) & 0xFF); }
+static float mag4(unsigned g, int j) { return (float)((g >> (8 * j)) & 0xFF); }
+
+// IQ3_XXS hand-built block, d = 2.0. Sub-block 0's word at byte 66 is
+// 0x30000001: scale nibble 3 in the TOP of a field that is only 2-byte
+// aligned (db = 2 * 3.5 / 2 = 3.5), sign index 1 for octet 0 (expands to
+// 0x81: weight 0 of the first grid, weight 3 of the second, negative). Every
+// index is 0, grid[0] = 0x04040404. Sub-blocks 1..7 have a zero word:
+// scale nibble 0, db = 2 * 0.5 / 2 = 0.5.
+static void iq3xxs_known_block(void) {
+    iq_byte blk[98];
+    memset(blk, 0, sizeof blk);
+    put_f16(blk, 0x4000);
+    blk[66] = 0x01; blk[69] = 0x30;
+    float got[256];
+    for (int seg = 0; seg < 4; seg++) stage_iq3xxs(got + 64 * seg, blk, seg);
+    CK(iq3xxs_grid[0] == 0x04040404u, "iq3xxs_grid[0] (%08x)", iq3xxs_grid[0]);
+    for (int j = 0; j < 8; j++) {
+        float want = 3.5f * 4.0f * ((j == 0 || j == 7) ? -1.0f : 1.0f);
+        CK(got[j] == want, "IQ3_XXS known block: weight %d = %g, want %g", j, (double)got[j], (double)want);
+    }
+    for (int j = 8; j < 32; j++) CK(got[j] == 14.0f, "IQ3_XXS known block: weight %d = %g", j, (double)got[j]);
+    for (int j = 32; j < 256; j++) CK(got[j] == 2.0f, "IQ3_XXS known block: weight %d = %g", j, (double)got[j]);
+    stage_block_matches(T_IQ3_XXS, blk, stage_iq3xxs, "IQ3_XXS known block");
+}
+
+// IQ2_S hand-built block, d = 2.0. Sub-block 0: scale byte 0x21 (weights
+// 0..15 scale (0.5+1)/4 -> db 0.75, weights 16..31 (0.5+2)/4 -> 1.25),
+// high-bit byte 0x01 (index 0 of octet 0 becomes 256: the ten-bit index),
+// direct sign byte 0x81 on octet 0, every index byte 0. grid[0] is the
+// all-8 entry; sub-blocks 1..7 have scale byte 0 -> db 0.25.
+static void iq2s_known_block(void) {
+    iq_byte blk[82];
+    memset(blk, 0, sizeof blk);
+    put_f16(blk, 0x4000);
+    blk[74] = 0x21; blk[66] = 0x01; blk[34] = 0x81;
+    float got[256];
+    for (int seg = 0; seg < 4; seg++) stage_iq2s(got + 64 * seg, blk, seg);
+    CK(iq2s_grid[0] == 0x0808080808080808ull, "iq2s_grid[0]");
+    iq_u64 g256 = iq2s_grid[256];
+    for (int j = 0; j < 8; j++) {
+        float want = 0.75f * mag8(g256, j) * ((j == 0 || j == 7) ? -1.0f : 1.0f);
+        CK(got[j] == want, "IQ2_S known block: weight %d = %g, want %g", j, (double)got[j], (double)want);
+    }
+    for (int j = 8; j < 16; j++) CK(got[j] == 6.0f, "IQ2_S known block: weight %d = %g", j, (double)got[j]);
+    for (int j = 16; j < 32; j++) CK(got[j] == 10.0f, "IQ2_S known block: weight %d = %g", j, (double)got[j]);
+    for (int j = 32; j < 256; j++) CK(got[j] == 2.0f, "IQ2_S known block: weight %d = %g", j, (double)got[j]);
+    stage_block_matches(T_IQ2_S, blk, stage_iq2s, "IQ2_S known block");
+}
+
+// IQ2_XS hand-built block, d = 2.0. Sub-block 0's first word is 0x0201:
+// nine-bit index 1 and seven-bit sign index 1 sharing the 16 bits (grid[1]
+// has 0x2b in byte 0 and 8 elsewhere; the sign expands to 0x81). Scale byte
+// 0x21 as in IQ2_S. Other words 0 (grid[0], signs 0); sub-blocks 1..7 scale
+// byte 0 -> db 0.25.
+static void iq2xs_known_block(void) {
+    iq_byte blk[74];
+    memset(blk, 0, sizeof blk);
+    put_f16(blk, 0x4000);
+    blk[2] = 0x01; blk[3] = 0x02; blk[66] = 0x21;
+    float got[256];
+    for (int seg = 0; seg < 4; seg++) stage_iq2xs(got + 64 * seg, blk, seg);
+    iq_u64 g1 = iq2xs_grid[1];
+    CK((g1 & 0xFF) == 0x2b && ((g1 >> 8) & 0xFF) == 8, "iq2xs_grid[1] (%016llx)", g1);
+    for (int j = 0; j < 8; j++) {
+        float want = 0.75f * mag8(g1, j) * ((j == 0 || j == 7) ? -1.0f : 1.0f);
+        CK(got[j] == want, "IQ2_XS known block: weight %d = %g, want %g", j, (double)got[j], (double)want);
+    }
+    for (int j = 8; j < 16; j++) CK(got[j] == 6.0f, "IQ2_XS known block: weight %d = %g", j, (double)got[j]);
+    for (int j = 16; j < 32; j++) CK(got[j] == 10.0f, "IQ2_XS known block: weight %d = %g", j, (double)got[j]);
+    for (int j = 32; j < 256; j++) CK(got[j] == 2.0f, "IQ2_XS known block: weight %d = %g", j, (double)got[j]);
+    stage_block_matches(T_IQ2_XS, blk, stage_iq2xs, "IQ2_XS known block");
+}
+
+// IQ2_XXS hand-built block, d = 2.0. Sub-block 0: index bytes 1,0,0,0 and
+// the word 0x30000001 at byte 6 (scale 3 -> db = 2 * 3.5 / 4 = 1.75, sign
+// index 1 for octet 0), read from a 2-byte aligned address in a 66-byte
+// block. Sub-blocks 1..7 zero: db 0.25 on grid[0].
+static void iq2xxs_known_block(void) {
+    iq_byte blk[66];
+    memset(blk, 0, sizeof blk);
+    put_f16(blk, 0x4000);
+    blk[2] = 0x01; blk[6] = 0x01; blk[9] = 0x30;
+    float got[256];
+    for (int seg = 0; seg < 4; seg++) stage_iq2xxs(got + 64 * seg, blk, seg);
+    iq_u64 g1 = iq2xxs_grid[1];
+    CK(iq2xxs_grid[0] == 0x0808080808080808ull, "iq2xxs_grid[0]");
+    for (int j = 0; j < 8; j++) {
+        float want = 1.75f * mag8(g1, j) * ((j == 0 || j == 7) ? -1.0f : 1.0f);
+        CK(got[j] == want, "IQ2_XXS known block: weight %d = %g, want %g", j, (double)got[j], (double)want);
+    }
+    for (int j = 8; j < 32; j++) CK(got[j] == 14.0f, "IQ2_XXS known block: weight %d = %g", j, (double)got[j]);
+    for (int j = 32; j < 256; j++) CK(got[j] == 2.0f, "IQ2_XXS known block: weight %d = %g", j, (double)got[j]);
+    stage_block_matches(T_IQ2_XXS, blk, stage_iq2xxs, "IQ2_XXS known block");
 }
 
 int main(void) {
@@ -194,13 +303,25 @@ int main(void) {
         }
     }
 
-    // 7. the tensor-core staging decoders, block by block
+    // 7. the tensor-core staging decoders, block by block: a hand-built
+    //    block per format from the format's definition, then 500 random
+    //    blocks and the scale corners against dequant_row
     iq3s_known_block();
-    iq3s_random_blocks();
+    random_blocks(T_IQ3_S, 110, stage_iq3s, "IQ3_S");
+    iq3xxs_known_block();
+    random_blocks(T_IQ3_XXS, 98, stage_iq3xxs, "IQ3_XXS");
+    iq2s_known_block();
+    random_blocks(T_IQ2_S, 82, stage_iq2s, "IQ2_S");
+    iq2xs_known_block();
+    random_blocks(T_IQ2_XS, 74, stage_iq2xs, "IQ2_XS");
+    iq2xxs_known_block();
+    random_blocks(T_IQ2_XXS, 66, stage_iq2xxs, "IQ2_XXS");
+    (void)mag4;
 
     printf(g_fail ? "iq-decode: FAILED\n"
                   : "iq-decode: ok (128 sign expansions, 2048+2048 grid signs, "
-                    "4096 IQ1 values, field reads, 65536 halves, IQ3_S staging: "
-                    "1 known + 500 random + 5 corner blocks bitwise)\n");
+                    "4096 IQ1 values, field reads, 65536 halves; staging of "
+                    "IQ3_S, IQ3_XXS, IQ2_S, IQ2_XS, IQ2_XXS: 1 known + 500 random "
+                    "+ 5 corner blocks each, bitwise)\n");
     return g_fail;
 }
