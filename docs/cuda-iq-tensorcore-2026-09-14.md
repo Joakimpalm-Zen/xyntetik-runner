@@ -23,164 +23,130 @@ Five review findings, each fixed red first where a mutation could show it:
 | P2: the TC gate's hand-kept type list lacked Q6_K; engagement was one total | `gpu_tc_type_has_kernel()` and `gpu_tc_dispatches_type()` from the backend's own kernel table; per-format engagement required in the forced-on arm, none allowed in the forced-off arms | `test-tc-tol --types`; granite-4.2-3b Q4_K_M on the Blackwell: `Q4_K=480 Q6_K=80` |
 | P3: the sign-expansion test never executed the device helper | the decode primitives moved to `src/iq_decode.h`, compiled by nvcc and by the C compiler into `tests/test_iq_decode.c` | the review's parity mutation fails 64 of 128 expansions; the PTX header's entries and tables are checked from Python |
 
-## Step 1, IQ3_S (opt-in)
+## Steps 1 and 2, the nine kernels
 
-`k_gemm_iq3_s_tc`: the `TC_GEMM_BLK` shape (the Q8_0/Q4_0 macro generalised
-over the block's element count, their PTX unchanged) with the 110-byte,
-256-weight block. The 64-row x 128-K fp16 weight tile is staged two
-64-element segments per row per K-step by `iq3s_stage64` in
-`src/iq_decode.h`; the same source, compiled for the host, is held to
-`dequant_row()` bit for bit on a hand-built block (the ninth index bit
-through `qh`, two distinct odd scales in one scale byte, a negative sign
-in each half of an octet), 500 random blocks and the scale corners (zero,
-the smallest subnormal, the largest half). Registered in `TC_KERNELS`, not
-promoted: `RUNNER_CUDA_TC=1` or the gate's `gpu_tc_force(1)` reaches it.
-Single-token decode stays on the generic matvec.
+`k_gemm_iq*_tc` for IQ1_S, IQ1_M, IQ2_XXS, IQ2_XS, IQ2_S, IQ3_XXS, IQ3_S,
+IQ4_XS and IQ4_NL: the `TC_GEMM_BLK` shape (the Q8_0/Q4_0 macro
+generalised over the block's element count, their PTX unchanged) with the
+format's block (50, 56, 66, 74, 82, 98, 110, 136 bytes per 256 weights;
+IQ4_NL's 18 bytes per 32 in the Q4_0 stager's two-block shape). The
+64-row x 128-K fp16 weight tile is staged two 64-element segments per row
+per K-step by the `*_stage64` functions in `src/iq_decode.h`; the same
+source, compiled for the host, is held by `tests/test_iq_decode.c` to
+`dequant_row()` bit for bit on 500 random blocks and the scale corners per
+format (IQ1_M's planted nibble by nibble into its scattered half) and to
+the format's definition on a hand-built block per format, one per row of
+the plan's hazard table. Each landed red first: `IQ_TC_TYPES` in
+`tests/test_iquants.py` claimed the format and the forced-TC leg failed
+until the backend's kernel table carried it (#95, #97, #98).
 
-Precision contract: fp16 operands, fp32 accumulation, the class the four
-promoted formats already live in. No IQ3_S product overflows fp16 (the
-block scale is a half, the sub-block scale is at most 31, the grid
-magnitudes at most 15; the staged value is `d * scale * magnitude` and the
-scalar kernel computes the same product in fp32), so the staging error is
-the fp16 rounding of that product and of the activations, measured below
-as the deviation from the scalar path.
+### The precision contract, and the model that broke the first draft
 
-### Measured (forced on against forced off, same binary and split)
+fp16 operands, fp32 accumulation, the class the four promoted formats live
+in. The first draft staged activations as the promoted kernels do,
+`__float2half(x)`. The plan's warning ("FP16 staging can overflow even
+when FP32 computation is finite") came true on the first architecture row
+beyond granite: Phi-4-mini requantized to IQ3_S has |x| = 1.6e5 at its
+first position in layer 30 (the FFN activation, the `ffn_down` input; the
+CPU path's `RUNNER_DEBUG_ACT` measured it), past fp16's 65504, so the
+staged operand was Inf and every logit of the forced-TC arm came out NaN.
+The non-finite check the review asked for (Step 0) is what caught it; the
+run was deterministic and memcheck, racecheck, synccheck and initcheck
+were clean, which is how a range problem was told apart from a kernel
+defect. The scalar path and the promoted formats on the Q4_K_M sibling
+stay under the limit.
 
-| model | box | dispatches (forced-on arm) | teacher-forced (64 positions) | free-running |
+The nine kernels therefore take the `XSCALED` form of the macro: each
+token column is staged as `x * (2^14 / max|x|)` and the product is scaled
+back in the epilogue; `k_colabsmax` computes the per-column maxima into a
+64-float buffer right before each tile's launch and the kernel receives
+them as a trailing parameter (the NVFP4 companion's shape, so no shared
+argument layout moves). Cost: one 64-block reduction per tile, about 2%
+of prefill throughput on the RTX 3070. The promoted Q4_K/Q6_K/Q8_0/Q4_0
+kernels keep their unscaled form and PTX; **their exposure to the same
+overflow is real** (a model whose activations exceed 65504 would produce
+NaN logits on the default path today) and is recorded here for the
+owner: extending the scaled form to them is a small change but re-gates
+four promoted formats.
+
+### Gate rows (forced on against forced off, same binary and split)
+
+Every row is `tests/test_tc_tol.c`: 64 teacher-forced positions, then
+free-running greedy at batch 64 / ctx 4096. Every free-running arm below
+is token-identical; every flip listed is a near-tie inside the gate's
+margin.
+
+| model | box | forced-on dispatches | of range | flips |
 |---|---|---|---|---|
-| llama-quantize IQ3_S fixture (256-wide) | RTX 3070, Windows | IQ3_S=28 | 7e-5 of range, 0 flips | 128 prompt + 32 greedy tokens identical |
-| same | Blackwell MIG slice | IQ3_S=28 | 7e-5 of range, 0 flips | identical |
-| granite-4.2-3b requantized to IQ3_S (241 IQ3_S, 40 Q4_K tensors), all 40 layers on the device | RTX 3070 | Q4_K=80 IQ3_S=480 | 8e-5 of range (mean 0.0024 of 29.2), 0 flips | identical |
-| same | Blackwell slice | Q4_K=80 IQ3_S=480 | 8e-5 of range, 0 flips | identical |
-| Qwen3.8-27B GSQ-RCO (the motivating file), 40 of 64 layers on the slice, `tc_vs_scalar.py` | Blackwell slice | IQ3_S tensors of the resident layers | greedy at 64 tokens: 9 of 9 prompts identical | (the runs are free-running) |
-
-Sanitizers, RTX 3070, `compute-sanitizer` 13.3 on the whole `test-tc-tol`
-run of the fixture (IQ3_S=28 dispatches under each tool): memcheck 0
-errors, racecheck 0 hazards, synccheck 0 errors, initcheck 0 errors.
-
-### Prefill throughput, `pp_bench` (5 warmed runs, median, `-n 1`)
-
-| prompt | RTX 3070 scalar | RTX 3070 TC | Blackwell slice scalar | Blackwell slice TC |
-|---|---|---|---|---|
-| 118 tokens | 24.6 tok/s | 495.4 tok/s (20x) | 13.8 | 221.7 (16x) |
-| 475 tokens | 26.2 | 459.8 (18x) | 12.1 | 237.2 (20x) |
-| 1892 tokens | 25.7 | 376.9 (15x) | 11.9 | 161.6 (14x) |
-
-Run-to-run spread on the RTX 3070 is under 1%; on the Blackwell slice it is
-6 to 53% because the slice is shared with a training job, so those rows are
-order-of-magnitude evidence, not a number to quote. The scalar column is the
-generic warp-per-row `k_mv_iq3_s_b` applied to 64 columns, which is why the
-gap is an order of magnitude larger than the promoted formats' rows: the
-codebook formats had no batched GEMM at all.
-
-### Promotion status
-
-Not promoted. The plan's gate (at least 10% median improvement over five
-warmed runs above noise, no regression over 5% on the workloads assigned to
-the path) is met by a wide margin on both device families for the one
-architecture measured in full (granite), and the precision rows match the
-promoted formats'. Promotion waits for the rest of the family so the
-decision is made once per architecture with the per-type dispatch counts
-in hand, as the plan orders.
-
-Evidence files: `cuda-iq-tensorcore-evidence/` (the two benches, the two
-gate logs, the racecheck log, the GSQ-RCO greedy comparison).
-
-## Step 2, group 2: IQ3_XXS, IQ2_S, IQ2_XS, IQ2_XXS (opt-in)
-
-The same `TC_GEMM_BLK` shape with the 98, 82, 74 and 66-byte blocks; the
-stagers in `src/iq_decode.h` are held to `dequant_row()` bit for bit on
-500 random blocks and the scale corners per format, and to the format's
-definition on a hand-built block each, one per row of the plan's hazard
-table: IQ3_XXS's scale nibble in the top of a 2-byte-aligned word and its
-packed seven-bit signs over two four-magnitude grids; IQ2_S's ten-bit
-index through the high-bit byte, direct sign bytes and two scales per
-sub-block; IQ2_XS's nine-bit index and seven-bit sign index sharing one
-16-bit word; IQ2_XXS's 32-bit field at byte 6 of a 66-byte block. PTX from
-CUDA 13.3 on the Windows box: four kernels added, no other body changed.
-
-Real models: granite-4.2-3b-bf16 requantized with llama-quantize b10353
-and an imatrix from the runner's own docs (200 chunks of 512). The
-llama-quantize recipes mix: the IQ3_XXS file carries 120 IQ3_XXS, 80
-IQ2_S and 41 IQ3_S tensors, the IQ2_S recipe stores 195 IQ2_XS and 46
-IQ3_S (no IQ2_S tensor at all), the IQ2_XS and IQ2_XXS files 235 of their
-own type; each has 40 Q4_K tensors beside them. Every type present is
-required to dispatch, and does.
-
-| model (all 40 layers on the device) | box | forced-on dispatches | teacher-forced | free-running |
-|---|---|---|---|---|
-| fixtures m-IQ3_XXS / m-IQ2_S / m-IQ2_XS / m-IQ2_XXS | RTX 3070 and Blackwell slice | IQ3_XXS=16 IQ3_S=4 IQ2_S=8 / IQ2_XS=20 IQ3_S=8 / IQ2_XS=24 / IQ2_XXS=24 | 3e-5 to 7e-5 of range, 0 flips each | identical, each |
-| granite-4.2-3b IQ3_XXS recipe | RTX 3070 | Q4_K=80 IQ3_XXS=240 IQ3_S=80 IQ2_S=160 | 6e-5 of range, 0/64 flips | identical |
-| same | Blackwell slice | same counts | 7e-5, 0/64 | identical |
-| granite-4.2-3b IQ2_S recipe | Blackwell slice | Q4_K=80 IQ2_XS=390 IQ3_S=90 | 1.1e-4, 0/64 | identical |
-| granite-4.2-3b IQ2_XS | Blackwell slice | Q4_K=80 IQ2_XS=470 | 1.2e-4, 0/64 | identical |
-| granite-4.2-3b IQ2_XXS | RTX 3070 | Q4_K=80 IQ2_XXS=470 | 1.3e-4, 0/64 | identical |
-| same | Blackwell slice | same | 1.3e-4, 0/64 | identical |
-
-Sanitizers, RTX 3070, the whole `test-tc-tol` run of each of the four
-fixtures under memcheck, racecheck, synccheck and initcheck: 0 errors, 0
-hazards, every run with its claimed types dispatching.
-
-### Prefill throughput (RTX 3070, 5 warmed runs, median, spread under 1%)
-
-| model | 118 tokens | 475 tokens | 1892 tokens |
-|---|---|---|---|
-| IQ3_XXS recipe (IQ3_XXS + IQ2_S + IQ3_S on the tensor cores) | 24.4 to 458.5 tok/s (19x) | 26.1 to 436.4 (17x) | 25.8 to 359.8 (14x) |
-| IQ2_XXS | 25.3 to 326.8 (13x) | 26.9 to 322.6 (12x) | 26.5 to 276.3 (10x) |
-
-The Blackwell slice was shared with another job's 14B load during this
-group's benches (one run was refused VRAM outright, spreads up to 50%), so
-its rows (`pp-bench-*-blackwell.json`) are kept as order-of-magnitude
-evidence only: IQ3_XXS 17 to 324-378 tok/s, IQ2_S 11-16 to 181-280, IQ2_XS
-11-18 to 100-127, IQ2_XXS 12 to 104-132.
-
-Promotion status unchanged: opt-in, the whole family first.
-
-## Step 2, groups 3 and 4: IQ1_S, IQ1_M, IQ4_XS, IQ4_NL (opt-in)
-
-IQ1_S and IQ1_M take the same shape with 50 and 56-byte blocks; the IQ1
-grid's bytes are signed and every octet carries a delta of plus or minus
-1/8, and IQ1_M's block scale is a half scattered across the top nibbles of
-its four scale words, reassembled by `iq_f16_bits` (exact on the host,
-`__ushort_as_half` on the device). IQ4_XS is the shape with the 136-byte
-block and the 16-entry nibble codebook; IQ4_NL has 32-element blocks and
-takes the Q4_0 stager's shape (two blocks per segment, tail-safe past
-n_in), so it is the `TC_GEMM_32B` instance. Hand-built blocks pin IQ1_S's
-3-bit scale, negative delta and high index bits in one word, IQ1_M's
-scattered half, two local scales and per-grid delta signs, and IQ4_XS's
-6-bit scale assembled from two fields; the IQ1_M random blocks plant the
-corner scales nibble by nibble. The fixture set gains the IQ4_XS and
-IQ4_NL recipes, so every claimed format has a fixture and the required
-gate on the Windows box now runs 20 legs.
-
-| model | box | forced-on dispatches | teacher-forced | free-running |
-|---|---|---|---|---|
-| fixtures m-IQ1_S / m-IQ1_M / m-IQ4_XS / m-IQ4_NL | RTX 3070 and Blackwell slice | IQ1_S=20 (IQ2_XXS=4) / IQ1_M=20 (IQ2_XXS=4) / IQ4_XS=28 / IQ4_NL=28 | 3e-5 to 7e-5 of range; 0 flips, except one exact tie (margin 0.0000) on m-IQ1_M | identical, each |
-| granite-4.2-3b IQ1_S (195 IQ1_S, 40 IQ2_XXS, 40 Q4_K) | Blackwell slice | Q4_K=80 IQ2_XXS=80 IQ1_S=390 | 8.6e-4 of range (mean 0.0216 of 25.1), 0/64 | identical |
-| granite-4.2-3b IQ1_M (195 IQ1_M, 40 IQ2_XXS, 40 Q4_K) | RTX 3070 | Q4_K=80 IQ2_XXS=80 IQ1_M=390 | 3.4e-4 of range, 0/64 | identical |
-| same | Blackwell slice | same | 3.4e-4, 0/64 | identical |
-| granite-4.2-3b IQ4_XS (236 IQ4_XS, 45 Q5_K) | Blackwell slice | IQ4_XS=470 | 4e-5, 0/64 | identical |
-| granite-4.2-3b IQ4_NL (236 IQ4_NL, 45 Q5_K) | Blackwell slice | IQ4_NL=470 | 5e-5, 0/64 | identical |
+| llama-quantize fixtures, all nine formats (256-wide) | RTX 3070 and Blackwell slice | each claimed type (IQ3_XXS=16 IQ3_S=4 IQ2_S=8; IQ3_S=28; IQ2_XXS=24; IQ2_XS=24; IQ2_XS=20 IQ3_S=8; IQ1_S=20; IQ1_M=20; IQ4_XS=28; IQ4_NL=28) | 3e-5 to 7e-5 | 0 |
+| granite-4.2-3b IQ3_S (241 IQ3_S, 40 Q4_K), all layers on the device | Blackwell slice / RTX 3070 | Q4_K=80 IQ3_S=480 | 9e-5 / 8e-5 | 0 / 0 |
+| granite-4.2-3b IQ3_XXS recipe (120 IQ3_XXS, 80 IQ2_S, 41 IQ3_S) | Blackwell / RTX 3070 | Q4_K=80 IQ3_XXS=240 IQ3_S=80 IQ2_S=160 | 6e-5 / 6e-5 | 0 / 0 |
+| granite-4.2-3b IQ2_S recipe (195 IQ2_XS, 46 IQ3_S) | Blackwell | Q4_K=80 IQ2_XS=390 IQ3_S=90 | 1.1e-4 | 1 |
+| granite-4.2-3b IQ2_XS | Blackwell | Q4_K=80 IQ2_XS=470 | 1.2e-4 | 0 |
+| granite-4.2-3b IQ2_XXS | Blackwell / RTX 3070 | Q4_K=80 IQ2_XXS=470 | 1.3e-4 / 1.3e-4 | 0 / 0 |
+| granite-4.2-3b IQ1_S (195 IQ1_S, 40 IQ2_XXS) | Blackwell | Q4_K=80 IQ2_XXS=80 IQ1_S=390 | 9.0e-4 | 2 |
+| granite-4.2-3b IQ1_M | Blackwell / RTX 3070 | Q4_K=80 IQ2_XXS=80 IQ1_M=390 | 3.4e-4 / 3.5e-4 | 0 / 1 |
+| granite-4.2-3b IQ4_XS (236 IQ4_XS, 45 Q5_K) | Blackwell | IQ4_XS=470 | 4e-5 | 0 |
+| granite-4.2-3b IQ4_NL | Blackwell | IQ4_NL=470 | 4e-5 | 0 |
+| Phi-4-mini IQ3_S (the overflow model) | Blackwell / RTX 3070 | IQ3_S=448 | 2.4e-4 / 2.5e-4 | 2 / 3 |
+| Llama-3.2-3B IQ3_S | Blackwell | IQ3_S=392 | 9e-5 | 0 |
+| Qwen3-4B IQ3_S | Blackwell | Q4_K=72 IQ3_S=432 | 2.4e-4 | 0 |
+| SmolLM2-1.7B IQ3_S | Blackwell | IQ3_S=336 | 3e-5 | 0 |
+| Mistral-7B IQ3_S | Blackwell | Q4_K=64 IQ3_S=384 | 4e-5 | 0 |
+| gemma-3-4b IQ3_S | Blackwell | IQ3_S=476 | 6e-5 | 0 |
+| gemma-4-E4B IQ3_S | Blackwell | Q4_K=48 IQ3_S=636 | 9e-5 | 0 |
+| Llama-3.2-3B IQ2_XXS | Blackwell | IQ2_XXS=330 | 4e-5 | 0 |
+| Qwen3-4B IQ2_XXS | Blackwell | Q4_K=72 IQ2_XXS=424 | 1.0e-4 | 1 |
+| SmolLM2-1.7B IQ2_XXS | Blackwell | IQ2_XXS=282 | 1.0e-4 | 0 |
+| Qwen3.8-27B GSQ-RCO (qwen35, the motivating file), 40 of 64 layers on the slice | Blackwell | resident IQ tensors | greedy at 64 tokens: 9 of 9 prompts identical | |
 
 The IQ1 rows are the family's largest deviations, an order of magnitude
-under the gate's bound and still 0 flips with identical free-running text;
-the 1-bit formats' logits are the most sensitive to the fp16 rounding of
-`scale * (grid + delta)`, whose values are not powers of two. Sanitizers,
-RTX 3070, each of the four fixtures' whole gate run under memcheck,
-racecheck, synccheck and initcheck: clean.
+under the bound: the 1-bit formats' logits are the most sensitive to the
+fp16 rounding of `scale * (grid + delta)`. The other architectures'
+models were requantized from their Q4_K_M files (`--allow-requantize`,
+imatrix from the runner's docs for IQ2_XXS), which says nothing about
+their quality and everything the gate needs about the two paths.
 
-### Prefill throughput
+Sanitizers: `compute-sanitizer` 13.3 on the RTX 3070, the whole
+`test-tc-tol` run of each of the nine fixtures under memcheck, racecheck,
+synccheck and initcheck: 0 errors, 0 hazards, with the claimed types
+dispatching in each run.
 
-| model | box | 118 tokens | 475 tokens | 1892 tokens |
-|---|---|---|---|---|
-| IQ1_M | RTX 3070 (spread under 1.1%) | 24.5 to 346.1 tok/s (14x) | 26.3 to 341.4 (13x) | 26.0 to 289.6 (11x) |
-| IQ1_S | Blackwell slice (shared) | 16.9 to 211.6 | 18.2 to 201.4 | 18.2 to 165.9 |
-| IQ1_M | Blackwell slice (shared) | 16.5 to 200.0 | 18.2 to 198.6 | 18.1 to 163.5 |
-| IQ4_XS | Blackwell slice (shared) | 15.2 to 299.9 | 16.7 to 306.7 | 16.6 to 250.9 |
-| IQ4_NL | Blackwell slice (shared) | 12.7 to 282.1 | 13.5 to 287.1 | 13.4 to 254.1 |
+### Prefill throughput (RTX 3070, 5 warmed runs, median, spread under 1%, `-n 1`)
 
-The family is complete: nine formats, each with a fixture row on both
-device families, a full-device real-model row, a sanitizer run and a
-prefill measurement. Promotion is the next step, decided per architecture
-with these rows in hand.
+| model, all layers on the device | 118 tokens | 475 tokens | 1892 tokens |
+|---|---|---|---|
+| granite-4.2-3b IQ3_S | 24.5 to 485.7 tok/s (20x) | 26.1 to 451.5 (17x) | 25.8 to 371.0 (14x) |
+| granite-4.2-3b IQ3_XXS recipe | 24.4 to 452.9 (19x) | 26.1 to 428.7 (16x) | 25.8 to 354.9 (14x) |
+| granite-4.2-3b IQ2_XXS | 25.1 to 320.3 (13x) | 26.9 to 318.7 (12x) | 26.6 to 273.2 (10x) |
+| granite-4.2-3b IQ1_M | 24.6 to 329.9 (13x) | 26.3 to 330.4 (13x) | 26.0 to 281.4 (11x) |
+| Phi-4-mini IQ3_S | 23.1 to 389.2 (17x) | 24.7 to 369.1 (15x) | 24.9 to 321.0 (13x) |
+
+The scalar column is the generic warp-per-row matvec applied to 64
+columns, which is why the gap is an order of magnitude larger than the
+promoted formats' rows: the codebook formats had no batched GEMM at all.
+The Blackwell slice was shared with another job's loads throughout this
+program (one bench run was refused VRAM outright, spreads reached 50%), so
+its throughput rows are not quoted; its gate rows are unaffected by
+contention.
+
+### Promotion
+
+Promoted 2026-09-14: the nine formats join Q4_K/Q6_K/Q8_0/Q4_0 in
+`tc_promoted()` for the same architecture list (llama, phi3, gemma4,
+qwen3, qwen35, mistral, gemma3, smollm, granite), each architecture with
+at least one row above and granite with all nine. The plan's gate (at
+least 10% median improvement over five warmed runs above noise, no
+regression over 5% on the workloads assigned to the path) is met by an
+order of magnitude on both device families; single-token decode is not on
+this path and is unchanged. `RUNNER_CUDA_TC=0` pins the scalar path as
+before, and every CPU-versus-CUDA identity gate sets it.
+
+Not claimed: a llama.cpp column on the tensor-core path (the CPU decoders
+are unchanged and keep their anchor); Metal kernels; anything about the
+IQ formats' own quality (the requantized models exist to compare two
+paths of the same file).
+
+Evidence files: `cuda-iq-tensorcore-evidence/`: the gate logs of every
+row above (`tc-tol-*`), the fixture racecheck logs, the RTX 3070 benches
+(`pp-bench-*`), the GSQ-RCO greedy comparison.

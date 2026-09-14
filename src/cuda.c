@@ -2329,6 +2329,19 @@ void gpu_moe_eager_force(int on) { g_moe_eager_force = on < 0 ? -1 : (on != 0); 
 // routing amplifies fp16 noise ~86x over dense, and the promotion decision
 // deliberately covers the dense family first. Unmeasured archs (qwen2,
 // qwen35, stablelm) are absent, not implied.
+// The codebook family: the nine formats whose tensor-core GEMMs stage each
+// token column scaled to fp16's range (TC_GEMM_BLK_X in kernels.cu) and so
+// take the per-column maxima as a trailing parameter.
+static bool tc_xscaled(int type) {
+    switch (type) {
+        case T_IQ1_S: case T_IQ1_M: case T_IQ2_XXS: case T_IQ2_XS: case T_IQ2_S:
+        case T_IQ3_XXS: case T_IQ3_S: case T_IQ4_XS: case T_IQ4_NL:
+            return true;
+        default:
+            return false;
+    }
+}
+
 static bool tc_promoted(const model_t *m, int type) {
     // Q6_K joined 2026-08-08: the profile showed it was 26% of prefill running
     // on the SCALAR path, because attn_v/ffn_down are Q6_K in every Q4_K_M.
@@ -2382,7 +2395,40 @@ static bool tc_promoted(const model_t *m, int type) {
     // mistral and gemma3 have no q4_0 gate row of their own and inherit the
     // arch list below, as Q6_K and Q8_0 did; they are the rows to measure
     // next, not rows this evidence covers.
-    if (type != T_Q4_K && type != T_Q6_K && type != T_Q8_0 && type != T_Q4_0)
+    // The codebook family joined 2026-09-14 (docs/cuda-iq-tensorcore-2026-09-14.md,
+    // evidence files beside it), each kernel a device twin of the CPU
+    // decoder staged to fp16 with the token columns scaled to fp16's range.
+    // Forced against the scalar path with test_tc_tol (64 teacher-forced
+    // positions, then free-running greedy at batch 64 / ctx 4096), every row
+    // 0 flips unless noted, every free-running arm token-identical:
+    //
+    //   granite-4.2-3b requantized to each of the nine formats, all layers
+    //   on the device, Blackwell slice: IQ4_XS 4e-5 of range, IQ4_NL 5e-5,
+    //   IQ3_XXS 6e-5, IQ3_S 9e-5, IQ2_S recipe (IQ2_XS+IQ3_S) 1.1e-4 with one
+    //   near-tie, IQ2_XS 1.2e-4, IQ2_XXS 1.3e-4, IQ1_M 3.4e-4, IQ1_S 9.0e-4
+    //   with two near-ties; IQ3_S, IQ3_XXS, IQ2_XXS and IQ1_M the same on an
+    //   RTX 3070.
+    //   IQ3_S on every other arch of the list, same protocol, Blackwell:
+    //   llama 9e-5, qwen3 2.4e-4, smollm 3e-5, mistral 4e-5, phi3 2.4e-4
+    //   (two near-ties; this is the model whose activations overflow fp16
+    //   without the column scaling), gemma3 6e-5, gemma4 9e-5; IQ2_XXS on
+    //   llama 4e-5, qwen3 1.0e-4 (one near-tie), smollm 1.0e-4.
+    //   qwen35: the GSQ-RCO Qwen3.8 27B mixed file, 40 of 64 layers on the
+    //   slice, 9 of 9 greedy outputs identical at 64 tokens forced on
+    //   against forced off.
+    //   the llama-quantize fixtures of all nine formats on both device
+    //   families: 3e-5 to 7e-5 of range; compute-sanitizer memcheck,
+    //   racecheck, synccheck and initcheck clean on each (RTX 3070).
+    //
+    // Prefill on the RTX 3070 (5 warmed runs, median, spread under 1.1%):
+    // 25 tok/s on the scalar path to 277-495 tok/s across the formats at
+    // 118 to 1892 tokens; the scalar path was the generic warp-per-row
+    // matvec applied to 64 columns, the family had no batched GEMM at all.
+    // The plan's gate (10% median gain over five runs, no 5% regression on
+    // the path's workloads) is met by an order of magnitude on both device
+    // families.
+    if (type != T_Q4_K && type != T_Q6_K && type != T_Q8_0 && type != T_Q4_0 &&
+        !tc_xscaled(type))
         return false;
     // granite joined 2026-08-13 with a gate row for EVERY promoted type on
     // its own weights — the only arch here that has one — because it was
@@ -2478,16 +2524,6 @@ static bool launch_tiled_xscaled(gpu_t *g, CUfunction f, unsigned grid,
         if (!launch(g, f, grid, 1, 1, block, pi)) return false;
     }
     return true;
-}
-
-static bool tc_xscaled(int type) {
-    switch (type) {
-        case T_IQ1_S: case T_IQ1_M: case T_IQ2_XXS: case T_IQ2_XS: case T_IQ2_S:
-        case T_IQ3_XXS: case T_IQ3_S: case T_IQ4_XS: case T_IQ4_NL:
-            return true;
-        default:
-            return false;
-    }
 }
 
 static bool enc_mv(gpu_t *g, model_t *m, gguf_tensor *w, CUdeviceptr x,
