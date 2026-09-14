@@ -212,6 +212,132 @@ static void iq2xs_known_block(void) {
     stage_block_matches(T_IQ2_XS, blk, stage_iq2xs, "IQ2_XS known block");
 }
 
+static void stage_iq1s(float *dst, const iq_byte *blk, int seg) { iq1s_stage64(dst, blk, seg, G64(iq1s_grid)); }
+static void stage_iq1m(float *dst, const iq_byte *blk, int seg) { iq1m_stage64(dst, blk, seg, G64(iq1s_grid)); }
+static float sbyte8(iq_u64 g, int j) { return (float)(int8_t)((g >> (8 * j)) & 0xFF); }
+
+// IQ1_S hand-built block, d = 2.0. Sub-block 0's word is 0xB001: scale 3
+// in bits 12-14 (dl = 2 * 7 = 14), the delta sign in bit 15 (negative), and
+// high index bits 1 for octet 0 (index 256). Every index byte 0;
+// grid[0] is all -1. Sub-blocks 1..7 have a zero word: dl 2, delta +1/8.
+static void iq1s_known_block(void) {
+    iq_byte blk[50];
+    memset(blk, 0, sizeof blk);
+    put_f16(blk, 0x4000);
+    blk[34] = 0x01; blk[35] = 0xB0;
+    float got[256];
+    for (int seg = 0; seg < 4; seg++) stage_iq1s(got + 64 * seg, blk, seg);
+    CK(iq1s_grid[0] == 0xffffffffffffffffull, "iq1s_grid[0]");
+    iq_u64 g256 = iq1s_grid[256];
+    for (int j = 0; j < 8; j++) {
+        float want = 14.0f * (sbyte8(g256, j) - 0.125f);
+        CK(got[j] == want, "IQ1_S known block: weight %d = %g, want %g", j, (double)got[j], (double)want);
+    }
+    for (int j = 8; j < 32; j++) CK(got[j] == -15.75f, "IQ1_S known block: weight %d = %g", j, (double)got[j]);
+    for (int j = 32; j < 256; j++) CK(got[j] == -1.75f, "IQ1_S known block: weight %d = %g", j, (double)got[j]);
+    stage_block_matches(T_IQ1_S, blk, stage_iq1s, "IQ1_S known block");
+}
+
+// IQ1_M hand-built block. The half scale 2.0 (0x4000) is scattered: its top
+// nibble 4 sits in the top nibble of the fourth scale word, the other three
+// nibbles are 0. The first scale word's low 12 bits are 0x00B: sub-block 0
+// has scale 3 for weights 0..15 (dl 14) and 1 for weights 16..31 (dl 6),
+// sub-block 1 zero (dl 2). High-bit byte 0 is 0x09: index 256 and a
+// negative delta for octet 0, index 0 and a positive delta for octet 1.
+// Every index byte 0; grid[0] is all -1.
+static void iq1m_known_block(void) {
+    iq_byte blk[56];
+    memset(blk, 0, sizeof blk);
+    blk[48] = 0x0B; blk[49] = 0x00;      // scale word 0
+    blk[54] = 0x00; blk[55] = 0x40;      // scale word 3: top nibble of d
+    blk[32] = 0x09;
+    float got[256];
+    for (int seg = 0; seg < 4; seg++) stage_iq1m(got + 64 * seg, blk, seg);
+    iq_u64 g256 = iq1s_grid[256];
+    for (int j = 0; j < 8; j++) {
+        float want = 14.0f * (sbyte8(g256, j) - 0.125f);
+        CK(got[j] == want, "IQ1_M known block: weight %d = %g, want %g", j, (double)got[j], (double)want);
+    }
+    for (int j = 8; j < 16; j++) CK(got[j] == -12.25f, "IQ1_M known block: weight %d = %g", j, (double)got[j]);
+    for (int j = 16; j < 32; j++) CK(got[j] == -5.25f, "IQ1_M known block: weight %d = %g", j, (double)got[j]);
+    for (int j = 32; j < 256; j++) CK(got[j] == -1.75f, "IQ1_M known block: weight %d = %g", j, (double)got[j]);
+    stage_block_matches(T_IQ1_M, blk, stage_iq1m, "IQ1_M known block");
+}
+
+// IQ1_M random blocks: the half scale is reassembled from four nibbles, so
+// the corner scales are planted nibble by nibble
+static void iq1m_random_blocks(void) {
+    iq_byte blk[56];
+    static const unsigned corners[] = { 0x0000, 0x0001, 0x7bff, 0x8001, 0xfbff, 0x4000 };
+    for (int n = 0; n < 500 + 6; n++) {
+        for (size_t i = 0; i < sizeof blk; i++) blk[i] = (iq_byte)rnd();
+        unsigned sd = n < 500 ? rnd_f16_scale() : corners[n - 500];
+        // nibble k of sd into the top nibble of scale word k
+        for (int k = 0; k < 4; k++) {
+            unsigned w = blk[48 + 2 * k] | (blk[49 + 2 * k] << 8);
+            w = (w & 0x0fff) | (((sd >> (4 * k)) & 0xf) << 12);
+            blk[48 + 2 * k] = w & 0xff; blk[49 + 2 * k] = w >> 8;
+        }
+        if (!stage_block_matches(T_IQ1_M, blk, stage_iq1m, n < 500 ? "IQ1_M random block" : "IQ1_M scale corner")) return;
+    }
+}
+
+// the IQ4 codebook, the format's values (quants.c keeps its own copy)
+static const signed char KV_IQ4[16] = {
+    -127, -104, -83, -65, -49, -35, -22, -10, 1, 13, 25, 38, 53, 69, 89, 113,
+};
+static void stage_iq4xs(float *dst, const iq_byte *blk, int seg) { iq4xs_stage64(dst, blk, seg, KV_IQ4); }
+
+// IQ4_XS hand-built block, d = 2.0. Sub-block 0's scale is 6 bits: low
+// nibble 0xF from scales_l[0] and high bits 1 from bits 0-1 of scales_h,
+// ls = 31, dl = 2 * (31 - 32) = -2; sub-block 1's low nibble is 0 and its
+// high bits (bits 2-3 of scales_h) 2, ls = 32, dl = 0; the rest ls = 0,
+// dl = -64. Nibble bytes: the first byte of sub-block 0 is 0xF0 (weight 0
+// takes codebook[0] = -127, weight 16 takes codebook[15] = 113), all
+// other bytes 0 (codebook[0] twice).
+static void iq4xs_known_block(void) {
+    iq_byte blk[136];
+    memset(blk, 0, sizeof blk);
+    put_f16(blk, 0x4000);
+    blk[2] = 0x09; blk[3] = 0x00;    // scales_h: sub-block 0 -> 1, sub-block 1 -> 2
+    blk[4] = 0x0F;                   // scales_l: sub-block 0 low nibble 0xF, sub-block 1 0
+    blk[8] = 0xF0;
+    float got[256];
+    for (int seg = 0; seg < 4; seg++) stage_iq4xs(got + 64 * seg, blk, seg);
+    CK(got[0] == -2.0f * -127.0f, "IQ4_XS known block: weight 0 = %g", (double)got[0]);
+    CK(got[16] == -2.0f * 113.0f, "IQ4_XS known block: weight 16 = %g", (double)got[16]);
+    for (int j = 1; j < 32; j++) if (j != 16)
+        CK(got[j] == 254.0f, "IQ4_XS known block: weight %d = %g", j, (double)got[j]);
+    for (int j = 32; j < 64; j++) CK(got[j] == 0.0f, "IQ4_XS known block: weight %d = %g", j, (double)got[j]);
+    for (int j = 64; j < 256; j++) CK(got[j] == 8128.0f, "IQ4_XS known block: weight %d = %g", j, (double)got[j]);
+    stage_block_matches(T_IQ4_XS, blk, stage_iq4xs, "IQ4_XS known block");
+}
+
+// IQ4_NL: 32-weight blocks, held to dequant_row one block at a time; the
+// hand-built block has d = 2.0 and a first byte of 0xF0
+static void iq4nl_blocks(void) {
+    iq_byte blk[18];
+    float want[32], got[32];
+    memset(blk, 0, sizeof blk);
+    put_f16(blk, 0x4000);
+    blk[2] = 0xF0;
+    iq4nl_stage32(got, blk, KV_IQ4);
+    CK(got[0] == -254.0f && got[16] == 226.0f && got[1] == -254.0f && got[17] == -254.0f,
+       "IQ4_NL known block: %g %g %g %g", (double)got[0], (double)got[16], (double)got[1], (double)got[17]);
+    static const unsigned corners[] = { 0x0000, 0x0001, 0x7bff, 0x8001, 0xfbff };
+    for (int n = 0; n < 505; n++) {
+        for (size_t i = 0; i < sizeof blk; i++) blk[i] = (iq_byte)rnd();
+        put_f16(blk, n < 500 ? rnd_f16_scale() : corners[n - 500]);
+        dequant_row(T_IQ4_NL, blk, want, 32);
+        iq4nl_stage32(got, blk, KV_IQ4);
+        for (int i = 0; i < 32; i++)
+            if (!f32_bits_equal(want[i], got[i])) {
+                CK(0, "IQ4_NL block %d element %d: staged %.9g, dequant_row %.9g", n, i, (double)got[i], (double)want[i]);
+                return;
+            }
+    }
+}
+
 // IQ2_XXS hand-built block, d = 2.0. Sub-block 0: index bytes 1,0,0,0 and
 // the word 0x30000001 at byte 6 (scale 3 -> db = 2 * 3.5 / 4 = 1.75, sign
 // index 1 for octet 0), read from a 2-byte aligned address in a 66-byte
@@ -316,12 +442,19 @@ int main(void) {
     random_blocks(T_IQ2_XS, 74, stage_iq2xs, "IQ2_XS");
     iq2xxs_known_block();
     random_blocks(T_IQ2_XXS, 66, stage_iq2xxs, "IQ2_XXS");
+    iq1s_known_block();
+    random_blocks(T_IQ1_S, 50, stage_iq1s, "IQ1_S");
+    iq1m_known_block();
+    iq1m_random_blocks();
+    iq4xs_known_block();
+    random_blocks(T_IQ4_XS, 136, stage_iq4xs, "IQ4_XS");
+    iq4nl_blocks();
     (void)mag4;
 
     printf(g_fail ? "iq-decode: FAILED\n"
                   : "iq-decode: ok (128 sign expansions, 2048+2048 grid signs, "
                     "4096 IQ1 values, field reads, 65536 halves; staging of "
-                    "IQ3_S, IQ3_XXS, IQ2_S, IQ2_XS, IQ2_XXS: 1 known + 500 random "
+                    "IQ3_S, IQ3_XXS, IQ2_S, IQ2_XS, IQ2_XXS, IQ1_S, IQ1_M, IQ4_XS, IQ4_NL: 1 known + 500 random "
                     "+ 5 corner blocks each, bitwise)\n");
     return g_fail;
 }

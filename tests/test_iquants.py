@@ -54,7 +54,12 @@ import pytest
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 BIN = os.environ.get("RUNNER_LLAMA_CPP_BIN")
 
-IQ_TYPES = ["IQ3_XXS", "IQ3_S", "IQ2_XXS", "IQ2_XS", "IQ2_S", "IQ1_S", "IQ1_M"]
+# The llama-quantize recipes the fixture set is built from: the seven
+# codebook types and, since the tensor-core program, the two IQ4 codebook
+# types (32-entry nibble codebooks, already on CUDA's generic matvec) so
+# their tensor-core kernels have a fixture too.
+IQ_TYPES = ["IQ3_XXS", "IQ3_S", "IQ2_XXS", "IQ2_XS", "IQ2_S", "IQ1_S", "IQ1_M",
+            "IQ4_XS", "IQ4_NL"]
 
 # The three llama.cpp tools this gate drives. A Windows build ships them as
 # llama-quantize.exe and friends, and Path.exists() on the bare name does
@@ -344,7 +349,8 @@ def tc_tol_bin():
 # path's and is not asked to. IQ3_S first (the largest tensor group of the
 # GSQ-RCO file that motivated the CUDA i-quants); the leg still runs the
 # gate wherever a file's other block types have one.
-IQ_TC_TYPES = ["IQ3_S", "IQ3_XXS", "IQ2_S", "IQ2_XS", "IQ2_XXS"]
+IQ_TC_TYPES = ["IQ3_S", "IQ3_XXS", "IQ2_S", "IQ2_XS", "IQ2_XXS", "IQ1_S", "IQ1_M",
+               "IQ4_XS", "IQ4_NL"]
 
 
 @pytest.mark.parametrize("t", IQ_TYPES)

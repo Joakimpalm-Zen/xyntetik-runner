@@ -3580,6 +3580,53 @@ static __device__ __forceinline__ void tc_stage_iq2_xxs(__half *dst,
 }
 TC_GEMM_BLK(k_gemm_iq2_xxs_tc, tc_stage_iq2_xxs, 66, 256)
 
+static __device__ __forceinline__ void tc_stage_iq1_s(__half *dst,
+                                                      const uchar *rw, int nb,
+                                                      int e0, int n_in) {
+    const uchar *blk = rw + (ulong64)(e0 >> 8) * 50;
+    iq1s_stage64(dst, blk, (e0 & 255) >> 6, kiq1s_grid);
+    (void)nb; (void)n_in;
+}
+TC_GEMM_BLK(k_gemm_iq1_s_tc, tc_stage_iq1_s, 50, 256)
+
+static __device__ __forceinline__ void tc_stage_iq1_m(__half *dst,
+                                                      const uchar *rw, int nb,
+                                                      int e0, int n_in) {
+    const uchar *blk = rw + (ulong64)(e0 >> 8) * 56;
+    iq1m_stage64(dst, blk, (e0 & 255) >> 6, kiq1s_grid);
+    (void)nb; (void)n_in;
+}
+TC_GEMM_BLK(k_gemm_iq1_m_tc, tc_stage_iq1_m, 56, 256)
+
+// the IQ4 codebook types: the same shape, the nibble codebook kv_iq4
+static __device__ __forceinline__ void tc_stage_iq4_xs(__half *dst,
+                                                       const uchar *rw, int nb,
+                                                       int e0, int n_in) {
+    const uchar *blk = rw + (ulong64)(e0 >> 8) * 136;
+    iq4xs_stage64(dst, blk, (e0 & 255) >> 6, kv_iq4);
+    (void)nb; (void)n_in;
+}
+TC_GEMM_BLK(k_gemm_iq4_xs_tc, tc_stage_iq4_xs, 136, 256)
+
+// IQ4_NL has 32-element blocks like Q4_0, so its stager is the Q4_0 one's
+// shape: two blocks per 64-element segment, tail-safe past n_in
+static __device__ __forceinline__ void tc_stage_iq4_nl(__half *dst,
+                                                       const uchar *rw, int nb,
+                                                       int e0, int n_in) {
+    #pragma unroll
+    for (int half = 0; half < 2; half++) {
+        int base = e0 + half * 32;
+        if (base >= n_in) {
+            #pragma unroll
+            for (int j = 0; j < 32; j++) dst[half * 32 + j] = __float2half(0.0f);
+            continue;
+        }
+        iq4nl_stage32(dst + half * 32, rw + (ulong64)(base / 32) * 18, kv_iq4);
+    }
+    (void)nb;
+}
+TC_GEMM_32B(k_gemm_iq4_nl_tc, tc_stage_iq4_nl, 18)
+
 // MXFP4 (gpt-oss expert tensors): 17-byte block = one E8M0 scale byte (a
 // biased power-of-two exponent, 2^(e-127), NOT an fp16) + 32 packed E2M1
 // nibbles indexing a fixed signed codebook. Table and decode are 1:1 with
