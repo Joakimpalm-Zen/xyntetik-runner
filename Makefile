@@ -845,10 +845,19 @@ $(TEST_ATTN_TOL): $(TEST_ATTN_TOL_SRC) $(HDR)
 # fixtures, where greedy argmax absorbs large numeric differences -- so a
 # fixture-scale backend feature could be wrong and pass everything. This
 # compares the logit vectors themselves.
+# NaN/Inf detection for the gates, compiled fast-math-free (QUANTS_CFLAGS)
+# because a fast-math TU folds every such test to false: see
+# tests/finite_check.c.
+FINITE_CHECK_OBJ = $(OBJDIR)/finite_check.o
+$(FINITE_CHECK_OBJ): tests/finite_check.c tests/finite_check.h
+	mkdir -p $(dir $@)
+	$(CC) $(QUANTS_CFLAGS) -I tests -c tests/finite_check.c -o $@
+
 TEST_GPU_ID_SRC = tests/test_gpu_identity.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o $(QUANTS_OBJ) \
-                  $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(OBJDIR)/vramreg.o $(GPU_OBJ)
-$(TEST_GPU_ID): $(TEST_GPU_ID_SRC) $(HDR)
-	$(CC) $(CFLAGS) -I src $(TEST_GPU_ID_SRC) -o $@ $(LDFLAGS)
+                  $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(OBJDIR)/vramreg.o $(GPU_OBJ) \
+                  $(FINITE_CHECK_OBJ)
+$(TEST_GPU_ID): $(TEST_GPU_ID_SRC) $(HDR) tests/finite_check.h
+	$(CC) $(CFLAGS) -I src -I tests $(TEST_GPU_ID_SRC) -o $@ $(LDFLAGS)
 
 # GPU-matvec vs GPU-grouped-MMA on the house fidelity columns (the routing
 # half of the account is scripts/moe-mm-flips.py). Same link as gpu-identity.
@@ -1963,6 +1972,7 @@ test: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSON_OOM) $(
 	./$(TEST_I8_TOL)
 	./$(TEST_MV_TOL)
 	./$(TEST_ATTN_TOL)
+	./$(TEST_GPU_ID) --self-test
 	./$(TEST_GPU_ID)
 	./$(TEST_QUANTS_SIMD)
 	./$(TEST_INSTANCES)
