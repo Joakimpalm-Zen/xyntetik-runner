@@ -35,11 +35,10 @@ typedef unsigned long long iq_u64;
 // The block scale, an IEEE half at a 2-byte aligned address. The device
 // converts in hardware; the host conversion below is exact for every
 // half (subnormals scaled by 2^-24, Inf and NaN built from their bits).
-IQ_FN float iq_f16(const iq_byte *p) {
+IQ_FN float iq_f16_bits(unsigned h) {
 #if defined(__CUDACC__)
-    return __half2float(*(const __half *)p);
+    return __half2float(__ushort_as_half((unsigned short)h));
 #else
-    unsigned h = p[0] | ((unsigned)p[1] << 8);
     unsigned sign = h >> 15, e = (h >> 10) & 0x1f, m = h & 0x3ff;
     float v;
     if (e == 0) {
@@ -51,6 +50,13 @@ IQ_FN float iq_f16(const iq_byte *p) {
         v = ldexpf((float)(m | 0x400), (int)e - 25);
     }
     return sign ? -v : v;
+#endif
+}
+IQ_FN float iq_f16(const iq_byte *p) {
+#if defined(__CUDACC__)
+    return __half2float(*(const __half *)p);
+#else
+    return iq_f16_bits(p[0] | ((unsigned)p[1] << 8));
 #endif
 }
 
@@ -210,6 +216,97 @@ IQ_FN void iq2xxs_stage64(iq_stage_t *dst, const iq_byte *blk, int seg,
             unsigned signs = iq_signs7((aux >> (7 * l)) & 127);
             for (int j = 0; j < 8; j++)
                 IQ_STORE(dst, h * 32 + l * 8 + j, db * iq_w8(g, j, signs));
+        }
+    }
+}
+
+
+// IQ1_S: 50-byte block; per sub-block ib four low index bytes at 2 + 4*ib
+// and one 16-bit word at 34 + 2*ib: three high index bits per index (bits
+// 0-11), a 3-bit scale (bits 12-14, decoded 1 + 2*scale) and the sign of
+// the shared 1/8 delta (bit 15). Grid bytes are signed.
+IQ_FN void iq1s_stage64(iq_stage_t *dst, const iq_byte *blk, int seg,
+                        const iq_u64 *grid) {
+    float d = iq_f16(blk);
+    for (int h = 0; h < 2; h++) {
+        int ib = 2 * seg + h;
+        const iq_byte *qs = blk + 2 + 4 * ib;
+        unsigned w = iq_ld16(blk + 34 + 2 * ib);
+        float dl = d * (float)(2 * ((w >> 12) & 7) + 1);
+        float delta = w & 0x8000 ? -IQ1_DELTA : IQ1_DELTA;
+        for (int l = 0; l < 4; l++) {
+            iq_u64 g = grid[qs[l] | (((w >> (3 * l)) & 7) << 8)];
+            for (int j = 0; j < 8; j++)
+                IQ_STORE(dst, h * 32 + l * 8 + j, dl * iq1_w(g, j, delta));
+        }
+    }
+}
+
+// IQ1_M: 56-byte block with no leading half: 32 low index bytes, 16 bytes
+// of high bits (per byte two 3-bit index extensions at bits 0-2 and 4-6,
+// and two delta signs at bits 3 and 7), then four 16-bit scale words. Each
+// word holds two 3-bit scales per sub-block of 32 (one per 16 weights,
+// decoded 1 + 2*scale) in its low 12 bits, and the block's half scale is
+// scattered across the four top nibbles.
+IQ_FN void iq1m_stage64(iq_stage_t *dst, const iq_byte *blk, int seg,
+                        const iq_u64 *grid) {
+    const iq_byte *scb = blk + 48;
+    unsigned sc0 = iq_ld16(scb), sc1 = iq_ld16(scb + 2),
+             sc2 = iq_ld16(scb + 4), sc3 = iq_ld16(scb + 6);
+    float d = iq_f16_bits((sc0 >> 12) | ((sc1 >> 8) & 0x00f0) |
+                          ((sc2 >> 4) & 0x0f00) | (sc3 & 0xf000));
+    for (int h = 0; h < 2; h++) {
+        int ib = 2 * seg + h;
+        const iq_byte *qs = blk + 4 * ib, *qh = blk + 32 + 2 * ib;
+        unsigned sw = iq_ld16(scb + 2 * (ib >> 1)) >> (6 * (ib & 1));
+        float dl0 = d * (float)(2 * (sw & 7) + 1);
+        float dl1 = d * (float)(2 * ((sw >> 3) & 7) + 1);
+        for (int l = 0; l < 4; l++) {
+            unsigned hb = qh[l >> 1];
+            unsigned idx = qs[l] | ((hb << ((l & 1) ? 4 : 8)) & 0x700);
+            float delta = hb & ((l & 1) ? 0x80 : 0x08) ? -IQ1_DELTA : IQ1_DELTA;
+            iq_u64 g = grid[idx];
+            float dl = l < 2 ? dl0 : dl1;
+            for (int j = 0; j < 8; j++)
+                IQ_STORE(dst, h * 32 + l * 8 + j, dl * iq1_w(g, j, delta));
+        }
+    }
+}
+
+
+// ------------------------------------------------- the IQ4 codebook types
+// IQ4_NL and IQ4_XS index a fixed 16-entry signed codebook with each
+// nibble; the caller passes the table (kv_iq4 on the device, the host
+// test's own copy of the format's values).
+
+// IQ4_NL: 18-byte block of 32 weights, d (half) + 16 bytes of nibbles; the
+// low nibble of byte j is weight j, the high nibble weight j + 16.
+IQ_FN void iq4nl_stage32(iq_stage_t *dst, const iq_byte *blk, const signed char *kv) {
+    float d = iq_f16(blk);
+    const iq_byte *q = blk + 2;
+    for (int j = 0; j < 16; j++) {
+        IQ_STORE(dst, j, d * (float)kv[q[j] & 0xF]);
+        IQ_STORE(dst, j + 16, d * (float)kv[q[j] >> 4]);
+    }
+}
+
+// IQ4_XS: 136-byte block of 256 weights: d (half), a 16-bit word of the
+// scales' high two bits, four bytes of their low nibbles, then 128 bytes
+// of nibbles; sub-block ib (32 weights) has scale (ls - 32) with ls the
+// 6-bit value assembled from both fields. Segment s is sub-blocks 2s, 2s+1.
+IQ_FN void iq4xs_stage64(iq_stage_t *dst, const iq_byte *blk, int seg,
+                         const signed char *kv) {
+    float d = iq_f16(blk);
+    unsigned sh = iq_ld16(blk + 2);
+    const iq_byte *sl = blk + 4;
+    for (int h = 0; h < 2; h++) {
+        int ib = 2 * seg + h;
+        int ls = ((sl[ib / 2] >> 4 * (ib % 2)) & 0xF) | (((sh >> 2 * ib) & 3) << 4);
+        float dl = d * (float)(ls - 32);
+        const iq_byte *q = blk + 8 + 16 * ib;
+        for (int j = 0; j < 16; j++) {
+            IQ_STORE(dst, h * 32 + j, dl * (float)kv[q[j] & 0xF]);
+            IQ_STORE(dst, h * 32 + j + 16, dl * (float)kv[q[j] >> 4]);
         }
     }
 }

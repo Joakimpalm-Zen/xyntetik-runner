@@ -621,6 +621,10 @@ static const struct { int type; const char *name; } TC_KERNELS[] = {
     { T_IQ2_S,   "k_gemm_iq2_s_tc" },
     { T_IQ2_XS,  "k_gemm_iq2_xs_tc" },
     { T_IQ2_XXS, "k_gemm_iq2_xxs_tc" },
+    { T_IQ1_S,   "k_gemm_iq1_s_tc" },
+    { T_IQ1_M,   "k_gemm_iq1_m_tc" },
+    { T_IQ4_XS,  "k_gemm_iq4_xs_tc" },
+    { T_IQ4_NL,  "k_gemm_iq4_nl_tc" },
 };
 bool gpu_tc_type_has_kernel(int type) {
     for (size_t i = 0; i < sizeof TC_KERNELS / sizeof *TC_KERNELS; i++)

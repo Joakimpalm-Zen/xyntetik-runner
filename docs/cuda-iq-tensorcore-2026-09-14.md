@@ -136,3 +136,51 @@ evidence only: IQ3_XXS 17 to 324-378 tok/s, IQ2_S 11-16 to 181-280, IQ2_XS
 11-18 to 100-127, IQ2_XXS 12 to 104-132.
 
 Promotion status unchanged: opt-in, the whole family first.
+
+## Step 2, groups 3 and 4: IQ1_S, IQ1_M, IQ4_XS, IQ4_NL (opt-in)
+
+IQ1_S and IQ1_M take the same shape with 50 and 56-byte blocks; the IQ1
+grid's bytes are signed and every octet carries a delta of plus or minus
+1/8, and IQ1_M's block scale is a half scattered across the top nibbles of
+its four scale words, reassembled by `iq_f16_bits` (exact on the host,
+`__ushort_as_half` on the device). IQ4_XS is the shape with the 136-byte
+block and the 16-entry nibble codebook; IQ4_NL has 32-element blocks and
+takes the Q4_0 stager's shape (two blocks per segment, tail-safe past
+n_in), so it is the `TC_GEMM_32B` instance. Hand-built blocks pin IQ1_S's
+3-bit scale, negative delta and high index bits in one word, IQ1_M's
+scattered half, two local scales and per-grid delta signs, and IQ4_XS's
+6-bit scale assembled from two fields; the IQ1_M random blocks plant the
+corner scales nibble by nibble. The fixture set gains the IQ4_XS and
+IQ4_NL recipes, so every claimed format has a fixture and the required
+gate on the Windows box now runs 20 legs.
+
+| model | box | forced-on dispatches | teacher-forced | free-running |
+|---|---|---|---|---|
+| fixtures m-IQ1_S / m-IQ1_M / m-IQ4_XS / m-IQ4_NL | RTX 3070 and Blackwell slice | IQ1_S=20 (IQ2_XXS=4) / IQ1_M=20 (IQ2_XXS=4) / IQ4_XS=28 / IQ4_NL=28 | 3e-5 to 7e-5 of range; 0 flips, except one exact tie (margin 0.0000) on m-IQ1_M | identical, each |
+| granite-4.2-3b IQ1_S (195 IQ1_S, 40 IQ2_XXS, 40 Q4_K) | Blackwell slice | Q4_K=80 IQ2_XXS=80 IQ1_S=390 | 8.6e-4 of range (mean 0.0216 of 25.1), 0/64 | identical |
+| granite-4.2-3b IQ1_M (195 IQ1_M, 40 IQ2_XXS, 40 Q4_K) | RTX 3070 | Q4_K=80 IQ2_XXS=80 IQ1_M=390 | 3.4e-4 of range, 0/64 | identical |
+| same | Blackwell slice | same | 3.4e-4, 0/64 | identical |
+| granite-4.2-3b IQ4_XS (236 IQ4_XS, 45 Q5_K) | Blackwell slice | IQ4_XS=470 | 4e-5, 0/64 | identical |
+| granite-4.2-3b IQ4_NL (236 IQ4_NL, 45 Q5_K) | Blackwell slice | IQ4_NL=470 | 5e-5, 0/64 | identical |
+
+The IQ1 rows are the family's largest deviations, an order of magnitude
+under the gate's bound and still 0 flips with identical free-running text;
+the 1-bit formats' logits are the most sensitive to the fp16 rounding of
+`scale * (grid + delta)`, whose values are not powers of two. Sanitizers,
+RTX 3070, each of the four fixtures' whole gate run under memcheck,
+racecheck, synccheck and initcheck: clean.
+
+### Prefill throughput
+
+| model | box | 118 tokens | 475 tokens | 1892 tokens |
+|---|---|---|---|---|
+| IQ1_M | RTX 3070 (spread under 1.1%) | 24.5 to 346.1 tok/s (14x) | 26.3 to 341.4 (13x) | 26.0 to 289.6 (11x) |
+| IQ1_S | Blackwell slice (shared) | 16.9 to 211.6 | 18.2 to 201.4 | 18.2 to 165.9 |
+| IQ1_M | Blackwell slice (shared) | 16.5 to 200.0 | 18.2 to 198.6 | 18.1 to 163.5 |
+| IQ4_XS | Blackwell slice (shared) | 15.2 to 299.9 | 16.7 to 306.7 | 16.6 to 250.9 |
+| IQ4_NL | Blackwell slice (shared) | 12.7 to 282.1 | 13.5 to 287.1 | 13.4 to 254.1 |
+
+The family is complete: nine formats, each with a fixture row on both
+device families, a full-device real-model row, a sanitizer run and a
+prefill measurement. Promotion is the next step, decided per architecture
+with these rows in hand.
