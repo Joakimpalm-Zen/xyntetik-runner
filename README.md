@@ -1848,10 +1848,11 @@ runner --shadow-mode -m ~/models/a.gguf     # asks first, then wires Claude Code
 
 That one command finds the stdlib-only Python client beside the binary (it
 ships in the release archive), tells you exactly what it will write, and
-asks before writing: the two capture hooks and a `/shadow` skill for Claude
-Code, a `/shadow` prompt for Codex, whichever of the two is on the machine,
-and the model the `/shadow` offload will serve. It ends by saying what
-happens next. The hooks run a small launcher file, not a shell line, so
+asks before writing: prompt, stop and post-edit capture hooks plus a `/shadow`
+skill for Claude Code; prompt, stop, post-edit and verification capture hooks
+plus a `/shadow` prompt for Codex; and the model the `/shadow` offload will
+serve. Codex reviews new or changed hooks before trusting them. It ends by
+saying what happens next. The hooks run small launcher files, not shell lines, so
 they work the same under sh, cmd and PowerShell and can never fail a
 prompt: every error is swallowed and the exit code is always zero.
 
@@ -1935,26 +1936,30 @@ so the last prompt before a commit is often a side remark and the fix
 cannot be attributed to its request from the timeline alone. And a terse
 request ("check why CI fails and fix it") carries no failing signal the
 model can see, because the tests that fail at the pre-fix state are the
-new ones. Both are addressed by capturing prospectively: a prompt hook and
-a stop hook record the request with the repository HEAD at both ends, so
-the task's commit range is exact.
+new ones. Both are addressed by capturing prospectively: prompt and stop
+hooks record the request with the repository HEAD at both ends, while a
+post-edit hook binds each resulting change set to the edit that produced it.
+The task's commit range is exact, without conflating unrelated edits between
+prompt and stop.
 
 ```json
 {"hooks": {
   "UserPromptSubmit": [{"hooks": [{"type": "command",
     "command": "python3 -m xyntetik_runner.shadow capture --event prompt"}]}],
   "Stop": [{"hooks": [{"type": "command",
-    "command": "python3 -m xyntetik_runner.shadow capture --event stop"}]}]}}
+    "command": "python3 -m xyntetik_runner.shadow capture --event stop"}]}],
+  "PostToolUse": [{"matcher": "Write|Edit|NotebookEdit", "hooks": [{"type": "command",
+    "command": "python3 -m xyntetik_runner.shadow capture --event post"}]}]}}
 ```
 
 `python -m xyntetik_runner.shadow install` writes the equivalent for you
-(the hooks call a small launcher file rather than this shell line):
-the two hooks merged into your Claude Code settings beside whatever is
-there (a backup sits next to the file), a `/shadow` skill that shows the
-ledger from inside a Claude Code session, and a `/shadow` prompt for
-Codex, which has no prompt-time hook and stays on its session files. It
-is an explicit opt-in, nothing runs until you submit a prompt, and
-`uninstall` removes exactly what it wrote. A prompt event records your
+(the hooks call small launcher files rather than these shell lines): the
+capture hooks are merged into Claude Code's settings and Codex's `hooks.json`
+beside whatever is already there, with backups next to both files. It also
+writes a `/shadow` skill for Claude Code and a `/shadow` prompt for Codex.
+Installation is explicit, nothing runs until you submit a prompt, and Codex
+reviews the commands before trusting them. `uninstall` removes only Runner's
+entries and launchers. A prompt event records your
 request, the directory, the time and the commit ids
 (the HEAD of every repository at or under the directory, so a session
 started from a parent directory still gets exact ranges), and capture v2

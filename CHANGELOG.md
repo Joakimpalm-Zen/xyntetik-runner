@@ -8,6 +8,13 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **Shadow capture hooks for Codex.** `shadow install` now merges prompt,
+  stop, post-edit and test-verification hooks into `~/.codex/hooks.json`,
+  preserving existing entries and adopting an older local adapter without
+  duplication. Direct shell and unified `exec` test runs are normalized into
+  the same verification record. Codex performs its normal trust review;
+  `shadow uninstall` removes only Runner-owned entries and launchers. Shadow's
+  local directory and generated launchers are owner-only on POSIX systems.
 - **The IQ family's prefill on the tensor cores, promoted: IQ1_S, IQ1_M,
   IQ2_XXS, IQ2_XS, IQ2_S, IQ3_XXS, IQ3_S, IQ4_XS and IQ4_NL.** Each gains a
   tensor-core GEMM (`k_gemm_iq*_tc`, the Q8_0/Q4_0 tile shape with the

@@ -111,10 +111,12 @@ The negative controls that prove the verifier can fail live in
   the plan, `--status` the recorded runs.
 - `install` also writes `~/.xyntetik/shadow/runner-capabilities.md` and a marked note
   in `~/.claude/CLAUDE.md` and `~/.codex/AGENTS.md` pointing at it.
-- `install`: `shadow install [--pythonpath P] [--out DIR]` merges the two capture
-  hooks into `~/.claude/settings.json`, writes the `/shadow` skill and the Codex
-  `/shadow` prompt; `uninstall` reverses exactly that; `capture --summary` counts
-  the capture file.
+- `install`: `shadow install [--pythonpath P] [--out DIR]` merges prompt, stop and
+  post-edit capture hooks into `~/.claude/settings.json`; merges prompt, stop,
+  post-edit and shell/unified-exec verification hooks into `~/.codex/hooks.json`; and writes
+  the two `/shadow` entry points. Existing hook entries survive, repeat installs
+  are idempotent, and `uninstall` removes only Runner-owned hooks and launchers.
+  `capture --summary` counts the capture file.
 
 The pipeline is exercised without a model in `python/tests/test_shadow_pipeline.py`
 on synthetic traces and a synthetic repository; a scripted chat function

@@ -74,6 +74,12 @@ def default_out() -> Path:
     return Path.home() / ".xyntetik" / "shadow"
 
 
+# The capture events, in one place. argparse and the runtime check both read
+# this: as two separate literals they drifted, and --event post parsed and then
+# failed at the runtime check.
+CAPTURE_EVENTS: tuple[str, ...] = ("prompt", "stop", "verify", "post")
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
@@ -534,8 +540,11 @@ def cmd_capture(args: argparse.Namespace) -> int:
         data = {}
     if not isinstance(data, dict):
         data = {}
-    if args.event not in ("prompt", "stop", "verify"):
-        print("error: --event prompt|stop|verify is required (or --summary)", file=sys.stderr)
+    # Kept in step with the argparse choices above by CAPTURE_EVENTS; they were
+    # two independent literals and a pipe test found them disagreeing.
+    if args.event not in CAPTURE_EVENTS:
+        print("error: --event %s is required (or --summary)" % "|".join(CAPTURE_EVENTS),
+              file=sys.stderr)
         return 2
     cwd = str(args.cwd or data.get("cwd") or Path.cwd())
     home_p = Path(args.home) if args.home else Path.home()
@@ -549,9 +558,7 @@ def cmd_capture(args: argparse.Namespace) -> int:
         from . import capture as cap
         verification = None
         if args.event == "verify":
-            ti = data.get("tool_input") or {}
-            tr = data.get("tool_response") or {}
-            command = str(ti.get("command") or "")
+            command, tr = cap.verification_io(data)
             if not cap.looks_like_verification(command):
                 return
             snap = cap.snapshot_all(Path(cwd), home_p)
@@ -575,7 +582,10 @@ def cmd_capture(args: argparse.Namespace) -> int:
                              tool=args.tool, session_id=session, snap=snap)
         cap.append(home_p, rec2)
 
-    if args.v2_only or args.event == "verify":
+    # `post` is v2-only for the same reason `verify` is: the v1 series has run
+    # continuously since 2026-09-08 and a new event type in it would make the
+    # counts before and after this change incomparable.
+    if args.v2_only or args.event in ("verify", "post"):
         try:
             _v2()
         except Exception:  # noqa: BLE001 - a hook never fails the prompt
@@ -702,12 +712,15 @@ def cmd_install(args: argparse.Namespace) -> int:
         return 2
     plan = []
     if claude:
-        plan.append(f"Claude Code: prompt and stop capture hooks merged into {home / '.claude' / 'settings.json'} "
+        plan.append(f"Claude Code: prompt, stop and edit capture hooks merged into {home / '.claude' / 'settings.json'} "
                     "(backup beside it), a /shadow skill, and a marked note in "
                     f"{home / '.claude' / 'CLAUDE.md'} saying Runner is here and what it can do")
     if codex:
-        plan.append(f"Codex: a /shadow prompt under {home / '.codex' / 'prompts'} and a marked note in "
-                    f"{home / '.codex' / 'AGENTS.md'} saying Runner is here and what it can do")
+        plan.append(f"Codex: prompt, stop, edit and verification capture hooks merged into "
+                    f"{home / '.codex' / 'hooks.json'} (backup beside it), a /shadow prompt under "
+                    f"{home / '.codex' / 'prompts'}, and a marked note in "
+                    f"{home / '.codex' / 'AGENTS.md'} saying Runner is here and what it can do; "
+                    "Codex reviews new or changed hooks before trusting them")
     if not args.no_tandem:
         plan.append("tandem: in a repository where the local model has verified successes on record, "
                     "each request also gets a background local attempt on a scratch copy; a verified "
@@ -758,7 +771,8 @@ def cmd_install(args: argparse.Namespace) -> int:
         print(f"claude code: {done.hooks_added} hook(s) added to {done.settings} "
               f"(backup beside it); skill {done.claude_skill}")
     if done.codex_prompt:
-        print(f"codex: prompt {done.codex_prompt}")
+        print(f"codex: {done.codex_hooks_added} hook(s) added to {done.codex_settings} "
+              f"(backup beside it); prompt {done.codex_prompt}")
     if done.sheet:
         print(f"capabilities: {done.sheet}; noted in {', '.join(str(n) for n in done.notes)}")
     # Warm the model hash here, where there is no timeout. The prompt hook
@@ -1094,7 +1108,8 @@ def cmd_uninstall(args: argparse.Namespace) -> int:
     if stop_server(home):
         print("warm runner stopped")
     done = uninstall(home)
-    print(f"removed {-done.hooks_added} hook(s), the /shadow skill, the codex prompt, the capability "
+    print(f"removed {-done.hooks_added} Claude Code hook(s); "
+          f"removed {-done.codex_hooks_added} Codex hook(s), the /shadow skill, the codex prompt, the capability "
           "sheet and the notes in CLAUDE.md and AGENTS.md")
     return 0
 
@@ -1181,7 +1196,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--timeout", type=float, default=600.0)
     p.set_defaults(fn=cmd_bank)
     p = sub.add_parser("capture", help="append a prompt or stop event from an agent hook")
-    p.add_argument("--event", choices=["prompt", "stop", "verify"], default="")
+    p.add_argument("--event", choices=list(CAPTURE_EVENTS), default="")
     p.add_argument("--summary", action="store_true", help="print counts over the capture file")
     p.add_argument("--v2-only", action="store_true",
                    help="write only the v2 record (the verify event has no v1 form)")
