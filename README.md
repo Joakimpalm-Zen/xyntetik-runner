@@ -1006,13 +1006,13 @@ tolerance tests. CUDA currently promotes Q4_K/Q6_K/Q8_0 on the gated dense
 families and Q4_0 on Gemma 4; the latter was bit-identical over 820 tensor-core
 dispatches on the real 31B QAT artifact. The codebook i-quants are gaining
 tensor-core prefill one format at a time, opt-in behind `RUNNER_CUDA_TC=1`
-until each is promoted on measured rows: IQ3_S so far (the forced path
-against the scalar one on a pure IQ3_S Granite 4.2 3B, all layers on the
-device: 0 of 64 teacher-forced flips, 8e-5 of the logit range, free-running
-token-identical, and prefill 12 to 240 tok/s at 512 tokens on a Blackwell
-slice; per-type dispatch counts and the rest of the rows in
-`docs/cuda-iq-tensorcore-2026-09-14.md`). Their single-token decode stays on
-the generic matvec.
+until the family is promoted on measured rows: IQ3_S, IQ3_XXS, IQ2_S,
+IQ2_XS and IQ2_XXS so far (the forced path against the scalar one on
+Granite 4.2 3B requantized to each format, all layers on the device: 0 of
+64 teacher-forced flips, at most 1.3e-4 of the logit range, free-running
+token-identical, and prefill 25 to 277-495 tok/s on an RTX 3070; per-type
+dispatch counts and every row in `docs/cuda-iq-tensorcore-2026-09-14.md`).
+Their single-token decode stays on the generic matvec.
 
 On Metal that now covers **decode as well as prefill**: the cooperative KV
 attention read was promoted on 2026-08-17 after clearing zero teacher-forced
