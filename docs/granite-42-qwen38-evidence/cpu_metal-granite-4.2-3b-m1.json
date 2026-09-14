@@ -1,5 +1,5 @@
 {
- "model": "/private/tmp/claude-501/-Users-zenzombie-AI-projects-origin/a0ad3a5e-4753-4359-aebe-6b81602c1132/scratchpad/models/granite-4.2-3b-Q4_K_M.gguf",
+ "model": "<scratchpad>/models/granite-4.2-3b-Q4_K_M.gguf",
  "tokens": 128,
  "context": 2048,
  "routing": "eager",

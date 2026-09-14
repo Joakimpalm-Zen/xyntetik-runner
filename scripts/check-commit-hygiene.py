@@ -38,6 +38,13 @@ FORBIDDEN = [
     # session_reconnection is a word, not an id
     (re.compile(r"\bsession_(?=[A-Za-z0-9]*\d)[A-Za-z0-9]{12,}", re.I), "session id"),
     (re.compile(r"\bsess-[A-Za-z0-9]{8,}(?<![a-z]{8})", re.I), "session id"),
+    # A harness scratchpad path carries the session UUID and the user's home
+    # directory name. One reached this public repository inside a committed
+    # evidence JSON, because this gate read commit messages and never file
+    # content. Both are checked now.
+    (re.compile(r"/claude-\d+/-[A-Za-z0-9]+-", re.I), "harness scratchpad path"),
+    (re.compile(r"\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/scratchpad\b",
+                re.I), "session UUID in a path"),
 ]
 # Agents sign with the project form; humans may use GitHub's own co-author
 # form, which needs the e-mail to link the profile. What is never accepted is
@@ -97,6 +104,34 @@ def commits(rng: str) -> list[tuple[str, str]]:
     return out
 
 
+# Content rules are a subset: a repository legitimately discusses session URLs
+# and trailers in its own documentation and in this file, but a session
+# identifier or a harness scratchpad path in a shipped file is a leak.
+CONTENT_FORBIDDEN = ("harness scratchpad path", "session UUID in a path", "session id")
+
+# Files whose whole job is to describe the rule.
+CONTENT_EXEMPT = ("AGENTS.md", "CLAUDE.md", "scripts/check-commit-hygiene.py")
+
+
+def added_content(rng: str) -> list[tuple[str, str]]:
+    """(path, added text) for lines this range adds, skipping the rule's own docs."""
+    raw = subprocess.run(["git", "diff", "--unified=0", "--no-color", rng],
+                         capture_output=True, text=True, check=True).stdout
+    out: dict[str, list[str]] = {}
+    path = ""
+    for line in raw.splitlines():
+        if line.startswith("+++ b/"):
+            path = line[6:]
+        elif line.startswith("+") and not line.startswith("+++") and path:
+            out.setdefault(path, []).append(line[1:])
+    return [(k, "\n".join(v)) for k, v in out.items()
+            if not any(k.endswith(e) for e in CONTENT_EXEMPT)]
+
+
+def content_problems(text: str) -> list[str]:
+    return [p for p in problems(text) if p.split(":", 1)[0] in CONTENT_FORBIDDEN]
+
+
 def self_test() -> int:
     bad = [
         "Fix thing\n\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>\n"
@@ -118,7 +153,16 @@ def self_test() -> int:
         "docs: link https://github.com/Joakimpalm-Zen/xyntetik-runner/releases\n",
         "server: session_reconnection keeps the slot; see session_persistence.md\n",
     ]
-    ok = all(problems(b) for b in bad) and not any(problems(g) for g in good)
+    leaky = [
+        '"model": "/private/tmp/claude-501/-Users-someone-projects/'
+        '00000000-1111-2222-3333-444444444444/scratchpad/models/x.gguf"',
+        "path: /tmp/00000000-1111-2222-3333-444444444444/scratchpad/out.json",
+    ]
+    clean = ['"model": "<scratchpad>/models/x.gguf"',
+             "results written under the session scratchpad directory"]
+    ok = (all(problems(b) for b in bad) and not any(problems(g) for g in good)
+          and all(content_problems(x) for x in leaky)
+          and not any(content_problems(x) for x in clean))
     if not ok:
         for b in bad:
             if not problems(b): print("  missed:", b.strip()[:80])
@@ -143,6 +187,13 @@ def main() -> int:
         for sha, msg in commits(a.range):
             for p in problems(msg):
                 print(f"{sha[:12]}: {p}")
+                bad += 1
+        # A session identifier reached this public repository inside a committed
+        # evidence file while this gate read only commit messages. Added content
+        # is checked too now.
+        for path, text in added_content(a.range):
+            for p in content_problems(text):
+                print(f"{path}: {p}")
                 bad += 1
     if a.message_file:
         with open(a.message_file, encoding="utf-8", errors="replace") as f:
