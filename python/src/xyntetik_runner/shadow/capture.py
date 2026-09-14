@@ -634,6 +634,39 @@ def looks_like_verification(command: str) -> bool:
     return bool(_TEST_CMD.search(command or ""))
 
 
+_EMBEDDED_EXEC_COMMAND = re.compile(
+    r"\b(?:tools\.)?exec_command\s*\(\s*\{[^{}]{0,1024}?"
+    r"\b(?:cmd|command)\s*:\s*(\"(?:\\.|[^\"\\])*\")", re.DOTALL)
+
+
+def verification_io(payload: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    """Normalize direct shell and Codex unified-exec verification payloads.
+
+    Codex CLI exposes a shell command directly. Some Codex surfaces wrap the
+    same call in a JavaScript ``exec`` tool whose input has a ``code`` string;
+    only a quoted ``cmd``/``command`` property is admitted from that wrapper.
+    The extracted text still has to pass ``looks_like_verification``.
+    """
+    tool_input = payload.get("tool_input") or {}
+    command = ""
+    if isinstance(tool_input, dict):
+        command = str(tool_input.get("command") or tool_input.get("cmd") or "")
+        code = tool_input.get("code")
+        if not command and isinstance(code, str):
+            for match in _EMBEDDED_EXEC_COMMAND.finditer(code):
+                try:
+                    candidate = json.loads(match.group(1))
+                except ValueError:
+                    continue
+                if isinstance(candidate, str) and looks_like_verification(candidate):
+                    command = candidate
+                    break
+    tool_response = payload.get("tool_response") or {}
+    if not isinstance(tool_response, dict):
+        tool_response = {"output": str(tool_response)}
+    return command, tool_response
+
+
 def verification_record(*, command: str, exit_code: int | None, output_tail: str,
                         manifest_sha256: str, cwd: str) -> dict[str, Any]:
     """A verification BOUND to the state it ran against.

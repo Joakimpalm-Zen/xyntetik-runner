@@ -30,18 +30,23 @@ and the referenced Git objects; exporting a record alone is insufficient.
 
 The capture file is `~/.xyntetik/shadow/capture2.jsonl`; blobs live alongside
 it. The v1 capture remains readable. No records or blobs are uploaded by these
-commands. Keep local captured content out of source-control commits.
+commands. Installation makes the Shadow directory owner-only where the platform
+supports POSIX permissions. Keep local captured content out of source-control
+commits.
 
 Bounds are 256 KiB per file, 4 MiB and 200 files per repository snapshot, with a
 shared three-second snapshot deadline. Reports retain truncated records and
 state which bounds were reached. Inherited task associations are heuristics;
 uncertain background-job ownership is recorded explicitly.
 
-`shadow install` installs prompt and stop hooks. Verification recording is an
-additional event interface (`shadow capture --event verify`), accepting the
-tool's command, response and exit code. The default installer does not discover
-verifiers or add a verification hook. The captured snapshot is taken after the
-tool returns; it does not prove the tree stayed unchanged during execution.
+`shadow install` installs prompt, stop and post-edit hooks for Claude Code and
+Codex. For Codex it also installs a `PostToolUse` hook that records recognized
+test-runner commands from direct shell and unified `exec` tools as verification
+events; Codex reviews new or changed hook
+commands before trusting them. The same event remains available directly as
+`shadow capture --event verify`, accepting the tool's command, response and exit
+code. The captured snapshot is taken after the tool returns; it does not prove
+the tree stayed unchanged during execution.
 
 `shadow capture --report --json` checks completeness, stored-content recovery,
 manifest associations and attribution. It does not execute captured commands.

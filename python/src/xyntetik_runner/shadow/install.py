@@ -2,10 +2,9 @@
 
 Nothing here runs implicitly: ``shadow install`` is a command a person
 types, it says what it wrote, and ``shadow uninstall`` removes exactly
-that. Claude Code gets two hooks (prompt and stop) merged into the user
-settings beside whatever is already there, and a ``/shadow`` skill that
-shows the ledger. Codex gets a ``/shadow`` prompt; it has no prompt-time
-hook, so its capture stays on the session files ``import`` already reads.
+that. Claude Code and Codex get capture hooks merged into their user
+settings beside whatever is already there. Claude also gets a ``/shadow``
+skill and Codex a ``/shadow`` prompt that show the ledger.
 The hook commands never block a prompt: they redirect their errors away
 and end in ``|| true``.
 """
@@ -27,6 +26,13 @@ MARK = "xyntetik_runner.shadow capture"
 HOOK_NAME = "xyntetik-shadow-capture-hook.py"
 MARKS = (MARK, HOOK_NAME)  # ours, this version and the one before it
 HOOK_REL = Path(".xyntetik") / "shadow" / HOOK_NAME
+CODEX_HOOK_NAME = "xyntetik-shadow-codex-capture-hook.py"
+CODEX_VERIFY_HOOK_NAME = "xyntetik-shadow-codex-verify-hook.py"
+CODEX_HOOK_REL = Path(".xyntetik") / "shadow" / CODEX_HOOK_NAME
+CODEX_VERIFY_HOOK_REL = Path(".xyntetik") / "shadow" / CODEX_VERIFY_HOOK_NAME
+CODEX_DESCRIPTION = ("Local-only Xyntetik Shadow capture. Records remain under "
+                     "~/.xyntetik and are never uploaded.")
+CODEX_MARKS = (MARK, CODEX_HOOK_NAME, CODEX_VERIFY_HOOK_NAME)
 SKILL_NAME = "shadow"
 
 
@@ -39,6 +45,8 @@ class Installed:
     claude_skill: Path | None
     codex_prompt: Path | None
     hooks_added: int
+    codex_settings: Path | None = None
+    codex_hooks_added: int = 0
     config: Path | None = None
     sheet: Path | None = None
     notes: tuple[Path, ...] = ()
@@ -173,6 +181,14 @@ def client_pythonpath() -> str:
     return str(Path(__file__).resolve().parents[2])
 
 
+def _owner_only(path: Path, mode: int) -> None:
+    """Tighten local capture paths where the platform supports POSIX modes."""
+    try:
+        path.chmod(mode)
+    except OSError:
+        pass
+
+
 def write_hook_launcher(home: Path, pythonpath: str | None) -> Path:
     """The file the hooks run: a stdlib launcher that puts the client on the
     path, runs the capture, and swallows everything else. No shell syntax
@@ -181,9 +197,9 @@ def write_hook_launcher(home: Path, pythonpath: str | None) -> Path:
     path = home / HOOK_REL
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(f'''# Written by `shadow install`; `shadow uninstall` removes it.
-# Records the request, directory, time and repository HEAD of a prompt or
-# stop event; never anything the assistant produced. It can never block a
-# prompt: every failure is swallowed and the exit code is always 0.
+# Records local hook events and workspace state. Raw post-edit payloads can
+# contain tool data. It can never block a prompt: every failure is swallowed
+# and the exit code is always 0.
 import os
 import sys
 
@@ -199,11 +215,60 @@ except BaseException:
     pass
 os._exit(0)
 ''', encoding="utf-8")
+    _owner_only(path.parent, 0o700)
+    _owner_only(path, 0o600)
     return path
 
 
 def hook_command(event: str, python: str, launcher: Path) -> str:
     return f'"{python}" "{launcher}" {event}'
+
+
+def write_codex_hook_launchers(home: Path, pythonpath: str | None) -> tuple[Path, Path]:
+    """Write fail-open adapters from Codex hook payloads to capture."""
+    capture = home / CODEX_HOOK_REL
+    verify = home / CODEX_VERIFY_HOOK_REL
+    capture.parent.mkdir(parents=True, exist_ok=True)
+    capture.write_text(f'''# Written by `shadow install`; `shadow uninstall` removes it.
+import os
+import sys
+
+try:
+    sys.stderr = open(os.devnull, "w")
+    if {pythonpath!r}:
+        sys.path.insert(0, {pythonpath!r})
+    from xyntetik_runner.shadow.cli import main
+    main(["capture", "--event", sys.argv[1], "--tool", "codex"])
+except BaseException:
+    pass
+os._exit(0)
+''', encoding="utf-8")
+    verify.write_text(f'''# Written by `shadow install`; `shadow uninstall` removes it.
+import io
+import os
+import re
+import sys
+
+try:
+    sys.stderr = open(os.devnull, "w")
+    raw = sys.stdin.read() or "{{}}"
+    if not re.search(r"(?:pytest|py\\.test|python[0-9.]*\\s+-m\\s+pytest|"
+                     r"make\\s+(?:test|check)|go\\s+test|cargo\\s+test|"
+                     r"npm\\s+(?:run\\s+)?test|pnpm\\s+test|yarn\\s+test|tox|nox)", raw):
+        os._exit(0)
+    if {pythonpath!r}:
+        sys.path.insert(0, {pythonpath!r})
+    sys.stdin = io.StringIO(raw)
+    from xyntetik_runner.shadow.cli import main
+    main(["capture", "--event", "verify", "--tool", "codex"])
+except BaseException:
+    pass
+os._exit(0)
+''', encoding="utf-8")
+    _owner_only(capture.parent, 0o700)
+    _owner_only(capture, 0o600)
+    _owner_only(verify, 0o600)
+    return capture, verify
 
 
 def _has_command(entry: object, command: str) -> bool:
@@ -237,7 +302,7 @@ HOOK_EVENTS: tuple[tuple[str, str, str], ...] = (
 
 def install_claude_hooks(settings: Path, *, python: str, pythonpath: str | None,
                          home: Path | None = None) -> int:
-    """Merge the two hooks into ``settings`` (created if absent); idempotent.
+    """Merge capture hooks into ``settings`` (created if absent); idempotent.
     Returns how many hooks were added. A backup sits beside the file."""
     launcher = write_hook_launcher(home if home is not None else settings.parent.parent, pythonpath)
     data: dict[str, object] = {}
@@ -294,6 +359,75 @@ def uninstall_claude_hooks(settings: Path) -> int:
             hooks.pop(name, None)
     if not hooks:
         data.pop("hooks", None)
+    settings.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    return removed
+
+
+CODEX_HOOK_EVENTS: tuple[tuple[str, str, str], ...] = (
+    ("prompt", "UserPromptSubmit", ""),
+    ("stop", "Stop", ""),
+    ("post", "PostToolUse", "Edit|Write|apply_patch|NotebookEdit"),
+    ("verify", "PostToolUse", r"Bash|exec|exec_command|functions\.exec"),
+)
+
+
+def install_codex_hooks(settings: Path, *, python: str, pythonpath: str | None,
+                        home: Path | None = None) -> int:
+    """Merge local capture hooks into Codex's documented hooks file."""
+    root = home if home is not None else settings.parent.parent
+    capture, verify = write_codex_hook_launchers(root, pythonpath)
+    data: dict[str, object] = {}
+    if settings.is_file():
+        data = json.loads(settings.read_text(encoding="utf-8") or "{}")
+        shutil.copyfile(settings, settings.with_suffix(".json.bak-shadow"))
+    data.setdefault("description", CODEX_DESCRIPTION)
+    hooks = data.setdefault("hooks", {})
+    assert isinstance(hooks, dict)
+    added = 0
+    for event, name, matcher in CODEX_HOOK_EVENTS:
+        entries = hooks.setdefault(name, [])
+        assert isinstance(entries, list)
+        launcher = verify if event == "verify" else capture
+        cmd = (f'"{python}" "{launcher}"' if event == "verify"
+               else hook_command(event, python, launcher))
+        exact = [entry for entry in entries if _has_command(entry, cmd)]
+        owned = [entry for entry in entries
+                 if (launcher.name in json.dumps(entry)
+                     or (MARK in json.dumps(entry) and f"--event {event}" in json.dumps(entry)))]
+        entries[:] = [entry for entry in entries if entry not in owned] + exact[:1]
+        if not exact:
+            entries.append(_hook_entry(cmd, matcher))
+            added += 0 if owned else 1
+    settings.parent.mkdir(parents=True, exist_ok=True)
+    settings.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    _owner_only(settings, 0o600)
+    return added
+
+
+def uninstall_codex_hooks(settings: Path) -> int:
+    """Remove only Runner-owned Codex hooks and preserve every foreign entry."""
+    if not settings.is_file():
+        return 0
+    data = json.loads(settings.read_text(encoding="utf-8") or "{}")
+    hooks = data.get("hooks")
+    if not isinstance(hooks, dict):
+        return 0
+    removed = 0
+    for name in ("UserPromptSubmit", "Stop", "PostToolUse"):
+        entries = hooks.get(name)
+        if not isinstance(entries, list):
+            continue
+        kept = [entry for entry in entries
+                if not any(mark in json.dumps(entry) for mark in CODEX_MARKS)]
+        removed += len(entries) - len(kept)
+        if kept:
+            hooks[name] = kept
+        else:
+            hooks.pop(name, None)
+    if not hooks:
+        data.pop("hooks", None)
+    if data.get("description") == CODEX_DESCRIPTION:
+        data.pop("description", None)
     settings.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
     return removed
 
@@ -435,17 +569,12 @@ how many wait for the local model; if any wait, offer `sync --replay N`
 (up to 15 minutes each) and let the user start it in their own words.
 Nothing replays by itself.
 
-Tandem (Codex has no hooks, so this is yours to do): at the start of a
-request that is work, in a repository where the local model has verified
-successes on record, run
-{prefix}{python} -m xyntetik_runner.shadow delegate --repo . --request "<the request verbatim>" --background
-(it returns at once with an id, or says the repository does not qualify)
-and before you finish run
-{prefix}{python} -m xyntetik_runner.shadow delegations
-; a verified result is shown in one line with `git apply <patch>` offered,
-never applied. When `delegate --background` says the record is strong,
-wait for it first (`delegations --wait <id>`) and do the work yourself
-only if the local result is not verified. `shadow tandem off` stops this.
+Tandem: in a repository where the local model has verified successes on
+record, the prompt hook starts a background attempt on a scratch copy while
+you work. The stop hook surfaces a verified result once, with `git apply
+<patch>` offered and never applied. Where the record is strong, the prompt
+hook says to wait for the local result first. `shadow tandem off` stops this;
+`shadow delegations` shows running and completed attempts.
 
 Offload a task to the local model (only when the user asks): first
 {prefix}{python} -m xyntetik_runner.shadow routes --out {out}
@@ -475,8 +604,9 @@ def install(home: Path, *, python: str = sys.executable, pythonpath: str | None 
     # the hooks and the skill run in processes that do not inherit this
     # one's PYTHONPATH; they always get the client's own location
     pythonpath = pythonpath or client_pythonpath()
-    settings = skill = prompt = config = None
+    settings = codex_settings = skill = prompt = config = None
     added = 0
+    codex_added = 0
     notes: list[Path] = []
     if model:
         config = write_config(home, model=model, runner=runner, ctx=ctx, gpu=gpu,
@@ -492,6 +622,9 @@ def install(home: Path, *, python: str = sys.executable, pythonpath: str | None 
         upsert_note(note, harness_note(sheet, shadow_command="/shadow"))
         notes.append(note)
     if codex:
+        codex_settings = home / ".codex" / "hooks.json"
+        codex_added = install_codex_hooks(codex_settings, python=python,
+                                          pythonpath=pythonpath, home=home)
         prompt = home / ".codex" / "prompts" / f"{SKILL_NAME}.md"
         prompt.parent.mkdir(parents=True, exist_ok=True)
         prompt.write_text(codex_prompt_text(python, pythonpath, out, str(sheet)), encoding="utf-8")
@@ -499,15 +632,19 @@ def install(home: Path, *, python: str = sys.executable, pythonpath: str | None 
         upsert_note(note, harness_note(sheet, shadow_command="the shadow prompt"))
         notes.append(note)
     return Installed(settings=settings, claude_skill=skill, codex_prompt=prompt, hooks_added=added,
+                     codex_settings=codex_settings, codex_hooks_added=codex_added,
                      config=config, sheet=sheet, notes=tuple(notes))
 
 
 def uninstall(home: Path) -> Installed:
     settings = home / ".claude" / "settings.json"
     removed = uninstall_claude_hooks(settings)
+    codex_settings = home / ".codex" / "hooks.json"
+    codex_removed = uninstall_codex_hooks(codex_settings)
     skill = home / ".claude" / "skills" / SKILL_NAME / "SKILL.md"
     prompt = home / ".codex" / "prompts" / f"{SKILL_NAME}.md"
-    for p in (skill, prompt, home / HOOK_REL, home / SHEET_REL):
+    for p in (skill, prompt, home / HOOK_REL, home / CODEX_HOOK_REL,
+              home / CODEX_VERIFY_HOOK_REL, home / SHEET_REL):
         if p.is_file():
             p.unlink()
     for note in (home / ".claude" / "CLAUDE.md", home / ".codex" / "AGENTS.md"):
@@ -515,4 +652,6 @@ def uninstall(home: Path) -> Installed:
     if skill.parent.is_dir() and not any(skill.parent.iterdir()):
         skill.parent.rmdir()
     return Installed(settings=settings if settings.is_file() else None, claude_skill=None,
-                     codex_prompt=None, hooks_added=-removed)
+                     codex_prompt=None, hooks_added=-removed,
+                     codex_settings=codex_settings if codex_settings.is_file() else None,
+                     codex_hooks_added=-codex_removed)

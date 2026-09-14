@@ -432,6 +432,9 @@ def test_install_is_explicit_idempotent_and_reversible(tmp_path: Path, capsys: A
     settings = home / ".claude" / "settings.json"
     settings.write_text(json.dumps({"model": "x", "hooks": {"Stop": [{"hooks": [
         {"type": "command", "command": "echo mine"}]}]}}), encoding="utf-8")
+    codex_settings = home / ".codex" / "hooks.json"
+    codex_settings.write_text(json.dumps({"description": "mine", "hooks": {"Stop": [{"hooks": [
+        {"type": "command", "command": "echo codex-mine"}]}]}}), encoding="utf-8")
     (home / ".codex" / "AGENTS.md").write_text("# my rules\n\nbe brief\n", encoding="utf-8")
     assert main(["install", "--home", str(home), "--python", "py", "--pythonpath", "/src",
                  "--out", "/o", "--yes"]) == 0
@@ -472,6 +475,18 @@ def test_install_is_explicit_idempotent_and_reversible(tmp_path: Path, capsys: A
     assert settings.with_suffix(".json.bak-shadow").is_file()
     skill = home / ".claude" / "skills" / "shadow" / "SKILL.md"
     prompt = home / ".codex" / "prompts" / "shadow.md"
+    codex_hooks = home / ".codex" / "hooks.json"
+    installed_codex = json.loads(codex_hooks.read_text(encoding="utf-8"))["hooks"]
+    assert set(installed_codex) == {"UserPromptSubmit", "Stop", "PostToolUse"}
+    assert {entry.get("matcher", "") for entry in installed_codex["PostToolUse"]} == {
+        "Edit|Write|apply_patch|NotebookEdit", "Bash|exec|exec_command|functions\\.exec"}
+    assert installed_codex["Stop"][0]["hooks"][0]["command"] == "echo codex-mine"
+    shadow_dir = home / ".xyntetik" / "shadow"
+    codex_capture = shadow_dir / "xyntetik-shadow-codex-capture-hook.py"
+    codex_verify = shadow_dir / "xyntetik-shadow-codex-verify-hook.py"
+    assert shadow_dir.stat().st_mode & 0o077 == 0
+    assert codex_capture.stat().st_mode & 0o077 == 0
+    assert codex_verify.stat().st_mode & 0o077 == 0
     assert "report --out /o --tasks" in skill.read_text(encoding="utf-8")
     assert "Never run `replay`" in skill.read_text(encoding="utf-8")
     assert "## Help (`/shadow help`" in skill.read_text(encoding="utf-8")
@@ -495,11 +510,18 @@ def test_install_is_explicit_idempotent_and_reversible(tmp_path: Path, capsys: A
     assert len(data["hooks"]["Stop"]) == 2 and len(data["hooks"]["UserPromptSubmit"]) == 1
     post = data["hooks"]["PostToolUse"]
     assert len(post) == 1 and post[0]["matcher"] == "Write|Edit|NotebookEdit"
+    installed_codex = json.loads(codex_settings.read_text(encoding="utf-8"))["hooks"]
+    assert len(installed_codex["Stop"]) == 2 and len(installed_codex["PostToolUse"]) == 2
     # reversible: exactly what install wrote, nothing else
     assert main(["uninstall", "--home", str(home)]) == 0
     data = json.loads(settings.read_text(encoding="utf-8"))
     assert data["hooks"] == {"Stop": [{"hooks": [{"type": "command", "command": "echo mine"}]}]}
     assert not skill.exists() and not prompt.exists() and not launcher.exists()
+    assert json.loads(codex_settings.read_text(encoding="utf-8")) == {
+        "description": "mine", "hooks": {"Stop": [{"hooks": [
+            {"type": "command", "command": "echo codex-mine"}]}]}}
+    assert not (home / ".xyntetik" / "shadow" / "xyntetik-shadow-codex-capture-hook.py").exists()
+    assert not (home / ".xyntetik" / "shadow" / "xyntetik-shadow-codex-verify-hook.py").exists()
     assert not (home / ".xyntetik" / "shadow" / "runner-capabilities.md").exists()
     assert not (home / ".claude" / "CLAUDE.md").exists()
     assert (home / ".codex" / "AGENTS.md").read_text(encoding="utf-8") == "# my rules\n\nbe brief\n"
@@ -507,7 +529,8 @@ def test_install_is_explicit_idempotent_and_reversible(tmp_path: Path, capsys: A
     # three since the `post` event: UserPromptSubmit, Stop, and PostToolUse on
     # Write|Edit, which is the only moment a change set can be bound to the edit
     # that produced it.
-    assert "3 hook(s) added" in out and "removed 3 hook(s)" in out
+    assert "3 hook(s) added" in out and "removed 3 Claude Code hook(s)" in out
+    assert "codex: 4 hook(s) added" in out and "removed 4 Codex hook(s)" in out
     assert "what happens next:" in out and "ask /shadow in Claude Code (the shadow prompt in Codex)" in out
     # hooks written by the previous version are still recognised and removed
     settings.write_text(json.dumps({"hooks": {"Stop": [{"hooks": [{"type": "command",
@@ -518,6 +541,71 @@ def test_install_is_explicit_idempotent_and_reversible(tmp_path: Path, capsys: A
     assert main(["uninstall", "--home", str(home)]) == 0
     assert "hooks" not in json.loads(settings.read_text(encoding="utf-8"))
     assert (home / ".codex" / "AGENTS.md").read_text(encoding="utf-8") == "# my rules\n\nbe brief\n", "the user's own rules survive"
+
+
+def test_codex_hook_launchers_capture_real_events_and_verification(tmp_path: Path) -> None:
+    """The documented Codex payload shape reaches capture through installed files."""
+    from xyntetik_runner.shadow import cli as _cli
+    from xyntetik_runner.shadow.install import install
+
+    home = tmp_path / "home"
+    (home / ".codex").mkdir(parents=True)
+    installed = install(home, python=sys.executable,
+                        pythonpath=str(Path(_cli.__file__).resolve().parents[2]),
+                        claude=False, codex=True)
+    assert installed.codex_hooks_added == 4
+    capture = home / ".xyntetik" / "shadow" / "xyntetik-shadow-codex-capture-hook.py"
+    verify = home / ".xyntetik" / "shadow" / "xyntetik-shadow-codex-verify-hook.py"
+    env = {**os.environ, "HOME": str(home), "USERPROFILE": str(home)}
+    env.pop("PYTHONPATH", None)
+    common = {"session_id": "codex-s", "cwd": str(tmp_path)}
+    for event, extra in (("prompt", {"prompt": "fix it"}), ("stop", {}),
+                         ("post", {"tool_name": "apply_patch"})):
+        proc = subprocess.run([sys.executable, str(capture), event],
+                              input=json.dumps({**common, **extra}), capture_output=True,
+                              text=True, env=env)
+        assert proc.returncode == 0 and proc.stdout == "" and proc.stderr == ""
+    proc = subprocess.run([sys.executable, str(verify)], input=json.dumps({
+        **common, "tool_input": {"command": "pytest -q"},
+        "tool_response": {"exit_code": 0, "output": "1 passed"}}),
+        capture_output=True, text=True, env=env)
+    assert proc.returncode == 0 and proc.stdout == "" and proc.stderr == ""
+    proc = subprocess.run([sys.executable, str(verify)], input=json.dumps({
+        **common, "tool_name": "exec",
+        "tool_input": {"code": 'await tools.exec_command({cmd: "python -m pytest -q"})'},
+        "tool_response": {"exit_code": 1, "output": "1 failed"}}),
+        capture_output=True, text=True, env=env)
+    assert proc.returncode == 0 and proc.stdout == "" and proc.stderr == ""
+    proc = subprocess.run([sys.executable, str(verify)], input=json.dumps({
+        **common, "tool_name": "exec",
+        "tool_input": {"code": 'text(\'example cmd: "pytest -q"\')'},
+        "tool_response": {"exit_code": 0, "output": "example only"}}),
+        capture_output=True, text=True, env=env)
+    assert proc.returncode == 0
+
+    rows = [json.loads(line) for line in
+            (home / ".xyntetik" / "shadow" / "capture2.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert [(row["event"], row["tool"]) for row in rows] == [
+        ("prompt", "codex"), ("stop", "codex"), ("post", "codex"),
+        ("verify", "codex"), ("verify", "codex")]
+    assert rows[-2]["verification"]["verdict"] == "passed"
+    assert rows[-1]["verification"]["verdict"] == "failed"
+
+
+def test_codex_hook_install_adopts_an_older_local_adapter(tmp_path: Path) -> None:
+    from xyntetik_runner.shadow.install import install_codex_hooks
+
+    home = tmp_path / "home"
+    settings = home / ".codex" / "hooks.json"
+    settings.parent.mkdir(parents=True)
+    old_capture = home / ".xyntetik" / "shadow" / "xyntetik-shadow-codex-capture-hook.py"
+    settings.write_text(json.dumps({"hooks": {"UserPromptSubmit": [{"hooks": [{
+        "type": "command", "command": f'"old-python" "{old_capture}" prompt'}]}]}}),
+        encoding="utf-8")
+    assert install_codex_hooks(settings, python="new-python", pythonpath="/src", home=home) == 3
+    prompts = json.loads(settings.read_text(encoding="utf-8"))["hooks"]["UserPromptSubmit"]
+    assert len(prompts) == 1
+    assert prompts[0]["hooks"][0]["command"] == f'"new-python" "{old_capture}" prompt'
 
 
 def test_capture_summary_counts_the_file(tmp_path: Path, capsys: Any) -> None:

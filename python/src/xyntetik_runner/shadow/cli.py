@@ -558,9 +558,7 @@ def cmd_capture(args: argparse.Namespace) -> int:
         from . import capture as cap
         verification = None
         if args.event == "verify":
-            ti = data.get("tool_input") or {}
-            tr = data.get("tool_response") or {}
-            command = str(ti.get("command") or "")
+            command, tr = cap.verification_io(data)
             if not cap.looks_like_verification(command):
                 return
             snap = cap.snapshot_all(Path(cwd), home_p)
@@ -714,12 +712,15 @@ def cmd_install(args: argparse.Namespace) -> int:
         return 2
     plan = []
     if claude:
-        plan.append(f"Claude Code: prompt and stop capture hooks merged into {home / '.claude' / 'settings.json'} "
+        plan.append(f"Claude Code: prompt, stop and edit capture hooks merged into {home / '.claude' / 'settings.json'} "
                     "(backup beside it), a /shadow skill, and a marked note in "
                     f"{home / '.claude' / 'CLAUDE.md'} saying Runner is here and what it can do")
     if codex:
-        plan.append(f"Codex: a /shadow prompt under {home / '.codex' / 'prompts'} and a marked note in "
-                    f"{home / '.codex' / 'AGENTS.md'} saying Runner is here and what it can do")
+        plan.append(f"Codex: prompt, stop, edit and verification capture hooks merged into "
+                    f"{home / '.codex' / 'hooks.json'} (backup beside it), a /shadow prompt under "
+                    f"{home / '.codex' / 'prompts'}, and a marked note in "
+                    f"{home / '.codex' / 'AGENTS.md'} saying Runner is here and what it can do; "
+                    "Codex reviews new or changed hooks before trusting them")
     if not args.no_tandem:
         plan.append("tandem: in a repository where the local model has verified successes on record, "
                     "each request also gets a background local attempt on a scratch copy; a verified "
@@ -770,7 +771,8 @@ def cmd_install(args: argparse.Namespace) -> int:
         print(f"claude code: {done.hooks_added} hook(s) added to {done.settings} "
               f"(backup beside it); skill {done.claude_skill}")
     if done.codex_prompt:
-        print(f"codex: prompt {done.codex_prompt}")
+        print(f"codex: {done.codex_hooks_added} hook(s) added to {done.codex_settings} "
+              f"(backup beside it); prompt {done.codex_prompt}")
     if done.sheet:
         print(f"capabilities: {done.sheet}; noted in {', '.join(str(n) for n in done.notes)}")
     # Warm the model hash here, where there is no timeout. The prompt hook
@@ -1106,7 +1108,8 @@ def cmd_uninstall(args: argparse.Namespace) -> int:
     if stop_server(home):
         print("warm runner stopped")
     done = uninstall(home)
-    print(f"removed {-done.hooks_added} hook(s), the /shadow skill, the codex prompt, the capability "
+    print(f"removed {-done.hooks_added} Claude Code hook(s); "
+          f"removed {-done.codex_hooks_added} Codex hook(s), the /shadow skill, the codex prompt, the capability "
           "sheet and the notes in CLAUDE.md and AGENTS.md")
     return 0
 
