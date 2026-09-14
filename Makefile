@@ -674,6 +674,14 @@ $(TEST_KV_TOL): $(TEST_KV_TOL_SRC) $(HDR)
 # SIMD (AVX2/NEON) dot and dequant kernels vs an independent double-precision
 # reference; also pins q8_quant_row byte-identical to its scalar definition
 TEST_QUANTS_SIMD_SRC = tests/test_quants_simd.c $(QUANTS_OBJ)
+# The codebook decode primitives the CUDA kernels compile (src/iq_decode.h),
+# executed on the host against the tables in quants_iq_grids.h, exhaustively.
+# QUANTS_CFLAGS for the same reason as the quant tests: this is arithmetic
+# the numerical identity rests on.
+TEST_IQ_DECODE = $(TEST_BATCH:test-batch%=test-iq-decode%)
+$(TEST_IQ_DECODE): tests/test_iq_decode.c src/iq_decode.h src/quants_iq_grids.h
+	$(CC) $(QUANTS_CFLAGS) -I src tests/test_iq_decode.c -o $@
+
 # QUANTS_CFLAGS, not CFLAGS: this test carries inline scalar REFERENCE
 # implementations of the quant kernels, and a reference compiled under
 # -ffast-math is checking the confined -fno-fast-math engine against a
@@ -1901,7 +1909,7 @@ test: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSON_OOM) $(
       $(TEST_TEMPLATE_OOM) \
       $(TEST_TOOLS) $(TEST_SHARED) $(TEST_FILE_ID) $(TEST_BATCH) $(TEST_BATCH_ID) $(TEST_BIND) $(TEST_HOST_HEADER) \
       $(TEST_PREFIX) $(TEST_GRAMMAR_FF) $(TEST_LOOKUP_DRAFT) $(TEST_VRAMREG) $(TEST_KV_TOL) $(TEST_TC_TOL) $(TEST_I8_TOL) $(TEST_MV_TOL) $(TEST_ATTN_TOL) $(TEST_GPU_ID) $(TEST_MOE_TOL) $(TEST_MOE_ROUTER) $(TEST_PAGING_WARN) $(TEST_AUTOFIT) $(TEST_RESP_SM_DEP) \
-      $(TEST_QUANTS_SIMD) $(TEST_INSTANCES) $(TEST_INSTANCES_OOM) $(TEST_METAL_ADMISSION) $(TEST_TRAY_CORE) $(TEST_TRAY_WIN_DEP) \
+      $(TEST_QUANTS_SIMD) $(TEST_IQ_DECODE) $(TEST_INSTANCES) $(TEST_INSTANCES_OOM) $(TEST_METAL_ADMISSION) $(TEST_TRAY_CORE) $(TEST_TRAY_WIN_DEP) \
       $(TEST_QUANTIZE) \
       $(TEST_VRAM_ROLLBACK) $(TEST_GGUF_GETTERS) $(TEST_GGUF_SPLIT) $(TEST_PARSE) $(TEST_ENVELOPE) $(TEST_ED25519) $(TEST_MLDSA) $(TEST_PMATH) $(TEST_ECDSA) $(TEST_CANON_KERNELS) \
       $(TEST_THREAD_DEFAULT) \
@@ -1988,6 +1996,7 @@ test: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSON_OOM) $(
 	./$(TEST_GPU_ID) --self-test
 	./$(TEST_GPU_ID)
 	./$(TEST_QUANTS_SIMD)
+	./$(TEST_IQ_DECODE)
 	./$(TEST_INSTANCES)
 	./$(TEST_INSTANCES_OOM)
 	./$(TEST_METAL_ADMISSION)
@@ -2292,7 +2301,7 @@ clean:
 #   make ptx NVCC_CCBIN=x86_64-conda-linux-gnu-gcc
 NVCC ?= nvcc
 NVCC_CCBIN ?=
-ptx: src/kernels.cu
+ptx: src/kernels.cu src/iq_decode.h
 	$(NVCC) $(if $(NVCC_CCBIN),-ccbin $(NVCC_CCBIN)) -ptx -arch=compute_75 -O3 -o src/kernels.ptx src/kernels.cu
 	python3 scripts/embed-ptx.py || python scripts/embed-ptx.py
 
