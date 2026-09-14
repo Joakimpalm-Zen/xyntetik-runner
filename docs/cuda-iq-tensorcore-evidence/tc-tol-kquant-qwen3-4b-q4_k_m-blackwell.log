@@ -1,0 +1,24 @@
+gpu-split: budget=25.13GB fixed=0.87GB G=36/36 full=1 used=3.07GB
+gpu: CUDA backend on NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb (2.5 GB weights in VRAM)
+gpu: VRAM 22.57 GB free of 25.37 GB after init (kv 0.03 GB + scratch 0.01 GB this instance)
+gpu-split: budget=25.13GB fixed=0.87GB G=36/36 full=1 used=3.07GB
+gpu: CUDA backend on NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb (2.5 GB weights in VRAM)
+gpu: VRAM 22.57 GB free of 25.37 GB after init (kv 0.03 GB + scratch 0.01 GB this instance)
+gpu-split: budget=25.13GB fixed=0.87GB G=36/36 full=1 used=3.07GB
+gpu: CUDA backend on NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb (2.5 GB weights in VRAM)
+gpu: VRAM 22.57 GB free of 25.37 GB after init (kv 0.03 GB + scratch 0.01 GB this instance)
+gpu-split: budget=25.13GB fixed=0.90GB G=36/36 full=1 used=3.68GB
+gpu: CUDA backend on NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb (2.5 GB weights in VRAM)
+gpu: VRAM 21.97 GB free of 25.37 GB after init (kv 0.60 GB + scratch 0.04 GB this instance)
+gpu-split: budget=25.13GB fixed=0.90GB G=36/36 full=1 used=3.68GB
+gpu: CUDA backend on NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb (2.5 GB weights in VRAM)
+gpu: VRAM 21.97 GB free of 25.37 GB after init (kv 0.60 GB + scratch 0.04 GB this instance)
+tc-tol: /home/lab/workspace/models/Qwen3-4B-Q4_K_M/Qwen3-4B-Q4_K_M.gguf | 192 tokens, 64 teacher-forced positions
+  scalar-b64   TC dispatches: none
+  scalar-b16   TC dispatches: none
+  tc-b64       TC dispatches: Q4_K=432 Q6_K=72
+  scalar-b16 vs scalar-b64 : mean|dlogit| 0.000000   (fp32 reassociation floor; context, not the gate)
+  tc-b64     vs scalar-b64 : mean|dlogit| 0.001406 = 0.00004 of mean logit range 32.58 (limit 0.005)
+  tc-b64     vs scalar-b64 : top1 diff 0/64 (0.0%, limit 5%), worst margin 0.0000 of range (limit 0.020)
+  free-running   : 128 prompt tokens, 32 greedy tokens at batch 64 / ctx 4096 -> token-identical
+tc-tol: ok

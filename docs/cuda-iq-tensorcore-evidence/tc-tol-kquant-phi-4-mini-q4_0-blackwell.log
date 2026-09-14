@@ -1,0 +1,30 @@
+rope: phi3 LongRoPE short factors, mscale 1.1902
+rope: phi3 LongRoPE short factors, mscale 1.1902
+gpu-split: budget=25.13GB fixed=0.89GB G=32/32 full=1 used=2.73GB
+gpu: CUDA backend on NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb (2.2 GB weights in VRAM)
+gpu: VRAM 22.91 GB free of 25.37 GB after init (kv 0.03 GB + scratch 0.01 GB this instance)
+rope: phi3 LongRoPE short factors, mscale 1.1902
+gpu-split: budget=25.13GB fixed=0.89GB G=32/32 full=1 used=2.73GB
+gpu: CUDA backend on NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb (2.2 GB weights in VRAM)
+gpu: VRAM 22.91 GB free of 25.37 GB after init (kv 0.03 GB + scratch 0.01 GB this instance)
+rope: phi3 LongRoPE short factors, mscale 1.1902
+gpu-split: budget=25.13GB fixed=0.89GB G=32/32 full=1 used=2.73GB
+gpu: CUDA backend on NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb (2.2 GB weights in VRAM)
+gpu: VRAM 22.91 GB free of 25.37 GB after init (kv 0.03 GB + scratch 0.01 GB this instance)
+rope: phi3 LongRoPE short factors, mscale 1.1902
+gpu-split: budget=25.13GB fixed=0.92GB G=32/32 full=1 used=3.27GB
+gpu: CUDA backend on NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb (2.2 GB weights in VRAM)
+gpu: VRAM 22.38 GB free of 25.37 GB after init (kv 0.54 GB + scratch 0.03 GB this instance)
+rope: phi3 LongRoPE short factors, mscale 1.1902
+gpu-split: budget=25.13GB fixed=0.92GB G=32/32 full=1 used=3.27GB
+gpu: CUDA backend on NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb (2.2 GB weights in VRAM)
+gpu: VRAM 22.38 GB free of 25.37 GB after init (kv 0.54 GB + scratch 0.03 GB this instance)
+tc-tol: /home/lab/workspace/models/Phi-4-mini-instruct-q4_0/Phi-4-mini-instruct-q4_0.gguf | 192 tokens, 64 teacher-forced positions
+  scalar-b64   TC dispatches: none
+  scalar-b16   TC dispatches: none
+  tc-b64       TC dispatches: Q4_0=448
+  scalar-b16 vs scalar-b64 : mean|dlogit| 0.000000   (fp32 reassociation floor; context, not the gate)
+  tc-b64     vs scalar-b64 : mean|dlogit| 0.001444 = 0.00003 of mean logit range 53.44 (limit 0.005)
+  tc-b64     vs scalar-b64 : top1 diff 0/64 (0.0%, limit 5%), worst margin 0.0000 of range (limit 0.020)
+  free-running   : 128 prompt tokens, 32 greedy tokens at batch 64 / ctx 4096 -> token-identical
+tc-tol: ok

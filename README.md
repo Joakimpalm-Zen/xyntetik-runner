@@ -1011,10 +1011,12 @@ the scalar one on Granite 4.2 3B requantized to the format with all layers
 on the device (at most a near-tie flip or two in 64 teacher-forced
 positions, free-running token-identical, at most 1.3e-4 of the logit
 range, 9e-4 for IQ1_S), IQ3_S on every architecture of the list, and
-prefill 25 to 273-486 tok/s on an RTX 3070; their token columns are staged
-scaled to fp16's range because Phi-4-mini's activations exceed it. Per-type
-dispatch counts and every row in `docs/cuda-iq-tensorcore-2026-09-14.md`.
-Their single-token decode stays on the generic matvec.
+prefill 25 to 273-486 tok/s on an RTX 3070. Every CUDA tensor-core GEMM,
+the k-quant ones included, stages its token columns scaled to fp16's range
+because real activations exceed it (Phi-4-mini's reach 1.6e5); `make
+test-tc-overflow` holds that. Per-type dispatch counts and every row in
+`docs/cuda-iq-tensorcore-2026-09-14.md`. Their single-token decode stays
+on the generic matvec.
 
 On Metal that now covers **decode as well as prefill**: the cooperative KV
 attention read was promoted on 2026-08-17 after clearing zero teacher-forced

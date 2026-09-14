@@ -1,0 +1,24 @@
+gpu-split: budget=25.13GB fixed=0.99GB G=40/40 full=1 used=9.49GB
+gpu: CUDA backend on NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb (9.3 GB weights in VRAM)
+gpu: VRAM 15.72 GB free of 25.37 GB after init (kv 0.03 GB + scratch 0.01 GB this instance)
+gpu-split: budget=25.13GB fixed=0.99GB G=40/40 full=1 used=9.49GB
+gpu: CUDA backend on NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb (9.3 GB weights in VRAM)
+gpu: VRAM 15.72 GB free of 25.37 GB after init (kv 0.03 GB + scratch 0.01 GB this instance)
+gpu-split: budget=25.13GB fixed=0.99GB G=40/40 full=1 used=9.49GB
+gpu: CUDA backend on NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb (9.3 GB weights in VRAM)
+gpu: VRAM 15.72 GB free of 25.37 GB after init (kv 0.03 GB + scratch 0.01 GB this instance)
+gpu-split: budget=25.13GB fixed=1.02GB G=40/40 full=1 used=10.16GB
+gpu: CUDA backend on NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb (9.3 GB weights in VRAM)
+gpu: VRAM 15.05 GB free of 25.37 GB after init (kv 0.67 GB + scratch 0.05 GB this instance)
+gpu-split: budget=25.13GB fixed=1.02GB G=40/40 full=1 used=10.16GB
+gpu: CUDA backend on NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb (9.3 GB weights in VRAM)
+gpu: VRAM 15.05 GB free of 25.37 GB after init (kv 0.67 GB + scratch 0.05 GB this instance)
+tc-tol: /home/lab/workspace/models/granite-4.2/granite-4.2-8b-Q8_0.gguf | 192 tokens, 64 teacher-forced positions
+  scalar-b64   TC dispatches: none
+  scalar-b16   TC dispatches: none
+  tc-b64       TC dispatches: Q8_0=560
+  scalar-b16 vs scalar-b64 : mean|dlogit| 0.000000   (fp32 reassociation floor; context, not the gate)
+  tc-b64     vs scalar-b64 : mean|dlogit| 0.001390 = 0.00005 of mean logit range 29.34 (limit 0.005)
+  tc-b64     vs scalar-b64 : top1 diff 0/64 (0.0%, limit 5%), worst margin 0.0000 of range (limit 0.020)
+  free-running   : 128 prompt tokens, 32 greedy tokens at batch 64 / ctx 4096 -> token-identical
+tc-tol: ok

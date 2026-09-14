@@ -34,9 +34,19 @@ names that were true when they were written.
   `RUNNER_CUDA_TC=0` pins the scalar path. The kernels stage each token
   column scaled to fp16's range: Phi-4-mini's first-position activation
   reaches 1.6e5 in layer 30, past fp16, and the first draft returned NaN
-  logits there, caught by the gate repair below. The promoted Q4_K, Q6_K,
-  Q8_0 and Q4_0 kernels keep their unscaled form and carry the same
-  exposure. `docs/cuda-iq-tensorcore-2026-09-14.md`.
+  logits there, caught by the gate repair below.
+  `docs/cuda-iq-tensorcore-2026-09-14.md`.
+- **The promoted Q4_K, Q6_K, Q8_0 and Q4_0 tensor-core kernels stage
+  their activations the same way.** They carried the same exposure: a
+  fixture whose FFN activation is 1e7 at the `ffn_down` input (finite in
+  fp32, far past fp16) made the previous binary answer `<unk><unk><unk>`
+  with the tensor cores on. `make test-tc-overflow` runs the forced-TC
+  gate on that fixture (in `make test`; skipped on macOS, where the Metal
+  tiled path is not yet scaled). Re-gated on every architecture of the
+  promoted list, 25 real-model rows across both CUDA device families, at
+  most one near-tie flip in 64 positions and free-running text identical
+  everywhere; sanitizers clean; the scaling costs under 2% of prefill on
+  an RTX 3070.
 - **The gates the v0.5.3 review found blunt.** The CPU/GPU logit gate
   accepted a NaN (NaN is not greater than any limit); it now fails
   non-finite logits on either side, through a fast-math-free translation

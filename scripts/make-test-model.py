@@ -50,6 +50,7 @@ FFN_WIDTHS = None  # per-layer FFN widths -> ARRAY-typed feed_forward_length
 G4HETERO = False   # gemma4 heterogeneous attention geometry (26B/12B shape)
 G4_HD32 = False    # --g4-hd32: widen every g4-hetero head to 32 (q8-able rows)
 ACT_OVERFLOW = 0   # scale on ffn_gate weights, to drive the activation extreme
+UP_SCALE = 1.0     # scale on ffn_up weights (--act-fp16-overflow)
 MUSE = False       # muse-glimmer: gated attention + QK/sandwich norms + NoPE
 MUSE_GATE_FLAT = False  # zero the attn_gate weights (sigmoid -> flat 0.5)
 DECLARE_REMOVED = []    # --declare-removed: (part, block) pairs, see below
@@ -120,6 +121,16 @@ while i < len(args):
         shared, ple = args[i].split(",")
         ESERIES_SHARED_KV, ESERIES_PLE = int(shared), int(ple)
         ARCH = "gemma4"
+    elif a == "--act-fp16-overflow":
+        # Drive the FFN activation, the ffn_down input, past fp16's 65504
+        # while every fp32 value stays finite: gate 4e4x and up 4e2x on
+        # +/-0.04 weights over 64 inputs gives a gated activation of the
+        # order of 1e6. A GEMM that stages activations as fp16 operands
+        # (the CUDA tensor-core and Metal tiled paths) turns that into
+        # Inf, then NaN logits, unless it scales each column first; this
+        # fixture is the regression for that scaling.
+        ACT_OVERFLOW = 40000.0
+        UP_SCALE = 400.0
     elif a == "--act-overflow":
         # Scale ffn_gate so the gated activation's input is large. The GELU
         # tanh argument grows as x^3, and a fast-math tanh evaluated through
@@ -384,7 +395,7 @@ for i in range(N_LAYER + MTP_LAYERS):
         *([] if APERTUS else
           [(f"blk.{i}.ffn_gate.weight", [N_EMBD, N_FF_I],
             tensor_data(N_EMBD * N_FF_I, ACT_OVERFLOW or 1.0))]),
-        (f"blk.{i}.ffn_up.weight", [N_EMBD, N_FF_I], tensor_data(N_EMBD * N_FF_I)),
+        (f"blk.{i}.ffn_up.weight", [N_EMBD, N_FF_I], tensor_data(N_EMBD * N_FF_I, UP_SCALE)),
         (f"blk.{i}.ffn_down.weight", [N_FF_I, N_EMBD], tensor_data(N_FF_I * N_EMBD)),
     ]
     if i >= N_LAYER:
