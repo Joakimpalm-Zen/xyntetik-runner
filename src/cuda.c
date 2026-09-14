@@ -2329,10 +2329,8 @@ void gpu_moe_eager_force(int on) { g_moe_eager_force = on < 0 ? -1 : (on != 0); 
 // routing amplifies fp16 noise ~86x over dense, and the promotion decision
 // deliberately covers the dense family first. Unmeasured archs (qwen2,
 // qwen35, stablelm) are absent, not implied.
-// The codebook family: the nine formats whose tensor-core GEMMs stage each
-// token column scaled to fp16's range (TC_GEMM_BLK_X in kernels.cu) and so
-// take the per-column maxima as a trailing parameter.
-static bool tc_xscaled(int type) {
+// The codebook family, promoted 2026-09-14 (see tc_promoted below).
+static bool tc_codebook(int type) {
     switch (type) {
         case T_IQ1_S: case T_IQ1_M: case T_IQ2_XXS: case T_IQ2_XS: case T_IQ2_S:
         case T_IQ3_XXS: case T_IQ3_S: case T_IQ4_XS: case T_IQ4_NL:
@@ -2427,8 +2425,14 @@ static bool tc_promoted(const model_t *m, int type) {
     // The plan's gate (10% median gain over five runs, no 5% regression on
     // the path's workloads) is met by an order of magnitude on both device
     // families.
+    //
+    // The four formats above were re-gated the same day when their kernels
+    // took the same column scaling (Step 6 of the same doc): 25 real-model
+    // rows across every arch of the list and both device families, 1e-5 to
+    // 6e-5 of range, at most one near-tie flip, free-running identical,
+    // and the scaling costs under 2% of prefill on the RTX 3070.
     if (type != T_Q4_K && type != T_Q6_K && type != T_Q8_0 && type != T_Q4_0 &&
-        !tc_xscaled(type))
+        !tc_codebook(type))
         return false;
     // granite joined 2026-08-13 with a gate row for EVERY promoted type on
     // its own weights — the only arch here that has one — because it was
@@ -2504,8 +2508,9 @@ static bool launch_tiled(gpu_t *g, CUfunction f, unsigned grid, unsigned block,
     return true;
 }
 
-// The codebook formats' tensor-core GEMMs stage each token column scaled by
-// 2^14 / max|x| (see TC_GEMM_BLK_X in kernels.cu), so every tile of
+// Every tensor-core GEMM stages each token column scaled by 2^14 / max|x|
+// (see TC_GEMM_BLK_X in kernels.cu; the codebook family from the start,
+// Q4_K/Q6_K/Q8_0/Q4_0 since the same day's follow-up), so every tile of
 // TC_N columns is preceded by k_colabsmax into g->xsc, and the kernel takes
 // that pointer as its trailing parameter.
 static bool launch_tiled_xscaled(gpu_t *g, CUfunction f, unsigned grid,
@@ -2545,13 +2550,9 @@ static bool enc_mv(gpu_t *g, model_t *m, gguf_tensor *w, CUdeviceptr x,
     if (batch > 1 && w->scale == 1.0f && tc_on(m, w->type) && g->sw->f_gemm_tc[w->type]) {
         g_tc_dispatches++;
         g_tc_dispatches_type[w->type]++;
-        if (tc_xscaled(w->type))
-            return launch_tiled_xscaled(g, g->sw->f_gemm_tc[w->type],
-                                        (n_out + TC_ROWS - 1) / TC_ROWS, 128,
-                                        weights, x, y, a, b);
-        return launch_tiled(g, g->sw->f_gemm_tc[w->type],
-                            (n_out + TC_ROWS - 1) / TC_ROWS, 128,
-                            weights, x, y, a, b, TC_N, false, 1.0f);
+        return launch_tiled_xscaled(g, g->sw->f_gemm_tc[w->type],
+                                    (n_out + TC_ROWS - 1) / TC_ROWS, 128,
+                                    weights, x, y, a, b);
     }
     // Prefill (batch>1) uses the tiled-GEMM variant where available (Q8_0/Q4_K):
     // GEMM_WARPS(=8) rows per block, 256 threads, x staged in shared memory.

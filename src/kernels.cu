@@ -853,7 +853,7 @@ extern "C" __global__ void k_gemm_q4_K(MV_PARAMS) {
 #define TC_K    128   // K-elements staged per step (half a q4_K super-block)
 #define TC_N    64    // token columns per tile (was 16; widened to amortise the weight dequantisation)
 
-extern "C" __global__ void k_gemm_q4_K_tc(MV_PARAMS) {
+extern "C" __global__ void k_gemm_q4_K_tc(MV_PARAMS, const float *xsc) {
     using namespace nvcuda::wmma;
     const int tid  = threadIdx.x;         // 128 threads = 4 warps
     const int warp = tid >> 5;
@@ -923,20 +923,25 @@ extern "C" __global__ void k_gemm_q4_K_tc(MV_PARAMS) {
                     for (int e = 0; e < 64; e++) dst[e] = __float2half(0.0f);
                 }
             }
-            // ---- stage activations: 128 K x 16 tokens, vectorized ----
+            // ---- stage activations: 128 K x TC_N tokens, vectorized ----
+            // Each column scaled to fp16's range by its own max|x| (xsc,
+            // from k_colabsmax): a model's activation outliers can exceed
+            // 65504 (Phi-4-mini requantized to IQ3_S reaches 1.6e5), and an
+            // Inf operand is a NaN logit. Scaled back in the epilogue.
             {
                 int col = tid / 2, part = tid % 2;
                 __half *dst = sh_x + col * TC_K + part * 64;
                 if (col < a.batch) {
+                    const float xinv = 16384.0f / xsc[col];
                     const float *xg = x + (ulong64)col * a.xs + b * 256 + koff
                                       + part * 64;
                     #pragma unroll
                     for (int v = 0; v < 16; v++) {
                         float4 xv = *(const float4 *)(xg + v * 4);
-                        dst[v * 4 + 0] = __float2half(xv.x);
-                        dst[v * 4 + 1] = __float2half(xv.y);
-                        dst[v * 4 + 2] = __float2half(xv.z);
-                        dst[v * 4 + 3] = __float2half(xv.w);
+                        dst[v * 4 + 0] = __float2half(xv.x * xinv);
+                        dst[v * 4 + 1] = __float2half(xv.y * xinv);
+                        dst[v * 4 + 2] = __float2half(xv.z * xinv);
+                        dst[v * 4 + 3] = __float2half(xv.w * xinv);
                     }
                 } else {
                     #pragma unroll
@@ -971,7 +976,7 @@ extern "C" __global__ void k_gemm_q4_K_tc(MV_PARAMS) {
         int rr = idx / TC_N, tt = idx % TC_N;
         unsigned gr = row0 + rr;
         if (gr < (unsigned)a.n_out && tt < a.batch) {
-            float r = sh_c[rr * TC_N + tt];
+            float r = sh_c[rr * TC_N + tt] * (xsc[tt] * (1.0f / 16384.0f));
             y[(ulong64)tt * a.ys + gr] = a.has_bias ? r + bias[gr] : r;
         }
     }
@@ -1068,16 +1073,16 @@ static __device__ __forceinline__ void tc_stage_q4_0(__half *dst,
 // segment at element offset e0 of a row. TC_GEMM_32B is its 32-element
 // instance (Q8_0, Q4_0, unchanged PTX); the 256-element codebook i-quants
 // instantiate it below with their own stagers.
-#define TC_GEMM_32B(NAME, STAGE, BLKBYTES) TC_GEMM_BLK_X(NAME, STAGE, BLKBYTES, 32, 0)
-#define TC_GEMM_BLK(NAME, STAGE, BLKBYTES, BLKELEMS) TC_GEMM_BLK_X(NAME, STAGE, BLKBYTES, BLKELEMS, 0)
-// XSCALED = 1: the codebook kernels' form. fp16 has no room for a model's
-// activation outliers (Phi-4-mini requantized to IQ3_S reaches |x| = 1.6e5
-// at its first position in layer 30, found 2026-09-14 by the non-finite
-// check the review asked for: every logit came out NaN), so each token
-// column is staged as x * (2^14 / max|x|) and the product is scaled back
-// in the epilogue. The per-column maxima arrive in the trailing parameter
-// (k_colabsmax fills them right before the launch); the promoted formats
-// keep their unscaled form and PTX.
+#define TC_GEMM_32B(NAME, STAGE, BLKBYTES) TC_GEMM_BLK_X(NAME, STAGE, BLKBYTES, 32, 1)
+#define TC_GEMM_BLK(NAME, STAGE, BLKBYTES, BLKELEMS) TC_GEMM_BLK_X(NAME, STAGE, BLKBYTES, BLKELEMS, 1)
+// XSCALED = 1, every tensor-core kernel's form since 2026-09-14: fp16 has
+// no room for a model's activation outliers (Phi-4-mini requantized to
+// IQ3_S reaches |x| = 1.6e5 at its first position in layer 30, found by the
+// non-finite check the review asked for: every logit came out NaN), so
+// each token column is staged as x * (2^14 / max|x|) and the product is
+// scaled back in the epilogue. The per-column maxima arrive in the trailing
+// parameter (k_colabsmax fills them right before the launch). XSCALED = 0
+// is the previous unscaled form, kept for reference and unused.
 #define TC_XPARAM_0
 #define TC_XPARAM_1 , const float *xsc
 #define TC_XSCALE_STAGE_0(col) const float xinv = 1.0f;
@@ -5381,7 +5386,7 @@ extern "C" __global__ void k_xielu(float *x, int n, float an, float ap,
 // steps), exactly like the q4_K tensor-core path, so it answers to the same
 // tolerance gate.
 
-extern "C" __global__ void k_gemm_q6_K_tc(MV_PARAMS) {
+extern "C" __global__ void k_gemm_q6_K_tc(MV_PARAMS, const float *xsc) {
     using namespace nvcuda::wmma;
     const int tid  = threadIdx.x;
     const int warp = tid >> 5;
@@ -5434,19 +5439,21 @@ extern "C" __global__ void k_gemm_q6_K_tc(MV_PARAMS) {
                     for (int e = 0; e < 64; e++) dst[e] = __float2half(0.0f);
                 }
             }
-            {   // ---- stage activations: 128 K x TC_N tokens ----
+            {   // ---- stage activations: 128 K x TC_N tokens, each column
+                //      scaled to fp16's range (see k_gemm_q4_K_tc) ----
                 int col = tid / 2, part = tid % 2;
                 __half *dst = sh_x + col * TC_K + part * 64;
                 if (col < a.batch) {
+                    const float xinv = 16384.0f / xsc[col];
                     const float *xg = x + (ulong64)col * a.xs + b * 256 + koff
                                       + part * 64;
                     #pragma unroll
                     for (int v = 0; v < 16; v++) {
                         float4 xv = *(const float4 *)(xg + v * 4);
-                        dst[v * 4 + 0] = __float2half(xv.x);
-                        dst[v * 4 + 1] = __float2half(xv.y);
-                        dst[v * 4 + 2] = __float2half(xv.z);
-                        dst[v * 4 + 3] = __float2half(xv.w);
+                        dst[v * 4 + 0] = __float2half(xv.x * xinv);
+                        dst[v * 4 + 1] = __float2half(xv.y * xinv);
+                        dst[v * 4 + 2] = __float2half(xv.z * xinv);
+                        dst[v * 4 + 3] = __float2half(xv.w * xinv);
                     }
                 } else {
                     #pragma unroll
@@ -5477,9 +5484,10 @@ extern "C" __global__ void k_gemm_q6_K_tc(MV_PARAMS) {
     for (int idx = tid; idx < TC_ROWS * TC_N; idx += blockDim.x) {
         int rr = idx / TC_N, tt = idx % TC_N;
         unsigned gr = row0 + rr;
-        if (gr < (unsigned)a.n_out && tt < a.batch)
-            y[(ulong64)tt * a.ys + gr] =
-                a.has_bias ? sh_c[idx] + bias[gr] : sh_c[idx];
+        if (gr < (unsigned)a.n_out && tt < a.batch) {
+            float r = sh_c[idx] * (xsc[tt] * (1.0f / 16384.0f));
+            y[(ulong64)tt * a.ys + gr] = a.has_bias ? r + bias[gr] : r;
+        }
     }
 }
 

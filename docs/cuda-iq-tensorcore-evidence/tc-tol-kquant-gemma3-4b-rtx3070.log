@@ -1,0 +1,24 @@
+gpu-split: budget=7.46GB fixed=1.10GB G=34/34 full=1 used=3.06GB
+gpu: CUDA backend on NVIDIA GeForce RTX 3070 (3.3 GB weights in VRAM)
+gpu: VRAM 4.06 GB free of 8.59 GB after init (kv 0.03 GB + scratch 0.01 GB this instance)
+gpu-split: budget=7.46GB fixed=1.10GB G=34/34 full=1 used=3.06GB
+gpu: CUDA backend on NVIDIA GeForce RTX 3070 (3.3 GB weights in VRAM)
+gpu: VRAM 4.06 GB free of 8.59 GB after init (kv 0.03 GB + scratch 0.01 GB this instance)
+gpu-split: budget=7.46GB fixed=1.10GB G=34/34 full=1 used=3.06GB
+gpu: CUDA backend on NVIDIA GeForce RTX 3070 (3.3 GB weights in VRAM)
+gpu: VRAM 4.06 GB free of 8.59 GB after init (kv 0.03 GB + scratch 0.01 GB this instance)
+gpu-split: budget=7.46GB fixed=1.11GB G=34/34 full=1 used=3.61GB
+gpu: CUDA backend on NVIDIA GeForce RTX 3070 (3.3 GB weights in VRAM)
+gpu: VRAM 3.51 GB free of 8.59 GB after init (kv 0.57 GB + scratch 0.02 GB this instance)
+gpu-split: budget=7.46GB fixed=1.11GB G=34/34 full=1 used=3.61GB
+gpu: CUDA backend on NVIDIA GeForce RTX 3070 (3.3 GB weights in VRAM)
+gpu: VRAM 3.51 GB free of 8.59 GB after init (kv 0.57 GB + scratch 0.02 GB this instance)
+tc-tol: C:/Users/zen/models/gemma3-4b.gguf | 192 tokens, 64 teacher-forced positions
+  scalar-b64   TC dispatches: none
+  scalar-b16   TC dispatches: none
+  tc-b64       TC dispatches: Q4_K=410 Q6_K=66
+  scalar-b16 vs scalar-b64 : mean|dlogit| 0.000000   (fp32 reassociation floor; context, not the gate)
+  tc-b64     vs scalar-b64 : mean|dlogit| 0.001291 = 0.00003 of mean logit range 37.81 (limit 0.005)
+  tc-b64     vs scalar-b64 : top1 diff 0/64 (0.0%, limit 5%), worst margin 0.0000 of range (limit 0.020)
+  free-running   : 128 prompt tokens, 32 greedy tokens at batch 64 / ctx 4096 -> token-identical
+tc-tol: ok

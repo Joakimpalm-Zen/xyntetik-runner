@@ -1,0 +1,24 @@
+gpu-split: budget=25.13GB fixed=1.21GB G=36/36 full=1 used=8.62GB
+gpu: CUDA backend on NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb (8.7 GB weights in VRAM)
+gpu: VRAM 16.35 GB free of 25.37 GB after init (kv 0.03 GB + scratch 0.01 GB this instance)
+gpu-split: budget=25.13GB fixed=1.21GB G=36/36 full=1 used=8.62GB
+gpu: CUDA backend on NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb (8.7 GB weights in VRAM)
+gpu: VRAM 16.35 GB free of 25.37 GB after init (kv 0.03 GB + scratch 0.01 GB this instance)
+gpu-split: budget=25.13GB fixed=1.21GB G=36/36 full=1 used=8.62GB
+gpu: CUDA backend on NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb (8.7 GB weights in VRAM)
+gpu: VRAM 16.35 GB free of 25.37 GB after init (kv 0.03 GB + scratch 0.01 GB this instance)
+gpu-split: budget=25.13GB fixed=1.24GB G=36/36 full=1 used=9.23GB
+gpu: CUDA backend on NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb (8.7 GB weights in VRAM)
+gpu: VRAM 15.75 GB free of 25.37 GB after init (kv 0.60 GB + scratch 0.05 GB this instance)
+gpu-split: budget=25.13GB fixed=1.24GB G=36/36 full=1 used=9.23GB
+gpu: CUDA backend on NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb (8.7 GB weights in VRAM)
+gpu: VRAM 15.75 GB free of 25.37 GB after init (kv 0.60 GB + scratch 0.05 GB this instance)
+tc-tol: /home/lab/workspace/models/Qwen3-8B-Q8_0/Qwen3-8B-Q8_0.gguf | 192 tokens, 64 teacher-forced positions
+  scalar-b64   TC dispatches: none
+  scalar-b16   TC dispatches: none
+  tc-b64       TC dispatches: Q8_0=504
+  scalar-b16 vs scalar-b64 : mean|dlogit| 0.000000   (fp32 reassociation floor; context, not the gate)
+  tc-b64     vs scalar-b64 : mean|dlogit| 0.000905 = 0.00003 of mean logit range 30.96 (limit 0.005)
+  tc-b64     vs scalar-b64 : top1 diff 0/64 (0.0%, limit 5%), worst margin 0.0000 of range (limit 0.020)
+  free-running   : 128 prompt tokens, 32 greedy tokens at batch 64 / ctx 4096 -> token-identical
+tc-tol: ok

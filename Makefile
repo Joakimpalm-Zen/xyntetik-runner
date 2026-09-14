@@ -1487,6 +1487,27 @@ endif
 test-cuda-iquants: runner $(TEST_GPU_ID)
 	RUNNER_REQUIRE_IQ_GATES=gpu $(PYTHON) -m pytest -q tests/test_iquants.py
 
+# The fp16 range of the tensor-core operands: a fixture whose FFN activation
+# is 1e7 at the ffn_down input (finite in fp32, far past fp16's 65504)
+# through the forced tensor-core gate. Every CUDA TC kernel stages each
+# token column scaled to fp16's range since 2026-09-14; before that the
+# staged operand was Inf and every logit NaN, which the gate now fails
+# outright. Runs on any CUDA box (the gate skips itself, and this target
+# passes, where there is no device); Metal's tiled path stages unscaled
+# fp16 activations and carries the same exposure, so the target does not
+# run there (recorded in docs/cuda-iq-tensorcore-2026-09-14.md).
+test-tc-overflow: runner $(TEST_TC_TOL)
+ifeq ($(shell uname -s),Darwin)
+	@echo "tc overflow gate skipped: the Metal tiled path is not yet scaled (recorded exposure)"
+else
+	@set -e; \
+	$(PYTHON) scripts/make-test-model.py --wide --quant q8_0 --act-fp16-overflow test-fp16ovf.gguf > /dev/null; \
+	./$(TEST_TC_TOL) test-fp16ovf.gguf > tc-overflow.out 2>&1 || { cat tc-overflow.out; exit 1; }; \
+	grep -q "tc-tol: ok" tc-overflow.out || { cat tc-overflow.out; exit 1; }; \
+	grep -q "ok (skipped)" tc-overflow.out && echo "tc overflow gate: skipped (no CUDA device)" || \
+	  { grep -q "TC dispatches: Q8_0=" tc-overflow.out || { cat tc-overflow.out; exit 1; }; echo "tc overflow gate ok"; }
+endif
+
 # CUDA NVFP4 (ModelOpt two-level export): the device kernels and the companion
 # scale in their tails against the CPU seam. Token identity on a generated
 # fixture and on any real NVFP4 file named in NVFP4_MODEL, logprob agreement
@@ -1990,6 +2011,7 @@ test: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSON_OOM) $(
 	$(TEST_RESP_SM_RUN)
 	./$(TEST_KV_TOL)
 	./$(TEST_TC_TOL)
+	$(MAKE) --no-print-directory test-tc-overflow
 	./$(TEST_I8_TOL)
 	./$(TEST_MV_TOL)
 	./$(TEST_ATTN_TOL)
@@ -2372,7 +2394,7 @@ test-makefile-sane:
 
 .PHONY: template-conformance template-conformance-refresh template-conformance-baseline template-conformance-harmony-oracle
 .PHONY: test-gpu-stub test-cuda-nvfp4
-.PHONY: FORCE makefile-noop test-python-deps test-makefile-sane test-cuda-iquants fixture-scale-note clean debug ptx test test-bare-invocation test-help-interface test-shader-embed test-metal-shader-gate test-apertus test-moe test-prune-experts test-metal-fallback test-metal-prefill test-metal-kquant test-metal-decode-only test-metal-split test-metal-bind-failure test-metal-kv-q8 test-metal-moe test-metal-gptoss-moe test-metal-gemma4-moe test-metal-gemma4-hetero test-metal-bigmodel test-metal-bigmodel-multibuf test-metal-moe-em test-metal-moe-mm test-metal-fuse test-metal-gelu-overflow test-metal-eseries test-metal-swa smoke release-check test-truncation fuzz fuzz-build fuzz-run test-shared-asan test-shared-noid test-split-guard test-swap-race
+.PHONY: FORCE makefile-noop test-python-deps test-makefile-sane test-cuda-iquants test-tc-overflow fixture-scale-note clean debug ptx test test-bare-invocation test-help-interface test-shader-embed test-metal-shader-gate test-apertus test-moe test-prune-experts test-metal-fallback test-metal-prefill test-metal-kquant test-metal-decode-only test-metal-split test-metal-bind-failure test-metal-kv-q8 test-metal-moe test-metal-gptoss-moe test-metal-gemma4-moe test-metal-gemma4-hetero test-metal-bigmodel test-metal-bigmodel-multibuf test-metal-moe-em test-metal-moe-mm test-metal-fuse test-metal-gelu-overflow test-metal-eseries test-metal-swa smoke release-check test-truncation fuzz fuzz-build fuzz-run test-shared-asan test-shared-noid test-split-guard test-swap-race
 
 # Soak harness for the startup/SIGTERM race (test_signal_during_startup). Not
 # in `make test` — it is a diagnostic soak (thousands of spawns), run on demand

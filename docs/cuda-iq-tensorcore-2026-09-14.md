@@ -63,11 +63,8 @@ back in the epilogue; `k_colabsmax` computes the per-column maxima into a
 them as a trailing parameter (the NVFP4 companion's shape, so no shared
 argument layout moves). Cost: one 64-block reduction per tile, about 2%
 of prefill throughput on the RTX 3070. The promoted Q4_K/Q6_K/Q8_0/Q4_0
-kernels keep their unscaled form and PTX; **their exposure to the same
-overflow is real** (a model whose activations exceed 65504 would produce
-NaN logits on the default path today) and is recorded here for the
-owner: extending the scaled form to them is a small change but re-gates
-four promoted formats.
+kernels kept their unscaled form in the promotion PR; the owner ordered
+the same treatment for them the same day (Step 6 below).
 
 ### Gate rows (forced on against forced off, same binary and split)
 
@@ -150,3 +147,74 @@ paths of the same file).
 Evidence files: `cuda-iq-tensorcore-evidence/`: the gate logs of every
 row above (`tc-tol-*`), the fixture racecheck logs, the RTX 3070 benches
 (`pp-bench-*`), the GSQ-RCO greedy comparison.
+
+## Step 6, the promoted Q4_K/Q6_K/Q8_0/Q4_0 kernels scaled the same way
+
+`k_gemm_q4_K_tc` and `k_gemm_q6_K_tc` (the hand-written aliasing kernels)
+gain the trailing `xsc` parameter, the scaled staging and the epilogue
+multiply; `k_gemm_q8_0_tc` and `k_gemm_q4_0_tc` take the macro's XSCALED
+form. Every tensor-core GEMM dispatch now goes through the scaled launch
+(the unscaled `launch_tiled` path serves only the fp32 tiled GEMM). PTX
+from CUDA 13.3 on the Windows box: exactly the four kernels changed.
+
+The regression instrument is a fixture, `make-test-model.py --wide --quant
+q8_0 --act-fp16-overflow`: gate weights 4e4x and up weights 4e2x drive the
+FFN activation (the `ffn_down` input) to 1.2e7, finite in fp32 and far
+past fp16. `make test-tc-overflow` (in `make test`; skips on macOS, where
+the Metal tiled path is not yet scaled) runs the forced-TC gate on it and
+requires `Q8_0` dispatches and a pass: Q8_0=28 dispatches, 6e-5 of range, 0
+flips, free-running identical on both CUDA boxes. The same fixture on the
+previous binary returns NaN logits (the row below).
+
+### Re-gate of the four formats on the scaled kernels
+
+Same protocol as above; every free-running arm token-identical.
+
+| model (all layers on the device) | box | forced-on dispatches | of range | flips |
+|---|---|---|---|---|
+| Llama-3.2-3B Q4_K_M | Blackwell slice | Q4_K=336 Q6_K=56 | 3e-5 | 0 |
+| Qwen3-4B Q4_K_M | Blackwell | Q4_K=432 Q6_K=72 | 4e-5 | 0 |
+| SmolLM2-1.7B Q4_K_M | Blackwell | Q4_K=288 Q6_K=48 | 5e-5 | 1 (near-tie) |
+| Mistral-7B Q4_K_M | Blackwell | Q4_K=384 Q6_K=64 | 2e-5 | 0 |
+| Phi-4-mini Q4_K_M | Blackwell | Q4_K=224 Q6_K=32 | 2e-5 | 0 |
+| granite-4.2-3b Q4_K_M | Blackwell | Q4_K=480 Q6_K=80 | 5e-5 | 0 |
+| gemma-3-4b Q4_K_M | Blackwell / RTX 3070 | Q4_K=408 Q6_K=68 / Q4_K=410 Q6_K=66 | 6e-5 / 3e-5 | 0 / 0 |
+| gemma-4-E4B Q4_K_M | Blackwell / RTX 3070 | Q4_K=452 Q6_K=64 | 5e-5 / 4e-5 | 0 / 0 |
+| Qwen3.8-4B Q4_K_M (qwen35) | Blackwell | Q4_K=432 Q6_K=64 | 1e-5 | 0 |
+| granite-4.2-8b Q4_K_M | RTX 3070 | Q4_K=480 Q6_K=80 | 5e-5 | 0 |
+| Llama-3.1-8B Q4_K_M | RTX 3070 | Q4_K=384 Q6_K=64 | 3e-5 | 0 |
+| SmolLM2-135M Q4_K_M | RTX 3070 | Q8_0=28 Q4_K=32 Q6_K=28 | 5e-5 | 0 |
+| Phi-4-mini Q8_0 | Blackwell | Q8_0=448 | 2e-5 | 0 |
+| granite-4.2-8b Q8_0 | Blackwell | Q8_0=560 | 5e-5 | 0 |
+| SmolLM2-135M Q8_0 | Blackwell / RTX 3070 | Q8_0=420 | 6e-5 / 6e-5 | 0 / 0 |
+| Qwen3-8B Q8_0 | Blackwell | Q8_0=504 | 3e-5 | 0 |
+| qwen3-0.6b Q8_0 | RTX 3070 | Q8_0=392 | 5e-5 | 0 |
+| granite-4.1-3b Q8_0 | RTX 3070 | Q8_0=560 | 4e-5 | 0 |
+| Phi-4-mini Q4_0 | Blackwell | Q4_0=448 | 3e-5 | 0 |
+| Hermes-4-14B Q4_0 (qwen3) | Blackwell | Q4_0=550 | 4e-5 | 0 |
+| SmolLM2-135M Q4_0 | RTX 3070 | Q4_0=420 | 5e-5 | 0 |
+| granite-4.1-8b Q4_0 | RTX 3070 | Q4_0=560 | 4e-5 | 0 |
+
+The rows sit where the promotion table's historical rows sat (3e-5 to
+8e-5 of range, 0 flips): the scaling moves the operands' rounding, not
+their class. Sanitizers on the RTX 3070: memcheck, racecheck, synccheck
+and initcheck on the overflow fixture's whole gate run; memcheck,
+racecheck and synccheck on one forced-TC prefill each of SmolLM2-135M
+Q4_K_M (Q4_K and Q6_K kernels), Q4_0 and Q8_0: clean. The
+previous binary on the overflow fixture with the tensor cores forced:
+`<unk><unk><unk>` (NaN logits, token 0); with them off, and the new binary
+either way: the same finite text.
+
+### Cost (RTX 3070, 5 warmed runs, median, forced on, scaled against the previous binary)
+
+| model, all layers on the device | 118 tokens | 475 tokens | 1892 tokens |
+|---|---|---|---|
+| granite-4.1-3b Q8_0 | 534.7 to 531.8 tok/s (-0.5%) | 509.6 to 503.8 (-1.1%) | 405.4 to 400.9 (-1.1%) |
+| granite-4.2-8b Q4_K_M | 258.7 to 257.0 (-0.7%) | 253.4 to 251.8 (-0.6%) | 215.6 to 213.7 (-0.9%) |
+| granite-4.1-8b Q4_0 | 181.8 to 178.8 (-1.7%) | 177.8 to 176.5 (-0.7%) | 161.2 to 160.4 (-0.5%) |
+
+Under 2% everywhere, the column-max reduction per tile; the plan's 5%
+regression bound holds. Every CUDA tensor-core GEMM now stages its
+operands inside fp16's range. Metal's tiled GEMM (`k_mm_*`, `tg_x` is
+half) still stages unscaled activations and carries the exposure on
+Apple silicon; it is the one place left.
