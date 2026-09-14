@@ -3544,6 +3544,42 @@ static __device__ __forceinline__ void tc_stage_iq3_s(__half *dst,
 }
 TC_GEMM_BLK(k_gemm_iq3_s_tc, tc_stage_iq3_s, 110, 256)
 
+static __device__ __forceinline__ void tc_stage_iq3_xxs(__half *dst,
+                                                        const uchar *rw, int nb,
+                                                        int e0, int n_in) {
+    const uchar *blk = rw + (ulong64)(e0 >> 8) * 98;
+    iq3xxs_stage64(dst, blk, (e0 & 255) >> 6, kiq3xxs_grid);
+    (void)nb; (void)n_in;
+}
+TC_GEMM_BLK(k_gemm_iq3_xxs_tc, tc_stage_iq3_xxs, 98, 256)
+
+static __device__ __forceinline__ void tc_stage_iq2_s(__half *dst,
+                                                      const uchar *rw, int nb,
+                                                      int e0, int n_in) {
+    const uchar *blk = rw + (ulong64)(e0 >> 8) * 82;
+    iq2s_stage64(dst, blk, (e0 & 255) >> 6, kiq2s_grid);
+    (void)nb; (void)n_in;
+}
+TC_GEMM_BLK(k_gemm_iq2_s_tc, tc_stage_iq2_s, 82, 256)
+
+static __device__ __forceinline__ void tc_stage_iq2_xs(__half *dst,
+                                                       const uchar *rw, int nb,
+                                                       int e0, int n_in) {
+    const uchar *blk = rw + (ulong64)(e0 >> 8) * 74;
+    iq2xs_stage64(dst, blk, (e0 & 255) >> 6, kiq2xs_grid);
+    (void)nb; (void)n_in;
+}
+TC_GEMM_BLK(k_gemm_iq2_xs_tc, tc_stage_iq2_xs, 74, 256)
+
+static __device__ __forceinline__ void tc_stage_iq2_xxs(__half *dst,
+                                                        const uchar *rw, int nb,
+                                                        int e0, int n_in) {
+    const uchar *blk = rw + (ulong64)(e0 >> 8) * 66;
+    iq2xxs_stage64(dst, blk, (e0 & 255) >> 6, kiq2xxs_grid);
+    (void)nb; (void)n_in;
+}
+TC_GEMM_BLK(k_gemm_iq2_xxs_tc, tc_stage_iq2_xxs, 66, 256)
+
 // MXFP4 (gpt-oss expert tensors): 17-byte block = one E8M0 scale byte (a
 // biased power-of-two exponent, 2^(e-127), NOT an fp16) + 32 packed E2M1
 // nibbles indexing a fixed signed codebook. Table and decode are 1:1 with

@@ -616,7 +616,11 @@ static const struct { int type; const char *name; } TC_KERNELS[] = {
     { T_Q4_0, "k_gemm_q4_0_tc" },
     // codebook i-quants: registered, not promoted (tc_promoted); the
     // forced-TC leg of tests/test_iquants.py is their gate
-    { T_IQ3_S, "k_gemm_iq3_s_tc" },
+    { T_IQ3_S,   "k_gemm_iq3_s_tc" },
+    { T_IQ3_XXS, "k_gemm_iq3_xxs_tc" },
+    { T_IQ2_S,   "k_gemm_iq2_s_tc" },
+    { T_IQ2_XS,  "k_gemm_iq2_xs_tc" },
+    { T_IQ2_XXS, "k_gemm_iq2_xxs_tc" },
 };
 bool gpu_tc_type_has_kernel(int type) {
     for (size_t i = 0; i < sizeof TC_KERNELS / sizeof *TC_KERNELS; i++)

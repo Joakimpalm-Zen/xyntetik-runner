@@ -86,3 +86,53 @@ in hand, as the plan orders.
 
 Evidence files: `cuda-iq-tensorcore-evidence/` (the two benches, the two
 gate logs, the racecheck log, the GSQ-RCO greedy comparison).
+
+## Step 2, group 2: IQ3_XXS, IQ2_S, IQ2_XS, IQ2_XXS (opt-in)
+
+The same `TC_GEMM_BLK` shape with the 98, 82, 74 and 66-byte blocks; the
+stagers in `src/iq_decode.h` are held to `dequant_row()` bit for bit on
+500 random blocks and the scale corners per format, and to the format's
+definition on a hand-built block each, one per row of the plan's hazard
+table: IQ3_XXS's scale nibble in the top of a 2-byte-aligned word and its
+packed seven-bit signs over two four-magnitude grids; IQ2_S's ten-bit
+index through the high-bit byte, direct sign bytes and two scales per
+sub-block; IQ2_XS's nine-bit index and seven-bit sign index sharing one
+16-bit word; IQ2_XXS's 32-bit field at byte 6 of a 66-byte block. PTX from
+CUDA 13.3 on the Windows box: four kernels added, no other body changed.
+
+Real models: granite-4.2-3b-bf16 requantized with llama-quantize b10353
+and an imatrix from the runner's own docs (200 chunks of 512). The
+llama-quantize recipes mix: the IQ3_XXS file carries 120 IQ3_XXS, 80
+IQ2_S and 41 IQ3_S tensors, the IQ2_S recipe stores 195 IQ2_XS and 46
+IQ3_S (no IQ2_S tensor at all), the IQ2_XS and IQ2_XXS files 235 of their
+own type; each has 40 Q4_K tensors beside them. Every type present is
+required to dispatch, and does.
+
+| model (all 40 layers on the device) | box | forced-on dispatches | teacher-forced | free-running |
+|---|---|---|---|---|
+| fixtures m-IQ3_XXS / m-IQ2_S / m-IQ2_XS / m-IQ2_XXS | RTX 3070 and Blackwell slice | IQ3_XXS=16 IQ3_S=4 IQ2_S=8 / IQ2_XS=20 IQ3_S=8 / IQ2_XS=24 / IQ2_XXS=24 | 3e-5 to 7e-5 of range, 0 flips each | identical, each |
+| granite-4.2-3b IQ3_XXS recipe | RTX 3070 | Q4_K=80 IQ3_XXS=240 IQ3_S=80 IQ2_S=160 | 6e-5 of range, 0/64 flips | identical |
+| same | Blackwell slice | same counts | 7e-5, 0/64 | identical |
+| granite-4.2-3b IQ2_S recipe | Blackwell slice | Q4_K=80 IQ2_XS=390 IQ3_S=90 | 1.1e-4, 0/64 | identical |
+| granite-4.2-3b IQ2_XS | Blackwell slice | Q4_K=80 IQ2_XS=470 | 1.2e-4, 0/64 | identical |
+| granite-4.2-3b IQ2_XXS | RTX 3070 | Q4_K=80 IQ2_XXS=470 | 1.3e-4, 0/64 | identical |
+| same | Blackwell slice | same | 1.3e-4, 0/64 | identical |
+
+Sanitizers, RTX 3070, the whole `test-tc-tol` run of each of the four
+fixtures under memcheck, racecheck, synccheck and initcheck: 0 errors, 0
+hazards, every run with its claimed types dispatching.
+
+### Prefill throughput (RTX 3070, 5 warmed runs, median, spread under 1%)
+
+| model | 118 tokens | 475 tokens | 1892 tokens |
+|---|---|---|---|
+| IQ3_XXS recipe (IQ3_XXS + IQ2_S + IQ3_S on the tensor cores) | 24.4 to 458.5 tok/s (19x) | 26.1 to 436.4 (17x) | 25.8 to 359.8 (14x) |
+| IQ2_XXS | 25.3 to 326.8 (13x) | 26.9 to 322.6 (12x) | 26.5 to 276.3 (10x) |
+
+The Blackwell slice was shared with another job's 14B load during this
+group's benches (one run was refused VRAM outright, spreads up to 50%), so
+its rows (`pp-bench-*-blackwell.json`) are kept as order-of-magnitude
+evidence only: IQ3_XXS 17 to 324-378 tok/s, IQ2_S 11-16 to 181-280, IQ2_XS
+11-18 to 100-127, IQ2_XXS 12 to 104-132.
+
+Promotion status unchanged: opt-in, the whole family first.

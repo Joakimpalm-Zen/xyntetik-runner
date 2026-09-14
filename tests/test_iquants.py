@@ -344,7 +344,7 @@ def tc_tol_bin():
 # path's and is not asked to. IQ3_S first (the largest tensor group of the
 # GSQ-RCO file that motivated the CUDA i-quants); the leg still runs the
 # gate wherever a file's other block types have one.
-IQ_TC_TYPES = ["IQ3_S"]
+IQ_TC_TYPES = ["IQ3_S", "IQ3_XXS", "IQ2_S", "IQ2_XS", "IQ2_XXS"]
 
 
 @pytest.mark.parametrize("t", IQ_TYPES)

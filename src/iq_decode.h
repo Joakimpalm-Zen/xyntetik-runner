@@ -123,4 +123,95 @@ IQ_FN void iq3s_stage64(iq_stage_t *dst, const iq_byte *blk, int seg,
     }
 }
 
+
+// IQ3_XXS: 98-byte block; segment s is sub-blocks 2s and 2s+1 of
+// dq_iq3_xxs: eight grid indices per sub-block (qs + 8*ib, four magnitudes
+// each), one word of four 7-bit sign indices and a 4-bit scale at
+// 66 + 4*ib, scale (0.5 + nibble) / 2.
+IQ_FN void iq3xxs_stage64(iq_stage_t *dst, const iq_byte *blk, int seg,
+                          const unsigned *grid) {
+    float d = iq_f16(blk);
+    for (int h = 0; h < 2; h++) {
+        int ib = 2 * seg + h;
+        const iq_byte *qs = blk + 2 + 8 * ib;
+        unsigned aux = iq_ld32a2(blk + 66 + 4 * ib);
+        float db = d * (0.5f + (float)(aux >> 28)) * 0.5f;
+        for (int l = 0; l < 4; l++) {
+            unsigned g1 = grid[qs[2 * l + 0]], g2 = grid[qs[2 * l + 1]];
+            unsigned signs = iq_signs7((aux >> (7 * l)) & 127);
+            for (int j = 0; j < 4; j++) {
+                IQ_STORE(dst, h * 32 + l * 8 + j, db * iq_w4(g1, j, signs));
+                IQ_STORE(dst, h * 32 + l * 8 + 4 + j, db * iq_w4(g2, j, signs >> 4));
+            }
+        }
+    }
+}
+
+// IQ2_S: 82-byte block; per sub-block ib: four low index bytes at 2 + 4*ib,
+// four sign bytes at 34 + 4*ib (one bit per weight, no table), two high
+// index bits per index in the byte at 66 + ib, two 4-bit scales in the
+// byte at 74 + ib, scale (0.5 + nibble) / 4, the low nibble for the first
+// 16 weights.
+IQ_FN void iq2s_stage64(iq_stage_t *dst, const iq_byte *blk, int seg,
+                        const iq_u64 *grid) {
+    float d = iq_f16(blk);
+    for (int h = 0; h < 2; h++) {
+        int ib = 2 * seg + h;
+        const iq_byte *qs = blk + 2 + 4 * ib, *sg = blk + 34 + 4 * ib;
+        unsigned hb = blk[66 + ib], sc = blk[74 + ib];
+        float db0 = d * (0.5f + (float)(sc & 0xF)) * 0.25f;
+        float db1 = d * (0.5f + (float)(sc >> 4)) * 0.25f;
+        for (int l = 0; l < 4; l++) {
+            iq_u64 g = grid[qs[l] | ((hb << (8 - 2 * l)) & 0x300)];
+            unsigned signs = sg[l];
+            float db = l < 2 ? db0 : db1;
+            for (int j = 0; j < 8; j++)
+                IQ_STORE(dst, h * 32 + l * 8 + j, db * iq_w8(g, j, signs));
+        }
+    }
+}
+
+// IQ2_XS: 74-byte block; per sub-block ib four 16-bit words at 2 + 8*ib,
+// each a 9-bit grid index and a 7-bit sign index, and the scale byte at
+// 66 + ib as in IQ2_S.
+IQ_FN void iq2xs_stage64(iq_stage_t *dst, const iq_byte *blk, int seg,
+                         const iq_u64 *grid) {
+    float d = iq_f16(blk);
+    for (int h = 0; h < 2; h++) {
+        int ib = 2 * seg + h;
+        const iq_byte *qs = blk + 2 + 8 * ib;
+        unsigned sc = blk[66 + ib];
+        float db0 = d * (0.5f + (float)(sc & 0xF)) * 0.25f;
+        float db1 = d * (0.5f + (float)(sc >> 4)) * 0.25f;
+        for (int l = 0; l < 4; l++) {
+            unsigned q = iq_ld16(qs + 2 * l);
+            iq_u64 g = grid[q & 511];
+            unsigned signs = iq_signs7(q >> 9);
+            float db = l < 2 ? db0 : db1;
+            for (int j = 0; j < 8; j++)
+                IQ_STORE(dst, h * 32 + l * 8 + j, db * iq_w8(g, j, signs));
+        }
+    }
+}
+
+// IQ2_XXS: 66-byte block; per sub-block ib eight bytes at 2 + 8*ib: four
+// grid indices, then one word of four 7-bit sign indices and a 4-bit
+// scale, scale (0.5 + nibble) / 4.
+IQ_FN void iq2xxs_stage64(iq_stage_t *dst, const iq_byte *blk, int seg,
+                          const iq_u64 *grid) {
+    float d = iq_f16(blk);
+    for (int h = 0; h < 2; h++) {
+        int ib = 2 * seg + h;
+        const iq_byte *qs = blk + 2 + 8 * ib;
+        unsigned aux = iq_ld32a2(qs + 4);
+        float db = d * (0.5f + (float)(aux >> 28)) * 0.25f;
+        for (int l = 0; l < 4; l++) {
+            iq_u64 g = grid[qs[l]];
+            unsigned signs = iq_signs7((aux >> (7 * l)) & 127);
+            for (int j = 0; j < 8; j++)
+                IQ_STORE(dst, h * 32 + l * 8 + j, db * iq_w8(g, j, signs));
+        }
+    }
+}
+
 #endif

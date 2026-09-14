@@ -8,17 +8,20 @@ names that were true when they were written.
 
 ## Unreleased
 
-- **IQ3_S prefill on the tensor cores, opt-in.** The first codebook
-  i-quant with a tensor-core GEMM (`k_gemm_iq3_s_tc`, the Q8_0/Q4_0 tile
-  shape with a 256-weight block; the segment decoder is shared with a host
-  test that holds it to the CPU decoder bit for bit). Reached through
-  `RUNNER_CUDA_TC=1`; not promoted until the rest of the family is
-  measured. Forced against the scalar path it is 0 of 64 teacher-forced
-  flips, 8e-5 of the logit range and free-running token-identical on a
-  pure IQ3_S Granite 4.2 3B on both CUDA device families, 9 of 9 greedy
-  outputs identical on the GSQ-RCO Qwen3.8 27B, sanitizer-clean, and
-  prefill goes from 25 to 377-495 tok/s on an RTX 3070. Single-token
-  decode is unchanged. `docs/cuda-iq-tensorcore-2026-09-14.md`.
+- **IQ3_S, IQ3_XXS, IQ2_S, IQ2_XS and IQ2_XXS prefill on the tensor
+  cores, opt-in.** The codebook i-quants gain tensor-core GEMMs
+  (`k_gemm_iq*_tc`, the Q8_0/Q4_0 tile shape with a 256-weight block; each
+  segment decoder is shared with a host test that holds it to the CPU
+  decoder bit for bit and to the format's definition on a hand-built
+  block). Reached through `RUNNER_CUDA_TC=1`; not promoted until the
+  family is complete. Forced against the scalar path, each is 0 of 64
+  teacher-forced flips, at most 1.3e-4 of the logit range and free-running
+  token-identical on Granite 4.2 3B requantized to the format with all
+  layers on the device, on both CUDA device families; IQ3_S is also 9 of 9
+  greedy outputs identical on the GSQ-RCO Qwen3.8 27B; every kernel is
+  sanitizer-clean; prefill goes from 25 to 277-495 tok/s on an RTX 3070
+  depending on the format. Single-token decode is unchanged.
+  `docs/cuda-iq-tensorcore-2026-09-14.md`.
 - **The gates the v0.5.3 review found blunt.** The CPU/GPU logit gate
   accepted a NaN (NaN is not greater than any limit); it now fails
   non-finite logits on either side, through a fast-math-free translation
