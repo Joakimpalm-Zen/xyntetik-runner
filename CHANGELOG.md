@@ -6,6 +6,38 @@ change between releases (the `-alpha` suffix was retired at v0.2.0 — the 0.x
 version already says what it needs to). Entries below the rename keep the
 names that were true when they were written.
 
+## Unreleased
+
+- **IQ3_S prefill on the tensor cores, opt-in.** The first codebook
+  i-quant with a tensor-core GEMM (`k_gemm_iq3_s_tc`, the Q8_0/Q4_0 tile
+  shape with a 256-weight block; the segment decoder is shared with a host
+  test that holds it to the CPU decoder bit for bit). Reached through
+  `RUNNER_CUDA_TC=1`; not promoted until the rest of the family is
+  measured. Forced against the scalar path it is 0 of 64 teacher-forced
+  flips, 8e-5 of the logit range and free-running token-identical on a
+  pure IQ3_S Granite 4.2 3B on both CUDA device families, 9 of 9 greedy
+  outputs identical on the GSQ-RCO Qwen3.8 27B, sanitizer-clean, and
+  prefill goes from 25 to 377-495 tok/s on an RTX 3070. Single-token
+  decode is unchanged. `docs/cuda-iq-tensorcore-2026-09-14.md`.
+- **The gates the v0.5.3 review found blunt.** The CPU/GPU logit gate
+  accepted a NaN (NaN is not greater than any limit); it now fails
+  non-finite logits on either side, through a fast-math-free translation
+  unit because the compiler folds every NaN test in a fast-math one, and
+  proves it with a self-test in `make test`. The i-quant gate's comparison
+  truncated to the shorter list and passed a NaN after a finite maximum;
+  it checks counts and finiteness first. Its Windows tool discovery missed
+  `llama-quantize.exe`; the tools are resolved once, `RUNNER_REQUIRE_IQ_GATES`
+  makes a missing prerequisite a failure and `make test-cuda-iquants` is
+  the required form. The tensor-core gate decided "TC-capable" from its own
+  list, which never learned Q6_K, and proved engagement with one total; the
+  backend now answers both (`gpu_tc_type_has_kernel`,
+  `gpu_tc_dispatches_type`) and the gate requires every TC-capable block
+  type to dispatch in the forced-on arm and none in the forced-off arms.
+  The sign-expansion test never ran the device helper; the decode
+  primitives live in `src/iq_decode.h`, compiled by nvcc and by the C
+  compiler into a host test, and the committed PTX's entries and tables
+  are checked from Python.
+
 ## v0.5.3 - 2026-09-14
 
 The codebook release. Every format the loader admits now has a CUDA

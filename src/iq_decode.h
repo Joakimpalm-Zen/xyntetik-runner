@@ -16,13 +16,43 @@
 #if defined(__CUDACC__)
 #define IQ_FN static __device__ __forceinline__
 #define IQ_POPC(x) __popc(x)
+// staging writes fp16 on the device (the tensor-core operand) and f32 on
+// the host, where the test compares the value before the fp16 rounding
+typedef __half iq_stage_t;
+#define IQ_STORE(dst, i, v) ((dst)[i] = __float2half(v))
 #else
+#include <math.h>
+#include <string.h>
 #define IQ_FN static inline
 #define IQ_POPC(x) __builtin_popcount(x)
+typedef float iq_stage_t;
+#define IQ_STORE(dst, i, v) ((dst)[i] = (v))
 #endif
 
 typedef unsigned char iq_byte;
 typedef unsigned long long iq_u64;
+
+// The block scale, an IEEE half at a 2-byte aligned address. The device
+// converts in hardware; the host conversion below is exact for every
+// half (subnormals scaled by 2^-24, Inf and NaN built from their bits).
+IQ_FN float iq_f16(const iq_byte *p) {
+#if defined(__CUDACC__)
+    return __half2float(*(const __half *)p);
+#else
+    unsigned h = p[0] | ((unsigned)p[1] << 8);
+    unsigned sign = h >> 15, e = (h >> 10) & 0x1f, m = h & 0x3ff;
+    float v;
+    if (e == 0) {
+        v = ldexpf((float)m, -24);
+    } else if (e == 31) {
+        unsigned bits = 0x7f800000u | (m << 13);
+        memcpy(&v, &bits, sizeof v);
+    } else {
+        v = ldexpf((float)(m | 0x400), (int)e - 25);
+    }
+    return sign ? -v : v;
+#endif
+}
 
 // Block fields are 2-byte aligned (every block size is even and a row is a
 // whole number of blocks), so 32-bit fields are read as two 16-bit halves.
@@ -58,5 +88,39 @@ IQ_FN float iq1_w(iq_u64 grid, int j, float delta) {
     return (float)(signed char)((grid >> (8 * j)) & 0xFF) + delta;
 }
 #define IQ1_DELTA 0.125f
+
+// ------------------------------------------------- tensor-core staging
+// One 64-element segment of a 256-weight block, decoded to the staging
+// type: segment s is elements [64s, 64s + 64). The tensor-core GEMMs stage
+// a 64-row x 128-K tile per step with two threads per row, one segment
+// each, so this is the unit of work; the host test decodes all four
+// segments of a block and holds them to dequant_row() bit for bit.
+
+// IQ3_S: segment s is the sub-block pair p = s of dq_iq3_s (quants.c):
+// scale nibbles of scales[p] (1 + 2*nibble, low nibble first), high index
+// bits qh[2p] and qh[2p+1] (one bit per index), indices qs + 16p, sign
+// bytes signs + 8p; the arithmetic of k_mv_iq3_s_b, value = d * scale *
+// (+/- magnitude).
+IQ_FN void iq3s_stage64(iq_stage_t *dst, const iq_byte *blk, int seg,
+                        const unsigned *grid) {
+    float d = iq_f16(blk);
+    const iq_byte *qs = blk + 2 + 16 * seg, *qh = blk + 66 + 2 * seg,
+                  *sg = blk + 74 + 8 * seg;
+    unsigned scb = blk[106 + seg];
+    for (int h = 0; h < 2; h++) {
+        float db = d * (float)(1 + 2 * (h ? (scb >> 4) : (scb & 0xF)));
+        unsigned hb = qh[h];
+        const iq_byte *q = qs + 8 * h, *sgn = sg + 4 * h;
+        for (int l = 0; l < 4; l++) {
+            unsigned g1 = grid[q[2 * l + 0] | ((hb << (8 - 2 * l)) & 256)];
+            unsigned g2 = grid[q[2 * l + 1] | ((hb << (7 - 2 * l)) & 256)];
+            unsigned signs = sgn[l];
+            for (int j = 0; j < 4; j++) {
+                IQ_STORE(dst, h * 32 + l * 8 + j, db * iq_w4(g1, j, signs));
+                IQ_STORE(dst, h * 32 + l * 8 + 4 + j, db * iq_w4(g2, j, signs >> 4));
+            }
+        }
+    }
+}
 
 #endif

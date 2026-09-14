@@ -679,8 +679,8 @@ TEST_QUANTS_SIMD_SRC = tests/test_quants_simd.c $(QUANTS_OBJ)
 # QUANTS_CFLAGS for the same reason as the quant tests: this is arithmetic
 # the numerical identity rests on.
 TEST_IQ_DECODE = $(TEST_BATCH:test-batch%=test-iq-decode%)
-$(TEST_IQ_DECODE): tests/test_iq_decode.c src/iq_decode.h src/quants_iq_grids.h
-	$(CC) $(QUANTS_CFLAGS) -I src tests/test_iq_decode.c -o $@
+$(TEST_IQ_DECODE): tests/test_iq_decode.c src/iq_decode.h src/quants_iq_grids.h $(QUANTS_OBJ)
+	$(CC) $(QUANTS_CFLAGS) -I src tests/test_iq_decode.c $(QUANTS_OBJ) -o $@ -lm -lpthread
 
 # QUANTS_CFLAGS, not CFLAGS: this test carries inline scalar REFERENCE
 # implementations of the quant kernels, and a reference compiled under

@@ -341,10 +341,10 @@ def tc_tol_bin():
 # cores. A type listed here must dispatch its batched GEMM in the forced-on
 # arm of the tolerance gate on every fixture file that carries it in a
 # block, and the gate's numbers must pass; a type not listed is the scalar
-# path's and is not asked to. Empty until the first IQ tensor-core kernel
-# lands; the leg still runs the gate wherever a file's other block types
-# (Q6_K, Q5_K on these fixtures) have one.
-IQ_TC_TYPES = []
+# path's and is not asked to. IQ3_S first (the largest tensor group of the
+# GSQ-RCO file that motivated the CUDA i-quants); the leg still runs the
+# gate wherever a file's other block types have one.
+IQ_TC_TYPES = ["IQ3_S"]
 
 
 @pytest.mark.parametrize("t", IQ_TYPES)
