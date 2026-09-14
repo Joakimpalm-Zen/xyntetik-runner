@@ -8,21 +8,28 @@ names that were true when they were written.
 
 ## Unreleased
 
-- **The IQ family's prefill on the tensor cores, opt-in: IQ1_S, IQ1_M,
+- **The IQ family's prefill on the tensor cores, promoted: IQ1_S, IQ1_M,
   IQ2_XXS, IQ2_XS, IQ2_S, IQ3_XXS, IQ3_S, IQ4_XS and IQ4_NL.** Each gains a
   tensor-core GEMM (`k_gemm_iq*_tc`, the Q8_0/Q4_0 tile shape with the
   format's block; every segment decoder is shared with a host test that
   holds it to the CPU decoder bit for bit and to the format's definition
-  on a hand-built block). Reached through `RUNNER_CUDA_TC=1`; promotion is
-  a separate, measured step. Forced against the scalar path, each is 0 of
-  64 teacher-forced flips and free-running token-identical on Granite 4.2
-  3B requantized to the format with all layers on the device (at most
-  1.3e-4 of the logit range for the IQ2, IQ3 and IQ4 formats, 8.6e-4 for
-  IQ1_S, the family's most sensitive), on both CUDA device families; IQ3_S
-  is also 9 of 9 greedy outputs identical on the GSQ-RCO Qwen3.8 27B;
-  every kernel is sanitizer-clean; prefill goes from 25 to 277-495 tok/s
-  on an RTX 3070 depending on the format. Single-token decode is
-  unchanged. `docs/cuda-iq-tensorcore-2026-09-14.md`.
+  on a hand-built block) and joins the promoted set for the gated
+  architecture list. Forced against the scalar path, each is at most a
+  near-tie flip or two in 64 teacher-forced positions and free-running
+  token-identical on Granite 4.2 3B requantized to the format with all
+  layers on the device (at most 1.3e-4 of the logit range for the IQ2, IQ3
+  and IQ4 formats, 9e-4 for IQ1_S, the family's most sensitive), on both
+  CUDA device families; IQ3_S the same on Llama 3.2, Qwen3, SmolLM2,
+  Mistral 7B, Phi-4-mini, gemma-3 and gemma-4, IQ2_XXS on three of them,
+  and 9 of 9 greedy outputs identical on the GSQ-RCO Qwen3.8 27B; every
+  kernel is sanitizer-clean; prefill goes from 25 to 273-486 tok/s on an
+  RTX 3070 depending on the format. Single-token decode is unchanged and
+  `RUNNER_CUDA_TC=0` pins the scalar path. The kernels stage each token
+  column scaled to fp16's range: Phi-4-mini's first-position activation
+  reaches 1.6e5 in layer 30, past fp16, and the first draft returned NaN
+  logits there, caught by the gate repair below. The promoted Q4_K, Q6_K,
+  Q8_0 and Q4_0 kernels keep their unscaled form and carry the same
+  exposure. `docs/cuda-iq-tensorcore-2026-09-14.md`.
 - **The gates the v0.5.3 review found blunt.** The CPU/GPU logit gate
   accepted a NaN (NaN is not greater than any limit); it now fails
   non-finite logits on either side, through a fast-math-free translation

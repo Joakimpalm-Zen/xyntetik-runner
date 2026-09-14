@@ -1004,16 +1004,17 @@ from a backend name. CUDA tensor-core and Metal tiled prefill kernels
 reassociate floating-point sums, so they are promoted by teacher-forced
 tolerance tests. CUDA currently promotes Q4_K/Q6_K/Q8_0 on the gated dense
 families and Q4_0 on Gemma 4; the latter was bit-identical over 820 tensor-core
-dispatches on the real 31B QAT artifact. The codebook i-quants are gaining
-tensor-core prefill, opt-in behind `RUNNER_CUDA_TC=1` until promoted on
-measured rows: all nine (IQ1_S, IQ1_M, IQ2_XXS, IQ2_XS, IQ2_S, IQ3_XXS,
-IQ3_S, IQ4_XS, IQ4_NL) have the kernel, each measured as the forced path
-against the scalar one on Granite 4.2 3B requantized to the format with all
-layers on the device: 0 of 64 teacher-forced flips, free-running
-token-identical, at most 1.3e-4 of the logit range (8.6e-4 for IQ1_S), and
-prefill 25 to 277-495 tok/s on an RTX 3070; per-type dispatch counts and
-every row in `docs/cuda-iq-tensorcore-2026-09-14.md`. Their single-token
-decode stays on the generic matvec.
+dispatches on the real 31B QAT artifact. The nine codebook i-quants (IQ1_S,
+IQ1_M, IQ2_XXS, IQ2_XS, IQ2_S, IQ3_XXS, IQ3_S, IQ4_XS, IQ4_NL) are promoted
+on the same list since 2026-09-14, each measured as the forced path against
+the scalar one on Granite 4.2 3B requantized to the format with all layers
+on the device (at most a near-tie flip or two in 64 teacher-forced
+positions, free-running token-identical, at most 1.3e-4 of the logit
+range, 9e-4 for IQ1_S), IQ3_S on every architecture of the list, and
+prefill 25 to 273-486 tok/s on an RTX 3070; their token columns are staged
+scaled to fp16's range because Phi-4-mini's activations exceed it. Per-type
+dispatch counts and every row in `docs/cuda-iq-tensorcore-2026-09-14.md`.
+Their single-token decode stays on the generic matvec.
 
 On Metal that now covers **decode as well as prefill**: the cooperative KV
 attention read was promoted on 2026-08-17 after clearing zero teacher-forced

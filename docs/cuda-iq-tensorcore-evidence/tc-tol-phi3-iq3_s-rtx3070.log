@@ -1,0 +1,30 @@
+rope: phi3 LongRoPE short factors, mscale 1.1902
+rope: phi3 LongRoPE short factors, mscale 1.1902
+gpu-split: budget=7.46GB fixed=1.05GB G=32/32 full=1 used=2.46GB
+gpu: CUDA backend on NVIDIA GeForce RTX 3070 (1.9 GB weights in VRAM)
+gpu: VRAM 5.51 GB free of 8.59 GB after init (kv 0.03 GB + scratch 0.01 GB this instance)
+rope: phi3 LongRoPE short factors, mscale 1.1902
+gpu-split: budget=7.46GB fixed=1.05GB G=32/32 full=1 used=2.46GB
+gpu: CUDA backend on NVIDIA GeForce RTX 3070 (1.9 GB weights in VRAM)
+gpu: VRAM 5.51 GB free of 8.59 GB after init (kv 0.03 GB + scratch 0.01 GB this instance)
+rope: phi3 LongRoPE short factors, mscale 1.1902
+gpu-split: budget=7.46GB fixed=1.05GB G=32/32 full=1 used=2.46GB
+gpu: CUDA backend on NVIDIA GeForce RTX 3070 (1.9 GB weights in VRAM)
+gpu: VRAM 5.51 GB free of 8.59 GB after init (kv 0.03 GB + scratch 0.01 GB this instance)
+rope: phi3 LongRoPE short factors, mscale 1.1902
+gpu-split: budget=7.46GB fixed=1.08GB G=32/32 full=1 used=3.00GB
+gpu: CUDA backend on NVIDIA GeForce RTX 3070 (1.9 GB weights in VRAM)
+gpu: VRAM 4.98 GB free of 8.59 GB after init (kv 0.54 GB + scratch 0.03 GB this instance)
+rope: phi3 LongRoPE short factors, mscale 1.1902
+gpu-split: budget=7.46GB fixed=1.08GB G=32/32 full=1 used=3.00GB
+gpu: CUDA backend on NVIDIA GeForce RTX 3070 (1.9 GB weights in VRAM)
+gpu: VRAM 4.98 GB free of 8.59 GB after init (kv 0.54 GB + scratch 0.03 GB this instance)
+tc-tol: C:/Users/zen/models/phi3-IQ3_S.gguf | 192 tokens, 64 teacher-forced positions
+  scalar-b64   TC dispatches: none
+  scalar-b16   TC dispatches: none
+  tc-b64       TC dispatches: IQ3_S=448
+  scalar-b16 vs scalar-b64 : mean|dlogit| 0.000000   (fp32 reassociation floor; context, not the gate)
+  tc-b64     vs scalar-b64 : mean|dlogit| 0.010526 = 0.00025 of mean logit range 42.63 (limit 0.005)
+  tc-b64     vs scalar-b64 : top1 diff 3/64 (4.7%, limit 5%), worst margin 0.0005 of range (limit 0.020)
+  free-running   : 128 prompt tokens, 32 greedy tokens at batch 64 / ctx 4096 -> token-identical
+tc-tol: ok
