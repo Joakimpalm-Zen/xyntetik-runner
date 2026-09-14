@@ -595,6 +595,32 @@ static bool gpu_tensor_type_ok(const gguf_tensor *t) {
     return false;
 }
 
+// Incremented at the one place the TC GEMM is dispatched, so a gate can ask
+// "did it run?" instead of inferring it from the output. Also per weight
+// type, so the gate can ask it per format: one total cannot tell "the Q4_K
+// tensors ran on the tensor cores" from "every TC-capable tensor did".
+static unsigned long g_tc_dispatches = 0;
+static unsigned long g_tc_dispatches_type[KT_N];
+unsigned long gpu_tc_dispatches(void) { return g_tc_dispatches; }
+unsigned long gpu_tc_dispatches_type(int type) {
+    return type >= 0 && type < KT_N ? g_tc_dispatches_type[type] : 0;
+}
+
+// The tensor-core prefill GEMMs, by weight type. Read at module load to
+// resolve the kernels and by the tolerance gate to learn which types it
+// can require a dispatch for; one table so the two agree by construction.
+static const struct { int type; const char *name; } TC_KERNELS[] = {
+    { T_Q4_K, "k_gemm_q4_K_tc" },
+    { T_Q6_K, "k_gemm_q6_K_tc" },
+    { T_Q8_0, "k_gemm_q8_0_tc" },
+    { T_Q4_0, "k_gemm_q4_0_tc" },
+};
+bool gpu_tc_type_has_kernel(int type) {
+    for (size_t i = 0; i < sizeof TC_KERNELS / sizeof *TC_KERNELS; i++)
+        if (TC_KERNELS[i].type == type) return true;
+    return false;
+}
+
 // The --caps answer for this backend, sourced from the admission test above so
 // the advertised list and the loader agree by construction.
 bool gpu_quant_ok(int type) { return gpu_type_ok(type); }
@@ -1409,11 +1435,14 @@ static gpu_weights *shared_build(model_t *m, size_t act_bytes, int max_hd,
         for (size_t i = 0; i < sizeof(fns) / sizeof(*fns); i++)
             CK(cu.ModuleGetFunction(fns[i].f, w->mod, fns[i].name));
         // Tensor-core kernels: resolved non-fatally so an older embedded PTX
-        // (without them) still loads — TC just stays unavailable there.
-        cu.ModuleGetFunction(&w->f_gemm_tc[T_Q4_K], w->mod, "k_gemm_q4_K_tc");
-        cu.ModuleGetFunction(&w->f_gemm_tc[T_Q6_K], w->mod, "k_gemm_q6_K_tc");
-        cu.ModuleGetFunction(&w->f_gemm_tc[T_Q8_0], w->mod, "k_gemm_q8_0_tc");
-        cu.ModuleGetFunction(&w->f_gemm_tc[T_Q4_0], w->mod, "k_gemm_q4_0_tc");
+        // (without them) still loads — TC just stays unavailable there. The
+        // table is the one gpu_tc_type_has_kernel() answers from, so the
+        // tolerance gate's idea of "TC-capable" cannot drift from what is
+        // registered here (it did: Q6_K was promoted 2026-08-08 and the
+        // gate's own list never learned it, so a pure Q6_K model skipped).
+        for (size_t i = 0; i < sizeof TC_KERNELS / sizeof *TC_KERNELS; i++)
+            cu.ModuleGetFunction(&w->f_gemm_tc[TC_KERNELS[i].type], w->mod,
+                                 TC_KERNELS[i].name);
 
         // weights: the file bytes the offloaded layers reference (whole file
         // for a full split, a prefix for partial) so byte offsets stay valid.
@@ -2259,10 +2288,6 @@ void gpu_tc_force(int on) {
     g_tc_state = on < 0 ? TC_ENV_UNSET : (on != 0);
 }
 
-// Incremented at the one place the TC GEMM is dispatched, so a gate can ask
-// "did it run?" instead of inferring it from the output.
-static unsigned long g_tc_dispatches = 0;
-unsigned long gpu_tc_dispatches(void) { return g_tc_dispatches; }
 
 // The fast decode matvec is a Metal lever: CUDA decode reaches its throughput
 // through the batched/TC paths instead, and the CUDA matvec is not under the
@@ -2436,6 +2461,7 @@ static bool enc_mv(gpu_t *g, model_t *m, gguf_tensor *w, CUdeviceptr x,
     // tile once and its four warps' MMAs share it (TC_ROWS/block, 128 threads).
     if (batch > 1 && w->scale == 1.0f && tc_on(m, w->type) && g->sw->f_gemm_tc[w->type]) {
         g_tc_dispatches++;
+        g_tc_dispatches_type[w->type]++;
         return launch_tiled(g, g->sw->f_gemm_tc[w->type],
                             (n_out + TC_ROWS - 1) / TC_ROWS, 128,
                             weights, x, y, a, b, TC_N, false, 1.0f);

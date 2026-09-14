@@ -883,6 +883,33 @@ void gpu_tc_force(int on) {
 }
 
 unsigned long gpu_tc_dispatches(void) { return g_tc_dispatches; }
+// per weight type, both tiled branches (tensor and mm) counted together
+enum { MM_TYPE_N = 64 };
+static unsigned long g_tc_dispatches_type[MM_TYPE_N];
+unsigned long gpu_tc_dispatches_type(int type) {
+    return type >= 0 && type < MM_TYPE_N ? g_tc_dispatches_type[type] : 0;
+}
+static void count_tc_dispatch(int type) {
+    g_tc_dispatches++;
+    if (type >= 0 && type < MM_TYPE_N) g_tc_dispatches_type[type]++;
+}
+
+// The tiled-GEMM pipelines by weight type: the table the pipelines are
+// created from and the one gpu_tc_type_has_kernel() answers from, so the
+// tolerance gate's "TC-capable" cannot drift from what exists.
+static const struct { int type; const char *name; } MM_KERNELS[] = {
+    { T_F32,    "k_mm_f32" },    { T_F16,    "k_mm_f16" },
+    { T_Q8_0,   "k_mm_q8_0" },   { T_Q4_0,   "k_mm_q4_0" },
+    { T_Q2_K,   "k_mm_q2_K" },   { T_Q3_K,   "k_mm_q3_K" },
+    { T_BF16,   "k_mm_bf16" },   { T_IQ4_NL, "k_mm_iq4_nl" },
+    { T_IQ4_XS, "k_mm_iq4_xs" }, { T_Q4_K,   "k_mm_q4_K" },
+    { T_Q6_K,   "k_mm_q6_K" },   { T_MXFP4,  "k_mm_mxfp4" },
+};
+bool gpu_tc_type_has_kernel(int type) {
+    for (size_t i = 0; i < sizeof MM_KERNELS / sizeof *MM_KERNELS; i++)
+        if (MM_KERNELS[i].type == type) return true;
+    return false;
+}
 
 static bool metal_mm_on(void) {
     if (g_mm_state == MM_ENV_UNSET) {
@@ -1407,18 +1434,9 @@ bool gpu_init(model_t *m) {
     g->p_moe_actmul   = mk_pipeline(dev, lib, @"k_moe_actmul");
     g->p_moe_sum      = mk_pipeline(dev, lib, @"k_moe_sum");
     g->p_trace_copy   = mk_pipeline(dev, lib, @"k_trace_copy_f32");
-    g->p_mm[T_F32]   = mk_pipeline(dev, lib, @"k_mm_f32");
-    g->p_mm[T_F16]   = mk_pipeline(dev, lib, @"k_mm_f16");
-    g->p_mm[T_Q8_0]  = mk_pipeline(dev, lib, @"k_mm_q8_0");
-    g->p_mm[T_Q4_0]  = mk_pipeline(dev, lib, @"k_mm_q4_0");
-    g->p_mm[T_Q2_K]  = mk_pipeline(dev, lib, @"k_mm_q2_K");
-    g->p_mm[T_Q3_K]  = mk_pipeline(dev, lib, @"k_mm_q3_K");
-    g->p_mm[T_BF16]  = mk_pipeline(dev, lib, @"k_mm_bf16");
-    g->p_mm[T_IQ4_NL] = mk_pipeline(dev, lib, @"k_mm_iq4_nl");
-    g->p_mm[T_IQ4_XS] = mk_pipeline(dev, lib, @"k_mm_iq4_xs");
-    g->p_mm[T_Q4_K]  = mk_pipeline(dev, lib, @"k_mm_q4_K");
-    g->p_mm[T_Q6_K]  = mk_pipeline(dev, lib, @"k_mm_q6_K");
-    g->p_mm[T_MXFP4] = mk_pipeline(dev, lib, @"k_mm_mxfp4");
+    for (size_t i = 0; i < sizeof MM_KERNELS / sizeof *MM_KERNELS; i++)
+        g->p_mm[MM_KERNELS[i].type] =
+            mk_pipeline(dev, lib, [NSString stringWithUTF8String:MM_KERNELS[i].name]);
     g->p_mv[T_F32]    = mk_pipeline(dev, lib, @"k_mv_f32");
     g->p_mv[T_F16]    = mk_pipeline(dev, lib, @"k_mv_f16");
     g->p_mv[T_Q8_0]   = mk_pipeline(dev, lib, @"k_mv_q8_0");
@@ -1994,7 +2012,7 @@ static void enc_mv_n(gpu_t *g, id<MTLComputeCommandEncoder> e, model_t *m,
         [e setThreadgroupMemoryLength:128 * 64 * sizeof(uint16_t)
                               atIndex:0];
         g_disp.tensor++;
-        g_tc_dispatches++;
+        count_tc_dispatch(w->type);
         [e dispatchThreadgroups:MTLSizeMake((n_out + 127) / 128,
                                             (n_col + 255) / 256, 1)
           threadsPerThreadgroup:MTLSizeMake(128, 1, 1)];
@@ -2024,7 +2042,7 @@ static void enc_mv_n(gpu_t *g, id<MTLComputeCommandEncoder> e, model_t *m,
         // are (see the struct comment above).
         enum { MM_TILE_M = 64, MM_TILE_N = 32 };
         g_disp.mm++;
-        g_tc_dispatches++;
+        count_tc_dispatch(w->type);
         [e dispatchThreadgroups:MTLSizeMake((n_out + MM_TILE_M - 1) / MM_TILE_M,
                                             (n_col + MM_TILE_N - 1) / MM_TILE_N, 1)
           threadsPerThreadgroup:MTLSizeMake(128, 1, 1)];

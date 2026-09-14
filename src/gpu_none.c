@@ -42,6 +42,8 @@ bool gpu_quant_ok(int type) {
 // the TC tolerance gate links against a CPU-only build.
 void gpu_tc_force(int on) { (void)on; }
 unsigned long gpu_tc_dispatches(void) { return 0; }
+unsigned long gpu_tc_dispatches_type(int type) { (void)type; return 0; }
+bool gpu_tc_type_has_kernel(int type) { (void)type; return false; }
 
 // Same, for the fast decode matvec: the mv tolerance gate links here and
 // reports "never dispatched" rather than failing to build.
