@@ -1063,7 +1063,13 @@ static __device__ __forceinline__ void tc_stage_q4_0(__half *dst,
 // production context the block inherits ZEROED shared memory and the
 // corruption surfaces. test_tc_tol now carries a free-running arm at ctx 4096
 // that fails against this kernel.
-#define TC_GEMM_32B(NAME, STAGE, BLKBYTES)                                     \
+// TC_GEMM_BLK is the same kernel for any block size: BLKELEMS elements per
+// BLKBYTES-byte block, nb blocks per row, STAGE decoding one 64-element
+// segment at element offset e0 of a row. TC_GEMM_32B is its 32-element
+// instance (Q8_0, Q4_0, unchanged PTX); the 256-element codebook i-quants
+// instantiate it below with their own stagers.
+#define TC_GEMM_32B(NAME, STAGE, BLKBYTES) TC_GEMM_BLK(NAME, STAGE, BLKBYTES, 32)
+#define TC_GEMM_BLK(NAME, STAGE, BLKBYTES, BLKELEMS)                           \
 extern "C" __global__ void NAME(MV_PARAMS) {                                   \
     using namespace nvcuda::wmma;                                              \
     const int tid  = threadIdx.x;                                              \
@@ -1077,7 +1083,7 @@ extern "C" __global__ void NAME(MV_PARAMS) {                                   \
     fragment<accumulator, 16, 16, 16, float> fc[TC_N / 16];                    \
     _Pragma("unroll")                                                          \
     for (int n = 0; n < TC_N / 16; n++) fill_fragment(fc[n], 0.0f);            \
-    int nb = a.n_in / 32;                                                      \
+    int nb = a.n_in / BLKELEMS;                                                \
     int srow = tid >> 1, sseg = tid & 1;                                       \
     for (int ks = 0; ks < a.n_in; ks += TC_K) {                                \
         {                                                                      \
@@ -3519,6 +3525,24 @@ extern "C" __global__ void k_mv_iq1_m_b(MV_PARAMS) {
     }
     MV_TAIL_B;
 }
+
+// ------------------------------------ tensor-core GEMMs for the codebook types
+// The TC_GEMM_BLK shape with a 256-element block: the 64-row x 128-K fp16
+// weight tile is staged two segments per row per K-step, each segment
+// decoded by the stager in iq_decode.h that the host test holds to
+// dequant_row() bit for bit, then rounded to fp16 for the MMA operand (the
+// same numeric class as the Q4_K/Q6_K/Q8_0/Q4_0 tensor-core kernels: exact
+// per-element weight values, fp16 operands, fp32 accumulation). Opt-in:
+// registered in cuda.c's TC_KERNELS, not promoted, reached through
+// RUNNER_CUDA_TC=1 or the gate's gpu_tc_force(1) until measured.
+static __device__ __forceinline__ void tc_stage_iq3_s(__half *dst,
+                                                      const uchar *rw, int nb,
+                                                      int e0, int n_in) {
+    const uchar *blk = rw + (ulong64)(e0 >> 8) * 110;
+    iq3s_stage64(dst, blk, (e0 & 255) >> 6, kiq3s_grid);
+    (void)nb; (void)n_in;
+}
+TC_GEMM_BLK(k_gemm_iq3_s_tc, tc_stage_iq3_s, 110, 256)
 
 // MXFP4 (gpt-oss expert tensors): 17-byte block = one E8M0 scale byte (a
 // biased power-of-two exponent, 2^(e-127), NOT an fp16) + 32 packed E2M1
