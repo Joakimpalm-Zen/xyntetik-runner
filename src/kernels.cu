@@ -1068,9 +1068,24 @@ static __device__ __forceinline__ void tc_stage_q4_0(__half *dst,
 // segment at element offset e0 of a row. TC_GEMM_32B is its 32-element
 // instance (Q8_0, Q4_0, unchanged PTX); the 256-element codebook i-quants
 // instantiate it below with their own stagers.
-#define TC_GEMM_32B(NAME, STAGE, BLKBYTES) TC_GEMM_BLK(NAME, STAGE, BLKBYTES, 32)
-#define TC_GEMM_BLK(NAME, STAGE, BLKBYTES, BLKELEMS)                           \
-extern "C" __global__ void NAME(MV_PARAMS) {                                   \
+#define TC_GEMM_32B(NAME, STAGE, BLKBYTES) TC_GEMM_BLK_X(NAME, STAGE, BLKBYTES, 32, 0)
+#define TC_GEMM_BLK(NAME, STAGE, BLKBYTES, BLKELEMS) TC_GEMM_BLK_X(NAME, STAGE, BLKBYTES, BLKELEMS, 0)
+// XSCALED = 1: the codebook kernels' form. fp16 has no room for a model's
+// activation outliers (Phi-4-mini requantized to IQ3_S reaches |x| = 1.6e5
+// at its first position in layer 30, found 2026-09-14 by the non-finite
+// check the review asked for: every logit came out NaN), so each token
+// column is staged as x * (2^14 / max|x|) and the product is scaled back
+// in the epilogue. The per-column maxima arrive in the trailing parameter
+// (k_colabsmax fills them right before the launch); the promoted formats
+// keep their unscaled form and PTX.
+#define TC_XPARAM_0
+#define TC_XPARAM_1 , const float *xsc
+#define TC_XSCALE_STAGE_0(col) const float xinv = 1.0f;
+#define TC_XSCALE_STAGE_1(col) const float xinv = 16384.0f / xsc[col];
+#define TC_XSCALE_OUT_0(tt) const float xmul = 1.0f;
+#define TC_XSCALE_OUT_1(tt) const float xmul = xsc[tt] * (1.0f / 16384.0f);
+#define TC_GEMM_BLK_X(NAME, STAGE, BLKBYTES, BLKELEMS, XSCALED)                \
+extern "C" __global__ void NAME(MV_PARAMS TC_XPARAM_##XSCALED) {               \
     using namespace nvcuda::wmma;                                              \
     const int tid  = threadIdx.x;                                              \
     const int warp = tid >> 5;                                                 \
@@ -1105,6 +1120,7 @@ extern "C" __global__ void NAME(MV_PARAMS) {                                   \
             /* 64-multiple — a 64-wide part can straddle the end of the row. */\
             int col = tid >> 1, part = tid & 1;                                \
             __half *dst = sh_x + col * TC_K + part * 64;                       \
+            TC_XSCALE_STAGE_##XSCALED(col < a.batch ? col : 0)                 \
             _Pragma("unroll")                                                  \
             for (int h = 0; h < 2; h++) {                                      \
                 __half *d2 = dst + h * 32;                                     \
@@ -1114,10 +1130,10 @@ extern "C" __global__ void NAME(MV_PARAMS) {                                   \
                     _Pragma("unroll")                                          \
                     for (int v = 0; v < 8; v++) {                              \
                         float4 xv = *(const float4 *)(xg + v * 4);             \
-                        d2[v * 4 + 0] = __float2half(xv.x);                    \
-                        d2[v * 4 + 1] = __float2half(xv.y);                    \
-                        d2[v * 4 + 2] = __float2half(xv.z);                    \
-                        d2[v * 4 + 3] = __float2half(xv.w);                    \
+                        d2[v * 4 + 0] = __float2half(xv.x * xinv);             \
+                        d2[v * 4 + 1] = __float2half(xv.y * xinv);             \
+                        d2[v * 4 + 2] = __float2half(xv.z * xinv);             \
+                        d2[v * 4 + 3] = __float2half(xv.w * xinv);             \
                     }                                                          \
                 } else {                                                       \
                     _Pragma("unroll")                                          \
@@ -1147,10 +1163,31 @@ extern "C" __global__ void NAME(MV_PARAMS) {                                   \
         int rr = idx / TC_N, tt = idx % TC_N;                                  \
         unsigned gr = row0 + rr;                                               \
         if (gr < (unsigned)a.n_out && tt < a.batch) {                          \
-            float r = sh_c[rr * TC_N + tt];                                    \
+            TC_XSCALE_OUT_##XSCALED(tt)                                        \
+            float r = sh_c[rr * TC_N + tt] * xmul;                             \
             y[(ulong64)tt * a.ys + gr] = a.has_bias ? r + bias[gr] : r;        \
         }                                                                      \
     }                                                                          \
+}
+
+// per-column max|x| over n_in elements of each of `batch` columns (stride
+// xs), for the XSCALED kernels; a zero (or vanishing) column scales by 1.
+// One block per column, 256 threads.
+extern "C" __global__ void k_colabsmax(const float *x, float *out, int n_in,
+                                       int xs, int batch) {
+    __shared__ float red[256];
+    int col = blockIdx.x, tid = threadIdx.x;
+    if (col >= batch) return;
+    const float *xc = x + (ulong64)col * xs;
+    float m = 0.0f;
+    for (int i = tid; i < n_in; i += blockDim.x) m = fmaxf(m, fabsf(xc[i]));
+    red[tid] = m;
+    __syncthreads();
+    for (int off = 128; off > 0; off >>= 1) {
+        if (tid < off) red[tid] = fmaxf(red[tid], red[tid + off]);
+        __syncthreads();
+    }
+    if (tid == 0) out[col] = red[0] > 1e-30f ? red[0] : 1.0f;   /* a tiny max would overflow 2^14 / max */
 }
 
 TC_GEMM_32B(k_gemm_q8_0_tc, tc_stage_q8_0, 34)
@@ -3542,7 +3579,7 @@ static __device__ __forceinline__ void tc_stage_iq3_s(__half *dst,
     iq3s_stage64(dst, blk, (e0 & 255) >> 6, kiq3s_grid);
     (void)nb; (void)n_in;
 }
-TC_GEMM_BLK(k_gemm_iq3_s_tc, tc_stage_iq3_s, 110, 256)
+TC_GEMM_BLK_X(k_gemm_iq3_s_tc, tc_stage_iq3_s, 110, 256, 1)
 
 static __device__ __forceinline__ void tc_stage_iq3_xxs(__half *dst,
                                                         const uchar *rw, int nb,
@@ -3551,7 +3588,7 @@ static __device__ __forceinline__ void tc_stage_iq3_xxs(__half *dst,
     iq3xxs_stage64(dst, blk, (e0 & 255) >> 6, kiq3xxs_grid);
     (void)nb; (void)n_in;
 }
-TC_GEMM_BLK(k_gemm_iq3_xxs_tc, tc_stage_iq3_xxs, 98, 256)
+TC_GEMM_BLK_X(k_gemm_iq3_xxs_tc, tc_stage_iq3_xxs, 98, 256, 1)
 
 static __device__ __forceinline__ void tc_stage_iq2_s(__half *dst,
                                                       const uchar *rw, int nb,
@@ -3560,7 +3597,7 @@ static __device__ __forceinline__ void tc_stage_iq2_s(__half *dst,
     iq2s_stage64(dst, blk, (e0 & 255) >> 6, kiq2s_grid);
     (void)nb; (void)n_in;
 }
-TC_GEMM_BLK(k_gemm_iq2_s_tc, tc_stage_iq2_s, 82, 256)
+TC_GEMM_BLK_X(k_gemm_iq2_s_tc, tc_stage_iq2_s, 82, 256, 1)
 
 static __device__ __forceinline__ void tc_stage_iq2_xs(__half *dst,
                                                        const uchar *rw, int nb,
@@ -3569,7 +3606,7 @@ static __device__ __forceinline__ void tc_stage_iq2_xs(__half *dst,
     iq2xs_stage64(dst, blk, (e0 & 255) >> 6, kiq2xs_grid);
     (void)nb; (void)n_in;
 }
-TC_GEMM_BLK(k_gemm_iq2_xs_tc, tc_stage_iq2_xs, 74, 256)
+TC_GEMM_BLK_X(k_gemm_iq2_xs_tc, tc_stage_iq2_xs, 74, 256, 1)
 
 static __device__ __forceinline__ void tc_stage_iq2_xxs(__half *dst,
                                                         const uchar *rw, int nb,
@@ -3578,7 +3615,7 @@ static __device__ __forceinline__ void tc_stage_iq2_xxs(__half *dst,
     iq2xxs_stage64(dst, blk, (e0 & 255) >> 6, kiq2xxs_grid);
     (void)nb; (void)n_in;
 }
-TC_GEMM_BLK(k_gemm_iq2_xxs_tc, tc_stage_iq2_xxs, 66, 256)
+TC_GEMM_BLK_X(k_gemm_iq2_xxs_tc, tc_stage_iq2_xxs, 66, 256, 1)
 
 static __device__ __forceinline__ void tc_stage_iq1_s(__half *dst,
                                                       const uchar *rw, int nb,
@@ -3587,7 +3624,7 @@ static __device__ __forceinline__ void tc_stage_iq1_s(__half *dst,
     iq1s_stage64(dst, blk, (e0 & 255) >> 6, kiq1s_grid);
     (void)nb; (void)n_in;
 }
-TC_GEMM_BLK(k_gemm_iq1_s_tc, tc_stage_iq1_s, 50, 256)
+TC_GEMM_BLK_X(k_gemm_iq1_s_tc, tc_stage_iq1_s, 50, 256, 1)
 
 static __device__ __forceinline__ void tc_stage_iq1_m(__half *dst,
                                                       const uchar *rw, int nb,
@@ -3596,7 +3633,7 @@ static __device__ __forceinline__ void tc_stage_iq1_m(__half *dst,
     iq1m_stage64(dst, blk, (e0 & 255) >> 6, kiq1s_grid);
     (void)nb; (void)n_in;
 }
-TC_GEMM_BLK(k_gemm_iq1_m_tc, tc_stage_iq1_m, 56, 256)
+TC_GEMM_BLK_X(k_gemm_iq1_m_tc, tc_stage_iq1_m, 56, 256, 1)
 
 // the IQ4 codebook types: the same shape, the nibble codebook kv_iq4
 static __device__ __forceinline__ void tc_stage_iq4_xs(__half *dst,
@@ -3606,7 +3643,7 @@ static __device__ __forceinline__ void tc_stage_iq4_xs(__half *dst,
     iq4xs_stage64(dst, blk, (e0 & 255) >> 6, kv_iq4);
     (void)nb; (void)n_in;
 }
-TC_GEMM_BLK(k_gemm_iq4_xs_tc, tc_stage_iq4_xs, 136, 256)
+TC_GEMM_BLK_X(k_gemm_iq4_xs_tc, tc_stage_iq4_xs, 136, 256, 1)
 
 // IQ4_NL has 32-element blocks like Q4_0, so its stager is the Q4_0 one's
 // shape: two blocks per 64-element segment, tail-safe past n_in
@@ -3625,7 +3662,7 @@ static __device__ __forceinline__ void tc_stage_iq4_nl(__half *dst,
     }
     (void)nb;
 }
-TC_GEMM_32B(k_gemm_iq4_nl_tc, tc_stage_iq4_nl, 18)
+TC_GEMM_BLK_X(k_gemm_iq4_nl_tc, tc_stage_iq4_nl, 18, 32, 1)
 
 // MXFP4 (gpt-oss expert tensors): 17-byte block = one E8M0 scale byte (a
 // biased power-of-two exponent, 2^(e-127), NOT an fp16) + 32 packed E2M1

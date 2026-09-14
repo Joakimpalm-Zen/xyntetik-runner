@@ -290,6 +290,7 @@ typedef struct gpu_weights {
                 f_swiglu, f_xielu, f_add, f_scale;
     CUfunction  f_q35_split, f_q35_gate, f_q35_conv, f_q35_delta;
     CUfunction  f_mamba_conv, f_mamba_ssd, f_mamba_gate_norm, f_relu2;
+    CUfunction  f_colabsmax;            // per-column |x| max for the scaled TC GEMMs
     CUfunction  f_attn_dec, f_attn_merge;   // flash-decoding attention (decode)
     // kernel tables indexed by ggml tensor type; sized past the largest
     // supported type id (T_MXFP4 = 39), not the count of supported types
@@ -359,6 +360,7 @@ typedef struct {
     gpu_weights *sw;                    // shared weights, refcounted
     CUdeviceptr kc, vc;
     CUdeviceptr x, xb, xb2, q, kt, vt, hb, hb2, att, attn_part, logits;
+    CUdeviceptr xsc;                    // [TC_N] per-column |x| max for the scaled TC GEMMs
     // sparse-MoE: router logits [MVB][n_expert], per-slot expert down-out
     // [rows][n_embd] (rows = max(used, MVB); the eager path uses column 0)
     CUdeviceptr moe_logits, moe_eout;
@@ -1351,6 +1353,7 @@ static gpu_weights *shared_build(model_t *m, size_t act_bytes, int max_hd,
             { &w->f_mamba_ssd,  "k_mamba2_ssd" },
             { &w->f_mamba_gate_norm, "k_mamba2_gate_norm" },
             { &w->f_relu2,      "k_relu2" },
+            { &w->f_colabsmax,  "k_colabsmax" },
             { &w->f_mv[T_F32],  "k_mv_f32" },    { &w->f_mv[T_F16],  "k_mv_f16" },
             { &w->f_mv[T_Q8_0], "k_mv_q8_0" },   { &w->f_mv[T_Q4_0], "k_mv_q4_0" },
             { &w->f_mv[T_Q4_1], "k_mv_q4_1" },   { &w->f_mv[T_Q5_0], "k_mv_q5_0" },
@@ -2025,6 +2028,7 @@ bool gpu_init(model_t *m) {
         CK(cu.MemAlloc(&g->attn_part, sizeof(float) * MVB * (size_t)m->n_head *
                                       ATTN_SPLITS * (max_hd + 2)));
         CK(cu.MemAlloc(&g->logits, sizeof(float) * m->n_vocab));
+        CK(cu.MemAlloc(&g->xsc,    sizeof(float) * TC_N));
         CK(cu.MemAlloc(&g->pos_dev, sizeof(int)));
         if (m->qwen35) {
             size_t hist_elems = (size_t)m->n_layer * (m->ssm_conv_kernel - 1) *
@@ -2454,6 +2458,38 @@ static bool launch_tiled(gpu_t *g, CUfunction f, unsigned grid, unsigned block,
     return true;
 }
 
+// The codebook formats' tensor-core GEMMs stage each token column scaled by
+// 2^14 / max|x| (see TC_GEMM_BLK_X in kernels.cu), so every tile of
+// TC_N columns is preceded by k_colabsmax into g->xsc, and the kernel takes
+// that pointer as its trailing parameter.
+static bool launch_tiled_xscaled(gpu_t *g, CUfunction f, unsigned grid,
+                                 unsigned block, CUdeviceptr weights,
+                                 CUdeviceptr x, CUdeviceptr y, mv_args a,
+                                 CUdeviceptr bias) {
+    for (int off = 0; off < a.batch; off += TC_N) {
+        mv_args ai = a;
+        ai.batch = (a.batch - off) < TC_N ? (a.batch - off) : TC_N;
+        CUdeviceptr xi = x + (CUdeviceptr)((uint64_t)off * (uint64_t)a.xs * sizeof(float));
+        CUdeviceptr yi = y + (CUdeviceptr)((uint64_t)off * (uint64_t)a.ys * sizeof(float));
+        void *pm[] = { &xi, &g->xsc, &ai.n_in, &ai.xs, &ai.batch };
+        if (!launch(g, g->sw->f_colabsmax, (unsigned)ai.batch, 1, 1, 256, pm))
+            return false;
+        void *pi[] = { &weights, &xi, &yi, &ai, &bias, &g->xsc };
+        if (!launch(g, f, grid, 1, 1, block, pi)) return false;
+    }
+    return true;
+}
+
+static bool tc_xscaled(int type) {
+    switch (type) {
+        case T_IQ1_S: case T_IQ1_M: case T_IQ2_XXS: case T_IQ2_XS: case T_IQ2_S:
+        case T_IQ3_XXS: case T_IQ3_S: case T_IQ4_XS: case T_IQ4_NL:
+            return true;
+        default:
+            return false;
+    }
+}
+
 static bool enc_mv(gpu_t *g, model_t *m, gguf_tensor *w, CUdeviceptr x,
                    CUdeviceptr y, int n_in, int n_out, CUdeviceptr bias,
                    int batch, int xs, int ys) {
@@ -2473,6 +2509,10 @@ static bool enc_mv(gpu_t *g, model_t *m, gguf_tensor *w, CUdeviceptr x,
     if (batch > 1 && w->scale == 1.0f && tc_on(m, w->type) && g->sw->f_gemm_tc[w->type]) {
         g_tc_dispatches++;
         g_tc_dispatches_type[w->type]++;
+        if (tc_xscaled(w->type))
+            return launch_tiled_xscaled(g, g->sw->f_gemm_tc[w->type],
+                                        (n_out + TC_ROWS - 1) / TC_ROWS, 128,
+                                        weights, x, y, a, b);
         return launch_tiled(g, g->sw->f_gemm_tc[w->type],
                             (n_out + TC_ROWS - 1) / TC_ROWS, 128,
                             weights, x, y, a, b, TC_N, false, 1.0f);
@@ -2662,7 +2702,7 @@ static void gpu_ctx_free(model_t *m, gpu_t *g) {
     if (g->stream && cu.StreamDestroy) cu.StreamDestroy(g->stream);
     CUdeviceptr bufs[] = { g->kc, g->vc, g->x, g->xb, g->xb2,
                            g->q, g->kt, g->vt, g->hb, g->hb2, g->att,
-                           g->attn_part, g->logits, g->pos_dev,
+                           g->attn_part, g->logits, g->xsc, g->pos_dev,
                            g->moe_logits, g->moe_eout, g->moe_sel,
                            g->moe_selw, g->moe_hb, g->moe_hb2,
                            g->moe_gath, g->moe_dout, g->moe_gidx, g->moe_gw,
