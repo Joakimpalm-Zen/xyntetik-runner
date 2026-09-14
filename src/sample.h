@@ -17,6 +17,17 @@ typedef struct {
     // penalising terminators can stop a model ever ending its turn.
     int32_t no_penalty[12];
     int n_no_penalty;
+    // Scripted reply, a test hook. While `script` is set, sample_pick returns
+    // the scripted ids in order instead of sampling, then -1 (a clean stop)
+    // once they are spent. A fixture model knows nothing, so a protocol test
+    // that needs the model to have SAID something specific -- a native tool
+    // call in the family's own syntax, a call split at an awkward token
+    // boundary -- scripts the reply and exercises every layer between the
+    // sampler and the wire on known bytes. Installed per request by the
+    // server under RUNNER_TEST_SCRIPTED_REPLY (completion.c), never by a
+    // preset; a constraint still refuses a scripted id it would not admit.
+    const int32_t *script;
+    int script_n, script_at;
 } sampler;
 
 // validity filter for constrained sampling; return true if token is allowed

@@ -3093,6 +3093,7 @@ int main(int argc, char **argv) {
     if (tmpl_override >= 0) tmpl = tmpl_override;
     if (tmpl < 0)
         tmpl = template_detect(gguf_get_str(&m.gf, "tokenizer.chat_template", NULL), &tok);
+    template_bind_think_tags(tmpl, &m.think_open, &m.think_close);
     if (!system_prompt) system_prompt = "You are a helpful assistant.";
     fprintf(stderr, "chat mode (template: %s) — Ctrl-D or /exit to quit\n\n",
             template_name(tmpl));

@@ -839,10 +839,11 @@ static char *messages_prompt(slot_t *s, sock_t fd, jv *req, tool_envelope *env,
     if (env->tools) env->owns_tools = true;
 
     sbuf ts = {0};
-    if (*strict && !native_decl)
+    // the family's own declaration block, as on the other two surfaces
+    if (*strict && !native_decl && !tool_envelope_native(env))
         sb_put(&ts, env->system_turn, strlen(env->system_turn));
     else if (!native_decl)
-        tools_render(tools, &ts);
+        tools_render_for(s->tmpl, tools, &ts);
 
     // upper bound on turns: the tool system turn, the system turn, and for
     // each message its own turn plus one per tool_result block it carries

@@ -100,6 +100,24 @@ enum { TMPL_CHATML, TMPL_LLAMA2, TMPL_LLAMA3, TMPL_ZEPHYR, TMPL_GEMMA,
        // Not reachable through --chat-template: you cannot ask for it.
        TMPL_LLAMA2_FALLBACK };
 
+// The reasoning tags a TEMPLATE family writes, for the families whose
+// protocol (not their architecture) defines them: the `<think>` block of
+// the Qwen3-derived templates, Granite 4.2 and Ornith. model.c sets the
+// architecture's pair where the architecture owns one (qwen3, gemma4,
+// Harmony, muse); a template forced onto another architecture, or one whose
+// architecture never had a pair (Granite 4.2 is `granitehybrid`), would
+// otherwise have no splitter and serve its reasoning as content. Returns
+// false, leaving the pointers alone, for a family without one.
+bool template_think_tags(int tmpl, const char **open, const char **close);
+// Bind them to a model's pair when the architecture set none: called
+// wherever a template is resolved for serving or chat, a no-op when the
+// architecture owns a pair, so gemma4/Harmony/muse keep theirs.
+static inline void template_bind_think_tags(int tmpl, const char **open,
+                                            const char **close) {
+    if (*open) return;
+    template_think_tags(tmpl, open, close);
+}
+
 // True for EITHER gemma-4 template family. The mainline and the E-series
 // differ at exactly one generation-prompt site (see TMPL_GEMMA4_MAINLINE
 // above); every other tmpl-dependent decision -- the native tool protocol,
@@ -290,7 +308,28 @@ typedef struct {
     struct jv *tools;     // borrowed request declarations for native compiler
     bool  owns_tools;     // Anthropic translation survives prompt construction
     char *named;          // owned named-tool choice, when kind == TCH_NAMED
+    // The native protocol is PARSED but the sampler is not constrained to it:
+    // no grammar is compiled, the model writes its turn in the syntax its own
+    // template taught it, and the same demultiplexer that serves the
+    // constrained turn recognises the calls on the way out. Parsing a native
+    // protocol must not depend on a grammar being active -- until 2026-09-14
+    // it did, and the families that had no grammar (Qwen 3.8, Granite 4.2,
+    // Ornith) streamed their well-formed calls to the client as prose. With
+    // no grammar bounding the turn, the demultiplexer's contract loosens
+    // where a grammar used to make the strict reading safe: a block that is
+    // not a valid call is dropped and reported as a protocol fault instead of
+    // voiding the whole turn, a partial block at the end is dropped and never
+    // completed, and max_calls is a parser bound rather than a grammar's.
+    bool  parse_only;
 } tool_envelope;
+
+// True when the envelope carries a model-native protocol: the prompt teaches
+// the family's own syntax and the parser reads it. TP_MUSE_USER is the
+// generic JSON payload behind a Muse recipient header, so it is not native
+// in this sense and still wants the generic teaching turn.
+static inline bool tool_envelope_native(const tool_envelope *e) {
+    return e && e->proto != TP_GENERIC && e->proto != TP_MUSE_USER;
+}
 
 enum tool_envelope_result {
     TOOL_ENVELOPE_OOM     = -2,
@@ -386,6 +425,10 @@ typedef struct {
                           // document, unlike any_called below
     bool  any_called;     // a tool branch was selected by ANY entry so far;
                           // this is what finish_reason "tool_calls" reads
+    bool  fault;          // parse-only: a complete block was not a valid call
+                          // and was dropped; tool_stream_finish reports it
+    bool  skip_ws;        // qwen: drop the framing whitespace after a call
+    int   n_calls;        // calls emitted so far (the parse-only bound)
     int   depth;          // nesting inside the value being forwarded
     bool  started;        // the forwarded value has produced its first byte
     bool  in_str, esc;    // JSON string state within that value
@@ -396,7 +439,27 @@ typedef struct {
 void tool_stream_init(tool_stream *s, const tool_envelope *e,
                       const tool_stream_sink *sink);
 int  tool_stream_feed(tool_stream *s, const char *bytes, int n);
+// Ends the stream: flushes what the states held back, returns -1 when the
+// document could not be mapped (a strict envelope that never resolved, a
+// call block still open, or a parse-only block that was not a valid call),
+// otherwise a sink's non-zero refusal or 0. `truncated` says the turn ended
+// on a budget or a deadline rather than by the model: a parse-only call
+// still open then is a cut, not a fault, and finishing reports 0 with the
+// partial block dropped (never completed) so the caller keeps "length".
 int  tool_stream_finish(tool_stream *s);
+int  tool_stream_finish_ex(tool_stream *s, bool truncated);
+// The buffered turn of a parse-only envelope, mapped by the demultiplexer
+// itself so both paths recognise exactly the same calls: content and the
+// OpenAI tool_calls[] items (comma-separated) are appended, *n_calls counts
+// the calls, and the return is 0, or -1 when the turn carried a protocol
+// fault (a block that was not a valid call, or a call the model left open),
+// in which case what WAS valid is still appended. `truncated` as for
+// tool_stream_finish_ex.
+int  tool_stream_map(const tool_envelope *e, const char *doc, size_t n,
+                     bool truncated, struct sbuf *content, struct sbuf *tc,
+                     int *n_calls);
+// Parse-only bound on calls per turn (the grammar bounds constrained turns).
+#define TOOL_STREAM_MAX_CALLS 32
 // true once a tool branch was selected, i.e. finish_reason is "tool_calls"
 bool tool_stream_called(const tool_stream *s);
 void tool_stream_free(tool_stream *s);

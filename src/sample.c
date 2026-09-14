@@ -150,6 +150,15 @@ static bool sample_stats(void) {
 #define HEAD_CAP 4096
 
 int sample_pick(sampler *s, float *logits, int n_vocab, sample_ok_fn ok, void *ud) {
+    // A scripted reply (sample.h): the next scripted id, or a clean stop once
+    // the script is spent. The constraint keeps its veto so a script that
+    // walks off a grammar ends the turn rather than corrupting the validator.
+    if (s->script) {
+        if (s->script_at >= s->script_n) return -1;
+        int tok = s->script[s->script_at++];
+        if (tok < 0 || tok >= n_vocab) return -1;
+        return !ok || ok(ud, tok) ? tok : -1;
+    }
     // Greedy is a determinism request: return the model's argmax, unmodified.
     // The repeat penalty exists to add variety to *sampled* output and has no
     // meaning when the caller asked for the single most likely token, so it

@@ -1681,6 +1681,32 @@ and admits as many calls as `parallel_tool_calls` allows. `--tool-info`
 reports `qwen3_xml` for this family and `qwen_json` for the ChatML JSON
 protocol, both native. Not measured here: any checkpoint's task quality.
 
+Qwen 3.8, Granite 4.2 and Ornith speak the same function/parameter XML and
+are parsed by the same demultiplexer, but their sampler is not constrained
+to it: their templates open a reasoning block the XML grammar has no branch
+for, and their turns are free text in the syntax their own templates teach.
+Parsing does not depend on a grammar being active. Until 2026-09-14 it did,
+and these three families streamed their well-formed calls to the client as
+prose (the buffered turn parsed them; every agent client streams). Now a
+call is a call on the Chat, Responses and Anthropic surfaces, buffered and
+streamed, with the prose before, between and after calls kept as content,
+each block on its own `tool_calls` index, and the reasoning block split
+into `reasoning_content` (Granite 4.2 had no splitter at all, since the
+tags are the template's, not the architecture's). With no grammar bounding
+the turn the parser's own contract applies: a block that is not a valid
+call against the declarations (an undeclared function, a typed parameter
+that does not parse, a missing required one) is neither content nor a call
+and the turn reports `finish_reason: error` with `finish_detail:
+envelope_unmapped` alongside whatever WAS valid; nothing is invented for
+it. A token budget that cuts a block keeps the complete calls, drops the
+partial one and reports `length`. Up to 32 calls per turn are recognised
+regardless of `parallel_tool_calls`, which for these families is a
+grammar's bound and no grammar is active. The regression gate is
+`tests/test_native_xml_routing.py`, which dictates the model's reply
+through a test hook (`RUNNER_TEST_SCRIPTED_REPLY=1` at server start admits
+`runner_test_reply` on a request; the field is refused otherwise) so the
+whole path from sampler to wire runs on known bytes.
+
 `enable_thinking`, either at the top level or inside `chat_template_kwargs`,
 is the request-level form of `--think`/`--no-think`. Omitting it is not the
 same as sending `false`: an absent field renders whatever the model family's
