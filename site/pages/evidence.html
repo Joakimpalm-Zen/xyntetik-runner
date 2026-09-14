@@ -101,7 +101,7 @@ nav: evidence
       </div>
       <div class="card">
         <h3>Prefill: llama.cpp's win, published as such</h3>
-        <p>llama.cpp's prefill comes from a mature tensor-core GEMM stack across every quant. Runner's tensor-core path is held to a teacher-forced tolerance gate (0/64 top-1 flips, at most 0.012% mean logit deviation on every promoted row) and its tile is 64 columns wide. The gap is reported, not hidden.</p>
+        <p>llama.cpp's prefill comes from a mature tensor-core GEMM stack across every quant. Runner's tensor-core path is held to a teacher-forced tolerance gate (at most a near-tie flip or two in 64 positions, at most 0.012% mean logit deviation on the k-quant rows and 0.09% on the 1-bit codebook rows promoted in September 2026, free-running text identical) and its tile is 64 columns wide. The gap is reported, not hidden.</p>
       </div>
       <div class="card">
         <h3>The M1 rows show the coexistence trade from the losing side</h3>
