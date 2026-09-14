@@ -39,6 +39,7 @@ measured on every claimed type, not only on the ones a real file happens
 to mix.
 """
 import json
+import math
 import os
 import pathlib
 import re
@@ -55,9 +56,49 @@ BIN = os.environ.get("RUNNER_LLAMA_CPP_BIN")
 
 IQ_TYPES = ["IQ3_XXS", "IQ3_S", "IQ2_XXS", "IQ2_XS", "IQ2_S", "IQ1_S", "IQ1_M"]
 
-pytestmark = pytest.mark.skipif(
-    not BIN or not (pathlib.Path(BIN) / "llama-quantize").exists(),
-    reason="RUNNER_LLAMA_CPP_BIN with llama-quantize/llama-imatrix/llama-cli required")
+# The three llama.cpp tools this gate drives. A Windows build ships them as
+# llama-quantize.exe and friends, and Path.exists() on the bare name does
+# not search executable suffixes, so until 2026-09-14 a directory holding
+# exactly the three .exe files skipped the whole module (the v0.5.3 review's
+# P2). Each tool is resolved once, here, and the resolved path is what the
+# subprocess calls use.
+TOOLS = ("llama-quantize", "llama-imatrix", "llama-server")
+
+
+def find_tool(bin_dir, name):
+    """The tool's path under bin_dir, bare or with the Windows suffix, or
+    None when neither is a file."""
+    for cand in (name, name + ".exe"):
+        p = pathlib.Path(bin_dir) / cand
+        if p.is_file():
+            return p
+    return None
+
+
+def resolve_tools(bin_dir):
+    if not bin_dir:
+        return {n: None for n in TOOLS}
+    return {n: find_tool(bin_dir, n) for n in TOOLS}
+
+
+TOOL = resolve_tools(BIN)
+
+# A missing prerequisite is a skip on a developer machine and a FAILURE on
+# the box whose job it is to run the gate: RUNNER_REQUIRE_IQ_GATES names
+# the legs that must run ("gpu", "llamacpp", or "all"). A required device
+# run that silently skipped would read as green in the release evidence,
+# which is the failure mode the device ledger exists to stop.
+REQUIRE = {r for r in os.environ.get("RUNNER_REQUIRE_IQ_GATES", "").split(",") if r}
+
+# Pre-quantized fixtures (m-<TYPE>.gguf for every IQ_TYPES entry) let a box
+# without llama.cpp run the GPU leg; without it the files are quantized here.
+FIXTURE_DIR = os.environ.get("RUNNER_IQ_FIXTURES")
+
+
+def unavailable(leg, reason):
+    if leg in REQUIRE or "all" in REQUIRE:
+        pytest.fail(f"{reason} (required by RUNNER_REQUIRE_IQ_GATES)")
+    pytest.skip(reason)
 
 
 @pytest.fixture(scope="module")
@@ -70,26 +111,37 @@ def runner_bin():
 
 @pytest.fixture(scope="module")
 def iq_files(tmp_path_factory):
-    tmp = tmp_path_factory.mktemp("iq")
-    base = tmp / "base.gguf"
-    subprocess.run([sys.executable, ROOT / "scripts/make-test-model.py", "--wide",
-                    str(base)],
-                   check=True, cwd=ROOT, stdout=subprocess.DEVNULL)
-    corpus = tmp / "corpus.txt"
-    corpus.write_text("the quick brown fox jumps over the lazy dog " * 40)
-    imatrix = tmp / "imatrix.gguf"
-    subprocess.run([pathlib.Path(BIN) / "llama-imatrix", "-m", base,
-                    "-f", corpus, "-o", imatrix, "--ctx-size", "128"],
-                   check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                   timeout=300)
     files = {}
-    for t in IQ_TYPES:
-        out = tmp / f"m-{t}.gguf"
-        subprocess.run([pathlib.Path(BIN) / "llama-quantize", "--imatrix", imatrix,
-                        str(base), str(out), t],
+    if FIXTURE_DIR:
+        for t in IQ_TYPES:
+            out = pathlib.Path(FIXTURE_DIR) / f"m-{t}.gguf"
+            if not out.is_file():
+                unavailable("gpu", f"RUNNER_IQ_FIXTURES has no {out.name}")
+            files[t] = (out, _tensor_types(out))
+    else:
+        missing = [n for n in ("llama-quantize", "llama-imatrix") if not TOOL[n]]
+        if missing:
+            unavailable("gpu", f"RUNNER_LLAMA_CPP_BIN lacks {', '.join(missing)} "
+                        "and RUNNER_IQ_FIXTURES is unset")
+        tmp = tmp_path_factory.mktemp("iq")
+        base = tmp / "base.gguf"
+        subprocess.run([sys.executable, ROOT / "scripts/make-test-model.py", "--wide",
+                        str(base)],
+                       check=True, cwd=ROOT, stdout=subprocess.DEVNULL)
+        corpus = tmp / "corpus.txt"
+        corpus.write_text("the quick brown fox jumps over the lazy dog " * 40)
+        imatrix = tmp / "imatrix.gguf"
+        subprocess.run([TOOL["llama-imatrix"], "-m", base,
+                        "-f", corpus, "-o", imatrix, "--ctx-size", "128"],
                        check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                        timeout=300)
-        files[t] = (out, _tensor_types(out))
+        for t in IQ_TYPES:
+            out = tmp / f"m-{t}.gguf"
+            subprocess.run([TOOL["llama-quantize"], "--imatrix", imatrix,
+                            str(base), str(out), t],
+                           check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                           timeout=300)
+            files[t] = (out, _tensor_types(out))
     covered = set().union(*(types for _, types in files.values()))
     missing = set(IQ_TYPES) - covered
     assert not missing, (f"no fixture carries {sorted(missing)}; per file: "
@@ -114,7 +166,7 @@ def _server(model):
         s.bind(("127.0.0.1", 0))
         port = s.getsockname()[1]
     proc = subprocess.Popen(
-        [pathlib.Path(BIN) / "llama-server", "-m", model,
+        [TOOL["llama-server"], "-m", model,
          "--port", str(port), "--host", "127.0.0.1"],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     for _ in range(120):
@@ -173,6 +225,50 @@ def _ref_logprobs(model, tokens, n_vocab):
 LOGPROB_TOL = 0.05
 
 
+def worst_deviation(ours, ref, n_expected):
+    """max |ours - ref| over exactly n_expected positions. Every count and
+    every value is checked first: `max(abs(a - b) for a, b in zip(...))`
+    truncates to the shorter list and, once a finite maximum is in hand,
+    lets a later NaN through (both reproduced by the v0.5.3 review's P2),
+    so a reference that answered fewer positions, or a score that was NaN,
+    read as a pass."""
+    assert len(ours) == n_expected, f"runner scored {len(ours)} of {n_expected}"
+    assert len(ref) == n_expected, f"reference scored {len(ref)} of {n_expected}"
+    for i, (a, b) in enumerate(zip(ours, ref)):
+        assert isinstance(a, (int, float)) and math.isfinite(a), f"runner logprob {i}: {a!r}"
+        assert isinstance(b, (int, float)) and math.isfinite(b), f"reference logprob {i}: {b!r}"
+    devs = [abs(a - b) for a, b in zip(ours, ref)]
+    assert all(math.isfinite(d) for d in devs), devs
+    return max(devs)
+
+
+def test_worst_deviation_rejects_short_or_nonfinite_scores():
+    nan = float("nan")
+    assert worst_deviation([0.25, 0.5], [0.25, 0.75], 2) == 0.25
+    for ours, ref, n in [
+        ([0.25, nan], [0.25, 0.25], 2),        # NaN after a finite maximum
+        ([0.25, 0.25], [0.25, nan], 2),
+        ([0.25], [0.25, 0.25], 2),             # zip would truncate
+        ([0.25, 0.25], [0.25], 2),
+        ([0.25, 0.25], [0.25, 0.25], 3),       # fewer positions than scored
+        ([0.25, float("inf")], [0.25, 0.25], 2),
+        ([0.25, None], [0.25, 0.25], 2),       # a missing score
+    ]:
+        with pytest.raises(AssertionError):
+            worst_deviation(ours, ref, n)
+
+
+def test_find_tool_accepts_the_windows_suffix(tmp_path):
+    for n in TOOLS:
+        (tmp_path / (n + ".exe")).write_bytes(b"")
+    found = resolve_tools(tmp_path)
+    assert all(found[n] == tmp_path / (n + ".exe") for n in TOOLS), found
+    (tmp_path / "llama-quantize").write_bytes(b"")
+    assert find_tool(tmp_path, "llama-quantize") == tmp_path / "llama-quantize"
+    assert find_tool(tmp_path, "llama-cli") is None
+    assert resolve_tools(None) == {n: None for n in TOOLS}
+
+
 @pytest.mark.parametrize("t", IQ_TYPES)
 def test_iquant_matches_llamacpp_logprobs(runner_bin, iq_files, t):
     """Teacher-forced per-position log P(token | prefix) on the runner's CPU
@@ -181,6 +277,8 @@ def test_iquant_matches_llamacpp_logprobs(runner_bin, iq_files, t):
     sparsest fixtures the greedy token is a lone byte >= 0x80, which
     llama-server refuses to return as content, and a text comparison was
     blind to everything below the argmax anyway."""
+    if not TOOL["llama-server"]:
+        unavailable("llamacpp", "RUNNER_LLAMA_CPP_BIN lacks llama-server")
     model, types = iq_files[t]
     ours = subprocess.run(
         [runner_bin, "-m", model, "-p", "hello world", "--score",
@@ -188,9 +286,10 @@ def test_iquant_matches_llamacpp_logprobs(runner_bin, iq_files, t):
         cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=300)
     assert ours.returncode == 0, ours.stderr.decode(errors="replace")
     score = json.loads(ours.stdout.decode())
-    assert score["n_scored"] >= 8, score
+    n_expected = len(score["tokens"]) - 1
+    assert n_expected >= 8 and score["n_scored"] == n_expected, score
     ref = _ref_logprobs(model, score["tokens"], score["n_vocab"])
-    worst = max(abs(a - b) for a, b in zip(score["logprobs"], ref))
+    worst = worst_deviation(score["logprobs"], ref, n_expected)
     assert worst <= LOGPROB_TOL, (
         f"{t} ({sorted(types)}): worst |dlogprob| {worst:.4g} over "
         f"{len(ref)} positions; runner={score['logprobs']} llama.cpp={ref}")
@@ -201,7 +300,7 @@ def gpu_identity_bin():
     exe = ROOT / ("test-gpu-identity.exe" if sys.platform == "win32"
                   else "test-gpu-identity")
     if not exe.exists():
-        pytest.skip("test-gpu-identity not built (make test-gpu-identity)")
+        unavailable("gpu", "test-gpu-identity not built (make test-gpu-identity)")
     return exe
 
 
@@ -214,17 +313,17 @@ def test_iquant_gpu_matches_cpu(runner_bin, gpu_identity_bin, iq_files, t):
         [runner_bin, "--caps"], cwd=ROOT, stdout=subprocess.PIPE,
         check=True).stdout)
     if not caps.get("gpu"):
-        pytest.skip("no GPU backend on this machine")
+        unavailable("gpu", "no GPU backend on this machine")
     model, types = iq_files[t]
     lacking = sorted(types - set(caps.get("gpu_quants", [])))
     if lacking:
-        pytest.skip(f"{t}: {lacking} have no kernel on the "
+        unavailable("gpu", f"{t}: {lacking} have no kernel on the "
                     f"{caps['gpu'].get('backend')} backend")
     p = subprocess.run([gpu_identity_bin, model], cwd=ROOT,
                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                        timeout=600)
     log = p.stdout.decode(errors="replace")
     if "gpu-identity: ok (skipped)" in log:
-        pytest.skip(f"{t}: the gate skipped (no device, or CPU fallback)")
+        unavailable("gpu", f"{t}: the gate skipped (no device, or CPU fallback)")
     assert p.returncode == 0, log
     assert "gpu-identity: ok" in log, log

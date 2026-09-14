@@ -1466,6 +1466,18 @@ else
 	@echo "metal gpt-oss MoE smoke skipped: macOS-only backend"
 endif
 
+# CUDA codebook i-quants: the device decoders against the CPU ones at logit
+# precision on the llama-quantize fixtures of all seven types (the GPU leg of
+# tests/test_iquants.py), REQUIRED rather than skippable: a box that lacks a
+# device, the fixtures, or the gate binary FAILS this target instead of
+# reading green. The fixtures are quantized with the llama.cpp tools in
+# RUNNER_LLAMA_CPP_BIN, or read pre-built from RUNNER_IQ_FIXTURES on a box
+# without them (the Windows CUDA box); the llama.cpp comparison leg runs
+# where llama-server is present and is not required here. Part of the
+# release evidence on both CUDA classes since 0.5.3.
+test-cuda-iquants: runner $(TEST_GPU_ID)
+	RUNNER_REQUIRE_IQ_GATES=gpu $(PYTHON) -m pytest -q tests/test_iquants.py
+
 # CUDA NVFP4 (ModelOpt two-level export): the device kernels and the companion
 # scale in their tails against the CPU seam. Token identity on a generated
 # fixture and on any real NVFP4 file named in NVFP4_MODEL, logprob agreement
@@ -2350,7 +2362,7 @@ test-makefile-sane:
 
 .PHONY: template-conformance template-conformance-refresh template-conformance-baseline template-conformance-harmony-oracle
 .PHONY: test-gpu-stub test-cuda-nvfp4
-.PHONY: FORCE makefile-noop test-python-deps test-makefile-sane fixture-scale-note clean debug ptx test test-bare-invocation test-help-interface test-shader-embed test-metal-shader-gate test-apertus test-moe test-prune-experts test-metal-fallback test-metal-prefill test-metal-kquant test-metal-decode-only test-metal-split test-metal-bind-failure test-metal-kv-q8 test-metal-moe test-metal-gptoss-moe test-metal-gemma4-moe test-metal-gemma4-hetero test-metal-bigmodel test-metal-bigmodel-multibuf test-metal-moe-em test-metal-moe-mm test-metal-fuse test-metal-gelu-overflow test-metal-eseries test-metal-swa smoke release-check test-truncation fuzz fuzz-build fuzz-run test-shared-asan test-shared-noid test-split-guard test-swap-race
+.PHONY: FORCE makefile-noop test-python-deps test-makefile-sane test-cuda-iquants fixture-scale-note clean debug ptx test test-bare-invocation test-help-interface test-shader-embed test-metal-shader-gate test-apertus test-moe test-prune-experts test-metal-fallback test-metal-prefill test-metal-kquant test-metal-decode-only test-metal-split test-metal-bind-failure test-metal-kv-q8 test-metal-moe test-metal-gptoss-moe test-metal-gemma4-moe test-metal-gemma4-hetero test-metal-bigmodel test-metal-bigmodel-multibuf test-metal-moe-em test-metal-moe-mm test-metal-fuse test-metal-gelu-overflow test-metal-eseries test-metal-swa smoke release-check test-truncation fuzz fuzz-build fuzz-run test-shared-asan test-shared-noid test-split-guard test-swap-race
 
 # Soak harness for the startup/SIGTERM race (test_signal_during_startup). Not
 # in `make test` — it is a diagnostic soak (thousands of spawns), run on demand

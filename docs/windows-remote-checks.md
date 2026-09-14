@@ -67,7 +67,14 @@ Run the gate before tagging any release:
         --report docs/compat-reports/cuda-smoke-X.Y.Z-<date>-rtx3070.json
 
 It exits nonzero on failure and the report is committed with the release, the
-same way the compatibility report is. The checks are invariants rather than
+same way the compatibility report is. Beside it, on every CUDA box that
+records a device-ledger row: `make test-cuda-nvfp4` on the real NVFP4 file
+and `make test-cuda-iquants` on the seven codebook i-quant fixtures (on this
+box `RUNNER_IQ_FIXTURES=C:/Users/zen/iqfix`, the set quantized on the
+Blackwell with llama.cpp b10353, because the tools are not installed here).
+The i-quant target fails, rather than skipping, when the device, the
+fixtures or the gate binary are missing; a required gate that skips reads
+as green in the evidence, which is the failure the ledger exists to stop. The checks are invariants rather than
 expected constants, so the same script is valid on a discrete card, a headless
 card, and a unified-memory device: the central one is that `unified_memory`
 must agree with the VRAM and RAM sizes actually reported, which is the v0.4.2
