@@ -206,8 +206,33 @@ def hook_command(event: str, python: str, launcher: Path) -> str:
     return f'"{python}" "{launcher}" {event}'
 
 
-def _hook_entry(command: str) -> dict[str, object]:
-    return {"hooks": [{"type": "command", "timeout": 10, "command": command}]}
+def _has_command(entry: object, command: str) -> bool:
+    """Whether this settings entry already runs exactly this command."""
+    if not isinstance(entry, dict):
+        return False
+    hooks = entry.get("hooks")
+    return isinstance(hooks, list) and any(
+        isinstance(h, dict) and h.get("command") == command for h in hooks)
+
+
+def _hook_entry(command: str, matcher: str = "") -> dict[str, object]:
+    entry: dict[str, object] = {"hooks": [{"type": "command", "timeout": 10,
+                                           "command": command}]}
+    if matcher:
+        entry["matcher"] = matcher
+    return entry
+
+
+# `post` fires after a file-writing tool, which is the only moment the resulting
+# change set can be bound to the edit that produced it. Without it `change_set_all`
+# is built but never runs on a real edit, and a task's changes can only be
+# recovered as a session-wide prompt-to-stop delta that sweeps in every unrelated
+# edit in between.
+HOOK_EVENTS: tuple[tuple[str, str, str], ...] = (
+    ("prompt", "UserPromptSubmit", ""),
+    ("stop", "Stop", ""),
+    ("post", "PostToolUse", "Write|Edit|NotebookEdit"),
+)
 
 
 def install_claude_hooks(settings: Path, *, python: str, pythonpath: str | None,
@@ -222,7 +247,7 @@ def install_claude_hooks(settings: Path, *, python: str, pythonpath: str | None,
     hooks = data.setdefault("hooks", {})
     assert isinstance(hooks, dict)
     added = 0
-    for event, name in (("prompt", "UserPromptSubmit"), ("stop", "Stop")):
+    for event, name, matcher in HOOK_EVENTS:
         entries = hooks.setdefault(name, [])
         assert isinstance(entries, list)
         # an entry in the previous shell-line form is replaced by the launcher
@@ -230,9 +255,19 @@ def install_claude_hooks(settings: Path, *, python: str, pythonpath: str | None,
         kept = [e for e in entries if not (MARK in json.dumps(e) and HOOK_NAME not in json.dumps(e))]
         upgraded = len(entries) - len(kept)
         entries[:] = kept
-        present = any(HOOK_NAME in json.dumps(e) for e in entries)
+        # PostToolUse already carries other hooks (the verify hook, and anything
+        # the user installed), so presence is checked per COMMAND, not per file:
+        # matching on the launcher name alone would see the verify hook and skip
+        # installing this one.
+        #
+        # The comparison reads the command field directly rather than searching
+        # json.dumps(entry): the command contains double quotes, json.dumps
+        # escapes them, and a substring test against the escaped form never
+        # matches -- which made a second install append a duplicate hook.
+        cmd = hook_command(event, python, launcher)
+        present = any(_has_command(e, cmd) for e in entries)
         if not present:
-            entries.append(_hook_entry(hook_command(event, python, launcher)))
+            entries.append(_hook_entry(cmd, matcher))
             added += 1 if not upgraded else 0
     settings.parent.mkdir(parents=True, exist_ok=True)
     settings.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
@@ -247,7 +282,7 @@ def uninstall_claude_hooks(settings: Path) -> int:
     if not isinstance(hooks, dict):
         return 0
     removed = 0
-    for name in ("UserPromptSubmit", "Stop"):
+    for name in ("UserPromptSubmit", "Stop", "PostToolUse"):
         entries = hooks.get(name)
         if not isinstance(entries, list):
             continue

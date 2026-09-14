@@ -653,3 +653,115 @@ def test_costs_keep_partial_records_in_the_denominator(tmp_path: Path) -> None:
     assert co["snapshot_latency_s"]["n"] == len(rows), "every record counted"
     assert "partial ones included" in co["denominator_note"]
     assert co["blob_store"]["objects"] >= 0
+
+
+# ------------------------------------------------------------------ post event
+#
+# `change_set_all` is what "the complete resulting change set" means, and before
+# the `post` event existed it had never run on a real edit: five days of real
+# capture held prompt, stop and verify records and zero post records. A session
+# delta from prompt to stop cannot say which task step produced which change, so
+# the hook has to fire at the edit.
+
+
+def test_capture_events_have_one_definition() -> None:
+    """argparse and the runtime check were two separate literals and drifted.
+
+    `--event post` parsed fine and then died on a hardcoded
+    `not in ("prompt","stop","verify")` a few lines later. Unit tests missed it
+    because they exercised the install contract, not the CLI; a pipe test found
+    it. Both now read CAPTURE_EVENTS.
+    """
+    from xyntetik_runner.shadow import cli, install as I
+
+    assert "post" in cli.CAPTURE_EVENTS
+    assert {e for e, _n, _m in I.HOOK_EVENTS} <= set(cli.CAPTURE_EVENTS), \
+        "every installed hook must pass the CLI's own event check"
+
+
+def test_capture_post_through_the_cli_writes_v2_only(tmp_path: Path) -> None:
+    """The path the hook actually takes: JSON on stdin, --event post."""
+    from xyntetik_runner.shadow.cli import main
+
+    home = tmp_path / "home"
+    home.mkdir()
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    (repo / "a.py").write_text("x = 1\n", encoding="utf-8")
+
+    payload = json.dumps({"session_id": "s1", "tool_name": "Edit",
+                          "hook_event_name": "PostToolUse", "cwd": str(repo),
+                          "tool_input": {"file_path": str(repo / "a.py")}})
+    import io
+    old_stdin = sys.stdin
+    sys.stdin = io.StringIO(payload)
+    try:
+        rc = main(["capture", "--event", "post", "--home", str(home), "--cwd", str(repo)])
+    finally:
+        sys.stdin = old_stdin
+    assert rc == 0
+
+    v2 = home / C.CAPTURE2_FILE
+    assert v2.is_file(), "post must write a v2 record"
+    recs = [json.loads(l) for l in v2.read_text(encoding="utf-8").splitlines()]
+    assert [r["event"] for r in recs] == ["post"]
+    assert recs[0]["state"]["workspace"]["repos"], "the edit's workspace must be snapshotted"
+
+    # v1 stays comparable across this change: post never appends to it
+    assert not (home / C.CAPTURE_FILE).exists() if hasattr(C, "CAPTURE_FILE") else True
+
+
+def test_install_adds_a_write_edit_hook_and_keeps_foreign_posttooluse_entries(
+        tmp_path: Path) -> None:
+    from xyntetik_runner.shadow import install as I
+
+    settings = tmp_path / ".claude" / "settings.json"
+    settings.parent.mkdir(parents=True)
+    # a PostToolUse hook that is not ours must survive install and uninstall
+    foreign = {"matcher": "Bash",
+               "hooks": [{"type": "command", "command": "echo someone-elses-hook"}]}
+    settings.write_text(json.dumps({"hooks": {"PostToolUse": [foreign]}}), encoding="utf-8")
+
+    I.install_claude_hooks(settings, python=sys.executable, pythonpath=None, home=tmp_path)
+    data = json.loads(settings.read_text(encoding="utf-8"))
+    post = data["hooks"]["PostToolUse"]
+
+    assert foreign in post, "installing must not disturb another tool's hook"
+    ours = [e for e in post if I.HOOK_NAME in json.dumps(e)]
+    assert len(ours) == 1, "exactly one capture hook on PostToolUse"
+    assert ours[0]["matcher"] == "Write|Edit|NotebookEdit"
+    assert ours[0]["hooks"][0]["command"].endswith(" post")
+
+    # idempotent: a second install adds nothing
+    I.install_claude_hooks(settings, python=sys.executable, pythonpath=None, home=tmp_path)
+    post2 = json.loads(settings.read_text(encoding="utf-8"))["hooks"]["PostToolUse"]
+    assert len([e for e in post2 if I.HOOK_NAME in json.dumps(e)]) == 1
+
+    I.uninstall_claude_hooks(settings)
+    left = json.loads(settings.read_text(encoding="utf-8")).get("hooks", {}).get("PostToolUse", [])
+    assert foreign in left, "uninstalling ours must not remove another tool's hook"
+    assert not [e for e in left if I.HOOK_NAME in json.dumps(e)]
+
+
+def test_post_event_records_a_workspace_state(tmp_path: Path) -> None:
+    """The point of the event: a snapshot bound to the moment of the edit."""
+    home = tmp_path / "home"
+    home.mkdir()
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    (repo / "a.py").write_text("x = 1\n", encoding="utf-8")
+
+    before = C.snapshot_all(repo, home)
+    (repo / "a.py").write_text("x = 2\n", encoding="utf-8")
+    after = C.snapshot_all(repo, home)
+
+    rec = C.build("post", payload={"tool_name": "Edit"}, cwd=repo, home=home,
+                  tool="claude_code", session_id="s1", snap=after)
+    assert rec["event"] == "post"
+    assert rec["state"]["workspace"]
+
+    cs = C.change_set_all(before, after)
+    assert cs["count"] >= 1, "the edit must appear in the change set"
+    assert any(p.endswith("a.py") for p in cs["paths"]), cs["paths"]
