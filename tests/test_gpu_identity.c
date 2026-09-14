@@ -32,8 +32,10 @@
 // the model fell back to the CPU -- comparing the CPU against itself is the
 // vacuity every tolerance gate here is written to avoid.
 #include "runner.h"
+#include "finite_check.h"
 
 #include <math.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -120,7 +122,150 @@ static float *run(const char *path, int gpu_mode, int *n_vocab_out,
     return out;
 }
 
+// The verdict on two [steps][nv] logit sets. 0 = ok, 1 = FAILED, printed as
+// the gate's last line either way. Kept apart from the model runs so that
+// `--self-test` can drive it with synthetic inputs under the release flags.
+static int compare_logits(const float *cpu, const float *gpu, int nv, int steps) {
+    size_t n = (size_t)steps * (size_t)nv;
+
+    // Non-finite logits on EITHER side fail before any reduction. Until
+    // 2026-09-14 a single GPU NaN passed this gate: |cpu - NaN| is NaN, the
+    // sum and the fraction of range became NaN, and "NaN > limit" is false,
+    // so the gate printed ok (reproduced by the v0.5.3 review with clang -O2
+    // and -O3 -ffast-math; the released kernels were not producing NaNs, the
+    // instrument was blind to them). +/-Inf reached the limit check and
+    // failed, but only by accident of the comparison's direction. The masked
+    // vocabulary sentinel (-1e30 and below) is finite and stays admitted.
+    // The detection lives in tests/finite_check.c, a fast-math-free TU: in
+    // this one the compiler folds any NaN test, bit pattern included, to
+    // false (see that file).
+    size_t first_cpu = n, first_gpu = n;
+    size_t n_nonfinite_cpu = count_nonfinite_f32(cpu, n, &first_cpu);
+    size_t n_nonfinite_gpu = count_nonfinite_f32(gpu, n, &first_gpu);
+    if (n_nonfinite_cpu || n_nonfinite_gpu) {
+        size_t first_bad = first_cpu < first_gpu ? first_cpu : first_gpu;
+        printf("FAIL: non-finite logits (cpu %zu, gpu %zu of %zu; first at "
+               "position %zu vocab %d: cpu %g, gpu %g) — a NaN or Inf is a "
+               "defect, never a rounding difference\ngpu-identity: FAILED\n",
+               n_nonfinite_cpu, n_nonfinite_gpu, n, first_bad / (size_t)nv,
+               (int)(first_bad % (size_t)nv), (double)cpu[first_bad],
+               (double)gpu[first_bad]);
+        return 1;
+    }
+
+    size_t n_diff = 0;
+    double worst = 0, sum = 0;
+    for (size_t i = 0; i < n; i++) {
+        double d = fabs((double)cpu[i] - (double)gpu[i]);
+        sum += d;
+        if (d > worst) worst = d;
+        if (memcmp(&cpu[i], &gpu[i], sizeof(float)) != 0) n_diff++;
+    }
+    double mean_dev = sum / (double)n;
+
+    // Range over REAL logits only: some archs suppress vocabulary entries with
+    // a large negative sentinel, which would make a fraction-of-range bound
+    // vacuously true.
+    double range_sum = 0;
+    for (int s2 = 0; s2 < steps; s2++) {
+        double lo = 1e300, hi = -1e300;
+        for (int v = 0; v < nv; v++) {
+            double x = (double)cpu[(size_t)s2 * nv + v];
+            if (x <= -1e29) continue;
+            if (x < lo) lo = x;
+            if (x > hi) hi = x;
+        }
+        if (hi > lo) range_sum += hi - lo;
+    }
+    double range = range_sum / steps;
+    double frac = range > 0 ? mean_dev / range : 1e9;
+
+    // Anti-vacuity: all-zero logits would compare equal and prove nothing.
+    double absmax = 0;
+    for (size_t i = 0; i < n; i++) {
+        double a = fabs((double)cpu[i]);
+        if (a > absmax) absmax = a;
+    }
+    if (absmax < 1e-6) {
+        printf("FAIL: the CPU run produced all-zero logits\n"
+               "gpu-identity: FAILED\n");
+        return 1;
+    }
+
+    printf("  %zu logits over %d positions | %zu differ, mean|dlogit| %.3g "
+           "= %.3g of mean range %.3g (limit %g), worst %.3g\n",
+           n, steps, n_diff, mean_dev, frac, range, GPU_DEV_FRAC, worst);
+
+    if (frac > GPU_DEV_FRAC) {
+        printf("FAIL: CPU and GPU disagree by more than reduction-order "
+               "rounding — this is a missing or wrong operation on one side, "
+               "not a rounding difference\ngpu-identity: FAILED\n");
+        return 1;
+    }
+    printf("gpu-identity: ok\n");
+    return 0;
+}
+
+// `--self-test`: the verdict function under the flags this binary was built
+// with, on inputs a model run cannot be asked to produce on demand. Each
+// case is one deliberate defect class or one legitimate agreement; the
+// expected verdict is stated beside it. Exit 0 only when every case reads
+// as it should.
+static float make_bits(uint32_t b) {
+    float x;
+    memcpy(&x, &b, sizeof x);
+    return x;
+}
+
+static int self_test(void) {
+    enum { NV = 7, ST = 3, N = NV * ST };
+    static float cpu[N], gpu[N];
+    int fail = 0;
+    struct { const char *name; size_t at; int expect; } cases[] = {
+        { "equal finite logits",             (size_t)-1, 0 },
+        { "one GPU NaN",                     9,          1 },
+        { "one GPU +Inf",                    9,          1 },
+        { "one GPU -Inf",                    9,          1 },
+        { "one CPU NaN",                     9,          1 },
+        { "a decisive finite disagreement",  9,          1 },
+        { "a reduction-sized disagreement",  9,          0 },
+        { "the masked-vocabulary sentinel",  9,          0 },
+    };
+    for (size_t c = 0; c < sizeof cases / sizeof *cases; c++) {
+        for (int i = 0; i < N; i++) {
+            // a real-looking spread: range about 6 per position
+            cpu[i] = (float)((i * 7) % 13) * 0.5f - 3.0f;
+            gpu[i] = cpu[i];
+        }
+        size_t at = cases[c].at;
+        switch (c) {
+            case 1: gpu[at] = make_bits(0x7fc00000u); break;         // NaN
+            case 2: gpu[at] = make_bits(0x7f800000u); break;         // +Inf
+            case 3: gpu[at] = make_bits(0xff800000u); break;         // -Inf
+            case 4: cpu[at] = make_bits(0x7fc00000u); break;         // NaN
+            case 5: gpu[at] = cpu[at] + 3.0f; break;                  // missing op
+            case 6: gpu[at] = cpu[at] + 1e-4f; break;                 // rounding
+            case 7: cpu[at] = -1e30f; gpu[at] = -1e30f; break;        // sentinel
+            default: break;
+        }
+        printf("self-test: %s (expect %s)\n", cases[c].name,
+               cases[c].expect ? "FAILED" : "ok");
+        int rc = compare_logits(cpu, gpu, NV, ST);
+        if (rc != cases[c].expect) {
+            printf("SELF-TEST FAIL: '%s' read as %s, expected %s\n",
+                   cases[c].name, rc ? "FAILED" : "ok",
+                   cases[c].expect ? "FAILED" : "ok");
+            fail = 1;
+        }
+    }
+    printf(fail ? "gpu-identity self-test: FAILED\n"
+                : "gpu-identity self-test: ok (%zu cases)\n",
+           sizeof cases / sizeof *cases);
+    return fail;
+}
+
 int main(int argc, char **argv) {
+    if (argc > 1 && strcmp(argv[1], "--self-test") == 0) return self_test();
     const char *path = argc > 1 ? argv[1] : "test.gguf";
     if (argc > 2) g_gpu_layers = atoi(argv[2]);
     if (argc > 3) g_n_batch = atoi(argv[3]) > 0 ? atoi(argv[3]) : N_BATCH;
@@ -175,59 +320,7 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    size_t n = (size_t)STEPS * (size_t)nv_cpu;
-    size_t n_diff = 0;
-    double worst = 0, sum = 0;
-    for (size_t i = 0; i < n; i++) {
-        double d = fabs((double)cpu[i] - (double)gpu[i]);
-        sum += d;
-        if (d > worst) worst = d;
-        if (memcmp(&cpu[i], &gpu[i], sizeof(float)) != 0) n_diff++;
-    }
-    double mean_dev = sum / (double)n;
-
-    // Range over REAL logits only: some archs suppress vocabulary entries with
-    // a large negative sentinel, which would make a fraction-of-range bound
-    // vacuously true.
-    double range_sum = 0;
-    for (int s2 = 0; s2 < STEPS; s2++) {
-        double lo = 1e300, hi = -1e300;
-        for (int v = 0; v < nv_cpu; v++) {
-            double x = (double)cpu[(size_t)s2 * nv_cpu + v];
-            if (x <= -1e29) continue;
-            if (x < lo) lo = x;
-            if (x > hi) hi = x;
-        }
-        if (hi > lo) range_sum += hi - lo;
-    }
-    double range = range_sum / STEPS;
-    double frac = range > 0 ? mean_dev / range : 1e9;
-
-    // Anti-vacuity: all-zero logits would compare equal and prove nothing.
-    double absmax = 0;
-    for (size_t i = 0; i < n; i++) {
-        double a = fabs((double)cpu[i]);
-        if (a > absmax) absmax = a;
-    }
-    if (absmax < 1e-6) {
-        printf("FAIL: the CPU run produced all-zero logits\n"
-               "gpu-identity: FAILED\n");
-        free(cpu); free(gpu);
-        return 1;
-    }
-
-    printf("  %zu logits over %d positions | %zu differ, mean|dlogit| %.3g "
-           "= %.3g of mean range %.3g (limit %g), worst %.3g\n",
-           n, STEPS, n_diff, mean_dev, frac, range, GPU_DEV_FRAC, worst);
-
-    if (frac > GPU_DEV_FRAC) {
-        printf("FAIL: CPU and GPU disagree by more than reduction-order "
-               "rounding — this is a missing or wrong operation on one side, "
-               "not a rounding difference\ngpu-identity: FAILED\n");
-        free(cpu); free(gpu);
-        return 1;
-    }
-    printf("gpu-identity: ok\n");
+    int rc = compare_logits(cpu, gpu, nv_cpu, STEPS);
     free(cpu); free(gpu);
-    return 0;
+    return rc;
 }

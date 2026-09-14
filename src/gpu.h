@@ -62,6 +62,16 @@ void   gpu_tc_force(int on);
 // cannot tell an unused kernel apart from an exactly-matching one — and Q8_0
 // turns out to be the second case. Counting the dispatch removes the guess.
 unsigned long gpu_tc_dispatches(void);
+// The same count per weight type (CUDA: the tensor-core GEMM; Metal: the
+// tiled and tensor GEMMs), so the gate can require that EVERY TC-capable
+// format in a model dispatched, not just that something did: a total of a
+// mixed Q4_K/IQ file can be all Q4_K. 0 for a type outside the table.
+unsigned long gpu_tc_dispatches_type(int type);
+// Does this backend carry a batched (tensor-core or tiled) GEMM for the
+// type? A static fact about the backend's kernel table, answered without a
+// device, and the gate's only source for "TC-capable" (its own hand-kept
+// list missed Q6_K for five weeks).
+bool   gpu_tc_type_has_kernel(int type);
 // test hook for the fast-matvec tolerance gate: force the reassociating decode
 // matvec on (1) or off (0) regardless of RUNNER_METAL_MV; -1 returns to the
 // env default. A no-op on backends without one (CUDA, CPU-only builds).

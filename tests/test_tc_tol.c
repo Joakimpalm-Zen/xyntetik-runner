@@ -44,6 +44,7 @@
 //
 // Default model is test.gguf (F32 toy): the harness runs and self-skips.
 #include "runner.h"
+#include "finite_check.h"
 
 #include <float.h>
 #include <math.h>
@@ -84,6 +85,10 @@ static const char *TEXT =
 
 static int g_reserve_vram_pct = 0;
 
+// Every ggml type id the loader admits is below this; the backend answers 0
+// for anything outside its own table.
+enum { TYPE_N = 64 };
+
 typedef struct {
     const char *name;
     int         tc;          // gpu_tc_force argument while this config runs
@@ -91,7 +96,16 @@ typedef struct {
     bool        available;
     float      *logits;      // [STEPS][n_vocab], owned
     int32_t    *top1;        // [STEPS], owned
+    unsigned long disp[TYPE_N];   // TC dispatches per weight type, this run
 } config;
+
+// Which weight types the model carries in its blocks (blk.*), and which
+// only elsewhere (token_embd, output). The engagement check below requires
+// a dispatch for every TC-capable BLOCK type: the embedding is a host
+// gather on every backend, and the output projection runs at one column
+// during this gate's prefill, so neither can be required to dispatch.
+static unsigned long g_block_tensors[TYPE_N];
+static unsigned long g_other_tensors[TYPE_N];
 
 static int argmax(const float *v, int n) {
     int best = 0;
@@ -124,6 +138,8 @@ static float logit_range(const float *v, int n) {
 static bool run_config(config *c, const char *path, const int32_t *toks,
                        int n_tok, int n_vocab) {
     gpu_tc_force(c->tc);
+    unsigned long before[TYPE_N];
+    for (int t = 0; t < TYPE_N; t++) before[t] = gpu_tc_dispatches_type(t);
 
     model_t m;
     memset(&m, 0, sizeof(m));
@@ -176,10 +192,23 @@ static bool run_config(config *c, const char *path, const int32_t *toks,
         c->top1[s] = (int32_t)argmax(lg, n_vocab);
     }
     model_free(&m);
+    for (int t = 0; t < TYPE_N; t++)
+        c->disp[t] = gpu_tc_dispatches_type(t) - before[t];
 
-    // anti-vacuity: a run that produced no logits proves nothing
+    // anti-vacuity: a run that produced no logits proves nothing, and a
+    // NaN or Inf is a defect that no tolerance may absorb (the detection
+    // lives in a fast-math-free TU; see tests/finite_check.c)
+    size_t n_logits = (size_t)STEPS * (size_t)n_vocab, first_bad = 0;
+    size_t n_bad = count_nonfinite_f32(c->logits, n_logits, &first_bad);
+    if (n_bad) {
+        fprintf(stderr, "FAIL: %s produced %zu non-finite logits (first at "
+                "position %zu, vocab %zu)\n", c->name, n_bad,
+                first_bad / (size_t)n_vocab, first_bad % (size_t)n_vocab);
+        g_fail = 1;
+        return false;
+    }
     double absmax = 0;
-    for (size_t i = 0; i < (size_t)STEPS * (size_t)n_vocab; i++) {
+    for (size_t i = 0; i < n_logits; i++) {
         double a = fabs((double)c->logits[i]);
         if (a > absmax) absmax = a;
     }
@@ -190,6 +219,41 @@ static bool run_config(config *c, const char *path, const int32_t *toks,
     }
     c->available = true;
     return true;
+}
+
+// The engagement contract, checked before any number is compared and
+// regardless of what the numbers say: the forced-off arms must not have
+// dispatched the batched GEMM for any type, and the forced-on arm must
+// have dispatched it for EVERY TC-capable type the model's blocks carry.
+// Until 2026-09-14 engagement was one total, consulted only when the
+// outputs were bit-identical: a mixed file could show TC activity that was
+// entirely one format's while another format's kernel never ran, and a
+// pure Q6_K model was skipped as "no TC-capable tensor" by a hand-kept
+// list that had never learned the type (the v0.5.3 review's P2).
+static void engagement_check(const config *cfgs, int n_cfg) {
+    for (int i = 0; i < n_cfg; i++) {
+        const config *c = &cfgs[i];
+        if (!c->available) continue;
+        unsigned long total = 0;
+        for (int t = 0; t < TYPE_N; t++) total += c->disp[t];
+        printf("  %-12s TC dispatches:", c->name);
+        if (!total) printf(" none");
+        for (int t = 0; t < TYPE_N; t++)
+            if (c->disp[t]) printf(" %s=%lu", ggml_type_name(t), c->disp[t]);
+        printf("\n");
+        if (!c->tc) {
+            ck(total == 0, "a forced-off arm dispatched the batched GEMM");
+            continue;
+        }
+        for (int t = 0; t < TYPE_N; t++) {
+            if (!g_block_tensors[t] || !gpu_tc_type_has_kernel(t)) continue;
+            if (c->disp[t]) continue;
+            fprintf(stderr, "FAIL: %s: %lu block tensors are %s, which has a "
+                    "batched GEMM, and none dispatched it in the forced-on "
+                    "arm\n", c->name, g_block_tensors[t], ggml_type_name(t));
+            g_fail = 1;
+        }
+    }
 }
 
 // ------------------------------------------------------- the free-running arm
@@ -308,6 +372,17 @@ static void top1_stats(const config *a, const config *b, int n_vocab,
 }
 
 int main(int argc, char **argv) {
+    // `--types`: the weight types this backend carries a batched GEMM for,
+    // straight from its kernel table, so a test can hold the list to what
+    // the promotion story claims (Q6_K went missing from the gate's own
+    // list for five weeks).
+    if (argc > 1 && strcmp(argv[1], "--types") == 0) {
+        printf("tc-types:");
+        for (int t = 0; t < TYPE_N; t++)
+            if (gpu_tc_type_has_kernel(t)) printf(" %s", ggml_type_name(t));
+        printf("\n");
+        return 0;
+    }
     const char *path = argc > 1 ? argv[1] : "test.gguf";
     if (argc > 2) g_reserve_vram_pct = atoi(argv[2]);
 
@@ -318,13 +393,17 @@ int main(int argc, char **argv) {
         fprintf(stderr, "cannot open %s\n", path);
         return 1;
     }
-    // TC kernels exist for Q4_K, Q8_0 and Q4_0; without at least one tensor
-    // of a TC-capable type the TC and scalar paths are the same code and
-    // the gate would measure nothing
+    // Without at least one BLOCK tensor of a type the backend has a batched
+    // GEMM for, the TC and scalar paths are the same code and the gate would
+    // measure nothing. The backend answers which types those are.
     bool has_tc_type = false;
-    for (uint64_t i = 0; i < gf.n_tensors; i++)
-        if (gf.tensors[i].type == T_Q4_K || gf.tensors[i].type == T_Q8_0 ||
-            gf.tensors[i].type == T_Q4_0) has_tc_type = true;
+    for (uint64_t i = 0; i < gf.n_tensors; i++) {
+        int t = (int)gf.tensors[i].type;
+        if (t < 0 || t >= TYPE_N) continue;
+        bool in_block = strncmp(gf.tensors[i].name, "blk.", 4) == 0;
+        if (in_block) g_block_tensors[t]++; else g_other_tensors[t]++;
+        if (in_block && gpu_tc_type_has_kernel(t)) has_tc_type = true;
+    }
 
     tokenizer tk;
     if (!tokenizer_init(&tk, &gf)) {
@@ -347,16 +426,19 @@ int main(int argc, char **argv) {
     printf("tc-tol: %s | %d tokens, %d teacher-forced positions\n",
            path, n_tok, STEPS);
     if (!has_tc_type) {
-        printf("  skipped: no TC-capable tensor in this model (TC kernels: "
-               "Q4_K/Q8_0/Q4_0)\n" "tc-tol: ok (skipped)\n");
+        printf("  skipped: no block tensor of a type this backend has a "
+               "batched GEMM for (");
+        for (int t = 0, n = 0; t < TYPE_N; t++)
+            if (gpu_tc_type_has_kernel(t)) printf("%s%s", n++ ? "/" : "", ggml_type_name(t));
+        printf(")\n" "tc-tol: ok (skipped)\n");
         return 0;
     }
 
     enum { N_CFG = 3 };
     config cfgs[N_CFG] = {
-        { "scalar-b64", 0, N_BATCH,      false, NULL, NULL },
-        { "scalar-b16", 0, N_BATCH_CTRL, false, NULL, NULL },
-        { "tc-b64",     1, N_BATCH,      false, NULL, NULL },
+        { "scalar-b64", 0, N_BATCH,      false, NULL, NULL, {0} },
+        { "scalar-b16", 0, N_BATCH_CTRL, false, NULL, NULL, {0} },
+        { "tc-b64",     1, N_BATCH,      false, NULL, NULL, {0} },
     };
 
     int n_vocab = 0;
@@ -388,6 +470,7 @@ int main(int argc, char **argv) {
                "tc-tol: %s\n", g_fail ? "FAILED" : "ok (skipped)");
         return g_fail;
     }
+    engagement_check(cfgs, N_CFG);
 
     double impl = mean_abs_diff(tc, ref, n_vocab);
 
@@ -402,7 +485,8 @@ int main(int argc, char **argv) {
     // so a genuine perfect score was being recorded as "skipped, not passing".
     // Ask the engine how many times it dispatched instead of guessing.
     if (impl == 0.0) {
-        unsigned long fired = gpu_tc_dispatches();
+        unsigned long fired = 0;
+        for (int t = 0; t < TYPE_N; t++) fired += tc->disp[t];
         if (fired == 0) {
             printf("  tc-b64 vs scalar-b64 : logits BIT-IDENTICAL and the TC "
                    "GEMM never dispatched — skipping, not passing\n"

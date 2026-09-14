@@ -17,6 +17,8 @@ runner-debug.dSYM/
 # next conformance run re-fetches (network, plus models/ for the GGUF-sourced
 # families). That is why the gate is not wired into `make test`.
 .build/
+test-iq-decode
+test-iq-decode.exe
 test-json-schema
 test-json-schema.exe
 test-sval-walk

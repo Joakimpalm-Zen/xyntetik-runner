@@ -3122,33 +3122,10 @@ static __device__ const ulong64 kiq1s_grid[2048] = {
 };
 
 
-static __device__ __forceinline__ unsigned ld16(const uchar *p) {
-    return *(const unsigned short *)p;
-}
-static __device__ __forceinline__ unsigned ld32a2(const uchar *p) {
-    return ld16(p) | (ld16(p + 2) << 16);
-}
-// ksigns_iq2xs[i] in quants_iq_grids.h is i with its odd parity in bit 7
-// (tests/test_cuda_iq_grids.py checks all 128 entries), so a 7-bit sign
-// index expands arithmetically instead of through a divergent table read.
-static __device__ __forceinline__ unsigned iq_signs7(unsigned idx) {
-    return idx | ((__popc(idx) & 1u) << 7);
-}
-// weight j of an 8-magnitude grid entry (byte j), negated by sign bit j
-static __device__ __forceinline__ float iq_w8(ulong64 grid, int j, unsigned signs) {
-    float mag = (float)((grid >> (8 * j)) & 0xFF);
-    return (signs >> j) & 1 ? -mag : mag;
-}
-// weight j of a 4-magnitude grid entry (byte j), negated by sign bit j
-static __device__ __forceinline__ float iq_w4(unsigned grid, int j, unsigned signs) {
-    float mag = (float)((grid >> (8 * j)) & 0xFF);
-    return (signs >> j) & 1 ? -mag : mag;
-}
-// IQ1 grid bytes are signed (-1/0/1) and carry a per-index delta
-static __device__ __forceinline__ float iq1_w(ulong64 grid, int j, float delta) {
-    return (float)(signed char)((grid >> (8 * j)) & 0xFF) + delta;
-}
-#define IQ1_DELTA 0.125f
+// The decode primitives (sign expansion, grid-byte magnitudes, the 2-byte
+// aligned field reads) live in iq_decode.h, compiled here as device code
+// and by the C compiler for tests/test_iq_decode.c.
+#include "iq_decode.h"
 
 // IQ2_XXS: 66-byte block, d (fp16) + 8 sub-blocks of 8 bytes: four grid
 // indices, then one word of four 7-bit sign indices (bits 0-27) and a 4-bit
@@ -3164,7 +3141,7 @@ extern "C" __global__ void k_mv_iq2_xxs(MV_PARAMS) {
         const uchar *qs = blk + 2;
         const float *xp = x + b * 256;
         for (int ib = 0; ib < 8; ib++, qs += 8) {
-            unsigned aux = ld32a2(qs + 4);
+            unsigned aux = iq_ld32a2(qs + 4);
             float db = d * (0.5f + (float)(aux >> 28)) * 0.25f;
             float t = 0;
             for (int l = 0; l < 4; l++, xp += 8) {
@@ -3188,7 +3165,7 @@ extern "C" __global__ void k_mv_iq2_xxs_b(MV_PARAMS) {
         const uchar *qs = blk + 2;
         ulong64 base = (ulong64)b * 256;
         for (int ib = 0; ib < 8; ib++, qs += 8) {
-            unsigned aux = ld32a2(qs + 4);
+            unsigned aux = iq_ld32a2(qs + 4);
             float db = d * (0.5f + (float)(aux >> 28)) * 0.25f;
             for (int l = 0; l < 4; l++, base += 8) {
                 ulong64 g = kiq2xxs_grid[qs[l]];
@@ -3217,7 +3194,7 @@ extern "C" __global__ void k_mv_iq2_xs(MV_PARAMS) {
             float db0 = d * (0.5f + (float)(sc[ib] & 0xF)) * 0.25f;
             float db1 = d * (0.5f + (float)(sc[ib] >> 4)) * 0.25f;
             for (int l = 0; l < 4; l++, xp += 8) {
-                unsigned q = ld16(qs + 2 * l);
+                unsigned q = iq_ld16(qs + 2 * l);
                 ulong64 g = kiq2xs_grid[q & 511];
                 unsigned signs = iq_signs7(q >> 9);
                 float t = 0;
@@ -3242,7 +3219,7 @@ extern "C" __global__ void k_mv_iq2_xs_b(MV_PARAMS) {
             float db0 = d * (0.5f + (float)(sc[ib] & 0xF)) * 0.25f;
             float db1 = d * (0.5f + (float)(sc[ib] >> 4)) * 0.25f;
             for (int l = 0; l < 4; l++, base += 8) {
-                unsigned q = ld16(qs + 2 * l);
+                unsigned q = iq_ld16(qs + 2 * l);
                 ulong64 g = kiq2xs_grid[q & 511];
                 unsigned signs = iq_signs7(q >> 9);
                 float db = l < 2 ? db0 : db1;
@@ -3320,7 +3297,7 @@ extern "C" __global__ void k_mv_iq3_xxs(MV_PARAMS) {
         const uchar *qs = blk + 2, *ss = blk + 66;
         const float *xp = x + b * 256;
         for (int ib = 0; ib < 8; ib++, qs += 8) {
-            unsigned aux = ld32a2(ss + 4 * ib);
+            unsigned aux = iq_ld32a2(ss + 4 * ib);
             float db = d * (0.5f + (float)(aux >> 28)) * 0.5f;
             float t = 0;
             for (int l = 0; l < 4; l++, xp += 8) {
@@ -3348,7 +3325,7 @@ extern "C" __global__ void k_mv_iq3_xxs_b(MV_PARAMS) {
         const uchar *qs = blk + 2, *ss = blk + 66;
         ulong64 base = (ulong64)b * 256;
         for (int ib = 0; ib < 8; ib++, qs += 8) {
-            unsigned aux = ld32a2(ss + 4 * ib);
+            unsigned aux = iq_ld32a2(ss + 4 * ib);
             float db = d * (0.5f + (float)(aux >> 28)) * 0.5f;
             for (int l = 0; l < 4; l++, base += 8) {
                 unsigned g1 = kiq3xxs_grid[qs[2 * l + 0]];
@@ -3442,7 +3419,7 @@ extern "C" __global__ void k_mv_iq1_s(MV_PARAMS) {
         const uchar *qs = blk + 2, *qh = blk + 34;
         const float *xp = x + b * 256;
         for (int ib = 0; ib < 8; ib++, qs += 4) {
-            unsigned h = ld16(qh + 2 * ib);
+            unsigned h = iq_ld16(qh + 2 * ib);
             float dl = d * (float)(2 * ((h >> 12) & 7) + 1);
             float delta = h & 0x8000 ? -IQ1_DELTA : IQ1_DELTA;
             float t = 0;
@@ -3466,7 +3443,7 @@ extern "C" __global__ void k_mv_iq1_s_b(MV_PARAMS) {
         const uchar *qs = blk + 2, *qh = blk + 34;
         ulong64 base = (ulong64)b * 256;
         for (int ib = 0; ib < 8; ib++, qs += 4) {
-            unsigned h = ld16(qh + 2 * ib);
+            unsigned h = iq_ld16(qh + 2 * ib);
             float dl = d * (float)(2 * ((h >> 12) & 7) + 1);
             float delta = h & 0x8000 ? -IQ1_DELTA : IQ1_DELTA;
             for (int l = 0; l < 4; l++, base += 8) {
@@ -3491,13 +3468,13 @@ extern "C" __global__ void k_mv_iq1_m(MV_PARAMS) {
     for (int b = lane; b < nb; b += 32) {
         const uchar *blk = rw + (ulong64)b * 56;
         const uchar *qs = blk, *qh = blk + 32, *scb = blk + 48;
-        unsigned sc0 = ld16(scb), sc1 = ld16(scb + 2), sc2 = ld16(scb + 4), sc3 = ld16(scb + 6);
+        unsigned sc0 = iq_ld16(scb), sc1 = iq_ld16(scb + 2), sc2 = iq_ld16(scb + 4), sc3 = iq_ld16(scb + 6);
         unsigned short sd = (sc0 >> 12) | ((sc1 >> 8) & 0x00f0) |
                             ((sc2 >> 4) & 0x0f00) | (sc3 & 0xf000);
         float d = __half2float(__ushort_as_half(sd));
         const float *xp = x + b * 256;
         for (int ib = 0; ib < 8; ib++, qs += 4, qh += 2) {
-            unsigned sw = ld16(scb + 2 * (ib >> 1)) >> (6 * (ib & 1));
+            unsigned sw = iq_ld16(scb + 2 * (ib >> 1)) >> (6 * (ib & 1));
             float dl0 = d * (float)(2 * (sw & 7) + 1);
             float dl1 = d * (float)(2 * ((sw >> 3) & 7) + 1);
             for (int l = 0; l < 4; l++, xp += 8) {
@@ -3521,13 +3498,13 @@ extern "C" __global__ void k_mv_iq1_m_b(MV_PARAMS) {
     for (int b = lane; b < nb; b += 32) {
         const uchar *blk = rw + (ulong64)b * 56;
         const uchar *qs = blk, *qh = blk + 32, *scb = blk + 48;
-        unsigned sc0 = ld16(scb), sc1 = ld16(scb + 2), sc2 = ld16(scb + 4), sc3 = ld16(scb + 6);
+        unsigned sc0 = iq_ld16(scb), sc1 = iq_ld16(scb + 2), sc2 = iq_ld16(scb + 4), sc3 = iq_ld16(scb + 6);
         unsigned short sd = (sc0 >> 12) | ((sc1 >> 8) & 0x00f0) |
                             ((sc2 >> 4) & 0x0f00) | (sc3 & 0xf000);
         float d = __half2float(__ushort_as_half(sd));
         ulong64 base = (ulong64)b * 256;
         for (int ib = 0; ib < 8; ib++, qs += 4, qh += 2) {
-            unsigned sw = ld16(scb + 2 * (ib >> 1)) >> (6 * (ib & 1));
+            unsigned sw = iq_ld16(scb + 2 * (ib >> 1)) >> (6 * (ib & 1));
             float dl0 = d * (float)(2 * (sw & 7) + 1);
             float dl1 = d * (float)(2 * ((sw >> 3) & 7) + 1);
             for (int l = 0; l < 4; l++, base += 8) {
