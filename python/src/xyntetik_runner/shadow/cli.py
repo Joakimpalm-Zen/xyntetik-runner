@@ -74,6 +74,12 @@ def default_out() -> Path:
     return Path.home() / ".xyntetik" / "shadow"
 
 
+# The capture events, in one place. argparse and the runtime check both read
+# this: as two separate literals they drifted, and --event post parsed and then
+# failed at the runtime check.
+CAPTURE_EVENTS: tuple[str, ...] = ("prompt", "stop", "verify", "post")
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
@@ -534,8 +540,11 @@ def cmd_capture(args: argparse.Namespace) -> int:
         data = {}
     if not isinstance(data, dict):
         data = {}
-    if args.event not in ("prompt", "stop", "verify"):
-        print("error: --event prompt|stop|verify is required (or --summary)", file=sys.stderr)
+    # Kept in step with the argparse choices above by CAPTURE_EVENTS; they were
+    # two independent literals and a pipe test found them disagreeing.
+    if args.event not in CAPTURE_EVENTS:
+        print("error: --event %s is required (or --summary)" % "|".join(CAPTURE_EVENTS),
+              file=sys.stderr)
         return 2
     cwd = str(args.cwd or data.get("cwd") or Path.cwd())
     home_p = Path(args.home) if args.home else Path.home()
@@ -575,7 +584,10 @@ def cmd_capture(args: argparse.Namespace) -> int:
                              tool=args.tool, session_id=session, snap=snap)
         cap.append(home_p, rec2)
 
-    if args.v2_only or args.event == "verify":
+    # `post` is v2-only for the same reason `verify` is: the v1 series has run
+    # continuously since 2026-09-08 and a new event type in it would make the
+    # counts before and after this change incomparable.
+    if args.v2_only or args.event in ("verify", "post"):
         try:
             _v2()
         except Exception:  # noqa: BLE001 - a hook never fails the prompt
@@ -1181,7 +1193,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--timeout", type=float, default=600.0)
     p.set_defaults(fn=cmd_bank)
     p = sub.add_parser("capture", help="append a prompt or stop event from an agent hook")
-    p.add_argument("--event", choices=["prompt", "stop", "verify"], default="")
+    p.add_argument("--event", choices=list(CAPTURE_EVENTS), default="")
     p.add_argument("--summary", action="store_true", help="print counts over the capture file")
     p.add_argument("--v2-only", action="store_true",
                    help="write only the v2 record (the verify event has no v1 form)")

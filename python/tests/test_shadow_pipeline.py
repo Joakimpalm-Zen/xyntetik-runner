@@ -493,6 +493,8 @@ def test_install_is_explicit_idempotent_and_reversible(tmp_path: Path, capsys: A
     assert main(["install", "--home", str(home), "--python", "py", "--yes"]) == 0
     data = json.loads(settings.read_text(encoding="utf-8"))
     assert len(data["hooks"]["Stop"]) == 2 and len(data["hooks"]["UserPromptSubmit"]) == 1
+    post = data["hooks"]["PostToolUse"]
+    assert len(post) == 1 and post[0]["matcher"] == "Write|Edit|NotebookEdit"
     # reversible: exactly what install wrote, nothing else
     assert main(["uninstall", "--home", str(home)]) == 0
     data = json.loads(settings.read_text(encoding="utf-8"))
@@ -502,7 +504,10 @@ def test_install_is_explicit_idempotent_and_reversible(tmp_path: Path, capsys: A
     assert not (home / ".claude" / "CLAUDE.md").exists()
     assert (home / ".codex" / "AGENTS.md").read_text(encoding="utf-8") == "# my rules\n\nbe brief\n"
     out = capsys.readouterr().out
-    assert "2 hook(s) added" in out and "removed 2 hook(s)" in out
+    # three since the `post` event: UserPromptSubmit, Stop, and PostToolUse on
+    # Write|Edit, which is the only moment a change set can be bound to the edit
+    # that produced it.
+    assert "3 hook(s) added" in out and "removed 3 hook(s)" in out
     assert "what happens next:" in out and "ask /shadow in Claude Code (the shadow prompt in Codex)" in out
     # hooks written by the previous version are still recognised and removed
     settings.write_text(json.dumps({"hooks": {"Stop": [{"hooks": [{"type": "command",
