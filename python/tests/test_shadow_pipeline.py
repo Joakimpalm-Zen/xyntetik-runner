@@ -484,9 +484,10 @@ def test_install_is_explicit_idempotent_and_reversible(tmp_path: Path, capsys: A
     shadow_dir = home / ".xyntetik" / "shadow"
     codex_capture = shadow_dir / "xyntetik-shadow-codex-capture-hook.py"
     codex_verify = shadow_dir / "xyntetik-shadow-codex-verify-hook.py"
-    assert shadow_dir.stat().st_mode & 0o077 == 0
-    assert codex_capture.stat().st_mode & 0o077 == 0
-    assert codex_verify.stat().st_mode & 0o077 == 0
+    if os.name != "nt":  # Windows chmod does not expose POSIX owner/group bits.
+        assert shadow_dir.stat().st_mode & 0o077 == 0
+        assert codex_capture.stat().st_mode & 0o077 == 0
+        assert codex_verify.stat().st_mode & 0o077 == 0
     assert "report --out /o --tasks" in skill.read_text(encoding="utf-8")
     assert "Never run `replay`" in skill.read_text(encoding="utf-8")
     assert "## Help (`/shadow help`" in skill.read_text(encoding="utf-8")
