@@ -8,6 +8,26 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **Gemma 4, Qwen 3.8, Qwen3-Coder and Granite 4.2 get their publishers'
+  sampling presets; Gemma 3 loses a penalty its publisher never stated.**
+  Gemma 4 inherited Gemma 3's preset and with it a `repeat_penalty 1.10`
+  that no Gemma `generation_config.json` carries; at the family's own
+  temperature 1.0 that penalty turned every native tool call into
+  special-token soup (the 2026-09-14 Windows report: 12B QAT Q4_0, 0 of 4
+  tool cases with it, 4 of 4 without). New presets, each pinned to the
+  publisher's `generation_config.json`: `gemma4` (1.0 / 0.95 / 64, no
+  penalty), `qwen38` (1.0 / 0.95 / 20, thinking mode; it landed on Qwen3's
+  0.6 by name), `qwen3-coder` (0.7 / 0.8 / 20, 1.05; it landed on Qwen3's
+  too), `granite42` (1.0 / 0.95; it fell through to the generic preset and
+  ITS 1.10 penalty, under which Granite 4.2 8B reasoned to the token limit
+  on every tool case). `gemma3` now reads 1.0 like its config. The other
+  presets' `repeat_penalty 1.10` (llama3, mistral, smollm2, lucie, teuken)
+  is unchanged and now labelled as runner's calibration in the preset's
+  source. Every buffered response and the opt-in usage chunk of a stream
+  carry `runner_telemetry.sampling` (preset, effective values, seed, per
+  field source) and `runner_telemetry.tool_protocol` (template, family,
+  tools, constrained, parse_only); `/v1/capabilities` reports the resident
+  `template` and `tool_protocol`. Gate: `tests/test_sampling_defaults.py`.
 - **Qwen 3.8, Granite 4.2 and Ornith tool calls reach streaming clients as
   `tool_calls`, not prose.** The three families were excluded from the
   strict envelope to keep their native XML out of the generic JSON grammar,

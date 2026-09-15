@@ -691,8 +691,53 @@ typedef struct {
     // Major page faults taken while serving this request. Nonzero means the
     // time went to disk, not to arithmetic.
     uint64_t    major_faults;
+    // The request's effective sampling and protocol (req_diag below), so a
+    // client can read what the server actually ran without a log.
+    const struct req_diag *diag;
     jv         *req;         // echoed request fields
 } resp_doc;
+
+// What one request was actually served with: the resolved preset, the five
+// effective sampling values and where each came from, and the tool contract
+// the prompt and parser were built on. Reported as
+// runner_telemetry.sampling / runner_telemetry.tool_protocol because the
+// 2026-09-14 Windows report could only INFER, from an A/B against explicit
+// request fields, that a family preset had applied a repeat penalty the
+// vendor never published; the effective values were visible nowhere a client
+// could reach. Each source is "request" when the request set the field,
+// "cli" when a --temp-style flag did, else "preset".
+typedef struct req_diag {
+    const char *preset;
+    float temp, top_p, min_p, repeat_penalty;
+    int   top_k;
+    const char *src_temp, *src_top_p, *src_min_p, *src_top_k, *src_repeat;
+    uint64_t seed;           // 0: not fixed by the request
+    const char *template_name;
+    const char *tool_protocol; // the family name --tool-info reports, or NULL
+    bool  tools;             // tools were declared and callable
+    bool  constrained;       // a grammar was compiled for this turn
+    bool  parse_only;        // a native protocol parsed without a grammar
+} req_diag;
+
+static void diag_json(sbuf *r, const req_diag *d) {
+    sb_fmt(r, ",\"sampling\":{\"preset\":%s%s%s,\"temperature\":%.2f,"
+              "\"top_p\":%.2f,\"top_k\":%d,\"min_p\":%.2f,"
+              "\"repeat_penalty\":%.2f,\"seed\":%llu,\"source\":{"
+              "\"temperature\":\"%s\",\"top_p\":\"%s\",\"top_k\":\"%s\","
+              "\"min_p\":\"%s\",\"repeat_penalty\":\"%s\"}}",
+           d->preset ? "\"" : "", d->preset ? d->preset : "null",
+           d->preset ? "\"" : "",
+           (double)d->temp, (double)d->top_p, d->top_k, (double)d->min_p,
+           (double)d->repeat_penalty, (unsigned long long)d->seed,
+           d->src_temp, d->src_top_p, d->src_top_k, d->src_min_p, d->src_repeat);
+    sb_fmt(r, ",\"tool_protocol\":{\"template\":\"%s\",\"family\":%s%s%s,"
+              "\"tools\":%s,\"constrained\":%s,\"parse_only\":%s}",
+           d->template_name ? d->template_name : "",
+           d->tool_protocol ? "\"" : "", d->tool_protocol ? d->tool_protocol : "null",
+           d->tool_protocol ? "\"" : "",
+           d->tools ? "true" : "false", d->constrained ? "true" : "false",
+           d->parse_only ? "true" : "false");
+}
 
 // The speculation fields of a resp_doc, from the engine that served the
 // request. One spelling for the four surfaces that build a resp_doc.
@@ -763,6 +808,7 @@ static void telemetry_json(sbuf *r, const resp_doc *d) {
     // Only present when the standard finish_reason lost a distinction, so
     // ordinary turns are byte-for-byte what they were before.
     if (d->finish_detail) sb_fmt(r, ",\"finish_detail\":\"%s\"", d->finish_detail);
+    if (d->diag) diag_json(r, d->diag);
     // Only present when the request took the speculative walk, for the same
     // reason: which source proposed, and what the walk did with it. Rounds,
     // drafted and accepted are the totals /metrics accumulates; the lookup's
@@ -2153,6 +2199,31 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
         omit_reasoning = display && display->type == J_STR &&
                          !strcmp(display->str, "omitted");
     }
+    // The request's effective sampling, with each field's source, and the
+    // tool contract it was served under (req_diag). Read back by clients
+    // from runner_telemetry; the values are what the sampler holds now.
+    bool native_tp = false;
+    req_diag diag = {
+        .preset = SV.preset_name,
+        .temp = s->smp.temp, .top_p = s->smp.top_p, .min_p = s->smp.min_p,
+        .repeat_penalty = s->smp.repeat_penalty, .top_k = s->smp.top_k,
+        .src_temp = !absent(jv_get(req, "temperature")) ? "request"
+                  : SV.ov.has_temp ? "cli" : "preset",
+        .src_top_p = !absent(jv_get(req, "top_p")) ? "request"
+                   : SV.ov.has_top_p ? "cli" : "preset",
+        .src_min_p = !absent(jv_get(req, "min_p")) ? "request"
+                   : SV.ov.has_min_p ? "cli" : "preset",
+        .src_top_k = !absent(jv_get(req, "top_k")) ? "request"
+                   : SV.ov.has_top_k ? "cli" : "preset",
+        .src_repeat = !absent(jv_get(req, "repeat_penalty")) ? "request"
+                    : SV.ov.has_repeat_penalty ? "cli" : "preset",
+        .seed = seed > 0 ? (uint64_t)seed : 0,
+        .template_name = template_name(s->tmpl),
+        .tool_protocol = chat ? tool_protocol_name(s->tmpl, &native_tp) : NULL,
+        .tools = env != NULL,
+        .constrained = env != NULL && schema != NULL,
+        .parse_only = env != NULL && env->parse_only,
+    };
     if (script_text) {
         int32_t *ids = NULL;
         int n = scripted_reply_tokens(s->tok, script_text, &ids);
@@ -2414,7 +2485,7 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
                            .gtime = gtime, .major_faults = plat_major_faults() - faults_at_start,
                            .schema = schema != NULL,
                            .json_mode = e->json_mode, .spec = spec_used,
-                           SPEC_DOC_FIELDS(e),
+                           SPEC_DOC_FIELDS(e), .diag = &diag,
                            .req = req };
             sbuf f = {0};
             sb_lit(&f, ",\"response\":");
@@ -2522,7 +2593,12 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
                 sb_esc(&u, SV.model_name, strlen(SV.model_name));
                 sb_lit(&u, "\",\"choices\":[],");
                 openai_usage_json(&u, n_prompt, n_gen, keep);
-                sb_lit(&u, "}");
+                // the one terminal chunk a stream opts into is also where
+                // its effective sampling and protocol can be read back
+                sb_lit(&u, ",\"runner_telemetry\":{\"prompt_cached_tokens\":");
+                sb_fmt(&u, "%d", keep);
+                diag_json(&u, &diag);
+                sb_lit(&u, "}}");
                 ok = chunk_send(&g, &u) == 0;
             }
             if (ok) send_all(fd, "data: [DONE]\n\n", 14);
@@ -2607,7 +2683,7 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
                            .gtime = gtime, .major_faults = plat_major_faults() - faults_at_start,
                            .schema = schema != NULL,
                            .json_mode = e->json_mode, .spec = spec_used,
-                           SPEC_DOC_FIELDS(e),
+                           SPEC_DOC_FIELDS(e), .diag = &diag,
                            .req = req };
             sbuf r = {0};
             anth_body(&r, &g, &d);
@@ -2643,7 +2719,7 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
                            .gtime = gtime, .major_faults = plat_major_faults() - faults_at_start,
                            .schema = schema != NULL,
                            .json_mode = e->json_mode, .spec = spec_used,
-                           SPEC_DOC_FIELDS(e),
+                           SPEC_DOC_FIELDS(e), .diag = &diag,
                            .req = req };
             sbuf r = {0};
             responses_body(&r, &g, &d);
@@ -2738,7 +2814,7 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
                            .schema = schema != NULL,
                         .finish_detail = finish_detail_of(finish),
                         .json_mode = e->json_mode, .spec = spec_used,
-                        SPEC_DOC_FIELDS(e) };
+                        SPEC_DOC_FIELDS(e), .diag = &diag };
         telemetry_json(&r, &td);
         sb_lit(&r, "}");
         send_built(fd, &r);

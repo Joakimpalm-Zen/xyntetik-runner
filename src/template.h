@@ -373,6 +373,13 @@ const struct jv *tool_decl_native(int tmpl, bool strict, bool atem_tool_calling,
                                   struct jv *tools, tool_envelope *env,
                                   bool *skip_generic);
 
+// The native tool protocol a template family speaks, as --tool-info and
+// runner_telemetry.tool_protocol name it ("gemma4", "qwen3_xml", "atem",
+// "harmony", "qwen_json"), or "generic" with *native false for a family
+// that renders the generic declarations and envelope. Derived from
+// tool_decl_native's own selection, never a static table.
+const char *tool_protocol_name(int tmpl, bool *native);
+
 // Map a generated envelope document back to the OpenAI response shape.
 // Returns the NUMBER of tool_calls[] items appended to tc (1 for the ordinary
 // single-call envelope, 0..max_calls for the parallel form), 0 for the final

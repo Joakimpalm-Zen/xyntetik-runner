@@ -1196,6 +1196,16 @@ static void send_capabilities(sock_t fd) {
                (double)d->temp, (double)d->top_p, d->top_k,
                (double)d->min_p, (double)d->repeat_penalty);
     }
+    // The resident model's chat template and the tool protocol it selects
+    // (the --tool-info answer), so a client can tell which contract its
+    // tool declarations will be taught and parsed under before sending one.
+    if (pm) {
+        bool native = false;
+        const char *fam = tool_protocol_name(SV.slots[0].tmpl, &native);
+        sb_fmt(&r, ",\"template\":\"%s\",\"tool_protocol\":{\"family\":\"%s\","
+                   "\"native\":%s}",
+               template_name(SV.slots[0].tmpl), fam, native ? "true" : "false");
+    }
     sb_lit(&r, ",\"features\":{"
                "\"responses_api\":true,"
                "\"messages_api\":true,"

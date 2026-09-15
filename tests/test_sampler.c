@@ -37,6 +37,54 @@ static void test_preset_selection(void) {
     assert(!strcmp(p->name, "phi3"));
     assert(EQ(p->temp, 0.0f));
 
+    // The 2026-09-14 Windows report: Gemma 4 served under Gemma 3's preset
+    // inherited a repeat penalty of 1.10 that no Gemma generation_config
+    // carries, and every native tool call came out as special-token soup at
+    // the family's own temperature. Google's generation_config.json for the
+    // 12B, E4B, 26B-A4B and 31B instruction models all read temperature 1.0,
+    // top_k 64, top_p 0.95 and no repetition_penalty (transformers' 1.0), so
+    // that is the preset, keyed on the template family as well as the arch
+    // so a forced --chat-template gemma4 lands on it too.
+    p = sampler_preset_for("gemma4", "Gemma 4 12b It", -1);
+    assert(!strcmp(p->name, "gemma4"));
+    assert(EQ(p->temp, 1.0f) && EQ(p->top_p, 0.95f) && p->top_k == 64);
+    assert(EQ(p->min_p, 0.0f) && EQ(p->repeat_penalty, 1.0f));
+    assert(!strcmp(sampler_preset_for("llama", "anything", TMPL_GEMMA4)->name, "gemma4"));
+    assert(!strcmp(sampler_preset_for("llama", "anything", TMPL_GEMMA4_MAINLINE)->name, "gemma4"));
+    // Gemma 3's own generation_config.json (top_k 64, top_p 0.95, do_sample,
+    // no temperature and no repetition_penalty keys) has no penalty either:
+    // the 1.10 this preset carried was runner's calibration wearing the
+    // Gemma team's citation.
+    p = sampler_preset_for("gemma3", "Gemma 3 4b It", -1);
+    assert(EQ(p->repeat_penalty, 1.0f));
+    // Qwen 3.8: its generation_config.json and model card (thinking mode,
+    // which is the runner's default for the family) say temperature 1.0,
+    // top_p 0.95, top_k 20, min_p 0, repetition_penalty 1.0. The arch is
+    // qwen35 and the name carries "qwen3", which used to land on Qwen3's
+    // 0.6.
+    p = sampler_preset_for("qwen35", "Qwen3.8 27B", TMPL_QWEN38);
+    assert(!strcmp(p->name, "qwen38"));
+    assert(EQ(p->temp, 1.0f) && EQ(p->top_p, 0.95f) && p->top_k == 20);
+    assert(EQ(p->repeat_penalty, 1.0f) && EQ(p->min_p, 0.0f));
+    // Qwen3-Coder-30B-A3B-Instruct generation_config.json: temperature 0.7,
+    // top_p 0.8, top_k 20, repetition_penalty 1.05 (it is a qwen3moe file
+    // whose name also carries "qwen3").
+    p = sampler_preset_for("qwen3moe", "Qwen3 Coder 30B A3B Instruct", TMPL_QWEN3_CODER);
+    assert(!strcmp(p->name, "qwen3-coder"));
+    assert(EQ(p->temp, 0.7f) && EQ(p->top_p, 0.8f) && p->top_k == 20);
+    assert(EQ(p->repeat_penalty, 1.05f));
+    // Granite 4.2 (3b and 8b generation_config.json): temperature 1.0,
+    // top_p 0.95, do_sample, nothing else; it used to fall through to the
+    // generic preset and its 1.10 penalty.
+    p = sampler_preset_for("granitehybrid", "Granite 4.2 8b", TMPL_GRANITE42);
+    assert(!strcmp(p->name, "granite42"));
+    assert(EQ(p->temp, 1.0f) && EQ(p->top_p, 0.95f) && p->top_k == 0);
+    assert(EQ(p->repeat_penalty, 1.0f) && EQ(p->min_p, 0.0f));
+    // Qwen3 proper keeps its own card: 0.6 / 0.95 / 20 (generation_config
+    // of Qwen3-4B agrees), and a qwen3 file under the plain thinking ChatML
+    // template stays there.
+    assert(!strcmp(sampler_preset_for("qwen3", "Qwen3 4B", TMPL_CHATML_THINK)->name, "qwen3"));
+
     // three families share `general.architecture: llama`, so the name is the
     // only thing that separates them
     p = sampler_preset_for("llama", "Llama 3.2 3B Instruct", -1);

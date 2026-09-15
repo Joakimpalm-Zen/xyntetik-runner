@@ -22,8 +22,31 @@
     "prompt_cached_tokens": "<number>",
     "prompt_eval_tokens": "<number>",
     "prompt_forked_tokens": "<number>",
+    "sampling": {
+      "min_p": "<number>",
+      "preset": "<redacted>",
+      "repeat_penalty": "<number>",
+      "seed": "<number>",
+      "source": {
+        "min_p": "<redacted>",
+        "repeat_penalty": "<redacted>",
+        "temperature": "<redacted>",
+        "top_k": "<redacted>",
+        "top_p": "<redacted>"
+      },
+      "temperature": "<number>",
+      "top_k": "<number>",
+      "top_p": "<number>"
+    },
     "schema": true,
-    "speculative": false
+    "speculative": false,
+    "tool_protocol": {
+      "constrained": false,
+      "family": "<redacted>",
+      "parse_only": false,
+      "template": "<redacted>",
+      "tools": false
+    }
   },
   "usage": {
     "completion_tokens": "<number>",
