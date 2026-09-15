@@ -6,6 +6,9 @@ under Gemma 3's repeat penalty; Qwen3-Coder untested on 0.5.3; CUDA prefill
 and WDDM pressure on a 12 GB card). This file is the durable progress record
 the plan asked for: what landed, what each gate proved, what is still open
 and why. It is updated in the same pull request as the work it describes.
+Pull requests in order: #102 xml-native-routing, #103 sampling-presets,
+#104 claude-code-allof, #105 wddm-budget, #106 gemma4-prose-call,
+#107 recurrent-turn-mark, #108 surface-parity, #109 stage-timings.
 
 Legend: DONE (merged, gate green), PARTIAL (merged, scope remaining named),
 NOT RUN (gate exists or is planned, not executed on the required hardware or
@@ -96,7 +99,7 @@ which is the honest state, not a claim.
 |---|---|
 | Deterministic protocol/HTTP contract suite | PARTIAL: the XML families on all three surfaces (`tests/test_native_xml_routing.py`), sampling defaults (`tests/test_sampling_defaults.py`), the Codex Responses shape and replayed reasoning (`tests/conformance/test_responses.py`), Claude Code's schemas (`tests/test_json_schema.c`); the scripted-reply hook is the enabler for the remaining families (Gemma 4, Harmony, Muse, Qwen JSON, generic). |
 | Publisher-anchored template/tokenizer/sampling | Template bytes: `scripts/template-conformance.py` (CI, network oracles). Template TOKENS: the same script against a shelf of real vocabularies, now measuring the ids the server feeds; run on the Blackwell 2026-09-15 (`docs/cross-family-remedy-evidence/opencode-1.18.31-qwen38-gsq-iq3s-blackwell-turn-mark.txt` carries the summary); the CI leg stays bytes-only because the vocabularies are not on the runner. Structural half in CI: `tests/test_prompt_marks.c`. Sampling anchors: `tests/test_sampling_defaults.py` (publisher values per family). |
-| Actual artifact suite at shipped defaults | OPEN |
+| Actual artifact suite at shipped defaults | PARTIAL: `scripts/tool-protocol-check.py` (the report's cases, streamed and buffered, hashes of binary/model/preset in the record) and `scripts/turn-mark-check.py` (the agent-turn reuse shape) have run on the three reported artifacts, on Gemma 4 12B QAT, Granite 4.2 3B/8B and granite-4.0-h-micro; `tests/compatibility/coverage.json` is the roster that says which family, template and pinned artifact has PASS/FAIL/NOT RUN/UNSUPPORTED, and `tests/test_coverage_inventory.py` keeps it complete against the admitted architectures and template ids, so a family cannot inherit certification by omission. OPEN: running the two scripts over every pinned artifact in one sweep (`scripts/check-release.py` does not invoke them yet). |
 | OpenCode / Continue real client loops incl. Windows | DONE: all seven rows on the Blackwell (Qwen3-4B), OpenCode on Qwen 3.8 (Linux, twice) and Granite 4.2 (Windows), and 2026-09-15 Continue CLI 1.5.47 + OpenCode 1.18.31 for Windows through `scripts/agent-client-sweep.py` on ZEN-GAMING against Granite 4.2 8B (`agent-client-sweep-granite42-8b-windows-rtx3070-2026-09-15.json`: both PASS, 27 s and 236 s, the sentinel read through the clients' own tools; the loop's later turns kept 7936/7996 and more through the `kv` tier). OPEN: the loops as a CI-adjacent gate (`--require` rows in release certification). |
 | Pressure / cancellation / recovery / cache / performance | OPEN |
 
