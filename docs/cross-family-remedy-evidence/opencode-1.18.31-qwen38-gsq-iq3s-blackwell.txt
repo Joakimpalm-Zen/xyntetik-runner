@@ -1,0 +1,31 @@
+# OpenCode 1.18.31 against Qwen3.8-27B-GSQ-RCO-IQ3_S-recovered.gguf served by the xml-native-routing branch on the Blackwell MIG 1g.24gb slice, 2026-09-14
+# fixture: agent-fixture-qwen38/ (sentinel.txt: The code word is TANGERINE-4471.)
+# prompt: Read the file sentinel.txt in this directory with your tools and reply with the code word it contains, in one sentence.
+# runner sha256: c1ec9b591378586143389468296a797f265c2dccbd3eb9fdf7c2bf6bca64dafb
+# model sha256: 873df48dd3ecf205f73c29716e80fbe766e4202ef4ed394b2c24607a8628458f
+# opencode.json:
+#   {
+#     "$schema": "https://opencode.ai/config.json",
+#     "provider": {
+#       "runner": {
+#         "npm": "@ai-sdk/openai-compatible",
+#         "name": "Xyntetik Runner",
+#         "options": { "baseURL": "http://127.0.0.1:8093/v1" },
+#         "models": { "Qwen3.8-27B-GSQ-RCO-IQ3_S-recovered.gguf": { "name": "qwen38-gsq", "limit": { "context": 32768, "output": 4096 } } }
+#       }
+#     }
+#   }
+# wall: 586 s, rc 0
+== opencode run output
+
+> build · Qwen3.8-27B-GSQ-RCO-IQ3_S-recovered.gguf
+
+→ Read sentinel.txt
+The code word in sentinel.txt is TANGERINE-4471.
+== server log (requests)
+[slot 0] chatcmpl-0: start, 614 prompt (0 cached)
+[slot 0] chatcmpl-0: 614 prompt (0 cached) + 139 gen tok (3.8 tok/s)
+[slot 0] chatcmpl-1: start, 7491 prompt (0 cached)
+[slot 0] chatcmpl-1: 7491 prompt (0 cached) + 68 gen tok (3.7 tok/s)
+[slot 0] chatcmpl-2: start, 7639 prompt (0 cached)
+[slot 0] chatcmpl-2: 7639 prompt (0 cached) + 165 gen tok (3.7 tok/s)
