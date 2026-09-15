@@ -551,6 +551,11 @@ const sampler_preset *sampler_resolve(sampler *s, const char *arch,
                                       const char *name, int tmpl,
                                       const sampler_override *ov) {
     const sampler_preset *p = sampler_preset_for(arch, name, tmpl);
+    // A scripted reply (a test hook, sample.h) never survives a resolve: the
+    // pointer is per request and a caller resolving a sampler it declared
+    // on the stack must not inherit a stale one from the stack's past.
+    s->script = NULL;
+    s->script_n = s->script_at = 0;
     s->temp           = p->temp;
     s->top_p          = p->top_p;
     s->min_p          = p->min_p;

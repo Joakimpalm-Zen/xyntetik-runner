@@ -85,8 +85,8 @@ void sampler_ident(const char *name, const char *path, char *buf, size_t n);
 // Enumerate the preset table; NULL past the end.
 const sampler_preset *sampler_preset_at(int i);
 // Apply preset then overrides to s. Touches only the five sampling knobs —
-// rng state and the penalty window are left alone — and returns the preset
-// used, so callers can report it.
+// rng state and the penalty window are left alone, a scripted reply is
+// cleared — and returns the preset used, so callers can report it.
 const sampler_preset *sampler_resolve(sampler *s, const char *arch,
                                       const char *name, int tmpl,
                                       const sampler_override *ov);

@@ -51,7 +51,7 @@ static void *serve_thread(void *arg) {
     p.n_batch   = 8;
     if (!model_load(&c->m, g_model, &p)) { c->rc = -1; return NULL; }
     if (!tokenizer_init(&c->tok, &c->m.gf)) { c->rc = -2; return NULL; }
-    sampler smp;
+    sampler smp = {0};
     sampler_reset(&smp);
     sampler_override ov;
     memset(&ov, 0, sizeof(ov));

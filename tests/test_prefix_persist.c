@@ -58,7 +58,7 @@ int main(int argc, char **argv) {
     tokenizer tok;
     if (!model_load(&m, g_model, &p)) { fprintf(stderr, "cannot load %s\n", g_model); return 1; }
     if (!tokenizer_init(&tok, &m.gf)) { fprintf(stderr, "tokenizer init failed\n"); return 1; }
-    sampler smp;
+    sampler smp = {0};
     sampler_reset(&smp);
     prefix_cache_configure(64u << 20, 600.0);
 
