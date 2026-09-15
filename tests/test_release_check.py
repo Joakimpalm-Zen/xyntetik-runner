@@ -387,6 +387,36 @@ def test_release_check_requires_readme_and_site_to_link_the_same_hf_repos(
     assert check_release.check(args) is True
 
 
+def test_release_check_parity_sees_dataset_links_too(monkeypatch, tmp_path, capsys):
+    """Evidence repositories live under `datasets/`; a parity check that only
+    read the model spelling let a migrated report drift out of the README or
+    the site unseen (2026-09-15 restructure)."""
+    args = good_args(tmp_path)
+    monkeypatch.setattr(
+        check_release, "binary_version", lambda _: "runner 0.1.3-alpha"
+    )
+    args.readme = write(
+        tmp_path / "README.md",
+        "Public alpha (`0.1.3-alpha`)\n"
+        "./runner --version   # -> runner 0.1.3-alpha\n"
+        "https://huggingface.co/datasets/Joakimpalm-Zen/Only-In-README-report\n"
+        "https://huggingface.co/datasets/Joakimpalm-Zen/Both-report\n",
+    )
+    pages = tmp_path / "pages"
+    pages.mkdir()
+    write(pages / "evidence.html",
+          '<a href="{{hfd}}/Both-report">x</a> <a href="{{hfd}}/Only-On-Site-report">y</a>')
+    args.site_pages = pages
+    assert check_release.check(args) is False
+    out = capsys.readouterr()
+    out = out.out + out.err
+    assert "Only-In-README-report" in out and "Only-On-Site-report" in out
+    write(pages / "evidence.html",
+          '<a href="{{hfd}}/Both-report">x</a> '
+          '<a href="https://huggingface.co/datasets/Joakimpalm-Zen/Only-In-README-report">y</a>')
+    assert check_release.check(args) is True
+
+
 def _pinned(monkeypatch):
     monkeypatch.setattr(
         check_release, "binary_version", lambda _: "runner 0.1.3-alpha"

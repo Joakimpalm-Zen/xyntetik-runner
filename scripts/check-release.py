@@ -237,14 +237,17 @@ def check(args):
     return ok
 
 
-HF_REPO = re.compile(r"https://huggingface\.co/Joakimpalm-Zen/([A-Za-z0-9._-]+)")
+HF_REPO = re.compile(r"https://huggingface\.co/(?:datasets/)?Joakimpalm-Zen/([A-Za-z0-9._-]+)")
 
 
 def hf_repos(text):
-    """Repository names linked from `text`, in either the absolute or the
-    site's `{{hf}}/<name>` spelling."""
+    """Repository names linked from `text`: Model repositories in the absolute
+    or the site's `{{hf}}/<name>` spelling, and Dataset repositories (the
+    evidence reports since 2026-09-15) in the `datasets/` or `{{hfd}}/<name>`
+    spelling. Both kinds count, so a report that moved to Datasets stays
+    under the README/site parity rule."""
     names = set(HF_REPO.findall(text))
-    names |= set(re.findall(r"\{\{hf\}\}/([A-Za-z0-9._-]+)", text))
+    names |= set(re.findall(r"\{\{hfd?\}\}/([A-Za-z0-9._-]+)", text))
     return names
 
 

@@ -242,8 +242,8 @@ bare: yes
   <div class="wrap split">
     <div class="reveal">
       <p class="eyebrow">Published artifacts</p>
-      <h2>Sixteen repositories on Hugging Face, gated the same way.</h2>
-      <p>Nine carry weights, seven are measurement reports over third-party files with no weights republished. A derivative is published only after its stated gate against the named parent, and a near-miss stays published with its numbers in the open rather than being quietly removed.</p>
+      <h2>Eleven models and ten evidence datasets on Hugging Face, gated the same way.</h2>
+      <p>The models carry weights; the datasets are the measurement reports, gate records and training records behind them, with no third-party weights republished. Five <a href="{{hf}}">collections</a> group them: releases, model surgery, pruning and quantization frontiers, compatibility reports, and LoRA training on quantized weights. A derivative is published only after its stated gate against the named parent, and a near-miss stays published with its numbers in the open rather than being quietly removed.</p>
       <div class="btn-row">
         <a class="btn" href="{{hf}}" rel="noopener">Browse on Hugging Face</a>
         <a class="btn" href="/evidence/#artifacts">The artifact ledger</a>
@@ -253,6 +253,7 @@ bare: yes
       <li><div><div class="t"><a href="{{hf}}/Qwen3-30B-A3B-selective-attnQ8_0-expQ4_0-GGUF">Qwen3-30B-A3B, selective precision</a></div><div class="d">Attention Q8_0, experts Q4_0, 17.99 GB. Passes the fidelity bar where the official uniform Q4_K_M fails it.</div></div><span class="pill pass">passes bar</span></li>
       <li><div><div class="t"><a href="{{hf}}/Qwen3-4B-Runner-ToolUse-Q4_K_M">Qwen3-4B Runner ToolUse adapter</a></div><div class="d">The LoRA behind the 0.69 to 1.00 claim, produced twice with the same sha256; the card carries the sidecar and the training command.</div></div><span class="pill pass">reproduced</span></li>
       <li><div><div class="t"><a href="{{hf}}/gemma-4-31B-it-attn48-removed-Q4_0-GGUF">gemma-4-31B-it, attention block 48 removed</a></div><div class="d">First sublayer-removal artifact: one attention sublayer physically dropped, 64 MiB of KV cache freed at 4k context, KLD 0.0223 on 44,413 held-out positions.</div></div><span class="pill pass">KLD 0.0223</span></li>
+      <li><div><div class="t"><a href="{{hf}}/Qwen3.8-27B-GSQ-RCO-IQ3_S-recovered-GGUF">Qwen3.8-27B GSQ-RCO IQ3_S, recovered scales</a></div><div class="d">ISTA-DASLab's IQ3_S file with every block scale retrained against the BF16 parent: same bytes, same layout, inside the bar the source misses. Evidence in its <a href="{{hfd}}/Qwen3.8-27B-GSQ-RCO-scale-recovery-evidence">dataset</a>.</div></div></li>
       <li><div><div class="t"><a href="{{hf}}/gpt-oss-20b-keep30-MXFP4-GGUF">gpt-oss-20b keep-30</a></div><div class="d">Expert-pruned derivative whose originally published number did not reproduce. Kept published with the measured status at the top of the card.</div></div><span class="pill fail">fails current bar</span></li>
     </ul>
   </div>
