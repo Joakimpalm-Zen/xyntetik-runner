@@ -8,6 +8,17 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **Qwen3-Coder's auto turn is parsed unconstrained, like the other XML
+  families; a required or named choice keeps the grammar on all four.** The
+  report's Qwen3-Coder-30B-A3B Q4_K_M at its own temperature 0.7 read 2 of
+  6 report cases under the XML grammar: the raw-string parameter's sentinel
+  was `\n</parameter>` and the model closes with ` </parameter>` as often
+  as not, so a value ran on through the closers and into the next call. The
+  sentinel is the closing tag itself now (the parser still strips the one
+  framing newline), and the auto turn is the model's free turn, parsed. A
+  stray opener on a line of its own that no function follows is dropped as
+  framing (Granite 4.2 8B opens an answer with a bare `<tool_call>` now and
+  then), while the tag inside a sentence stays content.
 - **The latest agent clients make their first request again.** Re-validating
   the README's coding-agent rows at the clients' latest versions on the
   Blackwell found three that could not: Claude Code 2.1.272 declares

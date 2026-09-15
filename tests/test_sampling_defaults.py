@@ -193,9 +193,14 @@ def test_native_tool_turn_reports_its_contract(model):
         assert d["runner_telemetry"]["sampling"]["preset"] == "qwen38"
     with _server(model, "qwen3-coder") as srv:
         mid = _get(srv, "/v1/models")["data"][0]["id"]
-        d = _chat(srv, mid, tools=[{"type": "function", "function": {
+        bash = [{"type": "function", "function": {
             "name": "bash", "parameters": {"type": "object", "properties": {
-                "command": {"type": "string"}}, "required": ["command"]}}}])
+                "command": {"type": "string"}}, "required": ["command"]}}}]
+        # auto: the model's free turn, parsed; required: the grammar
+        d = _chat(srv, mid, tools=bash)
+        tp = d["runner_telemetry"]["tool_protocol"]
+        assert tp["constrained"] is False and tp["parse_only"] is True, tp
+        assert d["runner_telemetry"]["sampling"]["preset"] == "qwen3-coder"
+        d = _chat(srv, mid, tools=bash, tool_choice="required")
         tp = d["runner_telemetry"]["tool_protocol"]
         assert tp["constrained"] is True and tp["parse_only"] is False, tp
-        assert d["runner_telemetry"]["sampling"]["preset"] == "qwen3-coder"

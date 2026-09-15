@@ -444,3 +444,4 @@ def test_scripted_reply_is_refused_without_the_hook(model):
         except urllib.error.HTTPError as e:
             assert e.code == 400, e.code
             assert "RUNNER_TEST_SCRIPTED_REPLY" in e.read().decode()
+

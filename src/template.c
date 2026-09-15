@@ -3217,18 +3217,25 @@ const jv *tool_decl_native(int tmpl, bool strict, bool atem_tool_calling,
     // measured decision (template.h, tool_envelope.parse_only). Both choices
     // reach the client through one parser, so a call is a call on every
     // surface, streamed or buffered.
-    bool xml_free = tmpl == TMPL_QWEN38 || tmpl == TMPL_GRANITE42 ||
-                    tmpl == TMPL_ORNITH;
-    if (strict && tmpl == TMPL_QWEN3_CODER) {
+    bool xml = tmpl == TMPL_QWEN38 || tmpl == TMPL_GRANITE42 ||
+               tmpl == TMPL_ORNITH || tmpl == TMPL_QWEN3_CODER;
+    if (strict && xml) {
         env->proto = TP_QWEN_XML;
         env->tools = tools;
-    } else if (strict && xml_free) {
-        env->proto = TP_QWEN_XML;
-        env->tools = tools;
-        env->parse_only = true;
-        // a parser bound, not a grammar's: the model was never told how many
-        // calls a turn may carry, so parallel_tool_calls is not the limit
-        env->max_calls = TOOL_STREAM_MAX_CALLS;
+        // One contract for the four: an auto turn is the model's own free
+        // turn in its native syntax, parsed (Qwen3-Coder-30B-A3B under the
+        // XML grammar at its own temperature read 2 of 6 on the 2026-09-14
+        // report's cases, the model fighting the raw-string grammar's
+        // closers; unconstrained, the family writes its format as trained).
+        // A required or named choice keeps the grammar, because a prompt
+        // alone cannot enforce a choice the caller insisted on.
+        if (env->kind == TCH_AUTO) {
+            env->parse_only = true;
+            // a parser bound, not a grammar's: the model was never told how
+            // many calls a turn may carry, so parallel_tool_calls is not
+            // the limit
+            env->max_calls = TOOL_STREAM_MAX_CALLS;
+        }
     } else if (strict && qwen) {
         env->proto = TP_QWEN;
         env->tools = tools;
@@ -4522,9 +4529,20 @@ static int ts_qwen(tool_stream *s, const char *bytes, int n) {
                     continue;
                 }
                 if (memcmp(s->head+at,"<function=",kf)) {
-                    int rc=s->sink.content
-                        ? s->sink.content(s->sink.ud,s->head,(int)ol) : 0;
-                    head_drop(s,ol);s->state=TS_QWEN_TEXT;
+                    // An opener on a line of its own that no function follows
+                    // is stray framing (Granite 4.2 8B opens an answer with
+                    // `<tool_call>\n` now and then): dropped with its line
+                    // break. One inside a sentence is a mention: content.
+                    bool own_line = s->head[ol]=='\n' ||
+                                    (s->head[ol]=='\r' && ol+1<s->head_n && s->head[ol+1]=='\n');
+                    int rc=0;
+                    if (own_line) head_drop(s,at);
+                    else {
+                        rc=s->sink.content
+                            ? s->sink.content(s->sink.ud,s->head,(int)ol) : 0;
+                        head_drop(s,ol);
+                    }
+                    s->state=TS_QWEN_TEXT;
                     if (rc) return rc;
                     continue;
                 }

@@ -2089,8 +2089,15 @@ static snode *coder_call_tail(jv *tool, char *err, int errcap) {
                          "length or pattern constraint its raw-text syntax cannot "
                          "enforce",props->keys[i]);
             if (value && raw) {
-                free(value->sentinel);value->sentinel=strdup("\n</parameter>");
-                value->sentinel_len=13;
+                // The closing tag itself, not `\n</parameter>`: Qwen3-Coder
+                // 30B-A3B at its own temperature closes with ` </parameter>`
+                // or `\n\n </parameter>` as often as with the reference's
+                // newline, and a sentinel that requires the newline lets the
+                // value run on through the tags and into the next call until
+                // a bare `\n</parameter>` happens. The parser strips the one
+                // framing newline where the model wrote it (coder_one_call).
+                free(value->sentinel);value->sentinel=strdup("</parameter>");
+                value->sentinel_len=12;
                 if (!value->sentinel) { schema_free(value);value=NULL; }
             } else if (value) {
                 // an enum-valued string is spelled exactly, no JSON
