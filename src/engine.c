@@ -1214,9 +1214,14 @@ static bool constraint_done(const engine *e, bool schema) {
 static bool constraint_spelling_ok(engine *e, int id, bool schema) {
     if (!schema || e->constraint_phase != CP_OUTPUT) return false;
     if (is_stop(e, id)) return false;
-    if (sval_ws_is_content(&e->sv)) return false;
     const char *sp = tok_raw(e->tok, id);
     if (!sp || !*sp) return false;
+    // Inside free content a protocol marker is corruption, with one
+    // exception: a raw frame that carries a handoff marker (Gemma 4's prose
+    // branch hands off at `<|tool_call>call:`), where the model's own
+    // control token IS the syntax that leaves the prose for the call.
+    if (sval_ws_is_content(&e->sv) &&
+        !sval_raw_marker_opens(&e->sv, sp, (int)strlen(sp))) return false;
     // CP_OUTPUT is guaranteed by the first line, so this is exactly what
     // constraint_feed would do with these bytes.
     return constraint_payload_trial(e, true, sp, (int)strlen(sp));

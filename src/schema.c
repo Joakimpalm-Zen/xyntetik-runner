@@ -2822,10 +2822,33 @@ fail:
 // A visible answer: raw bytes up to the turn close. As a UNION alternative it
 // is the catch-all, which is exactly right -- gemma4 has no marker for "this
 // turn is prose", so anything not starting the native block is prose.
-static snode *g4_final(jv *final_schema, char *err, int errcap) {
+// The prose answer, or the caller's schema. Free prose carries a handoff:
+// Gemma 4's own format is call-first, but asked for a word before acting
+// (the 2026-09-14 report's "briefly say what you are about to do, then
+// list the files") the 12B QAT model writes the prose and then its native
+// call, and a prose branch with no way into the call grammar left that
+// call as content with the framing in it, on every preset. Seeing the full
+// opener commits to the call, as Qwen's text handoff does; the engine lets
+// the model spell the opener with its own control token there
+// (constraint_spelling_ok).
+static snode *g4_final(jv *tools, const char *only_tool, jv *final_schema,
+                       int *budget, char *err, int errcap) {
     if (final_schema) return compile_node(final_schema, err, errcap, 0);
     snode *n = atem_raw("<turn|>");
-    if (!n) snprintf(err, errcap, "out of memory compiling gemma4 answer");
+    if (!n) { snprintf(err, errcap, "out of memory compiling gemma4 answer"); return NULL; }
+    snode *call = tools ? g4_call(tools, only_tool, false, budget, err, errcap) : NULL;
+    if (tools && !call) { schema_free(n); return NULL; }
+    if (call) {
+        n->lits = calloc(1, sizeof(*n->lits));
+        n->alts = calloc(1, sizeof(*n->alts));
+        if (!n->lits || !n->alts || !(n->lits[0] = strdup("<|tool_call>call:"))) {
+            schema_free(call); schema_free(n);
+            snprintf(err, errcap, "out of memory compiling gemma4 answer");
+            return NULL;
+        }
+        n->n_lits = 1; n->alts[0] = call; n->n_alts = 1;
+        n->whitespace_significant = true;
+    }
     return n;
 }
 
@@ -2833,7 +2856,7 @@ static snode *g4_body(jv *tools, bool allow_final, const char *only_tool,
                       jv *final_schema, int *budget, char *err, int errcap) {
     snode *call = g4_call(tools, only_tool, true, budget, err, errcap);
     if (!call || !allow_final) return call;
-    snode *fin = g4_final(final_schema, err, errcap);
+    snode *fin = g4_final(tools, only_tool, final_schema, budget, err, errcap);
     snode *u = fin ? sn_new(SN_UNION) : NULL;
     if (u) u->alts = calloc(2, sizeof(*u->alts));
     if (!u || !u->alts) {
@@ -2922,7 +2945,7 @@ snode *schema_compile_gemma4_turn(jv *tools, bool allow_final,
     if (!atem_seq_add(marked, choice)) goto fail;
     choice = NULL;
     if (!allow_final) return marked;
-    snode *fin = g4_final(final_schema, err, errcap);
+    snode *fin = g4_final(tools, only_tool, final_schema, &budget, err, errcap);
     snode *u = fin ? sn_new(SN_UNION) : NULL;
     if (u) u->alts = calloc(2, sizeof(*u->alts));
     if (!u || !u->alts) {
@@ -3886,6 +3909,22 @@ static int feed_byte(sval *v, uint8_t c) {
 // unreachable, because it is optional everywhere it is legal. Inside a string
 // it is NOT optional -- there it is the value -- so this reports that case and
 // the caller leaves such tokens alone.
+bool sval_raw_marker_opens(const sval *v, const char *spelling, int n) {
+    if (v->depth <= 0 || n <= 0) return false;
+    const sframe *f = &v->stack[v->depth - 1];
+    if (!f->node || f->node->kind != SN_RAW || f->phase != P_RAW) return false;
+    if (!f->node->n_lits || !f->node->n_alts) return false;
+    const char *marker = f->node->lits[0];
+    size_t ml = strlen(marker);
+    int at = f->sub;
+    for (int i = 0; i < n; i++) {
+        if ((size_t)at >= ml) return true;   // the marker completed inside the spelling
+        if ((unsigned char)spelling[i] != (unsigned char)marker[at]) return false;
+        at++;
+    }
+    return at > f->sub;
+}
+
 bool sval_ws_is_content(const sval *v) {
     if (v->depth <= 0) return false;
     const sframe *f = &v->stack[v->depth - 1];

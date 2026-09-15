@@ -2676,6 +2676,36 @@ static void test_xml_parse_only_open_block_at_finish(void) {
     tool_envelope_free(&e); jv_free(tools);
 }
 
+// Gemma 4's prose branch hands off to the call at the family's opener, so a
+// turn that writes a word before acting (the report's case C) is a call
+// with content, not content with framing in it; the buffered map and the
+// streamed demultiplexer read it the same way at every split.
+static void test_gemma4_prose_then_call(void) {
+    jv *tools = parse("[{\"type\":\"function\",\"function\":{\"name\":\"bash\",\"parameters\":{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"}},\"required\":[\"command\"]}}}]");
+    char err[192];
+    snode *root = schema_compile_gemma4_turn(tools, true, NULL, NULL, false, false, err, sizeof err);
+    assert(root);
+    const char *doc = "I will list the files.\n\n<|tool_call>call:bash{command:<|\"|>ls<|\"|>}<tool_call|>";
+    assert(accepts(root, doc));
+    tool_envelope e; bool skip = false;
+    assert(tool_envelope_build(tools, NULL, NULL, &e, err, sizeof err) == 1);
+    tool_decl_native(TMPL_GEMMA4_MAINLINE, true, true, tools, &e, &skip);
+    assert(e.proto == TP_GEMMA4);
+    sbuf out = {0}, tc = {0};
+    assert(tool_envelope_map(&e, doc, strlen(doc), &out, &tc) == 1);
+    assert(!strcmp(out.s, "I will list the files.\n\n"));
+    assert(strstr(tc.s, "{\\\"command\\\":\\\"ls\\\"}"));
+    free(out.s); free(tc.s);
+    for (size_t step = 1; step <= strlen(doc); step++) {
+        demux_log log; demux_step(&e, doc, step, &log);
+        assert(log.begins == 1 && log.ends == 1);
+        assert(!strcmp(log.content.s, "I will list the files.\n\n"));
+        assert(!strcmp(log.args.s, "{\"command\":\"ls\"}"));
+        log_free(&log);
+    }
+    tool_envelope_free(&e); schema_free(root); jv_free(tools);
+}
+
 // The native syntax has no insignificant whitespace: a newline between the
 // function name and its `>` or before an enum-valued string parameter was
 // grammatical (the walker took it for JSON whitespace at the node that
@@ -2777,6 +2807,7 @@ int main(void) {
     test_qwen_prose_still_constrains_calls();
     test_coder_native_calls();
     test_coder_parameters_in_any_order();
+    test_gemma4_prose_then_call();
     test_xml_families_share_the_parse_only_contract();
     test_xml_parse_only_prose_and_three_calls_every_split();
     test_xml_parse_only_keeps_prose_around_calls();

@@ -3847,6 +3847,14 @@ static int gemma4_map(const tool_envelope *e, const char *doc, size_t n,
         if (reasoning) sb_put(reasoning, p, (size_t)((close ? close : end) - p));
         p = close ? close + sizeof(THOUGHT_END) - 1 : end;
     }
+    // Prose before the first call is content (a turn asked for a word before
+    // acting writes it, and the grammar's prose branch hands off to the call
+    // at the opener); the calls follow.
+    const char *first = atem_find(p, end, "<|tool_call>");
+    if (first && first > p) {
+        sb_put(content, p, (size_t)(first - p));
+        p = first;
+    }
     int calls = 0;
     while (p < end) {
         const char *at = p;
@@ -3858,7 +3866,7 @@ static int gemma4_map(const tool_envelope *e, const char *doc, size_t n,
         calls++;
         p = at;
     }
-    if (calls) return tc->failed ? -1 : calls;
+    if (calls) return tc->failed || content->failed ? -1 : calls;
     // No call block: the turn is prose, up to the turn close the model does
     // not otherwise emit.
     const char *stop = atem_find(p, end, "<turn|>");
@@ -4717,6 +4725,19 @@ static int ts_gemma4(tool_stream *s, const char *bytes, int n) {
         }
         case TS_G4_TEXT: {
             const char *at = s->head ? strstr(s->head, G4_TURN_END) : NULL;
+            // a call after prose: the family's format is call-first, but a
+            // turn asked for a word before acting writes the prose and then
+            // the opener, and that opener is a call, not content
+            const char *call = s->head ? strstr(s->head, G4_CALL_OPEN) : NULL;
+            if (call && (!at || call < at)) {
+                size_t prefix = (size_t)(call - s->head);
+                int rc = prefix && s->sink.content
+                           ? s->sink.content(s->sink.ud, s->head, (int)prefix) : 0;
+                head_drop(s, prefix);
+                s->state = TS_G4_CALLS;
+                if (rc) return rc;
+                break;
+            }
             size_t emit_n = s->head_n;
             bool done = false;
             if (at) {
@@ -4724,11 +4745,17 @@ static int ts_gemma4(tool_stream *s, const char *bytes, int n) {
                 done = true;
             } else {
                 // hold back the longest tail that could still become the turn
-                // close: emitting it would put framing in the client's content
-                size_t keep = strlen(G4_TURN_END) - 1;
-                if (keep > emit_n) keep = emit_n;
-                for (; keep > 0; keep--)
-                    if (!memcmp(s->head + emit_n - keep, G4_TURN_END, keep)) break;
+                // close or a call opener: emitting it would put framing in
+                // the client's content
+                size_t keep = 0;
+                const char *markers[] = { G4_TURN_END, G4_CALL_OPEN };
+                for (int m = 0; m < 2; m++) {
+                    size_t k = strlen(markers[m]) - 1;
+                    if (k > emit_n) k = emit_n;
+                    for (; k > 0; k--)
+                        if (!memcmp(s->head + emit_n - k, markers[m], k)) break;
+                    if (k > keep) keep = k;
+                }
                 emit_n -= keep;
             }
             int rc = emit_n && s->sink.content

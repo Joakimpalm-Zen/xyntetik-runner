@@ -199,6 +199,12 @@ bool sval_trial(const sval *v, sval *scratch, const char *s, int n);
 // insignificant separator. Callers suppress separator whitespace to stop a
 // constrained model burning its budget on blank runs; see schema.c.
 bool sval_ws_is_content(const sval *v);
+// True when the validator sits in a raw frame that carries a handoff marker
+// and `spelling` (a control token's raw text) begins or continues that
+// marker from the bytes already matched: the one place a protocol token is
+// syntax inside free content rather than corruption of it (Gemma 4's
+// <|tool_call> after prose).
+bool sval_raw_marker_opens(const sval *v, const char *spelling, int n);
 // true while the validator is inside a trailing raw value whose only
 // terminator is the model's own stop token (which decodes to no bytes); the
 // engine accepts a stop token there as the answer's natural end

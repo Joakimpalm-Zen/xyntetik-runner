@@ -1727,8 +1727,15 @@ buffered turn parsed them; every agent client streams); Qwen3-Coder's auto
 turn stayed constrained until 2026-09-15, when the report's own artifact
 (30B-A3B Q4_K_M at its temperature 0.7) read 2 of 6 cases under the grammar,
 the model fighting the raw-string closers, and reads clean unconstrained.
-Prose before, between and after calls is kept as content, each block is its
-own `tool_calls` index, and the reasoning block is split into
+Gemma 4's own format is call-first, but a turn asked for a word before
+acting writes the prose and then its native call, and until 2026-09-15 that
+call was served as content with the framing in it: the prose branch of its
+turn grammar now hands off to the call at `<|tool_call>call:` (the model's
+own control token is admitted there), and the demultiplexer and the buffered
+map read a call after prose. Prose before, between and after calls is kept
+as content on every protocol, buffered turns included (the buffered turn used
+to discard the words before a call on every protocol but Harmony), each
+block is its own `tool_calls` index, and the reasoning block is split into
 `reasoning_content` (Granite 4.2 had no splitter at all, since the tags are
 the template's, not the architecture's). With no grammar bounding the turn
 the parser's own contract applies: a block that is not a valid call against
