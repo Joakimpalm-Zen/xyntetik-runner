@@ -1,0 +1,278 @@
+{
+ "gate": "tool-protocol-check",
+ "label": "ZEN-GAMING RTX 3070 8GB, Windows 11, CUDA, sampling-presets branch (granite42 preset), shipped defaults, max_tokens 400",
+ "started": "2026-09-15T07:09:33+0200",
+ "host": "Zen-Gaming",
+ "platform": "Windows-11-10.0.26100-SP0",
+ "base_url": "http://127.0.0.1:8097",
+ "model": "granite-4.2-8b-Q4_K_M.gguf",
+ "model_file": "C:/Users/zen/models/granite-4.2-8b-Q4_K_M.gguf",
+ "model_sha256": "16a9369d0805f80b7377d25d87f937a90c05dc04ad79173a52001e42c9aab311",
+ "runner": "./runner.exe",
+ "runner_sha256": "554155b75720f9f50e35a869898e49f4e9041108e5a40410bf2bec1ffef28370",
+ "sampling_served": {
+  "preset": "granite42",
+  "temperature": 1.0,
+  "top_p": 0.95,
+  "top_k": 0,
+  "min_p": 0.0,
+  "repeat_penalty": 1.0
+ },
+ "context": 16384,
+ "overrides": {},
+ "max_tokens": 400,
+ "cases": {
+  "A": {
+   "title": "single call",
+   "prompt": "List the files in the current directory.",
+   "tools": [
+    "bash"
+   ],
+   "modes": {
+    "buffered": {
+     "wall_s": 4.795,
+     "finish_reason": "tool_calls",
+     "content": "",
+     "reasoning": "The user wants to list files in the current directory. I can use the bash command \"ls\" to list files. Let's do that.\n",
+     "calls": [
+      {
+       "name": "bash",
+       "arguments": "{\"command\":\"ls\"}",
+       "id": "call_0"
+      }
+     ],
+     "usage": {
+      "prompt_tokens": 274,
+      "prompt_tokens_details": {
+       "cached_tokens": 0
+      },
+      "completion_tokens": 60,
+      "total_tokens": 334
+     },
+     "telemetry": {
+      "prompt_cached_tokens": 0,
+      "prompt_forked_tokens": 0,
+      "prompt_eval_tokens": 274,
+      "prefix_cache_saved_seconds": 0.0,
+      "generation_seconds": 2.873204,
+      "generation_tok_s": 20.883,
+      "major_page_faults": 56730,
+      "json_mode": false,
+      "schema": false,
+      "speculative": false,
+      "sampling": {
+       "preset": "granite42",
+       "temperature": 1.0,
+       "top_p": 0.95,
+       "top_k": 0,
+       "min_p": 0.0,
+       "repeat_penalty": 1.0,
+       "seed": 0,
+       "source": {
+        "temperature": "preset",
+        "top_p": "preset",
+        "top_k": "preset",
+        "min_p": "preset",
+        "repeat_penalty": "preset"
+       }
+      },
+      "tool_protocol": {
+       "template": "granite42",
+       "family": "qwen3_xml",
+       "tools": true,
+       "constrained": false,
+       "parse_only": true
+      }
+     },
+     "result": "PASS",
+     "reasons": []
+    },
+    "stream": {
+     "wall_s": 3.051,
+     "finish_reason": "tool_calls",
+     "content": "",
+     "reasoning": "The user wants to list files in the current directory. I can use the bash tool to run a command like \"ls\". Let's do that.\n",
+     "calls": [
+      {
+       "name": "bash",
+       "arguments": "{\"command\":\"ls\"}",
+       "id": "call_0"
+      }
+     ],
+     "telemetry": null,
+     "result": "PASS",
+     "reasons": []
+    }
+   }
+  },
+  "B": {
+   "title": "prose and parallel calls",
+   "prompt": "Check whether boss.json, boss.toml and boss.yaml exist anywhere in this project. Use the glob tool for each pattern.",
+   "tools": [
+    "glob",
+    "bash"
+   ],
+   "modes": {
+    "buffered": {
+     "wall_s": 5.678,
+     "finish_reason": "tool_calls",
+     "content": "",
+     "reasoning": "I need to use the glob tool to search for each file pattern: boss.json, boss.toml, and boss.yaml. The glob tool finds files matching a pattern. I should call glob for each pattern separately.\n",
+     "calls": [
+      {
+       "name": "glob",
+       "arguments": "{\"pattern\":\"boss.json\"}",
+       "id": "call_0"
+      }
+     ],
+     "usage": {
+      "prompt_tokens": 341,
+      "prompt_tokens_details": {
+       "cached_tokens": 25
+      },
+      "completion_tokens": 81,
+      "total_tokens": 422
+     },
+     "telemetry": {
+      "prompt_cached_tokens": 25,
+      "prompt_forked_tokens": 0,
+      "prompt_eval_tokens": 316,
+      "prefix_cache_saved_seconds": 0.0,
+      "generation_seconds": 3.80107,
+      "generation_tok_s": 21.31,
+      "major_page_faults": 4358,
+      "json_mode": false,
+      "schema": false,
+      "speculative": false,
+      "sampling": {
+       "preset": "granite42",
+       "temperature": 1.0,
+       "top_p": 0.95,
+       "top_k": 0,
+       "min_p": 0.0,
+       "repeat_penalty": 1.0,
+       "seed": 0,
+       "source": {
+        "temperature": "preset",
+        "top_p": "preset",
+        "top_k": "preset",
+        "min_p": "preset",
+        "repeat_penalty": "preset"
+       }
+      },
+      "tool_protocol": {
+       "template": "granite42",
+       "family": "qwen3_xml",
+       "tools": true,
+       "constrained": false,
+       "parse_only": true
+      }
+     },
+     "result": "PASS",
+     "reasons": []
+    },
+    "stream": {
+     "wall_s": 4.294,
+     "finish_reason": "tool_calls",
+     "content": "",
+     "reasoning": "I need to check for three files: boss.json, boss.toml, and boss.yaml. I'll use the glob tool for each pattern. The glob tool finds files matching a pattern. I should call glob for each file pattern separately.\n",
+     "calls": [
+      {
+       "name": "glob",
+       "arguments": "{\"pattern\":\"boss.json\"}",
+       "id": "call_0"
+      }
+     ],
+     "telemetry": null,
+     "result": "PASS",
+     "reasons": []
+    }
+   }
+  },
+  "C": {
+   "title": "prose then call",
+   "prompt": "Briefly say what you are about to do, then list the files in the current directory.",
+   "tools": [
+    "bash"
+   ],
+   "modes": {
+    "buffered": {
+     "wall_s": 3.618,
+     "finish_reason": "tool_calls",
+     "content": "",
+     "reasoning": "I need to respond briefly to what I'm about to do, then list files in the current directory. I can use bash to list files. Let's do it step by step.\n",
+     "calls": [
+      {
+       "name": "bash",
+       "arguments": "{\"command\":\"ls -la\"}",
+       "id": "call_0"
+      }
+     ],
+     "usage": {
+      "prompt_tokens": 285,
+      "prompt_tokens_details": {
+       "cached_tokens": 257
+      },
+      "completion_tokens": 70,
+      "total_tokens": 355
+     },
+     "telemetry": {
+      "prompt_cached_tokens": 257,
+      "prompt_forked_tokens": 257,
+      "prompt_eval_tokens": 28,
+      "prefix_cache_saved_seconds": 1.724498,
+      "generation_seconds": 3.266536,
+      "generation_tok_s": 21.429,
+      "major_page_faults": 0,
+      "json_mode": false,
+      "schema": false,
+      "speculative": false,
+      "sampling": {
+       "preset": "granite42",
+       "temperature": 1.0,
+       "top_p": 0.95,
+       "top_k": 0,
+       "min_p": 0.0,
+       "repeat_penalty": 1.0,
+       "seed": 0,
+       "source": {
+        "temperature": "preset",
+        "top_p": "preset",
+        "top_k": "preset",
+        "min_p": "preset",
+        "repeat_penalty": "preset"
+       }
+      },
+      "tool_protocol": {
+       "template": "granite42",
+       "family": "qwen3_xml",
+       "tools": true,
+       "constrained": false,
+       "parse_only": true
+      }
+     },
+     "result": "FAIL",
+     "reasons": [
+      "no prose beside the call"
+     ]
+    },
+    "stream": {
+     "wall_s": 19.294,
+     "finish_reason": "length",
+     "content": "",
+     "reasoning": "I need to follow the user's request: \"Briefly say what you are about to do, then list the files in the current directory.\"\n\nI should first briefly say what I'm about to do. Then I need to list the files in the current directory. Since I have a bash tool, I can run a command like `ls` or `ls -la` to list files. I'll use `ls -la` for detailed listing, but the user just said \"list the files\", so maybe `ls` is fine. I'll do a simple `ls`.\n\nBut I need to output the brief statement first, then the file list. However, the instruction says: \"Briefly say what you are about to do, then list the files in the current directory.\" So I should respond with a brief statement, then list files. But since I'm an AI, I can't output two parts separately? Actually, I can output text. I'll say something like \"I am about to list the files in the current directory.\" Then run the tool to list files.\n\nBut the tool call will return the file list, and I can then present it. However, the user might expect me to output both the brief statement and the list. I'll output the brief statement first, then use the tool to get the list, then output the list.\n\nBut the tool call is separate. Let me plan:\n\n1. Briefly say what I'm about to do: \"I am about to list the files in the current directory.\"\n2. Use bash command `ls` to list files.\n\nI'll call the bash tool with command `ls`. Then after getting the result, I'll output the list.\n\nBut the user said \"then list the files\", so I should do the listing after the brief statement. Since I'm generating a response, I can include both. However, to be precise,",
+     "calls": [],
+     "telemetry": null,
+     "result": "FAIL",
+     "reasons": [
+      "finish_reason 'length'",
+      "no parsed call",
+      "no prose beside the call"
+     ]
+    }
+   }
+  }
+ },
+ "verdict": "FAIL",
+ "finished": "2026-09-15T07:10:24+0200"
+}

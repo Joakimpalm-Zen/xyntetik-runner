@@ -1,0 +1,213 @@
+{
+ "gate": "tool-protocol-check",
+ "label": "Blackwell MIG 1g.24gb, gemma-4-12b-it-qat-q4_0, branch xml, shipped defaults",
+ "started": "2026-09-15T07:04:52+0200",
+ "host": "bfff3786ea4e",
+ "platform": "Linux-6.12.0-211.16.1.el10_2.x86_64-x86_64-with-glibc2.39",
+ "base_url": "http://127.0.0.1:8098",
+ "model": "gemma-4-12b-it-qat-q4_0.gguf",
+ "model_file": "/home/lab/workspace/models/gemma-4-12b-it-qat-q4_0/gemma-4-12b-it-qat-q4_0.gguf",
+ "model_sha256": "93567e57a8fe10b23569b9d9ec38cd005deedf71e29477c421a4b83f418a538b",
+ "runner": "./runner",
+ "runner_sha256": "c1ec9b591378586143389468296a797f265c2dccbd3eb9fdf7c2bf6bca64dafb",
+ "sampling_served": {
+  "preset": "gemma3",
+  "temperature": 1.0,
+  "top_p": 0.95,
+  "top_k": 64,
+  "min_p": 0.0,
+  "repeat_penalty": 1.1
+ },
+ "context": 32768,
+ "overrides": {},
+ "max_tokens": 400,
+ "cases": {
+  "A": {
+   "title": "single call",
+   "prompt": "List the files in the current directory.",
+   "tools": [
+    "bash"
+   ],
+   "modes": {
+    "buffered": {
+     "wall_s": 14.818,
+     "finish_reason": "tool_calls",
+     "content": "",
+     "reasoning": "",
+     "calls": [
+      {
+       "name": "bash",
+       "arguments": "{\"command\":\"ls -F --color=never --show-ctime * 2>/dev/null || ls -F --color=never * 2>/dev/null || ls -aQ /tmp && echo \\\"Directory content:\\\" && ls -A . (or just use 'ls') ? No, let's keep it simple. Just 'ls'.\\n\\necho \\\"Current directory contents:\\\"\\nls -16R | head # This might be too much info. Let's stick to standard listing first.\\n\\n# Re-evaluating for simplicity as per typical user intent for this prompt type correctly handles all scenarios by using `ls`. Actually I will just run `ls`. \\\\`  \\\\`    \\\\`  \\\\`    \\\\`   \\\\`    \\\\``}<tool_call|><|tool_response>marking out ... Wait, let me just use the simplest command first to see what is there without overcomplicating it with flags unless needed later. Use `find .`. No, simple $LS$. I will go with $LS$ and show all including hidden if possible but usually a normal list is best unless specified.}<tool_call|><|channel>thought\\n<channel|><|tool_call>call:bash{command:\"}",
+       "id": "call_0"
+      }
+     ],
+     "usage": {
+      "prompt_tokens": 65,
+      "prompt_tokens_details": {
+       "cached_tokens": 0
+      },
+      "completion_tokens": 246,
+      "total_tokens": 311
+     },
+     "telemetry": {
+      "prompt_cached_tokens": 0,
+      "prompt_forked_tokens": 0,
+      "prompt_eval_tokens": 65,
+      "prefix_cache_saved_seconds": 0.0,
+      "generation_seconds": 14.433825,
+      "generation_tok_s": 17.043,
+      "major_page_faults": 0,
+      "json_mode": false,
+      "schema": true,
+      "speculative": false
+     },
+     "result": "FAIL",
+     "reasons": [
+      "framing '<tool_call' in arguments of bash"
+     ]
+    },
+    "stream": {
+     "wall_s": 15.604,
+     "finish_reason": "tool_calls",
+     "content": "",
+     "reasoning": "",
+     "calls": [
+      {
+       "name": "bash",
+       "arguments": "{\"command\":\"ls -F \u0915\u0930\u0935\u093e\u093e\u0933 (I'll just use 'ls' for simplicity as per standard output) ls -F --color=never 10758698294134235397-01 --- actually just \\\"ls\\\" is fine. Let me check first what is there with a simple ls. \u5220\u6389\u90a3\u4e2a\u5947\u602a\u7684\u4e1c\u897f\u3002 Just run 'ls'.\\n\\n# Re-trying simply... \u5220\u6389\u4e4b\u524d\u7684\u9519\u8bef\u60f3\u6cd5\u3002 Let me just execute the list command correctly now.\\n\\necho \\\"Listing files...\\\" && ls -F &> /dev/null || echo \\\"Directory might be empty or inaccessible.\\\" (Wait, I should just run it directly.)\\n\\n# Final decision on command to provide clear output for user while keeping it clean within environment constraints if any exist but usually direct LS works best here since no specific extra flags were requested other than listing them. Since I need to follow instructions precisely and give results clearly, let's stick to basic `ls`. Actually standard `lc` isn't a thing so lsf is not relevant either unless i want human readable sizes but that wasn't asked for yet.)\\n```bash\\nls\\n```<|channel>thought\\n<channel|><|tool_call>call:bash{command:\"}",
+       "id": "call_0"
+      }
+     ],
+     "telemetry": null,
+     "result": "FAIL",
+     "reasons": [
+      "framing '<|tool_call' in arguments of bash"
+     ]
+    }
+   }
+  },
+  "B": {
+   "title": "prose and parallel calls",
+   "prompt": "Check whether boss.json, boss.toml and boss.yaml exist anywhere in this project. Use the glob tool for each pattern.",
+   "tools": [
+    "glob",
+    "bash"
+   ],
+   "modes": {
+    "buffered": {
+     "wall_s": 22.599,
+     "finish_reason": "tool_calls",
+     "content": "",
+     "reasoning": "",
+     "calls": [
+      {
+       "name": "glob",
+       "arguments": "{\"pattern\":\"**/*.json_boss?*`}<tool_call|><|tool_response>delete_thought|Wait, I should use the exact filenames requested as patterns.*<|channel>thought><|tool_call>call mangrove-tool {path=\\\"**/*\\\", name=\\\"Searcher\\\"} (This is not my tool format)\\n\\nLet's stick to the specified instructions properly using `glob`.\\n\\nI will search for `boss.*` variations or specific names if needed but since they are specific files I will check them individually with wildcards to cover directories.**(Self-correction again - The prompt asks specifically for these three names.)<channel|><|tool_call>calltome {path=\\\"\\\", name=\\\"User\\\"} (No such tool) \\n\\n*Actually fixing my process:* I need to call `glob` three times with relevant patterns because one file might be deep in a directory structure.**Note:** Since \\\"anywhere\\\" implies nested directories, I should use recursion where possible via double stars (`**`). However, standard glob behavior varies; usually ** means recursive depth of unknown levels common in many implementations like Python's `glomb`. If it doesn't support **, let me try basic glob first then refine.** Actually standard bash/python shells often handle recursive. Let me just check. Regardless, most robust way is checking if pattern matches anything including subdirs. Since some environments don't support ** deeply unless specified: \\nI will use searching paths like **/boss.json etc? No, simple path logic: boss.* wouldn't work as easily as looking at each file type individually but we want EXACT filenames prefixing by 'boss'.**\\n\\nLet me start by trying the exact filename patterns with leading stars or similar structures that represent \\\"anywhere\\\". Most systems treat `**/filename` or simply listing files works depending on shell integration but since this tool is generic:`<|channel>thought\\n<channel|><|tool_call>call:glob{pattern:\"}",
+       "id": "call_0"
+      }
+     ],
+     "usage": {
+      "prompt_tokens": 125,
+      "prompt_tokens_details": {
+       "cached_tokens": 7
+      },
+      "completion_tokens": 386,
+      "total_tokens": 511
+     },
+     "telemetry": {
+      "prompt_cached_tokens": 7,
+      "prompt_forked_tokens": 0,
+      "prompt_eval_tokens": 118,
+      "prefix_cache_saved_seconds": 0.0,
+      "generation_seconds": 21.895862,
+      "generation_tok_s": 17.629,
+      "major_page_faults": 0,
+      "json_mode": false,
+      "schema": true,
+      "speculative": false
+     },
+     "result": "FAIL",
+     "reasons": [
+      "framing '<tool_call' in arguments of glob"
+     ]
+    },
+    "stream": {
+     "wall_s": 16.51,
+     "finish_reason": "stop",
+     "content": "<|tool_response><tool_call|><|tool_call>call\u60f3\u5230\u8fd9\u4e9b\u6587\u4ef6\u3002\u4e0b\u4e00\u6b65\uff0c\u6211\u5c06\u6309\u7167\u8981\u6c42\u7684\u987a\u5e8f\u68c0\u67e5\u53e6\u5916\u4e24\u4e2a\u6587\u4ef6\u3002\n\n<|channel>thought\n<channel|><|tool_call>callhelix_tools{tool_name:\"glob\",argumentsforkey:\"**/*.toml\",parameter_name:\"pattern\"}<tool_call|><|tool_response><|channel>thoughttagging... Wait, I should use the specific filename patterns requested by the user while using recursive globs to search \"anywhere\".\n\nThe previous step was incorrect because it didn't follow my mental thought but tried to call something else or failed correctly based on instructions (it actually produced an error/invalid output because I started typing). Let me restart following the correct sequence with `glob`.\n\nI will check for `boss.json`, then `boss.toml`, then `boss.yaml` recursively (`**`). \n\nWait, looking back at my input box - it seems like a mistake happened in transcription or logic flow there; let me execute them clearly one by one now via calls as intended first time through if they haven't run yet properly (or re-run if needed). Since they were not successfully called in a clean way, let's do them now independently as per standard procedure: 1) boss.json 2) boss.toml 3) boss.yaml in any directory (**/.filename).<channel|><|tool_call>call:glob{pattern:<|\"|>}<tool_call|>",
+     "reasoning": "",
+     "calls": [],
+     "telemetry": null,
+     "result": "FAIL",
+     "reasons": [
+      "finish_reason 'stop'",
+      "no parsed call",
+      "framing '<tool_call' in content",
+      "framing '<|tool_call' in content"
+     ]
+    }
+   }
+  },
+  "C": {
+   "title": "prose then call",
+   "prompt": "Briefly say what you are about to do, then list the files in the current directory.",
+   "tools": [
+    "bash"
+   ],
+   "modes": {
+    "buffered": {
+     "wall_s": 2.738,
+     "finish_reason": "stop",
+     "content": "I am going to list all the files and directories in the current working directory.\n\n<|tool_call>call:bash{command\u307e\u3067\u306b:\"ls -F\"}<tool_call|><|tool_response>thoughtall_the_files_and_directories",
+     "reasoning": "",
+     "calls": [],
+     "usage": {
+      "prompt_tokens": 76,
+      "prompt_tokens_details": {
+       "cached_tokens": 48
+      },
+      "completion_tokens": 41,
+      "total_tokens": 117
+     },
+     "telemetry": {
+      "prompt_cached_tokens": 48,
+      "prompt_forked_tokens": 48,
+      "prompt_eval_tokens": 28,
+      "prefix_cache_saved_seconds": 0.282889,
+      "generation_seconds": 2.387306,
+      "generation_tok_s": 17.174,
+      "major_page_faults": 0,
+      "json_mode": false,
+      "schema": true,
+      "speculative": false
+     },
+     "result": "FAIL",
+     "reasons": [
+      "finish_reason 'stop'",
+      "no parsed call",
+      "framing '<tool_call' in content",
+      "framing '<|tool_call' in content"
+     ]
+    },
+    "stream": {
+     "wall_s": 4.729,
+     "finish_reason": "stop",
+     "content": "I am going to list the files in the current directory using a shell command.\n\n<|tool_call>call:bash{command: \u06a9\u0644list -F --ltr 10 (Wait, simple ls is better) }<tool_call|><|tool_response><|tool_call>call\u60f3\u5230 bash{command:-ls -F}<tool_call|><|tool_response><|channel>thought\n<channel|>I will now list all files and directories in your current working folder.\n\n```bashalsh -F```",
+     "reasoning": "",
+     "calls": [],
+     "telemetry": null,
+     "result": "FAIL",
+     "reasons": [
+      "finish_reason 'stop'",
+      "no parsed call",
+      "framing '<tool_call' in content",
+      "framing '<|tool_call' in content"
+     ]
+    }
+   }
+  }
+ },
+ "verdict": "FAIL",
+ "finished": "2026-09-15T07:06:13+0200",
+ "rejudged": "2026-09-15: re-judged with the framing-in-arguments rule of scripts/tool-protocol-check.py"
+}

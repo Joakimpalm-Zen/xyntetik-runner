@@ -160,6 +160,14 @@ def judge(case, turn):
         ok, why = schema_ok(c, case["tools"])
         if not ok:
             reasons.append(why)
+        # A schema-valid string can still be the model's own protocol soup:
+        # the report's Gemma 4 case A "passed" 1,300 characters of framing
+        # as a shell command. No argument anybody asked for contains a
+        # tool-call marker.
+        for m in FRAMING:
+            if m in c["arguments"]:
+                reasons.append("framing %r in arguments of %s" % (m, c["name"]))
+                break
     for m in FRAMING:
         if m in turn["content"]:
             reasons.append("framing %r in content" % m)
