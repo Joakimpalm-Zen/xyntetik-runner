@@ -33,7 +33,8 @@ PUBLISHED = {
     "gemma4":    {"temperature": 1.0, "top_p": 0.95, "top_k": 64, "min_p": 0.0, "repeat_penalty": 1.0},
     "qwen38":    {"temperature": 1.0, "top_p": 0.95, "top_k": 20, "min_p": 0.0, "repeat_penalty": 1.0},
     "granite42": {"temperature": 1.0, "top_p": 0.95, "top_k": 0,  "min_p": 0.0, "repeat_penalty": 1.0},
-    "qwen3-coder": {"temperature": 0.7, "top_p": 0.8, "top_k": 20, "min_p": 0.0, "repeat_penalty": 1.05},
+    # the config's repetition_penalty 1.05 is not taken: measured 0/8 vs 8/8 (sample.c)
+    "qwen3-coder": {"temperature": 0.7, "top_p": 0.8, "top_k": 20, "min_p": 0.0, "repeat_penalty": 1.0},
 }
 TEMPLATE_FOR = {"gemma4": "gemma4-mainline", "qwen38": "qwen38",
                 "granite42": "granite42", "qwen3-coder": "qwen3-coder"}

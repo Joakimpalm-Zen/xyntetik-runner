@@ -8,6 +8,13 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **The `qwen3-coder` preset carries `repeat_penalty 1.0`, not the
+  config's 1.05.** Measured on the report's 30B-A3B Q4_K_M at the config's
+  temperature 0.7: this sampler's 1.05 read 0 of 8 well-formed calls
+  (`<function=bash}` where the protocol needs `>`), 1.0 read 8 of 8, and
+  temperature 0 (penalty bypassed) is clean on GPU and CPU. Same mechanism
+  as the Gemma 4 finding; why the publisher's stack tolerates the value is
+  an open question recorded with the evidence.
 - **Qwen3-Coder's auto turn is parsed unconstrained, like the other XML
   families; a required or named choice keeps the grammar on all four.** The
   report's Qwen3-Coder-30B-A3B Q4_K_M at its own temperature 0.7 read 2 of

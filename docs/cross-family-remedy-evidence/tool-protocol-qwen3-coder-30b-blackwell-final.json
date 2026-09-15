@@ -1,0 +1,289 @@
+{
+ "gate": "tool-protocol-check",
+ "label": "Blackwell MIG 1g.24gb, Qwen3-Coder-30B-A3B-Instruct Q4_K_M (the report's artifact), parse-only auto turn, qwen3-coder preset with repeat_penalty 1.0, shipped defaults",
+ "started": "2026-09-15T08:34:57+0200",
+ "host": "bfff3786ea4e",
+ "platform": "Linux-6.12.0-211.16.1.el10_2.x86_64-x86_64-with-glibc2.39",
+ "base_url": "http://127.0.0.1:8102",
+ "model": "Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf",
+ "model_file": "/home/lab/workspace/models/Qwen3-Coder-30B-A3B-Instruct-Q4_K_M/Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf",
+ "model_sha256": "79ad15a5ee3caddc3f4ff0db33a14454a5a3eb503d7fa1c1e35feafc579de486",
+ "runner": "./runner",
+ "runner_sha256": "d451b7bd7f790bc0ada35f1efca2cc327f80c640c6b09c525c7e4bb6c70e6661",
+ "sampling_served": {
+  "preset": "qwen3-coder",
+  "temperature": 0.7,
+  "top_p": 0.8,
+  "top_k": 20,
+  "min_p": 0.0,
+  "repeat_penalty": 1.0
+ },
+ "context": 32768,
+ "overrides": {},
+ "tool_choice": "auto (absent)",
+ "max_tokens": 400,
+ "cases": {
+  "A": {
+   "title": "single call",
+   "prompt": "List the files in the current directory.",
+   "tools": [
+    "bash"
+   ],
+   "modes": {
+    "buffered": {
+     "wall_s": 1.606,
+     "finish_reason": "tool_calls",
+     "content": "",
+     "reasoning": "",
+     "calls": [
+      {
+       "name": "bash",
+       "arguments": "{\"command\":\"ls\"}",
+       "id": "call_0"
+      }
+     ],
+     "usage": {
+      "prompt_tokens": 282,
+      "prompt_tokens_details": {
+       "cached_tokens": 0
+      },
+      "completion_tokens": 21,
+      "total_tokens": 303
+     },
+     "telemetry": {
+      "prompt_cached_tokens": 0,
+      "prompt_forked_tokens": 0,
+      "prompt_eval_tokens": 282,
+      "prefix_cache_saved_seconds": 0.0,
+      "generation_seconds": 0.204939,
+      "generation_tok_s": 102.47,
+      "major_page_faults": 0,
+      "json_mode": false,
+      "schema": false,
+      "speculative": false,
+      "sampling": {
+       "preset": "qwen3-coder",
+       "temperature": 0.7,
+       "top_p": 0.8,
+       "top_k": 20,
+       "min_p": 0.0,
+       "repeat_penalty": 1.0,
+       "seed": 0,
+       "source": {
+        "temperature": "preset",
+        "top_p": "preset",
+        "top_k": "preset",
+        "min_p": "preset",
+        "repeat_penalty": "preset"
+       }
+      },
+      "tool_protocol": {
+       "template": "qwen3-coder",
+       "family": "qwen3_xml",
+       "tools": true,
+       "constrained": false,
+       "parse_only": true
+      }
+     },
+     "result": "PASS",
+     "reasons": []
+    },
+    "stream": {
+     "wall_s": 0.214,
+     "finish_reason": "tool_calls",
+     "content": "",
+     "reasoning": "",
+     "calls": [
+      {
+       "name": "bash",
+       "arguments": "{\"command\":\"ls\"}",
+       "id": "call_0"
+      }
+     ],
+     "telemetry": null,
+     "result": "PASS",
+     "reasons": []
+    }
+   }
+  },
+  "B": {
+   "title": "prose and parallel calls",
+   "prompt": "Check whether boss.json, boss.toml and boss.yaml exist anywhere in this project. Use the glob tool for each pattern.",
+   "tools": [
+    "glob",
+    "bash"
+   ],
+   "modes": {
+    "buffered": {
+     "wall_s": 2.291,
+     "finish_reason": "tool_calls",
+     "content": "",
+     "reasoning": "",
+     "calls": [
+      {
+       "name": "glob",
+       "arguments": "{\"pattern\":\"boss.json\"}",
+       "id": "call_0"
+      },
+      {
+       "name": "glob",
+       "arguments": "{\"pattern\":\"boss.toml\"}",
+       "id": "call_1"
+      },
+      {
+       "name": "glob",
+       "arguments": "{\"pattern\":\"boss.yaml\"}",
+       "id": "call_2"
+      }
+     ],
+     "usage": {
+      "prompt_tokens": 359,
+      "prompt_tokens_details": {
+       "cached_tokens": 42
+      },
+      "completion_tokens": 69,
+      "total_tokens": 428
+     },
+     "telemetry": {
+      "prompt_cached_tokens": 42,
+      "prompt_forked_tokens": 0,
+      "prompt_eval_tokens": 317,
+      "prefix_cache_saved_seconds": 0.0,
+      "generation_seconds": 0.673034,
+      "generation_tok_s": 102.521,
+      "major_page_faults": 0,
+      "json_mode": false,
+      "schema": false,
+      "speculative": false,
+      "sampling": {
+       "preset": "qwen3-coder",
+       "temperature": 0.7,
+       "top_p": 0.8,
+       "top_k": 20,
+       "min_p": 0.0,
+       "repeat_penalty": 1.0,
+       "seed": 0,
+       "source": {
+        "temperature": "preset",
+        "top_p": "preset",
+        "top_k": "preset",
+        "min_p": "preset",
+        "repeat_penalty": "preset"
+       }
+      },
+      "tool_protocol": {
+       "template": "qwen3-coder",
+       "family": "qwen3_xml",
+       "tools": true,
+       "constrained": false,
+       "parse_only": true
+      }
+     },
+     "result": "PASS",
+     "reasons": []
+    },
+    "stream": {
+     "wall_s": 1.08,
+     "finish_reason": "tool_calls",
+     "content": "The user wants to check if `boss.json`, `boss.toml`, and `boss.yaml` exist in the project. I will use the `glob` tool to search for each of these files.\n\n1. First, I will search for `boss.json`.\n2. Then, I will search for `boss.toml`.\n3. Finally, I will search for `boss.yaml`.\n\nI will execute these searches one by one.\n",
+     "reasoning": "",
+     "calls": [
+      {
+       "name": "glob",
+       "arguments": "{\"pattern\":\"boss.json\"}",
+       "id": "call_0"
+      }
+     ],
+     "telemetry": null,
+     "result": "PASS",
+     "reasons": []
+    }
+   }
+  },
+  "C": {
+   "title": "prose then call",
+   "prompt": "Briefly say what you are about to do, then list the files in the current directory.",
+   "tools": [
+    "bash"
+   ],
+   "modes": {
+    "buffered": {
+     "wall_s": 1.189,
+     "finish_reason": "tool_calls",
+     "content": "I will first provide a brief overview of what I'm about to do, and then list the files in the current directory.\n\nTo accomplish this, I will use the `bash` tool to execute a shell command that lists the files in the current directory. The command I will use is `ls -la`, which will show all files, including hidden ones, with detailed information.\n\nLet's proceed with listing the files.\n",
+     "reasoning": "",
+     "calls": [
+      {
+       "name": "bash",
+       "arguments": "{\"command\":\"ls -la\"}",
+       "id": "call_0"
+      }
+     ],
+     "usage": {
+      "prompt_tokens": 293,
+      "prompt_tokens_details": {
+       "cached_tokens": 269
+      },
+      "completion_tokens": 107,
+      "total_tokens": 400
+     },
+     "telemetry": {
+      "prompt_cached_tokens": 269,
+      "prompt_forked_tokens": 269,
+      "prompt_eval_tokens": 24,
+      "prefix_cache_saved_seconds": 1.341874,
+      "generation_seconds": 1.037295,
+      "generation_tok_s": 103.153,
+      "major_page_faults": 0,
+      "json_mode": false,
+      "schema": false,
+      "speculative": false,
+      "sampling": {
+       "preset": "qwen3-coder",
+       "temperature": 0.7,
+       "top_p": 0.8,
+       "top_k": 20,
+       "min_p": 0.0,
+       "repeat_penalty": 1.0,
+       "seed": 0,
+       "source": {
+        "temperature": "preset",
+        "top_p": "preset",
+        "top_k": "preset",
+        "min_p": "preset",
+        "repeat_penalty": "preset"
+       }
+      },
+      "tool_protocol": {
+       "template": "qwen3-coder",
+       "family": "qwen3_xml",
+       "tools": true,
+       "constrained": false,
+       "parse_only": true
+      }
+     },
+     "result": "PASS",
+     "reasons": []
+    },
+    "stream": {
+     "wall_s": 0.475,
+     "finish_reason": "tool_calls",
+     "content": "I will first provide a brief description of what I am about to do, and then list the files in the current directory.\n\n",
+     "reasoning": "",
+     "calls": [
+      {
+       "name": "bash",
+       "arguments": "{\"command\":\"ls -la\"}",
+       "id": "call_0"
+      }
+     ],
+     "telemetry": null,
+     "result": "PASS",
+     "reasons": []
+    }
+   }
+  }
+ },
+ "verdict": "PASS",
+ "finished": "2026-09-15T08:35:12+0200"
+}
