@@ -27,8 +27,7 @@ curl -LO https://github.com/Joakimpalm-Zen/xyntetik-runner/releases/latest/downl
 curl -LO https://github.com/Joakimpalm-Zen/xyntetik-runner/releases/latest/download/SHA256SUMS
 shasum -a 256 --check --ignore-missing SHA256SUMS
 chmod +x runner-macos-arm64 && mv runner-macos-arm64 runner
-curl -L -o model.gguf https://huggingface.co/ibm-granite/granite-4.1-3b-GGUF/resolve/main/granite-4.1-3b-Q8_0.gguf
-./runner -m model.gguf --serve
+./runner -hf ibm-granite/granite-4.1-3b-GGUF:Q8_0 --serve
 ```
 
 ```sh
@@ -240,9 +239,13 @@ curl -L -o model.gguf \
   https://huggingface.co/Joakimpalm-Zen/gemma-4-E2B-it-Q4_0-GGUF/resolve/main/gemma-4-E2B-it-Q4_K_M-Q4_0-mix.gguf
 ```
 
-Run a GGUF:
+Run a GGUF. `-hf owner/repo[:TAG]` fetches it from the Hugging Face Hub
+instead of `-m` (the tag picks the quant when the repository has several;
+the file is cached under `~/.cache/xyntetik-runner/hf` and verified against
+the Hub's SHA-256 record before it loads; `HF_TOKEN` for gated repos):
 
 ```sh
+./runner -hf ibm-granite/granite-4.1-3b-GGUF:Q8_0 -i
 ./runner -m model.gguf -i
 ./runner -m model.gguf -p "Explain prefix caching" --temp 0
 ./runner -m model.gguf --serve --parallel 2
