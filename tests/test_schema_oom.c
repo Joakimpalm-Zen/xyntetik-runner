@@ -222,6 +222,17 @@ static snode *n_gemma4_primed(jv *t, jv *f, char *e, int c) {
 static snode *n_gemma4_parallel(jv *t, jv *f, char *e, int c) {
     (void)f; return schema_compile_gemma4_parallel(t, NULL, e, c);
 }
+// Qwen: the reasoning turn (thought or call, then the un-thought turn as
+// its continuation), the un-thought turn, and the parallel form.
+static snode *n_qwen(jv *t, jv *f, char *e, int c) {
+    return schema_compile_qwen_turn(t, true, NULL, f, true, false, e, c);
+}
+static snode *n_qwen_no_think(jv *t, jv *f, char *e, int c) {
+    return schema_compile_qwen_turn(t, true, NULL, f, false, false, e, c);
+}
+static snode *n_qwen_parallel(jv *t, jv *f, char *e, int c) {
+    (void)f; return schema_compile_qwen_parallel(t, NULL, e, c);
+}
 
 static const struct { const char *name; native_fn fn; } NATIVE[] = {
     { "atem_tools",       n_atem_tools },
@@ -234,6 +245,9 @@ static const struct { const char *name; native_fn fn; } NATIVE[] = {
     { "gemma4",           n_gemma4 },
     { "gemma4_primed",    n_gemma4_primed },
     { "gemma4_parallel",  n_gemma4_parallel },
+    { "qwen",             n_qwen },
+    { "qwen_no_think",    n_qwen_no_think },
+    { "qwen_parallel",    n_qwen_parallel },
 };
 
 static void test_native_compilers_survive_allocation_failure(void) {

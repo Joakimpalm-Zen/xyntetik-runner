@@ -2022,7 +2022,9 @@ snode *schema_compile_qwen_turn(jv *tools, bool allow_final,
     if (!thought || !after ||
         !atem_seq_add(thought, atem_raw("</think>\n\n")) ||
         !atem_seq_add(thought, after)) {
-        if (thought && thought->n_props < 2) schema_free(after);
+        // `after` is owned by `thought` only once both adds succeeded; an
+        // atem_seq failure (thought NULL) used to skip the free and leak it
+        if (!thought || thought->n_props < 2) schema_free(after);
         after = NULL;
         goto fail;
     }

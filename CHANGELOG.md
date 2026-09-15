@@ -8,6 +8,14 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **The schema OOM gate walks the Qwen turn compilers.** `tests/test_schema_oom.c`
+  fails every allocation of `schema_compile_qwen_turn` (thinking on and off)
+  and `schema_compile_qwen_parallel` in turn, as it already did for the atem,
+  Harmony and Gemma 4 compilers, and requires the compile to come back with a
+  reason and no leaked block. The walk found one leak: a reasoning turn whose
+  thought sequence failed to allocate dropped the already compiled un-thought
+  continuation instead of freeing it (clang's static analyzer, 2026-09-15
+  review). Fixed; an out-of-memory path only, no served behaviour changes.
 - **Recurrent slots resume the next agent turn at the prompt boundary.** A
   recurrent or hybrid model's fold cannot be sliced to an arbitrary
   position, so a slot whose history diverged from the next prompt anywhere
