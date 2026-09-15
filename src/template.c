@@ -3298,6 +3298,24 @@ const jv *tool_decl_native(int tmpl, bool strict, bool atem_tool_calling,
                ? tools : NULL;
 }
 
+const char *tool_protocol_name(int tmpl, bool *native) {
+    tool_envelope env = {0};
+    bool skip_generic = false;
+    // strict + atem_tool_calling: each family's NATIVE default
+    tool_decl_native(tmpl, true, true, NULL, &env, &skip_generic);
+    *native = true;
+    switch (env.proto) {
+        case TP_ATEM:     return "atem";
+        case TP_HARMONY:  return "harmony";
+        case TP_GEMMA4:   return "gemma4";
+        case TP_QWEN:     return "qwen_json";
+        case TP_QWEN_XML: return "qwen3_xml";
+        default: break;
+    }
+    *native = false;
+    return "generic";
+}
+
 // Map ONE envelope entry. Shared by the single-call document and each element
 // of the parallel form so the two cannot drift in how they render a call.
 // `index` numbers the call ids; returns 1 when a call was appended, 0 for the

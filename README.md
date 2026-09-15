@@ -898,10 +898,33 @@ Use chat mode or an API chat surface to judge an instruction-tuned model.
 Raw `-p` completion deliberately bypasses chat framing and is primarily useful
 for benchmarks and deterministic comparison gates.
 
-Sampling defaults come from a per-family preset selected from model metadata
-and filename. The chosen preset is logged at load, `--caps` publishes the full
-preset table, and explicit sampling flags always win. At `--temp 0`, runner
-returns the model argmax without applying repeat penalty.
+Sampling defaults come from a per-family preset selected from the detected
+chat template, model metadata and filename. The chosen preset is logged at
+load, `--caps` publishes the full preset table with each preset's source,
+and explicit sampling flags always win. At `--temp 0`, runner returns the
+model argmax without applying repeat penalty. The presets are the
+publishers' pinned `generation_config.json` values where a publisher ships
+them (Gemma 3 and Gemma 4: temperature 1.0, top_k 64, top_p 0.95, no
+repetition penalty; Qwen 3.8: 1.0 / 0.95 / 20; Qwen3-Coder: 0.7 / 0.8 / 20
+with 1.05; Granite 4.2: 1.0 / 0.95; the audit is in
+`docs/cross-family-remedy-2026-09-14.md`). Where a preset carries a value
+the publisher never stated, its source says so: the `repeat_penalty 1.10`
+of the llama3, mistral, smollm2, lucie and teuken presets is runner's own
+calibration, not the vendor's. Gemma 4 used to inherit Gemma 3's preset,
+which until 2026-09-14 carried that same 1.10 under the Gemma team's
+citation; at the family's temperature 1.0 the penalty turned every native
+tool call into special-token soup (the 2026-09-14 Windows report, 12B QAT
+Q4_0: 0 of 4 tool cases with it, 4 of 4 without). A request can read back
+what it was served with: `runner_telemetry.sampling` carries the preset,
+the five effective values, the seed and each value's source (`preset`,
+`cli` or `request`), and `runner_telemetry.tool_protocol` the template, the
+tool-protocol family, whether tools were declared, whether a grammar
+constrained the turn and whether a native protocol was parsed without one.
+`GET /v1/capabilities` reports the resident model's `template` and
+`tool_protocol` beside its `sampling` block. Gate:
+`tests/test_sampling_defaults.py` (positive-temperature family defaults
+with a fixed seed, explicit penalty 1.0 and 1.1, the greedy control,
+request isolation, CLI precedence).
 
 Interactive chat keeps its KV state across turns and auto-detects the template
 from metadata and vocabulary. Thinking channels are displayed separately.
@@ -1316,7 +1339,9 @@ the prompt lookup's share as `lookup_drafted`/`lookup_accepted`, so a
 per-source acceptance rate is one division.
 Ordinary streamed chat and legacy completions do NOT carry `runner_telemetry`:
 a stream's only extra terminal chunk is the opt-in `stream_options.include_usage`
-one. `GET /v1/capabilities` says so rather than claiming the capability flatly,
+one, and that chunk carries `runner_telemetry.sampling` and
+`runner_telemetry.tool_protocol` (what the stream was served with) beside
+`usage`. `GET /v1/capabilities` says so rather than claiming the capability flatly,
 reporting `features.request_telemetry` as `{"buffered": true, "streamed":
 false}`. Set request field `"cache_prompt": false` to bypass prefix reuse. Streaming clients
 whose writes fail cancel generation. An orderly client socket close on any

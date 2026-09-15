@@ -390,41 +390,77 @@ static const sampler_preset PRESETS[] = {
 
     // Meta's Llama-3.x-Instruct generation_config.json ships temperature 0.6
     // and top_p 0.9 and no top_k, so top-k filtering is off here.
-    { "llama3", "Llama-3.x-Instruct generation_config.json (Meta)",
+    { "llama3", "Llama-3.x-Instruct generation_config.json (Meta); repeat_penalty 1.10 is runner's calibration",
       0.60f, 0.90f, 0.00f, 1.10f, 0 },
 
     // Mistral publish no sampling params in the v0.3 generation_config; these
     // are the documented Mistral API defaults.
-    { "mistral", "Mistral AI API defaults (no params in v0.3 generation_config)",
+    { "mistral", "Mistral AI API defaults (no params in v0.3 generation_config); repeat_penalty 1.10 is runner's calibration",
       0.70f, 1.00f, 0.00f, 1.10f, 0 },
 
-    // Gemma team's stated optimum for Gemma 3 inference (min_p 0.0, with 0.01
-    // called out as optional — the stated optimum is used).
-    { "gemma3", "Gemma 3 inference settings published by the Gemma team",
-      1.00f, 0.95f, 0.00f, 1.10f, 64 },
+    // google/gemma-3-4b-it generation_config.json: top_k 64, top_p 0.95,
+    // do_sample, and NO temperature or repetition_penalty key (transformers'
+    // defaults, 1.0 and 1.0); the Gemma team's stated optimum adds min_p 0.0
+    // with 0.01 optional. This preset carried repeat_penalty 1.10 until
+    // 2026-09-14: runner's own calibration wearing the vendor's citation.
+    { "gemma3", "Gemma 3 generation_config.json (Google): temperature 1.0, "
+                "top_k 64, top_p 0.95, no repetition penalty",
+      1.00f, 0.95f, 0.00f, 1.00f, 64 },
+
+    // google/gemma-4-{12B,E4B,26B-A4B,31B}-it generation_config.json, all
+    // four identical: temperature 1.0, top_k 64, top_p 0.95, do_sample, no
+    // repetition_penalty. Gemma 4 used to inherit Gemma 3's preset, and with
+    // it a 1.10 penalty no Gemma config carries; at the family's own
+    // temperature 1.0 that penalty turned every native tool call into
+    // special-token soup (2026-09-14 Windows report, 12B QAT Q4_0: 0/4 with
+    // the penalty, 4/4 without, nothing else changed).
+    { "gemma4", "Gemma 4 generation_config.json (Google): temperature 1.0, "
+                "top_k 64, top_p 0.95, no repetition penalty",
+      1.00f, 0.95f, 0.00f, 1.00f, 64 },
+
+    // Qwen/Qwen3.8-27B generation_config.json and model card, thinking mode
+    // (the runner's default for the family): temperature 1.0, top_p 0.95,
+    // top_k 20, min_p 0.0, repetition_penalty 1.0. (Instruct mode is 0.7 /
+    // 0.8 / 20 with presence_penalty 1.5, which this sampler has no knob
+    // for.) A qwen35 file whose name carries "qwen3" used to land on Qwen3's
+    // 0.6.
+    { "qwen38", "Qwen3.8 generation_config.json and model card (thinking mode)",
+      1.00f, 0.95f, 0.00f, 1.00f, 20 },
+
+    // Qwen/Qwen3-Coder-30B-A3B-Instruct generation_config.json: temperature
+    // 0.7, top_p 0.8, top_k 20, repetition_penalty 1.05.
+    { "qwen3-coder", "Qwen3-Coder generation_config.json",
+      0.70f, 0.80f, 0.00f, 1.05f, 20 },
+
+    // ibm-granite/granite-4.2-{3b,8b} generation_config.json: temperature
+    // 1.0, top_p 0.95, do_sample, nothing else (no top_k, no penalty); the
+    // model card says the same "across all tasks and serving backends". It
+    // used to fall through to the generic preset and its 1.10 penalty.
+    { "granite42", "Granite 4.2 generation_config.json (IBM)",
+      1.00f, 0.95f, 0.00f, 1.00f, 0 },
 
     // Phi-3.5-mini-instruct model card sample inference code, which runs
     // temperature 0.0 / do_sample False. Greedy by default is unusual but it
     // is what Microsoft publish; a caller wanting variety overrides --temp,
     // and the calibrated penalty above is waiting for them when they do.
-    { "phi3", "Phi-3.5-mini-instruct model card sample inference args",
+    { "phi3", "Phi-3.5-mini-instruct model card sample inference args; repeat_penalty 1.03 is runner's calibration",
       0.00f, 1.00f, 0.00f, 1.03f, 0 },
 
     // SmolLM2-1.7B-Instruct model card: "We suggest to use temperature=0.2,
     // top_p=0.9".
-    { "smollm2", "SmolLM2-Instruct model card suggestion",
+    { "smollm2", "SmolLM2-Instruct model card suggestion; repeat_penalty 1.10 is runner's calibration",
       0.20f, 0.90f, 0.00f, 1.10f, 0 },
 
     // Mistral's Nemo card is explicit that this family departs from other
     // Mistral models: "Unlike previous Mistral models, Mistral Nemo requires
     // smaller temperatures. We recommend to use a temperature of 0.3." (their
     // sample code runs 0.35). Everything else inherits the mistral preset.
-    { "mistral-nemo", "Mistral-Nemo-Instruct-2407 model card (temperature 0.3)",
+    { "mistral-nemo", "Mistral-Nemo-Instruct-2407 model card (temperature 0.3); repeat_penalty 1.10 is runner's calibration",
       0.30f, 1.00f, 0.00f, 1.10f, 0 },
 
     // OpenLLM-France Lucie-7B-Instruct generation_config.json:
     // temperature 0.6, top_p 0.9 (do_sample true; nothing else stated).
-    { "lucie", "Lucie-7B-Instruct generation_config.json (OpenLLM-France)",
+    { "lucie", "Lucie-7B-Instruct generation_config.json (OpenLLM-France); repeat_penalty 1.10 is runner's calibration",
       0.60f, 0.90f, 0.00f, 1.10f, 0 },
 
     // BSC salamandra-7b-instruct generation_config.json: temperature 0.6,
@@ -436,7 +472,7 @@ static const sampler_preset PRESETS[] = {
     // temperature 0.7, top_p 0.95. An example rather than a stated best
     // practice — the weakest citation grade here, but it is what the vendor
     // publishes.
-    { "teuken", "Teuken-7B-instruct model card usage example (OpenGPT-X)",
+    { "teuken", "Teuken-7B-instruct model card usage example (OpenGPT-X); repeat_penalty 1.10 is runner's calibration",
       0.70f, 0.95f, 0.00f, 1.10f, 0 },
 
     // Gridcore Syntetik (the preset name is a published-artifact contract
@@ -505,8 +541,15 @@ const sampler_preset *sampler_preset_for(const char *arch, const char *name,
     if (!strcmp(arch, "qwen3"))  return by_name("qwen3");
     if (!strcmp(arch, "qwen2"))  return by_name("qwen2.5");
     if (!strcmp(arch, "phi3"))   return by_name("phi3");
-    if (!strcmp(arch, "gemma3") || !strcmp(arch, "gemma4"))
-        return by_name("gemma3");
+    // Families whose preset is the template's: the checkpoint's own
+    // template names the family more reliably than its arch (qwen35 serves
+    // both Ornith and Qwen 3.8, qwen3moe both Qwen3 and Qwen3-Coder) and
+    // than its name.
+    if (is_gemma4(tmpl) || !strcmp(arch, "gemma4")) return by_name("gemma4");
+    if (tmpl == TMPL_QWEN38)      return by_name("qwen38");
+    if (tmpl == TMPL_QWEN3_CODER) return by_name("qwen3-coder");
+    if (tmpl == TMPL_GRANITE42)   return by_name("granite42");
+    if (!strcmp(arch, "gemma3")) return by_name("gemma3");
 
     // The DETECTED TEMPLATE, where there is one, outranks every name test
     // below. Both signals answer "which family is this", but the template is

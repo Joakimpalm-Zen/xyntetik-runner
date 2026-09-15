@@ -49,5 +49,10 @@
     "top_p": "<number>"
   },
   "slots": "<number>",
-  "swap": false
+  "swap": false,
+  "template": "<redacted>",
+  "tool_protocol": {
+    "family": "<redacted>",
+    "native": false
+  }
 }

@@ -1,0 +1,280 @@
+{
+ "gate": "tool-protocol-check",
+ "label": "ZEN-GAMING RTX 3070 8GB, Windows 11, CUDA, sampling-presets branch (granite42 preset), shipped defaults, max_tokens 1500",
+ "started": "2026-09-15T07:10:24+0200",
+ "host": "Zen-Gaming",
+ "platform": "Windows-11-10.0.26100-SP0",
+ "base_url": "http://127.0.0.1:8097",
+ "model": "granite-4.2-8b-Q4_K_M.gguf",
+ "model_file": "C:/Users/zen/models/granite-4.2-8b-Q4_K_M.gguf",
+ "model_sha256": "16a9369d0805f80b7377d25d87f937a90c05dc04ad79173a52001e42c9aab311",
+ "runner": "./runner.exe",
+ "runner_sha256": "554155b75720f9f50e35a869898e49f4e9041108e5a40410bf2bec1ffef28370",
+ "sampling_served": {
+  "preset": "granite42",
+  "temperature": 1.0,
+  "top_p": 0.95,
+  "top_k": 0,
+  "min_p": 0.0,
+  "repeat_penalty": 1.0
+ },
+ "context": 16384,
+ "overrides": {},
+ "max_tokens": 1500,
+ "cases": {
+  "A": {
+   "title": "single call",
+   "prompt": "List the files in the current directory.",
+   "tools": [
+    "bash"
+   ],
+   "modes": {
+    "buffered": {
+     "wall_s": 3.001,
+     "finish_reason": "tool_calls",
+     "content": "",
+     "reasoning": "I need to list the files in the current directory. I can use the bash command with `ls` to do this.\n",
+     "calls": [
+      {
+       "name": "bash",
+       "arguments": "{\"command\":\"ls\"}",
+       "id": "call_0"
+      }
+     ],
+     "usage": {
+      "prompt_tokens": 274,
+      "prompt_tokens_details": {
+       "cached_tokens": 273
+      },
+      "completion_tokens": 58,
+      "total_tokens": 332
+     },
+     "telemetry": {
+      "prompt_cached_tokens": 273,
+      "prompt_forked_tokens": 273,
+      "prompt_eval_tokens": 1,
+      "prefix_cache_saved_seconds": 2.093076,
+      "generation_seconds": 2.704466,
+      "generation_tok_s": 21.446,
+      "major_page_faults": 0,
+      "json_mode": false,
+      "schema": false,
+      "speculative": false,
+      "sampling": {
+       "preset": "granite42",
+       "temperature": 1.0,
+       "top_p": 0.95,
+       "top_k": 0,
+       "min_p": 0.0,
+       "repeat_penalty": 1.0,
+       "seed": 0,
+       "source": {
+        "temperature": "preset",
+        "top_p": "preset",
+        "top_k": "preset",
+        "min_p": "preset",
+        "repeat_penalty": "preset"
+       }
+      },
+      "tool_protocol": {
+       "template": "granite42",
+       "family": "qwen3_xml",
+       "tools": true,
+       "constrained": false,
+       "parse_only": true
+      }
+     },
+     "result": "PASS",
+     "reasons": []
+    },
+    "stream": {
+     "wall_s": 2.801,
+     "finish_reason": "tool_calls",
+     "content": "",
+     "reasoning": "The user wants to list files in the current directory. I can use the bash tool to run `ls` command.\n",
+     "calls": [
+      {
+       "name": "bash",
+       "arguments": "{\"command\":\"ls\"}",
+       "id": "call_0"
+      }
+     ],
+     "telemetry": null,
+     "result": "PASS",
+     "reasons": []
+    }
+   }
+  },
+  "B": {
+   "title": "prose and parallel calls",
+   "prompt": "Check whether boss.json, boss.toml and boss.yaml exist anywhere in this project. Use the glob tool for each pattern.",
+   "tools": [
+    "glob",
+    "bash"
+   ],
+   "modes": {
+    "buffered": {
+     "wall_s": 5.144,
+     "finish_reason": "error",
+     "content": "",
+     "reasoning": "I need to check for three files: boss.json, boss.toml, and boss.yaml anywhere in the project. I'll use the glob tool for each pattern. The glob tool finds files matching a pattern. I should run glob for each file name pattern. Let's start with boss.json.\n",
+     "calls": [],
+     "usage": {
+      "prompt_tokens": 341,
+      "prompt_tokens_details": {
+       "cached_tokens": 25
+      },
+      "completion_tokens": 70,
+      "total_tokens": 411
+     },
+     "telemetry": {
+      "prompt_cached_tokens": 25,
+      "prompt_forked_tokens": 0,
+      "prompt_eval_tokens": 316,
+      "prefix_cache_saved_seconds": 0.0,
+      "generation_seconds": 3.277617,
+      "generation_tok_s": 21.357,
+      "major_page_faults": 7,
+      "json_mode": false,
+      "schema": false,
+      "speculative": false,
+      "finish_detail": "envelope_unmapped",
+      "sampling": {
+       "preset": "granite42",
+       "temperature": 1.0,
+       "top_p": 0.95,
+       "top_k": 0,
+       "min_p": 0.0,
+       "repeat_penalty": 1.0,
+       "seed": 0,
+       "source": {
+        "temperature": "preset",
+        "top_p": "preset",
+        "top_k": "preset",
+        "min_p": "preset",
+        "repeat_penalty": "preset"
+       }
+      },
+      "tool_protocol": {
+       "template": "granite42",
+       "family": "qwen3_xml",
+       "tools": true,
+       "constrained": false,
+       "parse_only": true
+      }
+     },
+     "result": "FAIL",
+     "reasons": [
+      "finish_reason 'error'",
+      "no parsed call"
+     ]
+    },
+    "stream": {
+     "wall_s": 4.399,
+     "finish_reason": "tool_calls",
+     "content": "",
+     "reasoning": "I need to check if boss.json, boss.toml, and boss.yaml exist anywhere in the project. I should use the glob tool for each pattern. The glob tool finds files matching a pattern. I'll need to call glob for each file name pattern.\n",
+     "calls": [
+      {
+       "name": "glob",
+       "arguments": "{\"pattern\":\"**/boss.json\"}",
+       "id": "call_0"
+      }
+     ],
+     "telemetry": null,
+     "result": "PASS",
+     "reasons": []
+    }
+   }
+  },
+  "C": {
+   "title": "prose then call",
+   "prompt": "Briefly say what you are about to do, then list the files in the current directory.",
+   "tools": [
+    "bash"
+   ],
+   "modes": {
+    "buffered": {
+     "wall_s": 5.157,
+     "finish_reason": "tool_calls",
+     "content": "",
+     "reasoning": "I need to respond to the user's request. They want me to briefly say what I am about to do, then list the files in the current directory. I have access to a bash tool that can run shell commands. I can use the `ls` command to list files in the current directory. I'll first respond briefly, then execute the command.\n",
+     "calls": [
+      {
+       "name": "bash",
+       "arguments": "{\"command\":\"ls\"}",
+       "id": "call_0"
+      }
+     ],
+     "usage": {
+      "prompt_tokens": 285,
+      "prompt_tokens_details": {
+       "cached_tokens": 257
+      },
+      "completion_tokens": 103,
+      "total_tokens": 388
+     },
+     "telemetry": {
+      "prompt_cached_tokens": 257,
+      "prompt_forked_tokens": 257,
+      "prompt_eval_tokens": 28,
+      "prefix_cache_saved_seconds": 1.878371,
+      "generation_seconds": 4.819879,
+      "generation_tok_s": 21.37,
+      "major_page_faults": 2,
+      "json_mode": false,
+      "schema": false,
+      "speculative": false,
+      "sampling": {
+       "preset": "granite42",
+       "temperature": 1.0,
+       "top_p": 0.95,
+       "top_k": 0,
+       "min_p": 0.0,
+       "repeat_penalty": 1.0,
+       "seed": 0,
+       "source": {
+        "temperature": "preset",
+        "top_p": "preset",
+        "top_k": "preset",
+        "min_p": "preset",
+        "repeat_penalty": "preset"
+       }
+      },
+      "tool_protocol": {
+       "template": "granite42",
+       "family": "qwen3_xml",
+       "tools": true,
+       "constrained": false,
+       "parse_only": true
+      }
+     },
+     "result": "FAIL",
+     "reasons": [
+      "no prose beside the call"
+     ]
+    },
+    "stream": {
+     "wall_s": 2.441,
+     "finish_reason": "tool_calls",
+     "content": "",
+     "reasoning": "I need to first run a simple command to list files in the current directory using bash.\n",
+     "calls": [
+      {
+       "name": "bash",
+       "arguments": "{\"command\":\"ls -la\"}",
+       "id": "call_0"
+      }
+     ],
+     "telemetry": null,
+     "result": "FAIL",
+     "reasons": [
+      "no prose beside the call"
+     ]
+    }
+   }
+  }
+ },
+ "verdict": "FAIL",
+ "finished": "2026-09-15T07:10:57+0200"
+}

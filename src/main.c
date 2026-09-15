@@ -685,35 +685,12 @@ static void cli_cleanup(engine *e, int32_t *toks, tokenizer *tok, model_t *m) {
 
 // --tool-info resolves, from the model's chat template alone, which native
 // tool-call protocol family the runtime speaks for this model and whether that
-// protocol is native (vs the generic marker/envelope fallback). BOTH are read
-// from template.c truth -- the protocol tool_decl_native() selects for the
-// family, plus the one family (ornith/qwen3_xml) whose native declaration
-// tools_render_for renders instead and which tool_decl_native deliberately
-// leaves alone -- never a static arch->family table, which would drift from the
-// renderer. `native` is set to whether that family has a native tool protocol.
+// protocol is native (vs the generic marker/envelope fallback): the same
+// answer runner_telemetry.tool_protocol gives per request, from the
+// template layer's own selection (tool_protocol_name), never a static
+// arch->family table that would drift from the renderer.
 static const char *tool_family_for(int tmpl, bool *native) {
-    tool_envelope env = {0};
-    bool skip_generic = false;
-    // strict + atem_tool_calling: ask for each family's NATIVE default, so the
-    // protocol tool_decl_native selects is the one this model was trained on.
-    tool_decl_native(tmpl, true, true, NULL, &env, &skip_generic);
-    switch (env.proto) {
-        case TP_ATEM:     *native = true; return "atem";
-        case TP_HARMONY:  *native = true; return "harmony";
-        case TP_GEMMA4:   *native = true; return "gemma4";
-        // Qwen2.5/Qwen3 ChatML: `<tool_call>{JSON}</tool_call>`, the protocol
-        // the chat surface selects for these files; it read generic here.
-        case TP_QWEN:     *native = true; return "qwen_json";
-        // Qwen3-Coder: the function/parameter XML, ornith's family
-        case TP_QWEN_XML: *native = true; return "qwen3_xml";
-        default: break;
-    }
-    if (tmpl == TMPL_ORNITH || tmpl == TMPL_GRANITE42 || tmpl == TMPL_QWEN38) {
-        *native = true;
-        return "qwen3_xml";
-    }
-    *native = false;
-    return "generic";
+    return tool_protocol_name(tmpl, native);
 }
 
 // One line of chat input, newline stripped, in a buffer that grows to fit it.
