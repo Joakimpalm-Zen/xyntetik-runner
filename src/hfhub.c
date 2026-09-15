@@ -192,9 +192,43 @@ static bool file_size(const char *path, long long *size) {
 
 // run argv (NULL-terminated) and wait; the child's exit code, -1 when it
 // could not be started
+#ifdef _WIN32
+// The CRT's spawn joins argv with spaces and no quoting, so an argument
+// with a space ("Authorization: Bearer ...") reaches the child as three.
+// Quote the ones that need it by the CRT's own rules: wrap in double
+// quotes, double the backslashes that precede a quote, escape the quote.
+static char *win_quote(const char *arg) {
+    bool plain = *arg != 0;
+    for (const char *p = arg; *p && plain; p++)
+        if (*p == ' ' || *p == '\t' || *p == '"') plain = false;
+    if (plain) return strdup(arg);
+    size_t n = strlen(arg);
+    char *q = malloc(2 * n + 3), *w = q;
+    if (!q) return NULL;
+    *w++ = '"';
+    for (size_t i = 0; i < n; i++) {
+        size_t bs = 0;
+        while (i < n && arg[i] == '\\') { bs++; i++; }
+        if (i == n) { for (size_t k = 0; k < 2 * bs; k++) *w++ = '\\'; break; }
+        if (arg[i] == '"') { for (size_t k = 0; k < 2 * bs + 1; k++) *w++ = '\\'; *w++ = '"'; }
+        else { for (size_t k = 0; k < bs; k++) *w++ = '\\'; *w++ = arg[i]; }
+    }
+    *w++ = '"'; *w = 0;
+    return q;
+}
+#endif
+
 static int run_wait(char *const argv[]) {
 #ifdef _WIN32
-    intptr_t rc = _spawnvp(_P_WAIT, argv[0], (const char *const *)argv);
+    int n = 0;
+    while (argv[n]) n++;
+    char **quoted = calloc((size_t)n + 1, sizeof *quoted);
+    if (!quoted) return -1;
+    bool ok = true;
+    for (int i = 0; i < n && ok; i++) ok = (quoted[i] = win_quote(argv[i])) != NULL;
+    intptr_t rc = ok ? _spawnvp(_P_WAIT, argv[0], (const char *const *)quoted) : -1;
+    for (int i = 0; i < n; i++) free(quoted[i]);
+    free(quoted);
     return rc == -1 ? -1 : (int)rc;
 #else
     pid_t pid = fork();
