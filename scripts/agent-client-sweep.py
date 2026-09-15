@@ -147,9 +147,14 @@ class Sweep:
         cfg = os.path.join(home, ".codex")
         os.makedirs(cfg)
         with open(os.path.join(cfg, "config.toml"), "w") as f:
+            # hosted web search is declared as a live tool the runner refuses
+            # by name; the README's Codex recipe disables it for a local
+            # session (both spellings, for the versions that read either)
             f.write('model = "%s"\nmodel_provider = "runner"\n'
+                    'web_search = "disabled"\n'
                     '[model_providers.runner]\nname = "Xyntetik Runner"\n'
                     'base_url = "%s/v1"\nwire_api = "responses"\nenv_key = "RUNNER_API_KEY"\n'
+                    '[features]\nweb_search_request = false\n'
                     % (self.model, self.base))
         env = self.env(home, RUNNER_API_KEY="none", CODEX_HOME=cfg)
         # read-only is enough for the loop (the file is read by the sandboxed
