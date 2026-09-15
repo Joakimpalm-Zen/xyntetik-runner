@@ -1,0 +1,96 @@
+{
+ "gate": "turn-mark-check",
+ "label": "ZEN-GAMING RTX 3070 8GB, Windows 11, CUDA, granite-4.2-8b (dense attention: kv tier), shipped defaults",
+ "started": "2026-09-15T10:06:35+0200",
+ "host": "Zen-Gaming",
+ "platform": "Windows-11-10.0.26100-SP0",
+ "base_url": "http://127.0.0.1:8097",
+ "model": "granite-4.2-8b-Q4_K_M.gguf",
+ "model_file": "C:/Users/zen/models/granite-4.2-8b-Q4_K_M.gguf",
+ "model_sha256": "16a9369d0805f80b7377d25d87f937a90c05dc04ad79173a52001e42c9aab311",
+ "runner": "./runner.exe",
+ "runner_sha256": "e2286856bd96a0e5caec6ff45ca5bc3125509c6aba9455e152c421968f7d0d0b",
+ "sampling_served": {
+  "preset": "granite42",
+  "temperature": 1.0,
+  "top_p": 0.95,
+  "top_k": 0,
+  "min_p": 0.0,
+  "repeat_penalty": 1.0
+ },
+ "template": "granite42",
+ "context": 16384,
+ "max_tokens": 64,
+ "turns": {
+  "first": {
+   "wall_s": 7.688,
+   "content": "",
+   "reasoning": "Okay, the user wants me to list the files in the current directory and then say which one I'd read first. But I'm an AI, I don't have access to the actual filesystem. I need to explain that I can't list files directly.\n\nWait, the instructions say I'm a coding agent",
+   "finish_reason": "length",
+   "prompt_tokens": 514,
+   "cached_tokens": 3,
+   "cache": "kv",
+   "prefill_seconds": 4.460444,
+   "prefill_tokens": 511
+  },
+  "second": {
+   "wall_s": 3.49,
+   "content": "",
+   "reasoning": "Okay, the user asked me to list files in the current directory and then say which one I'd read first. I listed them as Makefile, README.md, src, tests. Now they're confirming the listing shows those four items and asking which file I'd read first and why.\n\nI need to",
+   "finish_reason": "length",
+   "prompt_tokens": 557,
+   "cached_tokens": 513,
+   "cache": "kv",
+   "prefill_seconds": 0.486822,
+   "prefill_tokens": 44
+  },
+  "second_replay": {
+   "wall_s": 3.14,
+   "content": "",
+   "reasoning": "Okay, the user asked me to list files in the current directory and then say which one I'd read first. I listed them as Makefile, README.md, src, tests. Now they're confirming the listing shows those four items and asking which file I'd read first and why.\n\nI need to",
+   "finish_reason": "length",
+   "prompt_tokens": 557,
+   "cached_tokens": 556,
+   "cache": "kv",
+   "prefill_seconds": 0.054557,
+   "prefill_tokens": 1
+  },
+  "second_fresh": {
+   "wall_s": 7.831,
+   "content": "",
+   "reasoning": "Okay, the user asked me to list files in the current directory and then say which one I'd read first. I listed them as Makefile, README.md, src, tests. Now they're confirming the listing shows those four items and asking which file I'd read first and why.\n\nI need to",
+   "finish_reason": "length",
+   "prompt_tokens": 557,
+   "cached_tokens": 0,
+   "cache": "none",
+   "prefill_seconds": 4.795837,
+   "prefill_tokens": 557
+  }
+ },
+ "checks": {
+  "second_turn_keeps_the_first_prompt": {
+   "pass": true,
+   "cached_tokens": 513,
+   "first_prompt_tokens": 514,
+   "cache": "kv"
+  },
+  "verbatim_replay_keeps_all_but_one": {
+   "pass": true,
+   "cached_tokens": 556,
+   "prompt_tokens": 557,
+   "cache": "kv"
+  },
+  "kept_turn_answers_like_a_fresh_slot": {
+   "pass": true,
+   "second": "",
+   "fresh": ""
+  },
+  "prefill_is_the_tail_only": {
+   "pass": true,
+   "second_prefill_seconds": 0.486822,
+   "fresh_prefill_seconds": 4.795837
+  }
+ },
+ "verdict": "PASS",
+ "finished": "2026-09-15T10:07:08+0200"
+}

@@ -2390,6 +2390,11 @@ void gpu_disable(model_t *m) {
     m->gpu_layers = 0;
 }
 
+// Metal runs every recurrent layer on the host (the Mamba-2 and DeltaNet
+// mixers have no Metal path), so the host buffers are the live fold already.
+bool gpu_recurrent_download(model_t *m) { (void)m; return true; }
+bool gpu_recurrent_upload(model_t *m) { (void)m; return true; }
+
 // Metal has no batched-decode kernels yet, so it declines the microbatch and
 // model_batch_decode decodes sequentially. The port is the same shape as the
 // CUDA one (per-column position and per-sequence KV buffer, batched twins of

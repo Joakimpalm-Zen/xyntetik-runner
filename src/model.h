@@ -332,6 +332,13 @@ typedef struct {
     // pattern need; per-slot because each decoding stream owns its own model_t.
     float *ssm_conv_snap, *ssm_state_snap; // snapshot of the two buffers above
     int    ssm_snap_pos;                   // position that snapshot is valid at, -1 = none
+    // Turn mark (tracer 7): a second, independent checkpoint of the same two
+    // buffers, taken at a request's prompt boundary so the NEXT request on the
+    // slot can resume the fold there instead of re-folding the whole prompt.
+    // Lazily allocated at the first mark (one more fold copy of host RAM, only
+    // on slots that serve a recurrent model); -1 = none.
+    float *ssm_conv_mark, *ssm_state_mark;
+    int    ssm_mark_pos;
     float *att, *logits;
     // --- LoRA adapter (adaptation D2): frozen base + low-rank f32 deltas,
     // CPU dense projections. lora is [n_layer][LORA_SLOTS] or NULL; lora_id
@@ -887,6 +894,23 @@ bool model_recurrent_restore(model_t *m, int pos);
 size_t model_recurrent_blob_bytes(const model_t *m);
 bool model_recurrent_blob_save(const model_t *m, uint8_t *dst);
 bool model_recurrent_blob_load(model_t *m, const uint8_t *src);
+// Turn mark (tracer 7). The snapshot above is the rollback slot: spec-decode
+// re-takes it every round, so it never survives to the next request. The mark
+// is a second checkpoint with one owner, the prompt boundary of the request a
+// slot is serving, kept until the slot's history stops containing the tokens
+// it was folded over. Backend-aware: a device-resident fold (CUDA) is pulled
+// to the host buffers before the copy and pushed back after a restore, so
+// the mark works for the offloaded recurrent models the report was about,
+// which the depth-one snapshot never did. `model_recurrent_mark` returns
+// false on a non-recurrent model, when the mark buffers cannot be allocated,
+// or when the device copy fails (then no mark is held).
+bool model_recurrent_mark(model_t *m, int pos);
+int  model_recurrent_mark_pos(const model_t *m);   // -1 = none held
+// Copy the mark back over the live fold (and the device, when it lives there).
+// false = no mark, or the device push failed and the live fold is now
+// UNDEFINED: the caller must recompute from position 0.
+bool model_recurrent_restore_mark(model_t *m);
+void model_recurrent_mark_drop(model_t *m);
 // Internal backend bridge for tensor-role placement: apply one complete MoE
 // FFN (including its residual) to m->x on the host. CUDA uses this after its
 // attention sublayer and then resumes on-device. False rejects a non-MoE layer.

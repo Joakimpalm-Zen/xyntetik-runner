@@ -181,6 +181,7 @@
         "prompt_cached_tokens": "<number>",
         "prompt_eval_tokens": "<number>",
         "prompt_forked_tokens": "<number>",
+        "prompt_reuse": "<redacted>",
         "sampling": {
           "min_p": "<number>",
           "preset": "<redacted>",

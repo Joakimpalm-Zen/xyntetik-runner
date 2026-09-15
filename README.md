@@ -1332,7 +1332,19 @@ speculative mode flags. `timing.prefill_seconds` and `timing.prefill_tokens`
 are the prefill measured over the tokens it actually evaluated (the cached
 prefix costs nothing), apart from `generation_seconds`, which has always been
 the decode; a client no longer needs wall minus generation to tell a slow
-prompt from a slow decode. `major_page_faults` comes with
+prompt from a slow decode. `prompt_reuse` says HOW the slot arrived at
+`prompt_cached_tokens`: `extended` (the prompt continues the slot's history
+verbatim), `kv` (attention rows kept up to the first differing token),
+`turn_mark` (a recurrent fold resumed at the previous prompt boundary, see
+below), `snapshot`, `prefix_cache` (forked from the shared tier),
+`recurrent_reset` (the fold could not be restored where the history
+diverged, so the whole prompt was folded again), `ring_reset`, `mismatch`
+(the prompt differs at its first token) or `none` (`cache_prompt:false` or
+a fresh slot); the server's start line carries the same word, and
+`RUNNER_REWIND_TRACE=1` prints the token at which the prompt left the
+history, decoded, which is what turns "0 cached" on a prompt the client
+just sent into a diagnosis (it found the thought-block finding above).
+`major_page_faults` comes with
 `page_fault_counter`: `major` where the OS separates page-ins from disk
 (POSIX), `all` where it counts soft faults too (Windows `PageFaultCount`),
 so the million faults a Windows first request reports are read as what they
@@ -1367,6 +1379,23 @@ truncation, not an error: generation ends, `finish_reason` is `"length"`, and
 constrained output is closed to a legal document exactly as a token-ceiling
 hit would be. Expiry during PREFILL has no tokens to truncate and answers
 `408` instead, naming the prompt as what to shorten.
+
+A recurrent or hybrid model (Qwen 3.5/3.8, Ornith, Granite-4 h-series,
+Nemotron-H) keeps a fold over its whole prefix rather than per-position
+rows, so a slot's own rewind can only resume where a checkpoint of that fold
+exists. Since 2026-09-15 every prefill leaves one at the prompt boundary (one
+token short of the end, so a verbatim replay resumes there too): an agent
+client's next request, which replays the prompt, the reply as the template
+re-renders it and a new turn, resumes at the mark and folds only what
+follows. Before the mark such a slot re-folded its entire prompt on every
+turn on CUDA, where the shared tier does not apply to a device-resident
+fold (the 2026-09-15 OpenCode loop on Qwen 3.8 27B: 7.5K prompt, "0 cached"
+every turn). The mark lives on the slot (one fold-sized copy of host RAM,
+moved through PCIe on CUDA), is dropped whenever the history below it
+changes, and the resumed decode is gated bit-identical to a cold one
+(`tests/test_recurrent_rewind.c`, `tests/test_turn_mark.py`);
+`scripts/turn-mark-check.py` runs the agent-turn shape against a live server
+and records what the second turn kept.
 
 Prefix reuse lives in this process only. The cache is host RAM bounded by
 `RUNNER_PREFIX_CACHE_MB`, and it is released by `POST /unload`, by
@@ -1755,6 +1784,26 @@ dictates the model's reply through a test hook
 on a request; the field is refused otherwise) so the whole path from
 sampler to wire runs on known bytes; `scripts/tool-protocol-check.py` is
 the report's own cases against a live server, at shipped defaults.
+
+The prompt these families read is also checked at the token level now,
+because a byte-identical render can still feed different tokens. A control
+token is recognised only inside the template's own bytes (the prompt marks,
+so `<|im_end|>` typed into a message stays text), and until 2026-09-15 the
+Qwen 3.8 and Granite 4.2 generation prompts passed their thought block
+through a format argument, which is caller text by contract: every
+thinking-enabled turn opened on `<th` `ink` `>` as three text tokens where
+the reference put one, and the block a replayed assistant turn carries (the
+server composes it from `reasoning_content`) was text too, so the next
+request on a slot could never match its history against the turn it had
+just generated. Both are template bytes now, `tests/test_prompt_marks.c`
+holds that every control spelling a template writes, live or replayed
+(thought block, calls, results), sits inside the marks for every family
+and thinking mode, and `scripts/template-conformance.py` compares the
+reference's tokens against the ids the server actually feeds (prompt-mode
+encoding of the marked render) rather than against the stripped text
+re-encoded: on the Blackwell with the real vocabularies, Qwen 3.8, Granite
+4.2, Ornith, Qwen3-Coder and chatml-think are token-identical to their
+references on every case, tool replays included.
 
 `enable_thinking`, either at the top level or inside `chat_template_kwargs`,
 is the request-level form of `--think`/`--no-think`. Omitting it is not the
@@ -2313,7 +2362,7 @@ merely dense matvec/matmul support.
 |---|---|
 | `llama`, `mistral`, `smollm`, `stablelm` | Llama-style dense families with family tokenizers/templates. |
 | `qwen2`, `qwen3` | QKV-bias and per-head-QK-norm variants. |
-| `qwen35` | Dense Qwen3.5/3.8/Ornith Gated DeltaNet plus full attention; CPU and CUDA. Qwen3.8-27B admitted 2026-09-06 (tokenizer 0/721 after the `qwen35` rule learned `[\p{L}\p{M}]+` runs; its NextN block feeds `--mtp`; its own `qwen38` chat template with the reasoning-effort preamble, `reasoning_effort` xhigh/medium/low honoured); evidence in `docs/granite-42-qwen38-cert-2026-09-06.md`. CPU recurrent folds support speculative decode, grammar fast-forward, and exact shared-prefix restore. Any GPU-backed recurrent instance declines shared-prefix restore; a CUDA-resident recurrent layer also declines speculative decode and grammar fast-forward. |
+| `qwen35` | Dense Qwen3.5/3.8/Ornith Gated DeltaNet plus full attention; CPU and CUDA. Qwen3.8-27B admitted 2026-09-06 (tokenizer 0/721 after the `qwen35` rule learned `[\p{L}\p{M}]+` runs; its NextN block feeds `--mtp`; its own `qwen38` chat template with the reasoning-effort preamble, `reasoning_effort` xhigh/medium/low honoured); evidence in `docs/granite-42-qwen38-cert-2026-09-06.md`. CPU recurrent folds support speculative decode, grammar fast-forward, and exact shared-prefix restore. Any GPU-backed recurrent instance declines shared-prefix restore (its own turn mark resumes the next request at the prompt boundary on CPU and CUDA alike, since 2026-09-15); a CUDA-resident recurrent layer also declines speculative decode and grammar fast-forward. |
 | `qwen3moe` | Fused and legacy split sparse-MoE layouts on CPU/CUDA; supported fused layouts on Metal. |
 | `gemma3` | Regular and QAT layouts, sliding-window attention, sandwich norms. |
 | `gemma4` | Heterogeneous attention, thinking channels, E-series, supported dense/MoE layouts, and the family's native tool protocol. Both E-series export shapes load. A layer at or past `block_count - attention.shared_kv_layers` computes no K and no V (it attends over the cache an earlier layer filled), so the current quantized exports - the ggml-org Q4_0, Google's own QAT Q4_0 and the community QAT F16 - omit `attn_k.weight`, `attn_v.weight` and `attn_k_norm.weight` on exactly those layers: 666 tensors on E4B where the BF16 export has 720. Those three are optional on the shared-KV tail and still required on every KV-owning layer, where a missing one is refused by name. |

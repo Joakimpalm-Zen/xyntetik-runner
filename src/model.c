@@ -3761,6 +3761,7 @@ static bool model_alloc_runtime(model_t *m, const model_params *p) {
         m->ssm_state_snap = calloc((size_t)m->n_layer * m->ssm_v_heads *
                                    hv * hv, sizeof(float));
         m->ssm_snap_pos = -1;
+        m->ssm_mark_pos = -1;
         // one dequantized conv-kernel row, reused every conv step (the forward
         // pass is single-threaded here, so one buffer suffices) — preallocated
         // so the hot path never mallocs and an OOM fails the load, not a token
@@ -3791,6 +3792,7 @@ static bool model_alloc_runtime(model_t *m, const model_params *p) {
         m->ssm_state_snap = calloc((size_t)m->n_layer * nh * hd * ds,
                                    sizeof(float));
         m->ssm_snap_pos = -1;
+        m->ssm_mark_pos = -1;
         m->ssm_cw = malloc(sizeof(float) * m->ssm_conv_kernel);
         if (!m->ssm_qkv || !m->ssm_aux || !m->ssm_z ||
             !m->ssm_conv_state || !m->ssm_state_mem || !m->ssm_cw ||
@@ -4025,6 +4027,7 @@ void model_free(model_t *m) {
     free(m->ssm_cw);
     free(m->ssm_conv_state); free(m->ssm_state_mem);
     free(m->ssm_conv_snap); free(m->ssm_state_snap);
+    free(m->ssm_conv_mark); free(m->ssm_state_mark);
     free(m->hb); free(m->hb2); free(m->att); free(m->logits); free(m->all_logits);
     free(m->mtp_h); free(m->mtp_tok); free(m->mtp_pending); free(m->mtp_cat);
     free(m->mtp_logits); free(m->mtp_hid);
@@ -5741,6 +5744,7 @@ void model_recurrent_reset(model_t *m) {
     memset(m->ssm_conv_state, 0, recurrent_conv_bytes(m));
     memset(m->ssm_state_mem, 0, recurrent_state_bytes(m));
     m->ssm_snap_pos = -1;   // a fresh sequence: no earlier fold to restore
+    m->ssm_mark_pos = -1;   // and the mark was over the sequence being dropped
 }
 
 bool model_recurrent_snapshot(model_t *m, int pos) {
@@ -5786,6 +5790,58 @@ bool model_recurrent_blob_load(model_t *m, const uint8_t *src) {
     memcpy(m->ssm_state_mem, src + cb, recurrent_state_bytes(m));
     m->ssm_snap_pos = -1;   // a freshly installed fold has no earlier snapshot
     return true;
+}
+
+// ---- turn mark (tracer 7) -------------------------------------------------
+//
+// Same two buffers as the snapshot, one more copy, one owner: the prompt
+// boundary. The difference from the snapshot is where the live fold is. The
+// snapshot is host-only (spec-decode is refused on a device-resident fold, so
+// it never needed more); the mark is what makes a GPU-offloaded recurrent
+// slot resume at all, so it moves the device layers' state through the host
+// buffers on both edges. Layers past gpu_layers already fold on the host and
+// their buffer rows are live; the backend copies only its own layers.
+bool model_recurrent_mark(model_t *m, int pos) {
+    if (!model_has_recurrent(m) || pos < 0) return false;
+    if (!m->ssm_conv_mark || !m->ssm_state_mark) {
+        free(m->ssm_conv_mark); free(m->ssm_state_mark);
+        m->ssm_conv_mark  = malloc(recurrent_conv_bytes(m) ? recurrent_conv_bytes(m) : 1);
+        m->ssm_state_mark = malloc(recurrent_state_bytes(m));
+        if (!m->ssm_conv_mark || !m->ssm_state_mark) {
+            free(m->ssm_conv_mark); free(m->ssm_state_mark);
+            m->ssm_conv_mark = m->ssm_state_mark = NULL;
+            m->ssm_mark_pos = -1;
+            return false;
+        }
+    }
+    m->ssm_mark_pos = -1;
+    if (m->gpu && !gpu_recurrent_download(m)) return false;
+    memcpy(m->ssm_conv_mark, m->ssm_conv_state, recurrent_conv_bytes(m));
+    memcpy(m->ssm_state_mark, m->ssm_state_mem, recurrent_state_bytes(m));
+    m->ssm_mark_pos = pos;
+    return true;
+}
+
+int model_recurrent_mark_pos(const model_t *m) {
+    if (!model_has_recurrent(m) || !m->ssm_conv_mark || !m->ssm_state_mark)
+        return -1;
+    return m->ssm_mark_pos;
+}
+
+bool model_recurrent_restore_mark(model_t *m) {
+    if (model_recurrent_mark_pos(m) < 0) return false;
+    memcpy(m->ssm_conv_state, m->ssm_conv_mark, recurrent_conv_bytes(m));
+    memcpy(m->ssm_state_mem, m->ssm_state_mark, recurrent_state_bytes(m));
+    m->ssm_snap_pos = -1;   // the rollback slot described the abandoned tail
+    if (m->gpu && !gpu_recurrent_upload(m)) {
+        m->ssm_mark_pos = -1;   // the device fold is undefined: caller recomputes
+        return false;
+    }
+    return true;
+}
+
+void model_recurrent_mark_drop(model_t *m) {
+    if (m) m->ssm_mark_pos = -1;
 }
 
 // ------------------------------------------------ LoRA adapters (adaptation D2)

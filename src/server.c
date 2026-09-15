@@ -124,21 +124,25 @@ static char *message_text(jv *msg, int tmpl, bool replay_reason, bool *oom) {
         // block. Qwen3 preserves reasoning only on the final historical
         // assistant after the last user, which the caller selects explicitly.
         // Calls and visible text follow the block in the same buffer.
+        // The framing is the runner's, not the caller's: marked (prompt_lit)
+        // so `<think>` reaches the model as the control token its reference
+        // tokenizer produces, not as three text tokens. The reasoning text
+        // between is the caller's and goes in unmarked.
         if ((tmpl == TMPL_ORNITH || tmpl == TMPL_QWEN38 ||
              (tmpl == TMPL_CHATML_THINK && replay_reason)) &&
             !strcmp(role, "assistant")) {
-            sb_lit(&b, "<think>\n");
+            prompt_lit(&b, "<think>\n");
             if (reason) sb_put(&b, reason, strlen(reason));
-            sb_lit(&b, "\n</think>\n\n");
+            prompt_lit(&b, "\n</think>\n\n");
         } else if (tmpl == TMPL_GRANITE42 && !strcmp(role, "assistant") &&
                    reason && reason[strspn(reason, " \t\n\r\f\v")]) {
             // granite 4.2 folds a non-blank reasoning_content in as
             // `<think>\n` reasoning `\n</think>\n` content
             // (chat_template.jinja:77); the renderer then seeds or
             // truncates the block by the turn's position.
-            sb_lit(&b, "<think>\n");
+            prompt_lit(&b, "<think>\n");
             sb_put(&b, reason, strlen(reason));
-            sb_lit(&b, "\n</think>\n");
+            prompt_lit(&b, "\n</think>\n");
         }
         assistant_calls_render(tmpl, txt.s, calls, &b, NULL);
     }

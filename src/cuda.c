@@ -2848,6 +2848,72 @@ void gpu_free(model_t *m) {
     gpu_ctx_free(m, g);
 }
 
+// Move the device-resident recurrent layers' state between the device
+// buffers and the host buffers (m->ssm_conv_state / m->ssm_state_mem), layer
+// by layer at the same offsets, for the layers this context runs. `prev`
+// selects the pre-forward rollback copy (the fallback path wants the state
+// the failed forward started from); otherwise the live state. Per-layer sizes
+// follow the allocation in gpu_init exactly: qwen35 keeps a [v_heads x state
+// x state] DeltaNet matrix, Mamba-2 an [inner x state] one, and both keep the
+// (conv_kernel - 1) x conv_dim ring. The host layout is the same (model.c
+// recurrent_conv_bytes / recurrent_state_bytes).
+static bool recurrent_xfer(gpu_t *g, model_t *m, bool to_host, bool prev) {
+    CUdeviceptr dconv, dstate;
+    size_t conv_layer, state_layer;
+    if (m->qwen35) {
+        int convdim = 2 * m->ssm_state * m->ssm_groups + m->ssm_inner;
+        conv_layer  = (size_t)(m->ssm_conv_kernel - 1) * convdim;
+        state_layer = (size_t)m->ssm_v_heads * m->ssm_state * m->ssm_state;
+        dconv  = prev ? g->q35_hist_prev  : g->q35_hist;
+        dstate = prev ? g->q35_state_prev : g->q35_state;
+    } else if ((m->granite_hybrid || m->nemotron_h) && g->mamba_state) {
+        int cd = m->ssm_inner + 2 * m->ssm_groups * m->ssm_state;
+        conv_layer  = (size_t)(m->ssm_conv_kernel - 1) * cd;
+        state_layer = (size_t)m->ssm_inner * m->ssm_state;
+        dconv  = prev ? g->mamba_conv_prev  : g->mamba_conv;
+        dstate = prev ? g->mamba_state_prev : g->mamba_state;
+    } else {
+        return true;   // no device-resident fold in this context
+    }
+    for (int l = 0; l < m->gpu_layers; l++) {
+        if (!m->layers[l].recurrent) continue;
+        float *hconv  = m->ssm_conv_state + (size_t)l * conv_layer;
+        float *hstate = m->ssm_state_mem + (size_t)l * state_layer;
+        CUdeviceptr dc = dconv + (size_t)l * conv_layer * sizeof(float);
+        CUdeviceptr ds = dstate + (size_t)l * state_layer * sizeof(float);
+        if (to_host) {
+            if (conv_layer && cu.MemcpyDtoH(hconv, dc, conv_layer * sizeof(float)) != 0)
+                return false;
+            if (cu.MemcpyDtoH(hstate, ds, state_layer * sizeof(float)) != 0)
+                return false;
+        } else {
+            if (conv_layer && cu.MemcpyHtoD(dc, hconv, conv_layer * sizeof(float)) != 0)
+                return false;
+            if (cu.MemcpyHtoD(ds, hstate, state_layer * sizeof(float)) != 0)
+                return false;
+        }
+    }
+    return true;
+}
+
+// Turn mark (model_recurrent_mark): the live fold, both directions. The host
+// buffers are the seam the mark copies through, so a mark on an offloaded
+// recurrent slot costs one fold-sized PCIe copy per request at the prompt
+// boundary and one more on the resume, both far below re-folding the prompt.
+bool gpu_recurrent_download(model_t *m) {
+    gpu_t *g = m ? m->gpu : NULL;
+    if (!g) return true;
+    if (!g->sw || !g->sw->ctx || cu.CtxSetCurrent(g->sw->ctx) != 0) return false;
+    return recurrent_xfer(g, m, true, false);
+}
+
+bool gpu_recurrent_upload(model_t *m) {
+    gpu_t *g = m ? m->gpu : NULL;
+    if (!g) return true;
+    if (!g->sw || !g->sw->ctx || cu.CtxSetCurrent(g->sw->ctx) != 0) return false;
+    return recurrent_xfer(g, m, false, false);
+}
+
 // A runtime GPU failure on CUDA is fully recoverable on the host: the host KV
 // cache is the authoritative copy and the device one is a mirror, so there is
 // nothing to rescue before releasing. Freeing rather than orphaning matters
@@ -2855,41 +2921,12 @@ void gpu_free(model_t *m) {
 // slot's copy of them alive too.
 void gpu_disable(model_t *m) {
     gpu_t *g = m ? m->gpu : NULL;
-    // KV is mirrored after every step. Qwen3.5 recurrent state is much larger,
-    // so rescue it only on this rare fallback path instead of copying tens of
-    // megabytes over PCIe after every generated token.
-    if (g && m->qwen35 && g->sw && g->sw->ctx &&
-        cu.CtxSetCurrent(g->sw->ctx) == 0) {
-        int convdim = 2 * m->ssm_state * m->ssm_groups + m->ssm_inner;
-        size_t hist_layer = (size_t)(m->ssm_conv_kernel - 1) * convdim;
-        size_t state_layer = (size_t)m->ssm_v_heads * m->ssm_state * m->ssm_state;
-        for (int l = 0; l < m->gpu_layers; l++) {
-            if (!m->layers[l].recurrent) continue;
-            if (hist_layer)
-                cu.MemcpyDtoH(m->ssm_conv_state + (size_t)l * hist_layer,
-                              g->q35_hist_prev + (size_t)l * hist_layer * sizeof(float),
-                              hist_layer * sizeof(float));
-            cu.MemcpyDtoH(m->ssm_state_mem + (size_t)l * state_layer,
-                          g->q35_state_prev + (size_t)l * state_layer * sizeof(float),
-                          state_layer * sizeof(float));
-        }
-    }
-    if (g && (m->granite_hybrid || m->nemotron_h) && g->sw && g->sw->ctx &&
-        g->mamba_state && cu.CtxSetCurrent(g->sw->ctx) == 0) {
-        int cd = m->ssm_inner + 2 * m->ssm_groups * m->ssm_state;
-        size_t conv_layer = (size_t)(m->ssm_conv_kernel - 1) * cd;
-        size_t state_layer = (size_t)m->ssm_inner * m->ssm_state;
-        for (int l = 0; l < m->gpu_layers; l++) {
-            if (!m->layers[l].recurrent) continue;
-            if (conv_layer)
-                cu.MemcpyDtoH(m->ssm_conv_state + (size_t)l * conv_layer,
-                              g->mamba_conv_prev + (size_t)l * conv_layer * sizeof(float),
-                              conv_layer * sizeof(float));
-            cu.MemcpyDtoH(m->ssm_state_mem + (size_t)l * state_layer,
-                          g->mamba_state_prev + (size_t)l * state_layer * sizeof(float),
-                          state_layer * sizeof(float));
-        }
-    }
+    // KV is mirrored after every step. The recurrent fold is much larger, so
+    // rescue it only on this rare fallback path instead of copying tens of
+    // megabytes over PCIe after every generated token: the pre-forward
+    // rollback copy is the state the failed forward started from.
+    if (g && g->sw && g->sw->ctx && cu.CtxSetCurrent(g->sw->ctx) == 0)
+        recurrent_xfer(g, m, true, true);
     gpu_free(m);
 }
 

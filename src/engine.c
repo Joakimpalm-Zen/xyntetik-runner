@@ -122,6 +122,8 @@ bool engine_init(engine *e, model_t *m, tokenizer *tok, sampler *smp) {
 void engine_reset(engine *e) {
     e->pos = 0;
     e->hit_stop = false;
+    e->rewind_how = REWIND_NONE;
+    model_recurrent_mark_drop(e->m);   // a fresh sequence: the mark was over the old one
     sampler_reset(e->smp);
     jsonv_init(&e->jv);
     if (e->schema) sval_init(&e->sv, e->schema);
@@ -178,11 +180,48 @@ static void spec_fold_sync(engine *e, const int32_t *d, int acc, int nd,
 // Site 2 of 2 for the flat-row assumption (model.h, model_kv_byte_off): a kept
 // prefix of `keep` tokens is assumed to still sit at rows [0, keep) of every
 // layer. Under a layout where a layer recycles rows, "keep" is not a rewind.
+static uint64_t fnv1a_toks(const int32_t *toks, int n) {
+    uint64_t h = 1469598103934665603ULL;
+    for (int i = 0; i < n; i++) {
+        h ^= (uint64_t)(uint32_t)toks[i];
+        h *= 1099511628211ULL;
+    }
+    return h;
+}
+
+const char *engine_rewind_how_name(int how) {
+    switch (how) {
+    case REWIND_EXTENDED:  return "extended";
+    case REWIND_KV:        return "kv";
+    case REWIND_SNAPSHOT:  return "snapshot";
+    case REWIND_MARK:      return "turn_mark";
+    case REWIND_RECURRENT: return "recurrent_reset";
+    case REWIND_RING:      return "ring_reset";
+    case REWIND_MISMATCH:  return "mismatch";
+    case REWIND_FORK:      return "prefix_cache";
+    default:               return "none";
+    }
+}
+
+bool engine_mark_turn(engine *e) {
+    if (!e || !e->hist || !model_has_recurrent(e->m)) return false;
+    uint64_t h = fnv1a_toks(e->hist, e->pos);
+    // A slot that just resumed from its mark holds exactly the mark's fold:
+    // re-taking it would copy the same bytes (over PCIe, on CUDA).
+    if (model_recurrent_mark_pos(e->m) == e->pos && e->mark_hash == h) return true;
+    if (!model_recurrent_mark(e->m, e->pos)) return false;
+    e->mark_hash = h;
+    return true;
+}
+
 int engine_rewind(engine *e, const int32_t *toks, int n) {
     int keep = 0;
     if (e->hist)
         while (keep < e->pos && keep < n - 1 && e->hist[keep] == toks[keep])
             keep++; // n - 1: always feed at least one token to get logits
+    int how = keep == e->pos ? (keep ? REWIND_EXTENDED : REWIND_NONE)
+            : keep ? REWIND_KV : REWIND_MISMATCH;
+    int agree = keep, mark_before = model_recurrent_mark_pos(e->m);
     // Recurrent (SSM) layers hold a FOLD over [0, e->pos), not a per-position
     // prefix, so keeping KV rows [0, keep) does not by itself put the recurrent
     // state at `keep` — it is still the fold as-of the old e->pos. Attention's
@@ -200,12 +239,53 @@ int engine_rewind(engine *e, const int32_t *toks, int n) {
     // have been overwritten. A pure EXTENSION is still fine (the ring holds
     // exactly what the next step reads); any real rewind recomputes from 0,
     // which is the recurrent path's own precedent two paragraphs down.
-    if (keep < e->pos && model_kv_ring_active(e->m)) keep = 0;
+    if (keep < e->pos && model_kv_ring_active(e->m)) { keep = 0; how = REWIND_RING; }
     if (model_has_recurrent(e->m) && keep < e->pos) {
-        if (!model_recurrent_restore(e->m, keep)) {
-            model_recurrent_reset(e->m);
+        int mark = model_recurrent_mark_pos(e->m);
+        if (model_recurrent_restore(e->m, keep)) {
+            how = REWIND_SNAPSHOT;
+        } else if (mark > 0 && mark <= keep &&
+                   fnv1a_toks(toks, mark) == e->mark_hash &&
+                   model_recurrent_restore_mark(e->m)) {
+            // The turn mark: the fold as of the prompt boundary of the request
+            // this slot served last. The kept run reaches it (the new prompt
+            // replays that prompt verbatim), so resume there and re-feed the
+            // agreeing tail beyond it along with the new tokens: the fold is
+            // not sliceable, only restorable where it was taken.
+            keep = mark;
+            how = REWIND_MARK;
+        } else {
+            model_recurrent_reset(e->m);   // drops the mark: hist[0,mark) is about to change
+            if (keep) how = REWIND_RECURRENT;   // a mismatch at token 0 stays one
             keep = 0;
         }
+    }
+    // A mark past the kept run is over tokens the slot is about to overwrite.
+    if (model_recurrent_mark_pos(e->m) > keep) model_recurrent_mark_drop(e->m);
+    e->rewind_how = how;
+    // RUNNER_REWIND_TRACE=1: where the new prompt left the slot's history,
+    // and what that cost. A "0 cached" a client cannot explain is almost
+    // always a template re-rendering an earlier turn differently (a think
+    // block, a re-serialised call), and this says at which token.
+    static int trace = -1;
+    if (trace < 0) trace = getenv("RUNNER_REWIND_TRACE") ? 1 : 0;
+    if (trace) {
+        fprintf(stderr, "rewind: history %d, prompt %d, agree %d, mark %d -> "
+                "keep %d (%s)", e->pos, n, agree, mark_before, keep,
+                engine_rewind_how_name(how));
+        if (agree < e->pos && agree < n) {
+            fprintf(stderr, "; diverges at %d:", agree);
+            for (int i = agree > 3 ? agree - 3 : 0; i < agree + 3; i++) {
+                int32_t h = i < e->pos && e->hist ? e->hist[i] : -1;
+                int32_t p = i < n ? toks[i] : -1;
+                fprintf(stderr, " [%d] %d %s%s%s / %d %s%s%s", i,
+                        h, h >= 0 ? "'" : "", h >= 0 && e->tok ? tok_raw(e->tok, h) : "",
+                        h >= 0 ? "'" : "",
+                        p, p >= 0 ? "'" : "", p >= 0 && e->tok ? tok_raw(e->tok, p) : "",
+                        p >= 0 ? "'" : "");
+            }
+        }
+        fputc('\n', stderr);
     }
     // the head's KV rows [0, keep) stay valid (position-addressed); only
     // the pending hidden is lost, see model_mtp_reset
@@ -586,6 +666,7 @@ prefix_reuse engine_prefix_reuse(engine *e, const int32_t *toks, int n) {
 
         hit->used = now;
         hit->hits++;
+        e->rewind_how = REWIND_FORK;
         r.keep    = best;
         r.forked  = best;
         r.saved_s = PFX.cost_per_tok * best;
