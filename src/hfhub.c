@@ -369,10 +369,9 @@ char *hf_fetch(const char *spec, char *err, size_t errcap) {
     snprintf(api_url, sizeof api_url, "https://huggingface.co/api/models/%s?blobs=true", repo);
     snprintf(api_path, sizeof api_path, "%s%c.files.json", repodir, HF_SEP);
     if (curl_get(api_url, api_path, true, err, errcap) != 0) {
-        char more[256];
-        snprintf(more, sizeof more, " (does %s exist? a gated or private repository needs HF_TOKEN)", repo);
         size_t at = strlen(err);
-        if (at < errcap) snprintf(err + at, errcap - at, "%s", more);
+        if (at < errcap)
+            snprintf(err + at, errcap - at, " (does %.200s exist? a gated or private repository needs HF_TOKEN)", repo);
         return NULL;
     }
     size_t jn = 0;
@@ -417,9 +416,10 @@ char *hf_fetch(const char *spec, char *err, size_t errcap) {
     if (ok) {
         char rel[1024], target[2048];
         local_name(first, rel, sizeof rel);
-        snprintf(target, sizeof target, "%s%c%s", repodir, HF_SEP, rel);
-        result = strdup(target);
-        if (!result) snprintf(err, errcap, "out of memory");
+        if (snprintf(target, sizeof target, "%s%c%s", repodir, HF_SEP, rel) >= (int)sizeof target)
+            snprintf(err, errcap, "cache path too long for %s", first);
+        else if (!(result = strdup(target)))
+            snprintf(err, errcap, "out of memory");
     }
     free(names);
     jv_free(doc);
