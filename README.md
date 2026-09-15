@@ -198,7 +198,7 @@ for Linux, macOS, or Windows, or build from source:
 git clone https://github.com/Joakimpalm-Zen/xyntetik-runner
 cd xyntetik-runner
 make
-./runner --version   # -> runner 0.5.3
+./runner --version   # -> runner 0.5.4
 ```
 
 CUDA builds and releases need only an NVIDIA driver at runtime. The CUDA
@@ -253,7 +253,7 @@ Run a GGUF:
 ./runner -m model.gguf --draft-lookup -f transcript.txt -p "Summarize the text above"
 ```
 
-> **Pre-1.0 (`0.5.3`).** APIs, model coverage and certification envelopes may
+> **Pre-1.0 (`0.5.4`).** APIs, model coverage and certification envelopes may
 > change between releases. CI builds and smoke-tests Linux, macOS, and
 > Windows, but the project still has limited hardware coverage. Include
 > `runner --version`, `runner --caps`, the model's exact filename, and the load
@@ -478,7 +478,7 @@ shell, then run `make`.
 
 Each release publishes a CPU image - the same binary on a distroless glibc base,
 nothing else - to `ghcr.io/joakimpalm-zen/xyntetik-runner:v<version>` (the
-tag carries the `v`, e.g. `:v0.5.3`) and `:latest`. Build it yourself with `docker build -t runner .`.
+tag carries the `v`, e.g. `:v0.5.4`) and `:latest`. Build it yourself with `docker build -t runner .`.
 
 The server binds **loopback only** by design (there is no `--host`/`0.0.0.0`
 flag), so it never exposes itself to a network, even in a container - which
@@ -1961,7 +1961,7 @@ recorded complete tool -> execution -> result -> answer loops for OpenCode
 as below), Continue CLI 1.5.47, Cline CLI 3.0.61 and pi 0.85.1; Aider 0.86.2
 passed transport/inference under `--dry-run` and still needs a matching model
 edit profile. Two of those versions could not make a single request against
-v0.5.3 (Claude Code's `allOf` tool schemas, Codex's stateless Responses
+the 0.5.3 release (Claude Code's `allOf` tool schemas, Codex's stateless Responses
 shape); the 2026-08-03/04 sweep had recorded the same loops for OpenCode
 1.18.4, Cline CLI 3.0.46, pi 0.81.1, Continue CLI 1.5.47, Claude Code 2.1.220
 and Codex CLI 0.144.6. OpenCode 1.18.31 also completed the loop against

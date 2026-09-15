@@ -6,7 +6,18 @@ change between releases (the `-alpha` suffix was retired at v0.2.0 — the 0.x
 version already says what it needs to). Entries below the rename keep the
 names that were true when they were written.
 
-## Unreleased
+## v0.5.4 - 2026-09-15
+
+The cross-family release. The agent-client remedy of 2026-09-14 and
+2026-09-15 ships whole: Qwen 3.8, Granite 4.2 and Ornith tool calls reach
+streaming clients as tool calls, one declared prompt reaches the model
+through every API door, recurrent slots resume the next agent turn at a
+mark instead of re-folding the prompt, and the request telemetry says what
+a turn was served with and where its time went. On CUDA the whole codebook
+i-quant family runs its prefill on the tensor cores, every tensor-core
+kernel stages activations scaled to fp16's range, and the Windows layer fit
+respects the OS video-memory budget. The Hugging Face account is organised
+for an outsider: models, evidence datasets and collections.
 
 - **The Hugging Face account is organised for an outsider.** Weightless
   reports are Datasets now (the seven measurement and frontier reports, plus
