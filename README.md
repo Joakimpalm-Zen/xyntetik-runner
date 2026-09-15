@@ -1961,7 +1961,7 @@ recorded complete tool -> execution -> result -> answer loops for OpenCode
 as below), Continue CLI 1.5.47, Cline CLI 3.0.61 and pi 0.85.1; Aider 0.86.2
 passed transport/inference under `--dry-run` and still needs a matching model
 edit profile. Two of those versions could not make a single request against
-v0.5.3 (Claude Code's `allOf` tool schemas, Codex's stateless Responses
+the 0.5.3 release (Claude Code's `allOf` tool schemas, Codex's stateless Responses
 shape); the 2026-08-03/04 sweep had recorded the same loops for OpenCode
 1.18.4, Cline CLI 3.0.46, pi 0.81.1, Continue CLI 1.5.47, Claude Code 2.1.220
 and Codex CLI 0.144.6. OpenCode 1.18.31 also completed the loop against
