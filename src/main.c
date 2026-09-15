@@ -1,6 +1,7 @@
 #define _CRT_RAND_S
 // runner — CLI: one-shot completion, interactive chat, and server launcher.
 #include "dpo.h"
+#include "hfhub.h"
 #include "runner.h"
 #include "instances.h"
 #include "tray.h"
@@ -752,6 +753,10 @@ static void usage_to(FILE *f, const char *prog) {
         "usage: %s -m model.gguf [options]\n\n"
         "options:\n"
         "  -m PATH        GGUF model file\n"
+        "  -hf REPO[:TAG] fetch the GGUF from the Hugging Face Hub instead\n"
+        "                 (owner/repo, TAG picks the quant when the repo has\n"
+        "                 several; cached under ~/.cache/xyntetik-runner/hf,\n"
+        "                 sha256-verified; HF_TOKEN for gated repos)\n"
         "  -p TEXT        prompt (one-shot completion; \\n etc. are unescaped)\n"
         "  -f FILE        read prompt from file (appended after -p text)\n"
         "  -i             interactive chat mode\n"
@@ -1207,6 +1212,7 @@ static int run_shadow_mode(const char *model, bool yes) {
 
 int main(int argc, char **argv) {
     const char *model_path = NULL, *prompt = NULL, *system_prompt = NULL;
+    const char *hf_spec = NULL;
     char *owned_prompt = NULL;
     const char *tmpl_arg = NULL, *prompt_file = NULL, *schema_file = NULL;
     const char *quant_out = NULL, *quant_type = NULL, *prune_experts = NULL;
@@ -1275,6 +1281,7 @@ int main(int argc, char **argv) {
         const char *a = argv[i];
         #define NEXT (i + 1 < argc ? argv[++i] : (usage(argv[0]), exit(1), (char*)0))
         if      (!strcmp(a, "-m")) model_path = NEXT;
+        else if (!strcmp(a, "-hf") || !strcmp(a, "--hf")) hf_spec = NEXT;
         else if (!strcmp(a, "-p")) prompt = NEXT;
         else if (!strcmp(a, "-f")) prompt_file = NEXT;
         else if (!strcmp(a, "-n")) n_predict = (int)int_arg(a, NEXT, -1, INT_MAX);
@@ -1663,6 +1670,22 @@ int main(int argc, char **argv) {
             printf("%s\"%s\"", i ? "," : "", arches[i]);
         printf("]}\n");
         return 0;
+    }
+    // -hf resolves to a cached local file before anything reads model_path,
+    // so every mode (-p, -i, --serve, --score, ...) sees a plain path
+    if (hf_spec) {
+        if (model_path) {
+            fprintf(stderr, "error: use -m or -hf, not both\n");
+            return 1;
+        }
+        char herr[1024];
+        char *fetched = hf_fetch(hf_spec, herr, sizeof herr);
+        if (!fetched) {
+            fprintf(stderr, "error: -hf %s: %s\n", hf_spec, herr);
+            return 1;
+        }
+        fprintf(stderr, "hf: %s -> %s\n", hf_spec, fetched);
+        model_path = fetched;   // lives for the process
     }
     if (!model_path) { usage(argv[0]); return 1; }
     if (prompt_file) {

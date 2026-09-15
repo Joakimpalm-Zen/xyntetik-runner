@@ -6,6 +6,24 @@ change between releases (the `-alpha` suffix was retired at v0.2.0 — the 0.x
 version already says what it needs to). Entries below the rename keep the
 names that were true when they were written.
 
+## Unreleased
+
+- **`-hf owner/repo[:TAG]` fetches the GGUF from the Hugging Face Hub.** The
+  spelling llama.cpp and Ollama users know, so a model page's "Use this
+  model" snippet is one line: `runner -hf ibm-granite/granite-4.1-3b-GGUF:Q8_0
+  --serve`. The runner reads the repository's file list, picks the `.gguf`
+  the tag names (a whole token of the file name, case-insensitive; a
+  repository with one GGUF needs no tag, one with several is refused with
+  the list), downloads what the cache lacks with the system `curl` (every
+  part of a multipart file), verifies each download's SHA-256 against the
+  Hub's own LFS record and only then hands the path to the loader. Cache:
+  `$RUNNER_HF_CACHE`, else `~/.cache/xyntetik-runner/hf`
+  (`%LOCALAPPDATA%\xyntetik-runner\hf` on Windows), one directory per
+  repository; `HF_TOKEN` is sent as a bearer token for gated repositories.
+  Vision projectors (`mmproj-*`) are never candidates. Gated by
+  `tests/test_hfhub.c` (the selection rules) and `tests/test_hf_fetch.py`
+  (the transfer against a fake hub through `RUNNER_CURL`).
+
 ## v0.5.4 - 2026-09-15
 
 The cross-family release. The agent-client remedy of 2026-09-14 and
