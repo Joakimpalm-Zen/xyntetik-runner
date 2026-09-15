@@ -1016,7 +1016,7 @@
         "cpu_cuda",
         "chat"
       ],
-      "notes": "Official meta-models GGUF (Muse-Glimmer-30B-KQuant-17GB-Q4_K_M.gguf, 4-bit k-quant; upstream renamed/replaced the original muse-glimmer-30B-kquant-17gb.gguf — re-measured 2026-08-21, all six greedy cert outputs byte-identical, only the sha changed). Text path only: the separate vision encoder (mmproj) and atem tool syntax are out of scope. Evidence: docs/muse-glimmer-cert-2026-08-11.md.",
+      "notes": "Official meta-models GGUF (Muse-Glimmer-30B-KQuant-17GB-Q4_K_M.gguf, 4-bit k-quant; upstream renamed/replaced the original muse-glimmer-30B-kquant-17gb.gguf \u2014 re-measured 2026-08-21, all six greedy cert outputs byte-identical, only the sha changed). Text path only: the separate vision encoder (mmproj) and atem tool syntax are out of scope. Evidence: docs/muse-glimmer-cert-2026-08-11.md.",
       "check_params": {
         "cpu_cuda": {
           "pins": {
@@ -1243,6 +1243,114 @@
             "[/INST]",
             "<<SYS>>",
             "<|start_of_role|>"
+          ]
+        }
+      }
+    },
+    {
+      "id": "qwen3-coder-30b-a3b-instruct-q4_k_m",
+      "architecture": "qwen3moe",
+      "family": "Qwen3-Coder",
+      "file": "models/Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf",
+      "sha256": "79ad15a5ee3caddc3f4ff0db33a14454a5a3eb503d7fa1c1e35feafc579de486",
+      "upstream": "Qwen/Qwen3-Coder-30B-A3B-Instruct-GGUF (Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf)",
+      "tokenizer_reference": "Qwen/Qwen3-Coder-30B-A3B-Instruct",
+      "template": "qwen3-coder",
+      "preset": "qwen3-coder",
+      "quant_composition": "Q4_K_M (uniform k-quant)",
+      "checks": [
+        "load",
+        "chat",
+        "tool"
+      ],
+      "notes": "The 2026-09-14 Windows report's third artifact, re-tested 2026-09-15 on the Blackwell MIG slice at shipped defaults with scripts/tool-protocol-check.py: 6/6 report cases buffered and streamed once its auto turn was parsed unconstrained and the preset's repeat penalty read 1.0 (the config's 1.05 read 0 of 8 well-formed calls; evidence docs/cross-family-remedy-evidence/qwen3-coder-30b-repeat-penalty-ab-blackwell.txt). No llama.cpp reference row taken here: the tool gate anchors on the family's own protocol, the greedy/tokenizer rows are the sibling qwen3-30b-a3b-q4_k_m's. Backends: CUDA (Blackwell, full residency), CPU (case A at temperature 0); Metal NOT RUN.",
+      "check_params": {
+        "tool": {
+          "gate": "scripts/tool-protocol-check.py",
+          "cases": "A,B,C",
+          "evidence": "docs/cross-family-remedy-evidence/tool-protocol-qwen3-coder-30b-blackwell-final.json"
+        },
+        "chat": {
+          "prompt": "What is 2+2?",
+          "max_tokens": 200,
+          "gpu": "auto",
+          "expect_stop": true,
+          "expect_nonempty_content": true,
+          "forbid_substrings": [
+            "<|im_start|>",
+            "<start_of_turn>"
+          ]
+        }
+      }
+    },
+    {
+      "id": "qwen3.8-27b-gsq-rco-iq3_s-recovered",
+      "architecture": "qwen35",
+      "family": "Qwen 3.8",
+      "file": "models/Qwen3.8-27B-GSQ-RCO-IQ3_S-recovered.gguf",
+      "sha256": "873df48dd3ecf205f73c29716e80fbe766e4202ef4ed394b2c24607a8628458f",
+      "upstream": "Joakimpalm-Zen/Qwen3.8-27B-GSQ-RCO-IQ3_S-recovered-GGUF",
+      "tokenizer_reference": "Qwen/Qwen3.8-27B",
+      "template": "qwen38",
+      "preset": "qwen38",
+      "quant_composition": "IQ3_S/IQ3_XXS/IQ2_S/IQ2_XS/IQ2_XXS/IQ1_M codebook types with Q2_K/Q4_K/IQ4_XS/BF16 (see the Hugging Face card)",
+      "checks": [
+        "load",
+        "chat",
+        "tool"
+      ],
+      "notes": "The 2026-09-14 Windows report's first artifact (the runner's own published quant). CUDA since v0.5.3 (PR #92, docs/cuda-iquants-2026-09-14.md: CPU vs CUDA 9/9 greedy identical). Tool protocol at shipped defaults 2026-09-14/15 on the Blackwell: 6/6 report cases with the parse-only XML routing (0/6 streamed on v0.5.3's routing, the report's finding), tool_choice required 2/2 under the XML grammar; OpenCode 1.18.31 completed a Read loop against it. Metal: UNSUPPORTED (qwen35 has no Metal path).",
+      "check_params": {
+        "tool": {
+          "gate": "scripts/tool-protocol-check.py",
+          "cases": "A,B,C",
+          "evidence": "docs/cross-family-remedy-evidence/tool-protocol-qwen38-gsq-iq3s-blackwell-branch.json"
+        },
+        "chat": {
+          "prompt": "What is 2+2?",
+          "max_tokens": 200,
+          "gpu": "auto",
+          "expect_stop": true,
+          "expect_nonempty_content": true,
+          "forbid_substrings": [
+            "<|im_start|>",
+            "<start_of_turn>"
+          ]
+        }
+      }
+    },
+    {
+      "id": "gemma-4-12b-it-qat-q4_0",
+      "architecture": "gemma4",
+      "family": "Gemma 4",
+      "file": "models/gemma-4-12b-it-qat-q4_0.gguf",
+      "sha256": "93567e57a8fe10b23569b9d9ec38cd005deedf71e29477c421a4b83f418a538b",
+      "upstream": "google/gemma-4-12B-it-qat-q4_0-gguf (gemma-4-12b-it-qat-q4_0.gguf)",
+      "tokenizer_reference": "google/gemma-4-12B-it",
+      "template": "gemma4-mainline",
+      "preset": "gemma4",
+      "quant_composition": "Q4_0 QAT (Google's quantization-aware export)",
+      "checks": [
+        "load",
+        "chat",
+        "tool"
+      ],
+      "notes": "The 2026-09-14 Windows report's second artifact. Tool protocol at shipped defaults 2026-09-15 on the Blackwell: report cases A and B 4/4 under the gemma4 preset (repeat penalty 1.0), 0/6 under the previous gemma3 preset's 1.10 with the same binary (the report's finding); case C (prose then call) FAIL on both, an open item (Gemma 4's own format is call-first; docs/cross-family-remedy-2026-09-14.md). Not a substitute for the gemma-4-12b-it-q4_k_m row: different quantization, different behaviour at the family's temperature.",
+      "check_params": {
+        "tool": {
+          "gate": "scripts/tool-protocol-check.py",
+          "cases": "A,B,C",
+          "evidence": "docs/cross-family-remedy-evidence/tool-protocol-gemma4-12b-qat-q4_0-blackwell-gemma4-preset.json"
+        },
+        "chat": {
+          "prompt": "What is 2+2?",
+          "max_tokens": 200,
+          "gpu": "auto",
+          "expect_stop": true,
+          "expect_nonempty_content": true,
+          "forbid_substrings": [
+            "<|im_start|>",
+            "<start_of_turn>"
           ]
         }
       }

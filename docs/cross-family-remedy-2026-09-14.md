@@ -71,9 +71,20 @@ instruct mode's `presence_penalty 1.5`, a knob this sampler does not have.
 
 ## 3. Coverage inventory
 
-OPEN. `tests/compatibility/models.json` (29 artifacts) to be reconciled with
-`model_supported_archs()`, the 22 template ids, README/site claims and the
-three reported artifacts.
+DONE as a roster, mostly NOT RUN as rows: `tests/compatibility/coverage.json`
+gives every admitted architecture label (19, read from `runner --caps`),
+every chat-template id (22, read from `template_name`) and every pinned
+artifact (32 rows in `models.json`, the three reported artifacts added by
+hash with upstream, template, preset and quant composition) a disposition
+for the tool-protocol gate, the client loop, the sampling anchor and each
+backend: PASS with evidence, FAIL with a reason, NOT RUN, UNSUPPORTED.
+`tests/test_coverage_inventory.py` refuses a label without a disposition,
+a PASS without its evidence file, and a NOT RUN that carries evidence
+(mutation-proven: dropping a template id and an architecture fails two of
+its four checks). The rows that are PASS today: qwen38, granite42,
+qwen3-coder, gemma4-mainline (A/B), chatml-think (client loop), and the
+architectures behind them. Everything else is NOT RUN for the new gates,
+which is the honest state, not a claim.
 
 ## 4. Layered gates
 
