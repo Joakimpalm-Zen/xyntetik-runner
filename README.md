@@ -1332,7 +1332,15 @@ speculative mode flags. `timing.prefill_seconds` and `timing.prefill_tokens`
 are the prefill measured over the tokens it actually evaluated (the cached
 prefix costs nothing), apart from `generation_seconds`, which has always been
 the decode; a client no longer needs wall minus generation to tell a slow
-prompt from a slow decode. `prompt_reuse` says HOW the slot arrived at
+prompt from a slow decode. The stages around it are measured too:
+`timing.queue_seconds` (the wait on the accept queue for a free slot),
+`timing.tokenize_seconds` (the rendered prompt through the tokenizer),
+`timing.device_wait_seconds` (the wait for the device turn before prefill,
+which is where a request queues behind another slot's prefill on a shared
+GPU) and `timing.first_visible_seconds` (the first non-reasoning byte, from
+the moment the slot took the request; `null` for a turn that produced none,
+a reasoning-only or empty turn). Tool execution is the client's time, not
+the server's, and is not reported. `prompt_reuse` says HOW the slot arrived at
 `prompt_cached_tokens`: `extended` (the prompt continues the slot's history
 verbatim), `kv` (attention rows kept up to the first differing token),
 `turn_mark` (a recurrent fold resumed at the previous prompt boundary, see

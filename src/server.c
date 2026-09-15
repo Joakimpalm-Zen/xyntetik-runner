@@ -1544,8 +1544,11 @@ static void handle_conn(slot_t *s, sock_t fd) {
 static void *slot_worker(void *arg) {
     slot_t *s = arg;
     for (;;) {
-        sock_t fd = q_pop();
+        double waited = 0;
+        sock_t fd = q_pop(&waited);
         if (fd == SOCK_INVALID) return NULL;
+        s->queue_wait_s = waited;
+        s->req_t0 = now_s();
         handle_conn(s, fd);
         sock_close(fd);
     }

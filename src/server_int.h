@@ -25,10 +25,15 @@ typedef struct {
     int        id;
     int        tmpl;
     pthread_t  th;
+    // Stage timing for the request this slot is serving: when the worker
+    // took it off the accept queue (its clock start) and how long it had
+    // waited there. Zero for a request the accept loop answered itself.
+    double     req_t0, queue_wait_s;
 } slot_t;
 
 typedef struct {
     sock_t fds[512];
+    double at[512];   // when each fd was queued (now_s), for the queue wait
     int  head, tail, count, limit;
     bool shutdown;
     pthread_mutex_t mu;
@@ -186,7 +191,9 @@ bool init_swap_runtime(const model_params *mp, int n_threads, int ttl);
 // Admission: q_push sheds with 503 when the queue is full, q_pop blocks until
 // a connection arrives or the queue is shut down (SOCK_INVALID then).
 void   q_push(sock_t fd);
-sock_t q_pop(void);
+// Pop the next connection; *waited (optional) receives the seconds it sat
+// in the queue, the request's queue-wait stage.
+sock_t q_pop(double *waited);
 // Drain the queue at shutdown: every waiting connection is told 503
 // rather than dropped, and the workers blocked in q_pop are woken.
 void   queue_shutdown(void);
