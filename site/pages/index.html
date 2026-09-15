@@ -209,31 +209,51 @@ bare: yes
   </div>
 </section>
 
-<section class="section tint" id="flagship">
+<section class="section tint" id="personas">
   <div class="wrap">
     <div class="section-head reveal">
-      <p class="eyebrow">Three reasons to use Runner</p>
-      <h2>Inspectable, trainable, unbreakable under a budget.</h2>
+      <p class="eyebrow">Who Runner is for</p>
+      <h2>Run, build, attest. Find your column, then read what was measured.</h2>
     </div>
-    <div class="grid-3">
-      <a class="card card-link accent reveal" href="/runner/reproducible-lora-training-receipts/">
-        <div class="icon"><svg viewBox="0 0 36 36" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 4h13l6 6v22H9z"/><path d="M22 4v6h6"/><path d="M13 20l3 3 7-7"/></svg></div>
-        <h3>Evidence and reproducibility</h3>
-        <p>Results you can inspect, test and replay rather than merely generate. Recorded runs are signed and chained; a one-exit-code verifier replays them; the determinism claim has named edges, including what is deliberately not promised.</p>
-        <span class="more">Receipts, replay tiers and the scope &rarr;</span>
-      </a>
-      <a class="card card-link accent reveal" href="/runner/train-lora-on-quantized-gguf/">
-        <div class="icon"><svg viewBox="0 0 36 36" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="8" width="26" height="20" rx="3"/><path d="M11 22l4-6 4 4 3-3 3 5"/></svg></div>
-        <h3>LoRA training on the file you serve</h3>
-        <p>Train adapters directly through the frozen quantized GGUF, with no FP16 training copy. Same data, seed and config write a byte-identical adapter with a provenance sidecar. Measured 0.69 to 1.00 on a public artifact, with the merge caveat stated beside it.</p>
-        <span class="more">The measured claim and how to run it &rarr;</span>
-      </a>
-      <a class="card card-link accent reveal" href="/runner/truncation-safe-tool-calling/">
-        <div class="icon"><svg viewBox="0 0 36 36" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 8H7v20h5"/><path d="M24 8h5v20h-5"/><path d="M15 18h6"/><path d="M18 15v6"/></svg></div>
-        <h3>Tool calls that survive the token limit</h3>
-        <p>When the budget expires mid-call, Runner emits the smallest schema-legal ending so the arguments still parse and the agent continues. Five other engines were measured on the same rungs; none of them closes the document.</p>
-        <span class="more">The problem, the mechanism, the six-engine table &rarr;</span>
-      </a>
+    <div class="tiles">
+
+      <div class="tile head reveal"><p class="eyebrow">Run</p><h3>The Operator</h3><p>You run agents against a model on a GPU you own, and need calls that survive budgets, models that fit before they download, and one card shared without drama.</p></div>
+      <div class="tile head reveal"><p class="eyebrow">Build</p><h3>The Builder</h3><p>You pay per token for a coding agent all day and want to know, with proof, what a local model could take off that bill without breaking your flow.</p></div>
+      <div class="tile head reveal"><p class="eyebrow">Attest</p><h3>The Auditor</h3><p>You answer for what the model did: to a customer, a regulator, or yourself in six months. You need the receipt, not the demo.</p></div>
+
+      <div class="tile reveal"><div class="t"><a href="/runner/">Your client's first request works</a></div><div class="d">OpenCode, Claude Code, Codex CLI, Continue, Cline and pi re-validated at their latest versions; native tool protocols per model family (Harmony, atem, Qwen XML, Gemma 4).</div><span class="pill pass">re-run per release</span></div>
+      <div class="tile reveal"><div class="t"><a href="/runner/shadow-mode/">Shadow mode</a></div><div class="d">Runs your own tasks past the local model in tandem and admits an offload only when its tests pass and are frozen per task. The ledger says what it managed, both denominators shown.</div><span class="pill pass">measured on your work</span></div>
+      <div class="tile reveal"><div class="t"><a href="/runner/reproducible-lora-training-receipts/">Signed receipts</a></div><div class="d">Recorded runs are signed (Ed25519, ML-DSA-44 optional) and chained; a one-exit-code verifier replays them; the determinism claim has named edges, including what is not promised.</div><span class="pill pass">replayable</span></div>
+
+      <div class="tile reveal"><div class="t"><a href="/runner/">One card, several models</a></div><div class="d">A VRAM registry across processes, swap mode by name, parallel slots, idle unload on a TTL.</div><span class="pill plain">registry, swap</span></div>
+      <div class="tile reveal"><div class="t"><a href="/runner/">Designed to stay on</a></div><div class="d">A menu-bar controller on macOS and Windows, idle unload on a TTL, a model swapped in by name. The engine as a thing that sits there all day, not a chore.</div><span class="pill plain">tray, TTL, swap</span></div>
+      <div class="tile reveal"><div class="t"><a href="/evidence/">The correctness contract</a></div><div class="d">Every published artifact carries its measured envelope against the named parent: margin-qualified top-1 at least 97% and mean KLD at most 0.05, the misses published beside the passes.</div><span class="pill pass">bar and misses</span></div>
+
+      <div class="tile reveal"><div class="t"><a href="/runner/">A box you do not sit at</a></div><div class="d">The GHCR image, one binary in a container, the same loopback API; the Windows layer fit respects the OS video-memory budget.</div><span class="pill plain">docker, ghcr</span></div>
+      <div class="tile shared ba reveal"><div class="t"><a href="/runner/train-lora-on-quantized-gguf/">LoRA on the file you serve</a></div><div class="d">Train adapters directly through the frozen Q4_K_M, with no FP16 training copy. 0.69 to 1.00 exact tool calls on a public artifact; the 4-bit merge that erases the adaptation is measured beside it.</div>
+        <div class="who">
+          <div><span class="pill ba">for the Builder</span><div class="d">Train on your own verified edits and serve base plus adapter, on the machine you already have.</div></div>
+          <div><span class="pill ba">for the Auditor</span><div class="d">Two runs with the same data, seed and config write a byte-identical adapter with a provenance sidecar: training you can attest to.</div></div>
+        </div></div>
+
+      <div class="tile shared ob reveal"><div class="t"><a href="/runner/truncation-safe-tool-calling/">Tool calls that survive the token limit</a></div><div class="d">When the budget cuts a call short, Runner closes it to the smallest schema-legal document so the arguments still parse. Six engines measured on the same rungs; only Runner returns an executable call.</div>
+        <div class="who">
+          <div><span class="pill ob">for the Operator</span><div class="d">An agent loop that keeps going under a budget instead of stalling on a half-written call.</div></div>
+          <div><span class="pill ob">for the Builder</span><div class="d">Your coding agent is the caller: a cut call still parses instead of failing the turn.</div></div>
+        </div></div>
+      <div class="tile reveal"><div class="t"><a href="/evidence/">The publisher's reference is the anchor</a></div><div class="d">Admission compares against the model publisher's float32 reference and chat template token for token; agreement with llama.cpp is a ceiling, never the headline.</div><span class="pill plain">provider-reference first</span></div>
+
+      <div class="tile shared ob reveal"><div class="t"><a href="/runner/">Fit and capabilities before you download</a></div><div class="d"><code>--fit</code> reports what your machine needs from the header alone; <code>--caps</code> says what this build can serve; <code>-hf</code> fetches the file, verified against the Hub's SHA-256 record.</div>
+        <div class="who">
+          <div><span class="pill ob">for the Operator</span><div class="d">Size the card before the model lands on it, and know the build serves the format.</div></div>
+          <div><span class="pill ob">for the Builder</span><div class="d">Will it fit the laptop, answered before the download starts.</div></div>
+        </div></div>
+      <div class="tile reveal"><div class="t"><a href="/runner/">Confidence you can see</a></div><div class="d">Per-token and per-choice logprobs on every surface, and a telemetry block that says what a turn was served with and where its time went.</div><span class="pill plain">logprobs, telemetry</span></div>
+
+      <div class="tile cmd reveal"><pre><code>runner -hf Joakimpalm-Zen/Qwen3-30B-A3B-selective-attnQ8_0-expQ4_0-GGUF --serve --parallel 2</code></pre></div>
+      <div class="tile cmd reveal"><pre><code>runner --shadow-mode -m ~/models/a.gguf</code></pre></div>
+      <div class="tile cmd reveal"><pre><code>runner --verify &lt;receipt&gt;   # one exit code: the run replays, or it does not</code></pre></div>
+
     </div>
   </div>
 </section>
