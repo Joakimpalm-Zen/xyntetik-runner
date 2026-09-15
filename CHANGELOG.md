@@ -8,6 +8,17 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **Gemma 4: a call after prose is a call.** The family's format is
+  call-first, but the 2026-09-14 report's "briefly say what you are about
+  to do, then list the files" had the 12B QAT model write the prose and
+  then its native call, and the turn was served as content with the framing
+  in it under every preset. The prose branch of the turn grammar hands off
+  to the call at `<|tool_call>call:` (the engine admits the model's own
+  control token there, the one place a protocol marker inside free content
+  is syntax), the streaming demultiplexer and the buffered map read a call
+  after prose, and buffered turns keep the prose beside the calls on every
+  protocol (they discarded it on all but Harmony). The report's artifact
+  reads 6/6 at shipped defaults (`docs/cross-family-remedy-evidence/tool-protocol-gemma4-12b-qat-q4_0-blackwell-handoff.json`).
 - **The CUDA layer fit respects the OS video-memory budget on Windows and
   keeps a headroom that scales with the budget.** The 2026-09-14 report's
   12 GB card was filled to 11.7 GB from the driver's free-memory view and

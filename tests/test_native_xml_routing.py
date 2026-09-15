@@ -445,3 +445,40 @@ def test_scripted_reply_is_refused_without_the_hook(model):
             assert e.code == 400, e.code
             assert "RUNNER_TEST_SCRIPTED_REPLY" in e.read().decode()
 
+
+
+@pytest.fixture(scope="module")
+def gemma4(model):
+    with _server(model, "gemma4-mainline") as srv:
+        with urllib.request.urlopen(srv.base_url + "/v1/models", timeout=30) as r:
+            srv.model_id = json.load(r)["data"][0]["id"]
+        yield srv
+
+
+def test_gemma4_prose_then_call_is_a_call(gemma4):
+    """Gemma 4's own format is call-first, but the report's case C (a user
+    asking for a word before the call) had the 12B QAT model write prose and
+    then its native call, and the turn served the whole thing as content with
+    the framing in it, on both presets. The prose branch of the turn grammar
+    now hands off to the call at the family's opener, and the demultiplexer
+    and the buffered map read a call after prose."""
+    reply = ("I will list the files.\n\n"
+             "<|tool_call>call:bash{command:<|\"|>ls<|\"|>}<tool_call|>")
+    body = {"model": gemma4.model_id, "max_tokens": 200,
+            "messages": [{"role": "user", "content": "Say what you will do, then list."}],
+            "tools": [BASH], "runner_test_reply": reply}
+    d = _post(gemma4, "/v1/chat/completions", body)
+    ch = d["choices"][0]
+    assert ch["finish_reason"] == "tool_calls", d
+    calls = ch["message"]["tool_calls"]
+    assert calls[0]["function"]["name"] == "bash", d
+    assert json.loads(calls[0]["function"]["arguments"]) == {"command": "ls"}, d
+    assert (ch["message"].get("content") or "").strip() == "I will list the files.", d
+    _no_framing(ch["message"].get("content") or "")
+    events = _post(gemma4, "/v1/chat/completions", dict(body, stream=True), stream=True)
+    content, scalls, finish = _chat_stream(events)
+    assert finish == "tool_calls", (finish, content)
+    assert list(scalls) == [0] and json.loads(scalls[0]["args"]) == {"command": "ls"}, scalls
+    assert content.strip() == "I will list the files.", content
+    for m in ("<|tool_call", "<tool_call|>"):
+        assert m not in content, content

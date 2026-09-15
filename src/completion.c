@@ -1363,17 +1363,15 @@ static int envelope_map_buffered(const tool_envelope *env, gen_ctx *g, sbuf *tc,
         g->reason = mapped_reason;
     } else free(mapped_reason.s);
     if (rc >= 1) {
-        if (env->proto == TP_HARMONY && mapped.n) {
-            // Harmony's commentary message is intentionally visible before its
-            // recipient-bearing call. OpenAI-shaped responses permit content
-            // and tool_calls together, and the streaming demux already emits
-            // both in that order.
-            free(g->out.s);
-            g->out = mapped;
-        } else {
-            g->out.n = 0;
-            free(mapped.s);
-        }
+        // Prose the mapper kept beside the calls is the model's own content:
+        // Harmony's commentary before its recipient-bearing call, Qwen's and
+        // Gemma 4's prose before the opener. OpenAI-shaped responses permit
+        // content and tool_calls together, and the streaming demux already
+        // emits both in that order; the buffered turn used to discard it for
+        // every protocol but Harmony, so a client that switched streaming
+        // off lost the words the model wrote before acting.
+        free(g->out.s);
+        g->out = mapped;
     } else if (rc == 0) {
         free(g->out.s);
         g->out = mapped;         // the final branch's payload is the reply
