@@ -419,6 +419,45 @@ static void test_responses_refuses_unknown_input_item_type(void) {
     ta_tmpl = TMPL_HARMONY;
 }
 
+// A replayed `reasoning` item, which Codex CLI 0.154.0 hands back on every
+// turn after the first (a stateless client replays every output item it
+// received). Harmony authors it on its analysis channel, exactly where the
+// chat surface puts reasoning_content and the Messages surface a thinking
+// block; a family whose reference strips prior thinking accepts the item
+// and renders nothing of it. Neither is a refusal: the request used to be
+// answered 400 and the client ended before its second turn.
+static void test_responses_replayed_reasoning_item(void) {
+    ta_tmpl = TMPL_HARMONY;
+    ta_run(handle_responses,
+           "{\"model\":\"m\",\"input\":[{\"type\":\"message\","
+           "\"role\":\"user\",\"content\":\"weather?\"},"
+           "{\"type\":\"reasoning\",\"id\":\"rs_1\",\"summary\":["
+           "{\"type\":\"summary_text\",\"text\":\"Oslo is asked for\"}]},"
+           "{\"type\":\"message\",\"role\":\"assistant\","
+           "\"content\":[{\"type\":\"output_text\",\"text\":\"Sunny.\"}]},"
+           "{\"type\":\"message\",\"role\":\"user\",\"content\":\"and Bergen?\"}]}"
+    );
+    ck(ta_prompt != NULL, "responses, harmony reasoning item: a prompt was produced");
+    ck(ta_prompt && strstr(ta_prompt, "<|channel|>analysis<|message|>Oslo is asked for") != NULL,
+       "responses, harmony reasoning item: replayed on the analysis channel");
+    ta_tmpl = TMPL_CHATML_THINK;
+    ta_run(handle_responses,
+           "{\"model\":\"m\",\"input\":[{\"type\":\"message\","
+           "\"role\":\"user\",\"content\":\"weather?\"},"
+           "{\"type\":\"reasoning\",\"id\":\"rs_1\",\"summary\":["
+           "{\"type\":\"summary_text\",\"text\":\"Oslo is asked for\"}]},"
+           "{\"type\":\"message\",\"role\":\"assistant\","
+           "\"content\":[{\"type\":\"output_text\",\"text\":\"Sunny.\"}]},"
+           "{\"type\":\"message\",\"role\":\"user\",\"content\":\"and Bergen?\"}]}"
+    );
+    ck(ta_prompt != NULL, "responses, qwen3 reasoning item: accepted");
+    ck(ta_prompt && strstr(ta_prompt, "Oslo is asked for") == NULL,
+       "responses, qwen3 reasoning item: prior thinking is stripped, as the reference does");
+    ck(ta_prompt && strstr(ta_prompt, "Sunny.") != NULL,
+       "responses, qwen3 reasoning item: the assistant's answer survives");
+    ta_tmpl = TMPL_HARMONY;
+}
+
 static void test_responses_refuses_malformed_message_item(void) {
     ta_tmpl = TMPL_CHATML;
     ta_run(handle_responses,
@@ -1154,6 +1193,7 @@ int main(void) {
     test_chat_text_spelled_call_resolves();
     test_chat_text_spelled_positional();
     test_chat_text_spelled_exhausted_refuses();
+    test_responses_replayed_reasoning_item();
     test_responses_refuses_malformed_message_item();
     test_responses_refuses_non_string_function_arguments();
     test_messages_orphan_result_two_tools();

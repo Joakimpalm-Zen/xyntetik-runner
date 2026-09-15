@@ -976,18 +976,26 @@ static void test_schema_pattern_shorthand_classes(void) {
                  bad.done));
         schema_free(schema); jv_free(j);
     }
-    // \s is NOT supported, on purpose: it includes tab/newline/CR, and JSON
-    // forbids raw control characters inside a string, so a grammar emitting
-    // them would produce output the caller cannot parse. Narrowing it to
-    // "space" would enforce a different language than the one declared, so it
-    // fails closed like every other form this compiler cannot honour exactly.
+    // \s compiles to the six whitespace characters the regex means. Five of
+    // them are control characters a JSON string only carries escaped, and
+    // this validator admits no escape inside a pattern, so the space is the
+    // one producible member: the enforced language is the declared one
+    // restricted to what a JSON string spells literally, which is exactly
+    // the restriction every class here has always carried (a `"` in a set
+    // was never producible either). Refusing \s outright, which this did
+    // until Claude Code 2.1.272 declared `[\s\S]`, left a claimed client
+    // unable to make a single request.
     const char *ws = "{\"type\":\"string\",\"pattern\":\"^\\\\s{2}$\"}";
     jv *j = json_parse(ws, strlen(ws));
     assert(j != NULL);
     char err[128];
-    assert(schema_compile(j, err, sizeof(err)) == NULL);
-    assert(strstr(err, "pattern") != NULL);
-    jv_free(j);
+    snode *schema = schema_compile(j, err, sizeof(err));
+    assert(schema != NULL);
+    sval two; sval_init(&two, schema);
+    assert(sval_feed(&two, "\"  \"", 4) && two.done);
+    sval one; sval_init(&one, schema);
+    assert(!(sval_feed(&one, "\" a\"", 4) && one.done));
+    schema_free(schema); jv_free(j);
 }
 
 static void test_schema_pattern_regex_syntax_is_rejected_not_reinterpreted(void) {
@@ -997,10 +1005,10 @@ static void test_schema_pattern_regex_syntax_is_rejected_not_reinterpreted(void)
     // declared pattern (e.g. [\d] would accept a literal backslash the
     // declared regex forbids)
     const char *bad_patterns[] = {
-        "{\"type\":\"string\",\"pattern\":\"^x[\\\\d]{2,}$\"}",   // class escape
-        "{\"type\":\"string\",\"pattern\":\"^x[^a]+$\"}",         // negated class
         "{\"type\":\"string\",\"pattern\":\"^a.b[a-z]+$\"}",      // prefix metachar
         "{\"type\":\"string\",\"pattern\":\"^a\\\\.b[a-z]+$\"}",  // prefix escape
+        "{\"type\":\"string\",\"pattern\":\"^x[\\\\q]{2,}$\"}",   // an escape regex has no meaning for
+        "{\"type\":\"string\",\"pattern\":\"^x[^]+$\"}",          // a negated empty set
     };
     for (size_t i = 0; i < sizeof(bad_patterns) / sizeof(*bad_patterns); i++) {
         jv *j = json_parse(bad_patterns[i], strlen(bad_patterns[i]));
@@ -1020,6 +1028,121 @@ static void test_schema_pattern_regex_syntax_is_rejected_not_reinterpreted(void)
     snode *schema = schema_compile(j, err, sizeof(err));
     assert(schema != NULL);
     schema_free(schema); jv_free(j);
+}
+
+// Claude Code 2.1.272 declares SendMessage.to as
+//   {"type":"string","allOf":[{"pattern":"^[^\n\r]*$"},{"pattern":"^[\s\S]{0,300}$"}]}
+// and the runner answered 400 to every request, which ends the client. The
+// conjunction of string constraints compiles to one string node that
+// enforces every pattern (and the tightest length bounds), and the class
+// syntax those patterns use -- negation, escapes inside a set, \s and \S --
+// compiles to exactly the declared character sets, with a negated or
+// universal class admitting non-ASCII characters whole. The enforced
+// language is, as for every pattern here, the declared one restricted to
+// the characters a JSON string carries unescaped.
+static void test_schema_allof_of_string_patterns(void) {
+    const char *src =
+        "{\"type\":\"string\",\"allOf\":[{\"pattern\":\"^[^\\\\n\\\\r]*$\"},"
+        "{\"pattern\":\"^[\\\\s\\\\S]{0,300}$\"}]}";
+    jv *j = json_parse(src, strlen(src));
+    assert(j != NULL);
+    char err[192];
+    snode *schema = schema_compile(j, err, sizeof(err));
+    if (!schema) fprintf(stderr, "allOf: %s\n", err);
+    assert(schema != NULL);
+    // an agent name, with a non-ASCII character, is admitted whole
+    const char *ok = "\"builder-\xc3\xa5-7\"";
+    sval v; sval_init(&v, schema);
+    assert(sval_feed(&v, ok, (int)strlen(ok)) && v.done);
+    // the empty string is in both languages
+    sval e; sval_init(&e, schema);
+    assert(sval_feed(&e, "\"\"", 2) && e.done);
+    // the second pattern's ceiling holds: byte 301 is refused where it lands
+    char longs[320]; longs[0] = '"';
+    memset(longs + 1, 'a', 301); longs[302] = '"'; longs[303] = 0;
+    sval l; sval_init(&l, schema);
+    assert(!sval_feed(&l, longs, 303));
+    memset(longs + 1, 'a', 300); longs[301] = '"'; longs[302] = 0;
+    sval m; sval_init(&m, schema);
+    assert(sval_feed(&m, longs, 302) && m.done);
+    // a forced completion of the open string closes it validly
+    sval c; sval_init(&c, schema);
+    assert(sval_feed(&c, "\"ab", 3));
+    char suffix[16];
+    int nfix = sval_close(&c, suffix, sizeof(suffix));
+    assert(nfix == 1 && suffix[0] == '"');
+    schema_free(schema); jv_free(j);
+
+    // two patterns whose conjunction is a fixed-length language: both hold
+    const char *both =
+        "{\"type\":\"string\",\"allOf\":[{\"pattern\":\"^[a-z]{2,4}$\"},"
+        "{\"pattern\":\"^[a-c]{3}$\"}]}";
+    j = json_parse(both, strlen(both));
+    schema = schema_compile(j, err, sizeof(err));
+    assert(schema != NULL);
+    sval a; sval_init(&a, schema);
+    assert(sval_feed(&a, "\"abc\"", 5) && a.done);
+    sval b; sval_init(&b, schema);
+    assert(!sval_feed(&b, "\"abd\"", 5));          // d is outside [a-c]
+    sval d; sval_init(&d, schema);
+    assert(!sval_feed(&d, "\"abcc\"", 6));         // {3} caps the second
+    sval f; sval_init(&f, schema);
+    assert(sval_feed(&f, "\"a", 2));
+    nfix = sval_close(&f, suffix, sizeof(suffix));  // fills to the joint minimum
+    assert(nfix == 3 && !memcmp(suffix, "aa\"", 3));
+    schema_free(schema); jv_free(j);
+
+    // allOf members that are not string constraints stay refused, as does
+    // a member whose type contradicts the parent
+    const char *bad[] = {
+        "{\"type\":\"string\",\"allOf\":[{\"type\":\"integer\"}]}",
+        "{\"type\":\"object\",\"allOf\":[{\"properties\":{\"a\":{\"type\":\"string\"}}}]}",
+        "{\"type\":\"string\",\"allOf\":[{\"pattern\":\"^[a-z]{2}$\"},{\"pattern\":\"^[0-9]{2}$\"}]}",
+    };
+    for (size_t i = 0; i < sizeof(bad) / sizeof(*bad); i++) {
+        j = json_parse(bad[i], strlen(bad[i]));
+        assert(schema_compile(j, err, sizeof(err)) == NULL);
+        jv_free(j);
+    }
+}
+
+// Negated classes and escapes inside a set: the enforced set is exactly the
+// declared one. `[^\n\r]` admits every character but the two newlines; a
+// control character never appears in a JSON string unescaped, so the class
+// keeps the same producible members as the declared regex.
+static void test_schema_negated_and_escaped_classes(void) {
+    struct { const char *pat; const char *ok; const char *bad; } cases[] = {
+        { "^[^\\\\n\\\\r]+$",     "\"one line\"",   "\"two\\nlines\"" },
+        { "^[^a-c]{2}$",          "\"xy\"",         "\"ab\"" },
+        { "^[\\\\-\\\\]a]{2}$",   "\"-]\"",         "\"ab\"" },
+        { "^[\\\\s]{1}$",         "\" \"",          "\"a\"" },
+        { "^[\\\\S]{3}$",         "\"a\xc3\xa9z\"", "\"a z\"" },
+        { "^\\\\S{2}$",           "\"ab\"",         "\"a b\"" },
+    };
+    for (size_t i = 0; i < sizeof(cases) / sizeof(*cases); i++) {
+        char src[128];
+        snprintf(src, sizeof(src), "{\"type\":\"string\",\"pattern\":\"%s\"}", cases[i].pat);
+        jv *j = json_parse(src, strlen(src));
+        assert(j != NULL);
+        char err[192];
+        snode *schema = schema_compile(j, err, sizeof(err));
+        if (!schema) fprintf(stderr, "%s: %s\n", cases[i].pat, err);
+        assert(schema != NULL);
+        sval v; sval_init(&v, schema);
+        assert(sval_feed(&v, cases[i].ok, (int)strlen(cases[i].ok)) && v.done);
+        sval w; sval_init(&w, schema);
+        assert(!(sval_feed(&w, cases[i].bad, (int)strlen(cases[i].bad)) && w.done));
+        // the forced completion never reaches for a control character or a
+        // quote as the class's filler
+        sval c; sval_init(&c, schema);
+        assert(sval_feed(&c, "\"", 1));
+        char suffix[32];
+        int nfix = sval_close(&c, suffix, sizeof(suffix));
+        assert(nfix >= 1);
+        for (int k = 0; k + 1 < nfix; k++)
+            assert(suffix[k] >= 0x20 && suffix[k] != '"' && suffix[k] != '\\');
+        schema_free(schema); jv_free(j);
+    }
 }
 
 static void test_schema_number_bounds_reject_dead_minus_and_close_in_bounds(void) {
@@ -2869,6 +2992,8 @@ int main(void) {
     test_schema_agent_id_pattern_is_enforced();
     test_schema_pattern_shorthand_classes();
     test_schema_pattern_regex_syntax_is_rejected_not_reinterpreted();
+    test_schema_allof_of_string_patterns();
+    test_schema_negated_and_escaped_classes();
     test_schema_number_bounds_reject_dead_minus_and_close_in_bounds();
     test_schema_merges_enum_and_const_anyof();
     test_schema_integer_bounds_are_enforced();

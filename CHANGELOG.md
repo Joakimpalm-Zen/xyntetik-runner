@@ -8,6 +8,28 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **The latest agent clients make their first request again.** Re-validating
+  the README's coding-agent rows at the clients' latest versions on the
+  Blackwell found three that could not: Claude Code 2.1.272 declares
+  `SendMessage.to` as an `allOf` of two patterns (`^[^\n\r]*$`,
+  `^[\s\S]{0,300}$`) and every request was refused with `unsupported
+  schema keyword 'allOf'`; Codex CLI 0.154.0 sends
+  `include:["reasoning.encrypted_content"]`, `parallel_tool_calls:true`
+  and, from its second turn, the `reasoning` items it received, and each was
+  a 400 on the Responses surface. Now: an `allOf` of string constraints
+  compiles to one string node enforcing every pattern and the tightest
+  bounds; the pattern compiler takes negated classes, escapes inside a set,
+  `\s` and the complements `\S`/`\D`/`\W`, and `*` (a negated or complement
+  class admits non-ASCII characters whole; the enforced language is the
+  declared one restricted to what a JSON string spells unescaped, as every
+  class here always was); the encrypted-reasoning include is accepted and
+  answered truthfully with nothing to include; `parallel_tool_calls:true`
+  streams each call as its own `function_call` item; replayed `reasoning`
+  items are accepted and rendered the way the family's reference renders
+  prior thinking (Harmony's analysis channel, nothing elsewhere), matching
+  the chat and Messages surfaces. `scripts/agent-client-sweep.py` is the
+  rows as a harness (opencode, claude, codex, continue, cline, pi, aider;
+  a per-run sentinel; NOT RUN is never a pass).
 - **Gemma 4, Qwen 3.8, Qwen3-Coder and Granite 4.2 get their publishers'
   sampling presets; Gemma 3 loses a penalty its publisher never stated.**
   Gemma 4 inherited Gemma 3's preset and with it a `repeat_penalty 1.10`

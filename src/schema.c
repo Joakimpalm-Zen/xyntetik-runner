@@ -63,8 +63,11 @@ void schema_free(snode *n) {
     for (int i = 0; i < n->n_lits; i++) free(n->lits[i]);
     free(n->lits);
     free(n->order);
-    for (int i = 0; i < n->n_pat; i++) free(n->pat[i].prefix);
-    free(n->pat);
+    for (int k = 0; k < n->n_pats; k++) {
+        for (int i = 0; i < n->pats[k].n; i++) free(n->pats[k].seg[i].prefix);
+        free(n->pats[k].seg);
+    }
+    free(n->pats);
     free(n->sentinel);
     for (int i = 0; i < n->n_props; i++) {
         if (n->keys) free(n->keys[i]);
@@ -126,6 +129,49 @@ static bool declares_type(jv *s, const char *want) {
     return false;
 }
 
+/* `allOf` is admitted in exactly one shape: on a string, with every member
+   a string constraint (pattern, minLength, maxLength, a `type` that agrees,
+   annotations). Its meaning there is a conjunction the string node can
+   enforce exactly -- every pattern, the tightest bounds. Claude Code 2.1.272
+   declares `{"allOf":[{"pattern":...},{"pattern":...}]}` on a tool
+   parameter and was answered 400 on every request. Any other allOf (object
+   fragments to merge, mixed types) stays refused by name. */
+static bool allof_is_string_conjunction(jv *s, char *err, int errcap) {
+    jv *all = jv_get(s, "allOf");
+    if (!all) return true;
+    if (all->type != J_ARR || all->n < 1) {
+        snprintf(err, errcap, "allOf must be a non-empty array");
+        return false;
+    }
+    if (!declares_type(s, "string")) {
+        snprintf(err, errcap, "unsupported schema keyword 'allOf' (only string "
+                              "constraints can be conjoined)");
+        return false;
+    }
+    for (int i = 0; i < all->n; i++) {
+        jv *m = all->items[i];
+        if (!m || m->type != J_OBJ) {
+            snprintf(err, errcap, "allOf members must be objects");
+            return false;
+        }
+        for (int k = 0; k < m->n; k++) {
+            const char *key = m->keys[k];
+            if (kw_in(key, KW_ANNOTATION) || kw_in(key, KW_STRING)) continue;
+            if (!strcmp(key, "type")) {
+                if (!declares_type(m, "string")) {
+                    snprintf(err, errcap, "allOf member declares a type other "
+                                          "than the string it constrains");
+                    return false;
+                }
+                continue;
+            }
+            snprintf(err, errcap, "unsupported schema keyword '%.40s' in allOf", key);
+            return false;
+        }
+    }
+    return true;
+}
+
 static bool check_keywords(jv *s, char *err, int errcap) {
     if (!s || s->type != J_OBJ) return true;
     bool one = jv_get(s, "oneOf") != NULL, any = jv_get(s, "anyOf") != NULL;
@@ -133,6 +179,7 @@ static bool check_keywords(jv *s, char *err, int errcap) {
         snprintf(err, errcap, "keyword 'anyOf' cannot be combined with 'oneOf'");
         return false;
     }
+    if (!allof_is_string_conjunction(s, err, errcap)) return false;
     bool composed = one || any;
     bool literal  = !composed &&
                     (jv_get(s, "enum") != NULL || jv_get(s, "const") != NULL);
@@ -140,6 +187,7 @@ static bool check_keywords(jv *s, char *err, int errcap) {
         const char *k = s->keys[i];
         if (kw_in(k, KW_ANNOTATION)) continue;
         if (!strcmp(k, "type")) continue;
+        if (!strcmp(k, "allOf") && !composed && !literal) continue;
         bool ok;
         if (composed)     ok = !strcmp(k, "oneOf") || !strcmp(k, "anyOf");
         else if (literal) ok = !strcmp(k, "enum") || !strcmp(k, "const");
@@ -241,84 +289,157 @@ static bool pattern_prefix_char_ok(unsigned char c) {
     return strchr(".\\*+?()|{}$^", (char)c) == NULL;
 }
 
-/* The shorthand classes a JSON string can carry literally. \d and \w expand to
-   printable ASCII, so the enforced language is exactly the declared one.
-
-   \s is deliberately absent. It includes tab, newline and CR, and JSON forbids
-   raw control characters inside a string — a grammar that emitted them would
-   produce output the caller cannot parse. Silently narrowing \s to "space" is
-   the other way to be wrong, so it stays a compile error like any other form
-   this compiler cannot enforce exactly. */
-static bool pattern_shorthand_class(char c, bool *ascii) {
+/* The shorthand classes, expanded to exactly the sets the regex means. \d
+   and \w are printable ASCII. \s is the six whitespace characters; five of
+   them are control characters a JSON string only carries escaped, and this
+   validator admits no escape inside a pattern, so the space is the one
+   producible member -- which is the restriction every class here has always
+   carried (a `"` in a set was never producible either): the enforced language
+   is the declared one restricted to what a JSON string spells literally.
+   \S, \D and \W are the complements, and admit every non-ASCII character.
+   Adds to `ascii`/`*non_ascii`; the caller starts from an empty set. */
+static bool pattern_shorthand_class(char c, bool *ascii, bool *non_ascii) {
+    bool set[128] = {0};
     switch (c) {
-        case 'd':
-            for (unsigned x = '0'; x <= '9'; x++) ascii[x] = true;
-            return true;
-        case 'w':
-            for (unsigned x = '0'; x <= '9'; x++) ascii[x] = true;
-            for (unsigned x = 'A'; x <= 'Z'; x++) ascii[x] = true;
-            for (unsigned x = 'a'; x <= 'z'; x++) ascii[x] = true;
-            ascii['_'] = true;
-            return true;
+        case 'd': case 'D':
+            for (unsigned x = '0'; x <= '9'; x++) set[x] = true;
+            break;
+        case 'w': case 'W':
+            for (unsigned x = '0'; x <= '9'; x++) set[x] = true;
+            for (unsigned x = 'A'; x <= 'Z'; x++) set[x] = true;
+            for (unsigned x = 'a'; x <= 'z'; x++) set[x] = true;
+            set['_'] = true;
+            break;
+        case 's': case 'S':
+            set[' '] = set['\t'] = set['\n'] = set['\r'] = set['\f'] = set['\v'] = true;
+            break;
         default:
             return false;
     }
+    bool negate = c == 'D' || c == 'W' || c == 'S';
+    for (unsigned x = 0; x < 128; x++) if (set[x] != negate) ascii[x] = true;
+    if (negate) *non_ascii = true;
+    return true;
+}
+
+/* A character a JSON string can spell without an escape and this validator
+   therefore lets a pattern class produce: printable ASCII other than the
+   quote and the backslash. Every class must contain at least one, or no
+   forced completion could ever fill it. */
+static bool pattern_producible(unsigned c) {
+    return c >= 0x20 && c < 0x7f && c != '"' && c != '\\';
 }
 
 /* What the compiled pattern allows at byte offset `pos`. The validator and
    the truncation closer both ask this rather than re-deriving segment
    boundaries, so they cannot disagree about where a class begins. */
-typedef enum { PAT_LIT, PAT_CLASS, PAT_END } pat_what;
-typedef struct { pat_what what; unsigned char lit; const bool *ascii; } pat_at;
+typedef enum { PAT_LIT, PAT_CLASS, PAT_END, PAT_NONE } pat_what;
+typedef struct { pat_what what; unsigned char lit; bool ascii[128]; bool non_ascii; } pat_at;
 
-static pat_at pat_at_pos(const snode *n, int pos) {
-    for (int i = 0; i < n->n_pat; i++) {
-        const pat_seg *g = &n->pat[i];
-        if (pos < g->prefix_len)
-            return (pat_at){ PAT_LIT, (unsigned char)g->prefix[pos], NULL };
+/* What ONE compiled pattern allows at byte offset `pos`. */
+static pat_at pattern_at_pos(const pattern *p, int pos) {
+    pat_at r = { PAT_END, 0, {0}, false };
+    for (int i = 0; i < p->n; i++) {
+        const pat_seg *g = &p->seg[i];
+        if (pos < g->prefix_len) {
+            r.what = PAT_LIT; r.lit = (unsigned char)g->prefix[pos];
+            return r;
+        }
         pos -= g->prefix_len;
         if (!g->has_class) continue;
         /* every segment but the last is fixed-length, so its span is exactly
            min_tail; the last may run to max_tail, or forever when unbounded */
-        int span = (i + 1 < n->n_pat) ? g->min_tail : g->max_tail;
-        if (span < 0 || pos < span)
-            return (pat_at){ PAT_CLASS, 0, g->ascii };
+        int span = (i + 1 < p->n) ? g->min_tail : g->max_tail;
+        if (span < 0 || pos < span) {
+            r.what = PAT_CLASS;
+            memcpy(r.ascii, g->ascii, sizeof(r.ascii));
+            r.non_ascii = g->non_ascii;
+            return r;
+        }
         pos -= span;
     }
-    return (pat_at){ PAT_END, 0, NULL };
+    return r;
+}
+
+/* What every pattern of the node allows at `pos`, together: the literal
+   they agree on, the intersection of their classes, END when any of them
+   is complete (the others may admit more, but the string cannot carry it),
+   NONE when they contradict. The validator and the truncation closer both
+   ask this rather than re-deriving segment boundaries, so they cannot
+   disagree about where a class begins. */
+static pat_at pat_at_pos(const snode *n, int pos) {
+    pat_at r = { PAT_CLASS, 0, {0}, true };
+    memset(r.ascii, 1, sizeof(r.ascii));
+    for (int k = 0; k < n->n_pats; k++) {
+        pat_at a = pattern_at_pos(&n->pats[k], pos);
+        if (a.what == PAT_END) { r.what = PAT_END; return r; }
+        if (a.what == PAT_LIT) {
+            bool ok = r.what == PAT_LIT ? r.lit == a.lit : r.ascii[a.lit];
+            if (!ok) { r.what = PAT_NONE; return r; }
+            r.what = PAT_LIT; r.lit = a.lit;
+            continue;
+        }
+        if (r.what == PAT_LIT) {
+            if (!a.ascii[r.lit]) { r.what = PAT_NONE; return r; }
+            continue;
+        }
+        for (unsigned c = 0; c < 128; c++) r.ascii[c] = r.ascii[c] && a.ascii[c];
+        r.non_ascii = r.non_ascii && a.non_ascii;
+    }
+    return r;
 }
 
 /* The byte a forced completion writes at offset `pos`: the literal the
-   pattern requires there, or the lowest member of the class it allows. One
-   function so the closer cannot drift from the validator. */
+   patterns require there, or the lowest producible member of the class they
+   allow. One function so the closer cannot drift from the validator. */
 static unsigned char pat_fill_byte(const snode *n, int pos) {
     pat_at at = pat_at_pos(n, pos);
     if (at.what == PAT_LIT) return at.lit;
     if (at.what == PAT_CLASS) {
-        for (unsigned c = 0; c < 128; c++) if (at.ascii[c]) return (unsigned char)c;
+        for (unsigned c = 0; c < 128; c++)
+            if (at.ascii[c] && pattern_producible(c)) return (unsigned char)c;
     }
     return ' ';   /* unreachable for a compiled pattern: every class is non-empty */
 }
 
-/* Shortest and longest strings the pattern admits; -1 max means unbounded.
-   These are what minLength/maxLength are checked against, and what the
-   closer must reach before it may emit the closing quote. */
-static int pat_min_len(const snode *n) {
+/* Shortest and longest strings the patterns admit together (the longest of
+   the minimums, the shortest of the maximums); -1 max means unbounded. These
+   are what minLength/maxLength are checked against, and what the closer must
+   reach before it may emit the closing quote. */
+static int pattern_min_len(const pattern *p) {
     int total = 0;
-    for (int i = 0; i < n->n_pat; i++)
-        total += n->pat[i].prefix_len + (n->pat[i].has_class ? n->pat[i].min_tail : 0);
+    for (int i = 0; i < p->n; i++)
+        total += p->seg[i].prefix_len + (p->seg[i].has_class ? p->seg[i].min_tail : 0);
     return total;
 }
 
-static int pat_max_len(const snode *n) {
+static int pattern_max_len(const pattern *p) {
     int total = 0;
-    for (int i = 0; i < n->n_pat; i++) {
-        total += n->pat[i].prefix_len;
-        if (!n->pat[i].has_class) continue;
-        if (n->pat[i].max_tail < 0) return -1;
-        total += n->pat[i].max_tail;
+    for (int i = 0; i < p->n; i++) {
+        total += p->seg[i].prefix_len;
+        if (!p->seg[i].has_class) continue;
+        if (p->seg[i].max_tail < 0) return -1;
+        total += p->seg[i].max_tail;
     }
     return total;
+}
+
+static int pat_min_len(const snode *n) {
+    int best = 0;
+    for (int k = 0; k < n->n_pats; k++) {
+        int m = pattern_min_len(&n->pats[k]);
+        if (m > best) best = m;
+    }
+    return best;
+}
+
+static int pat_max_len(const snode *n) {
+    int best = -1;
+    for (int k = 0; k < n->n_pats; k++) {
+        int m = pattern_max_len(&n->pats[k]);
+        if (m >= 0 && (best < 0 || m < best)) best = m;
+    }
+    return best;
 }
 
 /* Parse one `{n}` / `{n,}` / `{n,m}` / `+` quantifier at `q`. Returns the
@@ -326,6 +447,7 @@ static int pat_max_len(const snode *n) {
    enforce exactly. */
 static const char *parse_quantifier(const char *q, long *min, long *max) {
     if (*q == '+') { *min = 1; *max = -1; return q + 1; }
+    if (*q == '*') { *min = 0; *max = -1; return q + 1; }
     if (*q != '{') return NULL;
     char *end = NULL;
     *min = strtol(q + 1, &end, 10);
@@ -350,9 +472,54 @@ static const char *parse_quantifier(const char *q, long *min, long *max) {
    from the offset alone; with `^[A-Z]{1,3}[0-9]{2}$` it does not, and a
    compiler that guessed would enforce a language the caller did not
    declare -- the exact failure this file exists to prevent. */
+/* One member of a bracket set: a literal, a range, or an escape. Adds to
+   `ascii`/`*non_ascii` and returns the byte after the member, or NULL for
+   syntax this compiler cannot enforce exactly. */
+static const char *class_member(const char *q, const char *rb, bool *ascii,
+                                bool *non_ascii) {
+    unsigned char lo, hi;
+    if (*q == '\\') {
+        if (q + 1 >= rb) return NULL;
+        unsigned char e = (unsigned char)q[1];
+        if (pattern_shorthand_class((char)e, ascii, non_ascii)) return q + 2;
+        switch (e) {
+            case 'n': lo = '\n'; break;
+            case 'r': lo = '\r'; break;
+            case 't': lo = '\t'; break;
+            case 'f': lo = '\f'; break;
+            case 'v': lo = '\v'; break;
+            default:
+                /* an escaped punctuation character stands for itself */
+                if (e >= 128 || ((e >= 'a' && e <= 'z') || (e >= 'A' && e <= 'Z') ||
+                                 (e >= '0' && e <= '9')))
+                    return NULL;
+                lo = e;
+        }
+        ascii[lo] = true;
+        return q + 2;
+    }
+    lo = hi = (unsigned char)*q;
+    if (lo >= 128) return NULL;
+    const char *next = q + 1;
+    if (next + 1 < rb && *next == '-') {
+        if (next[1] == '\\' || (unsigned char)next[1] >= 128) return NULL;
+        hi = (unsigned char)next[1];
+        next += 2;
+    }
+    if (hi < lo) return NULL;
+    for (unsigned c = lo; c <= hi; c++) ascii[c] = true;
+    return next;
+}
+
+static bool compile_ascii_pattern_value(jv *pv, snode *n, char *err, int errcap);
+
 static bool compile_ascii_pattern(jv *s, snode *n, char *err, int errcap) {
     jv *pv = jv_get(s, "pattern");
     if (!pv) return true;
+    return compile_ascii_pattern_value(pv, n, err, errcap);
+}
+
+static bool compile_ascii_pattern_value(jv *pv, snode *n, char *err, int errcap) {
     /* declared before the first failure exit: the unwind path frees the
        prefixes owned so far, so the count has to be live from the start */
     pat_seg segs[8];
@@ -384,27 +551,37 @@ static bool compile_ascii_pattern(jv *s, snode *n, char *err, int errcap) {
 
         const char *quant;
         if (shorthand) {
-            if (!(esc[1] == 'd' || esc[1] == 'w')) goto bad;
-            pattern_shorthand_class(esc[1], g->ascii);
+            if (!pattern_shorthand_class(esc[1], g->ascii, &g->non_ascii)) goto bad;
             quant = esc + 2;
         } else {
-            const char *rb = strchr(lb + 1, ']');
-            if (!rb) goto bad;
-            if (lb[1] == '^') goto bad;   /* negated: not literally matchable */
-            for (const char *q = lb + 1; q < rb; q++) {
-                if (*q == '\\') goto bad; /* escapes inside [] are regex syntax */
-                unsigned char lo = (unsigned char)*q, hi = lo;
-                if (q + 2 < rb && q[1] == '-') {
-                    if (q[2] == '\\') goto bad;
-                    hi = (unsigned char)q[2];
-                    q += 2;
-                }
-                if (lo >= 128 || hi >= 128 || hi < lo) goto bad;
-                for (unsigned c = lo; c <= hi; c++) g->ascii[c] = true;
+            /* the set's closing bracket: the first `]` not escaped, and not
+               the one a set may open with (`[]a]` means `]` and `a`) */
+            const char *q = lb + 1;
+            bool negate = *q == '^';
+            if (negate) q++;
+            const char *rb = q;
+            if (*rb == ']') rb++;
+            for (; *rb && *rb != ']'; rb++) if (*rb == '\\' && rb[1]) rb++;
+            if (*rb != ']') goto bad;
+            if (rb == q) goto bad;        /* an empty set matches nothing: unsatisfiable */
+            while (q < rb) {
+                q = class_member(q, rb, g->ascii, &g->non_ascii);
+                if (!q) goto bad;
             }
-            if (rb == lb + 1) goto bad;   /* an empty class matches nothing: unsatisfiable */
+            if (negate) {
+                /* the complement: every ASCII character not named, and
+                   every non-ASCII one */
+                for (unsigned c = 0; c < 128; c++) g->ascii[c] = !g->ascii[c];
+                g->non_ascii = !g->non_ascii;
+            }
             quant = rb + 1;
         }
+        /* a class no JSON string can spell a member of (control characters
+           only, or the quote) leaves a forced completion nothing to write */
+        bool producible = false;
+        for (unsigned c = 0; c < 128 && !producible; c++)
+            producible = g->ascii[c] && pattern_producible(c);
+        if (!producible) goto bad;
         long min = 0, max = -1;
         const char *after = parse_quantifier(quant, &min, &max);
         if (!after) goto bad;
@@ -427,10 +604,17 @@ static bool compile_ascii_pattern(jv *s, snode *n, char *err, int errcap) {
     for (int i = 0; i + 1 < n_segs; i++)
         if (segs[i].has_class && segs[i].max_tail != segs[i].min_tail) goto bad;
 
-    n->pat = calloc((size_t)n_segs, sizeof(*n->pat));
-    if (!n->pat) goto oom;
-    memcpy(n->pat, segs, (size_t)n_segs * sizeof(*n->pat));
-    n->n_pat = n_segs;
+    {
+        pattern *grown = realloc(n->pats, sizeof(*n->pats) * (size_t)(n->n_pats + 1));
+        if (!grown) goto oom;
+        n->pats = grown;
+        pattern *pat = &n->pats[n->n_pats];
+        pat->seg = calloc((size_t)n_segs, sizeof(*pat->seg));
+        if (!pat->seg) goto oom;
+        memcpy(pat->seg, segs, (size_t)n_segs * sizeof(*pat->seg));
+        pat->n = n_segs;
+        n->n_pats++;
+    }
     return true;
 oom:
     for (int i = 0; i < n_segs; i++) free(segs[i].prefix);
@@ -439,10 +623,36 @@ bad:
     for (int i = 0; i < n_segs; i++) free(segs[i].prefix);
     snprintf(err, errcap,
              "pattern only supports an anchored sequence of literal runs and "
-             "repeated ASCII classes ([...], \\d or \\w), where every class "
-             "before the last has a fixed count (got %s)",
+             "repeated classes ([...], [^...], \\d, \\w, \\s and their "
+             "complements), where every class before the last has a fixed "
+             "count (got %s)",
              pv->type == J_STR ? pv->str : "a non-string");
     return false;
+}
+
+/* Every pattern of a string node holds at once, so their conjunction must
+   admit some string: a position where they contradict (`[a-z]` against
+   `[0-9]`, or two different literals) before the shortest string they
+   jointly require is an empty language, refused here rather than wedging a
+   request with no admissible byte. */
+static bool patterns_consistent(const snode *n, char *err, int errcap) {
+    int need = pat_min_len(n), cap = pat_max_len(n);
+    if (cap >= 0 && need > cap) {
+        snprintf(err, errcap, "allOf patterns cannot be satisfied together");
+        return false;
+    }
+    for (int pos = 0; pos < need; pos++) {
+        pat_at at = pat_at_pos(n, pos);
+        bool ok = at.what == PAT_LIT;
+        if (at.what == PAT_CLASS)
+            for (unsigned c = 0; c < 128 && !ok; c++)
+                ok = at.ascii[c] && pattern_producible(c);
+        if (!ok) {
+            snprintf(err, errcap, "allOf patterns cannot be satisfied together");
+            return false;
+        }
+    }
+    return true;
 }
 
 #define JSON_SAFE_INTEGER 9007199254740991LL
@@ -722,7 +932,37 @@ static snode *compile_typed(jv *s, const char *type, char *err, int errcap, int 
             schema_free(n);
             return NULL;
         }
-        if (n->n_pat && pat_max_len(n) >= 0 &&
+        // allOf of string constraints: every member's pattern is one more
+        // pattern the string must satisfy, its bounds tighten the node's.
+        // check_keywords admitted only string keywords in the members.
+        jv *all = jv_get(s, "allOf");
+        for (int i = 0; all && i < all->n; i++) {
+            jv *m = all->items[i];
+            jv *pv = jv_get(m, "pattern");
+            if (pv && !compile_ascii_pattern_value(pv, n, err, errcap)) {
+                schema_free(n);
+                return NULL;
+            }
+            int lo = 0, hi = -1;
+            if (!compile_bound(jv_get(m, "minLength"), 0, &lo) ||
+                !compile_bound(jv_get(m, "maxLength"), -1, &hi)) {
+                snprintf(err, errcap, "invalid string length bounds");
+                schema_free(n);
+                return NULL;
+            }
+            if (lo > n->min_items) n->min_items = lo;
+            if (hi >= 0 && (n->max_items < 0 || hi < n->max_items)) n->max_items = hi;
+            if (n->max_items >= 0 && n->min_items > n->max_items) {
+                snprintf(err, errcap, "invalid string length bounds");
+                schema_free(n);
+                return NULL;
+            }
+        }
+        if (n->n_pats > 1 && !patterns_consistent(n, err, errcap)) {
+            schema_free(n);
+            return NULL;
+        }
+        if (n->n_pats && pat_max_len(n) >= 0 &&
             n->min_items > pat_max_len(n)) {
             // a bounded pattern that can never be long enough for minLength is
             // an empty language: refuse it at compile time rather than let a
@@ -731,7 +971,7 @@ static snode *compile_typed(jv *s, const char *type, char *err, int errcap, int 
             schema_free(n);
             return NULL;
         }
-        if (n->n_pat && n->max_items >= 0 &&
+        if (n->n_pats && n->max_items >= 0 &&
             pat_min_len(n) > n->max_items) {
             snprintf(err, errcap, "pattern cannot satisfy maxLength");
             schema_free(n);
@@ -1314,7 +1554,7 @@ static snode *atem_string_value(jv *schema, const char *name, bool *raw,
     snode *json = compile_node(schema, err, errcap, 0);
     if (!json) return NULL;
     if (json->kind == SN_STR && json->min_items == 0 &&
-        json->max_items < 0 && json->n_pat == 0) {
+        json->max_items < 0 && json->n_pats == 0) {
         schema_free(json);
         *raw = true;
         return atem_raw("</atem:parameter>");
@@ -3235,15 +3475,20 @@ static int feed_byte(sval *v, uint8_t c) {
         }
 
     case P_STR: {
-        if (n->n_pat && f->sub == 0 && c != '"') {
-            if (c == '\\' || c >= 128) return -1;
-            pat_at at = pat_at_pos(n, f->lit_pos);
-            if (at.what == PAT_LIT) {
-                if (c != at.lit) return -1;
-            } else if (at.what == PAT_CLASS) {
-                if (!at.ascii[c]) return -1;
-            } else {
-                return -1;   // the pattern is complete: only the close quote
+        if (n->n_pats && f->sub == 0 && c != '"') {
+            if (c == '\\') return -1;
+            // a character starts here: ASCII, or the lead byte of a UTF-8
+            // sequence; its continuation bytes ride on utf8_state below and
+            // occupy no pattern position, as the declared regex counts them
+            if (f->utf8_state == 0) {
+                pat_at at = pat_at_pos(n, f->lit_pos);
+                if (at.what == PAT_LIT) {
+                    if (c != at.lit) return -1;
+                } else if (at.what == PAT_CLASS) {
+                    if (c >= 128 ? !at.non_ascii : !at.ascii[c]) return -1;
+                } else {
+                    return -1;   // the patterns are complete: only the close quote
+                }
             }
         }
         // a full string at maxLength admits only the closing quote — reject an
@@ -3256,7 +3501,7 @@ static int feed_byte(sval *v, uint8_t c) {
         if (r < 0) return -1;
         if (r == 1) {
             if (f->lit_pos < n->min_items ||
-                (n->n_pat && f->lit_pos < pat_min_len(n)) ||
+                (n->n_pats && f->lit_pos < pat_min_len(n)) ||
                 (n->max_items >= 0 && f->lit_pos > n->max_items))
                 return -1;
             frame_done(v);
@@ -3930,7 +4175,7 @@ static void emit_min_choice(emitq *q, const snode *n, int depth, int choice) {
         case SN_INT: emit_integer(q, integer_minimal_value(n)); break;
         case SN_STR:
             eq_putc(q, '"');
-            if (n->n_pat) {
+            if (n->n_pats) {
                 int need = pat_min_len(n);
                 if (n->min_items > need) need = n->min_items;
                 for (int i = 0; i < need && !eq_full(q); i++)
@@ -4083,10 +4328,10 @@ int sval_close(sval *v, char *out, int cap) {
             if (eq_escape(&q, f)) f->lit_pos++;
             eq_utf8(&q, f);
             int string_min = n->min_items;
-            if (n->n_pat && string_min < pat_min_len(n))
+            if (n->n_pats && string_min < pat_min_len(n))
                 string_min = pat_min_len(n);
             while (f->lit_pos < string_min && !eq_full(&q)) {
-                eq_putc(&q, n->n_pat ? pat_fill_byte(n, f->lit_pos) : ' ');
+                eq_putc(&q, n->n_pats ? pat_fill_byte(n, f->lit_pos) : ' ');
                 f->lit_pos++;
             }
             eq_putc(&q, '"');

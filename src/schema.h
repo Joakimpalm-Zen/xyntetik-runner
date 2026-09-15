@@ -18,7 +18,15 @@ typedef struct {
     bool  has_class;
     int   min_tail, max_tail;
     bool  ascii[128];
+    // The class admits every non-ASCII character, whole: a negated set
+    // (`[^\n\r]`), `\S`, `\D`, `\W` or a set spelling `\S`. The validator
+    // counts a UTF-8 sequence as one position, as the declared regex does.
+    bool  non_ascii;
 } pat_seg;
+
+// One compiled `pattern`: its segments. A string node may carry several
+// (an `allOf` of string constraints), and every one must hold.
+typedef struct { pat_seg *seg; int n; } pattern;
 
 typedef struct snode snode;
 struct snode {
@@ -36,13 +44,15 @@ struct snode {
     bool    has_num_min, has_num_max;
     double  real_min, real_max;                     // enforced number interval
     bool    has_real_min, has_real_max;
-    // A compiled `pattern` is a sequence of segments, each a literal run
+    // Each compiled `pattern` is a sequence of segments, a literal run
     // followed by an optional repeated ASCII class. One segment is the
     // common case (`^wf_[a-z0-9-]{6,}$`); several express shapes like
     // `^[A-Z]{3}[0-9]{4}$`. Every segment but the last is FIXED-length, so
     // the segment holding byte `p` follows from `p` alone and the enforced
     // language is still exactly the declared one -- see compile_pattern.
-    pat_seg *pat; int n_pat;
+    // Several patterns (allOf) are enforced together: pat_at_pos returns
+    // the intersection of what each admits at a position.
+    pattern *pats; int n_pats;
     // SN_RAW may also carry one marker/continuation in lits[0]/alts[0].
     // Its complete marker replaces the raw frame with the continuation.
     // SN_RAW's terminator. Its own field: this used to borrow the pattern

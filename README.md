@@ -1785,8 +1785,14 @@ terminal event contains usage and runner telemetry.
 
 Runner is stateless and refuses persistence or hosted-service fields rather
 than accepting them without effect: `store:true`, `previous_response_id`,
-`background:true`, `conversation`, `truncation:"auto"`, `include[]`, hosted
-tools, and `parallel_tool_calls:true`.
+`background:true`, `conversation`, `truncation:"auto"`, hosted tools, and
+every `include[]` member but one. `include:["reasoning.encrypted_content"]`
+is accepted: encrypted reasoning exists so a stateless client can hand a
+hosted model its hidden reasoning back, this runtime has none to encrypt,
+and a reasoning item without `encrypted_content` is the complete answer
+(Codex CLI 0.154 sends it on every request, with `store:false`).
+`parallel_tool_calls:true` is accepted as on the chat surface: the
+demultiplexer announces each call as its own `function_call` item.
 
 A replayed `function_call` item must say which function it called. Runner uses
 its `name`, falls back to the sole declared function when exactly one tool is
@@ -2157,13 +2163,20 @@ every arbitrary-key value. Mixed fixed properties plus open or schema-valued
 additional properties remain unsupported and are rejected rather than
 silently weakened.
 
-Anchored `pattern`s compile as a sequence of literal runs and repeated ASCII
-classes (`[...]`, `\d`, `\w`): `^wf_[a-z0-9-]{6,}$` and `^[A-Z]{3}[0-9]{4}$`
-both enforce, and a forced close mid-string completes to a string the pattern
-still accepts. Every class before the last carries a fixed count, so which
-class a byte belongs to follows from its offset; a variable-length class in
-the middle is refused rather than guessed, as are `\s`, negated classes, and
-escapes inside `[...]`.
+Anchored `pattern`s compile as a sequence of literal runs and repeated
+classes (`[...]`, `[^...]`, `\d`, `\w`, `\s` and their complements, with
+escapes inside a set): `^wf_[a-z0-9-]{6,}$`, `^[A-Z]{3}[0-9]{4}$` and
+`^[^\n\r]*$` all enforce, and a forced close mid-string completes to a
+string the pattern still accepts. A negated or complement class admits every
+non-ASCII character whole. The enforced language is the declared one
+restricted to what a JSON string spells unescaped (a control character or a
+quote inside a class was never producible). Every class before the last
+carries a fixed count, so which class a byte belongs to follows from its
+offset; a variable-length class in the middle is refused rather than
+guessed. An `allOf` of string constraints on a string is enforced as their
+conjunction, every pattern and the tightest bounds together; that is the one
+`allOf` shape accepted (Claude Code 2.1.272 declares
+`SendMessage.to` with two patterns), every other `allOf` is refused by name.
 
 Unsupported or ambiguous constraints fail at compile/request time. In
 particular, general overlapping `oneOf` branches are not tracked in parallel;

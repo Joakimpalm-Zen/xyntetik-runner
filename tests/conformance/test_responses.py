@@ -212,6 +212,7 @@ def test_responses_truncated_item_is_marked_incomplete(client):
     ("conversation", "conv_123", "stateless"),
     ("truncation", "auto", "truncation"),
     ("include", ["message.output_text.logprobs"], "include"),
+    ("include", ["file_search_call.results"], "include"),
 ])
 def test_stateful_features_are_refused(client, field, value, explains):
     """The project invariant, on this surface.
@@ -274,8 +275,6 @@ def test_supported_stateless_forms_are_accepted(client):
                                     "parameters": {"type": "object"}}],
       "tool_choice": {"type": "web_search_preview", "name": "f"}},
      "tool_choice"),
-    ({"input": "hi", "tools": [{"type": "function", "name": "f"}],
-      "parallel_tool_calls": True}, "parallel"),
     ({"input": [{"type": "function_call_output", "call_id": "call_1"}]},
      "output"),
 ])
@@ -522,6 +521,52 @@ def test_developer_role_is_accepted(client):
         name="responses-developer-role").expect_status(200).json
     if not d["output"]:
         raise ProtocolError("developer-role input produced no output", body=d)
+
+
+def test_codex_stateless_request_shape_is_accepted(client):
+    """What Codex CLI 0.154.0 sends on every request: `store:false`,
+    `include:["reasoning.encrypted_content"]`, `parallel_tool_calls:true`
+    and a `reasoning.summary` hint. Encrypted reasoning exists so a stateless
+    client can hand a hosted model its hidden reasoning back; this runtime has
+    none to encrypt, so a reasoning item without `encrypted_content` is the
+    complete, truthful answer and the request is served. Both fields used to
+    be refused, which ended the client before its first turn."""
+    # one small tool: the parallel envelope's teaching turn has to fit the
+    # conformance server's 1024-token context beside the prompt
+    small = {"type": "function", "name": "ping",
+             "parameters": {"type": "object", "properties": {},
+                            "additionalProperties": False}}
+    d = client.responses({"input": "hello", "temperature": 0,
+                          "max_output_tokens": 8, "store": False,
+                          "include": ["reasoning.encrypted_content"],
+                          "parallel_tool_calls": True,
+                          "reasoning": {"summary": "auto"},
+                          "tools": [small]},
+                         name="responses-codex-shape").expect_status(200).json
+    if d.get("parallel_tool_calls") is not True:
+        raise ProtocolError("parallel_tool_calls:true was not honoured in the echo",
+                            got=d.get("parallel_tool_calls"))
+    for item in d["output"]:
+        if item["type"] == "reasoning" and "encrypted_content" in item:
+            raise ProtocolError("a reasoning item claims encrypted content this "
+                                "runtime cannot have produced", item=item)
+
+
+def test_replayed_reasoning_item_is_accepted(client):
+    """Codex replays the reasoning items it received on every later turn.
+    The item is accepted; whether it renders is the family's reference
+    template's decision (tests/test_tool_attribution.c pins both answers)."""
+    d = client.responses({"input": [
+        {"role": "user", "content": "hello"},
+        {"type": "reasoning", "id": "rs_1",
+         "summary": [{"type": "summary_text", "text": "a greeting"}]},
+        {"type": "message", "role": "assistant",
+         "content": [{"type": "output_text", "text": "Hi."}]},
+        {"role": "user", "content": "again"}],
+        "temperature": 0, "max_output_tokens": 8, "store": False},
+        name="responses-replayed-reasoning").expect_status(200).json
+    if not d["output"]:
+        raise ProtocolError("replayed reasoning turn produced no output", body=d)
 
 
 def test_unknown_advisory_fields_are_tolerated(client):
