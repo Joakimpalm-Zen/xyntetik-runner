@@ -459,15 +459,19 @@ static void handle_chat(slot_t *s, sock_t fd, jv *req) {
         send_error(fd, rc == TOOL_ENVELOPE_OOM ? 500 : 400, terr);
         return;
     }
-    // Ornith is specifically trained on qwen3_xml. Keep its native protocol
-    // instead of forcing the model into runner's generic JSON envelope.
-    bool strict = rc == 1 && s->tmpl != TMPL_ORNITH &&
-                  s->tmpl != TMPL_GRANITE42 && s->tmpl != TMPL_QWEN38;
-    // When the strict envelope does not apply — no tools declared, or the
-    // ornith template's native protocol — the flag is vacuous and stays
-    // TOLERATED, exactly as before: ordinary OpenAI-shaped traffic sends
-    // parallel_tool_calls alongside requests that will never call anything,
-    // and rejecting those would break it.
+    // The envelope applies whenever tools are declared and callable. Ornith,
+    // Granite 4.2 and Qwen 3.8 used to be excluded here to keep their native
+    // XML protocol out of the generic JSON envelope; that also kept them out
+    // of the streaming demultiplexer, and every streamed call they made
+    // reached the client as prose (2026-09-14 Windows report). tool_decl_native
+    // now gives them the XML protocol on the envelope, parse-only (no
+    // grammar), so the same parser serves them buffered and streamed.
+    bool strict = rc == 1;
+    // When the strict envelope does not apply -- no tools declared, or
+    // tool_choice none -- the flag is vacuous and stays TOLERATED, exactly as
+    // before: ordinary OpenAI-shaped traffic sends parallel_tool_calls
+    // alongside requests that will never call anything, and rejecting those
+    // would break it.
     //
     // Families with a native declaration syntax render it themselves, from the
     // structured `tools` handed to render_prompt_alloc below; everyone else
@@ -483,7 +487,12 @@ static void handle_chat(slot_t *s, sock_t fd, jv *req) {
                                               &native_decl);
     sbuf ts = {0};
     bool oom = false;
-    if (strict && !native_decl)
+    // The generic teaching turn belongs to the generic envelope only. A
+    // family whose envelope carries a native protocol but renders its
+    // declarations outside the template (ornith, granite 4.2) gets its own
+    // declaration block from tools_render_for, exactly as it did without an
+    // envelope: prompt and parser must agree on the protocol.
+    if (strict && !native_decl && !tool_envelope_native(&env))
         sb_put(&ts, env.system_turn, strlen(env.system_turn));
     else if (!native_decl && s->tmpl != TMPL_MUSE)
         tools_render_for(s->tmpl, tools, &ts);
@@ -2032,6 +2041,7 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
                     return 1;
                 }
             }
+            template_bind_think_tags(tmpl, &s->m->think_open, &s->m->think_close);
             if (!engine_init(&s->e, s->m, s->tok, &s->smp)) {
                 fprintf(stderr, "error: out of memory initializing slot %d engine\n", i);
                 return 1;

@@ -640,10 +640,14 @@ void handle_responses(slot_t *s, sock_t fd, jv *req) {
     // message, then the input items in order
     int n_items = input->type == J_ARR ? input->n : 1;
     sbuf ts = {0};
-    if (strict && !native_decl)
+    // The family's own declaration block, as on the chat surface: ornith and
+    // granite 4.2 carry a native protocol on the envelope but render their
+    // declarations here rather than in the template, and the generic block
+    // used to be what this surface taught them.
+    if (strict && !native_decl && !tool_envelope_native(&env))
         sb_put(&ts, env.system_turn, strlen(env.system_turn));
     else if (!native_decl)
-        tools_render(tools, &ts);
+        tools_render_for(s->tmpl, tools, &ts);
     // The tool turn is content too: a builder that ran out here left `ts` short
     // or empty and the prompt would go out without the declarations the caller
     // sent, asking the model to call tools it was never shown.

@@ -8,6 +8,25 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **Qwen 3.8, Granite 4.2 and Ornith tool calls reach streaming clients as
+  `tool_calls`, not prose.** The three families were excluded from the
+  strict envelope to keep their native XML out of the generic JSON grammar,
+  which also kept them out of the streaming demultiplexer: the 2026-09-14
+  Windows report showed a bare `<tool_call>` block served as content with
+  `finish_reason: stop` while the buffered turn parsed it. They now carry
+  the XML protocol on the envelope parse-only (no grammar, the same parser
+  as Qwen3-Coder) on all three API surfaces, buffered and streamed: prose
+  kept before, between and after calls, one `tool_calls` index per block,
+  an invalid block reported as `envelope_unmapped` beside what was valid,
+  a block cut by the token budget dropped under `length`, up to 32 calls
+  per turn. Granite 4.2's reasoning is now split into `reasoning_content`
+  (the `<think>` tags are the template's; its architecture never set a
+  pair, so it had no splitter), and Ornith's splitter is primed only when
+  thinking is on (with `enable_thinking: false` the answer was served as
+  reasoning). Gate: `tests/test_native_xml_routing.py`, driven by the new
+  scripted-reply test hook (`RUNNER_TEST_SCRIPTED_REPLY=1` admits
+  `runner_test_reply` on a request; refused otherwise), so the path from
+  sampler to wire runs on known bytes.
 - **Shadow capture hooks for Codex.** `shadow install` now merges prompt,
   stop, post-edit and test-verification hooks into `~/.codex/hooks.json`,
   preserving existing entries and adopting an older local adapter without

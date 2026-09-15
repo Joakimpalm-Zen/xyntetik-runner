@@ -288,7 +288,8 @@ typedef struct {
                              // 1 = off, which every other arch keeps
     int32_t  *suppress;      // token ids forced to -inf in the logits
     int       n_suppress;    // (tokenizer.ggml.suppress_tokens)
-    const char *think_open, *think_close; // architecture thinking-tag pair, or NULL
+    const char *think_open, *think_close; // thinking-tag pair (architecture's,
+                                          // else the template's), or NULL
     gguf_tensor *tok_embd;
     gguf_tensor *output;     // may equal tok_embd (tied)
     float       *out_norm_w;

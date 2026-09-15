@@ -48,7 +48,7 @@ static void *serve_thread(void *arg) {
     p.n_threads = 1;
     p.n_ctx     = 512;
     p.n_batch   = 8;
-    sampler smp;
+    sampler smp = {0};
     sampler_reset(&smp);
     sampler_override ov;
     memset(&ov, 0, sizeof(ov));

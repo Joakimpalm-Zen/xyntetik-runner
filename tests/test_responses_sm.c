@@ -624,7 +624,8 @@ static void test_unmappable_envelope_is_not_served_as_content(void) {
     memset(&g, 0, sizeof(g));
     sb_put(&g.out, HARMONY_BROKEN, sizeof(HARMONY_BROKEN) - 1);
     sbuf tc = {0};
-    int rc = envelope_map_buffered(&harmony, &g, &tc);
+    bool fault = false;
+    int rc = envelope_map_buffered(&harmony, &g, &tc, false, &fault);
     ck(rc == -1, "the broken harmony document does not map");
     ck(g.out.n == 0,
        "an unmappable harmony document is not handed back as content");
@@ -641,7 +642,7 @@ static void test_unmappable_envelope_is_not_served_as_content(void) {
     memset(&g, 0, sizeof(g));
     sb_put(&g.out, "{tool", 5);
     tc = (sbuf){0};
-    rc = envelope_map_buffered(&generic, &g, &tc);
+    rc = envelope_map_buffered(&generic, &g, &tc, false, &fault);
     ck(rc == -1, "the broken generic document does not map");
     ck(g.out.n == 0,
        "an unmappable generic envelope is not handed back as content");

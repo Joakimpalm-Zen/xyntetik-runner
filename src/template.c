@@ -463,6 +463,16 @@ int req_reasoning_effort(struct jv *req) {
     return -1;
 }
 
+bool template_think_tags(int tmpl, const char **open, const char **close) {
+    if (tmpl == TMPL_CHATML_THINK || tmpl == TMPL_QWEN38 ||
+        tmpl == TMPL_GRANITE42 || tmpl == TMPL_ORNITH) {
+        *open = "<think>";
+        *close = "</think>";
+        return true;
+    }
+    return false;
+}
+
 int req_thinking_mode(struct jv *req) {
     if (!req) return THINK_DEFAULT;
     jv *kw = jv_get((jv *)req, "chat_template_kwargs");
@@ -3198,9 +3208,27 @@ void tool_envelope_free(tool_envelope *e) {
 const jv *tool_decl_native(int tmpl, bool strict, bool atem_tool_calling,
                            jv *tools, tool_envelope *env, bool *skip_generic) {
     bool qwen = tmpl == TMPL_CHATML || tmpl == TMPL_CHATML_THINK;
+    // The function/parameter XML families. Qwen3-Coder's turn is constrained
+    // to the XML grammar (schema.c) as it has been since the template was
+    // admitted; Qwen 3.8, Granite 4.2 and Ornith speak the same wire protocol
+    // and are parsed by the same demultiplexer, but their sampler is not
+    // constrained: their templates open a reasoning block the XML grammar
+    // has no branch for, and a constrained turn there is a separate,
+    // measured decision (template.h, tool_envelope.parse_only). Both choices
+    // reach the client through one parser, so a call is a call on every
+    // surface, streamed or buffered.
+    bool xml_free = tmpl == TMPL_QWEN38 || tmpl == TMPL_GRANITE42 ||
+                    tmpl == TMPL_ORNITH;
     if (strict && tmpl == TMPL_QWEN3_CODER) {
         env->proto = TP_QWEN_XML;
         env->tools = tools;
+    } else if (strict && xml_free) {
+        env->proto = TP_QWEN_XML;
+        env->tools = tools;
+        env->parse_only = true;
+        // a parser bound, not a grammar's: the model was never told how many
+        // calls a turn may carry, so parallel_tool_calls is not the limit
+        env->max_calls = TOOL_STREAM_MAX_CALLS;
     } else if (strict && qwen) {
         env->proto = TP_QWEN;
         env->tools = tools;
@@ -3257,6 +3285,9 @@ const jv *tool_decl_native(int tmpl, bool strict, bool atem_tool_calling,
     // caller's system text, an order only its renderer can produce, so it
     // takes the structured tools like the qwen families do (never strict:
     // its native protocol is the function XML, parsed like ornith's).
+    // Ornith and granite 4.2 render their declarations through
+    // tools_render_for (the caller's system-turn merge), so they are not in
+    // skip_generic's list even though their protocol is native.
     *skip_generic = qwen || g4_native || tmpl == TMPL_APERTUS ||
                     (tmpl == TMPL_MUSE && env->proto == TP_ATEM) ||
                     tmpl == TMPL_HARMONY || tmpl == TMPL_QWEN38 || tmpl == TMPL_QWEN3_CODER;
@@ -4436,19 +4467,78 @@ static bool ts_starts(const tool_stream *s, const char *lit) {
 #define QWEN_CALL_END  "</tool_call>"
 #define QWEN_TURN_END  "<|im_end|>"
 
+// True when a held `<tool_call>` block opens (or could still open) a
+// function: `<tool_call>`, optional whitespace, then a prefix of
+// `<function=`. A block that never does is prose that mentioned the tag.
+static bool ts_qwen_block_is_call(const tool_stream *s) {
+    size_t at = strlen(QWEN_CALL_OPEN);
+    while (at < s->head_n && ts_ws(s->head[at])) at++;
+    size_t left = s->head_n - at, fl = strlen("<function=");
+    size_t k = left < fl ? left : fl;
+    return !memcmp(s->head + at, "<function=", k);
+}
+
 static int ts_qwen(tool_stream *s, const char *bytes, int n) {
     head_put(s,bytes,(size_t)n);
+    bool lenient = s->env && s->env->parse_only;
     for (;;) {
         if (s->state==TS_DONE || !s->head_n) return 0;
         if (s->state==TS_QWEN_CALLS) {
+            if (lenient) {
+                // What follows the opener decides what the opener was. A
+                // second opener (Granite 4.2 8B at temperature 1.0 writes
+                // `<tool_call>\n<tool_call>\n<function=` in about half its
+                // calls) makes the first one stray framing: dropped, and the
+                // call behind it is still a call. Prose makes it a mention,
+                // content like the sentence around it. Only `<function=`
+                // makes it a call, held until its close. A prefix of either
+                // marker waits for the bytes that decide.
+                size_t at=strlen(QWEN_CALL_OPEN);
+                while (at<s->head_n && ts_ws(s->head[at])) at++;
+                size_t left=s->head_n-at, ol=strlen(QWEN_CALL_OPEN), fl=strlen("<function=");
+                if (!left) return 0;
+                size_t ko=left<ol?left:ol, kf=left<fl?left:fl;
+                if (!memcmp(s->head+at,QWEN_CALL_OPEN,ko)) {
+                    if (left<ol) return 0;
+                    head_drop(s,at);
+                    continue;
+                }
+                if (memcmp(s->head+at,"<function=",kf)) {
+                    int rc=s->sink.content
+                        ? s->sink.content(s->sink.ud,s->head,(int)ol) : 0;
+                    head_drop(s,ol);s->state=TS_QWEN_TEXT;
+                    if (rc) return rc;
+                    continue;
+                }
+            }
             // Hold the whole native call until its arguments are complete.
             // Never emit a callable event for malformed or partial XML.
             const char *close=strstr(s->head,QWEN_CALL_END);
             if (!close) return 0;
             const char *at=s->head;
             sbuf tc={0}, wrapped={0};
-            if (!qwen_call_for(s->env,&at,s->head+s->head_n,0,&tc)) {
-                free(tc.s);return 0;
+            bool past_bound = lenient && s->n_calls >= s->env->max_calls;
+            if (past_bound || !qwen_call_for(s->env,&at,s->head+s->head_n,0,&tc)) {
+                free(tc.s);
+                // Constrained: the grammar produced this block, so a block that
+                // does not map is a harness fault and the turn holds until
+                // finish reports it. Parse-only: the model wrote an invalid
+                // call. It is neither content (framing never is) nor a call
+                // (nothing is invented for it): the block is dropped, the
+                // fault recorded for the finish reason, and the turn goes on
+                // so a valid call after it still arrives.
+                if (!lenient) return 0;
+                s->fault=true;
+                if (tool_trace_on())
+                    fprintf(stderr, "tool-trace: parse-only block %s, dropped "
+                                    "(%zu bytes):\n%.*s\n",
+                            past_bound ? "past max_calls" : "not a valid call",
+                            (size_t)(close-s->head)+strlen(QWEN_CALL_END),
+                            (int)((size_t)(close-s->head)+strlen(QWEN_CALL_END)),
+                            s->head);
+                head_drop(s,(size_t)(close-s->head)+strlen(QWEN_CALL_END));
+                s->state=TS_QWEN_TEXT;s->skip_ws=true;
+                continue;
             }
             sb_lit(&wrapped,"[");sb_put(&wrapped,tc.s,tc.n);sb_lit(&wrapped,"]");
             jv *arr=json_parse(wrapped.s,wrapped.n);
@@ -4459,20 +4549,30 @@ static int ts_qwen(tool_stream *s, const char *bytes, int n) {
             if (!name || !args) rc=-1;
             else {
                 s->called=s->any_called=true;
+                s->n_calls++;
                 if (s->sink.call_begin) rc=s->sink.call_begin(s->sink.ud,name);
                 if (!rc && s->sink.call_args) rc=s->sink.call_args(s->sink.ud,args,(int)strlen(args));
                 if (!rc && s->sink.call_end) rc=s->sink.call_end(s->sink.ud);
             }
             jv_free(arr);free(tc.s);free(wrapped.s);
             head_drop(s,(size_t)(at-s->head));
-            s->state=TS_QWEN_TEXT;
+            // the newline the template writes after a call is framing; what
+            // the model says after it is content (below), as before a call
+            s->state=TS_QWEN_TEXT;s->skip_ws=true;
             if (rc) return rc;
             continue;
+        }
+        if (s->skip_ws) {
+            size_t i=0;
+            while (i<s->head_n && ts_ws(s->head[i])) i++;
+            if (i) head_drop(s,i);
+            if (!s->head_n) return 0;
+            s->skip_ws=false;
         }
         const char *open=strstr(s->head,QWEN_CALL_OPEN);
         const char *stop=strstr(s->head,QWEN_TURN_END);
         if (stop && (!open || stop<open)) {
-            int rc=!s->any_called && stop>s->head && s->sink.content
+            int rc=stop>s->head && s->sink.content
                 ? s->sink.content(s->sink.ud,s->head,(int)(stop-s->head)) : 0;
             s->state=TS_DONE;s->head_n=0;return rc;
         }
@@ -4481,7 +4581,7 @@ static int ts_qwen(tool_stream *s, const char *bytes, int n) {
             // Leading whitespace alone is framing, as on the buffered path.
             bool white=true;
             for (size_t i=0;i<prefix;i++) if (!ts_ws(s->head[i])) white=false;
-            int rc=prefix && !s->any_called && s->sink.content &&
+            int rc=prefix && s->sink.content &&
                    !(s->state==TS_QWEN_START && white)
                 ? s->sink.content(s->sink.ud,s->head,(int)prefix) : 0;
             head_drop(s,prefix);s->state=TS_QWEN_CALLS;
@@ -4502,7 +4602,7 @@ static int ts_qwen(tool_stream *s, const char *bytes, int n) {
             for (size_t i=0;i<emit;i++) if (!ts_ws(s->head[i])) white=false;
             if (white) return 0;
         }
-        int rc=emit && !s->any_called && s->sink.content
+        int rc=emit && s->sink.content
             ? s->sink.content(s->sink.ud,s->head,(int)emit) : 0;
         head_drop(s,emit);s->state=TS_QWEN_TEXT;return rc;
     }
@@ -4634,7 +4734,9 @@ int tool_stream_feed(tool_stream *s, const char *bytes, int n) {
     }
 }
 
-int tool_stream_finish(tool_stream *s) {
+int tool_stream_finish(tool_stream *s) { return tool_stream_finish_ex(s, false); }
+
+int tool_stream_finish_ex(tool_stream *s, bool truncated) {
     if (!s) return 0;
     // gemma4 streams as it goes, so finishing is only about the tail the
     // states deliberately hold back: the partial `<turn|>` match in TS_G4_TEXT
@@ -4649,10 +4751,22 @@ int tool_stream_finish(tool_stream *s) {
         bool framing = s->state == TS_QWEN_CALLS ||
                        (s->state == TS_QWEN_START &&
                         ts_partial(s, QWEN_CALL_OPEN));
+        if (s->state == TS_QWEN_CALLS && s->env && s->env->parse_only) {
+            // No grammar closed this block, so what it means depends on why
+            // the turn ended. A budget or deadline cut: a truncated call,
+            // dropped and never completed, and the caller keeps "length".
+            // The model's own end: a block that never opened a function was
+            // prose that mentioned the tag and goes out as content; one that
+            // did is a call the model abandoned, a protocol fault.
+            if (truncated) rc = 0;
+            else if (!ts_qwen_block_is_call(s)) { rc = 0; framing = false; }
+            else s->fault = true;
+        }
         if (s->head_n && !framing && s->sink.content)
             rc = s->sink.content(s->sink.ud, s->head, (int)s->head_n);
         s->head_n = 0;
         s->state = TS_DONE;
+        if (s->fault) rc = -1;
         return rc;
     }
     if (s->state == TS_G4_START || s->state == TS_G4_THOUGHT ||
@@ -4708,6 +4822,49 @@ done:
 }
 
 bool tool_stream_called(const tool_stream *s) { return s->any_called; }
+
+// tool_stream_map's sinks: content appended verbatim, each call rendered as
+// one OpenAI tool_calls[] item in the shape tool_calls_parse produces.
+typedef struct { sbuf *content, *tc; int n; sbuf args; } map_sink;
+static int map_content(void *ud, const char *b, int n) {
+    map_sink *m = ud; sb_put(m->content, b, (size_t)n); return 0;
+}
+static int map_call_begin(void *ud, const char *name) {
+    map_sink *m = ud;
+    if (m->n) sb_lit(m->tc, ",");
+    sb_fmt(m->tc, "{\"id\":\"call_%d\",\"type\":\"function\",\"function\":"
+                  "{\"name\":\"", m->n);
+    sb_esc(m->tc, name, (int)strlen(name));
+    sb_lit(m->tc, "\",\"arguments\":\"");
+    m->args.n = 0;
+    return 0;
+}
+static int map_call_args(void *ud, const char *b, int n) {
+    map_sink *m = ud; sb_put(&m->args, b, (size_t)n); return 0;
+}
+static int map_call_end(void *ud) {
+    map_sink *m = ud;
+    sb_esc(m->tc, m->args.s ? m->args.s : "", (int)m->args.n);
+    sb_lit(m->tc, "\"}}");
+    m->n++;
+    return 0;
+}
+
+int tool_stream_map(const tool_envelope *e, const char *doc, size_t n,
+                    bool truncated, sbuf *content, sbuf *tc, int *n_calls) {
+    map_sink m = { content, tc, 0, {0} };
+    tool_stream_sink sink = { &m, NULL, map_content, map_call_begin,
+                              map_call_args, map_call_end };
+    tool_stream s;
+    tool_stream_init(&s, e, &sink);
+    int rc = n ? tool_stream_feed(&s, doc, (int)n) : 0;
+    int fin = tool_stream_finish_ex(&s, truncated);
+    tool_stream_free(&s);
+    free(m.args.s);
+    *n_calls = m.n;
+    if (content->failed || tc->failed) return -1;
+    return rc || fin ? -1 : 0;
+}
 
 void tool_stream_free(tool_stream *s) {
     if (!s) return;

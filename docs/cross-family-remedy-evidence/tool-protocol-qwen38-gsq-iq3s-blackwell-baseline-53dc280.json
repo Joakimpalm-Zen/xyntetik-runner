@@ -1,0 +1,221 @@
+{
+ "gate": "tool-protocol-check",
+ "label": "BASELINE main 53dc280 (v0.5.3 routing), Blackwell MIG, shipped defaults",
+ "started": "2026-09-14T21:59:07+0200",
+ "host": "bfff3786ea4e",
+ "platform": "Linux-6.12.0-211.16.1.el10_2.x86_64-x86_64-with-glibc2.39",
+ "base_url": "http://127.0.0.1:8094",
+ "model": "Qwen3.8-27B-GSQ-RCO-IQ3_S-recovered.gguf",
+ "model_file": "/home/lab/workspace/models/Qwen3.8-27B-GSQ-RCO-IQ3_S-recovered/Qwen3.8-27B-GSQ-RCO-IQ3_S-recovered.gguf",
+ "model_sha256": "873df48dd3ecf205f73c29716e80fbe766e4202ef4ed394b2c24607a8628458f",
+ "runner": "./runner",
+ "runner_sha256": "90fa0e52010f9cb7b3395f1acb21bd3c530c1828f8846de0d9b75ebeeacfffb1",
+ "sampling_served": {
+  "preset": "qwen3",
+  "temperature": 0.6,
+  "top_p": 0.95,
+  "top_k": 20,
+  "min_p": 0.0,
+  "repeat_penalty": 1.0
+ },
+ "context": 32768,
+ "overrides": {},
+ "max_tokens": 400,
+ "cases": {
+  "A": {
+   "title": "single call",
+   "prompt": "List the files in the current directory.",
+   "tools": [
+    "bash"
+   ],
+   "modes": {
+    "buffered": {
+     "wall_s": 46.762,
+     "finish_reason": "tool_calls",
+     "content": "",
+     "reasoning": "The user wants to list the files in the current directory. I should use the bash tool to run the `ls` command.\n",
+     "calls": [
+      {
+       "name": "bash",
+       "arguments": "{\"command\":\"ls -la\"}",
+       "id": "call_0"
+      }
+     ],
+     "usage": {
+      "prompt_tokens": 313,
+      "prompt_tokens_details": {
+       "cached_tokens": 0
+      },
+      "completion_tokens": 58,
+      "total_tokens": 371
+     },
+     "telemetry": {
+      "prompt_cached_tokens": 0,
+      "prompt_forked_tokens": 0,
+      "prompt_eval_tokens": 313,
+      "prefix_cache_saved_seconds": 0.0,
+      "generation_seconds": 32.378913,
+      "generation_tok_s": 1.791,
+      "major_page_faults": 0,
+      "json_mode": false,
+      "schema": false,
+      "speculative": false
+     },
+     "result": "PASS",
+     "reasons": []
+    },
+    "stream": {
+     "wall_s": 49.818,
+     "finish_reason": "stop",
+     "content": "\n\n<tool_call>\n<function=bash>\n<parameter=command>\nls -la\n</parameter>\n</function>\n</tool_call>",
+     "reasoning": "The user is asking to list the files in the current directory. I should use the bash tool to execute `ls -la` or `ls` to list the files.\n",
+     "calls": [],
+     "telemetry": null,
+     "result": "FAIL",
+     "reasons": [
+      "finish_reason 'stop'",
+      "no parsed call",
+      "framing '<tool_call' in content",
+      "framing '<function=' in content",
+      "framing '<parameter=' in content"
+     ]
+    }
+   }
+  },
+  "B": {
+   "title": "prose and parallel calls",
+   "prompt": "Check whether boss.json, boss.toml and boss.yaml exist anywhere in this project. Use the glob tool for each pattern.",
+   "tools": [
+    "glob",
+    "bash"
+   ],
+   "modes": {
+    "buffered": {
+     "wall_s": 96.174,
+     "finish_reason": "tool_calls",
+     "content": "",
+     "reasoning": "The user wants to check whether boss.json, boss.toml, and boss.yaml exist anywhere in the project. Since these are independent calls, I should use the glob tool for each pattern. Let me make all three calls in parallel.\n",
+     "calls": [
+      {
+       "name": "glob",
+       "arguments": "{\"pattern\":\"**/boss.json\"}",
+       "id": "call_0"
+      },
+      {
+       "name": "glob",
+       "arguments": "{\"pattern\":\"**/boss.toml\"}",
+       "id": "call_1"
+      },
+      {
+       "name": "glob",
+       "arguments": "{\"pattern\":\"**/boss.yaml\"}",
+       "id": "call_2"
+      }
+     ],
+     "usage": {
+      "prompt_tokens": 386,
+      "prompt_tokens_details": {
+       "cached_tokens": 0
+      },
+      "completion_tokens": 139,
+      "total_tokens": 525
+     },
+     "telemetry": {
+      "prompt_cached_tokens": 0,
+      "prompt_forked_tokens": 0,
+      "prompt_eval_tokens": 386,
+      "prefix_cache_saved_seconds": 0.0,
+      "generation_seconds": 77.614144,
+      "generation_tok_s": 1.791,
+      "major_page_faults": 0,
+      "json_mode": false,
+      "schema": false,
+      "speculative": false
+     },
+     "result": "PASS",
+     "reasons": []
+    },
+    "stream": {
+     "wall_s": 113.347,
+     "finish_reason": "stop",
+     "content": "\n</think>\n\n<tool_call>\n<function=glob>\n<parameter=pattern>\n**/boss.json\n</parameter>\n</function>\n</tool_call>\n<tool_call>\n<function=glob>\n<parameter=pattern>\n**/boss.toml\n</parameter>\n</function>\n</tool_call>\n<tool_call>\n<function=glob>\n<parameter=pattern>\n**/boss.yaml\n</parameter>\n</function>\n</tool_call>",
+     "reasoning": "The user wants to check whether boss.json, boss.toml, and boss.yaml exist anywhere in the project. They specifically requested using the glob tool for each pattern. Since these are three independent calls, they should be made in parallel within the same block.\n\nI need to search for these files anywhere in the project, so I should use patterns like **/boss.json, **/boss.toml, **/boss.yaml.\n",
+     "calls": [],
+     "telemetry": null,
+     "result": "FAIL",
+     "reasons": [
+      "finish_reason 'stop'",
+      "no parsed call",
+      "framing '<tool_call' in content",
+      "framing '<function=' in content",
+      "framing '<parameter=' in content"
+     ]
+    }
+   }
+  },
+  "C": {
+   "title": "prose then call",
+   "prompt": "Briefly say what you are about to do, then list the files in the current directory.",
+   "tools": [
+    "bash"
+   ],
+   "modes": {
+    "buffered": {
+     "wall_s": 82.46,
+     "finish_reason": "tool_calls",
+     "content": "",
+     "reasoning": "The user is asking me to do two things:\n1. Briefly state what I'm about to do\n2. List the files in the current directory\n\nThis is a simple request. I should state what I'm about to do (list files in the current directory), and then actually run a command like `ls` to list the files.\n\nLet me make the tool call to list the files.\n",
+     "calls": [
+      {
+       "name": "bash",
+       "arguments": "{\"command\":\"ls -la\"}",
+       "id": "call_0"
+      }
+     ],
+     "usage": {
+      "prompt_tokens": 324,
+      "prompt_tokens_details": {
+       "cached_tokens": 0
+      },
+      "completion_tokens": 132,
+      "total_tokens": 456
+     },
+     "telemetry": {
+      "prompt_cached_tokens": 0,
+      "prompt_forked_tokens": 0,
+      "prompt_eval_tokens": 324,
+      "prefix_cache_saved_seconds": 0.0,
+      "generation_seconds": 68.129951,
+      "generation_tok_s": 1.937,
+      "major_page_faults": 0,
+      "json_mode": false,
+      "schema": false,
+      "speculative": false
+     },
+     "result": "FAIL",
+     "reasons": [
+      "no prose beside the call"
+     ]
+    },
+    "stream": {
+     "wall_s": 88.508,
+     "finish_reason": "stop",
+     "content": "\n\nI'll list the files in the current directory using the `ls` command.\n\n<tool_call>\n<function=bash>\n<parameter=command>\nls -la\n</parameter>\n</function>\n</tool_call>",
+     "reasoning": "The user is asking for two things:\n1. A brief description of what I'm about to do\n2. A list of the files in the current directory\n\nI should first state what I'm going to do, and then run a command to list the files. The command `ls -la` or `ls` will list the files in the current directory.\n\nLet me do both: first explain, then execute the command.\n",
+     "calls": [],
+     "telemetry": null,
+     "result": "FAIL",
+     "reasons": [
+      "finish_reason 'stop'",
+      "no parsed call",
+      "framing '<tool_call' in content",
+      "framing '<function=' in content",
+      "framing '<parameter=' in content"
+     ]
+    }
+   }
+  }
+ },
+ "verdict": "FAIL",
+ "finished": "2026-09-14T22:07:11+0200"
+}

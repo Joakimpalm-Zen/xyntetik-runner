@@ -2471,6 +2471,188 @@ static void test_qwen_json_closing_tag_inside_a_string(void) {
     tool_envelope_free(&e); jv_free(tools);
 }
 
+// The parse-only XML contract (template.h, tool_envelope.parse_only): Qwen
+// 3.8, Granite 4.2 and Ornith speak Qwen3-Coder's wire protocol without its
+// grammar. The same demultiplexer serves them, at every byte split, and the
+// buffered mapper is that demultiplexer run over the finished turn.
+static const char *XML_TOOLS =
+    "[{\"type\":\"function\",\"function\":{\"name\":\"glob\",\"parameters\":"
+    "{\"type\":\"object\",\"properties\":{\"pattern\":{\"type\":\"string\"}},"
+    "\"required\":[\"pattern\"]}}},"
+    "{\"type\":\"function\",\"function\":{\"name\":\"bash\",\"parameters\":"
+    "{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"},"
+    "\"timeout\":{\"type\":\"integer\"}},\"required\":[\"command\"]}}}]";
+
+static void xml_parse_only_env(int tmpl, jv *tools, tool_envelope *e) {
+    char err[192]; bool skip = false;
+    assert(tool_envelope_build(tools, NULL, NULL, e, err, sizeof err) == 1);
+    tool_decl_native(tmpl, true, true, tools, e, &skip);
+    assert(e->proto == TP_QWEN_XML);
+    assert(e->parse_only);
+    assert(e->max_calls == TOOL_STREAM_MAX_CALLS);
+}
+
+static void test_xml_families_share_the_parse_only_contract(void) {
+    jv *tools = parse(XML_TOOLS);
+    int fams[] = { TMPL_QWEN38, TMPL_GRANITE42, TMPL_ORNITH };
+    for (int i = 0; i < 3; i++) {
+        tool_envelope e;
+        xml_parse_only_env(fams[i], tools, &e);
+        tool_envelope_free(&e);
+    }
+    // Qwen3-Coder keeps its grammar: the constrained turn is the control
+    tool_envelope c; char err[192]; bool skip = false;
+    assert(tool_envelope_build(tools, NULL, NULL, &c, err, sizeof err) == 1);
+    tool_decl_native(TMPL_QWEN3_CODER, true, true, tools, &c, &skip);
+    assert(c.proto == TP_QWEN_XML && !c.parse_only && c.max_calls == 1);
+    tool_envelope_free(&c);
+    jv_free(tools);
+}
+
+// The report's case B: prose, then three calls, at every split.
+static void test_xml_parse_only_prose_and_three_calls_every_split(void) {
+    jv *tools = parse(XML_TOOLS);
+    tool_envelope e; xml_parse_only_env(TMPL_QWEN38, tools, &e);
+    const char *doc =
+        "I'll check for each file.\n"
+        "<tool_call>\n<function=glob>\n<parameter=pattern>\n**/boss.json\n</parameter>\n</function>\n</tool_call>\n"
+        "<tool_call>\n<function=glob>\n<parameter=pattern>\n**/boss.toml\n</parameter>\n</function>\n</tool_call>\n"
+        "<tool_call>\n<function=bash>\n<parameter=command>\nls -la\n</parameter>\n"
+        "<parameter=timeout>\n30\n</parameter>\n</function>\n</tool_call>";
+    for (size_t step = 1; step <= strlen(doc); step++) {
+        demux_log log; demux_step(&e, doc, step, &log);
+        assert(log.begins == 3 && log.ends == 3 && log.called);
+        assert(!strcmp(log.names.s, "glob glob bash"));
+        assert(!strcmp(log.content.s, "I'll check for each file.\n"));
+        // a string stays a string, an integer is typed, in one call each
+        assert(!strcmp(log.args.s,
+            "{\"pattern\":\"**/boss.json\"}{\"pattern\":\"**/boss.toml\"}"
+            "{\"command\":\"ls -la\",\"timeout\":30}"));
+        log_free(&log);
+    }
+    // the buffered mapper sees the same turn
+    sbuf content = {0}, tc = {0}; int n = 0;
+    assert(tool_stream_map(&e, doc, strlen(doc), false, &content, &tc, &n) == 0);
+    assert(n == 3);
+    assert(!strcmp(content.s, "I'll check for each file.\n"));
+    sbuf wrapped = {0}; sb_lit(&wrapped, "["); sb_put(&wrapped, tc.s, tc.n); sb_lit(&wrapped, "]");
+    jv *calls = parse(wrapped.s);
+    assert(calls && calls->n == 3);
+    assert(!strcmp(jv_str(jv_get(calls->items[2], "id"), ""), "call_2"));
+    assert(!strcmp(jv_str(jv_get(jv_get(calls->items[2], "function"), "arguments"), ""),
+                   "{\"command\":\"ls -la\",\"timeout\":30}"));
+    jv_free(calls); free(wrapped.s); free(content.s); free(tc.s);
+    tool_envelope_free(&e); jv_free(tools);
+}
+
+// Prose after a call is the model's content too; whitespace between calls is
+// the protocol's framing and is not.
+static void test_xml_parse_only_keeps_prose_around_calls(void) {
+    jv *tools = parse(XML_TOOLS);
+    tool_envelope e; xml_parse_only_env(TMPL_GRANITE42, tools, &e);
+    const char *doc =
+        "First:\n<tool_call>\n<function=bash>\n<parameter=command>\nls\n</parameter>\n</function>\n</tool_call>\n"
+        "and then I will summarise.";
+    demux_log log; demux(&e, doc, &log);
+    assert(log.begins == 1);
+    assert(!strcmp(log.content.s, "First:\nand then I will summarise."));
+    log_free(&log);
+    tool_envelope_free(&e); jv_free(tools);
+}
+
+// An invalid block (a function nobody declared, a typed parameter that does
+// not parse) is neither content nor a call: dropped, the fault reported by
+// the finisher, and the valid call after it still arrives.
+static void test_xml_parse_only_invalid_block_is_a_fault_not_content(void) {
+    jv *tools = parse(XML_TOOLS);
+    tool_envelope e; xml_parse_only_env(TMPL_QWEN38, tools, &e);
+    const char *docs[] = {
+        "<tool_call>\n<function=nosuch>\n<parameter=x>\n1\n</parameter>\n</function>\n</tool_call>\n"
+        "<tool_call>\n<function=bash>\n<parameter=command>\nls\n</parameter>\n</function>\n</tool_call>",
+        "<tool_call>\n<function=bash>\n<parameter=command>\nls\n</parameter>\n"
+        "<parameter=timeout>\nsoon\n</parameter>\n</function>\n</tool_call>\n"
+        "<tool_call>\n<function=bash>\n<parameter=command>\nls\n</parameter>\n</function>\n</tool_call>",
+        // a required parameter missing: nothing is invented for it
+        "<tool_call>\n<function=bash>\n<parameter=timeout>\n3\n</parameter>\n</function>\n</tool_call>\n"
+        "<tool_call>\n<function=bash>\n<parameter=command>\nls\n</parameter>\n</function>\n</tool_call>",
+    };
+    for (int d = 0; d < 3; d++) {
+        for (size_t step = 1; step <= strlen(docs[d]); step += 7) {
+            demux_log log; memset(&log, 0, sizeof log);
+            tool_stream_sink sink = { &log, log_reasoning, log_content, log_begin, log_args, log_end };
+            tool_stream s; tool_stream_init(&s, &e, &sink);
+            size_t len = strlen(docs[d]);
+            for (size_t i = 0; i < len; i += step) {
+                size_t k = len - i < step ? len - i : step;
+                assert(tool_stream_feed(&s, docs[d] + i, (int)k) == 0);
+            }
+            assert(tool_stream_finish_ex(&s, false) == -1);   // the fault
+            assert(log.begins == 1 && !strcmp(log.name, "bash"));
+            assert(!strcmp(log.args.s, "{\"command\":\"ls\"}"));
+            assert(log.content.n == 0);                        // never content
+            tool_stream_free(&s); log_free(&log);
+        }
+        sbuf content = {0}, tc = {0}; int n = 0;
+        assert(tool_stream_map(&e, docs[d], strlen(docs[d]), false, &content, &tc, &n) == -1);
+        assert(n == 1 && content.n == 0);
+        free(content.s); free(tc.s);
+    }
+    tool_envelope_free(&e); jv_free(tools);
+}
+
+// A call the turn ended inside: on a cut turn it is a truncated call, dropped
+// and never completed (the caller keeps "length"); on a turn the model ended
+// itself it is a fault. Text that merely mentions the tag is content.
+static void test_xml_parse_only_open_block_at_finish(void) {
+    jv *tools = parse(XML_TOOLS);
+    tool_envelope e; xml_parse_only_env(TMPL_ORNITH, tools, &e);
+    const char *cut =
+        "<tool_call>\n<function=bash>\n<parameter=command>\nls\n</parameter>\n</function>\n</tool_call>\n"
+        "<tool_call>\n<function=bash>\n<parameter=command>\nrm -";
+    for (int truncated = 0; truncated < 2; truncated++) {
+        demux_log log; memset(&log, 0, sizeof log);
+        tool_stream_sink sink = { &log, log_reasoning, log_content, log_begin, log_args, log_end };
+        tool_stream s; tool_stream_init(&s, &e, &sink);
+        assert(tool_stream_feed(&s, cut, (int)strlen(cut)) == 0);
+        assert(tool_stream_finish_ex(&s, truncated) == (truncated ? 0 : -1));
+        assert(log.begins == 1 && log.ends == 1);
+        assert(!strcmp(log.args.s, "{\"command\":\"ls\"}"));
+        assert(log.content.n == 0);
+        tool_stream_free(&s); log_free(&log);
+    }
+    // a stray second opener is framing, the call behind it is a call
+    const char *doubled =
+        "<tool_call>\n<tool_call>\n<function=bash>\n<parameter=command>\nls\n</parameter>\n</function>\n</tool_call>";
+    for (size_t step = 1; step <= strlen(doubled); step++) {
+        demux_log log; demux_step(&e, doubled, step, &log);
+        assert(log.begins == 1 && !strcmp(log.args.s, "{\"command\":\"ls\"}"));
+        assert(log.content.n == 0);
+        log_free(&log);
+    }
+    sbuf dc = {0}, dtc = {0}; int dn = 0;
+    assert(tool_stream_map(&e, doubled, strlen(doubled), false, &dc, &dtc, &dn) == 0 && dn == 1);
+    free(dc.s); free(dtc.s);
+    // a mention whose sentence also spells the closing tag stays prose
+    const char *closing = "The <tool_call> tag is closed by </tool_call>, as the docs say.";
+    for (size_t step = 1; step <= strlen(closing); step++) {
+        demux_log log; demux_step(&e, closing, step, &log);
+        assert(log.begins == 0);
+        assert(!strcmp(log.content.s, closing));
+        log_free(&log);
+    }
+    const char *mention = "Wrap calls in a <tool_call> block, as the docs say.";
+    demux_log log; memset(&log, 0, sizeof log);
+    tool_stream_sink sink = { &log, log_reasoning, log_content, log_begin, log_args, log_end };
+    tool_stream s; tool_stream_init(&s, &e, &sink);
+    for (size_t i = 0; i < strlen(mention); i++)
+        assert(tool_stream_feed(&s, mention + i, 1) == 0);
+    assert(tool_stream_finish_ex(&s, false) == 0);
+    assert(log.begins == 0);
+    assert(!strcmp(log.content.s, mention));
+    tool_stream_free(&s); log_free(&log);
+    tool_envelope_free(&e); jv_free(tools);
+}
+
 // The native syntax has no insignificant whitespace: a newline between the
 // function name and its `>` or before an enum-valued string parameter was
 // grammatical (the walker took it for JSON whitespace at the node that
@@ -2529,6 +2711,11 @@ int main(void) {
     test_qwen_prose_still_constrains_calls();
     test_coder_native_calls();
     test_coder_parameters_in_any_order();
+    test_xml_families_share_the_parse_only_contract();
+    test_xml_parse_only_prose_and_three_calls_every_split();
+    test_xml_parse_only_keeps_prose_around_calls();
+    test_xml_parse_only_invalid_block_is_a_fault_not_content();
+    test_xml_parse_only_open_block_at_finish();
     test_coder_grammar_has_no_insignificant_whitespace();
     test_qwen_json_closing_tag_inside_a_string();
     test_buffered_mapper_rejects_invalid_arguments();

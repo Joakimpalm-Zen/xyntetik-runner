@@ -222,6 +222,9 @@ static void append_text_logprobs(sbuf *r, slot_t *s, engine *e) {
 static void completion_cleanup(engine *e, snode *schema, gen_ctx *g) {
     engine_set_stop(e, NULL, NULL);
     e->schema = NULL;
+    free((void *)e->smp->script);
+    e->smp->script = NULL;
+    e->smp->script_n = e->smp->script_at = 0;
     e->emit_think_prelude = false;
     e->constraint_includes_prelude = false;
     schema_free(schema);
@@ -1271,9 +1274,26 @@ static int stop_feed(gen_ctx *g, const char *bytes, int n) {
 // Consumes g->out and replaces it with whatever the client should see; appends
 // any calls to tc. Returns the number of tool calls (parallel turns map several
 // at once), 0 for a plain answer, or -1 when the document could not be mapped.
-static int envelope_map_buffered(const tool_envelope *env, gen_ctx *g, sbuf *tc) {
+static int envelope_map_buffered(const tool_envelope *env, gen_ctx *g, sbuf *tc,
+                                 bool truncated, bool *fault) {
     sbuf mapped = {0};
     sbuf mapped_reason = {0};
+    *fault = false;
+    if (env->parse_only) {
+        // The demultiplexer IS the parser here, run over the finished turn,
+        // so the buffered response carries exactly the calls a streamed one
+        // would have. A fault (an invalid block, a call left open) does not
+        // void the turn: the valid calls and the prose are the model's real
+        // output and are kept; the finish reason names the fault.
+        int n_calls = 0;
+        int rc = tool_stream_map(env, g->out.s ? g->out.s : "", g->out.n,
+                                 truncated, &mapped, tc, &n_calls);
+        if (mapped.failed || tc->failed) { free(mapped.s); return -1; }
+        *fault = rc < 0;
+        free(g->out.s);
+        g->out = mapped;
+        return n_calls;
+    }
     int rc = tool_envelope_map_channels(
         env, g->out.s ? g->out.s : "", g->out.n, &mapped_reason, &mapped, tc);
     if (rc >= 0 && mapped_reason.n) {
@@ -1460,6 +1480,78 @@ static const char *unsupported_completion_field(jv *req) {
     return NULL;
 }
 
+// RUNNER_TEST_SCRIPTED_REPLY=1 at server start admits `runner_test_reply`, a
+// string the sampler then returns token for token instead of sampling
+// (sample.h). It exists for the protocol suite: a fixture model cannot be
+// made to say `<tool_call>` on purpose, and a test of what the server does
+// with a native call needs the model to have produced one. Without the
+// environment variable the field is refused, not ignored, so nothing served
+// in production can rely on it by accident. Returns the field's text (not
+// owned) or NULL when absent; *bad is set when the field is present and not
+// admissible, with the reason already answered on fd.
+static const char *scripted_reply(sock_t fd, jv *req, bool *bad) {
+    *bad = false;
+    jv *v = jv_get(req, "runner_test_reply");
+    if (absent(v)) return NULL;
+    static int on = -1;
+    if (on < 0) {
+        const char *env = getenv("RUNNER_TEST_SCRIPTED_REPLY");
+        on = env && *env && strcmp(env, "0") != 0;
+    }
+    if (!on) {
+        send_error(fd, 400, "runner_test_reply is a test hook; the server "
+                            "was not started with RUNNER_TEST_SCRIPTED_REPLY=1");
+        *bad = true;
+        return NULL;
+    }
+    if (v->type != J_STR) {
+        send_error(fd, 400, "runner_test_reply must be a string");
+        *bad = true;
+        return NULL;
+    }
+    return v->str;
+}
+
+// The scripted reply as token ids: the vocabulary's own spelling when that
+// decodes back to the script byte for byte (specials included, TOK_RAW: a
+// scripted `<|im_end|>` is the turn terminator as generated), otherwise one
+// byte token per byte. The fallback exists for the CI fixture, whose
+// byte-fallback vocabulary has no U+2581 piece and so spells a space as
+// three bytes that decode to U+2581, not to the space the script meant. A
+// test therefore chooses its chunking: a script without spaces arrives in
+// the vocabulary's pieces, one with spaces arrives a byte at a time, which
+// is the hardest split a demultiplexer can be handed. Returns the count with
+// *ids the caller's to free, -1 on allocation failure, -2 when neither
+// spelling reproduces the script.
+static int scripted_reply_tokens(tokenizer *tok, const char *text,
+                                 int32_t **ids) {
+    *ids = NULL;
+    int n = tok_encode_fit(tok, text, false, TOK_RAW, 0, ids);
+    if (n < 0) return -1;
+    size_t len = strlen(text), at = 0;
+    bool exact = true;
+    for (int i = 0; i < n && exact; i++) {
+        char buf[512];
+        int k = tok_decode(tok, (*ids)[i], buf, sizeof(buf));
+        if (k < 0 || at + (size_t)k > len || memcmp(text + at, buf, (size_t)k))
+            exact = false;
+        at += (size_t)(k > 0 ? k : 0);
+    }
+    if (exact && at == len) return n;
+    free(*ids);
+    *ids = malloc(sizeof(int32_t) * (len ? len : 1));
+    if (!*ids) return -1;
+    for (size_t i = 0; i < len; i++) {
+        char spelling[8];
+        snprintf(spelling, sizeof(spelling), "<0x%02X>",
+                 (unsigned)(unsigned char)text[i]);
+        int id = tok_find(tok, spelling);
+        if (id < 0) { free(*ids); *ids = NULL; return -2; }
+        (*ids)[i] = id;
+    }
+    return (int)len;
+}
+
 // a boolean request flag: absent takes the default, a non-boolean is an
 // error rather than a silent `false`
 bool request_bool(jv *req, const char *key, bool dflt, bool *out) {
@@ -1539,12 +1631,16 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
     bool harmony_primed_think = chat && s->tmpl == TMPL_HARMONY &&
                                 !(env && env->proto == TP_HARMONY) &&
                                 req_thinking_mode(req) != THINK_OFF;
-    // granite 4.2's and Qwen 3.8's generation prompts open `<think>\n` in
-    // every mode but THINK_OFF, where the block is already closed and the
-    // stream starts in content (template.c, TMPL_GRANITE42 / TMPL_QWEN38).
+    // granite 4.2's, Qwen 3.8's and ornith's generation prompts open
+    // `<think>\n` in every mode but THINK_OFF, where the block is already
+    // closed and the stream starts in content (template.c, TMPL_GRANITE42 /
+    // TMPL_QWEN38 / TMPL_ORNITH). Ornith used to prime the splitter in every
+    // mode, so a caller who turned thinking off had the answer served as
+    // reasoning_content.
     bool granite42_primed_think = chat &&
                                   (s->tmpl == TMPL_GRANITE42 ||
-                                   s->tmpl == TMPL_QWEN38) &&
+                                   s->tmpl == TMPL_QWEN38 ||
+                                   s->tmpl == TMPL_ORNITH) &&
                                   req_thinking_mode(req) != THINK_OFF;
     // gemma4's thought block is opened BY THE PROMPT on a tool-result
     // continuation with thinking on (template.c's g4_prev == 2 branch), so the
@@ -1579,6 +1675,9 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
         send_error(fd, 400, msg);
         return;
     }
+    bool script_bad = false;
+    const char *script_text = scripted_reply(fd, req, &script_bad);
+    if (script_bad) return;
     bool cache_prompt = true;
     bool share_prefix = true;
     if (!request_bool(req, "cache_prompt", true, &cache_prompt)) {
@@ -1869,8 +1968,12 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
     // contains the caller's response_format schema as its `final` branch, so
     // compiling that separately would drop the tool branches.
     snode *schema = NULL;
-    jv *sch = env ? NULL : request_schema(req);
-    if (env) {
+    // A parse-only envelope constrains nothing: the family's native protocol
+    // is parsed on the way out, and the caller's response_format applies as
+    // it would without tools (the XML grammar has no branch to carry it).
+    bool constrain = env && !env->parse_only;
+    jv *sch = constrain ? NULL : request_schema(req);
+    if (constrain) {
         char serr[128] = "envelope did not parse";
         if (env->proto == TP_HARMONY) {
             const char *only = env->kind == TCH_NAMED ? env->named : NULL;
@@ -1950,7 +2053,7 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
         }
     }
     e->schema = schema;
-    e->constraint_includes_prelude = env && env->proto == TP_HARMONY;
+    e->constraint_includes_prelude = constrain && env->proto == TP_HARMONY;
     // chat responses split a thinking prelude into the reasoning channel;
     // constrained generation forwards it only when asked (raw completions
     // keep the payload-only contract)
@@ -2050,6 +2153,23 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
         omit_reasoning = display && display->type == J_STR &&
                          !strcmp(display->str, "omitted");
     }
+    if (script_text) {
+        int32_t *ids = NULL;
+        int n = scripted_reply_tokens(s->tok, script_text, &ids);
+        if (n < 0) {
+            free(toks);
+            completion_cleanup(e, schema, NULL);
+            if (n == -2)
+                send_error(fd, 400, "runner_test_reply cannot be spelled in "
+                                    "this model's vocabulary");
+            else
+                send_error(fd, 500, "out of memory tokenizing runner_test_reply");
+            return;
+        }
+        s->smp.script = ids;
+        s->smp.script_n = n;
+        s->smp.script_at = 0;
+    }
     gen_ctx g = { .out = {0}, .fd = fd, .stream = stream, .api = api,
                   .omit_reasoning = omit_reasoning,
                   .stop_strs = stops, .n_stop = n_stops, .eng = e,
@@ -2118,16 +2238,14 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
                               "context_length_exceeded");
         return;
     }
-    if ((chat && s->tmpl == TMPL_ORNITH) || muse_forced_think ||
-        harmony_primed_think || granite42_primed_think)
+    if (muse_forced_think || harmony_primed_think || granite42_primed_think)
         engine_think_started(e);
 
     tool_envelope muse_plain_env = {.proto = TP_MUSE_PLAIN};
     // split thinking channels out of chat responses; raw completions stay raw
     if (env && (env->proto == TP_HARMONY || env->proto == TP_GEMMA4))
         think_init(&g.ts, NULL, NULL);
-    else if ((chat && s->tmpl == TMPL_ORNITH) || muse_forced_think ||
-        harmony_primed_think || granite42_primed_think)
+    else if (muse_forced_think || harmony_primed_think || granite42_primed_think)
         think_init_reasoning(&g.ts, m->think_open, m->think_close);
     else
         think_init(&g.ts, chat ? m->think_open : NULL, m->think_close);
@@ -2231,7 +2349,10 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
     // non-zero value came from a sink refusing to write, which IS the client
     // going away.
     if (g.tsx_on) {
-        int fin = tool_stream_finish(&g.tsx);
+        // the finisher reads a still-open native call differently on a cut
+        // turn (dropped, "length") and on one the model ended (a fault)
+        bool cut = !g.stopped && !e->hit_stop;
+        int fin = tool_stream_finish_ex(&g.tsx, cut);
         if (fin == -1)     unmapped = true;
         else if (fin != 0) g.dead = true;
     }
@@ -2410,13 +2531,17 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
         sbuf tc = {0};
         int n_tc = 0;
         if (env) {
-            n_tc = envelope_map_buffered(env, &g, &tc);
+            bool fault = false;
+            n_tc = envelope_map_buffered(env, &g, &tc, !strcmp(finish, "length"),
+                                         &fault);
             if (n_tc >= 1 && !strcmp(finish, "stop")) finish = "tool_calls";
             // The document was dropped, so the turn has no answer to report.
             // Saying "stop" over the resulting empty content would claim the
             // model chose to say nothing; the streamed path names the same
             // fault the same way.
             if (n_tc < 0) { n_tc = 0; finish = "envelope_error"; }
+            // a parse-only fault keeps what was valid and says what went wrong
+            if (fault) finish = "envelope_error";
         } else if (chat) {
             if (s->tmpl == TMPL_MUSE && schema)
                 muse_user_payload_strip(&g.out);
