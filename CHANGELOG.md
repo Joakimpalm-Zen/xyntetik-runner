@@ -8,6 +8,21 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **The CUDA layer fit respects the OS video-memory budget on Windows and
+  keeps a headroom that scales with the budget.** The 2026-09-14 report's
+  12 GB card was filled to 11.7 GB from the driver's free-memory view and
+  WDDM paged the process over PCIe (a 300-token request unfinished after
+  15 minutes; `--reserve-vram 85` the workaround). The fit now bounds the
+  driver's view by `IDXGIAdapter3::QueryVideoMemoryInfo` for this process
+  on the adapter matched by LUID, minus what it already holds, and holds
+  back the larger of 512 MiB and one sixteenth of the budget instead of a
+  flat 512 MiB (on a 16 GB slice the flat margin let the last allocation,
+  the recurrent state, run into the allocator's slack). The choice is
+  logged at load; `model_gpu_budget` is the arithmetic, gated in
+  `tests/test_autofit.c`. `runner_telemetry` gains `timing.prefill_seconds`
+  / `prefill_tokens` / `prefill_tok_s` (measured, apart from decode) and
+  `page_fault_counter` (`major` on POSIX, `all` on Windows) beside
+  `major_page_faults`.
 - **The `qwen3-coder` preset carries `repeat_penalty 1.0`, not the
   config's 1.05.** Measured on the report's 30B-A3B Q4_K_M at the config's
   temperature 0.7: this sampler's 1.05 read 0 of 8 well-formed calls

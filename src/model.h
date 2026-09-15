@@ -560,6 +560,17 @@ long long model_autofit_tokens(uint64_t budget, uint64_t weights,
                                uint64_t head_per_seq, uint64_t kv_per_tok,
                                int n_seq);
 int       model_autofit_clamp(long long best, int n_ctx_train);
+// The device offload budget the layer fit may spend, from the driver's free
+// memory view bounded by the OS video-memory budget for this process where
+// the OS publishes one (WDDM), capped by --reserve-vram; *headroom is what
+// the fit must additionally hold back for the driver context, PTX JIT, the
+// allocator's own slack and the OS reserve: the larger of 512 MiB and one
+// sixteenth of the budget, since a flat 512 MiB let a 12 GB card fill to
+// 11.7 GB and page, and a 16 GB slice run its last allocation into the
+// wall. Public so the arithmetic is gated without a card.
+uint64_t  model_gpu_budget(uint64_t driver_free, uint64_t driver_total,
+                           bool os_known, uint64_t os_budget, uint64_t os_usage,
+                           int reserve_pct, uint64_t *headroom);
 // Ring row admission without signed overflow: returns n_ctx when the window
 // plus one in-flight batch would not make a smaller allocation.
 int       model_kv_ring_rows(int window, int batch, int n_ctx);

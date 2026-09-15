@@ -158,7 +158,47 @@ static void test_kv_ring_rows(void) {
        "ring sizing saturates before signed addition can overflow");
 }
 
+// The device offload budget (model_gpu_budget): what the layer fit may
+// spend on weights and KV. The 2026-09-14 Windows report: on a 12 GB card
+// the fit filled VRAM to 11.7 GB from the driver's free-memory view and WDDM
+// then paged the process over PCIe (GPU 100% busy, a 300-token request not
+// finished in 15 minutes), and on the Blackwell slice the same fit left
+// 0.02 GB of slack and the recurrent state buffers, allocated last, were
+// refused by the device allocator. The budget now respects the OS video
+// memory budget for the process where the OS publishes one (WDDM,
+// IDXGIAdapter3::QueryVideoMemoryInfo) and keeps a headroom that scales
+// with the budget instead of a flat 512 MiB.
+static void test_gpu_budget(void) {
+    const uint64_t G = 1ull << 30, M = 1ull << 20;
+    uint64_t headroom = 0;
+    // no OS budget (Linux, or a driver without the query): the driver's free
+    // view, with the larger of 512 MiB and one sixteenth held back
+    uint64_t b = model_gpu_budget(23 * G, 24 * G, false, 0, 0, 0, &headroom);
+    ck(b == 23 * G && headroom == 23 * G / 16,
+       "no OS budget: the driver's free view, headroom one sixteenth of it");
+    b = model_gpu_budget(6 * G, 8 * G, false, 0, 0, 0, &headroom);
+    ck(headroom == 512 * M, "a small budget keeps the 512 MiB floor");
+    // the OS budget is the process's share and bounds the driver's view:
+    // 12.2 GB free by the driver, but WDDM budgets this process 10.9 GB of
+    // which 0.8 is already in use
+    b = model_gpu_budget((uint64_t)(12.2 * G), (uint64_t)(12.2 * G), true,
+                         (uint64_t)(10.9 * G), (uint64_t)(0.8 * G), 0, &headroom);
+    ck(b == (uint64_t)(10.9 * G) - (uint64_t)(0.8 * G),
+       "the OS budget minus what is already in use bounds the driver's view");
+    // an OS budget already exhausted yields nothing to offload, never a wrap
+    b = model_gpu_budget(4 * G, 8 * G, true, 2 * G, 3 * G, 0, &headroom);
+    ck(b == 0, "an exhausted OS budget is zero, not a wrapped subtraction");
+    // --reserve-vram caps the budget at that share of the card, after both
+    b = model_gpu_budget(12 * G, 12 * G, true, 11 * G, 0, 85, &headroom);
+    ck(b == 12 * G / 100 * 85, "--reserve-vram caps below the OS budget");
+    b = model_gpu_budget(12 * G, 12 * G, true, 9 * G, 0, 85, &headroom);
+    ck(b == 9 * G, "and the OS budget caps below --reserve-vram");
+    // the headroom follows the budget the fit will actually use
+    ck(headroom == 9 * G / 16, "headroom is taken from the effective budget");
+}
+
 int main(void) {
+    test_gpu_budget();
     test_multislot_is_not_billed_once();
     test_budget_is_never_exceeded();
     test_degenerate_inputs();

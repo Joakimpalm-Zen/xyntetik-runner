@@ -98,8 +98,14 @@ which is the honest state, not a claim.
 
 ## 5. Resources and performance
 
-OPEN: WDDM budget provider, fault telemetry naming, stage timings, cache-miss
-reasons, RTX 5070 profile, TC dispatch engagement on Gemma Q4_0.
+| Item | State | Evidence |
+|---|---|---|
+| Windows-aware budgeting | DONE (PR: wddm-budget) | `plat_gpu_os_budget` (DXGI `IDXGIAdapter3::QueryVideoMemoryInfo`, adapter matched to the CUDA device by LUID) bounds the driver's free view; `model_gpu_budget` (gated in `tests/test_autofit.c`) applies it, `--reserve-vram`, and a headroom of max(512 MiB, budget/16). ZEN-GAMING RTX 3070: `OS video memory budget 7.60 GB for this process, 0.14 GB in use; offload budget 7.46 GB, headroom 0.54 GB`. The report's 12 GB WDDM paging is not reproducible here (no 12 GB WDDM card); the mechanism it needs is in place and logged. Recheck after allocations: the existing `VRAM ... free after init` line. |
+| Peak allocations and serving slots in the budget | PARTIAL | The recurrent state (qwen35, granitehybrid, nemotron_h) was already in `act_bytes`; the headroom now scales. Per-slot KV is budgeted by the fit's own accounting. Not yet: a draft model's bytes and the prefix-cache snapshots. |
+| Fault telemetry naming | DONE | `page_fault_counter` beside `major_page_faults` (`major` POSIX, `all` Windows). |
+| Stage timings | PARTIAL | `timing.prefill_seconds/prefill_tokens/prefill_tok_s` measured; decode was `generation_seconds`. OPEN: queue wait, tokenization, first visible token, tool execution. |
+| Cache-miss reasons | OPEN | Observed: Qwen 3.8 (qwen35, GPU-backed recurrent) `0 cached` on a 7.5K shared prefix under OpenCode; Granite 4.2 (dense) on Windows 7916/7990 hits. The README states GPU-backed recurrent instances decline shared-prefix restore; a per-request `cache_miss_reason` is not reported yet. |
+| RTX 5070 profile, TC engagement on Gemma Q4_0, IQ3_S split throughput | OPEN | Observed on the way: Qwen 3.8 GSQ 61/64 layers on the Blackwell slice decodes at 1.8 tok/s and prefills at ~25 tok/s (the qwen35 recurrent CUDA path); Gemma 4 12B QAT Q4_0 full residency answered the report cases in 1.1-2.8 s. No profile taken yet. |
 
 ## Test hook: scripted replies
 

@@ -3457,6 +3457,28 @@ bool model_kv_trade_note(int gpu_layers, int n_layer, uint64_t kv_dev,
     return kv_dev * 4 > weights;
 }
 
+uint64_t model_gpu_budget(uint64_t driver_free, uint64_t driver_total,
+                          bool os_known, uint64_t os_budget, uint64_t os_usage,
+                          int reserve_pct, uint64_t *headroom) {
+    uint64_t budget = driver_free;
+    // The OS budget is what this process may keep resident before the OS
+    // pages it (WDDM's QueryVideoMemoryInfo Budget); what it already holds
+    // is counted against it. The driver's free view knows nothing of that
+    // and over-promises on a card shared with the desktop.
+    if (os_known) {
+        uint64_t os_avail = os_budget > os_usage ? os_budget - os_usage : 0;
+        if (os_avail < budget) budget = os_avail;
+    }
+    if (reserve_pct > 0) {
+        uint64_t cap = driver_total / 100 * (uint64_t)reserve_pct;
+        if (cap < budget) budget = cap;
+    }
+    uint64_t hr = budget / 16;
+    if (hr < (512ull << 20)) hr = 512ull << 20;
+    if (headroom) *headroom = hr;
+    return budget;
+}
+
 int model_autofit_clamp(long long best, int n_ctx_train) {
     int n = best > (long long)n_ctx_train ? n_ctx_train : (int)best;
     if (n < 512) n = 512;   // a floor: below this the window is not usable

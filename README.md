@@ -801,7 +801,7 @@ flags into unrelated feature sections.
 | `--vram-priority N` | Advisory priority tag on this claim, default `0` (also `RUNNER_VRAM_PRIORITY`). See [VRAM registry: priority and cooperative yield](#vram-registry-priority-and-cooperative-yield). |
 | `--yield-on-request` | In `--serve`, release the resident model at the next idle point when another process has asked it to. See the same section. |
 | `--reserve P` | Limit this process to `P` percent of total RAM and VRAM. |
-| `--reserve-vram P` | Override only the VRAM budget. |
+| `--reserve-vram P` | Override only the VRAM budget. The CUDA layer fit spends a budget that starts from the driver's free-memory view, is bounded by the OS video-memory budget for this process where the OS publishes one (Windows, WDDM: `IDXGIAdapter3::QueryVideoMemoryInfo` on the adapter matched by LUID, minus what the process already holds), is capped by this flag, and keeps a headroom of the larger of 512 MiB and one sixteenth of the budget for the driver context, PTX JIT, allocator slack and the OS reserve. The 2026-09-14 Windows report's 12 GB card was filled to 11.7 GB from the driver's view alone and paged over PCIe; the budget and headroom the fit chose are logged at load (`gpu: OS video memory budget ...`), and `gpu: VRAM ... free after init` reports the observed remainder. Where no OS budget exists (Linux, macOS) the driver's view with that headroom is what the fit spends, said so in the log. |
 | `--reserve-ram P` | Override only the RAM budget. |
 | `--reserve-cpu P` | Size the default thread count as a percentage of cores. |
 | `--kv f16\|q8` | KV storage; f16 is default, q8 uses about 53% as much memory and is lossy. |
@@ -1328,7 +1328,15 @@ accounting. Every surface reports the same number as
 
 Buffered generation responses include `runner_telemetry` with prompt tokens
 reused/evaluated, generation timing, paging counters, and structured or
-speculative mode flags. `speculative` reports whether that request used the
+speculative mode flags. `timing.prefill_seconds` and `timing.prefill_tokens`
+are the prefill measured over the tokens it actually evaluated (the cached
+prefix costs nothing), apart from `generation_seconds`, which has always been
+the decode; a client no longer needs wall minus generation to tell a slow
+prompt from a slow decode. `major_page_faults` comes with
+`page_fault_counter`: `major` where the OS separates page-ins from disk
+(POSIX), `all` where it counts soft faults too (Windows `PageFaultCount`),
+so the million faults a Windows first request reports are read as what they
+are, not as a disk stall. `speculative` reports whether that request used the
 speculative walk, not merely whether the server has a draft loaded; logprob and
 choice-logprob capture use the solo walk and therefore report it as false.
 When it is true a `speculation` object follows: the `source` (`model`, `mtp`,

@@ -69,6 +69,9 @@ static struct {
     CUresult (*DeviceGetUuid_v2)(unsigned char *, CUdevice);
     CUresult (*DeviceGetUuid)(unsigned char *, CUdevice);
     CUresult (*DeviceGetPCIBusId)(char *, int, CUdevice);
+    // Windows only (NULL elsewhere): the adapter LUID, which is how the OS
+    // video-memory budget is looked up for the same device (compat.c)
+    CUresult (*DeviceGetLuid)(char *, unsigned int *, CUdevice);
     CUresult (*PrimaryCtxRetain)(CUcontext *, CUdevice);
     CUresult (*PrimaryCtxRelease)(CUdevice);
     CUresult (*CtxSetCurrent)(CUcontext);
@@ -175,6 +178,7 @@ static bool cu_load(void) {
     cu.DeviceGetUuid_v2  = dl_sym(cu.lib, "cuDeviceGetUuid_v2");
     cu.DeviceGetUuid     = dl_sym(cu.lib, "cuDeviceGetUuid");
     cu.DeviceGetPCIBusId = dl_sym(cu.lib, "cuDeviceGetPCIBusId");
+    cu.DeviceGetLuid     = dl_sym(cu.lib, "cuDeviceGetLuid");   // optional
     cu.PrimaryCtxRetain  = dl_sym(cu.lib, "cuDevicePrimaryCtxRetain");
     cu.PrimaryCtxRelease = sym2("cuDevicePrimaryCtxRelease");
     cu.CtxSetCurrent     = dl_sym(cu.lib, "cuCtxSetCurrent");
@@ -1181,15 +1185,42 @@ static gpu_weights *shared_build(model_t *m, size_t act_bytes, int max_hd,
                     "pool; offload budget capped at available RAM "
                     "(%.1f GiB)\n", (double)vram_budget / (1u << 30));
         }
-        if (m->reserve_vram_pct > 0) {
-            size_t cap = vram_total / 100 * m->reserve_vram_pct;
-            if (cap < vram_budget) vram_budget = cap;
+        // The OS video-memory budget for this process, where the OS keeps
+        // one: WDDM pages a process that exceeds its budget over PCIe, and
+        // the driver's free-memory count does not know the budget exists.
+        // The card is matched by LUID so a machine with two adapters cannot
+        // be budgeted against the wrong one. model_gpu_budget bounds the
+        // driver's view by it, applies --reserve-vram, and sizes the headroom
+        // (the larger of 512 MiB and a sixteenth of the budget) that used to
+        // be a flat 512 MiB: on a 12 GB card that flat margin let the fit
+        // fill to 11.7 GB and page; on a 16 GB slice it left the last
+        // allocation, the recurrent state, to the allocator's slack.
+        uint64_t os_budget = 0, os_usage = 0, headroom = 0;
+        bool os_known = false;
+        if (cu.DeviceGetLuid) {
+            char luid[8]; unsigned mask = 0;
+            if (cu.DeviceGetLuid(luid, &mask, w->dev) == 0)
+                os_known = plat_gpu_os_budget((const unsigned char *)luid,
+                                              &os_budget, &os_usage);
         }
+        vram_budget = (size_t)model_gpu_budget(vram_budget, vram_total, os_known,
+                                               os_budget, os_usage,
+                                               m->reserve_vram_pct, &headroom);
+        if (os_known)
+            fprintf(stderr, "gpu: OS video memory budget %.2f GB for this "
+                            "process, %.2f GB in use; offload budget %.2f GB, "
+                            "headroom %.2f GB\n", os_budget / 1e9,
+                    os_usage / 1e9, vram_budget / 1e9, headroom / 1e9);
+        else
+            fprintf(stderr, "gpu: no OS video memory budget published for "
+                            "this device; offload budget %.2f GB from the "
+                            "driver's free view, headroom %.2f GB\n",
+                    vram_budget / 1e9, headroom / 1e9);
         // fixed device overhead regardless of split: activation scratch, the
-        // token-embedding weights (always uploaded), and a margin covering the
-        // CUDA context + PTX JIT + WDDM reserve
+        // token-embedding weights (always uploaded), and the headroom covering
+        // the CUDA context + PTX JIT + allocator slack + the OS reserve
         size_t fixed = act_bytes + (m->cpu_moe ? 0 : m->tok_embd->nbytes) +
-                       (512u << 20);
+                       (size_t)headroom;
         // decide how many *leading* layers fit — accumulate each layer's weight
         // bytes plus its KV bytes until the budget runs out; the CPU runs the
         // rest (partial offload)
