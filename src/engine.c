@@ -86,9 +86,9 @@ bool engine_init(engine *e, model_t *m, tokenizer *tok, sampler *smp) {
     }
     if (!strcmp(m->arch, "muse-glimmer"))
         e->think_end_id = tok_find(tok, "<|eom|>");
-    // A stop token is not repetition: the chat template puts it in the prompt,
-    // the prompt seeds the penalty window, and penalising it can leave a model
-    // unable to end its turn at all.
+    // A stop token is not repetition: penalising one the model generated can
+    // leave it unable to end its turn at all. (The window holds generated
+    // tokens only; the prompt no longer seeds it, see the note in engine_feed.)
     if (smp) {
         smp->n_no_penalty = 0;
         for (int i = 0; i < e->n_stop &&
@@ -295,9 +295,7 @@ int engine_rewind(engine *e, const int32_t *toks, int n) {
     // request's tokens; the catch-up loop re-feeds hist[dpos..pos)
     dpos_rewind(e, keep);
     e->hit_stop = false;
-    sampler_reset(e->smp);
-    // the kept prefix still counts toward the repeat-penalty window
-    for (int i = 0; i < keep; i++) sampler_accept(e->smp, toks[i]);
+    sampler_reset(e->smp);   // the kept prefix is prompt: it does not seed the penalty window
     jsonv_init(&e->jv);
     if (e->schema) sval_init(&e->sv, e->schema);
     constraint_reset(e);
@@ -658,8 +656,7 @@ prefix_reuse engine_prefix_reuse(engine *e, const int32_t *toks, int n) {
         e->pos = best;
         e->dpos = 0;          // the draft model's KV was not forked
         e->hit_stop = false;
-        sampler_reset(e->smp);
-        for (int i = 0; i < best; i++) sampler_accept(e->smp, toks[i]);
+        sampler_reset(e->smp);   // a forked prefix is prompt: it does not seed the penalty window
         jsonv_init(&e->jv);
         if (e->schema) sval_init(&e->sv, e->schema);
         constraint_reset(e);
@@ -1027,7 +1024,13 @@ float *engine_feed(engine *e, const int32_t *toks, int n) {
                 model_mtp_feed(m, toks[i + j]);
                 model_mtp_note_hidden(m, model_hidden_row(m, j));
             }
-        for (int j = 0; j < chunk; j++) sampler_accept(e->smp, toks[i + j]);
+        // The prompt does NOT enter the repeat-penalty window. It used to, and a
+        // prompt carrying a tool schema then held exactly the tokens a call must
+        // re-type (`=`, `amount`, `from_currency`): under the generic preset's
+        // penalty every sampled call on /v1/completions degenerated while greedy
+        // stayed perfect (2026-09-15; granite-4.1-3b Q8_0, 0 of 8 exact at 1.10,
+        // 8 of 8 at 1.0). The window holds what the model generated, which is
+        // the repetition the penalty exists to discourage; tests/test_penalty_window.c.
         e->pos += chunk;
         i += chunk;
         if (e->progress && n > 512 && (i % 512 < m->n_batch || last))
