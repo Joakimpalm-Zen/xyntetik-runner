@@ -143,6 +143,7 @@ OBJDIR = .build/$(BUILD_ID)
 # three-way platform branch above
 TEST_PREFIX = $(TEST_BATCH:test-batch%=test-prefix%)
 TEST_RECURRENT = $(TEST_BATCH:test-batch%=test-recurrent-rewind%)
+TEST_PENALTY_WINDOW = $(TEST_BATCH:test-batch%=test-penalty-window%)
 TEST_REQUEST_STOP = $(TEST_BATCH:test-batch%=test-request-stop%)
 TEST_HOST_HEADER = $(TEST_BATCH:test-batch%=test-host-header%)
 TEST_GRAMMAR_FF = $(TEST_BATCH:test-batch%=test-grammar-ff%)
@@ -625,6 +626,12 @@ $(TEST_PREFIX): $(TEST_PREFIX_SRC) $(HDR)
 TEST_RECURRENT_SRC = tests/test_recurrent_rewind.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o $(QUANTS_OBJ) \
                   $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(OBJDIR)/sample.o $(OBJDIR)/jsonmode.o \
                   $(OBJDIR)/schema.o $(OBJDIR)/json.o $(OBJDIR)/engine.o $(OBJDIR)/vramreg.o $(GPU_OBJ)
+TEST_PENALTY_WINDOW_SRC = tests/test_penalty_window.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o $(QUANTS_OBJ) \
+                  $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(OBJDIR)/sample.o $(OBJDIR)/jsonmode.o \
+                  $(OBJDIR)/schema.o $(OBJDIR)/json.o $(OBJDIR)/engine.o $(OBJDIR)/vramreg.o $(GPU_OBJ)
+$(TEST_PENALTY_WINDOW): $(TEST_PENALTY_WINDOW_SRC) $(HDR)
+	$(CC) $(CFLAGS) -I src $(TEST_PENALTY_WINDOW_SRC) -o $@ $(LDFLAGS)
+
 $(TEST_RECURRENT): $(TEST_RECURRENT_SRC) $(HDR)
 	$(CC) $(CFLAGS) -I src $(TEST_RECURRENT_SRC) -o $@ $(LDFLAGS)
 
@@ -1940,9 +1947,10 @@ test: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSON_OOM) $(
       $(TEST_THREAD_DEFAULT) \
       $(TEST_MODEL_LOAD_FAILURE) $(TEST_RESTART) $(TEST_PFX_PERSIST) \
       $(TEST_SCHED_TURN) $(TEST_RESIDENCY) $(TEST_BUDGET) $(TEST_ATTRIB_DEP) \
-      $(TEST_STOP_CONSTRAINT) $(TEST_MSG_OOM_DEP) $(TEST_RECURRENT) $(TEST_REQUEST_STOP) \
+      $(TEST_STOP_CONSTRAINT) $(TEST_MSG_OOM_DEP) $(TEST_RECURRENT) $(TEST_PENALTY_WINDOW) $(TEST_REQUEST_STOP) \
       runner test.gguf test-q8.gguf test-bf16.gguf test-ornith.gguf test-ornith-draft.gguf
 	./$(TEST_RECURRENT)
+	./$(TEST_PENALTY_WINDOW) test.gguf
 	./$(TEST_REQUEST_STOP)
 	./$(TEST_LORA_GRAD)
 	./$(TEST_DPO_GRAD)

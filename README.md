@@ -956,7 +956,12 @@ calibration, not the vendor's. Gemma 4 used to inherit Gemma 3's preset,
 which until 2026-09-14 carried that same 1.10 under the Gemma team's
 citation; at the family's temperature 1.0 the penalty turned every native
 tool call into special-token soup (the 2026-09-14 Windows report, 12B QAT
-Q4_0: 0 of 4 tool cases with it, 4 of 4 without). A request can read back
+Q4_0: 0 of 4 tool cases with it, 4 of 4 without). The penalty window holds
+the tokens the model generated, never the prompt (since 2026-09-15: a tool
+schema in a raw `/v1/completions` prompt held exactly the tokens a call
+must re-type, and the generic preset's penalty, 1.0 now where it was 1.10,
+turned every sampled call into schema-avoiding spellings while greedy
+stayed perfect; `tests/test_penalty_window.c`). A request can read back
 what it was served with: `runner_telemetry.sampling` carries the preset,
 the five effective values, the seed and each value's source (`preset`,
 `cli` or `request`), and `runner_telemetry.tool_protocol` the template, the

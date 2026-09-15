@@ -6,6 +6,28 @@ change between releases (the `-alpha` suffix was retired at v0.2.0 — the 0.x
 version already says what it needs to). Entries below the rename keep the
 names that were true when they were written.
 
+## Unreleased
+
+- **The repeat penalty no longer punishes the prompt's own tokens, and the
+  generic preset carries no penalty.** The penalty window used to be seeded
+  from the prompt, so a raw `/v1/completions` prompt carrying a tool schema
+  held exactly the tokens a call must re-type (`=`, `amount`,
+  `from_currency`), and under the generic preset's 1.10 every sampled call
+  degenerated into schema-avoiding spellings while greedy and the logprob
+  reads stayed perfect (the lab's pilot, 2026-09-15; reproduced on
+  granite-4.1-3b Q8_0: 0 of 8 exact calls at 1.10, 8 of 8 at 1.0). The
+  window now holds what the model generated, at every seam that used to
+  seed it (the prompt feed, a rewind over a kept prefix, a prefix-cache
+  fork), which is the repetition the penalty exists to discourage; gated in
+  `tests/test_penalty_window.c`. The generic preset's `repeat_penalty`
+  drops from 1.10 to 1.0: transformers and current llama.cpp default the
+  penalty off, and the 1.10 was runner's own calibration. Presets that
+  state a penalty keep it; a request that asks for one gets it. After the
+  change the same probe reads 8 of 8 at the preset default and 5 of 8 with
+  an explicit 1.10, the penalty now acting only on the call's own repeated
+  bytes. The same mechanism explains the 0.5.4 Gemma 4 and Qwen3-Coder
+  preset findings. Suite plan R4.12.7.
+
 ## v0.5.5 - 2026-09-15
 
 The Hub-fetch release. `runner -hf owner/repo[:TAG]` fetches a GGUF from

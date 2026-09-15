@@ -367,9 +367,13 @@ int sample_pick(sampler *s, float *logits, int n_vocab, sample_ok_fn ok, void *u
 // only value in this table that is calibration rather than citation.
 static const sampler_preset PRESETS[] = {
     // runner's historical fixed defaults; the fallback for families that
-    // publish nothing
+    // publish nothing. repeat_penalty 1.0 since 2026-09-15: the 1.10 this row
+    // carried was runner's calibration, transformers and current llama.cpp
+    // default the penalty off, and with a tool schema in the prompt it turned
+    // every sampled call on /v1/completions into garbage (R4.12.7). A caller
+    // who wants the penalty asks for it.
     { "generic", "runner defaults (no vendor recommendation for this model)",
-      0.80f, 0.95f, 0.05f, 1.10f, 40 },
+      0.80f, 0.95f, 0.05f, 1.00f, 40 },
 
     // Qwen3 model card, "Best Practices" — thinking-mode settings, since
     // runner surfaces qwen3's thinking channel. (Non-thinking is 0.7/0.8/20.)

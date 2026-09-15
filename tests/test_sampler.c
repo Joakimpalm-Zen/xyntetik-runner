@@ -159,7 +159,7 @@ static void test_preset_fallback(void) {
     const sampler_preset *g = sampler_preset_for("llama", "tinyllama_tinyllama-1.1b-chat-v1.0", -1);
     assert(!strcmp(g->name, "generic"));
     assert(EQ(g->temp, 0.8f) && EQ(g->top_p, 0.95f) && EQ(g->min_p, 0.05f));
-    assert(g->top_k == 40 && EQ(g->repeat_penalty, 1.1f));
+    assert(g->top_k == 40 && EQ(g->repeat_penalty, 1.0f));   // 1.10 until 2026-09-15 (R4.12.7)
 
     // "tinyllama" must not be read as the llama-3 family
     assert(strcmp(sampler_preset_for("llama", "TinyLlama 1.1B", -1)->name, "llama3") != 0);
