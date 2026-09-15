@@ -6,7 +6,14 @@ change between releases (the `-alpha` suffix was retired at v0.2.0 — the 0.x
 version already says what it needs to). Entries below the rename keep the
 names that were true when they were written.
 
-## Unreleased
+## v0.5.5 - 2026-09-15
+
+The Hub-fetch release. `runner -hf owner/repo[:TAG]` fetches a GGUF from
+the Hugging Face Hub by repository id, the spelling llama.cpp and Ollama
+users know, verified against the Hub's own SHA-256 record and cached, so
+a model page's "Use this model" snippet for Runner is one line. Released
+on its own, ahead of the Hub registry listing, so that the snippet never
+points at a binary that lacks the flag.
 
 - **`-hf owner/repo[:TAG]` fetches the GGUF from the Hugging Face Hub.** The
   spelling llama.cpp and Ollama users know, so a model page's "Use this
