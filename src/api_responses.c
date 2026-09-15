@@ -339,17 +339,31 @@ static bool responses_reject_stateful(sock_t fd, jv *req) {
                    "the context window is rejected rather than silently cut");
         return true;
     }
-    // `include` asks for extra output payloads (logprobs, image URLs, encrypted
-    // reasoning) none of which this runtime can produce
+    // `include` asks for extra output payloads. One member is a request this
+    // runtime answers truthfully by including nothing: encrypted reasoning
+    // exists so a STATELESS client can hand a hosted model its own hidden
+    // reasoning back next turn, and Codex sends `store:false` with
+    // `include:["reasoning.encrypted_content"]` on every request (0.154.0);
+    // there is no hidden state here to encrypt, so a reasoning item without
+    // `encrypted_content` is the complete answer and the client resumes from
+    // the visible history it already replays. Every other member (logprobs,
+    // image URLs, file search results) names a payload this runtime cannot
+    // produce, and a 200 without it would be the accepted-then-ignored shape
+    // this surface refuses.
     v = jv_get(req, "include");
     if (v && v->type != J_NULL && v->type != J_ARR) {
         send_error(fd, 400, "include must be an array");
         return true;
     }
-    if (v && v->type == J_ARR && v->n > 0) {
-        send_error(fd, 400,
-                   "include[] is not supported; no additional output payloads "
-                   "are available from this runtime");
+    for (int i = 0; v && v->type == J_ARR && i < v->n; i++) {
+        const char *m = jv_str(v->items[i], NULL);
+        if (m && !strcmp(m, "reasoning.encrypted_content")) continue;
+        char msg[192];
+        snprintf(msg, sizeof(msg),
+                 "include[] member %s%.60s%s is not supported; no additional "
+                 "output payloads are available from this runtime",
+                 m ? "\"" : "", m ? m : "of that type", m ? "\"" : "");
+        send_error(fd, 400, msg);
         return true;
     }
     return false;
@@ -372,13 +386,33 @@ static bool responses_validate_content_parts(jv *input, char *err,
             return false;
         }
         const char *item_type = jv_str(type_v, "message");
+        if (!strcmp(item_type, "reasoning")) {
+            // A replayed reasoning item: what a stateless client hands back
+            // from the previous turn's output (Codex replays every item it
+            // received). Its summary must be the shape this runtime emits.
+            jv *summary = jv_get(item, "summary");
+            if (summary && summary->type != J_NULL && summary->type != J_ARR) {
+                snprintf(err, err_cap, "input[%d].summary must be an array", i);
+                return false;
+            }
+            for (int k = 0; summary && summary->type == J_ARR && k < summary->n; k++) {
+                jv *part = summary->items[k];
+                if (!part || part->type != J_OBJ ||
+                    !jv_str(jv_get(part, "text"), NULL)) {
+                    snprintf(err, err_cap, "input[%d].summary[%d] must carry a "
+                                           "text string", i, k);
+                    return false;
+                }
+            }
+            continue;
+        }
         if (strcmp(item_type, "message") &&
             strcmp(item_type, "function_call") &&
             strcmp(item_type, "function_call_output")) {
             snprintf(err, err_cap,
                      "input[%d].type %s is unsupported; Runner accepts message, "
-                     "function_call and function_call_output items", i,
-                     item_type);
+                     "function_call, function_call_output and reasoning items",
+                     i, item_type);
             return false;
         }
         jv *content = jv_get(item, "content");
@@ -537,6 +571,10 @@ void handle_responses(slot_t *s, sock_t fd, jv *req) {
             const char *type = jv_str(jv_get(item, "type"), "message");
             if (!strcmp(type, "function_call")) roles[i] = "assistant";
             else if (!strcmp(type, "function_call_output")) roles[i] = "tool";
+            // a replayed reasoning item belongs to the assistant turn that
+            // follows it; it is not a turn of its own for the alternation
+            // rule (it renders nothing, or Harmony's analysis channel)
+            else if (!strcmp(type, "reasoning")) roles[i] = "reasoning";
             else {
                 const char *role = jv_str(jv_get(item, "role"), "user");
                 roles[i] = !strcmp(role, "developer") ? "system" : role;
@@ -599,9 +637,22 @@ void handle_responses(slot_t *s, sock_t fd, jv *req) {
         }
     }
 
+    // parallel_tool_calls is read BEFORE the envelope is built, because it
+    // changes the envelope's shape (the chat surface does the same). The
+    // streaming demultiplexer announces each call as its own function_call
+    // item, so several calls in one turn reach this surface exactly as they
+    // reach chat; this used to be refused here as "not supported yet", and
+    // Codex 0.154.0 sends parallel_tool_calls:true on every request.
+    bool parallel = false;
+    if (!request_bool(req, "parallel_tool_calls", false, &parallel)) {
+        jv_free(tools);
+        jv_free(choice_owned);
+        send_error(fd, 400, "parallel_tool_calls must be a boolean");
+        return;
+    }
     tool_envelope env = {0};
-    int rc = tool_envelope_build(tools, choice_owned ? choice_owned : choice_raw,
-                                 final_schema, &env, terr, sizeof(terr));
+    int rc = tool_envelope_build_ex(tools, choice_owned ? choice_owned : choice_raw,
+                                    final_schema, parallel, &env, terr, sizeof(terr));
     if (rc < 0) {
         jv_free(tools);
         jv_free(choice_owned);
@@ -618,24 +669,6 @@ void handle_responses(slot_t *s, sock_t fd, jv *req) {
     const jv *native_tools = tool_decl_native(s->tmpl, strict,
                                               /*atem_tool_calling=*/true, tools,
                                               &env, &native_decl);
-    bool parallel = false;
-    if (!request_bool(req, "parallel_tool_calls", false, &parallel)) {
-        tool_envelope_free(&env);
-        jv_free(tools);
-        jv_free(choice_owned);
-        send_error(fd, 400, "parallel_tool_calls must be a boolean");
-        return;
-    }
-    if (strict && parallel) {
-        tool_envelope_free(&env);
-        jv_free(tools);
-        jv_free(choice_owned);
-        send_error(fd, 400,
-                   "parallel_tool_calls:true is not supported yet; "
-                   "one call per turn");
-        return;
-    }
-
     // assemble the turns: tool system turn, then `instructions` as a system
     // message, then the input items in order
     int n_items = input->type == J_ARR ? input->n : 1;
@@ -684,6 +717,40 @@ void handle_responses(slot_t *s, sock_t fd, jv *req) {
         for (int i = 0; i < input->n; i++) {
             const char *role = "user";
             const char *type = jv_str(jv_get(input->items[i], "type"), "");
+            if (!strcmp(type, "reasoning")) {
+                // Whether replayed reasoning belongs in the PROMPT is the
+                // per-family question the Messages surface already answers
+                // for thinking blocks, and the answer has to match what
+                // /v1/chat/completions does with reasoning_content for the
+                // same resident model. Harmony authors prior reasoning on
+                // its own `analysis` channel; every other family's reference
+                // strips prior thinking from history, so for those the item
+                // is accepted and renders nothing, as it does there.
+                if (s->tmpl != TMPL_HARMONY) continue;
+                jv *summary = jv_get(input->items[i], "summary");
+                sbuf r = {0};
+                for (int k = 0; summary && summary->type == J_ARR && k < summary->n; k++) {
+                    const char *t = jv_str(jv_get(summary->items[k], "text"), "");
+                    if (r.n) sb_lit(&r, "\n");
+                    sb_put(&r, t, strlen(t));
+                }
+                if (r.failed) {
+                    free(r.s);
+                    for (int k = 0; k < n_own; k++) free(owned[k]);
+                    free(owned); free(cm); free(ts.s);
+                    tool_envelope_free(&env);
+                    jv_free(tools);
+                    jv_free(choice_owned);
+                    send_error(fd, 500, "out of memory building responses prompt");
+                    return;
+                }
+                if (!r.s || !r.n) { free(r.s); continue; }
+                owned[n_own++] = r.s;
+                cm[n_cm++] = (chat_msg){ .role = "assistant", .content = r.s,
+                                        .channel = "analysis" };
+                total += r.n + 64;
+                continue;
+            }
             bool is_call = !strcmp(type, "function_call");
             // The function a replayed call was made under. It used to be read
             // inside responses_item_text(), which returned NULL when the item

@@ -67,12 +67,13 @@ static void test_preset_selection(void) {
     assert(EQ(p->temp, 1.0f) && EQ(p->top_p, 0.95f) && p->top_k == 20);
     assert(EQ(p->repeat_penalty, 1.0f) && EQ(p->min_p, 0.0f));
     // Qwen3-Coder-30B-A3B-Instruct generation_config.json: temperature 0.7,
-    // top_p 0.8, top_k 20, repetition_penalty 1.05 (it is a qwen3moe file
-    // whose name also carries "qwen3").
+    // top_p 0.8, top_k 20 (it is a qwen3moe file whose name also carries
+    // "qwen3"). Its repetition_penalty 1.05 is not taken: measured 0 of 8
+    // well-formed calls against 8 of 8 at 1.0 (sample.c).
     p = sampler_preset_for("qwen3moe", "Qwen3 Coder 30B A3B Instruct", TMPL_QWEN3_CODER);
     assert(!strcmp(p->name, "qwen3-coder"));
     assert(EQ(p->temp, 0.7f) && EQ(p->top_p, 0.8f) && p->top_k == 20);
-    assert(EQ(p->repeat_penalty, 1.05f));
+    assert(EQ(p->repeat_penalty, 1.0f));
     // Granite 4.2 (3b and 8b generation_config.json): temperature 1.0,
     // top_p 0.95, do_sample, nothing else; it used to fall through to the
     // generic preset and its 1.10 penalty.

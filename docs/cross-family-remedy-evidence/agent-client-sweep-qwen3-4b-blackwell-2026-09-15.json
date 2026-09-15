@@ -1,0 +1,183 @@
+{
+ "gate": "agent-client-sweep",
+ "label": "Blackwell MIG 1g.24gb, Qwen3-4B Q4_K_M, latest clients, 2026-09-15",
+ "started": "2026-09-15T08:07:14+0200",
+ "host": "bfff3786ea4e",
+ "platform": "Linux-6.12.0-211.16.1.el10_2.x86_64-x86_64-with-glibc2.39",
+ "base_url": "http://127.0.0.1:8099",
+ "model": "Qwen3-4B-Q4_K_M.gguf",
+ "model_file": "/home/lab/workspace/models/Qwen3-4B-Q4_K_M/Qwen3-4B-Q4_K_M.gguf",
+ "model_sha256": "7485fe6f11af29433bc51cab58009521f205840f5b4ae3a32fa7f92e8534fdf5",
+ "runner": "./runner",
+ "runner_version": "runner 0.5.3",
+ "runner_sha256": "c33e24c2ab708a78b4fb3d7711eced85271d2f4ca9dbbbf53feb5c34f945c8c1",
+ "sampling_served": {
+  "preset": "qwen3",
+  "temperature": 0.6,
+  "top_p": 0.95,
+  "top_k": 20,
+  "min_p": 0.0,
+  "repeat_penalty": 1.0
+ },
+ "template": "chatml-think",
+ "tool_protocol": {
+  "family": "qwen_json",
+  "native": true
+ },
+ "context": 32768,
+ "prompt": "Read the file sentinel.txt in the current directory with your tools and reply with the code word it contains, in one sentence.",
+ "rows": [
+  {
+   "client": "opencode",
+   "version": "1.18.31",
+   "sentinel": "XYNTETIK-6269-2CB7",
+   "result": "PASS",
+   "reason": null,
+   "wall_s": 83.3,
+   "command": [
+    "/home/lab/.opencode/bin/opencode",
+    "run",
+    "--model",
+    "runner/Qwen3-4B-Q4_K_M.gguf",
+    "Read the file sentinel.txt in the current directory with your tools and reply with the code word it contains, in one sentence."
+   ],
+   "exit": 0,
+   "stdout_tail": "The code word in sentinel.txt is XYNTETIK-6269-2CB7.\n",
+   "stderr_tail": "\u001b[0m\n> build \u00b7 Qwen3-4B-Q4_K_M.gguf\n\u001b[0m\n\u001b[0m\u2192 \u001b[0mRead sentinel.txt\n"
+  },
+  {
+   "client": "claude",
+   "version": "2.1.272 (Claude Code)",
+   "sentinel": "XYNTETIK-E2C7-D1FC",
+   "result": "PASS",
+   "reason": null,
+   "wall_s": 261.8,
+   "command": [
+    "/home/lab/.nvm/versions/node/v22.22.3/bin/claude",
+    "-p",
+    "--model",
+    "Qwen3-4B-Q4_K_M.gguf",
+    "Read the file sentinel.txt in the current directory with your tools and reply with the code word it contains, in one sentence.",
+    "--allowedTools",
+    "Read"
+   ],
+   "exit": 0,
+   "stdout_tail": "\n\nThe code word in sentinel.txt is **XYNTETIK-E2C7-D1FC**.\n",
+   "stderr_tail": "\u001b[33m\"Qwen3-4B-Q4_K_M.gguf\" isn't described by this version's model catalog; update Claude Code, or map it with behavesAs on a modelPicker row (or modelOverrides, if it is a provider id of a model this version knows). Until then auto-compact keeps this session within 200k tokens (the context window it assumes); if the model accepts more, append [1m] to the model name for 1M, or set CLAUDE_CODE_MAX_CONTEXT_TOKENS to its real window; CLAUDE_CODE_DISABLE_UNKNOWN_MODEL_WINDOW_ENFORCEMENT=1 restores the previous wait-for-the-API behavior.\u001b[39m\n[claude-code:unrecognized_model] {\"model\":\"Qwen3-4B-Q4_K_M.gguf\",\"query_source\":\"generate_session_title\"}\n"
+  },
+  {
+   "client": "codex",
+   "version": "codex-cli 0.154.0",
+   "sentinel": "XYNTETIK-FD76-0C4A",
+   "result": "PASS",
+   "reason": null,
+   "wall_s": 113.4,
+   "command": [
+    "/home/lab/.nvm/versions/node/v22.22.3/bin/codex",
+    "exec",
+    "--dangerously-bypass-approvals-and-sandbox",
+    "--skip-git-repo-check",
+    "-C",
+    "/tmp/agent-sweep-codex-08hp1le4",
+    "Read the file sentinel.txt in the current directory with your tools and reply with the code word it contains, in one sentence."
+   ],
+   "exit": 0,
+   "stdout_tail": "\n\nThe code word in sentinel.txt is **XYNTETIK-FD76-0C4A**.\n",
+   "stderr_tail": "t contains in one sentence.\n\nFirst, I need to use the tools available. The exec_command function was used to run 'cat sentinel.txt', which outputs the content of the file. The response from the tool shows that the file contains \"The code word is XYNTETIK-FD76-0C4A.\"\n\nSo, the next step is to construct a sentence that includes this code word. The user specified exactly one sentence. The output from the file already includes the code word, so I can directly use that as the response. There's no need for additional processing since the file's content is straightforward and meets the user's requirement. I should just present the extracted code word in a single sentence as instructed.\n\u001b[0m\n\u001b[35m\u001b[3mcodex\u001b[0m\u001b[0m\n\n\nThe code word in sentinel.txt is **XYNTETIK-FD76-0C4A**.\n\u001b[2mtokens used\u001b[0m\n6,935\n"
+  },
+  {
+   "client": "continue",
+   "version": "1.5.47",
+   "sentinel": "XYNTETIK-0925-A69C",
+   "result": "PASS",
+   "reason": null,
+   "wall_s": 23.0,
+   "command": [
+    "/home/lab/.nvm/versions/node/v22.22.3/bin/cn",
+    "-p",
+    "--auto",
+    "--config",
+    "/tmp/agent-sweep-continue-6769h7qh/home/.continue/config.yaml",
+    "Read the file sentinel.txt in the current directory with your tools and reply with the code word it contains, in one sentence."
+   ],
+   "exit": 0,
+   "stdout_tail": "\n\nThe code word in sentinel.txt is **XYNTETIK-0925-A69C**.\n",
+   "stderr_tail": ""
+  },
+  {
+   "client": "cline",
+   "version": "3.0.61",
+   "sentinel": "XYNTETIK-2EE3-3800",
+   "result": "PASS",
+   "reason": null,
+   "wall_s": 65.7,
+   "command": [
+    "/home/lab/.nvm/versions/node/v22.22.3/bin/cline",
+    "Read the file sentinel.txt in the current directory with your tools and reply with the code word it contains, in one sentence.",
+    "--config",
+    "/tmp/agent-sweep-cline-tvg2dx5f/home/.cline",
+    "--data-dir",
+    "/tmp/agent-sweep-cline-tvg2dx5f/home/.cline/data",
+    "--auto-approve",
+    "true",
+    "--thinking",
+    "none",
+    "-c",
+    "/tmp/agent-sweep-cline-tvg2dx5f",
+    "-t",
+    "900"
+   ],
+   "exit": 0,
+   "stdout_tail": "\u001b[2mng\u001b[0m\u001b[2m li\u001b[0m\u001b[2mke \"T\u001b[0m\u001b[2mhe co\u001b[0m\u001b[2mde wor\u001b[0m\u001b[2md f\u001b[0m\u001b[2mound in s\u001b[0m\u001b[2menti\u001b[0m\u001b[2mnel\u001b[0m\u001b[2m.tx\u001b[0m\u001b[2mt \u001b[0m\u001b[2mis\u001b[0m\u001b[2m X\u001b[0m\u001b[2mY\u001b[0m\u001b[2mN\u001b[0m\u001b[2mTE\u001b[0m\u001b[2mT\u001b[0m\u001b[2mI\u001b[0m\u001b[2mK\u001b[0m\u001b[2m-\u001b[0m\u001b[2m2\u001b[0m\u001b[2mE\u001b[0m\u001b[2mE3\u001b[0m\u001b[2m-38\u001b[0m\u001b[2m0\u001b[0m\u001b[2m0.\" \n\u001b[0m\u001b[2m\nI \u001b[0m\u001b[2mneed \u001b[0m\u001b[2mto ma\u001b[0m\u001b[2mke sur\u001b[0m\u001b[2me \u001b[0m\u001b[2mthe\u001b[0m\u001b[2mre's n\u001b[0m\u001b[2mo other info\u001b[0m\u001b[2mrmatio\u001b[0m\u001b[2mn\u001b[0m\u001b[2m add\u001b[0m\u001b[2med. The r\u001b[0m\u001b[2mespon\u001b[0m\u001b[2mse f\u001b[0m\u001b[2mrom t\u001b[0m\u001b[2mhe \u001b[0m\u001b[2mtool is straight\u001b[0m\u001b[2mf\u001b[0m\u001b[2morw\u001b[0m\u001b[2mard,\u001b[0m\u001b[2m so the\u001b[0m\u001b[2m answer\u001b[0m\u001b[2m should d\u001b[0m\u001b[2mirectl\u001b[0m\u001b[2my qu\u001b[0m\u001b[2mote t\u001b[0m\u001b[2mhe co\u001b[0m\u001b[2mde wo\u001b[0m\u001b[2mrd f\u001b[0m\u001b[2mrom t\u001b[0m\u001b[2mh\u001b[0m\u001b[2me f\u001b[0m\u001b[2mile. \u001b[0m\u001b[2m\n\nC\u001b[0m\u001b[2mheck i\u001b[0m\u001b[2mf \u001b[0m\u001b[2mther\u001b[0m\u001b[2me's an\u001b[0m\u001b[2my oth\u001b[0m\u001b[2mer \u001b[0m\u001b[2mpart\u001b[0m\u001b[2m of the r\u001b[0m\u001b[2mespon\u001b[0m\u001b[2mse tha\u001b[0m\u001b[2mt mig\u001b[0m\u001b[2mht ha\u001b[0m\u001b[2mve more \u001b[0m\u001b[2md\u001b[0m\u001b[2metai\u001b[0m\u001b[2mls, \u001b[0m\u001b[2mbut t\u001b[0m\u001b[2mhe\u001b[0m\u001b[2m tool's\u001b[0m\u001b[2m resul\u001b[0m\u001b[2mt s\u001b[0m\u001b[2meems \u001b[0m\u001b[2mto have \u001b[0m\u001b[2mexac\u001b[0m\u001b[2mtly t\u001b[0m\u001b[2mhe line\u001b[0m\u001b[2m \u001b[0m\u001b[2mnee\u001b[0m\u001b[2mded.\u001b[0m\u001b[2m So t\u001b[0m\u001b[2mhe co\u001b[0m\u001b[2mde \u001b[0m\u001b[2mword is co\u001b[0m\u001b[2mrrectly ex\u001b[0m\u001b[2mt\u001b[0m\u001b[2mrac\u001b[0m\u001b[2mted. \n\nTh\u001b[0m\u001b[2me\u001b[0m\u001b[2mrefo\u001b[0m\u001b[2mre, th\u001b[0m\u001b[2me final\u001b[0m\u001b[2m an\u001b[0m\u001b[2mswer\u001b[0m\u001b[2m is the s\u001b[0m\u001b[2mentence con\u001b[0m\u001b[2mtain\u001b[0m\u001b[2ming t\u001b[0m\u001b[2mhe co\u001b[0m\u001b[2mde \u001b[0m\u001b[2mword a\u001b[0m\u001b[2ms f\u001b[0m\u001b[2mound\u001b[0m\u001b[2m in t\u001b[0m\u001b[2mhe\u001b[0m\u001b[2m file.\n\u001b[0m\n\n\nThe code word found in sentinel.txt is **XYNTETIK-2EE3-3800**.\n",
+   "stderr_tail": "m48389\u001b[0m\u001b[2m)\u001b[0m\n\u001b[0m      \u001b[2mat \u001b[0m\u001b[0m\u001b[1m\u001b[3mtransform\u001b[0m\u001b[2m (\u001b[0m\u001b[0m\u001b[36m/$bunfs/root/chunk-nd6m62hc.js\u001b[0m\u001b[2m:\u001b[0m\u001b[33m44\u001b[0m\u001b[2m:\u001b[33m43299\u001b[0m\u001b[2m)\u001b[0m\n\n\u001b[0m\u001b[33mDeprecationWarning\u001b[0m\u001b[2m:\u001b[0m \u001b[1mAI SDK Warning (openai-compatible.chat / Qwen3-4B-Q4_K_M.gguf): Deprecated: \"providerOptions key 'openai-compatible'\". Use 'openaiCompatible' instead.\u001b[0m\n\u001b[0m      \u001b[2mat \u001b[0m\u001b[0m\u001b[1m\u001b[3mBY\u001b[0m\u001b[2m (\u001b[0m\u001b[0m\u001b[36m/$bunfs/root/chunk-nd6m62hc.js\u001b[0m\u001b[2m:\u001b[0m\u001b[33m26\u001b[0m\u001b[2m:\u001b[33m48090\u001b[0m\u001b[2m)\u001b[0m\n\u001b[0m      \u001b[2mat \u001b[0m\u001b[0m\u001b[1m\u001b[3mcZ\u001b[0m\u001b[2m (\u001b[0m\u001b[0m\u001b[36m/$bunfs/root/chunk-nd6m62hc.js\u001b[0m\u001b[2m:\u001b[0m\u001b[33m26\u001b[0m\u001b[2m:\u001b[33m48389\u001b[0m\u001b[2m)\u001b[0m\n\u001b[0m      \u001b[2mat \u001b[0m\u001b[0m\u001b[1m\u001b[3mtransform\u001b[0m\u001b[2m (\u001b[0m\u001b[0m\u001b[36m/$bunfs/root/chunk-nd6m62hc.js\u001b[0m\u001b[2m:\u001b[0m\u001b[33m44\u001b[0m\u001b[2m:\u001b[33m43299\u001b[0m\u001b[2m)\u001b[0m\n\n"
+  },
+  {
+   "client": "pi",
+   "version": "0.85.1",
+   "sentinel": "XYNTETIK-8879-3EA9",
+   "result": "PASS",
+   "reason": null,
+   "wall_s": 12.2,
+   "command": [
+    "/home/lab/.nvm/versions/node/v22.22.3/bin/pi",
+    "-p",
+    "--no-session",
+    "--no-context-files",
+    "--provider",
+    "runner",
+    "--model",
+    "Qwen3-4B-Q4_K_M.gguf",
+    "Read the file sentinel.txt in the current directory with your tools and reply with the code word it contains, in one sentence."
+   ],
+   "exit": 0,
+   "stdout_tail": "\n\nThe code word in sentinel.txt is **XYNTETIK-8879-3EA9**.\n",
+   "stderr_tail": ""
+  },
+  {
+   "client": "aider",
+   "version": "aider 0.86.2",
+   "sentinel": "XYNTETIK-9877-91BC",
+   "result": "PASS",
+   "reason": null,
+   "wall_s": 5.0,
+   "command": [
+    "/home/lab/.local/bin/aider",
+    "--model",
+    "openai/Qwen3-4B-Q4_K_M.gguf",
+    "--no-git",
+    "--yes-always",
+    "--dry-run",
+    "--no-show-model-warnings",
+    "--no-check-update",
+    "--message",
+    "Read sentinel.txt and reply with the code word it contains, in one sentence.",
+    "sentinel.txt"
+   ],
+   "exit": 0,
+   "stdout_tail": "ed in sentinel.txt is \"XYNTETIK-9877-91BC\".\u001b[0m                \n\n\u001b[94msentine\u001b[0m                                                                         \n\u001b[2K\u001b[1A\u001b[2K\u001b[1A\u001b[2K\u001b[1A\u001b[2K\u001b[1A\u001b[2K\u001b[1A\u001b[2K\n\u001b[94m\u25ba \u001b[0m\u001b[1;94mANSWER\u001b[0m                                                                        \n\n\u001b[94mThe code word contained in sentinel.txt is \"XYNTETIK-9877-91BC\".\u001b[0m                \n\n\u001b[94msentine\u001b[0m                                                                         \n\u001b[2K\u001b[1A\u001b[2K\u001b[1A\u001b[2K\u001b[1A\u001b[2K\u001b[1A\u001b[2K\u001b[1A\u001b[2K\n\u001b[94m\u25ba \u001b[0m\u001b[1;94mANSWER\u001b[0m                                                                        \n\n\u001b[94mThe code word contained in sentinel.txt is \"XYNTETIK-9877-91BC\".\u001b[0m                \n\n\u001b[94msentinel.txt\u001b[0m                                                                    \n\n\u001b[107m                                                                                \u001b[0m\n\u001b[107m                                                                                \u001b[0m\n\u001b[107m                                                                                \u001b[0m\n\n\u001b[94m\u25ba \u001b[0m\u001b[1;94mANSWER\u001b[0m                                                                        \n\n\u001b[94mThe code word contained in sentinel.txt is \"XYNTETIK-9877-91BC\".\u001b[0m                \n\n\u001b[94msentine\u001b[0m                                                                         \n\u001b[2K\u001b[1A\u001b[2K\u001b[1A\u001b[2K\u001b[1A\u001b[2K\u001b[1A\u001b[2K\u001b[1A\u001b[2K\n\u001b[?25h\nTokens: 663 sent, 229 received.\nDid not apply edit to sentinel.txt (--dry-run)\n",
+   "stderr_tail": "Warning: Input is not a terminal (fd=0).\n"
+  }
+ ],
+ "verdict": "PASS",
+ "finished": "2026-09-15T08:16:43+0200"
+}

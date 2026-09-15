@@ -33,7 +33,8 @@ PUBLISHED = {
     "gemma4":    {"temperature": 1.0, "top_p": 0.95, "top_k": 64, "min_p": 0.0, "repeat_penalty": 1.0},
     "qwen38":    {"temperature": 1.0, "top_p": 0.95, "top_k": 20, "min_p": 0.0, "repeat_penalty": 1.0},
     "granite42": {"temperature": 1.0, "top_p": 0.95, "top_k": 0,  "min_p": 0.0, "repeat_penalty": 1.0},
-    "qwen3-coder": {"temperature": 0.7, "top_p": 0.8, "top_k": 20, "min_p": 0.0, "repeat_penalty": 1.05},
+    # the config's repetition_penalty 1.05 is not taken: measured 0/8 vs 8/8 (sample.c)
+    "qwen3-coder": {"temperature": 0.7, "top_p": 0.8, "top_k": 20, "min_p": 0.0, "repeat_penalty": 1.0},
 }
 TEMPLATE_FOR = {"gemma4": "gemma4-mainline", "qwen38": "qwen38",
                 "granite42": "granite42", "qwen3-coder": "qwen3-coder"}
@@ -193,9 +194,14 @@ def test_native_tool_turn_reports_its_contract(model):
         assert d["runner_telemetry"]["sampling"]["preset"] == "qwen38"
     with _server(model, "qwen3-coder") as srv:
         mid = _get(srv, "/v1/models")["data"][0]["id"]
-        d = _chat(srv, mid, tools=[{"type": "function", "function": {
+        bash = [{"type": "function", "function": {
             "name": "bash", "parameters": {"type": "object", "properties": {
-                "command": {"type": "string"}}, "required": ["command"]}}}])
+                "command": {"type": "string"}}, "required": ["command"]}}}]
+        # auto: the model's free turn, parsed; required: the grammar
+        d = _chat(srv, mid, tools=bash)
+        tp = d["runner_telemetry"]["tool_protocol"]
+        assert tp["constrained"] is False and tp["parse_only"] is True, tp
+        assert d["runner_telemetry"]["sampling"]["preset"] == "qwen3-coder"
+        d = _chat(srv, mid, tools=bash, tool_choice="required")
         tp = d["runner_telemetry"]["tool_protocol"]
         assert tp["constrained"] is True and tp["parse_only"] is False, tp
-        assert d["runner_telemetry"]["sampling"]["preset"] == "qwen3-coder"

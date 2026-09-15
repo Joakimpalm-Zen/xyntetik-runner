@@ -1,0 +1,862 @@
+{
+ "schema_version": "xyntetik.runner.coverage.v1",
+ "about": "One disposition per admitted architecture label, per chat-template id and per published artifact, for the gates the 2026-09-14 cross-family remedy installed: the tool protocol at shipped defaults (scripts/tool-protocol-check.py, the report's cases A/B/C buffered and streamed), a real client loop (scripts/agent-client-sweep.py or a recorded OpenCode run), the sampling preset's publisher anchor, and the backend a row ran on. PASS carries the evidence file; FAIL says what failed; NOT RUN means nobody executed the gate on that row (never a pass); UNSUPPORTED is a declared limit. tests/test_coverage_inventory.py refuses a label without a disposition and a PASS without evidence.",
+ "dispositions": [
+  "PASS",
+  "FAIL",
+  "NOT RUN",
+  "UNSUPPORTED"
+ ],
+ "reported_artifacts": [
+  "qwen3.8-27b-gsq-rco-iq3_s-recovered",
+  "gemma-4-12b-it-qat-q4_0",
+  "qwen3-coder-30b-a3b-instruct-q4_k_m"
+ ],
+ "templates": {
+  "qwen38": {
+   "artifact": "qwen3.8-27b-gsq-rco-iq3_s-recovered",
+   "tool_protocol": {
+    "status": "PASS",
+    "evidence": "docs/cross-family-remedy-evidence/tool-protocol-qwen38-gsq-iq3s-blackwell-branch.json",
+    "note": "6/6; required 2/2 (tool-protocol-qwen38-gsq-blackwell-required.json); baseline 53dc280 read 4/6 FAIL"
+   },
+   "client_loop": {
+    "status": "PASS",
+    "evidence": "docs/cross-family-remedy-evidence/opencode-1.18.31-qwen38-gsq-iq3s-blackwell.txt"
+   },
+   "sampling_anchor": {
+    "status": "PASS",
+    "preset": "qwen38",
+    "anchor": "Qwen/Qwen3.8-27B generation_config.json + model card thinking mode"
+   },
+   "backends": {
+    "cpu": "NOT RUN",
+    "cuda": "PASS",
+    "metal": "UNSUPPORTED"
+   }
+  },
+  "granite42": {
+   "artifact": "granite-4.2-8b-q4_k_m",
+   "tool_protocol": {
+    "status": "PASS",
+    "evidence": "docs/cross-family-remedy-evidence/tool-protocol-granite42-8b-q4_k_m-rtx3070-granite42-preset-400.json",
+    "note": "A 4/4, B 3/4; C FAIL: the model states its intent inside the reasoning block and calls with empty content"
+   },
+   "client_loop": {
+    "status": "PASS",
+    "evidence": "docs/cross-family-remedy-evidence/opencode-1.18.31-granite42-8b-q4_k_m-windows-rtx3070.txt"
+   },
+   "sampling_anchor": {
+    "status": "PASS",
+    "preset": "granite42",
+    "anchor": "ibm-granite/granite-4.2-3b and -8b generation_config.json"
+   },
+   "backends": {
+    "cpu": "NOT RUN",
+    "cuda": "PASS",
+    "metal": "NOT RUN"
+   },
+   "note": "Windows 11 / RTX 3070 rows"
+  },
+  "ornith": {
+   "artifact": "ornith-1.0-9b-q4_k_m",
+   "tool_protocol": {
+    "status": "NOT RUN",
+    "note": "no Ornith artifact re-run with the new gate; the parse-only contract is fixture-tested in tests/test_native_xml_routing.py"
+   },
+   "client_loop": {
+    "status": "NOT RUN"
+   },
+   "sampling_anchor": {
+    "status": "PASS",
+    "preset": "qwen3",
+    "anchor": "by name; Ornith publishes no generation_config sampling values"
+   },
+   "backends": {
+    "cpu": "NOT RUN",
+    "cuda": "NOT RUN",
+    "metal": "NOT RUN"
+   }
+  },
+  "qwen3-coder": {
+   "artifact": "qwen3-coder-30b-a3b-instruct-q4_k_m",
+   "tool_protocol": {
+    "status": "PASS",
+    "evidence": "docs/cross-family-remedy-evidence/tool-protocol-qwen3-coder-30b-blackwell-final.json",
+    "note": "6/6 at the corrected preset; constrained 2/6 and penalty-1.05 3/6 recorded beside it"
+   },
+   "client_loop": {
+    "status": "NOT RUN",
+    "note": "no client loop against the Coder artifact yet"
+   },
+   "sampling_anchor": {
+    "status": "PASS",
+    "preset": "qwen3-coder",
+    "anchor": "Qwen/Qwen3-Coder-30B-A3B-Instruct generation_config.json; repeat_penalty 1.0 by measurement (0/8 at 1.05)"
+   },
+   "backends": {
+    "cpu": "PASS",
+    "cuda": "PASS",
+    "metal": "NOT RUN"
+   }
+  },
+  "gemma4-mainline": {
+   "artifact": "gemma-4-12b-it-qat-q4_0",
+   "tool_protocol": {
+    "status": "PASS",
+    "evidence": "docs/cross-family-remedy-evidence/tool-protocol-gemma4-12b-qat-q4_0-blackwell-gemma4-preset.json",
+    "note": "cases A and B 4/4; case C (prose then call) FAIL on both presets: Gemma 4's own format is call-first, open item"
+   },
+   "client_loop": {
+    "status": "NOT RUN"
+   },
+   "sampling_anchor": {
+    "status": "PASS",
+    "preset": "gemma4",
+    "anchor": "google/gemma-4-{12B,E4B,26B-A4B,31B}-it generation_config.json"
+   },
+   "backends": {
+    "cpu": "NOT RUN",
+    "cuda": "PASS",
+    "metal": "NOT RUN"
+   }
+  },
+  "gemma4": {
+   "artifact": "gemma-4-e4b-it-q4_k_m",
+   "tool_protocol": {
+    "status": "NOT RUN",
+    "note": "E-series not re-run with the new gate"
+   },
+   "client_loop": {
+    "status": "NOT RUN"
+   },
+   "sampling_anchor": {
+    "status": "PASS",
+    "preset": "gemma4",
+    "anchor": "google/gemma-4-E4B-it generation_config.json"
+   },
+   "backends": {
+    "cpu": "NOT RUN",
+    "cuda": "NOT RUN",
+    "metal": "NOT RUN"
+   }
+  },
+  "chatml-think": {
+   "artifact": "qwen3-4b-q4_k_m",
+   "tool_protocol": {
+    "status": "NOT RUN",
+    "note": "the qwen_json constrained protocol; the client sweep exercised it end to end"
+   },
+   "client_loop": {
+    "status": "PASS",
+    "evidence": "docs/cross-family-remedy-evidence/agent-client-sweep-qwen3-4b-blackwell-2026-09-15.json",
+    "note": "seven clients on Qwen3-4B Q4_K_M"
+   },
+   "sampling_anchor": {
+    "status": "PASS",
+    "preset": "qwen3",
+    "anchor": "Qwen/Qwen3-4B generation_config.json"
+   },
+   "backends": {
+    "cpu": "NOT RUN",
+    "cuda": "PASS",
+    "metal": "NOT RUN"
+   }
+  },
+  "chatml": {
+   "artifact": "qwen2.5-32b-instruct-q3_k_s",
+   "tool_protocol": {
+    "status": "NOT RUN"
+   },
+   "client_loop": {
+    "status": "NOT RUN"
+   },
+   "sampling_anchor": {
+    "status": "PASS",
+    "preset": "qwen2.5",
+    "anchor": "Qwen/Qwen2.5-7B-Instruct generation_config.json"
+   },
+   "backends": {
+    "cpu": "NOT RUN",
+    "cuda": "NOT RUN",
+    "metal": "NOT RUN"
+   }
+  },
+  "harmony": {
+   "artifact": "gpt-oss-20b-mxfp4",
+   "tool_protocol": {
+    "status": "NOT RUN"
+   },
+   "client_loop": {
+    "status": "NOT RUN"
+   },
+   "sampling_anchor": {
+    "status": "PASS",
+    "preset": "gpt-oss",
+    "anchor": "OpenAI gpt-oss model card (no sampling keys in generation_config)"
+   },
+   "backends": {
+    "cpu": "NOT RUN",
+    "cuda": "NOT RUN",
+    "metal": "NOT RUN"
+   }
+  },
+  "muse": {
+   "artifact": "muse-glimmer-30b-kquant",
+   "tool_protocol": {
+    "status": "NOT RUN"
+   },
+   "client_loop": {
+    "status": "NOT RUN"
+   },
+   "sampling_anchor": {
+    "status": "NOT RUN",
+    "note": "generic preset; Muse publishes no sampling values"
+   },
+   "backends": {
+    "cpu": "NOT RUN",
+    "cuda": "NOT RUN",
+    "metal": "NOT RUN"
+   }
+  },
+  "gemma": {
+   "artifact": "gemma-3-4b-it-q4_k_m",
+   "tool_protocol": {
+    "status": "NOT RUN",
+    "note": "generic envelope"
+   },
+   "client_loop": {
+    "status": "NOT RUN"
+   },
+   "sampling_anchor": {
+    "status": "PASS",
+    "preset": "gemma3",
+    "anchor": "google/gemma-3-4b-it generation_config.json (unsloth mirror; the Google repo is gated)"
+   },
+   "backends": {
+    "cpu": "NOT RUN",
+    "cuda": "NOT RUN",
+    "metal": "NOT RUN"
+   }
+  },
+  "llama3": {
+   "artifact": "llama-3.2-3b-instruct-q4_k_m",
+   "tool_protocol": {
+    "status": "NOT RUN",
+    "note": "generic envelope"
+   },
+   "client_loop": {
+    "status": "NOT RUN"
+   },
+   "sampling_anchor": {
+    "status": "PASS",
+    "preset": "llama3",
+    "anchor": "Llama-3.x-Instruct generation_config.json; repeat_penalty 1.10 is runner's calibration (owner decision open)"
+   },
+   "backends": {
+    "cpu": "NOT RUN",
+    "cuda": "NOT RUN",
+    "metal": "NOT RUN"
+   }
+  },
+  "mistral": {
+   "artifact": "mistral-7b-instruct-v0.3-q4_k_m",
+   "tool_protocol": {
+    "status": "NOT RUN",
+    "note": "generic envelope"
+   },
+   "client_loop": {
+    "status": "NOT RUN"
+   },
+   "sampling_anchor": {
+    "status": "PASS",
+    "preset": "mistral",
+    "anchor": "Mistral AI API defaults; repeat_penalty 1.10 is runner's calibration"
+   },
+   "backends": {
+    "cpu": "NOT RUN",
+    "cuda": "NOT RUN",
+    "metal": "NOT RUN"
+   }
+  },
+  "mistral-v1": {
+   "artifact": null,
+   "tool_protocol": {
+    "status": "NOT RUN",
+    "note": "generic envelope"
+   },
+   "client_loop": {
+    "status": "NOT RUN"
+   },
+   "sampling_anchor": {
+    "status": "PASS",
+    "preset": "mistral",
+    "anchor": "as mistral"
+   },
+   "backends": {
+    "cpu": "NOT RUN",
+    "cuda": "NOT RUN",
+    "metal": "NOT RUN"
+   }
+  },
+  "mistral-nemo": {
+   "artifact": "mistral-nemo-instruct-2407-q4_k_m",
+   "tool_protocol": {
+    "status": "NOT RUN",
+    "note": "generic envelope"
+   },
+   "client_loop": {
+    "status": "NOT RUN"
+   },
+   "sampling_anchor": {
+    "status": "PASS",
+    "preset": "mistral-nemo",
+    "anchor": "Mistral-Nemo-Instruct-2407 model card (temperature 0.3); repeat_penalty 1.10 is runner's calibration"
+   },
+   "backends": {
+    "cpu": "NOT RUN",
+    "cuda": "NOT RUN",
+    "metal": "NOT RUN"
+   }
+  },
+  "phi3": {
+   "artifact": "phi-3.5-mini-instruct-q4_k_m",
+   "tool_protocol": {
+    "status": "NOT RUN",
+    "note": "generic envelope"
+   },
+   "client_loop": {
+    "status": "NOT RUN"
+   },
+   "sampling_anchor": {
+    "status": "PASS",
+    "preset": "phi3",
+    "anchor": "Phi-3.5-mini-instruct model card sample inference args; repeat_penalty 1.03 is runner's calibration"
+   },
+   "backends": {
+    "cpu": "NOT RUN",
+    "cuda": "NOT RUN",
+    "metal": "NOT RUN"
+   }
+  },
+  "apertus": {
+   "artifact": "apertus-8b-instruct-2509-q4_k_m",
+   "tool_protocol": {
+    "status": "NOT RUN",
+    "note": "native declarations, generic envelope"
+   },
+   "client_loop": {
+    "status": "NOT RUN"
+   },
+   "sampling_anchor": {
+    "status": "NOT RUN",
+    "note": "generic preset; Apertus publishes no sampling values"
+   },
+   "backends": {
+    "cpu": "NOT RUN",
+    "cuda": "NOT RUN",
+    "metal": "NOT RUN"
+   }
+  },
+  "granite": {
+   "artifact": "granite-4.1-8b-q4_0",
+   "tool_protocol": {
+    "status": "NOT RUN",
+    "note": "legacy Granite, generic envelope"
+   },
+   "client_loop": {
+    "status": "NOT RUN"
+   },
+   "sampling_anchor": {
+    "status": "NOT RUN",
+    "note": "generic preset"
+   },
+   "backends": {
+    "cpu": "NOT RUN",
+    "cuda": "NOT RUN",
+    "metal": "NOT RUN"
+   }
+  },
+  "zephyr": {
+   "artifact": null,
+   "tool_protocol": {
+    "status": "NOT RUN",
+    "note": "generic envelope"
+   },
+   "client_loop": {
+    "status": "NOT RUN"
+   },
+   "sampling_anchor": {
+    "status": "NOT RUN",
+    "note": "generic preset"
+   },
+   "backends": {
+    "cpu": "NOT RUN",
+    "cuda": "NOT RUN",
+    "metal": "NOT RUN"
+   }
+  },
+  "llama2": {
+   "artifact": null,
+   "tool_protocol": {
+    "status": "NOT RUN",
+    "note": "generic envelope"
+   },
+   "client_loop": {
+    "status": "NOT RUN"
+   },
+   "sampling_anchor": {
+    "status": "NOT RUN",
+    "note": "generic preset"
+   },
+   "backends": {
+    "cpu": "NOT RUN",
+    "cuda": "NOT RUN",
+    "metal": "NOT RUN"
+   }
+  },
+  "raw": {
+   "artifact": null,
+   "tool_protocol": {
+    "status": "UNSUPPORTED",
+    "note": "no chat framing, no tool protocol; the generic envelope is the only tool path"
+   },
+   "client_loop": {
+    "status": "UNSUPPORTED",
+    "note": "no client targets it"
+   },
+   "sampling_anchor": {
+    "status": "NOT RUN",
+    "note": "generic preset"
+   },
+   "backends": {
+    "cpu": "NOT RUN",
+    "cuda": "NOT RUN",
+    "metal": "NOT RUN"
+   }
+  },
+  "llama2-fallback": {
+   "artifact": null,
+   "tool_protocol": {
+    "status": "UNSUPPORTED",
+    "note": "an unrecognised template rendered as llama-2 markup: a finding, not a supported configuration"
+   },
+   "client_loop": {
+    "status": "UNSUPPORTED",
+    "note": "not a configuration to certify"
+   },
+   "sampling_anchor": {
+    "status": "NOT RUN",
+    "note": "generic preset"
+   },
+   "backends": {
+    "cpu": "NOT RUN",
+    "cuda": "NOT RUN",
+    "metal": "NOT RUN"
+   }
+  }
+ },
+ "architectures": {
+  "llama": {
+   "templates": [
+    "llama3",
+    "llama2",
+    "mistral",
+    "mistral-v1",
+    "mistral-nemo",
+    "zephyr",
+    "chatml"
+   ],
+   "artifacts": [
+    "llama-3.2-3b-instruct-q4_k_m",
+    "mistral-7b-instruct-v0.3-q4_k_m",
+    "eurollm-9b-instruct-q4_k_m",
+    "lucie-7b-instruct-q4_k_m",
+    "mistral-nemo-instruct-2407-q4_k_m",
+    "teuken-7b-instruct-commercial-v0.4-q4_k_m",
+    "salamandra-7b-instruct-q4_k_m",
+    "tildeopen-30b-q4_k_m"
+   ],
+   "tool_protocol": {
+    "status": "NOT RUN",
+    "note": "generic envelope rows not re-run with the new gate"
+   },
+   "client_loop": {
+    "status": "NOT RUN"
+   },
+   "backends": {
+    "cpu": "NOT RUN",
+    "cuda": "NOT RUN",
+    "metal": "NOT RUN"
+   }
+  },
+  "qwen2": {
+   "templates": [
+    "chatml"
+   ],
+   "artifacts": [
+    "qwen2.5-32b-instruct-q3_k_s"
+   ],
+   "tool_protocol": {
+    "status": "NOT RUN"
+   },
+   "client_loop": {
+    "status": "NOT RUN"
+   },
+   "backends": {
+    "cpu": "NOT RUN",
+    "cuda": "NOT RUN",
+    "metal": "NOT RUN"
+   }
+  },
+  "qwen3": {
+   "templates": [
+    "chatml-think"
+   ],
+   "artifacts": [
+    "qwen3-4b-q4_k_m"
+   ],
+   "tool_protocol": {
+    "status": "NOT RUN",
+    "note": "qwen_json constrained; exercised by the client sweep"
+   },
+   "client_loop": {
+    "status": "PASS",
+    "evidence": "docs/cross-family-remedy-evidence/agent-client-sweep-qwen3-4b-blackwell-2026-09-15.json"
+   },
+   "backends": {
+    "cpu": "NOT RUN",
+    "cuda": "PASS",
+    "metal": "NOT RUN"
+   }
+  },
+  "qwen35": {
+   "templates": [
+    "qwen38",
+    "ornith"
+   ],
+   "artifacts": [
+    "ornith-1.0-9b-q4_k_m",
+    "qwen3.8-27b-ud-q4_k_m",
+    "qwen3.8-27b-gsq-rco-iq3_s-recovered"
+   ],
+   "tool_protocol": {
+    "status": "PASS",
+    "evidence": "docs/cross-family-remedy-evidence/tool-protocol-qwen38-gsq-iq3s-blackwell-branch.json"
+   },
+   "client_loop": {
+    "status": "PASS",
+    "evidence": "docs/cross-family-remedy-evidence/opencode-1.18.31-qwen38-gsq-iq3s-blackwell.txt"
+   },
+   "backends": {
+    "cpu": "NOT RUN",
+    "cuda": "PASS",
+    "metal": "UNSUPPORTED"
+   },
+   "note": "Metal has no qwen35 path (by design; the hybrid runs on the CPU on Apple silicon)"
+  },
+  "qwen3moe": {
+   "templates": [
+    "chatml-think",
+    "qwen3-coder"
+   ],
+   "artifacts": [
+    "qwen3-30b-a3b-q4_k_m",
+    "qwen3-30b-a3b-expq4_0-attnq8_0",
+    "qwen3-coder-30b-a3b-instruct-q4_k_m"
+   ],
+   "tool_protocol": {
+    "status": "PASS",
+    "evidence": "docs/cross-family-remedy-evidence/tool-protocol-qwen3-coder-30b-blackwell-final.json"
+   },
+   "client_loop": {
+    "status": "NOT RUN"
+   },
+   "backends": {
+    "cpu": "PASS",
+    "cuda": "PASS",
+    "metal": "NOT RUN"
+   }
+  },
+  "mistral": {
+   "templates": [
+    "mistral",
+    "mistral-v1",
+    "mistral-nemo"
+   ],
+   "artifacts": [],
+   "tool_protocol": {
+    "status": "NOT RUN",
+    "note": "Mistral files in the manifest declare `llama`; no file with the `mistral` label is pinned"
+   },
+   "client_loop": {
+    "status": "NOT RUN"
+   },
+   "backends": {
+    "cpu": "NOT RUN",
+    "cuda": "NOT RUN",
+    "metal": "NOT RUN"
+   }
+  },
+  "smollm": {
+   "templates": [
+    "chatml"
+   ],
+   "artifacts": [],
+   "tool_protocol": {
+    "status": "NOT RUN",
+    "note": "no pinned artifact"
+   },
+   "client_loop": {
+    "status": "NOT RUN"
+   },
+   "backends": {
+    "cpu": "NOT RUN",
+    "cuda": "NOT RUN",
+    "metal": "NOT RUN"
+   }
+  },
+  "stablelm": {
+   "templates": [
+    "chatml",
+    "zephyr"
+   ],
+   "artifacts": [],
+   "tool_protocol": {
+    "status": "NOT RUN",
+    "note": "no pinned artifact"
+   },
+   "client_loop": {
+    "status": "NOT RUN"
+   },
+   "backends": {
+    "cpu": "NOT RUN",
+    "cuda": "NOT RUN",
+    "metal": "NOT RUN"
+   }
+  },
+  "gemma3": {
+   "templates": [
+    "gemma"
+   ],
+   "artifacts": [
+    "gemma-3-4b-it-q4_k_m"
+   ],
+   "tool_protocol": {
+    "status": "NOT RUN"
+   },
+   "client_loop": {
+    "status": "NOT RUN"
+   },
+   "backends": {
+    "cpu": "NOT RUN",
+    "cuda": "NOT RUN",
+    "metal": "NOT RUN"
+   }
+  },
+  "gemma4": {
+   "templates": [
+    "gemma4",
+    "gemma4-mainline"
+   ],
+   "artifacts": [
+    "gemma-4-12b-it-q4_k_m",
+    "gemma-4-e4b-it-q4_k_m",
+    "gemma-4-e4b-it-qat-q4_0",
+    "gemma-4-26b-a4b-it-q4_0",
+    "gemma-4-26b-a4b-it-qat-q4_0",
+    "gemma-4-12b-it-qat-q4_0"
+   ],
+   "tool_protocol": {
+    "status": "PASS",
+    "evidence": "docs/cross-family-remedy-evidence/tool-protocol-gemma4-12b-qat-q4_0-blackwell-gemma4-preset.json",
+    "note": "report cases A and B; case C open"
+   },
+   "client_loop": {
+    "status": "NOT RUN"
+   },
+   "backends": {
+    "cpu": "NOT RUN",
+    "cuda": "PASS",
+    "metal": "NOT RUN"
+   }
+  },
+  "phi3": {
+   "templates": [
+    "phi3"
+   ],
+   "artifacts": [
+    "phi-3.5-mini-instruct-q4_k_m"
+   ],
+   "tool_protocol": {
+    "status": "NOT RUN"
+   },
+   "client_loop": {
+    "status": "NOT RUN"
+   },
+   "backends": {
+    "cpu": "NOT RUN",
+    "cuda": "NOT RUN",
+    "metal": "NOT RUN"
+   }
+  },
+  "gpt-oss": {
+   "templates": [
+    "harmony"
+   ],
+   "artifacts": [
+    "gpt-oss-20b-mxfp4"
+   ],
+   "tool_protocol": {
+    "status": "NOT RUN"
+   },
+   "client_loop": {
+    "status": "NOT RUN"
+   },
+   "backends": {
+    "cpu": "NOT RUN",
+    "cuda": "NOT RUN",
+    "metal": "NOT RUN"
+   }
+  },
+  "apertus": {
+   "templates": [
+    "apertus"
+   ],
+   "artifacts": [
+    "apertus-8b-instruct-2509-q4_k_m"
+   ],
+   "tool_protocol": {
+    "status": "NOT RUN"
+   },
+   "client_loop": {
+    "status": "NOT RUN"
+   },
+   "backends": {
+    "cpu": "NOT RUN",
+    "cuda": "NOT RUN",
+    "metal": "NOT RUN"
+   }
+  },
+  "afmoe": {
+   "templates": [
+    "chatml"
+   ],
+   "artifacts": [
+    "trinity-nano-preview-q8_0"
+   ],
+   "tool_protocol": {
+    "status": "NOT RUN"
+   },
+   "client_loop": {
+    "status": "NOT RUN"
+   },
+   "backends": {
+    "cpu": "NOT RUN",
+    "cuda": "UNSUPPORTED",
+    "metal": "UNSUPPORTED"
+   },
+   "note": "CPU only by admission (README)"
+  },
+  "muse-glimmer": {
+   "templates": [
+    "muse"
+   ],
+   "artifacts": [
+    "muse-glimmer-30b-kquant"
+   ],
+   "tool_protocol": {
+    "status": "NOT RUN"
+   },
+   "client_loop": {
+    "status": "NOT RUN"
+   },
+   "backends": {
+    "cpu": "NOT RUN",
+    "cuda": "NOT RUN",
+    "metal": "NOT RUN"
+   }
+  },
+  "granite": {
+   "templates": [
+    "granite",
+    "granite42"
+   ],
+   "artifacts": [
+    "granite-4.1-8b-q4_0",
+    "granite-4.1-30b-q3_k_s",
+    "granite-4.2-3b-q4_k_m",
+    "granite-4.2-8b-q4_k_m"
+   ],
+   "tool_protocol": {
+    "status": "PASS",
+    "evidence": "docs/cross-family-remedy-evidence/tool-protocol-granite42-8b-q4_k_m-rtx3070-granite42-preset-400.json",
+    "note": "Granite 4.2 8B on Windows; case C open"
+   },
+   "client_loop": {
+    "status": "PASS",
+    "evidence": "docs/cross-family-remedy-evidence/opencode-1.18.31-granite42-8b-q4_k_m-windows-rtx3070.txt"
+   },
+   "backends": {
+    "cpu": "NOT RUN",
+    "cuda": "PASS",
+    "metal": "NOT RUN"
+   }
+  },
+  "granitehybrid": {
+   "templates": [
+    "granite42",
+    "granite"
+   ],
+   "artifacts": [],
+   "tool_protocol": {
+    "status": "NOT RUN",
+    "note": "no pinned artifact"
+   },
+   "client_loop": {
+    "status": "NOT RUN"
+   },
+   "backends": {
+    "cpu": "NOT RUN",
+    "cuda": "NOT RUN",
+    "metal": "NOT RUN"
+   }
+  },
+  "nemotron_h": {
+   "templates": [
+    "chatml"
+   ],
+   "artifacts": [],
+   "tool_protocol": {
+    "status": "NOT RUN",
+    "note": "no pinned artifact"
+   },
+   "client_loop": {
+    "status": "NOT RUN"
+   },
+   "backends": {
+    "cpu": "NOT RUN",
+    "cuda": "NOT RUN",
+    "metal": "NOT RUN"
+   }
+  },
+  "nemotron_h_moe": {
+   "templates": [
+    "chatml"
+   ],
+   "artifacts": [],
+   "tool_protocol": {
+    "status": "NOT RUN",
+    "note": "no pinned artifact"
+   },
+   "client_loop": {
+    "status": "NOT RUN"
+   },
+   "backends": {
+    "cpu": "NOT RUN",
+    "cuda": "NOT RUN",
+    "metal": "NOT RUN"
+   }
+  }
+ }
+}

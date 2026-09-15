@@ -1,0 +1,112 @@
+{
+ "gate": "tool-protocol-check",
+ "label": "Blackwell MIG, Qwen3.8 GSQ-RCO IQ3_S, tool_choice required (the XML grammar after the reasoning block)",
+ "started": "2026-09-15T08:28:35+0200",
+ "host": "bfff3786ea4e",
+ "platform": "Linux-6.12.0-211.16.1.el10_2.x86_64-x86_64-with-glibc2.39",
+ "base_url": "http://127.0.0.1:8103",
+ "model": "Qwen3.8-27B-GSQ-RCO-IQ3_S-recovered.gguf",
+ "model_file": "/home/lab/workspace/models/Qwen3.8-27B-GSQ-RCO-IQ3_S-recovered/Qwen3.8-27B-GSQ-RCO-IQ3_S-recovered.gguf",
+ "model_sha256": "873df48dd3ecf205f73c29716e80fbe766e4202ef4ed394b2c24607a8628458f",
+ "runner": "./runner",
+ "runner_sha256": "d4faddd6e8c7c13420b1fa4f52339c8e3f3251c5073d5a48d6a36064872c28e1",
+ "sampling_served": {
+  "preset": "qwen38",
+  "temperature": 1.0,
+  "top_p": 0.95,
+  "top_k": 20,
+  "min_p": 0.0,
+  "repeat_penalty": 1.0
+ },
+ "context": 32768,
+ "overrides": {},
+ "tool_choice": "required",
+ "max_tokens": 400,
+ "cases": {
+  "A": {
+   "title": "single call",
+   "prompt": "List the files in the current directory.",
+   "tools": [
+    "bash"
+   ],
+   "modes": {
+    "buffered": {
+     "wall_s": 25.844,
+     "finish_reason": "tool_calls",
+     "content": "",
+     "reasoning": "The user is asking to list the files in the current directory. This is a simple task using the bash tool. I will use the `ls` command.\n",
+     "calls": [
+      {
+       "name": "bash",
+       "arguments": "{\"command\":\"ls -la\"}",
+       "id": "call_0"
+      }
+     ],
+     "usage": {
+      "prompt_tokens": 313,
+      "prompt_tokens_details": {
+       "cached_tokens": 0
+      },
+      "completion_tokens": 63,
+      "total_tokens": 376
+     },
+     "telemetry": {
+      "prompt_cached_tokens": 0,
+      "prompt_forked_tokens": 0,
+      "prompt_eval_tokens": 313,
+      "prefix_cache_saved_seconds": 0.0,
+      "generation_seconds": 17.834766,
+      "generation_tok_s": 3.532,
+      "major_page_faults": 0,
+      "json_mode": false,
+      "schema": true,
+      "speculative": false,
+      "sampling": {
+       "preset": "qwen38",
+       "temperature": 1.0,
+       "top_p": 0.95,
+       "top_k": 20,
+       "min_p": 0.0,
+       "repeat_penalty": 1.0,
+       "seed": 0,
+       "source": {
+        "temperature": "preset",
+        "top_p": "preset",
+        "top_k": "preset",
+        "min_p": "preset",
+        "repeat_penalty": "preset"
+       }
+      },
+      "tool_protocol": {
+       "template": "qwen38",
+       "family": "qwen3_xml",
+       "tools": true,
+       "constrained": true,
+       "parse_only": false
+      }
+     },
+     "result": "PASS",
+     "reasons": []
+    },
+    "stream": {
+     "wall_s": 39.397,
+     "finish_reason": "tool_calls",
+     "content": "",
+     "reasoning": "The user wants to see a list of the files in the current directory. This is a simple task. I can use the bash tool to run `ls -la` to display all files in the current directory. Let me do that.\n\nWait, I need to make multiple tool calls in parallel if they're independent. But this is a single simple call. Let me just run `ls -la`.\n",
+     "calls": [
+      {
+       "name": "bash",
+       "arguments": "{\"command\":\"ls -la\"}",
+       "id": "call_0"
+      }
+     ],
+     "telemetry": null,
+     "result": "PASS",
+     "reasons": []
+    }
+   }
+  }
+ },
+ "verdict": "PASS",
+ "finished": "2026-09-15T08:29:45+0200"
+}

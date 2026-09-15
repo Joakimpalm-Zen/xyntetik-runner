@@ -2500,12 +2500,26 @@ static void test_xml_families_share_the_parse_only_contract(void) {
         xml_parse_only_env(fams[i], tools, &e);
         tool_envelope_free(&e);
     }
-    // Qwen3-Coder keeps its grammar: the constrained turn is the control
+    // Qwen3-Coder's auto turn is parse-only like the others (the constrained
+    // XML turn read 2/6 on the real 30B-A3B at its own temperature, the
+    // model fighting the raw-string grammar); a required or named choice
+    // keeps the grammar on every XML family, because a prompt alone cannot
+    // enforce a choice.
     tool_envelope c; char err[192]; bool skip = false;
     assert(tool_envelope_build(tools, NULL, NULL, &c, err, sizeof err) == 1);
     tool_decl_native(TMPL_QWEN3_CODER, true, true, tools, &c, &skip);
-    assert(c.proto == TP_QWEN_XML && !c.parse_only && c.max_calls == 1);
+    assert(c.proto == TP_QWEN_XML && c.parse_only && c.max_calls == TOOL_STREAM_MAX_CALLS);
     tool_envelope_free(&c);
+    jv *required = parse("\"required\"");
+    for (int i = 0; i < 4; i++) {
+        int fam[] = { TMPL_QWEN3_CODER, TMPL_QWEN38, TMPL_GRANITE42, TMPL_ORNITH };
+        tool_envelope r;
+        assert(tool_envelope_build(tools, required, NULL, &r, err, sizeof err) == 1);
+        tool_decl_native(fam[i], true, true, tools, &r, &skip);
+        assert(r.proto == TP_QWEN_XML && !r.parse_only && r.max_calls == 1);
+        tool_envelope_free(&r);
+    }
+    jv_free(required);
     jv_free(tools);
 }
 
@@ -2640,6 +2654,15 @@ static void test_xml_parse_only_open_block_at_finish(void) {
         assert(!strcmp(log.content.s, closing));
         log_free(&log);
     }
+    // an opener on its own line that no function follows is stray framing:
+    // the answer behind it is the content, the opener is not
+    const char *stray = "<tool_call>\nThe code word is X.";
+    for (size_t step = 1; step <= strlen(stray); step++) {
+        demux_log log; demux_step(&e, stray, step, &log);
+        assert(log.begins == 0);
+        assert(!strcmp(log.content.s, "The code word is X."));
+        log_free(&log);
+    }
     const char *mention = "Wrap calls in a <tool_call> block, as the docs say.";
     demux_log log; memset(&log, 0, sizeof log);
     tool_stream_sink sink = { &log, log_reasoning, log_content, log_begin, log_args, log_end };
@@ -2706,8 +2729,51 @@ static void test_coder_constrained_turn(void) {
     tool_envelope_free(&e);schema_free(root);jv_free(tools);
 }
 
+// Qwen3-Coder-30B-A3B at its own temperature 0.7 closes a raw string
+// parameter with ` </parameter>` and `\n\n </parameter>` as often as with
+// the reference's `\n</parameter>` (traced on the Blackwell, 2026-09-15).
+// The raw string's sentinel was `\n</parameter>`, so those closes did not
+// close: the value ran on through the closing tags and a whole second call
+// until a bare `\n</parameter>` happened, and the turn mapped to nothing.
+// The sentinel is the closing tag itself; the parser strips the reference's
+// one framing newline where it is present and keeps the model's other
+// whitespace as the value's own.
+static void test_coder_raw_string_closes_on_the_tag(void) {
+    jv *tools=parse("[{\"type\":\"function\",\"function\":{\"name\":\"bash\",\"parameters\":{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"}},\"required\":[\"command\"]}}}]");
+    char err[192];
+    snode *root=schema_compile_qwen_xml_turn(tools,true,NULL,NULL,false,err,sizeof err);
+    assert(root);
+    tool_envelope e;bool skip=false;
+    assert(tool_envelope_build(tools,NULL,NULL,&e,err,sizeof err)==1);
+    tool_decl_native(TMPL_QWEN3_CODER,true,true,tools,&e,&skip);
+    struct { const char *doc; const char *args; } cases[] = {
+        { "<tool_call>\n<function=bash>\n<parameter=command>\nls\n</parameter>\n</function>\n</tool_call><|im_end|>",
+          "{\"command\":\"ls\"}" },
+        { "<tool_call>\n<function=bash>\n<parameter=command>\nls </parameter>\n</function>\n</tool_call><|im_end|>",
+          "{\"command\":\"ls \"}" },
+        { "<tool_call>\n<function=bash>\n<parameter=command>\n\nls\n\n </parameter>\n</function>\n</tool_call><|im_end|>",
+          "{\"command\":\"\\nls\\n\\n \"}" },
+    };
+    // (the traced document's indented `</function>` is unreachable now: with
+    // the value closed, the grammar's own literals steer the closers)
+    for (size_t i = 0; i < 3; i++) {
+        assert(accepts(root,cases[i].doc));
+        sbuf out={0},tc={0};
+        assert(tool_envelope_map(&e,cases[i].doc,strlen(cases[i].doc),&out,&tc)==1);
+        sbuf wrapped={0};sb_lit(&wrapped,"[");sb_put(&wrapped,tc.s,tc.n);sb_lit(&wrapped,"]");
+        jv *calls=parse(wrapped.s);
+        assert(!strcmp(jv_str(jv_get(jv_get(calls->items[0],"function"),"arguments"),""),cases[i].args));
+        jv_free(calls);free(wrapped.s);free(out.s);free(tc.s);
+    }
+    // and the grammar still ends the turn after its one admitted call: a
+    // second opener where <|im_end|> is due is refused
+    assert(!accepts(root,"<tool_call>\n<function=bash>\n<parameter=command>\nls\n</parameter>\n</function>\n</tool_call>\n<tool_call>"));
+    tool_envelope_free(&e);schema_free(root);jv_free(tools);
+}
+
 int main(void) {
     test_coder_constrained_turn();
+    test_coder_raw_string_closes_on_the_tag();
     test_qwen_prose_still_constrains_calls();
     test_coder_native_calls();
     test_coder_parameters_in_any_order();

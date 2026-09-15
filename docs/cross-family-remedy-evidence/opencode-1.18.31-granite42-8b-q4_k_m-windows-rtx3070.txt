@@ -1,0 +1,27 @@
+# OpenCode 1.18.31 for Windows against granite-4.2-8b-Q4_K_M.gguf served by the runner built from the claude-code-allof branch (main + #102 + #103) on ZEN-GAMING: Windows 11, RTX 3070 8 GB, CUDA 13.3, 39/40 layers on the device, 2026-09-15
+# fixture: C:\Users\zen\oc-fixture (sentinel.txt, README.md, src/main.py), opencode.json provider `runner` via @ai-sdk/openai-compatible, baseURL http://127.0.0.1:8097/v1, OPENCODE_PERMISSION allow-all
+# prompt: Read the file sentinel.txt in the current directory with your tools and reply with the code word it contains, in one sentence.
+# launched detached through schtasks; the runner's log lines are appended below the transcript
+# note: the stray `<tool_call>` line OpenCode printed before the answer is the model opening its final turn with a bare opener; the demultiplexer now drops such an opener on its own line (tests/test_tools.c)
+build=0
+runner 0.5.3
+gpu-split: budget=7.46GB fixed=0.92GB G=39/40 full=0 used=7.12GB
+sampling: granite42 (temp 1.00, top_p 0.95, top_k 0, min_p 0.00, repeat_penalty 1.00)
+sentinel=XYNTETIK-A021-4215
+1.18.31
+rc=0 wall=276s
+> build · granite-4.2-8b-Q4_K_M.gguf
+
+✗ Read /workspace/opencode/sentinel.txt failed
+Error: File not found: C:\workspace\opencode\sentinel.txt
+✱ Glob "**/*" 5 matches
+→ Read sentinel.txt
+<tool_call>
+The code word is XYNTETIK-A021-4215.
+OPENCODE-WINDOWS: PASS
+[slot 0] chatcmpl-0: 589 prompt (0 cached) + 2172 gen tok (17.2 tok/s)
+[slot 0] chatcmpl-1: 7891 prompt (5 cached) + 66 gen tok (13.9 tok/s)
+[slot 0] chatcmpl-2: 7990 prompt (7916 cached) + 64 gen tok (14.5 tok/s)
+[slot 0] chatcmpl-3: 8148 prompt (8021 cached) + 72 gen tok (14.2 tok/s)
+[slot 0] chatcmpl-4: 8305 prompt (8175 cached) + 22 gen tok (14.1 tok/s)
+winoc-done

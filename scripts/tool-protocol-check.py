@@ -187,6 +187,9 @@ def main():
     ap.add_argument("--max-tokens", type=int, default=400)
     ap.add_argument("--temperature", type=float)
     ap.add_argument("--repeat-penalty", type=float)
+    ap.add_argument("--tool-choice", help="send tool_choice on every case "
+                    "(auto is the shipped default; required exercises the "
+                    "family's grammar)")
     ap.add_argument("--timeout", type=float, default=1800)
     ap.add_argument("--label", default="")
     args = ap.parse_args()
@@ -208,6 +211,7 @@ def main():
         "overrides": {k: v for k, v in
                       (("temperature", args.temperature),
                        ("repeat_penalty", args.repeat_penalty)) if v is not None},
+        "tool_choice": args.tool_choice or "auto (absent)",
         "max_tokens": args.max_tokens,
         "cases": {}, "verdict": "NOT RUN",
     }
@@ -228,6 +232,8 @@ def main():
             body = {"model": model, "stream": stream,
                     "messages": [{"role": "user", "content": case["prompt"]}],
                     "tools": case["tools"], "max_tokens": args.max_tokens}
+            if args.tool_choice:
+                body["tool_choice"] = args.tool_choice
             body.update(record["overrides"])
             mode = "stream" if stream else "buffered"
             try:

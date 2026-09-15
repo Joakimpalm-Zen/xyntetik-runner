@@ -8,6 +8,46 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **The `qwen3-coder` preset carries `repeat_penalty 1.0`, not the
+  config's 1.05.** Measured on the report's 30B-A3B Q4_K_M at the config's
+  temperature 0.7: this sampler's 1.05 read 0 of 8 well-formed calls
+  (`<function=bash}` where the protocol needs `>`), 1.0 read 8 of 8, and
+  temperature 0 (penalty bypassed) is clean on GPU and CPU. Same mechanism
+  as the Gemma 4 finding; why the publisher's stack tolerates the value is
+  an open question recorded with the evidence.
+- **Qwen3-Coder's auto turn is parsed unconstrained, like the other XML
+  families; a required or named choice keeps the grammar on all four.** The
+  report's Qwen3-Coder-30B-A3B Q4_K_M at its own temperature 0.7 read 2 of
+  6 report cases under the XML grammar: the raw-string parameter's sentinel
+  was `\n</parameter>` and the model closes with ` </parameter>` as often
+  as not, so a value ran on through the closers and into the next call. The
+  sentinel is the closing tag itself now (the parser still strips the one
+  framing newline), and the auto turn is the model's free turn, parsed. A
+  stray opener on a line of its own that no function follows is dropped as
+  framing (Granite 4.2 8B opens an answer with a bare `<tool_call>` now and
+  then), while the tag inside a sentence stays content.
+- **The latest agent clients make their first request again.** Re-validating
+  the README's coding-agent rows at the clients' latest versions on the
+  Blackwell found three that could not: Claude Code 2.1.272 declares
+  `SendMessage.to` as an `allOf` of two patterns (`^[^\n\r]*$`,
+  `^[\s\S]{0,300}$`) and every request was refused with `unsupported
+  schema keyword 'allOf'`; Codex CLI 0.154.0 sends
+  `include:["reasoning.encrypted_content"]`, `parallel_tool_calls:true`
+  and, from its second turn, the `reasoning` items it received, and each was
+  a 400 on the Responses surface. Now: an `allOf` of string constraints
+  compiles to one string node enforcing every pattern and the tightest
+  bounds; the pattern compiler takes negated classes, escapes inside a set,
+  `\s` and the complements `\S`/`\D`/`\W`, and `*` (a negated or complement
+  class admits non-ASCII characters whole; the enforced language is the
+  declared one restricted to what a JSON string spells unescaped, as every
+  class here always was); the encrypted-reasoning include is accepted and
+  answered truthfully with nothing to include; `parallel_tool_calls:true`
+  streams each call as its own `function_call` item; replayed `reasoning`
+  items are accepted and rendered the way the family's reference renders
+  prior thinking (Harmony's analysis channel, nothing elsewhere), matching
+  the chat and Messages surfaces. `scripts/agent-client-sweep.py` is the
+  rows as a harness (opencode, claude, codex, continue, cline, pi, aider;
+  a per-run sentinel; NOT RUN is never a pass).
 - **Gemma 4, Qwen 3.8, Qwen3-Coder and Granite 4.2 get their publishers'
   sampling presets; Gemma 3 loses a penalty its publisher never stated.**
   Gemma 4 inherited Gemma 3's preset and with it a `repeat_penalty 1.10`

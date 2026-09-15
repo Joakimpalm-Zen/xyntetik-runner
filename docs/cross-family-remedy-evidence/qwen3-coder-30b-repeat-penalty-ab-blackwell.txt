@@ -1,0 +1,37 @@
+# repeat_penalty A/B on Qwen3-Coder-30B-A3B-Instruct Q4_K_M, Blackwell MIG, temperature 0.7 top_p 0.8 top_k 20, the report case A, eight fixed seeds each, 2026-09-15
+  pen=1.0 run 1: ok tool_calls ['{"command":"ls"}'] ''
+  pen=1.0 run 2: ok tool_calls ['{"command":"ls"}'] ''
+  pen=1.0 run 3: ok tool_calls ['{"command":"ls"}'] ''
+  pen=1.0 run 4: ok tool_calls ['{"command":"ls"}'] ''
+  pen=1.0 run 5: ok tool_calls ['{"command":"ls"}'] ''
+  pen=1.0 run 6: ok tool_calls ['{"command":"ls"}'] ''
+  pen=1.0 run 7: ok tool_calls ['{"command":"ls"}'] ''
+  pen=1.0 run 8: ok tool_calls ['{"command":"ls"}'] ''
+repeat_penalty 1.0: 8 ok, 0 bad (temperature 0.7 top_p 0.8 top_k 20)
+  pen=1.05 run 1: bad error [] ''
+  pen=1.05 run 2: bad error [] ''
+  pen=1.05 run 3: bad error [] ''
+  pen=1.05 run 4: bad error [] '[{"id":"call_05798345678901234567890","function":{"arguments":"{\\"command\\":\\"ls'
+  pen=1.05 run 5: bad error [] ''
+  pen=1.05 run 6: bad error [] '[{"id":"call_0573347968694280951738","function":{"arguments":"{\\"command\\":\\"ls '
+  pen=1.05 run 7: bad error [] ''
+  pen=1.05 run 8: bad error [] '[{"id":"call_05733648240947519053","function":{"arguments":"{\\"command\\":\\"ls -l'
+repeat_penalty 1.05: 0 ok, 8 bad (temperature 0.7 top_p 0.8 top_k 20)
+coder6-done
+
+# temperature 0 (penalty bypassed): GPU cases A,B and CPU case A
+== GPU, temperature 0
+A single call buffered: PASS 
+A single call stream: PASS 
+B prose and parallel calls buffered: PASS 
+B prose and parallel calls stream: PASS 
+A buffered PASS ['{"command":"ls"}'] ''
+A stream PASS ['{"command":"ls"}'] ''
+B buffered PASS ['{"pattern":"boss.json"}', '{"pattern":"boss.toml"}', '{"pattern":"boss.yaml"}'] ''
+B stream PASS ['{"pattern":"boss.json"}', '{"pattern":"boss.toml"}', '{"pattern":"boss.yaml"}'] ''
+== CPU, temperature 0
+A single call buffered: PASS 
+A single call stream: PASS 
+A buffered PASS ['{"command":"ls"}'] ''
+A stream PASS ['{"command":"ls"}'] ''
+coder5-done

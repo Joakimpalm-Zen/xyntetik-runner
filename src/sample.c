@@ -428,9 +428,20 @@ static const sampler_preset PRESETS[] = {
       1.00f, 0.95f, 0.00f, 1.00f, 20 },
 
     // Qwen/Qwen3-Coder-30B-A3B-Instruct generation_config.json: temperature
-    // 0.7, top_p 0.8, top_k 20, repetition_penalty 1.05.
-    { "qwen3-coder", "Qwen3-Coder generation_config.json",
-      0.70f, 0.80f, 0.00f, 1.05f, 20 },
+    // 0.7, top_p 0.8, top_k 20, repetition_penalty 1.05. The penalty is NOT
+    // taken: measured on the Blackwell 2026-09-15 with the 30B-A3B Q4_K_M,
+    // the report's own case A at the config's temperature, this sampler's
+    // 1.05 read 0 of 8 well-formed calls (`<function=bash}` where the
+    // protocol needs `>`, then an OpenAI-shaped JSON array as prose) and 1.0
+    // read 8 of 8; at temperature 0, where the penalty is bypassed, the
+    // model's format is clean. Same mechanism as the Gemma 4 finding: a
+    // penalty on recently emitted tokens punishes re-typing the protocol's
+    // own markers. Why the publisher's stack tolerates the value and this
+    // sampler does not is an open question recorded with the evidence.
+    { "qwen3-coder", "Qwen3-Coder generation_config.json (temperature 0.7, "
+                     "top_p 0.8, top_k 20); repeat_penalty 1.0 by measurement, "
+                     "the config's 1.05 corrupts the XML protocol here",
+      0.70f, 0.80f, 0.00f, 1.00f, 20 },
 
     // ibm-granite/granite-4.2-{3b,8b} generation_config.json: temperature
     // 1.0, top_p 0.95, do_sample, nothing else (no top_k, no penalty); the
