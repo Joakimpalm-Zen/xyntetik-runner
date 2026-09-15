@@ -84,6 +84,9 @@ typedef struct {
     // emits instead would over-count a token that straddles the boundary.
     int   reason_tokens;
     bool  tok_had_reasoning;
+    // now_s() at the first visible (non-reasoning) byte, 0 until then: the
+    // "first visible response" stage of the request telemetry
+    double first_visible_t;
 } gen_ctx;
 
 typedef struct {
@@ -723,6 +726,12 @@ typedef struct req_diag {
     // from wall. generation_seconds has always been the decode.
     double prefill_s;
     int    prefill_tokens;
+    // The stages before it, each measured: the wait on the accept queue for
+    // a slot, the tokenization of the rendered prompt, the wait for the
+    // device turn before prefill; and the first visible (non-reasoning)
+    // byte, from the moment the slot took the request (-1 when the turn
+    // produced none, a reasoning-only or empty turn).
+    double queue_s, tokenize_s, device_wait_s, first_visible_s;
     // How the slot arrived at prompt_cached_tokens (engine_rewind_how_name):
     // the answer to "why did my identical prompt say 0 cached".
     const char *prompt_reuse;
@@ -746,11 +755,18 @@ static void diag_json(sbuf *r, const req_diag *d) {
            d->tool_protocol ? "\"" : "",
            d->tools ? "true" : "false", d->constrained ? "true" : "false",
            d->parse_only ? "true" : "false");
-    sb_fmt(r, ",\"timing\":{\"prefill_seconds\":%.6f,\"prefill_tokens\":%d,"
-              "\"prefill_tok_s\":%.3f},\"prompt_reuse\":\"%s\"",
+    sb_fmt(r, ",\"timing\":{\"queue_seconds\":%.6f,\"tokenize_seconds\":%.6f,"
+              "\"device_wait_seconds\":%.6f,"
+              "\"prefill_seconds\":%.6f,\"prefill_tokens\":%d,"
+              "\"prefill_tok_s\":%.3f,",
+           d->queue_s, d->tokenize_s, d->device_wait_s,
            d->prefill_s, d->prefill_tokens,
-           d->prefill_tokens / (d->prefill_s > 0 ? d->prefill_s : 1e-9),
-           d->prompt_reuse ? d->prompt_reuse : "none");
+           d->prefill_tokens / (d->prefill_s > 0 ? d->prefill_s : 1e-9));
+    if (d->first_visible_s >= 0)
+        sb_fmt(r, "\"first_visible_seconds\":%.6f}", d->first_visible_s);
+    else
+        sb_lit(r, "\"first_visible_seconds\":null}");
+    sb_fmt(r, ",\"prompt_reuse\":\"%s\"", d->prompt_reuse ? d->prompt_reuse : "none");
 }
 
 // The speculation fields of a resp_doc, from the engine that served the
@@ -1258,6 +1274,7 @@ static void anth_body(sbuf *r, gen_ctx *g, const resp_doc *d) {
 }
 
 static int emit_channel(gen_ctx *g, int reasoning, const char *bytes, int n) {
+    if (!reasoning && n > 0 && g->first_visible_t == 0) g->first_visible_t = now_s();
     sb_put(reasoning ? &g->reason : &g->out, bytes, n);
     if (!g->stream || g->dead) return g->dead ? 1 : 0;
     // reasoning is its own channel and never part of the envelope document
@@ -2131,8 +2148,10 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
     // only in the template's own bytes, never in message content; a raw
     // completion prompt is the caller's to compose, specials and all.
     int32_t *toks = NULL;
+    double tokenize_t0 = now_s();
     int n_prompt = tok_encode_fit(s->tok, prompt, true,
                                   chat ? TOK_PROMPT : TOK_RAW, 0, &toks);
+    double tokenize_s = now_s() - tokenize_t0;
     if (n_prompt < 0) {
         free(toks);
         completion_cleanup(e, schema, NULL);
@@ -2277,7 +2296,12 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
     // 26.2 s for a short request arriving during a 2,300-token prefill.
     engine_set_stop(e, request_should_stop, &stop);
     engine_set_prefill_yield(e, prefill_yield_turn, NULL);
+    double device_t0 = now_s();
     sched_prefill_begin();
+    diag.device_wait_s = now_s() - device_t0;
+    diag.queue_s = s->queue_wait_s;
+    diag.tokenize_s = tokenize_s;
+    diag.first_visible_s = -1;
     if (cache_prompt && share_prefix)
         reuse = engine_prefix_reuse(e, toks, n_prompt);
     else if (cache_prompt)
@@ -2445,6 +2469,10 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
         emit_channel(&g, 0, g.hold.s, (int)g.hold.n);
         g.hold.n = 0;
     }
+    // the first visible byte, from the moment the slot took the request
+    // (a request the accept loop answered itself has no slot clock: 0)
+    if (g.first_visible_t > 0 && s->req_t0 > 0)
+        diag.first_visible_s = g.first_visible_t - s->req_t0;
     // A native-envelope document the demultiplexer cannot map is a GENERATION
     // fault, not a dead client — and the difference decides whether the stream
     // is terminated. Recording it as g.dead skipped all three terminal blocks

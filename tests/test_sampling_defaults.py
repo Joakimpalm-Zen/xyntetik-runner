@@ -218,6 +218,12 @@ def test_telemetry_names_its_stage_timing_and_fault_counter(model):
         tm = t["timing"]
         assert tm["prefill_tokens"] == t["prompt_eval_tokens"], (tm, t)
         assert tm["prefill_seconds"] > 0 and tm["prefill_tok_s"] > 0, tm
+        # the stages before prefill are measured too, and the first visible
+        # byte cannot precede the prefill that produced it
+        for k in ("queue_seconds", "tokenize_seconds", "device_wait_seconds"):
+            assert isinstance(tm[k], float) and tm[k] >= 0, (k, tm)
+        assert tm["first_visible_seconds"] >= tm["prefill_seconds"], tm
+        assert tm["first_visible_seconds"] < 60, tm
         # a second identical prompt is served from the prefix cache: nothing
         # to prefill but the trailing rows, and the timing says so
         d2 = _chat(srv, mid, max_tokens=8)

@@ -40,9 +40,13 @@
     "schema": false,
     "speculative": false,
     "timing": {
+      "device_wait_seconds": "<number>",
+      "first_visible_seconds": "<number>",
       "prefill_seconds": "<number>",
       "prefill_tok_s": "<number>",
-      "prefill_tokens": "<number>"
+      "prefill_tokens": "<number>",
+      "queue_seconds": "<number>",
+      "tokenize_seconds": "<number>"
     },
     "tool_protocol": {
       "constrained": false,

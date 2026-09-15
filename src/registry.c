@@ -405,6 +405,7 @@ void q_push(sock_t fd) {
     if (!room) pthread_mutex_lock(&SV.q.mu);
     if (room) {
         SV.q.fds[SV.q.tail] = fd;
+        SV.q.at[SV.q.tail] = now_s();
         SV.q.tail = (SV.q.tail + 1) % (int)(sizeof(SV.q.fds) / sizeof(sock_t));
         SV.q.count++;
         pthread_cond_signal(&SV.q.cv);
@@ -416,13 +417,15 @@ void q_push(sock_t fd) {
     }
 }
 
-sock_t q_pop(void) {
+sock_t q_pop(double *waited) {
     pthread_mutex_lock(&SV.q.mu);
     while (SV.q.count == 0 && !SV.q.shutdown)
         pthread_cond_wait(&SV.q.cv, &SV.q.mu);
     sock_t fd = SOCK_INVALID;
+    if (waited) *waited = 0;
     if (SV.q.count > 0) {
         fd = SV.q.fds[SV.q.head];
+        if (waited) *waited = now_s() - SV.q.at[SV.q.head];
         SV.q.head = (SV.q.head + 1) % (int)(sizeof(SV.q.fds) / sizeof(sock_t));
         SV.q.count--;
     }

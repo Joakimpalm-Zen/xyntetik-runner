@@ -29,6 +29,12 @@ names that were true when they were written.
   `recurrent_reset`, `ring_reset`, `mismatch`, `none`); the start line
   carries the same word; the trace prints the decoded token at which the
   prompt left the history.
+- **Stage timings.** `runner_telemetry.timing` gains `queue_seconds` (the
+  accept queue), `tokenize_seconds`, `device_wait_seconds` (the device turn
+  before prefill) and `first_visible_seconds` (the first non-reasoning byte
+  from the moment the slot took the request, `null` when the turn produced
+  none), beside the measured prefill and the decode; a slow agent turn can
+  now be placed in the stage that was slow.
 - **One declared prompt through every door.** Ornith and Granite 4.2 fold
   the caller's system text into their declaration turn the way their
   references do, and only `/v1/chat/completions` did; `/v1/responses`

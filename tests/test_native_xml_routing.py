@@ -470,6 +470,24 @@ def test_three_surfaces_render_the_same_declared_prompt(model, template):
         assert n_chat == n_resp == n_msg, (template, n_chat, n_resp, n_msg)
 
 
+def test_reasoning_only_turn_reports_no_first_visible_byte(qwen38):
+    """A turn that never leaves its thought block produced nothing visible:
+    the stage is null, not a number that pretends a byte reached the client."""
+    d = _post(qwen38, "/v1/chat/completions", {
+        "model": qwen38.model_id, "max_tokens": 64,
+        "messages": [{"role": "user", "content": "Think about it."}],
+        "runner_test_reply": "Still thinking about the files"})
+    tm = d["runner_telemetry"]["timing"]
+    assert tm["first_visible_seconds"] is None, tm
+    assert d["choices"][0]["message"].get("reasoning_content"), d
+    d = _post(qwen38, "/v1/chat/completions", {
+        "model": qwen38.model_id, "max_tokens": 64,
+        "messages": [{"role": "user", "content": "Think about it."}],
+        "runner_test_reply": "Plan.\n</think>\n\nDone."})
+    tm = d["runner_telemetry"]["timing"]
+    assert tm["first_visible_seconds"] is not None and tm["first_visible_seconds"] >= tm["prefill_seconds"], tm
+
+
 def test_scripted_reply_is_refused_without_the_hook(model):
     exe = find_runner(ROOT)
     with RunnerServer(exe, model, ctx=1024, parallel=1,
