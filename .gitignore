@@ -87,6 +87,8 @@ test-vram-rollback
 test-vram-rollback.exe
 test-gguf-getters
 test-gguf-getters.exe
+test-hfhub
+test-hfhub.exe
 test-gguf-split-load
 test-gguf-split-load.exe
 test-parse
