@@ -29,6 +29,19 @@ names that were true when they were written.
   `recurrent_reset`, `ring_reset`, `mismatch`, `none`); the start line
   carries the same word; the trace prints the decoded token at which the
   prompt left the history.
+- **One declared prompt through every door.** Ornith and Granite 4.2 fold
+  the caller's system text into their declaration turn the way their
+  references do, and only `/v1/chat/completions` did; `/v1/responses`
+  (`instructions`) and `/v1/messages` (`system`) rendered a second system
+  turn, 28 tokens apart on the same conversation. `tools_system_fold` is the
+  one helper all three surfaces call; gated by the same system text, tools
+  and user turn tokenizing to the same prompt length on all three.
+- **Stop-token exemption audit.** The repeat penalty exempts exactly the
+  engine's stop ids (eos and the family turn terminators, from the
+  tokenizer), never punctuation; the set survives a request reset, is
+  installed per slot, re-derived after a `keep_alive: 0` reload, kept across
+  a prefix fork and applied to the speculative walk's target logits. The
+  slot and reload legs are pinned over HTTP.
 - **Thought blocks are template bytes.** The Qwen 3.8 and Granite 4.2
   generation prompts passed `<think>` through a format argument (caller
   text by contract, so it tokenized as `<th` `ink` `>`), and the block the

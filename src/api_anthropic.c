@@ -859,11 +859,20 @@ static char *messages_prompt(slot_t *s, sock_t fd, jv *req, tool_envelope *env,
 
     bool ok = !t.failed;
     if (ok) {
-        if (ts.n) turn_add_borrowed(&t, "system", ts.s);
         char *sys = anth_system_text(jv_get(req, "system"), terr, sizeof(terr),
                                      &oom);
         if (terr[0] || oom) { free(sys); ok = false; }
-        else if (sys) turn_add(&t, "system", sys);
+        else {
+            // ornith / granite 4.2 fold `system` into the declaration turn
+            // (tools_system_fold), as the chat surface folds messages[0]
+            if (tools_system_fold(s->tmpl, &ts, sys)) {
+                free(sys); sys = NULL;
+                if (ts.failed) { oom = true; ok = false; }
+            }
+            if (ok && ts.n) turn_add_borrowed(&t, "system", ts.s);
+            if (ok && sys) turn_add(&t, "system", sys);
+            else free(sys);
+        }
     }
     for (int i = 0; ok && i < msgs->n; i++) {
         jv *msg = msgs->items[i];

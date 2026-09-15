@@ -1496,7 +1496,10 @@ Chat supports buffered and SSE responses, part-array content, assistant
 `logprobs`/`top_logprobs`, `min_p`, `repeat_penalty`, up to four stop strings,
 and `keep_alive` on a registry-backed server. Tool declarations are rendered into the model
 prompt in the resident model's native tool protocol - identically on
-`/v1/chat/completions`, `/v1/responses`, and `/v1/messages` - and constrained
+`/v1/chat/completions`, `/v1/responses`, and `/v1/messages`, down to the
+caller's system text (Chat `messages[0]`, Responses `instructions`, Messages
+`system`), which Ornith and Granite 4.2 fold into their declaration turn the
+way their references do on every surface - and constrained
 back into well-formed `tool_calls`. Qwen2.5 and Qwen3 use their trained
 `# Tools` / `<tools>` declaration block and JSON `<tool_call>` turns; Runner
 constrains tool names and argument schemas directly in that native grammar and
@@ -1934,7 +1937,9 @@ shape); the 2026-08-03/04 sweep had recorded the same loops for OpenCode
 and Codex CLI 0.144.6. OpenCode 1.18.31 also completed the loop against
 Qwen 3.8 27B GSQ-RCO IQ3_S (Linux) and Granite 4.2 8B on Windows 11 with an
 RTX 3070, the two families the 2026-09-14 report found streaming their calls
-as prose.
+as prose; on that Windows machine the same sweep script ran Continue CLI
+1.5.47 and OpenCode 1.18.31 for Windows against Granite 4.2 8B, both PASS
+(`docs/cross-family-remedy-evidence/agent-client-sweep-granite42-8b-windows-rtx3070-2026-09-15.json`).
 
 Codex and other feature-rich agents can declare more than runner's 59-tool
 constrained envelope. Disable unused app, multi-agent, and hosted-search tools

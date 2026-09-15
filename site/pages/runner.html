@@ -194,7 +194,7 @@ curl -L -o model.gguf https://huggingface.co/ibm-granite/granite-4.1-3b-GGUF/res
     <div>
       <p class="eyebrow">Coding agents</p>
       <h2>Client compatibility is a dated observation, not an inference from an API name.</h2>
-      <p>The 2026-08-03/04 sweep recorded complete local file-read loops for OpenCode 1.18.4, Cline CLI 3.0.46, pi 0.81.1, Continue CLI 1.5.47, Claude Code 2.1.220 and a lean-tool-set Codex CLI 0.144.6. Aider 0.86.2 passed transport and inference under <code>--dry-run</code> but still needs a matching model edit profile. Exact request shapes and test scope: <a href="{{repo}}/blob/main/docs/agent-compatibility.md">docs/agent-compatibility.md</a>.</p>
+      <p>The 2026-09-15 sweep (<code>scripts/agent-client-sweep.py</code>, recorded per run with the binary, model and served preset hashed in) completed local file-read loops at the clients' latest versions: OpenCode 1.18.31, Claude Code 2.1.272, Codex CLI 0.154.0 (hosted web search disabled), Continue CLI 1.5.47, Cline CLI 3.0.61 and pi 0.85.1 on Linux; Continue CLI 1.5.47 and OpenCode 1.18.31 for Windows on an RTX 3070. Aider 0.86.2 passed transport and inference under <code>--dry-run</code> but still needs a matching model edit profile. The 2026-08-03/04 sweep had recorded OpenCode 1.18.4, Cline CLI 3.0.46, pi 0.81.1, Continue CLI 1.5.47, Claude Code 2.1.220 and Codex CLI 0.144.6. Exact request shapes and test scope: <a href="{{repo}}/blob/main/docs/agent-compatibility.md">docs/agent-compatibility.md</a>.</p>
     </div>
     <div>
 <pre><code># ~/.codex/config.toml

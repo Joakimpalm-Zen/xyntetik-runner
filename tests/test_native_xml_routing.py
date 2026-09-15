@@ -425,6 +425,51 @@ def test_other_xml_families_stream_the_call(model, template):
         assert content == "I'll check for each file.\n", (template, content)
 
 
+@pytest.mark.parametrize("template", ["granite42", "ornith", "qwen38"])
+def test_three_surfaces_render_the_same_declared_prompt(model, template):
+    """Chat, Responses and Messages teach a declared tool identically: the
+    same system text, tools and user turn tokenize to the same prompt on all
+    three. Ornith and Granite 4.2 render their declarations outside the
+    template and fold the caller's system text into that turn the way their
+    references do (ornith: declarations then the text, granite 4.2: the text
+    then the declarations); the Chat surface did, the typed surfaces rendered
+    a second system turn, so the same conversation was a different prompt
+    depending on the door it came through."""
+    system = "You are a careful assistant. Answer briefly."
+    user = "Check the three files."
+    with _server(model, template) as srv:
+        with urllib.request.urlopen(srv.base_url + "/v1/models", timeout=30) as r:
+            mid = json.load(r)["data"][0]["id"]
+        chat = _post(srv, "/v1/chat/completions", {
+            "model": mid, "max_tokens": 4,
+            "messages": [{"role": "system", "content": system},
+                         {"role": "user", "content": user}],
+            "tools": [GLOB, BASH], "chat_template_kwargs": NO_THINK,
+            "runner_test_reply": "Ok."})
+        responses = _post(srv, "/v1/responses", {
+            "model": mid, "max_output_tokens": 4,
+            "instructions": system,
+            "input": [{"role": "user", "content": user}],
+            "tools": [{"type": "function", "name": t["function"]["name"],
+                       "description": t["function"]["description"],
+                       "parameters": t["function"]["parameters"]}
+                      for t in (GLOB, BASH)],
+            "reasoning": {"effort": "low"}, "runner_test_reply": "Ok.",
+            **({"chat_template_kwargs": NO_THINK})})
+        messages = _post(srv, "/v1/messages", {
+            "model": mid, "max_tokens": 4, "system": system,
+            "messages": [{"role": "user", "content": user}],
+            "tools": [{"name": t["function"]["name"],
+                       "description": t["function"]["description"],
+                       "input_schema": t["function"]["parameters"]}
+                      for t in (GLOB, BASH)],
+            "chat_template_kwargs": NO_THINK, "runner_test_reply": "Ok."})
+        n_chat = chat["usage"]["prompt_tokens"]
+        n_resp = responses["usage"]["input_tokens"]
+        n_msg = messages["usage"]["input_tokens"]
+        assert n_chat == n_resp == n_msg, (template, n_chat, n_resp, n_msg)
+
+
 def test_scripted_reply_is_refused_without_the_hook(model):
     exe = find_runner(ROOT)
     with RunnerServer(exe, model, ctx=1024, parallel=1,

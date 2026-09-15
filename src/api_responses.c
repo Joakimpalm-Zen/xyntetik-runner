@@ -701,9 +701,24 @@ void handle_responses(slot_t *s, sock_t fd, jv *req) {
     }
     size_t total = ts.n + 128;
     int n_cm = 0, n_own = 0;
+    const char *instructions = jv_str(jv_get(req, "instructions"), NULL);
+    // ornith / granite 4.2 fold `instructions` into the declaration turn the
+    // way the chat surface folds messages[0] (tools_system_fold): the same
+    // conversation is the same prompt through every door
+    if (tools_system_fold(s->tmpl, &ts, instructions)) {
+        if (ts.failed) {
+            free(cm); free(owned); free(ts.s);
+            tool_envelope_free(&env);
+            jv_free(tools);
+            jv_free(choice_owned);
+            send_error(fd, 500, "out of memory building responses prompt");
+            return;
+        }
+        total = ts.n + 128;
+        instructions = NULL;
+    }
     if (ts.n)
         cm[n_cm++] = (chat_msg){ .role = "system", .content = ts.s };
-    const char *instructions = jv_str(jv_get(req, "instructions"), NULL);
     if (instructions && instructions[0]) {
         cm[n_cm++] = (chat_msg){
             .role = "system", .content = instructions,

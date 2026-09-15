@@ -44,7 +44,8 @@
    },
    "client_loop": {
     "status": "PASS",
-    "evidence": "docs/cross-family-remedy-evidence/opencode-1.18.31-granite42-8b-q4_k_m-windows-rtx3070.txt"
+    "evidence": "docs/cross-family-remedy-evidence/agent-client-sweep-granite42-8b-windows-rtx3070-2026-09-15.json",
+    "note": "Continue CLI 1.5.47 and OpenCode 1.18.31 for Windows, both PASS on the RTX 3070; the earlier manual OpenCode loop is opencode-1.18.31-granite42-8b-q4_k_m-windows-rtx3070.txt"
    },
    "sampling_anchor": {
     "status": "PASS",
