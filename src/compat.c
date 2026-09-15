@@ -152,6 +152,90 @@ uint64_t plat_major_faults(void) {
     return (uint64_t)pmc.PageFaultCount;
 }
 
+const char *plat_page_fault_counter(void) { return "all"; }
+
+// DXGI without linking dxgi.lib or dragging in its headers: the factory
+// entry point is loaded by name and the three COM interfaces are called
+// through their vtables. IDXGIAdapter3 (dxgi1_4) adds QueryVideoMemoryInfo,
+// which reports the process's WDDM budget and current usage per memory
+// segment group; LOCAL is the card's own memory.
+typedef struct { unsigned char b[16]; } win_guid;
+// {770AAE78-F26F-4DBA-A829-253C83D1B387} and {645967A4-1392-4310-A798-8053CE3E93FD},
+// spelled in memory order (Data1..Data3 little-endian, Data4 as written)
+static const win_guid IID_FACTORY1 =
+    {{0x78,0xae,0x0a,0x77,0x6f,0xf2,0xba,0x4d,0xa8,0x29,0x25,0x3c,0x83,0xd1,0xb3,0x87}};
+static const win_guid IID_ADAPTER3 =
+    {{0xa4,0x67,0x59,0x64,0x92,0x13,0x10,0x43,0xa7,0x98,0x80,0x53,0xce,0x3e,0x93,0xfd}};
+typedef struct { unsigned long long Budget, CurrentUsage,
+                 AvailableForReservation, CurrentReservation; } win_vmem_info;
+typedef struct {
+    unsigned short Description[128];
+    unsigned VendorId, DeviceId, SubSysId, Revision;
+    size_t DedicatedVideoMemory, DedicatedSystemMemory, SharedSystemMemory;
+    unsigned char AdapterLuid[8];
+    unsigned Flags;
+} win_adapter_desc1;
+typedef struct win_com { struct win_com_vtbl *vt; } win_com;
+struct win_com_vtbl {
+    long (__stdcall *QueryInterface)(win_com *, const win_guid *, void **);
+    unsigned long (__stdcall *AddRef)(win_com *);
+    unsigned long (__stdcall *Release)(win_com *);
+    void *slot[9];   // IDXGIObject (4) + IDXGIFactory (5), unused here
+    long (__stdcall *EnumAdapters1)(win_com *, unsigned, win_com **);   // IDXGIFactory1[12]
+};
+// IDXGIAdapter3's vtable: IUnknown(3) + IDXGIObject(4) + IDXGIAdapter(3) +
+// IDXGIAdapter1(1: GetDesc1) + IDXGIAdapter2(1) + IDXGIAdapter3(...:
+// RegisterHardwareContentProtectionTeardownStatusEvent,
+// UnregisterHardwareContentProtectionTeardownStatus,
+// QueryVideoMemoryInfo, ...)
+struct win_adapter_vtbl {
+    void *iunknown[3];
+    void *object[4];
+    void *adapter[3];
+    long (__stdcall *GetDesc1)(win_com *, win_adapter_desc1 *);
+    void *adapter2[1];
+    void *teardown[2];
+    long (__stdcall *QueryVideoMemoryInfo)(win_com *, unsigned, int, win_vmem_info *);
+};
+
+bool plat_gpu_os_budget(const unsigned char luid[8], uint64_t *budget,
+                        uint64_t *usage) {
+    typedef long (__stdcall *create_fn)(const win_guid *, void **);
+    HMODULE dxgi = LoadLibraryA("dxgi.dll");
+    if (!dxgi) return false;
+    create_fn create = (create_fn)(void *)GetProcAddress(dxgi, "CreateDXGIFactory1");
+    if (!create) { FreeLibrary(dxgi); return false; }
+    win_com *factory = NULL;
+    bool found = false;
+    if (create(&IID_FACTORY1, (void **)&factory) == 0 && factory) {
+        for (unsigned i = 0; !found; i++) {
+            win_com *adapter = NULL;
+            if (factory->vt->EnumAdapters1(factory, i, &adapter) != 0 || !adapter) break;
+            win_com *a3 = NULL;
+            if (adapter->vt->QueryInterface(adapter, &IID_ADAPTER3, (void **)&a3) == 0 && a3) {
+                struct win_adapter_vtbl *vt = (struct win_adapter_vtbl *)a3->vt;
+                win_adapter_desc1 desc;
+                memset(&desc, 0, sizeof(desc));
+                if (vt->GetDesc1(a3, &desc) == 0 &&
+                    memcmp(desc.AdapterLuid, luid, 8) == 0) {
+                    win_vmem_info info;
+                    memset(&info, 0, sizeof(info));
+                    if (vt->QueryVideoMemoryInfo(a3, 0, /*LOCAL*/ 0, &info) == 0) {
+                        *budget = info.Budget;
+                        *usage  = info.CurrentUsage;
+                        found = true;
+                    }
+                }
+                a3->vt->Release(a3);
+            }
+            adapter->vt->Release(adapter);
+        }
+        factory->vt->Release(factory);
+    }
+    FreeLibrary(dxgi);
+    return found;
+}
+
 uint64_t plat_proc_rss_bytes(void) {
     PROCESS_MEMORY_COUNTERS pmc = { .cb = sizeof(pmc) };
     if (!GetProcessMemoryInfo(GetCurrentProcess(), &pmc, sizeof(pmc))) return 0;
@@ -483,6 +567,14 @@ uint64_t plat_major_faults(void) {
     struct rusage ru;
     if (getrusage(RUSAGE_SELF, &ru) != 0) return 0;
     return (uint64_t)ru.ru_majflt;
+}
+
+const char *plat_page_fault_counter(void) { return "major"; }
+
+bool plat_gpu_os_budget(const unsigned char luid[8], uint64_t *budget,
+                        uint64_t *usage) {
+    (void)luid; (void)budget; (void)usage;
+    return false;   // no OS video-memory budget on POSIX
 }
 
 // getrusage gives the PEAK on both, and disagrees about units: ru_maxrss is

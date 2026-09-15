@@ -176,6 +176,7 @@
         "generation_tok_s": "<number>",
         "json_mode": false,
         "major_page_faults": "<number>",
+        "page_fault_counter": "<redacted>",
         "prefix_cache_saved_seconds": "<number>",
         "prompt_cached_tokens": "<number>",
         "prompt_eval_tokens": "<number>",
@@ -198,6 +199,11 @@
         },
         "schema": false,
         "speculative": false,
+        "timing": {
+          "prefill_seconds": "<number>",
+          "prefill_tok_s": "<number>",
+          "prefill_tokens": "<number>"
+        },
         "tool_protocol": {
           "constrained": false,
           "family": "<redacted>",

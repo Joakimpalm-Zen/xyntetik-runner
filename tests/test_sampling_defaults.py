@@ -205,3 +205,20 @@ def test_native_tool_turn_reports_its_contract(model):
         d = _chat(srv, mid, tools=bash, tool_choice="required")
         tp = d["runner_telemetry"]["tool_protocol"]
         assert tp["constrained"] is True and tp["parse_only"] is False, tp
+
+
+def test_telemetry_names_its_stage_timing_and_fault_counter(model):
+    """prefill is measured over the tokens it evaluated, apart from decode;
+    the page-fault number says which counter it came from."""
+    with _server(model, "gemma4-mainline") as srv:
+        mid = _get(srv, "/v1/models")["data"][0]["id"]
+        d = _chat(srv, mid, max_tokens=8)
+        t = d["runner_telemetry"]
+        assert t["page_fault_counter"] in ("major", "all"), t
+        tm = t["timing"]
+        assert tm["prefill_tokens"] == t["prompt_eval_tokens"], (tm, t)
+        assert tm["prefill_seconds"] > 0 and tm["prefill_tok_s"] > 0, tm
+        # a second identical prompt is served from the prefix cache: nothing
+        # to prefill but the trailing rows, and the timing says so
+        d2 = _chat(srv, mid, max_tokens=8)
+        assert d2["runner_telemetry"]["timing"]["prefill_tokens"] < tm["prefill_tokens"], d2["runner_telemetry"]

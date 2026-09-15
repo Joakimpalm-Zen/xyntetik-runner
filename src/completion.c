@@ -717,6 +717,12 @@ typedef struct req_diag {
     bool  tools;             // tools were declared and callable
     bool  constrained;       // a grammar was compiled for this turn
     bool  parse_only;        // a native protocol parsed without a grammar
+    // Stage timing, measured: the prefill's wall time over the tokens it
+    // actually evaluated (the cached prefix costs nothing), so a client can
+    // tell a slow prompt from a slow decode without subtracting generation
+    // from wall. generation_seconds has always been the decode.
+    double prefill_s;
+    int    prefill_tokens;
 } req_diag;
 
 static void diag_json(sbuf *r, const req_diag *d) {
@@ -737,6 +743,10 @@ static void diag_json(sbuf *r, const req_diag *d) {
            d->tool_protocol ? "\"" : "",
            d->tools ? "true" : "false", d->constrained ? "true" : "false",
            d->parse_only ? "true" : "false");
+    sb_fmt(r, ",\"timing\":{\"prefill_seconds\":%.6f,\"prefill_tokens\":%d,"
+              "\"prefill_tok_s\":%.3f}",
+           d->prefill_s, d->prefill_tokens,
+           d->prefill_tokens / (d->prefill_s > 0 ? d->prefill_s : 1e-9));
 }
 
 // The speculation fields of a resp_doc, from the engine that served the
@@ -798,11 +808,17 @@ static void telemetry_json(sbuf *r, const resp_doc *d) {
               "\"prefix_cache_saved_seconds\":%.6f,"
               "\"generation_seconds\":%.6f,"
               "\"generation_tok_s\":%.3f,\"major_page_faults\":%llu,"
+              // the counter behind that number: \"major\" where the OS
+              // separates page-ins from disk (POSIX), \"all\" where it
+              // counts soft faults too (Windows PageFaultCount), so the
+              // report's 1.2 million on a first request reads as what it
+              // was, not as a disk stall
+              "\"page_fault_counter\":\"%s\","
               "\"json_mode\":%s,"
               "\"schema\":%s,\"speculative\":%s",
            d->cached, d->forked, d->n_prompt - d->cached, d->saved_s, d->gtime,
            d->n_gen / (d->gtime > 0 ? d->gtime : 1e-9),
-           (unsigned long long)d->major_faults,
+           (unsigned long long)d->major_faults, plat_page_fault_counter(),
            d->json_mode ? "true" : "false", d->schema ? "true" : "false",
            d->spec ? "true" : "false");
     // Only present when the standard finish_reason lost a distinction, so
@@ -2282,6 +2298,8 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
 
     float *logits = engine_feed(e, toks + keep, n_prompt - keep);
     double prefill_s = now_s() - prefill_t0;
+    diag.prefill_s = prefill_s;
+    diag.prefill_tokens = n_prompt - keep;
     sched_prefill_end();
     engine_set_prefill_yield(e, NULL, NULL);
     // Publish outside the device turn: it is a host-memory copy, and this

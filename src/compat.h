@@ -87,6 +87,23 @@ uint64_t    plat_proc_peak_rss_bytes(void);
 // slow for some other reason. 0 where unavailable.
 uint64_t    plat_major_faults(void);
 
+// The OS video-memory budget for THIS process on the adapter identified by
+// an 8-byte LUID (IDXGIAdapter3::QueryVideoMemoryInfo, local segment):
+// *budget is what the process may keep resident before the OS starts paging
+// it, *usage what it holds now. True only where the OS publishes one
+// (WDDM); false on every other platform and when the query is unavailable,
+// which the caller treats as "budget unknown", never as zero. The driver's
+// own free-memory count knows nothing of this: on a 12 GB card shared with
+// the desktop it promised 11.7 GB, and WDDM then paged the process over PCIe
+// (2026-09-14 Windows report).
+bool        plat_gpu_os_budget(const unsigned char luid[8], uint64_t *budget,
+                               uint64_t *usage);
+// The page-fault counter plat_major_faults reads: "major" where the OS
+// separates page-ins from disk (POSIX ru_majflt), "all" where it does not
+// (Windows PageFaultCount counts soft faults too). Reported beside the
+// number so a reader knows what it means on the machine it came from.
+const char *plat_page_fault_counter(void);
+
 // Physically available RAM: free plus what the OS would reclaim on demand. NOT
 // total RAM, because "model fits in RAM" is the test that passes right before
 // the machine starts thrashing. 0 where unavailable.
