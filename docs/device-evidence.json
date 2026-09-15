@@ -20,18 +20,18 @@
       },
       "last_verified": {
         "date": "2026-09-15",
-        "commit": "d6bd631a4782fd202cb13ffe549bab5fd236a3d4",
-        "ran": "build054.sh on ZEN-GAMING: make OS=Windows_NT -j8 runner; make test-cuda-nvfp4 (qwen3.5-4b-nvfp4); test-gpu-identity.exe on the nine i-quant fixtures; make test-tc-overflow; scripts/cuda-smoke-remote.sh 13/13",
+        "commit": "47518c051359b3eaee3c6e63b231843b06d133c7",
+        "ran": "build055.sh on ZEN-GAMING: make OS=Windows_NT -j8 runner; make test-cuda-nvfp4 (qwen3.5-4b-nvfp4); test-gpu-identity.exe on the nine i-quant fixtures; make test-tc-overflow; scripts/cuda-smoke-remote.sh 13/13",
         "result": "pass",
         "caps": {
-          "version": "0.5.4",
+          "version": "0.5.5",
           "os": "windows",
           "arch": "x86_64",
           "cpu_cores": 8,
           "gpu_backend": "cuda",
           "gpu_name": "NVIDIA GeForce RTX 3070"
         },
-        "evidence": "docs/compat-reports/cuda-smoke-0.5.4-2026-09-15-rtx3070.json"
+        "evidence": "docs/compat-reports/cuda-smoke-0.5.5-2026-09-15-rtx3070.json"
       }
     },
     {
@@ -47,18 +47,18 @@
       },
       "last_verified": {
         "date": "2026-09-15",
-        "commit": "d6bd631a4782fd202cb13ffe549bab5fd236a3d4",
+        "commit": "47518c051359b3eaee3c6e63b231843b06d133c7",
         "ran": "compat_matrix.py --model granite-4.2-3b-q4_k_m --gpu auto --execute-checks --verify-files on the Blackwell MIG slice (load, tokenizer, cpu_cuda 9/9, chat)",
         "result": "pass",
         "caps": {
-          "version": "0.5.4",
+          "version": "0.5.5",
           "os": "linux",
           "arch": "x86_64",
           "cpu_cores": 128,
           "gpu_backend": "cuda",
           "gpu_name": "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb"
         },
-        "evidence": "docs/compat-reports/0.5.4-2026-09-15-blackwell-granite-4.2-3b-q4_k_m.json"
+        "evidence": "docs/compat-reports/0.5.5-2026-09-15-blackwell-granite-4.2-3b-q4_k_m.json"
       }
     },
     {
@@ -74,11 +74,11 @@
       },
       "last_verified": {
         "date": "2026-09-15",
-        "commit": "d6bd631a4782fd202cb13ffe549bab5fd236a3d4",
-        "ran": "make test PYTHON=.venv/bin/python (691 pytest, every C gate); scripts/conformance.sh; make release-check",
+        "commit": "47518c051359b3eaee3c6e63b231843b06d133c7",
+        "ran": "make test PYTHON=.venv/bin/python (every C gate and pytest); scripts/conformance.sh; make release-check",
         "result": "pass",
         "caps": {
-          "version": "0.5.4",
+          "version": "0.5.5",
           "os": "macos",
           "arch": "arm64",
           "cpu_cores": 8,
