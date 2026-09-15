@@ -720,28 +720,50 @@ reported beside it).
   **pass the bar** against the unmodified BF16 parent on a held-out split
   (Q4_K 97.74% / 0.04810, Q8_0 98.34% / 0.03883). Their provenance and
   method are the
-  [surgery report](https://huggingface.co/Joakimpalm-Zen/Muse-Glimmer-30B-surgery-report),
+  [surgery report](https://huggingface.co/datasets/Joakimpalm-Zen/Muse-Glimmer-30B-surgery-report),
   nine preregistered runs on one frozen 30B model; the cards say where the
   fidelity bar does and does not transfer to public benchmarks.
+- [Qwen3.8-27B GSQ-RCO IQ3_S, recovered scales](https://huggingface.co/Joakimpalm-Zen/Qwen3.8-27B-GSQ-RCO-IQ3_S-recovered-GGUF)
+  (11.77 GB) is ISTA-DASLab's IQ3_S file with every quantised block's fp16
+  scales retrained by distillation against the BF16 parent: same integer
+  codes, same layout, same byte length, and it reads mean KLD 0.0450 with
+  margin-qualified top-1 97.80% on 500 held-out positions, inside the bar
+  the unmodified source misses. Evidence and code:
+  [scale-recovery dataset](https://huggingface.co/datasets/Joakimpalm-Zen/Qwen3.8-27B-GSQ-RCO-scale-recovery-evidence).
+- [Muse-Glimmer-30B surgical 6.34%, Q4_K with recovered scales](https://huggingface.co/Joakimpalm-Zen/Muse-Glimmer-30B-Surgical-6p34-Q4_K-recovered-GGUF)
+  (14.61 GiB) closes the gate the surgery study left open: the 6.34% model
+  failed at plain Q4_K (0.05815) and passes with retrained scales (0.04949,
+  97.90%). Preregistration, four-arm scores, logs and code:
+  [scale-recovery dataset](https://huggingface.co/datasets/Joakimpalm-Zen/Muse-Glimmer-30B-scale-recovery-evidence).
 - Measurement reports over third-party artifacts, no weights republished,
   every measured file bound by SHA:
-  [Hermes-4-14B quant fidelity](https://huggingface.co/Joakimpalm-Zen/Hermes-4-14B-quant-fidelity-report)
+  [Hermes-4-14B quant fidelity](https://huggingface.co/datasets/Joakimpalm-Zen/Hermes-4-14B-quant-fidelity-report)
   (the 4-bit size threshold and the split story), the
-  [Qwen3 speculative pair](https://huggingface.co/Joakimpalm-Zen/Qwen3-speculative-pair-report)
+  [Qwen3 speculative pair](https://huggingface.co/datasets/Joakimpalm-Zen/Qwen3-speculative-pair-report)
   (measured draft acceptance, and why the engine's printed tok/round must
   not be tuned on), and the two Mamba-2 hybrid support reports -
-  [granite-4.0-h-small](https://huggingface.co/Joakimpalm-Zen/granite-4.0-h-small-runner-report)
+  [granite-4.0-h-small](https://huggingface.co/datasets/Joakimpalm-Zen/granite-4.0-h-small-runner-report)
   (`granitehybrid`, 3/5 greedy-identity at the noise floor) and
-  [Nemotron-3.5-Lightning-30B-A3B](https://huggingface.co/Joakimpalm-Zen/Nemotron-3.5-Lightning-30B-A3B-runner-report)
+  [Nemotron-3.5-Lightning-30B-A3B](https://huggingface.co/datasets/Joakimpalm-Zen/Nemotron-3.5-Lightning-30B-A3B-runner-report)
   (`nemotron_h_moe`, 4/5) - each carrying its measured-envelope manifest. Two
   frontier reports (2026-08-20, no weights republished - nothing cleared the
   bar AND beat upstream): the
-  [Lightning-30B prune frontier](https://huggingface.co/Joakimpalm-Zen/Nemotron-3.5-Lightning-30B-A3B-prune-frontier-report)
+  [Lightning-30B prune frontier](https://huggingface.co/datasets/Joakimpalm-Zen/Nemotron-3.5-Lightning-30B-A3B-prune-frontier-report)
   (keep-126 passes at 99.50%/0.026; the plan is published, the 1.37% saving was
   not worth an artifact) and the
-  [Muse-Glimmer-30B quant frontier](https://huggingface.co/Joakimpalm-Zen/Muse-Glimmer-30B-runner-quant-frontier-report)
+  [Muse-Glimmer-30B quant frontier](https://huggingface.co/datasets/Joakimpalm-Zen/Muse-Glimmer-30B-runner-quant-frontier-report)
   (Meta's own Q4_K_M passes the bar; six runner plans measured, none beat it -
   stated openly).
+
+Since 2026-09-15 the account is organised for a reader who has never seen
+it: weightless reports are Hugging Face **Datasets** (the seven above, plus
+the [Qwen3-4B tool-use training record](https://huggingface.co/datasets/Joakimpalm-Zen/Qwen3-4B-ToolUse-LoRA-training-record)
+extracted from the adapter repository), every model card opens with a
+release or research-artifact status block, and five collections tell the
+story: [Runner Releases](https://huggingface.co/collections/Joakimpalm-Zen/runner-releases-6aa98baaed03bba0e8a561ae), [Model Surgery and Scale Recovery](https://huggingface.co/collections/Joakimpalm-Zen/xyntetik-research-model-surgery-and-scale-recovery-6aa98bab0ecb9723f310c770),
+[Pruning and Quantization Frontiers](https://huggingface.co/collections/Joakimpalm-Zen/xyntetik-research-pruning-and-quantization-frontiers-6aa98badc3307048c060ebe2), [Runner Compatibility Reports](https://huggingface.co/collections/Joakimpalm-Zen/xyntetik-research-runner-compatibility-reports-6aa98baf2859827a8d866165)
+and [LoRA Training on Quantized Weights](https://huggingface.co/collections/Joakimpalm-Zen/xyntetik-research-lora-training-on-quantized-weights-6aa98bb02859827a8d86618c). The retired Model-typed copies
+of the reports stay up with a pointer to the canonical dataset.
 
 ## Command-line reference
 

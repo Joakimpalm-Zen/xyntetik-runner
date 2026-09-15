@@ -8,6 +8,18 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **The Hugging Face account is organised for an outsider.** Weightless
+  reports are Datasets now (the seven measurement and frontier reports, plus
+  three evidence sets extracted from model repositories: the Qwen3.8 and
+  Muse scale-recovery records and the Qwen3-4B tool-use training record),
+  every model card opens with a release or research-artifact status block,
+  five collections group releases, model surgery, pruning and quantization
+  frontiers, compatibility reports and LoRA training. README and the site
+  link the datasets, list the two recovered-scale artifacts that were
+  missing, and `scripts/check-release.py`'s README/site parity now reads
+  the `datasets/` and `{{hfd}}` spellings too (gated in
+  `tests/test_release_check.py`). The retired Model-typed report repositories
+  stay up with a pointer card; nothing was deleted.
 - **The schema OOM gate walks the Qwen turn compilers.** `tests/test_schema_oom.c`
   fails every allocation of `schema_compile_qwen_turn` (thinking on and off)
   and `schema_compile_qwen_parallel` in turn, as it already did for the atem,

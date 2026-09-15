@@ -29,6 +29,7 @@ SITE = ROOT / "site"
 OUT = SITE / "_site"
 REPO = "https://github.com/Joakimpalm-Zen/xyntetik-runner"
 HF = "https://huggingface.co/Joakimpalm-Zen"
+HFD = "https://huggingface.co/datasets/Joakimpalm-Zen"
 ORIGIN = "https://xyntetik.com"
 
 NAV = [
@@ -464,7 +465,7 @@ def main() -> int:
         body = re.sub(r"\{\{(chart):([a-z_]+)\}\}", sub, body)
         body = re.sub(r"\{\{mark:([a-z]+):(\d+)\}\}", lambda m: mark(m.group(1), "", int(m.group(2))), body)
         body = re.sub(r"\{\{heromark:([a-z]+)\}\}", lambda m: inline_mark(m.group(1)), body)
-        body = (body.replace("{{repo}}", REPO).replace("{{hf}}", HF)
+        body = (body.replace("{{repo}}", REPO).replace("{{hfd}}", HFD).replace("{{hf}}", HF)
                 .replace("{{version}}", version).replace("{{release_date}}", release_date))
         out = shell(meta, body, sha)
         problems += check_page(meta["path"], out, known)
