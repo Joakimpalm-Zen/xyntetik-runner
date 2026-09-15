@@ -377,3 +377,29 @@ details.table-view .table-wrap { margin-top: 0.6rem; }
 .mb-0 { margin-bottom: 0; }
 .center { text-align: center; }
 .max-none { max-width: none; }
+
+/* landing: who Runner is for (three persona columns; a shared feature is one tile spanning the two columns it serves) */
+#personas .tiles { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1rem; }
+#personas .tile { min-width: 0; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 1.1rem 1.25rem; box-shadow: var(--shadow); display: flex; flex-direction: column; gap: 0.35rem; }
+#personas .tile.head { border-top: 3px solid var(--teal); padding-top: 1.3rem; gap: 0.3rem; }
+#personas .tile.head h3 { margin: 0 0 0.15rem; }
+#personas .tile.head p { color: var(--ink-2); font-size: 0.97rem; margin: 0; }
+#personas .tile .t { font-weight: 500; font-size: 1rem; }
+#personas .tile .d { font-size: 0.9rem; line-height: 1.5; color: var(--ink-2); }
+#personas .tile .pill { margin-top: 0.3rem; align-self: flex-start; }
+#personas .tile.ob { grid-column: 1 / 3; border-top: 3px solid var(--teal); }
+#personas .tile.ba { grid-column: 2 / 4; border-top: 3px solid var(--coral); }
+#personas .tile.shared > .t, #personas .tile.shared > .d { text-align: center; }
+#personas .tile.shared > .d { max-width: 62ch; align-self: center; }
+#personas .tile.shared .who { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; margin-top: 0.5rem; padding-top: 0.6rem; border-top: 1px solid var(--line); }
+#personas .tile.shared .who > div { min-width: 0; }
+#personas .tile.shared .who .d { margin-top: 0.3rem; }
+#personas .pill.ob { border-color: transparent; background: var(--teal-soft); color: var(--teal-ink); }
+#personas .pill.ba { border-color: transparent; background: var(--coral-soft); color: var(--coral-ink); }
+#personas .tile.cmd { padding: 0.9rem 1.1rem; }
+#personas .tile.cmd pre { margin: 0; font-size: 0.8rem; white-space: pre-wrap; word-break: break-all; }
+@media (max-width: 900px) {
+  #personas .tiles { grid-template-columns: 1fr; }
+  #personas .tile.ob, #personas .tile.ba { grid-column: auto; }
+  #personas .tile.shared .who { grid-template-columns: 1fr; }
+}
