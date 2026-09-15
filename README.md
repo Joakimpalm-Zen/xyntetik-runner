@@ -27,8 +27,15 @@ curl -LO https://github.com/Joakimpalm-Zen/xyntetik-runner/releases/latest/downl
 curl -LO https://github.com/Joakimpalm-Zen/xyntetik-runner/releases/latest/download/SHA256SUMS
 shasum -a 256 --check --ignore-missing SHA256SUMS
 chmod +x runner-macos-arm64 && mv runner-macos-arm64 runner
-./runner -hf ibm-granite/granite-4.1-3b-GGUF:Q8_0 --serve
+./runner -hf Joakimpalm-Zen/gemma-4-E2B-it-Q4_0-GGUF --serve
 ```
+
+That fetches this account's 2.63 GB try-it artifact, verifies it against the
+Hub's SHA-256 record and serves it. Know what it is: it fails the fidelity
+bar and its card says so. The account's lead artifact passes the bar, 17.99
+GB, `./runner -hf Joakimpalm-Zen/Qwen3-30B-A3B-selective-attnQ8_0-expQ4_0-GGUF --serve`;
+the smallest first-party file that passes it is
+`./runner -hf ibm-granite/granite-4.1-3b-GGUF:Q8_0 --serve`.
 
 ```sh
 curl localhost:8080/v1/chat/completions \
@@ -217,26 +224,35 @@ Release archives name the binary for their platform - `runner-macos-arm64`,
 `runner` or substitute that name in the commands below. A source build produces
 `runner` directly.
 
-If you have no GGUF handy, the measured recommendation at 8 GB is an
-8-bit small model, not a 4-bit larger one. granite-4.1-3b Q8_0 (3.6 GB,
-first-party IBM file) is the smallest model that passes this project's
-fidelity gate against its own BF16 parent (100% margin-qualified top-1 /
-0.0024 mean KLD, 2026-08-14; every 4- and 5-bit quant measured to date
-fails on distributional distance):
+If you have no GGUF handy, start from this account's own artifacts, each
+published with its measured status ([the ledger](#published-artifacts)):
+
+```sh
+# the lead artifact: Qwen3-30B-A3B, attention Q8_0 / experts Q4_0, 17.99 GB,
+# passes the fidelity bar where the official uniform Q4_K_M fails it
+./runner -hf Joakimpalm-Zen/Qwen3-30B-A3B-selective-attnQ8_0-expQ4_0-GGUF --serve
+# the fastest smoke test on a small machine, 2.63 GB: against its own BF16
+# parent it agrees on 77.75% of tokens (mean KLD 0.286), a try-the-runner
+# artifact, not a faithful gemma-4-E2B; its card carries the full numbers
+./runner -hf Joakimpalm-Zen/gemma-4-E2B-it-Q4_0-GGUF --serve
+```
+
+The measured recommendation at 8 GB of RAM is an 8-bit small model, not a
+4-bit larger one: granite-4.1-3b Q8_0 (3.6 GB, first-party IBM file) is the
+smallest model that passes this project's fidelity gate against its own
+BF16 parent (100% margin-qualified top-1 / 0.0024 mean KLD, 2026-08-14;
+every 4- and 5-bit quant measured to date fails on distributional
+distance). Its repository is a quant ladder, so the tag picks the file:
+
+```sh
+./runner -hf ibm-granite/granite-4.1-3b-GGUF:Q8_0 --serve
+```
+
+`-m` takes a file you fetched yourself; the same file, by hand:
 
 ```sh
 curl -L -o model.gguf \
   https://huggingface.co/ibm-granite/granite-4.1-3b-GGUF/resolve/main/granite-4.1-3b-Q8_0.gguf
-```
-
-For the fastest possible smoke test on a small machine there is also a
-2.63 GB option - know what it is: measured against its own BF16 parent it
-agrees on 77.75% of tokens (mean KLD 0.286), a try-the-runner artifact,
-not a faithful gemma-4-E2B; its card carries the full numbers.
-
-```sh
-curl -L -o model.gguf \
-  https://huggingface.co/Joakimpalm-Zen/gemma-4-E2B-it-Q4_0-GGUF/resolve/main/gemma-4-E2B-it-Q4_K_M-Q4_0-mix.gguf
 ```
 
 Run a GGUF. `-hf owner/repo[:TAG]` fetches it from the Hugging Face Hub
@@ -245,6 +261,7 @@ the file is cached under `~/.cache/xyntetik-runner/hf` and verified against
 the Hub's SHA-256 record before it loads; `HF_TOKEN` for gated repos):
 
 ```sh
+./runner -hf Joakimpalm-Zen/gemma-4-E2B-it-Q4_0-GGUF -i
 ./runner -hf ibm-granite/granite-4.1-3b-GGUF:Q8_0 -i
 ./runner -m model.gguf -i
 ./runner -m model.gguf -p "Explain prefix caching" --temp 0
