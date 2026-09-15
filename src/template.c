@@ -2890,6 +2890,26 @@ void tool_history_render_for(int tmpl, const jv *calls,
         pl_lit(out, "]<|tools_suffix|>");
 }
 
+bool tools_system_fold(int tmpl, sbuf *ts, const char *system) {
+    if ((tmpl != TMPL_ORNITH && tmpl != TMPL_GRANITE42) || !ts || !ts->n ||
+        !system || !system[0])
+        return false;
+    if (tmpl == TMPL_ORNITH) {
+        sb_lit(ts, "\n\n");
+        sb_put(ts, system, strlen(system));
+        return true;
+    }
+    // granite 4.2: the caller's text FIRST, the declarations after a blank line
+    sbuf g = {0};
+    sb_put(&g, system, strlen(system));
+    sb_lit(&g, "\n\n");
+    if (ts->s) sb_put(&g, ts->s, ts->n);
+    if (g.failed) { free(g.s); ts->failed = true; return true; }
+    free(ts->s);
+    *ts = g;
+    return true;
+}
+
 // True when `text` holds anything the model would read as content, i.e. a
 // non-whitespace byte. This is `message_has_text` reduced to a flat string:
 // the Anthropic/Responses surfaces have already flattened their content parts

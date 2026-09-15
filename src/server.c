@@ -500,25 +500,16 @@ static void handle_chat(slot_t *s, sock_t fd, jv *req) {
         sb_put(&ts, env.system_turn, strlen(env.system_turn));
     else if (!native_decl && s->tmpl != TMPL_MUSE)
         tools_render_for(s->tmpl, tools, &ts);
+    // ornith / granite 4.2 fold the caller's system text into the
+    // declaration turn the way their references do (tools_system_fold, the
+    // same helper the typed surfaces use); the folded message is then skipped
     bool ornith_merged_system = false;
     if ((s->tmpl == TMPL_ORNITH || s->tmpl == TMPL_GRANITE42) && ts.n &&
         msgs->n > 0 && !strcmp(chat_role(msgs->items[0]), "system")) {
         char *system = message_text(msgs->items[0], s->tmpl, false, &oom);
-        if (system && system[0] && s->tmpl == TMPL_ORNITH) {
-            sb_lit(&ts, "\n\n");
-            sb_put(&ts, system, strlen(system));
-        } else if (system && system[0]) {
-            // granite 4.2 puts the caller's system text FIRST and the
-            // declarations after a blank line (chat_template.jinja:49-55)
-            sbuf g = {0};
-            sb_put(&g, system, strlen(system));
-            sb_lit(&g, "\n\n");
-            if (ts.s) sb_put(&g, ts.s, ts.n);
-            free(ts.s);
-            ts = g;
-        }
+        tools_system_fold(s->tmpl, &ts, system);
         free(system);
-        ornith_merged_system = true;
+        ornith_merged_system = true;   // an empty system turn folds to nothing
     }
     // The tool turn is content too. A builder that ran out here left `ts`
     // short or empty and the prompt went out without the declarations the

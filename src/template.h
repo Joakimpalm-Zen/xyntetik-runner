@@ -228,6 +228,16 @@ int req_reasoning_effort(struct jv *req);
 // render OpenAI "tools" declarations as a system turn (no-op when absent)
 void tools_render(const struct jv *tools, struct sbuf *out);
 void tools_render_for(int tmpl, const struct jv *tools, struct sbuf *out);
+// Fold the caller's system text into the family's declaration turn `ts`
+// (a tools_render_for block) the way its reference does: ornith appends
+// the text after the declarations behind a blank line, granite 4.2 puts
+// the text first and the declarations after one (chat_template.jinja:
+// 49-55). Returns true when the text was folded and the caller must NOT
+// render its own system turn; false leaves `ts` alone (every other family,
+// an empty block, no text) and the caller renders the turn as usual. One
+// helper for Chat, Responses and Messages, so a declared tool with a system
+// prompt is the same prompt through every door.
+bool tools_system_fold(int tmpl, struct sbuf *ts, const char *system);
 // Replay an assistant turn's tool_calls in the family's own syntax.
 //
 // `turn_has_text` is whether THAT TURN carried visible content, and it cannot

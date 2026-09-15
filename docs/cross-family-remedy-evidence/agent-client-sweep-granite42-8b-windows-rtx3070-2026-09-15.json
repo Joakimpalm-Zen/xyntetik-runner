@@ -1,0 +1,70 @@
+{
+ "gate": "agent-client-sweep",
+ "label": "ZEN-GAMING RTX 3070 8GB, Windows 11, CUDA, granite-4.2-8b Q4_K_M, recurrent-turn-mark tree, Continue CLI and OpenCode for Windows at their latest versions",
+ "started": "2026-09-15T10:45:19+0200",
+ "host": "Zen-Gaming",
+ "platform": "Windows-11-10.0.26100-SP0",
+ "base_url": "http://127.0.0.1:8097",
+ "model": "granite-4.2-8b-Q4_K_M.gguf",
+ "model_file": "C:/Users/zen/models/granite-4.2-8b-Q4_K_M.gguf",
+ "model_sha256": "16a9369d0805f80b7377d25d87f937a90c05dc04ad79173a52001e42c9aab311",
+ "runner": "./runner.exe",
+ "runner_version": "runner 0.5.3",
+ "runner_sha256": "e2286856bd96a0e5caec6ff45ca5bc3125509c6aba9455e152c421968f7d0d0b",
+ "sampling_served": {
+  "preset": "granite42",
+  "temperature": 1.0,
+  "top_p": 0.95,
+  "top_k": 0,
+  "min_p": 0.0,
+  "repeat_penalty": 1.0
+ },
+ "template": "granite42",
+ "tool_protocol": {
+  "family": "qwen3_xml",
+  "native": true
+ },
+ "context": 16384,
+ "prompt": "Read the file sentinel.txt in the current directory with your tools and reply with the code word it contains, in one sentence.",
+ "rows": [
+  {
+   "client": "continue",
+   "version": "1.5.47",
+   "sentinel": "XYNTETIK-FEAD-A5B2",
+   "result": "PASS",
+   "reason": null,
+   "wall_s": 27.0,
+   "command": [
+    "C:\\Users\\zen\\AppData\\Local\\node-v24.16.0-win-x64\\cn.CMD",
+    "-p",
+    "--auto",
+    "--config",
+    "C:\\Users\\zen\\r052tmp\\agent-sweep-continue-cclusxvl\\home\\.continue\\config.yaml",
+    "Read the file sentinel.txt in the current directory with your tools and reply with the code word it contains, in one sentence."
+   ],
+   "exit": 0,
+   "stdout_tail": "\nThe code word is XYNTETIK-FEAD-A5B2.\n",
+   "stderr_tail": ""
+  },
+  {
+   "client": "opencode",
+   "version": "1.18.31",
+   "sentinel": "XYNTETIK-8D65-D7F4",
+   "result": "PASS",
+   "reason": null,
+   "wall_s": 235.6,
+   "command": [
+    "C:\\Users\\zen\\opencode\\opencode.EXE",
+    "run",
+    "--model",
+    "runner/granite-4.2-8b-Q4_K_M.gguf",
+    "Read the file sentinel.txt in the current directory with your tools and reply with the code word it contains, in one sentence."
+   ],
+   "exit": 0,
+   "stdout_tail": "XYNTETIK-8D65-D7F4\n",
+   "stderr_tail": "     LastWriteTime         Length Name                                                                 \n----                 -------------         ------ ----                                                                 \nd-----        2026-09-15     10:45                home                                                                 \nd-----        2026-09-15     10:45                src                                                                  \n-a----        2026-09-15     10:46            294 opencode.json                                                        \n-a----        2026-09-15     10:45             11 README.md                                                            \n-a----        2026-09-15     10:45             38 sentinel.txt\n\u001b[0m\n\u001b[0m\u2192 \u001b[0mRead sentinel.txt\n"
+  }
+ ],
+ "verdict": "PASS",
+ "finished": "2026-09-15T10:49:56+0200"
+}
