@@ -2620,6 +2620,26 @@ static void test_xml_parse_only_open_block_at_finish(void) {
         assert(log.content.n == 0);
         tool_stream_free(&s); log_free(&log);
     }
+    // a stray second opener is framing, the call behind it is a call
+    const char *doubled =
+        "<tool_call>\n<tool_call>\n<function=bash>\n<parameter=command>\nls\n</parameter>\n</function>\n</tool_call>";
+    for (size_t step = 1; step <= strlen(doubled); step++) {
+        demux_log log; demux_step(&e, doubled, step, &log);
+        assert(log.begins == 1 && !strcmp(log.args.s, "{\"command\":\"ls\"}"));
+        assert(log.content.n == 0);
+        log_free(&log);
+    }
+    sbuf dc = {0}, dtc = {0}; int dn = 0;
+    assert(tool_stream_map(&e, doubled, strlen(doubled), false, &dc, &dtc, &dn) == 0 && dn == 1);
+    free(dc.s); free(dtc.s);
+    // a mention whose sentence also spells the closing tag stays prose
+    const char *closing = "The <tool_call> tag is closed by </tool_call>, as the docs say.";
+    for (size_t step = 1; step <= strlen(closing); step++) {
+        demux_log log; demux_step(&e, closing, step, &log);
+        assert(log.begins == 0);
+        assert(!strcmp(log.content.s, closing));
+        log_free(&log);
+    }
     const char *mention = "Wrap calls in a <tool_call> block, as the docs say.";
     demux_log log; memset(&log, 0, sizeof log);
     tool_stream_sink sink = { &log, log_reasoning, log_content, log_begin, log_args, log_end };

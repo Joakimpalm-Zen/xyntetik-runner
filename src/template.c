@@ -4484,21 +4484,37 @@ static int ts_qwen(tool_stream *s, const char *bytes, int n) {
     for (;;) {
         if (s->state==TS_DONE || !s->head_n) return 0;
         if (s->state==TS_QWEN_CALLS) {
+            if (lenient) {
+                // What follows the opener decides what the opener was. A
+                // second opener (Granite 4.2 8B at temperature 1.0 writes
+                // `<tool_call>\n<tool_call>\n<function=` in about half its
+                // calls) makes the first one stray framing: dropped, and the
+                // call behind it is still a call. Prose makes it a mention,
+                // content like the sentence around it. Only `<function=`
+                // makes it a call, held until its close. A prefix of either
+                // marker waits for the bytes that decide.
+                size_t at=strlen(QWEN_CALL_OPEN);
+                while (at<s->head_n && ts_ws(s->head[at])) at++;
+                size_t left=s->head_n-at, ol=strlen(QWEN_CALL_OPEN), fl=strlen("<function=");
+                if (!left) return 0;
+                size_t ko=left<ol?left:ol, kf=left<fl?left:fl;
+                if (!memcmp(s->head+at,QWEN_CALL_OPEN,ko)) {
+                    if (left<ol) return 0;
+                    head_drop(s,at);
+                    continue;
+                }
+                if (memcmp(s->head+at,"<function=",kf)) {
+                    int rc=s->sink.content
+                        ? s->sink.content(s->sink.ud,s->head,(int)ol) : 0;
+                    head_drop(s,ol);s->state=TS_QWEN_TEXT;
+                    if (rc) return rc;
+                    continue;
+                }
+            }
             // Hold the whole native call until its arguments are complete.
             // Never emit a callable event for malformed or partial XML.
             const char *close=strstr(s->head,QWEN_CALL_END);
-            if (!close) {
-                // A parse-only block that cannot be a call (no function opens
-                // it) is prose that mentioned the tag: release it rather than
-                // hold the rest of the turn hostage to a marker in a sentence.
-                if (lenient && !ts_qwen_block_is_call(s)) {
-                    int rc=s->sink.content
-                        ? s->sink.content(s->sink.ud,s->head,(int)s->head_n) : 0;
-                    s->head_n=0;s->state=TS_QWEN_TEXT;
-                    return rc;
-                }
-                return 0;
-            }
+            if (!close) return 0;
             const char *at=s->head;
             sbuf tc={0}, wrapped={0};
             bool past_bound = lenient && s->n_calls >= s->env->max_calls;
@@ -4513,6 +4529,13 @@ static int ts_qwen(tool_stream *s, const char *bytes, int n) {
                 // so a valid call after it still arrives.
                 if (!lenient) return 0;
                 s->fault=true;
+                if (tool_trace_on())
+                    fprintf(stderr, "tool-trace: parse-only block %s, dropped "
+                                    "(%zu bytes):\n%.*s\n",
+                            past_bound ? "past max_calls" : "not a valid call",
+                            (size_t)(close-s->head)+strlen(QWEN_CALL_END),
+                            (int)((size_t)(close-s->head)+strlen(QWEN_CALL_END)),
+                            s->head);
                 head_drop(s,(size_t)(close-s->head)+strlen(QWEN_CALL_END));
                 s->state=TS_QWEN_TEXT;s->skip_ws=true;
                 continue;
