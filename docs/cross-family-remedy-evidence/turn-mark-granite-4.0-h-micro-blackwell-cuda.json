@@ -1,0 +1,96 @@
+{
+ "gate": "turn-mark-check",
+ "label": "Blackwell MIG 1g.24gb, recurrent-turn-mark branch, granite-4.0-h-micro Q4_K_M on CUDA (granitehybrid Mamba-2), shipped defaults",
+ "started": "2026-09-15T09:37:30+0200",
+ "host": "bfff3786ea4e",
+ "platform": "Linux-6.12.0-211.16.1.el10_2.x86_64-x86_64-with-glibc2.39",
+ "base_url": "http://127.0.0.1:8095",
+ "model": "granite-4.0-h-micro-Q4_K_M.gguf",
+ "model_file": "/home/lab/workspace/models/granite-4.0-h-micro/granite-4.0-h-micro-Q4_K_M.gguf",
+ "model_sha256": "bcc78b9b25450101d1ad90d4b9a264e1bac892f534dfb76066f4eec792fdf023",
+ "runner": "./runner",
+ "runner_sha256": "d71ebf3a6672df6cbdcffa9249869ac8a0b5d6aa65044588be74bae6ddb85b5a",
+ "sampling_served": {
+  "preset": "generic",
+  "temperature": 0.8,
+  "top_p": 0.95,
+  "top_k": 40,
+  "min_p": 0.05,
+  "repeat_penalty": 1.1
+ },
+ "template": "granite",
+ "context": 32768,
+ "max_tokens": 64,
+ "turns": {
+  "first": {
+   "wall_s": 3.228,
+   "content": "To list the files in the current directory, I would use the `ls` command. However, since I'm an AI model and don't have the capability to execute commands or access files directly, I can't perform this action. \n\nGiven the description of the repository, the first file I would recommend reading is the",
+   "reasoning": "",
+   "finish_reason": "length",
+   "prompt_tokens": 512,
+   "cached_tokens": 0,
+   "cache": "none",
+   "prefill_seconds": 2.659921,
+   "prefill_tokens": 512
+  },
+  "second": {
+   "wall_s": 0.826,
+   "content": "I would read the `README.md` file first. The `README` file typically contains an overview of the project, including its purpose, how to install it, how to use it, and any other relevant information for someone who is new to the project. It's essentially the project's \"front door\" and provides",
+   "reasoning": "",
+   "finish_reason": "length",
+   "prompt_tokens": 552,
+   "cached_tokens": 511,
+   "cache": "turn_mark",
+   "prefill_seconds": 0.252874,
+   "prefill_tokens": 41
+  },
+  "second_replay": {
+   "wall_s": 0.574,
+   "content": "I would read the `README.md` file first. The `README` file typically contains an overview of the project, including its purpose, how to install it, how to use it, and any other relevant information for someone who is new to the project. It's essentially the project's \"front door\" and provides",
+   "reasoning": "",
+   "finish_reason": "length",
+   "prompt_tokens": 552,
+   "cached_tokens": 551,
+   "cache": "turn_mark",
+   "prefill_seconds": 0.008881,
+   "prefill_tokens": 1
+  },
+  "second_fresh": {
+   "wall_s": 3.413,
+   "content": "I would read the `README.md` file first. The `README` file typically contains an overview of the project, including its purpose, how to install it, how to use it, and any other relevant information for someone who is new to the project. It's essentially the project's \"front door\" and provides",
+   "reasoning": "",
+   "finish_reason": "length",
+   "prompt_tokens": 552,
+   "cached_tokens": 0,
+   "cache": "none",
+   "prefill_seconds": 2.856498,
+   "prefill_tokens": 552
+  }
+ },
+ "checks": {
+  "second_turn_keeps_the_first_prompt": {
+   "pass": true,
+   "cached_tokens": 511,
+   "first_prompt_tokens": 512,
+   "cache": "turn_mark"
+  },
+  "verbatim_replay_keeps_all_but_one": {
+   "pass": true,
+   "cached_tokens": 551,
+   "prompt_tokens": 552,
+   "cache": "turn_mark"
+  },
+  "kept_turn_answers_like_a_fresh_slot": {
+   "pass": true,
+   "second": "I would read the `README.md` file first. The `README` file typically contains an overview of the project, including its purpose, how to install it, how to use it, and any other relevant information fo",
+   "fresh": "I would read the `README.md` file first. The `README` file typically contains an overview of the project, including its purpose, how to install it, how to use it, and any other relevant information fo"
+  },
+  "prefill_is_the_tail_only": {
+   "pass": true,
+   "second_prefill_seconds": 0.252874,
+   "fresh_prefill_seconds": 2.856498
+  }
+ },
+ "verdict": "PASS",
+ "finished": "2026-09-15T09:37:39+0200"
+}

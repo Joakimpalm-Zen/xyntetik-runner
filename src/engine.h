@@ -90,6 +90,13 @@ typedef struct {
     bool    prelude_exhausted;
     bool progress;         // print prompt progress to stderr
     int32_t *hist;         // tokens whose KV occupies slots [0, pos)
+    // What the last engine_rewind / engine_prefix_reuse did with the slot's
+    // previous state (a rewind_how value), and the recurrent turn mark's
+    // binding: the fold in the model's mark buffers was taken over hist[0,
+    // mark_pos), whose FNV-1a hash this is. Belt and braces over the
+    // structural rule (the mark is dropped whenever pos moves below it).
+    int      rewind_how;
+    uint64_t mark_hash;
     // optional per-token logprob capture (server "logprobs"): caller points
     // these at buffers sized [lp_cap] / [lp_cap * lp_n] before generating
     float   *lp_chosen;    // chosen-token logprob per emitted token
@@ -211,6 +218,32 @@ void   engine_think_started(engine *e); // prompt already contains think_open
 // keep the KV for the longest common prefix of hist and toks, reset the rest
 // of the engine state; returns how many prompt tokens can be skipped
 int    engine_rewind(engine *e, const int32_t *toks, int n);
+// What engine_rewind (or the prefix fork after it) did with the slot's
+// previous state; engine_rewind_how_name spells it for the request telemetry
+// (runner_telemetry.timing.cache) and the start line, so a client that sees
+// "0 cached" on a prompt it just sent can read WHY instead of guessing.
+enum rewind_how {
+    REWIND_NONE = 0,   // cache off or a fresh slot: nothing to keep
+    REWIND_EXTENDED,   // the prompt extends the slot's history verbatim
+    REWIND_KV,         // attention rows [0, keep) kept, the tail re-fed
+    REWIND_SNAPSHOT,   // recurrent fold restored from the exact snapshot at keep
+    REWIND_MARK,       // recurrent fold resumed at the turn mark, tail re-fed
+    REWIND_RECURRENT,  // recurrent fold not restorable at keep: recomputed from 0
+    REWIND_RING,       // KV ring: any rewind recomputes from 0
+    REWIND_MISMATCH,   // the prompt differs from history at its first token
+    REWIND_FORK,       // forked from the shared prefix cache (engine_prefix_reuse)
+};
+const char *engine_rewind_how_name(int how);
+// Recurrent turn mark (model_recurrent_mark): checkpoint the fold at the
+// slot's current position, the prompt boundary of the request being served,
+// so the NEXT request on this slot can resume there. An agent client's next
+// prompt replays this one, the reply re-rendered by the template, then a new
+// turn: the kept run ends where the re-rendering first differs, past the
+// prompt but short of e->pos, where no exact snapshot exists, and before
+// the mark a recurrent slot re-folded the whole prompt on every turn.
+// engine_rewind resumes from the mark whenever the kept run reaches it.
+// false = not a recurrent model (nothing to mark) or the mark failed.
+bool   engine_mark_turn(engine *e);
 // feed tokens (batched); returns last-token logits, or NULL on overflow/stop
 float *engine_feed(engine *e, const int32_t *toks, int n);
 // sample until stop/limit, streaming decoded bytes to cb; returns token count

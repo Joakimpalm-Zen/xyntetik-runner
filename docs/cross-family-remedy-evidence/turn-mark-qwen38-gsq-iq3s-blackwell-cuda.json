@@ -1,0 +1,96 @@
+{
+ "gate": "turn-mark-check",
+ "label": "Blackwell MIG 1g.24gb, recurrent-turn-mark branch, Qwen3.8-27B GSQ IQ3_S on CUDA (qwen35 recurrent), shipped defaults",
+ "started": "2026-09-15T10:05:59+0200",
+ "host": "bfff3786ea4e",
+ "platform": "Linux-6.12.0-211.16.1.el10_2.x86_64-x86_64-with-glibc2.39",
+ "base_url": "http://127.0.0.1:8094",
+ "model": "Qwen3.8-27B-GSQ-RCO-IQ3_S-recovered.gguf",
+ "model_file": "/home/lab/workspace/models/Qwen3.8-27B-GSQ-RCO-IQ3_S-recovered/Qwen3.8-27B-GSQ-RCO-IQ3_S-recovered.gguf",
+ "model_sha256": "873df48dd3ecf205f73c29716e80fbe766e4202ef4ed394b2c24607a8628458f",
+ "runner": "./runner",
+ "runner_sha256": "24464117adc31868699fe1e43d445f82d7ccae8b4ce0c75285a93a3330d72773",
+ "sampling_served": {
+  "preset": "qwen38",
+  "temperature": 1.0,
+  "top_p": 0.95,
+  "top_k": 20,
+  "min_p": 0.0,
+  "repeat_penalty": 1.0
+ },
+ "template": "qwen38",
+ "context": 32768,
+ "max_tokens": 64,
+ "turns": {
+  "first": {
+   "wall_s": 31.28,
+   "content": "",
+   "reasoning": "We need to respond to user: \"List the files in the current directory, then tell me which one you would read first.\" We need likely use tool? We are coding agent in repository. Need list files current directory. We don't have actual file system? We can maybe use bash? But no tool provided in",
+   "finish_reason": "length",
+   "prompt_tokens": 551,
+   "cached_tokens": 0,
+   "cache": "recurrent_reset",
+   "prefill_seconds": 14.39791,
+   "prefill_tokens": 551
+  },
+  "second": {
+   "wall_s": 18.481,
+   "content": "",
+   "reasoning": "The user is asking which file to read first from Makefile, README.md, src, tests. I should answer concisely: README.md first, because it gives an overview of the project, build instructions, and context before diving into code. Or Makefile? Usually README first. Let me answer concisely",
+   "finish_reason": "length",
+   "prompt_tokens": 595,
+   "cached_tokens": 550,
+   "cache": "turn_mark",
+   "prefill_seconds": 1.62635,
+   "prefill_tokens": 45
+  },
+  "second_replay": {
+   "wall_s": 17.121,
+   "content": "",
+   "reasoning": "The user is asking which file to read first from Makefile, README.md, src, tests. I should answer concisely: README.md first, because it gives an overview of the project, build instructions, and context before diving into code. Or Makefile? Usually README first. Let me answer concisely",
+   "finish_reason": "length",
+   "prompt_tokens": 595,
+   "cached_tokens": 594,
+   "cache": "turn_mark",
+   "prefill_seconds": 0.270115,
+   "prefill_tokens": 1
+  },
+  "second_fresh": {
+   "wall_s": 32.279,
+   "content": "",
+   "reasoning": "The user is asking which file to read first from Makefile, README.md, src, tests. I should answer concisely: README.md first, because it gives an overview of the project, build instructions, and context before diving into code. Or Makefile? Usually README first. Let me answer concisely",
+   "finish_reason": "length",
+   "prompt_tokens": 595,
+   "cached_tokens": 0,
+   "cache": "none",
+   "prefill_seconds": 15.444686,
+   "prefill_tokens": 595
+  }
+ },
+ "checks": {
+  "second_turn_keeps_the_first_prompt": {
+   "pass": true,
+   "cached_tokens": 550,
+   "first_prompt_tokens": 551,
+   "cache": "turn_mark"
+  },
+  "verbatim_replay_keeps_all_but_one": {
+   "pass": true,
+   "cached_tokens": 594,
+   "prompt_tokens": 595,
+   "cache": "turn_mark"
+  },
+  "kept_turn_answers_like_a_fresh_slot": {
+   "pass": true,
+   "second": "",
+   "fresh": ""
+  },
+  "prefill_is_the_tail_only": {
+   "pass": true,
+   "second_prefill_seconds": 1.62635,
+   "fresh_prefill_seconds": 15.444686
+  }
+ },
+ "verdict": "PASS",
+ "finished": "2026-09-15T10:07:44+0200"
+}

@@ -84,6 +84,9 @@ void gpu_disable(model_t *m) {
     m->gpu = NULL;
 }
 
+bool gpu_recurrent_download(model_t *m) { (void)m; return true; }
+bool gpu_recurrent_upload(model_t *m) { (void)m; return true; }
+
 // No backend, so no microbatch: model_batch_decode sees NULL and decodes the
 // sequences one at a time, which is what this platform would have done anyway.
 bool gpu_mvt(model_t *m, const gguf_tensor *w, const float *dy, float *dx,

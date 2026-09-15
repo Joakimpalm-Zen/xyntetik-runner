@@ -17,8 +17,8 @@
    "artifact": "qwen3.8-27b-gsq-rco-iq3_s-recovered",
    "tool_protocol": {
     "status": "PASS",
-    "evidence": "docs/cross-family-remedy-evidence/tool-protocol-qwen38-gsq-iq3s-blackwell-branch.json",
-    "note": "6/6; required 2/2 (tool-protocol-qwen38-gsq-blackwell-required.json); baseline 53dc280 read 4/6 FAIL"
+    "evidence": "docs/cross-family-remedy-evidence/tool-protocol-qwen38-gsq-iq3s-blackwell-marked-think.json",
+    "note": "6/6 at the corrected prompt (thought block as its control token); 6/6 before it (tool-protocol-qwen38-gsq-iq3s-blackwell-branch.json); required 2/2; baseline 53dc280 read 4/6 FAIL"
    },
    "client_loop": {
     "status": "PASS",
@@ -39,8 +39,8 @@
    "artifact": "granite-4.2-8b-q4_k_m",
    "tool_protocol": {
     "status": "PASS",
-    "evidence": "docs/cross-family-remedy-evidence/tool-protocol-granite42-8b-q4_k_m-rtx3070-granite42-preset-400.json",
-    "note": "A 4/4, B 3/4; C FAIL: the model states its intent inside the reasoning block and calls with empty content"
+    "evidence": "docs/cross-family-remedy-evidence/tool-protocol-granite42-8b-q4_k_m-rtx3070-marked-think-1500.json",
+    "note": "A 4/4, B 3/4 across the 400 and 1500 runs at the corrected prompt, the same profile as before it; C FAIL: the model states its intent inside the reasoning block and calls with empty content"
    },
    "client_loop": {
     "status": "PASS",
@@ -542,7 +542,7 @@
    ],
    "tool_protocol": {
     "status": "PASS",
-    "evidence": "docs/cross-family-remedy-evidence/tool-protocol-qwen38-gsq-iq3s-blackwell-branch.json"
+    "evidence": "docs/cross-family-remedy-evidence/tool-protocol-qwen38-gsq-iq3s-blackwell-marked-think.json"
    },
    "client_loop": {
     "status": "PASS",
@@ -790,7 +790,7 @@
    ],
    "tool_protocol": {
     "status": "PASS",
-    "evidence": "docs/cross-family-remedy-evidence/tool-protocol-granite42-8b-q4_k_m-rtx3070-granite42-preset-400.json",
+    "evidence": "docs/cross-family-remedy-evidence/tool-protocol-granite42-8b-q4_k_m-rtx3070-marked-think-1500.json",
     "note": "Granite 4.2 8B on Windows; case C open"
    },
    "client_loop": {

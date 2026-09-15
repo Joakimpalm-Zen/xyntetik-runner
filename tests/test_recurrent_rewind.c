@@ -415,6 +415,109 @@ static void test_spec_admission_requires_host_recurrent_fold(void) {
     slot_close(&s);
 }
 
+// ---- gate 8: the turn mark resumes the NEXT request at the prompt boundary --
+//
+// An agent client's second request replays the first prompt, the reply the
+// slot generated (re-rendered by the template: a stripped think block, a
+// re-serialised tool call), then a new user turn. The kept run of hist ends
+// where the re-rendering first differs from what was generated, which is past
+// the prompt but short of e->pos, and no exact snapshot sits there: before the
+// mark a recurrent slot recomputed the WHOLE prompt from 0 on every turn (the
+// 2026-09-14 OpenCode loop on Qwen 3.8: 7.5K prompt, "0 cached", every turn).
+// engine_mark_turn checkpoints the fold at the prompt boundary; engine_rewind
+// resumes from it whenever the kept run reaches it, feeding only what follows.
+// Bit-identity to a cold decode is the bar, the kept count is the evidence.
+static void test_turn_mark_resumes_at_the_prompt_boundary(void) {
+    model_params p = base_params();
+    slot warm, cold;
+    if (!slot_open(&warm, &p) || !slot_open(&cold, &p)) {
+        ck(0, "load two instances for the turn-mark gate");
+        return;
+    }
+    const int32_t first[5]  = { 10, 20, 30, 40, 50 };          // request 1
+    const int32_t reply[2]  = { 60, 70 };                       // generated
+    // request 2: same prompt, the reply re-rendered (61 71 for 60 70), a new turn
+    const int32_t second[9] = { 10, 20, 30, 40, 50, 61, 71, 80, 90 };
+
+    engine_reset(&warm.e);
+    ck(engine_feed(&warm.e, first, 5) != NULL, "warm folds the first prompt");
+    ck(engine_mark_turn(&warm.e), "the slot marks the prompt boundary");
+    ck(engine_feed(&warm.e, reply, 2) != NULL, "warm folds its reply");
+    int keep = engine_rewind(&warm.e, second, 9);
+    ck(keep == 5, "rewind resumes at the mark, not at 0");
+    float *wl = engine_feed(&warm.e, second + keep, 9 - keep);
+    float *warm_l = snap_logits(&warm.m, wl);
+
+    engine_reset(&cold.e);
+    float *cl = engine_feed(&cold.e, second, 9);
+    float *cold_l = snap_logits(&cold.m, cl);
+    ck(logits_differ(&warm.m, warm_l, cold_l) == 0,
+       "a mark-resumed decode matches a cold one bit for bit");
+    free(warm_l); free(cold_l);
+
+    // The kept run may reach PAST the mark (the re-rendering agrees for a
+    // while): the fold is still only restorable at the mark, so keep lands
+    // there and the agreeing tail is simply fed again.
+    const int32_t third[9] = { 10, 20, 30, 40, 50, 60, 71, 80, 91 };
+    engine_reset(&warm.e);
+    ck(engine_feed(&warm.e, first, 5) != NULL, "fold request 1 again");
+    ck(engine_mark_turn(&warm.e), "mark at 5");
+    ck(engine_feed(&warm.e, reply, 2) != NULL, "generate the reply");   // pos 7
+    keep = engine_rewind(&warm.e, third, 9);   // hist agrees through 6 > mark
+    ck(keep == 5, "a kept run past the mark resumes at the mark");
+    wl = engine_feed(&warm.e, third + keep, 9 - keep);
+    warm_l = snap_logits(&warm.m, wl);
+    engine_reset(&cold.e);
+    cl = engine_feed(&cold.e, third, 9);
+    cold_l = snap_logits(&cold.m, cl);
+    ck(logits_differ(&warm.m, warm_l, cold_l) == 0,
+       "a rewind from past the mark matches cold");
+    free(warm_l); free(cold_l);
+
+    // A mark is bound to the tokens it was folded over. After a divergence
+    // BELOW the mark the slot's history no longer contains those tokens, so a
+    // later prompt that merely reaches the mark's position must not resume
+    // from it: the stale fold would answer from a prompt the client never sent.
+    engine_reset(&warm.e);
+    ck(engine_feed(&warm.e, first, 5) != NULL, "fold request 1 again");
+    ck(engine_mark_turn(&warm.e), "mark at 5 over 10 20 30 40 50");
+    const int32_t other[7] = { 10, 20, 33, 40, 50, 60, 70 };   // diverges at 2
+    keep = engine_rewind(&warm.e, other, 7);
+    ck(keep == 0, "a divergence below the mark recomputes from 0");
+    ck(engine_feed(&warm.e, other, 7) != NULL, "fold the divergent prompt");
+    const int32_t again[8] = { 10, 20, 33, 40, 50, 61, 71, 80 };
+    keep = engine_rewind(&warm.e, again, 8);   // agrees through 5 == old mark pos
+    ck(keep == 0, "the stale mark (10 20 30 40 50) is not resumed at position 5");
+    wl = engine_feed(&warm.e, again + keep, 8 - keep);
+    warm_l = snap_logits(&warm.m, wl);
+    engine_reset(&cold.e);
+    cl = engine_feed(&cold.e, again, 8);
+    cold_l = snap_logits(&cold.m, cl);
+    ck(logits_differ(&warm.m, warm_l, cold_l) == 0,
+       "a slot that dropped its stale mark still matches cold");
+    free(warm_l); free(cold_l);
+
+    // A pure extension (the client replays the reply token for token) never
+    // needed the mark and must not be disturbed by it.
+    engine_reset(&warm.e);
+    ck(engine_feed(&warm.e, first, 5) != NULL, "fold request 1 once more");
+    ck(engine_mark_turn(&warm.e), "mark at 5");
+    ck(engine_feed(&warm.e, reply, 2) != NULL, "generate the reply");
+    const int32_t ext[9] = { 10, 20, 30, 40, 50, 60, 70, 80, 90 };
+    keep = engine_rewind(&warm.e, ext, 9);
+    ck(keep == 7, "a verbatim replay extends the slot without a rewind");
+    wl = engine_feed(&warm.e, ext + keep, 9 - keep);
+    warm_l = snap_logits(&warm.m, wl);
+    engine_reset(&cold.e);
+    cl = engine_feed(&cold.e, ext, 9);
+    cold_l = snap_logits(&cold.m, cl);
+    ck(logits_differ(&warm.m, warm_l, cold_l) == 0,
+       "a pure extension beside a mark matches cold");
+    free(warm_l); free(cold_l);
+
+    slot_close(&warm); slot_close(&cold);
+}
+
 int main(void) {
     test_snapshot_restore_roundtrip();
     test_rewind_divergence_matches_cold();
@@ -423,5 +526,6 @@ int main(void) {
     test_divergent_round_rollback();
     test_spec_full_accept_identity();
     test_spec_admission_requires_host_recurrent_fold();
+    test_turn_mark_resumes_at_the_prompt_boundary();
     return g_fail;
 }

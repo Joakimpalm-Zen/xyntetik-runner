@@ -984,9 +984,12 @@ def run_renderer(binary, payload):
 
 
 def render_runner(binary, cases):
-    """id -> (prompt, error). error is None on a successful render."""
+    """id -> (prompt, error, prompt_ids). error is None on a successful
+    render; prompt_ids are the ids the server would feed for it (prompt-mode
+    encoding of the marked render), present when the case named a `gguf`."""
     doc = run_renderer(binary, {"cases": cases})
-    return {r["id"]: (r["prompt"], r.get("error")) for r in doc["results"]}
+    return {r["id"]: (r["prompt"], r.get("error"), r.get("prompt_ids"))
+            for r in doc["results"]}
 
 
 # --------------------------------------------------------- the token check
@@ -1026,24 +1029,32 @@ def tokenizer_path(fam):
 
 
 def token_check(binary, jobs):
-    """jobs: [(id, gguf, want_text, mine_text)] -> id -> (verdict, detail)."""
+    """jobs: [(id, gguf, want_text, mine_ids)] -> id -> (verdict, detail).
+
+    The reference side is its text encoded the way the reference tokenizer
+    reads a rendered prompt (every added token recognised). The runner side
+    is NOT its text re-encoded: it is the ids the server feeds, prompt-mode
+    encoding of the marked render, where a control token is read only in the
+    template's own bytes. Re-encoding the stripped text would compare the
+    two renderers under a tokenization production never uses, and it did:
+    Qwen 3.8's generation prompt passed `<think>` as three text tokens for a
+    week of byte-conformant renders."""
     if not jobs:
         return {}
     payload = []
-    for cid, gguf, want, mine in jobs:
+    for cid, gguf, want, _mine_ids in jobs:
         payload.append({"id": cid + " #ref", "gguf": gguf, "text": want})
-        payload.append({"id": cid + " #run", "gguf": gguf, "text": mine})
     doc = run_renderer(binary, {"tokenize": payload})
     got = {t["id"]: t for t in doc["tokens"]}
     out = {}
-    for cid, _g, _w, _m in jobs:
-        ref, run = got.get(cid + " #ref"), got.get(cid + " #run")
-        if not ref or not run or ref["ids"] is None or run["ids"] is None:
-            why = ((ref or {}).get("error") or (run or {}).get("error")
-                   or "the driver returned no ids")
+    for cid, _g, _w, mine_ids in jobs:
+        ref = got.get(cid + " #ref")
+        if not ref or ref["ids"] is None or mine_ids is None:
+            why = ((ref or {}).get("error")
+                   or "the driver returned no prompt-mode ids for the render")
             out[cid] = ("NOT-CHECKED", why)
             continue
-        a, b = ref["ids"], run["ids"]
+        a, b = ref["ids"], mine_ids
         if a == b:
             out[cid] = ("same", {"n": len(a), "delta": 0})
         else:
@@ -1336,14 +1347,15 @@ def run(args):
         patches = [(d, compile_patch(d, meta.get("bos_token")))
                    for d in fam_devs]
 
+        tok_gguf = tokenizer_path(fam)
         jobs = [{"id": cid, "template": fam.runner,
                  "add_generation_prompt": add_gen,
                  "request": request_body(fam, msgs, thinking,
-                                         TOOLS if "tool" in cid else None)}
+                                         TOOLS if "tool" in cid else None),
+                 **({"gguf": tok_gguf} if tok_gguf else {})}
                 for cid, msgs, add_gen, thinking, _om in cases]
         got = render_runner(binary, jobs)
 
-        tok_gguf = tokenizer_path(fam)
         if tok_gguf:
             tok_sources[n] = tok_gguf
         else:
@@ -1380,7 +1392,7 @@ def run(args):
                     for c in m.get("tool_calls") or []:
                         c["function"]["arguments"] = json.loads(
                             c["function"]["arguments"])
-            mine, mine_err = got[cid]
+            mine, mine_err, mine_ids = got[cid]
 
             refused = None
             want = None
@@ -1451,7 +1463,7 @@ def run(args):
                         want = patched
             entry = known.get(cid_full)
             if tok_gguf:
-                tok_jobs.append((cid_full, tok_gguf, want, mine))
+                tok_jobs.append((cid_full, tok_gguf, want, mine_ids))
 
             if mine == want:
                 if entry and not args.write_baseline:
@@ -1574,9 +1586,11 @@ def report(args, results, not_checked, structural, rot, moved, oracle_meta,
         # function of the text -- report it rather than trust the byte compare.
         if verdict == "ok" and tokens.get(cid_full, ("", ))[0] == "differ":
             tok_drift.append("%s: the two renders are byte-identical but "
-                             "tokenize differently. That should be "
-                             "impossible; the tokenizer or this harness is "
-                             "wrong." % cid_full)
+                             "the server would feed different tokens: a "
+                             "control token the renderer wrote outside its "
+                             "prompt marks (read as text), or caller text "
+                             "it marked (read as a control token). See "
+                             "tests/test_prompt_marks.c." % cid_full)
         # A token delta on a KNOWN difference is the number the fix campaign
         # is actually chasing, so it rides on the case line.
         line = "%s%s" % (line, token_line(tokens, cid_full)

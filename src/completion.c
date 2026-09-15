@@ -723,6 +723,9 @@ typedef struct req_diag {
     // from wall. generation_seconds has always been the decode.
     double prefill_s;
     int    prefill_tokens;
+    // How the slot arrived at prompt_cached_tokens (engine_rewind_how_name):
+    // the answer to "why did my identical prompt say 0 cached".
+    const char *prompt_reuse;
 } req_diag;
 
 static void diag_json(sbuf *r, const req_diag *d) {
@@ -744,9 +747,10 @@ static void diag_json(sbuf *r, const req_diag *d) {
            d->tools ? "true" : "false", d->constrained ? "true" : "false",
            d->parse_only ? "true" : "false");
     sb_fmt(r, ",\"timing\":{\"prefill_seconds\":%.6f,\"prefill_tokens\":%d,"
-              "\"prefill_tok_s\":%.3f}",
+              "\"prefill_tok_s\":%.3f},\"prompt_reuse\":\"%s\"",
            d->prefill_s, d->prefill_tokens,
-           d->prefill_tokens / (d->prefill_s > 0 ? d->prefill_s : 1e-9));
+           d->prefill_tokens / (d->prefill_s > 0 ? d->prefill_s : 1e-9),
+           d->prompt_reuse ? d->prompt_reuse : "none");
 }
 
 // The speculation fields of a resp_doc, from the engine that served the
@@ -2291,10 +2295,27 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
     // per request and makes that case visible; it also carries the prompt
     // length and how much of it the cache covered, which is what says whether
     // a long silence is a cold prefill or something worse.
-    fprintf(stderr, "[slot %d] %s: start, %d prompt (%d cached)\n",
-            s->id, req_id, n_prompt, keep);
+    diag.prompt_reuse = engine_rewind_how_name(e->rewind_how);
+    fprintf(stderr, "[slot %d] %s: start, %d prompt (%d cached, %s)\n",
+            s->id, req_id, n_prompt, keep, diag.prompt_reuse);
 
-    float *logits = engine_feed(e, toks + keep, n_prompt - keep);
+    // A recurrent slot marks its fold one token short of the prompt end, so
+    // the next request resumes there whether it replays this prompt verbatim
+    // (engine_rewind keeps at most n - 1: one token is always fed for logits)
+    // or extends it with a re-rendered reply and a new turn. The last prompt
+    // token is then fed on its own, as a kept attention prefix already feeds
+    // it. Inside the device turn: on CUDA the mark reads device-resident
+    // state. Attention-only models mark nothing and take the single feed.
+    float *logits = NULL;
+    int mark_at = n_prompt - 1;
+    if (cache_prompt && n_prompt > 1 && model_has_recurrent(e->m)) {
+        bool ok = mark_at == keep ||   // resumed at the mark: nothing before it to feed
+                  engine_feed(e, toks + keep, mark_at - keep) != NULL;
+        if (ok) engine_mark_turn(e);
+        if (ok) logits = engine_feed(e, toks + mark_at, 1);
+    } else {
+        logits = engine_feed(e, toks + keep, n_prompt - keep);
+    }
     double prefill_s = now_s() - prefill_t0;
     diag.prefill_s = prefill_s;
     diag.prefill_tokens = n_prompt - keep;

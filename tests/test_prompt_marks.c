@@ -7,7 +7,9 @@
 //     ./test-prompt-marks test.gguf
 #include "runner.h"
 #include "template.h"
+#include "json.h"
 
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -16,6 +18,140 @@ static int count_id(const int32_t *t, int n, int id) {
     int c = 0;
     for (int i = 0; i < n; i++) c += t[i] == id;
     return c;
+}
+
+// The converse. A control token the TEMPLATE writes must land inside the
+// marks, or the tokenizer reads it as text and the model sees a spelled-out
+// `<th` `ink` `>` where its reference put one token. Found on Qwen 3.8: the
+// generation prompt's `<think>\n` was passed through emit()'s %s argument,
+// which is caller-text by contract, so every thinking-enabled turn opened
+// on three text tokens and the next request on the slot could not match
+// the history against the same block rendered as one control token. The
+// messages here carry no angle bracket at all, so every one of these
+// spellings in a render is the template's, and each must be marked, in
+// every template and every thinking mode.
+static const char *const CONTROL_SPELLINGS[] = {
+    "<think>", "</think>", "<|think|>", "<|im_start|>", "<|im_end|>",
+    "<|start|>", "<|end|>", "<|message|>", "<|channel|>", "<|return|>",
+    "<|call|>", "<|constrain|>", "<|eot|>", "<|eom|>",
+    "<start_of_turn>", "<end_of_turn>", "<turn|>", "<|turn>",
+    "<|tool_call>", "<tool_call|>", "<|tool_response>", "<tool_response|>",
+    "<tool_call>", "</tool_call>", "<tool_response>", "</tool_response>",
+    "<|begin_of_text|>", "<|start_header_id|>", "<|end_header_id|>",
+    "<|eot_id|>", "<|eom_id|>", "<|endoftext|>", "<|end_of_text|>",
+    "<|start_of_role|>", "<|end_of_role|>", "<|tool_call|>",
+    "<|user|>", "<|assistant|>", "<|system|>",
+    "<|system_start|>", "<|system_end|>", "<|user_start|>", "<|user_end|>",
+    "<|assistant_start|>", "<|assistant_end|>", "<|tools_prefix|>",
+    "<s>", "</s>", "[INST]", "[/INST]", "[SYSTEM_PROMPT]", "[/SYSTEM_PROMPT]",
+    "[AVAILABLE_TOOLS]", "[/AVAILABLE_TOOLS]", "[TOOL_CALLS]", "[TOOL_RESULTS]",
+    "[/TOOL_RESULTS]", NULL,
+};
+
+// Report every occurrence of `lit` in `s` that is not inside the marks.
+static int unmarked_occurrences(const char *s, const char *lit) {
+    size_t n = strlen(lit);
+    int depth = 0, bad = 0;
+    for (const char *p = s; *p; p++) {
+        if (*p == PROMPT_RAW_OPEN) { depth++; continue; }
+        if (*p == PROMPT_RAW_CLOSE) { if (depth) depth--; continue; }
+        if (depth == 0 && strncmp(p, lit, n) == 0) bad++;
+    }
+    return bad;
+}
+
+static bool templates_mark_their_own_control_spellings(void) {
+    static const char *const names[] = {
+        "chatml", "chatml-think", "llama2", "llama3", "zephyr", "gemma",
+        "gemma4", "gemma4-mainline", "mistral", "mistral-v1", "mistral-nemo",
+        "phi3", "apertus", "ornith", "granite42", "qwen38", "qwen3-coder",
+        "muse", "harmony", "granite", NULL,
+    };
+    const chat_msg turns[] = {
+        { .role = "system", .content = "S" },
+        { .role = "user", .content = "U" },
+        { .role = "assistant", .content = "A" },
+        { .role = "user", .content = "V" },
+    };
+    static const int modes[] = { THINK_DEFAULT, THINK_ON, THINK_OFF };
+    bool ok = true;
+    for (int i = 0; names[i]; i++) {
+        int tmpl = template_from_name(names[i]);
+        if (tmpl < 0) { fprintf(stderr, "FAIL: unknown template %s\n", names[i]); return false; }
+        for (int m = 0; m < 3; m++) {
+            static char buf[16384];
+            size_t n = render_messages_with_tools(tmpl, turns, 4, true, modes[m], NULL,
+                                                  buf, sizeof buf);
+            if (n >= sizeof buf) { fprintf(stderr, "FAIL: %s render truncated\n", names[i]); return false; }
+            for (int k = 0; CONTROL_SPELLINGS[k]; k++) {
+                int bad = unmarked_occurrences(buf, CONTROL_SPELLINGS[k]);
+                if (bad) {
+                    fprintf(stderr, "FAIL: %s (thinking mode %d) writes %s outside its marks %d time(s)\n",
+                            names[i], modes[m], CONTROL_SPELLINGS[k], bad);
+                    ok = false;
+                }
+            }
+        }
+    }
+    // The replay half. A previous assistant turn arrives as the server
+    // composes it (server.c message_text): the thought block's framing via
+    // prompt_lit, the calls via assistant_calls_render, the result via
+    // tool_result_wrap. A renderer that parses that content and re-emits
+    // pieces of it (qwen38 re-frames the block and hands the calls on) must
+    // keep every one of those control spellings inside the marks, or the
+    // replayed turn reads back as text where the live turn was tokens.
+    static const char *const replayers[] = {
+        "chatml", "chatml-think", "ornith", "granite42", "qwen38", "qwen3-coder",
+        "gemma4", "apertus", "muse", NULL,
+    };
+    for (int i = 0; replayers[i]; i++) {
+        int tmpl = template_from_name(replayers[i]);
+        if (tmpl < 0) { fprintf(stderr, "FAIL: unknown template %s\n", replayers[i]); return false; }
+        jv *calls = tool_call_synth("get_weather", "{\"city\": \"Oslo\"}");
+        if (!calls) { fprintf(stderr, "FAIL: oom building the call\n"); return false; }
+        sbuf turn = {0};
+        bool think_family = tmpl == template_from_name("ornith") ||
+                            tmpl == template_from_name("qwen38") ||
+                            tmpl == template_from_name("chatml-think") ||
+                            tmpl == template_from_name("granite42");
+        if (think_family) {
+            prompt_lit(&turn, "<think>\n");
+            sb_put(&turn, "I should check.", 15);
+            prompt_lit(&turn, tmpl == template_from_name("granite42") ? "\n</think>\n"
+                                                                     : "\n</think>\n\n");
+        }
+        const char *turn_name = NULL;
+        // both shapes a client replays: a call after spoken text, and a bare
+        // call (the framing then follows the thought block directly)
+        assistant_calls_render(tmpl, i % 2 ? "Checking the weather." : "", calls,
+                               &turn, &turn_name);
+        sbuf result = {0};
+        const char *result_role = tool_result_wrap(tmpl, "{\"temp_c\": -3}", &result);
+        chat_msg conv[] = {
+            { .role = "user", .content = "U" },
+            { .role = "assistant", .content = turn.s ? turn.s : "", .name = turn_name },
+            { .role = result_role ? result_role : "tool", .content = result.s ? result.s : "" },
+            { .role = "user", .content = "V" },
+        };
+        for (int m = 0; m < 3; m++) {
+            static char buf[16384];
+            size_t n = render_messages_with_tools(tmpl, conv, 4, true, modes[m], NULL,
+                                                  buf, sizeof buf);
+            if (n >= sizeof buf) { fprintf(stderr, "FAIL: %s replay render truncated\n", replayers[i]); return false; }
+            for (int k = 0; CONTROL_SPELLINGS[k]; k++) {
+                int bad = unmarked_occurrences(buf, CONTROL_SPELLINGS[k]);
+                if (bad) {
+                    fprintf(stderr, "FAIL: %s (thinking mode %d) replays %s outside its marks %d time(s)\n",
+                            replayers[i], modes[m], CONTROL_SPELLINGS[k], bad);
+                    ok = false;
+                }
+            }
+        }
+        free(turn.s); free(result.s);
+        jv_free(calls);
+    }
+    if (ok) printf("every template marks its own control spellings, live and replayed\n");
+    return ok;
 }
 
 int main(int argc, char **argv) {
@@ -90,6 +226,7 @@ int main(int argc, char **argv) {
     printf("tok_encode_fit: %d tokens for %zu bytes, modes ok\n", nb, strlen(words));
     tokenizer_free(&t);
     gguf_close(&g);
+    if (!templates_mark_their_own_control_spellings()) return 1;
     printf("prompt-marks: ok\n");
     return 0;
 }

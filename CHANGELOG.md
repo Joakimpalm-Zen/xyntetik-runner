@@ -8,6 +8,39 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **Recurrent slots resume the next agent turn at the prompt boundary.** A
+  recurrent or hybrid model's fold cannot be sliced to an arbitrary
+  position, so a slot whose history diverged from the next prompt anywhere
+  short of its end (an agent client replays the prompt, then the reply as
+  the template re-renders it, then a new turn) re-folded the whole prompt;
+  on CUDA, where the shared prefix tier does not reach a device-resident
+  fold, that was every turn (Qwen 3.8 27B under OpenCode: 7.5K prompt, "0
+  cached", 586 s a turn). Every prefill now leaves a turn mark one token
+  short of the prompt end (`model_recurrent_mark`, moved through the host
+  buffers on CUDA for both the DeltaNet and the Mamba-2 families), and
+  `engine_rewind` resumes from it whenever the kept run reaches it;
+  verbatim replays resume there too. Gated bit-identical to a cold decode
+  (`tests/test_recurrent_rewind.c`, `tests/test_turn_mark.py`), anchored on
+  the Blackwell with Qwen 3.8 GSQ (qwen35, CUDA) and granite-4.0-h-micro
+  (Mamba-2, CUDA) through `scripts/turn-mark-check.py`.
+- **`runner_telemetry.prompt_reuse` and `RUNNER_REWIND_TRACE`.** The
+  telemetry names how the slot arrived at `prompt_cached_tokens`
+  (`extended`, `kv`, `turn_mark`, `snapshot`, `prefix_cache`,
+  `recurrent_reset`, `ring_reset`, `mismatch`, `none`); the start line
+  carries the same word; the trace prints the decoded token at which the
+  prompt left the history.
+- **Thought blocks are template bytes.** The Qwen 3.8 and Granite 4.2
+  generation prompts passed `<think>` through a format argument (caller
+  text by contract, so it tokenized as `<th` `ink` `>`), and the block the
+  server composes for a replayed assistant turn was unmarked on every
+  thinking family, so a replayed turn never matched the turn the slot had
+  generated. Both are marked now; the qwen38 renderer's re-framing keeps
+  the calls' marks. `tests/test_prompt_marks.c` gates every control
+  spelling a template writes, live and replayed, and
+  `scripts/template-conformance.py` compares the reference's tokens against
+  the ids the server feeds (prompt-mode encoding of the marked render), the
+  comparison that shows this class; the report's Qwen 3.8 and Granite 4.2
+  rows were re-run on the corrected prompt.
 - **Gemma 4: a call after prose is a call.** The family's format is
   call-first, but the 2026-09-14 report's "briefly say what you are about
   to do, then list the files" had the 12B QAT model write the prose and

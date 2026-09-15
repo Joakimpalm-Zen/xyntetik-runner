@@ -275,6 +275,23 @@ static bool content_starts(const char *s, const char *lit) {
     while (*s == PROMPT_RAW_OPEN || *s == PROMPT_RAW_CLOSE) s++;
     return strncmp(s, lit, strlen(lit)) == 0;
 }
+static const char *skip_marks(const char *s) {
+    while (*s == PROMPT_RAW_OPEN || *s == PROMPT_RAW_CLOSE) s++;
+    return s;
+}
+// Retreat `e` over marks that sit right before it (a builder's framing ends
+// its literal with a mark; a range that should end where the literal begins
+// must not keep that mark, or the tokenizer's raw state leaks into what is
+// emitted after it).
+static const char *unmark_end(const char *b, const char *e) {
+    while (e > b && (e[-1] == PROMPT_RAW_OPEN || e[-1] == PROMPT_RAW_CLOSE)) e--;
+    return e;
+}
+
+void prompt_lit(sbuf *b, const char *lit) {
+    char o = PROMPT_RAW_OPEN, c = PROMPT_RAW_CLOSE;
+    sb_put(b, &o, 1); sb_put(b, lit, strlen(lit)); sb_put(b, &c, 1);
+}
 
 static size_t emit(char *out, size_t cap, size_t off, const char *fmt,
                    const char *a, const char *b) {
@@ -1482,16 +1499,24 @@ size_t render_messages_with_tools(int tmpl, const chat_msg *msgs, int n_msgs,
             // reasoning and the content each trimmed; one that did not gets
             // the empty block the reference writes for no reasoning.
             off = emit(out, cap, off, "<|im_start|>assistant\n", NULL, NULL);
+            // The chat surface composes the block with its framing marked
+            // (server.c message_text, prompt_lit), so the parse looks past
+            // the marks and re-emits the framing as its own literals.
             const char *rest = c;
-            if (!strncmp(c, "<think>\n", 8)) {
-                const char *close = strstr(c + 8, "\n</think>\n\n");
+            const char *c0 = skip_marks(c);
+            if (!strncmp(c0, "<think>\n", 8)) {
+                const char *close = strstr(c0 + 8, "\n</think>\n\n");
                 if (close) {
-                    const char *re = trim_right(c + 8, close);
-                    const char *rb = trim_left(c + 8, re);
+                    const char *rb0 = skip_marks(c0 + 8);
+                    const char *re = trim_right(rb0, unmark_end(rb0, close));
+                    const char *rb = trim_left(rb0, re);
                     off = emit(out, cap, off, "<think>\n", NULL, NULL);
                     off = emit_n(out, cap, off, rb, (size_t)(re - rb));
                     off = emit(out, cap, off, "\n</think>\n\n", NULL, NULL);
+                    // past the framing's own CLOSE only: an OPEN right after
+                    // it begins the calls' framing and must stay with them
                     rest = close + 11;
+                    while (*rest == PROMPT_RAW_CLOSE) rest++;
                 } else {
                     rest = NULL;   // an open block: replay verbatim
                 }
@@ -1505,6 +1530,11 @@ size_t render_messages_with_tools(int tmpl, const chat_msg *msgs, int n_msgs,
                 // not trimmed away with the content's own whitespace
                 const char *xe = rest + strlen(rest);
                 const char *tc = strstr(rest, "<tool_call>");
+                // The calls were framed by tool_history_render_for with the
+                // marks around their scaffolding; the first `<tool_call>` sits
+                // right after its OPEN mark, and the replay must carry that
+                // mark or the tokenizer reads the block as text.
+                while (tc && tc > rest && is_mark(tc[-1])) tc--;
                 const char *ce = tc ? tc : xe;
                 const char *cend = trim_right(rest, ce);
                 const char *cb = trim_left(rest, cend);
@@ -1518,10 +1548,15 @@ size_t render_messages_with_tools(int tmpl, const chat_msg *msgs, int n_msgs,
             }
             off = emit(out, cap, off, "<|im_end|>\n", NULL, NULL);
         }
+        // emit_raw, not emit: the thought block is the template's own
+        // bytes, and emit() treats a %s argument as caller text (unmarked),
+        // which left `<think>` to tokenize as `<th` `ink` `>` on every
+        // thinking-enabled turn (found on Qwen 3.8, 2026-09-15; gated in
+        // tests/test_prompt_marks.c).
         if (add_assistant)
-            off = emit(out, cap, off, "<|im_start|>assistant\n%s",
-                       mode == THINK_OFF ? "<think>\n\n</think>\n\n"
-                                         : "<think>\n", NULL);
+            off = emit_raw(out, cap, off, "<|im_start|>assistant\n%s",
+                           mode == THINK_OFF ? "<think>\n\n</think>\n\n"
+                                             : "<think>\n", NULL);
         break;
     }
     case TMPL_GRANITE42: {
@@ -1590,8 +1625,8 @@ size_t render_messages_with_tools(int tmpl, const chat_msg *msgs, int n_msgs,
             const char *end = body + strlen(body);
             const char *b = seed ? body : trim_left(body, end);
             const char *e = trim_right(b, end);
-            off = emit(out, cap, off, "<|im_start|>assistant\n%s",
-                       seed ? "<think></think>" : "", NULL);
+            off = emit_raw(out, cap, off, "<|im_start|>assistant\n%s",
+                           seed ? "<think></think>" : "", NULL);   // the seed is the template's
             off = emit_n(out, cap, off, b, (size_t)(e - b));
             // a tool-call turn ends `</tool_call>\n` before <|im_end|>
             // (chat_template.jinja:118); the trim above took that newline
@@ -1599,10 +1634,10 @@ size_t render_messages_with_tools(int tmpl, const chat_msg *msgs, int n_msgs,
                 off = emit(out, cap, off, "\n", NULL, NULL);
             off = emit(out, cap, off, "<|im_end|>\n", NULL, NULL);
         }
-        if (add_assistant)
-            off = emit(out, cap, off, "<|im_start|>assistant\n%s",
-                       thinking == THINK_OFF ? "<think></think>" : "<think>\n",
-                       NULL);
+        if (add_assistant)   // emit_raw: the block is the template's (see qwen38)
+            off = emit_raw(out, cap, off, "<|im_start|>assistant\n%s",
+                           thinking == THINK_OFF ? "<think></think>" : "<think>\n",
+                           NULL);
         break;
     }
     case TMPL_CHATML:
@@ -1647,7 +1682,7 @@ size_t render_messages_with_tools(int tmpl, const chat_msg *msgs, int n_msgs,
             bool qwen3_empty_think =
                 tmpl == TMPL_CHATML_THINK && i == n_msgs - 1 &&
                 i > last_user && !strcmp(msgs[i].role, "assistant") &&
-                strncmp(msgs[i].content, "<think>", 7);
+                !content_starts(msgs[i].content, "<think>");
             off = emit(out, cap, off, "<|im_start|>%s\n", msgs[i].role,
                        NULL);
             if (qwen3_empty_think)

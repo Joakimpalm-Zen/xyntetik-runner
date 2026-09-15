@@ -152,6 +152,19 @@ void   gpu_free(model_t *m); // releases GPU buffers; KV pointers become invalid
 // its reference to the shared weights, straight back.
 void   gpu_disable(model_t *m);
 
+// Recurrent-state transfer (turn mark, model_recurrent_mark). A backend that
+// keeps the recurrent fold on the device (CUDA: q35_hist/q35_state for
+// qwen35, mamba_conv/mamba_state for the Mamba-2 families) copies every
+// device-resident recurrent layer's LIVE state to / from the host buffers
+// (m->ssm_conv_state / m->ssm_state_mem) at that layer's offset, so the
+// host-side snapshot seam sees the whole fold. Host-resident layers (past
+// gpu_layers) are untouched: their rows are already live. A backend whose
+// recurrent layers all run on the host (Metal, none) moves nothing and
+// returns true. false = a copy failed and the caller must treat the fold as
+// lost (recompute from position 0).
+bool   gpu_recurrent_download(model_t *m);
+bool   gpu_recurrent_upload(model_t *m);
+
 // ------------------------------------------- batched decode (backend half)
 //
 // One decode step for several independent sequences in a single microbatch.

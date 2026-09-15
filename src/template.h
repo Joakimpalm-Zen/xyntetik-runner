@@ -238,6 +238,12 @@ void tools_render_for(int tmpl, const struct jv *tools, struct sbuf *out);
 // without it (ornith.jinja:106-109).
 void tool_history_render_for(int tmpl, const struct jv *calls,
                              bool turn_has_text, struct sbuf *out);
+// Append a literal the RUNNER owns (a thought block's framing composed for
+// a replayed assistant turn, say) to a content buffer, bracketed in the
+// prompt marks, so the tokenizer reads its control tokens as control tokens
+// exactly as it does the template's own bytes. Caller text goes in with
+// sb_put, unmarked. See PROMPT_RAW_OPEN in tokenizer.h.
+void prompt_lit(struct sbuf *b, const char *lit);
 // Build a one-element OpenAI tool_calls array from a name and its arguments
 // (a JSON string). Owned jv or NULL on OOM. The adapter the typed surfaces use
 // to reach tool_history_render_for's serializer from their own call vocabulary.

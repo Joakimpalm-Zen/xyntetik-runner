@@ -392,6 +392,27 @@ static int do_cases(jv *cases, sbuf *out) {
         sb_lit(out, "{");
         emit_str(out, "id", id);
         sb_lit(out, ",");
+        // The ids the SERVER feeds for this render: prompt-mode encoding of
+        // the MARKED render (src/completion.c tok_encode_fit(TOK_PROMPT)),
+        // where a control token is read only inside the template's own
+        // bytes. Emitted before the marks are stripped, when the case names
+        // a tokenizer GGUF; the text-level compare below never sees marks.
+        // This is what caught Qwen 3.8's generation prompt spelling
+        // `<think>` as three text tokens: byte-conformant, token-divergent.
+        const char *tg = jv_str(jv_get(c, "gguf"), NULL);
+        tokslot *ts = (rc == 0 && prompt && tg) ? tok_for(tg) : NULL;
+        if (ts && ts->ready) {
+            enum { PCAP = 1 << 20 };
+            int32_t *pids = malloc(sizeof(int32_t) * PCAP);
+            int pn = pids ? tok_encode_prompt(&ts->t, prompt, pids, PCAP, true) : -1;
+            if (pn >= 0) {
+                sb_lit(out, "\"prompt_ids\":[");
+                for (int k = 0; k < pn; k++)
+                    sb_fmt(out, "%s%d", k ? "," : "", (int)pids[k]);
+                sb_lit(out, "],");
+            }
+            free(pids);
+        }
         if (rc == 0 && prompt) tok_strip_marks(prompt);   // compared as text
         emit_str(out, "prompt", rc == 0 ? prompt : NULL);
         sb_lit(out, ",");
@@ -424,10 +445,12 @@ static int do_tokenize(jv *jobs, sbuf *out) {
             sb_lit(out, "}");
             continue;
         }
-        // add_bos/parse_special exactly as the generation path tokenizes a
-        // prompt (src/completion.c, src/server.c, src/api_anthropic.c all
-        // pass true,true). A token comparison run under different flags
-        // would answer a question production never asks.
+        // The REFERENCE side of the token check: the reference tokenizer
+        // recognises every added token wherever it appears in the rendered
+        // text, which is tok_encode with parse_special. The runner side is
+        // not encoded here at all; it is the prompt-mode encoding of the
+        // marked render that the "cases" step emits as prompt_ids, because
+        // that is what src/completion.c feeds (tok_encode_fit, TOK_PROMPT).
         int n = tok_encode(&t->t, text, ids, TOK_CAP, true, true);
         if (n < 0) {
             sb_lit(out, ",\"ids\":null,");
