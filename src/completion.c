@@ -224,6 +224,7 @@ static void append_text_logprobs(sbuf *r, slot_t *s, engine *e) {
 
 static void completion_cleanup(engine *e, snode *schema, gen_ctx *g) {
     engine_set_stop(e, NULL, NULL);
+    engine_set_request_stops(e, NULL, 0);
     e->schema = NULL;
     free((void *)e->smp->script);
     e->smp->script = NULL;
@@ -1614,23 +1615,53 @@ static int scripted_reply_tokens(tokenizer *tok, const char *text,
     for (int i = 0; i < n && exact; i++) {
         char buf[512];
         int k = tok_decode(tok, (*ids)[i], buf, sizeof(buf));
+        if (k == 0 && tok_is_control(tok, (*ids)[i])) {
+            // a control token decodes to nothing; the script spelled it, so
+            // consume its raw spelling (that is how a scripted `<|eom|>` or
+            // `<s>` reaches the engine as the control token it is)
+            const char *sp = tok_raw(tok, (*ids)[i]);
+            size_t sl = sp ? strlen(sp) : 0;
+            if (!sl || at + sl > len || memcmp(text + at, sp, sl)) exact = false;
+            at += sl;
+            continue;
+        }
         if (k < 0 || at + (size_t)k > len || memcmp(text + at, buf, (size_t)k))
             exact = false;
         at += (size_t)(k > 0 ? k : 0);
     }
     if (exact && at == len) return n;
     free(*ids);
+    // byte by byte, except that a control token spelled `<...>` in the
+    // script is that token: the hook exists to drive the server's handling
+    // of what a model emits, and a model emits `<|eom|>` as one id
     *ids = malloc(sizeof(int32_t) * (len ? len : 1));
     if (!*ids) return -1;
-    for (size_t i = 0; i < len; i++) {
+    int m = 0;
+    for (size_t i = 0; i < len; ) {
+        if (text[i] == '<') {
+            const char *close = memchr(text + i, '>', len - i);
+            if (close && close - (text + i) < 200) {
+                char spelling[256];
+                size_t sl = (size_t)(close - (text + i)) + 1;
+                memcpy(spelling, text + i, sl);
+                spelling[sl] = 0;
+                int sid = tok_find(tok, spelling);
+                if (sid >= 0 && tok_is_control(tok, sid)) {
+                    (*ids)[m++] = sid;
+                    i += sl;
+                    continue;
+                }
+            }
+        }
         char spelling[8];
         snprintf(spelling, sizeof(spelling), "<0x%02X>",
                  (unsigned)(unsigned char)text[i]);
         int id = tok_find(tok, spelling);
         if (id < 0) { free(*ids); *ids = NULL; return -2; }
-        (*ids)[i] = id;
+        (*ids)[m++] = id;
+        i++;
     }
-    return (int)len;
+    return m;
 }
 
 // a boolean request flag: absent takes the default, a non-boolean is an
@@ -2006,13 +2037,45 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
     // use is an error rather than a silent downgrade — the same call
     // parallel_tool_calls makes in server.c, for the same reason: a caller who
     // is quietly ignored has no way to detect it.
-    if (n_stops > 0 && env) {
+    // Stop ids for this request. A stop string that spells a control token
+    // exactly stops on the token: control tokens decode to no bytes, so the
+    // text matcher could never see `<|eom|>`, and a Muse to=self turn ran
+    // straight through `<|eom|><|start|>assistant to=<tool>` with the specials
+    // silently removed (the lab, 2026-09-16). `stop_token_ids` (the vLLM
+    // spelling) names ids directly, up to eight, each within the vocabulary.
+    int req_stops[8];
+    int n_req_stops = 0;
+    for (int i = 0; i < n_stops; i++) {
+        int id = tok_find(s->tok, stops[i]);
+        if (id >= 0 && tok_is_control(s->tok, id) && n_req_stops < 8)
+            req_stops[n_req_stops++] = id;
+    }
+    jv *sti = jv_get(req, "stop_token_ids");
+    if (!absent(sti)) {
+        bool bad = sti->type != J_ARR || sti->n > 8;
+        for (int i = 0; !bad && i < sti->n; i++) {
+            jv *it = sti->items[i];
+            double v = it && it->type == J_NUM ? it->num : -1;
+            if (v < 0 || v != (double)(long long)v || v >= (double)s->tok->n_vocab ||
+                n_req_stops >= 8)
+                bad = true;
+            else
+                req_stops[n_req_stops++] = (int)v;
+        }
+        if (bad) {
+            send_error(fd, 400, "stop_token_ids must be an array of up to 8 token ids "
+                                "within the model's vocabulary");
+            return;
+        }
+    }
+    if ((n_stops > 0 || n_req_stops > 0) && env) {
         send_error(fd, 400,
-                   "stop is not supported with tool calling: the sequences "
-                   "would be matched against the tool-call protocol the model "
-                   "generates, not the text you receive");
+                   "stop and stop_token_ids are not supported with tool calling: "
+                   "the sequences would be matched against the tool-call protocol "
+                   "the model generates, not the text you receive");
         return;
     }
+    engine_set_request_stops(e, req_stops, n_req_stops);
     jv *rf = jv_get(req, "response_format");
     if (rf && rf->type != J_NULL) {   // null reads as absent, as everywhere else
         // An unrecognised or malformed response_format used to fall through to

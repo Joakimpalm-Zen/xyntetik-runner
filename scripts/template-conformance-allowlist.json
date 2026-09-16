@@ -238,7 +238,7 @@
       "why": "The reference generation prompt is the bare '<|start|>assistant'. Runner primes '<|channel|>analysis<|message|>' instead, because the decoded open marker is the bare word 'analysis' -- far too common to hunt for in a free stream -- and priming lets the channel splitter start already inside reasoning. Only WITHOUT tools: with tools runner leaves the header bare so the constrained recipient stays reachable, which the builtin mirrors.",
       "cite": {
         "file": "src/template.c",
-        "lines": "1938-1945",
+        "lines": "1966-1975",
         "anchor": "Priming lets the splitter start already inside"
       },
       "patch": {

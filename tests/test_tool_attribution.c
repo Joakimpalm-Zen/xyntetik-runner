@@ -1056,6 +1056,58 @@ static void test_messages_thinking_replays_on_harmony(void) {
        "messages harmony thinking: it is replayed on the analysis channel");
 }
 
+// Muse replays reasoning the way Meta's own template does: a `to=self` turn
+// ending <|eom|>, before the answer or the call it led to, on all three
+// surfaces (the lab, 2026-09-16: a to=self turn could never be byte-checked
+// through the chat endpoint because the reasoning was dropped).
+#define MUSE_SELF_TURN \
+    "<|start|>assistant to=self<|message|>RATE_FIRST<|eom|>" \
+    "<|start|>assistant to=get_weather<|message|><atem:function_calls>"
+
+static void test_muse_replays_reasoning_as_a_self_turn(void) {
+    ta_tmpl = TMPL_MUSE;
+    ta_run(handle_chat,
+           "{\"model\":\"m\",\"messages\":["
+           "{\"role\":\"user\",\"content\":\"weather in Oslo?\"},"
+           "{\"role\":\"assistant\",\"reasoning_content\":\"RATE_FIRST\","
+           "\"tool_calls\":[{\"id\":\"call_1\",\"type\":\"function\","
+           "\"function\":{\"name\":\"get_weather\","
+           "\"arguments\":\"{\\\"city\\\":\\\"Oslo\\\"}\"}}]},"
+           "{\"role\":\"tool\",\"tool_call_id\":\"call_1\","
+           "\"content\":\"sunny, 21C\"}]," TA_ONE_TOOL_CHAT "}");
+    ck(ta_prompt != NULL, "muse chat reasoning_content: a prompt was produced");
+    ck(ta_prompt && strstr(ta_prompt, MUSE_SELF_TURN) != NULL,
+       "muse chat reasoning_content: a to=self turn ending <|eom|>, then the call");
+
+    ta_run(handle_responses,
+           "{\"model\":\"m\",\"input\":[{\"type\":\"message\","
+           "\"role\":\"user\",\"content\":\"weather in Oslo?\"},"
+           "{\"type\":\"reasoning\",\"id\":\"rs_1\",\"summary\":["
+           "{\"type\":\"summary_text\",\"text\":\"RATE_FIRST\"}]},"
+           "{\"type\":\"function_call\",\"call_id\":\"call_1\","
+           "\"name\":\"get_weather\",\"arguments\":\"{\\\"city\\\":\\\"Oslo\\\"}\"},"
+           "{\"type\":\"function_call_output\",\"call_id\":\"call_1\","
+           "\"output\":\"sunny, 21C\"}]," TA_ONE_TOOL_RESP "}");
+    ck(ta_prompt != NULL, "muse responses reasoning item: a prompt was produced");
+    ck(ta_prompt && strstr(ta_prompt, MUSE_SELF_TURN) != NULL,
+       "muse responses reasoning item: the same to=self turn as chat");
+
+    ta_run(handle_messages,
+           "{\"model\":\"m\",\"max_tokens\":16,\"messages\":["
+           "{\"role\":\"user\",\"content\":\"weather in Oslo?\"},"
+           "{\"role\":\"assistant\",\"content\":[{\"type\":\"thinking\","
+           "\"thinking\":\"RATE_FIRST\",\"signature\":\"sig\"},"
+           "{\"type\":\"tool_use\",\"id\":\"call_1\",\"name\":\"get_weather\","
+           "\"input\":{\"city\":\"Oslo\"}}]},"
+           "{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\","
+           "\"tool_use_id\":\"call_1\",\"content\":\"sunny, 21C\"}]}],"
+           TA_ONE_TOOL_ANTH "}");
+    ck(ta_prompt != NULL, "muse messages thinking: a prompt was produced");
+    ck(ta_prompt && strstr(ta_prompt, MUSE_SELF_TURN) != NULL,
+       "muse messages thinking: the same to=self turn as chat");
+    ta_tmpl = TMPL_HARMONY;
+}
+
 static void test_messages_thinking_dropped_off_harmony(void) {
     ta_tmpl = TMPL_CHATML;
     ta_run(handle_messages,
@@ -1189,6 +1241,7 @@ int main(void) {
     test_messages_thinking_disabled_reaches_renderer();
     test_messages_thinking_replays_on_harmony();
     test_messages_thinking_dropped_off_harmony();
+    test_muse_replays_reasoning_as_a_self_turn();
     test_messages_redacted_thinking_never_replays();
     test_chat_text_spelled_call_resolves();
     test_chat_text_spelled_positional();

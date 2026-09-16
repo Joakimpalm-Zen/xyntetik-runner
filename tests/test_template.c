@@ -1968,6 +1968,29 @@ static void test_muse_tools_and_result_golden(void) {
     jv_free(tools);
 }
 
+// Meta's own template replays an assistant message's reasoning_content as its
+// own turn, `<|start|>assistant to=self<|message|>` REASONING `<|eom|>`, before
+// the answer; the chat surface hands it over on the `analysis` channel, as it
+// does for Harmony. A to=self turn that was never replayed could not be
+// byte-checked through the chat endpoint (the lab, 2026-09-16).
+static void test_muse_replays_reasoning(void) {
+    const chat_msg msgs[] = {
+        { .role = "user", .content = "Convert 12 EUR to CHF" },
+        { .role = "assistant", .content = "I need the rate first.", .channel = "analysis" },
+        { .role = "assistant", .content = "About 11.2 CHF." },
+        { .role = "user", .content = "Thanks" },
+    };
+    char out[4096];
+    render_messages_with_tools(TMPL_MUSE, msgs, 4, true, THINK_DEFAULT,
+                               NULL, out, sizeof(out));
+    assert(strstr(out,
+        "<|start|>user<|message|>Convert 12 EUR to CHF<|eot|>"
+        "<|start|>assistant to=self<|message|>I need the rate first.<|eom|>"
+        "<|start|>assistant to=user<|message|>About 11.2 CHF.<|eot|>"
+        "<|start|>user<|message|>Thanks<|eot|>") != NULL);
+    assert(strstr(out, "to=user<|message|>I need the rate first.") == NULL);
+}
+
 static void test_muse_tool_result_id_resolves_prior_name(void) {
     const char *src =
         "[{\"role\":\"assistant\",\"tool_calls\":[{\"id\":\"call_7\","
@@ -2544,6 +2567,7 @@ int main(void) {
     test_chatml_think_trailing_history_keeps_empty_thought();
     test_chatml_tool_result_renders_as_a_user_tool_response();
     test_muse_tools_and_result_golden();
+    test_muse_replays_reasoning();
     test_muse_tool_result_id_resolves_prior_name();
     test_tool_result_id_survives_a_nameless_matching_call();
     test_ornith_first_call_is_framed_by_whether_the_turn_spoke();

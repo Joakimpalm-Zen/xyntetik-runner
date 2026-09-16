@@ -2033,6 +2033,13 @@ size_t render_messages_with_tools(int tmpl, const chat_msg *msgs, int n_msgs,
                 off = emit(out, cap, off, "<|start|>system<|message|>%s",
                            mm->content, NULL);
                 off = emit(out, cap, off, "%s", muse_tail.s, NULL);
+            } else if (!strcmp(mm->role, "assistant") && mm->channel &&
+                       !strcmp(mm->channel, "analysis")) {
+                // the reference replays an assistant message's reasoning_content
+                // as its own turn: `<|start|>assistant to=self<|message|>` the
+                // reasoning `<|eom|>`, before the answer or call it led to
+                off = emit(out, cap, off, "<|start|>assistant to=self<|message|>%s<|eom|>",
+                           mm->content, NULL);
             } else if (!strcmp(mm->role, "assistant")) {
                 off = emit(out, cap, off, "<|start|>assistant to=%s<|message|>",
                            mm->name ? mm->name : "user", NULL);

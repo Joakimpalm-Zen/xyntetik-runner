@@ -8,6 +8,25 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **A stop that names a special token ends the turn there, and
+  `stop_token_ids`.** Control tokens decode to no bytes, so a stop string
+  such as `<|eom|>` could never match the text a client received, and a
+  Muse `to=self` turn ran straight through `<|eom|><|start|>assistant
+  to=<tool>` with the specials silently removed (the lab, 2026-09-16). A
+  stop string that spells a control token exactly now stops on that token,
+  and `stop_token_ids` (the vLLM spelling, up to eight ids within the
+  vocabulary, validated) names ids directly; both are per request and, like
+  `stop`, refused beside tool calling. The scripted-reply test hook spells
+  control tokens too, so `tests/test_stop_specials.py` drives the whole path
+  on the CI fixture's `<s>`.
+- **Muse replays `reasoning_content` as the reference's `to=self` turn.**
+  Meta's own template renders an assistant message's `reasoning_content` as
+  `<|start|>assistant to=self<|message|>` reasoning `<|eom|>` before the
+  answer or call; Runner dropped it, so a reasoning turn could never be
+  byte-checked through the chat endpoint (the lab, 2026-09-16). All three
+  surfaces now hand it to the renderer on the analysis channel, the way
+  Harmony's is (chat `reasoning_content`, Responses `reasoning` items,
+  Messages `thinking` blocks). Gated in `tests/test_template.c`.
 - **The repeat penalty no longer punishes the prompt's own tokens, and the
   generic preset carries no penalty.** The penalty window used to be seeded
   from the prompt, so a raw `/v1/completions` prompt carrying a tool schema
