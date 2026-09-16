@@ -4451,6 +4451,52 @@ static bool dbg_act_now(void) {
     return dbg_act_mode() && dbg_act_pass == dbg_act_mode();
 }
 
+// experiment/act-sparsity (2026-09-16): the block-sparsity measurement.
+// RUNNER_ACT_PROBE=<file> appends every row of the four matvec inputs of a
+// dense block (attn-in, attn-out, ffn-in, ffn-act) as records {int32 site,
+// int32 layer, int32 dim, float[dim]}. RUNNER_ACT_SPARSE=<s> (0 < s < 1)
+// zeroes, per row and site, the s fraction of elements with the smallest
+// magnitude before the matvec reads them (TEAL-style, dynamic per token), so
+// the fidelity bar can be read against a sparsity level. Neither is a
+// product path: both cost a sort per row and exist to answer one question.
+static FILE  *act_probe_file;
+static int    act_probe_state;   // 0 unread, 1 off, 2 on
+static float  act_sparse = -1.0f;
+static int cmp_f32(const void *a, const void *b) {
+    float x = *(const float *)a, y = *(const float *)b;
+    return x < y ? -1 : x > y;
+}
+static void act_site(int site, int layer, float *base, size_t stride, size_t dim, int rows) {
+    if (act_probe_state == 0) {
+        const char *f = getenv("RUNNER_ACT_PROBE");
+        const char *s = getenv("RUNNER_ACT_SPARSE");
+        act_probe_file = f && *f ? fopen(f, "ab") : NULL;
+        act_sparse = s && *s ? (float)atof(s) : -1.0f;
+        act_probe_state = (act_probe_file || (act_sparse > 0 && act_sparse < 1)) ? 2 : 1;
+    }
+    if (act_probe_state != 2) return;
+    static float *mag; static size_t mag_cap;
+    if (act_sparse > 0 && mag_cap < dim) {
+        free(mag); mag = malloc(sizeof(float) * dim); mag_cap = mag ? dim : 0;
+    }
+    for (int r = 0; r < rows; r++) {
+        float *v = base + (size_t)r * stride;
+        if (act_probe_file) {
+            int32_t hdr[3] = { site, layer, (int32_t)dim };
+            fwrite(hdr, sizeof hdr, 1, act_probe_file);
+            fwrite(v, sizeof(float), dim, act_probe_file);
+        }
+        if (act_sparse > 0 && mag) {
+            for (size_t i = 0; i < dim; i++) mag[i] = fabsf(v[i]);
+            qsort(mag, dim, sizeof(float), cmp_f32);
+            size_t k = (size_t)(act_sparse * (float)dim);
+            if (k >= dim) k = dim - 1;
+            float thr = mag[k];
+            for (size_t i = 0; i < dim; i++) if (fabsf(v[i]) < thr) v[i] = 0.0f;
+        }
+    }
+}
+
 static void dbg_stat(const char *tag, int layer, const float *v, size_t n) {
     float mn = FLT_MAX, mx = -FLT_MAX, absmx = 0;
     double sum = 0;
@@ -7346,6 +7392,7 @@ static void forward_layer(model_t *m, int l, int n, int pos, int dbg) {
     for (int b = 0; b < n; b++)
         xnorm(m, m->xb + (size_t)b * xdim, m->x + (size_t)b * n_embd,
               ly->attn_norm_w, ly->attn_norm_b, n_embd, m->rms_eps);
+    act_site(0, l, m->xb, xdim, n_embd, n);
     if (dbg) {
         fprintf(stderr, "ACT L%-3d cfg swa=%d hd=%d n_kv=%d q_dim=%d kv_dim=%d "
                 "scale=%.5f out_scale=%.6f wv=%d qn=%d kn=%d pan=%d pfn=%d "
@@ -7511,6 +7558,7 @@ static void forward_layer(model_t *m, int l, int n, int pos, int dbg) {
             }
     }
     if (dbg) dbg_stat("attn-out", l, m->xb2 + (size_t)(n - 1) * xdim, q_dim);
+    act_site(1, l, m->xb2, xdim, q_dim, n);
     matvec_b(m->tp, m->xb, xdim, ly->wo, m->xb2, xdim, q_dim, n_embd, ly->bo, n);
     LORA_HOOK(LW_O, m->xb, xdim, m->xb2, xdim, q_dim, n_embd, n);
     }
@@ -7542,6 +7590,7 @@ nemo_ffn:
     for (int b = 0; b < n; b++)
         xnorm(m, m->xb + (size_t)b * xdim, m->x + (size_t)b * n_embd,
               ly->ffn_norm_w, ly->ffn_norm_b, n_embd, m->rms_eps);
+    act_site(2, l, m->xb, xdim, n_embd, n);
     if (ly->is_moe) {
         if (ly->w_up_shexp)
             for (int b = 0; b < n; b++)
@@ -7580,6 +7629,7 @@ nemo_ffn:
         m->hb[i] = gated_act(m->ffn_act, m->hb[i], m->hb2[i]);
     }
     if (dbg) dbg_stat("ffn-act", l, m->hb + (size_t)(n - 1) * nff, nff);
+    act_site(3, l, m->hb, nff, nff, n);
     matvec_b(m->tp, m->xb, xdim, ly->w_down, m->hb, nff, nff, n_embd, NULL, n);
     LORA_HOOK(LW_DOWN, m->xb, xdim, m->hb, nff, nff, n_embd, n);
     }
