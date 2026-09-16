@@ -336,3 +336,16 @@ def test_show_tests_stages_the_frozen_test_and_edits_to_it_are_tamper(repo: Path
     (ws / "tests" / "test_add.c").write_text(WEAK_TEST, encoding="utf-8")
     out = verify(ws, protected, baseline, timeout_s=300)
     assert out.passed is False and any("tests/test_add.c" in t for t in out.tamper)
+
+
+def test_a_cohort_with_another_tool_set_is_not_a_repeat() -> None:
+    from dataclasses import replace
+    from xyntetik_runner.shadow.cli import attempt_key
+    from xyntetik_runner.shadow.evidence import Identity
+    base = Identity(project="p", task_class="file", context_band="", verifier_id="v",
+                    environment_id="e", model_sha256="m", quant="q", template_sha256="t",
+                    runner_build="b", backend="cpu", harness_version="h",
+                    tool_set=("list_files", "read_file", "write_file", "edit_file", "run_tests"))
+    shown = replace(base, tool_set=(*base.tool_set, "visible:solution-tests"))
+    assert attempt_key("bank:x:1", base) != attempt_key("bank:x:1", shown)
+    assert attempt_key("bank:x:1", base) == attempt_key("bank:x:1", replace(base, project="other"))
