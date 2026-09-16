@@ -324,7 +324,11 @@ static void test_atem_header_discriminates_matching_invoke(void) {
                                     ATEM_TURN_AFTER_REASONING,
                                     err, sizeof(err));
     assert(root != NULL);
-    assert(accepts(root, "data.clear<|message|><atem:function_calls>\n"
+    // after <|eom|> the model opens `<|start|>assistant to=NAME`; <|start|>
+    // decodes to nothing, so the grammar's bytes begin at `assistant to=`
+    assert(accepts(root, "assistant to=data.clear<|message|><atem:function_calls>\n"
+        "<atem:invoke name=\"data.clear\">\n</atem:invoke>\n</atem:function_calls>"));
+    assert(!accepts(root, "data.clear<|message|><atem:function_calls>\n"
         "<atem:invoke name=\"data.clear\">\n</atem:invoke>\n</atem:function_calls>"));
     schema_free(root);
     root = schema_compile_atem_turn(tools, false, "data.clear", NULL,
@@ -332,7 +336,7 @@ static void test_atem_header_discriminates_matching_invoke(void) {
     assert(root != NULL);
     assert(accepts(root, " to=data.clear<|message|><atem:function_calls>\n"
         "<atem:invoke name=\"data.clear\">\n</atem:invoke>\n</atem:function_calls>"));
-    assert(accepts(root, "data.clear<|message|><atem:function_calls>\n"
+    assert(accepts(root, "assistant to=data.clear<|message|><atem:function_calls>\n"
         "<atem:invoke name=\"data.clear\">\n</atem:invoke>\n</atem:function_calls>"));
     schema_free(root);
     jv_free(tools);

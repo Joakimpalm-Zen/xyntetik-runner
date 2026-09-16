@@ -22,6 +22,7 @@ MTP_LAYERS = 0   # extra trailing blocks declared as NextN/MTP predictor heads
 # is the FILE's choice, so this is the shape a hostile GGUF takes to make a
 # load cost minutes of CPU. Not a model feature -- a load-cost fixture.
 SPECIALS = 0
+CONTROL = []  # --control: named control tokens appended to the vocabulary
 # Gemma-4 E-series: per-layer embeddings plus a tail of layers that own no KV
 # cache. Both mechanisms are structural, so a tiny random model exercises the
 # load-time geometry, the aliased cache reads and the extra forward stage
@@ -225,6 +226,13 @@ while i < len(args):
     elif a == "--specials":
         i += 1
         SPECIALS = int(args[i])
+    elif a == "--control":
+        # named CONTROL tokens appended to the vocabulary (comma-separated), so
+        # a fixture can carry a family's turn markers (<|start|>, <|eom|>, ...)
+        # and a scripted reply can spell them: a control token decodes to no
+        # bytes, which is the whole point of testing it
+        i += 1
+        CONTROL = [x for x in args[i].split(",") if x]
     elif a == "--mtp-layers":
         # emit N extra blocks and declare them as training-only MTP predictor
         # heads; the runner must exclude them and decode exactly as without
@@ -279,6 +287,9 @@ if SPECIALS:
     VOCAB += [f"{i:06d}" for i in range(half)]
     VOCAB += [f"{i:07d}" for i in range(SPECIALS - half)]
     TTYPE += [4] * SPECIALS      # user-defined: they join the special list
+if CONTROL:
+    VOCAB += CONTROL
+    TTYPE += [3] * len(CONTROL)  # control: they join the special list and decode to nothing
 N_VOCAB = len(VOCAB)
 
 GGUF_U32, GGUF_F32, GGUF_STR, GGUF_ARR, GGUF_I32, GGUF_BOOL = 4, 6, 8, 9, 5, 7

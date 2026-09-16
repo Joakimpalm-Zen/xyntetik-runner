@@ -1780,10 +1780,16 @@ snode *schema_compile_atem_turn(struct jv *tools, bool allow_user,
                                 struct jv *final_schema,
                                 enum atem_turn_start start,
                                 char *err, int errcap) {
+    // After a self-addressed reasoning turn the model closes it with <|eom|>
+    // (a decoded-empty control the engine consumes) and opens the next turn
+    // as `<|start|>assistant to=NAME<|message|>`: <|start|> is decoded-empty
+    // too, so the bytes the grammar sees are `assistant to=`. The prefix used
+    // to be empty, which rejected every real transition at its first byte
+    // (the lab, 2026-09-16: finish "error" right after the self turn).
     if (start == ATEM_TURN_DIRECT || start == ATEM_TURN_AFTER_REASONING)
         return schema_compile_atem_turn_prefix(
             tools, allow_user, only_tool, final_schema,
-            start == ATEM_TURN_DIRECT ? " to=" : "", err, errcap);
+            start == ATEM_TURN_DIRECT ? " to=" : "assistant to=", err, errcap);
     if (start != ATEM_TURN_EITHER) {
         snprintf(err, errcap, "invalid atem turn start");
         return NULL;
@@ -1791,7 +1797,7 @@ snode *schema_compile_atem_turn(struct jv *tools, bool allow_user,
     snode *direct = schema_compile_atem_turn_prefix(
         tools, allow_user, only_tool, final_schema, " to=", err, errcap);
     snode *after = direct ? schema_compile_atem_turn_prefix(
-        tools, allow_user, only_tool, final_schema, "", err, errcap) : NULL;
+        tools, allow_user, only_tool, final_schema, "assistant to=", err, errcap) : NULL;
     snode *root = after ? sn_new(SN_UNION) : NULL;
     if (!root) {
         schema_free(direct); schema_free(after);
@@ -3944,6 +3950,26 @@ bool sval_ws_is_content(const sval *v) {
     if (f->node->kind == SN_RAW && f->phase == P_RAW) return true;
     if (f->node->kind == SN_MAP && f->phase == P_OBJ_INKEY) return true;
     // Mid-string (P_STR with the opening quote consumed) is the content case.
+    return f->phase == P_STR &&
+           (f->node->kind == SN_STR || f->node->kind == SN_ENUM);
+}
+
+// Whether the validator is consuming FREE content (a raw value, a string
+// body, a map key, an any-subtree), where a protocol marker the model spells
+// as a control token would be corruption. This is the question the engine's
+// control-token rule asks, and it is not sval_ws_is_content: that one also
+// answers true at every whitespace-significant PROTOCOL position, which is
+// the whole atem header (` to=`, the recipient enum, the invoke literal).
+// Asking it there refused Muse's decoded-empty `<|message|>` right after the
+// recipient name, so the served turn ended at the header with no call
+// (measured 2026-09-16 on the fixture, `required` and `auto` alike).
+bool sval_in_free_content(const sval *v) {
+    if (v->depth <= 0) return false;
+    const sframe *f = &v->stack[v->depth - 1];
+    if (!f->node) return false;
+    if (f->node->kind == SN_ANY) return true;
+    if (f->node->kind == SN_RAW && f->phase == P_RAW) return true;
+    if (f->node->kind == SN_MAP && f->phase == P_OBJ_INKEY) return true;
     return f->phase == P_STR &&
            (f->node->kind == SN_STR || f->node->kind == SN_ENUM);
 }

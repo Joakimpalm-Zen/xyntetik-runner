@@ -294,7 +294,7 @@ static void test_required_whitespace_reports_as_content(void) {
     // wire shape verified by direct grammar walk: the invoke branch opens
     // with the recipient (the tool name), then the function_calls block
     // whose literal embeds the required newline
-    const char *prefix = "ping<|message|><atem:function_calls>";
+    const char *prefix = "assistant to=ping<|message|><atem:function_calls>";
     assert(sval_feed(&v, prefix, (int)strlen(prefix)));
     // vocabulary-independent facts about this position, probed on copies
     // (sval is memcpy-copyable by contract): the newline is admissible and

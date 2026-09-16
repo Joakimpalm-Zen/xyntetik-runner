@@ -8,6 +8,27 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **Muse ATEM tool calling under `tool_choice: "auto"`, and after a
+  reasoning turn.** Three defects, one finding (the lab, 2026-09-16, on
+  Muse-Glimmer-30B: the default turn ended at the recipient header with no
+  call, `enable_thinking: true` finished "error" at the
+  `<|eom|><|start|>assistant to=<tool>` transition, and `required` with
+  thinking called the first declared tool instead of the one the reasoning
+  named). The engine's control-token rule refused Muse's decoded-empty
+  `<|message|>` right after the recipient name because the content check
+  it asked was also true at every whitespace-significant protocol position,
+  which is the whole atem header (`sval_in_free_content` now asks the
+  question the rule means); the after-reasoning grammar expected a tool
+  name where the model writes `assistant to=` (`<|start|>` decodes to
+  nothing), so every real transition was rejected at its first byte and
+  the sampler took the first admissible name; and the thinking-prelude
+  probe skipped "leading whitespace" before matching the open tag, which
+  ate the first byte of Muse's own ` to=self`, so the model's self turn
+  under auto was never a prelude. Gated on the CI Muse fixture carrying the
+  family's four turn markers as control tokens (`make-test-model.py
+  --control`) and the scripted-reply hook spelling the model's own streams:
+  `tests/test_muse_auto_toolchoice.py`, buffered and streamed, plus the
+  grammar cases in `tests/test_tools.c`.
 - **`shadow bank` builds make tasks too, and `--edit-only` keeps small
   models from flattening files.** The bank walked a repository's history
   for pytest commits only; it now admits built ranges the same way import
