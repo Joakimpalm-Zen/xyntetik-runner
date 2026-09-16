@@ -199,6 +199,9 @@ bool sval_trial(const sval *v, sval *scratch, const char *s, int n);
 // insignificant separator. Callers suppress separator whitespace to stop a
 // constrained model burning its budget on blank runs; see schema.c.
 bool sval_ws_is_content(const sval *v);
+// inside free content (raw value, string body, map key, any-subtree): where a
+// spelled protocol marker is corruption; false at protocol positions
+bool sval_in_free_content(const sval *v);
 // True when the validator sits in a raw frame that carries a handoff marker
 // and `spelling` (a control token's raw text) begins or continues that
 // marker from the bytes already matched: the one place a protocol token is

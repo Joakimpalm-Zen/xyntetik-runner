@@ -1244,9 +1244,16 @@ static bool constraint_feed(engine *e, bool schema, const char *bytes, int n,
     int ol = (int)strlen(open);
     bool tag_ok = e->constraint_tag_possible;
     int match = e->constraint_tag_match;
+    // A tag that itself begins with whitespace (Muse's ` to=self`) is matched
+    // from its first byte: skipping "leading whitespace" there consumed the
+    // tag's own space and the probe mismatched on the next byte, so the
+    // model's self-addressed turn under tool_choice auto was never
+    // recognised as a thinking prelude (the lab, 2026-09-16: the served turn
+    // ended inside the self turn the model had chosen).
+    bool open_ws = open[0] == ' ' || open[0] == '\n' || open[0] == '\r' || open[0] == '\t';
     for (int i = 0; tag_ok && i < n; i++) {
         char c = bytes[i];
-        if (match == 0 && (c == ' ' || c == '\n' || c == '\r' || c == '\t'))
+        if (match == 0 && !open_ws && (c == ' ' || c == '\n' || c == '\r' || c == '\t'))
             continue;
         if (c != open[match]) { tag_ok = false; break; }
         match++;
@@ -1311,7 +1318,10 @@ static bool constraint_spelling_ok(engine *e, int id, bool schema) {
     // exception: a raw frame that carries a handoff marker (Gemma 4's prose
     // branch hands off at `<|tool_call>call:`), where the model's own
     // control token IS the syntax that leaves the prose for the call.
-    if (sval_ws_is_content(&e->sv) &&
+    // (sval_in_free_content, not sval_ws_is_content: the latter is also true
+    // at whitespace-significant PROTOCOL positions, the whole atem header,
+    // and refused Muse's own `<|message|>` after the recipient name)
+    if (sval_in_free_content(&e->sv) &&
         !sval_raw_marker_opens(&e->sv, sp, (int)strlen(sp))) return false;
     // CP_OUTPUT is guaranteed by the first line, so this is exactly what
     // constraint_feed would do with these bytes.
