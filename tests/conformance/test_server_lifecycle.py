@@ -608,10 +608,20 @@ def test_keep_alive_zero_releases_what_unload_releases():
 
         _chat(srv.base_url, keep_alive=0)
 
-        with urllib.request.urlopen(srv.base_url + "/v1/capabilities",
-                                    timeout=5) as r:
-            caps = json.load(r)
-        assert caps["resident"] is None and caps["context"] == 0, caps
+        # keep_alive: 0 unloads at the worker's next SAFE POINT, which comes
+        # after this response was written (README, residency control), so
+        # the release is observed by polling, not asserted on the next read:
+        # the sanitized CI build lost that race once (2026-09-16).
+        deadline = time.time() + 10
+        caps = None
+        while time.time() < deadline:
+            with urllib.request.urlopen(srv.base_url + "/v1/capabilities",
+                                        timeout=5) as r:
+                caps = json.load(r)
+            if caps["resident"] is None:
+                break
+            time.sleep(0.2)
+        assert caps and caps["resident"] is None and caps["context"] == 0, caps
         after = _prefix_cache(srv.base_url)
         assert after["entries"] == 0 and after["bytes"] == 0, after
 
