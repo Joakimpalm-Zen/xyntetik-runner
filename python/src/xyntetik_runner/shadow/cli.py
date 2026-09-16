@@ -217,6 +217,15 @@ def _tasks(out: Path, only: str | None) -> list[RepairTask]:
     return [t for t in tasks if not only or t.task_id == only]
 
 
+def attempt_key(episode_id: str, ident: Identity) -> tuple[str, str, str, tuple[str, ...]]:
+    """What makes an attempt a repeat: the same episode under the same model,
+    scaffold AND tool set. The tool set is part of the identity (edit-only,
+    visible solution tests), so a cohort that differs there is a new
+    attempt, not a rerun; keyed on model and scaffold alone, the first
+    show-tests cohort was skipped as already attempted (2026-09-16)."""
+    return (episode_id, ident.model_sha256, ident.scaffold_sha256, tuple(ident.tool_set))
+
+
 def stage_solution_tests(task: RepairTask, ws_dir: Path) -> tuple[str, ...]:
     """Copy the task's frozen test files (never the Makefile) into the
     workspace and return their paths: the failing test as the attempt's
@@ -319,7 +328,7 @@ def run_replay(out: Path, endpoint: RunnerEndpoint, opts: ReplayOptions, *,
         template_sha256="unknown", runner_build=str(caps.get("version") or "unknown"),
         backend=str(caps.get("backend") or "unknown"), harness_version=HARNESS_VERSION,
         scaffold_sha256=scaffold_id)
-    done = {(r.episode_id, r.identity.model_sha256, r.identity.scaffold_sha256)
+    done = {attempt_key(r.episode_id, r.identity)
             for r in _read_records(evidence) if r.verifier is not None}
     ran = 0
     for task in replay_order(_tasks(out, opts.task)):
@@ -332,7 +341,7 @@ def run_replay(out: Path, endpoint: RunnerEndpoint, opts: ReplayOptions, *,
                                   "edit_file", "run_tests",
                                   *(("visible:solution-tests",) if opts.show_tests else ())),
                         verifier_id=f"commit-{'gates' if task.verifier_kind == 'make' else 'tests'}:{task.task_id}")
-        if (task.episode_id, ident.model_sha256, ident.scaffold_sha256) in done:
+        if attempt_key(task.episode_id, ident) in done:
             continue
         ran += 1
         print(f"[{task.task_id}] attempt with {model} ...", flush=True)

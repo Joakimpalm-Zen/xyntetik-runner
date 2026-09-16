@@ -8,6 +8,12 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **A replay cohort with another tool set is not a repeat.** The replay's
+  already-attempted check keyed on episode, model and scaffold, so a
+  cohort that differed only in its tool set (`--edit-only`,
+  `--show-tests`) was skipped whole as already attempted. The key now
+  carries the identity's tool set, which is what makes those cohorts
+  distinct in the ledger.
 - **`replay --show-tests`: the failing test as the attempt's visible
   specification.** A bank task's visible tests were the pre-state files,
   which pass at base by construction, so an attempt that ran them saw green
