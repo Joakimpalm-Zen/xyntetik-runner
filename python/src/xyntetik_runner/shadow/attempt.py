@@ -113,8 +113,15 @@ class Workspace:
     """Path confinement and the four tools over one directory."""
 
     def __init__(self, root: Path, *, visible_tests: Sequence[str], pythonpath: Sequence[str],
-                 python: str, budget: Budget, gates: Sequence[str] = ()):
+                 python: str, budget: Budget, gates: Sequence[str] = (),
+                 edit_only: bool = False):
         self.root = root.resolve()
+        self.edit_only = edit_only
+        """When set, write_file only creates files: an existing file must be
+        changed with edit_file. A small model asked to "write complete
+        files" replaces a 2,000-line file with its ten-line idea of it;
+        anchored edits keep the rest of the file, and a wrong anchor fails
+        loudly instead of silently deleting everything."""
         self.visible_tests = tuple(visible_tests)
         self.pythonpath = tuple(pythonpath)
         self.python = python
@@ -241,6 +248,13 @@ class Workspace:
             return f"error: {e}"
         if not isinstance(content, str):
             return "error: content must be a string"
+        if self.edit_only and target.is_file():
+            try:
+                n = len(target.read_text(encoding="utf-8", errors="replace").splitlines())
+            except OSError:
+                n = 0
+            return (f"error: {path} exists ({n} lines); change it with edit_file (exact old_text "
+                    "to new_text); write_file only creates new files")
         try:
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(content, encoding="utf-8")
@@ -353,6 +367,10 @@ def attempt(request: str, workspace: Workspace, chat: ChatFn, *, budget: Budget 
     budget = budget_with(scaffold, budget or workspace.budget)
     workspace.budget = budget
     tools = scaffold.apply_tools(TOOLS)
+    if workspace.edit_only:
+        tools = [dict(t, function=dict(t["function"], description=t["function"]["description"]
+                                      + " Existing files must be changed with edit_file."))
+                 if t["function"]["name"] == "write_file" else t for t in tools]
     listing = workspace.list_files("*")
     earlier = ""
     if context:

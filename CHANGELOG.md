@@ -8,6 +8,18 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **`shadow bank` builds make tasks too, and `--edit-only` keeps small
+  models from flattening files.** The bank walked a repository's history
+  for pytest commits only; it now admits built ranges the same way import
+  does (C test files as make gates, frozen with the Makefile), with
+  `--kind`, `--max-gates` and `--since` to build a single-gate bank from a
+  date. A commit's message is the request, so a bank task is a
+  specification rather than a session turn. `replay --edit-only` (and
+  `bench`) makes `write_file` create only: an existing file must change
+  through `edit_file`, recorded in the identity's tool set as
+  `write_file:new-only`, after a 3B model replaced a 2,417-line README
+  with nine lines and a 2,311-line Makefile with one. Gated in
+  `python/tests/test_shadow_make_gates.py`.
 - **Shadow mode admits C changes, verified by their make gates.** The
   ledger's admission rule wanted a pytest file beside Python source and
   nothing that needs a build, which put nearly all of this engine's own

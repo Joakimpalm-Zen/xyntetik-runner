@@ -248,6 +248,9 @@ class ReplayOptions:
     task: str = ""
     limit: int = 0
     endpoint_label: str = ""
+    edit_only: bool = False
+    """write_file creates only; existing files change through edit_file.
+    Part of the identity's tool set, so cohorts stay apart."""
 
 
 _CLASS_RANK = {"function": 0, "file": 1, "multi-file": 2}
@@ -301,7 +304,9 @@ def run_replay(out: Path, endpoint: RunnerEndpoint, opts: ReplayOptions, *,
             break
         ident = replace(base_identity, project=Path(task.repo).name, task_class=task.task_class,
                         context_band=_band(len(task.request)),
-                        tool_set=("list_files", "read_file", "write_file", "edit_file", "run_tests"),
+                        tool_set=("list_files", "read_file",
+                                  "write_file:new-only" if opts.edit_only else "write_file",
+                                  "edit_file", "run_tests"),
                         verifier_id=f"commit-{'gates' if task.verifier_kind == 'make' else 'tests'}:{task.task_id}")
         if (task.episode_id, ident.model_sha256, ident.scaffold_sha256) in done:
             continue
@@ -313,7 +318,7 @@ def run_replay(out: Path, endpoint: RunnerEndpoint, opts: ReplayOptions, *,
             baseline = Baseline.capture(ws_dir)
             ws = Workspace(ws_dir, visible_tests=task.visible_test_files,
                            pythonpath=task.pythonpath, python=opts.python, budget=budget,
-                           gates=task.gates)
+                           gates=task.gates, edit_only=opts.edit_only)
             chat = runner_chat(endpoint.post_json, model, max_tokens=budget.max_tokens)
             result = attempt(task.request, ws, chat, budget=budget, context=task.context,
                              scaffold=scaffold)
@@ -366,7 +371,8 @@ def cmd_replay(args: argparse.Namespace) -> int:
                          max_tokens=args.max_tokens, test_runs=args.test_runs, wall=args.wall,
                          min_tps=args.min_tps, scaffold_path=args.scaffold,
                          model_sha256=args.model_sha256, quant=args.quant, task=args.task,
-                         limit=args.limit, endpoint_label=args.endpoint)
+                         limit=args.limit, endpoint_label=args.endpoint,
+                         edit_only=args.edit_only)
     try:
         run_replay(Path(args.out), RunnerEndpoint(args.endpoint, timeout=args.request_timeout),
                    opts, model=args.model)
@@ -401,7 +407,7 @@ def cmd_bench(args: argparse.Namespace) -> int:
           flush=True)
     opts = ReplayOptions(python=args.python, timeout=args.timeout, max_turns=args.max_turns,
                          max_tokens=args.max_tokens, test_runs=args.test_runs, wall=args.wall,
-                         min_tps=args.min_tps, scaffold_path=args.scaffold)
+                         min_tps=args.min_tps, scaffold_path=args.scaffold, edit_only=args.edit_only)
     rows: list[dict[str, Any]] = []
     arms: list[tuple[str, str]] = [("endpoint", u) for u in args.endpoints.split(",") if u]
     arms += [("model", m) for m in args.models.split(",") if m]
@@ -510,12 +516,14 @@ def cmd_bank(args: argparse.Namespace) -> int:
     (out / "tasks").mkdir(parents=True, exist_ok=True)
     entries = build_bank(Path(args.repo), out_dir=out / "tasks", python=args.python,
                          limit=args.limit, max_commits=args.max_commits,
-                         max_src_files=args.max_src_files, timeout_s=args.timeout)
+                         max_src_files=args.max_src_files, timeout_s=args.timeout,
+                         kind=args.kind, max_gates=args.max_gates, since=args.since)
     admitted = [e for e in entries if e.task is not None]
     for e in admitted:
         assert e.task is not None
-        print(f"  admitted {e.task.task_id}: {e.task.expected_tests} frozen tests, "
-              f"{e.task.baseline_failing} fail at base", flush=True)
+        what = "gates" if e.task.verifier_kind == "make" else "tests"
+        print(f"  admitted {e.task.task_id}: {e.task.expected_tests} frozen {what}, "
+              f"{e.task.baseline_failing} fail at base, {e.task.task_class}", flush=True)
     reasons: dict[str, int] = {}
     for e in entries:
         if e.task is None:
@@ -1207,6 +1215,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--min-tps", type=float, default=15.0,
                    help="refuse a model that decodes slower than this (fit-first)")
     p.add_argument("--scaffold", default="", help="scaffold JSON; default is the base scaffold")
+    p.add_argument("--edit-only", action="store_true",
+                   help="write_file creates files only; existing files change through edit_file")
     p.set_defaults(fn=cmd_replay)
     p = sub.add_parser("bank", help="build repair tasks from a public repository's history")
     p.add_argument("--repo", required=True)
@@ -1216,6 +1226,11 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--max-commits", type=int, default=400)
     p.add_argument("--max-src-files", type=int, default=3)
     p.add_argument("--timeout", type=float, default=600.0)
+    p.add_argument("--kind", choices=("any", "pytest", "make"), default="any",
+                   help="keep only pytest ranges or only make ranges (C tests with built source)")
+    p.add_argument("--max-gates", type=int, default=0,
+                   help="make ranges: at most this many C test files per commit (0 = no cap)")
+    p.add_argument("--since", default="", help="git's --since, e.g. 2026-07-15")
     p.set_defaults(fn=cmd_bank)
     p = sub.add_parser("capture", help="append a prompt or stop event from an agent hook")
     p.add_argument("--event", choices=list(CAPTURE_EVENTS), default="")
@@ -1257,6 +1272,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--wall", type=float, default=600.0)
     p.add_argument("--min-tps", type=float, default=15.0)
     p.add_argument("--scaffold", default="")
+    p.add_argument("--edit-only", action="store_true")
     p.set_defaults(fn=cmd_bench)
     p = sub.add_parser("install", help="wire the hooks and a /shadow command into the harnesses "
                                        "(explicit opt-in; reversible with uninstall)")
