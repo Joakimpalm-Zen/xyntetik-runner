@@ -308,3 +308,31 @@ def test_edit_only_refuses_to_overwrite_an_existing_file(tmp_path: Path) -> None
     assert (tmp_path / "a.c").read_text(encoding="utf-8") == "int a(void) { return 1; }\n"
     assert ws.write_file("b.c", "int b;\n").startswith("wrote")
     assert ws.edit_file("a.c", "return 1", "return 2").startswith("edited")
+
+
+@needs_toolchain
+def test_show_tests_stages_the_frozen_test_and_edits_to_it_are_tamper(repo: Path, tmp_path: Path) -> None:
+    from xyntetik_runner.shadow.cli import stage_solution_tests
+    task = admit(episode(repo), out_dir=tmp_path / "tasks", timeout_s=300)
+    assert isinstance(task, RepairTask)
+    ws = _base_worktree(repo, tmp_path)
+    assert (ws / "tests" / "test_add.c").read_text(encoding="utf-8") == WEAK_TEST
+    staged = stage_solution_tests(task, ws)
+    assert staged == ("tests/test_add.c",)
+    assert (ws / "tests" / "test_add.c").read_text(encoding="utf-8") == STRONG_TEST
+    assert not (ws / "Makefile").read_text(encoding="utf-8").startswith("test-add:\ntrue")
+    baseline = Baseline.capture(ws)
+    protected = ProtectedTests.load(Path(task.protected_dir))
+    # the staged test is the visible specification: the workspace's own gate now fails at base
+    w = Workspace(ws, visible_tests=staged, pythonpath=(), python=sys.executable,
+                  budget=Budget(test_runs=2, test_timeout_s=120), gates=("test-add",))
+    try:
+        assert w.run_tests().startswith("exit code 1")
+    finally:
+        w.close()
+    # the right fix passes; weakening the staged test is tamper, the frozen copy still judges
+    (ws / "src" / "add.c").write_text(CORRECT, encoding="utf-8")
+    assert verify(ws, protected, baseline, timeout_s=300).passed is True
+    (ws / "tests" / "test_add.c").write_text(WEAK_TEST, encoding="utf-8")
+    out = verify(ws, protected, baseline, timeout_s=300)
+    assert out.passed is False and any("tests/test_add.c" in t for t in out.tamper)

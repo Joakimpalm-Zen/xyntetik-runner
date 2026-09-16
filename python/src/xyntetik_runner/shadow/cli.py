@@ -217,6 +217,23 @@ def _tasks(out: Path, only: str | None) -> list[RepairTask]:
     return [t for t in tasks if not only or t.task_id == only]
 
 
+def stage_solution_tests(task: RepairTask, ws_dir: Path) -> tuple[str, ...]:
+    """Copy the task's frozen test files (never the Makefile) into the
+    workspace and return their paths: the failing test as the attempt's
+    visible specification. Done before the baseline is captured, so an
+    edit to one of them is a change the verifier reports as tamper."""
+    src = Path(task.protected_dir)
+    staged: list[str] = []
+    for rel in task.test_files:
+        if not (src / rel).is_file():
+            continue
+        target = ws_dir / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(src / rel, target)
+        staged.append(rel)
+    return tuple(staged)
+
+
 def _worktree(task: RepairTask) -> Path:
     d = Path(tempfile.mkdtemp(prefix="xyntetik-shadow-attempt-"))
     proc = subprocess.run(["git", "-C", task.repo, "worktree", "add", "--detach", "-q", str(d),
@@ -251,6 +268,12 @@ class ReplayOptions:
     edit_only: bool = False
     """write_file creates only; existing files change through edit_file.
     Part of the identity's tool set, so cohorts stay apart."""
+    show_tests: bool = False
+    """Stage the frozen (post-state) test files into the workspace before the
+    attempt, so the attempt sees the failing test the fix was written for
+    instead of the pre-state test that passes. The protected copy still
+    judges, and an edit to a staged file is tamper. Part of the identity's
+    tool set (`visible:solution-tests`), so cohorts stay apart."""
 
 
 _CLASS_RANK = {"function": 0, "file": 1, "multi-file": 2}
@@ -306,7 +329,8 @@ def run_replay(out: Path, endpoint: RunnerEndpoint, opts: ReplayOptions, *,
                         context_band=_band(len(task.request)),
                         tool_set=("list_files", "read_file",
                                   "write_file:new-only" if opts.edit_only else "write_file",
-                                  "edit_file", "run_tests"),
+                                  "edit_file", "run_tests",
+                                  *(("visible:solution-tests",) if opts.show_tests else ())),
                         verifier_id=f"commit-{'gates' if task.verifier_kind == 'make' else 'tests'}:{task.task_id}")
         if (task.episode_id, ident.model_sha256, ident.scaffold_sha256) in done:
             continue
@@ -315,8 +339,11 @@ def run_replay(out: Path, endpoint: RunnerEndpoint, opts: ReplayOptions, *,
         ws_dir = _worktree(task)
         ws = None
         try:
+            visible = task.visible_test_files
+            if opts.show_tests:
+                visible = stage_solution_tests(task, ws_dir)
             baseline = Baseline.capture(ws_dir)
-            ws = Workspace(ws_dir, visible_tests=task.visible_test_files,
+            ws = Workspace(ws_dir, visible_tests=visible,
                            pythonpath=task.pythonpath, python=opts.python, budget=budget,
                            gates=task.gates, edit_only=opts.edit_only)
             chat = runner_chat(endpoint.post_json, model, max_tokens=budget.max_tokens)
@@ -372,7 +399,7 @@ def cmd_replay(args: argparse.Namespace) -> int:
                          min_tps=args.min_tps, scaffold_path=args.scaffold,
                          model_sha256=args.model_sha256, quant=args.quant, task=args.task,
                          limit=args.limit, endpoint_label=args.endpoint,
-                         edit_only=args.edit_only)
+                         edit_only=args.edit_only, show_tests=args.show_tests)
     try:
         run_replay(Path(args.out), RunnerEndpoint(args.endpoint, timeout=args.request_timeout),
                    opts, model=args.model)
@@ -407,7 +434,7 @@ def cmd_bench(args: argparse.Namespace) -> int:
           flush=True)
     opts = ReplayOptions(python=args.python, timeout=args.timeout, max_turns=args.max_turns,
                          max_tokens=args.max_tokens, test_runs=args.test_runs, wall=args.wall,
-                         min_tps=args.min_tps, scaffold_path=args.scaffold, edit_only=args.edit_only)
+                         min_tps=args.min_tps, scaffold_path=args.scaffold, edit_only=args.edit_only, show_tests=args.show_tests)
     rows: list[dict[str, Any]] = []
     arms: list[tuple[str, str]] = [("endpoint", u) for u in args.endpoints.split(",") if u]
     arms += [("model", m) for m in args.models.split(",") if m]
@@ -1217,6 +1244,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--scaffold", default="", help="scaffold JSON; default is the base scaffold")
     p.add_argument("--edit-only", action="store_true",
                    help="write_file creates files only; existing files change through edit_file")
+    p.add_argument("--show-tests", action="store_true",
+                   help="stage the frozen post-state test files into the workspace, so the "
+                        "attempt sees the failing test; edits to them are tamper")
     p.set_defaults(fn=cmd_replay)
     p = sub.add_parser("bank", help="build repair tasks from a public repository's history")
     p.add_argument("--repo", required=True)
@@ -1273,6 +1303,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--min-tps", type=float, default=15.0)
     p.add_argument("--scaffold", default="")
     p.add_argument("--edit-only", action="store_true")
+    p.add_argument("--show-tests", action="store_true")
     p.set_defaults(fn=cmd_bench)
     p = sub.add_parser("install", help="wire the hooks and a /shadow command into the harnesses "
                                        "(explicit opt-in; reversible with uninstall)")
