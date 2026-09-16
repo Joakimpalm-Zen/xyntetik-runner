@@ -349,3 +349,13 @@ def test_a_cohort_with_another_tool_set_is_not_a_repeat() -> None:
     shown = replace(base, tool_set=(*base.tool_set, "visible:solution-tests"))
     assert attempt_key("bank:x:1", base) != attempt_key("bank:x:1", shown)
     assert attempt_key("bank:x:1", base) == attempt_key("bank:x:1", replace(base, project="other"))
+
+
+def test_an_adapted_cohort_is_not_a_repeat_of_the_base() -> None:
+    from dataclasses import replace
+    from xyntetik_runner.shadow.cli import attempt_key
+    from xyntetik_runner.shadow.evidence import Identity
+    base = Identity(project="p", task_class="file", context_band="", tool_set=("run_tests",),
+                    verifier_id="v", environment_id="e", model_sha256="m", quant="q",
+                    template_sha256="t", runner_build="b", backend="cpu", harness_version="h")
+    assert attempt_key("bank:x:1", base) != attempt_key("bank:x:1", replace(base, adapter_sha256="a1"))

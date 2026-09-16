@@ -218,12 +218,15 @@ def _tasks(out: Path, only: str | None) -> list[RepairTask]:
 
 
 def attempt_key(episode_id: str, ident: Identity) -> tuple[str, str, str, tuple[str, ...]]:
+    """(episode, model, scaffold, tool set) plus the adapter when one is
+    served: the adapter rides in the model slot as `model+adapter`."""
     """What makes an attempt a repeat: the same episode under the same model,
     scaffold AND tool set. The tool set is part of the identity (edit-only,
     visible solution tests), so a cohort that differs there is a new
     attempt, not a rerun; keyed on model and scaffold alone, the first
     show-tests cohort was skipped as already attempted (2026-09-16)."""
-    return (episode_id, ident.model_sha256, ident.scaffold_sha256, tuple(ident.tool_set))
+    model = ident.model_sha256 + (f"+{ident.adapter_sha256}" if ident.adapter_sha256 else "")
+    return (episode_id, model, ident.scaffold_sha256, tuple(ident.tool_set))
 
 
 def stage_solution_tests(task: RepairTask, ws_dir: Path) -> tuple[str, ...]:
@@ -283,6 +286,10 @@ class ReplayOptions:
     instead of the pre-state test that passes. The protected copy still
     judges, and an edit to a staged file is tamper. Part of the identity's
     tool set (`visible:solution-tests`), so cohorts stay apart."""
+    adapter_sha256: str = ""
+    """The served adapter's hash when the endpoint runs with --lora: part of
+    the identity and of the repeat key, so an adapted cohort never pools
+    with the base model's (R14.5.19)."""
     samples: int = 1
     """Attempts per task at ``temperature``, each with its own seed and its
     own ledger record; the first verified sample ends the task. Coverage
@@ -333,6 +340,7 @@ def run_replay(out: Path, endpoint: RunnerEndpoint, opts: ReplayOptions, *,
         project="", task_class="file", context_band="", tool_set=(),
         verifier_id="", environment_id=f"{platform.node()}|{opts.endpoint_label or endpoint.base_url}",
         model_sha256=opts.model_sha256 or f"unknown:{model}", quant=opts.quant or "unknown",
+        adapter_sha256=opts.adapter_sha256 or None,
         template_sha256="unknown", runner_build=str(caps.get("version") or "unknown"),
         backend=str(caps.get("backend") or "unknown"), harness_version=HARNESS_VERSION,
         scaffold_sha256=scaffold_id)
@@ -434,7 +442,8 @@ def cmd_replay(args: argparse.Namespace) -> int:
                          model_sha256=args.model_sha256, quant=args.quant, task=args.task,
                          limit=args.limit, endpoint_label=args.endpoint,
                          edit_only=args.edit_only, show_tests=args.show_tests,
-                         samples=args.samples, temperature=args.temperature)
+                         samples=args.samples, temperature=args.temperature,
+                         adapter_sha256=args.adapter_sha256)
     try:
         run_replay(Path(args.out), RunnerEndpoint(args.endpoint, timeout=args.request_timeout),
                    opts, model=args.model)
@@ -470,7 +479,8 @@ def cmd_bench(args: argparse.Namespace) -> int:
     opts = ReplayOptions(python=args.python, timeout=args.timeout, max_turns=args.max_turns,
                          max_tokens=args.max_tokens, test_runs=args.test_runs, wall=args.wall,
                          min_tps=args.min_tps, scaffold_path=args.scaffold, edit_only=args.edit_only, show_tests=args.show_tests,
-                         samples=args.samples, temperature=args.temperature)
+                         samples=args.samples, temperature=args.temperature,
+                         adapter_sha256=args.adapter_sha256)
     rows: list[dict[str, Any]] = []
     arms: list[tuple[str, str]] = [("endpoint", u) for u in args.endpoints.split(",") if u]
     arms += [("model", m) for m in args.models.split(",") if m]
@@ -1286,6 +1296,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--samples", type=int, default=1,
                    help="attempts per task at --temperature, each with its own seed and record; "
                         "the first verified sample ends the task (coverage is the metric)")
+    p.add_argument("--adapter-sha256", default="",
+                   help="hash of the adapter the endpoint serves with --lora, for the identity")
     p.add_argument("--temperature", type=float, default=0.0)
     p.set_defaults(fn=cmd_replay)
     p = sub.add_parser("bank", help="build repair tasks from a public repository's history")
@@ -1346,6 +1358,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--show-tests", action="store_true")
     p.add_argument("--samples", type=int, default=1)
     p.add_argument("--temperature", type=float, default=0.0)
+    p.add_argument("--oracle-localization", action="store_true")
+    p.add_argument("--adapter-sha256", default="")
     p.set_defaults(fn=cmd_bench)
     p = sub.add_parser("install", help="wire the hooks and a /shadow command into the harnesses "
                                        "(explicit opt-in; reversible with uninstall)")
