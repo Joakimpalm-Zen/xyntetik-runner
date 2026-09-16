@@ -8,6 +8,25 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **Shadow mode admits C changes, verified by their make gates.** The
+  ledger's admission rule wanted a pytest file beside Python source and
+  nothing that needs a build, which put nearly all of this engine's own
+  work outside the instrument's scope. A range that touches built source is now
+  a `make` task: the C test files it touched are frozen together with the
+  post-state Makefile, each is a gate by the Makefile's own convention
+  (`tests/test_x.c` builds and runs as `make test-x` then `./test-x`, with
+  the fixture targets the test names, `test.gguf`, built first), a gate
+  passes when its binary exits 0, the gates must pass on the post-state
+  and fail on the pre-state, and a changed Makefile is tamper. The attempt
+  builds its gates in a scratch copy beside the workspace, so objects never
+  reach the patch. A built range without a C test file has no gate and is
+  ineligible, and says so. Episodes an import rejected under the old rule
+  are imported again under the new one, and the summary reads an
+  unattempted episode's newest record. A C change inside one function is
+  class `function`, so the same delegation order applies. Gated in
+  `python/tests/test_shadow_make_gates.py` on a synthetic C repository;
+  anchored on this repository's own repeat-penalty commit, admitted with
+  two gates that fail at base and pass at the fix.
 - **A stop that names a special token ends the turn there, and
   `stop_token_ids`.** Control tokens decode to no bytes, so a stop string
   such as `<|eom|>` could never match the text a client received, and a

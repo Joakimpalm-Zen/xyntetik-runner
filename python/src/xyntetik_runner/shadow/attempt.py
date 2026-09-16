@@ -18,16 +18,22 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import signal
 import subprocess
+import tempfile
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
-from xyntetik_runner.shadow.baseline import IGNORED_DIRS
+from xyntetik_runner.shadow.baseline import IGNORED_DIRS, file_sha256, tree_hashes
 from xyntetik_runner.shadow.scaffold import BASE_SYSTEM, Scaffold
+from xyntetik_runner.shadow.verifier import fixture_targets, run_gate
+
+SOURCE_SUFFIXES = (".c", ".h", ".cu", ".m", ".metal", ".cpp", ".py")
+MAKEFILES = frozenset({"Makefile", "makefile", "GNUmakefile"})
 
 ChatFn = Callable[[list[dict[str, Any]], list[dict[str, Any]]], dict[str, Any]]
 """``chat(messages, tools) -> assistant message`` (``content``, optional
@@ -59,8 +65,8 @@ TOOLS: list[dict[str, Any]] = [
             "path": {"type": "string"}, "old_text": {"type": "string"},
             "new_text": {"type": "string"}}, "required": ["path", "old_text", "new_text"]}}},
     {"type": "function", "function": {
-        "name": "run_tests", "description": "Run the visible test files with pytest and return "
-        "the tail of the output.",
+        "name": "run_tests", "description": "Run the visible tests (pytest files, or for C tests "
+        "their make gates: build and run) and return the tail of the output.",
         "parameters": {"type": "object", "properties": {}, "required": []}}},
     {"type": "function", "function": {
         "name": "finish", "description": "Declare the task done. Call this when the tests pass "
@@ -107,13 +113,77 @@ class Workspace:
     """Path confinement and the four tools over one directory."""
 
     def __init__(self, root: Path, *, visible_tests: Sequence[str], pythonpath: Sequence[str],
-                 python: str, budget: Budget):
+                 python: str, budget: Budget, gates: Sequence[str] = ()):
         self.root = root.resolve()
         self.visible_tests = tuple(visible_tests)
         self.pythonpath = tuple(pythonpath)
         self.python = python
         self.budget = budget
         self.test_runs = 0
+        self.gates = tuple(gates)
+        """Make gates of a C task; when set, run_tests builds and runs them
+        in a scratch copy kept beside the workspace, so objects and binaries
+        never land in the tree the baseline is compared against."""
+        self._build_dir: Path | None = None
+
+    def close(self) -> None:
+        if self._build_dir is not None:
+            shutil.rmtree(self._build_dir, ignore_errors=True)
+            self._build_dir = None
+
+    def _synced_build_dir(self) -> Path:
+        """The scratch copy, brought level with the workspace: files copied
+        with their mtimes so make rebuilds only what the attempt changed;
+        a source file the attempt removed is removed there too."""
+        if self._build_dir is None:
+            self._build_dir = Path(tempfile.mkdtemp(prefix="xyntetik-shadow-build-"))
+        dst = self._build_dir
+        now = tree_hashes(self.root)
+        # make compares whole-second mtimes: a file edited in the same second
+        # the gate was built would read as up to date, so a changed file is
+        # stamped strictly newer than anything already in the scratch copy
+        newest = max((p.stat().st_mtime for p in dst.rglob("*") if p.is_file()), default=0.0)
+        stamp = max(time.time(), newest + 1.0)
+        for rel, sha in now.items():
+            target = dst / rel
+            if target.is_file() and file_sha256(target) == sha:
+                continue
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(self.root / rel, target)
+            os.utime(target, (stamp, stamp))
+        for rel in tree_hashes(dst):
+            if rel not in now and (rel.endswith(SOURCE_SUFFIXES) or Path(rel).name in MAKEFILES):
+                (dst / rel).unlink(missing_ok=True)
+        return dst
+
+    def _test_file_of(self, gate: str) -> str | None:
+        """The C test file a gate builds, by the naming convention, among
+        the visible tests or under tests/."""
+        stem = "test_" + gate[len("test-"):].replace("-", "_") + ".c"
+        for rel in (*self.visible_tests, f"tests/{stem}"):
+            if Path(rel).name == stem and (self.root / rel).is_file():
+                return rel
+        return None
+
+    def _run_gates(self) -> str:
+        ws = self._synced_build_dir()
+        chunks: list[str] = []
+        code = 0
+        for gate in self.gates:
+            rel = self._test_file_of(gate)
+            state, out, timed_out = run_gate(ws, gate, timeout_s=self.budget.test_timeout_s,
+                                             fixtures=fixture_targets(ws, rel) if rel else ())
+            if timed_out:
+                return f"error: {gate} timed out after {self.budget.test_timeout_s:g}s"
+            text = (out or b"").decode("utf-8", errors="replace")
+            chunks.append(f"== make {gate} && ./{gate}: {state}\n{text}")
+            if state != "passed":
+                code = 1
+                break
+        text = "\n".join(chunks)
+        if len(text) > self.budget.output_chars:
+            text = "...\n" + text[-self.budget.output_chars:]
+        return f"exit code {code}\n{text}"
 
     def resolve(self, rel: str) -> Path:
         if not isinstance(rel, str) or not rel or rel.startswith(("/", "\\")) or ":" in rel[:3]:
@@ -215,6 +285,8 @@ class Workspace:
         if self.test_runs >= self.budget.test_runs:
             return f"error: test-run budget of {self.budget.test_runs} exhausted"
         self.test_runs += 1
+        if self.gates:
+            return self._run_gates()
         targets = [t for t in self.visible_tests if (self.root / t).is_file()]
         if not targets:
             targets = ["tests"] if (self.root / "tests").is_dir() else ["."]
@@ -286,9 +358,13 @@ def attempt(request: str, workspace: Workspace, chat: ChatFn, *, budget: Budget 
     if context:
         joined = "\n\n".join(f"- {c.strip()}" for c in context)
         earlier = f"Earlier requests in this session, oldest first:\n{joined}\n\n"
+    gates = ""
+    if workspace.gates:
+        gates = ("Gates: " + ", ".join(f"make {g} && ./{g}" for g in workspace.gates)
+                 + " (run_tests builds and runs them)\n\n")
     user = (f"{earlier}Task:\n{request.strip()}\n\nVisible test files: "
             f"{', '.join(workspace.visible_tests) or '(none at this state; look for tests/)'}\n\n"
-            f"Top-level files:\n{listing}")
+            f"{gates}Top-level files:\n{listing}")
     messages: list[dict[str, Any]] = [{"role": "system", "content": scaffold.system_text()},
                                       {"role": "user", "content": user}]
     t0 = time.monotonic()

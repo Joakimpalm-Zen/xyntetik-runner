@@ -46,7 +46,12 @@ route requests, train, or sandbox.
   scratch copy of the workspace with the verifier's own pytest configuration
   and returns a `VerifierOutcome`. A no-op, a changed protected test file, a
   changed `conftest.py` or pytest configuration file, a skipped or missing
-  expected test cannot pass; a timeout is `passed=None`.
+  expected test cannot pass; a timeout is `passed=None`. A protected set of
+  kind `make` freezes C test files and the Makefile instead: each expected
+  test is a make gate (`tests/test_x.c` is `make test-x` then `./test-x`),
+  built in the scratch copy with the fixture targets the test names
+  (`test.gguf`) and passed when the binary exits 0; a changed Makefile is
+  tamper like a changed test file.
 
 The negative controls that prove the verifier can fail live in
 `python/tests/test_shadow_verifier.py` against the frozen repair task in
@@ -57,7 +62,10 @@ The negative controls that prove the verifier can fail live in
   boundary: source, session, turn, working directory, start and end, the
   user's request. Never an assistant message, tool argument or tool result.
 - `tasks`: `pair` finds the commit ranges an episode's window covers in any
-  repository at or under its directory; `choose` gives each fix commit to one
+  repository at or under its directory (a range of Python source with pytest
+  files is a `pytest` task; a range that touches built source is a `make`
+  task verified by the gates of the C test files it touched, and a built
+  range without a C test file is ineligible); `choose` gives each fix commit to one
   prompt; `build_task` freezes the post-state test files, requires them to
   pass on the post-state and fail on the pre-state, and writes a `RepairTask`
   that records which tests fail at base. The source diff is never given to

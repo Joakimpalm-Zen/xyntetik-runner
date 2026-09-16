@@ -3,15 +3,24 @@
 An episode says when and where work happened. The repository says what
 changed: the commits in the episode's window (in any git repository at or
 under the working directory) give a pre-state, a post-state and the files
-touched. A task is admitted when the range touched pytest test files and
-Python source and nothing that needs a build, the post-state's versions of
-those test files can be collected and pass on the post-state tree, and the
-same frozen files fail on the pre-state tree. The frozen tests are the
-verifier; the source diff is the frontier's answer and is never given to
-the attempt.
+touched. A task is admitted when the range touched test files and source,
+the post-state's versions of those test files pass on the post-state tree,
+and the same frozen files fail on the pre-state tree. The frozen tests are
+the verifier; the source diff is the frontier's answer and is never given
+to the attempt.
+
+Two verifier kinds. A range of Python source and pytest files, with nothing
+that needs a build, is a ``pytest`` task: the frozen files are collected
+and run by pytest. A range that touches C, CUDA, Metal or other built
+source is a ``make`` task: its verifier is the make gates of the C test
+files it touched (``tests/test_x.c`` is ``make test-x`` then ``./test-x``,
+the convention the runner's own Makefile follows), built from the frozen
+test files and the frozen post-state Makefile. A built range without a C
+test file has no gate to verify it and is ineligible.
 
 Everything the attempt receives is: the pre-state tree, the user's request,
-and the names of the visible test files as they were at the pre-state.
+and the names of the visible test files (and gates) as they were at the
+pre-state.
 """
 
 from __future__ import annotations
@@ -34,6 +43,8 @@ from xyntetik_runner.shadow.importer import Episode
 from xyntetik_runner.shadow.verifier import InstrumentError, ProtectedTests, calibrate, check
 
 BUILD_SUFFIXES = (".c", ".h", ".cu", ".m", ".metal", ".cpp", ".rs", ".go")
+C_TEST_SUFFIX = ".c"
+MAKEFILE_NAMES = frozenset({"Makefile", "makefile", "GNUmakefile"})
 SKIP_DIRS = frozenset({"node_modules", "models", ".venv", "venv", "__pycache__", "dist", "build"})
 COMMIT_SLACK = timedelta(minutes=30)
 
@@ -67,6 +78,11 @@ class RepairTask:
     or method; ``file`` for one file beyond that; ``multi-file`` otherwise.
     The class a person delegates is the first one."""
     changed_lines: int = 0
+    verifier_kind: str = "pytest"
+    """``pytest`` or ``make`` (see the module docstring); a task written
+    before kinds existed is pytest."""
+    gates: tuple[str, ...] = ()
+    """The make gates of a ``make`` task, one per frozen C test file."""
 
     def to_json(self) -> str:
         return json.dumps(asdict(self), sort_keys=True, indent=2)
@@ -75,7 +91,7 @@ class RepairTask:
     def load(cls, path: Path) -> RepairTask:
         data = json.loads(path.read_text(encoding="utf-8"))
         for key in ("test_files", "visible_test_files", "pythonpath", "failing_at_base",
-                    "context"):
+                    "context", "gates"):
             data[key] = tuple(data.get(key) or ())
         return cls(**data)
 
@@ -157,6 +173,8 @@ def touched_files(repo: Path, shas: Iterable[str]) -> set[str]:
 
 
 def classify(files: Iterable[str]) -> tuple[list[str], list[str], list[str]]:
+    """(pytest files, Python source, built source) of a range. A C test file
+    counts as built source here; ``classify_range`` tells them apart."""
     tests, src, build = [], [], []
     for f in sorted(files):
         name = Path(f).name
@@ -167,6 +185,34 @@ def classify(files: Iterable[str]) -> tuple[list[str], list[str], list[str]]:
         elif f.endswith(BUILD_SUFFIXES):
             build.append(f)
     return tests, src, build
+
+
+@dataclass(frozen=True)
+class Touched:
+    py_tests: tuple[str, ...]
+    py_src: tuple[str, ...]
+    build: tuple[str, ...]
+    """built source that is not a C test file"""
+    c_tests: tuple[str, ...]
+    makefile: bool
+
+
+def is_c_test(rel: str) -> bool:
+    name = Path(rel).name
+    return name.startswith("test_") and name.endswith(C_TEST_SUFFIX)
+
+
+def gate_name(rel: str) -> str:
+    """``tests/test_penalty_window.c`` builds and runs as ``test-penalty-window``."""
+    return "test-" + Path(rel).stem[len("test_"):].replace("_", "-")
+
+
+def classify_range(files: Iterable[str]) -> Touched:
+    tests, src, build = classify(files)
+    c_tests = tuple(f for f in build if is_c_test(f))
+    return Touched(py_tests=tuple(tests), py_src=tuple(src),
+                   build=tuple(f for f in build if not is_c_test(f)), c_tests=c_tests,
+                   makefile=any(Path(f).name in MAKEFILE_NAMES for f in files))
 
 
 def import_roots(tree: Path) -> tuple[str, ...]:
@@ -240,13 +286,13 @@ def change_class(repo: Path, base: str, solution: str, src: Sequence[str]) -> tu
         return ("multi-file" if len(src) > 1 else "file", 0)
     rel = src[0]
     diff = _git(str(repo), "diff", "-U0", base, solution, "--", rel)
-    return class_from_diff(diff, _git(str(repo), "show", f"{solution}:{rel}"))
+    post = _git(str(repo), "show", f"{solution}:{rel}")
+    if rel.endswith(BUILD_SUFFIXES):
+        return class_from_diff_c(diff, post)
+    return class_from_diff(diff, post)
 
 
-def class_from_diff(diff: str, post_text: str) -> tuple[str, int]:
-    """The class of one file's change from its unified diff (zero context)
-    and the file's post-state text; shared by the committed range and the
-    uncommitted scratch worktree of a delegation."""
+def _hunks(diff: str) -> tuple[list[tuple[int, int]], int]:
     ranges: list[tuple[int, int]] = []
     changed = 0
     for line in diff.split("\n"):
@@ -257,6 +303,106 @@ def class_from_diff(diff: str, post_text: str) -> tuple[str, int]:
         count = int(m.group(2)) if m.group(2) is not None else 1
         changed += count
         ranges.append((start, start + max(count, 1) - 1))
+    return ranges, changed
+
+
+def _strip_c(line: str, in_comment: bool) -> tuple[str, bool]:
+    """A C line without its comments and string or character literals, and
+    whether a block comment is still open after it."""
+    out: list[str] = []
+    j = 0
+    while j < len(line):
+        if in_comment:
+            k = line.find("*/", j)
+            if k < 0:
+                return "".join(out), True
+            in_comment, j = False, k + 2
+            continue
+        if line.startswith("//", j):
+            break
+        if line.startswith("/*", j):
+            in_comment, j = True, j + 2
+            continue
+        ch = line[j]
+        if ch in "\"'":
+            j += 1
+            while j < len(line) and line[j] != ch:
+                j += 2 if line[j] == "\\" else 1
+            j += 1
+            continue
+        out.append(ch)
+        j += 1
+    return "".join(out), in_comment
+
+
+_C_NAME = re.compile(r"([A-Za-z_]\w*)\s*\(")
+_C_NOT_FUNC = ("struct", "enum", "union", "typedef", "if", "for", "while", "switch", "return")
+
+
+def c_function_spans(text: str) -> list[tuple[int, int, str]]:
+    """(first line, last line, name) of every function definition in a C
+    file, from brace depth: a definition opens at depth zero with a
+    parenthesised head and closes when the depth returns to zero. Comments,
+    strings and preprocessor lines are ignored. A heuristic, exact enough
+    to say whether a change stayed inside one function."""
+    spans: list[tuple[int, int, str]] = []
+    depth = 0
+    in_comment = False
+    start: tuple[int, str] | None = None
+    pending: tuple[int, str] | None = None   # a head whose brace is on a later line
+    for i, raw in enumerate(text.split("\n"), 1):
+        code, in_comment = _strip_c(raw, in_comment)
+        stripped = code.strip()
+        if depth == 0 and start is None and stripped.startswith("#"):
+            continue
+        opens, closes = code.count("{"), code.count("}")
+        if depth == 0 and start is None and stripped:
+            head = code.split("{", 1)[0]
+            m = _C_NAME.search(head)
+            is_head = (m is not None and "=" not in head and ";" not in head
+                       and m.group(1) not in _C_NOT_FUNC)
+            if is_head and opens:
+                start = (i, m.group(1))
+            elif is_head and head.rstrip().endswith(")"):
+                pending = (i, m.group(1))
+            elif opens and pending is not None and stripped.startswith("{"):
+                start = pending
+            else:
+                pending = None
+        depth += opens - closes
+        if start is not None and depth <= 0:
+            spans.append((start[0], i, start[1]))
+            start, pending, depth = None, None, 0
+    return spans
+
+
+def class_from_diff_c(diff: str, post_text: str) -> tuple[str, int]:
+    """``class_from_diff`` for a C file: ``function`` when every changed
+    line of the file falls inside one function definition; an added
+    ``#include`` does not make it a file-level change."""
+    ranges, changed = _hunks(diff)
+    if not ranges:
+        return ("file", 0)
+    spans = c_function_spans(post_text)
+    lines = post_text.split("\n")
+    owners: set[str] = set()
+    for a, b in ranges:
+        if all(lines[k - 1].lstrip().startswith("#include") for k in range(a, b + 1)
+               if 0 < k <= len(lines)):
+            continue
+        inside = [s for s in spans if s[0] <= a and b <= s[1]]
+        if not inside:
+            return ("file", changed)
+        innermost = min(inside, key=lambda s: s[1] - s[0])
+        owners.add(f"{innermost[2]}@{innermost[0]}")
+    return ("function" if len(owners) == 1 else "file", changed)
+
+
+def class_from_diff(diff: str, post_text: str) -> tuple[str, int]:
+    """The class of one file's change from its unified diff (zero context)
+    and the file's post-state text; shared by the committed range and the
+    uncommitted scratch worktree of a delegation."""
+    ranges, changed = _hunks(diff)
     if not ranges:
         return ("file", 0)
     try:
@@ -287,11 +433,12 @@ def build_task(episode: Episode, repo: Path, shas: Sequence[str], *, out_dir: Pa
                python: str = sys.executable, timeout_s: float = 600.0) -> RepairTask | Rejection:
     """Admit or reject one (episode, repository, commit range)."""
     files = touched_files(repo, shas)
-    tests, src, build = classify(files)
+    touched = classify_range(files)
+    if touched.build or touched.c_tests:
+        return build_make_task(episode, repo, shas, touched, out_dir=out_dir, timeout_s=timeout_s)
+    tests, src = list(touched.py_tests), list(touched.py_src)
     if not tests or not src:
         return Rejection(Disposition.INELIGIBLE, "range touches no pytest test file with Python source")
-    if build:
-        return Rejection(Disposition.INELIGIBLE, f"range touches {len(build)} file(s) that need a build")
     solution = shas[0]
     # --verify: without it git echoes an unresolvable "<sha>^" back on stdout
     # and a root commit would reach git worktree as an invalid reference.
@@ -336,6 +483,87 @@ def build_task(episode: Episode, repo: Path, shas: Sequence[str], *, out_dir: Pa
             pythonpath=roots, protected_dir=str(protected), expected_tests=len(frozen.expected),
             baseline_failing=cal.failing + cal.missing, failing_at_base=cal.failing_ids,
             task_class=klass, changed_lines=changed)
+        (task_dir / "task.json").write_text(task.to_json() + "\n", encoding="utf-8")
+        admitted = True
+        return task
+    except RuntimeError as e:
+        return Rejection(Disposition.UNREPLAYABLE, str(e))
+    finally:
+        if post is not None:
+            _drop_worktree(repo, post)
+        if pre is not None:
+            _drop_worktree(repo, pre)
+        if not admitted and task_dir.exists():
+            shutil.rmtree(task_dir, ignore_errors=True)
+
+
+def build_tools_present() -> str | None:
+    """Why a make task cannot be verified on this machine, or None."""
+    if not shutil.which("make"):
+        return "no make on this machine"
+    cc = os.environ.get("CC") or "cc"
+    if not shutil.which(cc):
+        return f"no C compiler on this machine ({cc} not found)"
+    return None
+
+
+def build_make_task(episode: Episode, repo: Path, shas: Sequence[str], touched: Touched, *,
+                    out_dir: Path, timeout_s: float = 600.0) -> RepairTask | Rejection:
+    """Admit or reject a built range: the verifier is the make gates of the
+    C test files it touched, frozen with the post-state Makefile."""
+    n_built = len(touched.build) + len(touched.c_tests)
+    if not touched.c_tests:
+        return Rejection(Disposition.INELIGIBLE,
+                         f"range touches {n_built} built file(s) and no C test file (tests/test_*.c) "
+                         "to verify them")
+    why = build_tools_present()
+    if why:
+        return Rejection(Disposition.UNREPLAYABLE, f"make gate: {why}")
+    solution = shas[0]
+    base = _git(str(repo), "rev-parse", "--verify", "--quiet", f"{shas[-1]}^").strip()
+    if not base:
+        return Rejection(Disposition.UNREPLAYABLE, "first commit in the range has no parent")
+    task_id = f"{repo.name}-{base[:8]}-{solution[:8]}"
+    task_dir = out_dir / task_id
+    protected = task_dir / "protected"
+    post = pre = None
+    admitted = False
+    try:
+        post = _worktree(repo, solution)
+        pre = _worktree(repo, base)
+        makefile = next((n for n in ("Makefile", "makefile", "GNUmakefile") if (post / n).is_file()), None)
+        if makefile is None:
+            return Rejection(Disposition.UNREPLAYABLE, "no Makefile at the post-state to build the gates")
+        present = [t for t in touched.c_tests if (post / t).is_file()]
+        if not present:
+            return Rejection(Disposition.UNREPLAYABLE, "C test files were deleted in the range")
+        if protected.exists():
+            shutil.rmtree(protected)
+        expected = {rel: [gate_name(rel)] for rel in present}
+        for rel in [*expected, makefile]:
+            (protected / rel).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(post / rel, protected / rel)
+        frozen = ProtectedTests.freeze(protected, expected, verifier_id=f"commit-gates:{task_id}",
+                                       kind="make")
+        outcome = check(post, frozen, timeout_s=timeout_s)
+        if outcome.passed is not True:
+            return Rejection(Disposition.UNREPLAYABLE,
+                             f"frozen gates do not pass on the post-state: {'; '.join(outcome.reasons)}")
+        try:
+            cal = calibrate(frozen, pre, timeout_s=timeout_s)
+        except InstrumentError as e:
+            return Rejection(Disposition.UNREPLAYABLE, f"instrument: {e}")
+        visible = tuple(t for t in present if (pre / t).is_file())
+        src = [*touched.build, *touched.py_src]
+        klass, changed = change_class(repo, base, solution, src)
+        task = RepairTask(
+            task_id=task_id, episode_id=episode.episode_id, repo=str(repo), base_sha=base,
+            solution_sha=solution, request=episode.request, request_sha256=episode.request_sha256,
+            context=episode.context, test_files=tuple(present), visible_test_files=visible,
+            src_files=len(src), pythonpath=(), protected_dir=str(protected),
+            expected_tests=len(frozen.expected), baseline_failing=cal.failing + cal.missing,
+            failing_at_base=cal.failing_ids, task_class=klass, changed_lines=changed,
+            verifier_kind="make", gates=tuple(gate_name(rel) for rel in present))
         (task_dir / "task.json").write_text(task.to_json() + "\n", encoding="utf-8")
         admitted = True
         return task
