@@ -8,6 +8,15 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **`replay --show-tests`: the failing test as the attempt's visible
+  specification.** A bank task's visible tests were the pre-state files,
+  which pass at base by construction, so an attempt that ran them saw green
+  and finished (18 of 30 in the first make-bank arm). With `--show-tests`
+  the frozen post-state test files are staged into the workspace before
+  the baseline is captured: the attempt's own gate then fails at base, the
+  protected copy still judges, and an edit to a staged file is tamper.
+  Recorded in the identity's tool set as `visible:solution-tests`, so the
+  cohort stays apart from the hidden-test one.
 - **Muse ATEM tool calling under `tool_choice: "auto"`, and after a
   reasoning turn.** Three defects, one finding (the lab, 2026-09-16, on
   Muse-Glimmer-30B: the default turn ended at the recipient header with no
