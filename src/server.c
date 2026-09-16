@@ -521,7 +521,14 @@ static void handle_chat(slot_t *s, sock_t fd, jv *req) {
         return;
     }
     size_t cm_cap = (size_t)msgs->n + 1;
-    if (s->tmpl == TMPL_HARMONY) {
+    // Every family that replays reasoning_content as its own turn needs a
+    // slot for it: Harmony (analysis channel) and Muse (the to=self turn,
+    // since #121). Counting only Harmony's left Muse one slot short per
+    // reasoning turn, a heap overflow the third replayed turn reached (the
+    // lab, 2026-09-16: "double free or corruption" on the fourth request of
+    // a Muse tool conversation; ASan on the fixture: WRITE past cm at the
+    // third).
+    if (s->tmpl == TMPL_HARMONY || s->tmpl == TMPL_MUSE) {
         for (int i = 0; i < msgs->n; i++) {
             jv *calls = jv_get(msgs->items[i], "tool_calls");
             if (calls && calls->type == J_ARR) cm_cap += (size_t)calls->n;

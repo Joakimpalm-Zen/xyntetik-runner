@@ -181,3 +181,56 @@ def test_required_with_thinking_calls_the_tool_the_reasoning_named(muse):
     tools = [TOOLS[1], TOOLS[0], TOOLS[2], TOOLS[3]]
     _assert_call(_chat(muse, AFTER_PRIMED_SELF, tool_choice="required", enable_thinking=True,
                        tools=tools), reasoning=REASON)
+
+
+# --- the lab's second finding: a multi-turn tool conversation with reasoning
+# replayed on every assistant turn crashed the server on the fourth request
+TOOLS3 = [
+    {"type": "function", "function": {"name": "today", "description": "today's date",
+                                      "parameters": {"type": "object", "properties": {}, "required": []}}},
+    {"type": "function", "function": {"name": "get_weather_forecast", "description": "forecast",
+                                      "parameters": {"type": "object", "properties": {
+                                          "city": {"type": "string"}, "days": {"type": "integer"}},
+                                          "required": ["city", "days"]}}},
+    {"type": "function", "function": {"name": "calculator", "description": "evaluate",
+                                      "parameters": {"type": "object", "properties": {
+                                          "expression": {"type": "string"}}, "required": ["expression"]}}},
+]
+
+
+def _atem(name, **params):
+    body = "".join(f"<atem:parameter name=\"{k}\">{v}</atem:parameter>\n" for k, v in params.items())
+    return f"<atem:function_calls>\n<atem:invoke name=\"{name}\">\n{body}</atem:invoke>\n</atem:function_calls>"
+
+
+def _turn(reason, name, **params):
+    return (f" to=self<|message|>{reason}<|eom|><|start|>assistant to={name}<|message|>"
+            + _atem(name, **params) + "<|eot|>")
+
+
+def test_four_tool_turns_with_reasoning_replayed_each_time(muse):
+    """Each request replays every earlier assistant turn's reasoning_content
+    and tool call plus the tool result; the fourth request must be served
+    like the first (the server allocated one message slot too few per
+    replayed Muse reasoning turn and overran the array on the third)."""
+    script = [("Date first.", "today", {}),
+              ("Now the forecast.", "get_weather_forecast", {"city": "Bogota", "days": 2}),
+              ("Convert 11 C.", "calculator", {"expression": "11 * 9/5 + 32"}),
+              ("Summarise.", "calculator", {"expression": "1 + 1"})]
+    results = ["2026-09-16", "day1: 11C; day2: 13C", "51.8", "2"]
+    messages = [{"role": "system", "content": "You are a careful assistant with tools."},
+                {"role": "user", "content": "Weather in Bogota over two days, in Fahrenheit?"}]
+    for i, (reason, name, params) in enumerate(script):
+        d = _chat(muse, _turn(reason, name, **params), messages=messages, tools=TOOLS3,
+                  repeat_penalty=1.0, max_tokens=900)
+        ch = d["choices"][0]
+        msg = ch["message"]
+        calls = msg.get("tool_calls") or []
+        assert ch["finish_reason"] == "tool_calls" and [c["function"]["name"] for c in calls] == [name], (i, d)
+        assert msg.get("reasoning_content") == reason, (i, d)
+        messages.append({"role": "assistant", "content": None, "reasoning_content": reason,
+                         "tool_calls": calls})
+        messages.append({"role": "tool", "tool_call_id": calls[0]["id"], "content": results[i]})
+    # and the server is still there for a fifth, plain request
+    d = _chat(muse, DIRECT_ANSWER, messages=messages[:2])
+    assert d["choices"][0]["message"]["content"] == "Sydney is warmer today."

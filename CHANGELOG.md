@@ -8,6 +8,17 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **A Muse tool conversation no longer overruns the chat message array on
+  its third replayed reasoning turn.** The chat handler sized its rendered
+  message array with one extra slot per `reasoning_content` for Harmony
+  only; since Muse began replaying reasoning as its own `to=self` turn,
+  each Muse assistant turn with reasoning was one slot short, and the third
+  such turn wrote past the array (the lab, 2026-09-16: "double free or
+  corruption" on the fourth request of a Muse tool conversation on the real
+  30B; ASan on the fixture: a 32-byte write past the array in the chat
+  handler). The count now covers both families. Gated by a four-turn
+  conversation on the Muse fixture in `tests/test_muse_auto_toolchoice.py`
+  and a three-turn render in `tests/test_tool_attribution.c`.
 - **A replay cohort with another tool set is not a repeat.** The replay's
   already-attempted check keyed on episode, model and scaffold, so a
   cohort that differed only in its tool set (`--edit-only`,
