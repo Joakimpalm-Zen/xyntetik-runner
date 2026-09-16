@@ -1108,6 +1108,40 @@ static void test_muse_replays_reasoning_as_a_self_turn(void) {
     ta_tmpl = TMPL_HARMONY;
 }
 
+// Every replayed Muse reasoning turn is one more rendered message: three
+// assistant turns with reasoning_content and a call each must render all
+// six turns (the array they go into was sized for Harmony's only; the
+// third turn wrote past it).
+static void test_muse_three_reasoning_turns_render_every_turn(void) {
+    ta_tmpl = TMPL_MUSE;
+    ta_run(handle_chat,
+           "{\"model\":\"m\",\"messages\":["
+           "{\"role\":\"user\",\"content\":\"weather in Oslo?\"},"
+           "{\"role\":\"assistant\",\"reasoning_content\":\"R_ONE\","
+           "\"tool_calls\":[{\"id\":\"c1\",\"type\":\"function\","
+           "\"function\":{\"name\":\"get_weather\",\"arguments\":\"{\\\"city\\\":\\\"Oslo\\\"}\"}}]},"
+           "{\"role\":\"tool\",\"tool_call_id\":\"c1\",\"content\":\"rainy\"},"
+           "{\"role\":\"assistant\",\"reasoning_content\":\"R_TWO\","
+           "\"tool_calls\":[{\"id\":\"c2\",\"type\":\"function\","
+           "\"function\":{\"name\":\"get_weather\",\"arguments\":\"{\\\"city\\\":\\\"Bergen\\\"}\"}}]},"
+           "{\"role\":\"tool\",\"tool_call_id\":\"c2\",\"content\":\"sunny\"},"
+           "{\"role\":\"assistant\",\"reasoning_content\":\"R_THREE\","
+           "\"tool_calls\":[{\"id\":\"c3\",\"type\":\"function\","
+           "\"function\":{\"name\":\"get_weather\",\"arguments\":\"{\\\"city\\\":\\\"Tromso\\\"}\"}}]},"
+           "{\"role\":\"tool\",\"tool_call_id\":\"c3\",\"content\":\"snow\"}],"
+           TA_ONE_TOOL_CHAT "}");
+    ck(ta_prompt != NULL, "muse three reasoning turns: a prompt was produced");
+    ck(ta_prompt && strstr(ta_prompt, "to=self<|message|>R_ONE<|eom|>") != NULL,
+       "muse three reasoning turns: the first self turn is rendered");
+    ck(ta_prompt && strstr(ta_prompt, "to=self<|message|>R_TWO<|eom|>") != NULL,
+       "muse three reasoning turns: the second self turn is rendered");
+    ck(ta_prompt && strstr(ta_prompt, "to=self<|message|>R_THREE<|eom|>") != NULL,
+       "muse three reasoning turns: the third self turn is rendered");
+    ck(ta_prompt && strstr(ta_prompt, "<tool_output name=\"get_weather\">\nsnow") != NULL,
+       "muse three reasoning turns: the last tool result is rendered after them");
+    ta_tmpl = TMPL_HARMONY;
+}
+
 static void test_messages_thinking_dropped_off_harmony(void) {
     ta_tmpl = TMPL_CHATML;
     ta_run(handle_messages,
@@ -1242,6 +1276,7 @@ int main(void) {
     test_messages_thinking_replays_on_harmony();
     test_messages_thinking_dropped_off_harmony();
     test_muse_replays_reasoning_as_a_self_turn();
+    test_muse_three_reasoning_turns_render_every_turn();
     test_messages_redacted_thinking_never_replays();
     test_chat_text_spelled_call_resolves();
     test_chat_text_spelled_positional();
