@@ -40,6 +40,12 @@ typedef struct {
     int  pos;              // next free KV slot
     int  stop_ids[12];
     int  n_stop;
+    // Stop ids the REQUEST added: a stop string that spells a control token
+    // exactly, or stop_token_ids. Live for one request; completion_cleanup
+    // clears them. Control tokens decode to no bytes, so the text matcher
+    // could never see `<|eom|>`; these end the turn on the id itself.
+    int  req_stop_ids[8];
+    int  n_req_stop;
     bool ignore_eos;
     bool hit_stop;         // last generate ended on a stop token / json done
     bool oom;              // generation aborted on an allocation failure — the
@@ -244,6 +250,9 @@ const char *engine_rewind_how_name(int how);
 // engine_rewind resumes from the mark whenever the kept run reaches it.
 // false = not a recurrent model (nothing to mark) or the mark failed.
 bool   engine_mark_turn(engine *e);
+// The request's own stop ids (engine.req_stop_ids): up to 8, replaced whole;
+// n = 0 clears them.
+void   engine_set_request_stops(engine *e, const int *ids, int n);
 // feed tokens (batched); returns last-token logits, or NULL on overflow/stop
 float *engine_feed(engine *e, const int32_t *toks, int n);
 // sample until stop/limit, streaming decoded bytes to cb; returns token count

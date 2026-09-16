@@ -738,10 +738,11 @@ void handle_responses(slot_t *s, sock_t fd, jv *req) {
                 // for thinking blocks, and the answer has to match what
                 // /v1/chat/completions does with reasoning_content for the
                 // same resident model. Harmony authors prior reasoning on
-                // its own `analysis` channel; every other family's reference
-                // strips prior thinking from history, so for those the item
-                // is accepted and renders nothing, as it does there.
-                if (s->tmpl != TMPL_HARMONY) continue;
+                // its own `analysis` channel and Muse as a `to=self` turn
+                // ending <|eom|>; every other family's reference strips prior
+                // thinking from history, so for those the item is accepted and
+                // renders nothing, as it does there.
+                if (s->tmpl != TMPL_HARMONY && s->tmpl != TMPL_MUSE) continue;
                 jv *summary = jv_get(input->items[i], "summary");
                 sbuf r = {0};
                 for (int k = 0; summary && summary->type == J_ARR && k < summary->n; k++) {

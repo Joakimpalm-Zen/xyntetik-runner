@@ -379,7 +379,8 @@ static bool anth_blocks(jv *messages, int message_index, jv *msg,
                     return false;
                 }
             }
-            const char *think_txt = tmpl == TMPL_HARMONY && !strcmp(bt, "thinking")
+            const char *think_txt = (tmpl == TMPL_HARMONY || tmpl == TMPL_MUSE) &&
+                                    !strcmp(bt, "thinking")
                 ? jv_str(jv_get(b, "thinking"), NULL) : NULL;
             if (think_txt && think_txt[0])
                 turn_add_native(t, "assistant", strdup(think_txt),

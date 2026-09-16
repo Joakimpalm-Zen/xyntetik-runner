@@ -1548,7 +1548,7 @@ fail closed. `GET /v1/capabilities` returns the admitted profile. See
 
 Chat supports buffered and SSE responses, part-array content, assistant
 `tool_calls` history, `role:"tool"` results, `stream_options.include_usage`,
-`logprobs`/`top_logprobs`, `min_p`, `repeat_penalty`, up to four stop strings,
+`logprobs`/`top_logprobs`, `min_p`, `repeat_penalty`, up to four stop strings (one that spells a control token exactly, such as `<|eom|>`, stops on that token) and `stop_token_ids` (up to eight ids),
 and `keep_alive` on a registry-backed server. Tool declarations are rendered into the model
 prompt in the resident model's native tool protocol - identically on
 `/v1/chat/completions`, `/v1/responses`, and `/v1/messages`, down to the
@@ -1561,7 +1561,7 @@ constrains tool names and argument schemas directly in that native grammar and
 maps buffered and streaming output back to the OpenAI shape.
 
 Stop strings and tool declarations cannot be combined: a request carrying both
-`stop` (or Anthropic's `stop_sequences`) and `tools` is refused with HTTP 400.
+`stop` (or Anthropic's `stop_sequences`, or `stop_token_ids`) and `tools` is refused with HTTP 400.
 A stop string is a rule about the model's visible text, but under the tool
 envelope the model generates protocol - Harmony channel markers and recipient
 headers, Muse's `<atem:invoke>` blocks, gemma-4's `<|tool_call>` blocks, Qwen's

@@ -586,7 +586,10 @@ static void handle_chat(slot_t *s, sock_t fd, jv *req) {
                 turn_name = jv_str(jv_get(fn, "name"), NULL);
             }
         }
-        if (s->tmpl == TMPL_HARMONY && !strcmp(role, "assistant")) {
+        // Harmony (the analysis channel) and Muse (a `to=self` turn ending
+        // <|eom|>) replay reasoning_content as its own turn, as their
+        // references do; the renderer spells each family's form
+        if ((s->tmpl == TMPL_HARMONY || s->tmpl == TMPL_MUSE) && !strcmp(role, "assistant")) {
             const char *reason = jv_str(
                 jv_get(msgs->items[i], "reasoning_content"), NULL);
             if (reason && reason[0]) {
@@ -595,6 +598,11 @@ static void handle_chat(slot_t *s, sock_t fd, jv *req) {
                                         .channel = "analysis" };
                 total += strlen(reason) + 64;
             }
+        }
+        // Harmony's answer and calls are separate messages on separate
+        // channels; every other family's, Muse's included, is one turn built
+        // by message_text below (Muse's call is the atem block, to=NAME)
+        if (s->tmpl == TMPL_HARMONY && !strcmp(role, "assistant")) {
             char *visible = message_text(msgs->items[i], s->tmpl, false, &oom);
             if (oom) break;
             jv *calls = jv_get(msgs->items[i], "tool_calls");

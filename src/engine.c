@@ -985,8 +985,15 @@ model_t *spec_draft_load(const char *path, const model_t *target,
     return dm;
 }
 
+void engine_set_request_stops(engine *e, const int *ids, int n) {
+    int cap = (int)(sizeof(e->req_stop_ids) / sizeof(*e->req_stop_ids));
+    e->n_req_stop = 0;
+    for (int i = 0; ids && i < n && i < cap; i++) e->req_stop_ids[e->n_req_stop++] = ids[i];
+}
+
 static bool is_stop(engine *e, int id) {
     for (int i = 0; i < e->n_stop; i++) if (e->stop_ids[i] == id) return true;
+    for (int i = 0; i < e->n_req_stop; i++) if (e->req_stop_ids[i] == id) return true;
     return false;
 }
 
