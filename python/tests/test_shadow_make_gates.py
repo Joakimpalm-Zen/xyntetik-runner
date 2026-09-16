@@ -280,3 +280,31 @@ def test_the_summary_reads_the_newest_record_of_an_unattempted_episode() -> None
     new = rec(Disposition.NOT_ATTEMPTED_RESOURCE, "admitted as x; not attempted yet")
     assert summarize([old]).eligible == 0
     assert summarize([old, new]).eligible == 1 and summarize([old, new]).observed == 1
+
+
+@needs_toolchain
+def test_the_bank_admits_a_make_commit_with_its_message_as_the_request(repo: Path, tmp_path: Path) -> None:
+    from xyntetik_runner.shadow.bank import build_bank
+    entries = build_bank(repo, out_dir=tmp_path / "bank", limit=5, max_commits=10, kind="make",
+                         max_gates=1, timeout_s=300)
+    admitted = [e for e in entries if e.task]
+    assert len(admitted) == 1 and admitted[0].task is not None
+    task = admitted[0].task
+    assert task.verifier_kind == "make" and task.gates == ("test-add",)
+    assert task.request == "fix" and task.episode_id.startswith("bank:")
+    reasons = {e.reason for e in entries if not e.task}
+    assert "unreplayable: first commit in the range has no parent" in reasons
+    # the pytest-only bank refuses the same commit, by name
+    only_py = build_bank(repo, out_dir=tmp_path / "bank2", limit=5, max_commits=10, kind="pytest")
+    assert not [e for e in only_py if e.task] and "built range, pytest bank" in {e.reason for e in only_py}
+
+
+def test_edit_only_refuses_to_overwrite_an_existing_file(tmp_path: Path) -> None:
+    (tmp_path / "a.c").write_text("int a(void) { return 1; }\n", encoding="utf-8")
+    ws = Workspace(tmp_path, visible_tests=(), pythonpath=(), python=sys.executable,
+                   budget=Budget(), edit_only=True)
+    out = ws.write_file("a.c", "int a(void) { return 2; }\n")
+    assert out.startswith("error: a.c exists (1 lines)") and "edit_file" in out
+    assert (tmp_path / "a.c").read_text(encoding="utf-8") == "int a(void) { return 1; }\n"
+    assert ws.write_file("b.c", "int b;\n").startswith("wrote")
+    assert ws.edit_file("a.c", "return 1", "return 2").startswith("edited")

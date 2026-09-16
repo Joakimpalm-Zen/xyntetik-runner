@@ -1,10 +1,11 @@
 """A public task bank (R15.0.3): repair tasks from an open-source history.
 
 The same admission rule as the personal ledger, applied to a repository
-anyone may clone: a commit that touched pytest test files and Python
-source and nothing that needs a build, whose post-state tests collect and
-pass and whose frozen tests fail on the parent. The request is the commit
-message, the authors' own public words. Nothing in a bank task comes from
+anyone may clone: a commit that touched test files and source, whose
+post-state tests pass and whose frozen tests fail on the parent, as a
+``pytest`` task (pytest files beside Python source, nothing built) or a
+``make`` task (C test files beside built source, verified by their make
+gates). The request is the commit message, the authors' own public words. Nothing in a bank task comes from
 a frontier tool, so scaffold learning can run on it without the
 training-data firewall's entitlement questions, and a scaffold learned
 here is then measured, not trained, on the owner's captured episodes.
@@ -21,7 +22,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from xyntetik_runner.shadow.importer import Episode
-from xyntetik_runner.shadow.tasks import RepairTask, Rejection, build_task, classify, touched_files
+from xyntetik_runner.shadow.tasks import RepairTask, Rejection, build_task, classify_range, touched_files
 
 
 @dataclass(frozen=True)
@@ -31,9 +32,11 @@ class BankEntry:
     reason: str
 
 
-def _commits(repo: Path, max_commits: int) -> Iterator[tuple[str, int, str]]:
-    proc = subprocess.run(["git", "-C", str(repo), "log", "--no-merges", "--format=%H%x00%at%x00%B%x1e",
-                           f"-n{max_commits}"], capture_output=True, text=True)
+def _commits(repo: Path, max_commits: int, since: str = "") -> Iterator[tuple[str, int, str]]:
+    cmd = ["git", "-C", str(repo), "log", "--no-merges", "--format=%H%x00%at%x00%B%x1e", f"-n{max_commits}"]
+    if since:
+        cmd += ["--since", since]
+    proc = subprocess.run(cmd, capture_output=True, text=True)
     for chunk in proc.stdout.split("\x1e"):
         chunk = chunk.strip("\n")
         if not chunk:
@@ -44,21 +47,39 @@ def _commits(repo: Path, max_commits: int) -> Iterator[tuple[str, int, str]]:
 
 def build_bank(repo: Path, *, out_dir: Path, python: str = sys.executable, limit: int = 20,
                max_commits: int = 400, max_src_files: int = 3, timeout_s: float = 600.0,
-               log: Iterator[str] | None = None) -> list[BankEntry]:
-    """Walk the history newest first and admit up to ``limit`` tasks."""
+               log: Iterator[str] | None = None, kind: str = "any", max_gates: int = 0,
+               since: str = "") -> list[BankEntry]:
+    """Walk the history newest first and admit up to ``limit`` tasks.
+    ``kind`` keeps only ``pytest`` or ``make`` ranges; ``max_gates`` (make
+    ranges) caps the C test files a commit may touch, so a single-gate
+    bank can be built; ``since`` is git's own date filter."""
     out: list[BankEntry] = []
     admitted = 0
-    for i, (sha, at, message) in enumerate(_commits(repo, max_commits)):
+    for i, (sha, at, message) in enumerate(_commits(repo, max_commits, since)):
         if admitted >= limit:
             break
         files = touched_files(repo, [sha])
-        tests, src, build = classify(files)
-        if not tests or not src:
-            out.append(BankEntry(sha, None, "no test+source pair"))
-            continue
-        if build:
-            out.append(BankEntry(sha, None, "needs a build"))
-            continue
+        touched = classify_range(files)
+        built = bool(touched.build or touched.c_tests)
+        if built:
+            if kind == "pytest":
+                out.append(BankEntry(sha, None, "built range, pytest bank"))
+                continue
+            if not touched.c_tests:
+                out.append(BankEntry(sha, None, "built source without a C test file"))
+                continue
+            if max_gates and len(touched.c_tests) > max_gates:
+                out.append(BankEntry(sha, None, f"{len(touched.c_tests)} C test files, above {max_gates}"))
+                continue
+            src = [*touched.build, *touched.py_src]
+        else:
+            if kind == "make":
+                out.append(BankEntry(sha, None, "python range, make bank"))
+                continue
+            if not touched.py_tests or not touched.py_src:
+                out.append(BankEntry(sha, None, "no test+source pair"))
+                continue
+            src = list(touched.py_src)
         if len(src) > max_src_files:
             out.append(BankEntry(sha, None, f"{len(src)} source files, above {max_src_files}"))
             continue
