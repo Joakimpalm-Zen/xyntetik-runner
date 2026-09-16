@@ -8,6 +8,12 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **`replay --samples N --temperature T`: coverage by repeated sampling.**
+  Each task gets up to N attempts at temperature, each with its own seed
+  and its own ledger record; the first verified sample ends the task and
+  the summary already counts an episode verified when any record is. The
+  identity's tool set carries `samples:N@T`, so the cohort stays apart from
+  the single greedy attempt, and a stopped run resumes at the next sample.
 - **A Muse tool conversation no longer overruns the chat message array on
   its third replayed reasoning turn.** The chat handler sized its rendered
   message array with one extra slot per `reasoning_content` for Harmony
