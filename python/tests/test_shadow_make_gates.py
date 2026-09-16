@@ -384,3 +384,13 @@ def test_oracle_localization_names_the_changed_source_and_function(repo: Path, t
     assert isinstance(task, RepairTask)
     assert oracle_localization(task) == [("src/add.c", ("add",))]
     assert oracle_hint(task) == "Where the change goes: src/add.c (function add).\n\n"
+
+
+def test_an_adapted_cohort_is_not_a_repeat_of_the_base() -> None:
+    from dataclasses import replace
+    from xyntetik_runner.shadow.cli import attempt_key
+    from xyntetik_runner.shadow.evidence import Identity
+    base = Identity(project="p", task_class="file", context_band="", tool_set=("run_tests",),
+                    verifier_id="v", environment_id="e", model_sha256="m", quant="q",
+                    template_sha256="t", runner_build="b", backend="cpu", harness_version="h")
+    assert attempt_key("bank:x:1", base) != attempt_key("bank:x:1", replace(base, adapter_sha256="a1"))
