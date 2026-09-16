@@ -226,6 +226,45 @@ def attempt_key(episode_id: str, ident: Identity) -> tuple[str, str, str, tuple[
     return (episode_id, ident.model_sha256, ident.scaffold_sha256, tuple(ident.tool_set))
 
 
+def oracle_localization(task: RepairTask) -> list[tuple[str, tuple[str, ...]]]:
+    """(source file, function names) the solution commit changed, from the
+    range's own diff; test files and the Makefile are not sources. For a
+    C file the functions are the ones owning the hunks (c_function_spans);
+    a hunk outside any function names the file alone."""
+    from xyntetik_runner.shadow.tasks import BUILD_SUFFIXES, _git, _hunks, c_function_spans, is_c_test
+    names = _git(task.repo, "diff", "--name-only", f"{task.base_sha}..{task.solution_sha}").split()
+    out: list[tuple[str, tuple[str, ...]]] = []
+    for rel in names:
+        base = Path(rel).name
+        if is_c_test(rel) or base.startswith("test_") or base in ("Makefile", "makefile", "GNUmakefile"):
+            continue
+        if not rel.endswith((*BUILD_SUFFIXES, ".py")):
+            continue
+        funcs: list[str] = []
+        if rel.endswith(BUILD_SUFFIXES):
+            post = _git(task.repo, "show", f"{task.solution_sha}:{rel}")
+            spans = c_function_spans(post)
+            ranges, _ = _hunks(_git(task.repo, "diff", "-U0", task.base_sha, task.solution_sha, "--", rel))
+            for a, b in ranges:
+                inside = [s for s in spans if s[0] <= a and b <= s[1]]
+                if inside:
+                    name = min(inside, key=lambda s: s[1] - s[0])[2]
+                    if name not in funcs:
+                        funcs.append(name)
+        out.append((rel, tuple(funcs)))
+    return out
+
+
+def oracle_hint(task: RepairTask) -> str:
+    """The request prefix that names where the fix goes."""
+    parts = []
+    for rel, funcs in oracle_localization(task):
+        parts.append(rel + (f" (function {', '.join(funcs)})" if funcs else ""))
+    if not parts:
+        return ""
+    return "Where the change goes: " + "; ".join(parts) + ".\n\n"
+
+
 def stage_solution_tests(task: RepairTask, ws_dir: Path) -> tuple[str, ...]:
     """Copy the task's frozen test files (never the Makefile) into the
     workspace and return their paths: the failing test as the attempt's
@@ -283,6 +322,10 @@ class ReplayOptions:
     instead of the pre-state test that passes. The protected copy still
     judges, and an edit to a staged file is tamper. Part of the identity's
     tool set (`visible:solution-tests`), so cohorts stay apart."""
+    oracle_localization: bool = False
+    """Name the files and functions the solution commit changed in the
+    request (from the range's own diff), so the attempt is measured on the
+    edit alone. Identity tool set `oracle:localization`. R14.5.18."""
     samples: int = 1
     """Attempts per task at ``temperature``, each with its own seed and its
     own ledger record; the first verified sample ends the task. Coverage
@@ -354,6 +397,7 @@ def run_replay(out: Path, endpoint: RunnerEndpoint, opts: ReplayOptions, *,
                                   "write_file:new-only" if opts.edit_only else "write_file",
                                   "edit_file", "run_tests",
                                   *(("visible:solution-tests",) if opts.show_tests else ()),
+                                  *(("oracle:localization",) if opts.oracle_localization else ()),
                                   *((f"samples:{opts.samples}@{opts.temperature:g}",)
                                     if opts.samples > 1 or opts.temperature > 0 else ())),
                         verifier_id=f"commit-{'gates' if task.verifier_kind == 'make' else 'tests'}:{task.task_id}")
@@ -378,7 +422,10 @@ def run_replay(out: Path, endpoint: RunnerEndpoint, opts: ReplayOptions, *,
                              gates=task.gates, edit_only=opts.edit_only)
               chat = runner_chat(endpoint.post_json, model, max_tokens=budget.max_tokens,
                                  temperature=opts.temperature, seed=seed)
-              result = attempt(task.request, ws, chat, budget=budget, context=task.context,
+              request = task.request
+              if opts.oracle_localization:
+                  request = oracle_hint(task) + request
+              result = attempt(request, ws, chat, budget=budget, context=task.context,
                                scaffold=scaffold)
               protected = ProtectedTests.load(Path(task.protected_dir))
               outcome = verify(ws_dir, protected, baseline, timeout_s=opts.timeout,
@@ -434,7 +481,8 @@ def cmd_replay(args: argparse.Namespace) -> int:
                          model_sha256=args.model_sha256, quant=args.quant, task=args.task,
                          limit=args.limit, endpoint_label=args.endpoint,
                          edit_only=args.edit_only, show_tests=args.show_tests,
-                         samples=args.samples, temperature=args.temperature)
+                         samples=args.samples, temperature=args.temperature,
+                         oracle_localization=args.oracle_localization)
     try:
         run_replay(Path(args.out), RunnerEndpoint(args.endpoint, timeout=args.request_timeout),
                    opts, model=args.model)
@@ -470,7 +518,8 @@ def cmd_bench(args: argparse.Namespace) -> int:
     opts = ReplayOptions(python=args.python, timeout=args.timeout, max_turns=args.max_turns,
                          max_tokens=args.max_tokens, test_runs=args.test_runs, wall=args.wall,
                          min_tps=args.min_tps, scaffold_path=args.scaffold, edit_only=args.edit_only, show_tests=args.show_tests,
-                         samples=args.samples, temperature=args.temperature)
+                         samples=args.samples, temperature=args.temperature,
+                         oracle_localization=args.oracle_localization)
     rows: list[dict[str, Any]] = []
     arms: list[tuple[str, str]] = [("endpoint", u) for u in args.endpoints.split(",") if u]
     arms += [("model", m) for m in args.models.split(",") if m]
@@ -1304,6 +1353,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--samples", type=int, default=1,
                    help="attempts per task at --temperature, each with its own seed and record; "
                         "the first verified sample ends the task (coverage is the metric)")
+    p.add_argument("--oracle-localization", action="store_true",
+                   help="name the files and functions the solution changed in the request (R14.5.18)")
     p.add_argument("--temperature", type=float, default=0.0)
     p.set_defaults(fn=cmd_replay)
     p = sub.add_parser("bank", help="build repair tasks from a public repository's history")
@@ -1374,6 +1425,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--show-tests", action="store_true")
     p.add_argument("--samples", type=int, default=1)
     p.add_argument("--temperature", type=float, default=0.0)
+    p.add_argument("--oracle-localization", action="store_true")
     p.set_defaults(fn=cmd_bench)
     p = sub.add_parser("install", help="wire the hooks and a /shadow command into the harnesses "
                                        "(explicit opt-in; reversible with uninstall)")

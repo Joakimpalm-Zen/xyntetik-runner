@@ -375,3 +375,12 @@ def test_forge_files_a_gate_caught_break_as_a_task(repo: Path, tmp_path: Path) -
     assert verify(ws, protected, baseline, timeout_s=300).passed is False
     (ws / "src" / "add.c").write_text(CORRECT, encoding="utf-8")
     assert verify(ws, protected, baseline, timeout_s=300).passed is True
+
+
+@needs_toolchain
+def test_oracle_localization_names_the_changed_source_and_function(repo: Path, tmp_path: Path) -> None:
+    from xyntetik_runner.shadow.cli import oracle_hint, oracle_localization
+    task = admit(episode(repo), out_dir=tmp_path / "tasks", timeout_s=300)
+    assert isinstance(task, RepairTask)
+    assert oracle_localization(task) == [("src/add.c", ("add",))]
+    assert oracle_hint(task) == "Where the change goes: src/add.c (function add).\n\n"
