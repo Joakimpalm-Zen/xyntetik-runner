@@ -88,7 +88,9 @@ def gate_sources(tree: Path, gate: str) -> tuple[str, ...]:
     """The source files a gate links, from make's own dry run: every
     `<objdir>/name.o` on its link line is `src/name.c`."""
     make = shutil.which("make") or "make"
-    proc = subprocess.run([make, "-n", gate], cwd=tree, capture_output=True, text=True)
+    # -B: an up-to-date gate prints nothing under -n alone, and then links no
+    # source; always-make lists every compile and the link line
+    proc = subprocess.run([make, "-n", "-B", gate], cwd=tree, capture_output=True, text=True)
     names: list[str] = []
     for m in re.finditer(r"(?:\S+/)?([A-Za-z0-9_]+)\.o\b|\b((?:[A-Za-z0-9_]+/)*[A-Za-z0-9_]+\.c)\b",
                          proc.stdout):
