@@ -359,12 +359,12 @@ def c_function_spans(text: str) -> list[tuple[int, int, str]]:
         if depth == 0 and start is None and stripped:
             head = code.split("{", 1)[0]
             m = _C_NAME.search(head)
-            is_head = (m is not None and "=" not in head and ";" not in head
-                       and m.group(1) not in _C_NOT_FUNC)
+            name = m.group(1) if m else ""
+            is_head = bool(name) and "=" not in head and ";" not in head and name not in _C_NOT_FUNC
             if is_head and opens:
-                start = (i, m.group(1))
+                start = (i, name)
             elif is_head and head.rstrip().endswith(")"):
-                pending = (i, m.group(1))
+                pending = (i, name)
             elif opens and pending is not None and stripped.startswith("{"):
                 start = pending
             else:
