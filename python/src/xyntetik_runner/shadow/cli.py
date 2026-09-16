@@ -137,7 +137,14 @@ def do_import(out: Path, *, home: Path | None, source: str = "", python: str = s
     print(f"scanned {report.files_read} trace files ({len(report.files_skipped)} unreadable), "
           f"{n} episodes", flush=True)
     evidence = out / "evidence.jsonl"
-    known = {r.episode_id for r in _read_records(evidence)}
+    latest: dict[str, EpisodeEvidence] = {}
+    for r in _read_records(evidence):
+        latest[r.episode_id] = r
+    # An episode is settled by its newest record, except one a rule that has
+    # since widened rejected: that one is paired again and its new record
+    # supersedes (the summary reads the newest record of an unattempted
+    # episode). Today's widened rule: built ranges, once "need a build".
+    known = {eid for eid, r in latest.items() if not _revisit(r)}
     known |= {t.episode_id for t in _tasks(out, None)}
     counts: dict[str, int] = {}
     admitted = 0
@@ -184,7 +191,8 @@ def do_import(out: Path, *, home: Path | None, source: str = "", python: str = s
             # denominator is complete before any replay.
             record(c.episode, Rejection(Disposition.NOT_ATTEMPTED_RESOURCE,
                                         f"admitted as {result.task_id}; not attempted yet"))
-            print(f"  admitted {result.task_id}: {result.expected_tests} frozen tests, "
+            print(f"  admitted {result.task_id}: {result.expected_tests} frozen "
+                  f"{'gates' if result.verifier_kind == 'make' else 'tests'}, "
                   f"{result.baseline_failing} fail at base, {result.src_files} source file(s)",
                   flush=True)
             continue
@@ -192,6 +200,16 @@ def do_import(out: Path, *, home: Path | None, source: str = "", python: str = s
     print("dispositions at import:", json.dumps(counts, sort_keys=True), flush=True)
     print(f"{admitted} task(s) admitted under {tasks_dir}", flush=True)
     return admitted
+
+
+REVISIT_REASONS = ("file(s) that need a build",)
+"""Rejection reasons of admission rules that have since widened; an episode
+whose newest record carries one is imported again."""
+
+
+def _revisit(r: EpisodeEvidence) -> bool:
+    return (r.verifier is None and r.disposition in (Disposition.INELIGIBLE, Disposition.UNREPLAYABLE)
+            and any(p in reason for reason in r.reasons for p in REVISIT_REASONS))
 
 
 def _tasks(out: Path, only: str | None) -> list[RepairTask]:
@@ -284,16 +302,18 @@ def run_replay(out: Path, endpoint: RunnerEndpoint, opts: ReplayOptions, *,
         ident = replace(base_identity, project=Path(task.repo).name, task_class=task.task_class,
                         context_band=_band(len(task.request)),
                         tool_set=("list_files", "read_file", "write_file", "edit_file", "run_tests"),
-                        verifier_id=f"commit-tests:{task.task_id}")
+                        verifier_id=f"commit-{'gates' if task.verifier_kind == 'make' else 'tests'}:{task.task_id}")
         if (task.episode_id, ident.model_sha256, ident.scaffold_sha256) in done:
             continue
         ran += 1
         print(f"[{task.task_id}] attempt with {model} ...", flush=True)
         ws_dir = _worktree(task)
+        ws = None
         try:
             baseline = Baseline.capture(ws_dir)
             ws = Workspace(ws_dir, visible_tests=task.visible_test_files,
-                           pythonpath=task.pythonpath, python=opts.python, budget=budget)
+                           pythonpath=task.pythonpath, python=opts.python, budget=budget,
+                           gates=task.gates)
             chat = runner_chat(endpoint.post_json, model, max_tokens=budget.max_tokens)
             result = attempt(task.request, ws, chat, budget=budget, context=task.context,
                              scaffold=scaffold)
@@ -334,6 +354,8 @@ def run_replay(out: Path, endpoint: RunnerEndpoint, opts: ReplayOptions, *,
                   f"{outcome.passed_count}/{outcome.expected}"
                   f"{' tamper' if outcome.tamper else ''}", flush=True)
         finally:
+            if ws is not None:
+                ws.close()
             _drop(task, ws_dir)
     print(f"{ran} attempt(s) recorded in {evidence}", flush=True)
     return ran, tps, model

@@ -221,7 +221,9 @@ def summarize(records: Iterable[EpisodeEvidence]) -> Summary:
         elif Disposition.VERIFIER_INCONCLUSIVE in dispositions:
             top = Disposition.VERIFIER_INCONCLUSIVE
         else:
-            top = recs[0].disposition
+            # the newest record: an episode imported again under a widened
+            # admission rule carries its new disposition, not its first
+            top = recs[-1].disposition
         by[top.value] += 1
         if top in ELIGIBLE:
             eligible += 1

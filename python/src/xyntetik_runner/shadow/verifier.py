@@ -6,6 +6,13 @@ scratch directory, writes the frozen tests over whatever the workspace has
 at those paths, runs pytest with the verifier's own configuration file so
 the workspace's cannot change collection, and reads a JUnit report.
 
+A protected set has a ``kind``. ``pytest`` is the above. ``make`` freezes C
+test files and the Makefile that builds them: each expected test is a make
+gate (``tests/test_x.c`` builds and runs as ``make test-x`` then
+``./test-x``), passed when the build succeeds and the binary exits 0. The
+frozen Makefile means the attempt cannot redefine a gate into a no-op; a
+changed Makefile is a tamper finding like a changed test file.
+
 What cannot count as success, each with its own reason string:
 
 * a no-op (the workspace is byte-identical to its baseline);
@@ -30,6 +37,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -52,6 +60,13 @@ VERIFIER_INI = "[pytest]\naddopts =\n"  # plus a pythonpath line per run, see _r
 VERIFIER_INI_NAME = ".xyntetik-shadow-verifier.ini"
 _ENV_PASSTHROUGH = ("PATH", "LANG", "LC_ALL", "SYSTEMROOT", "SystemRoot", "TEMP", "TMP",
                     "PYTHONIOENCODING")
+# a build needs the toolchain the shell has: the compiler choice and, on
+# macOS, the SDK; on MSYS2 the environment name. Never CFLAGS: the frozen
+# Makefile owns the flags the gate is built with.
+_BUILD_ENV_PASSTHROUGH = _ENV_PASSTHROUGH + ("CC", "CXX", "SDKROOT", "MACOSX_DEPLOYMENT_TARGET",
+                                             "MSYSTEM", "USERPROFILE", "ProgramData")
+KINDS = ("pytest", "make")
+MAKE_JOBS = max(1, os.cpu_count() or 1)
 
 
 class InstrumentError(RuntimeError):
@@ -71,6 +86,13 @@ class ProtectedTests:
     verifier_id: str
     files: Mapping[str, str]
     expected: tuple[tuple[str, str], ...]
+    kind: str = "pytest"
+    """``pytest``: expected names are test ids inside the frozen file.
+    ``make``: each expected name is a make gate built from the frozen file."""
+
+    def key(self, rel: str, name: str) -> tuple[str, str]:
+        """The outcome key of one expected test in a run of this kind."""
+        return (rel, name) if self.kind == "make" else _key(rel, name)
 
     @classmethod
     def load(cls, source: Path) -> ProtectedTests:
@@ -94,17 +116,23 @@ class ProtectedTests:
             if rel not in files:
                 raise InstrumentError(f"expected tests in a file the manifest does not freeze: {rel}")
         vid = str(m.get("verifier_id") or f"protected:{tree_sha256(files)[:16]}")
-        return cls(source=source, verifier_id=vid, files=files, expected=expected)
+        kind = str(m.get("kind") or "pytest")   # a manifest frozen before kinds is pytest
+        if kind not in KINDS:
+            raise InstrumentError(f"protected manifest kind {kind!r} unknown")
+        return cls(source=source, verifier_id=vid, files=files, expected=expected, kind=kind)
 
     @classmethod
     def freeze(cls, source: Path, expected: Mapping[str, Sequence[str]], *,
-               verifier_id: str | None = None) -> ProtectedTests:
+               verifier_id: str | None = None, kind: str = "pytest") -> ProtectedTests:
         """Write the manifest for every file under ``source`` and load it."""
+        if kind not in KINDS:
+            raise InstrumentError(f"protected kind {kind!r} unknown")
         files = {p.relative_to(source).as_posix(): file_sha256(p)
                  for p in sorted(source.rglob("*")) if p.is_file() and p.name != MANIFEST}
         manifest = {
             "schema_version": MANIFEST_SCHEMA,
             "verifier_id": verifier_id or f"protected:{tree_sha256(files)[:16]}",
+            "kind": kind,
             "files": files,
             "expected": {rel: list(names) for rel, names in expected.items()},
         }
@@ -126,7 +154,7 @@ def fixed_ids(protected: ProtectedTests, outcome_ids: Sequence[str], tree: Path,
                          pythonpath=pythonpath)
     want = set(outcome_ids)
     return tuple(f"{rel}::{name}" for rel, name in protected.expected
-                 if f"{rel}::{name}" in want and run.outcomes.get(_key(rel, name)) == "passed")
+                 if f"{rel}::{name}" in want and run.outcomes.get(protected.key(rel, name)) == "passed")
 
 
 @dataclass(frozen=True)
@@ -157,6 +185,8 @@ def _kill(proc: subprocess.Popen[bytes]) -> None:
 
 def _run_protected(protected: ProtectedTests, tree: Path, *, timeout_s: float,
                    python: str, pythonpath: Sequence[str] = ()) -> _Run:
+    if protected.kind == "make":
+        return _run_gates(protected, tree, timeout_s=timeout_s)
     scratch = Path(tempfile.mkdtemp(prefix="xyntetik-shadow-"))
     try:
         ws = scratch / "ws"
@@ -220,6 +250,115 @@ def _run_protected(protected: ProtectedTests, tree: Path, *, timeout_s: float,
         shutil.rmtree(scratch, ignore_errors=True)
 
 
+def gate_binary(ws: Path, gate: str) -> Path | None:
+    """The binary a gate built, at the workspace root, with or without .exe."""
+    for cand in (ws / gate, ws / f"{gate}.exe"):
+        if cand.is_file():
+            return cand
+    return None
+
+
+_GGUF_LITERAL = re.compile(r"[\w./-]+\.gguf")
+
+
+def fixture_targets(ws: Path, test_rel: str) -> tuple[str, ...]:
+    """The ``.gguf`` files a C test names that the workspace Makefile can
+    build (the runner's fixtures are make targets: ``test.gguf`` from
+    scripts/make-test-model.py). Built before the gate's binary runs, so a
+    gate that reads a generated fixture is judged on its assertions and not
+    on a missing file."""
+    try:
+        source = (ws / test_rel).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ()
+    names = sorted(set(_GGUF_LITERAL.findall(source)))
+    if not names:
+        return ()
+    rules: set[str] = set()
+    for mf in ("Makefile", "makefile", "GNUmakefile"):
+        try:
+            for line in (ws / mf).read_text(encoding="utf-8", errors="replace").split("\n"):
+                if ":" in line and not line.startswith(("\t", " ", "#")):
+                    rules.add(line.split(":", 1)[0].strip())
+        except OSError:
+            continue
+    return tuple(n for n in names if n in rules)
+
+
+def run_gate(ws: Path, gate: str, *, timeout_s: float, jobs: int = MAKE_JOBS,
+             env: Mapping[str, str] | None = None,
+             fixtures: Sequence[str] = ()) -> tuple[str, bytes, bool]:
+    """Build one make gate in ``ws`` (and the fixture targets its test
+    names) and run its binary: ("passed" | "failed", the combined output,
+    timed out). A build failure is a failed gate, so is a binary that exits
+    non-zero or that the build did not produce."""
+    if env is None:
+        env = {k: os.environ[k] for k in _BUILD_ENV_PASSTHROUGH if k in os.environ}
+        env["HOME"] = str(ws)
+    make = shutil.which("make") or "make"
+    t0 = time.monotonic()
+    out = b""
+    for cmd in ([make, f"-j{jobs}", gate, *fixtures], None):
+        remaining = timeout_s - (time.monotonic() - t0)
+        if remaining <= 0:
+            return ("failed", out, True)
+        if cmd is None:
+            exe = gate_binary(ws, gate)
+            if exe is None:
+                return ("failed", out + f"\n{gate}: the build produced no binary\n".encode(), False)
+            cmd = [str(exe)]
+        proc = subprocess.Popen(cmd, cwd=ws, env=dict(env), stdout=subprocess.PIPE,
+                                stderr=subprocess.STDOUT, start_new_session=(os.name == "posix"))
+        try:
+            chunk, _ = proc.communicate(timeout=remaining)
+        except subprocess.TimeoutExpired:
+            _kill(proc)
+            chunk, _ = proc.communicate()
+            return ("failed", out + (chunk or b""), True)
+        out += chunk or b""
+        if proc.returncode != 0:
+            return ("failed", out, False)
+    return ("passed", out, False)
+
+
+def _run_gates(protected: ProtectedTests, tree: Path, *, timeout_s: float) -> _Run:
+    """The make kind: the tree copied to scratch, the frozen test files and
+    Makefile written over it, every expected gate built and run there."""
+    scratch = Path(tempfile.mkdtemp(prefix="xyntetik-shadow-"))
+    try:
+        ws = scratch / "ws"
+        ws.mkdir()
+        _copy_tree(tree, ws)
+        for rel in protected.files:
+            target = ws / rel
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(protected.source / rel, target)
+        env = {k: os.environ[k] for k in _BUILD_ENV_PASSTHROUGH if k in os.environ}
+        env["HOME"] = str(scratch)
+        t0 = time.monotonic()
+        outcomes: dict[tuple[str, str], str] = {}
+        digest = hashlib.sha256()
+        timed_out = False
+        for rel, gate in protected.expected:
+            remaining = timeout_s - (time.monotonic() - t0)
+            if remaining <= 0:
+                timed_out = True
+                break
+            state, out, late = run_gate(ws, gate, timeout_s=remaining, env=env,
+                                        fixtures=fixture_targets(ws, rel))
+            digest.update(f"== {gate}\n".encode() + out)
+            if late:
+                timed_out = True
+                break
+            outcomes[(rel, gate)] = state
+        failed = sum(1 for s in outcomes.values() if s != "passed")
+        return _Run(outcomes=outcomes, report_sha256=digest.hexdigest(),
+                    duration_s=time.monotonic() - t0, timed_out=timed_out,
+                    returncode=1 if failed or timed_out else 0)
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
+
+
 def _key(rel: str, name: str) -> tuple[str, str]:
     """JUnit keys a test by (classname, name): the module dotted path, plus
     the class chain for methods. An expected id ``Class::test`` therefore
@@ -233,7 +372,7 @@ def _key(rel: str, name: str) -> tuple[str, str]:
 def _judge(protected: ProtectedTests, run: _Run) -> tuple[int, int, int, int]:
     passed = failed = skipped = missing = 0
     for rel, name in protected.expected:
-        state = run.outcomes.get(_key(rel, name))
+        state = run.outcomes.get(protected.key(rel, name))
         if state == "passed":
             passed += 1
         elif state == "failed":
@@ -272,11 +411,11 @@ def calibrate(protected: ProtectedTests, baseline_root: Path, *, timeout_s: floa
     if skipped:
         raise InstrumentError(f"{skipped} protected test(s) skip on the baseline; a skip is not "
                               "a failure the fix can turn into a pass")
-    if run.returncode == 0:
+    if run.returncode == 0 and protected.kind == "pytest":
         raise InstrumentError("pytest exited 0 on the baseline while the report shows failures; "
                               "the report and the process disagree")
     ids = tuple(f"{rel}::{name}" for rel, name in protected.expected
-                if run.outcomes.get(_key(rel, name)) != "passed")
+                if run.outcomes.get(protected.key(rel, name)) != "passed")
     return Calibration(failing=failed, passing=passed, missing=missing,
                        report_sha256=run.report_sha256, failing_ids=ids)
 
