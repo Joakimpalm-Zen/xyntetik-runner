@@ -599,6 +599,24 @@ def cmd_bank(args: argparse.Namespace) -> int:
 
 
 
+def cmd_forge(args: argparse.Namespace) -> int:
+    from xyntetik_runner.shadow.forge import forge
+    out = Path(args.out)
+    (out / "tasks").mkdir(parents=True, exist_ok=True)
+    entries = forge(Path(args.repo), [g for g in args.gates.split(",") if g], out_dir=out / "tasks",
+                    limit=args.limit, seed=args.seed, timeout_s=args.timeout, log=iter(()))
+    with (out / "forge.jsonl").open("a", encoding="utf-8") as f:
+        for e in entries:
+            f.write(json.dumps({"mutation": e.mutation.__dict__, "gate": e.gate,
+                                "outcome": e.outcome, "task_id": e.task_id}) + "\n")
+    counts: dict[str, int] = {}
+    for e in entries:
+        counts[e.outcome] = counts.get(e.outcome, 0) + 1
+    print(f"{counts.get('kept', 0)} task(s) forged from {len(entries)} probes; outcomes:",
+          json.dumps(counts, sort_keys=True), flush=True)
+    return 0
+
+
 def cmd_capture(args: argparse.Namespace) -> int:
     """Capture local raw events, bounded state and provenance; summarize on request.
 
@@ -1302,6 +1320,16 @@ def main(argv: list[str] | None = None) -> int:
                    help="make ranges: at most this many C test files per commit (0 = no cap)")
     p.add_argument("--since", default="", help="git's --since, e.g. 2026-07-15")
     p.set_defaults(fn=cmd_bank)
+
+    p = sub.add_parser("forge", help="synthetic repair tasks: break one function so a make gate "
+                                     "catches it, file each caught break as a task (R14.5.17)")
+    p.add_argument("--repo", required=True)
+    p.add_argument("--gates", required=True, help="comma-separated make gates that pass at HEAD")
+    p.add_argument("--out", default=str(default_out().parent / "shadow-forge"))
+    p.add_argument("--limit", type=int, default=30)
+    p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--timeout", type=float, default=600.0)
+    p.set_defaults(fn=cmd_forge)
     p = sub.add_parser("capture", help="append a prompt or stop event from an agent hook")
     p.add_argument("--event", choices=list(CAPTURE_EVENTS), default="")
     p.add_argument("--summary", action="store_true", help="print counts over the capture file")

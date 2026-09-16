@@ -349,3 +349,29 @@ def test_a_cohort_with_another_tool_set_is_not_a_repeat() -> None:
     shown = replace(base, tool_set=(*base.tool_set, "visible:solution-tests"))
     assert attempt_key("bank:x:1", base) != attempt_key("bank:x:1", shown)
     assert attempt_key("bank:x:1", base) == attempt_key("bank:x:1", replace(base, project="other"))
+
+
+@needs_toolchain
+def test_forge_files_a_gate_caught_break_as_a_task(repo: Path, tmp_path: Path) -> None:
+    from xyntetik_runner.shadow.forge import candidate_mutations, forge, gate_sources
+    assert gate_sources(repo, "test-add") == ("src/add.c",)
+    cands = candidate_mutations("src/add.c", CORRECT)
+    assert any(m.op == "plus-minus" and m.function == "add" for m in cands), cands
+    entries = forge(repo, ["test-add"], out_dir=tmp_path / "forge", limit=1, seed=0, timeout_s=300)
+    kept = [e for e in entries if e.outcome == "kept"]
+    assert len(kept) == 1, entries
+    task = RepairTask.load(tmp_path / "forge" / kept[0].task_id / "task.json")
+    assert task.verifier_kind == "make" and task.gates == ("test-add",) and task.task_class == "function"
+    assert task.baseline_failing == 1 and task.solution_sha == git(repo, "rev-parse", "HEAD")
+    assert "make test-add" in task.request and "without changing the test" in task.request
+    # the break is a reachable commit whose only change is the mutated line
+    diff = git(repo, "diff", "--stat", f"{task.base_sha}..{task.solution_sha}")
+    assert "src/add.c" in diff and "1 file changed" in diff, diff
+    # and the task verifies like any make task: base fails, HEAD passes, the fix passes
+    ws = tmp_path / "ws"
+    git(repo, "worktree", "add", "--detach", "-q", str(ws), task.base_sha)
+    protected = ProtectedTests.load(Path(task.protected_dir))
+    baseline = Baseline.capture(ws)
+    assert verify(ws, protected, baseline, timeout_s=300).passed is False
+    (ws / "src" / "add.c").write_text(CORRECT, encoding="utf-8")
+    assert verify(ws, protected, baseline, timeout_s=300).passed is True
