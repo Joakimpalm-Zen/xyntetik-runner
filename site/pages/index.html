@@ -45,9 +45,9 @@ bare: yes
         <span class="more">How that works &rarr;</span>
       </a>
       <a class="card card-link accent reveal" href="/runner/shadow-mode/">
-        <h3>Keep your coding assistant. Let the runner prove, on your own work, what a local model can do.</h3>
-        <p>One command wires Claude Code or Codex to the runner. Your requests and commits become tasks a local model is tried on under your repository's own tests; offloading opens only where the evidence says so, and every patch is yours to apply.</p>
-        <p class="measured">measured 2026-09-08: five consumer models, 260 samples, zero verified; the instrument verified the human's own fixes 13 of 13</p>
+        <h3>Keep your coding assistant. A bench with receipts for what a local model has proven on your own work.</h3>
+        <p>One command wires Claude Code or Codex to the runner. Your requests and commits become tasks a local model is tried on under your repository's own tests; the ledger keeps the verdicts and signed receipts, offload opens only where the evidence says so, and every patch is yours to apply. It measures; it does not learn.</p>
+        <p class="measured">measured 2026-09-08 to 09-17: five consumer models over 260 samples, then a 7B at best-of-8 over 224 samples on 28 real commits, zero verified; the instrument verified the human's own fixes 13 of 13</p>
         <span class="more">How shadow mode works &rarr;</span>
       </a>
       <a class="card card-link accent reveal" href="/runner/train-lora-on-quantized-gguf/">
@@ -222,7 +222,7 @@ bare: yes
       <div class="tile head reveal"><p class="eyebrow">Attest</p><h3>The Auditor</h3><p>You answer for what the model did: to a customer, a regulator, or yourself in six months. You need the receipt, not the demo.</p></div>
 
       <div class="tile reveal"><div class="t"><a href="/runner/">Your client's first request works</a></div><div class="d">OpenCode, Claude Code, Codex CLI, Continue, Cline and pi re-validated at their latest versions; native tool protocols per model family (Harmony, atem, Qwen XML, Gemma 4).</div><span class="pill pass">re-run per release</span></div>
-      <div class="tile reveal"><div class="t"><a href="/runner/shadow-mode/">Shadow mode</a></div><div class="d">Runs your own tasks past the local model in tandem and admits an offload only when its tests pass and are frozen per task. The ledger says what it managed, both denominators shown.</div><span class="pill pass">measured on your work</span></div>
+      <div class="tile reveal"><div class="t"><a href="/runner/shadow-mode/">Shadow mode</a></div><div class="d">A bench with receipts: runs your own tasks past the local model under tests frozen per task, records what it managed with both denominators shown, and admits an offload only on verified successes.</div><span class="pill pass">measured on your work</span></div>
       <div class="tile reveal"><div class="t"><a href="/runner/reproducible-lora-training-receipts/">Signed receipts</a></div><div class="d">Recorded runs are signed (Ed25519, ML-DSA-44 optional) and chained; a one-exit-code verifier replays them; the determinism claim has named edges, including what is not promised.</div><span class="pill pass">replayable</span></div>
 
       <div class="tile reveal"><div class="t"><a href="/runner/">One card, several models</a></div><div class="d">A VRAM registry across processes, swap mode by name, parallel slots, idle unload on a TTL.</div><span class="pill plain">registry, swap</span></div>
