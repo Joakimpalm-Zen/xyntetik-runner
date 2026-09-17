@@ -2380,8 +2380,25 @@ static void enc_moe_mm(gpu_t *g, id<MTLComputeCommandEncoder> e, model_t *m,
                        id<MTLBuffer> x, id<MTLBuffer> y,
                        int n_in, int n_out, int nslots, int xs, int ys,
                        id<MTLBuffer> bias, int bias_stride,
-                       int slots_per_token) {
+                       int slots_per_token, bool half_staged) {
     enum { MM_TILE_M = 64, MM_TILE_N = 32 };   // mirrors MM_TM/MM_TN
+    // The half-staged twins (RUNNER_METAL_MOE_MM=half) stage the activation
+    // rows scaled by their max|x|: one k_colabsmax over the x rows (tokens
+    // for gate/up, slots for down) into g->xsc first, before the GEMM's own
+    // bindings (the pass uses buffer 0 for x, the GEMM for the weights).
+    // The float-staged kernels ignore buffer 7 and get the dummy.
+    int xrows = slots_per_token ? nslots / slots_per_token : nslots;
+    bool scaled = half_staged && metal_ensure_xsc(g, xrows);
+    if (scaled) {
+        [e setComputePipelineState:g->p_colabsmax];
+        [e setBuffer:x offset:0 atIndex:0];
+        [e setBuffer:g->xsc offset:0 atIndex:1];
+        [e setBytes:&n_in length:sizeof n_in atIndex:2];
+        [e setBytes:&xs length:sizeof xs atIndex:3];
+        [e setBytes:&xrows length:sizeof xrows atIndex:4];
+        [e dispatchThreadgroups:MTLSizeMake((NSUInteger)xrows, 1, 1)
+          threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+    }
     [e setComputePipelineState:pso];
     struct { int n_in, n_out; uint64_t w_off, estride;
              int xs, ys, has_bias, bias_stride, slots_per_token; } a = {
@@ -2394,6 +2411,7 @@ static void enc_moe_mm(gpu_t *g, id<MTLComputeCommandEncoder> e, model_t *m,
     [e setBuffer:bias ? bias : g->dummy offset:0 atIndex:4];
     [e setBuffer:g->moe_colmap offset:0 atIndex:5];
     [e setBuffer:g->moe_eoff offset:0 atIndex:6];
+    [e setBuffer:scaled ? g->xsc : g->dummy offset:0 atIndex:7];
     g_disp.moe++;
     [e dispatchThreadgroups:MTLSizeMake((n_out + MM_TILE_M - 1) / MM_TILE_M,
                                         (nslots + MM_TILE_N - 1) / MM_TILE_N,
@@ -2630,7 +2648,7 @@ static void enc_moe_experts_batch(gpu_t *g, id<MTLComputeCommandEncoder> e,
     if (mm && mmp[ly->ffn_gate_exps->type])
         enc_moe_mm(g, e, m, mmp[ly->ffn_gate_exps->type],
                    ly->ffn_gate_exps, gstride, g->xb, g->moe_hb,
-                   n_embd, nff, slots, xdim, nff, g->geb[l], nff, used);
+                   n_embd, nff, slots, xdim, nff, g->geb[l], nff, used, mm_mode == 2);
     else
         enc_moe_mv(g, e, m, ly->ffn_gate_exps, gstride, g->xb, 0,
                    g->moe_hb, 0, n_embd, nff, slots, xdim, nff,
@@ -2638,7 +2656,7 @@ static void enc_moe_experts_batch(gpu_t *g, id<MTLComputeCommandEncoder> e,
     if (mm && mmp[ly->ffn_up_exps->type])
         enc_moe_mm(g, e, m, mmp[ly->ffn_up_exps->type],
                    ly->ffn_up_exps, ustride, g->xb, g->moe_hb2,
-                   n_embd, nff, slots, xdim, nff, g->ueb[l], nff, used);
+                   n_embd, nff, slots, xdim, nff, g->ueb[l], nff, used, mm_mode == 2);
     else
         enc_moe_mv(g, e, m, ly->ffn_up_exps, ustride, g->xb, 0,
                    g->moe_hb2, 0, n_embd, nff, slots, xdim, nff,
@@ -2657,7 +2675,7 @@ static void enc_moe_experts_batch(gpu_t *g, id<MTLComputeCommandEncoder> e,
         enc_moe_mm(g, e, m, mmp[ly->ffn_down_exps->type],
                    ly->ffn_down_exps, dstride, g->moe_hb,
                    g->moe_eout, nff, n_embd, slots, nff, n_embd,
-                   g->deb[l], n_embd, 0);
+                   g->deb[l], n_embd, 0, mm_mode == 2);
     else
         enc_moe_mv(g, e, m, ly->ffn_down_exps, dstride, g->moe_hb, 0,
                    g->moe_eout, 0, nff, n_embd, slots, nff, n_embd,

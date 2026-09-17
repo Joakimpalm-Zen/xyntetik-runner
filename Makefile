@@ -1667,6 +1667,11 @@ endif
 # same deal dense RUNNER_METAL_MM already has. The gate runs the full-model
 # identity bound with the feature engaged (engagement grep keeps it
 # non-vacuous) plus a greedy smoke that must complete coherently.
+# The test-gpu-identity leg below pins RUNNER_METAL_MOE_MM=0 inside the tool
+# (the grouped path is not byte-identical by design), so it measures the
+# matvec path on the MoE fixture; the grouped path answers to the byte
+# comparison at fixture scale and to TEST_MOE_MM_AB, including the
+# half-staged twins on the fp16-overflow fixture (2026-09-17).
 test-metal-moe-mm: runner $(TEST_GPU_ID) $(TEST_MOE_MM_AB) test-moe-fixture.gptoss-mxfp4.gguf
 ifeq ($(shell uname -s),Darwin)
 	@set -e; \
@@ -1689,11 +1694,19 @@ ifeq ($(shell uname -s),Darwin)
 	  echo "  misrouted column, which the fixture-scale identity bound cannot.)"; \
 	  exit 1; }; \
 	RUNNER_METAL_MOE_MM=1 ./$(TEST_GPU_ID) test-moe-fixture.gptoss-mxfp4.gguf || { \
-	  echo "FAIL: grouped-MMA breaches the identity bound"; exit 1; }; \
+	  echo "FAIL: the MoE fixture breaches the identity bound on the matvec path"; exit 1; }; \
 	./$(TEST_MOE_MM_AB) test-moe-fixture.gptoss-mxfp4.gguf || { \
 	  echo "FAIL: grouped-MMA fails the house fidelity bar at fixture scale"; exit 1; }; \
-	echo "  metal moe grouped-mma ok (engaged, fixture-identical, house bar held)"; \
-	rm -f moe-mm.out moe-mm-ref.out moe-mm.err
+	$(PYTHON) scripts/make-test-moe.py test-moe-ovf --act-fp16-overflow > /dev/null; \
+	./$(RUNNER_EXE) -m test-moe-ovf.moe1.gguf --quantize test-moe-ovf.moe1-q8 --quant q8_0 > /dev/null 2>&1; \
+	mv -f test-moe-ovf.moe1-q8 test-moe-ovf.moe1-q8.gguf 2>/dev/null || true; \
+	RUNNER_METAL_MOE_MM=half ./$(TEST_MOE_MM_AB) test-moe-ovf.moe1-q8.gguf half > moe-mmh-ovf.out 2>&1 || { \
+	  cat moe-mmh-ovf.out; echo "FAIL: the half-staged expert GEMM fails the house bar on the fp16-overflow fixture"; \
+	  echo "  (unscaled staging read <unk> for every token here, 0/24 top-1)"; exit 1; }; \
+	grep -q "half-staged" moe-mmh-ovf.out || { \
+	  echo "FAIL: the half-staged twins never engaged on the overflow fixture, vacuous"; exit 1; }; \
+	echo "  metal moe grouped-mma ok (engaged, fixture-identical, house bar held; half twins finite past fp16 range)"; \
+	rm -f moe-mm.out moe-mm-ref.out moe-mm.err moe-mmh-ovf.out test-moe-ovf.*.gguf
 else
 	@echo "metal moe grouped-mma: SKIP (macOS-only backend)"
 endif
