@@ -25,6 +25,17 @@ import struct
 import sys
 
 OUT = sys.argv[1] if len(sys.argv) > 1 else "test-moe"
+# --act-fp16-overflow: every variant's FFN input norm (ffn_norm, or
+# post_attention_norm on gpt-oss where that IS the FFN norm) is set to 4e6, so
+# the experts' gate/up GEMM input is ~1e6, past fp16's 65504 while every fp32
+# value stays finite. A half-staged expert GEMM that stages the activation
+# unscaled puts Inf into the tile; the scaled one (2026-09-17) does not. On
+# the gpt-oss variants the swiglu clamp masks the damage (min/max drop the
+# NaN and the down input lands on the limit), so the gate that shows it is
+# the SiLU moe1 variant with its experts requantized to Q8_0 (the half twins
+# exist for Q8_0 and MXFP4 experts). The dense twin is
+# scripts/make-test-model.py's flag of the same name.
+OVF = "--act-fp16-overflow" in sys.argv[2:]
 E, HEADS, KV, FF, LAYERS = 32, 4, 2, 64, 2
 VOCAB = ["<unk>", "<s>", "</s>"] + [f"<0x{i:02X}>" for i in range(256)]
 TTYPE = [2, 3, 3] + [6] * 256
@@ -129,7 +140,7 @@ for i in range(LAYERS):
         (f"blk.{i}.attn_k.weight", [E, kv_dim], pack(flist(E * kv_dim))),
         (f"blk.{i}.attn_v.weight", [E, kv_dim], pack(flist(E * kv_dim))),
         (f"blk.{i}.attn_output.weight", [E, E], pack(flist(E * E))),
-        (f"blk.{i}.ffn_norm.weight", [E], ones(E)),
+        (f"blk.{i}.ffn_norm.weight", [E], pack([4e6] * E) if OVF else ones(E)),
     ]
 
 # per-layer dense FFN weights (gate/up shared across experts; down is the oracle).
@@ -635,7 +646,8 @@ for _i in range(LAYERS):
         (f"blk.{_i}.attn_k.weight", [E, kv_dim], pack(flist(E * kv_dim))),
         (f"blk.{_i}.attn_v.weight", [E, kv_dim], pack(flist(E * kv_dim))),
         (f"blk.{_i}.attn_output.weight", [E, E], pack(flist(E * E))),
-        (f"blk.{_i}.post_attention_norm.weight", [E], ones(E)),
+        (f"blk.{_i}.post_attention_norm.weight", [E],
+         pack([4e6] * E) if OVF else ones(E)),
         (f"blk.{_i}.attn_sinks.weight", [HEADS],
          pack([0.25, -0.15, 0.10, -0.05])),
         (f"blk.{_i}.ffn_gate_inp.weight", [E, 2], pack(flist(E * 2))),

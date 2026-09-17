@@ -4054,10 +4054,15 @@ struct moe_mm_args {
     device const float *bias   [[buffer(4)]], \
     device const int   *colmap [[buffer(5)]], \
     device const int   *eoff   [[buffer(6)]], \
+    device const float *xsc    [[buffer(7)]], \
     uint3 tgpig [[threadgroup_position_in_grid]], \
     uint3 tpitg [[thread_position_in_threadgroup]], \
     uint  sgitg [[simdgroup_index_in_threadgroup]]
 
+// xsc (buffer 7): per-x-row max|x| from k_colabsmax, read only by the
+// half-staged twins below (the float-staged kernels take the buffer and
+// ignore it, so one parameter list serves both).
+//
 // MM_BODY with three substitutions: the weight base carries the expert's
 // stride, the x stage gathers its columns through the group map, and the
 // store scatters through the same map — plus one deliberate departure from
@@ -4140,6 +4145,9 @@ struct moe_mm_args {
     }
 
 // The half-staged twins (dense-kernel economics), kept for measurement.
+// Their activation tile is staged scaled by the row's max|x| (xsc, the
+// dense MM_BODY arrangement since 2026-09-17) and scaled back in the
+// epilogue, so an outlier past half's range stays finite here as well.
 #define MOE_MMH_BODY(...) \
     const int ex   = (int)tgpig.z; \
     const int cbeg = eoff[ex]; \
@@ -4172,7 +4180,8 @@ struct moe_mm_args {
                     uint xrow = a.slots_per_token \
                                     ? (uint)slot / a.slots_per_token \
                                     : (uint)slot; \
-                    v = x[(ulong)xrow * a.x_stride + k0 + kk]; \
+                    v = x[(ulong)xrow * a.x_stride + k0 + kk] \
+                        * (16384.0f / xsc[xrow]); \
                 } \
                 tg_x[idx] = (half)v; \
             } \
@@ -4204,7 +4213,9 @@ struct moe_mm_args {
         int cc = idx / MM_TM, rr = idx % MM_TM; \
         if (col0 + cc < count && row0 + rr < a.n_out) { \
             int slot = colmap[cbeg + col0 + cc]; \
-            float v = tg_c[idx]; \
+            uint xrow = a.slots_per_token ? (uint)slot / a.slots_per_token \
+                                          : (uint)slot; \
+            float v = tg_c[idx] * (xsc[xrow] * (1.0f / 16384.0f)); \
             if (a.has_bias) v += bias[(ulong)ex * a.bias_stride + row0 + rr]; \
             y[(ulong)slot * a.y_stride + row0 + rr] = v; \
         } \

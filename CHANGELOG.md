@@ -8,6 +8,27 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **The half-staged Metal MoE expert GEMM (`RUNNER_METAL_MOE_MM=half`)
+  stages activations inside fp16's range too.** The default grouped-MMA MoE
+  prefill stages in float and never carried the exposure; the half-staged
+  twins kept for measurement did, the same way the dense tiled GEMM did
+  until the entry above: an expert input past 65504 became an Inf operand.
+  On a SiLU MoE with Q8_0 experts and an FFN input of ~1e6 the twin read
+  `<unk>` for every generated token and failed the grouped-path fidelity
+  gate at 0 of 24 top-1; on gpt-oss the swiglu clamp masks it (min/max drop
+  the NaN and the down input lands on the limit), which is why the earlier
+  fixture could not show it. Now `enc_moe_mm` runs `k_colabsmax` over the
+  activation rows (tokens for gate/up, slots for down) before a half-staged
+  tile and the twin scales by row and back in the epilogue; the float
+  kernels take the buffer and ignore it. `scripts/make-test-moe.py
+  --act-fp16-overflow` builds the fixtures with the FFN input norm at 4e6,
+  and `make test-metal-moe-mm` gained the leg: the moe1 variant requantized
+  to Q8_0 experts, half twins engaged, `test-moe-mm-ab ... half` must pass
+  (it does, byte-identical to the CPU on that fixture). Also corrected in
+  that target: its `test-gpu-identity` leg never measured the grouped path,
+  since the tool pins `RUNNER_METAL_MOE_MM=0` by design; the echo now says
+  what it measures. Noted on the way: `--quantize OUT` writes `OUT`, not the
+  `OUT.gguf` its help text promises.
 - **Bugfix sweep 2026-09-17 (API surfaces): `stop_token_ids` validation
   reached undefined behaviour on an out-of-range element.** The per-element
   whole-number test was spelled as a round trip through `long long`, and
@@ -49,10 +70,11 @@ names that were true when they were written.
   29 of 29 with the tensor-core leg. Cost: the unscaled and scaled
   binaries alternated on the same loaded M1 (Llama-3.2-1B IQ3_S, 360-token
   prompt, four runs each) prefill at 152 and 153 tok/s mean, so the
-  column-max pass is inside run-to-run noise. Not closed here: the Metal MoE tiled
-  GEMM rounds its staged activations to half the same way (MoE expert
-  inputs; a follow-up), and the opt-in Metal 4 tensor path stages its own
-  operands. (suite R3/R13 tensor-core program, the last dense exposure)
+  column-max pass is inside run-to-run noise. The default Metal MoE tiled
+  GEMM stages in float and was never exposed; its opt-in half-staged twin
+  was, and is scaled in the entry below. The opt-in Metal 4 tensor path
+  stages its own operands. (suite R3/R13 tensor-core program, the last
+  dense exposure)
 - **Metal serves the seven codebook i-quants: IQ1_S, IQ1_M, IQ2_XXS, IQ2_XS,
   IQ2_S, IQ3_XXS and IQ3_S.** A file carrying even one such tensor ran on the
   CPU as a whole on Apple silicon, which is every GSQ-RCO and Unsloth dynamic

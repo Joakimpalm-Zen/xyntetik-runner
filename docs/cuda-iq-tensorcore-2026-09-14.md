@@ -222,6 +222,10 @@ half) stayed unscaled and carried the exposure on Apple silicon until
 (the same 2^14 / max|x| arrangement, scaled back in the epilogue) closed
 it, and `make test-tc-overflow` runs on Darwin since, where the old
 kernels produced 16,576 non-finite logits on the fixture and the scaled
-ones pass. The Metal MoE tiled GEMM (`MOE_MM_BODY`) rounds its staged
-activations to half as well and is the remaining place; the Metal 4
-tensor path (`kernels_tensor.metal`, opt-in) stages its own operands.
+ones pass. The default Metal MoE tiled GEMM (`MOE_MM_BODY`) stages in
+float and was never exposed; its opt-in half-staged twin (`MOE_MMH_BODY`,
+`RUNNER_METAL_MOE_MM=half`) was, and is scaled the same way since the same
+day (gate: `make test-metal-moe-mm` on the `--act-fp16-overflow` moe1
+fixture with Q8_0 experts, where the unscaled twin read `<unk>` for every
+token). The Metal 4 tensor path (`kernels_tensor.metal`, opt-in) stages
+its own operands.
