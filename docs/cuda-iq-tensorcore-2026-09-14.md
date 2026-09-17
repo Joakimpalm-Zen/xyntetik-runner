@@ -160,8 +160,9 @@ from CUDA 13.3 on the Windows box: exactly the four kernels changed.
 The regression instrument is a fixture, `make-test-model.py --wide --quant
 q8_0 --act-fp16-overflow`: gate weights 4e4x and up weights 4e2x drive the
 FFN activation (the `ffn_down` input) to 1.2e7, finite in fp32 and far
-past fp16. `make test-tc-overflow` (in `make test`; skips on macOS, where
-the Metal tiled path is not yet scaled) runs the forced-TC gate on it and
+past fp16. `make test-tc-overflow` (in `make test`; it skipped on macOS
+until 2026-09-17, when the Metal tiled path gained the same per-column
+scaling and the gate started running there too) runs the forced-TC gate on it and
 requires `Q8_0` dispatches and a pass: Q8_0=28 dispatches, 6e-5 of range, 0
 flips, free-running identical on both CUDA boxes. The same fixture on the
 previous binary returns NaN logits (the row below).
@@ -216,5 +217,11 @@ either way: the same finite text.
 Under 2% everywhere, the column-max reduction per tile; the plan's 5%
 regression bound holds. Every CUDA tensor-core GEMM now stages its
 operands inside fp16's range. Metal's tiled GEMM (`k_mm_*`, `tg_x` is
-half) still stages unscaled activations and carries the exposure on
-Apple silicon; it is the one place left.
+half) stayed unscaled and carried the exposure on Apple silicon until
+2026-09-17: `k_colabsmax` in `kernels.metal` and the scaled `MM_BODY`
+(the same 2^14 / max|x| arrangement, scaled back in the epilogue) closed
+it, and `make test-tc-overflow` runs on Darwin since, where the old
+kernels produced 16,576 non-finite logits on the fixture and the scaled
+ones pass. The Metal MoE tiled GEMM (`MOE_MM_BODY`) rounds its staged
+activations to half as well and is the remaining place; the Metal 4
+tensor path (`kernels_tensor.metal`, opt-in) stages its own operands.

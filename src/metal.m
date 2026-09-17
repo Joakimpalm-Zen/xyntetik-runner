@@ -70,6 +70,9 @@ typedef struct {
     bool          bind_failed;
     id<MTLBuffer> kc, vc;
     id<MTLBuffer> x, xb, xb2, q, kt, vt, hb, hb2, att, logits;
+    id<MTLBuffer> xsc;              // per-column max|x| for the scaled tiled GEMMs
+    int           xsc_cap;          // columns it holds
+    id<MTLComputePipelineState> p_colabsmax;
     id<MTLBuffer> agate;             // [n][q_dim] attention output gate scratch
     id<MTLBuffer> att_acc, att_ms;   // chunked-decode partials
     id<MTLBuffer> moe_logits, moe_sel, moe_selw, moe_hb, moe_hb2, moe_eout;
@@ -252,6 +255,8 @@ static void gpu_release_state(gpu_t *g, int n_layer) {
     [g->p_scale release];
     [g->p_moe_route release]; [g->p_moe_actmul release];
     [g->p_moe_sum release]; [g->p_trace_copy release];
+    if (g->xsc) [g->xsc release];
+    if (g->p_colabsmax) [g->p_colabsmax release];
     [g->queue release];
     [g->dev release];
     free(g);
@@ -1454,6 +1459,7 @@ bool gpu_init(model_t *m) {
     g->p_moe_actmul   = mk_pipeline(dev, lib, @"k_moe_actmul");
     g->p_moe_sum      = mk_pipeline(dev, lib, @"k_moe_sum");
     g->p_trace_copy   = mk_pipeline(dev, lib, @"k_trace_copy_f32");
+    g->p_colabsmax    = mk_pipeline(dev, lib, @"k_colabsmax");
     for (size_t i = 0; i < sizeof MM_KERNELS / sizeof *MM_KERNELS; i++)
         g->p_mm[MM_KERNELS[i].type] =
             mk_pipeline(dev, lib, [NSString stringWithUTF8String:MM_KERNELS[i].name]);
@@ -2007,6 +2013,19 @@ static void enc_mv_cols(gpu_t *g, id<MTLComputeCommandEncoder> e,
                         int n_in, int n_out, id<MTLBuffer> bias,
                         int n_col, int x_stride, int y_stride);
 
+// The per-column scale buffer for the tiled GEMMs, grown to the batch on
+// demand (a buffer allocation is not an encoder operation, so growing it
+// mid-encode is fine); false leaves the caller on the matvec path.
+static bool metal_ensure_xsc(gpu_t *g, int n_col) {
+    if (g->xsc && n_col <= g->xsc_cap) return true;
+    id<MTLBuffer> nb = new_f32_scratch(g->dev, (size_t)(n_col < 64 ? 64 : n_col));
+    if (!nb) return false;
+    if (g->xsc) [g->xsc release];
+    g->xsc = nb;
+    g->xsc_cap = n_col < 64 ? 64 : n_col;
+    return true;
+}
+
 static void enc_mv_n(gpu_t *g, id<MTLComputeCommandEncoder> e, model_t *m,
                      gguf_tensor *w, id<MTLBuffer> x, NSUInteger x_off,
                      id<MTLBuffer> y, NSUInteger y_off,
@@ -2050,7 +2069,21 @@ static void enc_mv_n(gpu_t *g, id<MTLComputeCommandEncoder> e, model_t *m,
     // K-quant kernels index a 256-superblock, so require that too.
     if (n_col > 1 && metal_mm_on() && g->p_mm[w->type] &&
         n_in % 32 == 0 &&
-        !(ggml_block_size(w->type) == 256 && n_in % 256 != 0)) {
+        !(ggml_block_size(w->type) == 256 && n_in % 256 != 0) &&
+        metal_ensure_xsc(g, n_col)) {
+        // Per-column max|x| first (k_colabsmax into g->xsc), then the tile:
+        // the GEMM stages its activation tile scaled by it and scales the
+        // product back, so an activation outlier past half's range (a
+        // recorded exposure since the CUDA kernels met one, 2026-09-14) is
+        // a finite operand here too. Gated by test-tc-overflow on Darwin.
+        [e setComputePipelineState:g->p_colabsmax];
+        [e setBuffer:x offset:x_off atIndex:0];
+        [e setBuffer:g->xsc offset:0 atIndex:1];
+        [e setBytes:&n_in length:sizeof n_in atIndex:2];
+        [e setBytes:&x_stride length:sizeof x_stride atIndex:3];
+        [e setBytes:&n_col length:sizeof n_col atIndex:4];
+        [e dispatchThreadgroups:MTLSizeMake((NSUInteger)n_col, 1, 1)
+          threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
         [e setComputePipelineState:g->p_mm[w->type]];
         mm_args ma = { n_in, n_out, n_col,
                        metal_bind_weights(g, e,
@@ -2061,6 +2094,7 @@ static void enc_mv_n(gpu_t *g, id<MTLComputeCommandEncoder> e, model_t *m,
         [e setBuffer:y offset:y_off atIndex:2];
         [e setBytes:&ma length:sizeof(ma) atIndex:3];
         [e setBuffer:bias ? bias : g->dummy offset:0 atIndex:4];
+        [e setBuffer:g->xsc offset:0 atIndex:5];
         // MM_TILE_M/MM_TILE_N mirror MM_TM/MM_TN in kernels.metal -- this file
         // cannot see that #define (the shader is compiled from an embedded
         // source string at runtime, not by clang alongside this file), so the

@@ -1512,20 +1512,16 @@ test-metal-iquants: runner $(TEST_GPU_ID)
 # token column scaled to fp16's range since 2026-09-14; before that the
 # staged operand was Inf and every logit NaN, which the gate now fails
 # outright. Runs on any CUDA box (the gate skips itself, and this target
-# passes, where there is no device); Metal's tiled path stages unscaled
-# fp16 activations and carries the same exposure, so the target does not
-# run there (recorded in docs/cuda-iq-tensorcore-2026-09-14.md).
+# passes, where there is no device). Metal's tiled path stages activations
+# the same way and was the last unscaled one until 2026-09-17 (k_colabsmax
+# + the scaled MM_BODY in kernels.metal), so the gate runs on Darwin too.
 test-tc-overflow: runner $(TEST_TC_TOL)
-ifeq ($(shell uname -s),Darwin)
-	@echo "tc overflow gate skipped: the Metal tiled path is not yet scaled (recorded exposure)"
-else
 	@set -e; \
 	$(PYTHON) scripts/make-test-model.py --wide --quant q8_0 --act-fp16-overflow test-fp16ovf.gguf > /dev/null; \
 	./$(TEST_TC_TOL) test-fp16ovf.gguf > tc-overflow.out 2>&1 || { cat tc-overflow.out; exit 1; }; \
 	grep -q "tc-tol: ok" tc-overflow.out || { cat tc-overflow.out; exit 1; }; \
 	grep -q "ok (skipped)" tc-overflow.out && echo "tc overflow gate: skipped (no CUDA device)" || \
 	  { grep -q "TC dispatches: Q8_0=" tc-overflow.out || { cat tc-overflow.out; exit 1; }; echo "tc overflow gate ok"; }
-endif
 
 # CUDA NVFP4 (ModelOpt two-level export): the device kernels and the companion
 # scale in their tails against the CPU seam. Token identity on a generated

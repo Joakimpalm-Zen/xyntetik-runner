@@ -8,6 +8,28 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **The Metal tiled prefill GEMM stages activations inside fp16's range.**
+  `k_mm_*` staged each token column as a plain half, so a model whose
+  activations exceed 65504 (Phi-4-mini's `ffn_down` input reaches 1.6e5;
+  the CUDA tensor-core kernels met it on 2026-09-14 and were scaled then)
+  put an Inf operand into the tile and every logit of the prefill came out
+  NaN on Apple silicon, with no error. Each column is now staged as
+  `x * (2^14 / max|x|)` and the product scaled back in the epilogue, the
+  CUDA `k_colabsmax` arrangement: a `k_colabsmax` kernel runs into a
+  per-column buffer right before each tile and the GEMMs take it as
+  buffer 5. `make test-tc-overflow`, which skipped itself on Darwin as a
+  recorded exposure, runs there now: on the old kernels it reports 16,576
+  non-finite logits in the forced arm on the overflow fixture; on the
+  scaled ones it passes. Every other Metal gate held: k-quant and i-quant
+  byte identity CPU versus Metal, prefill batch, decode-only, fusion, MoE
+  grouped-MMA, split files, fallback ownership, and `tests/test_iquants.py`
+  29 of 29 with the tensor-core leg. Cost: the unscaled and scaled
+  binaries alternated on the same loaded M1 (Llama-3.2-1B IQ3_S, 360-token
+  prompt, four runs each) prefill at 152 and 153 tok/s mean, so the
+  column-max pass is inside run-to-run noise. Not closed here: the Metal MoE tiled
+  GEMM rounds its staged activations to half the same way (MoE expert
+  inputs; a follow-up), and the opt-in Metal 4 tensor path stages its own
+  operands. (suite R3/R13 tensor-core program, the last dense exposure)
 - **Metal serves the seven codebook i-quants: IQ1_S, IQ1_M, IQ2_XXS, IQ2_XS,
   IQ2_S, IQ3_XXS and IQ3_S.** A file carrying even one such tensor ran on the
   CPU as a whole on Apple silicon, which is every GSQ-RCO and Unsloth dynamic
