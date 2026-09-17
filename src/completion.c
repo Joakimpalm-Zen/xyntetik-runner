@@ -2056,7 +2056,11 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
         for (int i = 0; !bad && i < sti->n; i++) {
             jv *it = sti->items[i];
             double v = it && it->type == J_NUM ? it->num : -1;
-            if (v < 0 || v != (double)(long long)v || v >= (double)s->tok->n_vocab ||
+            // Range BEFORE integrality: the whole-number test used to be a
+            // round trip through long long, and converting 1e300 to long
+            // long is undefined behaviour (UBSan flagged it; arm64 saturates,
+            // x86 yields LLONG_MIN). floor() compares without converting.
+            if (v < 0 || v >= (double)s->tok->n_vocab || v != floor(v) ||
                 n_req_stops >= 8)
                 bad = true;
             else

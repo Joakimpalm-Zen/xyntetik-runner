@@ -638,3 +638,30 @@ def test_fractional_integer_sampling_names_its_field(client, field):
     client.expect_400(dict(CHAT, **{field: 2.5}),
                       name=f"sampling-whole-{field}",
                       contains=field)
+
+
+def test_out_of_range_stop_token_id_is_rejected_without_undefined_behaviour(client, server):
+    """``stop_token_ids`` is validated per element. The whole-number check used
+    to be spelled ``v != (double)(long long)v``, which converts the value to
+    ``long long`` BEFORE the vocabulary bound is applied: for 1e300 that
+    conversion is undefined behaviour (UBSan: "outside the range of
+    representable values of type 'long long'"). arm64 saturates and x86
+    yields LLONG_MIN, so the answer happened to be 400 on both, but a
+    request field must never reach undefined territory. The sanitized
+    conformance leg runs this suite against ``runner-debug``, so the server
+    log is read back: a runtime-error line appended by this request is the
+    defect, whatever status came out."""
+    log = getattr(server, "log_path", None)
+    before = 0
+    if log:
+        try:
+            before = len(open(log, "rb").read())
+        except OSError:
+            before = 0
+    for bad in ([1e300], [-1e300], [4.6e18], [9.3e18]):
+        client.expect_400(dict(CHAT, stop_token_ids=bad),
+                          name=f"bad-stop-token-ids-{bad[0]!r}",
+                          contains="stop_token_ids")
+    if log:
+        tail = open(log, "rb").read()[before:].decode("utf-8", "replace")
+        assert "runtime error" not in tail, tail[:400]
