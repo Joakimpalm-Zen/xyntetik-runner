@@ -2028,7 +2028,9 @@ than use `previous_response_id`.
 
 ## Shadow mode: what could your local model have done?
 
-`python -m xyntetik_runner.shadow` records evidence about local coding attempts.
+`python -m xyntetik_runner.shadow` is a bench with receipts: it records
+evidence about local coding attempts on your own work, and it does not train
+or learn (the proven set changes only when the model changes).
 It imports replayable tasks from local agent sessions and repository history,
 checks that their protected tests fail before the recorded fix and pass after
 it, and runs bounded local attempts in scratch worktrees. The protected tests
