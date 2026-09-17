@@ -8,6 +8,29 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **Bugfix sweep 2026-09-17 (API surfaces): `stop_token_ids` validation
+  reached undefined behaviour on an out-of-range element.** The per-element
+  whole-number test was spelled as a round trip through `long long`, and
+  that conversion ran BEFORE the vocabulary bound, so `stop_token_ids:
+  [1e300]` converted 1e300 to `long long` (undefined; UBSan: "outside the
+  range of representable values"). arm64 saturates and x86 yields
+  `LLONG_MIN`, so both happened to answer 400, but a request field must not
+  depend on that. The bound is now applied first and integrality is checked
+  with `floor()`, which converts nothing. Gate:
+  `tests/conformance/test_request_validation.py::test_out_of_range_stop_token_id_is_rejected_without_undefined_behaviour`,
+  which reads the server log back so the sanitized conformance leg fails on
+  the runtime-error line whatever status came out. Same legs as the 09-13
+  and 09-15 rounds, all otherwise clean: clang `--analyze` (one new hit,
+  `hfhub.c:121`, a dead store before a `break`, triaged), `-Wvla -Wshadow`
+  (two harmless local shadows, `server.c:1978` `mb` and
+  `api_responses.c:802` `oom`), 28 API-facing C gates under ASan/UBSan, the
+  root pytest suite against the sanitized `runner` with report files (1240
+  passed, no reports), and a 2,315-case targeted mutation run over all four
+  request surfaces plus embeddings, framing and header edge cases. Found on
+  the way: the suite's `mutate_http.py` sends `"model": "m"`, which the
+  server answers 404 before parsing anything else, so its earlier "0
+  findings" rounds never reached a request body; the targeted run here
+  names the resident model.
 - **The Metal tiled prefill GEMM stages activations inside fp16's range.**
   `k_mm_*` staged each token column as a plain half, so a model whose
   activations exceed 65504 (Phi-4-mini's `ffn_down` input reaches 1.6e5;
