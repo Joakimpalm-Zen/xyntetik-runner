@@ -2119,9 +2119,42 @@ struct mm_args {
     device float       *y    [[buffer(2)]], \
     constant mm_args   &a    [[buffer(3)]], \
     device const float *bias [[buffer(4)]], \
+    device const float *xsc  [[buffer(5)]], \
     uint3 tgpig [[threadgroup_position_in_grid]], \
     uint3 tpitg [[thread_position_in_threadgroup]], \
     uint  sgitg [[simdgroup_index_in_threadgroup]]
+
+// Per-column max|x| for the tiled GEMMs (xsc, buffer 5 of MM_PARAMS): the
+// activation tile is staged as half, and a model's activation outliers can
+// exceed half's 65504 (Phi-4-mini requantized to IQ3_S reaches 1.6e5 at its
+// ffn_down input; the CUDA tensor-core kernels met it first, 2026-09-14),
+// where a staged Inf is a NaN logit. Each token column is staged as
+// x * (2^14 / max|x|) and the product scaled back in the epilogue, the CUDA
+// k_colabsmax arrangement. A tiny max would overflow 2^14 / max, so it
+// floors at 1 (the column is then staged unscaled, which is exact for it).
+kernel void k_colabsmax(device const float *x   [[buffer(0)]],
+                        device float       *out [[buffer(1)]],
+                        constant int &n_in      [[buffer(2)]],
+                        constant int &xs        [[buffer(3)]],
+                        constant int &batch     [[buffer(4)]],
+                        uint  col   [[threadgroup_position_in_grid]],
+                        uint  tid   [[thread_position_in_threadgroup]],
+                        uint  sgitg [[simdgroup_index_in_threadgroup]],
+                        uint  tiisg [[thread_index_in_simdgroup]]) {
+    threadgroup float red[8];
+    if ((int)col >= batch) return;
+    device const float *xc = x + (ulong)col * xs;
+    float m = 0.0f;
+    for (int i = (int)tid; i < n_in; i += 256) m = max(m, fabs(xc[i]));
+    m = simd_max(m);
+    if (tiisg == 0) red[sgitg] = m;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (tid == 0) {
+        float r = 0.0f;
+        for (int s = 0; s < 8; s++) r = max(r, red[s]);
+        out[col] = r > 1e-30f ? r : 1.0f;
+    }
+}
 
 // Shared prologue/epilogue; DEQ_CHUNK fills tg_w[r][0..MM_TK) for this
 // thread's row/sub-range from the type's own block layout.
@@ -2159,11 +2192,16 @@ struct mm_args {
             else { for (int j = 0; j < 8; j++) dst[j] = 0.0h; } \
         } \
         /* 128 threads x 4 values/pass = the MM_TN x MM_TK activation tile */ \
+        /* four consecutive k of one column per pass (MM_TK is a multiple of
+           4), staged scaled to half's range by the column's max|x| */ \
         for (int i = tid * 4; i < MM_TN * MM_TK; i += 128 * 4) { \
+            int cc = i / MM_TK; \
+            bool live = col0 + cc < a.n_col; \
+            float xinv = live ? 16384.0f / xsc[col0 + cc] : 0.0f; \
             for (int j = 0; j < 4; j++) { \
-                int idx = i + j, cc = idx / MM_TK, kk = idx % MM_TK; \
-                tg_x[idx] = (half)((col0 + cc < a.n_col) \
-                    ? x[(ulong)(col0 + cc) * a.x_stride + k0 + kk] : 0.0f); \
+                int idx = i + j, kk = idx % MM_TK; \
+                tg_x[idx] = (half)(live \
+                    ? x[(ulong)(col0 + cc) * a.x_stride + k0 + kk] * xinv : 0.0f); \
             } \
         } \
         threadgroup_barrier(mem_flags::mem_threadgroup); \
@@ -2191,9 +2229,11 @@ struct mm_args {
     threadgroup_barrier(mem_flags::mem_threadgroup); \
     for (int idx = tid; idx < MM_TN * MM_TM; idx += 128) { \
         int cc = idx / MM_TM, rr = idx % MM_TM; \
-        if (col0 + cc < a.n_col && row0 + rr < a.n_out) \
+        if (col0 + cc < a.n_col && row0 + rr < a.n_out) { \
+            float r = tg_c[idx] * (xsc[col0 + cc] * (1.0f / 16384.0f)); \
             y[(ulong)(col0 + cc) * a.y_stride + row0 + rr] = \
-                a.has_bias ? tg_c[idx] + bias[row0 + rr] : tg_c[idx]; \
+                a.has_bias ? r + bias[row0 + rr] : r; \
+        } \
     }
 
 kernel void k_mm_f32(MM_PARAMS) {

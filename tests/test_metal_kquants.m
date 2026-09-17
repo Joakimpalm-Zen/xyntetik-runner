@@ -164,6 +164,28 @@ static bool submit(id<MTLCommandQueue> queue,
     [enc setBuffer:y offset:0 atIndex:2];
     [enc setBytes:args length:args_size atIndex:3];
     [enc setBuffer:bias offset:0 atIndex:4];
+    // The tiled GEMMs take the per-column max|x| (buffer 5), which the
+    // engine computes with k_colabsmax right before the tile; here it is
+    // computed on the host from the same x, so the kernel under test is the
+    // GEMM alone. The floor at 1 mirrors the kernel's.
+    id<MTLBuffer> xscb = nil;
+    if (mm) {
+        const mm_args_host *ma = (const mm_args_host *)args;
+        const float *xh = (const float *)x.contents;
+        float *sc = calloc((size_t)ma->n_col, sizeof *sc);
+        for (int c = 0; c < ma->n_col; c++) {
+            float mx = 0;
+            for (int k = 0; k < ma->n_in; k++) {
+                float v = fabsf(xh[(size_t)c * ma->x_stride + k]);
+                if (v > mx) mx = v;
+            }
+            sc[c] = mx > 1e-30f ? mx : 1.0f;
+        }
+        xscb = [x.device newBufferWithBytes:sc length:(size_t)ma->n_col * sizeof *sc
+                                    options:MTLResourceStorageModeShared];
+        free(sc);
+        [enc setBuffer:xscb offset:0 atIndex:5];
+    }
     // MM_TILE_M/MM_TILE_N mirror MM_TM/MM_TN in kernels.metal -- see the
     // matching comment in src/metal.m's enc_mv_n.
     enum { MM_TILE_M = 64, MM_TILE_N = 32 };
@@ -179,6 +201,7 @@ static bool submit(id<MTLCommandQueue> queue,
     [enc endEncoding];
     [cb commit];
     [cb waitUntilCompleted];
+    [xscb release];
     if (cb.status == MTLCommandBufferStatusError) {
         CHECK(false, "Metal dispatch failed: %s",
               cb.error ? cb.error.localizedDescription.UTF8String : "unknown error");
