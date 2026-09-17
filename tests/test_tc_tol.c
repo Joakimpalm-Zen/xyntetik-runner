@@ -401,6 +401,11 @@ int main(int argc, char **argv) {
         int t = (int)gf.tensors[i].type;
         if (t < 0 || t >= TYPE_N) continue;
         bool in_block = strncmp(gf.tensors[i].name, "blk.", 4) == 0;
+        // Only matrices reach a GEMM: a block's norm vectors are F32 on
+        // every fixture, and Metal has an F32 tiled kernel, so counting them
+        // here read as "F32 block tensors never dispatched" on that backend
+        // (found 2026-09-17 when the leg first ran on a Mac).
+        if (gf.tensors[i].n_dims < 2) continue;
         if (in_block) g_block_tensors[t]++; else g_other_tensors[t]++;
         if (in_block && gpu_tc_type_has_kernel(t)) has_tc_type = true;
     }

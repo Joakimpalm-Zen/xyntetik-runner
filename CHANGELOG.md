@@ -8,6 +8,41 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **Metal serves the seven codebook i-quants: IQ1_S, IQ1_M, IQ2_XXS, IQ2_XS,
+  IQ2_S, IQ3_XXS and IQ3_S.** A file carrying even one such tensor ran on the
+  CPU as a whole on Apple silicon, which is every GSQ-RCO and Unsloth dynamic
+  quant, three days after CUDA closed the same gap. Each format now has a
+  matvec (`k_mv_iq*`, one 32-weight sub-block per lane, the `k_mv_iq4_xs`
+  shape) and a tiled-GEMM decoder (`k_mm_iq*`, one group of 8 per chunk) in
+  `kernels.metal`, sharing seven decode helpers whose arithmetic is
+  `src/iq_decode.h`'s, the file the CUDA kernels and the host test compile.
+  The codebook grids are a third copy of `quants_iq_grids.h`, generated from
+  the host header and held element-for-element equal to it by
+  `tests/test_metal_iq_kernels.py` (with the CUDA copy's test as the model),
+  which also holds every format to a defined, registered and embedded pair
+  of kernels. Gates on the M1: `test-metal-kquants` runs identity-column
+  parity of both kernels against the CPU dequantizer for all seven (the
+  shape sweep, including the partial-superblock rows); `make
+  test-metal-kquant` is byte-identical CPU versus Metal on eight public
+  files (mradermacher's SmolLM2-360M in all seven formats, Llama-3.2-1B
+  IQ3_S; short and long prompts, so both the matvec and the GEMM path);
+  the new `make test-metal-iquants` runs `tests/test_iquants.py` on the
+  llama-quantize fixture set, 9 of 9 GPU-identity legs at logit precision
+  and 9 of 9 tensor-core tolerance legs with every format dispatching its
+  GEMM in the forced-on arm. Measured on the M1 (8 GB), 360-token prompt,
+  64 greedy tokens: Llama-3.2-1B IQ3_S prefill 98 to 244 tok/s and decode
+  14.0 to 30.1 tok/s; SmolLM2-360M IQ2_XXS prefill 222 to 562 tok/s and
+  decode 51 to 74 tok/s. The refusal contract is kept by a tracer,
+  `RUNNER_METAL_INIT_INJECT_FAILURE=no-kernel:<TYPE>`, the same mechanism
+  as CUDA's, since nothing dense declines naturally on Metal any more; NVFP4
+  still does. Found on the way: the tolerance gate counted a block's F32
+  norm vectors as GEMM-eligible tensors, which only shows on a backend with
+  an F32 tiled kernel (Metal), so `tests/test_tc_tol.c` now counts matrices
+  only. Not claimed: the Metal tiled path still stages activations as
+  unscaled fp16 (`test-tc-overflow` keeps its Darwin skip), and the 11.8 GB
+  Qwen3.8-27B IQ3_S file needs a larger Mac than the 8 GB M1 for its own
+  row; the SmolLM2 and Llama-3.2 rows are the Metal anchor for now.
+  (suite R4.25)
 - **A Muse tool conversation no longer overruns the chat message array on
   its third replayed reasoning turn.** The chat handler sized its rendered
   message array with one extra slot per `reasoning_content` for Harmony

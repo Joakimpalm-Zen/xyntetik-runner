@@ -587,10 +587,25 @@ static bool gpu_type_ok(int type) {
         case T_Q4_1: case T_Q5_0: case T_Q5_1: case T_Q2_K: case T_Q3_K:
         case T_Q4_K:
         case T_Q5_K: case T_Q6_K: case T_IQ4_NL: case T_IQ4_XS: case T_MXFP4:
+        case T_IQ1_S: case T_IQ1_M: case T_IQ2_XXS: case T_IQ2_XS: case T_IQ2_S:
+        case T_IQ3_XXS: case T_IQ3_S:
             return true;
         default:
             return false;
     }
+}
+
+// Deterministic tracer for the "no Metal kernel for this type" diagnostic:
+// every dense format the loader reads now has a kernel here, so the message
+// below is reached naturally only by NVFP4 and by MoE expert types. The
+// fallback contract (tensor and type named, output byte-identical to the
+// CPU) is held by tests/test_gpu_declines.py through
+// RUNNER_METAL_INIT_INJECT_FAILURE=no-kernel:IQ2_XXS, the same mechanism as
+// cuda.c's inject_no_kernel.
+static bool metal_inject_no_kernel(int type) {
+    const char *inj = getenv("RUNNER_METAL_INIT_INJECT_FAILURE");
+    return inj && !strncmp(inj, "no-kernel:", 10) &&
+           !strcmp(inj + 10, ggml_type_name(type));
 }
 
 // The --caps answer for this backend, sourced from the admission test above so
@@ -616,7 +631,8 @@ static bool metal_tensor_type_ok(const gguf_tensor *t, bool moe) {
                 "which no Metal kernel applies — using CPU\n", t->name);
         return false;
     }
-    if (moe ? metal_moe_type_ok(t->type) : gpu_type_ok(t->type))
+    if ((moe ? metal_moe_type_ok(t->type) : gpu_type_ok(t->type)) &&
+        !metal_inject_no_kernel(t->type))
         return true;
     fprintf(stderr, "gpu: tensor %s uses %s, which has no Metal%s kernel — "
             "using CPU\n", t->name, ggml_type_name(t->type),
@@ -904,6 +920,10 @@ static const struct { int type; const char *name; } MM_KERNELS[] = {
     { T_BF16,   "k_mm_bf16" },   { T_IQ4_NL, "k_mm_iq4_nl" },
     { T_IQ4_XS, "k_mm_iq4_xs" }, { T_Q4_K,   "k_mm_q4_K" },
     { T_Q6_K,   "k_mm_q6_K" },   { T_MXFP4,  "k_mm_mxfp4" },
+    { T_IQ1_S,  "k_mm_iq1_s" },  { T_IQ1_M,  "k_mm_iq1_m" },
+    { T_IQ2_XXS, "k_mm_iq2_xxs" }, { T_IQ2_XS, "k_mm_iq2_xs" },
+    { T_IQ2_S,  "k_mm_iq2_s" },  { T_IQ3_XXS, "k_mm_iq3_xxs" },
+    { T_IQ3_S,  "k_mm_iq3_s" },
 };
 bool gpu_tc_type_has_kernel(int type) {
     for (size_t i = 0; i < sizeof MM_KERNELS / sizeof *MM_KERNELS; i++)
@@ -1453,6 +1473,13 @@ bool gpu_init(model_t *m) {
     g->p_mv[T_Q5_K]   = mk_pipeline(dev, lib, @"k_mv_q5_K");
     g->p_mv[T_Q6_K]   = mk_pipeline(dev, lib, @"k_mv_q6_K");
     g->p_mv[T_MXFP4]  = mk_pipeline(dev, lib, @"k_mv_mxfp4");
+    g->p_mv[T_IQ1_S]   = mk_pipeline(dev, lib, @"k_mv_iq1_s");
+    g->p_mv[T_IQ1_M]   = mk_pipeline(dev, lib, @"k_mv_iq1_m");
+    g->p_mv[T_IQ2_XXS] = mk_pipeline(dev, lib, @"k_mv_iq2_xxs");
+    g->p_mv[T_IQ2_XS]  = mk_pipeline(dev, lib, @"k_mv_iq2_xs");
+    g->p_mv[T_IQ2_S]   = mk_pipeline(dev, lib, @"k_mv_iq2_s");
+    g->p_mv[T_IQ3_XXS] = mk_pipeline(dev, lib, @"k_mv_iq3_xxs");
+    g->p_mv[T_IQ3_S]   = mk_pipeline(dev, lib, @"k_mv_iq3_s");
 
     // Fast (reassociating) decode matvec, gated by RUNNER_METAL_MV. Only the
     // two types that carry real decode traffic on the models this was measured
@@ -2023,8 +2050,7 @@ static void enc_mv_n(gpu_t *g, id<MTLComputeCommandEncoder> e, model_t *m,
     // K-quant kernels index a 256-superblock, so require that too.
     if (n_col > 1 && metal_mm_on() && g->p_mm[w->type] &&
         n_in % 32 == 0 &&
-        !((w->type == T_Q4_K || w->type == T_Q6_K || w->type == T_Q2_K ||
-           w->type == T_Q3_K || w->type == T_IQ4_XS) && n_in % 256 != 0)) {
+        !(ggml_block_size(w->type) == 256 && n_in % 256 != 0)) {
         [e setComputePipelineState:g->p_mm[w->type]];
         mm_args ma = { n_in, n_out, n_col,
                        metal_bind_weights(g, e,

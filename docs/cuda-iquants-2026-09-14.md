@@ -83,7 +83,8 @@ content parser refuses to return.
 
 - No llama.cpp column on the real file in this pass; the CPU decoders are
   unchanged and keep their earlier anchor.
-- Metal has no kernels for these types; that backend still declines the
-  file, naming the tensor.
+- Metal had no kernels for these types when this was written; it gained
+  them on 2026-09-17 (k_mv_iq*/k_mm_iq* in kernels.metal, the same host
+  grids as a third copy, tests/test_metal_iq_kernels.py).
 - No performance claim. The kernels are the generic warp-per-row shape;
   the coalesced GEMV, tiled GEMM and tensor-core paths do not cover them.

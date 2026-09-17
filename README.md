@@ -997,10 +997,10 @@ layout, tensor type, runtime, or capacity is unsupported.
 |---|---|
 | CPU | F32, F16, BF16, Q8_0, Q4_0, Q4_1, Q5_0, Q5_1, Q2_K, Q3_K, Q4_K, Q5_K, Q6_K, IQ4_NL, IQ4_XS, MXFP4, NVFP4, and the codebook i-quants IQ1_S, IQ1_M, IQ2_XXS, IQ2_XS, IQ2_S, IQ3_XXS, IQ3_S |
 | CUDA | The whole CPU list (NVFP4 with its per-tensor scale companion applied in the kernel; the codebook i-quants with device twins of the CPU decoders, so a mixed-type file such as a GSQ-RCO or Unsloth dynamic quant is admitted whole) |
-| Metal | The CPU list without NVFP4 and the IQ1-IQ3 families |
+| Metal | The CPU list without NVFP4 (the codebook i-quants with their own matvec and tiled-GEMM kernels, gated byte-identical to the CPU decoders and at logit precision on the fixture set) |
 
-On Metal a model that carries even one IQ1-IQ3 or NVFP4 tensor runs on the
-CPU as a whole: the backend refuses it loudly, naming the tensor and type.
+On Metal a model that carries even one NVFP4 tensor runs on the CPU as a
+whole: the backend refuses it loudly, naming the tensor and type.
 
 **Per-tensor scale companions.** NVIDIA's ModelOpt NVFP4 export is two-level:
 a UE4M3 scale per 16 elements inside each block and one F32 `<base>.scale`
