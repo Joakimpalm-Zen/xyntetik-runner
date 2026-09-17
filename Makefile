@@ -1251,7 +1251,8 @@ endif
 # focused kernel smoke into an unbounded multi-hour gate. The small pinned
 # filename is the automatic fixture; operators can still opt a specific
 # standalone dense artifact in with KQUANT_MODELS=/path/model.gguf.
-KQUANT_MODELS ?= $(wildcard models/tinyllama-q2k.gguf)
+KQUANT_MODELS ?= $(wildcard models/tinyllama-q2k.gguf \
+    models/SmolLM2-360M-Instruct-IQ3_S.gguf models/SmolLM2-360M-Instruct-IQ1_M.gguf)
 test-metal-kquant: runner
 ifeq ($(shell uname -s),Darwin)
 	@set -e; \
@@ -1496,6 +1497,13 @@ endif
 # where llama-server is present and is not required here. Part of the
 # release evidence on both CUDA classes since 0.5.3.
 test-cuda-iquants: runner $(TEST_GPU_ID)
+	RUNNER_REQUIRE_IQ_GATES=gpu $(PYTHON) -m pytest -q tests/test_iquants.py
+
+# The same gate on a Mac: the Metal codebook i-quant kernels (2026-09-17)
+# against the CPU decoders at logit precision on the fixture set, which
+# tests/test_iquants.py builds with llama-quantize/llama-imatrix from
+# RUNNER_LLAMA_CPP_BIN (Homebrew's llama.cpp: RUNNER_LLAMA_CPP_BIN=/opt/homebrew/bin).
+test-metal-iquants: runner $(TEST_GPU_ID)
 	RUNNER_REQUIRE_IQ_GATES=gpu $(PYTHON) -m pytest -q tests/test_iquants.py
 
 # The fp16 range of the tensor-core operands: a fixture whose FFN activation

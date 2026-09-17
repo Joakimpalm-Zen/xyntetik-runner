@@ -109,6 +109,24 @@ static void make_weights(int type, uint8_t *weights, int n_in, int n_out) {
                 break;
             case T_Q4_0:
             case T_Q8_0: memcpy(b + 0, &d, sizeof d); break;
+            // codebook i-quants: the half scale leads the block (every grid
+            // index is bounded by construction, so the random payload is a
+            // valid block); IQ1_M scatters its half across the top nibbles
+            // of the four trailing scale words (src/iq_decode.h iq1m_stage64)
+            case T_IQ1_S: case T_IQ2_XXS: case T_IQ2_XS: case T_IQ2_S:
+            case T_IQ3_XXS: case T_IQ3_S:
+                memcpy(b + 0, &d, sizeof d); break;
+            case T_IQ1_M: {
+                uint16_t hd;
+                memcpy(&hd, &d, sizeof hd);
+                for (int w = 0; w < 4; w++) {
+                    uint16_t sw;
+                    memcpy(&sw, b + 48 + 2 * w, sizeof sw);
+                    sw = (uint16_t)((sw & 0x0fff) | (((hd >> (4 * w)) & 0xF) << 12));
+                    memcpy(b + 48 + 2 * w, &sw, sizeof sw);
+                }
+                break;
+            }
             default: break;
             }
         }
@@ -363,6 +381,10 @@ int main(void) {
             { T_Q4_K, "q4_K", 256 }, { T_Q6_K, "q6_K", 256 },
             { T_Q4_0, "q4_0",  32 }, { T_Q8_0, "q8_0",  32 },
             { T_F16,  "f16",    1 }, { T_F32,  "f32",    1 },
+            { T_IQ1_S, "iq1_s", 256 }, { T_IQ1_M, "iq1_m", 256 },
+            { T_IQ2_XXS, "iq2_xxs", 256 }, { T_IQ2_XS, "iq2_xs", 256 },
+            { T_IQ2_S, "iq2_s", 256 }, { T_IQ3_XXS, "iq3_xxs", 256 },
+            { T_IQ3_S, "iq3_s", 256 },
         };
         for (size_t i = 0; i < sizeof kinds / sizeof *kinds; i++) {
             int type = kinds[i].type, step = kinds[i].step;
@@ -410,7 +432,8 @@ int main(void) {
         fprintf(stderr, "metal kquant kernels: %d failures\n", failures);
         return 1;
     }
-    printf("metal kernels: q2_K/q3_K/q4_K/q6_K/q4_0/q8_0/f16/f32 "
-           "mv+mm shape sweep; q2_K/q3_K MoE expert-offset parity ok\n");
+    printf("metal kernels: q2_K/q3_K/q4_K/q6_K/q4_0/q8_0/f16/f32 + the seven "
+           "codebook i-quants, mv+mm shape sweep; q2_K/q3_K MoE expert-offset "
+           "parity ok\n");
     return 0;
 }

@@ -36,13 +36,14 @@ def test_build_arch_names_riscv64():
 METAL_QUANTS = {
     "F32", "F16", "BF16", "Q8_0", "Q4_0", "Q4_1", "Q5_0", "Q5_1",
     "Q2_K", "Q3_K", "Q4_K", "Q5_K", "Q6_K", "IQ4_NL", "IQ4_XS", "MXFP4",
+    "IQ1_S", "IQ1_M", "IQ2_XXS", "IQ2_XS", "IQ2_S", "IQ3_XXS", "IQ3_S",
 }
 # CUDA gained BF16 and Q2_K matvec kernels 2026-08-20, NVFP4 on 2026-09-06
 # (the companion-scale loader plus k_mv_nvfp4/k_mv_nvfp4_b) and the seven
 # codebook i-quants on 2026-09-14 (k_mv_iq*/k_mv_iq*_b, so a mixed-type file
 # such as the GSQ-RCO Qwen3.8 27B is admitted whole instead of falling to the
-# CPU on its first IQ tensor). Metal has none of these, so the two backends
-# disagree on eight formats. The NVFP4 admission was late: the check only
+# CPU on its first IQ tensor). Metal gained the same seven on 2026-09-17
+# (k_mv_iq*/k_mm_iq*), so the backends now differ on NVFP4 alone. The NVFP4 admission was late: the check only
 # runs where a backend is actually present, and CI has no GPU, so the stale
 # list sat green until the suite was run on the CUDA box.
 CUDA_QUANTS = {
