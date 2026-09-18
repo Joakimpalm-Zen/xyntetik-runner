@@ -32,7 +32,15 @@ names that were true when they were written.
   replay verifies it. Requires head_dim divisible by 16 and refuses tied-V
   layers like q8 does. What is NOT claimed: fidelity. fp4's cost is per
   model and is reported, not gated: on SmolLM2-135M the format moves the
-  mean logit by 1.14 against 0.057 for q8. The lab's protocol
+  mean logit by 1.14 against 0.057 for q8, and the first protocol row, on
+  the M1 with Llama-3.2-1B IQ3_S (Metal, 300 teacher-forced positions,
+  reference = the same file with an f16 cache), reads fp4 mean KLD 0.1846
+  / top-1 74.3% / margin-qualified 88.3% / top-8 0.789 against q8 0.0033 /
+  98.0% / 100% / 0.977. On that model post-hoc fp4 is about 56x q8's KLD
+  and outside the house bar, so the option ships with its measurement,
+  not as a recommendation; the larger models the lab will run may behave
+  differently, and a K-fp4 with V-q8 split is the likely second build
+  given the lab's range table. The lab's protocol
   (`kld-compare-raw` with the same GGUF under `--kv fp4` and `--kv f16`, a
   4k-prefix variant, q8 as the comparison row) is the acceptance measure,
   and the lab's own range table says V at deep Qwen3.8 layers (|max| 94,
