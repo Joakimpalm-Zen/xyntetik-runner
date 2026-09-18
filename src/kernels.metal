@@ -2644,7 +2644,14 @@ static inline float2 kv_pair(device const uchar *row, int i2, int q8) {
 // so a prompt batch stores every token's K/V in one dispatch (grid.y = column).
 // off is the LAYER's byte offset; the kernel places column c at position
 // pos + c, modulo kv_rows when a ring is active (0 = flat absolute rows).
-struct store_args { int kv_dim, q8, stride, pos, kv_rows; ulong off, row_b; };
+// q8 / off / row_b describe the K cache, vq8 / voff / vrow_b the V cache:
+// the two differ under --kv k8v4 (K q8_0, V fp4).
+struct store_args { int kv_dim, q8, stride, pos, kv_rows; ulong off, row_b;
+                    int vq8; ulong voff, vrow_b; };
+
+static inline int kv_units(int kv_dim, int q8) {
+    return q8 == 2 ? kv_dim / 16 : q8 ? kv_dim / 32 : kv_dim;
+}
 
 kernel void k_store_kv(device const float *k_all [[buffer(0)]],
                        device const float *v_all [[buffer(1)]],
@@ -2652,15 +2659,14 @@ kernel void k_store_kv(device const float *k_all [[buffer(0)]],
                        device uchar       *vc [[buffer(3)]],
                        constant store_args &a [[buffer(4)]],
                        uint2 gid [[thread_position_in_grid]]) {
-    int n = a.q8 == 2 ? a.kv_dim / 16 : a.q8 ? a.kv_dim / 32 : a.kv_dim;
+    int nk = kv_units(a.kv_dim, a.q8), nv = kv_units(a.kv_dim, a.vq8);
     uint i = gid.x, col = gid.y;
-    if ((int)i < n) {
-        int p = a.pos + (int)col;
-        if (a.kv_rows > 0) p %= a.kv_rows;
-        ulong off = a.off + (ulong)p * a.row_b;
-        kv_store_row(kc + off, k_all + (ulong)col * a.stride, a.q8, i);
-        kv_store_row(vc + off, v_all + (ulong)col * a.stride, a.q8, i);
-    }
+    int p = a.pos + (int)col;
+    if (a.kv_rows > 0) p %= a.kv_rows;
+    if ((int)i < nk)
+        kv_store_row(kc + a.off + (ulong)p * a.row_b, k_all + (ulong)col * a.stride, a.q8, i);
+    if ((int)i < nv)
+        kv_store_row(vc + a.voff + (ulong)p * a.vrow_b, v_all + (ulong)col * a.stride, a.vq8, i);
 }
 
 // ------------------------------------------------- decode fusion (n == 1)
@@ -3066,13 +3072,15 @@ kernel void k_add_rmsnorm(device float       *x [[buffer(0)]],
 // (head, position) is exactly what a per-token dispatch computed.
 struct attn_args {
     int   head_dim, n_head, n_head_kv, n_ctx, pos;
-    ulong l_off;      // this layer's byte offset into the kv cache
+    ulong l_off;      // this layer's byte offset into the K cache
     float scale;
-    int   q8;
+    int   q8;         // K cache kind: 0 f16, 1 q8_0, 2 fp4
     int   window;     // sliding-window size for this layer (0 = full)
     int   has_sinks;  // gpt-oss: per-head sink joins softmax denominator only
     int   q_stride, att_stride, out_stride;
     int   kv_rows;    // ring capacity for this layer's rows (0 = flat)
+    ulong v_off;      // this layer's byte offset into the V cache
+    int   vq8;        // V cache kind (differs from q8 under --kv k8v4)
 };
 
 // Ring-aware KV row index: absolute position t lives at t % kv_rows when the
@@ -3156,6 +3164,8 @@ static inline float kv_dot_coop(device const uchar *row, device const float *qh,
     int kv_dim = a.n_head_kv * hd; \
     ulong row_b = kv_row_bytes(kv_dim, a.q8); \
     ulong base = a.l_off + kv_head_off(kvh, hd, a.q8); \
+    ulong row_v = kv_row_bytes(kv_dim, a.vq8); \
+    ulong base_v = a.v_off + kv_head_off(kvh, hd, a.vq8); \
     int pos = a.pos + (int)col; \
     device const float *q = q_all + (ulong)col * a.q_stride; \
     device float *att = att_all + (ulong)col * a.att_stride; \
@@ -3200,7 +3210,7 @@ static inline float kv_dot_coop(device const uchar *row, device const float *qh,
     for (int i = tid; i < hd; i += tpg) { \
         float o = 0; \
         for (int t = t0; t <= pos; t++) \
-            o += ah[t] * kv_pair(vc + base + kv_row_off(t, a.kv_rows, row_b), i / 2, a.q8)[i & 1]; \
+            o += ah[t] * kv_pair(vc + base_v + kv_row_off(t, a.kv_rows, row_v), i / 2, a.vq8)[i & 1]; \
         out[h * hd + i] = o / sum; \
     }
 
@@ -3266,9 +3276,9 @@ kernel void k_attn_coop(device const float *q_all   [[buffer(0)]],
 
 struct attn_chunk_args {
     int   head_dim, n_head, n_head_kv, n_ctx, pos;
-    ulong l_off;
+    ulong l_off;       // K cache
     float scale;
-    int   q8;
+    int   q8;          // K cache kind
     int   window;
     int   chunk;       // positions per chunk
     int   n_chunks;
@@ -3276,6 +3286,8 @@ struct attn_chunk_args {
     // No column strides: the host takes this path at n == 1 only (see the
     // n == 1 guard on the chunk dispatch in metal.m), so q, att and the
     // partials are all indexed from column zero.
+    ulong v_off;       // V cache
+    int   vq8;         // V cache kind
 };
 
 /* Shared halves of the chunked attention kernel; the two variants below
@@ -3289,6 +3301,8 @@ struct attn_chunk_args {
     int kv_dim = a.n_head_kv * hd; \
     ulong row_b = kv_row_bytes(kv_dim, a.q8); \
     ulong base = a.l_off + kv_head_off(kvh, hd, a.q8); \
+    ulong row_v = kv_row_bytes(kv_dim, a.vq8); \
+    ulong base_v = a.v_off + kv_head_off(kvh, hd, a.vq8); \
     int pos = a.pos; \
     device const float *qh = q_all + h * hd; \
     device float *ah = att_all + (ulong)h * a.n_ctx; \
@@ -3341,7 +3355,7 @@ struct attn_chunk_args {
     for (int i = tid; i < hd; i += tpg) { \
         float o = 0; \
         for (int t = lo; t <= hi; t++) \
-            o += ah[t] * kv_pair(vc + base + kv_row_off(t, a.kv_rows, row_b), i / 2, a.q8)[i & 1]; \
+            o += ah[t] * kv_pair(vc + base_v + kv_row_off(t, a.kv_rows, row_v), i / 2, a.vq8)[i & 1]; \
         acc[i] = o; \
     } \
     if (tid == 0) { ms[0] = mx; ms[1] = sum; }

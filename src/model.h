@@ -317,6 +317,7 @@ typedef struct {
     kv_owner_t kv_owner;     // malloc on CPU/CUDA; backend-owned on Metal
     bool   kv_q8;            // KV rows stored as q8_0 blocks (CPU and CUDA)
     bool   kv_fp4;           // KV rows stored as fp4 blocks (16 values in 9 bytes)
+    bool   kv_split;         // K rows q8_0, V rows fp4 (--kv k8v4): the caches differ
     float *x, *xb, *xb2, *q, *hb, *hb2;   // [n_batch][dim] activations
     float *k_tmp, *v_tmp;                 // [n_batch][kv_dim]
     float *q_gate;                        // qwen35 full-attention output gate
@@ -554,16 +555,35 @@ static inline float model_attn_scale(const model_t *m, int l) {
 // bytes per cached KV row / per layer start, honoring the storage format.
 // q8_0 packs each 32 values into a 34-byte block; kv_dim is always a
 // multiple of 32 when kv_q8 is enabled (checked at load)
-// e cached elements under the model's KV storage format: fp4 packs 16 values
-// into 9 bytes (UE4M3 scale + E2M1 nibbles), q8_0 32 into 34, f16 2 each.
-// Every KV byte offset in the engine goes through this one function.
-static inline size_t model_kv_bytes_of(const model_t *m, size_t e) {
-    if (m->kv_fp4) return e / 16 * 9;
-    if (m->kv_q8)  return e / 32 * 34;
-    return e * sizeof(f16_t);
+// The K cache and the V cache each have a storage KIND (0 f16, 1 q8_0, 2
+// fp4) and, since --kv k8v4, the two may differ, so every byte offset and row
+// size in the engine names the cache it addresses: the *_k_* family for K,
+// the *_v_* family for V, and the *_sum forms where an account wants both.
+// fp4 packs 16 values into 9 bytes, q8_0 32 into 34, f16 2 each.
+static inline int model_kv_kind_k(const model_t *m) {
+    return m->kv_fp4 ? 2 : (m->kv_q8 || m->kv_split) ? 1 : 0;
 }
-static inline size_t model_kv_row_bytes(const model_t *m, int l) {
-    return model_kv_bytes_of(m, (size_t)model_kv_dim(m, l));
+static inline int model_kv_kind_v(const model_t *m) {
+    return (m->kv_fp4 || m->kv_split) ? 2 : m->kv_q8 ? 1 : 0;
+}
+static inline size_t kv_bytes_of_kind(int kind, size_t e) {
+    return kind == 2 ? e / 16 * 9 : kind == 1 ? e / 32 * 34 : e * sizeof(f16_t);
+}
+static inline size_t model_k_bytes_of(const model_t *m, size_t e) {
+    return kv_bytes_of_kind(model_kv_kind_k(m), e);
+}
+static inline size_t model_v_bytes_of(const model_t *m, size_t e) {
+    return kv_bytes_of_kind(model_kv_kind_v(m), e);
+}
+static inline size_t model_k_row_bytes(const model_t *m, int l) {
+    return model_k_bytes_of(m, (size_t)model_kv_dim(m, l));
+}
+static inline size_t model_v_row_bytes(const model_t *m, int l) {
+    return model_v_bytes_of(m, (size_t)model_kv_dim(m, l));
+}
+// K row + V row: the per-position cost accounts use
+static inline size_t model_kv_row_bytes_sum(const model_t *m, int l) {
+    return model_k_row_bytes(m, l) + model_v_row_bytes(m, l);
 }
 
 // Reservation auto-fit (`-c 0` with --reserve-ram/--reserve-vram): how many
@@ -599,9 +619,11 @@ bool      model_kv_trade_note(int gpu_layers, int n_layer, uint64_t kv_dev,
 static inline int model_kv_owner(const model_t *m, int l) {
     return (m->kv_src && l < m->n_layer) ? m->kv_src[l] : l;
 }
-static inline size_t model_kv_byte_off(const model_t *m, int l) {
+// Byte offset of layer l's rows in the V cache (its owner's rows under
+// shared KV); the K form is below and differs under tied-V and under k8v4.
+static inline size_t model_v_byte_off(const model_t *m, int l) {
     size_t e = m->kv_off[model_kv_owner(m, l)];
-    return model_kv_bytes_of(m, e);
+    return model_v_bytes_of(m, e);
 }
 // Does layer l carry its V implicitly? gemma-4's full-attention layers ship no
 // attn_v.weight: V is the raw K projection, so after the weightless V norm
@@ -616,15 +638,13 @@ static inline bool model_layer_tied_v(const model_t *m, int l) {
 // only under tied-V, where a tied layer owns no K rows at all.
 static inline size_t model_k_byte_off(const model_t *m, int l) {
     size_t e = (m->kv_off_k ? m->kv_off_k : m->kv_off)[model_kv_owner(m, l)];
-    return model_kv_bytes_of(m, e);
+    return model_k_bytes_of(m, e);
 }
-static inline size_t model_v_byte_off(const model_t *m, int l) {
-    return model_kv_byte_off(m, l);
-}
-// Bytes covering the first `l` layers' K rows (== the V number unless tied-V).
+// Bytes covering the first `l` layers' K rows (differs from the V number
+// under tied-V, where a tied layer owns no K rows, and under k8v4).
 static inline size_t model_k_boundary_bytes(const model_t *m, int l) {
     size_t e = (m->kv_off_k ? m->kv_off_k : m->kv_off)[l];
-    return model_kv_bytes_of(m, e);
+    return model_k_bytes_of(m, e);
 }
 // THE FLAT-ROW ASSUMPTION, and the two features that still depend on it.
 //
@@ -658,9 +678,13 @@ static inline size_t model_k_boundary_bytes(const model_t *m, int l) {
 // needs this one -- calling model_kv_byte_off(m, gpu_layers) instead
 // undersizes the buffer whenever gpu_layers itself lands on a shared-KV
 // layer, since it would be redirected back to that layer's (earlier) owner.
-static inline size_t model_kv_boundary_bytes(const model_t *m, int l) {
+static inline size_t model_v_boundary_bytes(const model_t *m, int l) {
     size_t e = m->kv_off[l];
-    return model_kv_bytes_of(m, e);
+    return model_v_bytes_of(m, e);
+}
+// K + V raw cumulative boundary: allocation and device-split accounting
+static inline size_t model_kv_boundary_bytes_sum(const model_t *m, int l) {
+    return model_k_boundary_bytes(m, l) + model_v_boundary_bytes(m, l);
 }
 void        model_ple_prepass(model_t *m, const int32_t *tokens, int n,
                               const float *x, float *out, float *scratch);
@@ -731,6 +755,9 @@ typedef struct {
     // of the f16 bytes, so twice the context of q8. Lossier than q8; f16 stays
     // the default. Requires every layer's head_dim to be a multiple of 16.
     bool  kv_fp4;
+    // K rows q8_0 and V rows fp4 (--kv k8v4): measured 2026-09-18 as the
+    // side that survives 4 bits (K does not); about 41% of the f16 bytes.
+    bool  kv_split;
     // --moe-prefetch: hand routed experts to the OS as whole blocks before the
     // FFN reads them. 0 = auto (platform default: on for Apple Silicon when
     // weights exceed available RAM, off elsewhere — the A/B'd split), 1 =
@@ -950,8 +977,8 @@ typedef struct {
     bool     sparse;             // routed-MoE: hot set is smaller than weights
     uint64_t weights;            // whole file, per the header
     uint64_t hot;                // touched per token (== weights when dense)
-    uint64_t kv_f16_per_tok, kv_q8_per_tok, kv_fp4_per_tok;
-    uint64_t kv_f16, kv_q8, kv_fp4; // at n_ctx; 0 when that KV format is illegal
+    uint64_t kv_f16_per_tok, kv_q8_per_tok, kv_fp4_per_tok, kv_k8v4_per_tok;
+    uint64_t kv_f16, kv_q8, kv_fp4, kv_k8v4; // at n_ctx; 0 when that KV format is illegal
     uint64_t available;          // RAM available now, 0 = could not tell
 } model_fit;
 

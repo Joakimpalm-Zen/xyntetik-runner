@@ -376,7 +376,7 @@ static uint64_t model_identity(const model_t *m, const tokenizer *tok) {
         m->ffn_act, m->v_rmsnorm, m->n_suppress,
         // context geometry and KV element type: both change what a row means
         // and where it lives (--kv f16|q8|fp4 is a real axis, not a hint)
-        m->n_ctx, m->kv_q8, m->kv_fp4,
+        m->n_ctx, m->kv_q8, m->kv_fp4, m->kv_split,
     };
     h = h64(h, geo, sizeof geo);
     h = h64f(h, m->rms_eps);       h = h64f(h, m->rope_base);
@@ -389,7 +389,8 @@ static uint64_t model_identity(const model_t *m, const tokenizer *tok) {
         h = h64i(h, model_kv_dim(m, l));
         h = h64i(h, model_rope_dim(m, l));
         h = h64i(h, model_is_swa(m, l));
-        h = h64i(h, (long long)model_kv_row_bytes(m, l));
+        h = h64i(h, (long long)model_k_row_bytes(m, l));
+        h = h64i(h, (long long)model_v_row_bytes(m, l));
         const gguf_tensor *sample[2] = { m->layers[l].wq, m->layers[l].w_down };
         for (int k = 0; k < 2; k++) {
             if (!sample[k] || !sample[k]->data) { h = h64s(h, NULL); continue; }
@@ -431,7 +432,7 @@ size_t prefix_cache_entry_bytes(const model_t *m, int n) {
         // shared-KV layers alias an earlier layer's rows: snapshotting them
         // would copy the same bytes twice and make save/load disagree
         if (model_kv_owner(m, l) != l) continue;
-        t += 2 * (size_t)n * model_kv_row_bytes(m, l);
+        t += (size_t)n * model_kv_row_bytes_sum(m, l);
     }
     t += model_recurrent_blob_bytes(m);  // 0 for a non-recurrent model
     return t;
@@ -444,11 +445,11 @@ static void pfx_save(const model_t *m, uint8_t *dst, int n) {
     size_t off = 0;
     for (int l = 0; l < m->n_layer; l++) {
         if (model_kv_owner(m, l) != l) continue;
-        size_t blk = (size_t)n * model_kv_row_bytes(m, l);
-        size_t lo  = model_kv_byte_off(m, l);
-        memcpy(dst + off,       (const uint8_t *)m->kcache + lo, blk);
-        memcpy(dst + off + blk, (const uint8_t *)m->vcache + lo, blk);
-        off += 2 * blk;
+        size_t blk_k = (size_t)n * model_k_row_bytes(m, l);
+        size_t blk_v = (size_t)n * model_v_row_bytes(m, l);
+        memcpy(dst + off,         (const uint8_t *)m->kcache + model_k_byte_off(m, l), blk_k);
+        memcpy(dst + off + blk_k, (const uint8_t *)m->vcache + model_v_byte_off(m, l), blk_v);
+        off += blk_k + blk_v;
     }
     // the live fold is at position n here (the slot fed exactly n tokens), so it
     // is the fold to restore on an exact hit; no-op for a non-recurrent model.
@@ -460,12 +461,11 @@ static void pfx_load(const model_t *m, const uint8_t *src, int stride, int n) {
     size_t off = 0;
     for (int l = 0; l < m->n_layer; l++) {
         if (model_kv_owner(m, l) != l) continue;
-        size_t row = model_kv_row_bytes(m, l);
-        size_t blk = (size_t)stride * row, take = (size_t)n * row;
-        size_t lo  = model_kv_byte_off(m, l);
-        memcpy((uint8_t *)m->kcache + lo, src + off, take);
-        memcpy((uint8_t *)m->vcache + lo, src + off + blk, take);
-        off += 2 * blk;
+        size_t row_k = model_k_row_bytes(m, l), row_v = model_v_row_bytes(m, l);
+        size_t blk_k = (size_t)stride * row_k, blk_v = (size_t)stride * row_v;
+        memcpy((uint8_t *)m->kcache + model_k_byte_off(m, l), src + off, (size_t)n * row_k);
+        memcpy((uint8_t *)m->vcache + model_v_byte_off(m, l), src + off + blk_k, (size_t)n * row_v);
+        off += blk_k + blk_v;
     }
 }
 

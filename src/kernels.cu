@@ -3949,20 +3949,26 @@ __device__ __forceinline__ ulong64 kv_slot(int t, int ring) {
 
 // grid.y = token column; cache rows for consecutive positions are contiguous
 
+// q8 / l_off describe the K cache, vq8 / v_off the V cache: the two differ
+// under --kv k8v4 (K q8_0, V fp4), so each side computes its own row and
+// unit count. The grid covers max(units_k, units_v) threads.
+__device__ __forceinline__ int kv_units(int kv_dim, int q8) {
+    return q8 == 2 ? kv_dim / 16 : q8 ? kv_dim / 32 : kv_dim;
+}
+
 extern "C" __global__ void k_store_kv(const float *k, const float *v,
                                       unsigned char *kc, unsigned char *vc,
                                       int kv_dim, ulong64 l_off,
-                                      const int *posp, int q8, int ring) {
+                                      const int *posp, int q8, int ring,
+                                      ulong64 v_off, int vq8) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
-    int n = q8 == 2 ? kv_dim / 16 : q8 ? kv_dim / 32 : kv_dim;
-    if (i < n) {
-        ulong64 row_b = KV_ROW_BYTES(kv_dim, q8);
-        ulong64 dst = l_off + kv_slot(*posp + blockIdx.y, ring) * row_b;
-        const float *ks = k + (ulong64)blockIdx.y * kv_dim;
-        const float *vs = v + (ulong64)blockIdx.y * kv_dim;
-        kv_store_row(kc + dst, ks, kv_dim, q8, i);
-        kv_store_row(vc + dst, vs, kv_dim, q8, i);
-    }
+    ulong64 slot = kv_slot(*posp + blockIdx.y, ring);
+    const float *ks = k + (ulong64)blockIdx.y * kv_dim;
+    const float *vs = v + (ulong64)blockIdx.y * kv_dim;
+    if (i < kv_units(kv_dim, q8))
+        kv_store_row(kc + l_off + slot * KV_ROW_BYTES(kv_dim, q8), ks, kv_dim, q8, i);
+    if (i < kv_units(kv_dim, vq8))
+        kv_store_row(vc + v_off + slot * KV_ROW_BYTES(kv_dim, vq8), vs, kv_dim, vq8, i);
 }
 
 // ---------------------------------------------------------------- attention
@@ -3999,6 +4005,8 @@ extern "C" __global__ void k_attn(const float *q, const unsigned char *kc,
     int kv_dim = a.n_head_kv * hd;
     ulong64 row_b = KV_ROW_BYTES(kv_dim, a.q8);
     ulong64 base  = a.l_off + kv_head_off(kvh, hd, a.q8);
+    ulong64 row_v = KV_ROW_BYTES(kv_dim, a.vq8);
+    ulong64 base_v = a.v_off + kv_head_off(kvh, hd, a.vq8);
     int t0 = 0;                          // sliding-window start
     if (a.window > 0 && pos - a.window + 1 > 0) t0 = pos - a.window + 1;
     const float *qh = q + (ulong64)tk * a.qs + h * hd;
@@ -4054,7 +4062,7 @@ extern "C" __global__ void k_attn(const float *q, const unsigned char *kc,
     if (vchunk < nchunk && vlane < lanes) {
         float o0 = 0, o1 = 0;
         for (int t = t0 + vchunk; t <= pos; t += nchunk) {
-            float2 vf = kv_pair(vc + base + kv_slot(t, a.ring) * row_b, vlane, a.q8);
+            float2 vf = kv_pair(vc + base_v + kv_slot(t, a.ring) * row_v, vlane, a.vq8);
             o0 += ah[t] * vf.x;
             o1 += ah[t] * vf.y;
         }
@@ -4075,7 +4083,7 @@ extern "C" __global__ void k_attn(const float *q, const unsigned char *kc,
         for (int i2 = tid; i2 < lanes; i2 += tpg) {
             float o0 = 0, o1 = 0;
             for (int t = t0; t <= pos; t++) {
-                float2 vf = kv_pair(vc + base + kv_slot(t, a.ring) * row_b, i2, a.q8);
+                float2 vf = kv_pair(vc + base_v + kv_slot(t, a.ring) * row_v, i2, a.vq8);
                 o0 += ah[t] * vf.x;
                 o1 += ah[t] * vf.y;
             }
@@ -4125,6 +4133,8 @@ extern "C" __global__ void k_attn_dec(const float *q, const unsigned char *kc,
     int kv_dim = a.n_head_kv * hd;
     ulong64 row_b = KV_ROW_BYTES(kv_dim, a.q8);
     ulong64 base  = a.l_off + kv_head_off(kvh, hd, a.q8);
+    ulong64 row_v = KV_ROW_BYTES(kv_dim, a.vq8);
+    ulong64 base_v = a.v_off + kv_head_off(kvh, hd, a.vq8);
     int t0 = 0;
     if (a.window > 0 && pos - a.window + 1 > 0) t0 = pos - a.window + 1;
     int total = pos + 1 - t0;
@@ -4170,7 +4180,7 @@ extern "C" __global__ void k_attn_dec(const float *q, const unsigned char *kc,
     for (int i2 = tid; i2 < hd / 2; i2 += tpg) {
         float o0 = 0, o1 = 0;
         for (int t = s0; t < s1; t++) {
-            float2 vf = kv_pair(vc + base + kv_slot(t, a.ring) * row_b, i2, a.q8);
+            float2 vf = kv_pair(vc + base_v + kv_slot(t, a.ring) * row_v, i2, a.vq8);
             o0 += ah[t] * vf.x;
             o1 += ah[t] * vf.y;
         }
@@ -4266,18 +4276,19 @@ extern "C" __global__ void k_rope_seq(float *v, const float *fr, rope_args a,
 extern "C" __global__ void k_store_kv_seq(const float *k, const float *v,
                                           const ulong64 *kcp, const ulong64 *vcp,
                                           int kv_dim, ulong64 l_off,
-                                          const int *posp, int q8, int ring) {
+                                          const int *posp, int q8, int ring,
+                                          ulong64 v_off, int vq8) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
-    int n = q8 == 2 ? kv_dim / 16 : q8 ? kv_dim / 32 : kv_dim;
-    if (i < n) {
-        int sq = blockIdx.y;
-        ulong64 row_b = KV_ROW_BYTES(kv_dim, q8);
-        ulong64 dst = l_off + kv_slot(posp[sq], ring) * row_b;
-        const float *ks = k + (ulong64)sq * kv_dim;
-        const float *vs = v + (ulong64)sq * kv_dim;
-        kv_store_row((unsigned char *)kcp[sq] + dst, ks, kv_dim, q8, i);
-        kv_store_row((unsigned char *)vcp[sq] + dst, vs, kv_dim, q8, i);
-    }
+    int sq = blockIdx.y;
+    ulong64 slot = kv_slot(posp[sq], ring);
+    const float *ks = k + (ulong64)sq * kv_dim;
+    const float *vs = v + (ulong64)sq * kv_dim;
+    if (i < kv_units(kv_dim, q8))
+        kv_store_row((unsigned char *)kcp[sq] + l_off + slot * KV_ROW_BYTES(kv_dim, q8),
+                     ks, kv_dim, q8, i);
+    if (i < kv_units(kv_dim, vq8))
+        kv_store_row((unsigned char *)vcp[sq] + v_off + slot * KV_ROW_BYTES(kv_dim, vq8),
+                     vs, kv_dim, vq8, i);
 }
 
 // Flash-decoding attention over N sequences. Body is k_attn_dec verbatim with
@@ -4302,6 +4313,8 @@ extern "C" __global__ void k_attn_dec_seq(const float *q, const ulong64 *kcp,
     int kv_dim = a.n_head_kv * hd;
     ulong64 row_b = KV_ROW_BYTES(kv_dim, a.q8);
     ulong64 base  = a.l_off + kv_head_off(kvh, hd, a.q8);
+    ulong64 row_v = KV_ROW_BYTES(kv_dim, a.vq8);
+    ulong64 base_v = a.v_off + kv_head_off(kvh, hd, a.vq8);
     int t0 = 0;
     if (a.window > 0 && pos - a.window + 1 > 0) t0 = pos - a.window + 1;
     int total = pos + 1 - t0;
@@ -4347,7 +4360,7 @@ extern "C" __global__ void k_attn_dec_seq(const float *q, const ulong64 *kcp,
     for (int i2 = tid; i2 < hd / 2; i2 += tpg) {
         float o0 = 0, o1 = 0;
         for (int t = s0; t < s1; t++) {
-            float2 vf = kv_pair(vc + base + kv_slot(t, a.ring) * row_b, i2, a.q8);
+            float2 vf = kv_pair(vc + base_v + kv_slot(t, a.ring) * row_v, i2, a.vq8);
             o0 += ah[t] * vf.x;
             o1 += ah[t] * vf.y;
         }

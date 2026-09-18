@@ -8,6 +8,36 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **`--kv k8v4`: the split KV cache, K q8_0 and V fp4.** The probe that
+  followed the fp4 cache (K-q8 with V-fp4 on Llama-3.2-1B IQ3_S: mean KLD
+  0.0265, margin-qualified top-1 99.3%, inside the house bar at about 41%
+  of the f16 bytes, against fp4's 0.18 and K-fp4/V-q8's 0.16) said the 4-bit
+  cost sits in K, so the split ships as a first-class layout. The shipped
+  build repeats the row (Metal, M1, 300 teacher-forced positions, reference
+  = the same file with an f16 cache): mean KLD 0.0266, raw top-1 93.0%,
+  margin-qualified top-1 99.3%, top-8 overlap 0.92, against q8's 0.0035 /
+  98.0% / 100% / 0.977 and fp4's 0.18 / 74.3% / 88.7% / 0.79; on the
+  tolerance gate the k8v4 GPU arm sits 1.08x the CPU reassociation floor,
+  1 of 64 top-1 differences, worst margin 0.0005 of range. The K and V
+  caches now have separate row geometry through the whole engine: the
+  ambiguous per-cache helpers (`model_kv_row_bytes`, `model_kv_byte_off`,
+  `model_kv_boundary_bytes`, `model_kv_bytes_of`) are gone and every caller
+  names K or V (`model_k_row_bytes` / `model_v_row_bytes`,
+  `model_k_byte_off` / `model_v_byte_off`, the boundary pair and a `_sum`
+  for accounting), so a site that assumes one row size no longer compiles.
+  Store kernels on Metal and CUDA take a V kind and V offset beside the K
+  ones and cover max(units_k, units_v) threads; the attention kernels read
+  V at its own stride and base (`v_off` / `vq8` joined `attn_args` in the
+  shared header); the CPU attention job, the LoRA backward job, the prefix
+  cache (per-side blocks in the entry), the envelope (`"kv":"k8v4"`,
+  replay verifies it), `--caps` (`kv_types` gains `k8v4`), `--fit` (a k8v4
+  line and "FITS WITH --kv k8v4"), the Metal walk admission and the CUDA
+  shared-weights identity (layout 3) all carry the split. Gates:
+  `test-kv-tol` grew k8v4 arms (the one layout where a V row read at a K
+  stride would show), plus the existing fp4 codec and Metal store-identity
+  tests. Needs head_dim divisible by 32 and both q8 and fp4 kernels on the
+  backend; refused on tied-V layers like the other quantised caches. CUDA
+  runtime evidence pending the 3070 as for fp4. Suite R5.3.1.
 - **`--kv fp4`: a 4-bit KV cache, storage only.** Each 16 cached values
   become one UE4M3 scale byte and eight bytes of E2M1 nibbles, the NVFP4
   block layout without a second-level scale, at 28% of the f16 bytes (q8 is

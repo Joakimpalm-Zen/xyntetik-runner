@@ -48,11 +48,11 @@ typedef struct {
 
 typedef struct {
     int    head_dim, n_head, n_head_kv, n_ctx;
-    ka_u64 l_off;    // this layer's BYTE offset into the kv cache
+    ka_u64 l_off;    // this layer's BYTE offset into the K cache
     float  scale;
     int    qs, os;   // q / out element stride per token column
     int    window;   // sliding-window size for this layer (0 = full)
-    int    q8;       // cache KIND: 0 fp16 rows, 1 q8_0 blocks, 2 fp4 blocks
+    int    q8;       // K cache KIND: 0 fp16 rows, 1 q8_0 blocks, 2 fp4 blocks
     int    ring;     // rows this layer owns when it recycles them (0 = flat
                      // n_ctx rows indexed by absolute position). A sliding
                      // layer reads at most `window` positions back, so it
@@ -60,6 +60,8 @@ typedef struct {
                      // the attention kernels goes through kv_slot() to honour
                      // it. Host and device MUST agree here -- that is what
                      // this header exists for.
+    ka_u64 v_off;    // this layer's BYTE offset into the V cache (l_off is K)
+    int    vq8;      // V cache KIND; differs from q8 under --kv k8v4
 } attn_args;
 
 #endif // RUNNER_KERNEL_ARGS_H

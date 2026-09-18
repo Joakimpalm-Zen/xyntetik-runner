@@ -77,6 +77,7 @@ typedef struct {
     int         threads, n_ctx, n_batch, gpu_layers;
     bool        kv_q8;
     bool        kv_fp4;
+    bool        kv_split;
     const char *model_path;        // hashed
     const char *adapter_path;      // NULL = no adapter; hashed when set
     float       adapter_scale;
