@@ -1207,7 +1207,10 @@ Vulkan is not implemented; AMD and Intel GPUs use the CPU path.
   cache reads mean KLD 0.18 against the f16 cache, K-fp4 with V-q8 0.16, and
   K-q8 with V-fp4 0.027 with 93.0% raw and 99.3% margin-qualified top-1
   agreement (q8 alone: 0.0035, 98.0%, 100%), inside the house bar, so the K
-  side is the one to keep at 8 bits. Per model, measured, never assumed. Needs head_dim
+  side is the one to keep at 8 bits. On larger models (Qwen3.5-4B,
+  Muse-Glimmer-30B, Qwen3.8-27B; 500 positions) k8v4 costs 16-29x the q8
+  cache's KLD, 0.002-0.004 absolute, with 100% margin-qualified top-1
+  agreement on all three. Per model, measured, never assumed. Needs head_dim
   divisible by 32 and both q8 and fp4 kernels on the backend.
 - Prompt evaluation is batched; `-b` controls the batch and `-v` prints the KV
   allocation before inference.

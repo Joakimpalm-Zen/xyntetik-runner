@@ -18,7 +18,16 @@ names that were true when they were written.
   margin-qualified top-1 99.3%, top-8 overlap 0.92, against q8's 0.0035 /
   98.0% / 100% / 0.977 and fp4's 0.18 / 74.3% / 88.7% / 0.79; on the
   tolerance gate the k8v4 GPU arm sits 1.08x the CPU reassociation floor,
-  1 of 64 top-1 differences, worst margin 0.0005 of range. The K and V
+  1 of 64 top-1 differences, worst margin 0.0005 of range. On larger
+  models (the lab's rows, CPU, 500 held-out positions, same protocol):
+  Qwen3.5-4B IQ4_XS k8v4 KLD 0.0037 against fp4 0.0075 and q8 0.00020;
+  Muse-Glimmer-30B Q4_K 0.0041 against 0.0281 and 0.00014; Qwen3.8-27B
+  IQ3_S 0.0020 against 0.0041 and 0.00013; every k8v4 row margin-qualified
+  100%, top-8 0.965-0.978. So k8v4 costs 16-29x the q8 cache's KLD
+  (0.002-0.004 absolute) at 41% of the f16 bytes; keeping K at 8 bits
+  removes 85% of fp4's cost on Muse and about half on both Qwens, so V
+  at fp4 is a real, model-dependent residual and the option ships with
+  that number, not as "free". The K and V
   caches now have separate row geometry through the whole engine: the
   ambiguous per-cache helpers (`model_kv_row_bytes`, `model_kv_byte_off`,
   `model_kv_boundary_bytes`, `model_kv_bytes_of`) are gone and every caller
