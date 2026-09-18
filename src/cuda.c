@@ -434,7 +434,7 @@ typedef struct {
 #define TC_ROWS    64  // tensor-core GEMM output rows per block (match kernels.cu)
 
 // indirect expert matvec: weight base = w_off + sel[slot]*estride, slot = grid.y
-// l_off is a BYTE offset: the cache is fp16 or q8_0 depending on m->kv_q8,
+// l_off is a BYTE offset: the cache is fp16, q8_0 or fp4 per cache kind,
 // so element indexing is not enough (see the kv storage block in kernels.cu)
 
 bool gpu_available(char *name, int cap) {
@@ -828,6 +828,13 @@ static CUdeviceptr f32_dbuf_ones(const float *src, size_t n, const char *what,
     return d;
 }
 
+// one integer naming the cache layout for the shared-weights identity: 0 f16,
+// 1 q8_0, 2 fp4, 3 the k8v4 split (K q8_0, V fp4). Two instances with
+// different layouts cannot share a device cache.
+static int kv_identity(const model_t *m) {
+    return m->kv_split ? 3 : m->kv_fp4 ? 2 : (int)m->kv_q8;
+}
+
 bool gpu_kv_q8_ok(void) {
     return true;    // k_store_kv / k_attn / k_attn_dec all read q8_0 blocks
 }
@@ -876,7 +883,7 @@ static bool shared_config_matches(const gpu_weights *w, const model_t *m) {
         w->head_dim != m->head_dim || w->n_ff != m->n_ff ||
         w->n_vocab != m->n_vocab || w->n_ctx != m->n_ctx ||
         w->rope_dim != m->rope_dim || w->rope_dim_local != m->rope_dim_local ||
-        w->kv_q8 != (m->kv_fp4 ? 2 : (int)m->kv_q8) || w->v_rmsnorm != (int)m->v_rmsnorm ||
+        w->kv_q8 != kv_identity(m) || w->v_rmsnorm != (int)m->v_rmsnorm ||
         w->rope_base != m->rope_base || w->rope_mscale != m->rope_mscale ||
         w->cpu_moe != m->cpu_moe ||
         w->cpu_moe_layers != m->cpu_moe_layers)
@@ -1144,7 +1151,7 @@ static gpu_weights *shared_build(model_t *m, size_t act_bytes, int max_hd,
     w->cpu_moe = m->cpu_moe;
     w->cpu_moe_layers = m->cpu_moe_layers;
     w->rope_dim = m->rope_dim; w->rope_dim_local = m->rope_dim_local;
-    w->kv_q8 = m->kv_fp4 ? 2 : (int)m->kv_q8; w->v_rmsnorm = (int)m->v_rmsnorm;
+    w->kv_q8 = kv_identity(m); w->v_rmsnorm = (int)m->v_rmsnorm;
     w->rope_base = m->rope_base; w->rope_mscale = m->rope_mscale;
     {   // own copies of the rope tables so a later match can compare against
         // them without reaching into a model_t that may since have been freed
@@ -1239,8 +1246,8 @@ static gpu_weights *shared_build(model_t *m, size_t act_bytes, int max_hd,
             // earlier rows, and the q8_0 format discount (~53% of fp16)
             // still buys more offloaded layers. Charging every layer full
             // n_ctx rows left most of a 24 GB card idle under RUNNER_KV_RING.
-            size_t kv = 2 * (model_kv_boundary_bytes(m, l + 1) -
-                             model_kv_boundary_bytes(m, l));
+            size_t kv = model_kv_boundary_bytes_sum(m, l + 1) -
+                        model_kv_boundary_bytes_sum(m, l);
             if (used + wb + kv > vram_budget) break;
             used += wb + kv;
             G = l + 1;
@@ -2027,11 +2034,14 @@ bool gpu_init(model_t *m) {
         // device KV holds only the offloaded layers [0, gpu_layers) -- the
         // raw cumulative boundary, not layer gpu_layers's own (possibly
         // redirected) storage location. See model_kv_boundary_bytes().
-        size_t kv_bytes = model_kv_boundary_bytes(m, m->gpu_layers);
-        CK(cu.MemAlloc(&g->kc, kv_bytes));
-        CK(cu.MemAlloc(&g->vc, kv_bytes));
-        CK(cu.MemsetD8(g->kc, 0, kv_bytes));
-        CK(cu.MemsetD8(g->vc, 0, kv_bytes));
+        // K and V are sized separately: under --kv k8v4 the two caches
+        // have different row formats (K q8_0, V fp4).
+        size_t k_bytes = model_k_boundary_bytes(m, m->gpu_layers);
+        size_t v_bytes = model_v_boundary_bytes(m, m->gpu_layers);
+        CK(cu.MemAlloc(&g->kc, k_bytes));
+        CK(cu.MemAlloc(&g->vc, v_bytes));
+        CK(cu.MemsetD8(g->kc, 0, k_bytes));
+        CK(cu.MemsetD8(g->vc, 0, v_bytes));
 
         if (m->n_embd_ple > 0) {
             // [token][layer][n_embd_ple] for a whole tile, plus the per-layer
@@ -2220,7 +2230,7 @@ bool gpu_init(model_t *m) {
             fprintf(stderr, "gpu: VRAM %.2f GB free of %.2f GB after init "
                     "(kv %.2f GB + scratch %.2f GB this instance)\n",
                     vfree / 1e9, vtotal / 1e9,
-                    2.0 * model_kv_boundary_bytes(m, m->gpu_layers) / 1e9,
+                    (double)model_kv_boundary_bytes_sum(m, m->gpu_layers) / 1e9,
                     act_bytes / 1e9);
     }
 
@@ -2953,11 +2963,13 @@ static bool kv_upload(gpu_t *g, model_t *m, int lo, int hi) {
     for (int l = 0; l < m->gpu_layers; l++) {
         int llo, lhi;
         kv_span(m, l, lo, hi, &llo, &lhi);
-        size_t row = model_kv_row_bytes(m, l);
-        size_t off = model_kv_byte_off(m, l) + (size_t)llo * row;
-        size_t len = (size_t)(lhi - llo) * row;
-        if (cu.MemcpyHtoD(g->kc + off, (uint8_t *)m->kcache + off, len) != 0 ||
-            cu.MemcpyHtoD(g->vc + off, (uint8_t *)m->vcache + off, len) != 0)
+        size_t krow = model_k_row_bytes(m, l), vrow = model_v_row_bytes(m, l);
+        size_t koff = model_k_byte_off(m, l) + (size_t)llo * krow;
+        size_t voff = model_v_byte_off(m, l) + (size_t)llo * vrow;
+        if (cu.MemcpyHtoD(g->kc + koff, (uint8_t *)m->kcache + koff,
+                          (size_t)(lhi - llo) * krow) != 0 ||
+            cu.MemcpyHtoD(g->vc + voff, (uint8_t *)m->vcache + voff,
+                          (size_t)(lhi - llo) * vrow) != 0)
             return false;
     }
     return true;
@@ -2969,11 +2981,13 @@ static bool kv_copyback(gpu_t *g, model_t *m, int lo, int hi) {
     for (int l = 0; l < m->gpu_layers; l++) {
         int llo, lhi;
         kv_span(m, l, lo, hi, &llo, &lhi);
-        size_t row = model_kv_row_bytes(m, l);
-        size_t off = model_kv_byte_off(m, l) + (size_t)llo * row;
-        size_t len = (size_t)(lhi - llo) * row;
-        if (cu.MemcpyDtoH((uint8_t *)m->kcache + off, g->kc + off, len) != 0 ||
-            cu.MemcpyDtoH((uint8_t *)m->vcache + off, g->vc + off, len) != 0)
+        size_t krow = model_k_row_bytes(m, l), vrow = model_v_row_bytes(m, l);
+        size_t koff = model_k_byte_off(m, l) + (size_t)llo * krow;
+        size_t voff = model_v_byte_off(m, l) + (size_t)llo * vrow;
+        if (cu.MemcpyDtoH((uint8_t *)m->kcache + koff, g->kc + koff,
+                          (size_t)(lhi - llo) * krow) != 0 ||
+            cu.MemcpyDtoH((uint8_t *)m->vcache + voff, g->vc + voff,
+                          (size_t)(lhi - llo) * vrow) != 0)
             return false;
     }
     return true;
@@ -3833,14 +3847,17 @@ static bool fwd_tile(gpu_t *g, model_t *m, const int32_t *tokens, int tn,
         {
             // cache rows for consecutive positions are contiguous, so the
             // kernel indexes both source column and destination row by grid.y
-            uint64_t l_off = model_kv_byte_off(m, l);
-            int q8 = m->kv_fp4 ? 2 : m->kv_q8 ? 1 : 0;   // the cache KIND
+            uint64_t l_off = model_k_byte_off(m, l), v_off = model_v_byte_off(m, l);
+            int q8 = model_kv_kind_k(m), vq8 = model_kv_kind_v(m);   // cache KINDS
             // one thread per stored unit: per value for fp16, per 32-value
-            // q8_0 block or 16-value fp4 block (the block shares one scale)
-            int units = q8 == 2 ? kv_dim / 16 : q8 ? kv_dim / 32 : kv_dim;
+            // q8_0 block or 16-value fp4 block (the block shares one scale);
+            // the grid covers the larger of the K and V unit counts
+            int ku = q8 == 2 ? kv_dim / 16 : q8 ? kv_dim / 32 : kv_dim;
+            int vu = vq8 == 2 ? kv_dim / 16 : vq8 ? kv_dim / 32 : kv_dim;
+            int units = ku > vu ? ku : vu;
             int kring = model_kv_is_ring(m, l) ? m->kv_ring : 0;
             void *ps[] = { &g->kt, &g->vt, &g->kc, &g->vc, &kv_dim, &l_off,
-                           &g->pos_dev, &q8, &kring };
+                           &g->pos_dev, &q8, &kring, &v_off, &vq8 };
             ok = ok && launch(g, g->sw->f_store, (units + 63) / 64, tn, 1, 64, ps);
         }
     kv_done:
@@ -3852,10 +3869,11 @@ static bool fwd_tile(gpu_t *g, model_t *m, const int32_t *tokens, int tn,
 
         {
             attn_args aa = { hd, m->n_head, n_kv, m->n_ctx,
-                             (uint64_t)model_kv_byte_off(m, l),
+                             (uint64_t)model_k_byte_off(m, l),
                              model_attn_scale(m, l), q_dim, xdim,
-                             local ? m->swa_window : 0, m->kv_fp4 ? 2 : m->kv_q8 ? 1 : 0,
-                             model_kv_is_ring(m, l) ? m->kv_ring : 0 };
+                             local ? m->swa_window : 0, model_kv_kind_k(m),
+                             model_kv_is_ring(m, l) ? m->kv_ring : 0,
+                             (uint64_t)model_v_byte_off(m, l), model_kv_kind_v(m) };
             // Decode (tn==1, one query, long KV): flash-decoding — split the KV
             // range across ATTN_SPLITS blocks/head (higher occupancy, coalesced)
             // then merge partials. Prefill (tn>1) already runs n_head*tn blocks,
@@ -4649,12 +4667,14 @@ static bool fwd_batch(gpu_batch *B, model_t *m, int tn) {
         ok = ok && enc_rope_batch(B, m, g->kt, n_kv, tn, kv_dim, l);
 
         {   // each column stores into its own sequence's cache at its own row
-            uint64_t l_off = model_kv_byte_off(m, l);
-            int q8 = m->kv_fp4 ? 2 : m->kv_q8 ? 1 : 0;   // the cache KIND
-            int units = q8 == 2 ? kv_dim / 16 : q8 ? kv_dim / 32 : kv_dim;
+            uint64_t l_off = model_k_byte_off(m, l), v_off = model_v_byte_off(m, l);
+            int q8 = model_kv_kind_k(m), vq8 = model_kv_kind_v(m);   // cache KINDS
+            int ku = q8 == 2 ? kv_dim / 16 : q8 ? kv_dim / 32 : kv_dim;
+            int vu = vq8 == 2 ? kv_dim / 16 : vq8 ? kv_dim / 32 : kv_dim;
+            int units = ku > vu ? ku : vu;
             int kring = model_kv_is_ring(m, l) ? m->kv_ring : 0;
             void *ps[] = { &g->kt, &g->vt, &B->kcp_d, &B->vcp_d, &kv_dim,
-                           &l_off, &B->pos_d, &q8, &kring };
+                           &l_off, &B->pos_d, &q8, &kring, &v_off, &vq8 };
             ok = ok && launch(g, g->sw->f_store_seq, (units + 63) / 64, tn, 1, 64, ps);
         }
         }
@@ -4664,10 +4684,11 @@ static bool fwd_batch(gpu_batch *B, model_t *m, int tn) {
             // The extra grid dimension is free occupancy — a solo decode step
             // leaves most of the GPU idle, which is the headroom batching eats.
             attn_args aa = { hd, m->n_head, n_kv, m->n_ctx,
-                             (uint64_t)model_kv_byte_off(m, l),
+                             (uint64_t)model_k_byte_off(m, l),
                              model_attn_scale(m, l), q_dim, xdim,
-                             local ? m->swa_window : 0, m->kv_fp4 ? 2 : m->kv_q8 ? 1 : 0,
-                             model_kv_is_ring(m, l) ? m->kv_ring : 0 };
+                             local ? m->swa_window : 0, model_kv_kind_k(m),
+                             model_kv_is_ring(m, l) ? m->kv_ring : 0,
+                             (uint64_t)model_v_byte_off(m, l), model_kv_kind_v(m) };
             void *pd[] = { &g->q, &B->kcp_d, &B->vcp_d, &g->att, &g->attn_part,
                            &aa, &B->pos_d };
             ok = ok && launch(g, g->sw->f_attn_dec_seq, m->n_head, ATTN_SPLITS, tn, 128, pd);

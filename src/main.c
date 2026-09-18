@@ -917,11 +917,12 @@ static void usage_to(FILE *f, const char *prog) {
         "                 reservation leaves after the weights\n"
         "  --reserve-vram P / --reserve-ram P   as --reserve, one budget only\n"
         "  --reserve-cpu P  size the thread count as P%% of cores\n"
-        "  --kv f16|q8|fp4  KV cache storage (default f16). q8 roughly halves\n"
-        "                 the cache and fp4 halves it again (E2M1 values, one\n"
-        "                 UE4M3 scale per 16 channels, quantised after RoPE),\n"
-        "                 so each about doubles the context that fits; both are\n"
-        "                 lossy: output differs from an f16 cache\n"
+        "  --kv f16|q8|k8v4|fp4  KV cache storage (default f16). q8 roughly\n"
+        "                 halves the cache; k8v4 keeps K at q8 and stores V as\n"
+        "                 fp4 (about 41%% of f16); fp4 stores both as fp4 (about\n"
+        "                 28%%; E2M1 values, one UE4M3 scale per 16 channels,\n"
+        "                 quantised after RoPE). All three are lossy: output\n"
+        "                 differs from an f16 cache, fp4 K costs the most\n"
         "  --mlock        wire the weights into RAM so the OS cannot evict them.\n"
         "                 Off by default and allowed to fail: on a machine with\n"
         "                 little headroom, locking the model can cause the very\n"
@@ -1074,8 +1075,9 @@ static int run_fit_check(const char *path, int n_ctx_want) {
     fit_gib(h, sizeof h, f.hot);
     fit_gib(kf, sizeof kf, f.kv_f16);
     fit_gib(kq, sizeof kq, f.kv_q8);
-    char k4[32];
+    char k4[32], k84[32];
     fit_gib(k4, sizeof k4, f.kv_fp4);
+    fit_gib(k84, sizeof k84, f.kv_k8v4);
     fit_gib(av, sizeof av, f.available);
 
     uint32_t split = gguf_get_u32(&g, "split.count", 0);
@@ -1093,6 +1095,7 @@ static int run_fit_check(const char *path, int n_ctx_want) {
     printf("  kv cache      %s at ctx %d, f16", kf, f.n_ctx);
     if (f.kv_q8) printf("   |  %s with --kv q8", kq);
     else         printf("   |  --kv q8 unavailable (head_dim is not a multiple of 32)");
+    if (f.kv_k8v4) printf("   |  %s with --kv k8v4", k84);
     if (f.kv_fp4) printf("   |  %s with --kv fp4", k4);
     else          printf("   |  --kv fp4 unavailable (head_dim is not a multiple of 16)");
     printf("\n");
@@ -1112,6 +1115,10 @@ static int run_fit_check(const char *path, int n_ctx_want) {
         char over[32];
         fit_gib(over, sizeof over, f.hot + f.kv_f16 - f.available);
         printf(" — an f16 cache is %s over; q8 halves it\n", over);
+    } else if (!strcmp(v, "FITS WITH --kv k8v4")) {
+        char over[32];
+        fit_gib(over, sizeof over, f.hot + f.kv_q8 - f.available);
+        printf(" — a q8 cache is %s over; k8v4 (fp4 V) takes a quarter off it\n", over);
     } else if (!strcmp(v, "FITS WITH --kv fp4")) {
         char over[32];
         fit_gib(over, sizeof over, f.hot + (f.kv_q8 ? f.kv_q8 : f.kv_f16) - f.available);
@@ -1358,10 +1365,11 @@ int main(int argc, char **argv) {
         }
         else if (!strcmp(a, "--kv")) {
             const char *v = NEXT;
-            if (!strcmp(v, "q8")) { mp.kv_q8 = true; mp.kv_fp4 = false; }
-            else if (!strcmp(v, "fp4")) { mp.kv_fp4 = true; mp.kv_q8 = false; }
-            else if (!strcmp(v, "f16")) { mp.kv_q8 = false; mp.kv_fp4 = false; }
-            else { fprintf(stderr, "error: --kv expects f16, q8 or fp4\n"); return 1; }
+            mp.kv_q8 = mp.kv_fp4 = mp.kv_split = false;
+            if (!strcmp(v, "q8")) mp.kv_q8 = true;
+            else if (!strcmp(v, "fp4")) mp.kv_fp4 = true;
+            else if (!strcmp(v, "k8v4")) mp.kv_split = true;
+            else if (strcmp(v, "f16")) { fprintf(stderr, "error: --kv expects f16, q8, k8v4 or fp4\n"); return 1; }
         }
         else if (!strcmp(a, "--mlock")) mp.mlock = true;
         else if (!strcmp(a, "--moe-prefetch")) {
@@ -1626,7 +1634,7 @@ int main(int argc, char **argv) {
         // backend (CPU and CUDA); q8 needs head_dim % 32 == 0, which is a
         // per-model property and so is reported at load, not here. f16 is the
         // default because q8 is lossy — it does not reproduce f16 output.
-        printf(",\"kv_types\":[\"f16\",\"q8\",\"fp4\"],\"kv_type_default\":\"f16\"");
+        printf(",\"kv_types\":[\"f16\",\"q8\",\"k8v4\",\"fp4\"],\"kv_type_default\":\"f16\"");
         // Placement modes controllers may safely request. cpu_moe means the
         // CUDA backend can keep dense/attention tensors resident while sparse
         // expert FFNs execute from system RAM.
@@ -1845,7 +1853,7 @@ int main(int argc, char **argv) {
              gpu_layers_d != (double)(int)gpu_layers_d ||
              (gpu_v->b != (gpu_layers_d > 0)))) ||
             (strcmp(kv, "f16") != 0 && strcmp(kv, "q8") != 0 &&
-             strcmp(kv, "fp4") != 0)) {
+             strcmp(kv, "fp4") != 0 && strcmp(kv, "k8v4") != 0)) {
             fprintf(stderr, "UNVERIFIABLE: malformed execution profile\n");
             jv_free(vrec);
             return 3;
@@ -1855,6 +1863,7 @@ int main(int argc, char **argv) {
         n_threads = (int)threads_d;
         mp.kv_q8 = strcmp(kv, "q8") == 0;
         mp.kv_fp4 = strcmp(kv, "fp4") == 0;
+        mp.kv_split = strcmp(kv, "k8v4") == 0;
         mp.gpu_mode = gpu_v->b ? GPU_AUTO : GPU_OFF;
         if (gpu_layers_v && gpu_layers_d > 0)
             mp.gpu_layers_override = (int)gpu_layers_d;
@@ -2629,11 +2638,12 @@ int main(int argc, char **argv) {
         bool expected_gpu = jv_bool(jv_get(vprof, "gpu"), false);
         bool expected_q8 = strcmp(jv_str(jv_get(vprof, "kv"), ""), "q8") == 0;
         bool expected_fp4 = strcmp(jv_str(jv_get(vprof, "kv"), ""), "fp4") == 0;
+        bool expected_split = strcmp(jv_str(jv_get(vprof, "kv"), ""), "k8v4") == 0;
         jv *expected_layers_v = jv_get(vprof, "gpu_layers");
         int expected_layers = (int)jv_num(expected_layers_v, -1);
         if (m.n_ctx != expected_ctx || m.n_batch != expected_batch ||
             tpool_size(m.tp) != expected_threads || m.kv_q8 != expected_q8 ||
-            m.kv_fp4 != expected_fp4 ||
+            m.kv_fp4 != expected_fp4 || m.kv_split != expected_split ||
             (m.gpu != NULL) != expected_gpu ||
             (expected_layers_v && m.gpu_layers != expected_layers)) {
             fprintf(stderr, "UNVERIFIABLE: runtime could not reproduce the "
@@ -3063,6 +3073,7 @@ int main(int argc, char **argv) {
                 .gpu_layers = m.gpu_layers,
                 .threads = tpool_size(m.tp), .n_ctx = m.n_ctx,
                 .n_batch = m.n_batch, .kv_q8 = m.kv_q8, .kv_fp4 = m.kv_fp4,
+                .kv_split = m.kv_split,
                 .model_path = load_path,
                 .adapter_path = lora_path, .adapter_scale = lora_scale,
                 .seed = t_seed,

@@ -846,7 +846,7 @@ flags into unrelated feature sections.
 | `--reserve-vram P` | Override only the VRAM budget. The CUDA layer fit spends a budget that starts from the driver's free-memory view, is bounded by the OS video-memory budget for this process where the OS publishes one (Windows, WDDM: `IDXGIAdapter3::QueryVideoMemoryInfo` on the adapter matched by LUID, minus what the process already holds), is capped by this flag, and keeps a headroom of the larger of 512 MiB and one sixteenth of the budget for the driver context, PTX JIT, allocator slack and the OS reserve. The 2026-09-14 Windows report's 12 GB card was filled to 11.7 GB from the driver's view alone and paged over PCIe; the budget and headroom the fit chose are logged at load (`gpu: OS video memory budget ...`), and `gpu: VRAM ... free after init` reports the observed remainder. Where no OS budget exists (Linux, macOS) the driver's view with that headroom is what the fit spends, said so in the log. |
 | `--reserve-ram P` | Override only the RAM budget. |
 | `--reserve-cpu P` | Size the default thread count as a percentage of cores. |
-| `--kv f16\|q8\|fp4` | KV cache storage. `q8` stores q8_0 blocks at about 53% of the f16 bytes; `fp4` stores E2M1 values with one UE4M3 scale per 16 channels at about 28%, so each roughly doubles the context that fits. Both are lossy: output is not token-identical to an f16 cache, and fp4 costs more than q8, measured per model with `scripts/kld-compare-raw.py` against the same file's f16 cache. f16 is the default. |
+| `--kv f16\|q8\|k8v4\|fp4` | KV cache storage. `q8` stores q8_0 blocks at about 53% of the f16 bytes; `fp4` stores E2M1 values with one UE4M3 scale per 16 channels at about 28%, so each roughly doubles the context that fits; `k8v4` keeps K at q8_0 and stores only V as fp4, about 41%, because K is the side a 4-bit cache hurts (the measured split, see below). All are lossy: output is not token-identical to an f16 cache, and the cost is measured per model with `scripts/kld-compare-raw.py` against the same file's f16 cache. f16 is the default. |
 | `--mlock` | Ask the OS to wire mapped weights into RAM; failure is non-fatal. |
 | `--moe-prefetch on\|off\|auto` | Prefetch routed expert blocks. Auto enables it only for measured oversubscribed Apple Silicon cases. |
 | `--draft PATH` | Same-vocabulary draft GGUF for speculative decoding in one-shot, chat, or single-model serve mode. A draft is refused at load on a vocabulary mismatch, a discrete-VRAM (CUDA) fully-offloaded target or CUDA-resident recurrent state (the verify walk needs host-readable hidden work; unified-memory Metal full offload qualifies since 2026-09-01 and speculates correctly, target-exact and gated byte-identical against the plain path — but measure before relying on it there: on an M5 Max the batched verify costs roughly a full decode step per column, because the dequant ALU that hides under the bandwidth floor at batch 1 becomes the critical path with columns added, and the measured 70B+1B pair decoded SLOWER speculative than plain despite 62-70% acceptance; the root-cause numbers are in docs/metal-decode-dispatch-budget-2026-09-01.md), or out of memory, and is dropped in swap mode; the run continues without it. In serve mode `GET /v1/capabilities` reports whether the draft is actually `active`, so a harness never measures the fallback as speculative decoding. |
@@ -912,7 +912,7 @@ fit: Trinity-Nano-Preview-Q4_K_M.gguf
   note          KV is an upper bound: models with per-layer KV geometry (shared KV, MLA) use less
 ```
 
-The verdict is `FITS`, `FITS WITH --kv q8`, or `PAGES`, always with the
+The verdict is `FITS`, `FITS WITH --kv q8` (or `k8v4`, or `fp4`), or `PAGES`, always with the
 arithmetic that produced it. `-c N` sizes the KV estimate for the context you
 actually intend to run. For a sparse MoE the verdict uses the **hot set**, not
 the file size, because only the routed experts a token selects are touched -
@@ -1199,6 +1199,15 @@ Vulkan is not implemented; AMD and Intel GPUs use the CPU path.
   fallback rule, and the stored rows are byte-identical across backends. It is
   lossier than q8; the fidelity cost is per model and is measured against the
   same file's f16 cache, never assumed.
+- `--kv k8v4` is the split: K rows stay q8_0 and V rows are fp4, about 41% of
+  the f16 bytes. The K and V caches then have different row geometry, and
+  every cache offset in the engine is computed per side (CPU, CUDA and Metal
+  alike; the shared-weights identity treats it as its own layout). It exists
+  because the 4-bit cost is not symmetric: on Llama-3.2-1B IQ3_S the fp4
+  cache reads mean KLD 0.18 against the f16 cache, K-fp4 with V-q8 0.16, and
+  K-q8 with V-fp4 0.027 with 99.3% margin-qualified top-1 agreement, inside
+  the house bar, so the K side is the one to keep at 8 bits. Needs head_dim
+  divisible by 32 and both q8 and fp4 kernels on the backend.
 - Prompt evaluation is batched; `-b` controls the batch and `-v` prints the KV
   allocation before inference.
 

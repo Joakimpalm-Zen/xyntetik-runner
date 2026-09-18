@@ -13,7 +13,8 @@
 #include <stdlib.h>
 #include <string.h>
 
-typedef struct { int kv_dim, q8, stride, pos, kv_rows; uint64_t off, row_b; } store_args_host;
+typedef struct { int kv_dim, q8, stride, pos, kv_rows; uint64_t off, row_b;
+                 int vq8; uint64_t voff, vrow_b; } store_args_host;
 
 static uint32_t st = 0x9E3779B9u;
 static float rnd(void) { st ^= st << 13; st ^= st >> 17; st ^= st << 5; return (float)(int32_t)st / 2147483648.0f; }
@@ -43,7 +44,7 @@ int main(void) {
         id<MTLBuffer> kc = [dev newBufferWithLength:row_b * cols options:MTLResourceStorageModeShared];
         id<MTLBuffer> vc = [dev newBufferWithLength:row_b * cols options:MTLResourceStorageModeShared];
         memset(kc.contents, 0xAB, row_b * cols); memset(vc.contents, 0xAB, row_b * cols);
-        store_args_host a = { kv_dim, 2, kv_dim, 0, 0, 0, row_b };
+        store_args_host a = { kv_dim, 2, kv_dim, 0, 0, 0, row_b, 2, 0, row_b };
         id<MTLCommandBuffer> cb = [q commandBuffer];
         id<MTLComputeCommandEncoder> e = [cb computeCommandEncoder];
         [e setComputePipelineState:pso];

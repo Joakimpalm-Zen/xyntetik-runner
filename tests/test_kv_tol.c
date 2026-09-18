@@ -129,6 +129,7 @@ typedef struct {
     const char *name;
     bool        kv_q8;
     bool        kv_fp4;
+    bool        kv_split;    // --kv k8v4: K q8_0, V fp4
     int         gpu_mode;
     int         n_batch;     // prompt batch size; varying it only reassociates
     bool        available;   // config actually ran as requested
@@ -145,6 +146,7 @@ static model_params params_for(const config *c, int n_ctx) {
     p.n_batch   = c->n_batch;
     p.kv_q8     = c->kv_q8;
     p.kv_fp4    = c->kv_fp4;
+    p.kv_split  = c->kv_split;
     p.reserve_vram_pct = g_reserve_vram_pct;
     return p;
 }
@@ -189,6 +191,7 @@ static bool run_config(config *c, const char *path, const int32_t *toks,
     // and asking for a GPU on a CPU-only build is not an error either.
     bool got_q8  = m.kv_q8;
     bool got_fp4 = m.kv_fp4;
+    bool got_split = m.kv_split;
     bool got_gpu = m.gpu != NULL && m.gpu_layers > 0;
 
     // Cross-platform safety invariant, checked on every platform including
@@ -202,12 +205,17 @@ static bool run_config(config *c, const char *path, const int32_t *toks,
        "a backend without q8 attention kernels never runs a q8 KV cache");
     ck(!(got_fp4 && got_gpu && !gpu_kv_fp4_ok()),
        "a backend without fp4 attention kernels never runs an fp4 KV cache");
+    ck(!(got_split && got_gpu && !(gpu_kv_q8_ok() && gpu_kv_fp4_ok())),
+       "a backend without both q8 and fp4 kernels never runs a k8v4 KV cache");
+    ck(!(got_split && (got_q8 || got_fp4)),
+       "the k8v4 split is its own layout, never combined with q8 or fp4");
 
-    if (c->kv_q8 != got_q8 || c->kv_fp4 != got_fp4 ||
+    if (c->kv_q8 != got_q8 || c->kv_fp4 != got_fp4 || c->kv_split != got_split ||
         (c->gpu_mode == GPU_AUTO) != got_gpu) {
-        fprintf(stderr, "  %-12s skipped (asked kv_q8=%d kv_fp4=%d gpu=%d, got "
-                "kv_q8=%d kv_fp4=%d gpu=%d/%d layers)\n", c->name, (int)c->kv_q8,
-                (int)c->kv_fp4, c->gpu_mode == GPU_AUTO, (int)got_q8, (int)got_fp4,
+        fprintf(stderr, "  %-12s skipped (asked kv_q8=%d kv_fp4=%d k8v4=%d gpu=%d, got "
+                "kv_q8=%d kv_fp4=%d k8v4=%d gpu=%d/%d layers)\n", c->name, (int)c->kv_q8,
+                (int)c->kv_fp4, (int)c->kv_split, c->gpu_mode == GPU_AUTO,
+                (int)got_q8, (int)got_fp4, (int)got_split,
                 m.gpu_layers, m.n_layer);
         model_free(&m);
         return false;
@@ -336,20 +344,26 @@ int main(int argc, char **argv) {
     printf("kv-tol: %s | %d tokens, %d teacher-forced positions\n",
            path, n_tok, STEPS);
 
-    enum { N_CFG = 8 };
+    enum { N_CFG = 11 };
     config cfgs[N_CFG] = {
-        { "f16-cpu",   false, false, GPU_OFF,  N_BATCH, false, NULL, NULL },
-        { "f16-gpu",   false, false, GPU_AUTO, N_BATCH, false, NULL, NULL },
-        { "q8-cpu",    true,  false, GPU_OFF,  N_BATCH, false, NULL, NULL },
-        { "q8-gpu",    true,  false, GPU_AUTO, N_BATCH, false, NULL, NULL },
+        { "f16-cpu",   false, false, false, GPU_OFF,  N_BATCH, false, NULL, NULL },
+        { "f16-gpu",   false, false, false, GPU_AUTO, N_BATCH, false, NULL, NULL },
+        { "q8-cpu",    true,  false, false, GPU_OFF,  N_BATCH, false, NULL, NULL },
+        { "q8-gpu",    true,  false, false, GPU_AUTO, N_BATCH, false, NULL, NULL },
         // the negative control: same code, same device, same cache format,
         // only the prompt batching differs, so every difference it shows is
         // pure reassociation noise amplified by the q8 quantizer
-        { "q8-cpu-b1", true,  false, GPU_OFF,  1,       false, NULL, NULL },
+        { "q8-cpu-b1", true,  false, false, GPU_OFF,  1,       false, NULL, NULL },
         // the same three arms for the fp4 cache (2026-09-18)
-        { "fp4-cpu",   false, true,  GPU_OFF,  N_BATCH, false, NULL, NULL },
-        { "fp4-gpu",   false, true,  GPU_AUTO, N_BATCH, false, NULL, NULL },
-        { "fp4-cpu-b1", false, true, GPU_OFF,  1,       false, NULL, NULL },
+        { "fp4-cpu",   false, true,  false, GPU_OFF,  N_BATCH, false, NULL, NULL },
+        { "fp4-gpu",   false, true,  false, GPU_AUTO, N_BATCH, false, NULL, NULL },
+        { "fp4-cpu-b1", false, true, false, GPU_OFF,  1,       false, NULL, NULL },
+        // and for the k8v4 split (K q8_0, V fp4): the one layout where the K
+        // and V caches have different row geometry, so every offset/stride
+        // site that once assumed one row size is exercised here
+        { "k8v4-cpu",   false, false, true, GPU_OFF,  N_BATCH, false, NULL, NULL },
+        { "k8v4-gpu",   false, false, true, GPU_AUTO, N_BATCH, false, NULL, NULL },
+        { "k8v4-cpu-b1", false, false, true, GPU_OFF, 1,       false, NULL, NULL },
     };
 
     // n_vocab is a property of the file; read it from the first load
@@ -371,7 +385,8 @@ int main(int argc, char **argv) {
 
     config *f16c = &cfgs[0], *f16g = &cfgs[1], *q8c = &cfgs[2],
            *q8g  = &cfgs[3], *q8b1 = &cfgs[4],
-           *fp4c = &cfgs[5], *fp4g = &cfgs[6], *fp4b1 = &cfgs[7];
+           *fp4c = &cfgs[5], *fp4g = &cfgs[6], *fp4b1 = &cfgs[7],
+           *k84c = &cfgs[8], *k84g = &cfgs[9], *k84b1 = &cfgs[10];
 
     // ---------------------------------------------------------- invariant
     // fp16 GPU is token-identical to fp16 CPU. Strict, and staying strict:
@@ -500,6 +515,50 @@ int main(int argc, char **argv) {
            "every fp4 GPU/CPU token disagreement is a near-tie, not a decision");
     } else {
         printf("  fp4 tolerance gate : skipped (fp4 or GPU unavailable)\n");
+    }
+
+    // ----------------------------------------------------------- k8v4 arms
+    // Same contract as fp4: the f16 disagreement is the format's cost and is
+    // reported; GPU-vs-CPU parity is gated at the reassociation floor. This
+    // is the arm that catches a K/V geometry mix-up (a V row read at a K
+    // stride, or the V cache sized from the K format), which no single-kind
+    // arm can see because there the two geometries coincide.
+    if (k84c->available && f16c->available) {
+        double quant_err = mean_abs_diff(k84c, f16c, n_vocab);
+        int n_diff;
+        double worst;
+        top1_stats(k84c, f16c, n_vocab, &n_diff, &worst);
+        printf("  k8v4-cpu  vs f16-cpu : mean|dlogit| %.6f, top1 diff %d/%d, "
+               "worst margin %.4f (the format's cost; reported, not gated)\n",
+               quant_err, n_diff, STEPS, worst);
+    } else {
+        printf("  k8v4 cpu report    : skipped (k8v4 unavailable)\n");
+    }
+    if (k84c->available && k84g->available && k84b1->available) {
+        double reassoc  = mean_abs_diff(k84b1, k84c, n_vocab);
+        double impl_err = mean_abs_diff(k84g, k84c, n_vocab);
+        double ratio = impl_err / (reassoc > FLOOR_EPS ? reassoc : FLOOR_EPS);
+        int n_diff;
+        double worst;
+        top1_stats(k84c, k84g, n_vocab, &n_diff, &worst);
+        double frac = (double)n_diff / STEPS;
+        printf("  k8v4-cpu-b1 vs k8v4-cpu: mean|dlogit| %.6f   (reassociation "
+               "floor, CPU only)\n", reassoc);
+        printf("  k8v4-gpu  vs k8v4-cpu: mean|dlogit| %.6f   %.2fx the floor "
+               "(limit %.1fx)\n", impl_err, ratio, REASSOC_SLACK);
+        printf("  k8v4-gpu  vs k8v4-cpu: top1 diff %d/%d (%.1f%%, limit %.0f%%)"
+               ", worst margin %.4f of range (limit %.3f)\n",
+               n_diff, STEPS, 100.0 * frac, 100.0 * DISAGREE_MAX,
+               worst, TIE_FRAC);
+        ck(ratio <= REASSOC_SLACK,
+           "k8v4 GPU differs from k8v4 CPU no more than k8v4 CPU differs from "
+           "itself under legal reassociation");
+        ck(frac <= DISAGREE_MAX,
+           "k8v4 GPU and k8v4 CPU pick the same token at nearly every position");
+        ck(worst <= TIE_FRAC,
+           "every k8v4 GPU/CPU token disagreement is a near-tie, not a decision");
+    } else {
+        printf("  k8v4 tolerance gate: skipped (k8v4 or GPU unavailable)\n");
     }
 
     for (int i = 0; i < N_CFG; i++) { free(cfgs[i].logits); free(cfgs[i].top1); }

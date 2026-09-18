@@ -99,7 +99,8 @@ typedef struct { int n_in, n_out; uint64_t w_off; int has_bias;
 typedef struct { int n_in, n_out, n_col; uint64_t w_off;
                  int has_bias, x_stride, y_stride; } mm_args;
 typedef struct { int n, x_stride, y_stride; float eps; } norm_args;
-typedef struct { int kv_dim, q8, stride, pos, kv_rows; uint64_t off, row_b; } store_args;
+typedef struct { int kv_dim, q8, stride, pos, kv_rows; uint64_t off, row_b;
+                 int vq8; uint64_t voff, vrow_b; } store_args;
 typedef struct { int n_head, n_kv, head_dim, half_dim, pos, neox;
                  float mscale; int q_off_e, k_off_e, v_off_e;
                  uint64_t kc_off, vc_off; } rope_store_args;
@@ -114,9 +115,9 @@ typedef struct { int n_in, n_out; uint64_t g_off, u_off, estride_g, estride_u;
                  int xs, has_bias, act, slots_per_token, ys; } moe_gua_args;
 typedef struct { int head_dim, n_heads, half_dim, pos, neox; float mscale; int stride; } rope_args;
 typedef struct { int head_dim, n_head, n_head_kv, n_ctx, pos; uint64_t l_off; float scale; int q8, window, has_sinks;
-                 int q_stride, att_stride, out_stride, kv_rows; } attn_args;
+                 int q_stride, att_stride, out_stride, kv_rows; uint64_t v_off; int vq8; } attn_args;
 typedef struct { int head_dim, n_head, n_head_kv, n_ctx, pos; uint64_t l_off; float scale;
-                 int q8, window, chunk, n_chunks, kv_rows; } attn_chunk_args;
+                 int q8, window, chunk, n_chunks, kv_rows; uint64_t v_off; int vq8; } attn_chunk_args;
 typedef struct { int head_dim, n_head, n_chunks, has_sinks; } attn_comb_args;
 
 // Chunked decode attention. The split is chosen from the HEAD COUNT, not a
@@ -859,7 +860,7 @@ static id<MTLComputePipelineState> metal_front_pipe(gpu_t *g, model_t *m,
                                                     int l) {
     if (l >= m->n_layer || metal_front_off()) return nil;
     layer_t *ly = &m->layers[l];
-    if (m->kv_q8 || m->kv_fp4 || model_kv_owner(m, l) != l || !model_layer_ropes(m, l) ||
+    if (m->kv_q8 || m->kv_fp4 || m->kv_split || model_kv_owner(m, l) != l || !model_layer_ropes(m, l) ||
         m->v_rmsnorm || (m->attn_out_gate && ly->wq_gate) ||
         !ly->wq || !ly->wk || !ly->wv ||
         (m->n_expert <= 0 && !metal_front_all()) || m->n_embd > 7936)
@@ -1655,7 +1656,7 @@ bool gpu_init(model_t *m) {
         // this budget to maxBufferLength preserved the old ceiling in the
         // admission decision even after the multi-buffer implementation had
         // removed it from allocation.
-        uint64_t other = (uint64_t)model_kv_byte_off(m, m->n_layer) * 2
+        uint64_t other = (uint64_t)model_kv_boundary_bytes_sum(m, m->n_layer)
                        + 512ull * 1024 * 1024;
         metal_weight_limits limits = {
             .working_set = ws_limit,
@@ -1760,15 +1761,16 @@ bool gpu_init(model_t *m) {
     int q_dim = m->n_head * m->head_dim;
     for (int l = 0; l < m->n_layer; l++)
         if (model_q_dim(m, l) > q_dim) q_dim = model_q_dim(m, l);
-    size_t kv_bytes = model_kv_byte_off(m, m->n_layer);
+    size_t k_bytes = model_k_boundary_bytes(m, m->n_layer);
+    size_t v_bytes = model_v_boundary_bytes(m, m->n_layer);
 
     #define NEWBUF(n) [dev newBufferWithLength:(n) options:MTLResourceStorageModeShared]
-    g->kc = NEWBUF(kv_bytes);
-    g->vc = NEWBUF(kv_bytes);
+    g->kc = NEWBUF(k_bytes ? k_bytes : 1);
+    g->vc = NEWBUF(v_bytes);
     if (!metal_buffer_ok(g->kc) || !metal_buffer_ok(g->vc))
         return gpu_init_fail(m, g, lib, "KV buffer allocation");
-    memset(g->kc.contents, 0, kv_bytes);
-    memset(g->vc.contents, 0, kv_bytes);
+    memset(g->kc.contents, 0, k_bytes);
+    memset(g->vc.contents, 0, v_bytes);
     if (metal_init_injected("after-kv"))
         return gpu_init_fail(m, g, lib, "injected post-KV allocation failure");
 
@@ -3052,15 +3054,17 @@ static float *gpu_forward_native_batch(model_t *m, const int32_t *tokens,
         if (front) {
             metal_fuse_announce();
             metal_front_announce(fpipe, g);
-            size_t frow_b = model_kv_row_bytes(m, l);
-            uint64_t roff = model_kv_byte_off(m, l) +
-                (uint64_t)model_kv_row_at(m, l, pos) * frow_b;
+            // the megakernel is f16-only, so K and V rows are the same size
+            uint64_t roff = model_k_byte_off(m, l) +
+                (uint64_t)model_kv_row_at(m, l, pos) * model_k_row_bytes(m, l);
+            uint64_t roff_v = model_v_byte_off(m, l) +
+                (uint64_t)model_kv_row_at(m, l, pos) * model_v_row_bytes(m, l);
             attn_front_args fa = {
                 n_embd, m->n_head, n_kv, hd, model_rope_dim(m, l) / 2,
                 pos, m->rope_neox, model_rope_mscale(m, l), m->rms_eps,
                 qw, kw, vw,
                 g->bq[l] != nil, g->bk[l] != nil, g->bv[l] != nil,
-                roff, roff,
+                roff, roff_v,
                 g->qn[l] != nil, g->kn[l] != nil };
             bool local = model_is_swa(m, l);
             [e setComputePipelineState:fpipe];
@@ -3117,9 +3121,11 @@ static float *gpu_forward_native_batch(model_t *m, const int32_t *tokens,
                 enc_qknorm_n(g, e, m, g->kt, 0, g->kn[l], n_kv, hd, n, kv_dim);
         }
         {
-            size_t row_b = model_kv_row_bytes(m, l);
-            int q8 = m->kv_fp4 ? 2 : m->kv_q8 ? 1 : 0;   // the cache KIND
-            int kv_units = q8 == 2 ? kv_dim_l / 16 : q8 ? kv_dim_l / 32 : kv_dim_l;
+            size_t row_b = model_k_row_bytes(m, l), vrow_b = model_v_row_bytes(m, l);
+            int q8 = model_kv_kind_k(m), vq8 = model_kv_kind_v(m);   // cache KINDS
+            int ku = q8 == 2 ? kv_dim_l / 16 : q8 ? kv_dim_l / 32 : kv_dim_l;
+            int vu = vq8 == 2 ? kv_dim_l / 16 : vq8 ? kv_dim_l / 32 : kv_dim_l;
+            int kv_units = ku > vu ? ku : vu;
 
             // rope/store/attention each take the batch in one dispatch: the
             // kernels derive their column's position from pos + col, so every
@@ -3129,16 +3135,18 @@ static float *gpu_forward_native_batch(model_t *m, const int32_t *tokens,
             // Decode fusion F1: rope(q)+rope(k)+f16 store in ONE dispatch
             // (budget: -2 dispatches x n_layer per token). q8 caches and
             // prefill keep the split path; byte identity is the gate.
-            bool fused_rs = n == 1 && !q8 && owns_kv && metal_fuse_on() &&
+            bool fused_rs = n == 1 && !q8 && !vq8 && owns_kv && metal_fuse_on() &&
                             g->p_rope_store && model_layer_ropes(m, l);
             if (fused_rs) {
                 metal_fuse_announce();
                 int half = model_rope_dim(m, l) / 2;
-                uint64_t roff = model_kv_byte_off(m, l) +
+                uint64_t roff = model_k_byte_off(m, l) +
                                 (uint64_t)model_kv_row_at(m, l, pos) * row_b;
+                uint64_t roff_v = model_v_byte_off(m, l) +
+                                  (uint64_t)model_kv_row_at(m, l, pos) * vrow_b;
                 rope_store_args ra = {
                     m->n_head, n_kv, hd, half, pos, m->rope_neox,
-                    model_rope_mscale(m, l), 0, 0, 0, roff, roff };
+                    model_rope_mscale(m, l), 0, 0, 0, roff, roff_v };
                 bool local = model_is_swa(m, l);
                 [e setComputePipelineState:g->p_rope_store];
                 [e setBuffer:g->q  offset:0 atIndex:0];
@@ -3179,7 +3187,8 @@ static float *gpu_forward_native_batch(model_t *m, const int32_t *tokens,
 
                 store_args sa = { kv_dim_l, q8, kv_dim, pos,
                                   model_kv_is_ring(m, l) ? m->kv_ring : 0,
-                                  model_kv_byte_off(m, l), (uint64_t)row_b };
+                                  model_k_byte_off(m, l), (uint64_t)row_b,
+                                  vq8, model_v_byte_off(m, l), (uint64_t)vrow_b };
                 [e setComputePipelineState:g->p_store];
                 [e setBuffer:g->kt offset:0 atIndex:0];
                 [e setBuffer:g->vt offset:0 atIndex:1];
@@ -3201,8 +3210,8 @@ static float *gpu_forward_native_batch(model_t *m, const int32_t *tokens,
             int a_span = pos - a_t0 + 1;
             if (n == 1) {
                 // K and V, both read across the span this layer attends over.
-                unsigned long long b = 2ull * (unsigned long long)a_span
-                                     * (unsigned long long)model_kv_row_bytes(m, l);
+                unsigned long long b = (unsigned long long)a_span
+                                     * (unsigned long long)model_kv_row_bytes_sum(m, l);
                 if (window > 0) { g_disp.kv_swa += b; g_disp.kv_layers_swa++; }
                 else            { g_disp.kv_global += b; g_disp.kv_layers_global++; }
                 // ~4 device round-trips of the scores over the span, per head.
@@ -3229,10 +3238,11 @@ static float *gpu_forward_native_batch(model_t *m, const int32_t *tokens,
             if (n == 1 && a_nch >= 2 && a_nch <= METAL_ATTN_MAX_CHUNKS &&
                 hd == model_head_dim(m, 0)) {
                 attn_chunk_args ca = { hd, m->n_head, n_kv, m->n_ctx, pos,
-                                       (uint64_t)model_kv_byte_off(m, l),
+                                       (uint64_t)model_k_byte_off(m, l),
                                        model_attn_scale(m, l), q8, window,
                                        a_chunk, a_nch,
-                                       model_kv_is_ring(m, l) ? m->kv_ring : 0 };
+                                       model_kv_is_ring(m, l) ? m->kv_ring : 0,
+                                       (uint64_t)model_v_byte_off(m, l), vq8 };
                 bool coopc = metal_attn_coop_on() && g->p_attn_chunk_coop;
                 if (coopc) g_coop_dispatches++;
                 [e setComputePipelineState:coopc ? g->p_attn_chunk_coop
@@ -3263,11 +3273,12 @@ static float *gpu_forward_native_batch(model_t *m, const int32_t *tokens,
             }
 
             attn_args aa = { hd, m->n_head, n_kv, m->n_ctx, pos,
-                             (uint64_t)model_kv_byte_off(m, l),
+                             (uint64_t)model_k_byte_off(m, l),
                              model_attn_scale(m, l), q8, window,
                              g->sinks[l] != nil,
                              q_dim, m->n_head * m->n_ctx, xdim,
-                             model_kv_is_ring(m, l) ? m->kv_ring : 0 };
+                             model_kv_is_ring(m, l) ? m->kv_ring : 0,
+                             (uint64_t)model_v_byte_off(m, l), vq8 };
             // Cooperative twin at decode only: the score loop is what
             // scatters, and at n > 1 each column has its own KV range, which
             // the coop form's simdgroup-per-row split does not describe.
@@ -3528,7 +3539,7 @@ static bool metal_batch_eligible(model_t **seqs, int n, gpu_t **lead_out) {
         if (model_kv_ring_active(m)) return false;
         if (m->n_vocab != m0->n_vocab || m->n_embd != m0->n_embd ||
             m->n_ctx != m0->n_ctx || m->kv_q8 != m0->kv_q8 ||
-            m->kv_fp4 != m0->kv_fp4 ||
+            m->kv_fp4 != m0->kv_fp4 || m->kv_split != m0->kv_split ||
             m->n_layer != m0->n_layer) return false;
         // every projection this walk will hand to enc_mv_cols needs the
         // identity matvec kernel for its type
@@ -3640,9 +3651,11 @@ bool gpu_batch_decode(gpu_batch *b, const int *idx, const int32_t *tok,
         int q_dim = m0->n_head * m0->head_dim;
         int kv_dim = m0->n_head_kv * m0->head_dim;
         int window = model_is_swa(m0, l) ? m0->swa_window : 0;
-        size_t row_b = model_kv_row_bytes(m0, l);
-        int q8 = m0->kv_fp4 ? 2 : m0->kv_q8 ? 1 : 0;   // the cache KIND
-        int kv_units = q8 == 2 ? kv_dim_l / 16 : q8 ? kv_dim_l / 32 : kv_dim_l;
+        size_t row_b = model_k_row_bytes(m0, l), vrow_b = model_v_row_bytes(m0, l);
+        int q8 = model_kv_kind_k(m0), vq8 = model_kv_kind_v(m0);   // cache KINDS
+        int ku = q8 == 2 ? kv_dim_l / 16 : q8 ? kv_dim_l / 32 : kv_dim_l;
+        int vu = vq8 == 2 ? kv_dim_l / 16 : vq8 ? kv_dim_l / 32 : kv_dim_l;
+        int kv_units = ku > vu ? ku : vu;
         bool owns_kv = model_kv_owner(m0, l) == l;
 
         enc_rmsnorm_n(g, e, g->x, 0, g->xb, 0, g->attn_norm[l],
@@ -3685,7 +3698,8 @@ bool gpu_batch_decode(gpu_batch *b, const int *idx, const int32_t *tok,
             }
             if (owns_kv) {
                 store_args sa = { kv_dim_l, q8, kv_dim, p, 0,
-                                  model_kv_byte_off(ms, l), (uint64_t)row_b };
+                                  model_k_byte_off(ms, l), (uint64_t)row_b,
+                                  vq8, model_v_byte_off(ms, l), (uint64_t)vrow_b };
                 [e setComputePipelineState:g->p_store];
                 [e setBuffer:g->kt offset:foff((size_t)c * kv_dim) atIndex:0];
                 [e setBuffer:g->vt offset:foff((size_t)c * kv_dim) atIndex:1];
@@ -3698,9 +3712,10 @@ bool gpu_batch_decode(gpu_batch *b, const int *idx, const int32_t *tok,
             }
 
             attn_args aa = { hd, m0->n_head, n_kv, m0->n_ctx, p,
-                             (uint64_t)model_kv_byte_off(ms, l),
+                             (uint64_t)model_k_byte_off(ms, l),
                              model_attn_scale(m0, l), q8, window,
-                             false, q_dim, m0->n_head * m0->n_ctx, xdim, 0 };
+                             false, q_dim, m0->n_head * m0->n_ctx, xdim, 0,
+                             (uint64_t)model_v_byte_off(ms, l), vq8 };
             bool coop = metal_attn_coop_on() && g->p_attn_coop;
             if (coop) g_coop_dispatches++;
             [e setComputePipelineState:coop ? g->p_attn_coop : g->p_attn];
