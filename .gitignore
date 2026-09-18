@@ -242,3 +242,5 @@ test-prompt-marks.exe
 /test-dpo-grad
 /test-dpo-grad.exe
 .DS_Store
+test-kv-fp4
+test-metal-kvfp4

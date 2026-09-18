@@ -150,6 +150,8 @@ TEST_GRAMMAR_FF = $(TEST_BATCH:test-batch%=test-grammar-ff%)
 TEST_LOOKUP_DRAFT = $(TEST_BATCH:test-batch%=test-lookup-draft%)
 TEST_VRAMREG = $(TEST_BATCH:test-batch%=test-vram-registry%)
 TEST_KV_TOL = $(TEST_BATCH:test-batch%=test-kv-tol%)
+TEST_KV_FP4 = $(TEST_BATCH:test-batch%=test-kv-fp4%)
+TEST_METAL_KVFP4 = $(TEST_BATCH:test-batch%=test-metal-kvfp4%)
 TEST_QUANTS_SIMD = $(TEST_BATCH:test-batch%=test-quants-simd%)
 TEST_INSTANCES = $(TEST_BATCH:test-batch%=test-instances%)
 TEST_METAL_ADMISSION = $(TEST_BATCH:test-batch%=test-metal-admission%)
@@ -679,6 +681,12 @@ TEST_KV_TOL_SRC = tests/test_kv_tol.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o $(QUAN
 $(TEST_KV_TOL): $(TEST_KV_TOL_SRC) $(HDR)
 	$(CC) $(CFLAGS) -I src $(TEST_KV_TOL_SRC) -o $@ $(LDFLAGS)
 
+# the --kv fp4 cache codec (UE4M3 ceiling scale + E2M1 nibbles) against its
+# inverse and the dequantised dot; the reference every backend's cache bytes
+# are held to
+$(TEST_KV_FP4): tests/test_kv_fp4.c $(QUANTS_OBJ) $(HDR)
+	$(CC) $(CFLAGS) -I src tests/test_kv_fp4.c $(QUANTS_OBJ) -o $@ $(LDFLAGS)
+
 # SIMD (AVX2/NEON) dot and dequant kernels vs an independent double-precision
 # reference; also pins q8_quant_row byte-identical to its scalar definition
 TEST_QUANTS_SIMD_SRC = tests/test_quants_simd.c $(QUANTS_OBJ)
@@ -1171,6 +1179,11 @@ $(TEST_METAL_SHADERS): tests/test_metal_shaders.m src/kernels_metal.h
 	$(CC) -std=gnu11 -Wall -Wextra -Wno-unused-parameter -I src \
 	    tests/test_metal_shaders.m -o $@ -framework Metal -framework Foundation
 
+$(TEST_METAL_KVFP4): tests/test_metal_kvfp4.m src/kernels_metal.h $(QUANTS_OBJ) $(HDR)
+	$(CC) -std=gnu11 -Wall -Wextra -Wno-unused-parameter -I src \
+	    tests/test_metal_kvfp4.m $(QUANTS_OBJ) -o $@ -lm -lpthread \
+	    -framework Metal -framework Foundation
+
 $(TEST_METAL_KQUANTS): tests/test_metal_kquants.m src/kernels_metal.h $(QUANTS_OBJ) $(HDR)
 	$(CC) -std=gnu11 -Wall -Wextra -Wno-unused-parameter -I src \
 	    tests/test_metal_kquants.m $(QUANTS_OBJ) -o $@ -lm -lpthread \
@@ -1191,9 +1204,10 @@ $(TEST_METAL_OWNERSHIP): tests/test_metal_ownership.m src/metal.m src/compat.c $
 # run fall back to the CPU silently, which no correctness gate can see.
 test-metal-shader-gate:
 ifeq ($(shell uname -s),Darwin)
-	@$(MAKE) --no-print-directory $(TEST_METAL_SHADERS) $(TEST_METAL_KQUANTS) $(TEST_METAL_TENSOR) >/dev/null
+	@$(MAKE) --no-print-directory $(TEST_METAL_SHADERS) $(TEST_METAL_KQUANTS) $(TEST_METAL_KVFP4) $(TEST_METAL_TENSOR) >/dev/null
 	@./$(TEST_METAL_SHADERS)
 	@./$(TEST_METAL_KQUANTS)
+	@./$(TEST_METAL_KVFP4)
 	@./$(TEST_METAL_TENSOR)
 else
 	@echo "metal shader gate skipped: macOS-only backend"
@@ -1431,6 +1445,28 @@ ifeq ($(shell uname -s),Darwin)
 	fi
 else
 	@echo "metal bind failure smoke skipped: macOS-only backend"
+endif
+
+# The fp4 KV cache on Metal: the store kernel byte-identical to the CPU
+# encoder (test_metal_kvfp4.m), the banner proving the fp4 cache was in
+# use, and the tolerance gate's fp4 arms (GPU fp4 against CPU fp4 within the
+# reassociation floor). Like test-metal-kv-q8 it wants a real small model.
+test-metal-kv-fp4: runner $(TEST_KV_TOL) $(TEST_METAL_KVFP4)
+ifeq ($(shell uname -s),Darwin)
+	@set -e; \
+	if ./$(RUNNER_EXE) --caps | $(PYTHON) -c "import json,sys; d=json.load(sys.stdin); sys.exit(0 if (d.get('gpu') or {}).get('backend') == 'metal' else 1)"; then \
+		./$(TEST_METAL_KVFP4); \
+		model="$${ASAN_MODEL:-models/SmolLM2-135M-Instruct-Q8_0.gguf}"; \
+		if [ ! -f "$$model" ]; then echo "metal fp4 KV smoke skipped: $$model not found"; exit 0; fi; \
+		./$(RUNNER_EXE) -m "$$model" -p "hello" -n 1 --kv fp4 --gpu auto -v 2> metal-kv-fp4.err >/dev/null; \
+		grep -q "(fp4)" metal-kv-fp4.err || { echo "FAIL: the fp4 cache was not in use on Metal"; cat metal-kv-fp4.err; exit 1; }; \
+		./$(TEST_KV_TOL) "$$model"; \
+		rm -f metal-kv-fp4.err; \
+	else \
+		echo "metal fp4 KV smoke skipped: no Metal device reported by --caps"; \
+	fi
+else
+	@echo "metal fp4 KV smoke skipped: macOS-only backend"
 endif
 
 test-metal-kv-q8: runner $(TEST_KV_TOL)
@@ -1957,7 +1993,7 @@ test: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSON_OOM) $(
       $(TEST_TOKENIZER) $(TEST_TOK_MERGE) $(TEST_TOKENIZER_OOM) $(TEST_TEMPLATE) $(TEST_PROMPT_MARKS) \
       $(TEST_TEMPLATE_OOM) \
       $(TEST_TOOLS) $(TEST_SHARED) $(TEST_FILE_ID) $(TEST_BATCH) $(TEST_BATCH_ID) $(TEST_BIND) $(TEST_HOST_HEADER) \
-      $(TEST_PREFIX) $(TEST_GRAMMAR_FF) $(TEST_LOOKUP_DRAFT) $(TEST_VRAMREG) $(TEST_KV_TOL) $(TEST_TC_TOL) $(TEST_I8_TOL) $(TEST_MV_TOL) $(TEST_ATTN_TOL) $(TEST_GPU_ID) $(TEST_MOE_TOL) $(TEST_MOE_ROUTER) $(TEST_PAGING_WARN) $(TEST_AUTOFIT) $(TEST_RESP_SM_DEP) \
+      $(TEST_PREFIX) $(TEST_GRAMMAR_FF) $(TEST_LOOKUP_DRAFT) $(TEST_VRAMREG) $(TEST_KV_TOL) $(TEST_KV_FP4) $(TEST_TC_TOL) $(TEST_I8_TOL) $(TEST_MV_TOL) $(TEST_ATTN_TOL) $(TEST_GPU_ID) $(TEST_MOE_TOL) $(TEST_MOE_ROUTER) $(TEST_PAGING_WARN) $(TEST_AUTOFIT) $(TEST_RESP_SM_DEP) \
       $(TEST_QUANTS_SIMD) $(TEST_IQ_DECODE) $(TEST_INSTANCES) $(TEST_INSTANCES_OOM) $(TEST_METAL_ADMISSION) $(TEST_TRAY_CORE) $(TEST_TRAY_WIN_DEP) \
       $(TEST_QUANTIZE) \
       $(TEST_VRAM_ROLLBACK) $(TEST_GGUF_GETTERS) $(TEST_HFHUB) $(TEST_GGUF_SPLIT) $(TEST_PARSE) $(TEST_ENVELOPE) $(TEST_ED25519) $(TEST_MLDSA) $(TEST_PMATH) $(TEST_ECDSA) $(TEST_CANON_KERNELS) \
@@ -2039,6 +2075,7 @@ test: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSON_OOM) $(
 	./$(TEST_STOP_CONSTRAINT)
 	$(TEST_RESP_SM_RUN)
 	./$(TEST_KV_TOL)
+	./$(TEST_KV_FP4)
 	./$(TEST_TC_TOL)
 	$(MAKE) --no-print-directory test-tc-overflow
 	./$(TEST_I8_TOL)
@@ -2196,7 +2233,7 @@ smoke: runner test.gguf
 	./$(RUNNER_EXE) --caps | $(PYTHON) -c "import json,sys; p=json.load(sys.stdin)['sampling_presets']; assert {x['name'] for x in p} >= {'generic','qwen3','llama3','gemma3','phi3'} and all(x['source'] for x in p); print('preset table ok')"
 	./$(RUNNER_EXE) -m test.gguf -p "hello" -n 8 --temp 0 --gpu off
 	./$(RUNNER_EXE) -m test.gguf -p "hi" -n 24 --temp 0 --json --gpu off 2>/dev/null | $(PYTHON) -c "import json,sys; json.load(sys.stdin); print('valid json')"
-	./$(RUNNER_EXE) --caps | $(PYTHON) -c "import json,sys; c=json.load(sys.stdin); assert c['kv_types'] == ['f16','q8'], c['kv_types']; assert c['kv_type_default'] == 'f16', 'q8 KV is lossy: f16 must stay the default'; print('kv cache types ok')"
+	./$(RUNNER_EXE) --caps | $(PYTHON) -c "import json,sys; c=json.load(sys.stdin); assert c['kv_types'] == ['f16','q8','fp4'], c['kv_types']; assert c['kv_type_default'] == 'f16', 'q8 KV is lossy: f16 must stay the default'; print('kv cache types ok')"
 	./$(RUNNER_EXE) -m test.gguf -p "hello" -n 8 --temp 0 --gpu off --kv q8 2>&1 | grep -q "head_dim not a multiple of 32" && echo "kv q8 fallback ok"
 
 release-check: runner
@@ -2318,7 +2355,7 @@ clean:
 	      $(TEST_SCHEMA_OOM) $(TEST_SAMPLER) $(TEST_TOKENIZER) \
 	      $(TEST_TOKENIZER_OOM) $(TEST_TEMPLATE) $(TEST_PROMPT_MARKS) $(TEST_SHARED) \
 	      $(TEST_BATCH) $(TEST_BIND) $(TEST_HOST_HEADER) $(TEST_VRAMREG) test-shared-asan-bin \
-	      $(TEST_KV_TOL) $(TEST_TC_TOL) $(TEST_I8_TOL) $(TEST_MV_TOL) $(TEST_ATTN_TOL) $(TEST_GPU_ID) $(TEST_MOE_TOL) $(TEST_MOE_ROUTER) $(TEST_PAGING_WARN) $(TEST_AUTOFIT) $(TEST_RESP_SM) $(TEST_PREFIX) $(TEST_GRAMMAR_FF) $(TEST_TOOLS) $(DIFFTOK) \
+	      $(TEST_KV_TOL) $(TEST_KV_FP4) $(TEST_TC_TOL) $(TEST_I8_TOL) $(TEST_MV_TOL) $(TEST_ATTN_TOL) $(TEST_GPU_ID) $(TEST_MOE_TOL) $(TEST_MOE_ROUTER) $(TEST_PAGING_WARN) $(TEST_AUTOFIT) $(TEST_RESP_SM) $(TEST_PREFIX) $(TEST_GRAMMAR_FF) $(TEST_TOOLS) $(DIFFTOK) \
 	      $(TEST_QUANTS_SIMD) $(TEST_INSTANCES) $(TEST_INSTANCES_OOM) $(TEST_METAL_ADMISSION) $(TEST_TRAY_CORE) \
 	      $(TEST_QUANTIZE) $(TEST_VRAM_ROLLBACK) $(TEST_GGUF_GETTERS) $(TEST_HFHUB) \
 	      $(TEST_PARSE) $(TEST_THREAD_DEFAULT) $(TEST_METAL_OWNERSHIP) $(TEST_METAL_SHADERS) $(TEST_METAL_KQUANTS) $(TEST_MODEL_LOAD_FAILURE) \
@@ -2424,7 +2461,7 @@ test-makefile-sane:
 
 .PHONY: template-conformance template-conformance-refresh template-conformance-baseline template-conformance-harmony-oracle
 .PHONY: test-gpu-stub test-cuda-nvfp4
-.PHONY: FORCE makefile-noop test-python-deps test-makefile-sane test-cuda-iquants test-tc-overflow fixture-scale-note clean debug ptx test test-bare-invocation test-help-interface test-shader-embed test-metal-shader-gate test-apertus test-moe test-prune-experts test-metal-fallback test-metal-prefill test-metal-kquant test-metal-decode-only test-metal-split test-metal-bind-failure test-metal-kv-q8 test-metal-moe test-metal-gptoss-moe test-metal-gemma4-moe test-metal-gemma4-hetero test-metal-bigmodel test-metal-bigmodel-multibuf test-metal-moe-em test-metal-moe-mm test-metal-fuse test-metal-gelu-overflow test-metal-eseries test-metal-swa smoke release-check test-truncation fuzz fuzz-build fuzz-run test-shared-asan test-shared-noid test-split-guard test-swap-race
+.PHONY: test-metal-kv-fp4 FORCE makefile-noop test-python-deps test-makefile-sane test-cuda-iquants test-tc-overflow fixture-scale-note clean debug ptx test test-bare-invocation test-help-interface test-shader-embed test-metal-shader-gate test-apertus test-moe test-prune-experts test-metal-fallback test-metal-prefill test-metal-kquant test-metal-decode-only test-metal-split test-metal-bind-failure test-metal-kv-q8 test-metal-moe test-metal-gptoss-moe test-metal-gemma4-moe test-metal-gemma4-hetero test-metal-bigmodel test-metal-bigmodel-multibuf test-metal-moe-em test-metal-moe-mm test-metal-fuse test-metal-gelu-overflow test-metal-eseries test-metal-swa smoke release-check test-truncation fuzz fuzz-build fuzz-run test-shared-asan test-shared-noid test-split-guard test-swap-race
 
 # Soak harness for the startup/SIGTERM race (test_signal_during_startup). Not
 # in `make test` — it is a diagnostic soak (thousands of spawns), run on demand

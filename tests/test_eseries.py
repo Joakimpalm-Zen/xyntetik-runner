@@ -151,6 +151,7 @@ def test_caps_publishes_the_eseries_boolean(runner_bin):
     # Sits next to the other capability booleans, and means the same kind of
     # thing: a backend-wide claim, not a per-model promise.
     assert isinstance(gpu["moe"], bool) and isinstance(gpu["kv_q8"], bool)
+    assert isinstance(gpu["kv_fp4"], bool)
 
 
 def test_the_eseries_boolean_is_not_a_lie(runner_bin, tmp_path):

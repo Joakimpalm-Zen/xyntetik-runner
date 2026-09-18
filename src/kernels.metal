@@ -2499,21 +2499,77 @@ kernel void k_rope(device float       *v_all [[buffer(0)]],
 }
 
 // ---------------------------------------------------------------- kv store
-// The KV cache is either fp16 (2 bytes/value) or q8_0 (32 values per 34-byte
-// block: one fp16 scale + 32 int8 quants). Offsets are byte offsets so the CPU
-// and Metal paths share the same cache layout.
+// The KV cache is fp16 (2 bytes/value), q8_0 (32 values per 34-byte block:
+// one fp16 scale + 32 int8 quants) or fp4 (16 values per 9-byte block: one
+// UE4M3 scale + 16 E2M1 nibbles, the --kv fp4 cache). The `q8` field of the
+// argument structs carries the KIND: 0 f16, 1 q8, 2 fp4. Offsets are byte
+// offsets so the CPU and Metal paths share the same cache layout, and the
+// fp4 encoder repeats quants.c's fp4_quant_row step for step (UE4M3 ceiling
+// of amax/6, nearest E2M1 with ties up, sign in bit 3, element j in the low
+// nibble of byte j and element j+8 in its high nibble) so a row quantised
+// here is byte-identical to one quantised on the CPU.
+
+constant float kv_e2m1[16] = {
+     0.0f,  0.5f,  1.0f,  1.5f,  2.0f,  3.0f,  4.0f,  6.0f,
+     0.0f, -0.5f, -1.0f, -1.5f, -2.0f, -3.0f, -4.0f, -6.0f,
+};
+
+static inline float kv_ue4m3_f(uint x) {
+    if (x == 0 || x == 0x7F) return 0.0f;
+    int e = (x >> 3) & 0xF, mn = x & 7;
+    if (e == 0) return ldexp((float)mn, -9);
+    return ldexp(1.0f + (float)mn / 8.0f, e - 7);
+}
+
+static inline uint kv_ue4m3_ceil(float s) {
+    if (!(s > 0.0f)) return 0;
+    if (s >= 448.0f) return 0x7E;
+    int e;
+    float f = frexp(s, e);
+    int E = e - 1 + 7;
+    if (E >= 1) {
+        int mn = (int)ceil((f * 2.0f - 1.0f) * 8.0f);
+        if (mn == 8) { mn = 0; E++; }
+        if (E > 15 || (E == 15 && mn == 7)) return 0x7E;
+        return (uint)((E << 3) | mn);
+    }
+    int mn = (int)ceil(s * 512.0f);
+    if (mn >= 8) return 0x08;
+    return (uint)mn;
+}
+
+static inline uint kv_e2m1_code(float v) {
+    float a = fabs(v);
+    uint i = a < 0.25f ? 0 : a < 0.75f ? 1 : a < 1.25f ? 2 : a < 1.75f ? 3
+           : a < 2.5f ? 4 : a < 3.5f ? 5 : a < 5.0f ? 6 : 7;
+    return (v < 0.0f && i) ? (i | 8) : i;
+}
 
 static inline ulong kv_row_bytes(int kv_dim, int q8) {
-    return q8 ? (ulong)(kv_dim / 32) * 34 : (ulong)kv_dim * 2;
+    return q8 == 2 ? (ulong)(kv_dim / 16) * 9
+         : q8      ? (ulong)(kv_dim / 32) * 34 : (ulong)kv_dim * 2;
 }
 
 static inline ulong kv_head_off(int kvh, int hd, int q8) {
-    return q8 ? (ulong)(kvh * hd / 32) * 34 : (ulong)(kvh * hd) * 2;
+    return q8 == 2 ? (ulong)(kvh * hd / 16) * 9
+         : q8      ? (ulong)(kvh * hd / 32) * 34 : (ulong)(kvh * hd) * 2;
 }
 
 static inline void kv_store_row(device uchar *cache, device const float *src,
                                 int q8, uint i) {
-    if (q8) {
+    if (q8 == 2) {
+        device uchar *blk = cache + (ulong)i * 9;
+        device const float *x = src + i * 16;
+        float amax = 0;
+        for (int j = 0; j < 16; j++) amax = max(amax, fabs(x[j]));
+        uint sc = kv_ue4m3_ceil(amax / 6.0f);
+        float d = kv_ue4m3_f(sc);
+        float id = d > 0 ? 1.0f / d : 0.0f;
+        blk[0] = (uchar)sc;
+        for (int j = 0; j < 8; j++)
+            blk[1 + j] = (uchar)(kv_e2m1_code(x[j] * id) |
+                                 (kv_e2m1_code(x[j + 8] * id) << 4));
+    } else if (q8) {
         device uchar *blk = cache + (ulong)i * 34;
         device half *dptr = (device half *)blk;
         device char *q = (device char *)(blk + 2);
@@ -2532,7 +2588,18 @@ static inline void kv_store_row(device uchar *cache, device const float *src,
 static inline float kv_dot(device const uchar *row, device const float *qh,
                            int hd, int q8) {
     float s = 0;
-    if (q8) {
+    if (q8 == 2) {
+        for (int b = 0; b < hd / 16; b++) {
+            device const uchar *blk = row + (ulong)b * 9;
+            float d = kv_ue4m3_f(blk[0]);
+            device const float *xp = qh + b * 16;
+            float t = 0;
+            for (int j = 0; j < 8; j++)
+                t += xp[j] * kv_e2m1[blk[1 + j] & 0xF]
+                   + xp[j + 8] * kv_e2m1[blk[1 + j] >> 4];
+            s += d * t;
+        }
+    } else if (q8) {
         for (int b = 0; b < hd / 32; b++) {
             device const uchar *blk = row + (ulong)b * 34;
             float d = (float)*(device const half *)blk;
@@ -2551,6 +2618,17 @@ static inline float kv_dot(device const uchar *row, device const float *qh,
 }
 
 static inline float2 kv_pair(device const uchar *row, int i2, int q8) {
+    if (q8 == 2) {
+        // elements 2*i2 and 2*i2+1 sit in the same block (16 is even) and,
+        // being consecutive, in the same nibble half of two adjacent bytes
+        // when 2*i2 % 16 < 8, else both in the high halves
+        device const uchar *blk = row + (ulong)(i2 / 8) * 9;
+        float d = kv_ue4m3_f(blk[0]);
+        int j = (2 * i2) & 15;
+        uint c0 = j < 8 ? (blk[1 + j] & 0xF) : (blk[1 + j - 8] >> 4);
+        uint c1 = j + 1 < 8 ? (blk[1 + j + 1] & 0xF) : (blk[1 + j + 1 - 8] >> 4);
+        return float2(d * kv_e2m1[c0], d * kv_e2m1[c1]);
+    }
     if (q8) {
         device const uchar *blk = row + (ulong)(i2 / 16) * 34;
         float d = (float)*(device const half *)blk;
@@ -2574,7 +2652,7 @@ kernel void k_store_kv(device const float *k_all [[buffer(0)]],
                        device uchar       *vc [[buffer(3)]],
                        constant store_args &a [[buffer(4)]],
                        uint2 gid [[thread_position_in_grid]]) {
-    int n = a.q8 ? a.kv_dim / 32 : a.kv_dim;
+    int n = a.q8 == 2 ? a.kv_dim / 16 : a.q8 ? a.kv_dim / 32 : a.kv_dim;
     uint i = gid.x, col = gid.y;
     if ((int)i < n) {
         int p = a.pos + (int)col;
@@ -3026,7 +3104,18 @@ static inline ulong kv_row_off(int t, int kv_rows, ulong row_b) {
 static inline float kv_dot_coop(device const uchar *row, device const float *qh,
                                 int hd, int q8, uint lane) {
     float s = 0;
-    if (q8) {
+    if (q8 == 2) {
+        for (int b = (int)lane; b < hd / 16; b += 32) {
+            device const uchar *blk = row + (ulong)b * 9;
+            float d = kv_ue4m3_f(blk[0]);
+            device const float *xp = qh + b * 16;
+            float t = 0;
+            for (int j = 0; j < 8; j++)
+                t += xp[j] * kv_e2m1[blk[1 + j] & 0xF]
+                   + xp[j + 8] * kv_e2m1[blk[1 + j] >> 4];
+            s += d * t;
+        }
+    } else if (q8) {
         // One 32-element block per lane step: the block's scale is read once
         // and the 32 quants beneath it are contiguous.
         for (int b = (int)lane; b < hd / 32; b += 32) {

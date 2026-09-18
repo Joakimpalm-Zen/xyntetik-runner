@@ -32,6 +32,9 @@ const char *gpu_shader_source_sha(void) { return NULL; }   // no shaders here
 bool gpu_kv_q8_ok(void) {
     return false;   // no backend here; the CPU path handles q8 on its own
 }
+bool gpu_kv_fp4_ok(void) {
+    return false;
+}
 
 bool gpu_quant_ok(int type) {
     (void)type;

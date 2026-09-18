@@ -3816,13 +3816,56 @@ extern "C" __global__ void k_rope(float *v, const float *fr, rope_args a,
 
 struct q8_blk { __half d; signed char qs[32]; };   // 34 bytes, 2-byte aligned
 
+// The `q8` argument of every KV helper is the cache KIND: 0 fp16, 1 q8_0,
+// 2 fp4 (16 values per 9-byte block: one UE4M3 scale byte + 16 E2M1
+// nibbles, the --kv fp4 cache). The fp4 encoder repeats quants.c's
+// fp4_quant_row step for step (UE4M3 ceiling of amax/6, nearest E2M1 with
+// ties up, sign in bit 3, element j in the low nibble of byte j and element
+// j+8 in its high nibble), so a row quantised here is byte-identical to the
+// CPU's and to Metal's. An fp4 row is only byte-aligned.
+__device__ __forceinline__ unsigned kv_ue4m3_ceil(float s) {
+    if (!(s > 0.0f)) return 0;
+    if (s >= 448.0f) return 0x7E;
+    int e;
+    float f = frexpf(s, &e);
+    int E = e - 1 + 7;
+    if (E >= 1) {
+        int mn = (int)ceilf((f * 2.0f - 1.0f) * 8.0f);
+        if (mn == 8) { mn = 0; E++; }
+        if (E > 15 || (E == 15 && mn == 7)) return 0x7E;
+        return (unsigned)((E << 3) | mn);
+    }
+    int mn = (int)ceilf(s * 512.0f);
+    if (mn >= 8) return 0x08;
+    return (unsigned)mn;
+}
+__device__ __forceinline__ unsigned kv_e2m1_code(float v) {
+    float a = fabsf(v);
+    unsigned i = a < 0.25f ? 0 : a < 0.75f ? 1 : a < 1.25f ? 2 : a < 1.75f ? 3
+               : a < 2.5f ? 4 : a < 3.5f ? 5 : a < 5.0f ? 6 : 7;
+    return (v < 0.0f && i) ? (i | 8) : i;
+}
+
 #define KV_ROW_BYTES(kv_dim, q8) \
-    ((q8) ? (ulong64)((kv_dim) / 32) * 34 : (ulong64)(kv_dim) * 2)
+    ((q8) == 2 ? (ulong64)((kv_dim) / 16) * 9 : \
+     (q8) ? (ulong64)((kv_dim) / 32) * 34 : (ulong64)(kv_dim) * 2)
 
 __device__ __forceinline__ void kv_store_row(unsigned char *cache,
                                              const float *src, int kv_dim,
                                              int q8, int i) {
-    if (q8) {
+    if (q8 == 2) {
+        unsigned char *blk = cache + (ulong64)i * 9;
+        const float *x = src + i * 16;
+        float amax = 0;
+        for (int j = 0; j < 16; j++) amax = fmaxf(amax, fabsf(x[j]));
+        unsigned sc = kv_ue4m3_ceil(amax / 6.0f);
+        float d = ue4m3f((uchar)sc);
+        float id = d > 0 ? 1.0f / d : 0.0f;
+        blk[0] = (unsigned char)sc;
+        for (int j = 0; j < 8; j++)
+            blk[1 + j] = (unsigned char)(kv_e2m1_code(x[j] * id) |
+                                         (kv_e2m1_code(x[j + 8] * id) << 4));
+    } else if (q8) {
         q8_blk *b = (q8_blk *)(cache + (ulong64)i * 34);
         const float *x = src + i * 32;
         float amax = 0;
@@ -3841,7 +3884,18 @@ __device__ __forceinline__ void kv_store_row(unsigned char *cache,
 __device__ __forceinline__ float kv_dot(const unsigned char *row,
                                         const float *qh, int hd, int q8) {
     float s = 0;
-    if (q8) {
+    if (q8 == 2) {
+        for (int b = 0; b < hd / 16; b++) {
+            const unsigned char *blk = row + (ulong64)b * 9;
+            float d = ue4m3f(blk[0]);
+            const float *xp = qh + b * 16;
+            float t = 0;
+            for (int j = 0; j < 8; j++)
+                t += xp[j] * kv_mxfp4[blk[1 + j] & 0xF]
+                   + xp[j + 8] * kv_mxfp4[blk[1 + j] >> 4];
+            s += d * t;
+        }
+    } else if (q8) {
         for (int b = 0; b < hd / 32; b++) {
             const q8_blk *blk = (const q8_blk *)(row + (ulong64)b * 34);
             const float *xp = qh + b * 32;
@@ -3866,6 +3920,14 @@ __device__ __forceinline__ float kv_dot(const unsigned char *row,
 // straddle a q8 block (32 is even), so one block lookup serves both.
 __device__ __forceinline__ float2 kv_pair(const unsigned char *row,
                                           int i2, int q8) {
+    if (q8 == 2) {
+        const unsigned char *blk = row + (ulong64)(i2 / 8) * 9;
+        float d = ue4m3f(blk[0]);
+        int j = (2 * i2) & 15;
+        unsigned c0 = j < 8 ? (blk[1 + j] & 0xF) : (blk[1 + j - 8] >> 4);
+        unsigned c1 = j + 1 < 8 ? (blk[1 + j + 1] & 0xF) : (blk[1 + j + 1 - 8] >> 4);
+        return make_float2(d * kv_mxfp4[c0], d * kv_mxfp4[c1]);
+    }
     if (q8) {
         const q8_blk *blk = (const q8_blk *)(row + (ulong64)(i2 / 16) * 34);
         float d = __half2float(blk->d);
@@ -3892,7 +3954,7 @@ extern "C" __global__ void k_store_kv(const float *k, const float *v,
                                       int kv_dim, ulong64 l_off,
                                       const int *posp, int q8, int ring) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
-    int n = q8 ? kv_dim / 32 : kv_dim;
+    int n = q8 == 2 ? kv_dim / 16 : q8 ? kv_dim / 32 : kv_dim;
     if (i < n) {
         ulong64 row_b = KV_ROW_BYTES(kv_dim, q8);
         ulong64 dst = l_off + kv_slot(*posp + blockIdx.y, ring) * row_b;
@@ -3910,7 +3972,8 @@ extern "C" __global__ void k_store_kv(const float *k, const float *v,
 
 // byte offset of head kvh's slice within a cache row
 __device__ __forceinline__ ulong64 kv_head_off(int kvh, int hd, int q8) {
-    return q8 ? (ulong64)(kvh * hd / 32) * 34 : (ulong64)(kvh * hd) * 2;
+    return q8 == 2 ? (ulong64)(kvh * hd / 16) * 9
+         : q8      ? (ulong64)(kvh * hd / 32) * 34 : (ulong64)(kvh * hd) * 2;
 }
 
 // sinks: gpt-oss per-head learned attention-sink logits for this layer, or
@@ -4205,7 +4268,7 @@ extern "C" __global__ void k_store_kv_seq(const float *k, const float *v,
                                           int kv_dim, ulong64 l_off,
                                           const int *posp, int q8, int ring) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
-    int n = q8 ? kv_dim / 32 : kv_dim;
+    int n = q8 == 2 ? kv_dim / 16 : q8 ? kv_dim / 32 : kv_dim;
     if (i < n) {
         int sq = blockIdx.y;
         ulong64 row_b = KV_ROW_BYTES(kv_dim, q8);

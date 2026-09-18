@@ -36,6 +36,7 @@ const char *gpu_shader_source_sha(void);
 // can; a backend that cannot forces the cache back to f16 rather than
 // handing q8_0 blocks to kernels that would read them as fp16.
 bool   gpu_kv_q8_ok(void);
+bool   gpu_kv_fp4_ok(void);   // fp4 (16-in-9) KV rows readable by the attention kernels
 // Does this backend have kernels for a tensor format? Answered by the backend
 // itself so `--caps` cannot drift from what the loader will actually admit.
 // The two used to be a hand-kept literal in main.c and a switch in the backend

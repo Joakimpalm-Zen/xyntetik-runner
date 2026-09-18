@@ -1667,6 +1667,104 @@ void q8_quant_row(const float *x, void *dst, int n) {
 #endif
 }
 
+// ------------------------------------------------------------ fp4 KV cache
+// The --kv fp4 cache stores each 16 values as one UE4M3 scale byte followed
+// by 8 bytes of E2M1 nibbles (byte j: low nibble = element j, high nibble =
+// element j + 8, the block_nvfp4 sub-block convention above), 9 bytes per 16:
+// the NVFP4 layout without the second-level tensor scale. The scale is the
+// smallest UE4M3 value at or above amax/6, so every |x|/d lands inside the
+// E2M1 range and the codes never clip; the nibble is the nearest E2M1
+// magnitude (ties up) with the sign in bit 3. The CUDA and Metal store
+// kernels repeat this arithmetic step for step, so a row quantised on any
+// backend is byte-identical to the CPU's.
+#define QK_KVFP4 16
+#define KVFP4_BYTES 9
+
+float kv_ue4m3_to_f32(uint8_t x) { return ue4m3_to_fp32(x); }
+
+// the smallest UE4M3 code whose value is >= s (s > 0); 0 for s <= 0
+uint8_t kv_ue4m3_ceil(float s) {
+    if (!(s > 0.0f)) return 0;
+    if (s >= 448.0f) return 0x7E;                 // largest finite: (1+6/8)*2^8
+    int e;
+    float f = frexpf(s, &e);                      // s = f * 2^e, f in [0.5, 1)
+    int E = e - 1 + 7;                            // normal: (1+m/8) * 2^(E-7)
+    if (E >= 1) {
+        int m = (int)ceilf((f * 2.0f - 1.0f) * 8.0f);
+        if (m == 8) { m = 0; E++; }
+        if (E > 15 || (E == 15 && m == 7)) return 0x7E;
+        return (uint8_t)((E << 3) | m);
+    }
+    int m = (int)ceilf(s * 512.0f);              // subnormal: m * 2^-9
+    if (m >= 8) return 0x08;                      // == 1.0 * 2^-6
+    return (uint8_t)m;
+}
+
+// nearest E2M1 code for v (|v| <= 6 by construction of the scale)
+static inline uint8_t e2m1_code(float v) {
+    float a = fabsf(v);
+    uint8_t i = a < 0.25f ? 0 : a < 0.75f ? 1 : a < 1.25f ? 2 : a < 1.75f ? 3
+              : a < 2.5f ? 4 : a < 3.5f ? 5 : a < 5.0f ? 6 : 7;
+    return (v < 0.0f && i) ? (uint8_t)(i | 8) : i;
+}
+
+// quantize a row of floats into fp4 KV blocks (n must be a multiple of 16)
+void fp4_quant_row(const float *x, void *dst, int n) {
+    uint8_t *b = dst;
+    for (int i = 0; i < n / QK_KVFP4; i++, b += KVFP4_BYTES, x += QK_KVFP4) {
+        float amax = 0;
+        for (int j = 0; j < QK_KVFP4; j++) {
+            float a = fabsf(x[j]);
+            if (a > amax) amax = a;
+        }
+        uint8_t sc = kv_ue4m3_ceil(amax / 6.0f);
+        float d = ue4m3_to_fp32(sc);
+        float id = d > 0 ? 1.0f / d : 0.0f;
+        b[0] = sc;
+        for (int j = 0; j < QK_KVFP4 / 2; j++)
+            b[1 + j] = (uint8_t)(e2m1_code(x[j] * id) |
+                                 (e2m1_code(x[j + 8] * id) << 4));
+    }
+}
+
+void fp4_dequant_row(const void *src, float *y, int n) {
+    const uint8_t *b = src;
+    for (int i = 0; i < n / QK_KVFP4; i++, b += KVFP4_BYTES, y += QK_KVFP4) {
+        float d = ue4m3_to_fp32(b[0]);
+        for (int j = 0; j < QK_KVFP4 / 2; j++) {
+            y[j]     = kvalues_mxfp4[b[1 + j] & 0xF] * d;
+            y[j + 8] = kvalues_mxfp4[b[1 + j] >> 4]  * d;
+        }
+    }
+}
+
+// dot(dequant(row), x): the K score in fp4 attention
+float fp4_dot_row(const void *src, const float *x, int n) {
+    const uint8_t *b = src;
+    float s = 0;
+    for (int i = 0; i < n / QK_KVFP4; i++, b += KVFP4_BYTES, x += QK_KVFP4) {
+        float d = ue4m3_to_fp32(b[0]);
+        float t = 0;
+        for (int j = 0; j < QK_KVFP4 / 2; j++)
+            t += x[j] * kvalues_mxfp4[b[1 + j] & 0xF]
+               + x[j + 8] * kvalues_mxfp4[b[1 + j] >> 4];
+        s += d * t;
+    }
+    return s;
+}
+
+// out[i] += a * dequant(row)[i]: the V accumulation in fp4 attention
+void fp4_accum_row(const void *src, float a, float *out, int n) {
+    const uint8_t *b = src;
+    for (int i = 0; i < n / QK_KVFP4; i++, b += KVFP4_BYTES, out += QK_KVFP4) {
+        float ad = a * ue4m3_to_fp32(b[0]);
+        for (int j = 0; j < QK_KVFP4 / 2; j++) {
+            out[j]     += ad * kvalues_mxfp4[b[1 + j] & 0xF];
+            out[j + 8] += ad * kvalues_mxfp4[b[1 + j] >> 4];
+        }
+    }
+}
+
 // out[i] += a * dequant(row)[i] — the V accumulation in q8 attention
 void q8_accum_row(const void *src, float a, float *out, int n) {
     const block_q8_0 *b = src;

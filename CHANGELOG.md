@@ -8,6 +8,47 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **`--kv fp4`: a 4-bit KV cache, storage only.** Each 16 cached values
+  become one UE4M3 scale byte and eight bytes of E2M1 nibbles, the NVFP4
+  block layout without a second-level scale, at 28% of the f16 bytes (q8 is
+  53%), so the context that fits a given RAM or VRAM budget roughly doubles
+  again. Rows are quantised after RoPE at store time and dequantised at
+  attention, the same shape as the q8 cache, so no FP4 matmul kernels are
+  involved; the scale is the UE4M3 ceiling of amax/6, so no code ever
+  clips, and the codec reuses the NVFP4 weight decoder's tables. All three
+  backends: CPU (`fp4_quant_row` / `fp4_dot_row` / `fp4_accum_row` in
+  quants.c), Metal and CUDA carry store and attention arms keyed on a cache
+  kind (0 f16, 1 q8, 2 fp4) in the argument structs, and the rows they
+  write are byte-identical to the CPU's (tests/test_metal_kvfp4.m holds
+  Metal to it across four magnitude bands, a zero row and the E2M1 ties;
+  CUDA repeats the same arithmetic and answers to the tolerance gate on a
+  CUDA box). Gates: `test-kv-fp4` (the codec against its inverse and the
+  dequantised dot, in `make test`), the tolerance gate `test-kv-tol` grew
+  fp4 arms (GPU fp4 against CPU fp4 within the CPU's own reassociation
+  floor: measured 1.00x on the M1, 2 of 64 top-1 differences, worst margin
+  0.0074 of range) and `make test-metal-kv-fp4`; `--caps` lists `fp4` in
+  `kv_types` and reports `gpu.kv_fp4`; `--fit` prints the fp4 line and the
+  verdict gains "FITS WITH --kv fp4"; the envelope records `"kv":"fp4"` and
+  replay verifies it. Requires head_dim divisible by 16 and refuses tied-V
+  layers like q8 does. What is NOT claimed: fidelity. fp4's cost is per
+  model and is reported, not gated: on SmolLM2-135M the format moves the
+  mean logit by 1.14 against 0.057 for q8, and the first protocol row, on
+  the M1 with Llama-3.2-1B IQ3_S (Metal, 300 teacher-forced positions,
+  reference = the same file with an f16 cache), reads fp4 mean KLD 0.1846
+  / top-1 74.3% / margin-qualified 88.3% / top-8 0.789 against q8 0.0033 /
+  98.0% / 100% / 0.977. On that model post-hoc fp4 is about 56x q8's KLD
+  and outside the house bar, so the option ships with its measurement,
+  not as a recommendation; the larger models the lab will run may behave
+  differently, and a K-fp4 with V-q8 split is the likely second build
+  given the lab's range table. The lab's protocol
+  (`kld-compare-raw` with the same GGUF under `--kv fp4` and `--kv f16`, a
+  4k-prefix variant, q8 as the comparison row) is the acceptance measure,
+  and the lab's own range table says V at deep Qwen3.8 layers (|max| 94,
+  p99.9 25) is the side to watch; a K-fp4 with V-q8 split is the likely
+  second build if that row fails. CUDA runtime evidence is pending the
+  3070 (the box is committed to a study); the PTX is rebuilt on its CUDA
+  13.3 toolchain. Requested by the lab (suite R5.3, DeepSeek-V4.1-Flash
+  section 2.4.4 as the reference design).
 - **The half-staged Metal MoE expert GEMM (`RUNNER_METAL_MOE_MM=half`)
   stages activations inside fp16's range too.** The default grouped-MMA MoE
   prefill stages in float and never carried the exposure; the half-staged
