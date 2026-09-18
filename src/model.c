@@ -674,8 +674,12 @@ bool model_fit_report(gguf_file *g, int n_ctx_want, model_fit *out) {
     out->kv_q8_per_tok  = kv_dim % 32 == 0
         ? 2ull * (uint64_t)out->n_layer * (kv_dim / 32) * 34ull
         : 0;                                   // q8 KV needs head_dim % 32 == 0
+    out->kv_fp4_per_tok = kv_dim % 16 == 0
+        ? 2ull * (uint64_t)out->n_layer * (kv_dim / 16) * 9ull
+        : 0;                                   // fp4 KV needs head_dim % 16 == 0
     out->kv_f16 = out->kv_f16_per_tok * (uint64_t)out->n_ctx;
     out->kv_q8  = out->kv_q8_per_tok  * (uint64_t)out->n_ctx;
+    out->kv_fp4 = out->kv_fp4_per_tok * (uint64_t)out->n_ctx;
 
     out->available = plat_ram_available_bytes();
     #undef FK
@@ -686,6 +690,7 @@ const char *model_fit_verdict(const model_fit *f) {
     if (!f->available) return "UNKNOWN";
     if (f->hot + f->kv_f16 <= f->available) return "FITS";
     if (f->kv_q8 && f->hot + f->kv_q8 <= f->available) return "FITS WITH --kv q8";
+    if (f->kv_fp4 && f->hot + f->kv_fp4 <= f->available) return "FITS WITH --kv fp4";
     return "PAGES";
 }
 
@@ -956,6 +961,7 @@ typedef struct model_weights {
     // takes from `p` is consumed after the seam, by the per-instance half, so
     // two slots may legitimately differ on it and still share these buffers.
     bool     want_kv_q8;
+    bool     want_kv_fp4;
     int      gpu_mode;
     struct model_weights *next;
 } model_weights;
@@ -1073,7 +1079,8 @@ static model_weights *mw_find(const char *path, const model_params *p,
         if (!w->proto.path || strcmp(w->proto.path, path) != 0) continue;
         if (w->fsize != size || w->fino != ino ||
             w->fmtime != mtime || w->fctime != ctime) continue;
-        if (w->want_kv_q8 != p->kv_q8 || w->gpu_mode != p->gpu_mode) continue;
+        if (w->want_kv_q8 != p->kv_q8 || w->want_kv_fp4 != p->kv_fp4 ||
+            w->gpu_mode != p->gpu_mode) continue;
         return w;
     }
     return NULL;
@@ -1178,6 +1185,7 @@ static bool model_load_inner(model_t *m, const char *path, const model_params *p
             w->fmtime     = mtime;
             w->fctime     = ctime;
             w->want_kv_q8 = p->kv_q8;
+            w->want_kv_fp4 = p->kv_fp4;
             w->gpu_mode   = p->gpu_mode;
             w->next       = g_weights;
             g_weights     = w;
@@ -3410,6 +3418,22 @@ static bool model_bind_weights(model_t *m, const char *path, const model_params 
         else
             m->kv_q8 = true;
     }
+    // fp4 (16-value blocks, 9 bytes) sits below q8 on the same ladder and is
+    // decided the same way; a request for both is a CLI error upstream.
+    if (p->kv_fp4 && !m->kv_q8) {
+        bool aligned = true;
+        for (int l = 0; l < m->n_layer; l++)
+            if (model_head_dim(m, l) % 16 != 0) aligned = false;
+        char gname[128];
+        bool gpu_path = p->gpu_mode == GPU_AUTO && gpu_available(gname, sizeof(gname));
+        if (!aligned)
+            fprintf(stderr, "kv: head_dim not a multiple of 16 — keeping f16\n");
+        else if (gpu_path && !gpu_kv_fp4_ok())
+            fprintf(stderr, "kv: this GPU backend has no fp4 attention kernels "
+                            "— keeping f16 (use --gpu off for an fp4 cache)\n");
+        else
+            m->kv_fp4 = true;
+    }
 
     return true;
 }
@@ -3564,8 +3588,7 @@ static bool model_alloc_runtime(model_t *m, const model_params *p) {
         for (int l = 0; l < m->n_layer; l++) {
             if (model_kv_owner(m, l) != l) continue;  // shared-KV: no rows here
             int d = model_kv_dim(m, l);
-            kv_per_tok += 2ull * (m->kv_q8 ? (size_t)(d / 32) * 34
-                                           : (size_t)d * sizeof(f16_t));
+            kv_per_tok += 2ull * model_kv_bytes_of(m, (size_t)d);
         }
         long long best = -1;
         if (p->reserve_ram_pct > 0) {
@@ -3683,10 +3706,10 @@ static bool model_alloc_runtime(model_t *m, const model_params *p) {
             } else if (n_tied > 0 && p->gpu_mode != GPU_OFF) {
                 fprintf(stderr, "kv: tied-V refused — the GPU attention "
                         "kernels read a stored K row; rerun with --gpu off\n");
-            } else if (n_tied > 0 && m->kv_q8) {
-                fprintf(stderr, "kv: tied-V refused — a q8 cache would "
+            } else if (n_tied > 0 && (m->kv_q8 || m->kv_fp4)) {
+                fprintf(stderr, "kv: tied-V refused — a %s cache would "
                         "re-quantize the derived K row rather than read it; "
-                        "use the default f16 KV\n");
+                        "use the default f16 KV\n", m->kv_fp4 ? "fp4" : "q8");
             } else if (n_tied > 0) {
                 m->kv_off_k = malloc(sizeof(size_t) * (m->n_layer + 1));
                 if (!m->kv_off_k) return false;
@@ -3945,7 +3968,9 @@ static bool model_alloc_runtime(model_t *m, const model_params *p) {
                         " and %d of %d layers ran out of room because of it —"
                         " a smaller -c%s moves layers back\n",
                         m->n_ctx, kv_dev / 1e9, m->n_layer - m->gpu_layers,
-                        m->n_layer, m->kv_q8 ? "" : " or --kv q8 (about half)");
+                        m->n_layer, m->kv_fp4 ? "" : m->kv_q8
+                            ? " or --kv fp4 (about half again)"
+                            : " or --kv q8 (about half)");
             }
         }
     }
@@ -3973,7 +3998,7 @@ static bool model_alloc_runtime(model_t *m, const model_params *p) {
         fprintf(stderr, "%-24s %d\n", "vocab", m->n_vocab);
         fprintf(stderr, "%-24s %d (train %d)\n", "context", m->n_ctx, m->n_ctx_train);
         fprintf(stderr, "%-24s %.1f MB (%s)\n", "kv cache", 2.0 * kv_bytes / 1e6,
-                m->kv_q8 ? "q8_0" : "fp16");
+                m->kv_fp4 ? "fp4" : m->kv_q8 ? "q8_0" : "fp16");
         int n_swa = model_kv_swa_layers(m);
         size_t reach = model_kv_reachable_bytes(m);
         if (n_swa > 0 && reach < kv_bytes)
@@ -4349,6 +4374,7 @@ typedef struct {
     size_t row_b;           // bytes per cached row
     int ring;               // row count when this layer recycles rows, else 0
     bool q8;                // rows are q8_0 blocks
+    bool fp4;               // rows are fp4 blocks (16 values in 9 bytes)
     float scale;
     const float *sinks;     // gpt-oss per-head sink logits, or NULL
     // tied-V: this layer stores no K rows. K is derived per position from the
@@ -4370,8 +4396,9 @@ static void attn_heads(void *ctx, int h0, int h1) {
         const float *qh = j->q + h * hd;
         float *att = m->att + (size_t)h * m->n_ctx;
         int kvh = h / kv_mul;
-        size_t hoff = j->q8 ? (size_t)(kvh * hd / 32) * 34
-                            : (size_t)kvh * hd * sizeof(f16_t);
+        size_t hoff = j->fp4 ? (size_t)(kvh * hd / 16) * 9
+                    : j->q8  ? (size_t)(kvh * hd / 32) * 34
+                             : (size_t)kvh * hd * sizeof(f16_t);
         for (int t = j->t0; t <= j->pos; t++) {
             // att[] stays indexed by ABSOLUTE position (it is n_ctx wide and
             // softmax works on the [t0, pos] span); only the cache row moves.
@@ -4393,7 +4420,9 @@ static void attn_heads(void *ctx, int h0, int h1) {
                 for (int i = 0; i < hd; i++) s += qh[i] * kb[i];
             } else {
                 const uint8_t *kt = j->kc + slot * j->row_b + hoff;
-                if (j->q8) {
+                if (j->fp4) {
+                    s = fp4_dot_row(kt, qh, hd);
+                } else if (j->q8) {
                     s = vec_dot(T_Q8_0, kt, qh, hd);
                 } else {
                     const f16_t *kh = (const f16_t *)kt;
@@ -4411,7 +4440,9 @@ static void attn_heads(void *ctx, int h0, int h1) {
             size_t slot = j->ring ? (size_t)(t % j->ring) : (size_t)t;
             const uint8_t *vt = j->vc + slot * j->row_b + hoff;
             float a = att[t];
-            if (j->q8) {
+            if (j->fp4) {
+                fp4_accum_row(vt, a, out, hd);
+            } else if (j->q8) {
                 q8_accum_row(vt, a, out, hd);
             } else {
                 const f16_t *vh = (const f16_t *)vt;
@@ -6716,7 +6747,7 @@ static bool lora_layer_bw(model_t *m, int l, const int32_t *toks, int T,
         attn_job aj = { m, kc_l, vc_l, qt, ao + (size_t)t * q_dim, t,
                        attn_window_start(swa, t),
                        hd, kv_dim, row_b, 0,
-                       false, scale, NULL, false, NULL, l };
+                       false, false, scale, NULL, false, NULL, l };
         tpool_run(m->tp, attn_heads, &aj, n_head);
         if (gate) {
             // afmoe/muse: sigmoid gate from its own frozen projection of the
@@ -7470,7 +7501,10 @@ static void forward_layer(model_t *m, int l, int n, int pos, int dbg) {
         uint8_t *kc = kc_l + slot * row_b;
         uint8_t *vc = vc_l + slot * row_b;
         bool tied = model_layer_tied_v(m, l);
-        if (m->kv_q8) {
+        if (m->kv_fp4) {
+            fp4_quant_row(m->k_tmp + (size_t)b * kv_dim, kc, kv_dim);
+            fp4_quant_row(m->v_tmp + (size_t)b * kv_dim, vc, kv_dim);
+        } else if (m->kv_q8) {
             q8_quant_row(m->k_tmp + (size_t)b * kv_dim, kc, kv_dim);
             q8_quant_row(m->v_tmp + (size_t)b * kv_dim, vc, kv_dim);
         } else {
@@ -7501,7 +7535,7 @@ static void forward_layer(model_t *m, int l, int n, int pos, int dbg) {
         attn_job aj = { m, kc_l, vc_l, m->q + (size_t)b * q_dim,
                         m->xb2 + (size_t)b * xdim, p, t0, hd, kv_dim,
                         row_b, model_kv_is_ring(m, l) ? m->kv_ring : 0,
-                        m->kv_q8, scale, ly->attn_sinks,
+                        m->kv_q8, m->kv_fp4, scale, ly->attn_sinks,
                         model_layer_tied_v(m, l), ly->knorm_w, l };
         tpool_run(m->tp, attn_heads, &aj, m->n_head);
         if (m->qwen35 || (m->attn_out_gate && ly->wq_gate))
@@ -7674,9 +7708,10 @@ float *model_forward_batch(model_t *m, const int32_t *tokens, int n, int pos,
     if (dbg)
         fprintf(stderr, "ACT ==== forward n=%d pos=%d arch=%s embd_scale=%.5f "
                 "rms_eps=%.3g attn_scale=%.4f softcap=%.3f v_rmsnorm=%d "
-                "kv_q8=%d n_suppress=%d\n",
+                "kv_q8=%d kv_fp4=%d n_suppress=%d\n",
                 n, pos, m->arch, m->embd_scale, m->rms_eps, m->attn_scale,
-                m->logit_softcap, (int)m->v_rmsnorm, (int)m->kv_q8, m->n_suppress);
+                m->logit_softcap, (int)m->v_rmsnorm, (int)m->kv_q8, (int)m->kv_fp4,
+                m->n_suppress);
     int n_embd = m->n_embd;
     // gemma-4 E-series: a partial GPU split hands off to the CPU loop below
     // starting at layer `gpu_layers`, and that hand-off overwrites m->x with

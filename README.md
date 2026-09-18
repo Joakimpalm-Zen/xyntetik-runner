@@ -846,7 +846,7 @@ flags into unrelated feature sections.
 | `--reserve-vram P` | Override only the VRAM budget. The CUDA layer fit spends a budget that starts from the driver's free-memory view, is bounded by the OS video-memory budget for this process where the OS publishes one (Windows, WDDM: `IDXGIAdapter3::QueryVideoMemoryInfo` on the adapter matched by LUID, minus what the process already holds), is capped by this flag, and keeps a headroom of the larger of 512 MiB and one sixteenth of the budget for the driver context, PTX JIT, allocator slack and the OS reserve. The 2026-09-14 Windows report's 12 GB card was filled to 11.7 GB from the driver's view alone and paged over PCIe; the budget and headroom the fit chose are logged at load (`gpu: OS video memory budget ...`), and `gpu: VRAM ... free after init` reports the observed remainder. Where no OS budget exists (Linux, macOS) the driver's view with that headroom is what the fit spends, said so in the log. |
 | `--reserve-ram P` | Override only the RAM budget. |
 | `--reserve-cpu P` | Size the default thread count as a percentage of cores. |
-| `--kv f16\|q8` | KV storage; f16 is default, q8 uses about 53% as much memory and is lossy. |
+| `--kv f16\|q8\|fp4` | KV cache storage. `q8` stores q8_0 blocks at about 53% of the f16 bytes; `fp4` stores E2M1 values with one UE4M3 scale per 16 channels at about 28%, so each roughly doubles the context that fits. Both are lossy: output is not token-identical to an f16 cache, and fp4 costs more than q8, measured per model with `scripts/kld-compare-raw.py` against the same file's f16 cache. f16 is the default. |
 | `--mlock` | Ask the OS to wire mapped weights into RAM; failure is non-fatal. |
 | `--moe-prefetch on\|off\|auto` | Prefetch routed expert blocks. Auto enables it only for measured oversubscribed Apple Silicon cases. |
 | `--draft PATH` | Same-vocabulary draft GGUF for speculative decoding in one-shot, chat, or single-model serve mode. A draft is refused at load on a vocabulary mismatch, a discrete-VRAM (CUDA) fully-offloaded target or CUDA-resident recurrent state (the verify walk needs host-readable hidden work; unified-memory Metal full offload qualifies since 2026-09-01 and speculates correctly, target-exact and gated byte-identical against the plain path — but measure before relying on it there: on an M5 Max the batched verify costs roughly a full decode step per column, because the dequant ALU that hides under the bandwidth floor at batch 1 becomes the critical path with columns added, and the measured 70B+1B pair decoded SLOWER speculative than plain despite 62-70% acceptance; the root-cause numbers are in docs/metal-decode-dispatch-budget-2026-09-01.md), or out of memory, and is dropped in swap mode; the run continues without it. In serve mode `GET /v1/capabilities` reports whether the draft is actually `active`, so a harness never measures the fallback as speculative decoding. |
@@ -1192,6 +1192,13 @@ Vulkan is not implemented; AMD and Intel GPUs use the CPU path.
   by 32. It works on CPU, CUDA, and Metal, participates in capacity auto-fit,
   and is intentionally not token-identical to f16 KV. An incompatible head
   dimension is reported at load and keeps the cache in f16.
+- `--kv fp4` stores 16 values in 9 bytes (E2M1 codes with one UE4M3 scale per
+  16 channels, the NVFP4 block layout without a second-level scale), quantised
+  after RoPE and dequantised at attention, when every layer's head dimension
+  is divisible by 16. Same three backends, same auto-fit participation, same
+  fallback rule, and the stored rows are byte-identical across backends. It is
+  lossier than q8; the fidelity cost is per model and is measured against the
+  same file's f16 cache, never assumed.
 - Prompt evaluation is batched; `-b` controls the batch and `-v` prints the KV
   allocation before inference.
 

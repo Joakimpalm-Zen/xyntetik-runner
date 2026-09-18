@@ -52,7 +52,7 @@ typedef struct {
     float  scale;
     int    qs, os;   // q / out element stride per token column
     int    window;   // sliding-window size for this layer (0 = full)
-    int    q8;       // cache rows are q8_0 blocks rather than fp16
+    int    q8;       // cache KIND: 0 fp16 rows, 1 q8_0 blocks, 2 fp4 blocks
     int    ring;     // rows this layer owns when it recycles them (0 = flat
                      // n_ctx rows indexed by absolute position). A sliding
                      // layer reads at most `window` positions back, so it

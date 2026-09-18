@@ -375,8 +375,8 @@ static uint64_t model_identity(const model_t *m, const tokenizer *tok) {
         m->n_vocab, m->n_ctx_train, m->rope_dim, m->rope_neox, m->swa_window,
         m->ffn_act, m->v_rmsnorm, m->n_suppress,
         // context geometry and KV element type: both change what a row means
-        // and where it lives (--kv f16|q8 is a real axis, not a hint)
-        m->n_ctx, m->kv_q8,
+        // and where it lives (--kv f16|q8|fp4 is a real axis, not a hint)
+        m->n_ctx, m->kv_q8, m->kv_fp4,
     };
     h = h64(h, geo, sizeof geo);
     h = h64f(h, m->rms_eps);       h = h64f(h, m->rope_base);

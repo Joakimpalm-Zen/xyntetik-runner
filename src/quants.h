@@ -95,6 +95,13 @@ void  vec_dot_f32_multi(const float *w, const float *x, int x_stride,
                         int nb, int n, float *out);
 void  q8_quant_row(const float *x, void *dst, int n); // n % 32 == 0
 void  q8_accum_row(const void *src, float a, float *out, int n);
+// --kv fp4 cache blocks: 16 values in 9 bytes (UE4M3 scale + E2M1 nibbles)
+float   kv_ue4m3_to_f32(uint8_t x);
+uint8_t kv_ue4m3_ceil(float s);
+void  fp4_quant_row(const float *x, void *dst, int n);   // n % 16 == 0
+void  fp4_dequant_row(const void *src, float *y, int n);
+float fp4_dot_row(const void *src, const float *x, int n);
+void  fp4_accum_row(const void *src, float a, float *out, int n);
 
 // ------------------------------------------------ fused int8 dot (CPU lever 1)
 //

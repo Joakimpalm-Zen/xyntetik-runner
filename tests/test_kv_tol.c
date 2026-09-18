@@ -121,6 +121,7 @@ static int g_reserve_vram_pct = 0;
 typedef struct {
     const char *name;
     bool        kv_q8;
+    bool        kv_fp4;
     int         gpu_mode;
     int         n_batch;     // prompt batch size; varying it only reassociates
     bool        available;   // config actually ran as requested
@@ -136,6 +137,7 @@ static model_params params_for(const config *c, int n_ctx) {
     p.n_ctx     = n_ctx;
     p.n_batch   = c->n_batch;
     p.kv_q8     = c->kv_q8;
+    p.kv_fp4    = c->kv_fp4;
     p.reserve_vram_pct = g_reserve_vram_pct;
     return p;
 }
@@ -179,6 +181,7 @@ static bool run_config(config *c, const char *path, const int32_t *toks,
     // f16 when head_dim is not block-aligned or the backend lacks kernels,
     // and asking for a GPU on a CPU-only build is not an error either.
     bool got_q8  = m.kv_q8;
+    bool got_fp4 = m.kv_fp4;
     bool got_gpu = m.gpu != NULL && m.gpu_layers > 0;
 
     // Cross-platform safety invariant, checked on every platform including
@@ -190,11 +193,15 @@ static bool run_config(config *c, const char *path, const int32_t *toks,
     // gpu_kv_q8_ok()==false a guarantee rather than a stub nobody checks.
     ck(!(got_q8 && got_gpu && !gpu_kv_q8_ok()),
        "a backend without q8 attention kernels never runs a q8 KV cache");
+    ck(!(got_fp4 && got_gpu && !gpu_kv_fp4_ok()),
+       "a backend without fp4 attention kernels never runs an fp4 KV cache");
 
-    if (c->kv_q8 != got_q8 || (c->gpu_mode == GPU_AUTO) != got_gpu) {
-        fprintf(stderr, "  %-12s skipped (asked kv_q8=%d gpu=%d, got "
-                "kv_q8=%d gpu=%d/%d layers)\n", c->name, (int)c->kv_q8,
-                c->gpu_mode == GPU_AUTO, (int)got_q8, m.gpu_layers, m.n_layer);
+    if (c->kv_q8 != got_q8 || c->kv_fp4 != got_fp4 ||
+        (c->gpu_mode == GPU_AUTO) != got_gpu) {
+        fprintf(stderr, "  %-12s skipped (asked kv_q8=%d kv_fp4=%d gpu=%d, got "
+                "kv_q8=%d kv_fp4=%d gpu=%d/%d layers)\n", c->name, (int)c->kv_q8,
+                (int)c->kv_fp4, c->gpu_mode == GPU_AUTO, (int)got_q8, (int)got_fp4,
+                m.gpu_layers, m.n_layer);
         model_free(&m);
         return false;
     }
@@ -322,16 +329,20 @@ int main(int argc, char **argv) {
     printf("kv-tol: %s | %d tokens, %d teacher-forced positions\n",
            path, n_tok, STEPS);
 
-    enum { N_CFG = 5 };
+    enum { N_CFG = 8 };
     config cfgs[N_CFG] = {
-        { "f16-cpu",   false, GPU_OFF,  N_BATCH, false, NULL, NULL },
-        { "f16-gpu",   false, GPU_AUTO, N_BATCH, false, NULL, NULL },
-        { "q8-cpu",    true,  GPU_OFF,  N_BATCH, false, NULL, NULL },
-        { "q8-gpu",    true,  GPU_AUTO, N_BATCH, false, NULL, NULL },
+        { "f16-cpu",   false, false, GPU_OFF,  N_BATCH, false, NULL, NULL },
+        { "f16-gpu",   false, false, GPU_AUTO, N_BATCH, false, NULL, NULL },
+        { "q8-cpu",    true,  false, GPU_OFF,  N_BATCH, false, NULL, NULL },
+        { "q8-gpu",    true,  false, GPU_AUTO, N_BATCH, false, NULL, NULL },
         // the negative control: same code, same device, same cache format,
         // only the prompt batching differs, so every difference it shows is
         // pure reassociation noise amplified by the q8 quantizer
-        { "q8-cpu-b1", true,  GPU_OFF,  1,       false, NULL, NULL },
+        { "q8-cpu-b1", true,  false, GPU_OFF,  1,       false, NULL, NULL },
+        // the same three arms for the fp4 cache (2026-09-18)
+        { "fp4-cpu",   false, true,  GPU_OFF,  N_BATCH, false, NULL, NULL },
+        { "fp4-gpu",   false, true,  GPU_AUTO, N_BATCH, false, NULL, NULL },
+        { "fp4-cpu-b1", false, true, GPU_OFF,  1,       false, NULL, NULL },
     };
 
     // n_vocab is a property of the file; read it from the first load
@@ -352,7 +363,8 @@ int main(int argc, char **argv) {
         run_config(&cfgs[i], path, toks, n_tok, n_vocab);
 
     config *f16c = &cfgs[0], *f16g = &cfgs[1], *q8c = &cfgs[2],
-           *q8g  = &cfgs[3], *q8b1 = &cfgs[4];
+           *q8g  = &cfgs[3], *q8b1 = &cfgs[4],
+           *fp4c = &cfgs[5], *fp4g = &cfgs[6], *fp4b1 = &cfgs[7];
 
     // ---------------------------------------------------------- invariant
     // fp16 GPU is token-identical to fp16 CPU. Strict, and staying strict:
@@ -435,6 +447,52 @@ int main(int argc, char **argv) {
            "every q8 GPU/CPU token disagreement is a near-tie, not a decision");
     } else {
         printf("  q8 tolerance gate  : skipped (q8 or GPU unavailable)\n");
+    }
+
+    // ------------------------------------------------------------ fp4 arms
+    // fp4 is a 4-bit cache and may legitimately move a decision, so its
+    // f16 disagreement is REPORTED as the format's cost and not gated (the
+    // fidelity protocol, kld-compare-raw against the f16 cache, is where
+    // the format answers for itself). What IS gated is implementation
+    // parity: the GPU fp4 path may differ from the CPU fp4 path by no more
+    // than the CPU differs from itself under legal reassociation, since the
+    // stored rows are byte-identical across backends by construction.
+    if (fp4c->available && f16c->available) {
+        double quant_err = mean_abs_diff(fp4c, f16c, n_vocab);
+        int n_diff;
+        double worst;
+        top1_stats(fp4c, f16c, n_vocab, &n_diff, &worst);
+        printf("  fp4-cpu   vs f16-cpu : mean|dlogit| %.6f, top1 diff %d/%d, "
+               "worst margin %.4f (the format's cost; reported, not gated)\n",
+               quant_err, n_diff, STEPS, worst);
+    } else {
+        printf("  fp4 cpu report     : skipped (fp4 unavailable)\n");
+    }
+    if (fp4c->available && fp4g->available && fp4b1->available) {
+        double reassoc  = mean_abs_diff(fp4b1, fp4c, n_vocab);
+        double impl_err = mean_abs_diff(fp4g, fp4c, n_vocab);
+        double ratio = reassoc > 0 ? impl_err / reassoc : DBL_MAX;
+        int n_diff;
+        double worst;
+        top1_stats(fp4c, fp4g, n_vocab, &n_diff, &worst);
+        double frac = (double)n_diff / STEPS;
+        printf("  fp4-cpu-b1 vs fp4-cpu: mean|dlogit| %.6f   (reassociation "
+               "floor, CPU only)\n", reassoc);
+        printf("  fp4-gpu   vs fp4-cpu : mean|dlogit| %.6f   %.2fx the floor "
+               "(limit %.1fx)\n", impl_err, ratio, REASSOC_SLACK);
+        printf("  fp4-gpu   vs fp4-cpu : top1 diff %d/%d (%.1f%%, limit %.0f%%)"
+               ", worst margin %.4f of range (limit %.3f)\n",
+               n_diff, STEPS, 100.0 * frac, 100.0 * DISAGREE_MAX,
+               worst, TIE_FRAC);
+        ck(ratio <= REASSOC_SLACK,
+           "fp4 GPU differs from fp4 CPU no more than fp4 CPU differs from "
+           "itself under legal reassociation");
+        ck(frac <= DISAGREE_MAX,
+           "fp4 GPU and fp4 CPU pick the same token at nearly every position");
+        ck(worst <= TIE_FRAC,
+           "every fp4 GPU/CPU token disagreement is a near-tie, not a decision");
+    } else {
+        printf("  fp4 tolerance gate : skipped (fp4 or GPU unavailable)\n");
     }
 
     for (int i = 0; i < N_CFG; i++) { free(cfgs[i].logits); free(cfgs[i].top1); }

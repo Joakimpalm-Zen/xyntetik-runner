@@ -859,7 +859,7 @@ static id<MTLComputePipelineState> metal_front_pipe(gpu_t *g, model_t *m,
                                                     int l) {
     if (l >= m->n_layer || metal_front_off()) return nil;
     layer_t *ly = &m->layers[l];
-    if (m->kv_q8 || model_kv_owner(m, l) != l || !model_layer_ropes(m, l) ||
+    if (m->kv_q8 || m->kv_fp4 || model_kv_owner(m, l) != l || !model_layer_ropes(m, l) ||
         m->v_rmsnorm || (m->attn_out_gate && ly->wq_gate) ||
         !ly->wq || !ly->wk || !ly->wv ||
         (m->n_expert <= 0 && !metal_front_all()) || m->n_embd > 7936)
@@ -1036,6 +1036,9 @@ bool gpu_eseries_ok(void) {
 
 bool gpu_kv_q8_ok(void) {
     return true;
+}
+bool gpu_kv_fp4_ok(void) {
+    return true;    // k_store_kv / k_attn* read fp4 blocks (kv_kind 2)
 }
 
 // Largest K such that the prologue plus layers [0,K) fit `budget` bytes, and
@@ -3115,8 +3118,8 @@ static float *gpu_forward_native_batch(model_t *m, const int32_t *tokens,
         }
         {
             size_t row_b = model_kv_row_bytes(m, l);
-            int q8 = m->kv_q8;
-            int kv_units = q8 ? kv_dim_l / 32 : kv_dim_l;
+            int q8 = m->kv_fp4 ? 2 : m->kv_q8 ? 1 : 0;   // the cache KIND
+            int kv_units = q8 == 2 ? kv_dim_l / 16 : q8 ? kv_dim_l / 32 : kv_dim_l;
 
             // rope/store/attention each take the batch in one dispatch: the
             // kernels derive their column's position from pos + col, so every
@@ -3525,6 +3528,7 @@ static bool metal_batch_eligible(model_t **seqs, int n, gpu_t **lead_out) {
         if (model_kv_ring_active(m)) return false;
         if (m->n_vocab != m0->n_vocab || m->n_embd != m0->n_embd ||
             m->n_ctx != m0->n_ctx || m->kv_q8 != m0->kv_q8 ||
+            m->kv_fp4 != m0->kv_fp4 ||
             m->n_layer != m0->n_layer) return false;
         // every projection this walk will hand to enc_mv_cols needs the
         // identity matvec kernel for its type
@@ -3637,8 +3641,8 @@ bool gpu_batch_decode(gpu_batch *b, const int *idx, const int32_t *tok,
         int kv_dim = m0->n_head_kv * m0->head_dim;
         int window = model_is_swa(m0, l) ? m0->swa_window : 0;
         size_t row_b = model_kv_row_bytes(m0, l);
-        int q8 = m0->kv_q8;
-        int kv_units = q8 ? kv_dim_l / 32 : kv_dim_l;
+        int q8 = m0->kv_fp4 ? 2 : m0->kv_q8 ? 1 : 0;   // the cache KIND
+        int kv_units = q8 == 2 ? kv_dim_l / 16 : q8 ? kv_dim_l / 32 : kv_dim_l;
         bool owns_kv = model_kv_owner(m0, l) == l;
 
         enc_rmsnorm_n(g, e, g->x, 0, g->xb, 0, g->attn_norm[l],

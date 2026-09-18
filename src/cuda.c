@@ -831,6 +831,9 @@ static CUdeviceptr f32_dbuf_ones(const float *src, size_t n, const char *what,
 bool gpu_kv_q8_ok(void) {
     return true;    // k_store_kv / k_attn / k_attn_dec all read q8_0 blocks
 }
+bool gpu_kv_fp4_ok(void) {
+    return true;    // k_store_kv / k_attn / k_attn_dec read fp4 blocks (kind 2)
+}
 
 bool gpu_moe_ok(void) {
     return true;    // expert banks upload and route on the device
@@ -873,7 +876,7 @@ static bool shared_config_matches(const gpu_weights *w, const model_t *m) {
         w->head_dim != m->head_dim || w->n_ff != m->n_ff ||
         w->n_vocab != m->n_vocab || w->n_ctx != m->n_ctx ||
         w->rope_dim != m->rope_dim || w->rope_dim_local != m->rope_dim_local ||
-        w->kv_q8 != (int)m->kv_q8 || w->v_rmsnorm != (int)m->v_rmsnorm ||
+        w->kv_q8 != (m->kv_fp4 ? 2 : (int)m->kv_q8) || w->v_rmsnorm != (int)m->v_rmsnorm ||
         w->rope_base != m->rope_base || w->rope_mscale != m->rope_mscale ||
         w->cpu_moe != m->cpu_moe ||
         w->cpu_moe_layers != m->cpu_moe_layers)
@@ -1141,7 +1144,7 @@ static gpu_weights *shared_build(model_t *m, size_t act_bytes, int max_hd,
     w->cpu_moe = m->cpu_moe;
     w->cpu_moe_layers = m->cpu_moe_layers;
     w->rope_dim = m->rope_dim; w->rope_dim_local = m->rope_dim_local;
-    w->kv_q8 = (int)m->kv_q8; w->v_rmsnorm = (int)m->v_rmsnorm;
+    w->kv_q8 = m->kv_fp4 ? 2 : (int)m->kv_q8; w->v_rmsnorm = (int)m->v_rmsnorm;
     w->rope_base = m->rope_base; w->rope_mscale = m->rope_mscale;
     {   // own copies of the rope tables so a later match can compare against
         // them without reaching into a model_t that may since have been freed
@@ -3831,10 +3834,10 @@ static bool fwd_tile(gpu_t *g, model_t *m, const int32_t *tokens, int tn,
             // cache rows for consecutive positions are contiguous, so the
             // kernel indexes both source column and destination row by grid.y
             uint64_t l_off = model_kv_byte_off(m, l);
-            int q8 = m->kv_q8;
+            int q8 = m->kv_fp4 ? 2 : m->kv_q8 ? 1 : 0;   // the cache KIND
             // one thread per stored unit: per value for fp16, per 32-value
-            // q8_0 block (the whole block shares one amax/scale)
-            int units = q8 ? kv_dim / 32 : kv_dim;
+            // q8_0 block or 16-value fp4 block (the block shares one scale)
+            int units = q8 == 2 ? kv_dim / 16 : q8 ? kv_dim / 32 : kv_dim;
             int kring = model_kv_is_ring(m, l) ? m->kv_ring : 0;
             void *ps[] = { &g->kt, &g->vt, &g->kc, &g->vc, &kv_dim, &l_off,
                            &g->pos_dev, &q8, &kring };
@@ -3851,7 +3854,7 @@ static bool fwd_tile(gpu_t *g, model_t *m, const int32_t *tokens, int tn,
             attn_args aa = { hd, m->n_head, n_kv, m->n_ctx,
                              (uint64_t)model_kv_byte_off(m, l),
                              model_attn_scale(m, l), q_dim, xdim,
-                             local ? m->swa_window : 0, m->kv_q8,
+                             local ? m->swa_window : 0, m->kv_fp4 ? 2 : m->kv_q8 ? 1 : 0,
                              model_kv_is_ring(m, l) ? m->kv_ring : 0 };
             // Decode (tn==1, one query, long KV): flash-decoding — split the KV
             // range across ATTN_SPLITS blocks/head (higher occupancy, coalesced)
@@ -4647,8 +4650,8 @@ static bool fwd_batch(gpu_batch *B, model_t *m, int tn) {
 
         {   // each column stores into its own sequence's cache at its own row
             uint64_t l_off = model_kv_byte_off(m, l);
-            int q8 = m->kv_q8;
-            int units = q8 ? kv_dim / 32 : kv_dim;
+            int q8 = m->kv_fp4 ? 2 : m->kv_q8 ? 1 : 0;   // the cache KIND
+            int units = q8 == 2 ? kv_dim / 16 : q8 ? kv_dim / 32 : kv_dim;
             int kring = model_kv_is_ring(m, l) ? m->kv_ring : 0;
             void *ps[] = { &g->kt, &g->vt, &B->kcp_d, &B->vcp_d, &kv_dim,
                            &l_off, &B->pos_d, &q8, &kring };
@@ -4663,7 +4666,7 @@ static bool fwd_batch(gpu_batch *B, model_t *m, int tn) {
             attn_args aa = { hd, m->n_head, n_kv, m->n_ctx,
                              (uint64_t)model_kv_byte_off(m, l),
                              model_attn_scale(m, l), q_dim, xdim,
-                             local ? m->swa_window : 0, m->kv_q8,
+                             local ? m->swa_window : 0, m->kv_fp4 ? 2 : m->kv_q8 ? 1 : 0,
                              model_kv_is_ring(m, l) ? m->kv_ring : 0 };
             void *pd[] = { &g->q, &B->kcp_d, &B->vcp_d, &g->att, &g->attn_part,
                            &aa, &B->pos_d };
