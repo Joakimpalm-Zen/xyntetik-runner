@@ -4026,10 +4026,12 @@ static bool model_alloc_runtime(model_t *m, const model_params *p) {
                 : m->kv_q8 ? "q8_0" : "fp16");
         int n_swa = model_kv_swa_layers(m);
         size_t reach = model_kv_reachable_bytes(m);
-        if (n_swa > 0 && reach < kv_bytes)
+        // reach and the allocation both count K and V (per-side row bytes
+        // differ under --kv k8v4, so neither is "one side times two")
+        if (n_swa > 0 && reach < kv_bytes + k_bytes)
             fprintf(stderr, "%-24s %.1f MB (%d of %d layers slide a %d-token "
                     "window; the rest is written and never read back)\n",
-                    "kv reachable", 2.0 * reach / 1e6, n_swa, m->n_layer,
+                    "kv reachable", reach / 1e6, n_swa, m->n_layer,
                     m->swa_window);
         if (model_kv_ring_active(m))
             fprintf(stderr, "%-24s %d rows on %d sliding layers "

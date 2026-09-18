@@ -12,7 +12,13 @@ names that were true when they were written.
   followed the fp4 cache (K-q8 with V-fp4 on Llama-3.2-1B IQ3_S: mean KLD
   0.0265, margin-qualified top-1 99.3%, inside the house bar at about 41%
   of the f16 bytes, against fp4's 0.18 and K-fp4/V-q8's 0.16) said the 4-bit
-  cost sits in K, so the split ships as a first-class layout. The K and V
+  cost sits in K, so the split ships as a first-class layout. The shipped
+  build repeats the row (Metal, M1, 300 teacher-forced positions, reference
+  = the same file with an f16 cache): mean KLD 0.0266, raw top-1 93.0%,
+  margin-qualified top-1 99.3%, top-8 overlap 0.92, against q8's 0.0035 /
+  98.0% / 100% / 0.977 and fp4's 0.18 / 74.3% / 88.7% / 0.79; on the
+  tolerance gate the k8v4 GPU arm sits 1.08x the CPU reassociation floor,
+  1 of 64 top-1 differences, worst margin 0.0005 of range. The K and V
   caches now have separate row geometry through the whole engine: the
   ambiguous per-cache helpers (`model_kv_row_bytes`, `model_kv_byte_off`,
   `model_kv_boundary_bytes`, `model_kv_bytes_of`) are gone and every caller
