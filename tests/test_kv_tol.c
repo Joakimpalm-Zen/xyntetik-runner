@@ -79,6 +79,13 @@ enum { STEPS = 64, MAX_TOK = 192, N_BATCH = 64 };
 // places), so demanding 1.0x would be wrong; but a real layout or scale bug
 // lands orders of magnitude out, not at 3x.
 #define REASSOC_SLACK  3.0
+// FLOOR_EPS: the reassociation floor is measured, and on a model whose head
+// is a single cache block (the 2-layer fixture: head_dim 16, one fp4 block)
+// the CPU's batch-1 and batch-N runs are numerically IDENTICAL, so the floor
+// is 0 and any rounding-level GPU difference divides to infinity. A mean
+// |dlogit| below this is the two runs agreeing to fp32 rounding, and the
+// ratio is taken against it rather than against zero.
+#define FLOOR_EPS      1e-5
 // TIE_FRAC: a top-1 disagreement is only excusable if the two candidates were
 // within this fraction of the logit range of each other — i.e. a genuine
 // near-tie. A disagreement with a decisive margin is a bug no matter what the
@@ -420,7 +427,7 @@ int main(int argc, char **argv) {
         double quant_err  = mean_abs_diff(q8c, f16c, n_vocab);  // context only
         double reassoc    = mean_abs_diff(q8b1, q8c, n_vocab);  // the floor
         double impl_err   = mean_abs_diff(q8g, q8c, n_vocab);   // the measure
-        double ratio = reassoc > 0 ? impl_err / reassoc : DBL_MAX;
+        double ratio = impl_err / (reassoc > FLOOR_EPS ? reassoc : FLOOR_EPS);
 
         int n_diff;
         double worst;
@@ -471,7 +478,7 @@ int main(int argc, char **argv) {
     if (fp4c->available && fp4g->available && fp4b1->available) {
         double reassoc  = mean_abs_diff(fp4b1, fp4c, n_vocab);
         double impl_err = mean_abs_diff(fp4g, fp4c, n_vocab);
-        double ratio = reassoc > 0 ? impl_err / reassoc : DBL_MAX;
+        double ratio = impl_err / (reassoc > FLOOR_EPS ? reassoc : FLOOR_EPS);
         int n_diff;
         double worst;
         top1_stats(fp4c, fp4g, n_vocab, &n_diff, &worst);
