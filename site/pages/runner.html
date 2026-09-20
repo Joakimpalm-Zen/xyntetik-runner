@@ -9,7 +9,7 @@ nav: runner
     <div class="page-mark">{{mark:runner:64}}</div>
     <p class="eyebrow">Runner</p>
     <h1>One binary that serves, verifies, scores, adapts and trains GGUF models.</h1>
-    <p class="lede">Xyntetik Runner is written from scratch in plain C for CPU (x86 AVX2/FMA, ARM NEON), CUDA and Metal. No Python, no pip, no third-party runtime, no ggml. It speaks the OpenAI Chat Completions, Responses and Anthropic Messages APIs on a loopback port, reads the GGUF files the ecosystem already produces, and writes adapters the ecosystem can already load.</p>
+    <p class="lede">Xyntetik Runner is written from scratch in plain C for CPU (x86 AVX2/FMA, ARM NEON), CUDA and Metal. The core engine needs no Python, pip, third-party runtime or ggml; optional tools such as Shadow use the Python client. It speaks the OpenAI Chat Completions, Responses and Anthropic Messages APIs on a loopback port, reads the GGUF files the ecosystem already produces, and writes adapters the ecosystem can already load.</p>
     <nav class="toc" aria-label="On this page">
       <a href="#sixty-seconds">Sixty seconds</a>
       <a href="#contracts">The contracts</a>
@@ -29,7 +29,7 @@ nav: runner
       <p class="eyebrow">Try it</p>
       <h2>Sixty seconds to a served model</h2>
       <p>Download the binary and its checksum file, verify, fetch a model, serve. The checksum line is not decoration: this project's whole culture is receipts, and it starts at the download.</p>
-      <p class="small muted">The model below, granite-4.1-3b at Q8_0, is the smallest that passes the project's fidelity gate against its own BF16 parent. Alternatives and the reasoning are in the <a href="{{repo}}/blob/main/README.md#build-from-source">README quick start</a>.</p>
+      <p class="small muted">The model below, granite-4.1-3b at Q8_0, is the smallest that passes the project's fidelity gate against its own BF16 parent. Alternatives and the reasoning are in the <a href="{{repo}}/blob/main/README.md#choose-a-model">README model choices</a>.</p>
     </div>
     <div>
 <pre><code>curl -LO https://github.com/Joakimpalm-Zen/xyntetik-runner/releases/latest/download/runner-macos-arm64

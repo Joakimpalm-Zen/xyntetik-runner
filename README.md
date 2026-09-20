@@ -1,277 +1,139 @@
 # Xyntetik Runner
 
-Xyntetik Runner is a single-binary GGUF inference and LoRA training engine
-written from scratch in plain C: one binary **serves, verifies, scores,
-adapts and trains** GGUF models on CPU (x86 AVX2/FMA, ARM NEON), CUDA and
-Metal. It trains LoRA adapters directly through the same quantized GGUF
-weights it serves, with no separate FP16 training copy, and two runs with
-the same data, seed and config write a byte-identical adapter file. Every
-claim is tied to a measurement you can re-run, and every recorded run is a
-signed receipt that replays. No Python, no pip, no third-party runtime, no
-ggml. One caveat travels with the training claim: a quantized merge rounds
-the delta, and merging an adapter into a 4-bit base erases the fine-tune
-(8-bit and F16 keep it), so serve adapters with `--lora` or merge into
-Q8_0 or better.
+Xyntetik Runner runs local AI models on hardware you own. Chat, serve models
+to applications, generate structured tool calls, and train LoRA adapters
+through quantized GGUF weights—all from one native binary. GGUF is the model
+file format; a LoRA adapter is a small set of learned changes to a base model.
 
-Three questions this engine answers, one page each:
-[train a LoRA on the quantized GGUF you serve](docs/train-lora-on-quantized-gguf.md),
-[reproducible LoRA training with receipts](docs/reproducible-lora-training-receipts.md),
-[tool calls that survive the token limit](docs/truncation-safe-tool-calling.md).
+The engine is written from scratch in plain C for CPU (x86 AVX2/FMA,
+ARM NEON), CUDA and Metal. It needs no Python, pip, third-party runtime or
+ggml. Optional tools such as [Shadow](#shadow-mode-what-could-your-local-model-have-done)
+use the [Python client](python/README.md); model training has its own
+[supported architectures and backend limits](#adaptation).
 
-![Two independent training runs producing byte-identical adapters](docs/assets/deterministic-training.gif)
+**Start here:** [Why Runner](#why-runner) · [Quick start](#quick-start) ·
+[Choose a workflow](#choose-your-workflow)
 
-## Sixty seconds to a served model
+**Reference:** [Models](#models-and-conversion) · [Support matrix](#support-matrix) ·
+[Builds](#build-and-platforms) · [Hardware](#runtime-and-hardware) ·
+[CLI](#command-line-reference) · [APIs](#serving-and-apis) ·
+[Evidence and tradeoffs](#evidence-and-tradeoffs)
+
+## Why Runner?
+
+| What you need | How Runner helps | Learn more |
+|---|---|---|
+| A local model alongside your everyday work | Inspect memory needs, share GPU capacity, and unload idle models. | [Hardware and resource control](#runtime-and-hardware) |
+| Reliable structured output for applications and agents | Close a started JSON/tool-call document to a schema-valid ending when the token budget runs out, retaining the truncation signal. Valid arguments still need a semantic check. | [Tool-call recovery](#truncation) |
+| Runs you can reproduce and audit | Record replayable transcripts and sign receipts. Determinism has explicit bounds for builds, inputs and execution paths. | [Record and verify](#record-and-verify-a-run) |
+| Adaptation using the model weights you serve | Train reproducible LoRA adapters directly through frozen quantized GGUF weights, with no separate FP16 training copy. | [Training and its limits](#adaptation) |
+| Integration with existing tools | Serve Chat Completions, Responses and Anthropic Messages APIs; exchange GGUF models and LoRA adapters with the ecosystem. | [API support](#serving-and-apis) |
+
+Runner prioritizes reproducibility, explicit correctness checks and workstation
+resource control. Performance and model coverage vary by workload: read the
+[measured tradeoffs](#evidence-and-tradeoffs) when choosing an engine.
+
+Xyntetik Runner is independent and bootstrapped: **the engine is free
+forever under Apache 2.0**—consulting and enterprise work fund the hardware.
+Built in Sweden, inference and training run locally on your hardware; your
+model inputs stay on your machine.
+
+<a id="sixty-seconds-to-a-served-model"></a>
+## Quick start
+
+Start with a prebuilt binary and the 3.6 GB Granite model below. Allow time
+for the first model download. This is the project's measured starting point
+for an 8 GB machine. See [model choices](#choose-a-model) for a smaller
+smoke-test download or a larger model, with their fidelity results and caveats.
+
+### 1. Download and verify Runner
+
+Use the commands for your platform, or [build from source](#build-from-source).
+The checksum verifies the executable before you run it.
+
+**macOS (Apple Silicon)**
 
 ```sh
 curl -LO https://github.com/Joakimpalm-Zen/xyntetik-runner/releases/latest/download/runner-macos-arm64
 curl -LO https://github.com/Joakimpalm-Zen/xyntetik-runner/releases/latest/download/SHA256SUMS
 shasum -a 256 --check --ignore-missing SHA256SUMS
 chmod +x runner-macos-arm64 && mv runner-macos-arm64 runner
-./runner -hf Joakimpalm-Zen/gemma-4-E2B-it-Q4_0-GGUF --serve
 ```
 
-That fetches this account's 2.63 GB try-it artifact, verifies it against the
-Hub's SHA-256 record and serves it. Know what it is: it fails the fidelity
-bar and its card says so. The account's lead artifact passes the bar, 17.99
-GB, `./runner -hf Joakimpalm-Zen/Qwen3-30B-A3B-selective-attnQ8_0-expQ4_0-GGUF --serve`;
-the smallest first-party file that passes it is
-`./runner -hf ibm-granite/granite-4.1-3b-GGUF:Q8_0 --serve`.
+<details>
+<summary>Linux (x86_64)</summary>
 
 ```sh
-curl localhost:8080/v1/chat/completions \
-  -d '{"messages":[{"role":"user","content":"Say hello in one sentence."}]}'
+curl -LO https://github.com/Joakimpalm-Zen/xyntetik-runner/releases/latest/download/runner-linux-x86_64
+curl -LO https://github.com/Joakimpalm-Zen/xyntetik-runner/releases/latest/download/SHA256SUMS
+sha256sum -c --ignore-missing SHA256SUMS
+chmod +x runner-linux-x86_64 && mv runner-linux-x86_64 runner
 ```
 
-Linux: the asset is `runner-linux-x86_64` and the check command is
-`sha256sum -c --ignore-missing`. Windows: `runner-windows-x86_64.exe`.
-The checksum line is not decoration - this project's whole culture is
-receipts, and it starts at the download. The model above is the smallest
-that passes this project's fidelity gate against its own BF16 parent;
-alternatives and the reasoning are in the [quick start](#build-from-source)
-below.
+</details>
 
-macOS note: the binaries are not yet notarized. A `curl` download runs as
-shown; a *browser* download gets quarantined by Gatekeeper - clear it with
-`xattr -d com.apple.quarantine runner` or right-click → Open once.
+<details>
+<summary>Windows (x86_64, PowerShell)</summary>
 
-**Testing Runner?** The project is pre-1.0 and hardware coverage is still
-limited - that is an invitation, not an apology. If you have an
-NVIDIA/Apple setup, an unusual GGUF, a coding agent, or a model family
-not in the [support matrix](#support-matrix), the result is genuinely
-wanted, success or failure alike:
-[open an issue](../../issues) with `runner --version`, `runner --caps`,
-the model's exact filename and the load log. Independent reproductions
-of the determinism claims get credited in the docs, as the first one
-already is.
-
-**Contents:** [try it](#sixty-seconds-to-a-served-model) ·
-[why Runner](#why-this-and-not-llamacpp) ·
-[what it adds](#what-runner-adds) · [training](#adaptation) ·
-[models](#models-and-conversion) · [APIs](#serving-and-apis) ·
-[support matrix](#support-matrix) ·
-[CLI reference](#command-line-reference)
-
-Xyntetik Runner is independent and bootstrapped: **the engine is free
-forever under Apache 2.0** - consulting and enterprise work fund the
-hardware. Built in Sweden, runs on your hardware; your data never leaves
-the building.
-
-## Why this and not llama.cpp?
-
-Use llama.cpp - it is the ecosystem, and Runner deliberately rides its
-formats rather than competing with them: GGUF in, llama.cpp-convention
-adapter files in *and* out. An adapter Runner trains scores identically
-(1.000 on its held-out eval) served by stock llama.cpp, and community F16
-adapters load straight back into Runner - both measured, not assumed.
-
-What Runner adds is not a longer feature list; it is a set of
-**contracts** the ecosystem does not make. Determinism as a hard promise:
-the same executable and inputs reproduce the same sampled tokens across
-runs and thread counts, and training reproduces the same adapter file
-sha256, gated in CI. Independent rebuilds are explicitly outside that
-byte-identity claim because compiler and ISA libm can differ; the full
-claim boundary, including everything deliberately NOT promised, is one
-page: [docs/determinism-scope.md](docs/determinism-scope.md). Scope as a
-promise: supported architectures are
-named, unknown ones are refused, and every backend claim is tied to an
-executable gate and pinned model evidence. Honesty as an artifact: the
-benchmark tables below include the rows where Runner loses, and the docs
-keep the failed experiments. If you want maximum architecture coverage and
-raw speed, use llama.cpp and we mean that sincerely. If you need to prove
-what your model said, what it learned from, or what you actually shipped -
-that is what this runtime is for.
-
-In one sentence: **Runner is slower on purpose.** It does the model's
-arithmetic without the shortcuts faster engines take (activations stay
-f32 instead of being rounded to 8 bits, attention accumulates in f32
-instead of f16), so it can prove exactly what it produced.
-
-Whether that arithmetic also makes Runner the *more accurate* engine
-depends on which question you ask, and both answers belong here. Twelve
-families were scored against their publishers' implementations in float32
-on 2026-09-07, both tiers, 2,000 corpus positions each, with the other
-engine given its stronger configuration at each tier.
-
-On how close the whole output distribution is to the reference, Runner
-wins twenty-one of twenty-two rows, at p-values that leave no room for
-luck. On how often each engine picks the reference's token where the
-reference had a clear preference, Runner is ahead or level on twenty of
-twenty-two, but only one of those leads is big enough to be a real
-difference rather than chance: Apertus 8B at four bits, 1343 tokens
-against 1321 of 1369. Both things are true. Runner reproduces the
-reference distribution measurably better, essentially everywhere, and that
-advantage moves the winning token rarely enough that it takes well over a
-thousand qualified positions to see it once.
-
-There is no four-bit deficit. Not one row has the other engine
-significantly ahead on the token measure. The one row where it is
-genuinely closer in distribution is Gemma 4 E2B at four bits, and even
-there Runner leads the token column.
-
-**What this cost us to learn is worth stating.** An earlier version of
-this section reported the same comparisons over 100 positions, where one
-token moved the number by more than a percentage point. Nearly every
-difference it showed was noise, in both directions, including one that
-appeared to put the other engine ahead on Granite 4.2 at four bits;
-measured properly Runner leads that row. **StableLM was the exception and
-it was a real defect of ours**: the architecture normalises with LayerNorm
-and Runner was applying RMSNorm, and its pre-tokenizer had no entry so a
-third of the corpus tokenized differently from the publisher's own
-tokenizer. Both are fixed and the family now reproduces the reference
-exactly. It survived because it was named as supported here with no pinned
-file and therefore no gate, so there is now a test that fails whenever an
-architecture is claimed without one. It found four more. Evidence:
-[docs/golden-pass-2026-09-07.md](docs/golden-pass-2026-09-07.md).
-
-### Designed to stay on
-
-There is a cost benchmarks rarely show: what a resident inference server
-does to the machine while it serves nothing. We measured it - four-state
-lifecycle (loaded idle, post-inference idle, after unload), granite-4.1-3b
-Q8_0 at c=4096, stock defaults, engines run sequentially, llama.cpp from
-the prebuilt b10639 release. Reproduce it with
-[`scripts/idle_coexistence.py`](scripts/idle_coexistence.py).
-
-On an 8 GB M1 (quiet machine), while loaded and idle:
-
-| while idle | runner | llama-server b10639 |
-|---|---|---|
-| wired (unevictable) memory | +8 MB | +3,819 MB |
-| CPU wakeups per second | 0.5 | 161 |
-| CPU time per idle minute | ~0.00 s | 0.2-0.3 s |
-| give the memory back | `POST /unload` (360 MB to 24 MB) | kill the process |
-
-llama-server wires the whole model into unified memory and holds it until
-the process dies, and its idle loop ticks at ~160 Hz. Runner keeps weights
-as evictable zero-copy mappings the OS can reclaim whenever another app
-needs the RAM, wakes about once every two seconds, and hands everything
-back on `/unload` (or automatically with `--ttl`). The flip side is real and we
-report it: when llama-server is allowed to hold everything, its time to
-first token is faster (0.15 s vs 3.2 s on the pressured M1), because
-residency is exactly what it buys. On a discrete-GPU box (RTX 3070) the
-footprint gap disappears - both engines hold ~4 GB of VRAM loaded - and
-the remaining differences are idle discipline (0.00 vs 0.3-0.6 CPU
-seconds per minute) and lifecycle control (`/unload` returned all 4 GB of
-VRAM; llama-server has no unload).
-
-These are different optimization goals, not a defect: llama-server is
-built to answer the next request as fast as possible, Runner is built to
-be left running all day next to your actual work. If the machine is
-dedicated to inference, that residency is pure win - use llama.cpp. If
-the machine is also your workstation, an engine that wires down half your
-RAM and ticks 160 times a second while idle is the reason you kill it
-every time - and the reason Runner does not need killing.
-
-The same lifecycle measured on a 128 GB M5 Max with gpt-oss-120b (63 GB)
-says abundance does not dissolve the difference, it scales it: loaded idle,
-llama-server (`010be968`) wires **+60.8 GB** — half the machine held by an
-idle process — against Runner's **+35 MB**, and `/unload` hands everything
-back (RSS 229 MB). The latency flip side scales identically: 0.25 s vs 10.1 s
-cold first token. Full table and method:
-[docs/idle-coexistence-120b-m5max-2026-09-01.md](docs/idle-coexistence-120b-m5max-2026-09-01.md).
-
-For release history and benchmark narratives, see [CHANGELOG.md](CHANGELOG.md)
-and [docs/benchmarks.md](docs/benchmarks.md) (last re-measured 2026-09-02 on three hosts:
-dense decode 81-93% of llama.cpp on the MIG, prefill 5-10%).
-
-<a id="build-from-source"></a>
-## Quick start: source builds and model choice
-
-Download a prebuilt binary from the [latest release](../../releases/latest)
-for Linux, macOS, or Windows, or build from source:
-
-```sh
-git clone https://github.com/Joakimpalm-Zen/xyntetik-runner
-cd xyntetik-runner
-make
-./runner --version   # -> runner 0.5.5
+```powershell
+curl.exe -LO https://github.com/Joakimpalm-Zen/xyntetik-runner/releases/latest/download/runner-windows-x86_64.exe
+curl.exe -LO https://github.com/Joakimpalm-Zen/xyntetik-runner/releases/latest/download/SHA256SUMS
+Get-FileHash .\runner-windows-x86_64.exe -Algorithm SHA256
+Select-String -Path .\SHA256SUMS -Pattern 'runner-windows-x86_64.exe$'
+# Continue only if the two SHA-256 values match.
+Rename-Item .\runner-windows-x86_64.exe runner.exe
 ```
 
-CUDA builds and releases need only an NVIDIA driver at runtime. The CUDA
-toolkit is needed only by developers regenerating the embedded PTX.
+Use `.\runner.exe` instead of `./runner` in the examples below. Use
+`curl.exe` for HTTP requests in Windows PowerShell.
 
-> **GPU driver requirement - raised.** GPU execution now requires an NVIDIA
-> driver with **CUDA 13.0 support or newer** (the R580 driver series). The
-> embedded PTX is generated by the CUDA 13.0 toolchain (PTX ISA 9.0) to add
-> the BF16 and Q2_K device kernels; older drivers - the previous floor was
-> the CUDA ~11.8 era - will fail to JIT it, and the runner then reports the
-> failure and **falls back to CPU** rather than computing wrong. CPU-only
-> execution is unaffected. Check your driver's CUDA level with `nvidia-smi`
-> (top-right "CUDA Version").
+</details>
 
-Release archives name the binary for their platform - `runner-macos-arm64`,
-`runner-linux-x86_64`, `runner-windows-x86_64.exe` - so either rename it to
-`runner` or substitute that name in the commands below. A source build produces
-`runner` directly.
+macOS binaries are not yet notarized. A `curl` download runs as shown; a
+browser download may be quarantined by Gatekeeper. After checksum verification,
+clear it with `xattr -d com.apple.quarantine runner` or right-click → Open once.
+For NVIDIA GPU execution, the driver needs CUDA 13.0 support or newer
+(R580 series); see [build and platform requirements](#build-and-platforms).
 
-If you have no GGUF handy, start from this account's own artifacts, each
-published with its measured status ([the ledger](#published-artifacts)):
-
-```sh
-# the lead artifact: Qwen3-30B-A3B, attention Q8_0 / experts Q4_0, 17.99 GB,
-# passes the fidelity bar where the official uniform Q4_K_M fails it
-./runner -hf Joakimpalm-Zen/Qwen3-30B-A3B-selective-attnQ8_0-expQ4_0-GGUF --serve
-# the fastest smoke test on a small machine, 2.63 GB: against its own BF16
-# parent it agrees on 77.75% of tokens (mean KLD 0.286), a try-the-runner
-# artifact, not a faithful gemma-4-E2B; its card carries the full numbers
-./runner -hf Joakimpalm-Zen/gemma-4-E2B-it-Q4_0-GGUF --serve
-```
-
-The measured recommendation at 8 GB of RAM is an 8-bit small model, not a
-4-bit larger one: granite-4.1-3b Q8_0 (3.6 GB, first-party IBM file) is the
-smallest model that passes this project's fidelity gate against its own
-BF16 parent (100% margin-qualified top-1 / 0.0024 mean KLD, 2026-08-14;
-every 4- and 5-bit quant measured to date fails on distributional
-distance). Its repository is a quant ladder, so the tag picks the file:
+### 2. Start a model
 
 ```sh
 ./runner -hf ibm-granite/granite-4.1-3b-GGUF:Q8_0 --serve
 ```
 
-`-m` takes a file you fetched yourself; the same file, by hand:
+Runner downloads the GGUF, verifies it against the Hub's SHA-256 record,
+caches it, and serves it on `http://127.0.0.1:8080`. Keep this terminal open.
+The server is local-only, with no TLS or authentication; see
+[serving and APIs](#serving-and-apis) for the access boundary.
+
+### 3. Send your first request
+
+In a second terminal:
 
 ```sh
-curl -L -o model.gguf \
-  https://huggingface.co/ibm-granite/granite-4.1-3b-GGUF/resolve/main/granite-4.1-3b-Q8_0.gguf
+curl http://127.0.0.1:8080/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{"messages":[{"role":"user","content":"Say hello in one sentence."}]}'
 ```
 
-Run a GGUF. `-hf owner/repo[:TAG]` fetches it from the Hugging Face Hub
-instead of `-m` (the tag picks the quant when the repository has several;
-the file is cached under `~/.cache/xyntetik-runner/hf` and verified against
-the Hub's SHA-256 record before it loads; `HF_TOKEN` for gated repos):
+A successful response is JSON with the reply in `choices[0].message.content`.
+The exact wording depends on generation settings. Stop the server with Ctrl-C
+in its terminal. On macOS and Windows the [desktop tray](#desktop-tray) can
+remain running afterwards.
 
-```sh
-./runner -hf Joakimpalm-Zen/gemma-4-E2B-it-Q4_0-GGUF -i
-./runner -hf ibm-granite/granite-4.1-3b-GGUF:Q8_0 -i
-./runner -m model.gguf -i
-./runner -m model.gguf -p "Explain prefix caching" --temp 0
-./runner -m model.gguf --serve --parallel 2
-./runner -m model.gguf -p "Return a status object" --json
-./runner -m model.gguf -f big-document.txt -c 8192 -n 200
-./runner -m big.gguf --draft small.gguf -p "Continue this code"
-./runner -m qwen3.5-4b-mtp.gguf --mtp --gpu off -p "Continue this code"
-./runner -m model.gguf --draft-lookup -f transcript.txt -p "Summarize the text above"
+<details>
+<summary>Send the same request in Windows PowerShell</summary>
+
+```powershell
+$body = @{
+  messages = @(@{ role = 'user'; content = 'Say hello in one sentence.' })
+} | ConvertTo-Json -Depth 4
+$response = Invoke-RestMethod -Uri http://127.0.0.1:8080/v1/chat/completions `
+  -Method Post -ContentType 'application/json' -Body $body
+$response.choices[0].message.content
 ```
+
+</details>
 
 > **Pre-1.0 (`0.5.5`).** APIs, model coverage and certification envelopes may
 > change between releases. CI builds and smoke-tests Linux, macOS, and
@@ -280,14 +142,53 @@ the Hub's SHA-256 record before it loads; `HF_TOKEN` for gated repos):
 > log in issue reports. Read [SECURITY.md](SECURITY.md) for the threat model and
 > [CONTRIBUTING.md](CONTRIBUTING.md) for the required correctness gates.
 
+## Choose your workflow
+
+| I want to… | Start here |
+|---|---|
+| Chat or run a prompt | [Everyday commands](#everyday-commands) or the [desktop tray](#desktop-tray) |
+| Connect an app or coding agent | [Serving and APIs](#serving-and-apis), [coding-agent evidence](#coding-agent-evidence), [Python client](python/README.md) |
+| Generate JSON or tool calls | [Tool-call recovery](#truncation) and [structured output](#structured-output) |
+| Train, serve or merge an adapter | [LoRA training](#adaptation) and the [training walkthrough](docs/train-lora-on-quantized-gguf.md) |
+| Reproduce or audit a run | [Record and verify a run](#record-and-verify-a-run) |
+| Test local coding tasks alongside an existing agent | [Shadow mode](#shadow-mode-what-could-your-local-model-have-done) |
+| Choose, convert or prune a model | [Models and conversion](#models-and-conversion), [published artifacts](#published-artifacts), [support matrix](#support-matrix) |
+| Check fit or manage hardware | [Check before downloading](#deciding-before-you-download), [runtime and hardware](#runtime-and-hardware) |
+
+## Everyday commands
+
+Run a GGUF. `-hf owner/repo[:TAG]` fetches it from the Hugging Face Hub
+instead of `-m` (the tag picks the quant when the repository has several;
+the file is cached under `~/.cache/xyntetik-runner/hf` and verified against
+the Hub's SHA-256 record before it loads; `HF_TOKEN` for gated repos):
+
+```sh
+# Interactive chat: download a model or use a local file.
+./runner -hf ibm-granite/granite-4.1-3b-GGUF:Q8_0 -i
+./runner -m model.gguf -i
+# Smaller smoke-test model; does not pass the fidelity gate.
+./runner -hf Joakimpalm-Zen/gemma-4-E2B-it-Q4_0-GGUF -i
+
+# One-shot text, an API server, structured output, or a document prompt.
+./runner -m model.gguf -p "Explain prefix caching" --temp 0
+./runner -m model.gguf --serve --parallel 2
+./runner -m model.gguf -p "Return a status object" --json
+./runner -m model.gguf -f big-document.txt -c 8192 -n 200
+
+# Speculative decoding: draft model, CPU MTP head, or prompt lookup.
+./runner -m big.gguf --draft small.gguf -p "Continue this code"
+./runner -m qwen3.5-4b-mtp.gguf --mtp --gpu off -p "Continue this code"
+./runner -m model.gguf --draft-lookup -f transcript.txt -p "Summarize the text above"
+```
+
 ## What Runner adds
 
-The contracts above, made concrete. The two capabilities that matter most
-have their own sections below; the rest follow as a list, ordered by how
-much difference each makes in practice.
+The following guides explain the benefits, their limits, and the measurements
+behind them. Start with the capability your workflow needs.
 
 <a id="truncation"></a>
-### Truncated tool calls that still parse: closing the JSON when `max_tokens` runs out
+<a id="truncated-tool-calls-that-still-parse-closing-the-json-when-max_tokens-runs-out"></a>
+### Recover tool calls at the token limit
 
 When a tool call runs past its token budget, most engines return an empty or
 malformed `tool_calls` - commonly `finish_reason: "length"` with nothing
@@ -301,6 +202,15 @@ than the parser can read back (127 containers), so a close can never produce
 something the engine itself would reject. On local models, where context is tight and
 generation is slow, it is the difference between an agent loop that finishes and
 one that retries from scratch - burning tokens, time, and context window.
+
+**Boundary:** recovery closes a document that has started; if the model never
+starts it, Runner returns empty content. Schema validity does not guarantee
+correct values or tool selection. The response retains its truncation signal.
+See [structured output](#structured-output) for the complete contract, or the
+[tool-calling walkthrough](docs/truncation-safe-tool-calling.md) for a focused guide.
+
+<details>
+<summary>Measured truncation comparison and quantization evidence</summary>
 
 What each engine hands the caller when the token budget cuts a tool call short
 - same box, same tool schema, same prompt, `tool_choice:"required"`,
@@ -333,6 +243,8 @@ tool selection at 100% down to Q4_0 while argument agreement decayed to 50% - it
 guarantees the SHAPE of a call at any quantization, not its contents
 ([docs/quant-fidelity.md](docs/quant-fidelity.md)).
 
+</details>
+
 <a id="adaptation"></a>
 ### Train the GGUF you actually serve
 
@@ -363,6 +275,18 @@ by the finite-difference gate in `make test` on a fixture that carries it,
 and by a directional derivative over the whole adapter that averages out
 the f16 cache staircase.
 
+**Serving and merging:** use `--lora` to preserve the adapter delta. A quantized
+merge rounds it; in the measured study, merging into the 4-bit base erased the
+fine-tune, while Q8_0 and F16 retained it. See the study below before merging.
+
+Start with the [training walkthrough](docs/train-lora-on-quantized-gguf.md)
+or [reproducible training with receipts](docs/reproducible-lora-training-receipts.md).
+
+![Two independent training runs producing byte-identical adapters](docs/assets/deterministic-training.gif)
+
+<details>
+<summary>Training results, precision, merge behavior and interoperability</summary>
+
 Measured, on a public artifact you can download and reproduce
 ([Qwen3-4B-Runner-ToolUse-Q4_K_M](https://huggingface.co/Joakimpalm-Zen/Qwen3-4B-Runner-ToolUse-Q4_K_M)):
 
@@ -372,12 +296,29 @@ Measured, on a public artifact you can download and reproduce
 | training path | directly through the quantized inference artifact, CPU |
 | held-out tool-calling, exact call | **0.69 → 1.00** |
 | reproducibility | two independent runs → **byte-identical adapter** (same sha256) |
-| precision study | adapters trained through BF16 vs Q8_0: cosine 0.9998; through Q4_K_M: 0.9926 - measurably different objects, capability-equivalent **on this task's supervised decisions** (on the gold-completion region they coincide to ~0.0003 nat; the divergence lives in the unsupervised prompt region). Not equivalent everywhere: an external 36-prompt boundary bank, run in full through the native unlabeled lane (`scripts/tool-choice-boundary.py`), finds 3 of 36 prompts where the three adapters choose different tools and the disagreement survives deterministic generation (BF16 and Q8 `read_file`, Q4 `none`; twice BF16 and Q8 `list_dir`, Q4 `search_files`). Non-monotonic in bit width: the Q4-trained adapter carries the widest margins on that bank. A property of that bank, not a rate; [written up in full](docs/adaptation-engine.md) and [the lane](docs/tool-choice-boundary-lane.md) |
+| precision study | BF16/Q8_0/Q4_K_M training produces different adapters; task agreement and boundary disagreements are measured. [Full study](#training-precision-study). |
 | neutral-corpus drift | nll/token 4.063 → 4.026 (the adapter leaves unrelated text alone) |
 | merge study | `--merge-lora` into Q8_0/F16 keeps the 1.00 (verified in stock llama.cpp); merging into the 4-bit base **erases the fine-tune** - 0.69 again, 98.55% of weight bytes round back to the base's codes. Scale sweep: survival is monotone in delta magnitude (erased through 2×, partial at 4×, full at 8× - where the *exact* 8× adapter breaks the served model, the 4-bit grid filters it back to 1.00) |
 | interop | the adapter scores the same 1.00 served by stock llama.cpp; community F16 adapters load back into runner (measured on a third-party adapter, which also found and fixed the F32-only loader gap) |
 
+<a id="training-precision-study"></a>
+#### Precision study
+
+adapters trained through BF16 vs Q8_0: cosine 0.9998; through Q4_K_M: 0.9926 -
+measurably different objects, capability-equivalent **on this task's supervised
+decisions** (on the gold-completion region they coincide to ~0.0003 nat; the divergence
+lives in the unsupervised prompt region). Not equivalent everywhere: an external
+36-prompt boundary bank, run in full through the native unlabeled lane
+(`scripts/tool-choice-boundary.py`), finds 3 of 36 prompts where the three adapters
+choose different tools and the disagreement survives deterministic generation (BF16 and
+Q8 `read_file`, Q4 `none`; twice BF16 and Q8 `list_dir`, Q4 `search_files`).
+Non-monotonic in bit width: the Q4-trained adapter carries the widest margins on that
+bank. A property of that bank, not a rate; [written up in
+full](docs/adaptation-engine.md) and [the lane](docs/tool-choice-boundary-lane.md)
+
 ![Merging the adapter into the 4-bit base erases it; 8-bit keeps it](docs/assets/merge-erasure.gif)
+
+</details>
 
 `--score` gives teacher-forced logprobs for evals and rewards, `--lora`
 serves any adapter back, `--merge-lora` folds an adapter into the base for
@@ -393,7 +334,9 @@ Blackwell box a 14B pair of about 4,000 tokens is a step of just under an
 hour, so read the measured cost before starting a run. Design, gates,
 failure modes and every number above: [docs/adaptation-engine.md](docs/adaptation-engine.md).
 
-The rest of what sets Runner apart, ordered by how much difference each makes:
+### Fit, shared GPUs and decision evidence
+
+These capabilities help when managing several models or evaluating decisions:
 
 - **A shared GPU stops being first-come, first-crash.** Run a coding agent
   beside an embeddings model beside a draft model and the usual outcome is that
@@ -440,114 +383,357 @@ for MoE expert caching, and
 for the multi-row Metal decode matvec - which also records what the
 CPU/GPU byte-identity contract costs in reachable GPU optimizations.
 
-## Build and platforms
+## Record and verify a run
+
+Record the model, executable, inputs, settings and output, then replay the
+transcript to check the result:
 
 ```sh
-make          # release build: ./runner or runner.exe
-make debug    # ASan/UBSan development build where supported
-make test     # unit, fixture, generated-source, and backend gates
+./runner -m model.gguf -p "Say hello in one sentence." -s 42 --transcript run.json
+./runner -m model.gguf --verify run.json
 ```
 
-Runner uses ordinary platform C, math, threading, mmap/file-mapping, and
-dynamic-loader libraries. GGUF is little-endian, so little-endian hosts are
-required.
+Verification reports `VERIFIED`, `DIVERGED` or `UNVERIFIABLE`, with distinct
+exit codes. Signing is optional: `--keygen` creates a key and `--sign-key`
+signs a transcript. Chaining, trusted-key checks, Ed25519 and ML-DSA-44
+signatures, and model-signature verification are documented in the
+[CLI reference](#conversion-diagnostics-and-integration).
 
-### The T3 build: same model, same bytes, any machine (opt-in)
+Keep the same executable and model available for replay. The
+[determinism scope](docs/determinism-scope.md) explains the exact guarantees
+and why independent rebuilds and arbitrary hardware changes are outside
+some claims.
+
+## Shadow mode: what could your local model have done?
+
+`python -m xyntetik_runner.shadow` is a bench with receipts: it records
+evidence about local coding attempts on your own work, and it does not train
+or learn (the proven set changes only when the model changes).
+It imports replayable tasks from local agent sessions and repository history,
+checks that their protected tests fail before the recorded fix and pass after
+it, and runs bounded local attempts in scratch worktrees. The protected tests
+are outside the model's editable workspace. Results distinguish verified fixes,
+failures, no-ops and inconclusive verification; a passing result is scoped to
+the tests that ran.
+
+Capture v2 also retains raw hook payloads, task provenance and bounded workspace
+snapshots in local storage under `~/.xyntetik/shadow`. Payloads may contain agent
+text and tool data. Content blobs supplement recorded Git heads; replay still
+requires the referenced repositories and Git objects. Capture reports expose
+partial snapshots and uncertain attribution. See [capture and learning
+boundaries](docs/shadow-boundaries.md) for limits and the optional verification
+event. These local records are not uploaded by Shadow.
 
 ```sh
-make T3=1            # strict float, portable math, canonical-order kernels
-./runner --version   # runner vX.Y.Z (t3)
+runner --shadow-mode -m ~/models/a.gguf     # asks first, then wires Claude Code and Codex
 ```
 
-The default build uses fast-math and each ISA's own SIMD reduction order,
-so two machines agree on every sampled token (tier T2) but not on the last
-bits of the logits. `make T3=1` removes the three causes of that
-difference: it compiles without fast-math or fused-multiply-add
-contraction, replaces libm's `expf`, `logf`, `sinf`, `cosf`, `tanhf` and
-`powf` with implementations over IEEE add, multiply and divide only
-(`src/pmath.h`), and dispatches the F32, F16 and Q8_0 dot products to
-kernels that compute one fixed reduction tree on every target
-(`RUNNER_CANON_KERNELS`, gated bit for bit in `tests/test_canon_kernels.c`).
-Measured on a 165-token scoring run of the same Q8_0 model: 0 of 165
-positions bit-identical between an Apple M1 and an x86-64 box in the
-default build, 165 of 165 in the T3 build, and the same on riscv64 under
-qemu. Cost: 7% decode on x86-64, 17% on the M1, all of it the strict-float
-flags. A T3 receipt carries `"flavor":"t3"` in its `build` object. This is
-measured, not yet a claimed tier: the batched prefill tile, the k-quant
-formats, MoE and the GPU backends are not canonical yet. Details and
-tables in [docs/portable-bitexact-2026-09-05.md](docs/portable-bitexact-2026-09-05.md);
-`make cross-riscv64` builds the same configuration for riscv64 with zig.
+<details>
+<summary>Setup behavior, capture, replay, tandem work and full Shadow reference</summary>
 
-| Platform | Toolchain | Accelerated path |
+That one command finds the stdlib-only Python client beside the binary (it
+ships in the release archive), tells you exactly what it will write, and
+asks before writing: prompt, stop and post-edit capture hooks plus a `/shadow`
+skill for Claude Code; prompt, stop, post-edit and verification capture hooks
+plus a `/shadow` prompt for Codex; and the model the `/shadow` offload will
+serve. Codex reviews new or changed hooks before trusting them. It ends by
+saying what happens next. The hooks run small launcher files, not shell lines, so
+they work the same under sh, cmd and PowerShell and can never fail a
+prompt: every error is swallowed and the exit code is always zero.
+
+It also tells the harness what Runner can do. A capability sheet is
+written beside the ledger, and a short marked note goes into the
+harness's own instruction file (`~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md`)
+so that when you ask for something a local model could do, the assistant
+reads the sheet before proposing another local inference tool or a hosted
+API, and uses Runner where Runner does it. Your own instructions in those
+files are kept; `shadow uninstall` removes exactly the block. `--yes` skips the question
+for scripts. Inside either harness, `/shadow` then shows the ledger, and
+when you ask it to offload a task, reads where the local model has verified
+successes (`shadow routes`), runs the task on a scratch worktree with the
+repository's own tests (`shadow delegate`), and shows the diff and the
+verdict for you to apply with `git apply`; the working tree is never
+touched and nothing is applied silently. You keep your harness and your
+frontier model; the runner takes what the evidence says it can.
+
+Once the ledger holds verified successes for a repository, the local
+model works in tandem: each request that is work also starts a bounded
+attempt on a scratch copy in the background while your assistant works
+on it, and a verified result is offered to you as a patch, once, never
+applied. Every such attempt joins the ledger with the class its diff had,
+Routes keep repository and model-stack evidence separate, including adapter
+and scaffold identity; results from one stack do not qualify another. `shadow tandem off`
+stops it; `shadow delegations` lists them.
+
+The ledger fills through `sync`, which `/shadow` runs on every status:
+it imports what the hooks captured since last time, admits the tasks
+that can be replayed, and says how many wait for the local model. When
+you say so, `sync --replay N` runs the next N of them against the local
+model; nothing replays by itself. The runner these commands use stays
+warm between them, unloads by itself when idle, and is listed and ended
+by `shadow server`, so a second delegation a minute after the first does
+not pay the model load again.
+
+Without `-m`, `--shadow-mode` looks for GGUF files under the usual
+directories, asks the runner's own `--fit` about each, and proposes the
+largest that fits at the offload context; the list it looked at is
+printed, and `-m` always wins.
+
+Learning recipes and scaffold optimization belong to the optional Shade tools.
+The former `shadow adapt` and `shadow optimize` commands now print a migration
+message and exit without running. With Shade installed, their equivalents are
+`python -m xyntetik_shade.shadow adapt` and
+`python -m xyntetik_shade.shadow optimize`. Learning experiments produce candidate
+artifacts and evaluation records; they do not change Shadow's serving
+configuration. Existing configured adapters remain loadable through Runner's
+`--lora` support. Runner's low-level training and scoring commands remain part
+of the engine.
+
+To measure first, the bench runs the models on your disk against your own
+repository's history:
+
+```sh
+python -m xyntetik_runner.shadow bench --repo . \
+    --models ~/models/a.gguf,~/models/b.gguf --runner ./runner
+```
+
+One command: the bank is built from your repository's own history (commits
+that touched tests and source, whose tests fail before the fix and pass
+after it, classified `function`, `file` or `multi-file` by where the change
+sits), each model is served in turn, probed for fit, and replayed over every
+task, and the result is a table per model with the receipt identity on each
+row: attempted, verified, failed, and verified over attempted per task
+class. Counts before rates; no percentage before thirty independent tasks.
+The longer road (`import` your frontier history, `replay`, `report`) is
+the same machinery over the tasks your own sessions produced.
+
+The report prints counts and both denominators (verified over the episodes
+that could be replayed, and over everything observed) and refuses to print
+a percentage before thirty independent eligible episodes, because a
+percentage over a handful of tasks is not a measurement. What this is not:
+a router, a training loop, or a sandbox. The attempt's test runs and the
+verifier run as you, with the network reachable; treat the scratch copy as
+you would any code you run locally.
+
+Two limits found on the first real run, both properties of history rather
+than of any model. Agentic sessions commit many turns after the request,
+so the last prompt before a commit is often a side remark and the fix
+cannot be attributed to its request from the timeline alone. And a terse
+request ("check why CI fails and fix it") carries no failing signal the
+model can see, because the tests that fail at the pre-fix state are the
+new ones. Both are addressed by capturing prospectively: prompt and stop
+hooks record the request with the repository HEAD at both ends, while a
+post-edit hook binds each resulting change set to the edit that produced it.
+The task's commit range is exact, without conflating unrelated edits between
+prompt and stop.
+
+```json
+{"hooks": {
+  "UserPromptSubmit": [{"hooks": [{"type": "command",
+    "command": "python3 -m xyntetik_runner.shadow capture --event prompt"}]}],
+  "Stop": [{"hooks": [{"type": "command",
+    "command": "python3 -m xyntetik_runner.shadow capture --event stop"}]}],
+  "PostToolUse": [{"matcher": "Write|Edit|NotebookEdit", "hooks": [{"type": "command",
+    "command": "python3 -m xyntetik_runner.shadow capture --event post"}]}]}}
+```
+
+`python -m xyntetik_runner.shadow install` writes the equivalent for you
+(the hooks call small launcher files rather than these shell lines): the
+capture hooks are merged into Claude Code's settings and Codex's `hooks.json`
+beside whatever is already there, with backups next to both files. It also
+writes a `/shadow` skill for Claude Code and a `/shadow` prompt for Codex.
+Installation is explicit, nothing runs until you submit a prompt, and Codex
+reviews the commands before trusting them. `uninstall` removes only Runner's
+entries and launchers. A prompt event records your
+request, the directory, the time and the commit ids
+(the HEAD of every repository at or under the directory, so a session
+started from a parent directory still gets exact ranges), and capture v2
+adds the raw hook payload and a bounded snapshot of the changed files, all
+of it local, as described above; the file is
+`~/.xyntetik/shadow/capture.jsonl` and `import` reads it beside the
+session files. Earlier requests of the same session travel with a task as
+context. `replay` probes decode speed first and refuses a model below
+`--min-tps` (default 15 tokens per second): serve something that fits the
+card, at an 8K context for coding attempts. Design, gates and the negative controls that prove the
+verifier can fail: [python/README.md](python/README.md).
+
+</details>
+
+
+## Desktop tray
+
+macOS and Windows ship a menu-bar / notification-area controller. It lists
+every runner instance live on the machine - however it was started - with the
+models each has loaded, and lets you stop any of them, pick a GGUF, and start
+a desktop-managed server. Linux has no tray; `--tray` there prints an honest
+error.
+
+### When it appears
+
+The tray follows a session you sit with, and is left running afterwards so the
+next model can be loaded from it.
+
+| Invocation | Tray |
+|---|---|
+| `runner` with no arguments at a terminal, or a double-click | yes |
+| `runner -m model.gguf --serve` | yes |
+| `runner -m model.gguf -i` | yes |
+| `runner -m model.gguf -p "..."` | no |
+| `--caps`, `--quantize`, `--bench-json`, `--version` | no |
+| anything with `--no-tray` | no |
+| pipes, scripts, CI, Linux | no |
+
+A terminal on **either** stdin or stdout is what counts as "a person launched
+this", so `runner --serve > server.log` still raises one while CI, which
+usually has neither, does not. A one-shot `-p` run raises nothing on purpose:
+a two-second process should not leave a menu-bar icon behind it.
+
+`--tray` means *be* the tray rather than run a model. It is required wherever
+there is no terminal - launchd, Task Scheduler, a service wrapper - because
+every launch in the table above needs one. `--no-tray` opts out everywhere.
+
+One tray runs per machine; a second exits naming the pid that owns the icon.
+The tray is spawned detached with its own session, so stopping a server with
+Ctrl-C leaves the menu bar alone, and it outlives the run that raised it.
+
+### Icon states
+
+The Xyntetik ensö, the same drawing as the brand mark on xyntetik.com. On
+macOS it is a template image, so it follows light and dark menu bars.
+
+| State | Glyph | Meaning |
 |---|---|---|
-| Linux x86_64 | GCC | AVX2/FMA; CUDA on NVIDIA Turing / compute capability 7.5 or newer, driver with CUDA 13.0+ support (R580 series) |
-| macOS arm64 | Apple Clang | ARM NEON; Metal on Apple Silicon |
-| Windows x86_64 | MinGW-w64 via MSYS2 | AVX2/FMA; CUDA on NVIDIA Turing / compute capability 7.5 or newer, driver with CUDA 13.0+ support (R580 series) |
+| Idle | the bare ensö | No runner registered. |
+| Model loaded | ensö with the spark on its end | A runner is up with a model resident, nothing in flight. |
+| Running | the full Runner mark: ensö, spark and three streaks | Inference is in flight. |
 
-CI builds all three and runs the suite on hosted machines, which have no GPU.
-The accelerated halves of that table are verified on physical hardware, and
-[docs/device-evidence.json](docs/device-evidence.json) records when each was
-last run, written from the runner's own `--caps` on the machine in question.
-`make release-check` refuses a tag while one of them is stale, so the table
-above is a claim somebody re-checks rather than one that decays quietly.
+A menu-bar template image cannot animate, so the streaks are what says
+"moving": the ring itself is the same in every state.
 
-On Windows, install `make` and `mingw-w64-ucrt-x86_64-gcc` from an MSYS2 UCRT64
-shell, then run `make`.
+"Loaded" and "running" are told apart by `active_requests` from `/health`,
+polled on the same 5-second timer that refreshes the icon - so a request
+shorter than the tick can pass unseen. It is an indicator, not telemetry. When
+the count cannot be read the icon shows "model loaded", because a server that
+is up but unreachable still has a model resident.
 
-### Container image
+Configuration, the instance registry, autostart, uninstall, and the headless
+validation seams are documented in
+[docs/tray-controller.md](docs/tray-controller.md).
 
-Each release publishes a CPU image - the same binary on a distroless glibc base,
-nothing else - to `ghcr.io/joakimpalm-zen/xyntetik-runner:v<version>` (the
-tag carries the `v`, e.g. `:v0.5.5`) and `:latest`. Build it yourself with `docker build -t runner .`.
+The macOS release is ad-hoc signed, not Apple-notarized. A browser download may
+therefore be blocked by Gatekeeper even when its published checksum matches.
+Verify the SHA-256 checksum first, then remove the quarantine attribute from
+the extracted binary with `xattr -d com.apple.quarantine runner`; obtaining a
+Developer ID and notarizing releases remains an owner action.
 
-The server binds **loopback only** by design (there is no `--host`/`0.0.0.0`
-flag), so it never exposes itself to a network, even in a container - which
-shapes how you run it:
+## Structured output
 
-```sh
-# One-shot inference (no networking):
-docker run --rm -v "$PWD/models:/models" \
-  ghcr.io/joakimpalm-zen/xyntetik-runner:latest \
-  -m /models/your.gguf -p "hello" -n 128 --gpu off
+Runner provides two sampler-level guarantees:
 
-# Serve on the host's localhost (Linux; --network host shares the host loopback,
-# so the loopback-only server is reachable at 127.0.0.1:8080 on the host only):
-docker run --rm --network host -v "$PWD/models:/models" \
-  ghcr.io/joakimpalm-zen/xyntetik-runner:latest \
-  -m /models/your.gguf --serve --port 8080
-```
+- `--json` or OpenAI `response_format.type=json_object` emits one valid JSON
+  object.
+- `--json-schema FILE`, OpenAI `json_schema`, Responses `text.format`, and tool
+  parameter schemas compile to a streaming conformance validator.
 
-`-p 8080:8080` does not work - the port-proxy cannot reach a server bound to the
-container's own loopback; use `--network host`. There is no auth boundary, so
-keep any deployment on a trusted host.
+The supported schema subset covers objects, arrays, strings, numbers,
+integers, booleans, null, enums, const, type unions, numeric bounds on both
+`integer` and `number` (`minimum`/`maximum` and their exclusive forms, with a
+forced close completing the value inside the declared range), string
+lengths and supported anchored patterns, array item/count constraints,
+scalar-const `oneOf`/`anyOf`, and the tool-discriminated object union used by
+agent clients. Required properties are present, unknown properties are blocked
+for closed objects, and tool arguments are generated against the selected
+tool's schema.
 
-The image is **CPU by default, but GPU-capable without a separate variant.** The
-binary loads the CUDA **driver** at runtime (`libcuda.so.1`, the driver API) and
-carries its kernels as embedded PTX, so it needs no CUDA toolkit baked in - run
-it on an NVIDIA host with the NVIDIA Container Toolkit and `--gpus all` and the
-runner uses the GPU:
+Object schemas may be closed fixed-property records, unconstrained open
+objects, or homogeneous maps: with no declared properties (or an empty
+`properties` object), a schema-valued `additionalProperties` is enforced for
+every arbitrary-key value. Mixed fixed properties plus open or schema-valued
+additional properties remain unsupported and are rejected rather than
+silently weakened.
 
-```sh
-docker run --rm --gpus all --network host -v "$PWD/models:/models" \
-  ghcr.io/joakimpalm-zen/xyntetik-runner:latest \
-  -m /models/your.gguf --serve --port 8080
-```
+Anchored `pattern`s compile as a sequence of literal runs and repeated
+classes (`[...]`, `[^...]`, `\d`, `\w`, `\s` and their complements, with
+escapes inside a set): `^wf_[a-z0-9-]{6,}$`, `^[A-Z]{3}[0-9]{4}$` and
+`^[^\n\r]*$` all enforce, and a forced close mid-string completes to a
+string the pattern still accepts. A negated or complement class admits every
+non-ASCII character whole. The enforced language is the declared one
+restricted to what a JSON string spells unescaped (a control character or a
+quote inside a class was never producible). Every class before the last
+carries a fixed count, so which class a byte belongs to follows from its
+offset; a variable-length class in the middle is refused rather than
+guessed. An `allOf` of string constraints on a string is enforced as their
+conjunction, every pattern and the tightest bounds together; that is the one
+`allOf` shape accepted (Claude Code 2.1.272 declares
+`SendMessage.to` with two patterns), every other `allOf` is refused by name.
 
-(A `nvidia/cuda`-based image is deliberately not published - it would only add a
-CUDA runtime the driver-API path never calls.) Verified on an RTX 3070 via WSL2
-(2026-08-19, Docker 29.1.3 + NVIDIA Container Toolkit 1.19.1): the same
-distroless image run with `--gpus all` reports `"gpu":{"backend":"cuda","name":
-"NVIDIA GeForce RTX 3070",…}` from `runner --caps` and prints `gpu: CUDA backend
-on NVIDIA GeForce RTX 3070` with VRAM accounting at load; the identical image run
-without `--gpus` reports `"gpu":null` and runs on CPU (`libcuda.so.1` absent), so
-the flag is what makes the difference. A generation attempt in that case says
-that the CUDA driver library is unavailable before continuing on the CPU;
-runtime/device discovery and backend staging failures likewise name the failed
-stage instead of looking like a successful GPU admission. CUDA shared-weight
-setup also identifies the tensor upload or per-layer table/field that failed,
-including architecture-specific recurrent, sink, MoE-bias, and Gemma tables.
-Metal cannot be containerized
-(Apple-Silicon only, no passthrough).
+Unsupported or ambiguous constraints fail at compile/request time. In
+particular, general overlapping `oneOf` branches are not tracked in parallel;
+branches must diverge at a supported discriminator. This is a subset of JSON
+Schema 2020-12, not full JSON Schema or GBNF.
+
+If the budget ends after a document starts, runner emits the minimal legal
+suffix and reports a length finish - on the tool-call path too: a truncated
+call is still returned as a parseable `tool_calls` entry, but the envelope
+keeps the truncation signal (`finish_reason: "length"`, Responses
+`status: "incomplete"` with `max_output_tokens`, Anthropic
+`stop_reason: "max_tokens"`) so a caller knows the arguments are minimal
+closures rather than the model's completed intent. If the model never starts
+the document, runner returns empty content rather than inventing required
+values. Syntax and schema shape are guaranteed; semantic correctness and tool
+selection remain the model's responsibility.
+
+A client `stop` sequence is handled as a truncation the caller asked for. The
+matched bytes are withheld from the response, as they are in unconstrained
+text, and the constraint validator is truncated with them - re-seated on
+exactly the document the caller received - so the minimal legal suffix
+completes that copy rather than the longer one the model had reached. The
+delivered document parses and conforms; `finish_reason` is `"stop"` (Anthropic
+`stop_reason: "stop_sequence"`, carrying the matched string). The suffix itself
+is never stop-matched: it is runner closing the document rather than model
+text, and `["}"]` or `["\n\n"]` would otherwise eat the very bytes that make it
+legal.
+
+If an envelope document cannot be mapped back at all, runner reports the fault
+instead of serving the raw protocol as an answer. On the OpenAI surfaces
+content is empty, `finish_reason` is `"error"` with
+`runner_telemetry.finish_detail: "envelope_unmapped"`, and Responses reports
+`status: "incomplete"` with reason `envelope_unmapped`. A stream that ends
+this way is still terminated - a terminal chunk carrying the finish reason,
+then `data: [DONE]`, or Responses `response.incomplete` - so a client is never
+left waiting on events that will not arrive.
+
+Anthropic Messages reports the same fault as an **error object**, not a
+`Message`. All seven of its `stop_reason` values describe a turn that
+completed, so none of them can carry a generation fault; a buffered turn
+answers HTTP 500 with `{"type": "error", "error": {"type": "api_error",
+"message": ...}}`, which is the class the Anthropic SDKs retry with backoff,
+and a streamed turn - whose 200 is already sent - terminates on the protocol's
+documented `event: error` carrying the same object, in place of
+`message_delta`/`message_stop`. An allocation failure during generation is
+reported the same way on both. Partial text is not returned alongside it:
+unlike a budget truncation, which is a completion and keeps its content under
+`stop_reason: "max_tokens"`, a fault has no `stop_reason` that would not
+misstate why generation stopped. `runner_telemetry.finish_detail` rides on the
+error object so the two faults stay distinguishable.
+
+### `--top-k 40`: a faster constrained decode with different semantics
+
+Constrained decoding pays for the sampler on every step, and several shipped
+presets - SmolLM2's, llama3's, mistral's, gpt-oss's - set `top_k = 0`, which
+means no truncation and a pass over the whole vocabulary. Setting `--top-k 40`
+(or `"top_k": 40` per request) measured **12–27% higher decode throughput**
+than the same run at the preset's `top-k 0`, on an M1 with
+SmolLM2-135M-Instruct under JSON- and schema-constrained decoding.
+
+It is an option, not a default, and it is not certified. Truncating to 40
+candidates **changes the sampled distribution** - it is different semantics,
+not a cheaper route to the same tokens - so it stays outside the correctness
+gates rather than becoming a preset value. Reach for it when decode throughput
+matters more than reproducing the preset's distribution; leave it off when the
+run is being compared against a reference. At `--temp 0` the question does not
+arise: greedy argmax bypasses `top_k`, `top_p`, `min_p` and the repeat penalty
+entirely, so the certified greedy paths are unaffected either way.
 
 ## Models and conversion
 
@@ -567,6 +753,51 @@ Fetch the small test model with:
 
 For manual downloads, verify both the command exit status and resulting byte
 size. A partially downloaded GGUF can otherwise look like a model failure.
+
+<a id="quick-start-source-builds-and-model-choice"></a>
+### Choose a model
+
+The [quick start](#quick-start) uses Granite 4.1 3B Q8_0. The choices below
+separate a fidelity-gated starting point from a smaller smoke test and a
+larger project artifact. File size is not the total RAM requirement; use
+[`--fit`](#deciding-before-you-download) for the model and context you need.
+
+| Model | File size | Role |
+|---|---|---|
+| Granite 4.1 3B Q8_0 | 3.6 GB | Quick-start choice; passes the project's measured fidelity gate. |
+| Gemma 4 E2B Q4_0 mix | 2.63 GB | Smaller smoke test; **fails** the fidelity gate. |
+| Qwen3-30B-A3B selective precision | 17.99 GB | Lead project artifact; passes the fidelity gate. |
+
+Project artifacts have their measured status in the
+[published-artifact ledger](#published-artifacts):
+
+```sh
+# the lead artifact: Qwen3-30B-A3B, attention Q8_0 / experts Q4_0, 17.99 GB,
+# passes the fidelity bar where the official uniform Q4_K_M fails it
+./runner -hf Joakimpalm-Zen/Qwen3-30B-A3B-selective-attnQ8_0-expQ4_0-GGUF --serve
+# the fastest smoke test on a small machine, 2.63 GB: against its own BF16
+# parent it agrees on 77.75% of tokens (mean KLD 0.286), a try-the-runner
+# artifact, not a faithful gemma-4-E2B; its card carries the full numbers
+./runner -hf Joakimpalm-Zen/gemma-4-E2B-it-Q4_0-GGUF --serve
+```
+
+The measured recommendation at 8 GB of RAM is an 8-bit small model, not a
+4-bit larger one: granite-4.1-3b Q8_0 (3.6 GB, first-party IBM file) is the
+smallest model that passes this project's fidelity gate against its own
+BF16 parent (100% margin-qualified top-1 / 0.0024 mean KLD, 2026-08-14;
+every 4- and 5-bit quant measured to date fails on distributional
+distance). Its repository is a quant ladder, so the tag picks the file:
+
+```sh
+./runner -hf ibm-granite/granite-4.1-3b-GGUF:Q8_0 --serve
+```
+
+`-m` takes a file you fetched yourself; the same file, by hand:
+
+```sh
+curl -L -o model.gguf \
+  https://huggingface.co/ibm-granite/granite-4.1-3b-GGUF/resolve/main/granite-4.1-3b-Q8_0.gguf
+```
 
 ### Requantization and expert pruning
 
@@ -785,205 +1016,230 @@ story: [Runner Releases](https://huggingface.co/collections/Joakimpalm-Zen/runne
 and [LoRA Training on Quantized Weights](https://huggingface.co/collections/Joakimpalm-Zen/xyntetik-research-lora-training-on-quantized-weights-6aa98bb02859827a8d86618c). The retired Model-typed copies
 of the reports stay up with a pointer to the canonical dataset.
 
-## Command-line reference
+## Support matrix
 
-`runner --help` remains authoritative for the binary being executed. This
-grouped reference makes the complete interface discoverable without mixing
-flags into unrelated feature sections.
+`runner --caps` publishes the architecture IDs admitted by the current binary.
+Open the architecture table below for model-specific paths and limitations.
 
-### Modes and input
+**Metal quant-type coverage.** Both a matvec and a matmul kernel exist for
+`q2_K`, `q3_K`, `q4_0`, `q4_K`, `q6_K`, `q8_0`, `iq4_nl`, `iq4_xs`, `mxfp4`,
+`f16`, `bf16` and `f32`. **`q4_1`, `q5_0`, `q5_1` and `q5_K` ship `k_mv_*`
+only** — they decode on Metal but have no `k_mm_*`, so prefill on those types
+does not use the Metal matmul path. Requantizing such a file to `q4_K` or
+`q8_0` (`--quantize OUT --quant q4_k`) is the fix when prompt throughput
+matters. Quantization changes only the weight encoding: it cannot give an
+architecture a Metal path it lacks, because those gaps are missing kernels for
+operations (SSM scan, Gated DeltaNet, weight-normed routers, gate-less shared
+experts), not missing quant support.
 
-| Option | Purpose |
+A **sharded** GGUF takes a full Metal offload directly: each part's mapping
+gets its own tensor-boundary wraps, gated byte-identical to both the CPU path
+and the single merged file (`make test-metal-split`; measured on a real
+2-part 86 GB set). A partial `--gpu-layers` split of a sharded set refuses to
+CPU — merge to one file with `--quantize OUT --quant keep` first if a layer
+split is what you need. The loader accepts both duplicated-metadata shards
+and the standard compact form where only part one carries model metadata;
+explicit contradictions between parts are still rejected.
+
+Sparse-MoE expert matvec kernels cover `q2_K`, `q3_K`, `q4_0`, `q4_K`,
+`q5_K`, `q6_K`, `q8_0`, `mxfp4`, `f16`, and `f32`. This list is narrower than
+the dense quant list: a type needs a dedicated indirect expert kernel, not
+merely dense matvec/matmul support.
+
+<details>
+<summary>Architecture-by-architecture support and pinned evidence</summary>
+
+| GGUF `general.architecture` | Notes |
 |---|---|
-| `-m PATH` | GGUF path. In serve mode, `name=path,name2=path2` enables multi-model swap mode. |
-| `-p TEXT` | One-shot prompt; escaped sequences such as `\n` are unescaped. |
-| `-f FILE` | Append file contents to the prompt. |
-| `-i` | Stateful interactive chat. |
-| `--serve` | Start the HTTP server. |
-| `--tray` | Be the macOS/Windows tray controller instead of running a model. Required where there is no terminal. See [Desktop tray](#desktop-tray). |
-| `--no-tray` | Opt out of the tray everywhere, including the one that otherwise follows `--serve` and `-i`. |
-| `--port N` | Server port, default `8080`. |
-| `--parallel N` | Independent inference slots for a single-model server, default `1`. On CUDA and (since 2026-09-01) Metal, ready slots decode as one microbatch sharing a single weight sweep per step — measured 1.45-1.47x aggregate decode at 4-8 slots on Metal/M5 Max, and **bit-identical to sequential decode** by twin-kernel construction, gated in `make test` (`test-batch-identity`). Dense models only; MoE/recurrent families decode sequentially. `RUNNER_METAL_BATCH=0` restores sequential on Metal. |
-| `--ttl N` | Swap-mode idle unload timeout, default `300`; `0` disables it. |
-| `--force-uncertified` | Load a model even when its measured-envelope sidecar records an `outside-envelope` verdict for this runtime (refused by default). See [Measured-envelope gate](#measured-envelope-gate). |
-| `--json` | Constrain output to one valid JSON object. |
-| `--json-schema FILE` | Constrain output to the schema in `FILE`. |
+| `llama`, `mistral`, `smollm`, `stablelm` | Llama-style dense families with family tokenizers/templates. |
+| `qwen2`, `qwen3` | QKV-bias and per-head-QK-norm variants. |
+| `qwen35` | Dense Qwen3.5/3.8/Ornith Gated DeltaNet plus full attention; CPU and CUDA. Qwen3.8-27B admitted 2026-09-06 (tokenizer 0/721 after the `qwen35` rule learned `[\p{L}\p{M}]+` runs; its NextN block feeds `--mtp`; its own `qwen38` chat template with the reasoning-effort preamble, `reasoning_effort` xhigh/medium/low honoured); evidence in `docs/granite-42-qwen38-cert-2026-09-06.md`. CPU recurrent folds support speculative decode, grammar fast-forward, and exact shared-prefix restore. Any GPU-backed recurrent instance declines shared-prefix restore (its own turn mark resumes the next request at the prompt boundary on CPU and CUDA alike, since 2026-09-15); a CUDA-resident recurrent layer also declines speculative decode and grammar fast-forward. |
+| `qwen3moe` | Fused and legacy split sparse-MoE layouts on CPU/CUDA; supported fused layouts on Metal. |
+| `gemma3` | Regular and QAT layouts, sliding-window attention, sandwich norms. |
+| `gemma4` | Heterogeneous attention, thinking channels, E-series, supported dense/MoE layouts, and the family's native tool protocol. Both E-series export shapes load. A layer at or past `block_count - attention.shared_kv_layers` computes no K and no V (it attends over the cache an earlier layer filled), so the current quantized exports - the ggml-org Q4_0, Google's own QAT Q4_0 and the community QAT F16 - omit `attn_k.weight`, `attn_v.weight` and `attn_k_norm.weight` on exactly those layers: 666 tensors on E4B where the BF16 export has 720. Those three are optional on the shared-KV tail and still required on every KV-owning layer, where a missing one is refused by name. |
+| `phi3` | Fused QKV and gate/up tensors, LongRoPE factors. |
+| `gpt-oss` | Attention sinks, alpha-sigmoid GLU, expert biases, MXFP4 experts. Tokenizer exact (0/721 differential) and chat renders the real Harmony format (analysis channel as `reasoning_content`) as of 2026-08-14; cross-engine greedy identity remains inside the model's own measured KV-precision sensitivity envelope rather than certified. |
+| `apertus` | xIELU FFN; CPU and CUDA. |
+| `afmoe` | Arcee Trinity sparse MoE; CPU only. CUDA and Metal refuse it loudly as gated attention plus sparse MoE, rather than misreporting a quantization problem. |
+| `muse-glimmer` | Meta Muse Glimmer 30B, text path: gated attention, QK and sandwich norms, SWA with NoPE globals, softcapped logits. CPU, CUDA and Metal. Measured 2026-08-11; evidence in `docs/muse-glimmer-cert-2026-08-11.md` and `docs/muse-atem-cert-2026-08-11.md`. No vision encoder. Native atem definitions/results, recipient-constrained generation, truncation recovery, multi-call mapping, and buffered/SSE parsing are implemented and selected automatically for tool requests. |
+| `granite` | IBM Granite dense (3.x/4.1/4.2): the four muP scalars (embedding, fixed attention, residual, divided logit), read from the header (4.2 ships them all at 1.0). CPU, CUDA and Metal. Measured 2026-08-11; evidence in `docs/granite-cert-2026-08-11.md`. Granite 4.2 (3B, 8B) admitted 2026-09-06 with its `granite-docling` pre-tokenizer and its own `granite42` chat template (ChatML, `<think>`, function-XML tools); evidence in `docs/granite-42-qwen38-cert-2026-09-06.md`. granitemoe is a separate arch id and not admitted; granitehybrid is admitted separately, below. |
+| `granitehybrid` | Granite-4 h-series: a Mamba-2 selective-SSD recurrence (causal conv1d + the input-dependent state-space scan, with the gated RMS norm) interleaved with GQA attention, the layer type read per-layer from the `attention.head_count_kv` array (0 ⇒ recurrent); the attention layers are NoPE (`rope.scaling.finetuned=false`); the four granite muP scalars. Both published FFN layouts are supported: dense h-micro has a gated MLP on every layer and runs on CPU and CUDA; sparse h-small has a routed MoE FFN plus an always-on shared expert and currently runs on CPU because those two branches have no device path. The dense h-micro CUDA path is CPU-token-identical over 600/600 greedy tokens with per-run mean |Δlp| ≤ 0.000024 (max per-position 0.000422); evidence and raw probes are in [`docs/compat-reports/cpu-cuda-hybrid-2026-08-21/`](docs/compat-reports/cpu-cuda-hybrid-2026-08-21/). The sparse h-small CPU path was verified against llama.cpp b10353 at both Q4_K_M and Q8_0: greedy output is token-identical on deterministic prompts (a 256-token completion matches byte-for-byte) and holds at the quantisation noise floor elsewhere, where the divergences are synonymous-phrasing near-ties, not wrong math. Re-verified at higher precision (Q8_0, 2026-08-19): the sole non-empty divergence is a single-token near-tie whose top-2 candidates the runner and llama.cpp rank identically to within ~0.03-0.09 nats (an argmax coin-flip), with the runner's full top-5 logit distribution matching the oracle's - so the Mamba-2 math is correct and the Q4_K misses were pure noise floor, the same envelope noted for gpt-oss. Chunked-scan prefill: the token axis is tiled into chunks (~256), the per-head SSD recurrence runs in parallel across heads within a chunk and the SSD state + conv ring are carried across chunk boundaries - bit-identical to the serial per-token sweep (a pinned `make test` gate holds chunked == serial across chunk sizes) and ~1.8x faster prompt throughput on a long prompt (measured on granite-4.0-h-small Q8_0, 264 tokens). `XR_SSM_SERIAL=1` forces the serial reference path. The recurrent-state cache seam is wired: the fixed-size fold is snapshotted/restored on a rewind, and stored beside the KV in the prefix cache so an exact CPU prompt-prefix hit restores it in a memcpy rather than recomputing the recurrent layers. CPU speculative decode and grammar fast-forward use a per-round fold checkpoint; a CUDA split is admitted only while every recurrent layer remains host-resident. Metal has no SSM path. |
+| `nemotron_h` | NVIDIA Nemotron-H (Nemotron-Nano-9B-v2): a Mamba-2 selective-SSD recurrence interleaved with GQA attention and dense MLP blocks, where each block is EXACTLY ONE of three kinds (SSM \| attention \| MLP), typed per-layer off `attention.head_count_kv` (0) and `feed_forward_length` (0). NON-MoE and no muP scalars - unlike granitehybrid; the MLP is a gate-less squared-ReLU FFN (`down(relu(up(x))^2)`), attention is NoPE (`rope.scaling.finetuned=false`), and the SSM uses a GROUPED scan (`ssm.group_count=8`): B/C are shared across groups of heads and broadcast (group g covers heads [g·H/G, (g+1)·H/G)) - the same grouped scan `nemotron_h_moe` (Nemotron-3.5 Lightning) also uses - here first proven WITHOUT MoE, and admitted WITH MoE in the row below. CPU and **CUDA**: the Mamba-2 SSD scan, causal conv1d, gated RMS norm and squared-ReLU FFN all have device kernels, and full 56-layer offload is **greedy byte-identical to the CPU path** on the real Nano-9B-v2 Q8_0 (3 prompts x 48 decode steps plus an 88-token multi-tile prefill; re-verified independently post-merge at 32 tokens). Device prefill currently runs the per-token loop (correct, unoptimized); no Metal SSM path. Verified against llama.cpp b10353 on the real Nemotron-Nano-9B-v2 at Q8_0 (same GGUF both engines, CPU): 5/6 greedy completions byte-identical (including both 256-token generations); the sole miss is a single-token near-tie where both engines share the same top-3 candidates and llama.cpp's own top-1/top-2 gap is ~0.075 nats (an FP-summation-order coin-flip), i.e. the quantisation noise floor, not wrong math. Chunked-scan prefill (the grouped scan tiled into chunks, parallel across heads within a chunk, SSD state + conv ring carried across chunk boundaries), bit-identical to the serial per-token sweep and pinned chunked == serial in `make test`; the recurrent-state cache seam is wired (fold snapshotted/restored on rewind, and stored beside the KV so an exact CPU prompt-prefix hit restores it in a memcpy). CPU speculative decode and grammar fast-forward use the per-round fold checkpoint; full GPU offload and partial splits with a CUDA-resident recurrent layer decline them. |
+| `nemotron_h_moe` | NVIDIA Nemotron-3.5-Lightning-30B-A3B: `nemotron_h` with the dense squared-ReLU MLP replaced by a gate-less squared-ReLU **MoE** (128 experts / 6 used, no gate branch) plus an always-on **gate-less shared expert**; the router reuses the general softmax/group/scale/norm path. Same three-way block typing, grouped scan (`n_group=8`), and NoPE attention as `nemotron_h`. Runs on CPU: the SSM scan has a device kernel, but this family's router (weight-normed, scaled) and gate-less shared expert have no device path, so the backend falls back to CPU there. Greedy vs llama.cpp `ea12b27` on the real Lightning-30B Q4_0 (CPU, 8 tok × 5 prompts): **4/5 byte-identical**, the one divergence a near-tie on an open-ended counting continuation (noise floor, not wrong math - the coherent `Paris. … Berlin.` completion matches exactly). Evidence: `docs/compat-reports/ssm-greedy-reference-2026-08-20/`. |
 
-### Generation and context
+</details>
 
-| Option | Purpose |
+Admission remains layout-specific: an unsupported split expert layout, a
+non-SiLU MoE outside gemma-4's dual-branch form, or an architecture-specific
+tensor arrangement is refused even when the architecture ID is listed. The
+always-on shared expert (Qwen2-MoE/DeepSeek form: a dense FFN over the same
+normed input, summed with the routed output, optionally gated) is **supported**
+and is what afmoe uses; its width and tensors are shape-checked at load, and
+`expert_shared_count` set without the tensors present is an error rather than a
+silently dropped branch.
+
+| Area | Current support |
 |---|---|
-| `-n N` | Maximum generated tokens, default `256`; `-1` runs until EOS. |
-| `-c N` | Context length; default is the smaller of model maximum and 4096. `0` auto-fits with a reservation. |
-| `-b N` | Prompt batch size, default `64`. Unless `--gpu off` was given, the default is sized from **total** RAM instead: `512` at 12 GB or more, `256` at 6 GB or more, `64` below — so the tiled prefill GEMM gets more columns per dispatch (measured on Metal/M1: +9% prompt tok/s at 512 over the flat 64 default). Total RAM rather than free RAM on purpose: batch size changes how reassociating prefill paths tile their sums, and a default read off the machine's ambient load would make "the same command" produce different tokens on a busy day. A fixed machine fact cannot. `-b` always overrides. |
-| `-t N` | Worker threads; defaults to physical cores and is capped at `32`. The cap is measured, not assumed: decode PEAKS at 32 threads and regresses above it on many-core hardware (a 64-core Zen 5 box in 2026-08, and a 128-core sweep in 2026-08 where both models peaked at 32 while the previous default of 64 cost up to -41% decode and -55% prefill). Only machines with more than 64 logical CPUs are affected; below that the default is unchanged. An explicit `-t` is honoured up to 64. |
-| `-s N` | RNG seed; default is time-based. `0` is refused: it is the sampler RNG's fixed point, so it cannot produce a stream. |
-| `--think` / `--no-think` | In interactive chat (`-i`), request the model family's thinking or non-thinking prompt shape. They are refused in raw one-shot and server modes rather than being silently ignored; server callers use the request-level `enable_thinking` field. With neither flag, Runner renders whatever that family's own reference template renders, which is not the same answer for every family. Families without a distinct thinking prompt accept the flag and ignore it rather than approximate one. |
-| `--temp F` | Temperature; `0` is greedy and disables repeat penalty. |
-| `--top-k N` | Top-k sampling; `0` disables it. Several presets ship `0`, where setting it is a measured decode-throughput win that also changes the sampled distribution - see [`--top-k 40`](#--top-k-40-a-faster-constrained-decode-with-different-semantics). |
-| `--top-p F` | Nucleus sampling threshold. |
-| `--min-p F` | Probability floor relative to the top candidate; `0` disables it. |
-| `--repeat-penalty F` | Recent-token penalty; `1` disables it. |
-| `--rope-scale F` | Force linear rope position scaling. |
-| `--yarn-factor F` | Override a model's native YaRN factor while preserving its original context and correction parameters. Refuses models without YaRN metadata and conflicts with `--rope-scale`. |
-| `--rope-base F` | Override the rope frequency base. |
-| `--system TEXT` | System prompt in interactive chat (`-i`) only; refused in raw one-shot and server modes. |
-| `--chat-template NAME` | Force `chatml`, `chatml-think`, `llama2`, `llama3`, `mistral`, `mistral-v1`, `mistral-nemo`, `zephyr`, `phi3`, `gemma`, `gemma4`, `gemma4-mainline`, `apertus`, `ornith`, `granite42`, `qwen38`, `qwen3-coder`, `muse`, `granite`, `harmony`, or `raw`; default is auto-detection. The three Mistral framings are not interchangeable: `mistral` is the v0.3 / Mistral-Small-2409 form and the fallback for an unrecognised Mistral template, `mistral-v1` is v0.1/v0.2, `mistral-nemo` is Nemo-Instruct-2407. They differ by a space beside each `[INST]`/`[/INST]` marker and by which user turn carries the system prompt - one SentencePiece token per divergent space. gemma-4 likewise ships two chat-template revisions that auto-detect and are byte-exact to their own reference: `gemma4` is the E-series (E2B/E4B) form, `gemma4-mainline` is the 12B/26B-A4B/31B form, which pre-seeds an empty thought block on the thinking-off generation prompt where the E-series pre-seeds nothing. Applies to interactive chat and to `--serve`, including reloads after `/unload` or a `--ttl` expiry. An unrecognized name is an error, and the flag is refused with a swap set (`-m "name=path,name2=path2"`) because it names one template for a set of models that each detect their own - serve that model on its own instance instead. |
-| `--no-bos` | Do not add the beginning-of-sequence token. |
-| `--ignore-eos` | Continue generation past end-of-text tokens. |
+| File format | GGUF v2/v3, mmap/file-mapped host weights, including standard local multi-part sets. |
+| Tokenizers | SPM and byte-level BPE with llama, qwen2/qwen35, smollm, afmoe, tekken, llama4/gpt-4o, Gemma, and GPT-2-family (including `granite-docling`) pre-tokenization rules. |
+| Quantizations | `--caps` lists the admitted tensor formats: the k-quant and legacy families plus MXFP4, NVFP4 (two-level, with its per-tensor scale companion applied) and the codebook i-quants (IQ1_S/M, IQ2_XXS/XS/S, IQ3_XXS/S, IQ4_NL/XS). CUDA serves every one of them; on Metal, NVFP4 and the IQ1, IQ2 and IQ3 families are CPU-only and the backend refuses them loudly, naming the exact tensor and type that caused the CPU fallback. |
+| Transformer | RMSNorm, adjacent-pair and NeoX RoPE, grouped-query attention, SwiGLU/GELU/xIELU family paths, tied embeddings, dense and selected sparse MoE. |
+| Sampling | Greedy, temperature, top-k, top-p, min-p, repeat penalty, stop strings, JSON/schema constraints, speculative decoding. |
+| Context | Batched prefill, f16/q8 KV, linear/YaRN/llama-3 scaling, automatic extension. |
+| Serving | Chat Completions, Responses, legacy completions, embeddings, Anthropic Messages, SSE, parallel slots, model swap, prefix reuse. |
+| Desktop | macOS menu bar and Windows notification-area controller. |
+| Provenance | Replay-verifiable transcripts; Ed25519- or ML-DSA-44-signed, chained receipts with a one-exit-code verifier; OpenSSF Model Signing verification of the loaded GGUF (key method, P-256/384/521). |
 
-### Placement and memory
+Not implemented: Vulkan; TLS/auth; remote bind; remote/streamed GGUF parts; the
+`qwen2moe`/`deepseek2`/`kimi` architecture IDs (their shared-expert *layout* is
+implemented, as above - the architectures are not admitted) or MLA attention;
+Mamba/Jamba; MTP/NextN draft-head consumption on the GPU backends or with more
+than one predictor block (`--mtp` serves the single-block CPU case; without
+the flag the tensors load and are skipped, so dense decoding is unchanged);
+OMS model signatures by the certificate or keyless (Fulcio/Rekor) methods, or
+with shard or BLAKE serialization (reported as unsupported, never as
+verified); full GBNF; image/document inputs;
+hosted tools; response persistence; or parallel tool calls on the Responses and
+Messages surfaces (Chat Completions supports it, buffered and streaming).
 
-| Option | Purpose |
-|---|---|
-| `--gpu auto\|off` | Auto-detect offload, or force CPU. |
-| `--gpu-layers N` | Force the first `N` layers onto the GPU; `0` means no GPU. Omit for auto-fit. On Metal it also overrides the residency veto: a model larger than available RAM is refused for auto-selected partial offload, because nothing pinned can be held resident and the measured result was 8-35x slower decode, but an explicit `--gpu-layers N` splits it anyway. |
-| `--cpu-moe [N\|auto]` | CUDA hybrid placement: keep all, the deepest `N`, or an auto-fit set of expert FFNs in system RAM. |
-| `--wait-for-vram [S]` | Wait for another registered runner to release VRAM, default `300` seconds, instead of failing immediately. |
-| `--vram-priority N` | Advisory priority tag on this claim, default `0` (also `RUNNER_VRAM_PRIORITY`). See [VRAM registry: priority and cooperative yield](#vram-registry-priority-and-cooperative-yield). |
-| `--yield-on-request` | In `--serve`, release the resident model at the next idle point when another process has asked it to. See the same section. |
-| `--reserve P` | Limit this process to `P` percent of total RAM and VRAM. |
-| `--reserve-vram P` | Override only the VRAM budget. The CUDA layer fit spends a budget that starts from the driver's free-memory view, is bounded by the OS video-memory budget for this process where the OS publishes one (Windows, WDDM: `IDXGIAdapter3::QueryVideoMemoryInfo` on the adapter matched by LUID, minus what the process already holds), is capped by this flag, and keeps a headroom of the larger of 512 MiB and one sixteenth of the budget for the driver context, PTX JIT, allocator slack and the OS reserve. The 2026-09-14 Windows report's 12 GB card was filled to 11.7 GB from the driver's view alone and paged over PCIe; the budget and headroom the fit chose are logged at load (`gpu: OS video memory budget ...`), and `gpu: VRAM ... free after init` reports the observed remainder. Where no OS budget exists (Linux, macOS) the driver's view with that headroom is what the fit spends, said so in the log. |
-| `--reserve-ram P` | Override only the RAM budget. |
-| `--reserve-cpu P` | Size the default thread count as a percentage of cores. |
-| `--kv f16\|q8\|k8v4\|fp4` | KV cache storage. `q8` stores q8_0 blocks at about 53% of the f16 bytes; `fp4` stores E2M1 values with one UE4M3 scale per 16 channels at about 28%, so each roughly doubles the context that fits; `k8v4` keeps K at q8_0 and stores only V as fp4, about 41%, because K is the side a 4-bit cache hurts (the measured split, see below). All are lossy: output is not token-identical to an f16 cache, and the cost is measured per model with `scripts/kld-compare-raw.py` against the same file's f16 cache. f16 is the default. |
-| `--mlock` | Ask the OS to wire mapped weights into RAM; failure is non-fatal. |
-| `--moe-prefetch on\|off\|auto` | Prefetch routed expert blocks. Auto enables it only for measured oversubscribed Apple Silicon cases. |
-| `--draft PATH` | Same-vocabulary draft GGUF for speculative decoding in one-shot, chat, or single-model serve mode. A draft is refused at load on a vocabulary mismatch, a discrete-VRAM (CUDA) fully-offloaded target or CUDA-resident recurrent state (the verify walk needs host-readable hidden work; unified-memory Metal full offload qualifies since 2026-09-01 and speculates correctly, target-exact and gated byte-identical against the plain path — but measure before relying on it there: on an M5 Max the batched verify costs roughly a full decode step per column, because the dequant ALU that hides under the bandwidth floor at batch 1 becomes the critical path with columns added, and the measured 70B+1B pair decoded SLOWER speculative than plain despite 62-70% acceptance; the root-cause numbers are in docs/metal-decode-dispatch-budget-2026-09-01.md), or out of memory, and is dropped in swap mode; the run continues without it. In serve mode `GET /v1/capabilities` reports whether the draft is actually `active`, so a harness never measures the fallback as speculative decoding. |
-| `--draft-k N` | Draft tokens per speculative round, default `4`. Also the width for `--mtp` and `--draft-lookup`. All sources stop at the context boundary, including with `-n -1`; a final verify row cannot emit a bonus beyond the context or transcript token buffer. |
-| `--mtp` | Draft from the model's own NextN/MTP predictor block instead of a second model. Single-model serving preserves the head and draft width after `/unload`, `keep_alive: 0`, and TTL expiry. The export must declare exactly one block (`<arch>.nextn_predict_layers = 1`, as the MTP-preserved Qwen3.5/3.6 GGUFs do); the head runs on the CPU path only for now (`--gpu off`; a GPU-resident target is refused rather than silently decoded plain), on dense-attention or Gated DeltaNet backbones. Output is token-identical to plain decoding: the head only proposes, the target's verify walk decides, and on the CPU path a verify row is computed with the same dot the solo step uses, so the agreement is by construction. Measured 2026-09-02 on Qwen3.5-4B Q8_0 (32 threads, AVX-512): 1.31x decode on code and 1.08x on prose at `--draft-k 1` with `RUNNER_CPU_I8=1`, 1.17x and parity on the default f32 route, acceptance 75-94% for the first draft; wider windows lose on this hybrid model because every divergent round re-folds its recurrent state, and a 4-core AVX2 desktop is compute-bound in the dot itself and decodes SLOWER with `--mtp` at every width. Numbers, the profile, and the two walk fixes it took are in `docs/performance.md`. |
-| `--draft-lookup` | The fourth draft source, and the only one that needs no weights and no draft forward: prompt lookup. Each round the last n context tokens (prompt plus everything generated so far, n from 5 down to 3, longest match first) are searched for in the context itself, and the tokens that followed their most recent earlier occurrence are proposed, up to `--draft-k`; no match proposes nothing, so that round is plain decoding plus one integer search. Good for input-grounded output: repeating or quoting a document, summaries that reuse the source's wording, small code edits, tool results echoed back. Output is token-identical to plain decoding, greedy and seeded alike, because the target's verify walk decides every token (pinned in `make test` on three prompt shapes; the search itself is pinned against hand-computed proposals). One draft source per run: combining it with `--draft` or `--mtp` is refused at startup rather than silently ignored; grammar fast-forward still composes, as it does with the others. Works in one-shot, chat and single-model serve mode (`draft.source` is `lookup` in `GET /v1/capabilities`; ignored in swap mode with a `reason`), on every path the verify walk runs on (CPU, and the same GPU cases `--draft` accepts). Measured 2026-09-04 on an M1 CPU: 1.47x on a verbatim repeat at 98% acceptance and parity elsewhere on SmolLM2-135M Q8_0, and a LOSS on every row but the repeat on the compute-bound TinyLlama-1.1B Q2_K (0.84-0.93x), because a rejected draft is a wasted verify column; the literature's 2-4x needs a bandwidth-bound decode, which a resident 3B-8B Q8_0 would be and the 8 GB box could not hold that day. The tables, the negative rows included, are in [docs/context-drafts.md](docs/context-drafts.md). |
-| `--draft-required` | Fail the run instead of decoding plain when `--draft` is refused. The drop is deliberate and stays the default, but in local one-shot and interactive modes it is announced only on stderr beside a zero exit, so automation that collects stdout and checks the return code can record an unaccelerated run as speculative decoding. This flag closes that hole for benchmarks and scripted chat; it needs `--draft`, and it is refused in serve mode rather than accepted with no effect, because `GET /v1/capabilities` already reports whether the draft is `active` there. |
+## Build and platforms
 
-### Conversion, diagnostics, and integration
+<a id="build-from-source"></a>
+### Build from source
 
-| Option | Purpose |
-|---|---|
-| `--quantize OUT` | Rewrite the loaded model to `OUT` and exit. |
-| `--context-surgery OUT` | Compile `-c TARGET --yarn-factor FACTOR` into a native-YaRN GGUF and write `OUT.context.json` provenance. The target must equal original context × factor and extend both source values. Every tensor payload is independently reparsed and byte-compared before success; precision does not change. |
-| `--quant q8_0\|q4_0\|q3_k\|q4_k\|q6_k\|f16\|bf16\|keep` | Requantization target; default `q4_0`, or keep per-tensor types when pruning or merging alone. Requires `--quantize` or `--merge-lora`; without either the flag is refused rather than ignored. |
-| `--type-plan PLAN.json` | Per-tensor rewrite plan. First substring rule wins; types are `keep`, `q8_0`, `q4_0`, `q3_k`, `q4_k`, `q6_k`, `f16`, and `bf16`. Example: `{"default":"keep","rules":[{"match":"_exps.weight","type":"q3_k"}]}`. Requires `--quantize`. A rule that cannot be honoured for a tensor - the type's block does not divide the row width, or it would not make the tensor smaller - leaves that tensor at its source type and is reported on stderr BY NAME with the type it asked for, so the built file can differ from the plan as written. `scripts/type-plan-size.py` predicts the exact size and per-type histogram, including declines, before you build. |
-| `--merge-lora OUT` | Fold `--lora` into the base weights and write a standalone GGUF that runs in any GGUF runtime: `W' = W + (alpha/r)·B·A` per adapted projection, each tensor requantized to its own type (or `--quant T`), untouched tensors copied byte-verbatim, `OUT.merge.json` provenance (base/adapter/merged sha256s) written beside it. Deterministic: same inputs, byte-identical merged file. Merging into a quantized type rounds the delta through that type's grid - the merged artifact's fidelity is a measurement, not a given; `base + --lora` remains the exact form. |
-| `--prune-experts FILE` | Apply a per-layer MoE expert keep-list while rewriting. Requires `--quantize`. |
-| `--remove-sublayer attn:N[,mlp:M,...]` | Physically drop block N's attention (or block M's dense FFN) tensors while rewriting, declaring the absence with a `0` in the per-block `attention.head_count` / `head_count_kv` (or `feed_forward_length`) array, llama.cpp's own convention. The pre-norm stays. The runner omits the branch and reserves no KV rows for it; CPU path, dense blocks only. Requires `--quantize`. See "Sublayer removal" below. |
-| `--bench-json` | Run the built-in prompt/decode benchmark and print JSON metrics. |
-| `--lora FILE`, `--lora-scale F` | Load a LoRA adapter GGUF beside the frozen quantized base (llama.cpp adapter naming: `blk.N.<proj>.weight.lora_a/_b` + `adapter.lora.alpha`; F32, F16 or BF16 tensors - F16 is what llama.cpp's `convert_lora_to_gguf` emits, and a community adapter in that format loads and serves, measured). Interop runs the other way too: an adapter runner trained scores identically (1.000 on its held-out eval) when served by stock llama.cpp. Applied as `y += scale·B(Ax)` on the dense projections (attention q/k/v/output, FFN gate/up/down) - the base weights and kernels are untouched, so every base identity gate still describes the adapted run's substrate. Runs on the CPU and, on CUDA, on the device: an offloaded block applies the delta from adapter weights held in VRAM (36.9 MB at rank 8 on a 1.5B), a partial split lets each half apply its own blocks, and the CPU-versus-GPU gap with the adapter is no wider than without it (max \|Δlogprob\| 1.110e-3 against 1.255e-3, Qwen2.5-1.5B Q4_K_M, RTX 3070). Fails closed by name on shape/rank mismatches, unknown targets, recurrent/gemma-4-MoE architectures, and a backend with no adapter path (Metal today), rather than serving a model that ignored the adapter on its offloaded blocks. A zero adapter is gated byte-identical to the bare base; a real adapter is gated against the merged-weights reference. The adapter id joins the engine's model identity, so cached prefixes never cross an adapter boundary. The adapter and scale apply to every serving slot and every reload after `/unload` or TTL expiry, including named registry entries; an incompatible or missing adapter refuses that load. Draft models do not inherit the target adapter. |
-| `--train FILE`, `--train-steps`, `--lr`, `--train-ctx`, `--train-out`, `--save-every`, `--lora-rank` | AdamW LoRA training in the serving binary (position-batched and threaded under a byte-exact contract - 4B trains at ~20 s/step on a many-core host, 2.3× over the first release; the optional `RUNNER_TRAIN_GPU=1` CUDA assist puts the backward's transposed matvecs on the device and, since its position grid, is the faster arm on a consumer box - Qwen2.5-7B Q4_K_M at 64.8 s/step against 76.5 on 8 CPU threads, 2.2× its own previous kernel, RTX 3070; the adapter bytes are gated invariant across binaries, thread counts and the assist): plain-text corpora or `.jsonl` lines `{"prompt","completion","weight"}` with the prompt masked from the loss and per-example weights (the policy-gradient hook `scripts/train-grpo-lite.py` drives). Fresh adapters start as an exact no-op (A seeded, B zero); checkpoints are adapter GGUFs that `--lora` loads back. Deterministic by default: same data + same seed produce a byte-identical adapter file, gated in `make test`. Design, gates and measured results: [docs/adaptation-engine.md](docs/adaptation-engine.md). |
-| `--score` | Teacher-forced scoring: per-token log P(token\|prefix) over the raw `-p`/`-f` text - no template, no sampling - printed as JSON (`xyntetik.runner.score.v1`) with per-position logprobs, NLL, perplexity, and the absolute next-token `top1`/`top1_rate` beside `n_vocab`. The default path scores one forward per position, the exact numerics the sampler sees at decode time; `RUNNER_SCORE_CHUNKED=1` opts into a faster batched pass whose deviation from solo is measured and test-pinned (max \|Δlogprob\| ~1e-6 on the fixtures - the CPU batched forward is not bit-identical to solo, and scoring defaults to exactness over speed). `top1` exists so a harness can check the run instead of trusting it: a token with probability above 0.5 must be the argmax and an argmax token must carry at least `1/n_vocab`, so the reported count is bracketed by the reported logprobs, and a scorer that disagrees with itself fails loudly rather than returning a confident wrong perplexity. |
-| `--transcript FILE` | Record a one-shot `-p` run as `xyntetik.runner.transcript.v1`: model, adapter and binary hashes; the effective execution profile (including fallback KV type and GPU layer count); the exact 64-bit seed and sampling config; prompt/output text and token ids; the exact streamed output bytes as `output.bytes_hex` (tokenizer pieces need not individually be valid UTF-8); a `speculation` object naming the draft source (`model`, `mtp` or `lookup`) with its round, drafted and accepted counts when one was configured (absent for plain decoding, so those records are unchanged); and a chain hash over the serialized record body. |
-| `--verify FILE` | Replay a transcript against `-m` and report `VERIFIED` (exit 0), `DIVERGED` at a token or output byte (exit 2), or `UNVERIFIABLE` for an invalid record or artifact mismatch (exit 3). The recorded replay settings override conflicting CLI values. See [the exact determinism scope](docs/determinism-scope.md). |
-| `--keygen FILE` | Write a receipt-signing key (`xyntetik.runner.signkey.v1`: `algo`, the 32-byte seed and the public key as hex) to FILE and print the public key. Needs no `-m`; the seed comes from the OS generator. Keep the file private. |
-| `--keygen-algo ALGO` | With `--keygen`: `ed25519` (default; RFC 8032, 32-byte key, 64-byte signature) or `ml-dsa-44` (FIPS 204, post-quantum; 1312-byte key, 2420-byte signature; deterministic keygen and signing, verified against the NIST ACVP known answers). Verification accepts both; the record's signature object names its algorithm. |
-| `--sign-record FILE`, `--record-prev FILE`, `--check-record FILE` | Sign a JSON object in place with `--sign-key`, optionally link it to a previous signed record, or verify its signature and chain fields. Shadow delegation receipts use this generic interface. |
-| `--train-eot` | Append the selected template's end-of-turn token to each JSONL completion target. Opt-in; without it the supplied completion is the complete target. |
-| `--train-dpo FILE` | Train an adapter from JSONL `prompt`, `chosen`, `rejected` pairs. CPU forward/backward path; the frozen base is the reference, evaluated with the adapter bypassed. Does not activate the output adapter. |
-| `--dpo-beta F` | DPO reference-deviation coefficient (default `0.1`). Uses the existing training step, learning-rate, context and output options. |
-| `--sign-key FILE` | With `--transcript`: sign the receipt with the key in FILE. The signature object is appended inside the record after the chain and covers every byte before its own `,"signature"` key, chain hash included, so any Ed25519 (or ML-DSA-44) library verifies it from the file bytes and the embedded public key alone. |
-| `--transcript-prev FILE` | With `--transcript`: link the new receipt to FILE (FILE's chain hash becomes this record's `chain.prev`; a chain head carries 64 zeros). With `--verify`: check that link, `UNVERIFIABLE` on a break. |
-| `--require-signed` | With `--verify`: an unsigned record is `UNVERIFIABLE`. Signature, trust and link checks all run before the model is loaded for the replay. |
-| `--trust-key HEX` | With `--verify`: the record must be signed by this public key, given as its hex bytes or as `sha256:` plus the hex SHA-256 of those bytes (an ML-DSA-44 key is 2624 hex characters; its digest fits a policy file); unsigned, or signed by any other key, is `UNVERIFIABLE`. The verdict JSON carries `signed`, `public_key` and `prev` either way. |
-| `--model-sig FILE` | An OpenSSF Model Signing (OMS) bundle for `-m`, verified at load against `--model-pubkey`: the ECDSA signature over the DSSE pre-authentication encoding (P-256/384/521, SHA-256 first, then the curve-matched digest), the in-toto statement and predicate type, the `files`/`sha256` serialization, and the loaded file's digest against the manifest entry naming it (`.` for a single-file model). An explicit bundle that does not verify refuses the load. Without the flag, `<model>.sig` beside the model is picked up when it exists: verified when a key is given, reported as unverified otherwise. The receipt records the verdict as `model_signature`. Key method only; certificate and keyless bundles are refused as unsupported, never passed. Measured 2026-09-02 against bundles written by the reference signer (`model_signing` 1.1.1, key method, P-256) and against RFC 6979 vectors for all three curves. |
-| `--model-pubkey FILE` | The PEM `PUBLIC KEY` (EC, P-256/384/521) an OMS bundle must verify with. Given without `--model-sig`, it turns an auto-detected `<model>.sig` into a gate. |
-| `--require-signed-model` | Refuse to load `-m` unless an OMS bundle is present and verifies with `--model-pubkey`. The policy applies to named registry entries, every serving slot, and reloads after unload or TTL expiry. Registry refusals return HTTP 409 with `model_signature_refused`; the server stays available. Without `--model-sig`, each load discovers that model's own `.sig` sidecar. |
-| `--caps` | Print machine, backend, quant, architecture, placement, and sampling capabilities as JSON. |
-| `--tool-info` | With `-m`, print the model's tool-call protocol as JSON (`{"tool_family":…,"native_tool_protocol":…}`) and exit. No manifest required. |
-| `--shadow-mode` | Install shadow mode for Claude Code and Codex if present, asking first (`--yes` skips the question); `-m MODEL` names the model the `/shadow` offload serves. Hands off to the stdlib-only Python client beside the binary (`python/src`); see the shadow-mode section. |
-| `--fit PATH` | Estimate whether a GGUF fits this machine and exit. Reads only the header, so a partial download answers the question. |
-| `--version` | Print the version and exit. |
-| `-h`, `--help` | Print the option reference to stdout and exit `0`. Help asked for is written to stdout; help printed because something went wrong goes to stderr with a non-zero exit. |
-| `--parent-pid N` | Exit when process `N` dies; intended for supervisor cleanup. |
-| `-v` | Print verbose model and memory information. On a sliding-window model this includes a `kv reachable` line beside `kv cache`: every layer is allocated `n_ctx` rows, but a sliding layer never attends further back than its window, so the rest is written once and never read. The gap is large enough to decide a context length - gemma-3-4b at `-c 32768` allocates 4563 MB and can reach 793 MB of it - and it is a ceiling, not a correctness problem: answers are unaffected, the cache is simply bigger than the model can use. |
-
-#### Deciding before you download
-
-`--fit` answers "will this run here" from a model's GGUF **header**, which is
-the first few megabytes of the file:
-
-```console
-$ runner --fit Trinity-Nano-Preview-Q4_K_M.gguf
-fit: Trinity-Nano-Preview-Q4_K_M.gguf
-  model         afmoe, 56 layers, MoE 128 experts, 8 used
-  weights       3.53 GiB
-  hot set       0.66 GiB  (only the routed experts a token actually uses)
-  kv cache      0.22 GiB at ctx 4096, f16   |  0.12 GiB with --kv q8
-  available RAM 3.25 GiB right now
-  verdict       FITS — 2.37 GiB to spare at ctx 4096
-  note          the verdict uses the hot set; a sparse MoE runs usefully while the file exceeds RAM
-  note          KV is an upper bound: models with per-layer KV geometry (shared KV, MLA) use less
-```
-
-The verdict is `FITS`, `FITS WITH --kv q8` (or `k8v4`, or `fp4`), or `PAGES`, always with the
-arithmetic that produced it. `-c N` sizes the KV estimate for the context you
-actually intend to run. For a sparse MoE the verdict uses the **hot set**, not
-the file size, because only the routed experts a token selects are touched -
-which is why a 3.53 GiB file can be a comfortable fit in 3.25 GiB.
-
-The runner does not download anything, and `--fit` is not a reason to teach it
-HTTP. Fetch a header yourself with a ranged read - 16 MiB covers a large
-vocabulary; smaller models need far less:
+Download a prebuilt binary from the [latest release](../../releases/latest)
+for Linux, macOS, or Windows, or build from source:
 
 ```sh
-curl -r 0-16777215 -L -o head.gguf \
-  https://huggingface.co/ORG/REPO/resolve/main/MODEL.gguf
-runner --fit head.gguf
+git clone https://github.com/Joakimpalm-Zen/xyntetik-runner
+cd xyntetik-runner
+make
+./runner --version   # -> runner 0.5.5
 ```
 
-The sizes reported from a truncated header are the **whole** model's, because
-they come from the tensor descriptors rather than from how many bytes arrived.
-Loading such a file still fails, as it should: the normal loader refuses a GGUF
-whose data section does not cover the tensors it declares, and `--fit` reads
-through a separate path rather than relaxing that check.
+CUDA builds and releases need only an NVIDIA driver at runtime. The CUDA
+toolkit is needed only by developers regenerating the embedded PTX.
 
-### Usage behavior
+> **GPU driver requirement - raised.** GPU execution now requires an NVIDIA
+> driver with **CUDA 13.0 support or newer** (the R580 driver series). The
+> embedded PTX is generated by the CUDA 13.0 toolchain (PTX ISA 9.0) to add
+> the BF16 and Q2_K device kernels; older drivers - the previous floor was
+> the CUDA ~11.8 era - will fail to JIT it, and the runner then reports the
+> failure and **falls back to CPU** rather than computing wrong. CPU-only
+> execution is unaffected. Check your driver's CUDA level with `nvidia-smi`
+> (top-right "CUDA Version").
 
-Use chat mode or an API chat surface to judge an instruction-tuned model.
-Raw `-p` completion deliberately bypasses chat framing and is primarily useful
-for benchmarks and deterministic comparison gates.
+Release archives name the binary for their platform - `runner-macos-arm64`,
+`runner-linux-x86_64`, `runner-windows-x86_64.exe` - so either rename it to
+`runner` or substitute that name in the commands below. A source build produces
+`runner` directly.
 
-Sampling defaults come from a per-family preset selected from the detected
-chat template, model metadata and filename. The chosen preset is logged at
-load, `--caps` publishes the full preset table with each preset's source,
-and explicit sampling flags always win. At `--temp 0`, runner returns the
-model argmax without applying repeat penalty. The presets are the
-publishers' pinned `generation_config.json` values where a publisher ships
-them (Gemma 3 and Gemma 4: temperature 1.0, top_k 64, top_p 0.95, no
-repetition penalty; Qwen 3.8: 1.0 / 0.95 / 20; Qwen3-Coder: 0.7 / 0.8 / 20
-with 1.05; Granite 4.2: 1.0 / 0.95; the audit is in
-`docs/cross-family-remedy-2026-09-14.md`). Where a preset carries a value
-the publisher never stated, its source says so: the `repeat_penalty 1.10`
-of the llama3, mistral, smollm2, lucie and teuken presets is runner's own
-calibration, not the vendor's. Gemma 4 used to inherit Gemma 3's preset,
-which until 2026-09-14 carried that same 1.10 under the Gemma team's
-citation; at the family's temperature 1.0 the penalty turned every native
-tool call into special-token soup (the 2026-09-14 Windows report, 12B QAT
-Q4_0: 0 of 4 tool cases with it, 4 of 4 without). The penalty window holds
-the tokens the model generated, never the prompt (since 2026-09-15: a tool
-schema in a raw `/v1/completions` prompt held exactly the tokens a call
-must re-type, and the generic preset's penalty, 1.0 now where it was 1.10,
-turned every sampled call into schema-avoiding spellings while greedy
-stayed perfect; `tests/test_penalty_window.c`). A request can read back
-what it was served with: `runner_telemetry.sampling` carries the preset,
-the five effective values, the seed and each value's source (`preset`,
-`cli` or `request`), and `runner_telemetry.tool_protocol` the template, the
-tool-protocol family, whether tools were declared, whether a grammar
-constrained the turn and whether a native protocol was parsed without one.
-`GET /v1/capabilities` reports the resident model's `template` and
-`tool_protocol` beside its `sampling` block. Gate:
-`tests/test_sampling_defaults.py` (positive-temperature family defaults
-with a fixed seed, explicit penalty 1.0 and 1.1, the greedy control,
-request isolation, CLI precedence).
+```sh
+make          # release build: ./runner or runner.exe
+make debug    # ASan/UBSan development build where supported
+make test     # unit, fixture, generated-source, and backend gates
+```
 
-Interactive chat keeps its KV state across turns and auto-detects the template
-from metadata and vocabulary. Thinking channels are displayed separately.
-The server additionally reuses the longest shared prompt prefix across
-requests.
+Runner uses ordinary platform C, math, threading, mmap/file-mapping, and
+dynamic-loader libraries. GGUF is little-endian, so little-endian hosts are
+required.
 
-On macOS and Windows, a session you sit with - a bare invocation, `--serve`, or
-`-i` - also raises the desktop tray, which is left running afterwards. One-shot
-`-p` runs, tooling modes, pipes, scripts, CI, and Linux keep text-mode
-behavior, and `--no-tray` opts out everywhere. A run refused by an argument
-check raises nothing: the tray is detached, so one spawned by a process that
-then exits would outlive it. See [Desktop tray](#desktop-tray).
+### The T3 build: same model, same bytes, any machine (opt-in)
+
+```sh
+make T3=1            # strict float, portable math, canonical-order kernels
+./runner --version   # runner vX.Y.Z (t3)
+```
+
+The default build uses fast-math and each ISA's own SIMD reduction order,
+so two machines agree on every sampled token (tier T2) but not on the last
+bits of the logits. `make T3=1` removes the three causes of that
+difference: it compiles without fast-math or fused-multiply-add
+contraction, replaces libm's `expf`, `logf`, `sinf`, `cosf`, `tanhf` and
+`powf` with implementations over IEEE add, multiply and divide only
+(`src/pmath.h`), and dispatches the F32, F16 and Q8_0 dot products to
+kernels that compute one fixed reduction tree on every target
+(`RUNNER_CANON_KERNELS`, gated bit for bit in `tests/test_canon_kernels.c`).
+Measured on a 165-token scoring run of the same Q8_0 model: 0 of 165
+positions bit-identical between an Apple M1 and an x86-64 box in the
+default build, 165 of 165 in the T3 build, and the same on riscv64 under
+qemu. Cost: 7% decode on x86-64, 17% on the M1, all of it the strict-float
+flags. A T3 receipt carries `"flavor":"t3"` in its `build` object. This is
+measured, not yet a claimed tier: the batched prefill tile, the k-quant
+formats, MoE and the GPU backends are not canonical yet. Details and
+tables in [docs/portable-bitexact-2026-09-05.md](docs/portable-bitexact-2026-09-05.md);
+`make cross-riscv64` builds the same configuration for riscv64 with zig.
+
+| Platform | Toolchain | Accelerated path |
+|---|---|---|
+| Linux x86_64 | GCC | AVX2/FMA; CUDA on NVIDIA Turing / compute capability 7.5 or newer, driver with CUDA 13.0+ support (R580 series) |
+| macOS arm64 | Apple Clang | ARM NEON; Metal on Apple Silicon |
+| Windows x86_64 | MinGW-w64 via MSYS2 | AVX2/FMA; CUDA on NVIDIA Turing / compute capability 7.5 or newer, driver with CUDA 13.0+ support (R580 series) |
+
+CI builds all three and runs the suite on hosted machines, which have no GPU.
+The accelerated halves of that table are verified on physical hardware, and
+[docs/device-evidence.json](docs/device-evidence.json) records when each was
+last run, written from the runner's own `--caps` on the machine in question.
+`make release-check` refuses a tag while one of them is stale, so the table
+above is a claim somebody re-checks rather than one that decays quietly.
+
+On Windows, install `make` and `mingw-w64-ucrt-x86_64-gcc` from an MSYS2 UCRT64
+shell, then run `make`.
+
+### Container image
+
+Each release publishes a CPU image - the same binary on a distroless glibc base,
+nothing else - to `ghcr.io/joakimpalm-zen/xyntetik-runner:v<version>` (the
+tag carries the `v`, e.g. `:v0.5.5`) and `:latest`. Build it yourself with `docker build -t runner .`.
+
+The server binds **loopback only** by design (there is no `--host`/`0.0.0.0`
+flag), so it never exposes itself to a network, even in a container - which
+shapes how you run it:
+
+```sh
+# One-shot inference (no networking):
+docker run --rm -v "$PWD/models:/models" \
+  ghcr.io/joakimpalm-zen/xyntetik-runner:latest \
+  -m /models/your.gguf -p "hello" -n 128 --gpu off
+
+# Serve on the host's localhost (Linux; --network host shares the host loopback,
+# so the loopback-only server is reachable at 127.0.0.1:8080 on the host only):
+docker run --rm --network host -v "$PWD/models:/models" \
+  ghcr.io/joakimpalm-zen/xyntetik-runner:latest \
+  -m /models/your.gguf --serve --port 8080
+```
+
+`-p 8080:8080` does not work - the port-proxy cannot reach a server bound to the
+container's own loopback; use `--network host`. There is no auth boundary, so
+keep any deployment on a trusted host.
+
+The image is **CPU by default, but GPU-capable without a separate variant.** The
+binary loads the CUDA **driver** at runtime (`libcuda.so.1`, the driver API) and
+carries its kernels as embedded PTX, so it needs no CUDA toolkit baked in - run
+it on an NVIDIA host with the NVIDIA Container Toolkit and `--gpus all` and the
+runner uses the GPU:
+
+```sh
+docker run --rm --gpus all --network host -v "$PWD/models:/models" \
+  ghcr.io/joakimpalm-zen/xyntetik-runner:latest \
+  -m /models/your.gguf --serve --port 8080
+```
+
+(A `nvidia/cuda`-based image is deliberately not published - it would only add a
+CUDA runtime the driver-API path never calls.) Verified on an RTX 3070 via WSL2
+(2026-08-19, Docker 29.1.3 + NVIDIA Container Toolkit 1.19.1): the same
+distroless image run with `--gpus all` reports `"gpu":{"backend":"cuda","name":
+"NVIDIA GeForce RTX 3070",…}` from `runner --caps` and prints `gpu: CUDA backend
+on NVIDIA GeForce RTX 3070` with VRAM accounting at load; the identical image run
+without `--gpus` reports `"gpu":null` and runs on CPU (`libcuda.so.1` absent), so
+the flag is what makes the difference. A generation attempt in that case says
+that the CUDA driver library is unavailable before continuing on the CPU;
+runtime/device discovery and backend staging failures likewise name the failed
+stage instead of looking like a successful GPU admission. CUDA shared-weight
+setup also identifies the tensor upload or per-layer table/field that failed,
+including architecture-specific recurrent, sink, MoE-bias, and Gemma tables.
+Metal cannot be containerized
+(Apple-Silicon only, no passthrough).
 
 ## Runtime and hardware
 
@@ -1333,6 +1589,471 @@ field comes from, and the honesty caveats (notably that *schema-shape holding at
 `Q4_0`* is about the call **shape**, not the argument values) are documented in
 [docs/envelope-manifests/README.md](docs/envelope-manifests/README.md).
 
+## Command-line reference
+
+`runner --help` remains authoritative for the binary being executed. This
+grouped reference makes the complete interface discoverable without mixing
+flags into unrelated feature sections.
+
+### Modes and input
+
+| Option | Purpose |
+|---|---|
+| `-m PATH` | GGUF path. In serve mode, `name=path,name2=path2` enables multi-model swap mode. |
+| `-p TEXT` | One-shot prompt; escaped sequences such as `\n` are unescaped. |
+| `-f FILE` | Append file contents to the prompt. |
+| `-i` | Stateful interactive chat. |
+| `--serve` | Start the HTTP server. |
+| `--tray` | Be the macOS/Windows tray controller instead of running a model. Required where there is no terminal. See [Desktop tray](#desktop-tray). |
+| `--no-tray` | Opt out of the tray everywhere, including the one that otherwise follows `--serve` and `-i`. |
+| `--port N` | Server port, default `8080`. |
+| `--parallel N` | Independent inference slots, default `1`; eligible CUDA/Metal dense models use microbatched decode. [Details](#cli-parallel). |
+| `--ttl N` | Swap-mode idle unload timeout, default `300`; `0` disables it. |
+| `--force-uncertified` | Load a model even when its measured-envelope sidecar records an `outside-envelope` verdict for this runtime (refused by default). See [Measured-envelope gate](#measured-envelope-gate). |
+| `--json` | Constrain output to one valid JSON object. |
+| `--json-schema FILE` | Constrain output to the schema in `FILE`. |
+
+<a id="cli-parallel"></a>
+#### `--parallel N`
+
+Independent inference slots for a single-model server, default `1`. On CUDA and (since
+2026-09-01) Metal, ready slots decode as one microbatch sharing a single weight sweep
+per step — measured 1.45-1.47x aggregate decode at 4-8 slots on Metal/M5 Max, and
+**bit-identical to sequential decode** by twin-kernel construction, gated in `make test`
+(`test-batch-identity`). Dense models only; MoE/recurrent families decode sequentially.
+`RUNNER_METAL_BATCH=0` restores sequential on Metal.
+
+### Generation and context
+
+| Option | Purpose |
+|---|---|
+| `-n N` | Maximum generated tokens, default `256`; `-1` runs until EOS. |
+| `-c N` | Context length; default is the smaller of model maximum and 4096. `0` auto-fits with a reservation. |
+| `-b N` | Prompt batch size: `64` with `--gpu off`; otherwise `64`, `256` or `512` by total RAM. Explicit `-b` overrides. [Details](#cli-b). |
+| `-t N` | Worker threads; defaults to physical cores and is capped at `32`. The cap is measured, not assumed: decode PEAKS at 32 threads and regresses above it on many-core hardware (a 64-core Zen 5 box in 2026-08, and a 128-core sweep in 2026-08 where both models peaked at 32 while the previous default of 64 cost up to -41% decode and -55% prefill). Only machines with more than 64 logical CPUs are affected; below that the default is unchanged. An explicit `-t` is honoured up to 64. |
+| `-s N` | RNG seed; default is time-based. `0` is refused: it is the sampler RNG's fixed point, so it cannot produce a stream. |
+| `--think` / `--no-think` | Select thinking or non-thinking prompt shape in interactive chat only; family support varies. [Details](#cli-think). |
+| `--temp F` | Temperature; `0` is greedy and disables repeat penalty. |
+| `--top-k N` | Top-k sampling; `0` disables it. Several presets ship `0`, where setting it is a measured decode-throughput win that also changes the sampled distribution - see [`--top-k 40`](#--top-k-40-a-faster-constrained-decode-with-different-semantics). |
+| `--top-p F` | Nucleus sampling threshold. |
+| `--min-p F` | Probability floor relative to the top candidate; `0` disables it. |
+| `--repeat-penalty F` | Recent-token penalty; `1` disables it. |
+| `--rope-scale F` | Force linear rope position scaling. |
+| `--yarn-factor F` | Override a model's native YaRN factor while preserving its original context and correction parameters. Refuses models without YaRN metadata and conflicts with `--rope-scale`. |
+| `--rope-base F` | Override the rope frequency base. |
+| `--system TEXT` | System prompt in interactive chat (`-i`) only; refused in raw one-shot and server modes. |
+| `--chat-template NAME` | Override the chat template. See the complete list and family-specific thinking behavior below. [Details](#cli-chat-template). |
+| `--no-bos` | Do not add the beginning-of-sequence token. |
+| `--ignore-eos` | Continue generation past end-of-text tokens. |
+
+<a id="cli-b"></a>
+#### `-b N`
+
+Prompt batch size, default `64`. Unless `--gpu off` was given, the default is sized from
+**total** RAM instead: `512` at 12 GB or more, `256` at 6 GB or more, `64` below — so
+the tiled prefill GEMM gets more columns per dispatch (measured on Metal/M1: +9% prompt
+tok/s at 512 over the flat 64 default). Total RAM rather than free RAM on purpose: batch
+size changes how reassociating prefill paths tile their sums, and a default read off the
+machine's ambient load would make "the same command" produce different tokens on a busy
+day. A fixed machine fact cannot. `-b` always overrides.
+
+<a id="cli-think"></a>
+#### `--think` / `--no-think`
+
+In interactive chat (`-i`), request the model family's thinking or non-thinking prompt
+shape. They are refused in raw one-shot and server modes rather than being silently
+ignored; server callers use the request-level `enable_thinking` field. With neither
+flag, Runner renders whatever that family's own reference template renders, which is not
+the same answer for every family. Families without a distinct thinking prompt accept the
+flag and ignore it rather than approximate one.
+
+<a id="cli-chat-template"></a>
+#### `--chat-template NAME`
+
+Force `chatml`, `chatml-think`, `llama2`, `llama3`, `mistral`, `mistral-v1`,
+`mistral-nemo`, `zephyr`, `phi3`, `gemma`, `gemma4`, `gemma4-mainline`, `apertus`,
+`ornith`, `granite42`, `qwen38`, `qwen3-coder`, `muse`, `granite`, `harmony`, or `raw`;
+default is auto-detection. The three Mistral framings are not interchangeable: `mistral`
+is the v0.3 / Mistral-Small-2409 form and the fallback for an unrecognised Mistral
+template, `mistral-v1` is v0.1/v0.2, `mistral-nemo` is Nemo-Instruct-2407. They differ
+by a space beside each `[INST]`/`[/INST]` marker and by which user turn carries the
+system prompt - one SentencePiece token per divergent space. gemma-4 likewise ships two
+chat-template revisions that auto-detect and are byte-exact to their own reference:
+`gemma4` is the E-series (E2B/E4B) form, `gemma4-mainline` is the 12B/26B-A4B/31B form,
+which pre-seeds an empty thought block on the thinking-off generation prompt where the
+E-series pre-seeds nothing. Applies to interactive chat and to `--serve`, including
+reloads after `/unload` or a `--ttl` expiry. An unrecognized name is an error, and the
+flag is refused with a swap set (`-m "name=path,name2=path2"`) because it names one
+template for a set of models that each detect their own - serve that model on its own
+instance instead.
+
+### Placement and memory
+
+| Option | Purpose |
+|---|---|
+| `--gpu auto\|off` | Auto-detect offload, or force CPU. |
+| `--gpu-layers N` | Force the first `N` layers onto the GPU; `0` means no GPU. Omit for auto-fit. On Metal it also overrides the residency veto: a model larger than available RAM is refused for auto-selected partial offload, because nothing pinned can be held resident and the measured result was 8-35x slower decode, but an explicit `--gpu-layers N` splits it anyway. |
+| `--cpu-moe [N\|auto]` | CUDA hybrid placement: keep all, the deepest `N`, or an auto-fit set of expert FFNs in system RAM. |
+| `--wait-for-vram [S]` | Wait for another registered runner to release VRAM, default `300` seconds, instead of failing immediately. |
+| `--vram-priority N` | Advisory priority tag on this claim, default `0` (also `RUNNER_VRAM_PRIORITY`). See [VRAM registry: priority and cooperative yield](#vram-registry-priority-and-cooperative-yield). |
+| `--yield-on-request` | In `--serve`, release the resident model at the next idle point when another process has asked it to. See the same section. |
+| `--reserve P` | Limit this process to `P` percent of total RAM and VRAM. |
+| `--reserve-vram P` | Override the VRAM reservation percentage used by the CUDA layer-fit budget. [Details](#cli-reserve-vram). |
+| `--reserve-ram P` | Override only the RAM budget. |
+| `--reserve-cpu P` | Size the default thread count as a percentage of cores. |
+| `--kv f16\|q8\|k8v4\|fp4` | Choose KV cache storage; precision, memory use and backend support differ by format. [Details](#cli-kv). |
+| `--mlock` | Ask the OS to wire mapped weights into RAM; failure is non-fatal. |
+| `--moe-prefetch on\|off\|auto` | Prefetch routed expert blocks. Auto enables it only for measured oversubscribed Apple Silicon cases. |
+| `--draft PATH` | Use a same-vocabulary draft GGUF for speculative decoding; admission and backend restrictions apply. [Details](#cli-draft). |
+| `--draft-k N` | Draft tokens per speculative round, default `4`. Also the width for `--mtp` and `--draft-lookup`. All sources stop at the context boundary, including with `-n -1`; a final verify row cannot emit a bonus beyond the context or transcript token buffer. |
+| `--mtp` | Use the model’s single NextN/MTP predictor block for CPU speculative decoding. [Details](#cli-mtp). |
+| `--draft-lookup` | Draft from repeated prompt context without a second model; uses the `--draft-k` round width (default `4`). [Details](#cli-draft-lookup). |
+| `--draft-required` | Fail instead of falling back to plain decoding when a requested draft model is refused. [Details](#cli-draft-required). |
+
+<a id="cli-reserve-vram"></a>
+#### `--reserve-vram P`
+
+Override only the VRAM budget. The CUDA layer fit spends a budget that starts from the
+driver's free-memory view, is bounded by the OS video-memory budget for this process
+where the OS publishes one (Windows, WDDM: `IDXGIAdapter3::QueryVideoMemoryInfo` on the
+adapter matched by LUID, minus what the process already holds), is capped by this flag,
+and keeps a headroom of the larger of 512 MiB and one sixteenth of the budget for the
+driver context, PTX JIT, allocator slack and the OS reserve. The 2026-09-14 Windows
+report's 12 GB card was filled to 11.7 GB from the driver's view alone and paged over
+PCIe; the budget and headroom the fit chose are logged at load (`gpu: OS video memory
+budget ...`), and `gpu: VRAM ... free after init` reports the observed remainder. Where
+no OS budget exists (Linux, macOS) the driver's view with that headroom is what the fit
+spends, said so in the log.
+
+<a id="cli-kv"></a>
+#### `--kv f16|q8|k8v4|fp4`
+
+KV cache storage. `q8` stores q8_0 blocks at about 53% of the f16 bytes; `fp4` stores
+E2M1 values with one UE4M3 scale per 16 channels at about 28%, so each roughly doubles
+the context that fits; `k8v4` keeps K at q8_0 and stores only V as fp4, about 41%,
+because K is the side a 4-bit cache hurts (the measured split, see below). All are
+lossy: output is not token-identical to an f16 cache, and the cost is measured per model
+with `scripts/kld-compare-raw.py` against the same file's f16 cache. f16 is the default.
+
+<a id="cli-draft"></a>
+#### `--draft PATH`
+
+Same-vocabulary draft GGUF for speculative decoding in one-shot, chat, or single-model
+serve mode. A draft is refused at load on a vocabulary mismatch, a discrete-VRAM (CUDA)
+fully-offloaded target or CUDA-resident recurrent state (the verify walk needs
+host-readable hidden work; unified-memory Metal full offload qualifies since 2026-09-01
+and speculates correctly, target-exact and gated byte-identical against the plain path —
+but measure before relying on it there: on an M5 Max the batched verify costs roughly a
+full decode step per column, because the dequant ALU that hides under the bandwidth
+floor at batch 1 becomes the critical path with columns added, and the measured 70B+1B
+pair decoded SLOWER speculative than plain despite 62-70% acceptance; the root-cause
+numbers are in docs/metal-decode-dispatch-budget-2026-09-01.md), or out of memory, and
+is dropped in swap mode; the run continues without it. In serve mode `GET
+/v1/capabilities` reports whether the draft is actually `active`, so a harness never
+measures the fallback as speculative decoding.
+
+<a id="cli-mtp"></a>
+#### `--mtp`
+
+Draft from the model's own NextN/MTP predictor block instead of a second model.
+Single-model serving preserves the head and draft width after `/unload`, `keep_alive:
+0`, and TTL expiry. The export must declare exactly one block
+(`<arch>.nextn_predict_layers = 1`, as the MTP-preserved Qwen3.5/3.6 GGUFs do); the head
+runs on the CPU path only for now (`--gpu off`; a GPU-resident target is refused rather
+than silently decoded plain), on dense-attention or Gated DeltaNet backbones. Output is
+token-identical to plain decoding: the head only proposes, the target's verify walk
+decides, and on the CPU path a verify row is computed with the same dot the solo step
+uses, so the agreement is by construction. Measured 2026-09-02 on Qwen3.5-4B Q8_0 (32
+threads, AVX-512): 1.31x decode on code and 1.08x on prose at `--draft-k 1` with
+`RUNNER_CPU_I8=1`, 1.17x and parity on the default f32 route, acceptance 75-94% for the
+first draft; wider windows lose on this hybrid model because every divergent round
+re-folds its recurrent state, and a 4-core AVX2 desktop is compute-bound in the dot
+itself and decodes SLOWER with `--mtp` at every width. Numbers, the profile, and the two
+walk fixes it took are in `docs/performance.md`.
+
+<a id="cli-draft-lookup"></a>
+#### `--draft-lookup`
+
+The fourth draft source, and the only one that needs no weights and no draft forward:
+prompt lookup. Each round the last n context tokens (prompt plus everything generated so
+far, n from 5 down to 3, longest match first) are searched for in the context itself,
+and the tokens that followed their most recent earlier occurrence are proposed, up to
+`--draft-k`; no match proposes nothing, so that round is plain decoding plus one integer
+search. Good for input-grounded output: repeating or quoting a document, summaries that
+reuse the source's wording, small code edits, tool results echoed back. Output is
+token-identical to plain decoding, greedy and seeded alike, because the target's verify
+walk decides every token (pinned in `make test` on three prompt shapes; the search
+itself is pinned against hand-computed proposals). One draft source per run: combining
+it with `--draft` or `--mtp` is refused at startup rather than silently ignored; grammar
+fast-forward still composes, as it does with the others. Works in one-shot, chat and
+single-model serve mode (`draft.source` is `lookup` in `GET /v1/capabilities`; ignored
+in swap mode with a `reason`), on every path the verify walk runs on (CPU, and the same
+GPU cases `--draft` accepts). Measured 2026-09-04 on an M1 CPU: 1.47x on a verbatim
+repeat at 98% acceptance and parity elsewhere on SmolLM2-135M Q8_0, and a LOSS on every
+row but the repeat on the compute-bound TinyLlama-1.1B Q2_K (0.84-0.93x), because a
+rejected draft is a wasted verify column; the literature's 2-4x needs a bandwidth-bound
+decode, which a resident 3B-8B Q8_0 would be and the 8 GB box could not hold that day.
+The tables, the negative rows included, are in
+[docs/context-drafts.md](docs/context-drafts.md).
+
+<a id="cli-draft-required"></a>
+#### `--draft-required`
+
+Fail the run instead of decoding plain when `--draft` is refused. The drop is deliberate
+and stays the default, but in local one-shot and interactive modes it is announced only
+on stderr beside a zero exit, so automation that collects stdout and checks the return
+code can record an unaccelerated run as speculative decoding. This flag closes that hole
+for benchmarks and scripted chat; it needs `--draft`, and it is refused in serve mode
+rather than accepted with no effect, because `GET /v1/capabilities` already reports
+whether the draft is `active` there.
+
+### Conversion, diagnostics, and integration
+
+| Option | Purpose |
+|---|---|
+| `--quantize OUT` | Rewrite the loaded model to `OUT` and exit. |
+| `--context-surgery OUT` | Compile `-c TARGET --yarn-factor FACTOR` into a native-YaRN GGUF and write `OUT.context.json` provenance. The target must equal original context × factor and extend both source values. Every tensor payload is independently reparsed and byte-compared before success; precision does not change. |
+| `--quant q8_0\|q4_0\|q3_k\|q4_k\|q6_k\|f16\|bf16\|keep` | Requantization target; default `q4_0`, or keep per-tensor types when pruning or merging alone. Requires `--quantize` or `--merge-lora`; without either the flag is refused rather than ignored. |
+| `--type-plan PLAN.json` | Apply a per-tensor rewrite plan; first matching substring rule wins. [Details](#cli-type-plan). |
+| `--merge-lora OUT` | Merge an adapter into a standalone GGUF. Quantized merges round the delta; check the fidelity caveat below. [Details](#cli-merge-lora). |
+| `--prune-experts FILE` | Apply a per-layer MoE expert keep-list while rewriting. Requires `--quantize`. |
+| `--remove-sublayer attn:N[,mlp:M,...]` | Physically drop block N's attention (or block M's dense FFN) tensors while rewriting, declaring the absence with a `0` in the per-block `attention.head_count` / `head_count_kv` (or `feed_forward_length`) array, llama.cpp's own convention. The pre-norm stays. The runner omits the branch and reserves no KV rows for it; CPU path, dense blocks only. Requires `--quantize`. See [Sublayer removal](#sublayer-removal). |
+| `--bench-json` | Run the built-in prompt/decode benchmark and print JSON metrics. |
+| `--lora FILE`, `--lora-scale F` | Serve a LoRA adapter with the frozen base; supports CPU and CUDA, with explicit architecture restrictions. [Details](#cli-lora). |
+| `--train FILE`, `--train-steps`, `--lr`, `--train-ctx`, `--train-out`, `--save-every`, `--lora-rank` | Train a deterministic AdamW LoRA adapter from text or weighted prompt/completion JSONL. [Details](#cli-train). |
+| `--score` | Return teacher-forced token logprobs, NLL, perplexity and top-1 metrics as JSON. [Details](#cli-score). |
+| `--transcript FILE` | Record a one-shot run’s hashes, settings, tokens, output bytes and chain hash for replay. [Details](#cli-transcript). |
+| `--verify FILE` | Replay a transcript against `-m` and report `VERIFIED` (exit 0), `DIVERGED` at a token or output byte (exit 2), or `UNVERIFIABLE` for an invalid record or artifact mismatch (exit 3). The recorded replay settings override conflicting CLI values. See [the exact determinism scope](docs/determinism-scope.md). |
+| `--keygen FILE` | Write a receipt-signing key (`xyntetik.runner.signkey.v1`: `algo`, the 32-byte seed and the public key as hex) to FILE and print the public key. Needs no `-m`; the seed comes from the OS generator. Keep the file private. |
+| `--keygen-algo ALGO` | With `--keygen`: `ed25519` (default; RFC 8032, 32-byte key, 64-byte signature) or `ml-dsa-44` (FIPS 204, post-quantum; 1312-byte key, 2420-byte signature; deterministic keygen and signing, verified against the NIST ACVP known answers). Verification accepts both; the record's signature object names its algorithm. |
+| `--sign-record FILE`, `--record-prev FILE`, `--check-record FILE` | Sign a JSON object in place with `--sign-key`, optionally link it to a previous signed record, or verify its signature and chain fields. Shadow delegation receipts use this generic interface. |
+| `--train-eot` | Append the selected template's end-of-turn token to each JSONL completion target. Opt-in; without it the supplied completion is the complete target. |
+| `--train-dpo FILE` | Train an adapter from JSONL `prompt`, `chosen`, `rejected` pairs. CPU forward/backward path; the frozen base is the reference, evaluated with the adapter bypassed. Does not activate the output adapter. |
+| `--dpo-beta F` | DPO reference-deviation coefficient (default `0.1`). Uses the existing training step, learning-rate, context and output options. |
+| `--sign-key FILE` | With `--transcript`: sign the receipt with the key in FILE. The signature object is appended inside the record after the chain and covers every byte before its own `,"signature"` key, chain hash included, so any Ed25519 (or ML-DSA-44) library verifies it from the file bytes and the embedded public key alone. |
+| `--transcript-prev FILE` | With `--transcript`: link the new receipt to FILE (FILE's chain hash becomes this record's `chain.prev`; a chain head carries 64 zeros). With `--verify`: check that link, `UNVERIFIABLE` on a break. |
+| `--require-signed` | With `--verify`: an unsigned record is `UNVERIFIABLE`. Signature, trust and link checks all run before the model is loaded for the replay. |
+| `--trust-key HEX` | With `--verify`: the record must be signed by this public key, given as its hex bytes or as `sha256:` plus the hex SHA-256 of those bytes (an ML-DSA-44 key is 2624 hex characters; its digest fits a policy file); unsigned, or signed by any other key, is `UNVERIFIABLE`. The verdict JSON carries `signed`, `public_key` and `prev` either way. |
+| `--model-sig FILE` | Verify an OpenSSF Model Signing bundle against the model and supplied public key. [Details](#cli-model-sig). |
+| `--model-pubkey FILE` | The PEM `PUBLIC KEY` (EC, P-256/384/521) an OMS bundle must verify with. Given without `--model-sig`, it turns an auto-detected `<model>.sig` into a gate. |
+| `--require-signed-model` | Refuse to load `-m` unless an OMS bundle is present and verifies with `--model-pubkey`. The policy applies to named registry entries, every serving slot, and reloads after unload or TTL expiry. Registry refusals return HTTP 409 with `model_signature_refused`; the server stays available. Without `--model-sig`, each load discovers that model's own `.sig` sidecar. |
+| `--caps` | Print machine, backend, quant, architecture, placement, and sampling capabilities as JSON. |
+| `--tool-info` | With `-m`, print the model's tool-call protocol as JSON (`{"tool_family":…,"native_tool_protocol":…}`) and exit. No manifest required. |
+| `--shadow-mode` | Install shadow mode for Claude Code and Codex if present, asking first (`--yes` skips the question); `-m MODEL` names the model the `/shadow` offload serves. Hands off to the stdlib-only Python client beside the binary (`python/src`); see the shadow-mode section. |
+| `--fit PATH` | Estimate whether a GGUF fits this machine and exit. Reads only the header, so a partial download answers the question. |
+| `--version` | Print the version and exit. |
+| `-h`, `--help` | Print the option reference to stdout and exit `0`. Help asked for is written to stdout; help printed because something went wrong goes to stderr with a non-zero exit. |
+| `--parent-pid N` | Exit when process `N` dies; intended for supervisor cleanup. |
+| `-v` | Print verbose model and memory details, including allocated versus reachable sliding-window KV. [Details](#cli-v). |
+
+<a id="cli-type-plan"></a>
+#### `--type-plan PLAN.json`
+
+Per-tensor rewrite plan. First substring rule wins; types are `keep`, `q8_0`, `q4_0`,
+`q3_k`, `q4_k`, `q6_k`, `f16`, and `bf16`. Example:
+`{"default":"keep","rules":[{"match":"_exps.weight","type":"q3_k"}]}`. Requires
+`--quantize`. A rule that cannot be honoured for a tensor - the type's block does not
+divide the row width, or it would not make the tensor smaller - leaves that tensor at
+its source type and is reported on stderr BY NAME with the type it asked for, so the
+built file can differ from the plan as written. `scripts/type-plan-size.py` predicts the
+exact size and per-type histogram, including declines, before you build.
+
+<a id="cli-merge-lora"></a>
+#### `--merge-lora OUT`
+
+Fold `--lora` into the base weights and write a standalone GGUF that runs in any GGUF
+runtime: `W' = W + (alpha/r)·B·A` per adapted projection, each tensor requantized to its
+own type (or `--quant T`), untouched tensors copied byte-verbatim, `OUT.merge.json`
+provenance (base/adapter/merged sha256s) written beside it. Deterministic: same inputs,
+byte-identical merged file. Merging into a quantized type rounds the delta through that
+type's grid - the merged artifact's fidelity is a measurement, not a given; `base +
+--lora` remains the exact form.
+
+<a id="cli-lora"></a>
+#### `--lora FILE`, `--lora-scale F`
+
+Load a LoRA adapter GGUF beside the frozen quantized base (llama.cpp adapter naming:
+`blk.N.<proj>.weight.lora_a/_b` + `adapter.lora.alpha`; F32, F16 or BF16 tensors - F16
+is what llama.cpp's `convert_lora_to_gguf` emits, and a community adapter in that format
+loads and serves, measured). Interop runs the other way too: an adapter runner trained
+scores identically (1.000 on its held-out eval) when served by stock llama.cpp. Applied
+as `y += scale·B(Ax)` on the dense projections (attention q/k/v/output, FFN
+gate/up/down) - the base weights and kernels are untouched, so every base identity gate
+still describes the adapted run's substrate. Runs on the CPU and, on CUDA, on the
+device: an offloaded block applies the delta from adapter weights held in VRAM (36.9 MB
+at rank 8 on a 1.5B), a partial split lets each half apply its own blocks, and the
+CPU-versus-GPU gap with the adapter is no wider than without it (max |Δlogprob| 1.110e-3
+against 1.255e-3, Qwen2.5-1.5B Q4_K_M, RTX 3070). Fails closed by name on shape/rank
+mismatches, unknown targets, recurrent/gemma-4-MoE architectures, and a backend with no
+adapter path (Metal today), rather than serving a model that ignored the adapter on its
+offloaded blocks. A zero adapter is gated byte-identical to the bare base; a real
+adapter is gated against the merged-weights reference. The adapter id joins the engine's
+model identity, so cached prefixes never cross an adapter boundary. The adapter and
+scale apply to every serving slot and every reload after `/unload` or TTL expiry,
+including named registry entries; an incompatible or missing adapter refuses that load.
+Draft models do not inherit the target adapter.
+
+<a id="cli-train"></a>
+#### `--train FILE`, `--train-steps`, `--lr`, `--train-ctx`, `--train-out`, `--save-every`, `--lora-rank`
+
+AdamW LoRA training in the serving binary (position-batched and threaded under a
+byte-exact contract - 4B trains at ~20 s/step on a many-core host, 2.3× over the first
+release; the optional `RUNNER_TRAIN_GPU=1` CUDA assist puts the backward's transposed
+matvecs on the device and, since its position grid, is the faster arm on a consumer box
+- Qwen2.5-7B Q4_K_M at 64.8 s/step against 76.5 on 8 CPU threads, 2.2× its own previous
+kernel, RTX 3070; the adapter bytes are gated invariant across binaries, thread counts
+and the assist): plain-text corpora or `.jsonl` lines `{"prompt","completion","weight"}`
+with the prompt masked from the loss and per-example weights (the policy-gradient hook
+`scripts/train-grpo-lite.py` drives). Fresh adapters start as an exact no-op (A seeded,
+B zero); checkpoints are adapter GGUFs that `--lora` loads back. Deterministic by
+default: same data + same seed produce a byte-identical adapter file, gated in `make
+test`. Design, gates and measured results:
+[docs/adaptation-engine.md](docs/adaptation-engine.md).
+
+<a id="cli-score"></a>
+#### `--score`
+
+Teacher-forced scoring: per-token log P(token|prefix) over the raw `-p`/`-f` text - no
+template, no sampling - printed as JSON (`xyntetik.runner.score.v1`) with per-position
+logprobs, NLL, perplexity, and the absolute next-token `top1`/`top1_rate` beside
+`n_vocab`. The default path scores one forward per position, the exact numerics the
+sampler sees at decode time; `RUNNER_SCORE_CHUNKED=1` opts into a faster batched pass
+whose deviation from solo is measured and test-pinned (max |Δlogprob| ~1e-6 on the
+fixtures - the CPU batched forward is not bit-identical to solo, and scoring defaults to
+exactness over speed). `top1` exists so a harness can check the run instead of trusting
+it: a token with probability above 0.5 must be the argmax and an argmax token must carry
+at least `1/n_vocab`, so the reported count is bracketed by the reported logprobs, and a
+scorer that disagrees with itself fails loudly rather than returning a confident wrong
+perplexity.
+
+<a id="cli-transcript"></a>
+#### `--transcript FILE`
+
+Record a one-shot `-p` run as `xyntetik.runner.transcript.v1`: model, adapter and binary
+hashes; the effective execution profile (including fallback KV type and GPU layer
+count); the exact 64-bit seed and sampling config; prompt/output text and token ids; the
+exact streamed output bytes as `output.bytes_hex` (tokenizer pieces need not
+individually be valid UTF-8); a `speculation` object naming the draft source (`model`,
+`mtp` or `lookup`) with its round, drafted and accepted counts when one was configured
+(absent for plain decoding, so those records are unchanged); and a chain hash over the
+serialized record body.
+
+<a id="cli-model-sig"></a>
+#### `--model-sig FILE`
+
+An OpenSSF Model Signing (OMS) bundle for `-m`, verified at load against
+`--model-pubkey`: the ECDSA signature over the DSSE pre-authentication encoding
+(P-256/384/521, SHA-256 first, then the curve-matched digest), the in-toto statement and
+predicate type, the `files`/`sha256` serialization, and the loaded file's digest against
+the manifest entry naming it (`.` for a single-file model). An explicit bundle that does
+not verify refuses the load. Without the flag, `<model>.sig` beside the model is picked
+up when it exists: verified when a key is given, reported as unverified otherwise. The
+receipt records the verdict as `model_signature`. Key method only; certificate and
+keyless bundles are refused as unsupported, never passed. Measured 2026-09-02 against
+bundles written by the reference signer (`model_signing` 1.1.1, key method, P-256) and
+against RFC 6979 vectors for all three curves.
+
+<a id="cli-v"></a>
+#### `-v`
+
+Print verbose model and memory information. On a sliding-window model this includes a
+`kv reachable` line beside `kv cache`: every layer is allocated `n_ctx` rows, but a
+sliding layer never attends further back than its window, so the rest is written once
+and never read. The gap is large enough to decide a context length - gemma-3-4b at `-c
+32768` allocates 4563 MB and can reach 793 MB of it - and it is a ceiling, not a
+correctness problem: answers are unaffected, the cache is simply bigger than the model
+can use.
+
+#### Deciding before you download
+
+`--fit` answers "will this run here" from a model's GGUF **header**, which is
+the first few megabytes of the file:
+
+```console
+$ runner --fit Trinity-Nano-Preview-Q4_K_M.gguf
+fit: Trinity-Nano-Preview-Q4_K_M.gguf
+  model         afmoe, 56 layers, MoE 128 experts, 8 used
+  weights       3.53 GiB
+  hot set       0.66 GiB  (only the routed experts a token actually uses)
+  kv cache      0.22 GiB at ctx 4096, f16   |  0.12 GiB with --kv q8
+  available RAM 3.25 GiB right now
+  verdict       FITS — 2.37 GiB to spare at ctx 4096
+  note          the verdict uses the hot set; a sparse MoE runs usefully while the file exceeds RAM
+  note          KV is an upper bound: models with per-layer KV geometry (shared KV, MLA) use less
+```
+
+The verdict is `FITS`, `FITS WITH --kv q8` (or `k8v4`, or `fp4`), or `PAGES`, always with the
+arithmetic that produced it. `-c N` sizes the KV estimate for the context you
+actually intend to run. For a sparse MoE the verdict uses the **hot set**, not
+the file size, because only the routed experts a token selects are touched -
+which is why a 3.53 GiB file can be a comfortable fit in 3.25 GiB.
+
+`--fit` does not download anything. Fetch a header yourself with a ranged read - 16 MiB covers a large
+vocabulary; smaller models need far less:
+
+```sh
+curl -r 0-16777215 -L -o head.gguf \
+  https://huggingface.co/ORG/REPO/resolve/main/MODEL.gguf
+runner --fit head.gguf
+```
+
+The sizes reported from a truncated header are the **whole** model's, because
+they come from the tensor descriptors rather than from how many bytes arrived.
+Loading such a file still fails, as it should: the normal loader refuses a GGUF
+whose data section does not cover the tensors it declares, and `--fit` reads
+through a separate path rather than relaxing that check.
+
+### Usage behavior
+
+Use chat mode or an API chat surface to judge an instruction-tuned model.
+Raw `-p` completion deliberately bypasses chat framing and is primarily useful
+for benchmarks and deterministic comparison gates.
+
+Sampling defaults come from a per-family preset selected from the detected
+chat template, model metadata and filename. The chosen preset is logged at
+load, `--caps` publishes the full preset table with each preset's source,
+and explicit sampling flags always win. At `--temp 0`, runner returns the
+model argmax without applying repeat penalty. The presets are the
+publishers' pinned `generation_config.json` values where a publisher ships
+them (Gemma 3 and Gemma 4: temperature 1.0, top_k 64, top_p 0.95, no
+repetition penalty; Qwen 3.8: 1.0 / 0.95 / 20; Qwen3-Coder: 0.7 / 0.8 / 20
+with 1.05; Granite 4.2: 1.0 / 0.95; the audit is in
+`docs/cross-family-remedy-2026-09-14.md`). Where a preset carries a value
+the publisher never stated, its source says so: the `repeat_penalty 1.10`
+of the llama3, mistral, smollm2, lucie and teuken presets is runner's own
+calibration, not the vendor's. Gemma 4 used to inherit Gemma 3's preset,
+which until 2026-09-14 carried that same 1.10 under the Gemma team's
+citation; at the family's temperature 1.0 the penalty turned every native
+tool call into special-token soup (the 2026-09-14 Windows report, 12B QAT
+Q4_0: 0 of 4 tool cases with it, 4 of 4 without). The penalty window holds
+the tokens the model generated, never the prompt (since 2026-09-15: a tool
+schema in a raw `/v1/completions` prompt held exactly the tokens a call
+must re-type, and the generic preset's penalty, 1.0 now where it was 1.10,
+turned every sampled call into schema-avoiding spellings while greedy
+stayed perfect; `tests/test_penalty_window.c`). A request can read back
+what it was served with: `runner_telemetry.sampling` carries the preset,
+the five effective values, the seed and each value's source (`preset`,
+`cli` or `request`), and `runner_telemetry.tool_protocol` the template, the
+tool-protocol family, whether tools were declared, whether a grammar
+constrained the turn and whether a native protocol was parsed without one.
+`GET /v1/capabilities` reports the resident model's `template` and
+`tool_protocol` beside its `sampling` block. Gate:
+`tests/test_sampling_defaults.py` (positive-temperature family defaults
+with a fixed seed, explicit penalty 1.0 and 1.1, the greedy control,
+request isolation, CLI precedence).
+
+Interactive chat keeps its KV state across turns and auto-detects the template
+from metadata and vocabulary. Thinking channels are displayed separately.
+The server additionally reuses the longest shared prompt prefix across
+requests.
+
+On macOS and Windows, a session you sit with - a bare invocation, `--serve`, or
+`-i` - also raises the desktop tray, which is left running afterwards. One-shot
+`-p` runs, tooling modes, pipes, scripts, CI, and Linux keep text-mode
+behavior, and `--no-tray` opts out everywhere. A run refused by an argument
+check raises nothing: the tray is detached, so one spawned by a process that
+then exits would outlive it. See [Desktop tray](#desktop-tray).
+
 ## Serving and APIs
 
 Start a single-model server:
@@ -1511,6 +2232,48 @@ used to be range-checked and then silently dropped. A completion with no
 `POST /v1/runner/prefix-cache/clear` works everywhere and is what both
 refusals point at; serve with `--parallel 1` if you need an unloadable
 server.
+
+### Health and metrics
+
+`/health` also carries what a supervisor needs to budget several runners on
+one machine. `rss_bytes` is this **process's** resident set - weights, KV
+cache, activations and allocator overhead together - which is the number a
+machine is sized against and which no per-mapping measure accounts for;
+`peak_rss_bytes` is its high-water mark. `tokens_prompt`, `tokens_generated`
+and `generate_seconds` are cumulative monotonic totals across every API
+surface. `batch_steps` and `batch_sequences` count the scheduler's microbatch
+steps and the sequences cut into them, so `batch_sequences / batch_steps` is
+the mean batch size over your own window; both stay `0` on a server that never
+started continuous batching (a single slot, or swap mode). On CUDA they also
+stay `0` for a model whose weights use a quantization the batched path has no
+bitwise-identical kernel for - a batched step must return, per sequence, the
+bits a lone step would have, so such a model decodes its sequences one at a
+time rather than batching them into different numbers. The current CUDA
+microbatch loop covers gated dense transformer layers; recurrent, MoE, NoPE,
+attention-gated, and ungated xIELU models use sequential GPU forwards. Within
+the covered family Q8_0, Q4_0, Q4_K, Q5_K, Q6_K, F32 and F16 batch; the rest do
+not.
+
+Those are deliberately raw counters rather than a tokens-per-second field: a
+rate needs an averaging window, and the runner has no business choosing one for
+a consumer whose window differs. Difference them over your own interval. The
+endpoint does not count its own requests, so polling it on a timer does not
+show up as work.
+
+`GET /metrics` answers the same facts in Prometheus text exposition 0.0.4, so a
+monitoring stack ingests them without a translator. Every name carries the
+`runner_` prefix and every sample is preceded by its own `# HELP` and `# TYPE`:
+`runner_requests_total`, `runner_prompt_tokens_total`,
+`runner_prompt_cached_tokens_total`, `runner_generated_tokens_total`,
+`runner_generate_seconds_total`, `runner_batch_steps_total`,
+`runner_batch_sequences_total`, the six `runner_prefix_cache_*` counters and
+their three gauges, the three `runner_speculation_*` counters, and the gauges
+`runner_active_requests`, `runner_resident_memory_bytes` and
+`runner_peak_resident_memory_bytes`. It is on whenever `--serve` is, needs no
+flag, and computes nothing: there is no hit-rate and no tokens-per-second here
+for the same reason `/health` has none. Like `/health` it does not count its
+own requests, so a scraper on a timer does not measure itself.
+`GET /v1/capabilities` reports it as `features.prometheus_metrics`.
 
 ### Server environment
 
@@ -2046,450 +2809,128 @@ the user request, so use at least a 16k context for that workflow. Runner does
 not implement a response store; clients must send history each turn rather
 than use `previous_response_id`.
 
-## Shadow mode: what could your local model have done?
+<a id="why-this-and-not-llamacpp"></a>
+## Evidence and tradeoffs
 
-`python -m xyntetik_runner.shadow` is a bench with receipts: it records
-evidence about local coding attempts on your own work, and it does not train
-or learn (the proven set changes only when the model changes).
-It imports replayable tasks from local agent sessions and repository history,
-checks that their protected tests fail before the recorded fix and pass after
-it, and runs bounded local attempts in scratch worktrees. The protected tests
-are outside the model's editable workspace. Results distinguish verified fixes,
-failures, no-ops and inconclusive verification; a passing result is scoped to
-the tests that ran.
+Runner uses the ecosystem's formats: GGUF in, llama.cpp-convention
+adapter files in *and* out. An adapter Runner trains scores identically
+(1.000 on its held-out eval) served by stock llama.cpp, and community F16
+adapters load straight back into Runner - both measured, not assumed.
 
-Capture v2 also retains raw hook payloads, task provenance and bounded workspace
-snapshots in local storage under `~/.xyntetik/shadow`. Payloads may contain agent
-text and tool data. Content blobs supplement recorded Git heads; replay still
-requires the referenced repositories and Git objects. Capture reports expose
-partial snapshots and uncertain attribution. See [capture and learning
-boundaries](docs/shadow-boundaries.md) for limits and the optional verification
-event. These local records are not uploaded by Shadow.
+Runner's correctness and reproducibility **contracts** have explicit limits. Determinism as a hard promise:
+the same executable and inputs reproduce the same sampled tokens across
+runs and thread counts, and training reproduces the same adapter file
+sha256, gated in CI. Independent rebuilds are explicitly outside that
+byte-identity claim because compiler and ISA libm can differ; the full
+claim boundary, including everything deliberately NOT promised, is one
+page: [docs/determinism-scope.md](docs/determinism-scope.md). Scope as a
+promise: supported architectures are
+named, unknown ones are refused, and every backend claim is tied to an
+executable gate and pinned model evidence. Honesty as an artifact: the
+benchmark tables below include the rows where Runner loses, and the docs
+keep the failed experiments. If you want maximum architecture coverage and
+raw speed, use llama.cpp and we mean that sincerely. If you need to prove
+what your model said, what it learned from, or what you actually shipped -
+that is what this runtime is for.
 
-```sh
-runner --shadow-mode -m ~/models/a.gguf     # asks first, then wires Claude Code and Codex
-```
+**Arithmetic and performance.** Runner preserves more precision in key
+operations (activations stay
+f32 instead of being rounded to 8 bits, attention accumulates in f32
+instead of f16), as part of its numerical correctness contract. Replay and receipt guarantees
+are described in [determinism scope](docs/determinism-scope.md).
 
-That one command finds the stdlib-only Python client beside the binary (it
-ships in the release archive), tells you exactly what it will write, and
-asks before writing: prompt, stop and post-edit capture hooks plus a `/shadow`
-skill for Claude Code; prompt, stop, post-edit and verification capture hooks
-plus a `/shadow` prompt for Codex; and the model the `/shadow` offload will
-serve. Codex reviews new or changed hooks before trusting them. It ends by
-saying what happens next. The hooks run small launcher files, not shell lines, so
-they work the same under sh, cmd and PowerShell and can never fail a
-prompt: every error is swallowed and the exit code is always zero.
+Whether that arithmetic also makes Runner the *more accurate* engine
+depends on which question you ask, and both answers belong here. Twelve
+families were scored against their publishers' implementations in float32
+on 2026-09-07, both tiers, 2,000 corpus positions each, with the other
+engine given its stronger configuration at each tier.
 
-It also tells the harness what Runner can do. A capability sheet is
-written beside the ledger, and a short marked note goes into the
-harness's own instruction file (`~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md`)
-so that when you ask for something a local model could do, the assistant
-reads the sheet before proposing another local inference tool or a hosted
-API, and uses Runner where Runner does it. Your own instructions in those
-files are kept; `shadow uninstall` removes exactly the block. `--yes` skips the question
-for scripts. Inside either harness, `/shadow` then shows the ledger, and
-when you ask it to offload a task, reads where the local model has verified
-successes (`shadow routes`), runs the task on a scratch worktree with the
-repository's own tests (`shadow delegate`), and shows the diff and the
-verdict for you to apply with `git apply`; the working tree is never
-touched and nothing is applied silently. You keep your harness and your
-frontier model; the runner takes what the evidence says it can.
+On how close the whole output distribution is to the reference, Runner
+wins twenty-one of twenty-two rows, at p-values that leave no room for
+luck. On how often each engine picks the reference's token where the
+reference had a clear preference, Runner is ahead or level on twenty of
+twenty-two, but only one of those leads is big enough to be a real
+difference rather than chance: Apertus 8B at four bits, 1343 tokens
+against 1321 of 1369. Both things are true. Runner reproduces the
+reference distribution measurably better, essentially everywhere, and that
+advantage moves the winning token rarely enough that it takes well over a
+thousand qualified positions to see it once.
 
-Once the ledger holds verified successes for a repository, the local
-model works in tandem: each request that is work also starts a bounded
-attempt on a scratch copy in the background while your assistant works
-on it, and a verified result is offered to you as a patch, once, never
-applied. Every such attempt joins the ledger with the class its diff had,
-Routes keep repository and model-stack evidence separate, including adapter
-and scaffold identity; results from one stack do not qualify another. `shadow tandem off`
-stops it; `shadow delegations` lists them.
+There is no four-bit deficit. Not one row has the other engine
+significantly ahead on the token measure. The one row where it is
+genuinely closer in distribution is Gemma 4 E2B at four bits, and even
+there Runner leads the token column.
 
-The ledger fills through `sync`, which `/shadow` runs on every status:
-it imports what the hooks captured since last time, admits the tasks
-that can be replayed, and says how many wait for the local model. When
-you say so, `sync --replay N` runs the next N of them against the local
-model; nothing replays by itself. The runner these commands use stays
-warm between them, unloads by itself when idle, and is listed and ended
-by `shadow server`, so a second delegation a minute after the first does
-not pay the model load again.
+<details>
+<summary>Earlier measurements, corrected defects and the evidence trail</summary>
 
-Without `-m`, `--shadow-mode` looks for GGUF files under the usual
-directories, asks the runner's own `--fit` about each, and proposes the
-largest that fits at the offload context; the list it looked at is
-printed, and `-m` always wins.
+**What this cost us to learn is worth stating.** An earlier version of
+this section reported the same comparisons over 100 positions, where one
+token moved the number by more than a percentage point. Nearly every
+difference it showed was noise, in both directions, including one that
+appeared to put the other engine ahead on Granite 4.2 at four bits;
+measured properly Runner leads that row. **StableLM was the exception and
+it was a real defect of ours**: the architecture normalises with LayerNorm
+and Runner was applying RMSNorm, and its pre-tokenizer had no entry so a
+third of the corpus tokenized differently from the publisher's own
+tokenizer. Both are fixed and the family now reproduces the reference
+exactly. It survived because it was named as supported here with no pinned
+file and therefore no gate, so there is now a test that fails whenever an
+architecture is claimed without one. It found four more. Evidence:
+[docs/golden-pass-2026-09-07.md](docs/golden-pass-2026-09-07.md).
 
-Learning recipes and scaffold optimization belong to the optional Shade tools.
-The former `shadow adapt` and `shadow optimize` commands now print a migration
-message and exit without running. With Shade installed, their equivalents are
-`python -m xyntetik_shade.shadow adapt` and
-`python -m xyntetik_shade.shadow optimize`. Learning experiments produce candidate
-artifacts and evaluation records; they do not change Shadow's serving
-configuration. Existing configured adapters remain loadable through Runner's
-`--lora` support. Runner's low-level training and scoring commands remain part
-of the engine.
+</details>
 
-To measure first, the bench runs the models on your disk against your own
-repository's history:
+### Designed to stay on
 
-```sh
-python -m xyntetik_runner.shadow bench --repo . \
-    --models ~/models/a.gguf,~/models/b.gguf --runner ./runner
-```
+There is a cost benchmarks rarely show: what a resident inference server
+does to the machine while it serves nothing. We measured it - four-state
+lifecycle (loaded idle, post-inference idle, after unload), granite-4.1-3b
+Q8_0 at c=4096, stock defaults, engines run sequentially, llama.cpp from
+the prebuilt b10639 release. Reproduce it with
+[`scripts/idle_coexistence.py`](scripts/idle_coexistence.py).
 
-One command: the bank is built from your repository's own history (commits
-that touched tests and source, whose tests fail before the fix and pass
-after it, classified `function`, `file` or `multi-file` by where the change
-sits), each model is served in turn, probed for fit, and replayed over every
-task, and the result is a table per model with the receipt identity on each
-row: attempted, verified, failed, and verified over attempted per task
-class. Counts before rates; no percentage before thirty independent tasks.
-The longer road (`import` your frontier history, `replay`, `report`) is
-the same machinery over the tasks your own sessions produced.
+On an 8 GB M1 (quiet machine), while loaded and idle:
 
-The report prints counts and both denominators (verified over the episodes
-that could be replayed, and over everything observed) and refuses to print
-a percentage before thirty independent eligible episodes, because a
-percentage over a handful of tasks is not a measurement. What this is not:
-a router, a training loop, or a sandbox. The attempt's test runs and the
-verifier run as you, with the network reachable; treat the scratch copy as
-you would any code you run locally.
-
-Two limits found on the first real run, both properties of history rather
-than of any model. Agentic sessions commit many turns after the request,
-so the last prompt before a commit is often a side remark and the fix
-cannot be attributed to its request from the timeline alone. And a terse
-request ("check why CI fails and fix it") carries no failing signal the
-model can see, because the tests that fail at the pre-fix state are the
-new ones. Both are addressed by capturing prospectively: prompt and stop
-hooks record the request with the repository HEAD at both ends, while a
-post-edit hook binds each resulting change set to the edit that produced it.
-The task's commit range is exact, without conflating unrelated edits between
-prompt and stop.
-
-```json
-{"hooks": {
-  "UserPromptSubmit": [{"hooks": [{"type": "command",
-    "command": "python3 -m xyntetik_runner.shadow capture --event prompt"}]}],
-  "Stop": [{"hooks": [{"type": "command",
-    "command": "python3 -m xyntetik_runner.shadow capture --event stop"}]}],
-  "PostToolUse": [{"matcher": "Write|Edit|NotebookEdit", "hooks": [{"type": "command",
-    "command": "python3 -m xyntetik_runner.shadow capture --event post"}]}]}}
-```
-
-`python -m xyntetik_runner.shadow install` writes the equivalent for you
-(the hooks call small launcher files rather than these shell lines): the
-capture hooks are merged into Claude Code's settings and Codex's `hooks.json`
-beside whatever is already there, with backups next to both files. It also
-writes a `/shadow` skill for Claude Code and a `/shadow` prompt for Codex.
-Installation is explicit, nothing runs until you submit a prompt, and Codex
-reviews the commands before trusting them. `uninstall` removes only Runner's
-entries and launchers. A prompt event records your
-request, the directory, the time and the commit ids
-(the HEAD of every repository at or under the directory, so a session
-started from a parent directory still gets exact ranges), and capture v2
-adds the raw hook payload and a bounded snapshot of the changed files, all
-of it local, as described above; the file is
-`~/.xyntetik/shadow/capture.jsonl` and `import` reads it beside the
-session files. Earlier requests of the same session travel with a task as
-context. `replay` probes decode speed first and refuses a model below
-`--min-tps` (default 15 tokens per second): serve something that fits the
-card, at an 8K context for coding attempts. Design, gates and the negative controls that prove the
-verifier can fail: [python/README.md](python/README.md).
-
-## Desktop tray
-
-macOS and Windows ship a menu-bar / notification-area controller. It lists
-every runner instance live on the machine - however it was started - with the
-models each has loaded, and lets you stop any of them, pick a GGUF, and start
-a desktop-managed server. Linux has no tray; `--tray` there prints an honest
-error.
-
-### When it appears
-
-The tray follows a session you sit with, and is left running afterwards so the
-next model can be loaded from it.
-
-| Invocation | Tray |
-|---|---|
-| `runner` with no arguments at a terminal, or a double-click | yes |
-| `runner -m model.gguf --serve` | yes |
-| `runner -m model.gguf -i` | yes |
-| `runner -m model.gguf -p "..."` | no |
-| `--caps`, `--quantize`, `--bench-json`, `--version` | no |
-| anything with `--no-tray` | no |
-| pipes, scripts, CI, Linux | no |
-
-A terminal on **either** stdin or stdout is what counts as "a person launched
-this", so `runner --serve > server.log` still raises one while CI, which
-usually has neither, does not. A one-shot `-p` run raises nothing on purpose:
-a two-second process should not leave a menu-bar icon behind it.
-
-`--tray` means *be* the tray rather than run a model. It is required wherever
-there is no terminal - launchd, Task Scheduler, a service wrapper - because
-every launch in the table above needs one. `--no-tray` opts out everywhere.
-
-One tray runs per machine; a second exits naming the pid that owns the icon.
-The tray is spawned detached with its own session, so stopping a server with
-Ctrl-C leaves the menu bar alone, and it outlives the run that raised it.
-
-### Icon states
-
-The Xyntetik ensö, the same drawing as the brand mark on xyntetik.com. On
-macOS it is a template image, so it follows light and dark menu bars.
-
-| State | Glyph | Meaning |
+| while idle | runner | llama-server b10639 |
 |---|---|---|
-| Idle | the bare ensö | No runner registered. |
-| Model loaded | ensö with the spark on its end | A runner is up with a model resident, nothing in flight. |
-| Running | the full Runner mark: ensö, spark and three streaks | Inference is in flight. |
+| wired (unevictable) memory | +8 MB | +3,819 MB |
+| CPU wakeups per second | 0.5 | 161 |
+| CPU time per idle minute | ~0.00 s | 0.2-0.3 s |
+| give the memory back | `POST /unload` (360 MB to 24 MB) | kill the process |
 
-A menu-bar template image cannot animate, so the streaks are what says
-"moving": the ring itself is the same in every state.
+llama-server wires the whole model into unified memory and holds it until
+the process dies, and its idle loop ticks at ~160 Hz. Runner keeps weights
+as evictable zero-copy mappings the OS can reclaim whenever another app
+needs the RAM, wakes about once every two seconds, and hands everything
+back on `/unload` (or automatically with `--ttl`). The flip side is real and we
+report it: when llama-server is allowed to hold everything, its time to
+first token is faster (0.15 s vs 3.2 s on the pressured M1), because
+residency is exactly what it buys. On a discrete-GPU box (RTX 3070) the
+footprint gap disappears - both engines hold ~4 GB of VRAM loaded - and
+the remaining differences are idle discipline (0.00 vs 0.3-0.6 CPU
+seconds per minute) and lifecycle control (`/unload` returned all 4 GB of
+VRAM; llama-server has no unload).
 
-`/health` also carries what a supervisor needs to budget several runners on
-one machine. `rss_bytes` is this **process's** resident set - weights, KV
-cache, activations and allocator overhead together - which is the number a
-machine is sized against and which no per-mapping measure accounts for;
-`peak_rss_bytes` is its high-water mark. `tokens_prompt`, `tokens_generated`
-and `generate_seconds` are cumulative monotonic totals across every API
-surface. `batch_steps` and `batch_sequences` count the scheduler's microbatch
-steps and the sequences cut into them, so `batch_sequences / batch_steps` is
-the mean batch size over your own window; both stay `0` on a server that never
-started continuous batching (a single slot, or swap mode). On CUDA they also
-stay `0` for a model whose weights use a quantization the batched path has no
-bitwise-identical kernel for - a batched step must return, per sequence, the
-bits a lone step would have, so such a model decodes its sequences one at a
-time rather than batching them into different numbers. The current CUDA
-microbatch loop covers gated dense transformer layers; recurrent, MoE, NoPE,
-attention-gated, and ungated xIELU models use sequential GPU forwards. Within
-the covered family Q8_0, Q4_0, Q4_K, Q5_K, Q6_K, F32 and F16 batch; the rest do
-not.
+These are different optimization goals, not a defect: llama-server is
+built to answer the next request as fast as possible, Runner is built to
+be left running all day next to your actual work. If the machine is
+dedicated to inference, that residency is pure win - use llama.cpp. If
+the machine is also your workstation, an engine that wires down half your
+RAM and ticks 160 times a second while idle is the reason you kill it
+every time - and the reason Runner does not need killing.
 
-Those are deliberately raw counters rather than a tokens-per-second field: a
-rate needs an averaging window, and the runner has no business choosing one for
-a consumer whose window differs. Difference them over your own interval. The
-endpoint does not count its own requests, so polling it on a timer does not
-show up as work.
+The same lifecycle measured on a 128 GB M5 Max with gpt-oss-120b (63 GB)
+says abundance does not dissolve the difference, it scales it: loaded idle,
+llama-server (`010be968`) wires **+60.8 GB** — half the machine held by an
+idle process — against Runner's **+35 MB**, and `/unload` hands everything
+back (RSS 229 MB). The latency flip side scales identically: 0.25 s vs 10.1 s
+cold first token. Full table and method:
+[docs/idle-coexistence-120b-m5max-2026-09-01.md](docs/idle-coexistence-120b-m5max-2026-09-01.md).
 
-`GET /metrics` answers the same facts in Prometheus text exposition 0.0.4, so a
-monitoring stack ingests them without a translator. Every name carries the
-`runner_` prefix and every sample is preceded by its own `# HELP` and `# TYPE`:
-`runner_requests_total`, `runner_prompt_tokens_total`,
-`runner_prompt_cached_tokens_total`, `runner_generated_tokens_total`,
-`runner_generate_seconds_total`, `runner_batch_steps_total`,
-`runner_batch_sequences_total`, the six `runner_prefix_cache_*` counters and
-their three gauges, the three `runner_speculation_*` counters, and the gauges
-`runner_active_requests`, `runner_resident_memory_bytes` and
-`runner_peak_resident_memory_bytes`. It is on whenever `--serve` is, needs no
-flag, and computes nothing: there is no hit-rate and no tokens-per-second here
-for the same reason `/health` has none. Like `/health` it does not count its
-own requests, so a scraper on a timer does not measure itself.
-`GET /v1/capabilities` reports it as `features.prometheus_metrics`.
-
-"Loaded" and "running" are told apart by `active_requests` from `/health`,
-polled on the same 5-second timer that refreshes the icon - so a request
-shorter than the tick can pass unseen. It is an indicator, not telemetry. When
-the count cannot be read the icon shows "model loaded", because a server that
-is up but unreachable still has a model resident.
-
-Configuration, the instance registry, autostart, uninstall, and the headless
-validation seams are documented in
-[docs/tray-controller.md](docs/tray-controller.md).
-
-The macOS release is ad-hoc signed, not Apple-notarized. A browser download may
-therefore be blocked by Gatekeeper even when its published checksum matches.
-Verify the SHA-256 checksum first, then remove the quarantine attribute from
-the extracted binary with `xattr -d com.apple.quarantine runner`; obtaining a
-Developer ID and notarizing releases remains an owner action.
-
-## Structured output
-
-Runner provides two sampler-level guarantees:
-
-- `--json` or OpenAI `response_format.type=json_object` emits one valid JSON
-  object.
-- `--json-schema FILE`, OpenAI `json_schema`, Responses `text.format`, and tool
-  parameter schemas compile to a streaming conformance validator.
-
-The supported schema subset covers objects, arrays, strings, numbers,
-integers, booleans, null, enums, const, type unions, numeric bounds on both
-`integer` and `number` (`minimum`/`maximum` and their exclusive forms, with a
-forced close completing the value inside the declared range), string
-lengths and supported anchored patterns, array item/count constraints,
-scalar-const `oneOf`/`anyOf`, and the tool-discriminated object union used by
-agent clients. Required properties are present, unknown properties are blocked
-for closed objects, and tool arguments are generated against the selected
-tool's schema.
-
-Object schemas may be closed fixed-property records, unconstrained open
-objects, or homogeneous maps: with no declared properties (or an empty
-`properties` object), a schema-valued `additionalProperties` is enforced for
-every arbitrary-key value. Mixed fixed properties plus open or schema-valued
-additional properties remain unsupported and are rejected rather than
-silently weakened.
-
-Anchored `pattern`s compile as a sequence of literal runs and repeated
-classes (`[...]`, `[^...]`, `\d`, `\w`, `\s` and their complements, with
-escapes inside a set): `^wf_[a-z0-9-]{6,}$`, `^[A-Z]{3}[0-9]{4}$` and
-`^[^\n\r]*$` all enforce, and a forced close mid-string completes to a
-string the pattern still accepts. A negated or complement class admits every
-non-ASCII character whole. The enforced language is the declared one
-restricted to what a JSON string spells unescaped (a control character or a
-quote inside a class was never producible). Every class before the last
-carries a fixed count, so which class a byte belongs to follows from its
-offset; a variable-length class in the middle is refused rather than
-guessed. An `allOf` of string constraints on a string is enforced as their
-conjunction, every pattern and the tightest bounds together; that is the one
-`allOf` shape accepted (Claude Code 2.1.272 declares
-`SendMessage.to` with two patterns), every other `allOf` is refused by name.
-
-Unsupported or ambiguous constraints fail at compile/request time. In
-particular, general overlapping `oneOf` branches are not tracked in parallel;
-branches must diverge at a supported discriminator. This is a subset of JSON
-Schema 2020-12, not full JSON Schema or GBNF.
-
-If the budget ends after a document starts, runner emits the minimal legal
-suffix and reports a length finish - on the tool-call path too: a truncated
-call is still returned as a parseable `tool_calls` entry, but the envelope
-keeps the truncation signal (`finish_reason: "length"`, Responses
-`status: "incomplete"` with `max_output_tokens`, Anthropic
-`stop_reason: "max_tokens"`) so a caller knows the arguments are minimal
-closures rather than the model's completed intent. If the model never starts
-the document, runner returns empty content rather than inventing required
-values. Syntax and schema shape are guaranteed; semantic correctness and tool
-selection remain the model's responsibility.
-
-A client `stop` sequence is handled as a truncation the caller asked for. The
-matched bytes are withheld from the response, as they are in unconstrained
-text, and the constraint validator is truncated with them - re-seated on
-exactly the document the caller received - so the minimal legal suffix
-completes that copy rather than the longer one the model had reached. The
-delivered document parses and conforms; `finish_reason` is `"stop"` (Anthropic
-`stop_reason: "stop_sequence"`, carrying the matched string). The suffix itself
-is never stop-matched: it is runner closing the document rather than model
-text, and `["}"]` or `["\n\n"]` would otherwise eat the very bytes that make it
-legal.
-
-If an envelope document cannot be mapped back at all, runner reports the fault
-instead of serving the raw protocol as an answer. On the OpenAI surfaces
-content is empty, `finish_reason` is `"error"` with
-`runner_telemetry.finish_detail: "envelope_unmapped"`, and Responses reports
-`status: "incomplete"` with reason `envelope_unmapped`. A stream that ends
-this way is still terminated - a terminal chunk carrying the finish reason,
-then `data: [DONE]`, or Responses `response.incomplete` - so a client is never
-left waiting on events that will not arrive.
-
-Anthropic Messages reports the same fault as an **error object**, not a
-`Message`. All seven of its `stop_reason` values describe a turn that
-completed, so none of them can carry a generation fault; a buffered turn
-answers HTTP 500 with `{"type": "error", "error": {"type": "api_error",
-"message": ...}}`, which is the class the Anthropic SDKs retry with backoff,
-and a streamed turn - whose 200 is already sent - terminates on the protocol's
-documented `event: error` carrying the same object, in place of
-`message_delta`/`message_stop`. An allocation failure during generation is
-reported the same way on both. Partial text is not returned alongside it:
-unlike a budget truncation, which is a completion and keeps its content under
-`stop_reason: "max_tokens"`, a fault has no `stop_reason` that would not
-misstate why generation stopped. `runner_telemetry.finish_detail` rides on the
-error object so the two faults stay distinguishable.
-
-### `--top-k 40`: a faster constrained decode with different semantics
-
-Constrained decoding pays for the sampler on every step, and several shipped
-presets - SmolLM2's, llama3's, mistral's, gpt-oss's - set `top_k = 0`, which
-means no truncation and a pass over the whole vocabulary. Setting `--top-k 40`
-(or `"top_k": 40` per request) measured **12–27% higher decode throughput**
-than the same run at the preset's `top-k 0`, on an M1 with
-SmolLM2-135M-Instruct under JSON- and schema-constrained decoding.
-
-It is an option, not a default, and it is not certified. Truncating to 40
-candidates **changes the sampled distribution** - it is different semantics,
-not a cheaper route to the same tokens - so it stays outside the correctness
-gates rather than becoming a preset value. Reach for it when decode throughput
-matters more than reproducing the preset's distribution; leave it off when the
-run is being compared against a reference. At `--temp 0` the question does not
-arise: greedy argmax bypasses `top_k`, `top_p`, `min_p` and the repeat penalty
-entirely, so the certified greedy paths are unaffected either way.
-
-## Support matrix
-
-`runner --caps` publishes the architecture IDs admitted by the current binary:
-
-**Metal quant-type coverage.** Both a matvec and a matmul kernel exist for
-`q2_K`, `q3_K`, `q4_0`, `q4_K`, `q6_K`, `q8_0`, `iq4_nl`, `iq4_xs`, `mxfp4`,
-`f16`, `bf16` and `f32`. **`q4_1`, `q5_0`, `q5_1` and `q5_K` ship `k_mv_*`
-only** — they decode on Metal but have no `k_mm_*`, so prefill on those types
-does not use the Metal matmul path. Requantizing such a file to `q4_K` or
-`q8_0` (`--quantize OUT --quant q4_k`) is the fix when prompt throughput
-matters. Quantization changes only the weight encoding: it cannot give an
-architecture a Metal path it lacks, because those gaps are missing kernels for
-operations (SSM scan, Gated DeltaNet, weight-normed routers, gate-less shared
-experts), not missing quant support.
-
-A **sharded** GGUF takes a full Metal offload directly: each part's mapping
-gets its own tensor-boundary wraps, gated byte-identical to both the CPU path
-and the single merged file (`make test-metal-split`; measured on a real
-2-part 86 GB set). A partial `--gpu-layers` split of a sharded set refuses to
-CPU — merge to one file with `--quantize OUT --quant keep` first if a layer
-split is what you need. The loader accepts both duplicated-metadata shards
-and the standard compact form where only part one carries model metadata;
-explicit contradictions between parts are still rejected.
-
-Sparse-MoE expert matvec kernels cover `q2_K`, `q3_K`, `q4_0`, `q4_K`,
-`q5_K`, `q6_K`, `q8_0`, `mxfp4`, `f16`, and `f32`. This list is narrower than
-the dense quant list: a type needs a dedicated indirect expert kernel, not
-merely dense matvec/matmul support.
-
-| GGUF `general.architecture` | Notes |
-|---|---|
-| `llama`, `mistral`, `smollm`, `stablelm` | Llama-style dense families with family tokenizers/templates. |
-| `qwen2`, `qwen3` | QKV-bias and per-head-QK-norm variants. |
-| `qwen35` | Dense Qwen3.5/3.8/Ornith Gated DeltaNet plus full attention; CPU and CUDA. Qwen3.8-27B admitted 2026-09-06 (tokenizer 0/721 after the `qwen35` rule learned `[\p{L}\p{M}]+` runs; its NextN block feeds `--mtp`; its own `qwen38` chat template with the reasoning-effort preamble, `reasoning_effort` xhigh/medium/low honoured); evidence in `docs/granite-42-qwen38-cert-2026-09-06.md`. CPU recurrent folds support speculative decode, grammar fast-forward, and exact shared-prefix restore. Any GPU-backed recurrent instance declines shared-prefix restore (its own turn mark resumes the next request at the prompt boundary on CPU and CUDA alike, since 2026-09-15); a CUDA-resident recurrent layer also declines speculative decode and grammar fast-forward. |
-| `qwen3moe` | Fused and legacy split sparse-MoE layouts on CPU/CUDA; supported fused layouts on Metal. |
-| `gemma3` | Regular and QAT layouts, sliding-window attention, sandwich norms. |
-| `gemma4` | Heterogeneous attention, thinking channels, E-series, supported dense/MoE layouts, and the family's native tool protocol. Both E-series export shapes load. A layer at or past `block_count - attention.shared_kv_layers` computes no K and no V (it attends over the cache an earlier layer filled), so the current quantized exports - the ggml-org Q4_0, Google's own QAT Q4_0 and the community QAT F16 - omit `attn_k.weight`, `attn_v.weight` and `attn_k_norm.weight` on exactly those layers: 666 tensors on E4B where the BF16 export has 720. Those three are optional on the shared-KV tail and still required on every KV-owning layer, where a missing one is refused by name. |
-| `phi3` | Fused QKV and gate/up tensors, LongRoPE factors. |
-| `gpt-oss` | Attention sinks, alpha-sigmoid GLU, expert biases, MXFP4 experts. Tokenizer exact (0/721 differential) and chat renders the real Harmony format (analysis channel as `reasoning_content`) as of 2026-08-14; cross-engine greedy identity remains inside the model's own measured KV-precision sensitivity envelope rather than certified. |
-| `apertus` | xIELU FFN; CPU and CUDA. |
-| `afmoe` | Arcee Trinity sparse MoE; CPU only. CUDA and Metal refuse it loudly as gated attention plus sparse MoE, rather than misreporting a quantization problem. |
-| `muse-glimmer` | Meta Muse Glimmer 30B, text path: gated attention, QK and sandwich norms, SWA with NoPE globals, softcapped logits. CPU, CUDA and Metal. Measured 2026-08-11; evidence in `docs/muse-glimmer-cert-2026-08-11.md` and `docs/muse-atem-cert-2026-08-11.md`. No vision encoder. Native atem definitions/results, recipient-constrained generation, truncation recovery, multi-call mapping, and buffered/SSE parsing are implemented and selected automatically for tool requests. |
-| `granite` | IBM Granite dense (3.x/4.1/4.2): the four muP scalars (embedding, fixed attention, residual, divided logit), read from the header (4.2 ships them all at 1.0). CPU, CUDA and Metal. Measured 2026-08-11; evidence in `docs/granite-cert-2026-08-11.md`. Granite 4.2 (3B, 8B) admitted 2026-09-06 with its `granite-docling` pre-tokenizer and its own `granite42` chat template (ChatML, `<think>`, function-XML tools); evidence in `docs/granite-42-qwen38-cert-2026-09-06.md`. granitemoe is a separate arch id and not admitted; granitehybrid is admitted separately, below. |
-| `granitehybrid` | Granite-4 h-series: a Mamba-2 selective-SSD recurrence (causal conv1d + the input-dependent state-space scan, with the gated RMS norm) interleaved with GQA attention, the layer type read per-layer from the `attention.head_count_kv` array (0 ⇒ recurrent); the attention layers are NoPE (`rope.scaling.finetuned=false`); the four granite muP scalars. Both published FFN layouts are supported: dense h-micro has a gated MLP on every layer and runs on CPU and CUDA; sparse h-small has a routed MoE FFN plus an always-on shared expert and currently runs on CPU because those two branches have no device path. The dense h-micro CUDA path is CPU-token-identical over 600/600 greedy tokens with per-run mean |Δlp| ≤ 0.000024 (max per-position 0.000422); evidence and raw probes are in [`docs/compat-reports/cpu-cuda-hybrid-2026-08-21/`](docs/compat-reports/cpu-cuda-hybrid-2026-08-21/). The sparse h-small CPU path was verified against llama.cpp b10353 at both Q4_K_M and Q8_0: greedy output is token-identical on deterministic prompts (a 256-token completion matches byte-for-byte) and holds at the quantisation noise floor elsewhere, where the divergences are synonymous-phrasing near-ties, not wrong math. Re-verified at higher precision (Q8_0, 2026-08-19): the sole non-empty divergence is a single-token near-tie whose top-2 candidates the runner and llama.cpp rank identically to within ~0.03-0.09 nats (an argmax coin-flip), with the runner's full top-5 logit distribution matching the oracle's - so the Mamba-2 math is correct and the Q4_K misses were pure noise floor, the same envelope noted for gpt-oss. Chunked-scan prefill: the token axis is tiled into chunks (~256), the per-head SSD recurrence runs in parallel across heads within a chunk and the SSD state + conv ring are carried across chunk boundaries - bit-identical to the serial per-token sweep (a pinned `make test` gate holds chunked == serial across chunk sizes) and ~1.8x faster prompt throughput on a long prompt (measured on granite-4.0-h-small Q8_0, 264 tokens). `XR_SSM_SERIAL=1` forces the serial reference path. The recurrent-state cache seam is wired: the fixed-size fold is snapshotted/restored on a rewind, and stored beside the KV in the prefix cache so an exact CPU prompt-prefix hit restores it in a memcpy rather than recomputing the recurrent layers. CPU speculative decode and grammar fast-forward use a per-round fold checkpoint; a CUDA split is admitted only while every recurrent layer remains host-resident. Metal has no SSM path. |
-| `nemotron_h` | NVIDIA Nemotron-H (Nemotron-Nano-9B-v2): a Mamba-2 selective-SSD recurrence interleaved with GQA attention and dense MLP blocks, where each block is EXACTLY ONE of three kinds (SSM \| attention \| MLP), typed per-layer off `attention.head_count_kv` (0) and `feed_forward_length` (0). NON-MoE and no muP scalars - unlike granitehybrid; the MLP is a gate-less squared-ReLU FFN (`down(relu(up(x))^2)`), attention is NoPE (`rope.scaling.finetuned=false`), and the SSM uses a GROUPED scan (`ssm.group_count=8`): B/C are shared across groups of heads and broadcast (group g covers heads [g·H/G, (g+1)·H/G)) - the same grouped scan `nemotron_h_moe` (Nemotron-3.5 Lightning) also uses - here first proven WITHOUT MoE, and admitted WITH MoE in the row below. CPU and **CUDA**: the Mamba-2 SSD scan, causal conv1d, gated RMS norm and squared-ReLU FFN all have device kernels, and full 56-layer offload is **greedy byte-identical to the CPU path** on the real Nano-9B-v2 Q8_0 (3 prompts x 48 decode steps plus an 88-token multi-tile prefill; re-verified independently post-merge at 32 tokens). Device prefill currently runs the per-token loop (correct, unoptimized); no Metal SSM path. Verified against llama.cpp b10353 on the real Nemotron-Nano-9B-v2 at Q8_0 (same GGUF both engines, CPU): 5/6 greedy completions byte-identical (including both 256-token generations); the sole miss is a single-token near-tie where both engines share the same top-3 candidates and llama.cpp's own top-1/top-2 gap is ~0.075 nats (an FP-summation-order coin-flip), i.e. the quantisation noise floor, not wrong math. Chunked-scan prefill (the grouped scan tiled into chunks, parallel across heads within a chunk, SSD state + conv ring carried across chunk boundaries), bit-identical to the serial per-token sweep and pinned chunked == serial in `make test`; the recurrent-state cache seam is wired (fold snapshotted/restored on rewind, and stored beside the KV so an exact CPU prompt-prefix hit restores it in a memcpy). CPU speculative decode and grammar fast-forward use the per-round fold checkpoint; full GPU offload and partial splits with a CUDA-resident recurrent layer decline them. |
-| `nemotron_h_moe` | NVIDIA Nemotron-3.5-Lightning-30B-A3B: `nemotron_h` with the dense squared-ReLU MLP replaced by a gate-less squared-ReLU **MoE** (128 experts / 6 used, no gate branch) plus an always-on **gate-less shared expert**; the router reuses the general softmax/group/scale/norm path. Same three-way block typing, grouped scan (`n_group=8`), and NoPE attention as `nemotron_h`. Runs on CPU: the SSM scan has a device kernel, but this family's router (weight-normed, scaled) and gate-less shared expert have no device path, so the backend falls back to CPU there. Greedy vs llama.cpp `ea12b27` on the real Lightning-30B Q4_0 (CPU, 8 tok × 5 prompts): **4/5 byte-identical**, the one divergence a near-tie on an open-ended counting continuation (noise floor, not wrong math - the coherent `Paris. … Berlin.` completion matches exactly). Evidence: `docs/compat-reports/ssm-greedy-reference-2026-08-20/`. |
-
-Admission remains layout-specific: an unsupported split expert layout, a
-non-SiLU MoE outside gemma-4's dual-branch form, or an architecture-specific
-tensor arrangement is refused even when the architecture ID is listed. The
-always-on shared expert (Qwen2-MoE/DeepSeek form: a dense FFN over the same
-normed input, summed with the routed output, optionally gated) is **supported**
-and is what afmoe uses; its width and tensors are shape-checked at load, and
-`expert_shared_count` set without the tensors present is an error rather than a
-silently dropped branch.
-
-| Area | Current support |
-|---|---|
-| File format | GGUF v2/v3, mmap/file-mapped host weights, including standard local multi-part sets. |
-| Tokenizers | SPM and byte-level BPE with llama, qwen2/qwen35, smollm, afmoe, tekken, llama4/gpt-4o, Gemma, and GPT-2-family (including `granite-docling`) pre-tokenization rules. |
-| Quantizations | `--caps` lists the admitted tensor formats: the k-quant and legacy families plus MXFP4, NVFP4 (two-level, with its per-tensor scale companion applied) and the codebook i-quants (IQ1_S/M, IQ2_XXS/XS/S, IQ3_XXS/S, IQ4_NL/XS). CUDA serves every one of them; on Metal, NVFP4 and the IQ1, IQ2 and IQ3 families are CPU-only and the backend refuses them loudly, naming the exact tensor and type that caused the CPU fallback. |
-| Transformer | RMSNorm, adjacent-pair and NeoX RoPE, grouped-query attention, SwiGLU/GELU/xIELU family paths, tied embeddings, dense and selected sparse MoE. |
-| Sampling | Greedy, temperature, top-k, top-p, min-p, repeat penalty, stop strings, JSON/schema constraints, speculative decoding. |
-| Context | Batched prefill, f16/q8 KV, linear/YaRN/llama-3 scaling, automatic extension. |
-| Serving | Chat Completions, Responses, legacy completions, embeddings, Anthropic Messages, SSE, parallel slots, model swap, prefix reuse. |
-| Desktop | macOS menu bar and Windows notification-area controller. |
-| Provenance | Replay-verifiable transcripts; Ed25519- or ML-DSA-44-signed, chained receipts with a one-exit-code verifier; OpenSSF Model Signing verification of the loaded GGUF (key method, P-256/384/521). |
-
-Not implemented: Vulkan; TLS/auth; remote bind; remote/streamed GGUF parts; the
-`qwen2moe`/`deepseek2`/`kimi` architecture IDs (their shared-expert *layout* is
-implemented, as above - the architectures are not admitted) or MLA attention;
-Mamba/Jamba; MTP/NextN draft-head consumption on the GPU backends or with more
-than one predictor block (`--mtp` serves the single-block CPU case; without
-the flag the tensors load and are skipped, so dense decoding is unchanged);
-OMS model signatures by the certificate or keyless (Fulcio/Rekor) methods, or
-with shard or BLAKE serialization (reported as unsupported, never as
-verified); full GBNF; image/document inputs;
-hosted tools; response persistence; or parallel tool calls on the Responses and
-Messages surfaces (Chat Completions supports it, buffered and streaming).
+For release history and benchmark narratives, see [CHANGELOG.md](CHANGELOG.md)
+and [docs/benchmarks.md](docs/benchmarks.md) (last re-measured 2026-09-02 on three hosts:
+dense decode 81-93% of llama.cpp on the MIG, prefill 5-10%).
 
 ## Compatibility evidence
 
@@ -2534,6 +2975,9 @@ revision, binds itself to the corpus SHA-256, and contains only token IDs - neve
 credentials or model weights. `scripts/difftok.py --ref-ids CAPTURE` is the
 standalone replay path; `--capture CAPTURE --ref-revision COMMIT` creates one
 during an authenticated evidence run.
+
+<details>
+<summary>Detailed model results, known gaps and re-measurements</summary>
 
 Current high-signal caveats include:
 
@@ -2633,6 +3077,8 @@ Current high-signal caveats include:
   misses and the Teuken/TildeOpen chat failures were already in the
   2026-08-15 ledger.
 
+</details>
+
 The full 2026-08-05 pass/fail/refusal matrix, including failed derivatives, is
 in [docs/cert-matrix-status.md](docs/cert-matrix-status.md). Architecture and
 model-family additions must update the manifest and executable gates, not only
@@ -2673,6 +3119,16 @@ weights in unified memory. The load log and `--caps` are the sizing sources for
 an exact model/machine combination.
 
 ## Support the project
+
+**Testing Runner?** The project is pre-1.0 and hardware coverage is still
+limited - that is an invitation, not an apology. If you have an
+NVIDIA/Apple setup, an unusual GGUF, a coding agent, or a model family
+not in the [support matrix](#support-matrix), the result is genuinely
+wanted, success or failure alike:
+[open an issue](../../issues) with `runner --version`, `runner --caps`,
+the model's exact filename and the load log. Independent reproductions
+of the determinism claims get credited in the docs, as the first one
+already is.
 
 Xyntetik Runner is developed independently. If it is useful to you and you
 want to help fund the hardware and measurement time behind it, you can
