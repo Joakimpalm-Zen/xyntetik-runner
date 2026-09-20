@@ -1731,7 +1731,7 @@ spends, said so in the log.
 KV cache storage. `q8` stores q8_0 blocks at about 53% of the f16 bytes; `fp4` stores
 E2M1 values with one UE4M3 scale per 16 channels at about 28%, so each roughly doubles
 the context that fits; `k8v4` keeps K at q8_0 and stores only V as fp4, about 41%,
-because K is the side a 4-bit cache hurts (the measured split, see below). All are
+because K is the side a 4-bit cache hurts (see the measured split under [Long contexts](#long-contexts)). All are
 lossy: output is not token-identical to an f16 cache, and the cost is measured per model
 with `scripts/kld-compare-raw.py` against the same file's f16 cache. f16 is the default.
 
@@ -2354,7 +2354,7 @@ fires on framing nobody wrote (`["\n\n"]`, `["}"]` and `["<|"]` all hit).
 Runner refuses the request rather than ignoring the field. The refusal is a
 semantic one: a stop match no longer corrupts the document - under a plain
 `response_format` it truncates the constraint validator with it, described
-under structured output below - but a rule the caller wrote about visible text
+under [structured output](#structured-output) - but a rule the caller wrote about visible text
 cannot be honoured against protocol the caller never sees.
 
 `parallel_tool_calls:true` compiles the generic JSON tool envelope into a
@@ -2756,7 +2756,7 @@ declared tool) exactly as on the other two surfaces.
 
 A generation fault is reported as an Anthropic error object rather than a
 `Message` with a made-up `stop_reason` - HTTP 500 `api_error` buffered, the
-documented `event: error` mid-stream. See Constrained output below.
+documented `event: error` mid-stream. See [Structured output](#structured-output).
 
 ### Coding-agent evidence
 
