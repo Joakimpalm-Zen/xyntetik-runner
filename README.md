@@ -188,7 +188,7 @@ behind them. Start with the capability your workflow needs.
 
 <a id="truncation"></a>
 <a id="truncated-tool-calls-that-still-parse-closing-the-json-when-max_tokens-runs-out"></a>
-### Recover tool calls at the token limit
+### Truncated tool calls that still parse
 
 When a tool call runs past its token budget, most engines return an empty or
 malformed `tool_calls` - commonly `finish_reason: "length"` with nothing
