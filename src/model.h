@@ -803,6 +803,10 @@ void   model_lora_free(model_t *m);
 // the reference scope: GPU-resident, recurrent, MoE, q8 KV, the FFN
 // activations gpt-oss and apertus use, the weightless V norm, per-layer
 // embeddings, sinks and tied or absent V.
+// test hooks for the finite-difference gate: the forward's gated activation
+// and the backward's d/dg of act(g), dispatched on the activation kind
+float  model_ffn_act(int act, float g, float u);
+float  model_ffn_act_deriv(int act, float g);
 bool   model_lora_backward(model_t *m, const int32_t *toks, int n,
                            double *loss_out);
 // weighted variant: pos_w[t] scales transition t (predicting toks[t+1]) in

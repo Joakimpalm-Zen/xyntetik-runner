@@ -6480,6 +6480,13 @@ static float act_d(int act, float g) {
     return silu_d(g);
 }
 
+// Test hooks: the forward's own gated activation and the backward's
+// derivative, so the finite-difference gate can check act_d against central
+// differences of gated_act directly. The fixture-level gate alone could not
+// tell the SiLU derivative from the GELU one at fixture scale (R8.9.5).
+float model_ffn_act(int act, float g, float u) { return gated_act(act, g, u); }
+float model_ffn_act_deriv(int act, float g) { return act_d(act, g); }
+
 static bool lora_bw_supported(model_t *m, char *why, size_t cap) {
     const char *r = NULL;
     if (m->gpu) r = "GPU-resident model (run --gpu off)";

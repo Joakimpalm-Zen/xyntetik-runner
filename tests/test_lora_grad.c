@@ -61,6 +61,29 @@ int main(int argc, char **argv) {
     int32_t toks[T];
     for (int i = 0; i < T; i++) toks[i] = 3 + (i * 7) % (m.n_vocab - 4);
 
+    // ---- the activation derivative itself, against central differences of
+    // the forward's own gated_act (u = 1), both kinds, over the range real
+    // pre-activations occupy. Decisive where the fixture-level gate is not:
+    // a SiLU derivative substituted for GELU's passes the whole-adapter
+    // check at fixture scale but fails here at |g| ~ 1 by more than 5%.
+    {
+        const int kinds[2] = { ACT_SILU, ACT_GELU };
+        double worst_act = 0;
+        for (int k = 0; k < 2; k++)
+            for (double g = -6.0; g <= 6.0; g += 0.05) {
+                const double h = 1e-2;
+                double fd = ((double)model_ffn_act(kinds[k], (float)(g + h), 1.0f) -
+                             (double)model_ffn_act(kinds[k], (float)(g - h), 1.0f)) / (2 * h);
+                double an = model_ffn_act_deriv(kinds[k], (float)g);
+                double err = fabs(fd - an);
+                if (err > worst_act) worst_act = err;
+                CHECK(err < 2e-3, "act_d(%s, %.2f) = %.6f, central difference %.6f",
+                      kinds[k] == ACT_GELU ? "gelu" : "silu", g, an, fd);
+            }
+        printf("ok: activation derivatives match central differences, worst abs err %.2e\n",
+               worst_act);
+    }
+
     // ---- determinism: two runs, byte-identical grads and bit-equal loss
     double l1 = run_backward(&m, toks);
     // snapshot every grad buffer
