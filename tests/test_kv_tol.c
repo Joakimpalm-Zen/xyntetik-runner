@@ -453,6 +453,15 @@ int main(int argc, char **argv) {
                "costs; context, not the gate)\n", quant_err);
         printf("  q8-cpu-b1 vs q8-cpu  : mean|dlogit| %.6f   (reassociation "
                "floor, CPU only)\n", reassoc);
+        {   // diagnostic, not gated: how often the CPU flips a token against
+            // ITSELF under legal reassociation. A GPU/CPU top-1 failure that
+            // sits near this rate says the format is chaotic on this model and
+            // the fixed top-1 limits are the wrong instrument, not the kernels.
+            int nd_b1; double w_b1;
+            top1_stats(q8c, q8b1, n_vocab, &nd_b1, &w_b1);
+            printf("  q8-cpu-b1 vs q8-cpu  : top1 diff %d/%d, worst margin %.4f "
+                   "(the floor's own flip rate; diagnostic)\n", nd_b1, STEPS, w_b1);
+        }
         printf("  q8-gpu    vs q8-cpu  : mean|dlogit| %.6f   %.2fx the floor "
                "(limit %.1fx)\n", impl_err, ratio, REASSOC_SLACK);
         printf("  q8-gpu    vs q8-cpu  : top1 diff %d/%d (%.1f%%, limit %.0f%%)"
@@ -500,6 +509,15 @@ int main(int argc, char **argv) {
         double frac = (double)n_diff / STEPS;
         printf("  fp4-cpu-b1 vs fp4-cpu: mean|dlogit| %.6f   (reassociation "
                "floor, CPU only)\n", reassoc);
+        {   // diagnostic, not gated: how often the CPU flips a token against
+            // ITSELF under legal reassociation. A GPU/CPU top-1 failure that
+            // sits near this rate says the format is chaotic on this model and
+            // the fixed top-1 limits are the wrong instrument, not the kernels.
+            int nd_b1; double w_b1;
+            top1_stats(fp4c, fp4b1, n_vocab, &nd_b1, &w_b1);
+            printf("  fp4-cpu-b1 vs fp4-cpu: top1 diff %d/%d, worst margin %.4f "
+                   "(the floor's own flip rate; diagnostic)\n", nd_b1, STEPS, w_b1);
+        }
         printf("  fp4-gpu   vs fp4-cpu : mean|dlogit| %.6f   %.2fx the floor "
                "(limit %.1fx)\n", impl_err, ratio, REASSOC_SLACK);
         printf("  fp4-gpu   vs fp4-cpu : top1 diff %d/%d (%.1f%%, limit %.0f%%)"
@@ -544,6 +562,15 @@ int main(int argc, char **argv) {
         double frac = (double)n_diff / STEPS;
         printf("  k8v4-cpu-b1 vs k8v4-cpu: mean|dlogit| %.6f   (reassociation "
                "floor, CPU only)\n", reassoc);
+        {   // diagnostic, not gated: how often the CPU flips a token against
+            // ITSELF under legal reassociation. A GPU/CPU top-1 failure that
+            // sits near this rate says the format is chaotic on this model and
+            // the fixed top-1 limits are the wrong instrument, not the kernels.
+            int nd_b1; double w_b1;
+            top1_stats(k84c, k84b1, n_vocab, &nd_b1, &w_b1);
+            printf("  k8v4-cpu-b1 vs k8v4-cpu: top1 diff %d/%d, worst margin %.4f "
+                   "(the floor's own flip rate; diagnostic)\n", nd_b1, STEPS, w_b1);
+        }
         printf("  k8v4-gpu  vs k8v4-cpu: mean|dlogit| %.6f   %.2fx the floor "
                "(limit %.1fx)\n", impl_err, ratio, REASSOC_SLACK);
         printf("  k8v4-gpu  vs k8v4-cpu: top1 diff %d/%d (%.1f%%, limit %.0f%%)"
