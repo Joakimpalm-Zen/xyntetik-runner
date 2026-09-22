@@ -482,7 +482,7 @@ def probe_speed(post_json: Callable[..., dict[str, Any]], model: str, *, tokens:
 
 
 def runner_chat(post_json: Callable[..., dict[str, Any]], model: str, *, max_tokens: int,
-                temperature: float = 0.0) -> ChatFn:
+                temperature: float = 0.0, seed: int = 0) -> ChatFn:
     """Adapt ``RunnerEndpoint.post_json`` to the ``ChatFn`` shape."""
     def chat(messages: list[dict[str, Any]], tools: list[dict[str, Any]]) -> dict[str, Any]:
         # "required" constrains every turn to a real tool call through the
@@ -492,6 +492,8 @@ def runner_chat(post_json: Callable[..., dict[str, Any]], model: str, *, max_tok
         payload = {"model": model, "messages": messages, "tools": tools,
                    "tool_choice": "required", "max_tokens": max_tokens,
                    "temperature": temperature}
+        if seed > 0:
+            payload["seed"] = seed
         data = post_json("/v1/chat/completions", payload)
         choice = data["choices"][0]
         msg = dict(choice["message"])

@@ -218,12 +218,15 @@ def _tasks(out: Path, only: str | None) -> list[RepairTask]:
 
 
 def attempt_key(episode_id: str, ident: Identity) -> tuple[str, str, str, tuple[str, ...]]:
+    """(episode, model, scaffold, tool set) plus the adapter when one is
+    served: the adapter rides in the model slot as `model+adapter`."""
     """What makes an attempt a repeat: the same episode under the same model,
     scaffold AND tool set. The tool set is part of the identity (edit-only,
     visible solution tests), so a cohort that differs there is a new
     attempt, not a rerun; keyed on model and scaffold alone, the first
     show-tests cohort was skipped as already attempted (2026-09-16)."""
-    return (episode_id, ident.model_sha256, ident.scaffold_sha256, tuple(ident.tool_set))
+    model = ident.model_sha256 + (f"+{ident.adapter_sha256}" if ident.adapter_sha256 else "")
+    return (episode_id, model, ident.scaffold_sha256, tuple(ident.tool_set))
 
 
 def stage_solution_tests(task: RepairTask, ws_dir: Path) -> tuple[str, ...]:
@@ -283,6 +286,25 @@ class ReplayOptions:
     instead of the pre-state test that passes. The protected copy still
     judges, and an edit to a staged file is tamper. Part of the identity's
     tool set (`visible:solution-tests`), so cohorts stay apart."""
+    adapter_sha256: str = ""
+    """The served adapter's hash when the endpoint runs with --lora: part of
+    the identity and of the repeat key, so an adapted cohort never pools
+    with the base model's (R14.5.19)."""
+    cohort_tag: str = ""
+    """A free label for a serving condition the identity cannot see from
+    the endpoint (the context window, the KV cache kind): joins the tool set
+    as `cohort:<tag>` so the cohort stays apart from an earlier run of the
+    same model, and the ledger records which condition produced the row.
+    Added when the bet E k8v4 re-run (32k, --kv k8v4) was skipped as already
+    attempted because only model, scaffold and tool set key a repeat."""
+    samples: int = 1
+    """Attempts per task at ``temperature``, each with its own seed and its
+    own ledger record; the first verified sample ends the task. Coverage
+    (tasks with a verified sample) is the cohort's metric, and the summary
+    already reads it: an episode with any verified record counts verified.
+    Part of the identity's tool set (`samples:N@T`), so the cohort stays
+    apart from the single greedy attempt."""
+    temperature: float = 0.0
 
 
 _CLASS_RANK = {"function": 0, "file": 1, "multi-file": 2}
@@ -325,11 +347,18 @@ def run_replay(out: Path, endpoint: RunnerEndpoint, opts: ReplayOptions, *,
         project="", task_class="file", context_band="", tool_set=(),
         verifier_id="", environment_id=f"{platform.node()}|{opts.endpoint_label or endpoint.base_url}",
         model_sha256=opts.model_sha256 or f"unknown:{model}", quant=opts.quant or "unknown",
+        adapter_sha256=opts.adapter_sha256 or None,
         template_sha256="unknown", runner_build=str(caps.get("version") or "unknown"),
         backend=str(caps.get("backend") or "unknown"), harness_version=HARNESS_VERSION,
         scaffold_sha256=scaffold_id)
-    done = {attempt_key(r.episode_id, r.identity)
-            for r in _read_records(evidence) if r.verifier is not None}
+    # what each task's cohort already holds: how many samples, and whether
+    # one verified (a sampling cohort resumes where it stopped)
+    seen: dict[tuple[str, str, str, tuple[str, ...]], list[bool]] = {}
+    for r in _read_records(evidence):
+        if r.verifier is not None:
+            seen.setdefault(attempt_key(r.episode_id, r.identity), []).append(
+                r.disposition is Disposition.VERIFIED_LOCAL_ATTEMPT)
+    done = {k for k, v in seen.items() if any(v) or len(v) >= max(1, opts.samples)}
     ran = 0
     for task in replay_order(_tasks(out, opts.task)):
         if opts.limit and ran >= opts.limit:
@@ -339,65 +368,78 @@ def run_replay(out: Path, endpoint: RunnerEndpoint, opts: ReplayOptions, *,
                         tool_set=("list_files", "read_file",
                                   "write_file:new-only" if opts.edit_only else "write_file",
                                   "edit_file", "run_tests",
-                                  *(("visible:solution-tests",) if opts.show_tests else ())),
+                                  *(("visible:solution-tests",) if opts.show_tests else ()),
+
+                                  *((f"cohort:{opts.cohort_tag}",) if opts.cohort_tag else ()),
+                                  *((f"samples:{opts.samples}@{opts.temperature:g}",)
+                                    if opts.samples > 1 or opts.temperature > 0 else ())),
                         verifier_id=f"commit-{'gates' if task.verifier_kind == 'make' else 'tests'}:{task.task_id}")
         if attempt_key(task.episode_id, ident) in done:
             continue
         ran += 1
-        print(f"[{task.task_id}] attempt with {model} ...", flush=True)
-        ws_dir = _worktree(task)
-        ws = None
-        try:
-            visible = task.visible_test_files
-            if opts.show_tests:
-                visible = stage_solution_tests(task, ws_dir)
-            baseline = Baseline.capture(ws_dir)
-            ws = Workspace(ws_dir, visible_tests=visible,
-                           pythonpath=task.pythonpath, python=opts.python, budget=budget,
-                           gates=task.gates, edit_only=opts.edit_only)
-            chat = runner_chat(endpoint.post_json, model, max_tokens=budget.max_tokens)
-            result = attempt(task.request, ws, chat, budget=budget, context=task.context,
-                             scaffold=scaffold)
-            protected = ProtectedTests.load(Path(task.protected_dir))
-            outcome = verify(ws_dir, protected, baseline, timeout_s=opts.timeout,
-                             python=opts.python, pythonpath=task.pythonpath)
-            changes = baseline.changes(ws_dir)
-            fixed: tuple[str, ...] = ()
-            if changes and task.failing_at_base and outcome.passed is not None:
-                fixed = fixed_ids(protected, task.failing_at_base, ws_dir, timeout_s=opts.timeout,
-                                  python=opts.python, pythonpath=task.pythonpath)
-            if outcome.passed is True:
-                disposition = Disposition.VERIFIED_LOCAL_ATTEMPT
-            elif outcome.passed is False:
-                disposition = Disposition.LOCAL_FAILED
-            else:
-                disposition = Disposition.VERIFIER_INCONCLUSIVE
-            rec = EpisodeEvidence(
-                episode_id=task.episode_id, source=task.episode_id.split(":")[0],
-                observed_at=_now(), disposition=disposition, identity=ident,
-                baseline_sha256=baseline.sha256,
-                patch_sha256=baseline.patch_sha256(ws_dir) if changes else None,
-                changed_paths=changes.paths, verifier=outcome, wall_s=result.wall_s,
-                resources={"prompt_tokens": float(result.prompt_tokens),
-                           "completion_tokens": float(result.completion_tokens),
-                           "turns": float(result.turns), "tool_calls": float(result.tool_calls),
-                           "test_runs": float(result.test_runs),
-                           "failing_at_base": float(len(task.failing_at_base)),
-                           "fixed": float(len(fixed)), "probe_tps": round(tps, 2)},
-                reasons=(f"attempt: {result.stop_reason}",
-                         f"fixed {len(fixed)} of {len(task.failing_at_base)} failing at base",
-                         *outcome.reasons))
-            _append(evidence, rec)
-            _keep_attempt(out, task, ident, result, ws_dir)
-            print(f"[{task.task_id}] {disposition.value}: {result.stop_reason}, "
-                  f"{result.turns} turns, {result.tool_calls} calls, {result.wall_s:.0f}s; "
-                  f"fixed {len(fixed)}/{len(task.failing_at_base)}, verifier "
-                  f"{outcome.passed_count}/{outcome.expected}"
-                  f"{' tamper' if outcome.tamper else ''}", flush=True)
-        finally:
-            if ws is not None:
-                ws.close()
-            _drop(task, ws_dir)
+        first = len(seen.get(attempt_key(task.episode_id, ident), []))
+        for sample in range(first, max(1, opts.samples)):
+          seed = 1000 + sample if opts.samples > 1 or opts.temperature > 0 else 0
+          print(f"[{task.task_id}] attempt with {model}"
+                + (f" (sample {sample + 1} of {opts.samples}, seed {seed})" if opts.samples > 1 else "")
+                + " ...", flush=True)
+          ws_dir = _worktree(task)
+          ws = None
+          try:
+              visible = task.visible_test_files
+              if opts.show_tests:
+                  visible = stage_solution_tests(task, ws_dir)
+              baseline = Baseline.capture(ws_dir)
+              ws = Workspace(ws_dir, visible_tests=visible,
+                             pythonpath=task.pythonpath, python=opts.python, budget=budget,
+                             gates=task.gates, edit_only=opts.edit_only)
+              chat = runner_chat(endpoint.post_json, model, max_tokens=budget.max_tokens,
+                                 temperature=opts.temperature, seed=seed)
+              result = attempt(task.request, ws, chat, budget=budget, context=task.context,
+                               scaffold=scaffold)
+              protected = ProtectedTests.load(Path(task.protected_dir))
+              outcome = verify(ws_dir, protected, baseline, timeout_s=opts.timeout,
+                               python=opts.python, pythonpath=task.pythonpath)
+              changes = baseline.changes(ws_dir)
+              fixed: tuple[str, ...] = ()
+              if changes and task.failing_at_base and outcome.passed is not None:
+                  fixed = fixed_ids(protected, task.failing_at_base, ws_dir, timeout_s=opts.timeout,
+                                    python=opts.python, pythonpath=task.pythonpath)
+              if outcome.passed is True:
+                  disposition = Disposition.VERIFIED_LOCAL_ATTEMPT
+              elif outcome.passed is False:
+                  disposition = Disposition.LOCAL_FAILED
+              else:
+                  disposition = Disposition.VERIFIER_INCONCLUSIVE
+              rec = EpisodeEvidence(
+                  episode_id=task.episode_id, source=task.episode_id.split(":")[0],
+                  observed_at=_now(), disposition=disposition, identity=ident,
+                  baseline_sha256=baseline.sha256,
+                  patch_sha256=baseline.patch_sha256(ws_dir) if changes else None,
+                  changed_paths=changes.paths, verifier=outcome, wall_s=result.wall_s,
+                  resources={"prompt_tokens": float(result.prompt_tokens),
+                             "completion_tokens": float(result.completion_tokens),
+                             "turns": float(result.turns), "tool_calls": float(result.tool_calls),
+                             "test_runs": float(result.test_runs),
+                             "failing_at_base": float(len(task.failing_at_base)),
+                             "fixed": float(len(fixed)), "probe_tps": round(tps, 2),
+                             "sample": float(sample + 1), "seed": float(seed)},
+                  reasons=(f"attempt: {result.stop_reason}",
+                           f"fixed {len(fixed)} of {len(task.failing_at_base)} failing at base",
+                           *outcome.reasons))
+              _append(evidence, rec)
+              _keep_attempt(out, task, ident, result, ws_dir)
+              print(f"[{task.task_id}] {disposition.value}: {result.stop_reason}, "
+                    f"{result.turns} turns, {result.tool_calls} calls, {result.wall_s:.0f}s; "
+                    f"fixed {len(fixed)}/{len(task.failing_at_base)}, verifier "
+                    f"{outcome.passed_count}/{outcome.expected}"
+                    f"{' tamper' if outcome.tamper else ''}", flush=True)
+          finally:
+              if ws is not None:
+                  ws.close()
+              _drop(task, ws_dir)
+          if disposition is Disposition.VERIFIED_LOCAL_ATTEMPT:
+              break
     print(f"{ran} attempt(s) recorded in {evidence}", flush=True)
     return ran, tps, model
 
@@ -408,7 +450,9 @@ def cmd_replay(args: argparse.Namespace) -> int:
                          min_tps=args.min_tps, scaffold_path=args.scaffold,
                          model_sha256=args.model_sha256, quant=args.quant, task=args.task,
                          limit=args.limit, endpoint_label=args.endpoint,
-                         edit_only=args.edit_only, show_tests=args.show_tests)
+                         edit_only=args.edit_only, show_tests=args.show_tests,
+                         samples=args.samples, temperature=args.temperature,
+                         adapter_sha256=args.adapter_sha256, cohort_tag=args.cohort_tag)
     try:
         run_replay(Path(args.out), RunnerEndpoint(args.endpoint, timeout=args.request_timeout),
                    opts, model=args.model)
@@ -443,7 +487,9 @@ def cmd_bench(args: argparse.Namespace) -> int:
           flush=True)
     opts = ReplayOptions(python=args.python, timeout=args.timeout, max_turns=args.max_turns,
                          max_tokens=args.max_tokens, test_runs=args.test_runs, wall=args.wall,
-                         min_tps=args.min_tps, scaffold_path=args.scaffold, edit_only=args.edit_only, show_tests=args.show_tests)
+                         min_tps=args.min_tps, scaffold_path=args.scaffold, edit_only=args.edit_only, show_tests=args.show_tests,
+                         samples=args.samples, temperature=args.temperature,
+                         adapter_sha256=args.adapter_sha256, cohort_tag=args.cohort_tag)
     rows: list[dict[str, Any]] = []
     arms: list[tuple[str, str]] = [("endpoint", u) for u in args.endpoints.split(",") if u]
     arms += [("model", m) for m in args.models.split(",") if m]
@@ -1256,6 +1302,15 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--show-tests", action="store_true",
                    help="stage the frozen post-state test files into the workspace, so the "
                         "attempt sees the failing test; edits to them are tamper")
+    p.add_argument("--samples", type=int, default=1,
+                   help="attempts per task at --temperature, each with its own seed and record; "
+                        "the first verified sample ends the task (coverage is the metric)")
+    p.add_argument("--adapter-sha256", default="",
+                   help="hash of the adapter the endpoint serves with --lora, for the identity")
+    p.add_argument("--cohort-tag", default="",
+                   help="label for a serving condition the endpoint does not expose (context, KV kind); "
+                        "joins the tool set as cohort:<tag> so the run is its own cohort")
+    p.add_argument("--temperature", type=float, default=0.0)
     p.set_defaults(fn=cmd_replay)
     p = sub.add_parser("bank", help="build repair tasks from a public repository's history")
     p.add_argument("--repo", required=True)
@@ -1313,6 +1368,10 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--scaffold", default="")
     p.add_argument("--edit-only", action="store_true")
     p.add_argument("--show-tests", action="store_true")
+    p.add_argument("--samples", type=int, default=1)
+    p.add_argument("--cohort-tag", default="")
+    p.add_argument("--temperature", type=float, default=0.0)
+    p.add_argument("--adapter-sha256", default="")
     p.set_defaults(fn=cmd_bench)
     p = sub.add_parser("install", help="wire the hooks and a /shadow command into the harnesses "
                                        "(explicit opt-in; reversible with uninstall)")
