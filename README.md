@@ -1473,6 +1473,12 @@ Vulkan is not implemented; AMD and Intel GPUs use the CPU path.
   divisible by 32 and both q8 and fp4 kernels on the backend.
 - Prompt evaluation is batched; `-b` controls the batch and `-v` prints the KV
   allocation before inference.
+- `--decide FILE` and `POST /v1/decide`: typed decisions. A state plus typed
+  questions in, one distribution over the caller's verbatim option strings
+  per question out, scored teacher-forced on one prefill with no sampling.
+  The probabilities are the model's own and are not calibrated by the
+  engine; measure them with `scripts/decide-calibrate.py` before trusting a
+  number.
 
 ### Resource control
 
@@ -2687,6 +2693,28 @@ and is capped at 64; `scripts/cl-calibration.py` turns labeled records into an
 ECE report, and `scripts/tool-choice-boundary.py` runs an unlabeled
 tool-choice bank across serving conditions and reports where they disagree
 ([docs/tool-choice-boundary-lane.md](docs/tool-choice-boundary-lane.md)).
+
+POST /v1/decide (R13.10) scores caller-supplied option strings as verbatim
+continuations of a prefilled state with zero tokens sampled: each option's
+log-probability is the product of its in-context token conditionals, and
+`probs` is the softmax over the given options only (the exact contract is
+`src/decide.h` and `src/decide.c`, shared by the server route and
+`--decide FILE`). `scripts/decide-calibrate.py` turns a labeled question
+set (one JSON object per line: `state`, `question`, `options`, `answer` as
+an index or a distribution, `source`, `permutation_group`, `variant`) into
+a calibration report against that endpoint: accuracy, multi-class Brier
+score, log loss, and expected calibration error with a reliability curve,
+each computed on a held-out split chosen by `permutation_group` (never by
+row) and separately on the rest, both broken out by source. It also scores
+permutation invariance directly: every `permutation_group`'s variants are
+remapped to a canonical option order and compared pairwise by
+total-variation distance, and the report leads with that number rather
+than accuracy, because a decision surface that changes its answer when the
+options are reordered is not usable no matter how sharp its distribution
+looks elsewhere. `--batch-state` (default on) groups a state's questions
+into one request, the same KV reuse the endpoint itself is built around.
+No claim about any model's calibration is made here; the script measures
+whatever endpoint it is pointed at.
 
 ### OpenAI Responses
 

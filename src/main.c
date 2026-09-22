@@ -1,5 +1,6 @@
 #define _CRT_RAND_S
 // runner — CLI: one-shot completion, interactive chat, and server launcher.
+#include "decide.h"
 #include "dpo.h"
 #include "hfhub.h"
 #include "runner.h"
@@ -948,6 +949,10 @@ static void usage_to(FILE *f, const char *prog) {
         "  --score        teacher-forced scoring: per-token log P(token|prefix)\n"
         "                 over the raw -p/-f text (no template, no sampling),\n"
         "                 printed as JSON with NLL and perplexity\n"
+        "  --decide FILE  typed decisions: one /v1/decide request per line of\n"
+        "                 FILE (state, questions[{question, options}]), one\n"
+        "                 response per line on stdout; options scored verbatim\n"
+        "                 in context, no sampling (- reads stdin)\n"
         "  --lora FILE    load a LoRA adapter GGUF beside the frozen base\n"
         "                 (CPU dense projections; fails closed otherwise)\n"
         "  --lora-scale F multiply the adapter's trained alpha/r (default 1.0)\n"
@@ -1229,6 +1234,7 @@ static int run_shadow_mode(const char *model, bool yes) {
 
 int main(int argc, char **argv) {
     const char *model_path = NULL, *prompt = NULL, *system_prompt = NULL;
+    const char *decide_path = NULL;   // --decide FILE (jsonl of /v1/decide requests)
     const char *hf_spec = NULL;
     char *owned_prompt = NULL;
     const char *tmpl_arg = NULL, *prompt_file = NULL, *schema_file = NULL;
@@ -1386,6 +1392,7 @@ int main(int argc, char **argv) {
         else if (!strcmp(a, "--draft-lookup")) draft_lookup = true;
         else if (!strcmp(a, "--bench-json")) bench_json = true;
         else if (!strcmp(a, "--score")) score = true;
+        else if (!strcmp(a, "--decide")) decide_path = NEXT;
         else if (!strcmp(a, "--lora")) lora_path = NEXT;
         else if (!strcmp(a, "--lora-scale"))
             lora_scale = (float)float_arg(a, NEXT, 0, FLT_MAX);
@@ -1728,7 +1735,8 @@ int main(int argc, char **argv) {
     }
     if (!prompt && !interactive && !serve && !quant_out && !merge_out &&
         !context_out &&
-        !bench_json && !tool_info && !train_path && !dpo_path && !verify_path) {
+        !bench_json && !tool_info && !train_path && !dpo_path && !verify_path &&
+        !decide_path) {
         fprintf(stderr, "error: need -p PROMPT, -i, or --serve\n");
         usage(argv[0]);
         return 1;
@@ -2818,6 +2826,46 @@ int main(int argc, char **argv) {
         return rc;
     }
 
+    if (decide_path) {
+        // Typed decisions (R13.10): the same handler the server route uses,
+        // one request per line, one response per line; a bad line is an
+        // {"error":...} object on its line and the exit code is 1 at the end
+        FILE *df = strcmp(decide_path, "-") ? fopen(decide_path, "rb") : stdin;
+        if (!df) { fprintf(stderr, "error: cannot open %s\n", decide_path); CLI_FAIL; }
+        size_t cap = 1 << 16, len = 0; char *line = malloc(cap);
+        if (!line) { if (df != stdin) fclose(df); CLI_FAIL; }
+        int rc = 0, lineno = 0, c;
+        const char *label = strrchr(model_path, '/') ? strrchr(model_path, '/') + 1 : model_path;
+        for (;;) {
+            c = fgetc(df);
+            if (c != EOF && c != '\n') {
+                if (len + 1 >= cap) { cap *= 2; char *nl = realloc(line, cap); if (!nl) { rc = 1; break; } line = nl; }
+                line[len++] = (char)c;
+                continue;
+            }
+            if (len > 0) {
+                lineno++;
+                line[len] = 0;
+                jv *req = json_parse(line, len);
+                sbuf r = {0};
+                const char *derr = NULL;
+                int st = req ? decide_handle(&e, req, label, &r, &derr) : 400;
+                if (!req) derr = "invalid JSON";
+                if (st == 200) printf("%s\n", r.s);
+                else { printf("{\"error\":{\"line\":%d,\"status\":%d,\"message\":\"%s\"}}\n", lineno, st, derr ? derr : "decide failed"); rc = 1; }
+                fflush(stdout);
+                free(r.s);
+                if (req) jv_free(req);
+                len = 0;
+            }
+            if (c == EOF) break;
+        }
+        free(line);
+        if (df != stdin) fclose(df);
+        cli_cleanup(&e, toks, &tok, &m);
+        free(owned_prompt);
+        return rc;
+    }
     if (score) {
         // Teacher-forced scoring (adaptation D1): per-position
         // log P(token | prefix) over the RAW prompt bytes — no template, no

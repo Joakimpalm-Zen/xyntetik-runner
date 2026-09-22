@@ -19,6 +19,7 @@
 #include "compat.h"
 #include "http.h"
 #include "server_int.h"
+#include "decide.h"
 #include "scheduler.h"
 #include "completion.h"
 #include "api.h"
@@ -736,6 +737,27 @@ static void sb_emb_b64(sbuf *r, const float *v, int n) {
     }
 }
 
+// POST /v1/decide (R13.10): typed decisions, one prefill per state, zero
+// sampled tokens. The scorer runs on this slot's engine under the device
+// turn like embeddings; the KV is left holding a valid prefix, so a
+// following request on the slot rewinds into it like any other.
+static void handle_decide(slot_t *s, sock_t fd, jv *req) {
+    sbuf r = {0};
+    const char *err = NULL;
+    sched_prefill_begin();
+    int st = decide_handle(&s->e, req, SV.model_name, &r, &err);
+    sched_prefill_end();
+    if (st != 200) {
+        free(r.s);
+        send_error(fd, st, err ? err : "decide failed");
+        return;
+    }
+    send_built(fd, &r);
+    fprintf(stderr, "[slot %d] decide: %d question(s)\n", s->id,
+            jv_get(req, "questions") ? jv_get(req, "questions")->n : 0);
+    free(r.s);
+}
+
 static void handle_embeddings(slot_t *s, sock_t fd, jv *req) {
     jv *input = jv_get(req, "input");
     const char *one = jv_str(input, NULL);
@@ -1415,7 +1437,8 @@ static void handle_conn(slot_t *s, sock_t fd) {
                 !strcmp(path, "/v1/messages") ||
                 !strcmp(path, "/v1/messages/count_tokens") ||
                 !strcmp(path, "/v1/completions") ||
-                !strcmp(path, "/v1/embeddings"))) {
+                !strcmp(path, "/v1/embeddings") ||
+                !strcmp(path, "/v1/decide"))) {
         jv *req = body ? json_parse(body, content_length) : NULL;
         if (!req) {
             send_error(fd, 400, "invalid JSON body");
@@ -1508,6 +1531,7 @@ static void handle_conn(slot_t *s, sock_t fd) {
                 else if (strcmp(path, "/v1/messages/count_tokens") == 0)
                     handle_count_tokens(s, fd, req);
                 else if (strcmp(path, "/v1/embeddings") == 0) handle_embeddings(s, fd, req);
+                else if (strcmp(path, "/v1/decide") == 0) handle_decide(s, fd, req);
                 else handle_completion(s, fd, req);
                 // Ollama-style keep_alive: seconds of idle before the model
                 // unloads (swap mode) — 0 unloads now, negative pins forever.

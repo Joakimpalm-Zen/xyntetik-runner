@@ -8,6 +8,31 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **`POST /v1/decide` and `--decide FILE`: typed decisions with
+  probabilities, one prefill per state, zero sampled tokens** (R13.10). A
+  request carries a state and a list of typed questions, each with the
+  caller's option strings; the answer per question is a distribution over
+  those options. The rendering is fixed and raw (state, blank line,
+  question, newline, optional answer prefix) and every option is appended
+  VERBATIM, never relabelled. The readout is the exact one: an option is
+  tokenised in context (the concatenation, diffed against the prompt's
+  tokens, so a boundary merge is scored as part of the option), its
+  log-prob is the sum of its tokens' conditionals under the model's real
+  distribution, and options sharing a token prefix share the prefix's
+  conditionals (a sorted trie walk on the slot's own KV, rewinding between
+  siblings). Every scored conditional comes from a solo one-token forward,
+  so option order and question order change nothing, and the CLI mode and
+  the server route produce the same bytes. The response carries per-option
+  log-probs, probabilities, the argmax, the in-context token counts, and an
+  envelope with the runner version and digests of the state and the
+  questions. `tests/test_decide.py` pins the softmax, the trie inequality,
+  order invariance (exact), agreement with `--score` over the same text
+  positions, CLI-versus-server identity, and the refusals. What is NOT
+  claimed: calibration. The probabilities are the model's, unmodified; the
+  calibration instrument (`scripts/decide-calibrate.py`) measures them and
+  the lab's H6.10 is the item that would earn the word. Constraints: a KV
+  ring recomputes from position 0 on every sibling, and a recurrent model
+  re-folds the prompt per sibling unless marked; both are correct and slow.
 - **CUDA evidence for the fp4 and k8v4 caches, and the tolerance gate
   learns to read a chaotic format.** The 3070 gate (ZEN-GAMING, Qwen2.5-1.5B
   Q4_K_M; a 7B pair does not fit an 8 GB card beside that box's host RAM,
