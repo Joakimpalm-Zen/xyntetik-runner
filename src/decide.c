@@ -128,6 +128,25 @@ int decide_handle(engine *e, const jv *req, const char *model_name, sbuf *out, c
     jv *ap = jv_get((jv *)req, "answer_prefix");
     if (ap && ap->type != J_NULL && !aprefix) { *err = "answer_prefix must be a string"; return 400; }
     if (!aprefix) aprefix = "";
+    // Two renderings, chosen by the caller and stamped in the envelope.
+    // raw-v1 (the default, unchanged since R13.10's invariance results were
+    // taken on it): state, blank line, question, newline, answer_prefix, then
+    // the option. continuation-v1: the option follows the state directly,
+    // nothing injected, which is the loglikelihood readout a benchmark annex
+    // needs (HellaSwag, ARC, PIQA, WinoGrande, non-CoT MMLU score a
+    // continuation of the context; lm-eval's acc is exactly this sum of
+    // conditionals, acc_norm follows client-side from the ending's length).
+    // Under it the question is a label only (may be absent or empty) and
+    // answer_prefix has no place.
+    const char *rend = jstr(req, "rendering");
+    jv *rv = jv_get((jv *)req, "rendering");
+    if (rv && rv->type != J_NULL && !rend) { *err = "rendering must be a string"; return 400; }
+    if (!rend) rend = "raw-v1";
+    bool cont;
+    if (!strcmp(rend, "raw-v1")) cont = false;
+    else if (!strcmp(rend, "continuation-v1")) cont = true;
+    else { *err = "unknown rendering: raw-v1 or continuation-v1"; return 400; }
+    if (cont && *aprefix) { *err = "answer_prefix has no place in the continuation-v1 rendering"; return 400; }
     jv *qs = jv_get((jv *)req, "questions");
     if (!qs || qs->type != J_ARR || qs->n < 1) { *err = "missing questions (a non-empty array)"; return 400; }
     // receipt digests over the state bytes and a canonical rendering of the
@@ -170,7 +189,8 @@ int decide_handle(engine *e, const jv *req, const char *model_name, sbuf *out, c
         const jv *q = qs->items[i];
         if (q->type != J_OBJ) { *err = "each question must be an object"; status = 400; break; }
         const char *qt = jstr(q, "question");
-        if (!qt || !*qt) { *err = "a question is missing its text"; status = 400; break; }
+        if (!cont && (!qt || !*qt)) { *err = "a question is missing its text"; status = 400; break; }
+        if (!qt) qt = "";
         jv *opts = jv_get((jv *)q, "options");
         if (!opts || opts->type != J_ARR || opts->n < 2) { *err = "a question needs at least 2 options"; status = 400; break; }
         const char *id = jstr(q, "id");
@@ -186,13 +206,18 @@ int decide_handle(engine *e, const jv *req, const char *model_name, sbuf *out, c
                 if (!strcmp(ov[j], ov[k])) { *err = "duplicate option string"; bad = true; }
         }
         if (bad) { free(ov); free(res); status = 400; break; }
-        // the fixed raw rendering: state, blank line, question, newline, prefix
         size_t qlen = strlen(qt);
         char *prompt = malloc(slen + 2 + qlen + 1 + alen + 1);
         if (!prompt) { free(ov); free(res); *err = "out of memory"; status = 500; break; }
-        memcpy(prompt, state, slen); memcpy(prompt + slen, "\n\n", 2);
-        memcpy(prompt + slen + 2, qt, qlen); prompt[slen + 2 + qlen] = '\n';
-        memcpy(prompt + slen + 3 + qlen, aprefix, alen + 1);
+        if (cont) {
+            // continuation-v1: the state is the whole prompt
+            memcpy(prompt, state, slen + 1);
+        } else {
+            // raw-v1: state, blank line, question, newline, prefix
+            memcpy(prompt, state, slen); memcpy(prompt + slen, "\n\n", 2);
+            memcpy(prompt + slen + 2, qt, qlen); prompt[slen + 2 + qlen] = '\n';
+            memcpy(prompt + slen + 3 + qlen, aprefix, alen + 1);
+        }
         int ptoks = 0;
         const char *serr = NULL;
         bool ok = decide_score(e, prompt, ov, n_opt, res, &ptoks, &serr);
@@ -226,7 +251,7 @@ int decide_handle(engine *e, const jv *req, const char *model_name, sbuf *out, c
     if (status != 200) return status;
     sb_fmt(out, "],\"usage\":{\"prompt_tokens\":%d,\"completion_tokens\":0,\"total_tokens\":%d},"
                 "\"envelope\":{\"runner_version\":\"%s\",\"state_sha256\":\"%s\",\"questions_sha256\":\"%s\","
-                "\"rendering\":\"raw-v1\"}}", total_prompt, total_prompt, RUNNER_VERSION, state_sha, q_sha);
+                "\"rendering\":\"%s\"}}", total_prompt, total_prompt, RUNNER_VERSION, state_sha, q_sha, rend);
     if (out->failed) { *err = "out of memory building the response"; return 500; }
     return 200;
 }
