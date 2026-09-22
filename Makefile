@@ -687,6 +687,15 @@ $(TEST_KV_TOL): $(TEST_KV_TOL_SRC) $(HDR)
 $(TEST_KV_FP4): tests/test_kv_fp4.c $(QUANTS_OBJ) $(HDR)
 	$(CC) $(CFLAGS) -I src tests/test_kv_fp4.c $(QUANTS_OBJ) -o $@ $(LDFLAGS)
 
+# the CUDA KV store kernel against the CPU encoders, byte for byte (the twin
+# of test-metal-kv-fp4): loads the driver API dynamically and JITs the
+# committed PTX, so it builds without a CUDA toolkit and skips without a driver
+TEST_CUDA_KVFP4 = $(TEST_BATCH:test-batch%=test-cuda-kvfp4%)
+$(TEST_CUDA_KVFP4): tests/test_cuda_kvfp4.c src/kernels_ptx.h $(QUANTS_OBJ) $(HDR)
+	$(CC) $(CFLAGS) -I src tests/test_cuda_kvfp4.c $(QUANTS_OBJ) -o $@ $(LDFLAGS)
+test-cuda-kv-fp4: $(TEST_CUDA_KVFP4)
+	./$(TEST_CUDA_KVFP4)
+
 # SIMD (AVX2/NEON) dot and dequant kernels vs an independent double-precision
 # reference; also pins q8_quant_row byte-identical to its scalar definition
 TEST_QUANTS_SIMD_SRC = tests/test_quants_simd.c $(QUANTS_OBJ)
