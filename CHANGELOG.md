@@ -6,6 +6,22 @@ change between releases (the `-alpha` suffix was retired at v0.2.0 — the 0.x
 version already says what it needs to). Entries below the rename keep the
 names that were true when they were written.
 
+## Unreleased
+
+- **The terminator a generation stopped on is reported.** When a turn ends
+  on a stop token, `stop_token_id` and its spelling `stop_token` ride beside
+  `finish_reason` on the chat and completions surfaces, buffered and on the
+  final streamed chunk. `finish_reason: "stop"` alone could not tell Muse's
+  `<|eom|>` from its `<|eot|>`, which mean different things to a harness
+  (lab finding, 2026-09-22). A stop string, a budget end or a completed
+  constrained document carries neither field.
+- **`special_tokens: true` on `/v1/completions` renders control tokens.**
+  Their vocabulary spellings appear in `text` and in `logprobs.tokens`, with
+  `text_offset` following the rendered text, instead of the empty strings a
+  wire-format harness read as 0% conformance (lab finding, 2026-09-22). The
+  OpenAI shape stays the default; the flag is refused on the other surfaces
+  and together with `response_format`. Pinned in `tests/test_stop_specials.py`.
+
 ## v0.5.6 - 2026-09-22
 
 - **`decide-calibrate.py` and `kld-compare-raw.py` refuse a model name the

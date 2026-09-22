@@ -121,7 +121,7 @@ bool engine_init(engine *e, model_t *m, tokenizer *tok, sampler *smp) {
 
 void engine_reset(engine *e) {
     e->pos = 0;
-    e->hit_stop = false;
+    e->hit_stop = false; e->stop_id = -1;
     e->rewind_how = REWIND_NONE;
     model_recurrent_mark_drop(e->m);   // a fresh sequence: the mark was over the old one
     sampler_reset(e->smp);
@@ -294,7 +294,7 @@ int engine_rewind(engine *e, const int32_t *toks, int n) {
     // the draft's KV beyond the kept prefix was computed from the previous
     // request's tokens; the catch-up loop re-feeds hist[dpos..pos)
     dpos_rewind(e, keep);
-    e->hit_stop = false;
+    e->hit_stop = false; e->stop_id = -1;
     sampler_reset(e->smp);   // the kept prefix is prompt: it does not seed the penalty window
     jsonv_init(&e->jv);
     if (e->schema) sval_init(&e->sv, e->schema);
@@ -655,7 +655,7 @@ prefix_reuse engine_prefix_reuse(engine *e, const int32_t *toks, int n) {
         memcpy(e->hist, toks, sizeof(int32_t) * (size_t)best);
         e->pos = best;
         e->dpos = 0;          // the draft model's KV was not forked
-        e->hit_stop = false;
+        e->hit_stop = false; e->stop_id = -1;
         sampler_reset(e->smp);   // a forked prefix is prompt: it does not seed the penalty window
         jsonv_init(&e->jv);
         if (e->schema) sval_init(&e->sv, e->schema);
@@ -1757,6 +1757,23 @@ static void constraint_close(engine *e, gen_cb cb, void *ud) {
     e->constraint_closing = false;
 }
 
+// One generated token's bytes. A control token decodes to none; under the
+// request's `special_tokens` opt-in (completions only) it renders as its
+// vocabulary spelling, so a harness scoring the wire format from text sees
+// `<|message|>` where the model put it (lab finding 2026-09-22). Never
+// under a constraint: the validator's byte stream stays the decoded one.
+static int decode_piece(engine *e, int tok, char *buf, int cap) {
+    int n = tok_decode(e->tok, tok, buf, cap);
+    if (n == 0 && e->render_special && !e->schema && !e->json_mode &&
+        tok_is_control(e->tok, tok)) {
+        const char *sp = tok_raw(e->tok, tok);
+        n = sp ? (int)strlen(sp) : 0;
+        if (n >= cap) n = cap - 1;
+        if (n > 0) memcpy(buf, sp, (size_t)n);
+    }
+    return n;
+}
+
 // One emitted token's bookkeeping, shared by every row of the walk: decode,
 // push it through the constraint/callback path, count it, close a prelude
 // that ran out. Returns the callback rc (non-zero = abort) and reports
@@ -1764,7 +1781,7 @@ static void constraint_close(engine *e, gen_cb cb, void *ud) {
 static int spec_emit(engine *e, int tok, gen_cb cb, void *ud, int *n_gen,
                      bool constrained, bool *constrained_done) {
     char buf[512];
-    int n = tok_decode(e->tok, tok, buf, sizeof(buf));
+    int n = decode_piece(e, tok, buf, sizeof(buf));
     bool in_prelude = constrained && e->constraint_phase != CP_OUTPUT;
     int rc = e->schema && n > 0
                ? constraint_accept(e, true, buf, n, cb, ud)
@@ -1809,7 +1826,7 @@ static int spec_emit(engine *e, int tok, gen_cb cb, void *ud, int *n_gen,
 static int engine_generate_spec(engine *e, float *logits, int max_new,
                                 gen_cb cb, void *ud, double *gen_time) {
     int n_gen = 0;
-    e->hit_stop = false;
+    e->hit_stop = false; e->stop_id = -1;
     e->oom = false;
     e->lp_count = 0;
     e->prelude_count = 0;
@@ -1879,6 +1896,7 @@ static int engine_generate_spec(engine *e, float *logits, int max_new,
             if (debug_tokens()) fprintf(stderr, " %d", tok);
             if (is_stop(e, tok) && !e->ignore_eos) {
                 e->hit_stop = true;
+                e->stop_id = tok;
                 goto done;
             }
             bool cdone;
@@ -2017,6 +2035,7 @@ static int engine_generate_spec(engine *e, float *logits, int max_new,
             if (debug_tokens()) fprintf(stderr, " %d", tok);
             if (is_stop(e, tok) && !e->ignore_eos) {
                 e->hit_stop = true;
+                e->stop_id = tok;
                 e->pos += i + 1; // keep the consumed rows' KV
                 spec_fold_sync(e, b, i + 1, nb, round_pos);
                 dpos_rewind(e, e->pos);
@@ -2129,7 +2148,7 @@ done:
 // logic, not a solo one and a batched one that can drift apart.
 
 void engine_gen_begin(engine *e, int max_new) {
-    e->hit_stop  = false;
+    e->hit_stop  = false; e->stop_id = -1;
     e->oom       = false;
     e->lp_count  = 0;
     e->gen_max   = max_new;
@@ -2167,6 +2186,7 @@ int engine_gen_step(engine *e, const float *logits, gen_cb cb, void *ud,
     if (debug_tokens()) fprintf(stderr, " %d", tok);
     if (is_stop(e, tok) && !e->ignore_eos) {
         e->hit_stop = true;
+        e->stop_id = tok;
         return ENGINE_STEP_DONE;
     }
     if (want_lp) {
@@ -2177,7 +2197,7 @@ int engine_gen_step(engine *e, const float *logits, gen_cb cb, void *ud,
         e->lp_chosen[e->lp_count] = raw - pre.lse;
         e->lp_count++;
     }
-    int n = tok_decode(e->tok, tok, buf, sizeof(buf));
+    int n = decode_piece(e, tok, buf, sizeof(buf));
     bool in_prelude = (e->schema || e->json_mode) &&
                       e->constraint_phase != CP_OUTPUT;
     int rc = e->schema && n > 0
