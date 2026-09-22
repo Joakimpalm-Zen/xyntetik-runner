@@ -1,0 +1,101 @@
+{
+  "cases": [
+    {
+      "category": "nested_arguments",
+      "id": "runner-000-nested_arguments",
+      "latency_ms": 28253.42,
+      "ordinal": 0,
+      "status": "passed"
+    },
+    {
+      "category": "tool_selection",
+      "id": "runner-001-tool_selection",
+      "latency_ms": 7491.14,
+      "ordinal": 1,
+      "status": "passed"
+    },
+    {
+      "category": "forced_truncation",
+      "id": "runner-002-forced_truncation",
+      "latency_ms": 10973.54,
+      "ordinal": 2,
+      "status": "passed"
+    },
+    {
+      "category": "stream_normalization",
+      "id": "runner-003-stream_normalization",
+      "latency_ms": 2703.75,
+      "ordinal": 3,
+      "status": "passed"
+    },
+    {
+      "category": "tool_stream_normalization",
+      "id": "runner-004-tool_stream_normalization",
+      "latency_ms": 8756.85,
+      "ordinal": 4,
+      "status": "passed"
+    },
+    {
+      "category": "large_enum_selection",
+      "failure": {
+        "category": "transport",
+        "message": "[transport] read timed out\n    received = 0\n    error = 'timed out'"
+      },
+      "id": "runner-005-large_enum_selection",
+      "latency_ms": 120007.02,
+      "ordinal": 5,
+      "status": "failed"
+    },
+    {
+      "category": "reasoning_then_tool",
+      "failure": {
+        "category": "transport",
+        "message": "[transport] read timed out\n    received = 0\n    error = 'timed out'"
+      },
+      "id": "runner-006-reasoning_then_tool",
+      "latency_ms": 120016.58,
+      "ordinal": 6,
+      "status": "failed"
+    },
+    {
+      "category": "structured_final",
+      "failure": {
+        "category": "transport",
+        "message": "[transport] read timed out\n    received = 0\n    error = 'timed out'"
+      },
+      "id": "runner-007-structured_final",
+      "latency_ms": 120019.43,
+      "ordinal": 7,
+      "status": "failed"
+    }
+  ],
+  "configuration": {
+    "model": "/Users/zenzombie/AI_projects/origin/xyntetik-runner/models/google_gemma-3-4b-it-Q4_K_M.gguf",
+    "temperature": 0
+  },
+  "metrics": {
+    "elapsed_ms": 422022.57,
+    "valid_structured_tasks_per_second": 0.012
+  },
+  "resources": {
+    "peak_rss_kb": 2468720,
+    "peak_rss_kind": "sampled"
+  },
+  "runtime": {
+    "name": "runner",
+    "version": "runner 0.5.6"
+  },
+  "schema_version": "xyntetik.agent-torture.v4",
+  "totals": {
+    "attempted": 8,
+    "attempted_pass_rate": 0.625,
+    "call_rate": 1.0,
+    "declined": 0,
+    "failed": 3,
+    "failures_by_category": {
+      "transport": 3
+    },
+    "passed": 5,
+    "requests": 8
+  }
+}
