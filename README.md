@@ -2694,6 +2694,28 @@ ECE report, and `scripts/tool-choice-boundary.py` runs an unlabeled
 tool-choice bank across serving conditions and reports where they disagree
 ([docs/tool-choice-boundary-lane.md](docs/tool-choice-boundary-lane.md)).
 
+POST /v1/decide (R13.10) scores caller-supplied option strings as verbatim
+continuations of a prefilled state with zero tokens sampled: each option's
+log-probability is the product of its in-context token conditionals, and
+`probs` is the softmax over the given options only (the exact contract is
+`src/decide.h` and `src/decide.c`, shared by the server route and
+`--decide FILE`). `scripts/decide-calibrate.py` turns a labeled question
+set (one JSON object per line: `state`, `question`, `options`, `answer` as
+an index or a distribution, `source`, `permutation_group`, `variant`) into
+a calibration report against that endpoint: accuracy, multi-class Brier
+score, log loss, and expected calibration error with a reliability curve,
+each computed on a held-out split chosen by `permutation_group` (never by
+row) and separately on the rest, both broken out by source. It also scores
+permutation invariance directly: every `permutation_group`'s variants are
+remapped to a canonical option order and compared pairwise by
+total-variation distance, and the report leads with that number rather
+than accuracy, because a decision surface that changes its answer when the
+options are reordered is not usable no matter how sharp its distribution
+looks elsewhere. `--batch-state` (default on) groups a state's questions
+into one request, the same KV reuse the endpoint itself is built around.
+No claim about any model's calibration is made here; the script measures
+whatever endpoint it is pointed at.
+
 ### OpenAI Responses
 
 Responses requests are translated to the same prompt, sampler, and one tool

@@ -203,7 +203,17 @@ def post_decide(endpoint, payload, timeout=120,
         except urllib.error.HTTPError as e:
             body_text = e.read().decode("utf-8", errors="replace")
             if e.code == 400:
-                return False, None, f"HTTP 400: {body_text[:500]}"
+                # The runner error envelope is {"error": {"message": ...,
+                # "type": ..., "param": ..., "code": ...}} (src/http.c,
+                # send_error_detail); fall back to the raw body for a server
+                # that does not use that shape.
+                message = body_text[:500]
+                try:
+                    parsed = json.loads(body_text)
+                    message = parsed.get("error", {}).get("message", message)
+                except (ValueError, AttributeError):
+                    pass
+                return False, None, f"HTTP 400: {message}"
             last_err = f"HTTP {e.code}: {body_text[:500]}"
         except (urllib.error.URLError, TimeoutError, ConnectionError, OSError) as e:
             last_err = str(e)
@@ -332,8 +342,10 @@ def compute_metrics(rows, bins=DEFAULT_BINS):
 def compute_invariance(rows):
     """Permutation-invariance over `rows`' permutation_group values.
 
-    Each variant's probability vector is remapped, by exact option-string
-    match, back to the option order of that group's first row (file order).
+    A group here is a (permutation_group, state) pair: the variants of one
+    item that share the state text. Each variant's probability vector is
+    remapped, by exact option-string match, back to the option order of
+    that group's first row (file order).
     A group whose variants do not share the same SET of option strings is
     "unmatched" and excluded from the score, per the contract. A group left
     with fewer than two scored rows (one row, or every other row in the
@@ -341,9 +353,14 @@ def compute_invariance(rows):
     "single" rather than folded into either bucket.
     """
     scored = [r for r in rows if r["probs"] is not None]
+    # A permutation variant is the SAME state asked again with the options
+    # reordered or the question rephrased. Slice 1 also files a chosen and
+    # a rejected edit (two states, opposite labels) under one group id, and
+    # those are different questions, so the unit of invariance is the
+    # (permutation_group, state) pair, never the group id alone.
     by_group = {}
     for r in scored:
-        by_group.setdefault(r["permutation_group"], []).append(r)
+        by_group.setdefault((r["permutation_group"], r["state"]), []).append(r)
 
     unmatched = 0
     single = 0

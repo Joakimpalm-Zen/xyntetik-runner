@@ -162,6 +162,13 @@ Nothing here gates a merge; these are how a claim gets a number behind it.
   accuracy, by design; its records cannot feed `cl-calibration.py`. Ships
   with John6666's 36-prompt bank (`tool-choice-boundary-bank.jsonl`, MIT OR
   Apache-2.0, carried byte-identical). See `docs/tool-choice-boundary-lane.md`.
+- **`decide-calibrate.py`** - calibration report for POST /v1/decide
+  (R13.10): accuracy, multi-class Brier score, log loss, and expected
+  calibration error with a reliability curve, plus a permutation-invariance
+  score (every `permutation_group`'s variants remapped to a canonical option
+  order and compared by total-variation distance, reported first, ahead of
+  accuracy). Held out by `permutation_group`, never by row; both splits are
+  scored and broken out by source.
 - **`classify-grammar-trace.py`** - classifies grammar-draft rejection causes
   from a `RUNNER_GRAMMAR_TRACE` JSONL (tail-straddle, coarse-merge, fine-split,
   seam).
