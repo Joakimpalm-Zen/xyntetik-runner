@@ -8,6 +8,42 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **CUDA evidence for the fp4 and k8v4 caches, and the tolerance gate
+  learns to read a chaotic format.** The 3070 gate (ZEN-GAMING, Qwen2.5-1.5B
+  Q4_K_M; a 7B pair does not fit an 8 GB card beside that box's host RAM,
+  which is why the first attempt hung) says three things. (1) The stored
+  bytes are right: the new `test-cuda-kv-fp4`, the twin of the Metal
+  store-identity test, loads the driver API dynamically, JITs the committed
+  PTX and launches `k_store_kv` as cuda.c does; 128 of 128 rows are
+  byte-identical to the CPU encoders for fp4, q8, k8v4 and f16, including a
+  Qwen2.5-style K row with single channels a hundred times their block. It
+  builds without a toolkit, skips without a driver, and runs in `make test`.
+  (2) The attention paths sit at the reassociation floor: q8 0.82x, k8v4
+  1.29x and fp4 1.07x the CPU's own mean KL under a batch-size change (the
+  Mac reads 0.80x / 1.08x / 0.99x on Llama-3.2-1B), so nothing on CUDA is
+  computing something the CPU does not. (3) fp4-everywhere is unusable on
+  Qwen2.5: against the f16 cache the CUDA fp4 row reads mean KLD 2.00,
+  raw top-1 12.7%, margin-qualified 19.0%, and the CPU fp4 path moves 61
+  of 64 decisions on the same model, because Qwen2.5's attention K bias
+  puts single channels two orders of magnitude above the rest of their
+  16-wide block and the block scale zeroes everything beside them. k8v4 on
+  the same model, same backend: KLD 0.0408, margin-qualified 97.3%, inside
+  the bar; q8 0.0116 / 100%. That is the sharpest evidence yet for keeping
+  K at 8 bits. The gate change: `test-kv-tol`'s GPU-vs-CPU parity checks
+  were fixed limits (5% top-1 disagreements, 0.020 worst margin) that a
+  chaotic format fails for no reason (on Llama-3.2-1B the CPU flips 5 of
+  64 tokens against ITSELF with a worst margin of 0.0305; CUDA fp4 on the
+  1.5B flipped 11 of 64 against a CPU that flipped 4). Each arm now
+  measures the CPU's own flip rate and worst margin under reassociation,
+  gates the worst margin against the larger of the fixed bar and 2x that
+  floor, gates a new mean-KL ratio at the same 3x slack as the magnitude
+  ratio, and gates the raw count only while the CPU never flips against
+  itself (otherwise 64 coin flips are reported, not gated). A well-behaved
+  format never sees the relaxation, and the q8-vs-f16 tie check, which is
+  the format's contract rather than implementation parity, is unchanged.
+  Also measured and recorded as a non-result: in serve mode `-b 64` and
+  `-b 1` produce byte-identical logits, so a server pair at two batch
+  sizes measures no floor; the library-path b1 arm is the instrument.
 - **`--kv k8v4`: the split KV cache, K q8_0 and V fp4.** The probe that
   followed the fp4 cache (K-q8 with V-fp4 on Llama-3.2-1B IQ3_S: mean KLD
   0.0265, margin-qualified top-1 99.3%, inside the house bar at about 41%
