@@ -117,6 +117,7 @@ def read_questions(path, max_questions=None):
                 "options": list(options),
                 "source": obj["source"],
                 "permutation_group": obj["permutation_group"],
+                "split_group": obj.get("split_group"),
                 "variant": obj["variant"],
                 "label_dist": label_dist,
                 "split": None,
@@ -147,6 +148,13 @@ def label_to_distribution(answer, n_options):
 
 
 # ---------------------------------------------------------------- split ---
+
+def split_key(row):
+    """The id the held-out split goes by: `split_group` when the file carries
+    it (slice 1 rev f69ed87b: a DPO pair's chosen and rejected halves share
+    it so they land on one side), else `permutation_group`."""
+    return row.get("split_group") or row["permutation_group"]
+
 
 def assign_holdout_groups(group_ids, seed, holdout_frac):
     """Deterministically choose the held-out permutation_group ids.
@@ -591,10 +599,10 @@ def run(args):
         print("error: no usable questions parsed", file=sys.stderr)
         return None, 1
 
-    group_ids = [r["permutation_group"] for r in rows]
+    group_ids = [split_key(r) for r in rows]
     holdout_groups = assign_holdout_groups(group_ids, args.seed, args.holdout_frac)
     for r in rows:
-        r["split"] = "holdout" if r["permutation_group"] in holdout_groups else "train"
+        r["split"] = "holdout" if split_key(r) in holdout_groups else "train"
 
     request_groups = group_requests(rows, args.batch_state)
     total = len(rows)
@@ -610,7 +618,7 @@ def run(args):
 
     train_rows = [r for r in rows if r["split"] == "train"]
     holdout_rows = [r for r in rows if r["split"] == "holdout"]
-    train_groups = {r["permutation_group"] for r in train_rows}
+    train_groups = {split_key(r) for r in train_rows}
     holdout_groups_seen = {r["permutation_group"] for r in holdout_rows}
 
     failures = [{"id": r["id"], "line": r["line"], "source": r["source"],

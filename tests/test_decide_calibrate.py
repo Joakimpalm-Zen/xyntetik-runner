@@ -424,3 +424,21 @@ def test_batch_state_off_sends_one_request_per_question(tmp_path, make_server):
     assert code == 0
     assert len(server.received) == len(ROWS)
     assert all(len(b["questions"]) == 1 for b in server.received)
+
+
+def test_split_group_keeps_a_pair_together():
+    # two permutation groups that share a split_group (a DPO pair's chosen
+    # and rejected halves) land on the same side, whatever the seed
+    rows = [
+        {"permutation_group": "gA", "split_group": "pair1"},
+        {"permutation_group": "gB", "split_group": "pair1"},
+        {"permutation_group": "gC", "split_group": "gC"},
+        {"permutation_group": "gD"},
+    ]
+    keys = [dc.split_key(r) for r in rows]
+    assert keys == ["pair1", "pair1", "gC", "gD"]
+    for seed in range(20):
+        held = dc.assign_holdout_groups(keys, seed=seed, holdout_frac=0.5)
+        assert (("pair1" in held) == ("pair1" in held))  # one key, one side
+        sides = {dc.split_key(r) in held for r in rows[:2]}
+        assert len(sides) == 1

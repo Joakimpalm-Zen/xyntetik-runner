@@ -1026,7 +1026,7 @@ TEST_RESTART_SRC = tests/test_server_restart.c $(OBJDIR)/gguf.o $(OBJDIR)/compat
                    $(OBJDIR)/jsonmode.o $(OBJDIR)/schema.o $(OBJDIR)/json.o $(OBJDIR)/engine.o \
                    $(OBJDIR)/template.o $(OBJDIR)/vramreg.o $(OBJDIR)/http.o $(OBJDIR)/envelope.o $(OBJDIR)/ed25519.o $(MLDSA_OBJ) $(OBJDIR)/ecdsa.o $(OBJDIR)/oms.o $(OBJDIR)/registry.o \
                    $(OBJDIR)/scheduler.o $(OBJDIR)/completion.o $(OBJDIR)/decide.o $(OBJDIR)/api_responses.o \
-                   $(OBJDIR)/api_anthropic.o $(OBJDIR)/server.o $(OBJDIR)/decide.o $(GPU_OBJ)
+                   $(OBJDIR)/api_anthropic.o $(OBJDIR)/server.o $(GPU_OBJ)
 $(TEST_RESTART): $(TEST_RESTART_SRC) $(HDR)
 	$(CC) $(CFLAGS) -I src $(TEST_RESTART_SRC) -o $@ $(LDFLAGS)
 
@@ -1040,7 +1040,7 @@ TEST_SWAP_RACE_SRC = tests/test_swap_race.c src/gguf.c src/compat.c \
                      src/jsonmode.c src/schema.c src/json.c src/engine.c \
                      src/template.c src/vramreg.c src/http.c src/envelope.c src/ed25519.c $(MLDSA_SRC) src/ecdsa.c src/oms.c src/registry.c \
                      src/scheduler.c src/completion.c src/api_responses.c \
-                     src/api_anthropic.c src/server.c $(GPU_SRC)
+                     src/api_anthropic.c src/server.c src/decide.c $(GPU_SRC)
 test-swap-race: $(TEST_SWAP_RACE_SRC) $(HDR) test.gguf
 	$(CC) -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer \
 	    -fno-fast-math -std=gnu11 -Wall -I src $(TEST_SWAP_RACE_SRC) \
