@@ -6453,6 +6453,32 @@ static float silu_d(float g) {
     float sg = 1.0f / (1.0f + expf(-g));
     return sg * (1.0f + g * (1.0f - sg));
 }
+// act(g) alone (no up multiply), dispatched on ffn_act: SiLU above for
+// ACT_SILU, the same tanh-GELU approximation gated_act's ACT_GELU branch
+// computes for ACT_GELU (R8.9.5). Needed at the up-branch site, where the
+// down-branch gradient multiplies act(g) rather than act(g)*u; the gated
+// site itself calls gated_act directly so the recomputed forward is the
+// same code path serving runs, not a second transcription of it.
+static float act_f(int act, float g) {
+    if (act == ACT_GELU) {
+        float t = tanhf(0.7978845608f * (g + 0.044715f * g * g * g));
+        return 0.5f * g * (1.0f + t);
+    }
+    return silu_f(g);
+}
+// d/dg act(g): SiLU's derivative above for ACT_SILU, the exact derivative
+// of the tanh-GELU approximation for ACT_GELU:
+//   act(g)  = 0.5*g*(1+t),           t = tanh(k*(g + 0.044715*g^3))
+//   act'(g) = 0.5*(1+t) + 0.5*g*(1-t^2)*k*(1+3*0.044715*g^2)
+static float act_d(int act, float g) {
+    if (act == ACT_GELU) {
+        const float k = 0.7978845608f;
+        float t = tanhf(k * (g + 0.044715f * g * g * g));
+        return 0.5f * (1.0f + t) +
+               0.5f * g * (1.0f - t * t) * k * (1.0f + 3.0f * 0.044715f * g * g);
+    }
+    return silu_d(g);
+}
 
 static bool lora_bw_supported(model_t *m, char *why, size_t cap) {
     const char *r = NULL;
@@ -6462,14 +6488,19 @@ static bool lora_bw_supported(model_t *m, char *why, size_t cap) {
         r = "recurrent architecture";
     else if (m->n_expert > 0 || m->moe_gemma) r = "MoE FFN";
     else if (m->kv_q8) r = "q8 KV cache (use --kv f16)";
-    else if (m->ffn_act != ACT_SILU) r = "non-SiLU FFN activation";
+    else if (m->ffn_act == ACT_SWIGLU_OAI || m->ffn_act == ACT_XIELU)
+        r = "FFN activation not in the backward (gpt-oss/apertus)";
     // R8.9.4 (2026-09-08): head transforms (logit scale, softcap, suppress),
     // muP scalars and the embedding norm, the attention output gate, the
     // sandwich norms, the per-layer output scale and sliding-window
     // attention are in the backward now, each pinned by the finite-
     // difference gate on the granite and muse-glimmer fixtures. Still out:
-    // the weightless V norm (only gemma-4 carries it, behind the GELU
-    // refusal above), tied or absent V, PLE, sinks, ungated FFNs.
+    // the weightless V norm (only gemma-4 carries it, behind the ffn_act
+    // check above), tied or absent V, PLE, sinks, ungated FFNs.
+    // R8.9.5 (2026-09-22): ACT_GELU (gemma3/gemma4's tanh-GELU FFN) is in
+    // the backward too, pinned by the gemma3 fixture. gemma3 has no other
+    // refusal here and trains; gemma4 still refuses on v_rmsnorm below
+    // (R8.9.6 is the weightless V norm and per-layer embeddings).
     else if (m->v_rmsnorm) r = "V-projection rmsnorm";
     else if (m->ple) r = "per-layer embeddings";
     for (int l = 0; !r && l < m->n_layer; l++) {
@@ -6827,7 +6858,9 @@ static bool lora_layer_bw(model_t *m, int l, const int32_t *toks, int T,
     for (int t = 0; ok && t < T; t++) {
         const float *gt = g + (size_t)t * nff, *ut = u + (size_t)t * nff;
         float *ht = hact + (size_t)t * nff;
-        for (int i = 0; i < nff; i++) ht[i] = silu_f(gt[i]) * ut[i];
+        // gated_act itself (not a re-transcription of SiLU/GELU here), so
+        // the tape's recomputed forward is bit-identical to serving's
+        for (int i = 0; i < nff; i++) ht[i] = gated_act(m->ffn_act, gt[i], ut[i]);
     }
     // the FFN branch's output gradient: the residual scale, then the
     // sandwich norm's adjoint against the recomputed pre-norm output
@@ -6852,7 +6885,7 @@ static bool lora_layer_bw(model_t *m, int l, const int32_t *toks, int T,
         const float *gt = g + (size_t)t * nff, *ut = u + (size_t)t * nff;
         const float *dht = dhact + (size_t)t * nff;
         float *dgt = dgu + (size_t)t * nff;
-        for (int i = 0; i < nff; i++) dgt[i] = dht[i] * ut[i] * silu_d(gt[i]);
+        for (int i = 0; i < nff; i++) dgt[i] = dht[i] * ut[i] * act_d(m->ffn_act, gt[i]);
     }
     ok = ok && lora_site_bw(m, l, LW_GATE, ly->w_gate, xn2, dgu, dxn2,
                             E, nff, T);
@@ -6860,7 +6893,7 @@ static bool lora_layer_bw(model_t *m, int l, const int32_t *toks, int T,
         const float *gt = g + (size_t)t * nff;
         const float *dht = dhact + (size_t)t * nff;
         float *dgt = dgu + (size_t)t * nff;
-        for (int i = 0; i < nff; i++) dgt[i] = dht[i] * silu_f(gt[i]);
+        for (int i = 0; i < nff; i++) dgt[i] = dht[i] * act_f(m->ffn_act, gt[i]);
     }
     ok = ok && lora_site_bw(m, l, LW_UP, ly->w_up, xn2, dgu, dxn2,
                             E, nff, T);

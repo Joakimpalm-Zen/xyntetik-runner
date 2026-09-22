@@ -167,6 +167,14 @@ while i < len(args):
         # embeddings (no output tensor). Scaled-down but shape-preserving.
         GRANITE = True
         ARCH = "granite"
+    elif a == "--gemma3":
+        # Gemma-3 dense: scaled embeddings and a GELU (not SiLU) gated FFN,
+        # tied output (no output tensor, same as the plain llama default).
+        # No SWA/GQA-specific keys are written, so every layer loads as full
+        # attention -- that adjoint is already covered by the muse-glimmer
+        # fixture, and this one exists only to reach ACT_GELU in
+        # lora_bw_supported/the backward's gate/up derivative (R8.9.5).
+        ARCH = "gemma3"
     elif a == "--granite-resid":
         i += 1
         GRANITE_RESID = float(args[i])

@@ -800,8 +800,9 @@ void   model_lora_free(model_t *m);
 // (allocated on first use; model_lora_grad_zero clears them). Frozen base
 // weights receive no gradient; activation gradients flow through them via a
 // transposed quantized matvec. Fails closed (false) on any feature outside
-// the reference scope: GPU-resident, recurrent, MoE, q8 KV, non-SiLU FFN,
-// head transforms, per-head norms, sliding windows.
+// the reference scope: GPU-resident, recurrent, MoE, q8 KV, the FFN
+// activations gpt-oss and apertus use, the weightless V norm, per-layer
+// embeddings, sinks and tied or absent V.
 bool   model_lora_backward(model_t *m, const int32_t *toks, int n,
                            double *loss_out);
 // weighted variant: pos_w[t] scales transition t (predicting toks[t+1]) in
