@@ -197,3 +197,38 @@ def test_question_digest_is_unambiguous(server):
     c = _post(server, {"state": STATE, "questions": [{"question": "x\u001fa", "options": ["b", "c"]}]})
     d = _post(server, {"state": STATE, "questions": [{"question": "x", "options": ["ab", "c"]}]})
     assert c["envelope"]["questions_sha256"] != d["envelope"]["questions_sha256"]
+
+
+def test_continuation_rendering_scores_the_option_right_after_the_state(runner_bin, model, server):
+    # continuation-v1: nothing injected between state and option, so the
+    # total equals --score over the option's positions in state + option
+    for opt in [" jumps", " jumps over"]:
+        out = _post(server, {"state": STATE, "rendering": "continuation-v1",
+                             "questions": [{"options": [opt, " zzz"]}]})
+        assert out["envelope"]["rendering"] == "continuation-v1"
+        d = out["decisions"][0]
+        n_tok = d["n_tokens"][0]
+        sc = _score_positions(runner_bin, model, STATE + opt)
+        expected = sum(sc["logprobs"][-n_tok:])
+        assert abs(d["logprobs"][0] - expected) < 1e-4, (d["logprobs"][0], expected, n_tok)
+    # the question is a label only here, and the default is raw-v1 unchanged
+    raw = _post(server, {"state": STATE, "questions": [{"question": QUESTION, "options": [" jumps", " zzz"]}]})
+    explicit = _post(server, {"state": STATE, "rendering": "raw-v1",
+                              "questions": [{"question": QUESTION, "options": [" jumps", " zzz"]}]})
+    assert raw["decisions"][0]["logprobs"] == explicit["decisions"][0]["logprobs"]
+    assert raw["envelope"]["rendering"] == "raw-v1"
+    cont = _post(server, {"state": STATE, "rendering": "continuation-v1",
+                          "questions": [{"question": "ignored label", "options": [" jumps", " zzz"]}]})
+    assert cont["decisions"][0]["logprobs"] != raw["decisions"][0]["logprobs"]
+
+
+def test_continuation_rendering_refusals(server):
+    _post(server, {"state": STATE, "rendering": "continuation-v1", "answer_prefix": "A: ",
+                   "questions": [{"options": ["a", "b"]}]}, expect=400)
+    _post(server, {"state": STATE, "rendering": "sentence-v9",
+                   "questions": [{"question": "x", "options": ["a", "b"]}]}, expect=400)
+    _post(server, {"state": STATE, "rendering": 3,
+                   "questions": [{"question": "x", "options": ["a", "b"]}]}, expect=400)
+    # raw-v1 still needs its question text
+    _post(server, {"state": STATE, "rendering": "raw-v1",
+                   "questions": [{"options": ["a", "b"]}]}, expect=400)

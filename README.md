@@ -2723,7 +2723,15 @@ continuations of a prefilled state with zero tokens sampled: each option's
 log-probability is the product of its in-context token conditionals, and
 `probs` is the softmax over the given options only (the exact contract is
 `src/decide.h` and `src/decide.c`, shared by the server route and
-`--decide FILE`). `scripts/decide-calibrate.py` turns a labeled question
+`--decide FILE`). Two renderings, chosen per request and stamped in the
+envelope: `raw-v1` (the default) scores each option after the state, a blank
+line, the question, a newline and `answer_prefix`; `continuation-v1` scores
+the option as the direct continuation of the state with nothing injected,
+which is the loglikelihood readout a benchmark harness wants (HellaSwag,
+ARC, PIQA, WinoGrande and non-CoT MMLU all score an ending after its
+context; the sum of conditionals is lm-eval's `acc`, and `acc_norm` follows
+from the ending's length client-side). Under `continuation-v1` the question
+is a label only and `answer_prefix` is refused. `scripts/decide-calibrate.py` turns a labeled question
 set (one JSON object per line: `state`, `question`, `options`, `answer` as
 an index or a distribution, `source`, `permutation_group`, `variant`) into
 a calibration report against that endpoint: accuracy, multi-class Brier

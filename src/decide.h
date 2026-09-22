@@ -33,7 +33,8 @@ typedef struct {
 bool decide_score(engine *e, const char *prompt, const char *const *options, int n_opt,
                   decide_result *out, int *prompt_tokens, const char **err);
 
-// One request in the /v1/decide shape (state, answer_prefix, questions[]) to
+// One request in the /v1/decide shape (state, answer_prefix, rendering,
+// questions[]) to
 // one response body appended to *out; returns the HTTP status (200, 400,
 // 500) and, when not 200, *err names the problem. Shared by the server route
 // and the --decide CLI mode so both produce the same bytes for the same

@@ -8,6 +8,19 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **`/v1/decide` gains the `continuation-v1` rendering.** Chosen per request
+  and stamped in the envelope, it scores each option as the direct
+  continuation of the state with nothing injected, so the endpoint is a
+  loglikelihood instrument for any GGUF the runner serves (HellaSwag, ARC,
+  PIQA, WinoGrande, non-CoT MMLU-style multiple choice: the sum of
+  conditionals is lm-eval's `acc`, `acc_norm` follows client-side from the
+  ending's length). `raw-v1` stays the default and is byte-for-byte what it
+  was; under `continuation-v1` the question is a label only and
+  `answer_prefix` is refused. Asked for by the lab (2026-09-22) so a
+  student, its parent and a public comparator go through one instrument.
+  Pinned in `tests/test_decide.py` against `--score` on the raw
+  concatenation.
+
 - **Compat harness: python children speak UTF-8 on Windows.** The CPU-vs-CUDA
   identity check died on a cp1252 pipe while printing granite-4.2-8b's greedy
   text (ZEN-GAMING, the 0.5.6 post-tag rows) and was recorded as a cpu_cuda
