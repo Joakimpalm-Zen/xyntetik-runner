@@ -99,6 +99,12 @@ def run_group(cmd, timeout, grace=2.0, **kwargs):
 # a manifest that declares a contract without defining it is visible rather than
 # quietly green.
 
+# Every python child the matrix spawns gets these: the tool matrix and the
+# identity check both print model text, and a Windows pipe is cp1252 by
+# default (feedback-windows-second-platform, cause 2, recurring).
+PYTHON_UTF8_ENV = {"PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
+
+
 def run_cpu_cuda(runner, model, params, timeout, report_dir=None, model_id=None):
     """CPU vs CUDA byte identity under the pins the manifest names."""
     script = ROOT / "scripts" / "cpu_cuda_check.py"
@@ -106,6 +112,9 @@ def run_cpu_cuda(runner, model, params, timeout, report_dir=None, model_id=None)
         return {"status": "not_executed", "reason": "cpu_cuda_script_not_found"}
     env = dict(os.environ)
     env.update({k: str(v) for k, v in (params.get("pins") or {}).items()})
+    # A python child on Windows inherits a cp1252 pipe unless told otherwise;
+    # generated text is arbitrary Unicode, so the check would die printing it.
+    env.update(PYTHON_UTF8_ENV)
     cmd = [sys.executable, str(script), str(model),
            # Forwarded, never left to the sibling's default: cpu_cuda_check.py
            # falls back to the repo root's ./runner, so a ledger run against a
@@ -251,7 +260,7 @@ def run_tool(runner, model, params, timeout, report_dir=None, model_id=None):
     started = time.time()
     try:
         proc = run_group(cmd, timeout, capture_output=True, text=True,
-                         cwd=str(ROOT))
+                         cwd=str(ROOT), env=dict(os.environ, **PYTHON_UTF8_ENV))
     except subprocess.TimeoutExpired:
         return {"status": "not_executed", "reason": "tool_timeout"}
     out = (proc.stdout or "") + (proc.stderr or "")

@@ -1,0 +1,84 @@
+{
+  "schema_version": "xyntetik.runner.model-compat-report.v1",
+  "generated_utc": "2026-09-22T16:49:50Z",
+  "host": {
+    "os": "Windows",
+    "machine": "AMD64"
+  },
+  "runner": {
+    "path": "runner.exe",
+    "version": "runner 0.5.6"
+  },
+  "reference": {
+    "path": "llama-server.exe",
+    "version": "version: 0.3.0-dev (build 10754, commit 43d87ff2d)"
+  },
+  "models": [
+    {
+      "id": "gemma-4-e4b-it-q4_k_m",
+      "architecture": "gemma4",
+      "file": "models/gemma-4-E4B-it-Q4_K_M.gguf",
+      "expected_sha256": "85a896a047553e842f25297ee5b031d64ff30147d9c4af17b1e4b394cd1fab87",
+      "checks": {
+        "load": {
+          "status": "pass",
+          "returncode": 0,
+          "elapsed_ms": 2734.0,
+          "stderr_tail": "gemma4: E-series (per-layer embeddings + shared KV) \u00e2\u20ac\u201d verified against llama.cpp at the Q4_K noise floor rather than token-identically\nrope: using model frequency factors (rope_freqs.weight)\ngpu: OS video memory budget 7.60 GB for this process, 0.14 GB in use; offload budget 7.46 GB, headroom 0.54 GB\ngpu-split: budget=7.46GB fixed=0.93GB G=42/42 full=1 used=3.76GB\ngpu: CUDA backend on NVIDIA GeForce RTX 3070 (5.0 GB weights in VRAM)\ngpu: VRAM 2.20 GB free of 8.59 GB after init (kv 0.23 GB + scratch 0.02 GB this instance)\nloaded C:\\Users\\zen\\models\\gemma-4-E4B-it-Q4_K_M.gguf | gemma4 | 42 layers | ctx 4096 | 4 threads | 1.88s\nsampling: gemma4 (temp 0.00 \u00e2\u20ac\u201d greedy argmax; top_p/top_k/min_p/repeat_penalty inactive)\n\nprompt: 4 tok, 40.81 tok/s | gen: 1 tok, 51.74 tok/s\n"
+        },
+        "cpu_cuda": {
+          "status": "fail",
+          "returncode": 1,
+          "elapsed_ms": 218755.98,
+          "pins": {
+            "RUNNER_CUDA_TC": "0",
+            "RUNNER_MOE_EAGER": "1"
+          },
+          "min_prompt_tokens": 85,
+          "cpu_cuda_identity": {
+            "result": "fail",
+            "exact": "8/9",
+            "near_tie_tolerated": 0
+          },
+          "identical": "8/9",
+          "failed_prompts": [
+            "\"def parse_header(buf, size):\\n    if size < 8:\\n        raise ValueError('short header')\\n    magic, version = struct.unpack('<II', buf[:8])\\n    if magic != G"
+          ],
+          "report": "C:\\Users\\zen\\cpu_cuda\\gemma-4-e4b-it-q4_k_m.json",
+          "output_tail": "n starts immediately after the fixed header.\\n\\n# Let's assume the structure is:\\n# 8 bytes: Magic (4 bytes) + Version\"\n  gpu: \" is good.\\n# However, the current implementation relies on the caller to provide the correct 'size'\\n# for the header, which might be ambiguous or incorrect if the caller doesn't know the exact\\n# boundary of the header.\\n\\n# We need a robust way to parse the header without relying on external size information.\\n# In GGUF, the header is fixed size (8 bytes for magic/version) followed by a metadata section.\\n# The metadata section is usually terminated by a null byte or a specific structure,\\n# but for the initial parsing, we only need the fixed part.\\n\\n# Let\"\nok  : 'The city of Lisbon sits on seven hills above the Tagus estuary, and its oldest quarter survived the 1755 earthquake largely intact because the bedrock there is firmer than the reclaimed ground downriver. Rebuilding the lower town took decades, and the grid of streets laid out afterwards was among the first in Europe designed with seismic loads in mind, which is why the district still reads as unusually regular to a visitor who'\n\ncpu_cuda: fail \u2014 8/9 exact, 0 near-tie tolerated (eager routing)\n"
+        },
+        "chat": {
+          "status": "pass",
+          "returncode": 0,
+          "elapsed_ms": 2837.7,
+          "prompt": "What is 2+2?",
+          "gpu": "auto",
+          "failure_reasons": [],
+          "output_tail": "2 + 2 equals **4**.\n"
+        }
+      },
+      "resolved_file": "models/gemma-4-E4B-it-Q4_K_M.gguf",
+      "actual_sha256": "85a896a047553e842f25297ee5b031d64ff30147d9c4af17b1e4b394cd1fab87",
+      "file_status": "pass",
+      "complete": false
+    }
+  ],
+  "complete": false,
+  "summary": {
+    "models": 1,
+    "files": {
+      "pass": 1
+    },
+    "checks": {
+      "load": {
+        "pass": 1
+      },
+      "cpu_cuda": {
+        "fail": 1
+      },
+      "chat": {
+        "pass": 1
+      }
+    }
+  }
+}

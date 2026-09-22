@@ -714,3 +714,31 @@ def test_chat_smoke_follows_a_cpu_only_matrix(monkeypatch, tmp_path):
     module.run_chat(tmp_path / "runner", tmp_path / "m.gguf", {"gpu": "auto"}, 10)
     assert seen["cmd"][seen["cmd"].index("--gpu") + 1] == "auto"
     assert "--wait-for-vram" in seen["cmd"]
+
+
+def test_python_children_get_a_utf8_console(monkeypatch, tmp_path):
+    """A Windows pipe is cp1252 by default; the identity check died printing
+    granite's greedy text on ZEN-GAMING (2026-09-22) and was recorded as a
+    cpu_cuda fail that was never a CPU-vs-CUDA fact. Every python child the
+    matrix spawns is told to speak UTF-8."""
+    module = load_module()
+    envs = []
+
+    class Completed:
+        returncode = 0
+        stdout = "9/9 identical\n"
+        stderr = ""
+
+    def run(cmd, timeout, **kwargs):
+        envs.append(kwargs.get("env"))
+        return Completed()
+
+    monkeypatch.setattr(module, "run_group", run)
+    module.run_cpu_cuda(tmp_path / "runner", tmp_path / "m.gguf", {"tokens": 128}, 60)
+    module.run_tool(tmp_path / "runner", tmp_path / "m.gguf",
+                    {"scenario_matrix": "agent-torture"}, 60)
+    assert len(envs) == 2
+    for env in envs:
+        assert env is not None
+        assert env["PYTHONUTF8"] == "1"
+        assert env["PYTHONIOENCODING"] == "utf-8"

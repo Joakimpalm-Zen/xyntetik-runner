@@ -1,0 +1,97 @@
+{
+  "schema_version": "xyntetik.runner.model-compat-report.v1",
+  "generated_utc": "2026-09-22T16:53:46Z",
+  "host": {
+    "os": "Windows",
+    "machine": "AMD64"
+  },
+  "runner": {
+    "path": "runner.exe",
+    "version": "runner 0.5.6"
+  },
+  "reference": {
+    "path": "llama-server.exe",
+    "version": "version: 0.3.0-dev (build 10754, commit 43d87ff2d)"
+  },
+  "models": [
+    {
+      "id": "granite-4.2-8b-q4_k_m",
+      "architecture": "granite",
+      "file": "models/granite-4.2-8b-Q4_K_M.gguf",
+      "expected_sha256": "16a9369d0805f80b7377d25d87f937a90c05dc04ad79173a52001e42c9aab311",
+      "checks": {
+        "load": {
+          "status": "pass",
+          "returncode": 0,
+          "elapsed_ms": 2969.0,
+          "stderr_tail": "gpu: OS video memory budget 7.60 GB for this process, 0.14 GB in use; offload budget 7.46 GB, headroom 0.54 GB\ngpu-split: budget=7.46GB fixed=0.81GB G=40/40 full=1 used=6.26GB\ngpu: CUDA backend on NVIDIA GeForce RTX 3070 (5.3 GB weights in VRAM)\ngpu: VRAM 1.14 GB free of 8.59 GB after init (kv 0.67 GB + scratch 0.05 GB this instance)\nloaded C:\\Users\\zen\\models\\granite-4.2-8b-Q4_K_M.gguf | granite | 40 layers | ctx 4096 | 4 threads | 1.98s\nsampling: granite42 (temp 0.00 \u00e2\u20ac\u201d greedy argmax; top_p/top_k/min_p/repeat_penalty inactive)\n\nprompt: 3 tok, 17.45 tok/s | gen: 1 tok, 50.75 tok/s\n"
+        },
+        "tokenizer": {
+          "status": "pass",
+          "returncode": 0,
+          "elapsed_ms": 2015.0,
+          "stdout_tail": "\n0/721 strings differ (0 of them begin with whitespace)\nOK\n",
+          "stderr_tail": ""
+        },
+        "cpu_cuda": {
+          "status": "fail",
+          "returncode": 1,
+          "elapsed_ms": 415340.07,
+          "pins": {
+            "RUNNER_CUDA_TC": "0"
+          },
+          "min_prompt_tokens": 85,
+          "cpu_cuda_identity": null,
+          "identical": null,
+          "failed_prompts": [],
+          "report": "C:\\Users\\zen\\cpu_cuda\\granite-4.2-8b-q4_k_m.json",
+          "output_tail": ")\\n    magic, version = struct.unpack('<II', buf[:8])\\n    if magic != GGUF_MAGIC:\\n        raise ValueError('not a gguf file')\\n    return magic, version\\n\\n# The loader above rejects a truncated header before unpacking it, which\" -> ' is good.\\n# However, the unpack call itself migh'\nTraceback (most recent call last):\n  File \"C:\\Users\\zen\\runner-0.5.6\\scripts\\cpu_cuda_check.py\", line 408, in <module>\n    sys.exit(main())\n             ^^^^^^\n  File \"C:\\Users\\zen\\runner-0.5.6\\scripts\\cpu_cuda_check.py\", line 326, in main\n    cpu = generate_all(args.runner, args.model, \"off\", args.tokens, args.ctx,\n          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Users\\zen\\runner-0.5.6\\scripts\\cpu_cuda_check.py\", line 277, in generate_all\n    print(f\"  [{gpu}] {prompt!r} -> {out[-1]['text'][:48]!r}\", flush=True)\n  File \"C:\\Users\\zen\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\encodings\\cp1252.py\", line 19, in encode\n    return codecs.charmap_encode(input,self.errors,encoding_table)[0]\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nUnicodeEncodeError: 'charmap' codec can't encode characters in position 505-506: character maps to <undefined>\n"
+        },
+        "chat": {
+          "status": "pass",
+          "returncode": 0,
+          "elapsed_ms": 3069.35,
+          "prompt": "What is 2+2?",
+          "gpu": "auto",
+          "failure_reasons": [],
+          "output_tail": "2 + 2 = 4.\n"
+        },
+        "greedy_reference": {
+          "status": "pass",
+          "returncode": 0,
+          "elapsed_ms": 35047.0,
+          "stdout_tail": "{\n  \"schema_version\": \"xyntetik.runner.greedy-reference.v1\",\n  \"generated_utc\": \"2026-09-22T17:01:35Z\",\n  \"runner\": \"runner 0.5.6\",\n  \"reference\": \"version: 0.3.0-dev (build 10754, commit 43d87ff2d)\",\n  \"model\": \"C:\\\\Users\\\\zen\\\\models\\\\granite-4.2-8b-Q4_K_M.gguf\",\n  \"tokens\": 8,\n  \"comparison\": \"exact generated UTF-8 text from /v1/completions at temperature 0\",\n  \"comparisons\": [\n    {\n      \"prompt\": \"The capital of France is\",\n      \"runner\": \" Paris.\\\"\\n\\nBut the user says\",\n      \"reference\": \" Paris.\\\"\\n\\nBut the user says\",\n      \"status\": \"pass\"\n    },\n    {\n      \"prompt\": \"def fibonacci(n):\",\n      \"runner\": \"\\n    if n < 0:\",\n      \"reference\": \"\\n    if n < 0:\",\n      \"status\": \"pass\"\n    },\n    {\n      \"prompt\": \"1 2 3 4 5 6 7 8\",\n      \"runner\": \" 9 10 11 12\",\n      \"reference\": \" 9 10 11 12\",\n      \"status\": \"pass\"\n    },\n    {\n      \"prompt\": \"Once upon a time, in a land far away,\",\n      \"runner\": \" there was a small village nestled in the\",\n      \"reference\": \" there was a small village nestled in the\",\n      \"status\": \"pass\"\n    },\n    {\n      \"prompt\": \"JSON example: {\\\"name\\\":\",\n      \"runner\": \" \\\"John\\\", \\\"age\\\": 30\",\n      \"reference\": \" \\\"John\\\", \\\"age\\\": 30\",\n      \"status\": \"pass\"\n    }\n  ],\n  \"totals\": {\n    \"passed\": 5,\n    \"failed\": 0\n  }\n}\n",
+          "stderr_tail": ""
+        }
+      },
+      "resolved_file": "models/granite-4.2-8b-Q4_K_M.gguf",
+      "actual_sha256": "16a9369d0805f80b7377d25d87f937a90c05dc04ad79173a52001e42c9aab311",
+      "file_status": "pass",
+      "complete": false
+    }
+  ],
+  "complete": false,
+  "summary": {
+    "models": 1,
+    "files": {
+      "pass": 1
+    },
+    "checks": {
+      "load": {
+        "pass": 1
+      },
+      "tokenizer": {
+        "pass": 1
+      },
+      "cpu_cuda": {
+        "fail": 1
+      },
+      "chat": {
+        "pass": 1
+      },
+      "greedy_reference": {
+        "pass": 1
+      }
+    }
+  }
+}

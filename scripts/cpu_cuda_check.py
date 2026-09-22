@@ -287,6 +287,17 @@ def generate_all(runner, model, gpu, tokens, ctx, env, extra, timeout, log_path)
 
 
 def main():
+    # Windows consoles and pipes default to cp1252, and a model's greedy text
+    # can carry any Unicode: printing the per-prompt tail then raises
+    # UnicodeEncodeError and the whole identity check dies AFTER the CPU arm
+    # ran (granite-4.2-8b on ZEN-GAMING, 2026-09-22, recorded as a cpu_cuda
+    # fail that was never a CPU-vs-CUDA fact). Replace what cannot be encoded;
+    # the JSON report keeps the exact text.
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(errors="replace")
+        except (AttributeError, ValueError):
+            pass
     ap = argparse.ArgumentParser()
     ap.add_argument("model")
     # 128, not 16: the documented `cpu_cuda` contract has always said 128, and
