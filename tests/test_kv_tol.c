@@ -281,6 +281,28 @@ static bool run_config(config *c, const char *path, const int32_t *toks,
 }
 
 // mean absolute logit difference over every position and every vocab entry
+// mean KL(a || b) over the teacher-forced positions, softmax in double: the
+// distribution-level twin of mean_abs_diff. A top-1 count over 64 positions is
+// a noisy statistic on a chaotic format; the KL between two implementations
+// against the KL between the CPU and itself under reassociation is not.
+static double mean_kld(const config *a, const config *b, int n_vocab) {
+    double tot = 0;
+    for (int s = 0; s < STEPS; s++) {
+        const float *la = a->logits + (size_t)s * n_vocab, *lb = b->logits + (size_t)s * n_vocab;
+        double ma = -1e300, mb = -1e300;
+        for (int i = 0; i < n_vocab; i++) { if (la[i] > ma) ma = la[i]; if (lb[i] > mb) mb = lb[i]; }
+        double za = 0, zb = 0;
+        for (int i = 0; i < n_vocab; i++) { za += exp((double)la[i] - ma); zb += exp((double)lb[i] - mb); }
+        double kl = 0;
+        for (int i = 0; i < n_vocab; i++) {
+            double lpa = (double)la[i] - ma - log(za), lpb = (double)lb[i] - mb - log(zb);
+            kl += exp(lpa) * (lpa - lpb);
+        }
+        tot += kl;
+    }
+    return tot / STEPS;
+}
+
 static double mean_abs_diff(const config *a, const config *b, int n_vocab) {
     double sum = 0;
     size_t n = (size_t)STEPS * (size_t)n_vocab;
@@ -473,6 +495,10 @@ int main(int argc, char **argv) {
                "(the floor's own flip rate)\n", nd_b1, STEPS, w_b1);
         double lim_frac  = fmax(DISAGREE_MAX, TOP1_SLACK * (double)nd_b1 / STEPS);
         double lim_worst = fmax(TIE_FRAC, TOP1_SLACK * w_b1);
+        double kld_floor = mean_kld(q8c, q8b1, n_vocab), kld_impl = mean_kld(q8c, q8g, n_vocab);
+        double kld_ratio = kld_impl / (kld_floor > FLOOR_EPS ? kld_floor : FLOOR_EPS);
+        printf("  q8 kld floor / impl   : cpu-b1 vs cpu %.6f, gpu vs cpu %.6f, %.2fx the floor (limit %.1fx)\n",
+               kld_floor, kld_impl, kld_ratio, REASSOC_SLACK);
         printf("  q8-gpu    vs q8-cpu  : mean|dlogit| %.6f   %.2fx the floor "
                "(limit %.1fx)\n", impl_err, ratio, REASSOC_SLACK);
         printf("  q8-gpu    vs q8-cpu  : top1 diff %d/%d (%.1f%%, limit %.0f%%)"
@@ -480,6 +506,9 @@ int main(int argc, char **argv) {
                n_diff, STEPS, 100.0 * frac, 100.0 * DISAGREE_MAX,
                worst, TIE_FRAC);
 
+        ck(kld_ratio <= REASSOC_SLACK,
+           "q8 GPU distribution differs from q8 CPU no more than the CPU differs from "
+           "itself under legal reassociation (mean KL)");
         ck(ratio <= REASSOC_SLACK,
            "q8 GPU differs from q8 CPU no more than q8 CPU differs from "
            "itself under legal reassociation");
@@ -532,12 +561,19 @@ int main(int argc, char **argv) {
                "(the floor's own flip rate)\n", nd_b1, STEPS, w_b1);
         double lim_frac  = fmax(DISAGREE_MAX, TOP1_SLACK * (double)nd_b1 / STEPS);
         double lim_worst = fmax(TIE_FRAC, TOP1_SLACK * w_b1);
+        double kld_floor = mean_kld(fp4c, fp4b1, n_vocab), kld_impl = mean_kld(fp4c, fp4g, n_vocab);
+        double kld_ratio = kld_impl / (kld_floor > FLOOR_EPS ? kld_floor : FLOOR_EPS);
+        printf("  fp4 kld floor / impl   : cpu-b1 vs cpu %.6f, gpu vs cpu %.6f, %.2fx the floor (limit %.1fx)\n",
+               kld_floor, kld_impl, kld_ratio, REASSOC_SLACK);
         printf("  fp4-gpu   vs fp4-cpu : mean|dlogit| %.6f   %.2fx the floor "
                "(limit %.1fx)\n", impl_err, ratio, REASSOC_SLACK);
         printf("  fp4-gpu   vs fp4-cpu : top1 diff %d/%d (%.1f%%, limit %.0f%%)"
                ", worst margin %.4f of range (limit %.3f)\n",
                n_diff, STEPS, 100.0 * frac, 100.0 * DISAGREE_MAX,
                worst, TIE_FRAC);
+        ck(kld_ratio <= REASSOC_SLACK,
+           "fp4 GPU distribution differs from fp4 CPU no more than the CPU differs from "
+           "itself under legal reassociation (mean KL)");
         ck(ratio <= REASSOC_SLACK,
            "fp4 GPU differs from fp4 CPU no more than fp4 CPU differs from "
            "itself under legal reassociation");
@@ -588,12 +624,19 @@ int main(int argc, char **argv) {
                "(the floor's own flip rate)\n", nd_b1, STEPS, w_b1);
         double lim_frac  = fmax(DISAGREE_MAX, TOP1_SLACK * (double)nd_b1 / STEPS);
         double lim_worst = fmax(TIE_FRAC, TOP1_SLACK * w_b1);
+        double kld_floor = mean_kld(k84c, k84b1, n_vocab), kld_impl = mean_kld(k84c, k84g, n_vocab);
+        double kld_ratio = kld_impl / (kld_floor > FLOOR_EPS ? kld_floor : FLOOR_EPS);
+        printf("  k8v4 kld floor / impl   : cpu-b1 vs cpu %.6f, gpu vs cpu %.6f, %.2fx the floor (limit %.1fx)\n",
+               kld_floor, kld_impl, kld_ratio, REASSOC_SLACK);
         printf("  k8v4-gpu  vs k8v4-cpu: mean|dlogit| %.6f   %.2fx the floor "
                "(limit %.1fx)\n", impl_err, ratio, REASSOC_SLACK);
         printf("  k8v4-gpu  vs k8v4-cpu: top1 diff %d/%d (%.1f%%, limit %.0f%%)"
                ", worst margin %.4f of range (limit %.3f)\n",
                n_diff, STEPS, 100.0 * frac, 100.0 * DISAGREE_MAX,
                worst, TIE_FRAC);
+        ck(kld_ratio <= REASSOC_SLACK,
+           "k8v4 GPU distribution differs from k8v4 CPU no more than the CPU differs from "
+           "itself under legal reassociation (mean KL)");
         ck(ratio <= REASSOC_SLACK,
            "k8v4 GPU differs from k8v4 CPU no more than k8v4 CPU differs from "
            "itself under legal reassociation");
