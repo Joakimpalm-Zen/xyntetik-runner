@@ -6,7 +6,7 @@ change between releases (the `-alpha` suffix was retired at v0.2.0 — the 0.x
 version already says what it needs to). Entries below the rename keep the
 names that were true when they were written.
 
-## Unreleased
+## v0.5.6 - 2026-09-22
 
 - **Shadow replay identity: `--adapter-sha256` and `--cohort-tag`.** Two
   receipt-correctness features from the R14.5 bet instruments, kept after
