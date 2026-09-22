@@ -36,6 +36,28 @@ import urllib.error
 import urllib.request
 
 
+def served_model_ids(endpoint, timeout=20):
+    """Ids the endpoint serves (GET /v1/models), or None if it does not answer."""
+    try:
+        with urllib.request.urlopen(endpoint.rstrip("/") + "/v1/models", timeout=timeout) as r:
+            body = json.loads(r.read().decode("utf-8"))
+    except Exception:
+        return None
+    return [m["id"] for m in body.get("data", []) if isinstance(m, dict) and m.get("id")]
+
+
+def require_served(endpoint, name, label):
+    """Fail at once, naming the served ids, rather than 404 on every position
+    (found on the Blackwell 2026-09-22: a label instead of the served id gave a
+    full run with positions_scored 0)."""
+    ids = served_model_ids(endpoint)
+    if ids is None:
+        raise SystemExit(f"error: {endpoint} did not answer GET /v1/models ({label})")
+    if name not in ids:
+        raise SystemExit(f"error: --model-name-{label} {name!r} is not served by {endpoint}; "
+                         f"served ids: {', '.join(ids) if ids else '(none)'}")
+
+
 def start_server(runner, model, port):
     proc = subprocess.Popen(
         [runner, "-m", model, "--serve", "--no-tray",
@@ -225,6 +247,9 @@ def main(argv):
             print(f"starting server B: {args.model_b}", file=sys.stderr)
             procs.append(start_server(args.runner, args.model_b, args.port_b))
             ep_b = f"http://127.0.0.1:{args.port_b}"
+
+        require_served(ep_a, args.model_name_a, "a")
+        require_served(ep_b, args.model_name_b, "b")
 
         words = open(args.corpus, encoding="utf-8").read().split()
         n_scored = 0

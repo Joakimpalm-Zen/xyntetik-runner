@@ -186,6 +186,24 @@ def build_payload(state, model_name, answer_prefix, group_rows):
     return payload
 
 
+def served_model_ids(endpoint, timeout=20):
+    """The ids the endpoint serves (GET /v1/models), or None if the endpoint
+    does not answer. One request at startup turns a wrong --model-name into a
+    one-line error instead of a full-length run of 404s (found on the
+    Blackwell 2026-09-22: 25 minutes, 1,303 failures, exit 0)."""
+    url = endpoint.rstrip("/") + "/v1/models"
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as resp:
+            body = json.loads(resp.read().decode("utf-8"))
+    except Exception:
+        return None
+    ids = []
+    for m in body.get("data", []) if isinstance(body, dict) else []:
+        if isinstance(m, dict) and m.get("id"):
+            ids.append(m["id"])
+    return ids
+
+
 def post_decide(endpoint, payload, timeout=120,
                  max_retries=DEFAULT_MAX_RETRIES, backoff=DEFAULT_BACKOFF):
     """POST one /v1/decide request. Returns (ok, body_or_None, error_or_None).
@@ -210,7 +228,11 @@ def post_decide(endpoint, payload, timeout=120,
             return True, body, None
         except urllib.error.HTTPError as e:
             body_text = e.read().decode("utf-8", errors="replace")
-            if e.code == 400:
+            if e.code in (400, 404, 422):
+                # A client error about THIS request (bad options, or a model
+                # id the server does not serve): retrying the identical
+                # payload cannot help, so it fails at once. A 404 used to
+                # spend the whole retry budget with backoff on every group.
                 # The runner error envelope is {"error": {"message": ...,
                 # "type": ..., "param": ..., "code": ...}} (src/http.c,
                 # send_error_detail); fall back to the raw body for a server
@@ -221,7 +243,7 @@ def post_decide(endpoint, payload, timeout=120,
                     message = parsed.get("error", {}).get("message", message)
                 except (ValueError, AttributeError):
                     pass
-                return False, None, f"HTTP 400: {message}"
+                return False, None, f"HTTP {e.code}: {message}"
             last_err = f"HTTP {e.code}: {body_text[:500]}"
         except (urllib.error.URLError, TimeoutError, ConnectionError, OSError) as e:
             last_err = str(e)
@@ -530,6 +552,9 @@ def render_report(result):
     p = result["provenance"]
     lines = [
         "# decide-calibrate report",
+        *(["", "**NO RESULT: every question failed at the endpoint; the tables below are empty.**"]
+          if result["provenance"]["n_rows"] and
+          result["provenance"]["n_failed"] >= result["provenance"]["n_rows"] else []),
         "",
         f"questions file: `{p['questions_file']}` (sha256 `{p['questions_sha256']}`)",
         f"endpoint: {p['endpoint']}  model: {p['model_name']}",
@@ -606,6 +631,16 @@ def run(args):
     holdout_groups = assign_holdout_groups(group_ids, args.seed, args.holdout_frac)
     for r in rows:
         r["split"] = "holdout" if split_key(r) in holdout_groups else "train"
+
+    ids = served_model_ids(args.endpoint)
+    if ids is None:
+        print(f"error: {args.endpoint} did not answer GET /v1/models; is the server up?",
+              file=sys.stderr)
+        return None, 2
+    if args.model_name not in ids:
+        print(f"error: --model-name {args.model_name!r} is not served by {args.endpoint}; "
+              f"served ids: {', '.join(ids) if ids else '(none)'}", file=sys.stderr)
+        return None, 2
 
     request_groups = group_requests(rows, args.batch_state)
     total = len(rows)
@@ -720,8 +755,10 @@ def main(argv=None):
         with open(args.report, "w", encoding="utf-8") as f:
             f.write(render_report(result))
 
-    if result["provenance"]["n_rows"] == result["provenance"]["n_failed"]:
-        print("error: every question failed", file=sys.stderr)
+    n_scored = sum(1 for r in rows if r.get("probs") is not None)
+    if n_scored == 0:
+        print(f"error: nothing scored ({result['provenance']['n_failed']} of "
+              f"{result['provenance']['n_rows']} failed at the endpoint)", file=sys.stderr)
         return 1
     return 0
 

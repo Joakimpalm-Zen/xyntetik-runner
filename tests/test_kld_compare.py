@@ -148,3 +148,34 @@ def test_kld_compare_raw_refuses_a_run_that_scored_no_positions(corpus):
     assert result["positions_failed"] > 0
     # the evidence is still emitted, so --out records the failed run honestly
     assert proc.returncode == 1, proc.stdout
+
+
+def test_endpoint_mode_refuses_an_unserved_model_name(runner_bin, small_model, corpus):
+    # a label instead of the served id used to 404 on every position and
+    # still write a report; now it is a one-line refusal naming the served ids
+    proc = subprocess.Popen(
+        [str(runner_bin), "-m", str(small_model), "--serve", "--no-tray",
+         "--port", "58706", "--gpu", "off"],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        import time
+        import urllib.request
+        for _ in range(200):
+            try:
+                urllib.request.urlopen("http://127.0.0.1:58706/v1/models", timeout=1)
+                break
+            except Exception:
+                time.sleep(0.25)
+        else:
+            pytest.fail("test server did not come up")
+        proc2 = _run("--endpoint-a", "http://127.0.0.1:58706",
+                     "--model-name-a", "not-the-served-id",
+                     "--endpoint-b", "http://127.0.0.1:58706",
+                     "--model-name-b", small_model.name,
+                     "--corpus", str(corpus), "--max-positions", "2")
+        assert proc2.returncode != 0
+        assert "not served" in proc2.stderr and small_model.name in proc2.stderr
+        assert "position 0 failed" not in proc2.stderr
+    finally:
+        proc.kill()
+        proc.wait()

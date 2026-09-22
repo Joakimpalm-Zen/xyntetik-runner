@@ -45,7 +45,9 @@ class _Server:
     test can assert on exactly what was sent over the wire.
     """
 
-    def __init__(self, scorer):
+    def __init__(self, scorer, served=("test",), not_found=False):
+        self.served = list(served)
+        self.not_found = not_found
         self.scorer = scorer
         self.received = []
         outer = self
@@ -54,7 +56,31 @@ class _Server:
             def log_message(self, *a):
                 pass
 
+            def do_GET(self):
+                # the instrument checks GET /v1/models before scoring
+                if self.path.rstrip("/") == "/v1/models":
+                    out = json.dumps({"object": "list",
+                                      "data": [{"id": m} for m in outer.served]}).encode()
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(out)))
+                    self.end_headers()
+                    self.wfile.write(out)
+                else:
+                    self.send_response(404); self.end_headers()
+
             def do_POST(self):
+                if outer.not_found:
+                    out = json.dumps({"error": {"message": "unknown model (see /v1/models)",
+                                                "type": "invalid_request_error",
+                                                "param": "model", "code": "model_not_found"}}).encode()
+                    outer.received.append(json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0)))))
+                    self.send_response(404)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(out)))
+                    self.end_headers()
+                    self.wfile.write(out)
+                    return
                 length = int(self.headers.get("Content-Length", 0))
                 body = json.loads(self.rfile.read(length))
                 outer.received.append(body)
@@ -103,8 +129,8 @@ class _Server:
 def make_server():
     servers = []
 
-    def _make(scorer):
-        s = _Server(scorer)
+    def _make(scorer, **kw):
+        s = _Server(scorer, **kw)
         servers.append(s)
         return s
 
@@ -458,3 +484,31 @@ def test_distribution_label_matching_prediction_is_calibrated():
     m = dc.compute_metrics(rows, bins=10)
     assert m["ece"] == pytest.approx(0.2)
     assert m["accuracy"] == pytest.approx(1.0)
+
+
+def test_unknown_model_name_is_refused_before_any_request(tmp_path, make_server):
+    # a wrong --model-name is a one-line error naming the served ids, not a
+    # full-length run of 404s with an empty report (Blackwell, 2026-09-22)
+    server = make_server(hash_scorer)
+    qfile = tmp_path / "questions.jsonl"
+    write_jsonl(qfile, ROWS)
+    code = dc.main(["--questions", str(qfile), "--endpoint", server.endpoint,
+                    "--model-name", "not-the-served-id", "--seed", "1"])
+    assert code == 2
+    assert server.received == []
+
+
+def test_model_not_found_from_decide_is_not_retried(tmp_path, make_server, capsys):
+    # the server lists the id but 404s the decide (a swap-set server between
+    # loads, say): fatal per group, no retry budget spent, non-zero exit
+    server = make_server(hash_scorer, not_found=True)
+    qfile = tmp_path / "questions.jsonl"
+    write_jsonl(qfile, ROWS)
+    out = tmp_path / "r.json"
+    code = dc.main(["--questions", str(qfile), "--endpoint", server.endpoint,
+                    "--model-name", "test", "--seed", "1", "--out", str(out),
+                    "--report", str(tmp_path / "r.md")])
+    assert code == 1
+    groups = len({(r["state"], r.get("split_group") or r["permutation_group"]) for r in ROWS})
+    assert len(server.received) <= groups + 2   # each group sent once, never retried
+    assert "NO RESULT" in (tmp_path / "r.md").read_text()

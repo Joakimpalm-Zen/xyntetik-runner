@@ -8,6 +8,15 @@ names that were true when they were written.
 
 ## v0.5.6 - 2026-09-22
 
+- **`decide-calibrate.py` and `kld-compare-raw.py` refuse a model name the
+  endpoint does not serve, before any request.** Both ask GET /v1/models
+  once at startup and fail with the served ids in the message; a 404 for
+  the model on a decide request is fatal for that group instead of
+  spending the retry budget; a run that scored nothing exits non-zero and
+  the calibration report says so in its first line. Found by the lab on
+  the Blackwell (a label instead of the served id cost 25 minutes of slice
+  time and produced an empty report with exit 0). Regression tests on a
+  fake endpoint and a real one.
 - **Shadow replay identity: `--adapter-sha256` and `--cohort-tag`.** Two
   receipt-correctness features from the R14.5 bet instruments, kept after
   the bets closed. The served adapter's hash rides in the model slot of the
