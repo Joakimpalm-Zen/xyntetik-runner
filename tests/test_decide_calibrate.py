@@ -167,7 +167,7 @@ def write_jsonl(path, rows):
 # variant's option list -- the same shape the real ledger data uses.
 # A permutation variant shares its STATE with the other variants of its
 # group (reordered options, rephrased question); the instrument keys
-# invariance by (permutation_group, state) because slice 1 files a chosen
+# invariance by (permutation_group, state) because the question set files a chosen
 # and a rejected edit, two states with opposite labels, under one group id.
 ROWS = [
     {"state": "sA", "question": "is it fresh (v0)", "options": ["yes", "no"],

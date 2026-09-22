@@ -10,7 +10,7 @@ right 80% of the time, does the score survive rephrasing and re-ordering the
 options, and does it hold on questions the run never trained a threshold on?
 
 Input: the lab's question shape, one JSON object per line (contract:
-`docs/decide-contract.md`, shade `research/evaluation/typed-decisions/`):
+`docs/decide-contract.md`):
 
     {"state": "...", "question": "...", "options": ["...", "..."],
      "answer": 0, "source": "ledger", "permutation_group": "abc123",
@@ -151,7 +151,7 @@ def label_to_distribution(answer, n_options):
 
 def split_key(row):
     """The id the held-out split goes by: `split_group` when the file carries
-    it (slice 1 rev f69ed87b: a DPO pair's chosen and rejected halves share
+    it (in the first question set a DPO pair's chosen and rejected halves share
     it so they land on one side), else `permutation_group`."""
     return row.get("split_group") or row["permutation_group"]
 
@@ -387,7 +387,7 @@ def compute_invariance(rows):
     """
     scored = [r for r in rows if r["probs"] is not None]
     # A permutation variant is the SAME state asked again with the options
-    # reordered or the question rephrased. Slice 1 also files a chosen and
+    # reordered or the question rephrased. The question set also files a chosen and
     # a rejected edit (two states, opposite labels) under one group id, and
     # those are different questions, so the unit of invariance is the
     # (permutation_group, state) pair, never the group id alone.

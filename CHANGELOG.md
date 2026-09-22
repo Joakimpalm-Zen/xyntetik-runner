@@ -55,7 +55,7 @@ names that were true when they were written.
   cache kind), so a re-run under a changed condition is its own cohort
   instead of being skipped as already attempted, and the ledger records
   which condition produced the row. The forge and the oracle localizer
-  from the same branch died with their bets and are archived in shade.
+  from the same branch died with their bets and are archived in the private research record.
 - **`replay --samples N --temperature T`: coverage by repeated sampling.**
   Each task gets up to N attempts at temperature, each with its own seed
   and its own ledger record; the first verified sample ends the task and
@@ -104,7 +104,7 @@ names that were true when they were written.
   positions, CLI-versus-server identity, and the refusals. What is NOT
   claimed: calibration. The probabilities are the model's, unmodified; the
   calibration instrument (`scripts/decide-calibrate.py`) measures them and
-  the lab's H6.10 is the item that would earn the word. Constraints: a KV
+  a training objective for calibrated readouts is the lab's work, not this release's claim. Constraints: a KV
   ring recomputes from position 0 on every sibling, and a recurrent model
   re-folds the prompt per sibling unless marked; both are correct and slow.
 - **CUDA evidence for the fp4 and k8v4 caches, and the tolerance gate
