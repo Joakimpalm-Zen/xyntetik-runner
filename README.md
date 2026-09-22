@@ -1466,7 +1466,10 @@ Vulkan is not implemented; AMD and Intel GPUs use the CPU path.
   side is the one to keep at 8 bits. On larger models (Qwen3.5-4B,
   Muse-Glimmer-30B, Qwen3.8-27B; 500 positions) k8v4 costs 16-29x the q8
   cache's KLD, 0.002-0.004 absolute, with 100% margin-qualified top-1
-  agreement on all three. Per model, measured, never assumed. Needs head_dim
+  agreement on all three. The other end of the range is Qwen2.5-1.5B on
+  CUDA: fp4-everywhere reads mean KLD 2.00 against the f16 cache (its
+  attention K bias puts single channels far above their block), k8v4 0.04
+  and inside the bar. Per model, measured, never assumed. Needs head_dim
   divisible by 32 and both q8 and fp4 kernels on the backend.
 - Prompt evaluation is batched; `-b` controls the batch and `-v` prints the KV
   allocation before inference.

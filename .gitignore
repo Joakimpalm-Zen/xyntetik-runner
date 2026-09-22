@@ -244,3 +244,5 @@ test-prompt-marks.exe
 .DS_Store
 test-kv-fp4
 test-metal-kvfp4
+test-cuda-kvfp4
+test-cuda-kvfp4.exe
