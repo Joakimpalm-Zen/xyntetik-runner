@@ -7,6 +7,7 @@ field rewritten to a value a hostile (or merely mis-converted) file could
 carry; every one of them was a confirmed out-of-bounds access under
 `make debug` before the load-time check that now refuses it.
 """
+import json
 import pathlib
 import struct
 import subprocess
@@ -139,6 +140,86 @@ def _run(runner_bin, model):
         [runner_bin, "-m", model, "-p", "hi", "-n", "1", "-b", "1", "--gpu", "off"],
         cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60,
     )
+
+
+@pytest.mark.parametrize("untied", [False, True], ids=["tied", "untied"])
+@pytest.mark.parametrize("mode", ["score", "decide"])
+def test_tokenizer_ids_beyond_model_vocabulary_are_refused(
+        runner_bin, tmp_path, untied, mode):
+    """Tokenizer IDs must fit the logits, even when both weight tables agree.
+
+    Four embedding/output rows with the full byte vocabulary used to load,
+    then --score and --decide read past the four-float logits buffer. The
+    unmodified model anchors the refusal to the malformed geometry alone.
+    """
+    good = tmp_path / "vocab.gguf"
+    subprocess.run(
+        [sys.executable, ROOT / "scripts/make-test-model.py", str(good),
+         *(["--granite"] if untied else [])],
+        check=True, cwd=ROOT, stdout=subprocess.DEVNULL)
+    bad = _patch_ne(good, tmp_path / "vocab-short.gguf",
+                    "token_embd.weight", 1, 4)
+    if untied:
+        _patch_ne(bad, bad, "output.weight", 1, 4)
+
+    request = tmp_path / "decide.jsonl"
+    request.write_text(json.dumps({
+        "state": "hello", "questions": [
+            {"question": "choose", "options": ["yes", "no"]}],
+    }) + "\n", encoding="utf-8")
+    args = (["--score", "-p", "hello world"] if mode == "score"
+            else ["--decide", str(request)])
+    binaries = [runner_bin]
+    debug_bin = _sanitizer_bin()
+    if debug_bin:
+        binaries.append(debug_bin)
+    for binary in binaries:
+        def score(model):
+            return subprocess.run(
+                [binary, "-m", str(model), "--gpu", "off", "-t", "2", *args],
+                cwd=ROOT, capture_output=True, timeout=60)
+
+        good_proc = score(good)
+        assert good_proc.returncode == 0, good_proc.stderr.decode(errors="replace")
+        proc = score(bad)
+        err = proc.stderr.decode(errors="replace")
+        assert proc.returncode == 1, err
+        assert "tokenizer vocabulary" in err and "token_embd.weight" in err, err
+        assert not proc.stdout, "refuse at load before producing any scoring output"
+        assert "AddressSanitizer" not in err and "runtime error:" not in err, err
+
+
+def test_weight_vocabulary_padding_remains_supported(runner_bin, tmp_path):
+    """Weight tables may have unused padding rows beyond the tokenizer IDs."""
+    padded = tmp_path / "vocab-padded.gguf"
+    subprocess.run(
+        [sys.executable, ROOT / "scripts/make-test-model.py", str(padded),
+         "--control", "pad00000,pad00001,pad00002,pad00003"],
+        check=True, cwd=ROOT, stdout=subprocess.DEVNULL)
+    b = bytearray(padded.read_bytes())
+    for key, element_type in [("tokens", 8), ("scores", 6), ("token_type", 5)]:
+        name = "tokenizer.ggml." + key
+        marker = struct.pack("<Q", len(name)) + name.encode()
+        i = b.index(marker) + len(marker)
+        assert struct.unpack_from("<II", b, i) == (9, element_type)
+        n = struct.unpack_from("<Q", b, i + 8)[0]
+        assert n == 3 + 256 + 4  # special IDs, byte IDs, four padding rows
+        at = i + 16
+        for _ in range(n - 4):
+            at += (8 + struct.unpack_from("<Q", b, at)[0]
+                   if element_type == 8 else 4)
+        # Four eight-byte strings take 64 bytes with their length prefixes;
+        # their scores/types take 16 each. Removing 96 bytes preserves GGUF's
+        # 32-byte data alignment and leaves every tensor and its offset intact.
+        del b[at:at + (64 if element_type == 8 else 16)]
+        struct.pack_into("<Q", b, i + 8, n - 4)
+    padded.write_bytes(b)
+    proc = subprocess.run(
+        [runner_bin, "-m", str(padded), "--score", "-p", "hello world",
+         "--gpu", "off", "-t", "2"],
+        cwd=ROOT, capture_output=True, timeout=60)
+    assert proc.returncode == 0, proc.stderr.decode(errors="replace")
+    assert json.loads(proc.stdout)["n_vocab"] == 3 + 256 + 4
 
 
 def test_gemma4_rope_dims_wider_than_the_head_are_refused(runner_bin, tmp_path):
