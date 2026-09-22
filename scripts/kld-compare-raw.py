@@ -52,7 +52,11 @@ def require_served(endpoint, name, label):
     full run with positions_scored 0)."""
     ids = served_model_ids(endpoint)
     if ids is None:
-        raise SystemExit(f"error: {endpoint} did not answer GET /v1/models ({label})")
+        # a dead endpoint keeps the old contract: every position fails, the
+        # evidence is still emitted with positions_scored 0, exit 1
+        print(f"warning: {endpoint} did not answer GET /v1/models ({label}); "
+              f"proceeding, every position will fail if it stays down", file=sys.stderr)
+        return
     if name not in ids:
         raise SystemExit(f"error: --model-name-{label} {name!r} is not served by {endpoint}; "
                          f"served ids: {', '.join(ids) if ids else '(none)'}")
