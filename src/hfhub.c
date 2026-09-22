@@ -387,9 +387,21 @@ char *hf_fetch(const char *spec, char *err, size_t errcap) {
         return NULL;
     }
     // owner--repo, one directory per repository
+    // every '/' becomes "--", so the flat name can be longer than the spec;
+    // a spec that would not fit is refused here rather than overflowing
+    // (511 characters of "a/bbb..." did, under ASan, 2026-09-22)
     char flat[512];
-    memcpy(flat, repo, rn + 1);
-    for (char *p = flat; *p; p++) if (*p == '/') { memmove(p + 1, p, strlen(p) + 1); p[0] = '-'; p[1] = '-'; p++; }
+    size_t fl = 0;
+    for (size_t i = 0; i < rn; i++) {
+        size_t need = repo[i] == '/' ? 2 : 1;
+        if (fl + need >= sizeof flat) {
+            snprintf(err, errcap, "-hf %s: repository name too long", spec);
+            return NULL;
+        }
+        if (repo[i] == '/') { flat[fl++] = '-'; flat[fl++] = '-'; }
+        else flat[fl++] = repo[i];
+    }
+    flat[fl] = 0;
     snprintf(repodir, sizeof repodir, "%s%c%s", root, HF_SEP, flat);
     if (!mkdir_p(repodir)) {
         snprintf(err, errcap, "cannot create cache directory %s: %s", repodir, strerror(errno));

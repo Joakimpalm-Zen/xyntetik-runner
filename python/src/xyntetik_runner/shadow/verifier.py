@@ -170,7 +170,9 @@ def _copy_tree(src: Path, dst: Path) -> None:
     for rel in tree_hashes(src):
         target = dst / rel
         target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(src / rel, target)
+        # copy2 keeps the mode bits: a 0755 script the repository's checks
+        # execute directly must still be executable in the verification copy
+        shutil.copy2(src / rel, target)
 
 
 def _kill(proc: subprocess.Popen[bytes]) -> None:

@@ -186,3 +186,14 @@ def test_refusals(server):
     _post(server, {"state": STATE, "questions": [{"question": "x", "options": ["a", ""]}]}, expect=400)
     _post(server, {"state": STATE, "questions": [{"question": "x", "options": ["a", "a"]}]}, expect=400)
     _post(server, {"state": STATE, "questions": [{"question": "", "options": ["a", "b"]}]}, expect=400)
+
+
+def test_question_digest_is_unambiguous(server):
+    # separator bytes inside an option must not collide two different
+    # question sets into one digest (length-prefixed canonical form)
+    a = _post(server, {"state": STATE, "questions": [{"question": "x", "options": ["a\u001eb", "c"]}]})
+    b = _post(server, {"state": STATE, "questions": [{"question": "x", "options": ["a", "b\u001ec"]}]})
+    assert a["envelope"]["questions_sha256"] != b["envelope"]["questions_sha256"]
+    c = _post(server, {"state": STATE, "questions": [{"question": "x\u001fa", "options": ["b", "c"]}]})
+    d = _post(server, {"state": STATE, "questions": [{"question": "x", "options": ["ab", "c"]}]})
+    assert c["envelope"]["questions_sha256"] != d["envelope"]["questions_sha256"]

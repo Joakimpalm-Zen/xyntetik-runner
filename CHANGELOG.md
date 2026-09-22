@@ -8,6 +8,26 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **Four defects from Codex's 2026-09-22 bug search, each with a test that
+  reproduces it.** (1) `-hf` with a repository name whose `owner--repo`
+  expansion did not fit the 512-byte flat name overflowed the stack
+  (511 characters of `a/bbb...` under ASan); the expansion is bounded and
+  an over-long name is refused before any download
+  (`tests/test_hf_spec_bounds.py`). (2) The shadow verifier's verification
+  copy dropped mode bits (`copyfile`), so a 0755 script a repository's
+  checks execute directly failed with a permission error independent of
+  the proposed change; the copy is `copy2` now
+  (`python/tests/test_verifier_copy.py`). (3) `/v1/decide`'s questions
+  digest joined options with an unescaped record separator, so
+  `["a\x1eb","c"]` and `["a","b\x1ec"]` hashed alike; every field is
+  length-prefixed now (`tests/test_decide.py`). (4) `decide-calibrate`
+  collapsed a distribution-valued label to its argmax before the
+  calibration terms, reporting ECE 0.20 for a prediction equal to its
+  target; the hit is the label's mass on the predicted option, which is
+  the plain 0/1 hit for an index label (`tests/test_decide_calibrate.py`).
+  Codex's own fix for the fifth finding, tokenizer ids beyond the model
+  vocabulary indexing the logits out of bounds in `--score` and `decide`,
+  landed separately (PR #141).
 - **`POST /v1/decide` and `--decide FILE`: typed decisions with
   probabilities, one prefill per state, zero sampled tokens** (R13.10). A
   request carries a state and a list of typed questions, each with the
