@@ -2743,6 +2743,20 @@ static bool model_bind_weights(model_t *m, const char *path, const model_params 
                 (unsigned long long)m->tok_embd->ne[1], m->n_embd);
         return false;
     }
+    // Token IDs come from the tokenizer, while the embedding and logits
+    // buffers are sized by the weight table. Agreement between the input
+    // and output weights alone does not bound those IDs: scoring indexes
+    // logits directly with them. Extra padded weight rows are valid, but
+    // every vocabulary entry must have a row. Tokenizer loading separately
+    // validates the presence and type of this metadata.
+    gguf_kv *vocab = gguf_get(g, "tokenizer.ggml.tokens");
+    if (vocab && vocab->type == GGUF_T_ARR && vocab->arr_type == GGUF_T_STR &&
+        vocab->arr_n > (uint64_t)m->n_vocab) {
+        fprintf(stderr, "error: tokenizer vocabulary has %llu entries but "
+                "token_embd.weight has only %d rows\n",
+                (unsigned long long)vocab->arr_n, m->n_vocab);
+        return false;
+    }
 
     gguf_tensor *out_norm = need_tensor(g, "output_norm.weight", 0, &ok);
     if (!ok) return false;

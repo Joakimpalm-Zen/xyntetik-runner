@@ -1041,6 +1041,11 @@ split is what you need. The loader accepts both duplicated-metadata shards
 and the standard compact form where only part one carries model metadata;
 explicit contradictions between parts are still rejected.
 
+The loader rejects a GGUF whose tokenizer vocabulary has more entries than
+its embedding/output rows, before scoring or serving can index past the
+logits buffer. Extra padded weight rows beyond the tokenizer vocabulary
+remain supported.
+
 Sparse-MoE expert matvec kernels cover `q2_K`, `q3_K`, `q4_0`, `q4_K`,
 `q5_K`, `q6_K`, `q8_0`, `mxfp4`, `f16`, and `f32`. This list is narrower than
 the dense quant list: a type needs a dedicated indirect expert kernel, not
