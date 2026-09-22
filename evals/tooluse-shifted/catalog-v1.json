@@ -1,0 +1,209 @@
+[
+  {
+    "name": "search_files",
+    "description": "Find files matching a pattern in a directory tree",
+    "args": {
+      "pattern": {"type": "string"},
+      "path": {"type": "string"}
+    },
+    "required": ["pattern", "path"]
+  },
+  {
+    "name": "find_files",
+    "description": "Locate files by name or glob pattern",
+    "args": {
+      "pattern": {"type": "string"},
+      "path": {"type": "string"}
+    },
+    "required": ["pattern", "path"]
+  },
+  {
+    "name": "grep_text",
+    "description": "Search for text content in files",
+    "args": {
+      "pattern": {"type": "string"},
+      "path": {"type": "string"}
+    },
+    "required": ["pattern", "path"]
+  },
+  {
+    "name": "read_file",
+    "description": "Read the entire contents of a file",
+    "args": {
+      "path": {"type": "string"}
+    },
+    "required": ["path"]
+  },
+  {
+    "name": "read_lines",
+    "description": "Read specific lines from a file",
+    "args": {
+      "path": {"type": "string"},
+      "start": {"type": "integer"},
+      "end": {"type": "integer"}
+    },
+    "required": ["path", "start", "end"]
+  },
+  {
+    "name": "head_file",
+    "description": "Show the first N lines of a file",
+    "args": {
+      "path": {"type": "string"},
+      "n": {"type": "integer"}
+    },
+    "required": ["path", "n"]
+  },
+  {
+    "name": "cat_file",
+    "description": "Display file contents",
+    "args": {
+      "path": {"type": "string"}
+    },
+    "required": ["path"]
+  },
+  {
+    "name": "write_file",
+    "description": "Create or overwrite a file with content",
+    "args": {
+      "path": {"type": "string"},
+      "content": {"type": "string"}
+    },
+    "required": ["path", "content"]
+  },
+  {
+    "name": "append_file",
+    "description": "Add content to the end of a file",
+    "args": {
+      "path": {"type": "string"},
+      "content": {"type": "string"}
+    },
+    "required": ["path", "content"]
+  },
+  {
+    "name": "replace_in_file",
+    "description": "Find and replace text in a file",
+    "args": {
+      "path": {"type": "string"},
+      "pattern": {"type": "string"},
+      "replacement": {"type": "string"}
+    },
+    "required": ["path", "pattern", "replacement"]
+  },
+  {
+    "name": "truncate_file",
+    "description": "Reduce file size to a maximum length",
+    "args": {
+      "path": {"type": "string"},
+      "max_size": {"type": "integer"}
+    },
+    "required": ["path", "max_size"]
+  },
+  {
+    "name": "list_dir",
+    "description": "List files and directories in a folder",
+    "args": {
+      "path": {"type": "string"}
+    },
+    "required": ["path"]
+  },
+  {
+    "name": "tree",
+    "description": "Display directory structure as a tree",
+    "args": {
+      "path": {"type": "string"},
+      "depth": {"type": "integer"}
+    },
+    "required": ["path", "depth"]
+  },
+  {
+    "name": "ls_recursive",
+    "description": "Recursively list all files in a directory",
+    "args": {
+      "path": {"type": "string"}
+    },
+    "required": ["path"]
+  },
+  {
+    "name": "run_command",
+    "description": "Execute a shell command",
+    "args": {
+      "command": {"type": "string"},
+      "args": {"type": "string"}
+    },
+    "required": ["command", "args"]
+  },
+  {
+    "name": "run_tests",
+    "description": "Run unit tests matching a filter",
+    "args": {
+      "test_filter": {"type": "string"}
+    },
+    "required": ["test_filter"]
+  },
+  {
+    "name": "run_pytest",
+    "description": "Execute pytest on a specific test file",
+    "args": {
+      "test_file": {"type": "string"}
+    },
+    "required": ["test_file"]
+  },
+  {
+    "name": "git_status",
+    "description": "Check git repository status",
+    "args": {
+      "repo_path": {"type": "string"}
+    },
+    "required": ["repo_path"]
+  },
+  {
+    "name": "git_diff",
+    "description": "Show differences between git commits or branches",
+    "args": {
+      "repo_path": {"type": "string"},
+      "ref": {"type": "string"}
+    },
+    "required": ["repo_path", "ref"]
+  },
+  {
+    "name": "git_log",
+    "description": "Display git commit history",
+    "args": {
+      "repo_path": {"type": "string"},
+      "n": {"type": "integer"}
+    },
+    "required": ["repo_path", "n"]
+  },
+  {
+    "name": "http_get",
+    "description": "Fetch content from a URL",
+    "args": {
+      "url": {"type": "string"},
+      "headers": {"type": "string"}
+    },
+    "required": ["url"]
+  },
+  {
+    "name": "fetch_url",
+    "description": "Download a resource from the web",
+    "args": {
+      "url": {"type": "string"}
+    },
+    "required": ["url"]
+  },
+  {
+    "name": "download_file",
+    "description": "Download a file and save it locally",
+    "args": {
+      "url": {"type": "string"},
+      "path": {"type": "string"}
+    },
+    "required": ["url", "path"]
+  },
+  {
+    "name": "none",
+    "description": "No tool available for this request",
+    "args": {},
+    "required": []
+  }
+]

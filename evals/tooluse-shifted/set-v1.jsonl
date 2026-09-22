@@ -1,0 +1,150 @@
+{"id": "paraphrase_01", "prompt": "retrieve all python files", "gold_tool": "find_files", "gold_args": {"pattern": "*.py"}, "category": "paraphrase", "source": "handwritten"}
+{"id": "paraphrase_02", "prompt": "show me json files in config", "gold_tool": "search_files", "gold_args": {"pattern": "*.json", "path": "config"}, "category": "paraphrase", "source": "handwritten"}
+{"id": "paraphrase_03", "prompt": "WHERE ARE THE LOG FILES???", "gold_tool": "find_files", "gold_args": {"pattern": "*.log"}, "category": "paraphrase", "source": "handwritten"}
+{"id": "paraphrase_04", "prompt": "give me the first 10 lines of main.py", "gold_tool": "head_file", "gold_args": {"path": "main.py", "n": 10}, "category": "paraphrase", "source": "handwritten"}
+{"id": "paraphrase_05", "prompt": "open the README please", "gold_tool": "read_file", "gold_args": {"path": "README.md"}, "category": "paraphrase", "source": "handwritten"}
+{"id": "paraphrase_06", "prompt": "plz show contents of notes.txt", "gold_tool": "cat_file", "gold_args": {"path": "notes.txt"}, "category": "paraphrase", "source": "handwritten"}
+{"id": "paraphrase_07", "prompt": "I need to see what is in the src directory", "gold_tool": "list_dir", "gold_args": {"path": "src"}, "category": "paraphrase", "source": "handwritten"}
+{"id": "paraphrase_08", "prompt": "can u show me the directory tree of the project?", "gold_tool": "tree", "gold_args": {"path": ".", "depth": 3}, "category": "paraphrase", "source": "handwritten"}
+{"id": "paraphrase_09", "prompt": "write 'hello world' to output.txt", "gold_tool": "write_file", "gold_args": {"path": "output.txt", "content": "hello world"}, "category": "paraphrase", "source": "handwritten"}
+{"id": "paraphrase_10", "prompt": "add a line to the log file: deployment complete", "gold_tool": "append_file", "gold_args": {"path": "deploy.log", "content": "deployment complete"}, "category": "paraphrase", "source": "handwritten"}
+{"id": "paraphrase_11", "prompt": "list everything in the docs folder recursively", "gold_tool": "ls_recursive", "gold_args": {"path": "docs"}, "category": "paraphrase", "source": "handwritten"}
+{"id": "paraphrase_12", "prompt": "FIND ALL .yaml FILES", "gold_tool": "search_files", "gold_args": {"pattern": "*.yaml", "path": "."}, "category": "paraphrase", "source": "handwritten"}
+{"id": "paraphrase_13", "prompt": "i need the first 5 lines of tests/test_utils.py", "gold_tool": "head_file", "gold_args": {"path": "tests/test_utils.py", "n": 5}, "category": "paraphrase", "source": "handwritten"}
+{"id": "paraphrase_14", "prompt": "please show me README.md in full", "gold_tool": "read_file", "gold_args": {"path": "README.md"}, "category": "paraphrase", "source": "handwritten"}
+{"id": "paraphrase_15", "prompt": "what files r in the assets directory?", "gold_tool": "list_dir", "gold_args": {"path": "assets"}, "category": "paraphrase", "source": "handwritten"}
+{"id": "paraphrase_16", "prompt": "locate .csv files everywhere", "gold_tool": "find_files", "gold_args": {"pattern": "*.csv"}, "category": "paraphrase", "source": "handwritten"}
+{"id": "paraphrase_17", "prompt": "show the structure of the entire codebase starting from root", "gold_tool": "tree", "gold_args": {"path": ".", "depth": 5}, "category": "paraphrase", "source": "handwritten"}
+{"id": "paraphrase_18", "prompt": "fetch all markdown files in the docs directory", "gold_tool": "search_files", "gold_args": {"pattern": "*.md", "path": "docs"}, "category": "paraphrase", "source": "handwritten"}
+{"id": "paraphrase_19", "prompt": "get lines 50-100 from main.py", "gold_tool": "read_lines", "gold_args": {"path": "main.py", "start": 50, "end": 100}, "category": "paraphrase", "source": "handwritten"}
+{"id": "paraphrase_20", "prompt": "insert TODO at the end of status.log", "gold_tool": "append_file", "gold_args": {"path": "status.log", "content": "TODO"}, "category": "paraphrase", "source": "handwritten"}
+{"id": "multi_intent_01", "prompt": "look at the README and then tell me how to deploy", "gold_tool": "read_file", "gold_args": {"path": "README.md"}, "category": "multi_intent", "source": "handwritten"}
+{"id": "multi_intent_02", "prompt": "find all test files and run them", "gold_tool": "find_files", "gold_args": {"pattern": "test_*.py"}, "category": "multi_intent", "source": "handwritten"}
+{"id": "multi_intent_03", "prompt": "show me config.yaml and explain the settings", "gold_tool": "read_file", "gold_args": {"path": "config.yaml"}, "category": "multi_intent", "source": "handwritten"}
+{"id": "multi_intent_04", "prompt": "list the docs directory and then create a summary", "gold_tool": "list_dir", "gold_args": {"path": "docs"}, "category": "multi_intent", "source": "handwritten"}
+{"id": "multi_intent_05", "prompt": "search for .py files in src and run tests", "gold_tool": "search_files", "gold_args": {"pattern": "*.py", "path": "src"}, "category": "multi_intent", "source": "handwritten"}
+{"id": "multi_intent_06", "prompt": "check the git status and then push to main", "gold_tool": "git_status", "gold_args": {"repo_path": "."}, "category": "multi_intent", "source": "handwritten"}
+{"id": "multi_intent_07", "prompt": "get the first 20 lines of the log and analyze", "gold_tool": "head_file", "gold_args": {"path": "server.log", "n": 20}, "category": "multi_intent", "source": "handwritten"}
+{"id": "multi_intent_08", "prompt": "read notes.txt and update it with new info", "gold_tool": "read_file", "gold_args": {"path": "notes.txt"}, "category": "multi_intent", "source": "handwritten"}
+{"id": "multi_intent_09", "prompt": "show me the tree of lib directory and tell me what's there", "gold_tool": "tree", "gold_args": {"path": "lib", "depth": 2}, "category": "multi_intent", "source": "handwritten"}
+{"id": "multi_intent_10", "prompt": "find markdown files in the entire project and update links", "gold_tool": "find_files", "gold_args": {"pattern": "*.md"}, "category": "multi_intent", "source": "handwritten"}
+{"id": "multi_intent_11", "prompt": "view the git log and identify breaking changes", "gold_tool": "git_log", "gold_args": {"repo_path": ".", "n": 10}, "category": "multi_intent", "source": "handwritten"}
+{"id": "multi_intent_12", "prompt": "display config.json and generate documentation", "gold_tool": "read_file", "gold_args": {"path": "config.json"}, "category": "multi_intent", "source": "handwritten"}
+{"id": "multi_intent_13", "prompt": "search for .toml files and validate syntax", "gold_tool": "find_files", "gold_args": {"pattern": "*.toml"}, "category": "multi_intent", "source": "handwritten"}
+{"id": "multi_intent_14", "prompt": "list all files in build/ and clean up old ones", "gold_tool": "list_dir", "gold_args": {"path": "build"}, "category": "multi_intent", "source": "handwritten"}
+{"id": "multi_intent_15", "prompt": "get last 50 lines of deploy.log and check for errors", "gold_tool": "read_lines", "gold_args": {"path": "deploy.log", "start": 1, "end": 50}, "category": "multi_intent", "source": "handwritten"}
+{"id": "underspecified_01", "prompt": "what text are we looking for?", "gold_tool": "none", "gold_args": {}, "category": "underspecified", "source": "handwritten"}
+{"id": "underspecified_02", "prompt": "can you find something?", "gold_tool": "none", "gold_args": {}, "category": "underspecified", "source": "handwritten"}
+{"id": "underspecified_03", "prompt": "show me the files", "gold_tool": "none", "gold_args": {}, "category": "underspecified", "source": "handwritten"}
+{"id": "underspecified_04", "prompt": "read that file for me", "gold_tool": "none", "gold_args": {}, "category": "underspecified", "source": "handwritten"}
+{"id": "underspecified_05", "prompt": "grep for errors", "gold_tool": "grep_text", "gold_args": {"pattern": "error"}, "category": "underspecified", "source": "handwritten"}
+{"id": "underspecified_06", "prompt": "replace all instances of it", "gold_tool": "none", "gold_args": {}, "category": "underspecified", "source": "handwritten"}
+{"id": "underspecified_07", "prompt": "write something important", "gold_tool": "none", "gold_args": {}, "category": "underspecified", "source": "handwritten"}
+{"id": "underspecified_08", "prompt": "what's in there?", "gold_tool": "none", "gold_args": {}, "category": "underspecified", "source": "handwritten"}
+{"id": "underspecified_09", "prompt": "check the status", "gold_tool": "none", "gold_args": {}, "category": "underspecified", "source": "handwritten"}
+{"id": "underspecified_10", "prompt": "fetch the latest", "gold_tool": "none", "gold_args": {}, "category": "underspecified", "source": "handwritten"}
+{"id": "underspecified_11", "prompt": "search for it everywhere", "gold_tool": "none", "gold_args": {}, "category": "underspecified", "source": "handwritten"}
+{"id": "underspecified_12", "prompt": "run the tests", "gold_tool": "run_tests", "gold_args": {"test_filter": ""}, "category": "underspecified", "source": "handwritten"}
+{"id": "underspecified_13", "prompt": "show all files", "gold_tool": "none", "gold_args": {}, "category": "underspecified", "source": "handwritten"}
+{"id": "underspecified_14", "prompt": "download it", "gold_tool": "none", "gold_args": {}, "category": "underspecified", "source": "handwritten"}
+{"id": "underspecified_15", "prompt": "open the config", "gold_tool": "none", "gold_args": {}, "category": "underspecified", "source": "handwritten"}
+{"id": "near_miss_01", "prompt": "search for .py files matching test", "gold_tool": "grep_text", "gold_args": {"pattern": "test", "path": "."}, "category": "near_miss", "source": "handwritten"}
+{"id": "near_miss_02", "prompt": "look for TODO comments in the codebase", "gold_tool": "grep_text", "gold_args": {"pattern": "TODO", "path": "."}, "category": "near_miss", "source": "handwritten"}
+{"id": "near_miss_03", "prompt": "display first few lines of main.py with details", "gold_tool": "read_file", "gold_args": {"path": "main.py"}, "category": "near_miss", "source": "handwritten"}
+{"id": "near_miss_04", "prompt": "add a note to the deployment log", "gold_tool": "write_file", "gold_args": {"path": "deploy.log", "content": "deployment"}, "category": "near_miss", "source": "handwritten"}
+{"id": "near_miss_05", "prompt": "find and list all python source files", "gold_tool": "search_files", "gold_args": {"pattern": "*.py", "path": "."}, "category": "near_miss", "source": "handwritten"}
+{"id": "near_miss_06", "prompt": "show the repo structure at multiple levels", "gold_tool": "ls_recursive", "gold_args": {"path": "."}, "category": "near_miss", "source": "handwritten"}
+{"id": "near_miss_07", "prompt": "download a file from the repository", "gold_tool": "fetch_url", "gold_args": {"url": "https://example.com/file.txt"}, "category": "near_miss", "source": "handwritten"}
+{"id": "near_miss_08", "prompt": "check what changed in the repository recently", "gold_tool": "git_diff", "gold_args": {"repo_path": ".", "ref": "HEAD"}, "category": "near_miss", "source": "handwritten"}
+{"id": "near_miss_09", "prompt": "see recent commits in git history", "gold_tool": "git_log", "gold_args": {"repo_path": ".", "n": 5}, "category": "near_miss", "source": "handwritten"}
+{"id": "near_miss_10", "prompt": "find specific content in files", "gold_tool": "grep_text", "gold_args": {"pattern": "import", "path": "src"}, "category": "near_miss", "source": "handwritten"}
+{"id": "near_miss_11", "prompt": "write config values to a settings file", "gold_tool": "write_file", "gold_args": {"path": "settings.json", "content": "{}"}, "category": "near_miss", "source": "handwritten"}
+{"id": "near_miss_12", "prompt": "retrieve http content from a service", "gold_tool": "http_get", "gold_args": {"url": "https://api.example.com/data"}, "category": "near_miss", "source": "handwritten"}
+{"id": "near_miss_13", "prompt": "show the complete file tree with depth", "gold_tool": "tree", "gold_args": {"path": ".", "depth": 4}, "category": "near_miss", "source": "handwritten"}
+{"id": "near_miss_14", "prompt": "search for configuration files with extensions", "gold_tool": "find_files", "gold_args": {"pattern": "*.conf"}, "category": "near_miss", "source": "handwritten"}
+{"id": "near_miss_15", "prompt": "extract lines from a test file for review", "gold_tool": "read_lines", "gold_args": {"path": "tests/test_main.py", "start": 1, "end": 30}, "category": "near_miss", "source": "handwritten"}
+{"id": "none_case_01", "prompt": "please analyze the code for performance issues", "gold_tool": "none", "gold_args": {}, "category": "none", "source": "handwritten"}
+{"id": "none_case_02", "prompt": "create a detailed report of all vulnerabilities", "gold_tool": "none", "gold_args": {}, "category": "none", "source": "handwritten"}
+{"id": "none_case_03", "prompt": "generate documentation from the source code", "gold_tool": "none", "gold_args": {}, "category": "none", "source": "handwritten"}
+{"id": "none_case_04", "prompt": "translate the README to French", "gold_tool": "none", "gold_args": {}, "category": "none", "source": "handwritten"}
+{"id": "none_case_05", "prompt": "refactor the main module to improve readability", "gold_tool": "none", "gold_args": {}, "category": "none", "source": "handwritten"}
+{"id": "none_case_06", "prompt": "deploy the application to production", "gold_tool": "none", "gold_args": {}, "category": "none", "source": "handwritten"}
+{"id": "none_case_07", "prompt": "schedule a backup of the database", "gold_tool": "none", "gold_args": {}, "category": "none", "source": "handwritten"}
+{"id": "none_case_08", "prompt": "send a notification to the development team", "gold_tool": "none", "gold_args": {}, "category": "none", "source": "handwritten"}
+{"id": "none_case_09", "prompt": "optimize the database queries for performance", "gold_tool": "none", "gold_args": {}, "category": "none", "source": "handwritten"}
+{"id": "none_case_10", "prompt": "compile the C++ project to an executable", "gold_tool": "none", "gold_args": {}, "category": "none", "source": "handwritten"}
+{"id": "none_case_11", "prompt": "compress all log files to save disk space", "gold_tool": "none", "gold_args": {}, "category": "none", "source": "handwritten"}
+{"id": "none_case_12", "prompt": "encrypt sensitive configuration data", "gold_tool": "none", "gold_args": {}, "category": "none", "source": "handwritten"}
+{"id": "none_case_13", "prompt": "create a backup of the entire system", "gold_tool": "none", "gold_args": {}, "category": "none", "source": "handwritten"}
+{"id": "none_case_14", "prompt": "synchronize files with a remote server", "gold_tool": "none", "gold_args": {}, "category": "none", "source": "handwritten"}
+{"id": "none_case_15", "prompt": "convert image files to a different format", "gold_tool": "none", "gold_args": {}, "category": "none", "source": "handwritten"}
+{"id": "none_case_16", "prompt": "process large data files in batches", "gold_tool": "none", "gold_args": {}, "category": "none", "source": "handwritten"}
+{"id": "none_case_17", "prompt": "setup a continuous integration pipeline", "gold_tool": "none", "gold_args": {}, "category": "none", "source": "handwritten"}
+{"id": "none_case_18", "prompt": "train a machine learning model on the data", "gold_tool": "none", "gold_args": {}, "category": "none", "source": "handwritten"}
+{"id": "none_case_19", "prompt": "monitor system resources and generate alerts", "gold_tool": "none", "gold_args": {}, "category": "none", "source": "handwritten"}
+{"id": "none_case_20", "prompt": "migrate data from the old database", "gold_tool": "none", "gold_args": {}, "category": "none", "source": "handwritten"}
+{"id": "paraphrase_21", "prompt": "RETRIEVE ME ALL .md FILES", "gold_tool": "find_files", "gold_args": {"pattern": "*.md"}, "category": "paraphrase", "source": "handwritten"}
+{"id": "paraphrase_22", "prompt": "display the tree", "gold_tool": "tree", "gold_args": {"path": "."}, "category": "paraphrase", "source": "handwritten"}
+{"id": "paraphrase_23", "prompt": "need 2 find docs", "gold_tool": "list_dir", "gold_args": {"path": "docs"}, "category": "paraphrase", "source": "handwritten"}
+{"id": "paraphrase_24", "prompt": "show logs recursively", "gold_tool": "ls_recursive", "gold_args": {"path": "logs"}, "category": "paraphrase", "source": "handwritten"}
+{"id": "paraphrase_25", "prompt": "what is in settings.json?", "gold_tool": "read_file", "gold_args": {"path": "settings.json"}, "category": "paraphrase", "source": "handwritten"}
+{"id": "paraphrase_26", "prompt": "give first 15 lines of test.py", "gold_tool": "head_file", "gold_args": {"path": "test.py", "n": 15}, "category": "paraphrase", "source": "handwritten"}
+{"id": "paraphrase_27", "prompt": "find ALL yaml in the project", "gold_tool": "find_files", "gold_args": {"pattern": "*.yaml"}, "category": "paraphrase", "source": "handwritten"}
+{"id": "paraphrase_28", "prompt": "show me lines from 10 to 50 in main", "gold_tool": "read_lines", "gold_args": {"path": "main.py", "start": 10, "end": 50}, "category": "paraphrase", "source": "handwritten"}
+{"id": "paraphrase_29", "prompt": "write 'success' to result.txt", "gold_tool": "write_file", "gold_args": {"path": "result.txt", "content": "success"}, "category": "paraphrase", "source": "handwritten"}
+{"id": "paraphrase_30", "prompt": "add note to status log", "gold_tool": "append_file", "gold_args": {"path": "status.log", "content": "note"}, "category": "paraphrase", "source": "handwritten"}
+{"id": "multi_intent_16", "prompt": "show directory listing and count files", "gold_tool": "list_dir", "gold_args": {"path": "."}, "category": "multi_intent", "source": "handwritten"}
+{"id": "multi_intent_17", "prompt": "display git status and commit history", "gold_tool": "git_status", "gold_args": {"repo_path": "."}, "category": "multi_intent", "source": "handwritten"}
+{"id": "multi_intent_18", "prompt": "fetch content and store results", "gold_tool": "fetch_url", "gold_args": {"url": "https://example.com/data"}, "category": "multi_intent", "source": "handwritten"}
+{"id": "multi_intent_19", "prompt": "search for warnings and log them", "gold_tool": "grep_text", "gold_args": {"pattern": "warning", "path": "."}, "category": "multi_intent", "source": "handwritten"}
+{"id": "multi_intent_20", "prompt": "read settings and apply to config", "gold_tool": "read_file", "gold_args": {"path": "config.yaml"}, "category": "multi_intent", "source": "handwritten"}
+{"id": "underspecified_16", "prompt": "find this for me", "gold_tool": "none", "gold_args": {}, "category": "underspecified", "source": "handwritten"}
+{"id": "underspecified_17", "prompt": "look for errors", "gold_tool": "grep_text", "gold_args": {"pattern": "error"}, "category": "underspecified", "source": "handwritten"}
+{"id": "underspecified_18", "prompt": "what should I do first?", "gold_tool": "none", "gold_args": {}, "category": "underspecified", "source": "handwritten"}
+{"id": "underspecified_19", "prompt": "download the file", "gold_tool": "none", "gold_args": {}, "category": "underspecified", "source": "handwritten"}
+{"id": "underspecified_20", "prompt": "execute it", "gold_tool": "none", "gold_args": {}, "category": "underspecified", "source": "handwritten"}
+{"id": "near_miss_16", "prompt": "scan for pattern matching in logs", "gold_tool": "grep_text", "gold_args": {"pattern": "ERROR", "path": "logs"}, "category": "near_miss", "source": "handwritten"}
+{"id": "near_miss_17", "prompt": "list files matching pattern", "gold_tool": "search_files", "gold_args": {"pattern": "*.txt", "path": "."}, "category": "near_miss", "source": "handwritten"}
+{"id": "near_miss_18", "prompt": "review git log for merges", "gold_tool": "git_log", "gold_args": {"repo_path": ".", "n": 20}, "category": "near_miss", "source": "handwritten"}
+{"id": "near_miss_19", "prompt": "download and save the remote file", "gold_tool": "download_file", "gold_args": {"url": "https://example.com/data.json", "path": "data.json"}, "category": "near_miss", "source": "handwritten"}
+{"id": "near_miss_20", "prompt": "execute pytest on specific tests", "gold_tool": "run_pytest", "gold_args": {"test_file": "tests/test_module.py"}, "category": "near_miss", "source": "handwritten"}
+{"id": "none_case_21", "prompt": "build the Docker image", "gold_tool": "none", "gold_args": {}, "category": "none", "source": "handwritten"}
+{"id": "none_case_22", "prompt": "debug the segmentation fault", "gold_tool": "none", "gold_args": {}, "category": "none", "source": "handwritten"}
+{"id": "none_case_23", "prompt": "implement caching for performance", "gold_tool": "none", "gold_args": {}, "category": "none", "source": "handwritten"}
+{"id": "none_case_24", "prompt": "create a health check endpoint", "gold_tool": "none", "gold_args": {}, "category": "none", "source": "handwritten"}
+{"id": "none_case_25", "prompt": "add request validation middleware", "gold_tool": "none", "gold_args": {}, "category": "none", "source": "handwritten"}
+{"id": "paraphrase_31", "prompt": "SEARCH FOR *.RS FILES", "gold_tool": "find_files", "gold_args": {"pattern": "*.rs"}, "category": "paraphrase", "source": "handwritten"}
+{"id": "paraphrase_32", "prompt": "show me what is at scripts", "gold_tool": "list_dir", "gold_args": {"path": "scripts"}, "category": "paraphrase", "source": "handwritten"}
+{"id": "paraphrase_33", "prompt": "i need to c the Makefile", "gold_tool": "read_file", "gold_args": {"path": "Makefile"}, "category": "paraphrase", "source": "handwritten"}
+{"id": "paraphrase_34", "prompt": "give me first 25 lines", "gold_tool": "head_file", "gold_args": {"path": "main.py", "n": 25}, "category": "paraphrase", "source": "handwritten"}
+{"id": "paraphrase_35", "prompt": "find *.go files everywhere", "gold_tool": "find_files", "gold_args": {"pattern": "*.go"}, "category": "paraphrase", "source": "handwritten"}
+{"id": "paraphrase_36", "prompt": "show lines 100-150 from app.js", "gold_tool": "read_lines", "gold_args": {"path": "app.js", "start": 100, "end": 150}, "category": "paraphrase", "source": "handwritten"}
+{"id": "paraphrase_37", "prompt": "create output.log with startup message", "gold_tool": "write_file", "gold_args": {"path": "output.log", "content": "startup"}, "category": "paraphrase", "source": "handwritten"}
+{"id": "paraphrase_38", "prompt": "append error message to error.log", "gold_tool": "append_file", "gold_args": {"path": "error.log", "content": "error"}, "category": "paraphrase", "source": "handwritten"}
+{"id": "paraphrase_39", "prompt": "find all .sh scripts", "gold_tool": "find_files", "gold_args": {"pattern": "*.sh"}, "category": "paraphrase", "source": "handwritten"}
+{"id": "paraphrase_40", "prompt": "recursively show build directory", "gold_tool": "ls_recursive", "gold_args": {"path": "build"}, "category": "paraphrase", "source": "handwritten"}
+{"id": "multi_intent_21", "prompt": "review the commit log and create changelog", "gold_tool": "git_log", "gold_args": {"repo_path": ".", "n": 50}, "category": "multi_intent", "source": "handwritten"}
+{"id": "multi_intent_22", "prompt": "examine diff and apply patches", "gold_tool": "git_diff", "gold_args": {"repo_path": ".", "ref": "main"}, "category": "multi_intent", "source": "handwritten"}
+{"id": "multi_intent_23", "prompt": "read the rules and check compliance", "gold_tool": "read_file", "gold_args": {"path": "RULES.md"}, "category": "multi_intent", "source": "handwritten"}
+{"id": "multi_intent_24", "prompt": "search errors and log them to report", "gold_tool": "grep_text", "gold_args": {"pattern": "fatal", "path": "."}, "category": "multi_intent", "source": "handwritten"}
+{"id": "multi_intent_25", "prompt": "fetch api response and process it", "gold_tool": "http_get", "gold_args": {"url": "https://api.example.com/status"}, "category": "multi_intent", "source": "handwritten"}
+{"id": "near_miss_21", "prompt": "search recursive for imports", "gold_tool": "grep_text", "gold_args": {"pattern": "import", "path": "."}, "category": "near_miss", "source": "handwritten"}
+{"id": "near_miss_22", "prompt": "locate all config variations", "gold_tool": "find_files", "gold_args": {"pattern": "config*"}, "category": "near_miss", "source": "handwritten"}
+{"id": "near_miss_23", "prompt": "show full tree depth 6", "gold_tool": "tree", "gold_args": {"path": ".", "depth": 6}, "category": "near_miss", "source": "handwritten"}
+{"id": "near_miss_24", "prompt": "retrieve url content with headers", "gold_tool": "http_get", "gold_args": {"url": "https://api.example.com/data"}, "category": "near_miss", "source": "handwritten"}
+{"id": "near_miss_25", "prompt": "run command to execute tests", "gold_tool": "run_command", "gold_args": {"command": "pytest", "args": "-v"}, "category": "near_miss", "source": "handwritten"}
+{"id": "none_case_26", "prompt": "inspect memory usage patterns", "gold_tool": "none", "gold_args": {}, "category": "none", "source": "handwritten"}
+{"id": "none_case_27", "prompt": "profile the application bottlenecks", "gold_tool": "none", "gold_args": {}, "category": "none", "source": "handwritten"}
+{"id": "none_case_28", "prompt": "validate JSON schema compliance", "gold_tool": "none", "gold_args": {}, "category": "none", "source": "handwritten"}
+{"id": "none_case_29", "prompt": "run static analysis on code", "gold_tool": "none", "gold_args": {}, "category": "none", "source": "handwritten"}
+{"id": "none_case_30", "prompt": "generate test coverage report", "gold_tool": "none", "gold_args": {}, "category": "none", "source": "handwritten"}
+{"id": "paraphrase_41", "prompt": "SHOW ME YAML CONFIG FILES", "gold_tool": "find_files", "gold_args": {"pattern": "*.yaml"}, "category": "paraphrase", "source": "handwritten"}
+{"id": "paraphrase_42", "prompt": "get the head of app.py", "gold_tool": "head_file", "gold_args": {"path": "app.py", "n": 20}, "category": "paraphrase", "source": "handwritten"}
+{"id": "multi_intent_26", "prompt": "check file status and list contents", "gold_tool": "list_dir", "gold_args": {"path": "."}, "category": "multi_intent", "source": "handwritten"}
+{"id": "multi_intent_27", "prompt": "search recursively and prepare report", "gold_tool": "ls_recursive", "gold_args": {"path": "."}, "category": "multi_intent", "source": "handwritten"}
+{"id": "underspecified_21", "prompt": "what is the status?", "gold_tool": "none", "gold_args": {}, "category": "underspecified", "source": "handwritten"}
+{"id": "underspecified_22", "prompt": "perform some action", "gold_tool": "none", "gold_args": {}, "category": "underspecified", "source": "handwritten"}
+{"id": "near_miss_26", "prompt": "search for deprecation warnings", "gold_tool": "grep_text", "gold_args": {"pattern": "deprecated", "path": "."}, "category": "near_miss", "source": "handwritten"}
+{"id": "none_case_31", "prompt": "create a visual diagram of the architecture", "gold_tool": "none", "gold_args": {}, "category": "none", "source": "handwritten"}
+{"id": "none_case_32", "prompt": "write a detailed technical specification", "gold_tool": "none", "gold_args": {}, "category": "none", "source": "handwritten"}
+{"id": "none_case_33", "prompt": "optimize query performance using indices", "gold_tool": "none", "gold_args": {}, "category": "none", "source": "handwritten"}
