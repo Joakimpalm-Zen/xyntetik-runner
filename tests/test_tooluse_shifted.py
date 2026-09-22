@@ -275,3 +275,79 @@ class TestLabelModificationDetection:
 
         # Hashes should differ
         assert original_hash != modified_hash
+
+
+class TestServerCommandBuilder:
+    """Test that lora-scale is correctly passed to runner."""
+
+    def test_serve_without_adapter(self):
+        """Without adapter, lora-scale should not appear in command."""
+        class Args:
+            runner = "./runner"
+            model = "model.gguf"
+            threads = 4
+            lora_scale = 1.0
+
+        args = Args()
+        adapter = None
+        port = 9000
+
+        # Build command as the serve function would
+        cmd = [args.runner, "-m", args.model, "--serve", "--port", str(port),
+               "--no-tray", "--gpu", "off"]
+        if args.threads > 0:
+            cmd += ["-t", str(args.threads)]
+        if adapter:
+            cmd += ["--lora", adapter, "--lora-scale", str(args.lora_scale)]
+
+        assert "--lora-scale" not in cmd
+        assert "--lora" not in cmd
+
+    def test_serve_with_adapter_default_scale(self):
+        """With adapter and default scale (1.0), both should appear."""
+        class Args:
+            runner = "./runner"
+            model = "model.gguf"
+            threads = 4
+            lora_scale = 1.0
+
+        args = Args()
+        adapter = "adapter.gguf"
+        port = 9000
+
+        # Build command
+        cmd = [args.runner, "-m", args.model, "--serve", "--port", str(port),
+               "--no-tray", "--gpu", "off"]
+        if args.threads > 0:
+            cmd += ["-t", str(args.threads)]
+        if adapter:
+            cmd += ["--lora", adapter, "--lora-scale", str(args.lora_scale)]
+
+        assert "--lora" in cmd
+        assert "--lora-scale" in cmd
+        lora_idx = cmd.index("--lora")
+        scale_idx = cmd.index("--lora-scale")
+        assert cmd[lora_idx + 1] == "adapter.gguf"
+        assert cmd[scale_idx + 1] == "1.0"
+
+    def test_serve_with_adapter_custom_scale(self):
+        """With adapter and custom scale, both should be passed."""
+        class Args:
+            runner = "./runner"
+            model = "model.gguf"
+            threads = 4
+            lora_scale = 0.5
+
+        args = Args()
+        adapter = "adapter.gguf"
+        port = 9000
+
+        # Build command
+        cmd = [args.runner, "-m", args.model, "--serve", "--port", str(port),
+               "--no-tray", "--gpu", "off"]
+        if args.threads > 0:
+            cmd += ["-t", str(args.threads)]
+        if adapter:
+            cmd += ["--lora", adapter, "--lora-scale", str(args.lora_scale)]
+
+        assert cmd[cmd.index("--lora-scale") + 1] == "0.5"

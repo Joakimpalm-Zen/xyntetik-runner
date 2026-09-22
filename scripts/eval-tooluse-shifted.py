@@ -112,7 +112,7 @@ def serve(args, adapter, port):
     if args.threads > 0:
         cmd += ["-t", str(args.threads)]
     if adapter:
-        cmd += ["--lora", adapter]
+        cmd += ["--lora", adapter, "--lora-scale", str(args.lora_scale)]
 
     return subprocess.Popen(cmd, stdout=subprocess.DEVNULL,
                            stderr=subprocess.DEVNULL)
@@ -402,7 +402,7 @@ def main():
     ap.add_argument("--runner", default="./runner")
     ap.add_argument("--model", required=True)
     ap.add_argument("--lora")
-    ap.add_argument("--lora-scale", type=float, default=0.0)
+    ap.add_argument("--lora-scale", type=float, default=1.0)
     ap.add_argument("--threads", type=int, default=-1)
     ap.add_argument("--freeze", action="store_true",
                     help="Only freeze labels, do not run evaluation")
