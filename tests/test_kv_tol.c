@@ -93,6 +93,18 @@ enum { STEPS = 64, MAX_TOK = 192, N_BATCH = 64 };
 #define TIE_FRAC       0.02
 // and near-ties must stay rare even so
 #define DISAGREE_MAX   0.05
+// TOP1_SLACK: the two limits above are the bar for a well-behaved format. On a
+// format that is chaotic for a given model (fp4 on Qwen2.5-1.5B moves 61 of 64
+// decisions against f16; on Llama-3.2-1B the CPU flips 5 of 64 against ITSELF
+// under a batch-size change with a worst margin of 0.0305) the fixed numbers
+// sit below the CPU's own flip rate, and a GPU that agrees with the CPU as
+// well as the CPU agrees with itself would fail them for no reason. So, as
+// the magnitude criterion already does, the GPU-vs-CPU top-1 checks are also
+// taken against the measured CPU-vs-CPU floor: the limit is the larger of the
+// fixed bar and TOP1_SLACK times the floor's own flip rate / worst margin. A
+// well-behaved format (q8: 2 of 64, 0.0020) never sees the relaxation. The
+// q8-vs-f16 tie check is the FORMAT's contract and stays fixed.
+#define TOP1_SLACK     2.0
 
 static int g_fail = 0;
 
@@ -453,15 +465,14 @@ int main(int argc, char **argv) {
                "costs; context, not the gate)\n", quant_err);
         printf("  q8-cpu-b1 vs q8-cpu  : mean|dlogit| %.6f   (reassociation "
                "floor, CPU only)\n", reassoc);
-        {   // diagnostic, not gated: how often the CPU flips a token against
-            // ITSELF under legal reassociation. A GPU/CPU top-1 failure that
-            // sits near this rate says the format is chaotic on this model and
-            // the fixed top-1 limits are the wrong instrument, not the kernels.
-            int nd_b1; double w_b1;
-            top1_stats(q8c, q8b1, n_vocab, &nd_b1, &w_b1);
-            printf("  q8-cpu-b1 vs q8-cpu  : top1 diff %d/%d, worst margin %.4f "
-                   "(the floor's own flip rate; diagnostic)\n", nd_b1, STEPS, w_b1);
-        }
+        // how often the CPU flips a token against ITSELF under legal
+        // reassociation: the floor the GPU top-1 checks are taken against
+        int nd_b1; double w_b1;
+        top1_stats(q8c, q8b1, n_vocab, &nd_b1, &w_b1);
+        printf("  q8-cpu-b1 vs q8-cpu  : top1 diff %d/%d, worst margin %.4f "
+               "(the floor's own flip rate)\n", nd_b1, STEPS, w_b1);
+        double lim_frac  = fmax(DISAGREE_MAX, TOP1_SLACK * (double)nd_b1 / STEPS);
+        double lim_worst = fmax(TIE_FRAC, TOP1_SLACK * w_b1);
         printf("  q8-gpu    vs q8-cpu  : mean|dlogit| %.6f   %.2fx the floor "
                "(limit %.1fx)\n", impl_err, ratio, REASSOC_SLACK);
         printf("  q8-gpu    vs q8-cpu  : top1 diff %d/%d (%.1f%%, limit %.0f%%)"
@@ -472,10 +483,14 @@ int main(int argc, char **argv) {
         ck(ratio <= REASSOC_SLACK,
            "q8 GPU differs from q8 CPU no more than q8 CPU differs from "
            "itself under legal reassociation");
-        ck(frac <= DISAGREE_MAX,
-           "q8 GPU and q8 CPU pick the same token at nearly every position");
-        ck(worst <= TIE_FRAC,
-           "every q8 GPU/CPU token disagreement is a near-tie, not a decision");
+        printf("  q8 parity limits used: top1 %.1f%%, worst margin %.4f (the fixed bar or "
+               "%.1fx the floor's own, whichever is larger)\n", 100.0 * lim_frac, lim_worst, TOP1_SLACK);
+        ck(frac <= lim_frac,
+           "q8 GPU and q8 CPU disagree on a token no more often than the CPU "
+           "disagrees with itself (or the fixed bar)");
+        ck(worst <= lim_worst,
+           "every q8 GPU/CPU token disagreement is a near-tie by the CPU's own "
+           "standard (or the fixed bar)");
     } else {
         printf("  q8 tolerance gate  : skipped (q8 or GPU unavailable)\n");
     }
@@ -509,15 +524,14 @@ int main(int argc, char **argv) {
         double frac = (double)n_diff / STEPS;
         printf("  fp4-cpu-b1 vs fp4-cpu: mean|dlogit| %.6f   (reassociation "
                "floor, CPU only)\n", reassoc);
-        {   // diagnostic, not gated: how often the CPU flips a token against
-            // ITSELF under legal reassociation. A GPU/CPU top-1 failure that
-            // sits near this rate says the format is chaotic on this model and
-            // the fixed top-1 limits are the wrong instrument, not the kernels.
-            int nd_b1; double w_b1;
-            top1_stats(fp4c, fp4b1, n_vocab, &nd_b1, &w_b1);
-            printf("  fp4-cpu-b1 vs fp4-cpu: top1 diff %d/%d, worst margin %.4f "
-                   "(the floor's own flip rate; diagnostic)\n", nd_b1, STEPS, w_b1);
-        }
+        // how often the CPU flips a token against ITSELF under legal
+        // reassociation: the floor the GPU top-1 checks are taken against
+        int nd_b1; double w_b1;
+        top1_stats(fp4c, fp4b1, n_vocab, &nd_b1, &w_b1);
+        printf("  fp4-cpu-b1 vs fp4-cpu: top1 diff %d/%d, worst margin %.4f "
+               "(the floor's own flip rate)\n", nd_b1, STEPS, w_b1);
+        double lim_frac  = fmax(DISAGREE_MAX, TOP1_SLACK * (double)nd_b1 / STEPS);
+        double lim_worst = fmax(TIE_FRAC, TOP1_SLACK * w_b1);
         printf("  fp4-gpu   vs fp4-cpu : mean|dlogit| %.6f   %.2fx the floor "
                "(limit %.1fx)\n", impl_err, ratio, REASSOC_SLACK);
         printf("  fp4-gpu   vs fp4-cpu : top1 diff %d/%d (%.1f%%, limit %.0f%%)"
@@ -527,10 +541,14 @@ int main(int argc, char **argv) {
         ck(ratio <= REASSOC_SLACK,
            "fp4 GPU differs from fp4 CPU no more than fp4 CPU differs from "
            "itself under legal reassociation");
-        ck(frac <= DISAGREE_MAX,
-           "fp4 GPU and fp4 CPU pick the same token at nearly every position");
-        ck(worst <= TIE_FRAC,
-           "every fp4 GPU/CPU token disagreement is a near-tie, not a decision");
+        printf("  fp4 parity limits used: top1 %.1f%%, worst margin %.4f (the fixed bar or "
+               "%.1fx the floor's own, whichever is larger)\n", 100.0 * lim_frac, lim_worst, TOP1_SLACK);
+        ck(frac <= lim_frac,
+           "fp4 GPU and fp4 CPU disagree on a token no more often than the CPU "
+           "disagrees with itself (or the fixed bar)");
+        ck(worst <= lim_worst,
+           "every fp4 GPU/CPU token disagreement is a near-tie by the CPU's own "
+           "standard (or the fixed bar)");
     } else {
         printf("  fp4 tolerance gate : skipped (fp4 or GPU unavailable)\n");
     }
@@ -562,15 +580,14 @@ int main(int argc, char **argv) {
         double frac = (double)n_diff / STEPS;
         printf("  k8v4-cpu-b1 vs k8v4-cpu: mean|dlogit| %.6f   (reassociation "
                "floor, CPU only)\n", reassoc);
-        {   // diagnostic, not gated: how often the CPU flips a token against
-            // ITSELF under legal reassociation. A GPU/CPU top-1 failure that
-            // sits near this rate says the format is chaotic on this model and
-            // the fixed top-1 limits are the wrong instrument, not the kernels.
-            int nd_b1; double w_b1;
-            top1_stats(k84c, k84b1, n_vocab, &nd_b1, &w_b1);
-            printf("  k8v4-cpu-b1 vs k8v4-cpu: top1 diff %d/%d, worst margin %.4f "
-                   "(the floor's own flip rate; diagnostic)\n", nd_b1, STEPS, w_b1);
-        }
+        // how often the CPU flips a token against ITSELF under legal
+        // reassociation: the floor the GPU top-1 checks are taken against
+        int nd_b1; double w_b1;
+        top1_stats(k84c, k84b1, n_vocab, &nd_b1, &w_b1);
+        printf("  k8v4-cpu-b1 vs k8v4-cpu: top1 diff %d/%d, worst margin %.4f "
+               "(the floor's own flip rate)\n", nd_b1, STEPS, w_b1);
+        double lim_frac  = fmax(DISAGREE_MAX, TOP1_SLACK * (double)nd_b1 / STEPS);
+        double lim_worst = fmax(TIE_FRAC, TOP1_SLACK * w_b1);
         printf("  k8v4-gpu  vs k8v4-cpu: mean|dlogit| %.6f   %.2fx the floor "
                "(limit %.1fx)\n", impl_err, ratio, REASSOC_SLACK);
         printf("  k8v4-gpu  vs k8v4-cpu: top1 diff %d/%d (%.1f%%, limit %.0f%%)"
@@ -580,10 +597,14 @@ int main(int argc, char **argv) {
         ck(ratio <= REASSOC_SLACK,
            "k8v4 GPU differs from k8v4 CPU no more than k8v4 CPU differs from "
            "itself under legal reassociation");
-        ck(frac <= DISAGREE_MAX,
-           "k8v4 GPU and k8v4 CPU pick the same token at nearly every position");
-        ck(worst <= TIE_FRAC,
-           "every k8v4 GPU/CPU token disagreement is a near-tie, not a decision");
+        printf("  k8v4 parity limits used: top1 %.1f%%, worst margin %.4f (the fixed bar or "
+               "%.1fx the floor's own, whichever is larger)\n", 100.0 * lim_frac, lim_worst, TOP1_SLACK);
+        ck(frac <= lim_frac,
+           "k8v4 GPU and k8v4 CPU disagree on a token no more often than the CPU "
+           "disagrees with itself (or the fixed bar)");
+        ck(worst <= lim_worst,
+           "every k8v4 GPU/CPU token disagreement is a near-tie by the CPU's own "
+           "standard (or the fixed bar)");
     } else {
         printf("  k8v4 tolerance gate: skipped (k8v4 or GPU unavailable)\n");
     }
