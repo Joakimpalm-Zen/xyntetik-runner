@@ -290,6 +290,13 @@ class ReplayOptions:
     """The served adapter's hash when the endpoint runs with --lora: part of
     the identity and of the repeat key, so an adapted cohort never pools
     with the base model's (R14.5.19)."""
+    cohort_tag: str = ""
+    """A free label for a serving condition the identity cannot see from
+    the endpoint (the context window, the KV cache kind): joins the tool set
+    as `cohort:<tag>` so the cohort stays apart from an earlier run of the
+    same model, and the ledger records which condition produced the row.
+    Added when the bet E k8v4 re-run (32k, --kv k8v4) was skipped as already
+    attempted because only model, scaffold and tool set key a repeat."""
     samples: int = 1
     """Attempts per task at ``temperature``, each with its own seed and its
     own ledger record; the first verified sample ends the task. Coverage
@@ -362,6 +369,8 @@ def run_replay(out: Path, endpoint: RunnerEndpoint, opts: ReplayOptions, *,
                                   "write_file:new-only" if opts.edit_only else "write_file",
                                   "edit_file", "run_tests",
                                   *(("visible:solution-tests",) if opts.show_tests else ()),
+
+                                  *((f"cohort:{opts.cohort_tag}",) if opts.cohort_tag else ()),
                                   *((f"samples:{opts.samples}@{opts.temperature:g}",)
                                     if opts.samples > 1 or opts.temperature > 0 else ())),
                         verifier_id=f"commit-{'gates' if task.verifier_kind == 'make' else 'tests'}:{task.task_id}")
@@ -443,7 +452,7 @@ def cmd_replay(args: argparse.Namespace) -> int:
                          limit=args.limit, endpoint_label=args.endpoint,
                          edit_only=args.edit_only, show_tests=args.show_tests,
                          samples=args.samples, temperature=args.temperature,
-                         adapter_sha256=args.adapter_sha256)
+                         adapter_sha256=args.adapter_sha256, cohort_tag=args.cohort_tag)
     try:
         run_replay(Path(args.out), RunnerEndpoint(args.endpoint, timeout=args.request_timeout),
                    opts, model=args.model)
@@ -480,7 +489,7 @@ def cmd_bench(args: argparse.Namespace) -> int:
                          max_tokens=args.max_tokens, test_runs=args.test_runs, wall=args.wall,
                          min_tps=args.min_tps, scaffold_path=args.scaffold, edit_only=args.edit_only, show_tests=args.show_tests,
                          samples=args.samples, temperature=args.temperature,
-                         adapter_sha256=args.adapter_sha256)
+                         adapter_sha256=args.adapter_sha256, cohort_tag=args.cohort_tag)
     rows: list[dict[str, Any]] = []
     arms: list[tuple[str, str]] = [("endpoint", u) for u in args.endpoints.split(",") if u]
     arms += [("model", m) for m in args.models.split(",") if m]
@@ -1298,6 +1307,9 @@ def main(argv: list[str] | None = None) -> int:
                         "the first verified sample ends the task (coverage is the metric)")
     p.add_argument("--adapter-sha256", default="",
                    help="hash of the adapter the endpoint serves with --lora, for the identity")
+    p.add_argument("--cohort-tag", default="",
+                   help="label for a serving condition the endpoint does not expose (context, KV kind); "
+                        "joins the tool set as cohort:<tag> so the run is its own cohort")
     p.add_argument("--temperature", type=float, default=0.0)
     p.set_defaults(fn=cmd_replay)
     p = sub.add_parser("bank", help="build repair tasks from a public repository's history")
@@ -1357,8 +1369,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--edit-only", action="store_true")
     p.add_argument("--show-tests", action="store_true")
     p.add_argument("--samples", type=int, default=1)
+    p.add_argument("--cohort-tag", default="")
     p.add_argument("--temperature", type=float, default=0.0)
-    p.add_argument("--oracle-localization", action="store_true")
     p.add_argument("--adapter-sha256", default="")
     p.set_defaults(fn=cmd_bench)
     p = sub.add_parser("install", help="wire the hooks and a /shadow command into the harnesses "
