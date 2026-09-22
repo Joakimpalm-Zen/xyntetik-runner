@@ -1,0 +1,25 @@
+rope: linear scaling x8.00 (model metadata)
+loaded /Users/zenzombie/AI_projects/origin/xyntetik-runner/models/google_gemma-3-4b-it-Q4_K_M.gguf | gemma3 | 34 layers | ctx 4096 | 1 threads | 0.08s
+sampling: gemma3 (temp 1.00, top_p 0.95, top_k 64, min_p 0.00, repeat_penalty 1.00)
+rope: linear scaling x8.00 (model metadata)
+server listening on http://127.0.0.1:64038 — 2 slots x 2 threads, continuous batching
+  POST /v1/chat/completions | POST /v1/responses | POST /v1/completions
+  POST /v1/embeddings | POST /v1/messages | POST /v1/messages/count_tokens
+  GET /v1/models | GET /v1/capabilities | GET /health | GET /metrics
+  GET /v1/runner/prefix-cache | POST /v1/runner/prefix-cache/clear | POST /unload
+[slot 0] chatcmpl-0: start, 201 prompt (0 cached, none)
+[slot 0] chatcmpl-0: 201 prompt (0 cached) + 47 gen tok (3.5 tok/s) [schema] [152770 page-ins — weights not resident]
+[slot 1] chatcmpl-1: start, 115 prompt (63 cached, prefix_cache)
+[slot 1] chatcmpl-1: 115 prompt (63 cached) + 17 gen tok (3.8 tok/s) [schema]
+[slot 0] chatcmpl-2: start, 192 prompt (41 cached, kv)
+[slot 0] chatcmpl-2: 192 prompt (41 cached) + 1 gen tok (2.4 tok/s) [schema] [35452 page-ins — weights not resident]
+[slot 1] chatcmpl-3: start, 21 prompt (4 cached, kv)
+[slot 1] chatcmpl-3: 21 prompt (4 cached) + 4 gen tok (3.5 tok/s)
+[slot 0] chatcmpl-4: start, 110 prompt (63 cached, prefix_cache)
+[slot 0] chatcmpl-4: 110 prompt (63 cached) + 18 gen tok (3.6 tok/s) [schema]
+[slot 1] chatcmpl-5: start, 388 prompt (63 cached, prefix_cache)
+[slot 0] chatcmpl-6: start, 189 prompt (63 cached, kv)
+[slot 1] chatcmpl-5: 388 prompt (63 cached) + 12 gen tok (0.1 tok/s) [schema] [client gone] [1841013 page-ins — weights not resident]
+[slot 1] chatcmpl-7: start, 19 prompt (4 cached, kv)
+[slot 0] chatcmpl-6: 189 prompt (63 cached) + 15 gen tok (0.1 tok/s) [schema] [client gone] [2409405 page-ins — weights not resident]
+[slot 1] chatcmpl-7: 19 prompt (4 cached) + 17 gen tok (0.1 tok/s) [schema] [client gone] [2519032 page-ins — weights not resident]

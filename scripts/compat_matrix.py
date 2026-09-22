@@ -393,7 +393,11 @@ def run_tokenizer(model, reference, corpus, timeout, reference_ids=None, expect=
             result["reason"] = "tokenizer_reference_unavailable"
         elif any(marker in detail for marker in (
                 "calledprocesserror", "difftok harness failed",
-                "no such file or directory", "error 127")):
+                "no such file or directory", "error 127",
+                # the reference tokenizer library is missing from the python
+                # that ran the matrix (2026-09-22: `tokenizers` absent from the
+                # system python turned a never-run comparison into "fail")
+                "modulenotfounderror")):
             # The instrument itself did not build or run (no compiler on the
             # matrix process's PATH, 2026-09-02: 16 rows came back "fail"
             # having compared nothing). A tokenizer that was never compared

@@ -1,0 +1,11 @@
+{
+  "model": "/Users/zenzombie/AI_projects/origin/xyntetik-runner/models/google_gemma-3-4b-it-Q4_K_M.gguf",
+  "scenario_matrix": "agent-torture",
+  "returncode": 1,
+  "totals": {
+    "requests": 8,
+    "passed": 5,
+    "failed": 3
+  },
+  "artifacts_dir": "docs/compat-reports/tool/gemma-3-4b-it-q4_k_m"
+}
