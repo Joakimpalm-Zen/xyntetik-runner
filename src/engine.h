@@ -48,6 +48,17 @@ typedef struct {
     int  n_req_stop;
     bool ignore_eos;
     bool hit_stop;         // last generate ended on a stop token / json done
+    // The terminator the last generate ended on, when it ended on a TOKEN
+    // (an engine stop id or a request stop id): its vocabulary id, else -1
+    // (stop string, budget, constraint close, no legal continuation). The
+    // server reports it beside finish_reason, since "stop" alone cannot tell
+    // Muse's <|eom|> from its <|eot|> (lab finding 2026-09-22).
+    int  stop_id;
+    // Request opt-in (completions `special_tokens`): a control token that is
+    // not a stop renders as its vocabulary spelling to the callback and the
+    // logprob tables instead of decoding to nothing. Never under a
+    // constraint; the validator's byte stream stays the decoded one.
+    bool render_special;
     bool oom;              // generation aborted on an allocation failure — the
                            // finish reason is "error", never a silent "stop"
     bool json_mode;        // constrain output to a single JSON object

@@ -89,3 +89,101 @@ def test_an_ordinary_stop_string_still_matches_text(server):
     status, d = _post(server, dict(BASE, stop=["ta"]))
     assert status == 200, d
     assert d["choices"][0]["text"] == "Hello"
+
+
+# ---- the two 2026-09-22 lab papercuts: render specials on request, and say
+# ---- which terminator ended the turn
+
+def _stream(server, payload):
+    req = urllib.request.Request(server.base_url + "/v1/completions",
+                                 data=json.dumps(dict(payload, stream=True)).encode(),
+                                 headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=120) as r:
+        body = r.read().decode()
+    chunks = []
+    for line in body.splitlines():
+        if line.startswith("data: ") and line[6:] != "[DONE]":
+            chunks.append(json.loads(line[6:]))
+    return chunks
+
+
+def test_special_tokens_renders_the_control_token_in_text_and_logprobs(server):
+    status, d = _post(server, dict(BASE, special_tokens=True, logprobs=1))
+    assert status == 200, d
+    c = d["choices"][0]
+    assert c["text"] == "Hello<s>tail"
+    lp = c["logprobs"]
+    i = lp["token_ids"].index(1)
+    assert lp["tokens"][i] == "<s>"
+    # text_offset follows the rendered text: the token after `<s>` starts
+    # past its spelling, not at the same byte
+    assert lp["text_offset"][i] == len("Hello")
+    assert lp["text_offset"][i + 1] == len("Hello<s>")
+
+
+def test_without_the_flag_the_control_token_renders_empty(server):
+    status, d = _post(server, dict(BASE, logprobs=1))
+    assert status == 200, d
+    c = d["choices"][0]
+    assert c["text"] == "Hellotail"
+    lp = c["logprobs"]
+    i = lp["token_ids"].index(1)
+    assert lp["tokens"][i] == ""
+    assert lp["text_offset"][i + 1] == len("Hello")
+
+
+def test_special_tokens_is_a_completions_extension(server):
+    req = urllib.request.Request(
+        server.base_url + "/v1/chat/completions",
+        data=json.dumps({"messages": [{"role": "user", "content": "hi"}],
+                         "max_tokens": 4, "special_tokens": True,
+                         "runner_test_reply": "ok"}).encode(),
+        headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=120) as r:
+            status, d = r.status, json.loads(r.read())
+    except urllib.error.HTTPError as e:
+        status, d = e.code, json.loads(e.read())
+    assert status == 400
+    assert "special_tokens" in json.dumps(d)
+    status, d = _post(server, dict(BASE, special_tokens="yes"))
+    assert status == 400 and "special_tokens" in json.dumps(d)
+
+
+def test_special_tokens_refuses_a_constraint(server):
+    status, d = _post(server, dict(BASE, special_tokens=True,
+                                   response_format={"type": "json_object"}))
+    assert status == 400
+    assert "special_tokens" in json.dumps(d)
+
+
+def test_the_stop_token_is_reported_beside_finish_reason(server):
+    status, d = _post(server, dict(BASE, stop_token_ids=[1]))
+    assert status == 200, d
+    c = d["choices"][0]
+    assert c["finish_reason"] == "stop"
+    assert c["stop_token_id"] == 1
+    assert c["stop_token"] == "<s>"
+
+
+def test_a_stop_string_reports_no_stop_token(server):
+    status, d = _post(server, dict(BASE, stop=["ta"]))
+    assert status == 200, d
+    c = d["choices"][0]
+    assert c["finish_reason"] == "stop"
+    assert "stop_token_id" not in c and "stop_token" not in c
+    # a scripted reply that simply ran out ended on no terminator either
+    status, d = _post(server, dict(BASE))
+    assert "stop_token_id" not in d["choices"][0]
+
+
+def test_the_final_chunk_carries_the_stop_token(server):
+    chunks = _stream(server, dict(BASE, stop_token_ids=[1]))
+    finals = [ch["choices"][0] for ch in chunks
+              if ch["choices"] and ch["choices"][0].get("finish_reason")]
+    assert len(finals) == 1, chunks
+    assert finals[0]["finish_reason"] == "stop"
+    assert finals[0]["stop_token_id"] == 1
+    assert finals[0]["stop_token"] == "<s>"
+    text = "".join(ch["choices"][0].get("text", "") for ch in chunks if ch["choices"])
+    assert text == "Hello"

@@ -2371,6 +2371,19 @@ semantic one: a stop match no longer corrupts the document - under a plain
 under [structured output](#structured-output) - but a rule the caller wrote about visible text
 cannot be honoured against protocol the caller never sees.
 
+Two runner extensions on the OpenAI shape, both for harnesses that score the
+wire format rather than the rendered answer. When a turn ends on a stop token
+(the model's own terminator, a `stop` string that spells one, or an id from
+`stop_token_ids`), the choice carries `stop_token_id` and its spelling
+`stop_token` beside `finish_reason`, buffered and on the final streamed chunk,
+so a caller can tell Muse's `<|eom|>` from its `<|eot|>`; a stop string, a
+budget end or a completed constrained document carries neither. On
+`/v1/completions`, `special_tokens: true` renders control tokens as their
+vocabulary spellings in `text` and in `logprobs.tokens` (with `text_offset`
+following the rendered text) instead of dropping them; the default stays the
+OpenAI shape, the flag is refused on the other surfaces and together with
+`response_format`.
+
 `parallel_tool_calls:true` compiles the generic JSON tool envelope into a
 bounded `{"calls":[...]}` array (up to 8 entries) over the same discriminated
 union, instead of a single object; a direct answer is just a one-element

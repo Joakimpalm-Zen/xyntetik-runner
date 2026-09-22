@@ -139,12 +139,41 @@ static int chunk_send(gen_ctx *g, sbuf *c) {
     return g->dead ? 1 : 0;
 }
 
+// One token's rendered piece for the logprob tables: the decoded bytes, or
+// under the completions `special_tokens` opt-in the spelling of a control
+// token, the same rule the text follows (decode_piece in engine.c), so
+// `tokens`, `text_offset` and `text` agree.
+static int lp_piece(slot_t *s, engine *e, int id, char *tb, size_t cap) {
+    int n = tok_decode(s->tok, id, tb, (int)cap);
+    if (n == 0 && e->render_special && tok_is_control(s->tok, id)) {
+        const char *sp = tok_raw(s->tok, id);
+        n = sp ? (int)strlen(sp) : 0;
+        if (n >= (int)cap) n = (int)cap - 1;
+        if (n > 0) memcpy(tb, sp, (size_t)n);
+    }
+    return n;
+}
+
+// The terminator a generation stopped on. finish_reason "stop" covers a stop
+// string, a clean end and every stop TOKEN alike, and Muse's two closers
+// (<|eom|>, <|eot|>) mean different things to a harness (lab finding
+// 2026-09-22). When the turn ended on a token, its id and spelling ride
+// beside finish_reason on the OpenAI surfaces, buffered and on the final
+// chunk; a stop-string, budget or constraint end carries neither.
+static void append_stop_token(sbuf *r, slot_t *s, engine *e) {
+    if (!e->hit_stop || e->stop_id < 0) return;
+    const char *sp = tok_raw(s->tok, e->stop_id);
+    sb_fmt(r, ",\"stop_token_id\":%d,\"stop_token\":\"", e->stop_id);
+    if (sp) sb_esc(r, sp, strlen(sp));
+    sb_lit(r, "\"");
+}
+
 static void append_chat_logprobs(sbuf *r, slot_t *s, engine *e) {
     char tb[512];
     sb_lit(r, "\"logprobs\":{\"content\":[");
     for (int i = 0; i < e->lp_count; i++) {
         if (i) sb_lit(r, ",");
-        int tn = tok_decode(s->tok, e->lp_ids[i], tb, sizeof(tb));
+        int tn = lp_piece(s, e, e->lp_ids[i], tb, sizeof(tb));
         sb_lit(r, "{\"token\":\"");
         sb_esc(r, tb, tn);
         sb_fmt(r, "\",\"logprob\":%.6f,\"top_logprobs\":[", e->lp_chosen[i]);
@@ -152,7 +181,7 @@ static void append_chat_logprobs(sbuf *r, slot_t *s, engine *e) {
             const lp_alt *a = &e->lp_top[(size_t)i * e->lp_n + j];
             if (a->id < 0) break;
             if (j) sb_lit(r, ",");
-            tn = tok_decode(s->tok, a->id, tb, sizeof(tb));
+            tn = lp_piece(s, e, a->id, tb, sizeof(tb));
             sb_lit(r, "{\"token\":\"");
             sb_esc(r, tb, tn);
             sb_fmt(r, "\",\"logprob\":%.6f}", a->lp);
@@ -168,7 +197,7 @@ static void append_text_logprobs(sbuf *r, slot_t *s, engine *e) {
     sb_lit(r, "\"logprobs\":{\"tokens\":[");
     for (int i = 0; i < e->lp_count; i++) {
         if (i) sb_lit(r, ",");
-        int tn = tok_decode(s->tok, e->lp_ids[i], tb, sizeof(tb));
+        int tn = lp_piece(s, e, e->lp_ids[i], tb, sizeof(tb));
         sb_lit(r, "\""); sb_esc(r, tb, tn); sb_lit(r, "\"");
     }
     // Ids alongside the rendered pieces. Two distinct ids can decode to the
@@ -193,7 +222,7 @@ static void append_text_logprobs(sbuf *r, slot_t *s, engine *e) {
             const lp_alt *a = &e->lp_top[(size_t)i * e->lp_n + j];
             if (a->id < 0) break;
             if (j) sb_lit(r, ",");
-            int tn = tok_decode(s->tok, a->id, tb, sizeof(tb));
+            int tn = lp_piece(s, e, a->id, tb, sizeof(tb));
             sb_lit(r, "\""); sb_esc(r, tb, tn);
             sb_fmt(r, "\":%.6f", a->lp);
         }
@@ -217,7 +246,7 @@ static void append_text_logprobs(sbuf *r, slot_t *s, engine *e) {
     for (int i = 0; i < e->lp_count; i++) {
         if (i) sb_lit(r, ",");
         sb_fmt(r, "%d", offset);
-        offset += tok_decode(s->tok, e->lp_ids[i], tb, sizeof(tb));
+        offset += lp_piece(s, e, e->lp_ids[i], tb, sizeof(tb));
     }
     sb_lit(r, "]}");
 }
@@ -231,6 +260,7 @@ static void completion_cleanup(engine *e, snode *schema, gen_ctx *g) {
     e->smp->script_n = e->smp->script_at = 0;
     e->emit_think_prelude = false;
     e->constraint_includes_prelude = false;
+    e->render_special = false;
     schema_free(schema);
     if (g) {
         tool_stream_free(&g->tsx);
@@ -1960,6 +1990,20 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
     }
     int lp_n = (int)lp_num;
     if (lp_n < 0) lp_n = 0;
+    // `special_tokens` (a /v1/completions extension): render control tokens
+    // as their spellings in `text` and in `logprobs.tokens`. The OpenAI shape
+    // stays the default; a harness scoring the wire format opts in.
+    bool special_tokens = false;
+    if (!request_bool(req, "special_tokens", false, &special_tokens)) {
+        send_error(fd, 400, "special_tokens must be a boolean");
+        return;
+    }
+    if (special_tokens && api != API_TEXT) {
+        send_error(fd, 400, "special_tokens is a /v1/completions extension: "
+                            "the chat, Responses and Messages surfaces render "
+                            "the protocol into their own fields");
+        return;
+    }
     if (lp_n > 20) lp_n = 20;
     // JC-R1 constrained-choice posteriors (suite judgment-coprocessor plan):
     // buffered-only like logprobs, and only meaningful when a schema/JSON
@@ -2267,6 +2311,15 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
             e->cl_probe = (int)cl_probe_d;
         }
     }
+    if (special_tokens && (schema || e->json_mode)) {
+        free(toks);
+        completion_cleanup(e, schema, NULL);
+        send_error(fd, 400, "special_tokens cannot be combined with "
+                            "response_format: a constrained payload is "
+                            "validated on decoded bytes");
+        return;
+    }
+    e->render_special = special_tokens;
     if (want_lp && max_tokens > 0) {
         e->lp_cap    = max_tokens;
         e->lp_n      = lp_n;
@@ -2699,9 +2752,11 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
             }
             sbuf c = {0};
             chunk_open(&g, &c);
-            sb_fmt(&c, "%s,\"finish_reason\":\"%s\"}]",
+            sb_fmt(&c, "%s,\"finish_reason\":\"%s\"",
                    chat ? "\"delta\":{}" : "\"text\":\"\"",
                    openai_finish(finish));
+            append_stop_token(&c, s, e);
+            sb_lit(&c, "}]");
             // A streamed turn carries no runner_telemetry of its own, so
             // without this the reason widened away by openai_finish() would be
             // recoverable on buffered turns and nowhere at all on streamed
@@ -2890,7 +2945,7 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
             sb_lit(&r, "\"logprobs\":{\"content\":[");
             for (int i = 0; i < e->lp_count; i++) {
                 if (i) sb_lit(&r, ",");
-                int tn = tok_decode(s->tok, e->lp_ids[i], tb, sizeof(tb));
+                int tn = lp_piece(s, e, e->lp_ids[i], tb, sizeof(tb));
                 sb_lit(&r, "{\"token\":\"");
                 sb_esc(&r, tb, tn);
                 sb_fmt(&r, "\",\"logprob\":%.6f,\"top_logprobs\":[", e->lp_chosen[i]);
@@ -2898,7 +2953,7 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
                     const lp_alt *a = &e->lp_top[(size_t)i * e->lp_n + j];
                     if (a->id < 0) break;
                     if (j) sb_lit(&r, ",");
-                    tn = tok_decode(s->tok, a->id, tb, sizeof(tb));
+                    tn = lp_piece(s, e, a->id, tb, sizeof(tb));
                     sb_lit(&r, "{\"token\":\"");
                     sb_esc(&r, tb, tn);
                     sb_fmt(&r, "\",\"logprob\":%.6f}", a->lp);
@@ -2926,7 +2981,7 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
                 int stored = c->n_legal < CL_MAX_ALT ? c->n_legal : CL_MAX_ALT;
                 for (int j = 0; j < stored; j++) {
                     if (j) sb_lit(&r, ",");
-                    int tn = tok_decode(s->tok, c->ids[j], tb, sizeof(tb));
+                    int tn = lp_piece(s, e, c->ids[j], tb, sizeof(tb));
                     sb_lit(&r, "{\"token\":\"");
                     sb_esc(&r, tb, tn);
                     sb_fmt(&r, "\",\"id\":%d,\"prob\":%.6f,"
@@ -2937,7 +2992,9 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
             }
             sb_lit(&r, "],");
         }
-        sb_fmt(&r, "\"finish_reason\":\"%s\"}],", openai_finish(finish));
+        sb_fmt(&r, "\"finish_reason\":\"%s\"", openai_finish(finish));
+        append_stop_token(&r, s, e);
+        sb_lit(&r, "}],");
         openai_usage_json(&r, n_prompt, n_gen, keep);
         sb_lit(&r, ",");
         resp_doc td = { .n_prompt = n_prompt, .n_gen = n_gen, .cached = keep,
