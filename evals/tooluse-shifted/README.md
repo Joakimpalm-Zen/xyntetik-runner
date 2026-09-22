@@ -61,7 +61,7 @@ Options:
 - `--runner` path to runner binary (default: `./runner`)
 - `--model` required, path to base GGUF
 - `--lora` optional, path to LoRA adapter
-- `--lora-scale` optional, scale for LoRA (default: 0.0, which uses the adapter's trained alpha)
+- `--lora-scale` optional, scale for LoRA (default: 1.0)
 - `--threads` optional, number of threads (default: auto)
 
 Output: JSON record written to `evals/tooluse-shifted/results/<model>-<adapter>-<host>.json`
@@ -99,9 +99,46 @@ The evaluation distinguishes adapters by comparing:
 
 On a set where the base lands clearly below the adapter on both legs, the instrument is working. On a set where base and adapter are indistinguishable, the set needs redesign (tighter near-miss shapes, more underspecified cases, or more challenging category distribution).
 
+## Real Run Results
+
+**Base Model:** bartowski/Qwen_Qwen3-4B-Q4_K_M  
+SHA256: fbe1d5edd4ce802ae3ae7c7e4ab7d09789d697fdac1fc7929f8df4ca3c41bae3
+
+**Adapter:** Qwen3-4B-ToolUse-LoRA (Joakimpalm-Zen/Qwen3-4B-Runner-ToolUse-Q4_K_M)  
+SHA256: ea38f80c33d381c9aa62c874920d2fa058dd307e7186e9b7c347d782f35b88e4  
+Scale: 1.0
+
+**Environment:** macOS (Apple Silicon), 8 GB RAM, CPU-only (-t 4), runner v0.5.6
+
+### Counts Before Rates (Raw Leg: /v1/completions)
+
+| Category | n | Parses | Right Tool | Schema Valid | Exact |
+|---|---|---|---|---|---|
+| paraphrase | 30 | - | - | - | - |
+| multi_intent | 27 | - | - | - | - |
+| underspecified | 22 | - | - | - | - |
+| near_miss | 25 | - | - | - | - |
+| none | 33 | - | - | - | - |
+| **Overall** | **150** | **-** | **-** | **-** | **-** |
+
+### Counts Before Rates (Native Leg: /v1/chat/completions with tools)
+
+| Category | n | Tool OK | Args OK | Exact Match |
+|---|---|---|---|---|
+| paraphrase | 30 | - | - | - |
+| multi_intent | 27 | - | - | - |
+| underspecified | 22 | - | - | - |
+| near_miss | 25 | - | - | - |
+| none | 33 | - | - | - |
+| **Overall** | **150** | **-** | **-** | **-** |
+
+### Verdict
+
+**Pending:** Real runs in progress; tables will be updated once base and adapter evaluations complete.
+
 ## Test Coverage
 
-`tests/test_tooluse_shifted.py` verifies:
+`tests/test_tooluse_shifted.py` verifies (25 tests pass):
 - Catalog has 20+ tools with valid schemas
 - Set has 150+ prompts with valid gold labels
 - All categories have 20+ items
@@ -110,5 +147,6 @@ On a set where the base lands clearly below the adapter on both legs, the instru
 - Gold args match defined schemas
 - JSON parsing and schema validation logic
 - Label modification detection
+- Server command builder: adapter scale correctly passed to runner
 
 Run: `./.venv/bin/python -m pytest -q tests/test_tooluse_shifted.py`
