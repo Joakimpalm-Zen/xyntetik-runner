@@ -8,6 +8,19 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **Compat harness: python children speak UTF-8 on Windows.** The CPU-vs-CUDA
+  identity check died on a cp1252 pipe while printing granite-4.2-8b's greedy
+  text (ZEN-GAMING, the 0.5.6 post-tag rows) and was recorded as a cpu_cuda
+  fail that was never a CPU-vs-CUDA fact. The matrix now passes `PYTHONUTF8`
+  and `PYTHONIOENCODING` to its python children and the check reconfigures its
+  streams with `errors=replace`. The granite row was re-measured with the fixed
+  harness and is complete, 9/9 identical. Post-tag RTX 3070 rows for 0.5.6
+  (`docs/compat-reports/0.5.6-2026-09-22-rtx3070-*.json`, llama-server
+  reference): gemma-3-4b-it-q4_k_m passes every executed check (the tokenizer
+  reference is a gated repo the box cannot fetch); gemma-4-e4b-it-q4_k_m FAILS
+  cpu_cuda 8/9 with one deterministic flip at position 89 of one prompt on a
+  0.0006-nat tie, reproduced exactly on a second run, where every Blackwell
+  row since 0.4.6 read 9/9; recorded as measured and open as an item.
 - **The terminator a generation stopped on is reported.** When a turn ends
   on a stop token, `stop_token_id` and its spelling `stop_token` ride beside
   `finish_reason` on the chat and completions surfaces, buffered and on the
