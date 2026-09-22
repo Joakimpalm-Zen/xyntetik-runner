@@ -1473,6 +1473,12 @@ Vulkan is not implemented; AMD and Intel GPUs use the CPU path.
   divisible by 32 and both q8 and fp4 kernels on the backend.
 - Prompt evaluation is batched; `-b` controls the batch and `-v` prints the KV
   allocation before inference.
+- `--decide FILE` and `POST /v1/decide`: typed decisions. A state plus typed
+  questions in, one distribution over the caller's verbatim option strings
+  per question out, scored teacher-forced on one prefill with no sampling.
+  The probabilities are the model's own and are not calibrated by the
+  engine; measure them with `scripts/decide-calibrate.py` before trusting a
+  number.
 
 ### Resource control
 
