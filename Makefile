@@ -788,7 +788,7 @@ $(TEST_TC_TOL): $(TEST_TC_TOL_SRC) $(HDR) tests/finite_check.h
 TEST_LORA_GRAD_SRC = tests/test_lora_grad.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o \
                   $(QUANTS_OBJ) $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(OBJDIR)/vramreg.o \
                   $(GPU_OBJ)
-$(TEST_LORA_GRAD): $(TEST_LORA_GRAD_SRC) $(HDR) test.gguf test-lora.full.gguf test-q8.gguf test-lora-q8.full.gguf test-qk.gguf test-lora-qk.full.gguf test-nope.gguf test-lora-nope.full.gguf test-granite.gguf test-lora-granite.full.gguf test-muse.gguf test-lora-muse.full.gguf
+$(TEST_LORA_GRAD): $(TEST_LORA_GRAD_SRC) $(HDR) test.gguf test-lora.full.gguf test-q8.gguf test-lora-q8.full.gguf test-qk.gguf test-lora-qk.full.gguf test-nope.gguf test-lora-nope.full.gguf test-granite.gguf test-lora-granite.full.gguf test-muse.gguf test-lora-muse.full.gguf test-gemma3.gguf test-lora-gemma3.full.gguf
 	$(CC) $(CFLAGS) -I src $(TEST_LORA_GRAD_SRC) -o $@ $(LDFLAGS)
 
 test-lora.full.gguf: test.gguf scripts/make-test-lora.py
@@ -852,6 +852,15 @@ test-muse.gguf: scripts/make-test-model.py
 
 test-lora-muse.full.gguf: test-muse.gguf scripts/make-test-lora.py
 	$(PYTHON) scripts/make-test-lora.py test-muse.gguf test-lora-muse
+
+# R8.9.5: gemma3's GELU (not SiLU) gated FFN, the first refusal gemma3 and
+# gemma4 hit under --train. No SWA keys are written -- that adjoint is
+# already covered by the muse fixture above -- so this isolates ACT_GELU.
+test-gemma3.gguf: scripts/make-test-model.py
+	$(PYTHON) scripts/make-test-model.py --gemma3 test-gemma3.gguf
+
+test-lora-gemma3.full.gguf: test-gemma3.gguf scripts/make-test-lora.py
+	$(PYTHON) scripts/make-test-lora.py test-gemma3.gguf test-lora-gemma3
 
 test-qkw.gguf: scripts/make-test-model.py
 	$(PYTHON) scripts/make-test-model.py --qk-norm --wide test-qkw.gguf
@@ -2028,6 +2037,10 @@ test: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSON_OOM) $(
 	@# norms, sliding window and softcapped head, all through the adjoint
 	./$(TEST_LORA_GRAD) test-granite.gguf test-lora-granite.full.gguf
 	./$(TEST_LORA_GRAD) test-muse.gguf test-lora-muse.full.gguf
+	@# R8.9.5: gemma3's tanh-GELU gated FFN, the first refusal gemma3/gemma4
+	@# hit under --train -- act_f/act_d beside the SiLU pair, gated_act
+	@# itself recomputed at the tape site so serving and training agree
+	./$(TEST_LORA_GRAD) test-gemma3.gguf test-lora-gemma3.full.gguf
 	@# and with qwen3-style per-head QK norms in the layer: the norm adjoint
 	@# sits between the rope adjoint and the projection backward
 	./$(TEST_LORA_GRAD) test-qk.gguf test-lora-qk.full.gguf

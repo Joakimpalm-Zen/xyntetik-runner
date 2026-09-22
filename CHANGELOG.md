@@ -8,6 +8,24 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **Adapter training gains the GELU FFN activation (R8.9.5).** ACT_GELU
+  (gemma3's and gemma4's tanh-GELU gated FFN) is no longer the first
+  refusal `--train` hits on those architectures: the LoRA backward's
+  gate/up derivative now dispatches on `ffn_act` (`act_f`/`act_d` beside
+  the existing SiLU pair, the tanh-GELU approximation and its exact
+  derivative), and the tape's forward recompute calls `gated_act` itself
+  rather than a second transcription of it, so the recomputed activation
+  is bit-identical to what serving computes. `lora_bw_supported` now
+  admits ACT_GELU and refuses only ACT_SWIGLU_OAI and ACT_XIELU (gpt-oss,
+  apertus) by name; every other refusal is unchanged. gemma3 trains
+  cleanly with no other refusal in the way; gemma4 still refuses on its
+  weightless V norm and per-layer embeddings (R8.9.6). Pinned by a new
+  `--gemma3` fixture in the finite-difference gate (per-coordinate and
+  the whole-adapter directional derivative, same thresholds as every
+  other fixture); a deliberately broken derivative (zeroed for ACT_GELU)
+  fails the gate on the gemma3 fixture while the llama fixture, unaffected,
+  still passes.
+
 - **`/v1/decide` gains the `continuation-v1` rendering.** Chosen per request
   and stamped in the envelope, it scores each option as the direct
   continuation of the state with nothing injected, so the endpoint is a
