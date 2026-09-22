@@ -442,3 +442,19 @@ def test_split_group_keeps_a_pair_together():
         assert (("pair1" in held) == ("pair1" in held))  # one key, one side
         sides = {dc.split_key(r) in held for r in rows[:2]}
         assert len(sides) == 1
+
+
+def test_distribution_label_matching_prediction_is_calibrated():
+    # a prediction equal to a distribution-valued target has zero calibration
+    # error: the hit is the label's mass on the predicted option, not a
+    # 0/1 against the label's argmax
+    rows = [{"probs": [0.8, 0.2], "label_dist": [0.8, 0.2], "options": ["a", "b"]}] * 10
+    m = dc.compute_metrics(rows, bins=10)
+    assert m["ece"] == pytest.approx(0.0, abs=1e-12)
+    assert m["accuracy"] == pytest.approx(0.8)
+    assert m["brier"] == pytest.approx(0.0, abs=1e-12)
+    # and a one-hot label still counts a plain hit
+    rows = [{"probs": [0.8, 0.2], "label_dist": [1.0, 0.0], "options": ["a", "b"]}] * 10
+    m = dc.compute_metrics(rows, bins=10)
+    assert m["ece"] == pytest.approx(0.2)
+    assert m["accuracy"] == pytest.approx(1.0)

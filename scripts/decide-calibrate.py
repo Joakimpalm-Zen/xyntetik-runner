@@ -311,8 +311,11 @@ def compute_metrics(rows, bins=DEFAULT_BINS):
         probs = r["probs"]
         y = r["label_dist"]
         pred_idx = max(range(len(probs)), key=lambda i: probs[i])
-        true_idx = max(range(len(y)), key=lambda i: y[i])
-        hit = pred_idx == true_idx
+        # the label's mass on the predicted option: 0 or 1 for an index
+        # label, the expected correctness for a distribution label. Collapsing
+        # the distribution to its argmax reported ECE 0.20 for a prediction
+        # that matched the target exactly (found 2026-09-22).
+        hit = y[pred_idx]
         correct += hit
         brier_sum += sum((p - yy) ** 2 for p, yy in zip(probs, y))
         logloss_sum += -sum(yy * math.log(max(p, 1e-12)) for p, yy in zip(probs, y))

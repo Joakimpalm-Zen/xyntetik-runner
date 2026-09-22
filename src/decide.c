@@ -131,8 +131,11 @@ int decide_handle(engine *e, const jv *req, const char *model_name, sbuf *out, c
     jv *qs = jv_get((jv *)req, "questions");
     if (!qs || qs->type != J_ARR || qs->n < 1) { *err = "missing questions (a non-empty array)"; return 400; }
     // receipt digests over the state bytes and a canonical rendering of the
-    // questions (question, US, options joined by RS, LF), computed before any
-    // work so a refused request has the same digests as an accepted one
+    // questions, computed before any work so a refused request has the same
+    // digests as an accepted one. Every field is length-prefixed ("q<len>:"
+    // then "o<len>:" per option), so no byte an option can contain is a
+    // separator: with US/RS separators, ["a\x1eb","c"] and ["a","b\x1ec"]
+    // hashed alike (found 2026-09-22).
     char state_sha[65], q_sha[65];
     envelope_data_sha256(state, strlen(state), state_sha);
     {
@@ -140,14 +143,16 @@ int decide_handle(engine *e, const jv *req, const char *model_name, sbuf *out, c
         for (int i = 0; i < qs->n; i++) {
             const jv *q = qs->items[i];
             const char *qt = jstr(q, "question");
-            if (qt) sb_put(&canon, qt, strlen(qt));
-            sb_lit(&canon, "\x1f");
+            size_t ql = qt ? strlen(qt) : 0;
+            sb_fmt(&canon, "q%zu:", ql);
+            if (qt) sb_put(&canon, qt, ql);
             jv *opts = q->type == J_OBJ ? jv_get((jv *)q, "options") : NULL;
             if (opts && opts->type == J_ARR)
                 for (int j = 0; j < opts->n; j++) {
-                    if (j) sb_lit(&canon, "\x1e");
                     const char *o = opts->items[j]->type == J_STR ? opts->items[j]->str : "";
-                    sb_put(&canon, o, strlen(o));
+                    size_t ol = strlen(o);
+                    sb_fmt(&canon, "o%zu:", ol);
+                    sb_put(&canon, o, ol);
                 }
             sb_lit(&canon, "\n");
         }
