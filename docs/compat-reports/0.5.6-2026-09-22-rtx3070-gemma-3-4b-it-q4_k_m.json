@@ -1,0 +1,125 @@
+{
+  "schema_version": "xyntetik.runner.model-compat-report.v1",
+  "generated_utc": "2026-09-22T16:43:14Z",
+  "host": {
+    "os": "Windows",
+    "machine": "AMD64"
+  },
+  "runner": {
+    "path": "runner.exe",
+    "version": "runner 0.5.6"
+  },
+  "reference": {
+    "path": "llama-server.exe",
+    "version": "version: 0.3.0-dev (build 10754, commit 43d87ff2d)"
+  },
+  "models": [
+    {
+      "id": "gemma-3-4b-it-q4_k_m",
+      "architecture": "gemma3",
+      "file": "models/google_gemma-3-4b-it-Q4_K_M.gguf",
+      "expected_sha256": "4996030242583a40aa151ff93f49ed787ac8c25e4120c3ae4588b2e2a7d1ae94",
+      "checks": {
+        "load": {
+          "status": "pass",
+          "returncode": 0,
+          "elapsed_ms": 1500.0,
+          "stderr_tail": "rope: linear scaling x8.00 (model metadata)\ngpu: OS video memory budget 7.60 GB for this process, 0.14 GB in use; offload budget 7.46 GB, headroom 0.54 GB\ngpu-split: budget=7.46GB fixed=1.11GB G=34/34 full=1 used=3.61GB\ngpu: CUDA backend on NVIDIA GeForce RTX 3070 (2.5 GB weights in VRAM)\ngpu: VRAM 4.36 GB free of 8.59 GB after init (kv 0.57 GB + scratch 0.02 GB this instance)\nloaded C:\\Users\\zen\\models\\google_gemma-3-4b-it-Q4_K_M.gguf | gemma3 | 34 layers | ctx 4096 | 4 threads | 1.04s\nsampling: gemma3 (temp 0.00 \u00e2\u20ac\u201d greedy argmax; top_p/top_k/min_p/repeat_penalty inactive)\n\nprompt: 4 tok, 54.05 tok/s | gen: 1 tok, 77.68 tok/s\n"
+        },
+        "tokenizer": {
+          "status": "not_executed",
+          "returncode": 1,
+          "elapsed_ms": 4625.0,
+          "stdout_tail": "",
+          "stderr_tail": "           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Users\\zen\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\huggingface_hub\\file_download.py\", line 1148, in _hf_hub_download_to_cache_dir\n    _raise_on_head_call_error(head_call_error, force_download, local_files_only)\n  File \"C:\\Users\\zen\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\huggingface_hub\\file_download.py\", line 1782, in _raise_on_head_call_error\n    raise head_call_error\n  File \"C:\\Users\\zen\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\huggingface_hub\\file_download.py\", line 1669, in _get_metadata_or_catch_error\n    metadata = get_hf_file_metadata(\n               ^^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Users\\zen\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\huggingface_hub\\utils\\_validators.py\", line 88, in _inner_fn\n    return fn(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Users\\zen\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\huggingface_hub\\file_download.py\", line 1591, in get_hf_file_metadata\n    response = _httpx_follow_relative_redirects_with_backoff(\n               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Users\\zen\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\huggingface_hub\\utils\\_http.py\", line 692, in _httpx_follow_relative_redirects_with_backoff\n    hf_raise_for_status(response)\n  File \"C:\\Users\\zen\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\huggingface_hub\\utils\\_http.py\", line 787, in hf_raise_for_status\n    raise _format(GatedRepoError, message, response, repo_type=repo_type, repo_id=repo_id) from e\nhuggingface_hub.errors.GatedRepoError: 401 Client Error. (Request ID: Root=1-6ab2b02b-2a0114e40c66b291212fc287;67960edc-02ab-4588-aa5f-fee2790b78b4)\n\nCannot access gated repo for url https://huggingface.co/google/gemma-3-4b-it/resolve/main/tokenizer.json.\nAccess to model google/gemma-3-4b-it is restricted. You must have access to it and be authenticated to access it. Please log in.\n",
+          "reason": "tokenizer_reference_unavailable"
+        },
+        "cpu_cuda": {
+          "status": "pass",
+          "returncode": 0,
+          "elapsed_ms": 215657.99,
+          "pins": {
+            "RUNNER_CUDA_TC": "0"
+          },
+          "min_prompt_tokens": 85,
+          "cpu_cuda_identity": {
+            "result": "pass",
+            "exact": "9/9",
+            "near_tie_tolerated": 0
+          },
+          "identical": "9/9",
+          "failed_prompts": [],
+          "report": "C:\\Users\\zen\\cpu_cuda\\gemma-3-4b-it-q4_k_m.json",
+          "output_tail": "'\nok  : 'Q: What is 17 * 23?\\nA:'\nok  : 'The lighthouse keeper recorded the weather every morning: wind direction, cloud cover, and the hour the fog lifted.'\nok  : 'In 1929 the observatory published a revised catalogue listing 4218 objects, of which roughly one in nine turned out on later inspection to be a duplicate entry under a second designation. The correction'\nok  : \"def parse_header(buf, size):\\n    if size < 8:\\n        raise ValueError('short header')\\n    magic, version = struct.unpack('<II', buf[:8])\\n    if magic != GGUF_MAGIC:\\n        raise ValueError('not a gguf file')\\n    return magic, version\\n\\n# The loader above rejects a truncated header before unpacking it, which\"\nok  : 'The city of Lisbon sits on seven hills above the Tagus estuary, and its oldest quarter survived the 1755 earthquake largely intact because the bedrock there is firmer than the reclaimed ground downriver. Rebuilding the lower town took decades, and the grid of streets laid out afterwards was among the first in Europe designed with seismic loads in mind, which is why the district still reads as unusually regular to a visitor who'\n\ncpu_cuda: pass \u2014 9/9 exact, 0 near-tie tolerated (eager routing)\n"
+        },
+        "chat": {
+          "status": "pass",
+          "returncode": 0,
+          "elapsed_ms": 1707.6,
+          "prompt": "What is 2+2?",
+          "gpu": "auto",
+          "failure_reasons": [],
+          "output_tail": "2 + 2 = 4 \n\nDo you want to try another math problem? \u00f0\u0178\u02dc\u0160\n"
+        },
+        "tool": {
+          "status": "pass",
+          "returncode": 0,
+          "elapsed_ms": 148556.61,
+          "scenario_matrix": "agent-torture",
+          "totals": {
+            "requests": 8,
+            "passed": 8,
+            "failed": 0
+          },
+          "report": "C:\\Users\\zen\\tool\\gemma-3-4b-it-q4_k_m.json",
+          "output_tail": "report: C:\\Users\\zen\\tool\\gemma-3-4b-it-q4_k_m\\report.json\nraw: C:\\Users\\zen\\tool\\gemma-3-4b-it-q4_k_m\\raw.jsonl\nruntime=runner requests=8 passed=8 failed=0\n"
+        },
+        "greedy_reference": {
+          "status": "pass",
+          "returncode": 0,
+          "elapsed_ms": 18531.0,
+          "stdout_tail": "{\n  \"schema_version\": \"xyntetik.runner.greedy-reference.v1\",\n  \"generated_utc\": \"2026-09-22T16:49:49Z\",\n  \"runner\": \"runner 0.5.6\",\n  \"reference\": \"version: 0.3.0-dev (build 10754, commit 43d87ff2d)\",\n  \"model\": \"C:\\\\Users\\\\zen\\\\models\\\\google_gemma-3-4b-it-Q4_K_M.gguf\",\n  \"tokens\": 8,\n  \"comparison\": \"exact generated UTF-8 text from /v1/completions at temperature 0\",\n  \"comparisons\": [\n    {\n      \"prompt\": \"The capital of France is\",\n      \"runner\": \" Paris.\\n\\nParis is located in the\",\n      \"reference\": \" Paris.\\n\\nParis is located in the\",\n      \"status\": \"pass\"\n    },\n    {\n      \"prompt\": \"def fibonacci(n):\",\n      \"runner\": \"\\n    \\\"\\\"\\\"\\n    Calculates the\",\n      \"reference\": \"\\n    \\\"\\\"\\\"\\n    Calculates the\",\n      \"status\": \"pass\"\n    },\n    {\n      \"prompt\": \"1 2 3 4 5 6 7 8\",\n      \"runner\": \" 9 10 11\",\n      \"reference\": \" 9 10 11\",\n      \"status\": \"pass\"\n    },\n    {\n      \"prompt\": \"Once upon a time, in a land far away,\",\n      \"runner\": \" there lived a young woman named Elara\",\n      \"reference\": \" there lived a young woman named Elara\",\n      \"status\": \"pass\"\n    },\n    {\n      \"prompt\": \"JSON example: {\\\"name\\\":\",\n      \"runner\": \" \\\"John Doe\\\", \\\"age\\\": \",\n      \"reference\": \" \\\"John Doe\\\", \\\"age\\\": \",\n      \"status\": \"pass\"\n    }\n  ],\n  \"totals\": {\n    \"passed\": 5,\n    \"failed\": 0\n  }\n}\n",
+          "stderr_tail": ""
+        },
+        "long_context": {
+          "status": "not_executed",
+          "reason": "check_class_not_executable"
+        }
+      },
+      "resolved_file": "models/google_gemma-3-4b-it-Q4_K_M.gguf",
+      "actual_sha256": "4996030242583a40aa151ff93f49ed787ac8c25e4120c3ae4588b2e2a7d1ae94",
+      "file_status": "pass",
+      "complete": false
+    }
+  ],
+  "complete": false,
+  "summary": {
+    "models": 1,
+    "files": {
+      "pass": 1
+    },
+    "checks": {
+      "load": {
+        "pass": 1
+      },
+      "tokenizer": {
+        "not_executed": 1
+      },
+      "cpu_cuda": {
+        "pass": 1
+      },
+      "chat": {
+        "pass": 1
+      },
+      "tool": {
+        "pass": 1
+      },
+      "greedy_reference": {
+        "pass": 1
+      },
+      "long_context": {
+        "not_executed": 1
+      }
+    }
+  }
+}
