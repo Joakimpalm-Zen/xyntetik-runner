@@ -1475,7 +1475,13 @@ Vulkan is not implemented; AMD and Intel GPUs use the CPU path.
   CUDA: fp4-everywhere reads mean KLD 2.00 against the f16 cache (its
   attention K bias puts single channels far above their block), k8v4 0.04
   and inside the bar. Per model, measured, never assumed. Needs head_dim
-  divisible by 32 and both q8 and fp4 kernels on the backend.
+  divisible by 32 and both q8 and fp4 kernels on the backend. The
+  Muse-Glimmer-30B rows were also taken on CUDA (one RTX PRO 6000 Blackwell
+  MIG slice against a CPU f16 reference): k8v4 0.0036, fp4 0.0209, the
+  backend alone 2.0e-07, published on the
+  [recovered-scales card](https://huggingface.co/Joakimpalm-Zen/Muse-Glimmer-30B-Surgical-6p34-Q4_K-recovered-GGUF)
+  with the records in its
+  [evidence dataset](https://huggingface.co/datasets/Joakimpalm-Zen/Muse-Glimmer-30B-scale-recovery-evidence).
 - Prompt evaluation is batched; `-b` controls the batch and `-v` prints the KV
   allocation before inference.
 - `--decide FILE` and `POST /v1/decide`: typed decisions. A state plus typed
