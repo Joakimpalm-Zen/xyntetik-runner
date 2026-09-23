@@ -8,6 +8,26 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **`scripts/gguf-blockorder.py`: put a GGUF's tensors in block order and
+  prove nothing else changed.** Runner v0.5.6's partial split uploads one
+  file prefix from byte 0 through the farthest offloaded block and through
+  `token_embd.weight`, so a file with `output.weight` at its head, an
+  interleaved block order, or `token_embd` stored last uploads far more than
+  the split needs (the lab's Kvist-14B: 25.2 GB of a 28.9 GB file for 44 of
+  52 layers, refused on a 24 GB slice). The tool rewrites the data order
+  only, `token_embd` first, `blk.0 .. blk.N`, other tensors, `output_norm`
+  and `output` last (or `--order-from REF`), keeps the header and every
+  metadata field byte for byte, hashes every tensor on the way through,
+  re-reads the output before it replaces the temporary file, and reports
+  the prefix under v0.5.6's exact rule before and after. Standard library
+  only. The design and the first evidence are the lab's (its normaliser on
+  checkpoint-06000: 731 tensors and 40 fields identical); the target order
+  was corrected the same day after a first version put `token_embd` last,
+  which makes v0.5.6 upload the whole file. Pinned by
+  `tests/test_gguf_blockorder.py`: hashes, metadata and data offset
+  unchanged, same greedy text from both files, `--check-only` and
+  `--order-from` behaviour.
+
 - **Quantizer: a 32-block fallback for rows a K-quant cannot describe.** A
   row width that is a multiple of 32 but not of 256 used to leave the tensor
   at its source type under a K-quant or i-quant target, silently: a
