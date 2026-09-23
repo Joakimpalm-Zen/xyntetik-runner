@@ -8,6 +8,21 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **A partial GPU split no longer depends on the file's tensor order.** The
+  planner summed the offloaded layers' bytes, but the upload was one
+  contiguous file prefix through the farthest tensor any of them owned; a
+  file stored in name order (or grouped by role) made that prefix reach
+  nearly the whole file, the one allocation asked for far more than the
+  plan, and after four refused attempts the model served from the CPU (a
+  14B bf16 planned at 24.8 GB on a 24 GB slice; the lab, 2026-09-23). The
+  runner now measures the spread, says so, and uploads per tensor (the
+  MoE split's path) when it is real; a refused prefix allocation retries
+  the same split per tensor before giving the model to the CPU. The
+  serve-mode load line now reports the thread count the slots divide
+  instead of the registry model's one-thread placeholder pool. Pinned by
+  `tests/test_gpu_split_order.py` on a name-order fixture (CUDA boxes;
+  skips elsewhere) and a `--alpha-order` switch in the fixture generator.
+
 - **Adapter training gains the GELU FFN activation (R8.9.5).** ACT_GELU
   (gemma3's and gemma4's tanh-GELU gated FFN) is no longer the first
   refusal `--train` hits on those architectures: the LoRA backward's
