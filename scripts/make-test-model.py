@@ -13,7 +13,8 @@ SUPPRESS_ALL_BUT_EOS = False
 ZERO_FIRST_DIM = False
 WRAP_FIRST_OFFSET = False
 ARCH = "llama"
-ALPHA_ORDER = False  # --alpha-order: tensors stored in name order, not block order
+ALPHA_ORDER = False
+DROP_V = set()      # --drop-v: layers whose attn_v.weight is omitted (V = raw K)  # --alpha-order: tensors stored in name order, not block order
 AGENT_PROFILE = False
 AGENT_FEATURES = ["dense", "json_schema"]
 MTP_LAYERS = 0   # extra trailing blocks declared as NextN/MTP predictor heads
@@ -168,6 +169,13 @@ while i < len(args):
         # embeddings (no output tensor). Scaled-down but shape-preserving.
         GRANITE = True
         ARCH = "granite"
+    elif a == "--drop-v":
+        # --drop-v L1,L2: omit attn_v.weight on those layers only. gemma-4's
+        # full-attention layers ship no V projection and reuse the raw K
+        # projection as V under the weightless V norm; this reproduces that
+        # shape on the fixture so the backward's absent-V path is gated.
+        i += 1
+        DROP_V = {int(x) for x in args[i].split(",")}
     elif a == "--alpha-order":
         # Store the tensors in name order (blk.0, blk.1, blk.10, ..., output,
         # token_embd) instead of block order. Real files come out this way
@@ -412,7 +420,7 @@ for i in range(N_LAYER + MTP_LAYERS):
         (f"blk.{i}.attn_q.weight", [N_EMBD, q_dim], q_data),
         *([] if drop_kv else
           [(f"blk.{i}.attn_k.weight", [N_EMBD, kv_dim], k_data)]),
-        *([] if (v_data is None or drop_kv) else
+        *([] if (v_data is None or drop_kv or i in DROP_V) else
           [(f"blk.{i}.attn_v.weight", [N_EMBD, kv_dim], v_data)]),
         (f"blk.{i}.attn_output.weight", [q_dim, N_EMBD], o_data),
         *([] if not QK_NORM else

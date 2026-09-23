@@ -788,7 +788,7 @@ $(TEST_TC_TOL): $(TEST_TC_TOL_SRC) $(HDR) tests/finite_check.h
 TEST_LORA_GRAD_SRC = tests/test_lora_grad.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o \
                   $(QUANTS_OBJ) $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(OBJDIR)/vramreg.o \
                   $(GPU_OBJ)
-$(TEST_LORA_GRAD): $(TEST_LORA_GRAD_SRC) $(HDR) test.gguf test-lora.full.gguf test-q8.gguf test-lora-q8.full.gguf test-qk.gguf test-lora-qk.full.gguf test-nope.gguf test-lora-nope.full.gguf test-granite.gguf test-lora-granite.full.gguf test-muse.gguf test-lora-muse.full.gguf test-gemma3.gguf test-lora-gemma3.full.gguf
+$(TEST_LORA_GRAD): $(TEST_LORA_GRAD_SRC) $(HDR) test.gguf test-lora.full.gguf test-q8.gguf test-lora-q8.full.gguf test-qk.gguf test-lora-qk.full.gguf test-nope.gguf test-lora-nope.full.gguf test-granite.gguf test-lora-granite.full.gguf test-muse.gguf test-lora-muse.full.gguf test-gemma3.gguf test-lora-gemma3.full.gguf test-gemma4.gguf test-lora-gemma4.full.gguf test-g4v.gguf test-lora-g4v.full.gguf test-es8.gguf test-lora-es8.full.gguf
 	$(CC) $(CFLAGS) -I src $(TEST_LORA_GRAD_SRC) -o $@ $(LDFLAGS)
 
 test-lora.full.gguf: test.gguf scripts/make-test-lora.py
@@ -861,6 +861,29 @@ test-gemma3.gguf: scripts/make-test-model.py
 
 test-lora-gemma3.full.gguf: test-gemma3.gguf scripts/make-test-lora.py
 	$(PYTHON) scripts/make-test-lora.py test-gemma3.gguf test-lora-gemma3
+
+# R8.9.6: gemma-4 shapes in the backward. Dense (weightless V norm), the
+# absent-V layers gemma-4's full attention ships (V is the raw K
+# projection), and the E-series (shared KV, per-layer embeddings; 3 sharing
+# layers, PLE width 8: wide enough to exercise every adjoint, narrow enough
+# that the gate's directional derivative resolves it).
+test-gemma4.gguf: scripts/make-test-model.py
+	$(PYTHON) scripts/make-test-model.py --arch gemma4 test-gemma4.gguf
+
+test-lora-gemma4.full.gguf: test-gemma4.gguf scripts/make-test-lora.py
+	$(PYTHON) scripts/make-test-lora.py test-gemma4.gguf test-lora-gemma4
+
+test-g4v.gguf: scripts/make-test-model.py
+	$(PYTHON) scripts/make-test-model.py --arch gemma4 --drop-v 1 test-g4v.gguf
+
+test-lora-g4v.full.gguf: test-g4v.gguf scripts/make-test-lora.py
+	$(PYTHON) scripts/make-test-lora.py test-g4v.gguf test-lora-g4v
+
+test-es8.gguf: scripts/make-test-model.py
+	$(PYTHON) scripts/make-test-model.py --eseries 3,8 --drop-kv shared test-es8.gguf
+
+test-lora-es8.full.gguf: test-es8.gguf scripts/make-test-lora.py
+	$(PYTHON) scripts/make-test-lora.py test-es8.gguf test-lora-es8
 
 test-qkw.gguf: scripts/make-test-model.py
 	$(PYTHON) scripts/make-test-model.py --qk-norm --wide test-qkw.gguf
@@ -2041,6 +2064,12 @@ test: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSON_OOM) $(
 	@# hit under --train -- act_f/act_d beside the SiLU pair, gated_act
 	@# itself recomputed at the tape site so serving and training agree
 	./$(TEST_LORA_GRAD) test-gemma3.gguf test-lora-gemma3.full.gguf
+	@# R8.9.6: gemma-4 dense (weightless V norm), absent-V layers, and the
+	@# E-series (shared KV + per-layer embeddings) as a stiff fixture: the
+	@# whole-adapter directional derivative and the cosine are its checks
+	./$(TEST_LORA_GRAD) test-gemma4.gguf test-lora-gemma4.full.gguf
+	./$(TEST_LORA_GRAD) test-g4v.gguf test-lora-g4v.full.gguf
+	./$(TEST_LORA_GRAD) test-es8.gguf test-lora-es8.full.gguf stiff
 	@# and with qwen3-style per-head QK norms in the layer: the norm adjoint
 	@# sits between the rope adjoint and the projection backward
 	./$(TEST_LORA_GRAD) test-qk.gguf test-lora-qk.full.gguf
