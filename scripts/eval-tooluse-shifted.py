@@ -309,7 +309,12 @@ def score_native_leg(rows, port, catalog, model_id):
             "tools": tools,
             "tool_choice": "auto",
             "temperature": 0,
-            "max_tokens": 64,
+            # Qwen3 thinks by default and a 64-token budget was spent inside
+            # the think block on every prompt (the first ZEN run: 0 calls,
+            # every row finish_reason length). The leg measures the decision,
+            # not the reasoning budget: thinking off, a budget a call fits in.
+            "enable_thinking": False,
+            "max_tokens": 256,
             "choice_logprobs": True
         }).encode()
 
@@ -322,14 +327,18 @@ def score_native_leg(rows, port, catalog, model_id):
         refusal = None
         calls = []
         choice_records = []
+        finish = None
+        content = None
 
         try:
             with urllib.request.urlopen(req, timeout=600) as r:
                 resp = json.loads(r.read())
                 choice = resp["choices"][0]
-
-                if choice.get("finish_reason") == "tool_calls":
-                    calls = choice.get("tool_calls", [])
+                finish = choice.get("finish_reason")
+                msg = choice.get("message") or {}
+                content = (msg.get("content") or "")[:200] or None
+                if finish == "tool_calls":
+                    calls = msg.get("tool_calls") or choice.get("tool_calls", [])
 
                 # Extract choice_logprobs if available
                 choice_logprobs = choice.get("choice_logprobs")
@@ -398,6 +407,8 @@ def score_native_leg(rows, port, catalog, model_id):
             "args_match": args_match,
             "exact_match": exact_match,
             "refusal": refusal,
+            "finish_reason": finish,
+            "content_head": content,
             "choice_records": choice_records
         }
         results.append(verdicts)

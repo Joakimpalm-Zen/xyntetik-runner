@@ -358,6 +358,7 @@ class TestNativeLeg:
         monkeypatch.setattr(mod.urllib.request, "urlopen", refuse)
         out = mod.score_native_leg(self.ROWS, 1, self.CATALOG, "served-1")
         assert all(b["model"] == "served-1" for b in bodies)
+        assert all(b["enable_thinking"] is False and b["max_tokens"] >= 256 for b in bodies)
         assert out["refusals"] == 2
         assert out["tool_ok"] == 0 and out["exact_match"] == 0
         assert all(r["refusal"] for r in out["rows"])
@@ -373,3 +374,17 @@ class TestNativeLeg:
                             lambda req, timeout=0: R(json.dumps({"choices": [{"finish_reason": "stop", "message": {"content": "hi"}}]}).encode()))
         out = mod.score_native_leg(self.ROWS[:1], 1, self.CATALOG, "served-1")
         assert out["refusals"] == 0 and out["tool_ok"] == 1
+        assert out["rows"][0]["finish_reason"] == "stop" and out["rows"][0]["content_head"] == "hi"
+
+    def test_a_call_in_the_message_is_scored(self, monkeypatch):
+        mod = load_scorer()
+
+        class R(io.BytesIO):
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+
+        resp = {"choices": [{"finish_reason": "tool_calls", "message": {"content": None, "tool_calls": [
+            {"function": {"name": "read_file", "arguments": "{\"path\": \"x\"}"}}]}}]}
+        monkeypatch.setattr(mod.urllib.request, "urlopen", lambda req, timeout=0: R(json.dumps(resp).encode()))
+        out = mod.score_native_leg(self.ROWS[1:], 1, self.CATALOG, "served-1")
+        assert out["tool_ok"] == 1 and out["exact_match"] == 1
