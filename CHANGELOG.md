@@ -8,6 +8,19 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **`evals/tooluse-shifted`: a tool-use eval built to tell adapters apart
+  (R8.4).** A 23-tool catalog with overlapping names and argument shapes,
+  150 hand-written distribution-shifted prompts in five categories, labels
+  frozen and hashed before any model ran (the scorer refuses edited labels),
+  `scripts/eval-tooluse-shifted.py` with a raw-template leg and a native
+  chat leg that records every `choice_logprobs` decision point, and
+  versioned records with hashes. First measurement, four arms on one host:
+  the set separates base from adapter by one to two standard deviations and
+  cannot rank the three adapters; the README says so and lists the
+  redesign. Two scorer defects the first runs found are fixed in the same
+  change (a placeholder model name on the chat surface, a token budget spent
+  inside a thinking block).
+
 - **`/v1/decide` gains the `continuation-v1` rendering.** Chosen per request
   and stamped in the envelope, it scores each option as the direct
   continuation of the state with nothing injected, so the endpoint is a
