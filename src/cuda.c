@@ -1390,11 +1390,14 @@ static gpu_weights *shared_build(model_t *m, size_t act_bytes, int max_hd,
         for (int l = 0; l < G; l++)
             sum_w += layer_weight_bytes(&m->layers[l], m->n_expert, moe_on_host(m, l));
         size_t planned_upload = sum_w + m->tok_embd->nbytes + (full ? m->output->nbytes : 0);
-        // relative slack only: the norms and biases outside a layer's big
-        // tensors are a few kilobytes, never an eighth of the plan, and an
-        // absolute margin would hide the spread on a small file
+        // relative slack only, and a small one: the norms and biases outside
+        // a layer's big tensors are kilobytes, never a sixty-fourth of the
+        // plan, while a real overshoot can be modest and still fatal (the
+        // lab's file carries output.weight at the head of the file, so the
+        // prefix overshot the plan by 8%, 1.9 GB on a 24 GB slice). An
+        // absolute margin would hide the spread on a small file.
         bool spread = !m->cpu_moe && !full &&
-                      upload_len > planned_upload + planned_upload / 8;
+                      upload_len > planned_upload + planned_upload / 64;
         if (spread)
             fprintf(stderr, "gpu: the file's tensor order spreads the %d offloaded "
                             "layers over %.2f GB of the file against %.2f GB of "
