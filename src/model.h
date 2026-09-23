@@ -353,6 +353,12 @@ typedef struct {
     // streams (+ the final pre-norm hidden), recorded by solo forwards when
     // non-NULL. Owned by model_lora_backward for the duration of one call.
     float *tape;
+    // backward-only scratch (R8.9.6): per-owner-layer dK/dV accumulated from
+    // the layers that share its cache ([n_layer][T * bw_share_kvmax]), and
+    // the per-layer-embedding slices for the window ([T][n_layer][n_embd_ple])
+    float *bw_dk_share, *bw_dv_share;
+    int    bw_share_kvmax;
+    float *bw_ple;
     int    tape_T;
     float *all_logits;       // lazy [spec_batch][n_vocab] (speculative verify)
     int    spec_batch;       // rows all_logits can hold
@@ -800,8 +806,13 @@ void   model_lora_free(model_t *m);
 // (allocated on first use; model_lora_grad_zero clears them). Frozen base
 // weights receive no gradient; activation gradients flow through them via a
 // transposed quantized matvec. Fails closed (false) on any feature outside
-// the reference scope: GPU-resident, recurrent, MoE, q8 KV, non-SiLU FFN,
-// head transforms, per-head norms, sliding windows.
+// the reference scope: GPU-resident, recurrent, MoE, q8 KV, the FFN
+// activations gpt-oss and apertus use, the weightless V norm, per-layer
+// embeddings, sinks and tied or absent V.
+// test hooks for the finite-difference gate: the forward's gated activation
+// and the backward's d/dg of act(g), dispatched on the activation kind
+float  model_ffn_act(int act, float g, float u);
+float  model_ffn_act_deriv(int act, float g);
 bool   model_lora_backward(model_t *m, const int32_t *toks, int n,
                            double *loss_out);
 // weighted variant: pos_w[t] scales transition t (predicting toks[t+1]) in

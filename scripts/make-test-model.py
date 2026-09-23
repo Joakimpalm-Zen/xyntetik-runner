@@ -13,6 +13,8 @@ SUPPRESS_ALL_BUT_EOS = False
 ZERO_FIRST_DIM = False
 WRAP_FIRST_OFFSET = False
 ARCH = "llama"
+ALPHA_ORDER = False
+DROP_V = set()      # --drop-v: layers whose attn_v.weight is omitted (V = raw K)  # --alpha-order: tensors stored in name order, not block order
 AGENT_PROFILE = False
 AGENT_FEATURES = ["dense", "json_schema"]
 MTP_LAYERS = 0   # extra trailing blocks declared as NextN/MTP predictor heads
@@ -167,6 +169,30 @@ while i < len(args):
         # embeddings (no output tensor). Scaled-down but shape-preserving.
         GRANITE = True
         ARCH = "granite"
+    elif a == "--drop-v":
+        # --drop-v L1,L2: omit attn_v.weight on those layers only. gemma-4's
+        # full-attention layers ship no V projection and reuse the raw K
+        # projection as V under the weightless V norm; this reproduces that
+        # shape on the fixture so the backward's absent-V path is gated.
+        i += 1
+        DROP_V = {int(x) for x in args[i].split(",")}
+    elif a == "--alpha-order":
+        # Store the tensors in name order (blk.0, blk.1, blk.10, ..., output,
+        # token_embd) instead of block order. Real files come out this way
+        # from some writers, and a partial GPU split that uploads one file
+        # prefix through the farthest tensor of its layers then reaches
+        # nearly the whole file (the lab's 14B bf16 on a 24 GB slice,
+        # 2026-09-23). The runner resolves tensors by name, so the model is
+        # the same; only the layout differs.
+        ALPHA_ORDER = True
+    elif a == "--gemma3":
+        # Gemma-3 dense: scaled embeddings and a GELU (not SiLU) gated FFN,
+        # tied output (no output tensor, same as the plain llama default).
+        # No SWA/GQA-specific keys are written, so every layer loads as full
+        # attention -- that adjoint is already covered by the muse-glimmer
+        # fixture, and this one exists only to reach ACT_GELU in
+        # lora_bw_supported/the backward's gate/up derivative (R8.9.5).
+        ARCH = "gemma3"
     elif a == "--granite-resid":
         i += 1
         GRANITE_RESID = float(args[i])
@@ -394,7 +420,7 @@ for i in range(N_LAYER + MTP_LAYERS):
         (f"blk.{i}.attn_q.weight", [N_EMBD, q_dim], q_data),
         *([] if drop_kv else
           [(f"blk.{i}.attn_k.weight", [N_EMBD, kv_dim], k_data)]),
-        *([] if (v_data is None or drop_kv) else
+        *([] if (v_data is None or drop_kv or i in DROP_V) else
           [(f"blk.{i}.attn_v.weight", [N_EMBD, kv_dim], v_data)]),
         (f"blk.{i}.attn_output.weight", [q_dim, N_EMBD], o_data),
         *([] if not QK_NORM else
@@ -789,6 +815,8 @@ if QUANT in ("nvfp4", "nvfp4-fork40") and not any(
         t[3] == GGML_NVFP4 for t in _typed):
     sys.exit("--quant nvfp4 produced no NVFP4 tensor")
 tensors = _typed
+if ALPHA_ORDER:
+    tensors = sorted(tensors, key=lambda t: t[0])
 if GPU_UNSUPPORTED and not any(t[0] == GPU_UNSUPPORTED for t in tensors):
     sys.exit(f"--gpu-unsupported tensor {GPU_UNSUPPORTED!r} was not generated")
 

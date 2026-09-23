@@ -788,7 +788,7 @@ $(TEST_TC_TOL): $(TEST_TC_TOL_SRC) $(HDR) tests/finite_check.h
 TEST_LORA_GRAD_SRC = tests/test_lora_grad.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o \
                   $(QUANTS_OBJ) $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(OBJDIR)/vramreg.o \
                   $(GPU_OBJ)
-$(TEST_LORA_GRAD): $(TEST_LORA_GRAD_SRC) $(HDR) test.gguf test-lora.full.gguf test-q8.gguf test-lora-q8.full.gguf test-qk.gguf test-lora-qk.full.gguf test-nope.gguf test-lora-nope.full.gguf test-granite.gguf test-lora-granite.full.gguf test-muse.gguf test-lora-muse.full.gguf
+$(TEST_LORA_GRAD): $(TEST_LORA_GRAD_SRC) $(HDR) test.gguf test-lora.full.gguf test-q8.gguf test-lora-q8.full.gguf test-qk.gguf test-lora-qk.full.gguf test-nope.gguf test-lora-nope.full.gguf test-granite.gguf test-lora-granite.full.gguf test-muse.gguf test-lora-muse.full.gguf test-gemma3.gguf test-lora-gemma3.full.gguf test-gemma4.gguf test-lora-gemma4.full.gguf test-g4v.gguf test-lora-g4v.full.gguf test-es8.gguf test-lora-es8.full.gguf
 	$(CC) $(CFLAGS) -I src $(TEST_LORA_GRAD_SRC) -o $@ $(LDFLAGS)
 
 test-lora.full.gguf: test.gguf scripts/make-test-lora.py
@@ -852,6 +852,38 @@ test-muse.gguf: scripts/make-test-model.py
 
 test-lora-muse.full.gguf: test-muse.gguf scripts/make-test-lora.py
 	$(PYTHON) scripts/make-test-lora.py test-muse.gguf test-lora-muse
+
+# R8.9.5: gemma3's GELU (not SiLU) gated FFN, the first refusal gemma3 and
+# gemma4 hit under --train. No SWA keys are written -- that adjoint is
+# already covered by the muse fixture above -- so this isolates ACT_GELU.
+test-gemma3.gguf: scripts/make-test-model.py
+	$(PYTHON) scripts/make-test-model.py --gemma3 test-gemma3.gguf
+
+test-lora-gemma3.full.gguf: test-gemma3.gguf scripts/make-test-lora.py
+	$(PYTHON) scripts/make-test-lora.py test-gemma3.gguf test-lora-gemma3
+
+# R8.9.6: gemma-4 shapes in the backward. Dense (weightless V norm), the
+# absent-V layers gemma-4's full attention ships (V is the raw K
+# projection), and the E-series (shared KV, per-layer embeddings; 3 sharing
+# layers, PLE width 8: wide enough to exercise every adjoint, narrow enough
+# that the gate's directional derivative resolves it).
+test-gemma4.gguf: scripts/make-test-model.py
+	$(PYTHON) scripts/make-test-model.py --arch gemma4 test-gemma4.gguf
+
+test-lora-gemma4.full.gguf: test-gemma4.gguf scripts/make-test-lora.py
+	$(PYTHON) scripts/make-test-lora.py test-gemma4.gguf test-lora-gemma4
+
+test-g4v.gguf: scripts/make-test-model.py
+	$(PYTHON) scripts/make-test-model.py --arch gemma4 --drop-v 1 test-g4v.gguf
+
+test-lora-g4v.full.gguf: test-g4v.gguf scripts/make-test-lora.py
+	$(PYTHON) scripts/make-test-lora.py test-g4v.gguf test-lora-g4v
+
+test-es8.gguf: scripts/make-test-model.py
+	$(PYTHON) scripts/make-test-model.py --eseries 3,8 --drop-kv shared test-es8.gguf
+
+test-lora-es8.full.gguf: test-es8.gguf scripts/make-test-lora.py
+	$(PYTHON) scripts/make-test-lora.py test-es8.gguf test-lora-es8
 
 test-qkw.gguf: scripts/make-test-model.py
 	$(PYTHON) scripts/make-test-model.py --qk-norm --wide test-qkw.gguf
@@ -2028,6 +2060,16 @@ test: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSON_OOM) $(
 	@# norms, sliding window and softcapped head, all through the adjoint
 	./$(TEST_LORA_GRAD) test-granite.gguf test-lora-granite.full.gguf
 	./$(TEST_LORA_GRAD) test-muse.gguf test-lora-muse.full.gguf
+	@# R8.9.5: gemma3's tanh-GELU gated FFN, the first refusal gemma3/gemma4
+	@# hit under --train -- act_f/act_d beside the SiLU pair, gated_act
+	@# itself recomputed at the tape site so serving and training agree
+	./$(TEST_LORA_GRAD) test-gemma3.gguf test-lora-gemma3.full.gguf
+	@# R8.9.6: gemma-4 dense (weightless V norm), absent-V layers, and the
+	@# E-series (shared KV + per-layer embeddings) as a stiff fixture: the
+	@# whole-adapter directional derivative and the cosine are its checks
+	./$(TEST_LORA_GRAD) test-gemma4.gguf test-lora-gemma4.full.gguf
+	./$(TEST_LORA_GRAD) test-g4v.gguf test-lora-g4v.full.gguf
+	./$(TEST_LORA_GRAD) test-es8.gguf test-lora-es8.full.gguf stiff
 	@# and with qwen3-style per-head QK norms in the layer: the norm adjoint
 	@# sits between the rope adjoint and the projection backward
 	./$(TEST_LORA_GRAD) test-qk.gguf test-lora-qk.full.gguf
@@ -2176,7 +2218,7 @@ test: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSON_OOM) $(
 	./$(TEST_BATCH_ID) test.gguf
 	$(PYTHON) scripts/check-generated.py
 	PYTHONPATH=python/src $(PYTHON) -m pytest python/tests/
-	$(PYTHON) -m pytest -q tests/test_fit_check.py tests/test_apertus.py tests/test_ornith_cpu.py tests/test_ornith_reference.py tests/test_compat_matrix.py tests/test_arch_admission.py tests/test_hybrid_admission.py tests/test_hostile_geometry.py tests/test_certify_envelope.py tests/test_cpu_cuda_margin.py tests/test_envelope_gate.py tests/test_envelope_swap.py tests/test_cli_files.py tests/test_hf_fetch.py tests/test_stop_specials.py tests/test_muse_auto_toolchoice.py tests/test_chat_template_flag.py tests/test_server_banner.py tests/test_split_gguf.py tests/test_metal_coverage.py tests/test_gpu_declines.py tests/test_caps.py tests/test_tool_info.py tests/test_bench_json.py tests/test_mtp_admission.py tests/test_mtp_consume.py tests/test_compare_llamacpp.py tests/test_release_check.py tests/test_eseries.py tests/test_stress_models.py tests/test_moe_prune_plan.py tests/test_kld_compare.py tests/test_kld_margin.py tests/test_quant_fidelity.py tests/test_token_divergence.py tests/test_verify_gguf.py tests/test_type_plan_size.py tests/test_stress_context.py tests/test_cert_greedy_identity.py tests/test_tokenizer_corpus.py tests/test_batch_bench.py tests/test_spec_telemetry.py tests/test_draft_required.py tests/test_draft_lookup.py tests/test_kv_reachable.py tests/test_kv_ring.py tests/test_tiedv.py tests/test_moe_mm_flips.py tests/test_load_prefetch.py tests/test_spec_gpu.py tests/test_request_disconnect.py tests/test_score.py tests/test_decide.py tests/test_hf_spec_bounds.py tests/test_lora.py tests/test_train.py tests/test_merge.py tests/test_transcript.py tests/test_oms.py tests/test_kv_quality.py tests/test_tool_choice_boundary.py tests/test_nvfp4_scale.py tests/test_remove_sublayer.py tests/test_rewind_under_refused_prefix.py tests/test_server_penalty_exemptions.py tests/test_lora_identity_alpha.py tests/test_ttl_releases_draft.py tests/test_depth_slice.py tests/test_device_evidence.py tests/test_difftok.py tests/test_gate_coverage.py tests/test_gemma4_untyped_fallback.py tests/test_gen_quality_metrics.py tests/test_granite.py tests/test_iquants.py tests/test_metal_moe_batch.py tests/test_muse_glimmer.py tests/test_receipts.py tests/test_truncation_benchmark.py tests/test_type_plan.py tests/test_unload_honesty.py tests/test_tray_not_raised_on_refusal.py tests/test_shadow_mode_flag.py tests/test_record_sign.py tests/test_qwen3_coder_tools.py tests/test_native_xml_routing.py tests/test_sampling_defaults.py tests/test_coverage_inventory.py tests/test_turn_mark.py tests/test_cuda_iq_grids.py tests/test_metal_iq_kernels.py tests/test_tc_gate_eligibility.py tests/test_decide_calibrate.py tests/test_tooluse_shifted.py
+	$(PYTHON) -m pytest -q tests/test_fit_check.py tests/test_apertus.py tests/test_ornith_cpu.py tests/test_ornith_reference.py tests/test_compat_matrix.py tests/test_arch_admission.py tests/test_hybrid_admission.py tests/test_hostile_geometry.py tests/test_certify_envelope.py tests/test_cpu_cuda_margin.py tests/test_envelope_gate.py tests/test_envelope_swap.py tests/test_cli_files.py tests/test_hf_fetch.py tests/test_stop_specials.py tests/test_muse_auto_toolchoice.py tests/test_chat_template_flag.py tests/test_server_banner.py tests/test_split_gguf.py tests/test_metal_coverage.py tests/test_gpu_declines.py tests/test_caps.py tests/test_tool_info.py tests/test_bench_json.py tests/test_mtp_admission.py tests/test_mtp_consume.py tests/test_compare_llamacpp.py tests/test_release_check.py tests/test_eseries.py tests/test_stress_models.py tests/test_moe_prune_plan.py tests/test_kld_compare.py tests/test_kld_margin.py tests/test_quant_fidelity.py tests/test_token_divergence.py tests/test_verify_gguf.py tests/test_type_plan_size.py tests/test_stress_context.py tests/test_cert_greedy_identity.py tests/test_tokenizer_corpus.py tests/test_batch_bench.py tests/test_spec_telemetry.py tests/test_draft_required.py tests/test_draft_lookup.py tests/test_kv_reachable.py tests/test_kv_ring.py tests/test_tiedv.py tests/test_moe_mm_flips.py tests/test_load_prefetch.py tests/test_spec_gpu.py tests/test_request_disconnect.py tests/test_score.py tests/test_decide.py tests/test_hf_spec_bounds.py tests/test_lora.py tests/test_train.py tests/test_merge.py tests/test_transcript.py tests/test_oms.py tests/test_kv_quality.py tests/test_tool_choice_boundary.py tests/test_nvfp4_scale.py tests/test_remove_sublayer.py tests/test_rewind_under_refused_prefix.py tests/test_server_penalty_exemptions.py tests/test_lora_identity_alpha.py tests/test_ttl_releases_draft.py tests/test_depth_slice.py tests/test_device_evidence.py tests/test_difftok.py tests/test_gate_coverage.py tests/test_gemma4_untyped_fallback.py tests/test_gen_quality_metrics.py tests/test_granite.py tests/test_iquants.py tests/test_metal_moe_batch.py tests/test_muse_glimmer.py tests/test_receipts.py tests/test_truncation_benchmark.py tests/test_type_plan.py tests/test_unload_honesty.py tests/test_tray_not_raised_on_refusal.py tests/test_shadow_mode_flag.py tests/test_record_sign.py tests/test_qwen3_coder_tools.py tests/test_native_xml_routing.py tests/test_sampling_defaults.py tests/test_coverage_inventory.py tests/test_turn_mark.py tests/test_cuda_iq_grids.py tests/test_metal_iq_kernels.py tests/test_tc_gate_eligibility.py tests/test_decide_calibrate.py tests/test_gpu_split_order.py tests/test_tooluse_shifted.py
 	$(MAKE) --no-print-directory test-moe PYTHON="$(PYTHON)"
 	$(MAKE) --no-print-directory test-prune-experts PYTHON="$(PYTHON)"
 

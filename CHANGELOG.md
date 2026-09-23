@@ -20,6 +20,59 @@ names that were true when they were written.
   redesign. Two scorer defects the first runs found are fixed in the same
   change (a placeholder model name on the chat surface, a token budget spent
   inside a thinking block).
+- **Adapter training covers Gemma 4, dense and E-series (R8.9.6).** The LoRA
+  backward gains the weightless per-head V norm, the absent V projection of
+  gemma-4's full-attention layers (V is the raw K projection, so its adjoint
+  joins the K projection's), the E-series shared KV (a sharing layer attends
+  over its owner's cached rows, so its dK/dV are deposited for the owner,
+  which runs later in the reverse sweep and adds them before its cache-side
+  adjoints) and the per-layer embedding branch on the post-FFN residual
+  (frozen gate and projection, activation gradient only; the slices are
+  recomputed from the tape's layer-0 input through the same prepass the
+  forward uses). Only the derived-K cache layout (`RUNNER_TIEDV`), sinks,
+  ungated FFNs, MoE experts and recurrent blocks stay refused. Pinned by
+  three new fixtures in the finite-difference gate: gemma4 dense, gemma4
+  with a V-less layer (`--drop-v`), and an E-series with three sharing
+  layers and 8-wide per-layer embeddings (`--eseries 3,8 --drop-kv shared`).
+  The E-series fixture runs as a `stiff` fixture: the f16 KV staircase
+  makes it unresolvable per coordinate (the set of missing coordinates
+  changes with the step size, which a jacobian bias never does), so its
+  checks are the whole-adapter directional derivative (within 1%, best of
+  six steps down to 5e-6) and the gradient cosine (at least 0.999), with
+  per-coordinate misses reported as warnings.
+
+- **A partial GPU split no longer depends on the file's tensor order.** The
+  planner summed the offloaded layers' bytes, but the upload was one
+  contiguous file prefix through the farthest tensor any of them owned; a
+  file stored in name order (or grouped by role) made that prefix reach
+  nearly the whole file, the one allocation asked for far more than the
+  plan, and after four refused attempts the model served from the CPU (a
+  14B bf16 planned at 24.8 GB on a 24 GB slice; the lab, 2026-09-23). The
+  runner now measures the spread, says so, and uploads per tensor (the
+  MoE split's path) when it is real; a refused prefix allocation retries
+  the same split per tensor before giving the model to the CPU. The
+  serve-mode load line now reports the thread count the slots divide
+  instead of the registry model's one-thread placeholder pool. Pinned by
+  `tests/test_gpu_split_order.py` on a name-order fixture (CUDA boxes;
+  skips elsewhere) and a `--alpha-order` switch in the fixture generator.
+
+- **Adapter training gains the GELU FFN activation (R8.9.5).** ACT_GELU
+  (gemma3's and gemma4's tanh-GELU gated FFN) is no longer the first
+  refusal `--train` hits on those architectures: the LoRA backward's
+  gate/up derivative now dispatches on `ffn_act` (`act_f`/`act_d` beside
+  the existing SiLU pair, the tanh-GELU approximation and its exact
+  derivative), and the tape's forward recompute calls `gated_act` itself
+  rather than a second transcription of it, so the recomputed activation
+  is bit-identical to what serving computes. `lora_bw_supported` now
+  admits ACT_GELU and refuses only ACT_SWIGLU_OAI and ACT_XIELU (gpt-oss,
+  apertus) by name; every other refusal is unchanged. gemma3 trains
+  cleanly with no other refusal in the way; gemma4 still refuses on its
+  weightless V norm and per-layer embeddings (R8.9.6). Pinned by a new
+  `--gemma3` fixture in the finite-difference gate (per-coordinate and
+  the whole-adapter directional derivative, same thresholds as every
+  other fixture); a deliberately broken derivative (zeroed for ACT_GELU)
+  fails the gate on the gemma3 fixture while the llama fixture, unaffected,
+  still passes.
 
 - **`/v1/decide` gains the `continuation-v1` rendering.** Chosen per request
   and stamped in the envelope, it scores each option as the direct

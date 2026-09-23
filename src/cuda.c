@@ -326,6 +326,8 @@ typedef struct gpu_weights {
     int         cpu_moe_layers;         // requested host-expert count (share key)
     gpu_weight_binding *bindings;       // packed non-expert tensors in this mode
     int         n_bindings, cap_bindings;
+    bool        bound;                  // weights uploaded per tensor (bindings), not as one file prefix
+    size_t      bound_bytes;            // bytes the bindings hold (the banner's number when bound)
     int         gpu_layers;             // split decided by the first loader
     bool        no_id;                  // identity unavailable: listed so the
                                         // split guard can see it, never matched
@@ -1066,6 +1068,7 @@ static bool binding_add(gpu_weights *w, const model_t *m, gguf_tensor *t) {
         cu.MemFree(d);
         return false;
     }
+    w->bound_bytes += t->nbytes;
     w->bindings[w->n_bindings++] = (gpu_weight_binding){ off, t->nbytes, d };
     w->weights_len += t->nbytes;
     return true;
@@ -1075,7 +1078,7 @@ static bool binding_find(const gpu_weights *w, const model_t *m,
                          const gguf_tensor *t, CUdeviceptr *base,
                          uint64_t *relative_off) {
     uint64_t off = tensor_file_off(m, t);
-    if (!w->cpu_moe) {
+    if (!w->bound) {
         *base = w->weights;
         *relative_off = off;
         return off <= w->weights_len && t->nbytes <= w->weights_len - (size_t)off;
@@ -1374,7 +1377,34 @@ static gpu_weights *shared_build(model_t *m, size_t act_bytes, int max_hd,
                 if (end > upload_len) upload_len = end;
             }
         }
-        w->weights_len = m->cpu_moe ? 0 : upload_len;
+        // The plan above summed the offloaded layers' own bytes; the prefix
+        // upload below is bounded by the FARTHEST tensor any of them owns. A
+        // file whose tensors are not stored block by block (alphabetical
+        // blk.1, blk.10, blk.11 ... or grouped by role) makes that prefix
+        // reach most of the file, and the one contiguous allocation then
+        // asks for far more than the plan: a 14B bf16 planned at 24.8 GB on
+        // a 24 GB slice failed its weight allocation four times and served
+        // from the CPU (the lab, 2026-09-23). Measure the spread and upload
+        // per tensor when it is real, the path the MoE split already uses.
+        size_t sum_w = 0;
+        for (int l = 0; l < G; l++)
+            sum_w += layer_weight_bytes(&m->layers[l], m->n_expert, moe_on_host(m, l));
+        size_t planned_upload = sum_w + m->tok_embd->nbytes + (full ? m->output->nbytes : 0);
+        // relative slack only, and a small one: the norms and biases outside
+        // a layer's big tensors are kilobytes, never a sixty-fourth of the
+        // plan, while a real overshoot can be modest and still fatal (the
+        // lab's file carries output.weight at the head of the file, so the
+        // prefix overshot the plan by 8%, 1.9 GB on a 24 GB slice). An
+        // absolute margin would hide the spread on a small file.
+        bool spread = !m->cpu_moe && !full &&
+                      upload_len > planned_upload + planned_upload / 64;
+        if (spread)
+            fprintf(stderr, "gpu: the file's tensor order spreads the %d offloaded "
+                            "layers over %.2f GB of the file against %.2f GB of "
+                            "weights; uploading per tensor\n",
+                    G, upload_len / 1e9, planned_upload / 1e9);
+        w->bound = m->cpu_moe || spread;
+        w->weights_len = w->bound ? 0 : upload_len;
 
         CK(cu.ModuleLoadData(&w->mod, k_ptx_src));
         struct { CUfunction *f; const char *name; } fns[] = {
@@ -1503,7 +1533,25 @@ static gpu_weights *shared_build(model_t *m, size_t act_bytes, int max_hd,
         // for a full split, a prefix for partial) so byte offsets stay valid.
         // Every instance sharing this upload indexes it with offsets computed
         // against its own mmap base, which is the same layout by construction.
-        if (m->cpu_moe) {
+        if (!w->bound) {
+            // One contiguous prefix. When the allocation itself is refused,
+            // retry the same split per tensor before giving the model to
+            // the CPU: the bindings ask for exactly the planned bytes, and a
+            // partial split that was planned to fit usually does.
+            CUresult rc = cu.MemAlloc(&w->weights, w->weights_len);
+            if (rc != 0) {
+                fprintf(stderr, "gpu: cu.MemAlloc(&w->weights, w->weights_len) "
+                                "failed: %s (%.2f GB as one prefix); retrying "
+                                "the same %d-layer split per tensor\n",
+                        cu_err(rc), w->weights_len / 1e9, G);
+                w->weights = 0;
+                w->bound = true;
+                w->weights_len = 0;
+            } else {
+                CK(cu.MemcpyHtoD(w->weights, m->gf.map, w->weights_len));
+            }
+        }
+        if (w->bound) {
             // Pack only tensors used by the CUDA half. Every MoE FFN stays on
             // the host; attention and dense layers remain device resident.
             for (int l = 0; l < G; l++) {
@@ -1545,9 +1593,6 @@ static gpu_weights *shared_build(model_t *m, size_t act_bytes, int max_hd,
                 }
             }
             if (full && !binding_add(w, m, m->output)) goto fail;
-        } else {
-            CK(cu.MemAlloc(&w->weights, w->weights_len));
-            CK(cu.MemcpyHtoD(w->weights, m->gf.map, w->weights_len));
         }
         CK(cu.MemAlloc(&w->dummy, 4));
 
@@ -1807,7 +1852,8 @@ static gpu_weights *shared_acquire(model_t *m, size_t act_bytes, int max_hd) {
     if (w) {
         w->refs++;
         fprintf(stderr, "gpu: reusing resident weights (%.1f GB, now shared by "
-                "%d instances)\n", w->weights_len / 1e9, w->refs);
+                "%d instances)\n",
+                (w->bound ? w->bound_bytes : w->weights_len) / 1e9, w->refs);
     } else {
         w = shared_build(m, act_bytes, max_hd, fsize, fino, fmtime);
         // an entry with no file identity stays private — shared_matches never
@@ -2213,13 +2259,13 @@ bool gpu_init(model_t *m) {
             }
             fprintf(stderr, "gpu: CUDA backend on %s (%d/%d attention layers, "
                     "%.1f GB in VRAM; %d/%d expert layers on CPU)\n", name,
-                    m->gpu_layers, m->n_layer, g->sw->weights_len / 1e9,
+                    m->gpu_layers, m->n_layer, g->sw->bound_bytes / 1e9,
                     on_host, moe_tot);
         }
         else if (m->gpu_layers < m->n_layer)
             fprintf(stderr, "gpu: CUDA backend on %s (%d/%d layers, %.1f GB in "
                     "VRAM; CPU runs the rest)\n", name, m->gpu_layers, m->n_layer,
-                    g->sw->weights_len / 1e9);
+                    (g->sw->bound ? g->sw->bound_bytes : g->sw->weights_len) / 1e9);
         else
             fprintf(stderr, "gpu: CUDA backend on %s (%.1f GB weights in VRAM)\n",
                     name, g->sw->weights_len / 1e9);

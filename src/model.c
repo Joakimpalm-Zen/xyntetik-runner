@@ -6453,6 +6453,39 @@ static float silu_d(float g) {
     float sg = 1.0f / (1.0f + expf(-g));
     return sg * (1.0f + g * (1.0f - sg));
 }
+// act(g) alone (no up multiply), dispatched on ffn_act: SiLU above for
+// ACT_SILU, the same tanh-GELU approximation gated_act's ACT_GELU branch
+// computes for ACT_GELU (R8.9.5). Needed at the up-branch site, where the
+// down-branch gradient multiplies act(g) rather than act(g)*u; the gated
+// site itself calls gated_act directly so the recomputed forward is the
+// same code path serving runs, not a second transcription of it.
+static float act_f(int act, float g) {
+    if (act == ACT_GELU) {
+        float t = tanhf(0.7978845608f * (g + 0.044715f * g * g * g));
+        return 0.5f * g * (1.0f + t);
+    }
+    return silu_f(g);
+}
+// d/dg act(g): SiLU's derivative above for ACT_SILU, the exact derivative
+// of the tanh-GELU approximation for ACT_GELU:
+//   act(g)  = 0.5*g*(1+t),           t = tanh(k*(g + 0.044715*g^3))
+//   act'(g) = 0.5*(1+t) + 0.5*g*(1-t^2)*k*(1+3*0.044715*g^2)
+static float act_d(int act, float g) {
+    if (act == ACT_GELU) {
+        const float k = 0.7978845608f;
+        float t = tanhf(k * (g + 0.044715f * g * g * g));
+        return 0.5f * (1.0f + t) +
+               0.5f * g * (1.0f - t * t) * k * (1.0f + 3.0f * 0.044715f * g * g);
+    }
+    return silu_d(g);
+}
+
+// Test hooks: the forward's own gated activation and the backward's
+// derivative, so the finite-difference gate can check act_d against central
+// differences of gated_act directly. The fixture-level gate alone could not
+// tell the SiLU derivative from the GELU one at fixture scale (R8.9.5).
+float model_ffn_act(int act, float g, float u) { return gated_act(act, g, u); }
+float model_ffn_act_deriv(int act, float g) { return act_d(act, g); }
 
 static bool lora_bw_supported(model_t *m, char *why, size_t cap) {
     const char *r = NULL;
@@ -6462,20 +6495,32 @@ static bool lora_bw_supported(model_t *m, char *why, size_t cap) {
         r = "recurrent architecture";
     else if (m->n_expert > 0 || m->moe_gemma) r = "MoE FFN";
     else if (m->kv_q8) r = "q8 KV cache (use --kv f16)";
-    else if (m->ffn_act != ACT_SILU) r = "non-SiLU FFN activation";
+    else if (m->ffn_act == ACT_SWIGLU_OAI || m->ffn_act == ACT_XIELU)
+        r = "FFN activation not in the backward (gpt-oss/apertus)";
     // R8.9.4 (2026-09-08): head transforms (logit scale, softcap, suppress),
     // muP scalars and the embedding norm, the attention output gate, the
     // sandwich norms, the per-layer output scale and sliding-window
     // attention are in the backward now, each pinned by the finite-
     // difference gate on the granite and muse-glimmer fixtures. Still out:
-    // the weightless V norm (only gemma-4 carries it, behind the GELU
-    // refusal above), tied or absent V, PLE, sinks, ungated FFNs.
-    else if (m->v_rmsnorm) r = "V-projection rmsnorm";
-    else if (m->ple) r = "per-layer embeddings";
+    // the weightless V norm (only gemma-4 carries it, behind the ffn_act
+    // check above), tied or absent V, PLE, sinks, ungated FFNs.
+    // R8.9.5 (2026-09-22): ACT_GELU (gemma3/gemma4's tanh-GELU FFN) is in
+    // the backward too, pinned by the gemma3 fixture. gemma3 has no other
+    // refusal here and trains; gemma4 still refuses on v_rmsnorm below
+    // (R8.9.6 is the weightless V norm and per-layer embeddings).
+    // R8.9.6 (2026-09-23): the weightless V norm, an absent V projection
+    // (V is the raw K projection, gemma-4's full-attention layers), the
+    // shared KV of the E-series (a sharing layer's dK/dV flow to the owner's
+    // projections) and the per-layer embedding branch are in the backward,
+    // pinned by the gemma4, tied-V and E-series fixtures. Still out: the
+    // derived-K cache layout (RUNNER_TIEDV), sinks, ungated FFNs.
+    else if (m->tied_v) r = "derived-K cache layout (RUNNER_TIEDV)";
     for (int l = 0; !r && l < m->n_layer; l++) {
         const layer_t *ly = &m->layers[l];
+        bool owner = model_kv_owner(m, l) == l;
         if (model_kv_is_ring(m, l)) r = "recycled KV rows (RUNNER_KV_RING)";
-        else if (!ly->wv) r = "shared/absent V projection";
+        else if (owner && !ly->wv && !m->v_rmsnorm) r = "absent V projection";
+        else if (owner && !ly->wk) r = "absent K projection";
         else if (!ly->w_gate || !ly->w_up) r = "ungated FFN";
         else if (ly->attn_sinks) r = "attention sinks";
         else if (model_rope_dim(m, l) != model_head_dim(m, l))
@@ -6700,10 +6745,31 @@ static bool lora_layer_bw(model_t *m, int l, const int32_t *toks, int T,
 
     int hd_l = hd;
     size_t szE = sizeof(float) * (size_t)T * E;
+    // R8.9.6 shapes: a layer that shares another layer's cache computes no
+    // K/V of its own (its dK/dV go to the owner); a V-norm layer keeps its
+    // pre-norm V (or, with no V projection, the raw K it reuses as V); an
+    // E-series layer adds its per-layer embedding branch on the post-FFN
+    // residual.
+    int owner_l = model_kv_owner(m, l);
+    bool owns = owner_l == l;
+    bool vnorm = owns && m->v_rmsnorm;
+    bool vfromk = owns && !ly->wv;           // V is the raw K projection
+    bool need_kpre = owns && (ly->knorm_w || vfromk);
+    bool ple = ly->ple_gate && ly->ple_proj && m->bw_ple;
+    int P = m->n_embd_ple;
     float *qpre = ly->qnorm_w ? malloc(sizeof(float) * (size_t)T * q_dim)
                               : NULL;
-    float *kpre = ly->knorm_w ? malloc(sizeof(float) * (size_t)T * kv_dim)
-                              : NULL;
+    float *kpre = need_kpre ? malloc(sizeof(float) * (size_t)T * kv_dim)
+                            : NULL;
+    float *vpre = vnorm ? malloc(sizeof(float) * (size_t)T * kv_dim) : NULL;
+    float *dvn  = vnorm ? calloc((size_t)T * kv_dim, sizeof(float)) : NULL;
+    float *xpost = ple ? malloc(sizeof(float) * (size_t)T * E) : NULL;
+    float *ptt  = ple ? malloc(sizeof(float) * (size_t)T * P) : NULL;
+    float *pga  = ple ? malloc(sizeof(float) * (size_t)T * P) : NULL;
+    float *puu  = ple ? malloc(sizeof(float) * (size_t)T * E) : NULL;
+    float *pdu  = ple ? calloc((size_t)T * E, sizeof(float)) : NULL;
+    float *pdg  = ple ? calloc((size_t)T * P, sizeof(float)) : NULL;
+    float *pdx  = ple ? calloc((size_t)T * E, sizeof(float)) : NULL;
     float *xn1 = malloc(sizeof(float) * (size_t)T * E);
     float *xa  = malloc(szE);
     float *xn2 = malloc(szE);
@@ -6746,7 +6812,9 @@ static bool lora_layer_bw(model_t *m, int l, const int32_t *toks, int T,
               dk && dv && hact && dhact && dgu && dxn2 && dao && tmpE && p &&
               dbr && dyb && (!gate || (gpre && aopre && dg && dxg)) &&
               (!ly->post_attn_norm_w || opre) && (!ly->post_ffn_norm_w || fpre) &&
-              (!ly->qnorm_w || qpre) && (!ly->knorm_w || kpre);
+              (!ly->qnorm_w || qpre) && (!need_kpre || kpre) &&
+              (!vnorm || (vpre && dvn)) &&
+              (!ple || (xpost && ptt && pga && puu && pdu && pdg && pdx));
     // the per-layer output scale multiplies the whole residual stream after
     // the layer, so every gradient inside the layer carries it
     if (ok && os != 1.0f)
@@ -6776,13 +6844,24 @@ static bool lora_layer_bw(model_t *m, int l, const int32_t *toks, int T,
             if (ts != 1.0f)
                 for (int i = 0; i < q_dim; i++) qt[i] *= ts;
         }
-        if (ly->knorm_w) {
+        if (need_kpre) {
             float *kt = kpre + (size_t)t * kv_dim;
             matvec_b(m->tp, kt, kv_dim, ly->wk, x1, E, E, kv_dim, ly->bk, 1);
             lora_site_fw(m, l, LW_K, kt, x1, E, kv_dim);
         }
-        // tied fields stay zero: lora_bw_supported refuses v_rmsnorm models,
-        // so a tied-V layer can never reach this recompute
+        if (vnorm) {
+            // the pre-norm V the forward normalised before caching: its own
+            // projection, or the raw K projection when the layer ships none
+            float *vt = vpre + (size_t)t * kv_dim;
+            if (ly->wv) {
+                matvec_b(m->tp, vt, kv_dim, ly->wv, x1, E, E, kv_dim, ly->bv, 1);
+                lora_site_fw(m, l, LW_V, vt, x1, E, kv_dim);
+            } else {
+                memcpy(vt, kpre + (size_t)t * kv_dim, sizeof(float) * (size_t)kv_dim);
+            }
+        }
+        // the derived-K cache layout (m->tied_v) is refused above, so the
+        // attention below always reads real K and V rows
         attn_job aj = { m, kc_l, vc_l, qt, ao + (size_t)t * q_dim, t,
                        attn_window_start(swa, t),
                        hd, kv_dim, k_row_b, v_row_b, 0,
@@ -6818,17 +6897,59 @@ static bool lora_layer_bw(model_t *m, int l, const int32_t *toks, int T,
     }
 
     if (lprof) { double n2 = plat_now(); lbw_prof[0] += n2 - lt; lt = n2; }
+    for (int t = 0; ok && t < T; t++) {
+        const float *gt = g + (size_t)t * nff, *ut = u + (size_t)t * nff;
+        float *ht = hact + (size_t)t * nff;
+        // gated_act itself (not a re-transcription of SiLU/GELU here), so
+        // the tape's recomputed forward is bit-identical to serving's
+        for (int i = 0; i < nff; i++) ht[i] = gated_act(m->ffn_act, gt[i], ut[i]);
+    }
+    // ---- phase P (R8.9.6): the per-layer embedding branch. The forward
+    // runs it on the post-FFN residual, before the layer output scale:
+    //   y = x_post + rmsnorm(proj(gelu(gate x_post) * slice), w_post)
+    // so the gradient the FFN and attention see is d x_post = dy + J^T dy.
+    // gate and proj are frozen base weights (no adapter site); only the
+    // activation gradient flows. The slice is the prepass output for this
+    // token and layer, a function of the token embedding alone.
+    if (ok && ple) {
+        size_t per_tok = (size_t)m->n_layer * P;
+        for (int t = 0; t < T; t++) {
+            // x_post recomputed the way the forward built it
+            float *xp = xpost + (size_t)t * E;
+            matvec_b(m->tp, xp, E, ly->w_down, hact + (size_t)t * nff, nff,
+                     nff, E, NULL, 1);
+            lora_site_fw(m, l, LW_DOWN, xp, hact + (size_t)t * nff, nff, E);
+            if (ly->post_ffn_norm_w)
+                rmsnorm(xp, xp, ly->post_ffn_norm_w, E, m->post_norm_eps);
+            const float *xat = xa + (size_t)t * E;
+            for (int i = 0; i < E; i++) xp[i] = xat[i] + rs * xp[i];
+            // branch forward
+            const float *sl = m->bw_ple + (size_t)t * per_tok + (size_t)l * P;
+            float *tt = ptt + (size_t)t * P, *ga = pga + (size_t)t * P;
+            matvec_b(m->tp, tt, P, ly->ple_gate, xp, E, E, P, NULL, 1);
+            for (int i = 0; i < P; i++) ga[i] = gated_act(ACT_GELU, tt[i], sl[i]);
+            float *uu = puu + (size_t)t * E;
+            matvec_b(m->tp, uu, E, ly->ple_proj, ga, P, P, E, NULL, 1);
+            // branch backward: post-norm adjoint against the pre-norm output
+            rmsnorm_bw(uu, ly->ple_post_norm, dx + (size_t)t * E,
+                       pdu + (size_t)t * E, E, m->rms_eps);
+        }
+        ok = matvec_t(m, ly->ple_proj, pdu, pdg, P, E, T);
+        for (int t = 0; ok && t < T; t++) {
+            const float *sl = m->bw_ple + (size_t)t * per_tok + (size_t)l * P;
+            const float *tt = ptt + (size_t)t * P;
+            float *dg = pdg + (size_t)t * P;
+            for (int i = 0; i < P; i++) dg[i] *= sl[i] * act_d(ACT_GELU, tt[i]);
+        }
+        ok = ok && matvec_t(m, ly->ple_gate, pdg, pdx, E, P, T);
+        for (size_t i = 0; ok && i < (size_t)T * E; i++) dx[i] += pdx[i];
+    }
     // ---- phase B1: FFN backward site-major across the window, then the
     // attention-internal backward per position. Positions are independent
     // through every step here except the dK/dV accumulation, which keeps
     // its original ascending-t order — and within each site the batched
     // call preserves every element's per-position accumulation chain, so
     // the reorganization is a scheduling change, not a numeric one.
-    for (int t = 0; ok && t < T; t++) {
-        const float *gt = g + (size_t)t * nff, *ut = u + (size_t)t * nff;
-        float *ht = hact + (size_t)t * nff;
-        for (int i = 0; i < nff; i++) ht[i] = silu_f(gt[i]) * ut[i];
-    }
     // the FFN branch's output gradient: the residual scale, then the
     // sandwich norm's adjoint against the recomputed pre-norm output
     for (int t = 0; ok && t < T; t++) {
@@ -6852,7 +6973,7 @@ static bool lora_layer_bw(model_t *m, int l, const int32_t *toks, int T,
         const float *gt = g + (size_t)t * nff, *ut = u + (size_t)t * nff;
         const float *dht = dhact + (size_t)t * nff;
         float *dgt = dgu + (size_t)t * nff;
-        for (int i = 0; i < nff; i++) dgt[i] = dht[i] * ut[i] * silu_d(gt[i]);
+        for (int i = 0; i < nff; i++) dgt[i] = dht[i] * ut[i] * act_d(m->ffn_act, gt[i]);
     }
     ok = ok && lora_site_bw(m, l, LW_GATE, ly->w_gate, xn2, dgu, dxn2,
                             E, nff, T);
@@ -6860,7 +6981,7 @@ static bool lora_layer_bw(model_t *m, int l, const int32_t *toks, int T,
         const float *gt = g + (size_t)t * nff;
         const float *dht = dhact + (size_t)t * nff;
         float *dgt = dgu + (size_t)t * nff;
-        for (int i = 0; i < nff; i++) dgt[i] = dht[i] * silu_f(gt[i]);
+        for (int i = 0; i < nff; i++) dgt[i] = dht[i] * act_f(m->ffn_act, gt[i]);
     }
     ok = ok && lora_site_bw(m, l, LW_UP, ly->w_up, xn2, dgu, dxn2,
                             E, nff, T);
@@ -6913,13 +7034,30 @@ static bool lora_layer_bw(model_t *m, int l, const int32_t *toks, int T,
                            kv_mul, hd, q_dim, kv_dim, k_row_b, v_row_b, scale, swa };
         tpool_run(m->tp, attn_bw_worker, &aj, n_kv);
     }
+    // Shared KV (R8.9.6): a sharing layer attended over its owner's cached
+    // rows, so its dK/dV belong to the owner's projections. Layers run in
+    // reverse, so every sharer has deposited before its owner runs; the
+    // owner adds the deposits to its own dK/dV before the cache-side
+    // adjoints (rope, K norm, V norm) and its projection sites.
+    if (ok && m->bw_dk_share) {
+        size_t stride = (size_t)T * m->bw_share_kvmax;
+        if (!owns) {
+            float *sk = m->bw_dk_share + (size_t)owner_l * stride;
+            float *sv = m->bw_dv_share + (size_t)owner_l * stride;
+            for (size_t i = 0; i < (size_t)T * kv_dim; i++) { sk[i] += dk[i]; sv[i] += dv[i]; }
+        } else {
+            const float *sk = m->bw_dk_share + (size_t)l * stride;
+            const float *sv = m->bw_dv_share + (size_t)l * stride;
+            for (size_t i = 0; i < (size_t)T * kv_dim; i++) { dk[i] += sk[i]; dv[i] += sv[i]; }
+        }
+    }
 
     if (lprof) { double n2 = plat_now(); lbw_prof[2] += n2 - lt; lt = n2; }
     // ---- phase B2: projection backwards now that dK/dV are complete
     for (int t = 0; ok && t < T; t++) {
         if (model_layer_ropes(m, l)) {
             rope_unapply(m, dq + (size_t)t * q_dim, n_head, t, l);
-            rope_unapply(m, dk + (size_t)t * kv_dim, n_kv, t, l);
+            if (owns) rope_unapply(m, dk + (size_t)t * kv_dim, n_kv, t, l);
         } else {
             // a NoPE layer's only Q transform is the scalar temperature, whose
             // adjoint is the same scalar; K is stored as projected (no rope)
@@ -6944,7 +7082,7 @@ static bool lora_layer_bw(model_t *m, int l, const int32_t *toks, int T,
                        sizeof(float) * (size_t)hd_l);
             }
         }
-        if (ly->knorm_w) {
+        if (owns && ly->knorm_w) {
             float *dkt = dk + (size_t)t * kv_dim;
             const float *kp = kpre + (size_t)t * kv_dim;
             for (int h = 0; h < n_kv; h++) {
@@ -6956,11 +7094,31 @@ static bool lora_layer_bw(model_t *m, int l, const int32_t *toks, int T,
                        sizeof(float) * (size_t)hd_l);
             }
         }
+        if (vnorm) {
+            // the cached V is the weightless per-head norm of vpre: the
+            // adjoint lands on the V projection, or on the raw K projection
+            // when V is that projection (added to dK after the K-norm
+            // adjoint, before the K site)
+            float *dvt = dvn + (size_t)t * kv_dim;
+            const float *vp = vpre + (size_t)t * kv_dim;
+            for (int h = 0; h < n_kv; h++)
+                rmsnorm_bw(vp + (size_t)h * hd_l, NULL, dv + (size_t)t * kv_dim + (size_t)h * hd_l,
+                           dvt + (size_t)h * hd_l, hd_l, m->rms_eps);
+            if (vfromk) {
+                float *dkt = dk + (size_t)t * kv_dim;
+                for (int i = 0; i < kv_dim; i++) dkt[i] += dvt[i];
+            }
+        }
     }
-    // projection backwards, each site one batched call over the window
+    // projection backwards, each site one batched call over the window; a
+    // sharing layer has no K/V projections of its own
     ok = ok && lora_site_bw(m, l, LW_Q, ly->wq, xn1, dq, dxn1, E, q_dim, T);
-    ok = ok && lora_site_bw(m, l, LW_K, ly->wk, xn1, dk, dxn1, E, kv_dim, T);
-    ok = ok && lora_site_bw(m, l, LW_V, ly->wv, xn1, dv, dxn1, E, kv_dim, T);
+    if (owns) {
+        ok = ok && lora_site_bw(m, l, LW_K, ly->wk, xn1, dk, dxn1, E, kv_dim, T);
+        if (ly->wv)
+            ok = ok && lora_site_bw(m, l, LW_V, ly->wv, xn1, vnorm ? dvn : dv,
+                                    dxn1, E, kv_dim, T);
+    }
 
     // ---- phase B3: attn-norm backward + both residual paths -> layer input
     for (int t = 0; ok && t < T; t++) {
@@ -6977,6 +7135,8 @@ static bool lora_layer_bw(model_t *m, int l, const int32_t *toks, int T,
     free(dhact); free(dgu); free(dxn2); free(dao); free(tmpE); free(p);
     free(gpre); free(aopre); free(dg); free(dxg); free(opre); free(fpre);
     free(dbr); free(dyb);
+    free(vpre); free(dvn); free(xpost); free(ptt); free(pga); free(puu);
+    free(pdu); free(pdg); free(pdx);
     return ok;
 }
 
@@ -7102,10 +7262,32 @@ bool model_lora_backward_w(model_t *m, const int32_t *toks, int T,
     }
     free(dhn); free(thb);
     if (prof) { pt_head = plat_now(); }
-    // layers in reverse
+    // R8.9.6 scratch: shared-KV deposits per owner layer, and the per-layer
+    // embedding slices for the window, recomputed from the tape's layer-0
+    // input (the scaled token embedding the forward's prepass consumed)
     bool ok = true;
+    m->bw_dk_share = m->bw_dv_share = NULL; m->bw_ple = NULL;
+    if (m->kv_src) {
+        int kvmax = 0;
+        for (int l = 0; l < L; l++) if (model_kv_dim(m, l) > kvmax) kvmax = model_kv_dim(m, l);
+        m->bw_share_kvmax = kvmax;
+        m->bw_dk_share = calloc((size_t)L * T * kvmax, sizeof(float));
+        m->bw_dv_share = calloc((size_t)L * T * kvmax, sizeof(float));
+        if (!m->bw_dk_share || !m->bw_dv_share) ok = false;
+    }
+    if (ok && m->n_embd_ple > 0) {
+        size_t per_tok = (size_t)L * m->n_embd_ple;
+        float *scratch = malloc(sizeof(float) * per_tok);
+        m->bw_ple = malloc(sizeof(float) * (size_t)T * per_tok);
+        if (!scratch || !m->bw_ple) ok = false;
+        else model_ple_prepass(m, toks, T, m->tape, m->bw_ple, scratch);
+        free(scratch);
+    }
+    // layers in reverse
     for (int l = L - 1; ok && l >= 0; l--)
         ok = lora_layer_bw(m, l, toks, T, dx);
+    free(m->bw_dk_share); free(m->bw_dv_share); free(m->bw_ple);
+    m->bw_dk_share = m->bw_dv_share = m->bw_ple = NULL;
     if (prof) {
         fprintf(stderr, "train-prof: fw %.2fs head %.2fs layers %.2fs "
                 "(R %.2f sites %.2f attn %.2f b2b3 %.2f)\n",
