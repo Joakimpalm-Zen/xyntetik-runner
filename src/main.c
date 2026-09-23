@@ -2207,8 +2207,14 @@ int main(int argc, char **argv) {
         if (osr.status[0])
             oms_result_json(&osr, model_sig_json, sizeof model_sig_json);
         if (!tokenizer_init(&tok, &m.gf)) return 1;
-        fprintf(stderr, "loaded %s | %s | %d layers | ctx %d | %d threads | %.2fs\n",
-                load_path, m.arch, m.n_layer, m.n_ctx, tpool_size(m.tp),
+        // serve mode: the registry model's own pool is one thread by design
+        // (slots create their pools), so the honest number here is the count
+        // the slots divide, not the placeholder pool (the lab read "1 threads"
+        // as a CPU fallback at one thread, 2026-09-23)
+        fprintf(stderr, "loaded %s | %s | %d layers | ctx %d | %d threads%s | %.2fs\n",
+                load_path, m.arch, m.n_layer, m.n_ctx,
+                serve ? n_threads : tpool_size(m.tp),
+                serve ? " (divided across slots)" : "",
                 now_s() - t1);
         // --tool-info: one JSON line naming this model's native tool-call
         // protocol, resolved from its chat template exactly as the chat surface

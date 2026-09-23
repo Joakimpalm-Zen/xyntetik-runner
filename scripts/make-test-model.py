@@ -13,6 +13,7 @@ SUPPRESS_ALL_BUT_EOS = False
 ZERO_FIRST_DIM = False
 WRAP_FIRST_OFFSET = False
 ARCH = "llama"
+ALPHA_ORDER = False  # --alpha-order: tensors stored in name order, not block order
 AGENT_PROFILE = False
 AGENT_FEATURES = ["dense", "json_schema"]
 MTP_LAYERS = 0   # extra trailing blocks declared as NextN/MTP predictor heads
@@ -167,6 +168,15 @@ while i < len(args):
         # embeddings (no output tensor). Scaled-down but shape-preserving.
         GRANITE = True
         ARCH = "granite"
+    elif a == "--alpha-order":
+        # Store the tensors in name order (blk.0, blk.1, blk.10, ..., output,
+        # token_embd) instead of block order. Real files come out this way
+        # from some writers, and a partial GPU split that uploads one file
+        # prefix through the farthest tensor of its layers then reaches
+        # nearly the whole file (the lab's 14B bf16 on a 24 GB slice,
+        # 2026-09-23). The runner resolves tensors by name, so the model is
+        # the same; only the layout differs.
+        ALPHA_ORDER = True
     elif a == "--gemma3":
         # Gemma-3 dense: scaled embeddings and a GELU (not SiLU) gated FFN,
         # tied output (no output tensor, same as the plain llama default).
@@ -797,6 +807,8 @@ if QUANT in ("nvfp4", "nvfp4-fork40") and not any(
         t[3] == GGML_NVFP4 for t in _typed):
     sys.exit("--quant nvfp4 produced no NVFP4 tensor")
 tensors = _typed
+if ALPHA_ORDER:
+    tensors = sorted(tensors, key=lambda t: t[0])
 if GPU_UNSUPPORTED and not any(t[0] == GPU_UNSUPPORTED for t in tensors):
     sys.exit(f"--gpu-unsupported tensor {GPU_UNSUPPORTED!r} was not generated")
 
