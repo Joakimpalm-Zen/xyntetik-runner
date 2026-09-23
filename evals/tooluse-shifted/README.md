@@ -87,54 +87,97 @@ Results contain:
 
 1. **Rates are properties of this set only.** The 150 hand-written prompts are a fixed benchmark, not a representative sample of any traffic. Results do not transfer to other sets without re-measurement.
 
-2. **One host, one adapter.** This run used one machine and one adapter instance. Other adapters trained the same way and the same adapter on other machines are unmeasured.
+2. **One host so far.** The ZEN-GAMING arms are one machine; the second host (the M1) is pending. The two retrained adapters are the published recipe's adapters, not byte copies of the lost originals.
 
 3. **Greedy and constraint sampling are different instruments.** Raw leg (greedy decoding) and native leg (constrained tool_choice) measure different model behaviors. Both should be reported; neither alone is sufficient.
 
 ## Base Model vs. Adapter
 
-The evaluation distinguishes adapters by comparing:
-- Base model on the same prompt set
-- Base+adapter on the same prompt set
+The evaluation distinguishes adapters by comparing base and base+adapter on
+the same frozen set, both legs. On a set where the base lands clearly below
+the adapters and the adapters differ somewhere, the instrument works. Where
+they are indistinguishable, the set needs redesign; a gate that cannot fail
+is not a gate.
 
-On a set where the base lands clearly below the adapter on both legs, the instrument is working. On a set where base and adapter are indistinguishable, the set needs redesign (tighter near-miss shapes, more underspecified cases, or more challenging category distribution).
+## Real Run Results (2026-09-23, ZEN-GAMING, CPU)
 
-## Real Run Results
+Host: Windows 11, 8 threads, runner 0.5.6, `--gpu off`, greedy. Base:
+bartowski/Qwen_Qwen3-4B-Q4_K_M (sha256 fbe1d5ed...), the study base. Four
+arms: base; the published adapter (Qwen3-4B-ToolUse-LoRA, trained through
+Q4_K_M, sha256 ea38f80c...); and the two study adapters retrained from the
+published recipe because the originals were lost with the box that trained
+them (rank 8, alpha 16, lr 1e-4, 120 steps, ctx 128, runner 0.5.6; seed 1
+where the study used seed 0, which the current sampler refuses as an RNG
+fixed point; through Q8_0: sha256 0c85d630..., first-step loss 0.6911, last
+0.0001; through BF16: sha256 1cafe339..., 0.7022 to 0.0001; train records
+under `adapters/`). Scale 1.0 on every adapter. The raw leg reproduced
+exactly across three runs of the same arm (greedy scoring is deterministic
+here); the first two runs' native legs were scorer defects, not
+measurements, and are archived off the record.
 
-**Base Model:** bartowski/Qwen_Qwen3-4B-Q4_K_M  
-SHA256: fbe1d5edd4ce802ae3ae7c7e4ab7d09789d697fdac1fc7929f8df4ca3c41bae3
+### Counts Before Rates (Raw Leg: /v1/completions, the training template with the full catalog)
 
-**Adapter:** Qwen3-4B-ToolUse-LoRA (Joakimpalm-Zen/Qwen3-4B-Runner-ToolUse-Q4_K_M)  
-SHA256: ea38f80c33d381c9aa62c874920d2fa058dd307e7186e9b7c347d782f35b88e4  
-Scale: 1.0
+Right tool / exact match of n, per arm.
 
-**Environment:** macOS (Apple Silicon), 8 GB RAM, CPU-only (-t 4), runner v0.5.6
-
-### Counts Before Rates (Raw Leg: /v1/completions)
-
-| Category | n | Parses | Right Tool | Schema Valid | Exact |
+| Category | n | base | published (Q4_K_M) | through Q8_0 | through BF16 |
 |---|---|---|---|---|---|
-| paraphrase | 30 | - | - | - | - |
-| multi_intent | 27 | - | - | - | - |
-| underspecified | 22 | - | - | - | - |
-| near_miss | 25 | - | - | - | - |
-| none | 33 | - | - | - | - |
-| **Overall** | **150** | **-** | **-** | **-** | **-** |
+| paraphrase | 42 | 29 / 11 | 29 / 14 | 31 / 14 | 31 / 14 |
+| multi_intent | 27 | 17 / 3 | 18 / 4 | 18 / 3 | 19 / 4 |
+| underspecified | 22 | 6 / 3 | 9 / 6 | 7 / 4 | 7 / 4 |
+| near_miss | 26 | 13 / 2 | 14 / 0 | 13 / 0 | 14 / 0 |
+| none | 33 | 27 / 27 | 33 / 33 | 30 / 30 | 31 / 31 |
+| **Overall** | **150** | **92 / 46** | **103 / 57** | **99 / 51** | **102 / 53** |
 
-### Counts Before Rates (Native Leg: /v1/chat/completions with tools)
+JSON parses 149, 150, 150, 150; schema-valid arguments 92, 100, 98, 101.
 
-| Category | n | Tool OK | Args OK | Exact Match |
-|---|---|---|---|---|
-| paraphrase | 30 | - | - | - |
-| multi_intent | 27 | - | - | - |
-| underspecified | 22 | - | - | - |
-| near_miss | 25 | - | - | - |
-| none | 33 | - | - | - |
-| **Overall** | **150** | **-** | **-** | **-** |
+### Counts Before Rates (Native Leg: /v1/chat/completions with tools, thinking off, 256-token budget)
+
+Tool match / exact match of n, per arm. Refusals 0 on every arm; rows that
+emitted a call 79, 81, 84, 83; finish "length" 3, 2, 2, 2.
+
+| Category | n | base | published (Q4_K_M) | through Q8_0 | through BF16 |
+|---|---|---|---|---|---|
+| paraphrase | 42 | 31 / 15 | 29 / 14 | 29 / 15 | 29 / 15 |
+| multi_intent | 27 | 13 / 7 | 14 / 4 | 14 / 4 | 13 / 4 |
+| underspecified | 22 | 17 / 15 | 18 / 16 | 17 / 15 | 17 / 15 |
+| near_miss | 26 | 9 / 1 | 10 / 0 | 9 / 0 | 9 / 0 |
+| none | 33 | 33 / 33 | 33 / 33 | 33 / 33 | 33 / 33 |
+| **Overall** | **150** | **103 / 71** | **104 / 67** | **102 / 67** | **101 / 67** |
 
 ### Verdict
 
-**Pending:** Real runs in progress; tables will be updated once base and adapter evaluations complete.
+**The instrument separates base from adapter only weakly, and it cannot tell
+the three adapters apart. It does not yet pass R8.4.3.**
+
+- Raw leg, the template the adapters were trained on: the adapters gain
+  7 to 11 right-tool and 5 to 11 exact matches over base out of 150. The
+  binomial standard deviation of a count at these rates is about 6, so the
+  base-versus-adapter gap is one to two standard deviations: present, not
+  clear.
+- The three adapters disagree with each other on 2 to 6 of 150 exact
+  verdicts. That is inside noise; nothing here ranks Q4_K_M, Q8_0 and BF16
+  training.
+- Native leg: the adapters do not help on the chat protocol at all (tool
+  match 101 to 104 against base 103; exact 67 against base 71). They were
+  trained on the raw template, and the constrained chat surface reaches
+  more exact calls than the raw template on every arm (67 to 71 against
+  46 to 57), so the native leg measures the base's protocol, not the
+  adapter.
+- Where the set does discriminate: `none` (base 27 of 33, every adapter 30
+  to 33) and `underspecified` (base 3 exact, published 6) on the raw leg;
+  `near_miss` runs the other way, every adapter drops to 0 exact where base
+  keeps 2, which is a real adapter failure mode (the sibling tool is named,
+  the arguments follow the training shape instead of the prompt).
+
+What to redesign before R8.5 leans on this set: more `near_miss` and
+`underspecified` items, since those are the only categories that move;
+retire or shrink `none`, which saturates for any adapter; score the
+argument-level decisions the native leg records (`choice_records`) rather
+than whole-call exact match; and raise n so a 10-count gap is more than two
+standard deviations. Rates are properties of this set, never of traffic.
+
+Second host: the same arms on the M1 (macOS, CPU) are being measured and
+are appended when they land.
 
 ## Test Coverage
 
