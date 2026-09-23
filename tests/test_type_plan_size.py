@@ -97,48 +97,32 @@ def test_keep_default_predicts_a_byte_copy(runner_bin, moe_model, tmp_path):
     assert pred["declined_row_width"] == []
 
 
-def test_row_width_decline_is_reported_not_silently_applied(runner_bin, moe_model, tmp_path):
-    # The fixture's rows are far narrower than Q3_K's 256-wide super-block, so
-    # every q3_k rule must be reported as declined and cost nothing: the built
-    # file has to come out the same size as the keep-everything rewrite.
-    keep_plan = tmp_path / "keep.json"
-    keep_plan.write_text(json.dumps({"default": "keep", "rules": []}))
-    keep_out = tmp_path / "keep.gguf"
-    _build(runner_bin, moe_model, keep_plan, keep_out)
-
+def test_row_width_fallback_is_applied_and_predicted_exactly(runner_bin, moe_model, tmp_path):
+    # The fixture's rows are far narrower than Q3_K's 256-wide super-block but
+    # divide by 32, so every q3_k rule is honoured in the 32-block fallback
+    # (Q4_0), reported per tensor, and the predictor sizes the built file to
+    # the byte. A "Q4_K_M" of a model with 5760-wide rows used to keep 62% of
+    # its bytes at BF16 (the lab, 2026-09-23); the fallback is what fixes it.
     plan = tmp_path / "q3k.json"
     plan.write_text(json.dumps({"default": "keep",
                                 "rules": [{"match": "_exps.weight", "type": "q3_k"}]}))
     pred = _predict(moe_model, plan)
     out = tmp_path / "q3k.gguf"
-    _build(runner_bin, moe_model, plan, out)
-
-    assert pred["declined_row_width"], "a q3_k rule on sub-256 rows reported no decline"
-    assert pred["predicted_bytes"] == out.stat().st_size == keep_out.stat().st_size
-
-
-def test_decline_names_the_tensor_and_the_rule(runner_bin, moe_model, tmp_path):
-    """RI-3: a declined rule has to say WHICH tensor and WHICH type.
-
-    The report was an aggregate count -- "3 tensor(s) kept their own type" --
-    which tells an author of a plan that something was dropped but not what,
-    so the only way to find it was to diff the built histogram against the
-    plan they wrote. The predictor script answers this ahead of time; the
-    build itself should not be less informative than the prediction.
-    """
-    plan = tmp_path / "q3k.json"
-    plan.write_text(json.dumps({"default": "keep",
-                                "rules": [{"match": "_exps.weight", "type": "q3_k"}]}))
-    out = tmp_path / "named.gguf"
     log = _build(runner_bin, moe_model, plan, out)
 
-    pred = _predict(moe_model, plan)
-    declined = pred["declined_row_width"]
-    assert declined, "fixture no longer produces a row-width decline"
-    # the build names at least one declined tensor, and the type it refused
-    first = declined[0]["tensor"]
-    assert first in log, f"decline report does not name {first}:\n{log}"
-    assert "q3_k" in log.lower(), f"decline report does not name the rule type:\n{log}"
+    assert pred["fallback_row_width"], "a q3_k rule on sub-256 rows reported no fallback"
+    assert not pred["declined_row_width"]
+    assert all(f["wrote"] == "Q4_0" for f in pred["fallback_row_width"])
+    assert pred["histogram"].get("Q4_0", 0) >= len(pred["fallback_row_width"])
+    assert pred["predicted_bytes"] == out.stat().st_size
+    keep_plan = tmp_path / "keep.json"
+    keep_plan.write_text(json.dumps({"default": "keep", "rules": []}))
+    keep_out = tmp_path / "keep.gguf"
+    _build(runner_bin, moe_model, keep_plan, keep_out)
+    assert out.stat().st_size < keep_out.stat().st_size, "the fallback did not shrink the file"
+    # the build names the tensor, the type asked for and the type written
+    first = pred["fallback_row_width"][0]["tensor"]
+    assert first in log and "wanted q3_k, wrote q4_0" in log.lower(), log
 
 
 def test_nonquantizable_bf16_is_predicted_as_f32(runner_bin, tmp_path):

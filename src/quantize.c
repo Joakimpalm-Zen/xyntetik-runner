@@ -1356,6 +1356,33 @@ static bool type_fits_row(int type, int64_t n) {
     return n % ggml_block_size(type) == 0;
 }
 
+// A 256-wide K-quant or i-quant cannot describe a row that only divides by
+// 32. Leaving such a tensor at its source type made a "Q4_K_M" of a model
+// with 5760-wide rows keep 62% of its bytes at BF16 (Kvist-14B, the lab,
+// 2026-09-23), where llama.cpp writes the 32-block type of the nearest bit
+// budget instead. Same map here, reported per tensor: the file that comes
+// out is what its label says within one bit per weight, not a bf16 file
+// with a quantized name.
+static int width_fallback(int want, int64_t n) {
+    if (type_fits_row(want, n)) return want;
+    int fb;
+    switch (want) {
+    case T_Q2_K: case T_Q3_K:
+    case T_IQ1_S: case T_IQ1_M: case T_IQ2_XXS: case T_IQ2_XS: case T_IQ2_S:
+    case T_IQ3_XXS: case T_IQ3_S:
+        fb = T_Q4_0; break;
+    case T_Q4_K: case T_IQ4_XS: case T_IQ4_NL:
+        fb = T_Q5_0; break;
+    case T_Q5_K:
+        fb = T_Q5_1; break;
+    case T_Q6_K:
+        fb = T_Q8_0; break;
+    default:
+        return want;                       // no 32-block cousin: decline as before
+    }
+    return type_fits_row(fb, n) ? fb : want;
+}
+
 static bool quantize_install_injected(void) {
     const char *inject = getenv("RUNNER_QUANTIZE_INSTALL_FAIL");
     return inject && *inject && strcmp(inject, "0");
@@ -1938,6 +1965,10 @@ static int quantize_gguf_plan_inner(const char *in_path, const char *out_path, i
     // in schema.c, just smaller.
     enum { DECLINE_NAMES = 6 };
     const char *decl_w_name[DECLINE_NAMES]; uint32_t decl_w_type[DECLINE_NAMES];
+    // tensors written in a 32-block fallback type because the requested
+    // block does not divide their row (width_fallback)
+    const char *fb_name[DECLINE_NAMES]; uint32_t fb_want[DECLINE_NAMES], fb_got[DECLINE_NAMES];
+    int n_fb = 0; uint64_t fell_back = 0;
     const char *decl_s_name[DECLINE_NAMES]; uint32_t decl_s_type[DECLINE_NAMES];
     int n_decl_w = 0, n_decl_s = 0;
     uint64_t declined_width = 0;
@@ -1967,13 +1998,24 @@ static int quantize_gguf_plan_inner(const char *in_path, const char *out_path, i
                 out_type[i] = t->type;
             } else if (!should_quantize(t)) {
                 out_type[i] = t->type == T_F16 ? T_F16 : T_F32;
-            } else if (!type_fits_row(want, t->ne[0])) {
+            } else if (!type_fits_row(want, t->ne[0]) &&
+                       width_fallback(want, t->ne[0]) == want) {
                 out_type[i] = t->type;
                 if (n_decl_w < DECLINE_NAMES) {
                     decl_w_name[n_decl_w] = t->name;
                     decl_w_type[n_decl_w++] = (uint32_t)want;
                 }
                 declined_width++;
+            } else if (!type_fits_row(want, t->ne[0])) {
+                int fb = width_fallback(want, t->ne[0]);
+                if (n_fb < DECLINE_NAMES) {
+                    fb_name[n_fb] = t->name; fb_want[n_fb] = (uint32_t)want;
+                    fb_got[n_fb++] = (uint32_t)fb;
+                }
+                fell_back++;
+                want = fb;
+                out_type[i] = ggml_row_size(t->type, t->ne[0]) <=
+                              ggml_row_size(fb, t->ne[0]) ? t->type : fb;
             } else if (ggml_row_size(t->type, t->ne[0]) <=
                        ggml_row_size(want, t->ne[0])) {
                 out_type[i] = t->type;   // never grow
@@ -1995,7 +2037,8 @@ static int quantize_gguf_plan_inner(const char *in_path, const char *out_path, i
                             (only && *only && !strstr(t->name, only));
             if (filtered)
                 out_type[i] = t->type;
-            else if (should_quantize(t) && !type_fits_row(target, t->ne[0])) {
+            else if (should_quantize(t) && !type_fits_row(target, t->ne[0]) &&
+                     width_fallback(target, t->ne[0]) == target) {
                 out_type[i] = t->type;
                 filtered = true;          // and skip the never-grow rule below
                 if (n_decl_w < DECLINE_NAMES) {
@@ -2003,6 +2046,14 @@ static int quantize_gguf_plan_inner(const char *in_path, const char *out_path, i
                     decl_w_type[n_decl_w++] = (uint32_t)target;
                 }
                 declined_width++;
+            } else if (should_quantize(t) && !type_fits_row(target, t->ne[0])) {
+                int fb = width_fallback(target, t->ne[0]);
+                if (n_fb < DECLINE_NAMES) {
+                    fb_name[n_fb] = t->name; fb_want[n_fb] = (uint32_t)target;
+                    fb_got[n_fb++] = (uint32_t)fb;
+                }
+                fell_back++;
+                out_type[i] = fb;         // the never-grow rule below still applies
             } else
                 out_type[i] = should_quantize(t) ? target
                             : (t->type == T_F16 ? T_F16 : T_F32);
@@ -2042,6 +2093,17 @@ static int quantize_gguf_plan_inner(const char *in_path, const char *out_path, i
         gguf_close(&g);
         quantize_plans_free(&plan, &tplan);
         return 1;
+    }
+    if (w.ok && fell_back) {
+        fprintf(stderr, "quantize: %llu tensor(s) written in a 32-block fallback "
+                "type — the requested type's block does not divide their row "
+                "width\n", (unsigned long long)fell_back);
+        for (int k = 0; k < n_fb; k++)
+            fprintf(stderr, "quantize:   %s wanted %s, wrote %s\n", fb_name[k],
+                    ggml_type_name((int)fb_want[k]), ggml_type_name((int)fb_got[k]));
+        if (fell_back > (uint64_t)n_fb)
+            fprintf(stderr, "quantize:   ... and %llu more\n",
+                    (unsigned long long)(fell_back - (uint64_t)n_fb));
     }
     if (w.ok && declined_width) {
         fprintf(stderr, "quantize: %llu tensor(s) kept their own type — the "

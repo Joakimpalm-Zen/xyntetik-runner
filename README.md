@@ -812,8 +812,13 @@ Repack weight matrices to `q8_0`, `q4_0`, `q3_k`, `q4_k`, `q6_k`, `f16`, or
 ```
 
 Norms, biases, and rope factors stay f32; tensors already smaller than the
-target are retained, as are rows the target type cannot describe (`q3_k` needs
-a row width divisible by 256, `q8_0`/`q4_0` by 32). MoE router weights
+target are retained. A row a 256-wide K-quant or i-quant cannot describe
+(`q3_k`, `q4_k`, `q6_k` need a row width divisible by 256) is written in the
+32-block type of the nearest bit budget instead, reported per tensor on
+stderr (`q2_k`/`q3_k` and the 1- to 3-bit i-quants to `q4_0`, `q4_k`/`iq4_xs`
+to `q5_0`, `q5_k` to `q5_1`, `q6_k` to `q8_0`, the same map llama.cpp uses),
+so a model with 5760-wide rows quantised to Q4_K_M comes out near its label
+rather than two-thirds bf16; a row no type can describe is kept as is. MoE router weights
 (`ffn_gate_inp*`) keep their source type on every path, including a
 `--type-plan` that names them: the router selects which expert runs, so an
 error there swaps a whole FFN, and it is a fraction of a percent of the file.
@@ -1875,11 +1880,12 @@ whether the draft is `active` there.
 Per-tensor rewrite plan. First substring rule wins; types are `keep`, `q8_0`, `q4_0`,
 `q3_k`, `q4_k`, `q6_k`, `f16`, and `bf16`. Example:
 `{"default":"keep","rules":[{"match":"_exps.weight","type":"q3_k"}]}`. Requires
-`--quantize`. A rule that cannot be honoured for a tensor - the type's block does not
-divide the row width, or it would not make the tensor smaller - leaves that tensor at
-its source type and is reported on stderr BY NAME with the type it asked for, so the
-built file can differ from the plan as written. `scripts/type-plan-size.py` predicts the
-exact size and per-type histogram, including declines, before you build.
+`--quantize`. A rule whose type's block does not divide the row width is honoured in the
+32-block fallback type (reported BY NAME with the type asked for and the type written);
+a rule that would not make the tensor smaller leaves that tensor at its source type and
+is reported the same way, so the built file can differ from the plan as written.
+`scripts/type-plan-size.py` predicts the exact size and per-type histogram, including
+fallbacks and declines, before you build.
 
 <a id="cli-merge-lora"></a>
 #### `--merge-lora OUT`

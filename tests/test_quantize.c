@@ -471,7 +471,9 @@ int main(void) {
     // writer would emit one block (256 values, 32 dropped) under a header that
     // still says 288 -- and gguf.c rejects ne[0] % block_size != 0 at load, so
     // the requant "succeeds" and produces a file nothing can open. Such a
-    // tensor must keep its own type instead.
+    // tensor takes the 32-block fallback of the nearest bit budget (Q4_0 for
+    // Q3_K) instead of keeping its own type: a Q4_K_M of a model with
+    // 5760-wide rows used to come out two-thirds BF16 (2026-09-23).
     {
         const char *win = "q_width_in.gguf", *wout = "q_width_out.gguf";
         const char *plan = "q_width_plan.json";
@@ -495,12 +497,12 @@ int main(void) {
         assert(gguf_open(&g, wout));        // the whole point: it must load
         gguf_tensor *w288 = gguf_find_tensor(&g, "blk.0.ffn_down_exps.weight");
         gguf_tensor *w256 = gguf_find_tensor(&g, "blk.1.ffn_down_exps.weight");
-        assert(w288 && w288->type == T_F32);
-        assert(memcmp(w288->data, wide, sizeof(wide)) == 0);
+        assert(w288 && w288->type == T_Q4_0);   // the 32-block fallback, 9 whole blocks
+        assert(w288->ne[0] == W_N);
         assert(w256 && w256->type == T_Q3_K);   // the representable row still converts
         gguf_close(&g);
         remove(win); remove(wout); remove(plan);
-        printf("ok: a row too narrow for the plan's block keeps its own type\n");
+        printf("ok: a row too narrow for the plan's block takes the 32-block fallback\n");
     }
 
     // The MoE router decides WHICH expert runs. Quantizing it turns a small
