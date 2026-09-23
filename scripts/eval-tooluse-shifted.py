@@ -118,6 +118,20 @@ def serve(args, adapter, port):
                            stderr=subprocess.DEVNULL)
 
 
+def served_model_id(port):
+    """The id the server serves (GET /v1/models), or None. The chat leg must
+    name a served model: a placeholder is refused with 404 and a refused
+    request is not a decision (the first ZEN run scored 150 refusals per
+    arm as 52 none-matches, 2026-09-23)."""
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/v1/models", timeout=20) as r:
+            body = json.loads(r.read().decode("utf-8"))
+    except Exception:
+        return None
+    ids = [m.get("id") for m in body.get("data", []) if isinstance(m, dict) and m.get("id")]
+    return ids[0] if ids else None
+
+
 def wait_ready(port, timeout=300):
     """Wait for server to be ready."""
     t0 = time.time()
@@ -263,11 +277,12 @@ def score_raw_leg(rows, port, system_prompt, catalog, schemas):
     }
 
 
-def score_native_leg(rows, port, catalog):
-    """Score /v1/chat/completions native tools leg."""
+def score_native_leg(rows, port, catalog, model_id):
+    """Score /v1/chat/completions native tools leg. A refused request is a
+    failed row, never a match, and the refusal count is reported."""
     results = []
     n = len(rows)
-    tool_ok = args_ok = exact = 0
+    tool_ok = args_ok = exact = refusals = 0
 
     tools = []
     for tool in catalog:
@@ -289,7 +304,7 @@ def score_native_leg(rows, port, catalog):
 
     for row in rows:
         body = json.dumps({
-            "model": "ignored",
+            "model": model_id,
             "messages": [{"role": "user", "content": row["prompt"]}],
             "tools": tools,
             "tool_choice": "auto",
@@ -362,6 +377,8 @@ def score_native_leg(rows, port, catalog):
                     args_ok += 1
                     exact_match = True
                     exact += 1
+        elif refusal is not None:
+            refusals += 1
         elif not calls and gold_tool == "none":
             tool_match = True
             tool_ok += 1
@@ -390,6 +407,7 @@ def score_native_leg(rows, port, catalog):
         "tool_ok": tool_ok,
         "args_ok": args_ok,
         "exact_match": exact,
+        "refusals": refusals,
         "tool_ok_rate": round(tool_ok / n, 4) if n > 0 else 0,
         "args_ok_rate": round(args_ok / n, 4) if n > 0 else 0,
         "exact_match_rate": round(exact / n, 4) if n > 0 else 0,
@@ -452,7 +470,11 @@ def main():
         raw_scores = score_raw_leg(rows, port, system_prompt, catalog, schemas)
 
         print("Native leg...", file=sys.stderr)
-        native_scores = score_native_leg(rows, port, catalog)
+        model_id = served_model_id(port)
+        if not model_id:
+            print("error: the server lists no model (GET /v1/models); the native leg cannot run", file=sys.stderr)
+            sys.exit(2)
+        native_scores = score_native_leg(rows, port, catalog, model_id)
     finally:
         stop(srv)
 
@@ -491,6 +513,9 @@ def main():
         json.dump(record, f, indent=2)
 
     print(f"\nResult written to {out_file}", file=sys.stderr)
+    if native_scores.get("refusals", 0) == native_scores["n"]:
+        print("error: every native-leg request was refused; the record is written but is not a measurement", file=sys.stderr)
+        sys.exit(2)
 
     # Print summary
     print(f"\n{model_base}{adapter_suffix} on {host_suffix}:")

@@ -277,77 +277,99 @@ class TestLabelModificationDetection:
         assert original_hash != modified_hash
 
 
-class TestServerCommandBuilder:
-    """Test that lora-scale is correctly passed to runner."""
+import importlib.util
+import io
+import urllib.error
+import urllib.request
 
-    def test_serve_without_adapter(self):
-        """Without adapter, lora-scale should not appear in command."""
+
+def load_scorer():
+    path = os.path.join(os.path.dirname(__file__), "..", "scripts", "eval-tooluse-shifted.py")
+    spec = importlib.util.spec_from_file_location("eval_tooluse_shifted", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+class TestServerCommand:
+    """The serve command the scorer actually builds."""
+
+    def _capture(self, monkeypatch, mod):
+        seen = []
+
+        class P:
+            def __init__(self, cmd, **kw):
+                seen.append(cmd)
+
+        monkeypatch.setattr(mod.subprocess, "Popen", P)
+        return seen
+
+    def test_serve_without_adapter(self, monkeypatch):
+        mod = load_scorer()
+        seen = self._capture(monkeypatch, mod)
+
         class Args:
-            runner = "./runner"
-            model = "model.gguf"
-            threads = 4
-            lora_scale = 1.0
+            runner, model, threads, lora_scale = "./runner", "m.gguf", 4, 1.0
 
-        args = Args()
-        adapter = None
-        port = 9000
+        mod.serve(Args(), None, 9000)
+        assert "--lora" not in seen[0] and "--lora-scale" not in seen[0]
+        assert seen[0][:3] == ["./runner", "-m", "m.gguf"] and "--gpu" in seen[0]
 
-        # Build command as the serve function would
-        cmd = [args.runner, "-m", args.model, "--serve", "--port", str(port),
-               "--no-tray", "--gpu", "off"]
-        if args.threads > 0:
-            cmd += ["-t", str(args.threads)]
-        if adapter:
-            cmd += ["--lora", adapter, "--lora-scale", str(args.lora_scale)]
+    def test_serve_with_adapter_passes_the_scale(self, monkeypatch):
+        mod = load_scorer()
+        seen = self._capture(monkeypatch, mod)
 
-        assert "--lora-scale" not in cmd
-        assert "--lora" not in cmd
-
-    def test_serve_with_adapter_default_scale(self):
-        """With adapter and default scale (1.0), both should appear."""
         class Args:
-            runner = "./runner"
-            model = "model.gguf"
-            threads = 4
-            lora_scale = 1.0
+            runner, model, threads, lora_scale = "./runner", "m.gguf", 4, 0.5
 
-        args = Args()
-        adapter = "adapter.gguf"
-        port = 9000
+        mod.serve(Args(), "a.gguf", 9000)
+        i = seen[0].index("--lora")
+        assert seen[0][i + 1] == "a.gguf"
+        assert seen[0][seen[0].index("--lora-scale") + 1] == "0.5"
 
-        # Build command
-        cmd = [args.runner, "-m", args.model, "--serve", "--port", str(port),
-               "--no-tray", "--gpu", "off"]
-        if args.threads > 0:
-            cmd += ["-t", str(args.threads)]
-        if adapter:
-            cmd += ["--lora", adapter, "--lora-scale", str(args.lora_scale)]
 
-        assert "--lora" in cmd
-        assert "--lora-scale" in cmd
-        lora_idx = cmd.index("--lora")
-        scale_idx = cmd.index("--lora-scale")
-        assert cmd[lora_idx + 1] == "adapter.gguf"
-        assert cmd[scale_idx + 1] == "1.0"
+class TestNativeLeg:
+    """The chat leg names the served model and never scores a refusal as a match."""
 
-    def test_serve_with_adapter_custom_scale(self):
-        """With adapter and custom scale, both should be passed."""
-        class Args:
-            runner = "./runner"
-            model = "model.gguf"
-            threads = 4
-            lora_scale = 0.5
+    CATALOG = [{"name": "read_file", "args": {"path": {"type": "string"}}, "required": ["path"]},
+               {"name": "none", "args": {}, "required": []}]
+    ROWS = [{"id": "a", "category": "none", "prompt": "hello", "gold": {"tool": "none", "args": {}}},
+            {"id": "b", "category": "paraphrase", "prompt": "open x", "gold": {"tool": "read_file", "args": {"path": "x"}}}]
 
-        args = Args()
-        adapter = "adapter.gguf"
-        port = 9000
+    def test_served_model_id_reads_v1_models(self, monkeypatch):
+        mod = load_scorer()
 
-        # Build command
-        cmd = [args.runner, "-m", args.model, "--serve", "--port", str(port),
-               "--no-tray", "--gpu", "off"]
-        if args.threads > 0:
-            cmd += ["-t", str(args.threads)]
-        if adapter:
-            cmd += ["--lora", adapter, "--lora-scale", str(args.lora_scale)]
+        class R(io.BytesIO):
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
 
-        assert cmd[cmd.index("--lora-scale") + 1] == "0.5"
+        monkeypatch.setattr(mod.urllib.request, "urlopen",
+                            lambda url, timeout=0: R(json.dumps({"data": [{"id": "served-1"}]}).encode()))
+        assert mod.served_model_id(1) == "served-1"
+
+    def test_refused_requests_are_failures_not_none_matches(self, monkeypatch):
+        mod = load_scorer()
+        bodies = []
+
+        def refuse(req, timeout=0):
+            bodies.append(json.loads(req.data))
+            raise urllib.error.HTTPError(req.full_url, 404, "not found", {}, io.BytesIO(b'{"error":"model_not_found"}'))
+
+        monkeypatch.setattr(mod.urllib.request, "urlopen", refuse)
+        out = mod.score_native_leg(self.ROWS, 1, self.CATALOG, "served-1")
+        assert all(b["model"] == "served-1" for b in bodies)
+        assert out["refusals"] == 2
+        assert out["tool_ok"] == 0 and out["exact_match"] == 0
+        assert all(r["refusal"] for r in out["rows"])
+
+    def test_a_none_answer_matches_only_when_the_request_succeeded(self, monkeypatch):
+        mod = load_scorer()
+
+        class R(io.BytesIO):
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+
+        monkeypatch.setattr(mod.urllib.request, "urlopen",
+                            lambda req, timeout=0: R(json.dumps({"choices": [{"finish_reason": "stop", "message": {"content": "hi"}}]}).encode()))
+        out = mod.score_native_leg(self.ROWS[:1], 1, self.CATALOG, "served-1")
+        assert out["refusals"] == 0 and out["tool_ok"] == 1
