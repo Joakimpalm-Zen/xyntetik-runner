@@ -353,6 +353,12 @@ typedef struct {
     // streams (+ the final pre-norm hidden), recorded by solo forwards when
     // non-NULL. Owned by model_lora_backward for the duration of one call.
     float *tape;
+    // backward-only scratch (R8.9.6): per-owner-layer dK/dV accumulated from
+    // the layers that share its cache ([n_layer][T * bw_share_kvmax]), and
+    // the per-layer-embedding slices for the window ([T][n_layer][n_embd_ple])
+    float *bw_dk_share, *bw_dv_share;
+    int    bw_share_kvmax;
+    float *bw_ple;
     int    tape_T;
     float *all_logits;       // lazy [spec_batch][n_vocab] (speculative verify)
     int    spec_batch;       // rows all_logits can hold

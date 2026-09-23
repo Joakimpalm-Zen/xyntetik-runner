@@ -268,10 +268,11 @@ Llama, Mistral, Qwen2.5 and Granite 4.x dense (muP scalars, tied output),
 since 2026-09-08 the head transforms (logit scale, softcap, suppressed
 tokens), the afmoe and Muse-Glimmer attention output gate, the sandwich
 norms, the per-layer output scale and sliding-window attention, and since
-2026-09-22 the GELU gated FFN (Gemma 3) beside the SiLU one. The training
-gate names what it still refuses: Gemma 4's weightless V norm (every
-variant) and its E-series per-layer embeddings, tied or absent V,
-attention sinks, MoE experts, and recurrent or hybrid blocks. Every
+2026-09-22 the GELU gated FFN (Gemma 3) beside the SiLU one, and since
+2026-09-23 Gemma 4 in full: the weightless V norm, the V-less full-attention
+layers, the E-series shared KV and per-layer embeddings. The training gate
+names what it still refuses: attention sinks, MoE experts, recurrent or
+hybrid blocks, and the derived-K cache layout. Every
 covered shape is pinned by the finite-difference gate in `make test` on
 a fixture that carries it,
 and by a directional derivative over the whole adapter that averages out
