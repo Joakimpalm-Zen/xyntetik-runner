@@ -8,6 +8,23 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **Quantizer: a 32-block fallback for rows a K-quant cannot describe.** A
+  row width that is a multiple of 32 but not of 256 used to leave the tensor
+  at its source type under a K-quant or i-quant target, silently: a
+  "Q4_K_M" of a model with 5760-wide rows kept 62% of its bytes at BF16 (the
+  lab's Kvist-14B, 2026-09-23). The quantizer now writes the 32-block type of
+  the nearest bit budget (`q2_k`/`q3_k` and the 1- to 3-bit i-quants to
+  `q4_0`, `q4_k`/`iq4_xs` to `q5_0`, `q5_k` to `q5_1`, `q6_k` to `q8_0`, the
+  map llama.cpp uses), reports every such tensor by name with the type asked
+  for and the type written, and `scripts/type-plan-size.py` predicts the same
+  choice (`fallback_row_width`) so the predicted size still matches the
+  built file to the byte. A row no type can describe is still kept and
+  reported as before.
+- **`kld-compare-raw.py` and `kld-compare.py` server mode take `--threads`
+  and `--ctx`**, passed to both served runners, so a fidelity run no longer
+  needs the servers pre-started by hand to pin threads and context (the
+  lab, 2026-09-23).
+
 - **`evals/tooluse-shifted`: a tool-use eval built to tell adapters apart
   (R8.4).** A 23-tool catalog with overlapping names and argument shapes,
   150 hand-written distribution-shifted prompts in five categories, labels

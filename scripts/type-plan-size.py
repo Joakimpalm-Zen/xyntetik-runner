@@ -39,7 +39,8 @@ BLOCK = {
 }
 BY_NAME = {v[2]: k for k, v in BLOCK.items()}
 FILE_TYPE_KEY = "general.file_type"
-PLAN_TYPE = {"q8_0": "Q8_0", "q4_0": "Q4_0", "q3_k": "Q3_K", "f16": "F16"}
+PLAN_TYPE = {"q8_0": "Q8_0", "q4_0": "Q4_0", "q3_k": "Q3_K", "q4_k": "Q4_K",
+             "q6_k": "Q6_K", "f16": "F16"}
 
 
 def _read(f):
@@ -128,7 +129,16 @@ def main():
         tensors, data_start, alignment = _read(f)
     plan = json.loads(open(a.plan).read())
 
-    data, hist, declined, never_grew = 0, {}, [], []
+    # The quantizer's 32-block fallback (width_fallback in src/quantize.c):
+    # a 256-wide K-quant or i-quant that does not divide the row is written
+    # as the 32-block type of the nearest bit budget, reported per tensor.
+    # Only a type with no such cousin is still declined.
+    FALLBACK = {"Q2_K": "Q4_0", "Q3_K": "Q4_0", "IQ1_S": "Q4_0", "IQ1_M": "Q4_0",
+                "IQ2_XXS": "Q4_0", "IQ2_XS": "Q4_0", "IQ2_S": "Q4_0",
+                "IQ3_XXS": "Q4_0", "IQ3_S": "Q4_0",
+                "Q4_K": "Q5_0", "IQ4_XS": "Q5_0", "IQ4_NL": "Q5_0",
+                "Q5_K": "Q5_1", "Q6_K": "Q8_0"}
+    data, hist, declined, never_grew, fell_back = 0, {}, [], [], []
     for index, (name, src, ne) in enumerate(tensors):
         if src not in BLOCK:
             sys.exit(f"unsupported source type {src} on {name}")
@@ -145,9 +155,19 @@ def main():
                 out = 1 if src == 1 else 0
             else:
                 w = BY_NAME[PLAN_TYPE[want]]
+                wanted = PLAN_TYPE[want]
                 if ne[0] % BLOCK[w][0]:
-                    declined.append({"tensor": name, "type": PLAN_TYPE[want],
-                                     "row": ne[0], "block": BLOCK[w][0]})
+                    fb = FALLBACK.get(BLOCK[w][2].upper())
+                    if fb and ne[0] % BLOCK[BY_NAME[fb]][0] == 0:
+                        fell_back.append({"tensor": name, "wanted": wanted,
+                                          "wrote": fb, "row": ne[0]})
+                        w = BY_NAME[fb]
+                    else:
+                        declined.append({"tensor": name, "type": wanted,
+                                         "row": ne[0], "block": BLOCK[w][0]})
+                        w = None
+                if w is None:
+                    pass
                 elif row_bytes(src, ne[0]) <= row_bytes(w, ne[0]):
                     never_grew.append({"tensor": name, "type": PLAN_TYPE[want],
                                        "source": BLOCK[src][2]})
@@ -168,6 +188,7 @@ def main():
     total = data_start + data
     report = {"model": a.model, "plan": a.plan, "predicted_bytes": total,
               "histogram": hist, "declined_row_width": declined,
+              "fallback_row_width": fell_back,
               "declined_never_grow": never_grew}
     if a.json:
         print(json.dumps(report, indent=1))

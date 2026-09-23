@@ -62,10 +62,17 @@ def require_served(endpoint, name, label):
                          f"served ids: {', '.join(ids) if ids else '(none)'}")
 
 
-def start_server(runner, model, port):
+def start_server(runner, model, port, threads=0, ctx=0):
+    cmd = [runner, "-m", model, "--serve", "--no-tray",
+           "--port", str(port), "--gpu", "off"]
+    # server-mode passthrough (the lab, 2026-09-23): without it the
+    # rehearsal pre-started both servers by hand to pin threads and context
+    if threads > 0:
+        cmd += ["-t", str(threads)]
+    if ctx > 0:
+        cmd += ["-c", str(ctx)]
     proc = subprocess.Popen(
-        [runner, "-m", model, "--serve", "--no-tray",
-         "--port", str(port), "--gpu", "off"],
+        cmd,
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     for _ in range(400):
         if proc.poll() is not None:
@@ -218,6 +225,10 @@ def main(argv):
     ap.add_argument("--stride", type=int, default=1)
     ap.add_argument("--port-a", type=int, default=58611)
     ap.add_argument("--port-b", type=int, default=58612)
+    ap.add_argument("--threads", type=int, default=0,
+                    help="server mode: -t for both served runners (default: the runner's own default)")
+    ap.add_argument("--ctx", type=int, default=0,
+                    help="server mode: -c for both served runners (default: the model's trained context)")
     ap.add_argument("--tie-band", type=float, default=DEFAULT_TIE_BAND,
                     help="near-tie band in nats for margin-qualified top-1 "
                          f"(default {DEFAULT_TIE_BAND}; see the derivation "
@@ -237,7 +248,7 @@ def main(argv):
             if not args.model_name_a:
                 args.model_name_a = os.path.basename(args.model_a)
             print(f"starting server A: {args.model_a}", file=sys.stderr)
-            procs.append(start_server(args.runner, args.model_a, args.port_a))
+            procs.append(start_server(args.runner, args.model_a, args.port_a, args.threads, args.ctx))
             ep_a = f"http://127.0.0.1:{args.port_a}"
         if args.endpoint_b:
             ep_b = args.endpoint_b
@@ -249,7 +260,7 @@ def main(argv):
             if not args.model_name_b:
                 args.model_name_b = os.path.basename(args.model_b)
             print(f"starting server B: {args.model_b}", file=sys.stderr)
-            procs.append(start_server(args.runner, args.model_b, args.port_b))
+            procs.append(start_server(args.runner, args.model_b, args.port_b, args.threads, args.ctx))
             ep_b = f"http://127.0.0.1:{args.port_b}"
 
         require_served(ep_a, args.model_name_a, "a")
