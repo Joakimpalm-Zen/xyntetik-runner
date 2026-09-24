@@ -2750,11 +2750,20 @@ the forced-close buffer cannot hold is refused rather than truncated, because
 half a sentence in the model's voice is worse than none.
 
 It exists because a distilled student can state its answer in the first
-sentence of a reasoning turn and then hedge for hundreds of tokens without
-closing it. Measured on a 14B Muse-family student against its own parent, on
-20 held-out prompts: the student's reasoning ran a median 179 tokens against
-the parent's 53, and 2 turns of 17 never closed at all. A 256-token cap closes
-those 2 and touches no turn the parent's length.
+sentence of a reasoning turn and then hedge without ever closing it. Measured
+on a 14B Muse-family student against its own parent: mid-training the
+student's closed reasoning ran a median 179 tokens against the parent's 53 on
+the same prompts, and further training brought the closed turns back to the
+parent's length (median 20.5 against 48, maximum 122 for both) while a few
+turns still never closed at all.
+
+That is the shape to size against, and it is why the cap is a runaway guard
+rather than a length trimmer: set above the longest turn the model closes on
+its own, it changes nothing about ordinary generation and ends only the turns
+that would otherwise run to the token limit. For that student, 256 leaves
+every closing turn untouched and catches only the runaways. A cap tight
+enough to shorten normal reasoning is a different intervention, and it should
+be argued for on its own evidence.
 
 Raw completions are covered as well as chat, and the budget reads the
 prompt's own reasoning state to do it: a prompt that ends inside a reasoning
