@@ -2731,11 +2731,23 @@ tool-choice bank across serving conditions and reports where they disagree
 
 `--reasoning-budget N` (server default) and `reasoning_max_tokens` (per
 request, 0 turns it off) cap the tokens a turn may spend INSIDE its reasoning
-channel. When the cap is reached the sampler is restricted to the model's
-reasoning-close token, so the turn closes there and the model goes on to
-address its recipient; the answer keeps the whole `max_tokens` budget. This is
+channel. When the cap is reached the sampler is restricted to the forced
+close (a short transition sentence, then the model's reasoning-close token),
+so the turn ends there and the model goes on to address its recipient; the answer keeps the whole `max_tokens` budget. This is
 budget forcing in the s1 sense, and it is a serving control, never a
 measurement one: a benchmark that scores reasoning must run without it.
+
+The forced close writes a short sentence in the model's own voice before the
+close token, because a bare terminator drops the model mid sentence and
+measurably costs the answer that follows: llama.cpp's own reasoning-budget
+work reports HumanEval 93% uncapped, about 89% capped with a message and 79%
+capped with a bare end tag on a 9B model, and s1 (2501.19393) and Qwen3's
+"Considering the limited time..." line use the same pattern. The default is
+neutral between answering and calling a tool, since either can follow.
+`--reasoning-budget-message S` and the per-request `reasoning_budget_message`
+replace it; an empty string asks for the bare close deliberately. A sentence
+the forced-close buffer cannot hold is refused rather than truncated, because
+half a sentence in the model's voice is worse than none.
 
 It exists because a distilled student can state its answer in the first
 sentence of a reasoning turn and then hedge for hundreds of tokens without

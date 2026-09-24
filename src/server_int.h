@@ -58,6 +58,9 @@ typedef struct {
     // R4.12.16: default reasoning budget in tokens (0 = off), from
     // --reasoning-budget. A request's reasoning_max_tokens overrides it.
     int        reasoning_budget;
+    // --reasoning-budget-message: the server's transition sentence, NULL for
+    // the built-in default. A request's reasoning_budget_message wins.
+    const char *reasoning_budget_message;
     atomic_int ctx_size;
     atomic_int req_counter;
     // swap mode

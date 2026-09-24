@@ -1798,7 +1798,8 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
                const model_params *mp, sampler defaults,
                const sampler_override *ov, int port, int parallel,
                int n_threads, int ttl, const char *draft_path, int draft_k,
-               bool draft_lookup, int reasoning_budget, bool ignore_eos,
+               bool draft_lookup, int reasoning_budget,
+               const char *reasoning_budget_message, bool ignore_eos,
                int tmpl_override,
                bool force_uncertified, const oms_policy *signing) {
     sock_init();
@@ -2007,6 +2008,7 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
                                  : (name ? name + 1 : model_path);
     SV.n_predict_cap = 1024;
     SV.reasoning_budget = reasoning_budget;
+    SV.reasoning_budget_message = reasoning_budget_message;
     SV.q.limit = (int)(sizeof(SV.q.fds) / sizeof(sock_t));
     // a queue bound may only lower the fixed fd capacity, never raise it
     SV.q.limit = (int)env_i64("RUNNER_MAX_QUEUE", 1, SV.q.limit, SV.q.limit);
