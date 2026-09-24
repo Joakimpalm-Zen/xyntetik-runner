@@ -253,12 +253,20 @@ def canon_path(p):
     return p
 
 
+def canon_str(s):
+    """A produced or gold string value in canonical form: stripped, and a
+    path-shaped value with './' and a trailing slash dropped."""
+    s = s.strip()
+    if "/" in s or s in ("./", "."):
+        s = canon_path(s)
+    return s
+
+
 def norm_value(got, gold):
     """Normalise a produced argument value against the gold value's shape:
-    strings are stripped, a path's trailing slash and a leading './' are
-    dropped, and a digit string is read as an integer when the gold is one.
-    The label decides the shape; the model is not penalised for spelling
-    '.' as './'."""
+    strings are canonicalised (strip, path shape), and a digit string is read
+    as an integer when the gold is one. The label decides the shape; the
+    model is not penalised for spelling '.' as './'."""
     if isinstance(gold, bool):
         return got
     if isinstance(gold, int):
@@ -272,19 +280,12 @@ def norm_value(got, gold):
             return int(got.strip())
         return got
     if isinstance(gold, str) and isinstance(got, str):
-        s = got.strip()
-        g = gold.strip()
-        if s != g and ("/" in s or "/" in g or s in ("./", ".") or g == "."):
-            s = canon_path(s)
-        return s
+        return canon_str(got)
     return got
 
 
 def gold_value(v):
-    if isinstance(v, str):
-        s = v.strip()
-        return canon_path(s) if ("/" in s or s in ("./", ".")) else s
-    return v
+    return canon_str(v) if isinstance(v, str) else v
 
 
 def score_args(got, gold_args, required):
@@ -586,6 +587,13 @@ def score_native_leg(rows, port, catalog, model_id, schemas=None):
 
 # ----------------------------------------------------------------- next leg
 
+# Synonym siblings the catalog cannot separate. The set's also_ok labels
+# carry the same pairs for first calls (frozen); the second call takes them
+# from here, as a scoring rule.
+SYNONYMS = {"find_files": ["search_files"], "search_files": ["find_files"],
+            "read_file": ["cat_file"], "cat_file": ["read_file"],
+            "http_get": ["fetch_url"], "fetch_url": ["http_get"]}
+
 CANNED_RESULTS = {
     "search_files": "src/a.py\nsrc/b.py\n",
     "find_files": "tests/test_api.py\ntests/test_cli.py\n",
@@ -627,6 +635,11 @@ def next_messages(row):
     ]
 
 
+def next_gold(row):
+    nxt = row["gold"]["next"]
+    return {"tool": nxt["tool"], "args": nxt["args"], "also_ok": list(SYNONYMS.get(nxt["tool"], []))}
+
+
 def score_next_leg(rows, port, catalog, model_id, schemas=None):
     """Score the second call of each multi-intent row against gold_next."""
     schemas = schemas or {t["name"]: set(t.get("required", [])) for t in catalog}
@@ -635,8 +648,7 @@ def score_next_leg(rows, port, catalog, model_id, schemas=None):
     results = []
     counts = fresh_counts()
     for row in rows:
-        gold = {"tool": row["gold"]["next"]["tool"], "args": row["gold"]["next"]["args"],
-                "also_ok": []}
+        gold = next_gold(row)
         body = chat_request(model_id, next_messages(row), tools)
         body.pop("choice_logprobs", None)
         resp, refusal = post_json(f"http://127.0.0.1:{port}/v1/chat/completions", body)
@@ -791,13 +803,179 @@ def write_decisions(decide_leg, path):
                                 "acceptable_ids": [options.index(a) for a in r["acceptable"]]}) + "\n")
 
 
+# ------------------------------------------------------------------ rescore
+
+def summarize_native(results, n):
+    counts = fresh_counts()
+    for r in results:
+        if r.get("refusal"):
+            counts["refusals"] += 1
+            continue
+        if r.get("empty"):
+            counts["empty_outputs"] += 1
+        tally(counts, r)
+    return counts
+
+
+def rescore_record(record, rows, catalog, schemas, target=0.9):
+    """Re-derive every verdict and summary of a record from the outputs it
+    stores (raw text, emitted calls, decide probabilities) under the current
+    scoring rules. Labels come from the frozen set, never from the record."""
+    by_id = {r["id"]: r for r in rows}
+    system_prompt = render_system_prompt(catalog)
+    if "raw_leg" in record:
+        leg = record["raw_leg"]
+        counts = fresh_counts()
+        parses = schema_ok = 0
+        for v in leg["rows"]:
+            gold = by_id[v["id"]]["gold"]
+            obj = v.get("parsed")
+            if obj is None and v.get("output"):
+                obj = extract_json(v["output"])
+            v["parsed"] = obj
+            v["json_parse"] = v["right_tool"] = v["schema_valid"] = False
+            if v.get("refusal"):
+                counts["refusals"] += 1
+            elif not v.get("output"):
+                counts["empty_outputs"] += 1
+            if obj and isinstance(obj, dict):
+                v["json_parse"] = True
+                parses += 1
+                name, args = obj.get("tool"), obj.get("args")
+                if tool_matches(name, gold):
+                    v["right_tool"] = True
+                    want = schemas.get(gold["tool"], set())
+                    ok = (isinstance(args, dict) and set(args.keys()) == want and
+                          all(str(x).strip() for x in args.values()))
+                    if not ok and gold["tool"] == "none" and args in ({}, None):
+                        ok = True
+                    if ok:
+                        v["schema_valid"] = True
+                        schema_ok += 1
+                sc = score_call(name, args, gold, schemas)
+            else:
+                sc = score_call(None, None, {**FAILED, "args": gold["args"]}, schemas)
+            v.update(tool_ok=sc["tool_ok"], keys_ok=sc["keys_ok"], fields_total=sc["fields_total"],
+                     fields_ok=sc["fields_ok"], exact=sc["exact"], exact_match=sc["exact"])
+            tally(counts, sc)
+        n = leg["n"]
+        leg.update(json_parses=parses, right_tool=counts["tool_ok"], schema_valid=schema_ok,
+                   exact_match=counts["exact"], keys_ok=counts["keys_ok"],
+                   fields_total=counts["fields_total"], fields_ok=counts["fields_ok"],
+                   empty_outputs=counts["empty_outputs"], refusals=counts["refusals"],
+                   json_parses_rate=round(parses / n, 4), right_tool_rate=round(counts["tool_ok"] / n, 4),
+                   schema_valid_rate=round(schema_ok / n, 4), exact_match_rate=round(counts["exact"] / n, 4),
+                   by_category=per_category(leg["rows"]))
+    for key, gold_of in (("native_leg", lambda r: by_id[r["id"]]["gold"]),
+                         ("next_leg", lambda r: next_gold(by_id[r["id"]]))):
+        if key not in record:
+            continue
+        leg = record[key]
+        counts = fresh_counts()
+        for v in leg["rows"]:
+            gold = gold_of(v)
+            calls = v.get("emitted_calls") or []
+            if v.get("refusal"):
+                counts["refusals"] += 1
+                sc = score_call(None, None, {**FAILED, "args": gold["args"]}, schemas)
+            else:
+                if not calls and not v.get("content_head"):
+                    counts["empty_outputs"] += 1
+                name, args = call_name_args(calls[0]) if calls else (None, None)
+                sc = score_call(name, args, gold, schemas)
+                tally(counts, sc)
+            v.update(tool_ok=sc["tool_ok"], keys_ok=sc["keys_ok"], fields_total=sc["fields_total"],
+                     fields_ok=sc["fields_ok"], exact=sc["exact"])
+            if key == "native_leg":
+                v.update(tool_match=sc["tool_ok"], args_match=sc["exact"], exact_match=sc["exact"])
+            else:
+                v["gold_next"] = gold
+        n = leg["n"]
+        leg.update(tool_ok=counts["tool_ok"], keys_ok=counts["keys_ok"], fields_total=counts["fields_total"],
+                   fields_ok=counts["fields_ok"], refusals=counts["refusals"],
+                   empty_outputs=counts["empty_outputs"],
+                   tool_ok_rate=round(counts["tool_ok"] / n, 4) if n else 0)
+        if key == "native_leg":
+            leg.update(args_ok=counts["exact"], exact_match=counts["exact"],
+                       args_ok_rate=round(counts["exact"] / n, 4) if n else 0,
+                       exact_match_rate=round(counts["exact"] / n, 4) if n else 0,
+                       by_category=per_category(leg["rows"]))
+        else:
+            leg.update(exact=counts["exact"], exact_rate=round(counts["exact"] / n, 4) if n else 0)
+    if "decide_leg" in record:
+        leg = record["decide_leg"]
+        options = leg["options"]
+        idx = {o: i for i, o in enumerate(options)}
+        decisions = []
+        refusals = 0
+        for v in leg["rows"]:
+            gold = by_id[v["id"]]["gold"]
+            acceptable = {gold["tool"]} | set(gold.get("also_ok", []))
+            v["acceptable"] = sorted(acceptable)
+            probs = v.get("probs")
+            if probs is None:
+                refusals += 1
+                v.update(top=None, top_ok=False, p_acceptable=0.0, nll=None, brier=None)
+                continue
+            top = options[max(range(len(probs)), key=lambda i: probs[i])]
+            p_acc = min(max(sum(probs[idx[a]] for a in acceptable), 0.0), 1.0)
+            nll = max(0.0, -math.log(max(p_acc, 1e-12)))
+            brier = (p_acc - 1.0) ** 2 + sum(probs[i] ** 2 for i, o in enumerate(options) if o not in acceptable)
+            conf = max(probs)
+            hit = top in acceptable
+            v.update(top=top, top_ok=hit, confidence=conf, p_acceptable=p_acc, nll=nll, brier=brier)
+            decisions.append((conf, hit, brier))
+        cal = load_calibration_module()
+        summary = cal.summarize(decisions) if decisions else {"brier": None, "ece": None, "bins": []}
+        scored = [v for v in leg["rows"] if v["nll"] is not None]
+        by_cat = {}
+        for v in scored:
+            c = by_cat.setdefault(v["category"], {"n": 0, "top_ok": 0, "nll_sum": 0.0})
+            c["n"] += 1
+            c["top_ok"] += bool(v["top_ok"])
+            c["nll_sum"] += v["nll"]
+        for c in by_cat.values():
+            c["mean_nll"] = round(c["nll_sum"] / c["n"], 4)
+            del c["nll_sum"]
+        leg.update(refusals=refusals, top1_ok=sum(1 for v in scored if v["top_ok"]),
+                   mean_nll=round(sum(v["nll"] for v in scored) / len(scored), 4) if scored else None,
+                   mean_brier=round(summary["brier"], 4) if summary.get("brier") is not None else None,
+                   ece=round(summary["ece"], 4) if summary.get("ece") is not None else None,
+                   reliability=summary.get("bins", []),
+                   certificate=cal.certificate(decisions, target) if decisions else None,
+                   by_category=by_cat)
+    record["rescored_with"] = SCHEMA_VERSION + "+rules-2026-09-24"
+    return record
+
+
+def rescore_files(paths, target=0.9):
+    catalog, schemas = load_catalog(os.path.join(EVAL_DIR, "catalog-v1.json"))
+    sets = {}
+    for path in paths:
+        with open(path) as f:
+            record = json.load(f)
+        version = record.get("set_version", "v1")
+        if version not in sets:
+            rows, h = load_set(version)
+            sets[version] = (rows, h)
+        rows, h = sets[version]
+        if record.get("labels_sha256") != h:
+            sys.exit(f"{path}: record labels {record.get('labels_sha256')} are not the frozen {version} labels {h}")
+        rescore_record(record, rows, catalog, schemas, target)
+        with open(path, "w") as f:
+            json.dump(record, f, indent=2)
+        print(f"rescored {path}", file=sys.stderr)
+
+
 # --------------------------------------------------------------------- main
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--runner", default="./runner")
-    ap.add_argument("--model", required=True)
+    ap.add_argument("--model")
+    ap.add_argument("--rescore", nargs="+", metavar="RECORD",
+                    help="re-derive every verdict of these records from their stored outputs and rewrite them")
     ap.add_argument("--lora")
     ap.add_argument("--lora-scale", type=float, default=1.0)
     ap.add_argument("--threads", type=int, default=-1)
@@ -814,6 +992,12 @@ def main():
     ap.add_argument("--freeze", action="store_true",
                     help="Only verify and print the frozen labels hash, do not run evaluation")
     args = ap.parse_args()
+
+    if args.rescore:
+        rescore_files(args.rescore, args.certificate_target)
+        return
+    if not args.model:
+        ap.error("--model is required unless --rescore is given")
 
     catalog, schemas = load_catalog(os.path.join(EVAL_DIR, "catalog-v1.json"))
     rows, labels_sha = load_set(args.set)

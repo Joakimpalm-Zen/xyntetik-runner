@@ -507,3 +507,57 @@ class TestCalibrationCertificate:
         d, skipped = cal.read_decisions(io.StringIO("\n".join(lines)))
         assert skipped == 1 and [x[1] for x in d] == [True, False]
         assert abs(d[0][2] - 0.0) < 1e-9 and abs(d[1][2] - (0.36 + 0.36)) < 1e-9
+
+
+class TestRescore:
+    def test_path_spelling_is_canonical_on_both_sides(self):
+        mod = load_scorer()
+        s = mod.score_args({"path": "./logs/app.log", "n": 100}, {"path": "./logs/app.log", "n": 100}, {"path", "n"})
+        assert s["exact"]
+        s = mod.score_args({"path": "logs/app.log", "n": 100}, {"path": "./logs/app.log", "n": 100}, {"path", "n"})
+        assert s["exact"]
+
+    def test_next_gold_takes_the_synonym_rule(self):
+        mod = load_scorer()
+        row = {"gold": {"tool": "run_pytest", "args": {}, "next": {"tool": "read_file", "args": {"path": "x"}}}}
+        assert mod.next_gold(row)["also_ok"] == ["cat_file"]
+        rows = load_set("v2")
+        for r in rows:
+            assert r.get("also_ok", []) == mod.SYNONYMS.get(r["gold_tool"], []), r["id"]
+
+    def test_rescore_rebuilds_verdicts_from_stored_outputs(self, tmp_path):
+        mod = load_scorer()
+        catalog, schemas = mod.load_catalog(os.path.join(EVAL_DIR, "catalog-v1.json"))
+        rows, h = mod.load_set("v2")
+        by_id = {r["id"]: r for r in rows}
+        a = by_id["arg_shift_28"]          # head of ./logs/app.log, 100 lines
+        m = next(r for r in rows if r["category"] == "multi_intent" and r["gold_next"]["tool"] == "read_file")
+        record = {
+            "set_version": "v2", "labels_sha256": h,
+            "raw_leg": {"n": 1, "rows": [{"id": a["id"], "category": a["category"], "prompt": a["prompt"],
+                                          "output": '{"tool": "head_file", "args": {"path": "./logs/app.log", "n": 100}}',
+                                          "parsed": None, "exact": False, "refusal": None}]},
+            "next_leg": {"n": 1, "rows": [{"id": m["id"], "category": "multi_intent", "prompt": m["prompt"],
+                                           "emitted_calls": [{"function": {"name": "cat_file",
+                                                                           "arguments": json.dumps(m["gold_next"]["args"])}}],
+                                           "refusal": None, "content_head": None, "exact": False}]},
+            "decide_leg": {"n": 1, "options": ["head_file", "read_file", "none"],
+                           "rows": [{"id": a["id"], "category": a["category"], "gold_tool": "head_file",
+                                     "probs": [0.7, 0.2, 0.1]}]},
+        }
+        p = tmp_path / "r.json"
+        p.write_text(json.dumps(record))
+        mod.rescore_files([str(p)])
+        out = json.loads(p.read_text())
+        assert out["raw_leg"]["exact_match"] == 1 and out["raw_leg"]["rows"][0]["json_parse"]
+        assert out["next_leg"]["exact"] == 1
+        d = out["decide_leg"]
+        assert d["top1_ok"] == 1 and abs(d["rows"][0]["nll"] - (-math.log(0.7))) < 1e-9
+        assert d["certificate"]["threshold"] == 0.7 and out["rescored_with"].startswith("xyntetik")
+
+    def test_rescore_refuses_a_record_with_other_labels(self, tmp_path):
+        mod = load_scorer()
+        p = tmp_path / "r.json"
+        p.write_text(json.dumps({"set_version": "v2", "labels_sha256": "0" * 64}))
+        with pytest.raises(SystemExit):
+            mod.rescore_files([str(p)])
