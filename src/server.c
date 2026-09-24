@@ -954,10 +954,10 @@ static void send_models(sock_t fd) {
     sb_lit(&r, "{\"object\":\"list\",\"data\":[");
     if (SV.n_reg > 0) {
         for (int i = 0; i < SV.n_reg; i++) {
-            // registry names are char[64]; worst-case escape is \uXXXX per
-            // byte, so 63*6+1 bounds the output exactly — a smaller buffer
-            // truncated operator-chosen names mid-escape in the JSON id
-            char esc[63 * 6 + 2];
+            // worst-case escape is \uXXXX per byte, so (capacity-1)*6+1
+            // bounds the output exactly — a smaller buffer truncated
+            // operator-chosen names mid-escape in the JSON id
+            char esc[(sizeof(SV.reg[0].name) - 1) * 6 + 2];
             json_escape(SV.reg[i].name, strlen(SV.reg[i].name), esc, sizeof(esc));
             sb_fmt(&r, "%s{\"id\":\"%s\",\"object\":\"model\","
                        "\"owned_by\":\"runner\"}", i ? "," : "", esc);

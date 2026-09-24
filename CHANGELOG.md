@@ -8,6 +8,19 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **A long model filename no longer truncates the served model id** [lab
+  finding 2026-09-24]. Single-model serve joins the registry machinery so
+  `/unload` and `--ttl` work, and that join copied the file's basename through
+  a 64-byte registry field. A longer basename was truncated rather than
+  refused, so `/v1/models` advertised an id no file had and every client that
+  named the file got 404 from a model that was loaded and serving. Found on a
+  68-character checkpoint whose cut landed exactly where `.gguf` began, which
+  read as the extension being stripped; the same file under `--parallel 4`
+  skips that join and kept its whole name, so two servers on one file
+  disagreed about its id. Registry names are now sized for a filesystem
+  basename; an operator-chosen registry name that does not fit is still
+  refused with the limit named, never truncated. Pinned by
+  `tests/test_model_id_long_name.py` at both slot counts.
 - **A reasoning budget that closes an over-long reasoning turn (R4.12.16).**
   `--reasoning-budget N` and the per-request `reasoning_max_tokens` cap the
   tokens a turn may spend inside its reasoning channel: at the cap the sampler
