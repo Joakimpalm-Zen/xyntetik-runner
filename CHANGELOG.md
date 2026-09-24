@@ -27,10 +27,13 @@ names that were true when they were written.
   is restricted to the model's reasoning-close token, the turn closes, and the
   model addresses its recipient with the answer's budget untouched. Budget
   forcing in the s1 sense, and a serving control only. Raised by the lab's
-  Kvist work and sized on its numbers: a 14B student's reasoning ran a median
-  179 tokens against its parent's 53 on the same 20 prompts, with 2 turns of
-  17 never closing; a 256 cap closes those two and touches no parent-length
-  turn. Forcing through the sampler rather than by injecting a token means the
+  Kvist work and sized on its numbers: a 14B student's closed reasoning ran a
+  median 179 tokens against its parent's 53 mid-training and came back to the
+  parent's length by the end (20.5 against 48, both topping out at 122), while
+  a few turns never closed at all. So the cap is a runaway guard rather than a
+  length trimmer: set above the longest turn the model closes on its own it
+  changes nothing about ordinary generation, and 256 was the number that
+  caught only the runaways for that student. Forcing through the sampler rather than by injecting a token means the
   closed turn is ordinary generation to the KV, the penalty window, the
   logprobs, the constraint layer and the chat splitter, and the speculative
   walk stays token-exact. Counted per request, so a turn that closes and
