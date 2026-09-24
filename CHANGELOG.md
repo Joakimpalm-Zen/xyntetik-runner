@@ -8,6 +8,22 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **Muse: `reasoning_strength` honoured, and a caller's own directive is
+  kept.** The muse-glimmer renderer wrote "Reasoning strength: high." on
+  every request and appended it even when the system prompt already said
+  otherwise, so a caller asking for low reasoning got both lines. The
+  reference template takes a `reasoning_strength` kwarg (verbatim, "high"
+  when absent), rewrites "reasoning effort" in the caller's system text to
+  "reasoning strength" in its four casings and skips its own line when the
+  text already carries one; the renderer now does the same, the chat
+  surface reads `reasoning_strength` (low, medium, high; anything else is
+  400) and accepts `reasoning_effort` as the cross-family spelling with
+  xhigh reading as high. Found on the way: the generation head compared the
+  whole thinking argument to THINK_ON, so effort bits silently turned an
+  explicit reasoning turn into the bare header; masked. Pinned by
+  `test-template`. Raised by the lab's Kvist work, whose student
+  over-deliberates after tool results; the budget-forcing cap it also asked
+  for is filed, not built.
 - **`evals/tooluse-shifted` set v2 and four scoring legs: the instrument
   can fail (R8.4.2 to R8.4.6).** 274 hand-written prompts in six categories
   with the labelling rules v1 lacked (exactly the required fields, synonym

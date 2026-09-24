@@ -682,6 +682,23 @@ static void handle_chat(slot_t *s, sock_t fd, jv *req) {
             return;
         }
         thinking |= effort;
+    } else if (s->tmpl == TMPL_MUSE) {
+        // the reference's `reasoning_strength` kwarg (low, medium, high;
+        // absent renders "high"); `reasoning_effort` is accepted as the
+        // cross-family spelling, its xhigh reading as high. A value the
+        // reference would print verbatim into the system turn is refused
+        // here unless it is one of the three words.
+        int strength = req_reasoning_strength(req);
+        int effort = req_reasoning_effort(req);
+        if (strength < 0 || effort < 0) {
+            for (int i = 0; i < n_own; i++) free(owned[i]);
+            free(owned); free(cm); free(ts.s);
+            tool_envelope_free(&env);
+            send_error(fd, 400, "reasoning_strength must be one of low, "
+                                "medium, high for this model's template");
+            return;
+        }
+        thinking |= strength ? strength : effort;
     }
     char *prompt = render_prompt_alloc(s->tmpl, cm, n_cm, true,
                                        thinking, native_tools,

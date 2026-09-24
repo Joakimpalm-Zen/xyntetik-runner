@@ -1991,6 +1991,46 @@ static void test_muse_replays_reasoning(void) {
     assert(strstr(out, "to=user<|message|>I need the rate first.") == NULL);
 }
 
+static void test_muse_reasoning_strength(void) {
+    // the reference's `reasoning_strength` kwarg: the word verbatim, "high"
+    // when absent; a caller's own directive is normalised ("Reasoning
+    // effort" -> "Reasoning strength") and the kwarg line is then skipped
+    const chat_msg one[] = { { .role = "user", .content = "HI" } };
+    char out[4096];
+    render_messages(TMPL_MUSE, one, 1, true, THINK_DEFAULT, out, sizeof(out));
+    assert(strstr(out, "Knowledge cutoff: 2026-01-04.\n\nReasoning strength: high.\n\n# Valid recipients") != NULL);
+    render_messages(TMPL_MUSE, one, 1, true, THINK_DEFAULT | THINK_EFFORT_LOW, out, sizeof(out));
+    assert(strstr(out, "\n\nReasoning strength: low.\n\n# Valid recipients") != NULL);
+    assert(strstr(out, "high") == NULL);
+    render_messages(TMPL_MUSE, one, 1, true, THINK_ON | THINK_EFFORT_MEDIUM, out, sizeof(out));
+    assert(strstr(out, "\n\nReasoning strength: medium.\n\n# Valid recipients") != NULL);
+    assert(strstr(out, "<|start|>assistant to=self<|message|>") != NULL);
+
+    const chat_msg own[] = {
+        { .role = "system", .content = "Be terse. Reasoning effort: low." },
+        { .role = "user", .content = "HI" },
+    };
+    render_messages(TMPL_MUSE, own, 2, true, THINK_DEFAULT, out, sizeof(out));
+    assert(strstr(out, "<|start|>system<|message|>Be terse. Reasoning strength: low.\n\n# Valid recipients") != NULL);
+    assert(strstr(out, "Reasoning strength: high") == NULL);
+    assert(strstr(out, "Reasoning effort") == NULL);
+
+    const chat_msg own2[] = {
+        { .role = "system", .content = "Be terse." },
+        { .role = "user", .content = "HI" },
+    };
+    render_messages(TMPL_MUSE, own2, 2, true, THINK_DEFAULT | THINK_EFFORT_LOW, out, sizeof(out));
+    assert(strstr(out, "<|start|>system<|message|>Be terse.\n\nReasoning strength: low.\n\n# Valid recipients") != NULL);
+
+    const chat_msg own3[] = {
+        { .role = "system", .content = "REASONING EFFORT high please, and reasoning Effort is not a casing the reference rewrites" },
+        { .role = "user", .content = "HI" },
+    };
+    render_messages(TMPL_MUSE, own3, 2, true, THINK_DEFAULT, out, sizeof(out));
+    assert(strstr(out, "REASONING STRENGTH high please, and reasoning Effort is not") != NULL);
+    assert(strstr(out, "\n\nReasoning strength: high.") == NULL);
+}
+
 static void test_muse_tool_result_id_resolves_prior_name(void) {
     const char *src =
         "[{\"role\":\"assistant\",\"tool_calls\":[{\"id\":\"call_7\","
@@ -2552,6 +2592,7 @@ int main(void) {
     test_qwen38_tool_turns();
     test_muse_split_closes_on_fed_reasoning_boundary();
     test_muse_plain_thinking_close_leaves_no_recipient_residue();
+    test_muse_reasoning_strength();
     test_detect_and_render_apertus(&t);
     test_render_apertus_without_system();
     test_apertus_consecutive_assistant();
