@@ -468,13 +468,15 @@ class TestCompare:
         assert raw["n"] == n and raw["b_only"] == 20 and raw["a_only"] == 0 and raw["z"] < -2
         d = c["legs"]["decide_leg"]
         assert d["mean_diff"] > 0 and d["excludes_zero"] and d["b_better"] == n
-        assert cmpm.apart(c)
+        assert cmpm.apart(c) and cmpm.apart_any(c) and cmpm.direction(c) == "B"
         c2 = cmpm.compare(base, same, seed=1, resamples=500)
         assert c2["legs"]["raw_leg"]["z"] == 0 and not c2["legs"]["decide_leg"]["excludes_zero"]
-        assert not cmpm.apart(c2)
+        assert not cmpm.apart(c2) and not cmpm.apart_any(c2) and cmpm.direction(c2) == "none"
         text = cmpm.render(base, [good, same], [c, c2], [cmpm.compare(good, same, 1, 500)])
-        assert "NOT PASSED" not in text.split("## Verdict")[0]
-        assert "R8.4.3" in text
+        assert "R8.4.3 as written" in text and "as an instrument question" in text
+        assert "NOT PASSED" in text.split("## Verdict")[1]   # `same` is not told apart from base
+        text1 = cmpm.render(base, [good], [c], [])
+        assert "adapters clearly ABOVE the base (raw z <= -2 and decide CI below zero): good.gguf" in text1
 
 
 class TestCalibrationCertificate:
