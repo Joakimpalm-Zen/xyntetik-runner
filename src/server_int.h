@@ -44,7 +44,16 @@ typedef struct {
 // resident at a time (llama-swap semantics), loaded on demand, unloaded
 // after --ttl idle seconds
 typedef struct {
-    char name[64];
+    // A basename is up to 255 bytes on every real filesystem, and single-model
+    // serve copies the model file's basename in here (the parallel==1 join
+    // below), so anything shorter TRUNCATES the served model id rather than
+    // refusing it. 64 did exactly that to a 68-character checkpoint name on
+    // the lab box (2026-09-24): the id came back cut at 63 characters, which
+    // happened to land where ".gguf" began, and every client that named the
+    // file got a 404 from a server whose /v1/models listed a name no file
+    // had. An operator-chosen registry name is still refused when it does not
+    // fit, with the limit named.
+    char name[256];
     char path[1024];
     int  tmpl;
 } reg_entry;
