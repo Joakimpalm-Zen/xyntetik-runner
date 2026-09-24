@@ -28,7 +28,7 @@ certificate: the lowest top-1 confidence above which the decisions are
 right at least T of the time, and the share of decisions that clears it.
 Exit code 1 if ECE exceeds --max-ece (default: off), so the script can gate.
 
-No third-party imports — usable anywhere the runner builds.
+No third-party imports, usable anywhere the runner builds.
 """
 
 import argparse

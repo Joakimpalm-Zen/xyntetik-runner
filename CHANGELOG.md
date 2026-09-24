@@ -8,6 +8,26 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **`evals/tooluse-shifted` set v2 and four scoring legs: the instrument
+  can fail (R8.4.2 to R8.4.6).** 274 hand-written prompts in six categories
+  with the labelling rules v1 lacked (exactly the required fields, synonym
+  siblings declared as `also_ok`, a second call labelled on every
+  multi-intent row, labels frozen before any run), a decide leg that reads
+  the tool choice as a distribution over the whole catalog through
+  `POST /v1/decide` (log loss, Brier, ECE and a confidence certificate,
+  argmax identical to the greedy raw leg row for row), a teacher-forced
+  second-call leg, field-level argument scoring, empty outputs counted
+  apart from wrong answers, `--rescore` to re-derive verdicts from stored
+  outputs, and `scripts/tooluse-shifted-compare.py` for the paired verdict
+  (discordant pairs and a bootstrap CI on paired log loss, never totals).
+  Measured on four arms (ZEN-GAMING, CUDA path): every adapter is told
+  apart from the base and the three adapters from each other, including
+  the Q8_0- and BF16-trained pair no count separates (BF16 closer to the
+  truth on 184 of 274 rows, CI clear of zero); the adapters are not above
+  the base on this set (they win `none`, lose the chat protocol and the
+  underspecified prompts), so R8.4.3 as written is not met and the reason
+  is the adapters. `scripts/cl-calibration.py` gains `acceptable_ids`, an
+  importable `summarize`/`certificate` and `--threshold-target`.
 - **`scripts/gguf-blockorder.py`: put a GGUF's tensors in block order and
   prove nothing else changed.** Runner v0.5.6's partial split uploads one
   file prefix from byte 0 through the farthest offloaded block and through
