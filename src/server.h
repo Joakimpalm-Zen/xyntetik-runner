@@ -15,7 +15,7 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
                const model_params *mp, sampler defaults,
                const sampler_override *ov, int port, int parallel,
                int n_threads, int ttl, const char *draft_path, int draft_k,
-               bool draft_lookup,
+               bool draft_lookup, int reasoning_budget,
                bool ignore_eos, int tmpl_override, bool force_uncertified,
                const oms_policy *signing);
 

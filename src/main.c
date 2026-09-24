@@ -942,6 +942,10 @@ static void usage_to(FILE *f, const char *prog) {
         "  --draft-lookup draft from n-gram matches in the context itself\n"
         "                 (prompt lookup: no weights, no draft forward; one\n"
         "                 draft source per run, exclusive with --draft/--mtp)\n"
+        "  --reasoning-budget N  close a reasoning turn once it has spent N\n"
+        "                 tokens (budget forcing; 0 = off, the default). Per\n"
+        "                 request: reasoning_max_tokens. Needs a model whose\n"
+        "                 reasoning turn ends on a single token\n"
         "  --draft-required  fail instead of decoding plain if --draft is\n"
         "                 refused (local CLI only; serve mode reports\n"
         "                 draft.active from /v1/capabilities)\n"
@@ -1257,6 +1261,9 @@ int main(int argc, char **argv) {
     const char *draft_path = NULL;
     bool draft_required = false;
     int draft_k = 4;
+    // R4.12.16: server-side default reasoning budget in tokens (0 = off); a
+    // request's reasoning_max_tokens overrides it either way.
+    int reasoning_budget = 0;
     bool mtp_on = false, draft_lookup = false;
     bool interactive = false, verbose = false, no_bos = false;
     bool seed_given = false;
@@ -1390,6 +1397,8 @@ int main(int argc, char **argv) {
         else if (!strcmp(a, "--draft-k")) draft_k = (int)int_arg(a, NEXT, 1, 15);
         else if (!strcmp(a, "--mtp"))     { mp.mtp = true; mtp_on = true; }
         else if (!strcmp(a, "--draft-lookup")) draft_lookup = true;
+        else if (!strcmp(a, "--reasoning-budget"))
+            reasoning_budget = (int)int_arg(a, NEXT, 0, INT_MAX);
         else if (!strcmp(a, "--bench-json")) bench_json = true;
         else if (!strcmp(a, "--score")) score = true;
         else if (!strcmp(a, "--decide")) decide_path = NEXT;
@@ -2311,7 +2320,8 @@ int main(int argc, char **argv) {
         }
         int rc = server_run(registry ? NULL : &m, registry ? NULL : &tok,
                             model_path, &mp, smp, &ov, port, parallel, n_threads,
-                            ttl, draft_path, draft_k, draft_lookup, ignore_eos,
+                            ttl, draft_path, draft_k, draft_lookup,
+                            reasoning_budget, ignore_eos,
                             tmpl_override, force_uncertified, &signing);
         free(owned_prompt);
         return rc;

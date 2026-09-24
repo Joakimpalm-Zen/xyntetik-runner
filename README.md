@@ -2727,6 +2727,41 @@ ECE report, and `scripts/tool-choice-boundary.py` runs an unlabeled
 tool-choice bank across serving conditions and reports where they disagree
 ([docs/tool-choice-boundary-lane.md](docs/tool-choice-boundary-lane.md)).
 
+### Reasoning budget
+
+`--reasoning-budget N` (server default) and `reasoning_max_tokens` (per
+request, 0 turns it off) cap the tokens a turn may spend INSIDE its reasoning
+channel. When the cap is reached the sampler is restricted to the model's
+reasoning-close token, so the turn closes there and the model goes on to
+address its recipient; the answer keeps the whole `max_tokens` budget. This is
+budget forcing in the s1 sense, and it is a serving control, never a
+measurement one: a benchmark that scores reasoning must run without it.
+
+It exists because a distilled student can state its answer in the first
+sentence of a reasoning turn and then hedge for hundreds of tokens without
+closing it. Measured on a 14B Muse-family student against its own parent, on
+20 held-out prompts: the student's reasoning ran a median 179 tokens against
+the parent's 53, and 2 turns of 17 never closed at all. A 256-token cap closes
+those 2 and touches no turn the parent's length.
+
+The cap is refused rather than ignored where it cannot work: a model whose
+reasoning turn does not end on a single token answers 400, because a budget
+that silently never fires would have the caller read a long reasoning trace as
+the model's own choice. Today that means Muse-family models (`<|eom|>`).
+
+Forcing is a sampler restriction, not an injected token, so the closed turn is
+ordinary generation everywhere downstream: the KV, the penalty window, the
+logprobs, the constraint layer and the chat splitter all see what they would
+have seen had the model closed the turn itself, and the speculative walk stays
+token-exact. A turn that closes and re-opens gets no second budget, so the cap
+cannot become a loop of short reasoning turns.
+
+When a budget is in force the reply's `runner_telemetry` carries
+`reasoning_budget`: the `max_tokens` asked for, the reasoning `tokens`
+counted, and `forced_close` saying whether the cap actually closed a turn.
+`forced_close` is the fact a caller needs to read a short trace correctly, and
+`finish_reason` is untouched: the turn did not end here.
+
 POST /v1/decide (R13.10) scores caller-supplied option strings as verbatim
 continuations of a prefilled state with zero tokens sampled: each option's
 log-probability is the product of its in-context token conditionals, and
