@@ -24,7 +24,12 @@ names that were true when they were written.
   re-opens gets no second budget. Refused with 400 on a model whose reasoning
   turn does not end on a single token, rather than silently never firing.
   `runner_telemetry.reasoning_budget` reports the cap, the reasoning tokens
-  and whether the close was forced; `finish_reason` is untouched. Pinned by
+  and whether the close was forced; `finish_reason` is untouched. The forced
+  close writes a short sentence in the model's own voice first
+  (`--reasoning-budget-message`, per-request `reasoning_budget_message`, empty
+  string for a bare close): a bare terminator drops the model mid sentence and
+  measurably costs the answer that follows, and a sentence the buffer cannot
+  hold is refused rather than truncated. Pinned by
   `tests/test_reasoning_budget.py`.
 - **Muse: `reasoning_strength` honoured, and a caller's own directive is
   kept.** The muse-glimmer renderer wrote "Reasoning strength: high." on

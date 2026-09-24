@@ -14,6 +14,15 @@
 // return nonzero to abort generation (e.g. client disconnected)
 typedef int (*gen_cb)(void *ud, const char *bytes, int n);
 
+// Forced-close budget: the transition sentence plus the close token. Sized
+// for a byte-fallback vocabulary, where a short English sentence can cost one
+// token per byte (the CI fixture spells the default line in 50-odd tokens
+// where a real vocabulary spends a dozen). A sentence that does not fit is
+// never truncated: half a sentence in the model's voice is worse than none,
+// so a caller's is refused at the request and the built-in default falls
+// back to the bare close.
+#define THINK_FORCE_MAX 256
+
 typedef struct { int32_t id; float lp; } lp_alt; // logprob alternative
 
 // JC-R1 constrained-choice posterior: one DECISION POINT — a constrained
@@ -118,9 +127,23 @@ typedef struct {
     int     think_budget;    // 0 = off
     int     think_tokens;    // reasoning tokens this request
     bool    think_on;        // inside a reasoning turn right now
-    bool    think_forcing;   // next sample is restricted to think_end_id
+    bool    think_forcing;   // the forced close is being emitted
     bool    think_forced;    // the budget fired at least once (telemetry)
     int     think_open_match, think_close_match;
+    // What the forced close emits, token by token: an optional transition
+    // sentence in the model's own voice, then the reasoning-close token.
+    // The sentence is not decoration. A bare terminator drops a model mid
+    // sentence and measurably costs accuracy on the answer that follows
+    // (llama.cpp's own budget PR reports HumanEval 93% uncapped, ~89% capped
+    // with a message, 79% capped with a bare end tag on Qwen3.5-9B; s1
+    // 2501.19393 and Qwen3's "Considering the limited time..." use the same
+    // pattern), so runner defaults to a short neutral one and lets a caller
+    //replace it or ask for the bare close with an empty string.
+    int32_t think_force[THINK_FORCE_MAX];
+    int     think_force_n, think_force_at;
+    // the request's transition sentence, tokenized once at request setup
+    int32_t think_msg[THINK_FORCE_MAX - 1];
+    int     think_msg_n;
     bool    prelude_exhausted;
     bool progress;         // print prompt progress to stderr
     int32_t *hist;         // tokens whose KV occupies slots [0, pos)

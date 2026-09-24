@@ -1554,6 +1554,12 @@ _Static_assert(SEED_MAX < 18446744073709551616.0,
                "seed bound must stay below 2^64 so the uint64_t cast is defined");
 
 // negative sentinels: MT_UNLIMITED clamps to the context window later,
+// The default transition sentence a forced reasoning close writes. Neutral
+// between answering and calling a tool (the turn after it may be either),
+// first person, and short: the sentence is generated INSIDE the reasoning
+// channel and a caller reading the trace should see why it ends there.
+#define REASON_BUDGET_MESSAGE "\nI have what I need; stopping deliberation here.\n"
+
 // the other sentinels are request errors with distinct messages
 enum { MT_FRACTIONAL = -5, MT_NEGATIVE = -4, MT_BAD_TYPE = -3,
        MT_NON_FINITE = -2, MT_UNLIMITED = -1 };
@@ -1984,6 +1990,56 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
         }
     }
     e->think_budget = e->think_end_id >= 0 ? reason_budget : 0;
+    // The sentence the forced close writes before the close token. A bare
+    // terminator drops the model mid sentence and costs accuracy on the
+    // answer that follows (llama.cpp's budget PR measured HumanEval 93%
+    // uncapped, about 89% capped with a message and 79% with a bare end tag;
+    // s1 2501.19393 and Qwen3's own "Considering the limited time..." line do
+    // the same thing), so the default is a short neutral one. An empty string
+    // asks for the bare close deliberately. Tokenized once, here, so the
+    // generation loop never touches the tokenizer: a sentence that does not
+    // fit the forced-close buffer is refused rather than truncated, because
+    // half a sentence in the model's voice is worse than none of it.
+    e->think_msg_n = 0;
+    if (e->think_budget > 0) {
+        const char *msg = REASON_BUDGET_MESSAGE;
+        bool msg_is_default = true;
+        jv *rm = jv_get(req, "reasoning_budget_message");
+        if (!absent(rm)) {
+            if (rm->type != J_STR) {
+                send_error(fd, 400, "reasoning_budget_message must be a string");
+                return;
+            }
+            msg = rm->str;
+            msg_is_default = false;
+        } else if (SV.reasoning_budget_message) {
+            msg = SV.reasoning_budget_message;
+            msg_is_default = false;
+        }
+        if (*msg) {
+            // tok_encode writes at most `cap` and says nothing about the
+            // rest, so a long sentence would come back looking like a fitting
+            // one. tok_encode_fit sizes the buffer to the text and returns the
+            // TRUE count, which is what a fit decision needs.
+            int cap = (int)(sizeof(e->think_msg) / sizeof(*e->think_msg));
+            int32_t *enc = NULL;
+            int n = tok_encode_fit(s->tok, msg, false, TOK_TEXT, 0, &enc);
+            bool fits = n > 0 && n <= cap;
+            if (fits) memcpy(e->think_msg, enc, sizeof(int32_t) * (size_t)n);
+            free(enc);
+            if (!fits && !msg_is_default) {
+                // the caller chose these words; truncating them would put
+                // half a sentence in the model's voice
+                send_error(fd, 400, "reasoning_budget_message does not fit the "
+                                    "forced close; use a shorter sentence");
+                return;
+            }
+            // the built-in line on a vocabulary that spells it too expensively
+            // (byte fallback): close bare rather than refuse a request the
+            // caller never asked to carry a sentence at all
+            e->think_msg_n = fits ? n : 0;
+        }
+    }
     // "stream":"true" used to read as false and answer with a buffered
     // body, leaving a client that expected SSE waiting on events that
     // would never arrive

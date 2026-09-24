@@ -1422,7 +1422,10 @@ static bool json_ok(void *ud, int id) {
 // other token, so a schema-constrained run keeps its guarantees.
 static bool budget_ok(void *ud, int id) {
     engine *e = ud;
-    if (e->think_forcing) return id == e->think_end_id;
+    // While the close is being forced exactly one token is legal: the next
+    // one in the queue (the transition sentence, then the close token).
+    if (e->think_forcing && e->think_force_at < e->think_force_n)
+        return id == e->think_force[e->think_force_at];
     if (e->schema)    return constraint_token_ok(e, id, true);
     if (e->json_mode) return constraint_token_ok(e, id, false);
     return true;
@@ -1445,8 +1448,15 @@ static sample_ok_fn engine_sample_filter(engine *e) {
 //     matched in the decoded stream, the same pair the chat splitter uses.
 static void think_track(engine *e, int tok, const char *bytes, int n) {
     if (e->think_budget <= 0 || e->think_end_id < 0) return;
+    // A forced close in flight: walk the queue as its tokens come back out of
+    // the sampler. They are counted as reasoning tokens like any other, so
+    // `tokens` in the telemetry is what the turn actually spent.
+    if (e->think_forcing && e->think_force_at < e->think_force_n &&
+        tok == e->think_force[e->think_force_at])
+        e->think_force_at++;
     if (tok == e->think_end_id) {          // the close, forced or the model's
         e->think_on = e->think_forcing = false;
+        e->think_force_n = e->think_force_at = 0;
         e->think_open_match = e->think_close_match = 0;
         return;
     }
@@ -1475,7 +1485,15 @@ static void think_track(engine *e, int tok, const char *bytes, int n) {
     // Cumulative over the request: a turn that closes and re-opens does not
     // get a fresh budget, which is what stops a forced close from becoming a
     // loop of short reasoning turns.
-    if (++e->think_tokens >= e->think_budget) {
+    if (++e->think_tokens >= e->think_budget && !e->think_forcing) {
+        // Arm the close: the request's transition sentence (already
+        // tokenized, possibly empty) and then the close token.
+        int k = 0;
+        for (; k < e->think_msg_n && k < THINK_FORCE_MAX - 1; k++)
+            e->think_force[k] = e->think_msg[k];
+        e->think_force[k++] = (int32_t)e->think_end_id;
+        e->think_force_n = k;
+        e->think_force_at = 0;
         e->think_forcing = true;
         e->think_forced = true;
     }
@@ -1906,6 +1924,7 @@ static int engine_generate_spec(engine *e, float *logits, int max_new,
     e->prelude_max = max_new < 0 ? 0 : (max_new > 1 ? max_new / 2 : max_new);
     e->think_tokens = 0;
     e->think_forcing = e->think_forced = false;
+    e->think_force_n = e->think_force_at = 0;
     double t0 = now_s();
     model_t *m = e->m, *dm = e->dm;
     memset(&e->spec_st, 0, sizeof(e->spec_st));
@@ -2234,6 +2253,7 @@ void engine_gen_begin(engine *e, int max_new) {
     // (engine_think_started) opened it before generation began.
     e->think_tokens = 0;
     e->think_forcing = e->think_forced = false;
+    e->think_force_n = e->think_force_at = 0;
     e->pending_pos = -1;
     e->gen_t0    = now_s();
 }

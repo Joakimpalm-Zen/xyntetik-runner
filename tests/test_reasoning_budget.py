@@ -107,6 +107,53 @@ def test_without_a_budget_nothing_is_reported_and_nothing_is_forced(muse):
     assert _budget(body) is None
 
 
+def _reasoning(body):
+    """The reasoning channel, with the fixture's word-boundary marker read as
+    the space it stands for: this vocabulary is byte-fallback and has no
+    U+2581 piece, so it spells a space as the three bytes that decode to
+    U+2581 (the same quirk the scripted-reply hook documents). A real
+    vocabulary writes the sentence with ordinary spaces."""
+    text = body["choices"][0]["message"].get("reasoning_content") or ""
+    return text.replace("\u2581", " ")
+
+
+def test_the_forced_close_writes_a_transition_sentence(muse):
+    """A bare terminator drops the model mid sentence and measurably costs
+    the answer that follows (llama.cpp's budget PR: HumanEval 93% uncapped,
+    ~89% capped with a message, 79% with a bare end tag), so the default
+    close writes a short neutral line first. It lands INSIDE the reasoning
+    channel, where a reader of the trace can see why it ends there."""
+    code, body = _chat(muse, reasoning_max_tokens=BUDGET)
+    assert code == 200, body
+    assert "stopping deliberation here" in _reasoning(body)
+
+
+def test_a_caller_chooses_the_sentence_or_asks_for_a_bare_close(muse):
+    code, body = _chat(muse, reasoning_max_tokens=BUDGET,
+                       reasoning_budget_message="\nEnough. Answering now.\n")
+    assert code == 200, body
+    assert "Enough. Answering now." in _reasoning(body)
+    assert "stopping deliberation here" not in _reasoning(body)
+
+    code, body = _chat(muse, reasoning_max_tokens=BUDGET,
+                       reasoning_budget_message="")
+    assert code == 200, body
+    assert "stopping deliberation" not in _reasoning(body)
+    # the close still fired: counting stopped at the cap
+    assert _budget(body)["forced_close"] is True
+
+
+def test_a_sentence_that_cannot_fit_is_refused_not_truncated(muse):
+    code, body = _chat(muse, reasoning_max_tokens=BUDGET,
+                       reasoning_budget_message="word " * 2000)
+    assert code == 400, body
+    assert "shorter sentence" in json.dumps(body)
+    code, body = _chat(muse, reasoning_max_tokens=BUDGET,
+                       reasoning_budget_message=7)
+    assert code == 400, body
+    assert "reasoning_budget_message" in json.dumps(body)
+
+
 def test_the_budget_closes_the_reasoning_turn(muse):
     code, body = _chat(muse, reasoning_max_tokens=BUDGET)
     assert code == 200, body
@@ -114,10 +161,11 @@ def test_the_budget_closes_the_reasoning_turn(muse):
     assert rb is not None and rb["max_tokens"] == BUDGET
     # the cap fired, and it fired at the budget rather than somewhere else
     assert rb["forced_close"] is True
-    assert rb["tokens"] == BUDGET
-    # Counting stops when the turn closes, so `tokens` at exactly the budget
-    # is the proof that it DID close: an unforced turn would have counted
-    # every one of the generated tokens instead.
+    # Counting stops when the turn closes, so a count just past the budget
+    # (the cap itself, plus the forced sentence and its close token) is the
+    # proof that it DID close: an unforced turn would have counted every one
+    # of the generated tokens instead.
+    assert BUDGET <= rb["tokens"] <= BUDGET + 256   # the cap, the sentence, the close
     assert body["usage"]["completion_tokens"] > BUDGET
     # not a stop: the turn ran on past the close with its own budget intact
     assert body["choices"][0]["finish_reason"] in ("stop", "length")

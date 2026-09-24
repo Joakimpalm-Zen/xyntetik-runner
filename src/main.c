@@ -946,6 +946,10 @@ static void usage_to(FILE *f, const char *prog) {
         "                 tokens (budget forcing; 0 = off, the default). Per\n"
         "                 request: reasoning_max_tokens. Needs a model whose\n"
         "                 reasoning turn ends on a single token\n"
+        "  --reasoning-budget-message S  the sentence the forced close writes\n"
+        "                 before the close token (default: a short neutral\n"
+        "                 one; \"\" for a bare close). Per request:\n"
+        "                 reasoning_budget_message\n"
         "  --draft-required  fail instead of decoding plain if --draft is\n"
         "                 refused (local CLI only; serve mode reports\n"
         "                 draft.active from /v1/capabilities)\n"
@@ -1264,6 +1268,7 @@ int main(int argc, char **argv) {
     // R4.12.16: server-side default reasoning budget in tokens (0 = off); a
     // request's reasoning_max_tokens overrides it either way.
     int reasoning_budget = 0;
+    const char *reasoning_budget_message = NULL;   // NULL = the built-in line
     bool mtp_on = false, draft_lookup = false;
     bool interactive = false, verbose = false, no_bos = false;
     bool seed_given = false;
@@ -1399,6 +1404,8 @@ int main(int argc, char **argv) {
         else if (!strcmp(a, "--draft-lookup")) draft_lookup = true;
         else if (!strcmp(a, "--reasoning-budget"))
             reasoning_budget = (int)int_arg(a, NEXT, 0, INT_MAX);
+        else if (!strcmp(a, "--reasoning-budget-message"))
+            reasoning_budget_message = NEXT;
         else if (!strcmp(a, "--bench-json")) bench_json = true;
         else if (!strcmp(a, "--score")) score = true;
         else if (!strcmp(a, "--decide")) decide_path = NEXT;
@@ -2321,7 +2328,8 @@ int main(int argc, char **argv) {
         int rc = server_run(registry ? NULL : &m, registry ? NULL : &tok,
                             model_path, &mp, smp, &ov, port, parallel, n_threads,
                             ttl, draft_path, draft_k, draft_lookup,
-                            reasoning_budget, ignore_eos,
+                            reasoning_budget, reasoning_budget_message,
+                            ignore_eos,
                             tmpl_override, force_uncertified, &signing);
         free(owned_prompt);
         return rc;
