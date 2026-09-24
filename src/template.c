@@ -480,6 +480,21 @@ int req_reasoning_effort(struct jv *req) {
     return -1;
 }
 
+int req_reasoning_strength(struct jv *req) {
+    if (!req) return THINK_EFFORT_XHIGH;
+    jv *kw = jv_get((jv *)req, "chat_template_kwargs");
+    jv *v  = kw ? jv_get(kw, "reasoning_strength") : NULL;
+    if (!v || v->type == J_NULL)
+        v = jv_get((jv *)req, "reasoning_strength");
+    if (!v || v->type == J_NULL) return THINK_EFFORT_XHIGH;
+    const char *s = jv_str(v, NULL);
+    if (!s) return -1;
+    if (!strcmp(s, "high"))   return THINK_EFFORT_XHIGH;
+    if (!strcmp(s, "medium")) return THINK_EFFORT_MEDIUM;
+    if (!strcmp(s, "low"))    return THINK_EFFORT_LOW;
+    return -1;
+}
+
 bool template_think_tags(int tmpl, const char **open, const char **close) {
     if (tmpl == TMPL_CHATML_THINK || tmpl == TMPL_QWEN38 ||
         tmpl == TMPL_GRANITE42 || tmpl == TMPL_ORNITH) {
@@ -511,6 +526,50 @@ static void muse_json_string(sbuf *b, const char *s) {
 static jv *muse_tool_fn(const jv *tool) {
     jv *fn = jv_get((jv *)tool, "function");
     return fn ? fn : (jv *)tool;
+}
+
+// The reference's system-prompt handling for the reasoning directive:
+// "Reasoning effort" in the caller's text is rewritten to "Reasoning
+// strength" in exactly the four casings its jinja lists, and the kwarg-driven
+// line is skipped when the (lowercased) text already says "reasoning
+// strength". Returns a fresh copy when a rewrite happened, else NULL.
+static char *muse_normalise_reasoning(const char *s) {
+    static const char *from[] = {"Reasoning effort", "Reasoning Effort",
+                                 "reasoning effort", "REASONING EFFORT"};
+    static const char *to[]   = {"Reasoning strength", "Reasoning Strength",
+                                 "reasoning strength", "REASONING STRENGTH"};
+    if (!s) return NULL;
+    char *cur = NULL;
+    for (int k = 0; k < 4; k++) {
+        const char *src = cur ? cur : s;
+        if (!strstr(src, from[k])) continue;
+        size_t fl = strlen(from[k]), tl = strlen(to[k]);
+        size_t n = 0;
+        for (const char *q = src; (q = strstr(q, from[k])); q += fl) n++;
+        char *nx = malloc(strlen(src) + n * (tl - fl) + 1);
+        if (!nx) { free(cur); return NULL; }
+        char *w = nx;
+        const char *q = src;
+        for (const char *h; (h = strstr(q, from[k])); q = h + fl) {
+            memcpy(w, q, (size_t)(h - q)); w += h - q;
+            memcpy(w, to[k], tl); w += tl;
+        }
+        strcpy(w, q);
+        free(cur);
+        cur = nx;
+    }
+    return cur;
+}
+
+static bool muse_has_reasoning_strength(const char *s) {
+    static const char *needle = "reasoning strength";
+    size_t nl = strlen(needle);
+    for (const char *q = s; q && *q; q++) {
+        size_t i = 0;
+        while (i < nl && q[i] && tolower((unsigned char)q[i]) == needle[i]) i++;
+        if (i == nl) return true;
+    }
+    return false;
 }
 
 static bool muse_namespace_seen(const jv *tools, int before,
@@ -1999,8 +2058,22 @@ size_t render_messages_with_tools(int tmpl, const chat_msg *msgs, int n_msgs,
         // defined`, so under transformers the line always renders.
         // Structured tools are rendered below with the model's native atem
         // declaration macro; the legacy wrapper passes NULL and stays plain.
+        // `reasoning_strength` is a template kwarg in the reference
+        // (`render_reasoning`: the word verbatim, 'high' when absent); it
+        // arrives here as the THINK_EFFORT bits, xhigh (the absent value)
+        // reading as the reference's default "high". A caller's own system
+        // prompt may carry the directive itself: the reference normalises
+        // "reasoning effort" to "reasoning strength" (four casings) and
+        // then skips its line when the text already has one.
+        int effort_bits = thinking & THINK_EFFORT_MASK;
+        const char *strength = effort_bits == THINK_EFFORT_LOW ? "low"
+                             : effort_bits == THINK_EFFORT_MEDIUM ? "medium"
+                             : "high";
+        sbuf muse_line = {0};
+        pl_lit(&muse_line, "\n\nReasoning strength: ");
+        pl_lit(&muse_line, strength);
+        pl_lit(&muse_line, ".");
         sbuf muse_tail = {0};
-        pl_lit(&muse_tail, "\n\nReasoning strength: high.");
         if (tools && tools->type == J_ARR && tools->n) {
             pl_lit(&muse_tail, "\n\n");
             muse_render_tool_defs(tools, &muse_tail);
@@ -2025,13 +2098,19 @@ size_t render_messages_with_tools(int tmpl, const chat_msg *msgs, int n_msgs,
             off = emit(out, cap, off,
                        "<|start|>system<|message|>You are a helpful AI "
                        "assistant.\nKnowledge cutoff: 2026-01-04.", NULL, NULL);
+            off = emit(out, cap, off, "%s", muse_line.s, NULL);
             off = emit(out, cap, off, "%s", muse_tail.s, NULL);
         }
         for (int i = 0; i < n_msgs; i++) {
             const chat_msg *mm = &msgs[i];
             if (!strcmp(mm->role, "system")) {
+                char *sys_text = muse_normalise_reasoning(mm->content);
+                const char *st = sys_text ? sys_text : mm->content;
                 off = emit(out, cap, off, "<|start|>system<|message|>%s",
-                           mm->content, NULL);
+                           st, NULL);
+                if (!muse_has_reasoning_strength(st))
+                    off = emit(out, cap, off, "%s", muse_line.s, NULL);
+                free(sys_text);
                 off = emit(out, cap, off, "%s", muse_tail.s, NULL);
             } else if (!strcmp(mm->role, "assistant") && mm->channel &&
                        !strcmp(mm->channel, "analysis")) {
@@ -2067,13 +2146,15 @@ size_t render_messages_with_tools(int tmpl, const chat_msg *msgs, int n_msgs,
         // cannot pin `user`, because a required tool must remain reachable).
         if (add_assistant) {
             bool have_tools = tools && tools->type == J_ARR && tools->n;
-            const char *head = thinking == THINK_ON
+            int mode = thinking & THINK_MODE_MASK;   // effort bits ride above
+            const char *head = mode == THINK_ON
                          ? "<|start|>assistant to=self<|message|>"
-                         : thinking == THINK_OFF && !have_tools
+                         : mode == THINK_OFF && !have_tools
                          ? "<|start|>assistant to=user<|message|>"
                          : "<|start|>assistant";
             off = emit_raw(out, cap, off, "%s", head, NULL);
         }
+        free(muse_line.s);
         free(muse_tail.s);
         break;
     }

@@ -141,9 +141,10 @@ static inline bool is_gemma4(int tmpl) {
 // absence of a request field has to mean "match the reference", not "false".
 enum { THINK_DEFAULT = 0, THINK_ON, THINK_OFF };
 // Reasoning effort, OR'd into the `thinking` argument by a caller whose
-// family renders it (today only TMPL_QWEN38, whose template names exactly
-// these three and raises on anything else). The low nibble stays the
-// THINK_* mode; every other family never sees these bits set.
+// family renders it: TMPL_QWEN38 (xhigh/medium/low, its template raises on
+// anything else) and TMPL_MUSE (`reasoning_strength` low/medium/high, the
+// absent value rendering as the reference's default "high"). The low
+// nibble stays the THINK_* mode; every other family never sees these bits.
 enum { THINK_EFFORT_XHIGH = 0, THINK_EFFORT_MEDIUM = 0x10,
        THINK_EFFORT_LOW = 0x20, THINK_EFFORT_MASK = 0x30,
        THINK_MODE_MASK = 0x0f };
@@ -225,6 +226,10 @@ int req_thinking_mode(struct jv *req);
 // THINK_EFFORT_* for xhigh (also absent), medium and low; -1 for any other
 // value, which the template itself rejects.
 int req_reasoning_effort(struct jv *req);
+// `reasoning_strength` from the request (top level or chat_template_kwargs),
+// the Muse reference's kwarg: THINK_EFFORT_XHIGH for high (also absent),
+// MEDIUM, LOW; -1 for any other value.
+int req_reasoning_strength(struct jv *req);
 // render OpenAI "tools" declarations as a system turn (no-op when absent)
 void tools_render(const struct jv *tools, struct sbuf *out);
 void tools_render_for(int tmpl, const struct jv *tools, struct sbuf *out);
