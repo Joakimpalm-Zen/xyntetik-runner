@@ -272,6 +272,10 @@ int engine_lookup_draft(const int32_t *hist, int len, int k, int32_t *out);
 bool   engine_init(engine *e, model_t *m, tokenizer *tok, sampler *smp);
 void   engine_reset(engine *e); // clear KV position + sampler + json state
 void   engine_think_started(engine *e); // prompt already contains think_open
+// Reasoning budget only: read the prompt's reasoning state (the last
+// think_open/think_close wins) so a raw completion that resumes an open
+// reasoning turn is counted from its first generated token.
+void   engine_think_budget_prime(engine *e, const char *prompt);
 // keep the KV for the longest common prefix of hist and toks, reset the rest
 // of the engine state; returns how many prompt tokens can be skipped
 int    engine_rewind(engine *e, const int32_t *toks, int n);

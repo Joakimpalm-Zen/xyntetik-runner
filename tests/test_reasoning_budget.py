@@ -191,6 +191,60 @@ def test_the_server_default_applies_and_a_request_can_turn_it_off(muse_default_b
     assert _budget(body) is None
 
 
+def _raw(server, prompt, **extra):
+    payload = {"prompt": prompt, "max_tokens": 200, "temperature": 0}
+    payload.update(extra)
+    req = urllib.request.Request(server.base_url + "/v1/completions",
+                                 data=json.dumps(payload).encode(),
+                                 headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=300) as r:
+            return r.status, json.loads(r.read())
+    except urllib.error.HTTPError as e:
+        return e.code, json.loads(e.read())
+
+
+# A gate harness drives a reasoning model over raw completions and sends the
+# prompt that ENDS inside the reasoning turn, so the budget has to read that
+# state off the prompt: nothing else opens the turn on this path.
+OPEN = "<|start|>user<|message|>hi<|eot|><|start|>assistant to=self<|message|>"
+CLOSED = ("<|start|>assistant to=self<|message|>x<|eom|>"
+          "<|start|>assistant to=user<|message|>done<|eot|><|start|>assistant")
+NO_TURN = "<|start|>user<|message|>hi<|eot|><|start|>assistant"
+
+
+def test_a_raw_completion_resuming_a_reasoning_turn_is_capped(muse_default_budget):
+    code, body = _raw(muse_default_budget, OPEN)
+    assert code == 200, body
+    rb = _budget(body)
+    assert rb["forced_close"] is True and rb["tokens"] >= BUDGET
+
+
+@pytest.mark.parametrize("prompt", [CLOSED, NO_TURN])
+def test_a_raw_completion_outside_a_reasoning_turn_is_not_capped(muse_default_budget, prompt):
+    """The last marker wins: a prompt whose reasoning turn already closed, or
+    that never opened one, starts outside and is left alone."""
+    code, body = _raw(muse_default_budget, prompt)
+    assert code == 200, body
+    rb = _budget(body)
+    assert rb["forced_close"] is False and rb["tokens"] == 0
+
+
+def test_an_open_turn_does_not_leak_into_the_next_request(muse_default_budget):
+    """think_on survives engine_gen_begin on purpose (a chat request primes the
+    turn before generation), so a turn that runs out of tokens mid-reasoning
+    would otherwise leave the slot open and cap the next request from its
+    first token. Same slot, in order: open, then a prompt with no turn."""
+    code, body = _raw(muse_default_budget, OPEN, max_tokens=BUDGET)
+    assert code == 200, body
+    assert _budget(body)["forced_close"] is True
+
+    code, body = _raw(muse_default_budget, NO_TURN)
+    assert code == 200, body
+    rb = _budget(body)
+    assert rb["forced_close"] is False and rb["tokens"] == 0
+
+
 def test_a_bad_budget_is_refused(muse):
     for bad in (-1, 1.5, "lots", True):
         code, body = _chat(muse, reasoning_max_tokens=bad)
