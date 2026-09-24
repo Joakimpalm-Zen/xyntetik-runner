@@ -55,6 +55,9 @@ typedef struct {
     fdqueue    q;
     const char *model_name;
     int        n_predict_cap;
+    // R4.12.16: default reasoning budget in tokens (0 = off), from
+    // --reasoning-budget. A request's reasoning_max_tokens overrides it.
+    int        reasoning_budget;
     atomic_int ctx_size;
     atomic_int req_counter;
     // swap mode

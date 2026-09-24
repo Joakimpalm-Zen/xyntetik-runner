@@ -8,6 +8,24 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **A reasoning budget that closes an over-long reasoning turn (R4.12.16).**
+  `--reasoning-budget N` and the per-request `reasoning_max_tokens` cap the
+  tokens a turn may spend inside its reasoning channel: at the cap the sampler
+  is restricted to the model's reasoning-close token, the turn closes, and the
+  model addresses its recipient with the answer's budget untouched. Budget
+  forcing in the s1 sense, and a serving control only. Raised by the lab's
+  Kvist work and sized on its numbers: a 14B student's reasoning ran a median
+  179 tokens against its parent's 53 on the same 20 prompts, with 2 turns of
+  17 never closing; a 256 cap closes those two and touches no parent-length
+  turn. Forcing through the sampler rather than by injecting a token means the
+  closed turn is ordinary generation to the KV, the penalty window, the
+  logprobs, the constraint layer and the chat splitter, and the speculative
+  walk stays token-exact. Counted per request, so a turn that closes and
+  re-opens gets no second budget. Refused with 400 on a model whose reasoning
+  turn does not end on a single token, rather than silently never firing.
+  `runner_telemetry.reasoning_budget` reports the cap, the reasoning tokens
+  and whether the close was forced; `finish_reason` is untouched. Pinned by
+  `tests/test_reasoning_budget.py`.
 - **Muse: `reasoning_strength` honoured, and a caller's own directive is
   kept.** The muse-glimmer renderer wrote "Reasoning strength: high." on
   every request and appended it even when the system prompt already said

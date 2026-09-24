@@ -714,6 +714,12 @@ typedef struct {
     double      saved_s;
     double      gtime;
     bool        schema, json_mode, spec;
+    // R4.12.16 reasoning budget: whether it fired on this turn and how many
+    // reasoning tokens were counted against it. Reported only when a budget
+    // was set, so an ordinary turn's telemetry is byte-for-byte what it was.
+    int         reason_budget;
+    int         reason_budget_tokens;
+    bool        reason_forced;
     // Speculation accounting for the `speculation` object, read from the
     // engine only when spec is true (see telemetry_json)
     const char *spec_source;
@@ -808,7 +814,10 @@ static void diag_json(sbuf *r, const req_diag *d) {
     .spec_rounds = (e)->spec_st.rounds, .spec_drafted = (e)->spec_st.drafted, \
     .spec_accepted = (e)->spec_st.accepted, \
     .spec_lk_drafted = (e)->spec_st.lk_drafted, \
-    .spec_lk_accepted = (e)->spec_st.lk_accepted
+    .spec_lk_accepted = (e)->spec_st.lk_accepted, \
+    .reason_budget = (e)->think_budget, \
+    .reason_budget_tokens = (e)->think_tokens, \
+    .reason_forced = (e)->think_forced
 
 // Cumulative work counters (declared in server_int.h). Microseconds rather
 // than a double because there is no portable atomic double, and this only
@@ -875,6 +884,14 @@ static void telemetry_json(sbuf *r, const resp_doc *d) {
     // Only present when the standard finish_reason lost a distinction, so
     // ordinary turns are byte-for-byte what they were before.
     if (d->finish_detail) sb_fmt(r, ",\"finish_detail\":\"%s\"", d->finish_detail);
+    // Reasoning budget: present only when one was in force. `forced` says the
+    // cap actually closed a turn, which is the fact a caller needs to read a
+    // short reasoning trace correctly -- the model did not choose to stop.
+    if (d->reason_budget > 0)
+        sb_fmt(r, ",\"reasoning_budget\":{\"max_tokens\":%d,\"tokens\":%d,"
+                  "\"forced_close\":%s}",
+               d->reason_budget, d->reason_budget_tokens,
+               d->reason_forced ? "true" : "false");
     if (d->diag) diag_json(r, d->diag);
     // Only present when the request took the speculative walk, for the same
     // reason: which source proposed, and what the walk did with it. Rounds,
@@ -1941,6 +1958,32 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
         send_error(fd, 400, "max_tokens must be non-negative");
         return;
     }
+    // R4.12.16 reasoning budget: cap the tokens a turn may spend INSIDE its
+    // reasoning channel, leaving the answer's budget untouched. The request
+    // field overrides the server default (--reasoning-budget); 0 turns it
+    // off for this request even when the server set one. The cap is refused
+    // rather than ignored on a model whose reasoning close is not a single
+    // token, because a budget that silently never fires is worse than an
+    // error: the caller reads a long reasoning trace as the model's choice.
+    int reason_budget = SV.reasoning_budget;
+    jv *rb = jv_get(req, "reasoning_max_tokens");
+    if (!absent(rb)) {
+        double rbv = 0;
+        if (!request_number(req, "reasoning_max_tokens", 0, 0, INT_MAX, &rbv) ||
+            !whole_number(rbv)) {
+            send_error(fd, 400, "reasoning_max_tokens must be a whole number "
+                                "of tokens, zero or more");
+            return;
+        }
+        reason_budget = (int)rbv;
+        if (reason_budget > 0 && e->think_end_id < 0) {
+            send_error(fd, 400, "reasoning_max_tokens needs a model whose "
+                                "reasoning turn ends on a single token; this "
+                                "model declares none");
+            return;
+        }
+    }
+    e->think_budget = e->think_end_id >= 0 ? reason_budget : 0;
     // "stream":"true" used to read as false and answer with a buffered
     // body, leaving a client that expected SSE waiting on events that
     // would never arrive

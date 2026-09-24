@@ -104,6 +104,23 @@ typedef struct {
     int     constraint_tag_match, constraint_close_match;
     int     think_end_id;       // Muse <|eom|>: decoded-empty reasoning close
     int     prelude_max, prelude_count;
+    // R4.12.16 reasoning budget (budget forcing, s1-style). A distilled
+    // student can state its answer in the first sentence of a reasoning turn
+    // and then hedge for hundreds of tokens without ever closing it (the lab
+    // measured 3.4x the parent's reasoning length on Kvist-14B, 2 turns in 17
+    // never closing at all). With think_budget > 0, once a turn's cumulative
+    // REASONING tokens reach it the sampler is restricted to the model's
+    // reasoning-close token, so the turn closes and the model addresses its
+    // next recipient normally. Counted per request across every reasoning
+    // turn in it, so a model that closes and immediately re-opens gets no
+    // second budget. Never a stop: the answer still runs to max_tokens.
+    // Needs a model whose reasoning close is a single token (think_end_id).
+    int     think_budget;    // 0 = off
+    int     think_tokens;    // reasoning tokens this request
+    bool    think_on;        // inside a reasoning turn right now
+    bool    think_forcing;   // next sample is restricted to think_end_id
+    bool    think_forced;    // the budget fired at least once (telemetry)
+    int     think_open_match, think_close_match;
     bool    prelude_exhausted;
     bool progress;         // print prompt progress to stderr
     int32_t *hist;         // tokens whose KV occupies slots [0, pos)

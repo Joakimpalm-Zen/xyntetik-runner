@@ -1798,7 +1798,8 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
                const model_params *mp, sampler defaults,
                const sampler_override *ov, int port, int parallel,
                int n_threads, int ttl, const char *draft_path, int draft_k,
-               bool draft_lookup, bool ignore_eos, int tmpl_override,
+               bool draft_lookup, int reasoning_budget, bool ignore_eos,
+               int tmpl_override,
                bool force_uncertified, const oms_policy *signing) {
     sock_init();
     // The shared server state gets a lifetime, and it is this call. Everything
@@ -2005,6 +2006,7 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
                   : forced_name  ? forced_name
                                  : (name ? name + 1 : model_path);
     SV.n_predict_cap = 1024;
+    SV.reasoning_budget = reasoning_budget;
     SV.q.limit = (int)(sizeof(SV.q.fds) / sizeof(sock_t));
     // a queue bound may only lower the fixed fd capacity, never raise it
     SV.q.limit = (int)env_i64("RUNNER_MAX_QUEUE", 1, SV.q.limit, SV.q.limit);

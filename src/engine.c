@@ -135,6 +135,9 @@ void engine_reset(engine *e) {
 
 void engine_think_started(engine *e) {
     if (!e || !e->m || !e->m->think_close) return;
+    // the prompt primed the reasoning turn, so the budget is already counting
+    e->think_on = true;
+    e->think_open_match = e->think_close_match = 0;
     e->constraint_phase = CP_THINK;
     e->constraint_tag_possible = false;
     e->constraint_tag_match = 0;
@@ -1410,6 +1413,74 @@ static bool json_ok(void *ud, int id) {
     return constraint_token_ok(ud, id, false);
 }
 
+// R4.12.16: the reasoning budget forces its close through the SAMPLER rather
+// than by injecting a token, so both the solo step and the speculative walk
+// get it for free and a forced close is an ordinary sampled token everywhere
+// downstream (hist, KV, penalty window, logprobs, the constraint layer, the
+// splitter). While think_forcing is set exactly one token is legal, which is
+// what sample_pick then returns; the constraint filter still runs on every
+// other token, so a schema-constrained run keeps its guarantees.
+static bool budget_ok(void *ud, int id) {
+    engine *e = ud;
+    if (e->think_forcing) return id == e->think_end_id;
+    if (e->schema)    return constraint_token_ok(e, id, true);
+    if (e->json_mode) return constraint_token_ok(e, id, false);
+    return true;
+}
+
+// The filter a generation runs under, chosen ONCE per walk: a budget that can
+// fire mid-turn has to be in the pointer from the start.
+static sample_ok_fn engine_sample_filter(engine *e) {
+    if (e->think_budget > 0 && e->think_end_id >= 0) return budget_ok;
+    return e->schema ? schema_ok : e->json_mode ? json_ok : NULL;
+}
+
+// Track whether generation is inside a reasoning turn and how many tokens it
+// has spent there, then arm the force when the budget is gone. Called after
+// every emitted token with that token's decoded bytes (empty for a control
+// token). Three signals, in the order they are authoritative:
+//   - the reasoning-close TOKEN (Muse's <|eom|>, decoded-empty) closes;
+//   - under a constraint the phase machine already knows (CP_THINK);
+//   - unconstrained, the architecture's think_open / think_close strings are
+//     matched in the decoded stream, the same pair the chat splitter uses.
+static void think_track(engine *e, int tok, const char *bytes, int n) {
+    if (e->think_budget <= 0 || e->think_end_id < 0) return;
+    if (tok == e->think_end_id) {          // the close, forced or the model's
+        e->think_on = e->think_forcing = false;
+        e->think_open_match = e->think_close_match = 0;
+        return;
+    }
+    if (e->schema || e->json_mode) {
+        e->think_on = e->constraint_phase == CP_THINK;
+    } else if (e->m->think_open && e->m->think_close) {
+        for (int i = 0; i < n; i++) {
+            if (!e->think_on) {
+                e->think_open_match = tag_advance(e->m->think_open,
+                                                  e->think_open_match, bytes[i]);
+                if (e->think_open_match == (int)strlen(e->m->think_open)) {
+                    e->think_on = true;
+                    e->think_open_match = e->think_close_match = 0;
+                }
+            } else {
+                e->think_close_match = tag_advance(e->m->think_close,
+                                                   e->think_close_match, bytes[i]);
+                if (e->think_close_match == (int)strlen(e->m->think_close)) {
+                    e->think_on = false;
+                    e->think_open_match = e->think_close_match = 0;
+                }
+            }
+        }
+    }
+    if (!e->think_on) return;
+    // Cumulative over the request: a turn that closes and re-opens does not
+    // get a fresh budget, which is what stops a forced close from becoming a
+    // loop of short reasoning turns.
+    if (++e->think_tokens >= e->think_budget) {
+        e->think_forcing = true;
+        e->think_forced = true;
+    }
+}
+
 // RUNNER_SCHEMA_TRACE=1: one line per accepted token showing what the
 // constraint layer did with it -- phase, visible offset, validator depth and
 // done flag, and the decoded bytes. Added 2026-08-07 after two hypotheses
@@ -1794,6 +1865,7 @@ static int spec_emit(engine *e, int tok, gen_cb cb, void *ud, int *n_gen,
         const char *sp = tok_raw(e->tok, tok);
         rc = constraint_accept(e, true, sp, (int)strlen(sp), cb, ud);
     }
+    think_track(e, tok, buf, n);
     (*n_gen)++;
     if (in_prelude && (e->constraint_phase == CP_PROBE ||
                        e->constraint_phase == CP_THINK) &&
@@ -1832,6 +1904,8 @@ static int engine_generate_spec(engine *e, float *logits, int max_new,
     e->prelude_count = 0;
     e->prelude_exhausted = false;
     e->prelude_max = max_new < 0 ? 0 : (max_new > 1 ? max_new / 2 : max_new);
+    e->think_tokens = 0;
+    e->think_forcing = e->think_forced = false;
     double t0 = now_s();
     model_t *m = e->m, *dm = e->dm;
     memset(&e->spec_st, 0, sizeof(e->spec_st));
@@ -1851,7 +1925,7 @@ static int engine_generate_spec(engine *e, float *logits, int max_new,
     float *dl = NULL; // draft-model logits for position dpos
     // Even under JSON/schema constraints, speculation stays target-exact:
     // the draft proposes, but only target-sampled tokens feed the validator.
-    sample_ok_fn ok = e->schema ? schema_ok : e->json_mode ? json_ok : NULL;
+    sample_ok_fn ok = engine_sample_filter(e);
     bool constrained = e->schema || e->json_mode;
     // grammar drafts fill the whole verify window; they cost no forwards and
     // a pinned token is a near-certain accept, so draft_k does not cap them
@@ -2156,6 +2230,10 @@ void engine_gen_begin(engine *e, int max_new) {
     e->prelude_count = 0;
     e->prelude_exhausted = false;
     e->prelude_max = max_new < 0 ? 0 : (max_new > 1 ? max_new / 2 : max_new);
+    // think_on is NOT reset: a prompt that primed the reasoning turn
+    // (engine_think_started) opened it before generation began.
+    e->think_tokens = 0;
+    e->think_forcing = e->think_forced = false;
     e->pending_pos = -1;
     e->gen_t0    = now_s();
 }
@@ -2175,8 +2253,7 @@ int engine_gen_step(engine *e, const float *logits, gen_cb cb, void *ud,
     if (want_lp) lp_capture_pre(e, logits, &pre);
     if (e->cl_cap) cl_capture(e, logits);
     int tok = sample_pick(e->smp, (float *)logits, e->m->n_vocab,
-                          e->schema ? schema_ok :
-                          e->json_mode ? json_ok : NULL, e);
+                          engine_sample_filter(e), e);
     if (tok < 0) { // -1: no valid continuation (clean stop); -2: allocation error
         if (tok == -2) e->oom = true;
         e->hit_stop = true;
@@ -2211,6 +2288,7 @@ int engine_gen_step(engine *e, const float *logits, gen_cb cb, void *ud,
         const char *sp = tok_raw(e->tok, tok);
         rc = constraint_accept(e, true, sp, (int)strlen(sp), cb, ud);
     }
+    think_track(e, tok, buf, n);
     if (rc != 0) { e->gen_count++; return ENGINE_STEP_DONE; } // client gone
     e->gen_count++;
     if (in_prelude && (e->constraint_phase == CP_PROBE ||
