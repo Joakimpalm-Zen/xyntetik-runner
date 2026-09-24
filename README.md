@@ -2756,6 +2756,13 @@ closing it. Measured on a 14B Muse-family student against its own parent, on
 the parent's 53, and 2 turns of 17 never closed at all. A 256-token cap closes
 those 2 and touches no turn the parent's length.
 
+Raw completions are covered as well as chat, and the budget reads the
+prompt's own reasoning state to do it: a prompt that ends inside a reasoning
+turn (`... to=self<|message|>`, which is how a gate harness drives a reasoning
+model over `/v1/completions`) is counted from its first generated token. The
+last marker in the prompt wins, so a turn that already closed, or a prompt
+that never opened one, starts outside the cap.
+
 The cap is refused rather than ignored where it cannot work: a model whose
 reasoning turn does not end on a single token answers 400, because a budget
 that silently never fires would have the caller read a long reasoning trace as

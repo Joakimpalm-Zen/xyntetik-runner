@@ -133,6 +133,33 @@ void engine_reset(engine *e) {
     if (e->mtp_on) model_mtp_reset(e->m, 0);
 }
 
+// Where a PROMPT leaves the reasoning state, for the budget only.
+//
+// A chat request that primes the reasoning turn calls engine_think_started;
+// a RAW completion has no such signal, and the gate harnesses that drive a
+// reasoning model over /v1/completions send exactly the prompt that ends
+// inside the turn (`... to=self<|message|>`). Without this the budget starts
+// counting at the model's NEXT ` to=self`, which never comes: the turn is
+// already open, so a capped raw run reported 0 reasoning tokens and never
+// fired (measured on the muse fixture, 2026-09-24, before this).
+//
+// The rule is the last marker wins: an open after the last close means the
+// prompt ends inside reasoning. Text only -- a control token spells no bytes
+// here, which is why Muse's pair is the text around them.
+void engine_think_budget_prime(engine *e, const char *prompt) {
+    if (!e || e->think_budget <= 0 || !prompt) return;
+    if (!e->m || !e->m->think_open || !e->m->think_close) return;
+    const char *last_open = NULL, *last_close = NULL;
+    for (const char *q = prompt; (q = strstr(q, e->m->think_open)); q++)
+        last_open = q;
+    for (const char *q = prompt; (q = strstr(q, e->m->think_close)); q++)
+        last_close = q;
+    if (last_open && (!last_close || last_open > last_close)) {
+        e->think_on = true;
+        e->think_open_match = e->think_close_match = 0;
+    }
+}
+
 void engine_think_started(engine *e) {
     if (!e || !e->m || !e->m->think_close) return;
     // the prompt primed the reasoning turn, so the budget is already counting

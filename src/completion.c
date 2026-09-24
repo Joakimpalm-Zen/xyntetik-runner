@@ -2000,6 +2000,20 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
     // generation loop never touches the tokenizer: a sentence that does not
     // fit the forced-close buffer is refused rather than truncated, because
     // half a sentence in the model's voice is worse than none of it.
+    // A prompt can already be inside the reasoning turn (a raw completion
+    // resuming ` to=self`, which is how a gate harness drives one); the
+    // budget has to count from the first generated token there.
+    //
+    // The reset is not housekeeping. think_on survives engine_gen_begin on
+    // purpose (a chat request primes the turn BEFORE generation starts, via
+    // engine_think_started), so the slot would otherwise carry a still-open
+    // reasoning turn into the NEXT request -- which happens whenever a turn
+    // runs out of max_tokens mid-reasoning. Measured on the muse fixture:
+    // a request whose forced close did not fit left the slot open, and the
+    // next request, whose prompt held no reasoning turn at all, was capped
+    // from its first token.
+    e->think_on = false;
+    engine_think_budget_prime(e, prompt);
     e->think_msg_n = 0;
     if (e->think_budget > 0) {
         const char *msg = REASON_BUDGET_MESSAGE;

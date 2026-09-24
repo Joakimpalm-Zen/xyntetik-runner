@@ -29,7 +29,10 @@ names that were true when they were written.
   (`--reasoning-budget-message`, per-request `reasoning_budget_message`, empty
   string for a bare close): a bare terminator drops the model mid sentence and
   measurably costs the answer that follows, and a sentence the buffer cannot
-  hold is refused rather than truncated. Pinned by
+  hold is refused rather than truncated. Raw completions are covered as well
+  as chat: the budget reads the prompt's own reasoning state, so a prompt that
+  ends inside a reasoning turn, which is how a gate harness drives a reasoning
+  model, is counted from its first generated token. Pinned by
   `tests/test_reasoning_budget.py`.
 - **Muse: `reasoning_strength` honoured, and a caller's own directive is
   kept.** The muse-glimmer renderer wrote "Reasoning strength: high." on
