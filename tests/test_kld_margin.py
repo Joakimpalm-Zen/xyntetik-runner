@@ -213,3 +213,44 @@ def test_two_stops_on_the_same_token_agree_and_score(monkeypatch):
     d = {"</s>": -0.5, "x": -1.5}
     kld, agree, marg, overlap = kld_raw.score_pair(d, d)
     assert agree is True and marg is True and kld == pytest.approx(0.0, abs=1e-9)
+
+
+def test_every_position_is_counted_exactly_once(monkeypatch, tmp_path):
+    """The rates divide by the number of scored positions, and a stop must
+    not be counted twice. An earlier version appended in the stop branch and
+    then again in the scorer, so a 500-position run reported rates over 504
+    (lab, 2026-09-25)."""
+    import json as _json
+    stop_body = {"choices": [{"finish_reason": "stop", "stop_token": "</s>",
+                              "stop_logprobs": {"logprob": -0.1,
+                                                "top_logprobs": {"</s>": -0.1, "x": -3.0},
+                                                "top_token_ids": [2, 9]}}]}
+    text_body = {"choices": [{"finish_reason": "length", "logprobs": {
+        "tokens": ["x"], "token_logprobs": [-0.2],
+        "top_logprobs": [{"x": -0.2, "</s>": -2.5}]}}]}
+    # side A stops on every third position, side B never stops
+    calls = {"n": 0}
+
+    def fake(req, timeout=0):
+        calls["n"] += 1
+        a_side = calls["n"] % 2 == 1
+        pos = (calls["n"] - 1) // 2
+        return _Resp(stop_body if (a_side and pos % 3 == 0) else text_body)
+
+    monkeypatch.setattr(kld_raw.urllib.request, "urlopen", fake)
+    monkeypatch.setattr(kld_raw, "served_model_ids", lambda ep: ["a", "b"])
+    corpus = tmp_path / "c.txt"
+    corpus.write_text(" ".join(f"w{i}" for i in range(40)))
+    out = tmp_path / "r.json"
+    rc = kld_raw.main(["--endpoint-a", "http://a", "--model-name-a", "a",
+                       "--endpoint-b", "http://b", "--model-name-b", "b",
+                       "--corpus", str(corpus), "--max-positions", "9",
+                       "--stride", "1", "--out", str(out)])
+    assert rc == 0
+    r = _json.loads(out.read_text())
+    assert r["positions_scored"] == 9
+    assert r["rate_denominator"] == r["positions_scored"]
+    assert len(r["positions"]) == r["positions_scored"]
+    assert r["positions_stop"] == 3 and r["positions_stop_one_sided"] == 3
+    # every one-sided stop is a disagreement, so the rate is bounded by it
+    assert r["top1_agreement_pct"] <= 100.0 * (9 - 3) / 9 + 1e-9

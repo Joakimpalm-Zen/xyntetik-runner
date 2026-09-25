@@ -331,20 +331,27 @@ def main(argv):
                 print(f"position {i} failed: {e}", file=sys.stderr)
                 continue
             if stop_a or stop_b:
-                # A stop on one side only is a disagreement and is counted as
-                # one. A stop on both is agreement when the token matches.
-                # Either way the position leaves the KLD mean unless both
-                # sides reported a distribution, because a stop without one is
-                # not a distribution to compare -- the count says how many.
+                # A stop position is counted ONCE, like any other. Where both
+                # sides reported a distribution -- which runner does, beside
+                # the stop token -- the ordinary scorer handles it and gets
+                # the one-sided case right on its own: the stopping side's
+                # argmax IS the stop token and the other side's is not, so it
+                # reads as the disagreement it is. Only a stop with no
+                # distribution is scored here, from the tokens alone.
+                #
+                # An earlier version appended to the rate arrays here AND fell
+                # through to the scorer, so every stop position counted twice
+                # and the rates divided by more than positions_scored (found
+                # by the lab on the rerun, 2026-09-25: 504 against 500).
                 both = stop_a is not None and stop_b is not None
-                agree = bool(both and stop_a.token == stop_b.token)
                 n_stop += 1
                 if not both:
                     n_stop_one_sided += 1
-                top1s.append(agree)
-                margs.append(agree)
                 if da is None or db is None:
+                    agree = bool(both and stop_a.token == stop_b.token)
                     n_stop_unscored_kld += 1
+                    top1s.append(agree)
+                    margs.append(agree)
                     positions.append({"i": i, "kld": None, "agree": agree,
                                       "margin_agree": agree, "stop": True,
                                       "stop_a": stop_a.token if stop_a else None,
@@ -400,6 +407,10 @@ def main(argv):
         "positions_stop": n_stop,
         "positions_stop_one_sided": n_stop_one_sided,
         "positions_stop_kld_unscored": n_stop_unscored_kld,
+        # The rates below divide by this, and it equals positions_scored. It
+        # is reported because it did NOT once (see the stop branch): a reader
+        # who divides a percentage by the wrong denominator cannot tell.
+        "rate_denominator": len(top1s),
         "mean_kld": sum(klds) / len(klds) if klds else None,
         "top1_agreement_pct": 100.0 * sum(top1s) / len(top1s) if top1s else None,
         "top1_margin_qualified_pct":

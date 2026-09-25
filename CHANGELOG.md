@@ -23,6 +23,13 @@ names that were true when they were written.
   stop positions, counts a one-sided stop as a top-1 disagreement, keeps a
   distribution-less stop out of the KLD mean only, and reports the three
   counts. Pinned by `tests/test_stop_specials.py` and `tests/test_kld_margin.py`.
+  The first version of the script half counted a stop position twice, once in
+  the stop branch and once in the scorer, so the rates divided by more than
+  `positions_scored` (the lab's rerun: 504 against 500). A stop with a
+  distribution on both sides is now left to the ordinary scorer, which gets
+  the one-sided case right on its own because the stopping side's argmax is
+  the stop token and the other side's is not. The report carries
+  `rate_denominator` and a test pins it equal to `positions_scored`.
 - **A long model filename no longer truncates the served model id** [lab
   finding 2026-09-24]. Single-model serve joins the registry machinery so
   `/unload` and `--ttl` work, and that join copied the file's basename through
