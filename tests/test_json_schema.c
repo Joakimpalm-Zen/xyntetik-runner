@@ -313,6 +313,74 @@ static void test_required_whitespace_reports_as_content(void) {
     jv_free(tools);
 }
 
+// A native call cannot be closed while a schema-REQUIRED argument is missing.
+//
+// This is the rule a served model's tool calls rest on, and a public claim
+// now rests on it too: the lab's Kvist student learned to close find_flight
+// after `origin` alone, because its distillation target put 0.645 of the mass
+// on closing there (2026-09-25), and the answer to "can that reach a caller"
+// is this grammar. member_candidates() offers the closing literal only when
+// close_allowed() finds no required member left, so the model is never handed
+// the token it wants. Pinned per byte rather than through a served request,
+// so a refactor of the members walker fails here instead of in someone's
+// release notes.
+static void test_a_native_call_cannot_close_with_a_required_argument_missing(void) {
+    const char *tsrc =
+        "[{\"type\":\"function\",\"function\":{\"name\":\"find_flight\","
+        "\"parameters\":{\"type\":\"object\",\"properties\":{"
+        "\"origin\":{\"type\":\"string\"},"
+        "\"destination\":{\"type\":\"string\"},"
+        "\"date\":{\"type\":\"string\"}},"
+        "\"required\":[\"origin\",\"destination\",\"date\"]}}}]";
+    jv *tools = json_parse(tsrc, strlen(tsrc));
+    assert(tools != NULL);
+    char err[160];
+    snode *g = schema_compile_atem_turn(tools, false, NULL, NULL,
+                                        ATEM_TURN_EITHER, err, sizeof(err));
+    assert(g != NULL);
+    sval v;
+    sval_init(&v, g);
+    const char *open =
+        "assistant to=find_flight<|message|><atem:function_calls>\n<atem:invoke "
+        "name=\"find_flight\">\n<atem:parameter name=\"origin\">Oslo</atem:parameter>";
+    assert(sval_feed(&v, open, (int)strlen(open)));
+
+    // two required arguments outstanding: the close is not on offer, and the
+    // first byte that would spell it is refused outright
+    sval probe = v;
+    assert(!sval_feed(&probe, "\n</atem:invoke>", 15));
+    probe = v;
+    assert(sval_feed(&probe, "\n<atem:parameter name=\"destination\">", 36));
+
+    // one outstanding: still refused
+    const char *dest = "\n<atem:parameter name=\"destination\">Rome</atem:parameter>";
+    assert(sval_feed(&v, dest, (int)strlen(dest)));
+    probe = v;
+    assert(!sval_feed(&probe, "\n</atem:invoke>", 15));
+
+    // all three present: the close becomes legal
+    const char *date = "\n<atem:parameter name=\"date\">2026-10-01</atem:parameter>";
+    assert(sval_feed(&v, date, (int)strlen(date)));
+    probe = v;
+    assert(sval_feed(&probe, "\n</atem:invoke>", 15));
+
+    // and a turn cut while an argument is missing closes to a LEGAL document
+    // rather than a truncated one: the completion carries the missing keys,
+    // which is why the envelope reports "length" rather than a finished call
+    // (completion.c: only a cleanly finished document may claim tool_calls)
+    sval cut;
+    sval_init(&cut, g);
+    assert(sval_feed(&cut, open, (int)strlen(open)));
+    char out[512];
+    int n = sval_close(&cut, out, sizeof(out));
+    assert(n > 0);
+    assert(strstr(out, "destination") != NULL);
+    assert(strstr(out, "date") != NULL);
+    assert(strstr(out, "</atem:invoke>") != NULL);
+    schema_free(g);
+    jv_free(tools);
+}
+
 // A constrained document must begin with its opening token.
 //
 // Leading whitespace is the livelock that burns the budget. A model that
@@ -2975,6 +3043,7 @@ int main(void) {
     test_schema_required_close();
     test_map_refuses_a_duplicate_key_spelling();
     test_required_whitespace_reports_as_content();
+    test_a_native_call_cannot_close_with_a_required_argument_missing();
     test_leading_whitespace_is_refused_but_interior_is_kept();
     test_json_mode_leading_whitespace_is_refused();
     test_schema_close_without_payload_fabricates_nothing();
