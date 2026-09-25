@@ -166,6 +166,32 @@ static void append_stop_token(sbuf *r, slot_t *s, engine *e) {
     sb_fmt(r, ",\"stop_token_id\":%d,\"stop_token\":\"", e->stop_id);
     if (sp) sb_esc(r, sp, strlen(sp));
     sb_lit(r, "\"");
+    // The stop's own decision, when logprobs were asked for. It rides here
+    // rather than inside `logprobs`, whose entries align one-to-one with the
+    // emitted text and must not gain one for a token that decodes to nothing
+    // (engine.h, stop_lp_at). Without it a position whose greedy pick is a
+    // stop returns no distribution at all, so a fidelity comparison drops it
+    // -- and a ONE-SIDED stop, the case worth catching, disappears from both
+    // the agreement and the KLD statistics (lab, 2026-09-25).
+    if (e->stop_lp_at < 0) return;
+    char tb[512];
+    sb_fmt(r, ",\"stop_logprobs\":{\"logprob\":%.6f,\"top_logprobs\":{", e->stop_lp);
+    for (int j = 0; j < e->lp_n; j++) {
+        const lp_alt *a = &e->lp_top[(size_t)e->stop_lp_at * e->lp_n + j];
+        if (a->id < 0) break;
+        if (j) sb_lit(r, ",");
+        int tn = lp_piece(s, e, a->id, tb, sizeof(tb));
+        sb_lit(r, "\""); sb_esc(r, tb, tn);
+        sb_fmt(r, "\":%.6f", a->lp);
+    }
+    sb_lit(r, "},\"top_token_ids\":[");
+    for (int j = 0; j < e->lp_n; j++) {
+        const lp_alt *a = &e->lp_top[(size_t)e->stop_lp_at * e->lp_n + j];
+        if (a->id < 0) break;
+        if (j) sb_lit(r, ",");
+        sb_fmt(r, "%d", a->id);
+    }
+    sb_lit(r, "]}");
 }
 
 static void append_chat_logprobs(sbuf *r, slot_t *s, engine *e) {

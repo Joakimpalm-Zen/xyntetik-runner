@@ -2696,6 +2696,20 @@ collapsing "unspecified" onto one of them would misrender the other.
 Qwen3 history also retains the reference template's empty
 `<think>\n\n</think>` block before a trailing historical assistant answer;
 this is replay framing, independent of whether the new turn enables thinking.
+A turn that ends on a stop TOKEN also reports that token's own decision as
+`stop_logprobs` (its logprob, the top alternatives and their ids) whenever
+`logprobs` was requested. It rides beside `stop_token` rather than inside
+`logprobs`, whose entries align one for one with the emitted text: a stop
+token decodes to no bytes, so an entry there would break a caller that zips
+tokens against logprobs. Without it a position whose greedy next token is a
+stop reported no distribution at all, which made such a position invisible to
+a fidelity comparison: `scripts/kld-compare-raw.py` counted it as failed and
+dropped it, so a quantisation that flipped "stop here" against "keep going"
+left both the agreement and the KLD statistics instead of counting against
+them. That script now scores stop positions, counts a one-sided stop as a
+top-1 disagreement, and reports `positions_stop`, `positions_stop_one_sided`
+and `positions_stop_kld_unscored` beside the totals.
+
 Under tool calling the same field decides whether the constrained grammar
 admits Qwen3's leading `<think>` block before a call. Qwen3's reference
 defaults thinking on, so a grammar that forbade it would force the model to
