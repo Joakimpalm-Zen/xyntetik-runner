@@ -746,6 +746,13 @@ typedef struct {
     int         reason_budget;
     int         reason_budget_tokens;
     bool        reason_forced;
+    // The reasoning channel's sampler for THIS request, when one was in
+    // force: an eval log has to be able to prove which sampler produced a
+    // trace, and the request may carry no reasoning_* field at all when the
+    // server set the default.
+    bool        reason_smp;
+    float       reason_temp, reason_top_p, reason_min_p;
+    int         reason_top_k;
     // Speculation accounting for the `speculation` object, read from the
     // engine only when spec is true (see telemetry_json)
     const char *spec_source;
@@ -843,7 +850,12 @@ static void diag_json(sbuf *r, const req_diag *d) {
     .spec_lk_accepted = (e)->spec_st.lk_accepted, \
     .reason_budget = (e)->think_budget, \
     .reason_budget_tokens = (e)->think_tokens, \
-    .reason_forced = (e)->think_forced
+    .reason_forced = (e)->think_forced, \
+    .reason_smp = (e)->think_smp, \
+    .reason_temp = (e)->think_temp, \
+    .reason_top_p = (e)->think_top_p, \
+    .reason_min_p = (e)->think_min_p, \
+    .reason_top_k = (e)->think_top_k
 
 // Cumulative work counters (declared in server_int.h). Microseconds rather
 // than a double because there is no portable atomic double, and this only
@@ -918,6 +930,13 @@ static void telemetry_json(sbuf *r, const resp_doc *d) {
                   "\"forced_close\":%s}",
                d->reason_budget, d->reason_budget_tokens,
                d->reason_forced ? "true" : "false");
+    // Likewise the reasoning channel's sampler, when one was in force. A
+    // greedy request whose server sets --reasoning-temp produces a sampled
+    // reasoning turn, and nothing else in the response would say so.
+    if (d->reason_smp)
+        sb_fmt(r, ",\"reasoning_sampling\":{\"temperature\":%.4f,\"top_p\":%.4f,"
+                  "\"min_p\":%.4f,\"top_k\":%d}",
+               d->reason_temp, d->reason_top_p, d->reason_min_p, d->reason_top_k);
     if (d->diag) diag_json(r, d->diag);
     // Only present when the request took the speculative walk, for the same
     // reason: which source proposed, and what the walk did with it. Rounds,

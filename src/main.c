@@ -2319,6 +2319,13 @@ int main(int argc, char **argv) {
         char sdesc[256];
         sampler_describe(&smp, sp, sdesc, sizeof(sdesc));
         fprintf(stderr, "sampling: %s\n", sdesc);
+        // An operator who set a reasoning-channel default must see it here:
+        // the line above describes the sampler for calls and answers, and
+        // silence about the reasoning turn reads as "there is only one".
+        if (reasoning_temp >= 0.0f)
+            fprintf(stderr, "reasoning: temp %.2f (top_p, min_p, top_k "
+                            "inherited from the request or the preset)\n",
+                    (double)reasoning_temp);
     } else {
         // swap mode: no model yet, so the preset is chosen per model at load
         sampler_resolve(&smp, NULL, NULL, -1, &ov);

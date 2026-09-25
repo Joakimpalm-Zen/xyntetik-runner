@@ -173,3 +173,39 @@ def test_a_zero_initialised_server_state_means_off(muse):
     a = _chat(muse)
     b = _chat(muse)
     assert a[0] == 200 and _msg(a[1]) == _msg(b[1])
+
+
+def test_the_reasoning_sampler_is_visible_to_an_eval_log(muse_default_temp):
+    """An eval must be able to prove which sampler produced a trace. The
+    request carries no reasoning_* field when the server set the default, so
+    without this the trace looks greedy and the only way to know otherwise is
+    to read the server's source (the lab, 2026-09-26)."""
+    with urllib.request.urlopen(muse_default_temp.base_url + "/v1/capabilities",
+                                timeout=30) as r:
+        caps = json.load(r)
+    assert caps["reasoning"]["temperature"] == pytest.approx(1.5)
+    assert "top_p" in caps["reasoning"]["inherits"]
+
+    code, body = _chat(muse_default_temp, seed=5)
+    assert code == 200, body
+    rs = body["runner_telemetry"]["reasoning_sampling"]
+    assert rs["temperature"] == pytest.approx(1.5)
+    # the inherited knobs are reported as the values actually used, not as
+    # "inherited", so a log carries numbers rather than a pointer
+    for k in ("top_p", "min_p", "top_k"):
+        assert k in rs
+
+
+def test_nothing_is_reported_when_no_reasoning_sampler_is_in_force(muse):
+    with urllib.request.urlopen(muse.base_url + "/v1/capabilities", timeout=30) as r:
+        assert "reasoning" not in json.load(r)
+    code, body = _chat(muse)
+    assert code == 200
+    assert "reasoning_sampling" not in body["runner_telemetry"]
+
+
+def test_a_request_that_sets_it_is_reported_too(muse):
+    code, body = _chat(muse, reasoning_temperature=0.7, reasoning_top_k=13, seed=2)
+    assert code == 200, body
+    rs = body["runner_telemetry"]["reasoning_sampling"]
+    assert rs["temperature"] == pytest.approx(0.7) and rs["top_k"] == 13
