@@ -2779,6 +2779,25 @@ every closing turn untouched and catches only the runaways. A cap tight
 enough to shorten normal reasoning is a different intervention, and it should
 be argued for on its own evidence.
 
+### Reasoning-channel sampling
+
+`--reasoning-temp F` (server default) and the per-request
+`reasoning_temperature`, with `reasoning_top_p`, `reasoning_min_p` and
+`reasoning_top_k` beside it, replace the sampler's own settings while the turn
+is a reasoning turn and leave calls and answers on the request's sampler. A
+reasoning turn and an answer are different jobs: a turn that starts repeating
+needs randomness to escape it, and repetition is worst under greedy decoding,
+while a tool call's arguments must stay deterministic. A flat penalty across
+both is the intervention that garbled every sampled call in R4.12.7, which is
+why this one is scoped to the channel rather than to the request.
+
+Off unless asked for, and an explicit 0 is greedy again and reproduces the
+untouched run. That matters beyond taste: a harness that measures a model
+sends `temperature` 0 and expects argmax everywhere, and the fidelity tooling
+depends on it. The knob is refused rather than ignored on a model that
+declares no reasoning channel, because a setting that silently does nothing
+has the caller reading an unchanged trace as its effect.
+
 Raw completions are covered as well as chat, and the budget reads the
 prompt's own reasoning state to do it: a prompt that ends inside a reasoning
 turn (`... to=self<|message|>`, which is how a gate harness drives a reasoning

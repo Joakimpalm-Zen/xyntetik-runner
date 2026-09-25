@@ -1465,6 +1465,25 @@ static sample_ok_fn engine_sample_filter(engine *e) {
     return e->schema ? schema_ok : e->json_mode ? json_ok : NULL;
 }
 
+// Sample one token, under the reasoning channel's own knobs when the turn is
+// a reasoning turn and the caller asked for them (R4.12.17). The swap is
+// around sample_pick alone: the penalty WINDOW, the constraint filter and
+// every accounting path are untouched, so a request that sets nothing behaves
+// exactly as before, and a constrained payload -- which is never inside a
+// reasoning turn -- keeps the sampler it was given.
+static int engine_pick(engine *e, float *logits, int n_vocab,
+                       sample_ok_fn ok) {
+    if (!e->think_smp || !e->think_on) return sample_pick(e->smp, logits, n_vocab, ok, e);
+    sampler *s = e->smp;
+    float t0 = s->temp, p0 = s->top_p, m0 = s->min_p;
+    int k0 = s->top_k;
+    s->temp = e->think_temp; s->top_p = e->think_top_p;
+    s->min_p = e->think_min_p; s->top_k = e->think_top_k;
+    int tok = sample_pick(s, logits, n_vocab, ok, e);
+    s->temp = t0; s->top_p = p0; s->min_p = m0; s->top_k = k0;
+    return tok;
+}
+
 // Track whether generation is inside a reasoning turn and how many tokens it
 // has spent there, then arm the force when the budget is gone. Called after
 // every emitted token with that token's decoded bytes (empty for a control
@@ -2007,7 +2026,7 @@ static int engine_generate_spec(engine *e, float *logits, int max_new,
         if (e->stop && e->stop(e->stop_ud)) break;
         if (cur < 0) {
             // generation start: the first token comes from the live logits
-            int tok = sample_pick(e->smp, logits, m->n_vocab, ok, e);
+            int tok = engine_pick(e, logits, m->n_vocab, ok);
             if (tok < 0) {
                 if (tok == -2) e->oom = true;  // error, not a clean stop
                 e->hit_stop = true;
@@ -2142,7 +2161,7 @@ static int engine_generate_spec(engine *e, float *logits, int max_new,
             if (prof) t_logits += now_s() - tp;
             // b[i] is consumed: its hidden is the head's h for the next pair
             if (e->mtp_on) model_mtp_note_hidden(m, model_hidden_row(m, i));
-            int tok = sample_pick(e->smp, ti, m->n_vocab, ok, e);
+            int tok = engine_pick(e, ti, m->n_vocab, ok);
             if (tok < 0) {
                 if (tok == -2) e->oom = true;  // error, not a clean stop
                 e->hit_stop = true;
@@ -2301,8 +2320,8 @@ int engine_gen_step(engine *e, const float *logits, gen_cb cb, void *ud,
     bool want_lp = e->lp_cap && e->lp_count < e->lp_cap;
     if (want_lp) lp_capture_pre(e, logits, &pre);
     if (e->cl_cap) cl_capture(e, logits);
-    int tok = sample_pick(e->smp, (float *)logits, e->m->n_vocab,
-                          engine_sample_filter(e), e);
+    int tok = engine_pick(e, (float *)logits, e->m->n_vocab,
+                          engine_sample_filter(e));
     if (tok < 0) { // -1: no valid continuation (clean stop); -2: allocation error
         if (tok == -2) e->oom = true;
         e->hit_stop = true;

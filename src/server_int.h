@@ -70,6 +70,16 @@ typedef struct {
     // --reasoning-budget-message: the server's transition sentence, NULL for
     // the built-in default. A request's reasoning_budget_message wins.
     const char *reasoning_budget_message;
+    // --reasoning-temp: the server's default reasoning-channel temperature.
+    // The BOOL is load-bearing. SV is zero-initialised in every context that
+    // does not run server_run -- the socketpair unit tests among them -- and
+    // a float sentinel read 0.0 as "on at temperature zero", which switched
+    // the feature on for every request and then refused models that declare
+    // no reasoning channel (CI caught it, 2026-09-26). 0 can mean off for
+    // reasoning_budget because it is a count; a temperature of 0 is a
+    // legitimate setting, so it needs its own flag.
+    bool       reasoning_temp_set;
+    float      reasoning_temp;
     atomic_int ctx_size;
     atomic_int req_counter;
     // swap mode
