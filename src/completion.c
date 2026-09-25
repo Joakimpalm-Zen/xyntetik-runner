@@ -2035,11 +2035,11 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
     e->think_smp = false;
     {
         jv *rt = jv_get(req, "reasoning_temperature");
-        bool any = !absent(rt) || SV.reasoning_temp >= 0.0f;
+        bool any = !absent(rt) || SV.reasoning_temp_set;
         double rtemp = 0, rtop_p = top_p, rmin_p = min_p, rtop_k = top_k;
         if (any) {
             if (!request_number(req, "reasoning_temperature",
-                                SV.reasoning_temp >= 0.0f ? SV.reasoning_temp : 0,
+                                SV.reasoning_temp_set ? SV.reasoning_temp : 0,
                                 0, 2, &rtemp)) {
                 send_error(fd, 400, "reasoning_temperature must be a number in 0..2");
                 return;

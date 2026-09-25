@@ -22,7 +22,12 @@ names that were true when they were written.
   and every accounting path are untouched, and a constrained payload, which is
   never inside a reasoning turn, keeps the sampler it was given. Requested by
   the lab for the Kvist serving recipe, measured there, never a gate arm.
-  Pinned by `tests/test_reasoning_sampling.py`.
+  Pinned by `tests/test_reasoning_sampling.py`. The server-side default
+  carries an explicit flag rather than a negative float sentinel: the server
+  state is zero-initialised wherever the startup path does not run, and 0.0
+  read as "on at temperature zero", which switched the feature on for every
+  request in that context and then refused models declaring no reasoning
+  channel.
 - **A stop token's own decision is reported, and fidelity comparisons stop
   dropping those positions** [lab finding 2026-09-25]. A position whose greedy
   next token is a stop returned no `logprobs` block at all, because the arrays

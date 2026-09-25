@@ -162,3 +162,14 @@ def test_a_model_without_a_reasoning_channel_refuses_the_knob(plain):
     except urllib.error.HTTPError as e:
         assert e.code == 400
         assert "reasoning channel" in json.loads(e.read())["error"]["message"]
+
+
+def test_a_zero_initialised_server_state_means_off(muse):
+    """The server state is zero-initialised wherever server_run does not run,
+    including the socketpair unit tests, so "off" cannot be a float sentinel:
+    0.0 would read as "on at temperature zero" and switch the feature on for
+    every request. Observable here as the default server leaving greedy
+    requests reproducible and reporting nothing."""
+    a = _chat(muse)
+    b = _chat(muse)
+    assert a[0] == 200 and _msg(a[1]) == _msg(b[1])

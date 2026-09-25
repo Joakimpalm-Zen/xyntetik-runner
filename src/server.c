@@ -2010,7 +2010,8 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
     SV.n_predict_cap = 1024;
     SV.reasoning_budget = reasoning_budget;
     SV.reasoning_budget_message = reasoning_budget_message;
-    SV.reasoning_temp = reasoning_temp;
+    SV.reasoning_temp_set = reasoning_temp >= 0.0f;
+    SV.reasoning_temp = reasoning_temp >= 0.0f ? reasoning_temp : 0.0f;
     SV.q.limit = (int)(sizeof(SV.q.fds) / sizeof(sock_t));
     // a queue bound may only lower the fixed fd capacity, never raise it
     SV.q.limit = (int)env_i64("RUNNER_MAX_QUEUE", 1, SV.q.limit, SV.q.limit);
