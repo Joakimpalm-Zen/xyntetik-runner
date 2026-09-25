@@ -946,7 +946,10 @@ static void usage_to(FILE *f, const char *prog) {
         "                 tokens (budget forcing; 0 = off, the default). Per\n"
         "                 request: reasoning_max_tokens. Needs a model whose\n"
         "                 reasoning turn ends on a single token\n"
-        "  --reasoning-budget-message S  the sentence the forced close writes\n"
+        "  --reasoning-temp F  temperature for REASONING turns only; calls and\n"
+        "                 answers keep the request's own sampler (off by\n"
+        "                 default). Per request: reasoning_temperature, with\n"
+        "                 reasoning_top_p / reasoning_min_p / reasoning_top_k\n"        "  --reasoning-budget-message S  the sentence the forced close writes\n"
         "                 before the close token (default: a short neutral\n"
         "                 one; \"\" for a bare close). Per request:\n"
         "                 reasoning_budget_message\n"
@@ -1269,6 +1272,7 @@ int main(int argc, char **argv) {
     // request's reasoning_max_tokens overrides it either way.
     int reasoning_budget = 0;
     const char *reasoning_budget_message = NULL;   // NULL = the built-in line
+    float reasoning_temp = -1.0f;                  // < 0 = off
     bool mtp_on = false, draft_lookup = false;
     bool interactive = false, verbose = false, no_bos = false;
     bool seed_given = false;
@@ -1406,6 +1410,8 @@ int main(int argc, char **argv) {
             reasoning_budget = (int)int_arg(a, NEXT, 0, INT_MAX);
         else if (!strcmp(a, "--reasoning-budget-message"))
             reasoning_budget_message = NEXT;
+        else if (!strcmp(a, "--reasoning-temp"))
+            reasoning_temp = (float)float_arg(a, NEXT, 0, 2);
         else if (!strcmp(a, "--bench-json")) bench_json = true;
         else if (!strcmp(a, "--score")) score = true;
         else if (!strcmp(a, "--decide")) decide_path = NEXT;
@@ -2329,7 +2335,7 @@ int main(int argc, char **argv) {
                             model_path, &mp, smp, &ov, port, parallel, n_threads,
                             ttl, draft_path, draft_k, draft_lookup,
                             reasoning_budget, reasoning_budget_message,
-                            ignore_eos,
+                            reasoning_temp, ignore_eos,
                             tmpl_override, force_uncertified, &signing);
         free(owned_prompt);
         return rc;

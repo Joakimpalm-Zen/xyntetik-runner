@@ -8,6 +8,21 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **Reasoning-channel sampling (R4.12.17).** `--reasoning-temp F` and the
+  per-request `reasoning_temperature`, `reasoning_top_p`, `reasoning_min_p`
+  and `reasoning_top_k` apply only while the turn is a reasoning turn; calls
+  and answers keep the request's sampler. A reasoning turn that repeats needs
+  randomness to escape it, and repetition is worst under greedy decoding,
+  while a tool call's arguments must stay deterministic: a flat penalty across
+  both is what garbled every sampled call in R4.12.7. Off unless asked for,
+  and an explicit zero reproduces the untouched greedy run, which is what the
+  fidelity tooling and any harness measuring a model depend on. Refused rather
+  than ignored on a model that declares no reasoning channel. The swap is
+  around the sampling call alone, so the penalty window, the constraint filter
+  and every accounting path are untouched, and a constrained payload, which is
+  never inside a reasoning turn, keeps the sampler it was given. Requested by
+  the lab for the Kvist serving recipe, measured there, never a gate arm.
+  Pinned by `tests/test_reasoning_sampling.py`.
 - **A stop token's own decision is reported, and fidelity comparisons stop
   dropping those positions** [lab finding 2026-09-25]. A position whose greedy
   next token is a stop returned no `logprobs` block at all, because the arrays

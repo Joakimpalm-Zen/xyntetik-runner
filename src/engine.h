@@ -176,6 +176,17 @@ typedef struct {
     // and the KLD statistics, biasing fidelity upward.)
     float    stop_lp;      // logprob of the stop token itself
     int      stop_lp_at;   // slot in lp_top holding its alternatives, -1 if none
+    // R4.12.17 reasoning-channel sampling. A reasoning turn and an answer are
+    // different jobs: a loop needs randomness to escape (looping is worst
+    // under greedy decoding, arXiv 2512.12895) while a tool call's arguments
+    // must stay deterministic, and a flat penalty across both garbles the
+    // call (R4.12.7). These knobs replace the sampler's own ONLY while the
+    // turn is a reasoning turn -- the same think_on the reasoning budget
+    // tracks -- and only when the caller asked for them. think_smp off
+    // leaves every existing request byte-identical, greedy included.
+    bool     think_smp;    // the four knobs below are in force
+    float    think_temp, think_top_p, think_min_p;
+    int      think_top_k;
     // JC-R1 "choice_logprobs": constrained-choice posteriors. When cl_cap>0
     // and a schema/JSON constraint is active, each payload sampling step
     // probes the top cl_probe candidates by raw logit against the validator

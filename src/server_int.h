@@ -70,6 +70,9 @@ typedef struct {
     // --reasoning-budget-message: the server's transition sentence, NULL for
     // the built-in default. A request's reasoning_budget_message wins.
     const char *reasoning_budget_message;
+    // --reasoning-temp: default reasoning-channel temperature (<0 = off). A
+    // request's reasoning_temperature overrides it.
+    float      reasoning_temp;
     atomic_int ctx_size;
     atomic_int req_counter;
     // swap mode

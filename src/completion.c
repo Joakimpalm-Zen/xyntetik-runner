@@ -2026,6 +2026,48 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
     // generation loop never touches the tokenizer: a sentence that does not
     // fit the forced-close buffer is refused rather than truncated, because
     // half a sentence in the model's voice is worse than none of it.
+    // R4.12.17: the reasoning channel's own sampling. A reasoning turn and an
+    // answer are different jobs -- a loop needs randomness to escape it,
+    // while a tool call's arguments must stay deterministic -- so these apply
+    // only while the turn is a reasoning turn. Absent, nothing changes: a
+    // greedy request stays greedy everywhere, which is what the gate
+    // harnesses and the KLD tooling rely on.
+    e->think_smp = false;
+    {
+        jv *rt = jv_get(req, "reasoning_temperature");
+        bool any = !absent(rt) || SV.reasoning_temp >= 0.0f;
+        double rtemp = 0, rtop_p = top_p, rmin_p = min_p, rtop_k = top_k;
+        if (any) {
+            if (!request_number(req, "reasoning_temperature",
+                                SV.reasoning_temp >= 0.0f ? SV.reasoning_temp : 0,
+                                0, 2, &rtemp)) {
+                send_error(fd, 400, "reasoning_temperature must be a number in 0..2");
+                return;
+            }
+            if (!request_number(req, "reasoning_top_p", top_p, 0, 1, &rtop_p) ||
+                !request_number(req, "reasoning_min_p", min_p, 0, 1, &rmin_p) ||
+                !request_number(req, "reasoning_top_k", top_k, 0, 1000, &rtop_k) ||
+                !whole_number(rtop_k)) {
+                send_error(fd, 400, "reasoning_top_p, reasoning_min_p and "
+                                    "reasoning_top_k must be in range "
+                                    "(0..1, 0..1, 0..1000 whole)");
+                return;
+            }
+            // Refused rather than ignored on a model with no reasoning
+            // channel: a knob that silently does nothing has the caller
+            // reading an unchanged trace as the setting's effect.
+            if (!m->think_open || !m->think_close) {
+                send_error(fd, 400, "reasoning_temperature needs a model with a "
+                                    "reasoning channel; this model declares none");
+                return;
+            }
+            e->think_smp = true;
+            e->think_temp = (float)rtemp;
+            e->think_top_p = (float)rtop_p;
+            e->think_min_p = (float)rmin_p;
+            e->think_top_k = (int)rtop_k;
+        }
+    }
     // A prompt can already be inside the reasoning turn (a raw completion
     // resuming ` to=self`, which is how a gate harness drives one); the
     // budget has to count from the first generated token there.
