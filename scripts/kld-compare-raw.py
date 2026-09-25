@@ -86,6 +86,32 @@ def start_server(runner, model, port, threads=0, ctx=0):
     raise RuntimeError(f"server for {model} on port {port} did not come up")
 
 
+# A position whose greedy next token is a STOP used to have no distribution
+# at all: a stop token decodes to no bytes, so it is not an emitted token and
+# the `logprobs` arrays, which align with the emitted text, are empty. The
+# except branch below then counted the position as failed and dropped it.
+#
+# When BOTH sides stop, nothing is lost: they agree. When ONE side stops and
+# the other does not, the position is a top-1 DISAGREEMENT -- precisely the
+# divergence a fidelity comparison exists to catch, since a quantisation that
+# flips "stop here" against "keep going" changes where generation ends -- and
+# dropping it biased agreement upward. Found by the lab on a release pass
+# (2026-09-25): 1 of 500 positions, one-sided, silently excluded.
+#
+# Runner reports the stop position's own decision beside the stop token, in
+# `stop_logprobs` (runner >= 0.5.7). Where a server does not, the stop token
+# itself is still known from `stop_token`, so the position is recorded as a
+# stop with no distribution and still counted against agreement.
+class StopPosition(Exception):
+    """The side stopped here. `dist` is its distribution when the server
+    reported one, else None; `token` is the stop token's spelling."""
+
+    def __init__(self, token, dist=None):
+        super().__init__(f"next token is a stop ({token!r})")
+        self.token = token
+        self.dist = dist
+
+
 def query(endpoint, model_name, prompt, top_n=20):
     payload = {"model": model_name, "prompt": prompt, "max_tokens": 1,
               "temperature": 0, "logprobs": top_n}
@@ -95,7 +121,18 @@ def query(endpoint, model_name, prompt, top_n=20):
         headers={"Content-Type": "application/json"}, method="POST")
     with urllib.request.urlopen(req, timeout=120) as resp:
         body = json.loads(resp.read())
-    lp = body["choices"][0]["logprobs"]
+    choice = body["choices"][0]
+    lp = choice.get("logprobs")
+    if not lp or not (lp.get("content") or lp.get("tokens")):
+        stop = choice.get("stop_token")
+        if stop is None and choice.get("finish_reason") != "stop":
+            raise KeyError("logprobs")
+        sl = choice.get("stop_logprobs")
+        dist = None
+        if sl:
+            dist = dict(sl.get("top_logprobs") or {})
+            dist[stop] = sl["logprob"]
+        raise StopPosition(stop, dist)
     if "content" in lp:  # llama.cpp OpenAI-style schema
         step = lp["content"][0]
         top = {e["token"]: e["logprob"] for e in step["top_logprobs"]}
@@ -269,6 +306,7 @@ def main(argv):
         words = open(args.corpus, encoding="utf-8").read().split()
         n_scored = 0
         n_failed = 0
+        n_stop = n_stop_one_sided = n_stop_unscored_kld = 0
         klds, top1s, overlaps, margs, positions = [], [], [], [], []
         prefix = ""
         for i, w in enumerate(words):
@@ -277,13 +315,42 @@ def main(argv):
                 continue
             if n_scored >= args.max_positions:
                 break
+            stop_a = stop_b = None
+            da = db = None
             try:
-                da = query(ep_a, args.model_name_a, prefix)
-                db = query(ep_b, args.model_name_b, prefix)
+                try:
+                    da = query(ep_a, args.model_name_a, prefix)
+                except StopPosition as sp:
+                    stop_a, da = sp, sp.dist
+                try:
+                    db = query(ep_b, args.model_name_b, prefix)
+                except StopPosition as sp:
+                    stop_b, db = sp, sp.dist
             except Exception as e:
                 n_failed += 1
                 print(f"position {i} failed: {e}", file=sys.stderr)
                 continue
+            if stop_a or stop_b:
+                # A stop on one side only is a disagreement and is counted as
+                # one. A stop on both is agreement when the token matches.
+                # Either way the position leaves the KLD mean unless both
+                # sides reported a distribution, because a stop without one is
+                # not a distribution to compare -- the count says how many.
+                both = stop_a is not None and stop_b is not None
+                agree = bool(both and stop_a.token == stop_b.token)
+                n_stop += 1
+                if not both:
+                    n_stop_one_sided += 1
+                top1s.append(agree)
+                margs.append(agree)
+                if da is None or db is None:
+                    n_stop_unscored_kld += 1
+                    positions.append({"i": i, "kld": None, "agree": agree,
+                                      "margin_agree": agree, "stop": True,
+                                      "stop_a": stop_a.token if stop_a else None,
+                                      "stop_b": stop_b.token if stop_b else None})
+                    n_scored += 1
+                    continue
             kld, agree, marg, overlap8 = score_pair(da, db, args.tie_band)
             klds.append(kld); top1s.append(agree); overlaps.append(overlap8)
             margs.append(marg)
@@ -326,6 +393,13 @@ def main(argv):
         "tie_band_nats": args.tie_band,
         "positions_scored": n_scored,
         "positions_failed": n_failed,
+        # Stop positions are scored, not dropped (see query()). one_sided is
+        # the number where exactly one side stopped, each counted as a top-1
+        # disagreement; kld_unscored is how many carried no distribution to
+        # compare and so are absent from mean_kld only.
+        "positions_stop": n_stop,
+        "positions_stop_one_sided": n_stop_one_sided,
+        "positions_stop_kld_unscored": n_stop_unscored_kld,
         "mean_kld": sum(klds) / len(klds) if klds else None,
         "top1_agreement_pct": 100.0 * sum(top1s) / len(top1s) if top1s else None,
         "top1_margin_qualified_pct":

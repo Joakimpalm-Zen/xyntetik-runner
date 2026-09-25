@@ -1946,6 +1946,7 @@ static int engine_generate_spec(engine *e, float *logits, int max_new,
     e->hit_stop = false; e->stop_id = -1;
     e->oom = false;
     e->lp_count = 0;
+    e->stop_lp_at = -1; e->stop_lp = 0;
     e->prelude_count = 0;
     e->prelude_exhausted = false;
     e->prelude_max = max_new < 0 ? 0 : (max_new > 1 ? max_new / 2 : max_new);
@@ -2271,6 +2272,7 @@ void engine_gen_begin(engine *e, int max_new) {
     e->hit_stop  = false; e->stop_id = -1;
     e->oom       = false;
     e->lp_count  = 0;
+    e->stop_lp_at = -1; e->stop_lp = 0;
     e->gen_max   = max_new;
     e->gen_count = 0;
     e->prelude_count = 0;
@@ -2309,6 +2311,16 @@ int engine_gen_step(engine *e, const float *logits, gen_cb cb, void *ud,
     sampler_accept(e->smp, tok);
     if (debug_tokens()) fprintf(stderr, " %d", tok);
     if (is_stop(e, tok) && !e->ignore_eos) {
+        // The stop's own decision, recorded beside the aligned arrays rather
+        // than in them (see engine.h). lp_capture_pre already filled this
+        // slot's alternatives; only the chosen value and the index are new.
+        if (want_lp) {
+            float raw = logits[tok];
+            for (int i = 0; i < pre.n_snap; i++)
+                if (pre.snap_ids[i] == tok) { raw = pre.snap[i]; break; }
+            e->stop_lp = raw - pre.lse;
+            e->stop_lp_at = e->lp_count;
+        }
         e->hit_stop = true;
         e->stop_id = tok;
         return ENGINE_STEP_DONE;

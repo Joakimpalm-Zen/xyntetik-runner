@@ -160,6 +160,22 @@ typedef struct {
     int32_t *lp_ids;       // chosen token id per emitted token
     lp_alt  *lp_top;       // top-N alternatives per token
     int      lp_n, lp_cap, lp_count;
+    // The STOP position's decision. A stop token is a decision the model
+    // made, and on a fidelity comparison it is the interesting one: a
+    // quantisation that flips "stop here" against "keep going" is exactly the
+    // divergence the comparison exists to catch. It is kept OUT of the arrays
+    // above because those align one-to-one with the emitted text, and a stop
+    // token decodes to no bytes; a caller zipping tokens with logprobs must
+    // not find an extra entry. lp_capture_pre has already written this
+    // position's alternatives at slot lp_count, which lp_count never reaches,
+    // so stop_lp_at names that slot rather than copying it.
+    // Reported beside stop_token/stop_token_id, never inside logprobs.
+    // (lab finding 2026-09-25: a position whose greedy pick is a stop came
+    // back with no logprobs block at all, so kld-compare-raw counted it as a
+    // failed position and a ONE-SIDED stop silently left both the agreement
+    // and the KLD statistics, biasing fidelity upward.)
+    float    stop_lp;      // logprob of the stop token itself
+    int      stop_lp_at;   // slot in lp_top holding its alternatives, -1 if none
     // JC-R1 "choice_logprobs": constrained-choice posteriors. When cl_cap>0
     // and a schema/JSON constraint is active, each payload sampling step
     // probes the top cl_probe candidates by raw logit against the validator

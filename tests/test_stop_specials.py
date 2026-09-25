@@ -187,3 +187,43 @@ def test_the_final_chunk_carries_the_stop_token(server):
     assert finals[0]["stop_token"] == "<s>"
     text = "".join(ch["choices"][0].get("text", "") for ch in chunks if ch["choices"])
     assert text == "Hello"
+
+
+def test_a_stop_as_the_first_token_still_reports_its_distribution(server):
+    """A stop token is a decision, and on a fidelity comparison it is the
+    interesting one: a quantisation that flips "stop here" against "keep
+    going" changes where generation ends. The logprobs arrays align with the
+    emitted TEXT and a stop decodes to no bytes, so the stop's own decision
+    rides beside stop_token instead. Before this it was reported nowhere, and
+    kld-compare-raw dropped the position as failed (lab, 2026-09-25)."""
+    code, body = _post(server, {**BASE, "runner_test_reply": "<s>tail",
+                                "logprobs": 3, "stop_token_ids": [1]})
+    assert code == 200, body
+    ch = body["choices"][0]
+    assert ch["finish_reason"] == "stop" and ch["stop_token_id"] == 1
+    sl = ch.get("stop_logprobs")
+    assert sl is not None, ch
+    assert isinstance(sl["logprob"], float)
+    assert sl["top_logprobs"] and len(sl["top_token_ids"]) == len(sl["top_logprobs"])
+    # the aligned arrays are untouched: no entry for a token with no bytes
+    assert not (ch.get("logprobs") or {}).get("tokens")
+
+
+def test_the_stop_distribution_is_absent_when_logprobs_were_not_asked_for(server):
+    code, body = _post(server, {**BASE, "runner_test_reply": "<s>tail",
+                                "stop_token_ids": [1]})
+    assert code == 200, body
+    ch = body["choices"][0]
+    assert ch["stop_token_id"] == 1 and "stop_logprobs" not in ch
+
+
+def test_text_before_a_stop_keeps_its_own_logprobs_aligned(server):
+    code, body = _post(server, {**BASE, "runner_test_reply": "Hello<s>tail",
+                                "logprobs": 3, "stop_token_ids": [1]})
+    assert code == 200, body
+    ch = body["choices"][0]
+    lp = ch["logprobs"]
+    # one entry per emitted text token, and the stop is not among them
+    assert len(lp["tokens"]) == len(lp["token_logprobs"]) == len(lp["top_logprobs"])
+    assert "".join(lp["tokens"]) == ch["text"]
+    assert ch["stop_logprobs"]["logprob"] <= 0.0

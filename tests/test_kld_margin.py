@@ -144,3 +144,72 @@ def test_band_is_documented_and_conservative():
     # project measures that is 0.5-1.1 nats (see the derivation in the script).
     # The default must sit at the conservative end of that translation.
     assert 0.4 <= BAND <= 0.6
+
+
+# ---------------------------------------------------------- stop positions
+#
+# A position whose greedy next token is a stop has no emitted token, so the
+# logprobs arrays are empty and the position used to be counted as FAILED and
+# dropped. Both-sides stops cost nothing; a ONE-SIDED stop is a top-1
+# disagreement, and dropping it biased agreement upward (lab, 2026-09-25:
+# 1 of 500 positions on a release pass).
+
+class _Resp:
+    def __init__(self, body):
+        self._b = body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def read(self):
+        import json
+        return json.dumps(self._b).encode()
+
+
+def _serve(monkeypatch, body):
+    monkeypatch.setattr(kld_raw.urllib.request, "urlopen",
+                        lambda req, timeout=0: _Resp(body))
+
+
+def test_a_stop_position_raises_stop_not_keyerror(monkeypatch):
+    _serve(monkeypatch, {"choices": [{
+        "finish_reason": "stop", "stop_token": "</s>", "stop_token_id": 2,
+        "stop_logprobs": {"logprob": -0.5,
+                          "top_logprobs": {"</s>": -0.5, "x": -1.5},
+                          "top_token_ids": [2, 9]}}]})
+    with pytest.raises(kld_raw.StopPosition) as e:
+        kld_raw.query("http://x", "m", "prefix")
+    assert e.value.token == "</s>"
+    # the distribution rides along, so a both-sides stop can still be scored
+    assert e.value.dist == {"</s>": -0.5, "x": -1.5}
+
+
+def test_a_stop_without_a_distribution_is_still_a_stop(monkeypatch):
+    """A server older than the stop_logprobs field, or one that reports none:
+    the position is still known to be a stop and still counts, it just carries
+    no distribution to put in the KLD mean."""
+    _serve(monkeypatch, {"choices": [{"finish_reason": "stop",
+                                      "stop_token": "<|eot|>"}]})
+    with pytest.raises(kld_raw.StopPosition) as e:
+        kld_raw.query("http://x", "m", "prefix")
+    assert e.value.token == "<|eot|>" and e.value.dist is None
+
+
+def test_an_empty_logprobs_block_without_a_stop_is_still_an_error(monkeypatch):
+    """Only a STOP explains a missing distribution. Anything else is the bug
+    the old except branch was hiding, and must not be read as a stop."""
+    _serve(monkeypatch, {"choices": [{"finish_reason": "length",
+                                      "logprobs": {"tokens": []}}]})
+    with pytest.raises(KeyError):
+        kld_raw.query("http://x", "m", "prefix")
+
+
+def test_two_stops_on_the_same_token_agree_and_score(monkeypatch):
+    """Both sides stopping on the same token is agreement, and when both
+    carry a distribution the position also joins the KLD mean."""
+    d = {"</s>": -0.5, "x": -1.5}
+    kld, agree, marg, overlap = kld_raw.score_pair(d, d)
+    assert agree is True and marg is True and kld == pytest.approx(0.0, abs=1e-9)

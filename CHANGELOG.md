@@ -8,6 +8,21 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **A stop token's own decision is reported, and fidelity comparisons stop
+  dropping those positions** [lab finding 2026-09-25]. A position whose greedy
+  next token is a stop returned no `logprobs` block at all, because the arrays
+  align with the emitted text and a stop decodes to no bytes. Every such
+  position was therefore counted as failed by `scripts/kld-compare-raw.py` and
+  excluded from both the agreement and the KLD statistics. Where both files
+  stop, nothing is lost; where ONE does, the position is exactly the
+  divergence the comparison exists to catch, so the script was biased upward
+  precisely on quantisations that move a stop decision. Found on a release
+  pass, 1 of 500 positions, one-sided. The engine now records the stop
+  position's logprob and top alternatives and reports them as `stop_logprobs`
+  beside `stop_token`, leaving the aligned arrays untouched; the script scores
+  stop positions, counts a one-sided stop as a top-1 disagreement, keeps a
+  distribution-less stop out of the KLD mean only, and reports the three
+  counts. Pinned by `tests/test_stop_specials.py` and `tests/test_kld_margin.py`.
 - **A long model filename no longer truncates the served model id** [lab
   finding 2026-09-24]. Single-model serve joins the registry machinery so
   `/unload` and `--ttl` work, and that join copied the file's basename through
