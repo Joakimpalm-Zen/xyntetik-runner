@@ -84,7 +84,12 @@ names that were true when they were written.
   truth on 184 of 274 rows, CI clear of zero); the adapters are not above
   the base on this set (they win `none`, lose the chat protocol and the
   underspecified prompts), so R8.4.3 as written is not met and the reason
-  is the adapters. `scripts/cl-calibration.py` gains `acceptable_ids`, an
+  is the adapters. Rerun on the same host's CPU path, all four arms agree
+  with their CUDA records on every row of every leg; the ten raw rows whose
+  bytes differ diverge late in a long answer and parse to the same call, and
+  no decide option moves by more than 0.013. The one v1 arm that differed
+  across hosts agrees here, which places that difference on the host, not on
+  the adapter serving path. `scripts/cl-calibration.py` gains `acceptable_ids`, an
   importable `summarize`/`certificate` and `--threshold-target`.
 - **`scripts/gguf-blockorder.py`: put a GGUF's tensors in block order and
   prove nothing else changed.** Runner v0.5.6's partial split uploads one

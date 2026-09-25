@@ -282,9 +282,36 @@ auto` (the 4B fits on the card; the adapter served on the device, R8.7.2),
 8 threads, greedy. The same base and adapters as v1, sha256 verified on
 the box: base fbe1d5ed..., published adapter ea38f80c..., through-Q8_0
 0c85d630..., through-BF16 1cafe339.... One arm took 13 to 16 minutes for
-all four legs. Records: `results/*-v2-gpu-windows.json`. The CPU-path
-pass (`--gpu off`, the v1 reference path) runs after this one and is
-added when it lands.
+all four legs. Records: `results/*-v2-gpu-windows.json`. The CPU-path pass
+is the section below.
+
+### Second path: the same box on the CPU
+
+The four arms were rerun on the same host with `--gpu off`, the path every v1
+record used, 2 h 45 m to 2 h 55 m per arm against 13 to 16 minutes on the
+card. Records: `results/*-v2-windows.json` (the CUDA ones carry `-gpu`).
+
+Agreement is per row, not per total. Verdicts identical on every row of every
+leg, all four arms:
+
+| arm | raw exact | native exact | second call | decide argmax | raw output bytes |
+|---|---|---|---|---|---|
+| base | 274 / 274 | 274 / 274 | 40 / 40 | 274 / 274 | 272 / 274 |
+| published (Q4_K_M) | 274 / 274 | 274 / 274 | 40 / 40 | 274 / 274 | 271 / 274 |
+| through Q8_0 | 274 / 274 | 274 / 274 | 40 / 40 | 274 / 274 | 271 / 274 |
+| through BF16 | 274 / 274 | 274 / 274 | 40 / 40 | 274 / 274 | 272 / 274 |
+
+The ten raw rows whose BYTES differ all diverge late in a long answer (the
+first differing byte is 65 to 215 characters in) and every one of them parses
+to the same call and the same verdict. On the decide leg the largest
+difference in any option's probability, over all 1,096 scored rows, is 0.0126.
+
+This is the arithmetic-level agreement the v1 pass could not show. There the
+one arm that differed across hosts was the adapter trained through Q8_0, 149
+of 150 rows between ZEN and the lab box; here the same adapter agrees on all
+274 rows between the two compute paths on ONE host. The v1 difference is
+therefore a cross-HOST property, not a property of the adapter serving path,
+which is what a single host cannot separate.
 
 ### Counts Before Rates (Raw Leg: the training template with the full catalog)
 
