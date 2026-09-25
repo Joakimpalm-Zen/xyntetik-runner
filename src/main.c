@@ -946,7 +946,10 @@ static void usage_to(FILE *f, const char *prog) {
         "                 tokens (budget forcing; 0 = off, the default). Per\n"
         "                 request: reasoning_max_tokens. Needs a model whose\n"
         "                 reasoning turn ends on a single token\n"
-        "  --reasoning-temp F  temperature for REASONING turns only; calls and\n"
+        "  --loop-guard   close a reasoning turn that starts repeating (a span\n"
+        "                 repeated back to back); off by default. Per request:\n"
+        "                 loop_guard, loop_guard_span/repeats/window,\n"
+        "                 loop_guard_everywhere\n"        "  --reasoning-temp F  temperature for REASONING turns only; calls and\n"
         "                 answers keep the request's own sampler (off by\n"
         "                 default). Per request: reasoning_temperature, with\n"
         "                 reasoning_top_p / reasoning_min_p / reasoning_top_k\n"        "  --reasoning-budget-message S  the sentence the forced close writes\n"
@@ -1273,6 +1276,7 @@ int main(int argc, char **argv) {
     int reasoning_budget = 0;
     const char *reasoning_budget_message = NULL;   // NULL = the built-in line
     float reasoning_temp = -1.0f;                  // < 0 = off
+    bool loop_guard = false;                       // R4.12.18, off by default
     bool mtp_on = false, draft_lookup = false;
     bool interactive = false, verbose = false, no_bos = false;
     bool seed_given = false;
@@ -1410,6 +1414,7 @@ int main(int argc, char **argv) {
             reasoning_budget = (int)int_arg(a, NEXT, 0, INT_MAX);
         else if (!strcmp(a, "--reasoning-budget-message"))
             reasoning_budget_message = NEXT;
+        else if (!strcmp(a, "--loop-guard")) loop_guard = true;
         else if (!strcmp(a, "--reasoning-temp"))
             reasoning_temp = (float)float_arg(a, NEXT, 0, 2);
         else if (!strcmp(a, "--bench-json")) bench_json = true;
@@ -2342,7 +2347,7 @@ int main(int argc, char **argv) {
                             model_path, &mp, smp, &ov, port, parallel, n_threads,
                             ttl, draft_path, draft_k, draft_lookup,
                             reasoning_budget, reasoning_budget_message,
-                            reasoning_temp, ignore_eos,
+                            reasoning_temp, loop_guard, ignore_eos,
                             tmpl_override, force_uncertified, &signing);
         free(owned_prompt);
         return rc;

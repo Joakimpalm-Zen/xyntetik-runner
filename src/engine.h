@@ -187,6 +187,23 @@ typedef struct {
     bool     think_smp;    // the four knobs below are in force
     float    think_temp, think_top_p, think_min_p;
     int      think_top_k;
+    // R4.12.18 loop guard, detect-and-force-close half. A distilled model
+    // that starts repeating inside a reasoning turn runs to the token limit
+    // and the turn is lost; the lab measured 6 of 9 closed-loop failures that
+    // way, and 18 of 19 capped training rollouts carried a repeated span.
+    // Detection looks at the GENERATED suffix only, never the prompt: a span
+    // of loop_span tokens repeated loop_repeats times back to back inside the
+    // last loop_window. On a hit inside a reasoning turn the turn is closed
+    // through the same path the budget uses, so the model writes its next
+    // header itself; outside one (only reachable with loop_all) the turn
+    // stops and the envelope says "loop". Reasoning-only by default because
+    // every measured runaway is a reasoning turn and a repeated span in an
+    // ANSWER is often a legitimate table or list.
+    bool     loop_guard, loop_all;
+    int      loop_span, loop_repeats, loop_window;
+    int      loop_hits;    // how many times it fired this request
+    bool     loop_stop;    // ended the turn (outside a reasoning turn)
+    int      gen_start;    // hist index where this generation began
     // JC-R1 "choice_logprobs": constrained-choice posteriors. When cl_cap>0
     // and a schema/JSON constraint is active, each payload sampling step
     // probes the top cl_probe candidates by raw logit against the validator
@@ -299,10 +316,11 @@ int engine_lookup_draft(const int32_t *hist, int len, int k, int32_t *out);
 bool   engine_init(engine *e, model_t *m, tokenizer *tok, sampler *smp);
 void   engine_reset(engine *e); // clear KV position + sampler + json state
 void   engine_think_started(engine *e); // prompt already contains think_open
-// Reasoning budget only: read the prompt's reasoning state (the last
-// think_open/think_close wins) so a raw completion that resumes an open
-// reasoning turn is counted from its first generated token.
-void   engine_think_budget_prime(engine *e, const char *prompt);
+// Read the prompt's reasoning state (the last think_open/think_close wins)
+// so a raw completion that resumes an open reasoning turn is treated as one
+// from its first generated token. Needed by the budget, the reasoning
+// sampler and the loop guard alike.
+void   engine_think_prime(engine *e, const char *prompt);
 // keep the KV for the longest common prefix of hist and toks, reset the rest
 // of the engine state; returns how many prompt tokens can be skipped
 int    engine_rewind(engine *e, const int32_t *toks, int n);

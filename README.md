@@ -2779,6 +2779,29 @@ every closing turn untouched and catches only the runaways. A cap tight
 enough to shorten normal reasoning is a different intervention, and it should
 be argued for on its own evidence.
 
+### Loop guard
+
+`--loop-guard` (server) and the per-request `loop_guard` close a reasoning
+turn that has started repeating. Detection looks at the generated suffix
+only, never the prompt: a span of `loop_guard_span` tokens repeated
+`loop_guard_repeats` times back to back inside the last `loop_guard_window`
+(8, 3 and 256 by default). On a hit the turn is closed through the same path
+the reasoning budget uses, so the transition sentence and the terminator go
+out and the model addresses its recipient normally; the answer keeps its own
+budget and `finish_reason` is untouched.
+
+It watches the reasoning channel only unless `loop_guard_everywhere` is set,
+because a repeated span in an answer is often a legitimate table or list,
+while every runaway measured on a distilled student was a reasoning turn.
+Widened, a hit outside a reasoning turn ends the turn with `finish_reason`
+`loop`, since there is no channel to close and continuing bills the caller
+for a repetition they did not ask for. Refused rather than ignored where it
+could never fire: a model with no reasoning channel and no widening.
+
+`runner_telemetry.loop_guard` reports the thresholds, how many times it fired
+and whether it ended the turn. This is the detect-and-close half; rewinding
+to the loop onset and resampling that position is deliberately not here.
+
 ### Reasoning-channel sampling
 
 `--reasoning-temp F` (server default) and the per-request
