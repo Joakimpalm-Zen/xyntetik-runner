@@ -78,6 +78,8 @@ typedef struct {
     // no reasoning channel (CI caught it, 2026-09-26). 0 can mean off for
     // reasoning_budget because it is a count; a temperature of 0 is a
     // legitimate setting, so it needs its own flag.
+    // --loop-guard: the server's default for the loop guard (off).
+    bool       loop_guard;
     bool       reasoning_temp_set;
     float      reasoning_temp;
     atomic_int ctx_size;

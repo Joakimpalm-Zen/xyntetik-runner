@@ -133,7 +133,7 @@ void engine_reset(engine *e) {
     if (e->mtp_on) model_mtp_reset(e->m, 0);
 }
 
-// Where a PROMPT leaves the reasoning state, for the budget only.
+// Where a PROMPT leaves the reasoning state, for every consumer of it.
 //
 // A chat request that primes the reasoning turn calls engine_think_started;
 // a RAW completion has no such signal, and the gate harnesses that drive a
@@ -146,8 +146,13 @@ void engine_reset(engine *e) {
 // The rule is the last marker wins: an open after the last close means the
 // prompt ends inside reasoning. Text only -- a control token spells no bytes
 // here, which is why Muse's pair is the text around them.
-void engine_think_budget_prime(engine *e, const char *prompt) {
-    if (!e || e->think_budget <= 0 || !prompt) return;
+void engine_think_prime(engine *e, const char *prompt) {
+    // Every consumer of think_on primes from the prompt, not just the
+    // budget: the reasoning sampler and the loop guard both need to know
+    // that a raw completion resumed an open reasoning turn. Gating this on
+    // the budget left the loop guard watching a channel it believed closed.
+    if (!e || !prompt) return;
+    if (e->think_budget <= 0 && !e->think_smp && !e->loop_guard) return;
     if (!e->m || !e->m->think_open || !e->m->think_close) return;
     const char *last_open = NULL, *last_close = NULL;
     for (const char *q = prompt; (q = strstr(q, e->m->think_open)); q++)
@@ -1461,7 +1466,12 @@ static bool budget_ok(void *ud, int id) {
 // The filter a generation runs under, chosen ONCE per walk: a budget that can
 // fire mid-turn has to be in the pointer from the start.
 static sample_ok_fn engine_sample_filter(engine *e) {
-    if (e->think_budget > 0 && e->think_end_id >= 0) return budget_ok;
+    // Any mechanism that can arm a forced close needs the filter in the
+    // pointer from the start, because the walk caches it: the budget and the
+    // loop guard both do. Gating on the budget alone left the guard arming a
+    // close that nothing enforced, so the loop ran on to the token limit.
+    if ((e->think_budget > 0 || e->loop_guard) && e->think_end_id >= 0)
+        return budget_ok;
     return e->schema ? schema_ok : e->json_mode ? json_ok : NULL;
 }
 
@@ -1484,6 +1494,49 @@ static int engine_pick(engine *e, float *logits, int n_vocab,
     return tok;
 }
 
+// Arm a forced close of the reasoning turn: the request's transition
+// sentence (already tokenized, possibly empty) and then the close token. The
+// budget and the loop guard both end a turn this way, so the model writes its
+// own next header and everything downstream sees ordinary generation.
+static void think_arm_close(engine *e) {
+    if (e->think_forcing || e->think_end_id < 0) return;
+    int k = 0;
+    for (; k < e->think_msg_n && k < THINK_FORCE_MAX - 1; k++)
+        e->think_force[k] = e->think_msg[k];
+    e->think_force[k++] = (int32_t)e->think_end_id;
+    e->think_force_n = k;
+    e->think_force_at = 0;
+    e->think_forcing = true;
+    e->think_forced = true;
+}
+
+// The loop guard's detector: does the generated suffix end in `repeats`
+// back-to-back copies of one span of at least `span` tokens, inside the last
+// `window`? Terminal-periodic by construction, so it fires at the moment the
+// repetition becomes undeniable rather than on a span that merely occurred
+// twice somewhere earlier. The prompt is never examined: a document that
+// legitimately repeats itself is not this model's doing.
+static bool loop_detected(const engine *e) {
+    if (!e->hist) return false;
+    int n = e->pos - e->gen_start;          // generated tokens so far
+    if (n <= 0) return false;
+    int w = n < e->loop_window ? n : e->loop_window;
+    const int32_t *tail = e->hist + e->pos - w;
+    int max_p = w / e->loop_repeats;
+    for (int p = e->loop_span; p <= max_p; p++) {
+        // cheap rejection first: the last token must equal the one a period
+        // back, which kills nearly every p without touching the rest
+        if (tail[w - 1] != tail[w - 1 - p]) continue;
+        bool same = true;
+        for (int i = 0; i < p * (e->loop_repeats - 1) && same; i++) {
+            int at = w - 1 - i;
+            if (tail[at] != tail[at - p]) same = false;
+        }
+        if (same) return true;
+    }
+    return false;
+}
+
 // Track whether generation is inside a reasoning turn and how many tokens it
 // has spent there, then arm the force when the budget is gone. Called after
 // every emitted token with that token's decoded bytes (empty for a control
@@ -1493,7 +1546,12 @@ static int engine_pick(engine *e, float *logits, int n_vocab,
 //   - unconstrained, the architecture's think_open / think_close strings are
 //     matched in the decoded stream, the same pair the chat splitter uses.
 static void think_track(engine *e, int tok, const char *bytes, int n) {
-    if (e->think_budget <= 0 || e->think_end_id < 0) return;
+    // Every consumer of think_on needs this to run: the budget, the
+    // reasoning sampler and the loop guard. Gating it on the budget alone
+    // left think_on stuck true for a chat request that primed the reasoning
+    // turn, so the reasoning sampler kept applying after the turn closed.
+    if (e->think_end_id < 0) return;
+    if (e->think_budget <= 0 && !e->think_smp && !e->loop_guard) return;
     // A forced close in flight: walk the queue as its tokens come back out of
     // the sampler. They are counted as reasoning tokens like any other, so
     // `tokens` in the telemetry is what the turn actually spent.
@@ -1531,18 +1589,23 @@ static void think_track(engine *e, int tok, const char *bytes, int n) {
     // Cumulative over the request: a turn that closes and re-opens does not
     // get a fresh budget, which is what stops a forced close from becoming a
     // loop of short reasoning turns.
-    if (++e->think_tokens >= e->think_budget && !e->think_forcing) {
-        // Arm the close: the request's transition sentence (already
-        // tokenized, possibly empty) and then the close token.
-        int k = 0;
-        for (; k < e->think_msg_n && k < THINK_FORCE_MAX - 1; k++)
-            e->think_force[k] = e->think_msg[k];
-        e->think_force[k++] = (int32_t)e->think_end_id;
-        e->think_force_n = k;
-        e->think_force_at = 0;
-        e->think_forcing = true;
-        e->think_forced = true;
-    }
+    if (e->think_budget > 0 && ++e->think_tokens >= e->think_budget)
+        think_arm_close(e);
+}
+
+// The loop guard, run after the reasoning tracker so think_on is current.
+// Inside a reasoning turn a hit closes the turn the way the budget does; with
+// loop_all set, a hit anywhere else ends the turn instead, because there is
+// no channel to close and continuing means the caller pays for a repetition
+// it did not ask for. A forced close in flight is left alone: its own tokens
+// are not a loop.
+static void loop_guard_check(engine *e) {
+    if (!e->loop_guard || e->think_forcing) return;
+    if (!e->think_on && !e->loop_all) return;
+    if (!loop_detected(e)) return;
+    e->loop_hits++;
+    if (e->think_on && e->think_end_id >= 0) think_arm_close(e);
+    else e->loop_stop = true;
 }
 
 // RUNNER_SCHEMA_TRACE=1: one line per accepted token showing what the
@@ -1930,6 +1993,7 @@ static int spec_emit(engine *e, int tok, gen_cb cb, void *ud, int *n_gen,
         rc = constraint_accept(e, true, sp, (int)strlen(sp), cb, ud);
     }
     think_track(e, tok, buf, n);
+    loop_guard_check(e);
     (*n_gen)++;
     if (in_prelude && (e->constraint_phase == CP_PROBE ||
                        e->constraint_phase == CP_THINK) &&
@@ -1972,6 +2036,8 @@ static int engine_generate_spec(engine *e, float *logits, int max_new,
     e->think_tokens = 0;
     e->think_forcing = e->think_forced = false;
     e->think_force_n = e->think_force_at = 0;
+    e->loop_hits = 0; e->loop_stop = false;
+    e->gen_start = e->pos;
     double t0 = now_s();
     model_t *m = e->m, *dm = e->dm;
     memset(&e->spec_st, 0, sizeof(e->spec_st));
@@ -2302,6 +2368,8 @@ void engine_gen_begin(engine *e, int max_new) {
     e->think_tokens = 0;
     e->think_forcing = e->think_forced = false;
     e->think_force_n = e->think_force_at = 0;
+    e->loop_hits = 0; e->loop_stop = false;
+    e->gen_start = e->pos;
     e->pending_pos = -1;
     e->gen_t0    = now_s();
 }
@@ -2367,6 +2435,7 @@ int engine_gen_step(engine *e, const float *logits, gen_cb cb, void *ud,
         rc = constraint_accept(e, true, sp, (int)strlen(sp), cb, ud);
     }
     think_track(e, tok, buf, n);
+    loop_guard_check(e);
     if (rc != 0) { e->gen_count++; return ENGINE_STEP_DONE; } // client gone
     e->gen_count++;
     if (in_prelude && (e->constraint_phase == CP_PROBE ||
@@ -2400,6 +2469,7 @@ int engine_gen_step(engine *e, const float *logits, gen_cb cb, void *ud,
         e->hit_stop = true;
         return ENGINE_STEP_DONE;
     }
+    if (e->loop_stop) { e->hit_stop = true; return ENGINE_STEP_DONE; }
     if (e->hist && e->pos < e->m->n_ctx) e->hist[e->pos] = tok;
     *next_tok = (int32_t)tok;
     *next_pos = e->pos++;

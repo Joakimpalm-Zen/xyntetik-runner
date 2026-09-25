@@ -1816,7 +1816,7 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
                int n_threads, int ttl, const char *draft_path, int draft_k,
                bool draft_lookup, int reasoning_budget,
                const char *reasoning_budget_message, float reasoning_temp,
-               bool ignore_eos,
+               bool loop_guard, bool ignore_eos,
                int tmpl_override,
                bool force_uncertified, const oms_policy *signing) {
     sock_init();
@@ -2026,6 +2026,7 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
     SV.n_predict_cap = 1024;
     SV.reasoning_budget = reasoning_budget;
     SV.reasoning_budget_message = reasoning_budget_message;
+    SV.loop_guard = loop_guard;
     SV.reasoning_temp_set = reasoning_temp >= 0.0f;
     SV.reasoning_temp = reasoning_temp >= 0.0f ? reasoning_temp : 0.0f;
     SV.q.limit = (int)(sizeof(SV.q.fds) / sizeof(sock_t));

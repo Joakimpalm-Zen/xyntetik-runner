@@ -750,6 +750,10 @@ typedef struct {
     // force: an eval log has to be able to prove which sampler produced a
     // trace, and the request may carry no reasoning_* field at all when the
     // server set the default.
+    // loop guard: whether it was in force, and what it did
+    bool        loop_on;
+    int         loop_hits, loop_span, loop_repeats, loop_window;
+    bool        loop_ended;
     bool        reason_smp;
     float       reason_temp, reason_top_p, reason_min_p;
     int         reason_top_k;
@@ -851,6 +855,12 @@ static void diag_json(sbuf *r, const req_diag *d) {
     .reason_budget = (e)->think_budget, \
     .reason_budget_tokens = (e)->think_tokens, \
     .reason_forced = (e)->think_forced, \
+    .loop_on = (e)->loop_guard, \
+    .loop_hits = (e)->loop_hits, \
+    .loop_span = (e)->loop_span, \
+    .loop_repeats = (e)->loop_repeats, \
+    .loop_window = (e)->loop_window, \
+    .loop_ended = (e)->loop_stop, \
     .reason_smp = (e)->think_smp, \
     .reason_temp = (e)->think_temp, \
     .reason_top_p = (e)->think_top_p, \
@@ -933,6 +943,11 @@ static void telemetry_json(sbuf *r, const resp_doc *d) {
     // Likewise the reasoning channel's sampler, when one was in force. A
     // greedy request whose server sets --reasoning-temp produces a sampled
     // reasoning turn, and nothing else in the response would say so.
+    if (d->loop_on)
+        sb_fmt(r, ",\"loop_guard\":{\"span\":%d,\"repeats\":%d,\"window\":%d,"
+                  "\"interventions\":%d,\"ended_turn\":%s}",
+               d->loop_span, d->loop_repeats, d->loop_window, d->loop_hits,
+               d->loop_ended ? "true" : "false");
     if (d->reason_smp)
         sb_fmt(r, ",\"reasoning_sampling\":{\"temperature\":%.4f,\"top_p\":%.4f,"
                   "\"min_p\":%.4f,\"top_k\":%d}",
@@ -2087,6 +2102,54 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
             e->think_top_k = (int)rtop_k;
         }
     }
+    // R4.12.18 loop guard (detect and force-close). Off unless asked for.
+    // Reasoning-only by default: every measured runaway is a reasoning turn,
+    // and a repeated span in an ANSWER is often a legitimate table or list,
+    // so the widening is a deliberate request rather than the default.
+    e->loop_guard = false;
+    {
+        bool want = SV.loop_guard;
+        if (!request_bool(req, "loop_guard", want, &want)) {
+            send_error(fd, 400, "loop_guard must be a boolean");
+            return;
+        }
+        if (want) {
+            double span = 8, reps = 3, win = 256;
+            bool all = false;
+            if (!request_number(req, "loop_guard_span", 8, 2, 128, &span) ||
+                !request_number(req, "loop_guard_repeats", 3, 2, 16, &reps) ||
+                !request_number(req, "loop_guard_window", 256, 16, 4096, &win) ||
+                !whole_number(span) || !whole_number(reps) || !whole_number(win)) {
+                send_error(fd, 400, "loop_guard_span (2..128), loop_guard_repeats "
+                                    "(2..16) and loop_guard_window (16..4096) must "
+                                    "be whole numbers in range");
+                return;
+            }
+            if (!request_bool(req, "loop_guard_everywhere", false, &all)) {
+                send_error(fd, 400, "loop_guard_everywhere must be a boolean");
+                return;
+            }
+            if (span * reps > win) {
+                send_error(fd, 400, "loop_guard_span times loop_guard_repeats "
+                                    "must fit inside loop_guard_window");
+                return;
+            }
+            // Refused rather than ignored where it could never fire: without a
+            // reasoning channel and without the widening there is no region to
+            // watch, and a guard that silently never runs is worse than none.
+            if (!all && (!m->think_open || !m->think_close)) {
+                send_error(fd, 400, "loop_guard watches the reasoning channel; "
+                                    "this model declares none. Set "
+                                    "loop_guard_everywhere to watch the whole turn");
+                return;
+            }
+            e->loop_guard = true;
+            e->loop_all = all;
+            e->loop_span = (int)span;
+            e->loop_repeats = (int)reps;
+            e->loop_window = (int)win;
+        }
+    }
     // A prompt can already be inside the reasoning turn (a raw completion
     // resuming ` to=self`, which is how a gate harness drives one); the
     // budget has to count from the first generated token there.
@@ -2100,7 +2163,7 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
     // next request, whose prompt held no reasoning turn at all, was capped
     // from its first token.
     e->think_on = false;
-    engine_think_budget_prime(e, prompt);
+    engine_think_prime(e, prompt);
     e->think_msg_n = 0;
     if (e->think_budget > 0) {
         const char *msg = REASON_BUDGET_MESSAGE;

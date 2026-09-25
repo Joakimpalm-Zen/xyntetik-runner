@@ -17,6 +17,7 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
                int n_threads, int ttl, const char *draft_path, int draft_k,
                bool draft_lookup, int reasoning_budget,
                const char *reasoning_budget_message, float reasoning_temp,
+               bool loop_guard,
                bool ignore_eos, int tmpl_override, bool force_uncertified,
                const oms_policy *signing);
 

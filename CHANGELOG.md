@@ -8,6 +8,25 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **Loop guard: a repeating reasoning turn is closed rather than run to the
+  limit (R4.12.18, detect-and-close half).** `--loop-guard` and the
+  per-request `loop_guard` watch the generated suffix for a span repeated back
+  to back (8 tokens, 3 times, inside 256, all configurable) and close the turn
+  through the reasoning budget's path, so the model writes its own next
+  header. Reasoning-only unless `loop_guard_everywhere` is set: every runaway
+  the lab measured on a distilled student was a reasoning turn, and a repeated
+  span in an answer is often a legitimate table. Widened, a hit outside
+  reasoning ends the turn with `finish_reason` `loop`. Off by default, refused
+  where it could never fire, and reported in `runner_telemetry.loop_guard`.
+  Evidence: 6 of 9 closed-loop failures were runaway reasoning and 18 of 19
+  capped training rollouts carried a repeated span; looping is worst under
+  greedy decoding (arXiv 2512.12895). Rewind-and-resample is deliberately not
+  included. Three defects of the same shape were found and fixed on the way:
+  the reasoning state machine, the prompt-state prime and the sampler filter
+  each keyed off the reasoning BUDGET alone, so the sampler kept applying
+  after a turn closed, the guard watched a channel it believed shut, and an
+  armed close went unenforced. Each now keys off every consumer. Pinned by
+  `tests/test_loop_guard.py`.
 - **Reasoning-channel sampling (R4.12.17).** `--reasoning-temp F` and the
   per-request `reasoning_temperature`, `reasoning_top_p`, `reasoning_min_p`
   and `reasoning_top_k` apply only while the turn is a reasoning turn; calls
