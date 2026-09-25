@@ -1194,6 +1194,22 @@ static void send_capabilities(sock_t fd) {
         sb_lit(&r, "\"");
     }
     sb_lit(&r, "}");
+    // The reasoning channel's own serving defaults, when the operator set
+    // any. Without this an eval can only learn which sampler produced a
+    // trace by reading the server's source (the lab, 2026-09-26): the
+    // request carries no reasoning_* field, so the trace looks greedy.
+    if (SV.reasoning_temp_set || SV.reasoning_budget > 0) {
+        sb_lit(&r, ",\"reasoning\":{");
+        bool first = true;
+        if (SV.reasoning_temp_set) {
+            sb_fmt(&r, "\"temperature\":%.2f,\"inherits\":\"top_p, min_p, top_k "
+                       "from the request or the model's preset\"", SV.reasoning_temp);
+            first = false;
+        }
+        if (SV.reasoning_budget > 0)
+            sb_fmt(&r, "%s\"max_tokens\":%d", first ? "" : ",", SV.reasoning_budget);
+        sb_lit(&r, "}");
+    }
     sb_fmt(&r, ",\"context\":%d,\"models\":[", context_load());
     if (SV.n_reg > 0) {
         for (int i = 0; i < SV.n_reg; i++) {

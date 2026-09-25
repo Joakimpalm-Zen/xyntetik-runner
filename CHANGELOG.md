@@ -27,7 +27,12 @@ names that were true when they were written.
   state is zero-initialised wherever the startup path does not run, and 0.0
   read as "on at temperature zero", which switched the feature on for every
   request in that context and then refused models declaring no reasoning
-  channel.
+  channel. The sampler in force is reported rather than inferred:
+  `/v1/capabilities` carries the server's `reasoning` defaults, the startup
+  line prints them, and each reply carries `runner_telemetry.reasoning_sampling`
+  with the values used, so an eval log can prove which sampler produced a
+  trace (a greedy request on a server with a reasoning default otherwise looks
+  greedy in every field).
 - **A stop token's own decision is reported, and fidelity comparisons stop
   dropping those positions** [lab finding 2026-09-25]. A position whose greedy
   next token is a stop returned no `logprobs` block at all, because the arrays

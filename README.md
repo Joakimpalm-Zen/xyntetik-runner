@@ -2791,6 +2791,15 @@ while a tool call's arguments must stay deterministic. A flat penalty across
 both is the intervention that garbled every sampled call in R4.12.7, which is
 why this one is scoped to the channel rather than to the request.
 
+Whichever way it is set, the sampler that produced a trace is visible without
+reading the server's source: `GET /v1/capabilities` reports the server's
+`reasoning` defaults, the startup line prints them beside the ordinary
+`sampling:` line, and every reply whose reasoning turn ran under them carries
+`runner_telemetry.reasoning_sampling` with the four values actually used. A
+greedy request served by a server with a reasoning default produces a sampled
+reasoning turn and nothing else in the response would say so, which an eval
+log cannot afford.
+
 Off unless asked for, and an explicit 0 is greedy again and reproduces the
 untouched run. That matters beyond taste: a harness that measures a model
 sends `temperature` 0 and expects argmax everywhere, and the fidelity tooling
