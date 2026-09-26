@@ -16,7 +16,10 @@ names that were true when they were written.
   header. Reasoning-only unless `loop_guard_everywhere` is set: every runaway
   the lab measured on a distilled student was a reasoning turn, and a repeated
   span in an answer is often a legitimate table. Widened, a hit outside
-  reasoning ends the turn with `finish_reason` `loop`. Off by default, refused
+  reasoning ends the turn, reported as `finish_reason` `length` with
+  `runner_telemetry.finish_detail` `loop`, the same widening `reasoning_limit`
+  gets; it answered `stop` until 2026-09-26, which said the model chose to end
+  a turn the runner ended for it. Off by default, refused
   where it could never fire, and reported in `runner_telemetry.loop_guard`.
   Evidence: 6 of 9 closed-loop failures were runaway reasoning and 18 of 19
   capped training rollouts carried a repeated span; looping is worst under

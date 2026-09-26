@@ -2793,9 +2793,12 @@ budget and `finish_reason` is untouched.
 It watches the reasoning channel only unless `loop_guard_everywhere` is set,
 because a repeated span in an answer is often a legitimate table or list,
 while every runaway measured on a distilled student was a reasoning turn.
-Widened, a hit outside a reasoning turn ends the turn with `finish_reason`
-`loop`, since there is no channel to close and continuing bills the caller
-for a repetition they did not ask for. Refused rather than ignored where it
+Widened, a hit outside a reasoning turn ends the turn, since there is no
+channel to close and continuing bills the caller for a repetition they did not
+ask for. On the wire that is `finish_reason` `length`, the standard value for
+a turn cut short, with `runner_telemetry.finish_detail` carrying `loop`: the
+OpenAI vocabulary is a closed set and `stop` would say the model chose to end
+the turn when the runner ended it. Refused rather than ignored where it
 could never fire: a model with no reasoning channel and no widening.
 
 A model can re-enter reasoning after each forced close and loop again, so

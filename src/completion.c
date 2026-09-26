@@ -1166,6 +1166,12 @@ static void responses_body(sbuf *r, gen_ctx *g, const resp_doc *d) {
 // case they have never heard of. Which fault it was survives as finish_detail.
 static const char *openai_finish(const char *finish) {
     if (!strcmp(finish, "reasoning_limit")) return "length";
+    // "loop" is ours too, and widened for the same reason. The turn was cut
+    // short, so "length" is the standard value that describes what a client
+    // sees; WHY it was cut short is finish_detail's job. Reported as "stop"
+    // before this, which said the model chose to end the turn when the
+    // runner ended it for repeating itself (lab, 2026-09-26).
+    if (!strcmp(finish, "loop"))            return "length";
     if (!strcmp(finish, "envelope_error"))  return "error";
     return finish;
 }
@@ -1173,6 +1179,7 @@ static const char *openai_finish(const char *finish) {
 // Non-NULL only when the wire value above lost a distinction worth keeping.
 static const char *finish_detail_of(const char *finish) {
     if (!strcmp(finish, "reasoning_limit")) return "reasoning_limit";
+    if (!strcmp(finish, "loop"))            return "loop";
     if (!strcmp(finish, "envelope_error"))  return "envelope_unmapped";
     return NULL;
 }
@@ -1203,6 +1210,7 @@ static bool generation_faulted(const char *finish) {
 static const char *anth_stop_reason(const char *finish, bool stop_hit) {
     if (!strcmp(finish, "tool_calls")) return "tool_use";
     if (!strcmp(finish, "length") ||
+        !strcmp(finish, "loop") ||
         !strcmp(finish, "reasoning_limit")) return "max_tokens";
     // a user stop sequence is its own terminal reason in this vocabulary, and
     // the matched string is reported alongside it
@@ -2898,6 +2906,7 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
     const char *finish = e->oom ? "error"
                        : unmapped ? "envelope_error"
                        : e->prelude_exhausted ? "reasoning_limit"
+                       : e->loop_stop ? "loop"
                        : g.stopped || e->hit_stop ? "stop" : "length";
     // a streamed call reports the same terminal reason a buffered one does.
     // Only a CLEANLY FINISHED document may claim "tool_calls": a budget
@@ -2914,7 +2923,8 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
         // with output_item.added must always reach output_item.done, including
         // when generation stopped mid-item
         bool cut = strcmp(finish, "length") == 0 ||
-                   strcmp(finish, "reasoning_limit") == 0;
+                   strcmp(finish, "reasoning_limit") == 0 ||
+                   strcmp(finish, "loop") == 0;
         // The turn produced a document nothing could read, so it did not
         // complete — and the reason is neither of the two standard ones.
         // "max_output_tokens" would be the closest lie, and a lie a client can
