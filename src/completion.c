@@ -752,7 +752,7 @@ typedef struct {
     // server set the default.
     // loop guard: whether it was in force, and what it did
     bool        loop_on;
-    int         loop_hits, loop_span, loop_repeats, loop_window;
+    int         loop_hits, loop_span, loop_repeats, loop_window, loop_max;
     bool        loop_ended;
     bool        reason_smp;
     float       reason_temp, reason_top_p, reason_min_p;
@@ -860,6 +860,7 @@ static void diag_json(sbuf *r, const req_diag *d) {
     .loop_span = (e)->loop_span, \
     .loop_repeats = (e)->loop_repeats, \
     .loop_window = (e)->loop_window, \
+    .loop_max = (e)->loop_max_closes, \
     .loop_ended = (e)->loop_stop, \
     .reason_smp = (e)->think_smp, \
     .reason_temp = (e)->think_temp, \
@@ -945,9 +946,9 @@ static void telemetry_json(sbuf *r, const resp_doc *d) {
     // reasoning turn, and nothing else in the response would say so.
     if (d->loop_on)
         sb_fmt(r, ",\"loop_guard\":{\"span\":%d,\"repeats\":%d,\"window\":%d,"
-                  "\"interventions\":%d,\"ended_turn\":%s}",
-               d->loop_span, d->loop_repeats, d->loop_window, d->loop_hits,
-               d->loop_ended ? "true" : "false");
+                  "\"max_closes\":%d,\"interventions\":%d,\"ended_turn\":%s}",
+               d->loop_span, d->loop_repeats, d->loop_window, d->loop_max,
+               d->loop_hits, d->loop_ended ? "true" : "false");
     if (d->reason_smp)
         sb_fmt(r, ",\"reasoning_sampling\":{\"temperature\":%.4f,\"top_p\":%.4f,"
                   "\"min_p\":%.4f,\"top_k\":%d}",
@@ -2125,6 +2126,13 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
                                     "be whole numbers in range");
                 return;
             }
+            double closes = 3;
+            if (!request_number(req, "loop_guard_max_closes", 3, 1, 16, &closes) ||
+                !whole_number(closes)) {
+                send_error(fd, 400, "loop_guard_max_closes must be a whole "
+                                    "number in 1..16");
+                return;
+            }
             if (!request_bool(req, "loop_guard_everywhere", false, &all)) {
                 send_error(fd, 400, "loop_guard_everywhere must be a boolean");
                 return;
@@ -2148,6 +2156,7 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
             e->loop_span = (int)span;
             e->loop_repeats = (int)reps;
             e->loop_window = (int)win;
+            e->loop_max_closes = (int)closes;
         }
     }
     // A prompt can already be inside the reasoning turn (a raw completion

@@ -2798,8 +2798,15 @@ Widened, a hit outside a reasoning turn ends the turn with `finish_reason`
 for a repetition they did not ask for. Refused rather than ignored where it
 could never fire: a model with no reasoning channel and no widening.
 
-`runner_telemetry.loop_guard` reports the thresholds, how many times it fired
-and whether it ended the turn. This is the detect-and-close half; rewinding
+A model can re-enter reasoning after each forced close and loop again, so
+`loop_guard_max_closes` (3 by default) caps how many times one request may be
+closed before it ends with `finish_reason` `loop` instead. Measured on a
+distilled student: one task took five closes and 648 thinking tokens without
+ever terminating, and closing a turn forever is not a guard, it is a slower
+loop.
+
+`runner_telemetry.loop_guard` reports the thresholds, the cap, how many times
+it fired and whether it ended the turn. This is the detect-and-close half; rewinding
 to the loop onset and resampling that position is deliberately not here.
 
 ### Reasoning-channel sampling
