@@ -63,14 +63,17 @@ names that were true when they were written.
   with the values used, so an eval log can prove which sampler produced a
   trace (a greedy request on a server with a reasoning default otherwise looks
   greedy in every field). **Measured on the 14B student it was built for and
-  it did NOT help: 49 of 60 against 51 greedy on the same closed-loop set, at
-  temperature 0.6.** It recovered 2 runaways and broke 4 tasks that pass
-  greedy, three of them arithmetic slips ("63 + 2 = 60") and one a new
-  runaway. On a distilled model of this size, sampling inside the reasoning
-  channel introduces errors faster than it escapes loops, and a guard that
-  intervenes only at a detected repeat is strictly better. The knob stays
-  because the mechanism is sound and the result is one model at one
-  temperature, but nothing should reach for it before measuring.
+  it did NOT help: 49 and 47 of 60 across two seeds against 51 greedy on the
+  same closed-loop set, at temperature 0.6.** The first seed recovered 2
+  runaways and broke 4 tasks that pass greedy, three of them arithmetic slips
+  ("63 + 2 = 60") and one a new runaway; the second recovered none and broke
+  4, two of them the same tasks. Termination fell in both (92% and 87%
+  against 90% greedy and 97% guarded). On a distilled model of this size,
+  sampling inside the reasoning channel introduces errors faster than it
+  escapes loops, and a guard that intervenes only at a detected repeat is
+  strictly better. The knob stays because the mechanism is sound and the
+  result is one model at one temperature, but nothing should reach for it
+  before measuring.
 - **A stop token's own decision is reported, and fidelity comparisons stop
   dropping those positions** [lab finding 2026-09-25]. A position whose greedy
   next token is a stop returned no `logprobs` block at all, because the arrays
