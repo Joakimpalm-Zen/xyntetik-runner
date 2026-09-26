@@ -21,7 +21,18 @@ names that were true when they were written.
   Evidence: 6 of 9 closed-loop failures were runaway reasoning and 18 of 19
   capped training rollouts carried a repeated span; looping is worst under
   greedy decoding (arXiv 2512.12895). Rewind-and-resample is deliberately not
-  included. Three defects of the same shape were found and fixed on the way:
+  included. `loop_guard_max_closes` (3 by default) caps how many times one
+  request may be closed before it ends with `finish_reason` `loop`: a model
+  can re-enter reasoning after every close and loop again, measured at five
+  closes and 648 thinking tokens on one task without ever terminating.
+  **Measured on the 14B student it was built for, on a 60-task closed-loop
+  set: 51 of 60 unguarded, 54 of 60 with the guard.** It fired on 5 of the 6
+  runaways with no false firings, every task it did not touch scored
+  unchanged, termination went from 90% to 97% and mean thinking tokens from
+  171 to 114. Of the five it fired on, three passed (runaways recovered) and
+  two failed, both tasks where the loop was a symptom of the model not having
+  the number rather than of not stopping: a guard fixes the turn, not the
+  task. Three defects of the same shape were found and fixed on the way:
   the reasoning state machine, the prompt-state prime and the sampler filter
   each keyed off the reasoning BUDGET alone, so the sampler kept applying
   after a turn closed, the guard watched a channel it believed shut, and an
@@ -51,7 +62,15 @@ names that were true when they were written.
   line prints them, and each reply carries `runner_telemetry.reasoning_sampling`
   with the values used, so an eval log can prove which sampler produced a
   trace (a greedy request on a server with a reasoning default otherwise looks
-  greedy in every field).
+  greedy in every field). **Measured on the 14B student it was built for and
+  it did NOT help: 49 of 60 against 51 greedy on the same closed-loop set, at
+  temperature 0.6.** It recovered 2 runaways and broke 4 tasks that pass
+  greedy, three of them arithmetic slips ("63 + 2 = 60") and one a new
+  runaway. On a distilled model of this size, sampling inside the reasoning
+  channel introduces errors faster than it escapes loops, and a guard that
+  intervenes only at a detected repeat is strictly better. The knob stays
+  because the mechanism is sound and the result is one model at one
+  temperature, but nothing should reach for it before measuring.
 - **A stop token's own decision is reported, and fidelity comparisons stop
   dropping those positions** [lab finding 2026-09-25]. A position whose greedy
   next token is a stop returned no `logprobs` block at all, because the arrays
