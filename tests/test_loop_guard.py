@@ -226,3 +226,26 @@ def test_an_out_of_range_cap_is_refused(muse, bad):
     code, body = _post(muse, loop_guard=True, loop_guard_max_closes=bad)
     assert code == 400, (bad, body)
     assert "loop_guard_max_closes" in json.dumps(body)
+
+
+def test_a_turn_ended_by_the_guard_does_not_claim_the_model_stopped(muse):
+    """finish_reason "stop" says the model chose to end the turn. When the
+    guard ends it, that is a lie, and it was the reply's value before this
+    (lab, 2026-09-26). The OpenAI vocabulary is a closed set, so "loop" is
+    widened to "length", the standard value for a turn cut short, and the
+    reason itself rides in runner_telemetry.finish_detail exactly as
+    reasoning_limit does."""
+    code, body = _post(muse, prompt=OPEN_ANSWER, loop_guard_everywhere=True, **GUARD)
+    assert code == 200, body
+    assert body["choices"][0]["finish_reason"] == "length"
+    assert body["runner_telemetry"]["finish_detail"] == "loop"
+    assert _guard(body)["ended_turn"] is True
+
+
+def test_a_turn_the_guard_only_closed_reports_nothing_unusual(muse):
+    """Closing a reasoning turn is not ending the request: the turn carries
+    on, so the finish reason belongs to whatever really ended it."""
+    code, body = _post(muse, **GUARD)
+    assert code == 200, body
+    assert _guard(body)["ended_turn"] is False
+    assert body["runner_telemetry"].get("finish_detail") != "loop"
