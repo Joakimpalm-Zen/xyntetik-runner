@@ -1517,6 +1517,11 @@ static void think_arm_close(engine *e) {
 // twice somewhere earlier. The prompt is never examined: a document that
 // legitimately repeats itself is not this model's doing.
 static bool loop_detected(const engine *e) {
+    // The window is hist[gen_start, pos), which is the generated text UP TO
+    // but not including the token just emitted: it is written at hist[pos]
+    // when the step completes, after this runs. So the guard fires one token
+    // after the repetition becomes complete, which costs a token and keeps
+    // this off the hot path's ordering.
     if (!e->hist) return false;
     int n = e->pos - e->gen_start;          // generated tokens so far
     if (n <= 0) return false;
@@ -1604,7 +1609,13 @@ static void loop_guard_check(engine *e) {
     if (!e->think_on && !e->loop_all) return;
     if (!loop_detected(e)) return;
     e->loop_hits++;
-    if (e->think_on && e->think_end_id >= 0) think_arm_close(e);
+    // Past the cap the turn is not closed again: a model that re-enters
+    // reasoning and loops after every close would otherwise be closed
+    // forever, which spends the caller's budget more slowly rather than
+    // stopping. Ending with "loop" says what happened.
+    bool may_close = e->think_on && e->think_end_id >= 0 &&
+                     e->loop_hits <= e->loop_max_closes;
+    if (may_close) think_arm_close(e);
     else e->loop_stop = true;
 }
 

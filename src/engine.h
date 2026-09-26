@@ -201,6 +201,13 @@ typedef struct {
     // ANSWER is often a legitimate table or list.
     bool     loop_guard, loop_all;
     int      loop_span, loop_repeats, loop_window;
+    // How many times a reasoning turn may be force-closed before the request
+    // gives up and ends. A model can re-enter reasoning after each close and
+    // loop again: the lab measured one task taking 5 closes and 648 thinking
+    // tokens without ever terminating (2026-09-26). Closing a turn forever is
+    // not a guard, it is a slower loop, so the cap converts it into an honest
+    // stop the caller can see.
+    int      loop_max_closes;
     int      loop_hits;    // how many times it fired this request
     bool     loop_stop;    // ended the turn (outside a reasoning turn)
     int      gen_start;    // hist index where this generation began

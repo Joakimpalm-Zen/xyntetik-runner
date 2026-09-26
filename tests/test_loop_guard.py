@@ -179,3 +179,50 @@ def test_a_model_with_no_reasoning_channel_refuses_the_default_scope(plain):
                        loop_guard_repeats=3)
     assert code == 200, body
     assert _guard(body)["interventions"] == 1
+
+
+# A model can re-enter reasoning after each forced close and loop again: the
+# lab measured one task taking 5 closes and 648 thinking tokens without ever
+# terminating (2026-09-26). Closing a turn forever is not a guard, it is a
+# slower loop, so past the cap the request ends with finish_reason "loop".
+
+# Shaped so a SCRIPT can survive its own forced close, which a real model does
+# for free: the repetition completes, one more token fires the guard, and the
+# next token the script offers is exactly the close the guard armed (the queue
+# is the bare terminator once the transition sentence is empty), so generation
+# continues into the next reasoning turn instead of ending on a refused token.
+_SEG = "28 + 5 = " * 3 + "2"
+REOPENING_LOOP = ((_SEG + "<|eom|><|start|>assistant to=self<|message|>") * 2) + _SEG
+BARE_CLOSE = {"reasoning_budget_message": "", "reasoning_max_tokens": 100000}
+
+
+def test_a_reopening_loop_is_capped_and_then_ends_the_turn(muse):
+    code, body = _post(muse, runner_test_reply=REOPENING_LOOP,
+                       loop_guard_max_closes=1, **BARE_CLOSE, **GUARD)
+    assert code == 200, body
+    g = _guard(body)
+    assert g["max_closes"] == 1
+    # the first hit closed the turn, a later one had no close left and stopped
+    assert g["interventions"] >= 2 and g["ended_turn"] is True
+
+
+def test_the_cap_defaults_to_three_and_is_reported(muse):
+    code, body = _post(muse, **GUARD)
+    assert code == 200, body
+    assert _guard(body)["max_closes"] == 3
+
+
+def test_a_single_loop_is_closed_not_ended_under_the_cap(muse):
+    """The common case must stay a close: one runaway turn, one close, the
+    turn carries on to its answer."""
+    code, body = _post(muse, loop_guard_max_closes=3, **GUARD)
+    assert code == 200, body
+    g = _guard(body)
+    assert g["interventions"] == 1 and g["ended_turn"] is False
+
+
+@pytest.mark.parametrize("bad", [0, 17, 1.5])
+def test_an_out_of_range_cap_is_refused(muse, bad):
+    code, body = _post(muse, loop_guard=True, loop_guard_max_closes=bad)
+    assert code == 400, (bad, body)
+    assert "loop_guard_max_closes" in json.dumps(body)
