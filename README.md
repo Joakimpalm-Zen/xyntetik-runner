@@ -1974,8 +1974,10 @@ An OpenSSF Model Signing (OMS) bundle for `-m`, verified at load against
 `--model-pubkey`: the ECDSA signature over the DSSE pre-authentication encoding
 (P-256/384/521, SHA-256 first, then the curve-matched digest), the in-toto statement and
 predicate type, the `files`/`sha256` serialization, and the loaded file's digest against
-the manifest entry naming it (`.` for a single-file model). An explicit bundle that does
-not verify refuses the load. Without the flag, `<model>.sig` beside the model is picked
+the manifest entry naming it (`.` for a single-file model). A split GGUF is loaded from
+every part, so every part is a model file: each `-NNNNN-of-MMMMM.gguf` must be named in the
+manifest and match its digest, and the verdict says how many parts were checked. An
+explicit bundle that does not verify refuses the load. Without the flag, `<model>.sig` beside the model is picked
 up when it exists: verified when a key is given, reported as unverified otherwise. The
 receipt records the verdict as `model_signature`. Key method only; certificate and
 keyless bundles are refused as unsupported, never passed. Measured 2026-09-02 against

@@ -86,6 +86,50 @@ static const char *base_name(const char *p) {
     return b;
 }
 
+static bool name_matches(const char *name, const char *model_path);
+
+// A split GGUF part name, `<prefix>-NNNNN-of-MMMMM.gguf`: reports the
+// 1-based part number and the count, and how long the prefix is.
+static bool split_suffix(const char *path, unsigned *no, unsigned *count,
+                         size_t *prefix_len) {
+    size_t n = strlen(path);
+    const char *tail = ".gguf";
+    size_t tl = strlen(tail);
+    // "-00001-of-00003" is 15 bytes
+    if (n < 15 + tl || strcmp(path + n - tl, tail) != 0) return false;
+    const char *p = path + n - tl - 15;
+    if (p[0] != '-' || strncmp(p + 6, "-of-", 4) != 0) return false;
+    unsigned a = 0, b = 0;
+    for (int i = 1; i <= 5; i++) {
+        if (p[i] < '0' || p[i] > '9' || p[9 + i] < '0' || p[9 + i] > '9') return false;
+        a = a * 10 + (unsigned)(p[i] - '0');
+        b = b * 10 + (unsigned)(p[9 + i] - '0');
+    }
+    if (a < 1 || b < 1 || a > b) return false;
+    *no = a; *count = b; *prefix_len = (size_t)(p - path);
+    return true;
+}
+
+// The manifest entry naming `path` (NULL when there is none); *want is its
+// digest string and *algo its algorithm.
+static jv *manifest_entry(jv *res, const char *path) {
+    for (int i = 0; i < res->n; i++) {
+        const char *nm = jv_str(jv_get(res->items[i], "name"), NULL);
+        if (name_matches(nm, path)) return res->items[i];
+    }
+    return NULL;
+}
+
+static bool digest_equal(const char *want, const char *have) {
+    bool same = strlen(want) == 64;
+    for (int i = 0; same && i < 64; i++) {
+        char a = want[i], c = have[i];
+        if (a >= 'A' && a <= 'F') a = (char)(a - 'A' + 'a');
+        if (a != c) same = false;
+    }
+    return same;
+}
+
 static bool name_matches(const char *name, const char *model_path) {
     if (!name) return false;
     if (strcmp(name, ".") == 0) return true;   // single-file model, the file itself
@@ -234,11 +278,7 @@ bool oms_verify_file(const char *bundle_path, const char *pubkey_pem_path,
             set(out, "unverified", "cannot hash the model file");
             break;
         }
-        jv *match = NULL;
-        for (int i = 0; i < res->n; i++) {
-            const char *nm = jv_str(jv_get(res->items[i], "name"), NULL);
-            if (name_matches(nm, model_path)) { match = res->items[i]; break; }
-        }
+        jv *match = manifest_entry(res, model_path);
         if (!match) {
             set(out, "unverified", "the manifest has no entry for this model file");
             break;
@@ -251,17 +291,72 @@ bool oms_verify_file(const char *bundle_path, const char *pubkey_pem_path,
             set(out, "unsupported", "manifest entry uses a digest other than sha256");
             break;
         }
-        bool same = strlen(want) == 64;
-        for (int i = 0; same && i < 64; i++) {
-            char a = want[i], c = have[i];
-            if (a >= 'A' && a <= 'F') a = (char)(a - 'A' + 'a');
-            if (a != c) same = false;
-        }
-        if (!same) {
+        if (!digest_equal(want, have)) {
             set(out, "unverified", "model file digest differs from the signed manifest");
             break;
         }
-        set(out, "verified", "signature, statement and model digest verified");
+        // A split GGUF is loaded from every part, so every part is a model
+        // file: each must be named in the manifest and match. Only the part
+        // given on the command line was hashed before this, and a weight
+        // changed in any other part still loaded as "verified" (external
+        // review, 2026-09-27).
+        unsigned no = 0, count = 0;
+        size_t plen = 0;
+        int n_parts = 1;
+        bool parts_ok = true;
+        if (split_suffix(model_path, &no, &count, &plen) && count > 1) {
+            char part[4096];
+            for (unsigned i = 1; i <= count && parts_ok; i++) {
+                if (i == no) continue;
+                int w = snprintf(part, sizeof part, "%.*s-%05u-of-%05u.gguf",
+                                 (int)plen, model_path, i, count);
+                if (w <= 0 || (size_t)w >= sizeof part) {
+                    set(out, "unverified", "split part path too long");
+                    parts_ok = false;
+                    break;
+                }
+                jv *pm = manifest_entry(res, part);
+                if (!pm) {
+                    snprintf(out->reason, sizeof out->reason,
+                             "the manifest has no entry for split part %u of %u",
+                             i, count);
+                    snprintf(out->status, sizeof out->status, "unverified");
+                    parts_ok = false;
+                    break;
+                }
+                if (strcmp(jv_str(jv_get(pm, "algorithm"), ""), "sha256") != 0) {
+                    set(out, "unsupported", "manifest entry uses a digest other than sha256");
+                    parts_ok = false;
+                    break;
+                }
+                char phave[65];
+                if (!envelope_file_sha256(part, phave)) {
+                    snprintf(out->reason, sizeof out->reason,
+                             "cannot hash split part %u of %u", i, count);
+                    snprintf(out->status, sizeof out->status, "unverified");
+                    parts_ok = false;
+                    break;
+                }
+                if (!digest_equal(jv_str(jv_get(pm, "digest"), ""), phave)) {
+                    snprintf(out->reason, sizeof out->reason,
+                             "split part %u of %u digest differs from the signed manifest",
+                             i, count);
+                    snprintf(out->status, sizeof out->status, "unverified");
+                    parts_ok = false;
+                    break;
+                }
+                n_parts++;
+            }
+        }
+        if (!parts_ok) break;
+        if (n_parts > 1)
+            snprintf(out->reason, sizeof out->reason,
+                     "signature, statement and all %d split part digests verified",
+                     n_parts);
+        else
+            snprintf(out->reason, sizeof out->reason,
+                     "signature, statement and model digest verified");
+        snprintf(out->status, sizeof out->status, "verified");
         ok = true;
     } while (0);
     if (stmt) jv_free(stmt);

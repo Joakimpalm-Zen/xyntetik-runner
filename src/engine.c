@@ -1952,9 +1952,12 @@ static void constraint_close(engine *e, gen_cb cb, void *ud) {
         e->constraint_phase = CP_OUTPUT;
     }
     if (e->schema && !e->sv.done) {
-        char cbuf[4096];
-        int cn = sval_close(&e->sv, cbuf, sizeof(cbuf));
-        if (cn > 0 && cb) cb(ud, cbuf, cn);
+        // sized by the schema, not by a fixed buffer: a long enum member or
+        // minLength used to come back cut mid-string (2026-09-27)
+        int cn = 0;
+        char *cbuf = sval_close_alloc(&e->sv, &cn, SVAL_CLOSE_MAX);
+        if (cbuf && cn > 0 && cb) cb(ud, cbuf, cn);
+        free(cbuf);
     } else if (!e->schema && e->json_mode && !e->jv.done) {
         char cbuf[600];
         int cn = jsonv_close(&e->jv, cbuf, sizeof(cbuf));
@@ -1986,7 +1989,8 @@ static int decode_piece(engine *e, int tok, char *buf, int cap) {
 // One emitted token's bookkeeping, shared by every row of the walk: decode,
 // push it through the constraint/callback path, count it, close a prelude
 // that ran out. Returns the callback rc (non-zero = abort) and reports
-// whether the constrained document completed on this token.
+// whether generation is DONE on this token: the constrained document
+// completed, or the loop guard ended the turn.
 static int spec_emit(engine *e, int tok, gen_cb cb, void *ud, int *n_gen,
                      bool constrained, bool *constrained_done) {
     char buf[512];
@@ -2017,6 +2021,12 @@ static int spec_emit(engine *e, int tok, gen_cb cb, void *ud, int *n_gen,
     }
     *constrained_done = e->schema ? constraint_done(e, true)
                                   : e->json_mode && constraint_done(e, false);
+    // The guard's stop decision ends the walk the same way a completed
+    // document does. It was detected here and acted on only by the plain
+    // step: under --draft-lookup a scripted repetition ran to max_tokens
+    // while reporting 82 interventions and ended_turn true (external
+    // review, 2026-09-27).
+    if (e->loop_stop) *constrained_done = true;
     return rc;
 }
 

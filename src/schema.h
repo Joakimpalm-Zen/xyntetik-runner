@@ -213,5 +213,12 @@ bool sval_raw_marker_opens(const sval *v, const char *spelling, int n);
 // engine accepts a stop token there as the answer's natural end
 bool sval_at_raw_tail(const sval *v);
 int  sval_close(sval *v, char *out, int cap);
+// The same close into a heap buffer that grows to fit, up to `max` bytes
+// (SVAL_CLOSE_MAX for the engine): a close that FITS is always a valid
+// document, where a fixed buffer cut a long enum member or minLength fill
+// short of its closing quote. Returns the malloc'd text (caller frees) and
+// its length in *len; NULL only on allocation failure.
+#define SVAL_CLOSE_MAX (1 << 20)
+char *sval_close_alloc(sval *v, int *len, int max);
 
 #endif // RUNNER_SCHEMA_H

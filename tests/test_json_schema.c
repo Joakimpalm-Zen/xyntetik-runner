@@ -3031,6 +3031,57 @@ static void test_enum_past_sixty_literals(void) {
     assert(!compiles(huge));
 }
 
+// A close sized by the schema. The engine's closer used a fixed 4,096-byte
+// buffer, so an accepted schema whose one enum member is 5,000 characters
+// came back through the API as 4,097 characters with no closing quote
+// (external review, 2026-09-27). The growable close fits it, and the
+// document parses and conforms.
+static void test_schema_close_fits_a_long_enum_member(void) {
+    enum { LEN = 5000 };
+    static char member[LEN + 1];
+    memset(member, 'a', LEN);
+    member[LEN] = 0;
+    static char src[LEN + 128];
+    snprintf(src, sizeof(src),
+             "{\"type\":\"object\",\"properties\":{\"k\":{\"type\":\"string\","
+             "\"enum\":[\"%s\"]}},\"required\":[\"k\"]}", member);
+    jv *schema_json = json_parse(src, strlen(src));
+    assert(schema_json != NULL);
+    char err[128];
+    snode *schema = schema_compile(schema_json, err, sizeof(err));
+    assert(schema != NULL);
+
+    sval v;
+    sval_init(&v, schema);
+    const char *head = "{\"k\":\"";
+    assert(sval_feed(&v, head, (int)strlen(head)));
+    int n = 0;
+    char *tail = sval_close_alloc(&v, &n, SVAL_CLOSE_MAX);
+    assert(tail != NULL && n > LEN);           // the member, the quote, the brace
+    assert(tail[n - 1] == '}' && tail[n - 2] == '"');
+
+    static char full[LEN + 256];
+    snprintf(full, sizeof(full), "%s%s", head, tail);
+    jv *parsed = json_parse(full, strlen(full));
+    assert(parsed != NULL);
+    assert(strcmp(jv_str(jv_get(parsed, "k"), ""), member) == 0);
+    jv_free(parsed);
+    sval chk; sval_init(&chk, schema);
+    assert(sval_feed(&chk, full, (int)strlen(full)) && chk.done);
+
+    // the fixed-buffer close keeps its old shape: cut, never overrun
+    sval w;
+    sval_init(&w, schema);
+    assert(sval_feed(&w, head, (int)strlen(head)));
+    char small[64];
+    int m = sval_close(&w, small, sizeof(small));
+    assert(m == (int)sizeof(small) - 1 && small[m] == 0);
+
+    free(tail);
+    schema_free(schema);
+    jv_free(schema_json);
+}
+
 int main(void) {
     test_schema_sibling_constraints_are_not_dropped();
     test_strict_bounded_numbers();
@@ -3041,6 +3092,7 @@ int main(void) {
     test_escapes_are_paired_and_closable();
     test_json_close_partial_string();
     test_schema_required_close();
+    test_schema_close_fits_a_long_enum_member();
     test_map_refuses_a_duplicate_key_spelling();
     test_required_whitespace_reports_as_content();
     test_a_native_call_cannot_close_with_a_required_argument_missing();
