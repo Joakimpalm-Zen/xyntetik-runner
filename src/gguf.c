@@ -121,6 +121,18 @@ static const char *first_duplicate_inplace(const char **s, uint64_t n) {
     return NULL;
 }
 
+// qsort has no context argument every libc shares, so the table being sorted
+// rides in a file-static; loads serialise (swap_mu, or one CLI process), so
+// nothing sorts two files at once.
+static const gguf_tensor *sort_ctx_tensors;
+static int cmp_tensor_offset(const void *a, const void *b) {
+    const uint64_t ia = *(const uint64_t *)a, ib = *(const uint64_t *)b;
+    uint64_t oa = (uint64_t)(uintptr_t)sort_ctx_tensors[ia].data;
+    uint64_t ob = (uint64_t)(uintptr_t)sort_ctx_tensors[ib].data;
+    if (oa != ob) return oa < ob ? -1 : 1;
+    return ia < ib ? -1 : ia > ib;   // a fixed order among equal offsets
+}
+
 static bool gguf_open_one_x(gguf_file *g, const char *path, bool header_only) {
     memset(g, 0, sizeof(*g));
     g->header_only = header_only;
@@ -313,15 +325,13 @@ static bool gguf_open_one_x(gguf_file *g, const char *path, bool header_only) {
         uint64_t *order = malloc(sizeof(uint64_t) * g->n_tensors);
         if (order) {
             for (uint64_t i = 0; i < g->n_tensors; i++) order[i] = i;
-            // insertion sort by offset: n_tensors is at most a few thousand
-            for (uint64_t i = 1; i < g->n_tensors; i++) {
-                uint64_t k = order[i], j = i;
-                while (j > 0 && (uint64_t)(uintptr_t)g->tensors[order[j - 1]].data >
-                                (uint64_t)(uintptr_t)g->tensors[k].data) {
-                    order[j] = order[j - 1]; j--;
-                }
-                order[j] = k;
-            }
+            // qsort, not insertion: the header admits 100,000 tensors, and a
+            // file listing them in reverse offset order made this quadratic
+            // (about 5e9 steps, minutes inside a swap) for a companion lookup
+            // only NVFP4 tensors need (sweep, 2026-09-27; the same class as
+            // the tokenizer's special-token sort).
+            sort_ctx_tensors = g->tensors;
+            qsort(order, (size_t)g->n_tensors, sizeof(*order), cmp_tensor_offset);
             for (uint64_t i = 0; i < g->n_tensors; i++) {
                 gguf_tensor *t = &g->tensors[order[i]];
                 if (t->type != T_NVFP4 || t->nbytes == 0) continue;

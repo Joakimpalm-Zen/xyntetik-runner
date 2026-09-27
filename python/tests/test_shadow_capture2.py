@@ -765,3 +765,26 @@ def test_post_event_records_a_workspace_state(tmp_path: Path) -> None:
     cs = C.change_set_all(before, after)
     assert cs["count"] >= 1, "the edit must appear in the change set"
     assert any(p.endswith("a.py") for p in cs["paths"]), cs["paths"]
+
+
+def test_install_refuses_a_settings_file_it_cannot_merge_into(tmp_path: Path) -> None:
+    """A user's settings.json whose "hooks" is not an object, or whose event
+    list is not a list, used to fail on a bare assert after the backup had
+    been written (sweep, 2026-09-27). It is refused with a message and left
+    exactly as it was."""
+    from xyntetik_runner.shadow import install as I
+    settings = tmp_path / ".claude" / "settings.json"
+    settings.parent.mkdir(parents=True)
+    for bad in ({"hooks": []}, {"hooks": {"Stop": {"type": "command"}}}, ["not", "an", "object"]):
+        original = json.dumps(bad)
+        settings.write_text(original, encoding="utf-8")
+        with pytest.raises(RuntimeError) as info:
+            I.install_claude_hooks(settings, python=sys.executable, pythonpath=None, home=tmp_path)
+        assert "fix it" in str(info.value) or "JSON object" in str(info.value)
+        assert settings.read_text(encoding="utf-8") == original
+        assert not settings.with_suffix(".json.bak-shadow").exists()
+    settings.write_text("{not json", encoding="utf-8")
+    with pytest.raises(RuntimeError) as info:
+        I.install_claude_hooks(settings, python=sys.executable, pythonpath=None, home=tmp_path)
+    assert "not valid JSON" in str(info.value)
+
