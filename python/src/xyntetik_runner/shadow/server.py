@@ -15,40 +15,16 @@ from __future__ import annotations
 import contextlib
 import json
 import os
-import secrets
 import signal
 import subprocess
-import sys
-import time
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-if sys.platform == "win32":
-    import msvcrt
-
-    def _lock_fd(fd: int) -> None:
-        while True:
-            try:
-                msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
-                return
-            except OSError:
-                time.sleep(0.2)
-
-    def _unlock_fd(fd: int) -> None:
-        msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
-else:
-    import fcntl
-
-    def _lock_fd(fd: int) -> None:
-        fcntl.flock(fd, fcntl.LOCK_EX)
-
-    def _unlock_fd(fd: int) -> None:
-        fcntl.flock(fd, fcntl.LOCK_UN)
-
 from xyntetik_runner.endpoint import RunnerEndpoint
 from xyntetik_runner.process import ManagedRunner, ServerLaunch
+from xyntetik_runner.shadow.filelock import locked, replace_text
 
 STATE_REL = Path(".xyntetik") / "shadow" / "server.json"
 DEFAULT_TTL = 900
@@ -68,41 +44,21 @@ class ServerState:
 
 
 def atomic_write_text(path: Path, text: str) -> None:
-    """Write through a sibling temporary file and rename, so a kill mid-write
-    leaves the previous file, never a truncated one. The temporary name is
-    unique per writer: two concurrent starts sharing one name raced each
-    other's rename, and one of them died with FileNotFoundError while the
-    other's record pointed at the wrong process (external review,
-    2026-09-27)."""
-    tmp = path.with_name(f".{path.name}.{os.getpid()}.{secrets.token_hex(4)}.tmp")
-    try:
-        tmp.write_text(text, encoding="utf-8")
-        os.replace(tmp, path)
-    finally:
-        with contextlib.suppress(OSError):
-            tmp.unlink()
+    """Write through a temporary file unique to this writer and rename, so a
+    kill mid-write leaves the previous file and two writers never share a
+    temporary name (external review, 2026-09-27)."""
+    replace_text(path, text)
 
 
 @contextlib.contextmanager
 def state_lock(home: Path) -> Iterator[None]:
     """One shadow command at a time through the read-check-start-record
     sequence, so two commands that find no warm runner do not both start
-    one. The lock is a sibling file held for the duration; a runner start
-    (a model load) happens under it, and the second caller then finds the
-    live runner the first recorded instead of starting a duplicate that
-    nothing tracks."""
-    path = home / STATE_REL
-    path.parent.mkdir(parents=True, exist_ok=True)
-    lock = path.with_name(f".{path.name}.lock")
-    fd = os.open(lock, os.O_RDWR | os.O_CREAT, 0o644)
-    try:
-        _lock_fd(fd)
+    one. A runner start (a model load) happens under it, and the second
+    caller then finds the live runner the first recorded instead of
+    starting a duplicate that nothing tracks."""
+    with locked(home / STATE_REL):
         yield
-    finally:
-        try:
-            _unlock_fd(fd)
-        finally:
-            os.close(fd)
 
 
 def read_state(home: Path) -> ServerState | None:

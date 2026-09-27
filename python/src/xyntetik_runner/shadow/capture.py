@@ -20,6 +20,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, cast
 
+from xyntetik_runner.shadow.filelock import locked, replace_bytes, replace_text
+
 SCHEMA = "xyntetik.shadow.capture.v2"
 CAPTURE2_FILE = ".xyntetik/shadow/capture2.jsonl"
 BLOBS_DIR = ".xyntetik/shadow/blobs"
@@ -142,12 +144,8 @@ def _read_threads(home: Path) -> dict[str, Any]:
 
 
 def _write_threads(home: Path, d: dict[str, Any]) -> None:
-    p = home / THREADS_FILE
     try:
-        p.parent.mkdir(parents=True, exist_ok=True)
-        tmp = p.with_suffix(".tmp")
-        tmp.write_text(json.dumps(d, sort_keys=True), encoding="utf-8")
-        tmp.replace(p)
+        replace_text(home / THREADS_FILE, json.dumps(d, sort_keys=True))
     except Exception:
         pass
 
@@ -161,17 +159,24 @@ def _read_jobs(home: Path) -> dict[str, Any]:
 
 def _write_jobs(home: Path, d: dict[str, Any]) -> None:
     try:
-        p = home / JOBS_FILE
-        p.parent.mkdir(parents=True, exist_ok=True)
-        tmp = p.with_suffix(".tmp")
-        tmp.write_text(json.dumps(d, sort_keys=True), encoding="utf-8")
-        tmp.replace(p)
+        replace_text(home / JOBS_FILE, json.dumps(d, sort_keys=True))
     except Exception:
         pass
 
 
 def link(home: Path, *, session_id: str, event_id: str, prov: Provenance,
          job_ids: list[str] | None = None) -> Provenance:
+    """`_link_locked` under the ledgers' lock. The ledgers are shared by every
+    session that captures, so the whole read-modify-write runs under one
+    lock: two sessions linking at once used to drop each other's thread or
+    job record, and shared a temporary file name (sweep, 2026-09-27)."""
+    with locked(home / THREADS_FILE):
+        return _link_locked(home, session_id=session_id, event_id=event_id, prov=prov,
+                            job_ids=job_ids)
+
+
+def _link_locked(home: Path, *, session_id: str, event_id: str, prov: Provenance,
+                 job_ids: list[str] | None = None) -> Provenance:
     """Attach the task thread this event belongs to, and say how confidently.
 
     A `user_request` or `worker_assignment` **is** its own origin:
@@ -253,9 +258,7 @@ def put_blob(home: Path, data: bytes) -> str:
     try:
         if not p.exists():
             p.parent.mkdir(parents=True, exist_ok=True)
-            tmp = p.with_name(p.name + ".tmp")
-            tmp.write_bytes(data)
-            tmp.replace(p)
+            replace_bytes(p, data)
     except Exception:
         return sha          # the hash is still a valid reference to report
     return sha

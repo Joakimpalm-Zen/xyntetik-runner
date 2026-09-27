@@ -8,6 +8,19 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **Sweep of 2026-09-27, two defects.** (1) The buffered and streamed paths
+  used different tests for "the runner cut this turn": buffered tested
+  `finish == "length"`, streamed tested the stop flags, and neither counted
+  a loop-guard end. A native call left open by the guard was reported as
+  the model's own protocol fault (`error`, `envelope_unmapped`) on both,
+  and a turn whose reasoning was capped and whose answer then ran out
+  (`reasoning_limit`) was a fault buffered and a cut streamed. One shared
+  test now: a budget, a deadline, or the guard is a cut (call dropped,
+  `length`, detail `loop`); pinned on both surfaces. (2) The shadow capture
+  hooks' thread and job ledgers were read-modify-write files with no lock
+  and a shared temporary name, so two sessions capturing at once dropped
+  each other's record; the ledgers, the warm-runner state and the blob
+  store now share one lock-and-rename helper.
 - **Five defects from an external review of ac5418e (2026-09-27), each with a
   pinning test.** (1) `--require-signed-model` hashed only the split GGUF
   part named on the command line, so a weight changed in any other part
