@@ -135,7 +135,7 @@ $response.choices[0].message.content
 
 </details>
 
-> **Pre-1.0 (`0.5.6`).** APIs, model coverage and certification envelopes may
+> **Pre-1.0 (`0.5.7`).** APIs, model coverage and certification envelopes may
 > change between releases. CI builds and smoke-tests Linux, macOS, and
 > Windows, but the project still has limited hardware coverage. Include
 > `runner --version`, `runner --caps`, the model's exact filename, and the load
@@ -1129,7 +1129,7 @@ for Linux, macOS, or Windows, or build from source:
 git clone https://github.com/Joakimpalm-Zen/xyntetik-runner
 cd xyntetik-runner
 make
-./runner --version   # -> runner 0.5.6
+./runner --version   # -> runner 0.5.7
 ```
 
 CUDA builds and releases need only an NVIDIA driver at runtime. The CUDA
@@ -1205,7 +1205,7 @@ shell, then run `make`.
 
 Each release publishes a CPU image - the same binary on a distroless glibc base,
 nothing else - to `ghcr.io/joakimpalm-zen/xyntetik-runner:v<version>` (the
-tag carries the `v`, e.g. `:v0.5.6`) and `:latest`. Build it yourself with `docker build -t runner .`.
+tag carries the `v`, e.g. `:v0.5.7`) and `:latest`. Build it yourself with `docker build -t runner .`.
 
 The server binds **loopback only** by design (there is no `--host`/`0.0.0.0`
 flag), so it never exposes itself to a network, even in a container - which
@@ -2898,6 +2898,21 @@ looks elsewhere. `--batch-state` (default on) groups a state's questions
 into one request, the same KV reuse the endpoint itself is built around.
 No claim about any model's calibration is made here; the script measures
 whatever endpoint it is pointed at.
+
+### Serving a distilled reasoning student
+
+Xyntetik-Kvist-14B, a dense student in the Muse-Glimmer architecture
+(`muse-glimmer` template), pins a runner release from 0.5.7 on. What its lab
+measured while gating it, on the CPU Q8_0 path over 60 held-out closed-loop
+tool tasks, is the serving advice: greedy decoding is the gate's own
+setting; `--loop-guard` fired only on runaway reasoning turns and never on an
+ordinary one (51 to 54 of 60 on one checkpoint; no score change on the next,
+with termination from 98.3% to 100%); `--reasoning-temp 0.6` scored below
+greedy on two seeds (49 and 47 against 51) and is not recommended. The full
+filename is the served model id (a 68-character checkpoint name used to be
+cut at 63), and a `reasoning_strength` directive in the system prompt is
+honoured. The model card carries the gate numbers and their disclosures;
+nothing here restates them.
 
 ### OpenAI Responses
 

@@ -6,7 +6,7 @@ change between releases (the `-alpha` suffix was retired at v0.2.0 — the 0.x
 version already says what it needs to). Entries below the rename keep the
 names that were true when they were written.
 
-## Unreleased
+## v0.5.7 - 2026-09-27
 
 - **Full sweep of 2026-09-27 (analyser, extra warnings, sanitizer pass,
   module reads), three defects.** (1) `-hf` trusted the Hub's file list: a
