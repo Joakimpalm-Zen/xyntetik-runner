@@ -18,11 +18,34 @@ import os
 import secrets
 import signal
 import subprocess
+import sys
 import time
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+if sys.platform == "win32":
+    import msvcrt
+
+    def _lock_fd(fd: int) -> None:
+        while True:
+            try:
+                msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
+                return
+            except OSError:
+                time.sleep(0.2)
+
+    def _unlock_fd(fd: int) -> None:
+        msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+else:
+    import fcntl
+
+    def _lock_fd(fd: int) -> None:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+
+    def _unlock_fd(fd: int) -> None:
+        fcntl.flock(fd, fcntl.LOCK_UN)
 
 from xyntetik_runner.endpoint import RunnerEndpoint
 from xyntetik_runner.process import ManagedRunner, ServerLaunch
@@ -73,26 +96,11 @@ def state_lock(home: Path) -> Iterator[None]:
     lock = path.with_name(f".{path.name}.lock")
     fd = os.open(lock, os.O_RDWR | os.O_CREAT, 0o644)
     try:
-        if os.name == "nt":
-            import msvcrt
-            while True:
-                try:
-                    msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
-                    break
-                except OSError:
-                    time.sleep(0.2)
-        else:
-            import fcntl
-            fcntl.flock(fd, fcntl.LOCK_EX)
+        _lock_fd(fd)
         yield
     finally:
         try:
-            if os.name == "nt":
-                import msvcrt
-                msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
-            else:
-                import fcntl
-                fcntl.flock(fd, fcntl.LOCK_UN)
+            _unlock_fd(fd)
         finally:
             os.close(fd)
 
