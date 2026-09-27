@@ -8,6 +8,20 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **Full sweep of 2026-09-27 (analyser, extra warnings, sanitizer pass,
+  module reads), three defects.** (1) `-hf` trusted the Hub's file list: a
+  name with a `..` segment, an absolute path, a drive letter or a backslash
+  became a cache path under it and was fetched to wherever it pointed; such
+  a listing is now refused whole, naming the file. (2) The GGUF loader
+  ordered tensors by offset with an insertion sort; the header admits
+  100,000 tensors and a reversed listing made that quadratic (minutes
+  inside a swap), now qsort. (3) `runner --shadow-mode` install failed on a
+  bare assert, after writing its backup, when a settings.json carried
+  `hooks` that was not an object or an event list that was not a list; it
+  now refuses with a message and leaves the file as it was. The clang
+  static analyser's remaining reports were read one by one and are guarded
+  by code it cannot see; the Windows and CUDA halves were built and gated on
+  an RTX 3070.
 - **Sweep of 2026-09-27, two defects.** (1) The buffered and streamed paths
   used different tests for "the runner cut this turn": buffered tested
   `finish == "length"`, streamed tested the stop flags, and neither counted

@@ -160,7 +160,9 @@ $response.choices[0].message.content
 Run a GGUF. `-hf owner/repo[:TAG]` fetches it from the Hugging Face Hub
 instead of `-m` (the tag picks the quant when the repository has several;
 the file is cached under `~/.cache/xyntetik-runner/hf` and verified against
-the Hub's SHA-256 record before it loads; `HF_TOKEN` for gated repos):
+the Hub's SHA-256 record before it loads; `HF_TOKEN` for gated repos; a
+repository whose file list carries a name that would leave the cache
+directory is refused whole):
 
 ```sh
 # Interactive chat: download a model or use a local file.

@@ -158,19 +158,23 @@ int decide_handle(engine *e, const jv *req, const char *model_name, sbuf *out, c
     char state_sha[65], q_sha[65];
     envelope_data_sha256(state, strlen(state), state_sha);
     {
+        // Lengths are printed as unsigned long long: the canonical form feeds
+        // the request hash, and %zu through the MinGW printf checker reads as
+        // an unknown conversion (Windows build warning, sweep 2026-09-27).
+        // Same digits, so the hash is unchanged.
         sbuf canon = {0};
         for (int i = 0; i < qs->n; i++) {
             const jv *q = qs->items[i];
             const char *qt = jstr(q, "question");
             size_t ql = qt ? strlen(qt) : 0;
-            sb_fmt(&canon, "q%zu:", ql);
+            sb_fmt(&canon, "q%llu:", (unsigned long long)ql);
             if (qt) sb_put(&canon, qt, ql);
             jv *opts = q->type == J_OBJ ? jv_get((jv *)q, "options") : NULL;
             if (opts && opts->type == J_ARR)
                 for (int j = 0; j < opts->n; j++) {
                     const char *o = opts->items[j]->type == J_STR ? opts->items[j]->str : "";
                     size_t ol = strlen(o);
-                    sb_fmt(&canon, "o%zu:", ol);
+                    sb_fmt(&canon, "o%llu:", (unsigned long long)ol);
                     sb_put(&canon, o, ol);
                 }
             sb_lit(&canon, "\n");
