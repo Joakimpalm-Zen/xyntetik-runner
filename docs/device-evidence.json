@@ -19,19 +19,19 @@
         "gpu_backend": "cuda"
       },
       "last_verified": {
-        "date": "2026-09-15",
-        "commit": "47518c051359b3eaee3c6e63b231843b06d133c7",
-        "ran": "build055.sh on ZEN-GAMING: make OS=Windows_NT -j8 runner; make test-cuda-nvfp4 (qwen3.5-4b-nvfp4); test-gpu-identity.exe on the nine i-quant fixtures; make test-tc-overflow; scripts/cuda-smoke-remote.sh 13/13",
+        "date": "2026-09-27",
+        "commit": "15cef8ac58bf6c4b88567728bcfb598186e2342a",
+        "ran": "build057.sh on ZEN-GAMING: make OS=Windows_NT -j8 runner; make test-cuda-nvfp4 (qwen3.5-4b-nvfp4, 7.77e-05); test-gpu-identity.exe on the nine i-quant fixtures; make test-tc-overflow; scripts/cuda-smoke-remote.sh 13/13",
         "result": "pass",
         "caps": {
-          "version": "0.5.5",
+          "version": "0.5.7",
           "os": "windows",
           "arch": "x86_64",
           "cpu_cores": 8,
           "gpu_backend": "cuda",
           "gpu_name": "NVIDIA GeForce RTX 3070"
         },
-        "evidence": "docs/compat-reports/cuda-smoke-0.5.5-2026-09-15-rtx3070.json"
+        "evidence": "docs/compat-reports/cuda-smoke-0.5.7-2026-09-27-rtx3070.json"
       }
     },
     {
@@ -73,18 +73,19 @@
         "gpu_backend": "metal"
       },
       "last_verified": {
-        "date": "2026-09-15",
-        "commit": "47518c051359b3eaee3c6e63b231843b06d133c7",
-        "ran": "make test PYTHON=.venv/bin/python (every C gate and pytest); scripts/conformance.sh; make release-check",
+        "date": "2026-09-27",
+        "commit": "15cef8ac58bf6c4b88567728bcfb598186e2342a",
+        "ran": "make test PYTHON=.venv/bin/python (every C gate and 869 pytest); scripts/conformance.sh 456/17; compat_matrix.py gemma-4-e4b-it-qat-q4_0 --gpu auto complete; make release-check",
         "result": "pass",
         "caps": {
-          "version": "0.5.5",
+          "version": "0.5.7",
           "os": "macos",
           "arch": "arm64",
           "cpu_cores": 8,
           "gpu_backend": "metal",
           "gpu_name": "Apple M1"
-        }
+        },
+        "evidence": "docs/compat-reports/0.5.7-2026-09-27-m1-gemma-4-e4b-it-qat-q4_0.json"
       }
     }
   ]
