@@ -4052,13 +4052,36 @@ bool sval_feed(sval *v, const char *s, int len) {
 
 // `reserve` is headroom the FILL loops may not touch, so the structural tail
 // behind them always fits. See sval_close, which sets it.
-typedef struct { char *out; int cap, n, reserve; } emitq;
+//
+// `grow` marks a heap buffer the queue may enlarge (doubling, up to `max`),
+// which is how sval_close_alloc keeps a close VALID whatever the schema asks
+// for: a 5,000-character enum member, or minLength past the old fixed 4,096,
+// used to come back cut at the buffer's end with no closing quote (external
+// review, 2026-09-27). A fixed caller buffer keeps the old truncating shape.
+typedef struct { char *out; int cap, n, reserve; bool grow; int max; } emitq;
 
+// Room for `need` more bytes plus the NUL, enlarging a growable buffer when
+// it must. False once the buffer is fixed or at its ceiling.
+static bool eq_grow(emitq *q, int need) {
+    if (q->n + need < q->cap) return true;
+    if (!q->grow || q->cap >= q->max) return false;
+    int nc = q->cap;
+    while (nc <= q->n + need && nc < q->max)
+        nc = nc > q->max / 2 ? q->max : nc * 2;
+    char *p = realloc(q->out, (size_t)nc);
+    if (!p) { q->grow = false; return false; }
+    q->out = p;
+    q->cap = nc;
+    return q->n + need < q->cap;
+}
 static void eq_put(emitq *q, const char *s) {
-    while (*s && q->n < q->cap - 1) q->out[q->n++] = *s++;
+    while (*s) {
+        if (q->n >= q->cap - 1 && !eq_grow(q, 1)) break;
+        q->out[q->n++] = *s++;
+    }
 }
 static void eq_putc(emitq *q, char c) {
-    if (q->n < q->cap - 1) q->out[q->n++] = c;
+    if (q->n < q->cap - 1 || eq_grow(q, 1)) q->out[q->n++] = c;
 }
 // Once the buffer is full nothing further can be emitted, so the minItems /
 // minLength loops below stop there. Without this they still iterate to the
@@ -4070,7 +4093,10 @@ static void eq_putc(emitq *q, char c) {
 // silently: a `[` closed under minItems:5000 came back as 4095 filler bytes
 // and no bracket at all. A document that parses and is short of its minItems
 // is something a caller can read; one that does not parse is not.
-static bool eq_full(const emitq *q) { return q->n + q->reserve >= q->cap - 1; }
+static bool eq_full(emitq *q) {
+    if (q->n + q->reserve >= q->cap - 1) eq_grow(q, q->reserve + 1);
+    return q->n + q->reserve >= q->cap - 1;
+}
 
 // Finish the string escape generation stopped inside, if any. Shared with
 // json_mode's closer so the two cannot disagree about what a partial escape
@@ -4357,12 +4383,8 @@ static void close_members(emitq *q, const snode *n, int from, bool first,
     eq_put(q, n->sentinel);
 }
 
-int sval_close(sval *v, char *out, int cap) {
-    // One closing byte per frame still open, plus the one this frame writes
-    // and the NUL. SVAL_MAX_DEPTH bounds v->depth, so this is a small fixed
-    // reservation against a fill bound the request chose.
-    emitq q = { out, cap, 0, v->depth + 2 };
-    if (v->done) { out[0] = 0; return 0; }
+static int sval_close_q(sval *v, emitq *q) {
+    if (v->done) { q->out[0] = 0; return 0; }
     // Nothing generated at all — the root value never opened, so there is no
     // partial document to complete. Emit nothing.
     //
@@ -4375,7 +4397,7 @@ int sval_close(sval *v, char *out, int cap) {
     // never started is fabrication, and a caller must be able to tell the
     // difference. jsonv_close has always drawn that line the same way.
     if (v->depth == 1 && v->stack[0].phase == P_START) {
-        out[0] = 0;
+        q->out[0] = 0;
         return 0;
     }
     while (v->depth > 0) {
@@ -4384,31 +4406,31 @@ int sval_close(sval *v, char *out, int cap) {
         int choice = frame_choice(v, v->depth - 1);
         switch (n->kind == SN_ANY ? P_STR + 100 : f->phase) {
         case P_STR + 100: { // any-subtree: let the generic machine close
-            if (f->phase == P_START) { emit_min_choice(&q, n, 0, -1); break; }
+            if (f->phase == P_START) { emit_min_choice(q, n, 0, -1); break; }
             char tmp[512];
             int cn = jsonv_close(&v->any, tmp, sizeof(tmp));
-            if (cn > 0) eq_put(&q, tmp);
-            else if (!v->any.done) eq_put(&q, n->min_items ? "{}" : "null");
+            if (cn > 0) eq_put(q, tmp);
+            else if (!v->any.done) eq_put(q, n->min_items ? "{}" : "null");
             break;
         }
         case P_START:
-            emit_min_choice(&q, n, 0, choice);
+            emit_min_choice(q, n, 0, choice);
             break;
         case P_STR:
             // a dangling backslash or a partial \uXXXX. The character it
             // completes is one lit_pos never saw, and padding as if it were
             // still missing added one filler too many -- straight past
             // maxLength, into a document this grammar itself rejects.
-            if (eq_escape(&q, f)) f->lit_pos++;
-            eq_utf8(&q, f);
+            if (eq_escape(q, f)) f->lit_pos++;
+            eq_utf8(q, f);
             int string_min = n->min_items;
             if (n->n_pats && string_min < pat_min_len(n))
                 string_min = pat_min_len(n);
-            while (f->lit_pos < string_min && !eq_full(&q)) {
-                eq_putc(&q, n->n_pats ? pat_fill_byte(n, f->lit_pos) : ' ');
+            while (f->lit_pos < string_min && !eq_full(q)) {
+                eq_putc(q, n->n_pats ? pat_fill_byte(n, f->lit_pos) : ' ');
                 f->lit_pos++;
             }
-            eq_putc(&q, '"');
+            eq_putc(q, '"');
             break;
         case P_LIT: {
             static const char *bools[] = { "true", "false" };
@@ -4427,7 +4449,7 @@ int sval_close(sval *v, char *out, int cap) {
                     if (f->alive & (1ull << i)) { pick = i; break; }
             }
             if (pick < 0) break;
-            eq_put(&q, lits[pick] + f->lit_pos);
+            eq_put(q, lits[pick] + f->lit_pos);
             // Finishing a discriminator literal decides the parent's choice —
             // the args emitted next must come from the same alternative. Both
             // shapes frame_done() recognises are recognised here, or a turn
@@ -4445,33 +4467,33 @@ int sval_close(sval *v, char *out, int cap) {
             break;
         }
         case P_NUM:
-            if (n->kind == SN_INT) close_integer(&q, n, f);
-            else close_number(&q, v, n, f);
+            if (n->kind == SN_INT) close_integer(q, n, f);
+            else close_number(q, v, n, f);
             break;
         case P_OBJ_KEY1:
-            if (n->kind == SN_MAP) eq_putc(&q, '}');
-            else close_obj(&q, n, f->idx, false, false, choice);
+            if (n->kind == SN_MAP) eq_putc(q, '}');
+            else close_obj(q, n, f->idx, false, false, choice);
             break;
         case P_OBJ_KEY: // a ',' was already consumed
             if (n->kind == SN_MAP) {
                 // the invented key must dodge the duplicate guard: an
                 // empty key may already exist in this map
                 uint32_t kh = json_key_hash_init();
-                eq_putc(&q, '"');
+                eq_putc(q, '"');
                 for (int extend = 0; extend < 64; extend++) {
                     bool dup = false;
                     for (int i = 0; i < v->n_seen; i++)
                         if (v->seen_depth[i] == v->depth &&
                             v->seen_hash[i] == kh) { dup = true; break; }
                     if (!dup) break;
-                    eq_putc(&q, '_');
+                    eq_putc(q, '_');
                     kh = json_key_hash_byte(kh, '_');
                 }
-                eq_put(&q, "\":");
-                emit_min_choice(&q, n->items, 0, choice);
-                eq_putc(&q, '}');
+                eq_put(q, "\":");
+                emit_min_choice(q, n->items, 0, choice);
+                eq_putc(q, '}');
             } else {
-                close_obj(&q, n, f->idx, false, true, choice);
+                close_obj(q, n, f->idx, false, true, choice);
             }
             break;
         case P_OBJ_INKEY: {
@@ -4486,11 +4508,11 @@ int sval_close(sval *v, char *out, int cap) {
                 int fn = json_escape_close(&f->sub, &f->esc,
                                            (uint16_t)(f->num_abs >> 32),
                                            fin, (int)sizeof(fin), &scalar);
-                for (int i = 0; i < fn; i++) eq_putc(&q, fin[i]);
+                for (int i = 0; i < fn; i++) eq_putc(q, fin[i]);
                 if (scalar) kh = json_key_hash_scalar(kh, scalar);
                 fn = json_utf8_close(&f->utf8_state, fin);
                 for (int i = 0; i < fn; i++) {
-                    eq_putc(&q, fin[i]);
+                    eq_putc(q, fin[i]);
                     kh = json_key_hash_byte(kh, (uint8_t)fin[i]);
                 }
                 for (int extend = 0; extend < 64; extend++) {
@@ -4499,54 +4521,54 @@ int sval_close(sval *v, char *out, int cap) {
                         if (v->seen_depth[i] == v->depth &&
                             v->seen_hash[i] == kh) { dup = true; break; }
                     if (!dup) break;
-                    eq_putc(&q, '_');
+                    eq_putc(q, '_');
                     kh = json_key_hash_byte(kh, '_');
                 }
-                eq_put(&q, "\":");
-                emit_min_choice(&q, n->items, 0, choice);
-                eq_putc(&q, '}');
+                eq_put(q, "\":");
+                emit_min_choice(q, n->items, 0, choice);
+                eq_putc(q, '}');
                 break;
             }
             // finish the lowest still-alive candidate key, give it a value
             for (int i = 0; i < n->n_props; i++) {
                 if (!(f->alive & (1ull << i))) continue;
-                eq_put(&q, n->keys[i] + f->lit_pos);
-                eq_put(&q, "\":");
-                emit_min_choice(&q, n->props[i], 0, choice);
+                eq_put(q, n->keys[i] + f->lit_pos);
+                eq_put(q, "\":");
+                emit_min_choice(q, n->props[i], 0, choice);
                 f->idx = i + 1;
                 break;
             }
-            close_obj(&q, n, f->idx, true, false, choice);
+            close_obj(q, n, f->idx, true, false, choice);
             break;
         }
         case P_OBJ_COLON:
-            eq_putc(&q, ':');
-            emit_min_choice(&q, n->kind == SN_MAP ? n->items : n->props[f->sub],
+            eq_putc(q, ':');
+            emit_min_choice(q, n->kind == SN_MAP ? n->items : n->props[f->sub],
                             0, choice);
-            if (n->kind == SN_MAP) eq_putc(&q, '}');
-            else close_obj(&q, n, f->idx, true, false, choice);
+            if (n->kind == SN_MAP) eq_putc(q, '}');
+            else close_obj(q, n, f->idx, true, false, choice);
             break;
         case P_OBJ_NEXT: // a value just completed, comma needed before more
-            if (n->kind == SN_MAP) eq_putc(&q, '}');
-            else close_obj(&q, n, f->idx, true, false, choice);
+            if (n->kind == SN_MAP) eq_putc(q, '}');
+            else close_obj(q, n, f->idx, true, false, choice);
             break;
         case P_ARR_FIRST:
         case P_ARR_NEXT:
-            for (int i = f->idx; i < n->min_items && !eq_full(&q); i++) {
-                if (i > 0 || f->phase == P_ARR_NEXT) eq_putc(&q, ',');
-                emit_min_choice(&q, n->items, 0, -1);
+            for (int i = f->idx; i < n->min_items && !eq_full(q); i++) {
+                if (i > 0 || f->phase == P_ARR_NEXT) eq_putc(q, ',');
+                emit_min_choice(q, n->items, 0, -1);
             }
-            eq_putc(&q, ']');
+            eq_putc(q, ']');
             break;
         case P_SEQ:
-            for (int i = f->idx; i < n->n_props && !eq_full(&q); i++)
-                emit_min_choice(&q, n->props[i], 0, choice);
+            for (int i = f->idx; i < n->n_props && !eq_full(q); i++)
+                emit_min_choice(q, n->props[i], 0, choice);
             break;
         case P_MEM_FIRST:
         case P_MEM_NEXT: {
             bool first = f->phase == P_MEM_FIRST;
             if (f->lit_pos == 0) {
-                close_members(&q, n, f->idx, first, choice);
+                close_members(q, n, f->idx, first, choice);
                 break;
             }
             int pick = f->sub ? f->sub - 1 : -1;
@@ -4557,10 +4579,10 @@ int sval_close(sval *v, char *out, int cap) {
             }
             if (pick < 0) break;
             const char *prefix = member_prefix(n, pick, first);
-            eq_put(&q, prefix + f->lit_pos);
+            eq_put(q, prefix + f->lit_pos);
             if (pick == n->n_props) break;
-            emit_min_choice(&q, n->props[pick], 0, choice);
-            close_members(&q, n, pick + 1, false, choice);
+            emit_min_choice(q, n->props[pick], 0, choice);
+            close_members(q, n, pick + 1, false, choice);
             break;
         }
         case P_RAW:
@@ -4568,14 +4590,34 @@ int sval_close(sval *v, char *out, int cap) {
             // prefix; append only the unmatched suffix, then the enclosing
             // sequence contributes its fixed newline/invoke/calls closes.
             if (n->n_lits && n->n_alts && f->sub > f->lit_pos) {
-                eq_put(&q,n->lits[0]+f->sub);
-                emit_min_choice(&q,n->alts[0],0,choice);
-            } else eq_put(&q, n->sentinel + f->lit_pos);
+                eq_put(q,n->lits[0]+f->sub);
+                emit_min_choice(q,n->alts[0],0,choice);
+            } else eq_put(q, n->sentinel + f->lit_pos);
             break;
         }
         v->depth--;
     }
     v->done = true;
-    out[q.n] = 0;
-    return q.n;
+    q->out[q->n] = 0;
+    return q->n;
+}
+
+int sval_close(sval *v, char *out, int cap) {
+    // One closing byte per frame still open, plus the one this frame writes
+    // and the NUL. SVAL_MAX_DEPTH bounds v->depth, so this is a small fixed
+    // reservation against a fill bound the request chose.
+    emitq q = { out, cap, 0, v->depth + 2, false, cap };
+    return sval_close_q(v, &q);
+}
+
+char *sval_close_alloc(sval *v, int *len, int max) {
+    int cap = 4096;
+    if (max < 64) max = 64;
+    if (cap > max) cap = max;
+    char *buf = malloc((size_t)cap);
+    *len = 0;
+    if (!buf) return NULL;
+    emitq q = { buf, cap, 0, v->depth + 2, true, max };
+    *len = sval_close_q(v, &q);
+    return q.out;
 }

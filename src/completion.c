@@ -3167,7 +3167,13 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
             // the Responses items are derived from it rather than re-extracted
             // from the envelope: one mapping, two renderings.
             jv *call = tool_calls_array(&tc, n_tc);
-            bool cut    = strcmp(finish, "length") == 0;
+            // every reason the turn was cut short, as the streamed branch
+            // counts them: a loop-guard stop came back "completed" here and
+            // "incomplete" streamed, on identical text (external review,
+            // 2026-09-27)
+            bool cut    = strcmp(finish, "length") == 0 ||
+                          strcmp(finish, "reasoning_limit") == 0 ||
+                          strcmp(finish, "loop") == 0;
             // the streamed branch above reports the same fault the same way:
             // a turn whose document could not be mapped did not complete, and
             // "max_output_tokens" would send the caller retrying with a bigger

@@ -81,6 +81,15 @@ def plain(plain_model):
         yield srv
 
 
+@pytest.fixture(scope="module")
+def muse_draft(muse_model):
+    """The speculative walk (prompt-lookup drafting, no draft model)."""
+    with _serve(muse_model, ["--draft-lookup"]) as srv:
+        with urllib.request.urlopen(srv.base_url + "/v1/models", timeout=30) as r:
+            srv.model_id = json.load(r)["data"][0]["id"]
+        yield srv
+
+
 def _post(server, **body):
     payload = {"prompt": OPEN_REASONING, "max_tokens": 200, "temperature": 0,
                "runner_test_reply": LOOP}
@@ -249,3 +258,52 @@ def test_a_turn_the_guard_only_closed_reports_nothing_unusual(muse):
     assert code == 200, body
     assert _guard(body)["ended_turn"] is False
     assert body["runner_telemetry"].get("finish_detail") != "loop"
+
+
+def test_the_speculative_walk_honours_the_guard_s_stop(muse_draft):
+    """The walk detected the repetition (82 interventions reported) and
+    never acted on the stop: under --draft-lookup a scripted repetition ran
+    to max_tokens with ended_turn true (external review, 2026-09-27). It
+    ends where the plain step ends."""
+    code, body = _post(muse_draft, prompt=OPEN_ANSWER, loop_guard_everywhere=True, **GUARD)
+    assert code == 200, body
+    g = _guard(body)
+    assert g["ended_turn"] is True
+    assert len(body["choices"][0]["text"]) < 40, body["choices"][0]["text"]
+    assert body["choices"][0]["finish_reason"] == "length"
+    assert body["runner_telemetry"]["finish_detail"] == "loop"
+
+
+def _responses(server, stream):
+    payload = {"model": server.model_id, "max_output_tokens": 200, "temperature": 0,
+               "input": [{"role": "user", "content": "count"}],
+               "runner_test_reply": LOOP, "loop_guard_everywhere": True, **GUARD,
+               "stream": stream}
+    req = urllib.request.Request(server.base_url + "/v1/responses",
+                                 data=json.dumps(payload).encode(),
+                                 headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=300) as r:
+        raw = r.read().decode()
+    if not stream:
+        return json.loads(raw)
+    last = None
+    for line in raw.splitlines():
+        if line.startswith("data: "):
+            ev = json.loads(line[6:])
+            if ev.get("type") in ("response.completed", "response.incomplete"):
+                last = ev["response"]
+    assert last is not None, raw[-500:]
+    return last
+
+
+def test_a_buffered_response_cut_by_the_guard_is_incomplete(muse_draft):
+    """The buffered Responses body counted only "length" as cut short; the
+    same guard-ended request came back status "completed" buffered and
+    "incomplete" streamed, on identical text (external review, 2026-09-27).
+    Both surfaces say the same thing."""
+    buffered = _responses(muse_draft, stream=False)
+    assert buffered["status"] == "incomplete", buffered
+    assert buffered["incomplete_details"]["reason"] == "max_output_tokens"
+    streamed = _responses(muse_draft, stream=True)
+    assert streamed["status"] == "incomplete", streamed
+

@@ -245,3 +245,76 @@ def test_reference_tool_bundle(runner_bin, model, p256, tmp_path):
     p = _load(runner_bin, m, "--model-pubkey", str(pub), "--require-signed-model")
     assert p.returncode == 0, p.stderr.decode(errors="replace")
     assert b"model signature: verified" in p.stderr
+
+
+def _multi_bundle(priv, files, out):
+    """A key-method bundle whose manifest names several files, as the
+    reference signer writes for a model directory."""
+    res = [{"name": f.name, "digest": hashlib.sha256(f.read_bytes()).hexdigest(),
+            "algorithm": "sha256"} for f in files]
+    root = hashlib.sha256(b"".join(bytes.fromhex(r["digest"]) for r in res)).hexdigest()
+    stmt = {
+        "_type": "https://in-toto.io/Statement/v1",
+        "subject": [{"name": files[0].parent.name, "digest": {"sha256": root}}],
+        "predicateType": "https://model_signing/signature/v1.0",
+        "predicate": {
+            "resources": res,
+            "serialization": {"method": "files", "hash_type": "sha256",
+                              "allow_symlinks": False},
+        },
+    }
+    payload = json.dumps(stmt, indent=2).encode()
+    ptype = b"application/vnd.in-toto+json"
+    pae = b"DSSEv1 %d %s %d %s" % (len(ptype), ptype, len(payload), payload)
+    pae_file = out.with_suffix(".pae")
+    pae_file.write_bytes(pae)
+    sig = subprocess.run([OPENSSL, "dgst", "-sha256", "-sign", str(priv),
+                          str(pae_file)], check=True, stdout=subprocess.PIPE).stdout
+    out.write_text(json.dumps({
+        "mediaType": "application/vnd.dev.sigstore.bundle.v0.3+json",
+        "verificationMaterial": {"publicKey": {"hint": "openssl-test"}, "tlogEntries": []},
+        "dsseEnvelope": {
+            "payload": base64.b64encode(payload).decode(),
+            "payloadType": ptype.decode(),
+            "signatures": [{"sig": base64.b64encode(sig).decode(), "keyid": ""}],
+        },
+    }))
+    return out
+
+
+def test_every_split_part_is_verified(runner_bin, model, p256, tmp_path):
+    """A split GGUF is loaded from every part, so every part is a model
+    file. Only the part on the command line was hashed: a weight changed in
+    the second part loaded as "verified" (external review, 2026-09-27)."""
+    priv, pub = p256
+    d = tmp_path / "split"
+    d.mkdir()
+    subprocess.run([sys.executable, ROOT / "scripts/gguf-split.py", str(model),
+                    str(d / "m"), "2"], check=True, cwd=ROOT,
+                   stdout=subprocess.DEVNULL)
+    p1, p2 = d / "m-00001-of-00002.gguf", d / "m-00002-of-00002.gguf"
+    assert p1.is_file() and p2.is_file()
+    # both parts named and intact: verified, and the receipt says how many
+    sig = _multi_bundle(priv, [p1, p2], tmp_path / "split.sig")
+    rec = tmp_path / "r.json"
+    p = _load(runner_bin, p1, "--model-sig", str(sig), "--model-pubkey", str(pub),
+              "--require-signed-model", transcript=rec)
+    assert p.returncode == 0, p.stderr.decode(errors="replace")
+    assert b"model signature: verified" in p.stderr
+    assert b"all 2 split part" in p.stderr
+    # a weight changed in the part NOT on the command line: refused
+    raw = bytearray(p2.read_bytes())
+    raw[-16] ^= 1
+    p2.write_bytes(raw)
+    p = _load(runner_bin, p1, "--model-sig", str(sig), "--model-pubkey", str(pub),
+              "--require-signed-model")
+    assert p.returncode != 0
+    assert b"split part 2 of 2 digest differs" in p.stderr
+    # a manifest that names only the first part: refused, the second is unaccounted for
+    p2.write_bytes(bytes(raw[:-16]) + bytes([raw[-16] ^ 1]) + bytes(raw[-15:]))
+    only = _multi_bundle(priv, [p1], tmp_path / "only.sig")
+    p = _load(runner_bin, p1, "--model-sig", str(only), "--model-pubkey", str(pub),
+              "--require-signed-model")
+    assert p.returncode != 0
+    assert b"no entry for split part 2 of 2" in p.stderr
+

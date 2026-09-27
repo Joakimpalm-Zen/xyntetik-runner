@@ -8,6 +8,25 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **Five defects from an external review of ac5418e (2026-09-27), each with a
+  pinning test.** (1) `--require-signed-model` hashed only the split GGUF
+  part named on the command line, so a weight changed in any other part
+  loaded as "verified"; every part must now be named in the manifest and
+  match its digest, and the verdict says how many were checked. (2) The
+  structured-output closer wrote into a fixed 4,096-byte buffer, so an
+  accepted schema with a 5,000-character enum member came back under
+  `max_tokens` truncation as 4,097 characters with no closing quote; the
+  close now grows to fit (up to 1 MiB), so a truncated document still
+  parses and conforms. (3) The speculative walk (`--draft`,
+  `--draft-lookup`) detected a loop-guard stop and never acted on it: a
+  scripted repetition ran to `max_tokens` while reporting 82 interventions;
+  it now ends where the plain step ends. (4) The buffered Responses body
+  counted only `length` as cut short, so a guard-ended or reasoning-capped
+  turn was `completed` buffered and `incomplete` streamed on identical text.
+  (5) Two shadow commands starting a warm runner at the same moment both
+  started one, raced a shared temporary state file, and left a live runner
+  nothing tracked; starts are serialised under a lock file and the state
+  file's temporary name is unique per writer.
 - **Loop guard: a repeating reasoning turn is closed rather than run to the
   limit (R4.12.18, detect-and-close half).** `--loop-guard` and the
   per-request `loop_guard` watch the generated suffix for a span repeated back
