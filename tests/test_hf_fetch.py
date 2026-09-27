@@ -180,3 +180,29 @@ def test_flag_argument_rules(runner_bin, hub, fixture_model):
 def test_help_documents_the_flag(runner_bin):
     r = subprocess.run([str(runner_bin), "--help"], capture_output=True, text=True, cwd=ROOT)
     assert "-hf REPO[:TAG]" in r.stdout + r.stderr
+
+
+def test_a_listing_with_a_traversing_name_is_refused_whole(runner_bin, hub, tmp_path):
+    """The file list is the repository owner's data. A name with a `..`
+    segment became a cache path under it and was written wherever it pointed
+    (sweep, 2026-09-27); an absolute path or a drive letter did the same.
+    The runner refuses the repository and fetches nothing."""
+    files = json.loads((hub["dir"] / "files.json").read_text())
+    good = hub["dir"] / "model-Q8_0.gguf"
+    for bad in ("../escape-Q8_0.gguf", "/abs/escape-Q8_0.gguf", "sub/../../up-Q8_0.gguf",
+                "C:\\escape-Q8_0.gguf", "a//b-Q8_0.gguf"):
+        listing = dict(files)
+        listing["siblings"] = files["siblings"] + [
+            {"rfilename": bad, "size": good.stat().st_size,
+             "lfs": {"sha256": sha256(good), "size": good.stat().st_size}}]
+        (hub["dir"] / "files.json").write_text(json.dumps(listing))
+        if hub["log"].exists():
+            hub["log"].unlink()
+        p = run(runner_bin, hub["env"], "-hf", "owner/repo:Q8_0", "-p", "hi", "-n", "1",
+                "--gpu", "off", "-t", "2")
+        assert p.returncode != 0, (bad, p.stderr)
+        assert "will not hold" in p.stderr, (bad, p.stderr)
+        # nothing was fetched: the listing was the only transfer
+        assert resolve_calls(hub["log"]) == [], (bad, calls(hub["log"]))
+        assert not (tmp_path / "escape-Q8_0.gguf").exists()
+

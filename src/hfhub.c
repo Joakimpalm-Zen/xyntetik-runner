@@ -300,6 +300,29 @@ static bool cache_root(char *out, size_t cap) {
 }
 
 // a repo file name as a cache-relative path: '/' becomes the platform's separator
+// A repository file name the cache may hold. The listing is the Hub's, and
+// a repository's owner writes it, so a name is DATA: one with a `..` segment,
+// an absolute path, a drive letter, a backslash or a control character used
+// to become a cache path under it and be written wherever it pointed (sweep,
+// 2026-09-27). Refused whole, never repaired: a listing that carries one is
+// not one to fetch from.
+static bool safe_rfilename(const char *rf) {
+    if (!rf || !*rf || *rf == '/' || *rf == '\\') return false;
+    const char *seg = rf;
+    for (const char *p = rf;; p++) {
+        unsigned char c = (unsigned char)*p;
+        if (c && (c < 0x20 || c == 0x7f || c == '\\' || c == ':')) return false;
+        if (c == '/' || c == 0) {
+            size_t n = (size_t)(p - seg);
+            if (n == 0) return false;                       // "a//b" or a trailing "/"
+            if (n == 1 && seg[0] == '.') return false;
+            if (n == 2 && seg[0] == '.' && seg[1] == '.') return false;
+            if (c == 0) return true;
+            seg = p + 1;
+        }
+    }
+}
+
 static void local_name(const char *rfilename, char *out, size_t cap) {
     size_t n = strlen(rfilename);
     if (n >= cap) n = cap - 1;
@@ -435,7 +458,14 @@ char *hf_fetch(const char *spec, char *err, size_t errcap) {
     int n = 0;
     for (int i = 0; i < sib->n; i++) {
         const char *rf = jv_str(jv_get(sib->items[i], "rfilename"), NULL);
-        if (rf) names[n++] = rf;
+        if (!rf) continue;
+        if (!safe_rfilename(rf)) {
+            snprintf(err, errcap, "%s lists a file name the cache will not hold (%.120s); "
+                                  "refusing the repository", repo, rf);
+            free(names); jv_free(doc);
+            return NULL;
+        }
+        names[n++] = rf;
     }
     int pick = hf_select_file(names, n, tag, err, errcap);
     if (pick < 0) { free(names); jv_free(doc); return NULL; }
