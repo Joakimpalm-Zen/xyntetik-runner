@@ -307,14 +307,33 @@ def install_claude_hooks(settings: Path, *, python: str, pythonpath: str | None,
     launcher = write_hook_launcher(home if home is not None else settings.parent.parent, pythonpath)
     data: dict[str, object] = {}
     if settings.is_file():
-        data = json.loads(settings.read_text(encoding="utf-8") or "{}")
-        shutil.copyfile(settings, settings.with_suffix(".json.bak-shadow"))
+        try:
+            data = json.loads(settings.read_text(encoding="utf-8") or "{}")
+        except ValueError as error:
+            raise RuntimeError(f"{settings} is not valid JSON ({error}); fix it or move it "
+                               "aside before installing the hooks") from error
+        if not isinstance(data, dict):
+            raise RuntimeError(f"{settings} must hold a JSON object at the top level")
+    # A settings file whose "hooks" is not an object, or whose event list is
+    # not a list, is the user's file and not this installer's to reshape: say
+    # so and leave it as it is. Both used to be bare asserts, which crashed
+    # with a traceback after the backup had already been written (sweep,
+    # 2026-09-27).
     hooks = data.setdefault("hooks", {})
-    assert isinstance(hooks, dict)
+    if not isinstance(hooks, dict):
+        raise RuntimeError(f"{settings}: \"hooks\" must be an object, found "
+                           f"{type(hooks).__name__}; fix it before installing the hooks")
+    for _event, name, _matcher in HOOK_EVENTS:
+        found = hooks.get(name)
+        if found is not None and not isinstance(found, list):
+            raise RuntimeError(f"{settings}: hooks.{name} must be a list, found "
+                               f"{type(found).__name__}; fix it before installing the hooks")
+    if settings.is_file():
+        shutil.copyfile(settings, settings.with_suffix(".json.bak-shadow"))
     added = 0
     for event, name, matcher in HOOK_EVENTS:
         entries = hooks.setdefault(name, [])
-        assert isinstance(entries, list)
+        assert isinstance(entries, list)   # checked above
         # an entry in the previous shell-line form is replaced by the launcher
         # form; one in the launcher form is left alone
         kept = [e for e in entries if not (MARK in json.dumps(e) and HOOK_NAME not in json.dumps(e))]
