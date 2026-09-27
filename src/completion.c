@@ -2884,11 +2884,17 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
     // tool_stream_finish returns -1 for exactly that failure; any other
     // non-zero value came from a sink refusing to write, which IS the client
     // going away.
+    // Did the RUNNER end the turn rather than the model? A budget, a
+    // deadline, or the loop guard: the finisher reads a still-open native
+    // call differently on a cut turn (dropped, "length") and on one the model
+    // ended (a fault). One test, shared with the buffered mapper below: the
+    // buffered path tested finish == "length", which missed a turn whose
+    // reasoning was capped and whose answer then ran out (finish
+    // "reasoning_limit"), and both paths read a loop-guard end as the
+    // model's own (sweep, 2026-09-27).
+    bool turn_cut = (!g.stopped && !e->hit_stop) || e->loop_stop;
     if (g.tsx_on) {
-        // the finisher reads a still-open native call differently on a cut
-        // turn (dropped, "length") and on one the model ended (a fault)
-        bool cut = !g.stopped && !e->hit_stop;
-        int fin = tool_stream_finish_ex(&g.tsx, cut);
+        int fin = tool_stream_finish_ex(&g.tsx, turn_cut);
         if (fin == -1)     unmapped = true;
         else if (fin != 0) g.dead = true;
     }
@@ -3077,7 +3083,7 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
         int n_tc = 0;
         if (env) {
             bool fault = false;
-            n_tc = envelope_map_buffered(env, &g, &tc, !strcmp(finish, "length"),
+            n_tc = envelope_map_buffered(env, &g, &tc, turn_cut,
                                          &fault);
             if (n_tc >= 1 && !strcmp(finish, "stop")) finish = "tool_calls";
             // The document was dropped, so the turn has no answer to report.

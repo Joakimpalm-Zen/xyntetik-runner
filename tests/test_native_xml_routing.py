@@ -545,3 +545,32 @@ def test_gemma4_prose_then_call_is_a_call(gemma4):
     assert content.strip() == "I will list the files.", content
     for m in ("<|tool_call", "<tool_call|>"):
         assert m not in content, content
+
+
+# A loop-guard end inside an open native call is a CUT turn, like a budget
+# end: the runner ended it, not the model. Both surfaces read it that way
+# (dropped call, finish "length", detail "loop"). Before the sweep of
+# 2026-09-27 the buffered path tested finish == "length" and the streamed one
+# tested hit_stop, so a guard-ended open call was reported as the model's own
+# protocol fault ("error", envelope_unmapped) on both.
+LOOPING_CALL = ("Listing.\n<tool_call>\n<function=bash>\n<parameter=command>\n" +
+                "ls -la ; " * 12)
+LOOP_GUARD = {"loop_guard": True, "loop_guard_span": 4, "loop_guard_repeats": 3,
+              "loop_guard_everywhere": True}
+
+
+def test_a_guard_ended_open_call_is_a_cut_turn_on_both_surfaces(qwen38):
+    body = {"model": qwen38.model_id, "max_tokens": 200, "temperature": 0,
+            "messages": [{"role": "user", "content": "List the files."}],
+            "tools": [BASH], "runner_test_reply": LOOPING_CALL, **NO_THINK, **LOOP_GUARD}
+    d = _post(qwen38, "/v1/chat/completions", body)
+    ch = d["choices"][0]
+    assert ch["finish_reason"] == "length", d
+    assert d["runner_telemetry"]["finish_detail"] == "loop", d
+    assert not ch["message"].get("tool_calls"), d
+    assert d["runner_telemetry"]["loop_guard"]["ended_turn"] is True
+    events = _post(qwen38, "/v1/chat/completions", {**body, "stream": True}, stream=True)
+    _content, calls, finish = _chat_stream(events)
+    assert finish == "length", events
+    assert not calls, calls
+
