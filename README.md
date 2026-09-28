@@ -2908,17 +2908,20 @@ path, greedy, over the gate's 60 held-out closed-loop tool tasks, on runner
 builds 53b4deb and ac5418e, both contained in 0.5.7. Greedy decoding is the
 gate's own setting and the recommendation. The loop guard's value depends on
 how often a checkpoint loops: on an earlier checkpoint of the study it turned
-3 of 6 runaways into passes (51 to 54 of 60), and on a later one that rarely
+3 of 6 runaways into passes (51 to 54 of 60); on a later one that rarely
 loops the score was unchanged (57 of 60 either way) with termination from
-98.3% to 100%; it fired on no task that passed without it. Reasoning-channel
+98.3% to 100%; and on the released checkpoint, measured on the v0.5.7 release
+binary itself, it leaves the score unchanged (58 of 60 either way), does not
+end that checkpoint's one runaway (5 interventions inside it) and fired on no
+task that passed without it. Reasoning-channel
 sampling at temperature 0.6 (top_p 0.9, min_p 0.05, top_k 20) on that earlier
 checkpoint scored 49 and 47 of 60 across two seeds against 51 greedy, with
 termination 92% and 87% against 90%, and the two seeds broke two tasks in
 common, both becoming runaways; it is not recommended. The full filename is
 the served model id (a 68-character checkpoint name used to be cut at 63),
 and a `reasoning_strength` directive in the system prompt is honoured. The
-model card carries the gate numbers, the guard measurement on the released
-checkpoint, and their disclosures; nothing here restates them.
+model card carries the gate numbers, the full guard measurement on the
+released checkpoint, and their disclosures; nothing here restates them.
 
 ### OpenAI Responses
 
