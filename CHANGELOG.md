@@ -6,6 +6,28 @@ change between releases (the `-alpha` suffix was retired at v0.2.0 — the 0.x
 version already says what it needs to). Entries below the rename keep the
 names that were true when they were written.
 
+## Unreleased
+
+- **Muse valid-recipients line: bare tool names verbatim, behind a switch
+  (R4.12.20, from a lab reading of Meta's Muse-Glimmer-30B discussion #60).**
+  The reference template writes every tool name into the system turn's
+  `# Valid recipients` line as a namespace pattern, so a bare `read` becomes
+  `"read.*"`; discussion #60 (open, marked ready to merge, not merged) reports
+  the model then emitting `read.filePath`-style recipients and failing the
+  first call of every task, and its patch writes a bare name verbatim and
+  keeps `"ns.*"` for a dotted one. The runner mirrors the reference by
+  default, unchanged, because byte-identity against the reference is the
+  anchor and Xyntetik-Kvist-14B was trained and gated on the `.*` rendering
+  of its bare tool names. The patched rendering is available per request
+  (`bare_recipients: true`, top level or in `chat_template_kwargs`, on the
+  chat and Responses surfaces; a non-boolean is refused with 400) and as a
+  server default (`--bare-recipients`; a request saying `false` gets the
+  reference back). A bare name beside a dotted name in the same prefix, `read`
+  and `read.file`, yields both `"read"` and `"read.*"`, our reading of the
+  patch text; the tool metadata block is unchanged. The default flips only
+  after #60 merges upstream or a Kvist E2/E3 re-check under both renderings,
+  whichever first, and the pair is published on the card.
+
 ## v0.5.7 - 2026-09-27
 
 - **Full sweep of 2026-09-27 (analyser, extra warnings, sanitizer pass,

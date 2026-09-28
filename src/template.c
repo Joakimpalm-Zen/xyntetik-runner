@@ -495,6 +495,22 @@ int req_reasoning_strength(struct jv *req) {
     return -1;
 }
 
+static bool g_bare_recipients = false;
+
+void template_set_bare_recipients(bool bare) { g_bare_recipients = bare; }
+bool template_bare_recipients(void) { return g_bare_recipients; }
+
+int req_bare_recipients(struct jv *req) {
+    if (!req) return 0;
+    jv *kw = jv_get((jv *)req, "chat_template_kwargs");
+    jv *v  = kw ? jv_get(kw, "bare_recipients") : NULL;
+    if (!v || v->type == J_NULL)
+        v = jv_get((jv *)req, "bare_recipients");
+    if (!v || v->type == J_NULL) return 0;
+    if (v->type != J_BOOL) return -1;
+    return v->b ? THINK_BARE_RECIPIENTS : THINK_NS_RECIPIENTS;
+}
+
 bool template_think_tags(int tmpl, const char **open, const char **close) {
     if (tmpl == TMPL_CHATML_THINK || tmpl == TMPL_QWEN38 ||
         tmpl == TMPL_GRANITE42 || tmpl == TMPL_ORNITH) {
@@ -582,6 +598,44 @@ static bool muse_namespace_seen(const jv *tools, int before,
         if (n == nsn && !memcmp(prior, name, n)) return true;
     }
     return false;
+}
+
+// The patched rendering (discussion #60) keeps one `"ns.*"` per namespace
+// among the DOTTED names and writes each bare name once, verbatim; a bare
+// `read` beside a dotted `read.file` yields both `"read"` and `"read.*"`.
+static bool muse_recipient_seen(const jv *tools, int before,
+                                const char *name, bool bare) {
+    size_t nsn = bare ? strlen(name) : (size_t)(strchr(name, '.') - name);
+    for (int i = 0; i < before; i++) {
+        const char *prior = jv_str(jv_get(muse_tool_fn(tools->items[i]),
+                                         "name"), "");
+        const char *pdot = strchr(prior, '.');
+        if (bare) {
+            if (!pdot && !strcmp(prior, name)) return true;
+        } else if (pdot && (size_t)(pdot - prior) == nsn &&
+                   !memcmp(prior, name, nsn)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static void muse_render_recipients(const jv *tools, sbuf *b, bool bare_mode) {
+    for (int i = 0; i < tools->n; i++) {
+        jv *fn = muse_tool_fn(tools->items[i]);
+        const char *name = jv_str(jv_get(fn, "name"), "");
+        const char *dot = strchr(name, '.');
+        if (bare_mode && !dot) {
+            if (muse_recipient_seen(tools, i, name, true)) continue;
+            pl_lit(b, ", \""); sb_put(b, name, strlen(name)); pl_lit(b, "\"");
+            continue;
+        }
+        size_t nsn = dot ? (size_t)(dot - name) : strlen(name);
+        if (bare_mode ? muse_recipient_seen(tools, i, name, false)
+                      : muse_namespace_seen(tools, i, name, nsn)) continue;
+        pl_lit(b, ", \""); sb_put(b, name, nsn);
+        pl_lit(b, ".*\"");
+    }
 }
 
 static void muse_render_tool_defs(const jv *tools, sbuf *b) {
@@ -2080,15 +2134,10 @@ size_t render_messages_with_tools(int tmpl, const chat_msg *msgs, int n_msgs,
         }
         pl_lit(&muse_tail, "\n\n# Valid recipients: \"self\"");
         if (tools && tools->type == J_ARR) {
-            for (int i = 0; i < tools->n; i++) {
-                jv *fn = muse_tool_fn(tools->items[i]);
-                const char *name = jv_str(jv_get(fn, "name"), "");
-                const char *dot = strchr(name, '.');
-                size_t nsn = dot ? (size_t)(dot - name) : strlen(name);
-                if (muse_namespace_seen(tools, i, name, nsn)) continue;
-                pl_lit(&muse_tail, ", \""); sb_put(&muse_tail, name, nsn);
-                pl_lit(&muse_tail, ".*\"");
-            }
+            bool bare_mode = (thinking & THINK_BARE_RECIPIENTS) ? true
+                           : (thinking & THINK_NS_RECIPIENTS)   ? false
+                           : g_bare_recipients;
+            muse_render_recipients(tools, &muse_tail, bare_mode);
         }
         pl_lit(&muse_tail, ", \"user\".<|eot|>");
         bool has_system = false;

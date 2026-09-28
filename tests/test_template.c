@@ -2031,6 +2031,60 @@ static void test_muse_reasoning_strength(void) {
     assert(strstr(out, "\n\nReasoning strength: high.") == NULL);
 }
 
+// R4.12.20: a bare tool name in the valid-recipients line. The reference
+// renders every name as a namespace pattern; discussion #60's patch renders a
+// bare name verbatim and keeps the pattern for a dotted one. The reference
+// rendering is the default; the request bits and the server default select
+// the patched one.
+static void test_muse_bare_recipients(void) {
+    const char *src =
+        "[{\"type\":\"function\",\"function\":{\"name\":\"read\",\"parameters\":{}}},"
+        "{\"type\":\"function\",\"function\":{\"name\":\"weather.get\",\"parameters\":{}}},"
+        "{\"type\":\"function\",\"function\":{\"name\":\"read\",\"parameters\":{}}},"
+        "{\"type\":\"function\",\"function\":{\"name\":\"weather.forecast\",\"parameters\":{}}},"
+        "{\"type\":\"function\",\"function\":{\"name\":\"bash\",\"parameters\":{}}},"
+        "{\"type\":\"function\",\"function\":{\"name\":\"read.file\",\"parameters\":{}}}]";
+    jv *tools = json_parse(src, strlen(src));
+    assert(tools != NULL);
+    const chat_msg msgs[] = { { .role = "user", .content = "Go." } };
+    char out[8192];
+    // default: the reference rendering, one pattern per namespace prefix
+    assert(!template_bare_recipients());
+    render_messages_with_tools(TMPL_MUSE, msgs, 1, true, THINK_DEFAULT, tools, out, sizeof(out));
+    assert(strstr(out, "# Valid recipients: \"self\", \"read.*\", \"weather.*\", \"bash.*\", \"user\".<|eot|>") != NULL);
+    // the request asks for the patched rendering: bare names verbatim, once
+    // each; dotted names keep one pattern per namespace, so read and
+    // read.file yield both "read" and "read.*"
+    render_messages_with_tools(TMPL_MUSE, msgs, 1, true, THINK_DEFAULT | THINK_BARE_RECIPIENTS, tools, out, sizeof(out));
+    assert(strstr(out, "# Valid recipients: \"self\", \"read\", \"weather.*\", \"bash\", \"read.*\", \"user\".<|eot|>") != NULL);
+    // the server default flips it; a request saying false gets the reference back
+    template_set_bare_recipients(true);
+    render_messages_with_tools(TMPL_MUSE, msgs, 1, true, THINK_DEFAULT, tools, out, sizeof(out));
+    assert(strstr(out, "\"self\", \"read\", \"weather.*\", \"bash\", \"read.*\", \"user\"") != NULL);
+    render_messages_with_tools(TMPL_MUSE, msgs, 1, true, THINK_DEFAULT | THINK_NS_RECIPIENTS, tools, out, sizeof(out));
+    assert(strstr(out, "\"self\", \"read.*\", \"weather.*\", \"bash.*\", \"user\"") != NULL);
+    template_set_bare_recipients(false);
+    // the effort bits and the recipients bits do not collide
+    render_messages_with_tools(TMPL_MUSE, msgs, 1, true, THINK_EFFORT_LOW | THINK_BARE_RECIPIENTS, tools, out, sizeof(out));
+    assert(strstr(out, "Reasoning strength: low.") != NULL);
+    assert(strstr(out, "\"self\", \"read\", \"weather.*\"") != NULL);
+    // the tool metadata block is untouched by the switch (one entry per prefix)
+    assert(strstr(out, "// Tool metadata\n{\"name\": \"read\", \"description\": \"\"}\n{\"name\": \"weather\", \"description\": \"\"}\n{\"name\": \"bash\", \"description\": \"\"}\n// Function schemas") != NULL);
+    jv_free(tools);
+    // the request reader: absent means the server default, a non-boolean is refused
+    const char *r1 = "{\"bare_recipients\": true}";
+    const char *r2 = "{\"chat_template_kwargs\": {\"bare_recipients\": false}}";
+    const char *r3 = "{\"bare_recipients\": \"yes\"}";
+    const char *r4 = "{}";
+    jv *q1 = json_parse(r1, strlen(r1)); jv *q2 = json_parse(r2, strlen(r2));
+    jv *q3 = json_parse(r3, strlen(r3)); jv *q4 = json_parse(r4, strlen(r4));
+    assert(req_bare_recipients(q1) == THINK_BARE_RECIPIENTS);
+    assert(req_bare_recipients(q2) == THINK_NS_RECIPIENTS);
+    assert(req_bare_recipients(q3) == -1);
+    assert(req_bare_recipients(q4) == 0);
+    jv_free(q1); jv_free(q2); jv_free(q3); jv_free(q4);
+}
+
 static void test_muse_tool_result_id_resolves_prior_name(void) {
     const char *src =
         "[{\"role\":\"assistant\",\"tool_calls\":[{\"id\":\"call_7\","
@@ -2610,6 +2664,7 @@ int main(void) {
     test_muse_tools_and_result_golden();
     test_muse_replays_reasoning();
     test_muse_tool_result_id_resolves_prior_name();
+    test_muse_bare_recipients();
     test_tool_result_id_survives_a_nameless_matching_call();
     test_ornith_first_call_is_framed_by_whether_the_turn_spoke();
     test_llama2_bos_per_turn_and_the_fallback_that_must_not_get_it();
