@@ -942,8 +942,11 @@ reported beside it).
 
 - [Xyntetik-Kvist-14B](https://huggingface.co/Joakimpalm-Zen/Xyntetik-Kvist-14B)
   ([GGUF](https://huggingface.co/Joakimpalm-Zen/Xyntetik-Kvist-14B-GGUF): BF16,
-  Q8_0, a Q5_0 mix;
+  Q8_0, a Q5_0 mix, an IQ4_NL mix;
   [training record](https://huggingface.co/datasets/Joakimpalm-Zen/Xyntetik-Kvist-14B-training-record))
+  is built for one job, tool-calling agent loops on this runner from a 24 GB
+  card, and is not a drop-in replacement for Muse-Glimmer-30B, for Gemma or for
+  any general-purpose model (held-out KLD 0.762 against its own parent). It
   is not a quantised derivative and is not measured under the fidelity bar: it
   is a dense 14B student in the Muse-Glimmer architecture, distilled from
   Muse-Glimmer-30B and released 2026-09-28 under a preregistered five-arm gate
