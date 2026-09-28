@@ -148,6 +148,19 @@ enum { THINK_DEFAULT = 0, THINK_ON, THINK_OFF };
 enum { THINK_EFFORT_XHIGH = 0, THINK_EFFORT_MEDIUM = 0x10,
        THINK_EFFORT_LOW = 0x20, THINK_EFFORT_MASK = 0x30,
        THINK_MODE_MASK = 0x0f };
+// Muse only: how a BARE tool name (no dot) is written into the system turn's
+// "# Valid recipients" line. The reference template renders every name as a
+// namespace pattern, `"read.*"`, and Meta's Muse-Glimmer-30B discussion #60
+// (open, not merged) reports the model then emitting `read.filePath`-style
+// recipients and failing the first call of every task; its patch renders a
+// bare name verbatim, `"read"`, and keeps `"ns.*"` for a dotted one. The
+// reference rendering stays the default here (byte-identity against the
+// reference is the anchor, and Kvist was trained and gated on it); a
+// request says `bare_recipients: true|false` and a server runs
+// `--bare-recipients` to flip the default. Neither bit set means "the
+// server default"; other families never read these bits.
+enum { THINK_BARE_RECIPIENTS = 0x40, THINK_NS_RECIPIENTS = 0x80,
+       THINK_RECIPIENTS_MASK = 0xc0 };
 
 struct jv;
 typedef struct {
@@ -230,6 +243,14 @@ int req_reasoning_effort(struct jv *req);
 // the Muse reference's kwarg: THINK_EFFORT_XHIGH for high (also absent),
 // MEDIUM, LOW; -1 for any other value.
 int req_reasoning_strength(struct jv *req);
+// `bare_recipients` from the request (top level or chat_template_kwargs):
+// THINK_BARE_RECIPIENTS for true, THINK_NS_RECIPIENTS for false, 0 when
+// absent (the server default applies), -1 for a value that is not a boolean.
+int req_bare_recipients(struct jv *req);
+// the server default for a request that does not say: reference (false) unless
+// `--bare-recipients` was given
+void template_set_bare_recipients(bool bare);
+bool template_bare_recipients(void);
 // render OpenAI "tools" declarations as a system turn (no-op when absent)
 void tools_render(const struct jv *tools, struct sbuf *out);
 void tools_render_for(int tmpl, const struct jv *tools, struct sbuf *out);

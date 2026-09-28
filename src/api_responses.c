@@ -885,6 +885,17 @@ void handle_responses(slot_t *s, sock_t fd, jv *req) {
     // it never counted is rendered into the prompt too. render_prompt_alloc
     // measures the real size and grows to it.
     int thinking = req_thinking_mode(req);
+    int recipients = req_bare_recipients(req);
+    if (recipients < 0) {
+        for (int i = 0; i < n_own; i++) free(owned[i]);
+        free(owned); free(cm); free(ts.s);
+        tool_envelope_free(&env);
+        jv_free(tools);
+        jv_free(choice_owned);
+        send_error(fd, 400, "bare_recipients must be a boolean");
+        return;
+    }
+    thinking |= recipients;
     if (s->tmpl == TMPL_QWEN38) {
         int effort = req_reasoning_effort(req);
         if (effort < 0) {

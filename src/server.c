@@ -669,6 +669,15 @@ static void handle_chat(slot_t *s, sock_t fd, jv *req) {
     total += tool_bytes.n + 4096;
     free(tool_bytes.s);
     int thinking = req_thinking_mode(req);
+    int recipients = req_bare_recipients(req);
+    if (recipients < 0) {
+        for (int i = 0; i < n_own; i++) free(owned[i]);
+        free(owned); free(cm); free(ts.s);
+        tool_envelope_free(&env);
+        send_error(fd, 400, "bare_recipients must be a boolean");
+        return;
+    }
+    thinking |= recipients;
     if (s->tmpl == TMPL_QWEN38) {
         // the template's own contract: xhigh (default), medium or low,
         // anything else is refused by the reference and so here

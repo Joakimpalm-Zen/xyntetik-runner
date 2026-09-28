@@ -946,6 +946,11 @@ static void usage_to(FILE *f, const char *prog) {
         "                 tokens (budget forcing; 0 = off, the default). Per\n"
         "                 request: reasoning_max_tokens. Needs a model whose\n"
         "                 reasoning turn ends on a single token\n"
+        "  --bare-recipients  Muse only: write a bare tool name verbatim in\n"
+        "                 the system turn's valid-recipients line (\"read\")\n"
+        "                 instead of the reference's namespace pattern\n"
+        "                 (\"read.*\"); off by default (the reference\n"
+        "                 rendering). Per request: bare_recipients\n"
         "  --loop-guard   close a reasoning turn that starts repeating (a span\n"
         "                 repeated back to back); off by default. Per request:\n"
         "                 loop_guard, loop_guard_span/repeats/window,\n"
@@ -1415,6 +1420,7 @@ int main(int argc, char **argv) {
         else if (!strcmp(a, "--reasoning-budget-message"))
             reasoning_budget_message = NEXT;
         else if (!strcmp(a, "--loop-guard")) loop_guard = true;
+        else if (!strcmp(a, "--bare-recipients")) template_set_bare_recipients(true);
         else if (!strcmp(a, "--reasoning-temp"))
             reasoning_temp = (float)float_arg(a, NEXT, 0, 2);
         else if (!strcmp(a, "--bench-json")) bench_json = true;
