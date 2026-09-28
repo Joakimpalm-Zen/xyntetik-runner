@@ -940,6 +940,20 @@ Every fidelity claim below is measured under the adopted dual-column bar
 400 teacher-forced positions, zero point exact; plain top-1 always
 reported beside it).
 
+- [Xyntetik-Kvist-14B](https://huggingface.co/Joakimpalm-Zen/Xyntetik-Kvist-14B)
+  ([GGUF](https://huggingface.co/Joakimpalm-Zen/Xyntetik-Kvist-14B-GGUF): BF16,
+  Q8_0, a Q5_0 mix;
+  [training record](https://huggingface.co/datasets/Joakimpalm-Zen/Xyntetik-Kvist-14B-training-record))
+  is not a quantised derivative and is not measured under the fidelity bar: it
+  is a dense 14B student in the Muse-Glimmer architecture, distilled from
+  Muse-Glimmer-30B and released 2026-09-28 under a preregistered five-arm gate
+  (template conformance, tool-call validity, closed-loop tool tasks against the
+  parent and a control, a KLD cap, a looping check). On the gate's 60 held-out
+  tasks it solves 57 where the parent solves 60 and the untrained control 0;
+  the card leads with its disclosures (calc is the weak kind at 12 of 15 over
+  160 tasks, 7 of 160 runs end in a reasoning loop, twelve gated attempts for
+  two full passes) and pins this runner from v0.5.7. Serving advice is under
+  "Serving a distilled reasoning student".
 - [Qwen3-30B-A3B selective precision](https://huggingface.co/Joakimpalm-Zen/Qwen3-30B-A3B-selective-attnQ8_0-expQ4_0-GGUF)
   (attention Q8_0 / experts Q4_0, 17.99 GB) **passes the bar** where the
   official uniform Q4_K_M fails it, from a byte-verified first-party Q8_0
