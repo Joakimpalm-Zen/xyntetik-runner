@@ -68,6 +68,13 @@ menu to see the current state:
 | running | The normal `●` instance row with models and **Stop**; the Start row becomes the label `Default runner: running on :<port>` (no silent-no-op click). |
 | exited on its own | `⚠ default runner exited (failed start or crash)` with a **View log** row and a **Restart default runner** action. The warning clears when you restart, stop, or quit. |
 | stopped by you | Back to the plain **Start default runner** row — an intentional stop is not an error and leaves no warning. |
+| port held by another launcher | `⚠ port <port> is held by another launcher (pid <pid>)`: the Suite or a Python `ManagedRunner` holds the startup lease on this port, so the tray does not start a second Runner there. Start again once it has stopped its Runner. |
+
+Before it starts the managed server the tray takes the startup lease on its
+port, `<state root>/leases/runner-<port>.pid`, the same lease the Suite and the
+Python client's `ManagedRunner` take, and holds it until the managed server is
+gone. So no two launchers start a Runner on one port. A lease whose owner has
+died, or whose pid now belongs to another process, is reclaimed.
 
 The managed server's stdout+stderr go to `<config_dir>/managed.log`
 (truncated on each start), so **View log** always has the failure story.
@@ -125,7 +132,8 @@ Remove, if present:
 
 - the autostart artifact above,
 - `~/.xyntetik/runner/` (POSIX) or `%APPDATA%\xyntetik\runner\` (Windows) —
-  contains only `config.json` and the self-healing `instances/` directory.
+  contains only `config.json`, the self-healing `instances/` directory and
+  the `leases/` directory of startup leases.
 
 Nothing else is written anywhere (`managed.log` lives inside the same
 `runner/` directory).

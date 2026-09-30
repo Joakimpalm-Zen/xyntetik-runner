@@ -496,6 +496,28 @@ int main(int argc, char **argv) {
     CHECK(menu_has(items, n, "Start default runner"),
           "restoring the file heals the menu with no tray restart");
 
+    // 2a. R4.12.24: another launcher (the Suite, a ManagedRunner) holding the
+    // startup lease on this port refuses the managed start, and the menu says
+    // so; once it lets go, the start below goes through and takes the lease
+    char lease[1100];
+    CHECK(runner_lease_path(8127, lease, sizeof lease), "tray lease path resolves");
+    {
+        runner_lease other;
+        CHECK(runner_lease_acquire(&other, lease), "another launcher takes the lease");
+        char mp0[600];
+        marker_path(mp0, sizeof mp0);
+        remove(mp0);
+        tray_menu_act(TRAY_ACT_START_MANAGED, 0, NULL);
+        msleep(300);
+        FILE *m0 = fopen(mp0, "rb");
+        CHECK(m0 == NULL, "a held startup lease refuses the managed start");
+        if (m0) fclose(m0);
+        n = tray_menu_build(items, 128);
+        CHECK(menu_has(items, n, "held by another launcher"),
+              "the menu names the lease holder");
+        runner_lease_release(&other);
+    }
+
     tray_menu_act(TRAY_ACT_START_MANAGED, 0, NULL);
 
     char mp[600];
@@ -523,6 +545,8 @@ int main(int argc, char **argv) {
     CHECK(strstr(args, "--port 8127") != NULL, "child got the configured port");
     CHECK(strstr(args, "-c 512") != NULL, "child got last_args tail");
     CHECK(instance_pid_alive(child), "child is alive before quit");
+    CHECK(runner_lease_holder(lease) == (long)getpid(),
+          "the tray holds the startup lease while its runner runs");
 
     // 2b. the child never registers (it is not a real runner), so the core
     // must report STARTING: visible row, cancel option, no live Start row
@@ -588,6 +612,7 @@ int main(int argc, char **argv) {
         msleep(100);
     }
     CHECK(child_dead, "managed child stopped by quit");
+    CHECK(runner_lease_holder(lease) == 0, "quit released the startup lease");
 
     int nl = 0;
     instance_rec *r = instances_list(&nl);

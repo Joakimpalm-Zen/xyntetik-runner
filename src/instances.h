@@ -14,6 +14,7 @@
 #define RUNNER_INSTANCES_H
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 typedef struct {
@@ -55,5 +56,38 @@ void instances_list_free(instance_rec *recs, int n);
 
 // True if a process with this pid is alive (platform-appropriate check).
 bool instance_pid_alive(long pid);
+
+// ------------------------------------------------------------ startup lease
+//
+// The Runner package's StartupLease (python/src/xyntetik_runner/lease.py) in
+// C, record for record, so the tray, the Python client's ManagedRunner and the
+// Suite never both launch a Runner on one port (R4.12.24). The lease lives at
+// <state root>/leases/runner-<port>.pid, next to instances/.
+typedef struct {
+    char path[1100];
+    char token[33];
+    bool held;
+} runner_lease;
+
+// <state root>/leases/runner-<port>.pid, the leases directory created; false
+// when no state root resolves.
+bool runner_lease_path(int port, char *out, size_t cap);
+
+// Claim the lease at `path` for this process. False while a live owner holds
+// it (or when the claim cannot be written); a dead or reused owner's record is
+// moved aside and the claim retried.
+bool runner_lease_acquire(runner_lease *l, const char *path);
+
+// Release, only while the record still carries this lease's token. Safe to
+// call on a lease that is not held.
+void runner_lease_release(runner_lease *l);
+
+// The pid the record at `path` names as its owner; 0 when none.
+long runner_lease_holder(const char *path);
+
+// This platform's process start identity, exactly as lease.py reads it:
+// Linux /proc field 22, Windows the creation FILETIME, macOS `ps -o lstart=`
+// under LC_ALL=C and TZ=UTC. False where it cannot be read.
+bool runner_lease_start_identity(long pid, char *out, size_t cap);
 
 #endif // RUNNER_INSTANCES_H

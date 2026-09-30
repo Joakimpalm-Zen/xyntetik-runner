@@ -37,7 +37,58 @@ static void write_fake(const char *dir, long pid, const char *name) {
     fclose(f);
 }
 
-int main(void) {
+static void write_lease_record(const char *path, long pid, const char *start,
+                               const char *token) {
+    char f[1300];
+#ifdef _WIN32
+    _mkdir(path);
+    snprintf(f, sizeof f, "%s\\owner.json", path);
+#else
+    mkdir(path, 0755);
+    snprintf(f, sizeof f, "%s/owner.json", path);
+#endif
+    FILE *o = fopen(f, "wb");
+    if (!o) return;
+    if (start)
+        fprintf(o, "{\"owner_pid\": %ld, \"owner_start\": \"%s\", \"token\": \"%s\"}",
+                pid, start, token);
+    else
+        fprintf(o, "{\"owner_pid\": %ld, \"owner_start\": null, \"token\": \"%s\"}",
+                pid, token);
+    fclose(o);
+}
+
+// Helper modes for tests/test_lease_interop.py, which holds this C lease
+// against the Python class it ports:
+//   test-instances lease-identity PID   print PID's start identity
+//   test-instances lease-hold PATH      acquire; print "held" or "refused PID";
+//                                       when held, keep it until stdin closes
+static int lease_helper(int argc, char **argv) {
+    if (argc == 3 && !strcmp(argv[1], "lease-identity")) {
+        char id[96];
+        if (!runner_lease_start_identity(atol(argv[2]), id, sizeof id)) return 1;
+        printf("%s\n", id);
+        return 0;
+    }
+    if (argc == 3 && !strcmp(argv[1], "lease-hold")) {
+        runner_lease l;
+        if (!runner_lease_acquire(&l, argv[2])) {
+            printf("refused %ld\n", runner_lease_holder(argv[2]));
+            fflush(stdout);
+            return 0;
+        }
+        printf("held\n");
+        fflush(stdout);
+        while (getchar() != EOF) {}
+        runner_lease_release(&l);
+        return 0;
+    }
+    fprintf(stderr, "usage: test-instances [lease-identity PID | lease-hold PATH]\n");
+    return 2;
+}
+
+int main(int argc, char **argv) {
+    if (argc > 1) return lease_helper(argc, argv);
     char tmpl[512];
 #ifdef _WIN32
     snprintf(tmpl, sizeof tmpl, "%s\\xyntetik-test-%ld", getenv("TEMP"), (long)getpid());
@@ -187,6 +238,52 @@ int main(void) {
         waitpid(z, NULL, 0);
     }
 #endif
+
+    // 8. the startup lease (R4.12.24), lease.py's rules in C
+    {
+        char lp[1100];
+        CHECK(runner_lease_path(8123, lp, sizeof lp), "lease path resolves");
+        CHECK(strstr(lp, "leases") && strstr(lp, "runner-8123.pid"),
+              "lease path is <root>/leases/runner-<port>.pid");
+        char me[96];
+        CHECK(runner_lease_start_identity((long)getpid(), me, sizeof me),
+              "this process has a start identity");
+
+        runner_lease a, b;
+        CHECK(runner_lease_acquire(&a, lp), "a free lease is claimed");
+        CHECK(runner_lease_holder(lp) == (long)getpid(), "the record names this process");
+        CHECK(!runner_lease_acquire(&b, lp), "a held lease refuses a second claim");
+        b.held = true;                  // a release without the token is ignored
+        runner_lease_release(&b);
+        CHECK(runner_lease_holder(lp) == (long)getpid(), "a foreign token releases nothing");
+        runner_lease_release(&a);
+        CHECK(runner_lease_holder(lp) == 0, "the owner's release removes the record");
+        CHECK(runner_lease_acquire(&b, lp), "a released lease is claimed again");
+        runner_lease_release(&b);
+
+        // a live pid whose start identity moved: the pid was reused
+        write_lease_record(lp, (long)getpid(), "not this process", "t1");
+        CHECK(runner_lease_acquire(&a, lp), "a reused pid's record is stale");
+        runner_lease_release(&a);
+
+        // unverifiable ownership: honoured while fresh, then it ages out
+        write_lease_record(lp, (long)getpid(), NULL, "t2");
+        CHECK(!runner_lease_acquire(&a, lp), "a fresh unverifiable record is honoured");
+        setenv_compat("RUNNER_UNVERIFIED_LEASE_TTL", "0");
+        CHECK(runner_lease_acquire(&a, lp), "an unverifiable record ages out");
+        setenv_compat("RUNNER_UNVERIFIED_LEASE_TTL", "900");
+        runner_lease_release(&a);
+
+#ifndef _WIN32
+        // a dead owner's record is moved aside and the claim retried
+        pid_t d = fork();
+        if (d == 0) _exit(0);
+        waitpid(d, NULL, 0);
+        write_lease_record(lp, (long)d, me, "t3");
+        CHECK(runner_lease_acquire(&a, lp), "a dead owner's record is stale");
+        runner_lease_release(&a);
+#endif
+    }
 
     if (fails) { fprintf(stderr, "test_instances: %d FAILURES\n", fails); return 1; }
     printf("instances registry tests ok\n");

@@ -10,6 +10,19 @@ from pathlib import Path
 from typing import Any
 
 from .endpoint import RunnerEndpoint
+from .lease import StartupLease, lease_holder
+
+
+def default_lease_dir() -> Path | None:
+    """Where every launcher takes the startup lease: the Runner's state root's
+    `leases` directory, ~/.xyntetik/runner/leases (%APPDATA%\\xyntetik\\runner\\
+    leases on Windows), read from HOME and APPDATA exactly as the tray and the
+    Suite read them. None when neither is set."""
+    if os.name == "nt":
+        base = os.environ.get("APPDATA")
+        return Path(base) / "xyntetik" / "runner" / "leases" if base else None
+    home = os.environ.get("HOME")
+    return Path(home) / ".xyntetik" / "runner" / "leases" if home else None
 
 
 def spawn_detached(
@@ -156,11 +169,21 @@ class ManagedRunner:
         *,
         spawn: Callable[[list[str]], Any] | None = None,
         endpoint_factory: Callable[[str], RunnerEndpoint] | None = None,
+        lease: bool = True,
+        lease_dir: str | Path | None = None,
     ):
         self.launch = launch
         self._spawn = spawn or self._default_spawn
         self._endpoint_factory = endpoint_factory or RunnerEndpoint
         self.process: Any = None
+        # The startup lease on this port (R4.12.24), the one the tray and the
+        # Suite take, so no two launchers start a Runner on one port. Held from
+        # the spawn until the child is stopped. `lease_dir` None = the default.
+        self._lease_wanted = lease
+        self._lease_dir = Path(lease_dir) if lease_dir is not None else None
+        self._lease: StartupLease | None = None
+        self.lease_holder: int | None = None
+        """The pid holding the lease when start() was refused for it."""
 
     @property
     def base_url(self) -> str:
@@ -171,7 +194,8 @@ class ManagedRunner:
         did.
 
         `start()` owns the child for the whole call: False means nothing is
-        left running. A runner that never became answerable — still loading
+        left running. False also when another launcher holds the startup lease
+        for this port; `lease_holder` then names it when its record does. A runner that never became answerable — still loading
         weights when the deadline expired, wedged, or abandoned by a
         KeyboardInterrupt — is terminated before returning, because the caller
         has no handle to it and would otherwise leak a process holding VRAM
@@ -179,7 +203,14 @@ class ManagedRunner:
         """
         if self.alive():
             return True
-        self.process = self._spawn(build_server_args(self.launch))
+        self.stop()  # a child that ended on its own leaves its lease behind
+        if not self._take_lease():
+            return False
+        try:
+            self.process = self._spawn(build_server_args(self.launch))
+        except BaseException:
+            self._release_lease()
+            raise
         endpoint = self._endpoint_factory(self.base_url)
         deadline = time.monotonic() + timeout
         started = False
@@ -209,16 +240,35 @@ class ManagedRunner:
 
     def stop(self, *, timeout: float = 10) -> None:
         process = self.process
-        if process is None:
-            return
-        if process.poll() is None:
-            process.terminate()
-            try:
-                process.wait(timeout=timeout)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                process.wait(timeout=5)
-        self.process = None
+        if process is not None:
+            if process.poll() is None:
+                process.terminate()
+                try:
+                    process.wait(timeout=timeout)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=5)
+            self.process = None
+        self._release_lease()
+
+    def _take_lease(self) -> bool:
+        self.lease_holder = None
+        if not self._lease_wanted or self._lease is not None:
+            return True
+        root = self._lease_dir if self._lease_dir is not None else default_lease_dir()
+        if root is None:
+            return True  # no state root: the port bind arbitrates, as before
+        lease = StartupLease(root / f"runner-{self.launch.port}.pid")
+        if not lease.acquire():
+            self.lease_holder = lease_holder(lease.path)
+            return False
+        self._lease = lease
+        return True
+
+    def _release_lease(self) -> None:
+        lease, self._lease = self._lease, None
+        if lease is not None:
+            lease.release()
 
     @staticmethod
     def _default_spawn(args: list[str]) -> subprocess.Popen[Any]:

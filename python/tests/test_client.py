@@ -4,6 +4,7 @@ import http.client
 import json
 import os
 import re
+import shutil
 import socket
 import subprocess
 import sys
@@ -28,6 +29,7 @@ from xyntetik_runner import (
     query_system_capabilities,
     spawn_detached,
 )
+from xyntetik_runner.lease import lease_holder
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 RUNNER_BIN = REPO_ROOT / ("runner.exe" if os.name == "nt" else "runner")
@@ -745,7 +747,89 @@ class EndpointTests(unittest.TestCase):
         self.assertEqual(caught.exception.partial, "partial")
 
 
-class ManagedRunnerOwnershipTests(unittest.TestCase):
+class _PrivateStateRoot(unittest.TestCase):
+    """A ManagedRunner takes the startup lease under the Runner's state root
+    by default; these tests keep that root private."""
+
+    def setUp(self):
+        root = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, root, True)
+        env = patch.dict(os.environ, {"HOME": root, "APPDATA": root})
+        env.start()
+        self.addCleanup(env.stop)
+        self.leases = (Path(root) / "xyntetik" / "runner" / "leases" if os.name == "nt"
+                       else Path(root) / ".xyntetik" / "runner" / "leases")
+
+
+class _AnsweringChild:
+    pid = 3003
+
+    def __init__(self):
+        self.running = True
+
+    def poll(self):
+        return None if self.running else 0
+
+    def terminate(self):
+        self.running = False
+
+    def kill(self):
+        self.running = False
+
+    def wait(self, timeout=None):
+        return 0
+
+
+class _AnsweringEndpoint:
+    def capabilities(self, timeout=2):
+        return {"object": "runner.capabilities", "pid": 3003}
+
+
+class ManagedRunnerLeaseTests(_PrivateStateRoot):
+    """R4.12.24: the lease the tray and the Suite take, taken here too, so
+    arbitration between launchers on one port is two-sided."""
+
+    def _managed(self, spawned, **kw):
+        return ManagedRunner(
+            ServerLaunch("runner", "model.gguf", 8090),
+            spawn=lambda args: spawned.append(args) or _AnsweringChild(),
+            endpoint_factory=lambda url: _AnsweringEndpoint(),
+            **kw,
+        )
+
+    def test_start_takes_the_lease_and_stop_releases_it(self):
+        spawned = []
+        managed = self._managed(spawned)
+        self.assertTrue(managed.start(timeout=0.1, interval=0.01))
+        path = self.leases / "runner-8090.pid"
+        self.assertEqual(lease_holder(path), os.getpid())
+        managed.stop()
+        self.assertFalse(path.exists())
+
+    def test_a_held_lease_refuses_the_start_without_spawning(self):
+        other = StartupLease(self.leases / "runner-8090.pid")
+        self.assertTrue(other.acquire())
+        spawned = []
+        managed = self._managed(spawned)
+        self.assertFalse(managed.start(timeout=0.1, interval=0.01))
+        self.assertEqual(spawned, [])
+        self.assertEqual(managed.lease_holder, os.getpid())
+        other.release()
+        self.assertTrue(managed.start(timeout=0.1, interval=0.01))
+        self.assertIsNone(managed.lease_holder)
+        managed.stop()
+
+    def test_the_lease_can_be_declined(self):
+        other = StartupLease(self.leases / "runner-8090.pid")
+        self.assertTrue(other.acquire())
+        self.addCleanup(other.release)
+        spawned = []
+        managed = self._managed(spawned, lease=False)
+        self.assertTrue(managed.start(timeout=0.1, interval=0.01))
+        managed.stop()
+
+
+class ManagedRunnerOwnershipTests(_PrivateStateRoot):
     def test_start_refuses_a_healthy_runner_owned_by_another_process(self):
         """A listener that was already on the requested port must not certify
         the newly spawned child. Otherwise the child can lose bind(), die, and
@@ -839,7 +923,7 @@ class ManagedRunnerOwnershipTests(unittest.TestCase):
         self.assertFalse(managed.alive())
 
 
-class LaunchTests(unittest.TestCase):
+class LaunchTests(_PrivateStateRoot):
     def test_default_spawn_preserves_caller_relative_paths(self):
         args = [str(Path("bin") / "runner"), "-m",
                 str(Path("models") / "model.gguf")]

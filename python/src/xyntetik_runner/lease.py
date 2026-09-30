@@ -126,6 +126,11 @@ class StartupLease:
             return None
 
 
+def lease_holder(path: Path) -> int | None:
+    """The pid a lease's record names as its owner, if any."""
+    return _record_owner_pid(StartupLease(Path(path))._read_record(Path(path)))
+
+
 # How long an UNVERIFIABLE claim of ownership stays honoured. Applies only
 # when the start-time check cannot run (record has no owner_start, or the
 # host cannot read process start times): a fresh unverifiable lease is

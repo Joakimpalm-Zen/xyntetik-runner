@@ -1,9 +1,15 @@
 // Instance discovery registry — see instances.h for the contract.
+#ifdef _WIN32
+#define _CRT_RAND_S   // rand_s, for the startup lease's token
+#endif
 #include "instances.h"
 #include "compat.h"
 #include "json.h"
 #include "runner.h"
 
+#include <limits.h>
+#include <math.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -388,4 +394,339 @@ static void rec_free_members(instance_rec *r) {
 void instances_list_free(instance_rec *recs, int n) {
     for (int i = 0; i < n; i++) rec_free_members(&recs[i]);
     free(recs);
+}
+
+// ------------------------------------------------------------ startup lease
+//
+// The Runner package's StartupLease (python/src/xyntetik_runner/lease.py), in
+// C for the tray (R4.12.24). Every rule below is that class's rule; the
+// comments there carry the reasons. A claim is a directory holding owner.json,
+// renamed onto the lease path in one step, so exactly one claimant wins; a
+// held lease names a live owner whose start identity still matches.
+
+#define LEASE_RECORD "owner.json"
+#define LEASE_TTL_DEFAULT 900.0
+
+typedef struct {
+    long pid;                  // 0 when absent or not a positive integer
+    bool has_start, has_token;
+    char start[96];
+    char token[96];
+    char source[1200];         // the file read, whose mtime is the silence clock
+} lease_rec;
+
+static char lease_sep(void) {
+#ifdef _WIN32
+    return '\\';
+#else
+    return '/';
+#endif
+}
+
+static bool lease_is_dir(const char *p) {
+    struct stat st;
+    return stat(p, &st) == 0 && (st.st_mode & S_IFMT) == S_IFDIR;
+}
+
+// A claim or a moved-aside record holds owner.json and nothing else.
+static void lease_remove_tree(const char *p) {
+    if (!lease_is_dir(p)) {
+        remove(p);
+        return;
+    }
+    char f[1300];
+    if (path_child(f, sizeof f, p, lease_sep(), LEASE_RECORD)) remove(f);
+#ifdef _WIN32
+    _rmdir(p);
+#else
+    rmdir(p);
+#endif
+}
+
+// A sibling of the lease path: <dir>/.<name>.<tag>.<kind>
+static bool lease_sibling(char *out, size_t cap, const char *path,
+                          const char *tag, const char *kind) {
+    const char *slash = strrchr(path, '/');
+#ifdef _WIN32
+    const char *bs = strrchr(path, '\\');
+    if (!slash || (bs && bs > slash)) slash = bs;
+#endif
+    size_t dl = slash ? (size_t)(slash - path) + 1 : 0;
+    const char *name = slash ? slash + 1 : path;
+    int n = snprintf(out, cap, "%.*s.%s.%s.%s", (int)dl, path, name, tag, kind);
+    return n > 0 && (size_t)n < cap;
+}
+
+static void lease_hex_token(char out[33]) {
+    unsigned char b[16];
+    bool ok = false;
+#ifdef _WIN32
+    ok = true;
+    for (int i = 0; i < 16 && ok; i += 4) {
+        unsigned v;
+        if (rand_s(&v) != 0) { ok = false; break; }
+        memcpy(b + i, &v, 4);
+    }
+#else
+    FILE *f = fopen("/dev/urandom", "rb");
+    if (f) {
+        ok = fread(b, 1, sizeof b, f) == sizeof b;
+        fclose(f);
+    }
+#endif
+    if (!ok) {
+        // The token only has to differ from every other claimant's; with no
+        // OS generator the pid, the clock and an address still make it so.
+        uint64_t x = ((uint64_t)time(NULL) << 20) ^ (uint64_t)plat_pid_self() ^
+                     (uint64_t)(uintptr_t)out;
+        for (int i = 0; i < 16; i++) {
+            x = x * 6364136223846793005ull + 1442695040888963407ull;
+            b[i] = (unsigned char)(x >> 56);
+        }
+    }
+    static const char hx[] = "0123456789abcdef";
+    for (int i = 0; i < 16; i++) {
+        out[2 * i] = hx[b[i] >> 4];
+        out[2 * i + 1] = hx[b[i] & 15];
+    }
+    out[32] = 0;
+}
+
+bool runner_lease_start_identity(long pid, char *out, size_t cap) {
+    if (pid <= 0 || cap == 0) return false;
+#ifdef _WIN32
+    // lease.py: str(creation.value), the creation FILETIME as one number
+    HANDLE h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, (DWORD)pid);
+    if (!h) return false;
+    FILETIME create, exit_t, kern, user;
+    bool ok = GetProcessTimes(h, &create, &exit_t, &kern, &user);
+    CloseHandle(h);
+    if (!ok) return false;
+    unsigned long long v =
+        ((unsigned long long)create.dwHighDateTime << 32) | create.dwLowDateTime;
+    int n = snprintf(out, cap, "%llu", v);
+    return n > 0 && (size_t)n < cap;
+#elif defined(__linux__)
+    // lease.py: field 22 of /proc/<pid>/stat, verbatim (clock ticks since
+    // boot); comm may hold spaces and parentheses, so count from the last ')'
+    char sp[64], buf[2048];
+    snprintf(sp, sizeof sp, "/proc/%ld/stat", pid);
+    FILE *f = fopen(sp, "rb");
+    if (!f) return false;
+    size_t rn = fread(buf, 1, sizeof buf - 1, f);
+    fclose(f);
+    buf[rn] = 0;
+    char *p = strrchr(buf, ')');
+    if (!p || p[1] != ' ') return false;
+    p += 2;
+    for (int field = 0; field < 19; field++) {
+        while (*p && *p != ' ') p++;
+        while (*p == ' ') p++;
+        if (!*p) return false;
+    }
+    size_t l = strcspn(p, " \n");
+    if (l == 0 || l >= cap) return false;
+    memcpy(out, p, l);
+    out[l] = 0;
+    return true;
+#elif defined(__APPLE__)
+    // lease.py and the Suite ask `ps -o lstart=` with LC_ALL=C and TZ=UTC,
+    // which formats the kernel's start second with strftime("%c") in the C
+    // locale: "%a %b %e %H:%M:%S %Y" in UTC. The same rendering from the same
+    // second, without a subprocess (the tray never launches through a shell);
+    // tests/test_lease_interop.py holds it equal to ps's own output.
+    struct kinfo_proc kp;
+    size_t len = sizeof kp;
+    int mib[4] = { CTL_KERN, KERN_PROC, KERN_PROC_PID, (int)pid };
+    if (sysctl(mib, 4, &kp, &len, NULL, 0) != 0 || len < sizeof kp) return false;
+    time_t s = (time_t)kp.kp_proc.p_starttime.tv_sec;
+    struct tm tm;
+    if (!gmtime_r(&s, &tm)) return false;
+    static const char *const day[] = { "Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat" };
+    static const char *const mon[] = { "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                                       "Jul", "Aug", "Sep", "Oct", "Nov", "Dec" };
+    int n = snprintf(out, cap, "%s %s %2d %02d:%02d:%02d %d", day[tm.tm_wday],
+                     mon[tm.tm_mon], tm.tm_mday, tm.tm_hour, tm.tm_min,
+                     tm.tm_sec, tm.tm_year + 1900);
+    return n > 0 && (size_t)n < cap;
+#else
+    (void)out;
+    return false;   // unverifiable: the record ages out after the TTL
+#endif
+}
+
+static bool lease_read(const char *path, lease_rec *r) {
+    memset(r, 0, sizeof *r);
+    if (lease_is_dir(path)) {
+        if (!path_child(r->source, sizeof r->source, path, lease_sep(), LEASE_RECORD))
+            return false;
+    } else {
+        snprintf(r->source, sizeof r->source, "%s", path);
+    }
+    FILE *f = fopen(r->source, "rb");
+    if (!f) return false;
+    char buf[8192];
+    size_t n = fread(buf, 1, sizeof buf - 1, f);
+    fclose(f);
+    buf[n] = 0;
+    jv *v = json_parse(buf, n);
+    if (!v) return false;
+    if (v->type != J_OBJ) { jv_free(v); return false; }
+    // owner_pid, or clu_pid from the former Clu-local lease; an integer or a
+    // string of one, as lease.py's int() accepts
+    jv *pv = jv_get(v, "owner_pid");
+    if (!pv || pv->type == J_NULL) pv = jv_get(v, "clu_pid");
+    if (pv && pv->type == J_NUM && pv->num == floor(pv->num) && pv->num > 0 &&
+        pv->num < 9.0e15) {
+        r->pid = (long)pv->num;
+    } else if (pv && pv->type == J_STR) {
+        long long q;
+        if (parse_i64(jv_str(pv, ""), 1, LONG_MAX, &q)) r->pid = (long)q;
+    }
+    jv *sv = jv_get(v, "owner_start");
+    if (sv && sv->type == J_STR) {
+        snprintf(r->start, sizeof r->start, "%s", jv_str(sv, ""));
+        r->has_start = true;
+    } else if (sv && sv->type == J_NUM && sv->num == floor(sv->num)) {
+        snprintf(r->start, sizeof r->start, "%.0f", sv->num);
+        r->has_start = true;
+    }
+    jv *tv = jv_get(v, "token");
+    if (tv && tv->type == J_STR) {
+        snprintf(r->token, sizeof r->token, "%s", jv_str(tv, ""));
+        r->has_token = true;
+    }
+    jv_free(v);
+    return true;
+}
+
+static bool lease_same_token(const lease_rec *a, const lease_rec *b) {
+    if (a->has_token != b->has_token) return false;
+    return !a->has_token || strcmp(a->token, b->token) == 0;
+}
+
+// Ownership that can be neither proven nor disproven is honoured while the
+// record is younger than the window: a crashed owner ages out, a live one
+// is not stolen from before then.
+static bool lease_unverified_fresh(const lease_rec *r) {
+    struct stat st;
+    if (!r->source[0] || stat(r->source, &st) != 0) return false;
+    double ttl = env_f64("RUNNER_UNVERIFIED_LEASE_TTL", 0, 1e12, LEASE_TTL_DEFAULT);
+    return difftime(time(NULL), st.st_mtime) < ttl;
+}
+
+static bool lease_still_owned(const lease_rec *r) {
+    if (r->pid <= 0 || !plat_pid_alive(r->pid)) return false;
+    if (!r->has_start) return lease_unverified_fresh(r);
+    char live[96];
+    if (!runner_lease_start_identity(r->pid, live, sizeof live))
+        return lease_unverified_fresh(r);
+    return strcmp(live, r->start) == 0;   // differ: the pid was reused
+}
+
+static bool lease_write_claim(const char *claim, const char *token) {
+    char f[1300];
+    if (!path_child(f, sizeof f, claim, lease_sep(), LEASE_RECORD)) return false;
+    char start[96], esc[96 * 6 + 2];
+    long pid = plat_pid_self();
+    bool has_start = runner_lease_start_identity(pid, start, sizeof start);
+    if (has_start) json_escape(start, strlen(start), esc, sizeof esc);
+    FILE *o = fopen(f, "wb");
+    if (!o) return false;
+    // `created` is informational (no reader judges by it); whole seconds do
+    int w = fprintf(o, "{\"owner_pid\": %ld, \"owner_start\": %s%s%s, "
+                       "\"token\": \"%s\", \"created\": %lld.0}",
+                    pid, has_start ? "\"" : "", has_start ? esc : "null",
+                    has_start ? "\"" : "", token, (long long)time(NULL));
+    return fclose(o) == 0 && w > 0;
+}
+
+bool runner_lease_path(int port, char *out, size_t cap) {
+    const char *inst = instances_dir();
+    if (!inst || port <= 0) return false;
+    // the state root is the registry's parent: <root>/instances
+    char root[1024];
+    snprintf(root, sizeof root, "%s", inst);
+    char *cut = strrchr(root, lease_sep());
+    if (!cut) return false;
+    *cut = 0;
+    char dir[1100], name[32];
+    if (!path_child(dir, sizeof dir, root, lease_sep(), "leases") || !mkdir_one(dir))
+        return false;
+    snprintf(name, sizeof name, "runner-%d.pid", port);
+    return path_child(out, cap, dir, lease_sep(), name);
+}
+
+bool runner_lease_acquire(runner_lease *l, const char *path) {
+    memset(l, 0, sizeof *l);
+    int n = snprintf(l->path, sizeof l->path, "%s", path);
+    if (n <= 0 || (size_t)n >= sizeof l->path) return false;
+    lease_hex_token(l->token);
+    char claim[1300];
+    if (!lease_sibling(claim, sizeof claim, path, l->token, "claim")) return false;
+    for (int attempt = 0; attempt < 8; attempt++) {
+        lease_remove_tree(claim);
+        if (!mkdir_one(claim) || !lease_write_claim(claim, l->token)) {
+            lease_remove_tree(claim);
+            return false;
+        }
+        if (rename(claim, path) == 0) {
+            l->held = true;
+            return true;
+        }
+        if (!path_exists(path)) {
+            lease_remove_tree(claim);
+            continue;
+        }
+        lease_rec rec;
+        lease_read(path, &rec);
+        if (lease_still_owned(&rec)) {
+            lease_remove_tree(claim);
+            return false;
+        }
+        char tag[33], stale[1300];
+        lease_hex_token(tag);
+        if (lease_sibling(stale, sizeof stale, path, tag, "stale") &&
+            rename(path, stale) == 0) {
+            // between judging the record stale and moving it, a rival may
+            // have reclaimed: delete only the exact record judged
+            lease_rec moved;
+            lease_read(stale, &moved);
+            if (!lease_same_token(&moved, &rec)) {
+                rename(stale, path);   // theirs; a third claim may have landed
+                lease_remove_tree(claim);
+                continue;
+            }
+            lease_remove_tree(stale);
+        }
+        lease_remove_tree(claim);
+    }
+    return false;
+}
+
+void runner_lease_release(runner_lease *l) {
+    if (!l->held) return;
+    l->held = false;
+    lease_rec rec;
+    if (!lease_read(l->path, &rec) || !rec.has_token || strcmp(rec.token, l->token) != 0)
+        return;
+    char tag[33], stale[1300];
+    lease_hex_token(tag);
+    if (!lease_sibling(stale, sizeof stale, l->path, tag, "stale") ||
+        rename(l->path, stale) != 0)
+        return;
+    lease_rec moved;
+    lease_read(stale, &moved);
+    if (!moved.has_token || strcmp(moved.token, l->token) != 0) {
+        // the path changed after the read above: the record moved belongs to
+        // another owner, so put it back unless a claim already took its place
+        rename(stale, l->path);
+        return;
+    }
+    lease_remove_tree(stale);
+}
+
+long runner_lease_holder(const char *path) {
+    lease_rec r;
+    return lease_read(path, &r) ? r.pid : 0;
 }
