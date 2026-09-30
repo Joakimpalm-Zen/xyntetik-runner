@@ -442,7 +442,11 @@ void plat_parent_watch(long pid) {
 #include <sys/stat.h>
 
 #ifdef __linux__
-#include <sys/prctl.h>
+#include <poll.h>
+#include <sys/syscall.h>
+#ifndef SYS_pidfd_open
+#define SYS_pidfd_open 434   // one number on every architecture since Linux 5.3
+#endif
 #endif
 
 #include <sys/mman.h>
@@ -824,8 +828,33 @@ bool plat_file_rmw(const char *path, plat_rmw_fn fn, void *ud) {
     return written;
 }
 
+// The watched process, set once before the watcher thread starts.
+static long parent_watched = 0;
+#ifdef __linux__
+static int parent_pidfd = -1;
+#endif
+
 static void *parent_poll(void *arg) {
-    long pid = (long)(intptr_t)arg;
+    (void)arg;
+    long pid = parent_watched;
+#ifdef __linux__
+    // A pidfd becomes readable when the watched PROCESS has exited, at once
+    // and with no window for its pid to be reused. This replaced
+    // PR_SET_PDEATHSIG (R4.12.25), which the kernel fires when the THREAD
+    // that forked the Runner exits: a supervisor that launched from a
+    // short-lived thread had its Runner killed seconds after it was ready,
+    // and it fired on the direct parent even when --parent-pid named a
+    // grandparent. An unexpected poll error falls through to the 2 s poll.
+    if (parent_pidfd >= 0) {
+        struct pollfd pf = { .fd = parent_pidfd, .events = POLLIN };
+        int r;
+        while ((r = poll(&pf, 1, -1)) < 0 && errno == EINTR) {}
+        if (r > 0) {
+            fprintf(stderr, "parent %ld exited — shutting down\n", pid);
+            _exit(0);
+        }
+    }
+#endif
     for (;;) {
         struct timespec ts = { 2, 0 };
         nanosleep(&ts, NULL);
@@ -839,16 +868,23 @@ static void *parent_poll(void *arg) {
 
 void plat_parent_watch(long pid) {
     if (pid <= 0) return;
+    parent_watched = pid;
 #ifdef __linux__
-    // instant path when the watched pid is the direct parent; the poll
-    // below still covers grandparent supervisors and the pre-prctl race
-    prctl(PR_SET_PDEATHSIG, SIGTERM);
+    // Linux 5.3 and later; an older kernel (ENOSYS) or a refusal keeps the
+    // 2 s poll alone. A pid that is already gone is refused here, as on
+    // Windows: the flag's contract is to never run unwatched.
+    long fd = syscall(SYS_pidfd_open, (pid_t)pid, 0);
+    if (fd < 0 && errno == ESRCH) {
+        fprintf(stderr, "error: --parent-pid %ld is not running — exiting\n", pid);
+        _exit(0);
+    }
+    parent_pidfd = fd >= 0 ? (int)fd : -1;
 #endif
     pthread_t th;
     pthread_attr_t at;
     bool attr_ok = pthread_attr_init(&at) == 0;
     if (!attr_ok || pthread_attr_setdetachstate(&at, PTHREAD_CREATE_DETACHED) != 0 ||
-        pthread_create(&th, &at, parent_poll, (void *)(intptr_t)pid) != 0) {
+        pthread_create(&th, &at, parent_poll, NULL) != 0) {
         // this runs pre-model-load (no CUDA threads exist yet), so a plain
         // _exit is fine — but continuing unwatched would silently break
         // the flag's contract, so fail hard instead

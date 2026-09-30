@@ -1904,7 +1904,7 @@ whether the draft is `active` there.
 | `--fit PATH` | Estimate whether a GGUF fits this machine and exit. Reads only the header, so a partial download answers the question. |
 | `--version` | Print the version and exit. |
 | `-h`, `--help` | Print the option reference to stdout and exit `0`. Help asked for is written to stdout; help printed because something went wrong goes to stderr with a non-zero exit. |
-| `--parent-pid N` | Exit when process `N` dies; intended for supervisor cleanup. |
+| `--parent-pid N` | Exit when process `N` dies, whichever of its threads launched the Runner: at once on Linux 5.3 or later and on Windows, within 2 s elsewhere. A process already gone is refused. Intended for supervisor cleanup. |
 | `-v` | Print verbose model and memory details, including allocated versus reachable sliding-window KV. [Details](#cli-v). |
 
 <a id="cli-type-plan"></a>
