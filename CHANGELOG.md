@@ -8,6 +8,16 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **The loop-guard and reasoning-sampling refusals name their field.** The
+  400s for `loop_guard`, `loop_guard_span`/`_repeats`/`_window`/
+  `_max_closes`/`_everywhere` and `reasoning_temperature` with
+  `reasoning_top_p`/`_min_p`/`_top_k` sent `"param": null`; they now name
+  the field that broke its rule, with `invalid_type` or `invalid_value` as
+  the sampling fields have since RI-5, and a model with no reasoning
+  channel answers `unsupported_parameter`. A request whose span and
+  repeats do not fit its window names `loop_guard_window`. The messages are
+  unchanged.
+
 - **`/health` and `/v1/capabilities` name the build.** Both carry
   `version`, the `--version` string, and a T3 build adds `build_flavor`
   as its receipts do. A supervisor could only infer the build from the

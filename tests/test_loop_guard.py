@@ -164,15 +164,32 @@ def test_the_server_default_applies_and_a_request_can_turn_it_off(muse_guarded):
     assert len(body["choices"][0]["text"]) > 100
 
 
-@pytest.mark.parametrize("bad", [
-    {"loop_guard_span": 1}, {"loop_guard_span": 500}, {"loop_guard_repeats": 1},
-    {"loop_guard_window": 4}, {"loop_guard_span": 1.5},
-    {"loop_guard_span": 100, "loop_guard_repeats": 4, "loop_guard_window": 64},
+# R4.12.23: each refusal names the field that broke its rule, and says whether
+# it was the wrong type or out of range, as the sampling fields do (RI-5).
+@pytest.mark.parametrize("bad,param,why", [
+    ({"loop_guard_span": 1}, "loop_guard_span", "invalid_value"),
+    ({"loop_guard_span": 500}, "loop_guard_span", "invalid_value"),
+    ({"loop_guard_repeats": 1}, "loop_guard_repeats", "invalid_value"),
+    ({"loop_guard_window": 4}, "loop_guard_window", "invalid_value"),
+    ({"loop_guard_span": 1.5}, "loop_guard_span", "invalid_value"),
+    ({"loop_guard_repeats": "3"}, "loop_guard_repeats", "invalid_type"),
+    # every value in range, the window too narrow for the repetition asked for
+    ({"loop_guard_span": 100, "loop_guard_repeats": 4, "loop_guard_window": 64},
+     "loop_guard_window", "invalid_value"),
+    ({"loop_guard_everywhere": "yes"}, "loop_guard_everywhere", "invalid_type"),
 ])
-def test_out_of_range_settings_are_refused(muse, bad):
+def test_out_of_range_settings_are_refused(muse, bad, param, why):
     code, body = _post(muse, loop_guard=True, **bad)
     assert code == 400, (bad, body)
-    assert "loop_guard" in json.dumps(body)
+    assert body["error"]["param"] == param, body
+    assert body["error"]["code"] == why, body
+
+
+def test_a_non_boolean_switch_is_refused_by_name(muse):
+    code, body = _post(muse, loop_guard="on")
+    assert code == 400, body
+    assert body["error"]["param"] == "loop_guard", body
+    assert body["error"]["code"] == "invalid_type", body
 
 
 def test_a_model_with_no_reasoning_channel_refuses_the_default_scope(plain):
@@ -182,6 +199,8 @@ def test_a_model_with_no_reasoning_channel_refuses_the_default_scope(plain):
     code, body = _post(plain, prompt="hi", loop_guard=True)
     assert code == 400, body
     assert "reasoning channel" in json.dumps(body)
+    assert body["error"]["param"] == "loop_guard", body
+    assert body["error"]["code"] == "unsupported_parameter", body
     # widened, it works on that model
     code, body = _post(plain, prompt="hi", loop_guard=True,
                        loop_guard_everywhere=True, loop_guard_span=4,
@@ -234,7 +253,8 @@ def test_a_single_loop_is_closed_not_ended_under_the_cap(muse):
 def test_an_out_of_range_cap_is_refused(muse, bad):
     code, body = _post(muse, loop_guard=True, loop_guard_max_closes=bad)
     assert code == 400, (bad, body)
-    assert "loop_guard_max_closes" in json.dumps(body)
+    assert body["error"]["param"] == "loop_guard_max_closes", body
+    assert body["error"]["code"] == "invalid_value", body
 
 
 def test_a_turn_ended_by_the_guard_does_not_claim_the_model_stopped(muse):
