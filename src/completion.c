@@ -103,6 +103,11 @@ typedef struct {
     // receipt (what --verify's replay compares against); only when on
     bool  raw_on;
     sbuf  raw;
+    // R1.1.2: the calls the turn delivered, as the receipt records them
+    // ({"name","arguments"} objects, comma-separated), when raw_on
+    sbuf  calls;
+    int   n_calls;
+    bool  call_open;   // a streamed call begun and not yet ended
 } gen_ctx;
 
 typedef struct {
@@ -340,6 +345,7 @@ static void completion_cleanup(engine *e, snode *schema, gen_ctx *g) {
         free(g->repeat_json);
         g->repeat_json = NULL;
         free(g->raw.s);
+        free(g->calls.s);
         g->raw = (sbuf){0};
     }
     free(e->lp_chosen); free(e->lp_ids); free(e->lp_top);
@@ -480,9 +486,28 @@ static int resp_close_item(gen_ctx *g);
 
 static int anth_close_block(gen_ctx *g);
 
+// R1.1.2: the receipt's copy of a streamed call, taken from the same bytes
+// the client receives on every surface
+static void rec_call_begin(gen_ctx *g, const char *name) {
+    if (!g->raw_on) return;
+    if (g->call_open) sb_lit(&g->calls, "\"}");   // never ended: as delivered
+    sb_lit(&g->calls, g->n_calls ? ",{\"name\":\"" : "{\"name\":\"");
+    sb_esc(&g->calls, name, strlen(name));
+    sb_lit(&g->calls, "\",\"arguments\":\"");
+    g->n_calls++;
+    g->call_open = true;
+}
+
+static void rec_call_end(gen_ctx *g) {
+    if (!g->raw_on || !g->call_open) return;
+    sb_lit(&g->calls, "\"}");
+    g->call_open = false;
+}
+
 static int sink_call_begin(void *ud, const char *name) {
     gen_ctx *g = ud;
     if (g->dead) return 1;
+    rec_call_begin(g, name);
     if (g->api == API_RESPONSES || g->api == API_MESSAGES) {
         // the name identifies the item/block, so it must be known before that
         // is announced — which is exactly when tool_stream calls this
@@ -507,6 +532,7 @@ static int sink_call_begin(void *ud, const char *name) {
 static int sink_call_args(void *ud, const char *b, int n) {
     gen_ctx *g = ud;
     if (g->dead) return 1;
+    if (g->raw_on && g->call_open) sb_esc(&g->calls, b, (size_t)n);
     if (g->api == API_RESPONSES) return resp_delta(g, "function_call", b, n);
     if (g->api == API_MESSAGES) return anth_delta(g, "tool_use", b, n);
     sbuf c = {0};
@@ -521,6 +547,7 @@ static int sink_call_args(void *ud, const char *b, int n) {
 static int sink_call_end(void *ud) {
     gen_ctx *g = ud;
     int rc = 0;
+    rec_call_end(g);
     if (g->api == API_RESPONSES) rc = resp_close_item(g);
     else if (g->api == API_MESSAGES) rc = anth_close_block(g);
     if (!rc) g->tool_index++;
@@ -2136,20 +2163,110 @@ static void prefill_yield_turn(void *ud) {
     sched_prefill_begin();
 }
 
+// R1.1.2: what shaped a served turn's output beyond the sampler. Each kind
+// is a member of the receipt's "constraints" array, with what identifies it
+// (a schema or tool list by the sha256 of its compact JSON, the stop
+// sequences themselves), and a name in serve.shaped_by.
+typedef struct {
+    const char *kinds[10];
+    int  n;
+    sbuf json;   // the array's members, comma-separated
+} turn_shape;
+
+static void shape_open(turn_shape *t, const char *kind) {
+    if (t->n < (int)(sizeof t->kinds / sizeof t->kinds[0])) t->kinds[t->n] = kind;
+    sb_fmt(&t->json, "%s{\"kind\":\"%s\"", t->n ? "," : "", kind);
+    t->n++;
+}
+
+static void json_digest(const jv *v, char hex[65]) {
+    sbuf d = {0};
+    jv_dump(v, &d);
+    if (d.failed) snprintf(hex, 65, "unknown");
+    else envelope_data_sha256(d.s, d.n, hex);
+    free(d.s);
+}
+
+// A grammar is a constraint only when one was compiled: a parse-only
+// envelope (a native protocol read on the way out) leaves the tokens the
+// sampler's, and a replay reproduces them.
+static void turn_shape_of(turn_shape *t, jv *req, const engine *e,
+                          const tool_envelope *env, bool constrain, jv *sch,
+                          const char *const *stops, int n_stops,
+                          const int *req_stops, int n_req_stops, bool scripted) {
+    char h[65];
+    // the caller's schema shapes the turn directly, or as the final branch
+    // of an auto tool turn's envelope
+    jv *used = constrain ? (env->kind == TCH_AUTO ? request_schema(req) : NULL)
+                         : sch;
+    if (used) {
+        json_digest(used, h);
+        shape_open(t, "json_schema");
+        sb_fmt(&t->json, ",\"sha256\":\"%s\"}", h);
+    } else if (e->json_mode) {
+        shape_open(t, "json_mode");
+        sb_lit(&t->json, "}");
+    }
+    if (constrain) {
+        json_digest(env->tools, h);
+        shape_open(t, "tools");
+        sb_fmt(&t->json, ",\"sha256\":\"%s\",\"choice\":\"%s\"", h,
+               env->kind == TCH_REQUIRED ? "required"
+             : env->kind == TCH_NAMED ? "named" : "auto");
+        if (env->kind == TCH_NAMED && env->named) {
+            sb_lit(&t->json, ",\"name\":\"");
+            sb_esc(&t->json, env->named, strlen(env->named));
+            sb_lit(&t->json, "\"");
+        }
+        sb_lit(&t->json, "}");
+    }
+    if (n_stops || n_req_stops) {
+        shape_open(t, "stop");
+        sb_lit(&t->json, ",\"sequences\":[");
+        for (int i = 0; i < n_stops; i++) {
+            sb_lit(&t->json, i ? ",\"" : "\"");
+            sb_esc(&t->json, stops[i], strlen(stops[i]));
+            sb_lit(&t->json, "\"");
+        }
+        sb_lit(&t->json, "]");
+        if (n_req_stops) {
+            sb_lit(&t->json, ",\"token_ids\":[");
+            for (int i = 0; i < n_req_stops; i++)
+                sb_fmt(&t->json, "%s%d", i ? "," : "", req_stops[i]);
+            sb_lit(&t->json, "]");
+        }
+        sb_lit(&t->json, "}");
+    }
+    if (e->think_budget > 0) {
+        shape_open(t, "reasoning_budget");
+        sb_fmt(&t->json, ",\"tokens\":%d}", e->think_budget);
+    }
+    const char *flags[4];
+    int nf = 0;
+    if (e->think_smp)  flags[nf++] = "reasoning_sampling";
+    if (e->loop_guard) flags[nf++] = "loop_guard";
+    if (e->ignore_eos) flags[nf++] = "ignore_eos";
+    if (scripted)      flags[nf++] = "scripted";
+    for (int i = 0; i < nf; i++) {
+        shape_open(t, flags[i]);
+        sb_lit(&t->json, "}");
+    }
+}
+
 // R1.2.2: one receipt for a finished generation, in the CLI transcript's
 // format so --verify replays it: the prompt's and the output's token ids,
 // the sampler's settings and its state as generation started, the model's,
 // adapter's and binary's digests. "serve" says which surface and request it
-// was, how the prompt's KV was obtained, and what shaped the output beyond
-// the sampler -- a replay of a constrained or stop-truncated turn cannot
-// reproduce it from the sampler alone. Returns NULL, or why nothing was
-// written.
+// was and how the prompt's KV was obtained; "constraints" (R1.1.2) what
+// shaped the output beyond the sampler -- --verify refuses such a record
+// rather than replay it without them -- and "tool_calls" the calls the turn
+// delivered. Returns NULL, or why nothing was written.
 static const char *serve_receipt(slot_t *s, engine *e, gen_ctx *g,
                                  const char *prompt, int api, bool chat,
                                  uint64_t gen_rng, int max_tokens, int n_prompt,
                                  int n_gen, int cached, const char *reuse,
-                                 bool spec_used, const char *const *shaped,
-                                 int n_shaped, char file[64], char chain[65]) {
+                                 bool spec_used, const turn_shape *shape,
+                                 char file[64], char chain[65]) {
     model_t *m = s->m;
     char msha[65], bsha[65];
     if (!provenance_digests(msha, bsha))
@@ -2162,11 +2279,28 @@ static const char *serve_receipt(slot_t *s, engine *e, gen_ctx *g,
            api == API_TEXT ? "completions" : api == API_CHAT ? "chat.completions"
          : api == API_RESPONSES ? "responses" : "messages",
            g->id, reuse ? reuse : "none", cached);
-    for (int i = 0; i < n_shaped; i++)
-        sb_fmt(&sj, "%s\"%s\"", i ? "," : "", shaped[i]);
+    for (int i = 0; i < shape->n && i < 10; i++)
+        sb_fmt(&sj, "%s\"%s\"", i ? "," : "", shape->kinds[i]);
     sb_lit(&sj, "]}");
     sb_put(&sj, "", 1);
-    if (sj.failed) { free(sj.s); return "out of memory building the receipt"; }
+    sbuf cj = {0}, tj = {0};
+    if (shape->n) {
+        sb_lit(&cj, "[");
+        sb_put(&cj, shape->json.s, shape->json.n);
+        sb_lit(&cj, "]");
+        sb_put(&cj, "", 1);
+    }
+    if (g->n_calls) {
+        sb_lit(&tj, "[");
+        sb_put(&tj, g->calls.s, g->calls.n);
+        if (g->call_open) sb_lit(&tj, "\"}");   // cut off mid-call: as delivered
+        sb_lit(&tj, "]");
+        sb_put(&tj, "", 1);
+    }
+    if (sj.failed || cj.failed || tj.failed || shape->json.failed || g->calls.failed) {
+        free(sj.s); free(cj.s); free(tj.s);
+        return "out of memory building the receipt";
+    }
     char gname[128] = "cpu";
     if (m->gpu && !gpu_available(gname, (int)sizeof gname))
         snprintf(gname, sizeof gname, "gpu");
@@ -2213,9 +2347,13 @@ static const char *serve_receipt(slot_t *s, engine *e, gen_ctx *g,
         .model_sha256 = msha, .binary_sha256 = bsha,
         .template_name = chat ? template_name(s->tmpl) : "raw",
         .serve_json = sj.s,
+        .constraints_json = cj.s,
+        .tool_calls_json = tj.s,
     };
     bool ok = receipts_write(&ti, file, chain);
     free(sj.s);
+    free(cj.s);
+    free(tj.s);
     return ok ? NULL : "the receipt could not be written (see server log)";
 }
 
@@ -3354,30 +3492,28 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
         work.spec_accepted = e->spec_st.accepted;
     }
     server_record_work(&work);
-    // R1.2.2: the receipt, before any body is built so the body can name it
+    // R1.2.2: the receipt. What shaped the output is named now, while the
+    // request's settings are installed; the record itself is written once the
+    // turn's calls are known (a streamed turn's after its demultiplexer
+    // finishes, a buffered turn's once they are mapped), and before any body
+    // is built, so the body can name it.
     char receipt_file[64] = "", receipt_chain[65] = "";
-    if (g.raw_on && !g.dead) {
-        const char *shaped[10];
-        int n_shaped = 0;
-        if (schema)            shaped[n_shaped++] = "json_schema";
-        else if (e->json_mode) shaped[n_shaped++] = "json_mode";
-        if (env)               shaped[n_shaped++] = "tools";
-        if (n_stops || n_req_stops) shaped[n_shaped++] = "stop";
-        if (e->think_budget > 0) shaped[n_shaped++] = "reasoning_budget";
-        if (e->think_smp)      shaped[n_shaped++] = "reasoning_sampling";
-        if (e->loop_guard)     shaped[n_shaped++] = "loop_guard";
-        if (e->ignore_eos)     shaped[n_shaped++] = "ignore_eos";
-        if (script_text)       shaped[n_shaped++] = "scripted";
-        diag.receipt_error = serve_receipt(s, e, &g, prompt, api, chat, gen_rng,
-                                           max_tokens, n_prompt, n_gen, keep,
-                                           diag.prompt_reuse, spec_used,
-                                           shaped, n_shaped, receipt_file,
-                                           receipt_chain);
-        if (!diag.receipt_error) {
-            diag.receipt_file = receipt_file;
-            diag.receipt_chain = receipt_chain;
-        }
-    }
+    turn_shape shape = {0};
+    if (g.raw_on)
+        turn_shape_of(&shape, req, e, env, constrain, sch, stops, n_stops,
+                      req_stops, n_req_stops, script_text != NULL);
+#define WRITE_RECEIPT() do {                                                  \
+        if (g.raw_on && !g.dead && !receipt_file[0] && !diag.receipt_error) { \
+            diag.receipt_error = serve_receipt(                               \
+                s, e, &g, prompt, api, chat, gen_rng, max_tokens, n_prompt,   \
+                n_gen, keep, diag.prompt_reuse, spec_used, &shape,            \
+                receipt_file, receipt_chain);                                 \
+            if (!diag.receipt_error) {                                        \
+                diag.receipt_file = receipt_file;                             \
+                diag.receipt_chain = receipt_chain;                           \
+            }                                                                 \
+        }                                                                     \
+    } while (0)
     // The socket probe and the streaming write path share g.dead. Whichever
     // learned the verdict first takes this same cleanup exit: no terminal
     // frame is owed to a peer already proven gone, and buffered responses must
@@ -3419,6 +3555,7 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
         if (fin == -1)     unmapped = true;
         else if (fin != 0) g.dead = true;
     }
+    if (stream) WRITE_RECEIPT();
     // Anything still held for a multi-byte character the model never finished
     // goes out now rather than disappearing. It is genuinely truncated, so it
     // renders as U+FFFD — but silently dropping bytes would make the streamed
@@ -3644,8 +3781,21 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
             // R4.12.19: reported by every body below, from the one mapping
             jv *em = tool_calls_array(&tc, n_tc);
             g.repeat_json = repeated_calls_json(req, api, em);
+            // R1.1.2: and recorded in the receipt from the same mapping
+            for (int i = 0; g.raw_on && em && i < em->n; i++) {
+                jv *f = jv_get(em->items[i], "function");
+                const char *nm = jv_str(jv_get(f, "name"), "");
+                const char *args = jv_str(jv_get(f, "arguments"), "");
+                sb_lit(&g.calls, g.n_calls ? ",{\"name\":\"" : "{\"name\":\"");
+                sb_esc(&g.calls, nm, strlen(nm));
+                sb_lit(&g.calls, "\",\"arguments\":\"");
+                sb_esc(&g.calls, args, strlen(args));
+                sb_lit(&g.calls, "\"}");
+                g.n_calls++;
+            }
             jv_free(em);
         }
+        WRITE_RECEIPT();
         if (api == API_MESSAGES) {
             // A fault is an error object here, not a Message. Anthropic's
             // seven stop_reason values all describe a turn that COMPLETED, so
@@ -3887,6 +4037,8 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
         free(r.s);
     }
 done: ;
+#undef WRITE_RECEIPT
+    free(shape.json.s);
     // A paging note only when there was paging. Silence is the normal case and
     // a per-request "0 page-ins" would be noise, but when the weights have been
     // evicted this line is the only thing that says the time went to the disk

@@ -123,6 +123,15 @@ typedef struct {
     const char *template_name;
     const char *serve_json;
     char       *chain_out;
+    // Agent transcripts, D4a (R1.1.2). constraints_json: a JSON array of
+    // {"kind":..} objects naming what shaped the output beyond the sampler
+    // (a grammar, a stop sequence, a scripted reply), written as
+    // "constraints"; --verify refuses a record whose constraints it cannot
+    // reproduce. tool_calls_json: a JSON array of {"name","arguments"}, the
+    // calls the turn delivered, written as "tool_calls". NULL writes neither,
+    // so an unconstrained record is what it always was.
+    const char *constraints_json;
+    const char *tool_calls_json;
 } transcript_info;
 
 // Signing keys: xyntetik.runner.signkey.v1, a 32-byte seed and the public

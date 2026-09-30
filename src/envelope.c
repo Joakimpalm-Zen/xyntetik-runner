@@ -345,6 +345,16 @@ bool transcript_write(const transcript_info *ti) {
         tsb_put(&w, ti->serve_json, strlen(ti->serve_json));
         tsb_put(&w, ",", 1);
     }
+    if (ti->constraints_json) {
+        tsb_put(&w, "\"constraints\":", 14);
+        tsb_put(&w, ti->constraints_json, strlen(ti->constraints_json));
+        tsb_put(&w, ",", 1);
+    }
+    if (ti->tool_calls_json) {
+        tsb_put(&w, "\"tool_calls\":", 13);
+        tsb_put(&w, ti->tool_calls_json, strlen(ti->tool_calls_json));
+        tsb_put(&w, ",", 1);
+    }
     tsb_fmt(&w, "\"generated_utc\":\"%s\",", utc);
     tsb_put(&w, "\"prompt\":{\"text\":", 17);
     tsb_json_str(&w, ti->prompt_text, strlen(ti->prompt_text));

@@ -200,6 +200,129 @@ static char *read_file(const char *path, size_t *out_len) {
     return buf;
 }
 
+// A JSON schema's identity in a record (R1.1.2): the sha256 of its compact
+// JSON, key order kept -- what serve receipts record for a request's schema,
+// so how the file is spelled (indentation, spacing) is not identity.
+static bool schema_file_digest(const char *path, char hex[65]) {
+    size_t n = 0;
+    char *b = read_file(path, &n);
+    if (!b) return false;
+    jv *v = json_parse(b, n);
+    free(b);
+    if (!v) return false;
+    sbuf d = {0};
+    jv_dump(v, &d);
+    jv_free(v);
+    bool ok = !d.failed;
+    if (ok) envelope_data_sha256(d.s, d.n, hex);
+    free(d.s);
+    return ok;
+}
+
+// Agent transcripts, D4a (R1.1.2): may this record be replayed with the
+// constraints this verifier was given? A replay runs the sampler; a grammar,
+// a stop sequence or a scripted reply shaped the recorded tokens beyond it,
+// and a replay without them could only disagree with the record -- which a
+// DIVERGED verdict would blame on the model or the build. A CLI record made
+// under --json, --json-schema or --ignore-eos replays when the verifier is
+// given the same constraint (the schema matched by digest); anything a served
+// turn was shaped by is refused (replaying it is D4b); and a constraint the
+// verifier adds that the record does not name is refused too. False with the
+// reason in `why`.
+static bool replay_constraints_ok(jv *rec, bool json_mode,
+                                  const char *schema_file, bool ignore_eos,
+                                  char *why, size_t cap) {
+    jv *cons = jv_get(rec, "constraints");
+    jv *serve = jv_get(rec, "serve");
+    if (cons && cons->type != J_ARR) {
+        snprintf(why, cap, "malformed constraints");
+        return false;
+    }
+    if (serve) {
+        // records written before D4a name what shaped them only here
+        jv *list = cons ? cons : jv_get(serve, "shaped_by");
+        char names[256] = "";
+        size_t k = 0;
+        int n = 0;
+        for (int i = 0; list && list->type == J_ARR && i < list->n; i++) {
+            jv *it = list->items[i];
+            const char *kind = it && it->type == J_STR ? it->str
+                             : jv_str(jv_get(it, "kind"), "?");
+            int w = snprintf(names + k, sizeof names - k, "%s%s", n ? ", " : "", kind);
+            if (w > 0 && (size_t)w < sizeof names - k) k += (size_t)w;
+            n++;
+        }
+        if (n) {
+            snprintf(why, cap, "the served output was shaped beyond the sampler "
+                     "by %s; this build replays the sampler only (replaying a "
+                     "served turn's constraints is D4b), so a replay could only "
+                     "disagree with the record", names);
+            return false;
+        }
+    }
+    bool rj = false, re = false;
+    const char *rs = NULL;
+    for (int i = 0; cons && i < cons->n; i++) {
+        const char *kind = jv_str(jv_get(cons->items[i], "kind"), NULL);
+        if (!kind) {
+            snprintf(why, cap, "malformed constraints");
+            return false;
+        }
+        if (!strcmp(kind, "json_mode")) rj = true;
+        else if (!strcmp(kind, "ignore_eos")) re = true;
+        else if (!strcmp(kind, "json_schema")) {
+            rs = jv_str(jv_get(cons->items[i], "sha256"), "");
+            if (strlen(rs) != 64) {
+                snprintf(why, cap, "malformed json_schema constraint");
+                return false;
+            }
+        } else {
+            snprintf(why, cap, "the output was shaped beyond the sampler by %s, "
+                     "which this build does not replay", kind);
+            return false;
+        }
+    }
+    if (rj != json_mode) {
+        snprintf(why, cap, rj ? "the output was generated under --json "
+                 "(constraint json_mode); verify with --json to replay it"
+                 : "--json given, but the record's output was not generated "
+                 "under it (no json_mode constraint)");
+        return false;
+    }
+    if (re != ignore_eos) {
+        snprintf(why, cap, re ? "the output was generated under --ignore-eos "
+                 "(constraint ignore_eos); verify with --ignore-eos to replay it"
+                 : "--ignore-eos given, but the record's output was not "
+                 "generated under it (no ignore_eos constraint)");
+        return false;
+    }
+    if (rs && !schema_file) {
+        snprintf(why, cap, "the output was generated under a JSON schema "
+                 "(constraint json_schema, sha256 %s); verify with "
+                 "--json-schema naming that schema to replay it", rs);
+        return false;
+    }
+    if (!rs && schema_file) {
+        snprintf(why, cap, "--json-schema given, but the record's output was "
+                 "not generated under a schema (no json_schema constraint)");
+        return false;
+    }
+    if (rs) {
+        char have[65];
+        if (!schema_file_digest(schema_file, have)) {
+            snprintf(why, cap, "cannot read --json-schema %s as JSON", schema_file);
+            return false;
+        }
+        if (!hex_eq_nocase(have, rs)) {
+            snprintf(why, cap, "--json-schema %s is a different schema (sha256 "
+                     "%s) from the record's json_schema constraint (sha256 %s)",
+                     schema_file, have, rs);
+            return false;
+        }
+    }
+    return true;
+}
+
 static bool receipt_chain_hash(const char *path, char out[65]) {
     size_t n = 0;
     char *buf = read_file(path, &n);
@@ -805,8 +928,10 @@ static void usage_to(FILE *f, const char *prog) {
         "                 VERIFIED (exit 0; tier T1 same-binary or T2\n"
         "                 token-replay), DIVERGED at token N (exit 2),\n"
         "                 UNVERIFIABLE (exit 3: bad chain hash, wrong model\n"
-        "                 sha, wrong adapter). The record's config and seed\n"
-        "                 override CLI sampling flags\n"
+        "                 sha, wrong adapter, or output shaped by a constraint\n"
+        "                 the replay would not reproduce; --json, --json-schema\n"
+        "                 and --ignore-eos must match the record's). The\n"
+        "                 record's config and seed override CLI sampling flags\n"
         "  --sign-record F  sign any JSON object file in place with --sign-key,\n"
         "                 the transcript's chain + signature (--record-prev P\n"
         "                 links it to record P); --check-record F verifies one\n"
@@ -1985,6 +2110,15 @@ int main(int argc, char **argv) {
                 fprintf(stderr, "UNVERIFIABLE: chain link broken: the record's prev "
                         "is not the chain hash of %s\n", transcript_prev);
                 jv_free(vrec); return 3;
+            }
+        }
+        {
+            char why[512];
+            if (!replay_constraints_ok(vrec, json_mode, schema_file, ignore_eos,
+                                       why, sizeof why)) {
+                fprintf(stderr, "UNVERIFIABLE: %s\n", why);
+                jv_free(vrec);
+                return 3;
             }
         }
         jv *prof = jv_get(vrec, "profile"), *cfg = jv_get(vrec, "config");
@@ -3305,6 +3439,24 @@ int main(int argc, char **argv) {
             }
             char gname[128] = "";
             if (m.gpu) gpu_available(gname, sizeof gname);
+            // R1.1.2: what shaped the output beyond the sampler, so --verify
+            // replays it under the same constraints or refuses it
+            char cons[256] = "", schema_sha[65] = "";
+            size_t cn = 0;
+            if (schema_file && !schema_file_digest(schema_file, schema_sha))
+                snprintf(schema_sha, sizeof schema_sha, "unknown");
+            if (schema_file)
+                cn += (size_t)snprintf(cons + cn, sizeof cons - cn,
+                                       "{\"kind\":\"json_schema\",\"sha256\":\"%s\"}",
+                                       schema_sha);
+            if (json_mode)
+                cn += (size_t)snprintf(cons + cn, sizeof cons - cn,
+                                       "%s{\"kind\":\"json_mode\"}", cn ? "," : "");
+            if (ignore_eos)
+                cn += (size_t)snprintf(cons + cn, sizeof cons - cn,
+                                       "%s{\"kind\":\"ignore_eos\"}", cn ? "," : "");
+            char cons_json[260] = "";
+            if (cn) snprintf(cons_json, sizeof cons_json, "[%s]", cons);
             char *transcript_exe = plat_executable_path();
             transcript_info ti = {
                 .out_path = transcript_path,
@@ -3350,6 +3502,7 @@ int main(int argc, char **argv) {
                 .spec_lk_accepted = e.spec_st.lk_accepted,
                 .model_sig_json = model_sig_json[0] ? model_sig_json : NULL,
                 .adapter_sig_json = adapter_sig_json[0] ? adapter_sig_json : NULL,
+                .constraints_json = cons_json[0] ? cons_json : NULL,
             };
             if (ocap.failed) {
                 fprintf(stderr, "error: transcript: out of memory capturing "

@@ -8,6 +8,26 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **Agent transcripts (D4a): records name their constraints and tool
+  calls, and `--verify` refuses what it cannot replay.** A grammar, a stop
+  sequence or a scripted reply shapes the tokens beyond the sampler, so a
+  replay without it disagrees with the record by construction -- and was
+  reported as `DIVERGED`, blaming the model or the build: a CLI record made
+  under `--json` diverged at token 0 even when verified with `--json`,
+  because nothing in the record said so. Transcripts and serve receipts now
+  carry `constraints` (a schema or tool list by the sha256 of its compact
+  JSON, stop sequences, reasoning budget, loop guard, `ignore_eos`,
+  scripted) and served receipts `tool_calls` (the calls each turn delivered,
+  buffered and streamed, on every surface). `--verify` refuses a constrained
+  served record as `UNVERIFIABLE`, naming the constraint; a CLI record made
+  under `--json`, `--json-schema` or `--ignore-eos` replays when the verifier
+  is given the same one and is refused otherwise, as is a constraint the
+  verifier adds. A parse-only tool turn (native syntax, no grammar) is no
+  longer listed as shaped by `tools`, and a tool grammar is no longer also
+  listed as `json_schema`. Anchors in `tests/test_agent_transcripts.py`:
+  hashlib digests of the schema and tool list, the recorded calls against
+  the ones each response delivered, and the verdicts.
+
 - **`--sign-model`: sign a model without Python or openssl.** `runner
   --sign-model FILE --model-key KEY.pem` writes the OMS key-method bundle the
   load-time check (and the reference `model_signing verify key`) reads:
