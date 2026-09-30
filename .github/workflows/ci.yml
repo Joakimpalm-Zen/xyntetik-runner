@@ -489,6 +489,11 @@ jobs:
         # /v1/capabilities is answered on the accept loop while another client
         # swaps the model out from under it.
         run: make test-swap-race
+      - name: tokenizer shared across slots, under ThreadSanitizer
+        # Every --parallel slot tokenizes with the one tokenizer the server
+        # loaded; per-call state left in it was a data race (2026-09-30).
+        if: runner.os == 'Linux'
+        run: make test-tokenizer-race
 
   # The `make test` baseline. Deliberately boring: one Linux CPU runner, one
   # build, one target — so that ADDING A CHECK TO `make test` IS ENOUGH TO PUT

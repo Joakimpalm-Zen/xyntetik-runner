@@ -42,10 +42,8 @@ typedef struct {
     int      sb_off[257];
     int      b2u[256];      // BPE byte -> codepoint
     int      u2b[512];      // BPE codepoint -> byte (-1 = none)
-    // Set by an encode helper when it drops a text segment because a temporary
-    // allocation failed. tok_encode resets it per call and returns -1 when set,
-    // so an OOM is never mistaken for a legitimately shorter prompt.
-    bool     encode_oom;
+    // Read-only after tokenizer_init: parallel slots share one tokenizer and
+    // encode concurrently. Per-call state lives on the calling thread.
 } tokenizer;
 
 bool tokenizer_init(tokenizer *t, gguf_file *g);
@@ -81,7 +79,8 @@ size_t tok_strip_marks(char *s);
 typedef enum { TOK_TEXT, TOK_RAW, TOK_PROMPT } tok_mode;
 int    tok_encode_fit(tokenizer *t, const char *text, bool add_bos, tok_mode mode,
                       int spare, int32_t **out);
-// raw-byte encode without BOS/specials/segment normalization (see tokenizer.c)
+// raw-byte encode without BOS/specials/segment normalization (see tokenizer.c);
+// -1 when a temporary allocation failed, never a silently shorter encoding
 int  tok_encode_raw(tokenizer *t, const char *text, int n,
                     int32_t *out, int cap);
 // decode one token into buf (returns bytes written, no NUL); control tokens -> 0

@@ -1100,6 +1100,18 @@ TEST_SWAP_RACE_SRC = tests/test_swap_race.c src/gguf.c src/compat.c \
                      src/template.c src/vramreg.c src/http.c src/envelope.c src/ed25519.c $(MLDSA_SRC) src/ecdsa.c src/oms.c src/registry.c \
                      src/scheduler.c src/completion.c src/api_responses.c \
                      src/api_anthropic.c src/server.c src/decide.c $(GPU_SRC)
+# Parallel slots share one tokenizer and encode on their own threads; under
+# ThreadSanitizer any per-call state left in the shared struct is a report,
+# and TSan exits non-zero on one. Not in `make test` (MinGW has no TSan); CI
+# runs it beside test-swap-race.
+TEST_TOKENIZER_RACE_SRC = tests/test_tokenizer_race.c src/tokenizer.c src/gguf.c \
+                          src/compat.c src/quants.c
+test-tokenizer-race: $(TEST_TOKENIZER_RACE_SRC) $(HDR) test.gguf
+	$(CC) -O1 -g -fsanitize=thread -fno-omit-frame-pointer -fno-fast-math \
+	    -std=gnu11 -Wall -Wno-unused-const-variable $(GPU_BACKEND_DEF) -I src \
+	    $(TEST_TOKENIZER_RACE_SRC) -o test-tokenizer-race-bin -lm -lpthread
+	TSAN_OPTIONS=halt_on_error=1 ./test-tokenizer-race-bin test.gguf
+
 test-swap-race: $(TEST_SWAP_RACE_SRC) $(HDR) test.gguf
 	$(CC) -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer \
 	    -fno-fast-math -std=gnu11 -Wall -I src $(TEST_SWAP_RACE_SRC) \
@@ -2444,7 +2456,7 @@ clean:
 	      $(TEST_FILE_ID) test-file-identity.tmp \
 	      $(TEST_BUDGET) $(TEST_ATTRIB) $(TEST_MSG_OOM) $(TEST_STOP_CONSTRAINT) $(TEST_ROPE_YARN) $(TEST_ATTN_SCALE) \
 	      $(TMPL_CONF_RENDER) \
-	      $(TEST_SPLIT_GUARD) split-guard.out test-swap-race-bin \
+	      $(TEST_SPLIT_GUARD) split-guard.out test-swap-race-bin test-tokenizer-race-bin \
 	      runner-gpu-stub
 	rm -rf test-attn
 	rm -rf .build

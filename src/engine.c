@@ -1906,7 +1906,7 @@ static int grammar_draft(engine *e, int32_t *d, int max_d) {
                                   &doc_done);
     if (fn <= 0) return 0;
     int nd = tok_encode_raw(e->tok, fb, fn, d, max_d);
-    if (e->tok->encode_oom) return 0;
+    if (nd < 0) return 0;   // an OOM drafts nothing rather than a short prefix
     int off = 0, keep = 0;
     for (int i = 0; i < nd; i++) {
         if (d[i] < 0 || d[i] >= e->m->n_vocab || tok_is_control(e->tok, d[i]))
