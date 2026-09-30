@@ -397,8 +397,20 @@ class EndpointTests(unittest.TestCase):
         )
 
         self.assertEqual(endpoint.context_size(), 6144)
+        self.assertIsNone(endpoint.version())
         self.assertTrue(endpoint.healthy())
         self.assertEqual(seen["timeout"], 2.0)
+
+    def test_capabilities_expose_the_running_build(self):
+        endpoint = RunnerEndpoint(
+            "http://127.0.0.1:8080",
+            opener=lambda request, timeout: _Response(payload={
+                "object": "runner.capabilities",
+                "version": "0.5.8",
+            }),
+        )
+
+        self.assertEqual(endpoint.version(), "0.5.8")
 
     def test_stream_collects_content_and_requires_terminal_marker(self):
         lines = [

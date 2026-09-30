@@ -8,6 +8,12 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **`/health` and `/v1/capabilities` name the build.** Both carry
+  `version`, the `--version` string, and a T3 build adds `build_flavor`
+  as its receipts do. A supervisor could only infer the build from the
+  feature set before; now it can record the build that answered and refuse
+  one below its floor by number. Additive; no field changed.
+
 - **Full sweep of 2026-09-30 (the pytest suite against an ASan/UBSan
   server, a tokenizer fuzzer, a streamed-against-buffered differential over
   every API surface, and the rope and sampler formulas re-derived from the
