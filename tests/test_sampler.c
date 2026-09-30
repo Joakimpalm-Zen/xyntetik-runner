@@ -254,6 +254,35 @@ static void test_sampling_applies_repeat_penalty(void) {
     assert(sample_pick(&s, logits, 4, NULL, NULL) == 1);
 }
 
+// The penalty applies ONCE per distinct token in the window, however often
+// it recurs there. That is the reference semantics: transformers'
+// RepetitionPenaltyLogitsProcessor gathers each id's score and scatters one
+// penalised value back (a repeated id is written twice with the same number),
+// and llama.cpp's penalties sampler applies repeat_penalty once per distinct
+// token and leaves counting to the frequency penalty. Applying it per
+// occurrence compounds it: a token seen five times in the 256-token window
+// was divided by penalty^5, so llama3's 1.10 preset cut its logit by 38%.
+// Here 1.5 once leaves token 0 on top (10/1.5 = 6.67 > 6); compounded over
+// three occurrences it fell to 2.96 and token 1 won.
+static void test_repeat_penalty_applies_once_per_distinct_token(void) {
+    sampler s = { .temp = 0.01f, .repeat_penalty = 1.5f, .top_p = 1.0f, .rng = 7 };
+    sampler_reset(&s);
+    sampler_accept(&s, 0);
+    sampler_accept(&s, 0);
+    sampler_accept(&s, 0);
+    float logits[4] = { 10.0f, 6.0f, 1.0f, 0.5f };
+    assert(sample_pick(&s, logits, 4, NULL, NULL) == 0);
+    // and a negative logit is multiplied once, not cubed: -1 * 1.5 = -1.5
+    // stays above token 2's -1.6, where -1 * 1.5^3 = -3.4 fell below it
+    sampler t = { .temp = 0.01f, .repeat_penalty = 1.5f, .top_p = 1.0f, .rng = 7 };
+    sampler_reset(&t);
+    sampler_accept(&t, 1);
+    sampler_accept(&t, 1);
+    sampler_accept(&t, 1);
+    float neg[3] = { -9.0f, -1.0f, -1.6f };
+    assert(sample_pick(&t, neg, 3, NULL, NULL) == 1);
+}
+
 // Stop tokens are exempt from the penalty: a chat template puts the turn
 // terminator in the prompt, so the penalty window is seeded with it and a
 // penalised model can never end its turn.
@@ -414,6 +443,7 @@ int main(void) {
     test_describe();
     test_greedy_ignores_repeat_penalty();
     test_sampling_applies_repeat_penalty();
+    test_repeat_penalty_applies_once_per_distinct_token();
     test_stop_tokens_stay_exempt();
     test_penalty_window_ignores_ids_outside_the_vocabulary();
     test_greedy_constrained();

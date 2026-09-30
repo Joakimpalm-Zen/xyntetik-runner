@@ -2080,7 +2080,10 @@ the tokens the model generated, never the prompt (since 2026-09-15: a tool
 schema in a raw `/v1/completions` prompt held exactly the tokens a call
 must re-type, and the generic preset's penalty, 1.0 now where it was 1.10,
 turned every sampled call into schema-avoiding spellings while greedy
-stayed perfect; `tests/test_penalty_window.c`). A request can read back
+stayed perfect; `tests/test_penalty_window.c`). The penalty applies once
+per distinct token in the window however often it recurs there, as
+transformers and llama.cpp apply it (until 2026-09-30 it compounded per
+occurrence; `tests/test_sampler.c`). A request can read back
 what it was served with: `runner_telemetry.sampling` carries the preset,
 the five effective values, the seed and each value's source (`preset`,
 `cli` or `request`), and `runner_telemetry.tool_protocol` the template, the
