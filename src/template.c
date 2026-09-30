@@ -1044,11 +1044,9 @@ static void g4_upper(sbuf *o, const char *s) {
 }
 
 static void g4_number(sbuf *o, double d) {
-    if (d >= (double)LLONG_MIN && d < 9223372036854775808.0 &&
-        d == (double)(long long)d)
-        pl_fmt(o, "%lld", (long long)d);
-    else
-        pl_fmt(o, "%.10g", d);
+    char num[32];
+    json_format_number(d, num);   // the reference's str()/tojson spelling
+    pl_fmt(o, "%s", num);
 }
 
 // jinja:124-155. `escape_keys` wraps object KEYS in <|"|> as well as values;

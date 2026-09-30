@@ -11,7 +11,7 @@ names that were true when they were written.
 - **Full sweep of 2026-09-30 (the pytest suite against an ASan/UBSan
   server, a tokenizer fuzzer, a streamed-against-buffered differential over
   every API surface, and the rope and sampler formulas re-derived from the
-  publishers' references), eight defects.** (1) The repeat penalty compounded
+  publishers' references), nine defects.** (1) The repeat penalty compounded
   per occurrence: a token seen k times in the window was scaled by
   penalty^k, where transformers and llama.cpp apply it once per distinct
   token; it now applies once. (2) top-k selection parked the minimum of
@@ -39,7 +39,11 @@ names that were true when they were written.
   1e300 is undefined there, and on x86 it read as "unknown" and accepted a
   file with no LFS record unverified. A size that is not a whole,
   non-negative byte count now refuses the repository, as a traversing name
-  does.
+  does. (9) Re-serialised JSON printed non-integers with ten significant
+  digits: the Messages API's `tool_use.input` (the model's own arguments),
+  replayed `tool_use` history and tool schemas rendered into prompts all
+  lost digits (1234567.891234 became 1234567.891). Numbers now print at the
+  shortest spelling that reads back exactly, as json.dumps does.
 
 - **Muse valid-recipients line: bare tool names verbatim, behind a switch
   (R4.12.20, from a lab reading of Meta's Muse-Glimmer-30B discussion #60).**

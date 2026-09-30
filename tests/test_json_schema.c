@@ -2907,6 +2907,15 @@ static void test_tojson_dump_matches_jinja(void) {
         { "42", "42", "bare number" },
         { "{\"min\":0,\"max\":100,\"mult\":0.01}",
           "{\"min\": 0, \"max\": 100, \"mult\": 0.01}", "schema numerics" },
+        // a double prints as the SHORTEST text that reads back to it, as
+        // json.dumps does (repr); "%.10g" cut every one of these but 0.1 and
+        // 1e-07, so a tool argument or a schema bound with more than ten
+        // significant digits reached the client or the prompt altered
+        { "[3.141592653589793,1234567.891234,0.1,1e-07,1.5e300,"
+          "123456789.12345679,-0.000123456789012]",
+          "[3.141592653589793, 1234567.891234, 0.1, 1e-07, 1.5e+300, "
+          "123456789.12345679, -0.000123456789012]",
+          "doubles round-trip at their shortest spelling" },
     };
     for (size_t i = 0; i < sizeof(cases) / sizeof(*cases); i++) {
         jv *v = json_parse(cases[i].doc, strlen(cases[i].doc));
