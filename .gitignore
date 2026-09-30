@@ -233,6 +233,8 @@ test-ecdsa
 test-ecdsa.exe
 test-watermark
 test-watermark.exe
+test-prefill-invariance
+test-prefill-invariance.exe
 
 # xyntetik.com is generated at build time (site/build.py)
 site/_site/
