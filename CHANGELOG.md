@@ -8,6 +8,14 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **A transcript whose output holds a NUL byte verifies again.** The writer
+  spelled the byte `\u0000` in `output.text`, which the runner's own JSON
+  parser refuses (a parsed string is NUL-terminated), so `--verify` called
+  the record malformed and it could never be replayed; a sampled run on a
+  byte-fallback vocabulary hits it within a few hundred tokens. Text fields
+  now render the byte as U+FFFD; `output.bytes_hex`, which the replay
+  compares, keeps it exactly. Regression in `tests/test_transcript.py`.
+
 - **Agent transcripts (D4a): records name their constraints and tool
   calls, and `--verify` refuses what it cannot replay.** A grammar, a stop
   sequence or a scripted reply shapes the tokens beyond the sampler, so a

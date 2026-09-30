@@ -263,3 +263,24 @@ def test_recorded_adapter_scale_drives_replay(runner_bin, base, tmp_path):
         cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120)
     assert p.returncode == 0, p.stderr.decode(errors="replace")
     assert "scale x0.25" in p.stderr.decode(errors="replace")
+
+
+def test_a_nul_output_byte_still_verifies(runner_bin, base, tmp_path):
+    """A NUL byte in the output was written into output.text as \\u0000, which
+    the runner's own parser refuses (json.c): the record could not be read
+    back, and --verify called it malformed. The text is a rendering (U+FFFD
+    there); bytes_hex keeps the exact byte, and the replay compares that."""
+    out = tmp_path / "nul.json"
+    args = ["-m", str(base), "-p", "the quick brown fox", "-n", "300", "--temp",
+            "1.0", "-s", "5", "--gpu", "off", "-t", "2", "-c", "512", "--ignore-eos"]
+    p = subprocess.run([runner_bin, *args, "--transcript", str(out)], cwd=ROOT,
+                       stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120)
+    assert p.returncode == 0, p.stderr.decode(errors="replace")
+    rec = json.loads(out.read_bytes())
+    # the precondition this fixture and seed provide
+    assert b"\0" in bytes.fromhex(rec["output"]["bytes_hex"])
+    assert "\0" not in rec["output"]["text"]
+    v = subprocess.run([runner_bin, "-m", str(base), "--verify", str(out), "--gpu",
+                        "off", "-t", "2", "-c", "512", "--ignore-eos"], cwd=ROOT,
+                       stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120)
+    assert v.returncode == 0 and b"VERIFIED" in v.stderr, v.stderr[-400:]

@@ -200,12 +200,23 @@ static void tsb_fmt(tsb *w, const char *fmt, ...) {
 
 // json_escape needs a caller-sized buffer; escape in bounded chunks so an
 // arbitrarily long prompt/output never needs a matching single allocation
+// A NUL byte is written as U+FFFD: json_parse refuses \u0000 (a jv string is
+// NUL-terminated, see json.c), so a record that spelled it could not be read
+// back by --verify at all. The text fields are renderings; the exact output
+// bytes are output.bytes_hex, which is what a replay compares.
 static void tsb_json_str(tsb *w, const char *s, size_t n) {
     tsb_put(w, "\"", 1);
     char esc[1024];   // worst case 6 bytes out per byte in: 150*6 = 900
     size_t i = 0;
     while (i < n) {
+        if (s[i] == 0) {
+            tsb_put(w, "\xef\xbf\xbd", 3);
+            i++;
+            continue;
+        }
         size_t take = n - i < 150 ? n - i : 150;
+        for (size_t j = 1; j < take; j++)
+            if (s[i + j] == 0) { take = j; break; }
         // do not split a UTF-8 sequence across chunks: back off to a
         // boundary unless that would empty the chunk
         while (take > 1 && i + take < n &&
