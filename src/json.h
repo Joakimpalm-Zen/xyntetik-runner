@@ -50,6 +50,12 @@ int json_unescape(const char *s, size_t n, char out[4], int *outn);
 // is non-NULL.
 bool json_number_text_ok(const char *s, double *out);
 
+// A JSON number as text: an integral value inside long long's range as an
+// integer, anything else as the SHORTEST %g spelling that reads back to the
+// same double -- what Python's json.dumps (repr) writes, and so what a
+// reference template's `tojson` renders. `out` needs 32 bytes.
+void json_format_number(double d, char out[32]);
+
 // Growable string builder for assembling JSON/HTTP bodies.
 //
 // `failed` latches on allocation failure and every sb_* call then becomes a

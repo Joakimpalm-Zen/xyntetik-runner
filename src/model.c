@@ -404,9 +404,16 @@ static bool rope_setup(model_t *m, gguf_file *g, const char *arch,
     if (mode == RS_LINEAR) {
         for (int j = 0; j < half; j++) m->rope_inv_freq[j] /= factor;
     } else if (mode == RS_YARN) {
-        // NTK-by-parts: interpolate long wavelengths, keep short ones intact
-        float lo = floorf(yarn_corr_dim(m->rope_dim, orig, 32.0f, m->rope_base));
-        float hi = ceilf(yarn_corr_dim(m->rope_dim, orig, 1.0f, m->rope_base));
+        // NTK-by-parts: interpolate long wavelengths, keep short ones intact.
+        // The ramp's correction range is rounded outward by transformers'
+        // default (truncate=True) and by llama.cpp, but NOT by gpt-oss: its
+        // reference (gpt_oss/torch/model.py) uses the bounds as computed and
+        // its config.json says `"truncate": false`. Rounding there moved every
+        // frequency inside the ramp at every position (1.75x at dimension 17
+        // of the real heads) -- invisible against llama.cpp, which rounds too.
+        float lo = yarn_corr_dim(m->rope_dim, orig, 32.0f, m->rope_base);
+        float hi = yarn_corr_dim(m->rope_dim, orig, 1.0f, m->rope_base);
+        if (!m->gptoss) { lo = floorf(lo); hi = ceilf(hi); }
         if (lo < 0) lo = 0;
         if (hi > m->rope_dim - 1) hi = m->rope_dim - 1;
         for (int j = 0; j < half; j++) {
@@ -1745,6 +1752,7 @@ static bool model_bind_weights(model_t *m, const char *path, const model_params 
         if (mx > 0) { m->n_ff = (int)mx; m->ffn_var = mn != mx; }
     }
     m->n_ctx_train = (int)gguf_get_u32(g, AK("context_length"), 2048);
+    m->pooling_type = gguf_get_u32(g, AK("pooling_type"), MODEL_POOL_NONE);
     m->head_dim    = (int)gguf_get_u32(g, AK("attention.key_length"),
                                        m->n_head ? m->n_embd / m->n_head : 0);
     m->rope_dim    = (int)gguf_get_u32(g, AK("rope.dimension_count"), m->head_dim);
@@ -1787,6 +1795,13 @@ static bool model_bind_weights(model_t *m, const char *path, const model_params 
                 m->l_is_swa[i] = m->swa_window > 0 && ((i + 1) % pattern) != 0;
         else if (m->swa_window <= 0)
             for (int i = 0; i < m->n_layer; i++) m->l_is_swa[i] = false;
+        // The reference scales attention by query_pre_attn_scalar ** -0.5,
+        // and that scalar is the head width on every size but the 27B, where
+        // it is hidden_size / num_attention_heads (168, over 128-wide heads).
+        // The GGUF does not carry it; the 27B is the 62-block size, which is
+        // how llama.cpp recovers the same rule (gemma_pytorch config.py).
+        if (m->n_layer == 62 && m->n_head > 0)
+            m->attn_scale = 1.0f / sqrtf((float)(m->n_embd / m->n_head));
     }
     if (strcmp(arch, "gpt-oss") == 0) {
         // gpt-oss (OpenAI MoE). Transcribed from llama.cpp
@@ -2050,6 +2065,11 @@ static bool model_bind_weights(model_t *m, const char *path, const model_params 
         m->rope_dim      = (int)gguf_get_u32(g, AK("rope.dimension_count"), m->head_dim);
         m->rope_dim_local = (int)gguf_get_u32(g, AK("rope.dimension_count_swa"), m->rope_dim);
         int hd_swa       = (int)gguf_get_u32(g, AK("attention.key_length_swa"), m->head_dim);
+        // The generic sliding-window block above already built a table from
+        // the same keys; this branch rebuilds it with the family's rules, so
+        // the first one is released rather than stranded (one leak per load,
+        // including every swap reload in --serve).
+        free(m->l_is_swa);
         m->l_is_swa   = calloc(m->n_layer, sizeof(bool));
         m->l_head_kv  = calloc(m->n_layer, sizeof(int));
         m->l_head_dim = calloc(m->n_layer, sizeof(int));
@@ -2438,6 +2458,7 @@ static bool model_bind_weights(model_t *m, const char *path, const model_params 
         m->swa_window = (int)gguf_get_u32(g, AK("attention.sliding_window"), 2048);
         int period = (int)gguf_get_u32(g, AK("attention.sliding_window_pattern"), 4);
         if (period < 1) period = 4;
+        free(m->l_is_swa);   // the generic block's table, rebuilt here (see gemma4)
         m->l_is_swa = calloc(m->n_layer, sizeof(bool));
         if (!m->l_is_swa) return false;
         if (!swa_pattern_array(g, AK("attention.sliding_window_pattern"),
@@ -8339,8 +8360,26 @@ bool model_batch_decode(model_batch *b, const int *idx, const int32_t *tok,
 
 // mean-pooled, L2-normalized embedding of toks (final layer, output-normed).
 // Clobbers KV slots [0, n) — the caller owns resetting its engine state.
+bool model_pooling_supported(const model_t *m) {
+    return m->pooling_type == MODEL_POOL_NONE ||
+           m->pooling_type == MODEL_POOL_MEAN ||
+           m->pooling_type == MODEL_POOL_LAST;
+}
+
+const char *model_pooling_name(uint32_t pooling_type) {
+    switch (pooling_type) {
+        case MODEL_POOL_NONE: return "none";
+        case MODEL_POOL_MEAN: return "mean";
+        case MODEL_POOL_CLS:  return "cls";
+        case MODEL_POOL_LAST: return "last";
+        case MODEL_POOL_RANK: return "rank";
+        default:              return "unknown";
+    }
+}
+
 bool model_embed(model_t *m, const int32_t *toks, int n, float *out) {
-    if (n <= 0 || n > m->n_ctx) return false;
+    if (n <= 0 || n > m->n_ctx || !model_pooling_supported(m)) return false;
+    bool last = m->pooling_type == MODEL_POOL_LAST;
     void *save_gpu = m->gpu;
     if (m->gpu && m->gpu_layers >= m->n_layer)
         m->gpu = NULL; // full offload keeps hidden states on-device; go CPU
@@ -8350,7 +8389,10 @@ bool model_embed(model_t *m, const int32_t *toks, int n, float *out) {
     for (int i = 0; i < n; ) {
         int chunk = n - i < m->n_batch ? n - i : m->n_batch;
         model_forward_batch(m, toks + i, chunk, i, false);
-        for (int b = 0; b < chunk; b++) {
+        // last-token pooling reads only the final position of the final
+        // chunk; the earlier chunks still run, for the KV they leave behind
+        for (int b = last ? (i + chunk == n ? chunk - 1 : chunk) : 0;
+             b < chunk; b++) {
             xnorm(m, tmp, m->x + (size_t)b * m->n_embd, m->out_norm_w,
                   m->out_norm_b, m->n_embd, m->rms_eps);
             for (int j = 0; j < m->n_embd; j++) out[j] += tmp[j];
@@ -8360,7 +8402,8 @@ bool model_embed(model_t *m, const int32_t *toks, int n, float *out) {
     free(tmp);
     m->gpu = save_gpu;
     float ss = 0;
-    for (int j = 0; j < m->n_embd; j++) { out[j] /= n; ss += out[j] * out[j]; }
+    int pooled = last ? 1 : n;
+    for (int j = 0; j < m->n_embd; j++) { out[j] /= pooled; ss += out[j] * out[j]; }
     if (ss > 0) {
         float inv = 1.0f / sqrtf(ss);
         for (int j = 0; j < m->n_embd; j++) out[j] *= inv;

@@ -1164,6 +1164,35 @@ static void test_qwen_native_stream_boundaries(void) {
     jv_free(tools);
 }
 
+// A turn that produced no visible bytes at all -- the model stopped on its
+// end token straight away, or every token was a control token -- reaches
+// tool_stream_finish with nothing held. The start states ask whether the
+// (empty) head could still become a call opener, and that check used to run
+// memcmp(NULL, lit, 0): undefined even at length zero (memcmp's pointers are
+// declared nonnull, so the optimiser may drop later NULL checks), and fatal
+// under -fsanitize=undefined, which is how the sanitized server died on the
+// first tool-declaring qwen38 request (tests/test_sampling_defaults.py). The
+// assertions hold on any build; the sanitized builds are what turn the old
+// code red.
+static void test_empty_turn_finishes_cleanly(void) {
+    jv *tools = parse(TOOLS);
+    char err[192];
+    tool_envelope e;
+    assert(tool_envelope_build(tools, NULL, NULL, &e, err, sizeof(err)) == 1);
+    e.tools = tools;
+    const int protos[] = { TP_QWEN, TP_QWEN_XML, TP_GEMMA4 };
+    for (size_t i = 0; i < sizeof(protos) / sizeof(*protos); i++) {
+        e.proto = protos[i];
+        demux_log log;
+        demux_step(&e, "", 1, &log);
+        assert(!log.called && log.begins == 0 && log.ends == 0);
+        assert(log.content.n == 0 && log.reasoning.n == 0);
+        log_free(&log);
+    }
+    tool_envelope_free(&e);
+    jv_free(tools);
+}
+
 // the same property the SSE boundary matrix asserts one level up: what the
 // client sees may not depend on where the token boundaries happened to fall
 static void demux_every_split(const tool_envelope *e, const char *doc) {
@@ -2851,6 +2880,7 @@ int main(void) {
     test_qwen_think_then_call_is_legal();
     test_qwen_truncation_stays_executable();
     test_qwen_native_stream_boundaries();
+    test_empty_turn_finishes_cleanly();
     test_stream_demux_is_boundary_independent();
     test_atem_stream_demux_is_boundary_independent();
     test_muse_schema_payload_stream_hides_recipient_header();

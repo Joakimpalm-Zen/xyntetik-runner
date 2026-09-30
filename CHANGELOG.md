@@ -8,6 +8,52 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **Full sweep of 2026-09-30 (the pytest suite against an ASan/UBSan
+  server, a tokenizer fuzzer, a streamed-against-buffered differential over
+  every API surface, and the rope and sampler formulas re-derived from the
+  publishers' references, and a ThreadSanitizer stress of parallel slots),
+  eleven defects.** (1) The repeat penalty compounded
+  per occurrence: a token seen k times in the window was scaled by
+  penalty^k, where transformers and llama.cpp apply it once per distinct
+  token; it now applies once. (2) top-k selection parked the minimum of
+  three as its pivot, not the median its comment promised, so all-tied or
+  rank-ordered logits made it n*k (680 ms per token at top_k 2000 over a
+  262k vocabulary); the selected set is unchanged. (3) gpt-oss's YaRN ramp
+  rounded its correction range outward, as transformers' default and
+  llama.cpp do, where OpenAI's reference and the model's config
+  (`"truncate": false`) do not; every rotary frequency inside the ramp was
+  off at every position (1.75x at dimension 17 of the real heads). (4) A
+  native-protocol turn that produced no visible bytes ran
+  memcmp(NULL, lit, 0) at finish, undefined and fatal to a sanitized server.
+  (5) gemma4 and muse-glimmer loads stranded the generic sliding-window
+  layer table (n_layer bytes per load, every swap reload included); CI's
+  leak gate now loads both families. (6) `/v1/embeddings` ignored the
+  pooling a GGUF declares and its tokenizer's `add_eos_token`: a
+  last-token embedding model (Qwen3-Embedding) was mean-pooled with no end
+  token and answered 200. Declared last-token pooling is now honoured over
+  the appended end token, mean stays the default, and CLS or rank pooling
+  is refused by name. (7) Gemma 3 27B scored attention by 1/sqrt(head_dim)
+  where its reference uses `query_pre_attn_scalar ** -0.5` = 1/sqrt(168)
+  (n_embd / n_head, over 128-wide heads): 1.146x too sharp at every layer.
+  The other sizes' scalar is their head width and is unchanged. (8) `-hf`
+  cast the Hub listing's file size straight to an integer: a size like
+  1e300 is undefined there, and on x86 it read as "unknown" and accepted a
+  file with no LFS record unverified. A size that is not a whole,
+  non-negative byte count now refuses the repository, as a traversing name
+  does. (9) Re-serialised JSON printed non-integers with ten significant
+  digits: the Messages API's `tool_use.input` (the model's own arguments),
+  replayed `tool_use` history and tool schemas rendered into prompts all
+  lost digits (1234567.891234 became 1234567.891). Numbers now print at the
+  shortest spelling that reads back exactly, as json.dumps does. (10)
+  `/v1/embeddings` with `encoding_format: float` printed seven significant
+  digits where a float32 needs nine, so it and `base64` returned different
+  vectors for one request; the float list is now exact. (11) Parallel
+  slots share one tokenizer, and the per-call "a segment was dropped on OOM"
+  flag lived in it: concurrent requests raced on it, and one slot's clear
+  could turn another's truncated tokenization into a success. The flag is
+  per thread now; `make test-tokenizer-race` (CI, Linux) gates it under
+  TSan.
+
 - **Muse valid-recipients line: bare tool names verbatim, behind a switch
   (R4.12.20, from a lab reading of Meta's Muse-Glimmer-30B discussion #60).**
   The reference template writes every tool name into the system turn's

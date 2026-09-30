@@ -252,6 +252,24 @@ bool json_number_text_ok(const char *s, double *out) {
     return true;
 }
 
+void json_format_number(double d, char out[32]) {
+    // (double)LLONG_MAX rounds UP to 2^63, which is not representable as
+    // long long — the upper bound must exclude it (strict compare)
+    if (d >= (double)LLONG_MIN && d < 9223372036854775808.0 &&
+        d == (double)(long long)d) {
+        snprintf(out, 32, "%lld", (long long)d);
+        return;
+    }
+    // "%.10g" used to stand here, and cut every value with more digits than
+    // that: a model's tool argument 1234567.891234 reached the client as
+    // 1234567.891. Seventeen significant digits always read back exactly;
+    // the first precision that does is the spelling repr would choose.
+    for (int p = 1; p <= 17; p++) {
+        snprintf(out, 32, "%.*g", p, d);
+        if (strtod(out, NULL) == d) return;
+    }
+}
+
 static jv *parse_number(jcur *c) {
     const char *start = c->p;
     const char *p = start;
@@ -542,15 +560,12 @@ static void jv_dump_sep(const jv *v, sbuf *o,
     switch (v->type) {
     case J_NULL: sb_lit(o, "null"); break;
     case J_BOOL: sb_lit(o, v->b ? "true" : "false"); break;
-    case J_NUM:
-        // (double)LLONG_MAX rounds UP to 2^63, which is not representable as
-        // long long — the upper bound must exclude it (strict compare)
-        if (v->num >= (double)LLONG_MIN && v->num < 9223372036854775808.0 &&
-            v->num == (double)(long long)v->num)
-            sb_fmt(o, "%lld", (long long)v->num);
-        else
-            sb_fmt(o, "%.10g", v->num);
+    case J_NUM: {
+        char num[32];
+        json_format_number(v->num, num);
+        sb_put(o, num, strlen(num));
         break;
+    }
     case J_STR:
         sb_lit(o, "\"");
         sb_esc(o, v->str, strlen(v->str));

@@ -472,6 +472,16 @@ jobs:
           if [ "$(uname -s)" = Linux ]; then
             ASAN_OPTIONS=detect_leaks=1 ./runner-debug -m test.gguf \
               -p "hello" -n 8 --temp 0 --gpu off
+            # gemma4 and muse-glimmer rebuild the sliding-window layer table
+            # the generic loader already built from the same keys, and until
+            # 2026-09-30 stranded the first copy on every load. test.gguf has
+            # no sliding window, so it could not see that.
+            python3 scripts/make-test-model.py --muse-glimmer test-leak-muse.gguf
+            python3 scripts/make-test-model.py --gemma4-hetero test-leak-g4h.gguf
+            for f in test-leak-muse.gguf test-leak-g4h.gguf; do
+              ASAN_OPTIONS=detect_leaks=1 ./runner-debug -m "$f" \
+                -p "hello" -n 8 --temp 0 --gpu off
+            done
           fi
       - name: sanitized server race gate
         # The CLI run above never starts a server, so nothing sanitized ever
@@ -479,6 +489,11 @@ jobs:
         # /v1/capabilities is answered on the accept loop while another client
         # swaps the model out from under it.
         run: make test-swap-race
+      - name: tokenizer shared across slots, under ThreadSanitizer
+        # Every --parallel slot tokenizes with the one tokenizer the server
+        # loaded; per-call state left in it was a data race (2026-09-30).
+        if: runner.os == 'Linux'
+        run: make test-tokenizer-race
 
   # The `make test` baseline. Deliberately boring: one Linux CPU runner, one
   # build, one target — so that ADDING A CHECK TO `make test` IS ENOUGH TO PUT

@@ -1044,11 +1044,9 @@ static void g4_upper(sbuf *o, const char *s) {
 }
 
 static void g4_number(sbuf *o, double d) {
-    if (d >= (double)LLONG_MIN && d < 9223372036854775808.0 &&
-        d == (double)(long long)d)
-        pl_fmt(o, "%lld", (long long)d);
-    else
-        pl_fmt(o, "%.10g", d);
+    char num[32];
+    json_format_number(d, num);   // the reference's str()/tojson spelling
+    pl_fmt(o, "%s", num);
 }
 
 // jinja:124-155. `escape_keys` wraps object KEYS in <|"|> as well as values;
@@ -4672,10 +4670,13 @@ static int ts_atem(tool_stream *s, const char *bytes, int n) {
 }
 
 // True when `head` is a strict, incomplete prefix of `lit` -- i.e. it could
-// still become it once more bytes arrive.
+// still become it once more bytes arrive. An empty head (still NULL before
+// the first byte is held) is a prefix of anything, and is answered without
+// memcmp: its pointers are declared nonnull even at length zero.
 static bool ts_partial(const tool_stream *s, const char *lit) {
     size_t ln = strlen(lit);
-    return s->head_n < ln && !memcmp(s->head, lit, s->head_n);
+    return s->head_n < ln &&
+           (s->head_n == 0 || !memcmp(s->head, lit, s->head_n));
 }
 
 static bool ts_starts(const tool_stream *s, const char *lit) {

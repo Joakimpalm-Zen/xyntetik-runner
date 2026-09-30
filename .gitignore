@@ -65,6 +65,7 @@ test-moe-tol.exe
 test-moe-fixture.*.gguf
 test-shared-asan-bin
 test-swap-race-bin
+test-tokenizer-race-bin
 test-swap-race-bin.dSYM/
 test-batch
 test-batch-identity.exe
@@ -89,6 +90,10 @@ test-gguf-getters
 test-gguf-getters.exe
 test-hfhub
 test-penalty-window
+test-rope-yarn
+test-rope-yarn.exe
+test-attn-scale
+test-attn-scale.exe
 test-hfhub.exe
 test-gguf-split-load
 test-gguf-split-load.exe
@@ -116,6 +121,8 @@ fuzz-schema_compile
 fuzz-sval_feed
 fuzz-jsonv_feed
 fuzz-gguf_open
+fuzz-sval_trial
+fuzz-http_request
 fuzz-corpus/
 tests/compatibility/out/*.runner.log
 tests/compatibility/out/reference-*.log

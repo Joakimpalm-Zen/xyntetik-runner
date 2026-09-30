@@ -206,3 +206,29 @@ def test_a_listing_with_a_traversing_name_is_refused_whole(runner_bin, hub, tmp_
         assert resolve_calls(hub["log"]) == [], (bad, calls(hub["log"]))
         assert not (tmp_path / "escape-Q8_0.gguf").exists()
 
+
+
+def test_a_listing_with_an_impossible_size_is_refused(runner_bin, hub):
+    """A listed size is the repository owner's data too, and it is what
+    verifies a file with no LFS record. It was converted with a plain cast:
+    1e300 is undefined behaviour there, and on x86 it became a negative size
+    that read as "unknown", so the download was accepted unverified; arm64
+    saturates and refused the same listing. A size that is not a whole,
+    non-negative byte count refuses the repository before anything is
+    fetched, the way a traversing name does."""
+    files = json.loads((hub["dir"] / "files.json").read_text())
+    good = hub["dir"] / "model-Q8_0.gguf"
+    for bad in (1e300, -5, 12.5):
+        listing = dict(files)
+        listing["siblings"] = [s for s in files["siblings"]
+                               if s["rfilename"] != "model-Q8_0.gguf"] + [
+            {"rfilename": "model-Q8_0.gguf", "size": bad}]
+        (hub["dir"] / "files.json").write_text(json.dumps(listing))
+        if hub["log"].exists():
+            hub["log"].unlink()
+        p = run(runner_bin, hub["env"], "-hf", "owner/repo:Q8_0", "-p", "hi", "-n", "1",
+                "--gpu", "off", "-t", "2")
+        assert p.returncode != 0, (bad, p.stderr)
+        assert "size" in p.stderr, (bad, p.stderr)
+        assert resolve_calls(hub["log"]) == [], (bad, calls(hub["log"]))
+    assert good.exists()

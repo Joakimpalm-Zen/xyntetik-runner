@@ -11,6 +11,17 @@
 enum { TT_NORMAL = 1, TT_UNKNOWN = 2, TT_CONTROL = 3, TT_USER_DEFINED = 4,
        TT_UNUSED = 5, TT_BYTE = 6 };
 
+// Set by an encode helper when it drops a text segment because a temporary
+// allocation failed; each public encode clears it on entry and returns -1 when
+// it is set, so an OOM is never mistaken for a legitimately shorter prompt.
+// Per THREAD, not per tokenizer: parallel server slots share one tokenizer
+// and encode on their own threads, and the flag used to live in the shared
+// struct, where one slot's clear could erase another's OOM (a race TSan
+// reported under four concurrent requests; tests/test_tokenizer_race.c).
+// An encode runs start to finish on the calling thread, so a thread-local
+// flag is exactly per call.
+static _Thread_local bool tls_encode_oom;
+
 // ---------------------------------------------------------------- hashmap
 
 static uint64_t fnv1a(const char *s, size_t n) {
@@ -296,6 +307,7 @@ bool tokenizer_init(tokenizer *t, gguf_file *g) {
         return false;
     t->add_bos = gguf_get_bool(g, "tokenizer.ggml.add_bos_token", t->model == TOK_SPM);
     t->add_space_prefix = gguf_get_bool(g, "tokenizer.ggml.add_space_prefix", true);
+    t->add_eos = gguf_get_bool(g, "tokenizer.ggml.add_eos_token", false);
 
     if (!hmap_init(&t->vocab, (size_t)t->n_vocab)) return false;
     for (int i = 0; i < t->n_vocab; i++)
@@ -494,9 +506,9 @@ static bool spm_push_pair(tokenizer *t, const char *text, const sym_t *sym,
 static int spm_encode(tokenizer *t, const char *text, size_t n,
                       int32_t *out, int cap, int n_out) {
     if (n == 0) return n_out;
-    if (n > SIZE_MAX / sizeof(sym_t) - 1) { t->encode_oom = true; return n_out; }
+    if (n > SIZE_MAX / sizeof(sym_t) - 1) { tls_encode_oom = true; return n_out; }
     sym_t *sym = malloc(sizeof(sym_t) * (n + 1));
-    if (!sym) { t->encode_oom = true; return n_out; }  // signalled via t; tok_encode returns -1
+    if (!sym) { tls_encode_oom = true; return n_out; }  // signalled via t; tok_encode returns -1
     int n_sym = 0;
     for (size_t i = 0; i < n; ) {
         int l = u8_len((uint8_t)text[i]);
@@ -546,7 +558,7 @@ static int spm_encode(tokenizer *t, const char *text, size_t n,
                 !spm_push_pair(t, text, sym, &h, c.l)) { oom = true; break; }
         }
         mh_free(&h);
-        if (oom) { free(sym); t->encode_oom = true; return n_out; }
+        if (oom) { free(sym); tls_encode_oom = true; return n_out; }
     }
 
     for (int i = 0; i != -1; i = sym[i].next) {
@@ -571,9 +583,9 @@ static int spm_encode(tokenizer *t, const char *text, size_t n,
 static int spm_encode_text(tokenizer *t, const char *text, size_t n,
                            int32_t *out, int cap, int n_out, bool first_segment) {
     // replace ' ' with U+2581, optionally prefix a space
-    if (n > (SIZE_MAX - 4) / 3) { t->encode_oom = true; return n_out; }
+    if (n > (SIZE_MAX - 4) / 3) { tls_encode_oom = true; return n_out; }
     char *buf = malloc(n * 3 + 4);
-    if (!buf) { t->encode_oom = true; return n_out; }
+    if (!buf) { tls_encode_oom = true; return n_out; }
     size_t m = 0;
     if (t->add_space_prefix && first_segment && n > 0) {
         memcpy(buf + m, "\xE2\x96\x81", 3); m += 3;
@@ -1065,7 +1077,7 @@ static int bpe_word(tokenizer *t, const char *w, int n, int32_t *out, int cap, i
     // one block, four slices: the linked list needs two arrays the compacting
     // version did not, and four separate mallocs per pre-token showed up
     int *mem = malloc(sizeof(int) * max_sym * 4);
-    if (!mem) { t->encode_oom = true; return n_out; }
+    if (!mem) { tls_encode_oom = true; return n_out; }
     int *st = mem, *ln = mem + max_sym, *next = mem + 2 * max_sym,
         *prev = mem + 3 * max_sym;
     int ns = 0;
@@ -1120,7 +1132,7 @@ static int bpe_word(tokenizer *t, const char *w, int n, int32_t *out, int cap, i
                 !bpe_push_pair(t, w, st, ln, next, &h, c.l)) { oom = true; break; }
         }
         mh_free(&h);
-        if (oom) { free(mem); t->encode_oom = true; return n_out; }
+        if (oom) { free(mem); tls_encode_oom = true; return n_out; }
     }
     for (int i = 0; i != -1; i = next[i]) {
         int id = hmap_get(&t->vocab, w + st[i], ln[i]);
@@ -1167,7 +1179,7 @@ static int bpe_encode_text(tokenizer *t, const char *text, size_t n,
     size_t *off = malloc(sizeof(size_t) * (n + 2));
     // byte->unicode expands ascii <0x80 to <=2 bytes
     char *word = malloc(n * 2 + 8);
-    if (!cp || !off || !word) { free(cp); free(off); free(word); t->encode_oom = true; return n_out; }
+    if (!cp || !off || !word) { free(cp); free(off); free(word); tls_encode_oom = true; return n_out; }
     int ncp = 0;
     for (size_t i = 0; i < n; ) {
         int l = u8_len((uint8_t)text[i]);
@@ -1209,9 +1221,9 @@ static int bpe_encode_text(tokenizer *t, const char *text, size_t n,
 static int bpe_spm_encode_text(tokenizer *t, const char *text, size_t n,
                                int32_t *out, int cap, int n_out) {
     if (n == 0) return n_out;
-    if (n > (SIZE_MAX - 4) / 3) { t->encode_oom = true; return n_out; }
+    if (n > (SIZE_MAX - 4) / 3) { tls_encode_oom = true; return n_out; }
     char *buf = malloc(n * 3 + 4);
-    if (!buf) { t->encode_oom = true; return n_out; }
+    if (!buf) { tls_encode_oom = true; return n_out; }
     size_t m = 0;
     for (size_t i = 0; i < n; i++) {
         if (text[i] == ' ') { memcpy(buf + m, "\xE2\x96\x81", 3); m += 3; }
@@ -1238,7 +1250,7 @@ static int encode_core(tokenizer *t, const char *text, size_t n,
                        const size_t *raw_run, int32_t *out, int cap,
                        bool add_bos, bool parse_special) {
     int n_out = 0;
-    t->encode_oom = false;   // set by a helper that had to drop a segment
+    tls_encode_oom = false;   // set by a helper that had to drop a segment
     if (add_bos && t->add_bos && t->bos_id >= 0 && n_out < cap)
         out[n_out++] = t->bos_id;
 
@@ -1282,7 +1294,7 @@ static int encode_core(tokenizer *t, const char *text, size_t n,
     }
     // A dropped segment would look like a legitimately shorter prompt; refuse
     // to return a silently truncated tokenization.
-    if (t->encode_oom) return -1;
+    if (tls_encode_oom) return -1;
     return n_out;
 }
 
@@ -1311,7 +1323,7 @@ int tok_encode_prompt(tokenizer *t, const char *text, int32_t *out, int cap,
     size_t *run = malloc(sizeof(size_t) * (n + 1));
     if (!clean || !own || !run) {
         free(clean); free(own); free(run);
-        t->encode_oom = true;
+        tls_encode_oom = true;
         return -1;
     }
     size_t m = 0;
@@ -1376,13 +1388,14 @@ int tok_find(tokenizer *t, const char *s) {
 // cannot round-trip some byte simply yields a shorter (or empty) draft.
 int tok_encode_raw(tokenizer *t, const char *text, int n,
                    int32_t *out, int cap) {
-    t->encode_oom = false;
+    tls_encode_oom = false;
     if (n <= 0) return 0;
-    return t->model == TOK_SPM
+    int k = t->model == TOK_SPM
         ? spm_encode_text(t, text, n, out, cap, 0, false)
         : t->model == TOK_BPE_SPM
         ? bpe_spm_encode_text(t, text, n, out, cap, 0)
         : bpe_encode_text(t, text, n, out, cap, 0);
+    return tls_encode_oom ? -1 : k;
 }
 
 int tok_decode(tokenizer *t, int id, char *buf, int cap) {

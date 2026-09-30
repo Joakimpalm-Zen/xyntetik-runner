@@ -162,7 +162,7 @@ instead of `-m` (the tag picks the quant when the repository has several;
 the file is cached under `~/.cache/xyntetik-runner/hf` and verified against
 the Hub's SHA-256 record before it loads; `HF_TOKEN` for gated repos; a
 repository whose file list carries a name that would leave the cache
-directory is refused whole):
+directory, or a size that is not a whole byte count, is refused whole):
 
 ```sh
 # Interactive chat: download a model or use a local file.
@@ -1087,10 +1087,10 @@ merely dense matvec/matmul support.
 | `qwen2`, `qwen3` | QKV-bias and per-head-QK-norm variants. |
 | `qwen35` | Dense Qwen3.5/3.8/Ornith Gated DeltaNet plus full attention; CPU and CUDA. Qwen3.8-27B admitted 2026-09-06 (tokenizer 0/721 after the `qwen35` rule learned `[\p{L}\p{M}]+` runs; its NextN block feeds `--mtp`; its own `qwen38` chat template with the reasoning-effort preamble, `reasoning_effort` xhigh/medium/low honoured); evidence in `docs/granite-42-qwen38-cert-2026-09-06.md`. CPU recurrent folds support speculative decode, grammar fast-forward, and exact shared-prefix restore. Any GPU-backed recurrent instance declines shared-prefix restore (its own turn mark resumes the next request at the prompt boundary on CPU and CUDA alike, since 2026-09-15); a CUDA-resident recurrent layer also declines speculative decode and grammar fast-forward. |
 | `qwen3moe` | Fused and legacy split sparse-MoE layouts on CPU/CUDA; supported fused layouts on Metal. |
-| `gemma3` | Regular and QAT layouts, sliding-window attention, sandwich norms. |
+| `gemma3` | Regular and QAT layouts, sliding-window attention, sandwich norms. The 27B (62 blocks) scales attention by its config's `query_pre_attn_scalar`, which is n_embd / n_head (168), not its 128-wide heads; every other size uses the head width (since 2026-09-30, `tests/test_attn_scale.c`; before, the 27B ran 1.146x too sharp). |
 | `gemma4` | Heterogeneous attention, thinking channels, E-series, supported dense/MoE layouts, and the family's native tool protocol. Both E-series export shapes load. A layer at or past `block_count - attention.shared_kv_layers` computes no K and no V (it attends over the cache an earlier layer filled), so the current quantized exports - the ggml-org Q4_0, Google's own QAT Q4_0 and the community QAT F16 - omit `attn_k.weight`, `attn_v.weight` and `attn_k_norm.weight` on exactly those layers: 666 tensors on E4B where the BF16 export has 720. Those three are optional on the shared-KV tail and still required on every KV-owning layer, where a missing one is refused by name. |
 | `phi3` | Fused QKV and gate/up tensors, LongRoPE factors. |
-| `gpt-oss` | Attention sinks, alpha-sigmoid GLU, expert biases, MXFP4 experts. Tokenizer exact (0/721 differential) and chat renders the real Harmony format (analysis channel as `reasoning_content`) as of 2026-08-14; cross-engine greedy identity remains inside the model's own measured KV-precision sensitivity envelope rather than certified. |
+| `gpt-oss` | Attention sinks, alpha-sigmoid GLU, expert biases, MXFP4 experts. The YaRN ramp follows OpenAI's reference, whose correction range is not rounded (`"truncate": false` in the model's config; transformers' default and llama.cpp round it), since 2026-09-30 (`tests/test_rope_yarn.c`, anchored on tables computed from the reference formula); the cross-engine figures in this row were measured before that change. Tokenizer exact (0/721 differential) and chat renders the real Harmony format (analysis channel as `reasoning_content`) as of 2026-08-14; cross-engine greedy identity remains inside the model's own measured KV-precision sensitivity envelope rather than certified. |
 | `apertus` | xIELU FFN; CPU and CUDA. |
 | `afmoe` | Arcee Trinity sparse MoE; CPU only. CUDA and Metal refuse it loudly as gated attention plus sparse MoE, rather than misreporting a quantization problem. |
 | `muse-glimmer` | Meta Muse Glimmer 30B, text path: gated attention, QK and sandwich norms, SWA with NoPE globals, softcapped logits. CPU, CUDA and Metal. Measured 2026-08-11; evidence in `docs/muse-glimmer-cert-2026-08-11.md` and `docs/muse-atem-cert-2026-08-11.md`. No vision encoder. Native atem definitions/results, recipient-constrained generation, truncation recovery, multi-call mapping, and buffered/SSE parsing are implemented and selected automatically for tool requests. The reference template's `reasoning_strength` kwarg (low, medium, high; absent renders high) is honoured on the chat surface, `reasoning_effort` is accepted as the cross-family spelling, and a system prompt that carries the directive itself keeps it (the reference's normalisation of "reasoning effort" to "reasoning strength" and skip of its own line are reproduced). Bare tool names render as the reference's namespace patterns by default; `bare_recipients` / `--bare-recipients` selects the verbatim rendering of Meta's discussion #60 (see "Muse recipients line"). |
@@ -2080,7 +2080,10 @@ the tokens the model generated, never the prompt (since 2026-09-15: a tool
 schema in a raw `/v1/completions` prompt held exactly the tokens a call
 must re-type, and the generic preset's penalty, 1.0 now where it was 1.10,
 turned every sampled call into schema-avoiding spellings while greedy
-stayed perfect; `tests/test_penalty_window.c`). A request can read back
+stayed perfect; `tests/test_penalty_window.c`). The penalty applies once
+per distinct token in the window however often it recurs there, as
+transformers and llama.cpp apply it (until 2026-09-30 it compounded per
+occurrence; `tests/test_sampler.c`). A request can read back
 what it was served with: `runner_telemetry.sampling` carries the preset,
 the five effective values, the seed and each value's source (`preset`,
 `cli` or `request`), and `runner_telemetry.tool_protocol` the template, the
@@ -2126,7 +2129,7 @@ non-loopback authorities.
 | `POST /v1/chat/completions` | OpenAI Chat Completions, including SSE, tools, structured output, logprobs, and stop strings. |
 | `POST /v1/responses` | OpenAI Responses translation over the same engine and tool envelope. |
 | `POST /v1/completions` | Legacy raw prompt completions. |
-| `POST /v1/embeddings` | Mean-pooled, L2-normalized embeddings. |
+| `POST /v1/embeddings` | L2-normalized embeddings, pooled as the GGUF declares in `{arch}.pooling_type`: the mean over every token (also when the key is absent, as on generative models), or the last token (embedding models such as Qwen3-Embedding), with the end token appended first when `tokenizer.ggml.add_eos_token` is set. A model declaring CLS or rank pooling is refused with 400 naming it (since 2026-09-30; before, every model was mean-pooled with no end token). |
 | `POST /v1/messages` | Anthropic Messages translation. |
 | `POST /v1/messages/count_tokens` | Token count for the matching Messages request. |
 | `GET /v1/models` | Registered models and current residency. |

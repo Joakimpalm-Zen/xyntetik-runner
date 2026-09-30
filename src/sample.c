@@ -31,6 +31,11 @@ void sampler_accept(sampler *s, int tok) {
     if (s->n_recent < 256) s->n_recent++;
 }
 
+static int tok_cmp(const void *a, const void *b) {
+    int32_t x = *(const int32_t *)a, y = *(const int32_t *)b;
+    return (x > y) - (x < y);
+}
+
 typedef struct { float p; int id; } cand_t;
 static int cand_cmp(const void *a, const void *b) {
     const cand_t *x = a, *y = b;
@@ -63,10 +68,14 @@ static void select_topk(cand_t *c, int n, int k) {
     int lo = 0, hi = n - 1;
     while (lo < hi) {
         int mid = lo + (hi - lo) / 2;
-        // order lo/mid/hi so c[mid] is the median, then park it at lo as pivot
+        // order lo/mid/hi so c[mid] is the median, then park it at lo as pivot.
+        // (The third compare used to run the other way round, which left the
+        // median at hi and the MINIMUM at lo: on input already in rank order,
+        // such as all-tied logits, every pass then peeled one candidate.)
         if (cand_cmp(&c[mid], &c[lo]) < 0) { cand_t t = c[lo]; c[lo] = c[mid]; c[mid] = t; }
         if (cand_cmp(&c[hi], &c[lo]) < 0)  { cand_t t = c[lo]; c[lo] = c[hi]; c[hi] = t; }
-        if (cand_cmp(&c[mid], &c[hi]) < 0) { cand_t t = c[mid]; c[mid] = c[hi]; c[hi] = t; }
+        if (cand_cmp(&c[hi], &c[mid]) < 0) { cand_t t = c[mid]; c[mid] = c[hi]; c[hi] = t; }
+        { cand_t t = c[lo]; c[lo] = c[mid]; c[mid] = t; }
         cand_t pivot = c[lo];
         int i = lo, j = hi;
         while (i < j) {
@@ -166,8 +175,18 @@ int sample_pick(sampler *s, float *logits, int n_vocab, sample_ok_fn ok, void *u
     // token that was not the argmax — and made an exempt-list necessary just
     // to let a penalised model emit its own stop token.)
     if (s->temp > 0 && s->repeat_penalty != 1.0f) {
-        for (int i = 0; i < s->n_recent; i++) {
-            int tok = s->recent[i];
+        // Once per DISTINCT token, however often it recurs in the window: the
+        // reference semantics of transformers' RepetitionPenaltyLogitsProcessor
+        // and llama.cpp's penalties sampler. Walking the window directly
+        // applied it per occurrence, so a token seen k times was scaled by
+        // penalty^k. Sorting a copy puts repeats side by side.
+        int32_t win[sizeof(s->recent) / sizeof(*s->recent)];
+        int n_win = s->n_recent;
+        memcpy(win, s->recent, sizeof(*win) * (size_t)n_win);
+        qsort(win, (size_t)n_win, sizeof(*win), tok_cmp);
+        for (int i = 0; i < n_win; i++) {
+            int tok = win[i];
+            if (i > 0 && tok == win[i - 1]) continue;
             // The window is filled from the token stream, whose ids are bounded
             // by the TOKENIZER's vocabulary (or a draft model's) rather than by
             // the length of this logits array. The penalty below writes through

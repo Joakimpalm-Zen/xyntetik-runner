@@ -188,6 +188,10 @@ typedef struct {
     uint64_t  n_agent_required_features;
     int       n_layer, n_embd, n_head, n_head_kv, head_dim, n_ff;
     int       n_vocab, n_ctx_train, rope_dim;
+    // How /v1/embeddings reads a vector out: {arch}.pooling_type, llama.cpp's
+    // enum (0 none, 1 mean, 2 cls, 3 last, 4 rank). Absent reads as 0, and
+    // 0 or 1 pool the mean; model_embed implements 3 as the last position.
+    uint32_t  pooling_type;
     // sparse-MoE (0 = dense model). n_ff_exp is the per-expert FFN width.
     int       n_expert, n_expert_used, n_ff_exp;
     float    *moe_logits;  // [n_expert] router scratch (forward, single token)
@@ -1052,6 +1056,14 @@ float       *model_mtp_draft_logits(model_t *m);
 float       *model_mtp_step(model_t *m, const float *h, int32_t tok, int pos);
 const float *model_mtp_hidden(const model_t *m);
 // mean-pooled L2-normalized embedding of toks; clobbers KV slots [0, n)
+// Pooled, L2-normalized embedding of `toks` under m->pooling_type: the mean
+// of every position's final-normed hidden state (none or mean declared), or
+// the last position's alone (last). Returns false for a pooling it does not
+// implement; model_pooling_supported() lets a caller refuse before any work.
+enum { MODEL_POOL_NONE = 0, MODEL_POOL_MEAN = 1, MODEL_POOL_CLS = 2,
+       MODEL_POOL_LAST = 3, MODEL_POOL_RANK = 4 };
+bool   model_pooling_supported(const model_t *m);
+const char *model_pooling_name(uint32_t pooling_type);
 bool   model_embed(model_t *m, const int32_t *toks, int n, float *out);
 // The per-row embedding transforms every forward path applies right after the
 // dequantized table row lands in a host buffer: the gemma-family sqrt(n_embd)

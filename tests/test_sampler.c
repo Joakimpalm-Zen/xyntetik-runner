@@ -11,6 +11,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #define EQ(a, b) (fabsf((a) - (b)) < 1e-6f)
 
@@ -254,6 +255,35 @@ static void test_sampling_applies_repeat_penalty(void) {
     assert(sample_pick(&s, logits, 4, NULL, NULL) == 1);
 }
 
+// The penalty applies ONCE per distinct token in the window, however often
+// it recurs there. That is the reference semantics: transformers'
+// RepetitionPenaltyLogitsProcessor gathers each id's score and scatters one
+// penalised value back (a repeated id is written twice with the same number),
+// and llama.cpp's penalties sampler applies repeat_penalty once per distinct
+// token and leaves counting to the frequency penalty. Applying it per
+// occurrence compounds it: a token seen five times in the 256-token window
+// was divided by penalty^5, so llama3's 1.10 preset cut its logit by 38%.
+// Here 1.5 once leaves token 0 on top (10/1.5 = 6.67 > 6); compounded over
+// three occurrences it fell to 2.96 and token 1 won.
+static void test_repeat_penalty_applies_once_per_distinct_token(void) {
+    sampler s = { .temp = 0.01f, .repeat_penalty = 1.5f, .top_p = 1.0f, .rng = 7 };
+    sampler_reset(&s);
+    sampler_accept(&s, 0);
+    sampler_accept(&s, 0);
+    sampler_accept(&s, 0);
+    float logits[4] = { 10.0f, 6.0f, 1.0f, 0.5f };
+    assert(sample_pick(&s, logits, 4, NULL, NULL) == 0);
+    // and a negative logit is multiplied once, not cubed: -1 * 1.5 = -1.5
+    // stays above token 2's -1.6, where -1 * 1.5^3 = -3.4 fell below it
+    sampler t = { .temp = 0.01f, .repeat_penalty = 1.5f, .top_p = 1.0f, .rng = 7 };
+    sampler_reset(&t);
+    sampler_accept(&t, 1);
+    sampler_accept(&t, 1);
+    sampler_accept(&t, 1);
+    float neg[3] = { -9.0f, -1.0f, -1.6f };
+    assert(sample_pick(&t, neg, 3, NULL, NULL) == 1);
+}
+
 // Stop tokens are exempt from the penalty: a chat template puts the turn
 // terminator in the prompt, so the penalty window is seeded with it and a
 // penalised model can never end its turn.
@@ -373,6 +403,40 @@ static void test_no_filter_sampling_is_deterministic_and_unbiased(void) {
 }
 
 
+// top-k runs by quickselect, whose comment promised a median-of-three pivot;
+// the code parked the MINIMUM of the three instead. On input that is already
+// in rank order -- every logit tied (ties rank by id), or logits that fall
+// with the id -- each pass then peels one candidate, and selection costs
+// n*k: 680 ms per token at top_k 2000 over a 262k vocabulary, 15 ms at 40,
+// against ~1.5 ms for the same call on shuffled logits. The gate compares the
+// two shapes on the same host (a ratio, so a slow runner scales both), and
+// checks the pick is still inside the top k: all tied, the k survivors are
+// ids 0..k-1.
+static double cpu_ms(void) { return (double)clock() * 1000.0 / CLOCKS_PER_SEC; }
+
+static void test_topk_selection_is_linear_on_ranked_input(void) {
+    enum { V = 262144, K = 2000 };
+    float *tied = malloc(sizeof(float) * V), *mixed = malloc(sizeof(float) * V);
+    assert(tied && mixed);
+    for (int i = 0; i < V; i++) {
+        tied[i] = 0.0f;
+        mixed[i] = (float)((i * 2654435761u) % 10007u) * 1e-3f;
+    }
+    sampler a = { .temp = 1.0f, .top_p = 1.0f, .top_k = K,
+                  .repeat_penalty = 1.0f, .rng = 7 };
+    sampler b = a;
+    double t0 = cpu_ms();
+    int tok = sample_pick(&a, tied, V, NULL, NULL);
+    double t_tied = cpu_ms() - t0;
+    t0 = cpu_ms();
+    (void)sample_pick(&b, mixed, V, NULL, NULL);
+    double t_mixed = cpu_ms() - t0;
+    assert(tok >= 0 && tok < K);
+    printf("ok: top-k on tied logits %.1f ms, shuffled %.1f ms\n", t_tied, t_mixed);
+    assert(t_tied < 10.0 * t_mixed + 50.0);
+    free(tied); free(mixed);
+}
+
 // The DETECTED TEMPLATE outranks the model name. Both answer "which family is
 // this", but the template is read out of the checkpoint while the name is a
 // label a re-quantiser can change -- and for Nemo the two presets disagree on
@@ -414,10 +478,12 @@ int main(void) {
     test_describe();
     test_greedy_ignores_repeat_penalty();
     test_sampling_applies_repeat_penalty();
+    test_repeat_penalty_applies_once_per_distinct_token();
     test_stop_tokens_stay_exempt();
     test_penalty_window_ignores_ids_outside_the_vocabulary();
     test_greedy_constrained();
     test_no_filter_sampling_is_deterministic_and_unbiased();
+    test_topk_selection_is_linear_on_ranked_input();
     puts("sampler tests ok");
     return 0;
 }
