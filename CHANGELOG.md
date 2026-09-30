@@ -8,6 +8,20 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **Receipt bundles: one directory a verifier can take.**
+  `--export-bundle RECEIPT --bundle-out DIR` writes the receipt byte for
+  byte, the OMS model signature and its key when given, and a
+  `xyntetik.runner.bundle.v1` manifest carrying every file's sha256, the
+  receipt's chain hash, its signing key with its fingerprint, and the model
+  and binary digests a replay needs; `--sign-key` signs the manifest.
+  `--check-bundle DIR` verifies it offline (exit 0 / 2 naming the failure / 3)
+  and says it does not replay: the bundled receipt does, through `--verify`.
+  A receipt whose chain does not recompute is refused rather than packaged.
+  Anchors in `tests/test_bundle.py`: hashlib over every file and the key
+  bytes, openssl's DER fingerprint of the model key, and the bundled receipt
+  replaying VERIFIED; a flipped byte or a missing file in any member fails
+  the check by name, as does a manifest listing a path outside the bundle.
+
 - **Per-request adapters: `--adapter NAME=PATH` and `"model":
   "<model>:NAME"`.** Adapters are parsed once (the `--lora` refusals, one
   shared parser) and borrowed by a slot's model for the requests that name

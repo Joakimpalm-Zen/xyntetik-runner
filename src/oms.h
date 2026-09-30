@@ -44,6 +44,11 @@ bool oms_check_model(const char *model_path, const oms_policy *policy,
 bool oms_verify_file(const char *bundle_path, const char *pubkey_pem_path,
                      const char *model_path, oms_result *out);
 
+// The conventional key fingerprint: sha256 of the DER SubjectPublicKeyInfo in
+// a PEM "PUBLIC KEY" file (what `openssl pkey -pubin -outform DER | sha256sum`
+// prints). False when the file is unreadable or not an EC public key PEM.
+bool oms_pubkey_fingerprint(const char *pem_path, char hex[65]);
+
 // Appends the JSON object the transcript records for a model signature
 // ({"status":..,"subject_digest":..,"curve":..}) to `buf`, capped at `cap`.
 int oms_result_json(const oms_result *r, char *buf, size_t cap);

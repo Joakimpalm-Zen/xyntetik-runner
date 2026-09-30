@@ -13,6 +13,7 @@
 #include "oms.h"
 #include "server.h"
 #include "provenance.h"
+#include "bundle.h"
 #include "build_arch.h"
 // for render_prompt_alloc: chat mode renders the same prompts the chat route
 // does, so it uses the same measured-size renderer rather than a second one
@@ -808,6 +809,17 @@ static void usage_to(FILE *f, const char *prog) {
         "  --sign-record F  sign any JSON object file in place with --sign-key,\n"
         "                 the transcript's chain + signature (--record-prev P\n"
         "                 links it to record P); --check-record F verifies one\n"
+        "  --export-bundle R  with --bundle-out DIR: put receipt R, its model\n"
+        "                 signature (--model-sig) and key (--model-pubkey), the\n"
+        "                 receipt key's fingerprint and a sha256 manifest in one\n"
+        "                 directory a verifier can take; --sign-key signs the\n"
+        "                 manifest. Needs no -m\n"
+        "  --bundle-out DIR  where --export-bundle writes (created)\n"
+        "  --check-bundle DIR  verify a bundle offline: files match the\n"
+        "                 manifest, the receipt chain recomputes, signatures\n"
+        "                 verify (--trust-key pins the manifest signer). Exit\n"
+        "                 0 OK, 2 BAD, 3 UNVERIFIABLE. Does not replay: that is\n"
+        "                 --verify with the model\n"
         "  --keygen F     write a receipt-signing key (xyntetik.runner.signkey\n"
         "                 .v1) to F and print its public key; needs no -m\n"
         "  --keygen-algo A  ed25519 (default; 32-byte key, 64-byte signature)\n"
@@ -1269,6 +1281,8 @@ int main(int argc, char **argv) {
     const char *transcript_path = NULL;
     const char *transcript_prev = NULL, *sign_key = NULL, *keygen_path = NULL;
     const char *sign_record = NULL, *record_prev = NULL, *check_record = NULL;
+    // R1.2.1: receipt bundles
+    const char *export_bundle = NULL, *bundle_out = NULL, *check_bundle = NULL;
     const char *keygen_algo = SIGN_ALGO_ED25519;
     const char *trust_key = NULL, *model_sig = NULL, *model_pubkey = NULL;
     bool require_signed = false, require_signed_model = false;
@@ -1375,6 +1389,9 @@ int main(int argc, char **argv) {
         else if (!strcmp(a, "--sign-record")) sign_record = NEXT;
         else if (!strcmp(a, "--record-prev")) record_prev = NEXT;
         else if (!strcmp(a, "--check-record")) check_record = NEXT;
+        else if (!strcmp(a, "--export-bundle")) export_bundle = NEXT;
+        else if (!strcmp(a, "--bundle-out")) bundle_out = NEXT;
+        else if (!strcmp(a, "--check-bundle")) check_bundle = NEXT;
         else if (!strcmp(a, "--keygen-algo")) keygen_algo = NEXT;
         else if (!strcmp(a, "--require-signed")) require_signed = true;
         else if (!strcmp(a, "--trust-key")) trust_key = NEXT;
@@ -1574,6 +1591,18 @@ int main(int argc, char **argv) {
         return record_sign(sign_record, sign_key, record_prev) ? 0 : 1;
     }
     if (check_record) return record_check(check_record, trust_key);
+    if (check_bundle) return bundle_check(check_bundle, trust_key);
+    if (export_bundle || bundle_out) {
+        if (!export_bundle || !bundle_out) {
+            fprintf(stderr, "error: --export-bundle RECEIPT and --bundle-out "
+                    "DIR go together\n");
+            return 1;
+        }
+        bundle_opts bo = { .receipt = export_bundle, .out_dir = bundle_out,
+                           .model_sig = model_sig, .model_pubkey = model_pubkey,
+                           .sign_key = sign_key };
+        return bundle_export(&bo);
+    }
     if (keygen_path) {
         uint8_t seed[32];
         char pub[SIGN_PUBHEX_CAP];

@@ -80,6 +80,19 @@ static uint8_t *pem_public_key_der(const char *pem, size_t n, size_t *der_len) {
 
 // ---- the verifier -------------------------------------------------------------
 
+bool oms_pubkey_fingerprint(const char *pem_path, char hex[65]) {
+    size_t n = 0;
+    char *pem = read_all(pem_path, &n);
+    if (!pem) return false;
+    size_t der_len = 0;
+    uint8_t *der = pem_public_key_der(pem, n, &der_len);
+    free(pem);
+    if (!der) return false;
+    envelope_data_sha256(der, der_len, hex);
+    free(der);
+    return true;
+}
+
 static const char *base_name(const char *p) {
     const char *b = p;
     for (const char *q = p; *q; q++) if (*q == '/' || *q == '\\') b = q + 1;
