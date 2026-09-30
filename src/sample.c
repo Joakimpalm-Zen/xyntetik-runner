@@ -68,10 +68,14 @@ static void select_topk(cand_t *c, int n, int k) {
     int lo = 0, hi = n - 1;
     while (lo < hi) {
         int mid = lo + (hi - lo) / 2;
-        // order lo/mid/hi so c[mid] is the median, then park it at lo as pivot
+        // order lo/mid/hi so c[mid] is the median, then park it at lo as pivot.
+        // (The third compare used to run the other way round, which left the
+        // median at hi and the MINIMUM at lo: on input already in rank order,
+        // such as all-tied logits, every pass then peeled one candidate.)
         if (cand_cmp(&c[mid], &c[lo]) < 0) { cand_t t = c[lo]; c[lo] = c[mid]; c[mid] = t; }
         if (cand_cmp(&c[hi], &c[lo]) < 0)  { cand_t t = c[lo]; c[lo] = c[hi]; c[hi] = t; }
-        if (cand_cmp(&c[mid], &c[hi]) < 0) { cand_t t = c[mid]; c[mid] = c[hi]; c[hi] = t; }
+        if (cand_cmp(&c[hi], &c[mid]) < 0) { cand_t t = c[mid]; c[mid] = c[hi]; c[hi] = t; }
+        { cand_t t = c[lo]; c[lo] = c[mid]; c[mid] = t; }
         cand_t pivot = c[lo];
         int i = lo, j = hi;
         while (i < j) {
