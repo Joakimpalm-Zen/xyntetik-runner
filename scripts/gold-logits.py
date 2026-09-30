@@ -63,6 +63,38 @@ def query(endpoint, model_name, prompt, top_n=20):
     return top
 
 
+def token_speller(tok):
+    """How a server spells one token in its logprobs: the text the token adds
+    inside a sentence.
+
+    `decode([id])` is not that on the families whose tokenizer prepends a
+    space (SentencePiece with add_space_prefix: Mistral v0.3, Phi-3.5, Llama
+    2). Their decoder strips the leading space of the first piece of every
+    decode, so a lone "\u2581new" reads "new" while both servers report " new".
+    KL here matches tokens by spelling, so almost every word token went
+    unmatched: measured 2026-09-07, Mistral v0.3 read mean KL 1.6114 on both
+    engines to four decimals and Phi-3.5 about 1.9, with top-1 agreeing only on
+    punctuation. The prefixes the servers scored were the reference's own ids
+    (checked 2026-09-30 against the runner's tokenizer at all 100 positions of
+    both families); the spelling was the fault. Decoding each token after an
+    anchor token and keeping what it added gives the in-sentence spelling on
+    every family, and the same spelling as before on byte-level BPE ones
+    (Qwen3, Granite). No cleanup either: a server does not strip the space
+    before punctuation.
+    """
+    anchor = tok("a", add_special_tokens=False)["input_ids"][-1:]
+    base = tok.decode(anchor, clean_up_tokenization_spaces=False) if anchor else ""
+    cache = {}
+
+    def spell(i):
+        if i not in cache:
+            s = tok.decode(anchor + [i], clean_up_tokenization_spaces=False)
+            cache[i] = (s[len(base):] if anchor and s.startswith(base)
+                        else tok.decode([i], clean_up_tokenization_spaces=False))
+        return cache[i]
+    return spell
+
+
 def kld(gold, other):
     """KL(gold || other) over gold's top tokens, with `other`'s mass renormalised
     over the same support; tokens missing from `other` get its floor."""
@@ -199,6 +231,7 @@ def main():
         out = model(torch.tensor([span]))
     logp = torch.log_softmax(out.logits[0].float(), dim=-1)
 
+    spell = token_speller(tok)
     rows = []
     skipped = 0
     sides = [("a", args.endpoint_a, args.model_name_a)]
@@ -212,8 +245,8 @@ def main():
         if tok(prefix, add_special_tokens=False)["input_ids"] != body[:pos]:
             continue
         top = torch.topk(logp[len(special) + pos - 1], args.top_n)
-        gold = {tok.decode([int(i)]): float(v) for v, i in zip(top.values, top.indices)}
-        gold_top1 = tok.decode([int(top.indices[0])])
+        gold = {spell(int(i)): float(v) for v, i in zip(top.values, top.indices)}
+        gold_top1 = spell(int(top.indices[0]))
         row = {"pos": pos, "gold_top1": gold_top1, "gold_margin":
                float(top.values[0] - top.values[1])}
         got = {name: query(ep, mn, prefix, args.top_n) for name, ep, mn in sides}
@@ -234,6 +267,7 @@ def main():
                "reference_class": type(model).__name__,
                "special_prefix_tokens": len(special),
                "special_prefix_forced": bool(args.force_bos and special),
+               "token_spelling": "in-sentence (anchored decode)",
                "positions_skipped_no_logprobs": skipped,
                "reference_dtype": "float32", "reference_device": "cpu",
                "sides": {}}
@@ -269,7 +303,9 @@ def main():
                 "not distinguishable" if w is None or w[1] >= 0.05
                 else ("a closer" if w[0] > 0 else "b closer")),
         }
-    report = {"schema_version": "xyntetik.runner.gold-logits.v2",
+    # v3: tokens are spelled as a server spells them (token_speller); a v2
+    # report on an add_space_prefix family compared mismatched spellings
+    report = {"schema_version": "xyntetik.runner.gold-logits.v3",
               "summary": summary, "rows": rows}
     print(json.dumps(summary, indent=2))
     if args.out:
