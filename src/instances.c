@@ -1,7 +1,4 @@
 // Instance discovery registry — see instances.h for the contract.
-#ifdef _WIN32
-#define _CRT_RAND_S   // rand_s, for the startup lease's token
-#endif
 #include "instances.h"
 #include "compat.h"
 #include "json.h"
@@ -457,17 +454,22 @@ static bool lease_sibling(char *out, size_t cap, const char *path,
     return n > 0 && (size_t)n < cap;
 }
 
+static uint64_t lease_splitmix(uint64_t *s) {
+    uint64_t z = (*s += 0x9e3779b97f4a7c15ull);
+    z = (z ^ (z >> 30)) * 0xbf58476d1ce4e5b9ull;
+    z = (z ^ (z >> 27)) * 0x94d049bb133111ebull;
+    return z ^ (z >> 31);
+}
+
+// A token only has to differ from every other claimant's, as the Rust port's
+// keyed hash does: /dev/urandom where there is one, else the pid, a fine
+// clock, a per-process sequence and an address, mixed. (Not rand_s:
+// test_instances_oom.c compiles this file after <stdlib.h>, too late for the
+// _CRT_RAND_S its declaration needs under MinGW.)
 static void lease_hex_token(char out[33]) {
     unsigned char b[16];
     bool ok = false;
-#ifdef _WIN32
-    ok = true;
-    for (int i = 0; i < 16 && ok; i += 4) {
-        unsigned v;
-        if (rand_s(&v) != 0) { ok = false; break; }
-        memcpy(b + i, &v, 4);
-    }
-#else
+#ifndef _WIN32
     FILE *f = fopen("/dev/urandom", "rb");
     if (f) {
         ok = fread(b, 1, sizeof b, f) == sizeof b;
@@ -475,14 +477,23 @@ static void lease_hex_token(char out[33]) {
     }
 #endif
     if (!ok) {
-        // The token only has to differ from every other claimant's; with no
-        // OS generator the pid, the clock and an address still make it so.
-        uint64_t x = ((uint64_t)time(NULL) << 20) ^ (uint64_t)plat_pid_self() ^
-                     (uint64_t)(uintptr_t)out;
-        for (int i = 0; i < 16; i++) {
-            x = x * 6364136223846793005ull + 1442695040888963407ull;
-            b[i] = (unsigned char)(x >> 56);
-        }
+        static unsigned seq = 0;
+        uint64_t clk;
+#ifdef _WIN32
+        LARGE_INTEGER q;
+        QueryPerformanceCounter(&q);
+        clk = (uint64_t)q.QuadPart;
+#else
+        struct timespec ts;
+        clock_gettime(CLOCK_MONOTONIC, &ts);
+        clk = (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
+#endif
+        uint64_t s = clk ^ ((uint64_t)plat_pid_self() << 32) ^
+                     ((uint64_t)time(NULL) << 12) ^ (uint64_t)(uintptr_t)out ^
+                     ((uint64_t)++seq << 48);
+        uint64_t h0 = lease_splitmix(&s), h1 = lease_splitmix(&s);
+        memcpy(b, &h0, 8);
+        memcpy(b + 8, &h1, 8);
     }
     static const char hx[] = "0123456789abcdef";
     for (int i = 0; i < 16; i++) {
