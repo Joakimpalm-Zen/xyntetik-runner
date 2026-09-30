@@ -17,6 +17,7 @@ PUBLIC_ROUTES = {
     ("POST", "/v1/responses"),
     ("POST", "/v1/completions"),
     ("POST", "/v1/embeddings"),
+    ("POST", "/v1/rerank"),
     ("POST", "/v1/messages"),
     ("POST", "/v1/messages/count_tokens"),
     ("GET", "/v1/models"),

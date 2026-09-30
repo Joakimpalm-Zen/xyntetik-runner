@@ -2,6 +2,7 @@
 #include "envelope.h"
 #include "runner.h"
 #include <math.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -25,12 +26,16 @@ static int cmp_seq(const void *a, const void *b) {
     return x->n - y->n;
 }
 
-bool decide_score(engine *e, const char *prompt, const char *const *options, int n_opt,
-                  decide_result *out, int *prompt_tokens, const char **err) {
+// `mode` is how the prompt (and prompt + option) is tokenized: TOK_TEXT for
+// caller text, TOK_PROMPT for a chat render whose control tokens sit inside
+// the template's marks. An option is always appended as plain bytes.
+static bool score_mode(engine *e, const char *prompt, tok_mode mode,
+                       const char *const *options, int n_opt,
+                       decide_result *out, int *prompt_tokens, const char **err) {
     *err = NULL;
     model_t *m = e->m;
     int32_t *ptoks = NULL;
-    int np = tok_encode_fit(e->tok, prompt, true, TOK_TEXT, 0, &ptoks);
+    int np = tok_encode_fit(e->tok, prompt, true, mode, 0, &ptoks);
     if (np < 0) { *err = "out of memory tokenizing the prompt"; return false; }
     if (np < 1) { free(ptoks); *err = "empty prompt"; return false; }
     *prompt_tokens = np;
@@ -49,7 +54,7 @@ bool decide_score(engine *e, const char *prompt, const char *const *options, int
         // the option tokenised IN CONTEXT: the concatenation, diffed against
         // the prompt's own tokens; a boundary merge shortens `common` and is
         // then scored as part of the option
-        int nf = tok_encode_fit(e->tok, cat, true, TOK_TEXT, 0, &seq[i].toks);
+        int nf = tok_encode_fit(e->tok, cat, true, mode, 0, &seq[i].toks);
         free(cat);
         if (nf < 0) { *err = "out of memory tokenizing an option"; ok = false; break; }
         int c = 0;
@@ -111,6 +116,11 @@ bool decide_score(engine *e, const char *prompt, const char *const *options, int
     for (int i = 0; i < n_opt; i++) free(seq[i].toks);
     free(seq); free(ptoks);
     return ok;
+}
+
+bool decide_score(engine *e, const char *prompt, const char *const *options, int n_opt,
+                  decide_result *out, int *prompt_tokens, const char **err) {
+    return score_mode(e, prompt, TOK_TEXT, options, n_opt, out, prompt_tokens, err);
 }
 
 // ---------------------------------------------------------------- request
@@ -256,6 +266,211 @@ int decide_handle(engine *e, const jv *req, const char *model_name, sbuf *out, c
     sb_fmt(out, "],\"usage\":{\"prompt_tokens\":%d,\"completion_tokens\":0,\"total_tokens\":%d},"
                 "\"envelope\":{\"runner_version\":\"%s\",\"state_sha256\":\"%s\",\"questions_sha256\":\"%s\","
                 "\"rendering\":\"%s\"}}", total_prompt, total_prompt, RUNNER_VERSION, state_sha, q_sha, rend);
+    if (out->failed) { *err = "out of memory building the response"; return 500; }
+    return 200;
+}
+
+// ---------------------------------------------------------------- rerank
+
+// R10.3.1: relevance as a constrained two-way choice. Each document is put to
+// the served model as a question with exactly two legal answers and scored
+// with the same exact readout as /v1/decide; the relevance score is P(yes)
+// renormalized over {yes, no}, and the logit is log P(yes) - log P(no), the
+// same number in the units a margin is read in.
+
+#define RERANK_INSTRUCTION \
+    "Judge whether the document answers the query. Answer yes or no."
+
+typedef struct { int idx; double logit, lp_yes, lp_no; } rr_row;
+
+static int rr_cmp(const void *a, const void *b) {
+    const rr_row *x = a, *y = b;
+    if (x->logit != y->logit) return x->logit > y->logit ? -1 : 1;
+    return x->idx - y->idx;   // a tie keeps the input order
+}
+
+// A document is a string or an object with a string "text" (the Cohere and
+// Jina shape); anything else is refused by name.
+static const char *rr_doc_text(const jv *d) {
+    if (d->type == J_STR) return d->str;
+    if (d->type == J_OBJ) return jstr(d, "text");
+    return NULL;
+}
+
+// The chat-v1 prompt: the instruction as the system turn, query and document
+// as the user turn, rendered by the served model's own template with thinking
+// off, so the answer is the first thing the assistant turn holds.
+static char *rr_render_chat(int tmpl, const char *instr, const char *q,
+                            const char *d) {
+    sbuf u = {0};
+    sb_lit(&u, "Query: ");
+    sb_put(&u, q, strlen(q));
+    sb_lit(&u, "\nDocument: ");
+    sb_put(&u, d, strlen(d));
+    sb_put(&u, "", 1);
+    if (u.failed) { free(u.s); return NULL; }
+    chat_msg msgs[2] = { { .role = "system", .content = instr },
+                         { .role = "user", .content = u.s } };
+    char *p = NULL;
+    for (size_t cap = 1024 + u.n + strlen(instr);; cap *= 2) {
+        char *b = malloc(cap);
+        if (!b) break;
+        size_t n = render_messages_with_tools(tmpl, msgs, 2, true, THINK_OFF,
+                                              NULL, b, cap);
+        if (n == SIZE_MAX) { free(b); break; }
+        if (n < cap && strlen(b) + 1 < cap) { p = b; break; }
+        free(b);
+        if (cap > ((size_t)1 << 30)) break;
+    }
+    free(u.s);
+    return p;
+}
+
+static char *rr_render_raw(const char *instr, const char *q, const char *d) {
+    sbuf b = {0};
+    sb_put(&b, instr, strlen(instr));
+    sb_lit(&b, "\n\nQuery: ");
+    sb_put(&b, q, strlen(q));
+    sb_lit(&b, "\nDocument: ");
+    sb_put(&b, d, strlen(d));
+    sb_lit(&b, "\nRelevant:");
+    sb_put(&b, "", 1);
+    if (b.failed) { free(b.s); return NULL; }
+    return b.s;
+}
+
+int rerank_handle(engine *e, const jv *req, const char *model_name, int tmpl,
+                  sbuf *out, const char **err) {
+    *err = NULL;
+    const char *query = jstr(req, "query");
+    if (!query || !*query) { *err = "missing query (a non-empty string)"; return 400; }
+    jv *docs = jv_get((jv *)req, "documents");
+    if (!docs || docs->type != J_ARR || docs->n < 1) {
+        *err = "missing documents (a non-empty array)"; return 400;
+    }
+    for (int i = 0; i < docs->n; i++) {
+        const char *t = rr_doc_text(docs->items[i]);
+        if (!t || !*t) {
+            *err = "each document must be a non-empty string or an object "
+                   "with a non-empty string \"text\"";
+            return 400;
+        }
+    }
+    const char *instr = jstr(req, "instruction");
+    jv *iv = jv_get((jv *)req, "instruction");
+    if (iv && iv->type != J_NULL && (!instr || !*instr)) {
+        *err = "instruction must be a non-empty string"; return 400;
+    }
+    if (!instr) instr = RERANK_INSTRUCTION;
+    const char *rend = jstr(req, "rendering");
+    jv *rv = jv_get((jv *)req, "rendering");
+    if (rv && rv->type != J_NULL && !rend) { *err = "rendering must be a string"; return 400; }
+    if (!rend) rend = "chat-v1";
+    bool chat;
+    if (!strcmp(rend, "chat-v1")) chat = true;
+    else if (!strcmp(rend, "raw-v1")) chat = false;
+    else { *err = "unknown rendering: chat-v1 or raw-v1"; return 400; }
+    if (chat && tmpl == TMPL_HARMONY) {
+        // Harmony's answer follows a channel header the model chooses, not
+        // the generation prompt; scoring "yes" right after it would read a
+        // distribution the model never answers from.
+        *err = "rendering chat-v1 cannot score harmony's channel protocol; "
+               "use rendering raw-v1";
+        return 400;
+    }
+    int top_n = docs->n;
+    jv *tn = jv_get((jv *)req, "top_n");
+    if (tn && tn->type != J_NULL) {
+        if (tn->type != J_NUM || tn->num != floor(tn->num) || tn->num < 1) {
+            *err = "top_n must be a positive integer"; return 400;
+        }
+        if (tn->num < top_n) top_n = (int)tn->num;
+    }
+    bool ret_docs = false;
+    jv *rd = jv_get((jv *)req, "return_documents");
+    if (rd && rd->type != J_NULL) {
+        if (rd->type != J_BOOL) {
+            *err = "return_documents must be a boolean"; return 400;
+        }
+        ret_docs = rd->b;
+    }
+
+    // the chat answer is the first assistant token; the raw prompt ends in a
+    // colon, so its answers carry their leading space
+    const char *const opts_chat[2] = { "yes", "no" };
+    const char *const opts_raw[2]  = { " yes", " no" };
+    rr_row *rows = calloc((size_t)docs->n, sizeof *rows);
+    if (!rows) { *err = "out of memory"; return 500; }
+    int total_prompt = 0, status = 200;
+    for (int i = 0; i < docs->n && status == 200; i++) {
+        const char *d = rr_doc_text(docs->items[i]);
+        char *prompt = chat ? rr_render_chat(tmpl, instr, query, d)
+                            : rr_render_raw(instr, query, d);
+        if (!prompt) { *err = "out of memory rendering a document"; status = 500; break; }
+        decide_result res[2];
+        int ptoks = 0;
+        const char *serr = NULL;
+        bool ok = score_mode(e, prompt, chat ? TOK_PROMPT : TOK_TEXT,
+                             chat ? opts_chat : opts_raw, 2, res, &ptoks, &serr);
+        free(prompt);
+        if (!ok) {
+            *err = serr ? serr : "scoring failed";
+            status = strstr(*err, "memory") ? 500 : 400;
+            break;
+        }
+        total_prompt += ptoks;
+        rows[i].idx = i;
+        rows[i].lp_yes = res[0].lp;
+        rows[i].lp_no = res[1].lp;
+        rows[i].logit = res[0].lp - res[1].lp;
+    }
+    if (status != 200) { free(rows); return status; }
+    qsort(rows, (size_t)docs->n, sizeof *rows, rr_cmp);
+
+    char q_sha[65], d_sha[65], i_sha[65];
+    envelope_data_sha256(query, strlen(query), q_sha);
+    envelope_data_sha256(instr, strlen(instr), i_sha);
+    {
+        // length-prefixed, for the reason decide_handle gives
+        sbuf canon = {0};
+        for (int i = 0; i < docs->n; i++) {
+            const char *d = rr_doc_text(docs->items[i]);
+            size_t dl = strlen(d);
+            sb_fmt(&canon, "d%llu:", (unsigned long long)dl);
+            sb_put(&canon, d, dl);
+        }
+        envelope_data_sha256(canon.s ? canon.s : "", canon.n, d_sha);
+        free(canon.s);
+    }
+    static unsigned long long counter = 0;
+    sb_fmt(out, "{\"id\":\"rerank-%llu\",\"object\":\"rerank\",\"model\":\"", ++counter);
+    sb_esc(out, model_name, strlen(model_name));
+    sb_lit(out, "\",\"results\":[");
+    for (int k = 0; k < top_n; k++) {
+        const rr_row *r = &rows[k];
+        // logistic of the logit, written so neither tail overflows
+        double p = r->logit >= 0 ? 1.0 / (1.0 + exp(-r->logit))
+                                 : exp(r->logit) / (1.0 + exp(r->logit));
+        sb_fmt(out, "%s{\"index\":%d,\"relevance_score\":%.9g,\"logit\":%.9g,"
+                    "\"margin\":", k ? "," : "", r->idx, p, r->logit);
+        if (k + 1 < docs->n) sb_fmt(out, "%.9g", r->logit - rows[k + 1].logit);
+        else                 sb_lit(out, "null");
+        sb_fmt(out, ",\"logprobs\":{\"yes\":%.9g,\"no\":%.9g}", r->lp_yes, r->lp_no);
+        if (ret_docs) {
+            const char *d = rr_doc_text(docs->items[r->idx]);
+            sb_lit(out, ",\"document\":{\"text\":\"");
+            sb_esc(out, d, strlen(d));
+            sb_lit(out, "\"}");
+        }
+        sb_lit(out, "}");
+    }
+    free(rows);
+    sb_fmt(out, "],\"usage\":{\"prompt_tokens\":%d,\"completion_tokens\":0,"
+                "\"total_tokens\":%d},\"envelope\":{\"runner_version\":\"%s\","
+                "\"query_sha256\":\"%s\",\"documents_sha256\":\"%s\","
+                "\"instruction_sha256\":\"%s\",\"rendering\":\"%s\","
+                "\"options\":[\"yes\",\"no\"]}}",
+           total_prompt, total_prompt, RUNNER_VERSION, q_sha, d_sha, i_sha, rend);
     if (out->failed) { *err = "out of memory building the response"; return 500; }
     return 200;
 }

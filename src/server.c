@@ -4,6 +4,7 @@
 //                               response_format {"type":"json_object"}
 //   POST /v1/completions        raw prompt completion
 //   POST /v1/embeddings         L2-normed embeddings, pooled as the GGUF declares
+//   POST /v1/rerank             documents ranked by a yes/no relevance choice
 //   GET  /v1/models             the loaded model
 //   GET  /v1/capabilities       registry + feature discovery
 //   GET  /health                liveness
@@ -413,7 +414,7 @@ static void handle_chat(slot_t *s, sock_t fd, jv *req) {
         send_error(fd, 400, merr);
         return;
     }
-    const char **roles = malloc(sizeof(*roles) * (size_t)msgs->n);
+    const char **roles = malloc(sizeof(*roles) * (size_t)(unsigned)msgs->n);
     if (!roles) {
         send_error(fd, 500, "out of memory validating chat history");
         return;
@@ -786,6 +787,23 @@ static void handle_decide(slot_t *s, sock_t fd, jv *req) {
     send_built(fd, &r);
     fprintf(stderr, "[slot %d] decide: %d question(s)\n", s->id,
             jv_get(req, "questions") ? jv_get(req, "questions")->n : 0);
+    free(r.s);
+}
+
+static void handle_rerank(slot_t *s, sock_t fd, jv *req) {
+    sbuf r = {0};
+    const char *err = NULL;
+    sched_prefill_begin();
+    int st = rerank_handle(&s->e, req, SV.model_name, s->tmpl, &r, &err);
+    sched_prefill_end();
+    if (st != 200) {
+        free(r.s);
+        send_error(fd, st, err ? err : "rerank failed");
+        return;
+    }
+    send_built(fd, &r);
+    fprintf(stderr, "[slot %d] rerank: %d document(s)\n", s->id,
+            jv_get(req, "documents") ? jv_get(req, "documents")->n : 0);
     free(r.s);
 }
 
@@ -1607,7 +1625,8 @@ static void handle_conn(slot_t *s, sock_t fd) {
                 !strcmp(path, "/v1/messages/count_tokens") ||
                 !strcmp(path, "/v1/completions") ||
                 !strcmp(path, "/v1/embeddings") ||
-                !strcmp(path, "/v1/decide"))) {
+                !strcmp(path, "/v1/decide") ||
+                !strcmp(path, "/v1/rerank"))) {
         jv *req = body ? json_parse(body, content_length) : NULL;
         if (!req) {
             send_error(fd, 400, "invalid JSON body");
@@ -1701,6 +1720,7 @@ static void handle_conn(slot_t *s, sock_t fd) {
                     handle_count_tokens(s, fd, req);
                 else if (strcmp(path, "/v1/embeddings") == 0) handle_embeddings(s, fd, req);
                 else if (strcmp(path, "/v1/decide") == 0) handle_decide(s, fd, req);
+                else if (strcmp(path, "/v1/rerank") == 0) handle_rerank(s, fd, req);
                 else handle_completion(s, fd, req);
                 // Ollama-style keep_alive: seconds of idle before the model
                 // unloads (swap mode) — 0 unloads now, negative pins forever.
@@ -2398,7 +2418,8 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
                 port, parallel, parallel > 1 ? "s" : "", threads_per_slot,
                 batched ? ", continuous batching" : "");
     fputs("  POST /v1/chat/completions | POST /v1/responses | POST /v1/completions\n"
-          "  POST /v1/embeddings | POST /v1/messages | POST /v1/messages/count_tokens\n"
+          "  POST /v1/embeddings | POST /v1/rerank | POST /v1/messages"
+          " | POST /v1/messages/count_tokens\n"
           "  GET /v1/models | GET /v1/capabilities | GET /health | GET /metrics\n"
           "  GET /v1/runner/prefix-cache | POST /v1/runner/prefix-cache/clear"
           " | POST /unload\n"

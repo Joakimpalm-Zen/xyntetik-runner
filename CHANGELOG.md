@@ -8,6 +8,19 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **`POST /v1/rerank` without a reranker model.** A document's relevance is
+  the served model's answer to a two-answer question (yes or no), read with
+  `/v1/decide`'s exact in-context scorer: `relevance_score` is P(yes)
+  renormalized over the two answers, `logit` the log-odds and `margin` the
+  gap to the next rank, returned with the ranking. The request takes the
+  Cohere/Jina shape (`query`, `documents` as strings or `{text}` objects,
+  `top_n`, `return_documents`) plus an optional `instruction` and a
+  `rendering` (`chat-v1` through the model's own template, `raw-v1` for base
+  models). Pinned in `tests/test_rerank.py`: every score equals the
+  `/v1/decide` readout of the same prompt, document order changes no score,
+  and the zero-branch fixture, whose logits cannot see the documents by
+  construction, ties every document and keeps the input order.
+
 - **`GET /v1/runner/provenance`: a running server says what it is.** A
   receipt records the binary's and the model's digests, the load-time
   signature verdict and the envelope, but only after a CLI inference; an
