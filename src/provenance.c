@@ -30,6 +30,7 @@ typedef struct {
 // finishes after its model was swapped out is dropped instead of being filed
 // under the model that replaced it.
 static pthread_mutex_t mu = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t  hashed = PTHREAD_COND_INITIALIZER;   // hstate left H_HASHING
 static char     binary_sha[65];
 static bool     binary_ok;
 static bool     resident;
@@ -93,6 +94,7 @@ static void *hash_model(void *arg) {
         hstate = ok ? H_DONE : H_FAILED;
         if (ok) memcpy(model_sha, sha, sizeof sha);
     }
+    pthread_cond_broadcast(&hashed);
     pthread_mutex_unlock(&mu);
     free(j->path);
     free(j);
@@ -158,13 +160,31 @@ void provenance_note_load(const provenance_load *l) {
         free(jp);
         pthread_mutex_lock(&mu);
         if (gen == my_gen) hstate = H_FAILED;
+        pthread_cond_broadcast(&hashed);
         pthread_mutex_unlock(&mu);
     }
+}
+
+bool provenance_digests(char model[65], char binary[65]) {
+    pthread_mutex_lock(&mu);
+    uint64_t my_gen = gen;
+    while (resident && gen == my_gen && hstate == H_HASHING)
+        pthread_cond_wait(&hashed, &mu);
+    file_id now;
+    bool ok = resident && gen == my_gen && hstate == H_DONE && binary_ok &&
+              load_id_ok && identify(model_path, &now) && same_file(&now, &load_id);
+    if (ok) {
+        memcpy(model, model_sha, 65);
+        memcpy(binary, binary_sha, 65);
+    }
+    pthread_mutex_unlock(&mu);
+    return ok;
 }
 
 void provenance_note_unload(void) {
     pthread_mutex_lock(&mu);
     resident = false;
+    pthread_cond_broadcast(&hashed);
     gen++;   // an in-flight digest belongs to a model that is gone
     free(model_path);
     free(adapter_path);

@@ -1,6 +1,10 @@
 // Generation and wire framing. Lifted out of server.c (RNR-019); see completion.h.
 #include "completion.h"
 #include "respstore.h"
+#include "gpu.h"
+#include "build_arch.h"
+#include "provenance.h"
+#include "receipts.h"
 #include "compat.h"
 
 #include "http.h"
@@ -95,6 +99,10 @@ typedef struct {
     // R4.12.19: the runner_telemetry.repeated_tool_calls array, when a call
     // this turn emitted repeats one already in the conversation (owned)
     char *repeat_json;
+    // R1.2.2: every byte the engine emitted, before any splitting, for the
+    // receipt (what --verify's replay compares against); only when on
+    bool  raw_on;
+    sbuf  raw;
 } gen_ctx;
 
 typedef struct {
@@ -331,6 +339,8 @@ static void completion_cleanup(engine *e, snode *schema, gen_ctx *g) {
         g->ptoks = NULL;
         free(g->repeat_json);
         g->repeat_json = NULL;
+        free(g->raw.s);
+        g->raw = (sbuf){0};
     }
     free(e->lp_chosen); free(e->lp_ids); free(e->lp_top);
     e->lp_chosen = NULL; e->lp_ids = NULL; e->lp_top = NULL;
@@ -849,6 +859,9 @@ typedef struct req_diag {
     int         context_tokens;
     // R8.6: the per-request adapter, when one was named
     const char *adapter_name, *adapter_sha256;
+    // R1.2.2: this request's receipt (file and chain hash), or why none was
+    // written while receipts are on
+    const char *receipt_file, *receipt_chain, *receipt_error;
 } req_diag;
 
 static void diag_json(sbuf *r, const req_diag *d) {
@@ -889,6 +902,11 @@ static void diag_json(sbuf *r, const req_diag *d) {
         sb_esc(r, d->adapter_name, strlen(d->adapter_name));
         sb_fmt(r, "\",\"sha256\":\"%s\"}", d->adapter_sha256);
     }
+    if (d->receipt_file)
+        sb_fmt(r, ",\"receipt\":{\"file\":\"%s\",\"chain_hash\":\"%s\"}",
+               d->receipt_file, d->receipt_chain);
+    else if (d->receipt_error)
+        sb_fmt(r, ",\"receipt\":{\"error\":\"%s\"}", d->receipt_error);
 }
 
 // The speculation fields of a resp_doc, from the engine that served the
@@ -1794,6 +1812,7 @@ static int gen_emit(void *ud, int reasoning, const char *bytes, int n) {
 
 static int gen_collect(void *ud, const char *bytes, int n) {
     gen_ctx *g = ud;
+    if (g->raw_on) sb_put(&g->raw, bytes, (size_t)n);
     // One call per generated token, which is what makes this the right place
     // to count reasoning tokens: gen_emit below can fire more than once for
     // the same token when the splitter cuts it across channels.
@@ -2115,6 +2134,87 @@ static void prefill_yield_turn(void *ud) {
     // still waited 25.3 s of a 26.4 s prefill.
     sched_prefill_end();
     sched_prefill_begin();
+}
+
+// R1.2.2: one receipt for a finished generation, in the CLI transcript's
+// format so --verify replays it: the prompt's and the output's token ids,
+// the sampler's settings and its state as generation started, the model's,
+// adapter's and binary's digests. "serve" says which surface and request it
+// was, how the prompt's KV was obtained, and what shaped the output beyond
+// the sampler -- a replay of a constrained or stop-truncated turn cannot
+// reproduce it from the sampler alone. Returns NULL, or why nothing was
+// written.
+static const char *serve_receipt(slot_t *s, engine *e, gen_ctx *g,
+                                 const char *prompt, int api, bool chat,
+                                 uint64_t gen_rng, int max_tokens, int n_prompt,
+                                 int n_gen, int cached, const char *reuse,
+                                 bool spec_used, const char *const *shaped,
+                                 int n_shaped, char file[64], char chain[65]) {
+    model_t *m = s->m;
+    char msha[65], bsha[65];
+    if (!provenance_digests(msha, bsha))
+        return "the served model file is not the one loaded (or its digest "
+               "failed); no receipt can name it";
+    if (g->raw.failed) return "out of memory capturing the output";
+    sbuf sj = {0};
+    sb_fmt(&sj, "{\"api\":\"%s\",\"request_id\":\"%s\",\"prompt_reuse\":"
+                "\"%s\",\"cached_tokens\":%d,\"shaped_by\":[",
+           api == API_TEXT ? "completions" : api == API_CHAT ? "chat.completions"
+         : api == API_RESPONSES ? "responses" : "messages",
+           g->id, reuse ? reuse : "none", cached);
+    for (int i = 0; i < n_shaped; i++)
+        sb_fmt(&sj, "%s\"%s\"", i ? "," : "", shaped[i]);
+    sb_lit(&sj, "]}");
+    sb_put(&sj, "", 1);
+    if (sj.failed) { free(sj.s); return "out of memory building the receipt"; }
+    char gname[128] = "cpu";
+    if (m->gpu && !gpu_available(gname, (int)sizeof gname))
+        snprintf(gname, sizeof gname, "gpu");
+    const char *apath = s->adapter >= 0 ? SV.adapters[s->adapter].path
+                                        : SV.mp.lora_path;
+    transcript_info ti = {
+        .runner_version = RUNNER_VERSION,
+        .compiler = __VERSION__,
+#ifdef _WIN32
+        .os = "windows",
+#elif defined(__APPLE__)
+        .os = "macos",
+#else
+        .os = "linux",
+#endif
+        .arch = RUNNER_BUILD_ARCH,
+#ifdef RUNNER_T3_BUILD
+        .build_flavor = "t3",
+#endif
+        .device = m->gpu ? gname : "cpu", .gpu = m->gpu != NULL,
+        .gpu_layers = m->gpu_layers,
+        .threads = m->tp ? tpool_size(m->tp) : 0, .n_ctx = m->n_ctx,
+        .n_batch = m->n_batch, .kv_q8 = m->kv_q8, .kv_fp4 = m->kv_fp4,
+        .kv_split = m->kv_split,
+        .model_path = m->path,
+        .adapter_path = apath, .adapter_scale = SV.mp.lora_scale,
+        .seed = gen_rng,
+        .temp = s->smp.temp, .top_p = s->smp.top_p, .min_p = s->smp.min_p,
+        .repeat_penalty = s->smp.repeat_penalty, .top_k = s->smp.top_k,
+        .n_predict = max_tokens, .bos = true,
+        .prompt_text = prompt,
+        .prompt_tokens = e->hist, .n_prompt = n_prompt,
+        .output_text = g->raw.s ? g->raw.s : "", .output_text_len = g->raw.n,
+        .output_tokens = e->hist + n_prompt, .n_output = n_gen,
+        .hit_stop = e->hit_stop,
+        .spec_source = spec_used ? (e->dm ? "model" : e->mtp_on ? "mtp"
+                                   : e->lookup_on ? "lookup" : NULL) : NULL,
+        .spec_rounds = e->spec_st.rounds, .spec_drafted = e->spec_st.drafted,
+        .spec_accepted = e->spec_st.accepted,
+        .spec_lk_drafted = e->spec_st.lk_drafted,
+        .spec_lk_accepted = e->spec_st.lk_accepted,
+        .model_sha256 = msha, .binary_sha256 = bsha,
+        .template_name = chat ? template_name(s->tmpl) : "raw",
+        .serve_json = sj.s,
+    };
+    bool ok = receipts_write(&ti, file, chain);
+    free(sj.s);
+    return ok ? NULL : "the receipt could not be written (see server log)";
 }
 
 void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
@@ -3235,6 +3335,9 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
     // that logger reads initialized before that first possible jump.
     bool unmapped = false;
     double gtime;
+    // R1.2.2: the sampler's state as generation starts is the receipt's seed
+    uint64_t gen_rng = s->smp.rng;
+    g.raw_on = receipts_enabled();
     int n_gen = sched_generate(s, logits, max_tokens, gen_collect, &g, &gtime,
                                req_deadline);
     // The one place every surface's generation passes through, so /health's
@@ -3249,6 +3352,30 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
         work.spec_accepted = e->spec_st.accepted;
     }
     server_record_work(&work);
+    // R1.2.2: the receipt, before any body is built so the body can name it
+    char receipt_file[64] = "", receipt_chain[65] = "";
+    if (g.raw_on && !g.dead) {
+        const char *shaped[10];
+        int n_shaped = 0;
+        if (schema)            shaped[n_shaped++] = "json_schema";
+        else if (e->json_mode) shaped[n_shaped++] = "json_mode";
+        if (env)               shaped[n_shaped++] = "tools";
+        if (n_stops || n_req_stops) shaped[n_shaped++] = "stop";
+        if (e->think_budget > 0) shaped[n_shaped++] = "reasoning_budget";
+        if (e->think_smp)      shaped[n_shaped++] = "reasoning_sampling";
+        if (e->loop_guard)     shaped[n_shaped++] = "loop_guard";
+        if (e->ignore_eos)     shaped[n_shaped++] = "ignore_eos";
+        if (script_text)       shaped[n_shaped++] = "scripted";
+        diag.receipt_error = serve_receipt(s, e, &g, prompt, api, chat, gen_rng,
+                                           max_tokens, n_prompt, n_gen, keep,
+                                           diag.prompt_reuse, spec_used,
+                                           shaped, n_shaped, receipt_file,
+                                           receipt_chain);
+        if (!diag.receipt_error) {
+            diag.receipt_file = receipt_file;
+            diag.receipt_chain = receipt_chain;
+        }
+    }
     // The socket probe and the streaming write path share g.dead. Whichever
     // learned the verdict first takes this same cleanup exit: no terminal
     // frame is owed to a peer already proven gone, and buffered responses must

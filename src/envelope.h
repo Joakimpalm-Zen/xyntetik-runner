@@ -109,6 +109,16 @@ typedef struct {
     const char *spec_source;
     int         spec_rounds, spec_drafted, spec_accepted;
     int         spec_lk_drafted, spec_lk_accepted;   // the lookup's share
+    // Serve-mode receipts (R1.2.2). Precomputed digests (64 hex) skip the
+    // per-record hashing of a multi-GB model and of the executable; NULL
+    // hashes the files as the CLI always has. template_name replaces "raw"
+    // in config.template (the prompt tokens are what a replay feeds either
+    // way). serve_json, when set, is a JSON object written as "serve". The
+    // record's chain hash is copied to chain_out (65 bytes) when non-NULL.
+    const char *model_sha256, *binary_sha256;
+    const char *template_name;
+    const char *serve_json;
+    char       *chain_out;
 } transcript_info;
 
 // Signing keys: xyntetik.runner.signkey.v1, a 32-byte seed and the public

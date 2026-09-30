@@ -8,6 +8,20 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **Per-request receipts in serve mode (`--receipts DIR`).** Every
+  finished generation on the chat, completions, Responses and Messages
+  surfaces writes the CLI's transcript record, so `--verify` replays a
+  served request exactly as it replays a one-shot run. Records are chained in
+  write order and across restarts (a newest record that does not parse
+  refuses the start instead of beginning a second chain), signed with
+  `--sign-key`, bounded with `--receipts-keep`, and carry a `serve` object:
+  the surface, the request id, how the prompt's KV was obtained, and what
+  shaped the output beyond the sampler. `runner_telemetry.receipt` names
+  each response's record. The anchor in `tests/test_serve_receipts.py` is
+  the CLI replay: greedy, sampled (the sampler's state as generation started
+  is the recorded seed) and chat receipts all replay VERIFIED at T1, as did
+  records whose prompt reused the slot's KV.
+
 - **Receipt bundles: one directory a verifier can take.**
   `--export-bundle RECEIPT --bundle-out DIR` writes the receipt byte for
   byte, the OMS model signature and its key when given, and a

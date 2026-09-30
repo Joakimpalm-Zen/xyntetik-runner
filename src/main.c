@@ -14,6 +14,7 @@
 #include "server.h"
 #include "provenance.h"
 #include "bundle.h"
+#include "receipts.h"
 #include "build_arch.h"
 // for render_prompt_alloc: chat mode renders the same prompts the chat route
 // does, so it uses the same measured-size renderer rather than a second one
@@ -825,7 +826,14 @@ static void usage_to(FILE *f, const char *prog) {
         "  --keygen-algo A  ed25519 (default; 32-byte key, 64-byte signature)\n"
         "                 or ml-dsa-44 (FIPS 204 post-quantum; 1312-byte key,\n"
         "                 2420-byte signature, deterministic)\n"
-        "  --sign-key F   with --transcript: sign the receipt with the key in F\n"
+        "  --receipts DIR  with --serve: write a receipt (the --transcript\n"
+        "                 record, replayable by --verify) for every finished\n"
+        "                 generation into DIR, chained in write order across\n"
+        "                 restarts and signed with --sign-key when given; each\n"
+        "                 response's runner_telemetry.receipt names its file\n"
+        "  --receipts-keep N  keep the newest N receipts (default 0: all)\n"
+        "  --sign-key F   with --transcript or --receipts: sign the receipt\n"
+        "                 with the key in F\n"
         "                 (a signature over every byte before the ,\"signature\"\n"
         "                 key, chain hash included; the object names the algo)\n"
         "  --transcript-prev F  with --transcript: link the receipt to F (its\n"
@@ -1283,6 +1291,9 @@ int main(int argc, char **argv) {
     const char *sign_record = NULL, *record_prev = NULL, *check_record = NULL;
     // R1.2.1: receipt bundles
     const char *export_bundle = NULL, *bundle_out = NULL, *check_bundle = NULL;
+    // R1.2.2: per-request receipts in serve mode
+    const char *receipts_dir = NULL;
+    int receipts_keep = 0;
     const char *keygen_algo = SIGN_ALGO_ED25519;
     const char *trust_key = NULL, *model_sig = NULL, *model_pubkey = NULL;
     bool require_signed = false, require_signed_model = false;
@@ -1392,6 +1403,9 @@ int main(int argc, char **argv) {
         else if (!strcmp(a, "--export-bundle")) export_bundle = NEXT;
         else if (!strcmp(a, "--bundle-out")) bundle_out = NEXT;
         else if (!strcmp(a, "--check-bundle")) check_bundle = NEXT;
+        else if (!strcmp(a, "--receipts")) receipts_dir = NEXT;
+        else if (!strcmp(a, "--receipts-keep"))
+            receipts_keep = (int)int_arg(a, NEXT, 0, 100000000);
         else if (!strcmp(a, "--keygen-algo")) keygen_algo = NEXT;
         else if (!strcmp(a, "--require-signed")) require_signed = true;
         else if (!strcmp(a, "--trust-key")) trust_key = NEXT;
@@ -2270,6 +2284,21 @@ int main(int argc, char **argv) {
     // reader, so any of them is an instruction that would otherwise be
     // silently dropped — the same discard --chat-template was fixed for, in a
     // place where the user believes they asked for a different file on disk.
+    if (receipts_dir && !serve) {
+        fprintf(stderr, "error: --receipts writes one receipt per served "
+                "request and needs --serve (use --transcript for a one-shot "
+                "run)\n");
+        return 1;
+    }
+    if (receipts_keep && !receipts_dir) {
+        fprintf(stderr, "error: --receipts-keep needs --receipts DIR\n");
+        return 1;
+    }
+    if (receipts_dir) {
+        receipts_cfg rcfg = { .dir = receipts_dir, .keep = receipts_keep,
+                              .sign_key = sign_key };
+        if (!receipts_configure(&rcfg)) return 1;
+    }
     if (n_adapters && !serve) {
         fprintf(stderr, "error: --adapter routes adapters per request and "
                 "needs --serve (use --lora for a one-shot run)\n");

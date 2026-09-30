@@ -42,6 +42,12 @@ void provenance_init(void);
 void provenance_note_load(const provenance_load *l);
 // The resident model is gone (unload, swap, shutdown).
 void provenance_note_unload(void);
+// The resident model's and the executable's sha256 for a receipt (R1.2.2),
+// waiting for the background model digest when it is still being taken.
+// False when there is no resident model, its digest failed, or the file on
+// disk is no longer the one loaded: a receipt must not name bytes that are
+// not the ones served.
+bool provenance_digests(char model[65], char binary[65]);
 // Append `"build":{...},"model":{...}|null,"adapter":{...}|null` to b.
 // `model_id` is the id the server answers to for the resident model; it is
 // the caller's, because a registry name is chosen after the load.
