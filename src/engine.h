@@ -268,6 +268,13 @@ typedef struct {
     void *prefill_ud;
     // request cancellation, sampled only at complete prefill/decode steps
     bool (*stop)(void *ud);
+    // R1.8.1: the watermark's per-pick hook (watermark.h, wm_prepare), NULL
+    // when off. Called before every pick with the tokens before the one being
+    // picked (hist[0..t)) and the generation's first position; it installs
+    // or clears the sampler's reweight, so the engine never links it.
+    void (*wm_prepare)(void *ud, sampler *s, const int32_t *hist, int start,
+                       int t);
+    void *wm_ud;
     void *stop_ud;
     // identity of everything that decides what this engine's KV bytes mean:
     // the weights, the geometry, the tokenizer and the cache element type.

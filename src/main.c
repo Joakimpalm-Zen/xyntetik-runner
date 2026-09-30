@@ -15,6 +15,7 @@
 #include "provenance.h"
 #include "bundle.h"
 #include "receipts.h"
+#include "watermark.h"
 #include "build_arch.h"
 // for render_prompt_alloc: chat mode renders the same prompts the chat route
 // does, so it uses the same measured-size renderer rather than a second one
@@ -217,6 +218,47 @@ static bool schema_file_digest(const char *path, char hex[65]) {
     if (ok) envelope_data_sha256(d.s, d.n, hex);
     free(d.s);
     return ok;
+}
+
+// R1.8.2: score a token sequence against the key and print the verdict as
+// one JSON object; exit 0 WATERMARKED, 2 NOT_DETECTED, 3 INSUFFICIENT.
+static int wm_report(const wm_key *k, const int32_t *toks, int n, int start,
+                     const char *source, const char *record_kid) {
+    wm_score sc;
+    wm_detect(k, toks, n, start, &sc);
+    const char *v = wm_verdict(&sc);
+    printf("{\"schema_version\":\"xyntetik.runner.watermark_detect.v1\","
+           "\"key_id\":\"%s\",\"source\":\"%s\",", k->id, source);
+    if (record_kid) {
+        bool hex = strlen(record_kid) == 16;
+        for (int i = 0; hex && i < 16; i++)
+            hex = (record_kid[i] >= '0' && record_kid[i] <= '9') ||
+                  (record_kid[i] >= 'a' && record_kid[i] <= 'f');
+        printf("\"record_key_id\":\"%s\",", hex ? record_kid : "malformed");
+    }
+    printf("\"scheme\":\"%s\",\"layers\":%d,\"context\":%d,\"tokens\":%d,"
+           "\"scored\":%d,\"g_ones\":%lld,\"g_n\":%lld,\"mean_g\":%.6f,"
+           "\"z\":%.4f,\"p_value\":%.4g,\"verdict\":\"%s\"}\n",
+           WM_SCHEME, WM_LAYERS, WM_CONTEXT, sc.tokens, sc.scored, sc.g_sum,
+           sc.g_n, sc.mean, sc.z, sc.p_value, v);
+    fprintf(stderr, "%s: z %.2f over %d scored of %d tokens (p %.3g)\n", v,
+            sc.z, sc.scored, sc.tokens, sc.p_value);
+    return !strcmp(v, "WATERMARKED") ? 0 : !strcmp(v, "NOT_DETECTED") ? 2 : 3;
+}
+
+// The token ids of a JSON array, each an int32 >= 0; NULL on anything else.
+static int32_t *json_token_ids(jv *arr, int *n_out) {
+    if (!arr || arr->type != J_ARR) return NULL;
+    int32_t *t = malloc(sizeof *t * (size_t)(arr->n ? arr->n : 1));
+    if (!t) return NULL;
+    for (int i = 0; i < arr->n; i++) {
+        double v = jv_num(arr->items[i], -1);
+        if (!arr->items[i] || arr->items[i]->type != J_NUM || v < 0 ||
+            v > INT32_MAX || v != (double)(int32_t)v) { free(t); return NULL; }
+        t[i] = (int32_t)v;
+    }
+    *n_out = arr->n;
+    return t;
 }
 
 // Agent transcripts, D4a (R1.1.2): may this record be replayed with the
@@ -946,6 +988,15 @@ static void usage_to(FILE *f, const char *prog) {
         "                 verify (--trust-key pins the manifest signer). Exit\n"
         "                 0 OK, 2 BAD, 3 UNVERIFIABLE. Does not replay: that is\n"
         "                 --verify with the model\n"
+        "  --watermark F  mark sampled output with the tournament watermark\n"
+        "                 key F (-p runs and --serve; off by default; greedy is\n"
+        "                 never changed); records carry its key id, and\n"
+        "                 --verify replays a marked record only with F\n"
+        "  --watermark-keygen F  write a new watermark key to F; needs no -m\n"
+        "  --detect-watermark F  score F against --watermark's key: a\n"
+        "                 transcript record (no -m) or a text (-m for its\n"
+        "                 tokenizer). Exit 0 WATERMARKED, 2 NOT_DETECTED,\n"
+        "                 3 INSUFFICIENT\n"
         "  --keygen F     write a receipt-signing key (xyntetik.runner.signkey\n"
         "                 .v1) to F and print its public key; needs no -m\n"
         "  --keygen-algo A  ed25519 (default; 32-byte key, 64-byte signature)\n"
@@ -1430,6 +1481,8 @@ int main(int argc, char **argv) {
     const char *keygen_algo = SIGN_ALGO_ED25519;
     const char *trust_key = NULL, *model_sig = NULL, *model_pubkey = NULL;
     const char *sign_model = NULL, *model_key = NULL;
+    const char *watermark_path = NULL, *watermark_keygen = NULL;
+    const char *detect_path = NULL;
     bool require_signed = false, require_signed_model = false;
     receipt_sig_state v_rsig = RSIG_NONE;   // --verify: the record's signature state
     char v_rec_pub[SIGN_PUBHEX_CAP] = "";
@@ -1548,6 +1601,9 @@ int main(int argc, char **argv) {
         else if (!strcmp(a, "--model-pubkey")) model_pubkey = NEXT;
         else if (!strcmp(a, "--sign-model")) sign_model = NEXT;
         else if (!strcmp(a, "--model-key")) model_key = NEXT;
+        else if (!strcmp(a, "--watermark")) watermark_path = NEXT;
+        else if (!strcmp(a, "--watermark-keygen")) watermark_keygen = NEXT;
+        else if (!strcmp(a, "--detect-watermark")) detect_path = NEXT;
         else if (!strcmp(a, "--require-signed-model")) require_signed_model = true;
         else if (!strcmp(a, "--quant")) quant_type = NEXT;
         else if (!strcmp(a, "--prune-experts")) prune_experts = NEXT;
@@ -1778,6 +1834,86 @@ int main(int argc, char **argv) {
                            .sign_key = sign_key };
         return bundle_export(&bo);
     }
+    if (watermark_keygen) {
+        uint8_t key[32];
+        char id[17];
+        if (!os_random(key, sizeof key)) {
+            fprintf(stderr, "error: --watermark-keygen: the OS random generator "
+                    "is unavailable\n");
+            return 1;
+        }
+        bool ok = wm_key_write(watermark_keygen, key, id);
+        memset(key, 0, sizeof key);
+        if (!ok) {
+            fprintf(stderr, "error: --watermark-keygen: cannot create %s (an "
+                    "existing key is never overwritten)\n", watermark_keygen);
+            return 1;
+        }
+        printf("{\"schema_version\":\"xyntetik.runner.watermark_key.v1\","
+               "\"key_id\":\"%s\"}\n", id);
+        fprintf(stderr, "watermark key -> %s (keep it private; receipts name it "
+                "by its id %s)\n", watermark_keygen, id);
+        return 0;
+    }
+    // R1.8.1: one key for everything this process marks, replays or scores
+    wm_key wmk;
+    memset(&wmk, 0, sizeof wmk);
+    bool wm_on = false;
+    if (watermark_path) {
+        char werr[256];
+        if (!wm_key_load(watermark_path, &wmk, werr, sizeof werr)) {
+            fprintf(stderr, "error: --watermark: %s\n", werr);
+            return 1;
+        }
+        wm_on = true;
+    }
+    char *detect_text = NULL;
+    if (detect_path) {
+        if (!wm_on) {
+            fprintf(stderr, "error: --detect-watermark needs --watermark KEY\n");
+            return 1;
+        }
+        size_t dn = 0;
+        char *dbuf = read_file(detect_path, &dn);
+        if (!dbuf) {
+            fprintf(stderr, "error: --detect-watermark: cannot read %s\n", detect_path);
+            return 1;
+        }
+        jv *dj = json_parse(dbuf, dn);
+        if (dj && !strcmp(jv_str(jv_get(dj, "schema_version"), ""),
+                          "xyntetik.runner.transcript.v1")) {
+            // a record carries its own token ids and the prompt as context:
+            // no tokenizer, no model
+            int np = 0, no = 0;
+            int32_t *pt = json_token_ids(jv_get(jv_get(dj, "prompt"), "tokens"), &np);
+            int32_t *ot = json_token_ids(jv_get(jv_get(dj, "output"), "tokens"), &no);
+            int32_t *all = pt && ot ? malloc(sizeof *all * (size_t)(np + no + 1)) : NULL;
+            int rc = 3;
+            if (!all) {
+                fprintf(stderr, "error: --detect-watermark: %s has malformed token "
+                        "arrays\n", detect_path);
+            } else {
+                memcpy(all, pt, sizeof *all * (size_t)np);
+                memcpy(all + np, ot, sizeof *all * (size_t)no);
+                jv *rw = jv_get(dj, "watermark");
+                rc = wm_report(&wmk, all, np + no, np, "record",
+                               rw ? jv_str(jv_get(rw, "key_id"), "") : NULL);
+            }
+            free(pt); free(ot); free(all);
+            jv_free(dj);
+            free(dbuf);
+            return rc;
+        }
+        jv_free(dj);
+        if (!model_path) {
+            free(dbuf);
+            fprintf(stderr, "error: --detect-watermark: %s is not a transcript "
+                    "record; scoring a text needs -m MODEL (its tokenizer)\n",
+                    detect_path);
+            return 1;
+        }
+        detect_text = dbuf;   // tokenized once the model is loaded
+    }
     if (keygen_path) {
         uint8_t seed[32];
         char pub[SIGN_PUBHEX_CAP];
@@ -2007,7 +2143,7 @@ int main(int argc, char **argv) {
     if (!prompt && !interactive && !serve && !quant_out && !merge_out &&
         !context_out &&
         !bench_json && !tool_info && !train_path && !dpo_path && !verify_path &&
-        !decide_path) {
+        !decide_path && !detect_text) {
         fprintf(stderr, "error: need -p PROMPT, -i, or --serve\n");
         usage(argv[0]);
         return 1;
@@ -2110,6 +2246,37 @@ int main(int argc, char **argv) {
                 fprintf(stderr, "UNVERIFIABLE: chain link broken: the record's prev "
                         "is not the chain hash of %s\n", transcript_prev);
                 jv_free(vrec); return 3;
+            }
+        }
+        {
+            // R1.8.2: a marked record replays only under its own key, and an
+            // unmarked one never under a key
+            jv *vw = jv_get(vrec, "watermark");
+            const char *rk = vw ? jv_str(jv_get(vw, "key_id"), "") : NULL;
+            const char *why = NULL;
+            char wbuf[256];
+            if (rk && strcmp(jv_str(jv_get(vw, "scheme"), ""), WM_SCHEME) != 0) {
+                snprintf(wbuf, sizeof wbuf, "the output was watermarked with scheme "
+                         "\"%.40s\", which this build does not replay",
+                         jv_str(jv_get(vw, "scheme"), ""));
+                why = wbuf;
+            } else if (rk && !wm_on) {
+                snprintf(wbuf, sizeof wbuf, "the output was watermarked (key id "
+                         "%.16s); replaying it needs that key: verify with "
+                         "--watermark naming it", rk);
+                why = wbuf;
+            } else if (rk && strcmp(rk, wmk.id) != 0) {
+                snprintf(wbuf, sizeof wbuf, "--watermark key id %s is not the "
+                         "record's watermark key id (%.16s)", wmk.id, rk);
+                why = wbuf;
+            } else if (!rk && wm_on) {
+                why = "--watermark given, but the record's output was not "
+                      "watermarked";
+            }
+            if (why) {
+                fprintf(stderr, "UNVERIFIABLE: %s\n", why);
+                jv_free(vrec);
+                return 3;
             }
         }
         {
@@ -2638,6 +2805,7 @@ int main(int argc, char **argv) {
     }
 
     if (serve) {
+        if (wm_on) server_set_watermark(&wmk);
         if (n_adapters) server_set_adapters(adapter_names, adapter_paths,
                                             n_adapters, lora_scale);
         if (registry) {
@@ -2673,6 +2841,11 @@ int main(int argc, char **argv) {
     e.ignore_eos = ignore_eos;
     e.json_mode = json_mode;
     e.progress = true;
+    wm_state cli_wm = { .key = wm_on ? &wmk : NULL };
+    if (wm_on) {
+        e.wm_prepare = wm_prepare;
+        e.wm_ud = &cli_wm;
+    }
     if (draft_path) {
         e.dm = spec_draft_load(draft_path, &m, &mp);
         if (e.dm) {
@@ -3171,6 +3344,21 @@ int main(int argc, char **argv) {
         return rc;
     }
 
+    if (detect_text) {
+        // R1.8.2 over a text: tokenized without BOS by the model's own
+        // tokenizer, scored from the first position with a full context
+        size_t cap = strlen(detect_text) + 16;
+        int32_t *dt = cap <= (size_t)INT_MAX ? malloc(sizeof *dt * cap) : NULL;
+        int nt = dt ? tok_encode(&tok, detect_text, dt, (int)cap, false, false) : -1;
+        int rc = 3;
+        if (nt < 0) fprintf(stderr, "error: --detect-watermark: out of memory\n");
+        else rc = wm_report(&wmk, dt, nt, WM_CONTEXT, "text", NULL);
+        free(dt);
+        free(detect_text);
+        cli_cleanup(&e, toks, &tok, &m);
+        free(owned_prompt);
+        return rc;
+    }
     if (decide_path) {
         // Typed decisions (R13.10): the same handler the server route uses,
         // one request per line, one response per line; a bad line is an
@@ -3457,6 +3645,12 @@ int main(int argc, char **argv) {
                                        "%s{\"kind\":\"ignore_eos\"}", cn ? "," : "");
             char cons_json[260] = "";
             if (cn) snprintf(cons_json, sizeof cons_json, "[%s]", cons);
+            char wm_json[192] = "";
+            if (wm_on)
+                snprintf(wm_json, sizeof wm_json,
+                         "{\"scheme\":\"%s\",\"key_id\":\"%s\",\"layers\":%d,"
+                         "\"context\":%d,\"marked_tokens\":%d}", WM_SCHEME,
+                         wmk.id, WM_LAYERS, WM_CONTEXT, cli_wm.marked);
             char *transcript_exe = plat_executable_path();
             transcript_info ti = {
                 .out_path = transcript_path,
@@ -3503,6 +3697,7 @@ int main(int argc, char **argv) {
                 .model_sig_json = model_sig_json[0] ? model_sig_json : NULL,
                 .adapter_sig_json = adapter_sig_json[0] ? adapter_sig_json : NULL,
                 .constraints_json = cons_json[0] ? cons_json : NULL,
+                .watermark_json = wm_json[0] ? wm_json : NULL,
             };
             if (ocap.failed) {
                 fprintf(stderr, "error: transcript: out of memory capturing "

@@ -361,6 +361,11 @@ bool transcript_write(const transcript_info *ti) {
         tsb_put(&w, ti->constraints_json, strlen(ti->constraints_json));
         tsb_put(&w, ",", 1);
     }
+    if (ti->watermark_json) {
+        tsb_put(&w, "\"watermark\":", 12);
+        tsb_put(&w, ti->watermark_json, strlen(ti->watermark_json));
+        tsb_put(&w, ",", 1);
+    }
     if (ti->tool_calls_json) {
         tsb_put(&w, "\"tool_calls\":", 13);
         tsb_put(&w, ti->tool_calls_json, strlen(ti->tool_calls_json));

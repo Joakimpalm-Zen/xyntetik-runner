@@ -15,6 +15,7 @@
 #include "runner.h"
 #include "http.h"
 #include "oms.h"
+#include "watermark.h"
 
 typedef struct {
     model_t   *m;         // slot 0 borrows the preloaded model
@@ -32,6 +33,8 @@ typedef struct {
     // R8.6: the per-request adapter this slot's model borrows now (index
     // into SV.adapters), -1 for none
     int        adapter;
+    // R1.8.1: this slot's watermark hook state (the key is SV.wm_key)
+    wm_state   wm;
 } slot_t;
 
 // A per-request adapter (R8.6): loaded once at startup, borrowed by a slot's
@@ -163,6 +166,9 @@ typedef struct {
     oms_policy  signing;      // same policy on initial and subsequent loads
     adapter_entry adapters[RUNNER_MAX_ADAPTERS];
     int           n_adapters;
+    // R1.8.1: every sampled generation is marked with this key when wm_on
+    bool          wm_on;
+    wm_key        wm_key;
 } server_state;
 
 extern server_state SV;

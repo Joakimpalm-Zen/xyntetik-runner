@@ -889,6 +889,9 @@ typedef struct req_diag {
     // R1.2.2: this request's receipt (file and chain hash), or why none was
     // written while receipts are on
     const char *receipt_file, *receipt_chain, *receipt_error;
+    // R1.8.1: the watermark this turn was sampled under, when one is on
+    bool        wm_on;
+    int         wm_marked;
 } req_diag;
 
 static void diag_json(sbuf *r, const req_diag *d) {
@@ -929,6 +932,9 @@ static void diag_json(sbuf *r, const req_diag *d) {
         sb_esc(r, d->adapter_name, strlen(d->adapter_name));
         sb_fmt(r, "\",\"sha256\":\"%s\"}", d->adapter_sha256);
     }
+    if (d->wm_on)
+        sb_fmt(r, ",\"watermark\":{\"scheme\":\"%s\",\"key_id\":\"%s\","
+                  "\"marked_tokens\":%d}", WM_SCHEME, SV.wm_key.id, d->wm_marked);
     if (d->receipt_file)
         sb_fmt(r, ",\"receipt\":{\"file\":\"%s\",\"chain_hash\":\"%s\"}",
                d->receipt_file, d->receipt_chain);
@@ -2350,6 +2356,12 @@ static const char *serve_receipt(slot_t *s, engine *e, gen_ctx *g,
         .constraints_json = cj.s,
         .tool_calls_json = tj.s,
     };
+    char wj[192] = "";
+    if (SV.wm_on)
+        snprintf(wj, sizeof wj, "{\"scheme\":\"%s\",\"key_id\":\"%s\","
+                 "\"layers\":%d,\"context\":%d,\"marked_tokens\":%d}",
+                 WM_SCHEME, SV.wm_key.id, WM_LAYERS, WM_CONTEXT, s->wm.marked);
+    ti.watermark_json = wj[0] ? wj : NULL;
     bool ok = receipts_write(&ti, file, chain);
     free(sj.s);
     free(cj.s);
@@ -3013,6 +3025,17 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
         }
     }
     e->json_mode = request_json_mode(req);
+    // R1.8.1: every sampled turn is marked when the server has a key; the
+    // hook reads the context from this slot's history at each pick
+    if (SV.wm_on) {
+        s->wm.key = &SV.wm_key;
+        s->wm.marked = s->wm.repeats = 0;
+        e->wm_prepare = wm_prepare;
+        e->wm_ud = &s->wm;
+    } else {
+        e->wm_prepare = NULL;
+        e->wm_ud = NULL;
+    }
     // Constrained decoding. The tool envelope wins when present: it already
     // contains the caller's response_format schema as its `final` branch, so
     // compiling that separately would drop the tool branches.
@@ -3480,6 +3503,8 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
     g.raw_on = receipts_enabled();
     int n_gen = sched_generate(s, logits, max_tokens, gen_collect, &g, &gtime,
                                req_deadline);
+    diag.wm_on = SV.wm_on;
+    diag.wm_marked = s->wm.marked;
     // The one place every surface's generation passes through, so /health's
     // and /metrics' cumulative counters see chat, completions, responses and
     // messages alike. The speculation counters are read only when this request

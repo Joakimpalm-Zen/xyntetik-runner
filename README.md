@@ -1914,6 +1914,9 @@ whether the draft is `active` there.
 | `--lora-sig FILE` | The OMS bundle for the `--lora` adapter (default `<adapter>.sig`), verified with `--model-pubkey`; `--require-signed-model` requires it. [Details](#cli-model-sig). |
 | `--model-pubkey FILE` | The PEM `PUBLIC KEY` (EC, P-256/384/521) an OMS bundle must verify with. Given without `--model-sig`, it turns an auto-detected `<model>.sig` into a gate. |
 | `--require-signed-model` | Refuse to load `-m` unless an OMS bundle is present and verifies with `--model-pubkey`. The policy applies to named registry entries, every serving slot, and reloads after unload or TTL expiry. Registry refusals return HTTP 409 with `model_signature_refused`; the server stays available. Without `--model-sig`, each load discovers that model's own `.sig` sidecar. |
+| `--watermark KEY` | Mark sampled output with a tournament-sampling watermark (SynthID-Text's construction) under the key in KEY: every sampled token on the `-p` path and every sampled turn in `--serve`. Off by default; greedy decoding (`--temp 0`) is never changed; averaged over keys the output distribution is unchanged. Transcripts and receipts record the key's id (`watermark`), responses report it in `runner_telemetry.watermark`, and `--verify` replays a marked record only with its key. [Details](#cli-watermark). |
+| `--watermark-keygen FILE` | Write a new watermark key (`xyntetik.runner.watermark_key.v1`, mode 0600, never overwritten) and print its id. Needs no `-m`. |
+| `--detect-watermark FILE` | Score FILE against `--watermark`'s key: a transcript record or receipt (its own token ids, the prompt as context; needs no `-m`) or a text (tokenized by `-m`'s tokenizer). Prints a `xyntetik.runner.watermark_detect.v1` object (mean g-value, z, one-sided p) and exits 0 `WATERMARKED` (z >= 4), 2 `NOT_DETECTED`, 3 `INSUFFICIENT` (fewer than 16 scored tokens). |
 | `--sign-model FILE`, `--model-key KEY.pem` | Write an OMS bundle for FILE (every part of a split GGUF) to `FILE.sig`, or to `--model-sig OUT`, signed with a PEM EC private key (SEC1 or PKCS#8, unencrypted, P-256/384/521) by deterministic ECDSA: the same key and model always give the same bytes. An existing bundle is never overwritten. Needs no `-m`. [Details](#cli-sign-model). |
 | `--caps` | Print machine, backend, quant, architecture, placement, and sampling capabilities as JSON. |
 | `--tool-info` | With `-m`, print the model's tool-call protocol as JSON (`{"tool_family":…,"native_tool_protocol":…}`) and exit. No manifest required. |
@@ -2060,6 +2063,41 @@ checked again on every reload, and required by `--require-signed-model`; a bundl
 that does not verify, or an adapter whose bytes changed, refuses the load (the
 server's start for `--adapter`). The verdict is recorded as `adapter_signature` in
 receipts and as the adapter's `signature` in `/v1/runner/provenance`.
+
+<a id="cli-watermark"></a>
+#### `--watermark KEY`
+
+Machine-readable marking of generated text (the kind EU AI Act Article 50 asks for),
+with no second model and, averaged over keys, no change to the output distribution:
+
+```
+runner --watermark-keygen wm.key                     # once per deployment
+runner -m model.gguf -p "..." --watermark wm.key --transcript run.json
+runner --detect-watermark run.json --watermark wm.key    # WATERMARKED, z and p
+runner --serve -m model.gguf --watermark wm.key --receipts receipts/
+```
+
+The construction is SynthID-Text's tournament sampling (Dathathri et al., Nature 2024):
+30 layers of pairwise matches among 2^30 candidates drawn from the filtered
+distribution, won by the larger keyed g-value. Its winner distribution has a closed
+form, so the sampler reweights the candidates that survived top-k, top-p and min-p and
+draws once, exactly as before. The g-values of a token are the bits of SipHash-2-4 over
+its id, keyed by SHA-256 of the key and the 4 tokens before it; a context that already
+occurred in the same generation is left unmarked and is not scored, so repeated text
+neither locks onto one bias nor counts twice. The detector's z is the g-value count
+against a fair coin. Greedy and near-deterministic spans carry no mark, so how many
+tokens a text needs depends on how much entropy the model spends: on the test fixture
+(random weights, high entropy) 50 sampled tokens gave z 12.5; a real model spends less
+per token, so measure it on yours before relying on a threshold. Records name the key by id only (the first 8
+bytes of SHA-256 over a domain and the key); `--verify` needs the key itself to replay
+a marked run, which is what makes the mark verifiable rather than only detectable.
+Speculative decoding marks the same tokens as plain decoding (each verified row sees its
+own context). Anchored in `tests/test_watermark.c` (SipHash reference vectors, the closed
+form against a literal enumerated tournament, unbiasedness over 4000 keys, the
+detector's null on random streams) and `tests/test_watermark.py` (the detector
+re-implemented from this description with its SipHash checked against openssl, counting
+the same g-values; detection with the key, none with another key or on unmarked
+output, `--verify`, serve receipts, text).
 
 <a id="cli-sign-model"></a>
 #### `--sign-model FILE`

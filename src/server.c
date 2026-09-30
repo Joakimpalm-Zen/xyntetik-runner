@@ -2258,6 +2258,14 @@ static struct {
     float scale;
 } ADAPTER_CFG;
 
+static bool WM_CFG_ON;
+static wm_key WM_CFG;
+
+void server_set_watermark(const wm_key *key) {
+    memcpy(&WM_CFG, key, sizeof WM_CFG);
+    WM_CFG_ON = true;
+}
+
 void server_set_adapters(const char *const *names, const char *const *paths,
                          int n, float scale) {
     ADAPTER_CFG.names = names;
@@ -2534,6 +2542,12 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
     SV.reasoning_budget = reasoning_budget;
     SV.reasoning_budget_message = reasoning_budget_message;
     SV.loop_guard = loop_guard;
+    SV.wm_on = WM_CFG_ON;
+    if (WM_CFG_ON) {
+        SV.wm_key = WM_CFG;
+        fprintf(stderr, "watermark: sampled output is marked (%s, key id %s)\n",
+                WM_SCHEME, SV.wm_key.id);
+    }
     SV.reasoning_temp_set = reasoning_temp >= 0.0f;
     SV.reasoning_temp = reasoning_temp >= 0.0f ? reasoning_temp : 0.0f;
     SV.q.limit = (int)(sizeof(SV.q.fds) / sizeof(sock_t));

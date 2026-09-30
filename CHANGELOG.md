@@ -8,6 +8,20 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **Tournament-sampling watermark and detector (`--watermark`,
+  `--detect-watermark`).** Article 50 wants generated text marked in a
+  machine-readable way, and the runner owns its sampler: `--watermark KEY`
+  applies SynthID-Text's tournament (30 layers, closed form over the
+  candidates that survived the filters, g-values from SipHash-2-4 keyed by
+  SHA-256 of the key and a 4-token context, repeated contexts unmarked) to
+  sampled output on the CLI and in serve mode. Off by default; greedy is
+  never changed; unbiased over keys. Records and receipts carry the key id,
+  `--verify` replays a marked record only with its key, speculative decoding
+  marks the same tokens, and `--detect-watermark` scores a record (no model)
+  or a text (the model's tokenizer). Anchors: SipHash reference vectors and
+  openssl, the closed form against an enumerated tournament, the detector
+  re-implemented in Python counting the same g-values.
+
 - **A transcript whose output holds a NUL byte verifies again.** The writer
   spelled the byte `\u0000` in `output.text`, which the runner's own JSON
   parser refuses (a parsed string is NUL-terminated), so `--verify` called

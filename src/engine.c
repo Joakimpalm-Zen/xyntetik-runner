@@ -1674,16 +1674,25 @@ static sample_ok_fn engine_sample_filter(engine *e) {
 // every accounting path are untouched, so a request that sets nothing behaves
 // exactly as before, and a constrained payload -- which is never inside a
 // reasoning turn -- keeps the sampler it was given.
+// `t` is the position the picked token will occupy: hist[0..t) is the
+// sequence before it, which the watermark's context is read from (R1.8.1).
 static int engine_pick(engine *e, float *logits, int n_vocab,
-                       sample_ok_fn ok) {
-    if (!e->think_smp || !e->think_on) return sample_pick(e->smp, logits, n_vocab, ok, e);
+                       sample_ok_fn ok, int t) {
     sampler *s = e->smp;
-    float t0 = s->temp, p0 = s->top_p, m0 = s->min_p;
-    int k0 = s->top_k;
-    s->temp = e->think_temp; s->top_p = e->think_top_p;
-    s->min_p = e->think_min_p; s->top_k = e->think_top_k;
-    int tok = sample_pick(s, logits, n_vocab, ok, e);
-    s->temp = t0; s->top_p = p0; s->min_p = m0; s->top_k = k0;
+    if (e->wm_prepare) e->wm_prepare(e->wm_ud, s, e->hist, e->gen_start, t);
+    int tok;
+    if (!e->think_smp || !e->think_on) {
+        tok = sample_pick(s, logits, n_vocab, ok, e);
+    } else {
+        float t0 = s->temp, p0 = s->top_p, m0 = s->min_p;
+        int k0 = s->top_k;
+        s->temp = e->think_temp; s->top_p = e->think_top_p;
+        s->min_p = e->think_min_p; s->top_k = e->think_top_k;
+        tok = sample_pick(s, logits, n_vocab, ok, e);
+        s->temp = t0; s->top_p = p0; s->min_p = m0; s->top_k = k0;
+    }
+    s->reweight = NULL;
+    s->reweight_ud = NULL;
     return tok;
 }
 
@@ -2298,7 +2307,7 @@ static int engine_generate_spec(engine *e, float *logits, int max_new,
         if (e->stop && e->stop(e->stop_ud)) break;
         if (cur < 0) {
             // generation start: the first token comes from the live logits
-            int tok = engine_pick(e, logits, m->n_vocab, ok);
+            int tok = engine_pick(e, logits, m->n_vocab, ok, e->pos);
             if (tok < 0) {
                 if (tok == -2) e->oom = true;  // error, not a clean stop
                 e->hit_stop = true;
@@ -2433,7 +2442,7 @@ static int engine_generate_spec(engine *e, float *logits, int max_new,
             if (prof) t_logits += now_s() - tp;
             // b[i] is consumed: its hidden is the head's h for the next pair
             if (e->mtp_on) model_mtp_note_hidden(m, model_hidden_row(m, i));
-            int tok = engine_pick(e, ti, m->n_vocab, ok);
+            int tok = engine_pick(e, ti, m->n_vocab, ok, e->pos + i + 1);
             if (tok < 0) {
                 if (tok == -2) e->oom = true;  // error, not a clean stop
                 e->hit_stop = true;
@@ -2595,7 +2604,7 @@ int engine_gen_step(engine *e, const float *logits, gen_cb cb, void *ud,
     if (want_lp) lp_capture_pre(e, logits, &pre);
     if (e->cl_cap) cl_capture(e, logits);
     int tok = engine_pick(e, (float *)logits, e->m->n_vocab,
-                          engine_sample_filter(e));
+                          engine_sample_filter(e), e->pos);
     if (tok < 0) { // -1: no valid continuation (clean stop); -2: allocation error
         if (tok == -2) e->oom = true;
         e->hit_stop = true;
