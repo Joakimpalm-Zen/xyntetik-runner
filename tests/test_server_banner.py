@@ -25,6 +25,9 @@ PUBLIC_ROUTES = {
     ("GET", "/v1/runner/prefix-cache"),
     ("POST", "/v1/runner/prefix-cache/clear"),
     ("GET", "/v1/runner/provenance"),
+    ("POST", "/v1/runner/contexts"),
+    ("GET", "/v1/runner/contexts"),
+    ("DELETE", "/v1/runner/contexts/{id}"),
     ("GET", "/health"),
     ("GET", "/metrics"),
     ("POST", "/unload"),
@@ -74,7 +77,8 @@ def test_startup_banner_lists_every_public_route(tmp_path):
             proc.wait(timeout=10)
 
     banner = proc.stderr.read().decode(errors="replace")
-    advertised = set(re.findall(r"\b(GET|POST) (/[^ |\r\n]+)", banner))
+    advertised = set(re.findall(r"\b(GET|POST|DELETE) (/[^ |\r\n]+)",
+                                banner))
     assert advertised == PUBLIC_ROUTES, (
         f"startup banner route drift: missing={sorted(PUBLIC_ROUTES - advertised)}, "
         f"extra={sorted(advertised - PUBLIC_ROUTES)}\n{banner}"

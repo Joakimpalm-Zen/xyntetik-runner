@@ -495,6 +495,44 @@ void   prefix_cache_clear(void);
 // host bytes one n-token snapshot of this model would occupy
 size_t prefix_cache_entry_bytes(const model_t *m, int n);
 
+// ---- named contexts (R10.4) ---------------------------------------------
+//
+// The prefix cache serves repeated prefixes blindly: a snapshot survives
+// only while traffic keeps it warm, and nothing says which prefix a caller
+// meant. A NAMED context is a snapshot a client asked for: the prompt it
+// names is prefilled once, pinned (no TTL, never evicted by traffic, still
+// counted in the cache budget) and forked by any request whose tokens start
+// with it. A request that names a context its prompt does not start with is
+// told so rather than silently served cold.
+#define PFX_CTX_NAME_MAX 64
+enum {
+    PFX_CTX_UNKNOWN     = -1,   // no context of that name for this model
+    PFX_CTX_MISMATCH    = -2,   // it exists but the tokens do not extend it
+    PFX_CTX_NOSPACE     = -3,   // the budget cannot hold it beside other pins
+    PFX_CTX_UNSUPPORTED = -4,   // ring or tied-V KV: no contiguous snapshot
+    PFX_CTX_BADNAME     = -5,   // 1..64 of [A-Za-z0-9._:-]
+};
+bool prefix_context_name_ok(const char *name);
+// Pin the KV the slot holds for toks[0, n) (e->pos must be n, e->hist toks)
+// under `name`, replacing a context of that name. Returns n or a PFX_CTX_*.
+int  prefix_context_pin(engine *e, const char *name, const int32_t *toks, int n);
+// Does context `name` (for e's model) strictly prefix toks[0, n)? Returns its
+// token count, or PFX_CTX_UNKNOWN / PFX_CTX_MISMATCH (*at = the first token
+// that differs) / PFX_CTX_BADNAME.
+int  prefix_context_check(const engine *e, const char *name,
+                          const int32_t *toks, int n, int *at);
+bool prefix_context_release(const char *name);
+typedef struct {
+    char     name[PFX_CTX_NAME_MAX + 1];
+    int      tokens;
+    size_t   bytes;
+    uint64_t hits;
+    double   age_s;
+    uint64_t model_key;
+} prefix_context_info;
+// Fills up to cap entries; returns the total count of named contexts.
+int  prefix_context_list(prefix_context_info *out, int cap);
+
 // ---- snapshot persistence (runner.prefix.v1) --------------------------
 //
 // A warm prefix cache is worth minutes of prefill and it dies with the

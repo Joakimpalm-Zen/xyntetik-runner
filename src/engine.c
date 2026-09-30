@@ -519,6 +519,11 @@ typedef struct pfx_entry {
     size_t    bytes;
     double    used;
     uint64_t  hits;
+    // R10.4: a named context is pinned -- no TTL, never an eviction victim --
+    // and released only by name, by clear, or with the model
+    bool      pinned;
+    double    created;
+    char      name[PFX_CTX_NAME_MAX + 1];
 } pfx_entry;
 
 static struct {
@@ -550,8 +555,12 @@ static void pfx_drop(pfx_entry **pp) {
 
 static void pfx_expire(double now) {
     for (pfx_entry **pp = &PFX.head; *pp; ) {
-        if (now - (*pp)->used > PFX.ttl) { PFX.evictions++; pfx_drop(pp); }
-        else pp = &(*pp)->next;
+        if (!(*pp)->pinned && now - (*pp)->used > PFX.ttl) {
+            PFX.evictions++;
+            pfx_drop(pp);
+        } else {
+            pp = &(*pp)->next;
+        }
     }
 }
 
@@ -582,10 +591,11 @@ static void pfx_trim(size_t need) {
         pfx_entry **victim = NULL;
         for (int proven = 0; proven <= 1 && !victim; proven++)
             for (pfx_entry **pp = &PFX.head; *pp; pp = &(*pp)->next) {
+                if ((*pp)->pinned) continue;   // named: released by name only
                 if (((*pp)->hits > 0) != (proven == 1)) continue;
                 if (!victim || (*pp)->used < (*victim)->used) victim = pp;
             }
-        if (!victim) break; // every entry belongs to one of the two classes
+        if (!victim) break; // nothing evictable is left: the rest are pinned
         PFX.evictions++;
         pfx_drop(victim);
     }
@@ -768,7 +778,8 @@ void engine_prefix_publish(engine *e, const int32_t *toks, int n,
             pthread_mutex_unlock(&PFX.mu);
             return;
         }
-        if (c == lim) pfx_drop(pp);          // ours strictly extends p
+        if (c == lim && !p->pinned) pfx_drop(pp);   // ours strictly extends p
+        else if (c == lim) pp = &p->next;           // a named one stays
         else {
             if (c > diverge_at) diverge_at = c;
             pp = &p->next;
@@ -828,6 +839,120 @@ void engine_prefix_publish(engine *e, const int32_t *toks, int n,
     PFX.bytes += need;
     PFX.stores++;
     pthread_mutex_unlock(&PFX.mu);
+}
+
+// ---------------------------------------------------- named contexts (R10.4)
+
+static bool pfx_ctx_name_ok(const char *name) {
+    size_t n = name ? strlen(name) : 0;
+    if (n == 0 || n > PFX_CTX_NAME_MAX) return false;
+    for (size_t i = 0; i < n; i++) {
+        char c = name[i];
+        if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+              (c >= '0' && c <= '9') || c == '.' || c == '_' || c == '-' ||
+              c == ':'))
+            return false;
+    }
+    return true;
+}
+
+bool prefix_context_name_ok(const char *name) { return pfx_ctx_name_ok(name); }
+
+static pfx_entry **pfx_find_named(const char *name) {
+    for (pfx_entry **pp = &PFX.head; *pp; pp = &(*pp)->next)
+        if ((*pp)->pinned && !strcmp((*pp)->name, name)) return pp;
+    return NULL;
+}
+
+int prefix_context_pin(engine *e, const char *name, const int32_t *toks, int n) {
+    if (!pfx_ctx_name_ok(name)) return PFX_CTX_BADNAME;
+    // the two layouts engine_prefix_publish refuses, for the same reason
+    if (model_kv_ring_active(e->m) || e->m->tied_v || !e->hist)
+        return PFX_CTX_UNSUPPORTED;
+    // the snapshot is taken from the slot's KV, which must hold exactly toks:
+    // a recurrent fold belongs to position e->pos and nowhere else
+    if (n < 1 || e->pos != n || memcmp(e->hist, toks, sizeof(int32_t) * (size_t)n))
+        return PFX_CTX_MISMATCH;
+    size_t need = prefix_cache_entry_bytes(e->m, n);
+    pfx_entry *ne = calloc(1, sizeof *ne);
+    int32_t *nt = malloc(sizeof(int32_t) * (size_t)n);
+    uint8_t *kv = malloc(need);
+    if (!ne || !nt || !kv) { free(ne); free(nt); free(kv); return PFX_CTX_NOSPACE; }
+    memcpy(nt, toks, sizeof(int32_t) * (size_t)n);
+    pfx_save(e->m, kv, n);
+
+    pthread_mutex_lock(&PFX.mu);
+    pfx_defaults();
+    double now = now_s();
+    pfx_entry **old = pfx_find_named(name);   // re-pinning a name replaces it
+    if (old) pfx_drop(old);
+    pfx_expire(now);
+    pfx_trim(need);
+    if (PFX.bytes + need > PFX.budget) {
+        pthread_mutex_unlock(&PFX.mu);
+        free(ne); free(nt); free(kv);
+        return PFX_CTX_NOSPACE;
+    }
+    ne->key = e->model_key; ne->toks = nt; ne->n = n;
+    ne->kv = kv; ne->bytes = need; ne->used = now; ne->created = now;
+    ne->pinned = true;
+    snprintf(ne->name, sizeof ne->name, "%s", name);
+    ne->next = PFX.head; PFX.head = ne;
+    PFX.bytes += need;
+    PFX.stores++;
+    pthread_mutex_unlock(&PFX.mu);
+    return n;
+}
+
+int prefix_context_check(const engine *e, const char *name,
+                         const int32_t *toks, int n, int *at) {
+    if (at) *at = -1;
+    if (!pfx_ctx_name_ok(name)) return PFX_CTX_BADNAME;
+    pthread_mutex_lock(&PFX.mu);
+    pfx_entry **pp = pfx_find_named(name);
+    int rc;
+    if (!pp || (*pp)->key != e->model_key) {
+        rc = PFX_CTX_UNKNOWN;
+    } else {
+        const pfx_entry *p = *pp;
+        int c = 0;
+        while (c < p->n && c < n && p->toks[c] == toks[c]) c++;
+        // the context must be a STRICT prefix: a prompt that ends where the
+        // context ends has no token left to sample the answer from
+        if (c == p->n && n > p->n) rc = p->n;
+        else { rc = PFX_CTX_MISMATCH; if (at) *at = c; }
+    }
+    pthread_mutex_unlock(&PFX.mu);
+    return rc;
+}
+
+bool prefix_context_release(const char *name) {
+    if (!pfx_ctx_name_ok(name)) return false;
+    pthread_mutex_lock(&PFX.mu);
+    pfx_entry **pp = pfx_find_named(name);
+    if (pp) pfx_drop(pp);
+    pthread_mutex_unlock(&PFX.mu);
+    return pp != NULL;
+}
+
+int prefix_context_list(prefix_context_info *out, int cap) {
+    pthread_mutex_lock(&PFX.mu);
+    double now = now_s();
+    int n = 0;
+    for (pfx_entry *p = PFX.head; p; p = p->next) {
+        if (!p->pinned) continue;
+        if (n < cap) {
+            snprintf(out[n].name, sizeof out[n].name, "%s", p->name);
+            out[n].tokens = p->n;
+            out[n].bytes = p->bytes;
+            out[n].hits = p->hits;
+            out[n].age_s = now - p->created;
+            out[n].model_key = p->key;
+        }
+        n++;
+    }
+    pthread_mutex_unlock(&PFX.mu);
+    return n;
 }
 
 // ---------------------------------------------------- snapshot persistence

@@ -274,6 +274,7 @@ const char *reason_phrase(int code) {
         case 409: return "Conflict";
         case 500: return "Internal Server Error";
         case 503: return "Service Unavailable";
+        case 507: return "Insufficient Storage";
         default:  return "Internal Server Error";
     }
 }

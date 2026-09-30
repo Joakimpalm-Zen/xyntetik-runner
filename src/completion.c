@@ -843,6 +843,9 @@ typedef struct req_diag {
     // How the slot arrived at prompt_cached_tokens (engine_rewind_how_name):
     // the answer to "why did my identical prompt say 0 cached".
     const char *prompt_reuse;
+    // R10.4: the named context this request built on, and its length
+    const char *context_id;
+    int         context_tokens;
 } req_diag;
 
 static void diag_json(sbuf *r, const req_diag *d) {
@@ -875,6 +878,9 @@ static void diag_json(sbuf *r, const req_diag *d) {
     else
         sb_lit(r, "\"first_visible_seconds\":null}");
     sb_fmt(r, ",\"prompt_reuse\":\"%s\"", d->prompt_reuse ? d->prompt_reuse : "none");
+    if (d->context_id)
+        sb_fmt(r, ",\"context\":{\"id\":\"%s\",\"tokens\":%d}",
+               d->context_id, d->context_tokens);
 }
 
 // The speculation fields of a resp_doc, from the engine that served the
@@ -2579,6 +2585,22 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
         }
         plp = (int)v;
     }
+    // R10.4: a request may name the context its prompt builds on; checked
+    // against the prompt's tokens once they exist, below
+    const char *ctx_id = NULL;
+    int ctx_tokens = 0;
+    {
+        jv *cv = jv_get(req, "context_id");
+        if (!absent(cv)) {
+            if (cv->type != J_STR || !prefix_context_name_ok(cv->str)) {
+                send_error_detail(fd, 400, "context_id must be 1 to 64 "
+                                  "characters of [A-Za-z0-9._:-]",
+                                  "context_id", "invalid_value");
+                return;
+            }
+            ctx_id = cv->str;
+        }
+    }
     if ((echo || plp >= 0) && stream) {
         send_error(fd, 400, echo ? "echo is buffered-only; set stream to false"
                                  : "prompt_logprobs is buffered-only; set "
@@ -2838,6 +2860,42 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
                                "context_length_exceeded");
         return;
     }
+    if (ctx_id) {
+        // The context is only worth naming if it is what this prompt starts
+        // with; a caller whose system prompt changed must hear it, not be
+        // served cold under a name that promised a warm prefix.
+        const char *why = !cache_prompt || !share_prefix
+                ? "context_id needs the prefix cache (cache_prompt and "
+                  "prefix_cache must not be false)"
+            : echo || plp >= 0
+                ? "context_id cannot be combined with echo or prompt_logprobs, "
+                  "which score the whole prompt from position 0"
+            : NULL;
+        if (why) {
+            free(toks);
+            completion_cleanup(e, schema, NULL);
+            send_error_detail(fd, 400, why, "context_id", "invalid_value");
+            return;
+        }
+        int at = -1;
+        int cn = prefix_context_check(e, ctx_id, toks, n_prompt, &at);
+        if (cn < 0) {
+            free(toks);
+            completion_cleanup(e, schema, NULL);
+            char msg[256];
+            if (cn == PFX_CTX_UNKNOWN)
+                snprintf(msg, sizeof msg, "no context \"%s\" is pinned for "
+                         "this model (POST /v1/runner/contexts)", ctx_id);
+            else
+                snprintf(msg, sizeof msg, "the prompt does not start with "
+                         "context \"%s\": it differs at token %d", ctx_id, at);
+            send_error_detail(fd, cn == PFX_CTX_UNKNOWN ? 404 : 409, msg,
+                              "context_id", cn == PFX_CTX_UNKNOWN
+                              ? "context_not_found" : "context_mismatch");
+            return;
+        }
+        ctx_tokens = cn;
+    }
     int remaining_ctx = m->n_ctx - n_prompt;
     if (max_tokens < 0 || max_tokens > remaining_ctx) max_tokens = remaining_ctx;
 
@@ -2939,6 +2997,7 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
         .tools = env != NULL,
         .constrained = env != NULL && schema != NULL,
         .parse_only = env != NULL && env->parse_only,
+        .context_id = ctx_id, .context_tokens = ctx_tokens,
     };
     if (script_text) {
         int32_t *ids = NULL;

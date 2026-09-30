@@ -8,6 +8,19 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **Named contexts: prefill a shared prefix once, on purpose.**
+  `POST /v1/runner/contexts` pins a raw prompt or chat messages (rendered
+  without the generation prompt) under an id: no TTL, never evicted by
+  traffic, counted in the prefix-cache budget. A request carrying
+  `context_id` forks it, and is refused (404 / 409, naming the first
+  differing token) when its prompt does not start with the context, rather
+  than served cold under a name that promised a warm prefix;
+  `runner_telemetry.context` says what it built on. `GET` lists the pins and
+  `DELETE /v1/runner/contexts/{id}` releases one. `tests/test_named_contexts.py`
+  pins that a forked context answers with the same tokens and logprobs as the
+  same prompt prefilled cold, and that a pin outlives the cache TTL (checked
+  by letting the TTL expire it: the test fails).
+
 - **A repeated tool call is reported (`runner_telemetry.repeated_tool_calls`).**
   The lab's sixth runaway re-called `get_weather(Athens)` after stating the
   answer, request after request, and the loop guard saw nothing because each

@@ -9,6 +9,8 @@
 //   GET  /v1/capabilities       registry + feature discovery
 //   GET  /health                liveness
 //   GET  /metrics               the same counters in Prometheus text format
+//   POST /v1/runner/contexts    pin a named prefix (R10.4); GET lists,
+//                               DELETE /v1/runner/contexts/{id} releases
 //   GET  /v1/runner/provenance  binary and model digests, the load-time
 //                               signature and envelope verdicts, the effective
 //                               configuration (provenance.h)
@@ -403,7 +405,27 @@ const char *sole_tool_name(const jv *tools) {
     return name && name[0] ? name : NULL;
 }
 
+// What becomes of a rendered chat prompt: generation (handle_chat), or a
+// named context pinned from it (R10.4). One renderer serves both, so a
+// context built from messages is byte for byte the prefix a later chat
+// request renders from the same messages.
+typedef void (*chat_prompt_fn)(slot_t *s, sock_t fd, const char *prompt,
+                               jv *req, const tool_envelope *env);
+
+static void handle_chat_render(slot_t *s, sock_t fd, jv *req,
+                               bool add_assistant, chat_prompt_fn run);
+
+static void chat_generate(slot_t *s, sock_t fd, const char *prompt, jv *req,
+                          const tool_envelope *env) {
+    run_completion(s, fd, prompt, API_CHAT, req, env);
+}
+
 static void handle_chat(slot_t *s, sock_t fd, jv *req) {
+    handle_chat_render(s, fd, req, true, chat_generate);
+}
+
+static void handle_chat_render(slot_t *s, sock_t fd, jv *req,
+                               bool add_assistant, chat_prompt_fn run) {
     jv *msgs = jv_get(req, "messages");
     if (!msgs || msgs->type != J_ARR || msgs->n == 0) {
         send_error(fd, 400, "missing messages");
@@ -715,7 +737,7 @@ static void handle_chat(slot_t *s, sock_t fd, jv *req) {
         }
         thinking |= strength ? strength : effort;
     }
-    char *prompt = render_prompt_alloc(s->tmpl, cm, n_cm, true,
+    char *prompt = render_prompt_alloc(s->tmpl, cm, n_cm, add_assistant,
                                        thinking, native_tools,
                                        total + 256);
     if (!prompt) {
@@ -725,13 +747,152 @@ static void handle_chat(slot_t *s, sock_t fd, jv *req) {
         send_error(fd, 500, "out of memory building chat prompt");
         return;
     }
-    run_completion(s, fd, prompt, API_CHAT, req, strict ? &env : NULL);
+    run(s, fd, prompt, req, strict ? &env : NULL);
     free(prompt);
     for (int i = 0; i < n_own; i++) free(owned[i]);
     free(owned);
     free(cm);
     free(ts.s);
     tool_envelope_free(&env);
+}
+
+// ---- named contexts (R10.4) ---------------------------------------------
+//
+// POST /v1/runner/contexts {id, prompt} or {id, messages[, tools]} prefills
+// the prompt once and pins its KV under `id`; a request carrying
+// "context_id": id forks it (completion.c checks it is a prefix first).
+// GET lists them, DELETE /v1/runner/contexts/{id} releases one.
+static void context_pin_prompt(slot_t *s, sock_t fd, const char *prompt,
+                               bool chat, jv *req) {
+    const char *id = jv_str(jv_get(req, "id"), "");
+    engine *e = &s->e;
+    int32_t *toks = NULL;
+    int n = tok_encode_fit(s->tok, prompt, true, chat ? TOK_PROMPT : TOK_RAW,
+                           0, &toks);
+    if (n < 0) { free(toks); send_error(fd, 500, "out of memory tokenizing"); return; }
+    if (n < 2 || n >= s->m->n_ctx) {
+        free(toks);
+        send_error_detail(fd, 400,
+                          n >= 2 ? "the context does not fit the context "
+                                   "window with room to continue it"
+                          : chat ? "these messages render to (almost) "
+                                   "nothing on their own in this model's "
+                                   "template (some fold the system turn into "
+                                   "the first user turn); a context needs at "
+                                   "least 2 tokens"
+                                 : "a context needs at least 2 tokens",
+                          chat ? "messages" : "prompt", "invalid_value");
+        return;
+    }
+    double t0 = now_s();
+    sched_prefill_begin();
+    prefix_reuse r = engine_prefix_reuse(e, toks, n);
+    float *lg = engine_feed(e, toks + r.keep, n - r.keep);
+    int rc = lg ? prefix_context_pin(e, id, toks, n) : PFX_CTX_NOSPACE;
+    sched_prefill_end();
+    double secs = now_s() - t0;
+    free(toks);
+    if (!lg) { send_error(fd, 500, "prefill failed (context or memory)"); return; }
+    if (rc == PFX_CTX_UNSUPPORTED) {
+        send_error_detail(fd, 409, "this model's KV layout (a ring or tied-V "
+                          "cache) has no contiguous prefix to pin", NULL,
+                          "context_unsupported");
+        return;
+    }
+    if (rc == PFX_CTX_NOSPACE) {
+        send_error_detail(fd, 507, "the prefix-cache budget cannot hold this "
+                          "context beside the ones already pinned "
+                          "(RUNNER_PREFIX_CACHE_MB, or DELETE a context)",
+                          NULL, "context_budget");
+        return;
+    }
+    if (rc < 0) { send_error(fd, 500, "could not pin the context"); return; }
+    // the entry's size is the cache's own per-token arithmetic
+    size_t bytes = prefix_cache_entry_bytes(s->m, n);
+    char body[512];
+    int bn = snprintf(body, sizeof body,
+                      "{\"object\":\"runner.context\",\"id\":\"%s\","
+                      "\"tokens\":%d,\"bytes\":%llu,\"prefill_tokens\":%d,"
+                      "\"cached_tokens\":%d,\"seconds\":%.6f}",
+                      id, n, (unsigned long long)bytes, n - r.keep, r.keep, secs);
+    send_response(fd, 200, "application/json", body, (size_t)bn);
+    fprintf(stderr, "[slot %d] context %s: %d tokens pinned (%d prefilled)\n",
+            s->id, id, n, n - r.keep);
+}
+
+static void context_from_chat(slot_t *s, sock_t fd, const char *prompt,
+                              jv *req, const tool_envelope *env) {
+    (void)env;   // declarations are in the rendered prompt; nothing is parsed
+    context_pin_prompt(s, fd, prompt, true, req);
+}
+
+static void handle_context_create(slot_t *s, sock_t fd, jv *req) {
+    const char *id = jv_str(jv_get(req, "id"), NULL);
+    if (!id || !prefix_context_name_ok(id)) {
+        send_error_detail(fd, 400, "id must be 1 to 64 characters of "
+                          "[A-Za-z0-9._:-]", "id", "invalid_value");
+        return;
+    }
+    jv *prompt = jv_get(req, "prompt");
+    jv *msgs = jv_get(req, "messages");
+    bool has_p = prompt && prompt->type != J_NULL;
+    bool has_m = msgs && msgs->type != J_NULL;
+    if (has_p == has_m) {
+        send_error(fd, 400, "a context is either a raw prompt (\"prompt\") or "
+                            "chat messages (\"messages\", with \"tools\"): "
+                            "give exactly one");
+        return;
+    }
+    if (has_p) {
+        if (prompt->type != J_STR) {
+            send_error_detail(fd, 400, "prompt must be a string", "prompt",
+                              "invalid_type");
+            return;
+        }
+        context_pin_prompt(s, fd, prompt->str, false, req);
+        return;
+    }
+    // rendered WITHOUT the assistant generation prompt: the context is what
+    // a later request's messages start with, not a turn to answer
+    handle_chat_render(s, fd, req, false, context_from_chat);
+}
+
+static void send_contexts(sock_t fd) {
+    int n = prefix_context_list(NULL, 0);
+    prefix_context_info *v = n ? calloc((size_t)n, sizeof *v) : NULL;
+    if (n && !v) { send_error(fd, 500, "out of memory"); return; }
+    if (n) n = prefix_context_list(v, n);
+    sbuf r = {0};
+    sb_lit(&r, "{\"object\":\"list\",\"data\":[");
+    for (int i = 0; i < n; i++)
+        sb_fmt(&r, "%s{\"id\":\"%s\",\"tokens\":%d,\"bytes\":%llu,"
+                   "\"hits\":%llu,\"age_seconds\":%.3f}",
+               i ? "," : "", v[i].name, v[i].tokens,
+               (unsigned long long)v[i].bytes,
+               (unsigned long long)v[i].hits, v[i].age_s);
+    sb_lit(&r, "]}");
+    free(v);
+    if (r.failed) { free(r.s); send_error(fd, 500, "out of memory"); return; }
+    send_response(fd, 200, "application/json", r.s, r.n);
+    free(r.s);
+}
+
+static void delete_context(sock_t fd, const char *path) {
+    const char *id = path + sizeof("/v1/runner/contexts/") - 1;
+    if (!prefix_context_name_ok(id)) {
+        send_error_detail(fd, 400, "not a context id", "id", "invalid_value");
+        return;
+    }
+    if (!prefix_context_release(id)) {
+        send_error_detail(fd, 404, "no context of that id", "id",
+                          "context_not_found");
+        return;
+    }
+    char body[160];
+    int bn = snprintf(body, sizeof body,
+                      "{\"object\":\"runner.context\",\"id\":\"%s\","
+                      "\"deleted\":true}", id);
+    send_response(fd, 200, "application/json", body, (size_t)bn);
 }
 
 static void handle_completion(slot_t *s, sock_t fd, jv *req) {
@@ -1568,11 +1729,15 @@ static void handle_conn(slot_t *s, sock_t fd) {
         ((!strcmp(method, "POST") &&
           (!strcmp(path, "/unload") ||
            !strcmp(path, "/v1/runner/prefix-cache/clear"))) ||
+         (!strcmp(method, "DELETE") &&
+          !strncmp(path, "/v1/runner/contexts/",
+                   sizeof("/v1/runner/contexts/") - 1)) ||
          (!strcmp(method, "GET") &&
           (!strcmp(path, "/health") || !strcmp(path, "/v1/models") ||
            !strcmp(path, "/v1/capabilities") || !strcmp(path, "/metrics") ||
            !strcmp(path, "/v1/runner/prefix-cache") ||
-           !strcmp(path, "/v1/runner/provenance"))));
+           !strcmp(path, "/v1/runner/provenance") ||
+           !strcmp(path, "/v1/runner/contexts"))));
     if (bodyless_route) {
         // These routes are normally served by accept_fastpath. A declared body
         // is deliberately deferred here so the slot can consume it before
@@ -1610,6 +1775,13 @@ static void handle_conn(slot_t *s, sock_t fd) {
     } else if (!strcmp(method, "GET") &&
                !strcmp(path, "/v1/runner/provenance")) {
         send_provenance(fd);
+    } else if (!strcmp(method, "GET") &&
+               !strcmp(path, "/v1/runner/contexts")) {
+        send_contexts(fd);
+    } else if (!strcmp(method, "DELETE") &&
+               !strncmp(path, "/v1/runner/contexts/",
+                        sizeof("/v1/runner/contexts/") - 1)) {
+        delete_context(fd, path);
     } else if (!strcmp(method, "GET") && !strcmp(path, "/health")) {
         send_health(fd);
     } else if (!strcmp(method, "GET") && !strcmp(path, "/v1/models")) {
@@ -1626,7 +1798,8 @@ static void handle_conn(slot_t *s, sock_t fd) {
                 !strcmp(path, "/v1/completions") ||
                 !strcmp(path, "/v1/embeddings") ||
                 !strcmp(path, "/v1/decide") ||
-                !strcmp(path, "/v1/rerank"))) {
+                !strcmp(path, "/v1/rerank") ||
+                !strcmp(path, "/v1/runner/contexts"))) {
         jv *req = body ? json_parse(body, content_length) : NULL;
         if (!req) {
             send_error(fd, 400, "invalid JSON body");
@@ -1721,6 +1894,8 @@ static void handle_conn(slot_t *s, sock_t fd) {
                 else if (strcmp(path, "/v1/embeddings") == 0) handle_embeddings(s, fd, req);
                 else if (strcmp(path, "/v1/decide") == 0) handle_decide(s, fd, req);
                 else if (strcmp(path, "/v1/rerank") == 0) handle_rerank(s, fd, req);
+                else if (strcmp(path, "/v1/runner/contexts") == 0)
+                    handle_context_create(s, fd, req);
                 else handle_completion(s, fd, req);
                 // Ollama-style keep_alive: seconds of idle before the model
                 // unloads (swap mode) — 0 unloads now, negative pins forever.
@@ -1822,12 +1997,14 @@ static bool accept_fastpath(sock_t fd) {
     bool metrics = !strncmp(hdr, "GET /metrics ", 13);
     bool prov = !strncmp(hdr, "GET /v1/runner/provenance ",
                          sizeof("GET /v1/runner/provenance ") - 1);
+    bool ctx_list = !strncmp(hdr, "GET /v1/runner/contexts ",
+                             sizeof("GET /v1/runner/contexts ") - 1);
     // The old spelling still has to reach a handler, or an operator's script
     // gets a 404 that says nothing. It is not answered here — it falls through
     // to the slot path, which replies 405 with the reason.
     if (!strncmp(hdr, "GET /unload ", 12)) return false;
     if (!health && !models && !caps && !unload && !pfx_stats && !pfx_clear &&
-        !metrics && !prov)
+        !metrics && !prov && !ctx_list)
         return false;
     // Keep the request untouched until framing says it is bodyless. A partial
     // header, an oversized header, malformed framing, and every declared body
@@ -1860,6 +2037,7 @@ static bool accept_fastpath(sock_t fd) {
     else if (models)     send_models(fd);
     else if (metrics)    send_metrics(fd);
     else if (prov)       send_provenance(fd);
+    else if (ctx_list)   send_contexts(fd);
     else if (unload)     handle_unload(fd);
     else if (pfx_stats)  send_prefix_cache(fd);
     else if (pfx_clear) {
@@ -2423,7 +2601,9 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
           "  GET /v1/models | GET /v1/capabilities | GET /health | GET /metrics\n"
           "  GET /v1/runner/prefix-cache | POST /v1/runner/prefix-cache/clear"
           " | POST /unload\n"
-          "  GET /v1/runner/provenance\n", stderr);
+          "  GET /v1/runner/provenance | POST /v1/runner/contexts"
+          " | GET /v1/runner/contexts | DELETE /v1/runner/contexts/{id}\n",
+          stderr);
 
     // Say it in the banner, not only at init.
     //
