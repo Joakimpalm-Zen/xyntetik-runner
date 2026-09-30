@@ -4358,24 +4358,111 @@ static void mv_rows(void *ctx, int i0, int i1) {
 // activation quant to save one dot.
 enum { I8_MIN_ROWS = 32 };
 
+static bool mv_takes_i8(const gguf_tensor *w, int n_in, int n_out, int n_batch) {
+    return n_batch < MV_SMALL_BATCH && n_out >= I8_MIN_ROWS && i8_dot_enabled() &&
+           i8_dot_ok(w->type, n_in);
+}
+
+// The int8 activation columns: the quantization depends on the activations
+// alone, not on the weight type, so projections of one input can share it.
+static void *mv_quant_act(const float *x, int x_stride, int n_in, int n_batch) {
+    size_t asz = i8_act_size(n_in);
+    void *xq = malloc(asz * (size_t)n_batch);
+    if (xq)
+        for (int c = 0; c < n_batch; c++)
+            i8_quant_act(x + (size_t)c * x_stride,
+                         (uint8_t *)xq + (size_t)c * asz, n_in);
+    return xq;
+}
+
 static void matvec_b(tpool *tp, float *y, int y_stride, const gguf_tensor *w,
                      const float *x, int x_stride, int n_in, int n_out,
                      const float *bias, int n_batch) {
     mv_job j = { w, x, bias, y, n_in, n_batch, x_stride, y_stride,
                  ggml_row_size(w->type, n_in), NULL, 0 };
     void *xq = NULL;
-    if (n_batch < MV_SMALL_BATCH && n_out >= I8_MIN_ROWS && i8_dot_enabled() &&
-        i8_dot_ok(w->type, n_in)) {
-        size_t asz = i8_act_size(n_in);
-        if ((xq = malloc(asz * (size_t)n_batch))) {
-            for (int c = 0; c < n_batch; c++)
-                i8_quant_act(x + (size_t)c * x_stride,
-                             (uint8_t *)xq + (size_t)c * asz, n_in);
-            j.xq = xq;
-            j.xq_stride = asz;
-        }
+    if (mv_takes_i8(w, n_in, n_out, n_batch) &&
+        (xq = mv_quant_act(x, x_stride, n_in, n_batch))) {
+        j.xq = xq;
+        j.xq_stride = i8_act_size(n_in);
     }
     tpool_run(tp, mv_rows, &j, n_out);
+    free(xq);
+}
+
+// Several projections of ONE input in one pool dispatch (R3.1.6). Q, K and V
+// (with afmoe's Q gate), and gate and up, read the same normed activations,
+// and each was its own tpool_run, so its own barrier: three fewer a layer,
+// measured at 0.9 to 1.4 ms a token at 32 to 64 threads. The parts' rows form
+// one range, each worker's slice is cut at the part boundaries, and every row
+// runs exactly the job matvec_b gives it (the same dot, the same activation
+// quantization, the same order), so the output is byte-identical; the tests
+// hold the two against each other. The weights are not concatenated at load:
+// one layer's projections are often different quant types (Q4_K_M keeps V at
+// Q6_K), which a single tensor could not hold without requantizing.
+// RUNNER_MV_FUSE=0 dispatches the parts one by one, as before.
+typedef struct {
+    float *y;
+    int y_stride;
+    const gguf_tensor *w;
+    int n_out;
+    const float *bias;
+} mv_part;
+
+enum { MV_MAX_PARTS = 4 };
+
+typedef struct {
+    int n;
+    mv_job job[MV_MAX_PARTS];
+    int start[MV_MAX_PARTS + 1];
+} mv_multi;
+
+static void mv_multi_rows(void *ctx, int i0, int i1) {
+    mv_multi *mm = ctx;
+    for (int s = 0; s < mm->n; s++) {
+        int a = i0 > mm->start[s] ? i0 : mm->start[s];
+        int b = i1 < mm->start[s + 1] ? i1 : mm->start[s + 1];
+        if (a < b) mv_rows(&mm->job[s], a - mm->start[s], b - mm->start[s]);
+    }
+}
+
+static bool mv_fuse_enabled(void) {
+    static int on = -1;
+    if (on < 0) {
+        const char *e = getenv("RUNNER_MV_FUSE");
+        on = !(e && e[0] == '0' && e[1] == 0);
+    }
+    return on;
+}
+
+static void matvec_b_parts(tpool *tp, const mv_part *p, int np, const float *x,
+                           int x_stride, int n_in, int n_batch) {
+    if (np == 1 || !mv_fuse_enabled()) {
+        for (int s = 0; s < np; s++)
+            matvec_b(tp, p[s].y, p[s].y_stride, p[s].w, x, x_stride, n_in,
+                     p[s].n_out, p[s].bias, n_batch);
+        return;
+    }
+    mv_multi mm = { .n = np };
+    void *xq = NULL;
+    bool xq_tried = false;
+    for (int s = 0; s < np; s++) {
+        mv_job j = { p[s].w, x, p[s].bias, p[s].y, n_in, n_batch, x_stride,
+                     p[s].y_stride, ggml_row_size(p[s].w->type, n_in), NULL, 0 };
+        if (mv_takes_i8(p[s].w, n_in, p[s].n_out, n_batch)) {
+            if (!xq_tried) {
+                xq = mv_quant_act(x, x_stride, n_in, n_batch);
+                xq_tried = true;
+            }
+            if (xq) {
+                j.xq = xq;
+                j.xq_stride = i8_act_size(n_in);
+            }
+        }
+        mm.job[s] = j;
+        mm.start[s + 1] = mm.start[s] + p[s].n_out;
+    }
+    tpool_run(tp, mv_multi_rows, &mm, mm.start[np]);
     free(xq);
 }
 
@@ -7651,15 +7738,6 @@ static void forward_layer(model_t *m, int l, int n, int pos, int dbg) {
                        m->ssm_qkv + (size_t)b * 2 * q_dim + h * 2 * hd + hd,
                        sizeof(float) * hd);
             }
-    } else {
-        matvec_b(m->tp, m->q, q_dim, ly->wq, m->xb, xdim,
-                 n_embd, q_dim, ly->bq, n);
-        LORA_HOOK(LW_Q, m->q, q_dim, m->xb, xdim, n_embd, q_dim, n);
-        // afmoe output gate: projected from the SAME normed input as Q,
-        // consumed after attn_heads by the shared q_gate multiply below
-        if (m->attn_out_gate && ly->wq_gate)
-            matvec_b(m->tp, m->q_gate, q_dim, ly->wq_gate, m->xb, xdim,
-                     n_embd, q_dim, NULL, n);
     }
     // gemma4 E-series shared-KV layers project Q as usual but compute no
     // K/V at all: they attend over the cache an earlier layer already
@@ -7668,11 +7746,31 @@ static void forward_layer(model_t *m, int l, int n, int pos, int dbg) {
     // binds them optionally on these layers, so both are NULL), and an older
     // full-form file's copies are bound and then simply ignored.
     bool owns_kv = model_kv_owner(m, l) == l;
+    if (!m->qwen35) {
+        // Q, the afmoe output gate (projected from the SAME normed input as
+        // Q, consumed after attn_heads by the shared q_gate multiply below),
+        // K and V: one dispatch. The LoRA deltas follow, each on its own
+        // output, as they did after each projection.
+        mv_part qkv[MV_MAX_PARTS];
+        int np = 0;
+        qkv[np++] = (mv_part){ m->q, q_dim, ly->wq, q_dim, ly->bq };
+        if (m->attn_out_gate && ly->wq_gate)
+            qkv[np++] = (mv_part){ m->q_gate, q_dim, ly->wq_gate, q_dim, NULL };
+        if (owns_kv) {
+            qkv[np++] = (mv_part){ m->k_tmp, kv_dim, ly->wk, kv_dim, ly->bk };
+            if (ly->wv)
+                qkv[np++] = (mv_part){ m->v_tmp, kv_dim, ly->wv, kv_dim, ly->bv };
+        }
+        matvec_b_parts(m->tp, qkv, np, m->xb, xdim, n_embd, n);
+        LORA_HOOK(LW_Q, m->q, q_dim, m->xb, xdim, n_embd, q_dim, n);
+    }
     if (owns_kv) {
-        matvec_b(m->tp, m->k_tmp, kv_dim, ly->wk, m->xb, xdim, n_embd, kv_dim, ly->bk, n);
+        if (m->qwen35)
+            matvec_b(m->tp, m->k_tmp, kv_dim, ly->wk, m->xb, xdim, n_embd, kv_dim, ly->bk, n);
         LORA_HOOK(LW_K, m->k_tmp, kv_dim, m->xb, xdim, n_embd, kv_dim, n);
         if (ly->wv) {
-            matvec_b(m->tp, m->v_tmp, kv_dim, ly->wv, m->xb, xdim, n_embd, kv_dim, ly->bv, n);
+            if (m->qwen35)
+                matvec_b(m->tp, m->v_tmp, kv_dim, ly->wv, m->xb, xdim, n_embd, kv_dim, ly->bv, n);
             LORA_HOOK(LW_V, m->v_tmp, kv_dim, m->xb, xdim, n_embd, kv_dim, n);
         } else
             // gemma4 global layers have no V projection: V is the raw K
@@ -7847,9 +7945,11 @@ nemo_ffn:
                 m->hb[i] = xielu(m->hb[i], an, ap, bb, ep);
         }
     } else {
-    matvec_b(m->tp, m->hb,  nff, ly->w_gate, m->xb, xdim, n_embd, nff, NULL, n);
+    // gate and up in one dispatch (R3.1.6), then their LoRA deltas
+    mv_part gu[2] = { { m->hb,  nff, ly->w_gate, nff, NULL },
+                      { m->hb2, nff, ly->w_up,   nff, NULL } };
+    matvec_b_parts(m->tp, gu, 2, m->xb, xdim, n_embd, n);
     LORA_HOOK(LW_GATE, m->hb, nff, m->xb, xdim, n_embd, nff, n);
-    matvec_b(m->tp, m->hb2, nff, ly->w_up,   m->xb, xdim, n_embd, nff, NULL, n);
     LORA_HOOK(LW_UP, m->hb2, nff, m->xb, xdim, n_embd, nff, n);
     for (size_t i = 0; i < (size_t)n * nff; i++)
         m->hb[i] = gated_act(m->ffn_act, m->hb[i], m->hb2[i]);
