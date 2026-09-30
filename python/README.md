@@ -5,6 +5,12 @@ The supported Python endpoint, process-launch, and startup-ownership boundary fo
 `StartupLease` atomically arbitrates one parent-owned Runner launch. It only
 tracks the owning parent and never kills an unrelated child process. PID reuse,
 dead owners, and unreaped zombie owners are treated as stale claims.
+`ManagedRunner` takes it on its port before it spawns, at
+`<state root>/leases/runner-<port>.pid` (`~/.xyntetik/runner` or
+`%APPDATA%\xyntetik\runner`), the lease the tray and the Suite take, and
+holds it until `stop()`. A start refused for a held lease returns False without
+spawning, with `lease_holder` naming the holder; `lease=False` opts out and
+`lease_dir` moves it.
 
 `ManagedRunner.start()` owns the child for the whole call. A False return means
 nothing is left running: a runner that never answered before the deadline is

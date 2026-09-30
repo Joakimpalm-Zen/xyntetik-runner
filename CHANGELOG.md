@@ -8,6 +8,17 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **The tray and the Python client take the Suite's startup lease.** The
+  tray's managed start and `ManagedRunner.start()` launched a Runner with no
+  lease, so between them and the Suite only the port bind decided who
+  started one. Both now take `<state root>/leases/runner-<port>.pid`, the
+  Python `StartupLease` the Suite ported, before they spawn and hold it
+  until their Runner is gone; a held lease refuses the start (the tray's
+  menu names the holder, `ManagedRunner.lease_holder` does in Python). The
+  tray's lease is a C port of the same class, reading each platform's
+  process start identity exactly as it does, and
+  `tests/test_lease_interop.py` holds the two against each other both ways.
+
 - **`--parent-pid` watches the process on Linux, not the launching
   thread.** It armed `PR_SET_PDEATHSIG`, which the kernel fires when the
   THREAD that forked the Runner exits: a supervisor that launched from a

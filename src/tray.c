@@ -201,6 +201,12 @@ static bool cfg_save(void) {
 static long g_managed_pid = 0;
 static bool g_managed_spawned = false;  // spawned since the last user stop
 static bool g_quit = false;
+// R4.12.24: the startup lease on the managed port, the one the Suite and the
+// Python client's ManagedRunner take, so no two of them launch a Runner on
+// one port. Held from the spawn until the managed Runner is gone. A refused
+// start records the holder (0 when it names none) for the menu; -1 = none.
+static runner_lease g_lease;
+static long g_lease_refused = -1;
 
 // Is the configured model still on disk? Publishing a checkpoint and
 // reclaiming the local copy is routine, and it silently arms a config that can
@@ -226,6 +232,10 @@ static int managed_state(const instance_rec *recs, int nrecs) {
     // reap a dead child, else the zombie still answers kill(pid, 0)
     if (g_managed_pid > 0) waitpid((pid_t)g_managed_pid, NULL, WNOHANG);
 #endif
+    // the Runner the lease was taken for has ended: another launcher may
+    // start one now
+    if (g_lease.held && (g_managed_pid <= 0 || !instance_pid_alive(g_managed_pid)))
+        runner_lease_release(&g_lease);
     if (g_managed_pid <= 0) {
         // Derived exactly like the rest: a missing model outranks "exited",
         // because it explains the exit and survives it.
@@ -303,6 +313,17 @@ static void spawn_managed(void) {
     // open and land in MG_EXITED, which is indistinguishable from a crash and
     // sends the user to the log for a cause the menu already knows.
     if (!model_file_present()) return;
+    // One launcher per port. Best-effort like the registry: with no state
+    // root to hold a lease in, the port bind is the only arbiter, as before.
+    char lease_path[1100];
+    if (!g_lease.held && runner_lease_path(g_cfg.port, lease_path, sizeof lease_path)) {
+        if (!runner_lease_acquire(&g_lease, lease_path)) {
+            g_lease_refused = runner_lease_holder(lease_path);
+            return;
+        }
+    }
+    g_lease_refused = -1;
+    bool spawned = false;
     char exe[1200];
     self_exe(exe, sizeof exe);
     char portbuf[16];
@@ -358,6 +379,7 @@ static void spawn_managed(void) {
         fprintf(stderr, "tray: refusing to start — the command line for this "
                 "configuration does not fit; shorten the model path or the "
                 "extra arguments\n");
+        runner_lease_release(&g_lease);
         return;
     }
     SECURITY_ATTRIBUTES sa = { sizeof sa, NULL, TRUE };
@@ -375,6 +397,7 @@ static void spawn_managed(void) {
                        NULL, NULL, &si, &pi)) {
         g_managed_pid = (long)pi.dwProcessId;
         g_managed_spawned = true;
+        spawned = true;
         CloseHandle(pi.hThread);
         CloseHandle(pi.hProcess);
     }
@@ -391,9 +414,11 @@ static void spawn_managed(void) {
     if (posix_spawn(&pid, exe, &fa, NULL, argv, environ) == 0) {
         g_managed_pid = (long)pid;
         g_managed_spawned = true;
+        spawned = true;
     }
     posix_spawn_file_actions_destroy(&fa);
 #endif
+    if (!spawned) runner_lease_release(&g_lease);
 }
 
 // Graceful-then-firm stop. The 3 s escalation runs inline: stopping is a
@@ -434,7 +459,10 @@ static void stop_pid(long pid) {
         if (mine) waitpid((pid_t)pid, NULL, 0);
     }
 #endif
-    if (pid == g_managed_pid) g_managed_pid = 0;
+    if (pid == g_managed_pid) {
+        g_managed_pid = 0;
+        runner_lease_release(&g_lease);
+    }
 }
 
 static void self_exe(char *out, size_t cap) {
@@ -604,6 +632,16 @@ int tray_menu_build(tray_item *it, int cap) {
         PUT(.kind = TRAY_K_LABEL);
         snprintf(row->label, sizeof row->label,
                  "⚠ model file missing: %.470s", base_name(g_cfg.last_model));
+    }
+    if (g_lease_refused >= 0 && (st == MG_OFF || st == MG_EXITED)) {
+        PUT(.kind = TRAY_K_LABEL);
+        if (g_lease_refused > 0)
+            snprintf(row->label, sizeof row->label,
+                     "⚠ port %d is held by another launcher (pid %ld)",
+                     g_cfg.port, g_lease_refused);
+        else
+            snprintf(row->label, sizeof row->label,
+                     "⚠ port %d is held by another launcher", g_cfg.port);
     }
     if (st == MG_STARTING) {
         PUT(.kind = TRAY_K_LABEL);
