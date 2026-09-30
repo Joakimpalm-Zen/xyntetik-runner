@@ -1032,15 +1032,27 @@ reported beside it).
   [Muse-Glimmer-30B quant frontier](https://huggingface.co/datasets/Joakimpalm-Zen/Muse-Glimmer-30B-runner-quant-frontier-report)
   (Meta's own Q4_K_M passes the bar; six runner plans measured, none beat it -
   stated openly).
+- [Xyntetik-Blad-Genesis-0.7M](https://huggingface.co/Joakimpalm-Zen/Xyntetik-Blad-Genesis-0.7M)
+  and its [training record](https://huggingface.co/datasets/Joakimpalm-Zen/Xyntetik-Blad-Genesis-0.7M-training-record)
+  are a research artifact at toy scale, **not a Runner model**: no GGUF,
+  PyTorch on CPU only, with a small `run_example.py`. They hold 686,756-parameter
+  program-proposal cores (3 seeds x 160, 320 and 640 iterations) trained from
+  scratch with no human text. A tiny model trained only on its own executed
+  programs beat the best blind search at equal executions on a synthetic list
+  DSL; every self-improvement mechanism tested failed once its cost was
+  counted (one host). The record is the full preregistered GENESIS I record
+  (18 studies, 1,407 files, 655 MB); start with `GENESIS-I.md`. Apache-2.0.
+  Collection: [Xyntetik Research: GENESIS I](https://huggingface.co/collections/Joakimpalm-Zen/xyntetik-research-genesis-i-6abcfa50b6707dec9bfee356).
 
 Since 2026-09-15 the account is organised for a reader who has never seen
 it: weightless reports are Hugging Face **Datasets** (the seven above, plus
 the [Qwen3-4B tool-use training record](https://huggingface.co/datasets/Joakimpalm-Zen/Qwen3-4B-ToolUse-LoRA-training-record)
 extracted from the adapter repository), every model card opens with a
-release or research-artifact status block, and five collections tell the
+release or research-artifact status block, and seven collections tell the
 story: [Runner Releases](https://huggingface.co/collections/Joakimpalm-Zen/runner-releases-6aa98baaed03bba0e8a561ae), [Model Surgery and Scale Recovery](https://huggingface.co/collections/Joakimpalm-Zen/xyntetik-research-model-surgery-and-scale-recovery-6aa98bab0ecb9723f310c770),
 [Pruning and Quantization Frontiers](https://huggingface.co/collections/Joakimpalm-Zen/xyntetik-research-pruning-and-quantization-frontiers-6aa98badc3307048c060ebe2), [Runner Compatibility Reports](https://huggingface.co/collections/Joakimpalm-Zen/xyntetik-research-runner-compatibility-reports-6aa98baf2859827a8d866165)
-and [LoRA Training on Quantized Weights](https://huggingface.co/collections/Joakimpalm-Zen/xyntetik-research-lora-training-on-quantized-weights-6aa98bb02859827a8d86618c). The retired Model-typed copies
+[LoRA Training on Quantized Weights](https://huggingface.co/collections/Joakimpalm-Zen/xyntetik-research-lora-training-on-quantized-weights-6aa98bb02859827a8d86618c),
+[Kvist: distilled agents](https://huggingface.co/collections/Joakimpalm-Zen/xyntetik-kvist-distilled-agents-6ab9f930af19ca84df9ebf6b) and [GENESIS I](https://huggingface.co/collections/Joakimpalm-Zen/xyntetik-research-genesis-i-6abcfa50b6707dec9bfee356). The retired Model-typed copies
 of the reports stay up with a pointer to the canonical dataset.
 
 ## Support matrix
