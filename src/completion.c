@@ -2208,6 +2208,8 @@ static const char *serve_receipt(slot_t *s, engine *e, gen_ctx *g,
         .spec_accepted = e->spec_st.accepted,
         .spec_lk_drafted = e->spec_st.lk_drafted,
         .spec_lk_accepted = e->spec_st.lk_accepted,
+        .adapter_sig_json = s->adapter >= 0 && SV.adapters[s->adapter].sig_json[0]
+                            ? SV.adapters[s->adapter].sig_json : NULL,
         .model_sha256 = msha, .binary_sha256 = bsha,
         .template_name = chat ? template_name(s->tmpl) : "raw",
         .serve_json = sj.s,

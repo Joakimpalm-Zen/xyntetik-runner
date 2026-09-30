@@ -996,6 +996,9 @@ static void usage_to(FILE *f, const char *prog) {
         "  --lora FILE    load a LoRA adapter GGUF beside the frozen base\n"
         "                 (CPU dense projections; fails closed otherwise)\n"
         "  --lora-scale F multiply the adapter's trained alpha/r (default 1.0)\n"
+        "  --lora-sig F   OMS bundle for the --lora adapter (default: its path\n"
+        "                 + .sig when it exists); verified with --model-pubkey,\n"
+        "                 and required by --require-signed-model like the model\n"
         "  --adapter NAME=PATH  with --serve: load a LoRA adapter once and serve\n"
         "                 it per request as \"model\": \"<model>:NAME\" (CPU\n"
         "                 hooks, --gpu off; repeatable, up to 16; exclusive\n"
@@ -1326,6 +1329,7 @@ int main(int argc, char **argv) {
     bool bench_json = false;
     bool score = false;
     const char *lora_path = NULL;
+    const char *lora_sig = NULL;   // R1.2.3: the adapter's OMS bundle
     // R8.6: --adapter NAME=PATH, repeatable; served per request as "<model>:NAME"
     const char *adapter_names[16], *adapter_paths[16];
     int n_adapters = 0;
@@ -1467,6 +1471,7 @@ int main(int argc, char **argv) {
         else if (!strcmp(a, "--score")) score = true;
         else if (!strcmp(a, "--decide")) decide_path = NEXT;
         else if (!strcmp(a, "--lora")) lora_path = NEXT;
+        else if (!strcmp(a, "--lora-sig")) lora_sig = NEXT;
         else if (!strcmp(a, "--adapter")) {
             char *spec = strdup(NEXT);
             char *eq = spec ? strchr(spec, '=') : NULL;
@@ -2325,6 +2330,7 @@ int main(int argc, char **argv) {
     tokenizer tok;
     oms_policy signing = { model_sig, model_pubkey, require_signed_model };
     char model_sig_json[512] = "";   // load-time OMS verdict for the receipt
+    char adapter_sig_json[512] = ""; // and the adapter's (R1.2.3)
     // A reservation is a budget for the whole server, so the -c 0 auto-fit has
     // to know how many slots will divide it. Set before the FIRST load, not
     // just for the slots server_run creates: slot 0 is this model, and a slot 0
@@ -2334,6 +2340,7 @@ int main(int argc, char **argv) {
     if (train_path) mp.gpu_mode = GPU_OFF;   // --train is the CPU path (v1)
     if (serve) mp.n_seq = parallel;
     mp.lora_path = lora_path;
+    mp.lora_sig = lora_sig;
     mp.lora_scale = lora_scale;
     if (!registry) {
         double t1 = now_s();
@@ -2342,6 +2349,17 @@ int main(int argc, char **argv) {
         if (!oms_check_model(load_path, &signing, &osr)) return 1;
         if (osr.status[0])
             oms_result_json(&osr, model_sig_json, sizeof model_sig_json);
+        // R1.2.3: an adapter changes what is served, so the same trusted key
+        // and the same "required" apply to it, with its own bundle
+        oms_result aosr;
+        memset(&aosr, 0, sizeof aosr);
+        if (lora_path) {
+            oms_policy apol = { lora_sig, model_pubkey, require_signed_model };
+            if (!oms_check_artifact(lora_path, &apol, "adapter", &aosr))
+                return 1;
+            if (aosr.status[0])
+                oms_result_json(&aosr, adapter_sig_json, sizeof adapter_sig_json);
+        }
         if (!tokenizer_init(&tok, &m.gf)) return 1;
         // serve mode: the registry model's own pool is one thread by design
         // (slots create their pools), so the honest number here is the count
@@ -2401,7 +2419,7 @@ int main(int argc, char **argv) {
                 provenance_note_load(&(provenance_load){
                     .model_path = load_path,
                     .adapter_path = lora_path, .adapter_scale = lora_scale,
-                    .signature = &osr,
+                    .signature = &osr, .adapter_signature = &aosr,
                     .envelope_state = env_state, .envelope_detail = env_line });
         }
         // Discovery registry: run modes announce themselves so the tray (or
@@ -3300,6 +3318,7 @@ int main(int argc, char **argv) {
                 .spec_lk_drafted = e.spec_st.lk_drafted,
                 .spec_lk_accepted = e.spec_st.lk_accepted,
                 .model_sig_json = model_sig_json[0] ? model_sig_json : NULL,
+                .adapter_sig_json = adapter_sig_json[0] ? adapter_sig_json : NULL,
             };
             if (ocap.failed) {
                 fprintf(stderr, "error: transcript: out of memory capturing "

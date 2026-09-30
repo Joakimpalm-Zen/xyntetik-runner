@@ -101,6 +101,10 @@ typedef struct {
     const char *prev_hash;
     const char *sign_key_path;
     const char *model_sig_json;
+    // the adapter's load-time OMS verdict object (R1.2.3), or NULL: written
+    // as a top-level "adapter_signature" (never a nested "signature" key,
+    // which a signed record reserves for its own)
+    const char *adapter_sig_json;
     // Speculation accounting: spec_source names the draft source the run was
     // configured with ("model" | "mtp" | "lookup") or NULL for plain
     // decoding, in which case no "speculation" object is written and the

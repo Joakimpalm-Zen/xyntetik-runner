@@ -792,6 +792,7 @@ typedef struct {
     // copies and lazy reloads. Path is borrowed for the params' lifetime;
     // scale is explicit (0 is a valid no-op), ignored when path is NULL.
     const char *lora_path;
+    const char *lora_sig;   // R1.2.3: explicit OMS bundle for lora_path (NULL: PATH.sig)
     float lora_scale;
 } model_params;
 

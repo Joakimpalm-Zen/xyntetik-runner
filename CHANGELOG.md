@@ -8,6 +8,18 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **Adapters answer to the model-signing policy.** A LoRA adapter changes
+  the model that serves, yet it loaded unverified beside a signed base. The
+  `--lora` adapter (`--lora-sig FILE`, else `<adapter>.sig`) and every
+  `--adapter` (`PATH.sig`) are now verified with `--model-pubkey` at load and
+  on every reload, required by `--require-signed-model`, and refused when
+  their bytes no longer match the signed digest; the verdict lands in
+  receipts as `adapter_signature` and in `/v1/runner/provenance`. Split GGUF
+  parts were already covered (every part named and matched). Anchors in
+  `tests/test_adapter_signature.py`: openssl-made bundles, a flipped adapter
+  byte refusing the load with the signature intact (and passing when the
+  check is disabled, so the test can fail).
+
 - **Per-request receipts in serve mode (`--receipts DIR`).** Every
   finished generation on the chat, completions, Responses and Messages
   surfaces writes the CLI's transcript record, so `--verify` replays a

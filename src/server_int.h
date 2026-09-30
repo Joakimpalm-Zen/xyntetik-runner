@@ -41,6 +41,7 @@ typedef struct {
     char      name[64];
     char      path[1024];
     char      sha256[65];
+    char      sig_json[512];   // load-time OMS verdict, "" = none (R1.2.3)
     lora_set *set;
 } adapter_entry;
 

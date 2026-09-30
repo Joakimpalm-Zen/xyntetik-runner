@@ -1899,6 +1899,7 @@ whether the draft is `active` there.
 | `--require-signed` | With `--verify`: an unsigned record is `UNVERIFIABLE`. Signature, trust and link checks all run before the model is loaded for the replay. |
 | `--trust-key HEX` | With `--verify`: the record must be signed by this public key, given as its hex bytes or as `sha256:` plus the hex SHA-256 of those bytes (an ML-DSA-44 key is 2624 hex characters; its digest fits a policy file); unsigned, or signed by any other key, is `UNVERIFIABLE`. The verdict JSON carries `signed`, `public_key` and `prev` either way. |
 | `--model-sig FILE` | Verify an OpenSSF Model Signing bundle against the model and supplied public key. [Details](#cli-model-sig). |
+| `--lora-sig FILE` | The OMS bundle for the `--lora` adapter (default `<adapter>.sig`), verified with `--model-pubkey`; `--require-signed-model` requires it. [Details](#cli-model-sig). |
 | `--model-pubkey FILE` | The PEM `PUBLIC KEY` (EC, P-256/384/521) an OMS bundle must verify with. Given without `--model-sig`, it turns an auto-detected `<model>.sig` into a gate. |
 | `--require-signed-model` | Refuse to load `-m` unless an OMS bundle is present and verifies with `--model-pubkey`. The policy applies to named registry entries, every serving slot, and reloads after unload or TTL expiry. Registry refusals return HTTP 409 with `model_signature_refused`; the server stays available. Without `--model-sig`, each load discovers that model's own `.sig` sidecar. |
 | `--caps` | Print machine, backend, quant, architecture, placement, and sampling capabilities as JSON. |
@@ -2038,6 +2039,14 @@ receipt records the verdict as `model_signature`. Key method only; certificate a
 keyless bundles are refused as unsupported, never passed. Measured 2026-09-02 against
 bundles written by the reference signer (`model_signing` 1.1.1, key method, P-256) and
 against RFC 6979 vectors for all three curves.
+
+An adapter changes the model that serves, so it answers to the same policy: the
+`--lora` adapter's bundle (`--lora-sig FILE`, else `<adapter>.sig`) and every
+`--adapter NAME=PATH` bundle (`PATH.sig`) are verified with `--model-pubkey`,
+checked again on every reload, and required by `--require-signed-model`; a bundle
+that does not verify, or an adapter whose bytes changed, refuses the load (the
+server's start for `--adapter`). The verdict is recorded as `adapter_signature` in
+receipts and as the adapter's `signature` in `/v1/runner/provenance`.
 
 <a id="cli-v"></a>
 #### `-v`

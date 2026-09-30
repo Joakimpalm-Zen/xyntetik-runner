@@ -384,6 +384,11 @@ bool oms_verify_file(const char *bundle_path, const char *pubkey_pem_path,
 
 bool oms_check_model(const char *model_path, const oms_policy *policy,
                      oms_result *out) {
+    return oms_check_artifact(model_path, policy, "model", out);
+}
+
+bool oms_check_artifact(const char *model_path, const oms_policy *policy,
+                        const char *label, oms_result *out) {
     oms_result local = {0};
     if (!out) out = &local;
     memset(out, 0, sizeof(*out));
@@ -396,7 +401,7 @@ bool oms_check_model(const char *model_path, const oms_policy *policy,
         auto_sig = malloc(n + sizeof(".sig"));
         if (!auto_sig) {
             set(out, "unverified", "out of memory locating signature bundle");
-            fprintf(stderr, "error: model signature: %s\n", out->reason);
+            fprintf(stderr, "error: %s signature: %s\n", label, out->reason);
             return false;
         }
         memcpy(auto_sig, model_path, n);
@@ -407,18 +412,20 @@ bool oms_check_model(const char *model_path, const oms_policy *policy,
     bool allowed = true;
     if (sig) {
         bool verified = oms_verify_file(sig, policy->pubkey_path, model_path, out);
-        fprintf(stderr, "model signature: %s (%s%s%s%s%s)\n", out->status,
+        fprintf(stderr, "%s signature: %s (%s%s%s%s%s)\n", label, out->status,
                 out->reason, out->curve[0] ? "; " : "", out->curve,
                 out->hash[0] ? "/" : "", out->hash);
         allowed = verified || !(policy->bundle_path || policy->pubkey_path ||
                                 policy->required);
     } else if (policy->required) {
-        set(out, "missing", "no signature bundle (pass --model-sig)");
+        set(out, "missing", strcmp(label, "model")
+                            ? "no signature bundle (PATH.sig, or --lora-sig)"
+                            : "no signature bundle (pass --model-sig)");
         allowed = false;
     }
     if (!allowed)
-        fprintf(stderr, "error: model signature: refusing to load %s: %s\n",
-                model_path, out->reason);
+        fprintf(stderr, "error: %s signature: refusing to load %s: %s\n",
+                label, model_path, out->reason);
     free(auto_sig);
     return allowed;
 }

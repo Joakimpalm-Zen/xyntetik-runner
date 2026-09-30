@@ -327,6 +327,11 @@ bool transcript_write(const transcript_info *ti) {
         tsb_put(&w, ti->model_sig_json, strlen(ti->model_sig_json));
         tsb_put(&w, ",", 1);
     }
+    if (ti->adapter_sig_json && ti->adapter_path) {
+        tsb_put(&w, "\"adapter_signature\":", 20);
+        tsb_put(&w, ti->adapter_sig_json, strlen(ti->adapter_sig_json));
+        tsb_put(&w, ",", 1);
+    }
     if (ti->spec_source) {
         tsb_put(&w, "\"speculation\":{\"source\":", 24);
         tsb_json_str(&w, ti->spec_source, strlen(ti->spec_source));

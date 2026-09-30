@@ -38,6 +38,13 @@ typedef struct {
 bool oms_check_model(const char *model_path, const oms_policy *policy,
                      oms_result *out);
 
+// The same policy for any other artifact that changes what is served -- a
+// LoRA adapter (R1.2.3). `label` names it in the log ("adapter"); the policy's
+// bundle_path must be the ARTIFACT's own (NULL discovers <path>.sig), never
+// the model's.
+bool oms_check_artifact(const char *path, const oms_policy *policy,
+                        const char *label, oms_result *out);
+
 // Verify `bundle_path` against the model file at `model_path` with the
 // trusted public key in `pubkey_pem_path` (PEM "PUBLIC KEY", EC only).
 // Returns true only when status is "verified"; `out` always describes why.

@@ -172,6 +172,16 @@ int swap_to(const char *want) {
         memset(&osr, 0, sizeof osr);
         bool sig_refused = model_ok &&
             !oms_check_model(SV.reg[idx].path, &SV.signing, &osr);
+        // the --lora adapter comes back with every reload, under the same
+        // trusted key (R1.2.3)
+        oms_result aosr;
+        memset(&aosr, 0, sizeof aosr);
+        if (model_ok && !sig_refused && SV.mp.lora_path) {
+            oms_policy apol = { SV.mp.lora_sig, SV.signing.pubkey_path,
+                                SV.signing.required };
+            sig_refused = !oms_check_artifact(SV.mp.lora_path, &apol,
+                                              "adapter", &aosr);
+        }
         bool tok_ok = model_ok && !sig_refused && tok && tokenizer_init(tok, &m->gf);
         bool mtp_refused = model_ok && SV.single && SV.mp.mtp &&
                            !model_mtp_ready(m);
@@ -301,7 +311,7 @@ int swap_to(const char *want) {
         provenance_note_load(&(provenance_load){
             .model_path = SV.reg[idx].path,
             .adapter_path = SV.mp.lora_path, .adapter_scale = SV.mp.lora_scale,
-            .signature = &osr,
+            .signature = &osr, .adapter_signature = &aosr,
             .envelope_state = env_state, .envelope_detail = env_line });
         resident_store(idx);
     }

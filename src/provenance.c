@@ -40,6 +40,7 @@ static float    adapter_scale;
 static char     adapter_sha[65];
 static bool     adapter_ok;
 static char     sig_json[512];      // oms_result_json, "" = no bundle
+static char     asig_json[512];     // the adapter's, likewise
 static int      env_state;
 static char     env_detail[256];
 static char     loaded_utc[32];
@@ -131,6 +132,9 @@ void provenance_note_load(const provenance_load *l) {
     sig_json[0] = 0;
     if (l->signature && l->signature->status[0])
         oms_result_json(l->signature, sig_json, sizeof sig_json);
+    asig_json[0] = 0;
+    if (l->adapter_signature && l->adapter_signature->status[0])
+        oms_result_json(l->adapter_signature, asig_json, sizeof asig_json);
     env_state = l->envelope_state;
     snprintf(env_detail, sizeof env_detail, "%s",
              l->envelope_detail ? l->envelope_detail : "");
@@ -258,7 +262,10 @@ void provenance_render(sbuf *b, const char *model_id) {
         sb_lit(b, ",\"sha256\":");
         if (adapter_ok) put_str(b, adapter_sha);
         else            sb_lit(b, "null");
-        sb_fmt(b, ",\"scale\":%g}", (double)adapter_scale);
+        sb_fmt(b, ",\"scale\":%g,\"signature\":", (double)adapter_scale);
+        if (asig_json[0]) sb_put(b, asig_json, strlen(asig_json));
+        else              sb_lit(b, "null");
+        sb_lit(b, "}");
     }
     pthread_mutex_unlock(&mu);
 }

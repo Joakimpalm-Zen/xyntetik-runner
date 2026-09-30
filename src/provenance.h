@@ -32,6 +32,7 @@ typedef struct {
     const char *adapter_path;     // NULL = no adapter
     float       adapter_scale;
     const oms_result *signature;  // NULL or empty status = none requested/found
+    const oms_result *adapter_signature;   // the same, for adapter_path
     int         envelope_state;   // enum envelope_state
     const char *envelope_detail;  // the gate's one-line summary ("" when silent)
 } provenance_load;

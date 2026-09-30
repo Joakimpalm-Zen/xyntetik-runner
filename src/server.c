@@ -1502,7 +1502,12 @@ static void send_provenance(sock_t fd) {
         sb_esc(&r, SV.adapters[i].name, strlen(SV.adapters[i].name));
         sb_lit(&r, "\",\"path\":\"");
         sb_esc(&r, SV.adapters[i].path, strlen(SV.adapters[i].path));
-        sb_fmt(&r, "\",\"sha256\":\"%s\"}", SV.adapters[i].sha256);
+        sb_fmt(&r, "\",\"sha256\":\"%s\",\"signature\":", SV.adapters[i].sha256);
+        if (SV.adapters[i].sig_json[0])
+            sb_put(&r, SV.adapters[i].sig_json, strlen(SV.adapters[i].sig_json));
+        else
+            sb_lit(&r, "null");
+        sb_lit(&r, "}");
     }
     sb_lit(&r, "],");
     sb_fmt(&r, "\"signature_policy\":{\"required\":%s,\"trusted_key\":%s},"
@@ -2295,6 +2300,14 @@ static bool load_adapters(const model_t *base) {
             fprintf(stderr, "error: cannot read adapter %s\n", a->path);
             return false;
         }
+        // R1.2.3: each adapter answers to the operator's trusted key like
+        // the model does, from its own PATH.sig
+        oms_policy apol = { NULL, SV.signing.pubkey_path, SV.signing.required };
+        oms_result ar;
+        memset(&ar, 0, sizeof ar);
+        if (!oms_check_artifact(a->path, &apol, "adapter", &ar)) return false;
+        a->sig_json[0] = 0;
+        if (ar.status[0]) oms_result_json(&ar, a->sig_json, sizeof a->sig_json);
         a->set = model_lora_set_load(SV.slots[0].m, a->path, ADAPTER_CFG.scale);
         if (!a->set) return false;
         SV.n_adapters = i + 1;
