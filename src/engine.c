@@ -1088,6 +1088,70 @@ float *engine_feed(engine *e, const int32_t *toks, int n) {
     return logits;
 }
 
+// noinline: one compiled copy is the whole point (engine.h)
+__attribute__((noinline))
+float engine_logsumexp(const float *logits, int n) {
+    float mx = logits[0];
+    for (int i = 1; i < n; i++) if (logits[i] > mx) mx = logits[i];
+    double sum = 0;
+    for (int i = 0; i < n; i++) sum += expf(logits[i] - mx);
+    return mx + logf((float)sum);
+}
+
+float *engine_score_prompt(engine *e, const int32_t *toks, int n, int top_n,
+                           prompt_scores *ps) {
+    memset(ps, 0, sizeof *ps);
+    if (n < 1 || top_n < 0) return NULL;
+    ps->n = n;
+    ps->top_n = top_n;
+    ps->lp = calloc((size_t)n, sizeof *ps->lp);
+    ps->rank = calloc((size_t)n, sizeof *ps->rank);
+    ps->top = top_n ? calloc((size_t)n * (size_t)top_n, sizeof *ps->top) : NULL;
+    if (!ps->lp || !ps->rank || (top_n && !ps->top)) {
+        prompt_scores_free(ps);
+        return NULL;
+    }
+    engine_reset(e);
+    int V = e->m->n_vocab;
+    float *logits = NULL;
+    for (int i = 0; i < n; i++) {
+        // the same between-chunk courtesies engine_feed extends, per token
+        if (i && e->stop && e->stop(e->stop_ud)) logits = NULL;
+        else logits = engine_feed(e, toks + i, 1);
+        if (!logits) { prompt_scores_free(ps); return NULL; }
+        if (i + 1 == n) break;
+        if (e->prefill_yield && (i & 63) == 63) e->prefill_yield(e->prefill_ud);
+        // the one normalizer --score and decode-time logprobs also divide by
+        float lse = engine_logsumexp(logits, V);
+        int32_t want = toks[i + 1];
+        float lw = logits[want] - lse;
+        // ranked in logprob space, the space the alternatives are listed in
+        int above = 0;
+        for (int v = 0; v < V; v++) above += logits[v] - lse > lw;
+        ps->lp[i + 1] = lw;
+        ps->rank[i + 1] = above + 1;
+        if (!top_n) continue;
+        lp_alt *top = ps->top + (size_t)(i + 1) * top_n;
+        int filled = 0;
+        for (int v = 0; v < V; v++) {
+            float lp = logits[v] - lse;
+            if (filled == top_n && lp <= top[filled - 1].lp) continue;
+            int j = filled < top_n ? filled++ : top_n - 1;
+            while (j > 0 && top[j - 1].lp < lp) { top[j] = top[j - 1]; j--; }
+            top[j].id = v; top[j].lp = lp;
+        }
+        for (int j = filled; j < top_n; j++) { top[j].id = -1; top[j].lp = 0; }
+    }
+    return logits;
+}
+
+void prompt_scores_free(prompt_scores *ps) {
+    free(ps->lp);
+    free(ps->rank);
+    free(ps->top);
+    memset(ps, 0, sizeof *ps);
+}
+
 // Advance a tag-prefix match by one byte, retaining the longest suffix that
 // can still begin the tag. Tags are tiny, so the direct overlap check keeps
 // this state self-contained without another allocation or public parser API.
@@ -1709,11 +1773,7 @@ typedef struct {
 
 static void lp_capture_pre(engine *e, const float *logits, lp_pre *p) {
     int V = e->m->n_vocab;
-    float mx = logits[0];
-    for (int i = 1; i < V; i++) if (logits[i] > mx) mx = logits[i];
-    double sum = 0;
-    for (int i = 0; i < V; i++) sum += expf(logits[i] - mx);
-    p->lse = mx + logf((float)sum);
+    p->lse = engine_logsumexp(logits, V);
     p->n_snap = 0;
     sampler *s = e->smp;
     // n_recent is capped at 256 in sample.c (sampler.recent[256]); the extra
@@ -1752,11 +1812,7 @@ static void cl_capture(engine *e, const float *logits) {
     enum { PROBE_CAP = 64 };
     int M = e->cl_probe >= 8 && e->cl_probe <= PROBE_CAP ? e->cl_probe : 32;
     if (M > V) M = V;
-    float mx = logits[0];
-    for (int i = 1; i < V; i++) if (logits[i] > mx) mx = logits[i];
-    double sum = 0;
-    for (int i = 0; i < V; i++) sum += expf(logits[i] - mx);
-    float lse = mx + logf((float)sum);
+    float lse = engine_logsumexp(logits, V);
     int   ids[PROBE_CAP]; float lps[PROBE_CAP];
     int filled = 0;
     for (int i = 0; i < V; i++) {

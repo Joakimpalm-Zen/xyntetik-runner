@@ -8,6 +8,23 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **`echo` and `prompt_logprobs` on `/v1/completions`.** The prompt is scored
+  teacher-forced: `echo: true` with `logprobs: N` returns the prompt's token
+  logprobs ahead of the generated ones in OpenAI's shape (the first entry
+  `null`), `max_tokens: 0` scores without generating, and `prompt_logprobs:
+  K` returns vLLM's per-position map with each token's rank. The prompt is
+  fed one solo forward per token with no prefix reuse, the `--score` path.
+  Both were refused with 400 before; they stay refused on streams and on the
+  chat surfaces. Found on the way: `--score` spelled the log-softmax
+  normalizer as its own copy of the loop, and under `-ffast-math` the double
+  sum compiled to a different order than the sampler's, so its logprobs
+  could differ from decode-time ones in the last bit (1 ulp at 6 of 8
+  positions of the test prompt). Every reported logprob now divides by one
+  non-inlined `engine_logsumexp`, and `tests/test_echo_logprobs.py` pins the
+  echo and `prompt_logprobs` numbers to `--score`'s exactly, with the
+  zero-branch fixture (a position's logits depend on the previous token
+  alone) as the absolute check.
+
 - **`POST /v1/rerank` without a reranker model.** A document's relevance is
   the served model's answer to a two-answer question (yes or no), read with
   `/v1/decide`'s exact in-context scorer: `relevance_score` is P(yes)

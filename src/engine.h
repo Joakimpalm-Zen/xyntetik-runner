@@ -362,6 +362,34 @@ bool   engine_mark_turn(engine *e);
 void   engine_set_request_stops(engine *e, const int *ids, int n);
 // feed tokens (batched); returns last-token logits, or NULL on overflow/stop
 float *engine_feed(engine *e, const int32_t *toks, int n);
+
+// The log-softmax normalizer of one logits row: float max, a double sum of
+// expf(l - max), float result. EVERY logprob the runner reports divides by
+// this one function -- decode-time logprobs, choice_logprobs, prompt scoring
+// and `--score` -- because under -ffast-math the compiler may order the double
+// sum differently in each place it is inlined, and two copies of the same loop
+// then disagree in the last bit (measured: echo against --score, 2026-09-30).
+float  engine_logsumexp(const float *logits, int n);
+
+// Teacher-forced scoring of a prompt (R4.8, echo / prompt_logprobs). The KV
+// is reset and toks fed ONE TOKEN AT A TIME from position 0 -- the solo
+// forward `--score` uses and the sampler sees at decode, not the batched
+// prefill, whose rows are not bit-identical to it -- and position i (1..n-1)
+// records log P(toks[i] | toks[..i]) with the sampler's log-softmax
+// arithmetic, the token's 1-based rank (1 + the count of strictly larger
+// logits) and, when top_n > 0, the top_n alternatives best first. Entry 0 is
+// unused: nothing precedes the first token. Returns the logits after the
+// last token, ready for generation, or NULL on context overflow, a stop
+// request or an allocation failure (ps is then empty).
+typedef struct {
+    int      n, top_n;   // n = the prompt's token count
+    float   *lp;         // [n]
+    int32_t *rank;       // [n]
+    lp_alt  *top;        // [n * top_n], NULL when top_n == 0
+} prompt_scores;
+float *engine_score_prompt(engine *e, const int32_t *toks, int n, int top_n,
+                           prompt_scores *ps);
+void   prompt_scores_free(prompt_scores *ps);
 // sample until stop/limit, streaming decoded bytes to cb; returns token count
 int    engine_generate(engine *e, float *logits, int max_new,
                        gen_cb cb, void *ud, double *gen_time);

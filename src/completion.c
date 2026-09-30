@@ -87,6 +87,10 @@ typedef struct {
     // now_s() at the first visible (non-reasoning) byte, 0 until then: the
     // "first visible response" stage of the request telemetry
     double first_visible_t;
+    // R4.8: the prompt's teacher-forced scores and its token ids, when echo
+    // with logprobs or prompt_logprobs asked for them (owned)
+    prompt_scores ps;
+    int32_t *ptoks;
 } gen_ctx;
 
 typedef struct {
@@ -217,13 +221,23 @@ static void append_chat_logprobs(sbuf *r, slot_t *s, engine *e) {
     sb_lit(r, "]}");
 }
 
-static void append_text_logprobs(sbuf *r, slot_t *s, engine *e) {
+// Legacy text logprobs. `pg` non-NULL puts echo's prompt entries first (R4.8):
+// the first prompt token has nothing before it, so its logprob and
+// alternatives are null, as OpenAI's echo spells them; `prompt_alts` is the
+// request's alternative count for those entries (the generated ones use the
+// engine's own table, e->lp_n).
+static void append_text_logprobs(sbuf *r, slot_t *s, engine *e,
+                                 const gen_ctx *pg, int prompt_alts) {
     char tb[512];
     int offset = 0;
+    int np = pg && pg->ptoks ? pg->ps.n : 0;
+    int pa = prompt_alts < (pg ? pg->ps.top_n : 0) ? prompt_alts
+           : pg ? pg->ps.top_n : 0;
     sb_lit(r, "\"logprobs\":{\"tokens\":[");
-    for (int i = 0; i < e->lp_count; i++) {
+    for (int i = 0; i < np + e->lp_count; i++) {
         if (i) sb_lit(r, ",");
-        int tn = lp_piece(s, e, e->lp_ids[i], tb, sizeof(tb));
+        int id = i < np ? pg->ptoks[i] : e->lp_ids[i - np];
+        int tn = lp_piece(s, e, id, tb, sizeof(tb));
         sb_lit(r, "\""); sb_esc(r, tb, tn); sb_lit(r, "\"");
     }
     // Ids alongside the rendered pieces. Two distinct ids can decode to the
@@ -231,21 +245,26 @@ static void append_text_logprobs(sbuf *r, slot_t *s, engine *e) {
     // anything comparing our output to another runtime's needs the id to tell
     // "same token" from "same text" — scripts/token_divergence.py does.
     sb_lit(r, "],\"token_ids\":[");
-    for (int i = 0; i < e->lp_count; i++) {
+    for (int i = 0; i < np + e->lp_count; i++) {
         if (i) sb_lit(r, ",");
-        sb_fmt(r, "%d", e->lp_ids[i]);
+        sb_fmt(r, "%d", i < np ? pg->ptoks[i] : e->lp_ids[i - np]);
     }
     sb_lit(r, "],\"token_logprobs\":[");
-    for (int i = 0; i < e->lp_count; i++) {
+    for (int i = 0; i < np + e->lp_count; i++) {
         if (i) sb_lit(r, ",");
-        sb_fmt(r, "%.6f", e->lp_chosen[i]);
+        if (i == 0 && np) sb_lit(r, "null");
+        else sb_fmt(r, "%.6f", i < np ? pg->ps.lp[i] : e->lp_chosen[i - np]);
     }
     sb_lit(r, "],\"top_logprobs\":[");
-    for (int i = 0; i < e->lp_count; i++) {
+    for (int i = 0; i < np + e->lp_count; i++) {
         if (i) sb_lit(r, ",");
+        if (i == 0 && np) { sb_lit(r, "null"); continue; }
+        const lp_alt *row = i < np ? &pg->ps.top[(size_t)i * pg->ps.top_n]
+                                   : &e->lp_top[(size_t)(i - np) * e->lp_n];
+        int cnt = i < np ? pa : e->lp_n;
         sb_lit(r, "{");
-        for (int j = 0; j < e->lp_n; j++) {
-            const lp_alt *a = &e->lp_top[(size_t)i * e->lp_n + j];
+        for (int j = 0; j < cnt; j++) {
+            const lp_alt *a = &row[j];
             if (a->id < 0) break;
             if (j) sb_lit(r, ",");
             int tn = lp_piece(s, e, a->id, tb, sizeof(tb));
@@ -257,11 +276,15 @@ static void append_text_logprobs(sbuf *r, slot_t *s, engine *e) {
     // The OpenAI top_logprobs shape is a string->float map with nowhere to put
     // an id, so the ids ride in a parallel array in the same order.
     sb_lit(r, "],\"top_token_ids\":[");
-    for (int i = 0; i < e->lp_count; i++) {
+    for (int i = 0; i < np + e->lp_count; i++) {
         if (i) sb_lit(r, ",");
+        if (i == 0 && np) { sb_lit(r, "null"); continue; }
+        const lp_alt *row = i < np ? &pg->ps.top[(size_t)i * pg->ps.top_n]
+                                   : &e->lp_top[(size_t)(i - np) * e->lp_n];
+        int cnt = i < np ? pa : e->lp_n;
         sb_lit(r, "[");
-        for (int j = 0; j < e->lp_n; j++) {
-            const lp_alt *a = &e->lp_top[(size_t)i * e->lp_n + j];
+        for (int j = 0; j < cnt; j++) {
+            const lp_alt *a = &row[j];
             if (a->id < 0) break;
             if (j) sb_lit(r, ",");
             sb_fmt(r, "%d", a->id);
@@ -269,10 +292,11 @@ static void append_text_logprobs(sbuf *r, slot_t *s, engine *e) {
         sb_lit(r, "]");
     }
     sb_lit(r, "],\"text_offset\":[");
-    for (int i = 0; i < e->lp_count; i++) {
+    for (int i = 0; i < np + e->lp_count; i++) {
         if (i) sb_lit(r, ",");
         sb_fmt(r, "%d", offset);
-        offset += lp_piece(s, e, e->lp_ids[i], tb, sizeof(tb));
+        offset += lp_piece(s, e, i < np ? pg->ptoks[i] : e->lp_ids[i - np],
+                           tb, sizeof(tb));
     }
     sb_lit(r, "]}");
 }
@@ -298,6 +322,9 @@ static void completion_cleanup(engine *e, snode *schema, gen_ctx *g) {
         free(g->call_name);
         free(g->out_items.s);
         free(g->out_text.s);
+        prompt_scores_free(&g->ps);
+        free(g->ptoks);
+        g->ptoks = NULL;
     }
     free(e->lp_chosen); free(e->lp_ids); free(e->lp_top);
     e->lp_chosen = NULL; e->lp_ids = NULL; e->lp_top = NULL;
@@ -1674,7 +1701,7 @@ bool request_keep_alive(jv *req, bool *present, int *seconds) {
 // SDKs routinely serialize neutral values for features this single-choice
 // engine does not implement. Accept only the forms whose semantics are exactly
 // a no-op; reject every value that would otherwise be silently ignored.
-static const char *unsupported_completion_field(jv *req) {
+static const char *unsupported_completion_field(jv *req, int api) {
     jv *v = jv_get(req, "n");
     if (!absent(v) && (v->type != J_NUM || !isfinite(v->num) || v->num != 1))
         return "n";
@@ -1686,10 +1713,14 @@ static const char *unsupported_completion_field(jv *req) {
         return "presence_penalty";
     v = jv_get(req, "logit_bias");
     if (!absent(v) && (v->type != J_OBJ || v->n != 0)) return "logit_bias";
+    // echo and prompt_logprobs are served on /v1/completions (R4.8), where
+    // the prompt is the caller's text; the chat surfaces render a prompt the
+    // caller never wrote, so there is nothing of theirs to echo or score.
     v = jv_get(req, "echo");
-    if (!absent(v) && (v->type != J_BOOL || v->b)) return "echo";
+    if (api != API_TEXT && !absent(v) && (v->type != J_BOOL || v->b))
+        return "echo";
     v = jv_get(req, "prompt_logprobs");
-    if (!absent(v)) return "prompt_logprobs";
+    if (api != API_TEXT && !absent(v)) return "prompt_logprobs";
     // `user` is advisory rather than an inference control, but recognizing it
     // still means rejecting malformed values instead of accepting any JSON.
     v = jv_get(req, "user");
@@ -1915,7 +1946,7 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
                                                               : "cmpl-",
              atomic_fetch_add(&SV.req_counter, 1));
 
-    const char *unsupported = unsupported_completion_field(req);
+    const char *unsupported = unsupported_completion_field(req, api);
     if (unsupported) {
         char msg[128];
         snprintf(msg, sizeof(msg), "%s has unsupported semantics", unsupported);
@@ -2344,6 +2375,34 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
                             "set stream to false");
         return;
     }
+    // R4.8: echo (OpenAI legacy) and prompt_logprobs (vLLM's spelling) score
+    // the prompt teacher-forced. Buffered-only: the prompt's entries are
+    // known before the first generated token, but a stream has no field for
+    // them in either wire shape.
+    bool echo = false;
+    if (api == API_TEXT && !request_bool(req, "echo", false, &echo)) {
+        send_error(fd, 400, "echo must be a boolean");
+        return;
+    }
+    int plp = -1;   // -1 = prompt_logprobs absent or null
+    if (api == API_TEXT && !absent(jv_get(req, "prompt_logprobs"))) {
+        double v = 0;
+        jv *pv = jv_get(req, "prompt_logprobs");
+        if (pv->type != J_NUM ||
+            !request_number(req, "prompt_logprobs", 0, 0, 20, &v) ||
+            !whole_number(v)) {
+            send_error(fd, 400, "prompt_logprobs must be a whole number "
+                                "from 0 to 20");
+            return;
+        }
+        plp = (int)v;
+    }
+    if ((echo || plp >= 0) && stream) {
+        send_error(fd, 400, echo ? "echo is buffered-only; set stream to false"
+                                 : "prompt_logprobs is buffered-only; set "
+                                   "stream to false");
+        return;
+    }
     // OpenAI "stop": a string or an array of up to 4 non-empty strings.
     // Pointers borrow from req, which outlives the whole request.
     const char *stops[4];
@@ -2740,7 +2799,12 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
     diag.queue_s = s->queue_wait_s;
     diag.tokenize_s = tokenize_s;
     diag.first_visible_s = -1;
-    if (cache_prompt && share_prefix)
+    // Scoring the prompt reads every position's logits, so no prefix is
+    // reused: the whole prompt is fed, one solo forward per token.
+    bool score_prompt = (echo && want_lp) || plp >= 0;
+    if (score_prompt)
+        engine_reset(e);
+    else if (cache_prompt && share_prefix)
         reuse = engine_prefix_reuse(e, toks, n_prompt);
     else if (cache_prompt)
         reuse.keep = engine_rewind(e, toks, n_prompt);
@@ -2770,7 +2834,14 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
     // state. Attention-only models mark nothing and take the single feed.
     float *logits = NULL;
     int mark_at = n_prompt - 1;
-    if (cache_prompt && n_prompt > 1 && model_has_recurrent(e->m)) {
+    if (score_prompt) {
+        g.ptoks = malloc(sizeof(int32_t) * (size_t)n_prompt);
+        int top_n = plp > lp_n ? plp : lp_n;
+        if (g.ptoks) {
+            memcpy(g.ptoks, toks, sizeof(int32_t) * (size_t)n_prompt);
+            logits = engine_score_prompt(e, toks, n_prompt, top_n, &g.ps);
+        }
+    } else if (cache_prompt && n_prompt > 1 && model_has_recurrent(e->m)) {
         bool ok = mark_at == keep ||   // resumed at the mark: nothing before it to feed
                   engine_feed(e, toks + keep, mark_at - keep) != NULL;
         if (ok) engine_mark_turn(e);
@@ -2801,6 +2872,10 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
                               "timeout. Send a shorter prompt, raise the "
                               "timeout, or reuse a cached prefix.",
                               NULL, "timeout");
+        else if (!g.dead && score_prompt)
+            // the prompt already fit the context (checked at tokenization),
+            // so a scoring failure here is the score tables' allocation
+            send_error(fd, 500, "out of memory scoring the prompt");
         else if (!g.dead)
             send_error_detail(fd, 400, "context overflow",
                               api == API_TEXT ? "prompt" :
@@ -3072,7 +3147,7 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
                 sbuf lp = {0};
                 chunk_open(&g, &lp);
                 sb_lit(&lp, "\"text\":\"\",");
-                append_text_logprobs(&lp, s, e);
+                append_text_logprobs(&lp, s, e, NULL, 0);
                 sb_lit(&lp, ",\"finish_reason\":null}]}");
                 chunk_send(&g, &lp);
             }
@@ -3256,6 +3331,7 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
         sb_lit(&r, "\",\"choices\":[{\"index\":0,");
         if (chat) sb_lit(&r, "\"message\":{\"role\":\"assistant\",\"content\":\"");
         else      sb_lit(&r, "\"text\":\"");
+        if (!chat && echo) sb_esc(&r, prompt, strlen(prompt));   // R4.8
         sb_esc(&r, g.out.s ? g.out.s : "", g.out.n);
         sb_lit(&r, "\"");
         if (n_tc) {
@@ -3293,10 +3369,46 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
                 sb_lit(&r, "]}");
             }
             sb_lit(&r, "]},");
+        } else if (!chat && echo && want_lp && g.ptoks) {
+            // echo: the prompt's teacher-forced entries, then the generated
+            append_text_logprobs(&r, s, e, &g, lp_n);
+            sb_lit(&r, ",");
         } else if (!chat && e->lp_count > 0) {
             // same body as the non-streaming path, ids included
-            append_text_logprobs(&r, s, e);
+            append_text_logprobs(&r, s, e, NULL, 0);
             sb_lit(&r, ",");
+        }
+        if (!chat && plp >= 0 && g.ptoks) {
+            // vLLM's prompt_logprobs: per prompt position, the actual token
+            // and the top `plp` alternatives, each with its 1-based rank
+            char tb[512];
+            const prompt_scores *ps = &g.ps;
+            sb_lit(&r, "\"prompt_logprobs\":[null");
+            for (int i = 1; i < ps->n; i++) {
+                const lp_alt *row = &ps->top[(size_t)i * ps->top_n];
+                int want = g.ptoks[i];
+                int tn = lp_piece(s, e, want, tb, sizeof(tb));
+                sb_fmt(&r, ",{\"%d\":{\"logprob\":%.9g,\"rank\":%d,"
+                           "\"decoded_token\":\"", want, (double)ps->lp[i],
+                       ps->rank[i]);
+                sb_esc(&r, tb, tn);
+                sb_lit(&r, "\"}");
+                for (int j = 0; j < plp && row && row[j].id >= 0; j++) {
+                    if (row[j].id == want) continue;
+                    // everything above row[j] is listed before it, so its
+                    // rank counts only the strictly better entries there
+                    int rank = 1;
+                    for (int k = 0; k < j; k++) rank += row[k].lp > row[j].lp;
+                    tn = lp_piece(s, e, row[j].id, tb, sizeof(tb));
+                    sb_fmt(&r, ",\"%d\":{\"logprob\":%.9g,\"rank\":%d,"
+                               "\"decoded_token\":\"", row[j].id,
+                           (double)row[j].lp, rank);
+                    sb_esc(&r, tb, tn);
+                    sb_lit(&r, "\"}");
+                }
+                sb_lit(&r, "}");
+            }
+            sb_lit(&r, "],");
         }
         // JC-R1 constrained-choice posteriors: one entry per decision point
         // (a constrained step where >= 2 probed candidates were legal),

@@ -2975,16 +2975,13 @@ int main(int argc, char **argv) {
                 model_forward_batch_keep(&m, toks + pos, k, pos)) {
                 for (int b = 0; b < k; b++) {
                     float *lg = model_spec_row_logits(&m, b);
-                    // raw-logit log-softmax, the lp_capture_pre arithmetic:
-                    // float max, double sum of expf, float result
-                    float mx = lg[0];
+                    // raw-logit log-softmax through the one normalizer every
+                    // reported logprob uses (engine_logsumexp, engine.h)
                     int arg = 0;
                     for (int i = 1; i < m.n_vocab; i++)
-                        if (lg[i] > mx) { mx = lg[i]; arg = i; }
-                    double sum = 0;
-                    for (int i = 0; i < m.n_vocab; i++)
-                        sum += expf(lg[i] - mx);
-                    float lp = lg[toks[pos + b + 1]] - (mx + logf((float)sum));
+                        if (lg[i] > lg[arg]) arg = i;
+                    float lp = lg[toks[pos + b + 1]] -
+                               engine_logsumexp(lg, m.n_vocab);
                     printf("%s%.9g", emitted++ ? "," : "", (double)lp);
                     total += lp;
                     if (arg == toks[pos + b + 1]) top1++;
@@ -2993,14 +2990,10 @@ int main(int argc, char **argv) {
             } else {
                 float *lg = model_forward(&m, toks[pos], pos);
                 if (!lg) { fail = 1; break; }
-                float mx = lg[0];
                 int arg = 0;
                 for (int i = 1; i < m.n_vocab; i++)
-                    if (lg[i] > mx) { mx = lg[i]; arg = i; }
-                double sum = 0;
-                for (int i = 0; i < m.n_vocab; i++)
-                    sum += expf(lg[i] - mx);
-                float lp = lg[toks[pos + 1]] - (mx + logf((float)sum));
+                    if (lg[i] > lg[arg]) arg = i;
+                float lp = lg[toks[pos + 1]] - engine_logsumexp(lg, m.n_vocab);
                 printf("%s%.9g", emitted++ ? "," : "", (double)lp);
                 total += lp;
                 if (arg == toks[pos + 1]) top1++;

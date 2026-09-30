@@ -2167,9 +2167,20 @@ Chat Completions and Responses are text-only: image, file, and other
 unrenderable content parts receive HTTP 400 rather than being discarded while
 adjacent text is processed.
 
-Legacy Completions accepts neutral `echo:false` and `prompt_logprobs:null`, but
-rejects `echo:true` and non-null `prompt_logprobs` with HTTP 400 until Runner can
-return the requested prompt-side output. These controls are never ignored.
+Legacy Completions scores the prompt teacher-forced (since 2026-09-30).
+`echo: true` returns the prompt in front of the completion in `text`, and with
+`logprobs: N` the logprob arrays cover the prompt's tokens first, then the
+generated ones; the first prompt token has nothing before it, so its
+`token_logprobs`, `top_logprobs` and `top_token_ids` entries are `null`, as
+OpenAI's echo spells them. `max_tokens: 0` scores without generating, which
+is the loglikelihood request an evaluation harness sends. `prompt_logprobs: K`
+(0 to 20, vLLM's spelling) adds `choices[0].prompt_logprobs`: `null`, then per
+position a map from token id to `{logprob, rank, decoded_token}` holding the
+actual token and the top K alternatives. The prompt is fed one token at a time
+from position 0 with no prefix reuse, the solo forward `--score` uses, so the
+numbers are `--score`'s bit for bit; that costs one forward per prompt token.
+Both are buffered-only (a stream refuses them with 400) and remain refused on
+the chat surfaces, whose prompt is a render the caller did not write.
 
 The `usage` object carries OpenAI's cached-prompt breakdown:
 `usage.prompt_tokens_details.cached_tokens` on Chat Completions and legacy
