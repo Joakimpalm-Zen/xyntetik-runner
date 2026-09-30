@@ -8,6 +8,23 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **One pool dispatch for Q/K/V and for gate/up on the CPU path.** Each
+  projection of a layer's normed input was its own thread-pool dispatch and
+  barrier; Q (with afmoe's Q gate), K and V now run as one, and gate and up
+  as one, with the int8 activations quantized once for all of them. The
+  logits are byte-identical, checked against the separate dispatches
+  (`RUNNER_MV_FUSE=0`) on the batched and decode paths, with the int8 route
+  on and off, on the test fixtures and on SmolLM2-135M Q8_0, Llama-3.2-1B
+  IQ3_S, Llama-3.2-3B Q4_K_M, Qwen2.5-7B Q4_K_M and Gemma-3-4B Q4_K_M. The
+  gain grows with the thread count, as the barriers' cost does: on the
+  128-core Threadripper, Llama-3.2-3B Q4_K_M decode went from 18.0 to 22.9
+  tok/s at 64 threads (median of 3, every pair faster), with no difference
+  outside the noise at 32 threads (27.2 and 25.5); on the 8-core M1,
+  SmolLM2-135M decode went from 70.2 to 81.2 tok/s and Llama-3.2-1B IQ3_S
+  moved within its noise. Measured beside another tenant using about six
+  cores. The weights are not concatenated: one layer's projections are often
+  different quant types.
+
 - **The gold-logit harness spells tokens as a server does.**
   `scripts/gold-logits.py` named each reference token with a lone
   `decode([id])`, which on SentencePiece tokenizers that prepend a space
