@@ -1752,6 +1752,7 @@ static bool model_bind_weights(model_t *m, const char *path, const model_params 
         if (mx > 0) { m->n_ff = (int)mx; m->ffn_var = mn != mx; }
     }
     m->n_ctx_train = (int)gguf_get_u32(g, AK("context_length"), 2048);
+    m->pooling_type = gguf_get_u32(g, AK("pooling_type"), MODEL_POOL_NONE);
     m->head_dim    = (int)gguf_get_u32(g, AK("attention.key_length"),
                                        m->n_head ? m->n_embd / m->n_head : 0);
     m->rope_dim    = (int)gguf_get_u32(g, AK("rope.dimension_count"), m->head_dim);
@@ -8352,8 +8353,26 @@ bool model_batch_decode(model_batch *b, const int *idx, const int32_t *tok,
 
 // mean-pooled, L2-normalized embedding of toks (final layer, output-normed).
 // Clobbers KV slots [0, n) — the caller owns resetting its engine state.
+bool model_pooling_supported(const model_t *m) {
+    return m->pooling_type == MODEL_POOL_NONE ||
+           m->pooling_type == MODEL_POOL_MEAN ||
+           m->pooling_type == MODEL_POOL_LAST;
+}
+
+const char *model_pooling_name(uint32_t pooling_type) {
+    switch (pooling_type) {
+        case MODEL_POOL_NONE: return "none";
+        case MODEL_POOL_MEAN: return "mean";
+        case MODEL_POOL_CLS:  return "cls";
+        case MODEL_POOL_LAST: return "last";
+        case MODEL_POOL_RANK: return "rank";
+        default:              return "unknown";
+    }
+}
+
 bool model_embed(model_t *m, const int32_t *toks, int n, float *out) {
-    if (n <= 0 || n > m->n_ctx) return false;
+    if (n <= 0 || n > m->n_ctx || !model_pooling_supported(m)) return false;
+    bool last = m->pooling_type == MODEL_POOL_LAST;
     void *save_gpu = m->gpu;
     if (m->gpu && m->gpu_layers >= m->n_layer)
         m->gpu = NULL; // full offload keeps hidden states on-device; go CPU
@@ -8363,7 +8382,10 @@ bool model_embed(model_t *m, const int32_t *toks, int n, float *out) {
     for (int i = 0; i < n; ) {
         int chunk = n - i < m->n_batch ? n - i : m->n_batch;
         model_forward_batch(m, toks + i, chunk, i, false);
-        for (int b = 0; b < chunk; b++) {
+        // last-token pooling reads only the final position of the final
+        // chunk; the earlier chunks still run, for the KV they leave behind
+        for (int b = last ? (i + chunk == n ? chunk - 1 : chunk) : 0;
+             b < chunk; b++) {
             xnorm(m, tmp, m->x + (size_t)b * m->n_embd, m->out_norm_w,
                   m->out_norm_b, m->n_embd, m->rms_eps);
             for (int j = 0; j < m->n_embd; j++) out[j] += tmp[j];
@@ -8373,7 +8395,8 @@ bool model_embed(model_t *m, const int32_t *toks, int n, float *out) {
     free(tmp);
     m->gpu = save_gpu;
     float ss = 0;
-    for (int j = 0; j < m->n_embd; j++) { out[j] /= n; ss += out[j] * out[j]; }
+    int pooled = last ? 1 : n;
+    for (int j = 0; j < m->n_embd; j++) { out[j] /= pooled; ss += out[j] * out[j]; }
     if (ss > 0) {
         float inv = 1.0f / sqrtf(ss);
         for (int j = 0; j < m->n_embd; j++) out[j] *= inv;

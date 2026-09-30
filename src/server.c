@@ -3,7 +3,7 @@
 //   POST /v1/chat/completions   messages, sampling params, stream (SSE),
 //                               response_format {"type":"json_object"}
 //   POST /v1/completions        raw prompt completion
-//   POST /v1/embeddings         mean-pooled L2-normed embeddings
+//   POST /v1/embeddings         L2-normed embeddings, pooled as the GGUF declares
 //   GET  /v1/models             the loaded model
 //   GET  /v1/capabilities       registry + feature discovery
 //   GET  /health                liveness
@@ -791,6 +791,20 @@ static void handle_embeddings(slot_t *s, sock_t fd, jv *req) {
     if (n_in == 0) { send_error(fd, 400, "missing input"); return; }
 
     model_t *m = s->m;
+    // The checkpoint says how its vectors are read out. Mean and last are
+    // implemented; a model that declares another readout (a CLS token, a
+    // reranker's score head) is refused by name rather than mean-pooled into
+    // a vector its publisher never defined.
+    if (!model_pooling_supported(m)) {
+        char msg[160];
+        snprintf(msg, sizeof msg,
+                 "this model declares %s pooling (%s.pooling_type = %u); "
+                 "/v1/embeddings implements mean and last",
+                 model_pooling_name(m->pooling_type),
+                 m->arch, (unsigned)m->pooling_type);
+        send_error(fd, 400, msg);
+        return;
+    }
     jv *encoding = jv_get(req, "encoding_format");
     bool b64 = false;
     if (!absent(encoding)) {
@@ -838,13 +852,17 @@ static void handle_embeddings(slot_t *s, sock_t fd, jv *req) {
         // an embedding input has no template: every byte is the caller's
         // text, and a control token spelled in it is those characters
         int32_t *toks = NULL;
-        int n = tok_encode_fit(s->tok, txt, true, TOK_TEXT, 0, &toks);
+        int n = tok_encode_fit(s->tok, txt, true, TOK_TEXT, 1, &toks);
         if (n < 0) {
             free(toks);
             err_code = 500; err_msg = "out of memory tokenizing input";
             ok = false;
             break;
         }
+        // an embedding model's tokenizer that appends its end token does so
+        // here too: last-token pooling reads out exactly that position
+        if (s->tok->add_eos && s->tok->eos_id >= 0 && n > 0)
+            toks[n++] = s->tok->eos_id;
         if (n == 0 || !model_embed(m, toks, n, emb)) {
             free(toks);
             err_code = 400;

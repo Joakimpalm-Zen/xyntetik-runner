@@ -66,6 +66,9 @@ YARN_ORIG_CTX = 0
 QK_NORM = False    # --qk-norm: per-head attn_q_norm/attn_k_norm (qwen3-style)
 WIDE = False       # 256-wide rows, large enough for an i-quant test block
 GPU_UNSUPPORTED = None  # one named tensor stored as CPU-only IQ2_XXS
+ZERO_BRANCHES = False  # --zero-branches: attn_output/ffn_down all zero
+POOLING = None     # --pooling N: {arch}.pooling_type (llama.cpp's enum)
+ADD_EOS = False    # --add-eos: tokenizer.ggml.add_eos_token = true
 args = sys.argv[1:]
 i = 0
 while i < len(args):
@@ -259,6 +262,19 @@ while i < len(args):
         # bytes, which is the whole point of testing it
         i += 1
         CONTROL = [x for x in args[i].split(",") if x]
+    elif a == "--zero-branches":
+        # Every block's attention and FFN write zero into the residual
+        # stream, so each position's final hidden state IS its token's
+        # embedding row. That gives the embeddings gate an answer computed
+        # from the file alone, independent of the forward it is checking.
+        ZERO_BRANCHES = True
+    elif a == "--pooling":
+        # the embedding pooling a GGUF declares: 0 none, 1 mean, 2 cls,
+        # 3 last, 4 rank (llama.cpp's LLAMA_POOLING_TYPE)
+        i += 1
+        POOLING = int(args[i])
+    elif a == "--add-eos":
+        ADD_EOS = True
     elif a == "--mtp-layers":
         # emit N extra blocks and declare them as training-only MTP predictor
         # heads; the runner must exclude them and decode exactly as without
@@ -414,6 +430,8 @@ for i in range(N_LAYER + MTP_LAYERS):
     v_data = (None if (G4HETERO and not g4_swa(i))
               else tensor_data(N_EMBD * kv_dim))
     o_data = tensor_data(q_dim * N_EMBD)
+    if ZERO_BRANCHES:
+        o_data = struct.pack(f"<{q_dim * N_EMBD}f", *([0.0] * (q_dim * N_EMBD)))
     drop_kv = i in DROPPED_KV
     tensors += [
         (f"blk.{i}.attn_norm.weight", [N_EMBD], ones(N_EMBD)),
@@ -433,7 +451,9 @@ for i in range(N_LAYER + MTP_LAYERS):
           [(f"blk.{i}.ffn_gate.weight", [N_EMBD, N_FF_I],
             tensor_data(N_EMBD * N_FF_I, ACT_OVERFLOW or 1.0))]),
         (f"blk.{i}.ffn_up.weight", [N_EMBD, N_FF_I], tensor_data(N_EMBD * N_FF_I, UP_SCALE)),
-        (f"blk.{i}.ffn_down.weight", [N_FF_I, N_EMBD], tensor_data(N_FF_I * N_EMBD)),
+        (f"blk.{i}.ffn_down.weight", [N_FF_I, N_EMBD],
+         (lambda d: struct.pack(f"<{N_FF_I * N_EMBD}f", *([0.0] * (N_FF_I * N_EMBD)))
+          if ZERO_BRANCHES else d)(tensor_data(N_FF_I * N_EMBD))),
     ]
     if i >= N_LAYER:
         # NextN/MTP predictor block: the backbone's block shape plus the
@@ -541,6 +561,10 @@ meta_kvs = [
     kv_u32("tokenizer.ggml.eos_token_id", 2),
     kv_bool("tokenizer.ggml.add_bos_token", True),
 ]
+if POOLING is not None:
+    meta_kvs.append(kv_u32(f"{ARCH}.pooling_type", POOLING))
+if ADD_EOS:
+    meta_kvs.append(kv_bool("tokenizer.ggml.add_eos_token", True))
 if YARN_FACTOR is not None:
     meta_kvs += [
         kv_str(f"{ARCH}.rope.scaling.type", "yarn"),

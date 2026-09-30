@@ -296,6 +296,7 @@ bool tokenizer_init(tokenizer *t, gguf_file *g) {
         return false;
     t->add_bos = gguf_get_bool(g, "tokenizer.ggml.add_bos_token", t->model == TOK_SPM);
     t->add_space_prefix = gguf_get_bool(g, "tokenizer.ggml.add_space_prefix", true);
+    t->add_eos = gguf_get_bool(g, "tokenizer.ggml.add_eos_token", false);
 
     if (!hmap_init(&t->vocab, (size_t)t->n_vocab)) return false;
     for (int i = 0; i < t->n_vocab; i++)

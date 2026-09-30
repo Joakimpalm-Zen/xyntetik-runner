@@ -2129,7 +2129,7 @@ non-loopback authorities.
 | `POST /v1/chat/completions` | OpenAI Chat Completions, including SSE, tools, structured output, logprobs, and stop strings. |
 | `POST /v1/responses` | OpenAI Responses translation over the same engine and tool envelope. |
 | `POST /v1/completions` | Legacy raw prompt completions. |
-| `POST /v1/embeddings` | Mean-pooled, L2-normalized embeddings. |
+| `POST /v1/embeddings` | L2-normalized embeddings, pooled as the GGUF declares in `{arch}.pooling_type`: the mean over every token (also when the key is absent, as on generative models), or the last token (embedding models such as Qwen3-Embedding), with the end token appended first when `tokenizer.ggml.add_eos_token` is set. A model declaring CLS or rank pooling is refused with 400 naming it (since 2026-09-30; before, every model was mean-pooled with no end token). |
 | `POST /v1/messages` | Anthropic Messages translation. |
 | `POST /v1/messages/count_tokens` | Token count for the matching Messages request. |
 | `GET /v1/models` | Registered models and current residency. |
