@@ -11,7 +11,7 @@ names that were true when they were written.
 - **Full sweep of 2026-09-30 (the pytest suite against an ASan/UBSan
   server, a tokenizer fuzzer, a streamed-against-buffered differential over
   every API surface, and the rope and sampler formulas re-derived from the
-  publishers' references), seven defects.** (1) The repeat penalty compounded
+  publishers' references), eight defects.** (1) The repeat penalty compounded
   per occurrence: a token seen k times in the window was scaled by
   penalty^k, where transformers and llama.cpp apply it once per distinct
   token; it now applies once. (2) top-k selection parked the minimum of
@@ -34,7 +34,12 @@ names that were true when they were written.
   is refused by name. (7) Gemma 3 27B scored attention by 1/sqrt(head_dim)
   where its reference uses `query_pre_attn_scalar ** -0.5` = 1/sqrt(168)
   (n_embd / n_head, over 128-wide heads): 1.146x too sharp at every layer.
-  The other sizes' scalar is their head width and is unchanged.
+  The other sizes' scalar is their head width and is unchanged. (8) `-hf`
+  cast the Hub listing's file size straight to an integer: a size like
+  1e300 is undefined there, and on x86 it read as "unknown" and accepted a
+  file with no LFS record unverified. A size that is not a whole,
+  non-negative byte count now refuses the repository, as a traversing name
+  does.
 
 - **Muse valid-recipients line: bare tool names verbatim, behind a switch
   (R4.12.20, from a lab reading of Meta's Muse-Glimmer-30B discussion #60).**

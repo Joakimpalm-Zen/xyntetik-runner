@@ -8,6 +8,7 @@
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <math.h>
 #include <string.h>
 #include <sys/stat.h>
 
@@ -485,8 +486,25 @@ char *hf_fetch(const char *spec, char *err, size_t errcap) {
         if (!entry) { snprintf(err, errcap, "%s lists no part %u of %s", repo, k, first); ok = false; break; }
         jv *lfs = jv_get(entry, "lfs");
         const char *sha = lfs ? jv_str(jv_get(lfs, "sha256"), NULL) : NULL;
-        double sz = jv_num(jv_get(entry, "size"), -1);
-        ok = ensure_file(repo, want, repodir, sz < 0 ? -1 : (long long)sz, sha, quiet, err, errcap);
+        // The size is what verifies a file with no LFS record, and like the
+        // name it is the repository owner's data. It was cast straight to
+        // long long: 1e300 is undefined there (x86 made it negative, which
+        // read as "unknown" and skipped the check; arm64 saturated). Absent
+        // stays unknown; anything present must be a whole, non-negative byte
+        // count a file can have, or the repository is refused.
+        jv *szv = jv_get(entry, "size");
+        long long size = -1;
+        if (szv) {
+            double sz = szv->type == J_NUM ? szv->num : -1;
+            if (!(sz >= 0 && sz <= 9007199254740992.0) || sz != floor(sz)) {
+                snprintf(err, errcap, "%s lists an impossible size for %s; "
+                                      "refusing the repository", repo, want);
+                ok = false;
+                break;
+            }
+            size = (long long)sz;
+        }
+        ok = ensure_file(repo, want, repodir, size, sha, quiet, err, errcap);
     }
     char *result = NULL;
     if (ok) {

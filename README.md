@@ -162,7 +162,7 @@ instead of `-m` (the tag picks the quant when the repository has several;
 the file is cached under `~/.cache/xyntetik-runner/hf` and verified against
 the Hub's SHA-256 record before it loads; `HF_TOKEN` for gated repos; a
 repository whose file list carries a name that would leave the cache
-directory is refused whole):
+directory, or a size that is not a whole byte count, is refused whole):
 
 ```sh
 # Interactive chat: download a model or use a local file.
