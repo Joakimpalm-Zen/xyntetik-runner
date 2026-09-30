@@ -91,6 +91,9 @@ typedef struct {
     // with logprobs or prompt_logprobs asked for them (owned)
     prompt_scores ps;
     int32_t *ptoks;
+    // R4.12.19: the runner_telemetry.repeated_tool_calls array, when a call
+    // this turn emitted repeats one already in the conversation (owned)
+    char *repeat_json;
 } gen_ctx;
 
 typedef struct {
@@ -325,6 +328,8 @@ static void completion_cleanup(engine *e, snode *schema, gen_ctx *g) {
         prompt_scores_free(&g->ps);
         free(g->ptoks);
         g->ptoks = NULL;
+        free(g->repeat_json);
+        g->repeat_json = NULL;
     }
     free(e->lp_chosen); free(e->lp_ids); free(e->lp_top);
     e->lp_chosen = NULL; e->lp_ids = NULL; e->lp_top = NULL;
@@ -799,6 +804,8 @@ typedef struct {
     // client can read what the server actually ran without a log.
     const struct req_diag *diag;
     jv         *req;         // echoed request fields
+    // R4.12.19: a JSON array, or NULL when no emitted call repeats one
+    const char *repeated_calls;
 } resp_doc;
 
 // What one request was actually served with: the resolved preset, the five
@@ -981,6 +988,10 @@ static void telemetry_json(sbuf *r, const resp_doc *d) {
                   "\"min_p\":%.4f,\"top_k\":%d}",
                d->reason_temp, d->reason_top_p, d->reason_min_p, d->reason_top_k);
     if (d->diag) diag_json(r, d->diag);
+    // Only present when an emitted call repeats one the conversation already
+    // holds: a report for the harness, never a change to the turn (R4.12.19)
+    if (d->repeated_calls)
+        sb_fmt(r, ",\"repeated_tool_calls\":%s", d->repeated_calls);
     // Only present when the request took the speculative walk, for the same
     // reason: which source proposed, and what the walk did with it. Rounds,
     // drafted and accepted are the totals /metrics accumulates; the lookup's
@@ -1045,6 +1056,177 @@ static jv *tool_calls_array(const sbuf *tc, int n_tc) {
     free(a.s);
     if (v && v->type != J_ARR) { jv_free(v); v = NULL; }
     return v;
+}
+
+// ---- R4.12.19: a call this turn repeats one the conversation already made
+//
+// The loop the lab caught (get_weather(Athens) re-called turn after turn, the
+// answer already in the model's reasoning) exists only ACROSS requests. The
+// chat-shaped surfaces carry the earlier calls as structure, so matching an
+// emitted call against them parses no prose. It is REPORTED, never refused: a
+// legitimate agent re-calls a tool too (polling, a retry after an error), and
+// a flag lets the harness break its own loop with a reason.
+
+// Two JSON values are the same call argument when they are equal as values:
+// objects compare key by key in any order, so whitespace and key order in a
+// replayed `arguments` string cannot hide a repeat.
+static bool jv_same(const jv *a, const jv *b) {
+    if (a->type != b->type) return false;
+    switch (a->type) {
+    case J_NULL: return true;
+    case J_BOOL: return a->b == b->b;
+    case J_NUM:  return a->num == b->num;
+    case J_STR:  return !strcmp(a->str, b->str);
+    case J_ARR:
+        if (a->n != b->n) return false;
+        for (int i = 0; i < a->n; i++)
+            if (!jv_same(a->items[i], b->items[i])) return false;
+        return true;
+    case J_OBJ:
+        if (a->n != b->n) return false;
+        for (int i = 0; i < a->n; i++) {
+            const jv *o = jv_get((jv *)b, a->keys[i]);
+            if (!o || !jv_same(a->items[i], o)) return false;
+        }
+        return true;
+    }
+    return false;
+}
+
+typedef struct {
+    const char *name;
+    const jv   *args;   // the parsed arguments (or the tool_use input)
+    const char *raw;    // the arguments string when it did not parse
+    jv         *owned;  // a parse to free
+    int         msg;    // index of the message / input item it came from
+} call_ref;
+
+// Chat and Responses spell arguments as a JSON string, Messages as a value.
+static void call_ref_args(call_ref *c, const jv *v) {
+    c->args = NULL; c->raw = NULL; c->owned = NULL;
+    if (!v) return;
+    if (v->type == J_STR) {
+        c->owned = json_parse(v->str, strlen(v->str));
+        if (c->owned) c->args = c->owned;
+        else          c->raw = v->str;
+    } else {
+        c->args = v;
+    }
+}
+
+static bool call_ref_same(const call_ref *a, const call_ref *b) {
+    if (strcmp(a->name, b->name)) return false;
+    if (a->args && b->args) return jv_same(a->args, b->args);
+    if (a->raw && b->raw) return !strcmp(a->raw, b->raw);
+    return !a->args && !a->raw && !b->args && !b->raw;
+}
+
+// The earlier calls a request carries, in its own surface's vocabulary.
+// Returns the count; *out is the caller's to free with call_refs_free.
+static int prior_calls(jv *req, int api, call_ref **out) {
+    *out = NULL;
+    jv *list = jv_get(req, api == API_RESPONSES ? "input" : "messages");
+    if (!list || list->type != J_ARR) return 0;
+    int cap = 0, n = 0;
+    call_ref *v = NULL;
+    for (int i = 0; i < list->n; i++) {
+        jv *m = list->items[i];
+        if (m->type != J_OBJ) continue;
+        // each surface's list of calls inside one message
+        jv *calls = NULL;
+        if (api == API_RESPONSES) {
+            if (strcmp(jv_str(jv_get(m, "type"), ""), "function_call")) continue;
+        } else {
+            if (strcmp(jv_str(jv_get(m, "role"), ""), "assistant")) continue;
+            calls = jv_get(m, api == API_MESSAGES ? "content" : "tool_calls");
+            if (!calls || calls->type != J_ARR) continue;
+        }
+        int k_n = api == API_RESPONSES ? 1 : calls->n;
+        for (int k = 0; k < k_n; k++) {
+            const char *name = NULL;
+            const jv *args = NULL;
+            if (api == API_RESPONSES) {
+                name = jv_str(jv_get(m, "name"), NULL);
+                args = jv_get(m, "arguments");
+            } else if (api == API_MESSAGES) {
+                jv *b = calls->items[k];
+                if (strcmp(jv_str(jv_get(b, "type"), ""), "tool_use")) continue;
+                name = jv_str(jv_get(b, "name"), NULL);
+                args = jv_get(b, "input");
+            } else {
+                jv *f = jv_get(calls->items[k], "function");
+                name = jv_str(jv_get(f, "name"), NULL);
+                args = jv_get(f, "arguments");
+            }
+            if (!name) continue;
+            if (n == cap) {
+                int nc = cap ? cap * 2 : 8;
+                call_ref *g = realloc(v, sizeof *v * (size_t)nc);
+                if (!g) { *out = v; return n; }
+                v = g; cap = nc;
+            }
+            v[n].name = name;
+            v[n].msg = i;
+            call_ref_args(&v[n], args);
+            n++;
+        }
+    }
+    *out = v;
+    return n;
+}
+
+static void call_refs_free(call_ref *v, int n) {
+    for (int i = 0; i < n; i++) jv_free(v[i].owned);
+    free(v);
+}
+
+// `emitted` is this turn's calls: the chat dialect's tool_calls array, or the
+// Responses output items (function_call entries; other items are skipped and
+// do not count toward `index`). Returns the telemetry array, malloc'd, or
+// NULL when nothing repeats.
+static char *repeated_calls_json(jv *req, int api, const jv *emitted) {
+    if (!emitted || emitted->type != J_ARR || emitted->n == 0) return NULL;
+    call_ref *prior = NULL;
+    int n_prior = prior_calls(req, api, &prior);
+    if (n_prior == 0) { free(prior); return NULL; }
+    sbuf r = {0};
+    int idx = 0, flagged = 0;
+    for (int i = 0; i < emitted->n; i++) {
+        jv *it = emitted->items[i];
+        jv *f = jv_get(it, "function");
+        call_ref c;
+        if (f) {
+            c.name = jv_str(jv_get(f, "name"), NULL);
+            call_ref_args(&c, jv_get(f, "arguments"));
+        } else if (!strcmp(jv_str(jv_get(it, "type"), ""), "function_call")) {
+            c.name = jv_str(jv_get(it, "name"), NULL);
+            call_ref_args(&c, jv_get(it, "arguments"));
+        } else {
+            continue;
+        }
+        int this_idx = idx++;
+        if (!c.name) { jv_free(c.owned); continue; }
+        int count = 0, last = -1;
+        for (int k = 0; k < n_prior; k++)
+            if (call_ref_same(&c, &prior[k])) { count++; last = prior[k].msg; }
+        if (count) {
+            // sb_lit evaluates its argument twice; the count moves apart
+            const char *open = flagged ? ",{\"index\":" : "[{\"index\":";
+            flagged++;
+            sb_lit(&r, open);
+            sb_fmt(&r, "%d,\"name\":\"", this_idx);
+            sb_esc(&r, c.name, strlen(c.name));
+            sb_fmt(&r, "\",\"prior_calls\":%d,\"last_message_index\":%d}",
+                   count, last);
+        }
+        jv_free(c.owned);
+    }
+    call_refs_free(prior, n_prior);
+    if (!flagged || r.failed) { free(r.s); return NULL; }
+    sb_lit(&r, "]");
+    sb_put(&r, "", 1);
+    if (r.failed) { free(r.s); return NULL; }
+    return r.s;
 }
 
 static const char *call_field(const jv *calls, int i, const char *key,
@@ -3056,6 +3238,17 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
         if ((cut || failed) && resp_shape_of(g.item_kind) == &RESP_MESSAGE)
             g.close_status = "incomplete";
         resp_close_item(&g);
+        if (!g.dead && g.out_items.n) {
+            // R4.12.19 from the items the stream already delivered
+            sbuf a = {0};
+            sb_lit(&a, "[");
+            sb_put(&a, g.out_items.s, g.out_items.n);
+            sb_lit(&a, "]");
+            jv *em = a.failed ? NULL : json_parse(a.s, a.n);
+            free(a.s);
+            g.repeat_json = repeated_calls_json(req, api, em);
+            jv_free(em);
+        }
         if (!g.dead) {
             bool truncated = cut || failed;
             resp_doc d = { .status = truncated ? "incomplete" : "completed",
@@ -3072,7 +3265,8 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
                            .schema = schema != NULL,
                            .json_mode = e->json_mode, .spec = spec_used,
                            SPEC_DOC_FIELDS(e), .diag = &diag,
-                           .req = req };
+                           .req = req,
+                           .repeated_calls = g.repeat_json };
             sbuf f = {0};
             sb_lit(&f, ",\"response\":");
             responses_body(&f, &g, &d);
@@ -3217,6 +3411,12 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
                              // faking a result)
             }
         }
+        if (chat && n_tc > 0) {
+            // R4.12.19: reported by every body below, from the one mapping
+            jv *em = tool_calls_array(&tc, n_tc);
+            g.repeat_json = repeated_calls_json(req, api, em);
+            jv_free(em);
+        }
         if (api == API_MESSAGES) {
             // A fault is an error object here, not a Message. Anthropic's
             // seven stop_reason values all describe a turn that COMPLETED, so
@@ -3272,7 +3472,8 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
                            .schema = schema != NULL,
                            .json_mode = e->json_mode, .spec = spec_used,
                            SPEC_DOC_FIELDS(e), .diag = &diag,
-                           .req = req };
+                           .req = req,
+                           .repeated_calls = g.repeat_json };
             sbuf r = {0};
             anth_body(&r, &g, &d);
             send_built(fd, &r);
@@ -3314,7 +3515,8 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
                            .schema = schema != NULL,
                            .json_mode = e->json_mode, .spec = spec_used,
                            SPEC_DOC_FIELDS(e), .diag = &diag,
-                           .req = req };
+                           .req = req,
+                           .repeated_calls = g.repeat_json };
             sbuf r = {0};
             responses_body(&r, &g, &d);
             send_built(fd, &r);
@@ -3447,7 +3649,8 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
                            .schema = schema != NULL,
                         .finish_detail = finish_detail_of(finish),
                         .json_mode = e->json_mode, .spec = spec_used,
-                        SPEC_DOC_FIELDS(e), .diag = &diag };
+                        SPEC_DOC_FIELDS(e), .diag = &diag,
+                        .repeated_calls = g.repeat_json };
         telemetry_json(&r, &td);
         sb_lit(&r, "}");
         send_built(fd, &r);

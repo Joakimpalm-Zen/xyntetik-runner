@@ -8,6 +8,18 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **A repeated tool call is reported (`runner_telemetry.repeated_tool_calls`).**
+  The lab's sixth runaway re-called `get_weather(Athens)` after stating the
+  answer, request after request, and the loop guard saw nothing because each
+  request was clean. The chat-shaped surfaces carry the earlier calls as
+  structure (Chat `tool_calls`, Responses `function_call` items, Messages
+  `tool_use` blocks), so an emitted call with the same name and the same
+  arguments as JSON values is flagged with its index, the count of identical
+  earlier calls and where the latest one sits. Reported, never refused: a
+  poll or a retry is a legitimate repeat. Buffered bodies and the streamed
+  Responses completion event carry it; the streamed Chat and Messages turns
+  do not yet.
+
 - **`echo` and `prompt_logprobs` on `/v1/completions`.** The prompt is scored
   teacher-forced: `echo: true` with `logprobs: N` returns the prompt's token
   logprobs ahead of the generated ones in OpenAI's shape (the first entry

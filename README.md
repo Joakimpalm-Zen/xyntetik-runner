@@ -2863,6 +2863,22 @@ loop.
 it fired and whether it ended the turn. This is the detect-and-close half; rewinding
 to the loop onset and resampling that position is deliberately not here.
 
+The guard cannot see the loop that happens ACROSS requests: a model that has
+its answer and calls `get_weather(Athens)` again, turn after turn, finishes
+every request cleanly. The chat-shaped surfaces receive the earlier calls as
+structure, so when a call this turn emits has the same name and the same
+arguments (compared as JSON values, so key order and whitespace do not
+matter) as one already in the conversation, `runner_telemetry` carries
+`repeated_tool_calls`: one entry per repeating call, with its `index` among
+this turn's calls, its `name`, `prior_calls` (how many identical calls the
+conversation holds) and `last_message_index` (where the latest one is in
+`messages`, or in `input` on Responses). It is a report, never a refusal: an
+agent that polls or retries after an error re-calls a tool on purpose, and the
+flag lets its harness break its own loop with a reason. Carried by the
+buffered Chat Completions, Responses and Messages bodies and by the streamed
+Responses `response.completed` event; the streamed Chat and Messages turns do
+not carry it yet.
+
 
 ### Muse recipients line
 
