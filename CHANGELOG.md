@@ -11,7 +11,7 @@ names that were true when they were written.
 - **Full sweep of 2026-09-30 (the pytest suite against an ASan/UBSan
   server, a tokenizer fuzzer, a streamed-against-buffered differential over
   every API surface, and the rope and sampler formulas re-derived from the
-  publishers' references), nine defects.** (1) The repeat penalty compounded
+  publishers' references), ten defects.** (1) The repeat penalty compounded
   per occurrence: a token seen k times in the window was scaled by
   penalty^k, where transformers and llama.cpp apply it once per distinct
   token; it now applies once. (2) top-k selection parked the minimum of
@@ -43,7 +43,10 @@ names that were true when they were written.
   digits: the Messages API's `tool_use.input` (the model's own arguments),
   replayed `tool_use` history and tool schemas rendered into prompts all
   lost digits (1234567.891234 became 1234567.891). Numbers now print at the
-  shortest spelling that reads back exactly, as json.dumps does.
+  shortest spelling that reads back exactly, as json.dumps does. (10)
+  `/v1/embeddings` with `encoding_format: float` printed seven significant
+  digits where a float32 needs nine, so it and `base64` returned different
+  vectors for one request; the float list is now exact.
 
 - **Muse valid-recipients line: bare tool names verbatim, behind a switch
   (R4.12.20, from a lab reading of Meta's Muse-Glimmer-30B discussion #60).**

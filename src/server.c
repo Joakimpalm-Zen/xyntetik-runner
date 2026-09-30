@@ -879,9 +879,11 @@ static void handle_embeddings(slot_t *s, sock_t fd, jv *req) {
             sb_emb_b64(&r, emb, m->n_embd);
             sb_lit(&r, "\"");
         } else {
+            // nine significant digits: the fewest that read every float32
+            // back exactly, so this list and the base64 bytes are one vector
             sb_lit(&r, "[");
             for (int j = 0; j < m->n_embd; j++)
-                sb_fmt(&r, "%s%.7g", j ? "," : "", emb[j]);
+                sb_fmt(&r, "%s%.9g", j ? "," : "", (double)emb[j]);
             sb_lit(&r, "]");
         }
         sb_lit(&r, "}");

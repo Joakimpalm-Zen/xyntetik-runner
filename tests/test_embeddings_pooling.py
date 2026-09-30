@@ -173,3 +173,26 @@ def test_undeclared_readouts_are_refused_by_name(runner_bin, tmp_path_factory,
         code, body = _embed(srv, "hello")
     assert code == 400, body
     assert name in body["error"]["message"].lower()
+
+
+def test_float_and_base64_carry_the_same_vector(runner_bin, tmp_path_factory):
+    """`encoding_format` chooses a spelling, not a vector. base64 carries the
+    float32 bytes exactly; the float list printed each component with seven
+    significant digits, and a float32 needs nine to read back, so the two
+    formats of one request disagreed in the last bits."""
+    import base64
+    m = _fixture(tmp_path_factory, "enc", "--pooling", "1")
+    with _serve(runner_bin, m) as srv:
+        vecs = {}
+        for fmt in ("float", "base64"):
+            req = urllib.request.Request(
+                srv.base_url + "/v1/embeddings",
+                data=json.dumps({"input": "hello there",
+                                 "encoding_format": fmt}).encode(),
+                headers={"Content-Type": "application/json"})
+            with urllib.request.urlopen(req, timeout=60) as r:
+                vecs[fmt] = json.load(r)["data"][0]["embedding"]
+    raw = base64.b64decode(vecs["base64"])
+    decoded = struct.unpack(f"<{len(raw) // 4}f", raw)
+    as_f32 = [struct.unpack("<f", struct.pack("<f", x))[0] for x in vecs["float"]]
+    assert list(decoded) == as_f32
