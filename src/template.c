@@ -4672,10 +4672,13 @@ static int ts_atem(tool_stream *s, const char *bytes, int n) {
 }
 
 // True when `head` is a strict, incomplete prefix of `lit` -- i.e. it could
-// still become it once more bytes arrive.
+// still become it once more bytes arrive. An empty head (still NULL before
+// the first byte is held) is a prefix of anything, and is answered without
+// memcmp: its pointers are declared nonnull even at length zero.
 static bool ts_partial(const tool_stream *s, const char *lit) {
     size_t ln = strlen(lit);
-    return s->head_n < ln && !memcmp(s->head, lit, s->head_n);
+    return s->head_n < ln &&
+           (s->head_n == 0 || !memcmp(s->head, lit, s->head_n));
 }
 
 static bool ts_starts(const tool_stream *s, const char *lit) {
