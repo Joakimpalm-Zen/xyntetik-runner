@@ -3701,6 +3701,10 @@ static bool model_alloc_runtime(model_t *m, const model_params *p) {
     // build on the CPU path was bit-identical to flat. CUDA's kernels take the
     // ring through attn_args and kv_slot(); Metal's do not, so a Metal build
     // refuses rather than returning wrong numbers.
+    {
+        const char *e = getenv("RUNNER_ATTN_SPLIT");
+        m->attn_split = e && !strcmp(e, "0") ? -1 : 0;
+    }
     m->kv_ring = 0;
     if (m->swa_window > 0 && m->l_is_swa) {
         const char *e = getenv("RUNNER_KV_RING");
@@ -4543,71 +4547,181 @@ typedef struct {
     int          layer;
 } attn_job;
 
-static void attn_heads(void *ctx, int h0, int h1) {
-    attn_job *j = ctx;
+// One head's scores att[t] = q.k_t * scale for t in [t_lo, t_hi]. Each score
+// is one dot computed whole, so which call computes it cannot change its bits.
+// noinline, like the two helpers below: the head-parallel path and the split
+// path must run the SAME compiled loops, not two inlined copies the compiler
+// was free to vectorize differently.
+static __attribute__((noinline)) void attn_scores(const attn_job *j, int h,
+                                                  int t_lo, int t_hi) {
     model_t *m = j->m;
     int hd = j->hd;
-    int kv_dim = j->kv_dim;
-    int kv_mul = m->n_head / (kv_dim / hd);
-    float scale = j->scale;
-
-    for (int h = h0; h < h1; h++) {
-        const float *qh = j->q + h * hd;
-        float *att = m->att + (size_t)h * m->n_ctx;
-        int kvh = h / kv_mul;
-        size_t hoff_k = kv_bytes_of_kind(j->kk, (size_t)kvh * hd);
-        size_t hoff_v = kv_bytes_of_kind(j->vk, (size_t)kvh * hd);
-        for (int t = j->t0; t <= j->pos; t++) {
-            // att[] stays indexed by ABSOLUTE position (it is n_ctx wide and
-            // softmax works on the [t0, pos] span); only the cache row moves.
-            size_t slot = j->ring ? (size_t)(t % j->ring) : (size_t)t;
-            float s;
-            if (j->tied) {
-                // no K row exists: rebuild this head's K from the stored V.
-                // V is the weightless-normed raw projection, so K1 = V*w and
-                // K = rope(K1) — the same two steps the store path would have
-                // taken, replayed at read time against the cached V. (tied
-                // implies an f16 cache; q8 is refused at activation.)
-                float kb[1024];
-                const f16_t *vh0 = (const f16_t *)(j->vc + slot * j->v_row_b + hoff_v);
-                for (int i = 0; i < hd; i++)
-                    kb[i] = f16_load(vh0 + i) * j->knw[i];
-                if (model_layer_ropes(m, j->layer))
-                    rope_head(m, kb, j->layer, t);
+    int kv_mul = m->n_head / (j->kv_dim / hd);
+    const float *qh = j->q + h * hd;
+    float *att = m->att + (size_t)h * m->n_ctx;
+    int kvh = h / kv_mul;
+    size_t hoff_k = kv_bytes_of_kind(j->kk, (size_t)kvh * hd);
+    size_t hoff_v = kv_bytes_of_kind(j->vk, (size_t)kvh * hd);
+    for (int t = t_lo; t <= t_hi; t++) {
+        // att[] stays indexed by ABSOLUTE position (it is n_ctx wide and
+        // softmax works on the [t0, pos] span); only the cache row moves.
+        size_t slot = j->ring ? (size_t)(t % j->ring) : (size_t)t;
+        float s;
+        if (j->tied) {
+            // no K row exists: rebuild this head's K from the stored V.
+            // V is the weightless-normed raw projection, so K1 = V*w and
+            // K = rope(K1) — the same two steps the store path would have
+            // taken, replayed at read time against the cached V. (tied
+            // implies an f16 cache; q8 is refused at activation.)
+            float kb[1024];
+            const f16_t *vh0 = (const f16_t *)(j->vc + slot * j->v_row_b + hoff_v);
+            for (int i = 0; i < hd; i++)
+                kb[i] = f16_load(vh0 + i) * j->knw[i];
+            if (model_layer_ropes(m, j->layer))
+                rope_head(m, kb, j->layer, t);
+            s = 0;
+            for (int i = 0; i < hd; i++) s += qh[i] * kb[i];
+        } else {
+            const uint8_t *kt = j->kc + slot * j->k_row_b + hoff_k;
+            if (j->kk == 2) {
+                s = fp4_dot_row(kt, qh, hd);
+            } else if (j->kk == 1) {
+                s = vec_dot(T_Q8_0, kt, qh, hd);
+            } else {
+                const f16_t *kh = (const f16_t *)kt;
                 s = 0;
-                for (int i = 0; i < hd; i++) s += qh[i] * kb[i];
-            } else {
-                const uint8_t *kt = j->kc + slot * j->k_row_b + hoff_k;
-                if (j->kk == 2) {
-                    s = fp4_dot_row(kt, qh, hd);
-                } else if (j->kk == 1) {
-                    s = vec_dot(T_Q8_0, kt, qh, hd);
-                } else {
-                    const f16_t *kh = (const f16_t *)kt;
-                    s = 0;
-                    for (int i = 0; i < hd; i++) s += qh[i] * f16_load(kh + i);
-                }
+                for (int i = 0; i < hd; i++) s += qh[i] * f16_load(kh + i);
             }
-            att[t] = s * scale;
         }
-        if (j->sinks) softmax_sink(att + j->t0, j->pos + 1 - j->t0, j->sinks[h]);
-        else          softmax(att + j->t0, j->pos + 1 - j->t0);
-        float *out = j->out + h * hd;
-        memset(out, 0, sizeof(float) * hd);
-        for (int t = j->t0; t <= j->pos; t++) {
-            size_t slot = j->ring ? (size_t)(t % j->ring) : (size_t)t;
-            const uint8_t *vt = j->vc + slot * j->v_row_b + hoff_v;
-            float a = att[t];
-            if (j->vk == 2) {
-                fp4_accum_row(vt, a, out, hd);
-            } else if (j->vk == 1) {
-                q8_accum_row(vt, a, out, hd);
-            } else {
-                const f16_t *vh = (const f16_t *)vt;
-                for (int i = 0; i < hd; i++) out[i] += a * f16_load(vh + i);
-            }
+        att[t] = s * j->scale;
+    }
+}
+
+// One head's softmax over its whole span. Never split: its running sum and
+// its vectorized exp both depend on where a range starts.
+static __attribute__((noinline)) void attn_softmax(const attn_job *j, int h) {
+    float *att = j->m->att + (size_t)h * j->m->n_ctx;
+    if (j->sinks) softmax_sink(att + j->t0, j->pos + 1 - j->t0, j->sinks[h]);
+    else          softmax(att + j->t0, j->pos + 1 - j->t0);
+}
+
+// One head's output channels [i0, i0 + n): out[i] = sum over t of att[t] *
+// v_t[i], in t order. Every channel's sum is independent of every other's,
+// so a slice gives each channel the bits the whole row gives it; i0 and n are
+// whole KV blocks (32 channels of q8_0, 16 of fp4) so the row helpers read
+// the same bytes per channel.
+static __attribute__((noinline)) void attn_values(const attn_job *j, int h,
+                                                  int i0, int n) {
+    model_t *m = j->m;
+    int hd = j->hd;
+    int kv_mul = m->n_head / (j->kv_dim / hd);
+    const float *att = m->att + (size_t)h * m->n_ctx;
+    size_t hoff_v = kv_bytes_of_kind(j->vk, (size_t)(h / kv_mul) * hd + (size_t)i0);
+    float *out = j->out + h * hd + i0;
+    memset(out, 0, sizeof(float) * n);
+    for (int t = j->t0; t <= j->pos; t++) {
+        size_t slot = j->ring ? (size_t)(t % j->ring) : (size_t)t;
+        const uint8_t *vt = j->vc + slot * j->v_row_b + hoff_v;
+        float a = att[t];
+        if (j->vk == 2) {
+            fp4_accum_row(vt, a, out, n);
+        } else if (j->vk == 1) {
+            q8_accum_row(vt, a, out, n);
+        } else {
+            const f16_t *vh = (const f16_t *)vt;
+            for (int i = 0; i < n; i++) out[i] += a * f16_load(vh + i);
         }
     }
+}
+
+static void attn_heads(void *ctx, int h0, int h1) {
+    attn_job *j = ctx;
+    for (int h = h0; h < h1; h++) {
+        attn_scores(j, h, j->t0, j->pos);
+        attn_softmax(j, h);
+        attn_values(j, h, 0, j->hd);
+    }
+}
+
+// ---- R3.1.7: split attention -------------------------------------------------
+// attn_heads keeps one thread per head, so with fewer heads than threads the
+// rest idle through the longest part of a long-context decode (64 heads on a
+// 128-thread box at 250K positions). The split runs the same three steps as
+// three pool passes over finer items:
+//   scores   (head, position chunk)  attn_scores on a chunk of the span
+//   softmax  (head)                  attn_softmax, unchanged
+//   values   (head, channel slice)   attn_values on a slice of the channels
+// and is BIT-IDENTICAL to attn_heads by construction: no step's summation
+// is reordered, only distributed. There is deliberately no flash-decoding
+// merge of per-chunk softmaxes -- its rescale changes the summation order,
+// which would move every pinned output (the re-pin rule) for a speedup this
+// split gets without it. tests/test_attn_split.c holds the identity at 1-7
+// threads across every cache kind and attention variant.
+typedef struct {
+    attn_job *j;
+    int nc, cs;   // position chunks per head, chunk length
+    int nd, ds;   // channel slices per head, slice width
+} attn_split_job;
+
+static void attn_split_scores(void *ctx, int i0, int i1) {
+    attn_split_job *s = ctx;
+    for (int i = i0; i < i1; i++) {
+        int h = i / s->nc, c = i % s->nc;
+        int lo = s->j->t0 + c * s->cs;
+        int hi = lo + s->cs - 1 < s->j->pos ? lo + s->cs - 1 : s->j->pos;
+        if (lo <= hi) attn_scores(s->j, h, lo, hi);
+    }
+}
+
+static void attn_split_softmax(void *ctx, int h0, int h1) {
+    attn_split_job *s = ctx;
+    for (int h = h0; h < h1; h++) attn_softmax(s->j, h);
+}
+
+static void attn_split_values(void *ctx, int i0, int i1) {
+    attn_split_job *s = ctx;
+    for (int i = i0; i < i1; i++)
+        attn_values(s->j, i / s->nd, (i % s->nd) * s->ds, s->ds);
+}
+
+// Below this span the split is not taken: two extra pool passes buy little
+// on a short span. 256 is a chosen bar, not a measured crossover; the
+// measured gains (docs/performance.md) are all at spans far above it.
+#define ATTN_SPLIT_MIN_SPAN 256
+
+static bool attn_split_wanted(const model_t *m, int n_head, int span) {
+    if (m->attn_split) return m->attn_split > 0;
+    int nt = tpool_size(m->tp);
+    if (nt <= 1 || span < ATTN_SPLIT_MIN_SPAN) return false;
+    // the head split's busy share: n_head items over nt threads in rounds
+    int rounds = (n_head + nt - 1) / nt;
+    return n_head * 4 < rounds * nt * 3;   // more than a quarter idle
+}
+
+static void attn_run(model_t *m, attn_job *j, int n_head) {
+    int span = j->pos + 1 - j->t0;
+    if (!attn_split_wanted(m, n_head, span)) {
+        tpool_run(m->tp, attn_heads, j, n_head);
+        return;
+    }
+    int nt = tpool_size(m->tp) > 0 ? tpool_size(m->tp) : 1;
+    m->attn_split_runs++;
+    attn_split_job s = { .j = j };
+    // about four score items per thread, none shorter than 32 positions
+    int want = (4 * nt + n_head - 1) / n_head;
+    int most = (span + 31) / 32;
+    s.nc = want < most ? want : most;
+    if (s.nc < 1) s.nc = 1;
+    s.cs = (span + s.nc - 1) / s.nc;
+    s.nc = (span + s.cs - 1) / s.cs;
+    // channel slices of whole KV blocks: 32 channels (one q8_0 block, a
+    // 64-byte f16 line), 16 for an fp4 cache whose width is not a multiple
+    // of 32; a head width neither divides stays whole
+    s.ds = j->hd % 32 == 0 ? 32 : (j->hd % 16 == 0 && j->vk != 1) ? 16 : j->hd;
+    s.nd = j->hd / s.ds;
+    tpool_run(m->tp, attn_split_scores, &s, n_head * s.nc);
+    tpool_run(m->tp, attn_split_softmax, &s, n_head);
+    tpool_run(m->tp, attn_split_values, &s, n_head * s.nd);
 }
 
 // ------------------------------------------------- activation tracing (debug)
@@ -7058,7 +7172,7 @@ static bool lora_layer_bw(model_t *m, int l, const int32_t *toks, int T,
                        attn_window_start(swa, t),
                        hd, kv_dim, k_row_b, v_row_b, 0,
                        0, 0, scale, NULL, false, NULL, l };
-        tpool_run(m->tp, attn_heads, &aj, n_head);
+        attn_run(m, &aj, n_head);
         if (gate) {
             // afmoe/muse: sigmoid gate from its own frozen projection of the
             // normed input, applied element-wise to the attention output
@@ -7960,7 +8074,7 @@ static void forward_layer(model_t *m, int l, int n, int pos, int dbg) {
                         k_row_b, v_row_b, model_kv_is_ring(m, l) ? m->kv_ring : 0,
                         model_kv_kind_k(m), model_kv_kind_v(m), scale, ly->attn_sinks,
                         model_layer_tied_v(m, l), ly->knorm_w, l };
-        tpool_run(m->tp, attn_heads, &aj, m->n_head);
+        attn_run(m, &aj, m->n_head);
         if (m->qwen35 || (m->attn_out_gate && ly->wq_gate))
             for (int i = 0; i < q_dim; i++) {
                 float g = m->q_gate[(size_t)b * q_dim + i];

@@ -235,6 +235,10 @@ test-watermark
 test-watermark.exe
 test-prefill-invariance
 test-prefill-invariance.exe
+test-attn-split-bin
+test-attn-split-bin.exe
+attn-split-*.gguf
+attn-split.err
 
 # xyntetik.com is generated at build time (site/build.py)
 site/_site/

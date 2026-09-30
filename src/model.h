@@ -252,6 +252,11 @@ typedef struct {
     bool     *l_no_ffn;      // [n_layer] FFN removed
     int       n_removed;     // removed sublayers in total (0 = a normal file)
     int       kv_ring;       // rows a sliding layer owns (0 = flat n_ctx rows)
+    // R3.1.7 split attention: 0 decides per call (fewer heads than threads,
+    // a long span), 1 always, -1 never. RUNNER_ATTN_SPLIT=0 sets -1 at load,
+    // for an A/B; the split is bit-identical, so only speed can differ.
+    int       attn_split;
+    long      attn_split_runs;  // split passes taken: the gate's engagement check
     size_t   *kv_off;        // [n_layer+1] element offsets into VCACHE (and
                              // into kcache too unless tied-V is on)
     // [n_layer+1] element offsets into KCACHE. NULL means the two caches share

@@ -10,6 +10,10 @@ does not make it, and the absence is deliberate.
   one model file, one config and seed: the emitted token ids are
   identical across runs and across `-t` thread counts. This is the
   core contract and it is exercised by the test suite on every change.
+  CPU attention divides its work by the thread count (heads, and with
+  fewer heads than threads position chunks and channel slices) without
+  reordering any sum; `test-attn-split` holds its logits byte for byte
+  at 1, 2, 3, 4 and 7 threads on every cache kind, solo and batched.
 - **Training byte-determinism, same build.** `--train` with identical
   inputs reproduces the same adapter file, byte for byte, verified by
   sha256 in CI. The `.train.json` sidecar records the binary sha,

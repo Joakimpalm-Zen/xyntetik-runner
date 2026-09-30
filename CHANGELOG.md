@@ -8,6 +8,18 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **CPU attention uses the threads a few-heads model left idle.** One
+  token's attention was split over query heads only, so with fewer heads
+  than threads the rest waited. It now also splits over position chunks
+  (scores) and channel slices (the V sum) when more than a quarter of the
+  threads would idle and the span is at least 256 positions, and it is
+  bit-identical to the head split by construction: no sum is reordered and
+  no partial softmaxes are merged, so nothing needed re-pinning.
+  `test-attn-split` holds the logits byte for byte at 1-7 threads across
+  every cache kind and attention variant. On a 2-head model at `-t 4`,
+  decode and prefill rose 19-38% at 2.8K context; at 11.8K decode is
+  memory-bound on the measuring box and only prefill gained (about 8%).
+  `RUNNER_ATTN_SPLIT=0` turns it off for an A/B. [Details](docs/performance.md)
 - **Session images: suspend, resume and fork a generation.** `--session-out
   FILE` writes a `-p` generation's state to one file (tokens, KV and recurrent
   fold, sampler and rng state, constraint digest, next-token logits, a
