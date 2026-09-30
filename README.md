@@ -3023,10 +3023,22 @@ Streaming emits ordered typed lifecycle, text-delta, function-argument-delta,
 done, and terminal events with monotonic `sequence_number` values. The
 terminal event contains usage and runner telemetry.
 
-Runner is stateless and refuses persistence or hosted-service fields rather
-than accepting them without effect: `store:true`, `previous_response_id`,
-`background:true`, `conversation`, `truncation:"auto"`, hosted tools, and
-every `include[]` member but one. `include:["reasoning.encrypted_content"]`
+`store:true` keeps the finished response in an in-memory store (never
+written to disk; bounded by `RUNNER_RESPONSES_STORE_MB`, default 64, least
+recently used first, and `RUNNER_RESPONSES_STORE_TTL` seconds, default 3600),
+and `previous_response_id` continues it: the stored conversation (the input it
+answered, then its output items) is placed in front of this request's `input`,
+so the continuation is the same request as sending that history explicitly
+(the same `input_tokens`, and greedy the same output; `instructions` and
+`tools` are not carried over, as on the hosted API). `GET /v1/responses/{id}`,
+`GET /v1/responses/{id}/input_items` and `DELETE /v1/responses/{id}` read and
+drop entries. `store` defaults to false here, unlike the hosted API, so
+nothing is kept unless asked; an unknown or expired id answers 404
+(`previous_response_not_found`). The store dies with the process.
+
+Runner refuses the remaining hosted-service fields rather than accepting them
+without effect: `background:true`, `conversation`, `truncation:"auto"`, hosted
+tools, and every `include[]` member but one. `include:["reasoning.encrypted_content"]`
 is accepted: encrypted reasoning exists so a stateless client can hand a
 hosted model its hidden reasoning back, this runtime has none to encrypt,
 and a reasoning item without `encrypted_content` is the complete answer
@@ -3059,9 +3071,13 @@ contract pinned by goldens in `tests/test_tool_attribution.c`.
 
 Messages uses the same internal engine and constrained tool envelope. It
 supports string or block-list system/content values, `tool_use`/`tool_result`,
-all tool-choice forms compatible with one call per turn, stop sequences,
-sampling controls, metadata, thinking-channel blocks, and Anthropic SSE event
-ordering. `max_tokens` is required.
+every tool-choice form, stop sequences, sampling controls, metadata,
+thinking-channel blocks, and Anthropic SSE event ordering. `max_tokens` is
+required. `tool_choice.disable_parallel_tool_use:false` compiles the parallel
+envelope (several `tool_use` blocks in one turn, as `parallel_tool_calls:true`
+does on the OpenAI surfaces); absent or `true` keeps one call per turn, which
+is what this surface has always compiled, so an unmarked request's grammar is
+unchanged.
 
 `thinking.type:"enabled"` requires `budget_tokens`; that field is rejected for
 `adaptive` and `disabled`. `thinking.display` accepts `summarized` or `omitted`
@@ -3069,7 +3085,7 @@ with enabled/adaptive thinking. The omitted form keeps an empty thinking block
 while withholding reasoning text in buffered and SSE responses.
 
 Runner refuses hosted tools, MCP/container execution, image/document blocks,
-parallel tool use, `stop_sequences` sent alongside `tools` (see Chat
+`stop_sequences` sent alongside `tools` (see Chat
 Completions above), and forced thinking on a model with no reasoning channel.
 It implements protocol translation only; it never executes a tool.
 
@@ -3131,9 +3147,10 @@ codex "list the files here"
 ```
 
 Codex's system prompt and tools can consume roughly 10k input tokens before
-the user request, so use at least a 16k context for that workflow. Runner does
-not implement a response store; clients must send history each turn rather
-than use `previous_response_id`.
+the user request, so use at least a 16k context for that workflow. Codex sends
+`store:false` and the whole history each turn; a client that relies on
+`previous_response_id` must send `store:true` on the turn it continues, since
+the store keeps nothing unasked.
 
 <a id="why-this-and-not-llamacpp"></a>
 ## Evidence and tradeoffs

@@ -1,5 +1,6 @@
 // Generation and wire framing. Lifted out of server.c (RNR-019); see completion.h.
 #include "completion.h"
+#include "respstore.h"
 #include "compat.h"
 
 #include "http.h"
@@ -1240,6 +1241,31 @@ static const char *call_field(const jv *calls, int i, const char *key,
     return jv_str(jv_get(jv_get(calls->items[i], "function"), key), dflt);
 }
 
+// R10.6: keep a finished response when the request said store:true. The
+// input kept is the EFFECTIVE one (a previous_response_id already expanded
+// into it by api_responses.c), so a continuation of this response needs
+// nothing else from the store.
+static void responses_store_keep(jv *req, const char *id, const char *body,
+                                 size_t body_n) {
+    if (!req || !jv_bool(jv_get(req, "store"), false)) return;
+    jv *in = jv_get(req, "input");
+    sbuf a = {0};
+    if (in && in->type == J_STR) {
+        sb_lit(&a, "[{\"role\":\"user\",\"content\":\"");
+        sb_esc(&a, in->str, strlen(in->str));
+        sb_lit(&a, "\"}]");
+    } else if (in && in->type == J_ARR) {
+        jv_dump(in, &a);
+    } else {
+        sb_lit(&a, "[]");
+    }
+    if (!a.failed &&
+        !respstore_put(id, a.s, a.n, body, body_n))
+        fprintf(stderr, "responses: %s not stored (store budget "
+                "RUNNER_RESPONSES_STORE_MB is full or 0)\n", id);
+    free(a.s);
+}
+
 static void responses_body(sbuf *r, gen_ctx *g, const resp_doc *d) {
     int n_calls = d->calls ? d->calls->n : 0;
     sb_fmt(r, "{\"id\":\"%s\",\"object\":\"response\",\"created_at\":%ld,"
@@ -1308,8 +1334,11 @@ static void responses_body(sbuf *r, gen_ctx *g, const resp_doc *d) {
     resp_echo(r, d->req, "tools", "[]");
     resp_echo(r, d->req, "tool_choice", "\"auto\"");
     resp_echo(r, d->req, "parallel_tool_calls", "false");
-    sb_lit(r, ",\"previous_response_id\":null,\"store\":false,"
-              "\"truncation\":\"disabled\",\"user\":null,\"usage\":");
+    // R10.6: what the request asked the store to do, echoed as it was served
+    resp_echo(r, d->req, "previous_response_id", "null");
+    sb_fmt(r, ",\"store\":%s,",
+           d->req && jv_bool(jv_get(d->req, "store"), false) ? "true" : "false");
+    sb_lit(r, "\"truncation\":\"disabled\",\"user\":null,\"usage\":");
     if (d->with_usage) {
         sb_fmt(r, "{\"input_tokens\":%d,"
                   "\"input_tokens_details\":{\"cached_tokens\":%d},"
@@ -3328,7 +3357,10 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
                            .repeated_calls = g.repeat_json };
             sbuf f = {0};
             sb_lit(&f, ",\"response\":");
+            size_t body_at = f.n;
             responses_body(&f, &g, &d);
+            if (!f.failed)
+                responses_store_keep(req, g.id, f.s + body_at, f.n - body_at);
             resp_send(&g, truncated ? "response.incomplete"
                                     : "response.completed", &f);
         }
@@ -3578,6 +3610,7 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
                            .repeated_calls = g.repeat_json };
             sbuf r = {0};
             responses_body(&r, &g, &d);
+            if (!r.failed) responses_store_keep(req, g.id, r.s, r.n);
             send_built(fd, &r);
             free(r.s);
             jv_free(call);

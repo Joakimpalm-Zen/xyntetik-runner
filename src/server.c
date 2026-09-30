@@ -31,6 +31,7 @@
 #include "api.h"
 #include "server.h"
 #include "provenance.h"
+#include "respstore.h"
 #include "gpu.h"
 
 #include <errno.h>
@@ -895,6 +896,70 @@ static void delete_context(sock_t fd, const char *path) {
     send_response(fd, 200, "application/json", body, (size_t)bn);
 }
 
+// ---- the Responses store (R10.6) ---------------------------------------
+// GET /v1/responses/{id}, GET /v1/responses/{id}/input_items and
+// DELETE /v1/responses/{id}. Bodyless, answered from the accept thread: the
+// store has its own lock and holds no model state.
+static bool response_id_ok(const char *id, size_t n) {
+    if (n == 0 || n > 64) return false;
+    for (size_t i = 0; i < n; i++) {
+        char c = id[i];
+        if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+              (c >= '0' && c <= '9') || c == '_' || c == '-'))
+            return false;
+    }
+    return true;
+}
+
+static void stored_response_route(sock_t fd, const char *method,
+                                  const char *path) {
+    const char *id = path + sizeof("/v1/responses/") - 1;
+    const char *slash = strchr(id, '/');
+    size_t idn = slash ? (size_t)(slash - id) : strlen(id);
+    bool items = slash && !strcmp(slash, "/input_items");
+    char key[65];
+    if (!response_id_ok(id, idn) || (slash && !items) ||
+        (items && strcmp(method, "GET"))) {
+        send_error_detail(fd, 404, "no such route", NULL, "not_found");
+        return;
+    }
+    memcpy(key, id, idn);
+    key[idn] = 0;
+    if (!strcmp(method, "DELETE")) {
+        if (!respstore_delete(key)) {
+            send_error_detail(fd, 404, "no stored response of that id",
+                              "response_id", "response_not_found");
+            return;
+        }
+        char body[160];
+        int bn = snprintf(body, sizeof body, "{\"id\":\"%s\",\"object\":"
+                          "\"response.deleted\",\"deleted\":true}", key);
+        send_response(fd, 200, "application/json", body, (size_t)bn);
+        return;
+    }
+    size_t n = 0;
+    char *doc = items ? respstore_input(key, &n) : respstore_body(key, &n);
+    if (!doc) {
+        send_error_detail(fd, 404, "no stored response of that id (never "
+                          "stored, deleted, or expired)", "response_id",
+                          "response_not_found");
+        return;
+    }
+    if (items) {
+        sbuf r = {0};
+        sb_lit(&r, "{\"object\":\"list\",\"data\":");
+        sb_put(&r, doc, n);
+        sb_lit(&r, "}");
+        free(doc);
+        if (r.failed) { free(r.s); send_error(fd, 500, "out of memory"); return; }
+        send_response(fd, 200, "application/json", r.s, r.n);
+        free(r.s);
+        return;
+    }
+    send_response(fd, 200, "application/json", doc, n);
+    free(doc);
+}
+
 static void handle_completion(slot_t *s, sock_t fd, jv *req) {
     const char *prompt = jv_str(jv_get(req, "prompt"), NULL);
     if (!prompt) { send_error(fd, 400, "missing prompt"); return; }
@@ -1730,8 +1795,11 @@ static void handle_conn(slot_t *s, sock_t fd) {
           (!strcmp(path, "/unload") ||
            !strcmp(path, "/v1/runner/prefix-cache/clear"))) ||
          (!strcmp(method, "DELETE") &&
-          !strncmp(path, "/v1/runner/contexts/",
-                   sizeof("/v1/runner/contexts/") - 1)) ||
+          (!strncmp(path, "/v1/runner/contexts/",
+                    sizeof("/v1/runner/contexts/") - 1) ||
+           !strncmp(path, "/v1/responses/", sizeof("/v1/responses/") - 1))) ||
+         (!strcmp(method, "GET") &&
+          !strncmp(path, "/v1/responses/", sizeof("/v1/responses/") - 1)) ||
          (!strcmp(method, "GET") &&
           (!strcmp(path, "/health") || !strcmp(path, "/v1/models") ||
            !strcmp(path, "/v1/capabilities") || !strcmp(path, "/metrics") ||
@@ -1782,6 +1850,9 @@ static void handle_conn(slot_t *s, sock_t fd) {
                !strncmp(path, "/v1/runner/contexts/",
                         sizeof("/v1/runner/contexts/") - 1)) {
         delete_context(fd, path);
+    } else if ((!strcmp(method, "GET") || !strcmp(method, "DELETE")) &&
+               !strncmp(path, "/v1/responses/", sizeof("/v1/responses/") - 1)) {
+        stored_response_route(fd, method, path);
     } else if (!strcmp(method, "GET") && !strcmp(path, "/health")) {
         send_health(fd);
     } else if (!strcmp(method, "GET") && !strcmp(path, "/v1/models")) {
@@ -1999,12 +2070,16 @@ static bool accept_fastpath(sock_t fd) {
                          sizeof("GET /v1/runner/provenance ") - 1);
     bool ctx_list = !strncmp(hdr, "GET /v1/runner/contexts ",
                              sizeof("GET /v1/runner/contexts ") - 1);
+    bool stored = !strncmp(hdr, "GET /v1/responses/",
+                           sizeof("GET /v1/responses/") - 1) ||
+                  !strncmp(hdr, "DELETE /v1/responses/",
+                           sizeof("DELETE /v1/responses/") - 1);
     // The old spelling still has to reach a handler, or an operator's script
     // gets a 404 that says nothing. It is not answered here — it falls through
     // to the slot path, which replies 405 with the reason.
     if (!strncmp(hdr, "GET /unload ", 12)) return false;
     if (!health && !models && !caps && !unload && !pfx_stats && !pfx_clear &&
-        !metrics && !prov && !ctx_list)
+        !metrics && !prov && !ctx_list && !stored)
         return false;
     // Keep the request untouched until framing says it is bodyless. A partial
     // header, an oversized header, malformed framing, and every declared body
@@ -2038,6 +2113,7 @@ static bool accept_fastpath(sock_t fd) {
     else if (metrics)    send_metrics(fd);
     else if (prov)       send_provenance(fd);
     else if (ctx_list)   send_contexts(fd);
+    else if (stored)     stored_response_route(fd, method, path);
     else if (unload)     handle_unload(fd);
     else if (pfx_stats)  send_prefix_cache(fd);
     else if (pfx_clear) {
@@ -2184,6 +2260,7 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
 #endif
     install_stop_handlers(); // resets the stop flag + listener on both platforms
     provenance_init();       // the executable's digest, once, before serving
+    respstore_reset_from_env();   // an in-memory store lives with the server
     SV.ignore_eos = ignore_eos;
     // Measured-envelope enforcement for swapped-in models. registry.c resolves
     // the backend from each loaded model, since an available GPU may be unused
@@ -2602,8 +2679,9 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
           "  GET /v1/runner/prefix-cache | POST /v1/runner/prefix-cache/clear"
           " | POST /unload\n"
           "  GET /v1/runner/provenance | POST /v1/runner/contexts"
-          " | GET /v1/runner/contexts | DELETE /v1/runner/contexts/{id}\n",
-          stderr);
+          " | GET /v1/runner/contexts | DELETE /v1/runner/contexts/{id}\n"
+          "  GET /v1/responses/{id} | GET /v1/responses/{id}/input_items"
+          " | DELETE /v1/responses/{id}\n", stderr);
 
     // Say it in the banner, not only at init.
     //

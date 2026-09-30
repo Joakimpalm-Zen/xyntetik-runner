@@ -579,15 +579,26 @@ def test_malformed_requests_are_rejected(client, payload, contains):
                       path="/v1/messages")
 
 
-def test_parallel_tool_use_is_refused_not_quietly_downgraded(client):
-    """The envelope is one call per turn on every surface. A client that asked
-    for several and got one could not tell that apart from a considered
-    choice, so it is refused exactly as parallel_tool_calls:true is."""
+def test_parallel_tool_use_is_served_not_quietly_downgraded(client):
+    """disable_parallel_tool_use:false compiles the parallel envelope (R10.6),
+    as parallel_tool_calls:true does on the OpenAI surfaces, so a client that
+    asked for several calls is not answered by a grammar that admits one
+    (tests/test_responses_store.py dictates a two-call turn through it). A
+    value that is not a boolean is still refused."""
+    r = client.messages({"messages": [{"role": "user", "content": "hi"}],
+                         "max_tokens": 8, "tools": [WEATHER],
+                         "tool_choice": {"type": "auto",
+                                         "disable_parallel_tool_use": False}},
+                        name="messages-parallel")
+    # the parallel envelope's teaching turn can outgrow this suite's small
+    # context; what must not happen is a refusal of the field itself
+    if r.status != 200:
+        assert r.json["error"]["code"] == "context_length_exceeded", r.json
     client.expect_400({"messages": [{"role": "user", "content": "hi"}],
                        "max_tokens": 8, "tools": [WEATHER],
                        "tool_choice": {"type": "auto",
-                                       "disable_parallel_tool_use": False}},
-                      "messages-parallel", contains="one tool call per turn",
+                                       "disable_parallel_tool_use": "no"}},
+                      "messages-parallel-type", contains="boolean",
                       path="/v1/messages")
 
 

@@ -8,6 +8,21 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **Responses persistence and parallel `tool_use` on Messages.**
+  `store:true` keeps a finished response in an in-memory store (never
+  written to disk, bounded by `RUNNER_RESPONSES_STORE_MB` and
+  `RUNNER_RESPONSES_STORE_TTL`), `previous_response_id` continues it by
+  placing the stored conversation in front of the new `input`, and
+  `GET`/`DELETE /v1/responses/{id}` and `/input_items` read and drop
+  entries; both fields were refused with 400 before. `store` defaults to
+  false, so nothing is kept unasked. On Messages,
+  `tool_choice.disable_parallel_tool_use:false` now compiles the parallel
+  envelope instead of being refused; an unmarked request keeps the one-call
+  grammar it always had. `tests/test_responses_store.py` pins that a
+  continued response is the same request as its explicit history (equal
+  `input_tokens`, equal greedy text), and dictates a two-call Messages turn
+  through the parallel grammar.
+
 - **Named contexts: prefill a shared prefix once, on purpose.**
   `POST /v1/runner/contexts` pins a raw prompt or chat messages (rendered
   without the generation prompt) under an id: no TTL, never evicted by

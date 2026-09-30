@@ -21,6 +21,10 @@ struct jv {
 jv         *json_parse(const char *s, size_t n); // NULL on error
 void        jv_free(jv *v);
 jv         *jv_get(jv *obj, const char *key);    // NULL if absent / not object
+// Replace the member `key` of obj with val (freeing the old value) or append
+// it; obj takes ownership of val on success. False on a non-object or OOM
+// (val is then still the caller's).
+bool        jv_set(jv *obj, const char *key, jv *val);
 const char *jv_str (jv *v, const char *dflt);
 double      jv_num (jv *v, double dflt);
 bool        jv_bool(jv *v, bool dflt);
