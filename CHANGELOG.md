@@ -8,6 +8,26 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **Full sweep of 2026-09-30 (the pytest suite against an ASan/UBSan
+  server, a tokenizer fuzzer, a streamed-against-buffered differential over
+  every API surface, and the rope and sampler formulas re-derived from the
+  publishers' references), five defects.** (1) The repeat penalty compounded
+  per occurrence: a token seen k times in the window was scaled by
+  penalty^k, where transformers and llama.cpp apply it once per distinct
+  token; it now applies once. (2) top-k selection parked the minimum of
+  three as its pivot, not the median its comment promised, so all-tied or
+  rank-ordered logits made it n*k (680 ms per token at top_k 2000 over a
+  262k vocabulary); the selected set is unchanged. (3) gpt-oss's YaRN ramp
+  rounded its correction range outward, as transformers' default and
+  llama.cpp do, where OpenAI's reference and the model's config
+  (`"truncate": false`) do not; every rotary frequency inside the ramp was
+  off at every position (1.75x at dimension 17 of the real heads). (4) A
+  native-protocol turn that produced no visible bytes ran
+  memcmp(NULL, lit, 0) at finish, undefined and fatal to a sanitized server.
+  (5) gemma4 and muse-glimmer loads stranded the generic sliding-window
+  layer table (n_layer bytes per load, every swap reload included); CI's
+  leak gate now loads both families.
+
 - **Muse valid-recipients line: bare tool names verbatim, behind a switch
   (R4.12.20, from a lab reading of Meta's Muse-Glimmer-30B discussion #60).**
   The reference template writes every tool name into the system turn's
