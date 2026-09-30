@@ -851,6 +851,11 @@ static void usage_to(FILE *f, const char *prog) {
         "                 refuses the load\n"
         "  --require-signed-model  refuse to load -m unless its OMS signature\n"
         "                 verifies with --model-pubkey\n"
+        "  --sign-model F  write an OMS bundle for model F (every part of a\n"
+        "                 split GGUF) to F.sig, or to --model-sig; deterministic\n"
+        "                 ECDSA (RFC 6979) with --model-key. Needs no -m\n"
+        "  --model-key F  the PEM EC private key --sign-model signs with (SEC1\n"
+        "                 or PKCS#8, unencrypted, P-256/384/521)\n"
         "  --merge-lora OUT  fold --lora into the base weights and write\n"
         "                 OUT.gguf + an OUT.gguf.merge.json provenance record:\n"
         "                 W' = W + (alpha/r)*B*A per adapted projection, each\n"
@@ -1299,6 +1304,7 @@ int main(int argc, char **argv) {
     int receipts_keep = 0;
     const char *keygen_algo = SIGN_ALGO_ED25519;
     const char *trust_key = NULL, *model_sig = NULL, *model_pubkey = NULL;
+    const char *sign_model = NULL, *model_key = NULL;
     bool require_signed = false, require_signed_model = false;
     receipt_sig_state v_rsig = RSIG_NONE;   // --verify: the record's signature state
     char v_rec_pub[SIGN_PUBHEX_CAP] = "";
@@ -1415,6 +1421,8 @@ int main(int argc, char **argv) {
         else if (!strcmp(a, "--trust-key")) trust_key = NEXT;
         else if (!strcmp(a, "--model-sig")) model_sig = NEXT;
         else if (!strcmp(a, "--model-pubkey")) model_pubkey = NEXT;
+        else if (!strcmp(a, "--sign-model")) sign_model = NEXT;
+        else if (!strcmp(a, "--model-key")) model_key = NEXT;
         else if (!strcmp(a, "--require-signed-model")) require_signed_model = true;
         else if (!strcmp(a, "--quant")) quant_type = NEXT;
         else if (!strcmp(a, "--prune-experts")) prune_experts = NEXT;
@@ -1611,6 +1619,29 @@ int main(int argc, char **argv) {
     }
     if (check_record) return record_check(check_record, trust_key);
     if (check_bundle) return bundle_check(check_bundle, trust_key);
+    if (sign_model || model_key) {
+        if (!sign_model || !model_key) {
+            fprintf(stderr, "error: --sign-model MODEL and --model-key KEY.pem go "
+                    "together\n");
+            return 1;
+        }
+        char def[4096];
+        const char *out = model_sig;
+        if (!out) {
+            if (strlen(sign_model) + 5 > sizeof def) {
+                fprintf(stderr, "error: --sign-model: path too long\n");
+                return 1;
+            }
+            snprintf(def, sizeof def, "%s.sig", sign_model);
+            out = def;
+        }
+        oms_sign_info si;
+        if (!oms_sign_file(sign_model, model_key, out, &si)) return 1;
+        printf("signed: %s (%s/%s, %d file%s, subject sha256 %s, key hint %s)\n",
+               out, si.curve, si.hash, si.n_resources,
+               si.n_resources == 1 ? "" : "s", si.subject_digest, si.key_hint);
+        return 0;
+    }
     if (export_bundle || bundle_out) {
         if (!export_bundle || !bundle_out) {
             fprintf(stderr, "error: --export-bundle RECEIPT and --bundle-out "

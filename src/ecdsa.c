@@ -1,11 +1,14 @@
-// ECDSA verification over P-256 / P-384 / P-521. See ecdsa.h for scope.
+// ECDSA over P-256 / P-384 / P-521. See ecdsa.h for scope.
 //
 // Layout: big numbers are little-endian arrays of 32-bit limbs (17 limbs
 // cover 521 bits); field and scalar arithmetic run in Montgomery form with
 // a per-modulus context (the modulus, -p^-1 mod 2^32, R^2 mod p); points are
-// Jacobian (X, Y, Z) with mixed addition against affine bases. Nothing here
-// is constant-time and nothing needs to be: every input is public.
+// Jacobian (X, Y, Z) with mixed addition against affine bases. Verification
+// is not constant-time and need not be: every input is public. The signer's
+// secret scalars go through jpt_mul_fixed (see there for what that covers).
 #include "ecdsa.h"
+#include "ed25519.h"
+#include "envelope.h"
 #include <string.h>
 
 enum { L_MAX = 17 };   // limbs: 32*17 = 544 bits >= 521
@@ -55,6 +58,20 @@ static const curve_def CURVES[] = {
 
 size_t ec_field_bytes(ec_curve c) {
     return c == EC_P256 ? 32 : c == EC_P384 ? 48 : 66;
+}
+
+ec_hash ec_curve_hash(ec_curve c) {
+    return c == EC_P256 ? EC_SHA256 : c == EC_P384 ? EC_SHA384 : EC_SHA512;
+}
+
+size_t ec_hash_bytes(ec_hash h) {
+    return h == EC_SHA256 ? 32 : h == EC_SHA384 ? 48 : 64;
+}
+
+void ec_digest(ec_hash h, const void *m, size_t n, uint8_t *out) {
+    if (h == EC_SHA256) envelope_data_sha256_raw(m, n, out);
+    else if (h == EC_SHA384) ed25519_sha384(out, m, n);
+    else ed25519_sha512(out, m, n);
 }
 
 // ---- plain big-number helpers (L limbs, little-endian) ---------------------
@@ -516,5 +533,383 @@ bool ecdsa_spki_parse(const uint8_t *der, size_t der_len, ec_curve *curve_out,
     memcpy(pub_out, der + b + 2, 2 * fb);
     *pub_len_out = 2 * fb;
     *curve_out = curve;
+    return true;
+}
+
+// ---- signing (R1.2.5) ---------------------------------------------------------
+
+// big-endian n bytes <- bn
+static void bn_to_bytes(const bn *a, uint8_t *out, size_t n) {
+    for (size_t i = 0; i < n; i++) {
+        size_t k = n - 1 - i;
+        out[k] = i / 4 < L_MAX ? (uint8_t)(a->v[i / 4] >> ((i % 4) * 8)) : 0;
+    }
+}
+
+// r = bit ? a : r, without a branch on bit
+static void bn_cmov(bn *r, const bn *a, uint32_t bit) {
+    uint32_t m = 0u - bit;
+    for (int i = 0; i < L_MAX; i++) r->v[i] = (r->v[i] & ~m) | (a->v[i] & m);
+}
+
+// One curve's constants in the forms the arithmetic needs.
+typedef struct {
+    const curve_def *cd;
+    int  L, nbits;
+    size_t fb;
+    bn   p, n;
+    mont mp, mn;
+    bn   a_m, b_m;
+    apt  G;
+} curve_ctx;
+
+static bool curve_load(ec_curve c, curve_ctx *x) {
+    if (c < EC_P256 || c > EC_P521) return false;
+    const curve_def *cd = &CURVES[c];
+    bn a, b, gx, gy;
+    if (!bn_from_hex(&x->p, cd->p) || !bn_from_hex(&a, cd->a) ||
+        !bn_from_hex(&b, cd->b) || !bn_from_hex(&gx, cd->gx) ||
+        !bn_from_hex(&gy, cd->gy) || !bn_from_hex(&x->n, cd->n))
+        return false;
+    x->cd = cd;
+    x->L = cd->L;
+    x->fb = ec_field_bytes(c);
+    x->nbits = bn_bits(&x->n, cd->L);
+    mont_init(&x->mp, &x->p, cd->L, cd->bits);
+    mont_init(&x->mn, &x->n, cd->L, cd->bits);
+    mont_to(&x->a_m, &a, &x->mp);
+    mont_to(&x->b_m, &b, &x->mp);
+    mont_to(&x->G.x, &gx, &x->mp);
+    mont_to(&x->G.y, &gy, &x->mp);
+    return true;
+}
+
+// r = k*G for a secret k in [1, n). The scalar is first widened to k + n or
+// k + 2n, whichever has exactly nbits+1 bits (the choice made by a masked
+// select), so every call starts from the same top bit and runs the same
+// sequence: nbits doublings, each followed by an addition whose result is
+// kept or dropped by a masked select. The point operations therefore do not
+// depend on k's bits; the field arithmetic's final conditional subtraction
+// still does (see ecdsa.h).
+static void jpt_mul_fixed(jpt *r, const bn *k, const curve_ctx *x) {
+    // L_MAX limbs hold 3n for every curve (P-521: 523 bits < 544)
+    bn k1, k2;
+    bn_add(&k1, k, &x->n, L_MAX);
+    bn_add(&k2, &k1, &x->n, L_MAX);
+    bn_cmov(&k1, &k2, (uint32_t)(1 - bn_bit(&k1, x->nbits)));
+    jpt acc = { .x = x->G.x, .y = x->G.y, .z = x->mp.one, .inf = false };
+    for (int i = x->nbits - 1; i >= 0; i--) {
+        jpt d = acc, t;
+        jpt_double(&d, &acc, &x->a_m, &x->mp);
+        jpt_madd(&t, &d, &x->G, &x->a_m, &x->mp);
+        uint32_t bit = (uint32_t)bn_bit(&k1, i);
+        bn_cmov(&d.x, &t.x, bit);
+        bn_cmov(&d.y, &t.y, bit);
+        bn_cmov(&d.z, &t.z, bit);
+        // at infinity only on the way to k = 1 (prefix n of 2n + 1)
+        d.inf = (bool)(((uint32_t)d.inf & (bit ^ 1u)) | ((uint32_t)t.inf & bit));
+        acc = d;
+    }
+    *r = acc;
+}
+
+static bool scalar_ok(const bn *d, const curve_ctx *x) {
+    return !bn_is_zero(d, x->L) && bn_cmp(d, &x->n, x->L) < 0;
+}
+
+// bits2int (RFC 6979 2.3.2): the leftmost nbits bits of b as an integer
+static void bits2int(bn *out, const uint8_t *b, size_t blen, const curve_ctx *x) {
+    size_t rlen = ((size_t)x->nbits + 7) / 8;
+    if (blen * 8 <= (size_t)x->nbits) {
+        bn_from_bytes(out, b, blen);
+        return;
+    }
+    bn_from_bytes(out, b, rlen);
+    int shift = (int)(rlen * 8) - x->nbits;   // < 8
+    if (shift > 0) {
+        for (int i = 0; i < L_MAX; i++) {
+            uint32_t hi = i + 1 < L_MAX ? out->v[i + 1] : 0;
+            out->v[i] = (out->v[i] >> shift) | (hi << (32 - shift));
+        }
+    }
+}
+
+// HMAC (RFC 2104) with the ec_hash; RFC 6979's keys are hlen bytes and its
+// messages are at most V || 0x01 || x || h1 (64 + 1 + 66 + 66 bytes)
+static void hmac(ec_hash h, const uint8_t *key, const uint8_t *msg, size_t n,
+                 uint8_t *out) {
+    size_t hl = ec_hash_bytes(h), bl = h == EC_SHA256 ? 64 : 128;
+    uint8_t buf[128 + 256], inner[64];
+    if (n > 256) n = 256;
+    for (size_t i = 0; i < bl; i++) buf[i] = (uint8_t)((i < hl ? key[i] : 0) ^ 0x36);
+    memcpy(buf + bl, msg, n);
+    ec_digest(h, buf, bl + n, inner);
+    for (size_t i = 0; i < bl; i++) buf[i] = (uint8_t)((i < hl ? key[i] : 0) ^ 0x5c);
+    memcpy(buf + bl, inner, hl);
+    ec_digest(h, buf, bl + hl, out);
+    memset(buf, 0, sizeof buf);
+    memset(inner, 0, sizeof inner);
+}
+
+// K = HMAC_K(V || sep || rest); V = HMAC_K(V)
+static void drbg_step(ec_hash h, uint8_t *K, uint8_t *V, int sep,
+                      const uint8_t *rest, size_t rest_n) {
+    size_t hl = ec_hash_bytes(h);
+    uint8_t m[64 + 1 + 2 * 66];
+    size_t k = 0;
+    memcpy(m, V, hl); k = hl;
+    if (sep >= 0) m[k++] = (uint8_t)sep;
+    if (rest_n) { memcpy(m + k, rest, rest_n); k += rest_n; }
+    hmac(h, K, m, k, K);
+    hmac(h, K, V, hl, V);
+    memset(m, 0, sizeof m);
+}
+
+bool ecdsa_sign(ec_curve c, const uint8_t *priv, ec_hash h,
+                const uint8_t *digest, uint8_t *r_out, uint8_t *s_out) {
+    if (!priv || !digest || !r_out || !s_out || h < EC_SHA256 || h > EC_SHA512)
+        return false;
+    curve_ctx x;
+    if (!curve_load(c, &x)) return false;
+    const int L = x.L;
+    const size_t fb = x.fb, hl = ec_hash_bytes(h);
+    const size_t rlen = ((size_t)x.nbits + 7) / 8;   // == fb on these curves
+    bn d, e;
+    if (!bn_from_bytes(&d, priv, fb) || !scalar_ok(&d, &x)) return false;
+    // e = bits2int(h1) mod n; bits2octets(h1) is its rlen-byte encoding
+    bits2int(&e, digest, hl, &x);
+    if (bn_cmp(&e, &x.n, L) >= 0) bn_sub(&e, &e, &x.n, L);
+    uint8_t seed[2 * 66];                 // int2octets(x) || bits2octets(h1)
+    bn_to_bytes(&d, seed, rlen);
+    bn_to_bytes(&e, seed + rlen, rlen);
+    uint8_t V[64], K[64];
+    memset(V, 0x01, hl);
+    memset(K, 0x00, hl);
+    drbg_step(h, K, V, 0x00, seed, 2 * rlen);
+    drbg_step(h, K, V, 0x01, seed, 2 * rlen);
+    bool ok = false;
+    for (int attempt = 0; attempt < 64 && !ok; attempt++) {
+        if (attempt) drbg_step(h, K, V, 0x00, NULL, 0);
+        uint8_t T[2 * 64];
+        size_t tlen = 0;
+        while (tlen < rlen) {
+            hmac(h, K, V, hl, V);
+            memcpy(T + tlen, V, hl);
+            tlen += hl;
+        }
+        bn k;
+        bits2int(&k, T, tlen, &x);
+        memset(T, 0, sizeof T);
+        if (!scalar_ok(&k, &x)) continue;
+        // r = x(kG) mod n
+        jpt R;
+        apt RA;
+        jpt_mul_fixed(&R, &k, &x);
+        if (!jpt_to_affine(&RA, &R, &x.mp)) continue;
+        bn rr;
+        mont_from(&rr, &RA.x, &x.mp);
+        if (bn_cmp(&rr, &x.n, L) >= 0) bn_sub(&rr, &rr, &x.n, L);
+        if (bn_is_zero(&rr, L)) continue;
+        // s = k^-1 (e + r*d) mod n
+        bn k_m, ki_m, r_m, d_m, e_m, t, s_m, ss;
+        mont_to(&k_m, &k, &x.mn);
+        mont_inv(&ki_m, &k_m, &x.mn);
+        mont_to(&r_m, &rr, &x.mn);
+        mont_to(&d_m, &d, &x.mn);
+        mont_to(&e_m, &e, &x.mn);
+        mont_mul(&t, &r_m, &d_m, &x.mn);
+        bn_add_mod(&t, &t, &e_m, &x.n, L);
+        mont_mul(&s_m, &ki_m, &t, &x.mn);
+        mont_from(&ss, &s_m, &x.mn);
+        memset(&k, 0, sizeof k);
+        memset(&k_m, 0, sizeof k_m);
+        memset(&ki_m, 0, sizeof ki_m);
+        memset(&d_m, 0, sizeof d_m);
+        if (bn_is_zero(&ss, L)) continue;
+        bn_to_bytes(&rr, r_out, fb);
+        bn_to_bytes(&ss, s_out, fb);
+        ok = true;
+    }
+    memset(&d, 0, sizeof d);
+    memset(seed, 0, sizeof seed);
+    memset(K, 0, sizeof K);
+    memset(V, 0, sizeof V);
+    return ok;
+}
+
+bool ecdsa_public_from_private(ec_curve c, const uint8_t *priv, uint8_t *pub_out) {
+    curve_ctx x;
+    if (!priv || !pub_out || !curve_load(c, &x)) return false;
+    bn d;
+    if (!bn_from_bytes(&d, priv, x.fb) || !scalar_ok(&d, &x)) return false;
+    jpt Q;
+    apt QA;
+    jpt_mul_fixed(&Q, &d, &x);
+    memset(&d, 0, sizeof d);
+    if (!jpt_to_affine(&QA, &Q, &x.mp)) return false;
+    bn qx, qy;
+    mont_from(&qx, &QA.x, &x.mp);
+    mont_from(&qy, &QA.y, &x.mp);
+    bn_to_bytes(&qx, pub_out, x.fb);
+    bn_to_bytes(&qy, pub_out + x.fb, x.fb);
+    return true;
+}
+
+// DER length octets; returns how many were written
+static size_t der_len_put(uint8_t *o, size_t len) {
+    if (len < 0x80) { o[0] = (uint8_t)len; return 1; }
+    if (len < 0x100) { o[0] = 0x81; o[1] = (uint8_t)len; return 2; }
+    o[0] = 0x82; o[1] = (uint8_t)(len >> 8); o[2] = (uint8_t)len;
+    return 3;
+}
+
+// minimal INTEGER from an n-byte big-endian unsigned value
+static size_t der_int_put(uint8_t *o, const uint8_t *v, size_t n) {
+    size_t i = 0;
+    while (i + 1 < n && v[i] == 0) i++;
+    size_t len = n - i, pad = (v[i] & 0x80) ? 1 : 0, k = 0;
+    o[k++] = 0x02;
+    k += der_len_put(o + k, len + pad);
+    if (pad) o[k++] = 0;
+    memcpy(o + k, v + i, len);
+    return k + len;
+}
+
+size_t ecdsa_der_sig_encode(const uint8_t *r, const uint8_t *s, size_t n,
+                            uint8_t *out) {
+    uint8_t body[2 * (66 + 4)];
+    if (n > 66) return 0;
+    size_t b = der_int_put(body, r, n);
+    b += der_int_put(body + b, s, n);
+    size_t k = 0;
+    out[k++] = 0x30;
+    k += der_len_put(out + k, b);
+    memcpy(out + k, body, b);
+    return k + b;
+}
+
+static void curve_oid(ec_curve c, const uint8_t **oid, size_t *n) {
+    if (c == EC_P256) { *oid = OID_P256; *n = sizeof OID_P256; }
+    else if (c == EC_P384) { *oid = OID_P384; *n = sizeof OID_P384; }
+    else { *oid = OID_P521; *n = sizeof OID_P521; }
+}
+
+size_t ecdsa_spki_encode(ec_curve c, const uint8_t *pub, uint8_t *out) {
+    if (c < EC_P256 || c > EC_P521) return 0;
+    const uint8_t *oid;
+    size_t ol, fb = ec_field_bytes(c);
+    curve_oid(c, &oid, &ol);
+    uint8_t alg[32], lb[3];
+    size_t a = 0;
+    alg[a++] = 0x30;
+    alg[a++] = (uint8_t)(2 + sizeof OID_EC_PUBLIC_KEY + 2 + ol);
+    alg[a++] = 0x06; alg[a++] = (uint8_t)sizeof OID_EC_PUBLIC_KEY;
+    memcpy(alg + a, OID_EC_PUBLIC_KEY, sizeof OID_EC_PUBLIC_KEY);
+    a += sizeof OID_EC_PUBLIC_KEY;
+    alg[a++] = 0x06; alg[a++] = (uint8_t)ol;
+    memcpy(alg + a, oid, ol);
+    a += ol;
+    size_t bits = 2 + 2 * fb;   // unused-bits byte, 0x04, X, Y
+    size_t body = a + 1 + der_len_put(lb, bits) + bits, k = 0;
+    out[k++] = 0x30;
+    k += der_len_put(out + k, body);
+    memcpy(out + k, alg, a);
+    k += a;
+    out[k++] = 0x03;
+    k += der_len_put(out + k, bits);
+    out[k++] = 0x00;
+    out[k++] = 0x04;
+    memcpy(out + k, pub, 2 * fb);
+    return k + 2 * fb;
+}
+
+// INTEGER holding one small value (a version field)
+static bool der_small_int(const uint8_t *d, size_t n, size_t *off, int *v) {
+    size_t len, c = der_tlv(d, n, *off, 0x02, &len);
+    if (!c || len != 1 || (d[c] & 0x80)) return false;
+    *v = d[c];
+    *off = c + len;
+    return true;
+}
+
+static bool oid_curve(const uint8_t *o, size_t n, ec_curve *c) {
+    if (n == sizeof OID_P256 && !memcmp(o, OID_P256, n)) { *c = EC_P256; return true; }
+    if (n == sizeof OID_P384 && !memcmp(o, OID_P384, n)) { *c = EC_P384; return true; }
+    if (n == sizeof OID_P521 && !memcmp(o, OID_P521, n)) { *c = EC_P521; return true; }
+    return false;
+}
+
+// SEC1 ECPrivateKey (RFC 5915) occupying d[0..n): version 1, the scalar,
+// optional [0] curve, optional [1] public key. `have` says whether the
+// PKCS#8 wrapper already named the curve in *c.
+static bool sec1_parse(const uint8_t *d, size_t n, bool have, ec_curve *c,
+                       uint8_t *priv_out) {
+    size_t len, off = der_tlv(d, n, 0, 0x30, &len);
+    if (!off || off + len != n) return false;
+    int ver;
+    if (!der_small_int(d, n, &off, &ver) || ver != 1) return false;
+    size_t klen, k = der_tlv(d, n, off, 0x04, &klen);
+    if (!k || klen == 0) return false;
+    off = k + klen;
+    const uint8_t *pubbits = NULL;
+    size_t publen = 0;
+    if (off < n && d[off] == 0xa0) {
+        size_t plen, p = der_tlv(d, n, off, 0xa0, &plen);
+        size_t olen, o = p ? der_tlv(d, n, p, 0x06, &olen) : 0;
+        ec_curve named;
+        if (!o || o + olen != p + plen || !oid_curve(d + o, olen, &named)) return false;
+        if (have && named != *c) return false;
+        *c = named;
+        have = true;
+        off = p + plen;
+    }
+    if (off < n && d[off] == 0xa1) {
+        size_t plen, p = der_tlv(d, n, off, 0xa1, &plen);
+        size_t blen, b = p ? der_tlv(d, n, p, 0x03, &blen) : 0;
+        if (!b || b + blen != p + plen) return false;
+        pubbits = d + b;
+        publen = blen;
+        off = p + plen;
+    }
+    if (off != n || !have) return false;
+    size_t fb = ec_field_bytes(*c);
+    if (klen > fb) return false;
+    memset(priv_out, 0, fb);
+    memcpy(priv_out + (fb - klen), d + k, klen);
+    uint8_t pub[132];
+    if (!ecdsa_public_from_private(*c, priv_out, pub)) return false;   // range
+    if (pubbits && (publen != 2 + 2 * fb || pubbits[0] != 0 || pubbits[1] != 0x04 ||
+                    memcmp(pubbits + 2, pub, 2 * fb) != 0))
+        return false;
+    return true;
+}
+
+bool ecdsa_private_key_parse(const uint8_t *der, size_t der_len,
+                             ec_curve *curve_out, uint8_t *priv_out) {
+    if (!der || !curve_out || !priv_out) return false;
+    size_t len, off = der_tlv(der, der_len, 0, 0x30, &len);
+    if (!off || off + len != der_len) return false;
+    size_t after_ver = off;
+    int ver;
+    if (!der_small_int(der, der_len, &after_ver, &ver)) return false;
+    if (after_ver < der_len && der[after_ver] == 0x04)   // SEC1
+        return sec1_parse(der, der_len, false, curve_out, priv_out);
+    // PKCS#8 / OneAsymmetricKey: version 0 (or 1), AlgorithmIdentifier
+    // { id-ecPublicKey, namedCurve }, OCTET STRING { ECPrivateKey }, then
+    // optional attributes and public key, which are not needed
+    if (ver != 0 && ver != 1) return false;
+    size_t alen, a = der_tlv(der, der_len, after_ver, 0x30, &alen);
+    if (!a) return false;
+    size_t olen, o = der_tlv(der, der_len, a, 0x06, &olen);
+    if (!o || olen != sizeof OID_EC_PUBLIC_KEY ||
+        memcmp(der + o, OID_EC_PUBLIC_KEY, olen) != 0)
+        return false;
+    size_t clen, co = der_tlv(der, der_len, o + olen, 0x06, &clen);
+    ec_curve c;
+    if (!co || co + clen != a + alen || !oid_curve(der + co, clen, &c)) return false;
+    size_t klen, k = der_tlv(der, der_len, a + alen, 0x04, &klen);
+    if (!k) return false;
+    if (!sec1_parse(der + k, klen, true, &c, priv_out)) return false;
+    *curve_out = c;
     return true;
 }

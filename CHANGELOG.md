@@ -8,6 +8,19 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **`--sign-model`: sign a model without Python or openssl.** `runner
+  --sign-model FILE --model-key KEY.pem` writes the OMS key-method bundle the
+  load-time check (and the reference `model_signing verify key`) reads:
+  DSSE over an in-toto statement naming the file, or every part of a split
+  GGUF, signed by deterministic ECDSA (RFC 6979) with the curve's own digest,
+  so the same key and model always give byte-identical bundles. Keys are PEM
+  SEC1 or PKCS#8, unencrypted, P-256/384/521; an existing bundle is never
+  overwritten. Anchors: the RFC 6979 appendix signatures reproduced exactly
+  from the private keys (`tests/test_ecdsa.c`, with 1*G and (n-1)*G for the
+  scalar-widening path), openssl verifying every signature over the PAE, and
+  the reference verifier accepting single-file and split bundles
+  (`tests/test_sign_model.py`).
+
 - **Adapters answer to the model-signing policy.** A LoRA adapter changes
   the model that serves, yet it loaded unverified beside a signed base. The
   `--lora` adapter (`--lora-sig FILE`, else `<adapter>.sig`) and every

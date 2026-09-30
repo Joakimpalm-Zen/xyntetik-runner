@@ -56,6 +56,25 @@ bool oms_verify_file(const char *bundle_path, const char *pubkey_pem_path,
 // prints). False when the file is unreadable or not an EC public key PEM.
 bool oms_pubkey_fingerprint(const char *pem_path, char hex[65]);
 
+// Write a key-method bundle for the model at `model_path` (R1.2.5,
+// `runner --sign-model`): a DSSE envelope over an in-toto Statement v1 whose
+// manifest names the file (resource ".", as the reference signer names a
+// single file) or, for a split GGUF, every part by name (subject: the parts'
+// directory, as the reference names a directory). Signed with the PEM EC
+// private key at `key_pem_path` (SEC1 or PKCS#8, unencrypted, P-256/384/521)
+// by deterministic ECDSA with the curve's digest; the key hint is sha256 of
+// the PEM public key, the reference's identifier. `out_path` is created and
+// never overwritten. Reasons for a refusal go to stderr.
+typedef struct {
+    char curve[8];
+    char hash[8];
+    char subject_digest[65];
+    char key_hint[65];
+    int  n_resources;
+} oms_sign_info;
+bool oms_sign_file(const char *model_path, const char *key_pem_path,
+                   const char *out_path, oms_sign_info *info);
+
 // Appends the JSON object the transcript records for a model signature
 // ({"status":..,"subject_digest":..,"curve":..}) to `buf`, capped at `cap`.
 int oms_result_json(const oms_result *r, char *buf, size_t cap);

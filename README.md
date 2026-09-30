@@ -1902,6 +1902,7 @@ whether the draft is `active` there.
 | `--lora-sig FILE` | The OMS bundle for the `--lora` adapter (default `<adapter>.sig`), verified with `--model-pubkey`; `--require-signed-model` requires it. [Details](#cli-model-sig). |
 | `--model-pubkey FILE` | The PEM `PUBLIC KEY` (EC, P-256/384/521) an OMS bundle must verify with. Given without `--model-sig`, it turns an auto-detected `<model>.sig` into a gate. |
 | `--require-signed-model` | Refuse to load `-m` unless an OMS bundle is present and verifies with `--model-pubkey`. The policy applies to named registry entries, every serving slot, and reloads after unload or TTL expiry. Registry refusals return HTTP 409 with `model_signature_refused`; the server stays available. Without `--model-sig`, each load discovers that model's own `.sig` sidecar. |
+| `--sign-model FILE`, `--model-key KEY.pem` | Write an OMS bundle for FILE (every part of a split GGUF) to `FILE.sig`, or to `--model-sig OUT`, signed with a PEM EC private key (SEC1 or PKCS#8, unencrypted, P-256/384/521) by deterministic ECDSA: the same key and model always give the same bytes. An existing bundle is never overwritten. Needs no `-m`. [Details](#cli-sign-model). |
 | `--caps` | Print machine, backend, quant, architecture, placement, and sampling capabilities as JSON. |
 | `--tool-info` | With `-m`, print the model's tool-call protocol as JSON (`{"tool_family":…,"native_tool_protocol":…}`) and exit. No manifest required. |
 | `--shadow-mode` | Install shadow mode for Claude Code and Codex if present, asking first (`--yes` skips the question); `-m MODEL` names the model the `/shadow` offload serves. Hands off to the stdlib-only Python client beside the binary (`python/src`); see the shadow-mode section. |
@@ -2047,6 +2048,34 @@ checked again on every reload, and required by `--require-signed-model`; a bundl
 that does not verify, or an adapter whose bytes changed, refuses the load (the
 server's start for `--adapter`). The verdict is recorded as `adapter_signature` in
 receipts and as the adapter's `signature` in `/v1/runner/provenance`.
+
+<a id="cli-sign-model"></a>
+#### `--sign-model FILE`
+
+Signs a model so `--model-pubkey` (or the reference `model_signing verify key`) can
+check it, without Python or openssl on the signing machine:
+
+```
+runner --sign-model model.gguf --model-key signing.pem        # writes model.gguf.sig
+openssl pkey -in signing.pem -pubout -out signing.pub.pem     # what verifiers are given
+runner -m model.gguf --model-pubkey signing.pub.pem --require-signed-model
+```
+
+The bundle is the key method of the OMS spec as the reference signer writes it: a DSSE
+envelope over an in-toto Statement v1 (`https://model_signing/signature/v1.0`, `files`
+serialization, sha256), the file named `.`, the subject the file name with the sha256 of
+its digest; for a split GGUF every `-NNNNN-of-MMMMM.gguf` part is named, the subject is
+the parts' directory, and a missing part refuses the signature. The key hint is the
+sha256 of the PEM public key, the reference's identifier. The digest is the curve's own
+(SHA-256, -384, -512), and the signature is deterministic ECDSA (RFC 6979): signing the
+same model with the same key twice gives the same bytes, so a bundle can be re-derived
+and compared instead of trusted. Encrypted keys, other curves and RSA keys are refused.
+The signer runs the same sequence of point operations for every key, but the field
+arithmetic is not constant-time: sign on a machine you control, not a shared host.
+Anchored in `tests/test_ecdsa.c` (the RFC 6979 appendix A.2.5-A.2.7 signatures from the
+private keys, r and s exact) and `tests/test_sign_model.py` (openssl verifies each
+signature over the PAE with the key it derived; the reference `model_signing` 1.1.1
+verifier accepts single-file and split bundles and refuses a changed model).
 
 <a id="cli-v"></a>
 #### `-v`
