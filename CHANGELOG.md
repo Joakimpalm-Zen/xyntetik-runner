@@ -8,6 +8,18 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **The gold-logit harness spells tokens as a server does.**
+  `scripts/gold-logits.py` named each reference token with a lone
+  `decode([id])`, which on SentencePiece tokenizers that prepend a space
+  (Mistral v0.3, Phi-3.5) drops the leading space: the reference said `new`
+  where both servers said ` new`, so its KL, which matches tokens by
+  spelling, left most word tokens unmatched. That is why the golden pass read
+  those two families at mean KL 1.6 and 1.9 with both engines agreeing to
+  four decimals; the published diagnosis (a space token added by the
+  servers) was wrong, and the servers were checked to see the reference's
+  exact ids. Tokens are now decoded after an anchor token (report schema
+  v3); byte-level BPE families spell exactly as before.
+
 - **The tray and the Python client take the Suite's startup lease.** The
   tray's managed start and `ManagedRunner.start()` launched a Runner with no
   lease, so between them and the Suite only the port bind decided who

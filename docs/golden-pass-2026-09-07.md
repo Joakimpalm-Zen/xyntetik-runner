@@ -561,6 +561,18 @@ Both halves matter, so both are stated.
   does not run on transformers 5.16 (`DynamicCache.from_legacy_cache` is
   gone), so for that family the reference implementation the standing
   rule points at is not currently runnable at all.
+  **Correction 2026-09-30: the diagnosis above was wrong.** Checked with the
+  runner's own tokenizer on every one of the 100 scored prefixes of both
+  families, the servers saw exactly the reference's ids; no space token was
+  added. The fault was the spelling: the harness named each reference token
+  with a lone `decode([id])`, which on these tokenizers strips the leading
+  space of its first piece, so the reference said `new` where both servers
+  said ` new`, and a KL that matches tokens by spelling left almost every
+  word token unmatched (top-1 agreed only on punctuation, 55% and 41%).
+  `gold-logits.py` now spells a token as a server does (R6.7.6, report
+  schema v3). The two rows above are instrument readings, not fidelity, and
+  are not re-measured yet: a float32 reference needs about 30 GB of memory
+  for Mistral v0.3 and 16 GB for Phi-3.5.
 
 ## What this pass did not measure
 
