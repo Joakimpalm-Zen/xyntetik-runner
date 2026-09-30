@@ -8,6 +8,16 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **`--parent-pid` watches the process on Linux, not the launching
+  thread.** It armed `PR_SET_PDEATHSIG`, which the kernel fires when the
+  THREAD that forked the Runner exits: a supervisor that launched from a
+  short-lived thread had its Runner killed seconds after it was ready (the
+  Suite hit this), and it fired on the direct parent even when the flag
+  named a grandparent. Linux now waits on a pidfd for the named process,
+  which also ends the 2 s poll's delay there (Linux 5.3 or later; older
+  kernels keep the poll), and a process that is already gone is refused at
+  start as on Windows.
+
 - **The loop-guard and reasoning-sampling refusals name their field.** The
   400s for `loop_guard`, `loop_guard_span`/`_repeats`/`_window`/
   `_max_closes`/`_everywhere` and `reasoning_temperature` with

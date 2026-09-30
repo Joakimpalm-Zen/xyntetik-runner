@@ -999,7 +999,8 @@ static void usage_to(FILE *f, const char *prog) {
         "  --fit PATH     estimate whether a GGUF fits this machine and exit;\n"
         "                 reads only the header, so a partial download works\n"
         "  --version      print the runner version and exit\n"
-        "  --parent-pid N exit when process N dies (supervisor cleanup)\n"
+        "  --parent-pid N exit when process N dies, not when the thread that\n"
+        "                 launched this one does (supervisor cleanup)\n"
         "  -v             verbose model info\n"
         "  -h, --help     print this help to stdout and exit\n",
         prog);
