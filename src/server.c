@@ -910,6 +910,16 @@ static void handle_embeddings(slot_t *s, sock_t fd, jv *req) {
 
 // ---------------------------------------------------------------- http
 
+// The build that answers, on /health and /v1/capabilities: the --version
+// string, so a supervisor can name the build in its own records and refuse one
+// below its floor without inferring it from the feature set. A T3 build also
+// names its flavor, as its receipts do; the default build writes none.
+#ifdef RUNNER_T3_BUILD
+#define BUILD_JSON "\"version\":\"" RUNNER_VERSION "\",\"build_flavor\":\"t3\""
+#else
+#define BUILD_JSON "\"version\":\"" RUNNER_VERSION "\""
+#endif
+
 // /health and /v1/models read only startup-immutable strings plus an atomic
 // resident snapshot, so they are safe to answer from the accept thread with no lock
 static void send_health(sock_t fd) {
@@ -965,14 +975,14 @@ static void send_health(sock_t fd) {
         char esc[63 * 6 + 2];
         json_escape(SV.reg[res].name, strlen(SV.reg[res].name), esc, sizeof(esc));
         n = snprintf(b, sizeof(b),
-                     "{\"status\":\"ok\",\"resident\":\"%s\","
+                     "{\"status\":\"ok\"," BUILD_JSON ",\"resident\":\"%s\","
                      "\"active_requests\":%d%s}", esc, active, m);
     } else if (SV.n_reg > 0) {
-        n = snprintf(b, sizeof(b), "{\"status\":\"ok\",\"resident\":null,"
+        n = snprintf(b, sizeof(b), "{\"status\":\"ok\"," BUILD_JSON ",\"resident\":null,"
                                    "\"active_requests\":%d%s}", active, m);
     } else {
         n = snprintf(b, sizeof(b),
-                     "{\"status\":\"ok\",\"active_requests\":%d%s}",
+                     "{\"status\":\"ok\"," BUILD_JSON ",\"active_requests\":%d%s}",
                      active, m);
     }
     send_response(fd, 200, "application/json", b, n);
@@ -1177,7 +1187,7 @@ static void send_capabilities(sock_t fd) {
     bool guarded = SV.n_reg > 0;
     if (guarded) pthread_mutex_lock(&SV.swap_mu);
     int res = resident_load();
-    sb_fmt(&r, "{\"object\":\"runner.capabilities\",\"pid\":%ld,\"swap\":",
+    sb_fmt(&r, "{\"object\":\"runner.capabilities\"," BUILD_JSON ",\"pid\":%ld,\"swap\":",
            plat_pid_self());
     sb_lit(&r, SV.n_reg > 0 && !SV.single ? "true" : "false");
     sb_lit(&r, ",\"resident\":");

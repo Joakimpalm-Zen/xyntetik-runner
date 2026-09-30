@@ -54,5 +54,6 @@
   "tool_protocol": {
     "family": "<redacted>",
     "native": false
-  }
+  },
+  "version": "<redacted>"
 }

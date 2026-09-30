@@ -132,6 +132,12 @@ class RunnerEndpoint:
         value = self.capabilities(timeout=timeout).get("context")
         return value if isinstance(value, int) and value > 0 else None
 
+    def version(self, *, timeout: float | None = None) -> str | None:
+        """The running build's `--version` string; None from a Runner older
+        than the field."""
+        value = self.capabilities(timeout=timeout).get("version")
+        return value if isinstance(value, str) and value else None
+
     def healthy(self, *, timeout: float = 2.0) -> bool:
         try:
             self.capabilities(timeout=timeout)
