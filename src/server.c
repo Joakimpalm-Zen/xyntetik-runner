@@ -10,7 +10,8 @@
 //   GET  /health                liveness
 //   GET  /metrics               the same counters in Prometheus text format
 //   POST /v1/runner/contexts    pin a named prefix (R10.4); GET lists,
-//                               DELETE /v1/runner/contexts/{id} releases
+//                               DELETE /v1/runner/contexts/{id} releases;
+//                               .../{id}/snapshot writes it to disk (R1.12)
 //   GET  /v1/runner/provenance  binary and model digests, the load-time
 //                               signature and envelope verdicts, the effective
 //                               configuration (provenance.h)
@@ -32,6 +33,7 @@
 #include "server.h"
 #include "provenance.h"
 #include "respstore.h"
+#include "kvsnap.h"
 #include "envelope.h"
 #include "gpu.h"
 
@@ -828,6 +830,50 @@ static void context_from_chat(slot_t *s, sock_t fd, const char *prompt,
     context_pin_prompt(s, fd, prompt, true, req);
 }
 
+static void send_kvsnap(sock_t fd, bool ok, sbuf *out, const kvsnap_err *err) {
+    if (ok && !out->failed) send_response(fd, 200, "application/json", out->s, out->n);
+    else if (ok) send_error(fd, 500, "out of memory");
+    else send_error_detail(fd, err->status, err->msg, NULL, err->code);
+    free(out->s);
+}
+
+// R1.12.2: a context loaded from a --kv-snapshots snapshot instead of prefilled
+static void context_from_snapshot(slot_t *s, sock_t fd, const char *id,
+                                  jv *snap) {
+    if (!snap || snap->type != J_STR) {
+        send_error_detail(fd, 400, "snapshot must be a string", "snapshot",
+                          "invalid_type");
+        return;
+    }
+    sbuf out = {0};
+    kvsnap_err err = {0};
+    bool ok = kvsnap_load(&s->e, id, snap->str, &out, &err);
+    send_kvsnap(fd, ok, &out, &err);
+}
+
+// R1.12.1: POST /v1/runner/contexts/{id}/snapshot {name?, receipt?}
+static void handle_context_snapshot(slot_t *s, sock_t fd, jv *req,
+                                    const char *path) {
+    char id[PFX_CTX_NAME_MAX + 1];
+    const char *p = path + sizeof("/v1/runner/contexts/") - 1;
+    const char *end = strstr(p, "/snapshot");
+    size_t n = end ? (size_t)(end - p) : 0;
+    if (!end || n == 0 || n > PFX_CTX_NAME_MAX) {
+        send_error_detail(fd, 400, "not a context id", "id", "invalid_value");
+        return;
+    }
+    memcpy(id, p, n);
+    id[n] = 0;
+    if (!prefix_context_name_ok(id)) {
+        send_error_detail(fd, 400, "not a context id", "id", "invalid_value");
+        return;
+    }
+    sbuf out = {0};
+    kvsnap_err err = {0};
+    bool ok = kvsnap_save(&s->e, id, req, &out, &err);
+    send_kvsnap(fd, ok, &out, &err);
+}
+
 static void handle_context_create(slot_t *s, sock_t fd, jv *req) {
     const char *id = jv_str(jv_get(req, "id"), NULL);
     if (!id || !prefix_context_name_ok(id)) {
@@ -837,8 +883,18 @@ static void handle_context_create(slot_t *s, sock_t fd, jv *req) {
     }
     jv *prompt = jv_get(req, "prompt");
     jv *msgs = jv_get(req, "messages");
+    jv *snap = jv_get(req, "snapshot");
     bool has_p = prompt && prompt->type != J_NULL;
     bool has_m = msgs && msgs->type != J_NULL;
+    if (snap && snap->type != J_NULL) {
+        if (has_p || has_m) {
+            send_error(fd, 400, "a context is a prompt, messages or a snapshot: "
+                                "give exactly one");
+            return;
+        }
+        context_from_snapshot(s, fd, id, snap);
+        return;
+    }
     if (has_p == has_m) {
         send_error(fd, 400, "a context is either a raw prompt (\"prompt\") or "
                             "chat messages (\"messages\", with \"tools\"): "
@@ -1895,7 +1951,10 @@ static void handle_conn(slot_t *s, sock_t fd) {
                 !strcmp(path, "/v1/embeddings") ||
                 !strcmp(path, "/v1/decide") ||
                 !strcmp(path, "/v1/rerank") ||
-                !strcmp(path, "/v1/runner/contexts"))) {
+                !strcmp(path, "/v1/runner/contexts") ||
+                (!strncmp(path, "/v1/runner/contexts/",
+                          sizeof("/v1/runner/contexts/") - 1) &&
+                 strstr(path, "/snapshot")))) {
         jv *req = body ? json_parse(body, content_length) : NULL;
         if (!req) {
             send_error(fd, 400, "invalid JSON body");
@@ -1996,6 +2055,9 @@ static void handle_conn(slot_t *s, sock_t fd) {
                 else if (strcmp(path, "/v1/rerank") == 0) handle_rerank(s, fd, req);
                 else if (strcmp(path, "/v1/runner/contexts") == 0)
                     handle_context_create(s, fd, req);
+                else if (!strncmp(path, "/v1/runner/contexts/",
+                                  sizeof("/v1/runner/contexts/") - 1))
+                    handle_context_snapshot(s, fd, req, path);
                 else handle_completion(s, fd, req);
                 // Ollama-style keep_alive: seconds of idle before the model
                 // unloads (swap mode) — 0 unloads now, negative pins forever.
@@ -2788,7 +2850,8 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
           "  GET /v1/runner/prefix-cache | POST /v1/runner/prefix-cache/clear"
           " | POST /unload\n"
           "  GET /v1/runner/provenance | POST /v1/runner/contexts"
-          " | GET /v1/runner/contexts | DELETE /v1/runner/contexts/{id}\n"
+          " | GET /v1/runner/contexts | DELETE /v1/runner/contexts/{id}"
+          " | POST /v1/runner/contexts/{id}/snapshot\n"
           "  GET /v1/responses/{id} | GET /v1/responses/{id}/input_items"
           " | DELETE /v1/responses/{id}\n", stderr);
 

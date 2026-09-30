@@ -8,6 +8,20 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **Signed KV snapshots: memory with provenance (`--kv-snapshots DIR`).**
+  A named context can be written to disk (`POST /v1/runner/contexts/{id}/
+  snapshot`) and loaded back by a later server (`{"id", "snapshot"}` on
+  `POST /v1/runner/contexts`). The KV is the prefix cache's own
+  runner.prefix.v1 entry; the manifest names its sha256, the model and
+  binary digests, the KV type, the token digest and the receipt that
+  produced it, chained and signed with `--sign-key`. Loading refuses a
+  manifest that does not recompute or verify, changed KV bytes, another
+  model and another KV type; a request built on a loaded snapshot names it
+  in its receipt and still replays VERIFIED. Anchors in
+  `tests/test_kv_snapshots.py`: hashlib for every digest, `--check-record`
+  for the signature, and the memory itself -- a request forked from the
+  loaded snapshot returns the cold prefill's tokens and logprobs exactly.
+
 - **Tournament-sampling watermark and detector (`--watermark`,
   `--detect-watermark`).** Article 50 wants generated text marked in a
   machine-readable way, and the runner owns its sampler: `--watermark KEY`

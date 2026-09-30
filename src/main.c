@@ -16,6 +16,7 @@
 #include "bundle.h"
 #include "receipts.h"
 #include "watermark.h"
+#include "kvsnap.h"
 #include "build_arch.h"
 // for render_prompt_alloc: chat mode renders the same prompts the chat route
 // does, so it uses the same measured-size renderer rather than a second one
@@ -988,6 +989,12 @@ static void usage_to(FILE *f, const char *prog) {
         "                 verify (--trust-key pins the manifest signer). Exit\n"
         "                 0 OK, 2 BAD, 3 UNVERIFIABLE. Does not replay: that is\n"
         "                 --verify with the model\n"
+        "  --kv-snapshots DIR  with --serve: POST /v1/runner/contexts/{id}/\n"
+        "                 snapshot writes a named context to DIR (KV + manifest\n"
+        "                 with its digests, model, KV type and producing receipt,\n"
+        "                 signed with --sign-key); {\"id\",\"snapshot\"} on\n"
+        "                 POST /v1/runner/contexts loads one back, refusing\n"
+        "                 another model, KV type or changed bytes\n"
         "  --watermark F  mark sampled output with the tournament watermark\n"
         "                 key F (-p runs and --serve; off by default; greedy is\n"
         "                 never changed); records carry its key id, and\n"
@@ -1483,6 +1490,7 @@ int main(int argc, char **argv) {
     const char *sign_model = NULL, *model_key = NULL;
     const char *watermark_path = NULL, *watermark_keygen = NULL;
     const char *detect_path = NULL;
+    const char *kv_snapshots = NULL;
     bool require_signed = false, require_signed_model = false;
     receipt_sig_state v_rsig = RSIG_NONE;   // --verify: the record's signature state
     char v_rec_pub[SIGN_PUBHEX_CAP] = "";
@@ -1604,6 +1612,7 @@ int main(int argc, char **argv) {
         else if (!strcmp(a, "--watermark")) watermark_path = NEXT;
         else if (!strcmp(a, "--watermark-keygen")) watermark_keygen = NEXT;
         else if (!strcmp(a, "--detect-watermark")) detect_path = NEXT;
+        else if (!strcmp(a, "--kv-snapshots")) kv_snapshots = NEXT;
         else if (!strcmp(a, "--require-signed-model")) require_signed_model = true;
         else if (!strcmp(a, "--quant")) quant_type = NEXT;
         else if (!strcmp(a, "--prune-experts")) prune_experts = NEXT;
@@ -2636,6 +2645,12 @@ int main(int argc, char **argv) {
                               .sign_key = sign_key };
         if (!receipts_configure(&rcfg)) return 1;
     }
+    if (kv_snapshots && !serve) {
+        fprintf(stderr, "error: --kv-snapshots saves and loads named contexts "
+                "and needs --serve\n");
+        return 1;
+    }
+    if (kv_snapshots && !kvsnap_configure(kv_snapshots, sign_key)) return 1;
     if (n_adapters && !serve) {
         fprintf(stderr, "error: --adapter routes adapters per request and "
                 "needs --serve (use --lora for a one-shot run)\n");

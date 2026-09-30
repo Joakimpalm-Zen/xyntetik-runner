@@ -37,5 +37,8 @@ bool receipts_enabled(void);
 bool receipts_write(transcript_info *ti, char name_out[64], char chain_out[65]);
 // Forget the configuration (server teardown).
 void receipts_reset(void);
+// R1.12: the path of receipt `file` (a plain receipt-<sequence>.json name)
+// in DIR; false when receipts are off or the name is not one of theirs.
+bool receipts_record_path(const char *file, char *path, size_t cap);
 
 #endif

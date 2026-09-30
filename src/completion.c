@@ -2272,7 +2272,8 @@ static const char *serve_receipt(slot_t *s, engine *e, gen_ctx *g,
                                  uint64_t gen_rng, int max_tokens, int n_prompt,
                                  int n_gen, int cached, const char *reuse,
                                  bool spec_used, const turn_shape *shape,
-                                 char file[64], char chain[65]) {
+                                 const char *ctx_id, char file[64],
+                                 char chain[65]) {
     model_t *m = s->m;
     char msha[65], bsha[65];
     if (!provenance_digests(msha, bsha))
@@ -2287,7 +2288,12 @@ static const char *serve_receipt(slot_t *s, engine *e, gen_ctx *g,
            g->id, reuse ? reuse : "none", cached);
     for (int i = 0; i < shape->n && i < 10; i++)
         sb_fmt(&sj, "%s\"%s\"", i ? "," : "", shape->kinds[i]);
-    sb_lit(&sj, "]}");
+    sb_lit(&sj, "]");
+    // R1.12.2: the KV snapshot this request's prompt started from
+    char origin[256];
+    if (ctx_id && prefix_context_origin(ctx_id, origin, sizeof origin))
+        sb_fmt(&sj, ",\"kv_snapshot\":%s", origin);
+    sb_lit(&sj, "}");
     sb_put(&sj, "", 1);
     sbuf cj = {0}, tj = {0};
     if (shape->n) {
@@ -3532,7 +3538,7 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
             diag.receipt_error = serve_receipt(                               \
                 s, e, &g, prompt, api, chat, gen_rng, max_tokens, n_prompt,   \
                 n_gen, keep, diag.prompt_reuse, spec_used, &shape,            \
-                receipt_file, receipt_chain);                                 \
+                diag.context_id, receipt_file, receipt_chain);                \
             if (!diag.receipt_error) {                                        \
                 diag.receipt_file = receipt_file;                             \
                 diag.receipt_chain = receipt_chain;                           \

@@ -205,6 +205,16 @@ bool receipts_write(transcript_info *ti, char name_out[64], char chain_out[65]) 
     return ok;
 }
 
+bool receipts_record_path(const char *file, char *path, size_t cap) {
+    unsigned long long seq;
+    if (!file || !seq_of(file, &seq)) return false;
+    pthread_mutex_lock(&RC.mu);
+    bool on = RC.on;
+    if (on) snprintf(path, cap, "%s/%s", RC.dir, file);
+    pthread_mutex_unlock(&RC.mu);
+    return on;
+}
+
 void receipts_reset(void) {
     pthread_mutex_lock(&RC.mu);
     RC.on = false;

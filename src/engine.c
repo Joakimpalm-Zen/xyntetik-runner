@@ -528,6 +528,9 @@ typedef struct pfx_entry {
     bool      pinned;
     double    created;
     char      name[PFX_CTX_NAME_MAX + 1];
+    // R1.12.2: the snapshot a pinned context was imported from (a JSON
+    // object), empty when it was built by prefill
+    char      origin[256];
 } pfx_entry;
 
 static struct {
@@ -1098,6 +1101,135 @@ int prefix_cache_load(const char *path, const engine *e) {
         fprintf(stderr, "prefix: %d snapshot(s) in %s belong to a different "
                 "model or context — refused\n", refused, path);
     return loaded;
+}
+
+// Writes one entry the way prefix_cache_save writes each, digest included, so
+// the file is a runner.prefix.v1 file a cache load would also accept.
+int prefix_context_export(const char *name, const char *path) {
+    if (!pfx_ctx_name_ok(name)) return PFX_CTX_BADNAME;
+    if (!path || !*path) return -1;
+    size_t path_n = strlen(path);
+    char *tmp = malloc(path_n + sizeof(".partial"));
+    if (!tmp) return -1;
+    snprintf(tmp, path_n + sizeof(".partial"), "%s.partial", path);
+    pthread_mutex_lock(&PFX.mu);
+    pfx_entry **pp = pfx_find_named(name);
+    if (!pp) {
+        pthread_mutex_unlock(&PFX.mu);
+        free(tmp);
+        return PFX_CTX_UNKNOWN;
+    }
+    FILE *f = fopen(tmp, "wb");
+    if (!f) {
+        pthread_mutex_unlock(&PFX.mu);
+        fprintf(stderr, "prefix: cannot write %s\n", tmp);
+        free(tmp);
+        return -1;
+    }
+    const pfx_entry *p = *pp;
+    uint32_t count = 1;
+    uint64_t key = p->key, bytes = p->bytes, digest = 0xcbf29ce484222325ull;
+    int32_t n = p->n;
+    bool ok = wr(f, PFX_MAGIC, PFX_MAGIC_N) && wr(f, &count, sizeof count) &&
+              wr(f, &key, sizeof key) && wr(f, &n, sizeof n) &&
+              wr(f, &bytes, sizeof bytes) &&
+              wr(f, p->toks, sizeof(int32_t) * (size_t)n) && wr(f, p->kv, p->bytes);
+    digest ^= pfx_digest(&key, sizeof key);   digest *= 0x100000001b3ull;
+    digest ^= pfx_digest(p->toks, sizeof(int32_t) * (size_t)n);
+    digest *= 0x100000001b3ull;
+    digest ^= pfx_digest(p->kv, p->bytes);    digest *= 0x100000001b3ull;
+    pthread_mutex_unlock(&PFX.mu);
+    ok = ok && wr(f, &digest, sizeof digest);
+    if (fclose(f) != 0) ok = false;
+    if (!ok || !plat_replace_file(tmp, path)) {
+        remove(tmp);
+        free(tmp);
+        return -1;
+    }
+    free(tmp);
+    return n;
+}
+
+int prefix_context_import(const engine *e, const char *name, const char *path,
+                          const char *origin) {
+    if (!pfx_ctx_name_ok(name)) return PFX_CTX_BADNAME;
+    if (!e || !e->m || model_kv_ring_active(e->m) || e->m->tied_v)
+        return PFX_CTX_UNSUPPORTED;
+    FILE *f = fopen(path, "rb");
+    if (!f) return PFX_CTX_UNKNOWN;
+    char magic[PFX_MAGIC_N];
+    uint32_t count = 0;
+    uint64_t key = 0, bytes = 0, want = 0;
+    int32_t n = 0;
+    int32_t *toks = NULL;
+    uint8_t *kv = NULL;
+    int rc = PFX_CTX_CORRUPT;
+    if (!rd(f, magic, PFX_MAGIC_N) || memcmp(magic, PFX_MAGIC, PFX_MAGIC_N) ||
+        !rd(f, &count, sizeof count) || count != 1 ||
+        !rd(f, &key, sizeof key) || !rd(f, &n, sizeof n) ||
+        !rd(f, &bytes, sizeof bytes) || n < 1 || n > e->m->n_ctx ||
+        bytes == 0 || bytes > (uint64_t)1 << 40)
+        goto out;
+    toks = malloc(sizeof(int32_t) * (size_t)n);
+    kv = malloc((size_t)bytes);
+    if (!toks || !kv) { rc = PFX_CTX_NOSPACE; goto out; }
+    if (!rd(f, toks, sizeof(int32_t) * (size_t)n) || !rd(f, kv, (size_t)bytes) ||
+        !rd(f, &want, sizeof want) || fgetc(f) != EOF)
+        goto out;
+    uint64_t digest = 0xcbf29ce484222325ull;
+    digest ^= pfx_digest(&key, sizeof key);  digest *= 0x100000001b3ull;
+    digest ^= pfx_digest(toks, sizeof(int32_t) * (size_t)n);
+    digest *= 0x100000001b3ull;
+    digest ^= pfx_digest(kv, (size_t)bytes); digest *= 0x100000001b3ull;
+    if (digest != want) goto out;
+    // the refusal that matters, as in prefix_cache_load: KV from another
+    // model, context length or element type is never adapted
+    if (key != e->model_key || bytes != prefix_cache_entry_bytes(e->m, n)) {
+        rc = PFX_CTX_MISMATCH;
+        goto out;
+    }
+    pfx_entry *ne = calloc(1, sizeof *ne);
+    if (!ne) { rc = PFX_CTX_NOSPACE; goto out; }
+    pthread_mutex_lock(&PFX.mu);
+    pfx_defaults();
+    double now = now_s();
+    pfx_entry **old = pfx_find_named(name);
+    if (old) pfx_drop(old);
+    pfx_expire(now);
+    pfx_trim((size_t)bytes);
+    if (PFX.bytes + bytes > PFX.budget) {
+        pthread_mutex_unlock(&PFX.mu);
+        free(ne);
+        rc = PFX_CTX_NOSPACE;
+        goto out;
+    }
+    ne->key = key; ne->toks = toks; ne->n = n;
+    ne->kv = kv; ne->bytes = (size_t)bytes; ne->used = now; ne->created = now;
+    ne->pinned = true;
+    snprintf(ne->name, sizeof ne->name, "%s", name);
+    snprintf(ne->origin, sizeof ne->origin, "%s", origin ? origin : "");
+    ne->next = PFX.head; PFX.head = ne;
+    PFX.bytes += (size_t)bytes;
+    PFX.stores++;
+    pthread_mutex_unlock(&PFX.mu);
+    toks = NULL; kv = NULL;
+    rc = n;
+out:
+    fclose(f);
+    free(toks);
+    free(kv);
+    return rc;
+}
+
+bool prefix_context_origin(const char *name, char *out, size_t cap) {
+    if (cap) out[0] = 0;
+    if (!pfx_ctx_name_ok(name)) return false;
+    pthread_mutex_lock(&PFX.mu);
+    pfx_entry **pp = pfx_find_named(name);
+    bool has = pp && (*pp)->origin[0];
+    if (has) snprintf(out, cap, "%s", (*pp)->origin);
+    pthread_mutex_unlock(&PFX.mu);
+    return has;
 }
 
 // load a draft model for speculative decoding, with the same gates in CLI

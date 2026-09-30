@@ -28,6 +28,7 @@ PUBLIC_ROUTES = {
     ("POST", "/v1/runner/contexts"),
     ("GET", "/v1/runner/contexts"),
     ("DELETE", "/v1/runner/contexts/{id}"),
+    ("POST", "/v1/runner/contexts/{id}/snapshot"),
     ("GET", "/v1/responses/{id}"),
     ("GET", "/v1/responses/{id}/input_items"),
     ("DELETE", "/v1/responses/{id}"),
