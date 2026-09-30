@@ -1042,7 +1042,7 @@ reported beside it).
   DSL; every self-improvement mechanism tested failed once its cost was
   counted (one host). The record is the full preregistered GENESIS I record
   (18 studies, 1,407 files, 655 MB); start with `GENESIS-I.md`. Apache-2.0.
-  Collection: [Xyntetik Research: GENESIS I](https://huggingface.co/collections/Joakimpalm-Zen/xyntetik-research-genesis-i-6abcfa50b6707dec9bfee356).
+  Collection: [Xyntetik Research: GENESIS](https://huggingface.co/collections/Joakimpalm-Zen/xyntetik-research-genesis-6abcfa50b6707dec9bfee356).
 
 Since 2026-09-15 the account is organised for a reader who has never seen
 it: weightless reports are Hugging Face **Datasets** (the seven above, plus
@@ -1052,7 +1052,7 @@ release or research-artifact status block, and seven collections tell the
 story: [Runner Releases](https://huggingface.co/collections/Joakimpalm-Zen/runner-releases-6aa98baaed03bba0e8a561ae), [Model Surgery and Scale Recovery](https://huggingface.co/collections/Joakimpalm-Zen/xyntetik-research-model-surgery-and-scale-recovery-6aa98bab0ecb9723f310c770),
 [Pruning and Quantization Frontiers](https://huggingface.co/collections/Joakimpalm-Zen/xyntetik-research-pruning-and-quantization-frontiers-6aa98badc3307048c060ebe2), [Runner Compatibility Reports](https://huggingface.co/collections/Joakimpalm-Zen/xyntetik-research-runner-compatibility-reports-6aa98baf2859827a8d866165)
 [LoRA Training on Quantized Weights](https://huggingface.co/collections/Joakimpalm-Zen/xyntetik-research-lora-training-on-quantized-weights-6aa98bb02859827a8d86618c),
-[Kvist: distilled agents](https://huggingface.co/collections/Joakimpalm-Zen/xyntetik-kvist-distilled-agents-6ab9f930af19ca84df9ebf6b) and [GENESIS I](https://huggingface.co/collections/Joakimpalm-Zen/xyntetik-research-genesis-i-6abcfa50b6707dec9bfee356). The retired Model-typed copies
+[Kvist: distilled agents](https://huggingface.co/collections/Joakimpalm-Zen/xyntetik-kvist-distilled-agents-6ab9f930af19ca84df9ebf6b) and [GENESIS](https://huggingface.co/collections/Joakimpalm-Zen/xyntetik-research-genesis-6abcfa50b6707dec9bfee356). The retired Model-typed copies
 of the reports stay up with a pointer to the canonical dataset.
 
 ## Support matrix
