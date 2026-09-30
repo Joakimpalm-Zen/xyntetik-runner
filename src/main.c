@@ -12,6 +12,7 @@
 #include "envelope.h"
 #include "oms.h"
 #include "server.h"
+#include "provenance.h"
 #include "build_arch.h"
 // for render_prompt_alloc: chat mode renders the same prompts the chat route
 // does, so it uses the same measured-size renderer rather than a second one
@@ -2284,14 +2285,23 @@ int main(int argc, char **argv) {
             const char *env_backend = m.gpu ? "cuda" : "cpu";
 #endif
             char env_line[256];
+            int env_state = ENV_UNCLASSIFIED;
             bool ok = envelope_gate(load_path, RUNNER_VERSION, env_backend,
                                     force_uncertified, env_line,
-                                    (int)sizeof env_line, NULL);
+                                    (int)sizeof env_line, &env_state);
             if (env_line[0]) fprintf(stderr, "%s\n", env_line);
             if (!ok) {
                 cli_cleanup(NULL, NULL, &tok, &m);
                 return 1;
             }
+            // The server's /v1/runner/provenance reports the verdicts THIS
+            // load ran under, so they are recorded here, where they were made.
+            if (serve)
+                provenance_note_load(&(provenance_load){
+                    .model_path = load_path,
+                    .adapter_path = lora_path, .adapter_scale = lora_scale,
+                    .signature = &osr,
+                    .envelope_state = env_state, .envelope_detail = env_line });
         }
         // Discovery registry: run modes announce themselves so the tray (or
         // any controller) can list every live runner. Best-effort — failure

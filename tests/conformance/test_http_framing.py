@@ -145,6 +145,7 @@ def test_compact_fastpath_request_closes_cleanly(server, request_bytes):
     "/v1/models",
     "/v1/capabilities",
     "/v1/runner/prefix-cache",
+    "/v1/runner/provenance",
     "/metrics",
 ])
 def test_fastpath_get_with_body_is_rejected_without_reset(server, path):

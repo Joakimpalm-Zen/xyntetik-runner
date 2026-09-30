@@ -10,6 +10,7 @@
 #include "json.h"
 #include "compat.h"
 #include "envelope.h"
+#include "provenance.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -51,6 +52,7 @@ void unload_resident(void) {
     s->e.tok = NULL;
     context_store(0);
     resident_store(-1);
+    provenance_note_unload();
 }
 
 void unload_draft(void) {
@@ -166,8 +168,10 @@ int swap_to(const char *want) {
         model_t *m = calloc(1, sizeof(model_t));
         tokenizer *tok = calloc(1, sizeof(tokenizer));
         bool model_ok = m && model_load(m, SV.reg[idx].path, &SV.mp);
+        oms_result osr;
+        memset(&osr, 0, sizeof osr);
         bool sig_refused = model_ok &&
-            !oms_check_model(SV.reg[idx].path, &SV.signing, NULL);
+            !oms_check_model(SV.reg[idx].path, &SV.signing, &osr);
         bool tok_ok = model_ok && !sig_refused && tok && tokenizer_init(tok, &m->gf);
         bool mtp_refused = model_ok && SV.single && SV.mp.mtp &&
                            !model_mtp_ready(m);
@@ -180,8 +184,9 @@ int swap_to(const char *want) {
         // keeps serving its other models -- NOT a process exit like the CLI's.
         // The sidecar read runs here, outside swap_mu, alongside the load.
         bool env_refused = false;
+        char env_line[256] = "";
+        int env_state = ENV_UNCLASSIFIED;
         if (model_ok && tok_ok) {
-            char env_line[256];
 #ifdef __APPLE__
             const char *env_backend = m->gpu ? "metal" : "cpu";
 #else
@@ -189,7 +194,7 @@ int swap_to(const char *want) {
 #endif
             if (!envelope_gate(SV.reg[idx].path, RUNNER_VERSION, env_backend,
                                SV.force_uncertified, env_line, sizeof env_line,
-                               NULL))
+                               &env_state))
                 env_refused = true;
             if (env_line[0]) fprintf(stderr, "%s\n", env_line);
         }
@@ -293,6 +298,11 @@ int swap_to(const char *want) {
             s->e.lookup_on = true;
             s->e.draft_k = SV.draft_k;
         }
+        provenance_note_load(&(provenance_load){
+            .model_path = SV.reg[idx].path,
+            .adapter_path = SV.mp.lora_path, .adapter_scale = SV.mp.lora_scale,
+            .signature = &osr,
+            .envelope_state = env_state, .envelope_detail = env_line });
         resident_store(idx);
     }
     SV.model_name = SV.reg[idx].name;

@@ -8,6 +8,9 @@
 //   GET  /v1/capabilities       registry + feature discovery
 //   GET  /health                liveness
 //   GET  /metrics               the same counters in Prometheus text format
+//   GET  /v1/runner/provenance  binary and model digests, the load-time
+//                               signature and envelope verdicts, the effective
+//                               configuration (provenance.h)
 //
 // Swap-mode request bodies may carry "keep_alive" (seconds of idle before
 // the model unloads; 0 = unload now, negative = keep forever).
@@ -24,6 +27,8 @@
 #include "completion.h"
 #include "api.h"
 #include "server.h"
+#include "provenance.h"
+#include "gpu.h"
 
 #include <errno.h>
 #include <pthread.h>
@@ -1169,6 +1174,94 @@ static void send_metrics(sock_t fd) {
     send_response(fd, 200, "text/plain; version=0.0.4", buf, b.n);
 }
 
+// GET /v1/runner/provenance (R10.2.1): the statement a receipt carries, for
+// the server as it runs now. The identity half (digests and load-time
+// verdicts) is provenance.c's; the effective configuration is read here from
+// the resident slot, under swap_mu for the same reason send_capabilities
+// takes it -- a swap frees the model this reads.
+static void send_provenance(sock_t fd) {
+    sbuf r = {0};
+    bool guarded = SV.n_reg > 0;
+    if (guarded) pthread_mutex_lock(&SV.swap_mu);
+    int res = resident_load();
+    const char *id = SV.n_reg == 0 ? SV.model_name
+                   : res >= 0      ? SV.reg[res].name : NULL;
+    const slot_t *s0 = SV.slots ? &SV.slots[0] : NULL;
+    const model_t *m = (s0 && (SV.n_reg == 0 || res >= 0)) ? s0->m : NULL;
+    sb_lit(&r, "{\"object\":\"runner.provenance\"," BUILD_JSON ",");
+    provenance_render(&r, id);
+    sb_lit(&r, ",\"profile\":");
+    if (!m) {
+        sb_lit(&r, "null");
+    } else {
+        char gname[128] = "cpu";
+        if (m->gpu && !gpu_available(gname, (int)sizeof gname))
+            snprintf(gname, sizeof gname, "gpu");
+        sb_lit(&r, "{\"device\":\"");
+        sb_esc(&r, gname, strlen(gname));
+        sb_fmt(&r, "\",\"gpu\":%s,\"gpu_layers\":%d,\"threads\":%d,"
+                   "\"ctx\":%d,\"kv\":\"%s\",\"batch\":%d,\"slots\":%d}",
+               m->gpu ? "true" : "false", m->gpu_layers,
+               m->tp ? tpool_size(m->tp) : 0, m->n_ctx,
+               m->kv_fp4 ? "fp4" : m->kv_split ? "k8v4"
+                         : m->kv_q8 ? "q8" : "f16",
+               m->n_batch, SV.n_slots);
+    }
+    sb_lit(&r, ",\"config\":{");
+    if (m) {
+        const sampler *d = &s0->smp_base;
+        sb_lit(&r, "\"sampling\":{\"preset\":");
+        if (SV.preset_name) {
+            sb_lit(&r, "\"");
+            sb_esc(&r, SV.preset_name, strlen(SV.preset_name));
+            sb_lit(&r, "\"");
+        } else {
+            sb_lit(&r, "null");
+        }
+        sb_fmt(&r, ",\"temperature\":%g,\"top_k\":%d,\"top_p\":%g,"
+                   "\"min_p\":%g,\"repeat_penalty\":%g},",
+               (double)d->temp, d->top_k, (double)d->top_p,
+               (double)d->min_p, (double)d->repeat_penalty);
+        const char *tn = template_name(s0->tmpl);
+        sb_lit(&r, "\"template\":\"");
+        sb_esc(&r, tn, strlen(tn));
+        sb_fmt(&r, "\",\"template_forced\":%s,",
+               SV.tmpl_override >= 0 ? "true" : "false");
+        const engine *e = &s0->e;
+        const char *dsrc = e->dm ? "model" : e->mtp_on ? "mtp"
+                         : e->lookup_on ? "lookup" : NULL;
+        if (dsrc) sb_fmt(&r, "\"draft\":\"%s\",", dsrc);
+        else      sb_lit(&r, "\"draft\":null,");
+    }
+    sb_fmt(&r, "\"max_tokens_cap\":%d,\"reasoning_budget\":%d,"
+               "\"loop_guard\":%s,\"ignore_eos\":%s,"
+               "\"request_timeout_s\":%g,",
+           SV.n_predict_cap, SV.reasoning_budget,
+           SV.loop_guard ? "true" : "false",
+           SV.ignore_eos ? "true" : "false", SV.req_timeout);
+    if (SV.reasoning_temp_set)
+        sb_fmt(&r, "\"reasoning_temperature\":%g,", (double)SV.reasoning_temp);
+    sb_fmt(&r, "\"signature_policy\":{\"required\":%s,\"trusted_key\":%s},"
+               "\"force_uncertified\":%s}",
+           SV.signing.required ? "true" : "false",
+           SV.signing.pubkey_path ? "true" : "false",
+           SV.force_uncertified ? "true" : "false");
+    if (guarded) pthread_mutex_unlock(&SV.swap_mu);
+    sb_lit(&r, ",\"statement\":\"Digests and verdicts this process "
+               "established for itself: the executable hashed at start, the "
+               "model file hashed after its load and re-identified on every "
+               "read, the signature and envelope verdicts the load ran under. "
+               "This is not an attestation; a process can only report on "
+               "itself.\"}");
+    if (r.failed) {
+        free(r.s);
+        send_error(fd, 500, "out of memory building the provenance record");
+        return;
+    }
+    send_response(fd, 200, "application/json", r.s, r.n);
+    free(r.s);
+}
+
 static void send_capabilities(sock_t fd) {
     sbuf r = {0};
     // Unlike /health and /v1/models, this route reports on the RESIDENT MODEL
@@ -1460,7 +1553,8 @@ static void handle_conn(slot_t *s, sock_t fd) {
          (!strcmp(method, "GET") &&
           (!strcmp(path, "/health") || !strcmp(path, "/v1/models") ||
            !strcmp(path, "/v1/capabilities") || !strcmp(path, "/metrics") ||
-           !strcmp(path, "/v1/runner/prefix-cache"))));
+           !strcmp(path, "/v1/runner/prefix-cache") ||
+           !strcmp(path, "/v1/runner/provenance"))));
     if (bodyless_route) {
         // These routes are normally served by accept_fastpath. A declared body
         // is deliberately deferred here so the slot can consume it before
@@ -1495,6 +1589,9 @@ static void handle_conn(slot_t *s, sock_t fd) {
         // operators reclaiming the memory without unloading the model.
         prefix_cache_clear();
         send_prefix_cache(fd);
+    } else if (!strcmp(method, "GET") &&
+               !strcmp(path, "/v1/runner/provenance")) {
+        send_provenance(fd);
     } else if (!strcmp(method, "GET") && !strcmp(path, "/health")) {
         send_health(fd);
     } else if (!strcmp(method, "GET") && !strcmp(path, "/v1/models")) {
@@ -1703,12 +1800,14 @@ static bool accept_fastpath(sock_t fd) {
     bool pfx_clear = !strncmp(hdr, "POST /v1/runner/prefix-cache/clear ",
                               sizeof("POST /v1/runner/prefix-cache/clear ") - 1);
     bool metrics = !strncmp(hdr, "GET /metrics ", 13);
+    bool prov = !strncmp(hdr, "GET /v1/runner/provenance ",
+                         sizeof("GET /v1/runner/provenance ") - 1);
     // The old spelling still has to reach a handler, or an operator's script
     // gets a 404 that says nothing. It is not answered here — it falls through
     // to the slot path, which replies 405 with the reason.
     if (!strncmp(hdr, "GET /unload ", 12)) return false;
     if (!health && !models && !caps && !unload && !pfx_stats && !pfx_clear &&
-        !metrics)
+        !metrics && !prov)
         return false;
     // Keep the request untouched until framing says it is bodyless. A partial
     // header, an oversized header, malformed framing, and every declared body
@@ -1740,6 +1839,7 @@ static bool accept_fastpath(sock_t fd) {
     if (health)          send_health(fd);
     else if (models)     send_models(fd);
     else if (metrics)    send_metrics(fd);
+    else if (prov)       send_provenance(fd);
     else if (unload)     handle_unload(fd);
     else if (pfx_stats)  send_prefix_cache(fd);
     else if (pfx_clear) {
@@ -1885,6 +1985,7 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
     listener_fd = -1;
 #endif
     install_stop_handlers(); // resets the stop flag + listener on both platforms
+    provenance_init();       // the executable's digest, once, before serving
     SV.ignore_eos = ignore_eos;
     // Measured-envelope enforcement for swapped-in models. registry.c resolves
     // the backend from each loaded model, since an available GPU may be unused
@@ -2300,7 +2401,8 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
           "  POST /v1/embeddings | POST /v1/messages | POST /v1/messages/count_tokens\n"
           "  GET /v1/models | GET /v1/capabilities | GET /health | GET /metrics\n"
           "  GET /v1/runner/prefix-cache | POST /v1/runner/prefix-cache/clear"
-          " | POST /unload\n", stderr);
+          " | POST /unload\n"
+          "  GET /v1/runner/provenance\n", stderr);
 
     // Say it in the banner, not only at init.
     //
@@ -2363,6 +2465,7 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
         pthread_mutex_unlock(&SV.swap_mu);
         pthread_mutex_destroy(&SV.swap_mu);
     } else {
+        provenance_note_unload();
         tokenizer_free(tok);
         for (int i = 0; i < parallel; i++) {
             model_t *draft = SV.slots[i].e.dm;

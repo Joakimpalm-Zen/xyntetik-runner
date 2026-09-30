@@ -23,6 +23,7 @@ PUBLIC_ROUTES = {
     ("GET", "/v1/capabilities"),
     ("GET", "/v1/runner/prefix-cache"),
     ("POST", "/v1/runner/prefix-cache/clear"),
+    ("GET", "/v1/runner/provenance"),
     ("GET", "/health"),
     ("GET", "/metrics"),
     ("POST", "/unload"),

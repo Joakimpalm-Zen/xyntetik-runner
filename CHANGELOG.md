@@ -8,6 +8,21 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **`GET /v1/runner/provenance`: a running server says what it is.** A
+  receipt records the binary's and the model's digests, the load-time
+  signature verdict and the envelope, but only after a CLI inference; an
+  operator in front of a server had no way to check the same facts. The route
+  reports them for the resident model: the executable hashed once at start,
+  the model file hashed in the background after its load (`sha256_state`
+  `hashing` until done), the OMS and envelope verdicts the load ran under
+  (a sidecar edited later does not rewrite them), the adapter's digest, the
+  profile and the effective configuration. The model file is re-identified
+  on every read, and a file replaced or edited since the load is reported as
+  `changed_since_load` with no digest, because the bytes on disk are no longer
+  the bytes being served. The anchors in `tests/test_provenance.py` are
+  hashlib over the same files and an openssl-made signature; the
+  change-detection gate was checked by disabling it (the test fails).
+
 - **One pool dispatch for Q/K/V and for gate/up on the CPU path.** Each
   projection of a layer's normed input was its own thread-pool dispatch and
   barrier; Q (with afmoe's Q gate), K and V now run as one, and gate and up
