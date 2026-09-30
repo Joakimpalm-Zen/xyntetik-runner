@@ -943,7 +943,9 @@ reported beside it).
 - [Xyntetik-Kvist-14B](https://huggingface.co/Joakimpalm-Zen/Xyntetik-Kvist-14B)
   ([GGUF](https://huggingface.co/Joakimpalm-Zen/Xyntetik-Kvist-14B-GGUF): BF16,
   Q8_0, a Q5_0 mix, an IQ4_NL mix;
-  [training record](https://huggingface.co/datasets/Joakimpalm-Zen/Xyntetik-Kvist-14B-training-record))
+  [training record](https://huggingface.co/datasets/Joakimpalm-Zen/Xyntetik-Kvist-14B-training-record);
+  [research checkpoints](https://huggingface.co/Joakimpalm-Zen/Xyntetik-Kvist-14B-research-checkpoints),
+  weights only, to resume the training from)
   is built for one job, tool-calling agent loops on this runner from a 24 GB
   card, and is not a drop-in replacement for Muse-Glimmer-30B, for Gemma or for
   any general-purpose model (held-out KLD 0.762 against its own parent). It
