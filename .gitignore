@@ -91,6 +91,8 @@ test-hfhub
 test-penalty-window
 test-rope-yarn
 test-rope-yarn.exe
+test-attn-scale
+test-attn-scale.exe
 test-hfhub.exe
 test-gguf-split-load
 test-gguf-split-load.exe

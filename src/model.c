@@ -1795,6 +1795,13 @@ static bool model_bind_weights(model_t *m, const char *path, const model_params 
                 m->l_is_swa[i] = m->swa_window > 0 && ((i + 1) % pattern) != 0;
         else if (m->swa_window <= 0)
             for (int i = 0; i < m->n_layer; i++) m->l_is_swa[i] = false;
+        // The reference scales attention by query_pre_attn_scalar ** -0.5,
+        // and that scalar is the head width on every size but the 27B, where
+        // it is hidden_size / num_attention_heads (168, over 128-wide heads).
+        // The GGUF does not carry it; the 27B is the 62-block size, which is
+        // how llama.cpp recovers the same rule (gemma_pytorch config.py).
+        if (m->n_layer == 62 && m->n_head > 0)
+            m->attn_scale = 1.0f / sqrtf((float)(m->n_embd / m->n_head));
     }
     if (strcmp(arch, "gpt-oss") == 0) {
         // gpt-oss (OpenAI MoE). Transcribed from llama.cpp

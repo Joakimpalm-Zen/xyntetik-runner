@@ -69,6 +69,8 @@ GPU_UNSUPPORTED = None  # one named tensor stored as CPU-only IQ2_XXS
 ZERO_BRANCHES = False  # --zero-branches: attn_output/ffn_down all zero
 POOLING = None     # --pooling N: {arch}.pooling_type (llama.cpp's enum)
 ADD_EOS = False    # --add-eos: tokenizer.ggml.add_eos_token = true
+LAYERS = None      # --layers N: block count (a family's size tells some rules)
+HEAD_DIM = None    # --head-dim N: decouple head_dim from N_EMBD / N_HEAD
 args = sys.argv[1:]
 i = 0
 while i < len(args):
@@ -275,6 +277,17 @@ while i < len(args):
         POOLING = int(args[i])
     elif a == "--add-eos":
         ADD_EOS = True
+    elif a == "--layers":
+        # Some reference rules key on the model's SIZE, which a loader can
+        # only read off its block count: Gemma 3 27B (62 blocks) scales its
+        # attention by n_embd / n_head where the smaller sizes use head_dim.
+        i += 1
+        LAYERS = int(args[i])
+    elif a == "--head-dim":
+        # a head width other than N_EMBD / N_HEAD, published as key_length,
+        # value_length and rope.dimension_count (the plain and gemma3 shapes)
+        i += 1
+        HEAD_DIM = int(args[i])
     elif a == "--mtp-layers":
         # emit N extra blocks and declare them as training-only MTP predictor
         # heads; the runner must exclude them and decode exactly as without
@@ -302,6 +315,8 @@ MUSE_HD = 24         # decoupled head_dim: N_HEAD*24 = 96, not N_EMBD (64)
 if MUSE:
     N_LAYER = 8      # two full periods of the 3-sliding:1-full pattern
 def muse_swa(i):  return True if MUSE_ALL_SWA else (i % 4) != 3
+if LAYERS is not None:
+    N_LAYER = LAYERS
 
 # gemma4-hetero per-layer geometry: full-attention layers (i%3 == 2) use
 # head_dim 32 / 2 KV heads / no V tensor; sliding layers head_dim 16 /
@@ -417,6 +432,9 @@ for i in range(N_LAYER + MTP_LAYERS):
     elif MUSE:
         q_dim  = N_HEAD * MUSE_HD
         kv_dim = N_KV * MUSE_HD
+    elif HEAD_DIM:
+        q_dim  = N_HEAD * HEAD_DIM
+        kv_dim = N_KV * HEAD_DIM
     else:
         q_dim  = N_EMBD
         kv_dim = N_KV * (N_EMBD // N_HEAD)
@@ -561,6 +579,12 @@ meta_kvs = [
     kv_u32("tokenizer.ggml.eos_token_id", 2),
     kv_bool("tokenizer.ggml.add_bos_token", True),
 ]
+if HEAD_DIM:
+    meta_kvs += [
+        kv_u32(f"{ARCH}.attention.key_length", HEAD_DIM),
+        kv_u32(f"{ARCH}.attention.value_length", HEAD_DIM),
+        kv_u32(f"{ARCH}.rope.dimension_count", HEAD_DIM),
+    ]
 if POOLING is not None:
     meta_kvs.append(kv_u32(f"{ARCH}.pooling_type", POOLING))
 if ADD_EOS:

@@ -145,6 +145,7 @@ TEST_PREFIX = $(TEST_BATCH:test-batch%=test-prefix%)
 TEST_RECURRENT = $(TEST_BATCH:test-batch%=test-recurrent-rewind%)
 TEST_PENALTY_WINDOW = $(TEST_BATCH:test-batch%=test-penalty-window%)
 TEST_ROPE_YARN = $(TEST_BATCH:test-batch%=test-rope-yarn%)
+TEST_ATTN_SCALE = $(TEST_BATCH:test-batch%=test-attn-scale%)
 TEST_REQUEST_STOP = $(TEST_BATCH:test-batch%=test-request-stop%)
 TEST_HOST_HEADER = $(TEST_BATCH:test-batch%=test-host-header%)
 TEST_GRAMMAR_FF = $(TEST_BATCH:test-batch%=test-grammar-ff%)
@@ -644,6 +645,12 @@ TEST_ROPE_YARN_SRC = tests/test_rope_yarn.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o 
 $(TEST_ROPE_YARN): $(TEST_ROPE_YARN_SRC) $(HDR)
 	$(CC) $(CFLAGS) -I src $(TEST_ROPE_YARN_SRC) -o $@ $(LDFLAGS)
 
+# per-family attention scales against the published configs (Gemma 3 27B's
+# query_pre_attn_scalar is not its head width); same link set as above
+TEST_ATTN_SCALE_SRC = $(TEST_ROPE_YARN_SRC:tests/test_rope_yarn.c=tests/test_attn_scale.c)
+$(TEST_ATTN_SCALE): $(TEST_ATTN_SCALE_SRC) $(HDR)
+	$(CC) $(CFLAGS) -I src $(TEST_ATTN_SCALE_SRC) -o $@ $(LDFLAGS)
+
 $(TEST_RECURRENT): $(TEST_RECURRENT_SRC) $(HDR)
 	$(CC) $(CFLAGS) -I src $(TEST_RECURRENT_SRC) -o $@ $(LDFLAGS)
 
@@ -837,6 +844,13 @@ $(TEST_MVCANON): $(TEST_MVCANON_SRC) src/quants.c $(HDR) test.gguf test-q8.gguf
 
 test-yarn.gguf: scripts/make-test-model.py
 	$(PYTHON) scripts/make-test-model.py --yarn 32,4096 test-yarn.gguf
+
+# gemma3 at the 27B's block count and at the 1B's, both with heads narrower
+# than n_embd / n_head so the two attention-scale rules disagree
+test-gemma3-62.gguf: scripts/make-test-model.py
+	$(PYTHON) scripts/make-test-model.py --gemma3 --layers 62 --head-dim 8 test-gemma3-62.gguf
+test-gemma3-26.gguf: scripts/make-test-model.py
+	$(PYTHON) scripts/make-test-model.py --gemma3 --layers 26 --head-dim 8 test-gemma3-26.gguf
 
 test-qk.gguf: scripts/make-test-model.py
 	$(PYTHON) scripts/make-test-model.py --qk-norm test-qk.gguf
@@ -2054,9 +2068,11 @@ test: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSON_OOM) $(
       $(TEST_THREAD_DEFAULT) \
       $(TEST_MODEL_LOAD_FAILURE) $(TEST_RESTART) $(TEST_PFX_PERSIST) \
       $(TEST_SCHED_TURN) $(TEST_RESIDENCY) $(TEST_BUDGET) $(TEST_ATTRIB_DEP) \
-      $(TEST_STOP_CONSTRAINT) $(TEST_MSG_OOM_DEP) $(TEST_RECURRENT) $(TEST_PENALTY_WINDOW) $(TEST_ROPE_YARN) $(TEST_REQUEST_STOP) \
-      runner test.gguf test-q8.gguf test-bf16.gguf test-ornith.gguf test-ornith-draft.gguf test-yarn.gguf
+      $(TEST_STOP_CONSTRAINT) $(TEST_MSG_OOM_DEP) $(TEST_RECURRENT) $(TEST_PENALTY_WINDOW) $(TEST_ROPE_YARN) $(TEST_ATTN_SCALE) $(TEST_REQUEST_STOP) \
+      runner test.gguf test-q8.gguf test-bf16.gguf test-ornith.gguf test-ornith-draft.gguf test-yarn.gguf \
+      test-gemma3-62.gguf test-gemma3-26.gguf
 	./$(TEST_RECURRENT)
+	./$(TEST_ATTN_SCALE) test-gemma3-62.gguf test-gemma3-26.gguf
 	./$(TEST_PENALTY_WINDOW) test.gguf
 	./$(TEST_REQUEST_STOP)
 	./$(TEST_LORA_GRAD)
@@ -2426,7 +2442,7 @@ clean:
 	      $(TEST_QUANTIZE) $(TEST_VRAM_ROLLBACK) $(TEST_GGUF_GETTERS) $(TEST_HFHUB) \
 	      $(TEST_PARSE) $(TEST_THREAD_DEFAULT) $(TEST_METAL_OWNERSHIP) $(TEST_METAL_SHADERS) $(TEST_METAL_KQUANTS) $(TEST_MODEL_LOAD_FAILURE) \
 	      $(TEST_FILE_ID) test-file-identity.tmp \
-	      $(TEST_BUDGET) $(TEST_ATTRIB) $(TEST_MSG_OOM) $(TEST_STOP_CONSTRAINT) $(TEST_ROPE_YARN) \
+	      $(TEST_BUDGET) $(TEST_ATTRIB) $(TEST_MSG_OOM) $(TEST_STOP_CONSTRAINT) $(TEST_ROPE_YARN) $(TEST_ATTN_SCALE) \
 	      $(TMPL_CONF_RENDER) \
 	      $(TEST_SPLIT_GUARD) split-guard.out test-swap-race-bin \
 	      runner-gpu-stub

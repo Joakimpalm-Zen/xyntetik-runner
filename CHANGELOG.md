@@ -11,7 +11,7 @@ names that were true when they were written.
 - **Full sweep of 2026-09-30 (the pytest suite against an ASan/UBSan
   server, a tokenizer fuzzer, a streamed-against-buffered differential over
   every API surface, and the rope and sampler formulas re-derived from the
-  publishers' references), six defects.** (1) The repeat penalty compounded
+  publishers' references), seven defects.** (1) The repeat penalty compounded
   per occurrence: a token seen k times in the window was scaled by
   penalty^k, where transformers and llama.cpp apply it once per distinct
   token; it now applies once. (2) top-k selection parked the minimum of
@@ -31,7 +31,10 @@ names that were true when they were written.
   last-token embedding model (Qwen3-Embedding) was mean-pooled with no end
   token and answered 200. Declared last-token pooling is now honoured over
   the appended end token, mean stays the default, and CLS or rank pooling
-  is refused by name.
+  is refused by name. (7) Gemma 3 27B scored attention by 1/sqrt(head_dim)
+  where its reference uses `query_pre_attn_scalar ** -0.5` = 1/sqrt(168)
+  (n_embd / n_head, over 128-wide heads): 1.146x too sharp at every layer.
+  The other sizes' scalar is their head width and is unchanged.
 
 - **Muse valid-recipients line: bare tool names verbatim, behind a switch
   (R4.12.20, from a lab reading of Meta's Muse-Glimmer-30B discussion #60).**
