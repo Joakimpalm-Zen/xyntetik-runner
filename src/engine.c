@@ -224,6 +224,10 @@ static uint64_t fnv1a_toks(const int32_t *toks, int n) {
     return h;
 }
 
+void engine_refresh_identity(engine *e) {
+    e->model_key = model_identity(e->m, e->tok);
+}
+
 const char *engine_rewind_how_name(int how) {
     switch (how) {
     case REWIND_EXTENDED:  return "extended";

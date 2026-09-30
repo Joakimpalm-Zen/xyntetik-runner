@@ -1881,6 +1881,7 @@ whether the draft is `active` there.
 | `--remove-sublayer attn:N[,mlp:M,...]` | Physically drop block N's attention (or block M's dense FFN) tensors while rewriting, declaring the absence with a `0` in the per-block `attention.head_count` / `head_count_kv` (or `feed_forward_length`) array, llama.cpp's own convention. The pre-norm stays. The runner omits the branch and reserves no KV rows for it; CPU path, dense blocks only. Requires `--quantize`. See [Sublayer removal](#sublayer-removal). |
 | `--bench-json` | Run the built-in prompt/decode benchmark and print JSON metrics. |
 | `--lora FILE`, `--lora-scale F` | Serve a LoRA adapter with the frozen base; supports CPU and CUDA, with explicit architecture restrictions. [Details](#cli-lora). |
+| `--adapter NAME=PATH` | With `--serve`: load an adapter once and select it per request as `"model": "<model>:NAME"`. [Details](#cli-adapter). |
 | `--train FILE`, `--train-steps`, `--lr`, `--train-ctx`, `--train-out`, `--save-every`, `--lora-rank` | Train a deterministic AdamW LoRA adapter from text or weighted prompt/completion JSONL. [Details](#cli-train). |
 | `--score` | Return teacher-forced token logprobs, NLL, perplexity and top-1 metrics as JSON. [Details](#cli-score). |
 | `--transcript FILE` | Record a one-shot run’s hashes, settings, tokens, output bytes and chain hash for replay. [Details](#cli-transcript). |
@@ -1954,6 +1955,25 @@ model identity, so cached prefixes never cross an adapter boundary. The adapter 
 scale apply to every serving slot and every reload after `/unload` or TTL expiry,
 including named registry entries; an incompatible or missing adapter refuses that load.
 Draft models do not inherit the target adapter.
+
+<a id="cli-adapter"></a>
+#### `--adapter NAME=PATH`
+
+Per-request adapters for a served model. Each `--adapter` (repeatable, up to 16)
+is parsed once, by the same refusals `--lora` applies, and a request selects one by
+naming it after the model: `"model": "base.gguf:NAME"` (or an alias such as
+`"runner:NAME"`); a request without a suffix runs the bare base, and `/v1/models`
+lists every `<model>:NAME`. The slot's model borrows the adapter for that request
+only, so parallel slots serve different adapters side by side. Switching adapters
+re-keys the slot's prefix identity and drops the KV the slot holds, so no row
+computed under one adapter serves another (the test caught exactly that: a bare
+request after an adapted one reused the slot's rows until this reset). Each
+response's `runner_telemetry.adapter` names the adapter and its sha256, and
+`/v1/runner/provenance` lists the loaded set. CPU hooks only for now (`--gpu off`),
+one model served by path (not a swap registry), exclusive with `--lora`;
+`--lora-scale` applies to every adapter. A routed request answers exactly as a
+server started with `--lora` on the same adapter, and the zero adapter exactly as
+the bare base (`tests/test_adapter_routing.py`).
 
 <a id="cli-train"></a>
 #### `--train FILE`, `--train-steps`, `--lr`, `--train-ctx`, `--train-out`, `--save-every`, `--lora-rank`

@@ -32,6 +32,7 @@
 #include "server.h"
 #include "provenance.h"
 #include "respstore.h"
+#include "envelope.h"
 #include "gpu.h"
 
 #include <errno.h>
@@ -1257,6 +1258,15 @@ static void send_models(sock_t fd) {
         json_escape(SV.model_name, strlen(SV.model_name), esc, sizeof(esc));
         sb_fmt(&r, "{\"id\":\"%s\",\"object\":\"model\",\"owned_by\":\"runner\"}", esc);
     }
+    // R8.6: every loaded adapter is a model id of its own
+    for (int i = 0; i < SV.n_adapters; i++) {
+        const char *bn = SV.n_reg > 0 ? SV.reg[0].name : SV.model_name;
+        sb_lit(&r, ",{\"id\":\"");
+        sb_esc(&r, bn, strlen(bn));
+        sb_lit(&r, ":");
+        sb_esc(&r, SV.adapters[i].name, strlen(SV.adapters[i].name));
+        sb_lit(&r, "\",\"object\":\"model\",\"owned_by\":\"runner\"}");
+    }
     sb_lit(&r, "]}");
     send_built(fd, &r);
     free(r.s);
@@ -1485,6 +1495,16 @@ static void send_provenance(sock_t fd) {
            SV.ignore_eos ? "true" : "false", SV.req_timeout);
     if (SV.reasoning_temp_set)
         sb_fmt(&r, "\"reasoning_temperature\":%g,", (double)SV.reasoning_temp);
+    // R8.6: the adapters a request may name, each with its digest
+    sb_lit(&r, "\"adapters\":[");
+    for (int i = 0; i < SV.n_adapters; i++) {
+        sb_fmt(&r, "%s{\"name\":\"", i ? "," : "");
+        sb_esc(&r, SV.adapters[i].name, strlen(SV.adapters[i].name));
+        sb_lit(&r, "\",\"path\":\"");
+        sb_esc(&r, SV.adapters[i].path, strlen(SV.adapters[i].path));
+        sb_fmt(&r, "\",\"sha256\":\"%s\"}", SV.adapters[i].sha256);
+    }
+    sb_lit(&r, "],");
     sb_fmt(&r, "\"signature_policy\":{\"required\":%s,\"trusted_key\":%s},"
                "\"force_uncertified\":%s}",
            SV.signing.required ? "true" : "false",
@@ -1876,6 +1896,9 @@ static void handle_conn(slot_t *s, sock_t fd) {
             send_error(fd, 400, "invalid JSON body");
         } else {
             jv *model = jv_get(req, "model");
+            // R8.6: "<model>:<adapter>" names a per-request adapter; the base
+            // is then validated like any request's model
+            int adapter = request_adapter(req);
             if (model && model->type != J_NULL && model->type != J_STR) {
                 send_error_detail(fd, 400, "model must be a string", "model",
                                   "invalid_type");
@@ -1956,6 +1979,7 @@ static void handle_conn(slot_t *s, sock_t fd) {
             } else if (!validate_single_model_request(fd, req)) {
                 ok = false;
             }
+            if (ok) ok = slot_use_adapter(s, adapter, fd);
             if (ok) {
                 if (strcmp(path, "/v1/chat/completions") == 0) handle_chat(s, fd, req);
                 else if (strcmp(path, "/v1/responses") == 0) handle_responses(s, fd, req);
@@ -2222,6 +2246,61 @@ static void install_stop_handlers(void) {
 
 static bool stop_was_requested(void) { return win_stop_requested != 0; }
 #endif
+
+static struct {
+    const char *const *names, *const *paths;
+    int   n;
+    float scale;
+} ADAPTER_CFG;
+
+void server_set_adapters(const char *const *names, const char *const *paths,
+                         int n, float scale) {
+    ADAPTER_CFG.names = names;
+    ADAPTER_CFG.paths = paths;
+    ADAPTER_CFG.n = n;
+    ADAPTER_CFG.scale = scale;
+}
+
+// Load the configured adapters against the preloaded model (R8.6). They run on
+// the host hooks, so a slot with a device path refuses them; a swap set
+// refuses them too, since the geometry they were parsed against would change
+// under them.
+static bool load_adapters(const model_t *base) {
+    if (ADAPTER_CFG.n == 0) return true;
+    if (!base) {
+        fprintf(stderr, "error: --adapter needs one model served by path "
+                "(-m model.gguf), not a name=path registry\n");
+        return false;
+    }
+    for (int i = 0; i < SV.n_slots; i++)
+        if (SV.slots[i].m && SV.slots[i].m->gpu) {
+            fprintf(stderr, "error: --adapter runs on the CPU hooks; slot %d "
+                    "has a device path (serve with --gpu off)\n", i);
+            return false;
+        }
+    if (ADAPTER_CFG.n > RUNNER_MAX_ADAPTERS) {
+        fprintf(stderr, "error: at most %d --adapter\n", RUNNER_MAX_ADAPTERS);
+        return false;
+    }
+    for (int i = 0; i < ADAPTER_CFG.n; i++) {
+        adapter_entry *a = &SV.adapters[i];
+        snprintf(a->name, sizeof a->name, "%s", ADAPTER_CFG.names[i]);
+        snprintf(a->path, sizeof a->path, "%s", ADAPTER_CFG.paths[i]);
+        for (int j = 0; j < i; j++)
+            if (!strcmp(SV.adapters[j].name, a->name)) {
+                fprintf(stderr, "error: duplicate --adapter name '%s'\n", a->name);
+                return false;
+            }
+        if (!envelope_file_sha256(a->path, a->sha256)) {
+            fprintf(stderr, "error: cannot read adapter %s\n", a->path);
+            return false;
+        }
+        a->set = model_lora_set_load(SV.slots[0].m, a->path, ADAPTER_CFG.scale);
+        if (!a->set) return false;
+        SV.n_adapters = i + 1;
+    }
+    return true;
+}
 
 int server_run(model_t *base, tokenizer *tok, const char *model_path,
                const model_params *mp, sampler defaults,
@@ -2613,6 +2692,9 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
         }
     }
 
+    for (int i = 0; i < SV.n_slots; i++) SV.slots[i].adapter = -1;
+    if (!load_adapters(base)) return 1;
+
     // last long stop is behind us; a signal from here on is either caught
     // right now or by the published listener below
     if (stop_was_requested()) {
@@ -2754,6 +2836,9 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
         }
     }
     prefix_cache_clear();
+    // the slots' models are gone; nothing borrows an adapter any more
+    for (int i = 0; i < SV.n_adapters; i++) model_lora_set_free(SV.adapters[i].set);
+    SV.n_adapters = 0;
     pthread_cond_destroy(&SV.q.cv);
     pthread_mutex_destroy(&SV.q.mu);
     free(SV.slots);

@@ -976,6 +976,10 @@ static void usage_to(FILE *f, const char *prog) {
         "  --lora FILE    load a LoRA adapter GGUF beside the frozen base\n"
         "                 (CPU dense projections; fails closed otherwise)\n"
         "  --lora-scale F multiply the adapter's trained alpha/r (default 1.0)\n"
+        "  --adapter NAME=PATH  with --serve: load a LoRA adapter once and serve\n"
+        "                 it per request as \"model\": \"<model>:NAME\" (CPU\n"
+        "                 hooks, --gpu off; repeatable, up to 16; exclusive\n"
+        "                 with --lora; --lora-scale applies)\n"
         "  --train FILE   AdamW LoRA training (CPU): plain text, or .jsonl\n"
         "                 lines {\"prompt\",\"completion\",\"weight\"} with the\n"
         "                 prompt masked from the loss. Deterministic by\n"
@@ -1297,6 +1301,9 @@ int main(int argc, char **argv) {
     bool bench_json = false;
     bool score = false;
     const char *lora_path = NULL;
+    // R8.6: --adapter NAME=PATH, repeatable; served per request as "<model>:NAME"
+    const char *adapter_names[16], *adapter_paths[16];
+    int n_adapters = 0;
     float lora_scale = 1.0f;
     const char *train_path = NULL, *train_out = "adapter-out.gguf";
     const char *dpo_path = NULL;
@@ -1429,6 +1436,31 @@ int main(int argc, char **argv) {
         else if (!strcmp(a, "--score")) score = true;
         else if (!strcmp(a, "--decide")) decide_path = NEXT;
         else if (!strcmp(a, "--lora")) lora_path = NEXT;
+        else if (!strcmp(a, "--adapter")) {
+            char *spec = strdup(NEXT);
+            char *eq = spec ? strchr(spec, '=') : NULL;
+            if (!eq || eq == spec || !eq[1]) {
+                fprintf(stderr, "error: --adapter wants NAME=PATH\n");
+                return 1;
+            }
+            *eq = 0;
+            bool name_ok = strlen(spec) < 64;
+            for (const char *c = spec; name_ok && *c; c++)
+                name_ok = (*c >= 'a' && *c <= 'z') || (*c >= 'A' && *c <= 'Z') ||
+                          (*c >= '0' && *c <= '9') || *c == '.' || *c == '_' ||
+                          *c == '-';
+            if (!name_ok) {
+                fprintf(stderr, "error: --adapter NAME must be 1 to 63 "
+                        "characters of [A-Za-z0-9._-]\n");
+                return 1;
+            }
+            if (n_adapters >= 16) {
+                fprintf(stderr, "error: at most 16 --adapter\n");
+                return 1;
+            }
+            adapter_names[n_adapters] = spec;   // lives for the process
+            adapter_paths[n_adapters++] = eq + 1;
+        }
         else if (!strcmp(a, "--lora-scale"))
             lora_scale = (float)float_arg(a, NEXT, 0, FLT_MAX);
         else if (!strcmp(a, "--train")) train_path = NEXT;
@@ -2209,6 +2241,17 @@ int main(int argc, char **argv) {
     // reader, so any of them is an instruction that would otherwise be
     // silently dropped — the same discard --chat-template was fixed for, in a
     // place where the user believes they asked for a different file on disk.
+    if (n_adapters && !serve) {
+        fprintf(stderr, "error: --adapter routes adapters per request and "
+                "needs --serve (use --lora for a one-shot run)\n");
+        return 1;
+    }
+    if (n_adapters && lora_path) {
+        fprintf(stderr, "error: --adapter and --lora are exclusive: --lora "
+                "installs one adapter for every request; serve it as --adapter "
+                "NAME=PATH and name it per request instead\n");
+        return 1;
+    }
     const char *orphan = prune_experts ? "--prune-experts"
                        : remove_sublayer ? "--remove-sublayer"
                        : type_plan     ? "--type-plan"
@@ -2354,6 +2397,8 @@ int main(int argc, char **argv) {
     }
 
     if (serve) {
+        if (n_adapters) server_set_adapters(adapter_names, adapter_paths,
+                                            n_adapters, lora_scale);
         if (registry) {
             // swap-mode server: models come and go at runtime; the record
             // carries none and readers ask /v1/models live

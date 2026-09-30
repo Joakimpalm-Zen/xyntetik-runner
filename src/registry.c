@@ -310,6 +310,44 @@ int swap_to(const char *want) {
     return idx;
 }
 
+int request_adapter(jv *req) {
+    jv *mv = jv_get(req, "model");
+    if (SV.n_adapters == 0 || !mv || mv->type != J_STR) return -1;
+    char *colon = strrchr(mv->str, ':');
+    if (!colon || colon == mv->str) return -1;
+    // a served name that itself contains a colon is a model, not a route
+    for (int i = 0; i < SV.n_reg; i++)
+        if (!strcmp(SV.reg[i].name, mv->str)) return -1;
+    for (int i = 0; i < SV.n_adapters; i++)
+        if (!strcmp(SV.adapters[i].name, colon + 1)) {
+            *colon = 0;   // the base is validated as any request's model is
+            return i;
+        }
+    return -1;
+}
+
+bool slot_use_adapter(slot_t *s, int idx, sock_t fd) {
+    if (SV.n_adapters == 0 || !s->m) return true;
+    uint64_t before = s->m->lora_id;
+    if (!model_lora_use(s->m, idx >= 0 ? SV.adapters[idx].set : NULL)) {
+        send_error(fd, 500, "cannot install the requested adapter on this "
+                            "slot (see server log)");
+        return false;
+    }
+    s->adapter = idx;
+    if (s->m->lora_id != before) {
+        // The shared prefix cache keys on the identity, which folds in the
+        // adapter id; the slot's OWN KV is matched by tokens alone
+        // (engine_rewind), so rows computed under the previous adapter are
+        // dropped here or the next request reuses them. Measured: a bare
+        // request after an adapted one with the same prompt answered with
+        // logprobs ~0.07 off the bare reference before this reset.
+        engine_refresh_identity(&s->e);
+        engine_reset(&s->e);
+    }
+    return true;
+}
+
 bool validate_single_model_request(sock_t fd, jv *req) {
     const char *want = jv_str(jv_get(req, "model"), NULL);
     if (request_model_matches(want, SV.model_name)) return true;

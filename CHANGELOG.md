@@ -8,6 +8,20 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **Per-request adapters: `--adapter NAME=PATH` and `"model":
+  "<model>:NAME"`.** Adapters are parsed once (the `--lora` refusals, one
+  shared parser) and borrowed by a slot's model for the requests that name
+  them, so parallel slots serve different adapters side by side;
+  `/v1/models` lists each route, `runner_telemetry.adapter` names the
+  adapter and its sha256 per request, and `/v1/runner/provenance` lists the
+  loaded set. CPU hooks only for now. Anchors in
+  `tests/test_adapter_routing.py`: a routed request answers exactly as a
+  `--lora` server on the same adapter, the zero adapter exactly as the bare
+  base, interleaved on one slot and across two. The interleaving caught the
+  one real hazard: a slot's own KV is matched by tokens alone, so switching
+  adapters now drops it (a bare request after an adapted one had reused its
+  rows, logprobs ~0.07 off).
+
 - **A TypeScript client for the fields no other engine returns**
   (`clients/typescript`, `@xyntetik/runner-client`, R10.7). It does not
   replace the OpenAI or Anthropic SDKs a TypeScript agent already uses: it

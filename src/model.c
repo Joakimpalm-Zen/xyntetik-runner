@@ -6044,6 +6044,13 @@ static const char *const lora_slot_name[LW_SLOTS] = {
 
 void model_lora_free(model_t *m) {
     if (m->gpu) gpu_lora_unbind(m);
+    if (m->lora_borrowed) {
+        // a per-request adapter (R8.6) belongs to the server's adapter set
+        m->lora = NULL;
+        m->lora_id = 0;
+        m->lora_borrowed = false;
+        return;
+    }
     if (!m->lora) return;
     for (int l = 0; l < m->n_layer; l++)
         for (int s = 0; s < LW_SLOTS; s++) {
@@ -6129,7 +6136,13 @@ bool model_lora_slot(const model_t *m, int layer, int slot,
     return true;
 }
 
-bool model_lora_load(model_t *m, const char *path, float user_scale) {
+// Parse an adapter GGUF against m's geometry: every refusal that makes an
+// adapter unservable on m, then the table. Returns the table (the caller's)
+// with its identity and alpha, or NULL having said why on stderr. Shared by
+// --lora (installed, owned) and --adapter (loaded once, borrowed per request).
+static struct lora_w *lora_parse(model_t *m, const char *path, float user_scale,
+                                 uint64_t *id_out, float *alpha_out,
+                                 int *pairs_out) {
     // v1 scope, refused by property rather than allowed by accident: the
     // hooks live on the dense-transformer projection sites. The offloaded
     // half is bound at the end of this function, once the adapter has
@@ -6137,7 +6150,7 @@ bool model_lora_load(model_t *m, const char *path, float user_scale) {
     if (m->qwen35 || m->granite_hybrid || m->nemotron_h) {
         fprintf(stderr, "error: --lora does not cover recurrent "
                 "architectures yet (%s)\n", m->arch);
-        return false;
+        return NULL;
     }
     if (m->n_removed > 0) {
         // The hook sites assume every dense projection exists in every
@@ -6146,12 +6159,12 @@ bool model_lora_load(model_t *m, const char *path, float user_scale) {
         fprintf(stderr, "error: --lora does not cover a model with removed "
                 "sublayers yet (%d removed by --remove-sublayer)\n",
                 m->n_removed);
-        return false;
+        return NULL;
     }
     if (m->moe_gemma) {
         fprintf(stderr, "error: --lora does not cover the gemma-4 "
                 "dual-branch FFN yet\n");
-        return false;
+        return NULL;
     }
     if (m->tied_v) {
         // A K-side adapter delta would be silently dropped at read time on a
@@ -6159,14 +6172,14 @@ bool model_lora_load(model_t *m, const char *path, float user_scale) {
         // touched), so the combination refuses rather than degrades.
         fprintf(stderr, "error: --lora cannot run with RUNNER_TIEDV — the "
                 "derived K rows bypass the adapter hooks; unset RUNNER_TIEDV\n");
-        return false;
+        return NULL;
     }
     gguf_file g;
     if (!gguf_open(&g, path)) {
         fprintf(stderr, "error: cannot open adapter %s\n", path);
-        return false;
+        return NULL;
     }
-    bool ok = false;
+    struct lora_w *ok = NULL;
     const char *ftype = gguf_get_str(&g, "general.type", "");
     const char *atype = gguf_get_str(&g, "adapter.type", "");
     if (strcmp(ftype, "adapter") != 0 || strcmp(atype, "lora") != 0) {
@@ -6283,9 +6296,6 @@ bool model_lora_load(model_t *m, const char *path, float user_scale) {
         fprintf(stderr, "error: adapter carries no lora_a/lora_b pairs\n");
         goto fail_tab;
     }
-    model_lora_free(m);
-    m->lora = tab;
-    m->lora_alpha = alpha;
     // alpha scales every delta, so two files that differ only in
     // adapter.lora.alpha are different adapters; without it in the id the
     // prefix cache served rows computed under the old alpha after a reload
@@ -6295,19 +6305,10 @@ bool model_lora_load(model_t *m, const char *path, float user_scale) {
         memcpy(&abits, &alpha, 4);
         id = (id ^ abits) * 0x100000001B3ull;
     }
-    m->lora_id = id ^ (uint64_t)(int64_t)(user_scale * 65536.0f);
-    fprintf(stderr, "lora: %s — %d adapted projections, alpha %g, "
-            "scale x%g\n", path, n_pairs, (double)alpha,
-            (double)user_scale);
-    // The offloaded blocks apply the adapter on the device; the host hooks
-    // cover whatever the split left behind. A backend without an adapter
-    // path says so and the load fails, because the alternative is serving a
-    // model that quietly ignored the adapter on most of its layers.
-    if (m->gpu && !gpu_lora_bind(m)) {
-        model_lora_free(m);   // owns tab now; ok stays false
-        goto done;
-    }
-    ok = true;
+    *id_out = id ^ (uint64_t)(int64_t)(user_scale * 65536.0f);
+    *alpha_out = alpha;
+    *pairs_out = n_pairs;
+    ok = tab;
     goto done;
 fail_tab:
     for (int l = 0; l < m->n_layer; l++)
@@ -6319,6 +6320,78 @@ fail_tab:
 done:
     gguf_close(&g);
     return ok;
+}
+
+bool model_lora_load(model_t *m, const char *path, float user_scale) {
+    uint64_t id = 0;
+    float alpha = 0;
+    int n_pairs = 0;
+    struct lora_w *tab = lora_parse(m, path, user_scale, &id, &alpha, &n_pairs);
+    if (!tab) return false;
+    model_lora_free(m);
+    m->lora = tab;
+    m->lora_alpha = alpha;
+    m->lora_id = id;
+    fprintf(stderr, "lora: %s — %d adapted projections, alpha %g, "
+            "scale x%g\n", path, n_pairs, (double)alpha,
+            (double)user_scale);
+    // The offloaded blocks apply the adapter on the device; the host hooks
+    // cover whatever the split left behind. A backend without an adapter
+    // path says so and the load fails, because the alternative is serving a
+    // model that quietly ignored the adapter on most of its layers.
+    if (m->gpu && !gpu_lora_bind(m)) {
+        model_lora_free(m);   // owns tab now
+        return false;
+    }
+    return true;
+}
+
+// ---- per-request adapters (R8.6)
+
+struct lora_set {
+    struct lora_w *tab;
+    int      n_layer;
+    uint64_t id;
+    float    alpha;
+};
+
+lora_set *model_lora_set_load(model_t *m, const char *path, float scale) {
+    lora_set *ls = calloc(1, sizeof *ls);
+    if (!ls) return NULL;
+    int n_pairs = 0;
+    ls->tab = lora_parse(m, path, scale, &ls->id, &ls->alpha, &n_pairs);
+    if (!ls->tab) { free(ls); return NULL; }
+    ls->n_layer = m->n_layer;
+    fprintf(stderr, "adapter: %s — %d adapted projections, alpha %g, "
+            "scale x%g\n", path, n_pairs, (double)ls->alpha, (double)scale);
+    return ls;
+}
+
+void model_lora_set_free(lora_set *ls) {
+    if (!ls) return;
+    for (int l = 0; l < ls->n_layer; l++)
+        for (int s = 0; s < LW_SLOTS; s++) {
+            free(ls->tab[(size_t)l * LW_SLOTS + s].a);
+            free(ls->tab[(size_t)l * LW_SLOTS + s].b);
+        }
+    free(ls->tab);
+    free(ls);
+}
+
+uint64_t model_lora_set_id(const lora_set *ls) { return ls ? ls->id : 0; }
+
+bool model_lora_use(model_t *m, const lora_set *ls) {
+    // the device path binds an adapter by uploading it; swapping per request
+    // is the host hooks' job only (a GPU model is refused where the server
+    // loads its adapters, and here again)
+    if (m->gpu) return false;
+    if (m->lora && !m->lora_borrowed) return false;   // --lora owns the slot
+    if (ls && ls->n_layer != m->n_layer) return false;
+    m->lora = ls ? ls->tab : NULL;
+    m->lora_borrowed = ls != NULL;
+    m->lora_id = ls ? ls->id : 0;
+    m->lora_alpha = ls ? ls->alpha : 0;
+    return true;
 }
 
 

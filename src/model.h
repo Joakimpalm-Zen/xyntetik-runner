@@ -351,6 +351,7 @@ typedef struct {
     // folds into the engine's model identity so cached prefixes can never
     // cross an adapter boundary.
     struct lora_w *lora;
+    bool     lora_borrowed;  // lora is a per-request adapter's table (R8.6)
     uint64_t lora_id;
     float    lora_alpha;     // adapter alpha (load or train-init), for saving
     // D3 activation tape: [n_layer+1][tape_T][n_embd] layer-entry residual
@@ -803,6 +804,16 @@ bool   model_load(model_t *m, const char *path, const model_params *p);
 // multiplies the adapter's alpha/r (1.0 = as trained).
 bool   model_lora_load(model_t *m, const char *path, float user_scale);
 void   model_lora_free(model_t *m);
+// Per-request adapters (R8.6): an adapter parsed once against a model's
+// geometry by the same refusals --lora applies, then BORROWED by any model of
+// that geometry for one request at a time (model_lora_use; NULL removes it).
+// The model never frees a borrowed table. Host hooks only: model_lora_use
+// refuses a model with a device path and one that owns a --lora adapter.
+typedef struct lora_set lora_set;
+lora_set *model_lora_set_load(model_t *m, const char *path, float scale);
+void      model_lora_set_free(lora_set *ls);
+uint64_t  model_lora_set_id(const lora_set *ls);
+bool      model_lora_use(model_t *m, const lora_set *ls);
 // --- adaptation D3: backward through the LoRA path (CPU reference).
 // model_lora_backward teacher-forces toks[0..n) from position 0 (clobbering
 // KV rows [0,n)), computes the summed NLL over transitions, and ACCUMULATES

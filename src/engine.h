@@ -360,6 +360,9 @@ bool   engine_mark_turn(engine *e);
 // The request's own stop ids (engine.req_stop_ids): up to 8, replaced whole;
 // n = 0 clears them.
 void   engine_set_request_stops(engine *e, const int *ids, int n);
+// Recompute the engine's model identity (the prefix-cache key) after the
+// model's adapter changed (R8.6); cheap enough to do per adapter switch.
+void   engine_refresh_identity(engine *e);
 // feed tokens (batched); returns last-token logits, or NULL on overflow/stop
 float *engine_feed(engine *e, const int32_t *toks, int n);
 

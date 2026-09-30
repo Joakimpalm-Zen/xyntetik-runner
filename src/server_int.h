@@ -29,7 +29,20 @@ typedef struct {
     // took it off the accept queue (its clock start) and how long it had
     // waited there. Zero for a request the accept loop answered itself.
     double     req_t0, queue_wait_s;
+    // R8.6: the per-request adapter this slot's model borrows now (index
+    // into SV.adapters), -1 for none
+    int        adapter;
 } slot_t;
+
+// A per-request adapter (R8.6): loaded once at startup, borrowed by a slot's
+// model for the requests that name it as "<model>:<name>".
+#define RUNNER_MAX_ADAPTERS 16
+typedef struct {
+    char      name[64];
+    char      path[1024];
+    char      sha256[65];
+    lora_set *set;
+} adapter_entry;
 
 typedef struct {
     sock_t fds[512];
@@ -147,6 +160,8 @@ typedef struct {
     // its other models), unless force_uncertified was set at startup.
     bool        force_uncertified;
     oms_policy  signing;      // same policy on initial and subsequent loads
+    adapter_entry adapters[RUNNER_MAX_ADAPTERS];
+    int           n_adapters;
 } server_state;
 
 extern server_state SV;
@@ -214,6 +229,14 @@ void handle_unload(sock_t fd);
 // Resolve + load the requested model; returns the registry index or a SWAP_*.
 int  swap_to(const char *want);
 bool validate_single_model_request(sock_t fd, jv *req);
+// R8.6: split an adapter suffix off the request's "model" ("base:name"),
+// leaving the base for the usual validation; returns the adapter index, -1
+// for none. A suffix naming no loaded adapter is left in place, so the model
+// check answers it as an unknown model.
+int  request_adapter(jv *req);
+// Borrow adapter idx (-1: none) on the slot's model for this request, and
+// re-key the slot's prefix identity when it changes. False: answered 500.
+bool slot_use_adapter(slot_t *s, int idx, sock_t fd);
 bool init_swap_runtime(const model_params *mp, int n_threads, int ttl);
 // Admission: q_push sheds with 503 when the queue is full, q_pop blocks until
 // a connection arrives or the queue is shut down (SOCK_INVALID then).

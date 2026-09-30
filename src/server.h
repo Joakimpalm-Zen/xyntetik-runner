@@ -21,6 +21,11 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
                bool ignore_eos, int tmpl_override, bool force_uncertified,
                const oms_policy *signing);
 
+// R8.6: adapters to load at the next server_run, each served per request as
+// "<model>:<name>". Borrowed strings; call before server_run.
+void server_set_adapters(const char *const *names, const char *const *paths,
+                         int n, float scale);
+
 // Request the same graceful stop as the platform's first SIGINT / console
 // control event. This closes the listener so a server_run blocked in accept()
 // can drain and return. A second request keeps the operator-facing escalation

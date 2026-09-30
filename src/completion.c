@@ -847,6 +847,8 @@ typedef struct req_diag {
     // R10.4: the named context this request built on, and its length
     const char *context_id;
     int         context_tokens;
+    // R8.6: the per-request adapter, when one was named
+    const char *adapter_name, *adapter_sha256;
 } req_diag;
 
 static void diag_json(sbuf *r, const req_diag *d) {
@@ -882,6 +884,11 @@ static void diag_json(sbuf *r, const req_diag *d) {
     if (d->context_id)
         sb_fmt(r, ",\"context\":{\"id\":\"%s\",\"tokens\":%d}",
                d->context_id, d->context_tokens);
+    if (d->adapter_name) {
+        sb_lit(r, ",\"adapter\":{\"name\":\"");
+        sb_esc(r, d->adapter_name, strlen(d->adapter_name));
+        sb_fmt(r, "\",\"sha256\":\"%s\"}", d->adapter_sha256);
+    }
 }
 
 // The speculation fields of a resp_doc, from the engine that served the
@@ -3027,6 +3034,8 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
         .constrained = env != NULL && schema != NULL,
         .parse_only = env != NULL && env->parse_only,
         .context_id = ctx_id, .context_tokens = ctx_tokens,
+        .adapter_name = s->adapter >= 0 ? SV.adapters[s->adapter].name : NULL,
+        .adapter_sha256 = s->adapter >= 0 ? SV.adapters[s->adapter].sha256 : NULL,
     };
     if (script_text) {
         int32_t *ids = NULL;
