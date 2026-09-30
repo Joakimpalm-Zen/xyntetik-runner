@@ -404,9 +404,16 @@ static bool rope_setup(model_t *m, gguf_file *g, const char *arch,
     if (mode == RS_LINEAR) {
         for (int j = 0; j < half; j++) m->rope_inv_freq[j] /= factor;
     } else if (mode == RS_YARN) {
-        // NTK-by-parts: interpolate long wavelengths, keep short ones intact
-        float lo = floorf(yarn_corr_dim(m->rope_dim, orig, 32.0f, m->rope_base));
-        float hi = ceilf(yarn_corr_dim(m->rope_dim, orig, 1.0f, m->rope_base));
+        // NTK-by-parts: interpolate long wavelengths, keep short ones intact.
+        // The ramp's correction range is rounded outward by transformers'
+        // default (truncate=True) and by llama.cpp, but NOT by gpt-oss: its
+        // reference (gpt_oss/torch/model.py) uses the bounds as computed and
+        // its config.json says `"truncate": false`. Rounding there moved every
+        // frequency inside the ramp at every position (1.75x at dimension 17
+        // of the real heads) -- invisible against llama.cpp, which rounds too.
+        float lo = yarn_corr_dim(m->rope_dim, orig, 32.0f, m->rope_base);
+        float hi = yarn_corr_dim(m->rope_dim, orig, 1.0f, m->rope_base);
+        if (!m->gptoss) { lo = floorf(lo); hi = ceilf(hi); }
         if (lo < 0) lo = 0;
         if (hi > m->rope_dim - 1) hi = m->rope_dim - 1;
         for (int j = 0; j < half; j++) {

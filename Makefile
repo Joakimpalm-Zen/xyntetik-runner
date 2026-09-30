@@ -144,6 +144,7 @@ OBJDIR = .build/$(BUILD_ID)
 TEST_PREFIX = $(TEST_BATCH:test-batch%=test-prefix%)
 TEST_RECURRENT = $(TEST_BATCH:test-batch%=test-recurrent-rewind%)
 TEST_PENALTY_WINDOW = $(TEST_BATCH:test-batch%=test-penalty-window%)
+TEST_ROPE_YARN = $(TEST_BATCH:test-batch%=test-rope-yarn%)
 TEST_REQUEST_STOP = $(TEST_BATCH:test-batch%=test-request-stop%)
 TEST_HOST_HEADER = $(TEST_BATCH:test-batch%=test-host-header%)
 TEST_GRAMMAR_FF = $(TEST_BATCH:test-batch%=test-grammar-ff%)
@@ -634,6 +635,15 @@ TEST_PENALTY_WINDOW_SRC = tests/test_penalty_window.c $(OBJDIR)/gguf.o $(OBJDIR)
 $(TEST_PENALTY_WINDOW): $(TEST_PENALTY_WINDOW_SRC) $(HDR)
 	$(CC) $(CFLAGS) -I src $(TEST_PENALTY_WINDOW_SRC) -o $@ $(LDFLAGS)
 
+# YaRN's frequency table against the publishers' reference ramps (gpt-oss
+# unrounded, transformers' default rounded); the same link set as the
+# penalty-window gate, since model_load is the interface under test
+TEST_ROPE_YARN_SRC = tests/test_rope_yarn.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o $(QUANTS_OBJ) \
+                  $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(OBJDIR)/sample.o $(OBJDIR)/jsonmode.o \
+                  $(OBJDIR)/schema.o $(OBJDIR)/json.o $(OBJDIR)/engine.o $(OBJDIR)/vramreg.o $(GPU_OBJ)
+$(TEST_ROPE_YARN): $(TEST_ROPE_YARN_SRC) $(HDR)
+	$(CC) $(CFLAGS) -I src $(TEST_ROPE_YARN_SRC) -o $@ $(LDFLAGS)
+
 $(TEST_RECURRENT): $(TEST_RECURRENT_SRC) $(HDR)
 	$(CC) $(CFLAGS) -I src $(TEST_RECURRENT_SRC) -o $@ $(LDFLAGS)
 
@@ -824,6 +834,9 @@ TEST_MVCANON_SRC = tests/test_mvcanon.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o \
 $(TEST_MVCANON): $(TEST_MVCANON_SRC) src/quants.c $(HDR) test.gguf test-q8.gguf
 	$(CC) $(CFLAGS) -ffp-contract=off -DRUNNER_CANON_KERNELS -I src \
 	    $(TEST_MVCANON_SRC) src/quants.c -o $@ $(LDFLAGS)
+
+test-yarn.gguf: scripts/make-test-model.py
+	$(PYTHON) scripts/make-test-model.py --yarn 32,4096 test-yarn.gguf
 
 test-qk.gguf: scripts/make-test-model.py
 	$(PYTHON) scripts/make-test-model.py --qk-norm test-qk.gguf
@@ -2041,8 +2054,8 @@ test: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSON_OOM) $(
       $(TEST_THREAD_DEFAULT) \
       $(TEST_MODEL_LOAD_FAILURE) $(TEST_RESTART) $(TEST_PFX_PERSIST) \
       $(TEST_SCHED_TURN) $(TEST_RESIDENCY) $(TEST_BUDGET) $(TEST_ATTRIB_DEP) \
-      $(TEST_STOP_CONSTRAINT) $(TEST_MSG_OOM_DEP) $(TEST_RECURRENT) $(TEST_PENALTY_WINDOW) $(TEST_REQUEST_STOP) \
-      runner test.gguf test-q8.gguf test-bf16.gguf test-ornith.gguf test-ornith-draft.gguf
+      $(TEST_STOP_CONSTRAINT) $(TEST_MSG_OOM_DEP) $(TEST_RECURRENT) $(TEST_PENALTY_WINDOW) $(TEST_ROPE_YARN) $(TEST_REQUEST_STOP) \
+      runner test.gguf test-q8.gguf test-bf16.gguf test-ornith.gguf test-ornith-draft.gguf test-yarn.gguf
 	./$(TEST_RECURRENT)
 	./$(TEST_PENALTY_WINDOW) test.gguf
 	./$(TEST_REQUEST_STOP)
@@ -2154,6 +2167,7 @@ test: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSON_OOM) $(
 	@# zero: the dense-oracle MoE fixtures are 0.5/0.5 either way and can only
 	@# compare a routing path with itself (it self-skips on those, correctly)
 	$(PYTHON) scripts/make-test-moe.py test-moe-fixture
+	./$(TEST_ROPE_YARN) test-moe-fixture.gptoss-yarn.gguf test-yarn.gguf
 	./$(TEST_MOE_TOL) test-moe-fixture.moe4.gguf
 	@# CPU/GPU agreement on a router that has a BIAS and routes top-1, so the
 	@# bias decides which expert runs. Every other MoE fixture here either has
@@ -2412,7 +2426,7 @@ clean:
 	      $(TEST_QUANTIZE) $(TEST_VRAM_ROLLBACK) $(TEST_GGUF_GETTERS) $(TEST_HFHUB) \
 	      $(TEST_PARSE) $(TEST_THREAD_DEFAULT) $(TEST_METAL_OWNERSHIP) $(TEST_METAL_SHADERS) $(TEST_METAL_KQUANTS) $(TEST_MODEL_LOAD_FAILURE) \
 	      $(TEST_FILE_ID) test-file-identity.tmp \
-	      $(TEST_BUDGET) $(TEST_ATTRIB) $(TEST_MSG_OOM) $(TEST_STOP_CONSTRAINT) \
+	      $(TEST_BUDGET) $(TEST_ATTRIB) $(TEST_MSG_OOM) $(TEST_STOP_CONSTRAINT) $(TEST_ROPE_YARN) \
 	      $(TMPL_CONF_RENDER) \
 	      $(TEST_SPLIT_GUARD) split-guard.out test-swap-race-bin \
 	      runner-gpu-stub

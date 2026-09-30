@@ -686,6 +686,19 @@ write(f"{OUT}.gptoss-top1.gguf", gptoss,
                             ku("gpt-oss.attention.sliding_window", 8),
                             ku("gpt-oss.attention.sliding_window_pattern", 2)]))
 
+# The same gpt-oss file with the published YaRN block (factor 32 over a 4096
+# original context, as every gpt-oss config ships). tests/test_rope_yarn.c
+# reads the frequency table the loader builds from it against OpenAI's
+# reference, which does not round the ramp's correction range.
+write(f"{OUT}.gptoss-yarn.gguf", gptoss,
+      base_meta("gpt-oss", [ku("gpt-oss.expert_count", 2),
+                            ku("gpt-oss.expert_used_count", 2),
+                            ku("gpt-oss.expert_feed_forward_length", FF),
+                            ku("gpt-oss.attention.sliding_window", 8),
+                            ku("gpt-oss.attention.sliding_window_pattern", 2),
+                            ks("gpt-oss.rope.scaling.type", "yarn"),
+                            kf("gpt-oss.rope.scaling.factor", 32.0),
+                            ku("gpt-oss.rope.scaling.original_context_length", 4096)]))
 
 # --- gemma-4 dual-branch MoE fixture. CPU is the oracle here too. The fixture
 # exercises the gemma-only FFN shape: dense GELU branch plus routed GELU experts
