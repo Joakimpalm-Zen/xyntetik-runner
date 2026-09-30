@@ -8,6 +8,18 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **A TypeScript client for the fields no other engine returns**
+  (`clients/typescript`, `@xyntetik/runner-client`, R10.7). It does not
+  replace the OpenAI or Anthropic SDKs a TypeScript agent already uses: it
+  types `runner_telemetry`, `choice_logprobs`, the provenance statement and
+  the transcript receipt, wraps `/v1/rerank`, `/v1/decide`, named contexts
+  and the Responses store, parses SSE (a malformed data frame is an error,
+  never skipped), and recomputes a receipt's chain hash from its bytes with
+  WebCrypto. No runtime dependencies; the compiler is pinned (5.9.3).
+  `make test-ts-client`, a step of the consumer-compatibility CI job, runs it
+  against a live runner, with Node's own sha256 as the anchor for the binary
+  digest and the chain hash, and a one-byte edit of a receipt failing it.
+
 - **Responses persistence and parallel `tool_use` on Messages.**
   `store:true` keeps a finished response in an in-memory store (never
   written to disk, bounded by `RUNNER_RESPONSES_STORE_MB` and

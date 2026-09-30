@@ -875,6 +875,8 @@ jobs:
           npm ci --ignore-scripts --prefix tests/compatibility/node
       - name: official SDK, LiteLLM and LangChain compatibility
         run: .compat-venv/bin/python scripts/consumer_compat.py
+      - name: TypeScript client (clients/typescript)
+        run: make test-ts-client
       - uses: actions/upload-artifact@v7
         if: always()
         with:

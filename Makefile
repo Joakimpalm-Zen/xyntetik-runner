@@ -2554,8 +2554,16 @@ test-makefile-sane:
 
 
 .PHONY: template-conformance template-conformance-refresh template-conformance-baseline template-conformance-harmony-oracle
-.PHONY: test-gpu-stub test-cuda-nvfp4
+.PHONY: test-gpu-stub test-cuda-nvfp4 test-ts-client
 .PHONY: test-metal-kv-fp4 FORCE makefile-noop test-python-deps test-makefile-sane test-cuda-iquants test-tc-overflow fixture-scale-note clean debug ptx test test-bare-invocation test-help-interface test-shader-embed test-metal-shader-gate test-apertus test-moe test-prune-experts test-metal-fallback test-metal-prefill test-metal-kquant test-metal-decode-only test-metal-split test-metal-bind-failure test-metal-kv-q8 test-metal-moe test-metal-gptoss-moe test-metal-gemma4-moe test-metal-gemma4-hetero test-metal-bigmodel test-metal-bigmodel-multibuf test-metal-moe-em test-metal-moe-mm test-metal-fuse test-metal-gelu-overflow test-metal-eseries test-metal-swa smoke release-check test-truncation fuzz fuzz-build fuzz-run test-shared-asan test-shared-noid test-split-guard test-swap-race
+
+# The TypeScript client (R10.7): type-checked with the pinned compiler and run
+# against a live runner on the CI fixture. Needs Node 18+ and npm (the pinned
+# typescript is fetched by `npm ci`), so it is its own target and a CI step in
+# the consumer-compatibility job rather than part of `make test`.
+test-ts-client: $(RUNNER_EXE)
+	cd clients/typescript && npm ci --ignore-scripts && npx tsc -p tsconfig.json && \
+	  node --test test/client.test.mjs
 
 # Soak harness for the startup/SIGTERM race (test_signal_during_startup). Not
 # in `make test` — it is a diagnostic soak (thousands of spawns), run on demand

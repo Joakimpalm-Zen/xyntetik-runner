@@ -147,7 +147,7 @@ $response.choices[0].message.content
 | I want to… | Start here |
 |---|---|
 | Chat or run a prompt | [Everyday commands](#everyday-commands) or the [desktop tray](#desktop-tray) |
-| Connect an app or coding agent | [Serving and APIs](#serving-and-apis), [coding-agent evidence](#coding-agent-evidence), [Python client](python/README.md) |
+| Connect an app or coding agent | [Serving and APIs](#serving-and-apis), [coding-agent evidence](#coding-agent-evidence), [Python client](python/README.md), [TypeScript client](clients/typescript/README.md) |
 | Generate JSON or tool calls | [Tool-call recovery](#truncation) and [structured output](#structured-output) |
 | Train, serve or merge an adapter | [LoRA training](#adaptation) and the [training walkthrough](docs/train-lora-on-quantized-gguf.md) |
 | Reproduce or audit a run | [Record and verify a run](#record-and-verify-a-run) |
