@@ -134,18 +134,25 @@ def test_the_server_default_applies_and_a_request_can_override_it(muse_default_t
     assert again == cold
 
 
-@pytest.mark.parametrize("bad", [
-    {"reasoning_temperature": 3},
-    {"reasoning_temperature": -1},
-    {"reasoning_temperature": "hot"},
-    {"reasoning_temperature": 0.5, "reasoning_top_k": -1},
-    {"reasoning_temperature": 0.5, "reasoning_top_p": 2},
-    {"reasoning_temperature": 0.5, "reasoning_top_k": 1.5},
+# R4.12.23: each refusal names its field and says wrong type from out of range.
+@pytest.mark.parametrize("bad,param,why", [
+    ({"reasoning_temperature": 3}, "reasoning_temperature", "invalid_value"),
+    ({"reasoning_temperature": -1}, "reasoning_temperature", "invalid_value"),
+    ({"reasoning_temperature": "hot"}, "reasoning_temperature", "invalid_type"),
+    ({"reasoning_temperature": 0.5, "reasoning_top_k": -1}, "reasoning_top_k",
+     "invalid_value"),
+    ({"reasoning_temperature": 0.5, "reasoning_top_p": 2}, "reasoning_top_p",
+     "invalid_value"),
+    ({"reasoning_temperature": 0.5, "reasoning_min_p": "0.1"}, "reasoning_min_p",
+     "invalid_type"),
+    ({"reasoning_temperature": 0.5, "reasoning_top_k": 1.5}, "reasoning_top_k",
+     "invalid_value"),
 ])
-def test_out_of_range_values_are_refused(muse, bad):
+def test_out_of_range_values_are_refused(muse, bad, param, why):
     code, body = _chat(muse, **bad)
     assert code == 400, (bad, body)
-    assert "reasoning_" in json.dumps(body)
+    assert body["error"]["param"] == param, body
+    assert body["error"]["code"] == why, body
 
 
 def test_a_model_without_a_reasoning_channel_refuses_the_knob(plain):
@@ -161,7 +168,10 @@ def test_a_model_without_a_reasoning_channel_refuses_the_knob(plain):
             raise AssertionError(f"accepted with {r.status}")
     except urllib.error.HTTPError as e:
         assert e.code == 400
-        assert "reasoning channel" in json.loads(e.read())["error"]["message"]
+        err = json.loads(e.read())["error"]
+        assert "reasoning channel" in err["message"]
+        assert err["param"] == "reasoning_temperature"
+        assert err["code"] == "unsupported_parameter"
 
 
 def test_a_zero_initialised_server_state_means_off(muse):

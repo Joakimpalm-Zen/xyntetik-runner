@@ -1578,6 +1578,19 @@ static bool whole_number(double n) {
     return n == floor(n);
 }
 
+// R4.12.23: the extension fields' refusals name their field, as RI-5's
+// sampling refusals below do; they used to send "param": null. The messages
+// stay as they were, several of them listing a group of fields with their
+// ranges, so `param` is what says which field of the group was wrong, and
+// `code` separates a wrong type from a value outside its range.
+static void refuse_field(sock_t fd, jv *req, const char *key, jtype want,
+                         const char *msg) {
+    jv *v = jv_get(req, key);
+    send_error_detail(fd, 400, msg, key,
+                      !absent(v) && v->type != want ? "invalid_type"
+                                                    : "invalid_value");
+}
+
 // RI-5: name the field and the rule it broke.
 //
 // Six sampling settings used to share one "numeric sampling parameter out of
@@ -2084,24 +2097,33 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
             if (!request_number(req, "reasoning_temperature",
                                 SV.reasoning_temp_set ? SV.reasoning_temp : 0,
                                 0, 2, &rtemp)) {
-                send_error(fd, 400, "reasoning_temperature must be a number in 0..2");
+                refuse_field(fd, req, "reasoning_temperature", J_NUM,
+                             "reasoning_temperature must be a number in 0..2");
                 return;
             }
-            if (!request_number(req, "reasoning_top_p", top_p, 0, 1, &rtop_p) ||
-                !request_number(req, "reasoning_min_p", min_p, 0, 1, &rmin_p) ||
-                !request_number(req, "reasoning_top_k", top_k, 0, 1000, &rtop_k) ||
-                !whole_number(rtop_k)) {
-                send_error(fd, 400, "reasoning_top_p, reasoning_min_p and "
-                                    "reasoning_top_k must be in range "
-                                    "(0..1, 0..1, 0..1000 whole)");
+            const char *bad = NULL;
+            if (!request_number(req, "reasoning_top_p", top_p, 0, 1, &rtop_p))
+                bad = "reasoning_top_p";
+            else if (!request_number(req, "reasoning_min_p", min_p, 0, 1, &rmin_p))
+                bad = "reasoning_min_p";
+            else if (!request_number(req, "reasoning_top_k", top_k, 0, 1000, &rtop_k) ||
+                     !whole_number(rtop_k))
+                bad = "reasoning_top_k";
+            if (bad) {
+                refuse_field(fd, req, bad, J_NUM,
+                             "reasoning_top_p, reasoning_min_p and "
+                             "reasoning_top_k must be in range "
+                             "(0..1, 0..1, 0..1000 whole)");
                 return;
             }
             // Refused rather than ignored on a model with no reasoning
             // channel: a knob that silently does nothing has the caller
             // reading an unchanged trace as the setting's effect.
             if (!m->think_open || !m->think_close) {
-                send_error(fd, 400, "reasoning_temperature needs a model with a "
-                                    "reasoning channel; this model declares none");
+                send_error_detail(fd, 400, "reasoning_temperature needs a model "
+                                  "with a reasoning channel; this model "
+                                  "declares none", "reasoning_temperature",
+                                  "unsupported_parameter");
                 return;
             }
             e->think_smp = true;
@@ -2119,44 +2141,60 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
     {
         bool want = SV.loop_guard;
         if (!request_bool(req, "loop_guard", want, &want)) {
-            send_error(fd, 400, "loop_guard must be a boolean");
+            refuse_field(fd, req, "loop_guard", J_BOOL,
+                         "loop_guard must be a boolean");
             return;
         }
         if (want) {
             double span = 8, reps = 3, win = 256;
             bool all = false;
+            const char *bad = NULL;
             if (!request_number(req, "loop_guard_span", 8, 2, 128, &span) ||
-                !request_number(req, "loop_guard_repeats", 3, 2, 16, &reps) ||
-                !request_number(req, "loop_guard_window", 256, 16, 4096, &win) ||
-                !whole_number(span) || !whole_number(reps) || !whole_number(win)) {
-                send_error(fd, 400, "loop_guard_span (2..128), loop_guard_repeats "
-                                    "(2..16) and loop_guard_window (16..4096) must "
-                                    "be whole numbers in range");
+                !whole_number(span))
+                bad = "loop_guard_span";
+            else if (!request_number(req, "loop_guard_repeats", 3, 2, 16, &reps) ||
+                     !whole_number(reps))
+                bad = "loop_guard_repeats";
+            else if (!request_number(req, "loop_guard_window", 256, 16, 4096, &win) ||
+                     !whole_number(win))
+                bad = "loop_guard_window";
+            if (bad) {
+                refuse_field(fd, req, bad, J_NUM,
+                             "loop_guard_span (2..128), loop_guard_repeats "
+                             "(2..16) and loop_guard_window (16..4096) must "
+                             "be whole numbers in range");
                 return;
             }
             double closes = 3;
             if (!request_number(req, "loop_guard_max_closes", 3, 1, 16, &closes) ||
                 !whole_number(closes)) {
-                send_error(fd, 400, "loop_guard_max_closes must be a whole "
-                                    "number in 1..16");
+                refuse_field(fd, req, "loop_guard_max_closes", J_NUM,
+                             "loop_guard_max_closes must be a whole "
+                             "number in 1..16");
                 return;
             }
             if (!request_bool(req, "loop_guard_everywhere", false, &all)) {
-                send_error(fd, 400, "loop_guard_everywhere must be a boolean");
+                refuse_field(fd, req, "loop_guard_everywhere", J_BOOL,
+                             "loop_guard_everywhere must be a boolean");
                 return;
             }
+            // Each value is in its own range here; it is the window that has
+            // to be wide enough to hold the repetition asked for.
             if (span * reps > win) {
-                send_error(fd, 400, "loop_guard_span times loop_guard_repeats "
-                                    "must fit inside loop_guard_window");
+                send_error_detail(fd, 400, "loop_guard_span times "
+                                  "loop_guard_repeats must fit inside "
+                                  "loop_guard_window", "loop_guard_window",
+                                  "invalid_value");
                 return;
             }
             // Refused rather than ignored where it could never fire: without a
             // reasoning channel and without the widening there is no region to
             // watch, and a guard that silently never runs is worse than none.
             if (!all && (!m->think_open || !m->think_close)) {
-                send_error(fd, 400, "loop_guard watches the reasoning channel; "
-                                    "this model declares none. Set "
-                                    "loop_guard_everywhere to watch the whole turn");
+                send_error_detail(fd, 400, "loop_guard watches the reasoning "
+                                  "channel; this model declares none. Set "
+                                  "loop_guard_everywhere to watch the whole "
+                                  "turn", "loop_guard", "unsupported_parameter");
                 return;
             }
             e->loop_guard = true;
