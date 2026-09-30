@@ -17,6 +17,7 @@
 #include "receipts.h"
 #include "watermark.h"
 #include "kvsnap.h"
+#include "session.h"
 #include "build_arch.h"
 // for render_prompt_alloc: chat mode renders the same prompts the chat route
 // does, so it uses the same measured-size renderer rather than a second one
@@ -219,6 +220,63 @@ static bool schema_file_digest(const char *path, char hex[65]) {
     if (ok) envelope_data_sha256(d.s, d.n, hex);
     free(d.s);
     return ok;
+}
+
+// R1.3: the step loop behind --suspend-after, --session-out and --resume.
+// It stops after `stop_at` generated tokens in all (0: the budget), every
+// handed-out token already forwarded, and says whether the generation is
+// still live -- neither a stop, a finished document nor an error ended it.
+// Only a live generation is imaged. *last is the next token's logits.
+static bool session_steps(engine *e, float *logits, int stop_at, gen_cb cb,
+                          void *ud, const float **last) {
+    int32_t tok;
+    int pos;
+    while (stop_at <= 0 || e->gen_count < stop_at) {
+        if (engine_gen_step(e, logits, cb, ud, &tok, &pos) != ENGINE_STEP_MORE) break;
+        logits = model_forward(e->m, tok, pos);
+        if (!logits) { e->oom = true; break; }
+    }
+    e->pending_pos = -1;
+    *last = logits;
+    return logits && !e->hit_stop && !e->oom;
+}
+
+static bool session_image_out(const char *path, const engine *e,
+                              const char *model_path, const float *logits,
+                              int n_prompt, int max_new, bool json_mode,
+                              bool ignore_eos, const char *schema_file) {
+    session_meta mt;
+    memset(&mt, 0, sizeof mt);
+    if (!envelope_file_sha256(model_path, mt.model_sha256)) {
+        fprintf(stderr, "error: session: cannot hash %s\n", model_path);
+        return false;
+    }
+    char *exe = plat_executable_path();
+    if (exe) envelope_file_sha256(exe, mt.binary_sha256);
+    free(exe);
+    if (schema_file && !schema_file_digest(schema_file, mt.schema_sha256)) {
+        fprintf(stderr, "error: session: cannot read %s\n", schema_file);
+        return false;
+    }
+    const model_t *m = e->m;
+    mt.model_key = e->model_key;
+    mt.n_ctx = m->n_ctx;
+    snprintf(mt.kv_type, sizeof mt.kv_type, "%s",
+             m->kv_fp4 ? "fp4" : m->kv_split ? "k8v4" : m->kv_q8 ? "q8" : "f16");
+    mt.n_prompt = n_prompt;
+    mt.n_tokens = e->pos;
+    mt.max_new = max_new;
+    mt.generated = e->gen_count;
+    mt.temp = e->smp->temp; mt.top_k = e->smp->top_k; mt.top_p = e->smp->top_p;
+    mt.min_p = e->smp->min_p; mt.repeat_penalty = e->smp->repeat_penalty;
+    mt.rng = e->smp->rng;
+    mt.json_mode = json_mode;
+    mt.ignore_eos = ignore_eos;
+    char sha[65];
+    if (!session_write(path, e, &mt, logits, m->n_vocab, sha)) return false;
+    fprintf(stderr, "session image -> %s (sha256 %s; %d tokens, %d of %d "
+            "generated)\n", path, sha, e->pos, e->gen_count, max_new);
+    return true;
 }
 
 // R1.8.2: score a token sequence against the key and print the verdict as
@@ -995,6 +1053,17 @@ static void usage_to(FILE *f, const char *prog) {
         "                 signed with --sign-key); {\"id\",\"snapshot\"} on\n"
         "                 POST /v1/runner/contexts loads one back, refusing\n"
         "                 another model, KV type or changed bytes\n"
+        "  --session-out F  with -p or --resume: write the generation's image\n"
+        "                 to F (tokens, KV and recurrent state, sampler and rng,\n"
+        "                 constraint, next-token logits; SHA-256 trailer; never\n"
+        "                 overwritten). CPU, solo step loop, finite -n\n"
+        "  --suspend-after N  stop after N generated tokens and write the\n"
+        "                 image there (with --session-out)\n"
+        "  --resume F     continue the generation imaged in F with the same -m:\n"
+        "                 the continuation, and its image, are the ones the\n"
+        "                 uninterrupted run makes, byte for byte\n"
+        "  --fork-seed N  with --resume: continue under rng seed N instead of\n"
+        "                 the image's own (a reproducible fork)\n"
         "  --watermark F  mark sampled output with the tournament watermark\n"
         "                 key F (-p runs and --serve; off by default; greedy is\n"
         "                 never changed); records carry its key id, and\n"
@@ -1491,6 +1560,12 @@ int main(int argc, char **argv) {
     const char *watermark_path = NULL, *watermark_keygen = NULL;
     const char *detect_path = NULL;
     const char *kv_snapshots = NULL;
+    const char *session_out = NULL, *resume_path = NULL;
+    int suspend_after = 0;
+    bool fork_seed_given = false, n_given = false, kv_given = false;
+    uint64_t fork_seed = 0;
+    session_image simg;
+    memset(&simg, 0, sizeof simg);
     bool require_signed = false, require_signed_model = false;
     receipt_sig_state v_rsig = RSIG_NONE;   // --verify: the record's signature state
     char v_rec_pub[SIGN_PUBHEX_CAP] = "";
@@ -1562,7 +1637,7 @@ int main(int argc, char **argv) {
         else if (!strcmp(a, "-hf") || !strcmp(a, "--hf")) hf_spec = NEXT;
         else if (!strcmp(a, "-p")) prompt = NEXT;
         else if (!strcmp(a, "-f")) prompt_file = NEXT;
-        else if (!strcmp(a, "-n")) n_predict = (int)int_arg(a, NEXT, -1, INT_MAX);
+        else if (!strcmp(a, "-n")) { n_predict = (int)int_arg(a, NEXT, -1, INT_MAX); n_given = true; }
         else if (!strcmp(a, "-c")) mp.n_ctx = (int)int_arg(a, NEXT, 0, INT_MAX);
         else if (!strcmp(a, "-b")) mp.n_batch = (int)int_arg(a, NEXT, 0, INT_MAX);
         else if (!strcmp(a, "-t")) n_threads = (int)int_arg(a, NEXT, 0, INT_MAX);
@@ -1613,6 +1688,14 @@ int main(int argc, char **argv) {
         else if (!strcmp(a, "--watermark-keygen")) watermark_keygen = NEXT;
         else if (!strcmp(a, "--detect-watermark")) detect_path = NEXT;
         else if (!strcmp(a, "--kv-snapshots")) kv_snapshots = NEXT;
+        else if (!strcmp(a, "--session-out")) session_out = NEXT;
+        else if (!strcmp(a, "--resume")) resume_path = NEXT;
+        else if (!strcmp(a, "--suspend-after"))
+            suspend_after = (int)int_arg(a, NEXT, 1, INT_MAX);
+        else if (!strcmp(a, "--fork-seed")) {
+            fork_seed = u64_arg(a, NEXT);
+            fork_seed_given = true;
+        }
         else if (!strcmp(a, "--require-signed-model")) require_signed_model = true;
         else if (!strcmp(a, "--quant")) quant_type = NEXT;
         else if (!strcmp(a, "--prune-experts")) prune_experts = NEXT;
@@ -1638,6 +1721,7 @@ int main(int argc, char **argv) {
         }
         else if (!strcmp(a, "--kv")) {
             const char *v = NEXT;
+            kv_given = true;
             mp.kv_q8 = mp.kv_fp4 = mp.kv_split = false;
             if (!strcmp(v, "q8")) mp.kv_q8 = true;
             else if (!strcmp(v, "fp4")) mp.kv_fp4 = true;
@@ -2152,7 +2236,7 @@ int main(int argc, char **argv) {
     if (!prompt && !interactive && !serve && !quant_out && !merge_out &&
         !context_out &&
         !bench_json && !tool_info && !train_path && !dpo_path && !verify_path &&
-        !decide_path && !detect_text) {
+        !decide_path && !detect_text && !resume_path) {
         fprintf(stderr, "error: need -p PROMPT, -i, or --serve\n");
         usage(argv[0]);
         return 1;
@@ -2170,6 +2254,108 @@ int main(int argc, char **argv) {
         return 1;
     }
     if (!seed_given) smp.rng = (uint64_t)time(NULL) ^ 0x9E3779B97F4A7C15ull;
+    // R1.3 session images: suspend (--suspend-after N with --session-out),
+    // resume (--resume), fork (--resume with --fork-seed). They image the
+    // host KV cache and the solo step loop, so they run on the CPU, without
+    // speculation, and outside serve / interactive / verify.
+    if (session_out || suspend_after || resume_path || fork_seed_given) {
+        const char *why = NULL;
+        if (suspend_after && !session_out)
+            why = "--suspend-after N needs --session-out FILE";
+        else if (fork_seed_given && !resume_path)
+            why = "--fork-seed forks a session and needs --resume FILE";
+        else if (resume_path && prompt)
+            why = "--resume continues an image's prompt; give no -p";
+        else if (serve || interactive || verify_path || transcript_path)
+            why = "session images are for one-shot runs (not --serve, -i, "
+                  "--verify or --transcript)";
+        else if (draft_path || mtp_on || draft_lookup)
+            why = "session images run the solo step loop: no --draft, --mtp or "
+                  "--draft-lookup";
+        else if (watermark_path)
+            why = "an image does not carry a watermark key, so a resume could not "
+                  "continue a marked generation: no --watermark";
+        else if (!resume_path && n_predict < 1)
+            why = "session images need a finite generation budget (-n N, N >= 1)";
+        else if (!resume_path && suspend_after >= n_predict)
+            why = "--suspend-after N must stop before the -n budget is spent";
+        if (!why && session_out) {
+            // refused before the load and the generation, not after them;
+            // session_write's O_EXCL still closes the race
+            FILE *ex = fopen(session_out, "rb");
+            if (ex) {
+                fclose(ex);
+                fprintf(stderr, "error: --session-out %s already exists; an "
+                        "image is never overwritten\n", session_out);
+                return 1;
+            }
+        }
+        if (why) { fprintf(stderr, "error: %s\n", why); return 1; }
+        mp.gpu_mode = GPU_OFF;
+    }
+    if (resume_path) {
+        // the image fixes everything that shapes the continuation; a flag
+        // that would change it is refused, not silently overridden
+        const char *fixed = seed_given ? "-s" : n_given ? "-n" : mp.n_ctx ? "-c"
+            : kv_given ? "--kv"
+            : ov.has_temp ? "--temp" : ov.has_top_k ? "--top-k"
+            : ov.has_top_p ? "--top-p" : ov.has_min_p ? "--min-p"
+            : ov.has_repeat_penalty ? "--repeat-penalty" : NULL;
+        if (fixed) {
+            fprintf(stderr, "error: --resume continues under the image's own "
+                    "settings; %s would change them%s\n", fixed,
+                    seed_given ? " (a different continuation is --fork-seed N)" : "");
+            return 1;
+        }
+        if (!session_read(resume_path, &simg)) return 1;
+        const session_meta *sm = &simg.meta;
+        // the image's shape and sampler, as a replay takes a record's
+        mp.n_ctx = sm->n_ctx;
+        mp.kv_q8 = !strcmp(sm->kv_type, "q8");
+        mp.kv_fp4 = !strcmp(sm->kv_type, "fp4");
+        mp.kv_split = !strcmp(sm->kv_type, "k8v4");
+        ov.temp = sm->temp;                     ov.has_temp = true;
+        ov.top_k = sm->top_k;                   ov.has_top_k = true;
+        ov.top_p = sm->top_p;                   ov.has_top_p = true;
+        ov.min_p = sm->min_p;                   ov.has_min_p = true;
+        ov.repeat_penalty = sm->repeat_penalty; ov.has_repeat_penalty = true;
+        smp.rng = fork_seed_given ? fork_seed : sm->rng;
+        if (smp.rng == 0) { fprintf(stderr, "error: --fork-seed must be nonzero\n"); return 1; }
+        if ((json_mode && !sm->json_mode) || (ignore_eos && !sm->ignore_eos)) {
+            fprintf(stderr, "error: --resume: the image was not generated under "
+                    "%s\n", json_mode && !sm->json_mode ? "--json" : "--ignore-eos");
+            session_image_free(&simg);
+            return 1;
+        }
+        json_mode = sm->json_mode;
+        ignore_eos = sm->ignore_eos;
+        n_predict = sm->max_new;
+        if (sm->schema_sha256[0]) {
+            char have[65];
+            if (!schema_file || !schema_file_digest(schema_file, have) ||
+                strcmp(have, sm->schema_sha256) != 0) {
+                fprintf(stderr, "error: --resume: the image was generated under a "
+                        "JSON schema (sha256 %s); give --json-schema naming that "
+                        "schema\n", sm->schema_sha256);
+                return 1;
+            }
+        } else if (schema_file) {
+            fprintf(stderr, "error: --resume: the image was not generated under "
+                    "a schema; --json-schema would change what it continues\n");
+            return 1;
+        }
+        if (suspend_after && suspend_after <= sm->generated) {
+            fprintf(stderr, "error: --suspend-after %d: the image has already "
+                    "generated %d tokens\n", suspend_after, sm->generated);
+            return 1;
+        }
+        if (suspend_after >= sm->max_new) {
+            fprintf(stderr, "error: --suspend-after %d must stop before the "
+                    "image's budget of %d tokens is spent\n", suspend_after,
+                    sm->max_new);
+            return 1;
+        }
+    }
 
     // ---- notarized inference D2: parse the transcript BEFORE the load so
     // the record's profile (ctx, kv, gpu) and config (sampler, seed) shape
@@ -3592,6 +3778,71 @@ int main(int argc, char **argv) {
         return 0;
     }
 
+    if (resume_path) {
+        // R1.3: continue a suspended generation from its image, exactly
+        const session_meta *sm = &simg.meta;
+        char have[65];
+        const char *why = NULL;
+        if (!envelope_file_sha256(load_path, have) || strcmp(have, sm->model_sha256))
+            why = "-m is not the model the image was made with (model sha256)";
+        else if (e.model_key != sm->model_key)
+            why = "this engine's model key (context, KV type, geometry) is not the "
+                  "image's";
+        else if (simg.n_vocab != m.n_vocab ||
+                 simg.state_n != prefix_cache_entry_bytes(&m, sm->n_tokens))
+            why = "the image's state does not fit this model";
+        if (!why && !engine_state_load(&e, simg.tokens, sm->n_tokens, simg.state))
+            why = "this model's KV layout (a ring or tied-V cache) cannot be resumed";
+        if (why) {
+            fprintf(stderr, "error: --resume %s: %s\n", resume_path, why);
+            session_image_free(&simg);
+            CLI_FAIL;
+        }
+        char bsha[65] = "";
+        char *exe = plat_executable_path();
+        if (exe) envelope_file_sha256(exe, bsha);
+        free(exe);
+        if (strcmp(bsha, sm->binary_sha256) != 0)
+            fprintf(stderr, "session: resumed by another binary than the one that "
+                    "suspended it; the continuation is exact only on that one\n");
+        engine_gen_resume(&e, sm->max_new, sm->n_prompt, sm->generated);
+        float *lg = malloc(sizeof(float) * (size_t)m.n_vocab);
+        if (!lg) { session_image_free(&simg); CLI_FAIL; }
+        memcpy(lg, simg.logits, sizeof(float) * (size_t)m.n_vocab);
+        fprintf(stderr, "resumed %s: %d tokens, %d of %d generated%s\n",
+                resume_path, sm->n_tokens, sm->generated, sm->max_new,
+                fork_seed_given ? " (forked: new rng seed)" : "");
+        double st0 = now_s();
+        const float *last = NULL;
+        bool live = session_steps(&e, lg, suspend_after, stdout_cb, NULL, &last);
+        bool suspended = live && e.gen_count < e.gen_max;
+        int rc = 0;
+        if (session_out) {
+            if (live) {
+                if (!session_image_out(session_out, &e, load_path, last,
+                                       sm->n_prompt, sm->max_new, json_mode,
+                                       ignore_eos, schema_file))
+                    rc = 1;
+            } else {
+                fprintf(stderr, "error: session: the generation ended before the "
+                        "image point; no image written\n");
+                rc = 1;
+            }
+        }
+        if (!suspended) engine_gen_end(&e, stdout_cb, NULL, NULL);
+        printf("\n");
+        double gt = now_s() - st0;
+        int n_new = e.gen_count - sm->generated;
+        if (e.hit_stop && !json_mode) fprintf(stderr, "[end of text]\n");
+        fprintf(stderr, "\nresumed gen: %d tok, %.2f tok/s\n", n_new,
+                n_new / (gt > 0 ? gt : 1e-9));
+        free(lg);
+        session_image_free(&simg);
+        cli_cleanup(&e, toks, &tok, &m);
+        free(owned_prompt);
+        return rc;
+    }
+
     if (!interactive) {
         // one-shot completion
         char *p = unescape(prompt);
@@ -3623,9 +3874,35 @@ int main(int argc, char **argv) {
         // verbatim as they stream
         uint64_t t_seed = smp.rng;
         outcap_t ocap = { .echo = true };
-        n_gen = engine_generate(&e, logits, n_predict,
-                                transcript_path ? outcap_cb : stdout_cb,
-                                transcript_path ? &ocap : NULL, &gtime);
+        int s_rc = 0;
+        if (session_out) {
+            // R1.3: the step loop, stopped at --suspend-after or the budget,
+            // and imaged there while the generation is live
+            double st0 = now_s();
+            engine_gen_begin(&e, n_predict);
+            const float *last = NULL;
+            bool live = session_steps(&e, logits, suspend_after, stdout_cb, NULL, &last);
+            bool suspended = live && e.gen_count < e.gen_max;
+            if (live) {
+                if (!session_image_out(session_out, &e, load_path, last, n_prompt,
+                                       n_predict, json_mode, ignore_eos, schema_file))
+                    s_rc = 1;
+            } else {
+                // an ended generation has nothing left to resume; asked for an
+                // image and given none is a failure, not a quiet success
+                fprintf(stderr, "error: session: the generation ended before the "
+                        "image point; no image written\n");
+                s_rc = 1;
+            }
+            // a suspended document stays open: closing it is the resumed
+            // run's business, at its own end
+            n_gen = suspended ? e.gen_count : engine_gen_end(&e, stdout_cb, NULL, NULL);
+            gtime = now_s() - st0;
+        } else {
+            n_gen = engine_generate(&e, logits, n_predict,
+                                    transcript_path ? outcap_cb : stdout_cb,
+                                    transcript_path ? &ocap : NULL, &gtime);
+        }
         printf("\n");
         if (e.hit_stop && !json_mode) fprintf(stderr, "[end of text]\n");
         fprintf(stderr, "\nprompt: %d tok, %.2f tok/s | gen: %d tok, %.2f tok/s\n",
@@ -3728,7 +4005,7 @@ int main(int argc, char **argv) {
         free(p);
         cli_cleanup(&e, toks, &tok, &m);
         free(owned_prompt);
-        return t_rc;
+        return t_rc | s_rc;
     }
 
     // interactive chat

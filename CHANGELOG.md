@@ -8,6 +8,17 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **Session images: suspend, resume and fork a generation.** `--session-out
+  FILE` writes a `-p` generation's state to one file (tokens, KV and recurrent
+  fold, sampler and rng state, constraint digest, next-token logits, a
+  SHA-256 trailer, no timestamp); `--suspend-after N` stops there; `--resume
+  FILE` continues it; `--fork-seed N` continues it under a new seed. The gate
+  is byte identity: a run imaged at the end of its budget and the same run
+  suspended half way, resumed and imaged at the end write the same file,
+  under seeded sampling with a repeat penalty, greedy, `--json`,
+  `--json-schema` and a Mamba-2 hybrid. A different model, a changed byte, a
+  missing or different schema and an existing output file are refused. CPU,
+  solo step loop, finite `-n`. [README](README.md#cli-session-images)
 - **Prefill is batch-invariant on the CPU.** An F32 weight's decode dot
   summed in four accumulator chains while the batched prefill tile keeps
   one per output, so any row prefilled in a batch of eight or more got

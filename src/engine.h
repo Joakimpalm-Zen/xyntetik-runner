@@ -447,6 +447,25 @@ enum { ENGINE_STEP_DONE = 0, ENGINE_STEP_MORE = 1 };
 int    engine_constraint_truncate(engine *e, int n);
 
 void   engine_gen_begin(engine *e, int max_new);
+
+// ---- session images (R1.3) ----------------------------------------------
+// The live sequence as bytes and back: the KV rows of [0, pos) per layer and
+// the recurrent fold at pos, in the prefix cache's entry layout
+// (prefix_cache_entry_bytes(m, pos) bytes). Load installs n rows and
+// hist[0..n) on a reset engine, leaving it at pos n. Both refuse a ring or
+// tied-V cache (no contiguous rows).
+size_t engine_state_bytes(const engine *e);
+bool   engine_state_save(const engine *e, uint8_t *dst);
+bool   engine_state_load(engine *e, const int32_t *hist, int n, const uint8_t *src);
+// Resume a suspended generation: with the state of n_prompt + n_generated
+// tokens loaded, begin a generation of max_new tokens exactly as
+// engine_gen_begin would have at the prompt's end, then replay the
+// n_generated tokens through the bookkeeping a step runs after its pick
+// (penalty window, constraint validator, reasoning and loop trackers,
+// counts) without sampling or forwarding. The next engine_gen_step then
+// continues as if the generation had never stopped; the caller restores
+// the sampler's rng and supplies the next-token logits.
+void   engine_gen_resume(engine *e, int max_new, int n_prompt, int n_generated);
 int    engine_gen_step(engine *e, const float *logits, gen_cb cb, void *ud,
                        int32_t *next_tok, int *next_pos);
 int    engine_gen_end(engine *e, gen_cb cb, void *ud, double *gen_time);

@@ -1915,6 +1915,7 @@ whether the draft is `active` there.
 | `--model-pubkey FILE` | The PEM `PUBLIC KEY` (EC, P-256/384/521) an OMS bundle must verify with. Given without `--model-sig`, it turns an auto-detected `<model>.sig` into a gate. |
 | `--require-signed-model` | Refuse to load `-m` unless an OMS bundle is present and verifies with `--model-pubkey`. The policy applies to named registry entries, every serving slot, and reloads after unload or TTL expiry. Registry refusals return HTTP 409 with `model_signature_refused`; the server stays available. Without `--model-sig`, each load discovers that model's own `.sig` sidecar. |
 | `--kv-snapshots DIR` | With `--serve`: let named contexts be written to DIR as signed KV snapshots and loaded back by a later server, so an agent's memory outlives the process and a run can prove which memory it started from. Opt-in; nothing is read from DIR unless a request names it. See `POST /v1/runner/contexts/{id}/snapshot`. |
+| `--session-out FILE`, `--suspend-after N`, `--resume FILE`, `--fork-seed N` | Suspend a `-p` generation to one file and resume it later, exactly, or fork it under a new seed. The resumed continuation and its image are byte-identical to what the uninterrupted run makes. CPU only, the solo step loop (no `--draft`, `--mtp`, `--draft-lookup`, `--watermark`), a finite `-n`; an image is never overwritten. [Details](#cli-session-images). |
 | `--watermark KEY` | Mark sampled output with a tournament-sampling watermark (SynthID-Text's construction) under the key in KEY: every sampled token on the `-p` path and every sampled turn in `--serve`. Off by default; greedy decoding (`--temp 0`) is never changed; averaged over keys the output distribution is unchanged. Transcripts and receipts record the key's id (`watermark`), responses report it in `runner_telemetry.watermark`, and `--verify` replays a marked record only with its key. [Details](#cli-watermark). |
 | `--watermark-keygen FILE` | Write a new watermark key (`xyntetik.runner.watermark_key.v1`, mode 0600, never overwritten) and print its id. Needs no `-m`. |
 | `--detect-watermark FILE` | Score FILE against `--watermark`'s key: a transcript record or receipt (its own token ids, the prompt as context; needs no `-m`) or a text (tokenized by `-m`'s tokenizer). Prints a `xyntetik.runner.watermark_detect.v1` object (mean g-value, z, one-sided p) and exits 0 `WATERMARKED` (z >= 4), 2 `NOT_DETECTED`, 3 `INSUFFICIENT` (fewer than 16 scored tokens). |
@@ -2127,6 +2128,49 @@ Anchored in `tests/test_ecdsa.c` (the RFC 6979 appendix A.2.5-A.2.7 signatures f
 private keys, r and s exact) and `tests/test_sign_model.py` (openssl verifies each
 signature over the PAE with the key it derived; the reference `model_signing` 1.1.1
 verifier accepts single-file and split bundles and refuses a changed model).
+
+<a id="cli-session-images"></a>
+#### `--session-out FILE`, `--suspend-after N`, `--resume FILE`, `--fork-seed N`
+
+A generation can stop part-way and continue later, in another process, exactly as if it
+had never stopped:
+
+```
+runner -m model.gguf -p "..." -n 400 -s 7 --suspend-after 150 --session-out s.img
+runner -m model.gguf --resume s.img                                 # the other 250
+runner -m model.gguf --resume s.img --fork-seed 11                  # or a fork of them
+```
+
+The image is one file: a `xyntetik.runner.session.v1` JSON header (the model's sha256
+and the engine's model key, context length, KV type, prompt length, token count, the
+`-n` budget and how much of it is spent, the sampler's settings and rng state, the
+`--json` / `--json-schema` constraint by digest, `--ignore-eos`, the runner version and
+the binary's sha256), then the token ids, the KV of every position plus a recurrent
+model's fold state (the prefix cache's entry layout), and the next token's logits,
+closed by a SHA-256 over every byte before it. What the state does not hold (the
+repeat-penalty window, the constraint validator, the reasoning and loop trackers) is
+rebuilt on resume by replaying the generated tokens through the step's own bookkeeping.
+It carries no timestamp, so the same state is the same bytes. That is the gate: a run
+straight through to `-n` imaged at its end, and the same run suspended half way, resumed
+and imaged at its end, write the identical file. `tests/test_session_images.py` checks
+this under seeded sampling with a repeat penalty, greedy, `--json`, `--json-schema` and a
+Mamba-2 hybrid, and through a chain of two suspensions.
+
+`--resume` takes the sampler, context length, KV type, budget and constraint from the
+image, and refuses `-s`, `-n`, `-c`, `--kv`, `--temp`, `--top-k`, `--top-p`, `--min-p`
+and `--repeat-penalty` rather than silently overriding them, as it refuses `--json` or
+`--ignore-eos` on an image made without them. It also refuses a model whose sha256 or engine model key differs from the image's, an
+image whose trailer does not match its bytes, and a schema image without the same
+`--json-schema` (the schema itself is not in the image, only its digest). Resumed by a
+different binary, it warns: the continuation is exact only on the build that suspended
+it. `--fork-seed N` replaces the image's rng state with `N`, so a fork is reproducible
+and shares the image's tokens as its prefix. `--session-out` refuses an existing file
+before loading anything. A generation that ends (end of text, a closed document) before
+its image point has nothing to resume: no image is written and the run exits 1.
+Images are CPU-only and use the solo step loop, so no `--draft`, `--mtp` or
+`--draft-lookup`. They cannot be combined with `--serve`, `-i`, `--verify`,
+`--transcript` or `--watermark` (an image does not carry the watermark key a marked
+continuation would need). A model whose KV cache is a ring or tied-V cannot be imaged.
 
 <a id="cli-v"></a>
 #### `-v`

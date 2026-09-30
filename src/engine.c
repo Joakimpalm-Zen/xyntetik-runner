@@ -2721,9 +2721,64 @@ void engine_gen_begin(engine *e, int max_new) {
     e->gen_t0    = now_s();
 }
 
+// Everything a step does with a token after choosing it and before handing
+// it out: its bytes through the constraint validator and to the caller, the
+// reasoning and loop trackers, the counts, the prelude budget. Shared with
+// engine_gen_resume, which replays generated tokens through exactly this, so
+// a resumed generation's state is the one the step built, by construction.
+// True when the step must end the generation (the caller left, or closing a
+// prelude failed).
+static bool gen_consume(engine *e, int tok, gen_cb cb, void *ud) {
+    char buf[512];
+    int n = decode_piece(e, tok, buf, sizeof(buf));
+    bool in_prelude = (e->schema || e->json_mode) &&
+                      e->constraint_phase != CP_OUTPUT;
+    int rc = e->schema && n > 0
+               ? constraint_accept(e, true, buf, n, cb, ud)
+           : e->json_mode && n > 0
+               ? constraint_accept(e, false, buf, n, cb, ud)
+           : cb && n > 0 ? cb(ud, buf, n) : 0;
+    if (!rc && (e->schema || e->json_mode))
+        rc = constraint_control_accept(e, tok, e->schema != NULL, cb, ud);
+    if (!rc && e->schema && n == 0 && constraint_spelling_ok(e, tok, true)) {
+        const char *sp = tok_raw(e->tok, tok);
+        rc = constraint_accept(e, true, sp, (int)strlen(sp), cb, ud);
+    }
+    think_track(e, tok, buf, n);
+    loop_guard_check(e);
+    if (rc != 0) { e->gen_count++; return true; } // client gone
+    e->gen_count++;
+    if (in_prelude && (e->constraint_phase == CP_PROBE ||
+                       e->constraint_phase == CP_THINK) && e->prelude_max > 0 &&
+        ++e->prelude_count >= e->prelude_max) {
+        e->prelude_exhausted = true;
+        // A model that opens a thinking block and never closes it used to end
+        // the request here, having produced nothing: the caller asked for a
+        // schema-constrained payload and got an empty document. Measured on
+        // e4b-q4km (gemma4, prelude tags <|channel>thought / <channel|>), two
+        // of four tool prompts did exactly this -- prelude_max is max_new/2,
+        // so -n 200 burned 100 tokens thinking and returned one newline.
+        //
+        // Under an active constraint the prelude is not the deliverable, so
+        // the budget cap now CLOSES the prelude instead of ending the turn:
+        // phase moves to output, the payload validator is reset, and the
+        // remaining half of the budget goes on the JSON that was asked for.
+        // prelude_exhausted still records why, so the server keeps reporting
+        // "reasoning_limit".
+        // No `else`. `in_prelude` above already required a constraint, so an
+        // unconstrained turn never reaches this bound at ALL -- it runs to
+        // max_tokens like any other. There WAS an else here returning
+        // ENGINE_STEP_DONE, and it was unreachable; on 2026-08-15 it was read
+        // as the unconstrained POLICY and presented to the owner as one, which
+        // is the specific harm of dead code that looks like a decision.
+        if (constraint_finish_think(e, e->schema != NULL, cb, ud) != 0)
+            return true;
+    }
+    return false;
+}
+
 int engine_gen_step(engine *e, const float *logits, gen_cb cb, void *ud,
                     int32_t *next_tok, int *next_pos) {
-    char buf[512];
     // Arriving here at all means the caller forwarded the row the previous
     // step handed out -- `logits` is that forward's result. Anything still
     // outstanding when engine_gen_end runs was abandoned instead.
@@ -2767,50 +2822,7 @@ int engine_gen_step(engine *e, const float *logits, gen_cb cb, void *ud,
         e->lp_chosen[e->lp_count] = raw - pre.lse;
         e->lp_count++;
     }
-    int n = decode_piece(e, tok, buf, sizeof(buf));
-    bool in_prelude = (e->schema || e->json_mode) &&
-                      e->constraint_phase != CP_OUTPUT;
-    int rc = e->schema && n > 0
-               ? constraint_accept(e, true, buf, n, cb, ud)
-           : e->json_mode && n > 0
-               ? constraint_accept(e, false, buf, n, cb, ud)
-           : cb && n > 0 ? cb(ud, buf, n) : 0;
-    if (!rc && (e->schema || e->json_mode))
-        rc = constraint_control_accept(e, tok, e->schema != NULL, cb, ud);
-    if (!rc && e->schema && n == 0 && constraint_spelling_ok(e, tok, true)) {
-        const char *sp = tok_raw(e->tok, tok);
-        rc = constraint_accept(e, true, sp, (int)strlen(sp), cb, ud);
-    }
-    think_track(e, tok, buf, n);
-    loop_guard_check(e);
-    if (rc != 0) { e->gen_count++; return ENGINE_STEP_DONE; } // client gone
-    e->gen_count++;
-    if (in_prelude && (e->constraint_phase == CP_PROBE ||
-                       e->constraint_phase == CP_THINK) && e->prelude_max > 0 &&
-        ++e->prelude_count >= e->prelude_max) {
-        e->prelude_exhausted = true;
-        // A model that opens a thinking block and never closes it used to end
-        // the request here, having produced nothing: the caller asked for a
-        // schema-constrained payload and got an empty document. Measured on
-        // e4b-q4km (gemma4, prelude tags <|channel>thought / <channel|>), two
-        // of four tool prompts did exactly this -- prelude_max is max_new/2,
-        // so -n 200 burned 100 tokens thinking and returned one newline.
-        //
-        // Under an active constraint the prelude is not the deliverable, so
-        // the budget cap now CLOSES the prelude instead of ending the turn:
-        // phase moves to output, the payload validator is reset, and the
-        // remaining half of the budget goes on the JSON that was asked for.
-        // prelude_exhausted still records why, so the server keeps reporting
-        // "reasoning_limit".
-        // No `else`. `in_prelude` above already required a constraint, so an
-        // unconstrained turn never reaches this bound at ALL -- it runs to
-        // max_tokens like any other. There WAS an else here returning
-        // ENGINE_STEP_DONE, and it was unreachable; on 2026-08-15 it was read
-        // as the unconstrained POLICY and presented to the owner as one, which
-        // is the specific harm of dead code that looks like a decision.
-        if (constraint_finish_think(e, e->schema != NULL, cb, ud) != 0)
-            return ENGINE_STEP_DONE;
-    }
+    if (gen_consume(e, tok, cb, ud)) return ENGINE_STEP_DONE;
     if ((e->schema && constraint_done(e, true)) ||
         (!e->schema && e->json_mode && constraint_done(e, false))) {
         e->hit_stop = true;
@@ -2836,6 +2848,49 @@ int engine_gen_end(engine *e, gen_cb cb, void *ud, double *gen_time) {
     constraint_close(e, cb, ud);
     if (gen_time) *gen_time = now_s() - e->gen_t0;
     return e->gen_count;
+}
+
+// ---- session images (R1.3) --------------------------------------------------
+
+size_t engine_state_bytes(const engine *e) {
+    return prefix_cache_entry_bytes(e->m, e->pos);
+}
+
+bool engine_state_save(const engine *e, uint8_t *dst) {
+    if (!e || !e->m || !dst || model_kv_ring_active(e->m) || e->m->tied_v)
+        return false;
+    pfx_save(e->m, dst, e->pos);
+    return true;
+}
+
+bool engine_state_load(engine *e, const int32_t *hist, int n, const uint8_t *src) {
+    if (!e || !e->m || !e->hist || !src || n < 1 || n > e->m->n_ctx ||
+        model_kv_ring_active(e->m) || e->m->tied_v)
+        return false;
+    engine_reset(e);
+    pfx_load(e->m, src, n, n);
+    if (model_has_recurrent(e->m)) {
+        size_t kvb = prefix_cache_entry_bytes(e->m, n) - model_recurrent_blob_bytes(e->m);
+        if (!model_recurrent_blob_load(e->m, src + kvb)) return false;
+    }
+    memcpy(e->hist, hist, sizeof(int32_t) * (size_t)n);
+    e->pos = n;
+    e->rewind_how = REWIND_NONE;
+    return true;
+}
+
+void engine_gen_resume(engine *e, int max_new, int n_prompt, int n_generated) {
+    int end = e->pos;
+    e->pos = n_prompt;
+    engine_gen_begin(e, max_new);     // gen_start = the prompt's end, as it was
+    for (int i = 0; i < n_generated; i++) {
+        int tok = e->hist[n_prompt + i];
+        sampler_accept(e->smp, tok);
+        gen_consume(e, tok, NULL, NULL);
+        e->pos++;
+    }
+    e->pos = end;
+    e->pending_pos = -1;
 }
 
 // The speculative walk owns its own forwards and cannot interleave with
