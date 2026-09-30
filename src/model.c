@@ -2050,6 +2050,11 @@ static bool model_bind_weights(model_t *m, const char *path, const model_params 
         m->rope_dim      = (int)gguf_get_u32(g, AK("rope.dimension_count"), m->head_dim);
         m->rope_dim_local = (int)gguf_get_u32(g, AK("rope.dimension_count_swa"), m->rope_dim);
         int hd_swa       = (int)gguf_get_u32(g, AK("attention.key_length_swa"), m->head_dim);
+        // The generic sliding-window block above already built a table from
+        // the same keys; this branch rebuilds it with the family's rules, so
+        // the first one is released rather than stranded (one leak per load,
+        // including every swap reload in --serve).
+        free(m->l_is_swa);
         m->l_is_swa   = calloc(m->n_layer, sizeof(bool));
         m->l_head_kv  = calloc(m->n_layer, sizeof(int));
         m->l_head_dim = calloc(m->n_layer, sizeof(int));
@@ -2438,6 +2443,7 @@ static bool model_bind_weights(model_t *m, const char *path, const model_params 
         m->swa_window = (int)gguf_get_u32(g, AK("attention.sliding_window"), 2048);
         int period = (int)gguf_get_u32(g, AK("attention.sliding_window_pattern"), 4);
         if (period < 1) period = 4;
+        free(m->l_is_swa);   // the generic block's table, rebuilt here (see gemma4)
         m->l_is_swa = calloc(m->n_layer, sizeof(bool));
         if (!m->l_is_swa) return false;
         if (!swa_pattern_array(g, AK("attention.sliding_window_pattern"),
