@@ -139,6 +139,12 @@ def test_document_order_does_not_change_a_score(runner_bin, dense):
         sa = {DOCS[r["index"]]: r["logit"] for r in a["results"]}
         sb = {DOCS[::-1][r["index"]]: r["logit"] for r in b["results"]}
         assert sa == sb
+        # nor does what the slot served before: each document is scored cold
+        _post(srv, "/v1/completions", {"prompt": QUERY + " and then some more "
+                                       "words to leave rows behind", "max_tokens": 4})
+        _, c = _post(srv, "/v1/rerank", {"query": QUERY, "documents": DOCS[1:]})
+        sc = {DOCS[1:][r["index"]]: r["logit"] for r in c["results"]}
+        assert sc == {d: sa[d] for d in DOCS[1:]}
 
 
 def test_top_n_documents_and_object_form(runner_bin, dense):

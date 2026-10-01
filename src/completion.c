@@ -347,6 +347,7 @@ static void completion_cleanup(engine *e, snode *schema, gen_ctx *g) {
         free(g->raw.s);
         free(g->calls.s);
         g->raw = (sbuf){0};
+        g->calls = (sbuf){0};
     }
     free(e->lp_chosen); free(e->lp_ids); free(e->lp_top);
     e->lp_chosen = NULL; e->lp_ids = NULL; e->lp_top = NULL;

@@ -548,6 +548,23 @@ static bool responses_expand_previous(sock_t fd, jv *req) {
     free(in); free(body);
     jv *out = jv_get(b, "output");
     jv *cur = jv_get(req, "input");
+    // A stored conversation that does not read back is an error, never a
+    // shorter history served as if it were the whole one.
+    if (!hist || hist->type != J_ARR || !b || (out && out->type != J_ARR)) {
+        jv_free(hist);
+        jv_free(b);
+        send_error(fd, 500, "the stored response named by previous_response_id "
+                            "could not be read back");
+        return false;
+    }
+    // the same refusal a request without previous_response_id gets, made
+    // here because the merged array replaces `input` below
+    if (cur && cur->type != J_NULL && cur->type != J_STR && cur->type != J_ARR) {
+        jv_free(hist);
+        jv_free(b);
+        send_error(fd, 400, "input must be a string or an array of items");
+        return false;
+    }
     sbuf m = {0};
     sb_lit(&m, "[");
     int k = 0;

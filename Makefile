@@ -171,7 +171,6 @@ TEST_ATTN_TOL = $(TEST_BATCH:test-batch%=test-attn-tol%)
 TEST_GPU_ID = $(TEST_BATCH:test-batch%=test-gpu-identity%)
 TEST_MOE_MM_AB = $(TEST_BATCH:test-batch%=test-moe-mm-ab%)
 TEST_BATCH_ID = $(TEST_BATCH:test-batch%=test-batch-identity%)
-TEST_PREFILL_INV = $(TEST_BATCH:test-batch%=test-prefill-invariance%)
 TEST_ATTN_SPLIT = $(TEST_BATCH:test-batch%=test-attn-split-bin%)
 TEST_MOE_TOL = $(TEST_BATCH:test-batch%=test-moe-tol%)
 TEST_MOE_ROUTER = $(TEST_BATCH:test-batch%=test-moe-router%)
@@ -969,14 +968,6 @@ TEST_BATCH_ID_SRC = tests/test_batch_identity.c $(OBJDIR)/gguf.o $(OBJDIR)/compa
                     $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(OBJDIR)/vramreg.o $(GPU_OBJ)
 $(TEST_BATCH_ID): $(TEST_BATCH_ID_SRC) $(HDR)
 	$(CC) $(CFLAGS) -I src $(TEST_BATCH_ID_SRC) -o $@ $(LDFLAGS)
-
-# Batch-invariant prefill (R1.5): a prompt prefilled in chunks of any width
-# gives the solo (one-token-per-forward) path's logits and KV, byte for byte.
-TEST_PREFILL_INV_SRC = tests/test_prefill_invariance.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o \
-                       $(QUANTS_OBJ) $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o \
-                       $(OBJDIR)/vramreg.o $(GPU_OBJ)
-$(TEST_PREFILL_INV): $(TEST_PREFILL_INV_SRC) $(HDR) test.gguf test-q8.gguf test-bf16.gguf
-	$(CC) $(CFLAGS) -I src $(TEST_PREFILL_INV_SRC) -o $@ $(LDFLAGS)
 
 # Split attention (R3.1.7): the (head, chunk) / (head, slice) split is
 # bit-identical to the head-parallel path at 1-7 threads, forced and
@@ -2115,7 +2106,7 @@ endif
 test: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSON_OOM) $(TEST_SCHEMA_OOM) $(TEST_SAMPLER) $(TEST_LORA_GRAD) $(TEST_DPO_GRAD) $(TEST_MVT) $(TEST_MVCANON) \
       $(TEST_TOKENIZER) $(TEST_TOK_MERGE) $(TEST_TOKENIZER_OOM) $(TEST_TEMPLATE) $(TEST_PROMPT_MARKS) \
       $(TEST_TEMPLATE_OOM) \
-      $(TEST_TOOLS) $(TEST_SHARED) $(TEST_FILE_ID) $(TEST_BATCH) $(TEST_BATCH_ID) $(TEST_PREFILL_INV) $(TEST_ATTN_SPLIT) $(TEST_BIND) $(TEST_HOST_HEADER) \
+      $(TEST_TOOLS) $(TEST_SHARED) $(TEST_FILE_ID) $(TEST_BATCH) $(TEST_BATCH_ID) $(TEST_ATTN_SPLIT) $(TEST_BIND) $(TEST_HOST_HEADER) \
       $(TEST_PREFIX) $(TEST_GRAMMAR_FF) $(TEST_LOOKUP_DRAFT) $(TEST_VRAMREG) $(TEST_KV_TOL) $(TEST_KV_FP4) $(TEST_CUDA_KVFP4) $(TEST_TC_TOL) $(TEST_I8_TOL) $(TEST_MV_TOL) $(TEST_ATTN_TOL) $(TEST_GPU_ID) $(TEST_MOE_TOL) $(TEST_MOE_ROUTER) $(TEST_PAGING_WARN) $(TEST_AUTOFIT) $(TEST_RESP_SM_DEP) \
       $(TEST_QUANTS_SIMD) $(TEST_IQ_DECODE) $(TEST_INSTANCES) $(TEST_INSTANCES_OOM) $(TEST_METAL_ADMISSION) $(TEST_TRAY_CORE) $(TEST_TRAY_WIN_DEP) \
       $(TEST_QUANTIZE) \
@@ -2302,7 +2293,6 @@ test: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSON_OOM) $(
 	$(MAKE) --no-print-directory test-metal-moe-mm
 	$(MAKE) --no-print-directory test-metal-fuse
 	./$(TEST_BATCH_ID) test.gguf
-	./$(TEST_PREFILL_INV) test.gguf test-q8.gguf test-bf16.gguf
 	$(MAKE) --no-print-directory test-attn-split
 	$(PYTHON) scripts/check-generated.py
 	PYTHONPATH=python/src $(PYTHON) -m pytest python/tests/

@@ -4231,16 +4231,6 @@ typedef struct {
 // Batches narrower than this take the per-column native dot (see mv_rows);
 // wider ones the dequantized f32 tile, whose row reuse only pays off there.
 enum { MV_SMALL_BATCH = 8 };
-// A canonical build (RUNNER_CANON_KERNELS) runs every batch width through
-// the solo path: its dot kernels fix one reduction tree per format, and the
-// dequantize-to-f32 tile below does not follow those trees, so a canonical
-// build would otherwise be exact across ISAs and still depend on batch shape.
-#ifdef RUNNER_CANON_KERNELS
-enum { MV_SOLO_ORDER = 1 };
-#else
-enum { MV_SOLO_ORDER = 0 };
-#endif
-
 
 static void mv_rows(void *ctx, int i0, int i1) {
     mv_job *j = ctx;
@@ -4251,7 +4241,7 @@ static void mv_rows(void *ctx, int i0, int i1) {
     // the weights, so dot(w * s, x) = s * dot(w, x), before the bias.
     const float sc = j->w->scale;
 
-    if (j->n_batch < MV_SMALL_BATCH || MV_SOLO_ORDER) {
+    if (j->n_batch < MV_SMALL_BATCH) {
         // Solo step and small batches (the speculative verify, a few server
         // slots decoding together): every column takes the SAME native dot
         // the solo step takes, rows outer so a weight row is streamed from
@@ -4373,8 +4363,7 @@ static void mv_rows(void *ctx, int i0, int i1) {
 enum { I8_MIN_ROWS = 32 };
 
 static bool mv_takes_i8(const gguf_tensor *w, int n_in, int n_out, int n_batch) {
-    return (n_batch < MV_SMALL_BATCH || MV_SOLO_ORDER) && n_out >= I8_MIN_ROWS &&
-           i8_dot_enabled() &&
+    return n_batch < MV_SMALL_BATCH && n_out >= I8_MIN_ROWS && i8_dot_enabled() &&
            i8_dot_ok(w->type, n_in);
 }
 

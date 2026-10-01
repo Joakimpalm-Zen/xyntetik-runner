@@ -9,7 +9,9 @@
 //                                 (sha256, engine model key), context length,
 //                                 KV type, prompt length, token count, the
 //                                 generation budget and how much of it is
-//                                 spent, the sampler (knobs and rng state),
+//                                 spent, the sampler (knobs and rng state;
+//                                 the rng is "0" for a greedy run, which
+//                                 never draws from it),
 //                                 the constraint (json mode, schema digest),
 //                                 ignore_eos, the runner version and binary
 //   u32 n, int32 tokens[n]        the prompt and what was generated

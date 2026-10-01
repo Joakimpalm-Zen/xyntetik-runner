@@ -199,3 +199,15 @@ def test_messages_parallel_tool_use(runner_bin, model):
             "runner_test_reply": TWO_CALLS})
         uses = [b for b in d.get("content", []) if b["type"] == "tool_use"]
         assert len(uses) <= 1, d
+
+
+def test_a_wrong_typed_input_is_refused_with_a_previous_response(runner_bin, model):
+    """previous_response_id replaced `input` with the merged history before
+    its type was checked, so `"input": 5` answered 200 on a continuation and
+    400 everywhere else."""
+    with _serve(runner_bin, model) as srv:
+        st, a = _resp(srv, input="Name a colour.", store=True)
+        assert st == 200, a
+        assert _resp(srv, input=5)[0] == 400
+        st, b = _resp(srv, input=5, previous_response_id=a["id"])
+        assert st == 400, b

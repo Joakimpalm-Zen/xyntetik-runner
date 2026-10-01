@@ -284,3 +284,21 @@ def test_a_nul_output_byte_still_verifies(runner_bin, base, tmp_path):
                         "off", "-t", "2", "-c", "512", "--ignore-eos"], cwd=ROOT,
                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120)
     assert v.returncode == 0 and b"VERIFIED" in v.stderr, v.stderr[-400:]
+
+
+def test_the_token_that_completes_a_json_document_is_recorded(runner_bin, base,
+                                                              tmp_path):
+    """A token that completes a constrained document ends the turn before its
+    forward, and the record read the output tokens from a history that was
+    only written on the way to that forward: `{}` was recorded as [126, 0].
+    The fixture's vocabulary is bytes offset by 3, so the ids are the text."""
+    out = tmp_path / "json.json"
+    p = subprocess.run(
+        [runner_bin, "-m", str(base), "-p", "hello", "--json", "-n", "60", "-s",
+         "4", "--gpu", "off", "-t", "2", "--transcript", str(out)],
+        cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120)
+    assert p.returncode == 0, p.stderr.decode(errors="replace")
+    o = json.loads(out.read_bytes())["output"]
+    # the precondition: the document closed before the budget ran out
+    assert o["finish"] == "stop" and o["n"] < 60, o
+    assert bytes(t - 3 for t in o["tokens"]) == bytes.fromhex(o["bytes_hex"]), o

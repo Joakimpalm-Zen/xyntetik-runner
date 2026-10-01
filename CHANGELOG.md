@@ -8,6 +8,72 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **Review of the 2026-10-01 batch: nine defects fixed, one feature parked.**
+  - *Parked: batch-invariant CPU prefill (R1.5).* Its gate passed on
+    fixtures only. On arm64 the BF16 fixture fails it (`make test` was red
+    on an M1; CI runs `make test` on x86 and Windows), F16 has the same
+    four-chain NEON dot, and on a real model the property does not hold for
+    quantized weights: granite-4.1-3b Q8_0 on the CPU, 92% of 26 million
+    batched prefill dots differ in the last bits from the same dot decoded
+    alone. The Q8_0 fixtures pass because their weights are numerically
+    degenerate, so the gate could not fail there. The change is reverted
+    here and kept on the branch `parked/r1.5-batch-invariant-prefill`.
+    What follows from it, stated where it applies: a named context, a KV
+    snapshot and a receipt with a reused prefix are exact on the fixtures
+    the tests use; on a real quantized model a prefix built at one batch
+    shape and replayed at another can differ in the last bits. The same
+    holds for a repeated request: asked twice, a prompt's second answer
+    reuses its KV and can differ from the first in a logprob's last digit
+    (as in v0.5.7); the adapter-routing test now holds a routed request to
+    the reference with the same reuse history.
+  - *A record named the wrong last token of a constrained turn.* The token
+    that completes a `--json` or schema document ends the turn before its
+    forward, and records read output tokens from a history written only on
+    the way to that forward: `{}` was recorded as `[126, 0]`. Both the
+    recorder and the replay read the same stale slot, so `--verify` still
+    said VERIFIED. The history is now written before the early exits, on the
+    solo and speculative paths.
+  - *`--export-bundle` could delete the receipt it was given.* Exporting
+    into the directory the receipt lives in rewrote it onto itself, and a
+    manifest that then failed to sign removed `receipt.json`, `model.sig`
+    and `model-pubkey.pem`, written by this call or not. A directory that
+    already holds any of the bundle's files is refused before a byte is
+    written.
+  - *One oversized stored response emptied the Responses store.* An entry
+    larger than `RUNNER_RESPONSES_STORE_MB` evicted every other entry and
+    was then refused. It is refused first.
+  - *`previous_response_id` could serve a shorter history, or accept a bad
+    `input`.* A stored conversation that did not read back was dropped
+    silently (now 500), and a wrong-typed `input` answered 200 on a
+    continuation and 400 everywhere else (now 400).
+  - *A snapshot that could not be written answered 404 `context_not_found`.*
+    The export's I/O error shared a value with "unknown context"; it is
+    `snapshot_write_failed` (500) now. The snapshot route also matched any
+    path containing `/snapshot`.
+  - *Re-pinning or re-loading a context that no longer fits destroyed the
+    old one.* The pin being replaced was dropped before the budget check;
+    it is dropped only once the new entry is known to fit.
+  - *A greedy session image carried the wall clock.* An unseeded run's rng
+    is the time, and the image recorded it even at temperature 0, where it
+    is never drawn from: two images of the same greedy state differed
+    whenever the runs straddled a second, so the byte-identity gate passed
+    or failed by timing (it failed under the sanitizer build). A greedy
+    image now records rng `0`.
+  - *A rerank score moved with the document order.* Each document reused
+    the KV rows the previous one left, so its prefix was fed at a batch
+    width that depended on what came before, and the score changed in its
+    last digit (x86 CI, once R1.5 was out; on a quantized model with it in).
+    `/v1/rerank` now scores every document from an empty KV: a score is a
+    function of the document's own prompt, at the price of prefilling the
+    shared instruction and query once per document. `/v1/decide` keeps its
+    prefix reuse and the same last-digit exposure to the slot's history.
+  - *The TypeScript client's stream never cancelled its reader*, so a
+    consumer that left the loop early kept the server generating and its
+    slot held.
+  - Scope note on signed KV snapshots: a manifest's signature is checked
+    against the key the manifest itself names. Loading does not pin a
+    trusted key yet, so `signed_by` is what a caller must read.
+
 - **CPU attention uses the threads a few-heads model left idle.** One
   token's attention was split over query heads only, so with fewer heads
   than threads the rest waited. It now also splits over position chunks
@@ -31,23 +97,6 @@ names that were true when they were written.
   `--json-schema` and a Mamba-2 hybrid. A different model, a changed byte, a
   missing or different schema and an existing output file are refused. CPU,
   solo step loop, finite `-n`. [README](README.md#cli-session-images)
-- **Prefill is batch-invariant on the CPU.** An F32 weight's decode dot
-  summed in four accumulator chains while the batched prefill tile keeps
-  one per output, so any row prefilled in a batch of eight or more got
-  different last bits than the same row decoded alone: a token's logits
-  depended on the prefill chunk (measured: 165 of 259 last-token logits
-  on the fixture at chunk 37, 253 of 259 on a 768-wide synthetic model),
-  and a receipt whose prompt KV came from a cache replayed exactly only by
-  luck. The decode dot now walks the tile's order (one accumulator, the
-  same reduction, the same fused tail). F16, BF16, Q8_0, Q4_0, Q4_K and
-  Q6_K were already invariant and are measured so. No measurable cost:
-  F32 decode 339.8 -> 338.0 tok/s and prefill 730.9 -> 719.9 tok/s,
-  medians of seven interleaved runs on a 4-core box (noise). A canonical
-  (T3) build keeps its own F32 tree and now prefills through the
-  per-column canonical dots, so it is batch-invariant too. Gates:
-  `test-prefill-invariance` (logits and KV byte for byte across seven
-  chunkings, F32/Q8_0/BF16 fixtures) and `test_quants_simd` (the F32
-  decode dot against a written order: 807 failures on the old kernel).
 
 - **Signed KV snapshots: memory with provenance (`--kv-snapshots DIR`).**
   A named context can be written to disk (`POST /v1/runner/contexts/{id}/
@@ -61,7 +110,9 @@ names that were true when they were written.
   in its receipt and still replays VERIFIED. Anchors in
   `tests/test_kv_snapshots.py`: hashlib for every digest, `--check-record`
   for the signature, and the memory itself -- a request forked from the
-  loaded snapshot returns the cold prefill's tokens and logprobs exactly.
+  loaded snapshot returns the cold prefill's tokens and logprobs exactly
+  on the test fixture (see the batch-invariance note at the top of this
+  section for real quantized models).
 
 - **Tournament-sampling watermark and detector (`--watermark`,
   `--detect-watermark`).** Article 50 wants generated text marked in a
@@ -142,7 +193,7 @@ names that were true when they were written.
   each response's record. The anchor in `tests/test_serve_receipts.py` is
   the CLI replay: greedy, sampled (the sampler's state as generation started
   is the recorded seed) and chat receipts all replay VERIFIED at T1, as did
-  records whose prompt reused the slot's KV.
+  records whose prompt reused the slot's KV, on the test fixtures.
 
 - **Receipt bundles: one directory a verifier can take.**
   `--export-bundle RECEIPT --bundle-out DIR` writes the receipt byte for

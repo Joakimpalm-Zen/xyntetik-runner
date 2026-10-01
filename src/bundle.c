@@ -151,10 +151,18 @@ int bundle_export(const bundle_opts *o) {
     join(p_rec, sizeof p_rec, o->out_dir, "receipt.json");
     join(p_sig, sizeof p_sig, o->out_dir, "model.sig");
     join(p_pub, sizeof p_pub, o->out_dir, "model-pubkey.pem");
-    FILE *exists = fopen(p_manifest, "rb");
-    if (exists) {
+    // Nothing in the directory is overwritten, and so nothing this call did
+    // not write is removed by a failure below: exporting a receipt into the
+    // directory it lives in used to rewrite it onto itself and then delete
+    // it when the manifest could not be signed.
+    const char *members[] = { p_manifest, p_rec, p_sig, p_pub };
+    for (int i = 0; i < 4; i++) {
+        FILE *exists = fopen(members[i], "rb");
+        if (!exists) continue;
         fclose(exists);
-        fprintf(stderr, "error: bundle: %s already holds a bundle\n", o->out_dir);
+        fprintf(stderr, "error: bundle: %s already exists; a bundle is "
+                "written into a directory that holds none of its files\n",
+                members[i]);
         goto out;
     }
     size_t sn = 0, pn = 0;

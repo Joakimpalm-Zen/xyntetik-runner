@@ -323,3 +323,26 @@ def test_resume_refuses_a_constraint_the_image_was_not_made_under(runner_bin, fx
     for flag in ("--json", "--ignore-eos"):
         rc, out, err = _run(runner_bin, "-m", m, "--resume", d / "s.img", flag)
         assert rc == 1 and f"not generated under {flag}" in err, err[-400:]
+
+
+def test_a_greedy_image_does_not_carry_the_clock(runner_bin, fx):
+    """An unseeded run's rng is the wall clock, and the image recorded it even
+    for a greedy generation that never draws from it: two images of the same
+    greedy state differed whenever the runs straddled a second, which made
+    the byte-identity gate above pass or fail by timing."""
+    import time
+    d = fx["d"] / "clock"
+    d.mkdir()
+    gen = ["-p", "hello", "--temp", "0", "--ignore-eos"]
+    rc, _, err = _run(runner_bin, "-m", fx["model"], "-n", N, *gen,
+                      "--session-out", d / "a.img")
+    assert rc == 0, err[-800:]
+    time.sleep(1.1)
+    rc, _, err = _run(runner_bin, "-m", fx["model"], "-n", N, *gen,
+                      "--suspend-after", HALF, "--session-out", d / "b1.img")
+    assert rc == 0, err[-800:]
+    time.sleep(1.1)
+    rc, _, err = _run(runner_bin, "-m", fx["model"], "--resume", d / "b1.img",
+                      "--session-out", d / "b2.img")
+    assert rc == 0, err[-800:]
+    assert (d / "a.img").read_bytes() == (d / "b2.img").read_bytes()
