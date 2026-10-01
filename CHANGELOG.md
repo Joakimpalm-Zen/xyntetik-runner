@@ -9,23 +9,25 @@ names that were true when they were written.
 ## Unreleased
 
 - **Review of the 2026-10-01 batch: nine defects fixed, one feature parked.**
-  - *Parked: batch-invariant CPU prefill (R1.5).* Its gate passed on
-    fixtures only. On arm64 the BF16 fixture fails it (`make test` was red
-    on an M1; CI runs `make test` on x86 and Windows), F16 has the same
-    four-chain NEON dot, and on a real model the property does not hold for
-    quantized weights: granite-4.1-3b Q8_0 on the CPU, 92% of 26 million
-    batched prefill dots differ in the last bits from the same dot decoded
-    alone. The Q8_0 fixtures pass because their weights are numerically
-    degenerate, so the gate could not fail there. The change is reverted
-    here and kept on the branch `parked/r1.5-batch-invariant-prefill`.
-    What follows from it, stated where it applies: a named context, a KV
-    snapshot and a receipt with a reused prefix are exact on the fixtures
-    the tests use; on a real quantized model a prefix built at one batch
-    shape and replayed at another can differ in the last bits. The same
-    holds for a repeated request: asked twice, a prompt's second answer
-    reuses its KV and can differ from the first in a logprob's last digit
-    (as in v0.5.7); the adapter-routing test now holds a routed request to
-    the reference with the same reuse history.
+  - *Parked: batch-invariant CPU prefill (R1.5).* It claimed the property
+    for "the CPU"; it holds on x86 and not on arm64. On an M1 `make test`
+    was red (the BF16 fixture; CI runs `make test` on x86 and Windows
+    only), F16 has the same four-chain NEON dot, and a real model is not
+    invariant there: granite-4.1-3b Q8_0, 92% of 26 million batched prefill
+    dots differ in the last bits from the same dot decoded alone, while the
+    Q8_0 fixtures pass (their weights are numerically degenerate, so the
+    gate could not fail on them). On x86 the same gate passes on real
+    models: Qwen3-8B Q8_0 and Qwen2.5-7B Q4_K_M, 0 of ~152K logits differ
+    at all 14 chunkings (Zen 5, an AVX-512 native build). The change is
+    reverted here and kept on the branch
+    `parked/r1.5-batch-invariant-prefill` until the NEON kernels follow.
+    What follows from it, stated where it applies: without it a prefix
+    built at one batch width and continued at another can differ in the
+    last bits, so a named context, a KV snapshot, a repeated request and a
+    receipt with a reused prefix agree with the cold answer in their text
+    and to within a logprob's last digit, not always bit for bit (as in
+    v0.5.7). The tests that pinned exact equality across a reuse now
+    compare like with like or to 1e-5.
   - *A record named the wrong last token of a constrained turn.* The token
     that completes a `--json` or schema document ends the turn before its
     forward, and records read output tokens from a history written only on
