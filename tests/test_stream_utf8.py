@@ -171,3 +171,4 @@ def test_a_native_protocol_call_streams_whole_characters(tmp_path):
     assert json.loads(buffered) == {"city": TEXT}, buffered
     assert "�" not in streamed and json.loads(streamed) == {"city": TEXT}, streamed
 
+

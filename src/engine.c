@@ -1666,6 +1666,11 @@ static bool constraint_done(const engine *e, bool schema) {
            (schema ? e->sv.done : e->jv.done);
 }
 
+bool engine_constraint_complete(const engine *e) {
+    if (e->schema) return constraint_done(e, true);
+    return e->json_mode && constraint_done(e, false);
+}
+
 // A protocol token the model was trained on (Muse's <|message|>, <|start|>)
 // decodes to no bytes, so the byte machine can never observe it — yet the
 // atem automata SPELL those markers as literals. Without this, the model is
@@ -1709,9 +1714,16 @@ static bool constraint_token_ok(engine *e, int id, bool schema) {
     // change was a no-op for the case that motivated it and untestable
     // without a think-tag model to hand. It may still be right; it is not
     // shipping unmeasured.
+    // CP_AFTER_THINK is the prelude the budget cap closed (gen_consume): the
+    // model was mid-sentence and was not told. A control token is still its
+    // to emit there (its own close tag, typically), but a STOP is not: with
+    // prose masked, a stop was the likeliest token left, and the turn ended
+    // at half its budget with nothing in content (measured 2026-10-02 on
+    // Qwen3.5-0.8B and 4B under json_object: 100 of 200 tokens, all
+    // reasoning, finish "length"). The half that is left is for the payload.
     if (is_stop(e, id) || tok_is_control(e->tok, id))
         return e->constraint_phase == CP_THINK ||
-               e->constraint_phase == CP_AFTER_THINK ||
+               (e->constraint_phase == CP_AFTER_THINK && !is_stop(e, id)) ||
                constraint_done(e, schema) ||
                // A trailing raw value (Muse's to=user free-text answer) can
                // only ever end at the model's own stop token: its byte

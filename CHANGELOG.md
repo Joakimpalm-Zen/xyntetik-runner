@@ -8,6 +8,34 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **Family sweep, 2026-10-02: three defects real models showed.**
+  `scripts/family-sweep.py` puts a real model of each family through every
+  surface (56 models on the Blackwell). What it found and what changed:
+  - *A JSON-mode or schema turn on a thinking model ended at half its budget
+    with empty content.* When the reasoning prelude hits its cap the engine
+    closes it, and a stop token was still admitted at that point; with the
+    model's prose masked it was the likeliest token left. Qwen3.5-0.8B and
+    4B under `json_object`: 100 of 200 tokens, all reasoning, `"content":
+    ""`. A stop is refused until the payload is complete; the 4B now returns
+    the document. A document the model completes after the cap reports
+    `finish_reason: "stop"` (it was `"length"`, which makes a typed client
+    discard a whole answer); `finish_detail: "reasoning_limit"` still says
+    the reasoning was cut.
+  - *A tool whose `parameters` is not a JSON Schema was accepted on families
+    whose calls are parsed.* `{"type": "nonsense"}` was a 400 where the
+    schema is compiled and a 200 where it is not. The structural rules of
+    JSON Schema are now checked on every family (`type` names real types,
+    `properties` is an object, `required` a list of strings, sub-schemas are
+    schemas); schemas outside the constrained subset are still taken where
+    the turn is parsed.
+  - *A code point is not sampled.* The hex digits of a `\uXXXX` escape in a
+    constrained string are picked greedily. granite-4.1-3b Q8_0 at
+    temperature 0.8 wrote "Å" as `\u00a5` or `\u00a1` in 23 of 60 tool
+    calls, one digit off; with greedy digits 57 of 60 are exact and none has
+    a wrong first character (the Blackwell, the same prompt, n=60). Banning
+    the escape outright was measured first and rejected: 0 of 60, the model
+    reaches for the backslash anyway.
+
 - **A streamed tool call no longer splits a character.** A character whose
   UTF-8 bytes arrive as separate tokens was sent one argument delta per
   byte, each lone byte escaped to U+FFFD, so a client assembled well-formed

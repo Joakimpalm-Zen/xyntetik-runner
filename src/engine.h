@@ -445,6 +445,11 @@ enum { ENGINE_STEP_DONE = 0, ENGINE_STEP_MORE = 1 };
 // Call it before engine_gen_end (or before engine_generate returns, i.e. from
 // the generation callback itself); afterwards the document is gone.
 int    engine_constraint_truncate(engine *e, int n);
+// Has the constrained payload (JSON mode or a schema) been completed by the
+// model? False with no constraint. A turn whose reasoning prelude hit its
+// cap and whose payload then finished is a finished turn, not a truncated
+// one.
+bool   engine_constraint_complete(const engine *e);
 
 void   engine_gen_begin(engine *e, int max_new);
 

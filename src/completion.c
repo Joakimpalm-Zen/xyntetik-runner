@@ -3644,9 +3644,19 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
     // caller the model chose to say nothing.
     const char *finish = e->oom ? "error"
                        : unmapped ? "envelope_error"
-                       : e->prelude_exhausted ? "reasoning_limit"
+                       // the reasoning cap is the reason only while it left
+                       // the payload unfinished: a document the model went on
+                       // to complete is a finished turn (and a finished tool
+                       // call), not one to discard as truncated
+                       : e->prelude_exhausted && !engine_constraint_complete(e)
+                           ? "reasoning_limit"
                        : e->loop_stop ? "loop"
                        : g.stopped || e->hit_stop ? "stop" : "length";
+    // The reasoning cap fired and the model then completed the payload: the
+    // wire says the turn finished, and the cap stays recoverable as
+    // finish_detail, where it has lived since the wire value became "length".
+    const char *cut_detail = e->prelude_exhausted && strcmp(finish, "reasoning_limit")
+                           ? "reasoning_limit" : NULL;
     // a streamed call reports the same terminal reason a buffered one does.
     // Only a CLEANLY FINISHED document may claim "tool_calls": a budget
     // truncation still parses (the closer guarantees that) but the envelope
@@ -3799,6 +3809,7 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
             // ones. Emitted only when there IS a distinction to keep, so an
             // ordinary stream stays byte-for-byte what it was.
             const char *sdet = finish_detail_of(finish);
+            if (!sdet) sdet = cut_detail;
             if (sdet)
                 sb_fmt(&c, ",\"runner_telemetry\":{\"finish_detail\":\"%s\"}",
                        sdet);
@@ -4102,7 +4113,8 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
                         .forked = reuse.forked, .saved_s = reuse.saved_s,
                         .gtime = gtime, .major_faults = plat_major_faults() - faults_at_start,
                            .schema = schema != NULL,
-                        .finish_detail = finish_detail_of(finish),
+                        .finish_detail = finish_detail_of(finish)
+                                       ? finish_detail_of(finish) : cut_detail,
                         .json_mode = e->json_mode, .spec = spec_used,
                         SPEC_DOC_FIELDS(e), .diag = &diag,
                         .repeated_calls = g.repeat_json };

@@ -377,9 +377,17 @@ class Bench:
         p = {"prompt": "A short history of the printing press. " * 6,
              "max_tokens": 16, "temperature": 0}
         st, a = self.req(srv, "POST", "/v1/completions", p)
-        st2, b = self.req(srv, "POST", "/v1/completions", p)
-        assert st == 200 and st2 == 200, (a, b)
-        cached = b["usage"].get("prompt_tokens_details", {}).get("cached_tokens", 0)
+        assert st == 200, a
+        # two slots: a recurrent model's KV lives in the slot that built it
+        # (it has no shareable prefix snapshot), so the repeat is asked until
+        # it lands there
+        cached, b = 0, a
+        for _ in range(4):
+            st2, b = self.req(srv, "POST", "/v1/completions", p)
+            assert st2 == 200, b
+            cached = b["usage"].get("prompt_tokens_details", {}).get("cached_tokens", 0)
+            if cached:
+                break
         assert cached > 0, (f"the repeated prompt reused nothing: {b['usage']}; "
                             f"reuse {b['runner_telemetry'].get('prompt_reuse')}")
         if a["choices"][0]["text"] != b["choices"][0]["text"]:
