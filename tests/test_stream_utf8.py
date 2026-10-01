@@ -172,3 +172,41 @@ def test_a_native_protocol_call_streams_whole_characters(tmp_path):
     assert "�" not in streamed and json.loads(streamed) == {"city": TEXT}, streamed
 
 
+
+
+def test_a_broken_think_tag_cannot_precede_the_document(tmp_path):
+    """Before a constrained payload a model may open its think block, so the
+    probe admits the tag's bytes; but a token taken on the tag path alone is
+    not in the payload validator, and the payload was still admitted after
+    it: `<` then `{` went out as `<{"name": ...` under a strict schema
+    (Qwen3-Coder-30B on the family sweep, 2026-10-02). After a tag byte the
+    only way on is the rest of the tag."""
+    exe = ROOT / ("runner.exe" if sys.platform == "win32" else "runner")
+    if not exe.exists():
+        pytest.skip("runner binary not built")
+    m = tmp_path / "model.gguf"
+    subprocess.run([sys.executable, ROOT / "scripts/make-test-model.py", str(m)],
+                   check=True, cwd=ROOT, stdout=subprocess.DEVNULL)
+    env = dict(os.environ, RUNNER_TEST_SCRIPTED_REPLY="1")
+    schema = {"type": "object", "properties": {"name": {"type": "string"}},
+              "required": ["name"], "additionalProperties": False}
+    fmt = {"type": "json_schema", "json_schema": {"name": "p", "strict": True,
+                                                  "schema": schema}}
+    with RunnerServer(exe, m, ctx=1024, env=env, extra_args=[
+            "--gpu", "off", "-t", "2", "--chat-template", "chatml-think"]) as s:
+        leak = _post(s, "/v1/chat/completions", {
+            "max_tokens": 40, "temperature": 0, "response_format": fmt,
+            "messages": [{"role": "user", "content": "x"}],
+            "runner_test_reply": '<{"name":"Ada"}'})
+        # the two legal starts are untouched: the document, and a whole block
+        plain = _post(s, "/v1/chat/completions", {
+            "max_tokens": 40, "temperature": 0, "response_format": fmt,
+            "messages": [{"role": "user", "content": "x"}],
+            "runner_test_reply": '{"name":"Ada"}'})
+        think = _post(s, "/v1/chat/completions", {
+            "max_tokens": 60, "temperature": 0, "response_format": fmt,
+            "messages": [{"role": "user", "content": "x"}],
+            "runner_test_reply": '<think>hm</think>{"name":"Ada"}'})
+    assert "{" not in (leak["choices"][0]["message"]["content"] or ""), leak
+    assert json.loads(plain["choices"][0]["message"]["content"]) == {"name": "Ada"}
+    assert json.loads(think["choices"][0]["message"]["content"]) == {"name": "Ada"}

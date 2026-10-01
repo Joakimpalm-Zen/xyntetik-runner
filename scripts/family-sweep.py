@@ -499,14 +499,18 @@ class Bench:
                 notes = "this template does not render the system turn as a " \
                         "strict prefix: " + json.dumps(d)[:200]
             else:
-                assert st == 200, d
-                assert d["runner_telemetry"]["context"]["id"] == "sweep"
-                assert d["runner_telemetry"]["prompt_cached_tokens"] >= pin["tokens"]
+                assert st == 200, f"a request on the pinned context: {st} {json.dumps(d)[:300]}"
+                tel = d["runner_telemetry"]
+                assert tel.get("context", {}).get("id") == "sweep", f"telemetry: {tel}"
+                assert tel["prompt_cached_tokens"] >= pin["tokens"], \
+                    (f"the context was named but not forked: {tel['prompt_cached_tokens']} "
+                     f"cached of {pin['tokens']} pinned, reuse {tel.get('prompt_reuse')}")
             st, d = self.req(srv, "POST", "/v1/chat/completions", {
                 "messages": [{"role": "user", "content": "Something else entirely."}],
                 "max_tokens": 2, "context_id": "sweep"})
             assert st == 409, f"a prompt that does not start with the context: {st}"
-            assert self.req(srv, "DELETE", "/v1/runner/contexts/sweep")[0] == 200
+            st = self.req(srv, "DELETE", "/v1/runner/contexts/sweep")[0]
+            assert st == 200, f"deleting the context: {st}"
         docs = ["The cat sat on the mat.", "Quarterly revenue rose four percent.",
                 "A kitten slept on a rug."]
         rr = {"query": "cats resting"}
@@ -516,7 +520,7 @@ class Bench:
             # rendering: the refusal names the rendering to use
             rr["rendering"] = "raw-v1"
             st, a = self.req(srv, "POST", "/v1/rerank", {**rr, "documents": docs})
-        assert st == 200 and len(a["results"]) == 3, a
+        assert st == 200 and len(a["results"]) == 3, f"rerank: {st} {json.dumps(a)[:300]}"
         st, b = self.req(srv, "POST", "/v1/rerank", {**rr, "documents": docs[::-1]})
         sa = {docs[r["index"]]: r["logit"] for r in a["results"]}
         sb = {docs[::-1][r["index"]]: r["logit"] for r in b["results"]}
@@ -525,7 +529,7 @@ class Bench:
             "state": "The sky is clear and it is noon.",
             "questions": [{"question": "Is the sky blue?",
                            "options": ["yes", "no"]}]})
-        assert st == 200, d
+        assert st == 200, f"decide: {st} {json.dumps(d)[:300]}"
         st, e = self.req(srv, "POST", "/v1/embeddings", {"input": "a river"})
         if st != 200:
             notes = ((notes + "; ") if notes else "") + \

@@ -8,7 +8,7 @@ names that were true when they were written.
 
 ## Unreleased
 
-- **Family sweep, 2026-10-02: three defects real models showed.**
+- **Family sweep, 2026-10-02: six defects real models showed.**
   `scripts/family-sweep.py` puts a real model of each family through every
   surface (56 models on the Blackwell). What it found and what changed:
   - *A JSON-mode or schema turn on a thinking model ended at half its budget
@@ -28,6 +28,22 @@ names that were true when they were written.
     `properties` is an object, `required` a list of strings, sub-schemas are
     schemas); schemas outside the constrained subset are still taken where
     the turn is parsed.
+  - *A named context on a model that cannot fork it was served cold under
+    its name.* A recurrent model on a device keeps its state there, so the
+    prefix cache never forks a snapshot for it; a context could still be
+    pinned, and every request naming it passed the prefix check and was
+    prefilled from scratch while its telemetry named the context (Qwen3.5 on
+    CUDA). Pinning and loading a snapshot there answer 409
+    `context_unsupported`, and a request whose named context was not what it
+    was built on answers 409 `context_unavailable`.
+  - *A strict-schema document could start with a stray `<`.* Before a
+    constrained payload a model may open its think block, so the probe admits
+    the tag's bytes; a token taken on the tag path alone is not in the
+    payload validator, and the payload was still admitted after it:
+    Qwen3-Coder-30B wrote `<{"name": "Ada", ...`. After a tag byte the only
+    way on is the rest of the tag.
+  - *A truncated model file is refused as truncated* ("its data ends at byte
+    N but the file is M bytes"), not as "invalid tensor metadata" alone.
   - *A code point is not sampled.* The hex digits of a `\uXXXX` escape in a
     constrained string are picked greedily. granite-4.1-3b Q8_0 at
     temperature 0.8 wrote "Å" as `\u00a5` or `\u00a1` in 23 of 60 tool

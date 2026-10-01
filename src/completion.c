@@ -3403,6 +3403,18 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
     else
         engine_reset(e);
     int keep = reuse.keep;
+    if (ctx_id && keep < ctx_tokens) {
+        // The context passed the prefix check and still was not what the
+        // prompt was built on (released between the check and here, or a
+        // model that cannot fork one): the request named a warm prefix, so
+        // it is refused rather than served cold under that name.
+        free(toks);
+        completion_cleanup(e, schema, NULL);
+        send_error_detail(fd, 409, "the named context could not be forked for "
+                          "this request; pin it again or drop context_id",
+                          "context_id", "context_unavailable");
+        return;
+    }
     double prefill_t0 = now_s();
     // Name the request BEFORE any work, and say it started.
     //

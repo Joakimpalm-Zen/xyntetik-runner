@@ -110,6 +110,7 @@ typedef struct {
     // through think_close, then enforce sv/jv and emit only the payload
     uint8_t constraint_phase;
     bool    constraint_tag_possible;
+    bool    constraint_payload_dead;   // a probe token matched the tag only
     int     constraint_tag_match, constraint_close_match;
     int     think_end_id;       // Muse <|eom|>: decoded-empty reasoning close
     int     prelude_max, prelude_count;

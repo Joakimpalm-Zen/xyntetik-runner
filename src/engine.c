@@ -28,6 +28,7 @@ static void constraint_reset(engine *e) {
                           e->m && e->m->think_open && e->m->think_close
                             ? CP_PROBE : CP_OUTPUT;
     e->constraint_tag_possible = e->constraint_phase == CP_PROBE;
+    e->constraint_payload_dead = false;
     e->constraint_tag_match = 0;
     e->constraint_close_match = 0;
 }
@@ -876,6 +877,13 @@ int prefix_context_pin(engine *e, const char *name, const int32_t *toks, int n) 
     // the two layouts engine_prefix_publish refuses, for the same reason
     if (model_kv_ring_active(e->m) || e->m->tied_v || !e->hist)
         return PFX_CTX_UNSUPPORTED;
+    // A recurrent model on a device keeps its fold there, out of the host
+    // blob's reach, so engine_prefix_reuse never forks a snapshot for it. A
+    // context pinned there could not be honoured: every request naming it
+    // passed the prefix check and was then served cold under its name
+    // (Qwen3.5 on CUDA, the family sweep, 2026-10-02). Refused where it is
+    // asked for.
+    if (model_has_recurrent(e->m) && e->m->gpu) return PFX_CTX_UNSUPPORTED;
     // the snapshot is taken from the slot's KV, which must hold exactly toks:
     // a recurrent fold belongs to position e->pos and nowhere else
     if (n < 1 || e->pos != n || memcmp(e->hist, toks, sizeof(int32_t) * (size_t)n))
@@ -1157,7 +1165,8 @@ int prefix_context_export(const char *name, const char *path) {
 int prefix_context_import(const engine *e, const char *name, const char *path,
                           const char *origin) {
     if (!pfx_ctx_name_ok(name)) return PFX_CTX_BADNAME;
-    if (!e || !e->m || model_kv_ring_active(e->m) || e->m->tied_v)
+    if (!e || !e->m || model_kv_ring_active(e->m) || e->m->tied_v ||
+        (model_has_recurrent(e->m) && e->m->gpu))
         return PFX_CTX_UNSUPPORTED;
     FILE *f = fopen(path, "rb");
     if (!f) return PFX_CTX_UNKNOWN;
@@ -1603,11 +1612,18 @@ static bool constraint_feed(engine *e, bool schema, const char *bytes, int n,
 
     // CP_PROBE keeps both safe starts alive: a direct constrained payload, or
     // optional leading whitespace followed by the declared opening tag.
-    bool payload_ok;
+    // Once a token was taken on the tag path ALONE its bytes are not in the
+    // payload validator, so the payload path is dead: admitting it later let
+    // a model write `<` (the first byte of <think>) and then `{`, and the
+    // strict-schema document went out as `<{"name": ...` (Qwen3-Coder-30B,
+    // the family sweep, 2026-10-02).
+    bool payload_ok = !e->constraint_payload_dead;
     sval sv = e->sv;
     jsonv jv = e->jv;
-    if (schema) payload_ok = sval_feed(&sv, bytes, n);
-    else        payload_ok = jsonv_feed(&jv, bytes, n);
+    if (payload_ok) {
+        if (schema) payload_ok = sval_feed(&sv, bytes, n);
+        else        payload_ok = jsonv_feed(&jv, bytes, n);
+    }
 
     int ol = (int)strlen(open);
     bool tag_ok = e->constraint_tag_possible;
@@ -1650,6 +1666,7 @@ static bool constraint_feed(engine *e, bool schema, const char *bytes, int n,
         // untruncatable.
         cdoc_put(e, bytes, n);
     }
+    else if (match > 0) e->constraint_payload_dead = true;
     e->constraint_tag_possible = tag_ok;
     e->constraint_tag_match = tag_ok ? match : 0;
     if (!tag_ok) {
