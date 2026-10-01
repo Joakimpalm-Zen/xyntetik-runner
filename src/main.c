@@ -269,7 +269,11 @@ static bool session_image_out(const char *path, const engine *e,
     mt.generated = e->gen_count;
     mt.temp = e->smp->temp; mt.top_k = e->smp->top_k; mt.top_p = e->smp->top_p;
     mt.min_p = e->smp->min_p; mt.repeat_penalty = e->smp->repeat_penalty;
-    mt.rng = e->smp->rng;
+    // A greedy generation never draws from the rng, and an unseeded run's
+    // rng is the wall clock: recorded, it made two images of the same greedy
+    // state differ whenever the runs straddled a second. The image holds no
+    // timestamp, so a state that does not include the rng does not carry it.
+    mt.rng = e->smp->temp > 0 ? e->smp->rng : 0;
     mt.json_mode = json_mode;
     mt.ignore_eos = ignore_eos;
     char sha[65];
@@ -2319,8 +2323,18 @@ int main(int argc, char **argv) {
         ov.top_p = sm->top_p;                   ov.has_top_p = true;
         ov.min_p = sm->min_p;                   ov.has_min_p = true;
         ov.repeat_penalty = sm->repeat_penalty; ov.has_repeat_penalty = true;
-        smp.rng = fork_seed_given ? fork_seed : sm->rng;
-        if (smp.rng == 0) { fprintf(stderr, "error: --fork-seed must be nonzero\n"); return 1; }
+        if (fork_seed_given && fork_seed == 0) {
+            fprintf(stderr, "error: --fork-seed must be nonzero\n");
+            return 1;
+        }
+        if (!fork_seed_given && sm->rng == 0 && sm->temp > 0) {
+            fprintf(stderr, "error: --resume %s: a sampled image without an rng "
+                    "state\n", resume_path);
+            return 1;
+        }
+        // a greedy image records no rng (it is never drawn from); the sampler
+        // still wants a nonzero state
+        smp.rng = fork_seed_given ? fork_seed : sm->rng ? sm->rng : 1;
         if ((json_mode && !sm->json_mode) || (ignore_eos && !sm->ignore_eos)) {
             fprintf(stderr, "error: --resume: the image was not generated under "
                     "%s\n", json_mode && !sm->json_mode ? "--json" : "--ignore-eos");

@@ -8,7 +8,7 @@ names that were true when they were written.
 
 ## Unreleased
 
-- **Review of the 2026-10-01 batch: seven defects fixed, one feature parked.**
+- **Review of the 2026-10-01 batch: eight defects fixed, one feature parked.**
   - *Parked: batch-invariant CPU prefill (R1.5).* Its gate passed on
     fixtures only. On arm64 the BF16 fixture fails it (`make test` was red
     on an M1; CI runs `make test` on x86 and Windows), F16 has the same
@@ -21,7 +21,11 @@ names that were true when they were written.
     What follows from it, stated where it applies: a named context, a KV
     snapshot and a receipt with a reused prefix are exact on the fixtures
     the tests use; on a real quantized model a prefix built at one batch
-    shape and replayed at another can differ in the last bits.
+    shape and replayed at another can differ in the last bits. The same
+    holds for a repeated request: asked twice, a prompt's second answer
+    reuses its KV and can differ from the first in a logprob's last digit
+    (as in v0.5.7); the adapter-routing test now holds a routed request to
+    the reference with the same reuse history.
   - *A record named the wrong last token of a constrained turn.* The token
     that completes a `--json` or schema document ends the turn before its
     forward, and records read output tokens from a history written only on
@@ -49,6 +53,12 @@ names that were true when they were written.
   - *Re-pinning or re-loading a context that no longer fits destroyed the
     old one.* The pin being replaced was dropped before the budget check;
     it is dropped only once the new entry is known to fit.
+  - *A greedy session image carried the wall clock.* An unseeded run's rng
+    is the time, and the image recorded it even at temperature 0, where it
+    is never drawn from: two images of the same greedy state differed
+    whenever the runs straddled a second, so the byte-identity gate passed
+    or failed by timing (it failed under the sanitizer build). A greedy
+    image now records rng `0`.
   - *The TypeScript client's stream never cancelled its reader*, so a
     consumer that left the loop early kept the server generating and its
     slot held.

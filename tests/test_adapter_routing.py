@@ -74,12 +74,18 @@ def _answer(srv, model=None):
 
 @pytest.fixture(scope="module")
 def refs(runner_bin, fx):
+    # Each reference is taken twice: cold, and again with the prompt's KV
+    # reused. CPU prefill is not batch-invariant (the reused request feeds its
+    # last prompt token alone, the cold one in the batch), so the two can
+    # differ in a logprob's last digit, and a routed request is held to the
+    # reference with the SAME history, not to whichever was taken first.
     with RunnerServer(runner_bin, fx["base"], extra_args=ARGS) as srv:
-        bare, _ = _answer(srv)
+        bare = (_answer(srv)[0], _answer(srv)[0])
     with RunnerServer(runner_bin, fx["base"],
                       extra_args=[*ARGS, "--lora", str(fx["tuned"])]) as srv:
-        tuned, _ = _answer(srv)
-    assert bare != tuned, "the adapter must change the answer"
+        tuned = (_answer(srv)[0], _answer(srv)[0])
+    assert bare[0] != tuned[0], "the adapter must change the answer"
+    assert bare[0][0] == bare[1][0] and tuned[0][0] == tuned[1][0]
     return {"bare": bare, "tuned": tuned}
 
 
@@ -92,11 +98,17 @@ def _routed(runner_bin, fx, parallel=1):
 def test_a_routed_request_is_the_lora_server(runner_bin, fx, refs):
     with _routed(runner_bin, fx) as srv:
         # interleaved, the same prompt each time: nothing may carry over
-        for want, model in [("tuned", "base.gguf:tuned"), ("bare", None),
-                            ("tuned", "base.gguf:tuned"), ("bare", "base.gguf"),
-                            ("bare", "base.gguf:null"), ("tuned", "runner:tuned")]:
+        # an identity's first request is cold, its later ones fork the
+        # prefix its first one published (the zero adapter is its own identity)
+        seen = set()
+        for want, ident, model in [
+                ("tuned", "tuned", "base.gguf:tuned"), ("bare", "bare", None),
+                ("tuned", "tuned", "base.gguf:tuned"),
+                ("bare", "bare", "base.gguf"), ("bare", "null", "base.gguf:null"),
+                ("tuned", "tuned", "runner:tuned")]:
             got, body = _answer(srv, model)
-            assert got == refs[want], (model, want)
+            assert got == refs[want][ident in seen], (model, want)
+            seen.add(ident)
         _, body = _answer(srv, "base.gguf:tuned")
         a = body["runner_telemetry"]["adapter"]
         assert a == {"name": "tuned", "sha256": hashlib.sha256(
@@ -118,7 +130,8 @@ def test_parallel_slots_route_independently(runner_bin, fx, refs):
         with cf.ThreadPoolExecutor(4) as ex:
             got = list(ex.map(lambda m: (m, _answer(srv, m)[0]), jobs))
         for model, answer in got:
-            assert answer == refs["tuned" if model else "bare"], model
+            # which of a slot's requests found a prefix to reuse is a race
+            assert answer in refs["tuned" if model else "bare"], model
 
 
 def test_models_and_refusals(runner_bin, fx):
