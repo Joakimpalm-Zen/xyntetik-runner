@@ -2619,6 +2619,11 @@ int main(int argc, char **argv) {
     mp.n_threads = serve ? 1 : n_threads; // server slots create their own pools
 
     f16_init();
+    {
+        // constrained strings write characters raw (jsonmode.h)
+        const char *ue = getenv("RUNNER_JSON_U_ESCAPES");
+        json_u_escapes_allow(ue && *ue && strcmp(ue, "0") != 0);
+    }
 
     // `-m name=path` with --parallel > 1 is one named model, not a swap set.
     // Swap mode is genuinely single-slot (ensure_resident loads slots[0]
