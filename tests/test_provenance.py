@@ -146,6 +146,10 @@ def test_signature_and_envelope_verdicts_are_the_load_time_ones(
         assert _get(srv)[1]["model"]["envelope"]["state"] == "experimental"
 
 
+@pytest.mark.skipif(sys.platform == "win32",
+                    reason="Windows refuses to rewrite a file the server has "
+                           "mapped (EINVAL), so the change this detects "
+                           "cannot be made there")
 def test_a_model_file_changed_after_load_is_not_vouched_for(
         runner_bin, model, tmp_path):
     m = tmp_path / "served.gguf"

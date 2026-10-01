@@ -135,7 +135,11 @@ def test_suspend_and_resume_write_the_straight_runs_image(runner_bin, fx, case):
     a, b2 = (d / "a.img").read_bytes(), (d / "b2.img").read_bytes()
     assert a == b2, f"{name}: a suspended and resumed generation imaged differently"
     # what was printed agrees too: the suspended half, then the resumed half
-    assert out_a == out_b1[:-1] + out_b2
+    # (minus the newline the suspended run ends its output with, which a
+    # Windows text-mode stdout writes as CRLF)
+    nl = b"\r\n" if sys.platform == "win32" else b"\n"
+    assert out_b1.endswith(nl)
+    assert out_a == out_b1[:-len(nl)] + out_b2
 
     img, half = _image(d / "a.img"), _image(d / "b1.img")
     h = img["header"]
