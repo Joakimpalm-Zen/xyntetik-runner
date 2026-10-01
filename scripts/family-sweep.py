@@ -509,11 +509,15 @@ class Bench:
             assert self.req(srv, "DELETE", "/v1/runner/contexts/sweep")[0] == 200
         docs = ["The cat sat on the mat.", "Quarterly revenue rose four percent.",
                 "A kitten slept on a rug."]
-        st, a = self.req(srv, "POST", "/v1/rerank",
-                         {"query": "cats resting", "documents": docs})
+        rr = {"query": "cats resting"}
+        st, a = self.req(srv, "POST", "/v1/rerank", {**rr, "documents": docs})
+        if st == 400 and "raw-v1" in json.dumps(a):
+            # a channel protocol (harmony) is not scored through its chat
+            # rendering: the refusal names the rendering to use
+            rr["rendering"] = "raw-v1"
+            st, a = self.req(srv, "POST", "/v1/rerank", {**rr, "documents": docs})
         assert st == 200 and len(a["results"]) == 3, a
-        st, b = self.req(srv, "POST", "/v1/rerank",
-                         {"query": "cats resting", "documents": docs[::-1]})
+        st, b = self.req(srv, "POST", "/v1/rerank", {**rr, "documents": docs[::-1]})
         sa = {docs[r["index"]]: r["logit"] for r in a["results"]}
         sb = {docs[::-1][r["index"]]: r["logit"] for r in b["results"]}
         assert sa == sb, f"a rerank score moved with document order: {sa} vs {sb}"
