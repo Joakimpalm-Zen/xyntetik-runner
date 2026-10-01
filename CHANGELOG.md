@@ -8,7 +8,7 @@ names that were true when they were written.
 
 ## Unreleased
 
-- **Review of the 2026-10-01 batch: eight defects fixed, one feature parked.**
+- **Review of the 2026-10-01 batch: nine defects fixed, one feature parked.**
   - *Parked: batch-invariant CPU prefill (R1.5).* Its gate passed on
     fixtures only. On arm64 the BF16 fixture fails it (`make test` was red
     on an M1; CI runs `make test` on x86 and Windows), F16 has the same
@@ -59,6 +59,14 @@ names that were true when they were written.
     whenever the runs straddled a second, so the byte-identity gate passed
     or failed by timing (it failed under the sanitizer build). A greedy
     image now records rng `0`.
+  - *A rerank score moved with the document order.* Each document reused
+    the KV rows the previous one left, so its prefix was fed at a batch
+    width that depended on what came before, and the score changed in its
+    last digit (x86 CI, once R1.5 was out; on a quantized model with it in).
+    `/v1/rerank` now scores every document from an empty KV: a score is a
+    function of the document's own prompt, at the price of prefilling the
+    shared instruction and query once per document. `/v1/decide` keeps its
+    prefix reuse and the same last-digit exposure to the slot's history.
   - *The TypeScript client's stream never cancelled its reader*, so a
     consumer that left the loop early kept the server generating and its
     slot held.

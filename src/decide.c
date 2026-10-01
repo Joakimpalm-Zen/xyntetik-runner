@@ -410,6 +410,14 @@ int rerank_handle(engine *e, const jv *req, const char *model_name, int tmpl,
         decide_result res[2];
         int ptoks = 0;
         const char *serr = NULL;
+        // Every document is scored from an empty KV. Reusing the rows the
+        // previous document (or an earlier request) left behind fed this
+        // one's prefix in a batch whose width depended on what came before,
+        // and CPU prefill is not batch-invariant: a score then moved in its
+        // last digit with the document order. Cold, a document's score is a
+        // function of its own prompt and nothing else. The price is the
+        // shared instruction and query being prefilled once per document.
+        engine_reset(e);
         bool ok = score_mode(e, prompt, chat ? TOK_PROMPT : TOK_TEXT,
                              chat ? opts_chat : opts_raw, 2, res, &ptoks, &serr);
         free(prompt);
