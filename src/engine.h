@@ -541,6 +541,7 @@ enum {
     PFX_CTX_UNSUPPORTED = -4,   // ring or tied-V KV: no contiguous snapshot
     PFX_CTX_BADNAME     = -5,   // 1..64 of [A-Za-z0-9._:-]
     PFX_CTX_CORRUPT     = -6,   // a snapshot file that is not one whole entry
+    PFX_CTX_IO          = -7,   // the snapshot file could not be written
 };
 bool prefix_context_name_ok(const char *name);
 // Pin the KV the slot holds for toks[0, n) (e->pos must be n, e->hist toks)
@@ -592,7 +593,7 @@ int prefix_cache_load(const char *path, const engine *e);
 
 // R1.12: one named context as a runner.prefix.v1 file of exactly one entry
 // (prefix_cache_save's format), and back. Export returns the token count or
-// PFX_CTX_UNKNOWN / PFX_CTX_BADNAME / -1 on an I/O error. Import makes the
+// PFX_CTX_UNKNOWN / PFX_CTX_BADNAME / PFX_CTX_IO on an I/O error. Import makes the
 // same checks a cache load makes -- magic, one whole entry, the body digest,
 // this engine's model_key and the entry size its KV type implies -- and
 // pins the entry under `name`, remembering `origin` (a JSON object naming the

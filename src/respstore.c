@@ -95,6 +95,13 @@ bool respstore_put(const char *id, const char *input_json, size_t input_n,
     double now = now_s();
     e->created = e->used = now;
     rs_expire(now);
+    // an entry the whole budget cannot hold is refused before anything is
+    // dropped for it: evicting first emptied the store and then stored nothing
+    if (need > RS.budget) {
+        pthread_mutex_unlock(&RS.mu);
+        free(e->id); free(e->input); free(e->body); free(e);
+        return false;
+    }
     rs_entry **old = rs_find(id);
     if (old) rs_drop(old);
     // least recently used first, until the new entry fits

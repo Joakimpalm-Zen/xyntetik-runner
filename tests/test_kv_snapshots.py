@@ -14,6 +14,7 @@ memory itself: a request forked from the loaded snapshot answers exactly what
 the same prompt answers from a cold prefill, and its receipt replays VERIFIED.
 """
 import hashlib
+import os
 import json
 import pathlib
 import struct
@@ -211,3 +212,27 @@ def test_refusals(runner_bin, fx, saved, tmp_path):
                       extra_args=["--gpu", "off", "-t", "2"]) as srv:
         st, err = _refused(srv, "mem")
         assert st == 400 and "--kv-snapshots" in err["message"], err
+
+
+def test_the_snapshot_route_and_a_failed_write_say_what_happened(runner_bin, fx,
+                                                                 tmp_path):
+    """A snapshot that could not be written answered 404 context_not_found
+    (the export's I/O error shared a value with "unknown context"), and any
+    path that merely contained /snapshot was routed as one."""
+    snaps = tmp_path / "ro"
+    snaps.mkdir()
+    with _srv(runner_bin, fx["m32"], snaps) as srv:
+        assert _post(srv, "/v1/runner/contexts", {"id": "w", "prompt": MEMORY})[0] == 200
+        st, body = _post(srv, "/v1/runner/contexts/w/snapshotx", {"name": "a"})
+        assert st == 400, body
+        st, body = _post(srv, "/v1/runner/contexts/w/snapshot/x", {"name": "a"})
+        assert st == 400, body
+        if sys.platform != "win32" and os.geteuid() != 0:
+            snaps.chmod(0o500)
+            try:
+                st, body = _post(srv, "/v1/runner/contexts/w/snapshot", {"name": "a"})
+            finally:
+                snaps.chmod(0o700)
+            assert st == 500 and body["error"]["code"] == "snapshot_write_failed", body
+        st, body = _post(srv, "/v1/runner/contexts/w/snapshot", {"name": "a"})
+        assert st == 200, body

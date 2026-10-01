@@ -8,6 +8,54 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **Review of the 2026-10-01 batch: seven defects fixed, one feature parked.**
+  - *Parked: batch-invariant CPU prefill (R1.5).* Its gate passed on
+    fixtures only. On arm64 the BF16 fixture fails it (`make test` was red
+    on an M1; CI runs `make test` on x86 and Windows), F16 has the same
+    four-chain NEON dot, and on a real model the property does not hold for
+    quantized weights: granite-4.1-3b Q8_0 on the CPU, 92% of 26 million
+    batched prefill dots differ in the last bits from the same dot decoded
+    alone. The Q8_0 fixtures pass because their weights are numerically
+    degenerate, so the gate could not fail there. The change is reverted
+    here and kept on the branch `parked/r1.5-batch-invariant-prefill`.
+    What follows from it, stated where it applies: a named context, a KV
+    snapshot and a receipt with a reused prefix are exact on the fixtures
+    the tests use; on a real quantized model a prefix built at one batch
+    shape and replayed at another can differ in the last bits.
+  - *A record named the wrong last token of a constrained turn.* The token
+    that completes a `--json` or schema document ends the turn before its
+    forward, and records read output tokens from a history written only on
+    the way to that forward: `{}` was recorded as `[126, 0]`. Both the
+    recorder and the replay read the same stale slot, so `--verify` still
+    said VERIFIED. The history is now written before the early exits, on the
+    solo and speculative paths.
+  - *`--export-bundle` could delete the receipt it was given.* Exporting
+    into the directory the receipt lives in rewrote it onto itself, and a
+    manifest that then failed to sign removed `receipt.json`, `model.sig`
+    and `model-pubkey.pem`, written by this call or not. A directory that
+    already holds any of the bundle's files is refused before a byte is
+    written.
+  - *One oversized stored response emptied the Responses store.* An entry
+    larger than `RUNNER_RESPONSES_STORE_MB` evicted every other entry and
+    was then refused. It is refused first.
+  - *`previous_response_id` could serve a shorter history, or accept a bad
+    `input`.* A stored conversation that did not read back was dropped
+    silently (now 500), and a wrong-typed `input` answered 200 on a
+    continuation and 400 everywhere else (now 400).
+  - *A snapshot that could not be written answered 404 `context_not_found`.*
+    The export's I/O error shared a value with "unknown context"; it is
+    `snapshot_write_failed` (500) now. The snapshot route also matched any
+    path containing `/snapshot`.
+  - *Re-pinning or re-loading a context that no longer fits destroyed the
+    old one.* The pin being replaced was dropped before the budget check;
+    it is dropped only once the new entry is known to fit.
+  - *The TypeScript client's stream never cancelled its reader*, so a
+    consumer that left the loop early kept the server generating and its
+    slot held.
+  - Scope note on signed KV snapshots: a manifest's signature is checked
+    against the key the manifest itself names. Loading does not pin a
+    trusted key yet, so `signed_by` is what a caller must read.
+
 - **CPU attention uses the threads a few-heads model left idle.** One
   token's attention was split over query heads only, so with fewer heads
   than threads the rest waited. It now also splits over position chunks
@@ -44,7 +92,9 @@ names that were true when they were written.
   in its receipt and still replays VERIFIED. Anchors in
   `tests/test_kv_snapshots.py`: hashlib for every digest, `--check-record`
   for the signature, and the memory itself -- a request forked from the
-  loaded snapshot returns the cold prefill's tokens and logprobs exactly.
+  loaded snapshot returns the cold prefill's tokens and logprobs exactly
+  on the test fixture (see the batch-invariance note at the top of this
+  section for real quantized models).
 
 - **Tournament-sampling watermark and detector (`--watermark`,
   `--detect-watermark`).** Article 50 wants generated text marked in a
@@ -125,7 +175,7 @@ names that were true when they were written.
   each response's record. The anchor in `tests/test_serve_receipts.py` is
   the CLI replay: greedy, sampled (the sampler's state as generation started
   is the recorded seed) and chat receipts all replay VERIFIED at T1, as did
-  records whose prompt reused the slot's KV.
+  records whose prompt reused the slot's KV, on the test fixtures.
 
 - **Receipt bundles: one directory a verifier can take.**
   `--export-bundle RECEIPT --bundle-out DIR` writes the receipt byte for

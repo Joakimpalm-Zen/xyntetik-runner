@@ -158,3 +158,25 @@ def test_refusals(runner_bin, signed, tmp_path):
     (out / "bundle.json").write_text(json.dumps(man))
     c = _run(runner_bin, "--check-bundle", out)
     assert c.returncode == 2 and b"plain name" in c.stdout
+
+
+def test_an_export_never_overwrites_or_removes_what_was_there(runner_bin, signed,
+                                                              tmp_path):
+    """Exporting into the directory a receipt lives in rewrote receipt.json
+    onto itself, and a manifest that could not be signed then removed it (and
+    any model.sig beside it): the only copy, gone. A directory that already
+    holds one of the bundle's files is refused before anything is written."""
+    d = tmp_path / "run"
+    d.mkdir()
+    rec = d / "receipt.json"
+    shutil.copy(signed["rec"], rec)
+    sig = d / "model.sig"
+    sig.write_bytes(b"not this bundle's")
+    before = rec.read_bytes()
+    p = _run(runner_bin, "--export-bundle", rec, "--bundle-out", d, "--sign-key",
+             d / "no-such.key")
+    assert p.returncode != 0
+    assert b"already exists" in p.stderr, p.stderr
+    assert rec.read_bytes() == before
+    assert sig.read_bytes() == b"not this bundle's"
+    assert not (d / "bundle.json").exists()

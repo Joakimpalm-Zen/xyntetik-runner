@@ -856,9 +856,9 @@ static void handle_context_snapshot(slot_t *s, sock_t fd, jv *req,
                                     const char *path) {
     char id[PFX_CTX_NAME_MAX + 1];
     const char *p = path + sizeof("/v1/runner/contexts/") - 1;
-    const char *end = strstr(p, "/snapshot");
+    const char *end = strchr(p, '/');
     size_t n = end ? (size_t)(end - p) : 0;
-    if (!end || n == 0 || n > PFX_CTX_NAME_MAX) {
+    if (!end || strcmp(end, "/snapshot") != 0 || n == 0 || n > PFX_CTX_NAME_MAX) {
         send_error_detail(fd, 400, "not a context id", "id", "invalid_value");
         return;
     }

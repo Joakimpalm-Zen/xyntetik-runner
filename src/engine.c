@@ -891,15 +891,19 @@ int prefix_context_pin(engine *e, const char *name, const int32_t *toks, int n) 
     pthread_mutex_lock(&PFX.mu);
     pfx_defaults();
     double now = now_s();
-    pfx_entry **old = pfx_find_named(name);   // re-pinning a name replaces it
-    if (old) pfx_drop(old);
+    // re-pinning a name replaces it, but only once the new entry is known to
+    // fit with the old one's bytes credited: a refusal leaves the old pin
+    pfx_entry **old = pfx_find_named(name);
+    size_t old_bytes = old ? (*old)->bytes : 0;
     pfx_expire(now);
-    pfx_trim(need);
-    if (PFX.bytes + need > PFX.budget) {
+    pfx_trim(need > old_bytes ? need - old_bytes : 0);
+    if (PFX.bytes - old_bytes + need > PFX.budget) {
         pthread_mutex_unlock(&PFX.mu);
         free(ne); free(nt); free(kv);
         return PFX_CTX_NOSPACE;
     }
+    old = pfx_find_named(name);   // the trim may have moved its link
+    if (old) pfx_drop(old);
     ne->key = e->model_key; ne->toks = nt; ne->n = n;
     ne->kv = kv; ne->bytes = need; ne->used = now; ne->created = now;
     ne->pinned = true;
@@ -1107,10 +1111,10 @@ int prefix_cache_load(const char *path, const engine *e) {
 // the file is a runner.prefix.v1 file a cache load would also accept.
 int prefix_context_export(const char *name, const char *path) {
     if (!pfx_ctx_name_ok(name)) return PFX_CTX_BADNAME;
-    if (!path || !*path) return -1;
+    if (!path || !*path) return PFX_CTX_IO;
     size_t path_n = strlen(path);
     char *tmp = malloc(path_n + sizeof(".partial"));
-    if (!tmp) return -1;
+    if (!tmp) return PFX_CTX_IO;
     snprintf(tmp, path_n + sizeof(".partial"), "%s.partial", path);
     pthread_mutex_lock(&PFX.mu);
     pfx_entry **pp = pfx_find_named(name);
@@ -1124,7 +1128,7 @@ int prefix_context_export(const char *name, const char *path) {
         pthread_mutex_unlock(&PFX.mu);
         fprintf(stderr, "prefix: cannot write %s\n", tmp);
         free(tmp);
-        return -1;
+        return PFX_CTX_IO;
     }
     const pfx_entry *p = *pp;
     uint32_t count = 1;
@@ -1144,7 +1148,7 @@ int prefix_context_export(const char *name, const char *path) {
     if (!ok || !plat_replace_file(tmp, path)) {
         remove(tmp);
         free(tmp);
-        return -1;
+        return PFX_CTX_IO;
     }
     free(tmp);
     return n;
@@ -1193,16 +1197,20 @@ int prefix_context_import(const engine *e, const char *name, const char *path,
     pthread_mutex_lock(&PFX.mu);
     pfx_defaults();
     double now = now_s();
+    // as in prefix_context_pin: the context being replaced is dropped only
+    // once the snapshot is known to fit
     pfx_entry **old = pfx_find_named(name);
-    if (old) pfx_drop(old);
+    size_t old_bytes = old ? (*old)->bytes : 0;
     pfx_expire(now);
-    pfx_trim((size_t)bytes);
-    if (PFX.bytes + bytes > PFX.budget) {
+    pfx_trim((size_t)bytes > old_bytes ? (size_t)bytes - old_bytes : 0);
+    if (PFX.bytes - old_bytes + bytes > PFX.budget) {
         pthread_mutex_unlock(&PFX.mu);
         free(ne);
         rc = PFX_CTX_NOSPACE;
         goto out;
     }
+    old = pfx_find_named(name);
+    if (old) pfx_drop(old);
     ne->key = key; ne->toks = toks; ne->n = n;
     ne->kv = kv; ne->bytes = (size_t)bytes; ne->used = now; ne->created = now;
     ne->pinned = true;
@@ -2452,6 +2460,9 @@ static int engine_generate_spec(engine *e, float *logits, int max_new,
                 e->stop_id = tok;
                 goto done;
             }
+            // before the completed-document exit, as in engine_gen_step: the
+            // record reads the turn's last token from hist
+            if (e->hist) e->hist[e->pos] = tok;
             bool cdone;
             int rc = spec_emit(e, tok, cb, ud, &n_gen, constrained, &cdone);
             if (cdone) {
@@ -2463,7 +2474,6 @@ static int engine_generate_spec(engine *e, float *logits, int max_new,
                 SPEC_STATS();
                 return n_gen;
             }
-            if (e->hist) e->hist[e->pos] = tok;
             cur = tok;
             if (rc) goto done;   // aborted callback: still forward the token
             continue;            // re-check the budget with the token pending
@@ -2627,6 +2637,7 @@ static int engine_generate_spec(engine *e, float *logits, int max_new,
             if (prof) tp = now_s();
             spec_fold_sync(e, b, i + 1, nb, round_pos);
             if (prof) t_sync += now_s() - tp;
+            if (e->hist && e->pos < m->n_ctx) e->hist[e->pos] = tok;
             if (cdone) {
                 e->hit_stop = true;
                 dpos_rewind(e, e->pos);
@@ -2634,7 +2645,6 @@ static int engine_generate_spec(engine *e, float *logits, int max_new,
                 SPEC_STATS();
                 return n_gen;
             }
-            if (e->hist && e->pos < m->n_ctx) e->hist[e->pos] = tok;
             cur = tok;
             // the draft's KV beyond the consumed prefix was computed from the
             // abandoned drafts; the next catch-up refeeds from here (the
@@ -2822,6 +2832,12 @@ int engine_gen_step(engine *e, const float *logits, gen_cb cb, void *ud,
         e->lp_chosen[e->lp_count] = raw - pre.lse;
         e->lp_count++;
     }
+    // Written before the exits below: a token that completes a constrained
+    // document (or trips the loop guard) is counted and delivered but never
+    // forwarded, and a record's output tokens are read from hist. It used to
+    // be written only on the way to its forward, so such a record named
+    // whatever hist held there instead of the turn's last token.
+    if (e->hist && e->pos < e->m->n_ctx) e->hist[e->pos] = tok;
     if (gen_consume(e, tok, cb, ud)) return ENGINE_STEP_DONE;
     if ((e->schema && constraint_done(e, true)) ||
         (!e->schema && e->json_mode && constraint_done(e, false))) {
@@ -2829,7 +2845,6 @@ int engine_gen_step(engine *e, const float *logits, gen_cb cb, void *ud,
         return ENGINE_STEP_DONE;
     }
     if (e->loop_stop) { e->hit_stop = true; return ENGINE_STEP_DONE; }
-    if (e->hist && e->pos < e->m->n_ctx) e->hist[e->pos] = tok;
     *next_tok = (int32_t)tok;
     *next_pos = e->pos++;
     e->pending_pos = *next_pos;

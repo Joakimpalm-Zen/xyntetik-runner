@@ -118,24 +118,31 @@ export class RunnerClient {
     const reader = res.body.getReader();
     const dec = new TextDecoder();
     let buf = "", seen = "";
-    for (;;) {
-      const { value, done } = await reader.read();
-      if (value) buf += dec.decode(value, { stream: true });
-      let nl: number;
-      while ((nl = buf.indexOf("\n")) >= 0) {
-        const line = buf.slice(0, nl).replace(/\r$/, "");
-        buf = buf.slice(nl + 1);
-        if (!line.startsWith("data:")) continue;
-        const data = line.slice(5).trimStart();
-        if (data === "[DONE]") return;
-        let ev: Json;
-        try { ev = JSON.parse(data) as Json; } catch {
-          throw new RunnerProtocolError("malformed data frame", seen);
+    // The reader is cancelled on every way out: a consumer that breaks out of
+    // the loop, a protocol error, or [DONE]. A body left open and unread keeps
+    // the server generating for nobody and holds its slot.
+    try {
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (value) buf += dec.decode(value, { stream: true });
+        let nl: number;
+        while ((nl = buf.indexOf("\n")) >= 0) {
+          const line = buf.slice(0, nl).replace(/\r$/, "");
+          buf = buf.slice(nl + 1);
+          if (!line.startsWith("data:")) continue;
+          const data = line.slice(5).trimStart();
+          if (data === "[DONE]") return;
+          let ev: Json;
+          try { ev = JSON.parse(data) as Json; } catch {
+            throw new RunnerProtocolError("malformed data frame", seen);
+          }
+          seen += data;
+          yield ev;
         }
-        seen += data;
-        yield ev;
+        if (done) return;
       }
-      if (done) return;
+    } finally {
+      await reader.cancel().catch(() => {});
     }
   }
 
