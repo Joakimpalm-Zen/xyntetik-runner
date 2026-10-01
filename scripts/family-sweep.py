@@ -162,11 +162,14 @@ class Bench:
 
     def cli_transcript(self, tmp):
         rec = tmp / f"t-{self.backend}.json"
-        rc, _, err, _ = self.cli("-p", "Write one sentence about rivers.", "-n", "24",
+        rc, _, err, _ = self.cli("-p", "The river rose in the night and", "-n", "24",
                                  "--temp", "0.7", "-s", "11", "--transcript", rec)
-        assert rc == 0, err[-600:]
+        assert rc == 0, f"recording: exit {rc}: {err[-600:]}"
         r = json.loads(rec.read_text())
-        assert r["output"]["n"] >= 1 and len(r["output"]["tokens"]) == r["output"]["n"]
+        o = r["output"]
+        assert len(o["tokens"]) == o["n"], f"n {o['n']} but {len(o['tokens'])} tokens"
+        if o["n"] == 0:
+            raise Note("the model ended the turn at once; nothing to replay")
         rc, _, err, _ = sh([self.runner, "-m", self.model, "--verify", rec,
                             *(["-t", str(self.threads)] if self.threads else [])],
                            self.timeout)
@@ -287,11 +290,19 @@ class Bench:
         d = self.chat(srv, "Return a JSON object describing a cat.",
                       response_format={"type": "json_object"}, max_tokens=200)
         txt = d["choices"][0]["message"]["content"]
-        json.loads(txt)   # a legal document, complete or closed at the ceiling
+        try:
+            json.loads(txt)   # a legal document, complete or closed at the ceiling
+        except (ValueError, TypeError):
+            assert False, "json_object content is not a JSON document: " + \
+                json.dumps(d["choices"][0], ensure_ascii=False)[:700]
         d = self.chat(srv, "Describe a person named Ada who is 36.", max_tokens=200,
                       response_format={"type": "json_schema", "json_schema": {
                           "name": "person", "strict": True, "schema": SCHEMA}})
-        v = json.loads(d["choices"][0]["message"]["content"])
+        try:
+            v = json.loads(d["choices"][0]["message"]["content"])
+        except (ValueError, TypeError):
+            assert False, "json_schema content is not a JSON document: " + \
+                json.dumps(d["choices"][0], ensure_ascii=False)[:700]
         assert isinstance(v, dict) and isinstance(v.get("name"), str) and \
             isinstance(v.get("age"), int) and not isinstance(v.get("age"), bool), v
         assert set(v) <= {"name", "age", "tags"}, v
@@ -369,7 +380,8 @@ class Bench:
         st2, b = self.req(srv, "POST", "/v1/completions", p)
         assert st == 200 and st2 == 200, (a, b)
         cached = b["usage"].get("prompt_tokens_details", {}).get("cached_tokens", 0)
-        assert cached > 0, f"the repeated prompt reused nothing: {b['usage']}"
+        assert cached > 0, (f"the repeated prompt reused nothing: {b['usage']}; "
+                            f"reuse {b['runner_telemetry'].get('prompt_reuse')}")
         if a["choices"][0]["text"] != b["choices"][0]["text"]:
             raise Note("the repeated request's greedy text differs from the cold "
                        "one (a near-tie moved by the reused KV's last bits): "
@@ -459,24 +471,34 @@ class Bench:
                      "/v1/runner/prefix-cache", "/v1/runner/provenance"):
             st, _ = self.req(srv, "GET", path, raw=True)
             assert st == 200, f"{path}: {st}"
-        sysp = "You are a terse assistant for a river-survey team. " * 4
+        # A named context in its designed use: the system turn pinned once,
+        # then chat requests that start with it. A template that folds the
+        # system turn into the first user turn has no such prefix: said, not
+        # failed.
+        notes = None
+        sysm = {"role": "system", "content":
+                "You are a terse assistant for a river-survey team. " * 4}
         st, pin = self.req(srv, "POST", "/v1/runner/contexts",
-                           {"id": "sweep", "prompt": sysp})
-        if st == 409:
-            notes = "named context: " + json.dumps(pin)[:160]
+                           {"id": "sweep", "messages": [sysm]})
+        if st in (400, 409):
+            notes = f"named context not pinned ({st}): " + json.dumps(pin)[:200]
         else:
             assert st == 200, pin
-            st, d = self.req(srv, "POST", "/v1/completions", {
-                "prompt": sysp + "Question: where is the ford?", "max_tokens": 8,
-                "temperature": 0, "context_id": "sweep"})
-            assert st == 200, d
-            assert d["runner_telemetry"]["context"]["id"] == "sweep"
-            st, d = self.req(srv, "POST", "/v1/completions", {
-                "prompt": "Something else entirely.", "max_tokens": 2,
-                "context_id": "sweep"})
+            st, d = self.req(srv, "POST", "/v1/chat/completions", {
+                "messages": [sysm, {"role": "user", "content": "Where is the ford?"}],
+                "max_tokens": 8, "temperature": 0, "context_id": "sweep"})
+            if st == 409:
+                notes = "this template does not render the system turn as a " \
+                        "strict prefix: " + json.dumps(d)[:200]
+            else:
+                assert st == 200, d
+                assert d["runner_telemetry"]["context"]["id"] == "sweep"
+                assert d["runner_telemetry"]["prompt_cached_tokens"] >= pin["tokens"]
+            st, d = self.req(srv, "POST", "/v1/chat/completions", {
+                "messages": [{"role": "user", "content": "Something else entirely."}],
+                "max_tokens": 2, "context_id": "sweep"})
             assert st == 409, f"a prompt that does not start with the context: {st}"
             assert self.req(srv, "DELETE", "/v1/runner/contexts/sweep")[0] == 200
-            notes = None
         docs = ["The cat sat on the mat.", "Quarterly revenue rose four percent.",
                 "A kitten slept on a rug."]
         st, a = self.req(srv, "POST", "/v1/rerank",
@@ -534,7 +556,7 @@ class Bench:
         ]
         for name, body in cases:
             st, d = self.req(srv, "POST", "/v1/chat/completions", body)
-            assert 400 <= st < 500, f"{name}: answered {st} {json.dumps(d)[:200]}"
+            assert 400 <= st < 500, f"{name}: answered {st} {json.dumps(d)[:600]}"
         st, d = self.req(srv, "POST", "/v1/chat/completions", {
             "messages": [{"role": "user", "content": ""}], "max_tokens": 4})
         assert st in (200, 400), f"empty content: {st}"
