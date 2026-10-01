@@ -33,10 +33,6 @@ static const char *LITS[3] = { "true", "false", "null" };
 // digit that makes DC..DF cannot become anything but an unpaired low
 // surrogate -- because a rejection at the FOURTH digit would leave a
 // constrained model with all sixteen continuations masked.
-static bool g_u_escapes = true;
-void json_u_escapes_allow(bool on) { g_u_escapes = on; }
-bool json_u_escapes_allowed(void) { return g_u_escapes; }
-
 bool json_escape_hex(uint8_t *sub, uint16_t *esc, uint8_t c) {
     int d;
     if (c >= '0' && c <= '9') d = c - '0';
@@ -60,6 +56,11 @@ bool json_escape_hex(uint8_t *sub, uint16_t *esc, uint8_t c) {
     if (!low && val == 0) return false;
     *sub = (!low && val >= 0xD800 && val <= 0xDBFF) ? 6 : 0;
     return true;
+}
+
+bool jsonv_in_u_escape(const jsonv *v) {
+    return v && !v->done && (v->st == S_KEY || v->st == S_STRING) &&
+           ((v->sub >= 2 && v->sub <= 5) || v->sub >= 8);
 }
 
 uint32_t json_key_hash_init(void) { return 2166136261u; }   // FNV-1a basis
@@ -286,7 +287,7 @@ static bool feed_byte(jsonv *v, uint8_t c, bool *reconsume) {
                 if (key) v->khash = json_key_hash_byte(v->khash, dec);
                 return true;
             }
-            if (c == 'u' && g_u_escapes) { v->sub = 2; return true; }
+            if (c == 'u') { v->sub = 2; return true; }
             return false;
         }
         if (v->sub == 6) { if (c != '\\') return false; v->sub = 7; return true; }

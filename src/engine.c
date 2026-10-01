@@ -1821,7 +1821,21 @@ static int engine_pick(engine *e, float *logits, int n_vocab,
     sampler *s = e->smp;
     if (e->wm_prepare) e->wm_prepare(e->wm_ud, s, e->hist, e->gen_start, t);
     int tok;
-    if (!e->think_smp || !e->think_on) {
+    // The hex digits of a \uXXXX escape in a constrained string are picked
+    // greedily. A code point is not a place for variety, and sampling it is
+    // where a small model slips: granite-4.1-3b Q8_0 at temperature 0.8
+    // wrote "Å" as \u00a5 or \u00a1 in 23 of 60 tool calls, a digit off
+    // the \u00c5 it wrote in the other 36. Only the digits: the choice to
+    // escape at all, and everything else in the string, stay the sampler's.
+    bool hex = s->temp > 0 && ok && e->constraint_phase == CP_OUTPUT &&
+               (e->schema ? sval_in_u_escape(&e->sv)
+                          : e->json_mode && jsonv_in_u_escape(&e->jv));
+    if (hex) {
+        float t0 = s->temp;
+        s->temp = 0;
+        tok = sample_pick(s, logits, n_vocab, ok, e);
+        s->temp = t0;
+    } else if (!e->think_smp || !e->think_on) {
         tok = sample_pick(s, logits, n_vocab, ok, e);
     } else {
         float t0 = s->temp, p0 = s->top_p, m0 = s->min_p;

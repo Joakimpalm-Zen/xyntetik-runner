@@ -3192,7 +3192,7 @@ static int str_byte(uint8_t c, uint8_t *sub, uint16_t *esc,
     if (*sub == 1) { // after backslash
         if (c == '"' || c == '\\' || c == '/' || c == 'b' || c == 'f' ||
             c == 'n' || c == 'r' || c == 't') { *sub = 0; return 0; }
-        if (c == 'u' && json_u_escapes_allowed()) { *sub = 2; return 0; }
+        if (c == 'u') { *sub = 2; return 0; }
         return -1;
     }
     if (*sub == 6) { if (c != '\\') return -1; *sub = 7; return 0; }
@@ -3972,6 +3972,17 @@ bool sval_in_free_content(const sval *v) {
     if (f->node->kind == SN_MAP && f->phase == P_OBJ_INKEY) return true;
     return f->phase == P_STR &&
            (f->node->kind == SN_STR || f->node->kind == SN_ENUM);
+}
+
+bool sval_in_u_escape(const sval *v) {
+    if (!v || v->done || v->depth <= 0) return false;
+    const sframe *f = &v->stack[v->depth - 1];
+    // only where `sub` is str_byte's escape progress
+    if (!f->node) return false;
+    if (!((f->phase == P_STR && f->node->kind == SN_STR) ||
+          (f->phase == P_OBJ_INKEY && f->node->kind == SN_MAP)))
+        return false;
+    return (f->sub >= 2 && f->sub <= 5) || f->sub >= 8;
 }
 
 // A trailing raw node (Muse's to=user free-text answer) has no terminator

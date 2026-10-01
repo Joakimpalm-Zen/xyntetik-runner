@@ -20,16 +20,6 @@ names that were true when they were written.
   whole on the chat, Responses and Messages streams, on a byte vocabulary
   that splits every non-ASCII character.
 
-- **Constrained strings write characters raw.** Under `--json`, a schema or
-  a tool grammar a model can no longer open a `\uXXXX` escape: JSON never
-  needs one for a printable character, and a small model that chooses one
-  for a non-ASCII letter gets the code point wrong (granite-4.1-3b Q8_0:
-  "Å" as `\u00a5`, `\u00a1`, `\u00a2` or `\u00e5` in 8 of 24 tool calls,
-  v0.5.7, while the raw UTF-8 it writes in the same string is right). The
-  short escapes are unchanged; `RUNNER_JSON_U_ESCAPES=1` restores the old
-  grammar. Given up: spelling U+0001 to U+001F other than `\b \f \n \r
-  \t` inside a constrained string.
-
 - **Review of the 2026-10-01 batch: nine defects fixed, one feature parked.**
   - *Parked: batch-invariant CPU prefill (R1.5).* It claimed the property
     for "the CPU"; it holds on x86 and not on arm64. On an M1 `make test`

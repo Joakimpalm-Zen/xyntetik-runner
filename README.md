@@ -652,16 +652,6 @@ Runner provides two sampler-level guarantees:
 - `--json-schema FILE`, OpenAI `json_schema`, Responses `text.format`, and tool
   parameter schemas compile to a streaming conformance validator.
 
-Under either, a string is written as the characters themselves: a constrained
-model cannot open a `\uXXXX` escape. JSON never needs one for a printable
-character, and small models that choose one for a non-ASCII letter get the
-code point wrong (measured on granite-4.1-3b: "Å" written as `\u00a5`,
-`\u00a1`, `\u00a2` or `\u00e5` in 8 of 24 tool calls, while its raw UTF-8
-is right). The short escapes (`\n`, `\t`, `\"`, `\\`, ...) are unchanged;
-`RUNNER_JSON_U_ESCAPES=1` restores the escape, which is the only way to spell
-the remaining control characters (U+0001 to U+001F) inside a constrained
-string.
-
 The supported schema subset covers objects, arrays, strings, numbers,
 integers, booleans, null, enums, const, type unions, numeric bounds on both
 `integer` and `number` (`minimum`/`maximum` and their exclusive forms, with a

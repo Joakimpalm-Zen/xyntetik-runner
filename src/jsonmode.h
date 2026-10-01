@@ -59,18 +59,10 @@ typedef struct {
 // to such an escape; every rejection leaves other digits legal, so a
 // constrained model is never left with nothing to sample.
 bool json_escape_hex(uint8_t *sub, uint16_t *esc, uint8_t c);
-// May a constrained string OPEN a \uXXXX escape? JSON never requires one
-// for a printable character, and a small model that chooses one for a
-// non-ASCII letter gets the code point wrong: granite-4.1-3b wrote "Å" as
-// \u00a5, \u00a1, \u00a2 or \u00e5 in 8 of 24 tool calls, while the raw
-// UTF-8 it writes elsewhere in the same string is right. The validators
-// admit the escape by default (the library and its tests); the runner
-// turns it off at start, so a constrained model writes the character itself
-// (RUNNER_JSON_U_ESCAPES=1 keeps the escapes). The short escapes (\n, \t,
-// \", \\, ...) are untouched; what is given up is spelling the other
-// control characters, U+0001 to U+001F, inside a constrained string.
-void json_u_escapes_allow(bool on);
-bool json_u_escapes_allowed(void);
+// Is the validator inside the hex digits of a \uXXXX escape (after the
+// `u`, before the fourth digit, either half of a pair)? The engine picks
+// those digits greedily: see engine_pick.
+bool jsonv_in_u_escape(const jsonv *v);
 // Finish an escape that generation stopped inside, writing at most 12 bytes
 // to `out` and leaving the string state ready for the closing quote. Padding
 // the missing digits with zeros is what a caller would do instead, and that
