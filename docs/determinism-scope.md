@@ -29,16 +29,6 @@ does not make it, and the absence is deliberate.
     compiler reassociation under fast-math, and SIMD reduction order.
 - **Quantization determinism.** `--quantize` and `--merge-lora` write
   the same output bytes for the same inputs on the same build.
-- **Batch-invariant prefill (CPU).** A token's logits and KV are
-  byte-identical whether it was decoded alone or prefilled in a batch of
-  any width, so prefix caching, chunked prefill, `-b` and speculation do
-  not change output, and a receipt whose prompt KV came from a cache
-  replays exactly from its prompt tokens. Gated by
-  `test-prefill-invariance` (last-token and next-step logits, byte for
-  byte, across seven chunkings, on the F32, Q8_0 and BF16 fixtures) and
-  by `test_quants_simd` (the F32 decode dot against a written summation
-  order); measured also on F16, Q4_0, Q4_K and Q6_K. The GPU backends
-  are not covered by this gate.
 
 ## Measured, not yet claimed: T3, any machine, same bytes
 
@@ -49,10 +39,9 @@ only) and canonical-order dot kernels that fix one reduction tree on every
 target. In that configuration the decode path produced bit-identical
 log-probabilities on arm64, x86-64 and riscv64 for every position of a
 165-token measurement (docs/portable-bitexact-2026-09-05.md), at a 7 to
-17% decode cost. It is not on the claimed list because the k-quant
-formats, MoE experts and the GPU backends are not canonical yet (a T3
-build prefills through the canonical per-column dots, so its prefill is
-batch-invariant too), and no CI job runs the cross-ISA comparison. A T3 receipt
+17% decode cost. It is not on the claimed list because the batched prefill
+tile, the k-quant formats, MoE experts and the GPU backends are not
+canonical yet, and no CI job runs the cross-ISA comparison. A T3 receipt
 records `"flavor":"t3"` in its build object so a verifier can tell which
 binary wrote it. When the coverage and the gate exist, T3 joins T1 and T2
 above as "another machine, same bytes".

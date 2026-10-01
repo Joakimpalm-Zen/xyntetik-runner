@@ -31,23 +31,6 @@ names that were true when they were written.
   `--json-schema` and a Mamba-2 hybrid. A different model, a changed byte, a
   missing or different schema and an existing output file are refused. CPU,
   solo step loop, finite `-n`. [README](README.md#cli-session-images)
-- **Prefill is batch-invariant on the CPU.** An F32 weight's decode dot
-  summed in four accumulator chains while the batched prefill tile keeps
-  one per output, so any row prefilled in a batch of eight or more got
-  different last bits than the same row decoded alone: a token's logits
-  depended on the prefill chunk (measured: 165 of 259 last-token logits
-  on the fixture at chunk 37, 253 of 259 on a 768-wide synthetic model),
-  and a receipt whose prompt KV came from a cache replayed exactly only by
-  luck. The decode dot now walks the tile's order (one accumulator, the
-  same reduction, the same fused tail). F16, BF16, Q8_0, Q4_0, Q4_K and
-  Q6_K were already invariant and are measured so. No measurable cost:
-  F32 decode 339.8 -> 338.0 tok/s and prefill 730.9 -> 719.9 tok/s,
-  medians of seven interleaved runs on a 4-core box (noise). A canonical
-  (T3) build keeps its own F32 tree and now prefills through the
-  per-column canonical dots, so it is batch-invariant too. Gates:
-  `test-prefill-invariance` (logits and KV byte for byte across seven
-  chunkings, F32/Q8_0/BF16 fixtures) and `test_quants_simd` (the F32
-  decode dot against a written order: 807 failures on the old kernel).
 
 - **Signed KV snapshots: memory with provenance (`--kv-snapshots DIR`).**
   A named context can be written to disk (`POST /v1/runner/contexts/{id}/

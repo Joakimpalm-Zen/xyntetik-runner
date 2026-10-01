@@ -1150,15 +1150,14 @@ int main(void) {
 
     // vec_dot_f32_multi: the batched prefill inner loop.
     //
-    // The invariant is BLOCKING-INDEPENDENCE: each column keeps its own
-    // accumulator and walks the row in one order, so a column's result
-    // cannot depend on how many columns travel with it. Since R1.5 it is
-    // also AGREEMENT with the single-column dot decode uses (vec_dot on
-    // F32): `dot_f32_row` reduced with four accumulator chains and produced
-    // slightly different bits (measured here 2026-09-02), so a token's
-    // logits depended on whether it was prefilled or decoded, and a receipt
-    // replayed exactly only under the batch shape that wrote it. It now
-    // walks the same one-accumulator order, checked below per column.
+    // The invariant is BLOCKING-INDEPENDENCE, not agreement with the
+    // single-column dot: each column keeps its own accumulator and walks the
+    // row in one order, so a column's result cannot depend on how many
+    // columns travel with it. (`dot_f32_row` reduces with a different
+    // accumulator layout and has always produced slightly different bits —
+    // measured here 2026-09-02 when a widening was first gated against it by
+    // mistake. Prefill uses this kernel and decode uses that one; each is
+    // internally stable, which is what "same executable, same tokens" needs.)
     // This is what lets the register blocking widen or tile without touching
     // the token contract. Widths straddle the 8- and 4-column blocks and
     // their remainders; row lengths straddle the SIMD step and its tail.
@@ -1196,11 +1195,6 @@ int main(void) {
                     CHECK(got[k] == spec,
                           "vec_dot_f32_multi n=%d nb=%d col=%d: %.9g != fixed-order %.9g",
                           n, nb, k, (double)got[k], (double)spec);
-                    // the decode path's dot: the same bits (R1.5)
-                    float solo = vec_dot(T_F32, wv, xv + (size_t)k * MAXN, n);
-                    CHECK(solo == spec,
-                          "vec_dot(F32) n=%d col=%d: solo %.9g != fixed-order %.9g",
-                          n, k, (double)solo, (double)spec);
                 }
             }
         }

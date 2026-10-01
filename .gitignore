@@ -233,8 +233,6 @@ test-ecdsa
 test-ecdsa.exe
 test-watermark
 test-watermark.exe
-test-prefill-invariance
-test-prefill-invariance.exe
 test-attn-split-bin
 test-attn-split-bin.exe
 attn-split-*.gguf

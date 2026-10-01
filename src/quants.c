@@ -2309,37 +2309,7 @@ static float dot_iq4_xs_neon(const block_iq4_xs *b, const float *x, int n) {
 // case and by the generic dequantize-then-dot fallback below, where the 256-
 // element serial sum -- not the block decode -- was the cost (a Q3_K row spent
 // 5610 ns, of which only 1979 was the decode).
-// The solo f32 dot sums in the batched kernels' order (R1.5): one vector
-// accumulator walking the row, the same horizontal reduction, the same fmaf
-// tail -- exactly vec_dot_f32_multi's single-column path, which the 4x4
-// prefill tile and the 8-column block match by construction. It used four
-// independent chains, faster on a cache-resident row but a different last
-// bit than the tile, so a token's logits depended on how many tokens were
-// prefilled with it and a receipt replayed exactly only under the batch
-// shape that wrote it (tests/test_prefill_invariance.c holds the two).
 static inline float dot_f32_row(const float *w, const float *x, int n) {
-#if RUNNER_AVX2
-    __m256 acc = _mm256_setzero_ps();
-    int i = 0;
-    for (; i + 8 <= n; i += 8)
-        acc = _mm256_fmadd_ps(_mm256_loadu_ps(w + i), _mm256_loadu_ps(x + i), acc);
-    return f32_dot_tail(hsum8(acc), w, x, i, n);
-#elif RUNNER_NEON
-    float32x4_t acc = vdupq_n_f32(0);
-    int i = 0;
-    for (; i + 4 <= n; i += 4)
-        acc = vfmaq_f32(acc, vld1q_f32(w + i), vld1q_f32(x + i));
-    return f32_dot_tail(vaddvq_f32(acc), w, x, i, n);
-#else
-    return f32_dot_tail(0.0f, w, x, 0, n);
-#endif
-}
-
-// The four-chain f32 dot the canonical kernels define as their f32 tree
-// (RUNNER_CANON_KERNELS; tests/test_canon_kernels.c's ref_f32). A canonical
-// build takes the solo dot for every batch width (model.c, mv_rows), so it
-// is batch-invariant without the tile having to follow this tree.
-static inline float dot_f32_row4(const float *w, const float *x, int n) {
 #if RUNNER_NEON
     float32x4_t a0 = vdupq_n_f32(0), a1 = vdupq_n_f32(0);
     float32x4_t a2 = vdupq_n_f32(0), a3 = vdupq_n_f32(0);
@@ -2401,7 +2371,7 @@ static inline float __attribute__((unused)) canon_tree8(const float l[8]) {
 // the block scale into an 8-lane accumulator, hsum8 (which is canon_tree8)
 static float canon_dot_q8_0(const block_q8_0 *b, const float *x, int n) { return dot_q8_0_avx2(b, x, n); }
 static float canon_dot_f16(const f16_t *w, const float *x, int n)        { return dot_f16_avx2(w, x, n); }
-static float canon_dot_f32(const float *w, const float *x, int n)        { return dot_f32_row4(w, x, n); }
+static float canon_dot_f32(const float *w, const float *x, int n)        { return dot_f32_row(w, x, n); }
 #elif RUNNER_NEON
 // lanes 0..3 in A, lanes 4..7 in B; c = A + B then (c0+c2)+(c1+c3) is hsum8's tree
 static inline float canon_hsum8_neon(float32x4_t A, float32x4_t B) {
