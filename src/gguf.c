@@ -307,7 +307,19 @@ static bool gguf_open_one_x(gguf_file *g, const char *path, bool header_only) {
         }
         if (off > g->map_size - data_start ||
             t->nbytes > g->map_size - data_start - off) {
-            fprintf(stderr, "error: invalid tensor metadata for %s\n", t->name);
+            // The usual cause is not a hostile header but a download that
+            // stopped: say what is missing, so the user fetches the file
+            // again instead of suspecting the model.
+            uint64_t need = 0;
+            bool fits = checked_u64_add(off, t->nbytes, &need) &&
+                        checked_u64_add(need, data_start, &need);
+            if (fits)
+                fprintf(stderr, "error: invalid tensor metadata for %s: its data "
+                        "ends at byte %llu but the file is %llu bytes (a "
+                        "truncated or incomplete download?)\n", t->name,
+                        (unsigned long long)need, (unsigned long long)g->map_size);
+            else
+                fprintf(stderr, "error: invalid tensor metadata for %s\n", t->name);
             goto fail;
         }
         t->data = (uint8_t *)g->map + (size_t)data_start + (size_t)off;

@@ -336,3 +336,29 @@ def test_seed_zero_is_refused_rather_than_silently_randomised(runner_bin, model)
     b = _sampled(runner_bin, model, 7)
     assert a.returncode == 0 and a.stdout == b.stdout
     assert a.stdout != _sampled(runner_bin, model, 8).stdout
+
+
+def test_a_truncated_model_says_it_is_truncated(tmp_path):
+    """A download that stopped part-way was refused as "invalid tensor
+    metadata for blk.51.attn_output.weight", which reads as a broken model
+    (a 3.4 GB of 3.8 GB Trinity-Nano on the family sweep, 2026-10-02). The
+    refusal now says where the tensor ends and how long the file is."""
+    import pathlib
+    import subprocess
+    import sys
+    root = pathlib.Path(__file__).resolve().parents[1]
+    exe = root / ("runner.exe" if sys.platform == "win32" else "runner")
+    if not exe.exists():
+        import pytest
+        pytest.skip("runner binary not built")
+    whole = tmp_path / "whole.gguf"
+    subprocess.run([sys.executable, root / "scripts/make-test-model.py", str(whole)],
+                   check=True, cwd=root, stdout=subprocess.DEVNULL)
+    data = whole.read_bytes()
+    cut = tmp_path / "cut.gguf"
+    cut.write_bytes(data[:len(data) * 3 // 4])
+    p = subprocess.run([str(exe), "-m", str(cut), "-p", "hi", "-n", "1", "--gpu",
+                        "off"], capture_output=True, timeout=60)
+    err = p.stderr.decode(errors="replace")
+    assert p.returncode == 1, err
+    assert f"the file is {len(data) * 3 // 4} bytes" in err and "truncated" in err, err
