@@ -4,6 +4,7 @@
 
 #include "runner.h"
 #include "oms.h"
+#include "watermark.h"
 
 // `tmpl_override` is --chat-template resolved to a TMPL_* value, or -1 to
 // detect it from the model. It is a single model's template, so the caller
@@ -20,6 +21,15 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
                bool loop_guard,
                bool ignore_eos, int tmpl_override, bool force_uncertified,
                const oms_policy *signing);
+
+// R8.6: adapters to load at the next server_run, each served per request as
+// "<model>:<name>". Borrowed strings; call before server_run.
+void server_set_adapters(const char *const *names, const char *const *paths,
+                         int n, float scale);
+
+// R1.8.1: mark every sampled generation with this watermark key (copied).
+// Call before server_run.
+void server_set_watermark(const wm_key *key);
 
 // Request the same graceful stop as the platform's first SIGINT / console
 // control event. This closes the listener so a server_run blocked in accept()

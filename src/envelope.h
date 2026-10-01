@@ -101,6 +101,10 @@ typedef struct {
     const char *prev_hash;
     const char *sign_key_path;
     const char *model_sig_json;
+    // the adapter's load-time OMS verdict object (R1.2.3), or NULL: written
+    // as a top-level "adapter_signature" (never a nested "signature" key,
+    // which a signed record reserves for its own)
+    const char *adapter_sig_json;
     // Speculation accounting: spec_source names the draft source the run was
     // configured with ("model" | "mtp" | "lookup") or NULL for plain
     // decoding, in which case no "speculation" object is written and the
@@ -109,6 +113,29 @@ typedef struct {
     const char *spec_source;
     int         spec_rounds, spec_drafted, spec_accepted;
     int         spec_lk_drafted, spec_lk_accepted;   // the lookup's share
+    // Serve-mode receipts (R1.2.2). Precomputed digests (64 hex) skip the
+    // per-record hashing of a multi-GB model and of the executable; NULL
+    // hashes the files as the CLI always has. template_name replaces "raw"
+    // in config.template (the prompt tokens are what a replay feeds either
+    // way). serve_json, when set, is a JSON object written as "serve". The
+    // record's chain hash is copied to chain_out (65 bytes) when non-NULL.
+    const char *model_sha256, *binary_sha256;
+    const char *template_name;
+    const char *serve_json;
+    char       *chain_out;
+    // Agent transcripts, D4a (R1.1.2). constraints_json: a JSON array of
+    // {"kind":..} objects naming what shaped the output beyond the sampler
+    // (a grammar, a stop sequence, a scripted reply), written as
+    // "constraints"; --verify refuses a record whose constraints it cannot
+    // reproduce. tool_calls_json: a JSON array of {"name","arguments"}, the
+    // calls the turn delivered, written as "tool_calls". NULL writes neither,
+    // so an unconstrained record is what it always was.
+    const char *constraints_json;
+    const char *tool_calls_json;
+    // R1.8.2: the watermark the sampler applied ({"scheme","key_id",
+    // "layers","context","marked_tokens"}), written as "watermark"; a replay
+    // needs the same key. NULL for an unmarked run.
+    const char *watermark_json;
 } transcript_info;
 
 // Signing keys: xyntetik.runner.signkey.v1, a 32-byte seed and the public

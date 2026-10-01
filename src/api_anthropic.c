@@ -540,25 +540,15 @@ static jv *anth_tool_choice(jv *tc, char *err, int errcap, bool *oom) {
         snprintf(err, errcap, "tool_choice must be an object");
         return NULL;
     }
-    // "don't disable parallel use" is a request to allow several calls in one
-    // turn. The envelope is one call per turn on every surface, so this is
-    // refused here exactly as parallel_tool_calls:true is on the other two,
-    // rather than answered with a single call the caller cannot distinguish
-    // from a considered choice.
+    // disable_parallel_tool_use:false asks for several calls in one turn,
+    // which the parallel envelope serves as it does parallel_tool_calls on
+    // the OpenAI surfaces (messages_prompt reads it, R10.6); here only its
+    // type is checked.
     jv *par = jv_get(tc, "disable_parallel_tool_use");
-    if (par && par->type != J_NULL) {
-        if (par->type != J_BOOL) {
-            snprintf(err, errcap,
-                     "tool_choice.disable_parallel_tool_use must be a boolean");
-            return NULL;
-        }
-        if (!par->b) {
-            snprintf(err, errcap,
-                     "tool_choice.disable_parallel_tool_use:false is not "
-                     "supported yet; this runtime emits one tool call per turn. "
-                     "Omit it or send true.");
-            return NULL;
-        }
+    if (par && par->type != J_NULL && par->type != J_BOOL) {
+        snprintf(err, errcap,
+                 "tool_choice.disable_parallel_tool_use must be a boolean");
+        return NULL;
     }
     const char *type = jv_str(jv_get(tc, "type"), NULL);
     const char *mapped = NULL;
@@ -816,7 +806,14 @@ static char *messages_prompt(slot_t *s, sock_t fd, jv *req, tool_envelope *env,
     // the same envelope compiler, from the same declarations, as both OpenAI
     // surfaces: this is what makes an Anthropic tool call and a chat tool call
     // the same internal agent action
-    int rc = tool_envelope_build(tools, choice, NULL, env, terr, sizeof(terr));
+    // Absent keeps the one-call envelope this surface has always compiled;
+    // an explicit false opts into several calls per turn. (Anthropic's own
+    // default allows parallel use; changing what an unmarked request
+    // compiles to would change every existing client's grammar at once.)
+    jv *par = raw_choice ? jv_get(raw_choice, "disable_parallel_tool_use") : NULL;
+    bool parallel = par && par->type == J_BOOL && !par->b;
+    int rc = tool_envelope_build_ex(tools, choice, NULL, parallel, env, terr,
+                                    sizeof(terr));
     if (rc < 0) {
         jv_free(tools);
         jv_free(choice);

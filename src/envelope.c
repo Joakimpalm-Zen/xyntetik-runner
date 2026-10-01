@@ -200,12 +200,23 @@ static void tsb_fmt(tsb *w, const char *fmt, ...) {
 
 // json_escape needs a caller-sized buffer; escape in bounded chunks so an
 // arbitrarily long prompt/output never needs a matching single allocation
+// A NUL byte is written as U+FFFD: json_parse refuses \u0000 (a jv string is
+// NUL-terminated, see json.c), so a record that spelled it could not be read
+// back by --verify at all. The text fields are renderings; the exact output
+// bytes are output.bytes_hex, which is what a replay compares.
 static void tsb_json_str(tsb *w, const char *s, size_t n) {
     tsb_put(w, "\"", 1);
     char esc[1024];   // worst case 6 bytes out per byte in: 150*6 = 900
     size_t i = 0;
     while (i < n) {
+        if (s[i] == 0) {
+            tsb_put(w, "\xef\xbf\xbd", 3);
+            i++;
+            continue;
+        }
         size_t take = n - i < 150 ? n - i : 150;
+        for (size_t j = 1; j < take; j++)
+            if (s[i + j] == 0) { take = j; break; }
         // do not split a UTF-8 sequence across chunks: back off to a
         // boundary unless that would empty the chunk
         while (take > 1 && i + take < n &&
@@ -244,13 +255,17 @@ static void tsb_hex_str(tsb *w, const char *s, size_t n) {
 
 bool transcript_write(const transcript_info *ti) {
     char msha[65] = "", bsha[65] = "", asha[65] = "";
-    if (!envelope_file_sha256(ti->model_path, msha)) {
+    if (ti->model_sha256 && strlen(ti->model_sha256) == 64) {
+        memcpy(msha, ti->model_sha256, 65);
+    } else if (!envelope_file_sha256(ti->model_path, msha)) {
         fprintf(stderr, "error: transcript: cannot hash model %s\n",
                 ti->model_path);
         return false;
     }
-    if (!ti->executable_path ||
-        !envelope_file_sha256(ti->executable_path, bsha)) {
+    if (ti->binary_sha256 && strlen(ti->binary_sha256) == 64) {
+        memcpy(bsha, ti->binary_sha256, 65);
+    } else if (!ti->executable_path ||
+               !envelope_file_sha256(ti->executable_path, bsha)) {
         fprintf(stderr, "error: transcript: cannot hash runner executable\n");
         return false;
     }
@@ -310,15 +325,22 @@ bool transcript_write(const transcript_info *ti) {
     tsb_fmt(&w, "\"config\":{\"seed\":%llu,\"seed_u64\":\"%llu\","
                 "\"temp\":%g,\"top_k\":%d,"
                 "\"top_p\":%g,\"min_p\":%g,\"repeat_penalty\":%g,"
-                "\"n_predict\":%d,\"template\":\"raw\",\"bos\":%s},",
+                "\"n_predict\":%d,\"template\":",
             (unsigned long long)ti->seed, (unsigned long long)ti->seed,
             (double)ti->temp, ti->top_k,
             (double)ti->top_p, (double)ti->min_p,
-            (double)ti->repeat_penalty, ti->n_predict,
-            ti->bos ? "true" : "false");
+            (double)ti->repeat_penalty, ti->n_predict);
+    const char *tn = ti->template_name ? ti->template_name : "raw";
+    tsb_json_str(&w, tn, strlen(tn));
+    tsb_fmt(&w, ",\"bos\":%s},", ti->bos ? "true" : "false");
     if (ti->model_sig_json) {
         tsb_put(&w, "\"model_signature\":", 18);
         tsb_put(&w, ti->model_sig_json, strlen(ti->model_sig_json));
+        tsb_put(&w, ",", 1);
+    }
+    if (ti->adapter_sig_json && ti->adapter_path) {
+        tsb_put(&w, "\"adapter_signature\":", 20);
+        tsb_put(&w, ti->adapter_sig_json, strlen(ti->adapter_sig_json));
         tsb_put(&w, ",", 1);
     }
     if (ti->spec_source) {
@@ -328,6 +350,26 @@ bool transcript_write(const transcript_info *ti) {
                     "\"lookup_drafted\":%d,\"lookup_accepted\":%d},",
                 ti->spec_rounds, ti->spec_drafted, ti->spec_accepted,
                 ti->spec_lk_drafted, ti->spec_lk_accepted);
+    }
+    if (ti->serve_json) {
+        tsb_put(&w, "\"serve\":", 8);
+        tsb_put(&w, ti->serve_json, strlen(ti->serve_json));
+        tsb_put(&w, ",", 1);
+    }
+    if (ti->constraints_json) {
+        tsb_put(&w, "\"constraints\":", 14);
+        tsb_put(&w, ti->constraints_json, strlen(ti->constraints_json));
+        tsb_put(&w, ",", 1);
+    }
+    if (ti->watermark_json) {
+        tsb_put(&w, "\"watermark\":", 12);
+        tsb_put(&w, ti->watermark_json, strlen(ti->watermark_json));
+        tsb_put(&w, ",", 1);
+    }
+    if (ti->tool_calls_json) {
+        tsb_put(&w, "\"tool_calls\":", 13);
+        tsb_put(&w, ti->tool_calls_json, strlen(ti->tool_calls_json));
+        tsb_put(&w, ",", 1);
     }
     tsb_fmt(&w, "\"generated_utc\":\"%s\",", utc);
     tsb_put(&w, "\"prompt\":{\"text\":", 17);
@@ -352,6 +394,7 @@ bool transcript_write(const transcript_info *ti) {
     }
     char chain[65];
     envelope_data_sha256(w.b, w.n, chain);
+    if (ti->chain_out) memcpy(ti->chain_out, chain, 65);
 
     size_t tl = strlen(ti->out_path) + sizeof ".partial";
     char *tmp = malloc(tl);

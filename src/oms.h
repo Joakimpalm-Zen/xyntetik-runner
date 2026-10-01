@@ -38,11 +38,42 @@ typedef struct {
 bool oms_check_model(const char *model_path, const oms_policy *policy,
                      oms_result *out);
 
+// The same policy for any other artifact that changes what is served -- a
+// LoRA adapter (R1.2.3). `label` names it in the log ("adapter"); the policy's
+// bundle_path must be the ARTIFACT's own (NULL discovers <path>.sig), never
+// the model's.
+bool oms_check_artifact(const char *path, const oms_policy *policy,
+                        const char *label, oms_result *out);
+
 // Verify `bundle_path` against the model file at `model_path` with the
 // trusted public key in `pubkey_pem_path` (PEM "PUBLIC KEY", EC only).
 // Returns true only when status is "verified"; `out` always describes why.
 bool oms_verify_file(const char *bundle_path, const char *pubkey_pem_path,
                      const char *model_path, oms_result *out);
+
+// The conventional key fingerprint: sha256 of the DER SubjectPublicKeyInfo in
+// a PEM "PUBLIC KEY" file (what `openssl pkey -pubin -outform DER | sha256sum`
+// prints). False when the file is unreadable or not an EC public key PEM.
+bool oms_pubkey_fingerprint(const char *pem_path, char hex[65]);
+
+// Write a key-method bundle for the model at `model_path` (R1.2.5,
+// `runner --sign-model`): a DSSE envelope over an in-toto Statement v1 whose
+// manifest names the file (resource ".", as the reference signer names a
+// single file) or, for a split GGUF, every part by name (subject: the parts'
+// directory, as the reference names a directory). Signed with the PEM EC
+// private key at `key_pem_path` (SEC1 or PKCS#8, unencrypted, P-256/384/521)
+// by deterministic ECDSA with the curve's digest; the key hint is sha256 of
+// the PEM public key, the reference's identifier. `out_path` is created and
+// never overwritten. Reasons for a refusal go to stderr.
+typedef struct {
+    char curve[8];
+    char hash[8];
+    char subject_digest[65];
+    char key_hint[65];
+    int  n_resources;
+} oms_sign_info;
+bool oms_sign_file(const char *model_path, const char *key_pem_path,
+                   const char *out_path, oms_sign_info *info);
 
 // Appends the JSON object the transcript records for a model signature
 // ({"status":..,"subject_digest":..,"curve":..}) to `buf`, capped at `cap`.

@@ -4,10 +4,17 @@
 //                               response_format {"type":"json_object"}
 //   POST /v1/completions        raw prompt completion
 //   POST /v1/embeddings         L2-normed embeddings, pooled as the GGUF declares
+//   POST /v1/rerank             documents ranked by a yes/no relevance choice
 //   GET  /v1/models             the loaded model
 //   GET  /v1/capabilities       registry + feature discovery
 //   GET  /health                liveness
 //   GET  /metrics               the same counters in Prometheus text format
+//   POST /v1/runner/contexts    pin a named prefix (R10.4); GET lists,
+//                               DELETE /v1/runner/contexts/{id} releases;
+//                               .../{id}/snapshot writes it to disk (R1.12)
+//   GET  /v1/runner/provenance  binary and model digests, the load-time
+//                               signature and envelope verdicts, the effective
+//                               configuration (provenance.h)
 //
 // Swap-mode request bodies may carry "keep_alive" (seconds of idle before
 // the model unloads; 0 = unload now, negative = keep forever).
@@ -24,6 +31,11 @@
 #include "completion.h"
 #include "api.h"
 #include "server.h"
+#include "provenance.h"
+#include "respstore.h"
+#include "kvsnap.h"
+#include "envelope.h"
+#include "gpu.h"
 
 #include <errno.h>
 #include <pthread.h>
@@ -397,7 +409,27 @@ const char *sole_tool_name(const jv *tools) {
     return name && name[0] ? name : NULL;
 }
 
+// What becomes of a rendered chat prompt: generation (handle_chat), or a
+// named context pinned from it (R10.4). One renderer serves both, so a
+// context built from messages is byte for byte the prefix a later chat
+// request renders from the same messages.
+typedef void (*chat_prompt_fn)(slot_t *s, sock_t fd, const char *prompt,
+                               jv *req, const tool_envelope *env);
+
+static void handle_chat_render(slot_t *s, sock_t fd, jv *req,
+                               bool add_assistant, chat_prompt_fn run);
+
+static void chat_generate(slot_t *s, sock_t fd, const char *prompt, jv *req,
+                          const tool_envelope *env) {
+    run_completion(s, fd, prompt, API_CHAT, req, env);
+}
+
 static void handle_chat(slot_t *s, sock_t fd, jv *req) {
+    handle_chat_render(s, fd, req, true, chat_generate);
+}
+
+static void handle_chat_render(slot_t *s, sock_t fd, jv *req,
+                               bool add_assistant, chat_prompt_fn run) {
     jv *msgs = jv_get(req, "messages");
     if (!msgs || msgs->type != J_ARR || msgs->n == 0) {
         send_error(fd, 400, "missing messages");
@@ -408,7 +440,7 @@ static void handle_chat(slot_t *s, sock_t fd, jv *req) {
         send_error(fd, 400, merr);
         return;
     }
-    const char **roles = malloc(sizeof(*roles) * (size_t)msgs->n);
+    const char **roles = malloc(sizeof(*roles) * (size_t)(unsigned)msgs->n);
     if (!roles) {
         send_error(fd, 500, "out of memory validating chat history");
         return;
@@ -709,7 +741,7 @@ static void handle_chat(slot_t *s, sock_t fd, jv *req) {
         }
         thinking |= strength ? strength : effort;
     }
-    char *prompt = render_prompt_alloc(s->tmpl, cm, n_cm, true,
+    char *prompt = render_prompt_alloc(s->tmpl, cm, n_cm, add_assistant,
                                        thinking, native_tools,
                                        total + 256);
     if (!prompt) {
@@ -719,13 +751,270 @@ static void handle_chat(slot_t *s, sock_t fd, jv *req) {
         send_error(fd, 500, "out of memory building chat prompt");
         return;
     }
-    run_completion(s, fd, prompt, API_CHAT, req, strict ? &env : NULL);
+    run(s, fd, prompt, req, strict ? &env : NULL);
     free(prompt);
     for (int i = 0; i < n_own; i++) free(owned[i]);
     free(owned);
     free(cm);
     free(ts.s);
     tool_envelope_free(&env);
+}
+
+// ---- named contexts (R10.4) ---------------------------------------------
+//
+// POST /v1/runner/contexts {id, prompt} or {id, messages[, tools]} prefills
+// the prompt once and pins its KV under `id`; a request carrying
+// "context_id": id forks it (completion.c checks it is a prefix first).
+// GET lists them, DELETE /v1/runner/contexts/{id} releases one.
+static void context_pin_prompt(slot_t *s, sock_t fd, const char *prompt,
+                               bool chat, jv *req) {
+    const char *id = jv_str(jv_get(req, "id"), "");
+    engine *e = &s->e;
+    int32_t *toks = NULL;
+    int n = tok_encode_fit(s->tok, prompt, true, chat ? TOK_PROMPT : TOK_RAW,
+                           0, &toks);
+    if (n < 0) { free(toks); send_error(fd, 500, "out of memory tokenizing"); return; }
+    if (n < 2 || n >= s->m->n_ctx) {
+        free(toks);
+        send_error_detail(fd, 400,
+                          n >= 2 ? "the context does not fit the context "
+                                   "window with room to continue it"
+                          : chat ? "these messages render to (almost) "
+                                   "nothing on their own in this model's "
+                                   "template (some fold the system turn into "
+                                   "the first user turn); a context needs at "
+                                   "least 2 tokens"
+                                 : "a context needs at least 2 tokens",
+                          chat ? "messages" : "prompt", "invalid_value");
+        return;
+    }
+    double t0 = now_s();
+    sched_prefill_begin();
+    prefix_reuse r = engine_prefix_reuse(e, toks, n);
+    float *lg = engine_feed(e, toks + r.keep, n - r.keep);
+    int rc = lg ? prefix_context_pin(e, id, toks, n) : PFX_CTX_NOSPACE;
+    sched_prefill_end();
+    double secs = now_s() - t0;
+    free(toks);
+    if (!lg) { send_error(fd, 500, "prefill failed (context or memory)"); return; }
+    if (rc == PFX_CTX_UNSUPPORTED) {
+        send_error_detail(fd, 409, "this model's KV layout (a ring or tied-V "
+                          "cache) has no contiguous prefix to pin", NULL,
+                          "context_unsupported");
+        return;
+    }
+    if (rc == PFX_CTX_NOSPACE) {
+        send_error_detail(fd, 507, "the prefix-cache budget cannot hold this "
+                          "context beside the ones already pinned "
+                          "(RUNNER_PREFIX_CACHE_MB, or DELETE a context)",
+                          NULL, "context_budget");
+        return;
+    }
+    if (rc < 0) { send_error(fd, 500, "could not pin the context"); return; }
+    // the entry's size is the cache's own per-token arithmetic
+    size_t bytes = prefix_cache_entry_bytes(s->m, n);
+    char body[512];
+    int bn = snprintf(body, sizeof body,
+                      "{\"object\":\"runner.context\",\"id\":\"%s\","
+                      "\"tokens\":%d,\"bytes\":%llu,\"prefill_tokens\":%d,"
+                      "\"cached_tokens\":%d,\"seconds\":%.6f}",
+                      id, n, (unsigned long long)bytes, n - r.keep, r.keep, secs);
+    send_response(fd, 200, "application/json", body, (size_t)bn);
+    fprintf(stderr, "[slot %d] context %s: %d tokens pinned (%d prefilled)\n",
+            s->id, id, n, n - r.keep);
+}
+
+static void context_from_chat(slot_t *s, sock_t fd, const char *prompt,
+                              jv *req, const tool_envelope *env) {
+    (void)env;   // declarations are in the rendered prompt; nothing is parsed
+    context_pin_prompt(s, fd, prompt, true, req);
+}
+
+static void send_kvsnap(sock_t fd, bool ok, sbuf *out, const kvsnap_err *err) {
+    if (ok && !out->failed) send_response(fd, 200, "application/json", out->s, out->n);
+    else if (ok) send_error(fd, 500, "out of memory");
+    else send_error_detail(fd, err->status, err->msg, NULL, err->code);
+    free(out->s);
+}
+
+// R1.12.2: a context loaded from a --kv-snapshots snapshot instead of prefilled
+static void context_from_snapshot(slot_t *s, sock_t fd, const char *id,
+                                  jv *snap) {
+    if (!snap || snap->type != J_STR) {
+        send_error_detail(fd, 400, "snapshot must be a string", "snapshot",
+                          "invalid_type");
+        return;
+    }
+    sbuf out = {0};
+    kvsnap_err err = {0};
+    bool ok = kvsnap_load(&s->e, id, snap->str, &out, &err);
+    send_kvsnap(fd, ok, &out, &err);
+}
+
+// R1.12.1: POST /v1/runner/contexts/{id}/snapshot {name?, receipt?}
+static void handle_context_snapshot(slot_t *s, sock_t fd, jv *req,
+                                    const char *path) {
+    char id[PFX_CTX_NAME_MAX + 1];
+    const char *p = path + sizeof("/v1/runner/contexts/") - 1;
+    const char *end = strstr(p, "/snapshot");
+    size_t n = end ? (size_t)(end - p) : 0;
+    if (!end || n == 0 || n > PFX_CTX_NAME_MAX) {
+        send_error_detail(fd, 400, "not a context id", "id", "invalid_value");
+        return;
+    }
+    memcpy(id, p, n);
+    id[n] = 0;
+    if (!prefix_context_name_ok(id)) {
+        send_error_detail(fd, 400, "not a context id", "id", "invalid_value");
+        return;
+    }
+    sbuf out = {0};
+    kvsnap_err err = {0};
+    bool ok = kvsnap_save(&s->e, id, req, &out, &err);
+    send_kvsnap(fd, ok, &out, &err);
+}
+
+static void handle_context_create(slot_t *s, sock_t fd, jv *req) {
+    const char *id = jv_str(jv_get(req, "id"), NULL);
+    if (!id || !prefix_context_name_ok(id)) {
+        send_error_detail(fd, 400, "id must be 1 to 64 characters of "
+                          "[A-Za-z0-9._:-]", "id", "invalid_value");
+        return;
+    }
+    jv *prompt = jv_get(req, "prompt");
+    jv *msgs = jv_get(req, "messages");
+    jv *snap = jv_get(req, "snapshot");
+    bool has_p = prompt && prompt->type != J_NULL;
+    bool has_m = msgs && msgs->type != J_NULL;
+    if (snap && snap->type != J_NULL) {
+        if (has_p || has_m) {
+            send_error(fd, 400, "a context is a prompt, messages or a snapshot: "
+                                "give exactly one");
+            return;
+        }
+        context_from_snapshot(s, fd, id, snap);
+        return;
+    }
+    if (has_p == has_m) {
+        send_error(fd, 400, "a context is either a raw prompt (\"prompt\") or "
+                            "chat messages (\"messages\", with \"tools\"): "
+                            "give exactly one");
+        return;
+    }
+    if (has_p) {
+        if (prompt->type != J_STR) {
+            send_error_detail(fd, 400, "prompt must be a string", "prompt",
+                              "invalid_type");
+            return;
+        }
+        context_pin_prompt(s, fd, prompt->str, false, req);
+        return;
+    }
+    // rendered WITHOUT the assistant generation prompt: the context is what
+    // a later request's messages start with, not a turn to answer
+    handle_chat_render(s, fd, req, false, context_from_chat);
+}
+
+static void send_contexts(sock_t fd) {
+    int n = prefix_context_list(NULL, 0);
+    prefix_context_info *v = n ? calloc((size_t)n, sizeof *v) : NULL;
+    if (n && !v) { send_error(fd, 500, "out of memory"); return; }
+    if (n) n = prefix_context_list(v, n);
+    sbuf r = {0};
+    sb_lit(&r, "{\"object\":\"list\",\"data\":[");
+    for (int i = 0; i < n; i++)
+        sb_fmt(&r, "%s{\"id\":\"%s\",\"tokens\":%d,\"bytes\":%llu,"
+                   "\"hits\":%llu,\"age_seconds\":%.3f}",
+               i ? "," : "", v[i].name, v[i].tokens,
+               (unsigned long long)v[i].bytes,
+               (unsigned long long)v[i].hits, v[i].age_s);
+    sb_lit(&r, "]}");
+    free(v);
+    if (r.failed) { free(r.s); send_error(fd, 500, "out of memory"); return; }
+    send_response(fd, 200, "application/json", r.s, r.n);
+    free(r.s);
+}
+
+static void delete_context(sock_t fd, const char *path) {
+    const char *id = path + sizeof("/v1/runner/contexts/") - 1;
+    if (!prefix_context_name_ok(id)) {
+        send_error_detail(fd, 400, "not a context id", "id", "invalid_value");
+        return;
+    }
+    if (!prefix_context_release(id)) {
+        send_error_detail(fd, 404, "no context of that id", "id",
+                          "context_not_found");
+        return;
+    }
+    char body[160];
+    int bn = snprintf(body, sizeof body,
+                      "{\"object\":\"runner.context\",\"id\":\"%s\","
+                      "\"deleted\":true}", id);
+    send_response(fd, 200, "application/json", body, (size_t)bn);
+}
+
+// ---- the Responses store (R10.6) ---------------------------------------
+// GET /v1/responses/{id}, GET /v1/responses/{id}/input_items and
+// DELETE /v1/responses/{id}. Bodyless, answered from the accept thread: the
+// store has its own lock and holds no model state.
+static bool response_id_ok(const char *id, size_t n) {
+    if (n == 0 || n > 64) return false;
+    for (size_t i = 0; i < n; i++) {
+        char c = id[i];
+        if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+              (c >= '0' && c <= '9') || c == '_' || c == '-'))
+            return false;
+    }
+    return true;
+}
+
+static void stored_response_route(sock_t fd, const char *method,
+                                  const char *path) {
+    const char *id = path + sizeof("/v1/responses/") - 1;
+    const char *slash = strchr(id, '/');
+    size_t idn = slash ? (size_t)(slash - id) : strlen(id);
+    bool items = slash && !strcmp(slash, "/input_items");
+    char key[65];
+    if (!response_id_ok(id, idn) || (slash && !items) ||
+        (items && strcmp(method, "GET"))) {
+        send_error_detail(fd, 404, "no such route", NULL, "not_found");
+        return;
+    }
+    memcpy(key, id, idn);
+    key[idn] = 0;
+    if (!strcmp(method, "DELETE")) {
+        if (!respstore_delete(key)) {
+            send_error_detail(fd, 404, "no stored response of that id",
+                              "response_id", "response_not_found");
+            return;
+        }
+        char body[160];
+        int bn = snprintf(body, sizeof body, "{\"id\":\"%s\",\"object\":"
+                          "\"response.deleted\",\"deleted\":true}", key);
+        send_response(fd, 200, "application/json", body, (size_t)bn);
+        return;
+    }
+    size_t n = 0;
+    char *doc = items ? respstore_input(key, &n) : respstore_body(key, &n);
+    if (!doc) {
+        send_error_detail(fd, 404, "no stored response of that id (never "
+                          "stored, deleted, or expired)", "response_id",
+                          "response_not_found");
+        return;
+    }
+    if (items) {
+        sbuf r = {0};
+        sb_lit(&r, "{\"object\":\"list\",\"data\":");
+        sb_put(&r, doc, n);
+        sb_lit(&r, "}");
+        free(doc);
+        if (r.failed) { free(r.s); send_error(fd, 500, "out of memory"); return; }
+        send_response(fd, 200, "application/json", r.s, r.n);
+        free(r.s);
+        return;
+    }
+    send_response(fd, 200, "application/json", doc, n);
+    free(doc);
 }
 
 static void handle_completion(slot_t *s, sock_t fd, jv *req) {
@@ -781,6 +1070,23 @@ static void handle_decide(slot_t *s, sock_t fd, jv *req) {
     send_built(fd, &r);
     fprintf(stderr, "[slot %d] decide: %d question(s)\n", s->id,
             jv_get(req, "questions") ? jv_get(req, "questions")->n : 0);
+    free(r.s);
+}
+
+static void handle_rerank(slot_t *s, sock_t fd, jv *req) {
+    sbuf r = {0};
+    const char *err = NULL;
+    sched_prefill_begin();
+    int st = rerank_handle(&s->e, req, SV.model_name, s->tmpl, &r, &err);
+    sched_prefill_end();
+    if (st != 200) {
+        free(r.s);
+        send_error(fd, st, err ? err : "rerank failed");
+        return;
+    }
+    send_built(fd, &r);
+    fprintf(stderr, "[slot %d] rerank: %d document(s)\n", s->id,
+            jv_get(req, "documents") ? jv_get(req, "documents")->n : 0);
     free(r.s);
 }
 
@@ -1008,6 +1314,15 @@ static void send_models(sock_t fd) {
         json_escape(SV.model_name, strlen(SV.model_name), esc, sizeof(esc));
         sb_fmt(&r, "{\"id\":\"%s\",\"object\":\"model\",\"owned_by\":\"runner\"}", esc);
     }
+    // R8.6: every loaded adapter is a model id of its own
+    for (int i = 0; i < SV.n_adapters; i++) {
+        const char *bn = SV.n_reg > 0 ? SV.reg[0].name : SV.model_name;
+        sb_lit(&r, ",{\"id\":\"");
+        sb_esc(&r, bn, strlen(bn));
+        sb_lit(&r, ":");
+        sb_esc(&r, SV.adapters[i].name, strlen(SV.adapters[i].name));
+        sb_lit(&r, "\",\"object\":\"model\",\"owned_by\":\"runner\"}");
+    }
     sb_lit(&r, "]}");
     send_built(fd, &r);
     free(r.s);
@@ -1167,6 +1482,109 @@ static void send_metrics(sock_t fd) {
         return;
     }
     send_response(fd, 200, "text/plain; version=0.0.4", buf, b.n);
+}
+
+// GET /v1/runner/provenance (R10.2.1): the statement a receipt carries, for
+// the server as it runs now. The identity half (digests and load-time
+// verdicts) is provenance.c's; the effective configuration is read here from
+// the resident slot, under swap_mu for the same reason send_capabilities
+// takes it -- a swap frees the model this reads.
+static void send_provenance(sock_t fd) {
+    sbuf r = {0};
+    bool guarded = SV.n_reg > 0;
+    if (guarded) pthread_mutex_lock(&SV.swap_mu);
+    int res = resident_load();
+    const char *id = SV.n_reg == 0 ? SV.model_name
+                   : res >= 0      ? SV.reg[res].name : NULL;
+    const slot_t *s0 = SV.slots ? &SV.slots[0] : NULL;
+    const model_t *m = (s0 && (SV.n_reg == 0 || res >= 0)) ? s0->m : NULL;
+    sb_lit(&r, "{\"object\":\"runner.provenance\"," BUILD_JSON ",");
+    provenance_render(&r, id);
+    sb_lit(&r, ",\"profile\":");
+    if (!m) {
+        sb_lit(&r, "null");
+    } else {
+        char gname[128] = "cpu";
+        if (m->gpu && !gpu_available(gname, (int)sizeof gname))
+            snprintf(gname, sizeof gname, "gpu");
+        sb_lit(&r, "{\"device\":\"");
+        sb_esc(&r, gname, strlen(gname));
+        sb_fmt(&r, "\",\"gpu\":%s,\"gpu_layers\":%d,\"threads\":%d,"
+                   "\"ctx\":%d,\"kv\":\"%s\",\"batch\":%d,\"slots\":%d}",
+               m->gpu ? "true" : "false", m->gpu_layers,
+               m->tp ? tpool_size(m->tp) : 0, m->n_ctx,
+               m->kv_fp4 ? "fp4" : m->kv_split ? "k8v4"
+                         : m->kv_q8 ? "q8" : "f16",
+               m->n_batch, SV.n_slots);
+    }
+    sb_lit(&r, ",\"config\":{");
+    if (m) {
+        const sampler *d = &s0->smp_base;
+        sb_lit(&r, "\"sampling\":{\"preset\":");
+        if (SV.preset_name) {
+            sb_lit(&r, "\"");
+            sb_esc(&r, SV.preset_name, strlen(SV.preset_name));
+            sb_lit(&r, "\"");
+        } else {
+            sb_lit(&r, "null");
+        }
+        sb_fmt(&r, ",\"temperature\":%g,\"top_k\":%d,\"top_p\":%g,"
+                   "\"min_p\":%g,\"repeat_penalty\":%g},",
+               (double)d->temp, d->top_k, (double)d->top_p,
+               (double)d->min_p, (double)d->repeat_penalty);
+        const char *tn = template_name(s0->tmpl);
+        sb_lit(&r, "\"template\":\"");
+        sb_esc(&r, tn, strlen(tn));
+        sb_fmt(&r, "\",\"template_forced\":%s,",
+               SV.tmpl_override >= 0 ? "true" : "false");
+        const engine *e = &s0->e;
+        const char *dsrc = e->dm ? "model" : e->mtp_on ? "mtp"
+                         : e->lookup_on ? "lookup" : NULL;
+        if (dsrc) sb_fmt(&r, "\"draft\":\"%s\",", dsrc);
+        else      sb_lit(&r, "\"draft\":null,");
+    }
+    sb_fmt(&r, "\"max_tokens_cap\":%d,\"reasoning_budget\":%d,"
+               "\"loop_guard\":%s,\"ignore_eos\":%s,"
+               "\"request_timeout_s\":%g,",
+           SV.n_predict_cap, SV.reasoning_budget,
+           SV.loop_guard ? "true" : "false",
+           SV.ignore_eos ? "true" : "false", SV.req_timeout);
+    if (SV.reasoning_temp_set)
+        sb_fmt(&r, "\"reasoning_temperature\":%g,", (double)SV.reasoning_temp);
+    // R8.6: the adapters a request may name, each with its digest
+    sb_lit(&r, "\"adapters\":[");
+    for (int i = 0; i < SV.n_adapters; i++) {
+        sb_fmt(&r, "%s{\"name\":\"", i ? "," : "");
+        sb_esc(&r, SV.adapters[i].name, strlen(SV.adapters[i].name));
+        sb_lit(&r, "\",\"path\":\"");
+        sb_esc(&r, SV.adapters[i].path, strlen(SV.adapters[i].path));
+        sb_fmt(&r, "\",\"sha256\":\"%s\",\"signature\":", SV.adapters[i].sha256);
+        if (SV.adapters[i].sig_json[0])
+            sb_put(&r, SV.adapters[i].sig_json, strlen(SV.adapters[i].sig_json));
+        else
+            sb_lit(&r, "null");
+        sb_lit(&r, "}");
+    }
+    sb_lit(&r, "],");
+    sb_fmt(&r, "\"signature_policy\":{\"required\":%s,\"trusted_key\":%s},"
+               "\"force_uncertified\":%s}",
+           SV.signing.required ? "true" : "false",
+           SV.signing.pubkey_path ? "true" : "false",
+           SV.force_uncertified ? "true" : "false");
+    if (guarded) pthread_mutex_unlock(&SV.swap_mu);
+    sb_lit(&r, ",\"statement\":\"Digests and verdicts this process "
+               "established for itself: the executable hashed at start, the "
+               "model file hashed after its load and re-identified on every "
+               "read, the signature and envelope verdicts the load ran under. "
+               "This is not an attestation; a process can only report on "
+               "itself.\"}");
+    if (r.failed) {
+        free(r.s);
+        send_error(fd, 500, "out of memory building the provenance record");
+        return;
+    }
+    send_response(fd, 200, "application/json", r.s, r.n);
+    free(r.s);
 }
 
 static void send_capabilities(sock_t fd) {
@@ -1457,10 +1875,18 @@ static void handle_conn(slot_t *s, sock_t fd) {
         ((!strcmp(method, "POST") &&
           (!strcmp(path, "/unload") ||
            !strcmp(path, "/v1/runner/prefix-cache/clear"))) ||
+         (!strcmp(method, "DELETE") &&
+          (!strncmp(path, "/v1/runner/contexts/",
+                    sizeof("/v1/runner/contexts/") - 1) ||
+           !strncmp(path, "/v1/responses/", sizeof("/v1/responses/") - 1))) ||
+         (!strcmp(method, "GET") &&
+          !strncmp(path, "/v1/responses/", sizeof("/v1/responses/") - 1)) ||
          (!strcmp(method, "GET") &&
           (!strcmp(path, "/health") || !strcmp(path, "/v1/models") ||
            !strcmp(path, "/v1/capabilities") || !strcmp(path, "/metrics") ||
-           !strcmp(path, "/v1/runner/prefix-cache"))));
+           !strcmp(path, "/v1/runner/prefix-cache") ||
+           !strcmp(path, "/v1/runner/provenance") ||
+           !strcmp(path, "/v1/runner/contexts"))));
     if (bodyless_route) {
         // These routes are normally served by accept_fastpath. A declared body
         // is deliberately deferred here so the slot can consume it before
@@ -1495,6 +1921,19 @@ static void handle_conn(slot_t *s, sock_t fd) {
         // operators reclaiming the memory without unloading the model.
         prefix_cache_clear();
         send_prefix_cache(fd);
+    } else if (!strcmp(method, "GET") &&
+               !strcmp(path, "/v1/runner/provenance")) {
+        send_provenance(fd);
+    } else if (!strcmp(method, "GET") &&
+               !strcmp(path, "/v1/runner/contexts")) {
+        send_contexts(fd);
+    } else if (!strcmp(method, "DELETE") &&
+               !strncmp(path, "/v1/runner/contexts/",
+                        sizeof("/v1/runner/contexts/") - 1)) {
+        delete_context(fd, path);
+    } else if ((!strcmp(method, "GET") || !strcmp(method, "DELETE")) &&
+               !strncmp(path, "/v1/responses/", sizeof("/v1/responses/") - 1)) {
+        stored_response_route(fd, method, path);
     } else if (!strcmp(method, "GET") && !strcmp(path, "/health")) {
         send_health(fd);
     } else if (!strcmp(method, "GET") && !strcmp(path, "/v1/models")) {
@@ -1510,12 +1949,20 @@ static void handle_conn(slot_t *s, sock_t fd) {
                 !strcmp(path, "/v1/messages/count_tokens") ||
                 !strcmp(path, "/v1/completions") ||
                 !strcmp(path, "/v1/embeddings") ||
-                !strcmp(path, "/v1/decide"))) {
+                !strcmp(path, "/v1/decide") ||
+                !strcmp(path, "/v1/rerank") ||
+                !strcmp(path, "/v1/runner/contexts") ||
+                (!strncmp(path, "/v1/runner/contexts/",
+                          sizeof("/v1/runner/contexts/") - 1) &&
+                 strstr(path, "/snapshot")))) {
         jv *req = body ? json_parse(body, content_length) : NULL;
         if (!req) {
             send_error(fd, 400, "invalid JSON body");
         } else {
             jv *model = jv_get(req, "model");
+            // R8.6: "<model>:<adapter>" names a per-request adapter; the base
+            // is then validated like any request's model
+            int adapter = request_adapter(req);
             if (model && model->type != J_NULL && model->type != J_STR) {
                 send_error_detail(fd, 400, "model must be a string", "model",
                                   "invalid_type");
@@ -1596,6 +2043,7 @@ static void handle_conn(slot_t *s, sock_t fd) {
             } else if (!validate_single_model_request(fd, req)) {
                 ok = false;
             }
+            if (ok) ok = slot_use_adapter(s, adapter, fd);
             if (ok) {
                 if (strcmp(path, "/v1/chat/completions") == 0) handle_chat(s, fd, req);
                 else if (strcmp(path, "/v1/responses") == 0) handle_responses(s, fd, req);
@@ -1604,6 +2052,12 @@ static void handle_conn(slot_t *s, sock_t fd) {
                     handle_count_tokens(s, fd, req);
                 else if (strcmp(path, "/v1/embeddings") == 0) handle_embeddings(s, fd, req);
                 else if (strcmp(path, "/v1/decide") == 0) handle_decide(s, fd, req);
+                else if (strcmp(path, "/v1/rerank") == 0) handle_rerank(s, fd, req);
+                else if (strcmp(path, "/v1/runner/contexts") == 0)
+                    handle_context_create(s, fd, req);
+                else if (!strncmp(path, "/v1/runner/contexts/",
+                                  sizeof("/v1/runner/contexts/") - 1))
+                    handle_context_snapshot(s, fd, req, path);
                 else handle_completion(s, fd, req);
                 // Ollama-style keep_alive: seconds of idle before the model
                 // unloads (swap mode) — 0 unloads now, negative pins forever.
@@ -1703,12 +2157,20 @@ static bool accept_fastpath(sock_t fd) {
     bool pfx_clear = !strncmp(hdr, "POST /v1/runner/prefix-cache/clear ",
                               sizeof("POST /v1/runner/prefix-cache/clear ") - 1);
     bool metrics = !strncmp(hdr, "GET /metrics ", 13);
+    bool prov = !strncmp(hdr, "GET /v1/runner/provenance ",
+                         sizeof("GET /v1/runner/provenance ") - 1);
+    bool ctx_list = !strncmp(hdr, "GET /v1/runner/contexts ",
+                             sizeof("GET /v1/runner/contexts ") - 1);
+    bool stored = !strncmp(hdr, "GET /v1/responses/",
+                           sizeof("GET /v1/responses/") - 1) ||
+                  !strncmp(hdr, "DELETE /v1/responses/",
+                           sizeof("DELETE /v1/responses/") - 1);
     // The old spelling still has to reach a handler, or an operator's script
     // gets a 404 that says nothing. It is not answered here — it falls through
     // to the slot path, which replies 405 with the reason.
     if (!strncmp(hdr, "GET /unload ", 12)) return false;
     if (!health && !models && !caps && !unload && !pfx_stats && !pfx_clear &&
-        !metrics)
+        !metrics && !prov && !ctx_list && !stored)
         return false;
     // Keep the request untouched until framing says it is bodyless. A partial
     // header, an oversized header, malformed framing, and every declared body
@@ -1740,6 +2202,9 @@ static bool accept_fastpath(sock_t fd) {
     if (health)          send_health(fd);
     else if (models)     send_models(fd);
     else if (metrics)    send_metrics(fd);
+    else if (prov)       send_provenance(fd);
+    else if (ctx_list)   send_contexts(fd);
+    else if (stored)     stored_response_route(fd, method, path);
     else if (unload)     handle_unload(fd);
     else if (pfx_stats)  send_prefix_cache(fd);
     else if (pfx_clear) {
@@ -1849,6 +2314,77 @@ static void install_stop_handlers(void) {
 static bool stop_was_requested(void) { return win_stop_requested != 0; }
 #endif
 
+static struct {
+    const char *const *names, *const *paths;
+    int   n;
+    float scale;
+} ADAPTER_CFG;
+
+static bool WM_CFG_ON;
+static wm_key WM_CFG;
+
+void server_set_watermark(const wm_key *key) {
+    memcpy(&WM_CFG, key, sizeof WM_CFG);
+    WM_CFG_ON = true;
+}
+
+void server_set_adapters(const char *const *names, const char *const *paths,
+                         int n, float scale) {
+    ADAPTER_CFG.names = names;
+    ADAPTER_CFG.paths = paths;
+    ADAPTER_CFG.n = n;
+    ADAPTER_CFG.scale = scale;
+}
+
+// Load the configured adapters against the preloaded model (R8.6). They run on
+// the host hooks, so a slot with a device path refuses them; a swap set
+// refuses them too, since the geometry they were parsed against would change
+// under them.
+static bool load_adapters(const model_t *base) {
+    if (ADAPTER_CFG.n == 0) return true;
+    if (!base) {
+        fprintf(stderr, "error: --adapter needs one model served by path "
+                "(-m model.gguf), not a name=path registry\n");
+        return false;
+    }
+    for (int i = 0; i < SV.n_slots; i++)
+        if (SV.slots[i].m && SV.slots[i].m->gpu) {
+            fprintf(stderr, "error: --adapter runs on the CPU hooks; slot %d "
+                    "has a device path (serve with --gpu off)\n", i);
+            return false;
+        }
+    if (ADAPTER_CFG.n > RUNNER_MAX_ADAPTERS) {
+        fprintf(stderr, "error: at most %d --adapter\n", RUNNER_MAX_ADAPTERS);
+        return false;
+    }
+    for (int i = 0; i < ADAPTER_CFG.n; i++) {
+        adapter_entry *a = &SV.adapters[i];
+        snprintf(a->name, sizeof a->name, "%s", ADAPTER_CFG.names[i]);
+        snprintf(a->path, sizeof a->path, "%s", ADAPTER_CFG.paths[i]);
+        for (int j = 0; j < i; j++)
+            if (!strcmp(SV.adapters[j].name, a->name)) {
+                fprintf(stderr, "error: duplicate --adapter name '%s'\n", a->name);
+                return false;
+            }
+        if (!envelope_file_sha256(a->path, a->sha256)) {
+            fprintf(stderr, "error: cannot read adapter %s\n", a->path);
+            return false;
+        }
+        // R1.2.3: each adapter answers to the operator's trusted key like
+        // the model does, from its own PATH.sig
+        oms_policy apol = { NULL, SV.signing.pubkey_path, SV.signing.required };
+        oms_result ar;
+        memset(&ar, 0, sizeof ar);
+        if (!oms_check_artifact(a->path, &apol, "adapter", &ar)) return false;
+        a->sig_json[0] = 0;
+        if (ar.status[0]) oms_result_json(&ar, a->sig_json, sizeof a->sig_json);
+        a->set = model_lora_set_load(SV.slots[0].m, a->path, ADAPTER_CFG.scale);
+        if (!a->set) return false;
+        SV.n_adapters = i + 1;
+    }
+    return true;
+}
+
 int server_run(model_t *base, tokenizer *tok, const char *model_path,
                const model_params *mp, sampler defaults,
                const sampler_override *ov, int port, int parallel,
@@ -1885,6 +2421,8 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
     listener_fd = -1;
 #endif
     install_stop_handlers(); // resets the stop flag + listener on both platforms
+    provenance_init();       // the executable's digest, once, before serving
+    respstore_reset_from_env();   // an in-memory store lives with the server
     SV.ignore_eos = ignore_eos;
     // Measured-envelope enforcement for swapped-in models. registry.c resolves
     // the backend from each loaded model, since an available GPU may be unused
@@ -2066,6 +2604,12 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
     SV.reasoning_budget = reasoning_budget;
     SV.reasoning_budget_message = reasoning_budget_message;
     SV.loop_guard = loop_guard;
+    SV.wm_on = WM_CFG_ON;
+    if (WM_CFG_ON) {
+        SV.wm_key = WM_CFG;
+        fprintf(stderr, "watermark: sampled output is marked (%s, key id %s)\n",
+                WM_SCHEME, SV.wm_key.id);
+    }
     SV.reasoning_temp_set = reasoning_temp >= 0.0f;
     SV.reasoning_temp = reasoning_temp >= 0.0f ? reasoning_temp : 0.0f;
     SV.q.limit = (int)(sizeof(SV.q.fds) / sizeof(sock_t));
@@ -2237,6 +2781,9 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
         }
     }
 
+    for (int i = 0; i < SV.n_slots; i++) SV.slots[i].adapter = -1;
+    if (!load_adapters(base)) return 1;
+
     // last long stop is behind us; a signal from here on is either caught
     // right now or by the published listener below
     if (stop_was_requested()) {
@@ -2297,10 +2844,16 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
                 port, parallel, parallel > 1 ? "s" : "", threads_per_slot,
                 batched ? ", continuous batching" : "");
     fputs("  POST /v1/chat/completions | POST /v1/responses | POST /v1/completions\n"
-          "  POST /v1/embeddings | POST /v1/messages | POST /v1/messages/count_tokens\n"
+          "  POST /v1/embeddings | POST /v1/rerank | POST /v1/messages"
+          " | POST /v1/messages/count_tokens\n"
           "  GET /v1/models | GET /v1/capabilities | GET /health | GET /metrics\n"
           "  GET /v1/runner/prefix-cache | POST /v1/runner/prefix-cache/clear"
-          " | POST /unload\n", stderr);
+          " | POST /unload\n"
+          "  GET /v1/runner/provenance | POST /v1/runner/contexts"
+          " | GET /v1/runner/contexts | DELETE /v1/runner/contexts/{id}"
+          " | POST /v1/runner/contexts/{id}/snapshot\n"
+          "  GET /v1/responses/{id} | GET /v1/responses/{id}/input_items"
+          " | DELETE /v1/responses/{id}\n", stderr);
 
     // Say it in the banner, not only at init.
     //
@@ -2363,6 +2916,7 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
         pthread_mutex_unlock(&SV.swap_mu);
         pthread_mutex_destroy(&SV.swap_mu);
     } else {
+        provenance_note_unload();
         tokenizer_free(tok);
         for (int i = 0; i < parallel; i++) {
             model_t *draft = SV.slots[i].e.dm;
@@ -2372,6 +2926,9 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
         }
     }
     prefix_cache_clear();
+    // the slots' models are gone; nothing borrows an adapter any more
+    for (int i = 0; i < SV.n_adapters; i++) model_lora_set_free(SV.adapters[i].set);
+    SV.n_adapters = 0;
     pthread_cond_destroy(&SV.q.cv);
     pthread_mutex_destroy(&SV.q.mu);
     free(SV.slots);

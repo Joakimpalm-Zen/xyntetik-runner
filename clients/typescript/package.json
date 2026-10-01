@@ -1,0 +1,18 @@
+{
+  "name": "@xyntetik/runner-client",
+  "version": "0.1.0",
+  "description": "TypeScript client for Xyntetik Runner's runner-only fields and routes",
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": ["dist"],
+  "engines": { "node": ">=18" },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "node --test test/client.test.mjs"
+  },
+  "devDependencies": {
+    "typescript": "5.9.3"
+  }
+}

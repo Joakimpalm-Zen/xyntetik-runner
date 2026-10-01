@@ -1,5 +1,6 @@
 // OpenAI Responses request -> chat. Lifted out of server.c (RNR-019); see api.h.
 #include "api.h"
+#include "respstore.h"
 #include "compat.h"
 
 #include <stdio.h>
@@ -284,26 +285,20 @@ static const char *responses_call_name(jv *items, int before, const char *id) {
 // is the project invariant: a client that asked the server to remember a turn
 // and got a 200 would believe it did.
 static bool responses_reject_stateful(sock_t fd, jv *req) {
+    // store and previous_response_id are served by the in-memory store
+    // (respstore.h, R10.6); their shape is checked here, their meaning in
+    // responses_expand_previous and completion.c
     jv *v = jv_get(req, "previous_response_id");
-    if (v && v->type != J_NULL) {
-        send_error(fd, 400,
-                   "previous_response_id is not supported: this runtime is "
-                   "stateless and stores no conversation. Send the prior turns "
-                   "in `input` instead.");
+    if (v && v->type != J_NULL && v->type != J_STR) {
+        send_error_detail(fd, 400, "previous_response_id must be a string",
+                          "previous_response_id", "invalid_type");
         return true;
     }
     v = jv_get(req, "store");
-    if (v && v->type != J_NULL) {
-        if (v->type != J_BOOL) {
-            send_error(fd, 400, "store must be a boolean");
-            return true;
-        }
-        if (v->b) {
-            send_error(fd, 400,
-                       "store:true is not supported: this runtime is stateless "
-                       "and cannot retrieve a stored response. Use store:false.");
-            return true;
-        }
+    if (v && v->type != J_NULL && v->type != J_BOOL) {
+        send_error_detail(fd, 400, "store must be a boolean", "store",
+                          "invalid_type");
+        return true;
     }
     v = jv_get(req, "background");
     if (v && v->type != J_NULL) {
@@ -528,8 +523,69 @@ static bool responses_validate_content_parts(jv *input, char *err,
     return true;
 }
 
+// previous_response_id: the stored response's effective input, then its
+// output items (which the Responses input grammar accepts as they are), then
+// this request's input, become the request's `input`. Everything downstream
+// then serves an ordinary stateless request: one code path, which is what
+// makes a continued response the same request as the explicit history.
+// Returns false when it answered the request itself.
+static bool responses_expand_previous(sock_t fd, jv *req) {
+    const char *prev = jv_str(jv_get(req, "previous_response_id"), NULL);
+    if (!prev) return true;
+    size_t in_n = 0, body_n = 0;
+    char *in = respstore_input(prev, &in_n);
+    char *body = in ? respstore_body(prev, &body_n) : NULL;
+    if (!in || !body) {
+        free(in); free(body);
+        send_error_detail(fd, 404, "previous_response_id names no stored "
+                          "response (never stored, deleted, or expired: the "
+                          "store is in memory and bounded)",
+                          "previous_response_id", "previous_response_not_found");
+        return false;
+    }
+    jv *hist = json_parse(in, in_n);
+    jv *b = json_parse(body, body_n);
+    free(in); free(body);
+    jv *out = jv_get(b, "output");
+    jv *cur = jv_get(req, "input");
+    sbuf m = {0};
+    sb_lit(&m, "[");
+    int k = 0;
+    for (int i = 0; hist && hist->type == J_ARR && i < hist->n; i++) {
+        if (k++) sb_lit(&m, ",");
+        jv_dump(hist->items[i], &m);
+    }
+    for (int i = 0; out && out->type == J_ARR && i < out->n; i++) {
+        if (k++) sb_lit(&m, ",");
+        jv_dump(out->items[i], &m);
+    }
+    if (cur && cur->type == J_STR) {
+        if (k++) sb_lit(&m, ",");
+        sb_lit(&m, "{\"role\":\"user\",\"content\":\"");
+        sb_esc(&m, cur->str, strlen(cur->str));
+        sb_lit(&m, "\"}");
+    } else if (cur && cur->type == J_ARR) {
+        for (int i = 0; i < cur->n; i++) {
+            if (k++) sb_lit(&m, ",");
+            jv_dump(cur->items[i], &m);
+        }
+    }
+    sb_lit(&m, "]");
+    jv_free(hist);
+    jv_free(b);
+    jv *merged = m.failed ? NULL : json_parse(m.s, m.n);
+    free(m.s);
+    if (!merged || !jv_set(req, "input", merged)) {
+        jv_free(merged);
+        send_error(fd, 500, "out of memory expanding previous_response_id");
+        return false;
+    }
+    return true;
+}
+
 void handle_responses(slot_t *s, sock_t fd, jv *req) {
     if (responses_reject_stateful(fd, req)) return;
+    if (!responses_expand_previous(fd, req)) return;
     if (!req_thinking_mode_valid(req)) {
         send_error(fd, 400,
                    "enable_thinking must be a boolean or null, either at the "

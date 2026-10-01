@@ -206,8 +206,8 @@ def test_responses_truncated_item_is_marked_incomplete(client):
 
 # ------------------------------------------------- unsupported, not ignored
 @pytest.mark.parametrize("field,value,explains", [
-    ("store", True, "stateless"),
-    ("previous_response_id", "resp_123", "stateless"),
+    # store:true and previous_response_id are served by the in-memory store
+    # since R10.6 (tests/test_responses_store.py); an unknown id is a 404
     ("background", True, "background"),
     ("conversation", "conv_123", "stateless"),
     ("truncation", "auto", "truncation"),

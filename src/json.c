@@ -407,6 +407,27 @@ jv *jv_get(jv *obj, const char *key) {
     return NULL;
 }
 
+bool jv_set(jv *obj, const char *key, jv *val) {
+    if (!obj || obj->type != J_OBJ || !val) return false;
+    for (int i = 0; i < obj->n; i++)
+        if (strcmp(obj->keys[i], key) == 0) {
+            jv_free(obj->items[i]);
+            obj->items[i] = val;
+            return true;
+        }
+    char *k = strdup(key);
+    jv **items = realloc(obj->items, sizeof(jv *) * (size_t)(obj->n + 1));
+    if (items) obj->items = items;
+    char **keys = items ? realloc(obj->keys, sizeof(char *) * (size_t)(obj->n + 1))
+                        : NULL;
+    if (keys) obj->keys = keys;
+    if (!k || !items || !keys) { free(k); return false; }
+    obj->items[obj->n] = val;
+    obj->keys[obj->n] = k;
+    obj->n++;
+    return true;
+}
+
 const char *jv_str(jv *v, const char *dflt) {
     return (v && v->type == J_STR) ? v->str : dflt;
 }

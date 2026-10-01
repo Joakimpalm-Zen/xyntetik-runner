@@ -45,6 +45,49 @@ across thread counts. Scope a shared box with `--reserve-cpu` or pin with `-t`.
 The 100.5s SmolLM2 torture run would now be ~16s. GPU decode is **2.23s**
 (2.6x the fixed CPU), and CPU/GPU top-1 tokens match 0/64.
 
+## 2026-09-30 — CPU attention: more threads than heads, and the same bits
+
+`attn_heads` gave each thread whole query heads, so a model with fewer heads
+than threads left the rest idle through the longest part of a long-context
+decode (the roadmap case: 64 heads on a 128-thread box at 250K positions).
+The split (R3.1.7, `attn_run` in `src/model.c`) runs the same three steps as
+three pool passes over finer items: scores over (head, position chunk),
+softmax per head, and the V sum over (head, channel slice). It is
+**bit-identical** to the head split by construction, not by tolerance: each
+score is still one whole dot, the softmax still runs over the whole span
+(its running sum and vectorized `expf` are order-sensitive, so it is never
+cut), and each output channel still sums its positions in order; only which
+thread computes what changes. Flash-decoding's merge of per-chunk softmaxes
+was not used: its rescale reorders the sums, which would move every pinned
+output. `test-attn-split` holds the identity at 1-7 threads on f16, q8_0,
+fp4 and k8v4 caches, sliced and unsliced head widths, a sliding-window
+ring, tied-V and sinks, and asserts the split actually engaged.
+
+It engages when more than a quarter of the threads would idle under the head
+split and the span is at least 256 positions (a chosen bar, not a measured
+crossover: two extra pool passes buy little on a short span). `RUNNER_ATTN_SPLIT=0` turns it off for an
+A/B; the output cannot differ, only the speed.
+
+Measured on this repository's 4-core container (8 MB L2 per core), a
+synthetic 2-head model (n_embd 256, head width 128, one KV head, 4 layers,
+f16 KV) at `-t 4`, greedy: the same binary with `RUNNER_ATTN_SPLIT=0` against
+the default, alternating, two repetitions each; greedy output byte-identical
+in every run:
+
+| context | prefill, split off -> on | decode, split off -> on |
+| --- | --- | --- |
+| 2,763 tokens (KV fits in cache) | 687, 731 -> 799, 944 tok/s | 244, 282 -> 337, 337 tok/s |
+| 11,849 tokens | 180, 188 -> 194, 205 tok/s | 86.5, 87.6 -> 85.8, 85.9 tok/s |
+
+Where the KV stays in cache the idle threads were the limit and the split
+buys a fifth to a third on both prefill and decode. At 11.8K positions this
+model reads about 24 MB of KV per decoded token and decode is memory-bound on
+this container: the split neither helps nor costs, and prefill keeps a
+smaller gain. (A first comparison against the pre-change binary read +35%
+decode at 11.8K; the same-binary A/B above shows that was run-to-run noise.)
+A real-model number on a many-core box, the 64-head, 128-thread case the
+item names, is still owed.
+
 ## 2026-09-02 — the batched CPU prefill kernel was load-bound, and a 4x4 tile fixed it
 
 A CPU prefill profile on an M1 (`sample`, SmolLM2-135M Q8_0, 4k-token prompt)

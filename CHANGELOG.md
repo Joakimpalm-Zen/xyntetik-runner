@@ -8,6 +8,267 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **CPU attention uses the threads a few-heads model left idle.** One
+  token's attention was split over query heads only, so with fewer heads
+  than threads the rest waited. It now also splits over position chunks
+  (scores) and channel slices (the V sum) when more than a quarter of the
+  threads would idle and the span is at least 256 positions, and it is
+  bit-identical to the head split by construction: no sum is reordered and
+  no partial softmaxes are merged, so nothing needed re-pinning.
+  `test-attn-split` holds the logits byte for byte at 1-7 threads across
+  every cache kind and attention variant. On a 2-head model at `-t 4`,
+  decode and prefill rose 19-38% at 2.8K context; at 11.8K decode is
+  memory-bound on the measuring box and only prefill gained (about 8%).
+  `RUNNER_ATTN_SPLIT=0` turns it off for an A/B. [Details](docs/performance.md)
+- **Session images: suspend, resume and fork a generation.** `--session-out
+  FILE` writes a `-p` generation's state to one file (tokens, KV and recurrent
+  fold, sampler and rng state, constraint digest, next-token logits, a
+  SHA-256 trailer, no timestamp); `--suspend-after N` stops there; `--resume
+  FILE` continues it; `--fork-seed N` continues it under a new seed. The gate
+  is byte identity: a run imaged at the end of its budget and the same run
+  suspended half way, resumed and imaged at the end write the same file,
+  under seeded sampling with a repeat penalty, greedy, `--json`,
+  `--json-schema` and a Mamba-2 hybrid. A different model, a changed byte, a
+  missing or different schema and an existing output file are refused. CPU,
+  solo step loop, finite `-n`. [README](README.md#cli-session-images)
+- **Prefill is batch-invariant on the CPU.** An F32 weight's decode dot
+  summed in four accumulator chains while the batched prefill tile keeps
+  one per output, so any row prefilled in a batch of eight or more got
+  different last bits than the same row decoded alone: a token's logits
+  depended on the prefill chunk (measured: 165 of 259 last-token logits
+  on the fixture at chunk 37, 253 of 259 on a 768-wide synthetic model),
+  and a receipt whose prompt KV came from a cache replayed exactly only by
+  luck. The decode dot now walks the tile's order (one accumulator, the
+  same reduction, the same fused tail). F16, BF16, Q8_0, Q4_0, Q4_K and
+  Q6_K were already invariant and are measured so. No measurable cost:
+  F32 decode 339.8 -> 338.0 tok/s and prefill 730.9 -> 719.9 tok/s,
+  medians of seven interleaved runs on a 4-core box (noise). A canonical
+  (T3) build keeps its own F32 tree and now prefills through the
+  per-column canonical dots, so it is batch-invariant too. Gates:
+  `test-prefill-invariance` (logits and KV byte for byte across seven
+  chunkings, F32/Q8_0/BF16 fixtures) and `test_quants_simd` (the F32
+  decode dot against a written order: 807 failures on the old kernel).
+
+- **Signed KV snapshots: memory with provenance (`--kv-snapshots DIR`).**
+  A named context can be written to disk (`POST /v1/runner/contexts/{id}/
+  snapshot`) and loaded back by a later server (`{"id", "snapshot"}` on
+  `POST /v1/runner/contexts`). The KV is the prefix cache's own
+  runner.prefix.v1 entry; the manifest names its sha256, the model and
+  binary digests, the KV type, the token digest and the receipt that
+  produced it, chained and signed with `--sign-key`. Loading refuses a
+  manifest that does not recompute or verify, changed KV bytes, another
+  model and another KV type; a request built on a loaded snapshot names it
+  in its receipt and still replays VERIFIED. Anchors in
+  `tests/test_kv_snapshots.py`: hashlib for every digest, `--check-record`
+  for the signature, and the memory itself -- a request forked from the
+  loaded snapshot returns the cold prefill's tokens and logprobs exactly.
+
+- **Tournament-sampling watermark and detector (`--watermark`,
+  `--detect-watermark`).** Article 50 wants generated text marked in a
+  machine-readable way, and the runner owns its sampler: `--watermark KEY`
+  applies SynthID-Text's tournament (30 layers, closed form over the
+  candidates that survived the filters, g-values from SipHash-2-4 keyed by
+  SHA-256 of the key and a 4-token context, repeated contexts unmarked) to
+  sampled output on the CLI and in serve mode. Off by default; greedy is
+  never changed; unbiased over keys. Records and receipts carry the key id,
+  `--verify` replays a marked record only with its key, speculative decoding
+  marks the same tokens, and `--detect-watermark` scores a record (no model)
+  or a text (the model's tokenizer). Anchors: SipHash reference vectors and
+  openssl, the closed form against an enumerated tournament, the detector
+  re-implemented in Python counting the same g-values.
+
+- **A transcript whose output holds a NUL byte verifies again.** The writer
+  spelled the byte `\u0000` in `output.text`, which the runner's own JSON
+  parser refuses (a parsed string is NUL-terminated), so `--verify` called
+  the record malformed and it could never be replayed; a sampled run on a
+  byte-fallback vocabulary hits it within a few hundred tokens. Text fields
+  now render the byte as U+FFFD; `output.bytes_hex`, which the replay
+  compares, keeps it exactly. Regression in `tests/test_transcript.py`.
+
+- **Agent transcripts (D4a): records name their constraints and tool
+  calls, and `--verify` refuses what it cannot replay.** A grammar, a stop
+  sequence or a scripted reply shapes the tokens beyond the sampler, so a
+  replay without it disagrees with the record by construction -- and was
+  reported as `DIVERGED`, blaming the model or the build: a CLI record made
+  under `--json` diverged at token 0 even when verified with `--json`,
+  because nothing in the record said so. Transcripts and serve receipts now
+  carry `constraints` (a schema or tool list by the sha256 of its compact
+  JSON, stop sequences, reasoning budget, loop guard, `ignore_eos`,
+  scripted) and served receipts `tool_calls` (the calls each turn delivered,
+  buffered and streamed, on every surface). `--verify` refuses a constrained
+  served record as `UNVERIFIABLE`, naming the constraint; a CLI record made
+  under `--json`, `--json-schema` or `--ignore-eos` replays when the verifier
+  is given the same one and is refused otherwise, as is a constraint the
+  verifier adds. A parse-only tool turn (native syntax, no grammar) is no
+  longer listed as shaped by `tools`, and a tool grammar is no longer also
+  listed as `json_schema`. Anchors in `tests/test_agent_transcripts.py`:
+  hashlib digests of the schema and tool list, the recorded calls against
+  the ones each response delivered, and the verdicts.
+
+- **`--sign-model`: sign a model without Python or openssl.** `runner
+  --sign-model FILE --model-key KEY.pem` writes the OMS key-method bundle the
+  load-time check (and the reference `model_signing verify key`) reads:
+  DSSE over an in-toto statement naming the file, or every part of a split
+  GGUF, signed by deterministic ECDSA (RFC 6979) with the curve's own digest,
+  so the same key and model always give byte-identical bundles. Keys are PEM
+  SEC1 or PKCS#8, unencrypted, P-256/384/521; an existing bundle is never
+  overwritten. Anchors: the RFC 6979 appendix signatures reproduced exactly
+  from the private keys (`tests/test_ecdsa.c`, with 1*G and (n-1)*G for the
+  scalar-widening path), openssl verifying every signature over the PAE, and
+  the reference verifier accepting single-file and split bundles
+  (`tests/test_sign_model.py`).
+
+- **Adapters answer to the model-signing policy.** A LoRA adapter changes
+  the model that serves, yet it loaded unverified beside a signed base. The
+  `--lora` adapter (`--lora-sig FILE`, else `<adapter>.sig`) and every
+  `--adapter` (`PATH.sig`) are now verified with `--model-pubkey` at load and
+  on every reload, required by `--require-signed-model`, and refused when
+  their bytes no longer match the signed digest; the verdict lands in
+  receipts as `adapter_signature` and in `/v1/runner/provenance`. Split GGUF
+  parts were already covered (every part named and matched). Anchors in
+  `tests/test_adapter_signature.py`: openssl-made bundles, a flipped adapter
+  byte refusing the load with the signature intact (and passing when the
+  check is disabled, so the test can fail).
+
+- **Per-request receipts in serve mode (`--receipts DIR`).** Every
+  finished generation on the chat, completions, Responses and Messages
+  surfaces writes the CLI's transcript record, so `--verify` replays a
+  served request exactly as it replays a one-shot run. Records are chained in
+  write order and across restarts (a newest record that does not parse
+  refuses the start instead of beginning a second chain), signed with
+  `--sign-key`, bounded with `--receipts-keep`, and carry a `serve` object:
+  the surface, the request id, how the prompt's KV was obtained, and what
+  shaped the output beyond the sampler. `runner_telemetry.receipt` names
+  each response's record. The anchor in `tests/test_serve_receipts.py` is
+  the CLI replay: greedy, sampled (the sampler's state as generation started
+  is the recorded seed) and chat receipts all replay VERIFIED at T1, as did
+  records whose prompt reused the slot's KV.
+
+- **Receipt bundles: one directory a verifier can take.**
+  `--export-bundle RECEIPT --bundle-out DIR` writes the receipt byte for
+  byte, the OMS model signature and its key when given, and a
+  `xyntetik.runner.bundle.v1` manifest carrying every file's sha256, the
+  receipt's chain hash, its signing key with its fingerprint, and the model
+  and binary digests a replay needs; `--sign-key` signs the manifest.
+  `--check-bundle DIR` verifies it offline (exit 0 / 2 naming the failure / 3)
+  and says it does not replay: the bundled receipt does, through `--verify`.
+  A receipt whose chain does not recompute is refused rather than packaged.
+  Anchors in `tests/test_bundle.py`: hashlib over every file and the key
+  bytes, openssl's DER fingerprint of the model key, and the bundled receipt
+  replaying VERIFIED; a flipped byte or a missing file in any member fails
+  the check by name, as does a manifest listing a path outside the bundle.
+
+- **Per-request adapters: `--adapter NAME=PATH` and `"model":
+  "<model>:NAME"`.** Adapters are parsed once (the `--lora` refusals, one
+  shared parser) and borrowed by a slot's model for the requests that name
+  them, so parallel slots serve different adapters side by side;
+  `/v1/models` lists each route, `runner_telemetry.adapter` names the
+  adapter and its sha256 per request, and `/v1/runner/provenance` lists the
+  loaded set. CPU hooks only for now. Anchors in
+  `tests/test_adapter_routing.py`: a routed request answers exactly as a
+  `--lora` server on the same adapter, the zero adapter exactly as the bare
+  base, interleaved on one slot and across two. The interleaving caught the
+  one real hazard: a slot's own KV is matched by tokens alone, so switching
+  adapters now drops it (a bare request after an adapted one had reused its
+  rows, logprobs ~0.07 off).
+
+- **A TypeScript client for the fields no other engine returns**
+  (`clients/typescript`, `@xyntetik/runner-client`, R10.7). It does not
+  replace the OpenAI or Anthropic SDKs a TypeScript agent already uses: it
+  types `runner_telemetry`, `choice_logprobs`, the provenance statement and
+  the transcript receipt, wraps `/v1/rerank`, `/v1/decide`, named contexts
+  and the Responses store, parses SSE (a malformed data frame is an error,
+  never skipped), and recomputes a receipt's chain hash from its bytes with
+  WebCrypto. No runtime dependencies; the compiler is pinned (5.9.3).
+  `make test-ts-client`, a step of the consumer-compatibility CI job, runs it
+  against a live runner, with Node's own sha256 as the anchor for the binary
+  digest and the chain hash, and a one-byte edit of a receipt failing it.
+
+- **Responses persistence and parallel `tool_use` on Messages.**
+  `store:true` keeps a finished response in an in-memory store (never
+  written to disk, bounded by `RUNNER_RESPONSES_STORE_MB` and
+  `RUNNER_RESPONSES_STORE_TTL`), `previous_response_id` continues it by
+  placing the stored conversation in front of the new `input`, and
+  `GET`/`DELETE /v1/responses/{id}` and `/input_items` read and drop
+  entries; both fields were refused with 400 before. `store` defaults to
+  false, so nothing is kept unasked. On Messages,
+  `tool_choice.disable_parallel_tool_use:false` now compiles the parallel
+  envelope instead of being refused; an unmarked request keeps the one-call
+  grammar it always had. `tests/test_responses_store.py` pins that a
+  continued response is the same request as its explicit history (equal
+  `input_tokens`, equal greedy text), and dictates a two-call Messages turn
+  through the parallel grammar.
+
+- **Named contexts: prefill a shared prefix once, on purpose.**
+  `POST /v1/runner/contexts` pins a raw prompt or chat messages (rendered
+  without the generation prompt) under an id: no TTL, never evicted by
+  traffic, counted in the prefix-cache budget. A request carrying
+  `context_id` forks it, and is refused (404 / 409, naming the first
+  differing token) when its prompt does not start with the context, rather
+  than served cold under a name that promised a warm prefix;
+  `runner_telemetry.context` says what it built on. `GET` lists the pins and
+  `DELETE /v1/runner/contexts/{id}` releases one. `tests/test_named_contexts.py`
+  pins that a forked context answers with the same tokens and logprobs as the
+  same prompt prefilled cold, and that a pin outlives the cache TTL (checked
+  by letting the TTL expire it: the test fails).
+
+- **A repeated tool call is reported (`runner_telemetry.repeated_tool_calls`).**
+  The lab's sixth runaway re-called `get_weather(Athens)` after stating the
+  answer, request after request, and the loop guard saw nothing because each
+  request was clean. The chat-shaped surfaces carry the earlier calls as
+  structure (Chat `tool_calls`, Responses `function_call` items, Messages
+  `tool_use` blocks), so an emitted call with the same name and the same
+  arguments as JSON values is flagged with its index, the count of identical
+  earlier calls and where the latest one sits. Reported, never refused: a
+  poll or a retry is a legitimate repeat. Buffered bodies and the streamed
+  Responses completion event carry it; the streamed Chat and Messages turns
+  do not yet.
+
+- **`echo` and `prompt_logprobs` on `/v1/completions`.** The prompt is scored
+  teacher-forced: `echo: true` with `logprobs: N` returns the prompt's token
+  logprobs ahead of the generated ones in OpenAI's shape (the first entry
+  `null`), `max_tokens: 0` scores without generating, and `prompt_logprobs:
+  K` returns vLLM's per-position map with each token's rank. The prompt is
+  fed one solo forward per token with no prefix reuse, the `--score` path.
+  Both were refused with 400 before; they stay refused on streams and on the
+  chat surfaces. Found on the way: `--score` spelled the log-softmax
+  normalizer as its own copy of the loop, and under `-ffast-math` the double
+  sum compiled to a different order than the sampler's, so its logprobs
+  could differ from decode-time ones in the last bit (1 ulp at 6 of 8
+  positions of the test prompt). Every reported logprob now divides by one
+  non-inlined `engine_logsumexp`, and `tests/test_echo_logprobs.py` pins the
+  echo and `prompt_logprobs` numbers to `--score`'s exactly, with the
+  zero-branch fixture (a position's logits depend on the previous token
+  alone) as the absolute check.
+
+- **`POST /v1/rerank` without a reranker model.** A document's relevance is
+  the served model's answer to a two-answer question (yes or no), read with
+  `/v1/decide`'s exact in-context scorer: `relevance_score` is P(yes)
+  renormalized over the two answers, `logit` the log-odds and `margin` the
+  gap to the next rank, returned with the ranking. The request takes the
+  Cohere/Jina shape (`query`, `documents` as strings or `{text}` objects,
+  `top_n`, `return_documents`) plus an optional `instruction` and a
+  `rendering` (`chat-v1` through the model's own template, `raw-v1` for base
+  models). Pinned in `tests/test_rerank.py`: every score equals the
+  `/v1/decide` readout of the same prompt, document order changes no score,
+  and the zero-branch fixture, whose logits cannot see the documents by
+  construction, ties every document and keeps the input order.
+
+- **`GET /v1/runner/provenance`: a running server says what it is.** A
+  receipt records the binary's and the model's digests, the load-time
+  signature verdict and the envelope, but only after a CLI inference; an
+  operator in front of a server had no way to check the same facts. The route
+  reports them for the resident model: the executable hashed once at start,
+  the model file hashed in the background after its load (`sha256_state`
+  `hashing` until done), the OMS and envelope verdicts the load ran under
+  (a sidecar edited later does not rewrite them), the adapter's digest, the
+  profile and the effective configuration. The model file is re-identified
+  on every read, and a file replaced or edited since the load is reported as
+  `changed_since_load` with no digest, because the bytes on disk are no longer
+  the bytes being served. The anchors in `tests/test_provenance.py` are
+  hashlib over the same files and an openssl-made signature; the
+  change-detection gate was checked by disabling it (the test fails).
+
 - **One pool dispatch for Q/K/V and for gate/up on the CPU path.** Each
   projection of a layer's normed input was its own thread-pool dispatch and
   barrier; Q (with afmoe's Q gate), K and V now run as one, and gate and up

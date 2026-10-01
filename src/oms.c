@@ -4,9 +4,20 @@
 #include "ed25519.h"
 #include "envelope.h"
 #include "json.h"
+#include <errno.h>
+#include <fcntl.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifdef _WIN32
+#include <io.h>
+#else
+#include <unistd.h>
+#endif
+#ifndef O_BINARY
+#define O_BINARY 0
+#endif
 
 static void set(oms_result *r, const char *status, const char *reason) {
     snprintf(r->status, sizeof r->status, "%s", status);
@@ -79,6 +90,19 @@ static uint8_t *pem_public_key_der(const char *pem, size_t n, size_t *der_len) {
 }
 
 // ---- the verifier -------------------------------------------------------------
+
+bool oms_pubkey_fingerprint(const char *pem_path, char hex[65]) {
+    size_t n = 0;
+    char *pem = read_all(pem_path, &n);
+    if (!pem) return false;
+    size_t der_len = 0;
+    uint8_t *der = pem_public_key_der(pem, n, &der_len);
+    free(pem);
+    if (!der) return false;
+    envelope_data_sha256(der, der_len, hex);
+    free(der);
+    return true;
+}
 
 static const char *base_name(const char *p) {
     const char *b = p;
@@ -371,6 +395,11 @@ bool oms_verify_file(const char *bundle_path, const char *pubkey_pem_path,
 
 bool oms_check_model(const char *model_path, const oms_policy *policy,
                      oms_result *out) {
+    return oms_check_artifact(model_path, policy, "model", out);
+}
+
+bool oms_check_artifact(const char *model_path, const oms_policy *policy,
+                        const char *label, oms_result *out) {
     oms_result local = {0};
     if (!out) out = &local;
     memset(out, 0, sizeof(*out));
@@ -383,7 +412,7 @@ bool oms_check_model(const char *model_path, const oms_policy *policy,
         auto_sig = malloc(n + sizeof(".sig"));
         if (!auto_sig) {
             set(out, "unverified", "out of memory locating signature bundle");
-            fprintf(stderr, "error: model signature: %s\n", out->reason);
+            fprintf(stderr, "error: %s signature: %s\n", label, out->reason);
             return false;
         }
         memcpy(auto_sig, model_path, n);
@@ -394,18 +423,20 @@ bool oms_check_model(const char *model_path, const oms_policy *policy,
     bool allowed = true;
     if (sig) {
         bool verified = oms_verify_file(sig, policy->pubkey_path, model_path, out);
-        fprintf(stderr, "model signature: %s (%s%s%s%s%s)\n", out->status,
+        fprintf(stderr, "%s signature: %s (%s%s%s%s%s)\n", label, out->status,
                 out->reason, out->curve[0] ? "; " : "", out->curve,
                 out->hash[0] ? "/" : "", out->hash);
         allowed = verified || !(policy->bundle_path || policy->pubkey_path ||
                                 policy->required);
     } else if (policy->required) {
-        set(out, "missing", "no signature bundle (pass --model-sig)");
+        set(out, "missing", strcmp(label, "model")
+                            ? "no signature bundle (PATH.sig, or --lora-sig)"
+                            : "no signature bundle (pass --model-sig)");
         allowed = false;
     }
     if (!allowed)
-        fprintf(stderr, "error: model signature: refusing to load %s: %s\n",
-                model_path, out->reason);
+        fprintf(stderr, "error: %s signature: refusing to load %s: %s\n",
+                label, model_path, out->reason);
     free(auto_sig);
     return allowed;
 }
@@ -416,4 +447,221 @@ int oms_result_json(const oms_result *r, char *buf, size_t cap) {
                     "\"hash\":\"%s\",\"resource\":\"%s\"}",
                     r->status, r->subject_digest, r->curve, r->hash,
                     r->resource_name);
+}
+
+// ---- the signer (R1.2.5) ---------------------------------------------------------
+
+static void b64_put(sbuf *b, const uint8_t *d, size_t n) {
+    static const char T[] =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    for (size_t i = 0; i < n; i += 3) {
+        uint32_t v = (uint32_t)d[i] << 16;
+        if (i + 1 < n) v |= (uint32_t)d[i + 1] << 8;
+        if (i + 2 < n) v |= d[i + 2];
+        char q[4] = { T[(v >> 18) & 63], T[(v >> 12) & 63],
+                      i + 1 < n ? T[(v >> 6) & 63] : '=',
+                      i + 2 < n ? T[v & 63] : '=' };
+        sb_put(b, q, 4);
+    }
+}
+
+// The PEM block labelled `label` in pem, decoded; NULL when there is none.
+static uint8_t *pem_block(const char *pem, const char *label, size_t *len) {
+    char begin[64], end[64];
+    snprintf(begin, sizeof begin, "-----BEGIN %s-----", label);
+    snprintf(end, sizeof end, "-----END %s-----", label);
+    const char *b = strstr(pem, begin);
+    if (!b) return NULL;
+    b += strlen(begin);
+    const char *e = strstr(b, end);
+    if (!e) return NULL;
+    uint8_t *der = malloc((size_t)(e - b) + 1);
+    if (!der) return NULL;
+    long k = b64_decode(b, (size_t)(e - b), der);
+    if (k <= 0) { free(der); return NULL; }
+    *len = (size_t)k;
+    return der;
+}
+
+// The last directory name in the absolute form of `path`'s parent: what the
+// reference signer names a model directory.
+static void parent_name(const char *path, char *out, size_t cap) {
+#ifdef _WIN32
+    char abs[_MAX_PATH];
+    if (!_fullpath(abs, path, sizeof abs)) snprintf(abs, sizeof abs, "%s", path);
+#else
+    char abs[PATH_MAX];
+    if (!realpath(path, abs)) snprintf(abs, sizeof abs, "%s", path);
+#endif
+    size_t n = strlen(abs);
+    while (n && abs[n - 1] != '/' && abs[n - 1] != '\\') n--;   // drop the file
+    while (n && (abs[n - 1] == '/' || abs[n - 1] == '\\')) n--;
+    abs[n] = 0;
+    const char *b = base_name(abs);
+    snprintf(out, cap, "%s", *b ? b : "model");
+}
+
+bool oms_sign_file(const char *model_path, const char *key_pem_path,
+                   const char *out_path, oms_sign_info *info) {
+    memset(info, 0, sizeof *info);
+    size_t kn = 0;
+    char *pem = read_all(key_pem_path, &kn);
+    if (!pem) {
+        fprintf(stderr, "error: --sign-model: cannot read the key %s\n", key_pem_path);
+        return false;
+    }
+    if (strstr(pem, "ENCRYPTED")) {
+        memset(pem, 0, kn);
+        free(pem);
+        fprintf(stderr, "error: --sign-model: %s is an encrypted private key; "
+                "this build reads unencrypted P-256, P-384 or P-521 keys only\n",
+                key_pem_path);
+        return false;
+    }
+    size_t dn = 0;
+    uint8_t *der = pem_block(pem, "EC PRIVATE KEY", &dn);
+    if (!der) der = pem_block(pem, "PRIVATE KEY", &dn);
+    memset(pem, 0, kn);
+    free(pem);
+    ec_curve curve;
+    uint8_t d[66];
+    bool key_ok = der && ecdsa_private_key_parse(der, dn, &curve, d);
+    if (der) { memset(der, 0, dn); free(der); }
+    if (!key_ok) {
+        fprintf(stderr, "error: --sign-model: %s is not an EC private key on "
+                "P-256, P-384 or P-521 (PEM \"EC PRIVATE KEY\" or \"PRIVATE "
+                "KEY\")\n", key_pem_path);
+        return false;
+    }
+    bool ok = false;
+    sbuf st = {0}, bundle = {0}, pubpem = {0};
+    FILE *f = NULL;
+    const size_t fb = ec_field_bytes(curve);
+    const ec_hash h = ec_curve_hash(curve);
+    do {
+        // the key's identity, as the reference computes it: sha256 of the
+        // PEM SubjectPublicKeyInfo, 64-column base64 with a final newline
+        uint8_t pub[132], spki[160];
+        if (!ecdsa_public_from_private(curve, d, pub)) break;
+        size_t sn = ecdsa_spki_encode(curve, pub, spki);
+        sbuf body = {0};
+        b64_put(&body, spki, sn);
+        sb_lit(&pubpem, "-----BEGIN PUBLIC KEY-----\n");
+        for (size_t i = 0; i < body.n; i += 64) {
+            sb_put(&pubpem, body.s + i, body.n - i < 64 ? body.n - i : 64);
+            sb_lit(&pubpem, "\n");
+        }
+        sb_lit(&pubpem, "-----END PUBLIC KEY-----\n");
+        free(body.s);
+        if (pubpem.failed) break;
+        envelope_data_sha256(pubpem.s, pubpem.n, info->key_hint);
+        snprintf(info->curve, sizeof info->curve, "%s",
+                 curve == EC_P256 ? "P-256" : curve == EC_P384 ? "P-384" : "P-521");
+        snprintf(info->hash, sizeof info->hash, "%s",
+                 h == EC_SHA256 ? "sha256" : h == EC_SHA384 ? "sha384" : "sha512");
+        // the manifest: one file, or every part of a split GGUF in order
+        unsigned no = 0, count = 1;
+        size_t plen = 0;
+        bool split = split_suffix(model_path, &no, &count, &plen) && count > 1;
+        char subject[256];
+        if (split) parent_name(model_path, subject, sizeof subject);
+        else snprintf(subject, sizeof subject, "%s", base_name(model_path));
+        sbuf res = {0};
+        uint8_t *roots = malloc((size_t)count * 32);
+        bool files_ok = roots != NULL;
+        for (unsigned i = 1; files_ok && i <= count; i++) {
+            char part[4096], hex[65];
+            if (split) {
+                if (plen + 20 >= sizeof part) { files_ok = false; break; }
+                snprintf(part, sizeof part, "%.*s-%05u-of-%05u.gguf",
+                         (int)plen, model_path, i, count);
+            } else {
+                snprintf(part, sizeof part, "%s", model_path);
+            }
+            if (!envelope_file_sha256(part, hex)) {
+                if (split)
+                    fprintf(stderr, "error: --sign-model: cannot read split part "
+                            "%u of %u (%s)\n", i, count, part);
+                else
+                    fprintf(stderr, "error: --sign-model: cannot read %s\n", part);
+                files_ok = false;
+                break;
+            }
+            for (int k = 0; k < 32; k++) {
+                unsigned v;
+                sscanf(hex + 2 * k, "%2x", &v);
+                roots[(size_t)(i - 1) * 32 + (size_t)k] = (uint8_t)v;
+            }
+            const char *nm = split ? base_name(part) : ".";
+            sb_fmt(&res, "%s      {\n        \"algorithm\": \"sha256\",\n"
+                   "        \"digest\": \"%s\",\n        \"name\": \"",
+                   i > 1 ? ",\n" : "", hex);
+            sb_esc(&res, nm, strlen(nm));
+            sb_lit(&res, "\"\n      }");
+        }
+        if (files_ok) {
+            envelope_data_sha256(roots, (size_t)count * 32, info->subject_digest);
+            info->n_resources = (int)count;
+        }
+        free(roots);
+        if (!files_ok || res.failed) { free(res.s); break; }
+        sb_lit(&st, "{\n  \"_type\": \"https://in-toto.io/Statement/v1\",\n"
+                    "  \"subject\": [\n    {\n      \"name\": \"");
+        sb_esc(&st, subject, strlen(subject));
+        sb_fmt(&st, "\",\n      \"digest\": {\n        \"sha256\": \"%s\"\n"
+                    "      }\n    }\n  ],\n", info->subject_digest);
+        sb_lit(&st, "  \"predicateType\": \"https://model_signing/signature/v1.0\",\n"
+                    "  \"predicate\": {\n    \"resources\": [\n");
+        sb_put(&st, res.s, res.n);
+        free(res.s);
+        sb_lit(&st, "\n    ],\n    \"serialization\": {\n"
+                    "      \"method\": \"files\",\n      \"hash_type\": \"sha256\",\n"
+                    "      \"allow_symlinks\": false\n    }\n  }\n}");
+        if (st.failed) break;
+        // DSSE PAE, the digest and the deterministic signature
+        const char *ptype = "application/vnd.in-toto+json";
+        sbuf pae = {0};
+        sb_fmt(&pae, "DSSEv1 %zu %s %zu ", strlen(ptype), ptype, st.n);
+        sb_put(&pae, st.s, st.n);
+        if (pae.failed) { free(pae.s); break; }
+        uint8_t dig[64], r[66], s[66], sig[160];
+        ec_digest(h, pae.s, pae.n, dig);
+        free(pae.s);
+        if (!ecdsa_sign(curve, d, h, dig, r, s)) break;
+        size_t sgn = ecdsa_der_sig_encode(r, s, fb, sig);
+        sb_lit(&bundle, "{\"mediaType\":\"application/vnd.dev.sigstore.bundle.v0.3+json\","
+                        "\"verificationMaterial\":{\"publicKey\":{\"hint\":\"");
+        sb_lit(&bundle, info->key_hint);
+        sb_lit(&bundle, "\"},\"tlogEntries\":[]},\"dsseEnvelope\":{\"payload\":\"");
+        b64_put(&bundle, (const uint8_t *)st.s, st.n);
+        sb_fmt(&bundle, "\",\"payloadType\":\"%s\",\"signatures\":[{\"sig\":\"", ptype);
+        b64_put(&bundle, sig, sgn);
+        sb_lit(&bundle, "\",\"keyid\":\"\"}]}}");
+        if (bundle.failed) break;
+        // created, never replaced: O_EXCL decides in one step (fopen's "x"
+        // is missing from older Windows C runtimes)
+        int fd = open(out_path, O_WRONLY | O_CREAT | O_EXCL | O_BINARY, 0644);
+        f = fd >= 0 ? fdopen(fd, "wb") : NULL;
+        if (fd >= 0 && !f) close(fd);
+        if (!f) {
+            fprintf(stderr, "error: --sign-model: %s %s; remove it or name another "
+                    "with --model-sig\n", out_path,
+                    errno == EEXIST ? "already exists" : "cannot be created");
+            break;
+        }
+        bool wrote = fwrite(bundle.s, 1, bundle.n, f) == bundle.n;
+        wrote = (fclose(f) == 0) && wrote;
+        f = NULL;
+        if (!wrote) {
+            remove(out_path);
+            fprintf(stderr, "error: --sign-model: cannot write %s\n", out_path);
+            break;
+        }
+        ok = true;
+    } while (0);
+    memset(d, 0, sizeof d);
+    free(st.s);
+    free(bundle.s);
+    free(pubpem.s);
+    return ok;
 }

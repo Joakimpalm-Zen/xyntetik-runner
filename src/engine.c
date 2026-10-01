@@ -224,6 +224,10 @@ static uint64_t fnv1a_toks(const int32_t *toks, int n) {
     return h;
 }
 
+void engine_refresh_identity(engine *e) {
+    e->model_key = model_identity(e->m, e->tok);
+}
+
 const char *engine_rewind_how_name(int how) {
     switch (how) {
     case REWIND_EXTENDED:  return "extended";
@@ -519,6 +523,14 @@ typedef struct pfx_entry {
     size_t    bytes;
     double    used;
     uint64_t  hits;
+    // R10.4: a named context is pinned -- no TTL, never an eviction victim --
+    // and released only by name, by clear, or with the model
+    bool      pinned;
+    double    created;
+    char      name[PFX_CTX_NAME_MAX + 1];
+    // R1.12.2: the snapshot a pinned context was imported from (a JSON
+    // object), empty when it was built by prefill
+    char      origin[256];
 } pfx_entry;
 
 static struct {
@@ -550,8 +562,12 @@ static void pfx_drop(pfx_entry **pp) {
 
 static void pfx_expire(double now) {
     for (pfx_entry **pp = &PFX.head; *pp; ) {
-        if (now - (*pp)->used > PFX.ttl) { PFX.evictions++; pfx_drop(pp); }
-        else pp = &(*pp)->next;
+        if (!(*pp)->pinned && now - (*pp)->used > PFX.ttl) {
+            PFX.evictions++;
+            pfx_drop(pp);
+        } else {
+            pp = &(*pp)->next;
+        }
     }
 }
 
@@ -582,10 +598,11 @@ static void pfx_trim(size_t need) {
         pfx_entry **victim = NULL;
         for (int proven = 0; proven <= 1 && !victim; proven++)
             for (pfx_entry **pp = &PFX.head; *pp; pp = &(*pp)->next) {
+                if ((*pp)->pinned) continue;   // named: released by name only
                 if (((*pp)->hits > 0) != (proven == 1)) continue;
                 if (!victim || (*pp)->used < (*victim)->used) victim = pp;
             }
-        if (!victim) break; // every entry belongs to one of the two classes
+        if (!victim) break; // nothing evictable is left: the rest are pinned
         PFX.evictions++;
         pfx_drop(victim);
     }
@@ -768,7 +785,8 @@ void engine_prefix_publish(engine *e, const int32_t *toks, int n,
             pthread_mutex_unlock(&PFX.mu);
             return;
         }
-        if (c == lim) pfx_drop(pp);          // ours strictly extends p
+        if (c == lim && !p->pinned) pfx_drop(pp);   // ours strictly extends p
+        else if (c == lim) pp = &p->next;           // a named one stays
         else {
             if (c > diverge_at) diverge_at = c;
             pp = &p->next;
@@ -828,6 +846,120 @@ void engine_prefix_publish(engine *e, const int32_t *toks, int n,
     PFX.bytes += need;
     PFX.stores++;
     pthread_mutex_unlock(&PFX.mu);
+}
+
+// ---------------------------------------------------- named contexts (R10.4)
+
+static bool pfx_ctx_name_ok(const char *name) {
+    size_t n = name ? strlen(name) : 0;
+    if (n == 0 || n > PFX_CTX_NAME_MAX) return false;
+    for (size_t i = 0; i < n; i++) {
+        char c = name[i];
+        if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+              (c >= '0' && c <= '9') || c == '.' || c == '_' || c == '-' ||
+              c == ':'))
+            return false;
+    }
+    return true;
+}
+
+bool prefix_context_name_ok(const char *name) { return pfx_ctx_name_ok(name); }
+
+static pfx_entry **pfx_find_named(const char *name) {
+    for (pfx_entry **pp = &PFX.head; *pp; pp = &(*pp)->next)
+        if ((*pp)->pinned && !strcmp((*pp)->name, name)) return pp;
+    return NULL;
+}
+
+int prefix_context_pin(engine *e, const char *name, const int32_t *toks, int n) {
+    if (!pfx_ctx_name_ok(name)) return PFX_CTX_BADNAME;
+    // the two layouts engine_prefix_publish refuses, for the same reason
+    if (model_kv_ring_active(e->m) || e->m->tied_v || !e->hist)
+        return PFX_CTX_UNSUPPORTED;
+    // the snapshot is taken from the slot's KV, which must hold exactly toks:
+    // a recurrent fold belongs to position e->pos and nowhere else
+    if (n < 1 || e->pos != n || memcmp(e->hist, toks, sizeof(int32_t) * (size_t)n))
+        return PFX_CTX_MISMATCH;
+    size_t need = prefix_cache_entry_bytes(e->m, n);
+    pfx_entry *ne = calloc(1, sizeof *ne);
+    int32_t *nt = malloc(sizeof(int32_t) * (size_t)n);
+    uint8_t *kv = malloc(need);
+    if (!ne || !nt || !kv) { free(ne); free(nt); free(kv); return PFX_CTX_NOSPACE; }
+    memcpy(nt, toks, sizeof(int32_t) * (size_t)n);
+    pfx_save(e->m, kv, n);
+
+    pthread_mutex_lock(&PFX.mu);
+    pfx_defaults();
+    double now = now_s();
+    pfx_entry **old = pfx_find_named(name);   // re-pinning a name replaces it
+    if (old) pfx_drop(old);
+    pfx_expire(now);
+    pfx_trim(need);
+    if (PFX.bytes + need > PFX.budget) {
+        pthread_mutex_unlock(&PFX.mu);
+        free(ne); free(nt); free(kv);
+        return PFX_CTX_NOSPACE;
+    }
+    ne->key = e->model_key; ne->toks = nt; ne->n = n;
+    ne->kv = kv; ne->bytes = need; ne->used = now; ne->created = now;
+    ne->pinned = true;
+    snprintf(ne->name, sizeof ne->name, "%s", name);
+    ne->next = PFX.head; PFX.head = ne;
+    PFX.bytes += need;
+    PFX.stores++;
+    pthread_mutex_unlock(&PFX.mu);
+    return n;
+}
+
+int prefix_context_check(const engine *e, const char *name,
+                         const int32_t *toks, int n, int *at) {
+    if (at) *at = -1;
+    if (!pfx_ctx_name_ok(name)) return PFX_CTX_BADNAME;
+    pthread_mutex_lock(&PFX.mu);
+    pfx_entry **pp = pfx_find_named(name);
+    int rc;
+    if (!pp || (*pp)->key != e->model_key) {
+        rc = PFX_CTX_UNKNOWN;
+    } else {
+        const pfx_entry *p = *pp;
+        int c = 0;
+        while (c < p->n && c < n && p->toks[c] == toks[c]) c++;
+        // the context must be a STRICT prefix: a prompt that ends where the
+        // context ends has no token left to sample the answer from
+        if (c == p->n && n > p->n) rc = p->n;
+        else { rc = PFX_CTX_MISMATCH; if (at) *at = c; }
+    }
+    pthread_mutex_unlock(&PFX.mu);
+    return rc;
+}
+
+bool prefix_context_release(const char *name) {
+    if (!pfx_ctx_name_ok(name)) return false;
+    pthread_mutex_lock(&PFX.mu);
+    pfx_entry **pp = pfx_find_named(name);
+    if (pp) pfx_drop(pp);
+    pthread_mutex_unlock(&PFX.mu);
+    return pp != NULL;
+}
+
+int prefix_context_list(prefix_context_info *out, int cap) {
+    pthread_mutex_lock(&PFX.mu);
+    double now = now_s();
+    int n = 0;
+    for (pfx_entry *p = PFX.head; p; p = p->next) {
+        if (!p->pinned) continue;
+        if (n < cap) {
+            snprintf(out[n].name, sizeof out[n].name, "%s", p->name);
+            out[n].tokens = p->n;
+            out[n].bytes = p->bytes;
+            out[n].hits = p->hits;
+            out[n].age_s = now - p->created;
+            out[n].model_key = p->key;
+        }
+        n++;
+    }
+    pthread_mutex_unlock(&PFX.mu);
+    return n;
 }
 
 // ---------------------------------------------------- snapshot persistence
@@ -971,6 +1103,135 @@ int prefix_cache_load(const char *path, const engine *e) {
     return loaded;
 }
 
+// Writes one entry the way prefix_cache_save writes each, digest included, so
+// the file is a runner.prefix.v1 file a cache load would also accept.
+int prefix_context_export(const char *name, const char *path) {
+    if (!pfx_ctx_name_ok(name)) return PFX_CTX_BADNAME;
+    if (!path || !*path) return -1;
+    size_t path_n = strlen(path);
+    char *tmp = malloc(path_n + sizeof(".partial"));
+    if (!tmp) return -1;
+    snprintf(tmp, path_n + sizeof(".partial"), "%s.partial", path);
+    pthread_mutex_lock(&PFX.mu);
+    pfx_entry **pp = pfx_find_named(name);
+    if (!pp) {
+        pthread_mutex_unlock(&PFX.mu);
+        free(tmp);
+        return PFX_CTX_UNKNOWN;
+    }
+    FILE *f = fopen(tmp, "wb");
+    if (!f) {
+        pthread_mutex_unlock(&PFX.mu);
+        fprintf(stderr, "prefix: cannot write %s\n", tmp);
+        free(tmp);
+        return -1;
+    }
+    const pfx_entry *p = *pp;
+    uint32_t count = 1;
+    uint64_t key = p->key, bytes = p->bytes, digest = 0xcbf29ce484222325ull;
+    int32_t n = p->n;
+    bool ok = wr(f, PFX_MAGIC, PFX_MAGIC_N) && wr(f, &count, sizeof count) &&
+              wr(f, &key, sizeof key) && wr(f, &n, sizeof n) &&
+              wr(f, &bytes, sizeof bytes) &&
+              wr(f, p->toks, sizeof(int32_t) * (size_t)n) && wr(f, p->kv, p->bytes);
+    digest ^= pfx_digest(&key, sizeof key);   digest *= 0x100000001b3ull;
+    digest ^= pfx_digest(p->toks, sizeof(int32_t) * (size_t)n);
+    digest *= 0x100000001b3ull;
+    digest ^= pfx_digest(p->kv, p->bytes);    digest *= 0x100000001b3ull;
+    pthread_mutex_unlock(&PFX.mu);
+    ok = ok && wr(f, &digest, sizeof digest);
+    if (fclose(f) != 0) ok = false;
+    if (!ok || !plat_replace_file(tmp, path)) {
+        remove(tmp);
+        free(tmp);
+        return -1;
+    }
+    free(tmp);
+    return n;
+}
+
+int prefix_context_import(const engine *e, const char *name, const char *path,
+                          const char *origin) {
+    if (!pfx_ctx_name_ok(name)) return PFX_CTX_BADNAME;
+    if (!e || !e->m || model_kv_ring_active(e->m) || e->m->tied_v)
+        return PFX_CTX_UNSUPPORTED;
+    FILE *f = fopen(path, "rb");
+    if (!f) return PFX_CTX_UNKNOWN;
+    char magic[PFX_MAGIC_N];
+    uint32_t count = 0;
+    uint64_t key = 0, bytes = 0, want = 0;
+    int32_t n = 0;
+    int32_t *toks = NULL;
+    uint8_t *kv = NULL;
+    int rc = PFX_CTX_CORRUPT;
+    if (!rd(f, magic, PFX_MAGIC_N) || memcmp(magic, PFX_MAGIC, PFX_MAGIC_N) ||
+        !rd(f, &count, sizeof count) || count != 1 ||
+        !rd(f, &key, sizeof key) || !rd(f, &n, sizeof n) ||
+        !rd(f, &bytes, sizeof bytes) || n < 1 || n > e->m->n_ctx ||
+        bytes == 0 || bytes > (uint64_t)1 << 40)
+        goto out;
+    toks = malloc(sizeof(int32_t) * (size_t)n);
+    kv = malloc((size_t)bytes);
+    if (!toks || !kv) { rc = PFX_CTX_NOSPACE; goto out; }
+    if (!rd(f, toks, sizeof(int32_t) * (size_t)n) || !rd(f, kv, (size_t)bytes) ||
+        !rd(f, &want, sizeof want) || fgetc(f) != EOF)
+        goto out;
+    uint64_t digest = 0xcbf29ce484222325ull;
+    digest ^= pfx_digest(&key, sizeof key);  digest *= 0x100000001b3ull;
+    digest ^= pfx_digest(toks, sizeof(int32_t) * (size_t)n);
+    digest *= 0x100000001b3ull;
+    digest ^= pfx_digest(kv, (size_t)bytes); digest *= 0x100000001b3ull;
+    if (digest != want) goto out;
+    // the refusal that matters, as in prefix_cache_load: KV from another
+    // model, context length or element type is never adapted
+    if (key != e->model_key || bytes != prefix_cache_entry_bytes(e->m, n)) {
+        rc = PFX_CTX_MISMATCH;
+        goto out;
+    }
+    pfx_entry *ne = calloc(1, sizeof *ne);
+    if (!ne) { rc = PFX_CTX_NOSPACE; goto out; }
+    pthread_mutex_lock(&PFX.mu);
+    pfx_defaults();
+    double now = now_s();
+    pfx_entry **old = pfx_find_named(name);
+    if (old) pfx_drop(old);
+    pfx_expire(now);
+    pfx_trim((size_t)bytes);
+    if (PFX.bytes + bytes > PFX.budget) {
+        pthread_mutex_unlock(&PFX.mu);
+        free(ne);
+        rc = PFX_CTX_NOSPACE;
+        goto out;
+    }
+    ne->key = key; ne->toks = toks; ne->n = n;
+    ne->kv = kv; ne->bytes = (size_t)bytes; ne->used = now; ne->created = now;
+    ne->pinned = true;
+    snprintf(ne->name, sizeof ne->name, "%s", name);
+    snprintf(ne->origin, sizeof ne->origin, "%s", origin ? origin : "");
+    ne->next = PFX.head; PFX.head = ne;
+    PFX.bytes += (size_t)bytes;
+    PFX.stores++;
+    pthread_mutex_unlock(&PFX.mu);
+    toks = NULL; kv = NULL;
+    rc = n;
+out:
+    fclose(f);
+    free(toks);
+    free(kv);
+    return rc;
+}
+
+bool prefix_context_origin(const char *name, char *out, size_t cap) {
+    if (cap) out[0] = 0;
+    if (!pfx_ctx_name_ok(name)) return false;
+    pthread_mutex_lock(&PFX.mu);
+    pfx_entry **pp = pfx_find_named(name);
+    bool has = pp && (*pp)->origin[0];
+    if (has) snprintf(out, cap, "%s", (*pp)->origin);
+    pthread_mutex_unlock(&PFX.mu);
+    return has;
+}
+
 // load a draft model for speculative decoding, with the same gates in CLI
 // and server mode: the target must keep a CPU verify path, and the vocabs
 // must match modulo family padding. NULL (with a stderr note) = run plain.
@@ -1086,6 +1347,70 @@ float *engine_feed(engine *e, const int32_t *toks, int n) {
         if (!last && e->prefill_yield) e->prefill_yield(e->prefill_ud);
     }
     return logits;
+}
+
+// noinline: one compiled copy is the whole point (engine.h)
+__attribute__((noinline))
+float engine_logsumexp(const float *logits, int n) {
+    float mx = logits[0];
+    for (int i = 1; i < n; i++) if (logits[i] > mx) mx = logits[i];
+    double sum = 0;
+    for (int i = 0; i < n; i++) sum += expf(logits[i] - mx);
+    return mx + logf((float)sum);
+}
+
+float *engine_score_prompt(engine *e, const int32_t *toks, int n, int top_n,
+                           prompt_scores *ps) {
+    memset(ps, 0, sizeof *ps);
+    if (n < 1 || top_n < 0) return NULL;
+    ps->n = n;
+    ps->top_n = top_n;
+    ps->lp = calloc((size_t)n, sizeof *ps->lp);
+    ps->rank = calloc((size_t)n, sizeof *ps->rank);
+    ps->top = top_n ? calloc((size_t)n * (size_t)top_n, sizeof *ps->top) : NULL;
+    if (!ps->lp || !ps->rank || (top_n && !ps->top)) {
+        prompt_scores_free(ps);
+        return NULL;
+    }
+    engine_reset(e);
+    int V = e->m->n_vocab;
+    float *logits = NULL;
+    for (int i = 0; i < n; i++) {
+        // the same between-chunk courtesies engine_feed extends, per token
+        if (i && e->stop && e->stop(e->stop_ud)) logits = NULL;
+        else logits = engine_feed(e, toks + i, 1);
+        if (!logits) { prompt_scores_free(ps); return NULL; }
+        if (i + 1 == n) break;
+        if (e->prefill_yield && (i & 63) == 63) e->prefill_yield(e->prefill_ud);
+        // the one normalizer --score and decode-time logprobs also divide by
+        float lse = engine_logsumexp(logits, V);
+        int32_t want = toks[i + 1];
+        float lw = logits[want] - lse;
+        // ranked in logprob space, the space the alternatives are listed in
+        int above = 0;
+        for (int v = 0; v < V; v++) above += logits[v] - lse > lw;
+        ps->lp[i + 1] = lw;
+        ps->rank[i + 1] = above + 1;
+        if (!top_n) continue;
+        lp_alt *top = ps->top + (size_t)(i + 1) * top_n;
+        int filled = 0;
+        for (int v = 0; v < V; v++) {
+            float lp = logits[v] - lse;
+            if (filled == top_n && lp <= top[filled - 1].lp) continue;
+            int j = filled < top_n ? filled++ : top_n - 1;
+            while (j > 0 && top[j - 1].lp < lp) { top[j] = top[j - 1]; j--; }
+            top[j].id = v; top[j].lp = lp;
+        }
+        for (int j = filled; j < top_n; j++) { top[j].id = -1; top[j].lp = 0; }
+    }
+    return logits;
+}
+
+void prompt_scores_free(prompt_scores *ps) {
+    free(ps->lp);
+    free(ps->rank);
+    free(ps->top);
+    memset(ps, 0, sizeof *ps);
 }
 
 // Advance a tag-prefix match by one byte, retaining the longest suffix that
@@ -1481,16 +1806,25 @@ static sample_ok_fn engine_sample_filter(engine *e) {
 // every accounting path are untouched, so a request that sets nothing behaves
 // exactly as before, and a constrained payload -- which is never inside a
 // reasoning turn -- keeps the sampler it was given.
+// `t` is the position the picked token will occupy: hist[0..t) is the
+// sequence before it, which the watermark's context is read from (R1.8.1).
 static int engine_pick(engine *e, float *logits, int n_vocab,
-                       sample_ok_fn ok) {
-    if (!e->think_smp || !e->think_on) return sample_pick(e->smp, logits, n_vocab, ok, e);
+                       sample_ok_fn ok, int t) {
     sampler *s = e->smp;
-    float t0 = s->temp, p0 = s->top_p, m0 = s->min_p;
-    int k0 = s->top_k;
-    s->temp = e->think_temp; s->top_p = e->think_top_p;
-    s->min_p = e->think_min_p; s->top_k = e->think_top_k;
-    int tok = sample_pick(s, logits, n_vocab, ok, e);
-    s->temp = t0; s->top_p = p0; s->min_p = m0; s->top_k = k0;
+    if (e->wm_prepare) e->wm_prepare(e->wm_ud, s, e->hist, e->gen_start, t);
+    int tok;
+    if (!e->think_smp || !e->think_on) {
+        tok = sample_pick(s, logits, n_vocab, ok, e);
+    } else {
+        float t0 = s->temp, p0 = s->top_p, m0 = s->min_p;
+        int k0 = s->top_k;
+        s->temp = e->think_temp; s->top_p = e->think_top_p;
+        s->min_p = e->think_min_p; s->top_k = e->think_top_k;
+        tok = sample_pick(s, logits, n_vocab, ok, e);
+        s->temp = t0; s->top_p = p0; s->min_p = m0; s->top_k = k0;
+    }
+    s->reweight = NULL;
+    s->reweight_ud = NULL;
     return tok;
 }
 
@@ -1709,11 +2043,7 @@ typedef struct {
 
 static void lp_capture_pre(engine *e, const float *logits, lp_pre *p) {
     int V = e->m->n_vocab;
-    float mx = logits[0];
-    for (int i = 1; i < V; i++) if (logits[i] > mx) mx = logits[i];
-    double sum = 0;
-    for (int i = 0; i < V; i++) sum += expf(logits[i] - mx);
-    p->lse = mx + logf((float)sum);
+    p->lse = engine_logsumexp(logits, V);
     p->n_snap = 0;
     sampler *s = e->smp;
     // n_recent is capped at 256 in sample.c (sampler.recent[256]); the extra
@@ -1752,11 +2082,7 @@ static void cl_capture(engine *e, const float *logits) {
     enum { PROBE_CAP = 64 };
     int M = e->cl_probe >= 8 && e->cl_probe <= PROBE_CAP ? e->cl_probe : 32;
     if (M > V) M = V;
-    float mx = logits[0];
-    for (int i = 1; i < V; i++) if (logits[i] > mx) mx = logits[i];
-    double sum = 0;
-    for (int i = 0; i < V; i++) sum += expf(logits[i] - mx);
-    float lse = mx + logf((float)sum);
+    float lse = engine_logsumexp(logits, V);
     int   ids[PROBE_CAP]; float lps[PROBE_CAP];
     int filled = 0;
     for (int i = 0; i < V; i++) {
@@ -2113,7 +2439,7 @@ static int engine_generate_spec(engine *e, float *logits, int max_new,
         if (e->stop && e->stop(e->stop_ud)) break;
         if (cur < 0) {
             // generation start: the first token comes from the live logits
-            int tok = engine_pick(e, logits, m->n_vocab, ok);
+            int tok = engine_pick(e, logits, m->n_vocab, ok, e->pos);
             if (tok < 0) {
                 if (tok == -2) e->oom = true;  // error, not a clean stop
                 e->hit_stop = true;
@@ -2248,7 +2574,7 @@ static int engine_generate_spec(engine *e, float *logits, int max_new,
             if (prof) t_logits += now_s() - tp;
             // b[i] is consumed: its hidden is the head's h for the next pair
             if (e->mtp_on) model_mtp_note_hidden(m, model_hidden_row(m, i));
-            int tok = engine_pick(e, ti, m->n_vocab, ok);
+            int tok = engine_pick(e, ti, m->n_vocab, ok, e->pos + i + 1);
             if (tok < 0) {
                 if (tok == -2) e->oom = true;  // error, not a clean stop
                 e->hit_stop = true;
@@ -2395,9 +2721,64 @@ void engine_gen_begin(engine *e, int max_new) {
     e->gen_t0    = now_s();
 }
 
+// Everything a step does with a token after choosing it and before handing
+// it out: its bytes through the constraint validator and to the caller, the
+// reasoning and loop trackers, the counts, the prelude budget. Shared with
+// engine_gen_resume, which replays generated tokens through exactly this, so
+// a resumed generation's state is the one the step built, by construction.
+// True when the step must end the generation (the caller left, or closing a
+// prelude failed).
+static bool gen_consume(engine *e, int tok, gen_cb cb, void *ud) {
+    char buf[512];
+    int n = decode_piece(e, tok, buf, sizeof(buf));
+    bool in_prelude = (e->schema || e->json_mode) &&
+                      e->constraint_phase != CP_OUTPUT;
+    int rc = e->schema && n > 0
+               ? constraint_accept(e, true, buf, n, cb, ud)
+           : e->json_mode && n > 0
+               ? constraint_accept(e, false, buf, n, cb, ud)
+           : cb && n > 0 ? cb(ud, buf, n) : 0;
+    if (!rc && (e->schema || e->json_mode))
+        rc = constraint_control_accept(e, tok, e->schema != NULL, cb, ud);
+    if (!rc && e->schema && n == 0 && constraint_spelling_ok(e, tok, true)) {
+        const char *sp = tok_raw(e->tok, tok);
+        rc = constraint_accept(e, true, sp, (int)strlen(sp), cb, ud);
+    }
+    think_track(e, tok, buf, n);
+    loop_guard_check(e);
+    if (rc != 0) { e->gen_count++; return true; } // client gone
+    e->gen_count++;
+    if (in_prelude && (e->constraint_phase == CP_PROBE ||
+                       e->constraint_phase == CP_THINK) && e->prelude_max > 0 &&
+        ++e->prelude_count >= e->prelude_max) {
+        e->prelude_exhausted = true;
+        // A model that opens a thinking block and never closes it used to end
+        // the request here, having produced nothing: the caller asked for a
+        // schema-constrained payload and got an empty document. Measured on
+        // e4b-q4km (gemma4, prelude tags <|channel>thought / <channel|>), two
+        // of four tool prompts did exactly this -- prelude_max is max_new/2,
+        // so -n 200 burned 100 tokens thinking and returned one newline.
+        //
+        // Under an active constraint the prelude is not the deliverable, so
+        // the budget cap now CLOSES the prelude instead of ending the turn:
+        // phase moves to output, the payload validator is reset, and the
+        // remaining half of the budget goes on the JSON that was asked for.
+        // prelude_exhausted still records why, so the server keeps reporting
+        // "reasoning_limit".
+        // No `else`. `in_prelude` above already required a constraint, so an
+        // unconstrained turn never reaches this bound at ALL -- it runs to
+        // max_tokens like any other. There WAS an else here returning
+        // ENGINE_STEP_DONE, and it was unreachable; on 2026-08-15 it was read
+        // as the unconstrained POLICY and presented to the owner as one, which
+        // is the specific harm of dead code that looks like a decision.
+        if (constraint_finish_think(e, e->schema != NULL, cb, ud) != 0)
+            return true;
+    }
+    return false;
+}
+
 int engine_gen_step(engine *e, const float *logits, gen_cb cb, void *ud,
                     int32_t *next_tok, int *next_pos) {
-    char buf[512];
     // Arriving here at all means the caller forwarded the row the previous
     // step handed out -- `logits` is that forward's result. Anything still
     // outstanding when engine_gen_end runs was abandoned instead.
@@ -2410,7 +2791,7 @@ int engine_gen_step(engine *e, const float *logits, gen_cb cb, void *ud,
     if (want_lp) lp_capture_pre(e, logits, &pre);
     if (e->cl_cap) cl_capture(e, logits);
     int tok = engine_pick(e, (float *)logits, e->m->n_vocab,
-                          engine_sample_filter(e));
+                          engine_sample_filter(e), e->pos);
     if (tok < 0) { // -1: no valid continuation (clean stop); -2: allocation error
         if (tok == -2) e->oom = true;
         e->hit_stop = true;
@@ -2441,50 +2822,7 @@ int engine_gen_step(engine *e, const float *logits, gen_cb cb, void *ud,
         e->lp_chosen[e->lp_count] = raw - pre.lse;
         e->lp_count++;
     }
-    int n = decode_piece(e, tok, buf, sizeof(buf));
-    bool in_prelude = (e->schema || e->json_mode) &&
-                      e->constraint_phase != CP_OUTPUT;
-    int rc = e->schema && n > 0
-               ? constraint_accept(e, true, buf, n, cb, ud)
-           : e->json_mode && n > 0
-               ? constraint_accept(e, false, buf, n, cb, ud)
-           : cb && n > 0 ? cb(ud, buf, n) : 0;
-    if (!rc && (e->schema || e->json_mode))
-        rc = constraint_control_accept(e, tok, e->schema != NULL, cb, ud);
-    if (!rc && e->schema && n == 0 && constraint_spelling_ok(e, tok, true)) {
-        const char *sp = tok_raw(e->tok, tok);
-        rc = constraint_accept(e, true, sp, (int)strlen(sp), cb, ud);
-    }
-    think_track(e, tok, buf, n);
-    loop_guard_check(e);
-    if (rc != 0) { e->gen_count++; return ENGINE_STEP_DONE; } // client gone
-    e->gen_count++;
-    if (in_prelude && (e->constraint_phase == CP_PROBE ||
-                       e->constraint_phase == CP_THINK) && e->prelude_max > 0 &&
-        ++e->prelude_count >= e->prelude_max) {
-        e->prelude_exhausted = true;
-        // A model that opens a thinking block and never closes it used to end
-        // the request here, having produced nothing: the caller asked for a
-        // schema-constrained payload and got an empty document. Measured on
-        // e4b-q4km (gemma4, prelude tags <|channel>thought / <channel|>), two
-        // of four tool prompts did exactly this -- prelude_max is max_new/2,
-        // so -n 200 burned 100 tokens thinking and returned one newline.
-        //
-        // Under an active constraint the prelude is not the deliverable, so
-        // the budget cap now CLOSES the prelude instead of ending the turn:
-        // phase moves to output, the payload validator is reset, and the
-        // remaining half of the budget goes on the JSON that was asked for.
-        // prelude_exhausted still records why, so the server keeps reporting
-        // "reasoning_limit".
-        // No `else`. `in_prelude` above already required a constraint, so an
-        // unconstrained turn never reaches this bound at ALL -- it runs to
-        // max_tokens like any other. There WAS an else here returning
-        // ENGINE_STEP_DONE, and it was unreachable; on 2026-08-15 it was read
-        // as the unconstrained POLICY and presented to the owner as one, which
-        // is the specific harm of dead code that looks like a decision.
-        if (constraint_finish_think(e, e->schema != NULL, cb, ud) != 0)
-            return ENGINE_STEP_DONE;
-    }
+    if (gen_consume(e, tok, cb, ud)) return ENGINE_STEP_DONE;
     if ((e->schema && constraint_done(e, true)) ||
         (!e->schema && e->json_mode && constraint_done(e, false))) {
         e->hit_stop = true;
@@ -2510,6 +2848,49 @@ int engine_gen_end(engine *e, gen_cb cb, void *ud, double *gen_time) {
     constraint_close(e, cb, ud);
     if (gen_time) *gen_time = now_s() - e->gen_t0;
     return e->gen_count;
+}
+
+// ---- session images (R1.3) --------------------------------------------------
+
+size_t engine_state_bytes(const engine *e) {
+    return prefix_cache_entry_bytes(e->m, e->pos);
+}
+
+bool engine_state_save(const engine *e, uint8_t *dst) {
+    if (!e || !e->m || !dst || model_kv_ring_active(e->m) || e->m->tied_v)
+        return false;
+    pfx_save(e->m, dst, e->pos);
+    return true;
+}
+
+bool engine_state_load(engine *e, const int32_t *hist, int n, const uint8_t *src) {
+    if (!e || !e->m || !e->hist || !src || n < 1 || n > e->m->n_ctx ||
+        model_kv_ring_active(e->m) || e->m->tied_v)
+        return false;
+    engine_reset(e);
+    pfx_load(e->m, src, n, n);
+    if (model_has_recurrent(e->m)) {
+        size_t kvb = prefix_cache_entry_bytes(e->m, n) - model_recurrent_blob_bytes(e->m);
+        if (!model_recurrent_blob_load(e->m, src + kvb)) return false;
+    }
+    memcpy(e->hist, hist, sizeof(int32_t) * (size_t)n);
+    e->pos = n;
+    e->rewind_how = REWIND_NONE;
+    return true;
+}
+
+void engine_gen_resume(engine *e, int max_new, int n_prompt, int n_generated) {
+    int end = e->pos;
+    e->pos = n_prompt;
+    engine_gen_begin(e, max_new);     // gen_start = the prompt's end, as it was
+    for (int i = 0; i < n_generated; i++) {
+        int tok = e->hist[n_prompt + i];
+        sampler_accept(e->smp, tok);
+        gen_consume(e, tok, NULL, NULL);
+        e->pos++;
+    }
+    e->pos = end;
+    e->pending_pos = -1;
 }
 
 // The speculative walk owns its own forwards and cannot interleave with

@@ -1,5 +1,10 @@
 // Generation and wire framing. Lifted out of server.c (RNR-019); see completion.h.
 #include "completion.h"
+#include "respstore.h"
+#include "gpu.h"
+#include "build_arch.h"
+#include "provenance.h"
+#include "receipts.h"
 #include "compat.h"
 
 #include "http.h"
@@ -87,6 +92,22 @@ typedef struct {
     // now_s() at the first visible (non-reasoning) byte, 0 until then: the
     // "first visible response" stage of the request telemetry
     double first_visible_t;
+    // R4.8: the prompt's teacher-forced scores and its token ids, when echo
+    // with logprobs or prompt_logprobs asked for them (owned)
+    prompt_scores ps;
+    int32_t *ptoks;
+    // R4.12.19: the runner_telemetry.repeated_tool_calls array, when a call
+    // this turn emitted repeats one already in the conversation (owned)
+    char *repeat_json;
+    // R1.2.2: every byte the engine emitted, before any splitting, for the
+    // receipt (what --verify's replay compares against); only when on
+    bool  raw_on;
+    sbuf  raw;
+    // R1.1.2: the calls the turn delivered, as the receipt records them
+    // ({"name","arguments"} objects, comma-separated), when raw_on
+    sbuf  calls;
+    int   n_calls;
+    bool  call_open;   // a streamed call begun and not yet ended
 } gen_ctx;
 
 typedef struct {
@@ -217,13 +238,23 @@ static void append_chat_logprobs(sbuf *r, slot_t *s, engine *e) {
     sb_lit(r, "]}");
 }
 
-static void append_text_logprobs(sbuf *r, slot_t *s, engine *e) {
+// Legacy text logprobs. `pg` non-NULL puts echo's prompt entries first (R4.8):
+// the first prompt token has nothing before it, so its logprob and
+// alternatives are null, as OpenAI's echo spells them; `prompt_alts` is the
+// request's alternative count for those entries (the generated ones use the
+// engine's own table, e->lp_n).
+static void append_text_logprobs(sbuf *r, slot_t *s, engine *e,
+                                 const gen_ctx *pg, int prompt_alts) {
     char tb[512];
     int offset = 0;
+    int np = pg && pg->ptoks ? pg->ps.n : 0;
+    int pa = prompt_alts < (pg ? pg->ps.top_n : 0) ? prompt_alts
+           : pg ? pg->ps.top_n : 0;
     sb_lit(r, "\"logprobs\":{\"tokens\":[");
-    for (int i = 0; i < e->lp_count; i++) {
+    for (int i = 0; i < np + e->lp_count; i++) {
         if (i) sb_lit(r, ",");
-        int tn = lp_piece(s, e, e->lp_ids[i], tb, sizeof(tb));
+        int id = i < np ? pg->ptoks[i] : e->lp_ids[i - np];
+        int tn = lp_piece(s, e, id, tb, sizeof(tb));
         sb_lit(r, "\""); sb_esc(r, tb, tn); sb_lit(r, "\"");
     }
     // Ids alongside the rendered pieces. Two distinct ids can decode to the
@@ -231,21 +262,26 @@ static void append_text_logprobs(sbuf *r, slot_t *s, engine *e) {
     // anything comparing our output to another runtime's needs the id to tell
     // "same token" from "same text" — scripts/token_divergence.py does.
     sb_lit(r, "],\"token_ids\":[");
-    for (int i = 0; i < e->lp_count; i++) {
+    for (int i = 0; i < np + e->lp_count; i++) {
         if (i) sb_lit(r, ",");
-        sb_fmt(r, "%d", e->lp_ids[i]);
+        sb_fmt(r, "%d", i < np ? pg->ptoks[i] : e->lp_ids[i - np]);
     }
     sb_lit(r, "],\"token_logprobs\":[");
-    for (int i = 0; i < e->lp_count; i++) {
+    for (int i = 0; i < np + e->lp_count; i++) {
         if (i) sb_lit(r, ",");
-        sb_fmt(r, "%.6f", e->lp_chosen[i]);
+        if (i == 0 && np) sb_lit(r, "null");
+        else sb_fmt(r, "%.6f", i < np ? pg->ps.lp[i] : e->lp_chosen[i - np]);
     }
     sb_lit(r, "],\"top_logprobs\":[");
-    for (int i = 0; i < e->lp_count; i++) {
+    for (int i = 0; i < np + e->lp_count; i++) {
         if (i) sb_lit(r, ",");
+        if (i == 0 && np) { sb_lit(r, "null"); continue; }
+        const lp_alt *row = i < np ? &pg->ps.top[(size_t)i * pg->ps.top_n]
+                                   : &e->lp_top[(size_t)(i - np) * e->lp_n];
+        int cnt = i < np ? pa : e->lp_n;
         sb_lit(r, "{");
-        for (int j = 0; j < e->lp_n; j++) {
-            const lp_alt *a = &e->lp_top[(size_t)i * e->lp_n + j];
+        for (int j = 0; j < cnt; j++) {
+            const lp_alt *a = &row[j];
             if (a->id < 0) break;
             if (j) sb_lit(r, ",");
             int tn = lp_piece(s, e, a->id, tb, sizeof(tb));
@@ -257,11 +293,15 @@ static void append_text_logprobs(sbuf *r, slot_t *s, engine *e) {
     // The OpenAI top_logprobs shape is a string->float map with nowhere to put
     // an id, so the ids ride in a parallel array in the same order.
     sb_lit(r, "],\"top_token_ids\":[");
-    for (int i = 0; i < e->lp_count; i++) {
+    for (int i = 0; i < np + e->lp_count; i++) {
         if (i) sb_lit(r, ",");
+        if (i == 0 && np) { sb_lit(r, "null"); continue; }
+        const lp_alt *row = i < np ? &pg->ps.top[(size_t)i * pg->ps.top_n]
+                                   : &e->lp_top[(size_t)(i - np) * e->lp_n];
+        int cnt = i < np ? pa : e->lp_n;
         sb_lit(r, "[");
-        for (int j = 0; j < e->lp_n; j++) {
-            const lp_alt *a = &e->lp_top[(size_t)i * e->lp_n + j];
+        for (int j = 0; j < cnt; j++) {
+            const lp_alt *a = &row[j];
             if (a->id < 0) break;
             if (j) sb_lit(r, ",");
             sb_fmt(r, "%d", a->id);
@@ -269,10 +309,11 @@ static void append_text_logprobs(sbuf *r, slot_t *s, engine *e) {
         sb_lit(r, "]");
     }
     sb_lit(r, "],\"text_offset\":[");
-    for (int i = 0; i < e->lp_count; i++) {
+    for (int i = 0; i < np + e->lp_count; i++) {
         if (i) sb_lit(r, ",");
         sb_fmt(r, "%d", offset);
-        offset += lp_piece(s, e, e->lp_ids[i], tb, sizeof(tb));
+        offset += lp_piece(s, e, i < np ? pg->ptoks[i] : e->lp_ids[i - np],
+                           tb, sizeof(tb));
     }
     sb_lit(r, "]}");
 }
@@ -298,6 +339,14 @@ static void completion_cleanup(engine *e, snode *schema, gen_ctx *g) {
         free(g->call_name);
         free(g->out_items.s);
         free(g->out_text.s);
+        prompt_scores_free(&g->ps);
+        free(g->ptoks);
+        g->ptoks = NULL;
+        free(g->repeat_json);
+        g->repeat_json = NULL;
+        free(g->raw.s);
+        free(g->calls.s);
+        g->raw = (sbuf){0};
     }
     free(e->lp_chosen); free(e->lp_ids); free(e->lp_top);
     e->lp_chosen = NULL; e->lp_ids = NULL; e->lp_top = NULL;
@@ -437,9 +486,28 @@ static int resp_close_item(gen_ctx *g);
 
 static int anth_close_block(gen_ctx *g);
 
+// R1.1.2: the receipt's copy of a streamed call, taken from the same bytes
+// the client receives on every surface
+static void rec_call_begin(gen_ctx *g, const char *name) {
+    if (!g->raw_on) return;
+    if (g->call_open) sb_lit(&g->calls, "\"}");   // never ended: as delivered
+    sb_lit(&g->calls, g->n_calls ? ",{\"name\":\"" : "{\"name\":\"");
+    sb_esc(&g->calls, name, strlen(name));
+    sb_lit(&g->calls, "\",\"arguments\":\"");
+    g->n_calls++;
+    g->call_open = true;
+}
+
+static void rec_call_end(gen_ctx *g) {
+    if (!g->raw_on || !g->call_open) return;
+    sb_lit(&g->calls, "\"}");
+    g->call_open = false;
+}
+
 static int sink_call_begin(void *ud, const char *name) {
     gen_ctx *g = ud;
     if (g->dead) return 1;
+    rec_call_begin(g, name);
     if (g->api == API_RESPONSES || g->api == API_MESSAGES) {
         // the name identifies the item/block, so it must be known before that
         // is announced — which is exactly when tool_stream calls this
@@ -464,6 +532,7 @@ static int sink_call_begin(void *ud, const char *name) {
 static int sink_call_args(void *ud, const char *b, int n) {
     gen_ctx *g = ud;
     if (g->dead) return 1;
+    if (g->raw_on && g->call_open) sb_esc(&g->calls, b, (size_t)n);
     if (g->api == API_RESPONSES) return resp_delta(g, "function_call", b, n);
     if (g->api == API_MESSAGES) return anth_delta(g, "tool_use", b, n);
     sbuf c = {0};
@@ -478,6 +547,7 @@ static int sink_call_args(void *ud, const char *b, int n) {
 static int sink_call_end(void *ud) {
     gen_ctx *g = ud;
     int rc = 0;
+    rec_call_end(g);
     if (g->api == API_RESPONSES) rc = resp_close_item(g);
     else if (g->api == API_MESSAGES) rc = anth_close_block(g);
     if (!rc) g->tool_index++;
@@ -772,6 +842,8 @@ typedef struct {
     // client can read what the server actually ran without a log.
     const struct req_diag *diag;
     jv         *req;         // echoed request fields
+    // R4.12.19: a JSON array, or NULL when no emitted call repeats one
+    const char *repeated_calls;
 } resp_doc;
 
 // What one request was actually served with: the resolved preset, the five
@@ -809,6 +881,17 @@ typedef struct req_diag {
     // How the slot arrived at prompt_cached_tokens (engine_rewind_how_name):
     // the answer to "why did my identical prompt say 0 cached".
     const char *prompt_reuse;
+    // R10.4: the named context this request built on, and its length
+    const char *context_id;
+    int         context_tokens;
+    // R8.6: the per-request adapter, when one was named
+    const char *adapter_name, *adapter_sha256;
+    // R1.2.2: this request's receipt (file and chain hash), or why none was
+    // written while receipts are on
+    const char *receipt_file, *receipt_chain, *receipt_error;
+    // R1.8.1: the watermark this turn was sampled under, when one is on
+    bool        wm_on;
+    int         wm_marked;
 } req_diag;
 
 static void diag_json(sbuf *r, const req_diag *d) {
@@ -841,6 +924,22 @@ static void diag_json(sbuf *r, const req_diag *d) {
     else
         sb_lit(r, "\"first_visible_seconds\":null}");
     sb_fmt(r, ",\"prompt_reuse\":\"%s\"", d->prompt_reuse ? d->prompt_reuse : "none");
+    if (d->context_id)
+        sb_fmt(r, ",\"context\":{\"id\":\"%s\",\"tokens\":%d}",
+               d->context_id, d->context_tokens);
+    if (d->adapter_name) {
+        sb_lit(r, ",\"adapter\":{\"name\":\"");
+        sb_esc(r, d->adapter_name, strlen(d->adapter_name));
+        sb_fmt(r, "\",\"sha256\":\"%s\"}", d->adapter_sha256);
+    }
+    if (d->wm_on)
+        sb_fmt(r, ",\"watermark\":{\"scheme\":\"%s\",\"key_id\":\"%s\","
+                  "\"marked_tokens\":%d}", WM_SCHEME, SV.wm_key.id, d->wm_marked);
+    if (d->receipt_file)
+        sb_fmt(r, ",\"receipt\":{\"file\":\"%s\",\"chain_hash\":\"%s\"}",
+               d->receipt_file, d->receipt_chain);
+    else if (d->receipt_error)
+        sb_fmt(r, ",\"receipt\":{\"error\":\"%s\"}", d->receipt_error);
 }
 
 // The speculation fields of a resp_doc, from the engine that served the
@@ -954,6 +1053,10 @@ static void telemetry_json(sbuf *r, const resp_doc *d) {
                   "\"min_p\":%.4f,\"top_k\":%d}",
                d->reason_temp, d->reason_top_p, d->reason_min_p, d->reason_top_k);
     if (d->diag) diag_json(r, d->diag);
+    // Only present when an emitted call repeats one the conversation already
+    // holds: a report for the harness, never a change to the turn (R4.12.19)
+    if (d->repeated_calls)
+        sb_fmt(r, ",\"repeated_tool_calls\":%s", d->repeated_calls);
     // Only present when the request took the speculative walk, for the same
     // reason: which source proposed, and what the walk did with it. Rounds,
     // drafted and accepted are the totals /metrics accumulates; the lookup's
@@ -1020,9 +1123,205 @@ static jv *tool_calls_array(const sbuf *tc, int n_tc) {
     return v;
 }
 
+// ---- R4.12.19: a call this turn repeats one the conversation already made
+//
+// The loop the lab caught (get_weather(Athens) re-called turn after turn, the
+// answer already in the model's reasoning) exists only ACROSS requests. The
+// chat-shaped surfaces carry the earlier calls as structure, so matching an
+// emitted call against them parses no prose. It is REPORTED, never refused: a
+// legitimate agent re-calls a tool too (polling, a retry after an error), and
+// a flag lets the harness break its own loop with a reason.
+
+// Two JSON values are the same call argument when they are equal as values:
+// objects compare key by key in any order, so whitespace and key order in a
+// replayed `arguments` string cannot hide a repeat.
+static bool jv_same(const jv *a, const jv *b) {
+    if (a->type != b->type) return false;
+    switch (a->type) {
+    case J_NULL: return true;
+    case J_BOOL: return a->b == b->b;
+    case J_NUM:  return a->num == b->num;
+    case J_STR:  return !strcmp(a->str, b->str);
+    case J_ARR:
+        if (a->n != b->n) return false;
+        for (int i = 0; i < a->n; i++)
+            if (!jv_same(a->items[i], b->items[i])) return false;
+        return true;
+    case J_OBJ:
+        if (a->n != b->n) return false;
+        for (int i = 0; i < a->n; i++) {
+            const jv *o = jv_get((jv *)b, a->keys[i]);
+            if (!o || !jv_same(a->items[i], o)) return false;
+        }
+        return true;
+    }
+    return false;
+}
+
+typedef struct {
+    const char *name;
+    const jv   *args;   // the parsed arguments (or the tool_use input)
+    const char *raw;    // the arguments string when it did not parse
+    jv         *owned;  // a parse to free
+    int         msg;    // index of the message / input item it came from
+} call_ref;
+
+// Chat and Responses spell arguments as a JSON string, Messages as a value.
+static void call_ref_args(call_ref *c, const jv *v) {
+    c->args = NULL; c->raw = NULL; c->owned = NULL;
+    if (!v) return;
+    if (v->type == J_STR) {
+        c->owned = json_parse(v->str, strlen(v->str));
+        if (c->owned) c->args = c->owned;
+        else          c->raw = v->str;
+    } else {
+        c->args = v;
+    }
+}
+
+static bool call_ref_same(const call_ref *a, const call_ref *b) {
+    if (strcmp(a->name, b->name)) return false;
+    if (a->args && b->args) return jv_same(a->args, b->args);
+    if (a->raw && b->raw) return !strcmp(a->raw, b->raw);
+    return !a->args && !a->raw && !b->args && !b->raw;
+}
+
+// The earlier calls a request carries, in its own surface's vocabulary.
+// Returns the count; *out is the caller's to free with call_refs_free.
+static int prior_calls(jv *req, int api, call_ref **out) {
+    *out = NULL;
+    jv *list = jv_get(req, api == API_RESPONSES ? "input" : "messages");
+    if (!list || list->type != J_ARR) return 0;
+    int cap = 0, n = 0;
+    call_ref *v = NULL;
+    for (int i = 0; i < list->n; i++) {
+        jv *m = list->items[i];
+        if (m->type != J_OBJ) continue;
+        // each surface's list of calls inside one message
+        jv *calls = NULL;
+        if (api == API_RESPONSES) {
+            if (strcmp(jv_str(jv_get(m, "type"), ""), "function_call")) continue;
+        } else {
+            if (strcmp(jv_str(jv_get(m, "role"), ""), "assistant")) continue;
+            calls = jv_get(m, api == API_MESSAGES ? "content" : "tool_calls");
+            if (!calls || calls->type != J_ARR) continue;
+        }
+        int k_n = api == API_RESPONSES ? 1 : calls->n;
+        for (int k = 0; k < k_n; k++) {
+            const char *name = NULL;
+            const jv *args = NULL;
+            if (api == API_RESPONSES) {
+                name = jv_str(jv_get(m, "name"), NULL);
+                args = jv_get(m, "arguments");
+            } else if (api == API_MESSAGES) {
+                jv *b = calls->items[k];
+                if (strcmp(jv_str(jv_get(b, "type"), ""), "tool_use")) continue;
+                name = jv_str(jv_get(b, "name"), NULL);
+                args = jv_get(b, "input");
+            } else {
+                jv *f = jv_get(calls->items[k], "function");
+                name = jv_str(jv_get(f, "name"), NULL);
+                args = jv_get(f, "arguments");
+            }
+            if (!name) continue;
+            if (n == cap) {
+                int nc = cap ? cap * 2 : 8;
+                call_ref *g = realloc(v, sizeof *v * (size_t)nc);
+                if (!g) { *out = v; return n; }
+                v = g; cap = nc;
+            }
+            v[n].name = name;
+            v[n].msg = i;
+            call_ref_args(&v[n], args);
+            n++;
+        }
+    }
+    *out = v;
+    return n;
+}
+
+static void call_refs_free(call_ref *v, int n) {
+    for (int i = 0; i < n; i++) jv_free(v[i].owned);
+    free(v);
+}
+
+// `emitted` is this turn's calls: the chat dialect's tool_calls array, or the
+// Responses output items (function_call entries; other items are skipped and
+// do not count toward `index`). Returns the telemetry array, malloc'd, or
+// NULL when nothing repeats.
+static char *repeated_calls_json(jv *req, int api, const jv *emitted) {
+    if (!emitted || emitted->type != J_ARR || emitted->n == 0) return NULL;
+    call_ref *prior = NULL;
+    int n_prior = prior_calls(req, api, &prior);
+    if (n_prior == 0) { free(prior); return NULL; }
+    sbuf r = {0};
+    int idx = 0, flagged = 0;
+    for (int i = 0; i < emitted->n; i++) {
+        jv *it = emitted->items[i];
+        jv *f = jv_get(it, "function");
+        call_ref c;
+        if (f) {
+            c.name = jv_str(jv_get(f, "name"), NULL);
+            call_ref_args(&c, jv_get(f, "arguments"));
+        } else if (!strcmp(jv_str(jv_get(it, "type"), ""), "function_call")) {
+            c.name = jv_str(jv_get(it, "name"), NULL);
+            call_ref_args(&c, jv_get(it, "arguments"));
+        } else {
+            continue;
+        }
+        int this_idx = idx++;
+        if (!c.name) { jv_free(c.owned); continue; }
+        int count = 0, last = -1;
+        for (int k = 0; k < n_prior; k++)
+            if (call_ref_same(&c, &prior[k])) { count++; last = prior[k].msg; }
+        if (count) {
+            // sb_lit evaluates its argument twice; the count moves apart
+            const char *open = flagged ? ",{\"index\":" : "[{\"index\":";
+            flagged++;
+            sb_lit(&r, open);
+            sb_fmt(&r, "%d,\"name\":\"", this_idx);
+            sb_esc(&r, c.name, strlen(c.name));
+            sb_fmt(&r, "\",\"prior_calls\":%d,\"last_message_index\":%d}",
+                   count, last);
+        }
+        jv_free(c.owned);
+    }
+    call_refs_free(prior, n_prior);
+    if (!flagged || r.failed) { free(r.s); return NULL; }
+    sb_lit(&r, "]");
+    sb_put(&r, "", 1);
+    if (r.failed) { free(r.s); return NULL; }
+    return r.s;
+}
+
 static const char *call_field(const jv *calls, int i, const char *key,
                               const char *dflt) {
     return jv_str(jv_get(jv_get(calls->items[i], "function"), key), dflt);
+}
+
+// R10.6: keep a finished response when the request said store:true. The
+// input kept is the EFFECTIVE one (a previous_response_id already expanded
+// into it by api_responses.c), so a continuation of this response needs
+// nothing else from the store.
+static void responses_store_keep(jv *req, const char *id, const char *body,
+                                 size_t body_n) {
+    if (!req || !jv_bool(jv_get(req, "store"), false)) return;
+    jv *in = jv_get(req, "input");
+    sbuf a = {0};
+    if (in && in->type == J_STR) {
+        sb_lit(&a, "[{\"role\":\"user\",\"content\":\"");
+        sb_esc(&a, in->str, strlen(in->str));
+        sb_lit(&a, "\"}]");
+    } else if (in && in->type == J_ARR) {
+        jv_dump(in, &a);
+    } else {
+        sb_lit(&a, "[]");
+    }
+    if (!a.failed &&
+        !respstore_put(id, a.s, a.n, body, body_n))
+        fprintf(stderr, "responses: %s not stored (store budget "
+                "RUNNER_RESPONSES_STORE_MB is full or 0)\n", id);
+    free(a.s);
 }
 
 static void responses_body(sbuf *r, gen_ctx *g, const resp_doc *d) {
@@ -1093,8 +1392,11 @@ static void responses_body(sbuf *r, gen_ctx *g, const resp_doc *d) {
     resp_echo(r, d->req, "tools", "[]");
     resp_echo(r, d->req, "tool_choice", "\"auto\"");
     resp_echo(r, d->req, "parallel_tool_calls", "false");
-    sb_lit(r, ",\"previous_response_id\":null,\"store\":false,"
-              "\"truncation\":\"disabled\",\"user\":null,\"usage\":");
+    // R10.6: what the request asked the store to do, echoed as it was served
+    resp_echo(r, d->req, "previous_response_id", "null");
+    sb_fmt(r, ",\"store\":%s,",
+           d->req && jv_bool(jv_get(d->req, "store"), false) ? "true" : "false");
+    sb_lit(r, "\"truncation\":\"disabled\",\"user\":null,\"usage\":");
     if (d->with_usage) {
         sb_fmt(r, "{\"input_tokens\":%d,"
                   "\"input_tokens_details\":{\"cached_tokens\":%d},"
@@ -1543,6 +1845,7 @@ static int gen_emit(void *ud, int reasoning, const char *bytes, int n) {
 
 static int gen_collect(void *ud, const char *bytes, int n) {
     gen_ctx *g = ud;
+    if (g->raw_on) sb_put(&g->raw, bytes, (size_t)n);
     // One call per generated token, which is what makes this the right place
     // to count reasoning tokens: gen_emit below can fire more than once for
     // the same token when the splitter cuts it across channels.
@@ -1674,7 +1977,7 @@ bool request_keep_alive(jv *req, bool *present, int *seconds) {
 // SDKs routinely serialize neutral values for features this single-choice
 // engine does not implement. Accept only the forms whose semantics are exactly
 // a no-op; reject every value that would otherwise be silently ignored.
-static const char *unsupported_completion_field(jv *req) {
+static const char *unsupported_completion_field(jv *req, int api) {
     jv *v = jv_get(req, "n");
     if (!absent(v) && (v->type != J_NUM || !isfinite(v->num) || v->num != 1))
         return "n";
@@ -1686,10 +1989,14 @@ static const char *unsupported_completion_field(jv *req) {
         return "presence_penalty";
     v = jv_get(req, "logit_bias");
     if (!absent(v) && (v->type != J_OBJ || v->n != 0)) return "logit_bias";
+    // echo and prompt_logprobs are served on /v1/completions (R4.8), where
+    // the prompt is the caller's text; the chat surfaces render a prompt the
+    // caller never wrote, so there is nothing of theirs to echo or score.
     v = jv_get(req, "echo");
-    if (!absent(v) && (v->type != J_BOOL || v->b)) return "echo";
+    if (api != API_TEXT && !absent(v) && (v->type != J_BOOL || v->b))
+        return "echo";
     v = jv_get(req, "prompt_logprobs");
-    if (!absent(v)) return "prompt_logprobs";
+    if (api != API_TEXT && !absent(v)) return "prompt_logprobs";
     // `user` is advisory rather than an inference control, but recognizing it
     // still means rejecting malformed values instead of accepting any JSON.
     v = jv_get(req, "user");
@@ -1862,6 +2169,212 @@ static void prefill_yield_turn(void *ud) {
     sched_prefill_begin();
 }
 
+// R1.1.2: what shaped a served turn's output beyond the sampler. Each kind
+// is a member of the receipt's "constraints" array, with what identifies it
+// (a schema or tool list by the sha256 of its compact JSON, the stop
+// sequences themselves), and a name in serve.shaped_by.
+typedef struct {
+    const char *kinds[10];
+    int  n;
+    sbuf json;   // the array's members, comma-separated
+} turn_shape;
+
+static void shape_open(turn_shape *t, const char *kind) {
+    if (t->n < (int)(sizeof t->kinds / sizeof t->kinds[0])) t->kinds[t->n] = kind;
+    sb_fmt(&t->json, "%s{\"kind\":\"%s\"", t->n ? "," : "", kind);
+    t->n++;
+}
+
+static void json_digest(const jv *v, char hex[65]) {
+    sbuf d = {0};
+    jv_dump(v, &d);
+    if (d.failed) snprintf(hex, 65, "unknown");
+    else envelope_data_sha256(d.s, d.n, hex);
+    free(d.s);
+}
+
+// A grammar is a constraint only when one was compiled: a parse-only
+// envelope (a native protocol read on the way out) leaves the tokens the
+// sampler's, and a replay reproduces them.
+static void turn_shape_of(turn_shape *t, jv *req, const engine *e,
+                          const tool_envelope *env, bool constrain, jv *sch,
+                          const char *const *stops, int n_stops,
+                          const int *req_stops, int n_req_stops, bool scripted) {
+    char h[65];
+    // the caller's schema shapes the turn directly, or as the final branch
+    // of an auto tool turn's envelope
+    jv *used = constrain ? (env->kind == TCH_AUTO ? request_schema(req) : NULL)
+                         : sch;
+    if (used) {
+        json_digest(used, h);
+        shape_open(t, "json_schema");
+        sb_fmt(&t->json, ",\"sha256\":\"%s\"}", h);
+    } else if (e->json_mode) {
+        shape_open(t, "json_mode");
+        sb_lit(&t->json, "}");
+    }
+    if (constrain) {
+        json_digest(env->tools, h);
+        shape_open(t, "tools");
+        sb_fmt(&t->json, ",\"sha256\":\"%s\",\"choice\":\"%s\"", h,
+               env->kind == TCH_REQUIRED ? "required"
+             : env->kind == TCH_NAMED ? "named" : "auto");
+        if (env->kind == TCH_NAMED && env->named) {
+            sb_lit(&t->json, ",\"name\":\"");
+            sb_esc(&t->json, env->named, strlen(env->named));
+            sb_lit(&t->json, "\"");
+        }
+        sb_lit(&t->json, "}");
+    }
+    if (n_stops || n_req_stops) {
+        shape_open(t, "stop");
+        sb_lit(&t->json, ",\"sequences\":[");
+        for (int i = 0; i < n_stops; i++) {
+            sb_lit(&t->json, i ? ",\"" : "\"");
+            sb_esc(&t->json, stops[i], strlen(stops[i]));
+            sb_lit(&t->json, "\"");
+        }
+        sb_lit(&t->json, "]");
+        if (n_req_stops) {
+            sb_lit(&t->json, ",\"token_ids\":[");
+            for (int i = 0; i < n_req_stops; i++)
+                sb_fmt(&t->json, "%s%d", i ? "," : "", req_stops[i]);
+            sb_lit(&t->json, "]");
+        }
+        sb_lit(&t->json, "}");
+    }
+    if (e->think_budget > 0) {
+        shape_open(t, "reasoning_budget");
+        sb_fmt(&t->json, ",\"tokens\":%d}", e->think_budget);
+    }
+    const char *flags[4];
+    int nf = 0;
+    if (e->think_smp)  flags[nf++] = "reasoning_sampling";
+    if (e->loop_guard) flags[nf++] = "loop_guard";
+    if (e->ignore_eos) flags[nf++] = "ignore_eos";
+    if (scripted)      flags[nf++] = "scripted";
+    for (int i = 0; i < nf; i++) {
+        shape_open(t, flags[i]);
+        sb_lit(&t->json, "}");
+    }
+}
+
+// R1.2.2: one receipt for a finished generation, in the CLI transcript's
+// format so --verify replays it: the prompt's and the output's token ids,
+// the sampler's settings and its state as generation started, the model's,
+// adapter's and binary's digests. "serve" says which surface and request it
+// was and how the prompt's KV was obtained; "constraints" (R1.1.2) what
+// shaped the output beyond the sampler -- --verify refuses such a record
+// rather than replay it without them -- and "tool_calls" the calls the turn
+// delivered. Returns NULL, or why nothing was written.
+static const char *serve_receipt(slot_t *s, engine *e, gen_ctx *g,
+                                 const char *prompt, int api, bool chat,
+                                 uint64_t gen_rng, int max_tokens, int n_prompt,
+                                 int n_gen, int cached, const char *reuse,
+                                 bool spec_used, const turn_shape *shape,
+                                 const char *ctx_id, char file[64],
+                                 char chain[65]) {
+    model_t *m = s->m;
+    char msha[65], bsha[65];
+    if (!provenance_digests(msha, bsha))
+        return "the served model file is not the one loaded (or its digest "
+               "failed); no receipt can name it";
+    if (g->raw.failed) return "out of memory capturing the output";
+    sbuf sj = {0};
+    sb_fmt(&sj, "{\"api\":\"%s\",\"request_id\":\"%s\",\"prompt_reuse\":"
+                "\"%s\",\"cached_tokens\":%d,\"shaped_by\":[",
+           api == API_TEXT ? "completions" : api == API_CHAT ? "chat.completions"
+         : api == API_RESPONSES ? "responses" : "messages",
+           g->id, reuse ? reuse : "none", cached);
+    for (int i = 0; i < shape->n && i < 10; i++)
+        sb_fmt(&sj, "%s\"%s\"", i ? "," : "", shape->kinds[i]);
+    sb_lit(&sj, "]");
+    // R1.12.2: the KV snapshot this request's prompt started from
+    char origin[256];
+    if (ctx_id && prefix_context_origin(ctx_id, origin, sizeof origin))
+        sb_fmt(&sj, ",\"kv_snapshot\":%s", origin);
+    sb_lit(&sj, "}");
+    sb_put(&sj, "", 1);
+    sbuf cj = {0}, tj = {0};
+    if (shape->n) {
+        sb_lit(&cj, "[");
+        sb_put(&cj, shape->json.s, shape->json.n);
+        sb_lit(&cj, "]");
+        sb_put(&cj, "", 1);
+    }
+    if (g->n_calls) {
+        sb_lit(&tj, "[");
+        sb_put(&tj, g->calls.s, g->calls.n);
+        if (g->call_open) sb_lit(&tj, "\"}");   // cut off mid-call: as delivered
+        sb_lit(&tj, "]");
+        sb_put(&tj, "", 1);
+    }
+    if (sj.failed || cj.failed || tj.failed || shape->json.failed || g->calls.failed) {
+        free(sj.s); free(cj.s); free(tj.s);
+        return "out of memory building the receipt";
+    }
+    char gname[128] = "cpu";
+    if (m->gpu && !gpu_available(gname, (int)sizeof gname))
+        snprintf(gname, sizeof gname, "gpu");
+    const char *apath = s->adapter >= 0 ? SV.adapters[s->adapter].path
+                                        : SV.mp.lora_path;
+    transcript_info ti = {
+        .runner_version = RUNNER_VERSION,
+        .compiler = __VERSION__,
+#ifdef _WIN32
+        .os = "windows",
+#elif defined(__APPLE__)
+        .os = "macos",
+#else
+        .os = "linux",
+#endif
+        .arch = RUNNER_BUILD_ARCH,
+#ifdef RUNNER_T3_BUILD
+        .build_flavor = "t3",
+#endif
+        .device = m->gpu ? gname : "cpu", .gpu = m->gpu != NULL,
+        .gpu_layers = m->gpu_layers,
+        .threads = m->tp ? tpool_size(m->tp) : 0, .n_ctx = m->n_ctx,
+        .n_batch = m->n_batch, .kv_q8 = m->kv_q8, .kv_fp4 = m->kv_fp4,
+        .kv_split = m->kv_split,
+        .model_path = m->path,
+        .adapter_path = apath, .adapter_scale = SV.mp.lora_scale,
+        .seed = gen_rng,
+        .temp = s->smp.temp, .top_p = s->smp.top_p, .min_p = s->smp.min_p,
+        .repeat_penalty = s->smp.repeat_penalty, .top_k = s->smp.top_k,
+        .n_predict = max_tokens, .bos = true,
+        .prompt_text = prompt,
+        .prompt_tokens = e->hist, .n_prompt = n_prompt,
+        .output_text = g->raw.s ? g->raw.s : "", .output_text_len = g->raw.n,
+        .output_tokens = e->hist + n_prompt, .n_output = n_gen,
+        .hit_stop = e->hit_stop,
+        .spec_source = spec_used ? (e->dm ? "model" : e->mtp_on ? "mtp"
+                                   : e->lookup_on ? "lookup" : NULL) : NULL,
+        .spec_rounds = e->spec_st.rounds, .spec_drafted = e->spec_st.drafted,
+        .spec_accepted = e->spec_st.accepted,
+        .spec_lk_drafted = e->spec_st.lk_drafted,
+        .spec_lk_accepted = e->spec_st.lk_accepted,
+        .adapter_sig_json = s->adapter >= 0 && SV.adapters[s->adapter].sig_json[0]
+                            ? SV.adapters[s->adapter].sig_json : NULL,
+        .model_sha256 = msha, .binary_sha256 = bsha,
+        .template_name = chat ? template_name(s->tmpl) : "raw",
+        .serve_json = sj.s,
+        .constraints_json = cj.s,
+        .tool_calls_json = tj.s,
+    };
+    char wj[192] = "";
+    if (SV.wm_on)
+        snprintf(wj, sizeof wj, "{\"scheme\":\"%s\",\"key_id\":\"%s\","
+                 "\"layers\":%d,\"context\":%d,\"marked_tokens\":%d}",
+                 WM_SCHEME, SV.wm_key.id, WM_LAYERS, WM_CONTEXT, s->wm.marked);
+    ti.watermark_json = wj[0] ? wj : NULL;
+    bool ok = receipts_write(&ti, file, chain);
+    free(sj.s);
+    free(cj.s);
+    free(tj.s);
+    return ok ? NULL : "the receipt could not be written (see server log)";
+}
+
 void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
                            jv *req, const tool_envelope *env) {
     bool chat = api != API_TEXT; // chat-shaped: thinking channels, tools
@@ -1915,7 +2428,7 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
                                                               : "cmpl-",
              atomic_fetch_add(&SV.req_counter, 1));
 
-    const char *unsupported = unsupported_completion_field(req);
+    const char *unsupported = unsupported_completion_field(req, api);
     if (unsupported) {
         char msg[128];
         snprintf(msg, sizeof(msg), "%s has unsupported semantics", unsupported);
@@ -2344,6 +2857,50 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
                             "set stream to false");
         return;
     }
+    // R4.8: echo (OpenAI legacy) and prompt_logprobs (vLLM's spelling) score
+    // the prompt teacher-forced. Buffered-only: the prompt's entries are
+    // known before the first generated token, but a stream has no field for
+    // them in either wire shape.
+    bool echo = false;
+    if (api == API_TEXT && !request_bool(req, "echo", false, &echo)) {
+        send_error(fd, 400, "echo must be a boolean");
+        return;
+    }
+    int plp = -1;   // -1 = prompt_logprobs absent or null
+    if (api == API_TEXT && !absent(jv_get(req, "prompt_logprobs"))) {
+        double v = 0;
+        jv *pv = jv_get(req, "prompt_logprobs");
+        if (pv->type != J_NUM ||
+            !request_number(req, "prompt_logprobs", 0, 0, 20, &v) ||
+            !whole_number(v)) {
+            send_error(fd, 400, "prompt_logprobs must be a whole number "
+                                "from 0 to 20");
+            return;
+        }
+        plp = (int)v;
+    }
+    // R10.4: a request may name the context its prompt builds on; checked
+    // against the prompt's tokens once they exist, below
+    const char *ctx_id = NULL;
+    int ctx_tokens = 0;
+    {
+        jv *cv = jv_get(req, "context_id");
+        if (!absent(cv)) {
+            if (cv->type != J_STR || !prefix_context_name_ok(cv->str)) {
+                send_error_detail(fd, 400, "context_id must be 1 to 64 "
+                                  "characters of [A-Za-z0-9._:-]",
+                                  "context_id", "invalid_value");
+                return;
+            }
+            ctx_id = cv->str;
+        }
+    }
+    if ((echo || plp >= 0) && stream) {
+        send_error(fd, 400, echo ? "echo is buffered-only; set stream to false"
+                                 : "prompt_logprobs is buffered-only; set "
+                                   "stream to false");
+        return;
+    }
     // OpenAI "stop": a string or an array of up to 4 non-empty strings.
     // Pointers borrow from req, which outlives the whole request.
     const char *stops[4];
@@ -2474,6 +3031,17 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
         }
     }
     e->json_mode = request_json_mode(req);
+    // R1.8.1: every sampled turn is marked when the server has a key; the
+    // hook reads the context from this slot's history at each pick
+    if (SV.wm_on) {
+        s->wm.key = &SV.wm_key;
+        s->wm.marked = s->wm.repeats = 0;
+        e->wm_prepare = wm_prepare;
+        e->wm_ud = &s->wm;
+    } else {
+        e->wm_prepare = NULL;
+        e->wm_ud = NULL;
+    }
     // Constrained decoding. The tool envelope wins when present: it already
     // contains the caller's response_format schema as its `final` branch, so
     // compiling that separately would drop the tool branches.
@@ -2597,6 +3165,42 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
                                "context_length_exceeded");
         return;
     }
+    if (ctx_id) {
+        // The context is only worth naming if it is what this prompt starts
+        // with; a caller whose system prompt changed must hear it, not be
+        // served cold under a name that promised a warm prefix.
+        const char *why = !cache_prompt || !share_prefix
+                ? "context_id needs the prefix cache (cache_prompt and "
+                  "prefix_cache must not be false)"
+            : echo || plp >= 0
+                ? "context_id cannot be combined with echo or prompt_logprobs, "
+                  "which score the whole prompt from position 0"
+            : NULL;
+        if (why) {
+            free(toks);
+            completion_cleanup(e, schema, NULL);
+            send_error_detail(fd, 400, why, "context_id", "invalid_value");
+            return;
+        }
+        int at = -1;
+        int cn = prefix_context_check(e, ctx_id, toks, n_prompt, &at);
+        if (cn < 0) {
+            free(toks);
+            completion_cleanup(e, schema, NULL);
+            char msg[256];
+            if (cn == PFX_CTX_UNKNOWN)
+                snprintf(msg, sizeof msg, "no context \"%s\" is pinned for "
+                         "this model (POST /v1/runner/contexts)", ctx_id);
+            else
+                snprintf(msg, sizeof msg, "the prompt does not start with "
+                         "context \"%s\": it differs at token %d", ctx_id, at);
+            send_error_detail(fd, cn == PFX_CTX_UNKNOWN ? 404 : 409, msg,
+                              "context_id", cn == PFX_CTX_UNKNOWN
+                              ? "context_not_found" : "context_mismatch");
+            return;
+        }
+        ctx_tokens = cn;
+    }
     int remaining_ctx = m->n_ctx - n_prompt;
     if (max_tokens < 0 || max_tokens > remaining_ctx) max_tokens = remaining_ctx;
 
@@ -2698,6 +3302,9 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
         .tools = env != NULL,
         .constrained = env != NULL && schema != NULL,
         .parse_only = env != NULL && env->parse_only,
+        .context_id = ctx_id, .context_tokens = ctx_tokens,
+        .adapter_name = s->adapter >= 0 ? SV.adapters[s->adapter].name : NULL,
+        .adapter_sha256 = s->adapter >= 0 ? SV.adapters[s->adapter].sha256 : NULL,
     };
     if (script_text) {
         int32_t *ids = NULL;
@@ -2740,7 +3347,12 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
     diag.queue_s = s->queue_wait_s;
     diag.tokenize_s = tokenize_s;
     diag.first_visible_s = -1;
-    if (cache_prompt && share_prefix)
+    // Scoring the prompt reads every position's logits, so no prefix is
+    // reused: the whole prompt is fed, one solo forward per token.
+    bool score_prompt = (echo && want_lp) || plp >= 0;
+    if (score_prompt)
+        engine_reset(e);
+    else if (cache_prompt && share_prefix)
         reuse = engine_prefix_reuse(e, toks, n_prompt);
     else if (cache_prompt)
         reuse.keep = engine_rewind(e, toks, n_prompt);
@@ -2770,7 +3382,14 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
     // state. Attention-only models mark nothing and take the single feed.
     float *logits = NULL;
     int mark_at = n_prompt - 1;
-    if (cache_prompt && n_prompt > 1 && model_has_recurrent(e->m)) {
+    if (score_prompt) {
+        g.ptoks = malloc(sizeof(int32_t) * (size_t)n_prompt);
+        int top_n = plp > lp_n ? plp : lp_n;
+        if (g.ptoks) {
+            memcpy(g.ptoks, toks, sizeof(int32_t) * (size_t)n_prompt);
+            logits = engine_score_prompt(e, toks, n_prompt, top_n, &g.ps);
+        }
+    } else if (cache_prompt && n_prompt > 1 && model_has_recurrent(e->m)) {
         bool ok = mark_at == keep ||   // resumed at the mark: nothing before it to feed
                   engine_feed(e, toks + keep, mark_at - keep) != NULL;
         if (ok) engine_mark_turn(e);
@@ -2801,6 +3420,10 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
                               "timeout. Send a shorter prompt, raise the "
                               "timeout, or reuse a cached prefix.",
                               NULL, "timeout");
+        else if (!g.dead && score_prompt)
+            // the prompt already fit the context (checked at tokenization),
+            // so a scoring failure here is the score tables' allocation
+            send_error(fd, 500, "out of memory scoring the prompt");
         else if (!g.dead)
             send_error_detail(fd, 400, "context overflow",
                               api == API_TEXT ? "prompt" :
@@ -2881,8 +3504,13 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
     // that logger reads initialized before that first possible jump.
     bool unmapped = false;
     double gtime;
+    // R1.2.2: the sampler's state as generation starts is the receipt's seed
+    uint64_t gen_rng = s->smp.rng;
+    g.raw_on = receipts_enabled();
     int n_gen = sched_generate(s, logits, max_tokens, gen_collect, &g, &gtime,
                                req_deadline);
+    diag.wm_on = SV.wm_on;
+    diag.wm_marked = s->wm.marked;
     // The one place every surface's generation passes through, so /health's
     // and /metrics' cumulative counters see chat, completions, responses and
     // messages alike. The speculation counters are read only when this request
@@ -2895,6 +3523,28 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
         work.spec_accepted = e->spec_st.accepted;
     }
     server_record_work(&work);
+    // R1.2.2: the receipt. What shaped the output is named now, while the
+    // request's settings are installed; the record itself is written once the
+    // turn's calls are known (a streamed turn's after its demultiplexer
+    // finishes, a buffered turn's once they are mapped), and before any body
+    // is built, so the body can name it.
+    char receipt_file[64] = "", receipt_chain[65] = "";
+    turn_shape shape = {0};
+    if (g.raw_on)
+        turn_shape_of(&shape, req, e, env, constrain, sch, stops, n_stops,
+                      req_stops, n_req_stops, script_text != NULL);
+#define WRITE_RECEIPT() do {                                                  \
+        if (g.raw_on && !g.dead && !receipt_file[0] && !diag.receipt_error) { \
+            diag.receipt_error = serve_receipt(                               \
+                s, e, &g, prompt, api, chat, gen_rng, max_tokens, n_prompt,   \
+                n_gen, keep, diag.prompt_reuse, spec_used, &shape,            \
+                diag.context_id, receipt_file, receipt_chain);                \
+            if (!diag.receipt_error) {                                        \
+                diag.receipt_file = receipt_file;                             \
+                diag.receipt_chain = receipt_chain;                           \
+            }                                                                 \
+        }                                                                     \
+    } while (0)
     // The socket probe and the streaming write path share g.dead. Whichever
     // learned the verdict first takes this same cleanup exit: no terminal
     // frame is owed to a peer already proven gone, and buffered responses must
@@ -2936,6 +3586,7 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
         if (fin == -1)     unmapped = true;
         else if (fin != 0) g.dead = true;
     }
+    if (stream) WRITE_RECEIPT();
     // Anything still held for a multi-byte character the model never finished
     // goes out now rather than disappearing. It is genuinely truncated, so it
     // renders as U+FFFD — but silently dropping bytes would make the streamed
@@ -2981,6 +3632,17 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
         if ((cut || failed) && resp_shape_of(g.item_kind) == &RESP_MESSAGE)
             g.close_status = "incomplete";
         resp_close_item(&g);
+        if (!g.dead && g.out_items.n) {
+            // R4.12.19 from the items the stream already delivered
+            sbuf a = {0};
+            sb_lit(&a, "[");
+            sb_put(&a, g.out_items.s, g.out_items.n);
+            sb_lit(&a, "]");
+            jv *em = a.failed ? NULL : json_parse(a.s, a.n);
+            free(a.s);
+            g.repeat_json = repeated_calls_json(req, api, em);
+            jv_free(em);
+        }
         if (!g.dead) {
             bool truncated = cut || failed;
             resp_doc d = { .status = truncated ? "incomplete" : "completed",
@@ -2997,10 +3659,14 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
                            .schema = schema != NULL,
                            .json_mode = e->json_mode, .spec = spec_used,
                            SPEC_DOC_FIELDS(e), .diag = &diag,
-                           .req = req };
+                           .req = req,
+                           .repeated_calls = g.repeat_json };
             sbuf f = {0};
             sb_lit(&f, ",\"response\":");
+            size_t body_at = f.n;
             responses_body(&f, &g, &d);
+            if (!f.failed)
+                responses_store_keep(req, g.id, f.s + body_at, f.n - body_at);
             resp_send(&g, truncated ? "response.incomplete"
                                     : "response.completed", &f);
         }
@@ -3072,7 +3738,7 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
                 sbuf lp = {0};
                 chunk_open(&g, &lp);
                 sb_lit(&lp, "\"text\":\"\",");
-                append_text_logprobs(&lp, s, e);
+                append_text_logprobs(&lp, s, e, NULL, 0);
                 sb_lit(&lp, ",\"finish_reason\":null}]}");
                 chunk_send(&g, &lp);
             }
@@ -3142,6 +3808,25 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
                              // faking a result)
             }
         }
+        if (chat && n_tc > 0) {
+            // R4.12.19: reported by every body below, from the one mapping
+            jv *em = tool_calls_array(&tc, n_tc);
+            g.repeat_json = repeated_calls_json(req, api, em);
+            // R1.1.2: and recorded in the receipt from the same mapping
+            for (int i = 0; g.raw_on && em && i < em->n; i++) {
+                jv *f = jv_get(em->items[i], "function");
+                const char *nm = jv_str(jv_get(f, "name"), "");
+                const char *args = jv_str(jv_get(f, "arguments"), "");
+                sb_lit(&g.calls, g.n_calls ? ",{\"name\":\"" : "{\"name\":\"");
+                sb_esc(&g.calls, nm, strlen(nm));
+                sb_lit(&g.calls, "\",\"arguments\":\"");
+                sb_esc(&g.calls, args, strlen(args));
+                sb_lit(&g.calls, "\"}");
+                g.n_calls++;
+            }
+            jv_free(em);
+        }
+        WRITE_RECEIPT();
         if (api == API_MESSAGES) {
             // A fault is an error object here, not a Message. Anthropic's
             // seven stop_reason values all describe a turn that COMPLETED, so
@@ -3197,7 +3882,8 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
                            .schema = schema != NULL,
                            .json_mode = e->json_mode, .spec = spec_used,
                            SPEC_DOC_FIELDS(e), .diag = &diag,
-                           .req = req };
+                           .req = req,
+                           .repeated_calls = g.repeat_json };
             sbuf r = {0};
             anth_body(&r, &g, &d);
             send_built(fd, &r);
@@ -3239,9 +3925,11 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
                            .schema = schema != NULL,
                            .json_mode = e->json_mode, .spec = spec_used,
                            SPEC_DOC_FIELDS(e), .diag = &diag,
-                           .req = req };
+                           .req = req,
+                           .repeated_calls = g.repeat_json };
             sbuf r = {0};
             responses_body(&r, &g, &d);
+            if (!r.failed) responses_store_keep(req, g.id, r.s, r.n);
             send_built(fd, &r);
             free(r.s);
             jv_free(call);
@@ -3256,6 +3944,7 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
         sb_lit(&r, "\",\"choices\":[{\"index\":0,");
         if (chat) sb_lit(&r, "\"message\":{\"role\":\"assistant\",\"content\":\"");
         else      sb_lit(&r, "\"text\":\"");
+        if (!chat && echo) sb_esc(&r, prompt, strlen(prompt));   // R4.8
         sb_esc(&r, g.out.s ? g.out.s : "", g.out.n);
         sb_lit(&r, "\"");
         if (n_tc) {
@@ -3293,10 +3982,46 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
                 sb_lit(&r, "]}");
             }
             sb_lit(&r, "]},");
+        } else if (!chat && echo && want_lp && g.ptoks) {
+            // echo: the prompt's teacher-forced entries, then the generated
+            append_text_logprobs(&r, s, e, &g, lp_n);
+            sb_lit(&r, ",");
         } else if (!chat && e->lp_count > 0) {
             // same body as the non-streaming path, ids included
-            append_text_logprobs(&r, s, e);
+            append_text_logprobs(&r, s, e, NULL, 0);
             sb_lit(&r, ",");
+        }
+        if (!chat && plp >= 0 && g.ptoks) {
+            // vLLM's prompt_logprobs: per prompt position, the actual token
+            // and the top `plp` alternatives, each with its 1-based rank
+            char tb[512];
+            const prompt_scores *ps = &g.ps;
+            sb_lit(&r, "\"prompt_logprobs\":[null");
+            for (int i = 1; i < ps->n; i++) {
+                const lp_alt *row = &ps->top[(size_t)i * ps->top_n];
+                int want = g.ptoks[i];
+                int tn = lp_piece(s, e, want, tb, sizeof(tb));
+                sb_fmt(&r, ",{\"%d\":{\"logprob\":%.9g,\"rank\":%d,"
+                           "\"decoded_token\":\"", want, (double)ps->lp[i],
+                       ps->rank[i]);
+                sb_esc(&r, tb, tn);
+                sb_lit(&r, "\"}");
+                for (int j = 0; j < plp && row && row[j].id >= 0; j++) {
+                    if (row[j].id == want) continue;
+                    // everything above row[j] is listed before it, so its
+                    // rank counts only the strictly better entries there
+                    int rank = 1;
+                    for (int k = 0; k < j; k++) rank += row[k].lp > row[j].lp;
+                    tn = lp_piece(s, e, row[j].id, tb, sizeof(tb));
+                    sb_fmt(&r, ",\"%d\":{\"logprob\":%.9g,\"rank\":%d,"
+                               "\"decoded_token\":\"", row[j].id,
+                           (double)row[j].lp, rank);
+                    sb_esc(&r, tb, tn);
+                    sb_lit(&r, "\"}");
+                }
+                sb_lit(&r, "}");
+            }
+            sb_lit(&r, "],");
         }
         // JC-R1 constrained-choice posteriors: one entry per decision point
         // (a constrained step where >= 2 probed candidates were legal),
@@ -3335,13 +4060,16 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
                            .schema = schema != NULL,
                         .finish_detail = finish_detail_of(finish),
                         .json_mode = e->json_mode, .spec = spec_used,
-                        SPEC_DOC_FIELDS(e), .diag = &diag };
+                        SPEC_DOC_FIELDS(e), .diag = &diag,
+                        .repeated_calls = g.repeat_json };
         telemetry_json(&r, &td);
         sb_lit(&r, "}");
         send_built(fd, &r);
         free(r.s);
     }
 done: ;
+#undef WRITE_RECEIPT
+    free(shape.json.s);
     // A paging note only when there was paging. Silence is the normal case and
     // a per-request "0 page-ins" would be noise, but when the weights have been
     // evicted this line is the only thing that says the time went to the disk

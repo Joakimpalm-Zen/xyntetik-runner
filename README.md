@@ -147,7 +147,7 @@ $response.choices[0].message.content
 | I want to… | Start here |
 |---|---|
 | Chat or run a prompt | [Everyday commands](#everyday-commands) or the [desktop tray](#desktop-tray) |
-| Connect an app or coding agent | [Serving and APIs](#serving-and-apis), [coding-agent evidence](#coding-agent-evidence), [Python client](python/README.md) |
+| Connect an app or coding agent | [Serving and APIs](#serving-and-apis), [coding-agent evidence](#coding-agent-evidence), [Python client](python/README.md), [TypeScript client](clients/typescript/README.md) |
 | Generate JSON or tool calls | [Tool-call recovery](#truncation) and [structured output](#structured-output) |
 | Train, serve or merge an adapter | [LoRA training](#adaptation) and the [training walkthrough](docs/train-lora-on-quantized-gguf.md) |
 | Reproduce or audit a run | [Record and verify a run](#record-and-verify-a-run) |
@@ -408,6 +408,18 @@ Keep the same executable and model available for replay. The
 [determinism scope](docs/determinism-scope.md) explains the exact guarantees
 and why independent rebuilds and arbitrary hardware changes are outside
 some claims.
+
+A replay runs the sampler, so a record also says what shaped its output
+beyond the sampler (`constraints`: a JSON schema or tool list by the sha256 of
+its compact JSON, `json_mode`, stop sequences, a reasoning budget, the loop
+guard, `ignore_eos`, a scripted reply) and which tool calls the turn delivered
+(`tool_calls`, name and arguments). Replaying without those could only
+disagree with the record, so `--verify` refuses such a record as
+`UNVERIFIABLE` and names the constraint instead of reporting `DIVERGED`. A CLI
+record made under `--json`, `--json-schema` or `--ignore-eos` replays when the
+verifier is given the same one (the schema is matched by digest, not
+spelling); a constraint the verifier adds that the record does not name is
+refused too. Replaying a served turn's grammar and stops is not in this build.
 
 ## Shadow mode: what could your local model have done?
 
@@ -1881,13 +1893,16 @@ whether the draft is `active` there.
 | `--remove-sublayer attn:N[,mlp:M,...]` | Physically drop block N's attention (or block M's dense FFN) tensors while rewriting, declaring the absence with a `0` in the per-block `attention.head_count` / `head_count_kv` (or `feed_forward_length`) array, llama.cpp's own convention. The pre-norm stays. The runner omits the branch and reserves no KV rows for it; CPU path, dense blocks only. Requires `--quantize`. See [Sublayer removal](#sublayer-removal). |
 | `--bench-json` | Run the built-in prompt/decode benchmark and print JSON metrics. |
 | `--lora FILE`, `--lora-scale F` | Serve a LoRA adapter with the frozen base; supports CPU and CUDA, with explicit architecture restrictions. [Details](#cli-lora). |
+| `--adapter NAME=PATH` | With `--serve`: load an adapter once and select it per request as `"model": "<model>:NAME"`. [Details](#cli-adapter). |
 | `--train FILE`, `--train-steps`, `--lr`, `--train-ctx`, `--train-out`, `--save-every`, `--lora-rank` | Train a deterministic AdamW LoRA adapter from text or weighted prompt/completion JSONL. [Details](#cli-train). |
 | `--score` | Return teacher-forced token logprobs, NLL, perplexity and top-1 metrics as JSON. [Details](#cli-score). |
 | `--transcript FILE` | Record a one-shot run’s hashes, settings, tokens, output bytes and chain hash for replay. [Details](#cli-transcript). |
-| `--verify FILE` | Replay a transcript against `-m` and report `VERIFIED` (exit 0), `DIVERGED` at a token or output byte (exit 2), or `UNVERIFIABLE` for an invalid record or artifact mismatch (exit 3). The recorded replay settings override conflicting CLI values. See [the exact determinism scope](docs/determinism-scope.md). |
+| `--verify FILE` | Replay a transcript against `-m` and report `VERIFIED` (exit 0), `DIVERGED` at a token or output byte (exit 2), or `UNVERIFIABLE` for an invalid record, an artifact mismatch, or output shaped by a constraint the replay would not reproduce (exit 3; `--json`, `--json-schema` and `--ignore-eos` must match the record's `constraints`). The recorded replay settings override conflicting CLI values. See [the exact determinism scope](docs/determinism-scope.md). |
 | `--keygen FILE` | Write a receipt-signing key (`xyntetik.runner.signkey.v1`: `algo`, the 32-byte seed and the public key as hex) to FILE and print the public key. Needs no `-m`; the seed comes from the OS generator. Keep the file private. |
 | `--keygen-algo ALGO` | With `--keygen`: `ed25519` (default; RFC 8032, 32-byte key, 64-byte signature) or `ml-dsa-44` (FIPS 204, post-quantum; 1312-byte key, 2420-byte signature; deterministic keygen and signing, verified against the NIST ACVP known answers). Verification accepts both; the record's signature object names its algorithm. |
 | `--sign-record FILE`, `--record-prev FILE`, `--check-record FILE` | Sign a JSON object in place with `--sign-key`, optionally link it to a previous signed record, or verify its signature and chain fields. Shadow delegation receipts use this generic interface. |
+| `--receipts DIR`, `--receipts-keep N` | With `--serve`: every finished generation on the chat, completions, Responses and Messages surfaces writes the `--transcript` record into `DIR` as `receipt-<sequence>.json`, so `-m MODEL --verify FILE` replays it; chained in write order (each record's `chain.prev` is the previous one's hash, continued across restarts from the newest record, and a newest record that does not parse refuses the start rather than beginning a second chain), signed with `--sign-key` when given, and with a `serve` object naming the surface, the request id, how the prompt's KV was obtained (`prompt_reuse`, `cached_tokens`) and what shaped the output beyond the sampler (`shaped_by`: `json_schema`, `json_mode`, `tools`, `stop`, `reasoning_budget`, `loop_guard`, ...; `constraints` gives each with what identifies it, and `tool_calls` the calls the turn delivered, buffered or streamed; `--verify` refuses such a record as `UNVERIFIABLE` rather than replay it without them). A tool turn parsed from the model's native syntax without a grammar is not a constraint: its tokens are the sampler's. Each response's `runner_telemetry.receipt` names its `file` and `chain_hash`. The model and binary digests come from the load-time provenance, so the first receipt waits for the background model digest. `--receipts-keep N` keeps the newest N (default all). Receipts hold the prompt and the output and never leave `DIR`. Replay prefills the prompt in one batch, and prefill is batch-invariant on the CPU (a token's numbers do not depend on how many tokens were prefilled with it; [determinism scope](docs/determinism-scope.md)), so a record whose prefix was reused from a cache replays exactly. |
+| `--export-bundle RECEIPT`, `--bundle-out DIR`, `--check-bundle DIR` | Put a receipt, the OMS model signature (`--model-sig`) and its key (`--model-pubkey`), the receipt key's fingerprint (sha256 of the key bytes) and a `xyntetik.runner.bundle.v1` manifest of every file's sha256 into one directory a verifier can take; `--sign-key` also signs the manifest. `--check-bundle` verifies it offline: the files are the ones listed, the receipt's chain hash recomputes, its signature is the one the manifest names, both key fingerprints recompute, and the manifest's own signature (pinned with `--trust-key`). Exit 0 OK, 2 BAD naming the file or check, 3 UNVERIFIABLE. A receipt whose chain does not recompute is refused, not bundled. The check does not replay the inference; the bundled receipt does, with `-m MODEL --verify DIR/receipt.json`. Needs no `-m`. |
 | `--train-eot` | Append the selected template's end-of-turn token to each JSONL completion target. Opt-in; without it the supplied completion is the complete target. |
 | `--train-dpo FILE` | Train an adapter from JSONL `prompt`, `chosen`, `rejected` pairs. CPU forward/backward path; the frozen base is the reference, evaluated with the adapter bypassed. Does not activate the output adapter. |
 | `--dpo-beta F` | DPO reference-deviation coefficient (default `0.1`). Uses the existing training step, learning-rate, context and output options. |
@@ -1896,8 +1911,15 @@ whether the draft is `active` there.
 | `--require-signed` | With `--verify`: an unsigned record is `UNVERIFIABLE`. Signature, trust and link checks all run before the model is loaded for the replay. |
 | `--trust-key HEX` | With `--verify`: the record must be signed by this public key, given as its hex bytes or as `sha256:` plus the hex SHA-256 of those bytes (an ML-DSA-44 key is 2624 hex characters; its digest fits a policy file); unsigned, or signed by any other key, is `UNVERIFIABLE`. The verdict JSON carries `signed`, `public_key` and `prev` either way. |
 | `--model-sig FILE` | Verify an OpenSSF Model Signing bundle against the model and supplied public key. [Details](#cli-model-sig). |
+| `--lora-sig FILE` | The OMS bundle for the `--lora` adapter (default `<adapter>.sig`), verified with `--model-pubkey`; `--require-signed-model` requires it. [Details](#cli-model-sig). |
 | `--model-pubkey FILE` | The PEM `PUBLIC KEY` (EC, P-256/384/521) an OMS bundle must verify with. Given without `--model-sig`, it turns an auto-detected `<model>.sig` into a gate. |
 | `--require-signed-model` | Refuse to load `-m` unless an OMS bundle is present and verifies with `--model-pubkey`. The policy applies to named registry entries, every serving slot, and reloads after unload or TTL expiry. Registry refusals return HTTP 409 with `model_signature_refused`; the server stays available. Without `--model-sig`, each load discovers that model's own `.sig` sidecar. |
+| `--kv-snapshots DIR` | With `--serve`: let named contexts be written to DIR as signed KV snapshots and loaded back by a later server, so an agent's memory outlives the process and a run can prove which memory it started from. Opt-in; nothing is read from DIR unless a request names it. See `POST /v1/runner/contexts/{id}/snapshot`. |
+| `--session-out FILE`, `--suspend-after N`, `--resume FILE`, `--fork-seed N` | Suspend a `-p` generation to one file and resume it later, exactly, or fork it under a new seed. The resumed continuation and its image are byte-identical to what the uninterrupted run makes. CPU only, the solo step loop (no `--draft`, `--mtp`, `--draft-lookup`, `--watermark`), a finite `-n`; an image is never overwritten. [Details](#cli-session-images). |
+| `--watermark KEY` | Mark sampled output with a tournament-sampling watermark (SynthID-Text's construction) under the key in KEY: every sampled token on the `-p` path and every sampled turn in `--serve`. Off by default; greedy decoding (`--temp 0`) is never changed; averaged over keys the output distribution is unchanged. Transcripts and receipts record the key's id (`watermark`), responses report it in `runner_telemetry.watermark`, and `--verify` replays a marked record only with its key. [Details](#cli-watermark). |
+| `--watermark-keygen FILE` | Write a new watermark key (`xyntetik.runner.watermark_key.v1`, mode 0600, never overwritten) and print its id. Needs no `-m`. |
+| `--detect-watermark FILE` | Score FILE against `--watermark`'s key: a transcript record or receipt (its own token ids, the prompt as context; needs no `-m`) or a text (tokenized by `-m`'s tokenizer). Prints a `xyntetik.runner.watermark_detect.v1` object (mean g-value, z, one-sided p) and exits 0 `WATERMARKED` (z >= 4), 2 `NOT_DETECTED`, 3 `INSUFFICIENT` (fewer than 16 scored tokens). |
+| `--sign-model FILE`, `--model-key KEY.pem` | Write an OMS bundle for FILE (every part of a split GGUF) to `FILE.sig`, or to `--model-sig OUT`, signed with a PEM EC private key (SEC1 or PKCS#8, unencrypted, P-256/384/521) by deterministic ECDSA: the same key and model always give the same bytes. An existing bundle is never overwritten. Needs no `-m`. [Details](#cli-sign-model). |
 | `--caps` | Print machine, backend, quant, architecture, placement, and sampling capabilities as JSON. |
 | `--tool-info` | With `-m`, print the model's tool-call protocol as JSON (`{"tool_family":…,"native_tool_protocol":…}`) and exit. No manifest required. |
 | `--shadow-mode` | Install shadow mode for Claude Code and Codex if present, asking first (`--yes` skips the question); `-m MODEL` names the model the `/shadow` offload serves. Hands off to the stdlib-only Python client beside the binary (`python/src`); see the shadow-mode section. |
@@ -1954,6 +1976,25 @@ model identity, so cached prefixes never cross an adapter boundary. The adapter 
 scale apply to every serving slot and every reload after `/unload` or TTL expiry,
 including named registry entries; an incompatible or missing adapter refuses that load.
 Draft models do not inherit the target adapter.
+
+<a id="cli-adapter"></a>
+#### `--adapter NAME=PATH`
+
+Per-request adapters for a served model. Each `--adapter` (repeatable, up to 16)
+is parsed once, by the same refusals `--lora` applies, and a request selects one by
+naming it after the model: `"model": "base.gguf:NAME"` (or an alias such as
+`"runner:NAME"`); a request without a suffix runs the bare base, and `/v1/models`
+lists every `<model>:NAME`. The slot's model borrows the adapter for that request
+only, so parallel slots serve different adapters side by side. Switching adapters
+re-keys the slot's prefix identity and drops the KV the slot holds, so no row
+computed under one adapter serves another (the test caught exactly that: a bare
+request after an adapted one reused the slot's rows until this reset). Each
+response's `runner_telemetry.adapter` names the adapter and its sha256, and
+`/v1/runner/provenance` lists the loaded set. CPU hooks only for now (`--gpu off`),
+one model served by path (not a swap registry), exclusive with `--lora`;
+`--lora-scale` applies to every adapter. A routed request answers exactly as a
+server started with `--lora` on the same adapter, and the zero adapter exactly as
+the bare base (`tests/test_adapter_routing.py`).
 
 <a id="cli-train"></a>
 #### `--train FILE`, `--train-steps`, `--lr`, `--train-ctx`, `--train-out`, `--save-every`, `--lora-rank`
@@ -2016,6 +2057,120 @@ receipt records the verdict as `model_signature`. Key method only; certificate a
 keyless bundles are refused as unsupported, never passed. Measured 2026-09-02 against
 bundles written by the reference signer (`model_signing` 1.1.1, key method, P-256) and
 against RFC 6979 vectors for all three curves.
+
+An adapter changes the model that serves, so it answers to the same policy: the
+`--lora` adapter's bundle (`--lora-sig FILE`, else `<adapter>.sig`) and every
+`--adapter NAME=PATH` bundle (`PATH.sig`) are verified with `--model-pubkey`,
+checked again on every reload, and required by `--require-signed-model`; a bundle
+that does not verify, or an adapter whose bytes changed, refuses the load (the
+server's start for `--adapter`). The verdict is recorded as `adapter_signature` in
+receipts and as the adapter's `signature` in `/v1/runner/provenance`.
+
+<a id="cli-watermark"></a>
+#### `--watermark KEY`
+
+Machine-readable marking of generated text (the kind EU AI Act Article 50 asks for),
+with no second model and, averaged over keys, no change to the output distribution:
+
+```
+runner --watermark-keygen wm.key                     # once per deployment
+runner -m model.gguf -p "..." --watermark wm.key --transcript run.json
+runner --detect-watermark run.json --watermark wm.key    # WATERMARKED, z and p
+runner --serve -m model.gguf --watermark wm.key --receipts receipts/
+```
+
+The construction is SynthID-Text's tournament sampling (Dathathri et al., Nature 2024):
+30 layers of pairwise matches among 2^30 candidates drawn from the filtered
+distribution, won by the larger keyed g-value. Its winner distribution has a closed
+form, so the sampler reweights the candidates that survived top-k, top-p and min-p and
+draws once, exactly as before. The g-values of a token are the bits of SipHash-2-4 over
+its id, keyed by SHA-256 of the key and the 4 tokens before it; a context that already
+occurred in the same generation is left unmarked and is not scored, so repeated text
+neither locks onto one bias nor counts twice. The detector's z is the g-value count
+against a fair coin. Greedy and near-deterministic spans carry no mark, so how many
+tokens a text needs depends on how much entropy the model spends: on the test fixture
+(random weights, high entropy) 50 sampled tokens gave z 12.5; a real model spends less
+per token, so measure it on yours before relying on a threshold. Records name the key by id only (the first 8
+bytes of SHA-256 over a domain and the key); `--verify` needs the key itself to replay
+a marked run, which is what makes the mark verifiable rather than only detectable.
+Speculative decoding marks the same tokens as plain decoding (each verified row sees its
+own context). Anchored in `tests/test_watermark.c` (SipHash reference vectors, the closed
+form against a literal enumerated tournament, unbiasedness over 4000 keys, the
+detector's null on random streams) and `tests/test_watermark.py` (the detector
+re-implemented from this description with its SipHash checked against openssl, counting
+the same g-values; detection with the key, none with another key or on unmarked
+output, `--verify`, serve receipts, text).
+
+<a id="cli-sign-model"></a>
+#### `--sign-model FILE`
+
+Signs a model so `--model-pubkey` (or the reference `model_signing verify key`) can
+check it, without Python or openssl on the signing machine:
+
+```
+runner --sign-model model.gguf --model-key signing.pem        # writes model.gguf.sig
+openssl pkey -in signing.pem -pubout -out signing.pub.pem     # what verifiers are given
+runner -m model.gguf --model-pubkey signing.pub.pem --require-signed-model
+```
+
+The bundle is the key method of the OMS spec as the reference signer writes it: a DSSE
+envelope over an in-toto Statement v1 (`https://model_signing/signature/v1.0`, `files`
+serialization, sha256), the file named `.`, the subject the file name with the sha256 of
+its digest; for a split GGUF every `-NNNNN-of-MMMMM.gguf` part is named, the subject is
+the parts' directory, and a missing part refuses the signature. The key hint is the
+sha256 of the PEM public key, the reference's identifier. The digest is the curve's own
+(SHA-256, -384, -512), and the signature is deterministic ECDSA (RFC 6979): signing the
+same model with the same key twice gives the same bytes, so a bundle can be re-derived
+and compared instead of trusted. Encrypted keys, other curves and RSA keys are refused.
+The signer runs the same sequence of point operations for every key, but the field
+arithmetic is not constant-time: sign on a machine you control, not a shared host.
+Anchored in `tests/test_ecdsa.c` (the RFC 6979 appendix A.2.5-A.2.7 signatures from the
+private keys, r and s exact) and `tests/test_sign_model.py` (openssl verifies each
+signature over the PAE with the key it derived; the reference `model_signing` 1.1.1
+verifier accepts single-file and split bundles and refuses a changed model).
+
+<a id="cli-session-images"></a>
+#### `--session-out FILE`, `--suspend-after N`, `--resume FILE`, `--fork-seed N`
+
+A generation can stop part-way and continue later, in another process, exactly as if it
+had never stopped:
+
+```
+runner -m model.gguf -p "..." -n 400 -s 7 --suspend-after 150 --session-out s.img
+runner -m model.gguf --resume s.img                                 # the other 250
+runner -m model.gguf --resume s.img --fork-seed 11                  # or a fork of them
+```
+
+The image is one file: a `xyntetik.runner.session.v1` JSON header (the model's sha256
+and the engine's model key, context length, KV type, prompt length, token count, the
+`-n` budget and how much of it is spent, the sampler's settings and rng state, the
+`--json` / `--json-schema` constraint by digest, `--ignore-eos`, the runner version and
+the binary's sha256), then the token ids, the KV of every position plus a recurrent
+model's fold state (the prefix cache's entry layout), and the next token's logits,
+closed by a SHA-256 over every byte before it. What the state does not hold (the
+repeat-penalty window, the constraint validator, the reasoning and loop trackers) is
+rebuilt on resume by replaying the generated tokens through the step's own bookkeeping.
+It carries no timestamp, so the same state is the same bytes. That is the gate: a run
+straight through to `-n` imaged at its end, and the same run suspended half way, resumed
+and imaged at its end, write the identical file. `tests/test_session_images.py` checks
+this under seeded sampling with a repeat penalty, greedy, `--json`, `--json-schema` and a
+Mamba-2 hybrid, and through a chain of two suspensions.
+
+`--resume` takes the sampler, context length, KV type, budget and constraint from the
+image, and refuses `-s`, `-n`, `-c`, `--kv`, `--temp`, `--top-k`, `--top-p`, `--min-p`
+and `--repeat-penalty` rather than silently overriding them, as it refuses `--json` or
+`--ignore-eos` on an image made without them. It also refuses a model whose sha256 or engine model key differs from the image's, an
+image whose trailer does not match its bytes, and a schema image without the same
+`--json-schema` (the schema itself is not in the image, only its digest). Resumed by a
+different binary, it warns: the continuation is exact only on the build that suspended
+it. `--fork-seed N` replaces the image's rng state with `N`, so a fork is reproducible
+and shares the image's tokens as its prefix. `--session-out` refuses an existing file
+before loading anything. A generation that ends (end of text, a closed document) before
+its image point has nothing to resume: no image is written and the run exits 1.
+Images are CPU-only and use the solo step loop, so no `--draft`, `--mtp` or
+`--draft-lookup`. They cannot be combined with `--serve`, `-i`, `--verify`,
+`--transcript` or `--watermark` (an image does not carry the watermark key a marked
+continuation would need). A model whose KV cache is a ring or tied-V cannot be imaged.
 
 <a id="cli-v"></a>
 #### `-v`
@@ -2144,12 +2299,18 @@ non-loopback authorities.
 | `POST /v1/responses` | OpenAI Responses translation over the same engine and tool envelope. |
 | `POST /v1/completions` | Legacy raw prompt completions. |
 | `POST /v1/embeddings` | L2-normalized embeddings, pooled as the GGUF declares in `{arch}.pooling_type`: the mean over every token (also when the key is absent, as on generative models), or the last token (embedding models such as Qwen3-Embedding), with the end token appended first when `tokenizer.ggml.add_eos_token` is set. A model declaring CLS or rank pooling is refused with 400 naming it (since 2026-09-30; before, every model was mean-pooled with no end token). |
+| `POST /v1/rerank` | Documents ranked against a `query` with no reranker model: each document is put to the served model as a question with exactly two answers (`yes`, `no`) and scored with `/v1/decide`'s exact in-context readout. `relevance_score` is P(yes) renormalized over the two answers, `logit` is log P(yes) - log P(no), and `margin` is the logit gap to the next-ranked document, so a client can tell a decisive order from a near tie. Accepts `documents` as strings or `{"text": ...}` objects, `top_n`, `return_documents`, an `instruction` replacing the default ("Judge whether the document answers the query. Answer yes or no."), and `rendering`: `chat-v1` (default; the model's own chat template, thinking off, refused for harmony's channel protocol) or `raw-v1` (`{instruction}\n\nQuery: {query}\nDocument: {document}\nRelevant:` with answers ` yes`/` no`, for base models). The `envelope` carries digests of the query, documents and instruction. The score is the served model's judgement, not a trained reranker's. |
 | `POST /v1/messages` | Anthropic Messages translation. |
 | `POST /v1/messages/count_tokens` | Token count for the matching Messages request. |
 | `GET /v1/models` | Registered models and current residency. |
 | `GET /v1/capabilities` | The build (`version`, the `--version` string, plus `build_flavor` on a T3 build), server process ID, active model, sampling preset, optional Xyntetik agent profile, and the EFFECTIVE execution mode: `slots` (the slot count actually running) and `draft` (`requested`/`active`, the `source` when active: `model`, `mtp` or `lookup`, plus a `reason` when a requested draft was refused). `active` reflects a configured draft in at least one resident slot, including multi-slot serving, and becomes false while the target is unloaded. `mtp.consumed` likewise reflects resident engines using the head; per-request telemetry separately reports whether that request speculated. |
 | `GET /v1/runner/prefix-cache` | Prefix-cache size, limits, and counters. Takes no request body and remains available while inference is active. |
+| `GET /v1/runner/provenance` | What the server can vouch for about itself, in the receipt's vocabulary: `build.binary_sha256` (the executable, hashed at start), the resident `model` (`sha256` of the file, hashed in the background after the load: `sha256_state` reads `hashing` until it is known, and `changed_since_load` with the digest withheld when the file on disk no longer has the size and timestamps it had at load), the load-time OMS `signature` verdict and `envelope` state, the `adapter` and its digest, the `profile` (device, threads, context, KV type, slots) and the effective `config`. `model` and `profile` are `null` while nothing is resident. Not an attestation: a process can only report on itself. Takes no request body. |
 | `POST /v1/runner/prefix-cache/clear` | Release cached prefixes without unloading the model. Takes no request body and remains available while inference is active. |
+| `POST /v1/runner/contexts` | Pin a named context: `{"id": ..., "prompt": ...}` (raw text) or `{"id": ..., "messages": [...], "tools": [...]}` (rendered by the model's template WITHOUT the assistant generation prompt, so it is exactly what a later request with the same leading messages renders first). The prompt is prefilled once and its KV snapshot pinned: no TTL, never evicted by traffic, counted in `RUNNER_PREFIX_CACHE_MB` (`507` with code `context_budget` when it does not fit beside the other pins). Re-pinning an id replaces it. A request carrying `"context_id": id` must start with the context's tokens: it is refused with `404` (`context_not_found`) or `409` (`context_mismatch`, naming the first differing token) rather than served cold, and `runner_telemetry.context` reports `{id, tokens}` beside the usual `prompt_cached_tokens`. `context_id` needs the prefix cache (`cache_prompt`/`prefix_cache` not false) and is refused with `echo`/`prompt_logprobs`. A model whose template folds the system turn into the first user turn renders nothing for system messages alone and says so. Ids are 1 to 64 characters of `[A-Za-z0-9._:-]`. |
+| `GET /v1/runner/contexts` | The pinned contexts: `id`, `tokens`, `bytes`, `hits`, `age_seconds`. Takes no request body. |
+| `DELETE /v1/runner/contexts/{id}` | Release one context (`404` when there is none). `POST /v1/runner/prefix-cache/clear` and `/unload` release every context with the rest of the cache. |
+| `POST /v1/runner/contexts/{id}/snapshot` | With `--kv-snapshots DIR`: write context `id` to `DIR/<name>.kv` (the prefix cache's own `runner.prefix.v1` format, one entry) and `DIR/<name>.kv.json`, a `xyntetik.runner.kv_snapshot.v1` manifest naming the KV file's sha256 and size, the token count and the sha256 of the token ids, the served model's sha256 and the engine's model key, the KV type and context length, the binary's sha256, and `producer.receipt` when the body names one (`{"receipt": "receipt-<n>.json"}`, a receipt this server wrote whose chain recomputes). The manifest is chained like any record and signed with `--sign-key` (`--check-record` verifies it). Body `{}` or `{"name", "receipt"}`; `name` defaults to the id; an existing snapshot is never overwritten (`409 snapshot_exists`). Loading is `POST /v1/runner/contexts` with `{"id": ..., "snapshot": "<name>"}`: the manifest must recompute and verify, the `.kv` bytes must be the ones it names, and the model and KV type must be this server's, else `409` (`snapshot_record_invalid`, `snapshot_digest_mismatch`, `snapshot_model_mismatch`, `snapshot_kv_type_mismatch`). A request built on a loaded context names the snapshot in its receipt (`serve.kv_snapshot`: name, KV sha256, manifest chain hash) and replays from its prompt tokens like any other. |
 | `GET /health` | Server and resident-model health, the build (`version`, and `build_flavor` on a T3 build), plus this process's `rss_bytes`/`peak_rss_bytes` and cumulative `tokens_prompt`, `tokens_generated`, `generate_seconds`, `batch_steps` and `batch_sequences`. |
 | `GET /metrics` | The same process counters in Prometheus text exposition 0.0.4 (`text/plain; version=0.0.4`), under the `runner_` prefix, with the prefix-cache and speculation counters alongside. Always on with `--serve`, takes no request body, and remains available while inference is active. |
 | `POST /unload` | Release resident model, draft and prefix-cache memory; the next request reloads on demand. Deferred to the next safe point while a load or generation is in flight (the reply says `"deferred":true`). Needs the registry: a server without one refuses with `409` rather than reporting a success it cannot deliver - see the residency note below. |
@@ -2165,9 +2326,20 @@ Chat Completions and Responses are text-only: image, file, and other
 unrenderable content parts receive HTTP 400 rather than being discarded while
 adjacent text is processed.
 
-Legacy Completions accepts neutral `echo:false` and `prompt_logprobs:null`, but
-rejects `echo:true` and non-null `prompt_logprobs` with HTTP 400 until Runner can
-return the requested prompt-side output. These controls are never ignored.
+Legacy Completions scores the prompt teacher-forced (since 2026-09-30).
+`echo: true` returns the prompt in front of the completion in `text`, and with
+`logprobs: N` the logprob arrays cover the prompt's tokens first, then the
+generated ones; the first prompt token has nothing before it, so its
+`token_logprobs`, `top_logprobs` and `top_token_ids` entries are `null`, as
+OpenAI's echo spells them. `max_tokens: 0` scores without generating, which
+is the loglikelihood request an evaluation harness sends. `prompt_logprobs: K`
+(0 to 20, vLLM's spelling) adds `choices[0].prompt_logprobs`: `null`, then per
+position a map from token id to `{logprob, rank, decoded_token}` holding the
+actual token and the top K alternatives. The prompt is fed one token at a time
+from position 0 with no prefix reuse, the solo forward `--score` uses, so the
+numbers are `--score`'s bit for bit; that costs one forward per prompt token.
+Both are buffered-only (a stream refuses them with 400) and remain refused on
+the chat surfaces, whose prompt is a render the caller did not write.
 
 The `usage` object carries OpenAI's cached-prompt breakdown:
 `usage.prompt_tokens_details.cached_tokens` on Chat Completions and legacy
@@ -2850,6 +3022,22 @@ loop.
 it fired and whether it ended the turn. This is the detect-and-close half; rewinding
 to the loop onset and resampling that position is deliberately not here.
 
+The guard cannot see the loop that happens ACROSS requests: a model that has
+its answer and calls `get_weather(Athens)` again, turn after turn, finishes
+every request cleanly. The chat-shaped surfaces receive the earlier calls as
+structure, so when a call this turn emits has the same name and the same
+arguments (compared as JSON values, so key order and whitespace do not
+matter) as one already in the conversation, `runner_telemetry` carries
+`repeated_tool_calls`: one entry per repeating call, with its `index` among
+this turn's calls, its `name`, `prior_calls` (how many identical calls the
+conversation holds) and `last_message_index` (where the latest one is in
+`messages`, or in `input` on Responses). It is a report, never a refusal: an
+agent that polls or retries after an error re-calls a tool on purpose, and the
+flag lets its harness break its own loop with a reason. Carried by the
+buffered Chat Completions, Responses and Messages bodies and by the streamed
+Responses `response.completed` event; the streamed Chat and Messages turns do
+not carry it yet.
+
 
 ### Muse recipients line
 
@@ -2991,10 +3179,22 @@ Streaming emits ordered typed lifecycle, text-delta, function-argument-delta,
 done, and terminal events with monotonic `sequence_number` values. The
 terminal event contains usage and runner telemetry.
 
-Runner is stateless and refuses persistence or hosted-service fields rather
-than accepting them without effect: `store:true`, `previous_response_id`,
-`background:true`, `conversation`, `truncation:"auto"`, hosted tools, and
-every `include[]` member but one. `include:["reasoning.encrypted_content"]`
+`store:true` keeps the finished response in an in-memory store (never
+written to disk; bounded by `RUNNER_RESPONSES_STORE_MB`, default 64, least
+recently used first, and `RUNNER_RESPONSES_STORE_TTL` seconds, default 3600),
+and `previous_response_id` continues it: the stored conversation (the input it
+answered, then its output items) is placed in front of this request's `input`,
+so the continuation is the same request as sending that history explicitly
+(the same `input_tokens`, and greedy the same output; `instructions` and
+`tools` are not carried over, as on the hosted API). `GET /v1/responses/{id}`,
+`GET /v1/responses/{id}/input_items` and `DELETE /v1/responses/{id}` read and
+drop entries. `store` defaults to false here, unlike the hosted API, so
+nothing is kept unless asked; an unknown or expired id answers 404
+(`previous_response_not_found`). The store dies with the process.
+
+Runner refuses the remaining hosted-service fields rather than accepting them
+without effect: `background:true`, `conversation`, `truncation:"auto"`, hosted
+tools, and every `include[]` member but one. `include:["reasoning.encrypted_content"]`
 is accepted: encrypted reasoning exists so a stateless client can hand a
 hosted model its hidden reasoning back, this runtime has none to encrypt,
 and a reasoning item without `encrypted_content` is the complete answer
@@ -3027,9 +3227,13 @@ contract pinned by goldens in `tests/test_tool_attribution.c`.
 
 Messages uses the same internal engine and constrained tool envelope. It
 supports string or block-list system/content values, `tool_use`/`tool_result`,
-all tool-choice forms compatible with one call per turn, stop sequences,
-sampling controls, metadata, thinking-channel blocks, and Anthropic SSE event
-ordering. `max_tokens` is required.
+every tool-choice form, stop sequences, sampling controls, metadata,
+thinking-channel blocks, and Anthropic SSE event ordering. `max_tokens` is
+required. `tool_choice.disable_parallel_tool_use:false` compiles the parallel
+envelope (several `tool_use` blocks in one turn, as `parallel_tool_calls:true`
+does on the OpenAI surfaces); absent or `true` keeps one call per turn, which
+is what this surface has always compiled, so an unmarked request's grammar is
+unchanged.
 
 `thinking.type:"enabled"` requires `budget_tokens`; that field is rejected for
 `adaptive` and `disabled`. `thinking.display` accepts `summarized` or `omitted`
@@ -3037,7 +3241,7 @@ with enabled/adaptive thinking. The omitted form keeps an empty thinking block
 while withholding reasoning text in buffered and SSE responses.
 
 Runner refuses hosted tools, MCP/container execution, image/document blocks,
-parallel tool use, `stop_sequences` sent alongside `tools` (see Chat
+`stop_sequences` sent alongside `tools` (see Chat
 Completions above), and forced thinking on a model with no reasoning channel.
 It implements protocol translation only; it never executes a tool.
 
@@ -3099,9 +3303,10 @@ codex "list the files here"
 ```
 
 Codex's system prompt and tools can consume roughly 10k input tokens before
-the user request, so use at least a 16k context for that workflow. Runner does
-not implement a response store; clients must send history each turn rather
-than use `previous_response_id`.
+the user request, so use at least a 16k context for that workflow. Codex sends
+`store:false` and the whole history each turn; a client that relies on
+`previous_response_id` must send `store:true` on the turn it continues, since
+the store keeps nothing unasked.
 
 <a id="why-this-and-not-llamacpp"></a>
 ## Evidence and tradeoffs

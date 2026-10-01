@@ -10,6 +10,7 @@
 #include "json.h"
 #include "compat.h"
 #include "envelope.h"
+#include "provenance.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -51,6 +52,7 @@ void unload_resident(void) {
     s->e.tok = NULL;
     context_store(0);
     resident_store(-1);
+    provenance_note_unload();
 }
 
 void unload_draft(void) {
@@ -166,8 +168,20 @@ int swap_to(const char *want) {
         model_t *m = calloc(1, sizeof(model_t));
         tokenizer *tok = calloc(1, sizeof(tokenizer));
         bool model_ok = m && model_load(m, SV.reg[idx].path, &SV.mp);
+        oms_result osr;
+        memset(&osr, 0, sizeof osr);
         bool sig_refused = model_ok &&
-            !oms_check_model(SV.reg[idx].path, &SV.signing, NULL);
+            !oms_check_model(SV.reg[idx].path, &SV.signing, &osr);
+        // the --lora adapter comes back with every reload, under the same
+        // trusted key (R1.2.3)
+        oms_result aosr;
+        memset(&aosr, 0, sizeof aosr);
+        if (model_ok && !sig_refused && SV.mp.lora_path) {
+            oms_policy apol = { SV.mp.lora_sig, SV.signing.pubkey_path,
+                                SV.signing.required };
+            sig_refused = !oms_check_artifact(SV.mp.lora_path, &apol,
+                                              "adapter", &aosr);
+        }
         bool tok_ok = model_ok && !sig_refused && tok && tokenizer_init(tok, &m->gf);
         bool mtp_refused = model_ok && SV.single && SV.mp.mtp &&
                            !model_mtp_ready(m);
@@ -180,8 +194,9 @@ int swap_to(const char *want) {
         // keeps serving its other models -- NOT a process exit like the CLI's.
         // The sidecar read runs here, outside swap_mu, alongside the load.
         bool env_refused = false;
+        char env_line[256] = "";
+        int env_state = ENV_UNCLASSIFIED;
         if (model_ok && tok_ok) {
-            char env_line[256];
 #ifdef __APPLE__
             const char *env_backend = m->gpu ? "metal" : "cpu";
 #else
@@ -189,7 +204,7 @@ int swap_to(const char *want) {
 #endif
             if (!envelope_gate(SV.reg[idx].path, RUNNER_VERSION, env_backend,
                                SV.force_uncertified, env_line, sizeof env_line,
-                               NULL))
+                               &env_state))
                 env_refused = true;
             if (env_line[0]) fprintf(stderr, "%s\n", env_line);
         }
@@ -293,11 +308,54 @@ int swap_to(const char *want) {
             s->e.lookup_on = true;
             s->e.draft_k = SV.draft_k;
         }
+        provenance_note_load(&(provenance_load){
+            .model_path = SV.reg[idx].path,
+            .adapter_path = SV.mp.lora_path, .adapter_scale = SV.mp.lora_scale,
+            .signature = &osr, .adapter_signature = &aosr,
+            .envelope_state = env_state, .envelope_detail = env_line });
         resident_store(idx);
     }
     SV.model_name = SV.reg[idx].name;
     pthread_mutex_unlock(&SV.swap_mu);
     return idx;
+}
+
+int request_adapter(jv *req) {
+    jv *mv = jv_get(req, "model");
+    if (SV.n_adapters == 0 || !mv || mv->type != J_STR) return -1;
+    char *colon = strrchr(mv->str, ':');
+    if (!colon || colon == mv->str) return -1;
+    // a served name that itself contains a colon is a model, not a route
+    for (int i = 0; i < SV.n_reg; i++)
+        if (!strcmp(SV.reg[i].name, mv->str)) return -1;
+    for (int i = 0; i < SV.n_adapters; i++)
+        if (!strcmp(SV.adapters[i].name, colon + 1)) {
+            *colon = 0;   // the base is validated as any request's model is
+            return i;
+        }
+    return -1;
+}
+
+bool slot_use_adapter(slot_t *s, int idx, sock_t fd) {
+    if (SV.n_adapters == 0 || !s->m) return true;
+    uint64_t before = s->m->lora_id;
+    if (!model_lora_use(s->m, idx >= 0 ? SV.adapters[idx].set : NULL)) {
+        send_error(fd, 500, "cannot install the requested adapter on this "
+                            "slot (see server log)");
+        return false;
+    }
+    s->adapter = idx;
+    if (s->m->lora_id != before) {
+        // The shared prefix cache keys on the identity, which folds in the
+        // adapter id; the slot's OWN KV is matched by tokens alone
+        // (engine_rewind), so rows computed under the previous adapter are
+        // dropped here or the next request reuses them. Measured: a bare
+        // request after an adapted one with the same prompt answered with
+        // logprobs ~0.07 off the bare reference before this reset.
+        engine_refresh_identity(&s->e);
+        engine_reset(&s->e);
+    }
+    return true;
 }
 
 bool validate_single_model_request(sock_t fd, jv *req) {

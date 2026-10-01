@@ -135,6 +135,24 @@ static int pick_scaled(sampler *s, cand_t *c, int k, float norm_sum,
             for (int i = 0; i < k; i++) c[i].p /= cum;
         }
     }
+    // the watermark's tournament (R1.8.1) over exactly the set that survived
+    // the filters, renormalised above, so the draw below sees its winner
+    // distribution
+    if (s->reweight && k > 1) {
+        float pb[256];
+        int32_t ib[256];
+        float *pp = k <= 256 ? pb : malloc(sizeof *pp * (size_t)k);
+        int32_t *ii = k <= 256 ? ib : malloc(sizeof *ii * (size_t)k);
+        bool ok = pp && ii;
+        if (ok) {
+            for (int i = 0; i < k; i++) { pp[i] = c[i].p; ii[i] = c[i].id; }
+            ok = s->reweight(s->reweight_ud, ii, pp, k);
+            if (ok) for (int i = 0; i < k; i++) c[i].p = pp[i];
+        }
+        if (pp != pb) free(pp);
+        if (ii != ib) free(ii);
+        if (!ok) return -2;   // allocation failure: an error, not a stop
+    }
     float r = r_pre >= 0.0f ? r_pre : rng_f32(&s->rng), cum = 0;
     int pick = c[k - 1].id;
     bool hit = false;
@@ -240,7 +258,11 @@ int sample_pick(sampler *s, float *logits, int n_vocab, sample_ok_fn ok, void *u
     // RNG still advances exactly once per call and a seeded run is unchanged.
     bool no_filter = want_k >= n_vocab && s->top_p >= 1.0f && s->min_p <= 0.0f;
     float r_pre = -1.0f;
-    if (no_filter && !ok && s->temp > 0 && n_vocab >= 4096)
+    // A reweight needs every surviving candidate's probability (the
+    // tournament's per-layer mean is over all of them), which a no-filter
+    // head does not carry; that one configuration takes the full sort.
+    bool head_ok = !(no_filter && s->reweight);
+    if (no_filter && head_ok && !ok && s->temp > 0 && n_vocab >= 4096)
         r_pre = rng_f32(&s->rng);
 
     // Every combination now has a head criterion, so the fast path is always
@@ -270,7 +292,7 @@ int sample_pick(sampler *s, float *logits, int n_vocab, sample_ok_fn ok, void *u
         }
         // allocation failed: fall through to the full-sort path below
     }
-    if (!ok && s->temp > 0 && n_vocab >= 4096) {
+    if (!ok && head_ok && s->temp > 0 && n_vocab >= 4096) {
         float mx = logits[0] / temp;
         for (int i = 1; i < n_vocab; i++) {
             float v = logits[i] / temp;

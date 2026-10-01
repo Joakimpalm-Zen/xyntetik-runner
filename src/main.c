@@ -12,6 +12,12 @@
 #include "envelope.h"
 #include "oms.h"
 #include "server.h"
+#include "provenance.h"
+#include "bundle.h"
+#include "receipts.h"
+#include "watermark.h"
+#include "kvsnap.h"
+#include "session.h"
 #include "build_arch.h"
 // for render_prompt_alloc: chat mode renders the same prompts the chat route
 // does, so it uses the same measured-size renderer rather than a second one
@@ -195,6 +201,227 @@ static char *read_file(const char *path, size_t *out_len) {
     buf[got] = 0;
     if (out_len) *out_len = got;
     return buf;
+}
+
+// A JSON schema's identity in a record (R1.1.2): the sha256 of its compact
+// JSON, key order kept -- what serve receipts record for a request's schema,
+// so how the file is spelled (indentation, spacing) is not identity.
+static bool schema_file_digest(const char *path, char hex[65]) {
+    size_t n = 0;
+    char *b = read_file(path, &n);
+    if (!b) return false;
+    jv *v = json_parse(b, n);
+    free(b);
+    if (!v) return false;
+    sbuf d = {0};
+    jv_dump(v, &d);
+    jv_free(v);
+    bool ok = !d.failed;
+    if (ok) envelope_data_sha256(d.s, d.n, hex);
+    free(d.s);
+    return ok;
+}
+
+// R1.3: the step loop behind --suspend-after, --session-out and --resume.
+// It stops after `stop_at` generated tokens in all (0: the budget), every
+// handed-out token already forwarded, and says whether the generation is
+// still live -- neither a stop, a finished document nor an error ended it.
+// Only a live generation is imaged. *last is the next token's logits.
+static bool session_steps(engine *e, float *logits, int stop_at, gen_cb cb,
+                          void *ud, const float **last) {
+    int32_t tok;
+    int pos;
+    while (stop_at <= 0 || e->gen_count < stop_at) {
+        if (engine_gen_step(e, logits, cb, ud, &tok, &pos) != ENGINE_STEP_MORE) break;
+        logits = model_forward(e->m, tok, pos);
+        if (!logits) { e->oom = true; break; }
+    }
+    e->pending_pos = -1;
+    *last = logits;
+    return logits && !e->hit_stop && !e->oom;
+}
+
+static bool session_image_out(const char *path, const engine *e,
+                              const char *model_path, const float *logits,
+                              int n_prompt, int max_new, bool json_mode,
+                              bool ignore_eos, const char *schema_file) {
+    session_meta mt;
+    memset(&mt, 0, sizeof mt);
+    if (!envelope_file_sha256(model_path, mt.model_sha256)) {
+        fprintf(stderr, "error: session: cannot hash %s\n", model_path);
+        return false;
+    }
+    char *exe = plat_executable_path();
+    if (exe) envelope_file_sha256(exe, mt.binary_sha256);
+    free(exe);
+    if (schema_file && !schema_file_digest(schema_file, mt.schema_sha256)) {
+        fprintf(stderr, "error: session: cannot read %s\n", schema_file);
+        return false;
+    }
+    const model_t *m = e->m;
+    mt.model_key = e->model_key;
+    mt.n_ctx = m->n_ctx;
+    snprintf(mt.kv_type, sizeof mt.kv_type, "%s",
+             m->kv_fp4 ? "fp4" : m->kv_split ? "k8v4" : m->kv_q8 ? "q8" : "f16");
+    mt.n_prompt = n_prompt;
+    mt.n_tokens = e->pos;
+    mt.max_new = max_new;
+    mt.generated = e->gen_count;
+    mt.temp = e->smp->temp; mt.top_k = e->smp->top_k; mt.top_p = e->smp->top_p;
+    mt.min_p = e->smp->min_p; mt.repeat_penalty = e->smp->repeat_penalty;
+    mt.rng = e->smp->rng;
+    mt.json_mode = json_mode;
+    mt.ignore_eos = ignore_eos;
+    char sha[65];
+    if (!session_write(path, e, &mt, logits, m->n_vocab, sha)) return false;
+    fprintf(stderr, "session image -> %s (sha256 %s; %d tokens, %d of %d "
+            "generated)\n", path, sha, e->pos, e->gen_count, max_new);
+    return true;
+}
+
+// R1.8.2: score a token sequence against the key and print the verdict as
+// one JSON object; exit 0 WATERMARKED, 2 NOT_DETECTED, 3 INSUFFICIENT.
+static int wm_report(const wm_key *k, const int32_t *toks, int n, int start,
+                     const char *source, const char *record_kid) {
+    wm_score sc;
+    wm_detect(k, toks, n, start, &sc);
+    const char *v = wm_verdict(&sc);
+    printf("{\"schema_version\":\"xyntetik.runner.watermark_detect.v1\","
+           "\"key_id\":\"%s\",\"source\":\"%s\",", k->id, source);
+    if (record_kid) {
+        bool hex = strlen(record_kid) == 16;
+        for (int i = 0; hex && i < 16; i++)
+            hex = (record_kid[i] >= '0' && record_kid[i] <= '9') ||
+                  (record_kid[i] >= 'a' && record_kid[i] <= 'f');
+        printf("\"record_key_id\":\"%s\",", hex ? record_kid : "malformed");
+    }
+    printf("\"scheme\":\"%s\",\"layers\":%d,\"context\":%d,\"tokens\":%d,"
+           "\"scored\":%d,\"g_ones\":%lld,\"g_n\":%lld,\"mean_g\":%.6f,"
+           "\"z\":%.4f,\"p_value\":%.4g,\"verdict\":\"%s\"}\n",
+           WM_SCHEME, WM_LAYERS, WM_CONTEXT, sc.tokens, sc.scored, sc.g_sum,
+           sc.g_n, sc.mean, sc.z, sc.p_value, v);
+    fprintf(stderr, "%s: z %.2f over %d scored of %d tokens (p %.3g)\n", v,
+            sc.z, sc.scored, sc.tokens, sc.p_value);
+    return !strcmp(v, "WATERMARKED") ? 0 : !strcmp(v, "NOT_DETECTED") ? 2 : 3;
+}
+
+// The token ids of a JSON array, each an int32 >= 0; NULL on anything else.
+static int32_t *json_token_ids(jv *arr, int *n_out) {
+    if (!arr || arr->type != J_ARR) return NULL;
+    int32_t *t = malloc(sizeof *t * (size_t)(arr->n ? arr->n : 1));
+    if (!t) return NULL;
+    for (int i = 0; i < arr->n; i++) {
+        double v = jv_num(arr->items[i], -1);
+        if (!arr->items[i] || arr->items[i]->type != J_NUM || v < 0 ||
+            v > INT32_MAX || v != (double)(int32_t)v) { free(t); return NULL; }
+        t[i] = (int32_t)v;
+    }
+    *n_out = arr->n;
+    return t;
+}
+
+// Agent transcripts, D4a (R1.1.2): may this record be replayed with the
+// constraints this verifier was given? A replay runs the sampler; a grammar,
+// a stop sequence or a scripted reply shaped the recorded tokens beyond it,
+// and a replay without them could only disagree with the record -- which a
+// DIVERGED verdict would blame on the model or the build. A CLI record made
+// under --json, --json-schema or --ignore-eos replays when the verifier is
+// given the same constraint (the schema matched by digest); anything a served
+// turn was shaped by is refused (replaying it is D4b); and a constraint the
+// verifier adds that the record does not name is refused too. False with the
+// reason in `why`.
+static bool replay_constraints_ok(jv *rec, bool json_mode,
+                                  const char *schema_file, bool ignore_eos,
+                                  char *why, size_t cap) {
+    jv *cons = jv_get(rec, "constraints");
+    jv *serve = jv_get(rec, "serve");
+    if (cons && cons->type != J_ARR) {
+        snprintf(why, cap, "malformed constraints");
+        return false;
+    }
+    if (serve) {
+        // records written before D4a name what shaped them only here
+        jv *list = cons ? cons : jv_get(serve, "shaped_by");
+        char names[256] = "";
+        size_t k = 0;
+        int n = 0;
+        for (int i = 0; list && list->type == J_ARR && i < list->n; i++) {
+            jv *it = list->items[i];
+            const char *kind = it && it->type == J_STR ? it->str
+                             : jv_str(jv_get(it, "kind"), "?");
+            int w = snprintf(names + k, sizeof names - k, "%s%s", n ? ", " : "", kind);
+            if (w > 0 && (size_t)w < sizeof names - k) k += (size_t)w;
+            n++;
+        }
+        if (n) {
+            snprintf(why, cap, "the served output was shaped beyond the sampler "
+                     "by %s; this build replays the sampler only (replaying a "
+                     "served turn's constraints is D4b), so a replay could only "
+                     "disagree with the record", names);
+            return false;
+        }
+    }
+    bool rj = false, re = false;
+    const char *rs = NULL;
+    for (int i = 0; cons && i < cons->n; i++) {
+        const char *kind = jv_str(jv_get(cons->items[i], "kind"), NULL);
+        if (!kind) {
+            snprintf(why, cap, "malformed constraints");
+            return false;
+        }
+        if (!strcmp(kind, "json_mode")) rj = true;
+        else if (!strcmp(kind, "ignore_eos")) re = true;
+        else if (!strcmp(kind, "json_schema")) {
+            rs = jv_str(jv_get(cons->items[i], "sha256"), "");
+            if (strlen(rs) != 64) {
+                snprintf(why, cap, "malformed json_schema constraint");
+                return false;
+            }
+        } else {
+            snprintf(why, cap, "the output was shaped beyond the sampler by %s, "
+                     "which this build does not replay", kind);
+            return false;
+        }
+    }
+    if (rj != json_mode) {
+        snprintf(why, cap, rj ? "the output was generated under --json "
+                 "(constraint json_mode); verify with --json to replay it"
+                 : "--json given, but the record's output was not generated "
+                 "under it (no json_mode constraint)");
+        return false;
+    }
+    if (re != ignore_eos) {
+        snprintf(why, cap, re ? "the output was generated under --ignore-eos "
+                 "(constraint ignore_eos); verify with --ignore-eos to replay it"
+                 : "--ignore-eos given, but the record's output was not "
+                 "generated under it (no ignore_eos constraint)");
+        return false;
+    }
+    if (rs && !schema_file) {
+        snprintf(why, cap, "the output was generated under a JSON schema "
+                 "(constraint json_schema, sha256 %s); verify with "
+                 "--json-schema naming that schema to replay it", rs);
+        return false;
+    }
+    if (!rs && schema_file) {
+        snprintf(why, cap, "--json-schema given, but the record's output was "
+                 "not generated under a schema (no json_schema constraint)");
+        return false;
+    }
+    if (rs) {
+        char have[65];
+        if (!schema_file_digest(schema_file, have)) {
+            snprintf(why, cap, "cannot read --json-schema %s as JSON", schema_file);
+            return false;
+        }
+        if (!hex_eq_nocase(have, rs)) {
+            snprintf(why, cap, "--json-schema %s is a different schema (sha256 "
+                     "%s) from the record's json_schema constraint (sha256 %s)",
+                     schema_file, have, rs);
+            return false;
+        }
+    }
+    return true;
 }
 
 static bool receipt_chain_hash(const char *path, char out[65]) {
@@ -802,17 +1029,63 @@ static void usage_to(FILE *f, const char *prog) {
         "                 VERIFIED (exit 0; tier T1 same-binary or T2\n"
         "                 token-replay), DIVERGED at token N (exit 2),\n"
         "                 UNVERIFIABLE (exit 3: bad chain hash, wrong model\n"
-        "                 sha, wrong adapter). The record's config and seed\n"
-        "                 override CLI sampling flags\n"
+        "                 sha, wrong adapter, or output shaped by a constraint\n"
+        "                 the replay would not reproduce; --json, --json-schema\n"
+        "                 and --ignore-eos must match the record's). The\n"
+        "                 record's config and seed override CLI sampling flags\n"
         "  --sign-record F  sign any JSON object file in place with --sign-key,\n"
         "                 the transcript's chain + signature (--record-prev P\n"
         "                 links it to record P); --check-record F verifies one\n"
+        "  --export-bundle R  with --bundle-out DIR: put receipt R, its model\n"
+        "                 signature (--model-sig) and key (--model-pubkey), the\n"
+        "                 receipt key's fingerprint and a sha256 manifest in one\n"
+        "                 directory a verifier can take; --sign-key signs the\n"
+        "                 manifest. Needs no -m\n"
+        "  --bundle-out DIR  where --export-bundle writes (created)\n"
+        "  --check-bundle DIR  verify a bundle offline: files match the\n"
+        "                 manifest, the receipt chain recomputes, signatures\n"
+        "                 verify (--trust-key pins the manifest signer). Exit\n"
+        "                 0 OK, 2 BAD, 3 UNVERIFIABLE. Does not replay: that is\n"
+        "                 --verify with the model\n"
+        "  --kv-snapshots DIR  with --serve: POST /v1/runner/contexts/{id}/\n"
+        "                 snapshot writes a named context to DIR (KV + manifest\n"
+        "                 with its digests, model, KV type and producing receipt,\n"
+        "                 signed with --sign-key); {\"id\",\"snapshot\"} on\n"
+        "                 POST /v1/runner/contexts loads one back, refusing\n"
+        "                 another model, KV type or changed bytes\n"
+        "  --session-out F  with -p or --resume: write the generation's image\n"
+        "                 to F (tokens, KV and recurrent state, sampler and rng,\n"
+        "                 constraint, next-token logits; SHA-256 trailer; never\n"
+        "                 overwritten). CPU, solo step loop, finite -n\n"
+        "  --suspend-after N  stop after N generated tokens and write the\n"
+        "                 image there (with --session-out)\n"
+        "  --resume F     continue the generation imaged in F with the same -m:\n"
+        "                 the continuation, and its image, are the ones the\n"
+        "                 uninterrupted run makes, byte for byte\n"
+        "  --fork-seed N  with --resume: continue under rng seed N instead of\n"
+        "                 the image's own (a reproducible fork)\n"
+        "  --watermark F  mark sampled output with the tournament watermark\n"
+        "                 key F (-p runs and --serve; off by default; greedy is\n"
+        "                 never changed); records carry its key id, and\n"
+        "                 --verify replays a marked record only with F\n"
+        "  --watermark-keygen F  write a new watermark key to F; needs no -m\n"
+        "  --detect-watermark F  score F against --watermark's key: a\n"
+        "                 transcript record (no -m) or a text (-m for its\n"
+        "                 tokenizer). Exit 0 WATERMARKED, 2 NOT_DETECTED,\n"
+        "                 3 INSUFFICIENT\n"
         "  --keygen F     write a receipt-signing key (xyntetik.runner.signkey\n"
         "                 .v1) to F and print its public key; needs no -m\n"
         "  --keygen-algo A  ed25519 (default; 32-byte key, 64-byte signature)\n"
         "                 or ml-dsa-44 (FIPS 204 post-quantum; 1312-byte key,\n"
         "                 2420-byte signature, deterministic)\n"
-        "  --sign-key F   with --transcript: sign the receipt with the key in F\n"
+        "  --receipts DIR  with --serve: write a receipt (the --transcript\n"
+        "                 record, replayable by --verify) for every finished\n"
+        "                 generation into DIR, chained in write order across\n"
+        "                 restarts and signed with --sign-key when given; each\n"
+        "                 response's runner_telemetry.receipt names its file\n"
+        "  --receipts-keep N  keep the newest N receipts (default 0: all)\n"
+        "  --sign-key F   with --transcript or --receipts: sign the receipt\n"
+        "                 with the key in F\n"
         "                 (a signature over every byte before the ,\"signature\"\n"
         "                 key, chain hash included; the object names the algo)\n"
         "  --transcript-prev F  with --transcript: link the receipt to F (its\n"
@@ -830,6 +1103,11 @@ static void usage_to(FILE *f, const char *prog) {
         "                 refuses the load\n"
         "  --require-signed-model  refuse to load -m unless its OMS signature\n"
         "                 verifies with --model-pubkey\n"
+        "  --sign-model F  write an OMS bundle for model F (every part of a\n"
+        "                 split GGUF) to F.sig, or to --model-sig; deterministic\n"
+        "                 ECDSA (RFC 6979) with --model-key. Needs no -m\n"
+        "  --model-key F  the PEM EC private key --sign-model signs with (SEC1\n"
+        "                 or PKCS#8, unencrypted, P-256/384/521)\n"
         "  --merge-lora OUT  fold --lora into the base weights and write\n"
         "                 OUT.gguf + an OUT.gguf.merge.json provenance record:\n"
         "                 W' = W + (alpha/r)*B*A per adapted projection, each\n"
@@ -975,6 +1253,13 @@ static void usage_to(FILE *f, const char *prog) {
         "  --lora FILE    load a LoRA adapter GGUF beside the frozen base\n"
         "                 (CPU dense projections; fails closed otherwise)\n"
         "  --lora-scale F multiply the adapter's trained alpha/r (default 1.0)\n"
+        "  --lora-sig F   OMS bundle for the --lora adapter (default: its path\n"
+        "                 + .sig when it exists); verified with --model-pubkey,\n"
+        "                 and required by --require-signed-model like the model\n"
+        "  --adapter NAME=PATH  with --serve: load a LoRA adapter once and serve\n"
+        "                 it per request as \"model\": \"<model>:NAME\" (CPU\n"
+        "                 hooks, --gpu off; repeatable, up to 16; exclusive\n"
+        "                 with --lora; --lora-scale applies)\n"
         "  --train FILE   AdamW LoRA training (CPU): plain text, or .jsonl\n"
         "                 lines {\"prompt\",\"completion\",\"weight\"} with the\n"
         "                 prompt masked from the loss. Deterministic by\n"
@@ -1264,8 +1549,23 @@ int main(int argc, char **argv) {
     const char *transcript_path = NULL;
     const char *transcript_prev = NULL, *sign_key = NULL, *keygen_path = NULL;
     const char *sign_record = NULL, *record_prev = NULL, *check_record = NULL;
+    // R1.2.1: receipt bundles
+    const char *export_bundle = NULL, *bundle_out = NULL, *check_bundle = NULL;
+    // R1.2.2: per-request receipts in serve mode
+    const char *receipts_dir = NULL;
+    int receipts_keep = 0;
     const char *keygen_algo = SIGN_ALGO_ED25519;
     const char *trust_key = NULL, *model_sig = NULL, *model_pubkey = NULL;
+    const char *sign_model = NULL, *model_key = NULL;
+    const char *watermark_path = NULL, *watermark_keygen = NULL;
+    const char *detect_path = NULL;
+    const char *kv_snapshots = NULL;
+    const char *session_out = NULL, *resume_path = NULL;
+    int suspend_after = 0;
+    bool fork_seed_given = false, n_given = false, kv_given = false;
+    uint64_t fork_seed = 0;
+    session_image simg;
+    memset(&simg, 0, sizeof simg);
     bool require_signed = false, require_signed_model = false;
     receipt_sig_state v_rsig = RSIG_NONE;   // --verify: the record's signature state
     char v_rec_pub[SIGN_PUBHEX_CAP] = "";
@@ -1296,6 +1596,10 @@ int main(int argc, char **argv) {
     bool bench_json = false;
     bool score = false;
     const char *lora_path = NULL;
+    const char *lora_sig = NULL;   // R1.2.3: the adapter's OMS bundle
+    // R8.6: --adapter NAME=PATH, repeatable; served per request as "<model>:NAME"
+    const char *adapter_names[16], *adapter_paths[16];
+    int n_adapters = 0;
     float lora_scale = 1.0f;
     const char *train_path = NULL, *train_out = "adapter-out.gguf";
     const char *dpo_path = NULL;
@@ -1333,7 +1637,7 @@ int main(int argc, char **argv) {
         else if (!strcmp(a, "-hf") || !strcmp(a, "--hf")) hf_spec = NEXT;
         else if (!strcmp(a, "-p")) prompt = NEXT;
         else if (!strcmp(a, "-f")) prompt_file = NEXT;
-        else if (!strcmp(a, "-n")) n_predict = (int)int_arg(a, NEXT, -1, INT_MAX);
+        else if (!strcmp(a, "-n")) { n_predict = (int)int_arg(a, NEXT, -1, INT_MAX); n_given = true; }
         else if (!strcmp(a, "-c")) mp.n_ctx = (int)int_arg(a, NEXT, 0, INT_MAX);
         else if (!strcmp(a, "-b")) mp.n_batch = (int)int_arg(a, NEXT, 0, INT_MAX);
         else if (!strcmp(a, "-t")) n_threads = (int)int_arg(a, NEXT, 0, INT_MAX);
@@ -1367,11 +1671,31 @@ int main(int argc, char **argv) {
         else if (!strcmp(a, "--sign-record")) sign_record = NEXT;
         else if (!strcmp(a, "--record-prev")) record_prev = NEXT;
         else if (!strcmp(a, "--check-record")) check_record = NEXT;
+        else if (!strcmp(a, "--export-bundle")) export_bundle = NEXT;
+        else if (!strcmp(a, "--bundle-out")) bundle_out = NEXT;
+        else if (!strcmp(a, "--check-bundle")) check_bundle = NEXT;
+        else if (!strcmp(a, "--receipts")) receipts_dir = NEXT;
+        else if (!strcmp(a, "--receipts-keep"))
+            receipts_keep = (int)int_arg(a, NEXT, 0, 100000000);
         else if (!strcmp(a, "--keygen-algo")) keygen_algo = NEXT;
         else if (!strcmp(a, "--require-signed")) require_signed = true;
         else if (!strcmp(a, "--trust-key")) trust_key = NEXT;
         else if (!strcmp(a, "--model-sig")) model_sig = NEXT;
         else if (!strcmp(a, "--model-pubkey")) model_pubkey = NEXT;
+        else if (!strcmp(a, "--sign-model")) sign_model = NEXT;
+        else if (!strcmp(a, "--model-key")) model_key = NEXT;
+        else if (!strcmp(a, "--watermark")) watermark_path = NEXT;
+        else if (!strcmp(a, "--watermark-keygen")) watermark_keygen = NEXT;
+        else if (!strcmp(a, "--detect-watermark")) detect_path = NEXT;
+        else if (!strcmp(a, "--kv-snapshots")) kv_snapshots = NEXT;
+        else if (!strcmp(a, "--session-out")) session_out = NEXT;
+        else if (!strcmp(a, "--resume")) resume_path = NEXT;
+        else if (!strcmp(a, "--suspend-after"))
+            suspend_after = (int)int_arg(a, NEXT, 1, INT_MAX);
+        else if (!strcmp(a, "--fork-seed")) {
+            fork_seed = u64_arg(a, NEXT);
+            fork_seed_given = true;
+        }
         else if (!strcmp(a, "--require-signed-model")) require_signed_model = true;
         else if (!strcmp(a, "--quant")) quant_type = NEXT;
         else if (!strcmp(a, "--prune-experts")) prune_experts = NEXT;
@@ -1397,6 +1721,7 @@ int main(int argc, char **argv) {
         }
         else if (!strcmp(a, "--kv")) {
             const char *v = NEXT;
+            kv_given = true;
             mp.kv_q8 = mp.kv_fp4 = mp.kv_split = false;
             if (!strcmp(v, "q8")) mp.kv_q8 = true;
             else if (!strcmp(v, "fp4")) mp.kv_fp4 = true;
@@ -1428,6 +1753,32 @@ int main(int argc, char **argv) {
         else if (!strcmp(a, "--score")) score = true;
         else if (!strcmp(a, "--decide")) decide_path = NEXT;
         else if (!strcmp(a, "--lora")) lora_path = NEXT;
+        else if (!strcmp(a, "--lora-sig")) lora_sig = NEXT;
+        else if (!strcmp(a, "--adapter")) {
+            char *spec = strdup(NEXT);
+            char *eq = spec ? strchr(spec, '=') : NULL;
+            if (!eq || eq == spec || !eq[1]) {
+                fprintf(stderr, "error: --adapter wants NAME=PATH\n");
+                return 1;
+            }
+            *eq = 0;
+            bool name_ok = strlen(spec) < 64;
+            for (const char *c = spec; name_ok && *c; c++)
+                name_ok = (*c >= 'a' && *c <= 'z') || (*c >= 'A' && *c <= 'Z') ||
+                          (*c >= '0' && *c <= '9') || *c == '.' || *c == '_' ||
+                          *c == '-';
+            if (!name_ok) {
+                fprintf(stderr, "error: --adapter NAME must be 1 to 63 "
+                        "characters of [A-Za-z0-9._-]\n");
+                return 1;
+            }
+            if (n_adapters >= 16) {
+                fprintf(stderr, "error: at most 16 --adapter\n");
+                return 1;
+            }
+            adapter_names[n_adapters] = spec;   // lives for the process
+            adapter_paths[n_adapters++] = eq + 1;
+        }
         else if (!strcmp(a, "--lora-scale"))
             lora_scale = (float)float_arg(a, NEXT, 0, FLT_MAX);
         else if (!strcmp(a, "--train")) train_path = NEXT;
@@ -1541,6 +1892,121 @@ int main(int argc, char **argv) {
         return record_sign(sign_record, sign_key, record_prev) ? 0 : 1;
     }
     if (check_record) return record_check(check_record, trust_key);
+    if (check_bundle) return bundle_check(check_bundle, trust_key);
+    if (sign_model || model_key) {
+        if (!sign_model || !model_key) {
+            fprintf(stderr, "error: --sign-model MODEL and --model-key KEY.pem go "
+                    "together\n");
+            return 1;
+        }
+        char def[4096];
+        const char *out = model_sig;
+        if (!out) {
+            if (strlen(sign_model) + 5 > sizeof def) {
+                fprintf(stderr, "error: --sign-model: path too long\n");
+                return 1;
+            }
+            snprintf(def, sizeof def, "%s.sig", sign_model);
+            out = def;
+        }
+        oms_sign_info si;
+        if (!oms_sign_file(sign_model, model_key, out, &si)) return 1;
+        printf("signed: %s (%s/%s, %d file%s, subject sha256 %s, key hint %s)\n",
+               out, si.curve, si.hash, si.n_resources,
+               si.n_resources == 1 ? "" : "s", si.subject_digest, si.key_hint);
+        return 0;
+    }
+    if (export_bundle || bundle_out) {
+        if (!export_bundle || !bundle_out) {
+            fprintf(stderr, "error: --export-bundle RECEIPT and --bundle-out "
+                    "DIR go together\n");
+            return 1;
+        }
+        bundle_opts bo = { .receipt = export_bundle, .out_dir = bundle_out,
+                           .model_sig = model_sig, .model_pubkey = model_pubkey,
+                           .sign_key = sign_key };
+        return bundle_export(&bo);
+    }
+    if (watermark_keygen) {
+        uint8_t key[32];
+        char id[17];
+        if (!os_random(key, sizeof key)) {
+            fprintf(stderr, "error: --watermark-keygen: the OS random generator "
+                    "is unavailable\n");
+            return 1;
+        }
+        bool ok = wm_key_write(watermark_keygen, key, id);
+        memset(key, 0, sizeof key);
+        if (!ok) {
+            fprintf(stderr, "error: --watermark-keygen: cannot create %s (an "
+                    "existing key is never overwritten)\n", watermark_keygen);
+            return 1;
+        }
+        printf("{\"schema_version\":\"xyntetik.runner.watermark_key.v1\","
+               "\"key_id\":\"%s\"}\n", id);
+        fprintf(stderr, "watermark key -> %s (keep it private; receipts name it "
+                "by its id %s)\n", watermark_keygen, id);
+        return 0;
+    }
+    // R1.8.1: one key for everything this process marks, replays or scores
+    wm_key wmk;
+    memset(&wmk, 0, sizeof wmk);
+    bool wm_on = false;
+    if (watermark_path) {
+        char werr[256];
+        if (!wm_key_load(watermark_path, &wmk, werr, sizeof werr)) {
+            fprintf(stderr, "error: --watermark: %s\n", werr);
+            return 1;
+        }
+        wm_on = true;
+    }
+    char *detect_text = NULL;
+    if (detect_path) {
+        if (!wm_on) {
+            fprintf(stderr, "error: --detect-watermark needs --watermark KEY\n");
+            return 1;
+        }
+        size_t dn = 0;
+        char *dbuf = read_file(detect_path, &dn);
+        if (!dbuf) {
+            fprintf(stderr, "error: --detect-watermark: cannot read %s\n", detect_path);
+            return 1;
+        }
+        jv *dj = json_parse(dbuf, dn);
+        if (dj && !strcmp(jv_str(jv_get(dj, "schema_version"), ""),
+                          "xyntetik.runner.transcript.v1")) {
+            // a record carries its own token ids and the prompt as context:
+            // no tokenizer, no model
+            int np = 0, no = 0;
+            int32_t *pt = json_token_ids(jv_get(jv_get(dj, "prompt"), "tokens"), &np);
+            int32_t *ot = json_token_ids(jv_get(jv_get(dj, "output"), "tokens"), &no);
+            int32_t *all = pt && ot ? malloc(sizeof *all * (size_t)(np + no + 1)) : NULL;
+            int rc = 3;
+            if (!all) {
+                fprintf(stderr, "error: --detect-watermark: %s has malformed token "
+                        "arrays\n", detect_path);
+            } else {
+                memcpy(all, pt, sizeof *all * (size_t)np);
+                memcpy(all + np, ot, sizeof *all * (size_t)no);
+                jv *rw = jv_get(dj, "watermark");
+                rc = wm_report(&wmk, all, np + no, np, "record",
+                               rw ? jv_str(jv_get(rw, "key_id"), "") : NULL);
+            }
+            free(pt); free(ot); free(all);
+            jv_free(dj);
+            free(dbuf);
+            return rc;
+        }
+        jv_free(dj);
+        if (!model_path) {
+            free(dbuf);
+            fprintf(stderr, "error: --detect-watermark: %s is not a transcript "
+                    "record; scoring a text needs -m MODEL (its tokenizer)\n",
+                    detect_path);
+            return 1;
+        }
+        detect_text = dbuf;   // tokenized once the model is loaded
+    }
     if (keygen_path) {
         uint8_t seed[32];
         char pub[SIGN_PUBHEX_CAP];
@@ -1770,7 +2236,7 @@ int main(int argc, char **argv) {
     if (!prompt && !interactive && !serve && !quant_out && !merge_out &&
         !context_out &&
         !bench_json && !tool_info && !train_path && !dpo_path && !verify_path &&
-        !decide_path) {
+        !decide_path && !detect_text && !resume_path) {
         fprintf(stderr, "error: need -p PROMPT, -i, or --serve\n");
         usage(argv[0]);
         return 1;
@@ -1788,6 +2254,108 @@ int main(int argc, char **argv) {
         return 1;
     }
     if (!seed_given) smp.rng = (uint64_t)time(NULL) ^ 0x9E3779B97F4A7C15ull;
+    // R1.3 session images: suspend (--suspend-after N with --session-out),
+    // resume (--resume), fork (--resume with --fork-seed). They image the
+    // host KV cache and the solo step loop, so they run on the CPU, without
+    // speculation, and outside serve / interactive / verify.
+    if (session_out || suspend_after || resume_path || fork_seed_given) {
+        const char *why = NULL;
+        if (suspend_after && !session_out)
+            why = "--suspend-after N needs --session-out FILE";
+        else if (fork_seed_given && !resume_path)
+            why = "--fork-seed forks a session and needs --resume FILE";
+        else if (resume_path && prompt)
+            why = "--resume continues an image's prompt; give no -p";
+        else if (serve || interactive || verify_path || transcript_path)
+            why = "session images are for one-shot runs (not --serve, -i, "
+                  "--verify or --transcript)";
+        else if (draft_path || mtp_on || draft_lookup)
+            why = "session images run the solo step loop: no --draft, --mtp or "
+                  "--draft-lookup";
+        else if (watermark_path)
+            why = "an image does not carry a watermark key, so a resume could not "
+                  "continue a marked generation: no --watermark";
+        else if (!resume_path && n_predict < 1)
+            why = "session images need a finite generation budget (-n N, N >= 1)";
+        else if (!resume_path && suspend_after >= n_predict)
+            why = "--suspend-after N must stop before the -n budget is spent";
+        if (!why && session_out) {
+            // refused before the load and the generation, not after them;
+            // session_write's O_EXCL still closes the race
+            FILE *ex = fopen(session_out, "rb");
+            if (ex) {
+                fclose(ex);
+                fprintf(stderr, "error: --session-out %s already exists; an "
+                        "image is never overwritten\n", session_out);
+                return 1;
+            }
+        }
+        if (why) { fprintf(stderr, "error: %s\n", why); return 1; }
+        mp.gpu_mode = GPU_OFF;
+    }
+    if (resume_path) {
+        // the image fixes everything that shapes the continuation; a flag
+        // that would change it is refused, not silently overridden
+        const char *fixed = seed_given ? "-s" : n_given ? "-n" : mp.n_ctx ? "-c"
+            : kv_given ? "--kv"
+            : ov.has_temp ? "--temp" : ov.has_top_k ? "--top-k"
+            : ov.has_top_p ? "--top-p" : ov.has_min_p ? "--min-p"
+            : ov.has_repeat_penalty ? "--repeat-penalty" : NULL;
+        if (fixed) {
+            fprintf(stderr, "error: --resume continues under the image's own "
+                    "settings; %s would change them%s\n", fixed,
+                    seed_given ? " (a different continuation is --fork-seed N)" : "");
+            return 1;
+        }
+        if (!session_read(resume_path, &simg)) return 1;
+        const session_meta *sm = &simg.meta;
+        // the image's shape and sampler, as a replay takes a record's
+        mp.n_ctx = sm->n_ctx;
+        mp.kv_q8 = !strcmp(sm->kv_type, "q8");
+        mp.kv_fp4 = !strcmp(sm->kv_type, "fp4");
+        mp.kv_split = !strcmp(sm->kv_type, "k8v4");
+        ov.temp = sm->temp;                     ov.has_temp = true;
+        ov.top_k = sm->top_k;                   ov.has_top_k = true;
+        ov.top_p = sm->top_p;                   ov.has_top_p = true;
+        ov.min_p = sm->min_p;                   ov.has_min_p = true;
+        ov.repeat_penalty = sm->repeat_penalty; ov.has_repeat_penalty = true;
+        smp.rng = fork_seed_given ? fork_seed : sm->rng;
+        if (smp.rng == 0) { fprintf(stderr, "error: --fork-seed must be nonzero\n"); return 1; }
+        if ((json_mode && !sm->json_mode) || (ignore_eos && !sm->ignore_eos)) {
+            fprintf(stderr, "error: --resume: the image was not generated under "
+                    "%s\n", json_mode && !sm->json_mode ? "--json" : "--ignore-eos");
+            session_image_free(&simg);
+            return 1;
+        }
+        json_mode = sm->json_mode;
+        ignore_eos = sm->ignore_eos;
+        n_predict = sm->max_new;
+        if (sm->schema_sha256[0]) {
+            char have[65];
+            if (!schema_file || !schema_file_digest(schema_file, have) ||
+                strcmp(have, sm->schema_sha256) != 0) {
+                fprintf(stderr, "error: --resume: the image was generated under a "
+                        "JSON schema (sha256 %s); give --json-schema naming that "
+                        "schema\n", sm->schema_sha256);
+                return 1;
+            }
+        } else if (schema_file) {
+            fprintf(stderr, "error: --resume: the image was not generated under "
+                    "a schema; --json-schema would change what it continues\n");
+            return 1;
+        }
+        if (suspend_after && suspend_after <= sm->generated) {
+            fprintf(stderr, "error: --suspend-after %d: the image has already "
+                    "generated %d tokens\n", suspend_after, sm->generated);
+            return 1;
+        }
+        if (suspend_after >= sm->max_new) {
+            fprintf(stderr, "error: --suspend-after %d must stop before the "
+                    "image's budget of %d tokens is spent\n", suspend_after,
+                    sm->max_new);
+            return 1;
+        }
+    }
 
     // ---- notarized inference D2: parse the transcript BEFORE the load so
     // the record's profile (ctx, kv, gpu) and config (sampler, seed) shape
@@ -1873,6 +2441,46 @@ int main(int argc, char **argv) {
                 fprintf(stderr, "UNVERIFIABLE: chain link broken: the record's prev "
                         "is not the chain hash of %s\n", transcript_prev);
                 jv_free(vrec); return 3;
+            }
+        }
+        {
+            // R1.8.2: a marked record replays only under its own key, and an
+            // unmarked one never under a key
+            jv *vw = jv_get(vrec, "watermark");
+            const char *rk = vw ? jv_str(jv_get(vw, "key_id"), "") : NULL;
+            const char *why = NULL;
+            char wbuf[256];
+            if (rk && strcmp(jv_str(jv_get(vw, "scheme"), ""), WM_SCHEME) != 0) {
+                snprintf(wbuf, sizeof wbuf, "the output was watermarked with scheme "
+                         "\"%.40s\", which this build does not replay",
+                         jv_str(jv_get(vw, "scheme"), ""));
+                why = wbuf;
+            } else if (rk && !wm_on) {
+                snprintf(wbuf, sizeof wbuf, "the output was watermarked (key id "
+                         "%.16s); replaying it needs that key: verify with "
+                         "--watermark naming it", rk);
+                why = wbuf;
+            } else if (rk && strcmp(rk, wmk.id) != 0) {
+                snprintf(wbuf, sizeof wbuf, "--watermark key id %s is not the "
+                         "record's watermark key id (%.16s)", wmk.id, rk);
+                why = wbuf;
+            } else if (!rk && wm_on) {
+                why = "--watermark given, but the record's output was not "
+                      "watermarked";
+            }
+            if (why) {
+                fprintf(stderr, "UNVERIFIABLE: %s\n", why);
+                jv_free(vrec);
+                return 3;
+            }
+        }
+        {
+            char why[512];
+            if (!replay_constraints_ok(vrec, json_mode, schema_file, ignore_eos,
+                                       why, sizeof why)) {
+                fprintf(stderr, "UNVERIFIABLE: %s\n", why);
+                jv_free(vrec);
+                return 3;
             }
         }
         jv *prof = jv_get(vrec, "profile"), *cfg = jv_get(vrec, "config");
@@ -2208,6 +2816,38 @@ int main(int argc, char **argv) {
     // reader, so any of them is an instruction that would otherwise be
     // silently dropped — the same discard --chat-template was fixed for, in a
     // place where the user believes they asked for a different file on disk.
+    if (receipts_dir && !serve) {
+        fprintf(stderr, "error: --receipts writes one receipt per served "
+                "request and needs --serve (use --transcript for a one-shot "
+                "run)\n");
+        return 1;
+    }
+    if (receipts_keep && !receipts_dir) {
+        fprintf(stderr, "error: --receipts-keep needs --receipts DIR\n");
+        return 1;
+    }
+    if (receipts_dir) {
+        receipts_cfg rcfg = { .dir = receipts_dir, .keep = receipts_keep,
+                              .sign_key = sign_key };
+        if (!receipts_configure(&rcfg)) return 1;
+    }
+    if (kv_snapshots && !serve) {
+        fprintf(stderr, "error: --kv-snapshots saves and loads named contexts "
+                "and needs --serve\n");
+        return 1;
+    }
+    if (kv_snapshots && !kvsnap_configure(kv_snapshots, sign_key)) return 1;
+    if (n_adapters && !serve) {
+        fprintf(stderr, "error: --adapter routes adapters per request and "
+                "needs --serve (use --lora for a one-shot run)\n");
+        return 1;
+    }
+    if (n_adapters && lora_path) {
+        fprintf(stderr, "error: --adapter and --lora are exclusive: --lora "
+                "installs one adapter for every request; serve it as --adapter "
+                "NAME=PATH and name it per request instead\n");
+        return 1;
+    }
     const char *orphan = prune_experts ? "--prune-experts"
                        : remove_sublayer ? "--remove-sublayer"
                        : type_plan     ? "--type-plan"
@@ -2223,6 +2863,7 @@ int main(int argc, char **argv) {
     tokenizer tok;
     oms_policy signing = { model_sig, model_pubkey, require_signed_model };
     char model_sig_json[512] = "";   // load-time OMS verdict for the receipt
+    char adapter_sig_json[512] = ""; // and the adapter's (R1.2.3)
     // A reservation is a budget for the whole server, so the -c 0 auto-fit has
     // to know how many slots will divide it. Set before the FIRST load, not
     // just for the slots server_run creates: slot 0 is this model, and a slot 0
@@ -2232,6 +2873,7 @@ int main(int argc, char **argv) {
     if (train_path) mp.gpu_mode = GPU_OFF;   // --train is the CPU path (v1)
     if (serve) mp.n_seq = parallel;
     mp.lora_path = lora_path;
+    mp.lora_sig = lora_sig;
     mp.lora_scale = lora_scale;
     if (!registry) {
         double t1 = now_s();
@@ -2240,6 +2882,17 @@ int main(int argc, char **argv) {
         if (!oms_check_model(load_path, &signing, &osr)) return 1;
         if (osr.status[0])
             oms_result_json(&osr, model_sig_json, sizeof model_sig_json);
+        // R1.2.3: an adapter changes what is served, so the same trusted key
+        // and the same "required" apply to it, with its own bundle
+        oms_result aosr;
+        memset(&aosr, 0, sizeof aosr);
+        if (lora_path) {
+            oms_policy apol = { lora_sig, model_pubkey, require_signed_model };
+            if (!oms_check_artifact(lora_path, &apol, "adapter", &aosr))
+                return 1;
+            if (aosr.status[0])
+                oms_result_json(&aosr, adapter_sig_json, sizeof adapter_sig_json);
+        }
         if (!tokenizer_init(&tok, &m.gf)) return 1;
         // serve mode: the registry model's own pool is one thread by design
         // (slots create their pools), so the honest number here is the count
@@ -2284,14 +2937,23 @@ int main(int argc, char **argv) {
             const char *env_backend = m.gpu ? "cuda" : "cpu";
 #endif
             char env_line[256];
+            int env_state = ENV_UNCLASSIFIED;
             bool ok = envelope_gate(load_path, RUNNER_VERSION, env_backend,
                                     force_uncertified, env_line,
-                                    (int)sizeof env_line, NULL);
+                                    (int)sizeof env_line, &env_state);
             if (env_line[0]) fprintf(stderr, "%s\n", env_line);
             if (!ok) {
                 cli_cleanup(NULL, NULL, &tok, &m);
                 return 1;
             }
+            // The server's /v1/runner/provenance reports the verdicts THIS
+            // load ran under, so they are recorded here, where they were made.
+            if (serve)
+                provenance_note_load(&(provenance_load){
+                    .model_path = load_path,
+                    .adapter_path = lora_path, .adapter_scale = lora_scale,
+                    .signature = &osr, .adapter_signature = &aosr,
+                    .envelope_state = env_state, .envelope_detail = env_line });
         }
         // Discovery registry: run modes announce themselves so the tray (or
         // any controller) can list every live runner. Best-effort — failure
@@ -2344,6 +3006,9 @@ int main(int argc, char **argv) {
     }
 
     if (serve) {
+        if (wm_on) server_set_watermark(&wmk);
+        if (n_adapters) server_set_adapters(adapter_names, adapter_paths,
+                                            n_adapters, lora_scale);
         if (registry) {
             // swap-mode server: models come and go at runtime; the record
             // carries none and readers ask /v1/models live
@@ -2377,6 +3042,11 @@ int main(int argc, char **argv) {
     e.ignore_eos = ignore_eos;
     e.json_mode = json_mode;
     e.progress = true;
+    wm_state cli_wm = { .key = wm_on ? &wmk : NULL };
+    if (wm_on) {
+        e.wm_prepare = wm_prepare;
+        e.wm_ud = &cli_wm;
+    }
     if (draft_path) {
         e.dm = spec_draft_load(draft_path, &m, &mp);
         if (e.dm) {
@@ -2875,6 +3545,21 @@ int main(int argc, char **argv) {
         return rc;
     }
 
+    if (detect_text) {
+        // R1.8.2 over a text: tokenized without BOS by the model's own
+        // tokenizer, scored from the first position with a full context
+        size_t cap = strlen(detect_text) + 16;
+        int32_t *dt = cap <= (size_t)INT_MAX ? malloc(sizeof *dt * cap) : NULL;
+        int nt = dt ? tok_encode(&tok, detect_text, dt, (int)cap, false, false) : -1;
+        int rc = 3;
+        if (nt < 0) fprintf(stderr, "error: --detect-watermark: out of memory\n");
+        else rc = wm_report(&wmk, dt, nt, WM_CONTEXT, "text", NULL);
+        free(dt);
+        free(detect_text);
+        cli_cleanup(&e, toks, &tok, &m);
+        free(owned_prompt);
+        return rc;
+    }
     if (decide_path) {
         // Typed decisions (R13.10): the same handler the server route uses,
         // one request per line, one response per line; a bad line is an
@@ -2965,16 +3650,13 @@ int main(int argc, char **argv) {
                 model_forward_batch_keep(&m, toks + pos, k, pos)) {
                 for (int b = 0; b < k; b++) {
                     float *lg = model_spec_row_logits(&m, b);
-                    // raw-logit log-softmax, the lp_capture_pre arithmetic:
-                    // float max, double sum of expf, float result
-                    float mx = lg[0];
+                    // raw-logit log-softmax through the one normalizer every
+                    // reported logprob uses (engine_logsumexp, engine.h)
                     int arg = 0;
                     for (int i = 1; i < m.n_vocab; i++)
-                        if (lg[i] > mx) { mx = lg[i]; arg = i; }
-                    double sum = 0;
-                    for (int i = 0; i < m.n_vocab; i++)
-                        sum += expf(lg[i] - mx);
-                    float lp = lg[toks[pos + b + 1]] - (mx + logf((float)sum));
+                        if (lg[i] > lg[arg]) arg = i;
+                    float lp = lg[toks[pos + b + 1]] -
+                               engine_logsumexp(lg, m.n_vocab);
                     printf("%s%.9g", emitted++ ? "," : "", (double)lp);
                     total += lp;
                     if (arg == toks[pos + b + 1]) top1++;
@@ -2983,14 +3665,10 @@ int main(int argc, char **argv) {
             } else {
                 float *lg = model_forward(&m, toks[pos], pos);
                 if (!lg) { fail = 1; break; }
-                float mx = lg[0];
                 int arg = 0;
                 for (int i = 1; i < m.n_vocab; i++)
-                    if (lg[i] > mx) { mx = lg[i]; arg = i; }
-                double sum = 0;
-                for (int i = 0; i < m.n_vocab; i++)
-                    sum += expf(lg[i] - mx);
-                float lp = lg[toks[pos + 1]] - (mx + logf((float)sum));
+                    if (lg[i] > lg[arg]) arg = i;
+                float lp = lg[toks[pos + 1]] - engine_logsumexp(lg, m.n_vocab);
                 printf("%s%.9g", emitted++ ? "," : "", (double)lp);
                 total += lp;
                 if (arg == toks[pos + 1]) top1++;
@@ -3100,6 +3778,71 @@ int main(int argc, char **argv) {
         return 0;
     }
 
+    if (resume_path) {
+        // R1.3: continue a suspended generation from its image, exactly
+        const session_meta *sm = &simg.meta;
+        char have[65];
+        const char *why = NULL;
+        if (!envelope_file_sha256(load_path, have) || strcmp(have, sm->model_sha256))
+            why = "-m is not the model the image was made with (model sha256)";
+        else if (e.model_key != sm->model_key)
+            why = "this engine's model key (context, KV type, geometry) is not the "
+                  "image's";
+        else if (simg.n_vocab != m.n_vocab ||
+                 simg.state_n != prefix_cache_entry_bytes(&m, sm->n_tokens))
+            why = "the image's state does not fit this model";
+        if (!why && !engine_state_load(&e, simg.tokens, sm->n_tokens, simg.state))
+            why = "this model's KV layout (a ring or tied-V cache) cannot be resumed";
+        if (why) {
+            fprintf(stderr, "error: --resume %s: %s\n", resume_path, why);
+            session_image_free(&simg);
+            CLI_FAIL;
+        }
+        char bsha[65] = "";
+        char *exe = plat_executable_path();
+        if (exe) envelope_file_sha256(exe, bsha);
+        free(exe);
+        if (strcmp(bsha, sm->binary_sha256) != 0)
+            fprintf(stderr, "session: resumed by another binary than the one that "
+                    "suspended it; the continuation is exact only on that one\n");
+        engine_gen_resume(&e, sm->max_new, sm->n_prompt, sm->generated);
+        float *lg = malloc(sizeof(float) * (size_t)m.n_vocab);
+        if (!lg) { session_image_free(&simg); CLI_FAIL; }
+        memcpy(lg, simg.logits, sizeof(float) * (size_t)m.n_vocab);
+        fprintf(stderr, "resumed %s: %d tokens, %d of %d generated%s\n",
+                resume_path, sm->n_tokens, sm->generated, sm->max_new,
+                fork_seed_given ? " (forked: new rng seed)" : "");
+        double st0 = now_s();
+        const float *last = NULL;
+        bool live = session_steps(&e, lg, suspend_after, stdout_cb, NULL, &last);
+        bool suspended = live && e.gen_count < e.gen_max;
+        int rc = 0;
+        if (session_out) {
+            if (live) {
+                if (!session_image_out(session_out, &e, load_path, last,
+                                       sm->n_prompt, sm->max_new, json_mode,
+                                       ignore_eos, schema_file))
+                    rc = 1;
+            } else {
+                fprintf(stderr, "error: session: the generation ended before the "
+                        "image point; no image written\n");
+                rc = 1;
+            }
+        }
+        if (!suspended) engine_gen_end(&e, stdout_cb, NULL, NULL);
+        printf("\n");
+        double gt = now_s() - st0;
+        int n_new = e.gen_count - sm->generated;
+        if (e.hit_stop && !json_mode) fprintf(stderr, "[end of text]\n");
+        fprintf(stderr, "\nresumed gen: %d tok, %.2f tok/s\n", n_new,
+                n_new / (gt > 0 ? gt : 1e-9));
+        free(lg);
+        session_image_free(&simg);
+        cli_cleanup(&e, toks, &tok, &m);
+        free(owned_prompt);
+        return rc;
+    }
+
     if (!interactive) {
         // one-shot completion
         char *p = unescape(prompt);
@@ -3131,9 +3874,35 @@ int main(int argc, char **argv) {
         // verbatim as they stream
         uint64_t t_seed = smp.rng;
         outcap_t ocap = { .echo = true };
-        n_gen = engine_generate(&e, logits, n_predict,
-                                transcript_path ? outcap_cb : stdout_cb,
-                                transcript_path ? &ocap : NULL, &gtime);
+        int s_rc = 0;
+        if (session_out) {
+            // R1.3: the step loop, stopped at --suspend-after or the budget,
+            // and imaged there while the generation is live
+            double st0 = now_s();
+            engine_gen_begin(&e, n_predict);
+            const float *last = NULL;
+            bool live = session_steps(&e, logits, suspend_after, stdout_cb, NULL, &last);
+            bool suspended = live && e.gen_count < e.gen_max;
+            if (live) {
+                if (!session_image_out(session_out, &e, load_path, last, n_prompt,
+                                       n_predict, json_mode, ignore_eos, schema_file))
+                    s_rc = 1;
+            } else {
+                // an ended generation has nothing left to resume; asked for an
+                // image and given none is a failure, not a quiet success
+                fprintf(stderr, "error: session: the generation ended before the "
+                        "image point; no image written\n");
+                s_rc = 1;
+            }
+            // a suspended document stays open: closing it is the resumed
+            // run's business, at its own end
+            n_gen = suspended ? e.gen_count : engine_gen_end(&e, stdout_cb, NULL, NULL);
+            gtime = now_s() - st0;
+        } else {
+            n_gen = engine_generate(&e, logits, n_predict,
+                                    transcript_path ? outcap_cb : stdout_cb,
+                                    transcript_path ? &ocap : NULL, &gtime);
+        }
         printf("\n");
         if (e.hit_stop && !json_mode) fprintf(stderr, "[end of text]\n");
         fprintf(stderr, "\nprompt: %d tok, %.2f tok/s | gen: %d tok, %.2f tok/s\n",
@@ -3150,6 +3919,30 @@ int main(int argc, char **argv) {
             }
             char gname[128] = "";
             if (m.gpu) gpu_available(gname, sizeof gname);
+            // R1.1.2: what shaped the output beyond the sampler, so --verify
+            // replays it under the same constraints or refuses it
+            char cons[256] = "", schema_sha[65] = "";
+            size_t cn = 0;
+            if (schema_file && !schema_file_digest(schema_file, schema_sha))
+                snprintf(schema_sha, sizeof schema_sha, "unknown");
+            if (schema_file)
+                cn += (size_t)snprintf(cons + cn, sizeof cons - cn,
+                                       "{\"kind\":\"json_schema\",\"sha256\":\"%s\"}",
+                                       schema_sha);
+            if (json_mode)
+                cn += (size_t)snprintf(cons + cn, sizeof cons - cn,
+                                       "%s{\"kind\":\"json_mode\"}", cn ? "," : "");
+            if (ignore_eos)
+                cn += (size_t)snprintf(cons + cn, sizeof cons - cn,
+                                       "%s{\"kind\":\"ignore_eos\"}", cn ? "," : "");
+            char cons_json[260] = "";
+            if (cn) snprintf(cons_json, sizeof cons_json, "[%s]", cons);
+            char wm_json[192] = "";
+            if (wm_on)
+                snprintf(wm_json, sizeof wm_json,
+                         "{\"scheme\":\"%s\",\"key_id\":\"%s\",\"layers\":%d,"
+                         "\"context\":%d,\"marked_tokens\":%d}", WM_SCHEME,
+                         wmk.id, WM_LAYERS, WM_CONTEXT, cli_wm.marked);
             char *transcript_exe = plat_executable_path();
             transcript_info ti = {
                 .out_path = transcript_path,
@@ -3194,6 +3987,9 @@ int main(int argc, char **argv) {
                 .spec_lk_drafted = e.spec_st.lk_drafted,
                 .spec_lk_accepted = e.spec_st.lk_accepted,
                 .model_sig_json = model_sig_json[0] ? model_sig_json : NULL,
+                .adapter_sig_json = adapter_sig_json[0] ? adapter_sig_json : NULL,
+                .constraints_json = cons_json[0] ? cons_json : NULL,
+                .watermark_json = wm_json[0] ? wm_json : NULL,
             };
             if (ocap.failed) {
                 fprintf(stderr, "error: transcript: out of memory capturing "
@@ -3209,7 +4005,7 @@ int main(int argc, char **argv) {
         free(p);
         cli_cleanup(&e, toks, &tok, &m);
         free(owned_prompt);
-        return t_rc;
+        return t_rc | s_rc;
     }
 
     // interactive chat

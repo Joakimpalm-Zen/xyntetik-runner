@@ -18,22 +18,25 @@ def completion_validation_client(report):
         yield Client(server, report)
 
 
-def test_text_completion_rejects_unsupported_echo(completion_validation_client):
+def test_text_completion_refuses_streamed_echo(completion_validation_client):
+    # echo is served since R4.8 (tests/test_echo_logprobs.py), buffered only:
+    # neither wire shape has a streamed field for the prompt's entries
     completion_validation_client.expect_400({
         "prompt": "hello",
         "max_tokens": 1,
         "echo": True,
-    }, name="completion-echo-unsupported", contains="echo",
+        "stream": True,
+    }, name="completion-echo-stream-refused", contains="echo",
         path="/v1/completions")
 
 
-def test_text_completion_rejects_unsupported_prompt_logprobs(
+def test_text_completion_refuses_out_of_range_prompt_logprobs(
         completion_validation_client):
     completion_validation_client.expect_400({
         "prompt": "hello",
         "max_tokens": 1,
-        "prompt_logprobs": 1,
-    }, name="completion-prompt-logprobs-unsupported",
+        "prompt_logprobs": 21,
+    }, name="completion-prompt-logprobs-range",
         contains="prompt_logprobs", path="/v1/completions")
 
 

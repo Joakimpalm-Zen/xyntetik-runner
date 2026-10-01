@@ -41,4 +41,12 @@ bool decide_score(engine *e, const char *prompt, const char *const *options, int
 // request. `model_name` is echoed in the response.
 int decide_handle(engine *e, const jv *req, const char *model_name, sbuf *out, const char **err);
 
+// POST /v1/rerank (R10.3.1): {query, documents[], top_n?, return_documents?,
+// instruction?, rendering?} to a ranking. Each document is scored as a
+// two-answer question (yes / no) with the scorer above; `tmpl` is the served
+// model's chat template for the default chat-v1 rendering. Returns the HTTP
+// status; *err names the problem when not 200.
+int rerank_handle(engine *e, const jv *req, const char *model_name, int tmpl,
+                  sbuf *out, const char **err);
+
 #endif

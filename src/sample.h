@@ -28,6 +28,14 @@ typedef struct {
     // preset; a constraint still refuses a scripted id it would not admit.
     const int32_t *script;
     int script_n, script_at;
+    // A reweighting of the filtered candidates just before the draw, or NULL:
+    // the tournament watermark (watermark.h, R1.8.1), installed per pick by
+    // the engine's hook so this file never links it. It receives the
+    // candidates' ids and probabilities (summing to 1) and rewrites the
+    // probabilities in place; false is an allocation failure. Greedy decoding
+    // never reaches it.
+    bool (*reweight)(void *ud, const int32_t *ids, float *p, int n);
+    void *reweight_ud;
 } sampler;
 
 // validity filter for constrained sampling; return true if token is allowed

@@ -268,6 +268,13 @@ typedef struct {
     void *prefill_ud;
     // request cancellation, sampled only at complete prefill/decode steps
     bool (*stop)(void *ud);
+    // R1.8.1: the watermark's per-pick hook (watermark.h, wm_prepare), NULL
+    // when off. Called before every pick with the tokens before the one being
+    // picked (hist[0..t)) and the generation's first position; it installs
+    // or clears the sampler's reweight, so the engine never links it.
+    void (*wm_prepare)(void *ud, sampler *s, const int32_t *hist, int start,
+                       int t);
+    void *wm_ud;
     void *stop_ud;
     // identity of everything that decides what this engine's KV bytes mean:
     // the weights, the geometry, the tokenizer and the cache element type.
@@ -360,8 +367,39 @@ bool   engine_mark_turn(engine *e);
 // The request's own stop ids (engine.req_stop_ids): up to 8, replaced whole;
 // n = 0 clears them.
 void   engine_set_request_stops(engine *e, const int *ids, int n);
+// Recompute the engine's model identity (the prefix-cache key) after the
+// model's adapter changed (R8.6); cheap enough to do per adapter switch.
+void   engine_refresh_identity(engine *e);
 // feed tokens (batched); returns last-token logits, or NULL on overflow/stop
 float *engine_feed(engine *e, const int32_t *toks, int n);
+
+// The log-softmax normalizer of one logits row: float max, a double sum of
+// expf(l - max), float result. EVERY logprob the runner reports divides by
+// this one function -- decode-time logprobs, choice_logprobs, prompt scoring
+// and `--score` -- because under -ffast-math the compiler may order the double
+// sum differently in each place it is inlined, and two copies of the same loop
+// then disagree in the last bit (measured: echo against --score, 2026-09-30).
+float  engine_logsumexp(const float *logits, int n);
+
+// Teacher-forced scoring of a prompt (R4.8, echo / prompt_logprobs). The KV
+// is reset and toks fed ONE TOKEN AT A TIME from position 0 -- the solo
+// forward `--score` uses and the sampler sees at decode, not the batched
+// prefill, whose rows are not bit-identical to it -- and position i (1..n-1)
+// records log P(toks[i] | toks[..i]) with the sampler's log-softmax
+// arithmetic, the token's 1-based rank (1 + the count of strictly larger
+// logits) and, when top_n > 0, the top_n alternatives best first. Entry 0 is
+// unused: nothing precedes the first token. Returns the logits after the
+// last token, ready for generation, or NULL on context overflow, a stop
+// request or an allocation failure (ps is then empty).
+typedef struct {
+    int      n, top_n;   // n = the prompt's token count
+    float   *lp;         // [n]
+    int32_t *rank;       // [n]
+    lp_alt  *top;        // [n * top_n], NULL when top_n == 0
+} prompt_scores;
+float *engine_score_prompt(engine *e, const int32_t *toks, int n, int top_n,
+                           prompt_scores *ps);
+void   prompt_scores_free(prompt_scores *ps);
 // sample until stop/limit, streaming decoded bytes to cb; returns token count
 int    engine_generate(engine *e, float *logits, int max_new,
                        gen_cb cb, void *ud, double *gen_time);
@@ -409,6 +447,25 @@ enum { ENGINE_STEP_DONE = 0, ENGINE_STEP_MORE = 1 };
 int    engine_constraint_truncate(engine *e, int n);
 
 void   engine_gen_begin(engine *e, int max_new);
+
+// ---- session images (R1.3) ----------------------------------------------
+// The live sequence as bytes and back: the KV rows of [0, pos) per layer and
+// the recurrent fold at pos, in the prefix cache's entry layout
+// (prefix_cache_entry_bytes(m, pos) bytes). Load installs n rows and
+// hist[0..n) on a reset engine, leaving it at pos n. Both refuse a ring or
+// tied-V cache (no contiguous rows).
+size_t engine_state_bytes(const engine *e);
+bool   engine_state_save(const engine *e, uint8_t *dst);
+bool   engine_state_load(engine *e, const int32_t *hist, int n, const uint8_t *src);
+// Resume a suspended generation: with the state of n_prompt + n_generated
+// tokens loaded, begin a generation of max_new tokens exactly as
+// engine_gen_begin would have at the prompt's end, then replay the
+// n_generated tokens through the bookkeeping a step runs after its pick
+// (penalty window, constraint validator, reasoning and loop trackers,
+// counts) without sampling or forwarding. The next engine_gen_step then
+// continues as if the generation had never stopped; the caller restores
+// the sampler's rng and supplies the next-token logits.
+void   engine_gen_resume(engine *e, int max_new, int n_prompt, int n_generated);
 int    engine_gen_step(engine *e, const float *logits, gen_cb cb, void *ud,
                        int32_t *next_tok, int *next_pos);
 int    engine_gen_end(engine *e, gen_cb cb, void *ud, double *gen_time);
@@ -467,6 +524,45 @@ void   prefix_cache_clear(void);
 // host bytes one n-token snapshot of this model would occupy
 size_t prefix_cache_entry_bytes(const model_t *m, int n);
 
+// ---- named contexts (R10.4) ---------------------------------------------
+//
+// The prefix cache serves repeated prefixes blindly: a snapshot survives
+// only while traffic keeps it warm, and nothing says which prefix a caller
+// meant. A NAMED context is a snapshot a client asked for: the prompt it
+// names is prefilled once, pinned (no TTL, never evicted by traffic, still
+// counted in the cache budget) and forked by any request whose tokens start
+// with it. A request that names a context its prompt does not start with is
+// told so rather than silently served cold.
+#define PFX_CTX_NAME_MAX 64
+enum {
+    PFX_CTX_UNKNOWN     = -1,   // no context of that name for this model
+    PFX_CTX_MISMATCH    = -2,   // it exists but the tokens do not extend it
+    PFX_CTX_NOSPACE     = -3,   // the budget cannot hold it beside other pins
+    PFX_CTX_UNSUPPORTED = -4,   // ring or tied-V KV: no contiguous snapshot
+    PFX_CTX_BADNAME     = -5,   // 1..64 of [A-Za-z0-9._:-]
+    PFX_CTX_CORRUPT     = -6,   // a snapshot file that is not one whole entry
+};
+bool prefix_context_name_ok(const char *name);
+// Pin the KV the slot holds for toks[0, n) (e->pos must be n, e->hist toks)
+// under `name`, replacing a context of that name. Returns n or a PFX_CTX_*.
+int  prefix_context_pin(engine *e, const char *name, const int32_t *toks, int n);
+// Does context `name` (for e's model) strictly prefix toks[0, n)? Returns its
+// token count, or PFX_CTX_UNKNOWN / PFX_CTX_MISMATCH (*at = the first token
+// that differs) / PFX_CTX_BADNAME.
+int  prefix_context_check(const engine *e, const char *name,
+                          const int32_t *toks, int n, int *at);
+bool prefix_context_release(const char *name);
+typedef struct {
+    char     name[PFX_CTX_NAME_MAX + 1];
+    int      tokens;
+    size_t   bytes;
+    uint64_t hits;
+    double   age_s;
+    uint64_t model_key;
+} prefix_context_info;
+// Fills up to cap entries; returns the total count of named contexts.
+int  prefix_context_list(prefix_context_info *out, int cap);
+
 // ---- snapshot persistence (runner.prefix.v1) --------------------------
 //
 // A warm prefix cache is worth minutes of prefill and it dies with the
@@ -493,5 +589,22 @@ size_t prefix_cache_entry_bytes(const model_t *m, int n);
 // does not fit the live budget.
 int prefix_cache_save(const char *path);
 int prefix_cache_load(const char *path, const engine *e);
+
+// R1.12: one named context as a runner.prefix.v1 file of exactly one entry
+// (prefix_cache_save's format), and back. Export returns the token count or
+// PFX_CTX_UNKNOWN / PFX_CTX_BADNAME / -1 on an I/O error. Import makes the
+// same checks a cache load makes -- magic, one whole entry, the body digest,
+// this engine's model_key and the entry size its KV type implies -- and
+// pins the entry under `name`, remembering `origin` (a JSON object naming the
+// snapshot, <= 255 bytes) for the receipts of requests built on it. Returns
+// the token count, PFX_CTX_UNKNOWN (unreadable), PFX_CTX_CORRUPT,
+// PFX_CTX_MISMATCH (another model, context or KV type), PFX_CTX_NOSPACE or
+// PFX_CTX_BADNAME.
+int  prefix_context_export(const char *name, const char *path);
+int  prefix_context_import(const engine *e, const char *name, const char *path,
+                           const char *origin);
+// The origin a pinned context was imported with; false when it was built by
+// prefill (or is not pinned).
+bool prefix_context_origin(const char *name, char *out, size_t cap);
 
 #endif // RUNNER_ENGINE_H
