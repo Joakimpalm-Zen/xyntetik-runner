@@ -8,6 +8,18 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **A streamed tool call no longer splits a character.** A character whose
+  UTF-8 bytes arrive as separate tokens was sent one argument delta per
+  byte, each lone byte escaped to U+FFFD, so a client assembled well-formed
+  JSON holding the wrong text: `"\ufffd\ufffdsa gick ut"` for "Åsa gick
+  ut". Present in v0.5.7 on the generic JSON tool envelope (found by a byte
+  capture of granite-4.1-3b writing Swedish, 4 of 4 runs); buffered
+  responses and content deltas were always right. The argument stream now
+  holds an unfinished sequence until the next token completes it, as content
+  deltas do. `tests/test_stream_utf8.py` holds content and tool arguments
+  whole on the chat, Responses and Messages streams, on a byte vocabulary
+  that splits every non-ASCII character.
+
 - **Review of the 2026-10-01 batch: nine defects fixed, one feature parked.**
   - *Parked: batch-invariant CPU prefill (R1.5).* It claimed the property
     for "the CPU"; it holds on x86 and not on arm64. On an M1 `make test`

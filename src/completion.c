@@ -82,6 +82,9 @@ typedef struct {
     // At most 3 bytes can ever be pending: a 4-byte sequence missing one.
     char  u8_pend[2][4];
     int   u8_pend_n[2];
+    // the same hold for a streamed tool call's argument bytes
+    char  a8_pend[4];
+    int   a8_pend_n;
     // Reasoning accounting for the Responses `usage` block. Counted per
     // TOKEN, not per emit: one token can be split across channels by the
     // think splitter, and a token that contributed any reasoning bytes is a
@@ -508,6 +511,7 @@ static void rec_call_end(gen_ctx *g) {
 static int sink_call_begin(void *ud, const char *name) {
     gen_ctx *g = ud;
     if (g->dead) return 1;
+    g->a8_pend_n = 0;
     rec_call_begin(g, name);
     if (g->api == API_RESPONSES || g->api == API_MESSAGES) {
         // the name identifies the item/block, so it must be known before that
@@ -530,8 +534,41 @@ static int sink_call_begin(void *ud, const char *name) {
     return chunk_send(g, &c);
 }
 
+static int sink_call_args_raw(gen_ctx *g, const char *b, int n);
+
+// A streamed call's argument bytes arrive a token at a time, and characters
+// do not respect token boundaries: a character whose UTF-8 bytes were
+// separate tokens went out one delta per byte, each lone byte escaped to
+// U+FFFD, and the client assembled well-formed JSON holding the wrong text
+// ("\ufffd\ufffdsa" for "Åsa"; v0.5.7, granite, the generic envelope). The
+// unfinished tail is held until the next bytes complete it, exactly as
+// send_text_delta does for content.
 static int sink_call_args(void *ud, const char *b, int n) {
     gen_ctx *g = ud;
+    if (g->dead) return 1;
+    int held = g->a8_pend_n;
+    if (!held && u8_incomplete_tail(b, n) == 0)
+        return sink_call_args_raw(g, b, n);
+    int total = held + n;
+    char *joined = malloc((size_t)total + 1);
+    if (!joined) {
+        // keep the model's order, as send_text_delta does on the same failure
+        g->a8_pend_n = 0;
+        int rc = sink_call_args_raw(g, g->a8_pend, held);
+        return rc ? rc : sink_call_args_raw(g, b, n);
+    }
+    memcpy(joined, g->a8_pend, (size_t)held);
+    memcpy(joined + held, b, (size_t)n);
+    int tail = u8_incomplete_tail(joined, total);
+    int emit = total - tail;
+    g->a8_pend_n = tail;
+    if (tail) memcpy(g->a8_pend, joined + emit, (size_t)tail);
+    int rc = emit > 0 ? sink_call_args_raw(g, joined, emit) : 0;
+    free(joined);
+    return rc;
+}
+
+static int sink_call_args_raw(gen_ctx *g, const char *b, int n) {
     if (g->dead) return 1;
     if (g->raw_on && g->call_open) sb_esc(&g->calls, b, (size_t)n);
     if (g->api == API_RESPONSES) return resp_delta(g, "function_call", b, n);
@@ -548,6 +585,12 @@ static int sink_call_args(void *ud, const char *b, int n) {
 static int sink_call_end(void *ud) {
     gen_ctx *g = ud;
     int rc = 0;
+    // a sequence the model never finished is truncated: it goes out as it is
+    if (g->a8_pend_n) {
+        int held = g->a8_pend_n;
+        g->a8_pend_n = 0;
+        sink_call_args_raw(g, g->a8_pend, held);
+    }
     rec_call_end(g);
     if (g->api == API_RESPONSES) rc = resp_close_item(g);
     else if (g->api == API_MESSAGES) rc = anth_close_block(g);
