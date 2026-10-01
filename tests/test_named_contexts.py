@@ -92,10 +92,13 @@ def test_a_forked_context_answers_exactly_as_a_cold_prompt(runner_bin, model):
         assert tel["context"] == {"id": "inv-sys", "tokens": n}
         assert tel["prompt_cached_tokens"] == n
         assert tel["prompt_reuse"] == "prefix_cache"
-        # the same bytes and the same numbers as the cold prefill
+        # the same bytes as the cold prefill, and the same numbers to within
+        # the last digit: the fork feeds the suffix at another batch width
+        # than the cold prompt, and CPU prefill is not batch-invariant on
+        # every host (an AVX-512 native build read -4.33079 against -4.330789)
         assert warm["choices"][0]["text"] == cold["choices"][0]["text"]
-        assert warm["choices"][0]["logprobs"]["token_logprobs"] == \
-            cold["choices"][0]["logprobs"]["token_logprobs"]
+        assert warm["choices"][0]["logprobs"]["token_logprobs"] == pytest.approx(
+            cold["choices"][0]["logprobs"]["token_logprobs"], abs=1e-5)
         st, lst = _req(srv, "GET", "/v1/runner/contexts")
         assert st == 200
         (entry,) = lst["data"]

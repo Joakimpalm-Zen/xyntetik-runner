@@ -28,6 +28,15 @@
 #include <stdlib.h>
 #include <string.h>
 
+// MinGW has no setenv/unsetenv; an empty value removes the variable there
+#ifdef _WIN32
+#define env_set(k, v) _putenv_s(k, v)
+#define env_unset(k)  _putenv_s(k, "")
+#else
+#define env_set(k, v) setenv(k, v, 1)
+#define env_unset(k)  unsetenv(k)
+#endif
+
 enum { N_POS = 600, N_CTX = 1024, N_BATCH_CHUNK = 64 };
 
 typedef struct { bool q8, fp4, k8v4, ring, tied; } opts;
@@ -41,8 +50,8 @@ static bool load(model_t *m, const char *path, const opts *o, int threads) {
     p.kv_q8 = o->q8;
     p.kv_fp4 = o->fp4;
     p.kv_split = o->k8v4;
-    if (o->ring) setenv("RUNNER_KV_RING", "1", 1); else unsetenv("RUNNER_KV_RING");
-    if (o->tied) setenv("RUNNER_TIEDV", "1", 1); else unsetenv("RUNNER_TIEDV");
+    if (o->ring) env_set("RUNNER_KV_RING", "1"); else env_unset("RUNNER_KV_RING");
+    if (o->tied) env_set("RUNNER_TIEDV", "1"); else env_unset("RUNNER_TIEDV");
     return model_load(m, path, &p);
 }
 

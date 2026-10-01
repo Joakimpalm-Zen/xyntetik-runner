@@ -149,10 +149,12 @@ def test_a_loaded_snapshot_is_the_memory(runner_bin, fx, saved, tmp_path):
         assert ctx["snapshot"]["kv_sha256"] == saved["snap"]["kv_sha256"]
         assert ctx["snapshot"]["signed_by"] == fx["pk"]
         warm = _answer(srv, context_id="mem2")
-    # the loaded KV answers exactly what a cold prefill answers
+    # the loaded KV answers what a cold prefill answers: the same bytes, the
+    # numbers to within the last digit (see test_named_contexts: a fork and a
+    # cold prompt feed at different batch widths)
     assert warm["choices"][0]["text"] == saved["cold"]["choices"][0]["text"]
-    assert warm["choices"][0]["logprobs"]["token_logprobs"] == \
-        saved["cold"]["choices"][0]["logprobs"]["token_logprobs"]
+    assert warm["choices"][0]["logprobs"]["token_logprobs"] == pytest.approx(
+        saved["cold"]["choices"][0]["logprobs"]["token_logprobs"], abs=1e-5)
     tel = warm["runner_telemetry"]
     assert tel["prompt_cached_tokens"] == saved["ctx"]["tokens"]
     # the receipt names the snapshot it started from, and replays
