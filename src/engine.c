@@ -1738,9 +1738,15 @@ static bool constraint_token_ok(engine *e, int id, bool schema) {
     // at half its budget with nothing in content (measured 2026-10-02 on
     // Qwen3.5-0.8B and 4B under json_object: 100 of 200 tokens, all
     // reasoning, finish "length"). The half that is left is for the payload.
+    // Nor is any other control token, save the model's own close tag: they
+    // decode to no bytes, so they never start the payload, and granite-4.2-8b
+    // spent the whole second half of its budget on them (content still
+    // empty, the same sweep). The close tag is admitted once: taking it
+    // moves the phase on (constraint_control_accept).
     if (is_stop(e, id) || tok_is_control(e->tok, id))
         return e->constraint_phase == CP_THINK ||
-               (e->constraint_phase == CP_AFTER_THINK && !is_stop(e, id)) ||
+               (e->constraint_phase == CP_AFTER_THINK && id == e->think_end_id &&
+                !is_stop(e, id)) ||
                constraint_done(e, schema) ||
                // A trailing raw value (Muse's to=user free-text answer) can
                // only ever end at the model's own stop token: its byte
@@ -2080,7 +2086,14 @@ static int constraint_finish_think(engine *e, bool schema,
 
 static int constraint_control_accept(engine *e, int tok, bool schema,
                                      gen_cb cb, void *ud) {
-    if (e->constraint_phase != CP_THINK || tok != e->think_end_id) return 0;
+    if (tok != e->think_end_id) return 0;
+    if (e->constraint_phase == CP_AFTER_THINK) {
+        // the model's own close after the engine's: nothing is left to
+        // close, and from here only the payload is admitted
+        e->constraint_phase = CP_OUTPUT;
+        return 0;
+    }
+    if (e->constraint_phase != CP_THINK) return 0;
     return constraint_finish_think(e, schema, cb, ud);
 }
 
