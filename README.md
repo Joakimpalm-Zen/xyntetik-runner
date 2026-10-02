@@ -933,8 +933,9 @@ tensor missing without a declaration is still `error: missing tensor`, and
 a declaration whose tensors are still present is refused by name. A removed
 attention reserves no KV rows, so the cache shrinks by that block's share at
 every context length (the `-v` banner lists `sublayers removed`). Limits,
-each refused rather than approximated: the CPU path only (the device decode
-loops still drive every block; pass `--gpu off`), dense blocks only (MoE
+each refused rather than approximated: the CPU and Metal paths only (the
+CUDA decode loops still drive every block; pass `--gpu off` there), dense
+blocks only (MoE
 FFNs, the hybrid SSM families, gemma-4 E-series shared-KV/per-layer
 embeddings, fused-QKV exports and NextN heads are declined by name), one
 head width across the file (a non-zero entry that differs from the rest is
