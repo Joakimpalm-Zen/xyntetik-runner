@@ -325,9 +325,10 @@ FAMILIES = {
         note="llama3 framing with a leading bos and trimmed content",
         tokenizer=("Lucie-7B-Instruct-Q4_K_M.gguf",)),
     "mistral-nemo": Family(
-        "mistral", ("hf", "mistralai/Mistral-Nemo-Instruct-2407"),
-        note="detected as mistral (the v0.3 form) on the pinned file; the "
-             "runner also has a mistral-nemo family",
+        "mistral-nemo", ("hf", "mistralai/Mistral-Nemo-Instruct-2407"),
+        note="the publisher's current template, which the runner detects as "
+             "mistral-nemo; the pinned GGUF embeds an OLDER template that "
+             "detects as the v0.3 form (an artifact-freshness matter, R4.22.7)",
         tool_family=True,
         tokenizer=("Mistral-Nemo-Instruct-2407-Q4_K_M.gguf",),
         cannot={"consecutive-user": ALTERNATE_AFTER_SYS,
