@@ -232,3 +232,36 @@ def test_continuation_rendering_refusals(server):
     # raw-v1 still needs its question text
     _post(server, {"state": STATE, "rendering": "raw-v1",
                    "questions": [{"options": ["a", "b"]}]}, expect=400)
+
+
+def test_a_score_does_not_depend_on_what_the_slot_served_before(server):
+    """R10.3.3. A question's prompt starts with the request's state, and its
+    rows used to come from wherever the slot's KV stood: an earlier request's,
+    or the previous question's. Which rows were reused decides how wide a
+    batch the rest is fed in, and CPU prefill is not batch-invariant, so a
+    logprob moved in its last digits with the slot's history and with the
+    order of the questions. The state is now fed alone, once per request."""
+    # Short questions on purpose: the fixture's tokens are bytes, and the
+    # difference shows when what follows the reused rows is fed in a batch
+    # narrower than eight (the solo dot) rather than inside a wide one.
+    opts = ["jumps", "sleeps", "jumps over", "barks loudly"]
+    qa = {"question": "a?", "options": opts}
+    qb = {"question": "b?", "options": ["the dog", "the fox"]}
+
+    def lps(body, i):
+        d = body["decisions"][i]
+        return dict(zip(d["options"], d["logprobs"]))
+
+    first = _post(server, {"state": STATE, "questions": [qa, qb]})
+    # other work on the slot: another state, then this state with one
+    # question, then the questions in the other order
+    _post(server, {"state": "an entirely different passage about rivers and "
+                            "bridges and the towns between them",
+                   "questions": [{"question": "what is it about",
+                                  "options": ["rivers", "cars"]}]})
+    alone = _post(server, {"state": STATE, "questions": [qa]})
+    swapped = _post(server, {"state": STATE, "questions": [qb, qa]})
+    again = _post(server, {"state": STATE, "questions": [qa, qb]})
+    assert lps(alone, 0) == lps(first, 0)
+    assert lps(swapped, 1) == lps(first, 0) and lps(swapped, 0) == lps(first, 1)
+    assert lps(again, 0) == lps(first, 0) and lps(again, 1) == lps(first, 1)
