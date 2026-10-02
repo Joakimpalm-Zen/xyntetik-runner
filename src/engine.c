@@ -536,6 +536,14 @@ typedef struct pfx_entry {
     // R1.12.2: the snapshot a pinned context was imported from (a JSON
     // object), empty when it was built by prefill
     char      origin[256];
+    // R1.12.4: an export writes the entry to disk WITHOUT the cache lock, so
+    // a multi-GB snapshot no longer stalls every slot's prefix lookup for the
+    // length of a disk write. `readers` counts exports in flight; a drop while
+    // one runs unlinks the entry and leaves the freeing to the last reader
+    // (`dropped`). An entry's buffers are never written after it is stored,
+    // so a reader needs no lock to read them.
+    int       readers;
+    bool      dropped;
 } pfx_entry;
 
 static struct {
@@ -558,11 +566,24 @@ static void pfx_defaults(void) {
     PFX.ttl    = env_f64("RUNNER_PREFIX_CACHE_TTL", 0.0, 1e9, 600.0);
 }
 
+static void pfx_free_entry(pfx_entry *e) {
+    free(e->toks); free(e->kv); free(e);
+}
+
 static void pfx_drop(pfx_entry **pp) {
     pfx_entry *e = *pp;
     *pp = e->next;
     PFX.bytes -= e->bytes;
-    free(e->toks); free(e->kv); free(e);
+    if (e->readers > 0) e->dropped = true;   // the last reader frees it
+    else pfx_free_entry(e);
+}
+
+// An export is done reading `e` without the lock: free it if it was dropped
+// meanwhile and this was the last reader.
+static void pfx_release_reader(pfx_entry *e) {
+    pthread_mutex_lock(&PFX.mu);
+    if (--e->readers == 0 && e->dropped) pfx_free_entry(e);
+    pthread_mutex_unlock(&PFX.mu);
 }
 
 static void pfx_expire(double now) {
@@ -1135,14 +1156,17 @@ int prefix_context_export(const char *name, const char *path) {
         free(tmp);
         return PFX_CTX_UNKNOWN;
     }
+    pfx_entry *p = *pp;
+    p->readers++;
+    pthread_mutex_unlock(&PFX.mu);
+    // From here the entry is read without the lock (see `readers`).
     FILE *f = fopen(tmp, "wb");
     if (!f) {
-        pthread_mutex_unlock(&PFX.mu);
         fprintf(stderr, "prefix: cannot write %s\n", tmp);
+        pfx_release_reader(p);
         free(tmp);
         return PFX_CTX_IO;
     }
-    const pfx_entry *p = *pp;
     uint32_t count = 1;
     uint64_t key = p->key, bytes = p->bytes, digest = 0xcbf29ce484222325ull;
     int32_t n = p->n;
@@ -1154,7 +1178,7 @@ int prefix_context_export(const char *name, const char *path) {
     digest ^= pfx_digest(p->toks, sizeof(int32_t) * (size_t)n);
     digest *= 0x100000001b3ull;
     digest ^= pfx_digest(p->kv, p->bytes);    digest *= 0x100000001b3ull;
-    pthread_mutex_unlock(&PFX.mu);
+    pfx_release_reader(p);
     ok = ok && wr(f, &digest, sizeof digest);
     if (fclose(f) != 0) ok = false;
     if (!ok || !plat_replace_file(tmp, path)) {

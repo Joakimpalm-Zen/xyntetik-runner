@@ -8,6 +8,11 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **Exporting a context snapshot no longer stalls the server.** The
+  export held the prefix-cache lock across the whole disk write, so a
+  multi-GB snapshot blocked every slot's prefix lookup until it finished.
+  The entry is now read without the lock under a reader count, and a
+  release that arrives meanwhile frees it when the export is done.
 - **A second slot of a CUDA server no longer claims the weights again.**
   Slots share one upload of the model, but the VRAM claim each slot makes
   before loading asked for the whole file, so with `--parallel 2` on a
