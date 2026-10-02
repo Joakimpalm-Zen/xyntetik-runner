@@ -8,6 +8,18 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **`make sweep-thinking`: the real-model sweep as a repeatable job
+  (R4.12.27).** The roster of thinking and tool-protocol families is checked
+  in (`scripts/sweep-rosters/thinking.json`, paths under
+  `$RUNNER_SWEEP_MODELS`), `family-sweep.py --only cpu|gpu` selects a half,
+  and the exit code tells a scheduler what happened: 0 clean, 1 an engine
+  FAIL, 2 a rostered model missing (a run that tested nothing does not
+  pass).
+- **CUDA says when i-quants will prefill on the scalar kernel (R4.12.28).**
+  On an architecture whose tensor-core prefill is not promoted, a model with
+  codebook i-quant matrices now prints, at load, how many there are and the
+  two ways out (`RUNNER_CUDA_TC=1`, `--gpu off`), instead of leaving it to a
+  prompt that does not return.
 - **KV snapshots load only from a trusted key (R1.12.3).** A manifest was
   verified against the key it names, so an unsigned one, or one signed by
   anyone, loaded as well, even on a server started with `--sign-key`. A

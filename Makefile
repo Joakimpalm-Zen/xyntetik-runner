@@ -2387,6 +2387,23 @@ release-check: runner
 test-truncation: runner test.gguf
 	$(PYTHON) scripts/truncation-benchmark.py --model test.gguf --assert
 
+# Real models through every surface (scripts/family-sweep.py). Not part of
+# `make test`: it needs a shelf of real GGUFs and, for the gpu rows, a device.
+# The roster is the set of families whose behaviour a fixture cannot model:
+# thinking blocks, native tool protocols, constrained turns (R4.12.27; every
+# defect of 2026-10-02 passed every fixture test). Exit 0 clean, 1 an engine
+# FAIL, 2 a model missing from the shelf.
+#   make sweep-thinking RUNNER_SWEEP_MODELS=/path/to/models SWEEP_BACKENDS=cpu,gpu
+SWEEP_BACKENDS ?= cpu
+SWEEP_OUT      ?= family-sweep-out
+SWEEP_THREADS  ?= 0
+.PHONY: sweep-thinking
+sweep-thinking: runner
+	@test -n "$(RUNNER_SWEEP_MODELS)" || { echo "error: set RUNNER_SWEEP_MODELS to the model shelf"; exit 2; }
+	RUNNER_SWEEP_MODELS="$(RUNNER_SWEEP_MODELS)" $(PYTHON) scripts/family-sweep.py \
+		--roster scripts/sweep-rosters/thinking.json --only $(SWEEP_BACKENDS) \
+		--threads $(SWEEP_THREADS) --out-dir $(SWEEP_OUT)
+
 # Optional ecosystem gate. Install the pinned Python and Node dependencies in
 # tests/compatibility first; Runner itself remains dependency-free.
 compat-consumers: runner test.gguf
