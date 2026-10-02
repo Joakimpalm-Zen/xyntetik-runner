@@ -28,7 +28,7 @@ import json
 
 from harness import ProtocolError
 
-# Thane's real tool surface (xyntetik_loadout.ARG_KEYS) as of this writing.
+# Thane's real tool surface (its argument-key table) as of this writing.
 # A representative subset: one no-arg tool, one single-arg, one multi-arg
 # with optionals, one whose argument is *named* like a schema keyword.
 THANE_TOOLS = {

@@ -478,3 +478,24 @@ def test_release_workflow_steps_are_shell_not_powershell():
             if stripped.startswith(cmdlet) or stripped.startswith(f"{cmdlet} "):
                 offenders.append(f"{n}: {stripped[:70]}")
     assert not offenders, "PowerShell cmdlet on a shell step (wrap it in `powershell -Command`):\n" + "\n".join(offenders)
+
+
+def test_private_markers_match_internals_not_only_names():
+    """R6.8: a text that describes the private repositories without naming
+    them is caught by their internal paths. The examples are assembled here
+    so this file does not itself carry a marker."""
+    import re
+    rx = re.compile("|".join(map(re.escape, check_release.PRIVATE_MARKERS)),
+                    re.I)
+    hits = ["packages" + "/thane/src/app.py",
+            "import xyntetik" + "_loadout",
+            "crates" + "/suite-core/src/lib.rs",
+            "research/archive" + "/suite/docs/plans/x.md",
+            "see BLACKWELL" + "_INVENTORY.md"]
+    for text in hits:
+        assert rx.search(text), text
+    misses = ["xyntetik_runner.shadow", "python/src/xyntetik_runner",
+              "plan item R12.1", "scripts/runner-control.sh",
+              "packages that ship", "the vault of receipts"]
+    for text in misses:
+        assert not rx.search(text), text

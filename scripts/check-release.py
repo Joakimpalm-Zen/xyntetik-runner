@@ -79,14 +79,42 @@ def pyproject_version(path):
 # the wild by the 2026-08-24 review — docs published from a measurement
 # session carried suite paths for a week). The class-level fix is this scan;
 # the instance-level fixes were commit d9557b3.
-PRIVATE_MARKERS = ("xyntetik-suite", "xyntetik-shade")
+#
+# Names alone were not enough (review 2026-09-08): a document can describe
+# the private repositories without naming either, as an assessment written for
+# the shadow-mode work did. The markers below also match their internals: the
+# suite's package and crate paths and its Python module names, and the
+# research ledgers and archive paths of the model project. Plan IDs (R12.1,
+# R8.7.2, ...) are NOT markers: an ID is opaque, and the public docs cite them
+# on purpose. A mechanical scan is a backstop; a reader is the decision.
+_SUITE_PACKAGES = ("thane", "forge", "clu", "coder", "foundation",
+                   "interpreter", "knowledge", "loadout", "platform-core",
+                   "ramp", "runner-control", "toolbox", "tower", "validator",
+                   "vault")
+_SUITE_CRATES = ("agent-runtime", "audit", "code-workflows", "contracts",
+                 "migration", "policy", "projections", "runner-control",
+                 "suite-core", "tools", "vault")
+_SHADE_LEDGERS = ("BLACKWELL_INVENTORY", "MODELS_PROVENANCE",
+                  "ACTIVE_RUNS_PROVENANCE", "SHADOW_EXTRACTION_NARRATIVES",
+                  "TRACKS_ED_WORKORDER", "RESEARCH_STATE")
+# Fixed strings, not one alternation: git grep matches a fixed-string set in
+# one pass, where the same set as a case-insensitive regex took five times as
+# long over the tree.
+PRIVATE_MARKERS = (
+    ("xyntetik-suite", "xyntetik-shade")
+    + tuple("packages/" + p for p in _SUITE_PACKAGES)
+    + tuple("xyntetik_" + p.replace("-", "_") for p in _SUITE_PACKAGES)
+    + tuple("crates/" + c for c in _SUITE_CRATES)
+    + ("research/archive/suite", "research/archive/runner-branches")
+    + _SHADE_LEDGERS)
 
 
 def private_reference_scan():
     try:
         proc = subprocess.run(
-            ["git", "grep", "-l", "-i", "-E", "|".join(PRIVATE_MARKERS),
-             "--", ":!scripts/check-release.py"],
+            ["git", "grep", "-l", "-i", "-F"]
+            + [a for m in PRIVATE_MARKERS for a in ("-e", m)]
+            + ["--", ":!scripts/check-release.py"],
             cwd=ROOT, capture_output=True, text=True, timeout=60)
     except FileNotFoundError:
         # no git on PATH (the Windows msys CI python): the same tree is
