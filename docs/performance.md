@@ -188,6 +188,13 @@ A block of weights staged through threadgroup memory, which is what helped
 the prefill kernel's value phase, made this kernel slower (6.1 tok/s at
 4,321 tokens) and was not kept.
 
+The same grouping was built for the prefill tile (one threadgroup per KV
+head and tile, twenty-four queries sharing each K and V read) and was
+slower: 58.0 tok/s against 63.5 on the 4,321-token prefill, byte-identical
+output. It needs three times the threadgroup memory for the queries and the
+score block, and the prefill kernel is not limited by the KV reads, which
+is what the first tiled kernel had already shown. Not kept.
+
 The restore of a turn from the prefix-cache store on a second pass over the
 same conversation was first read at about 3 s per 700 cached tokens; measured
 again with nothing else loading the machine it is 0.6 to 1.5 s for 225 to
