@@ -66,6 +66,8 @@ bool gpu_moe_ok(void) {
     return false;   // no backend here at all
 }
 
+bool gpu_shared_weights_resident(const model_t *m) { (void)m; return false; }
+
 bool gpu_removed_sublayers_ok(void) { return false; }
 
 bool gpu_eseries_ok(void) {

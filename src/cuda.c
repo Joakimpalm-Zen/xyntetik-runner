@@ -942,6 +942,24 @@ static void split_guard(const gpu_weights *w, const model_t *m) {
     }
 }
 
+// Would gpu_init for this model reuse a resident upload? The VRAM claim made
+// before gpu_init asks this, so a second slot of a server (or a draft of the
+// same file) claims its own KV cache and scratch instead of a second copy of
+// weights it will never upload: `--parallel 2` on a 14B in a 24 GB slice was
+// refused at startup for 10 GB the second slot did not need (2026-10-02).
+// The same match gpu_init makes, under the same lock; a miss is not an error.
+bool gpu_shared_weights_resident(const model_t *m) {
+    uint64_t size = 0, ino = 0;
+    int64_t mtime = 0;
+    if (!m || !m->path || !file_id(m->path, &size, &ino, &mtime)) return false;
+    bool hit = false;
+    pthread_mutex_lock(&g_shared_mu);
+    for (const gpu_weights *w = g_shared; w && !hit; w = w->next)
+        hit = shared_matches(w, m, size, ino, mtime);
+    pthread_mutex_unlock(&g_shared_mu);
+    return hit;
+}
+
 static void shared_destroy(gpu_weights *w) {
     if (!w) return;
     if (w->ctx) cu.CtxSetCurrent(w->ctx);

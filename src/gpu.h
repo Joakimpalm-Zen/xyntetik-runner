@@ -57,6 +57,9 @@ bool   gpu_eseries_ok(void);
 // True when the backend's layer walk omits a removed attention or FFN
 // (--remove-sublayer) per block; false makes the loader refuse the offload.
 bool   gpu_removed_sublayers_ok(void);
+// True when gpu_init would reuse device weights already uploaded for this file
+// and configuration (CUDA's shared-weight registry); false elsewhere.
+bool   gpu_shared_weights_resident(const model_t *m);
 // test hook for the TC tolerance gate: force the tensor-core GEMM opt-in on
 // (1) or off (0) regardless of RUNNER_CUDA_TC; -1 returns to the env default.
 // A no-op on backends without a TC path (Metal, CPU-only builds).

@@ -1127,6 +1127,9 @@ bool gpu_moe_ok(void) {
 
 // A block whose attention or FFN was removed (--remove-sublayer) is encoded
 // without that branch: gpu_forward_many skips it per block.
+// Metal maps the file; there is no device copy of the weights to share.
+bool gpu_shared_weights_resident(const model_t *m) { (void)m; return false; }
+
 bool gpu_removed_sublayers_ok(void) { return true; }
 
 bool gpu_eseries_ok(void) {

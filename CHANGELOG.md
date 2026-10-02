@@ -8,6 +8,12 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **A second slot of a CUDA server no longer claims the weights again.**
+  Slots share one upload of the model, but the VRAM claim each slot makes
+  before loading asked for the whole file, so with `--parallel 2` on a
+  14B a busy 24 GB card refused the second slot at startup for 10 GB it
+  never used. A resident upload now counts as paid; the slot claims its
+  KV cache and scratch.
 - **The default command runs StableLM again on a machine with a GPU.**
   `--gpu auto` (the default, and the only GPU setting) refused a LayerNorm
   model with "rerun with --gpu off", so `runner -m stablelm-2.gguf` failed

@@ -872,8 +872,11 @@ static bool model_vram_claim(model_t *m, const model_params *p, size_t kv_bytes)
     // and the same fixed margin cuda.c budgets for context + JIT + activations.
     // An estimate is the right resolution here — it decides fit, and the exact
     // figure replaces it at commit time.
-    uint64_t need = model_cuda_weight_estimate(m, p) +
-                    (uint64_t)kv_bytes * 2 + (512ull << 20);
+    // A second instance of a file already on the device (another slot of
+    // this server) shares that upload, so it claims no weights of its own.
+    uint64_t weights = gpu_shared_weights_resident(m)
+                     ? 0 : model_cuda_weight_estimate(m, p);
+    uint64_t need = weights + (uint64_t)kv_bytes * 2 + (512ull << 20);
     if (p->reserve_vram_pct > 0) {
         uint64_t cap = (uint64_t)vtotal / 100 * (uint64_t)p->reserve_vram_pct;
         if (cap < need) need = cap;   // --reserve-vram already caps the ask
