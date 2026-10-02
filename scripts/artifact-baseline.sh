@@ -73,8 +73,18 @@ wait_port() {  # port seconds
     i=$((i + 1)); [ "$i" -ge "$2" ] && return 1; sleep 1
   done
 }
+port_busy() {
+  "$PY" -c "import socket,sys; s=socket.create_connection(('127.0.0.1',$1),1)" 2>/dev/null
+}
 serve() {  # name port gpu threads model -> pid in SRV_PID
   local name=$1 port=$2 gpu=$3 threads=$4 model=$5
+  SRV_PID=
+  # Something already listening here would be scored in this model's name.
+  if port_busy "$port"; then
+    note "$name: port $port is already in use; not started, its steps are skipped"
+    printf '%s\t%s\t%s\n' "$name/port-$port-busy" 98 0 >> "$STEPLOG"
+    return 1
+  fi
   # shellcheck disable=SC2086
   $PIN "$RUNNER" --serve --no-tray -m "$model" -c "$CTX" --port "$port" \
       --gpu "$gpu" -t "$threads" > "$OUT/$name.server.log" 2>&1 &
@@ -82,6 +92,12 @@ serve() {  # name port gpu threads model -> pid in SRV_PID
   if ! wait_port "$port" 900; then
     note "$name: server did not come up (see $OUT/$name.server.log)"
     kill "$SRV_PID" 2>/dev/null; SRV_PID=
+    return 1
+  fi
+  # the listener has to be the process started here, not one that won the port
+  if ! kill -0 "$SRV_PID" 2>/dev/null; then
+    note "$name: the server started here exited, yet port $port answers; skipped"
+    SRV_PID=
     return 1
   fi
 }
@@ -108,18 +124,24 @@ fi
 llama_arm() {
   for tag in original derived; do
     f=$BL_ORIGINAL; [ $tag = derived ] && f=$BL_DERIVED
-    if ! skipped divergence; then
+    if ! skipped divergence && { port_busy 18201 || port_busy 18202; }; then
+      note "$tag: token_divergence's ports 18201/18202 are in use; step skipped"
+    elif ! skipped divergence; then
       step "$tag/divergence-vs-llama.cpp" "$OUT/$tag.divergence.log" \
         "$PY" scripts/token_divergence.py --model "$f" \
           --reference "$BL_LLAMA_SERVER" --runner "$RUNNER" \
           --threads "$CPU_THREADS" --ctx "$CTX" --tokens 64
     fi
     if ! skipped llama-protocol; then
+      if port_busy 18321; then
+        note "$tag: port 18321 is already in use; llama.cpp protocol step skipped"
+        continue
+      fi
       # shellcheck disable=SC2086
       $PIN "$BL_LLAMA_SERVER" -m "$f" -c "$CTX" --port 18321 --host 127.0.0.1 \
           -t "$CPU_THREADS" --jinja > "$OUT/$tag.llama-server.log" 2>&1 &
       lp=$!
-      if wait_port 18321 900; then
+      if wait_port 18321 900 && kill -0 "$lp" 2>/dev/null; then
         step "$tag/tool-protocol-llama.cpp" "$OUT/$tag.tool-protocol-llama.log" \
           "$PY" scripts/tool-protocol-check.py --base-url http://127.0.0.1:18321 \
             --model-file "$f" --label "$tag llama.cpp ${BL_LLAMA_VERSION:-}" \
