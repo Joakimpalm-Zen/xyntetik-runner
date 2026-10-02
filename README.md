@@ -1981,8 +1981,9 @@ blocks, and the CPU-versus-GPU gap with the adapter is no wider than without it 
 max |Δlogprob| 1.110e-3 against 1.255e-3, Qwen2.5-1.5B Q4_K_M, RTX 3070; Metal: mean
 3.0e-4 against 3.1e-4, SmolLM2-135M Q8_0 with a rank-8 adapter on all 210 projections,
 M1). On Metal a block with an adapter decodes on the split path, without the fused
-front kernel, so on a very small model decode slows (117 to 44 tok/s on that 135M,
-still above the CPU's 37) while prefill barely moves (1,250 to 1,150 tok/s). Fails
+front kernel, so decode slows: 117 to 44 tok/s on that 135M (still above the CPU's 37),
+and 9.8 to 8.3 tok/s on Llama-3.2-3B Q4_K_M with a rank-16 adapter on Q and V of every
+block (the CPU decodes it at 5.7). Prefill barely moves in either case. Fails
 closed by name on shape/rank mismatches, unknown targets, recurrent/gemma-4-MoE
 architectures, and an adapter on a routed-expert FFN that the device path cannot reach,
 rather than serving a model that ignored the adapter on its offloaded blocks. A zero adapter is gated byte-identical to the bare base; a real

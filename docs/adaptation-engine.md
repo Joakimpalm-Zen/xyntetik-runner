@@ -91,8 +91,12 @@ Metal applies the same delta since 2026-10-02 (`k_lora_a`, `k_lora_b` in
 above plus an adapter on every projection of a block against the merged
 reference, and CPU-versus-Metal generation equality through a batched prefill
 (`tests/test_lora.py`). A block that carries an adapter decodes on the split
-path, not the fused front kernel, which a 135M model notices (117 to 44
-tok/s) and a model whose weight pass dominates does not.
+path, not the fused front kernel. A 135M model notices that most (117 to 44
+tok/s). On Llama-3.2-3B Q4_K_M with a rank-16 adapter on the Q and V
+projections of all 28 blocks (M1, 1,157-token prompt, 64 tokens): decode
+9.8 to 8.3 tok/s, prefill unchanged (65.6 and 70.0 tok/s, within run-to-run
+spread), against 5.7 tok/s decode and 25 to 27 tok/s prefill on the CPU
+with or without the adapter.
 
 Refuses rather than degrades, in four places. A backend whose adapter
 kernels are missing fails the load with a sentence saying so instead of
