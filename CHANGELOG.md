@@ -8,6 +8,13 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **SentencePiece references for three tokenizer rows (R6.2.2).** Mistral
+  v0.3, Phi-3.5 and Salamandra now gate on the SentencePiece model each
+  publisher trained with, where the runner matches every string that does not
+  spell a special token; their earlier "divergences" were the publishers'
+  `tokenizer.json` disagreeing with those models, and stay visible as an
+  informational column. `difftok.py --spm-model` captures such a reference,
+  and `difftok` reads a GGUF header-only.
 - **`--type-plan-strict` (RI-3).** An opt-in that fails a `--type-plan`
   rewrite before any tensor data is written when a rule would be declined or
   fall back; the default still reports such rules and builds the file.

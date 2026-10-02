@@ -3721,11 +3721,21 @@ Current high-signal caveats include:
 - **The 2026-09-02 Blackwell matrix** (`docs/compat-reports/0.4.5-2026-09-02-blackwell.json`,
   all 25 files then pinned present, every executable class run) is the
   current ledger. Its executed tokenizer differentials pass on 7 models
-  and differ on 4: Mistral-7B-v0.3 (44/721, almost all leading-whitespace strings),
+  and differed on 4: Mistral-7B-v0.3 (44/721, almost all leading-whitespace strings),
   Phi-3.5-mini (2/721, around a literal `<s>` in text), Lucie-7B (190/721)
-  and Salamandra-7B (16/721, special-token spellings in plain text). Those
-  are tokenizer-fidelity gaps, recorded as failures and under investigation;
-  the chat and tool checks on the same models pass. Seven cross-engine greedy
+  and Salamandra-7B (16/721, special-token spellings in plain text). Re-read
+  on 2026-10-03 against the SentencePiece model each publisher trained with
+  ([docs/tokenizer-spm-2026-10-03.md](docs/tokenizer-spm-2026-10-03.md)), the
+  first three are not runner defects: the runner matches Mistral's, Phi's and
+  Salamandra's own SentencePiece models on every string that does not spell a
+  special token, and the counts above are those publishers' `tokenizer.json`
+  files disagreeing with their own SentencePiece models. Those rows now gate on
+  the SentencePiece model, with the `tokenizer.json` count kept as an
+  informational column: a server that tokenizes through `tokenizer.json` gives
+  these models different tokens for a leading space than the ones they were
+  trained on. Lucie, which ships only `tokenizer.json` and a custom normalizer
+  the runner does not implement, remains a real gap, deferred until there is
+  demand; the chat and tool checks on all four pass. Seven cross-engine greedy
   misses and the Teuken/TildeOpen chat failures were already in the
   2026-08-15 ledger.
 

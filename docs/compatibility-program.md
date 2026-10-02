@@ -151,6 +151,18 @@ and 11 cases. The tail is enough to reproduce and debug a known divergence; it
 is not enough to certify the other ~700 strings still agree, which is what the
 check is for.
 
+Since 2026-10-03 the Mistral v0.3, Phi-3.5 and Salamandra captures are taken
+from each publisher's SentencePiece model (`difftok.py --spm-model FILE
+--added-tokens tokenizer.json --capture`), the tokenizer the models were
+trained with, and record the model file's sha256 and the rows that spell a
+special token (from the model's control pieces and the tokenizer.json added
+specials). Those rows are reported apart and not gated: the runner reads a
+spelled `<s>` as the special token, the SentencePiece library as text. The
+earlier `tokenizer.json` captures stay beside them as
+`<name>.tokenizer-json.json` and are compared as an informational column
+(`tokenizer_reference_ids_informational` in the manifest), never gated.
+Evidence: [tokenizer-spm-2026-10-03.md](tokenizer-spm-2026-10-03.md).
+
 `scripts/reference_compare.py` gives Runner and llama.cpp equivalent raw
 `/v1/completions` requests and compares exact generated UTF-8 at temperature
 zero. This avoids CLI banners, prompt echo, ANSI output and chat-template

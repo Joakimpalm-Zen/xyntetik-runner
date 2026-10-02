@@ -1,1 +1,2 @@
 tokenizers==0.23.1
+sentencepiece==0.2.2
