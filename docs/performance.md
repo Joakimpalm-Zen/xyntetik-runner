@@ -45,6 +45,63 @@ across thread counts. Scope a shared box with `--reserve-cpu` or pin with `-t`.
 The 100.5s SmolLM2 torture run would now be ~16s. GPU decode is **2.23s**
 (2.6x the fixed CPU), and CPU/GPU top-1 tokens match 0/64.
 
+## 2026-10-02 - The sampler: a constrained token cost more than the model step it followed
+
+A sampler-only microbenchmark (random logits, one pick, M1) showed costs that
+no decode rate had attributed to the sampler:
+
+| pick, 128,256-entry vocabulary | before | after |
+|---|---:|---:|
+| greedy | 445 us | 28 us |
+| top-k 40, top-p, min-p | 1,871 us | 101 us |
+| top-k 40 under a filter that admits half the vocabulary | 16,688 us | 258 us |
+
+Three causes, one per row. Greedy tracked the index inside the loop that
+looks for the maximum, which no compiler vectorises. Top-k copied the whole
+vocabulary into a candidate array and ran a quickselect over it. A
+constrained pick sorted the whole vocabulary, and with top-k off (the
+Llama 3, Mistral, gpt-oss and SmolLM2 presets) it also asked the grammar
+about every entry. A constrained pick is every sampled token of a tool call,
+of a JSON-mode or schema reply, and of any turn that carries a reasoning
+budget or the loop guard.
+
+Now the m best candidates come from one pass with a heap of m, decided on the
+raw logit for almost every entry, and a constrained pick ranks a prefix at a
+time (256, then eight times as many) and stops as soon as the pick is
+settled. With top-k off, "settled" is a bound: the entries not yet ranked
+carry at most the vocabulary's mass minus the mass already ranked, and the
+top-p cutoff, the min-p set or the roulette draw is taken from the prefix
+only when it comes out the same for every denominator in that interval.
+Otherwise the ranking goes on, to the whole vocabulary if it must.
+
+End to end, sampled at temperature 0.8, M1:
+
+| model | unconstrained | `--json` before | `--json` after |
+|---|---:|---:|---:|
+| SmolLM2-135M Q8_0 (Metal) | 172 tok/s | 59 tok/s | 186 tok/s |
+| Llama-3.2-3B Q4_K_M (Metal) | 11.6 tok/s | 8.3 tok/s | 11.7 tok/s |
+
+The before column is a cost per token that does not shrink with the model:
+9.6 ms on a 49k vocabulary and 19.5 ms on 128k. On a GPU, where the model
+step is short, it was most of the token. The same Llama-3.2-3B file on a
+Blackwell MIG slice (CUDA, four CPU threads, the same prompt): 133 tok/s
+unconstrained before and after, sampled `--json` 39.6 tok/s before and
+123.1 after.
+
+The picks are the same picks. The previous implementation, kept as a
+reference object, and the new one agreed on 237,672 of 237,672 cases across
+seven vocabulary sizes from 5 to 49,152 entries (and on 210,744 of 210,744
+with a 128,256-entry vocabulary in the set), five logit shapes (including ties, all-equal and
+NaN-poisoned rows), every combination of the filters, and four constraint
+filters, with the generator state equal after each; where top-k is on, the
+filter is asked about the same candidates in the same order. The harness
+is not in the repository (it links two copies of the sampler);
+`tests/test_sampler.c` pins the properties it checked: a filter that admits
+everything gives the unconstrained pick, a filter that refuses the best 300
+entries gives the pick of a vocabulary without them, greedy returns the
+first of equal maxima, and the filter is asked about top_k candidates, or
+one prefix, never the vocabulary.
+
 ## 2026-10-02 - Metal prefill attention: the columns of a batch share the KV read
 
 Measured on the lab M1 (8 GB) with Llama-3.2-3B-Instruct Q4_K_M, because the
@@ -78,21 +135,74 @@ last bit on the f16, q8, k8v4 and fp4 caches and under a sliding window, and
 | 1,297 tokens | 47.4 tok/s | 64.1 tok/s |
 | 2,431 tokens | 36.2 tok/s | 59.2 tok/s |
 
-The ten-turn conversation, same binary, same turns, first pass on a fresh
-server (records in `docs/agent-turns-2026-10-02/`):
+At 4,321 tokens the tiled kernel still fell to 48.6 tok/s (27.8 one-column),
+and the same one-phase-at-a-time timing gave a different split there: of
+89 s, 39 s outside attention, 7 s scores, 2 s softmax and 41 s values. In
+the value phase a thread owns one output element and walks every row, and
+it read the tile's scores straight from the device, so each threadgroup
+fetched its score table once per element of the head, as eight far-apart
+streams. The scores now go through threadgroup memory a block of 128 rows
+at a time, packed as two four-wide vectors per row; the sums are the same
+additions in the same order. Values 41 s to 18 s, the prefill 48.6 to
+64.3 tok/s, the same bytes out.
 
-| | one column | tiled |
+Four further forms of the value phase were measured on that prompt and none
+moved it (61.7 to 64.8 tok/s): four elements per thread, every thread busy
+on one vector of columns, the V rows staged in threadgroup memory as well,
+and packed four-wide V loads. A 512-row block was slower (57.6). What bounds
+the remaining 18 s is not identified.
+
+The ten-turn conversation, same turns, first pass on a fresh server (records
+in `docs/agent-turns-2026-10-02/`):
+
+| | one column | tiled | tiled, scores in blocks |
+|---|---:|---:|---:|
+| wall time, ten turns | 173.6 s | 116.8 s | 93.9 s |
+| time to first token, median | 14.2 s | 10.4 s | 7.4 s |
+| time to first token, worst turn | 30.1 s | 15.6 s | 13.1 s |
+
+The worst turn in the last column is the first (the model's pages coming
+in); the worst later turn is 10.8 s, at 3,200 tokens of history.
+
+### Decode over a long history: one threadgroup per KV head
+
+Decode attention was timed the same way at 4,321 tokens of context: of a
+150 ms token, 87 ms outside attention, 19 ms scores, 1 ms softmax, 43 ms
+values. `k_attn_chunk_coop` gives every query head its own threadgroups, so
+under grouped-query attention the K and V rows of one KV head are fetched
+once per query head that shares it, three times on Llama 3.2.
+`k_attn_chunk_gqa` runs one threadgroup per KV head and chunk: a K element
+is loaded once and feeds a partial sum per query head, a V element an output
+sum per query head. Per query head the operations and their order are
+`k_attn_chunk_coop`'s, so the partials are the same bytes and the combine
+pass is unchanged (`tests/test_metal_attn_gqa.py`: log-probabilities equal
+to the last bit with the kernel on and off, and red with one query head's
+vector swapped for another's). f16 caches; `RUNNER_METAL_ATTN_GQA=0` pins
+the per-head kernel.
+
+| context | per query head | per KV head |
 |---|---:|---:|
-| wall time, ten turns | 173.6 s | 116.8 s |
-| time to first token, median | 14.2 s | 10.4 s |
-| time to first token, worst turn | 30.1 s | 15.6 s |
+| 347 tokens | 11.0 tok/s | 11.2 tok/s |
+| 1,157 tokens | 9.8 tok/s | 10.4 tok/s |
+| 4,321 tokens | 6.8 tok/s | 8.1 tok/s |
 
-Not changed, and still growing with context: decode attention (10.6 tok/s at
-the first turn, 7.1 at 2,100 tokens of history) and the restore of a turn
-from the prefix-cache store on a second pass over the same conversation
-(about 3 s per 700 cached tokens on this machine). One machine and one
-model; a larger GPU or a wider head count will move the split between the
-phases.
+A block of weights staged through threadgroup memory, which is what helped
+the prefill kernel's value phase, made this kernel slower (6.1 tok/s at
+4,321 tokens) and was not kept.
+
+The same grouping was built for the prefill tile (one threadgroup per KV
+head and tile, twenty-four queries sharing each K and V read) and was
+slower: 58.0 tok/s against 63.5 on the 4,321-token prefill, byte-identical
+output. It needs three times the threadgroup memory for the queries and the
+score block, and the prefill kernel is not limited by the KV reads, which
+is what the first tiled kernel had already shown. Not kept.
+
+The restore of a turn from the prefix-cache store on a second pass over the
+same conversation was first read at about 3 s per 700 cached tokens; measured
+again with nothing else loading the machine it is 0.6 to 1.5 s for 225 to
+2,162 cached tokens, so the first figure was memory pressure, not the
+restore. One machine and one model; a larger GPU or a wider head count will
+move the split between the phases.
 
 ## 2026-09-30 — CPU attention: more threads than heads, and the same bits
 

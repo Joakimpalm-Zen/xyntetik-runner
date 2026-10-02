@@ -1,0 +1,332 @@
+{
+ "gate": "tool-protocol-check",
+ "label": "derived",
+ "started": "2026-10-02T17:08:02+0200",
+ "host": "lab-box",
+ "platform": "Linux-6.12.0-211.16.1.el10_2.x86_64-x86_64-with-glibc2.39",
+ "base_url": "http://127.0.0.1:18301",
+ "model": "Qwen3.8-27B-GSQ-RCO-IQ3_S-recovered.gguf",
+ "model_file": "models/qwen38-recovered/Qwen3.8-27B-GSQ-RCO-IQ3_S-recovered.gguf",
+ "model_sha256": "873df48dd3ecf205f73c29716e80fbe766e4202ef4ed394b2c24607a8628458f",
+ "runner": "./runner",
+ "runner_sha256": "6732bf5616fbb1a219e0e51cb0bf4df15b8a864c77054ffcc508ab1d41a7d83a",
+ "sampling_served": {
+  "preset": "qwen38",
+  "temperature": 1.0,
+  "top_p": 0.95,
+  "top_k": 20,
+  "min_p": 0.0,
+  "repeat_penalty": 1.0
+ },
+ "context": 8192,
+ "overrides": {},
+ "tool_choice": "auto (absent)",
+ "max_tokens": 400,
+ "cases": {
+  "A": {
+   "title": "single call",
+   "prompt": "List the files in the current directory.",
+   "tools": [
+    "bash"
+   ],
+   "modes": {
+    "buffered": {
+     "wall_s": 30.625,
+     "finish_reason": "tool_calls",
+     "content": "",
+     "reasoning": "The user wants to list the files in the current directory. This is a simple request. I should use the bash tool to list the files in the current directory.\n\nLet me use `ls -la` to list the files including hidden ones, or just `ls`.\n",
+     "calls": [
+      {
+       "name": "bash",
+       "arguments": "{\"command\":\"ls -la\"}",
+       "id": "call_0"
+      }
+     ],
+     "usage": {
+      "prompt_tokens": 311,
+      "prompt_tokens_details": {
+       "cached_tokens": 0
+      },
+      "completion_tokens": 85,
+      "total_tokens": 396
+     },
+     "telemetry": {
+      "prompt_cached_tokens": 0,
+      "prompt_forked_tokens": 0,
+      "prompt_eval_tokens": 311,
+      "prefix_cache_saved_seconds": 0.0,
+      "generation_seconds": 22.410189,
+      "generation_tok_s": 3.793,
+      "major_page_faults": 0,
+      "page_fault_counter": "major",
+      "json_mode": false,
+      "schema": false,
+      "speculative": false,
+      "sampling": {
+       "preset": "qwen38",
+       "temperature": 1.0,
+       "top_p": 0.95,
+       "top_k": 20,
+       "min_p": 0.0,
+       "repeat_penalty": 1.0,
+       "seed": 0,
+       "source": {
+        "temperature": "preset",
+        "top_p": "preset",
+        "top_k": "preset",
+        "min_p": "preset",
+        "repeat_penalty": "preset"
+       }
+      },
+      "tool_protocol": {
+       "template": "qwen38",
+       "family": "qwen3_xml",
+       "tools": true,
+       "constrained": false,
+       "parse_only": true
+      },
+      "timing": {
+       "queue_seconds": 3e-05,
+       "tokenize_seconds": 0.00035,
+       "device_wait_seconds": 0.0,
+       "prefill_seconds": 8.213468,
+       "prefill_tokens": 311,
+       "prefill_tok_s": 37.865,
+       "first_visible_seconds": 23.505581
+      },
+      "prompt_reuse": "none"
+     },
+     "result": "PASS",
+     "reasons": []
+    },
+    "stream": {
+     "wall_s": 13.736,
+     "finish_reason": "tool_calls",
+     "content": "",
+     "reasoning": "The user wants to list the files in the current directory. Let's run the `ls` command.\n",
+     "calls": [
+      {
+       "name": "bash",
+       "arguments": "{\"command\":\"ls -la\"}",
+       "id": "call_0"
+      }
+     ],
+     "telemetry": null,
+     "result": "PASS",
+     "reasons": []
+    }
+   }
+  },
+  "B": {
+   "title": "prose and parallel calls",
+   "prompt": "Check whether boss.json, boss.toml and boss.yaml exist anywhere in this project. Use the glob tool for each pattern.",
+   "tools": [
+    "glob",
+    "bash"
+   ],
+   "modes": {
+    "buffered": {
+     "wall_s": 71.57,
+     "finish_reason": "tool_calls",
+     "content": "\n\nI'll check for all three files using glob patterns for each.\n\n",
+     "reasoning": "The user wants to check whether boss.json, boss.toml, and boss.yaml exist somewhere within this project. For each pattern, I need to use the glob tool. Since these are independent of each other, I can call all three at the same time.\n\nLet me think about the glob patterns:\n- boss.json\n- boss.toml\n- boss.yaml\n\nThe glob tool probably takes patterns like **/*.json. In order to search \"somewhere within this project,\" I should probably use patterns like **/boss.json, **/boss.toml, and **/boss.yaml.\n\nLet me try executing all three calls simultaneously.\n",
+     "calls": [
+      {
+       "name": "glob",
+       "arguments": "{\"pattern\":\"**/boss.json\"}",
+       "id": "call_0"
+      },
+      {
+       "name": "glob",
+       "arguments": "{\"pattern\":\"**/boss.toml\"}",
+       "id": "call_1"
+      },
+      {
+       "name": "glob",
+       "arguments": "{\"pattern\":\"**/boss.yaml\"}",
+       "id": "call_2"
+      }
+     ],
+     "usage": {
+      "prompt_tokens": 384,
+      "prompt_tokens_details": {
+       "cached_tokens": 0
+      },
+      "completion_tokens": 234,
+      "total_tokens": 618
+     },
+     "telemetry": {
+      "prompt_cached_tokens": 0,
+      "prompt_forked_tokens": 0,
+      "prompt_eval_tokens": 384,
+      "prefix_cache_saved_seconds": 0.0,
+      "generation_seconds": 61.749194,
+      "generation_tok_s": 3.79,
+      "major_page_faults": 0,
+      "page_fault_counter": "major",
+      "json_mode": false,
+      "schema": false,
+      "speculative": false,
+      "sampling": {
+       "preset": "qwen38",
+       "temperature": 1.0,
+       "top_p": 0.95,
+       "top_k": 20,
+       "min_p": 0.0,
+       "repeat_penalty": 1.0,
+       "seed": 0,
+       "source": {
+        "temperature": "preset",
+        "top_p": "preset",
+        "top_k": "preset",
+        "min_p": "preset",
+        "repeat_penalty": "preset"
+       }
+      },
+      "tool_protocol": {
+       "template": "qwen38",
+       "family": "qwen3_xml",
+       "tools": true,
+       "constrained": false,
+       "parse_only": true
+      },
+      "timing": {
+       "queue_seconds": 5e-06,
+       "tokenize_seconds": 0.000323,
+       "device_wait_seconds": 0.0,
+       "prefill_seconds": 9.817387,
+       "prefill_tokens": 384,
+       "prefill_tok_s": 39.114,
+       "first_visible_seconds": 45.436546
+      },
+      "prompt_reuse": "recurrent_reset"
+     },
+     "result": "PASS",
+     "reasons": []
+    },
+    "stream": {
+     "wall_s": 34.339,
+     "finish_reason": "tool_calls",
+     "content": "",
+     "reasoning": "The user is asking to check whether boss.json, boss.toml, and boss.yaml exist anywhere in the project using the glob tool for each pattern. Let's run three glob calls in parallel.\n",
+     "calls": [
+      {
+       "name": "glob",
+       "arguments": "{\"pattern\":\"**/boss.json\"}",
+       "id": "call_0"
+      },
+      {
+       "name": "glob",
+       "arguments": "{\"pattern\":\"**/boss.toml\"}",
+       "id": "call_1"
+      },
+      {
+       "name": "glob",
+       "arguments": "{\"pattern\":\"**/boss.yaml\"}",
+       "id": "call_2"
+      }
+     ],
+     "telemetry": null,
+     "result": "PASS",
+     "reasons": []
+    }
+   }
+  },
+  "C": {
+   "title": "prose then call",
+   "prompt": "Briefly say what you are about to do, then list the files in the current directory.",
+   "tools": [
+    "bash"
+   ],
+   "modes": {
+    "buffered": {
+     "wall_s": 100.576,
+     "finish_reason": "tool_calls",
+     "content": "\n\nI'll list the files in the current directory.\n\n",
+     "reasoning": "The user is asking me to briefly state what I'm about to do, and then list the files in the current directory. This is a simple request. I should state that I'm listing the files in the current directory, and then use bash to run `ls` to list the files.\n\nThe instructions say: \"Briefly state what you're about to do, then list the files in the current directory.\"\n\nSo my response should be like this: \"I'll list the files in the current directory.\" Then call the tool.\n\nActually, should I make the tool call within the same message? The format is: write a brief explanation, then make the tool call. Since the tool call is a function call, I need to make the call. Let me write the brief description and then invoke bash with `ls -la` or just `ls`.\n\nLet me keep it simple: \"I'll list the files in the current directory.\" Then call bash with the command `ls -la` (or `ls`). The user said \"list the files\" \u2014 `ls -la` would show hidden files too. Either is fine. Let me use `ls -la` for completeness, or plain `ls`. Let me go with `ls -la`.\n\nActually, let me think about what's most appropriate. \"List the files in the current directory\" \u2014 plain `ls` is sufficient, but `ls -la` provides more information. Either works. Let me go with `ls -la`.\n",
+     "calls": [
+      {
+       "name": "bash",
+       "arguments": "{\"command\":\"ls -la\"}",
+       "id": "call_0"
+      }
+     ],
+     "usage": {
+      "prompt_tokens": 322,
+      "prompt_tokens_details": {
+       "cached_tokens": 0
+      },
+      "completion_tokens": 350,
+      "total_tokens": 672
+     },
+     "telemetry": {
+      "prompt_cached_tokens": 0,
+      "prompt_forked_tokens": 0,
+      "prompt_eval_tokens": 322,
+      "prefix_cache_saved_seconds": 0.0,
+      "generation_seconds": 92.111682,
+      "generation_tok_s": 3.8,
+      "major_page_faults": 0,
+      "page_fault_counter": "major",
+      "json_mode": false,
+      "schema": false,
+      "speculative": false,
+      "sampling": {
+       "preset": "qwen38",
+       "temperature": 1.0,
+       "top_p": 0.95,
+       "top_k": 20,
+       "min_p": 0.0,
+       "repeat_penalty": 1.0,
+       "seed": 0,
+       "source": {
+        "temperature": "preset",
+        "top_p": "preset",
+        "top_k": "preset",
+        "min_p": "preset",
+        "repeat_penalty": "preset"
+       }
+      },
+      "tool_protocol": {
+       "template": "qwen38",
+       "family": "qwen3_xml",
+       "tools": true,
+       "constrained": false,
+       "parse_only": true
+      },
+      "timing": {
+       "queue_seconds": 4e-06,
+       "tokenize_seconds": 0.000277,
+       "device_wait_seconds": 0.0,
+       "prefill_seconds": 8.460722,
+       "prefill_tokens": 322,
+       "prefill_tok_s": 38.058,
+       "first_visible_seconds": 91.087819
+      },
+      "prompt_reuse": "recurrent_reset"
+     },
+     "result": "PASS",
+     "reasons": []
+    },
+    "stream": {
+     "wall_s": 19.224,
+     "finish_reason": "tool_calls",
+     "content": "\n\nI'm about to list the files in the current directory.\n\n",
+     "reasoning": "The user wants me to briefly say what I'm going to do, and then list the files in the current directory. Let me do that.\n",
+     "calls": [
+      {
+       "name": "bash",
+       "arguments": "{\"command\":\"ls -la\"}",
+       "id": "call_0"
+      }
+     ],
+     "telemetry": null,
+     "result": "PASS",
+     "reasons": []
+    }
+   }
+  }
+ },
+ "verdict": "PASS",
+ "finished": "2026-10-02T17:12:38+0200"
+}

@@ -1,0 +1,24 @@
+
+== qwen3 / Hermes-4-14B Q4_K_M: NousResearch_Hermes-4-14B-Q4_K_M.gguf (8.4 GB)
+  [gpu]
+    PASS gpu cli greedy
+    PASS gpu cli seeded sampling is reproducible
+    PASS gpu cli transcript replays VERIFIED
+    PASS gpu cli hostile prompts
+    PASS gpu serve chat basic
+    PASS gpu serve stream equals buffered, unicode
+    PASS gpu serve max_tokens 1 and stop sequences
+    PASS gpu serve json mode and strict schema
+    PASS gpu serve tool call required, streamed, tool result, auto
+    PASS gpu serve context near limit and over it
+    PASS gpu serve repeated request reuses KV
+    PASS gpu serve concurrent requests on two slots
+    PASS gpu serve logprobs, echo, prompt_logprobs
+    PASS gpu serve responses and messages surfaces
+    PASS gpu serve runner routes: context, rerank, decide, provenance
+    PASS gpu serve malformed requests
+    PASS gpu serve client hang-up mid-stream
+
+| family | file | PASS | FAIL | NOTE | SKIP |
+|---|---|---|---|---|---|
+| qwen3 / Hermes-4-14B Q4_K_M | NousResearch_Hermes-4-14B-Q4_K_M.gguf | 17 | 0 | 0 | 0 |

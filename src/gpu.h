@@ -54,6 +54,12 @@ bool   gpu_moe_ok(void);
 // and until 0.1.11 the honest answer on Metal was no. Per-model gpu_init()
 // guards still decide the rest (E2B's per-layer FFN widths, for one).
 bool   gpu_eseries_ok(void);
+// True when the backend's layer walk omits a removed attention or FFN
+// (--remove-sublayer) per block; false makes the loader refuse the offload.
+bool   gpu_removed_sublayers_ok(void);
+// True when gpu_init would reuse device weights already uploaded for this file
+// and configuration (CUDA's shared-weight registry); false elsewhere.
+bool   gpu_shared_weights_resident(const model_t *m);
 // test hook for the TC tolerance gate: force the tensor-core GEMM opt-in on
 // (1) or off (0) regardless of RUNNER_CUDA_TC; -1 returns to the env default.
 // A no-op on backends without a TC path (Metal, CPU-only builds).
@@ -95,6 +101,7 @@ unsigned long gpu_mv_dispatches(void);
 void   gpu_attn_coop_force(int on);
 unsigned long gpu_attn_coop_dispatches(void);
 unsigned long gpu_attn_tile_dispatches(void);  // prefill tiles (Metal), 0 elsewhere
+unsigned long gpu_attn_gqa_dispatches(void);   // grouped-query decode groups (Metal), 0 elsewhere
 // test hook: force (1) or forbid (0) the eager MoE routing path; -1 = env
 void   gpu_moe_eager_force(int on);
 bool   gpu_init(model_t *m);                     // false = unsupported, use CPU

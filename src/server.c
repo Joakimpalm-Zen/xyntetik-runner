@@ -1258,7 +1258,7 @@ static void handle_embeddings(slot_t *s, sock_t fd, jv *req) {
 // /health and /v1/models read only startup-immutable strings plus an atomic
 // resident snapshot, so they are safe to answer from the accept thread with no lock
 static void send_health(sock_t fd) {
-    char b[1024];
+    char b[2304];
     int n, res = resident_load();
     // Inference requests in flight. "A model is loaded" and "the model is
     // working" look identical from outside the process, and the tray needs to
@@ -1293,16 +1293,46 @@ static void send_health(sock_t fd) {
     uint64_t cur_rss = plat_proc_rss_bytes();
     uint64_t peak_rss = plat_proc_peak_rss_bytes();
     if (peak_rss < cur_rss) peak_rss = cur_rss;
-    char m[384];
+    // How many loads this process has made (R10.12.1): it moves on every
+    // load, reload and swap, so a client that reads it twice and sees the
+    // same number with a resident model has been talking to one load. A
+    // request can require it (`expect_resident`).
+    char m[448];
     snprintf(m, sizeof(m),
+             ",\"load_generation\":%llu"
              ",\"rss_bytes\":%llu,\"peak_rss_bytes\":%llu,"
              "\"tokens_prompt\":%llu,\"tokens_generated\":%llu,"
              "\"generate_seconds\":%.6f,"
              "\"batch_steps\":%llu,\"batch_sequences\":%llu",
+             (unsigned long long)provenance_load_generation(NULL),
              (unsigned long long)cur_rss,
              (unsigned long long)peak_rss,
              wt.prompt_tokens, wt.gen_tokens, wt.gen_seconds, bs, bq);
 
+    // What each busy slot is doing (R10.12.7): a client waiting on a long
+    // prefill can tell it from a hang, and one that closed its connection can
+    // see the request leave. Headers of a streamed reply are only sent once
+    // prefill is over, so this is the one place that progress is visible.
+    char rq[1024];
+    int rn = snprintf(rq, sizeof rq, ",\"requests\":[");
+    bool first_rq = true;
+    for (int i = 0; SV.slots && i < SV.n_slots; i++) {
+        slot_t *sl = &SV.slots[i];
+        int ph = atomic_load(&sl->rq_phase);
+        if (!ph) continue;
+        int w = snprintf(rq + rn, sizeof rq - (size_t)rn,
+                         "%s{\"slot\":%d,\"phase\":\"%s\",\"prompt_tokens\":%d,"
+                         "\"prompt_done\":%d,\"generated\":%d}",
+                         first_rq ? "" : ",", i, ph == 1 ? "prefill" : "generate",
+                         atomic_load(&sl->rq_prompt), atomic_load(&sl->rq_done),
+                         atomic_load(&sl->rq_gen));
+        // a row that does not fit is left out whole; the count above it
+        // (active_requests) still says how many there are
+        if (w < 0 || (size_t)w >= sizeof rq - (size_t)rn - 2) break;
+        rn += w;
+        first_rq = false;
+    }
+    snprintf(rq + rn, sizeof rq - (size_t)rn, "]");
     if (SV.n_reg > 0 && res >= 0) {
         // Registry names are char[64]. Match /v1/models' exact worst-case
         // bound so /health cannot identify the same resident by a truncated
@@ -1311,14 +1341,14 @@ static void send_health(sock_t fd) {
         json_escape(SV.reg[res].name, strlen(SV.reg[res].name), esc, sizeof(esc));
         n = snprintf(b, sizeof(b),
                      "{\"status\":\"ok\"," BUILD_JSON ",\"resident\":\"%s\","
-                     "\"active_requests\":%d%s}", esc, active, m);
+                     "\"active_requests\":%d%s%s}", esc, active, m, rq);
     } else if (SV.n_reg > 0) {
         n = snprintf(b, sizeof(b), "{\"status\":\"ok\"," BUILD_JSON ",\"resident\":null,"
-                                   "\"active_requests\":%d%s}", active, m);
+                                   "\"active_requests\":%d%s%s}", active, m, rq);
     } else {
         n = snprintf(b, sizeof(b),
-                     "{\"status\":\"ok\"," BUILD_JSON ",\"active_requests\":%d%s}",
-                     active, m);
+                     "{\"status\":\"ok\"," BUILD_JSON ",\"active_requests\":%d%s%s}",
+                     active, m, rq);
     }
     send_response(fd, 200, "application/json", b, n);
 }
@@ -2039,11 +2069,38 @@ static void handle_conn(slot_t *s, sock_t fd) {
                 free(body);
                 return;
             }
+            resident_expect expect;
+            if (!request_expect_resident(fd, req, &expect)) {
+                jv_free(req);
+                free(body);
+                return;
+            }
             atomic_fetch_add(&SV.active_requests, 1);
             atomic_fetch_add(&SV.total_requests, 1);
             bool ok = true;
-            if (SV.n_reg > 0) {
-                int sw = swap_to(jv_str(jv_get(req, "model"), NULL));
+            int sw = SV.n_reg > 0
+                ? swap_to_expect(jv_str(jv_get(req, "model"), NULL), &expect)
+                : single_model_expect(&expect);
+            if (sw == SWAP_EXPECT_MISMATCH || sw == SWAP_EXPECT_UNKNOWN) {
+                // R10.12.2: say what IS resident, so the client can decide
+                // without a second round trip
+                bool res = false;
+                unsigned long long g = provenance_load_generation(&res);
+                char msg[256];
+                snprintf(msg, sizeof msg,
+                         sw == SWAP_EXPECT_UNKNOWN
+                         ? "expect_resident could not be checked: the resident "
+                           "model's digest is not known yet or its file changed "
+                           "on disk (load_generation %llu); nothing was loaded"
+                         : "expect_resident does not match what is resident "
+                           "(load_generation %llu, %s); nothing was loaded",
+                         g, res ? "a model is resident" : "no model is resident");
+                send_error_detail(fd, 409, msg, "expect_resident",
+                                  sw == SWAP_EXPECT_UNKNOWN
+                                  ? "resident_identity_unknown"
+                                  : "resident_mismatch");
+                ok = false;
+            } else if (SV.n_reg > 0) {
                 if (sw == SWAP_LOAD_FAILED) {
                     send_error(fd, 500,
                                "model failed to load (registered but broken; see server log)");
@@ -2109,6 +2166,9 @@ static void handle_conn(slot_t *s, sock_t fd) {
                     pthread_mutex_unlock(&SV.swap_mu);
                 }
             }
+            // whatever way the handler left, this slot is no longer working
+            atomic_store(&s->rq_phase, 0);
+            s->e.stat_feed = s->e.stat_gen = NULL;
             // Drop the request from the count BEFORE the bookkeeping lock:
             // an /unload that saw this request active left pending_unload for
             // us, and the count must already be zero when we honour it.

@@ -130,6 +130,12 @@ snode *schema_compile_gemma4_parallel(struct jv *tools, const char *only_tool,
 // compiler's own reason in err) when a request must fall back to the generic
 // envelope. A probe of the real compiler, not a parallel rule set.
 bool schema_gemma4_constrainable(struct jv *tools, char *err, int errcap);
+// The same question for the function/parameter XML families under a required
+// or named tool choice (the only turns their grammar constrains): false, with
+// the compiler's reason in err, for a schema the raw-text syntax cannot
+// enforce (a string with a length or pattern constraint, ...).
+bool schema_qwen_xml_constrainable(struct jv *tools, const char *only_tool,
+                                   bool parallel, char *err, int errcap);
 void   schema_free(snode *n);
 
 // streaming validator state (memcpy-copyable for token lookahead)

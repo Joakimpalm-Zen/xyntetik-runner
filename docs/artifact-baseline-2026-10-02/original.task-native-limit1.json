@@ -1,0 +1,257 @@
+{
+  "schema_version": "xyntetik.runner.tooluse-shifted.v2",
+  "timestamp": "2026-10-02T15:38:15Z",
+  "set_version": "v2",
+  "set_file": "set-v2.jsonl",
+  "model_file": "Qwen3.8-27B-GSQ-RCO-IQ3_S.gguf",
+  "model_sha256": "64b53b64c7aa39f20a7e54bd80582fe595b1d745624ee8a72e92508c0326d810",
+  "adapter_file": null,
+  "adapter_sha256": null,
+  "adapter_scale": null,
+  "runner_version": "runner 0.5.7",
+  "host": "Linux-6.12.0-211.16.1.el10_2.x86_64-x86_64-with-glibc2.39",
+  "threads": 4,
+  "gpu": "auto",
+  "catalog_sha256": "d5b1a6a0cfae43e10966569ba50ae34b0b4eb93537d7f5cc919a6268fda03ed5",
+  "set_sha256": "4c1620b52add7023c6188c06364e3d0e20b317000ec2fbdf43cfb7364e713450",
+  "labels_sha256": "ebd0b4e64f79eb29918333ce0ae1888cf5bae30b4ba8376afc84805d45f4ea7c",
+  "model_id": "Qwen3.8-27B-GSQ-RCO-IQ3_S.gguf",
+  "partial": 1,
+  "native_leg": {
+    "n": 6,
+    "tool_ok": 5,
+    "args_ok": 5,
+    "exact_match": 5,
+    "keys_ok": 5,
+    "fields_total": 7,
+    "fields_ok": 7,
+    "refusals": 0,
+    "empty_outputs": 0,
+    "tool_ok_rate": 0.8333,
+    "args_ok_rate": 0.8333,
+    "exact_match_rate": 0.8333,
+    "choice_logprobs": false,
+    "by_category": {
+      "paraphrase": {
+        "n": 1,
+        "tool_ok": 1,
+        "exact": 1,
+        "fields_total": 2,
+        "fields_ok": 2
+      },
+      "multi_intent": {
+        "n": 1,
+        "tool_ok": 1,
+        "exact": 1,
+        "fields_total": 1,
+        "fields_ok": 1
+      },
+      "underspecified": {
+        "n": 1,
+        "tool_ok": 0,
+        "exact": 0,
+        "fields_total": 0,
+        "fields_ok": 0
+      },
+      "near_miss": {
+        "n": 1,
+        "tool_ok": 1,
+        "exact": 1,
+        "fields_total": 2,
+        "fields_ok": 2
+      },
+      "none": {
+        "n": 1,
+        "tool_ok": 1,
+        "exact": 1,
+        "fields_total": 0,
+        "fields_ok": 0
+      },
+      "arg_shift": {
+        "n": 1,
+        "tool_ok": 1,
+        "exact": 1,
+        "fields_total": 2,
+        "fields_ok": 2
+      }
+    },
+    "rows": [
+      {
+        "id": "paraphrase_01",
+        "category": "paraphrase",
+        "prompt": "grab every python file in the project",
+        "gold_tool": "find_files",
+        "gold_args": {
+          "pattern": "*.py",
+          "path": "."
+        },
+        "emitted_calls": [
+          {
+            "id": "call_0",
+            "type": "function",
+            "function": {
+              "name": "search_files",
+              "arguments": "{\"pattern\":\"*.py\",\"path\":\".\"}"
+            }
+          }
+        ],
+        "tool_match": true,
+        "args_match": true,
+        "exact_match": true,
+        "tool_ok": true,
+        "keys_ok": true,
+        "fields_total": 2,
+        "fields_ok": 2,
+        "exact": true,
+        "refusal": null,
+        "finish_reason": "tool_calls",
+        "content_head": null,
+        "choice_records": []
+      },
+      {
+        "id": "multi_intent_01",
+        "category": "multi_intent",
+        "prompt": "read README.md and then summarise it for me",
+        "gold_tool": "read_file",
+        "gold_args": {
+          "path": "README.md"
+        },
+        "emitted_calls": [
+          {
+            "id": "call_0",
+            "type": "function",
+            "function": {
+              "name": "read_file",
+              "arguments": "{\"path\":\"README.md\"}"
+            }
+          }
+        ],
+        "tool_match": true,
+        "args_match": true,
+        "exact_match": true,
+        "tool_ok": true,
+        "keys_ok": true,
+        "fields_total": 1,
+        "fields_ok": 1,
+        "exact": true,
+        "refusal": null,
+        "finish_reason": "tool_calls",
+        "content_head": null,
+        "choice_records": []
+      },
+      {
+        "id": "underspecified_01",
+        "category": "underspecified",
+        "prompt": "read that file",
+        "gold_tool": "none",
+        "gold_args": {},
+        "emitted_calls": [
+          {
+            "id": "call_0",
+            "type": "function",
+            "function": {
+              "name": "list_dir",
+              "arguments": "{\"path\":\".\"}"
+            }
+          }
+        ],
+        "tool_match": false,
+        "args_match": false,
+        "exact_match": false,
+        "tool_ok": false,
+        "keys_ok": false,
+        "fields_total": 0,
+        "fields_ok": 0,
+        "exact": false,
+        "refusal": null,
+        "finish_reason": "tool_calls",
+        "content_head": null,
+        "choice_records": []
+      },
+      {
+        "id": "near_miss_01",
+        "category": "near_miss",
+        "prompt": "find files whose contents mention 'timeout' anywhere in src",
+        "gold_tool": "grep_text",
+        "gold_args": {
+          "pattern": "timeout",
+          "path": "src"
+        },
+        "emitted_calls": [
+          {
+            "id": "call_0",
+            "type": "function",
+            "function": {
+              "name": "grep_text",
+              "arguments": "{\"pattern\":\"timeout\",\"path\":\"src\"}"
+            }
+          }
+        ],
+        "tool_match": true,
+        "args_match": true,
+        "exact_match": true,
+        "tool_ok": true,
+        "keys_ok": true,
+        "fields_total": 2,
+        "fields_ok": 2,
+        "exact": true,
+        "refusal": null,
+        "finish_reason": "tool_calls",
+        "content_head": null,
+        "choice_records": []
+      },
+      {
+        "id": "none_01",
+        "category": "none",
+        "prompt": "explain what a mutex is",
+        "gold_tool": "none",
+        "gold_args": {},
+        "emitted_calls": [],
+        "tool_match": true,
+        "args_match": true,
+        "exact_match": true,
+        "tool_ok": true,
+        "keys_ok": true,
+        "fields_total": 0,
+        "fields_ok": 0,
+        "exact": true,
+        "refusal": null,
+        "finish_reason": "length",
+        "content_head": "A **mutex** (short for **mutual exclusion**) is a synchronization primitive used in concurrent programming to ensure that only one thread (or process) can access a shared resource at a time.\n\n## The P",
+        "choice_records": []
+      },
+      {
+        "id": "arg_shift_01",
+        "category": "arg_shift",
+        "prompt": "show me the first ten lines of main.py",
+        "gold_tool": "head_file",
+        "gold_args": {
+          "path": "main.py",
+          "n": 10
+        },
+        "emitted_calls": [
+          {
+            "id": "call_0",
+            "type": "function",
+            "function": {
+              "name": "head_file",
+              "arguments": "{\"path\":\"main.py\",\"n\":10}"
+            }
+          }
+        ],
+        "tool_match": true,
+        "args_match": true,
+        "exact_match": true,
+        "tool_ok": true,
+        "keys_ok": true,
+        "fields_total": 2,
+        "fields_ok": 2,
+        "exact": true,
+        "refusal": null,
+        "finish_reason": "tool_calls",
+        "content_head": null,
+        "choice_records": []
+      }
+    ]
+  }
+}

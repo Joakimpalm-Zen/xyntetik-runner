@@ -8,6 +8,69 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **A second slot of a CUDA server no longer claims the weights again.**
+  Slots share one upload of the model, but the VRAM claim each slot makes
+  before loading asked for the whole file, so with `--parallel 2` on a
+  14B a busy 24 GB card refused the second slot at startup for 10 GB it
+  never used. A resident upload now counts as paid; the slot claims its
+  KV cache and scratch.
+- **The default command runs StableLM again on a machine with a GPU.**
+  `--gpu auto` (the default, and the only GPU setting) refused a LayerNorm
+  model with "rerun with --gpu off", so `runner -m stablelm-2.gguf` failed
+  on every Mac and GPU box; a removed-sublayer file did the same on CUDA.
+  Both now run on the CPU with a line saying why, as every other backend
+  gap does. Found by the compat row pinned for StableLM this week.
+- **A tool schema the function-XML syntax cannot enforce no longer 400s.**
+  On Granite 4.2, Qwen 3.8, Ornith and Qwen3-Coder a `required` or named
+  tool choice with a string parameter that carries `minLength`, `maxLength`
+  or `pattern` was refused. It now uses the generic JSON envelope for that
+  request, as gemma4 and Muse already did (15 of 120 agent-torture requests
+  on Granite 4.2 8B failed on this). `runner_telemetry.tool_protocol.family`
+  now reports the protocol the request actually ran under.
+- **Metal decode slows less as the context grows (grouped-query models).**
+  Decode attention fetched a KV head's K and V rows once per query head
+  that shares it. One threadgroup per KV head now serves all of them
+  (`k_attn_chunk_gqa`), byte-identical to the per-head kernel. Llama-3.2-3B
+  on an M1: 6.8 to 8.1 tok/s at 4,321 tokens of context, 9.8 to 10.4 at
+  1,157, unchanged at 347.
+- **`/health` shows what a busy slot is doing.** `requests` holds one row
+  per busy slot: `phase` (`prefill` or `generate`), `prompt_tokens`,
+  `prompt_done` and `generated`. A client waiting on a long prefill can tell
+  it from a hang, and one that closed its connection can see the request
+  leave the list when the work has stopped.
+- **`expect_resident`: a request can refuse to cause a load.** `/health`
+  and the provenance record now carry `load_generation`, which moves on
+  every load, reload and swap. A request may require it, the model file's
+  sha256, or both; when something else (or nothing) is resident the server
+  answers `409 resident_mismatch` and loads nothing, swaps nothing and
+  leaves a pending unload pending. For clients of a server they do not
+  manage, where checking `/health` and then sending a request is a race.
+- **Metal prefill over a long history is faster again.** The tiled
+  attention kernel read each tile's scores from the device once per element
+  of the head in its value phase; they now pass through threadgroup memory
+  a block of rows at a time. A 4,321-token prefill on an M1 (Llama-3.2-3B):
+  48.6 to 64.3 tok/s; the ten-turn agent benchmark 116.8 s to 93.9 s, median
+  time to first token 10.4 s to 7.4 s. Byte-identical to the one-column
+  kernel, as before.
+- **Metal runs files with removed sublayers (R4.1.6, Metal half).** A
+  `--remove-sublayer` artifact was CPU-only; the Metal walk now omits a
+  removed attention or FFN per block. The removed file scores
+  bit-identically to the parent with the branch's output projection
+  zeroed, on the decode walk and the batched prefill. CUDA still refuses
+  the offload by name.
+- **Constrained sampling no longer costs more than the model step.** Every
+  sampled token under a constraint (a tool call, JSON mode, a schema, a
+  reasoning budget, the loop guard) sorted the whole vocabulary, and with
+  top-k off asked the grammar about every entry of it: 9.6 ms per token on
+  a 49k vocabulary, 19.5 ms on 128k. Candidates are now ranked a prefix at
+  a time and the pick is taken as soon as the unranked entries provably
+  cannot change it. Sampled `--json` at temperature 0.8 on an M1:
+  SmolLM2-135M 59 to 186 tok/s, Llama-3.2-3B 8.3 to 11.7 tok/s (the
+  unconstrained rates); on CUDA (a Blackwell MIG slice) the same 3B file
+  39.6 to 123.1 tok/s against 133 unconstrained. Unconstrained top-k and greedy picks are cheaper
+  too (1.9 ms to 0.1 ms and 0.45 ms to 0.03 ms at 128k entries). The picks
+  are unchanged: the old and new samplers agreed on all 237,672 cases of a
+  differential run ([docs/performance.md](docs/performance.md)).
 - **`runner --adapt-info`: can this model take an adapter (R8.9.1)?** One
   JSON line per model file: whether a LoRA adapter can be served on it and
   whether one can be trained on it, each with the reason when not (a
@@ -38,7 +101,9 @@ names that were true when they were written.
   differ by 3.0e-4 on average with the adapter and 3.1e-4 without; prefill
   1,150 tok/s against the CPU's 115; decode 44 tok/s against 37 on the CPU
   and 117 without the adapter, because a block with an adapter leaves the
-  fused decode kernel. An adapter on a routed-expert FFN is refused by name.
+  fused decode kernel. On Llama-3.2-3B Q4_K_M with a rank-16 Q and V
+  adapter on every block: decode 9.8 to 8.3 tok/s (CPU 5.7), prefill
+  unchanged. An adapter on a routed-expert FFN is refused by name.
 - **Granite 4.0-H and 4.1 call tools in their own protocol (`granite4`).**
   Granite tool calling was the generic JSON envelope with the declarations
   in the runner's words. The 4.0-H and 4.1 templates define their own:

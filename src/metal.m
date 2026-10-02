@@ -31,6 +31,7 @@ typedef struct {
     id<MTLComputePipelineState> p_rmsnorm, p_qknorm, p_headnorm, p_rope, p_store, p_attn;
     id<MTLComputePipelineState> p_attn_chunk, p_attn_comb;
     id<MTLComputePipelineState> p_attn_coop, p_attn_chunk_coop;  // cooperative KV score read
+    id<MTLComputePipelineState> p_attn_chunk_gqa;   // one group per KV head (grouped-query)
     id<MTLComputePipelineState> p_attn_tile;   // prefill: several columns share each KV read
     // R8.8, the loaded adapter on the device: A and B per (layer, slot) for
     // the GPU-resident layers (NULL where there is none), the rank and the
@@ -231,7 +232,7 @@ static void gpu_release_state(gpu_t *g, int n_layer) {
     free(g->sinks); free(g->gib); free(g->geb); free(g->ueb); free(g->deb);
     free(g->ppn); free(g->pan); free(g->pfn);
     free(g->gpn1); free(g->gprn2); free(g->gpn2); free(g->ggis); free(g->gdsc);
-    [g->p_attn_coop release]; [g->p_attn_chunk_coop release];
+    [g->p_attn_coop release]; [g->p_attn_chunk_coop release]; [g->p_attn_chunk_gqa release];
     [g->p_attn_tile release];
     [g->p_lora_a release]; [g->p_lora_b release];
     lora_dev_release(g);
@@ -1015,6 +1016,21 @@ void gpu_attn_coop_force(int on) {
 }
 unsigned long gpu_attn_coop_dispatches(void) { return g_coop_dispatches; }
 
+// Decode attention under grouped-query attention serves every query head of
+// a KV head from one threadgroup, so the group's K and V rows are fetched
+// once (k_attn_chunk_gqa). The same bytes as k_attn_chunk_coop;
+// RUNNER_METAL_ATTN_GQA=0 pins that kernel.
+static unsigned long g_gqa_dispatches;
+unsigned long gpu_attn_gqa_dispatches(void) { return g_gqa_dispatches; }
+static bool metal_attn_gqa_on(void) {
+    static int v = -1;
+    if (v < 0) {
+        const char *e = getenv("RUNNER_METAL_ATTN_GQA");
+        v = !(e && e[0] == '0');
+    }
+    return v;
+}
+
 // Prefill attention tiles several columns per threadgroup so they share each
 // KV read (k_attn_tile). Byte-identical to k_attn; RUNNER_METAL_ATTN_TILE=0
 // pins the one-column kernel for an identity investigation.
@@ -1108,6 +1124,13 @@ void gpu_moe_eager_force(int on) { (void)on; }
 bool gpu_moe_ok(void) {
     return true;    // plain fused sparse-MoE routes and experts run on Metal
 }
+
+// A block whose attention or FFN was removed (--remove-sublayer) is encoded
+// without that branch: gpu_forward_many skips it per block.
+// Metal maps the file; there is no device copy of the weights to share.
+bool gpu_shared_weights_resident(const model_t *m) { (void)m; return false; }
+
+bool gpu_removed_sublayers_ok(void) { return true; }
 
 bool gpu_eseries_ok(void) {
     // The per-layer-embedding branch landed in 0.1.11 and is gated by
@@ -1471,7 +1494,7 @@ bool gpu_init(model_t *m) {
     if (!metal_tensor_type_ok(m->output, false)) return false;
     for (int l = 0; l < m->n_layer; l++) {
         layer_t *ly = &m->layers[l];
-        if (!ly->wv && !m->v_rmsnorm) {
+        if (!ly->wv && !m->v_rmsnorm && !ly->skip_mixer) {
             fprintf(stderr, "gpu: '%s' layer layout is not on the metal backend yet — using CPU\n",
                     m->arch);
             return false;
@@ -1536,6 +1559,7 @@ bool gpu_init(model_t *m) {
     g->p_lora_a       = mk_pipeline(dev, lib, @"k_lora_a");
     g->p_lora_b       = mk_pipeline(dev, lib, @"k_lora_b");
     g->p_attn_chunk_coop = mk_pipeline(dev, lib, @"k_attn_chunk_coop");
+    g->p_attn_chunk_gqa = mk_pipeline(dev, lib, @"k_attn_chunk_gqa");
     g->p_attn_chunk   = mk_pipeline(dev, lib, @"k_attn_chunk");
     g->p_attn_comb    = mk_pipeline(dev, lib, @"k_attn_combine");
     g->p_silu         = mk_pipeline(dev, lib, @"k_silu_mul");
@@ -3179,7 +3203,7 @@ static float *gpu_forward_native_batch(model_t *m, const int32_t *tokens,
         // An adapter adds its delta after each projection, so a block that
         // carries one keeps the split path the delta can be encoded into.
         id<MTLComputePipelineState> fpipe =
-            n == 1 && metal_fuse_on() && !g->lora_a
+            n == 1 && metal_fuse_on() && !g->lora_a && !ly->skip_mixer
                 ? metal_front_pipe(g, m, l) : nil;
         bool front = fpipe != nil;
         uint64_t qw = 0, kw = 0, vw = 0;
@@ -3195,6 +3219,27 @@ static float *gpu_forward_native_batch(model_t *m, const int32_t *tokens,
             kw = kwo; vw = vwo;
             if (!(qb && qb == kb && qb == vb)) front = false;
         }
+        // A removed sublayer (--remove-sublayer) is not encoded at all: the
+        // residual stream passes the branch untouched, as on the CPU. The
+        // fusions that fold a branch's residual add into a neighbouring norm
+        // have nothing to fold where the branch is gone, so they stand down
+        // around it: F2a needs this block's attention AND its FFN norm, F2b
+        // needs this block's FFN and the next block's attention norm.
+        bool f2a = n == 1 && metal_fuse_on() && g->p_add_rmsnorm &&
+                   !g->pan[l] && m->resid_scale == 1.0f && !nanstage &&
+                   !ly->moe_gemma && !ly->skip_mixer && !ly->skip_ffn;
+        bool f2b = n == 1 && metal_fuse_on() && g->p_add_rmsnorm &&
+                   !g->pfn[l] && m->resid_scale == 1.0f && !ly->ple_gate &&
+                   (ly->out_scale == 1.0f || ly->out_scale == 0.0f) &&
+                   !nantrace && !nanstage && l + 1 < n_gpu_layers &&
+                   n_gpu_layers == m->n_layer &&
+                   !ly->skip_ffn && !m->layers[l + 1].skip_mixer &&
+                   !metal_front_capable(g, m, l + 1);
+        bool sum_add = n == 1 && metal_fuse_on() && !f2b && ly->is_moe &&
+                       !ly->moe_gemma && !g->pfn[l] &&
+                       m->resid_scale == 1.0f && !ly->ple_gate &&
+                       !nantrace && !nanstage;
+        if (ly->skip_mixer) goto mixer_done;
         if (fuse_pending_add) {
             // Fusion F2b: the previous layer deferred its post-FFN residual
             // add into this layer's attention norm (one dispatch, not two).
@@ -3379,12 +3424,18 @@ static float *gpu_forward_native_batch(model_t *m, const int32_t *tokens,
             }
             int a_ov = metal_attn_chunk_override();
             int a_chunk, a_nch;
+            // one group per KV head when several query heads share it
+            int gqa_g = n_kv > 0 ? m->n_head / n_kv : 1;
+            bool gqa = n == 1 && gqa_g > 1 && gqa_g <= 8 && m->n_head % n_kv == 0 &&
+                       !q8 && !vq8 && metal_attn_coop_on() && metal_attn_gqa_on() &&
+                       g->p_attn_chunk_gqa;
             if (a_ov == 0) { a_chunk = 0; a_nch = 0; }        // path disabled
             else if (a_ov > 0) {
                 a_chunk = a_ov;
                 a_nch = (a_span + a_chunk - 1) / a_chunk;
             } else {
-                int want = METAL_ATTN_TARGET_GROUPS / (m->n_head > 0 ? m->n_head : 1);
+                int want = METAL_ATTN_TARGET_GROUPS /
+                           (gqa ? n_kv : m->n_head > 0 ? m->n_head : 1);
                 if (want < 1) want = 1;
                 if (want > METAL_ATTN_MAX_CHUNKS) want = METAL_ATTN_MAX_CHUNKS;
                 a_chunk = (a_span + want - 1) / want;
@@ -3404,7 +3455,9 @@ static float *gpu_forward_native_batch(model_t *m, const int32_t *tokens,
                                        (uint64_t)model_v_byte_off(m, l), vq8 };
                 bool coopc = metal_attn_coop_on() && g->p_attn_chunk_coop;
                 if (coopc) g_coop_dispatches++;
-                [e setComputePipelineState:coopc ? g->p_attn_chunk_coop
+                if (gqa) g_gqa_dispatches++;
+                [e setComputePipelineState:gqa ? g->p_attn_chunk_gqa
+                                         : coopc ? g->p_attn_chunk_coop
                                                  : g->p_attn_chunk];
                 [e setBuffer:g->q       offset:0 atIndex:0];
                 [e setBuffer:g->kc      offset:0 atIndex:1];
@@ -3414,7 +3467,7 @@ static float *gpu_forward_native_batch(model_t *m, const int32_t *tokens,
                 [e setBuffer:g->att_ms  offset:0 atIndex:5];
                 [e setBytes:&ca length:sizeof(ca) atIndex:6];
                 g_disp.attn_chunk++;
-                [e dispatchThreadgroups:MTLSizeMake(m->n_head, a_nch, 1)
+                [e dispatchThreadgroups:MTLSizeMake(gqa ? n_kv : m->n_head, a_nch, 1)
                   threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
 
                 attn_comb_args cb = { hd, m->n_head, a_nch,
@@ -3507,26 +3560,11 @@ static float *gpu_forward_native_batch(model_t *m, const int32_t *tokens,
         // Fusion F2a: post-attention add + the FFN's leading norm, one
         // dispatch. Guarded off wherever anything sits between the two
         // (sandwich norm, muP scale, gemma dual-branch, debug probes).
-        bool f2a = n == 1 && metal_fuse_on() && g->p_add_rmsnorm &&
-                   !g->pan[l] && m->resid_scale == 1.0f && !nanstage &&
-                   !ly->moe_gemma;
-        // Fusion F2b, decided BEFORE the FFN so F5 (sum+add) can take the
-        // layers F2b leaves behind: F2b defers the post-FFN add into the
-        // NEXT layer's attention norm; F5 folds it into THIS layer's
-        // expert sum. Mutually exclusive by construction.
-        bool f2b = n == 1 && metal_fuse_on() && g->p_add_rmsnorm &&
-                   !g->pfn[l] && m->resid_scale == 1.0f && !ly->ple_gate &&
-                   (ly->out_scale == 1.0f || ly->out_scale == 0.0f) &&
-                   !nantrace && !nanstage && l + 1 < n_gpu_layers &&
-                   n_gpu_layers == m->n_layer &&
-                   !metal_front_capable(g, m, l + 1);
-        bool sum_add = n == 1 && metal_fuse_on() && !f2b && ly->is_moe &&
-                       !ly->moe_gemma && !g->pfn[l] &&
-                       m->resid_scale == 1.0f && !ly->ple_gate &&
-                       !nantrace && !nanstage;
         if (!f2a)
             enc_elem_n(g, e, g->p_add, g->x, 0, g->xb, 0, n_embd, n, n_embd, xdim);
         NAN_PROBE(g->x, (size_t)n * n_embd, "post-attn-resid");
+        mixer_done: ;
+        if (ly->skip_ffn) goto ffn_done;
 
         if (ly->moe_gemma || ly->is_moe) {
             if (f2a) {
@@ -3576,6 +3614,7 @@ static float *gpu_forward_native_batch(model_t *m, const int32_t *tokens,
             fuse_pending_add = true;
         else if (!sum_add)
         enc_elem_n(g, e, g->p_add, g->x, 0, g->xb, 0, n_embd, n, n_embd, xdim);
+        ffn_done: ;
         // Order matters: the E-series branch reads the post-FFN residual of
         // EVERY token, so it has to run before any token's output scale.
         if (ly->ple_gate) enc_ple(g, e, m, ly, l, n, xdim);
@@ -3659,10 +3698,11 @@ static float *gpu_forward_native_batch(model_t *m, const int32_t *tokens,
                         / (double)(g_disp.kv_swa + g_disp.kv_global));
         fprintf(stderr, "metal-census n=%d total=%lu | tensor=%lu mm=%lu mv=%lu mvf=%lu "
                 "rmsnorm=%lu qknorm=%lu headnorm=%lu rope=%lu store=%lu "
-                "attn=%lu(tile %lu) attn_chunk=%lu(coop %lu) elem=%lu moe=%lu\n",
+                "attn=%lu(tile %lu) attn_chunk=%lu(coop %lu, gqa %lu) elem=%lu moe=%lu\n",
                 n, tot, g_disp.tensor, g_disp.mm, g_disp.mv, g_disp.mvf, g_disp.rmsnorm,
                 g_disp.qknorm, g_disp.headnorm, g_disp.rope, g_disp.store,
                 g_disp.attn, g_tile_dispatches, g_disp.attn_chunk, g_coop_dispatches,
+                g_gqa_dispatches,
                 g_disp.elem, g_disp.moe);
     }
     return (float *)g->logits.contents + (size_t)(n - 1) * m->n_vocab;
@@ -3714,7 +3754,8 @@ static bool metal_batch_eligible(model_t **seqs, int n, gpu_t **lead_out) {
             return false;
         for (int l = 0; l < m->n_layer; l++)
             if (m->layers[l].moe_gemma || m->layers[l].is_moe ||
-                m->layers[l].recurrent || m->layers[l].skip_mixer)
+                m->layers[l].recurrent || m->layers[l].skip_mixer ||
+                m->layers[l].skip_ffn)
                 return false;
         if (model_kv_ring_active(m)) return false;
         if (m->n_vocab != m0->n_vocab || m->n_embd != m0->n_embd ||

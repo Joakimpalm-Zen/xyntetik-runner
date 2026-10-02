@@ -1,0 +1,7 @@
+fit: models/qwen38-recovered/Qwen3.8-27B-GSQ-RCO-IQ3_S-recovered.gguf
+  model         qwen35, 64 layers
+  weights       10.96 GiB
+  kv cache      1.00 GiB at ctx 4096, f16   |  0.53 GiB with --kv q8   |  0.41 GiB with --kv k8v4   |  0.28 GiB with --kv fp4
+  available RAM 212.69 GiB right now
+  verdict       FITS — 200.73 GiB to spare at ctx 4096
+  note          KV is an upper bound: models with per-layer KV geometry (shared KV, MLA) use less

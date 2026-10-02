@@ -53,42 +53,54 @@ static int cand_cmp(const void *a, const void *b) {
     return x->id - y->id;   // deterministic order among exact ties
 }
 
-// True top-k by selection instead of by sorting. After this call c[0..k-1]
-// holds the k largest under cand_cmp, in arbitrary order among themselves.
+// The `m` best candidates under cand_cmp, sorted, into out[0..m): what the
+// first m entries of a full sort of the vocabulary would be, element for
+// element, without sorting or copying the vocabulary.
 //
-// This is exact, not approximate: cand_cmp is a TOTAL order (logit descending,
-// then id ascending, and ids are unique), so the k-largest set is unique and
-// sorting just those k reproduces the first k of a full sort element for
-// element. That is what lets top-k skip the O(n log n) sort of a 262k-entry
-// vocabulary for an O(n) partition plus an O(k log k) sort of the survivors.
+// Exact, not approximate: cand_cmp is a TOTAL order (scaled logit descending,
+// then id ascending, and ids are unique), so the m-best set is unique and
+// sorting it reproduces the prefix of the full sort.
 //
-// Median-of-three pivots. Real logit vectors are not adversarial, but the
-// quadratic case is cheap to avoid and this runs on every sampled token.
-static void select_topk(cand_t *c, int n, int k) {
-    int lo = 0, hi = n - 1;
-    while (lo < hi) {
-        int mid = lo + (hi - lo) / 2;
-        // order lo/mid/hi so c[mid] is the median, then park it at lo as pivot.
-        // (The third compare used to run the other way round, which left the
-        // median at hi and the MINIMUM at lo: on input already in rank order,
-        // such as all-tied logits, every pass then peeled one candidate.)
-        if (cand_cmp(&c[mid], &c[lo]) < 0) { cand_t t = c[lo]; c[lo] = c[mid]; c[mid] = t; }
-        if (cand_cmp(&c[hi], &c[lo]) < 0)  { cand_t t = c[lo]; c[lo] = c[hi]; c[hi] = t; }
-        if (cand_cmp(&c[hi], &c[mid]) < 0) { cand_t t = c[mid]; c[mid] = c[hi]; c[hi] = t; }
-        { cand_t t = c[lo]; c[lo] = c[mid]; c[mid] = t; }
-        cand_t pivot = c[lo];
-        int i = lo, j = hi;
-        while (i < j) {
-            while (i < j && cand_cmp(&c[j], &pivot) >= 0) j--;
-            c[i] = c[j];
-            while (i < j && cand_cmp(&c[i], &pivot) <= 0) i++;
-            c[j] = c[i];
-        }
-        c[i] = pivot;
-        // the pivot is now final at i; recurse only into the side holding k
-        if (i >= k) hi = i - 1;
-        else        lo = i + 1;
+// A heap of m with its WORST member at the root, and one pass. A sampled
+// token used to cost an n-entry copy and a quickselect over it (1.9 ms at
+// 128k entries, 3.5 ms at 262k on an M1), and a constrained one a full sort
+// (17 and 37 ms). Almost every entry loses to the root, and that is decided
+// on the raw logit: dividing by a positive temperature never reorders two
+// values, so an entry whose raw logit is not above the root's cannot beat it
+// (equal after scaling, it loses the id tie-break, because the pass visits
+// ids in ascending order). Only an entry that passes is scaled and compared
+// in full. A NaN at the root compares false with everything, so while one
+// sits there every entry takes the full compare.
+static void heap_down(cand_t *h, int m, int i) {
+    for (;;) {
+        int l = 2 * i + 1, r = l + 1, w = i;
+        if (l < m && cand_cmp(&h[l], &h[w]) > 0) w = l;
+        if (r < m && cand_cmp(&h[r], &h[w]) > 0) w = r;
+        if (w == i) return;
+        cand_t t = h[i]; h[i] = h[w]; h[w] = t;
+        i = w;
     }
+}
+
+static void top_sorted(const float *logits, float temp, int n, int m,
+                       cand_t *out) {
+    for (int i = 0; i < m; i++) out[i] = (cand_t){ logits[i] / temp, i };
+    if (m < n) {
+        for (int i = m / 2 - 1; i >= 0; i--) heap_down(out, m, i);
+        float raw_worst = logits[out[0].id];
+        bool worst_nan = isnan(out[0].p) != 0;
+        for (int i = m; i < n; i++) {
+            float x = logits[i];
+            if (!worst_nan && !(x > raw_worst)) continue;
+            cand_t c = { x / temp, i };
+            if (cand_cmp(&c, &out[0]) >= 0) continue;
+            out[0] = c;
+            heap_down(out, m, 0);
+            raw_worst = logits[out[0].id];
+            worst_nan = isnan(out[0].p) != 0;
+        }
+    }
+    qsort(out, (size_t)m, sizeof(cand_t), cand_cmp);
 }
 
 // Sample from `k` candidates carrying temperature-scaled logits in descending
@@ -164,6 +176,77 @@ static int pick_scaled(sampler *s, cand_t *c, int k, float norm_sum,
     return pick;
 }
 
+// A constrained pick with top-k off, decided from the first `k` valid
+// candidates in rank order when the rest of the vocabulary cannot change it.
+// Returns the token, -2 on an allocation failure, or -3 for "not settled by
+// this prefix": the caller ranks further.
+//
+// Masses are relative to the vocabulary's best entry (`top`, a scaled logit).
+// `total` is the whole vocabulary's mass, `seen` the mass of every entry
+// ranked so far, valid or not, so the valid entries still unranked carry at
+// most R = total - seen. With V the valid mass in hand, the true denominator
+// S lies in [V, V + R], and each rule below acts only when its answer is the
+// same for every S in that interval, with a 1e-5 margin on both sides so
+// float rounding in the caller's arithmetic cannot land on the other side:
+//  - top-p: the cutoff is the first candidate whose cumulative mass reaches
+//    top_p * S. Once it is located the kept set is renormalised over itself,
+//    so S drops out and pick_scaled finishes on the kept set alone.
+//  - min-p alone: everything at least min_p times the best valid candidate
+//    survives, a threshold on the logit; settled once the ranking has passed
+//    below it.
+//  - no filter: the draw r lands on the first candidate whose cumulative
+//    mass exceeds r * S.
+// `worst_ranked` is the scaled logit of the last entry ranked. *r_pre is the
+// roulette draw, taken here at most once and handed back so whichever path
+// finishes the pick uses the same one.
+static int prefix_decide(sampler *s, cand_t *valid, int k, double top,
+                         double total, double seen, float worst_ranked,
+                         float *r_pre) {
+    const double d = 1e-5;
+    double V = 0;
+    for (int i = 0; i < k; i++) V += exp((double)valid[i].p - top);
+    double R = total - seen;
+    if (!(R > 0)) R = 0;
+    R += 1e-9 * total;   // the two sums were accumulated in different orders
+    if (!(V > 0) || !(total > 0)) return -3;
+    if (s->top_p < 1.0f) {
+        double hi = (double)s->top_p * (V + R) * (1 + d);
+        double lo = (double)s->top_p * V * (1 - d), cum = 0;
+        for (int j = 0; j < k; j++) {
+            double prev = cum;
+            cum += exp((double)valid[j].p - top);
+            if (cum >= hi) {
+                if (j > 0 && !(prev < lo)) return -3;
+                float keep = s->top_p;
+                s->top_p = 1.0f;   // the cutoff is j; do not look for it again
+                int pick = pick_scaled(s, valid, j + 1, 0, *r_pre, NULL);
+                s->top_p = keep;
+                return pick;
+            }
+        }
+        return -3;
+    }
+    if (s->min_p > 0.0f) {
+        double floor_mass = (double)s->min_p * exp((double)valid[0].p - top);
+        if (exp((double)worst_ranked - top) < floor_mass * (1 - d))
+            return pick_scaled(s, valid, k, 0, *r_pre, NULL);
+        return -3;
+    }
+    if (s->reweight) return -3;
+    if (*r_pre < 0.0f) *r_pre = rng_f32(&s->rng);
+    double hi = (double)*r_pre * (V + R) * (1 + d);
+    double lo = (double)*r_pre * V * (1 - d), cum = 0;
+    for (int j = 0; j < k; j++) {
+        double prev = cum;
+        cum += exp((double)valid[j].p - top);
+        if (cum > hi) {
+            if (j > 0 && !(prev <= lo)) return -3;
+            return valid[j].id;
+        }
+    }
+    return -3;
+}
+
 // RUNNER_SAMPLE_STATS=1 traces why the head fast path was or was not usable.
 // Cached: this sits in the per-token path and getenv is not free.
 static bool sample_stats(void) {
@@ -227,8 +310,19 @@ int sample_pick(sampler *s, float *logits, int n_vocab, sample_ok_fn ok, void *u
     // intent and would otherwise turn every candidate into NaN, which the
     // cumulative walk answers with the LEAST likely token.
     if (s->temp <= 0 || s->temp < 1e-6f) {
-        int best = 0;
-        for (int i = 1; i < n_vocab; i++) if (logits[i] > logits[best]) best = i;
+        // The first index holding the greatest logit. Finding the value and
+        // then its index are two loops a compiler vectorises; the one loop
+        // that tracks the index is not (445 us against 20 at 128k entries).
+        // A NaN can leave the first loop without a value any entry equals;
+        // the index-tracking loop then answers, as it always did.
+        float mx = logits[0];
+        for (int i = 1; i < n_vocab; i++) if (logits[i] > mx) mx = logits[i];
+        int best = -1;
+        for (int i = 0; i < n_vocab; i++) if (logits[i] == mx) { best = i; break; }
+        if (best < 0) {
+            best = 0;
+            for (int i = 1; i < n_vocab; i++) if (logits[i] > logits[best]) best = i;
+        }
         if (!ok || ok(ud, best)) return best;
     } else if (ok) {
         // constrained + sampled: quick check whether the unconstrained flow
@@ -279,15 +373,13 @@ int sample_pick(sampler *s, float *logits, int n_vocab, sample_ok_fn ok, void *u
     // k it is given, so serving 11 where 40 were asked changes every
     // probability. Selection gives the true k in O(n) and is exact.
     if (!ok && s->temp > 0 && want_k < n_vocab) {
-        cand_t *c = malloc(sizeof(cand_t) * n_vocab);
+        cand_t small[256];
+        cand_t *c = want_k <= 256 ? small : malloc(sizeof(cand_t) * (size_t)want_k);
         if (c) {
-            for (int i = 0; i < n_vocab; i++)
-                c[i] = (cand_t){ logits[i] / temp, i };
-            select_topk(c, n_vocab, want_k);
-            qsort(c, want_k, sizeof(cand_t), cand_cmp);
+            top_sorted(logits, temp, n_vocab, want_k, c);
             int pick = pick_scaled(s, c, want_k, 0, r_pre, NULL);
             if (sample_stats()) fprintf(stderr, "[smp select k=%d]", want_k);
-            free(c);
+            if (c != small) free(c);
             return pick;
         }
         // allocation failed: fall through to the full-sort path below
@@ -323,7 +415,7 @@ int sample_pick(sampler *s, float *logits, int n_vocab, sample_ok_fn ok, void *u
                 // Strictly greater, because the walk takes the first token
                 // with cum > r and equality would leave it just past the end.
                 bool enough;
-                // want_k < n_vocab is handled by select_topk above and never
+                // want_k < n_vocab is handled by top_sorted above and never
                 // reaches here.
                 if (s->top_p < 1.0f)
                     // the top-p cutoff prefix lies inside a head carrying
@@ -363,32 +455,73 @@ int sample_pick(sampler *s, float *logits, int n_vocab, sample_ok_fn ok, void *u
         }
     }
 
-    cand_t *c = malloc(sizeof(cand_t) * n_vocab);
-    if (!c) return -2;  // allocation failure — an error, not a stop
-    for (int i = 0; i < n_vocab; i++) c[i] = (cand_t){ logits[i] / temp, i };
-    qsort(c, n_vocab, sizeof(cand_t), cand_cmp);
-
-    if (s->temp <= 0) {
-        // greedy constrained: first valid candidate in probability order
-        for (int i = 0; i < n_vocab; i++) {
-            if (ok(ud, c[i].id)) { int r = c[i].id; free(c); return r; }
-        }
+    if (!ok) {
+        cand_t *c = malloc(sizeof(cand_t) * n_vocab);
+        if (!c) return -2;  // allocation failure — an error, not a stop
+        for (int i = 0; i < n_vocab; i++) c[i] = (cand_t){ logits[i] / temp, i };
+        qsort(c, n_vocab, sizeof(cand_t), cand_cmp);
+        int pick = pick_scaled(s, c, want_k, 0, r_pre, NULL);
         free(c);
-        return -1;
+        return pick;
     }
 
-    int k = 0;
-    if (ok) {
-        // keep the `want_k` most likely *valid* candidates, in order
-        for (int i = 0; i < n_vocab && k < want_k; i++)
-            if (ok(ud, c[i].id)) c[k++] = c[i];
-        if (k == 0) { free(c); return -1; }
-    } else {
-        k = want_k;
+    // Constrained. The candidates are the VALID entries of the vocabulary in
+    // rank order: one for a greedy pick, the first top_k for a sampled one,
+    // all of them when top-k is off. A model that is following its grammar
+    // has them near the top, so the ranking is produced a prefix at a time:
+    // the best 256 (or 4x the need), and eight times as many whenever a
+    // prefix does not settle the pick. The filter is asked about the same
+    // candidates in the same order as when this sorted the whole vocabulary
+    // first, and it is asked about fewer of them.
+    //
+    // That sort, and with top-k off a filter call per vocabulary entry, ran
+    // on every sampled token of a tool call, a JSON-mode reply and any turn
+    // with a reasoning budget: 59 tok/s against 172 unconstrained on
+    // SmolLM2-135M, 8.3 against 11.6 on Llama-3.2-3B (M1, 2026-10-02).
+    int need = s->temp <= 0 ? 1 : want_k;
+    // Top-k off: every valid candidate is in the distribution, so a prefix
+    // settles the pick only when the entries below it provably cannot change
+    // it (prefix_decide). A watermark with no other filter weighs every
+    // survivor and takes the whole ranking.
+    bool open_ended = need >= n_vocab;
+    bool no_filter_c = s->top_p >= 1.0f && s->min_p <= 0.0f;
+    cand_t *c = NULL, *valid = NULL;
+    int m = need < 64 || open_ended ? 256 : need * 4, checked = 0, k = 0;
+    if (open_ended && no_filter_c && s->reweight) m = n_vocab;
+    double top = 0, total = 0, seen = 0;
+    for (;;) {
+        if (m > n_vocab) m = n_vocab;
+        cand_t *gc = realloc(c, sizeof(cand_t) * (size_t)m);
+        if (gc) c = gc;
+        cand_t *gv = gc ? realloc(valid, sizeof(cand_t) * (size_t)m) : NULL;
+        if (gv) valid = gv;
+        if (!gc || !gv) { free(c); free(valid); return -2; }
+        top_sorted(logits, temp, n_vocab, m, c);
+        if (open_ended && checked == 0 && m < n_vocab) {
+            // the whole vocabulary's mass, relative to its best entry: what
+            // bounds how much the unexamined entries can still carry
+            top = c[0].p;
+            for (int i = 0; i < n_vocab; i++)
+                total += expf(logits[i] / temp - c[0].p);
+        }
+        for (int i = checked; i < m && k < need; i++) {
+            if (open_ended) seen += exp((double)c[i].p - top);
+            if (ok(ud, c[i].id)) valid[k++] = c[i];
+        }
+        checked = m;
+        if (k >= need || m == n_vocab) break;
+        if (open_ended && k > 0) {
+            int pick = prefix_decide(s, valid, k, top, total, seen, c[m - 1].p,
+                                     &r_pre);
+            if (pick != -3) { free(c); free(valid); return pick; }
+        }
+        m = m > n_vocab / 8 ? n_vocab : m * 8;
     }
-
-    int pick = pick_scaled(s, c, k, 0, r_pre, NULL);
     free(c);
+    int pick = k == 0 ? -1
+             : s->temp <= 0 ? valid[0].id
+             : pick_scaled(s, valid, k, 0, r_pre, NULL);
+    free(valid);
     return pick;
 }
 

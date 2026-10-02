@@ -1,0 +1,2 @@
+loaded models/qwen38-recovered/Qwen3.8-27B-GSQ-RCO-IQ3_S-recovered.gguf | qwen35 | 64 layers | ctx 4096 | 32 threads | 0.03s
+{"tool_family":"qwen3_xml","native_tool_protocol":true,"template":"qwen38"}

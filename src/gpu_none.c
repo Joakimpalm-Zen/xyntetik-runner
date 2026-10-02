@@ -57,6 +57,7 @@ unsigned long gpu_mv_dispatches(void) { return 0; }
 void gpu_attn_coop_force(int on) { (void)on; }
 unsigned long gpu_attn_coop_dispatches(void) { return 0; }
 unsigned long gpu_attn_tile_dispatches(void) { return 0; }
+unsigned long gpu_attn_gqa_dispatches(void) { return 0; }
 
 // Same, for the fused-vs-eager MoE routing gate.
 void gpu_moe_eager_force(int on) { (void)on; }
@@ -64,6 +65,10 @@ void gpu_moe_eager_force(int on) { (void)on; }
 bool gpu_moe_ok(void) {
     return false;   // no backend here at all
 }
+
+bool gpu_shared_weights_resident(const model_t *m) { (void)m; return false; }
+
+bool gpu_removed_sublayers_ok(void) { return false; }
 
 bool gpu_eseries_ok(void) {
     return false;

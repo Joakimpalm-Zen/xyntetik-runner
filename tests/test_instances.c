@@ -198,6 +198,40 @@ int main(int argc, char **argv) {
     CHECK(n == 0, "no records after unregister + cleanup");
     instances_list_free(r, n);
 
+    // 5b. a registering process sweeps what dead processes left: their
+    // records and the temporaries of a write that never reached its rename.
+    // A machine that never runs the tray has no other reader to do it.
+    {
+        long deadpid = (long)getpid() + 2000000;
+        char dead[1300], deadtmp[1300], livetmp[1300];
+        write_fake(dir, deadpid, "ghost.gguf");
+        snprintf(dead, sizeof dead, "%s/%ld.json", dir, deadpid);
+        snprintf(deadtmp, sizeof deadtmp, "%s/%ld.json.tmp", dir, deadpid);
+        // the parent, not this process: our own registration writes and
+        // renames `<our pid>.json.tmp`
+#ifdef _WIN32
+        livetmp[0] = 0;   // no getppid here; the dead-pid half still runs
+#else
+        snprintf(livetmp, sizeof livetmp, "%s/%ld.json.tmp", dir, (long)getppid());
+#endif
+        FILE *f = fopen(deadtmp, "wb"); if (f) fclose(f);
+        if (livetmp[0]) { f = fopen(livetmp, "wb"); if (f) fclose(f); }
+        CHECK(instances_register("cli", 0, NULL, NULL, 0), "register sweeps");
+        f = fopen(dead, "rb");
+        CHECK(f == NULL, "a dead process's record is swept at registration");
+        if (f) fclose(f);
+        f = fopen(deadtmp, "rb");
+        CHECK(f == NULL, "a dead process's temporary is swept at registration");
+        if (f) fclose(f);
+        if (livetmp[0]) {
+            f = fopen(livetmp, "rb");
+            CHECK(f != NULL, "a live process's temporary is left alone");
+            if (f) fclose(f);
+            remove(livetmp);
+        }
+        instances_unregister();
+    }
+
     // 6. corrupt record is swept, not fatal
     {
         char junk[1300];

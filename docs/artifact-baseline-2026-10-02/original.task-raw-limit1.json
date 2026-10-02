@@ -1,0 +1,409 @@
+{
+  "schema_version": "xyntetik.runner.tooluse-shifted.v2",
+  "timestamp": "2026-10-02T15:28:33Z",
+  "set_version": "v2",
+  "set_file": "set-v2.jsonl",
+  "model_file": "Qwen3.8-27B-GSQ-RCO-IQ3_S.gguf",
+  "model_sha256": "64b53b64c7aa39f20a7e54bd80582fe595b1d745624ee8a72e92508c0326d810",
+  "adapter_file": null,
+  "adapter_sha256": null,
+  "adapter_scale": null,
+  "runner_version": "runner 0.5.7",
+  "host": "Linux-6.12.0-211.16.1.el10_2.x86_64-x86_64-with-glibc2.39",
+  "threads": 4,
+  "gpu": "auto",
+  "catalog_sha256": "d5b1a6a0cfae43e10966569ba50ae34b0b4eb93537d7f5cc919a6268fda03ed5",
+  "set_sha256": "4c1620b52add7023c6188c06364e3d0e20b317000ec2fbdf43cfb7364e713450",
+  "labels_sha256": "ebd0b4e64f79eb29918333ce0ae1888cf5bae30b4ba8376afc84805d45f4ea7c",
+  "model_id": "Qwen3.8-27B-GSQ-RCO-IQ3_S.gguf",
+  "partial": 1,
+  "raw_leg": {
+    "n": 6,
+    "json_parses": 2,
+    "right_tool": 2,
+    "schema_valid": 2,
+    "exact_match": 2,
+    "keys_ok": 2,
+    "fields_total": 7,
+    "fields_ok": 3,
+    "empty_outputs": 0,
+    "refusals": 0,
+    "json_parses_rate": 0.3333,
+    "right_tool_rate": 0.3333,
+    "schema_valid_rate": 0.3333,
+    "exact_match_rate": 0.3333,
+    "by_category": {
+      "paraphrase": {
+        "n": 1,
+        "tool_ok": 0,
+        "exact": 0,
+        "fields_total": 2,
+        "fields_ok": 0
+      },
+      "multi_intent": {
+        "n": 1,
+        "tool_ok": 1,
+        "exact": 1,
+        "fields_total": 1,
+        "fields_ok": 1
+      },
+      "underspecified": {
+        "n": 1,
+        "tool_ok": 0,
+        "exact": 0,
+        "fields_total": 0,
+        "fields_ok": 0
+      },
+      "near_miss": {
+        "n": 1,
+        "tool_ok": 0,
+        "exact": 0,
+        "fields_total": 2,
+        "fields_ok": 0
+      },
+      "none": {
+        "n": 1,
+        "tool_ok": 0,
+        "exact": 0,
+        "fields_total": 0,
+        "fields_ok": 0
+      },
+      "arg_shift": {
+        "n": 1,
+        "tool_ok": 1,
+        "exact": 1,
+        "fields_total": 2,
+        "fields_ok": 2
+      }
+    },
+    "rows": [
+      {
+        "id": "paraphrase_01",
+        "category": "paraphrase",
+        "prompt": "grab every python file in the project",
+        "output": "\n\n<think>\nThe user wants to find every Python file in the project. The best tool for this is `find_files` with a pattern matching Python files, or `ls_recursive` to list all files. Let me use `find_files` with the pattern `*.py` to find all Python files in the project",
+        "parsed": null,
+        "gold_tool": "find_files",
+        "gold_args": {
+          "pattern": "*.py",
+          "path": "."
+        },
+        "json_parse": false,
+        "right_tool": false,
+        "schema_valid": false,
+        "exact_match": false,
+        "refusal": null,
+        "tool_ok": false,
+        "keys_ok": false,
+        "fields_total": 2,
+        "fields_ok": 0,
+        "exact": false
+      },
+      {
+        "id": "multi_intent_01",
+        "category": "multi_intent",
+        "prompt": "read README.md and then summarise it for me",
+        "output": "\n\n<think>\nThe user wants to read README.md and then summarize it. I need to first read the file. Let me use the read_file tool to read README.md.\n</think>\n\n{\"tool\": \"read_file\", \"args\": {\"path\": \"README.md\"}}",
+        "parsed": {
+          "tool": "read_file",
+          "args": {
+            "path": "README.md"
+          }
+        },
+        "gold_tool": "read_file",
+        "gold_args": {
+          "path": "README.md"
+        },
+        "json_parse": true,
+        "right_tool": true,
+        "schema_valid": true,
+        "exact_match": true,
+        "refusal": null,
+        "tool_ok": true,
+        "keys_ok": true,
+        "fields_total": 1,
+        "fields_ok": 1,
+        "exact": true
+      },
+      {
+        "id": "underspecified_01",
+        "category": "underspecified",
+        "prompt": "read that file",
+        "output": "\n\n<think>\nThe user says \"read that file\" but doesn't specify which file. There's no context about a specific file. I need to ask for clarification, but the instructions say I should reply with only a JSON object. Since no specific file is mentioned, I cannot determine which file to read. I should",
+        "parsed": null,
+        "gold_tool": "none",
+        "gold_args": {},
+        "json_parse": false,
+        "right_tool": false,
+        "schema_valid": false,
+        "exact_match": false,
+        "refusal": null,
+        "tool_ok": false,
+        "keys_ok": false,
+        "fields_total": 0,
+        "fields_ok": 0,
+        "exact": false
+      },
+      {
+        "id": "near_miss_01",
+        "category": "near_miss",
+        "prompt": "find files whose contents mention 'timeout' anywhere in src",
+        "output": "\n\n<think>\nThe user wants to find files whose contents mention 'timeout' anywhere in the src directory. This is a grep/search for text pattern in a directory. The `grep_text` tool seems appropriate for searching text patterns in files within a path.\n\nLet me use grep_text with pattern \"timeout\" and path",
+        "parsed": null,
+        "gold_tool": "grep_text",
+        "gold_args": {
+          "pattern": "timeout",
+          "path": "src"
+        },
+        "json_parse": false,
+        "right_tool": false,
+        "schema_valid": false,
+        "exact_match": false,
+        "refusal": null,
+        "tool_ok": false,
+        "keys_ok": false,
+        "fields_total": 2,
+        "fields_ok": 0,
+        "exact": false
+      },
+      {
+        "id": "none_01",
+        "category": "none",
+        "prompt": "explain what a mutex is",
+        "output": "\n\n<think>\nThe user is asking me to explain what a mutex is. This is a general knowledge question about computer science/concurrency. None of the available tools are needed to answer this question - it's a conceptual explanation, not a file operation, search, command execution, or any other tool-specific task.\n\nI",
+        "parsed": null,
+        "gold_tool": "none",
+        "gold_args": {},
+        "json_parse": false,
+        "right_tool": false,
+        "schema_valid": false,
+        "exact_match": false,
+        "refusal": null,
+        "tool_ok": false,
+        "keys_ok": false,
+        "fields_total": 0,
+        "fields_ok": 0,
+        "exact": false
+      },
+      {
+        "id": "arg_shift_01",
+        "category": "arg_shift",
+        "prompt": "show me the first ten lines of main.py",
+        "output": "\n\n<think>\nThe user wants to see the first ten lines of main.py. The appropriate tool is head_file with path \"main.py\" and n=10.\n</think>\n\n{\"tool\": \"head_file\", \"args\": {\"path\": \"main.py\", \"n\": 10}}",
+        "parsed": {
+          "tool": "head_file",
+          "args": {
+            "path": "main.py",
+            "n": 10
+          }
+        },
+        "gold_tool": "head_file",
+        "gold_args": {
+          "path": "main.py",
+          "n": 10
+        },
+        "json_parse": true,
+        "right_tool": true,
+        "schema_valid": true,
+        "exact_match": true,
+        "refusal": null,
+        "tool_ok": true,
+        "keys_ok": true,
+        "fields_total": 2,
+        "fields_ok": 2,
+        "exact": true
+      }
+    ]
+  },
+  "native_leg": {
+    "n": 6,
+    "tool_ok": 0,
+    "args_ok": 0,
+    "exact_match": 0,
+    "keys_ok": 0,
+    "fields_total": 0,
+    "fields_ok": 0,
+    "refusals": 6,
+    "empty_outputs": 0,
+    "tool_ok_rate": 0.0,
+    "args_ok_rate": 0.0,
+    "exact_match_rate": 0.0,
+    "by_category": {
+      "paraphrase": {
+        "n": 1,
+        "tool_ok": 0,
+        "exact": 0,
+        "fields_total": 2,
+        "fields_ok": 0
+      },
+      "multi_intent": {
+        "n": 1,
+        "tool_ok": 0,
+        "exact": 0,
+        "fields_total": 1,
+        "fields_ok": 0
+      },
+      "underspecified": {
+        "n": 1,
+        "tool_ok": 0,
+        "exact": 0,
+        "fields_total": 0,
+        "fields_ok": 0
+      },
+      "near_miss": {
+        "n": 1,
+        "tool_ok": 0,
+        "exact": 0,
+        "fields_total": 2,
+        "fields_ok": 0
+      },
+      "none": {
+        "n": 1,
+        "tool_ok": 0,
+        "exact": 0,
+        "fields_total": 0,
+        "fields_ok": 0
+      },
+      "arg_shift": {
+        "n": 1,
+        "tool_ok": 0,
+        "exact": 0,
+        "fields_total": 2,
+        "fields_ok": 0
+      }
+    },
+    "rows": [
+      {
+        "id": "paraphrase_01",
+        "category": "paraphrase",
+        "prompt": "grab every python file in the project",
+        "gold_tool": "find_files",
+        "gold_args": {
+          "pattern": "*.py",
+          "path": "."
+        },
+        "emitted_calls": [],
+        "tool_match": false,
+        "args_match": false,
+        "exact_match": false,
+        "tool_ok": false,
+        "keys_ok": false,
+        "fields_total": 2,
+        "fields_ok": 0,
+        "exact": false,
+        "refusal": "HTTP 400: {\"error\":{\"message\":\"choice_logprobs requires a json_schema response_format, tool schema, or JSON mode\",\"type\":\"invalid_request_error\",\"param\":null,\"code\":null}}",
+        "finish_reason": null,
+        "content_head": null,
+        "choice_records": []
+      },
+      {
+        "id": "multi_intent_01",
+        "category": "multi_intent",
+        "prompt": "read README.md and then summarise it for me",
+        "gold_tool": "read_file",
+        "gold_args": {
+          "path": "README.md"
+        },
+        "emitted_calls": [],
+        "tool_match": false,
+        "args_match": false,
+        "exact_match": false,
+        "tool_ok": false,
+        "keys_ok": false,
+        "fields_total": 1,
+        "fields_ok": 0,
+        "exact": false,
+        "refusal": "HTTP 400: {\"error\":{\"message\":\"choice_logprobs requires a json_schema response_format, tool schema, or JSON mode\",\"type\":\"invalid_request_error\",\"param\":null,\"code\":null}}",
+        "finish_reason": null,
+        "content_head": null,
+        "choice_records": []
+      },
+      {
+        "id": "underspecified_01",
+        "category": "underspecified",
+        "prompt": "read that file",
+        "gold_tool": "none",
+        "gold_args": {},
+        "emitted_calls": [],
+        "tool_match": false,
+        "args_match": false,
+        "exact_match": false,
+        "tool_ok": false,
+        "keys_ok": false,
+        "fields_total": 0,
+        "fields_ok": 0,
+        "exact": false,
+        "refusal": "HTTP 400: {\"error\":{\"message\":\"choice_logprobs requires a json_schema response_format, tool schema, or JSON mode\",\"type\":\"invalid_request_error\",\"param\":null,\"code\":null}}",
+        "finish_reason": null,
+        "content_head": null,
+        "choice_records": []
+      },
+      {
+        "id": "near_miss_01",
+        "category": "near_miss",
+        "prompt": "find files whose contents mention 'timeout' anywhere in src",
+        "gold_tool": "grep_text",
+        "gold_args": {
+          "pattern": "timeout",
+          "path": "src"
+        },
+        "emitted_calls": [],
+        "tool_match": false,
+        "args_match": false,
+        "exact_match": false,
+        "tool_ok": false,
+        "keys_ok": false,
+        "fields_total": 2,
+        "fields_ok": 0,
+        "exact": false,
+        "refusal": "HTTP 400: {\"error\":{\"message\":\"choice_logprobs requires a json_schema response_format, tool schema, or JSON mode\",\"type\":\"invalid_request_error\",\"param\":null,\"code\":null}}",
+        "finish_reason": null,
+        "content_head": null,
+        "choice_records": []
+      },
+      {
+        "id": "none_01",
+        "category": "none",
+        "prompt": "explain what a mutex is",
+        "gold_tool": "none",
+        "gold_args": {},
+        "emitted_calls": [],
+        "tool_match": false,
+        "args_match": false,
+        "exact_match": false,
+        "tool_ok": false,
+        "keys_ok": false,
+        "fields_total": 0,
+        "fields_ok": 0,
+        "exact": false,
+        "refusal": "HTTP 400: {\"error\":{\"message\":\"choice_logprobs requires a json_schema response_format, tool schema, or JSON mode\",\"type\":\"invalid_request_error\",\"param\":null,\"code\":null}}",
+        "finish_reason": null,
+        "content_head": null,
+        "choice_records": []
+      },
+      {
+        "id": "arg_shift_01",
+        "category": "arg_shift",
+        "prompt": "show me the first ten lines of main.py",
+        "gold_tool": "head_file",
+        "gold_args": {
+          "path": "main.py",
+          "n": 10
+        },
+        "emitted_calls": [],
+        "tool_match": false,
+        "args_match": false,
+        "exact_match": false,
+        "tool_ok": false,
+        "keys_ok": false,
+        "fields_total": 2,
+        "fields_ok": 0,
+        "exact": false,
+        "refusal": "HTTP 400: {\"error\":{\"message\":\"choice_logprobs requires a json_schema response_format, tool schema, or JSON mode\",\"type\":\"invalid_request_error\",\"param\":null,\"code\":null}}",
+        "finish_reason": null,
+        "content_head": null,
+        "choice_records": []
+      }
+    ]
+  }
+}

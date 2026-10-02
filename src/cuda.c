@@ -850,6 +850,8 @@ bool gpu_moe_ok(void) {
     return true;    // expert banks upload and route on the device
 }
 
+bool gpu_removed_sublayers_ok(void) { return false; }
+
 bool gpu_eseries_ok(void) {
     // stage_ple ships the per-layer-embedding pre-pass each forward and enc_ple
     // runs the gate/proj/norm branch per layer; gpu_init has no PLE refusal.
@@ -938,6 +940,24 @@ static void split_guard(const gpu_weights *w, const model_t *m) {
                 m->path, w->gpu_layers, w->n_layer,
                 o->gpu_layers, o->n_layer);
     }
+}
+
+// Would gpu_init for this model reuse a resident upload? The VRAM claim made
+// before gpu_init asks this, so a second slot of a server (or a draft of the
+// same file) claims its own KV cache and scratch instead of a second copy of
+// weights it will never upload: `--parallel 2` on a 14B in a 24 GB slice was
+// refused at startup for 10 GB the second slot did not need (2026-10-02).
+// The same match gpu_init makes, under the same lock; a miss is not an error.
+bool gpu_shared_weights_resident(const model_t *m) {
+    uint64_t size = 0, ino = 0;
+    int64_t mtime = 0;
+    if (!m || !m->path || !file_id(m->path, &size, &ino, &mtime)) return false;
+    bool hit = false;
+    pthread_mutex_lock(&g_shared_mu);
+    for (const gpu_weights *w = g_shared; w && !hit; w = w->next)
+        hit = shared_matches(w, m, size, ino, mtime);
+    pthread_mutex_unlock(&g_shared_mu);
+    return hit;
 }
 
 static void shared_destroy(gpu_weights *w) {
@@ -2408,6 +2428,7 @@ unsigned long gpu_mv_dispatches(void) { return 0; }
 void gpu_attn_coop_force(int on) { (void)on; }
 unsigned long gpu_attn_coop_dispatches(void) { return 0; }
 unsigned long gpu_attn_tile_dispatches(void) { return 0; }
+unsigned long gpu_attn_gqa_dispatches(void) { return 0; }
 
 // Same hook for the MoE routing path: the fused-vs-eager tolerance gate has to
 // run both inside one process, which an env var read at first launch cannot

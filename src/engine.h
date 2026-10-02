@@ -3,6 +3,7 @@
 #define RUNNER_ENGINE_H
 
 #include <stdint.h>
+#include <stdatomic.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include "model.h"
@@ -147,6 +148,12 @@ typedef struct {
     int     think_msg_n;
     bool    prelude_exhausted;
     bool progress;         // print prompt progress to stderr
+    // Where an observer on another thread reads this engine's progress
+    // (the server's /health): prompt tokens fed so far and tokens generated,
+    // added to as they happen. NULL = nobody is watching. Pointers, not
+    // counters here, because an engine is copied by value for constraint
+    // trials and an atomic member would be copied with it.
+    atomic_int *stat_feed, *stat_gen;
     int32_t *hist;         // tokens whose KV occupies slots [0, pos)
     // What the last engine_rewind / engine_prefix_reuse did with the slot's
     // previous state (a rewind_how value), and the recurrent turn mark's

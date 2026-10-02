@@ -2978,6 +2978,16 @@ fail:
 // unbounded nested array, or any future refusal all report identically here.
 // Callers use this BEFORE prompt rendering to fall back to the generic
 // envelope for the whole request -- prompt and grammar must switch together.
+bool schema_qwen_xml_constrainable(jv *tools, const char *only_tool,
+                                   bool parallel, char *err, int errcap) {
+    // the turn a required or named choice compiles: no final branch
+    snode *probe = schema_compile_qwen_xml_turn(tools, false, only_tool, NULL,
+                                                parallel, err, errcap);
+    if (!probe) return false;
+    schema_free(probe);
+    return true;
+}
+
 bool schema_gemma4_constrainable(jv *tools, char *err, int errcap) {
     snode *probe = schema_compile_gemma4_turn(tools, true, NULL, NULL,
                                               true, false, err, errcap);

@@ -85,9 +85,14 @@ Two readings a zero could also carry are refused, not guessed: an
   added. A removed attention reserves no KV rows: the per-layer KV table
   reads 0 heads for it, so the cache shrinks by that block's share at every
   context length. The `-v` banner lists `sublayers removed  attn:48`.
-- Refused by name: GPU offload (`--gpu auto` with a backend present says to
-  rerun with `--gpu off`), `--lora`, `--train`, the MTP head on such a file,
-  and the families the writer refuses.
+- Metal runs such a file (2026-10-02): its layer walk omits the branch per
+  block, and the fusions that fold a branch's residual add into a
+  neighbouring norm stand down around a removed branch. Gate: the removed
+  file scores bit-identically to the zeroed parent on the device, token by
+  token and as one batch.
+- Refused by name: CUDA offload (`--gpu auto` on a CUDA build says to rerun
+  with `--gpu off`), `--lora`, `--train`, the MTP head on such a file, and
+  the families the writer refuses.
 
 ## Gates (`tests/test_remove_sublayer.py`, in `make test`)
 
@@ -147,9 +152,9 @@ computed-zero branch are the same function on a 60-block model.
 
 ## What remains
 
-- Device paths: CUDA already carries `skip_mixer` / `skip_ffn` for
-  nemotron_h; the dense decode loops need the same checks before the GPU
-  refusal can go. Metal has no per-block skip at all.
+- The CUDA device path: CUDA already carries `skip_mixer` / `skip_ffn` for
+  nemotron_h; the dense decode loops need the same checks before its
+  refusal can go. Metal's walk has them.
 - MoE FFN removal (drop the router, experts and shared expert), which the
   Glimmer Q4_K byte question needs.
 - The C2 E4B MatFormer slice is a different transform (per-layer FFN

@@ -390,14 +390,46 @@ def test_adapters_and_training_refuse_a_removed_model(runner_bin, parent, tmp_pa
     assert b"removed" in p.stderr
 
 
+def _score_gpu(runner_bin, model, chunked):
+    env = dict(os.environ)
+    if chunked:
+        env["RUNNER_SCORE_CHUNKED"] = "1"
+    p = subprocess.run([runner_bin, "-m", str(model), "--score", "-p", PROMPT,
+                        "-t", "2", "--gpu", "auto"], cwd=ROOT, env=env,
+                       stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                       timeout=120)
+    assert p.returncode == 0, p.stderr.decode(errors="replace")
+    assert b"Metal backend" in p.stderr, p.stderr.decode(errors="replace")
+    return json.loads(p.stdout)["logprobs"]
+
+
 @pytest.mark.skipif(platform.system() != "Darwin" or platform.machine() != "arm64",
-                    reason="needs a GPU backend to refuse")
-def test_gpu_path_is_refused_for_now(runner_bin, parent, tmp_path):
-    a = tmp_path / "a.gguf"
-    assert _remove(runner_bin, parent, a, "attn:1").returncode == 0
-    p = _run(runner_bin, ["-m", a, "-p", "hi", "-n", "1", "--gpu", "auto"])
-    assert p.returncode != 0
-    assert b"--gpu off" in p.stderr
+                    reason="the Metal walk is the backend that omits a removed sublayer")
+@pytest.mark.parametrize("spec,zero", [
+    ("attn:1", ["blk.1.attn_output.weight"]),
+    ("attn:0", ["blk.0.attn_output.weight"]),
+    ("mlp:0", ["blk.0.ffn_down.weight"]),
+    ("mlp:1", ["blk.1.ffn_down.weight"]),
+    ("attn:1,mlp:0", ["blk.1.attn_output.weight", "blk.0.ffn_down.weight"]),
+    ("attn:0,mlp:0", ["blk.0.attn_output.weight", "blk.0.ffn_down.weight"]),
+])
+@pytest.mark.parametrize("chunked", [False, True], ids=["decode", "prefill"])
+def test_metal_omits_a_removed_sublayer_bit_identically(
+        runner_bin, parent, tmp_path, spec, zero, chunked):
+    """The CPU anchor, on the device: the removed file scores exactly as the
+    parent with the branch's output projection zeroed, token by token (the
+    decode walk and its fusions) and in one batch (the prefill walk)."""
+    out = tmp_path / "removed.gguf"
+    p = _remove(runner_bin, parent, out, spec)
+    assert p.returncode == 0, p.stderr.decode(errors="replace")
+    zeroed = parent
+    for i, name in enumerate(zero):
+        nxt = tmp_path / ("zeroed%d.gguf" % i)
+        _zero_tensor(zeroed, nxt, name)
+        zeroed = nxt
+    removed = _score_gpu(runner_bin, out, chunked)
+    assert removed == _score_gpu(runner_bin, zeroed, chunked)
+    assert removed != _score_gpu(runner_bin, parent, chunked)
 
 
 # ---------------------------------------------------- the gemma-4 file shape

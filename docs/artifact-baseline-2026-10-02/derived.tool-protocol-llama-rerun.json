@@ -1,0 +1,191 @@
+{
+ "gate": "tool-protocol-check",
+ "label": "derived llama.cpp 73a43d1 (CPU build)",
+ "started": "2026-10-02T16:23:19+0200",
+ "host": "lab-box",
+ "platform": "Linux-6.12.0-211.16.1.el10_2.x86_64-x86_64-with-glibc2.39",
+ "base_url": "http://127.0.0.1:18331",
+ "model": "models/qwen38-recovered/Qwen3.8-27B-GSQ-RCO-IQ3_S-recovered.gguf",
+ "model_file": "models/qwen38-recovered/Qwen3.8-27B-GSQ-RCO-IQ3_S-recovered.gguf",
+ "model_sha256": "873df48dd3ecf205f73c29716e80fbe766e4202ef4ed394b2c24607a8628458f",
+ "runner": null,
+ "runner_sha256": null,
+ "capabilities_route": false,
+ "sampling_served": null,
+ "context": null,
+ "overrides": {},
+ "tool_choice": "auto (absent)",
+ "max_tokens": 400,
+ "cases": {
+  "A": {
+   "title": "single call",
+   "prompt": "List the files in the current directory.",
+   "tools": [
+    "bash"
+   ],
+   "modes": {
+    "buffered": {
+     "wall_s": 24.862,
+     "finish_reason": "tool_calls",
+     "content": "",
+     "reasoning": "The user is requesting a list of files in the current directory. Let's try running a simple command.\n",
+     "calls": [
+      {
+       "name": "bash",
+       "arguments": "{\"command\":\"ls -la\"}",
+       "id": "L3aXfHx5tB4oMsN2ThpG637XlVgSpLaQ"
+      }
+     ],
+     "usage": {
+      "completion_tokens": 52,
+      "prompt_tokens": 311,
+      "total_tokens": 363,
+      "prompt_tokens_details": {
+       "cached_tokens": 0
+      }
+     },
+     "telemetry": null,
+     "result": "PASS",
+     "reasons": []
+    },
+    "stream": {
+     "wall_s": 13.754,
+     "finish_reason": "tool_calls",
+     "content": "",
+     "reasoning": "The user is requesting a list display of files in the current directory. Let's run `ls -la`.\n",
+     "calls": [
+      {
+       "name": "bash",
+       "arguments": "{\"command\":\"ls -la\"}",
+       "id": "KuHos4yhTNY7fU6I0u6uNG8IVhgYY4fQ"
+      }
+     ],
+     "telemetry": null,
+     "result": "PASS",
+     "reasons": []
+    }
+   }
+  },
+  "B": {
+   "title": "prose and parallel calls",
+   "prompt": "Check whether boss.json, boss.toml and boss.yaml exist anywhere in this project. Use the glob tool for each pattern.",
+   "tools": [
+    "glob",
+    "bash"
+   ],
+   "modes": {
+    "buffered": {
+     "wall_s": 60.321,
+     "finish_reason": "tool_calls",
+     "content": "I'll search for all three files in parallel using glob patterns:\n\n",
+     "reasoning": "The user is asking to check whether boss.json, boss.toml, and boss.yaml exist anywhere within the project. Since these are independent, I'll use the glob tool for each pattern.\n\nI'll make three glob calls in parallel:\n- boss.json\n- boss.toml\n- boss.yaml\n\nI should use patterns like `**/boss.json` to search anywhere in the project.\n",
+     "calls": [
+      {
+       "name": "glob",
+       "arguments": "{\"pattern\":\"**/boss.json\"}",
+       "id": "376mkKS8Cy5uRyD1wcZRTnkj434jbogO"
+      },
+      {
+       "name": "glob",
+       "arguments": "{\"pattern\":\"**/boss.toml\"}",
+       "id": "HUZqMxDaHW0xgL1uSd5fSTfAVYLKNguE"
+      },
+      {
+       "name": "glob",
+       "arguments": "{\"pattern\":\"**/boss.yaml\"}",
+       "id": "DnPc84nWUtDJQXg2Kdxc2wW6xwx2CgNO"
+      }
+     ],
+     "usage": {
+      "completion_tokens": 185,
+      "prompt_tokens": 384,
+      "total_tokens": 569,
+      "prompt_tokens_details": {
+       "cached_tokens": 0
+      }
+     },
+     "telemetry": null,
+     "result": "PASS",
+     "reasons": []
+    },
+    "stream": {
+     "wall_s": 41.598,
+     "finish_reason": "tool_calls",
+     "content": "",
+     "reasoning": "The user wants to use the glob tool to check whether boss.json, boss.toml, and boss.yaml exist anywhere in this project. I should use glob for each pattern. These are independent calls, so I can run them all in parallel.\n\nThe pattern is probably \"**/boss.json\", \"**/boss.toml\", \"**/boss.yaml\" to search recursively anywhere within the project.\n",
+     "calls": [
+      {
+       "name": "glob",
+       "arguments": "{\"pattern\":\"**/boss.json\"}",
+       "id": "cGxN0JM9YPAwszOAlFOlckxYQHFz7WBq"
+      },
+      {
+       "name": "glob",
+       "arguments": "{\"pattern\":\"**/boss.toml\"}",
+       "id": "yaQFWBH8BCEQPg3z3fBN9065CYyiovVz"
+      },
+      {
+       "name": "glob",
+       "arguments": "{\"pattern\":\"**/boss.yaml\"}",
+       "id": "iFNcv1YxLWLULtQAWpxm3iFb09dvyzmM"
+      }
+     ],
+     "telemetry": null,
+     "result": "PASS",
+     "reasons": []
+    }
+   }
+  },
+  "C": {
+   "title": "prose then call",
+   "prompt": "Briefly say what you are about to do, then list the files in the current directory.",
+   "tools": [
+    "bash"
+   ],
+   "modes": {
+    "buffered": {
+     "wall_s": 19.159,
+     "finish_reason": "tool_calls",
+     "content": "I'm going to list the files in the current directory.\n\n",
+     "reasoning": "The user is requesting to concisely state what I'm about to do, and then list the files in the current directory.\n",
+     "calls": [
+      {
+       "name": "bash",
+       "arguments": "{\"command\":\"ls -la\"}",
+       "id": "3vFbmJ5TSFZXBxCt2HpvmFbGvKpJo0r5"
+      }
+     ],
+     "usage": {
+      "completion_tokens": 70,
+      "prompt_tokens": 322,
+      "total_tokens": 392,
+      "prompt_tokens_details": {
+       "cached_tokens": 293
+      }
+     },
+     "telemetry": null,
+     "result": "PASS",
+     "reasons": []
+    },
+    "stream": {
+     "wall_s": 18.347,
+     "finish_reason": "tool_calls",
+     "content": "I'll list the files in the current directory using a simple `ls` command.\n\n",
+     "reasoning": "The user is asking me to briefly state what I'm about to do, and then list the files in the current directory.\n",
+     "calls": [
+      {
+       "name": "bash",
+       "arguments": "{\"command\":\"ls -la\"}",
+       "id": "SCQH69s7QYSgpM06llljGBioNkDNFiUO"
+      }
+     ],
+     "telemetry": null,
+     "result": "PASS",
+     "reasons": []
+    }
+   }
+  }
+ },
+ "verdict": "PASS",
+ "finished": "2026-10-02T16:26:23+0200"
+}

@@ -76,6 +76,15 @@ wait_port() {  # port seconds
 port_busy() {
   "$PY" -c "import socket,sys; s=socket.create_connection(('127.0.0.1',$1),1)" 2>/dev/null
 }
+wait_health() {  # port seconds pid: /health answers 200, not merely the port
+  # llama-server opens its port before the model is loaded and answers 503
+  # until it is; a check started on the open port fails on its first request.
+  local i=0
+  until "$PY" -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:$1/health',timeout=2).status==200 else 1)" 2>/dev/null; do
+    kill -0 "$3" 2>/dev/null || return 1
+    i=$((i + 1)); [ "$i" -ge "$2" ] && return 1; sleep 1
+  done
+}
 serve() {  # name port gpu threads model -> pid in SRV_PID
   local name=$1 port=$2 gpu=$3 threads=$4 model=$5
   SRV_PID=
@@ -141,7 +150,7 @@ llama_arm() {
       $PIN "$BL_LLAMA_SERVER" -m "$f" -c "$CTX" --port 18321 --host 127.0.0.1 \
           -t "$CPU_THREADS" --jinja > "$OUT/$tag.llama-server.log" 2>&1 &
       lp=$!
-      if wait_port 18321 900 && kill -0 "$lp" 2>/dev/null; then
+      if wait_health 18321 1800 "$lp"; then
         step "$tag/tool-protocol-llama.cpp" "$OUT/$tag.tool-protocol-llama.log" \
           "$PY" scripts/tool-protocol-check.py --base-url http://127.0.0.1:18321 \
             --model-file "$f" --label "$tag llama.cpp ${BL_LLAMA_VERSION:-}" \

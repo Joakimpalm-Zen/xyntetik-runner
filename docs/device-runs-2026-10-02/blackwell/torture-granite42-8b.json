@@ -1,0 +1,946 @@
+{
+  "cases": [
+    {
+      "category": "nested_arguments",
+      "id": "runner-000-nested_arguments",
+      "latency_ms": 3116.91,
+      "ordinal": 0,
+      "status": "passed"
+    },
+    {
+      "category": "tool_selection",
+      "id": "runner-001-tool_selection",
+      "latency_ms": 2120.06,
+      "ordinal": 1,
+      "status": "passed"
+    },
+    {
+      "category": "forced_truncation",
+      "failure": {
+        "category": "declined",
+        "message": "[protocol] no tool call emitted; the model answered in prose\n    got = None"
+      },
+      "id": "runner-002-forced_truncation",
+      "latency_ms": 223.08,
+      "ordinal": 2,
+      "status": "failed"
+    },
+    {
+      "category": "stream_normalization",
+      "id": "runner-003-stream_normalization",
+      "latency_ms": 243.62,
+      "ordinal": 3,
+      "status": "passed"
+    },
+    {
+      "category": "tool_stream_normalization",
+      "id": "runner-004-tool_stream_normalization",
+      "latency_ms": 1900.64,
+      "ordinal": 4,
+      "status": "passed"
+    },
+    {
+      "category": "large_enum_selection",
+      "id": "runner-005-large_enum_selection",
+      "latency_ms": 2741.5,
+      "ordinal": 5,
+      "status": "passed"
+    },
+    {
+      "category": "reasoning_then_tool",
+      "failure": {
+        "category": "protocol",
+        "message": "[protocol] expected HTTP 200\n    got = 400\n    request = 'runner-006-reasoning_then_tool'\n    body = '{\"error\":{\"message\":\"unsupported tool schema: Qwen3-Coder string parameter \\'hypothesis\\' carries a length or pattern constraint its raw-text syntax cannot enforce\",\"type\":\"invalid_request_error\",\"param\":null,\"code\":null}}'"
+      },
+      "id": "runner-006-reasoning_then_tool",
+      "latency_ms": 0.3,
+      "ordinal": 6,
+      "status": "failed"
+    },
+    {
+      "category": "structured_final",
+      "id": "runner-007-structured_final",
+      "latency_ms": 1885.74,
+      "ordinal": 7,
+      "status": "passed"
+    },
+    {
+      "category": "nested_arguments",
+      "id": "runner-008-nested_arguments",
+      "latency_ms": 1857.03,
+      "ordinal": 8,
+      "status": "passed"
+    },
+    {
+      "category": "tool_selection",
+      "id": "runner-009-tool_selection",
+      "latency_ms": 2154.85,
+      "ordinal": 9,
+      "status": "passed"
+    },
+    {
+      "category": "forced_truncation",
+      "id": "runner-010-forced_truncation",
+      "latency_ms": 241.15,
+      "ordinal": 10,
+      "status": "passed"
+    },
+    {
+      "category": "stream_normalization",
+      "id": "runner-011-stream_normalization",
+      "latency_ms": 260.02,
+      "ordinal": 11,
+      "status": "passed"
+    },
+    {
+      "category": "tool_stream_normalization",
+      "id": "runner-012-tool_stream_normalization",
+      "latency_ms": 1901.47,
+      "ordinal": 12,
+      "status": "passed"
+    },
+    {
+      "category": "large_enum_selection",
+      "id": "runner-013-large_enum_selection",
+      "latency_ms": 2746.71,
+      "ordinal": 13,
+      "status": "passed"
+    },
+    {
+      "category": "reasoning_then_tool",
+      "failure": {
+        "category": "protocol",
+        "message": "[protocol] expected HTTP 200\n    got = 400\n    request = 'runner-014-reasoning_then_tool'\n    body = '{\"error\":{\"message\":\"unsupported tool schema: Qwen3-Coder string parameter \\'hypothesis\\' carries a length or pattern constraint its raw-text syntax cannot enforce\",\"type\":\"invalid_request_error\",\"param\":null,\"code\":null}}'"
+      },
+      "id": "runner-014-reasoning_then_tool",
+      "latency_ms": 0.24,
+      "ordinal": 14,
+      "status": "failed"
+    },
+    {
+      "category": "structured_final",
+      "id": "runner-015-structured_final",
+      "latency_ms": 1964.23,
+      "ordinal": 15,
+      "status": "passed"
+    },
+    {
+      "category": "nested_arguments",
+      "id": "runner-016-nested_arguments",
+      "latency_ms": 1865.64,
+      "ordinal": 16,
+      "status": "passed"
+    },
+    {
+      "category": "tool_selection",
+      "id": "runner-017-tool_selection",
+      "latency_ms": 2120.42,
+      "ordinal": 17,
+      "status": "passed"
+    },
+    {
+      "category": "forced_truncation",
+      "id": "runner-018-forced_truncation",
+      "latency_ms": 258.23,
+      "ordinal": 18,
+      "status": "passed"
+    },
+    {
+      "category": "stream_normalization",
+      "id": "runner-019-stream_normalization",
+      "latency_ms": 275.72,
+      "ordinal": 19,
+      "status": "passed"
+    },
+    {
+      "category": "tool_stream_normalization",
+      "id": "runner-020-tool_stream_normalization",
+      "latency_ms": 1900.95,
+      "ordinal": 20,
+      "status": "passed"
+    },
+    {
+      "category": "large_enum_selection",
+      "id": "runner-021-large_enum_selection",
+      "latency_ms": 2744.89,
+      "ordinal": 21,
+      "status": "passed"
+    },
+    {
+      "category": "reasoning_then_tool",
+      "failure": {
+        "category": "protocol",
+        "message": "[protocol] expected HTTP 200\n    got = 400\n    request = 'runner-022-reasoning_then_tool'\n    body = '{\"error\":{\"message\":\"unsupported tool schema: Qwen3-Coder string parameter \\'hypothesis\\' carries a length or pattern constraint its raw-text syntax cannot enforce\",\"type\":\"invalid_request_error\",\"param\":null,\"code\":null}}'"
+      },
+      "id": "runner-022-reasoning_then_tool",
+      "latency_ms": 0.26,
+      "ordinal": 22,
+      "status": "failed"
+    },
+    {
+      "category": "structured_final",
+      "id": "runner-023-structured_final",
+      "latency_ms": 1753.93,
+      "ordinal": 23,
+      "status": "passed"
+    },
+    {
+      "category": "nested_arguments",
+      "id": "runner-024-nested_arguments",
+      "latency_ms": 1856.95,
+      "ordinal": 24,
+      "status": "passed"
+    },
+    {
+      "category": "tool_selection",
+      "id": "runner-025-tool_selection",
+      "latency_ms": 2155.76,
+      "ordinal": 25,
+      "status": "passed"
+    },
+    {
+      "category": "forced_truncation",
+      "id": "runner-026-forced_truncation",
+      "latency_ms": 308.23,
+      "ordinal": 26,
+      "status": "passed"
+    },
+    {
+      "category": "stream_normalization",
+      "id": "runner-027-stream_normalization",
+      "latency_ms": 292.27,
+      "ordinal": 27,
+      "status": "passed"
+    },
+    {
+      "category": "tool_stream_normalization",
+      "id": "runner-028-tool_stream_normalization",
+      "latency_ms": 1901.53,
+      "ordinal": 28,
+      "status": "passed"
+    },
+    {
+      "category": "large_enum_selection",
+      "id": "runner-029-large_enum_selection",
+      "latency_ms": 2744.37,
+      "ordinal": 29,
+      "status": "passed"
+    },
+    {
+      "category": "reasoning_then_tool",
+      "failure": {
+        "category": "protocol",
+        "message": "[protocol] expected HTTP 200\n    got = 400\n    request = 'runner-030-reasoning_then_tool'\n    body = '{\"error\":{\"message\":\"unsupported tool schema: Qwen3-Coder string parameter \\'hypothesis\\' carries a length or pattern constraint its raw-text syntax cannot enforce\",\"type\":\"invalid_request_error\",\"param\":null,\"code\":null}}'"
+      },
+      "id": "runner-030-reasoning_then_tool",
+      "latency_ms": 0.24,
+      "ordinal": 30,
+      "status": "failed"
+    },
+    {
+      "category": "structured_final",
+      "id": "runner-031-structured_final",
+      "latency_ms": 1803.06,
+      "ordinal": 31,
+      "status": "passed"
+    },
+    {
+      "category": "nested_arguments",
+      "id": "runner-032-nested_arguments",
+      "latency_ms": 1865.85,
+      "ordinal": 32,
+      "status": "passed"
+    },
+    {
+      "category": "tool_selection",
+      "id": "runner-033-tool_selection",
+      "latency_ms": 2120.83,
+      "ordinal": 33,
+      "status": "passed"
+    },
+    {
+      "category": "forced_truncation",
+      "id": "runner-034-forced_truncation",
+      "latency_ms": 344.53,
+      "ordinal": 34,
+      "status": "passed"
+    },
+    {
+      "category": "stream_normalization",
+      "id": "runner-035-stream_normalization",
+      "latency_ms": 308.69,
+      "ordinal": 35,
+      "status": "passed"
+    },
+    {
+      "category": "tool_stream_normalization",
+      "id": "runner-036-tool_stream_normalization",
+      "latency_ms": 1901.34,
+      "ordinal": 36,
+      "status": "passed"
+    },
+    {
+      "category": "large_enum_selection",
+      "id": "runner-037-large_enum_selection",
+      "latency_ms": 2743.63,
+      "ordinal": 37,
+      "status": "passed"
+    },
+    {
+      "category": "reasoning_then_tool",
+      "failure": {
+        "category": "protocol",
+        "message": "[protocol] expected HTTP 200\n    got = 400\n    request = 'runner-038-reasoning_then_tool'\n    body = '{\"error\":{\"message\":\"unsupported tool schema: Qwen3-Coder string parameter \\'hypothesis\\' carries a length or pattern constraint its raw-text syntax cannot enforce\",\"type\":\"invalid_request_error\",\"param\":null,\"code\":null}}'"
+      },
+      "id": "runner-038-reasoning_then_tool",
+      "latency_ms": 0.35,
+      "ordinal": 38,
+      "status": "failed"
+    },
+    {
+      "category": "structured_final",
+      "id": "runner-039-structured_final",
+      "latency_ms": 1851.19,
+      "ordinal": 39,
+      "status": "passed"
+    },
+    {
+      "category": "nested_arguments",
+      "id": "runner-040-nested_arguments",
+      "latency_ms": 1865.12,
+      "ordinal": 40,
+      "status": "passed"
+    },
+    {
+      "category": "tool_selection",
+      "id": "runner-041-tool_selection",
+      "latency_ms": 2155.19,
+      "ordinal": 41,
+      "status": "passed"
+    },
+    {
+      "category": "forced_truncation",
+      "failure": {
+        "category": "declined",
+        "message": "[protocol] no tool call emitted; the model answered in prose\n    got = None"
+      },
+      "id": "runner-042-forced_truncation",
+      "latency_ms": 223.33,
+      "ordinal": 42,
+      "status": "failed"
+    },
+    {
+      "category": "stream_normalization",
+      "id": "runner-043-stream_normalization",
+      "latency_ms": 243.55,
+      "ordinal": 43,
+      "status": "passed"
+    },
+    {
+      "category": "tool_stream_normalization",
+      "id": "runner-044-tool_stream_normalization",
+      "latency_ms": 1902.1,
+      "ordinal": 44,
+      "status": "passed"
+    },
+    {
+      "category": "large_enum_selection",
+      "id": "runner-045-large_enum_selection",
+      "latency_ms": 2744.25,
+      "ordinal": 45,
+      "status": "passed"
+    },
+    {
+      "category": "reasoning_then_tool",
+      "failure": {
+        "category": "protocol",
+        "message": "[protocol] expected HTTP 200\n    got = 400\n    request = 'runner-046-reasoning_then_tool'\n    body = '{\"error\":{\"message\":\"unsupported tool schema: Qwen3-Coder string parameter \\'hypothesis\\' carries a length or pattern constraint its raw-text syntax cannot enforce\",\"type\":\"invalid_request_error\",\"param\":null,\"code\":null}}'"
+      },
+      "id": "runner-046-reasoning_then_tool",
+      "latency_ms": 0.24,
+      "ordinal": 46,
+      "status": "failed"
+    },
+    {
+      "category": "structured_final",
+      "id": "runner-047-structured_final",
+      "latency_ms": 1847.92,
+      "ordinal": 47,
+      "status": "passed"
+    },
+    {
+      "category": "nested_arguments",
+      "id": "runner-048-nested_arguments",
+      "latency_ms": 1856.87,
+      "ordinal": 48,
+      "status": "passed"
+    },
+    {
+      "category": "tool_selection",
+      "id": "runner-049-tool_selection",
+      "latency_ms": 2121.53,
+      "ordinal": 49,
+      "status": "passed"
+    },
+    {
+      "category": "forced_truncation",
+      "id": "runner-050-forced_truncation",
+      "latency_ms": 240.76,
+      "ordinal": 50,
+      "status": "passed"
+    },
+    {
+      "category": "stream_normalization",
+      "id": "runner-051-stream_normalization",
+      "latency_ms": 259.84,
+      "ordinal": 51,
+      "status": "passed"
+    },
+    {
+      "category": "tool_stream_normalization",
+      "id": "runner-052-tool_stream_normalization",
+      "latency_ms": 1901.13,
+      "ordinal": 52,
+      "status": "passed"
+    },
+    {
+      "category": "large_enum_selection",
+      "id": "runner-053-large_enum_selection",
+      "latency_ms": 2737.5,
+      "ordinal": 53,
+      "status": "passed"
+    },
+    {
+      "category": "reasoning_then_tool",
+      "failure": {
+        "category": "protocol",
+        "message": "[protocol] expected HTTP 200\n    got = 400\n    request = 'runner-054-reasoning_then_tool'\n    body = '{\"error\":{\"message\":\"unsupported tool schema: Qwen3-Coder string parameter \\'hypothesis\\' carries a length or pattern constraint its raw-text syntax cannot enforce\",\"type\":\"invalid_request_error\",\"param\":null,\"code\":null}}'"
+      },
+      "id": "runner-054-reasoning_then_tool",
+      "latency_ms": 0.23,
+      "ordinal": 54,
+      "status": "failed"
+    },
+    {
+      "category": "structured_final",
+      "id": "runner-055-structured_final",
+      "latency_ms": 1848.74,
+      "ordinal": 55,
+      "status": "passed"
+    },
+    {
+      "category": "nested_arguments",
+      "id": "runner-056-nested_arguments",
+      "latency_ms": 1865.32,
+      "ordinal": 56,
+      "status": "passed"
+    },
+    {
+      "category": "tool_selection",
+      "id": "runner-057-tool_selection",
+      "latency_ms": 2155.19,
+      "ordinal": 57,
+      "status": "passed"
+    },
+    {
+      "category": "forced_truncation",
+      "id": "runner-058-forced_truncation",
+      "latency_ms": 258.45,
+      "ordinal": 58,
+      "status": "passed"
+    },
+    {
+      "category": "stream_normalization",
+      "id": "runner-059-stream_normalization",
+      "latency_ms": 275.94,
+      "ordinal": 59,
+      "status": "passed"
+    },
+    {
+      "category": "tool_stream_normalization",
+      "id": "runner-060-tool_stream_normalization",
+      "latency_ms": 1900.94,
+      "ordinal": 60,
+      "status": "passed"
+    },
+    {
+      "category": "large_enum_selection",
+      "id": "runner-061-large_enum_selection",
+      "latency_ms": 2741.69,
+      "ordinal": 61,
+      "status": "passed"
+    },
+    {
+      "category": "reasoning_then_tool",
+      "failure": {
+        "category": "protocol",
+        "message": "[protocol] expected HTTP 200\n    got = 400\n    request = 'runner-062-reasoning_then_tool'\n    body = '{\"error\":{\"message\":\"unsupported tool schema: Qwen3-Coder string parameter \\'hypothesis\\' carries a length or pattern constraint its raw-text syntax cannot enforce\",\"type\":\"invalid_request_error\",\"param\":null,\"code\":null}}'"
+      },
+      "id": "runner-062-reasoning_then_tool",
+      "latency_ms": 0.22,
+      "ordinal": 62,
+      "status": "failed"
+    },
+    {
+      "category": "structured_final",
+      "id": "runner-063-structured_final",
+      "latency_ms": 1933.55,
+      "ordinal": 63,
+      "status": "passed"
+    },
+    {
+      "category": "nested_arguments",
+      "id": "runner-064-nested_arguments",
+      "latency_ms": 1865.8,
+      "ordinal": 64,
+      "status": "passed"
+    },
+    {
+      "category": "tool_selection",
+      "id": "runner-065-tool_selection",
+      "latency_ms": 2120.25,
+      "ordinal": 65,
+      "status": "passed"
+    },
+    {
+      "category": "forced_truncation",
+      "id": "runner-066-forced_truncation",
+      "latency_ms": 307.81,
+      "ordinal": 66,
+      "status": "passed"
+    },
+    {
+      "category": "stream_normalization",
+      "id": "runner-067-stream_normalization",
+      "latency_ms": 292.18,
+      "ordinal": 67,
+      "status": "passed"
+    },
+    {
+      "category": "tool_stream_normalization",
+      "id": "runner-068-tool_stream_normalization",
+      "latency_ms": 1902.91,
+      "ordinal": 68,
+      "status": "passed"
+    },
+    {
+      "category": "large_enum_selection",
+      "id": "runner-069-large_enum_selection",
+      "latency_ms": 2743.1,
+      "ordinal": 69,
+      "status": "passed"
+    },
+    {
+      "category": "reasoning_then_tool",
+      "failure": {
+        "category": "protocol",
+        "message": "[protocol] expected HTTP 200\n    got = 400\n    request = 'runner-070-reasoning_then_tool'\n    body = '{\"error\":{\"message\":\"unsupported tool schema: Qwen3-Coder string parameter \\'hypothesis\\' carries a length or pattern constraint its raw-text syntax cannot enforce\",\"type\":\"invalid_request_error\",\"param\":null,\"code\":null}}'"
+      },
+      "id": "runner-070-reasoning_then_tool",
+      "latency_ms": 0.24,
+      "ordinal": 70,
+      "status": "failed"
+    },
+    {
+      "category": "structured_final",
+      "id": "runner-071-structured_final",
+      "latency_ms": 1851.55,
+      "ordinal": 71,
+      "status": "passed"
+    },
+    {
+      "category": "nested_arguments",
+      "id": "runner-072-nested_arguments",
+      "latency_ms": 1866.29,
+      "ordinal": 72,
+      "status": "passed"
+    },
+    {
+      "category": "tool_selection",
+      "id": "runner-073-tool_selection",
+      "latency_ms": 2154.73,
+      "ordinal": 73,
+      "status": "passed"
+    },
+    {
+      "category": "forced_truncation",
+      "id": "runner-074-forced_truncation",
+      "latency_ms": 343.71,
+      "ordinal": 74,
+      "status": "passed"
+    },
+    {
+      "category": "stream_normalization",
+      "id": "runner-075-stream_normalization",
+      "latency_ms": 308.29,
+      "ordinal": 75,
+      "status": "passed"
+    },
+    {
+      "category": "tool_stream_normalization",
+      "id": "runner-076-tool_stream_normalization",
+      "latency_ms": 1902.17,
+      "ordinal": 76,
+      "status": "passed"
+    },
+    {
+      "category": "large_enum_selection",
+      "id": "runner-077-large_enum_selection",
+      "latency_ms": 2738.7,
+      "ordinal": 77,
+      "status": "passed"
+    },
+    {
+      "category": "reasoning_then_tool",
+      "failure": {
+        "category": "protocol",
+        "message": "[protocol] expected HTTP 200\n    got = 400\n    request = 'runner-078-reasoning_then_tool'\n    body = '{\"error\":{\"message\":\"unsupported tool schema: Qwen3-Coder string parameter \\'hypothesis\\' carries a length or pattern constraint its raw-text syntax cannot enforce\",\"type\":\"invalid_request_error\",\"param\":null,\"code\":null}}'"
+      },
+      "id": "runner-078-reasoning_then_tool",
+      "latency_ms": 0.26,
+      "ordinal": 78,
+      "status": "failed"
+    },
+    {
+      "category": "structured_final",
+      "id": "runner-079-structured_final",
+      "latency_ms": 1721.43,
+      "ordinal": 79,
+      "status": "passed"
+    },
+    {
+      "category": "nested_arguments",
+      "id": "runner-080-nested_arguments",
+      "latency_ms": 1866.19,
+      "ordinal": 80,
+      "status": "passed"
+    },
+    {
+      "category": "tool_selection",
+      "id": "runner-081-tool_selection",
+      "latency_ms": 2120.96,
+      "ordinal": 81,
+      "status": "passed"
+    },
+    {
+      "category": "forced_truncation",
+      "failure": {
+        "category": "declined",
+        "message": "[protocol] no tool call emitted; the model answered in prose\n    got = None"
+      },
+      "id": "runner-082-forced_truncation",
+      "latency_ms": 223.77,
+      "ordinal": 82,
+      "status": "failed"
+    },
+    {
+      "category": "stream_normalization",
+      "id": "runner-083-stream_normalization",
+      "latency_ms": 243.68,
+      "ordinal": 83,
+      "status": "passed"
+    },
+    {
+      "category": "tool_stream_normalization",
+      "id": "runner-084-tool_stream_normalization",
+      "latency_ms": 1902.34,
+      "ordinal": 84,
+      "status": "passed"
+    },
+    {
+      "category": "large_enum_selection",
+      "id": "runner-085-large_enum_selection",
+      "latency_ms": 2749.41,
+      "ordinal": 85,
+      "status": "passed"
+    },
+    {
+      "category": "reasoning_then_tool",
+      "failure": {
+        "category": "protocol",
+        "message": "[protocol] expected HTTP 200\n    got = 400\n    request = 'runner-086-reasoning_then_tool'\n    body = '{\"error\":{\"message\":\"unsupported tool schema: Qwen3-Coder string parameter \\'hypothesis\\' carries a length or pattern constraint its raw-text syntax cannot enforce\",\"type\":\"invalid_request_error\",\"param\":null,\"code\":null}}'"
+      },
+      "id": "runner-086-reasoning_then_tool",
+      "latency_ms": 0.3,
+      "ordinal": 86,
+      "status": "failed"
+    },
+    {
+      "category": "structured_final",
+      "id": "runner-087-structured_final",
+      "latency_ms": 1851.23,
+      "ordinal": 87,
+      "status": "passed"
+    },
+    {
+      "category": "nested_arguments",
+      "id": "runner-088-nested_arguments",
+      "latency_ms": 1866.52,
+      "ordinal": 88,
+      "status": "passed"
+    },
+    {
+      "category": "tool_selection",
+      "id": "runner-089-tool_selection",
+      "latency_ms": 2155.29,
+      "ordinal": 89,
+      "status": "passed"
+    },
+    {
+      "category": "forced_truncation",
+      "id": "runner-090-forced_truncation",
+      "latency_ms": 241.14,
+      "ordinal": 90,
+      "status": "passed"
+    },
+    {
+      "category": "stream_normalization",
+      "id": "runner-091-stream_normalization",
+      "latency_ms": 260.18,
+      "ordinal": 91,
+      "status": "passed"
+    },
+    {
+      "category": "tool_stream_normalization",
+      "id": "runner-092-tool_stream_normalization",
+      "latency_ms": 1901.84,
+      "ordinal": 92,
+      "status": "passed"
+    },
+    {
+      "category": "large_enum_selection",
+      "id": "runner-093-large_enum_selection",
+      "latency_ms": 2739.05,
+      "ordinal": 93,
+      "status": "passed"
+    },
+    {
+      "category": "reasoning_then_tool",
+      "failure": {
+        "category": "protocol",
+        "message": "[protocol] expected HTTP 200\n    got = 400\n    request = 'runner-094-reasoning_then_tool'\n    body = '{\"error\":{\"message\":\"unsupported tool schema: Qwen3-Coder string parameter \\'hypothesis\\' carries a length or pattern constraint its raw-text syntax cannot enforce\",\"type\":\"invalid_request_error\",\"param\":null,\"code\":null}}'"
+      },
+      "id": "runner-094-reasoning_then_tool",
+      "latency_ms": 0.35,
+      "ordinal": 94,
+      "status": "failed"
+    },
+    {
+      "category": "structured_final",
+      "id": "runner-095-structured_final",
+      "latency_ms": 1848.99,
+      "ordinal": 95,
+      "status": "passed"
+    },
+    {
+      "category": "nested_arguments",
+      "id": "runner-096-nested_arguments",
+      "latency_ms": 1857.12,
+      "ordinal": 96,
+      "status": "passed"
+    },
+    {
+      "category": "tool_selection",
+      "id": "runner-097-tool_selection",
+      "latency_ms": 2121.73,
+      "ordinal": 97,
+      "status": "passed"
+    },
+    {
+      "category": "forced_truncation",
+      "id": "runner-098-forced_truncation",
+      "latency_ms": 258.01,
+      "ordinal": 98,
+      "status": "passed"
+    },
+    {
+      "category": "stream_normalization",
+      "id": "runner-099-stream_normalization",
+      "latency_ms": 276.77,
+      "ordinal": 99,
+      "status": "passed"
+    },
+    {
+      "category": "tool_stream_normalization",
+      "id": "runner-100-tool_stream_normalization",
+      "latency_ms": 1904.47,
+      "ordinal": 100,
+      "status": "passed"
+    },
+    {
+      "category": "large_enum_selection",
+      "id": "runner-101-large_enum_selection",
+      "latency_ms": 2745.94,
+      "ordinal": 101,
+      "status": "passed"
+    },
+    {
+      "category": "reasoning_then_tool",
+      "failure": {
+        "category": "protocol",
+        "message": "[protocol] expected HTTP 200\n    got = 400\n    request = 'runner-102-reasoning_then_tool'\n    body = '{\"error\":{\"message\":\"unsupported tool schema: Qwen3-Coder string parameter \\'hypothesis\\' carries a length or pattern constraint its raw-text syntax cannot enforce\",\"type\":\"invalid_request_error\",\"param\":null,\"code\":null}}'"
+      },
+      "id": "runner-102-reasoning_then_tool",
+      "latency_ms": 0.39,
+      "ordinal": 102,
+      "status": "failed"
+    },
+    {
+      "category": "structured_final",
+      "id": "runner-103-structured_final",
+      "latency_ms": 1852.65,
+      "ordinal": 103,
+      "status": "passed"
+    },
+    {
+      "category": "nested_arguments",
+      "id": "runner-104-nested_arguments",
+      "latency_ms": 1866.42,
+      "ordinal": 104,
+      "status": "passed"
+    },
+    {
+      "category": "tool_selection",
+      "id": "runner-105-tool_selection",
+      "latency_ms": 2155.52,
+      "ordinal": 105,
+      "status": "passed"
+    },
+    {
+      "category": "forced_truncation",
+      "id": "runner-106-forced_truncation",
+      "latency_ms": 330.62,
+      "ordinal": 106,
+      "status": "passed"
+    },
+    {
+      "category": "stream_normalization",
+      "id": "runner-107-stream_normalization",
+      "latency_ms": 291.83,
+      "ordinal": 107,
+      "status": "passed"
+    },
+    {
+      "category": "tool_stream_normalization",
+      "id": "runner-108-tool_stream_normalization",
+      "latency_ms": 1900.82,
+      "ordinal": 108,
+      "status": "passed"
+    },
+    {
+      "category": "large_enum_selection",
+      "id": "runner-109-large_enum_selection",
+      "latency_ms": 2741.65,
+      "ordinal": 109,
+      "status": "passed"
+    },
+    {
+      "category": "reasoning_then_tool",
+      "failure": {
+        "category": "protocol",
+        "message": "[protocol] expected HTTP 200\n    got = 400\n    request = 'runner-110-reasoning_then_tool'\n    body = '{\"error\":{\"message\":\"unsupported tool schema: Qwen3-Coder string parameter \\'hypothesis\\' carries a length or pattern constraint its raw-text syntax cannot enforce\",\"type\":\"invalid_request_error\",\"param\":null,\"code\":null}}'"
+      },
+      "id": "runner-110-reasoning_then_tool",
+      "latency_ms": 0.27,
+      "ordinal": 110,
+      "status": "failed"
+    },
+    {
+      "category": "structured_final",
+      "id": "runner-111-structured_final",
+      "latency_ms": 1786.52,
+      "ordinal": 111,
+      "status": "passed"
+    },
+    {
+      "category": "nested_arguments",
+      "id": "runner-112-nested_arguments",
+      "latency_ms": 1868.37,
+      "ordinal": 112,
+      "status": "passed"
+    },
+    {
+      "category": "tool_selection",
+      "id": "runner-113-tool_selection",
+      "latency_ms": 2124.2,
+      "ordinal": 113,
+      "status": "passed"
+    },
+    {
+      "category": "forced_truncation",
+      "id": "runner-114-forced_truncation",
+      "latency_ms": 344.51,
+      "ordinal": 114,
+      "status": "passed"
+    },
+    {
+      "category": "stream_normalization",
+      "id": "runner-115-stream_normalization",
+      "latency_ms": 308.23,
+      "ordinal": 115,
+      "status": "passed"
+    },
+    {
+      "category": "tool_stream_normalization",
+      "id": "runner-116-tool_stream_normalization",
+      "latency_ms": 1901.74,
+      "ordinal": 116,
+      "status": "passed"
+    },
+    {
+      "category": "large_enum_selection",
+      "id": "runner-117-large_enum_selection",
+      "latency_ms": 2744.61,
+      "ordinal": 117,
+      "status": "passed"
+    },
+    {
+      "category": "reasoning_then_tool",
+      "failure": {
+        "category": "protocol",
+        "message": "[protocol] expected HTTP 200\n    got = 400\n    request = 'runner-118-reasoning_then_tool'\n    body = '{\"error\":{\"message\":\"unsupported tool schema: Qwen3-Coder string parameter \\'hypothesis\\' carries a length or pattern constraint its raw-text syntax cannot enforce\",\"type\":\"invalid_request_error\",\"param\":null,\"code\":null}}'"
+      },
+      "id": "runner-118-reasoning_then_tool",
+      "latency_ms": 0.28,
+      "ordinal": 118,
+      "status": "failed"
+    },
+    {
+      "category": "structured_final",
+      "id": "runner-119-structured_final",
+      "latency_ms": 1838.74,
+      "ordinal": 119,
+      "status": "passed"
+    }
+  ],
+  "configuration": {
+    "model": "models/granite-4.2/granite-4.2-8b-Q4_K_M.gguf",
+    "temperature": 0
+  },
+  "metrics": {
+    "elapsed_ms": 166869.28,
+    "valid_structured_tasks_per_second": 0.611
+  },
+  "resources": {
+    "peak_rss_kb": null,
+    "peak_rss_kind": "peak"
+  },
+  "runtime": {
+    "name": "runner",
+    "version": "unknown"
+  },
+  "schema_version": "xyntetik.agent-torture.v4",
+  "totals": {
+    "attempted": 117,
+    "attempted_pass_rate": 0.872,
+    "call_rate": 0.975,
+    "declined": 3,
+    "failed": 18,
+    "failures_by_category": {
+      "declined": 3,
+      "protocol": 15
+    },
+    "passed": 102,
+    "requests": 120
+  }
+}

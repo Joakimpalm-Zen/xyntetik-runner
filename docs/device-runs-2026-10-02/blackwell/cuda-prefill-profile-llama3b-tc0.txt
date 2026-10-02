@@ -1,0 +1,51 @@
+rope: using model frequency factors (rope_freqs.weight)
+gpu: no OS video memory budget published for this device; offload budget 25.13 GB from the driver's free view, headroom 1.57 GB
+gpu-split: budget=25.13GB fixed=1.93GB G=28/28 full=1 used=4.09GB
+gpu: CUDA backend on NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb (2.0 GB weights in VRAM)
+gpu: VRAM 22.59 GB free of 25.37 GB after init (kv 0.47 GB + scratch 0.03 GB this instance)
+loaded compat-models/Llama-3.2-3B-Instruct-Q4_K_M.gguf | llama | 28 layers | ctx 4096 | 32 threads | 0.67s
+sampling: llama3 (temp 0.00 — greedy argmax; top_p/top_k/min_p/repeat_penalty inactive)
+prompt: 512/541 tokensprompt: 541/541 tokens
+
+prompt: 541 tok, 272.60 tok/s | gen: 1 tok, 110.33 tok/s
+
+==== RUNNER_CUDA_PROFILE [PREFILL tile tn>1 (_b kernels)] ====
+note: CUDA graphs are DISABLED while profiling — a replayed graph never
+      re-enters the instrumented launch path, so decode would report
+      0.0 ms for every phase. Decode wall time is therefore pessimistic
+      (it carries the launch overhead graphs remove); the phase SPLIT is
+      what these numbers are for.
+tiles=9 tokens=541 launches=8934 (992.7/tile, 16.5/token)
+wall: 1983.5 ms | 220.3894 ms/tile | 3.6664 ms/token
+-- GPU phase (CUDA events, authoritative) --
+  norms(rms+qk)        6.0 ms    0.3%  0.6635 ms/tile  0.0110 ms/tok
+  matvec            1844.5 ms   93.8%  204.9411 ms/tile  3.4094 ms/tok
+  rope                 1.5 ms    0.1%  0.1706 ms/tile  0.0028 ms/tok
+  attention          109.3 ms    5.6%  12.1413 ms/tile  0.2020 ms/tok
+  elementwise          4.8 ms    0.2%  0.5363 ms/tile  0.0089 ms/tok
+  logits-mv            0.9 ms    0.0%  0.0967 ms/tile  0.0016 ms/tok
+  GPU-TOTAL         1966.9 ms  (99.2% of wall)  218.5495 ms/tile
+-- host-side raw QPC (overlaps GPU via sync memcpy) --
+  stage_x=1201.9  kv_copyback=15.3  logitsDtoH=0.0  sync-wait=302.1 ms
+  residual(wall-GPUbusy)=16.6 ms (0.8% of wall) = launch+host overhead
+
+==== RUNNER_CUDA_PROFILE [DECODE  tn==1 (k_mv_* kernels)] ====
+note: CUDA graphs are DISABLED while profiling — a replayed graph never
+      re-enters the instrumented launch path, so decode would report
+      0.0 ms for every phase. Decode wall time is therefore pessimistic
+      (it carries the launch overhead graphs remove); the phase SPLIT is
+      what these numbers are for.
+tiles=1 tokens=1 launches=478 (478.0/tile, 478.0/token)
+wall: 9.0 ms | 9.0226 ms/tile | 9.0226 ms/token
+-- GPU phase (CUDA events, authoritative) --
+  norms(rms+qk)        0.7 ms    7.7%  0.6569 ms/tile  0.6569 ms/tok
+  matvec               5.3 ms   62.1%  5.3052 ms/tile  5.3052 ms/tok
+  rope                 0.1 ms    1.4%  0.1155 ms/tile  0.1155 ms/tok
+  attention            1.3 ms   14.7%  1.2583 ms/tile  1.2583 ms/tok
+  elementwise          0.3 ms    4.0%  0.3419 ms/tile  0.3419 ms/tok
+  logits-mv            0.9 ms   10.1%  0.8612 ms/tile  0.8612 ms/tok
+  GPU-TOTAL            8.5 ms  (94.6% of wall)  8.5388 ms/tile
+-- host-side raw QPC (overlaps GPU via sync memcpy) --
+  stage_x=0.0  kv_copyback=0.4  logitsDtoH=0.0  sync-wait=7.4 ms
+  residual(wall-GPUbusy)=0.5 ms (5.4% of wall) = launch+host overhead
+=============================

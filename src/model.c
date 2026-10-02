@@ -872,8 +872,11 @@ static bool model_vram_claim(model_t *m, const model_params *p, size_t kv_bytes)
     // and the same fixed margin cuda.c budgets for context + JIT + activations.
     // An estimate is the right resolution here — it decides fit, and the exact
     // figure replaces it at commit time.
-    uint64_t need = model_cuda_weight_estimate(m, p) +
-                    (uint64_t)kv_bytes * 2 + (512ull << 20);
+    // A second instance of a file already on the device (another slot of
+    // this server) shares that upload, so it claims no weights of its own.
+    uint64_t weights = gpu_shared_weights_resident(m)
+                     ? 0 : model_cuda_weight_estimate(m, p);
+    uint64_t need = weights + (uint64_t)kv_bytes * 2 + (512ull << 20);
     if (p->reserve_vram_pct > 0) {
         uint64_t cap = (uint64_t)vtotal / 100 * (uint64_t)p->reserve_vram_pct;
         if (cap < need) need = cap;   // --reserve-vram already caps the ask
@@ -3979,27 +3982,34 @@ static bool model_alloc_runtime(model_t *m, const model_params *p) {
                     p->yarn_factor)) return false;
 
     if (p->gpu_mode == GPU_AUTO) {
-        // A removed sublayer is omitted by the CPU forward only; the device
-        // decode loops still drive every block's attention and FFN. Refuse
-        // the offload by name rather than let a backend read a NULL weight.
+        // Two kinds of model a GPU backend here would serve wrongly, so they
+        // never reach one. A removed sublayer is omitted by the CPU forward
+        // and the Metal walk, but the CUDA decode loops still drive every
+        // block's attention and FFN and would read a NULL weight. And every
+        // device norm kernel is an RMSNorm: a LayerNorm family offloaded onto
+        // one would centre nothing and drop its bias, the defect this arch
+        // carried on the CPU until 2026-09-07.
+        //
+        // Both used to end the run with an error, which made the DEFAULT
+        // command fail (--gpu auto is the default, and it is the only GPU
+        // setting there is): `runner -m stablelm.gguf` on any Mac or GPU box
+        // printed "rerun with --gpu off" and stopped. `auto` means "on the GPU
+        // where the GPU serves this model correctly", so they run on the CPU
+        // with a line saying why, as every backend gap reported by gpu_init
+        // already does.
         char gname[128];
-        if (m->n_removed > 0 && gpu_available(gname, sizeof(gname))) {
-            fprintf(stderr, "error: this model has %d removed sublayer%s "
-                    "(--remove-sublayer); only the CPU path omits them today "
-                    "— rerun with --gpu off\n", m->n_removed,
-                    m->n_removed == 1 ? "" : "s");
-            return false;
+        const char *cpu_why = NULL;
+        if (gpu_available(gname, sizeof(gname))) {
+            if (m->n_removed > 0 && !gpu_removed_sublayers_ok())
+                cpu_why = "this backend does not omit removed sublayers "
+                          "(--remove-sublayer) yet";
+            else if (m->norm_layernorm)
+                cpu_why = "this model normalises with LayerNorm and the GPU "
+                          "backends implement RMSNorm only";
         }
-        // Every device norm kernel is an RMSNorm. A LayerNorm family offloaded
-        // onto one would centre nothing and drop its bias, which is exactly
-        // the defect this arch was carrying on the CPU until 2026-09-07 and is
-        // not worth reintroducing on the GPU silently. Refuse by name; the CPU
-        // path is correct and is what `--gpu off` selects.
-        if (m->norm_layernorm && gpu_available(gname, sizeof(gname))) {
-            fprintf(stderr, "error: %s normalises with LayerNorm and the GPU "
-                    "backends implement RMSNorm only, so offload would be "
-                    "silently wrong. Rerun with --gpu off\n", m->arch);
-            return false;
+        if (cpu_why) {
+            fprintf(stderr, "gpu: %s — using CPU\n", cpu_why);
+            goto gpu_auto_done;
         }
         // Register the intended VRAM footprint before allocating any of it, so
         // a concurrent runner sees this claim rather than discovering it as a
@@ -4036,6 +4046,7 @@ static bool model_alloc_runtime(model_t *m, const model_params *p) {
                             : " or --kv q8 (about half)");
             }
         }
+    gpu_auto_done: ;
     }
 
     if (p->verbose) {

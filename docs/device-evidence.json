@@ -46,19 +46,19 @@
         "gpu_backend": "cuda"
       },
       "last_verified": {
-        "date": "2026-09-15",
-        "commit": "47518c051359b3eaee3c6e63b231843b06d133c7",
-        "ran": "compat_matrix.py --model granite-4.2-3b-q4_k_m --gpu auto --execute-checks --verify-files on the Blackwell MIG slice (load, tokenizer, cpu_cuda 9/9, chat)",
+        "date": "2026-10-02",
+        "commit": "9f066a57e937c0f32c67ea339c37b05a0d3f5358",
+        "ran": "scripts/cuda-gate.sh: test-tc-overflow, test-cuda-iquants, cpu_cuda_check (Qwen3-0.6B-q4_0.gguf, 64 tokens)",
         "result": "pass",
         "caps": {
-          "version": "0.5.5",
+          "version": "0.5.7",
           "os": "linux",
           "arch": "x86_64",
           "cpu_cores": 128,
           "gpu_backend": "cuda",
           "gpu_name": "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb"
         },
-        "evidence": "docs/compat-reports/0.5.5-2026-09-15-blackwell-granite-4.2-3b-q4_k_m.json"
+        "evidence": "docs/device-runs-2026-10-02/blackwell/cuda-gate-20261002T133652Z.json"
       }
     },
     {

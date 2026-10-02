@@ -186,10 +186,13 @@ def served_model_id(port):
     return ids[0] if ids else None
 
 
-def wait_ready(port, timeout=300):
-    """Wait for server to be ready."""
+def wait_ready(port, timeout=300, proc=None):
+    """Wait for server to be ready. A server that exited (it refused the
+    load: no VRAM, a bad file) is not waited for."""
     t0 = time.time()
     while time.time() - t0 < timeout:
+        if proc is not None and proc.poll() is not None:
+            return False
         try:
             urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=1)
             return True
@@ -524,9 +527,22 @@ def score_native_leg(rows, port, catalog, model_id, schemas=None):
     counts = fresh_counts()
     tools = native_tools(catalog)
 
+    # A family whose auto turn is parsed rather than constrained (the
+    # function-XML families: Qwen 3.8, Granite 4.2, Ornith, Qwen3-Coder) has
+    # no decision points to report, and the server refuses choice_logprobs
+    # there. The decision is still scored; the request goes again without
+    # the field, once, and the record says the probabilities are absent.
+    no_choice_lp = False
     for row in rows:
         body = chat_request(model_id, [{"role": "user", "content": row["prompt"]}], tools)
+        if no_choice_lp:
+            body.pop("choice_logprobs", None)
         resp, refusal = post_json(f"http://127.0.0.1:{port}/v1/chat/completions", body)
+        if (resp is None and refusal and "choice_logprobs" in refusal
+                and not no_choice_lp):
+            no_choice_lp = True
+            body.pop("choice_logprobs", None)
+            resp, refusal = post_json(f"http://127.0.0.1:{port}/v1/chat/completions", body)
         finish = content = None
         calls, choice_records = [], []
         if resp is not None:
@@ -580,6 +596,9 @@ def score_native_leg(rows, port, catalog, model_id, schemas=None):
         "tool_ok_rate": round(counts["tool_ok"] / n, 4) if n > 0 else 0,
         "args_ok_rate": round(counts["exact"] / n, 4) if n > 0 else 0,
         "exact_match_rate": round(counts["exact"] / n, 4) if n > 0 else 0,
+        # false: the family's auto turn is parsed, not constrained, so the
+        # server has no decision points to report (see the loop above)
+        "choice_logprobs": not no_choice_lp,
         "by_category": per_category(results),
         "rows": results
     }
@@ -1014,8 +1033,18 @@ def main():
 
     port = free_port()
     print(f"Starting server on port {port}...", file=sys.stderr)
+    # A run stopped from outside (`timeout` sends SIGTERM) must still stop the
+    # server it started: without this the interpreter died without running
+    # the finally below, and the orphaned server went on holding its VRAM,
+    # which made the next run's server refuse to load (the lab, 2026-10-02).
     srv = serve(args, args.lora, port)
-    if not wait_ready(port):
+
+    def on_term(*_):
+        stop(srv)
+        sys.exit(143)
+
+    signal.signal(signal.SIGTERM, on_term)
+    if not wait_ready(port, proc=srv):
         srv.kill()
         sys.exit("Server failed to start")
     time.sleep(1)

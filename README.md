@@ -933,8 +933,9 @@ tensor missing without a declaration is still `error: missing tensor`, and
 a declaration whose tensors are still present is refused by name. A removed
 attention reserves no KV rows, so the cache shrinks by that block's share at
 every context length (the `-v` banner lists `sublayers removed`). Limits,
-each refused rather than approximated: the CPU path only (the device decode
-loops still drive every block; pass `--gpu off`), dense blocks only (MoE
+each refused rather than approximated: the CPU and Metal paths only (the
+CUDA decode loops still drive every block; pass `--gpu off` there), dense
+blocks only (MoE
 FFNs, the hybrid SSM families, gemma-4 E-series shared-KV/per-layer
 embeddings, fused-QKV exports and NextN heads are declined by name), one
 head width across the file (a non-zero entry that differs from the rest is
@@ -1898,7 +1899,7 @@ whether the draft is `active` there.
 | `--type-plan PLAN.json` | Apply a per-tensor rewrite plan; first matching substring rule wins. [Details](#cli-type-plan). |
 | `--merge-lora OUT` | Merge an adapter into a standalone GGUF. Quantized merges round the delta; check the fidelity caveat below. [Details](#cli-merge-lora). |
 | `--prune-experts FILE` | Apply a per-layer MoE expert keep-list while rewriting. Requires `--quantize`. |
-| `--remove-sublayer attn:N[,mlp:M,...]` | Physically drop block N's attention (or block M's dense FFN) tensors while rewriting, declaring the absence with a `0` in the per-block `attention.head_count` / `head_count_kv` (or `feed_forward_length`) array, llama.cpp's own convention. The pre-norm stays. The runner omits the branch and reserves no KV rows for it; CPU path, dense blocks only. Requires `--quantize`. See [Sublayer removal](#sublayer-removal). |
+| `--remove-sublayer attn:N[,mlp:M,...]` | Physically drop block N's attention (or block M's dense FFN) tensors while rewriting, declaring the absence with a `0` in the per-block `attention.head_count` / `head_count_kv` (or `feed_forward_length`) array, llama.cpp's own convention. The pre-norm stays. The runner omits the branch and reserves no KV rows for it; CPU and Metal, dense blocks only (a CUDA build refuses the offload). Requires `--quantize`. See [Sublayer removal](#sublayer-removal). |
 | `--bench-json` | Run the built-in prompt/decode benchmark and print JSON metrics. |
 | `--lora FILE`, `--lora-scale F` | Serve a LoRA adapter with the frozen base; supports CPU, CUDA and Metal, with explicit architecture restrictions. [Details](#cli-lora). |
 | `--adapter NAME=PATH` | With `--serve`: load an adapter once and select it per request as `"model": "<model>:NAME"`. [Details](#cli-adapter). |
@@ -1980,8 +1981,9 @@ blocks, and the CPU-versus-GPU gap with the adapter is no wider than without it 
 max |Δlogprob| 1.110e-3 against 1.255e-3, Qwen2.5-1.5B Q4_K_M, RTX 3070; Metal: mean
 3.0e-4 against 3.1e-4, SmolLM2-135M Q8_0 with a rank-8 adapter on all 210 projections,
 M1). On Metal a block with an adapter decodes on the split path, without the fused
-front kernel, so on a very small model decode slows (117 to 44 tok/s on that 135M,
-still above the CPU's 37) while prefill barely moves (1,250 to 1,150 tok/s). Fails
+front kernel, so decode slows: 117 to 44 tok/s on that 135M (still above the CPU's 37),
+and 9.8 to 8.3 tok/s on Llama-3.2-3B Q4_K_M with a rank-16 adapter on Q and V of every
+block (the CPU decodes it at 5.7). Prefill barely moves in either case. Fails
 closed by name on shape/rank mismatches, unknown targets, recurrent/gemma-4-MoE
 architectures, and an adapter on a routed-expert FFN that the device path cannot reach,
 rather than serving a model that ignored the adapter on its offloaded blocks. A zero adapter is gated byte-identical to the bare base; a real
@@ -2486,7 +2488,42 @@ used to be range-checked and then silently dropped. A completion with no
 refusals point at; serve with `--parallel 1` if you need an unloadable
 server.
 
+A client of a server it does not manage can ask for the opposite guarantee:
+that its request is served by the load it already looked at, or not at all.
+`/health` and `GET /v1/runner/provenance` carry `load_generation`, a count
+of the loads this process has made; it moves on every load, reload and swap,
+and an unload leaves it alone. A generation request may carry
+
+```json
+"expect_resident": {"load_generation": 3, "model_sha256": "<64 hex>"}
+```
+
+with either field or both. The server checks it under the lock every load,
+unload and swap takes. When what is resident is something else, or nothing,
+the request is **refused** with `409` and `resident_mismatch`, and the
+refusal changes nothing: no model is loaded or swapped and a pending unload
+stays pending. While the model file's digest is still being taken, or after
+the file changed on disk, a `model_sha256` expectation is refused with
+`resident_identity_unknown` rather than guessed. A request without the
+field behaves as before, loading on demand.
+
 ### Health and metrics
+
+`/health` lists what each busy slot is doing, because a reply's headers are
+only sent once prefill is over and a client waiting on a long prompt cannot
+otherwise tell prefill from a hang:
+
+```json
+"requests": [{"slot": 0, "phase": "prefill", "prompt_tokens": 4190,
+              "prompt_done": 1024, "generated": 0}]
+```
+
+`phase` is `prefill` or `generate`; `prompt_done` counts the prompt tokens
+already in the cache (reused ones included) and advances a batch at a time.
+An idle server lists nothing. A request whose client closed its connection
+leaves the list when the server has actually stopped working on it, which is
+the confirmation the closed socket cannot give; with one request in flight,
+`"requests": []` and `"active_requests": 0` mean the compute is free.
 
 `/health` also carries what a supervisor needs to budget several runners on
 one machine. `rss_bytes` is this **process's** resident set - weights, KV
@@ -2856,8 +2893,13 @@ function/parameter XML and share one contract. A `tool_choice: auto` turn
 turn in the syntax its template teaches, parsed by the same demultiplexer
 buffered and streamed, on the Chat, Responses and Anthropic surfaces; a
 `required` or named choice keeps the grammar above, because a prompt alone
-cannot enforce a choice the caller insisted on. Parsing does not depend on a
-grammar being active. Until 2026-09-14 it did, and the three families that
+cannot enforce a choice the caller insisted on. A parameter value in this
+syntax is raw text up to its closing tag, so the grammar cannot enforce a
+string's `minLength`, `maxLength` or `pattern`; a `required` or named
+request that declares one uses the generic JSON envelope instead, prompt and
+grammar switching together (until 2026-10-02 it was answered 400), and
+`runner_telemetry.tool_protocol.family` then reads `generic` for that
+request. Parsing does not depend on a grammar being active. Until 2026-09-14 it did, and the three families that
 had no grammar streamed their well-formed calls to the client as prose (the
 buffered turn parsed them; every agent client streams); Qwen3-Coder's auto
 turn stayed constrained until 2026-09-15, when the report's own artifact
@@ -3295,7 +3337,9 @@ Codex and other feature-rich agents can declare more than runner's 59-tool
 constrained envelope. Disable unused app, multi-agent, and hosted-search tools
 for a local-model session. Exact request shapes and test scope are recorded in
 [docs/agent-compatibility.md](docs/agent-compatibility.md) and
-[docs/compatibility-program.md](docs/compatibility-program.md).
+[docs/compatibility-program.md](docs/compatibility-program.md). One
+configuration written out as steps, with its measured limits and the
+diagnostic to run when it fails: [docs/workflow-opencode.md](docs/workflow-opencode.md).
 
 For Codex CLI, configure a stateless Responses provider:
 
