@@ -31,7 +31,9 @@
 #   BL_PIN          a command prefix for every process, e.g. "taskset -c 0-23"
 #   BL_STEP_TIMEOUT seconds any one step may take (default 2400)
 #   BL_SKIP         comma list of steps to skip: protocol,torture,task,
-#                   fidelity,divergence,llama-torture
+#                   fidelity,divergence,llama-protocol
+#   BL_LLAMA_TORTURE  set to also run the 120-request agent-torture matrix
+#                   against llama.cpp (hours on a CPU build)
 set -u
 BL_ENV=${BL_ENV:-$(dirname "$0")/artifact-baseline.env}
 # shellcheck disable=SC1090
@@ -112,16 +114,23 @@ llama_arm() {
           --reference "$BL_LLAMA_SERVER" --runner "$RUNNER" \
           --threads "$CPU_THREADS" --ctx "$CTX" --tokens 64
     fi
-    if ! skipped llama-torture; then
+    if ! skipped llama-protocol; then
       # shellcheck disable=SC2086
       $PIN "$BL_LLAMA_SERVER" -m "$f" -c "$CTX" --port 18321 --host 127.0.0.1 \
           -t "$CPU_THREADS" --jinja > "$OUT/$tag.llama-server.log" 2>&1 &
       lp=$!
       if wait_port 18321 900; then
-        step "$tag/agent-torture-llama.cpp" "$OUT/$tag.torture-llama.log" \
-          "$PY" scripts/agent-torture.py --endpoint 127.0.0.1:18321 \
-            --runtime llama.cpp --runtime-version "${BL_LLAMA_VERSION:-unknown}" \
-            --model "$f" --out "$OUT/$tag.torture-llama"
+        step "$tag/tool-protocol-llama.cpp" "$OUT/$tag.tool-protocol-llama.log" \
+          "$PY" scripts/tool-protocol-check.py --base-url http://127.0.0.1:18321 \
+            --model-file "$f" --label "$tag llama.cpp ${BL_LLAMA_VERSION:-}" \
+            --out "$OUT/$tag.tool-protocol-llama.json"
+        # the full matrix is 120 requests: minutes on a GPU, hours on a CPU
+        if [ -n "${BL_LLAMA_TORTURE:-}" ]; then
+          step "$tag/agent-torture-llama.cpp" "$OUT/$tag.torture-llama.log" \
+            "$PY" scripts/agent-torture.py --endpoint 127.0.0.1:18321 \
+              --runtime llama.cpp --runtime-version "${BL_LLAMA_VERSION:-unknown}" \
+              --model "$f" --out "$OUT/$tag.torture-llama"
+        fi
       else
         note "$tag: llama-server did not come up"
       fi
