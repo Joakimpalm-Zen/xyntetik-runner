@@ -186,10 +186,13 @@ def served_model_id(port):
     return ids[0] if ids else None
 
 
-def wait_ready(port, timeout=300):
-    """Wait for server to be ready."""
+def wait_ready(port, timeout=300, proc=None):
+    """Wait for server to be ready. A server that exited (it refused the
+    load: no VRAM, a bad file) is not waited for."""
     t0 = time.time()
     while time.time() - t0 < timeout:
+        if proc is not None and proc.poll() is not None:
+            return False
         try:
             urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=1)
             return True
@@ -1030,8 +1033,18 @@ def main():
 
     port = free_port()
     print(f"Starting server on port {port}...", file=sys.stderr)
+    # A run stopped from outside (`timeout` sends SIGTERM) must still stop the
+    # server it started: without this the interpreter died without running
+    # the finally below, and the orphaned server went on holding its VRAM,
+    # which made the next run's server refuse to load (the lab, 2026-10-02).
     srv = serve(args, args.lora, port)
-    if not wait_ready(port):
+
+    def on_term(*_):
+        stop(srv)
+        sys.exit(143)
+
+    signal.signal(signal.SIGTERM, on_term)
+    if not wait_ready(port, proc=srv):
         srv.kill()
         sys.exit("Server failed to start")
     time.sleep(1)
