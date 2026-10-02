@@ -1024,6 +1024,17 @@ static void usage_to(FILE *f, const char *prog) {
         "                 verify (--trust-key pins the manifest signer). Exit\n"
         "                 0 OK, 2 BAD, 3 UNVERIFIABLE. Does not replay: that is\n"
         "                 --verify with the model\n"
+        "  --export-pack D  with --pack-out DIR: an evidence pack of every\n"
+        "                 receipt-*.json in D (one model, one build), the model\n"
+        "                 signature and key, --pack-envelope F (the envelope\n"
+        "                 manifest the receipts name) and --pack-attach F files\n"
+        "                 (oversight records, ...; repeatable), under a sha256\n"
+        "                 manifest with one inference per receipt and the chain\n"
+        "                 they form; --sign-key signs it. Needs no -m\n"
+        "  --pack-out DIR  where --export-pack writes (created)\n"
+        "  --pack-envelope F, --pack-attach F  see --export-pack\n"
+        "  --check-pack DIR  verify a pack offline like --check-bundle, and\n"
+        "                 that the receipts form the chain it states\n"
         "  --sessions DIR  with --serve: POST /v1/runner/sessions starts a\n"
         "                 raw-prompt generation that suspend_after N images\n"
         "                 into DIR; POST /v1/runner/sessions/{id}/resume\n"
@@ -1550,6 +1561,10 @@ int main(int argc, char **argv) {
     const char *sign_record = NULL, *record_prev = NULL, *check_record = NULL;
     // R1.2.1: receipt bundles
     const char *export_bundle = NULL, *bundle_out = NULL, *check_bundle = NULL;
+    const char *export_pack = NULL, *pack_out = NULL, *check_pack = NULL,
+               *pack_envelope = NULL;
+    const char *pack_attach[PACK_MAX_ATTACH];
+    int n_pack_attach = 0;
     // R1.2.2: per-request receipts in serve mode
     const char *receipts_dir = NULL;
     int receipts_keep = 0;
@@ -1679,6 +1694,19 @@ int main(int argc, char **argv) {
         else if (!strcmp(a, "--export-bundle")) export_bundle = NEXT;
         else if (!strcmp(a, "--bundle-out")) bundle_out = NEXT;
         else if (!strcmp(a, "--check-bundle")) check_bundle = NEXT;
+        else if (!strcmp(a, "--export-pack")) export_pack = NEXT;
+        else if (!strcmp(a, "--pack-out")) pack_out = NEXT;
+        else if (!strcmp(a, "--pack-envelope")) pack_envelope = NEXT;
+        else if (!strcmp(a, "--check-pack")) check_pack = NEXT;
+        else if (!strcmp(a, "--pack-attach")) {
+            const char *f = NEXT;
+            if (n_pack_attach == PACK_MAX_ATTACH) {
+                fprintf(stderr, "error: --pack-attach: at most %d files\n",
+                        PACK_MAX_ATTACH);
+                return 1;
+            }
+            pack_attach[n_pack_attach++] = f;
+        }
         else if (!strcmp(a, "--receipts")) receipts_dir = NEXT;
         else if (!strcmp(a, "--receipts-keep"))
             receipts_keep = (int)int_arg(a, NEXT, 0, 100000000);
@@ -1902,6 +1930,25 @@ int main(int argc, char **argv) {
     }
     if (check_record) return record_check(check_record, trust_key);
     if (check_bundle) return bundle_check(check_bundle, trust_key);
+    if (check_pack) return pack_check(check_pack, trust_key);
+    if (export_pack || pack_out) {
+        if (!export_pack || !pack_out) {
+            fprintf(stderr, "error: --export-pack RECEIPTS_DIR and --pack-out "
+                    "DIR go together\n");
+            return 1;
+        }
+        pack_opts po = { .receipts_dir = export_pack, .out_dir = pack_out,
+                         .model_sig = model_sig, .model_pubkey = model_pubkey,
+                         .envelope = pack_envelope, .n_attach = n_pack_attach,
+                         .sign_key = sign_key };
+        for (int i = 0; i < n_pack_attach; i++) po.attach[i] = pack_attach[i];
+        return pack_export(&po);
+    }
+    if ((pack_envelope || n_pack_attach) && !export_pack) {
+        fprintf(stderr, "error: --pack-envelope and --pack-attach go with "
+                "--export-pack\n");
+        return 1;
+    }
     if (sign_model || model_key) {
         if (!sign_model || !model_key) {
             fprintf(stderr, "error: --sign-model MODEL and --model-key KEY.pem go "

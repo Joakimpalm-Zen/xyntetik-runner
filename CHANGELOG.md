@@ -8,6 +8,19 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **Evidence packs (R1.6.1).** `--export-pack RECEIPTS_DIR --pack-out DIR`
+  gathers a server's receipts into one directory a reviewer can take: every
+  receipt, the model signature and key, the envelope manifest the receipts
+  name and attachments such as approval records, under a
+  `xyntetik.runner.evidence-pack.v1` manifest with one inference per receipt
+  (its id the chain hash) and whether the receipts form one unbroken chain
+  segment. `--check-pack DIR` verifies it offline, including that no
+  receipt was added beside the listed ones and that the stated segment is
+  the receipts' own.
+- **The 14-prompt boundary neighborhood, reproduced (R2.3.4).** The bank
+  author's one-factor neighborhood ran through the lane on the pinned study
+  artifacts: the same 6 of 14 disagreements, Q4 minimum margin 3.061 nat
+  against his 3.055 (`docs/tool-choice-boundary-lane.md`).
 - **Publisher sampling for Qwen 3.5, Nemotron Nano and Apertus; serving
   guidance in the manifest (R6.7.3).** Qwen 3.5 was served at Qwen3's
   temperature 0.6 (the card's setting for precise coding) and Nemotron Nano
