@@ -455,6 +455,78 @@
     "cuda": "NOT RUN",
     "metal": "NOT RUN"
    }
+  },
+  "qwen35": {
+   "tool_protocol": {
+    "status": "NOT RUN",
+    "note": "ornith's function-XML protocol, parse-only; no Qwen 3.5 artifact re-run since the family was split from ornith (2026-10-02)"
+   },
+   "client_loop": {
+    "status": "NOT RUN"
+   },
+   "sampling_anchor": {
+    "status": "NOT RUN",
+    "note": "no template-keyed preset; resolved by name or architecture"
+   },
+   "backends": {
+    "cpu": "NOT RUN",
+    "cuda": "NOT RUN",
+    "metal": "NOT RUN"
+   }
+  },
+  "qwen35-nothink": {
+   "tool_protocol": {
+    "status": "NOT RUN",
+    "note": "as qwen35; the 0.8B's template with thinking off by default"
+   },
+   "client_loop": {
+    "status": "NOT RUN"
+   },
+   "sampling_anchor": {
+    "status": "NOT RUN",
+    "note": "no template-keyed preset; resolved by name or architecture"
+   },
+   "backends": {
+    "cpu": "NOT RUN",
+    "cuda": "NOT RUN",
+    "metal": "NOT RUN"
+   }
+  },
+  "phi4": {
+   "tool_protocol": {
+    "status": "NOT RUN",
+    "note": "generic envelope; Phi-4-mini's own <|tool|> declaration block is not rendered (template-conformance backlog, 4 cases)"
+   },
+   "client_loop": {
+    "status": "NOT RUN"
+   },
+   "sampling_anchor": {
+    "status": "NOT RUN",
+    "note": "the phi3 preset by architecture; Phi-4-mini's card values are not anchored"
+   },
+   "backends": {
+    "cpu": "NOT RUN",
+    "cuda": "NOT RUN",
+    "metal": "NOT RUN"
+   }
+  },
+  "nemotron": {
+   "tool_protocol": {
+    "status": "NOT RUN",
+    "note": "generic envelope; the template's own <AVAILABLE_TOOLS>/<TOOLCALL> protocol is not rendered (template-conformance backlog, 4 cases)"
+   },
+   "client_loop": {
+    "status": "NOT RUN"
+   },
+   "sampling_anchor": {
+    "status": "NOT RUN",
+    "note": "no preset row; the generic fallback applies"
+   },
+   "backends": {
+    "cpu": "NOT RUN",
+    "cuda": "NOT RUN",
+    "metal": "NOT RUN"
+   }
   }
  },
  "architectures": {
@@ -534,7 +606,9 @@
   "qwen35": {
    "templates": [
     "qwen38",
-    "ornith"
+    "ornith",
+    "qwen35",
+    "qwen35-nothink"
    ],
    "artifacts": [
     "ornith-1.0-9b-q4_k_m",
@@ -684,7 +758,8 @@
   },
   "phi3": {
    "templates": [
-    "phi3"
+    "phi3",
+    "phi4"
    ],
    "artifacts": [
     "phi-3.5-mini-instruct-q4_k_m"
@@ -825,7 +900,7 @@
   },
   "nemotron_h": {
    "templates": [
-    "chatml"
+    "nemotron"
    ],
    "artifacts": [],
    "tool_protocol": {
