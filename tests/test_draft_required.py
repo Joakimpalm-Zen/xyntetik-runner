@@ -123,3 +123,16 @@ def test_draft_required_is_refused_in_serve_mode(runner_bin, model):
         cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60)
     assert p.returncode != 0
     assert b"/v1/capabilities" in p.stderr
+
+
+def test_a_draft_in_swap_mode_refuses_to_start(runner_bin, model):
+    """RI-2 slice 2 (owner 2026-10-02): `--draft` with a swap registry is a
+    contradiction the command line states, so the server refuses at startup
+    instead of serving without the draft and leaving it to a capabilities
+    poll to notice."""
+    p = subprocess.run(
+        [runner_bin, "--serve", "--no-tray", "-m", f"a={model},b={model}",
+         "--draft", str(model), "--port", "18779"],
+        cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60)
+    assert p.returncode == 1, p.stderr
+    assert b"--draft needs a single served model" in p.stderr, p.stderr

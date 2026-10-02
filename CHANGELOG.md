@@ -8,6 +8,10 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **`--draft` with a swap registry refuses to start (RI-2).** It used to
+  print a note and serve without the draft. The other draft fallbacks (a
+  draft refused at load, a registry given up to keep `--parallel` slots)
+  stay notes and are reported in `/v1/capabilities`.
 - **Streamed turns carry their telemetry (RI-4).** The finish chunk of a
   streamed chat or completions turn now carries the full `runner_telemetry`
   object a buffered reply carries (sampling, tool protocol, timing, closure,

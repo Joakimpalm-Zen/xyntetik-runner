@@ -2940,12 +2940,17 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
                         "ignored in swap mode";
         draft_lookup = false;
     }
+    // RI-2 slice 2 (owner 2026-10-02): this one is a contradiction the
+    // command line itself states, so it refuses at startup instead of
+    // serving without the draft. The other fallbacks stay notes: a draft
+    // refused at load (vocabulary, offload, memory) is a fact about the
+    // environment, and `-m name=path --parallel N` keeping its slots is a
+    // trade users rely on.
     if (draft_path && swap_mode) {
-        fprintf(stderr, "note: --draft needs a single served model — "
-                "ignoring it in swap mode\n");
-        SV.draft_note = "a draft needs a single served model; ignored in "
-                        "swap mode";
-        draft_path = NULL;
+        fprintf(stderr, "error: --draft needs a single served model, and -m "
+                "names a swap registry; serve one model with --draft, or "
+                "drop --draft\n");
+        return 1;
     }
 
     // "name=path,name2=path2" enables swap mode: one resident model,
