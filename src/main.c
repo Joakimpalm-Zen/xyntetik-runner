@@ -344,24 +344,36 @@ static bool replay_constraints_ok(jv *rec, bool json_mode,
         return false;
     }
     if (serve) {
-        // records written before D4a name what shaped them only here
+        // D4b (R1.1.3): a served turn shaped by a JSON schema, JSON mode or
+        // ignore_eos replays under the same constraint the CLI records do,
+        // given the schema by --json-schema (matched by digest below): the
+        // server compiles a response_format into the same engine constraint
+        // the CLI flag does, over the prompt tokens the record carries. What
+        // the replay cannot rebuild is refused by name: a tool envelope
+        // (declarations, choice and the native or generic grammar a request
+        // builds), stop sequences, a reasoning budget or the loop guard.
+        // Records written before D4a name what shaped them only in shaped_by.
         jv *list = cons ? cons : jv_get(serve, "shaped_by");
         char names[256] = "";
         size_t k = 0;
-        int n = 0;
+        int n = 0, rebuilt = 0;
         for (int i = 0; list && list->type == J_ARR && i < list->n; i++) {
             jv *it = list->items[i];
             const char *kind = it && it->type == J_STR ? it->str
                              : jv_str(jv_get(it, "kind"), "?");
+            if (cons && (!strcmp(kind, "json_schema") ||
+                         !strcmp(kind, "json_mode") ||
+                         !strcmp(kind, "ignore_eos")))
+                rebuilt++;
             int w = snprintf(names + k, sizeof names - k, "%s%s", n ? ", " : "", kind);
             if (w > 0 && (size_t)w < sizeof names - k) k += (size_t)w;
             n++;
         }
-        if (n) {
+        if (n > rebuilt) {
             snprintf(why, cap, "the served output was shaped beyond the sampler "
-                     "by %s; this build replays the sampler only (replaying a "
-                     "served turn's constraints is D4b), so a replay could only "
-                     "disagree with the record", names);
+                     "by %s, which a replay does not rebuild (a served JSON "
+                     "schema, JSON mode or ignore_eos does replay), so a replay "
+                     "could only disagree with the record", names);
             return false;
         }
     }

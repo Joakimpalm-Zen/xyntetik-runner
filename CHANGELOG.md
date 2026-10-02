@@ -8,6 +8,12 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **A served receipt shaped by a JSON schema or JSON mode replays (R1.1.3,
+  D4b).** `--verify` refused every served turn that a constraint shaped.
+  One shaped by a `response_format` of `json_schema` or `json_object` (or
+  `ignore_eos`) now replays under `--json-schema FILE` (matched by digest)
+  or `--json`, as a CLI record already did. Tool turns, stop sequences, a
+  reasoning budget and the loop guard are still refused by name.
 - **`scripts/audit-demo.sh`: the record-and-verify chain in under a
   minute (R1.2.4).** Records and signs a 1,000-token sampled run, verifies
   it by replay against the trusted key, and shows three forgeries refused,
