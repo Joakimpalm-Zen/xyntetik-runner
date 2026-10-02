@@ -478,3 +478,59 @@ def test_release_workflow_steps_are_shell_not_powershell():
             if stripped.startswith(cmdlet) or stripped.startswith(f"{cmdlet} "):
                 offenders.append(f"{n}: {stripped[:70]}")
     assert not offenders, "PowerShell cmdlet on a shell step (wrap it in `powershell -Command`):\n" + "\n".join(offenders)
+
+
+def test_private_markers_match_internals_not_only_names():
+    """R6.8: a text that describes the private repositories without naming
+    them is caught by their internal paths. The examples are assembled here
+    so this file does not itself carry a marker."""
+    import re
+    rx = re.compile("|".join(map(re.escape, check_release.PRIVATE_MARKERS)),
+                    re.I)
+    hits = ["packages" + "/thane/src/app.py",
+            "import xyntetik" + "_loadout",
+            "crates" + "/suite-core/src/lib.rs",
+            "research/archive" + "/suite/docs/plans/x.md",
+            "see BLACKWELL" + "_INVENTORY.md"]
+    for text in hits:
+        assert rx.search(text), text
+    misses = ["xyntetik_runner.shadow", "python/src/xyntetik_runner",
+              "plan item R12.1", "scripts/runner-control.sh",
+              "packages that ship", "the vault of receipts"]
+    for text in misses:
+        assert not rx.search(text), text
+
+
+def test_home_directory_paths_are_recognised():
+    """R6.2.x: a home directory in committed evidence names a machine. A
+    scratch directory that happens to contain `home` is not one."""
+    import re
+    rx = re.compile(check_release.HOME_PATH_RE)
+    for text in ["loaded /" + "home/lab/workspace/m.gguf",
+                 '"path": "/' + "Users/someone/models/m.gguf",
+                 "C:" + "\\Users\\zen\\m.gguf",
+                 "C:" + "\\\\Users\\\\zen\\\\m.gguf",
+                 "C:" + "/Users/zen/m.gguf"]:
+        assert rx.search(text), text
+    for text in ["/tmp/agent-sweep-x/home/.continue/config.yaml",
+                 "~/xs-work/models/m.gguf", "models/m.gguf"]:
+        assert not rx.search(text), text
+
+
+def test_kl_tables_need_a_margin_qualified_column():
+    """R6.7.8: a table that reports mean KL without the margin-qualified
+    top-1 beside it is refused; one that has it, or says it was not
+    measured, passes; a table without KL is not a fidelity table."""
+    md_bad = "| model | top-1 | mean KLD |\n|---|---|---|\n| a | 99% | 0.01 |\n"
+    md_ok = ("| model | margin-qualified top-1 | mean KLD |\n|---|---|---|\n"
+             "| a | not measured | 0.01 |\n")
+    md_other = "| model | tok/s |\n|---|---|\n| a | 12 |\n"
+    assert check_release.kl_tables_without_margin(md_bad)
+    assert not check_release.kl_tables_without_margin(md_ok)
+    assert not check_release.kl_tables_without_margin(md_other)
+    html_bad = "<table><tr><th>engine</th><th>mean KL</th></tr></table>"
+    html_ok = ("<table><tr><th>engine</th><th>margin-qualified top-1</th>"
+               "<th>mean KL</th></tr></table>")
+    assert check_release.kl_tables_without_margin(html_bad, html=True)
+    assert not check_release.kl_tables_without_margin(html_ok, html=True)
+    assert check_release.kl_table_scan()   # the tree itself is clean

@@ -1,5 +1,5 @@
 {
- "model": "/home/lab/workspace/models/muse-glimmer-30B-kquant-17gb/muse-glimmer-30B-kquant-17gb.gguf",
+ "model": "models/muse-glimmer-30B-kquant-17gb/muse-glimmer-30B-kquant-17gb.gguf",
  "tokens": 128,
  "context": 2048,
  "routing": "eager",

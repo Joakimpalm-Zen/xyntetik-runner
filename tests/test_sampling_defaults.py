@@ -35,9 +35,19 @@ PUBLISHED = {
     "granite42": {"temperature": 1.0, "top_p": 0.95, "top_k": 0,  "min_p": 0.0, "repeat_penalty": 1.0},
     # the config's repetition_penalty 1.05 is not taken: measured 0/8 vs 8/8 (sample.c)
     "qwen3-coder": {"temperature": 0.7, "top_p": 0.8, "top_k": 20, "min_p": 0.0, "repeat_penalty": 1.0},
+    # model cards, no sampling keys in the repository's generation_config
+    # (docs/serving-guidance.json)
+    "qwen35":    {"temperature": 1.0, "top_p": 0.95, "top_k": 20, "min_p": 0.0, "repeat_penalty": 1.0},
+    "qwen35-nothink": {"temperature": 1.0, "top_p": 1.0, "top_k": 20, "min_p": 0.0, "repeat_penalty": 1.0},
+    "nemotron":  {"temperature": 0.6, "top_p": 0.95, "top_k": 0,  "min_p": 0.0, "repeat_penalty": 1.0},
+    "apertus":   {"temperature": 0.8, "top_p": 0.9,  "top_k": 0,  "min_p": 0.0, "repeat_penalty": 1.0},
 }
 TEMPLATE_FOR = {"gemma4": "gemma4-mainline", "qwen38": "qwen38",
-                "granite42": "granite42", "qwen3-coder": "qwen3-coder"}
+                "granite42": "granite42", "qwen3-coder": "qwen3-coder",
+                "qwen35": "qwen35", "qwen35-nothink": "qwen35-nothink",
+                "nemotron": "nemotron", "apertus": "apertus"}
+# families whose tool calls ride the generic envelope
+NOT_NATIVE = {"nemotron", "apertus"}
 
 
 @pytest.fixture(scope="module")
@@ -95,7 +105,7 @@ def test_family_preset_matches_the_publisher(model, preset):
         for k, v in PUBLISHED[preset].items():
             assert s[k] == pytest.approx(v, abs=1e-6), (preset, k, s)
         assert caps["template"] == TEMPLATE_FOR[preset], caps
-        assert caps["tool_protocol"]["native"] is True, caps
+        assert caps["tool_protocol"]["native"] is (preset not in NOT_NATIVE), caps
 
 
 def test_gemma4_default_request_is_served_at_the_published_values(model):

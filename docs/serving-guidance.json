@@ -1,0 +1,165 @@
+{
+  "schema_version": "xyntetik.runner.serving-guidance.v1",
+  "retrieved": "2026-10-02",
+  "note": "What each publisher says a family should be served with, read from the publisher's Hugging Face repository: generation_config.json (machine-readable defaults that transformers applies) and the model card's own text. Recorded, not applied: the runner uses its own request defaults until R4.12.6 is decided. A null field means the publisher says nothing about it (a null generation_config: the repository has no such file, or it is gated); card_readable false means the card is gated and was not read.",
+  "families_note": "Keyed by the runner sampling preset that serves the family where one exists, so a manifest can set the two side by side; the other keys name the family.",
+  "families": {
+    "smollm2": {
+      "source": "HuggingFaceTB/SmolLM2-135M-Instruct",
+      "generation_config": {},
+      "card_sampling": [{"when": "card example", "temperature": 0.2, "top_p": 0.9}],
+      "thinking": null,
+      "precision": "bfloat16",
+      "card_readable": true
+    },
+    "qwen2.5": {
+      "source": "Qwen/Qwen2.5-0.5B-Instruct",
+      "generation_config": {"temperature": 0.7, "top_p": 0.8, "top_k": 20, "repetition_penalty": 1.1},
+      "card_sampling": [],
+      "thinking": null,
+      "precision": null,
+      "card_readable": true
+    },
+    "qwen3": {
+      "source": "Qwen/Qwen3-4B",
+      "generation_config": {"temperature": 0.6, "top_p": 0.95, "top_k": 20},
+      "card_sampling": [
+        {"when": "thinking", "temperature": 0.6, "top_p": 0.95, "top_k": 20, "min_p": 0},
+        {"when": "endless repetition", "presence_penalty": 1.5}
+      ],
+      "thinking": {"default": "on", "switch": "enable_thinking", "card_warning": "do not use greedy decoding in thinking mode"},
+      "precision": null,
+      "card_readable": true
+    },
+    "qwen35-nothink": {
+      "source": "Qwen/Qwen3.5-0.8B",
+      "generation_config": null,
+      "card_sampling": [
+        {"when": "non-thinking, text", "temperature": 1.0, "top_p": 1.0, "top_k": 20, "min_p": 0.0, "presence_penalty": 2.0, "repetition_penalty": 1.0},
+        {"when": "thinking, text", "temperature": 1.0, "top_p": 0.95, "top_k": 20, "min_p": 0.0, "presence_penalty": 1.5, "repetition_penalty": 1.0}
+      ],
+      "thinking": {"default": "off", "switch": "enable_thinking"},
+      "precision": null,
+      "card_readable": true
+    },
+    "qwen35": {
+      "source": "Qwen/Qwen3.5-4B",
+      "generation_config": null,
+      "card_sampling": [
+        {"when": "thinking, general", "temperature": 1.0, "top_p": 0.95, "top_k": 20, "min_p": 0.0, "presence_penalty": 1.5, "repetition_penalty": 1.0},
+        {"when": "thinking, precise coding", "temperature": 0.6, "top_p": 0.95, "top_k": 20, "min_p": 0.0, "presence_penalty": 0.0, "repetition_penalty": 1.0},
+        {"when": "non-thinking, general", "temperature": 0.7, "top_p": 0.8, "top_k": 20, "min_p": 0.0, "presence_penalty": 1.5, "repetition_penalty": 1.0}
+      ],
+      "thinking": {"default": "on", "switch": "enable_thinking"},
+      "precision": null,
+      "card_readable": true
+    },
+    "granite40h": {
+      "source": "ibm-granite/granite-4.0-h-micro",
+      "generation_config": {},
+      "card_sampling": [],
+      "thinking": null,
+      "precision": null,
+      "card_readable": true
+    },
+    "granite42": {
+      "source": "ibm-granite/granite-4.2-3b",
+      "generation_config": {"temperature": 1.0, "top_p": 0.95},
+      "card_sampling": [{"when": "all tasks and serving backends, including tool calling", "temperature": 1.0, "top_p": 0.95}],
+      "thinking": {"default": "on", "switch": "enable_thinking", "modes": ["thinking", "non-thinking", "low-effort (low_effort=True)"]},
+      "precision": "bfloat16",
+      "card_readable": true
+    },
+    "gemma3": {
+      "source": "google/gemma-3-4b-it",
+      "generation_config": null,
+      "card_sampling": [],
+      "thinking": null,
+      "precision": null,
+      "card_readable": false
+    },
+    "gemma4": {
+      "source": "google/gemma-4-E2B-it",
+      "generation_config": {"temperature": 1.0, "top_p": 0.95, "top_k": 64},
+      "card_sampling": [{"when": "all use cases", "temperature": 1.0, "top_p": 0.95, "top_k": 64}],
+      "thinking": {"default": "off", "switch": "<|think|> at the start of the system prompt", "history": "earlier turns carry the final response only, except tool-call turns"},
+      "precision": null,
+      "card_readable": true
+    },
+    "trinity": {
+      "source": "arcee-ai/Trinity-Nano-Preview",
+      "generation_config": {},
+      "card_sampling": [{"when": "card example", "temperature": 0.5, "top_k": 50, "top_p": 0.95}],
+      "thinking": null,
+      "precision": "bfloat16",
+      "card_readable": true
+    },
+    "apertus": {
+      "source": "swiss-ai/Apertus-8B-Instruct-2509",
+      "generation_config": {},
+      "card_sampling": [{"when": "recommended", "temperature": 0.8, "top_p": 0.9}],
+      "thinking": null,
+      "precision": "bfloat16",
+      "card_readable": true
+    },
+    "nemotron": {
+      "source": "nvidia/NVIDIA-Nemotron-Nano-9B-v2",
+      "generation_config": {},
+      "card_sampling": [
+        {"when": "reasoning on", "temperature": 0.6, "top_p": 0.95},
+        {"when": "reasoning off", "greedy": true}
+      ],
+      "thinking": {"default": "on", "switch": "/think or /no_think in the system or user turn", "budget": "runtime thinking budget supported"},
+      "precision": "bfloat16",
+      "card_readable": true
+    },
+    "stablelm2": {
+      "source": "stabilityai/stablelm-2-1_6b-chat",
+      "generation_config": {},
+      "card_sampling": [{"when": "card example", "temperature": 0.7}],
+      "thinking": null,
+      "precision": null,
+      "card_readable": true
+    },
+    "phi3": {
+      "source": "microsoft/Phi-3.5-mini-instruct",
+      "generation_config": {},
+      "card_sampling": [{"when": "card example and evaluations", "temperature": 0.0}],
+      "thinking": null,
+      "precision": null,
+      "card_readable": true
+    },
+    "phi4": {
+      "source": "microsoft/Phi-4-mini-instruct",
+      "generation_config": {},
+      "card_sampling": [{"when": "card example", "temperature": 0.0}],
+      "thinking": null,
+      "precision": null,
+      "card_readable": true
+    },
+    "mistral": {
+      "source": "mistralai/Mistral-7B-Instruct-v0.3",
+      "generation_config": {},
+      "card_sampling": [{"when": "card example", "temperature": 0.0}],
+      "thinking": null,
+      "precision": null,
+      "card_readable": true
+    },
+    "gpt-oss": {
+      "source": "openai/gpt-oss-20b",
+      "generation_config": {},
+      "card_sampling": [],
+      "thinking": {"default": null, "switch": "reasoning effort low, medium or high", "format": "harmony response format only"},
+      "precision": "MXFP4 MoE weights; the publisher's evaluations ran at that quantization",
+      "card_readable": true
+    },
+    "hermes4": {
+      "source": "NousResearch/Hermes-4-14B",
+      "generation_config": {},
+      "card_sampling": [{"when": "defaults that work well", "temperature": 0.6, "top_p": 0.95, "top_k": 20}],
+      "thinking": {"default": "off", "switch": "thinking=True in the chat template, or the card's deep-thinking system prompt"},
+      "precision": null,
+      "card_readable": true
+    }
+  }
+}

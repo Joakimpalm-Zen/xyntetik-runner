@@ -911,7 +911,7 @@ NOT CHECKED (34) -- these produced no comparison at all:
   nemotron-nano/system-mid-history runner refused: messages[2].role system is not representable by the llama2 template after history has started
 
 TOKENS NOT CHECKED (1 families) -- the text was compared, the token sequence was NOT:
-  zephyr        no GGUF carrying the zephyr tokenizer on the model shelf (looked for zephyr-7b-beta-Q4_K_M.gguf in /home/lab/workspace/runner-gold/models). The text comparison ran; the TOKEN comparison did not.
+  zephyr        no GGUF carrying the zephyr tokenizer on the model shelf (looked for zephyr-7b-beta-Q4_K_M.gguf in runner-gold/models). The text comparison ran; the TOKEN comparison did not.
   A whitespace-only text difference can still change the token sequence the model reads, so this is a real gap, not a formality. --require-tokens turns it into exit 2.
 
 FAIL: 142 new, 0 changed, 0 fixed-but-still-listed.

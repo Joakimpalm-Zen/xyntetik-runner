@@ -2,7 +2,7 @@
   "schema_version": "xyntetik.runner.gold-logits.v1",
   "summary": {
     "positions": 100,
-    "hf": "/home/lab/workspace/hf/apertus-8b",
+    "hf": "hf/apertus-8b",
     "corpus": "tests/fixtures/mixed-corpus.txt",
     "reference_class": "ApertusForCausalLM",
     "special_prefix_tokens": 1,

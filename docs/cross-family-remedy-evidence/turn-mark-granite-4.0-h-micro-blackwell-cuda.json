@@ -6,7 +6,7 @@
  "platform": "Linux-6.12.0-211.16.1.el10_2.x86_64-x86_64-with-glibc2.39",
  "base_url": "http://127.0.0.1:8095",
  "model": "granite-4.0-h-micro-Q4_K_M.gguf",
- "model_file": "/home/lab/workspace/models/granite-4.0-h-micro/granite-4.0-h-micro-Q4_K_M.gguf",
+ "model_file": "models/granite-4.0-h-micro/granite-4.0-h-micro-Q4_K_M.gguf",
  "model_sha256": "bcc78b9b25450101d1ad90d4b9a264e1bac892f534dfb76066f4eec792fdf023",
  "runner": "./runner",
  "runner_sha256": "d71ebf3a6672df6cbdcffa9249869ac8a0b5d6aa65044588be74bae6ddb85b5a",

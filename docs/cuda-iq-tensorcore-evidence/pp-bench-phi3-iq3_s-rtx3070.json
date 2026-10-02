@@ -1,5 +1,5 @@
 {
- "model": "C:/Users/zen/models/phi3-IQ3_S.gguf",
+ "model": "~/models/phi3-IQ3_S.gguf",
  "runs": 5,
  "extra": [],
  "rows": [

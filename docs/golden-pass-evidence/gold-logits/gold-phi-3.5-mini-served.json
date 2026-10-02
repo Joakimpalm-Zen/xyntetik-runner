@@ -2,7 +2,7 @@
   "schema_version": "xyntetik.runner.gold-logits.v1",
   "summary": {
     "positions": 100,
-    "hf": "/home/lab/workspace/hf/phi-3.5-mini",
+    "hf": "hf/phi-3.5-mini",
     "corpus": "tests/fixtures/mixed-corpus.txt",
     "reference_class": "Phi3ForCausalLM",
     "special_prefix_tokens": 0,

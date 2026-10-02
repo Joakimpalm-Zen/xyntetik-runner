@@ -1,5 +1,5 @@
 {
- "model": "/home/lab/workspace/models/Mistral-7B-Instruct-v0.3-Q4_K_M/Mistral-7B-Instruct-v0.3-Q4_K_M.gguf",
+ "model": "models/Mistral-7B-Instruct-v0.3-Q4_K_M/Mistral-7B-Instruct-v0.3-Q4_K_M.gguf",
  "tokens": 128,
  "context": 2048,
  "routing": "eager",

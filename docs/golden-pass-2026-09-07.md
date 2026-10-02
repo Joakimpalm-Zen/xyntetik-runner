@@ -431,10 +431,10 @@ instrument behind it that can fail.
 On unquantized StableLM 2 1.6B weights, through the same harness, on the
 same file, in the same run:
 
-| engine | mean KL from the reference | top-1 |
-|---|---|---|
-| llama.cpp | **0.0007** | **100%** |
-| Runner | **0.6099** | **55%** |
+| engine | margin-qualified top-1 | mean KL from the reference | top-1 |
+|---|---|---|---|
+| llama.cpp | **100.00%** | **0.0007** | **100%** |
+| Runner | **67.14%** | **0.6099** | **55%** |
 
 llama.cpp reproduces the publisher's implementation essentially exactly.
 The runner does not, and not subtly: at corpus position 110 the reference
@@ -573,6 +573,61 @@ Both halves matter, so both are stated.
   schema v3). The two rows above are instrument readings, not fidelity, and
   are not re-measured yet: a float32 reference needs about 30 GB of memory
   for Mistral v0.3 and 16 GB for Phi-3.5.
+
+## Per-family facts
+
+What the pass learned about each family, in one place, as it stands after
+the follow-up fixes (runner PRs #203 to #205). "Prefix" is the number of
+special tokens the publisher's tokenizer puts before the text, which the
+reference must be given (the first instrument fault above). The mq columns
+are margin-qualified top-1 at 2,000 positions, runner against llama.cpp,
+and the last column says which engine the per-position KL test found
+closer; rows without a 2,000-position figure give the 100-position reading
+and say so.
+
+| family | reference class | prefix | template, today | bf16 mq (2k) | served tier, mq (2k) | KL closer | facts that bite |
+|---|---|---|---|---|---|---|---|
+| SmolLM2 135M | LlamaForCausalLM | 0 | fixed default system prompt sent (PR #204) | 100.00 / 100.00 | Q8_0, 100.00 / 99.92 | runner | none beyond the system prompt |
+| Qwen2.5 0.5B | Qwen2ForCausalLM | 0 | clean | 100.00 / 100.00 | Q4_K_M, 98.96 / 98.81 | runner | none |
+| Qwen3 0.6B | Qwen3ForCausalLM | 0 | clean | 100.00 / 100.00 | Q4_0, 81.33 / 80.97 | runner | Q4_0 costs both engines a fifth of the qualified positions |
+| Qwen3 4B | Qwen3ForCausalLM | 0 | clean | 100.00 / 100.00 | Q4_K_M, 92.08 / 91.56 | runner | none |
+| Qwen3.5 0.8B | Qwen3_5ForCausalLM | 0 | own family `qwen35`, thinking off by default on the 0.8B (PR #203) | 100.00 / 100.00 | Q4_K_M, 97.71 / 97.57 | runner | was rendered as ornith: thought blocks in replayed turns, thinking on |
+| Granite 4.0-h micro | GraniteMoeHybridForCausalLM | 0 | default system prompt and publisher tools preamble (PR #204) | 100.00 / 100.00 | Q4_K_M, 94.36 / 93.67 | runner | hybrid recurrent; manifest row pinned in PR #203 |
+| Granite 4.2 3B | GraniteForCausalLM | 0 | clean | 100.00 / 99.93 | Q4_K_M, 91.25 / 91.04 (llama.cpp `-fa on`) | runner | the 100-position reading reversed at 2,000 |
+| Gemma 3 4B | Gemma3ForConditionalGeneration | 1 | clean | 100.00 / 100.00 | Q4_K_M, 96.19 / 95.61 | runner | multimodal class; the text path is what is measured |
+| Gemma 4 E2B | Gemma4ForConditionalGeneration | 1, forced | clean (E-series oracle re-pinned, PR #205) | 100.00 / 100.00 | Q4_0, 69.44 / 68.82 | llama.cpp (p=3e-07) | the tokenizer does not declare the BOS the model needs; Q4_0 is the weakest served tier in the table |
+| Trinity Nano (afmoe) | AfmoeForCausalLM | 1 | clean | 98.53 / 98.60 | Q8_0, 97.43 / 97.72 | neither at bf16, runner served | both engines sit 0.045 from the publisher at bf16, a shared reproduction gap |
+| Apertus 8B | ApertusForCausalLM | 1 | clean | not measured: llama.cpp refuses the bf16 file's template without `--no-jinja` | Q4_K_M, 98.10 / 96.49 | runner | the one significant mq difference (p<0.001) |
+| Nemotron Nano 9B v2 | NemotronHForCausalLM | 1 | own `nemotron` renderer (PR #203); tools ride the generic envelope | 100% / 100% at 100 positions | Q8_0, 100% / 100% at 100 positions | runner (100 positions) | the 2,000-position run did not finish |
+| StableLM 2 1.6B | StableLmForCausalLM | 0 | not in Phase A | 100.00 / 100.00 after the fix | no served tier measured | runner | LayerNorm with biases, `stablelm2` pre-tokenizer, trained at 4,096 so a larger context turns on YaRN |
+| Phi-3.5 mini | no runnable reference | n/a | clean (`phi3`) | not measured | not measured | n/a | the publisher's modeling code does not run on transformers 5.16; the R6.7.6 re-measure needs a float32 reference |
+| Mistral 7B v0.3 | not re-measured | n/a | publisher's current template clean; the pinned file embeds an older one | not measured | not measured | n/a | the first readings were the harness's token spelling (fixed, report schema v3); a float32 reference needs about 30 GB |
+| Phi-4-mini | template only | n/a | own `phi4` family (PR #203) | not in Phase B | not in Phase B | n/a | not Phi-3.5: no newlines around role markers; the publisher template ignores tools |
+| Hermes 4 | template only | n/a | default system prompt and tools preamble (PR #204) | not in Phase B | not in Phase B | n/a | none beyond the template |
+| Nemotron 3.5 Lightning | template only | n/a | detected as `granite42`; its nested XML tool declarations are still rendered as JSON | not in Phase B | not in Phase B | n/a | open (R4.22.5) |
+
+### Which earlier llama.cpp-anchored numbers were noise
+
+Every certification before this pass gated on greedy identity with llama.cpp.
+Read against the publisher's reference, three of those readings change
+meaning:
+
+- **afmoe, "FAIL (1/6)" on 2026-08-05.** Both engines sit about 0.045 from
+  the publisher at bf16 and neither is closer on margin-qualified top-1 or on
+  KL at 2,000 positions. The failed gate measured two engines equally far
+  from the reference, not a runner defect; the shared gap is the real
+  finding.
+- **Granite 4.2 3B at Q4_K_M, llama.cpp ahead at 100 positions.** Reversed
+  at 2,000 (the runner ahead by three positions, p=0.743): a coin flip in
+  either direction.
+- **The cross-engine near-tie misses on granitehybrid and nemotron_h.** At
+  the publisher's reference both engines read 100% margin-qualified top-1 on
+  the measured members at bf16, so a miss between them at a near-tie says
+  nothing about which one is right.
+
+Readings with no publisher reference yet (Muse Glimmer 30B, Nemotron 3.5
+Lightning, gpt-oss 120B and 20B, Mistral v0.3, Phi-3.5) keep their
+llama.cpp figures, labelled as agreement with another engine.
 
 ## What this pass did not measure
 

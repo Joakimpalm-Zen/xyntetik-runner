@@ -8,6 +8,69 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **Evidence packs (R1.6.1).** `--export-pack RECEIPTS_DIR --pack-out DIR`
+  gathers a server's receipts into one directory a reviewer can take: every
+  receipt, the model signature and key, the envelope manifest the receipts
+  name and attachments such as approval records, under a
+  `xyntetik.runner.evidence-pack.v1` manifest with one inference per receipt
+  (its id the chain hash) and whether the receipts form one unbroken chain
+  segment. `--check-pack DIR` verifies it offline, including that no
+  receipt was added beside the listed ones and that the stated segment is
+  the receipts' own.
+- **The 14-prompt boundary neighborhood, reproduced (R2.3.4).** The bank
+  author's one-factor neighborhood ran through the lane on the pinned study
+  artifacts: the same 6 of 14 disagreements, Q4 minimum margin 3.061 nat
+  against his 3.055 (`docs/tool-choice-boundary-lane.md`).
+- **Publisher sampling for Qwen 3.5, Nemotron Nano and Apertus; serving
+  guidance in the manifest (R6.7.3).** Qwen 3.5 was served at Qwen3's
+  temperature 0.6 (the card's setting for precise coding) and Nemotron Nano
+  9B v2 and Apertus at the generic preset. Each now gets its card's
+  recommendation, selected by its template: `qwen35` 1.0 / 0.95 / 20,
+  `qwen35-nothink` 1.0 / 1.0 / 20, `nemotron` 0.6 / 0.95, `apertus`
+  0.8 / 0.9. `docs/serving-guidance.json` records what 18 publishers say
+  (generation_config, card recommendations per mode, thinking default,
+  precision); `runner --tool-info` names the sampling preset; the envelope
+  certifier writes a reported-only `serving_guidance` block with the knobs
+  where the preset departs from the publisher.
+- **One decision-record contract (R2.1.4).** The per-step
+  `choice_logprobs` records and the `runner_telemetry.decision` summary are
+  published as one versioned contract, `docs/decision-record.md` with a JSON
+  schema in `docs/schemas/`; the summary carries
+  `schema: "xyntetik.runner.decision.v1"` and each record its `n_probed`, so
+  a reader can tell a grammar-shaped choice from free text.
+- **`confirm_below`: a constrained turn says when it should be confirmed
+  (R2.1.3).** On Chat Completions, Responses and Messages, a buffered
+  request with `confirm_below: p` gets `runner_telemetry.decision`: the
+  lowest posterior the chosen token had at a grammar-shaped choice (which
+  tool, which enum value; not free text), its margin, where it fell, and
+  `needs_confirmation`. The threshold is the caller's.
+- **Session images over HTTP (R1.3.5).** `--sessions DIR` adds
+  `POST /v1/runner/sessions` (a raw-prompt generation that `suspend_after`
+  images), `POST /v1/runner/sessions/{id}/resume` (exact continuation, or a
+  reproducible fork with `fork_seed`) and `GET`/`DELETE` by id, the id being
+  the image's sha256. On a Metal-served 3B a suspended and resumed run, and
+  a twice-suspended one, returned the straight run's text byte for byte.
+- **Records name the measured envelope they ran inside (R1.1.5).** A
+  transcript and a served receipt carry `envelope.verdict` in the
+  manifest's own vocabulary and the sha256 of the sidecar the load read
+  (null when there was none). Recorded, not replayed.
+- **A served receipt shaped by a JSON schema or JSON mode replays (R1.1.3,
+  D4b).** `--verify` refused every served turn that a constraint shaped.
+  One shaped by a `response_format` of `json_schema` or `json_object` (or
+  `ignore_eos`) now replays under `--json-schema FILE` (matched by digest)
+  or `--json`, as a CLI record already did. Tool turns, stop sequences, a
+  reasoning budget and the loop guard are still refused by name.
+- **`scripts/audit-demo.sh`: the record-and-verify chain in under a
+  minute (R1.2.4).** Records and signs a 1,000-token sampled run, verifies
+  it by replay against the trusted key, and shows three forgeries refused,
+  including one whose chain hash was recomputed and which only the replay
+  catches. 29 s on the 8 GB M1. `docs/audit-demo.md` states what it
+  proves and what it does not.
+- **Exporting a context snapshot no longer stalls the server.** The
+  export held the prefix-cache lock across the whole disk write, so a
+  multi-GB snapshot blocked every slot's prefix lookup until it finished.
+  The entry is now read without the lock under a reader count, and a
+  release that arrives meanwhile frees it when the export is done.
 - **A second slot of a CUDA server no longer claims the weights again.**
   Slots share one upload of the model, but the VRAM claim each slot makes
   before loading asked for the whole file, so with `--parallel 2` on a

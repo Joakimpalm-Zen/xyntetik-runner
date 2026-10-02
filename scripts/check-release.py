@@ -79,14 +79,42 @@ def pyproject_version(path):
 # the wild by the 2026-08-24 review — docs published from a measurement
 # session carried suite paths for a week). The class-level fix is this scan;
 # the instance-level fixes were commit d9557b3.
-PRIVATE_MARKERS = ("xyntetik-suite", "xyntetik-shade")
+#
+# Names alone were not enough (review 2026-09-08): a document can describe
+# the private repositories without naming either, as an assessment written for
+# the shadow-mode work did. The markers below also match their internals: the
+# suite's package and crate paths and its Python module names, and the
+# research ledgers and archive paths of the model project. Plan IDs (R12.1,
+# R8.7.2, ...) are NOT markers: an ID is opaque, and the public docs cite them
+# on purpose. A mechanical scan is a backstop; a reader is the decision.
+_SUITE_PACKAGES = ("thane", "forge", "clu", "coder", "foundation",
+                   "interpreter", "knowledge", "loadout", "platform-core",
+                   "ramp", "runner-control", "toolbox", "tower", "validator",
+                   "vault")
+_SUITE_CRATES = ("agent-runtime", "audit", "code-workflows", "contracts",
+                 "migration", "policy", "projections", "runner-control",
+                 "suite-core", "tools", "vault")
+_SHADE_LEDGERS = ("BLACKWELL_INVENTORY", "MODELS_PROVENANCE",
+                  "ACTIVE_RUNS_PROVENANCE", "SHADOW_EXTRACTION_NARRATIVES",
+                  "TRACKS_ED_WORKORDER", "RESEARCH_STATE")
+# Fixed strings, not one alternation: git grep matches a fixed-string set in
+# one pass, where the same set as a case-insensitive regex took five times as
+# long over the tree.
+PRIVATE_MARKERS = (
+    ("xyntetik-suite", "xyntetik-shade")
+    + tuple("packages/" + p for p in _SUITE_PACKAGES)
+    + tuple("xyntetik_" + p.replace("-", "_") for p in _SUITE_PACKAGES)
+    + tuple("crates/" + c for c in _SUITE_CRATES)
+    + ("research/archive/suite", "research/archive/runner-branches")
+    + _SHADE_LEDGERS)
 
 
 def private_reference_scan():
     try:
         proc = subprocess.run(
-            ["git", "grep", "-l", "-i", "-E", "|".join(PRIVATE_MARKERS),
-             "--", ":!scripts/check-release.py"],
+            ["git", "grep", "-l", "-i", "-F"]
+            + [a for m in PRIVATE_MARKERS for a in ("-e", m)]
+            + ["--", ":!scripts/check-release.py"],
             cwd=ROOT, capture_output=True, text=True, timeout=60)
     except FileNotFoundError:
         # no git on PATH (the Windows msys CI python): the same tree is
@@ -114,9 +142,93 @@ def private_reference_scan():
     return True
 
 
+# A home directory inside committed evidence names the machine and the user
+# that produced it, not the model (R6.2.x: 281 evidence files carried the
+# lab's and the owner's paths until 2026-10-02). The harnesses now write
+# relative paths; this keeps a new report from bringing them back. Scratch
+# directories under /tmp are not homes and are not matched.
+HOME_PATH_RE = (r"(^|[^A-Za-z0-9._-])(/home|/Users)/[A-Za-z0-9._-]+/"
+                r"|[A-Za-z]:\\+Users\\+|[A-Za-z]:/Users/")
+
+
+def home_path_scan():
+    try:
+        proc = subprocess.run(
+            ["git", "grep", "-l", "-E", HOME_PATH_RE, "--", "docs", "site",
+             "README.md", "python/README.md"],
+            cwd=ROOT, capture_output=True, text=True, timeout=60)
+    except FileNotFoundError:
+        print("release-check: note: git unavailable, home-path scan skipped "
+              "on this job (covered by sibling jobs)")
+        return True
+    except (subprocess.TimeoutExpired, OSError) as e:
+        return fail(f"home-path scan could not run: {e}")
+    if proc.returncode not in (0, 1):
+        return fail("home-path scan failed: "
+                    + (proc.stderr.strip() or f"git grep exited {proc.returncode}"))
+    hits = [l for l in proc.stdout.splitlines() if l.strip()]
+    if hits:
+        return fail("home-directory paths in public evidence: "
+                    + ", ".join(hits[:10])
+                    + (f" and {len(hits) - 10} more" if len(hits) > 10 else ""))
+    return True
+
+
+# R6.7.8: the measure that flatters the engine is published last. A table
+# that reports a mean KL must report the margin-qualified top-1 beside it
+# (the 2026-09-07 golden pass found that mean KL alone ranked engines by
+# noise at near-ties). Matched on the header row of every markdown and HTML
+# table in the public text; a column named "margin", "qualified", "mq" or
+# "v2 top-1" satisfies it, including one that says "not measured".
+_KL_HEADER = re.compile(r"\bKLD?\b|mean[ -]KL", re.I)
+_MQ_HEADER = re.compile(r"margin|qualified|\bmq\b|v2 top-1", re.I)
+
+
+def kl_tables_without_margin(text, html=False):
+    """Header rows of tables in `text` that carry a KL column and no
+    margin-qualified column."""
+    bad = []
+    if html:
+        for m in re.finditer(r"<tr>(.*?)</tr>", text, re.S):
+            row = m.group(1)
+            if "<th" not in row:
+                continue
+            heads = " | ".join(re.sub(r"<[^>]+>", "", h)
+                               for h in re.findall(r"<th[^>]*>.*?</th>", row, re.S))
+            if _KL_HEADER.search(heads) and not _MQ_HEADER.search(heads):
+                bad.append(heads.strip())
+        return bad
+    lines = text.split("\n")
+    for i, line in enumerate(lines[:-1]):
+        if (line.lstrip().startswith("|") and
+                re.match(r"\s*\|[-:| ]+\|\s*$", lines[i + 1]) and
+                _KL_HEADER.search(line) and not _MQ_HEADER.search(line)):
+            bad.append(line.strip())
+    return bad
+
+
+def kl_table_scan():
+    paths = [ROOT / "README.md"] + sorted((ROOT / "docs").rglob("*.md")) \
+        + sorted((ROOT / "site" / "pages").glob("*.html"))
+    hits = []
+    for path in paths:
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        for head in kl_tables_without_margin(text, html=path.suffix == ".html"):
+            hits.append(f"{path.relative_to(ROOT)}: {head[:80]}")
+    if hits:
+        return fail("tables report mean KL without a margin-qualified column: "
+                    + "; ".join(hits))
+    return True
+
+
 def check(args):
     ok = True
+    ok &= kl_table_scan()
     ok &= private_reference_scan()
+    ok &= home_path_scan()
     version = args.tag[1:] if args.tag.startswith("v") else args.tag
     expected_binary = f"runner {version}"
 

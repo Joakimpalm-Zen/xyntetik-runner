@@ -1,5 +1,5 @@
 {
- "model": "/home/lab/workspace/models/Qwen3.8-27B-GSQ-RCO-IQ3_S-recovered/Qwen3.8-27B-GSQ-RCO-IQ3_S-recovered.gguf",
+ "model": "models/Qwen3.8-27B-GSQ-RCO-IQ3_S-recovered/Qwen3.8-27B-GSQ-RCO-IQ3_S-recovered.gguf",
  "tokens": 128,
  "context": 2048,
  "routing": "eager",

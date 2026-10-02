@@ -24,7 +24,7 @@
           "status": "pass",
           "returncode": 0,
           "elapsed_ms": 218.9,
-          "stderr_tail": "gemma4: E-series (per-layer embeddings + shared KV) \u2014 verified against llama.cpp at the Q4_K noise floor rather than token-identically\nrope: using model frequency factors (rope_freqs.weight)\nloaded /home/lab/workspace/models/gemma-4-E4B-it-Q4_K_M/gemma-4-E4B-it-Q4_K_M.gguf | gemma4 | 42 layers | ctx 4096 | 32 threads | 0.04s\nsampling: gemma3 (temp 0.00 \u2014 greedy argmax; top_p/top_k/min_p/repeat_penalty inactive)\n\nprompt: 4 tok, 36.17 tok/s | gen: 1 tok, 24.00 tok/s\n"
+          "stderr_tail": "gemma4: E-series (per-layer embeddings + shared KV) \u2014 verified against llama.cpp at the Q4_K noise floor rather than token-identically\nrope: using model frequency factors (rope_freqs.weight)\nloaded models/gemma-4-E4B-it-Q4_K_M/gemma-4-E4B-it-Q4_K_M.gguf | gemma4 | 42 layers | ctx 4096 | 32 threads | 0.04s\nsampling: gemma3 (temp 0.00 \u2014 greedy argmax; top_p/top_k/min_p/repeat_penalty inactive)\n\nprompt: 4 tok, 36.17 tok/s | gen: 1 tok, 24.00 tok/s\n"
         },
         "cpu_cuda": {
           "status": "pass",
@@ -42,7 +42,7 @@
           },
           "identical": "9/9",
           "failed_prompts": [],
-          "report": "/home/lab/workspace/.r41-runner/rel047/cpu_cuda/gemma-4-e4b-it-q4_k_m.json",
+          "report": ".r41-runner/rel047/cpu_cuda/gemma-4-e4b-it-q4_k_m.json",
           "output_tail": "'\nok  : 'Q: What is 17 * 23?\\nA:'\nok  : 'The lighthouse keeper recorded the weather every morning: wind direction, cloud cover, and the hour the fog lifted.'\nok  : 'In 1929 the observatory published a revised catalogue listing 4218 objects, of which roughly one in nine turned out on later inspection to be a duplicate entry under a second designation. The correction'\nok  : \"def parse_header(buf, size):\\n    if size < 8:\\n        raise ValueError('short header')\\n    magic, version = struct.unpack('<II', buf[:8])\\n    if magic != GGUF_MAGIC:\\n        raise ValueError('not a gguf file')\\n    return magic, version\\n\\n# The loader above rejects a truncated header before unpacking it, which\"\nok  : 'The city of Lisbon sits on seven hills above the Tagus estuary, and its oldest quarter survived the 1755 earthquake largely intact because the bedrock there is firmer than the reclaimed ground downriver. Rebuilding the lower town took decades, and the grid of streets laid out afterwards was among the first in Europe designed with seismic loads in mind, which is why the district still reads as unusually regular to a visitor who'\n\ncpu_cuda: pass \u2014 9/9 exact, 0 near-tie tolerated (eager routing)\n"
         },
         "chat": {

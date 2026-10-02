@@ -100,3 +100,30 @@ def test_gpu_verdict_is_foreign_to_a_forced_cpu_run(model):
     assert proc.returncode == 0, proc.stderr.decode(errors="replace")
     err = proc.stderr.decode(errors="replace")
     assert "indeterminate" in err and "not this runtime" in err, err
+
+
+@pytest.mark.parametrize("verdict,word", [
+    ("certified", "certified"), ("experimental", "experimental"),
+    (None, "unclassified")])
+def test_a_transcript_names_the_envelope_it_ran_under(model, tmp_path, verdict, word):
+    """D6 (R1.1.5): the record and the manifest beside the model use one
+    vocabulary, and the record names that manifest by digest, so a reader
+    can match a transcript to the measurement it ran inside."""
+    import hashlib
+    side = model.parent / (model.name + ".envelope.json")
+    if verdict:
+        side.write_text(_manifest(verdict))
+    rec = tmp_path / "run.json"
+    proc = _run(model, "--transcript", str(rec))
+    assert proc.returncode == 0, proc.stderr.decode(errors="replace")
+    env = json.loads(rec.read_text())["envelope"]
+    assert env["verdict"] == word
+    if verdict:
+        assert env["manifest_sha256"] == hashlib.sha256(side.read_bytes()).hexdigest()
+    else:
+        assert env["manifest_sha256"] is None
+    # and the record still replays: the envelope is recorded, not replayed
+    v = subprocess.run([RUNNER, "-m", str(model), "--verify", str(rec),
+                        "--gpu", "off"], cwd=ROOT, stdout=subprocess.PIPE,
+                       stderr=subprocess.PIPE, timeout=30)
+    assert v.returncode == 0, (v.stdout + v.stderr).decode(errors="replace")

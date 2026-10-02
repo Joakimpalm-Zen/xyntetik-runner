@@ -2,7 +2,7 @@
   "schema_version": "xyntetik.runner.gold-logits.v1",
   "summary": {
     "positions": 100,
-    "hf": "/home/lab/workspace/hf/nemotron-nano-9b-v2",
+    "hf": "hf/nemotron-nano-9b-v2",
     "corpus": "tests/fixtures/mixed-corpus.txt",
     "reference_class": "NemotronHForCausalLM",
     "special_prefix_tokens": 1,

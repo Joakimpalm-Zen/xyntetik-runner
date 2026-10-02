@@ -1,5 +1,5 @@
 # OpenCode 1.18.31 for Windows against granite-4.2-8b-Q4_K_M.gguf served by the runner built from the claude-code-allof branch (main + #102 + #103) on ZEN-GAMING: Windows 11, RTX 3070 8 GB, CUDA 13.3, 39/40 layers on the device, 2026-09-15
-# fixture: C:\Users\zen\oc-fixture (sentinel.txt, README.md, src/main.py), opencode.json provider `runner` via @ai-sdk/openai-compatible, baseURL http://127.0.0.1:8097/v1, OPENCODE_PERMISSION allow-all
+# fixture: ~\oc-fixture (sentinel.txt, README.md, src/main.py), opencode.json provider `runner` via @ai-sdk/openai-compatible, baseURL http://127.0.0.1:8097/v1, OPENCODE_PERMISSION allow-all
 # prompt: Read the file sentinel.txt in the current directory with your tools and reply with the code word it contains, in one sentence.
 # launched detached through schtasks; the runner's log lines are appended below the transcript
 # note: the stray `<tool_call>` line OpenCode printed before the answer is the model opening its final turn with a bare opener; the demultiplexer now drops such an opener on its own line (tests/test_tools.c)

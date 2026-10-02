@@ -1,4 +1,4 @@
-file: /home/lab/workspace/Gridcore/cert-matrix-models/gpt-oss-safeguard-120b-shard1.gguf
+file: Gridcore/cert-matrix-models/gpt-oss-safeguard-120b-shard1.gguf
 gguf version: 3  tensors: 434  kv: 36
 general.architecture: gpt-oss
 general.name: Tlhv_Osb Mini

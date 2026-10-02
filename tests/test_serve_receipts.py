@@ -148,3 +148,61 @@ def test_a_broken_newest_record_refuses_the_start(runner_bin, fx, tmp_path):
                        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                        timeout=60)
     assert p.returncode != 0 and b"--serve" in p.stderr
+
+
+def test_a_served_schema_or_json_mode_turn_replays_under_its_constraint(
+        runner_bin, fx, tmp_path):
+    """D4b (R1.1.3): a served turn shaped by a JSON schema replays when the
+    verifier names that schema (matched by digest), and one shaped by JSON
+    mode replays under --json. A tool turn is still refused by name: its
+    grammar is built from the request, which the record does not carry."""
+    d = tmp_path / "r"
+    schema = {"type": "object", "properties": {"n": {"type": "integer"}},
+              "required": ["n"]}
+    sfile = tmp_path / "schema.json"
+    sfile.write_text(json.dumps(schema, indent=2))
+    tools = [{"type": "function", "function": {
+        "name": "f", "parameters": {"type": "object",
+                                    "properties": {"a": {"type": "string"}},
+                                    "required": ["a"]}}}]
+    # a tool declaration's prompt does not fit the fixture's 256 tokens
+    with RunnerServer(runner_bin, fx["model"], ctx=1024, extra_args=[
+            "--gpu", "off", "-t", "2", "--receipts", str(d),
+            "--sign-key", str(fx["key"]), "--chat-template", "chatml"]) as srv:
+        _post(srv, "/v1/chat/completions", {
+            "messages": [{"role": "user", "content": "a number"}],
+            "max_tokens": 12, "temperature": 0.8, "seed": 3,
+            "cache_prompt": False,
+            "response_format": {"type": "json_schema",
+                                "json_schema": {"name": "s", "schema": schema}}})
+        _post(srv, "/v1/chat/completions", {
+            "messages": [{"role": "user", "content": "json please"}],
+            "max_tokens": 12, "temperature": 0, "cache_prompt": False,
+            "response_format": {"type": "json_object"}})
+        _post(srv, "/v1/chat/completions", {
+            "messages": [{"role": "user", "content": "call f"}],
+            "max_tokens": 12, "temperature": 0, "cache_prompt": False,
+            "tools": tools, "tool_choice": "required"})
+    names = sorted(p.name for p in d.iterdir())
+    schema_rec, json_rec, tool_rec = (d / n for n in names)
+
+    def verify(rec, *extra):
+        v = subprocess.run([runner_bin, "-m", fx["model"], "--verify", rec,
+                            "--trust-key", fx["pk"], "--gpu", "off", "-t", "2",
+                            "-c", "1024", *extra],
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                           timeout=120)
+        return v.returncode, (v.stdout + v.stderr).decode(errors="replace")
+
+    rc, out = verify(schema_rec, "--json-schema", str(sfile))
+    assert rc == 0 and "VERIFIED" in out, out[-600:]
+    rc, out = verify(schema_rec)                     # the schema is needed
+    assert rc == 3 and "--json-schema" in out, out[-600:]
+    other = tmp_path / "other.json"
+    other.write_text(json.dumps({"type": "object"}))
+    rc, out = verify(schema_rec, "--json-schema", str(other))
+    assert rc == 3, out[-600:]                       # and it must be this one
+    rc, out = verify(json_rec, "--json")
+    assert rc == 0 and "VERIFIED" in out, out[-600:]
+    rc, out = verify(tool_rec)
+    assert rc == 3 and "tools" in out, out[-600:]

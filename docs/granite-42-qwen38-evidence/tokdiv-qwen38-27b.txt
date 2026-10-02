@@ -1,6 +1,6 @@
 {
   "schema_version": "xyntetik.runner.token-divergence.v1",
-  "model": "/home/lab/workspace/models/qwen3.8/Qwen3.8-27B-UD-Q4_K_M.gguf",
+  "model": "models/qwen3.8/Qwen3.8-27B-UD-Q4_K_M.gguf",
   "tokens_per_prompt": 32,
   "tie_threshold_nats": 0.25,
   "results": [

@@ -1,4 +1,4 @@
-file: /home/lab/workspace/Gridcore/cert-matrix-models/gpt-oss-36b-brainstorm-davidau.gguf
+file: Gridcore/cert-matrix-models/gpt-oss-36b-brainstorm-davidau.gguf
 gguf version: 3  tensors: 820  kv: 35
 general.architecture: gpt-oss
 general.name: GTP Osss 20b Test1

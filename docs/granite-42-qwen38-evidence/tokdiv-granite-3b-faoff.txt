@@ -1,6 +1,6 @@
 {
   "schema_version": "xyntetik.runner.token-divergence.v1",
-  "model": "/home/lab/workspace/models/granite-4.2/granite-4.2-3b-Q4_K_M.gguf",
+  "model": "models/granite-4.2/granite-4.2-3b-Q4_K_M.gguf",
   "tokens_per_prompt": 32,
   "tie_threshold_nats": 0.25,
   "reference_args": [

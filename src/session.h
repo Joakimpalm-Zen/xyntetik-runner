@@ -71,4 +71,28 @@ typedef struct {
 bool session_read(const char *path, session_image *img);
 void session_image_free(session_image *img);
 
+// The step loop behind every suspend point (the CLI's --suspend-after and the
+// server's /v1/runner/sessions). It stops after `stop_at` generated tokens in
+// all (0: the budget), every handed-out token already forwarded, and says
+// whether the generation is still live -- neither a stop, a finished document
+// nor an error ended it. Only a live generation is imaged. *last is the next
+// token's logits.
+// The directory a server keeps session images in (--sessions DIR, R1.3.5).
+// NULL until configured; configuring creates it when missing.
+bool        sessions_configure(const char *dir);
+const char *sessions_dir(void);
+
+bool session_run(engine *e, float *logits, int stop_at, gen_cb cb, void *ud,
+                 const float **last);
+
+// The image of `e` at its current point. model_sha256 and binary_sha256 may be
+// NULL, and are then computed from model_path and the running executable (a
+// server passes the digests its load already took). schema_sha256 is NULL or
+// "" when no schema shaped the run. The image's own sha256 goes to sha_out.
+bool session_image_write(const char *path, const engine *e, const char *model_path,
+                   const char *model_sha256, const char *binary_sha256,
+                   const float *logits, int n_prompt, int max_new,
+                   bool json_mode, bool ignore_eos, const char *schema_sha256,
+                   char sha_out[65]);
+
 #endif

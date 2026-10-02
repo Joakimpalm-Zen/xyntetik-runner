@@ -6,12 +6,15 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #ifdef _WIN32
 #include <io.h>
+#include <direct.h>
 #else
 #include <unistd.h>
 #endif
 
+#include "compat.h"
 #include "envelope.h"
 #include "runner.h"
 #include "json.h"
@@ -229,4 +232,86 @@ out:
         return false;
     }
     return true;
+}
+
+
+bool session_run(engine *e, float *logits, int stop_at, gen_cb cb, void *ud,
+                 const float **last) {
+    int32_t tok;
+    int pos;
+    while (stop_at <= 0 || e->gen_count < stop_at) {
+        if (engine_gen_step(e, logits, cb, ud, &tok, &pos) != ENGINE_STEP_MORE) break;
+        logits = model_forward(e->m, tok, pos);
+        if (!logits) { e->oom = true; break; }
+    }
+    e->pending_pos = -1;
+    *last = logits;
+    return logits && !e->hit_stop && !e->oom;
+}
+
+bool session_image_write(const char *path, const engine *e, const char *model_path,
+                   const char *model_sha256, const char *binary_sha256,
+                   const float *logits, int n_prompt, int max_new,
+                   bool json_mode, bool ignore_eos, const char *schema_sha256,
+                   char sha_out[65]) {
+    session_meta mt;
+    memset(&mt, 0, sizeof mt);
+    if (model_sha256 && strlen(model_sha256) == 64) {
+        memcpy(mt.model_sha256, model_sha256, 65);
+    } else if (!envelope_file_sha256(model_path, mt.model_sha256)) {
+        fprintf(stderr, "error: session: cannot hash %s\n", model_path);
+        return false;
+    }
+    if (binary_sha256 && strlen(binary_sha256) == 64) {
+        memcpy(mt.binary_sha256, binary_sha256, 65);
+    } else {
+        char *exe = plat_executable_path();
+        if (exe) envelope_file_sha256(exe, mt.binary_sha256);
+        free(exe);
+    }
+    if (schema_sha256 && *schema_sha256)
+        snprintf(mt.schema_sha256, sizeof mt.schema_sha256, "%s", schema_sha256);
+    const model_t *m = e->m;
+    mt.model_key = e->model_key;
+    mt.n_ctx = m->n_ctx;
+    snprintf(mt.kv_type, sizeof mt.kv_type, "%s",
+             m->kv_fp4 ? "fp4" : m->kv_split ? "k8v4" : m->kv_q8 ? "q8" : "f16");
+    mt.n_prompt = n_prompt;
+    mt.n_tokens = e->pos;
+    mt.max_new = max_new;
+    mt.generated = e->gen_count;
+    mt.temp = e->smp->temp; mt.top_k = e->smp->top_k; mt.top_p = e->smp->top_p;
+    mt.min_p = e->smp->min_p; mt.repeat_penalty = e->smp->repeat_penalty;
+    // A greedy generation never draws from the rng, and an unseeded run's
+    // rng is the wall clock: recorded, it made two images of the same greedy
+    // state differ whenever the runs straddled a second. The image holds no
+    // timestamp, so a state that does not include the rng does not carry it.
+    mt.rng = e->smp->temp > 0 ? e->smp->rng : 0;
+    mt.json_mode = json_mode;
+    mt.ignore_eos = ignore_eos;
+    return session_write(path, e, &mt, logits, m->n_vocab, sha_out);
+}
+
+
+static char g_sessions_dir[1024];
+
+bool sessions_configure(const char *dir) {
+    if (!dir || !*dir || strlen(dir) >= sizeof g_sessions_dir - 80) {
+        fprintf(stderr, "error: --sessions: a directory path is needed\n");
+        return false;
+    }
+#ifdef _WIN32
+    if (_mkdir(dir) != 0 && errno != EEXIST) {
+#else
+    if (mkdir(dir, 0700) != 0 && errno != EEXIST) {
+#endif
+        fprintf(stderr, "error: --sessions %s: %s\n", dir, strerror(errno));
+        return false;
+    }
+    snprintf(g_sessions_dir, sizeof g_sessions_dir, "%s", dir);
+    return true;
+}
+
+const char *sessions_dir(void) {
+    return g_sessions_dir[0] ? g_sessions_dir : NULL;
 }

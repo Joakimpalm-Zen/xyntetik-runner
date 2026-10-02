@@ -2,7 +2,7 @@
   "schema_version": "xyntetik.runner.gold-logits.v1",
   "summary": {
     "positions": 99,
-    "hf": "/home/lab/workspace/hf/granite-4.2-3b",
+    "hf": "hf/granite-4.2-3b",
     "corpus": "tests/fixtures/mixed-corpus.txt",
     "sides": {
       "a": {

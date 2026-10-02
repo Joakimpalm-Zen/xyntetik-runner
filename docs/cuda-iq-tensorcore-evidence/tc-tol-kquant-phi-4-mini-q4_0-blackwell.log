@@ -19,7 +19,7 @@ rope: phi3 LongRoPE short factors, mscale 1.1902
 gpu-split: budget=25.13GB fixed=0.92GB G=32/32 full=1 used=3.27GB
 gpu: CUDA backend on NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb (2.2 GB weights in VRAM)
 gpu: VRAM 22.38 GB free of 25.37 GB after init (kv 0.54 GB + scratch 0.03 GB this instance)
-tc-tol: /home/lab/workspace/models/Phi-4-mini-instruct-q4_0/Phi-4-mini-instruct-q4_0.gguf | 192 tokens, 64 teacher-forced positions
+tc-tol: models/Phi-4-mini-instruct-q4_0/Phi-4-mini-instruct-q4_0.gguf | 192 tokens, 64 teacher-forced positions
   scalar-b64   TC dispatches: none
   scalar-b16   TC dispatches: none
   tc-b64       TC dispatches: Q4_0=448

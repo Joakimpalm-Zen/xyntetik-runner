@@ -1,5 +1,5 @@
 {
- "model": "C:\\Users\\zen\\models\\Qwen3.8-27B-GSQ-RCO-IQ3_S-recovered.gguf",
+ "model": "~\\models\\Qwen3.8-27B-GSQ-RCO-IQ3_S-recovered.gguf",
  "tokens": 32,
  "context": 2048,
  "routing": "eager",

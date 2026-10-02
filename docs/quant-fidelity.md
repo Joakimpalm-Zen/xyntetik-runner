@@ -201,13 +201,18 @@ Reference Q8_0, 16 agent-torture requests at temperature 0, zero-point
 self-check PASSED (two independent reference spawns agreed on every tool
 call at 0 KLD before anything was measured).
 
-| variant | schema conformance | tool selection | argument agreement | mean KLD |
-|---|---:|---:|---:|---:|
-| q8_0 (reference) | 100.0% | 100.0% | 100.0% | 0 |
-| q6_k | 100.0% | 100.0% | 64.3% | 0.0129 |
-| q5_k_m | 100.0% | 100.0% | 57.1% | 0.0327 |
-| q4_k_m | 100.0% | 100.0% | 57.1% | 0.1271 |
-| q4_0 | 100.0% | 100.0% | 50.0% | 0.1398 |
+| variant | schema conformance | tool selection | argument agreement | margin-qualified top-1 | mean KLD |
+|---|---:|---:|---:|---:|---:|
+| q8_0 (reference) | 100.0% | 100.0% | 100.0% | not measured | 0 |
+| q6_k | 100.0% | 100.0% | 64.3% | not measured | 0.0129 |
+| q5_k_m | 100.0% | 100.0% | 57.1% | not measured | 0.0327 |
+| q4_k_m | 100.0% | 100.0% | 57.1% | not measured | 0.1271 |
+| q4_0 | 100.0% | 100.0% | 50.0% | not measured | 0.1398 |
+
+The KLD column of the two tool ladders is over the tool requests alone and
+the run recorded no margin-qualified figure, so it is a shape reading, not a
+fidelity claim; the whole-model fidelity rows are the size-threshold table
+below.
 
 The finding this table carries: **constrained decoding guarantees the
 shape of a tool call at any quantization, not its contents.** Schema
@@ -222,13 +227,13 @@ raw scratch report is not distributed with this public repository.
 Hermes-4-14B (bartowski's ladder, all hashes verified against the source repo),
 same harness, zero point PASSED:
 
-| variant | schema conformance | tool selection | argument agreement | mean KLD |
-|---|---|---|---|---|
-| q8_0 (reference) | 100.0% | 100.0% | 100.0% | 0 |
-| q6_k | **100.0%** | **100.0%** | 78.6% | 0.0155 |
-| q5_k_m | **100.0%** | **100.0%** | 78.6% | 0.0131 |
-| q4_k_m | **100.0%** | **100.0%** | 64.3% | 0.0205 |
-| q4_0 | **100.0%** | **100.0%** | 50.0% | 0.2775 |
+| variant | schema conformance | tool selection | argument agreement | margin-qualified top-1 | mean KLD |
+|---|---|---|---|---|---|
+| q8_0 (reference) | 100.0% | 100.0% | 100.0% | not measured | 0 |
+| q6_k | **100.0%** | **100.0%** | 78.6% | not measured | 0.0155 |
+| q5_k_m | **100.0%** | **100.0%** | 78.6% | not measured | 0.0131 |
+| q4_k_m | **100.0%** | **100.0%** | 64.3% | not measured | 0.0205 |
+| q4_0 | **100.0%** | **100.0%** | 50.0% | not measured | 0.2775 |
 
 The split holds on a second model family and gets sharper at 14B: shape and
 function choice survive every rung including legacy Q4_0, argument content
@@ -240,15 +245,16 @@ it emits is still schema-valid and still routed to the right function.
 ### unshippable" suggested
 
 Same bar (margin-qualified top-1 >= 97% AND mean KLD <= 0.05), same protocol,
-400 positions, each variant against its own Q8_0:
+400 positions, each variant against its own Q8_0 (gemma-4-E2B against its
+BF16):
 
-| model at Q4_K_M | params | mean KLD | verdict |
-|---|---|---|---|
-| gemma-4-E2B | ~5B (MoE, 2B active) | 0.3624 | FAIL |
-| granite-4.1-3b | 3B | 0.1376 | FAIL |
-| Phi-4-mini | 3.8B | 0.1258 | FAIL |
-| **Qwen3-8B** | **8B** | **0.0419** | **PASS** |
-| **Hermes-4-14B** | **14B** | **0.0279** | **PASS** |
+| model at Q4_K_M | params | margin-qualified top-1 | mean KLD | verdict |
+|---|---|---|---|---|
+| gemma-4-E2B | ~5B (MoE, 2B active) | 85.00% | 0.3624 | FAIL |
+| granite-4.1-3b | 3B | 93.00% | 0.1376 | FAIL |
+| Phi-4-mini | 3.8B | 96.50% | 0.1258 | FAIL |
+| **Qwen3-8B** | **8B** | **100.00%** | **0.0419** | **PASS** |
+| **Hermes-4-14B** | **14B** | **99.75%** | **0.0279** | **PASS** |
 
 Monotone in parameter count, with the crossover between roughly 4B and 8B. The
 usable rule is therefore not "never ship 4-bit" but **4-bit k-quants are viable

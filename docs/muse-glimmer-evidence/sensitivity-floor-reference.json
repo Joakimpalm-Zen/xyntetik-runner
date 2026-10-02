@@ -1,6 +1,6 @@
 {
   "schema_version": "xyntetik.runner.sensitivity-floor.v1",
-  "model": "/home/lab/workspace/Gridcore/muse-glimmer/muse-glimmer-30B-kquant-17gb.gguf",
+  "model": "Gridcore/muse-glimmer/muse-glimmer-30B-kquant-17gb.gguf",
   "mode": "llama.cpp cold-cache vs warm-cache",
   "tokens_per_prompt": 64,
   "prompts": 16,

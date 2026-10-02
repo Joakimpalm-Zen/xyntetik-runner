@@ -1,7 +1,7 @@
 gpu-split: budget=9.55GB fixed=1.71GB G=22/64 full=0 used=9.47GB
 gpu: CUDA backend on NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb (22/64 layers, 6.6 GB in VRAM; CPU runs the rest)
 gpu: VRAM 2.25 GB free of 25.37 GB after init (kv 0.18 GB + scratch 0.46 GB this instance)
-loaded /home/lab/workspace/models/qwen3.8/Qwen3.8-27B-Q4_0.gguf | qwen35 | 64 layers | ctx 2048 | 32 threads | 0.80s
+loaded models/qwen3.8/Qwen3.8-27B-Q4_0.gguf | qwen35 | 64 layers | ctx 2048 | 32 threads | 0.80s
 mtp: 1 predictor block(s) declared, excluded from the backbone; not consumed (pass --mtp to draft from it)
 sampling: qwen3 (temp 0.60, top_p 0.95, top_k 20, min_p 0.00, repeat_penalty 1.00)
 server listening on http://127.0.0.1:50965 — 1 slot x 32 threads

@@ -13,7 +13,7 @@ gpu: VRAM 7.24 GB free of 8.59 GB after init (kv 0.09 GB + scratch 0.01 GB this 
 gpu-split: budget=7.46GB fixed=0.58GB G=30/30 full=1 used=0.75GB
 gpu: CUDA backend on NVIDIA GeForce RTX 3070 (0.1 GB weights in VRAM)
 gpu: VRAM 7.24 GB free of 8.59 GB after init (kv 0.09 GB + scratch 0.01 GB this instance)
-tc-tol: C:/Users/zen/SmolLM2-135M-Instruct-Q4_K_M.gguf | 192 tokens, 64 teacher-forced positions
+tc-tol: ~/SmolLM2-135M-Instruct-Q4_K_M.gguf | 192 tokens, 64 teacher-forced positions
   scalar-b64   TC dispatches: none
   scalar-b16   TC dispatches: none
   tc-b64       TC dispatches: Q8_0=28 Q4_K=32 Q6_K=28

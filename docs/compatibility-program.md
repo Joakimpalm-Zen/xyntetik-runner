@@ -34,7 +34,7 @@ were SHA-pinned into the manifest and evidenced:
 `eu-roster-checks-2026-07-29.json` (cpu_cuda / tokenizer / chat / tool,
 with `not_executed` recorded where a check could not run) and
 `reference-<family>.json` (the 8-token greedy sweep vs pinned b10076 — the
-reference binary lives at `/home/lab/agent-torture-tools/llama/llama-b10076`
+reference binary lives at `~/agent-torture-tools/llama/llama-b10076`
 on the dev box, and a CPU-only build of the pinned source is reproducible
 from the workspace checkout). Findings worth naming: Lucie's tokenizer
 diverges on 259/721 corpus strings — **root-caused to the GGUF conversion,

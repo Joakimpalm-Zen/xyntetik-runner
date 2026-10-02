@@ -225,5 +225,54 @@ class CertifyEnvelopeTests(unittest.TestCase):
             self.assertNotEqual(tc.get("gate"), "pass")
 
 
+    def test_serving_guidance_sets_the_preset_beside_the_publisher(self):
+        """R6.7.3: the manifest records the preset a request without sampling
+        fields is served with, the publisher's guidance for the family, and
+        the knobs where they differ. Reported only: the verdict is unchanged."""
+        plain = self._run()
+        g = plain["serving_guidance"]
+        self.assertEqual(g["preset"]["name"], "generic")   # the fixture names no family
+        self.assertIsNone(g["publisher"])
+        self.assertIsNone(g["differs"])
+        named = self._run("--serving-guidance-family", "apertus")
+        g = named["serving_guidance"]
+        self.assertEqual(g["publisher"]["family"], "apertus")
+        self.assertEqual(g["publisher"]["source"], "swiss-ai/Apertus-8B-Instruct-2509")
+        # the card says temperature 0.8 and top_p 0.9; generic serves 0.8 and
+        # 0.95, and the card names neither top_k nor min_p
+        self.assertEqual(g["differs"], ["top_p"])
+        self.assertEqual(named["verdict"], plain["verdict"])
+
+
+class ServingGuidanceTable(unittest.TestCase):
+    """Every runner preset that cites a publisher agrees with what
+    docs/serving-guidance.json recorded from that publisher."""
+
+    def test_presets_agree_with_the_recorded_publishers(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("certify", SCRIPT)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        if not os.path.exists(RUNNER):
+            self.skipTest("needs a built runner")
+        caps = mod.runner_caps(RUNNER)
+        families = json.loads(open(mod.GUIDANCE).read())["families"]
+        checked = []
+        for p in caps["sampling_presets"]:
+            if p["name"] not in families:
+                continue
+            g = mod.serving_guidance(caps, {"sampling_preset": p["name"]})
+            checked.append(p["name"])
+            # mistral serves the Mistral API default 0.7 where the v0.3
+            # card's example runs 0.0 (sample.c); a departure is listed
+            # here so that a new one is a decision, not drift
+            allowed = {"mistral": ["temperature"]}
+            self.assertEqual(g["differs"], allowed.get(p["name"], []),
+                             (p["name"], g))
+        for name in ("qwen3", "qwen35", "qwen35-nothink", "nemotron", "apertus",
+                     "gemma4", "granite42"):
+            self.assertIn(name, checked)
+
+
 if __name__ == "__main__":
     unittest.main()

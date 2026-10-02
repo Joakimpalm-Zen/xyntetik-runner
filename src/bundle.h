@@ -40,4 +40,25 @@ int bundle_export(const bundle_opts *o);
 // when set, is the public key the manifest's signature must be made with.
 int bundle_check(const char *dir, const char *trust_hex);
 
+// Evidence packs (R1.6.1): every receipt-*.json of a receipts directory (one
+// model, one binary, one envelope), the model signature and key, the
+// envelope manifest the receipts name by digest, and opaque attachments
+// (oversight records, a tool cassette), under a
+// xyntetik.runner.evidence-pack.v1 manifest with one inference per receipt,
+// its id the receipt's chain hash, and whether the receipts form one
+// unbroken chain segment. pack_check verifies it offline like bundle_check.
+#define PACK_MAX_ATTACH 16
+typedef struct {
+    const char *receipts_dir;
+    const char *out_dir;
+    const char *model_sig, *model_pubkey;
+    const char *envelope;      // the <model>.envelope.json the receipts name
+    const char *attach[PACK_MAX_ATTACH];
+    int n_attach;
+    const char *sign_key;
+} pack_opts;
+
+int pack_export(const pack_opts *o);
+int pack_check(const char *dir, const char *trust_hex);
+
 #endif

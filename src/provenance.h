@@ -61,6 +61,9 @@ uint64_t provenance_load_generation(bool *is_resident);
 // guess either way.
 enum { PROV_EXPECT_OK = 0, PROV_EXPECT_MISMATCH, PROV_EXPECT_UNKNOWN };
 int provenance_expect(uint64_t want_generation, const char *want_sha256);
+// The measured-envelope verdict (enum envelope_state) the resident model was
+// loaded under, for a receipt (R1.1.5). False when nothing is resident.
+bool provenance_envelope_state(int *state);
 // Append `"build":{...},"model":{...}|null,"adapter":{...}|null` to b.
 // `model_id` is the id the server answers to for the resident model; it is
 // the caller's, because a registry name is chosen after the load.

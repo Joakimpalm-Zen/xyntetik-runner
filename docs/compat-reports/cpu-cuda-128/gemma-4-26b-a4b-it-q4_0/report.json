@@ -1,5 +1,5 @@
 {
- "model": "/home/lab/workspace/models/gemma-4-26B-A4B-it-Q4_0/gemma-4-26B-A4B-it-Q4_0.gguf",
+ "model": "models/gemma-4-26B-A4B-it-Q4_0/gemma-4-26B-A4B-it-Q4_0.gguf",
  "tokens": 128,
  "context": 2048,
  "routing": "eager",

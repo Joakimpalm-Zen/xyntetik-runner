@@ -24,7 +24,7 @@
           "status": "pass",
           "returncode": 0,
           "elapsed_ms": 126.6,
-          "stderr_tail": "loaded /home/lab/workspace/models/granite-4.2/granite-4.2-3b-Q4_K_M.gguf | granite | 40 layers | ctx 4096 | 32 threads | 0.01s\nsampling: generic (temp 0.00 \u2014 greedy argmax; top_p/top_k/min_p/repeat_penalty inactive)\n\nprompt: 3 tok, 37.19 tok/s | gen: 1 tok, 36.52 tok/s\n"
+          "stderr_tail": "loaded models/granite-4.2/granite-4.2-3b-Q4_K_M.gguf | granite | 40 layers | ctx 4096 | 32 threads | 0.01s\nsampling: generic (temp 0.00 \u2014 greedy argmax; top_p/top_k/min_p/repeat_penalty inactive)\n\nprompt: 3 tok, 37.19 tok/s | gen: 1 tok, 36.52 tok/s\n"
         },
         "tokenizer": {
           "status": "pass",

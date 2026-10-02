@@ -2,7 +2,7 @@
   "schema_version": "xyntetik.runner.gold-logits.v1",
   "summary": {
     "positions": 99,
-    "hf": "/home/lab/workspace/hf/trinity-nano",
+    "hf": "hf/trinity-nano",
     "corpus": "tests/fixtures/mixed-corpus.txt",
     "reference_class": "AfmoeForCausalLM",
     "special_prefix_tokens": 1,

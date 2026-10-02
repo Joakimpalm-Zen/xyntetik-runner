@@ -2,7 +2,7 @@
   "schema_version": "xyntetik.runner.gold-logits.v1",
   "summary": {
     "positions": 100,
-    "hf": "/home/lab/workspace/hf/mistral-7b-v0.3",
+    "hf": "hf/mistral-7b-v0.3",
     "corpus": "tests/fixtures/mixed-corpus.txt",
     "reference_class": "MistralForCausalLM",
     "special_prefix_tokens": 1,

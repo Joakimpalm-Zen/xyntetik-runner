@@ -6,7 +6,7 @@
  "platform": "Linux-6.12.0-211.16.1.el10_2.x86_64-x86_64-with-glibc2.39",
  "base_url": "http://127.0.0.1:8093",
  "model": "Qwen3.8-27B-GSQ-RCO-IQ3_S-recovered.gguf",
- "model_file": "/home/lab/workspace/models/Qwen3.8-27B-GSQ-RCO-IQ3_S-recovered/Qwen3.8-27B-GSQ-RCO-IQ3_S-recovered.gguf",
+ "model_file": "models/Qwen3.8-27B-GSQ-RCO-IQ3_S-recovered/Qwen3.8-27B-GSQ-RCO-IQ3_S-recovered.gguf",
  "model_sha256": "873df48dd3ecf205f73c29716e80fbe766e4202ef4ed394b2c24607a8628458f",
  "runner": "./runner",
  "runner_sha256": "c1ec9b591378586143389468296a797f265c2dccbd3eb9fdf7c2bf6bca64dafb",

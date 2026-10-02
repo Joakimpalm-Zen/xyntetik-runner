@@ -6,7 +6,7 @@
  "platform": "Linux-6.12.0-211.16.1.el10_2.x86_64-x86_64-with-glibc2.39",
  "base_url": "http://127.0.0.1:8099",
  "model": "Qwen3-4B-Q4_K_M.gguf",
- "model_file": "/home/lab/workspace/models/Qwen3-4B-Q4_K_M/Qwen3-4B-Q4_K_M.gguf",
+ "model_file": "models/Qwen3-4B-Q4_K_M/Qwen3-4B-Q4_K_M.gguf",
  "model_sha256": "7485fe6f11af29433bc51cab58009521f205840f5b4ae3a32fa7f92e8534fdf5",
  "runner": "./runner",
  "runner_version": "runner 0.5.3",
@@ -35,7 +35,7 @@
    "reason": null,
    "wall_s": 83.3,
    "command": [
-    "/home/lab/.opencode/bin/opencode",
+    "~/.opencode/bin/opencode",
     "run",
     "--model",
     "runner/Qwen3-4B-Q4_K_M.gguf",
@@ -53,7 +53,7 @@
    "reason": null,
    "wall_s": 261.8,
    "command": [
-    "/home/lab/.nvm/versions/node/v22.22.3/bin/claude",
+    "~/.nvm/versions/node/v22.22.3/bin/claude",
     "-p",
     "--model",
     "Qwen3-4B-Q4_K_M.gguf",
@@ -73,7 +73,7 @@
    "reason": null,
    "wall_s": 113.4,
    "command": [
-    "/home/lab/.nvm/versions/node/v22.22.3/bin/codex",
+    "~/.nvm/versions/node/v22.22.3/bin/codex",
     "exec",
     "--dangerously-bypass-approvals-and-sandbox",
     "--skip-git-repo-check",
@@ -93,7 +93,7 @@
    "reason": null,
    "wall_s": 23.0,
    "command": [
-    "/home/lab/.nvm/versions/node/v22.22.3/bin/cn",
+    "~/.nvm/versions/node/v22.22.3/bin/cn",
     "-p",
     "--auto",
     "--config",
@@ -112,7 +112,7 @@
    "reason": null,
    "wall_s": 65.7,
    "command": [
-    "/home/lab/.nvm/versions/node/v22.22.3/bin/cline",
+    "~/.nvm/versions/node/v22.22.3/bin/cline",
     "Read the file sentinel.txt in the current directory with your tools and reply with the code word it contains, in one sentence.",
     "--config",
     "/tmp/agent-sweep-cline-tvg2dx5f/home/.cline",
@@ -139,7 +139,7 @@
    "reason": null,
    "wall_s": 12.2,
    "command": [
-    "/home/lab/.nvm/versions/node/v22.22.3/bin/pi",
+    "~/.nvm/versions/node/v22.22.3/bin/pi",
     "-p",
     "--no-session",
     "--no-context-files",
@@ -161,7 +161,7 @@
    "reason": null,
    "wall_s": 5.0,
    "command": [
-    "/home/lab/.local/bin/aider",
+    "~/.local/bin/aider",
     "--model",
     "openai/Qwen3-4B-Q4_K_M.gguf",
     "--no-git",

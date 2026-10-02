@@ -1,5 +1,5 @@
 {
- "model": "/home/lab/workspace/models/granite-4.1-8b-Q4_0/granite-4.1-8b-Q4_0.gguf",
+ "model": "models/granite-4.1-8b-Q4_0/granite-4.1-8b-Q4_0.gguf",
  "tokens": 128,
  "context": 2048,
  "routing": "eager",

@@ -10,7 +10,7 @@
     "version": null
   },
   "reference": {
-    "path": "/home/lab/workspace/Old-archive/Gridcore/llama.cpp-b10353/build-static/bin/llama-server",
+    "path": "Old-archive/Gridcore/llama.cpp-b10353/build-static/bin/llama-server",
     "version": "version: 1 (f8def7f)"
   },
   "models": [
@@ -24,14 +24,14 @@
           "status": "pass",
           "returncode": 0,
           "elapsed_ms": 961.8,
-          "stderr_tail": "rope: using model frequency factors (rope_freqs.weight)\ngpu-split: budget=25.13GB fixed=0.89GB G=28/28 full=1 used=3.05GB\ngpu: CUDA backend on NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb (2.0 GB weights in VRAM)\ngpu: VRAM 22.60 GB free of 25.37 GB after init (kv 0.47 GB + scratch 0.03 GB this instance)\nloaded /home/lab/workspace/models/Llama-3.2-3B-Instruct-Q4_K_M/Llama-3.2-3B-Instruct-Q4_K_M.gguf | llama | 28 layers | ctx 4096 | 64 threads | 0.73s\nsampling: llama3 (temp 0.00 \u2014 greedy argmax; top_p/top_k/min_p/repeat_penalty inactive)\n\nprompt: 3 tok, 51.25 tok/s | gen: 1 tok, 116.71 tok/s\n"
+          "stderr_tail": "rope: using model frequency factors (rope_freqs.weight)\ngpu-split: budget=25.13GB fixed=0.89GB G=28/28 full=1 used=3.05GB\ngpu: CUDA backend on NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb (2.0 GB weights in VRAM)\ngpu: VRAM 22.60 GB free of 25.37 GB after init (kv 0.47 GB + scratch 0.03 GB this instance)\nloaded models/Llama-3.2-3B-Instruct-Q4_K_M/Llama-3.2-3B-Instruct-Q4_K_M.gguf | llama | 28 layers | ctx 4096 | 64 threads | 0.73s\nsampling: llama3 (temp 0.00 \u2014 greedy argmax; top_p/top_k/min_p/repeat_penalty inactive)\n\nprompt: 3 tok, 51.25 tok/s | gen: 1 tok, 116.71 tok/s\n"
         },
         "tokenizer": {
           "status": "not_executed",
           "returncode": 1,
           "elapsed_ms": 1991.4,
           "stdout_tail": "",
-          "stderr_tail": "hf_hub_download_to_cache_dir\n    _raise_on_head_call_error(head_call_error, force_download, local_files_only)\n    ~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/lab/.conda/envs/ccbuild/lib/python3.14/site-packages/huggingface_hub/file_download.py\", line 1864, in _raise_on_head_call_error\n    raise head_call_error\n  File \"/home/lab/.conda/envs/ccbuild/lib/python3.14/site-packages/huggingface_hub/file_download.py\", line 1707, in _get_metadata_or_catch_error\n    metadata = get_hf_file_metadata(\n        url=url,\n    ...<4 lines>...\n        retry_on_errors=retry_on_errors,\n    )\n  File \"/home/lab/.conda/envs/ccbuild/lib/python3.14/site-packages/huggingface_hub/utils/_validators.py\", line 88, in _inner_fn\n    return fn(*args, **kwargs)\n  File \"/home/lab/.conda/envs/ccbuild/lib/python3.14/site-packages/huggingface_hub/file_download.py\", line 1615, in get_hf_file_metadata\n    response = _httpx_follow_relative_redirects_with_backoff(\n        method=\"HEAD\", url=url, headers=hf_headers, timeout=timeout, retry_on_errors=retry_on_errors\n    )\n  File \"/home/lab/.conda/envs/ccbuild/lib/python3.14/site-packages/huggingface_hub/utils/_http.py\", line 726, in _httpx_follow_relative_redirects_with_backoff\n    hf_raise_for_status(response)\n    ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^\n  File \"/home/lab/.conda/envs/ccbuild/lib/python3.14/site-packages/huggingface_hub/utils/_http.py\", line 821, in hf_raise_for_status\n    raise _format(GatedRepoError, message, response, repo_type=repo_type, repo_id=repo_id) from e\nhuggingface_hub.errors.GatedRepoError: 403 Client Error. (Request ID: Root=1-6a7c9550-6f7628e54fff68ee01c0fff4;b8b24cad-ae26-4722-8286-c6bcdcc860c6)\n\nCannot access gated repo for url https://huggingface.co/meta-llama/Llama-3.2-3B-Instruct/resolve/main/tokenizer.json.\nAccess to model meta-llama/Llama-3.2-3B-Instruct is restricted and you are not in the authorized list. Visit https://huggingface.co/meta-llama/Llama-3.2-3B-Instruct to ask for access.\n",
+          "stderr_tail": "hf_hub_download_to_cache_dir\n    _raise_on_head_call_error(head_call_error, force_download, local_files_only)\n    ~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"~/.conda/envs/ccbuild/lib/python3.14/site-packages/huggingface_hub/file_download.py\", line 1864, in _raise_on_head_call_error\n    raise head_call_error\n  File \"~/.conda/envs/ccbuild/lib/python3.14/site-packages/huggingface_hub/file_download.py\", line 1707, in _get_metadata_or_catch_error\n    metadata = get_hf_file_metadata(\n        url=url,\n    ...<4 lines>...\n        retry_on_errors=retry_on_errors,\n    )\n  File \"~/.conda/envs/ccbuild/lib/python3.14/site-packages/huggingface_hub/utils/_validators.py\", line 88, in _inner_fn\n    return fn(*args, **kwargs)\n  File \"~/.conda/envs/ccbuild/lib/python3.14/site-packages/huggingface_hub/file_download.py\", line 1615, in get_hf_file_metadata\n    response = _httpx_follow_relative_redirects_with_backoff(\n        method=\"HEAD\", url=url, headers=hf_headers, timeout=timeout, retry_on_errors=retry_on_errors\n    )\n  File \"~/.conda/envs/ccbuild/lib/python3.14/site-packages/huggingface_hub/utils/_http.py\", line 726, in _httpx_follow_relative_redirects_with_backoff\n    hf_raise_for_status(response)\n    ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^\n  File \"~/.conda/envs/ccbuild/lib/python3.14/site-packages/huggingface_hub/utils/_http.py\", line 821, in hf_raise_for_status\n    raise _format(GatedRepoError, message, response, repo_type=repo_type, repo_id=repo_id) from e\nhuggingface_hub.errors.GatedRepoError: 403 Client Error. (Request ID: Root=1-6a7c9550-6f7628e54fff68ee01c0fff4;b8b24cad-ae26-4722-8286-c6bcdcc860c6)\n\nCannot access gated repo for url https://huggingface.co/meta-llama/Llama-3.2-3B-Instruct/resolve/main/tokenizer.json.\nAccess to model meta-llama/Llama-3.2-3B-Instruct is restricted and you are not in the authorized list. Visit https://huggingface.co/meta-llama/Llama-3.2-3B-Instruct to ask for access.\n",
           "reason": "tokenizer_reference_unavailable"
         },
         "cpu_cuda": {
@@ -57,13 +57,13 @@
           "returncode": 0,
           "elapsed_ms": 9009.44,
           "scenario_matrix": "agent-torture",
-          "output_tail": "report: /home/lab/workspace/Xyntetik-runner/tests/torture/out/report.json\nraw: /home/lab/workspace/Xyntetik-runner/tests/torture/out/raw.jsonl\nruntime=runner requests=8 passed=8 failed=0\n"
+          "output_tail": "report: Xyntetik-runner/tests/torture/out/report.json\nraw: Xyntetik-runner/tests/torture/out/raw.jsonl\nruntime=runner requests=8 passed=8 failed=0\n"
         },
         "greedy_reference": {
           "status": "fail",
           "returncode": 1,
           "elapsed_ms": 6890.5,
-          "stdout_tail": "{\n  \"schema_version\": \"xyntetik.runner.greedy-reference.v1\",\n  \"generated_utc\": \"2026-08-12T15:47:07Z\",\n  \"runner\": \"runner 0.1.15-alpha\",\n  \"reference\": \"version: 1 (f8def7f)\",\n  \"model\": \"/home/lab/workspace/models/Llama-3.2-3B-Instruct-Q4_K_M/Llama-3.2-3B-Instruct-Q4_K_M.gguf\",\n  \"tokens\": 8,\n  \"comparison\": \"exact generated UTF-8 text from /v1/completions at temperature 0\",\n  \"comparisons\": [\n    {\n      \"prompt\": \"The capital of France is\",\n      \"runner\": \" Paris. The capital of Italy is Rome\",\n      \"reference\": \" Paris. The capital of Italy is Rome\",\n      \"status\": \"pass\"\n    },\n    {\n      \"prompt\": \"def fibonacci(n):\",\n      \"runner\": \"  # Function to generate Fibonacci sequence \",\n      \"reference\": \" \\n    if n <= 0:\",\n      \"status\": \"fail\"\n    },\n    {\n      \"prompt\": \"1 2 3 4 5 6 7 8\",\n      \"runner\": \" 9 10 11 12\",\n      \"reference\": \" 9 10 11 12\",\n      \"status\": \"pass\"\n    },\n    {\n      \"prompt\": \"Once upon a time, in a land far away,\",\n      \"runner\": \" there was a beautiful princess named Sophia.\",\n      \"reference\": \" there was a beautiful and powerful sorcer\",\n      \"status\": \"fail\"\n    },\n    {\n      \"prompt\": \"JSON example: {\\\"name\\\":\",\n      \"runner\": \" \\\"John\\\", \\\"age\\\": 30\",\n      \"reference\": \" \\\"John\\\", \\\"age\\\": 30\",\n      \"status\": \"pass\"\n    }\n  ],\n  \"totals\": {\n    \"passed\": 3,\n    \"failed\": 2\n  }\n}\n",
+          "stdout_tail": "{\n  \"schema_version\": \"xyntetik.runner.greedy-reference.v1\",\n  \"generated_utc\": \"2026-08-12T15:47:07Z\",\n  \"runner\": \"runner 0.1.15-alpha\",\n  \"reference\": \"version: 1 (f8def7f)\",\n  \"model\": \"models/Llama-3.2-3B-Instruct-Q4_K_M/Llama-3.2-3B-Instruct-Q4_K_M.gguf\",\n  \"tokens\": 8,\n  \"comparison\": \"exact generated UTF-8 text from /v1/completions at temperature 0\",\n  \"comparisons\": [\n    {\n      \"prompt\": \"The capital of France is\",\n      \"runner\": \" Paris. The capital of Italy is Rome\",\n      \"reference\": \" Paris. The capital of Italy is Rome\",\n      \"status\": \"pass\"\n    },\n    {\n      \"prompt\": \"def fibonacci(n):\",\n      \"runner\": \"  # Function to generate Fibonacci sequence \",\n      \"reference\": \" \\n    if n <= 0:\",\n      \"status\": \"fail\"\n    },\n    {\n      \"prompt\": \"1 2 3 4 5 6 7 8\",\n      \"runner\": \" 9 10 11 12\",\n      \"reference\": \" 9 10 11 12\",\n      \"status\": \"pass\"\n    },\n    {\n      \"prompt\": \"Once upon a time, in a land far away,\",\n      \"runner\": \" there was a beautiful princess named Sophia.\",\n      \"reference\": \" there was a beautiful and powerful sorcer\",\n      \"status\": \"fail\"\n    },\n    {\n      \"prompt\": \"JSON example: {\\\"name\\\":\",\n      \"runner\": \" \\\"John\\\", \\\"age\\\": 30\",\n      \"reference\": \" \\\"John\\\", \\\"age\\\": 30\",\n      \"status\": \"pass\"\n    }\n  ],\n  \"totals\": {\n    \"passed\": 3,\n    \"failed\": 2\n  }\n}\n",
           "stderr_tail": ""
         },
         "long_context": {
@@ -71,7 +71,7 @@
           "reason": "check_class_not_executable"
         }
       },
-      "resolved_file": "/home/lab/workspace/models/Llama-3.2-3B-Instruct-Q4_K_M/Llama-3.2-3B-Instruct-Q4_K_M.gguf",
+      "resolved_file": "models/Llama-3.2-3B-Instruct-Q4_K_M/Llama-3.2-3B-Instruct-Q4_K_M.gguf",
       "actual_sha256": "6c1a2b41161032677be168d354123594c0e6e67d2b9227c84f296ad037c728ff",
       "file_status": "pass",
       "complete": false
@@ -86,7 +86,7 @@
           "status": "pass",
           "returncode": 0,
           "elapsed_ms": 1181.5,
-          "stderr_tail": "gpu-split: budget=25.13GB fixed=0.66GB G=32/32 full=1 used=5.38GB\ngpu: CUDA backend on NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb (4.4 GB weights in VRAM)\ngpu: VRAM 20.16 GB free of 25.37 GB after init (kv 0.54 GB + scratch 0.05 GB this instance)\nloaded /home/lab/workspace/models/Mistral-7B-Instruct-v0.3-Q4_K_M/Mistral-7B-Instruct-v0.3-Q4_K_M.gguf | llama | 32 layers | ctx 4096 | 64 threads | 0.89s\nsampling: mistral (temp 0.00 \u2014 greedy argmax; top_p/top_k/min_p/repeat_penalty inactive)\n\nprompt: 6 tok, 47.43 tok/s | gen: 1 tok, 65.74 tok/s\n"
+          "stderr_tail": "gpu-split: budget=25.13GB fixed=0.66GB G=32/32 full=1 used=5.38GB\ngpu: CUDA backend on NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb (4.4 GB weights in VRAM)\ngpu: VRAM 20.16 GB free of 25.37 GB after init (kv 0.54 GB + scratch 0.05 GB this instance)\nloaded models/Mistral-7B-Instruct-v0.3-Q4_K_M/Mistral-7B-Instruct-v0.3-Q4_K_M.gguf | llama | 32 layers | ctx 4096 | 64 threads | 0.89s\nsampling: mistral (temp 0.00 \u2014 greedy argmax; top_p/top_k/min_p/repeat_penalty inactive)\n\nprompt: 6 tok, 47.43 tok/s | gen: 1 tok, 65.74 tok/s\n"
         },
         "tokenizer": {
           "status": "fail",
@@ -118,13 +118,13 @@
           "returncode": 0,
           "elapsed_ms": 26182.4,
           "scenario_matrix": "agent-torture",
-          "output_tail": "report: /home/lab/workspace/Xyntetik-runner/tests/torture/out/report.json\nraw: /home/lab/workspace/Xyntetik-runner/tests/torture/out/raw.jsonl\nruntime=runner requests=8 passed=8 failed=0\n"
+          "output_tail": "report: Xyntetik-runner/tests/torture/out/report.json\nraw: Xyntetik-runner/tests/torture/out/raw.jsonl\nruntime=runner requests=8 passed=8 failed=0\n"
         },
         "greedy_reference": {
           "status": "pass",
           "returncode": 0,
           "elapsed_ms": 8583.5,
-          "stdout_tail": "{\n  \"schema_version\": \"xyntetik.runner.greedy-reference.v1\",\n  \"generated_utc\": \"2026-08-12T15:49:08Z\",\n  \"runner\": \"runner 0.1.15-alpha\",\n  \"reference\": \"version: 1 (f8def7f)\",\n  \"model\": \"/home/lab/workspace/models/Mistral-7B-Instruct-v0.3-Q4_K_M/Mistral-7B-Instruct-v0.3-Q4_K_M.gguf\",\n  \"tokens\": 8,\n  \"comparison\": \"exact generated UTF-8 text from /v1/completions at temperature 0\",\n  \"comparisons\": [\n    {\n      \"prompt\": \"The capital of France is\",\n      \"runner\": \" Paris, but the largest city is Mar\",\n      \"reference\": \" Paris, but the largest city is Mar\",\n      \"status\": \"pass\"\n    },\n    {\n      \"prompt\": \"def fibonacci(n):\",\n      \"runner\": \"\\n    if n <= 0:\",\n      \"reference\": \"\\n    if n <= 0:\",\n      \"status\": \"pass\"\n    },\n    {\n      \"prompt\": \"1 2 3 4 5 6 7 8\",\n      \"runner\": \" 9 10 11\",\n      \"reference\": \" 9 10 11\",\n      \"status\": \"pass\"\n    },\n    {\n      \"prompt\": \"Once upon a time, in a land far away,\",\n      \"runner\": \" there was a young girl named Elsa\",\n      \"reference\": \" there was a young girl named Elsa\",\n      \"status\": \"pass\"\n    },\n    {\n      \"prompt\": \"JSON example: {\\\"name\\\":\",\n      \"runner\": \" \\\"John\\\", \\\"age\\\": 3\",\n      \"reference\": \" \\\"John\\\", \\\"age\\\": 3\",\n      \"status\": \"pass\"\n    }\n  ],\n  \"totals\": {\n    \"passed\": 5,\n    \"failed\": 0\n  }\n}\n",
+          "stdout_tail": "{\n  \"schema_version\": \"xyntetik.runner.greedy-reference.v1\",\n  \"generated_utc\": \"2026-08-12T15:49:08Z\",\n  \"runner\": \"runner 0.1.15-alpha\",\n  \"reference\": \"version: 1 (f8def7f)\",\n  \"model\": \"models/Mistral-7B-Instruct-v0.3-Q4_K_M/Mistral-7B-Instruct-v0.3-Q4_K_M.gguf\",\n  \"tokens\": 8,\n  \"comparison\": \"exact generated UTF-8 text from /v1/completions at temperature 0\",\n  \"comparisons\": [\n    {\n      \"prompt\": \"The capital of France is\",\n      \"runner\": \" Paris, but the largest city is Mar\",\n      \"reference\": \" Paris, but the largest city is Mar\",\n      \"status\": \"pass\"\n    },\n    {\n      \"prompt\": \"def fibonacci(n):\",\n      \"runner\": \"\\n    if n <= 0:\",\n      \"reference\": \"\\n    if n <= 0:\",\n      \"status\": \"pass\"\n    },\n    {\n      \"prompt\": \"1 2 3 4 5 6 7 8\",\n      \"runner\": \" 9 10 11\",\n      \"reference\": \" 9 10 11\",\n      \"status\": \"pass\"\n    },\n    {\n      \"prompt\": \"Once upon a time, in a land far away,\",\n      \"runner\": \" there was a young girl named Elsa\",\n      \"reference\": \" there was a young girl named Elsa\",\n      \"status\": \"pass\"\n    },\n    {\n      \"prompt\": \"JSON example: {\\\"name\\\":\",\n      \"runner\": \" \\\"John\\\", \\\"age\\\": 3\",\n      \"reference\": \" \\\"John\\\", \\\"age\\\": 3\",\n      \"status\": \"pass\"\n    }\n  ],\n  \"totals\": {\n    \"passed\": 5,\n    \"failed\": 0\n  }\n}\n",
           "stderr_tail": ""
         },
         "long_context": {
@@ -132,7 +132,7 @@
           "reason": "check_class_not_executable"
         }
       },
-      "resolved_file": "/home/lab/workspace/models/Mistral-7B-Instruct-v0.3-Q4_K_M/Mistral-7B-Instruct-v0.3-Q4_K_M.gguf",
+      "resolved_file": "models/Mistral-7B-Instruct-v0.3-Q4_K_M/Mistral-7B-Instruct-v0.3-Q4_K_M.gguf",
       "actual_sha256": "1270d22c0fbb3d092fb725d4d96c457b7b687a5f5a715abe1e818da303e562b6",
       "file_status": "pass",
       "complete": false
@@ -147,7 +147,7 @@
           "status": "pass",
           "returncode": 0,
           "elapsed_ms": 13139.6,
-          "stderr_tail": "gpu-split: budget=25.13GB fixed=0.94GB G=64/64 full=1 used=15.42GB\ngpu: CUDA backend on NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb (14.4 GB weights in VRAM)\ngpu: VRAM 9.58 GB free of 25.37 GB after init (kv 1.07 GB + scratch 0.06 GB this instance)\nloaded /home/lab/workspace/models/Qwen2.5-32B-Instruct-Q3_K_S/Qwen2.5-32B-Instruct-Q3_K_S.gguf | qwen2 | 64 layers | ctx 4096 | 64 threads | 1.55s\nsampling: qwen2.5 (temp 0.00 \u2014 greedy argmax; top_p/top_k/min_p/repeat_penalty inactive)\n\nprompt: 3 tok, 0.27 tok/s | gen: 1 tok, 2.99 tok/s\n"
+          "stderr_tail": "gpu-split: budget=25.13GB fixed=0.94GB G=64/64 full=1 used=15.42GB\ngpu: CUDA backend on NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb (14.4 GB weights in VRAM)\ngpu: VRAM 9.58 GB free of 25.37 GB after init (kv 1.07 GB + scratch 0.06 GB this instance)\nloaded models/Qwen2.5-32B-Instruct-Q3_K_S/Qwen2.5-32B-Instruct-Q3_K_S.gguf | qwen2 | 64 layers | ctx 4096 | 64 threads | 1.55s\nsampling: qwen2.5 (temp 0.00 \u2014 greedy argmax; top_p/top_k/min_p/repeat_penalty inactive)\n\nprompt: 3 tok, 0.27 tok/s | gen: 1 tok, 2.99 tok/s\n"
         },
         "tokenizer": {
           "status": "pass",
@@ -173,13 +173,13 @@
           "returncode": 0,
           "elapsed_ms": 179250.57,
           "scenario_matrix": "agent-torture",
-          "output_tail": "report: /home/lab/workspace/Xyntetik-runner/tests/torture/out/report.json\nraw: /home/lab/workspace/Xyntetik-runner/tests/torture/out/raw.jsonl\nruntime=runner requests=8 passed=8 failed=0\n"
+          "output_tail": "report: Xyntetik-runner/tests/torture/out/report.json\nraw: Xyntetik-runner/tests/torture/out/raw.jsonl\nruntime=runner requests=8 passed=8 failed=0\n"
         },
         "greedy_reference": {
           "status": "pass",
           "returncode": 0,
           "elapsed_ms": 31083.5,
-          "stdout_tail": "{\n  \"schema_version\": \"xyntetik.runner.greedy-reference.v1\",\n  \"generated_utc\": \"2026-08-12T15:59:54Z\",\n  \"runner\": \"runner 0.1.15-alpha\",\n  \"reference\": \"version: 1 (f8def7f)\",\n  \"model\": \"/home/lab/workspace/models/Qwen2.5-32B-Instruct-Q3_K_S/Qwen2.5-32B-Instruct-Q3_K_S.gguf\",\n  \"tokens\": 8,\n  \"comparison\": \"exact generated UTF-8 text from /v1/completions at temperature 0\",\n  \"comparisons\": [\n    {\n      \"prompt\": \"The capital of France is\",\n      \"runner\": \" Paris. Is this statement correct?\\nA\",\n      \"reference\": \" Paris. Is this statement correct?\\nA\",\n      \"status\": \"pass\"\n    },\n    {\n      \"prompt\": \"def fibonacci(n):\",\n      \"runner\": \" \\n    if n <= 1:\",\n      \"reference\": \" \\n    if n <= 1:\",\n      \"status\": \"pass\"\n    },\n    {\n      \"prompt\": \"1 2 3 4 5 6 7 8\",\n      \"runner\": \" 9 10 11\",\n      \"reference\": \" 9 10 11\",\n      \"status\": \"pass\"\n    },\n    {\n      \"prompt\": \"Once upon a time, in a land far away,\",\n      \"runner\": \" there was a magical kingdom where the animals\",\n      \"reference\": \" there was a magical kingdom where the animals\",\n      \"status\": \"pass\"\n    },\n    {\n      \"prompt\": \"JSON example: {\\\"name\\\":\",\n      \"runner\": \" \\\"John\\\", \\\"age\\\": 3\",\n      \"reference\": \" \\\"John\\\", \\\"age\\\": 3\",\n      \"status\": \"pass\"\n    }\n  ],\n  \"totals\": {\n    \"passed\": 5,\n    \"failed\": 0\n  }\n}\n",
+          "stdout_tail": "{\n  \"schema_version\": \"xyntetik.runner.greedy-reference.v1\",\n  \"generated_utc\": \"2026-08-12T15:59:54Z\",\n  \"runner\": \"runner 0.1.15-alpha\",\n  \"reference\": \"version: 1 (f8def7f)\",\n  \"model\": \"models/Qwen2.5-32B-Instruct-Q3_K_S/Qwen2.5-32B-Instruct-Q3_K_S.gguf\",\n  \"tokens\": 8,\n  \"comparison\": \"exact generated UTF-8 text from /v1/completions at temperature 0\",\n  \"comparisons\": [\n    {\n      \"prompt\": \"The capital of France is\",\n      \"runner\": \" Paris. Is this statement correct?\\nA\",\n      \"reference\": \" Paris. Is this statement correct?\\nA\",\n      \"status\": \"pass\"\n    },\n    {\n      \"prompt\": \"def fibonacci(n):\",\n      \"runner\": \" \\n    if n <= 1:\",\n      \"reference\": \" \\n    if n <= 1:\",\n      \"status\": \"pass\"\n    },\n    {\n      \"prompt\": \"1 2 3 4 5 6 7 8\",\n      \"runner\": \" 9 10 11\",\n      \"reference\": \" 9 10 11\",\n      \"status\": \"pass\"\n    },\n    {\n      \"prompt\": \"Once upon a time, in a land far away,\",\n      \"runner\": \" there was a magical kingdom where the animals\",\n      \"reference\": \" there was a magical kingdom where the animals\",\n      \"status\": \"pass\"\n    },\n    {\n      \"prompt\": \"JSON example: {\\\"name\\\":\",\n      \"runner\": \" \\\"John\\\", \\\"age\\\": 3\",\n      \"reference\": \" \\\"John\\\", \\\"age\\\": 3\",\n      \"status\": \"pass\"\n    }\n  ],\n  \"totals\": {\n    \"passed\": 5,\n    \"failed\": 0\n  }\n}\n",
           "stderr_tail": ""
         },
         "long_context": {
@@ -187,7 +187,7 @@
           "reason": "check_class_not_executable"
         }
       },
-      "resolved_file": "/home/lab/workspace/models/Qwen2.5-32B-Instruct-Q3_K_S/Qwen2.5-32B-Instruct-Q3_K_S.gguf",
+      "resolved_file": "models/Qwen2.5-32B-Instruct-Q3_K_S/Qwen2.5-32B-Instruct-Q3_K_S.gguf",
       "actual_sha256": "a1aefda97dc4641598db576edf61b7b5f70f40abab33fbea39fb84fcaa9be44e",
       "file_status": "pass",
       "complete": false
@@ -202,7 +202,7 @@
           "status": "pass",
           "returncode": 0,
           "elapsed_ms": 982.4,
-          "stderr_tail": "gpu-split: budget=25.13GB fixed=0.90GB G=36/36 full=1 used=3.68GB\ngpu: CUDA backend on NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb (2.5 GB weights in VRAM)\ngpu: VRAM 21.97 GB free of 25.37 GB after init (kv 0.60 GB + scratch 0.04 GB this instance)\nloaded /home/lab/workspace/models/Qwen3-4B-Q4_K_M/Qwen3-4B-Q4_K_M.gguf | qwen3 | 36 layers | ctx 4096 | 64 threads | 0.77s\nsampling: qwen3 (temp 0.00 \u2014 greedy argmax; top_p/top_k/min_p/repeat_penalty inactive)\n\nprompt: 3 tok, 42.62 tok/s | gen: 1 tok, 91.94 tok/s\n"
+          "stderr_tail": "gpu-split: budget=25.13GB fixed=0.90GB G=36/36 full=1 used=3.68GB\ngpu: CUDA backend on NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb (2.5 GB weights in VRAM)\ngpu: VRAM 21.97 GB free of 25.37 GB after init (kv 0.60 GB + scratch 0.04 GB this instance)\nloaded models/Qwen3-4B-Q4_K_M/Qwen3-4B-Q4_K_M.gguf | qwen3 | 36 layers | ctx 4096 | 64 threads | 0.77s\nsampling: qwen3 (temp 0.00 \u2014 greedy argmax; top_p/top_k/min_p/repeat_penalty inactive)\n\nprompt: 3 tok, 42.62 tok/s | gen: 1 tok, 91.94 tok/s\n"
         },
         "tokenizer": {
           "status": "pass",
@@ -234,13 +234,13 @@
           "returncode": 1,
           "elapsed_ms": 17030.59,
           "scenario_matrix": "agent-torture",
-          "output_tail": "report: /home/lab/workspace/Xyntetik-runner/tests/torture/out/report.json\nraw: /home/lab/workspace/Xyntetik-runner/tests/torture/out/raw.jsonl\nruntime=runner requests=8 passed=5 failed=3\n"
+          "output_tail": "report: Xyntetik-runner/tests/torture/out/report.json\nraw: Xyntetik-runner/tests/torture/out/raw.jsonl\nruntime=runner requests=8 passed=5 failed=3\n"
         },
         "greedy_reference": {
           "status": "pass",
           "returncode": 0,
           "elapsed_ms": 7012.6,
-          "stdout_tail": "{\n  \"schema_version\": \"xyntetik.runner.greedy-reference.v1\",\n  \"generated_utc\": \"2026-08-12T16:00:56Z\",\n  \"runner\": \"runner 0.1.15-alpha\",\n  \"reference\": \"version: 1 (f8def7f)\",\n  \"model\": \"/home/lab/workspace/models/Qwen3-4B-Q4_K_M/Qwen3-4B-Q4_K_M.gguf\",\n  \"tokens\": 8,\n  \"comparison\": \"exact generated UTF-8 text from /v1/completions at temperature 0\",\n  \"comparisons\": [\n    {\n      \"prompt\": \"The capital of France is\",\n      \"runner\": \" Paris. The capital of Germany is Berlin\",\n      \"reference\": \" Paris. The capital of Germany is Berlin\",\n      \"status\": \"pass\"\n    },\n    {\n      \"prompt\": \"def fibonacci(n):\",\n      \"runner\": \"\\n    if n < 0:\\n\",\n      \"reference\": \"\\n    if n < 0:\\n\",\n      \"status\": \"pass\"\n    },\n    {\n      \"prompt\": \"1 2 3 4 5 6 7 8\",\n      \"runner\": \" 9 10 11\",\n      \"reference\": \" 9 10 11\",\n      \"status\": \"pass\"\n    },\n    {\n      \"prompt\": \"Once upon a time, in a land far away,\",\n      \"runner\": \" there was a king who had three daughters\",\n      \"reference\": \" there was a king who had three daughters\",\n      \"status\": \"pass\"\n    },\n    {\n      \"prompt\": \"JSON example: {\\\"name\\\":\",\n      \"runner\": \" \\\"John\\\", \\\"age\\\": 3\",\n      \"reference\": \" \\\"John\\\", \\\"age\\\": 3\",\n      \"status\": \"pass\"\n    }\n  ],\n  \"totals\": {\n    \"passed\": 5,\n    \"failed\": 0\n  }\n}\n",
+          "stdout_tail": "{\n  \"schema_version\": \"xyntetik.runner.greedy-reference.v1\",\n  \"generated_utc\": \"2026-08-12T16:00:56Z\",\n  \"runner\": \"runner 0.1.15-alpha\",\n  \"reference\": \"version: 1 (f8def7f)\",\n  \"model\": \"models/Qwen3-4B-Q4_K_M/Qwen3-4B-Q4_K_M.gguf\",\n  \"tokens\": 8,\n  \"comparison\": \"exact generated UTF-8 text from /v1/completions at temperature 0\",\n  \"comparisons\": [\n    {\n      \"prompt\": \"The capital of France is\",\n      \"runner\": \" Paris. The capital of Germany is Berlin\",\n      \"reference\": \" Paris. The capital of Germany is Berlin\",\n      \"status\": \"pass\"\n    },\n    {\n      \"prompt\": \"def fibonacci(n):\",\n      \"runner\": \"\\n    if n < 0:\\n\",\n      \"reference\": \"\\n    if n < 0:\\n\",\n      \"status\": \"pass\"\n    },\n    {\n      \"prompt\": \"1 2 3 4 5 6 7 8\",\n      \"runner\": \" 9 10 11\",\n      \"reference\": \" 9 10 11\",\n      \"status\": \"pass\"\n    },\n    {\n      \"prompt\": \"Once upon a time, in a land far away,\",\n      \"runner\": \" there was a king who had three daughters\",\n      \"reference\": \" there was a king who had three daughters\",\n      \"status\": \"pass\"\n    },\n    {\n      \"prompt\": \"JSON example: {\\\"name\\\":\",\n      \"runner\": \" \\\"John\\\", \\\"age\\\": 3\",\n      \"reference\": \" \\\"John\\\", \\\"age\\\": 3\",\n      \"status\": \"pass\"\n    }\n  ],\n  \"totals\": {\n    \"passed\": 5,\n    \"failed\": 0\n  }\n}\n",
           "stderr_tail": ""
         },
         "long_context": {
@@ -248,7 +248,7 @@
           "reason": "check_class_not_executable"
         }
       },
-      "resolved_file": "/home/lab/workspace/models/Qwen3-4B-Q4_K_M/Qwen3-4B-Q4_K_M.gguf",
+      "resolved_file": "models/Qwen3-4B-Q4_K_M/Qwen3-4B-Q4_K_M.gguf",
       "actual_sha256": "7485fe6f11af29433bc51cab58009521f205840f5b4ae3a32fa7f92e8534fdf5",
       "file_status": "pass",
       "complete": false
@@ -263,7 +263,7 @@
           "status": "pass",
           "returncode": 0,
           "elapsed_ms": 1196.5,
-          "stderr_tail": "gpu-split: budget=25.13GB fixed=1.29GB G=32/32 full=1 used=6.03GB\ngpu: CUDA backend on NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb (5.6 GB weights in VRAM)\ngpu: VRAM 18.77 GB free of 25.37 GB after init (kv 0.54 GB + scratch 0.18 GB this instance)\nloaded /home/lab/workspace/models/ornith-1.0-9b/ornith-1.0-9b-Q4_K_M.gguf | qwen35 | 32 layers | ctx 4096 | 64 threads | 0.90s\nsampling: generic (temp 0.00 \u2014 greedy argmax; top_p/top_k/min_p/repeat_penalty inactive)\n\nprompt: 3 tok, 20.71 tok/s | gen: 1 tok, 55.81 tok/s\n"
+          "stderr_tail": "gpu-split: budget=25.13GB fixed=1.29GB G=32/32 full=1 used=6.03GB\ngpu: CUDA backend on NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb (5.6 GB weights in VRAM)\ngpu: VRAM 18.77 GB free of 25.37 GB after init (kv 0.54 GB + scratch 0.18 GB this instance)\nloaded models/ornith-1.0-9b/ornith-1.0-9b-Q4_K_M.gguf | qwen35 | 32 layers | ctx 4096 | 64 threads | 0.90s\nsampling: generic (temp 0.00 \u2014 greedy argmax; top_p/top_k/min_p/repeat_penalty inactive)\n\nprompt: 3 tok, 20.71 tok/s | gen: 1 tok, 55.81 tok/s\n"
         },
         "tokenizer": {
           "status": "pass",
@@ -295,13 +295,13 @@
           "returncode": 1,
           "elapsed_ms": 43591.16,
           "scenario_matrix": "agent-torture",
-          "output_tail": "report: /home/lab/workspace/Xyntetik-runner/tests/torture/out/report.json\nraw: /home/lab/workspace/Xyntetik-runner/tests/torture/out/raw.jsonl\nruntime=runner requests=8 passed=1 failed=7\n"
+          "output_tail": "report: Xyntetik-runner/tests/torture/out/report.json\nraw: Xyntetik-runner/tests/torture/out/raw.jsonl\nruntime=runner requests=8 passed=1 failed=7\n"
         },
         "greedy_reference": {
           "status": "pass",
           "returncode": 0,
           "elapsed_ms": 9417.4,
-          "stdout_tail": "{\n  \"schema_version\": \"xyntetik.runner.greedy-reference.v1\",\n  \"generated_utc\": \"2026-08-12T16:02:55Z\",\n  \"runner\": \"runner 0.1.15-alpha\",\n  \"reference\": \"version: 1 (f8def7f)\",\n  \"model\": \"/home/lab/workspace/models/ornith-1.0-9b/ornith-1.0-9b-Q4_K_M.gguf\",\n  \"tokens\": 8,\n  \"comparison\": \"exact generated UTF-8 text from /v1/completions at temperature 0\",\n  \"comparisons\": [\n    {\n      \"prompt\": \"The capital of France is\",\n      \"runner\": \" Paris.\\nThe capital of France is\",\n      \"reference\": \" Paris.\\nThe capital of France is\",\n      \"status\": \"pass\"\n    },\n    {\n      \"prompt\": \"def fibonacci(n):\",\n      \"runner\": \"\\n    if n <= 0:\",\n      \"reference\": \"\\n    if n <= 0:\",\n      \"status\": \"pass\"\n    },\n    {\n      \"prompt\": \"1 2 3 4 5 6 7 8\",\n      \"runner\": \" 9 10 0/\",\n      \"reference\": \" 9 10 0/\",\n      \"status\": \"pass\"\n    },\n    {\n      \"prompt\": \"Once upon a time, in a land far away,\",\n      \"runner\": \" there was a big problem. People were\",\n      \"reference\": \" there was a big problem. People were\",\n      \"status\": \"pass\"\n    },\n    {\n      \"prompt\": \"JSON example: {\\\"name\\\":\",\n      \"runner\": \" \\\"John\\\", \\\"age\\\": 3\",\n      \"reference\": \" \\\"John\\\", \\\"age\\\": 3\",\n      \"status\": \"pass\"\n    }\n  ],\n  \"totals\": {\n    \"passed\": 5,\n    \"failed\": 0\n  }\n}\n",
+          "stdout_tail": "{\n  \"schema_version\": \"xyntetik.runner.greedy-reference.v1\",\n  \"generated_utc\": \"2026-08-12T16:02:55Z\",\n  \"runner\": \"runner 0.1.15-alpha\",\n  \"reference\": \"version: 1 (f8def7f)\",\n  \"model\": \"models/ornith-1.0-9b/ornith-1.0-9b-Q4_K_M.gguf\",\n  \"tokens\": 8,\n  \"comparison\": \"exact generated UTF-8 text from /v1/completions at temperature 0\",\n  \"comparisons\": [\n    {\n      \"prompt\": \"The capital of France is\",\n      \"runner\": \" Paris.\\nThe capital of France is\",\n      \"reference\": \" Paris.\\nThe capital of France is\",\n      \"status\": \"pass\"\n    },\n    {\n      \"prompt\": \"def fibonacci(n):\",\n      \"runner\": \"\\n    if n <= 0:\",\n      \"reference\": \"\\n    if n <= 0:\",\n      \"status\": \"pass\"\n    },\n    {\n      \"prompt\": \"1 2 3 4 5 6 7 8\",\n      \"runner\": \" 9 10 0/\",\n      \"reference\": \" 9 10 0/\",\n      \"status\": \"pass\"\n    },\n    {\n      \"prompt\": \"Once upon a time, in a land far away,\",\n      \"runner\": \" there was a big problem. People were\",\n      \"reference\": \" there was a big problem. People were\",\n      \"status\": \"pass\"\n    },\n    {\n      \"prompt\": \"JSON example: {\\\"name\\\":\",\n      \"runner\": \" \\\"John\\\", \\\"age\\\": 3\",\n      \"reference\": \" \\\"John\\\", \\\"age\\\": 3\",\n      \"status\": \"pass\"\n    }\n  ],\n  \"totals\": {\n    \"passed\": 5,\n    \"failed\": 0\n  }\n}\n",
           "stderr_tail": ""
         },
         "long_context": {
@@ -309,7 +309,7 @@
           "reason": "check_class_not_executable"
         }
       },
-      "resolved_file": "/home/lab/workspace/models/ornith-1.0-9b/ornith-1.0-9b-Q4_K_M.gguf",
+      "resolved_file": "models/ornith-1.0-9b/ornith-1.0-9b-Q4_K_M.gguf",
       "actual_sha256": "5720d1f671b4996481274fffe01868c3c36e87c135cc8538471cc7bd6087b106",
       "file_status": "pass",
       "complete": false
@@ -324,7 +324,7 @@
           "status": "pass",
           "returncode": 0,
           "elapsed_ms": 898.3,
-          "stderr_tail": "rope: phi3 LongRoPE short factors, mscale 1.1902\ngpu-split: budget=25.13GB fixed=0.64GB G=32/32 full=1 used=4.50GB\ngpu: CUDA backend on NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb (2.4 GB weights in VRAM)\ngpu: VRAM 21.07 GB free of 25.37 GB after init (kv 1.61 GB + scratch 0.04 GB this instance)\nloaded /home/lab/workspace/models/Phi-3.5-mini-instruct-Q4_K_M/Phi-3.5-mini-instruct-Q4_K_M.gguf | phi3 | 32 layers | ctx 4096 | 64 threads | 0.71s\nsampling: phi3 (temp 0.00 \u2014 greedy argmax; top_p/top_k/min_p/repeat_penalty inactive)\n\nprompt: 6 tok, 83.01 tok/s | gen: 1 tok, 100.42 tok/s\n"
+          "stderr_tail": "rope: phi3 LongRoPE short factors, mscale 1.1902\ngpu-split: budget=25.13GB fixed=0.64GB G=32/32 full=1 used=4.50GB\ngpu: CUDA backend on NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb (2.4 GB weights in VRAM)\ngpu: VRAM 21.07 GB free of 25.37 GB after init (kv 1.61 GB + scratch 0.04 GB this instance)\nloaded models/Phi-3.5-mini-instruct-Q4_K_M/Phi-3.5-mini-instruct-Q4_K_M.gguf | phi3 | 32 layers | ctx 4096 | 64 threads | 0.71s\nsampling: phi3 (temp 0.00 \u2014 greedy argmax; top_p/top_k/min_p/repeat_penalty inactive)\n\nprompt: 6 tok, 83.01 tok/s | gen: 1 tok, 100.42 tok/s\n"
         },
         "tokenizer": {
           "status": "fail",
@@ -356,13 +356,13 @@
           "returncode": 0,
           "elapsed_ms": 15646.93,
           "scenario_matrix": "agent-torture",
-          "output_tail": "report: /home/lab/workspace/Xyntetik-runner/tests/torture/out/report.json\nraw: /home/lab/workspace/Xyntetik-runner/tests/torture/out/raw.jsonl\nruntime=runner requests=8 passed=8 failed=0\n"
+          "output_tail": "report: Xyntetik-runner/tests/torture/out/report.json\nraw: Xyntetik-runner/tests/torture/out/raw.jsonl\nruntime=runner requests=8 passed=8 failed=0\n"
         },
         "greedy_reference": {
           "status": "fail",
           "returncode": 1,
           "elapsed_ms": 6615.6,
-          "stdout_tail": "{\n  \"schema_version\": \"xyntetik.runner.greedy-reference.v1\",\n  \"generated_utc\": \"2026-08-12T16:03:54Z\",\n  \"runner\": \"runner 0.1.15-alpha\",\n  \"reference\": \"version: 1 (f8def7f)\",\n  \"model\": \"/home/lab/workspace/models/Phi-3.5-mini-instruct-Q4_K_M/Phi-3.5-mini-instruct-Q4_K_M.gguf\",\n  \"tokens\": 8,\n  \"comparison\": \"exact generated UTF-8 text from /v1/completions at temperature 0\",\n  \"comparisons\": [\n    {\n      \"prompt\": \"The capital of France is\",\n      \"runner\": \" Paris.\\n\\nParis is the\",\n      \"reference\": \" Paris.\\n\\nParis is the\",\n      \"status\": \"pass\"\n    },\n    {\n      \"prompt\": \"def fibonacci(n):\",\n      \"runner\": \"\\n    if n == 0:\",\n      \"reference\": \"\\n    if n == 0:\",\n      \"status\": \"pass\"\n    },\n    {\n      \"prompt\": \"1 2 3 4 5 6 7 8\",\n      \"runner\": \" 9 10 11\",\n      \"reference\": \" 9 10 11\",\n      \"status\": \"pass\"\n    },\n    {\n      \"prompt\": \"Once upon a time, in a land far away,\",\n      \"runner\": \" there lived a young girl named Lily\",\n      \"reference\": \" there lived a young princess named Am\",\n      \"status\": \"fail\"\n    },\n    {\n      \"prompt\": \"JSON example: {\\\"name\\\":\",\n      \"runner\": \" \\\"John Doe\\\", \\\"age\\\":\",\n      \"reference\": \" \\\"John\\\", \\\"age\\\": 3\",\n      \"status\": \"fail\"\n    }\n  ],\n  \"totals\": {\n    \"passed\": 3,\n    \"failed\": 2\n  }\n}\n",
+          "stdout_tail": "{\n  \"schema_version\": \"xyntetik.runner.greedy-reference.v1\",\n  \"generated_utc\": \"2026-08-12T16:03:54Z\",\n  \"runner\": \"runner 0.1.15-alpha\",\n  \"reference\": \"version: 1 (f8def7f)\",\n  \"model\": \"models/Phi-3.5-mini-instruct-Q4_K_M/Phi-3.5-mini-instruct-Q4_K_M.gguf\",\n  \"tokens\": 8,\n  \"comparison\": \"exact generated UTF-8 text from /v1/completions at temperature 0\",\n  \"comparisons\": [\n    {\n      \"prompt\": \"The capital of France is\",\n      \"runner\": \" Paris.\\n\\nParis is the\",\n      \"reference\": \" Paris.\\n\\nParis is the\",\n      \"status\": \"pass\"\n    },\n    {\n      \"prompt\": \"def fibonacci(n):\",\n      \"runner\": \"\\n    if n == 0:\",\n      \"reference\": \"\\n    if n == 0:\",\n      \"status\": \"pass\"\n    },\n    {\n      \"prompt\": \"1 2 3 4 5 6 7 8\",\n      \"runner\": \" 9 10 11\",\n      \"reference\": \" 9 10 11\",\n      \"status\": \"pass\"\n    },\n    {\n      \"prompt\": \"Once upon a time, in a land far away,\",\n      \"runner\": \" there lived a young girl named Lily\",\n      \"reference\": \" there lived a young princess named Am\",\n      \"status\": \"fail\"\n    },\n    {\n      \"prompt\": \"JSON example: {\\\"name\\\":\",\n      \"runner\": \" \\\"John Doe\\\", \\\"age\\\":\",\n      \"reference\": \" \\\"John\\\", \\\"age\\\": 3\",\n      \"status\": \"fail\"\n    }\n  ],\n  \"totals\": {\n    \"passed\": 3,\n    \"failed\": 2\n  }\n}\n",
           "stderr_tail": ""
         },
         "long_context": {
@@ -370,7 +370,7 @@
           "reason": "check_class_not_executable"
         }
       },
-      "resolved_file": "/home/lab/workspace/models/Phi-3.5-mini-instruct-Q4_K_M/Phi-3.5-mini-instruct-Q4_K_M.gguf",
+      "resolved_file": "models/Phi-3.5-mini-instruct-Q4_K_M/Phi-3.5-mini-instruct-Q4_K_M.gguf",
       "actual_sha256": "e4165e3a71af97f1b4820da61079826d8752a2088e313af0c7d346796c38eff5",
       "file_status": "pass",
       "complete": false
@@ -385,14 +385,14 @@
           "status": "pass",
           "returncode": 0,
           "elapsed_ms": 922.2,
-          "stderr_tail": "rope: linear scaling x8.00 (model metadata)\ngpu-split: budget=25.13GB fixed=1.11GB G=34/34 full=1 used=3.61GB\ngpu: CUDA backend on NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb (2.5 GB weights in VRAM)\ngpu: VRAM 22.04 GB free of 25.37 GB after init (kv 0.57 GB + scratch 0.02 GB this instance)\nloaded /home/lab/workspace/models/google_gemma-3-4b-it-Q4_K_M/google_gemma-3-4b-it-Q4_K_M.gguf | gemma3 | 34 layers | ctx 4096 | 64 threads | 0.74s\nsampling: gemma3 (temp 0.00 \u2014 greedy argmax; top_p/top_k/min_p/repeat_penalty inactive)\n\nprompt: 4 tok, 63.23 tok/s | gen: 1 tok, 84.30 tok/s\n"
+          "stderr_tail": "rope: linear scaling x8.00 (model metadata)\ngpu-split: budget=25.13GB fixed=1.11GB G=34/34 full=1 used=3.61GB\ngpu: CUDA backend on NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb (2.5 GB weights in VRAM)\ngpu: VRAM 22.04 GB free of 25.37 GB after init (kv 0.57 GB + scratch 0.02 GB this instance)\nloaded models/google_gemma-3-4b-it-Q4_K_M/google_gemma-3-4b-it-Q4_K_M.gguf | gemma3 | 34 layers | ctx 4096 | 64 threads | 0.74s\nsampling: gemma3 (temp 0.00 \u2014 greedy argmax; top_p/top_k/min_p/repeat_penalty inactive)\n\nprompt: 4 tok, 63.23 tok/s | gen: 1 tok, 84.30 tok/s\n"
         },
         "tokenizer": {
           "status": "not_executed",
           "returncode": 1,
           "elapsed_ms": 2032.0,
           "stdout_tail": "",
-          "stderr_tail": "b/file_download.py\", line 1165, in _hf_hub_download_to_cache_dir\n    _raise_on_head_call_error(head_call_error, force_download, local_files_only)\n    ~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/lab/.conda/envs/ccbuild/lib/python3.14/site-packages/huggingface_hub/file_download.py\", line 1864, in _raise_on_head_call_error\n    raise head_call_error\n  File \"/home/lab/.conda/envs/ccbuild/lib/python3.14/site-packages/huggingface_hub/file_download.py\", line 1707, in _get_metadata_or_catch_error\n    metadata = get_hf_file_metadata(\n        url=url,\n    ...<4 lines>...\n        retry_on_errors=retry_on_errors,\n    )\n  File \"/home/lab/.conda/envs/ccbuild/lib/python3.14/site-packages/huggingface_hub/utils/_validators.py\", line 88, in _inner_fn\n    return fn(*args, **kwargs)\n  File \"/home/lab/.conda/envs/ccbuild/lib/python3.14/site-packages/huggingface_hub/file_download.py\", line 1615, in get_hf_file_metadata\n    response = _httpx_follow_relative_redirects_with_backoff(\n        method=\"HEAD\", url=url, headers=hf_headers, timeout=timeout, retry_on_errors=retry_on_errors\n    )\n  File \"/home/lab/.conda/envs/ccbuild/lib/python3.14/site-packages/huggingface_hub/utils/_http.py\", line 726, in _httpx_follow_relative_redirects_with_backoff\n    hf_raise_for_status(response)\n    ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^\n  File \"/home/lab/.conda/envs/ccbuild/lib/python3.14/site-packages/huggingface_hub/utils/_http.py\", line 821, in hf_raise_for_status\n    raise _format(GatedRepoError, message, response, repo_type=repo_type, repo_id=repo_id) from e\nhuggingface_hub.errors.GatedRepoError: 403 Client Error. (Request ID: Root=1-6a7c996e-7511a6756446468a609d3927;1131e55e-b593-4da9-ad6b-3091b18c8378)\n\nCannot access gated repo for url https://huggingface.co/google/gemma-3-4b-it/resolve/main/tokenizer.json.\nAccess to model google/gemma-3-4b-it is restricted and you are not in the authorized list. Visit https://huggingface.co/google/gemma-3-4b-it to ask for access.\n",
+          "stderr_tail": "b/file_download.py\", line 1165, in _hf_hub_download_to_cache_dir\n    _raise_on_head_call_error(head_call_error, force_download, local_files_only)\n    ~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"~/.conda/envs/ccbuild/lib/python3.14/site-packages/huggingface_hub/file_download.py\", line 1864, in _raise_on_head_call_error\n    raise head_call_error\n  File \"~/.conda/envs/ccbuild/lib/python3.14/site-packages/huggingface_hub/file_download.py\", line 1707, in _get_metadata_or_catch_error\n    metadata = get_hf_file_metadata(\n        url=url,\n    ...<4 lines>...\n        retry_on_errors=retry_on_errors,\n    )\n  File \"~/.conda/envs/ccbuild/lib/python3.14/site-packages/huggingface_hub/utils/_validators.py\", line 88, in _inner_fn\n    return fn(*args, **kwargs)\n  File \"~/.conda/envs/ccbuild/lib/python3.14/site-packages/huggingface_hub/file_download.py\", line 1615, in get_hf_file_metadata\n    response = _httpx_follow_relative_redirects_with_backoff(\n        method=\"HEAD\", url=url, headers=hf_headers, timeout=timeout, retry_on_errors=retry_on_errors\n    )\n  File \"~/.conda/envs/ccbuild/lib/python3.14/site-packages/huggingface_hub/utils/_http.py\", line 726, in _httpx_follow_relative_redirects_with_backoff\n    hf_raise_for_status(response)\n    ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^\n  File \"~/.conda/envs/ccbuild/lib/python3.14/site-packages/huggingface_hub/utils/_http.py\", line 821, in hf_raise_for_status\n    raise _format(GatedRepoError, message, response, repo_type=repo_type, repo_id=repo_id) from e\nhuggingface_hub.errors.GatedRepoError: 403 Client Error. (Request ID: Root=1-6a7c996e-7511a6756446468a609d3927;1131e55e-b593-4da9-ad6b-3091b18c8378)\n\nCannot access gated repo for url https://huggingface.co/google/gemma-3-4b-it/resolve/main/tokenizer.json.\nAccess to model google/gemma-3-4b-it is restricted and you are not in the authorized list. Visit https://huggingface.co/google/gemma-3-4b-it to ask for access.\n",
           "reason": "tokenizer_reference_unavailable"
         },
         "cpu_cuda": {
@@ -418,13 +418,13 @@
           "returncode": 0,
           "elapsed_ms": 14581.34,
           "scenario_matrix": "agent-torture",
-          "output_tail": "report: /home/lab/workspace/Xyntetik-runner/tests/torture/out/report.json\nraw: /home/lab/workspace/Xyntetik-runner/tests/torture/out/raw.jsonl\nruntime=runner requests=8 passed=8 failed=0\n"
+          "output_tail": "report: Xyntetik-runner/tests/torture/out/report.json\nraw: Xyntetik-runner/tests/torture/out/raw.jsonl\nruntime=runner requests=8 passed=8 failed=0\n"
         },
         "greedy_reference": {
           "status": "fail",
           "returncode": 1,
           "elapsed_ms": 7147.8,
-          "stdout_tail": "{\n  \"schema_version\": \"xyntetik.runner.greedy-reference.v1\",\n  \"generated_utc\": \"2026-08-12T16:04:52Z\",\n  \"runner\": \"runner 0.1.15-alpha\",\n  \"reference\": \"version: 1 (f8def7f)\",\n  \"model\": \"/home/lab/workspace/models/google_gemma-3-4b-it-Q4_K_M/google_gemma-3-4b-it-Q4_K_M.gguf\",\n  \"tokens\": 8,\n  \"comparison\": \"exact generated UTF-8 text from /v1/completions at temperature 0\",\n  \"comparisons\": [\n    {\n      \"prompt\": \"The capital of France is\",\n      \"runner\": \" Paris.\\n\\nParis is located in the\",\n      \"reference\": \" Paris.\\n\\nParis is a global center\",\n      \"status\": \"fail\"\n    },\n    {\n      \"prompt\": \"def fibonacci(n):\",\n      \"runner\": \"\\n    \\\"\\\"\\\"\\n    Calculates the\",\n      \"reference\": \"\\n    \\\"\\\"\\\"\\n    Calculates the\",\n      \"status\": \"pass\"\n    },\n    {\n      \"prompt\": \"1 2 3 4 5 6 7 8\",\n      \"runner\": \" 9 10 11\",\n      \"reference\": \" 9 10 11\",\n      \"status\": \"pass\"\n    },\n    {\n      \"prompt\": \"Once upon a time, in a land far away,\",\n      \"runner\": \" there lived a young woman named Elara\",\n      \"reference\": \" there lived a young woman named Elara\",\n      \"status\": \"pass\"\n    },\n    {\n      \"prompt\": \"JSON example: {\\\"name\\\":\",\n      \"runner\": \" \\\"John Doe\\\", \\\"age\\\": \",\n      \"reference\": \" \\\"John Doe\\\", \\\"age\\\": \",\n      \"status\": \"pass\"\n    }\n  ],\n  \"totals\": {\n    \"passed\": 4,\n    \"failed\": 1\n  }\n}\n",
+          "stdout_tail": "{\n  \"schema_version\": \"xyntetik.runner.greedy-reference.v1\",\n  \"generated_utc\": \"2026-08-12T16:04:52Z\",\n  \"runner\": \"runner 0.1.15-alpha\",\n  \"reference\": \"version: 1 (f8def7f)\",\n  \"model\": \"models/google_gemma-3-4b-it-Q4_K_M/google_gemma-3-4b-it-Q4_K_M.gguf\",\n  \"tokens\": 8,\n  \"comparison\": \"exact generated UTF-8 text from /v1/completions at temperature 0\",\n  \"comparisons\": [\n    {\n      \"prompt\": \"The capital of France is\",\n      \"runner\": \" Paris.\\n\\nParis is located in the\",\n      \"reference\": \" Paris.\\n\\nParis is a global center\",\n      \"status\": \"fail\"\n    },\n    {\n      \"prompt\": \"def fibonacci(n):\",\n      \"runner\": \"\\n    \\\"\\\"\\\"\\n    Calculates the\",\n      \"reference\": \"\\n    \\\"\\\"\\\"\\n    Calculates the\",\n      \"status\": \"pass\"\n    },\n    {\n      \"prompt\": \"1 2 3 4 5 6 7 8\",\n      \"runner\": \" 9 10 11\",\n      \"reference\": \" 9 10 11\",\n      \"status\": \"pass\"\n    },\n    {\n      \"prompt\": \"Once upon a time, in a land far away,\",\n      \"runner\": \" there lived a young woman named Elara\",\n      \"reference\": \" there lived a young woman named Elara\",\n      \"status\": \"pass\"\n    },\n    {\n      \"prompt\": \"JSON example: {\\\"name\\\":\",\n      \"runner\": \" \\\"John Doe\\\", \\\"age\\\": \",\n      \"reference\": \" \\\"John Doe\\\", \\\"age\\\": \",\n      \"status\": \"pass\"\n    }\n  ],\n  \"totals\": {\n    \"passed\": 4,\n    \"failed\": 1\n  }\n}\n",
           "stderr_tail": ""
         },
         "long_context": {
@@ -432,7 +432,7 @@
           "reason": "check_class_not_executable"
         }
       },
-      "resolved_file": "/home/lab/workspace/models/google_gemma-3-4b-it-Q4_K_M/google_gemma-3-4b-it-Q4_K_M.gguf",
+      "resolved_file": "models/google_gemma-3-4b-it-Q4_K_M/google_gemma-3-4b-it-Q4_K_M.gguf",
       "actual_sha256": "4996030242583a40aa151ff93f49ed787ac8c25e4120c3ae4588b2e2a7d1ae94",
       "file_status": "pass",
       "complete": false
@@ -472,7 +472,7 @@
           "reason": "sha256_mismatch"
         }
       },
-      "resolved_file": "/home/lab/workspace/models/gemma-4-12B-it-Q4_K_M/gemma-4-12B-it-Q4_K_M.gguf",
+      "resolved_file": "models/gemma-4-12B-it-Q4_K_M/gemma-4-12B-it-Q4_K_M.gguf",
       "actual_sha256": "3962624dcd25b947d889dc9ae1bf275b61db6cd4dbe694057f34fffef1671509",
       "file_status": "fail",
       "complete": false
@@ -487,7 +487,7 @@
           "status": "pass",
           "returncode": 0,
           "elapsed_ms": 2692.6,
-          "stderr_tail": "gpu-split: budget=25.13GB fixed=0.75GB G=48/48 full=1 used=19.28GB\ngpu: CUDA backend on NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb (18.6 GB weights in VRAM)\ngpu: VRAM 6.11 GB free of 25.37 GB after init (kv 0.40 GB + scratch 0.04 GB this instance)\nloaded /home/lab/workspace/models/Qwen3-30B-A3B-Q4_K_M/Qwen3-30B-A3B-Q4_K_M.gguf | qwen3moe | 48 layers | ctx 4096 | 64 threads | 2.08s\nsampling: qwen3 (temp 0.00 \u2014 greedy argmax; top_p/top_k/min_p/repeat_penalty inactive)\n\nprompt: 3 tok, 61.08 tok/s | gen: 1 tok, 77.13 tok/s\n"
+          "stderr_tail": "gpu-split: budget=25.13GB fixed=0.75GB G=48/48 full=1 used=19.28GB\ngpu: CUDA backend on NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb (18.6 GB weights in VRAM)\ngpu: VRAM 6.11 GB free of 25.37 GB after init (kv 0.40 GB + scratch 0.04 GB this instance)\nloaded models/Qwen3-30B-A3B-Q4_K_M/Qwen3-30B-A3B-Q4_K_M.gguf | qwen3moe | 48 layers | ctx 4096 | 64 threads | 2.08s\nsampling: qwen3 (temp 0.00 \u2014 greedy argmax; top_p/top_k/min_p/repeat_penalty inactive)\n\nprompt: 3 tok, 61.08 tok/s | gen: 1 tok, 77.13 tok/s\n"
         },
         "cpu_cuda": {
           "status": "fail",
@@ -513,13 +513,13 @@
           "returncode": 1,
           "elapsed_ms": 19728.73,
           "scenario_matrix": "agent-torture",
-          "output_tail": "report: /home/lab/workspace/Xyntetik-runner/tests/torture/out/report.json\nraw: /home/lab/workspace/Xyntetik-runner/tests/torture/out/raw.jsonl\nruntime=runner requests=8 passed=2 failed=6\n"
+          "output_tail": "report: Xyntetik-runner/tests/torture/out/report.json\nraw: Xyntetik-runner/tests/torture/out/raw.jsonl\nruntime=runner requests=8 passed=2 failed=6\n"
         },
         "greedy_reference": {
           "status": "fail",
           "returncode": 1,
           "elapsed_ms": 11953.3,
-          "stdout_tail": "{\n  \"schema_version\": \"xyntetik.runner.greedy-reference.v1\",\n  \"generated_utc\": \"2026-08-12T16:07:32Z\",\n  \"runner\": \"runner 0.1.15-alpha\",\n  \"reference\": \"version: 1 (f8def7f)\",\n  \"model\": \"/home/lab/workspace/models/Qwen3-30B-A3B-Q4_K_M/Qwen3-30B-A3B-Q4_K_M.gguf\",\n  \"tokens\": 8,\n  \"comparison\": \"exact generated UTF-8 text from /v1/completions at temperature 0\",\n  \"comparisons\": [\n    {\n      \"prompt\": \"The capital of France is\",\n      \"runner\": \" Paris. The capital of Italy is Rome\",\n      \"reference\": \" Paris. The capital of Italy is Rome\",\n      \"status\": \"pass\"\n    },\n    {\n      \"prompt\": \"def fibonacci(n):\",\n      \"runner\": \"\\n    if n <= 1:\\n\",\n      \"reference\": \"\\n    if n <= 0:\\n\",\n      \"status\": \"fail\"\n    },\n    {\n      \"prompt\": \"1 2 3 4 5 6 7 8\",\n      \"runner\": \" 9 10 11\",\n      \"reference\": \" 9 10 11\",\n      \"status\": \"pass\"\n    },\n    {\n      \"prompt\": \"Once upon a time, in a land far away,\",\n      \"runner\": \" there was a kingdom known for its love\",\n      \"reference\": \" there was a kingdom known for its love\",\n      \"status\": \"pass\"\n    },\n    {\n      \"prompt\": \"JSON example: {\\\"name\\\":\",\n      \"runner\": \" \\\"John\\\", \\\"age\\\": 3\",\n      \"reference\": \" \\\"John\\\", \\\"age\\\": 3\",\n      \"status\": \"pass\"\n    }\n  ],\n  \"totals\": {\n    \"passed\": 4,\n    \"failed\": 1\n  }\n}\n",
+          "stdout_tail": "{\n  \"schema_version\": \"xyntetik.runner.greedy-reference.v1\",\n  \"generated_utc\": \"2026-08-12T16:07:32Z\",\n  \"runner\": \"runner 0.1.15-alpha\",\n  \"reference\": \"version: 1 (f8def7f)\",\n  \"model\": \"models/Qwen3-30B-A3B-Q4_K_M/Qwen3-30B-A3B-Q4_K_M.gguf\",\n  \"tokens\": 8,\n  \"comparison\": \"exact generated UTF-8 text from /v1/completions at temperature 0\",\n  \"comparisons\": [\n    {\n      \"prompt\": \"The capital of France is\",\n      \"runner\": \" Paris. The capital of Italy is Rome\",\n      \"reference\": \" Paris. The capital of Italy is Rome\",\n      \"status\": \"pass\"\n    },\n    {\n      \"prompt\": \"def fibonacci(n):\",\n      \"runner\": \"\\n    if n <= 1:\\n\",\n      \"reference\": \"\\n    if n <= 0:\\n\",\n      \"status\": \"fail\"\n    },\n    {\n      \"prompt\": \"1 2 3 4 5 6 7 8\",\n      \"runner\": \" 9 10 11\",\n      \"reference\": \" 9 10 11\",\n      \"status\": \"pass\"\n    },\n    {\n      \"prompt\": \"Once upon a time, in a land far away,\",\n      \"runner\": \" there was a kingdom known for its love\",\n      \"reference\": \" there was a kingdom known for its love\",\n      \"status\": \"pass\"\n    },\n    {\n      \"prompt\": \"JSON example: {\\\"name\\\":\",\n      \"runner\": \" \\\"John\\\", \\\"age\\\": 3\",\n      \"reference\": \" \\\"John\\\", \\\"age\\\": 3\",\n      \"status\": \"pass\"\n    }\n  ],\n  \"totals\": {\n    \"passed\": 4,\n    \"failed\": 1\n  }\n}\n",
           "stderr_tail": ""
         },
         "long_context": {
@@ -527,7 +527,7 @@
           "reason": "check_class_not_executable"
         }
       },
-      "resolved_file": "/home/lab/workspace/models/Qwen3-30B-A3B-Q4_K_M/Qwen3-30B-A3B-Q4_K_M.gguf",
+      "resolved_file": "models/Qwen3-30B-A3B-Q4_K_M/Qwen3-30B-A3B-Q4_K_M.gguf",
       "actual_sha256": "0d003f6662faee786ed5da3e31b29c978de5ae5d275c8794c606a7f3c01aa8f5",
       "file_status": "pass",
       "complete": false
@@ -542,7 +542,7 @@
           "status": "pass",
           "returncode": 0,
           "elapsed_ms": 1121.3,
-          "stderr_tail": "gemma4: E-series (per-layer embeddings + shared KV) \u2014 verified against llama.cpp at the Q4_K noise floor rather than token-identically\nrope: using model frequency factors (rope_freqs.weight)\ngpu-split: budget=25.13GB fixed=0.93GB G=42/42 full=1 used=3.93GB\ngpu: CUDA backend on NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb (5.0 GB weights in VRAM)\ngpu: VRAM 19.88 GB free of 25.37 GB after init (kv 0.23 GB + scratch 0.02 GB this instance)\nloaded /home/lab/workspace/models/gemma-4-E4B-it-Q4_K_M/gemma-4-E4B-it-Q4_K_M.gguf | gemma4 | 42 layers | ctx 4096 | 64 threads | 0.89s\nsampling: gemma3 (temp 0.00 \u2014 greedy argmax; top_p/top_k/min_p/repeat_penalty inactive)\n\nprompt: 4 tok, 47.07 tok/s | gen: 1 tok, 54.00 tok/s\n"
+          "stderr_tail": "gemma4: E-series (per-layer embeddings + shared KV) \u2014 verified against llama.cpp at the Q4_K noise floor rather than token-identically\nrope: using model frequency factors (rope_freqs.weight)\ngpu-split: budget=25.13GB fixed=0.93GB G=42/42 full=1 used=3.93GB\ngpu: CUDA backend on NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb (5.0 GB weights in VRAM)\ngpu: VRAM 19.88 GB free of 25.37 GB after init (kv 0.23 GB + scratch 0.02 GB this instance)\nloaded models/gemma-4-E4B-it-Q4_K_M/gemma-4-E4B-it-Q4_K_M.gguf | gemma4 | 42 layers | ctx 4096 | 64 threads | 0.89s\nsampling: gemma3 (temp 0.00 \u2014 greedy argmax; top_p/top_k/min_p/repeat_penalty inactive)\n\nprompt: 4 tok, 47.07 tok/s | gen: 1 tok, 54.00 tok/s\n"
         },
         "cpu_cuda": {
           "status": "pass",
@@ -564,7 +564,7 @@
           "output_tail": "2 + 2 equals **4**.\n"
         }
       },
-      "resolved_file": "/home/lab/workspace/models/gemma-4-E4B-it-Q4_K_M/gemma-4-E4B-it-Q4_K_M.gguf",
+      "resolved_file": "models/gemma-4-E4B-it-Q4_K_M/gemma-4-E4B-it-Q4_K_M.gguf",
       "actual_sha256": "85a896a047553e842f25297ee5b031d64ff30147d9c4af17b1e4b394cd1fab87",
       "file_status": "pass",
       "complete": true
@@ -579,7 +579,7 @@
           "status": "pass",
           "returncode": 0,
           "elapsed_ms": 37923.0,
-          "stderr_tail": "gemma4: dense variant verified against llama.cpp (token-identical greedy output on the official ggml-org GGUF); unofficial dequant conversions may still produce garbage \u2014 prefer official files\nrope: using model frequency factors (rope_freqs.weight)\ngpu-split: budget=25.13GB fixed=1.35GB G=30/30 full=1 used=16.09GB\ngpu: CUDA backend on NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb (14.6 GB weights in VRAM)\ngpu: VRAM 9.53 GB free of 25.37 GB after init (kv 0.92 GB + scratch 0.03 GB this instance)\nloaded /home/lab/workspace/models/gemma-4-26B-A4B-it-Q4_0/gemma-4-26B-A4B-it-Q4_0.gguf | gemma4 | 30 layers | ctx 4096 | 64 threads | 37.37s\nsampling: gemma3 (temp 0.00 \u2014 greedy argmax; top_p/top_k/min_p/repeat_penalty inactive)\n\nprompt: 4 tok, 11.42 tok/s | gen: 1 tok, 65.24 tok/s\n"
+          "stderr_tail": "gemma4: dense variant verified against llama.cpp (token-identical greedy output on the official ggml-org GGUF); unofficial dequant conversions may still produce garbage \u2014 prefer official files\nrope: using model frequency factors (rope_freqs.weight)\ngpu-split: budget=25.13GB fixed=1.35GB G=30/30 full=1 used=16.09GB\ngpu: CUDA backend on NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb (14.6 GB weights in VRAM)\ngpu: VRAM 9.53 GB free of 25.37 GB after init (kv 0.92 GB + scratch 0.03 GB this instance)\nloaded models/gemma-4-26B-A4B-it-Q4_0/gemma-4-26B-A4B-it-Q4_0.gguf | gemma4 | 30 layers | ctx 4096 | 64 threads | 37.37s\nsampling: gemma3 (temp 0.00 \u2014 greedy argmax; top_p/top_k/min_p/repeat_penalty inactive)\n\nprompt: 4 tok, 11.42 tok/s | gen: 1 tok, 65.24 tok/s\n"
         },
         "cpu_cuda": {
           "status": "fail",
@@ -601,7 +601,7 @@
           "output_tail": "2 + 2 = 4\n"
         }
       },
-      "resolved_file": "/home/lab/workspace/models/gemma-4-26B-A4B-it-Q4_0/gemma-4-26B-A4B-it-Q4_0.gguf",
+      "resolved_file": "models/gemma-4-26B-A4B-it-Q4_0/gemma-4-26B-A4B-it-Q4_0.gguf",
       "actual_sha256": "d208665ab1cd3a69f7a9a4bc59430e8448c8093d9b06334f566ac59d6d504a03",
       "file_status": "pass",
       "complete": false
@@ -616,7 +616,7 @@
           "status": "pass",
           "returncode": 0,
           "elapsed_ms": 4953.8,
-          "stderr_tail": "gemma4: dense variant verified against llama.cpp (token-identical greedy output on the official ggml-org GGUF); unofficial dequant conversions may still produce garbage \u2014 prefer official files\nrope: using model frequency factors (rope_freqs.weight)\ngpu-split: budget=25.13GB fixed=1.17GB G=30/30 full=1 used=15.91GB\ngpu: CUDA backend on NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb (14.4 GB weights in VRAM)\ngpu: VRAM 9.71 GB free of 25.37 GB after init (kv 0.92 GB + scratch 0.03 GB this instance)\nloaded /home/lab/workspace/models/gemma-4-26B_q4_0-it/gemma-4-26B_q4_0-it.gguf | gemma4 | 30 layers | ctx 4096 | 64 threads | 4.24s\nsampling: gemma3 (temp 0.00 \u2014 greedy argmax; top_p/top_k/min_p/repeat_penalty inactive)\n\nprompt: 4 tok, 11.02 tok/s | gen: 1 tok, 48.80 tok/s\n"
+          "stderr_tail": "gemma4: dense variant verified against llama.cpp (token-identical greedy output on the official ggml-org GGUF); unofficial dequant conversions may still produce garbage \u2014 prefer official files\nrope: using model frequency factors (rope_freqs.weight)\ngpu-split: budget=25.13GB fixed=1.17GB G=30/30 full=1 used=15.91GB\ngpu: CUDA backend on NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb (14.4 GB weights in VRAM)\ngpu: VRAM 9.71 GB free of 25.37 GB after init (kv 0.92 GB + scratch 0.03 GB this instance)\nloaded models/gemma-4-26B_q4_0-it/gemma-4-26B_q4_0-it.gguf | gemma4 | 30 layers | ctx 4096 | 64 threads | 4.24s\nsampling: gemma3 (temp 0.00 \u2014 greedy argmax; top_p/top_k/min_p/repeat_penalty inactive)\n\nprompt: 4 tok, 11.02 tok/s | gen: 1 tok, 48.80 tok/s\n"
         },
         "cpu_cuda": {
           "status": "pass",
@@ -638,7 +638,7 @@
           "output_tail": "2 + 2 = 4\n"
         }
       },
-      "resolved_file": "/home/lab/workspace/models/gemma-4-26B_q4_0-it/gemma-4-26B_q4_0-it.gguf",
+      "resolved_file": "models/gemma-4-26B_q4_0-it/gemma-4-26B_q4_0-it.gguf",
       "actual_sha256": "3eca3b8f6d7baf218a7dd6bba5fb59a56ee25fe2d567b6f5f589b4f697eca51d",
       "file_status": "pass",
       "complete": true
@@ -653,7 +653,7 @@
           "status": "pass",
           "returncode": 0,
           "elapsed_ms": 4776.6,
-          "stderr_tail": "rope: YaRN scaling x32.00 (model metadata)\ngpu-split: budget=25.13GB fixed=1.23GB G=24/24 full=1 used=12.27GB\ngpu: CUDA backend on NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb (12.1 GB weights in VRAM)\ngpu: VRAM 12.69 GB free of 25.37 GB after init (kv 0.20 GB + scratch 0.07 GB this instance)\nloaded /home/lab/workspace/models/gpt-oss-20b-MXFP4/gpt-oss-20b-MXFP4.gguf | gpt-oss | 24 layers | ctx 4096 | 64 threads | 4.05s\nsampling: gpt-oss (temp 0.00 \u2014 greedy argmax; top_p/top_k/min_p/repeat_penalty inactive)\n\nprompt: 3 tok, 31.54 tok/s | gen: 1 tok, 30.81 tok/s\n"
+          "stderr_tail": "rope: YaRN scaling x32.00 (model metadata)\ngpu-split: budget=25.13GB fixed=1.23GB G=24/24 full=1 used=12.27GB\ngpu: CUDA backend on NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb (12.1 GB weights in VRAM)\ngpu: VRAM 12.69 GB free of 25.37 GB after init (kv 0.20 GB + scratch 0.07 GB this instance)\nloaded models/gpt-oss-20b-MXFP4/gpt-oss-20b-MXFP4.gguf | gpt-oss | 24 layers | ctx 4096 | 64 threads | 4.05s\nsampling: gpt-oss (temp 0.00 \u2014 greedy argmax; top_p/top_k/min_p/repeat_penalty inactive)\n\nprompt: 3 tok, 31.54 tok/s | gen: 1 tok, 30.81 tok/s\n"
         },
         "cpu_cuda": {
           "status": "pass",
@@ -675,7 +675,7 @@
           "output_tail": "[thinking]\nWe have a conversation. The user asks: \"What is 2+2?\" The assistant should answer. There's no conflict with policy. It's a simple math question. The answer is 4. There's no policy violation. So we can answer.\n[/thinking]\n2\u202f+\u202f2 equals **4**.\n"
         }
       },
-      "resolved_file": "/home/lab/workspace/models/gpt-oss-20b-MXFP4/gpt-oss-20b-MXFP4.gguf",
+      "resolved_file": "models/gpt-oss-20b-MXFP4/gpt-oss-20b-MXFP4.gguf",
       "actual_sha256": "27cd6c432c7672cb812a92f611cf3ba7bbc35928262bb1e1253ff4ee6ae35901",
       "file_status": "pass",
       "complete": true
@@ -703,7 +703,7 @@
           "reason": "sha256_mismatch"
         }
       },
-      "resolved_file": "/home/lab/workspace/models/Apertus-8B-Instruct-2509-Q4_K_M/Apertus-8B-Instruct-2509-Q4_K_M.gguf",
+      "resolved_file": "models/Apertus-8B-Instruct-2509-Q4_K_M/Apertus-8B-Instruct-2509-Q4_K_M.gguf",
       "actual_sha256": "87e7f0eb5a1d33e1a8ea4e7fdd2363764e0465061dd92962e0073aec31a7944d",
       "file_status": "fail",
       "complete": false
@@ -718,14 +718,14 @@
           "status": "pass",
           "returncode": 0,
           "elapsed_ms": 2136.7,
-          "stderr_tail": "gpu-split: budget=25.13GB fixed=0.88GB G=42/42 full=1 used=6.44GB\ngpu: CUDA backend on NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb (5.6 GB weights in VRAM)\ngpu: VRAM 18.78 GB free of 25.37 GB after init (kv 0.70 GB + scratch 0.05 GB this instance)\nloaded /home/lab/workspace/models/EuroLLM-9B-Instruct-Q4_K_M/EuroLLM-9B-Instruct-Q4_K_M.gguf | llama | 42 layers | ctx 4096 | 64 threads | 1.71s\nsampling: generic (temp 0.00 \u2014 greedy argmax; top_p/top_k/min_p/repeat_penalty inactive)\n\nprompt: 6 tok, 39.96 tok/s | gen: 1 tok, 46.80 tok/s\n"
+          "stderr_tail": "gpu-split: budget=25.13GB fixed=0.88GB G=42/42 full=1 used=6.44GB\ngpu: CUDA backend on NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb (5.6 GB weights in VRAM)\ngpu: VRAM 18.78 GB free of 25.37 GB after init (kv 0.70 GB + scratch 0.05 GB this instance)\nloaded models/EuroLLM-9B-Instruct-Q4_K_M/EuroLLM-9B-Instruct-Q4_K_M.gguf | llama | 42 layers | ctx 4096 | 64 threads | 1.71s\nsampling: generic (temp 0.00 \u2014 greedy argmax; top_p/top_k/min_p/repeat_penalty inactive)\n\nprompt: 6 tok, 39.96 tok/s | gen: 1 tok, 46.80 tok/s\n"
         },
         "tokenizer": {
           "status": "not_executed",
           "returncode": 1,
           "elapsed_ms": 2385.2,
           "stdout_tail": "",
-          "stderr_tail": "hub_download_to_cache_dir\n    _raise_on_head_call_error(head_call_error, force_download, local_files_only)\n    ~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/lab/.conda/envs/ccbuild/lib/python3.14/site-packages/huggingface_hub/file_download.py\", line 1864, in _raise_on_head_call_error\n    raise head_call_error\n  File \"/home/lab/.conda/envs/ccbuild/lib/python3.14/site-packages/huggingface_hub/file_download.py\", line 1707, in _get_metadata_or_catch_error\n    metadata = get_hf_file_metadata(\n        url=url,\n    ...<4 lines>...\n        retry_on_errors=retry_on_errors,\n    )\n  File \"/home/lab/.conda/envs/ccbuild/lib/python3.14/site-packages/huggingface_hub/utils/_validators.py\", line 88, in _inner_fn\n    return fn(*args, **kwargs)\n  File \"/home/lab/.conda/envs/ccbuild/lib/python3.14/site-packages/huggingface_hub/file_download.py\", line 1615, in get_hf_file_metadata\n    response = _httpx_follow_relative_redirects_with_backoff(\n        method=\"HEAD\", url=url, headers=hf_headers, timeout=timeout, retry_on_errors=retry_on_errors\n    )\n  File \"/home/lab/.conda/envs/ccbuild/lib/python3.14/site-packages/huggingface_hub/utils/_http.py\", line 726, in _httpx_follow_relative_redirects_with_backoff\n    hf_raise_for_status(response)\n    ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^\n  File \"/home/lab/.conda/envs/ccbuild/lib/python3.14/site-packages/huggingface_hub/utils/_http.py\", line 821, in hf_raise_for_status\n    raise _format(GatedRepoError, message, response, repo_type=repo_type, repo_id=repo_id) from e\nhuggingface_hub.errors.GatedRepoError: 403 Client Error. (Request ID: Root=1-6a7c9c4a-5262dd503e08a31c3a252a02;5a50a94b-0c35-44e3-9999-e8a15fcdbeed)\n\nCannot access gated repo for url https://huggingface.co/utter-project/EuroLLM-9B-Instruct/resolve/main/tokenizer.json.\nAccess to model utter-project/EuroLLM-9B-Instruct is restricted and you are not in the authorized list. Visit https://huggingface.co/utter-project/EuroLLM-9B-Instruct to ask for access.\n",
+          "stderr_tail": "hub_download_to_cache_dir\n    _raise_on_head_call_error(head_call_error, force_download, local_files_only)\n    ~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"~/.conda/envs/ccbuild/lib/python3.14/site-packages/huggingface_hub/file_download.py\", line 1864, in _raise_on_head_call_error\n    raise head_call_error\n  File \"~/.conda/envs/ccbuild/lib/python3.14/site-packages/huggingface_hub/file_download.py\", line 1707, in _get_metadata_or_catch_error\n    metadata = get_hf_file_metadata(\n        url=url,\n    ...<4 lines>...\n        retry_on_errors=retry_on_errors,\n    )\n  File \"~/.conda/envs/ccbuild/lib/python3.14/site-packages/huggingface_hub/utils/_validators.py\", line 88, in _inner_fn\n    return fn(*args, **kwargs)\n  File \"~/.conda/envs/ccbuild/lib/python3.14/site-packages/huggingface_hub/file_download.py\", line 1615, in get_hf_file_metadata\n    response = _httpx_follow_relative_redirects_with_backoff(\n        method=\"HEAD\", url=url, headers=hf_headers, timeout=timeout, retry_on_errors=retry_on_errors\n    )\n  File \"~/.conda/envs/ccbuild/lib/python3.14/site-packages/huggingface_hub/utils/_http.py\", line 726, in _httpx_follow_relative_redirects_with_backoff\n    hf_raise_for_status(response)\n    ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^\n  File \"~/.conda/envs/ccbuild/lib/python3.14/site-packages/huggingface_hub/utils/_http.py\", line 821, in hf_raise_for_status\n    raise _format(GatedRepoError, message, response, repo_type=repo_type, repo_id=repo_id) from e\nhuggingface_hub.errors.GatedRepoError: 403 Client Error. (Request ID: Root=1-6a7c9c4a-5262dd503e08a31c3a252a02;5a50a94b-0c35-44e3-9999-e8a15fcdbeed)\n\nCannot access gated repo for url https://huggingface.co/utter-project/EuroLLM-9B-Instruct/resolve/main/tokenizer.json.\nAccess to model utter-project/EuroLLM-9B-Instruct is restricted and you are not in the authorized list. Visit https://huggingface.co/utter-project/EuroLLM-9B-Instruct to ask for access.\n",
           "reason": "tokenizer_reference_unavailable"
         },
         "cpu_cuda": {
@@ -751,13 +751,13 @@
           "returncode": 0,
           "elapsed_ms": 62736.27,
           "scenario_matrix": "agent-torture",
-          "output_tail": "report: /home/lab/workspace/Xyntetik-runner/tests/torture/out/report.json\nraw: /home/lab/workspace/Xyntetik-runner/tests/torture/out/raw.jsonl\nruntime=runner requests=8 passed=8 failed=0\n"
+          "output_tail": "report: Xyntetik-runner/tests/torture/out/report.json\nraw: Xyntetik-runner/tests/torture/out/raw.jsonl\nruntime=runner requests=8 passed=8 failed=0\n"
         },
         "greedy_reference": {
           "status": "fail",
           "returncode": 1,
           "elapsed_ms": 16334.1,
-          "stdout_tail": "{\n  \"schema_version\": \"xyntetik.runner.greedy-reference.v1\",\n  \"generated_utc\": \"2026-08-12T16:18:29Z\",\n  \"runner\": \"runner 0.1.15-alpha\",\n  \"reference\": \"version: 1 (f8def7f)\",\n  \"model\": \"/home/lab/workspace/models/EuroLLM-9B-Instruct-Q4_K_M/EuroLLM-9B-Instruct-Q4_K_M.gguf\",\n  \"tokens\": 8,\n  \"comparison\": \"exact generated UTF-8 text from /v1/completions at temperature 0\",\n  \"comparisons\": [\n    {\n      \"prompt\": \"The capital of France is\",\n      \"runner\": \" Paris.\\nThe capital of France is\",\n      \"reference\": \" Paris.\\nThe capital of France is\",\n      \"status\": \"pass\"\n    },\n    {\n      \"prompt\": \"def fibonacci(n):\",\n      \"runner\": \"\\n    if n == 0:\",\n      \"reference\": \"\\n    if n == 0:\",\n      \"status\": \"pass\"\n    },\n    {\n      \"prompt\": \"1 2 3 4 5 6 7 8\",\n      \"runner\": \" 9 10 11\",\n      \"reference\": \" 9 10 11\",\n      \"status\": \"pass\"\n    },\n    {\n      \"prompt\": \"Once upon a time, in a land far away,\",\n      \"runner\": \" there was a magical kingdom called Em\",\n      \"reference\": \" there was a magical kingdom called Harm\",\n      \"status\": \"fail\"\n    },\n    {\n      \"prompt\": \"JSON example: {\\\"name\\\":\",\n      \"runner\": \" \\\"John\\\", \\\"age\\\": 3\",\n      \"reference\": \" \\\"John\\\", \\\"age\\\": 3\",\n      \"status\": \"pass\"\n    }\n  ],\n  \"totals\": {\n    \"passed\": 4,\n    \"failed\": 1\n  }\n}\n",
+          "stdout_tail": "{\n  \"schema_version\": \"xyntetik.runner.greedy-reference.v1\",\n  \"generated_utc\": \"2026-08-12T16:18:29Z\",\n  \"runner\": \"runner 0.1.15-alpha\",\n  \"reference\": \"version: 1 (f8def7f)\",\n  \"model\": \"models/EuroLLM-9B-Instruct-Q4_K_M/EuroLLM-9B-Instruct-Q4_K_M.gguf\",\n  \"tokens\": 8,\n  \"comparison\": \"exact generated UTF-8 text from /v1/completions at temperature 0\",\n  \"comparisons\": [\n    {\n      \"prompt\": \"The capital of France is\",\n      \"runner\": \" Paris.\\nThe capital of France is\",\n      \"reference\": \" Paris.\\nThe capital of France is\",\n      \"status\": \"pass\"\n    },\n    {\n      \"prompt\": \"def fibonacci(n):\",\n      \"runner\": \"\\n    if n == 0:\",\n      \"reference\": \"\\n    if n == 0:\",\n      \"status\": \"pass\"\n    },\n    {\n      \"prompt\": \"1 2 3 4 5 6 7 8\",\n      \"runner\": \" 9 10 11\",\n      \"reference\": \" 9 10 11\",\n      \"status\": \"pass\"\n    },\n    {\n      \"prompt\": \"Once upon a time, in a land far away,\",\n      \"runner\": \" there was a magical kingdom called Em\",\n      \"reference\": \" there was a magical kingdom called Harm\",\n      \"status\": \"fail\"\n    },\n    {\n      \"prompt\": \"JSON example: {\\\"name\\\":\",\n      \"runner\": \" \\\"John\\\", \\\"age\\\": 3\",\n      \"reference\": \" \\\"John\\\", \\\"age\\\": 3\",\n      \"status\": \"pass\"\n    }\n  ],\n  \"totals\": {\n    \"passed\": 4,\n    \"failed\": 1\n  }\n}\n",
           "stderr_tail": ""
         },
         "long_context": {
@@ -765,7 +765,7 @@
           "reason": "check_class_not_executable"
         }
       },
-      "resolved_file": "/home/lab/workspace/models/EuroLLM-9B-Instruct-Q4_K_M/EuroLLM-9B-Instruct-Q4_K_M.gguf",
+      "resolved_file": "models/EuroLLM-9B-Instruct-Q4_K_M/EuroLLM-9B-Instruct-Q4_K_M.gguf",
       "actual_sha256": "785a3b2883532381704ef74f866f822f179a931801d1ed1cf12e6deeb838806b",
       "file_status": "pass",
       "complete": false
@@ -780,7 +780,7 @@
           "status": "pass",
           "returncode": 0,
           "elapsed_ms": 1631.6,
-          "stderr_tail": "gpu-split: budget=25.13GB fixed=0.73GB G=32/32 full=1 used=4.97GB\ngpu: CUDA backend on NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb (4.1 GB weights in VRAM)\ngpu: VRAM 20.46 GB free of 25.37 GB after init (kv 0.54 GB + scratch 0.05 GB this instance)\nloaded /home/lab/workspace/models/Lucie-7B-Instruct-Q4_K_M/Lucie-7B-Instruct-Q4_K_M.gguf | llama | 32 layers | ctx 4096 | 64 threads | 1.32s\nsampling: lucie (temp 0.00 \u2014 greedy argmax; top_p/top_k/min_p/repeat_penalty inactive)\n\nprompt: 6 tok, 52.21 tok/s | gen: 1 tok, 64.43 tok/s\n"
+          "stderr_tail": "gpu-split: budget=25.13GB fixed=0.73GB G=32/32 full=1 used=4.97GB\ngpu: CUDA backend on NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb (4.1 GB weights in VRAM)\ngpu: VRAM 20.46 GB free of 25.37 GB after init (kv 0.54 GB + scratch 0.05 GB this instance)\nloaded models/Lucie-7B-Instruct-Q4_K_M/Lucie-7B-Instruct-Q4_K_M.gguf | llama | 32 layers | ctx 4096 | 64 threads | 1.32s\nsampling: lucie (temp 0.00 \u2014 greedy argmax; top_p/top_k/min_p/repeat_penalty inactive)\n\nprompt: 6 tok, 52.21 tok/s | gen: 1 tok, 64.43 tok/s\n"
         },
         "tokenizer": {
           "status": "fail",
@@ -812,13 +812,13 @@
           "returncode": 0,
           "elapsed_ms": 49797.25,
           "scenario_matrix": "agent-torture",
-          "output_tail": "report: /home/lab/workspace/Xyntetik-runner/tests/torture/out/report.json\nraw: /home/lab/workspace/Xyntetik-runner/tests/torture/out/raw.jsonl\nruntime=runner requests=8 passed=8 failed=0\n"
+          "output_tail": "report: Xyntetik-runner/tests/torture/out/report.json\nraw: Xyntetik-runner/tests/torture/out/raw.jsonl\nruntime=runner requests=8 passed=8 failed=0\n"
         },
         "greedy_reference": {
           "status": "fail",
           "returncode": 1,
           "elapsed_ms": 8991.9,
-          "stdout_tail": "{\n  \"schema_version\": \"xyntetik.runner.greedy-reference.v1\",\n  \"generated_utc\": \"2026-08-12T16:21:05Z\",\n  \"runner\": \"runner 0.1.15-alpha\",\n  \"reference\": \"version: 1 (f8def7f)\",\n  \"model\": \"/home/lab/workspace/models/Lucie-7B-Instruct-Q4_K_M/Lucie-7B-Instruct-Q4_K_M.gguf\",\n  \"tokens\": 8,\n  \"comparison\": \"exact generated UTF-8 text from /v1/completions at temperature 0\",\n  \"comparisons\": [\n    {\n      \"prompt\": \"The capital of France is\",\n      \"runner\": \" Paris.\\n\\n The capital of France is\",\n      \"reference\": \" Paris.\\n\\n The capital of France is\",\n      \"status\": \"pass\"\n    },\n    {\n      \"prompt\": \"def fibonacci(n):\",\n      \"runner\": \"\\n\\n\\n\\n The input is a list of\",\n      \"reference\": \"\\n\\n # Python Program to find the\",\n      \"status\": \"fail\"\n    },\n    {\n      \"prompt\": \"1 2 3 4 5 6 7 8\",\n      \"runner\": \" 9 10 11\",\n      \"reference\": \" 9 10 11\",\n      \"status\": \"pass\"\n    },\n    {\n      \"prompt\": \"Once upon a time, in a land far away,\",\n      \"runner\": \" there was a great king who ruled over\",\n      \"reference\": \" there was a great king who ruled over\",\n      \"status\": \"pass\"\n    },\n    {\n      \"prompt\": \"JSON example: {\\\"name\\\":\",\n      \"runner\": \" \\\" John\\\", \\\" age\\\": \\n\\n\",\n      \"reference\": \" \\\" John\\\", \\\" age\\\": \\n\\n\",\n      \"status\": \"pass\"\n    }\n  ],\n  \"totals\": {\n    \"passed\": 4,\n    \"failed\": 1\n  }\n}\n",
+          "stdout_tail": "{\n  \"schema_version\": \"xyntetik.runner.greedy-reference.v1\",\n  \"generated_utc\": \"2026-08-12T16:21:05Z\",\n  \"runner\": \"runner 0.1.15-alpha\",\n  \"reference\": \"version: 1 (f8def7f)\",\n  \"model\": \"models/Lucie-7B-Instruct-Q4_K_M/Lucie-7B-Instruct-Q4_K_M.gguf\",\n  \"tokens\": 8,\n  \"comparison\": \"exact generated UTF-8 text from /v1/completions at temperature 0\",\n  \"comparisons\": [\n    {\n      \"prompt\": \"The capital of France is\",\n      \"runner\": \" Paris.\\n\\n The capital of France is\",\n      \"reference\": \" Paris.\\n\\n The capital of France is\",\n      \"status\": \"pass\"\n    },\n    {\n      \"prompt\": \"def fibonacci(n):\",\n      \"runner\": \"\\n\\n\\n\\n The input is a list of\",\n      \"reference\": \"\\n\\n # Python Program to find the\",\n      \"status\": \"fail\"\n    },\n    {\n      \"prompt\": \"1 2 3 4 5 6 7 8\",\n      \"runner\": \" 9 10 11\",\n      \"reference\": \" 9 10 11\",\n      \"status\": \"pass\"\n    },\n    {\n      \"prompt\": \"Once upon a time, in a land far away,\",\n      \"runner\": \" there was a great king who ruled over\",\n      \"reference\": \" there was a great king who ruled over\",\n      \"status\": \"pass\"\n    },\n    {\n      \"prompt\": \"JSON example: {\\\"name\\\":\",\n      \"runner\": \" \\\" John\\\", \\\" age\\\": \\n\\n\",\n      \"reference\": \" \\\" John\\\", \\\" age\\\": \\n\\n\",\n      \"status\": \"pass\"\n    }\n  ],\n  \"totals\": {\n    \"passed\": 4,\n    \"failed\": 1\n  }\n}\n",
           "stderr_tail": ""
         },
         "long_context": {
@@ -826,7 +826,7 @@
           "reason": "check_class_not_executable"
         }
       },
-      "resolved_file": "/home/lab/workspace/models/Lucie-7B-Instruct-Q4_K_M/Lucie-7B-Instruct-Q4_K_M.gguf",
+      "resolved_file": "models/Lucie-7B-Instruct-Q4_K_M/Lucie-7B-Instruct-Q4_K_M.gguf",
       "actual_sha256": "0d889e0c126eb0424e478029dd9198af2afdffce29b0d98a86455c3c5b506db3",
       "file_status": "pass",
       "complete": false
@@ -841,7 +841,7 @@
           "status": "pass",
           "returncode": 0,
           "elapsed_ms": 1387.1,
-          "stderr_tail": "gpu-split: budget=25.13GB fixed=0.96GB G=40/40 full=1 used=8.17GB\ngpu: CUDA backend on NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb (7.5 GB weights in VRAM)\ngpu: VRAM 16.92 GB free of 25.37 GB after init (kv 0.67 GB + scratch 0.05 GB this instance)\nloaded /home/lab/workspace/models/Mistral-Nemo-Instruct-2407-Q4_K_M/Mistral-Nemo-Instruct-2407-Q4_K_M.gguf | llama | 40 layers | ctx 4096 | 64 threads | 1.02s\nsampling: mistral-nemo (temp 0.00 \u2014 greedy argmax; top_p/top_k/min_p/repeat_penalty inactive)\n\nprompt: 5 tok, 25.37 tok/s | gen: 1 tok, 41.17 tok/s\n"
+          "stderr_tail": "gpu-split: budget=25.13GB fixed=0.96GB G=40/40 full=1 used=8.17GB\ngpu: CUDA backend on NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb (7.5 GB weights in VRAM)\ngpu: VRAM 16.92 GB free of 25.37 GB after init (kv 0.67 GB + scratch 0.05 GB this instance)\nloaded models/Mistral-Nemo-Instruct-2407-Q4_K_M/Mistral-Nemo-Instruct-2407-Q4_K_M.gguf | llama | 40 layers | ctx 4096 | 64 threads | 1.02s\nsampling: mistral-nemo (temp 0.00 \u2014 greedy argmax; top_p/top_k/min_p/repeat_penalty inactive)\n\nprompt: 5 tok, 25.37 tok/s | gen: 1 tok, 41.17 tok/s\n"
         },
         "tokenizer": {
           "status": "pass",
@@ -873,13 +873,13 @@
           "returncode": 0,
           "elapsed_ms": 52558.17,
           "scenario_matrix": "agent-torture",
-          "output_tail": "report: /home/lab/workspace/Xyntetik-runner/tests/torture/out/report.json\nraw: /home/lab/workspace/Xyntetik-runner/tests/torture/out/raw.jsonl\nruntime=runner requests=8 passed=8 failed=0\n"
+          "output_tail": "report: Xyntetik-runner/tests/torture/out/report.json\nraw: Xyntetik-runner/tests/torture/out/raw.jsonl\nruntime=runner requests=8 passed=8 failed=0\n"
         },
         "greedy_reference": {
           "status": "fail",
           "returncode": 1,
           "elapsed_ms": 16811.4,
-          "stdout_tail": "{\n  \"schema_version\": \"xyntetik.runner.greedy-reference.v1\",\n  \"generated_utc\": \"2026-08-12T16:23:49Z\",\n  \"runner\": \"runner 0.1.15-alpha\",\n  \"reference\": \"version: 1 (f8def7f)\",\n  \"model\": \"/home/lab/workspace/models/Mistral-Nemo-Instruct-2407-Q4_K_M/Mistral-Nemo-Instruct-2407-Q4_K_M.gguf\",\n  \"tokens\": 8,\n  \"comparison\": \"exact generated UTF-8 text from /v1/completions at temperature 0\",\n  \"comparisons\": [\n    {\n      \"prompt\": \"The capital of France is\",\n      \"runner\": \" Paris. The city is located on the\",\n      \"reference\": \" Paris. Paris is the largest city in\",\n      \"status\": \"fail\"\n    },\n    {\n      \"prompt\": \"def fibonacci(n):\",\n      \"runner\": \" # function to generate fibonacci series\\n\",\n      \"reference\": \" # function to generate fibonacci sequence\\n\",\n      \"status\": \"fail\"\n    },\n    {\n      \"prompt\": \"1 2 3 4 5 6 7 8\",\n      \"runner\": \" 9 0 7 6\",\n      \"reference\": \" 9 0 7 6\",\n      \"status\": \"pass\"\n    },\n    {\n      \"prompt\": \"Once upon a time, in a land far away,\",\n      \"runner\": \" there was a kingdom called the Kingdom of\",\n      \"reference\": \" there was a kingdom called the Kingdom of\",\n      \"status\": \"pass\"\n    },\n    {\n      \"prompt\": \"JSON example: {\\\"name\\\":\",\n      \"runner\": \" \\\"John\\\", \\\"age\\\": 3\",\n      \"reference\": \" \\\"John\\\", \\\"age\\\": 3\",\n      \"status\": \"pass\"\n    }\n  ],\n  \"totals\": {\n    \"passed\": 3,\n    \"failed\": 2\n  }\n}\n",
+          "stdout_tail": "{\n  \"schema_version\": \"xyntetik.runner.greedy-reference.v1\",\n  \"generated_utc\": \"2026-08-12T16:23:49Z\",\n  \"runner\": \"runner 0.1.15-alpha\",\n  \"reference\": \"version: 1 (f8def7f)\",\n  \"model\": \"models/Mistral-Nemo-Instruct-2407-Q4_K_M/Mistral-Nemo-Instruct-2407-Q4_K_M.gguf\",\n  \"tokens\": 8,\n  \"comparison\": \"exact generated UTF-8 text from /v1/completions at temperature 0\",\n  \"comparisons\": [\n    {\n      \"prompt\": \"The capital of France is\",\n      \"runner\": \" Paris. The city is located on the\",\n      \"reference\": \" Paris. Paris is the largest city in\",\n      \"status\": \"fail\"\n    },\n    {\n      \"prompt\": \"def fibonacci(n):\",\n      \"runner\": \" # function to generate fibonacci series\\n\",\n      \"reference\": \" # function to generate fibonacci sequence\\n\",\n      \"status\": \"fail\"\n    },\n    {\n      \"prompt\": \"1 2 3 4 5 6 7 8\",\n      \"runner\": \" 9 0 7 6\",\n      \"reference\": \" 9 0 7 6\",\n      \"status\": \"pass\"\n    },\n    {\n      \"prompt\": \"Once upon a time, in a land far away,\",\n      \"runner\": \" there was a kingdom called the Kingdom of\",\n      \"reference\": \" there was a kingdom called the Kingdom of\",\n      \"status\": \"pass\"\n    },\n    {\n      \"prompt\": \"JSON example: {\\\"name\\\":\",\n      \"runner\": \" \\\"John\\\", \\\"age\\\": 3\",\n      \"reference\": \" \\\"John\\\", \\\"age\\\": 3\",\n      \"status\": \"pass\"\n    }\n  ],\n  \"totals\": {\n    \"passed\": 3,\n    \"failed\": 2\n  }\n}\n",
           "stderr_tail": ""
         },
         "long_context": {
@@ -887,7 +887,7 @@
           "reason": "check_class_not_executable"
         }
       },
-      "resolved_file": "/home/lab/workspace/models/Mistral-Nemo-Instruct-2407-Q4_K_M/Mistral-Nemo-Instruct-2407-Q4_K_M.gguf",
+      "resolved_file": "models/Mistral-Nemo-Instruct-2407-Q4_K_M/Mistral-Nemo-Instruct-2407-Q4_K_M.gguf",
       "actual_sha256": "5964f3e6d9c17b99e3d2174022048f3ec58b12ee8fefa987888e0562d070d52e",
       "file_status": "pass",
       "complete": false
@@ -902,14 +902,14 @@
           "status": "pass",
           "returncode": 0,
           "elapsed_ms": 2263.5,
-          "stderr_tail": "gpu-split: budget=25.13GB fixed=1.43GB G=32/32 full=1 used=5.73GB\ngpu: CUDA backend on NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb (5.0 GB weights in VRAM)\ngpu: VRAM 19.91 GB free of 25.37 GB after init (kv 0.13 GB + scratch 0.05 GB this instance)\nloaded /home/lab/workspace/models/Teuken-7B-instruct-commercial-v0.4-Q4_K_M/Teuken-7B-instruct-commercial-v0.4-Q4_K_M.gguf | llama | 32 layers | ctx 4096 | 64 threads | 1.72s\nsampling: teuken (temp 0.00 \u2014 greedy argmax; top_p/top_k/min_p/repeat_penalty inactive)\n\nprompt: 6 tok, 17.37 tok/s | gen: 1 tok, 38.10 tok/s\n"
+          "stderr_tail": "gpu-split: budget=25.13GB fixed=1.43GB G=32/32 full=1 used=5.73GB\ngpu: CUDA backend on NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb (5.0 GB weights in VRAM)\ngpu: VRAM 19.91 GB free of 25.37 GB after init (kv 0.13 GB + scratch 0.05 GB this instance)\nloaded models/Teuken-7B-instruct-commercial-v0.4-Q4_K_M/Teuken-7B-instruct-commercial-v0.4-Q4_K_M.gguf | llama | 32 layers | ctx 4096 | 64 threads | 1.72s\nsampling: teuken (temp 0.00 \u2014 greedy argmax; top_p/top_k/min_p/repeat_penalty inactive)\n\nprompt: 6 tok, 17.37 tok/s | gen: 1 tok, 38.10 tok/s\n"
         },
         "tokenizer": {
           "status": "not_executed",
           "returncode": 1,
           "elapsed_ms": 2805.5,
           "stdout_tail": "",
-          "stderr_tail": "ild/lib/python3.14/site-packages/huggingface_hub/file_download.py\", line 1088, in _hf_hub_download_to_cache_dir\n    (url_to_download, etag, commit_hash, expected_size, xet_file_data, head_call_error) = _get_metadata_or_catch_error(\n                                                                                          ~~~~~~~~~~~~~~~~~~~~~~~~~~~~^\n        repo_id=repo_id,\n        ^^^^^^^^^^^^^^^^\n    ...<10 lines>...\n        tree_cache_folder=storage_folder,\n        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n    )\n    ^\n  File \"/home/lab/.conda/envs/ccbuild/lib/python3.14/site-packages/huggingface_hub/file_download.py\", line 1707, in _get_metadata_or_catch_error\n    metadata = get_hf_file_metadata(\n        url=url,\n    ...<4 lines>...\n        retry_on_errors=retry_on_errors,\n    )\n  File \"/home/lab/.conda/envs/ccbuild/lib/python3.14/site-packages/huggingface_hub/utils/_validators.py\", line 88, in _inner_fn\n    return fn(*args, **kwargs)\n  File \"/home/lab/.conda/envs/ccbuild/lib/python3.14/site-packages/huggingface_hub/file_download.py\", line 1615, in get_hf_file_metadata\n    response = _httpx_follow_relative_redirects_with_backoff(\n        method=\"HEAD\", url=url, headers=hf_headers, timeout=timeout, retry_on_errors=retry_on_errors\n    )\n  File \"/home/lab/.conda/envs/ccbuild/lib/python3.14/site-packages/huggingface_hub/utils/_http.py\", line 726, in _httpx_follow_relative_redirects_with_backoff\n    hf_raise_for_status(response)\n    ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^\n  File \"/home/lab/.conda/envs/ccbuild/lib/python3.14/site-packages/huggingface_hub/utils/_http.py\", line 815, in hf_raise_for_status\n    raise _format(RemoteEntryNotFoundError, message, response, repo_type=repo_type, repo_id=repo_id) from e\nhuggingface_hub.errors.RemoteEntryNotFoundError: 404 Client Error. (Request ID: Root=1-6a7c9e2a-6e76cceb6727b36c0924ffc6;0270c47b-b560-4613-8cb4-9bca9126a2e6)\n\nEntry Not Found for url: https://huggingface.co/openGPT-X/Teuken-7B-instruct-commercial-v0.4/resolve/main/tokenizer.json.\n",
+          "stderr_tail": "ild/lib/python3.14/site-packages/huggingface_hub/file_download.py\", line 1088, in _hf_hub_download_to_cache_dir\n    (url_to_download, etag, commit_hash, expected_size, xet_file_data, head_call_error) = _get_metadata_or_catch_error(\n                                                                                          ~~~~~~~~~~~~~~~~~~~~~~~~~~~~^\n        repo_id=repo_id,\n        ^^^^^^^^^^^^^^^^\n    ...<10 lines>...\n        tree_cache_folder=storage_folder,\n        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n    )\n    ^\n  File \"~/.conda/envs/ccbuild/lib/python3.14/site-packages/huggingface_hub/file_download.py\", line 1707, in _get_metadata_or_catch_error\n    metadata = get_hf_file_metadata(\n        url=url,\n    ...<4 lines>...\n        retry_on_errors=retry_on_errors,\n    )\n  File \"~/.conda/envs/ccbuild/lib/python3.14/site-packages/huggingface_hub/utils/_validators.py\", line 88, in _inner_fn\n    return fn(*args, **kwargs)\n  File \"~/.conda/envs/ccbuild/lib/python3.14/site-packages/huggingface_hub/file_download.py\", line 1615, in get_hf_file_metadata\n    response = _httpx_follow_relative_redirects_with_backoff(\n        method=\"HEAD\", url=url, headers=hf_headers, timeout=timeout, retry_on_errors=retry_on_errors\n    )\n  File \"~/.conda/envs/ccbuild/lib/python3.14/site-packages/huggingface_hub/utils/_http.py\", line 726, in _httpx_follow_relative_redirects_with_backoff\n    hf_raise_for_status(response)\n    ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^\n  File \"~/.conda/envs/ccbuild/lib/python3.14/site-packages/huggingface_hub/utils/_http.py\", line 815, in hf_raise_for_status\n    raise _format(RemoteEntryNotFoundError, message, response, repo_type=repo_type, repo_id=repo_id) from e\nhuggingface_hub.errors.RemoteEntryNotFoundError: 404 Client Error. (Request ID: Root=1-6a7c9e2a-6e76cceb6727b36c0924ffc6;0270c47b-b560-4613-8cb4-9bca9126a2e6)\n\nEntry Not Found for url: https://huggingface.co/openGPT-X/Teuken-7B-instruct-commercial-v0.4/resolve/main/tokenizer.json.\n",
           "reason": "tokenizer_reference_unavailable"
         },
         "cpu_cuda": {
@@ -937,13 +937,13 @@
           "returncode": 0,
           "elapsed_ms": 46227.07,
           "scenario_matrix": "agent-torture",
-          "output_tail": "report: /home/lab/workspace/Xyntetik-runner/tests/torture/out/report.json\nraw: /home/lab/workspace/Xyntetik-runner/tests/torture/out/raw.jsonl\nruntime=runner requests=8 passed=8 failed=0\n"
+          "output_tail": "report: Xyntetik-runner/tests/torture/out/report.json\nraw: Xyntetik-runner/tests/torture/out/raw.jsonl\nruntime=runner requests=8 passed=8 failed=0\n"
         },
         "greedy_reference": {
           "status": "pass",
           "returncode": 0,
           "elapsed_ms": 14560.1,
-          "stdout_tail": "{\n  \"schema_version\": \"xyntetik.runner.greedy-reference.v1\",\n  \"generated_utc\": \"2026-08-12T16:26:34Z\",\n  \"runner\": \"runner 0.1.15-alpha\",\n  \"reference\": \"version: 1 (f8def7f)\",\n  \"model\": \"/home/lab/workspace/models/Teuken-7B-instruct-commercial-v0.4-Q4_K_M/Teuken-7B-instruct-commercial-v0.4-Q4_K_M.gguf\",\n  \"tokens\": 8,\n  \"comparison\": \"exact generated UTF-8 text from /v1/completions at temperature 0\",\n  \"comparisons\": [\n    {\n      \"prompt\": \"The capital of France is\",\n      \"runner\": \" Paris.\",\n      \"reference\": \" Paris.\",\n      \"status\": \"pass\"\n    },\n    {\n      \"prompt\": \"def fibonacci(n):\",\n      \"runner\": \" if n < 2: return\",\n      \"reference\": \" if n < 2: return\",\n      \"status\": \"pass\"\n    },\n    {\n      \"prompt\": \"1 2 3 4 5 6 7 8\",\n      \"runner\": \" 9 10 11\",\n      \"reference\": \" 9 10 11\",\n      \"status\": \"pass\"\n    },\n    {\n      \"prompt\": \"Once upon a time, in a land far away,\",\n      \"runner\": \" there lived a young girl named Rosalind\",\n      \"reference\": \" there lived a young girl named Rosalind\",\n      \"status\": \"pass\"\n    },\n    {\n      \"prompt\": \"JSON example: {\\\"name\\\":\",\n      \"runner\": \" \\\"John\\\", \\\"age\\\": 2\",\n      \"reference\": \" \\\"John\\\", \\\"age\\\": 2\",\n      \"status\": \"pass\"\n    }\n  ],\n  \"totals\": {\n    \"passed\": 5,\n    \"failed\": 0\n  }\n}\n",
+          "stdout_tail": "{\n  \"schema_version\": \"xyntetik.runner.greedy-reference.v1\",\n  \"generated_utc\": \"2026-08-12T16:26:34Z\",\n  \"runner\": \"runner 0.1.15-alpha\",\n  \"reference\": \"version: 1 (f8def7f)\",\n  \"model\": \"models/Teuken-7B-instruct-commercial-v0.4-Q4_K_M/Teuken-7B-instruct-commercial-v0.4-Q4_K_M.gguf\",\n  \"tokens\": 8,\n  \"comparison\": \"exact generated UTF-8 text from /v1/completions at temperature 0\",\n  \"comparisons\": [\n    {\n      \"prompt\": \"The capital of France is\",\n      \"runner\": \" Paris.\",\n      \"reference\": \" Paris.\",\n      \"status\": \"pass\"\n    },\n    {\n      \"prompt\": \"def fibonacci(n):\",\n      \"runner\": \" if n < 2: return\",\n      \"reference\": \" if n < 2: return\",\n      \"status\": \"pass\"\n    },\n    {\n      \"prompt\": \"1 2 3 4 5 6 7 8\",\n      \"runner\": \" 9 10 11\",\n      \"reference\": \" 9 10 11\",\n      \"status\": \"pass\"\n    },\n    {\n      \"prompt\": \"Once upon a time, in a land far away,\",\n      \"runner\": \" there lived a young girl named Rosalind\",\n      \"reference\": \" there lived a young girl named Rosalind\",\n      \"status\": \"pass\"\n    },\n    {\n      \"prompt\": \"JSON example: {\\\"name\\\":\",\n      \"runner\": \" \\\"John\\\", \\\"age\\\": 2\",\n      \"reference\": \" \\\"John\\\", \\\"age\\\": 2\",\n      \"status\": \"pass\"\n    }\n  ],\n  \"totals\": {\n    \"passed\": 5,\n    \"failed\": 0\n  }\n}\n",
           "stderr_tail": ""
         },
         "long_context": {
@@ -951,7 +951,7 @@
           "reason": "check_class_not_executable"
         }
       },
-      "resolved_file": "/home/lab/workspace/models/Teuken-7B-instruct-commercial-v0.4-Q4_K_M/Teuken-7B-instruct-commercial-v0.4-Q4_K_M.gguf",
+      "resolved_file": "models/Teuken-7B-instruct-commercial-v0.4-Q4_K_M/Teuken-7B-instruct-commercial-v0.4-Q4_K_M.gguf",
       "actual_sha256": "03fd13daafb6f20c1c5f4b908d163841cdd96803a6f5a7c0c39dd236a2b1630b",
       "file_status": "pass",
       "complete": false
@@ -966,7 +966,7 @@
           "status": "pass",
           "returncode": 0,
           "elapsed_ms": 2293.1,
-          "stderr_tail": "gpu-split: budget=25.13GB fixed=1.17GB G=32/32 full=1 used=5.10GB\ngpu: CUDA backend on NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb (4.9 GB weights in VRAM)\ngpu: VRAM 19.68 GB free of 25.37 GB after init (kv 0.54 GB + scratch 0.05 GB this instance)\nloaded /home/lab/workspace/models/salamandra-7b-instruct-Q4_K_M-f32/salamandra-7b-instruct-Q4_K_M-f32.gguf | llama | 32 layers | ctx 4096 | 64 threads | 1.95s\nsampling: salamandra (temp 0.00 \u2014 greedy argmax; top_p/top_k/min_p/repeat_penalty inactive)\n\nprompt: 5 tok, 46.59 tok/s | gen: 1 tok, 59.61 tok/s\n"
+          "stderr_tail": "gpu-split: budget=25.13GB fixed=1.17GB G=32/32 full=1 used=5.10GB\ngpu: CUDA backend on NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb (4.9 GB weights in VRAM)\ngpu: VRAM 19.68 GB free of 25.37 GB after init (kv 0.54 GB + scratch 0.05 GB this instance)\nloaded models/salamandra-7b-instruct-Q4_K_M-f32/salamandra-7b-instruct-Q4_K_M-f32.gguf | llama | 32 layers | ctx 4096 | 64 threads | 1.95s\nsampling: salamandra (temp 0.00 \u2014 greedy argmax; top_p/top_k/min_p/repeat_penalty inactive)\n\nprompt: 5 tok, 46.59 tok/s | gen: 1 tok, 59.61 tok/s\n"
         },
         "tokenizer": {
           "status": "fail",
@@ -998,13 +998,13 @@
           "returncode": 0,
           "elapsed_ms": 36182.79,
           "scenario_matrix": "agent-torture",
-          "output_tail": "report: /home/lab/workspace/Xyntetik-runner/tests/torture/out/report.json\nraw: /home/lab/workspace/Xyntetik-runner/tests/torture/out/raw.jsonl\nruntime=runner requests=8 passed=8 failed=0\n"
+          "output_tail": "report: Xyntetik-runner/tests/torture/out/report.json\nraw: Xyntetik-runner/tests/torture/out/raw.jsonl\nruntime=runner requests=8 passed=8 failed=0\n"
         },
         "greedy_reference": {
           "status": "pass",
           "returncode": 0,
           "elapsed_ms": 14930.2,
-          "stdout_tail": "{\n  \"schema_version\": \"xyntetik.runner.greedy-reference.v1\",\n  \"generated_utc\": \"2026-08-12T16:29:55Z\",\n  \"runner\": \"runner 0.1.15-alpha\",\n  \"reference\": \"version: 1 (f8def7f)\",\n  \"model\": \"/home/lab/workspace/models/salamandra-7b-instruct-Q4_K_M-f32/salamandra-7b-instruct-Q4_K_M-f32.gguf\",\n  \"tokens\": 8,\n  \"comparison\": \"exact generated UTF-8 text from /v1/completions at temperature 0\",\n  \"comparisons\": [\n    {\n      \"prompt\": \"The capital of France is\",\n      \"runner\": \" Paris. Paris is located in the North\",\n      \"reference\": \" Paris. Paris is located in the North\",\n      \"status\": \"pass\"\n    },\n    {\n      \"prompt\": \"def fibonacci(n):\",\n      \"runner\": \"\\n    \\\"\\\"\\\"\\n    Calculate the\",\n      \"reference\": \"\\n    \\\"\\\"\\\"\\n    Calculate the\",\n      \"status\": \"pass\"\n    },\n    {\n      \"prompt\": \"1 2 3 4 5 6 7 8\",\n      \"runner\": \" 9 10 11\",\n      \"reference\": \" 9 10 11\",\n      \"status\": \"pass\"\n    },\n    {\n      \"prompt\": \"Once upon a time, in a land far away,\",\n      \"runner\": \" there lived a king who ruled over\",\n      \"reference\": \" there lived a king who ruled over\",\n      \"status\": \"pass\"\n    },\n    {\n      \"prompt\": \"JSON example: {\\\"name\\\":\",\n      \"runner\": \" \\\"John Doe\\\", \\\"age\\\": \",\n      \"reference\": \" \\\"John Doe\\\", \\\"age\\\": \",\n      \"status\": \"pass\"\n    }\n  ],\n  \"totals\": {\n    \"passed\": 5,\n    \"failed\": 0\n  }\n}\n",
+          "stdout_tail": "{\n  \"schema_version\": \"xyntetik.runner.greedy-reference.v1\",\n  \"generated_utc\": \"2026-08-12T16:29:55Z\",\n  \"runner\": \"runner 0.1.15-alpha\",\n  \"reference\": \"version: 1 (f8def7f)\",\n  \"model\": \"models/salamandra-7b-instruct-Q4_K_M-f32/salamandra-7b-instruct-Q4_K_M-f32.gguf\",\n  \"tokens\": 8,\n  \"comparison\": \"exact generated UTF-8 text from /v1/completions at temperature 0\",\n  \"comparisons\": [\n    {\n      \"prompt\": \"The capital of France is\",\n      \"runner\": \" Paris. Paris is located in the North\",\n      \"reference\": \" Paris. Paris is located in the North\",\n      \"status\": \"pass\"\n    },\n    {\n      \"prompt\": \"def fibonacci(n):\",\n      \"runner\": \"\\n    \\\"\\\"\\\"\\n    Calculate the\",\n      \"reference\": \"\\n    \\\"\\\"\\\"\\n    Calculate the\",\n      \"status\": \"pass\"\n    },\n    {\n      \"prompt\": \"1 2 3 4 5 6 7 8\",\n      \"runner\": \" 9 10 11\",\n      \"reference\": \" 9 10 11\",\n      \"status\": \"pass\"\n    },\n    {\n      \"prompt\": \"Once upon a time, in a land far away,\",\n      \"runner\": \" there lived a king who ruled over\",\n      \"reference\": \" there lived a king who ruled over\",\n      \"status\": \"pass\"\n    },\n    {\n      \"prompt\": \"JSON example: {\\\"name\\\":\",\n      \"runner\": \" \\\"John Doe\\\", \\\"age\\\": \",\n      \"reference\": \" \\\"John Doe\\\", \\\"age\\\": \",\n      \"status\": \"pass\"\n    }\n  ],\n  \"totals\": {\n    \"passed\": 5,\n    \"failed\": 0\n  }\n}\n",
           "stderr_tail": ""
         },
         "long_context": {
@@ -1012,7 +1012,7 @@
           "reason": "check_class_not_executable"
         }
       },
-      "resolved_file": "/home/lab/workspace/models/salamandra-7b-instruct-Q4_K_M-f32/salamandra-7b-instruct-Q4_K_M-f32.gguf",
+      "resolved_file": "models/salamandra-7b-instruct-Q4_K_M-f32/salamandra-7b-instruct-Q4_K_M-f32.gguf",
       "actual_sha256": "bac8e8c1d1d9d53cbdb148b8ff9ad378ddb392429207099e85b5aae3a43bff3d",
       "file_status": "pass",
       "complete": false
@@ -1027,14 +1027,14 @@
           "status": "pass",
           "returncode": 0,
           "elapsed_ms": 4405.1,
-          "stderr_tail": "gpu-split: budget=25.13GB fixed=1.06GB G=60/60 full=1 used=19.49GB\ngpu: CUDA backend on NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb (18.5 GB weights in VRAM)\ngpu: VRAM 5.49 GB free of 25.37 GB after init (kv 1.01 GB + scratch 0.07 GB this instance)\nloaded /home/lab/workspace/models/TildeOpen-30b-Q4_K_M/TildeOpen-30b-Q4_K_M.gguf | llama | 60 layers | ctx 4096 | 64 threads | 3.54s\nsampling: generic (temp 0.00 \u2014 greedy argmax; top_p/top_k/min_p/repeat_penalty inactive)\n\nprompt: 5 tok, 9.65 tok/s | gen: 1 tok, 17.49 tok/s\n"
+          "stderr_tail": "gpu-split: budget=25.13GB fixed=1.06GB G=60/60 full=1 used=19.49GB\ngpu: CUDA backend on NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb (18.5 GB weights in VRAM)\ngpu: VRAM 5.49 GB free of 25.37 GB after init (kv 1.01 GB + scratch 0.07 GB this instance)\nloaded models/TildeOpen-30b-Q4_K_M/TildeOpen-30b-Q4_K_M.gguf | llama | 60 layers | ctx 4096 | 64 threads | 3.54s\nsampling: generic (temp 0.00 \u2014 greedy argmax; top_p/top_k/min_p/repeat_penalty inactive)\n\nprompt: 5 tok, 9.65 tok/s | gen: 1 tok, 17.49 tok/s\n"
         },
         "tokenizer": {
           "status": "not_executed",
           "returncode": 1,
           "elapsed_ms": 2675.4,
           "stdout_tail": "",
-          "stderr_tail": "me/lab/.conda/envs/ccbuild/lib/python3.14/site-packages/huggingface_hub/file_download.py\", line 1088, in _hf_hub_download_to_cache_dir\n    (url_to_download, etag, commit_hash, expected_size, xet_file_data, head_call_error) = _get_metadata_or_catch_error(\n                                                                                          ~~~~~~~~~~~~~~~~~~~~~~~~~~~~^\n        repo_id=repo_id,\n        ^^^^^^^^^^^^^^^^\n    ...<10 lines>...\n        tree_cache_folder=storage_folder,\n        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n    )\n    ^\n  File \"/home/lab/.conda/envs/ccbuild/lib/python3.14/site-packages/huggingface_hub/file_download.py\", line 1707, in _get_metadata_or_catch_error\n    metadata = get_hf_file_metadata(\n        url=url,\n    ...<4 lines>...\n        retry_on_errors=retry_on_errors,\n    )\n  File \"/home/lab/.conda/envs/ccbuild/lib/python3.14/site-packages/huggingface_hub/utils/_validators.py\", line 88, in _inner_fn\n    return fn(*args, **kwargs)\n  File \"/home/lab/.conda/envs/ccbuild/lib/python3.14/site-packages/huggingface_hub/file_download.py\", line 1615, in get_hf_file_metadata\n    response = _httpx_follow_relative_redirects_with_backoff(\n        method=\"HEAD\", url=url, headers=hf_headers, timeout=timeout, retry_on_errors=retry_on_errors\n    )\n  File \"/home/lab/.conda/envs/ccbuild/lib/python3.14/site-packages/huggingface_hub/utils/_http.py\", line 726, in _httpx_follow_relative_redirects_with_backoff\n    hf_raise_for_status(response)\n    ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^\n  File \"/home/lab/.conda/envs/ccbuild/lib/python3.14/site-packages/huggingface_hub/utils/_http.py\", line 815, in hf_raise_for_status\n    raise _format(RemoteEntryNotFoundError, message, response, repo_type=repo_type, repo_id=repo_id) from e\nhuggingface_hub.errors.RemoteEntryNotFoundError: 404 Client Error. (Request ID: Root=1-6a7c9fc0-6d63e9372744439569b9199b;27d2189f-5e9f-44dd-b6ce-9921f5ac1f97)\n\nEntry Not Found for url: https://huggingface.co/TildeAI/TildeOpen-30b/resolve/main/tokenizer.json.\n",
+          "stderr_tail": "me/lab/.conda/envs/ccbuild/lib/python3.14/site-packages/huggingface_hub/file_download.py\", line 1088, in _hf_hub_download_to_cache_dir\n    (url_to_download, etag, commit_hash, expected_size, xet_file_data, head_call_error) = _get_metadata_or_catch_error(\n                                                                                          ~~~~~~~~~~~~~~~~~~~~~~~~~~~~^\n        repo_id=repo_id,\n        ^^^^^^^^^^^^^^^^\n    ...<10 lines>...\n        tree_cache_folder=storage_folder,\n        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n    )\n    ^\n  File \"~/.conda/envs/ccbuild/lib/python3.14/site-packages/huggingface_hub/file_download.py\", line 1707, in _get_metadata_or_catch_error\n    metadata = get_hf_file_metadata(\n        url=url,\n    ...<4 lines>...\n        retry_on_errors=retry_on_errors,\n    )\n  File \"~/.conda/envs/ccbuild/lib/python3.14/site-packages/huggingface_hub/utils/_validators.py\", line 88, in _inner_fn\n    return fn(*args, **kwargs)\n  File \"~/.conda/envs/ccbuild/lib/python3.14/site-packages/huggingface_hub/file_download.py\", line 1615, in get_hf_file_metadata\n    response = _httpx_follow_relative_redirects_with_backoff(\n        method=\"HEAD\", url=url, headers=hf_headers, timeout=timeout, retry_on_errors=retry_on_errors\n    )\n  File \"~/.conda/envs/ccbuild/lib/python3.14/site-packages/huggingface_hub/utils/_http.py\", line 726, in _httpx_follow_relative_redirects_with_backoff\n    hf_raise_for_status(response)\n    ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^\n  File \"~/.conda/envs/ccbuild/lib/python3.14/site-packages/huggingface_hub/utils/_http.py\", line 815, in hf_raise_for_status\n    raise _format(RemoteEntryNotFoundError, message, response, repo_type=repo_type, repo_id=repo_id) from e\nhuggingface_hub.errors.RemoteEntryNotFoundError: 404 Client Error. (Request ID: Root=1-6a7c9fc0-6d63e9372744439569b9199b;27d2189f-5e9f-44dd-b6ce-9921f5ac1f97)\n\nEntry Not Found for url: https://huggingface.co/TildeAI/TildeOpen-30b/resolve/main/tokenizer.json.\n",
           "reason": "tokenizer_reference_unavailable"
         },
         "cpu_cuda": {
@@ -1062,13 +1062,13 @@
           "returncode": 0,
           "elapsed_ms": 152895.05,
           "scenario_matrix": "agent-torture",
-          "output_tail": "report: /home/lab/workspace/Xyntetik-runner/tests/torture/out/report.json\nraw: /home/lab/workspace/Xyntetik-runner/tests/torture/out/raw.jsonl\nruntime=runner requests=8 passed=8 failed=0\n"
+          "output_tail": "report: Xyntetik-runner/tests/torture/out/report.json\nraw: Xyntetik-runner/tests/torture/out/raw.jsonl\nruntime=runner requests=8 passed=8 failed=0\n"
         },
         "greedy_reference": {
           "status": "pass",
           "returncode": 0,
           "elapsed_ms": 36908.1,
-          "stdout_tail": "{\n  \"schema_version\": \"xyntetik.runner.greedy-reference.v1\",\n  \"generated_utc\": \"2026-08-12T16:37:57Z\",\n  \"runner\": \"runner 0.1.15-alpha\",\n  \"reference\": \"version: 1 (f8def7f)\",\n  \"model\": \"/home/lab/workspace/models/TildeOpen-30b-Q4_K_M/TildeOpen-30b-Q4_K_M.gguf\",\n  \"tokens\": 8,\n  \"comparison\": \"exact generated UTF-8 text from /v1/completions at temperature 0\",\n  \"comparisons\": [\n    {\n      \"prompt\": \"The capital of France is\",\n      \"runner\": \" a city of love, romance, and\",\n      \"reference\": \" a city of love, romance, and\",\n      \"status\": \"pass\"\n    },\n    {\n      \"prompt\": \"def fibonacci(n):\",\n      \"runner\": \"\\n    if n == 0:\",\n      \"reference\": \"\\n    if n == 0:\",\n      \"status\": \"pass\"\n    },\n    {\n      \"prompt\": \"1 2 3 4 5 6 7 8\",\n      \"runner\": \" 9 10 11\",\n      \"reference\": \" 9 10 11\",\n      \"status\": \"pass\"\n    },\n    {\n      \"prompt\": \"Once upon a time, in a land far away,\",\n      \"runner\": \" there was a little girl who loved to\",\n      \"reference\": \" there was a little girl who loved to\",\n      \"status\": \"pass\"\n    },\n    {\n      \"prompt\": \"JSON example: {\\\"name\\\":\",\n      \"runner\": \" \\\"John\\\", \\\"age\\\": 2\",\n      \"reference\": \" \\\"John\\\", \\\"age\\\": 2\",\n      \"status\": \"pass\"\n    }\n  ],\n  \"totals\": {\n    \"passed\": 5,\n    \"failed\": 0\n  }\n}\n",
+          "stdout_tail": "{\n  \"schema_version\": \"xyntetik.runner.greedy-reference.v1\",\n  \"generated_utc\": \"2026-08-12T16:37:57Z\",\n  \"runner\": \"runner 0.1.15-alpha\",\n  \"reference\": \"version: 1 (f8def7f)\",\n  \"model\": \"models/TildeOpen-30b-Q4_K_M/TildeOpen-30b-Q4_K_M.gguf\",\n  \"tokens\": 8,\n  \"comparison\": \"exact generated UTF-8 text from /v1/completions at temperature 0\",\n  \"comparisons\": [\n    {\n      \"prompt\": \"The capital of France is\",\n      \"runner\": \" a city of love, romance, and\",\n      \"reference\": \" a city of love, romance, and\",\n      \"status\": \"pass\"\n    },\n    {\n      \"prompt\": \"def fibonacci(n):\",\n      \"runner\": \"\\n    if n == 0:\",\n      \"reference\": \"\\n    if n == 0:\",\n      \"status\": \"pass\"\n    },\n    {\n      \"prompt\": \"1 2 3 4 5 6 7 8\",\n      \"runner\": \" 9 10 11\",\n      \"reference\": \" 9 10 11\",\n      \"status\": \"pass\"\n    },\n    {\n      \"prompt\": \"Once upon a time, in a land far away,\",\n      \"runner\": \" there was a little girl who loved to\",\n      \"reference\": \" there was a little girl who loved to\",\n      \"status\": \"pass\"\n    },\n    {\n      \"prompt\": \"JSON example: {\\\"name\\\":\",\n      \"runner\": \" \\\"John\\\", \\\"age\\\": 2\",\n      \"reference\": \" \\\"John\\\", \\\"age\\\": 2\",\n      \"status\": \"pass\"\n    }\n  ],\n  \"totals\": {\n    \"passed\": 5,\n    \"failed\": 0\n  }\n}\n",
           "stderr_tail": ""
         },
         "long_context": {
@@ -1076,7 +1076,7 @@
           "reason": "check_class_not_executable"
         }
       },
-      "resolved_file": "/home/lab/workspace/models/TildeOpen-30b-Q4_K_M/TildeOpen-30b-Q4_K_M.gguf",
+      "resolved_file": "models/TildeOpen-30b-Q4_K_M/TildeOpen-30b-Q4_K_M.gguf",
       "actual_sha256": "b051f04a87a74184b70c79ea7e514d7605817eebb5d7b8cc8f610406a52f82d5",
       "file_status": "pass",
       "complete": false
@@ -1091,7 +1091,7 @@
           "status": "pass",
           "returncode": 0,
           "elapsed_ms": 2238.5,
-          "stderr_tail": "gpu: this model's MoE router (gating=2 groups=1 norm_w=1 scale=2.826) has no device kernel \u2014 running on CPU\ngpu: model uses a quant type without a CUDA kernel \u2014 using CPU\nloaded /home/lab/workspace/models/trinity-nano/Trinity-Nano-Preview-Q8_0.gguf | afmoe | 56 layers | ctx 4096 | 64 threads | 0.83s\nsampling: generic (temp 0.00 \u2014 greedy argmax; top_p/top_k/min_p/repeat_penalty inactive)\n\nprompt: 3 tok, 3.38 tok/s | gen: 1 tok, 2.42 tok/s\n"
+          "stderr_tail": "gpu: this model's MoE router (gating=2 groups=1 norm_w=1 scale=2.826) has no device kernel \u2014 running on CPU\ngpu: model uses a quant type without a CUDA kernel \u2014 using CPU\nloaded models/trinity-nano/Trinity-Nano-Preview-Q8_0.gguf | afmoe | 56 layers | ctx 4096 | 64 threads | 0.83s\nsampling: generic (temp 0.00 \u2014 greedy argmax; top_p/top_k/min_p/repeat_penalty inactive)\n\nprompt: 3 tok, 3.38 tok/s | gen: 1 tok, 2.42 tok/s\n"
         },
         "tokenizer": {
           "status": "pass",
@@ -1109,7 +1109,7 @@
           "output_tail": "2 + 2 = 4.\n"
         }
       },
-      "resolved_file": "/home/lab/workspace/models/trinity-nano/Trinity-Nano-Preview-Q8_0.gguf",
+      "resolved_file": "models/trinity-nano/Trinity-Nano-Preview-Q8_0.gguf",
       "actual_sha256": "5fcc2428c325e8b2035d280ff28c4c659ea240ce317a9536f230acfc352b79d1",
       "file_status": "pass",
       "complete": true
@@ -1124,7 +1124,7 @@
           "status": "pass",
           "returncode": 0,
           "elapsed_ms": 3759.4,
-          "stderr_tail": "gpu-split: budget=25.13GB fixed=1.35GB G=52/52 full=1 used=16.62GB\ngpu: CUDA backend on NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb (16.8 GB weights in VRAM)\ngpu: VRAM 8.08 GB free of 25.37 GB after init (kv 0.22 GB + scratch 0.05 GB this instance)\nloaded /home/lab/workspace/models/muse-glimmer-30B-kquant-17gb/muse-glimmer-30B-kquant-17gb.gguf | muse-glimmer | 52 layers | ctx 4096 | 64 threads | 2.96s\nsampling: generic (temp 0.00 \u2014 greedy argmax; top_p/top_k/min_p/repeat_penalty inactive)\n\nprompt: 4 tok, 8.78 tok/s | gen: 1 tok, 14.75 tok/s\n"
+          "stderr_tail": "gpu-split: budget=25.13GB fixed=1.35GB G=52/52 full=1 used=16.62GB\ngpu: CUDA backend on NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb (16.8 GB weights in VRAM)\ngpu: VRAM 8.08 GB free of 25.37 GB after init (kv 0.22 GB + scratch 0.05 GB this instance)\nloaded models/muse-glimmer-30B-kquant-17gb/muse-glimmer-30B-kquant-17gb.gguf | muse-glimmer | 52 layers | ctx 4096 | 64 threads | 2.96s\nsampling: generic (temp 0.00 \u2014 greedy argmax; top_p/top_k/min_p/repeat_penalty inactive)\n\nprompt: 4 tok, 8.78 tok/s | gen: 1 tok, 14.75 tok/s\n"
         },
         "tokenizer": {
           "status": "pass",
@@ -1156,11 +1156,11 @@
           "status": "pass",
           "returncode": 0,
           "elapsed_ms": 30968.7,
-          "stdout_tail": "{\n  \"schema_version\": \"xyntetik.runner.greedy-reference.v1\",\n  \"generated_utc\": \"2026-08-12T16:43:14Z\",\n  \"runner\": \"runner 0.1.15-alpha\",\n  \"reference\": \"version: 1 (f8def7f)\",\n  \"model\": \"/home/lab/workspace/models/muse-glimmer-30B-kquant-17gb/muse-glimmer-30B-kquant-17gb.gguf\",\n  \"tokens\": 8,\n  \"comparison\": \"exact generated UTF-8 text from /v1/completions at temperature 0\",\n  \"comparisons\": [\n    {\n      \"prompt\": \"The capital of France is\",\n      \"runner\": \" Paris. It is the most populous\",\n      \"reference\": \" Paris. It is the most populous\",\n      \"status\": \"pass\"\n    },\n    {\n      \"prompt\": \"def fibonacci(n):\",\n      \"runner\": \" \\n    if n == 0:\",\n      \"reference\": \" \\n    if n == 0:\",\n      \"status\": \"pass\"\n    },\n    {\n      \"prompt\": \"1 2 3 4 5 6 7 8\",\n      \"runner\": \" 9 10 11 12\",\n      \"reference\": \" 9 10 11 12\",\n      \"status\": \"pass\"\n    },\n    {\n      \"prompt\": \"Once upon a time, in a land far away,\",\n      \"runner\": \" there lived a young girl named Lily.\",\n      \"reference\": \" there lived a young girl named Lily.\",\n      \"status\": \"pass\"\n    },\n    {\n      \"prompt\": \"JSON example: {\\\"name\\\":\",\n      \"runner\": \" \\\"John\\\", \\\"age\\\": 30\",\n      \"reference\": \" \\\"John\\\", \\\"age\\\": 30\",\n      \"status\": \"pass\"\n    }\n  ],\n  \"totals\": {\n    \"passed\": 5,\n    \"failed\": 0\n  }\n}\n",
+          "stdout_tail": "{\n  \"schema_version\": \"xyntetik.runner.greedy-reference.v1\",\n  \"generated_utc\": \"2026-08-12T16:43:14Z\",\n  \"runner\": \"runner 0.1.15-alpha\",\n  \"reference\": \"version: 1 (f8def7f)\",\n  \"model\": \"models/muse-glimmer-30B-kquant-17gb/muse-glimmer-30B-kquant-17gb.gguf\",\n  \"tokens\": 8,\n  \"comparison\": \"exact generated UTF-8 text from /v1/completions at temperature 0\",\n  \"comparisons\": [\n    {\n      \"prompt\": \"The capital of France is\",\n      \"runner\": \" Paris. It is the most populous\",\n      \"reference\": \" Paris. It is the most populous\",\n      \"status\": \"pass\"\n    },\n    {\n      \"prompt\": \"def fibonacci(n):\",\n      \"runner\": \" \\n    if n == 0:\",\n      \"reference\": \" \\n    if n == 0:\",\n      \"status\": \"pass\"\n    },\n    {\n      \"prompt\": \"1 2 3 4 5 6 7 8\",\n      \"runner\": \" 9 10 11 12\",\n      \"reference\": \" 9 10 11 12\",\n      \"status\": \"pass\"\n    },\n    {\n      \"prompt\": \"Once upon a time, in a land far away,\",\n      \"runner\": \" there lived a young girl named Lily.\",\n      \"reference\": \" there lived a young girl named Lily.\",\n      \"status\": \"pass\"\n    },\n    {\n      \"prompt\": \"JSON example: {\\\"name\\\":\",\n      \"runner\": \" \\\"John\\\", \\\"age\\\": 30\",\n      \"reference\": \" \\\"John\\\", \\\"age\\\": 30\",\n      \"status\": \"pass\"\n    }\n  ],\n  \"totals\": {\n    \"passed\": 5,\n    \"failed\": 0\n  }\n}\n",
           "stderr_tail": ""
         }
       },
-      "resolved_file": "/home/lab/workspace/models/muse-glimmer-30B-kquant-17gb/muse-glimmer-30B-kquant-17gb.gguf",
+      "resolved_file": "models/muse-glimmer-30B-kquant-17gb/muse-glimmer-30B-kquant-17gb.gguf",
       "actual_sha256": "7e9b74b7c8875e9e265695df9613bf6290f2392e479ce740495a129019c488d8",
       "file_status": "pass",
       "complete": true
@@ -1175,7 +1175,7 @@
           "status": "pass",
           "returncode": 0,
           "elapsed_ms": 2955.8,
-          "stderr_tail": "gpu-split: budget=25.13GB fixed=0.81GB G=40/40 full=1 used=5.97GB\ngpu: CUDA backend on NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb (5.1 GB weights in VRAM)\ngpu: VRAM 19.34 GB free of 25.37 GB after init (kv 0.67 GB + scratch 0.05 GB this instance)\nloaded /home/lab/workspace/models/granite-4.1-8b-Q4_0/granite-4.1-8b-Q4_0.gguf | granite | 40 layers | ctx 4096 | 64 threads | 0.86s\nsampling: generic (temp 0.00 \u2014 greedy argmax; top_p/top_k/min_p/repeat_penalty inactive)\n\nprompt: 3 tok, 1.53 tok/s | gen: 1 tok, 59.57 tok/s\n"
+          "stderr_tail": "gpu-split: budget=25.13GB fixed=0.81GB G=40/40 full=1 used=5.97GB\ngpu: CUDA backend on NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb (5.1 GB weights in VRAM)\ngpu: VRAM 19.34 GB free of 25.37 GB after init (kv 0.67 GB + scratch 0.05 GB this instance)\nloaded models/granite-4.1-8b-Q4_0/granite-4.1-8b-Q4_0.gguf | granite | 40 layers | ctx 4096 | 64 threads | 0.86s\nsampling: generic (temp 0.00 \u2014 greedy argmax; top_p/top_k/min_p/repeat_penalty inactive)\n\nprompt: 3 tok, 1.53 tok/s | gen: 1 tok, 59.57 tok/s\n"
         },
         "tokenizer": {
           "status": "pass",
@@ -1206,11 +1206,11 @@
           "status": "pass",
           "returncode": 0,
           "elapsed_ms": 14765.2,
-          "stdout_tail": "{\n  \"schema_version\": \"xyntetik.runner.greedy-reference.v1\",\n  \"generated_utc\": \"2026-08-12T16:45:27Z\",\n  \"runner\": \"runner 0.1.15-alpha\",\n  \"reference\": \"version: 1 (f8def7f)\",\n  \"model\": \"/home/lab/workspace/models/granite-4.1-8b-Q4_0/granite-4.1-8b-Q4_0.gguf\",\n  \"tokens\": 8,\n  \"comparison\": \"exact generated UTF-8 text from /v1/completions at temperature 0\",\n  \"comparisons\": [\n    {\n      \"prompt\": \"The capital of France is\",\n      \"runner\": \" Paris. The capital of Germany is Berlin\",\n      \"reference\": \" Paris. The capital of Germany is Berlin\",\n      \"status\": \"pass\"\n    },\n    {\n      \"prompt\": \"def fibonacci(n):\",\n      \"runner\": \" return n if n <= 1 else\",\n      \"reference\": \" return n if n <= 1 else\",\n      \"status\": \"pass\"\n    },\n    {\n      \"prompt\": \"1 2 3 4 5 6 7 8\",\n      \"runner\": \" 9 10 11 12\",\n      \"reference\": \" 9 10 11 12\",\n      \"status\": \"pass\"\n    },\n    {\n      \"prompt\": \"Once upon a time, in a land far away,\",\n      \"runner\": \" there lived a young girl named Lily.\",\n      \"reference\": \" there lived a young girl named Lily.\",\n      \"status\": \"pass\"\n    },\n    {\n      \"prompt\": \"JSON example: {\\\"name\\\":\",\n      \"runner\": \" \\\"John Doe\\\", \\\"age\\\": \",\n      \"reference\": \" \\\"John Doe\\\", \\\"age\\\": \",\n      \"status\": \"pass\"\n    }\n  ],\n  \"totals\": {\n    \"passed\": 5,\n    \"failed\": 0\n  }\n}\n",
+          "stdout_tail": "{\n  \"schema_version\": \"xyntetik.runner.greedy-reference.v1\",\n  \"generated_utc\": \"2026-08-12T16:45:27Z\",\n  \"runner\": \"runner 0.1.15-alpha\",\n  \"reference\": \"version: 1 (f8def7f)\",\n  \"model\": \"models/granite-4.1-8b-Q4_0/granite-4.1-8b-Q4_0.gguf\",\n  \"tokens\": 8,\n  \"comparison\": \"exact generated UTF-8 text from /v1/completions at temperature 0\",\n  \"comparisons\": [\n    {\n      \"prompt\": \"The capital of France is\",\n      \"runner\": \" Paris. The capital of Germany is Berlin\",\n      \"reference\": \" Paris. The capital of Germany is Berlin\",\n      \"status\": \"pass\"\n    },\n    {\n      \"prompt\": \"def fibonacci(n):\",\n      \"runner\": \" return n if n <= 1 else\",\n      \"reference\": \" return n if n <= 1 else\",\n      \"status\": \"pass\"\n    },\n    {\n      \"prompt\": \"1 2 3 4 5 6 7 8\",\n      \"runner\": \" 9 10 11 12\",\n      \"reference\": \" 9 10 11 12\",\n      \"status\": \"pass\"\n    },\n    {\n      \"prompt\": \"Once upon a time, in a land far away,\",\n      \"runner\": \" there lived a young girl named Lily.\",\n      \"reference\": \" there lived a young girl named Lily.\",\n      \"status\": \"pass\"\n    },\n    {\n      \"prompt\": \"JSON example: {\\\"name\\\":\",\n      \"runner\": \" \\\"John Doe\\\", \\\"age\\\": \",\n      \"reference\": \" \\\"John Doe\\\", \\\"age\\\": \",\n      \"status\": \"pass\"\n    }\n  ],\n  \"totals\": {\n    \"passed\": 5,\n    \"failed\": 0\n  }\n}\n",
           "stderr_tail": ""
         }
       },
-      "resolved_file": "/home/lab/workspace/models/granite-4.1-8b-Q4_0/granite-4.1-8b-Q4_0.gguf",
+      "resolved_file": "models/granite-4.1-8b-Q4_0/granite-4.1-8b-Q4_0.gguf",
       "actual_sha256": "5adf9b6b78921093bd4a805e1060f85d7f744c3eafc14d1ca449364d1e721a1a",
       "file_status": "pass",
       "complete": true
@@ -1225,7 +1225,7 @@
           "status": "pass",
           "returncode": 0,
           "elapsed_ms": 9442.8,
-          "stderr_tail": "gpu-split: budget=25.13GB fixed=0.93GB G=64/64 full=1 used=14.23GB\ngpu: CUDA backend on NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb (12.6 GB weights in VRAM)\ngpu: VRAM 11.42 GB free of 25.37 GB after init (kv 1.07 GB + scratch 0.06 GB this instance)\nloaded /home/lab/workspace/models/granite-4.1-30b-Q3_K_S/granite-4.1-30b-Q3_K_S.gguf | granite | 64 layers | ctx 4096 | 64 threads | 1.87s\nsampling: generic (temp 0.00 \u2014 greedy argmax; top_p/top_k/min_p/repeat_penalty inactive)\n\nprompt: 3 tok, 0.42 tok/s | gen: 1 tok, 3.22 tok/s\n"
+          "stderr_tail": "gpu-split: budget=25.13GB fixed=0.93GB G=64/64 full=1 used=14.23GB\ngpu: CUDA backend on NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb (12.6 GB weights in VRAM)\ngpu: VRAM 11.42 GB free of 25.37 GB after init (kv 1.07 GB + scratch 0.06 GB this instance)\nloaded models/granite-4.1-30b-Q3_K_S/granite-4.1-30b-Q3_K_S.gguf | granite | 64 layers | ctx 4096 | 64 threads | 1.87s\nsampling: generic (temp 0.00 \u2014 greedy argmax; top_p/top_k/min_p/repeat_penalty inactive)\n\nprompt: 3 tok, 0.42 tok/s | gen: 1 tok, 3.22 tok/s\n"
         },
         "tokenizer": {
           "status": "pass",
@@ -1247,7 +1247,7 @@
           "output_tail": "2 + 2 equals 4.\n"
         }
       },
-      "resolved_file": "/home/lab/workspace/models/granite-4.1-30b-Q3_K_S/granite-4.1-30b-Q3_K_S.gguf",
+      "resolved_file": "models/granite-4.1-30b-Q3_K_S/granite-4.1-30b-Q3_K_S.gguf",
       "actual_sha256": "a807f6ea95a69a2e159978299fcbb310c14307cbaaa2a64cbb18b7fc7a087df3",
       "file_status": "pass",
       "complete": false

@@ -2,7 +2,7 @@
   "schema_version": "xyntetik.runner.gold-logits.v1",
   "summary": {
     "positions": 98,
-    "hf": "/home/lab/workspace/hf/smollm2-135m",
+    "hf": "hf/smollm2-135m",
     "corpus": "tests/fixtures/mixed-corpus.txt",
     "reference_class": "LlamaForCausalLM",
     "special_prefix_tokens": 0,

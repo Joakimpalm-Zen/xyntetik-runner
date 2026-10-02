@@ -10,7 +10,7 @@
  "runs": {
   "apertus-8b-served": {
    "positions": 2000,
-   "hf": "/home/lab/workspace/hf/apertus-8b",
+   "hf": "hf/apertus-8b",
    "corpus": "tests/fixtures/gold-corpus-2k.txt",
    "reference_class": "ApertusForCausalLM",
    "special_prefix_tokens": 1,
@@ -51,7 +51,7 @@
   },
   "gemma-3-4b-it-bf16": {
    "positions": 2000,
-   "hf": "/home/lab/workspace/hf/gemma-3-4b-it",
+   "hf": "hf/gemma-3-4b-it",
    "corpus": "tests/fixtures/gold-corpus-2k.txt",
    "reference_class": "Gemma3ForConditionalGeneration",
    "special_prefix_tokens": 1,
@@ -92,7 +92,7 @@
   },
   "gemma-3-4b-it-served": {
    "positions": 2000,
-   "hf": "/home/lab/workspace/hf/gemma-3-4b-it",
+   "hf": "hf/gemma-3-4b-it",
    "corpus": "tests/fixtures/gold-corpus-2k.txt",
    "reference_class": "Gemma3ForConditionalGeneration",
    "special_prefix_tokens": 1,
@@ -133,7 +133,7 @@
   },
   "gemma-4-e2b-it-forcebos-bf16": {
    "positions": 2000,
-   "hf": "/home/lab/workspace/hf/gemma-4-e2b-it",
+   "hf": "hf/gemma-4-e2b-it",
    "corpus": "tests/fixtures/gold-corpus-2k.txt",
    "reference_class": "Gemma4ForConditionalGeneration",
    "special_prefix_tokens": 1,
@@ -174,7 +174,7 @@
   },
   "gemma-4-e2b-it-forcebos-served": {
    "positions": 2000,
-   "hf": "/home/lab/workspace/hf/gemma-4-e2b-it",
+   "hf": "hf/gemma-4-e2b-it",
    "corpus": "tests/fixtures/gold-corpus-2k.txt",
    "reference_class": "Gemma4ForConditionalGeneration",
    "special_prefix_tokens": 1,
@@ -215,7 +215,7 @@
   },
   "granite-4.0-h-micro-bf16": {
    "positions": 2000,
-   "hf": "/home/lab/workspace/hf/granite-4.0-h-micro",
+   "hf": "hf/granite-4.0-h-micro",
    "corpus": "tests/fixtures/gold-corpus-2k.txt",
    "reference_class": "GraniteMoeHybridForCausalLM",
    "special_prefix_tokens": 0,
@@ -256,7 +256,7 @@
   },
   "granite-4.0-h-micro-served": {
    "positions": 1999,
-   "hf": "/home/lab/workspace/hf/granite-4.0-h-micro",
+   "hf": "hf/granite-4.0-h-micro",
    "corpus": "tests/fixtures/gold-corpus-2k.txt",
    "reference_class": "GraniteMoeHybridForCausalLM",
    "special_prefix_tokens": 0,
@@ -297,7 +297,7 @@
   },
   "granite-4.2-3b-bf16": {
    "positions": 1983,
-   "hf": "/home/lab/workspace/hf/granite-4.2-3b",
+   "hf": "hf/granite-4.2-3b",
    "corpus": "tests/fixtures/gold-corpus-2k.txt",
    "reference_class": "GraniteForCausalLM",
    "special_prefix_tokens": 0,
@@ -338,7 +338,7 @@
   },
   "granite-4.2-3b-served": {
    "positions": 1984,
-   "hf": "/home/lab/workspace/hf/granite-4.2-3b",
+   "hf": "hf/granite-4.2-3b",
    "corpus": "tests/fixtures/gold-corpus-2k.txt",
    "reference_class": "GraniteForCausalLM",
    "special_prefix_tokens": 0,
@@ -379,7 +379,7 @@
   },
   "qwen2.5-0.5b-bf16": {
    "positions": 1999,
-   "hf": "/home/lab/workspace/hf/qwen2.5-0.5b",
+   "hf": "hf/qwen2.5-0.5b",
    "corpus": "tests/fixtures/gold-corpus-2k.txt",
    "reference_class": "Qwen2ForCausalLM",
    "special_prefix_tokens": 0,
@@ -420,7 +420,7 @@
   },
   "qwen2.5-0.5b-served": {
    "positions": 2000,
-   "hf": "/home/lab/workspace/hf/qwen2.5-0.5b",
+   "hf": "hf/qwen2.5-0.5b",
    "corpus": "tests/fixtures/gold-corpus-2k.txt",
    "reference_class": "Qwen2ForCausalLM",
    "special_prefix_tokens": 0,
@@ -461,7 +461,7 @@
   },
   "qwen3-0.6b-bf16": {
    "positions": 2000,
-   "hf": "/home/lab/workspace/hf/qwen3-0.6b",
+   "hf": "hf/qwen3-0.6b",
    "corpus": "tests/fixtures/gold-corpus-2k.txt",
    "reference_class": "Qwen3ForCausalLM",
    "special_prefix_tokens": 0,
@@ -502,7 +502,7 @@
   },
   "qwen3-0.6b-served": {
    "positions": 2000,
-   "hf": "/home/lab/workspace/hf/qwen3-0.6b",
+   "hf": "hf/qwen3-0.6b",
    "corpus": "tests/fixtures/gold-corpus-2k.txt",
    "reference_class": "Qwen3ForCausalLM",
    "special_prefix_tokens": 0,
@@ -543,7 +543,7 @@
   },
   "qwen3-4b-bf16": {
    "positions": 2000,
-   "hf": "/home/lab/workspace/hf/qwen3-4b",
+   "hf": "hf/qwen3-4b",
    "corpus": "tests/fixtures/gold-corpus-2k.txt",
    "reference_class": "Qwen3ForCausalLM",
    "special_prefix_tokens": 0,
@@ -584,7 +584,7 @@
   },
   "qwen3-4b-served": {
    "positions": 2000,
-   "hf": "/home/lab/workspace/hf/qwen3-4b",
+   "hf": "hf/qwen3-4b",
    "corpus": "tests/fixtures/gold-corpus-2k.txt",
    "reference_class": "Qwen3ForCausalLM",
    "special_prefix_tokens": 0,
@@ -625,7 +625,7 @@
   },
   "qwen3.5-0.8b-bf16": {
    "positions": 2000,
-   "hf": "/home/lab/workspace/hf/qwen3.5-0.8b",
+   "hf": "hf/qwen3.5-0.8b",
    "corpus": "tests/fixtures/gold-corpus-2k.txt",
    "reference_class": "Qwen3_5ForCausalLM",
    "special_prefix_tokens": 0,
@@ -666,7 +666,7 @@
   },
   "qwen3.5-0.8b-served": {
    "positions": 2000,
-   "hf": "/home/lab/workspace/hf/qwen3.5-0.8b",
+   "hf": "hf/qwen3.5-0.8b",
    "corpus": "tests/fixtures/gold-corpus-2k.txt",
    "reference_class": "Qwen3_5ForCausalLM",
    "special_prefix_tokens": 0,
@@ -707,7 +707,7 @@
   },
   "smollm2-135m-bf16": {
    "positions": 1983,
-   "hf": "/home/lab/workspace/hf/smollm2-135m",
+   "hf": "hf/smollm2-135m",
    "corpus": "tests/fixtures/gold-corpus-2k.txt",
    "reference_class": "LlamaForCausalLM",
    "special_prefix_tokens": 0,
@@ -748,7 +748,7 @@
   },
   "smollm2-135m-served": {
    "positions": 1983,
-   "hf": "/home/lab/workspace/hf/smollm2-135m",
+   "hf": "hf/smollm2-135m",
    "corpus": "tests/fixtures/gold-corpus-2k.txt",
    "reference_class": "LlamaForCausalLM",
    "special_prefix_tokens": 0,
@@ -789,7 +789,7 @@
   },
   "stablelm-2-1.6b-FIXED-bf16": {
    "positions": 2000,
-   "hf": "/home/lab/workspace/hf/stablelm-2-1.6b",
+   "hf": "hf/stablelm-2-1.6b",
    "corpus": "tests/fixtures/gold-corpus-2k.txt",
    "reference_class": "StableLmForCausalLM",
    "special_prefix_tokens": 0,
@@ -830,7 +830,7 @@
   },
   "stablelm-2-1.6b-bf16": {
    "positions": 2000,
-   "hf": "/home/lab/workspace/hf/stablelm-2-1.6b",
+   "hf": "hf/stablelm-2-1.6b",
    "corpus": "tests/fixtures/gold-corpus-2k.txt",
    "reference_class": "StableLmForCausalLM",
    "special_prefix_tokens": 0,
@@ -871,7 +871,7 @@
   },
   "trinity-nano-bf16": {
    "positions": 1999,
-   "hf": "/home/lab/workspace/hf/trinity-nano",
+   "hf": "hf/trinity-nano",
    "corpus": "tests/fixtures/gold-corpus-2k.txt",
    "reference_class": "AfmoeForCausalLM",
    "special_prefix_tokens": 1,
@@ -912,7 +912,7 @@
   },
   "trinity-nano-served": {
    "positions": 2000,
-   "hf": "/home/lab/workspace/hf/trinity-nano",
+   "hf": "hf/trinity-nano",
    "corpus": "tests/fixtures/gold-corpus-2k.txt",
    "reference_class": "AfmoeForCausalLM",
    "special_prefix_tokens": 1,

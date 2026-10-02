@@ -24,7 +24,7 @@
           "status": "pass",
           "returncode": 0,
           "elapsed_ms": 217.1,
-          "stderr_tail": "loaded /home/lab/workspace/models/Qwen3-30B-A3B-Q4_K_M/Qwen3-30B-A3B-Q4_K_M.gguf | qwen3moe | 48 layers | ctx 4096 | 32 threads | 0.01s\nsampling: qwen3 (temp 0.00 \u2014 greedy argmax; top_p/top_k/min_p/repeat_penalty inactive)\n\nprompt: 3 tok, 20.74 tok/s | gen: 1 tok, 27.86 tok/s\n"
+          "stderr_tail": "loaded models/Qwen3-30B-A3B-Q4_K_M/Qwen3-30B-A3B-Q4_K_M.gguf | qwen3moe | 48 layers | ctx 4096 | 32 threads | 0.01s\nsampling: qwen3 (temp 0.00 \u2014 greedy argmax; top_p/top_k/min_p/repeat_penalty inactive)\n\nprompt: 3 tok, 20.74 tok/s | gen: 1 tok, 27.86 tok/s\n"
         },
         "cpu_cuda": {
           "status": "not_executed",
@@ -35,7 +35,7 @@
             "RUNNER_CUDA_TC": "0",
             "RUNNER_MOE_EAGER": "1"
           },
-          "report": "/home/lab/workspace/.r41-runner/rel047/cpu_cuda/qwen3-30b-a3b-q4_k_m.json"
+          "report": ".r41-runner/rel047/cpu_cuda/qwen3-30b-a3b-q4_k_m.json"
         },
         "chat": {
           "status": "pass",
@@ -56,8 +56,8 @@
             "passed": 2,
             "failed": 6
           },
-          "report": "/home/lab/workspace/.r41-runner/rel047/tool/qwen3-30b-a3b-q4_k_m.json",
-          "output_tail": "report: /home/lab/workspace/.r41-runner/rel047/tool/qwen3-30b-a3b-q4_k_m/report.json\nraw: /home/lab/workspace/.r41-runner/rel047/tool/qwen3-30b-a3b-q4_k_m/raw.jsonl\nruntime=runner requests=8 passed=2 failed=6\n"
+          "report": ".r41-runner/rel047/tool/qwen3-30b-a3b-q4_k_m.json",
+          "output_tail": "report: .r41-runner/rel047/tool/qwen3-30b-a3b-q4_k_m/report.json\nraw: .r41-runner/rel047/tool/qwen3-30b-a3b-q4_k_m/raw.jsonl\nruntime=runner requests=8 passed=2 failed=6\n"
         },
         "greedy_reference": {
           "status": "not_executed",

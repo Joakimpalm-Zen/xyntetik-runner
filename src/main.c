@@ -222,62 +222,23 @@ static bool schema_file_digest(const char *path, char hex[65]) {
     return ok;
 }
 
-// R1.3: the step loop behind --suspend-after, --session-out and --resume.
-// It stops after `stop_at` generated tokens in all (0: the budget), every
-// handed-out token already forwarded, and says whether the generation is
-// still live -- neither a stop, a finished document nor an error ended it.
-// Only a live generation is imaged. *last is the next token's logits.
-static bool session_steps(engine *e, float *logits, int stop_at, gen_cb cb,
-                          void *ud, const float **last) {
-    int32_t tok;
-    int pos;
-    while (stop_at <= 0 || e->gen_count < stop_at) {
-        if (engine_gen_step(e, logits, cb, ud, &tok, &pos) != ENGINE_STEP_MORE) break;
-        logits = model_forward(e->m, tok, pos);
-        if (!logits) { e->oom = true; break; }
-    }
-    e->pending_pos = -1;
-    *last = logits;
-    return logits && !e->hit_stop && !e->oom;
-}
-
+// R1.3: the CLI's image writer. The loop and the image are session.c's
+// (shared with the server's /v1/runner/sessions); this adds the schema digest
+// a --json-schema run carries and the line the CLI prints.
+#define session_steps session_run
 static bool session_image_out(const char *path, const engine *e,
                               const char *model_path, const float *logits,
                               int n_prompt, int max_new, bool json_mode,
                               bool ignore_eos, const char *schema_file) {
-    session_meta mt;
-    memset(&mt, 0, sizeof mt);
-    if (!envelope_file_sha256(model_path, mt.model_sha256)) {
-        fprintf(stderr, "error: session: cannot hash %s\n", model_path);
-        return false;
-    }
-    char *exe = plat_executable_path();
-    if (exe) envelope_file_sha256(exe, mt.binary_sha256);
-    free(exe);
-    if (schema_file && !schema_file_digest(schema_file, mt.schema_sha256)) {
+    char ssha[65] = "";
+    if (schema_file && !schema_file_digest(schema_file, ssha)) {
         fprintf(stderr, "error: session: cannot read %s\n", schema_file);
         return false;
     }
-    const model_t *m = e->m;
-    mt.model_key = e->model_key;
-    mt.n_ctx = m->n_ctx;
-    snprintf(mt.kv_type, sizeof mt.kv_type, "%s",
-             m->kv_fp4 ? "fp4" : m->kv_split ? "k8v4" : m->kv_q8 ? "q8" : "f16");
-    mt.n_prompt = n_prompt;
-    mt.n_tokens = e->pos;
-    mt.max_new = max_new;
-    mt.generated = e->gen_count;
-    mt.temp = e->smp->temp; mt.top_k = e->smp->top_k; mt.top_p = e->smp->top_p;
-    mt.min_p = e->smp->min_p; mt.repeat_penalty = e->smp->repeat_penalty;
-    // A greedy generation never draws from the rng, and an unseeded run's
-    // rng is the wall clock: recorded, it made two images of the same greedy
-    // state differ whenever the runs straddled a second. The image holds no
-    // timestamp, so a state that does not include the rng does not carry it.
-    mt.rng = e->smp->temp > 0 ? e->smp->rng : 0;
-    mt.json_mode = json_mode;
-    mt.ignore_eos = ignore_eos;
     char sha[65];
-    if (!session_write(path, e, &mt, logits, m->n_vocab, sha)) return false;
+    if (!session_image_write(path, e, model_path, NULL, NULL, logits, n_prompt,
+                       max_new, json_mode, ignore_eos, ssha, sha))
+        return false;
     fprintf(stderr, "session image -> %s (sha256 %s; %d tokens, %d of %d "
             "generated)\n", path, sha, e->pos, e->gen_count, max_new);
     return true;
@@ -344,24 +305,36 @@ static bool replay_constraints_ok(jv *rec, bool json_mode,
         return false;
     }
     if (serve) {
-        // records written before D4a name what shaped them only here
+        // D4b (R1.1.3): a served turn shaped by a JSON schema, JSON mode or
+        // ignore_eos replays under the same constraint the CLI records do,
+        // given the schema by --json-schema (matched by digest below): the
+        // server compiles a response_format into the same engine constraint
+        // the CLI flag does, over the prompt tokens the record carries. What
+        // the replay cannot rebuild is refused by name: a tool envelope
+        // (declarations, choice and the native or generic grammar a request
+        // builds), stop sequences, a reasoning budget or the loop guard.
+        // Records written before D4a name what shaped them only in shaped_by.
         jv *list = cons ? cons : jv_get(serve, "shaped_by");
         char names[256] = "";
         size_t k = 0;
-        int n = 0;
+        int n = 0, rebuilt = 0;
         for (int i = 0; list && list->type == J_ARR && i < list->n; i++) {
             jv *it = list->items[i];
             const char *kind = it && it->type == J_STR ? it->str
                              : jv_str(jv_get(it, "kind"), "?");
+            if (cons && (!strcmp(kind, "json_schema") ||
+                         !strcmp(kind, "json_mode") ||
+                         !strcmp(kind, "ignore_eos")))
+                rebuilt++;
             int w = snprintf(names + k, sizeof names - k, "%s%s", n ? ", " : "", kind);
             if (w > 0 && (size_t)w < sizeof names - k) k += (size_t)w;
             n++;
         }
-        if (n) {
+        if (n > rebuilt) {
             snprintf(why, cap, "the served output was shaped beyond the sampler "
-                     "by %s; this build replays the sampler only (replaying a "
-                     "served turn's constraints is D4b), so a replay could only "
-                     "disagree with the record", names);
+                     "by %s, which a replay does not rebuild (a served JSON "
+                     "schema, JSON mode or ignore_eos does replay), so a replay "
+                     "could only disagree with the record", names);
             return false;
         }
     }
@@ -1051,6 +1024,22 @@ static void usage_to(FILE *f, const char *prog) {
         "                 verify (--trust-key pins the manifest signer). Exit\n"
         "                 0 OK, 2 BAD, 3 UNVERIFIABLE. Does not replay: that is\n"
         "                 --verify with the model\n"
+        "  --export-pack D  with --pack-out DIR: an evidence pack of every\n"
+        "                 receipt-*.json in D (one model, one build), the model\n"
+        "                 signature and key, --pack-envelope F (the envelope\n"
+        "                 manifest the receipts name) and --pack-attach F files\n"
+        "                 (oversight records, ...; repeatable), under a sha256\n"
+        "                 manifest with one inference per receipt and the chain\n"
+        "                 they form; --sign-key signs it. Needs no -m\n"
+        "  --pack-out DIR  where --export-pack writes (created)\n"
+        "  --pack-envelope F, --pack-attach F  see --export-pack\n"
+        "  --check-pack DIR  verify a pack offline like --check-bundle, and\n"
+        "                 that the receipts form the chain it states\n"
+        "  --sessions DIR  with --serve: POST /v1/runner/sessions starts a\n"
+        "                 raw-prompt generation that suspend_after N images\n"
+        "                 into DIR; POST /v1/runner/sessions/{id}/resume\n"
+        "                 continues it exactly (fork_seed S forks it); GET and\n"
+        "                 DELETE /v1/runner/sessions/{id}\n"
         "  --kv-snapshots DIR  with --serve: POST /v1/runner/contexts/{id}/\n"
         "                 snapshot writes a named context to DIR (KV + manifest\n"
         "                 with its digests, model, KV type and producing receipt,\n"
@@ -1284,7 +1273,8 @@ static void usage_to(FILE *f, const char *prog) {
         "  --train-out F  adapter GGUF to write (default adapter-out.gguf)\n"
         "  --lora-rank R  fresh-adapter rank when no --lora is given (8)\n"
         "  --caps         print machine capabilities as JSON and exit\n"
-        "  --tool-info    load -m MODEL and print its native tool-call protocol\n"
+        "  --tool-info    load -m MODEL and print its native tool-call protocol,\n"
+        "                 chat template and sampling preset\n"
         "  --adapt-info   load -m MODEL and print, as JSON, whether an adapter can\n"
         "                 be served on it and trained on it, with the reason\n"
         "                 when it cannot\n"
@@ -1561,12 +1551,20 @@ int main(int argc, char **argv) {
     const char *tmpl_arg = NULL, *prompt_file = NULL, *schema_file = NULL;
     const char *quant_out = NULL, *quant_type = NULL, *prune_experts = NULL;
     const char *remove_sublayer = NULL;
+    // the measured-envelope verdict the one-shot model loaded under, for its
+    // transcript (R1.1.5); unknown on paths that never ran the gate
+    int cli_env_state = ENV_UNCLASSIFIED;
+    bool cli_env_known = false;
     const char *type_plan = NULL, *merge_out = NULL, *context_out = NULL;
     const char *transcript_path = NULL;
     const char *transcript_prev = NULL, *sign_key = NULL, *keygen_path = NULL;
     const char *sign_record = NULL, *record_prev = NULL, *check_record = NULL;
     // R1.2.1: receipt bundles
     const char *export_bundle = NULL, *bundle_out = NULL, *check_bundle = NULL;
+    const char *export_pack = NULL, *pack_out = NULL, *check_pack = NULL,
+               *pack_envelope = NULL;
+    const char *pack_attach[PACK_MAX_ATTACH];
+    int n_pack_attach = 0;
     // R1.2.2: per-request receipts in serve mode
     const char *receipts_dir = NULL;
     int receipts_keep = 0;
@@ -1576,6 +1574,7 @@ int main(int argc, char **argv) {
     const char *watermark_path = NULL, *watermark_keygen = NULL;
     const char *detect_path = NULL;
     const char *kv_snapshots = NULL;
+    const char *sessions_path = NULL;   // --sessions DIR (R1.3.5)
     const char *session_out = NULL, *resume_path = NULL;
     int suspend_after = 0;
     bool fork_seed_given = false, n_given = false, kv_given = false;
@@ -1695,6 +1694,19 @@ int main(int argc, char **argv) {
         else if (!strcmp(a, "--export-bundle")) export_bundle = NEXT;
         else if (!strcmp(a, "--bundle-out")) bundle_out = NEXT;
         else if (!strcmp(a, "--check-bundle")) check_bundle = NEXT;
+        else if (!strcmp(a, "--export-pack")) export_pack = NEXT;
+        else if (!strcmp(a, "--pack-out")) pack_out = NEXT;
+        else if (!strcmp(a, "--pack-envelope")) pack_envelope = NEXT;
+        else if (!strcmp(a, "--check-pack")) check_pack = NEXT;
+        else if (!strcmp(a, "--pack-attach")) {
+            const char *f = NEXT;
+            if (n_pack_attach == PACK_MAX_ATTACH) {
+                fprintf(stderr, "error: --pack-attach: at most %d files\n",
+                        PACK_MAX_ATTACH);
+                return 1;
+            }
+            pack_attach[n_pack_attach++] = f;
+        }
         else if (!strcmp(a, "--receipts")) receipts_dir = NEXT;
         else if (!strcmp(a, "--receipts-keep"))
             receipts_keep = (int)int_arg(a, NEXT, 0, 100000000);
@@ -1709,6 +1721,7 @@ int main(int argc, char **argv) {
         else if (!strcmp(a, "--watermark-keygen")) watermark_keygen = NEXT;
         else if (!strcmp(a, "--detect-watermark")) detect_path = NEXT;
         else if (!strcmp(a, "--kv-snapshots")) kv_snapshots = NEXT;
+        else if (!strcmp(a, "--sessions")) sessions_path = NEXT;
         else if (!strcmp(a, "--session-out")) session_out = NEXT;
         else if (!strcmp(a, "--resume")) resume_path = NEXT;
         else if (!strcmp(a, "--suspend-after"))
@@ -1917,6 +1930,25 @@ int main(int argc, char **argv) {
     }
     if (check_record) return record_check(check_record, trust_key);
     if (check_bundle) return bundle_check(check_bundle, trust_key);
+    if (check_pack) return pack_check(check_pack, trust_key);
+    if (export_pack || pack_out) {
+        if (!export_pack || !pack_out) {
+            fprintf(stderr, "error: --export-pack RECEIPTS_DIR and --pack-out "
+                    "DIR go together\n");
+            return 1;
+        }
+        pack_opts po = { .receipts_dir = export_pack, .out_dir = pack_out,
+                         .model_sig = model_sig, .model_pubkey = model_pubkey,
+                         .envelope = pack_envelope, .n_attach = n_pack_attach,
+                         .sign_key = sign_key };
+        for (int i = 0; i < n_pack_attach; i++) po.attach[i] = pack_attach[i];
+        return pack_export(&po);
+    }
+    if ((pack_envelope || n_pack_attach) && !export_pack) {
+        fprintf(stderr, "error: --pack-envelope and --pack-attach go with "
+                "--export-pack\n");
+        return 1;
+    }
     if (sign_model || model_key) {
         if (!sign_model || !model_key) {
             fprintf(stderr, "error: --sign-model MODEL and --model-key KEY.pem go "
@@ -2871,6 +2903,12 @@ int main(int argc, char **argv) {
         return 1;
     }
     if (kv_snapshots && !kvsnap_configure(kv_snapshots, sign_key, trust_key)) return 1;
+    if (sessions_path && !serve) {
+        fprintf(stderr, "error: --sessions keeps the server's session images "
+                "and needs --serve (the CLI uses --session-out / --resume)\n");
+        return 1;
+    }
+    if (sessions_path && !sessions_configure(sessions_path)) return 1;
     if (n_adapters && !serve) {
         fprintf(stderr, "error: --adapter routes adapters per request and "
                 "needs --serve (use --lora for a one-shot run)\n");
@@ -2951,10 +2989,16 @@ int main(int argc, char **argv) {
             const char *fam = tool_family_for(ti_tmpl, &native);
             // The template family is named too: which renderer the chat
             // surface would use is the first question a golden pass asks of
-            // a file, and a fallback is a finding, not a default.
+            // a file, and a fallback is a finding, not a default. So is the
+            // sampling preset a request without sampling fields is served
+            // with (resolved as the load does; --temp and friends aside).
+            char ti_ident[256];
+            sampler_ident(gguf_get_str(&m.gf, "general.name", NULL), m.path,
+                          ti_ident, sizeof(ti_ident));
             printf("{\"tool_family\":\"%s\",\"native_tool_protocol\":%s,"
-                   "\"template\":\"%s\"}\n",
-                   fam, native ? "true" : "false", template_name(ti_tmpl));
+                   "\"template\":\"%s\",\"sampling_preset\":\"%s\"}\n",
+                   fam, native ? "true" : "false", template_name(ti_tmpl),
+                   sampler_preset_for(m.arch, ti_ident, ti_tmpl)->name);
             cli_cleanup(NULL, NULL, &tok, &m);
             return 0;
         }
@@ -3014,6 +3058,8 @@ int main(int argc, char **argv) {
             bool ok = envelope_gate(load_path, RUNNER_VERSION, env_backend,
                                     force_uncertified, env_line,
                                     (int)sizeof env_line, &env_state);
+            cli_env_state = env_state;
+            cli_env_known = true;
             if (env_line[0]) fprintf(stderr, "%s\n", env_line);
             if (!ok) {
                 cli_cleanup(NULL, NULL, &tok, &m);
@@ -4258,6 +4304,8 @@ int main(int argc, char **argv) {
                 .adapter_sig_json = adapter_sig_json[0] ? adapter_sig_json : NULL,
                 .constraints_json = cons_json[0] ? cons_json : NULL,
                 .watermark_json = wm_json[0] ? wm_json : NULL,
+                .envelope_known = cli_env_known,
+                .envelope_state = cli_env_state,
             };
             if (ocap.failed) {
                 fprintf(stderr, "error: transcript: out of memory capturing "

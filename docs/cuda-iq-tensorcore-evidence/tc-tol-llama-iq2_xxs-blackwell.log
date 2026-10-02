@@ -19,7 +19,7 @@ rope: using model frequency factors (rope_freqs.weight)
 gpu-split: budget=24.90GB fixed=0.84GB G=28/28 full=1 used=2.05GB
 gpu: CUDA backend on NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb (1.0 GB weights in VRAM)
 gpu: VRAM 23.36 GB free of 25.37 GB after init (kv 0.47 GB + scratch 0.03 GB this instance)
-tc-tol: /home/lab/workspace/models/iq-archrows/llama-IQ2_XXS.gguf | 192 tokens, 64 teacher-forced positions
+tc-tol: models/iq-archrows/llama-IQ2_XXS.gguf | 192 tokens, 64 teacher-forced positions
   scalar-b64   TC dispatches: none
   scalar-b16   TC dispatches: none
   tc-b64       TC dispatches: IQ2_XXS=330

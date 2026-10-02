@@ -1,5 +1,5 @@
 {
- "model": "/home/lab/workspace/models/Llama-3.2-3B-Instruct-Q4_K_M/Llama-3.2-3B-Instruct-Q4_K_M.gguf",
+ "model": "models/Llama-3.2-3B-Instruct-Q4_K_M/Llama-3.2-3B-Instruct-Q4_K_M.gguf",
  "tokens": 128,
  "context": 2048,
  "routing": "eager",

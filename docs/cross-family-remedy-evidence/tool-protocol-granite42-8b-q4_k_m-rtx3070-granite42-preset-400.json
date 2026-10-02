@@ -6,7 +6,7 @@
  "platform": "Windows-11-10.0.26100-SP0",
  "base_url": "http://127.0.0.1:8097",
  "model": "granite-4.2-8b-Q4_K_M.gguf",
- "model_file": "C:/Users/zen/models/granite-4.2-8b-Q4_K_M.gguf",
+ "model_file": "~/models/granite-4.2-8b-Q4_K_M.gguf",
  "model_sha256": "16a9369d0805f80b7377d25d87f937a90c05dc04ad79173a52001e42c9aab311",
  "runner": "./runner.exe",
  "runner_sha256": "554155b75720f9f50e35a869898e49f4e9041108e5a40410bf2bec1ffef28370",

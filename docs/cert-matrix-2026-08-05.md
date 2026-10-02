@@ -1136,19 +1136,19 @@ The goal doc's own framing for item 4 called this out explicitly as an open expe
 
 **Gemma 4 26B-A4B-it QAT Q4_0 (128 experts, top-8) — 3 keep-N points, all FAIL:**
 
-| keep-N | experts dropped | top-1 vs parent | mean KLD vs parent | verdict |
-|---|---|---|---|---|
-| 96 | 32 (25%) | 67.75% | 0.377 | FAIL (bar: ≥97% / ≤0.05) |
-| 64 | 64 (50%) | 50.25% | 0.719 | FAIL |
-| 48 | 80 (62.5%) | 45.25% | 0.896 | FAIL |
+| keep-N | experts dropped | top-1 vs parent | margin-qualified top-1 | mean KLD vs parent | verdict |
+|---|---|---|---|---|---|
+| 96 | 32 (25%) | 67.75% | not measured | 0.377 | FAIL (bar: ≥97% / ≤0.05) |
+| 64 | 64 (50%) | 50.25% | not measured | 0.719 | FAIL |
+| 48 | 80 (62.5%) | 45.25% | not measured | 0.896 | FAIL |
 
 **GPT-OSS Nano 9B (12 experts, top-4 — already a prune of the 32-expert base) — 3 keep-N points, all FAIL:**
 
-| keep-N | experts dropped | top-1 vs parent | mean KLD vs parent | verdict |
-|---|---|---|---|---|
-| 10 | 2 (16.7%) | 79.5% | 0.099 | FAIL |
-| 8 | 4 (33%) | 72.0% | 0.180 | FAIL |
-| 6 | 6 (50%) | 59.25% | 0.344 | FAIL |
+| keep-N | experts dropped | top-1 vs parent | margin-qualified top-1 | mean KLD vs parent | verdict |
+|---|---|---|---|---|---|
+| 10 | 2 (16.7%) | 79.5% | not measured | 0.099 | FAIL |
+| 8 | 4 (33%) | 72.0% | not measured | 0.180 | FAIL |
+| 6 | 6 (50%) | 59.25% | not measured | 0.344 | FAIL |
 
 Both curves are monotonic and neither gets remotely close to the bar even at the mildest point tested — contrast with keep-30's own 6.25% expert drop (2 of 32) clearing 97%/0.05 cleanly. Two comparative findings fall out of this data even though both experiments failed their own goal:
 

@@ -105,8 +105,8 @@ One JSON object per line, one line per (prompt, condition):
 | `decision` | the tool decision, or null if no probed legal alternative was a tool piece |
 | `seconds` | wall time of the probe |
 
-`decision` holds the server's `index`, `n_legal`, `coverage` and
-`alternatives` for that point, plus the tool-level reading: `by_tool` (best
+`decision` holds the server's record for that point ([decision-record.md](decision-record.md)): `index`, `n_legal`, `n_probed`, `coverage` and
+`alternatives`, plus the tool-level reading: `by_tool` (best
 raw logprob per tool among the legal pieces), `top1`, `top1_piece`, `top2`
 (the best alternative leading to a DIFFERENT tool, never a shorter piece of
 the same name; `no` and `non` are the `none` branch), and `margin_nat`
@@ -174,7 +174,8 @@ and reported the results on the HF forum. His migration bridge and all-36
 pass agree with the table above (28/28 branch matches; the same three
 disagreements, all surviving full deterministic generation). What he added
 is a design distinction the lane should be used with, recorded here with
-credit; the neighborhood numbers below are his report, not a run of ours.
+credit. The neighborhood numbers below were his report until 2026-10-02,
+when the same 14 prompts ran through this lane on our side (next section).
 
 - **Two questions, two instruments.** The original Q4 low-margin screen asks
   "where is this condition itself unsure?". An unscreened, symmetric
@@ -211,6 +212,17 @@ credit; the neighborhood numbers below are his report, not a run of ours.
   across these adapters, so this is a boundary-sensitivity observation
   outside that easy evaluation, not evidence that Q4-trained tool use is
   broken.
+- **Reproduced through this lane, 2026-10-02.** Runner 0.5.7, CPU, Apple
+  M1, on the pinned study artifacts (base and all three adapters
+  sha256-verified): **6 of 14 disagreements, the same six he reported**,
+  every per-variant outcome the same (the first anchor collapses under all
+  six substitutions; the second survives extension and directory changes
+  and collapses when either operation cue changes), the Q4 minimum margin
+  **3.061 nat** against his 3.055, and **0 of 14** under the 3-nat screen.
+  Six of the prompts were reconstructed from his descriptions of the
+  substitutions (the anchors and the second anchor's variants are quoted
+  in his post); all six behaved as he described. A constructed
+  neighborhood, so still no rate.
 - **Claim chain, unchanged:** published training provenance, exact published
   adapter bytes, independent behavioral probe, native full-call decision
   differences. Not an independent three-precision retraining reproduction.

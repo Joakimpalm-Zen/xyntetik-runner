@@ -12,6 +12,10 @@ claim: `certified` requires a passing compat gate for the artifact's sha *and* a
 named reference sha; `outside-envelope` records a measured failure; `experimental`
 means no gate evidence exists for the artifact yet.
 
+A transcript or served receipt made with a manifest beside its model records
+`"envelope": {"verdict": ..., "manifest_sha256": ...}`: the same verdict word
+this file uses and the digest of the sidecar the load read.
+
 ## The `tool_calling` block (reported-only)
 
 A manifest may carry an optional, additive `tool_calling` block (the schema
@@ -40,6 +44,21 @@ right tool — **not** about the correctness of the *argument values* it fills i
 Read it as "the envelope of the call survives the quant", nothing more. Likewise
 `truncation_recovery` is an engine property measured on a proxy model, so it is
 labelled `scope:"engine"` rather than attributed to this specific artifact.
+
+## The `serving_guidance` block (reported-only)
+
+`scripts/certify-envelope.py` also records how the artifact is served when a
+request names no sampling fields, beside what the family's publisher says:
+
+| Field | Meaning |
+|---|---|
+| `preset` | The runner's sampling preset for this file (`runner --tool-info` names it; `--caps` gives its values and the source it cites). |
+| `publisher` | The family's entry in [`docs/serving-guidance.json`](../serving-guidance.json): the publisher's repository, its `generation_config.json` sampling keys, the card's recommendations per mode, the thinking default and switch, and the stated precision, as read on the date given there. Keyed by the preset name; `--serving-guidance-family` names it for a family with no preset of its own. |
+| `differs` | The knobs (temperature, top_p, top_k, min_p) where the preset departs from the publisher's word: the repository's `generation_config.json` when it states them, else the card's first recommendation. `[]` agrees, `null` means one side is missing. |
+
+Like `tool_calling`, nothing in this block changes the load decision.
+`tests/test_certify_envelope.py` holds every preset that cites a publisher to
+the recorded guidance, so a departure is listed there as a decision.
 
 ## Manifests
 

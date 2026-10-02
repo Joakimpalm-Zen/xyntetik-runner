@@ -34,6 +34,7 @@
 #include "provenance.h"
 #include "respstore.h"
 #include "kvsnap.h"
+#include "session.h"
 #include "envelope.h"
 #include "gpu.h"
 
@@ -901,6 +902,345 @@ static void handle_context_snapshot(slot_t *s, sock_t fd, jv *req,
     kvsnap_err err = {0};
     bool ok = kvsnap_save(&s->e, id, req, &out, &err);
     send_kvsnap(fd, ok, &out, &err);
+}
+
+// ---- session images over HTTP (R1.3.5) -----------------------------------
+// POST /v1/runner/sessions starts a raw-prompt generation and, with
+// suspend_after, stops it after that many tokens and writes its image;
+// POST /v1/runner/sessions/{id}/resume continues an image exactly, or forks
+// it under another seed; GET and DELETE /v1/runner/sessions/{id} read and
+// remove one. An id is the image's own sha256, so the same state is the same
+// id. The images live in --sessions DIR and are the CLI's (--session-out /
+// --resume read and write the same files).
+//
+// The generation holds the device turn from prefill to its last token, so
+// a session does not interleave with other slots' batches: it is the solo
+// step loop the CLI runs, which is what makes a resume exact.
+
+static int session_text_cb(void *ud, const char *bytes, int n) {
+    sb_put((sbuf *)ud, bytes, (size_t)n);
+    return 0;
+}
+
+static bool session_id_ok(const char *id, size_t n) {
+    if (n != 64) return false;
+    for (size_t i = 0; i < n; i++)
+        if (!((id[i] >= '0' && id[i] <= '9') || (id[i] >= 'a' && id[i] <= 'f')))
+            return false;
+    return true;
+}
+
+static void session_path(char *out, size_t cap, const char *id) {
+    snprintf(out, cap, "%s/%s.session", sessions_dir(), id);
+}
+
+// Why this slot's model cannot hold a session, or NULL.
+static const char *session_unsupported(const model_t *m) {
+    if (model_kv_ring_active(m) || m->tied_v)
+        return "this model's KV layout (a ring or tied-V cache) has no "
+               "contiguous state to image";
+    if (model_has_recurrent(m) && m->gpu)
+        return "a recurrent model on a device keeps state the host cannot "
+               "restore; serve it with --gpu off to use sessions";
+    return NULL;
+}
+
+// The generation from here: run to the stop point or the end, image a
+// generation that is still live at a stop point, answer.
+static void session_answer(slot_t *s, sock_t fd, float *logits, int n_prompt,
+                           int max_new, int stop_at, bool ignore_eos,
+                           const char *parent, bool forked) {
+    engine *e = &s->e;
+    sbuf text = {0};
+    const float *last = NULL;
+    double t0 = now_s();
+    bool live = session_run(e, logits, stop_at, session_text_cb, &text, &last);
+    bool suspended = live && stop_at > 0 && e->gen_count < e->gen_max;
+    char id[65] = "";
+    const char *why = NULL;
+    if (suspended) {
+        char msha[65], bsha[65], tmp[1200], final[1200];
+        if (!provenance_digests(msha, bsha)) {
+            why = "the resident model's digest is not available (the file "
+                  "changed on disk since the load?), so no image was written";
+        } else {
+            snprintf(tmp, sizeof tmp, "%s/.partial-%d-%lld.session",
+                     sessions_dir(), s->id, (long long)(t0 * 1e6));
+            if (!session_image_write(tmp, e, s->m->path, msha, bsha, last,
+                                     n_prompt, max_new, false, ignore_eos,
+                                     NULL, id)) {
+                why = "the image could not be written (see the server log)";
+            } else {
+                session_path(final, sizeof final, id);
+                if (!plat_replace_file(tmp, final)) {
+                    remove(tmp);
+                    id[0] = 0;
+                    why = "the image could not be installed in --sessions";
+                }
+            }
+        }
+        // the slot does not carry a half-finished generation into the next
+        // request: its state is in the image
+        engine_reset(e);
+    } else {
+        engine_gen_end(e, session_text_cb, &text, NULL);
+    }
+    double secs = now_s() - t0;
+    if (why) {
+        free(text.s);
+        send_error_detail(fd, 500, why, NULL, "session_image_failed");
+        return;
+    }
+    sbuf r = {0};
+    sb_lit(&r, "{\"object\":\"runner.session\",\"id\":");
+    if (id[0]) sb_fmt(&r, "\"%s\"", id); else sb_lit(&r, "null");
+    sb_lit(&r, ",\"parent\":");
+    if (parent) sb_fmt(&r, "\"%s\"", parent); else sb_lit(&r, "null");
+    sb_fmt(&r, ",\"forked\":%s,\"text\":\"", forked ? "true" : "false");
+    sb_esc(&r, text.s ? text.s : "", text.n);
+    sb_fmt(&r, "\",\"tokens\":%d,\"generated\":%d,\"max_tokens\":%d,"
+               "\"finish_reason\":\"%s\",\"seconds\":%.6f}",
+           e->pos, e->gen_count, max_new,
+           suspended ? "suspended" : e->hit_stop ? "stop" : "length", secs);
+    free(text.s);
+    if (r.failed) { free(r.s); send_error(fd, 500, "out of memory"); return; }
+    send_response(fd, 200, "application/json", r.s, r.n);
+    free(r.s);
+    fprintf(stderr, "[slot %d] session%s%s: %d tokens, %d of %d generated%s\n",
+            s->id, parent ? " resume " : " ", parent ? parent : "", e->pos,
+            e->gen_count, max_new, id[0] ? ", imaged" : "");
+}
+
+static bool session_int(sock_t fd, jv *req, const char *key, int lo, int hi,
+                        int *out, bool required) {
+    jv *v = jv_get(req, key);
+    if (!v || v->type == J_NULL) {
+        if (!required) return true;
+        char msg[96];
+        snprintf(msg, sizeof msg, "%s is required", key);
+        send_error_detail(fd, 400, msg, key, "invalid_value");
+        return false;
+    }
+    if (v->type != J_NUM || v->num != (double)(long long)v->num ||
+        v->num < lo || v->num > hi) {
+        char msg[128];
+        snprintf(msg, sizeof msg, "%s must be an integer in [%d, %d]", key, lo, hi);
+        send_error_detail(fd, 400, msg, key, "invalid_value");
+        return false;
+    }
+    *out = (int)v->num;
+    return true;
+}
+
+static void handle_session_start(slot_t *s, sock_t fd, jv *req) {
+    engine *e = &s->e;
+    const char *no = session_unsupported(s->m);
+    if (no) { send_error_detail(fd, 409, no, NULL, "session_unsupported"); return; }
+    jv *prompt = jv_get(req, "prompt");
+    if (!prompt || prompt->type != J_STR) {
+        send_error_detail(fd, 400, "a session starts from a raw prompt "
+                          "(\"prompt\", a string)", "prompt", "invalid_value");
+        return;
+    }
+    int max_new = 0, stop_at = 0, top_k = s->smp_base.top_k;
+    if (!session_int(fd, req, "max_tokens", 1, s->m->n_ctx, &max_new, true) ||
+        !session_int(fd, req, "suspend_after", 1, s->m->n_ctx, &stop_at, false) ||
+        !session_int(fd, req, "top_k", 0, 1 << 20, &top_k, false))
+        return;
+    if (stop_at && stop_at >= max_new) {
+        send_error_detail(fd, 400, "suspend_after must stop before max_tokens "
+                          "is spent", "suspend_after", "invalid_value");
+        return;
+    }
+    jv *ie = jv_get(req, "ignore_eos");
+    bool ignore_eos = ie && ie->type == J_BOOL && ie->b;
+    s->smp = s->smp_base;
+    s->smp.top_k = top_k;
+    s->smp.temp = (float)jv_num(jv_get(req, "temperature"), s->smp.temp);
+    s->smp.top_p = (float)jv_num(jv_get(req, "top_p"), s->smp.top_p);
+    s->smp.min_p = (float)jv_num(jv_get(req, "min_p"), s->smp.min_p);
+    s->smp.repeat_penalty = (float)jv_num(jv_get(req, "repeat_penalty"),
+                                          s->smp.repeat_penalty);
+    jv *seed = jv_get(req, "seed");
+    if (seed && seed->type == J_NUM && seed->num >= 1)
+        s->smp.rng = (uint64_t)seed->num;
+    int32_t *toks = NULL;
+    int n = tok_encode_fit(s->tok, prompt->str, true, TOK_RAW, 0, &toks);
+    if (n < 0) { free(toks); send_error(fd, 500, "out of memory tokenizing"); return; }
+    if (n < 1 || n + max_new > s->m->n_ctx) {
+        free(toks);
+        send_error_detail(fd, 400, "the prompt and max_tokens do not fit the "
+                          "context window", "max_tokens", "context_length_exceeded");
+        return;
+    }
+    sched_prefill_begin();
+    engine_reset(e);
+    e->ignore_eos = ignore_eos;
+    float *lg = engine_feed(e, toks, n);
+    free(toks);
+    if (!lg) {
+        sched_prefill_end();
+        send_error(fd, 500, "prefill failed (context or memory)");
+        return;
+    }
+    engine_gen_begin(e, max_new);
+    session_answer(s, fd, lg, n, max_new, stop_at, ignore_eos, NULL, false);
+    e->ignore_eos = false;
+    sched_prefill_end();
+}
+
+static void handle_session_resume(slot_t *s, sock_t fd, jv *req,
+                                  const char *path) {
+    engine *e = &s->e;
+    const char *p = path + sizeof("/v1/runner/sessions/") - 1;
+    const char *end = strchr(p, '/');
+    if (!end || strcmp(end, "/resume") != 0 || !session_id_ok(p, (size_t)(end - p))) {
+        send_error_detail(fd, 400, "not a session id", "id", "invalid_value");
+        return;
+    }
+    char id[65], file[1200];
+    memcpy(id, p, 64);
+    id[64] = 0;
+    session_path(file, sizeof file, id);
+    FILE *f = fopen(file, "rb");
+    if (!f) {
+        send_error_detail(fd, 404, "no session of that id", "id", "session_not_found");
+        return;
+    }
+    fclose(f);
+    session_image img;
+    if (!session_read(file, &img)) {
+        send_error_detail(fd, 422, "the session image does not verify (see the "
+                          "server log)", "id", "session_corrupt");
+        return;
+    }
+    const session_meta *sm = &img.meta;
+    char msha[65], bsha[65];
+    const char *why = session_unsupported(s->m);
+    int stop_at = 0;
+    long long fork_seed = 0;
+    jv *fs = jv_get(req, "fork_seed");
+    if (fs && fs->type != J_NULL) {
+        if (fs->type != J_NUM || fs->num < 1 || fs->num != (double)(long long)fs->num) {
+            session_image_free(&img);
+            send_error_detail(fd, 400, "fork_seed must be a positive integer",
+                              "fork_seed", "invalid_value");
+            return;
+        }
+        fork_seed = (long long)fs->num;
+    }
+    if (!session_int(fd, req, "suspend_after", 1, sm->max_new, &stop_at, false)) {
+        session_image_free(&img);
+        return;
+    }
+    if (!why && (sm->json_mode || sm->schema_sha256[0]))
+        why = "the image was generated under a JSON constraint, which a "
+              "served session does not rebuild; resume it with the CLI";
+    if (!why && !provenance_digests(msha, bsha))
+        why = "the resident model's digest is not available";
+    if (!why && strcmp(msha, sm->model_sha256) != 0)
+        why = "the resident model is not the model the image was made with";
+    if (!why && e->model_key != sm->model_key)
+        why = "this engine's model key (context, KV type, geometry) is not "
+              "the image's";
+    if (!why && (img.n_vocab != s->m->n_vocab ||
+                 img.state_n != prefix_cache_entry_bytes(s->m, sm->n_tokens)))
+        why = "the image's state does not fit this model";
+    if (!why && stop_at && (stop_at <= sm->generated || stop_at >= sm->max_new))
+        why = "suspend_after must lie after the image's point and before its "
+              "budget is spent";
+    if (!why && sm->temp > 0 && sm->rng == 0 && !fork_seed)
+        why = "a sampled image without an rng state";
+    if (why) {
+        session_image_free(&img);
+        send_error_detail(fd, 409, why, NULL, "session_mismatch");
+        return;
+    }
+    s->smp = s->smp_base;
+    s->smp.temp = sm->temp; s->smp.top_k = sm->top_k; s->smp.top_p = sm->top_p;
+    s->smp.min_p = sm->min_p; s->smp.repeat_penalty = sm->repeat_penalty;
+    // a greedy image records no rng (it is never drawn from)
+    s->smp.rng = fork_seed ? (uint64_t)fork_seed : sm->rng ? sm->rng : 1;
+    sched_prefill_begin();
+    if (!engine_state_load(e, img.tokens, sm->n_tokens, img.state)) {
+        sched_prefill_end();
+        session_image_free(&img);
+        send_error_detail(fd, 409, "this model's KV layout cannot be resumed",
+                          NULL, "session_unsupported");
+        return;
+    }
+    e->ignore_eos = sm->ignore_eos;
+    engine_gen_resume(e, sm->max_new, sm->n_prompt, sm->generated);
+    float *lg = malloc(sizeof(float) * (size_t)s->m->n_vocab);
+    if (!lg) {
+        sched_prefill_end();
+        session_image_free(&img);
+        send_error(fd, 500, "out of memory");
+        return;
+    }
+    memcpy(lg, img.logits, sizeof(float) * (size_t)s->m->n_vocab);
+    session_answer(s, fd, lg, sm->n_prompt, sm->max_new, stop_at,
+                   sm->ignore_eos, id, fork_seed != 0);
+    e->ignore_eos = false;
+    sched_prefill_end();
+    free(lg);
+    session_image_free(&img);
+}
+
+// GET /v1/runner/sessions/{id}: the image's header; DELETE removes it.
+static void session_route(sock_t fd, const char *method, const char *path) {
+    const char *id = path + sizeof("/v1/runner/sessions/") - 1;
+    if (!sessions_dir()) {
+        send_error_detail(fd, 404, "sessions are off: start the server with "
+                          "--sessions DIR", NULL, "sessions_off");
+        return;
+    }
+    if (!session_id_ok(id, strlen(id))) {
+        send_error_detail(fd, 400, "not a session id", "id", "invalid_value");
+        return;
+    }
+    char file[1200];
+    session_path(file, sizeof file, id);
+    if (!strcmp(method, "DELETE")) {
+        if (remove(file) != 0) {
+            send_error_detail(fd, 404, "no session of that id", "id",
+                              "session_not_found");
+            return;
+        }
+        char body[160];
+        int bn = snprintf(body, sizeof body, "{\"object\":\"runner.session\","
+                          "\"id\":\"%s\",\"deleted\":true}", id);
+        send_response(fd, 200, "application/json", body, (size_t)bn);
+        return;
+    }
+    session_image img;
+    FILE *f = fopen(file, "rb");
+    if (!f) {
+        send_error_detail(fd, 404, "no session of that id", "id", "session_not_found");
+        return;
+    }
+    fclose(f);
+    if (!session_read(file, &img)) {
+        send_error_detail(fd, 422, "the session image does not verify", "id",
+                          "session_corrupt");
+        return;
+    }
+    const session_meta *sm = &img.meta;
+    char body[768];
+    int bn = snprintf(body, sizeof body,
+                      "{\"object\":\"runner.session\",\"id\":\"%s\","
+                      "\"model_sha256\":\"%s\",\"tokens\":%d,\"prompt_tokens\":%d,"
+                      "\"generated\":%d,\"max_tokens\":%d,\"ctx\":%d,\"kv\":\"%s\","
+                      "\"temperature\":%g,\"top_k\":%d,\"top_p\":%g,\"min_p\":%g,"
+                      "\"repeat_penalty\":%g,\"ignore_eos\":%s,"
+                      "\"binary_sha256\":\"%s\"}",
+                      id, sm->model_sha256, sm->n_tokens, sm->n_prompt,
+                      sm->generated, sm->max_new, sm->n_ctx, sm->kv_type,
+                      (double)sm->temp, sm->top_k, (double)sm->top_p,
+                      (double)sm->min_p, (double)sm->repeat_penalty,
+                      sm->ignore_eos ? "true" : "false", sm->binary_sha256);
+    session_image_free(&img);
+    send_response(fd, 200, "application/json", body, (size_t)bn);
 }
 
 static void handle_context_create(slot_t *s, sock_t fd, jv *req) {
@@ -1991,6 +2331,10 @@ static void handle_conn(slot_t *s, sock_t fd) {
                         sizeof("/v1/runner/contexts/") - 1)) {
         delete_context(fd, path);
     } else if ((!strcmp(method, "GET") || !strcmp(method, "DELETE")) &&
+               !strncmp(path, "/v1/runner/sessions/",
+                        sizeof("/v1/runner/sessions/") - 1)) {
+        session_route(fd, method, path);
+    } else if ((!strcmp(method, "GET") || !strcmp(method, "DELETE")) &&
                !strncmp(path, "/v1/responses/", sizeof("/v1/responses/") - 1)) {
         stored_response_route(fd, method, path);
     } else if (!strcmp(method, "GET") && !strcmp(path, "/health")) {
@@ -2013,7 +2357,11 @@ static void handle_conn(slot_t *s, sock_t fd) {
                 !strcmp(path, "/v1/runner/contexts") ||
                 (!strncmp(path, "/v1/runner/contexts/",
                           sizeof("/v1/runner/contexts/") - 1) &&
-                 strstr(path, "/snapshot")))) {
+                 strstr(path, "/snapshot")) ||
+                !strcmp(path, "/v1/runner/sessions") ||
+                (!strncmp(path, "/v1/runner/sessions/",
+                          sizeof("/v1/runner/sessions/") - 1) &&
+                 strstr(path, "/resume")))) {
         jv *req = body ? json_parse(body, content_length) : NULL;
         if (!req) {
             send_error(fd, 400, "invalid JSON body");
@@ -2144,6 +2492,17 @@ static void handle_conn(slot_t *s, sock_t fd) {
                 else if (!strncmp(path, "/v1/runner/contexts/",
                                   sizeof("/v1/runner/contexts/") - 1))
                     handle_context_snapshot(s, fd, req, path);
+                else if (!strncmp(path, "/v1/runner/sessions",
+                                   sizeof("/v1/runner/sessions") - 1)) {
+                    if (!sessions_dir())
+                        send_error_detail(fd, 404, "sessions are off: start "
+                                          "the server with --sessions DIR",
+                                          NULL, "sessions_off");
+                    else if (!strcmp(path, "/v1/runner/sessions"))
+                        handle_session_start(s, fd, req);
+                    else
+                        handle_session_resume(s, fd, req, path);
+                }
                 else handle_completion(s, fd, req);
                 // Ollama-style keep_alive: seconds of idle before the model
                 // unloads (swap mode) — 0 unloads now, negative pins forever.
