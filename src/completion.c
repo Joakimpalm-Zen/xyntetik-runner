@@ -3437,7 +3437,12 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
                     : SV.ov.has_repeat_penalty ? "cli" : "preset",
         .seed = seed > 0 ? (uint64_t)seed : 0,
         .template_name = template_name(s->tmpl),
-        .tool_protocol = chat ? tool_protocol_name(s->tmpl, &native_tp) : NULL,
+        // with tools declared, the protocol this request actually runs
+        // under (a fallback to the generic envelope is reported as such);
+        // without, the family's native one
+        .tool_protocol = !chat ? NULL
+                       : env ? tool_envelope_protocol_name(env)
+                       : tool_protocol_name(s->tmpl, &native_tp),
         .tools = env != NULL,
         .constrained = env != NULL && schema != NULL,
         .parse_only = env != NULL && env->parse_only,

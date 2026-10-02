@@ -3788,7 +3788,28 @@ const jv *tool_decl_native(int tmpl, bool strict, bool atem_tool_calling,
     // surface, streamed or buffered.
     bool xml = tmpl == TMPL_QWEN38 || tmpl == TMPL_GRANITE42 ||
                tmpl_ornith_like(tmpl) || tmpl == TMPL_QWEN3_CODER;
-    if (strict && xml) {
+    // A required or named choice on these families is held by the XML
+    // grammar, and that grammar has no way to enforce some schemas (a string
+    // parameter with minLength, maxLength or pattern: the value is raw text
+    // up to the closing tag). Such a request used to be answered 400, so a
+    // tool that worked on every JSON family failed on Granite 4.2, Qwen 3.8,
+    // Ornith and Qwen3-Coder (15 of 120 agent-torture requests on Granite
+    // 4.2 8B, 2026-10-02). It takes the generic envelope for this one
+    // request instead, as gemma4 does for a schema its syntax cannot spell:
+    // the request is kept and the constraint is enforced, in JSON. Decided
+    // here, before any rendering, so prompt and grammar switch together.
+    bool xml_fellback = false;
+    if (strict && xml && tools && env->kind != TCH_AUTO) {
+        char why[192] = "";
+        if (!schema_qwen_xml_constrainable(
+                tools, env->kind == TCH_NAMED ? env->named : NULL,
+                env->parallel, why, sizeof(why))) {
+            fprintf(stderr, "tools: function-XML syntax unavailable for this "
+                            "request (%s); using the generic envelope\n", why);
+            xml_fellback = true;
+        }
+    }
+    if (strict && xml && !xml_fellback) {
         env->proto = TP_QWEN_XML;
         env->tools = tools;
         // One contract for the four: an auto turn is the model's own free
@@ -3864,14 +3885,30 @@ const jv *tool_decl_native(int tmpl, bool strict, bool atem_tool_calling,
     // Ornith and granite 4.2 render their declarations through
     // tools_render_for (the caller's system-turn merge), so they are not in
     // skip_generic's list even though their protocol is native.
+    // An XML family that fell back renders the generic system turn too.
+    bool xml_in_template = (tmpl == TMPL_QWEN38 || tmpl == TMPL_QWEN3_CODER) &&
+                           !xml_fellback;
     *skip_generic = qwen || g4_native || tmpl == TMPL_APERTUS ||
                     (tmpl == TMPL_MUSE && env->proto == TP_ATEM) ||
-                    tmpl == TMPL_HARMONY || tmpl == TMPL_QWEN38 || tmpl == TMPL_QWEN3_CODER;
-    return qwen || tmpl == TMPL_QWEN38 || tmpl == TMPL_QWEN3_CODER ||
+                    tmpl == TMPL_HARMONY || xml_in_template;
+    return qwen || xml_in_template ||
            (tmpl == TMPL_MUSE && env->proto == TP_ATEM) ||
            (tmpl == TMPL_HARMONY && env->proto == TP_HARMONY) ||
            g4_native || tmpl == TMPL_APERTUS
                ? tools : NULL;
+}
+
+const char *tool_envelope_protocol_name(const tool_envelope *e) {
+    switch (e ? e->proto : TP_GENERIC) {
+        case TP_ATEM:       return "atem";
+        case TP_MUSE_PLAIN: return "atem";
+        case TP_HARMONY:    return "harmony";
+        case TP_GEMMA4:     return "gemma4";
+        case TP_QWEN:       return "qwen_json";
+        case TP_QWEN_XML:   return "qwen3_xml";
+        default: break;
+    }
+    return "generic";
 }
 
 const char *tool_protocol_name(int tmpl, bool *native) {

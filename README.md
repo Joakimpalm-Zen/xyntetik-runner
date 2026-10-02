@@ -2893,8 +2893,13 @@ function/parameter XML and share one contract. A `tool_choice: auto` turn
 turn in the syntax its template teaches, parsed by the same demultiplexer
 buffered and streamed, on the Chat, Responses and Anthropic surfaces; a
 `required` or named choice keeps the grammar above, because a prompt alone
-cannot enforce a choice the caller insisted on. Parsing does not depend on a
-grammar being active. Until 2026-09-14 it did, and the three families that
+cannot enforce a choice the caller insisted on. A parameter value in this
+syntax is raw text up to its closing tag, so the grammar cannot enforce a
+string's `minLength`, `maxLength` or `pattern`; a `required` or named
+request that declares one uses the generic JSON envelope instead, prompt and
+grammar switching together (until 2026-10-02 it was answered 400), and
+`runner_telemetry.tool_protocol.family` then reads `generic` for that
+request. Parsing does not depend on a grammar being active. Until 2026-09-14 it did, and the three families that
 had no grammar streamed their well-formed calls to the client as prose (the
 buffered turn parsed them; every agent client streams); Qwen3-Coder's auto
 turn stayed constrained until 2026-09-15, when the report's own artifact

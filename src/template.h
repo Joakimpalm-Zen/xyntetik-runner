@@ -499,6 +499,10 @@ const struct jv *tool_decl_native(int tmpl, bool strict, bool atem_tool_calling,
 // that renders the generic declarations and envelope. Derived from
 // tool_decl_native's own selection, never a static table.
 const char *tool_protocol_name(int tmpl, bool *native);
+// The protocol THIS request's envelope runs under: the family's native one,
+// or "generic" when the request fell back to the JSON envelope (a schema the
+// native syntax cannot enforce) or the family has none.
+const char *tool_envelope_protocol_name(const tool_envelope *e);
 
 // Map a generated envelope document back to the OpenAI response shape.
 // Returns the NUMBER of tool_calls[] items appended to tc (1 for the ordinary

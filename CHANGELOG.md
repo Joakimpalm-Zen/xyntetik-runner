@@ -8,6 +8,13 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **A tool schema the function-XML syntax cannot enforce no longer 400s.**
+  On Granite 4.2, Qwen 3.8, Ornith and Qwen3-Coder a `required` or named
+  tool choice with a string parameter that carries `minLength`, `maxLength`
+  or `pattern` was refused. It now uses the generic JSON envelope for that
+  request, as gemma4 and Muse already did (15 of 120 agent-torture requests
+  on Granite 4.2 8B failed on this). `runner_telemetry.tool_protocol.family`
+  now reports the protocol the request actually ran under.
 - **Metal decode slows less as the context grows (grouped-query models).**
   Decode attention fetched a KV head's K and V rows once per query head
   that shares it. One threadgroup per KV head now serves all of them
