@@ -1058,7 +1058,7 @@ TEST_BUDGET_SRC = tests/test_prompt_budget.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o
                   $(OBJDIR)/jsonmode.o $(OBJDIR)/schema.o $(OBJDIR)/json.o $(OBJDIR)/engine.o \
                   $(OBJDIR)/template.o $(OBJDIR)/vramreg.o $(OBJDIR)/http.o $(OBJDIR)/envelope.o $(OBJDIR)/ed25519.o $(MLDSA_OBJ) $(OBJDIR)/ecdsa.o $(OBJDIR)/oms.o $(OBJDIR)/registry.o $(OBJDIR)/provenance.o $(OBJDIR)/respstore.o $(OBJDIR)/receipts.o $(OBJDIR)/watermark.o $(OBJDIR)/kvsnap.o \
                   $(OBJDIR)/scheduler.o $(OBJDIR)/decide.o $(OBJDIR)/api_responses.o $(OBJDIR)/api_anthropic.o \
-                  $(GPU_OBJ)
+                  $(OBJDIR)/session.o $(GPU_OBJ)
 $(TEST_BUDGET): $(TEST_BUDGET_SRC) src/server.c $(HDR)
 	$(CC) $(CFLAGS) -I src $(TEST_BUDGET_SRC) -o $@ $(LDFLAGS)
 
@@ -1072,7 +1072,7 @@ TEST_ATTRIB_SRC = tests/test_tool_attribution.c $(OBJDIR)/gguf.o $(OBJDIR)/compa
                   $(OBJDIR)/jsonmode.o $(OBJDIR)/schema.o $(OBJDIR)/json.o $(OBJDIR)/engine.o \
                   $(OBJDIR)/template.o $(OBJDIR)/vramreg.o $(OBJDIR)/http.o $(OBJDIR)/envelope.o $(OBJDIR)/ed25519.o $(MLDSA_OBJ) $(OBJDIR)/ecdsa.o $(OBJDIR)/oms.o $(OBJDIR)/registry.o $(OBJDIR)/provenance.o $(OBJDIR)/respstore.o $(OBJDIR)/receipts.o $(OBJDIR)/watermark.o $(OBJDIR)/kvsnap.o \
                   $(OBJDIR)/scheduler.o $(OBJDIR)/decide.o $(OBJDIR)/api_responses.o $(OBJDIR)/api_anthropic.o \
-                  $(GPU_OBJ)
+                  $(OBJDIR)/session.o $(GPU_OBJ)
 $(TEST_ATTRIB): $(TEST_ATTRIB_SRC) src/server.c $(HDR)
 	$(CC) $(CFLAGS) -I src $(TEST_ATTRIB_SRC) -o $@ $(LDFLAGS)
 
@@ -1104,7 +1104,7 @@ TMPL_CONF_RENDER_SRC = scripts/template-conformance-render.c $(OBJDIR)/gguf.o \
                   $(OBJDIR)/compat.o $(QUANTS_OBJ) $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o \
                   $(OBJDIR)/sample.o $(OBJDIR)/jsonmode.o $(OBJDIR)/schema.o $(OBJDIR)/json.o \
                   $(OBJDIR)/engine.o $(OBJDIR)/template.o $(OBJDIR)/vramreg.o $(OBJDIR)/http.o \
-                  $(OBJDIR)/envelope.o $(OBJDIR)/ed25519.o $(MLDSA_OBJ) $(OBJDIR)/ecdsa.o $(OBJDIR)/oms.o $(OBJDIR)/registry.o $(OBJDIR)/provenance.o $(OBJDIR)/respstore.o $(OBJDIR)/receipts.o $(OBJDIR)/watermark.o $(OBJDIR)/kvsnap.o $(OBJDIR)/scheduler.o $(OBJDIR)/decide.o $(GPU_OBJ)
+                  $(OBJDIR)/envelope.o $(OBJDIR)/ed25519.o $(MLDSA_OBJ) $(OBJDIR)/ecdsa.o $(OBJDIR)/oms.o $(OBJDIR)/registry.o $(OBJDIR)/provenance.o $(OBJDIR)/respstore.o $(OBJDIR)/receipts.o $(OBJDIR)/watermark.o $(OBJDIR)/kvsnap.o $(OBJDIR)/scheduler.o $(OBJDIR)/decide.o $(OBJDIR)/session.o $(GPU_OBJ)
 $(TMPL_CONF_RENDER): $(TMPL_CONF_RENDER_SRC) src/server.c $(HDR)
 	$(CC) $(CFLAGS) -I src $(TMPL_CONF_RENDER_SRC) -o $@ $(LDFLAGS)
 
