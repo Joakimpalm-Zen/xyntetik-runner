@@ -8,6 +8,18 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **Granite 4.0-H and 4.1 call tools in their own protocol (`granite4`).**
+  Granite tool calling was the generic JSON envelope with the declarations
+  in the runner's words. The 4.0-H and 4.1 templates define their own:
+  declarations appended to the system turn, the Hermes JSON call, and tool
+  results folded into a user turn of `<tool_response>` blocks. A Granite
+  template that carries that protocol is now detected as `granite4` and
+  served that way, under the same grammar and parser as Qwen2.5 and Hermes 4;
+  without tools the prompt is byte for byte what `granite` renders, and
+  Granite 3.x stays on `granite` and the generic envelope. The four Granite
+  4.0-H tool cases of the conformance gate match the publisher; nine known
+  differences remain (Phi-4-mini's and Nemotron Nano's own tool
+  declarations, and one deliberate setting).
 - **Hermes 4 has its own template family, and two publishers' default system
   prompts are sent.** Hermes 4 (`hermes4`) was rendered as a Qwen3-style
   thinking template; it now gets what its publisher's template writes: a

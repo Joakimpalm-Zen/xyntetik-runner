@@ -600,7 +600,8 @@ static void handle_chat_render(slot_t *s, sock_t fd, jv *req,
     int n_cm = 0, n_own = 0;
     if (ts.n)
         cm[n_cm++] = (chat_msg){ .role = "system", .content = ts.s };
-    else if (msgs->n > 0 && strcmp(chat_role(msgs->items[0]), "system")) {
+    else if (!native_tools && msgs->n > 0 &&
+             strcmp(chat_role(msgs->items[0]), "system")) {
         // no system turn from the caller and none from the tools: the
         // publisher's template would write its own
         const char *ds = slot_default_system(s);

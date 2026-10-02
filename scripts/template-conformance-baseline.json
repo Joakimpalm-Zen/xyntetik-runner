@@ -38,7 +38,7 @@
     "in-progress": "someone is actively fixing this; see `note`"
   },
   "generated_by": "scripts/template-conformance.py --write-baseline",
-  "generated_at": "2026-10-02T09:46:38+00:00",
+  "generated_at": "2026-10-02T09:49:51+00:00",
   "oracles": {
     "apertus": {
       "source": "hf:swiss-ai/Apertus-8B-Instruct-2509",
@@ -166,54 +166,6 @@
     }
   },
   "known_differences": [
-    {
-      "id": "granite40h/multi-tool-call",
-      "status": "open",
-      "note": "",
-      "digest": "7b232d0a78a1eae8",
-      "allowlist_applied": [],
-      "first_diff_at": 38,
-      "reference_excerpt": "'ystem<|end_of_role|>You are a helpful assistant.\\n\\nYou are a helpful assistant with access '",
-      "runner_excerpt": "'ystem<|end_of_role|>Reply with exactly one JSON object and nothing else.\\nTo answer the use'",
-      "token_delta": -49,
-      "token_delta_stale": true
-    },
-    {
-      "id": "granite40h/tool-call+result",
-      "status": "open",
-      "note": "",
-      "digest": "44a6ef240d2806e4",
-      "allowlist_applied": [],
-      "first_diff_at": 38,
-      "reference_excerpt": "'ystem<|end_of_role|>You are a helpful assistant.\\n\\nYou are a helpful assistant with access '",
-      "runner_excerpt": "'ystem<|end_of_role|>Reply with exactly one JSON object and nothing else.\\nTo answer the use'",
-      "token_delta": -48,
-      "token_delta_stale": true
-    },
-    {
-      "id": "granite40h/tool-call-with-text",
-      "status": "open",
-      "note": "",
-      "digest": "60171f33aee6b80d",
-      "allowlist_applied": [],
-      "first_diff_at": 38,
-      "reference_excerpt": "'ystem<|end_of_role|>You are a helpful assistant.\\n\\nYou are a helpful assistant with access '",
-      "runner_excerpt": "'ystem<|end_of_role|>Reply with exactly one JSON object and nothing else.\\nTo answer the use'",
-      "token_delta": -49,
-      "token_delta_stale": true
-    },
-    {
-      "id": "granite40h/tool-then-conversation",
-      "status": "open",
-      "note": "",
-      "digest": "9b91f79a7cadeef4",
-      "allowlist_applied": [],
-      "first_diff_at": 38,
-      "reference_excerpt": "'ystem<|end_of_role|>You are a helpful assistant.\\n\\nYou are a helpful assistant with access '",
-      "runner_excerpt": "'ystem<|end_of_role|>Reply with exactly one JSON object and nothing else.\\nTo answer the use'",
-      "token_delta": -48,
-      "token_delta_stale": true
-    },
     {
       "id": "mistral-file/empty-assistant-content",
       "status": "open",

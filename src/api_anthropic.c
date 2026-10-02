@@ -870,7 +870,7 @@ static char *messages_prompt(slot_t *s, sock_t fd, jv *req, tool_envelope *env,
             if (ok && ts.n) turn_add_borrowed(&t, "system", ts.s);
             // no `system` and no tool turn: the publisher's default, as on
             // the chat surface
-            if (ok && !ts.n && !sys && slot_default_system(s))
+            if (ok && !ts.n && !sys && !native_tools && slot_default_system(s))
                 turn_add_borrowed(&t, "system", slot_default_system(s));
             if (ok && sys) turn_add(&t, "system", sys);
             else free(sys);

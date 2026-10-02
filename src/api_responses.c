@@ -805,7 +805,7 @@ void handle_responses(slot_t *s, sock_t fd, jv *req) {
         const char *r0 = jv_str(jv_get(input->items[0], "role"), "");
         input_opens_system = !strcmp(r0, "system") || !strcmp(r0, "developer");
     }
-    if (n_cm == 0 && !input_opens_system) {
+    if (n_cm == 0 && !input_opens_system && !native_tools) {
         const char *ds = slot_default_system(s);
         if (ds) {
             cm[n_cm++] = (chat_msg){ .role = "system", .content = ds };

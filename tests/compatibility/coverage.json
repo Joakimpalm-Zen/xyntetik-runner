@@ -545,6 +545,24 @@
     "cuda": "NOT RUN",
     "metal": "NOT RUN"
    }
+  },
+  "granite4": {
+   "tool_protocol": {
+    "status": "NOT RUN",
+    "note": "the publisher's protocol since 2026-10-02 (declarations in the system turn, Hermes JSON calls, <tool_response> user turns; conformance 14/14 text on granite-4.0-h-small); the tool gate has not been re-run on a Granite 4.0-H or 4.1 artifact under it"
+   },
+   "client_loop": {
+    "status": "NOT RUN"
+   },
+   "sampling_anchor": {
+    "status": "NOT RUN",
+    "note": "generic preset"
+   },
+   "backends": {
+    "cpu": "NOT RUN",
+    "cuda": "NOT RUN",
+    "metal": "NOT RUN"
+   }
   }
  },
  "architectures": {
@@ -876,7 +894,8 @@
   "granite": {
    "templates": [
     "granite",
-    "granite42"
+    "granite42",
+    "granite4"
    ],
    "artifacts": [
     "granite-4.1-8b-q4_0",
@@ -902,7 +921,8 @@
   "granitehybrid": {
    "templates": [
     "granite42",
-    "granite"
+    "granite",
+    "granite4"
    ],
    "artifacts": [
     "granite-4.0-h-micro-q4_k_m"

@@ -103,7 +103,10 @@ int template_detect(const char *meta_tmpl, tokenizer *tok) {
         if (strstr(meta_tmpl, "atem:function_calls") ||
             (strstr(meta_tmpl, "<|start|>") && strstr(meta_tmpl, "<|eot|>")))
             return TMPL_MUSE;
-        if (strstr(meta_tmpl, "<|start_of_role|>")) return TMPL_GRANITE;
+        if (strstr(meta_tmpl, "<|start_of_role|>"))
+            return strstr(meta_tmpl, "<tool_call>") &&
+                   strstr(meta_tmpl, "<tool_response>") ? TMPL_GRANITE4
+                                                        : TMPL_GRANITE;
         if (strstr(meta_tmpl, "<SPECIAL_10>System")) return TMPL_NEMOTRON;
         // Qwen3 and relatives: ChatML whose own template carries a
         // <think> branch. Detected from the model's template rather than
@@ -211,6 +214,7 @@ int template_from_name(const char *name) {
     if (!strcmp(name, "muse"))   return TMPL_MUSE;
     if (!strcmp(name, "harmony")) return TMPL_HARMONY;
     if (!strcmp(name, "granite")) return TMPL_GRANITE;
+    if (!strcmp(name, "granite4")) return TMPL_GRANITE4;
     if (!strcmp(name, "raw"))    return TMPL_RAW;
     return -1;
 }
@@ -221,7 +225,7 @@ const char *template_default_system(int tmpl, const char *meta_tmpl) {
         { TMPL_CHATML,
           "You are a helpful AI assistant named SmolLM, trained by Hugging Face" },
         // ibm-granite/granite-4.0-h-* chat_template (g4_default_system_message)
-        { TMPL_GRANITE,
+        { TMPL_GRANITE4,
           "You are a helpful assistant. Please ensure responses are "
           "professional, accurate, and safe." },
     };
@@ -257,6 +261,7 @@ const char *template_name(int t) {
         case TMPL_MUSE:   return "muse";
         case TMPL_HARMONY: return "harmony";
         case TMPL_GRANITE: return "granite";
+        case TMPL_GRANITE4: return "granite4";
         default: return "raw";
     }
 }
@@ -2435,12 +2440,49 @@ size_t render_messages_with_tools(int tmpl, const chat_msg *msgs, int n_msgs,
         break;
     }
     case TMPL_GRANITE:
-        // granite 4.1 (reference: the model's OWN tokenizer.chat_template):
+    case TMPL_GRANITE4: {
+        // granite (reference: the model's OWN tokenizer.chat_template):
         // <|start_of_role|>ROLE<|end_of_role|>CONTENT<|end_of_text|>\n per
-        // turn, assistant included. Tool declarations and the Hermes-style
-        // <tool_call> JSON blocks the template also defines are not rendered
-        // here — granite tool calling is unimplemented, not approximated.
-        for (int i = 0; i < n_msgs; i++) {
+        // turn, assistant included. Granite 3.x defines another tool
+        // protocol that is not rendered; its tools ride the generic
+        // envelope, whose teaching turn arrives here as a system message.
+        //
+        // The 4.0-H / 4.1 templates (TMPL_GRANITE4) also define tools: the
+        // declarations join the system turn (after the caller's text and a
+        // blank line, or alone), a call is the Hermes JSON block the caller
+        // already folded into the assistant content, and consecutive tool
+        // results share one user turn of <tool_response> blocks.
+        bool have_tools = tmpl == TMPL_GRANITE4 && tools &&
+                          tools->type == J_ARR && tools->n > 0;
+        int first = 0;
+        if (have_tools) {
+            sbuf decl = {0};
+            tools_render_for(tmpl, tools, &decl);
+            if (decl.failed) { free(decl.s); return SIZE_MAX; }
+            off = emit(out, cap, off, "<|start_of_role|>system<|end_of_role|>",
+                       NULL, NULL);
+            if (n_msgs > 0 && !strcmp(msgs[0].role, "system")) {
+                off = emit(out, cap, off, "%s\n\n", msgs[0].content, NULL);
+                first = 1;
+            }
+            off = emit(out, cap, off, "%s<|end_of_text|>\n", decl.s, NULL);
+            free(decl.s);
+        }
+        for (int i = first; i < n_msgs; i++) {
+            if (tmpl == TMPL_GRANITE4 && !strcmp(msgs[i].role, "tool")) {
+                bool prev_tool = i > 0 && !strcmp(msgs[i - 1].role, "tool");
+                bool next_tool = i + 1 < n_msgs &&
+                                 !strcmp(msgs[i + 1].role, "tool");
+                if (!prev_tool)
+                    off = emit(out, cap, off,
+                               "<|start_of_role|>user<|end_of_role|>", NULL, NULL);
+                off = emit(out, cap, off,
+                           "\n<tool_response>\n%s\n</tool_response>",
+                           msgs[i].content, NULL);
+                if (!next_tool)
+                    off = emit(out, cap, off, "<|end_of_text|>\n", NULL, NULL);
+                continue;
+            }
             off = emit(out, cap, off, "<|start_of_role|>%s<|end_of_role|>",
                        msgs[i].role, NULL);
             off = emit(out, cap, off, "%s<|end_of_text|>\n",
@@ -2450,6 +2492,7 @@ size_t render_messages_with_tools(int tmpl, const chat_msg *msgs, int n_msgs,
             off = emit(out, cap, off, "<|start_of_role|>assistant<|end_of_role|>",
                        NULL, NULL);
         break;
+    }
     case TMPL_GEMMA4_MAINLINE:
     case TMPL_GEMMA4: {
         // gemma4 (reference: llama.cpp models/templates/google-gemma-4-31B-it
@@ -2997,6 +3040,18 @@ static void coder_declaration(jv *tool, sbuf *out) {
 
 void tools_render_for(int tmpl, const jv *tools, sbuf *out) {
     bool qwen = tmpl == TMPL_CHATML || tmpl == TMPL_CHATML_THINK;
+    if (tmpl == TMPL_GRANITE4) {
+        // ibm-granite/granite-4.0-h-* and granite-4.1-* chat_template,
+        // verbatim (tools_system_message_prefix / _suffix)
+        if (!tools || tools->type != J_ARR || tools->n == 0) return;
+        pl_lit(out, "You are a helpful assistant with access to the following tools. You may call one or more tools to assist with the user query.\n\nYou are provided with function signatures within <tools></tools> XML tags:\n<tools>");
+        for (int i = 0; i < tools->n; i++) {
+            pl_lit(out, "\n");
+            jv_dump_tojson(tools->items[i], out);
+        }
+        pl_lit(out, "\n</tools>\n\nFor each tool call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:\n<tool_call>\n{\"name\": <function-name>, \"arguments\": <args-json-object>}\n</tool_call>. If a tool does not exist in the provided list of tools, notify the user that you do not have the ability to fulfill the request.");
+        return;
+    }
     if (tmpl == TMPL_HERMES4) {
         // NousResearch/Hermes-4-14B chat_template, verbatim: appended to the
         // system text, the tools one per line, no instruction after the
@@ -3170,6 +3225,7 @@ void tool_history_render_for(int tmpl, const jv *calls,
         const char *args = jv_str(jv_get(fn, "arguments"), "{}");
         if (!name) continue;
         if (tmpl_hermes_json(tmpl)) {
+            // (Granite 4 follows Qwen's rule here.)
             // Hermes 4 writes the newline before EVERY call, the first of a
             // turn that said nothing included; Qwen only between things
             if (tmpl == TMPL_HERMES4 || qwen_calls++ || turn_has_text)

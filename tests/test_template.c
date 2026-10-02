@@ -1481,7 +1481,7 @@ static void test_name_roundtrip(void) {
         "chatml", "llama2", "llama3", "zephyr", "gemma", "gemma4", "mistral",
         "mistral-v1", "mistral-nemo",
         "phi3", "phi4", "apertus", "ornith", "qwen35", "qwen35-nothink",
-        "nemotron", "hermes4", "granite42", "qwen38", "raw",
+        "nemotron", "hermes4", "granite", "granite4", "granite42", "qwen38", "raw",
     };
     for (size_t i = 0; i < sizeof(names) / sizeof(*names); i++) {
         int id = template_from_name(names[i]);
@@ -2701,7 +2701,7 @@ static void test_default_system_is_read_from_the_models_own_template(void) {
     const char *plain = "<|im_start|>{{ message.role }}";
     assert(!strcmp(template_default_system(TMPL_CHATML, smol),
                    "You are a helpful AI assistant named SmolLM, trained by Hugging Face"));
-    assert(!strcmp(template_default_system(TMPL_GRANITE, g40),
+    assert(!strcmp(template_default_system(TMPL_GRANITE4, g40),
                    "You are a helpful assistant. Please ensure responses are "
                    "professional, accurate, and safe."));
     // another ChatML model, a forced template, or no template text: nothing
@@ -2752,6 +2752,42 @@ static void test_hermes4_system_turn_and_calls(tokenizer *t) {
     assert(template_think_tags(TMPL_HERMES4, &o, &c));
 }
 
+// Granite 4.0-H / 4.1: the framing is granite's, the tool protocol is the
+// template's own. A template without <tool_call> (Granite 3.x) stays on the
+// plain family. Expected strings are the publisher's renders (conformance
+// row granite40h).
+static void test_granite4_native_tools(tokenizer *t) {
+    assert(template_detect("<|start_of_role|><tool_call><tool_response>", t) == TMPL_GRANITE4);
+    assert(template_detect("<|start_of_role|><|tool_call|>", t) == TMPL_GRANITE);
+    assert(tmpl_hermes_json(TMPL_GRANITE4) && !tmpl_hermes_json(TMPL_GRANITE));
+    static const char tj[] =
+        "[{\"type\":\"function\",\"function\":{\"name\":\"f\",\"parameters\":{}}}]";
+    jv *tools = json_parse(tj, sizeof tj - 1);
+    assert(tools);
+    char out[4096];
+    const chat_msg msgs[] = { CHAT_MSG("system", "S"), CHAT_MSG("user", "U"),
+                              CHAT_MSG("assistant", "<tool_call>\n{}\n</tool_call>"),
+                              CHAT_MSG("tool", "R1"), CHAT_MSG("tool", "R2") };
+    size_t n = render_messages_with_tools(TMPL_GRANITE4, msgs, 5, true, THINK_DEFAULT,
+                                          tools, out, sizeof(out));
+    assert(n < sizeof(out));
+    tok_strip_marks(out);
+    assert(!strncmp(out, "<|start_of_role|>system<|end_of_role|>S\n\n"
+                         "You are a helpful assistant with access to the following tools.", 100));
+    assert(strstr(out, "<tools>\n{\"type\": \"function\""));
+    assert(strstr(out, "fulfill the request.<|end_of_text|>\n"
+                       "<|start_of_role|>user<|end_of_role|>U<|end_of_text|>\n"));
+    assert(strstr(out, "<|start_of_role|>user<|end_of_role|>\n<tool_response>\nR1\n</tool_response>"
+                       "\n<tool_response>\nR2\n</tool_response><|end_of_text|>\n"
+                       "<|start_of_role|>assistant<|end_of_role|>"));
+    // without tools it is granite's render, byte for byte
+    char a[512], b[512];
+    render_messages(TMPL_GRANITE4, msgs, 2, true, THINK_DEFAULT, a, sizeof(a));
+    render_messages(TMPL_GRANITE, msgs, 2, true, THINK_DEFAULT, b, sizeof(b));
+    assert(!strcmp(a, b));
+    jv_free(tools);
+}
+
 static void test_detect_qwen3_coder(void) {
     const char *native = "<|im_start|> <function=example_function_name> <parameter=example_parameter_1>";
     assert(!strcmp(template_name(template_detect(native, NULL)), "qwen3-coder"));
@@ -2791,6 +2827,7 @@ int main(void) {
     test_phi4_has_no_newlines(&t);
     test_nemotron_nano_framing(&t);
     test_hermes4_system_turn_and_calls(&t);
+    test_granite4_native_tools(&t);
     test_qwen38_tool_turns();
     test_muse_split_closes_on_fed_reasoning_boundary();
     test_muse_plain_thinking_close_leaves_no_recipient_residue();

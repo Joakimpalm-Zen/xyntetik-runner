@@ -129,6 +129,13 @@ enum { TMPL_CHATML, TMPL_LLAMA2, TMPL_LLAMA3, TMPL_ZEPHYR, TMPL_GEMMA,
        // chatml-think until 2026-10-02 (15 of 22 cases). Detected by the
        // standard prompt's text.
        TMPL_HERMES4,
+       // Granite 4.0-H and 4.1 (ibm-granite chat templates that carry a
+       // <tool_call> block). TMPL_GRANITE's framing exactly, plus the tool
+       // protocol those templates define: declarations appended to the
+       // system turn, the Hermes JSON call, results folded into a user turn.
+       // Granite 3.x shares the framing and not the protocol, so it stays on
+       // TMPL_GRANITE and the generic envelope.
+       TMPL_GRANITE4,
        // What template_detect returns when NOTHING matched. It renders
        // llama-2 markup, because changing what unrecognised models render is
        // a behavioural decision and not this constant's job -- but it is a
@@ -193,7 +200,8 @@ static inline bool tmpl_ornith_like(int t) {
 // (<tool_call>{"name": ..., "arguments": {...}}</tool_call>): one grammar,
 // one parser, one replay form.
 static inline bool tmpl_hermes_json(int t) {
-    return t == TMPL_CHATML || t == TMPL_CHATML_THINK || t == TMPL_HERMES4;
+    return t == TMPL_CHATML || t == TMPL_CHATML_THINK || t == TMPL_HERMES4 ||
+           t == TMPL_GRANITE4;
 }
 static inline bool tmpl_qwen35(int t) {
     return t == TMPL_QWEN35 || t == TMPL_QWEN35_NOTHINK;

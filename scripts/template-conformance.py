@@ -304,7 +304,7 @@ FAMILIES = {
              "system turn",
         tool_family=True, tokenizer=("Phi-4-mini-instruct-q4_0.gguf",)),
     "granite40h": Family(
-        "granite", ("hf", "ibm-granite/granite-4.0-h-small"),
+        "granite4", ("hf", "ibm-granite/granite-4.0-h-small"),
         note="granitehybrid; the 4.0 template with its tools section",
         tool_family=True, tokenizer=("granite-4.0-h-small-Q4_K_M.gguf",)),
     "qwen35-4b": Family(
@@ -371,7 +371,7 @@ FAMILIES = {
         note="publisher page gated; the file's embedded template",
         tokenizer=("EuroLLM-9B-Instruct-Q4_K_M.gguf",)),
     "granite": Family(
-        "granite", ("gguf", "models/granite-4.1-8b-Q4_0.gguf"),
+        "granite4", ("gguf", "models/granite-4.1-8b-Q4_0.gguf"),
         note="src/template.c cites 'the model's OWN tokenizer.chat_template'; "
              "the ibm-granite HF repo is gated (401)",
         tokenizer=("granite-4.1-8b-Q4_0.gguf", "granite-4.1-3b-Q8_0.gguf")),
