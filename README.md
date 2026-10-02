@@ -404,6 +404,10 @@ signs a transcript. Chaining, trusted-key checks, Ed25519 and ML-DSA-44
 signatures, and model-signature verification are documented in the
 [CLI reference](#conversion-diagnostics-and-integration).
 
+`scripts/audit-demo.sh` runs the whole chain in under a minute on an 8 GB
+Mac: a signed 1,000-token record, a verifying replay, and three forgeries
+refused ([docs/audit-demo.md](docs/audit-demo.md)).
+
 Keep the same executable and model available for replay. The
 [determinism scope](docs/determinism-scope.md) explains the exact guarantees
 and why independent rebuilds and arbitrary hardware changes are outside

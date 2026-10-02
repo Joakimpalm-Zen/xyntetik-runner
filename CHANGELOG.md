@@ -8,6 +8,12 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **`scripts/audit-demo.sh`: the record-and-verify chain in under a
+  minute (R1.2.4).** Records and signs a 1,000-token sampled run, verifies
+  it by replay against the trusted key, and shows three forgeries refused,
+  including one whose chain hash was recomputed and which only the replay
+  catches. 29 s on the 8 GB M1. `docs/audit-demo.md` states what it
+  proves and what it does not.
 - **Exporting a context snapshot no longer stalls the server.** The
   export held the prefix-cache lock across the whole disk write, so a
   multi-GB snapshot blocked every slot's prefix lookup until it finished.
