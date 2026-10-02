@@ -196,9 +196,55 @@ static bool write_self(void) {
     return ok;
 }
 
+// A crashed process leaves its record, and one killed between the write and
+// the rename leaves `<pid>.json.tmp`. Only a reader swept them, and the only
+// reader in this binary is the tray: a machine that never ran it kept every
+// record of every dead process. Each registering process now sweeps first.
+// The list itself removes dead records; the temporaries are removed here, and
+// only when the pid in their name is not alive, so a live writer's is kept.
+static void sweep_stale(void) {
+    int n = 0;
+    instances_list_free(instances_list(&n), n);
+    const char *d = instances_dir();
+    if (!d) return;
+#ifdef _WIN32
+    char pat[1100];
+    snprintf(pat, sizeof pat, "%s\\*.json.tmp", d);
+    WIN32_FIND_DATAA fd;
+    HANDLE h = FindFirstFileA(pat, &fd);
+    if (h == INVALID_HANDLE_VALUE) return;
+    do {
+        const char *name = fd.cFileName;
+        char path[1300];
+        snprintf(path, sizeof path, "%s\\%s", d, name);
+#else
+    DIR *dp = opendir(d);
+    if (!dp) return;
+    struct dirent *de;
+    while ((de = readdir(dp)) != NULL) {
+        const char *name = de->d_name;
+        size_t l = strlen(name);
+        if (l < 10 || strcmp(name + l - 9, ".json.tmp") != 0) continue;
+        char path[1300];
+        snprintf(path, sizeof path, "%s/%s", d, name);
+#endif
+        char *end;
+        long pid = strtol(name, &end, 10);
+        if (end == name || strcmp(end, ".json.tmp") != 0) continue;
+        if (pid > 0 && !instance_pid_alive(pid)) remove(path);
+#ifdef _WIN32
+    } while (FindNextFileA(h, &fd));
+    FindClose(h);
+#else
+    }
+    closedir(dp);
+#endif
+}
+
 bool instances_register(const char *mode, int port,
                         const char *const *model_names,
                         const char *const *model_paths, int n_models) {
+    sweep_stale();
     snprintf(g_self.mode, sizeof g_self.mode, "%s", mode ? mode : "cli");
     g_self.port = port;
     if (!plat_pid_start_time((long)getpid(), &g_self.procstart))
