@@ -518,7 +518,7 @@ static int train_eot_id(tokenizer *tok, int tmpl) {
     case TMPL_GEMMA: s = "<end_of_turn>"; break;
     case TMPL_GEMMA4: case TMPL_GEMMA4_MAINLINE: s = "<turn|>"; break;
     case TMPL_MUSE: s = "<|eot|>"; break;
-    case TMPL_PHI3: s = "<|end|>"; break;
+    case TMPL_PHI3: case TMPL_PHI4: s = "<|end|>"; break;
     case TMPL_HARMONY: s = "<|return|>"; break;
     default: break;
     }

@@ -1480,7 +1480,8 @@ static void test_name_roundtrip(void) {
     static const char *const names[] = {
         "chatml", "llama2", "llama3", "zephyr", "gemma", "gemma4", "mistral",
         "mistral-v1", "mistral-nemo",
-        "phi3", "apertus", "ornith", "granite42", "qwen38", "raw",
+        "phi3", "phi4", "apertus", "ornith", "qwen35", "qwen35-nothink",
+        "nemotron", "granite42", "qwen38", "raw",
     };
     for (size_t i = 0; i < sizeof(names) / sizeof(*names); i++) {
         int id = template_from_name(names[i]);
@@ -2609,6 +2610,84 @@ static void test_muse_user_payload_strip_removes_only_recipient_header(void) {
 
 // Qwen/Qwen3-Coder-30B-A3B-Instruct tokenizer_config.json: function XML,
 // ChatML framing, and no thinking branch. Detection must not use the arch.
+// The three families the golden pass of 2026-09-07 found rendered through a
+// neighbour's template. Expected strings are the publishers' own renders
+// (scripts/template-conformance.py rows qwen35-4b, qwen35-0.8b, phi4mini and
+// nemotron-nano), written out here so the unit suite holds them without jinja.
+static void test_qwen35_is_not_ornith(tokenizer *t) {
+    const char *q35 =
+        "<function=example_function_name>{%- if loop.index0 > ns.last_query_index %}"
+        "<think>{%- if enable_thinking is defined and enable_thinking is false %}";
+    const char *q35s =
+        "<function=example_function_name>{%- if loop.index0 > ns.last_query_index %}"
+        "<think>{%- if enable_thinking is defined and enable_thinking is true %}";
+    const char *orn = "<function=example_function_name><think>";
+    assert(template_detect(q35, t) == TMPL_QWEN35);
+    assert(template_detect(q35s, t) == TMPL_QWEN35_NOTHINK);
+    assert(template_detect(orn, t) == TMPL_ORNITH);
+    assert(tmpl_ornith_like(TMPL_QWEN35) && tmpl_ornith_like(TMPL_QWEN35_NOTHINK));
+
+    char out[1024];
+    const chat_msg one[] = { CHAT_MSG("user", "hi") };
+    // the 4B opens the block unless told not to
+    render_messages(TMPL_QWEN35, one, 1, true, THINK_DEFAULT, out, sizeof(out));
+    assert(!strcmp(out, "<|im_start|>user\nhi<|im_end|>\n<|im_start|>assistant\n<think>\n"));
+    render_messages(TMPL_QWEN35, one, 1, true, THINK_OFF, out, sizeof(out));
+    assert(!strcmp(out, "<|im_start|>user\nhi<|im_end|>\n<|im_start|>assistant\n"
+                        "<think>\n\n</think>\n\n"));
+    // the 0.8B closes it unless told to think
+    render_messages(TMPL_QWEN35_NOTHINK, one, 1, true, THINK_DEFAULT, out, sizeof(out));
+    assert(!strcmp(out, "<|im_start|>user\nhi<|im_end|>\n<|im_start|>assistant\n"
+                        "<think>\n\n</think>\n\n"));
+    render_messages(TMPL_QWEN35_NOTHINK, one, 1, true, THINK_ON, out, sizeof(out));
+    assert(!strcmp(out, "<|im_start|>user\nhi<|im_end|>\n<|im_start|>assistant\n<think>\n"));
+}
+
+static void test_phi4_has_no_newlines(tokenizer *t) {
+    const char *p4 =
+        "{{ '<|' + message['role'] + '|>' + message['content'] + '<|tool|>' + "
+        "message['tools'] + '<|/tool|>' + '<|end|>' }}";
+    assert(template_detect(p4, t) == TMPL_PHI4);
+    char out[512];
+    const chat_msg msgs[] = { CHAT_MSG("system", "S"), CHAT_MSG("user", "U"),
+                              CHAT_MSG("assistant", "A"), CHAT_MSG("user", "V") };
+    render_messages(TMPL_PHI4, msgs, 4, true, THINK_DEFAULT, out, sizeof(out));
+    assert(!strcmp(out, "<|system|>S<|end|><|user|>U<|end|><|assistant|>A<|end|>"
+                        "<|user|>V<|end|><|assistant|>"));
+    render_messages(TMPL_PHI4, msgs, 2, false, THINK_DEFAULT, out, sizeof(out));
+    assert(!strcmp(out, "<|system|>S<|end|><|user|>U<|end|><|endoftext|>"));
+}
+
+static void test_nemotron_nano_framing(tokenizer *t) {
+    assert(template_detect("{{- '<SPECIAL_10>System\n' -}}", t) == TMPL_NEMOTRON);
+    char out[1024];
+    const chat_msg one[] = { CHAT_MSG("user", " hi ") };
+    // no system turn still writes the header; thinking is on by default
+    render_messages(TMPL_NEMOTRON, one, 1, true, THINK_DEFAULT, out, sizeof(out));
+    assert(!strcmp(out, "<SPECIAL_10>System\n\n<SPECIAL_11>User\nhi\n"
+                        "<SPECIAL_11>Assistant\n<think>\n"));
+    // the control string is read, removed, and closes the block
+    const chat_msg off[] = { CHAT_MSG("system", "Be brief. /no_think"),
+                             CHAT_MSG("user", "hi"),
+                             CHAT_MSG("assistant", "<think>x</think> yo "),
+                             CHAT_MSG("user", "again") };
+    render_messages(TMPL_NEMOTRON, off, 4, true, THINK_DEFAULT, out, sizeof(out));
+    assert(!strcmp(out, "<SPECIAL_10>System\nBe brief.\n<SPECIAL_11>User\nhi\n"
+                        "<SPECIAL_11>Assistant\nyo\n<SPECIAL_12>\n"
+                        "<SPECIAL_11>User\nagain\n"
+                        "<SPECIAL_11>Assistant\n<think></think>"));
+    // an explicit request setting outranks the text
+    render_messages(TMPL_NEMOTRON, off, 2, true, THINK_ON, out, sizeof(out));
+    assert(strstr(out, "<SPECIAL_11>Assistant\n<think>\n"));
+    // a trailing assistant turn is the prefill, after the thought tag
+    const chat_msg pre[] = { CHAT_MSG("user", "hi"), CHAT_MSG("assistant", "Sure") };
+    render_messages(TMPL_NEMOTRON, pre, 2, true, THINK_DEFAULT, out, sizeof(out));
+    assert(!strcmp(out, "<SPECIAL_10>System\n\n<SPECIAL_11>User\nhi\n"
+                        "<SPECIAL_11>Assistant\n<think>\nSure"));
+    const char *o, *c;
+    assert(template_think_tags(TMPL_NEMOTRON, &o, &c) && !strcmp(o, "<think>"));
+}
+
 static void test_detect_qwen3_coder(void) {
     const char *native = "<|im_start|> <function=example_function_name> <parameter=example_parameter_1>";
     assert(!strcmp(template_name(template_detect(native, NULL)), "qwen3-coder"));
@@ -2643,6 +2722,9 @@ int main(void) {
     test_detect_and_render_granite42(&t);
     test_granite42_tool_turns();
     test_detect_and_render_qwen38(&t);
+    test_qwen35_is_not_ornith(&t);
+    test_phi4_has_no_newlines(&t);
+    test_nemotron_nano_framing(&t);
     test_qwen38_tool_turns();
     test_muse_split_closes_on_fed_reasoning_boundary();
     test_muse_plain_thinking_close_leaves_no_recipient_residue();

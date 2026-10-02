@@ -79,8 +79,16 @@ int template_detect(const char *meta_tmpl, tokenizer *tok) {
             strstr(meta_tmpl, "<think></think>"))
             return TMPL_GRANITE42;
         if (strstr(meta_tmpl, "<function=example_function_name>") &&
-            strstr(meta_tmpl, "<think>"))
+            strstr(meta_tmpl, "<think>")) {
+            // Qwen 3.5 is ornith's template with a thought block only on the
+            // assistant turns after the last user query; the 0.8B also
+            // inverts the thinking default. Told apart by the two tests only
+            // their templates write (see the enum comments).
+            if (strstr(meta_tmpl, "loop.index0 > ns.last_query_index"))
+                return strstr(meta_tmpl, "enable_thinking is true")
+                           ? TMPL_QWEN35_NOTHINK : TMPL_QWEN35;
             return TMPL_ORNITH;
+        }
         if (strstr(meta_tmpl, "<|im_start|>") &&
             strstr(meta_tmpl, "<function=") && strstr(meta_tmpl, "<parameter="))
             return TMPL_QWEN3_CODER;
@@ -96,6 +104,7 @@ int template_detect(const char *meta_tmpl, tokenizer *tok) {
             (strstr(meta_tmpl, "<|start|>") && strstr(meta_tmpl, "<|eot|>")))
             return TMPL_MUSE;
         if (strstr(meta_tmpl, "<|start_of_role|>")) return TMPL_GRANITE;
+        if (strstr(meta_tmpl, "<SPECIAL_10>System")) return TMPL_NEMOTRON;
         // Qwen3 and relatives: ChatML whose own template carries a
         // <think> branch. Detected from the model's template rather than
         // a name list, so it follows the checkpoint and not a guess.
@@ -105,6 +114,11 @@ int template_detect(const char *meta_tmpl, tokenizer *tok) {
         if (strstr(meta_tmpl, "<|start_header_id|>")) return TMPL_LLAMA3;
         if (strstr(meta_tmpl, "<|user|>"))
             return strstr(meta_tmpl, "<|end|>") ? TMPL_PHI3 : TMPL_ZEPHYR;
+        // Phi-4-mini writes '<|' + role + '|>', so no literal role tag is
+        // in its template; without this line the vocabulary probe below
+        // answered phi3.
+        if (strstr(meta_tmpl, "<|/tool|>") && strstr(meta_tmpl, "<|end|>"))
+            return TMPL_PHI4;
         if (strstr(meta_tmpl, "<|turn>"))             return gemma4_variant(meta_tmpl);
         if (strstr(meta_tmpl, "<start_of_turn>"))     return TMPL_GEMMA;
         if (strstr(meta_tmpl, "[INST]"))
@@ -181,8 +195,12 @@ int template_from_name(const char *name) {
     if (!strcmp(name, "mistral-v1")) return TMPL_MISTRAL_V1;
     if (!strcmp(name, "mistral-nemo")) return TMPL_MISTRAL_NEMO;
     if (!strcmp(name, "phi3"))    return TMPL_PHI3;
+    if (!strcmp(name, "phi4"))    return TMPL_PHI4;
+    if (!strcmp(name, "nemotron")) return TMPL_NEMOTRON;
     if (!strcmp(name, "apertus")) return TMPL_APERTUS;
     if (!strcmp(name, "ornith")) return TMPL_ORNITH;
+    if (!strcmp(name, "qwen35")) return TMPL_QWEN35;
+    if (!strcmp(name, "qwen35-nothink")) return TMPL_QWEN35_NOTHINK;
     if (!strcmp(name, "granite42")) return TMPL_GRANITE42;
     if (!strcmp(name, "qwen3-coder")) return TMPL_QWEN3_CODER;
     if (!strcmp(name, "qwen38")) return TMPL_QWEN38;
@@ -205,8 +223,12 @@ const char *template_name(int t) {
         case TMPL_MISTRAL_V1: return "mistral-v1";
         case TMPL_MISTRAL_NEMO: return "mistral-nemo";
         case TMPL_PHI3:    return "phi3";
+        case TMPL_PHI4:    return "phi4";
+        case TMPL_NEMOTRON: return "nemotron";
         case TMPL_APERTUS: return "apertus";
         case TMPL_ORNITH: return "ornith";
+        case TMPL_QWEN35: return "qwen35";
+        case TMPL_QWEN35_NOTHINK: return "qwen35-nothink";
         case TMPL_GRANITE42: return "granite42";
         case TMPL_QWEN38: return "qwen38";
         case TMPL_QWEN3_CODER: return "qwen3-coder";
@@ -226,7 +248,7 @@ bool template_roles_valid(int tmpl, const char *const *roles, int n,
                                tmpl == TMPL_MISTRAL_V1 ||
                                tmpl == TMPL_MISTRAL_NEMO ||
                                tmpl == TMPL_APERTUS ||
-                               tmpl == TMPL_ORNITH ||
+                               tmpl_ornith_like(tmpl) ||
                                tmpl == TMPL_QWEN38;
     if (!leading_system_only) return true;
     for (int i = 1; !allow_mid_system && i < n; i++) {
@@ -513,7 +535,8 @@ int req_bare_recipients(struct jv *req) {
 
 bool template_think_tags(int tmpl, const char **open, const char **close) {
     if (tmpl == TMPL_CHATML_THINK || tmpl == TMPL_QWEN38 ||
-        tmpl == TMPL_GRANITE42 || tmpl == TMPL_ORNITH) {
+        tmpl == TMPL_NEMOTRON ||
+        tmpl == TMPL_GRANITE42 || tmpl_ornith_like(tmpl)) {
         *open = "<think>";
         *close = "</think>";
         return true;
@@ -1458,6 +1481,29 @@ static void apertus_render_tools(const jv *tools, sbuf *o) {
 static const char *trim_left(const char *p, const char *end);
 static const char *trim_right(const char *p, const char *end);
 
+// Nemotron Nano: the reference removes its two control strings from system
+// and user text and strips what is left (`.replace('/think', '')
+// .replace('/no_think', '').strip()`). Returns a malloc'd copy, NULL on OOM.
+// `ctl` false keeps the control strings and only strips, which is what the
+// reference does to assistant text.
+static char *nemotron_clean(const char *s, bool ctl) {
+    size_t n = strlen(s);
+    char *o = malloc(n + 1);
+    if (!o) return NULL;
+    size_t k = 0;
+    for (size_t i = 0; i < n;) {
+        if (ctl && !strncmp(s + i, "/think", 6)) { i += 6; continue; }
+        if (ctl && !strncmp(s + i, "/no_think", 9)) { i += 9; continue; }
+        o[k++] = s[i++];
+    }
+    while (k && (strchr(" \t\n\r\f\v", o[k - 1]) || is_mark(o[k - 1]))) k--;
+    size_t b = 0;
+    while (b < k && (strchr(" \t\n\r\f\v", o[b]) || is_mark(o[b]))) b++;
+    memmove(o, o + b, k - b);
+    o[k - b] = 0;
+    return o;
+}
+
 size_t render_messages_with_tools(int tmpl, const chat_msg *msgs, int n_msgs,
                                   bool add_assistant, int thinking,
                                   const jv *tools,
@@ -1465,7 +1511,92 @@ size_t render_messages_with_tools(int tmpl, const chat_msg *msgs, int n_msgs,
     size_t off = 0;
     out[0] = 0;
     switch (tmpl) {
+    case TMPL_NEMOTRON: {
+        // The last `/think` or `/no_think` in a system or user turn decides
+        // (`/think` wins inside one turn); thinking is on when neither
+        // appears. An explicit request setting outranks the text.
+        bool think = true;
+        for (int i = 0; i < n_msgs; i++) {
+            if (strcmp(msgs[i].role, "user") && strcmp(msgs[i].role, "system"))
+                continue;
+            if (strstr(msgs[i].content, "/think")) think = true;
+            else if (strstr(msgs[i].content, "/no_think")) think = false;
+        }
+        int mode = thinking & THINK_MODE_MASK;
+        if (mode == THINK_ON) think = true;
+        if (mode == THINK_OFF) think = false;
+        // Every conversation opens with the system header. The reference
+        // reads one leading system turn; the generic tool envelope adds a
+        // second in front of the caller's, so every leading one is joined.
+        off = emit_raw(out, cap, off, "<SPECIAL_10>System\n", NULL, NULL);
+        int first = 0;
+        bool wrote = false;
+        while (first < n_msgs && !strcmp(msgs[first].role, "system")) {
+            char *c = nemotron_clean(msgs[first].content, true);
+            if (!c) return SIZE_MAX;
+            if (c[0]) {
+                off = emit(out, cap, off, wrote ? "\n\n%s" : "%s", c, NULL);
+                wrote = true;
+            }
+            free(c);
+            first++;
+        }
+        off = emit(out, cap, off, "\n", NULL, NULL);
+        // A trailing assistant turn is held back and written after the
+        // generation prompt's thought tag: the reference's prefill.
+        int last = n_msgs;
+        char *held = NULL;
+        if (last > first && !strcmp(msgs[last - 1].role, "assistant")) {
+            held = nemotron_clean(msgs[last - 1].content, false);
+            if (!held) return SIZE_MAX;
+            last--;
+        }
+        for (int i = first; i < last; i++) {
+            const char *role = msgs[i].role;
+            if (!strcmp(role, "user")) {
+                char *c = nemotron_clean(msgs[i].content, true);
+                if (!c) { free(held); return SIZE_MAX; }
+                off = emit_raw(out, cap, off, "<SPECIAL_11>User\n", NULL, NULL);
+                off = emit(out, cap, off, "%s\n", c, NULL);
+                free(c);
+            } else if (!strcmp(role, "tool")) {
+                bool prev = i > first && !strcmp(msgs[i - 1].role, "tool");
+                bool next = i + 1 < last && !strcmp(msgs[i + 1].role, "tool");
+                if (!prev)
+                    off = emit_raw(out, cap, off,
+                                   "<SPECIAL_11>User\n<TOOL_RESPONSE>[", NULL, NULL);
+                off = emit(out, cap, off, next ? "%s, " : "%s",
+                           msgs[i].content, NULL);
+                if (!next)
+                    off = emit_raw(out, cap, off, "]</TOOL_RESPONSE>\n", NULL, NULL);
+            } else if (!strcmp(role, "assistant")) {
+                const char *body = msgs[i].content;
+                const char *close = strstr(body, "</think>");
+                if (close) body = close + 8;
+                char *c = nemotron_clean(body, false);
+                if (!c) { free(held); return SIZE_MAX; }
+                off = emit_raw(out, cap, off, "<SPECIAL_11>Assistant\n", NULL, NULL);
+                off = emit(out, cap, off, "%s", c, NULL);
+                off = emit_raw(out, cap, off, "\n<SPECIAL_12>\n", NULL, NULL);
+                free(c);
+            }
+            // a system turn after the first, like any other role, has no
+            // branch in the reference and renders as nothing
+        }
+        if (add_assistant || (held && held[0])) {
+            off = emit_raw(out, cap, off, "<SPECIAL_11>Assistant\n", NULL, NULL);
+            off = emit_raw(out, cap, off, think ? "<think>\n" : "<think></think>",
+                           NULL, NULL);
+            if (held && held[0]) off = emit(out, cap, off, "%s", held, NULL);
+            if (!add_assistant)
+                off = emit_raw(out, cap, off, "\n<SPECIAL_12>\n", NULL, NULL);
+        }
+        free(held);
+        break;
+    }
     case TMPL_ORNITH:
+    case TMPL_QWEN35:
+    case TMPL_QWEN35_NOTHINK:
         for (int i = 0; i < n_msgs; i++) {
             bool tool_response =
                 !strcmp(msgs[i].role, "user") &&
@@ -1496,9 +1627,14 @@ size_t render_messages_with_tools(int tmpl, const chat_msg *msgs, int n_msgs,
             // block, everything else (including undefined) means an OPEN one.
             // Emitting the open block for THINK_OFF handed a caller who asked
             // for no reasoning the one construct that starts it.
+            // Qwen 3.5-0.8B inverts the default: only an explicit `true`
+            // opens the block (chat_template.jinja:149).
+            int mode = thinking & THINK_MODE_MASK;
+            bool closed = tmpl == TMPL_QWEN35_NOTHINK ? mode != THINK_ON
+                                                      : mode == THINK_OFF;
             off = emit(out, cap, off,
-                       thinking == THINK_OFF ? "<think>\n\n</think>\n\n"
-                                             : "<think>\n", NULL, NULL);
+                       closed ? "<think>\n\n</think>\n\n" : "<think>\n",
+                       NULL, NULL);
         }
         break;
     case TMPL_QWEN3_CODER: {
@@ -1845,6 +1981,18 @@ size_t render_messages_with_tools(int tmpl, const chat_msg *msgs, int n_msgs,
         // (microsoft/Phi-3.5-mini-instruct spells it '<|endoftext|>').
         if (add_assistant)
             off = emit(out, cap, off, "<|assistant|>\n", NULL, NULL);
+        else
+            off = emit(out, cap, off, "<|endoftext|>", NULL, NULL);
+        break;
+    case TMPL_PHI4:
+        // microsoft/Phi-4-mini-instruct: the same tags with no newline
+        // anywhere, every role rendered the same way, and the same eos arm.
+        for (int i = 0; i < n_msgs; i++) {
+            off = emit_raw(out, cap, off, "<|%s|>", msgs[i].role, NULL);
+            off = emit(out, cap, off, "%s<|end|>", msgs[i].content, NULL);
+        }
+        if (add_assistant)
+            off = emit(out, cap, off, "<|assistant|>", NULL, NULL);
         else
             off = emit(out, cap, off, "<|endoftext|>", NULL, NULL);
         break;
@@ -2768,7 +2916,7 @@ static void coder_declaration(jv *tool, sbuf *out) {
 
 void tools_render_for(int tmpl, const jv *tools, sbuf *out) {
     bool qwen = tmpl == TMPL_CHATML || tmpl == TMPL_CHATML_THINK;
-    if (tmpl != TMPL_ORNITH && tmpl != TMPL_GRANITE42 &&
+    if (!tmpl_ornith_like(tmpl) && tmpl != TMPL_GRANITE42 &&
         tmpl != TMPL_QWEN38 && tmpl != TMPL_QWEN3_CODER && !qwen) {
         tools_render(tools, out);
         return;
@@ -2964,7 +3112,7 @@ void tool_history_render_for(int tmpl, const jv *calls,
             jv_free(g4);
             continue;
         }
-        if (tmpl != TMPL_ORNITH && tmpl != TMPL_GRANITE42 &&
+        if (!tmpl_ornith_like(tmpl) && tmpl != TMPL_GRANITE42 &&
             tmpl != TMPL_QWEN38 && tmpl != TMPL_QWEN3_CODER && tmpl != TMPL_MUSE) {
             pl_fmt(out, "<|tool_call>call:%s%s<tool_call|>", name, args);
             continue;
@@ -3026,10 +3174,10 @@ void tool_history_render_for(int tmpl, const jv *calls,
 }
 
 bool tools_system_fold(int tmpl, sbuf *ts, const char *system) {
-    if ((tmpl != TMPL_ORNITH && tmpl != TMPL_GRANITE42) || !ts || !ts->n ||
+    if ((!tmpl_ornith_like(tmpl) && tmpl != TMPL_GRANITE42) || !ts || !ts->n ||
         !system || !system[0])
         return false;
-    if (tmpl == TMPL_ORNITH) {
+    if (tmpl_ornith_like(tmpl)) {
         sb_lit(ts, "\n\n");
         sb_put(ts, system, strlen(system));
         return true;
@@ -3119,7 +3267,7 @@ void assistant_calls_render(int tmpl, const char *text, const jv *calls,
 // written the (possibly wrapped) content. Shared by message_text and the typed
 // surfaces so a result is framed the same way whatever surface replayed it.
 const char *tool_result_wrap(int tmpl, const char *result, sbuf *out) {
-    if (tmpl == TMPL_ORNITH) {
+    if (tmpl_ornith_like(tmpl)) {
         pl_lit(out, "<tool_response>\n");
         if (result) sb_put(out, result, strlen(result));
         pl_lit(out, "\n</tool_response>");
@@ -3486,7 +3634,7 @@ const jv *tool_decl_native(int tmpl, bool strict, bool atem_tool_calling,
     // reach the client through one parser, so a call is a call on every
     // surface, streamed or buffered.
     bool xml = tmpl == TMPL_QWEN38 || tmpl == TMPL_GRANITE42 ||
-               tmpl == TMPL_ORNITH || tmpl == TMPL_QWEN3_CODER;
+               tmpl_ornith_like(tmpl) || tmpl == TMPL_QWEN3_CODER;
     if (strict && xml) {
         env->proto = TP_QWEN_XML;
         env->tools = tools;
@@ -5456,7 +5604,7 @@ static int gemma4_tool_calls_parse(sbuf *content, sbuf *tc) {
 int tool_calls_parse_for(int tmpl, sbuf *content, sbuf *tc) {
     return (tmpl == TMPL_CHATML || tmpl == TMPL_CHATML_THINK)
                                ? qwen_tool_calls_parse(content, tc)
-         : tmpl == TMPL_ORNITH || tmpl == TMPL_QWEN38 ||
+         : tmpl_ornith_like(tmpl) || tmpl == TMPL_QWEN38 ||
            tmpl == TMPL_GRANITE42 ? ornith_tool_calls_parse(content, tc)
          : is_gemma4(tmpl)     ? gemma4_tool_calls_parse(content, tc)
                                : tool_calls_parse(content, tc);

@@ -105,6 +105,9 @@ typedef struct {
     // R1.2.2: every byte the engine emitted, before any splitting, for the
     // receipt (what --verify's replay compares against); only when on
     bool  raw_on;
+    // R4.12.19: the same record kept for a streamed turn that has no receipt,
+    // so the closing chunk can say which delivered calls repeat an earlier one
+    bool  calls_on;
     sbuf  raw;
     // R1.1.2: the calls the turn delivered, as the receipt records them
     // ({"name","arguments"} objects, comma-separated), when raw_on
@@ -493,7 +496,7 @@ static int anth_close_block(gen_ctx *g);
 // R1.1.2: the receipt's copy of a streamed call, taken from the same bytes
 // the client receives on every surface
 static void rec_call_begin(gen_ctx *g, const char *name) {
-    if (!g->raw_on) return;
+    if (!g->raw_on && !g->calls_on) return;
     if (g->call_open) sb_lit(&g->calls, "\"}");   // never ended: as delivered
     sb_lit(&g->calls, g->n_calls ? ",{\"name\":\"" : "{\"name\":\"");
     sb_esc(&g->calls, name, strlen(name));
@@ -503,7 +506,7 @@ static void rec_call_begin(gen_ctx *g, const char *name) {
 }
 
 static void rec_call_end(gen_ctx *g) {
-    if (!g->raw_on || !g->call_open) return;
+    if ((!g->raw_on && !g->calls_on) || !g->call_open) return;
     sb_lit(&g->calls, "\"}");
     g->call_open = false;
 }
@@ -570,7 +573,7 @@ static int sink_call_args(void *ud, const char *b, int n) {
 
 static int sink_call_args_raw(gen_ctx *g, const char *b, int n) {
     if (g->dead) return 1;
-    if (g->raw_on && g->call_open) sb_esc(&g->calls, b, (size_t)n);
+    if ((g->raw_on || g->calls_on) && g->call_open) sb_esc(&g->calls, b, (size_t)n);
     if (g->api == API_RESPONSES) return resp_delta(g, "function_call", b, n);
     if (g->api == API_MESSAGES) return anth_delta(g, "tool_use", b, n);
     sbuf c = {0};
@@ -1307,7 +1310,10 @@ static char *repeated_calls_json(jv *req, int api, const jv *emitted) {
         if (f) {
             c.name = jv_str(jv_get(f, "name"), NULL);
             call_ref_args(&c, jv_get(f, "arguments"));
-        } else if (!strcmp(jv_str(jv_get(it, "type"), ""), "function_call")) {
+        } else if (!strcmp(jv_str(jv_get(it, "type"), ""), "function_call") ||
+                   (jv_get(it, "name") && jv_get(it, "arguments") &&
+                    !jv_get(it, "type"))) {
+            // a Responses item, or the stream's own {"name","arguments"} record
             c.name = jv_str(jv_get(it, "name"), NULL);
             call_ref_args(&c, jv_get(it, "arguments"));
         } else {
@@ -1336,6 +1342,22 @@ static char *repeated_calls_json(jv *req, int api, const jv *emitted) {
     sb_put(&r, "", 1);
     if (r.failed) { free(r.s); return NULL; }
     return r.s;
+}
+
+// R4.12.19 for a streamed Chat or Messages turn: the calls the stream
+// delivered, as rec_call_begin recorded them.
+static char *repeated_calls_streamed(gen_ctx *g, jv *req, int api) {
+    if (!g->calls_on || !g->n_calls || g->calls.failed) return NULL;
+    sbuf a = {0};
+    sb_lit(&a, "[");
+    sb_put(&a, g->calls.s, g->calls.n);
+    if (g->call_open) sb_lit(&a, "\"}");
+    sb_lit(&a, "]");
+    jv *em = a.failed ? NULL : json_parse(a.s, a.n);
+    free(a.s);
+    char *r = repeated_calls_json(req, api, em);
+    jv_free(em);
+    return r;
 }
 
 static const char *call_field(const jv *calls, int i, const char *key,
@@ -2441,11 +2463,30 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
     // TMPL_QWEN38 / TMPL_ORNITH). Ornith used to prime the splitter in every
     // mode, so a caller who turned thinking off had the answer served as
     // reasoning_content.
+    // Qwen 3.5-0.8B inverts the default: its prompt opens the block only
+    // for an explicit THINK_ON.
+    // Nemotron Nano decides from the conversation's own /think and
+    // /no_think strings, so the question is asked of the rendered prompt.
+    bool nemotron_primed_think = false;
+    if (chat && s->tmpl == TMPL_NEMOTRON && prompt) {
+        static const char open[] = "<think>\n";
+        size_t e = strlen(prompt), k = sizeof(open) - 1;
+        while (k && e) {
+            char c = prompt[e - 1];
+            if (c == PROMPT_RAW_OPEN || c == PROMPT_RAW_CLOSE) { e--; continue; }
+            if (c != open[k - 1]) break;
+            e--; k--;
+        }
+        nemotron_primed_think = k == 0;
+    }
     bool granite42_primed_think = chat &&
                                   (s->tmpl == TMPL_GRANITE42 ||
                                    s->tmpl == TMPL_QWEN38 ||
-                                   s->tmpl == TMPL_ORNITH) &&
-                                  req_thinking_mode(req) != THINK_OFF;
+                                   tmpl_ornith_like(s->tmpl)) &&
+                                  (s->tmpl == TMPL_QWEN35_NOTHINK
+                                       ? req_thinking_mode(req) == THINK_ON
+                                       : req_thinking_mode(req) != THINK_OFF);
+    granite42_primed_think = granite42_primed_think || nemotron_primed_think;
     // gemma4's thought block is opened BY THE PROMPT on a tool-result
     // continuation with thinking on (template.c's g4_prev == 2 branch), so the
     // grammar must start inside it. Asked of the prompt itself rather than
@@ -3563,6 +3604,8 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
     // R1.2.2: the sampler's state as generation starts is the receipt's seed
     uint64_t gen_rng = s->smp.rng;
     g.raw_on = receipts_enabled();
+    // only a streamed chat-shaped turn with a history can repeat a call
+    g.calls_on = stream && (api == API_CHAT || api == API_MESSAGES);
     int n_gen = sched_generate(s, logits, max_tokens, gen_collect, &g, &gtime,
                                req_deadline);
     diag.wm_on = SV.wm_on;
@@ -3786,6 +3829,12 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
             // is the only place a streamed turn reports it
             sb_fmt(&f, "},\"usage\":{\"input_tokens\":%d,\"output_tokens\":%d}",
                    n_prompt, n_gen);
+            // R4.12.19: present only when a delivered call repeats one the
+            // conversation already holds, so an ordinary stream is unchanged
+            g.repeat_json = repeated_calls_streamed(&g, req, api);
+            if (g.repeat_json)
+                sb_fmt(&f, ",\"runner_telemetry\":{\"repeated_tool_calls\":%s}",
+                       g.repeat_json);
             if (!anth_send(&g, "message_delta", &f)) {
                 sbuf s2 = {0};
                 anth_send(&g, "message_stop", &s2);
@@ -3822,9 +3871,16 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
             // ordinary stream stays byte-for-byte what it was.
             const char *sdet = finish_detail_of(finish);
             if (!sdet) sdet = cut_detail;
-            if (sdet)
-                sb_fmt(&c, ",\"runner_telemetry\":{\"finish_detail\":\"%s\"}",
-                       sdet);
+            // R4.12.19: the same rule for a repeated call, on the same chunk
+            if (chat) g.repeat_json = repeated_calls_streamed(&g, req, api);
+            if (sdet || g.repeat_json) {
+                sb_lit(&c, ",\"runner_telemetry\":{");
+                if (sdet) sb_fmt(&c, "\"finish_detail\":\"%s\"", sdet);
+                if (g.repeat_json)
+                    sb_fmt(&c, "%s\"repeated_tool_calls\":%s",
+                           sdet ? "," : "", g.repeat_json);
+                sb_lit(&c, "}");
+            }
             sb_lit(&c, "}");
             bool ok = chunk_send(&g, &c) == 0;
             // OpenAI stream_options {"include_usage": true}: one extra chunk
