@@ -127,3 +127,16 @@ def test_a_blank_published_version_is_a_report_error_not_a_stale_verdict(tmp_pat
     with pytest.raises(SystemExit) as caught:
         MOD.main(["--results", str(tmp_path), "--json"])
     assert caught.value.code == 2
+
+
+def test_the_scheduled_job_reports_drift_and_never_pages():
+    """Published rows are dated snapshots, so upstream moving on is news, not
+    a defect: the weekly job writes a summary and does not file issues or go
+    red over it (it opened #8 to #11, each closed unmeasured). A broken
+    checker (exit 2) still fails the job."""
+    wf = (ROOT / ".github" / "workflows" / "competitor-freshness.yml").read_text()
+    assert "issues: write" not in wf
+    assert "issues.create" not in wf and "issues.update" not in wf
+    assert "exit 1" not in wf
+    assert 'if [ "$status" -gt 1 ]' in wf
+    assert "GITHUB_STEP_SUMMARY" in wf

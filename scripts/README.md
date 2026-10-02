@@ -106,7 +106,9 @@ runner; several are load-bearing gates for changing it.
   README's Claude Code compatibility claim into something that can be re-run.
 - **`competitor-freshness.py`** - checks the runtime versions in published
   torture results against upstream releases. Metadata-only registry requests;
-  a network failure is a skip, never a red scheduled run.
+  a network failure is a skip. The weekly workflow reports drift in its run
+  summary and never files an issue or fails over it (the rows are dated
+  snapshots).
 - **`template-conformance-harmony.py`** - the Harmony oracle used by
   `template-conformance.py`: gpt-oss is compared against `openai-harmony`
   rather than the GGUF's jinja, which is a reimplementation with known gaps.

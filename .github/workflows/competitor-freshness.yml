@@ -1,5 +1,16 @@
 name: competitor result freshness
 
+# Published competitor rows are dated snapshots (README, docs/agent-torture.md):
+# they say what was measured on a date with a named runtime version, and a
+# newer upstream release does not make them wrong. So this job REPORTS drift
+# and never files an issue or turns red over it. Until 2026-10-02 it opened
+# "Agent-torture competitor results are stale" whenever Ollama or vLLM shipped
+# a minor release, which is every few weeks: four issues (#8 to #11), each
+# closed without a re-measurement, on a public tracker. Re-measurement happens
+# in scheduled certification windows on owned hardware; the drift report below
+# is what those windows read. The job still fails on a broken checker (exit 2:
+# no published rows, or every registry lookup failed), because that is a
+# defect in this repository, not news about someone else's.
 on:
   schedule:
     - cron: "17 7 * * 1"
@@ -7,7 +18,6 @@ on:
 
 permissions:
   contents: read
-  issues: write
 
 jobs:
   check:
@@ -15,7 +25,6 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: Compare published rows with upstream releases
-        id: freshness
         shell: bash
         run: |
           set +e
@@ -23,38 +32,22 @@ jobs:
           status=$?
           set -e
           cat competitor-freshness.json
-          echo "status=$status" >> "$GITHUB_OUTPUT"
           if [ "$status" -gt 1 ]; then
             exit "$status"
           fi
-      - name: Open or update the stale-results issue
-        if: steps.freshness.outputs.status == '1'
-        uses: actions/github-script@v8
-        with:
-          script: |
-            const fs = require('fs');
-            const report = JSON.parse(fs.readFileSync('competitor-freshness.json', 'utf8'));
-            const title = 'Agent-torture competitor results are stale';
-            const rows = report.stale.map(row =>
-              `- **${row.runtime}**: published ${row.published}, upstream ${row.upstream}`
-            ).join('\n');
-            const body = `${rows}\n\nRefresh the affected comparison rows on identical local hardware. ` +
-              `This workflow checks release metadata only and deliberately does not run inference in GitHub CI.`;
-            const {data: issues} = await github.rest.issues.listForRepo({
-              owner: context.repo.owner, repo: context.repo.repo,
-              state: 'open', per_page: 100
-            });
-            const existing = issues.find(issue => !issue.pull_request && issue.title === title);
-            if (existing) {
-              await github.rest.issues.update({
-                owner: context.repo.owner, repo: context.repo.repo,
-                issue_number: existing.number, body
-              });
-            } else {
-              await github.rest.issues.create({
-                owner: context.repo.owner, repo: context.repo.repo, title, body
-              });
-            }
-      - name: Fail loudly when a published row is stale
-        if: steps.freshness.outputs.status == '1'
-        run: exit 1
+          python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json
+          r = json.load(open("competitor-freshness.json"))
+          print("## Competitor rows against upstream releases\n")
+          print("Dated snapshots: drift is information for the next "
+                "certification window, not a failure.\n")
+          print("| runtime | published | upstream | state |")
+          print("|---|---|---|---|")
+          for state in ("stale", "drift", "current"):
+              for row in r[state]:
+                  label = {"stale": "minor or larger behind", "drift": "patch behind",
+                           "current": "current"}[state]
+                  print(f"| {row['runtime']} | {row['published']} | {row['upstream']} | {label} |")
+          for row in r["skipped"]:
+              print(f"| {row['runtime']} | | | skipped: {row['reason']} |")
+          PY
