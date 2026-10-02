@@ -59,6 +59,10 @@ typedef struct {
 // to such an escape; every rejection leaves other digits legal, so a
 // constrained model is never left with nothing to sample.
 bool json_escape_hex(uint8_t *sub, uint16_t *esc, uint8_t c);
+// Is the validator inside the hex digits of a \uXXXX escape (after the
+// `u`, before the fourth digit, either half of a pair)? The engine picks
+// those digits greedily: see engine_pick.
+bool jsonv_in_u_escape(const jsonv *v);
 // Finish an escape that generation stopped inside, writing at most 12 bytes
 // to `out` and leaving the string state ready for the closing quote. Padding
 // the missing digits with zeros is what a caller would do instead, and that

@@ -58,6 +58,11 @@ bool json_escape_hex(uint8_t *sub, uint16_t *esc, uint8_t c) {
     return true;
 }
 
+bool jsonv_in_u_escape(const jsonv *v) {
+    return v && !v->done && (v->st == S_KEY || v->st == S_STRING) &&
+           ((v->sub >= 2 && v->sub <= 5) || v->sub >= 8);
+}
+
 uint32_t json_key_hash_init(void) { return 2166136261u; }   // FNV-1a basis
 
 uint32_t json_key_hash_byte(uint32_t h, uint8_t c) {

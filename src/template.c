@@ -3233,6 +3233,75 @@ int tool_envelope_build(jv *tools, jv *choice, jv *final_schema,
 // close it mid-call; a small cap keeps every legal document completable.
 #define PARALLEL_MAX_CALLS 8
 
+// Is a tool's parameter schema a JSON Schema at all? Not "does this engine
+// compile it" (a native-protocol turn is parsed, not constrained, and takes
+// schemas outside the supported subset on purpose), only the structural
+// rules every JSON Schema obeys: a schema is an object or a boolean, `type`
+// names real types, `properties` is an object of schemas, `required` a list
+// of strings, `items` and the combinators hold schemas. A family whose calls
+// are constrained refused {"type":"nonsense"} when it compiled it; a family
+// whose calls are parsed answered 200 and generated against a declaration
+// that means nothing. Both now say so. False with the reason in err.
+static bool tool_schema_sane(const jv *s, int depth, char *err, int errcap) {
+    static const char *const TYPES[] = { "object", "array", "string", "number",
+                                         "integer", "boolean", "null" };
+    if (!s || s->type == J_BOOL) return true;
+    if (depth > 48) { snprintf(err, errcap, "nested too deeply"); return false; }
+    if (s->type != J_OBJ) {
+        snprintf(err, errcap, "a schema must be an object");
+        return false;
+    }
+    jv *t = jv_get((jv *)s, "type");
+    for (int i = 0; t && i < (t->type == J_ARR ? t->n : 1); i++) {
+        const jv *one = t->type == J_ARR ? t->items[i] : t;
+        bool ok = false;
+        for (size_t k = 0; one->type == J_STR && k < sizeof TYPES / sizeof *TYPES; k++)
+            ok = ok || !strcmp(one->str, TYPES[k]);
+        if (!ok) {
+            snprintf(err, errcap, "\"type\" is not a JSON Schema type%s%.40s%s",
+                     one->type == J_STR ? " (\"" : "",
+                     one->type == J_STR ? one->str : "",
+                     one->type == J_STR ? "\")" : "");
+            return false;
+        }
+    }
+    jv *props = jv_get((jv *)s, "properties");
+    if (props && props->type != J_OBJ) {
+        snprintf(err, errcap, "\"properties\" must be an object");
+        return false;
+    }
+    for (int i = 0; props && i < props->n; i++)
+        if (!tool_schema_sane(props->items[i], depth + 1, err, errcap)) return false;
+    jv *req = jv_get((jv *)s, "required");
+    if (req && req->type != J_ARR) {
+        snprintf(err, errcap, "\"required\" must be an array of strings");
+        return false;
+    }
+    for (int i = 0; req && i < req->n; i++)
+        if (req->items[i]->type != J_STR) {
+            snprintf(err, errcap, "\"required\" must be an array of strings");
+            return false;
+        }
+    jv *en = jv_get((jv *)s, "enum");
+    if (en && en->type != J_ARR) {
+        snprintf(err, errcap, "\"enum\" must be an array");
+        return false;
+    }
+    static const char *const SUB[] = { "items", "additionalProperties", "not",
+                                       "anyOf", "oneOf", "allOf", "prefixItems" };
+    for (size_t k = 0; k < sizeof SUB / sizeof *SUB; k++) {
+        jv *v = jv_get((jv *)s, SUB[k]);
+        if (!v) continue;
+        if (v->type == J_ARR) {
+            for (int i = 0; i < v->n; i++)
+                if (!tool_schema_sane(v->items[i], depth + 1, err, errcap)) return false;
+        } else if (!tool_schema_sane(v, depth + 1, err, errcap)) {
+            return false;
+        }
+    }
+    return true;
+}
+
 int tool_envelope_build_ex(jv *tools, jv *choice, jv *final_schema,
                            bool parallel, tool_envelope *out,
                            char *err, int errcap) {
@@ -3256,6 +3325,15 @@ int tool_envelope_build_ex(jv *tools, jv *choice, jv *final_schema,
             return TOOL_ENVELOPE_INVALID;
         }
         return TOOL_ENVELOPE_NONE;
+    }
+    for (int i = 0; i < tools->n; i++) {
+        jv *fn = jv_get(tools->items[i], "function");
+        char why[128];
+        if (fn && !tool_schema_sane(jv_get(fn, "parameters"), 0, why, sizeof why)) {
+            snprintf(err, errcap, "tool \"%.60s\": parameters is not a JSON "
+                     "Schema: %s", jv_str(jv_get(fn, "name"), "?"), why);
+            return TOOL_ENVELOPE_INVALID;
+        }
     }
     if (kind == TCH_NONE)
         return TOOL_ENVELOPE_NONE;   // not a union this engine can express

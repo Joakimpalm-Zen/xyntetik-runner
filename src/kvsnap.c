@@ -367,8 +367,9 @@ bool kvsnap_load(const engine *e, const char *id, const char *name, sbuf *out,
             break;
         }
         if (n == PFX_CTX_UNSUPPORTED) {
-            fail(err, 409, "context_unsupported", "this model's KV layout has no "
-                 "contiguous prefix to pin");
+            fail(err, 409, "context_unsupported", "this model cannot fork a "
+                 "pinned prefix (a ring or tied-V KV layout, or a recurrent "
+                 "model on a device)");
             break;
         }
         if (n < 0) {

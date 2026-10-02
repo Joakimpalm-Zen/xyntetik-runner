@@ -8,6 +8,87 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **CUDA: Muse-Glimmer and Qwen2 prefill on the tensor cores.** The
+  tensor-core prefill GEMM is promoted per architecture, on a measured
+  tolerance row, and `muse-glimmer` and `qwen2` had none, so their prefill
+  ran the scalar kernels. For a codebook i-quant that is pathological:
+  Muse-Glimmer-30B IQ3_XXS prefilled at 2.60 tok/s on the GPU against 24.0
+  on 16 host threads, and a 3,300-token prompt timed out after fifteen
+  minutes (the family sweep). Both architectures now have their rows
+  (`test-tc-tol` on real weights, the Blackwell: 0 of 64 top-1 flips,
+  0.00001 to 0.00007 of the logit range against a 0.005 limit, free-running
+  output token-identical, on Muse-Glimmer-30B IQ3_XXS and K-quant, Kvist-14B
+  Q8_0 and Qwen2.5-7B Q4_K_M) and are promoted: Muse IQ3_XXS prefill 2.60
+  -> 85.3 tok/s, the K-quant file 34.9 -> 116.9. `RUNNER_CUDA_TC=0` still
+  turns the path off.
+
+- **Family sweep, 2026-10-02: six defects real models showed.**
+  `scripts/family-sweep.py` puts a real model of each family through every
+  surface (56 models on the Blackwell, CPU and CUDA). On the final build
+  the CPU half read 27 models, 462 PASS, 0 FAIL, and the CUDA re-run of
+  every row a fix touched (17 models, among them the Muse, Qwen3.5, Qwen3,
+  granite-4.2, gemma-4 and Qwen2.5 rows) 0 FAIL; the rest are notes on a
+  model's own answer and stated refusals (mistral3, olmo2 and smollm3 are
+  not admitted architectures; stablelm refuses the GPU). What it found and
+  what changed:
+  - *A JSON-mode or schema turn on a thinking model ended at half its budget
+    with empty content.* When the reasoning prelude hits its cap the engine
+    closes it, and a stop token was still admitted at that point; with the
+    model's prose masked it was the likeliest token left. Qwen3.5-0.8B and
+    4B under `json_object`: 100 of 200 tokens, all reasoning, `"content":
+    ""`. After a closed thinking block a stop is now refused until the
+    payload is complete, whoever closed it (Kvist-14B closed its own self
+    turn and stopped, content empty). Where the ENGINE closed it, every
+    other control token is refused too, save the model's own close tag
+    (granite-4.2-8b spent the second half on tokens that decode to nothing);
+    where the model closed it they stay admitted, since Muse goes on in its
+    protocol's control tokens there. A document the model completes after the cap reports
+    `finish_reason: "stop"` (it was `"length"`, which makes a typed client
+    discard a whole answer); `finish_detail: "reasoning_limit"` still says
+    the reasoning was cut.
+  - *A tool whose `parameters` is not a JSON Schema was accepted on families
+    whose calls are parsed.* `{"type": "nonsense"}` was a 400 where the
+    schema is compiled and a 200 where it is not. The structural rules of
+    JSON Schema are now checked on every family (`type` names real types,
+    `properties` is an object, `required` a list of strings, sub-schemas are
+    schemas); schemas outside the constrained subset are still taken where
+    the turn is parsed.
+  - *A named context on a model that cannot fork it was served cold under
+    its name.* A recurrent model on a device keeps its state there, so the
+    prefix cache never forks a snapshot for it; a context could still be
+    pinned, and every request naming it passed the prefix check and was
+    prefilled from scratch while its telemetry named the context (Qwen3.5 on
+    CUDA). Pinning and loading a snapshot there answer 409
+    `context_unsupported`, and a request whose named context was not what it
+    was built on answers 409 `context_unavailable`.
+  - *A strict-schema document could start with a stray `<`.* Before a
+    constrained payload a model may open its think block, so the probe admits
+    the tag's bytes; a token taken on the tag path alone is not in the
+    payload validator, and the payload was still admitted after it:
+    Qwen3-Coder-30B wrote `<{"name": "Ada", ...`. After a tag byte the only
+    way on is the rest of the tag.
+  - *A truncated model file is refused as truncated* ("its data ends at byte
+    N but the file is M bytes"), not as "invalid tensor metadata" alone.
+  - *A code point is not sampled.* The hex digits of a `\uXXXX` escape in a
+    constrained string are picked greedily. granite-4.1-3b Q8_0 at
+    temperature 0.8 wrote "Å" as `\u00a5` or `\u00a1` in 23 of 60 tool
+    calls, one digit off; with greedy digits 57 of 60 are exact and none has
+    a wrong first character (the Blackwell, the same prompt, n=60). Banning
+    the escape outright was measured first and rejected: 0 of 60, the model
+    reaches for the backslash anyway.
+
+- **A streamed tool call no longer splits a character.** A character whose
+  UTF-8 bytes arrive as separate tokens was sent one argument delta per
+  byte, each lone byte escaped to U+FFFD, so a client assembled well-formed
+  JSON holding the wrong text: `"\ufffd\ufffdsa gick ut"` for "Åsa gick
+  ut". Present in v0.5.7 on the generic JSON tool envelope (found by a byte
+  capture of granite-4.1-3b writing Swedish, 4 of 4 runs); buffered
+  responses and content deltas were always right. The argument stream now
+  holds an unfinished sequence until the next token completes it, as content
+  deltas do. `tests/test_stream_utf8.py` holds content and tool arguments
+  whole on the chat, Responses and Messages streams, on a byte vocabulary
+  that splits every non-ASCII character.
+
 - **Review of the 2026-10-01 batch: nine defects fixed, one feature parked.**
   - *Parked: batch-invariant CPU prefill (R1.5).* It claimed the property
     for "the CPU"; it holds on x86 and not on arm64. On an M1 `make test`

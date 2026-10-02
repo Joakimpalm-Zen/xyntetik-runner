@@ -82,6 +82,9 @@ typedef struct {
     // At most 3 bytes can ever be pending: a 4-byte sequence missing one.
     char  u8_pend[2][4];
     int   u8_pend_n[2];
+    // the same hold for a streamed tool call's argument bytes
+    char  a8_pend[4];
+    int   a8_pend_n;
     // Reasoning accounting for the Responses `usage` block. Counted per
     // TOKEN, not per emit: one token can be split across channels by the
     // think splitter, and a token that contributed any reasoning bytes is a
@@ -508,6 +511,7 @@ static void rec_call_end(gen_ctx *g) {
 static int sink_call_begin(void *ud, const char *name) {
     gen_ctx *g = ud;
     if (g->dead) return 1;
+    g->a8_pend_n = 0;
     rec_call_begin(g, name);
     if (g->api == API_RESPONSES || g->api == API_MESSAGES) {
         // the name identifies the item/block, so it must be known before that
@@ -530,8 +534,41 @@ static int sink_call_begin(void *ud, const char *name) {
     return chunk_send(g, &c);
 }
 
+static int sink_call_args_raw(gen_ctx *g, const char *b, int n);
+
+// A streamed call's argument bytes arrive a token at a time, and characters
+// do not respect token boundaries: a character whose UTF-8 bytes were
+// separate tokens went out one delta per byte, each lone byte escaped to
+// U+FFFD, and the client assembled well-formed JSON holding the wrong text
+// ("\ufffd\ufffdsa" for "Åsa"; v0.5.7, granite, the generic envelope). The
+// unfinished tail is held until the next bytes complete it, exactly as
+// send_text_delta does for content.
 static int sink_call_args(void *ud, const char *b, int n) {
     gen_ctx *g = ud;
+    if (g->dead) return 1;
+    int held = g->a8_pend_n;
+    if (!held && u8_incomplete_tail(b, n) == 0)
+        return sink_call_args_raw(g, b, n);
+    int total = held + n;
+    char *joined = malloc((size_t)total + 1);
+    if (!joined) {
+        // keep the model's order, as send_text_delta does on the same failure
+        g->a8_pend_n = 0;
+        int rc = sink_call_args_raw(g, g->a8_pend, held);
+        return rc ? rc : sink_call_args_raw(g, b, n);
+    }
+    memcpy(joined, g->a8_pend, (size_t)held);
+    memcpy(joined + held, b, (size_t)n);
+    int tail = u8_incomplete_tail(joined, total);
+    int emit = total - tail;
+    g->a8_pend_n = tail;
+    if (tail) memcpy(g->a8_pend, joined + emit, (size_t)tail);
+    int rc = emit > 0 ? sink_call_args_raw(g, joined, emit) : 0;
+    free(joined);
+    return rc;
+}
+
+static int sink_call_args_raw(gen_ctx *g, const char *b, int n) {
     if (g->dead) return 1;
     if (g->raw_on && g->call_open) sb_esc(&g->calls, b, (size_t)n);
     if (g->api == API_RESPONSES) return resp_delta(g, "function_call", b, n);
@@ -548,6 +585,12 @@ static int sink_call_args(void *ud, const char *b, int n) {
 static int sink_call_end(void *ud) {
     gen_ctx *g = ud;
     int rc = 0;
+    // a sequence the model never finished is truncated: it goes out as it is
+    if (g->a8_pend_n) {
+        int held = g->a8_pend_n;
+        g->a8_pend_n = 0;
+        sink_call_args_raw(g, g->a8_pend, held);
+    }
     rec_call_end(g);
     if (g->api == API_RESPONSES) rc = resp_close_item(g);
     else if (g->api == API_MESSAGES) rc = anth_close_block(g);
@@ -3360,6 +3403,18 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
     else
         engine_reset(e);
     int keep = reuse.keep;
+    if (ctx_id && keep < ctx_tokens) {
+        // The context passed the prefix check and still was not what the
+        // prompt was built on (released between the check and here, or a
+        // model that cannot fork one): the request named a warm prefix, so
+        // it is refused rather than served cold under that name.
+        free(toks);
+        completion_cleanup(e, schema, NULL);
+        send_error_detail(fd, 409, "the named context could not be forked for "
+                          "this request; pin it again or drop context_id",
+                          "context_id", "context_unavailable");
+        return;
+    }
     double prefill_t0 = now_s();
     // Name the request BEFORE any work, and say it started.
     //
@@ -3601,9 +3656,19 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
     // caller the model chose to say nothing.
     const char *finish = e->oom ? "error"
                        : unmapped ? "envelope_error"
-                       : e->prelude_exhausted ? "reasoning_limit"
+                       // the reasoning cap is the reason only while it left
+                       // the payload unfinished: a document the model went on
+                       // to complete is a finished turn (and a finished tool
+                       // call), not one to discard as truncated
+                       : e->prelude_exhausted && !engine_constraint_complete(e)
+                           ? "reasoning_limit"
                        : e->loop_stop ? "loop"
                        : g.stopped || e->hit_stop ? "stop" : "length";
+    // The reasoning cap fired and the model then completed the payload: the
+    // wire says the turn finished, and the cap stays recoverable as
+    // finish_detail, where it has lived since the wire value became "length".
+    const char *cut_detail = e->prelude_exhausted && strcmp(finish, "reasoning_limit")
+                           ? "reasoning_limit" : NULL;
     // a streamed call reports the same terminal reason a buffered one does.
     // Only a CLEANLY FINISHED document may claim "tool_calls": a budget
     // truncation still parses (the closer guarantees that) but the envelope
@@ -3756,6 +3821,7 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
             // ones. Emitted only when there IS a distinction to keep, so an
             // ordinary stream stays byte-for-byte what it was.
             const char *sdet = finish_detail_of(finish);
+            if (!sdet) sdet = cut_detail;
             if (sdet)
                 sb_fmt(&c, ",\"runner_telemetry\":{\"finish_detail\":\"%s\"}",
                        sdet);
@@ -4059,7 +4125,8 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
                         .forked = reuse.forked, .saved_s = reuse.saved_s,
                         .gtime = gtime, .major_faults = plat_major_faults() - faults_at_start,
                            .schema = schema != NULL,
-                        .finish_detail = finish_detail_of(finish),
+                        .finish_detail = finish_detail_of(finish)
+                                       ? finish_detail_of(finish) : cut_detail,
                         .json_mode = e->json_mode, .spec = spec_used,
                         SPEC_DOC_FIELDS(e), .diag = &diag,
                         .repeated_calls = g.repeat_json };

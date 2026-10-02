@@ -104,7 +104,10 @@ def test_a_signed_model_verifies_everywhere(runner_bin, model, tmp_path, curve, 
     b = json.loads(sig.read_text())
     assert b["mediaType"] == "application/vnd.dev.sigstore.bundle.v0.3+json"
     # the key hint is the reference's: sha256 of the PEM public key
-    assert b["verificationMaterial"]["publicKey"]["hint"] == _sha(pub.read_bytes())
+    # (the PEM as the reference serializes it, LF line ends: a Windows openssl
+    # writes the same key with CRLF, which is not the bytes the hint is over)
+    assert b["verificationMaterial"]["publicKey"]["hint"] == _sha(
+        pub.read_bytes().replace(b"\r\n", b"\n"))
     assert b["dsseEnvelope"]["payloadType"] == "application/vnd.in-toto+json"
     st = json.loads(base64.b64decode(b["dsseEnvelope"]["payload"]))
     assert st["_type"] == "https://in-toto.io/Statement/v1"

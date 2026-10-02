@@ -798,8 +798,11 @@ static void context_pin_prompt(slot_t *s, sock_t fd, const char *prompt,
     free(toks);
     if (!lg) { send_error(fd, 500, "prefill failed (context or memory)"); return; }
     if (rc == PFX_CTX_UNSUPPORTED) {
-        send_error_detail(fd, 409, "this model's KV layout (a ring or tied-V "
-                          "cache) has no contiguous prefix to pin", NULL,
+        send_error_detail(fd, 409, "this model cannot fork a pinned prefix: its "
+                          "KV layout has no contiguous prefix (a ring or "
+                          "tied-V cache), or it is a recurrent model on a "
+                          "device, whose state the host cannot restore "
+                          "(serve it with --gpu off to use contexts)", NULL,
                           "context_unsupported");
         return;
     }

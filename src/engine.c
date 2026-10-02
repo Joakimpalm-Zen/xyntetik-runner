@@ -28,6 +28,7 @@ static void constraint_reset(engine *e) {
                           e->m && e->m->think_open && e->m->think_close
                             ? CP_PROBE : CP_OUTPUT;
     e->constraint_tag_possible = e->constraint_phase == CP_PROBE;
+    e->constraint_payload_dead = false;
     e->constraint_tag_match = 0;
     e->constraint_close_match = 0;
 }
@@ -876,6 +877,13 @@ int prefix_context_pin(engine *e, const char *name, const int32_t *toks, int n) 
     // the two layouts engine_prefix_publish refuses, for the same reason
     if (model_kv_ring_active(e->m) || e->m->tied_v || !e->hist)
         return PFX_CTX_UNSUPPORTED;
+    // A recurrent model on a device keeps its fold there, out of the host
+    // blob's reach, so engine_prefix_reuse never forks a snapshot for it. A
+    // context pinned there could not be honoured: every request naming it
+    // passed the prefix check and was then served cold under its name
+    // (Qwen3.5 on CUDA, the family sweep, 2026-10-02). Refused where it is
+    // asked for.
+    if (model_has_recurrent(e->m) && e->m->gpu) return PFX_CTX_UNSUPPORTED;
     // the snapshot is taken from the slot's KV, which must hold exactly toks:
     // a recurrent fold belongs to position e->pos and nowhere else
     if (n < 1 || e->pos != n || memcmp(e->hist, toks, sizeof(int32_t) * (size_t)n))
@@ -1157,7 +1165,8 @@ int prefix_context_export(const char *name, const char *path) {
 int prefix_context_import(const engine *e, const char *name, const char *path,
                           const char *origin) {
     if (!pfx_ctx_name_ok(name)) return PFX_CTX_BADNAME;
-    if (!e || !e->m || model_kv_ring_active(e->m) || e->m->tied_v)
+    if (!e || !e->m || model_kv_ring_active(e->m) || e->m->tied_v ||
+        (model_has_recurrent(e->m) && e->m->gpu))
         return PFX_CTX_UNSUPPORTED;
     FILE *f = fopen(path, "rb");
     if (!f) return PFX_CTX_UNKNOWN;
@@ -1603,11 +1612,18 @@ static bool constraint_feed(engine *e, bool schema, const char *bytes, int n,
 
     // CP_PROBE keeps both safe starts alive: a direct constrained payload, or
     // optional leading whitespace followed by the declared opening tag.
-    bool payload_ok;
+    // Once a token was taken on the tag path ALONE its bytes are not in the
+    // payload validator, so the payload path is dead: admitting it later let
+    // a model write `<` (the first byte of <think>) and then `{`, and the
+    // strict-schema document went out as `<{"name": ...` (Qwen3-Coder-30B,
+    // the family sweep, 2026-10-02).
+    bool payload_ok = !e->constraint_payload_dead;
     sval sv = e->sv;
     jsonv jv = e->jv;
-    if (schema) payload_ok = sval_feed(&sv, bytes, n);
-    else        payload_ok = jsonv_feed(&jv, bytes, n);
+    if (payload_ok) {
+        if (schema) payload_ok = sval_feed(&sv, bytes, n);
+        else        payload_ok = jsonv_feed(&jv, bytes, n);
+    }
 
     int ol = (int)strlen(open);
     bool tag_ok = e->constraint_tag_possible;
@@ -1650,6 +1666,7 @@ static bool constraint_feed(engine *e, bool schema, const char *bytes, int n,
         // untruncatable.
         cdoc_put(e, bytes, n);
     }
+    else if (match > 0) e->constraint_payload_dead = true;
     e->constraint_tag_possible = tag_ok;
     e->constraint_tag_match = tag_ok ? match : 0;
     if (!tag_ok) {
@@ -1664,6 +1681,11 @@ static bool constraint_feed(engine *e, bool schema, const char *bytes, int n,
 static bool constraint_done(const engine *e, bool schema) {
     return e->constraint_phase == CP_OUTPUT &&
            (schema ? e->sv.done : e->jv.done);
+}
+
+bool engine_constraint_complete(const engine *e) {
+    if (e->schema) return constraint_done(e, true);
+    return e->json_mode && constraint_done(e, false);
 }
 
 // A protocol token the model was trained on (Muse's <|message|>, <|start|>)
@@ -1709,9 +1731,23 @@ static bool constraint_token_ok(engine *e, int id, bool schema) {
     // change was a no-op for the case that motivated it and untestable
     // without a think-tag model to hand. It may still be right; it is not
     // shipping unmeasured.
+    // After a closed thinking block (CP_AFTER_THINK) the payload is owed:
+    //  - a STOP is refused, whoever closed the block. With prose masked it
+    //    was the likeliest token left, and the turn ended with nothing in
+    //    content: Qwen3.5-0.8B and 4B under json_object after the reasoning
+    //    cap (100 of 200 tokens, all reasoning), and Kvist-14B after closing
+    //    its own self turn (2026-10-02, the family sweep).
+    //  - other control tokens are still the model's where IT closed the
+    //    block: Muse goes on in its protocol's control tokens between its
+    //    self turn and the payload. Where the ENGINE closed it (the cap,
+    //    gen_consume) the model was not told, and granite-4.2-8b spent the
+    //    rest of its budget on tokens that decode to nothing; there the only
+    //    control admitted is the model's own close tag, once (taking it
+    //    moves the phase on, constraint_control_accept).
     if (is_stop(e, id) || tok_is_control(e->tok, id))
         return e->constraint_phase == CP_THINK ||
-               e->constraint_phase == CP_AFTER_THINK ||
+               (e->constraint_phase == CP_AFTER_THINK && !is_stop(e, id) &&
+                (!e->prelude_exhausted || id == e->think_end_id)) ||
                constraint_done(e, schema) ||
                // A trailing raw value (Muse's to=user free-text answer) can
                // only ever end at the model's own stop token: its byte
@@ -1821,7 +1857,21 @@ static int engine_pick(engine *e, float *logits, int n_vocab,
     sampler *s = e->smp;
     if (e->wm_prepare) e->wm_prepare(e->wm_ud, s, e->hist, e->gen_start, t);
     int tok;
-    if (!e->think_smp || !e->think_on) {
+    // The hex digits of a \uXXXX escape in a constrained string are picked
+    // greedily. A code point is not a place for variety, and sampling it is
+    // where a small model slips: granite-4.1-3b Q8_0 at temperature 0.8
+    // wrote "Å" as \u00a5 or \u00a1 in 23 of 60 tool calls, a digit off
+    // the \u00c5 it wrote in the other 36. Only the digits: the choice to
+    // escape at all, and everything else in the string, stay the sampler's.
+    bool hex = s->temp > 0 && ok && e->constraint_phase == CP_OUTPUT &&
+               (e->schema ? sval_in_u_escape(&e->sv)
+                          : e->json_mode && jsonv_in_u_escape(&e->jv));
+    if (hex) {
+        float t0 = s->temp;
+        s->temp = 0;
+        tok = sample_pick(s, logits, n_vocab, ok, e);
+        s->temp = t0;
+    } else if (!e->think_smp || !e->think_on) {
         tok = sample_pick(s, logits, n_vocab, ok, e);
     } else {
         float t0 = s->temp, p0 = s->top_p, m0 = s->min_p;
@@ -2037,7 +2087,14 @@ static int constraint_finish_think(engine *e, bool schema,
 
 static int constraint_control_accept(engine *e, int tok, bool schema,
                                      gen_cb cb, void *ud) {
-    if (e->constraint_phase != CP_THINK || tok != e->think_end_id) return 0;
+    if (tok != e->think_end_id) return 0;
+    if (e->constraint_phase == CP_AFTER_THINK && e->prelude_exhausted) {
+        // the model's own close after the engine's: nothing is left to
+        // close, and from here only the payload is admitted
+        e->constraint_phase = CP_OUTPUT;
+        return 0;
+    }
+    if (e->constraint_phase != CP_THINK) return 0;
     return constraint_finish_think(e, schema, cb, ud);
 }
 
