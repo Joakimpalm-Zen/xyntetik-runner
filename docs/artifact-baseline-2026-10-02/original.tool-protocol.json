@@ -1,0 +1,332 @@
+{
+ "gate": "tool-protocol-check",
+ "label": "original",
+ "started": "2026-10-02T15:57:11+0200",
+ "host": "lab-box",
+ "platform": "Linux-6.12.0-211.16.1.el10_2.x86_64-x86_64-with-glibc2.39",
+ "base_url": "http://127.0.0.1:18301",
+ "model": "Qwen3.8-27B-GSQ-RCO-IQ3_S.gguf",
+ "model_file": "models/qwen38-public-quants/ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-IQ3_S.gguf",
+ "model_sha256": "64b53b64c7aa39f20a7e54bd80582fe595b1d745624ee8a72e92508c0326d810",
+ "runner": "./runner",
+ "runner_sha256": "6732bf5616fbb1a219e0e51cb0bf4df15b8a864c77054ffcc508ab1d41a7d83a",
+ "sampling_served": {
+  "preset": "qwen38",
+  "temperature": 1.0,
+  "top_p": 0.95,
+  "top_k": 20,
+  "min_p": 0.0,
+  "repeat_penalty": 1.0
+ },
+ "context": 8192,
+ "overrides": {},
+ "tool_choice": "auto (absent)",
+ "max_tokens": 400,
+ "cases": {
+  "A": {
+   "title": "single call",
+   "prompt": "List the files in the current directory.",
+   "tools": [
+    "bash"
+   ],
+   "modes": {
+    "buffered": {
+     "wall_s": 21.468,
+     "finish_reason": "tool_calls",
+     "content": "",
+     "reasoning": "The user is asking to list the files in the current directory. Let's use the bash tool.\n",
+     "calls": [
+      {
+       "name": "bash",
+       "arguments": "{\"command\":\"ls -la\"}",
+       "id": "call_0"
+      }
+     ],
+     "usage": {
+      "prompt_tokens": 311,
+      "prompt_tokens_details": {
+       "cached_tokens": 0
+      },
+      "completion_tokens": 50,
+      "total_tokens": 361
+     },
+     "telemetry": {
+      "prompt_cached_tokens": 0,
+      "prompt_forked_tokens": 0,
+      "prompt_eval_tokens": 311,
+      "prefix_cache_saved_seconds": 0.0,
+      "generation_seconds": 13.189618,
+      "generation_tok_s": 3.791,
+      "major_page_faults": 0,
+      "page_fault_counter": "major",
+      "json_mode": false,
+      "schema": false,
+      "speculative": false,
+      "sampling": {
+       "preset": "qwen38",
+       "temperature": 1.0,
+       "top_p": 0.95,
+       "top_k": 20,
+       "min_p": 0.0,
+       "repeat_penalty": 1.0,
+       "seed": 0,
+       "source": {
+        "temperature": "preset",
+        "top_p": "preset",
+        "top_k": "preset",
+        "min_p": "preset",
+        "repeat_penalty": "preset"
+       }
+      },
+      "tool_protocol": {
+       "template": "qwen38",
+       "family": "qwen3_xml",
+       "tools": true,
+       "constrained": false,
+       "parse_only": true
+      },
+      "timing": {
+       "queue_seconds": 2.4e-05,
+       "tokenize_seconds": 0.000318,
+       "device_wait_seconds": 0.0,
+       "prefill_seconds": 8.27725,
+       "prefill_tokens": 311,
+       "prefill_tok_s": 37.573,
+       "first_visible_seconds": 14.344751
+      },
+      "prompt_reuse": "none"
+     },
+     "result": "PASS",
+     "reasons": []
+    },
+    "stream": {
+     "wall_s": 13.475,
+     "finish_reason": "tool_calls",
+     "content": "",
+     "reasoning": "The user is asking to list the files in the current directory. Let's use the bash tool.\n",
+     "calls": [
+      {
+       "name": "bash",
+       "arguments": "{\"command\":\"ls -la\"}",
+       "id": "call_0"
+      }
+     ],
+     "telemetry": null,
+     "result": "PASS",
+     "reasons": []
+    }
+   }
+  },
+  "B": {
+   "title": "prose and parallel calls",
+   "prompt": "Check whether boss.json, boss.toml and boss.yaml exist anywhere in this project. Use the glob tool for each pattern.",
+   "tools": [
+    "glob",
+    "bash"
+   ],
+   "modes": {
+    "buffered": {
+     "wall_s": 45.447,
+     "finish_reason": "tool_calls",
+     "content": "",
+     "reasoning": "The user is asking to check whether boss.json, boss.toml, and boss.yaml exist somewhere in this project, using a glob tool for each pattern. Since these are independent calls, I can execute all three in parallel.\n",
+     "calls": [
+      {
+       "name": "glob",
+       "arguments": "{\"pattern\":\"**/boss.json\"}",
+       "id": "call_0"
+      },
+      {
+       "name": "glob",
+       "arguments": "{\"pattern\":\"**/boss.toml\"}",
+       "id": "call_1"
+      },
+      {
+       "name": "glob",
+       "arguments": "{\"pattern\":\"**/boss.yaml\"}",
+       "id": "call_2"
+      }
+     ],
+     "usage": {
+      "prompt_tokens": 384,
+      "prompt_tokens_details": {
+       "cached_tokens": 0
+      },
+      "completion_tokens": 135,
+      "total_tokens": 519
+     },
+     "telemetry": {
+      "prompt_cached_tokens": 0,
+      "prompt_forked_tokens": 0,
+      "prompt_eval_tokens": 384,
+      "prefix_cache_saved_seconds": 0.0,
+      "generation_seconds": 35.632922,
+      "generation_tok_s": 3.789,
+      "major_page_faults": 0,
+      "page_fault_counter": "major",
+      "json_mode": false,
+      "schema": false,
+      "speculative": false,
+      "sampling": {
+       "preset": "qwen38",
+       "temperature": 1.0,
+       "top_p": 0.95,
+       "top_k": 20,
+       "min_p": 0.0,
+       "repeat_penalty": 1.0,
+       "seed": 0,
+       "source": {
+        "temperature": "preset",
+        "top_p": "preset",
+        "top_k": "preset",
+        "min_p": "preset",
+        "repeat_penalty": "preset"
+       }
+      },
+      "tool_protocol": {
+       "template": "qwen38",
+       "family": "qwen3_xml",
+       "tools": true,
+       "constrained": false,
+       "parse_only": true
+      },
+      "timing": {
+       "queue_seconds": 6e-06,
+       "tokenize_seconds": 0.000348,
+       "device_wait_seconds": 0.0,
+       "prefill_seconds": 9.810833,
+       "prefill_tokens": 384,
+       "prefill_tok_s": 39.14,
+       "first_visible_seconds": 22.481209
+      },
+      "prompt_reuse": "recurrent_reset"
+     },
+     "result": "PASS",
+     "reasons": []
+    },
+    "stream": {
+     "wall_s": 36.371,
+     "finish_reason": "tool_calls",
+     "content": "",
+     "reasoning": "The user is asking to check whether boss.json, boss.toml, and boss.yaml exist anywhere in this project, and to use the glob tool for each pattern. Since these are independent calls, all three can be run in parallel.\n",
+     "calls": [
+      {
+       "name": "glob",
+       "arguments": "{\"pattern\":\"**/boss.json\"}",
+       "id": "call_0"
+      },
+      {
+       "name": "glob",
+       "arguments": "{\"pattern\":\"**/boss.toml\"}",
+       "id": "call_1"
+      },
+      {
+       "name": "glob",
+       "arguments": "{\"pattern\":\"**/boss.yaml\"}",
+       "id": "call_2"
+      }
+     ],
+     "telemetry": null,
+     "result": "PASS",
+     "reasons": []
+    }
+   }
+  },
+  "C": {
+   "title": "prose then call",
+   "prompt": "Briefly say what you are about to do, then list the files in the current directory.",
+   "tools": [
+    "bash"
+   ],
+   "modes": {
+    "buffered": {
+     "wall_s": 30.599,
+     "finish_reason": "tool_calls",
+     "content": "\n\nI'm going to list the files in the current directory using the `ls` command.\n\n",
+     "reasoning": "The user wants me to briefly state what I'm about to do, and then list the files in the current directory. Let's use the bash tool to list the files.\n",
+     "calls": [
+      {
+       "name": "bash",
+       "arguments": "{\"command\":\"ls -la\"}",
+       "id": "call_0"
+      }
+     ],
+     "usage": {
+      "prompt_tokens": 322,
+      "prompt_tokens_details": {
+       "cached_tokens": 0
+      },
+      "completion_tokens": 84,
+      "total_tokens": 406
+     },
+     "telemetry": {
+      "prompt_cached_tokens": 0,
+      "prompt_forked_tokens": 0,
+      "prompt_eval_tokens": 322,
+      "prefix_cache_saved_seconds": 0.0,
+      "generation_seconds": 22.096952,
+      "generation_tok_s": 3.801,
+      "major_page_faults": 0,
+      "page_fault_counter": "major",
+      "json_mode": false,
+      "schema": false,
+      "speculative": false,
+      "sampling": {
+       "preset": "qwen38",
+       "temperature": 1.0,
+       "top_p": 0.95,
+       "top_k": 20,
+       "min_p": 0.0,
+       "repeat_penalty": 1.0,
+       "seed": 0,
+       "source": {
+        "temperature": "preset",
+        "top_p": "preset",
+        "top_k": "preset",
+        "min_p": "preset",
+        "repeat_penalty": "preset"
+       }
+      },
+      "tool_protocol": {
+       "template": "qwen38",
+       "family": "qwen3_xml",
+       "tools": true,
+       "constrained": false,
+       "parse_only": true
+      },
+      "timing": {
+       "queue_seconds": 4e-06,
+       "tokenize_seconds": 0.000308,
+       "device_wait_seconds": 1e-06,
+       "prefill_seconds": 8.494238,
+       "prefill_tokens": 322,
+       "prefill_tok_s": 37.908,
+       "first_visible_seconds": 19.024741
+      },
+      "prompt_reuse": "recurrent_reset"
+     },
+     "result": "PASS",
+     "reasons": []
+    },
+    "stream": {
+     "wall_s": 17.652,
+     "finish_reason": "tool_calls",
+     "content": "\n\nI'll list the files in the current directory using `ls`.\n\n",
+     "reasoning": "The user wants me to briefly state what I'm about to do, and then list the files in the current directory.\n",
+     "calls": [
+      {
+       "name": "bash",
+       "arguments": "{\"command\":\"ls\"}",
+       "id": "call_0"
+      }
+     ],
+     "telemetry": null,
+     "result": "PASS",
+     "reasons": []
+    }
+   }
+  }
+ },
+ "verdict": "PASS",
+ "finished": "2026-10-02T16:00:02+0200"
+}

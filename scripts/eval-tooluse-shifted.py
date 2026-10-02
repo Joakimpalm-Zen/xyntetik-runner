@@ -524,9 +524,22 @@ def score_native_leg(rows, port, catalog, model_id, schemas=None):
     counts = fresh_counts()
     tools = native_tools(catalog)
 
+    # A family whose auto turn is parsed rather than constrained (the
+    # function-XML families: Qwen 3.8, Granite 4.2, Ornith, Qwen3-Coder) has
+    # no decision points to report, and the server refuses choice_logprobs
+    # there. The decision is still scored; the request goes again without
+    # the field, once, and the record says the probabilities are absent.
+    no_choice_lp = False
     for row in rows:
         body = chat_request(model_id, [{"role": "user", "content": row["prompt"]}], tools)
+        if no_choice_lp:
+            body.pop("choice_logprobs", None)
         resp, refusal = post_json(f"http://127.0.0.1:{port}/v1/chat/completions", body)
+        if (resp is None and refusal and "choice_logprobs" in refusal
+                and not no_choice_lp):
+            no_choice_lp = True
+            body.pop("choice_logprobs", None)
+            resp, refusal = post_json(f"http://127.0.0.1:{port}/v1/chat/completions", body)
         finish = content = None
         calls, choice_records = [], []
         if resp is not None:
@@ -580,6 +593,9 @@ def score_native_leg(rows, port, catalog, model_id, schemas=None):
         "tool_ok_rate": round(counts["tool_ok"] / n, 4) if n > 0 else 0,
         "args_ok_rate": round(counts["exact"] / n, 4) if n > 0 else 0,
         "exact_match_rate": round(counts["exact"] / n, 4) if n > 0 else 0,
+        # false: the family's auto turn is parsed, not constrained, so the
+        # server has no decision points to report (see the loop above)
+        "choice_logprobs": not no_choice_lp,
         "by_category": per_category(results),
         "rows": results
     }

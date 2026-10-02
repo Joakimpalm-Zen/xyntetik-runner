@@ -1,0 +1,156 @@
+{
+  "schema_version": "xyntetik.runner.token-divergence.v1",
+  "model": "models/qwen38-recovered/Qwen3.8-27B-GSQ-RCO-IQ3_S-recovered.gguf",
+  "tokens_per_prompt": 64,
+  "tie_threshold_nats": 0.25,
+  "reference_args": [],
+  "runner_args": [],
+  "results": [
+    {
+      "prompt": "The capital of France is",
+      "status": "identical",
+      "matched_tokens": 64,
+      "max_logprob_delta": 0.0686759745407104
+    },
+    {
+      "prompt": "def fibonacci(n):",
+      "status": "diverged",
+      "position": 6,
+      "matched_tokens": 6,
+      "runner_token": "0",
+      "runner_id": 15,
+      "reference_token": "1",
+      "reference_id": 16,
+      "runner_gap_nats": 0.006221000000000032,
+      "reference_gap_nats": 0.07031059265136719,
+      "max_logprob_delta": 0.012813898368835508
+    },
+    {
+      "prompt": "1 2 3 4 5 6 7 8",
+      "status": "identical",
+      "matched_tokens": 64,
+      "max_logprob_delta": 0.058696803012847854
+    },
+    {
+      "prompt": "Once upon a time, in a land far away,",
+      "status": "diverged",
+      "position": 28,
+      "matched_tokens": 28,
+      "runner_token": "One",
+      "runner_id": 3833,
+      "reference_token": "In",
+      "reference_id": 623,
+      "runner_gap_nats": 0.05435100000000004,
+      "reference_gap_nats": 0.04184913635253906,
+      "max_logprob_delta": 0.10198780257415774
+    },
+    {
+      "prompt": "JSON example: {\"name\":",
+      "status": "identical",
+      "matched_tokens": 64,
+      "max_logprob_delta": 0.07911390714263922
+    },
+    {
+      "prompt": "The three laws of thermodynamics are",
+      "status": "diverged",
+      "position": 57,
+      "matched_tokens": 57,
+      "runner_token": " if",
+      "runner_id": 413,
+      "reference_token": " for",
+      "reference_id": 364,
+      "runner_gap_nats": 0.013480999999999965,
+      "reference_gap_nats": 0.3337116241455078,
+      "max_logprob_delta": 0.15542608964920046
+    },
+    {
+      "prompt": "import numpy as np\n",
+      "status": "identical",
+      "matched_tokens": 64,
+      "max_logprob_delta": 0.057539507545471213
+    },
+    {
+      "prompt": "Q: What is 17 * 23?\nA:",
+      "status": "diverged",
+      "position": 0,
+      "matched_tokens": 0,
+      "runner_token": "\n\n",
+      "runner_id": 271,
+      "reference_token": " ",
+      "reference_id": 220,
+      "runner_gap_nats": 0.1133329999999999,
+      "reference_gap_nats": 0.02268993854522705,
+      "max_logprob_delta": 0.0
+    },
+    {
+      "prompt": "The quick brown fox",
+      "status": "identical",
+      "matched_tokens": 64,
+      "max_logprob_delta": 0.033357314163207974
+    },
+    {
+      "prompt": "class Stack:\n    def __init__(self):",
+      "status": "identical",
+      "matched_tokens": 64,
+      "max_logprob_delta": 0.059606650512695314
+    },
+    {
+      "prompt": "In 1969, humans first",
+      "status": "identical",
+      "matched_tokens": 64,
+      "max_logprob_delta": 0.10083027120208743
+    },
+    {
+      "prompt": "SELECT name, age FROM users WHERE",
+      "status": "identical",
+      "matched_tokens": 64,
+      "max_logprob_delta": 0.0855516217575073
+    },
+    {
+      "prompt": "The mitochondria is the",
+      "status": "identical",
+      "matched_tokens": 64,
+      "max_logprob_delta": 0.09798210858917233
+    },
+    {
+      "prompt": "for i in range(10):\n    print(",
+      "status": "identical",
+      "matched_tokens": 64,
+      "max_logprob_delta": 0.10822979138183597
+    },
+    {
+      "prompt": "Water boils at",
+      "status": "diverged",
+      "position": 63,
+      "matched_tokens": 63,
+      "runner_token": " pressure",
+      "runner_id": 7035,
+      "reference_token": "ization",
+      "reference_id": 1954,
+      "runner_gap_nats": 0.005537000000000014,
+      "reference_gap_nats": 0.08542251586914062,
+      "max_logprob_delta": 0.11741117274475099
+    },
+    {
+      "prompt": "A haiku about autumn:\n",
+      "status": "diverged",
+      "position": 1,
+      "matched_tokens": 1,
+      "runner_token": "Golden",
+      "runner_id": 57772,
+      "reference_token": "Le",
+      "reference_id": 2229,
+      "runner_gap_nats": 0.03528700000000007,
+      "reference_gap_nats": 0.047957539558410645,
+      "max_logprob_delta": 0.003389272964477552
+    }
+  ],
+  "totals": {
+    "prompts": 16,
+    "identical": 10,
+    "length_mismatch": 0,
+    "diverged_at_a_tie": 5,
+    "diverged_for_real": 1,
+    "max_logprob_delta": 0.15542608964920046
+  }
+}
