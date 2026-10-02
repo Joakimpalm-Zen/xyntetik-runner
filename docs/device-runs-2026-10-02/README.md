@@ -45,6 +45,8 @@ branch `backlog-batch-3` (`06d7d07`) unless noted. Records in `blackwell/`.
 | agent-torture, the same file, main's generic JSON envelope | 120 of 120, 120.5 s |
 | agent-torture, Granite 4.2 8B Q4_K_M (function XML) | 102 of 120: 15 refused with 400, 3 declined (below) |
 | new template families on their real files, CPU | 171 checks pass, 0 fail, 1 note, nine files |
+| the same, GPU (Qwen 3.5 4B, Phi-4-mini, Hermes 4 14B, Granite 4.1 8B) | 69 of 69 pass; Hermes 4 needed a second run (below) |
+| agent-torture, Granite 4.2 8B, the branch tip with the function-XML fallback | 117 of 120: the 15 refusals gone, the 3 declined remain |
 | CUDA prefill profile, Llama-3.2-3B Q4_K_M, 541 tokens | 667 tok/s; quantized matmuls 85% of GPU time, attention 14% |
 | sampled `--json`, Llama-3.2-3B Q4_K_M, CUDA | 39.6 tok/s on main, 123.1 with the new sampler (133 unconstrained) |
 
@@ -60,6 +62,15 @@ now uses the generic envelope for that request (`tests/test_xml_schema_fallback.
 The 3 declined cases ask for a tool call with `max_tokens: 1`; the model's
 one token went to its reasoning channel. That is the model's turn shape
 under a one-token budget, recorded rather than changed.
+
+**Hermes 4 on the GPU, and what a second slot costs.** The first GPU run
+of the Hermes 4 14B row failed at server start: the sweep serves with
+`--parallel 2`, and slot 1 asked for another 10.2 GB of VRAM beside the
+9.8 GB slot 0 held while this window's Granite 4.2 server occupied the
+rest. Run again alone it passed all 18 checks. The cause of the second
+10 GB is that every slot after the first loads the model again, and on CUDA
+each load uploads the weights; Metal maps the file and does not copy. Filed
+in the plan as R10.13.
 
 **Where CUDA prefill goes.** With tensor cores on, 794 ms of GPU time for
 541 tokens: 671 ms in the quantized matmuls, 109 ms in attention, the rest

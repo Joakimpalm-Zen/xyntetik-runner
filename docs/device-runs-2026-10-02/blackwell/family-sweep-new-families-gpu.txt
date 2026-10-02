@@ -1,0 +1,93 @@
+
+== qwen35 / Qwen3.5-4B Q4_K_M: Qwen3.5-4B-Q4_K_M.gguf (2.6 GB)
+  [gpu]
+    PASS gpu cli greedy
+    PASS gpu cli seeded sampling is reproducible
+    PASS gpu cli transcript replays VERIFIED
+    PASS gpu cli hostile prompts
+    PASS gpu serve chat basic
+    PASS gpu serve stream equals buffered, unicode
+    PASS gpu serve max_tokens 1 and stop sequences
+    PASS gpu serve json mode and strict schema
+    PASS gpu serve tool call required, streamed, tool result, auto
+    PASS gpu serve context near limit and over it
+    PASS gpu serve repeated request reuses KV
+    PASS gpu serve concurrent requests on two slots
+    PASS gpu serve logprobs, echo, prompt_logprobs
+    PASS gpu serve responses and messages surfaces
+    PASS gpu serve runner routes: context, rerank, decide, provenance
+    PASS gpu serve malformed requests
+    PASS gpu serve client hang-up mid-stream
+
+== phi3 / Phi-4-mini q4_0: Phi-4-mini-instruct-q4_0.gguf (2.0 GB)
+  [gpu]
+    PASS gpu cli greedy
+    PASS gpu cli seeded sampling is reproducible
+    PASS gpu cli transcript replays VERIFIED
+    PASS gpu cli hostile prompts
+    PASS gpu serve chat basic
+    PASS gpu serve stream equals buffered, unicode
+    PASS gpu serve max_tokens 1 and stop sequences
+    PASS gpu serve json mode and strict schema
+    PASS gpu serve tool call required, streamed, tool result, auto
+    PASS gpu serve context near limit and over it
+    PASS gpu serve repeated request reuses KV
+    PASS gpu serve concurrent requests on two slots
+    PASS gpu serve logprobs, echo, prompt_logprobs
+    PASS gpu serve responses and messages surfaces
+    PASS gpu serve runner routes: context, rerank, decide, provenance
+    PASS gpu serve malformed requests
+    PASS gpu serve client hang-up mid-stream
+
+== qwen3 / Hermes-4-14B Q4_K_M: NousResearch_Hermes-4-14B-Q4_K_M.gguf (8.4 GB)
+  [gpu]
+    PASS gpu cli greedy
+    PASS gpu cli seeded sampling is reproducible
+    PASS gpu cli transcript replays VERIFIED
+    PASS gpu cli hostile prompts
+    FAIL server lifecycle: [transport] runner exited during startup
+    returncode = 1
+    argv = 'm1-work/runner/runner -m models/Hermes-4-14B-Q4_K_M/NousResearch_Hermes-4-14B-Q4_K_M.gguf --serve --no-tray --port 41005 --parallel 2 -c 4096 --gpu auto -t 8'
+    log = "gpu: no OS video memory budget published for this device; offload budget 18.17 GB from the driver's free view, headroom 1.14 GB\ngpu-split: budget=18.17GB fixed=1.63GB G=40/40 full=1 used=10.22GB\ngpu: CUDA backend on NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb (9.0 GB weights in VRAM)\ngpu: VRAM 8.42 GB free of 25.37 GB after init (kv 0.67 GB + scratch 0.06 GB this instance)\nloaded models/Hermes-4-14B-Q4_K_M/NousResearch_Hermes-4-14B-Q4_K_M.gguf | qwen3 | 40 layers | ctx 4096 | 8 threads (divided across slots) | 1.14s\nsampling: qwen3 (temp 0.60, top_p 0.95, top_k 20, min_p 0.00, repeat_penalty 1.00)\nerror: 10.2GB of VRAM requested on GPU-399aa5c7-bb47-5ccb-b688-54fefec06647, but only 8.4GB is available\n  pid 1058345 holding 3.9GB for granite-4.2-8b-Q4_K_M, up 3m, priority 0\n  pid 1059079 holding 9.8GB for NousResearch_Hermes-4-14B-Q4_K_M, up 1s, priority 0\n  pass --wait-for-vram [SECONDS] to queue instead of failing\nerror: failed to load slot 1\n"
+
+== granite / granite-4.1-8b Q4_0: granite-4.1-8b-Q4_0.gguf (4.7 GB)
+  [gpu]
+    PASS gpu cli greedy
+    PASS gpu cli seeded sampling is reproducible
+    PASS gpu cli transcript replays VERIFIED
+    PASS gpu cli hostile prompts
+    PASS gpu serve chat basic
+    PASS gpu serve stream equals buffered, unicode
+    PASS gpu serve max_tokens 1 and stop sequences
+    PASS gpu serve json mode and strict schema
+    PASS gpu serve tool call required, streamed, tool result, auto
+    PASS gpu serve context near limit and over it
+    PASS gpu serve repeated request reuses KV
+    PASS gpu serve concurrent requests on two slots
+    PASS gpu serve logprobs, echo, prompt_logprobs
+    PASS gpu serve responses and messages surfaces
+    PASS gpu serve runner routes: context, rerank, decide, provenance
+    PASS gpu serve malformed requests
+    PASS gpu serve client hang-up mid-stream
+
+| family | file | PASS | FAIL | NOTE | SKIP |
+|---|---|---|---|---|---|
+| qwen35 / Qwen3.5-4B Q4_K_M | Qwen3.5-4B-Q4_K_M.gguf | 17 | 0 | 0 | 0 |
+| phi3 / Phi-4-mini q4_0 | Phi-4-mini-instruct-q4_0.gguf | 17 | 0 | 0 | 0 |
+| qwen3 / Hermes-4-14B Q4_K_M | NousResearch_Hermes-4-14B-Q4_K_M.gguf | 4 | 1 | 0 | 0 |
+| granite / granite-4.1-8b Q4_0 | granite-4.1-8b-Q4_0.gguf | 17 | 0 | 0 | 0 |
+
+FAIL qwen3 / Hermes-4-14B Q4_K_M [gpu] server lifecycle:
+  TransportError: [transport] runner exited during startup
+    returncode = 1
+    argv = 'm1-work/runner/runner -m models/Hermes-4-14B-Q4_K_M/NousResearch_Hermes-4-14B-Q4_K_M.gguf --serve --no-tray --port 41005 --parallel 2 -c 4096 --gpu auto -t 8'
+    log = "gpu: no OS video memory budget published for this device; offload budget 18.17 GB from the driver's free view, headroom 1.14 GB\ngpu-split: budget=18.17GB fixed=1.63GB G=40/40 full=1 used=10.22GB\ngpu: CUDA backend on NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb (9.0 GB weights in VRAM)\ngpu: VRAM 8.42 GB free of 25.37 GB after init (kv 0.67 GB + scratch 0.06 GB this instance)\nloaded models/Hermes-4-14B-Q4_K_M/NousResearch_Hermes-4-14B-Q4_K_M.gguf | qwen3 | 40 layers | ctx 4096 | 8 threads (divided across slots) | 1.14s\nsampling: qwen3 (temp 0.60, top_p 0.95, top_k 20, min_p 0.00, repeat_penalty 1.00)\nerror: 10.2GB of VRAM requested on GPU-399aa5c7-bb47-5ccb-b688-54fefec06647, but only 8.4GB is available\n  pid 1058345 holding 3.9GB for granite-4.2-8b-Q4_K_M, up 3m, priority 0\n  pid 1059079 holding 9.8GB for NousResearch_Hermes-4-14B-Q4_K_M, up 1s, priority 0\n  pass --wait-for-vram [SECONDS] to queue instead of failing\nerror: failed to load slot 1\n"; log tail: UDA backend on NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb (9.0 GB weights in VRAM)
+gpu: VRAM 8.42 GB free of 25.37 GB after init (kv 0.67 GB + scratch 0.06 GB this instance)
+loaded models/Hermes-4-14B-Q4_K_M/NousResearch_Hermes-4-14B-Q4_K_M.gguf | qwen3 | 40 layers | ctx 4096 | 8 threads (divided across slots) | 1.14s
+sampling: qwen3 (temp 0.60, top_p 0.95, top_k 20, min_p 0.00, repeat_penalty 1.00)
+error: 10.2GB of VRAM requested on GPU-399aa5c7-bb47-5ccb-b688-54fefec06647, but only 8.4GB is available
+  pid 1058345 holding 3.9GB for granite-4.2-8b-Q4_K_M, up 3m, priority 0
+  pid 1059079 holding 9.8GB for NousResearch_Hermes-4-14B-Q4_K_M, up 1s, priority 0
+  pass --wait-for-vram [SECONDS] to queue instead of failing
+error: failed to load slot 1
+
