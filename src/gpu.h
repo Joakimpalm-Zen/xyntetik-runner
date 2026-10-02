@@ -98,6 +98,7 @@ unsigned long gpu_mv_dispatches(void);
 void   gpu_attn_coop_force(int on);
 unsigned long gpu_attn_coop_dispatches(void);
 unsigned long gpu_attn_tile_dispatches(void);  // prefill tiles (Metal), 0 elsewhere
+unsigned long gpu_attn_gqa_dispatches(void);   // grouped-query decode groups (Metal), 0 elsewhere
 // test hook: force (1) or forbid (0) the eager MoE routing path; -1 = env
 void   gpu_moe_eager_force(int on);
 bool   gpu_init(model_t *m);                     // false = unsupported, use CPU

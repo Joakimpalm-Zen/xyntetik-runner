@@ -8,6 +8,12 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **Metal decode slows less as the context grows (grouped-query models).**
+  Decode attention fetched a KV head's K and V rows once per query head
+  that shares it. One threadgroup per KV head now serves all of them
+  (`k_attn_chunk_gqa`), byte-identical to the per-head kernel. Llama-3.2-3B
+  on an M1: 6.8 to 8.1 tok/s at 4,321 tokens of context, 9.8 to 10.4 at
+  1,157, unchanged at 347.
 - **`/health` shows what a busy slot is doing.** `requests` holds one row
   per busy slot: `phase` (`prefill` or `generate`), `prompt_tokens`,
   `prompt_done` and `generated`. A client waiting on a long prefill can tell

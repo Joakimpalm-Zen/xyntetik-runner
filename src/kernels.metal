@@ -3595,6 +3595,125 @@ struct attn_chunk_args {
     } \
     if (tid == 0) { ms[0] = mx; ms[1] = sum; }
 
+// Grouped-query decode attention: one threadgroup per (KV head, chunk) serves
+// every query head that shares that KV head.
+//
+// k_attn_chunk_coop gives each QUERY head its own threadgroups, so under
+// grouped-query attention the same K and V rows are fetched once per query
+// head of the group: three times on Llama 3.2, and at a long context those
+// fetches are the cost (4,321 rows on an M1: scores 19 ms and values 43 ms of
+// a 150 ms token, against 87 ms for everything outside attention). Here a K
+// element is loaded and widened once and feeds one partial sum per query
+// head, and a V element one output sum per query head.
+//
+// Per query head it is k_attn_chunk_coop's arithmetic, operation for
+// operation: the same lane partition and simd_sum for a score, the same
+// reductions for the chunk's maximum and sum, the same t-ordered value sum.
+// So the partials it writes are the bytes that kernel writes, and
+// k_attn_combine is unchanged. f16 caches only; the host keeps the quantized
+// kinds on k_attn_chunk_coop.
+#define ATTN_GQA_MAX 8
+kernel void k_attn_chunk_gqa(device const float *q_all   [[buffer(0)]],
+                             device const uchar *kc      [[buffer(1)]],
+                             device const uchar *vc      [[buffer(2)]],
+                             device float       *att_all [[buffer(3)]],
+                             device float       *acc_all [[buffer(4)]],
+                             device float       *ms_all  [[buffer(5)]],
+                             constant attn_chunk_args &a [[buffer(6)]],
+                             uint3 tgpig [[threadgroup_position_in_grid]],
+                             uint3 tid3  [[thread_position_in_threadgroup]],
+                             uint3 tpg3  [[threads_per_threadgroup]]) {
+    threadgroup float red[256];
+    uint tid = tid3.x, tpg = tpg3.x;
+    uint kvh = tgpig.x, z = tgpig.y;
+    int hd = a.head_dim;
+    int G = a.n_head / a.n_head_kv;
+    uint h0 = kvh * (uint)G;
+    int kv_dim = a.n_head_kv * hd;
+    ulong row_b = kv_row_bytes(kv_dim, 0);
+    ulong base = a.l_off + kv_head_off(kvh, hd, 0);
+    ulong base_v = a.v_off + kv_head_off(kvh, hd, 0);
+    int pos = a.pos;
+    int t0 = 0;
+    if (a.window > 0 && pos - a.window + 1 > 0) t0 = pos - a.window + 1;
+    int lo = t0 + (int)z * a.chunk;
+    int hi = min(lo + a.chunk - 1, pos);
+
+    if (lo > hi) { /* empty chunk: neutral partials for every head */
+        for (int g = 0; g < G; g++) {
+            device float *acc = acc_all + ((ulong)(h0 + g) * a.n_chunks + z) * hd;
+            device float *ms  = ms_all  + ((ulong)(h0 + g) * a.n_chunks + z) * 2;
+            for (int i = tid; i < hd; i += tpg) acc[i] = 0;
+            if (tid == 0) { ms[0] = -1e30f; ms[1] = 0; }
+        }
+        return;
+    }
+
+    {
+        uint lane = tid & 31u, sg = tid >> 5, n_sg = tpg >> 5;
+        for (int t = lo + (int)sg; t <= hi; t += (int)n_sg) {
+            device const half *k = (device const half *)(kc + base + kv_row_off(t, a.kv_rows, row_b));
+            float s[ATTN_GQA_MAX];
+            for (int g = 0; g < G; g++) s[g] = 0;
+            for (int i = (int)lane; i < hd; i += 32) {
+                float kf = (float)k[i];
+                for (int g = 0; g < G; g++)
+                    s[g] += q_all[(h0 + g) * hd + i] * kf;
+            }
+            for (int g = 0; g < G; g++) {
+                float sc = simd_sum(s[g]) * a.scale;
+                if (lane == 0) att_all[(ulong)(h0 + g) * a.n_ctx + t] = sc;
+            }
+        }
+    }
+    threadgroup_barrier(mem_flags::mem_device);
+
+    for (int g = 0; g < G; g++) {
+        device float *ah = att_all + (ulong)(h0 + g) * a.n_ctx;
+        device float *ms = ms_all + ((ulong)(h0 + g) * a.n_chunks + z) * 2;
+        float mx = -1e30f;
+        for (int t = lo + (int)tid; t <= hi; t += tpg) mx = max(mx, ah[t]);
+        red[tid] = mx;
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        for (uint off = tpg / 2; off > 0; off >>= 1) {
+            if (tid < off) red[tid] = max(red[tid], red[tid + off]);
+            threadgroup_barrier(mem_flags::mem_threadgroup);
+        }
+        mx = red[0];
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        float sum = 0;
+        for (int t = lo + (int)tid; t <= hi; t += tpg) {
+            float e = exp(ah[t] - mx);
+            ah[t] = e;
+            sum += e;
+        }
+        red[tid] = sum;
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        for (uint off = tpg / 2; off > 0; off >>= 1) {
+            if (tid < off) red[tid] += red[tid + off];
+            threadgroup_barrier(mem_flags::mem_threadgroup);
+        }
+        sum = red[0];
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        if (tid == 0) { ms[0] = mx; ms[1] = sum; }
+    }
+    threadgroup_barrier(mem_flags::mem_device);
+
+    /* UNNORMALISED partials, as in k_attn_chunk: the combine pass divides */
+    for (int i = tid; i < hd; i += tpg) {
+        float o[ATTN_GQA_MAX];
+        for (int g = 0; g < G; g++) o[g] = 0;
+        for (int t = lo; t <= hi; t++) {
+            float v = (float)((device const half *)(vc + base_v + kv_row_off(t, a.kv_rows, row_b)))[i];
+            for (int g = 0; g < G; g++)
+                o[g] += att_all[(ulong)(h0 + g) * a.n_ctx + t] * v;
+        }
+        for (int g = 0; g < G; g++)
+            acc_all[((ulong)(h0 + g) * a.n_chunks + z) * hd + i] = o[g];
+    }
+}
+
 kernel void k_attn_chunk(device const float *q_all   [[buffer(0)]],
                          device const uchar *kc      [[buffer(1)]],
                          device const uchar *vc      [[buffer(2)]],

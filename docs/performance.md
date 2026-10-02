@@ -162,12 +162,38 @@ in `docs/agent-turns-2026-10-02/`):
 The worst turn in the last column is the first (the model's pages coming
 in); the worst later turn is 10.8 s, at 3,200 tokens of history.
 
-Not changed, and still growing with context: decode attention (10.6 tok/s at
-the first turn, 7.1 at 2,100 tokens of history) and the restore of a turn
-from the prefix-cache store on a second pass over the same conversation
-(about 3 s per 700 cached tokens on this machine). One machine and one
-model; a larger GPU or a wider head count will move the split between the
-phases.
+### Decode over a long history: one threadgroup per KV head
+
+Decode attention was timed the same way at 4,321 tokens of context: of a
+150 ms token, 87 ms outside attention, 19 ms scores, 1 ms softmax, 43 ms
+values. `k_attn_chunk_coop` gives every query head its own threadgroups, so
+under grouped-query attention the K and V rows of one KV head are fetched
+once per query head that shares it, three times on Llama 3.2.
+`k_attn_chunk_gqa` runs one threadgroup per KV head and chunk: a K element
+is loaded once and feeds a partial sum per query head, a V element an output
+sum per query head. Per query head the operations and their order are
+`k_attn_chunk_coop`'s, so the partials are the same bytes and the combine
+pass is unchanged (`tests/test_metal_attn_gqa.py`: log-probabilities equal
+to the last bit with the kernel on and off, and red with one query head's
+vector swapped for another's). f16 caches; `RUNNER_METAL_ATTN_GQA=0` pins
+the per-head kernel.
+
+| context | per query head | per KV head |
+|---|---:|---:|
+| 347 tokens | 11.0 tok/s | 11.2 tok/s |
+| 1,157 tokens | 9.8 tok/s | 10.4 tok/s |
+| 4,321 tokens | 6.8 tok/s | 8.1 tok/s |
+
+A block of weights staged through threadgroup memory, which is what helped
+the prefill kernel's value phase, made this kernel slower (6.1 tok/s at
+4,321 tokens) and was not kept.
+
+The restore of a turn from the prefix-cache store on a second pass over the
+same conversation was first read at about 3 s per 700 cached tokens; measured
+again with nothing else loading the machine it is 0.6 to 1.5 s for 225 to
+2,162 cached tokens, so the first figure was memory pressure, not the
+restore. One machine and one model; a larger GPU or a wider head count will
+move the split between the phases.
 
 ## 2026-09-30 — CPU attention: more threads than heads, and the same bits
 
