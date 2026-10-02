@@ -1130,7 +1130,7 @@ TEST_SWAP_RACE_SRC = tests/test_swap_race.c src/gguf.c src/compat.c \
                      src/jsonmode.c src/schema.c src/json.c src/engine.c \
                      src/template.c src/vramreg.c src/http.c src/envelope.c src/ed25519.c $(MLDSA_SRC) src/ecdsa.c src/oms.c src/registry.c src/provenance.c src/respstore.c src/receipts.c src/watermark.c src/kvsnap.c \
                      src/scheduler.c src/completion.c src/api_responses.c \
-                     src/api_anthropic.c src/server.c src/decide.c $(GPU_SRC)
+                     src/api_anthropic.c src/session.c src/server.c src/decide.c $(GPU_SRC)
 # Parallel slots share one tokenizer and encode on their own threads; under
 # ThreadSanitizer any per-call state left in the shared struct is a report,
 # and TSan exits non-zero on one. Not in `make test` (MinGW has no TSan); CI
