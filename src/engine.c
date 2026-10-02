@@ -1357,6 +1357,7 @@ float *engine_feed(engine *e, const int32_t *toks, int n) {
         // the repetition the penalty exists to discourage; tests/test_penalty_window.c.
         e->pos += chunk;
         i += chunk;
+        if (e->stat_feed) atomic_fetch_add(e->stat_feed, chunk);
         if (e->progress && n > 512 && (i % 512 < m->n_batch || last))
             fprintf(stderr, "\rprompt: %d/%d tokens%s", i, n, last ? "\n" : "");
         // Between chunks, never inside one: a chunk is one model_forward_batch
@@ -2518,6 +2519,7 @@ static int engine_generate_spec(engine *e, float *logits, int max_new,
                 goto done;
             }
             sampler_accept(e->smp, tok);
+            if (e->stat_gen) atomic_fetch_add(e->stat_gen, 1);
             if (debug_tokens()) fprintf(stderr, " %d", tok);
             if (is_stop(e, tok) && !e->ignore_eos) {
                 e->hit_stop = true;
@@ -2663,6 +2665,7 @@ static int engine_generate_spec(engine *e, float *logits, int max_new,
                 goto done;
             }
             sampler_accept(e->smp, tok);
+            if (e->stat_gen) atomic_fetch_add(e->stat_gen, 1);
             if (debug_tokens()) fprintf(stderr, " %d", tok);
             if (is_stop(e, tok) && !e->ignore_eos) {
                 e->hit_stop = true;
@@ -2856,8 +2859,23 @@ static bool gen_consume(engine *e, int tok, gen_cb cb, void *ud) {
     return false;
 }
 
+// RUNNER_TEST_STEP_DELAY_MS=N sleeps N ms before every generation step: a
+// test hook. A fixture model generates thousands of tokens a second, so a
+// test of what the server reports DURING a request, or of what a disconnect
+// leaves behind, has nothing to observe without it. Read once; 0 when unset.
+static int test_step_delay_ms(void) {
+    static int ms = -1;
+    if (ms < 0) {
+        const char *v = getenv("RUNNER_TEST_STEP_DELAY_MS");
+        ms = v && *v ? atoi(v) : 0;
+        if (ms < 0) ms = 0;
+    }
+    return ms;
+}
+
 int engine_gen_step(engine *e, const float *logits, gen_cb cb, void *ud,
                     int32_t *next_tok, int *next_pos) {
+    if (test_step_delay_ms()) plat_sleep_ms(test_step_delay_ms());
     // Arriving here at all means the caller forwarded the row the previous
     // step handed out -- `logits` is that forward's result. Anything still
     // outstanding when engine_gen_end runs was abandoned instead.
@@ -2877,6 +2895,7 @@ int engine_gen_step(engine *e, const float *logits, gen_cb cb, void *ud,
         return ENGINE_STEP_DONE;
     }
     sampler_accept(e->smp, tok);
+    if (e->stat_gen) atomic_fetch_add(e->stat_gen, 1);
     if (debug_tokens()) fprintf(stderr, " %d", tok);
     if (is_stop(e, tok) && !e->ignore_eos) {
         // The stop's own decision, recorded beside the aligned arrays rather
@@ -2970,6 +2989,7 @@ void engine_gen_resume(engine *e, int max_new, int n_prompt, int n_generated) {
     for (int i = 0; i < n_generated; i++) {
         int tok = e->hist[n_prompt + i];
         sampler_accept(e->smp, tok);
+        if (e->stat_gen) atomic_fetch_add(e->stat_gen, 1);
         gen_consume(e, tok, NULL, NULL);
         e->pos++;
     }

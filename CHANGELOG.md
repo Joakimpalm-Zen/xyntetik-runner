@@ -8,6 +8,11 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **`/health` shows what a busy slot is doing.** `requests` holds one row
+  per busy slot: `phase` (`prefill` or `generate`), `prompt_tokens`,
+  `prompt_done` and `generated`. A client waiting on a long prefill can tell
+  it from a hang, and one that closed its connection can see the request
+  leave the list when the work has stopped.
 - **`expect_resident`: a request can refuse to cause a load.** `/health`
   and the provenance record now carry `load_generation`, which moves on
   every load, reload and swap. A request may require it, the model file's

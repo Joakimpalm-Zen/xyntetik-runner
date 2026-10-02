@@ -2508,6 +2508,22 @@ field behaves as before, loading on demand.
 
 ### Health and metrics
 
+`/health` lists what each busy slot is doing, because a reply's headers are
+only sent once prefill is over and a client waiting on a long prompt cannot
+otherwise tell prefill from a hang:
+
+```json
+"requests": [{"slot": 0, "phase": "prefill", "prompt_tokens": 4190,
+              "prompt_done": 1024, "generated": 0}]
+```
+
+`phase` is `prefill` or `generate`; `prompt_done` counts the prompt tokens
+already in the cache (reused ones included) and advances a batch at a time.
+An idle server lists nothing. A request whose client closed its connection
+leaves the list when the server has actually stopped working on it, which is
+the confirmation the closed socket cannot give; with one request in flight,
+`"requests": []` and `"active_requests": 0` mean the compute is free.
+
 `/health` also carries what a supervisor needs to budget several runners on
 one machine. `rss_bytes` is this **process's** resident set - weights, KV
 cache, activations and allocator overhead together - which is the number a

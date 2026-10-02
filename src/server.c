@@ -1258,7 +1258,7 @@ static void handle_embeddings(slot_t *s, sock_t fd, jv *req) {
 // /health and /v1/models read only startup-immutable strings plus an atomic
 // resident snapshot, so they are safe to answer from the accept thread with no lock
 static void send_health(sock_t fd) {
-    char b[1088];
+    char b[2304];
     int n, res = resident_load();
     // Inference requests in flight. "A model is loaded" and "the model is
     // working" look identical from outside the process, and the tray needs to
@@ -1309,6 +1309,30 @@ static void send_health(sock_t fd) {
              (unsigned long long)peak_rss,
              wt.prompt_tokens, wt.gen_tokens, wt.gen_seconds, bs, bq);
 
+    // What each busy slot is doing (R10.12.7): a client waiting on a long
+    // prefill can tell it from a hang, and one that closed its connection can
+    // see the request leave. Headers of a streamed reply are only sent once
+    // prefill is over, so this is the one place that progress is visible.
+    char rq[1024];
+    int rn = snprintf(rq, sizeof rq, ",\"requests\":[");
+    bool first_rq = true;
+    for (int i = 0; SV.slots && i < SV.n_slots; i++) {
+        slot_t *sl = &SV.slots[i];
+        int ph = atomic_load(&sl->rq_phase);
+        if (!ph) continue;
+        int w = snprintf(rq + rn, sizeof rq - (size_t)rn,
+                         "%s{\"slot\":%d,\"phase\":\"%s\",\"prompt_tokens\":%d,"
+                         "\"prompt_done\":%d,\"generated\":%d}",
+                         first_rq ? "" : ",", i, ph == 1 ? "prefill" : "generate",
+                         atomic_load(&sl->rq_prompt), atomic_load(&sl->rq_done),
+                         atomic_load(&sl->rq_gen));
+        // a row that does not fit is left out whole; the count above it
+        // (active_requests) still says how many there are
+        if (w < 0 || (size_t)w >= sizeof rq - (size_t)rn - 2) break;
+        rn += w;
+        first_rq = false;
+    }
+    snprintf(rq + rn, sizeof rq - (size_t)rn, "]");
     if (SV.n_reg > 0 && res >= 0) {
         // Registry names are char[64]. Match /v1/models' exact worst-case
         // bound so /health cannot identify the same resident by a truncated
@@ -1317,14 +1341,14 @@ static void send_health(sock_t fd) {
         json_escape(SV.reg[res].name, strlen(SV.reg[res].name), esc, sizeof(esc));
         n = snprintf(b, sizeof(b),
                      "{\"status\":\"ok\"," BUILD_JSON ",\"resident\":\"%s\","
-                     "\"active_requests\":%d%s}", esc, active, m);
+                     "\"active_requests\":%d%s%s}", esc, active, m, rq);
     } else if (SV.n_reg > 0) {
         n = snprintf(b, sizeof(b), "{\"status\":\"ok\"," BUILD_JSON ",\"resident\":null,"
-                                   "\"active_requests\":%d%s}", active, m);
+                                   "\"active_requests\":%d%s%s}", active, m, rq);
     } else {
         n = snprintf(b, sizeof(b),
-                     "{\"status\":\"ok\"," BUILD_JSON ",\"active_requests\":%d%s}",
-                     active, m);
+                     "{\"status\":\"ok\"," BUILD_JSON ",\"active_requests\":%d%s%s}",
+                     active, m, rq);
     }
     send_response(fd, 200, "application/json", b, n);
 }
@@ -2142,6 +2166,9 @@ static void handle_conn(slot_t *s, sock_t fd) {
                     pthread_mutex_unlock(&SV.swap_mu);
                 }
             }
+            // whatever way the handler left, this slot is no longer working
+            atomic_store(&s->rq_phase, 0);
+            s->e.stat_feed = s->e.stat_gen = NULL;
             // Drop the request from the count BEFORE the bookkeeping lock:
             // an /unload that saw this request active left pending_unload for
             // us, and the count must already be zero when we honour it.

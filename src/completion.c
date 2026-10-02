@@ -3510,6 +3510,12 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
                           "context_id", "context_unavailable");
         return;
     }
+    atomic_store(&s->rq_prompt, n_prompt);
+    atomic_store(&s->rq_done, keep);
+    atomic_store(&s->rq_gen, 0);
+    atomic_store(&s->rq_phase, 1);
+    e->stat_feed = &s->rq_done;
+    e->stat_gen = &s->rq_gen;
     double prefill_t0 = now_s();
     // Name the request BEFORE any work, and say it started.
     //
@@ -3548,6 +3554,7 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
     } else {
         logits = engine_feed(e, toks + keep, n_prompt - keep);
     }
+    atomic_store(&s->rq_phase, 2);
     double prefill_s = now_s() - prefill_t0;
     diag.prefill_s = prefill_s;
     diag.prefill_tokens = n_prompt - keep;

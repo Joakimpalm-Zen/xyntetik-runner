@@ -43,6 +43,11 @@ struct slot_s {
     // by -1). Owned by the slot and reused, so no request path frees it.
     int32_t   *hint_buf;
     int        hint_cap;
+    // R10.12.7: what this slot is doing, for /health. Written by the slot's
+    // worker, read by the accept thread, so every field is atomic. rq_phase:
+    // 0 idle, 1 prefill, 2 generating. rq_done counts prompt tokens that are
+    // in the KV (reused ones included), rq_gen tokens generated.
+    atomic_int rq_phase, rq_prompt, rq_done, rq_gen;
 };
 
 // A per-request adapter (R8.6): loaded once at startup, borrowed by a slot's
