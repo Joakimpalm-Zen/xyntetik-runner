@@ -1,0 +1,210 @@
+
+== qwen35 / Qwen3.5-0.8B Q4_K_M: Qwen3.5-0.8B-Q4_K_M.gguf (0.5 GB)
+  [cpu]
+    PASS cpu cli greedy
+    PASS cpu cli seeded sampling is reproducible
+    PASS cpu cli transcript replays VERIFIED
+    PASS cpu cli session suspend/resume byte identity
+    PASS cpu cli hostile prompts
+    PASS cpu serve chat basic
+    PASS cpu serve stream equals buffered, unicode
+    PASS cpu serve max_tokens 1 and stop sequences
+    PASS cpu serve json mode and strict schema
+    PASS cpu serve tool call required, streamed, tool result, auto
+    PASS cpu serve context near limit and over it
+    PASS cpu serve repeated request reuses KV
+    PASS cpu serve concurrent requests on two slots
+    PASS cpu serve logprobs, echo, prompt_logprobs
+    PASS cpu serve responses and messages surfaces
+    PASS cpu serve runner routes: context, rerank, decide, provenance
+    PASS cpu serve malformed requests
+    PASS cpu serve client hang-up mid-stream
+    PASS cpu serve receipt replays VERIFIED
+
+== phi3 / Phi-4-mini q4_0: Phi-4-mini-instruct-q4_0.gguf (2.0 GB)
+  [cpu]
+    PASS cpu cli greedy
+    PASS cpu cli seeded sampling is reproducible
+    PASS cpu cli transcript replays VERIFIED
+    PASS cpu cli session suspend/resume byte identity
+    PASS cpu cli hostile prompts
+    PASS cpu serve chat basic
+    PASS cpu serve stream equals buffered, unicode
+    PASS cpu serve max_tokens 1 and stop sequences
+    PASS cpu serve json mode and strict schema
+    PASS cpu serve tool call required, streamed, tool result, auto
+    PASS cpu serve context near limit and over it
+    PASS cpu serve repeated request reuses KV
+    PASS cpu serve concurrent requests on two slots
+    PASS cpu serve logprobs, echo, prompt_logprobs
+    PASS cpu serve responses and messages surfaces
+    PASS cpu serve runner routes: context, rerank, decide, provenance
+    PASS cpu serve malformed requests
+    PASS cpu serve client hang-up mid-stream
+    PASS cpu serve receipt replays VERIFIED
+
+== granitehybrid / granite-4.0-h-micro Q4_K_M: granite-4.0-h-micro-Q4_K_M.gguf (1.8 GB)
+  [cpu]
+    PASS cpu cli greedy
+    PASS cpu cli seeded sampling is reproducible
+    PASS cpu cli transcript replays VERIFIED
+    PASS cpu cli session suspend/resume byte identity
+    PASS cpu cli hostile prompts
+    PASS cpu serve chat basic
+    PASS cpu serve stream equals buffered, unicode
+    PASS cpu serve max_tokens 1 and stop sequences
+    PASS cpu serve json mode and strict schema
+    PASS cpu serve tool call required, streamed, tool result, auto
+    PASS cpu serve context near limit and over it
+    PASS cpu serve repeated request reuses KV
+    PASS cpu serve concurrent requests on two slots
+    PASS cpu serve logprobs, echo, prompt_logprobs
+    PASS cpu serve responses and messages surfaces
+    PASS cpu serve runner routes: context, rerank, decide, provenance
+    PASS cpu serve malformed requests
+    PASS cpu serve client hang-up mid-stream
+    PASS cpu serve receipt replays VERIFIED
+
+== qwen35 / Qwen3.5-4B Q4_K_M: Qwen3.5-4B-Q4_K_M.gguf (2.6 GB)
+  [cpu]
+    PASS cpu cli greedy
+    PASS cpu cli seeded sampling is reproducible
+    PASS cpu cli transcript replays VERIFIED
+    PASS cpu cli session suspend/resume byte identity
+    PASS cpu cli hostile prompts
+    PASS cpu serve chat basic
+    PASS cpu serve stream equals buffered, unicode
+    PASS cpu serve max_tokens 1 and stop sequences
+    PASS cpu serve json mode and strict schema
+    PASS cpu serve tool call required, streamed, tool result, auto
+    PASS cpu serve context near limit and over it
+    PASS cpu serve repeated request reuses KV
+    PASS cpu serve concurrent requests on two slots
+    PASS cpu serve logprobs, echo, prompt_logprobs
+    PASS cpu serve responses and messages surfaces
+    PASS cpu serve runner routes: context, rerank, decide, provenance
+    PASS cpu serve malformed requests
+    PASS cpu serve client hang-up mid-stream
+    PASS cpu serve receipt replays VERIFIED
+
+== llama / SmolLM2-135M Q8_0: SmolLM2-135M-Instruct-Q8_0.gguf (0.1 GB)
+  [cpu]
+    PASS cpu cli greedy
+    PASS cpu cli seeded sampling is reproducible
+    PASS cpu cli transcript replays VERIFIED
+    PASS cpu cli session suspend/resume byte identity
+    PASS cpu cli hostile prompts
+    PASS cpu serve chat basic
+    NOTE cpu serve stream equals buffered, unicode: did not repeat the text: 'Åsa gick ut på isen, Naïve.'
+    PASS cpu serve max_tokens 1 and stop sequences
+    PASS cpu serve json mode and strict schema
+    PASS cpu serve tool call required, streamed, tool result, auto
+    PASS cpu serve context near limit and over it
+    PASS cpu serve repeated request reuses KV
+    PASS cpu serve concurrent requests on two slots
+    PASS cpu serve logprobs, echo, prompt_logprobs
+    PASS cpu serve responses and messages surfaces
+    PASS cpu serve runner routes: context, rerank, decide, provenance
+    PASS cpu serve malformed requests
+    PASS cpu serve client hang-up mid-stream
+    PASS cpu serve receipt replays VERIFIED
+
+== stablelm / stablelm-2-zephyr-1.6b Q8_0: stablelm-2-zephyr-1_6b-Q8_0.gguf (1.6 GB)
+  [cpu]
+    PASS cpu cli greedy
+    PASS cpu cli seeded sampling is reproducible
+    PASS cpu cli transcript replays VERIFIED
+    PASS cpu cli session suspend/resume byte identity
+    PASS cpu cli hostile prompts
+    PASS cpu serve chat basic
+    PASS cpu serve stream equals buffered, unicode
+    PASS cpu serve max_tokens 1 and stop sequences
+    PASS cpu serve json mode and strict schema
+    PASS cpu serve tool call required, streamed, tool result, auto
+    PASS cpu serve context near limit and over it
+    PASS cpu serve repeated request reuses KV
+    PASS cpu serve concurrent requests on two slots
+    PASS cpu serve logprobs, echo, prompt_logprobs
+    PASS cpu serve responses and messages surfaces
+    PASS cpu serve runner routes: context, rerank, decide, provenance
+    PASS cpu serve malformed requests
+    PASS cpu serve client hang-up mid-stream
+    PASS cpu serve receipt replays VERIFIED
+
+== granite / granite-4.1-8b Q4_0: granite-4.1-8b-Q4_0.gguf (4.7 GB)
+  [cpu]
+    PASS cpu cli greedy
+    PASS cpu cli seeded sampling is reproducible
+    PASS cpu cli transcript replays VERIFIED
+    PASS cpu cli session suspend/resume byte identity
+    PASS cpu cli hostile prompts
+    PASS cpu serve chat basic
+    PASS cpu serve stream equals buffered, unicode
+    PASS cpu serve max_tokens 1 and stop sequences
+    PASS cpu serve json mode and strict schema
+    PASS cpu serve tool call required, streamed, tool result, auto
+    PASS cpu serve context near limit and over it
+    PASS cpu serve repeated request reuses KV
+    PASS cpu serve concurrent requests on two slots
+    PASS cpu serve logprobs, echo, prompt_logprobs
+    PASS cpu serve responses and messages surfaces
+    PASS cpu serve runner routes: context, rerank, decide, provenance
+    PASS cpu serve malformed requests
+    PASS cpu serve client hang-up mid-stream
+    PASS cpu serve receipt replays VERIFIED
+
+== qwen3 / Hermes-4-14B Q4_K_M: NousResearch_Hermes-4-14B-Q4_K_M.gguf (8.4 GB)
+  [cpu]
+    PASS cpu cli greedy
+    PASS cpu cli seeded sampling is reproducible
+    PASS cpu cli transcript replays VERIFIED
+    PASS cpu cli session suspend/resume byte identity
+    PASS cpu cli hostile prompts
+    PASS cpu serve chat basic
+    PASS cpu serve stream equals buffered, unicode
+    PASS cpu serve max_tokens 1 and stop sequences
+    PASS cpu serve json mode and strict schema
+    PASS cpu serve tool call required, streamed, tool result, auto
+    PASS cpu serve context near limit and over it
+    PASS cpu serve repeated request reuses KV
+    PASS cpu serve concurrent requests on two slots
+    PASS cpu serve logprobs, echo, prompt_logprobs
+    PASS cpu serve responses and messages surfaces
+    PASS cpu serve runner routes: context, rerank, decide, provenance
+    PASS cpu serve malformed requests
+    PASS cpu serve client hang-up mid-stream
+    PASS cpu serve receipt replays VERIFIED
+
+== granitehybrid / granite-4.0-h-small Q4_K_M: granite-4.0-h-small-Q4_K_M.gguf (18.1 GB)
+  [cpu]
+    PASS cpu cli greedy
+    PASS cpu cli seeded sampling is reproducible
+    PASS cpu cli transcript replays VERIFIED
+    PASS cpu cli session suspend/resume byte identity
+    PASS cpu cli hostile prompts
+    PASS cpu serve chat basic
+    PASS cpu serve stream equals buffered, unicode
+    PASS cpu serve max_tokens 1 and stop sequences
+    PASS cpu serve json mode and strict schema
+    PASS cpu serve tool call required, streamed, tool result, auto
+    PASS cpu serve context near limit and over it
+    PASS cpu serve repeated request reuses KV
+    PASS cpu serve concurrent requests on two slots
+    PASS cpu serve logprobs, echo, prompt_logprobs
+    PASS cpu serve responses and messages surfaces
+    PASS cpu serve runner routes: context, rerank, decide, provenance
+    PASS cpu serve malformed requests
+    PASS cpu serve client hang-up mid-stream
+    PASS cpu serve receipt replays VERIFIED
+
+| family | file | PASS | FAIL | NOTE | SKIP |
+|---|---|---|---|---|---|
+| qwen35 / Qwen3.5-0.8B Q4_K_M | Qwen3.5-0.8B-Q4_K_M.gguf | 19 | 0 | 0 | 0 |
+| phi3 / Phi-4-mini q4_0 | Phi-4-mini-instruct-q4_0.gguf | 19 | 0 | 0 | 0 |
+| granitehybrid / granite-4.0-h-micro Q4_K_M | granite-4.0-h-micro-Q4_K_M.gguf | 19 | 0 | 0 | 0 |
+| qwen35 / Qwen3.5-4B Q4_K_M | Qwen3.5-4B-Q4_K_M.gguf | 19 | 0 | 0 | 0 |
+| llama / SmolLM2-135M Q8_0 | SmolLM2-135M-Instruct-Q8_0.gguf | 18 | 0 | 1 | 0 |
+| stablelm / stablelm-2-zephyr-1.6b Q8_0 | stablelm-2-zephyr-1_6b-Q8_0.gguf | 19 | 0 | 0 | 0 |
+| granite / granite-4.1-8b Q4_0 | granite-4.1-8b-Q4_0.gguf | 19 | 0 | 0 | 0 |
+| qwen3 / Hermes-4-14B Q4_K_M | NousResearch_Hermes-4-14B-Q4_K_M.gguf | 19 | 0 | 0 | 0 |
+| granitehybrid / granite-4.0-h-small Q4_K_M | granite-4.0-h-small-Q4_K_M.gguf | 19 | 0 | 0 | 0 |

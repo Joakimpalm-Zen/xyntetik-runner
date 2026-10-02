@@ -32,3 +32,36 @@ therefore sits inside the ordinary CPU-versus-CUDA difference on this card
 and happens to land on a tie that narrow; the E-series path (per-layer
 embeddings, shared KV) is not an outlier. Whether a dense row may tolerate a
 margin-qualified flip is a policy question and is not decided here.
+
+## The Linux CUDA box (Blackwell, MIG 1g.24gb slice)
+
+Run on 2026-10-02 in a window the lab gave this work, on the unreleased
+branch `backlog-batch-3` (`06d7d07`) unless noted. Records in `blackwell/`.
+
+| run | result |
+|---|---|
+| CUDA gate on main `9f066a5`, run by the lab | pass: tc-overflow 12 s, device i-quants 34 s, CPU vs CUDA identity 12 s |
+| agent-torture, Granite 4.1 8B Q4_0, the family's own protocol (`granite4`) | 120 of 120, 147.8 s |
+| agent-torture, the same file, main's generic JSON envelope | 120 of 120, 120.5 s |
+| agent-torture, Granite 4.2 8B Q4_K_M (function XML) | 102 of 120: 15 refused with 400, 3 declined (below) |
+| new template families on their real files, CPU | 171 checks pass, 0 fail, 1 note, nine files |
+| CUDA prefill profile, Llama-3.2-3B Q4_K_M, 541 tokens | 667 tok/s; quantized matmuls 85% of GPU time, attention 14% |
+| sampled `--json`, Llama-3.2-3B Q4_K_M, CUDA | 39.6 tok/s on main, 123.1 with the new sampler (133 unconstrained) |
+
+**Granite 4.1 keeps its own protocol.** Both protocols pass every request;
+the publisher's is about 23% slower over the matrix, because its tool
+preamble is longer. The default stays the publisher's (the provider
+reference rule), and the generic envelope remains one template flag away.
+
+**Granite 4.2.** The 15 refusals were one defect: under a required tool
+choice, a string parameter with a length or pattern constraint cannot be
+enforced by the function-XML grammar, and the request was answered 400. It
+now uses the generic envelope for that request (`tests/test_xml_schema_fallback.py`).
+The 3 declined cases ask for a tool call with `max_tokens: 1`; the model's
+one token went to its reasoning channel. That is the model's turn shape
+under a one-token budget, recorded rather than changed.
+
+**Where CUDA prefill goes.** With tensor cores on, 794 ms of GPU time for
+541 tokens: 671 ms in the quantized matmuls, 109 ms in attention, the rest
+under 2%. With them off, 1,967 ms. The next prefill lever is the matmul
+tiles, not attention or launches.
