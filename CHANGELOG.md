@@ -15,6 +15,13 @@ names that were true when they were written.
   and the exit code tells a scheduler what happened: 0 clean, 1 an engine
   FAIL, 2 a rostered model missing (a run that tested nothing does not
   pass).
+- **CUDA: apertus, nemotron_h and granitehybrid prefill on the tensor
+  cores**, each on its own `test-tc-tol` row (the Blackwell, real weights: 0
+  of 64 flips, 0.00003, 0.00001 and 0.00005 of the logit range, free-running
+  output token-identical). `qwen3moe` was measured for the record and stays
+  opt-in: Qwen3-30B-A3B keep96 passes the teacher-forced bounds at about
+  fifty times the dense rows' deviation and fails the free-running arm,
+  diverging at token 20.
 - **CUDA says when i-quants will prefill on the scalar kernel (R4.12.28).**
   On an architecture whose tensor-core prefill is not promoted, a model with
   codebook i-quant matrices now prints, at load, how many there are and the

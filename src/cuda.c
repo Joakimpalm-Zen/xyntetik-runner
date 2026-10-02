@@ -2574,10 +2574,25 @@ static bool tc_promoted(const model_t *m, int type) {
     // went 34.9 -> 116.9. Neither arch is MoE (muse-glimmer's gates are
     // per-layer sigmoid gates, not routing), so the amplification that keeps
     // qwen3moe opt-in does not apply.
+    //
+    // apertus, nemotron_h and granitehybrid joined the same day, on the same
+    // gate (0 flips of 64 and token-identical free-running output on each):
+    //
+    //   apertus        Apertus-8B Q4_K_M            Q4_K/Q6_K   0.00003 of range
+    //   nemotron_h     Nemotron-Nano-9B-v2 Q4_K_M   Q8_0/Q4_K   0.00001
+    //   granitehybrid  granite-4.0-h-micro Q4_K_M   Q4_K/Q6_K   0.00005
+    //
+    // qwen3moe was run for the record and stays opt-in: Qwen3-30B-A3B keep96
+    // passes the teacher-forced bounds (2 flips of 64, 0.00250 of range, some
+    // fifty times the dense rows) and FAILS the free-running arm, diverging
+    // at token 20. That is the MoE amplification the owner's decision was
+    // about, now measured. afmoe has no row: its router has no device kernel
+    // and the model runs on the CPU.
     static const char *archs[] = { "llama", "phi3", "gemma4", "qwen3",
                                    "qwen35",
                                    "mistral", "gemma3", "smollm", "granite",
-                                   "muse-glimmer", "qwen2" };
+                                   "muse-glimmer", "qwen2",
+                                   "apertus", "nemotron_h", "granitehybrid" };
     for (size_t i = 0; i < sizeof(archs) / sizeof(*archs); i++)
         if (strcmp(m->arch, archs[i]) == 0) return true;
     return false;
