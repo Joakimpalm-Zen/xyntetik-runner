@@ -448,6 +448,25 @@ def run_tokenizer(model, reference, corpus, timeout, reference_ids=None, expect=
     return result
 
 
+def run_tokenizer_informational(model, reference_ids, corpus, timeout):
+    """The second, non-gating comparison: how many strings differ from the
+    publisher's tokenizer.json capture. Never changes a row's status."""
+    if not reference_ids.is_file():
+        return {"reference": "tokenizer.json", "differ": None,
+                "reason": "capture_not_found"}
+    result = run_command([sys.executable, str(TOKENIZER_SCRIPT), "--gguf", str(model),
+                          "--ref-ids", str(reference_ids), "--corpus", str(corpus),
+                          "--show", "0", "--report-only"], timeout)
+    import re as _re
+    m = _re.search(r"(\d+)/(\d+) strings differ", result.get("stdout_tail", ""))
+    marked = _re.search(r"(\d+) more differ on a spelled special marker",
+                        result.get("stdout_tail", ""))
+    return {"reference": "tokenizer.json",
+            "differ": int(m.group(1)) + (int(marked.group(1)) if marked else 0)
+                      if m else None,
+            "of": int(m.group(2)) if m else None}
+
+
 def run_greedy(runner, reference, model, timeout):
     return run_command([
         sys.executable, str(GREEDY_SCRIPT), "--runner", str(runner),
@@ -561,6 +580,16 @@ def main(argv=None):
                             path, tok_ref, corpus, args.timeout,
                             reference_ids=tok_ids, expect=(entry.get("check_params", {}).get("tokenizer") or {}).get("expect_divergences", 0))
                         failed |= item["checks"]["tokenizer"]["status"] != "pass"
+                        # R6.2.2: where the gate's reference is the publisher's
+                        # SentencePiece model, its tokenizer.json is compared
+                        # too and reported, never gated (the two artifacts
+                        # disagree on leading whitespace; users of servers that
+                        # read tokenizer.json get the other tokens)
+                        info = entry.get("tokenizer_reference_ids_informational")
+                        if info:
+                            info = Path(info) if Path(info).is_absolute() else ROOT / info
+                            item["checks"]["tokenizer"]["informational"] = \
+                                run_tokenizer_informational(path, info, corpus, args.timeout)
                 for cls, fn in (("cpu_cuda", run_cpu_cuda),
                                 ("chat", run_chat),
                                 ("tool", run_tool)):

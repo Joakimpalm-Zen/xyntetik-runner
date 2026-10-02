@@ -78,6 +78,38 @@ def reference_tokenizer(ref, revision=None):
         ref, revision=revision or "main", token=os.environ.get("HF_TOKEN"))
 
 
+def spm_capture(model_file, corpus, added_tokens_json=None):
+    """Reference ids from the publisher's SentencePiece model, and the rows
+    whose text spells one of that model's control or user-defined pieces.
+
+    Where a publisher ships the SentencePiece model the model was trained
+    with, that model is the reference (2026-10-03, owner decision on R6.2.2:
+    Mistral v0.3, Phi-3.5 and Salamandra; their tokenizer.json files differ
+    from their own SentencePiece models on leading whitespace). The library
+    reads a spelled `<s>` or `[INST]` as text, where the runner, like a chat
+    template needs, reads it as the special token; those rows are listed by
+    the reference's own vocabulary, not by comparing with the runner, and are
+    reported apart from the gated count."""
+    import sentencepiece as spm
+
+    sp = spm.SentencePieceProcessor(model_file=model_file)
+    marks = {sp.id_to_piece(i) for i in range(sp.get_piece_size())
+             if (sp.is_control(i) or sp.is_unknown(i)) and sp.id_to_piece(i)}
+    # Specials a publisher adds on top of the SentencePiece vocabulary (Phi's
+    # <|end|> family) are listed only in its tokenizer.json `added_tokens`.
+    if added_tokens_json:
+        with open(added_tokens_json, encoding="utf-8") as f:
+            for t in json.load(f).get("added_tokens") or []:
+                if t.get("special") and t.get("content"):
+                    marks.add(t["content"])
+    markers = sorted(marks)
+    ids = [sp.encode(s) for s in corpus]
+    rows = [i for i, s in enumerate(corpus) if any(m in s for m in markers)]
+    with open(model_file, "rb") as f:
+        digest = hashlib.sha256(f.read()).hexdigest()
+    return ids, rows, markers, digest
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--gguf", required=True)
@@ -98,6 +130,17 @@ def main():
     ap.add_argument("--ref-ids", metavar="PATH",
                     help="read reference ids from a --capture file instead of "
                          "loading a tokenizer; no network, no credentials")
+    ap.add_argument("--spm-model", metavar="FILE",
+                    help="with --capture: take the reference ids from this "
+                         "SentencePiece model (the publisher's tokenizer.model) "
+                         "instead of tokenizer.json; --ref and --ref-revision "
+                         "name where it came from")
+    ap.add_argument("--added-tokens", metavar="TOKENIZER_JSON",
+                    help="with --spm-model: the publisher tokenizer.json whose "
+                         "special added_tokens also count as special markers")
+    ap.add_argument("--report-only", action="store_true",
+                    help="print the comparison and exit 0 (an informational "
+                         "second reference)")
     ap.add_argument("--corpus", default="tests/fixtures/tokenizer-corpus.txt")
     ap.add_argument("--expect", type=int, default=0,
                     help="expected number of diverging strings")
@@ -127,13 +170,34 @@ def main():
                 f"({cap.get('corpus_sha256', '?')[:12]} != {want[:12]}); "
                 "recapture it")
         theirs = [list(x) for x in cap["ids"]]
+        marker_rows = set(cap.get("special_marker_rows") or [])
         if len(theirs) != len(corpus):
             raise SystemExit("--ref-ids has %d rows, corpus has %d"
                              % (len(theirs), len(corpus)))
         tok = None
+    elif args.spm_model:
+        if not args.capture or not args.ref or not args.ref_revision:
+            raise SystemExit("--spm-model needs --capture, --ref and --ref-revision")
+        theirs, rows, markers, digest = spm_capture(args.spm_model, corpus,
+                                                    args.added_tokens)
+        marker_rows = set(rows)
+        tok = None
+        with open(args.capture, "w", encoding="utf-8") as f:
+            json.dump({"ref": args.ref, "ref_revision": args.ref_revision,
+                       "source": "sentencepiece",
+                       "model_file": os.path.basename(args.spm_model),
+                       "model_sha256": digest,
+                       "corpus": os.path.basename(args.corpus),
+                       "corpus_sha256": corpus_digest(corpus),
+                       "special_markers": markers,
+                       "special_marker_rows": rows,
+                       "ids": theirs}, f)
+        print(f"captured {len(theirs)} SentencePiece tokenizations to "
+              f"{args.capture} ({len(rows)} rows spell a special marker)")
     else:
         if not args.ref:
             raise SystemExit("one of --ref or --ref-ids is required")
+        marker_rows = set()
         tok = reference_tokenizer(args.ref, args.ref_revision)
         theirs = [tok.encode(s, add_special_tokens=False).ids for s in corpus]
         if args.capture:
@@ -146,7 +210,9 @@ def main():
             print(f"captured {len(theirs)} reference tokenizations to "
                   f"{args.capture}")
 
-    bad = [i for i in range(len(corpus)) if mine[i] != theirs[i]]
+    differ = [i for i in range(len(corpus)) if mine[i] != theirs[i]]
+    marked = [i for i in differ if i in marker_rows]
+    bad = [i for i in differ if i not in marker_rows]
 
     for i in bad[: args.show]:
         s = corpus[i]
@@ -161,9 +227,15 @@ def main():
         print(f"... and {len(bad) - args.show} more")
 
     leading_ws = sum(1 for i in bad if corpus[i][:1] in (" ", "\t", "\n", "\r"))
+    if marked:
+        print(f"\n{len(marked)} more differ on a spelled special marker (the "
+              f"runner reads it as the special token, the SentencePiece "
+              f"library as text); not counted")
     print(f"\n{len(bad)}/{len(corpus)} strings differ "
           f"({leading_ws} of them begin with whitespace)")
 
+    if args.report_only:
+        return 0
     if len(bad) != args.expect:
         print(f"FAIL: expected {args.expect}", file=sys.stderr)
         return 1
