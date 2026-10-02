@@ -518,7 +518,7 @@ static int train_eot_id(tokenizer *tok, int tmpl) {
     case TMPL_GEMMA: s = "<end_of_turn>"; break;
     case TMPL_GEMMA4: case TMPL_GEMMA4_MAINLINE: s = "<turn|>"; break;
     case TMPL_MUSE: s = "<|eot|>"; break;
-    case TMPL_PHI3: s = "<|end|>"; break;
+    case TMPL_PHI3: case TMPL_PHI4: s = "<|end|>"; break;
     case TMPL_HARMONY: s = "<|return|>"; break;
     default: break;
     }
@@ -1168,9 +1168,9 @@ static void usage_to(FILE *f, const char *prog) {
         "  --rope-base F  override rope frequency base\n"
         "  --system TEXT  system prompt for interactive chat (-i) only\n"
         "  --chat-template chatml|chatml-think|llama2|llama3|mistral|mistral-v1|\n"
-        "                 mistral-nemo|zephyr|phi3|gemma|gemma4|gemma4-mainline|\n"
-        "                 apertus|ornith|granite42|qwen38|qwen3-coder|muse|granite|\n"
-        "                 harmony|raw\n"
+        "                 mistral-nemo|zephyr|phi3|phi4|gemma|gemma4|gemma4-mainline|\n"
+        "                 apertus|ornith|qwen35|qwen35-nothink|nemotron|granite42|\n"
+        "                 qwen38|qwen3-coder|muse|granite|harmony|raw\n"
         "                 (default: auto). Applies to chat and --serve; not\n"
         "                 valid with a multi-model -m swap set\n"
         "  --no-bos       do not add BOS token\n"
@@ -1283,6 +1283,11 @@ static void usage_to(FILE *f, const char *prog) {
         "  --lora-rank R  fresh-adapter rank when no --lora is given (8)\n"
         "  --caps         print machine capabilities as JSON and exit\n"
         "  --tool-info    load -m MODEL and print its native tool-call protocol\n"
+        "  --doctor       load -m MODEL, run one short probe and print a diagnostic\n"
+        "                 report as JSON: version, placement, template, sampler,\n"
+        "                 memory, timings, findings and a next step for each.\n"
+        "                 The report holds no prompt or reply text unless\n"
+        "                 --doctor-include-text is given; read it before sharing\n"
         "  --shadow-mode  install shadow mode for Claude Code and Codex if present\n"
         "                 (asks first; --yes skips the question); -m MODEL names\n"
         "                 the model the /shadow offload will serve\n"
@@ -1600,6 +1605,10 @@ int main(int argc, char **argv) {
     bool force_uncertified = false;
     int thinking = THINK_DEFAULT;
     bool bench_json = false;
+    bool doctor = false;            // --doctor: one diagnostic report, then exit
+    bool doctor_text = false;       // --doctor-include-text: keep the probe's text
+    char doctor_sampling[256] = ""; // the effective sampler, as the load line says
+    double doctor_load_s = 0;
     bool score = false;
     const char *lora_path = NULL;
     const char *lora_sig = NULL;   // R1.2.3: the adapter's OMS bundle
@@ -1756,6 +1765,8 @@ int main(int argc, char **argv) {
         else if (!strcmp(a, "--reasoning-temp"))
             reasoning_temp = (float)float_arg(a, NEXT, 0, 2);
         else if (!strcmp(a, "--bench-json")) bench_json = true;
+        else if (!strcmp(a, "--doctor")) doctor = true;
+        else if (!strcmp(a, "--doctor-include-text")) doctor = doctor_text = true;
         else if (!strcmp(a, "--score")) score = true;
         else if (!strcmp(a, "--decide")) decide_path = NEXT;
         else if (!strcmp(a, "--lora")) lora_path = NEXT;
@@ -2241,7 +2252,7 @@ int main(int argc, char **argv) {
     }
     if (!prompt && !interactive && !serve && !quant_out && !merge_out &&
         !context_out &&
-        !bench_json && !tool_info && !train_path && !dpo_path && !verify_path &&
+        !bench_json && !doctor && !tool_info && !train_path && !dpo_path && !verify_path &&
         !decide_path && !detect_text && !resume_path) {
         fprintf(stderr, "error: need -p PROMPT, -i, or --serve\n");
         usage(argv[0]);
@@ -3009,6 +3020,8 @@ int main(int argc, char **argv) {
         char sdesc[256];
         sampler_describe(&smp, sp, sdesc, sizeof(sdesc));
         fprintf(stderr, "sampling: %s\n", sdesc);
+        snprintf(doctor_sampling, sizeof doctor_sampling, "%s", sdesc);
+        doctor_load_s = now_s() - t1;
         // An operator who set a reasoning-channel default must see it here:
         // the line above describes the sampler for calls and answers, and
         // silence about the reasoning turn reads as "there is only one".
@@ -3710,6 +3723,199 @@ int main(int argc, char **argv) {
         cli_cleanup(&e, toks, &tok, &m);
         free(owned_prompt);
         return 0;
+    }
+
+    if (doctor) {
+        // R16.6.2: one explicitly invoked report a user can attach to a
+        // question about slowness, nonsense or broken tool calls. It states
+        // what this process actually did -- which backend took how many
+        // layers, which template and sampler it resolved -- runs one short
+        // chat probe through the same renderer, tokenizer and engine a chat
+        // request uses, and turns what it saw into findings with a next
+        // step. No content leaves the machine and none is recorded unless
+        // --doctor-include-text asks for it.
+        int dt = tmpl_override >= 0 ? tmpl_override
+               : template_detect(gguf_get_str(&m.gf, "tokenizer.chat_template", NULL), &tok);
+        bool have_tmpl_text = gguf_get_str(&m.gf, "tokenizer.chat_template", NULL) != NULL;
+        bool native = false;
+        const char *fam = tool_family_for(dt, &native);
+        template_bind_think_tags(dt, &m.think_open, &m.think_close);
+        static const char question[] = "What is 2+2? Answer with just the number.";
+        chat_msg dmsg[1] = { { .role = "user", .content = question } };
+        char *rendered = render_prompt_alloc(dt, dmsg, 1, true, THINK_OFF, NULL,
+                                             sizeof question + 1024);
+        if (!rendered) {
+            fprintf(stderr, "error: out of memory rendering the probe\n");
+            CLI_FAIL;
+        }
+        n_prompt = tok_encode_prompt(&tok, rendered, toks, (int)tok_cap, !no_bos);
+        free(rendered);
+        bool probe_ran = false, probe_stop = false, probe_has4 = false;
+        bool probe_leak = false, probe_empty = true;
+        double d_ptime = 0, d_gtime = 0;
+        int d_gen = 0;
+        outcap_t dout = {0};
+        enum { DOCTOR_TOKENS = 48 };
+        if (n_prompt > 0 && n_prompt + DOCTOR_TOKENS < m.n_ctx) {
+            t0 = now_s();
+            float *logits = engine_feed(&e, toks, n_prompt);
+            d_ptime = now_s() - t0;
+            if (logits) {
+                d_gen = engine_generate(&e, logits, DOCTOR_TOKENS, outcap_cb,
+                                        &dout, &d_gtime);
+                probe_ran = !dout.failed;
+                probe_stop = e.hit_stop;
+            }
+        }
+        if (probe_ran && dout.buf) {
+            dout.buf[dout.n] = 0;
+            for (size_t i = 0; i < dout.n; i++)
+                if (!strchr(" \t\r\n", dout.buf[i])) probe_empty = false;
+            probe_has4 = strchr(dout.buf, '4') != NULL;
+            static const char *const marks[] = {
+                "<|im_start|>", "<|im_end|>", "[INST]", "<<SYS>>", "<|eot_id|>",
+                "<start_of_turn>", "<|start_header_id|>", "<|end|>", "<|user|>",
+                "<SPECIAL_", "<|start_of_role|>" };
+            for (size_t i = 0; i < sizeof marks / sizeof *marks; i++)
+                if (strstr(dout.buf, marks[i])) probe_leak = true;
+        }
+        char gname[128] = "";
+        bool gpu_there = gpu_available(gname, (int)sizeof gname);
+        size_t vfree = 0, vtotal = 0;
+        bool vram_ok = gpu_there && gpu_mem_info(&vfree, &vtotal);
+        bool asked_gpu = mp.gpu_mode != GPU_OFF;
+        const char *backend =
+#ifdef __APPLE__
+            m.gpu ? "metal" : "cpu";
+#else
+            m.gpu ? "cuda" : "cpu";
+#endif
+        sbuf r = {0};
+        sb_lit(&r, "{\"schema\":\"xyntetik.runner.doctor.v1\",\"runner\":{\"version\":\"" RUNNER_VERSION "\"},");
+        // identity: what the file says it is, never where it lives
+        const char *bn = strrchr(model_path, '/');
+#ifdef _WIN32
+        const char *bn2 = strrchr(model_path, '\\');
+        if (bn2 && (!bn || bn2 > bn)) bn = bn2;
+#endif
+        bn = bn ? bn + 1 : model_path;
+        sb_lit(&r, "\"model\":{\"file\":\"");
+        sb_esc(&r, bn, strlen(bn));
+        sb_fmt(&r, "\",\"bytes\":%llu,\"architecture\":\"", (unsigned long long)m.file_size);
+        sb_esc(&r, m.arch, strlen(m.arch));
+        const char *gn = gguf_get_str(&m.gf, "general.name", "");
+        sb_lit(&r, "\",\"name\":\"");
+        sb_esc(&r, gn, strlen(gn));
+        sb_fmt(&r, "\",\"layers\":%d,\"trained_context\":%d,\"adapter\":%s},",
+               m.n_layer, m.n_ctx_train, lora_path ? "true" : "false");
+        sb_fmt(&r, "\"placement\":{\"requested\":\"%s\",\"backend\":\"%s\","
+                   "\"gpu_layers\":%d,\"layers\":%d,\"device\":\"",
+               asked_gpu ? "auto" : "off", backend, m.gpu ? m.gpu_layers : 0,
+               m.n_layer);
+        sb_esc(&r, gname, strlen(gname));
+        sb_lit(&r, "\"");
+        if (vram_ok)
+            sb_fmt(&r, ",\"vram_total_bytes\":%llu,\"vram_free_bytes\":%llu",
+                   (unsigned long long)vtotal, (unsigned long long)vfree);
+        sb_fmt(&r, "},\"context\":{\"tokens\":%d,\"kv\":\"%s\"},", m.n_ctx,
+               m.kv_fp4 ? "fp4" : m.kv_split ? "k8v4" : m.kv_q8 ? "q8" : "f16");
+        sb_fmt(&r, "\"template\":{\"name\":\"%s\",\"recognised\":%s,"
+                   "\"from_file\":%s,\"tool_family\":\"%s\",\"native_tool_protocol\":%s},",
+               template_name(dt), dt == TMPL_LLAMA2_FALLBACK ? "false" : "true",
+               have_tmpl_text ? "true" : "false", fam, native ? "true" : "false");
+        sb_lit(&r, "\"sampling\":\"");
+        sb_esc(&r, doctor_sampling, strlen(doctor_sampling));
+        sb_fmt(&r, "\",\"memory\":{\"ram_total_bytes\":%llu,\"ram_available_bytes\":%llu},",
+               (unsigned long long)plat_ram_bytes(),
+               (unsigned long long)plat_ram_available_bytes());
+        sb_fmt(&r, "\"timings\":{\"load_s\":%.3f,\"threads\":%d", doctor_load_s,
+               tpool_size(m.tp));
+        if (probe_ran)
+            sb_fmt(&r, ",\"prompt_tokens\":%d,\"prompt_s\":%.3f,\"prompt_tok_s\":%.2f,"
+                       "\"generated_tokens\":%d,\"gen_s\":%.3f,\"gen_tok_s\":%.2f",
+                   n_prompt, d_ptime, n_prompt / (d_ptime > 0 ? d_ptime : 1e-9),
+                   d_gen, d_gtime, d_gen / (d_gtime > 0 ? d_gtime : 1e-9));
+        sb_fmt(&r, "},\"probe\":{\"ran\":%s,\"thinking\":\"off\",\"stopped_by_itself\":%s,"
+                   "\"answer_found\":%s,\"empty\":%s,\"template_markup_in_reply\":%s",
+               probe_ran ? "true" : "false", probe_stop ? "true" : "false",
+               probe_has4 ? "true" : "false", probe_empty ? "true" : "false",
+               probe_leak ? "true" : "false");
+        if (doctor_text && probe_ran && dout.buf) {
+            sb_lit(&r, ",\"question\":\"");
+            sb_esc(&r, question, sizeof question - 1);
+            sb_lit(&r, "\",\"reply\":\"");
+            sb_esc(&r, dout.buf, dout.n);
+            sb_lit(&r, "\"");
+        }
+        sb_lit(&r, "},\"findings\":[");
+        int nf = 0, worst = 0;   // 0 ok, 1 degraded, 2 broken
+#define FINDING(sev, code, detail, next) do { \
+            sb_fmt(&r, "%s{\"severity\":\"%s\",\"code\":\"%s\",\"detail\":\"%s\"," \
+                       "\"next_step\":\"%s\"}", nf++ ? "," : "", \
+                   (sev) == 2 ? "broken" : "degraded", code, detail, next); \
+            if ((sev) > worst) worst = (sev); } while (0)
+        if (dt == TMPL_LLAMA2_FALLBACK)
+            FINDING(2, "template_not_recognised",
+                    "the model's chat template is not one this build renders; llama-2 markup is used, which the model was not trained on",
+                    "pass --chat-template NAME for a supported family, or report the model so its template can be added");
+        if (asked_gpu && gpu_there && !m.gpu)
+            FINDING(1, "gpu_not_used",
+                    "a GPU is present and was not used for this model; the load output above the report names the reason",
+                    "read the load lines for the refusal; a quantization or architecture without a device kernel runs on the CPU");
+        else if (m.gpu && m.gpu_layers < m.n_layer)
+            FINDING(1, "partial_offload",
+                    "only some layers are on the GPU, so every token crosses between device and host",
+                    "use a smaller quantization or a shorter -c so the whole model fits, or accept the split");
+        if (!asked_gpu && gpu_there)
+            FINDING(1, "gpu_disabled_by_flag",
+                    "the run asked for --gpu off although a GPU is present",
+                    "drop --gpu off to let the model use the device");
+        if (!probe_ran)
+            FINDING(2, "probe_did_not_run",
+                    "the probe prompt could not be rendered, tokenized or fed in this context",
+                    "raise -c, and if it still fails report the model with this file");
+        else {
+            if (probe_leak)
+                FINDING(2, "template_markup_in_reply",
+                        "the reply contains chat-template markers, so turn framing or stop tokens do not match the model",
+                        "check the template name above against the model card; try --chat-template");
+            if (!probe_stop)
+                FINDING(1, "did_not_stop",
+                        "the model did not end its turn within the probe's 48 tokens",
+                        "if replies run on in real use, the stop token or the template is wrong for this model");
+            if (probe_empty)
+                FINDING(2, "empty_reply",
+                        "the model produced no visible text",
+                        "check the template and that the file is an instruct or chat model");
+            else if (!probe_has4)
+                FINDING(1, "wrong_answer",
+                        "the reply to a one-step arithmetic question does not contain the answer",
+                        "a very small or heavily quantized model can miss it; otherwise suspect the template or the file");
+            if (d_gen > 4 && d_gen / (d_gtime > 0 ? d_gtime : 1e-9) < 1.0)
+                FINDING(1, "very_slow_decode",
+                        "generation is under one token per second",
+                        "check available RAM against the model size with --fit; a model larger than RAM pages from disk");
+        }
+        if (plat_ram_available_bytes() && m.file_size > plat_ram_available_bytes() && !m.gpu)
+            FINDING(1, "file_larger_than_available_ram",
+                    "the model file is larger than the RAM available right now",
+                    "close other programs, pick a smaller quantization, or run --fit for the exact numbers");
+#undef FINDING
+        sb_fmt(&r, "],\"verdict\":\"%s\",\"shareable\":\"%s\"}\n",
+               worst == 2 ? "broken" : worst == 1 ? "degraded" : "ok",
+               doctor_text ? "contains the probe question and the model's reply; read before sharing"
+                           : "no prompt or reply text; file name and machine sizes only");
+        if (r.failed) {
+            free(r.s); free(dout.buf);
+            fprintf(stderr, "error: out of memory building the report\n");
+            CLI_FAIL;
+        }
+        fwrite(r.s, 1, r.n, stdout);
+        free(r.s);
+        free(dout.buf);
+        cli_cleanup(&e, toks, &tok, &m);
+        free(owned_prompt);
+        return worst == 2 ? 2 : 0;
     }
 
     if (bench_json) {

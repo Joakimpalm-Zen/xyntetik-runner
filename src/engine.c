@@ -66,7 +66,11 @@ bool engine_init(engine *e, model_t *m, tokenizer *tok, sampler *smp) {
                                    // also not its declared eos (<|eom|> is
                                    // NOT a stop: it separates a reasoning
                                    // turn from the answer that follows it)
-                                   "<|eot|>" };
+                                   "<|eot|>",
+                                   // Nemotron Nano closes every assistant
+                                   // turn with <SPECIAL_12>; its declared
+                                   // eos is a different token
+                                   "<SPECIAL_12>" };
     // gpt-oss / Harmony inverts one of these. <|end|> terminates a NON-final
     // Harmony message — the assistant writes its analysis, closes it with
     // <|end|>, then opens the final channel — so treating <|end|> as a stop

@@ -88,6 +88,38 @@ enum { TMPL_CHATML, TMPL_LLAMA2, TMPL_LLAMA3, TMPL_ZEPHYR, TMPL_GEMMA,
        TMPL_QWEN38,
        // Qwen3-Coder: non-thinking ChatML with function/parameter XML.
        TMPL_QWEN3_CODER,
+       // Qwen 3.5 (Qwen/Qwen3.5-4B, -9B and -0.8B chat_template.jinja). It is
+       // ornith's template with ONE rule changed: an assistant turn at or
+       // before the last user query is replayed WITHOUT a thought block,
+       // where ornith opens every assistant turn with one. Rendered as
+       // ornith until the golden pass of 2026-09-07 put it against its own
+       // publisher (7 of 22 cases drifted on the 4B). Detected by the
+       // `loop.index0 > ns.last_query_index` test ornith's template lacks.
+       TMPL_QWEN35,
+       // The 0.8B's template is the same again with the thinking DEFAULT
+       // inverted: an unset enable_thinking renders the CLOSED block, and
+       // only an explicit true opens one. Detected by the literal
+       // `enable_thinking is true`.
+       TMPL_QWEN35_NOTHINK,
+       // Phi-4-mini (microsoft/Phi-4-mini-instruct). NOT Phi-3.5's framing:
+       // `<|role|>` content `<|end|>` with no newline anywhere, where
+       // Phi-3.5 writes one after the role tag and one after `<|end|>`.
+       // Served through TMPL_PHI3 until the golden pass of 2026-09-07 (20
+       // of 22 cases carried newline tokens the model never saw). Its
+       // template builds the role tag by concatenation, so it is detected
+       // by the `<|/tool|>` literal only it writes.
+       TMPL_PHI4,
+       // NVIDIA Nemotron Nano 9B v2 (nvidia/NVIDIA-Nemotron-Nano-9B-v2
+       // tokenizer_config.json). `<SPECIAL_10>System`, `<SPECIAL_11>User`,
+       // `<SPECIAL_11>Assistant`, turns closed by `<SPECIAL_12>`; a system
+       // header on EVERY conversation; `/think` and `/no_think` control
+       // strings read from system and user text and removed from it; a
+       // generation prompt that opens `<think>\n` or writes the closed
+       // `<think></think>`. Unrecognised until 2026-10-02, when the file
+       // was served on llama-2 markup with a loud banner (19 of 22 cases).
+       // Tool calls ride the generic envelope: the template's own
+       // <AVAILABLE_TOOLS>/<TOOLCALL> protocol is not rendered yet.
+       TMPL_NEMOTRON,
        // What template_detect returns when NOTHING matched. It renders
        // llama-2 markup, because changing what unrecognised models render is
        // a behavioural decision and not this constant's job -- but it is a
@@ -127,6 +159,18 @@ static inline void template_bind_think_tags(int tmpl, const char **open,
 // missed site would leave mainline tool calls speaking the generic protocol.
 static inline bool is_gemma4(int tmpl) {
     return tmpl == TMPL_GEMMA4 || tmpl == TMPL_GEMMA4_MAINLINE;
+}
+
+// The ornith family: ornith itself and the Qwen 3.5 templates it was derived
+// from. They share the function-XML tool protocol, the <tool_response> user
+// turn, the system-turn merge and the think tags; the Qwen 3.5 pair differ
+// only in which assistant turns carry a thought block and in the thinking
+// default, both handled where the block is written.
+static inline bool tmpl_ornith_like(int t) {
+    return t == TMPL_ORNITH || t == TMPL_QWEN35 || t == TMPL_QWEN35_NOTHINK;
+}
+static inline bool tmpl_qwen35(int t) {
+    return t == TMPL_QWEN35 || t == TMPL_QWEN35_NOTHINK;
 }
 
 // How the generation prompt should treat a thinking model.

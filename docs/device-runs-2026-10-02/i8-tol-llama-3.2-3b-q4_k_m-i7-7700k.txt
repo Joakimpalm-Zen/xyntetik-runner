@@ -1,0 +1,6 @@
+FAIL: this (format, model) combo is NOT promotable: fused int8 and scalar disagree on at least one teacher-forced token
+i8-tol: Llama-3.2-3B-Instruct-Q4_K_M.gguf | 192 tokens, 64 teacher-forced positions, 8 threads
+  scalar-t7 vs scalar : mean|dlogit| 0.000000000, top1 diff 0/64  (thread-count control; per-row partitioning makes this exact)
+  i8        vs scalar : 6174 fused matvecs, mean|dlogit| 0.013955 = 0.00055 of mean logit range 25.50 (limit 0.005)
+  i8        vs scalar : top1 diff 1/64 (limit 0), worst flip margin 0.0005 of range
+i8-tol: FAILED

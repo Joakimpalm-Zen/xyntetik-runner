@@ -191,3 +191,46 @@ def test_messages_flags_the_repeat(srv):
     assert d["runner_telemetry"]["repeated_tool_calls"] == [
         {"index": 0, "name": "get_weather", "prior_calls": 1,
          "last_message_index": 3}]
+
+
+def test_streamed_chat_flags_the_repeat_on_the_closing_chunk(srv):
+    chunks = _post(srv, "/v1/chat/completions", {
+        "max_tokens": 400, "messages": _chat_history(), "tools": [WEATHER],
+        "chat_template_kwargs": NO_THINK, "stream": True,
+        "runner_test_reply": _call("get_weather", city="Athens")}, stream=True)
+    last = [c for c in chunks if c.get("choices") and
+            c["choices"][0].get("finish_reason")]
+    assert len(last) == 1 and \
+        last[0]["choices"][0]["finish_reason"] == "tool_calls", chunks
+    assert last[0]["runner_telemetry"]["repeated_tool_calls"] == [
+        {"index": 0, "name": "get_weather", "prior_calls": 1,
+         "last_message_index": 3}]
+
+
+def test_streamed_chat_says_nothing_about_a_new_call(srv):
+    chunks = _post(srv, "/v1/chat/completions", {
+        "max_tokens": 400, "messages": _chat_history(), "tools": [WEATHER],
+        "chat_template_kwargs": NO_THINK, "stream": True,
+        "runner_test_reply": _call("get_weather", city="Tokyo")}, stream=True)
+    assert all("runner_telemetry" not in c for c in chunks), chunks
+
+
+def test_streamed_messages_flags_the_repeat_on_message_delta(srv):
+    msgs = [
+        {"role": "user", "content": "Which is warmer, Osaka or Athens?"},
+        {"role": "assistant", "content": [
+            {"type": "tool_use", "id": "t0", "name": "get_weather",
+             "input": {"city": "Osaka"}}]},
+        {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "t0", "content": "-1C"}]},
+    ]
+    events = _post(srv, "/v1/messages", {
+        "max_tokens": 400, "messages": msgs, "tools": [ANTH_WEATHER],
+        "chat_template_kwargs": NO_THINK, "stream": True,
+        "runner_test_reply": _call("get_weather", city="Osaka")}, stream=True)
+    delta = [e for e in events if e.get("type") == "message_delta"]
+    assert len(delta) == 1 and \
+        delta[0]["delta"]["stop_reason"] == "tool_use", events
+    assert delta[0]["runner_telemetry"]["repeated_tool_calls"] == [
+        {"index": 0, "name": "get_weather", "prior_calls": 1,
+         "last_message_index": 1}]

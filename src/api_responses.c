@@ -208,7 +208,7 @@ static char *responses_item_text(jv *item, int tmpl, const char **role,
         // carries the result plain under role "tool" (chatml wraps it in the
         // template, gemma4/muse name it on the turn header) -- the SAME
         // framing the chat surface produces via tool_result_wrap.
-        if (tmpl == TMPL_ORNITH) {
+        if (tmpl_ornith_like(tmpl)) {
             sbuf w = {0};
             *role = tool_result_wrap(tmpl, b.s ? b.s : "", &w);
             free(b.s);

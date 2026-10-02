@@ -1016,7 +1016,7 @@
         "cpu_cuda",
         "chat"
       ],
-      "notes": "Official meta-models GGUF (Muse-Glimmer-30B-KQuant-17GB-Q4_K_M.gguf, 4-bit k-quant; upstream renamed/replaced the original muse-glimmer-30B-kquant-17gb.gguf \u2014 re-measured 2026-08-21, all six greedy cert outputs byte-identical, only the sha changed). Text path only: the separate vision encoder (mmproj) and atem tool syntax are out of scope. Evidence: docs/muse-glimmer-cert-2026-08-11.md.",
+      "notes": "Official meta-models GGUF (Muse-Glimmer-30B-KQuant-17GB-Q4_K_M.gguf, 4-bit k-quant; upstream renamed/replaced the original muse-glimmer-30B-kquant-17gb.gguf — re-measured 2026-08-21, all six greedy cert outputs byte-identical, only the sha changed). Text path only: the separate vision encoder (mmproj) and atem tool syntax are out of scope. Evidence: docs/muse-glimmer-cert-2026-08-11.md.",
       "check_params": {
         "cpu_cuda": {
           "pins": {
@@ -1351,6 +1351,116 @@
           "forbid_substrings": [
             "<|im_start|>",
             "<start_of_turn>"
+          ]
+        }
+      }
+    },
+    {
+      "id": "stablelm-2-zephyr-1_6b-q8_0",
+      "architecture": "stablelm",
+      "family": "StableLM 2",
+      "file": "models/stablelm-2-zephyr-1_6b-Q8_0.gguf",
+      "sha256": "f2607e6fcb3de0b7a7230f2fc12912541173d3eba80d92f141b1968e1552f0c6",
+      "upstream": "stabilityai/stablelm-2-zephyr-1_6b",
+      "checks": [
+        "load",
+        "chat"
+      ],
+      "notes": "The publisher's own Q8_0 GGUF, pinned 2026-10-02 so the architecture is gated at all (R4.23.3): stablelm was admitted with no manifest row, which is how the LayerNorm defect of 2026-09-07 survived. CPU only: the device backends refuse the LayerNorm family and the load falls back. No llama.cpp reference is declared, so greedy_reference and tokenizer are not claimed; the numerical anchor is the publisher reference in float32 on the bf16 conversion (docs/golden-pass-2026-09-07.md: 100.00% margin-qualified top-1 over 1335 positions after the fix). Zephyr chat template.",
+      "check_params": {
+        "chat": {
+          "prompt": "What is 2+2?",
+          "max_tokens": 200,
+          "gpu": "auto",
+          "expect_stop": true,
+          "expect_nonempty_content": true,
+          "forbid_substrings": [
+            "<|im_start|>",
+            "[/INST]",
+            "<<SYS>>"
+          ]
+        }
+      }
+    },
+    {
+      "id": "granite-4.0-h-micro-q4_k_m",
+      "architecture": "granitehybrid",
+      "family": "Granite 4.0-H",
+      "file": "models/granite-4.0-h-micro-Q4_K_M.gguf",
+      "sha256": "bcc78b9b25450101d1ad90d4b9a264e1bac892f534dfb76066f4eec792fdf023",
+      "upstream": "ibm-granite/granite-4.0-h-micro-GGUF",
+      "checks": [
+        "load",
+        "chat"
+      ],
+      "notes": "IBM's own Q4_K_M GGUF of the Mamba-2 hybrid, pinned 2026-10-02 (R4.23.3; the architecture had no manifest row). No llama.cpp reference is declared, so greedy_reference and tokenizer are not claimed. Tensor-core prefill was promoted for granitehybrid on a clean test-tc-tol row on 2026-10-02 (0 of 64 flips); the publisher's default system prompt is not sent yet (template-conformance backlog, granite40h).",
+      "check_params": {
+        "chat": {
+          "prompt": "What is 2+2?",
+          "max_tokens": 200,
+          "gpu": "auto",
+          "expect_stop": true,
+          "expect_nonempty_content": true,
+          "forbid_substrings": [
+            "[/INST]",
+            "<<SYS>>",
+            "<|im_start|>"
+          ]
+        }
+      }
+    },
+    {
+      "id": "nemotron-nano-9b-v2-q4_k_m",
+      "architecture": "nemotron_h",
+      "family": "Nemotron Nano",
+      "file": "models/nvidia_NVIDIA-Nemotron-Nano-9B-v2-Q4_K_M.gguf",
+      "sha256": "be84528231457f766a35612386e2638d9af10beb10a9d8d23f0cc73c20818da7",
+      "upstream": "bartowski/nvidia_NVIDIA-Nemotron-Nano-9B-v2-GGUF",
+      "template": "nemotron",
+      "checks": [
+        "load",
+        "chat"
+      ],
+      "notes": "Pinned 2026-10-02 (R4.23.3; the architecture had no manifest row). Rendered through its own template family since the same date: until then the file was served on llama-2 markup with a load banner saying so. No llama.cpp reference is declared, so greedy_reference and tokenizer are not claimed. Tools ride the generic envelope; the template's own <AVAILABLE_TOOLS>/<TOOLCALL> protocol is not rendered.",
+      "check_params": {
+        "chat": {
+          "prompt": "What is 2+2?",
+          "max_tokens": 200,
+          "gpu": "auto",
+          "expect_stop": true,
+          "expect_nonempty_content": true,
+          "forbid_substrings": [
+            "[INST]",
+            "<<SYS>>",
+            "<SPECIAL_11>",
+            "<SPECIAL_12>"
+          ]
+        }
+      }
+    },
+    {
+      "id": "nemotron-3.5-lightning-30b-a3b-q4_0",
+      "architecture": "nemotron_h_moe",
+      "family": "Nemotron 3.5 Lightning",
+      "file": "models/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-Q4_0.gguf",
+      "sha256": "61f87e75974e4b535dcdf9aad056541a9514f1dfa4538b463b081d19b7a00e3c",
+      "upstream": "ggml-org/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-GGUF",
+      "checks": [
+        "load",
+        "chat"
+      ],
+      "notes": "Pinned 2026-10-02 (R4.23.3; the architecture had no manifest row). The MoE router has no device kernel, so the routed blocks run on the CPU and cpu_cuda is not declared. No llama.cpp reference is declared, so greedy_reference and tokenizer are not claimed. The 2026-10-02 family sweep served the keep104 derivative of this file through every surface, including a required tool call, buffered and streamed.",
+      "check_params": {
+        "chat": {
+          "prompt": "What is 2+2?",
+          "max_tokens": 200,
+          "gpu": "auto",
+          "expect_stop": true,
+          "expect_nonempty_content": true,
+          "forbid_substrings": [
+            "[INST]",
+            "<<SYS>>",
+            "<|im_start|>"
           ]
         }
       }

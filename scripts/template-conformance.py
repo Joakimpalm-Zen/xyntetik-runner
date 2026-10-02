@@ -298,22 +298,23 @@ FAMILIES = {
         tool_family=True, thinking_var="enable_thinking",
         tokenizer=("NousResearch_Hermes-4-14B-Q4_K_M.gguf",)),
     "phi4mini": Family(
-        "phi3", ("hf", "microsoft/Phi-4-mini-instruct"),
-        note="phi3 framing plus a <|tool|> block on the system turn",
+        "phi4", ("hf", "microsoft/Phi-4-mini-instruct"),
+        note="phi3's tags with no newlines, plus a <|tool|> block on the "
+             "system turn",
         tool_family=True, tokenizer=("Phi-4-mini-instruct-q4_0.gguf",)),
     "granite40h": Family(
         "granite", ("hf", "ibm-granite/granite-4.0-h-small"),
         note="granitehybrid; the 4.0 template with its tools section",
         tool_family=True, tokenizer=("granite-4.0-h-small-Q4_K_M.gguf",)),
     "qwen35-4b": Family(
-        "ornith", ("hf", "Qwen/Qwen3.5-4B"),
-        note="Qwen 3.5 detected as ornith; its template keeps the thought "
-             "block only after the last user query",
+        "qwen35", ("hf", "Qwen/Qwen3.5-4B"),
+        note="ornith's template with the thought block kept only on the "
+             "assistant turns after the last user query",
         tool_family=True, thinking_var="enable_thinking",
         tokenizer=("Qwen3.5-4B-Q4_K_M.gguf",),
         cannot={"system-mid-history": NO_MID_SYSTEM}),
     "qwen35-0.8b": Family(
-        "ornith", ("hf", "Qwen/Qwen3.5-0.8B"),
+        "qwen35-nothink", ("hf", "Qwen/Qwen3.5-0.8B"),
         note="the small Qwen 3.5 defaults thinking OFF in its template",
         tool_family=True, thinking_var="enable_thinking",
         tokenizer=("Qwen3.5-0.8B-Q4_K_M.gguf",),
@@ -351,14 +352,11 @@ FAMILIES = {
                 "unicode-emoji": ALTERNATE,
                 "long-content": ALTERNATE}),
     "nemotron-nano": Family(
-        "llama2", ("hf", "nvidia/NVIDIA-Nemotron-Nano-9B-v2"),
-        note="NOT RECOGNISED by the runner (falls back to llama2 markup); "
-             "the row measures the size of that defect",
+        "nemotron", ("hf", "nvidia/NVIDIA-Nemotron-Nano-9B-v2"),
+        note="its own SPECIAL_10/11/12 framing; tools still ride the "
+             "generic envelope, so the tool cases stay in the backlog",
         tool_family=True, thinking_var="enable_thinking",
-        tokenizer=("NVIDIA-Nemotron-Nano-9B-v2-Q8_0.gguf",),
-        cannot={"consecutive-user": LLAMA2_FALLBACK_ALTERNATE,
-                "consecutive-assistant": LLAMA2_FALLBACK_ALTERNATE,
-                "system-mid-history": LLAMA2_FALLBACK_ALTERNATE}),
+        tokenizer=("NVIDIA-Nemotron-Nano-9B-v2-Q8_0.gguf",)),
     "nemotron-lightning": Family(
         "granite42", ("gguf", "models/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-Q4_0.gguf"),
         note="detected as granite42 because its template carries the "

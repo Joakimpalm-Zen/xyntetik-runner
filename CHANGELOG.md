@@ -8,6 +8,58 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **`runner --doctor`: one diagnostic report to attach to a question.** It
+  loads the model, runs one short chat probe through the renderer, tokenizer
+  and engine a chat request uses, and prints JSON: the version, the file's
+  identity (name and size, never its path), which backend took how many
+  layers, the template and tool family in effect, the effective sampler,
+  memory, load and probe timings, and findings, each with a next step
+  (template not recognised, GPU present and unused, partial offload, template
+  markup in the reply, no stop, empty or wrong answer, decode under one token
+  a second, file larger than available RAM). The verdict is `ok`, `degraded`
+  or `broken`, and the exit code is 2 for `broken`. No prompt or reply text is
+  recorded unless `--doctor-include-text` is given.
+- **Three families render as their publishers do.** The golden pass of
+  2026-09-07 found each served through a neighbour's template; the
+  template-conformance backlog goes from 115 known differences to 61.
+  - *Qwen 3.5* (`qwen35`, and `qwen35-nothink` for the 0.8B) was rendered as
+    Ornith, which opens every replayed assistant turn with a thought block.
+    Qwen 3.5 writes one only on the assistant turns after the last user
+    query, and the 0.8B's template leaves thinking off unless asked. 24
+    cases, now identical.
+  - *Phi-4-mini* (`phi4`) was rendered as Phi-3.5, with a newline after every
+    role tag and after `<|end|>` that Phi-4-mini's template never writes. 16
+    of 20 cases; the four tool cases remain (its `<|tool|>` declaration block
+    is not rendered).
+  - *Nemotron Nano 9B v2* (`nemotron`) was not recognised at all and ran on
+    llama-2 markup. It now has its own family: the `<SPECIAL_10>` system
+    header on every conversation, `<SPECIAL_11>` turns closed by
+    `<SPECIAL_12>` (which is also a stop), the `/think` and `/no_think`
+    control strings, the prefill rule for a trailing assistant turn, and a
+    reasoning channel. 14 of 19 cases; tools still ride the generic envelope,
+    and an explicit `enable_thinking: false` closes the thought block where
+    the publisher's template ignores the setting.
+- **A streamed Chat or Messages turn reports a repeated tool call
+  (R4.12.19).** `runner_telemetry.repeated_tool_calls` was on buffered bodies
+  and the streamed Responses event; it is now on the closing chunk of a
+  streamed Chat turn and on `message_delta` of a streamed Messages turn,
+  present only when a delivered call repeats an earlier one.
+- **Four architectures get a pinned file (R4.23.3).** `stablelm`,
+  `granitehybrid`, `nemotron_h` and `nemotron_h_moe` were admitted with no row
+  in the compatibility manifest, the gap that let the StableLM LayerNorm
+  defect of 2026-09-07 through. Each now has a public GGUF pinned by sha256
+  with `load` and `chat` declared, and the admission test no longer carries an
+  UNGATED exemption.
+- **A scheduled CUDA gate (R6.9).** `scripts/cuda-gate.sh` runs the device
+  checks hosted CI cannot (`test-tc-overflow`, `test-cuda-iquants`,
+  `cpu_cuda_check.py`) from a fresh build and writes a device-evidence row;
+  `scripts/cuda-nightly.sh` pulls main, builds and runs it on a lab box,
+  yields to the box's other users, and reports a failed night as an issue.
+  `scripts/artifact-baseline.sh` drives the existing harnesses over an
+  original and a derived GGUF in Runner and llama.cpp (R16.6.1), and
+  `scripts/cpu_cuda_delta.py` prints where the CPU and the GPU first part on
+  one of the identity gate's prompts.
+
 - **`make sweep-thinking`: the real-model sweep as a repeatable job
   (R4.12.27).** The roster of thinking and tool-protocol families is checked
   in (`scripts/sweep-rosters/thinking.json`, paths under

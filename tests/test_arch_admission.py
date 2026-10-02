@@ -97,13 +97,6 @@ ARCH_GATE_EXEMPTIONS = {
     # string is not. Keep until a file actually ships with these strings.
     "mistral": "covered by llama-arch files (mistral-7b-instruct-v0.3-q4_k_m)",
     "smollm": "covered by llama-arch files; no GGUF ships arch=smollm",
-    # Genuinely ungated. These are claims with no pinned file behind them,
-    # which is exactly the shape of the stablelm defect. Each needs a file
-    # pinned in the manifest or removal from the admitted list.
-    "stablelm": "UNGATED: fixed 2026-09-07 (R4.23), still needs a pinned file",
-    "granitehybrid": "UNGATED: needs a pinned file (R4.23.3)",
-    "nemotron_h": "UNGATED: needs a pinned file (R4.23.3)",
-    "nemotron_h_moe": "UNGATED: needs a pinned file (R4.23.3)",
 }
 
 

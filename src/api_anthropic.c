@@ -315,7 +315,7 @@ static bool anth_blocks(jv *messages, int message_index, jv *msg,
                     return false;
                 }
                 turn_add_native(t, "tool", result, name, NULL);
-            } else if (tmpl == TMPL_ORNITH) {
+            } else if (tmpl_ornith_like(tmpl)) {
                 // ornith frames a result as a <tool_response> block in a user
                 // turn; its own render loop keys on that content prefix.
                 sbuf w = {0};

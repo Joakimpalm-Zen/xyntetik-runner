@@ -129,7 +129,7 @@ static char *message_text(jv *msg, int tmpl, bool replay_reason, bool *oom) {
     }
 
     sbuf b = {0};
-    if (tmpl == TMPL_ORNITH && !strcmp(role, "tool")) {
+    if (tmpl_ornith_like(tmpl) && !strcmp(role, "tool")) {
         // a result is a <tool_response> block in a user turn, not a plain one
         tool_result_wrap(tmpl, txt.s ? txt.s : "", &b);
     } else {
@@ -141,8 +141,11 @@ static char *message_text(jv *msg, int tmpl, bool replay_reason, bool *oom) {
         // so `<think>` reaches the model as the control token its reference
         // tokenizer produces, not as three text tokens. The reasoning text
         // between is the caller's and goes in unmarked.
+        // Qwen 3.5 writes the block (empty or not) only on the assistant
+        // turns after the last user query, which the caller selects too.
         if ((tmpl == TMPL_ORNITH || tmpl == TMPL_QWEN38 ||
-             (tmpl == TMPL_CHATML_THINK && replay_reason)) &&
+             ((tmpl == TMPL_CHATML_THINK || tmpl_qwen35(tmpl)) &&
+              replay_reason)) &&
             !strcmp(role, "assistant")) {
             prompt_lit(&b, "<think>\n");
             if (reason) sb_put(&b, reason, strlen(reason));
@@ -537,7 +540,7 @@ static void handle_chat_render(slot_t *s, sock_t fd, jv *req,
     // declaration turn the way their references do (tools_system_fold, the
     // same helper the typed surfaces use); the folded message is then skipped
     bool ornith_merged_system = false;
-    if ((s->tmpl == TMPL_ORNITH || s->tmpl == TMPL_GRANITE42) && ts.n &&
+    if ((tmpl_ornith_like(s->tmpl) || s->tmpl == TMPL_GRANITE42) && ts.n &&
         msgs->n > 0 && !strcmp(chat_role(msgs->items[0]), "system")) {
         char *system = message_text(msgs->items[0], s->tmpl, false, &oom);
         tools_system_fold(s->tmpl, &ts, system);
@@ -586,7 +589,7 @@ static void handle_chat_render(slot_t *s, sock_t fd, jv *req,
     if (ts.n)
         cm[n_cm++] = (chat_msg){ .role = "system", .content = ts.s };
     int last_user = -1;
-    if (s->tmpl == TMPL_CHATML_THINK)
+    if (s->tmpl == TMPL_CHATML_THINK || tmpl_qwen35(s->tmpl))
         for (int i = 0; i < msgs->n; i++)
             if (!strcmp(chat_role(msgs->items[i]), "user")) last_user = i;
     for (int i = 0; i < msgs->n; i++) {
@@ -668,14 +671,15 @@ static void handle_chat_render(slot_t *s, sock_t fd, jv *req,
             }
             continue;
         }
-        bool replay_reason = s->tmpl == TMPL_CHATML_THINK &&
-                             i == msgs->n - 1 && i > last_user;
+        bool replay_reason = (s->tmpl == TMPL_CHATML_THINK &&
+                              i == msgs->n - 1 && i > last_user) ||
+                             (tmpl_qwen35(s->tmpl) && i > last_user);
         char *content = message_text(msgs->items[i], s->tmpl, replay_reason,
                                      &oom);
         if (oom) break;
         if (!content) continue;
         owned[n_own++] = content;
-        if (s->tmpl == TMPL_ORNITH && !strcmp(role, "tool")) role = "user";
+        if (tmpl_ornith_like(s->tmpl) && !strcmp(role, "tool")) role = "user";
         cm[n_cm++] = (chat_msg){
             .role = role, .content = content, .name = turn_name,
         };
