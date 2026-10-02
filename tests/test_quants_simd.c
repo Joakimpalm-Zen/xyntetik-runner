@@ -440,13 +440,37 @@ static void ref_dq_q6_K(const block_q6_K *b, double *y) {
 
 // ------------------------------------------------------------ row builders
 
-// fill a row of blocks with random payloads and sane scale fields
+// Saturation stress (R13.11). Random payloads almost never put every code
+// of a block at its extreme at once, and a kernel that saturates a narrow
+// accumulator (an int16 pair sum, a widened nibble product) agrees with
+// the reference everywhere else. The trials past RANDOM_TRIALS fill every
+// payload byte with one of these patterns (all-zero, all-ones, the signed
+// extremes of both nibble and byte codes) and drive every activation to
+// the same magnitude with one sign, so the sums reach their largest
+// possible size. The scale fields stay sane.
+enum { RANDOM_TRIALS = 8 };
+static const int k_fills[] = { 0x00, 0xFF, 0x80, 0x7F, 0x88, 0x77 };
+#define FILL_TRIALS ((int)(sizeof(k_fills) / sizeof(k_fills[0])) * 2)
+static int g_fill = -1;   // -1: random payload bytes
+
+static void set_trial(int trial) {
+    g_fill = trial < RANDOM_TRIALS ? -1 : k_fills[(trial - RANDOM_TRIALS) / 2];
+}
+
+// every activation the same magnitude: positive on even fill trials,
+// negative on odd ones
+static void fill_x(int trial, float *x, int n) {
+    float v = (trial - RANDOM_TRIALS) % 2 ? -1.0f : 1.0f;
+    for (int i = 0; i < n; i++) x[i] = v;
+}
+
+// fill a row of blocks with random (or g_fill) payloads and sane scale fields
 static void make_row(int type, uint8_t *row, int n) {
     int bs = ggml_block_size(type);
     size_t ts = ggml_type_size(type);
     for (int i = 0; i < n / bs; i++) {
         uint8_t *p = row + i * ts;
-        for (size_t j = 0; j < ts; j++) p[j] = (uint8_t)rnd32();
+        for (size_t j = 0; j < ts; j++) p[j] = g_fill < 0 ? (uint8_t)rnd32() : (uint8_t)g_fill;
         switch (type) {
             case T_F32: case T_F16: case T_BF16: break;
             case T_Q4_0: ((block_q4_0 *)p)->d = sane_f16(); break;
@@ -581,9 +605,11 @@ static void test_vec_dot(int type, int n) {
     uint8_t *row = malloc(rowsz);
     float *x = malloc((size_t)n * sizeof(float));
     double *w = malloc((size_t)n * sizeof(double));
-    for (int trial = 0; trial < 8; trial++) {
+    for (int trial = 0; trial < RANDOM_TRIALS + FILL_TRIALS; trial++) {
+        set_trial(trial);
         make_row(type, row, n);
-        for (int i = 0; i < n; i++) x[i] = frnd();
+        if (trial < RANDOM_TRIALS) for (int i = 0; i < n; i++) x[i] = frnd();
+        else fill_x(trial, x, n);
         ref_weights(type, row, w, n);
         double ref = 0, mag = 0;
         for (int i = 0; i < n; i++) { ref += w[i] * x[i]; mag += fabs(w[i] * x[i]); }
@@ -592,6 +618,7 @@ static void test_vec_dot(int type, int n) {
         CHECK(fabs(got - ref) <= tol, "vec_dot %s n=%d trial=%d: got %g ref %g (tol %g)",
               ggml_type_name(type), n, trial, (double)got, ref, tol);
     }
+    g_fill = -1;
     free(row); free(x); free(w);
 }
 
@@ -600,7 +627,8 @@ static void test_dequant(int type, int n) {
     uint8_t *row = malloc(rowsz);
     float *got = malloc((size_t)n * sizeof(float));
     double *ref = malloc((size_t)n * sizeof(double));
-    for (int trial = 0; trial < 8; trial++) {
+    for (int trial = 0; trial < RANDOM_TRIALS + FILL_TRIALS; trial++) {
+        set_trial(trial);
         make_row(type, row, n);
         ref_weights(type, row, ref, n);
         dequant_row(type, row, got, n);
@@ -609,9 +637,10 @@ static void test_dequant(int type, int n) {
             CHECK(fabs(got[i] - ref[i]) <= tol,
                   "dequant %s trial=%d i=%d: got %g ref %g",
                   ggml_type_name(type), trial, i, (double)got[i], ref[i]);
-            if (g_fail > 20) return;
+            if (g_fail > 20) { g_fill = -1; return; }
         }
     }
+    g_fill = -1;
     free(row); free(got); free(ref);
 }
 
@@ -845,9 +874,12 @@ static void test_i8_dot(int type, int n) {
     CHECK(i8_act_size(n) == (size_t)(n / I8_REF_QK) * sizeof(ref_block_i8a),
           "i8_act_size(%d) = %zu, reference layout is %zu",
           n, i8_act_size(n), (size_t)(n / I8_REF_QK) * sizeof(ref_block_i8a));
-    for (int trial = 0; trial < 8; trial++) {
+    for (int trial = 0; trial < RANDOM_TRIALS + FILL_TRIALS; trial++) {
+        set_trial(trial);
         make_row(type, row, n);
         for (int i = 0; i < n; i++) x[i] = frnd();
+        // every activation at the quantizer's top code, 127 or -127
+        if (trial >= RANDOM_TRIALS) fill_x(trial, x, n);
         // trial 3: a zero activation block (d == 0 divides by nothing)
         if (trial == 3) memset(x, 0, I8_REF_QK * sizeof(float));
         // trial 4: one block far larger than the rest — per-block scaling is
@@ -892,6 +924,7 @@ static void test_i8_dot(int type, int n) {
               ggml_type_name(type), n, trial, (double)got, ref, bound);
         if (g_fail > 20) break;
     }
+    g_fill = -1;
     free(row); free(x); free(w); free(xq); free(xr);
 }
 

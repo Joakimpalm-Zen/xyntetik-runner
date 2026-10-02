@@ -106,7 +106,7 @@ One JSON object per line, one line per (prompt, condition):
 | `seconds` | wall time of the probe |
 
 `decision` holds the server's record for that point ([decision-record.md](decision-record.md)): `index`, `n_legal`, `n_probed`, `coverage` and
-`alternatives` for that point, plus the tool-level reading: `by_tool` (best
+`alternatives`, plus the tool-level reading: `by_tool` (best
 raw logprob per tool among the legal pieces), `top1`, `top1_piece`, `top2`
 (the best alternative leading to a DIFFERENT tool, never a shorter piece of
 the same name; `no` and `non` are the `none` branch), and `margin_nat`

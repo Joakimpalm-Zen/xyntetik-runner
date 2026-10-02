@@ -148,6 +148,28 @@ Required behavior:
 Working rule: a green gate with no external anchor is evidence the system is
 self-consistent, and nothing more.
 
+### Equivalence on random inputs is not equivalence
+
+A check that accepts a rewritten kernel, program or fast path because it agrees
+with the reference on random inputs misses every defect that lives at a
+boundary: a narrow accumulator that saturates, a code at its signed extreme, a
+value that reaches its clamp. A program-search study accepted four rewritten
+programs that way, each wrong only when a running value reached its saturation
+bound (about one random input in 10,000 to 100,000); boundary and
+saturation-stress inputs caught every one.
+
+Required behavior:
+
+- Every equivalence gate over a kernel or a rewritten path carries
+  deterministic boundary inputs beside the random ones: all codes at each
+  extreme, every activation at the quantizer's top code with one sign, the
+  zero block, the largest and smallest scales, the lengths around each SIMD
+  step and tail. `tests/test_quants_simd.c` is the pattern (its saturation
+  trials).
+- Prefer the original kernel unless the rewrite is proven equivalent, or
+  checked exhaustively over the reachable value range; passing on samples is
+  evidence, not proof.
+
 ### The provider's reference implementation is the primary anchor
 
 Standing rule (owner, 2026-09-06). This runner is not a llama.cpp clone; it
