@@ -3734,7 +3734,7 @@ int main(int argc, char **argv) {
         // request uses, and turns what it saw into findings with a next
         // step. No content leaves the machine and none is recorded unless
         // --doctor-include-text asks for it.
-        int dt = tmpl >= 0 ? tmpl
+        int dt = tmpl_override >= 0 ? tmpl_override
                : template_detect(gguf_get_str(&m.gf, "tokenizer.chat_template", NULL), &tok);
         bool have_tmpl_text = gguf_get_str(&m.gf, "tokenizer.chat_template", NULL) != NULL;
         bool native = false;
