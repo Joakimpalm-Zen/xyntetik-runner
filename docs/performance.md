@@ -82,9 +82,11 @@ End to end, sampled at temperature 0.8, M1:
 | Llama-3.2-3B Q4_K_M (Metal) | 11.6 tok/s | 8.3 tok/s | 11.7 tok/s |
 
 The before column is a cost per token that does not shrink with the model:
-9.6 ms on a 49k vocabulary and 19.5 ms on 128k. Where the model step itself
-takes 14 ms (a 7B on a discrete GPU), a tool call was running at well under
-half the unconstrained rate; that configuration was not measured here.
+9.6 ms on a 49k vocabulary and 19.5 ms on 128k. On a GPU, where the model
+step is short, it was most of the token. The same Llama-3.2-3B file on a
+Blackwell MIG slice (CUDA, four CPU threads, the same prompt): 133 tok/s
+unconstrained before and after, sampled `--json` 39.6 tok/s before and
+123.1 after.
 
 The picks are the same picks. The previous implementation, kept as a
 reference object, and the new one agreed on 237,672 of 237,672 cases across

@@ -54,7 +54,8 @@ names that were true when they were written.
   a time and the pick is taken as soon as the unranked entries provably
   cannot change it. Sampled `--json` at temperature 0.8 on an M1:
   SmolLM2-135M 59 to 186 tok/s, Llama-3.2-3B 8.3 to 11.7 tok/s (the
-  unconstrained rates). Unconstrained top-k and greedy picks are cheaper
+  unconstrained rates); on CUDA (a Blackwell MIG slice) the same 3B file
+  39.6 to 123.1 tok/s against 133 unconstrained. Unconstrained top-k and greedy picks are cheaper
   too (1.9 ms to 0.1 ms and 0.45 ms to 0.03 ms at 128k entries). The picks
   are unchanged: the old and new samplers agreed on all 237,672 cases of a
   differential run ([docs/performance.md](docs/performance.md)).
