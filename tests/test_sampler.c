@@ -441,6 +441,110 @@ static void test_topk_selection_is_linear_on_ranked_input(void) {
 // this", but the template is read out of the checkpoint while the name is a
 // label a re-quantiser can change -- and for Nemo the two presets disagree on
 // the temperature its own model card calls out (0.3, not 0.7).
+// A constrained pick ranks the vocabulary a prefix at a time instead of
+// sorting all of it, and with top-k off it settles the pick from a prefix
+// when the entries below cannot change it. Checked through the public API:
+//
+//   equivalence -- a filter that admits everything gives the unconstrained
+//   pick under top-k (the same candidates reach the same arithmetic), and a
+//   filter that refuses the best 300 gives the pick of a vocabulary where
+//   those 300 were never likely, which forces the ranking past its first
+//   prefix;
+//
+//   economy -- the filter is asked about top_k candidates, not about the
+//   vocabulary, and with top-k off on a peaked distribution about one prefix.
+//   This is the regression the change exists for: a filter call per
+//   vocabulary entry on every sampled token of a tool call.
+static int ok_calls;
+static bool admit_all(void *ud, int token) { (void)ud; (void)token; ok_calls++; return true; }
+static bool refuse_marked(void *ud, int token) {
+    ok_calls++;
+    return !((const unsigned char *)ud)[token];
+}
+
+static void peaked_logits(float *l, int n, unsigned seed) {
+    // a few likely tokens over a long, low tail: the shape of a real step
+    for (int i = 0; i < n; i++) {
+        seed = seed * 1664525u + 1013904223u;
+        l[i] = -6.0f - 6.0f * (float)(seed >> 8) / 16777216.0f;
+    }
+    for (int j = 0; j < 12; j++) {
+        seed = seed * 1664525u + 1013904223u;
+        l[seed % (unsigned)n] = 6.0f - 0.7f * (float)j;
+    }
+}
+
+static void test_constrained_pick_ranks_a_prefix(void) {
+    enum { V = 50000 };
+    float *base = malloc(sizeof(float) * V), *x = malloc(sizeof(float) * V);
+    unsigned char *mark = calloc(V, 1);
+    assert(base && x && mark);
+    for (unsigned seed = 1; seed <= 40; seed++) {
+        peaked_logits(base, V, seed);
+        sampler a = { .temp = 0.8f, .top_p = 0.95f, .min_p = 0.05f,
+                      .repeat_penalty = 1.0f, .top_k = 40, .rng = seed };
+        sampler b = a;
+        memcpy(x, base, sizeof(float) * V);
+        int free_pick = sample_pick(&a, x, V, NULL, NULL);
+        memcpy(x, base, sizeof(float) * V);
+        ok_calls = 0;
+        int all_pick = sample_pick(&b, x, V, admit_all, NULL);
+        assert(all_pick == free_pick);
+        assert(a.rng == b.rng);
+        assert(ok_calls == 40);   // top_k candidates, not the vocabulary
+
+        // top-k off: the likely tokens carry the mass, one prefix settles it
+        sampler c = { .temp = 0.8f, .top_p = 0.9f, .repeat_penalty = 1.0f,
+                      .rng = seed };
+        memcpy(x, base, sizeof(float) * V);
+        ok_calls = 0;
+        int open_pick = sample_pick(&c, x, V, admit_all, NULL);
+        assert(open_pick >= 0 && open_pick < V);
+        assert(ok_calls <= 256);
+    }
+
+    // refuse the 300 best: the first prefix of 256 holds nothing valid
+    peaked_logits(base, V, 77);
+    for (int j = 0; j < 300; j++) {
+        int best = 0;
+        for (int i = 1; i < V; i++)
+            if (!mark[i] && (mark[best] || base[i] > base[best])) best = i;
+        mark[best] = 1;
+    }
+    for (unsigned seed = 1; seed <= 20; seed++) {
+        sampler a = { .temp = 0.8f, .top_p = 0.95f, .repeat_penalty = 1.0f,
+                      .top_k = 40, .rng = seed };
+        sampler b = a;
+        memcpy(x, base, sizeof(float) * V);
+        int got = sample_pick(&a, x, V, refuse_marked, mark);
+        for (int i = 0; i < V; i++) x[i] = mark[i] ? -1e30f : base[i];
+        int want = sample_pick(&b, x, V, NULL, NULL);
+        assert(got == want && !mark[got]);
+        // greedy takes the best valid one
+        sampler g = { .temp = 0.0f, .top_p = 1.0f, .repeat_penalty = 1.0f };
+        memcpy(x, base, sizeof(float) * V);
+        int first = sample_pick(&g, x, V, refuse_marked, mark);
+        int best = -1;
+        for (int i = 0; i < V; i++)
+            if (!mark[i] && (best < 0 || base[i] > base[best])) best = i;
+        assert(first == best);
+    }
+    free(base); free(x); free(mark);
+}
+
+// Greedy returns the FIRST index holding the greatest logit, as the single
+// index-tracking loop it replaced did.
+static void test_greedy_takes_the_first_of_equal_maxima(void) {
+    enum { V = 5000 };
+    float *l = malloc(sizeof(float) * V);
+    assert(l);
+    for (int i = 0; i < V; i++) l[i] = -1.0f - (float)(i % 7);
+    l[1234] = 3.5f; l[4321] = 3.5f; l[77] = 3.25f;
+    sampler s = { .temp = 0.0f, .top_p = 1.0f, .repeat_penalty = 1.0f };
+    assert(sample_pick(&s, l, V, NULL, NULL) == 1234);
+    free(l);
+}
+
 static void test_template_outranks_the_model_name(void) {
     // a Nemo export whose name says nothing about Nemo, or nothing about
     // Mistral: by name alone both land on the wrong preset
@@ -484,6 +588,8 @@ int main(void) {
     test_greedy_constrained();
     test_no_filter_sampling_is_deterministic_and_unbiased();
     test_topk_selection_is_linear_on_ranked_input();
+    test_constrained_pick_ranks_a_prefix();
+    test_greedy_takes_the_first_of_equal_maxima();
     puts("sampler tests ok");
     return 0;
 }

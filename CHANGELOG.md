@@ -8,6 +8,18 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **Constrained sampling no longer costs more than the model step.** Every
+  sampled token under a constraint (a tool call, JSON mode, a schema, a
+  reasoning budget, the loop guard) sorted the whole vocabulary, and with
+  top-k off asked the grammar about every entry of it: 9.6 ms per token on
+  a 49k vocabulary, 19.5 ms on 128k. Candidates are now ranked a prefix at
+  a time and the pick is taken as soon as the unranked entries provably
+  cannot change it. Sampled `--json` at temperature 0.8 on an M1:
+  SmolLM2-135M 59 to 186 tok/s, Llama-3.2-3B 8.3 to 11.7 tok/s (the
+  unconstrained rates). Unconstrained top-k and greedy picks are cheaper
+  too (1.9 ms to 0.1 ms and 0.45 ms to 0.03 ms at 128k entries). The picks
+  are unchanged: the old and new samplers agreed on all 237,672 cases of a
+  differential run ([docs/performance.md](docs/performance.md)).
 - **`runner --adapt-info`: can this model take an adapter (R8.9.1)?** One
   JSON line per model file: whether a LoRA adapter can be served on it and
   whether one can be trained on it, each with the reason when not (a

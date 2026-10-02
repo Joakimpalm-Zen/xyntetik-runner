@@ -45,6 +45,61 @@ across thread counts. Scope a shared box with `--reserve-cpu` or pin with `-t`.
 The 100.5s SmolLM2 torture run would now be ~16s. GPU decode is **2.23s**
 (2.6x the fixed CPU), and CPU/GPU top-1 tokens match 0/64.
 
+## 2026-10-02 - The sampler: a constrained token cost more than the model step it followed
+
+A sampler-only microbenchmark (random logits, one pick, M1) showed costs that
+no decode rate had attributed to the sampler:
+
+| pick, 128,256-entry vocabulary | before | after |
+|---|---:|---:|
+| greedy | 445 us | 28 us |
+| top-k 40, top-p, min-p | 1,871 us | 101 us |
+| top-k 40 under a filter that admits half the vocabulary | 16,688 us | 258 us |
+
+Three causes, one per row. Greedy tracked the index inside the loop that
+looks for the maximum, which no compiler vectorises. Top-k copied the whole
+vocabulary into a candidate array and ran a quickselect over it. A
+constrained pick sorted the whole vocabulary, and with top-k off (the
+Llama 3, Mistral, gpt-oss and SmolLM2 presets) it also asked the grammar
+about every entry. A constrained pick is every sampled token of a tool call,
+of a JSON-mode or schema reply, and of any turn that carries a reasoning
+budget or the loop guard.
+
+Now the m best candidates come from one pass with a heap of m, decided on the
+raw logit for almost every entry, and a constrained pick ranks a prefix at a
+time (256, then eight times as many) and stops as soon as the pick is
+settled. With top-k off, "settled" is a bound: the entries not yet ranked
+carry at most the vocabulary's mass minus the mass already ranked, and the
+top-p cutoff, the min-p set or the roulette draw is taken from the prefix
+only when it comes out the same for every denominator in that interval.
+Otherwise the ranking goes on, to the whole vocabulary if it must.
+
+End to end, sampled at temperature 0.8, M1:
+
+| model | unconstrained | `--json` before | `--json` after |
+|---|---:|---:|---:|
+| SmolLM2-135M Q8_0 (Metal) | 172 tok/s | 59 tok/s | 186 tok/s |
+| Llama-3.2-3B Q4_K_M (Metal) | 11.6 tok/s | 8.3 tok/s | 11.7 tok/s |
+
+The before column is a cost per token that does not shrink with the model:
+9.6 ms on a 49k vocabulary and 19.5 ms on 128k. Where the model step itself
+takes 14 ms (a 7B on a discrete GPU), a tool call was running at well under
+half the unconstrained rate; that configuration was not measured here.
+
+The picks are the same picks. The previous implementation, kept as a
+reference object, and the new one agreed on 237,672 of 237,672 cases across
+seven vocabulary sizes from 5 to 49,152 entries (and on 210,744 of 210,744
+with a 128,256-entry vocabulary in the set), five logit shapes (including ties, all-equal and
+NaN-poisoned rows), every combination of the filters, and four constraint
+filters, with the generator state equal after each; where top-k is on, the
+filter is asked about the same candidates in the same order. The harness
+is not in the repository (it links two copies of the sampler);
+`tests/test_sampler.c` pins the properties it checked: a filter that admits
+everything gives the unconstrained pick, a filter that refuses the best 300
+entries gives the pick of a vocabulary without them, greedy returns the
+first of equal maxima, and the filter is asked about top_k candidates, or
+one prefix, never the vocabulary.
+
 ## 2026-10-02 - Metal prefill attention: the columns of a batch share the KV read
 
 Measured on the lab M1 (8 GB) with Llama-3.2-3B-Instruct Q4_K_M, because the
