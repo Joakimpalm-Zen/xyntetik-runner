@@ -1573,6 +1573,10 @@ int main(int argc, char **argv) {
     const char *tmpl_arg = NULL, *prompt_file = NULL, *schema_file = NULL;
     const char *quant_out = NULL, *quant_type = NULL, *prune_experts = NULL;
     const char *remove_sublayer = NULL;
+    // the measured-envelope verdict the one-shot model loaded under, for its
+    // transcript (R1.1.5); unknown on paths that never ran the gate
+    int cli_env_state = ENV_UNCLASSIFIED;
+    bool cli_env_known = false;
     const char *type_plan = NULL, *merge_out = NULL, *context_out = NULL;
     const char *transcript_path = NULL;
     const char *transcript_prev = NULL, *sign_key = NULL, *keygen_path = NULL;
@@ -3026,6 +3030,8 @@ int main(int argc, char **argv) {
             bool ok = envelope_gate(load_path, RUNNER_VERSION, env_backend,
                                     force_uncertified, env_line,
                                     (int)sizeof env_line, &env_state);
+            cli_env_state = env_state;
+            cli_env_known = true;
             if (env_line[0]) fprintf(stderr, "%s\n", env_line);
             if (!ok) {
                 cli_cleanup(NULL, NULL, &tok, &m);
@@ -4270,6 +4276,8 @@ int main(int argc, char **argv) {
                 .adapter_sig_json = adapter_sig_json[0] ? adapter_sig_json : NULL,
                 .constraints_json = cons_json[0] ? cons_json : NULL,
                 .watermark_json = wm_json[0] ? wm_json : NULL,
+                .envelope_known = cli_env_known,
+                .envelope_state = cli_env_state,
             };
             if (ocap.failed) {
                 fprintf(stderr, "error: transcript: out of memory capturing "

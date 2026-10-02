@@ -253,6 +253,16 @@ static void tsb_hex_str(tsb *w, const char *s, size_t n) {
     tsb_put(w, "\"", 1);
 }
 
+const char *envelope_state_word(int state) {
+    switch (state) {
+    case ENV_CERTIFIED:     return "certified";
+    case ENV_OUTSIDE:       return "outside-envelope";
+    case ENV_EXPERIMENTAL:  return "experimental";
+    case ENV_INDETERMINATE: return "indeterminate";
+    default:                return "unclassified";
+    }
+}
+
 bool transcript_write(const transcript_info *ti) {
     char msha[65] = "", bsha[65] = "", asha[65] = "";
     if (ti->model_sha256 && strlen(ti->model_sha256) == 64) {
@@ -310,6 +320,25 @@ bool transcript_write(const transcript_info *ti) {
     tsb_put(&w, "\"model\":{\"path\":", 16);
     tsb_json_str(&w, ti->model_path, strlen(ti->model_path));
     tsb_fmt(&w, ",\"sha256\":\"%s\"},", msha);
+    if (ti->envelope_known) {
+        // the sidecar the verdict came from, by digest; null when there is
+        // none (unclassified) or it can no longer be read
+        char esha[65] = "";
+        size_t ml = strlen(ti->model_path);
+        char *side = malloc(ml + sizeof ".envelope.json");
+        if (side) {
+            memcpy(side, ti->model_path, ml);
+            memcpy(side + ml, ".envelope.json", sizeof ".envelope.json");
+            if (ti->envelope_state == ENV_UNCLASSIFIED ||
+                !envelope_file_sha256(side, esha))
+                esha[0] = 0;
+            free(side);
+        }
+        tsb_fmt(&w, "\"envelope\":{\"verdict\":\"%s\",\"manifest_sha256\":",
+                envelope_state_word(ti->envelope_state));
+        if (esha[0]) tsb_fmt(&w, "\"%s\"},", esha);
+        else         tsb_put(&w, "null},", 6);
+    }
     if (ti->adapter_path) {
         tsb_put(&w, "\"adapter\":{\"path\":", 18);
         tsb_json_str(&w, ti->adapter_path, strlen(ti->adapter_path));

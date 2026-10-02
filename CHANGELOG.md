@@ -8,6 +8,10 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **Records name the measured envelope they ran inside (R1.1.5).** A
+  transcript and a served receipt carry `envelope.verdict` in the
+  manifest's own vocabulary and the sha256 of the sidecar the load read
+  (null when there was none). Recorded, not replayed.
 - **A served receipt shaped by a JSON schema or JSON mode replays (R1.1.3,
   D4b).** `--verify` refused every served turn that a constraint shaped.
   One shaped by a `response_format` of `json_schema` or `json_object` (or

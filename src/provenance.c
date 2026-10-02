@@ -195,6 +195,14 @@ uint64_t provenance_load_generation(bool *is_resident) {
     return g;
 }
 
+bool provenance_envelope_state(int *state) {
+    pthread_mutex_lock(&mu);
+    bool r = resident;
+    if (r && state) *state = env_state;
+    pthread_mutex_unlock(&mu);
+    return r;
+}
+
 int provenance_expect(uint64_t want_generation, const char *want_sha256) {
     pthread_mutex_lock(&mu);
     int r = PROV_EXPECT_OK;

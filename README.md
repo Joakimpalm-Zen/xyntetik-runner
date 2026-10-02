@@ -404,6 +404,12 @@ signs a transcript. Chaining, trusted-key checks, Ed25519 and ML-DSA-44
 signatures, and model-signature verification are documented in the
 [CLI reference](#conversion-diagnostics-and-integration).
 
+A record also names the measured envelope its model loaded under, in the
+manifest's own words (`envelope.verdict`: `certified`, `outside-envelope`,
+`experimental`, `indeterminate` or `unclassified`) with the sha256 of the
+`.envelope.json` sidecar it came from, so a transcript can be matched to the
+measurement it ran inside. It is recorded, not replayed.
+
 `scripts/audit-demo.sh` runs the whole chain in under a minute on an 8 GB
 Mac: a signed 1,000-token record, a verifying replay, and three forgeries
 refused ([docs/audit-demo.md](docs/audit-demo.md)).

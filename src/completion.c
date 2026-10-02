@@ -2394,6 +2394,8 @@ static const char *serve_receipt(slot_t *s, engine *e, gen_ctx *g,
         snprintf(gname, sizeof gname, "gpu");
     const char *apath = s->adapter >= 0 ? SV.adapters[s->adapter].path
                                         : SV.mp.lora_path;
+    int env_state = 0;
+    bool env_known = provenance_envelope_state(&env_state);
     transcript_info ti = {
         .runner_version = RUNNER_VERSION,
         .compiler = __VERSION__,
@@ -2437,6 +2439,7 @@ static const char *serve_receipt(slot_t *s, engine *e, gen_ctx *g,
         .serve_json = sj.s,
         .constraints_json = cj.s,
         .tool_calls_json = tj.s,
+        .envelope_known = env_known, .envelope_state = env_state,
     };
     char wj[192] = "";
     if (SV.wm_on)

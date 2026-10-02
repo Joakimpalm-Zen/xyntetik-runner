@@ -12,6 +12,10 @@ claim: `certified` requires a passing compat gate for the artifact's sha *and* a
 named reference sha; `outside-envelope` records a measured failure; `experimental`
 means no gate evidence exists for the artifact yet.
 
+A transcript or served receipt made with a manifest beside its model records
+`"envelope": {"verdict": ..., "manifest_sha256": ...}`: the same verdict word
+this file uses and the digest of the sidecar the load read.
+
 ## The `tool_calling` block (reported-only)
 
 A manifest may carry an optional, additive `tool_calling` block (the schema

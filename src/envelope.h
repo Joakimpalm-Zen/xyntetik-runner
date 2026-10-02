@@ -136,6 +136,14 @@ typedef struct {
     // "layers","context","marked_tokens"}), written as "watermark"; a replay
     // needs the same key. NULL for an unmarked run.
     const char *watermark_json;
+    // D6 (R1.1.5): the measured-envelope verdict this model loaded under, an
+    // enum envelope_state, written as "envelope" in the manifest's own
+    // vocabulary with the sha256 of the sidecar it came from. A record and
+    // the manifest beside its model then name the same verdict in the same
+    // words, and a reader can tell which manifest that was. The field is
+    // written whenever the writer knows the state (envelope_known).
+    bool        envelope_known;
+    int         envelope_state;
 } transcript_info;
 
 // Signing keys: xyntetik.runner.signkey.v1, a 32-byte seed and the public
@@ -200,6 +208,11 @@ int envelope_report(const char *model_path, const char *runtime_version,
 // Only a MATCHING outside-envelope verdict refuses. `*out_state`
 // (may be NULL) receives the resolved envelope_state. `msg` is always
 // NUL-terminated when cap > 0.
+// The manifest's word for a state: "certified", "outside-envelope",
+// "experimental", "indeterminate" (a sidecar that could not judge this run)
+// or "unclassified" (no sidecar).
+const char *envelope_state_word(int state);
+
 bool envelope_gate(const char *model_path, const char *runtime_version,
                    const char *backend, bool forced,
                    char *msg, int cap, int *out_state);
