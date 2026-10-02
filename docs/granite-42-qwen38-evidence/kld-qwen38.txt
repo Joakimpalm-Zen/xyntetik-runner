@@ -1,5 +1,5 @@
-starting server A: /home/lab/workspace/models/qwen3.8/Qwen3.8-27B-UD-Q4_K_M.gguf
-starting server B: /home/lab/workspace/models/qwen3.8/Qwen3.8-27B-Q8_0.gguf
+starting server A: models/qwen3.8/Qwen3.8-27B-UD-Q4_K_M.gguf
+starting server B: models/qwen3.8/Qwen3.8-27B-Q8_0.gguf
 {
   "positions_scored": 100,
   "positions_failed": 0,

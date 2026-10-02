@@ -47,7 +47,7 @@ raster states, not visibility or click behavior in the live Windows taskbar.
 
 This box is a full CUDA build-and-run machine: `C:\msys64\ucrt64\bin\gcc.exe`,
 `C:\msys64\usr\bin\make.exe`, CUDA Toolkit v13.3 with `nvcc` and `ptxas`,
-Python 3.12, git, and GGUF models already in `C:\Users\zen\`. A fresh clone
+Python 3.12, git, and GGUF models already in `~\`. A fresh clone
 builds with `make OS=Windows_NT -j2 runner`.
 
 That matters because CI has no GPU, so `src/cuda.c` is compiled on three
@@ -61,8 +61,8 @@ surface nothing else in the lab has.
 Run the gate before tagging any release:
 
     scripts/cuda-smoke-remote.sh \
-        --binary C:/Users/zen/cuda-smoke/runner.exe \
-        --model  C:/Users/zen/qwen3-0.6b-q8_0.gguf \
+        --binary ~/cuda-smoke/runner.exe \
+        --model  ~/qwen3-0.6b-q8_0.gguf \
         --expect-version X.Y.Z \
         --report docs/compat-reports/cuda-smoke-X.Y.Z-<date>-rtx3070.json
 
@@ -70,7 +70,7 @@ It exits nonzero on failure and the report is committed with the release, the
 same way the compatibility report is. Beside it, on every CUDA box that
 records a device-ledger row: `make test-cuda-nvfp4` on the real NVFP4 file
 and `make test-cuda-iquants` on the seven codebook i-quant fixtures (on this
-box `RUNNER_IQ_FIXTURES=C:/Users/zen/iqfix`, the set quantized on the
+box `RUNNER_IQ_FIXTURES=~/iqfix`, the set quantized on the
 Blackwell with llama.cpp b10353, because the tools are not installed here).
 The i-quant target fails, rather than skipping, when the device, the
 fixtures or the gate binary are missing; a required gate that skips reads
@@ -99,7 +99,7 @@ dies with the session (zero-byte logs, no process left), and there is no
 The `/ST is earlier than current time` warning is harmless; `/run` starts
 it now. Poll the log with `type` in separate calls and `schtasks /delete
 /tn <name> /f` when done. Use the full interpreter path in the `.bat`
-(`C:\Users\zen\AppData\Local\Programs\Python\Python312\python.exe -u`);
+(`~\AppData\Local\Programs\Python\Python312\python.exe -u`);
 the bare `python` is a Store alias that resolves for cmd but not reliably
 for a task.
 

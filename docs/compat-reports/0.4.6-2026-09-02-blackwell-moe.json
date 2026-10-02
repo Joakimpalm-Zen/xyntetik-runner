@@ -24,7 +24,7 @@
           "status": "pass",
           "returncode": 0,
           "elapsed_ms": 228.1,
-          "stderr_tail": "loaded /home/lab/workspace/models/Qwen3-30B-A3B-Q4_K_M/Qwen3-30B-A3B-Q4_K_M.gguf | qwen3moe | 48 layers | ctx 4096 | 32 threads | 0.01s\nsampling: qwen3 (temp 0.00 \u2014 greedy argmax; top_p/top_k/min_p/repeat_penalty inactive)\n\nprompt: 3 tok, 20.95 tok/s | gen: 1 tok, 28.58 tok/s\n"
+          "stderr_tail": "loaded models/Qwen3-30B-A3B-Q4_K_M/Qwen3-30B-A3B-Q4_K_M.gguf | qwen3moe | 48 layers | ctx 4096 | 32 threads | 0.01s\nsampling: qwen3 (temp 0.00 \u2014 greedy argmax; top_p/top_k/min_p/repeat_penalty inactive)\n\nprompt: 3 tok, 20.95 tok/s | gen: 1 tok, 28.58 tok/s\n"
         },
         "cpu_cuda": {
           "status": "pass_margin_qualified",

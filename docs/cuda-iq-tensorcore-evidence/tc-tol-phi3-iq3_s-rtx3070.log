@@ -19,7 +19,7 @@ rope: phi3 LongRoPE short factors, mscale 1.1902
 gpu-split: budget=7.46GB fixed=1.08GB G=32/32 full=1 used=3.00GB
 gpu: CUDA backend on NVIDIA GeForce RTX 3070 (1.9 GB weights in VRAM)
 gpu: VRAM 4.98 GB free of 8.59 GB after init (kv 0.54 GB + scratch 0.03 GB this instance)
-tc-tol: C:/Users/zen/models/phi3-IQ3_S.gguf | 192 tokens, 64 teacher-forced positions
+tc-tol: ~/models/phi3-IQ3_S.gguf | 192 tokens, 64 teacher-forced positions
   scalar-b64   TC dispatches: none
   scalar-b16   TC dispatches: none
   tc-b64       TC dispatches: IQ3_S=448

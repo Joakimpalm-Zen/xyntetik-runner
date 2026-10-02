@@ -13,7 +13,7 @@ gpu: VRAM 23.22 GB free of 25.37 GB after init (kv 0.81 GB + scratch 0.04 GB thi
 gpu-split: budget=25.13GB fixed=0.66GB G=24/24 full=1 used=2.44GB
 gpu: CUDA backend on NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb (1.1 GB weights in VRAM)
 gpu: VRAM 23.22 GB free of 25.37 GB after init (kv 0.81 GB + scratch 0.04 GB this instance)
-tc-tol: /home/lab/workspace/models/SmolLM2-1.7B-Instruct-Q4_K_M/SmolLM2-1.7B-Instruct-Q4_K_M.gguf | 192 tokens, 64 teacher-forced positions
+tc-tol: models/SmolLM2-1.7B-Instruct-Q4_K_M/SmolLM2-1.7B-Instruct-Q4_K_M.gguf | 192 tokens, 64 teacher-forced positions
   scalar-b64   TC dispatches: none
   scalar-b16   TC dispatches: none
   tc-b64       TC dispatches: Q4_K=288 Q6_K=48

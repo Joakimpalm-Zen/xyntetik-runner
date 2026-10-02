@@ -1,5 +1,5 @@
 {
- "model": "/home/lab/workspace/models/Mistral-Nemo-Instruct-2407-Q4_K_M/Mistral-Nemo-Instruct-2407-Q4_K_M.gguf",
+ "model": "models/Mistral-Nemo-Instruct-2407-Q4_K_M/Mistral-Nemo-Instruct-2407-Q4_K_M.gguf",
  "tokens": 128,
  "context": 2048,
  "routing": "eager",

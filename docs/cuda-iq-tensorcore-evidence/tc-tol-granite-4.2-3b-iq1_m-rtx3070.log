@@ -13,7 +13,7 @@ gpu: VRAM 6.07 GB free of 8.59 GB after init (kv 0.34 GB + scratch 0.05 GB this 
 gpu-split: budget=7.46GB fixed=0.67GB G=40/40 full=1 used=1.73GB
 gpu: CUDA backend on NVIDIA GeForce RTX 3070 (1.0 GB weights in VRAM)
 gpu: VRAM 6.07 GB free of 8.59 GB after init (kv 0.34 GB + scratch 0.05 GB this instance)
-tc-tol: C:/Users/zen/models/granite-4.2-3b-IQ1_M.gguf | 192 tokens, 64 teacher-forced positions
+tc-tol: ~/models/granite-4.2-3b-IQ1_M.gguf | 192 tokens, 64 teacher-forced positions
   scalar-b64   TC dispatches: none
   scalar-b16   TC dispatches: none
   tc-b64       TC dispatches: Q4_K=80 IQ2_XXS=80 IQ1_M=390

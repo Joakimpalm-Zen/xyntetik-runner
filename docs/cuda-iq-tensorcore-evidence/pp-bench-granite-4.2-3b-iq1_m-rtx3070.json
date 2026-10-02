@@ -1,5 +1,5 @@
 {
- "model": "C:/Users/zen/models/granite-4.2-3b-IQ1_M.gguf",
+ "model": "~/models/granite-4.2-3b-IQ1_M.gguf",
  "runs": 5,
  "extra": [],
  "rows": [

@@ -1,4 +1,4 @@
-file: /home/lab/workspace/Gridcore/cert-matrix-models/t3.17-drafter.gguf
+file: Gridcore/cert-matrix-models/t3.17-drafter.gguf
 gguf version: 3  tensors: 49  kv: 44
 general.architecture: gemma4-assistant
 general.name: 26B A4B Assistant

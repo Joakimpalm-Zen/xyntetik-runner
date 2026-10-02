@@ -13,7 +13,7 @@ gpu: VRAM 22.33 GB free of 25.37 GB after init (kv 0.60 GB + scratch 0.04 GB thi
 gpu-split: budget=24.90GB fixed=0.90GB G=36/36 full=1 used=3.08GB
 gpu: CUDA backend on NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb (1.9 GB weights in VRAM)
 gpu: VRAM 22.33 GB free of 25.37 GB after init (kv 0.60 GB + scratch 0.04 GB this instance)
-tc-tol: /home/lab/workspace/models/iq-archrows/qwen3-IQ3_S.gguf | 192 tokens, 64 teacher-forced positions
+tc-tol: models/iq-archrows/qwen3-IQ3_S.gguf | 192 tokens, 64 teacher-forced positions
   scalar-b64   TC dispatches: none
   scalar-b16   TC dispatches: none
   tc-b64       TC dispatches: Q4_K=72 IQ3_S=432

@@ -873,7 +873,7 @@
     }
   ],
   "configuration": {
-    "model": "/home/lab/workspace/Gridcore/muse-glimmer/Muse-Glimmer-30B-Q3_K_S.gguf",
+    "model": "Gridcore/muse-glimmer/Muse-Glimmer-30B-Q3_K_S.gguf",
     "temperature": 0
   },
   "metrics": {

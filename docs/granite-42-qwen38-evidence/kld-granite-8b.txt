@@ -1,5 +1,5 @@
-starting server A: /home/lab/workspace/models/granite-4.2/granite-4.2-8b-Q4_K_M.gguf
-starting server B: /home/lab/workspace/models/granite-4.2/granite-4.2-8b-Q8_0.gguf
+starting server A: models/granite-4.2/granite-4.2-8b-Q4_K_M.gguf
+starting server B: models/granite-4.2/granite-4.2-8b-Q8_0.gguf
 {
   "positions_scored": 400,
   "positions_failed": 0,

@@ -10,7 +10,7 @@
     "version": null
   },
   "reference": {
-    "path": "/home/lab/agent-torture-tools/llama/llama-b10076",
+    "path": "~/agent-torture-tools/llama/llama-b10076",
     "version": null
   },
   "models": [
@@ -24,7 +24,7 @@
           "status": "pass",
           "returncode": 0,
           "elapsed_ms": 1040.4,
-          "stderr_tail": "gpu-split: budget=25.13GB fixed=0.73GB G=32/32 full=1 used=4.97GB\ngpu: CUDA backend on NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb (4.1 GB weights in VRAM)\ngpu: VRAM 20.46 GB free of 25.37 GB after init (kv 0.54 GB + scratch 0.05 GB this instance)\nloaded /home/lab/workspace/models/Lucie-7B-Instruct-v1.1-gguf-fixed/Lucie-7B-Instruct-v1.1-q4_k_m.gguf | llama | 32 layers | ctx 4096 | 64 threads | 0.78s\nsampling: lucie (temp 0.00 \u2014 greedy argmax; top_p/top_k/min_p/repeat_penalty inactive)\n\nprompt: 6 tok, 49.97 tok/s | gen: 1 tok, 71.29 tok/s\n"
+          "stderr_tail": "gpu-split: budget=25.13GB fixed=0.73GB G=32/32 full=1 used=4.97GB\ngpu: CUDA backend on NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb (4.1 GB weights in VRAM)\ngpu: VRAM 20.46 GB free of 25.37 GB after init (kv 0.54 GB + scratch 0.05 GB this instance)\nloaded models/Lucie-7B-Instruct-v1.1-gguf-fixed/Lucie-7B-Instruct-v1.1-q4_k_m.gguf | llama | 32 layers | ctx 4096 | 64 threads | 0.78s\nsampling: lucie (temp 0.00 \u2014 greedy argmax; top_p/top_k/min_p/repeat_penalty inactive)\n\nprompt: 6 tok, 49.97 tok/s | gen: 1 tok, 71.29 tok/s\n"
         },
         "tokenizer": {
           "status": "fail",
@@ -58,7 +58,7 @@
           "returncode": 0,
           "elapsed_ms": 23157.27,
           "scenario_matrix": "agent-torture",
-          "output_tail": "report: /home/lab/workspace/.lucie-repin-ef520cd/tests/torture/out/report.json\nraw: /home/lab/workspace/.lucie-repin-ef520cd/tests/torture/out/raw.jsonl\nruntime=runner requests=8 passed=8 failed=0\n"
+          "output_tail": "report: .lucie-repin-ef520cd/tests/torture/out/report.json\nraw: .lucie-repin-ef520cd/tests/torture/out/raw.jsonl\nruntime=runner requests=8 passed=8 failed=0\n"
         },
         "greedy_reference": {
           "status": "not_executed",
@@ -69,7 +69,7 @@
           "reason": "check_class_not_executable"
         }
       },
-      "resolved_file": "/home/lab/workspace/models/Lucie-7B-Instruct-v1.1-gguf-fixed/Lucie-7B-Instruct-v1.1-q4_k_m.gguf",
+      "resolved_file": "models/Lucie-7B-Instruct-v1.1-gguf-fixed/Lucie-7B-Instruct-v1.1-q4_k_m.gguf",
       "actual_sha256": "bec3af604bc043bb0860216b11da6ef689e01e7696e1b064c75acc3e15753433",
       "file_status": "pass",
       "complete": false

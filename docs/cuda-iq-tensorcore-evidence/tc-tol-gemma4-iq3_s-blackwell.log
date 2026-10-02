@@ -25,7 +25,7 @@ rope: using model frequency factors (rope_freqs.weight)
 gpu-split: budget=24.90GB fixed=1.11GB G=42/42 full=1 used=3.07GB
 gpu: CUDA backend on NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb (4.7 GB weights in VRAM)
 gpu: VRAM 19.96 GB free of 25.37 GB after init (kv 0.23 GB + scratch 0.02 GB this instance)
-tc-tol: /home/lab/workspace/models/iq-archrows/gemma4-IQ3_S.gguf | 192 tokens, 64 teacher-forced positions
+tc-tol: models/iq-archrows/gemma4-IQ3_S.gguf | 192 tokens, 64 teacher-forced positions
   scalar-b64   TC dispatches: none
   scalar-b16   TC dispatches: none
   tc-b64       TC dispatches: Q4_K=48 IQ3_S=636

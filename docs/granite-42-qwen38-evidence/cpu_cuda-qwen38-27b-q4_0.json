@@ -1,5 +1,5 @@
 {
- "model": "/home/lab/workspace/models/qwen3.8/Qwen3.8-27B-Q4_0.gguf",
+ "model": "models/qwen3.8/Qwen3.8-27B-Q4_0.gguf",
  "tokens": 128,
  "context": 2048,
  "routing": "eager",

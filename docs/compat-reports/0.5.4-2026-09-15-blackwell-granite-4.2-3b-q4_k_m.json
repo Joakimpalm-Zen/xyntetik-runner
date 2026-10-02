@@ -24,7 +24,7 @@
           "status": "pass",
           "returncode": 0,
           "elapsed_ms": 1458.7,
-          "stderr_tail": "gpu: no OS video memory budget published for this device; offload budget 13.99 GB from the driver's free view, headroom 0.87 GB\ngpu-split: budget=13.99GB fixed=1.07GB G=40/40 full=1 used=3.29GB\ngpu: CUDA backend on NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb (2.2 GB weights in VRAM)\ngpu: VRAM 11.34 GB free of 25.37 GB after init (kv 0.34 GB + scratch 0.05 GB this instance)\nloaded /home/lab/workspace/models/granite-4.2/granite-4.2-3b-Q4_K_M.gguf | granite | 40 layers | ctx 4096 | 32 threads | 1.17s\nsampling: granite42 (temp 0.00 \u2014 greedy argmax; top_p/top_k/min_p/repeat_penalty inactive)\n\nprompt: 3 tok, 19.93 tok/s | gen: 1 tok, 46.63 tok/s\n"
+          "stderr_tail": "gpu: no OS video memory budget published for this device; offload budget 13.99 GB from the driver's free view, headroom 0.87 GB\ngpu-split: budget=13.99GB fixed=1.07GB G=40/40 full=1 used=3.29GB\ngpu: CUDA backend on NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb (2.2 GB weights in VRAM)\ngpu: VRAM 11.34 GB free of 25.37 GB after init (kv 0.34 GB + scratch 0.05 GB this instance)\nloaded models/granite-4.2/granite-4.2-3b-Q4_K_M.gguf | granite | 40 layers | ctx 4096 | 32 threads | 1.17s\nsampling: granite42 (temp 0.00 \u2014 greedy argmax; top_p/top_k/min_p/repeat_penalty inactive)\n\nprompt: 3 tok, 19.93 tok/s | gen: 1 tok, 46.63 tok/s\n"
         },
         "tokenizer": {
           "status": "pass",

@@ -13,7 +13,7 @@ gpu: VRAM 17.61 GB free of 25.37 GB after init (kv 0.34 GB + scratch 0.05 GB thi
 gpu-split: budget=20.06GB fixed=0.72GB G=40/40 full=1 used=2.75GB
 gpu: CUDA backend on NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb (2.0 GB weights in VRAM)
 gpu: VRAM 17.61 GB free of 25.37 GB after init (kv 0.34 GB + scratch 0.05 GB this instance)
-tc-tol: /home/lab/workspace/models/granite-4.2/granite-4.2-3b-IQ4_XS.gguf | 192 tokens, 64 teacher-forced positions
+tc-tol: models/granite-4.2/granite-4.2-3b-IQ4_XS.gguf | 192 tokens, 64 teacher-forced positions
   scalar-b64   TC dispatches: none
   scalar-b16   TC dispatches: none
   tc-b64       TC dispatches: IQ4_XS=470

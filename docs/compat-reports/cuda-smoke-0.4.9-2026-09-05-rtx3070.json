@@ -79,7 +79,7 @@
       "severity": "fail"
     }
   ],
-  "generation_output": "gpu-split: budget=7.46GB fixed=0.72GB G=28/28 full=1 used=1.66GB\r\ngpu: CUDA backend on NVIDIA GeForce RTX 3070 (0.6 GB weights in VRAM)\r\ngpu: VRAM 6.32 GB free of 8.59 GB after init (kv 0.47 GB + scratch 0.02 GB this instance)\r\nloaded C:/Users/zen/qwen3-0.6b-q8_0.gguf | qwen3 | 28 layers | ctx 4096 | 4 threads | 0.50s\r\nsampling: qwen3 (temp 0.00 \u2014 greedy argmax; top_p/top_k/min_p/repeat_penalty inactive)\r\nThe capital of France is Paris. The capital of France is also the capital of the Republic of France. The capital of France is also the capital\r\nprompt: 5 tok, 186.27 tok/s | gen: 24 tok, 276.60 tok/s\r\n\r\n",
+  "generation_output": "gpu-split: budget=7.46GB fixed=0.72GB G=28/28 full=1 used=1.66GB\r\ngpu: CUDA backend on NVIDIA GeForce RTX 3070 (0.6 GB weights in VRAM)\r\ngpu: VRAM 6.32 GB free of 8.59 GB after init (kv 0.47 GB + scratch 0.02 GB this instance)\r\nloaded ~/qwen3-0.6b-q8_0.gguf | qwen3 | 28 layers | ctx 4096 | 4 threads | 0.50s\r\nsampling: qwen3 (temp 0.00 \u2014 greedy argmax; top_p/top_k/min_p/repeat_penalty inactive)\r\nThe capital of France is Paris. The capital of France is also the capital of the Republic of France. The capital of France is also the capital\r\nprompt: 5 tok, 186.27 tok/s | gen: 24 tok, 276.60 tok/s\r\n\r\n",
   "gpu": {
     "backend": "cuda",
     "eseries": true,

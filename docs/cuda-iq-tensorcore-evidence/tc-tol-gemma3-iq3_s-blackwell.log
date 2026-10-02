@@ -19,7 +19,7 @@ rope: linear scaling x8.00 (model metadata)
 gpu-split: budget=24.90GB fixed=1.11GB G=34/34 full=1 used=3.05GB
 gpu: CUDA backend on NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb (1.9 GB weights in VRAM)
 gpu: VRAM 22.36 GB free of 25.37 GB after init (kv 0.57 GB + scratch 0.02 GB this instance)
-tc-tol: /home/lab/workspace/models/iq-archrows/gemma3-IQ3_S.gguf | 192 tokens, 64 teacher-forced positions
+tc-tol: models/iq-archrows/gemma3-IQ3_S.gguf | 192 tokens, 64 teacher-forced positions
   scalar-b64   TC dispatches: none
   scalar-b16   TC dispatches: none
   tc-b64       TC dispatches: IQ3_S=476

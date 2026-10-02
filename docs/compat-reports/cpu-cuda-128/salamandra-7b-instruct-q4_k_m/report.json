@@ -1,5 +1,5 @@
 {
- "model": "/home/lab/workspace/models/salamandra-7b-instruct-Q4_K_M-f32/salamandra-7b-instruct-Q4_K_M-f32.gguf",
+ "model": "models/salamandra-7b-instruct-Q4_K_M-f32/salamandra-7b-instruct-Q4_K_M-f32.gguf",
  "tokens": 128,
  "context": 2048,
  "routing": "eager",

@@ -6,7 +6,7 @@
  "platform": "Linux-6.12.0-211.16.1.el10_2.x86_64-x86_64-with-glibc2.39",
  "base_url": "http://127.0.0.1:8102",
  "model": "Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf",
- "model_file": "/home/lab/workspace/models/Qwen3-Coder-30B-A3B-Instruct-Q4_K_M/Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf",
+ "model_file": "models/Qwen3-Coder-30B-A3B-Instruct-Q4_K_M/Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf",
  "model_sha256": "79ad15a5ee3caddc3f4ff0db33a14454a5a3eb503d7fa1c1e35feafc579de486",
  "runner": "./runner",
  "runner_sha256": "d4faddd6e8c7c13420b1fa4f52339c8e3f3251c5073d5a48d6a36064872c28e1",

@@ -142,9 +142,42 @@ def private_reference_scan():
     return True
 
 
+# A home directory inside committed evidence names the machine and the user
+# that produced it, not the model (R6.2.x: 281 evidence files carried the
+# lab's and the owner's paths until 2026-10-02). The harnesses now write
+# relative paths; this keeps a new report from bringing them back. Scratch
+# directories under /tmp are not homes and are not matched.
+HOME_PATH_RE = (r"(^|[^A-Za-z0-9._-])(/home|/Users)/[A-Za-z0-9._-]+/"
+                r"|[A-Za-z]:\\+Users\\+|[A-Za-z]:/Users/")
+
+
+def home_path_scan():
+    try:
+        proc = subprocess.run(
+            ["git", "grep", "-l", "-E", HOME_PATH_RE, "--", "docs", "site",
+             "README.md", "python/README.md"],
+            cwd=ROOT, capture_output=True, text=True, timeout=60)
+    except FileNotFoundError:
+        print("release-check: note: git unavailable, home-path scan skipped "
+              "on this job (covered by sibling jobs)")
+        return True
+    except (subprocess.TimeoutExpired, OSError) as e:
+        return fail(f"home-path scan could not run: {e}")
+    if proc.returncode not in (0, 1):
+        return fail("home-path scan failed: "
+                    + (proc.stderr.strip() or f"git grep exited {proc.returncode}"))
+    hits = [l for l in proc.stdout.splitlines() if l.strip()]
+    if hits:
+        return fail("home-directory paths in public evidence: "
+                    + ", ".join(hits[:10])
+                    + (f" and {len(hits) - 10} more" if len(hits) > 10 else ""))
+    return True
+
+
 def check(args):
     ok = True
     ok &= private_reference_scan()
+    ok &= home_path_scan()
     version = args.tag[1:] if args.tag.startswith("v") else args.tag
     expected_binary = f"runner {version}"
 

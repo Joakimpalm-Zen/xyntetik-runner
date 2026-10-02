@@ -1,4 +1,4 @@
-file: /home/lab/workspace/Gridcore/cert-matrix-models/gpt-oss-120b-mxfp4.gguf
+file: Gridcore/cert-matrix-models/gpt-oss-120b-mxfp4.gguf
 gguf version: 3  tensors: 687  kv: 36
 general.architecture: gpt-oss
 general.name: gpt-oss-120b

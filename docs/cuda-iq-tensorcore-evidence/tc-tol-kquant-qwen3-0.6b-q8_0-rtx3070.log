@@ -13,7 +13,7 @@ gpu: VRAM 6.32 GB free of 8.59 GB after init (kv 0.47 GB + scratch 0.02 GB this 
 gpu-split: budget=7.46GB fixed=0.72GB G=28/28 full=1 used=1.66GB
 gpu: CUDA backend on NVIDIA GeForce RTX 3070 (0.6 GB weights in VRAM)
 gpu: VRAM 6.32 GB free of 8.59 GB after init (kv 0.47 GB + scratch 0.02 GB this instance)
-tc-tol: C:/Users/zen/qwen3-0.6b-q8_0.gguf | 192 tokens, 64 teacher-forced positions
+tc-tol: ~/qwen3-0.6b-q8_0.gguf | 192 tokens, 64 teacher-forced positions
   scalar-b64   TC dispatches: none
   scalar-b16   TC dispatches: none
   tc-b64       TC dispatches: Q8_0=392

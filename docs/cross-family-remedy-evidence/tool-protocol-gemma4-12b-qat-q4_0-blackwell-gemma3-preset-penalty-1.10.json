@@ -6,7 +6,7 @@
  "platform": "Linux-6.12.0-211.16.1.el10_2.x86_64-x86_64-with-glibc2.39",
  "base_url": "http://127.0.0.1:8098",
  "model": "gemma-4-12b-it-qat-q4_0.gguf",
- "model_file": "/home/lab/workspace/models/gemma-4-12b-it-qat-q4_0/gemma-4-12b-it-qat-q4_0.gguf",
+ "model_file": "models/gemma-4-12b-it-qat-q4_0/gemma-4-12b-it-qat-q4_0.gguf",
  "model_sha256": "93567e57a8fe10b23569b9d9ec38cd005deedf71e29477c421a4b83f418a538b",
  "runner": "./runner",
  "runner_sha256": "c1ec9b591378586143389468296a797f265c2dccbd3eb9fdf7c2bf6bca64dafb",

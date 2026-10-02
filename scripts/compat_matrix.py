@@ -339,6 +339,38 @@ def run_load(runner, model, gpu, timeout):
     }
 
 
+def scrub_paths(obj, roots):
+    """The report with every absolute machine path rewritten relative to the
+    first root it lies under (the home directory as `~`). Reports are
+    committed as public evidence: a path into the box's workspace, the
+    user's home or a scratch directory says nothing about the model and
+    something about the machine (R6.2.x). Applied to every string, so the
+    paths inside captured stderr and stdout tails go too."""
+    pairs = []
+    for r in (r for r in roots if r):
+        r = Path(r).resolve()
+        for form in {str(r), str(r).replace("\\", "/")}:
+            if len(form) > 1:
+                pairs.append((form, "~" if r == Path.home().resolve() else ""))
+    pairs.sort(key=lambda p: -len(p[0]))   # the most specific root wins
+
+    def fix(text):
+        for root, repl in pairs:
+            text = text.replace(root + "/", repl + "/" if repl else "")
+            text = text.replace(root + "\\", repl + "\\" if repl else "")
+            if text == root:
+                text = repl or "."
+        return text
+
+    if isinstance(obj, str):
+        return fix(obj)
+    if isinstance(obj, list):
+        return [scrub_paths(v, roots) for v in obj]
+    if isinstance(obj, dict):
+        return {k: scrub_paths(v, roots) for k, v in obj.items()}
+    return obj
+
+
 def resolve_model(entry, models_root):
     declared = Path(entry["file"])
     if declared.is_absolute() and declared.is_file():
@@ -596,6 +628,9 @@ def main(argv=None):
             status = check["status"]
             statuses[status] = statuses.get(status, 0) + 1
 
+    report = scrub_paths(report, [args.models_root, ROOT,
+                                  args.out.parent if args.out else None,
+                                  Path.home()])
     rendered = json.dumps(report, indent=2) + "\n"
     if args.out:
         args.out.parent.mkdir(parents=True, exist_ok=True)

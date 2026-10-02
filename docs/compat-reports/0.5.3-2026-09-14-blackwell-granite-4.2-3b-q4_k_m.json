@@ -24,7 +24,7 @@
           "status": "pass",
           "returncode": 0,
           "elapsed_ms": 1545.0,
-          "stderr_tail": "gpu-split: budget=12.00GB fixed=0.73GB G=40/40 full=1 used=2.95GB\ngpu: CUDA backend on NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb (2.2 GB weights in VRAM)\ngpu: VRAM 9.36 GB free of 25.37 GB after init (kv 0.34 GB + scratch 0.05 GB this instance)\nloaded /home/lab/workspace/models/granite-4.2/granite-4.2-3b-Q4_K_M.gguf | granite | 40 layers | ctx 4096 | 32 threads | 1.23s\nsampling: generic (temp 0.00 \u2014 greedy argmax; top_p/top_k/min_p/repeat_penalty inactive)\n\nprompt: 3 tok, 15.29 tok/s | gen: 1 tok, 31.10 tok/s\n"
+          "stderr_tail": "gpu-split: budget=12.00GB fixed=0.73GB G=40/40 full=1 used=2.95GB\ngpu: CUDA backend on NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb (2.2 GB weights in VRAM)\ngpu: VRAM 9.36 GB free of 25.37 GB after init (kv 0.34 GB + scratch 0.05 GB this instance)\nloaded models/granite-4.2/granite-4.2-3b-Q4_K_M.gguf | granite | 40 layers | ctx 4096 | 32 threads | 1.23s\nsampling: generic (temp 0.00 \u2014 greedy argmax; top_p/top_k/min_p/repeat_penalty inactive)\n\nprompt: 3 tok, 15.29 tok/s | gen: 1 tok, 31.10 tok/s\n"
         },
         "tokenizer": {
           "status": "pass",

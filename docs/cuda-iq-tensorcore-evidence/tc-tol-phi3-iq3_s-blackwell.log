@@ -19,7 +19,7 @@ rope: phi3 LongRoPE short factors, mscale 1.1902
 gpu-split: budget=24.90GB fixed=1.08GB G=32/32 full=1 used=3.00GB
 gpu: CUDA backend on NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb (1.9 GB weights in VRAM)
 gpu: VRAM 22.42 GB free of 25.37 GB after init (kv 0.54 GB + scratch 0.03 GB this instance)
-tc-tol: /home/lab/workspace/models/iq-archrows/phi3-IQ3_S.gguf | 192 tokens, 64 teacher-forced positions
+tc-tol: models/iq-archrows/phi3-IQ3_S.gguf | 192 tokens, 64 teacher-forced positions
   scalar-b64   TC dispatches: none
   scalar-b16   TC dispatches: none
   tc-b64       TC dispatches: IQ3_S=448

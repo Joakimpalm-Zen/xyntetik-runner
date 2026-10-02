@@ -13,7 +13,7 @@ gpu: VRAM 15.83 GB free of 25.37 GB after init (kv 0.67 GB + scratch 0.06 GB thi
 gpu-split: budget=25.13GB fixed=1.03GB G=40/40 full=1 used=9.16GB
 gpu: CUDA backend on NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb (8.5 GB weights in VRAM)
 gpu: VRAM 15.83 GB free of 25.37 GB after init (kv 0.67 GB + scratch 0.06 GB this instance)
-tc-tol: /home/lab/workspace/models/Hermes-4-14B-Q4_0/NousResearch_Hermes-4-14B-Q4_0.gguf | 192 tokens, 64 teacher-forced positions
+tc-tol: models/Hermes-4-14B-Q4_0/NousResearch_Hermes-4-14B-Q4_0.gguf | 192 tokens, 64 teacher-forced positions
   scalar-b64   TC dispatches: none
   scalar-b16   TC dispatches: none
   tc-b64       TC dispatches: Q4_0=550

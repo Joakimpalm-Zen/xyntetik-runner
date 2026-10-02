@@ -1,4 +1,4 @@
-starting server A: /home/lab/workspace/Gridcore/cert-matrix-models/gpt-oss-36b-brainstorm-davidau.gguf
+starting server A: Gridcore/cert-matrix-models/gpt-oss-36b-brainstorm-davidau.gguf
 {
   "positions_scored": 400,
   "positions_failed": 0,

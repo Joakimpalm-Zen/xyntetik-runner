@@ -1,5 +1,5 @@
 {
-  "model": "/Users/zenzombie/AI_projects/origin/xyntetik-runner/models/google_gemma-3-4b-it-Q4_K_M.gguf",
+  "model": "models/google_gemma-3-4b-it-Q4_K_M.gguf",
   "scenario_matrix": "agent-torture",
   "returncode": 1,
   "totals": {

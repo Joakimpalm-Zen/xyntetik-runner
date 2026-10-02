@@ -499,3 +499,19 @@ def test_private_markers_match_internals_not_only_names():
               "packages that ship", "the vault of receipts"]
     for text in misses:
         assert not rx.search(text), text
+
+
+def test_home_directory_paths_are_recognised():
+    """R6.2.x: a home directory in committed evidence names a machine. A
+    scratch directory that happens to contain `home` is not one."""
+    import re
+    rx = re.compile(check_release.HOME_PATH_RE)
+    for text in ["loaded /" + "home/lab/workspace/m.gguf",
+                 '"path": "/' + "Users/someone/models/m.gguf",
+                 "C:" + "\\Users\\zen\\m.gguf",
+                 "C:" + "\\\\Users\\\\zen\\\\m.gguf",
+                 "C:" + "/Users/zen/m.gguf"]:
+        assert rx.search(text), text
+    for text in ["/tmp/agent-sweep-x/home/.continue/config.yaml",
+                 "~/xs-work/models/m.gguf", "models/m.gguf"]:
+        assert not rx.search(text), text

@@ -1,5 +1,5 @@
 rope: linear scaling x8.00 (model metadata)
-loaded /Users/zenzombie/AI_projects/origin/xyntetik-runner/models/google_gemma-3-4b-it-Q4_K_M.gguf | gemma3 | 34 layers | ctx 4096 | 1 threads | 0.08s
+loaded models/google_gemma-3-4b-it-Q4_K_M.gguf | gemma3 | 34 layers | ctx 4096 | 1 threads | 0.08s
 sampling: gemma3 (temp 1.00, top_p 0.95, top_k 64, min_p 0.00, repeat_penalty 1.00)
 rope: linear scaling x8.00 (model metadata)
 server listening on http://127.0.0.1:64038 — 2 slots x 2 threads, continuous batching

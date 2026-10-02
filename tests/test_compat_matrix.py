@@ -523,7 +523,10 @@ def test_per_row_reports_are_referenced_from_the_ledger(monkeypatch, tmp_path):
                  "--verify-files", "--execute-checks", "--out", str(out)])
 
     check = json.loads(out.read_text())["models"][0]["checks"]["cpu_cuda"]
-    assert check["report"] == str(out.parent / "cpu_cuda" / "m.json")
+    # relative to the ledger's own directory: the ledger is committed as
+    # public evidence and names its files, not the machine (R6.2.x)
+    assert check["report"] == "cpu_cuda/m.json"
+    assert (out.parent / check["report"]).is_file()
     assert (out.parent / "cpu_cuda" / "m.json").is_file()
 
 
@@ -743,3 +746,28 @@ def test_python_children_get_a_utf8_console(monkeypatch, tmp_path):
         assert env is not None
         assert env["PYTHONUTF8"] == "1"
         assert env["PYTHONIOENCODING"] == "utf-8"
+
+
+def test_reports_carry_no_machine_paths(tmp_path):
+    """R6.2.x: every string of a report is rewritten relative to the models
+    root, the repository, the output directory or the home directory, so a
+    committed report names files, not the machine that read them."""
+    import importlib.util
+    from pathlib import Path
+    spec = importlib.util.spec_from_file_location(
+        "cm", Path(__file__).resolve().parents[1] / "scripts/compat_matrix.py")
+    cm = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(cm)
+    home = Path.home()
+    models = tmp_path / "shelf"
+    report = {"load": {"stderr_tail": f"loaded {models}/m.gguf | llama"},
+              "report": str(cm.ROOT / "docs/compat-reports/cpu_cuda/m.json"),
+              "note": f"cache in {home}/.cache/x", "plain": "no paths here"}
+    out = cm.scrub_paths(report, [models, cm.ROOT, None, home])
+    text = repr(out)
+    assert str(models) not in text and str(cm.ROOT) not in text
+    assert str(home) not in text
+    assert out["load"]["stderr_tail"] == "loaded m.gguf | llama"
+    assert out["report"] == "docs/compat-reports/cpu_cuda/m.json"
+    assert out["note"] == "cache in ~/.cache/x"
+    assert out["plain"] == "no paths here"

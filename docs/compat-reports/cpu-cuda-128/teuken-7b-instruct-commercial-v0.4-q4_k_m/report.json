@@ -1,5 +1,5 @@
 {
- "model": "/home/lab/workspace/models/Teuken-7B-instruct-commercial-v0.4-Q4_K_M/Teuken-7B-instruct-commercial-v0.4-Q4_K_M.gguf",
+ "model": "models/Teuken-7B-instruct-commercial-v0.4-Q4_K_M/Teuken-7B-instruct-commercial-v0.4-Q4_K_M.gguf",
  "tokens": 128,
  "context": 2048,
  "routing": "eager",

@@ -2,7 +2,7 @@
   "schema_version": "xyntetik.runner.gold-logits.v1",
   "summary": {
     "positions": 100,
-    "hf": "/home/lab/workspace/hf/qwen2.5-0.5b",
+    "hf": "hf/qwen2.5-0.5b",
     "corpus": "tests/fixtures/mixed-corpus.txt",
     "reference_class": "Qwen2ForCausalLM",
     "special_prefix_tokens": 0,
