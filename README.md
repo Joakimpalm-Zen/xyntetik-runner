@@ -2226,7 +2226,9 @@ is exact on the backend and build that suspended it. A recurrent model on a devi
 cannot be imaged (its state is not the host's to restore; serve it with `--gpu off`), and
 an image made under `--json` or `--json-schema` is resumed by the CLI, not the server.
 Gate: `tests/test_server_sessions.py`, red when a resume does not restore the image's
-rng state.
+rng state. `scripts/session-demo.py` runs the whole cycle (suspend, exact resume, eight
+forks, keep one) and [docs/session-images.md](docs/session-images.md) says what it
+proves.
 
 <a id="cli-v"></a>
 #### `-v`
