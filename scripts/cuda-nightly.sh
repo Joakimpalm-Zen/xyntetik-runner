@@ -8,8 +8,10 @@
 # files a person puts there once:
 #   cuda-nightly.env  VAR=value lines for this script (below)
 #   cuda-gate.env     VAR=value lines for scripts/cuda-gate.sh
-# The checkout this script runs from is the one it updates and builds, so the
-# scheduler entry is one line: bash <checkout>/scripts/cuda-nightly.sh BASE.
+# The checkout it updates and builds is the one this script sits in, or the
+# one NIGHTLY_SRC names. Run a COPY of the script with NIGHTLY_SRC set: the
+# update replaces the file under a shell that is still reading it otherwise.
+#   cp <checkout>/scripts/cuda-nightly.sh BASE/run.sh && bash BASE/run.sh BASE
 #
 # It is a guest on a shared machine. Before it touches the CPU it checks the
 # conditions the box's other users named, and when one holds it logs a skip
@@ -23,6 +25,7 @@
 #                       the Windows pid under MSYS2)
 #   NIGHTLY_MAKE_ARGS   make arguments for the build (e.g. OS=Windows_NT -j4)
 #   NIGHTLY_REMOTE      git remote and branch to build (default origin main)
+#   NIGHTLY_SRC         the checkout to update and build
 #   NIGHTLY_ISSUE_REPO  owner/name; when set and the GitHub CLI is logged in,
 #                       a failed night opens one issue there, or comments on
 #                       the open one, so a person sees it. Unset: local only.
@@ -31,7 +34,7 @@ BASE=${1:?usage: cuda-nightly.sh BASE_DIR}
 mkdir -p "$BASE/logs" "$BASE/out" || exit 2
 # shellcheck disable=SC1091
 [ -f "$BASE/cuda-nightly.env" ] && { set -a; . "$BASE/cuda-nightly.env"; set +a; }
-SRC=$(cd "$(dirname "$0")/.." && pwd)
+SRC=${NIGHTLY_SRC:-$(cd "$(dirname "$0")/.." && pwd)}
 log() { echo "$(date '+%F %T') $*" >> "$BASE/history.log"; }
 
 pid_alive() {
