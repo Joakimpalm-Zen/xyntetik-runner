@@ -8,6 +8,12 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **The default command runs StableLM again on a machine with a GPU.**
+  `--gpu auto` (the default, and the only GPU setting) refused a LayerNorm
+  model with "rerun with --gpu off", so `runner -m stablelm-2.gguf` failed
+  on every Mac and GPU box; a removed-sublayer file did the same on CUDA.
+  Both now run on the CPU with a line saying why, as every other backend
+  gap does. Found by the compat row pinned for StableLM this week.
 - **A tool schema the function-XML syntax cannot enforce no longer 400s.**
   On Granite 4.2, Qwen 3.8, Ornith and Qwen3-Coder a `required` or named
   tool choice with a string parameter that carries `minLength`, `maxLength`
