@@ -586,6 +586,8 @@ static bool inject_no_kernel(int type) {
            !strcmp(inj + 10, ggml_type_name(type));
 }
 
+static void tc_scalar_notice(const model_t *m);
+
 static bool gpu_tensor_type_ok(const gguf_tensor *t) {
     if (!t) return true;
     if (t->scale != 1.0f && !gpu_scale_companion_ok(t->type)) {
@@ -2271,6 +2273,7 @@ bool gpu_init(model_t *m) {
                     name, g->sw->weights_len / 1e9);
         // the number Phase 5 is judged on: with weights shared, a second slot
         // should cost only its KV cache and activation scratch
+        tc_scalar_notice(m);
         size_t vfree = 0, vtotal = 0;
         if (cu.MemGetInfo(&vfree, &vtotal) == 0)
             fprintf(stderr, "gpu: VRAM %.2f GB free of %.2f GB after init "
@@ -2588,6 +2591,36 @@ static bool tc_on(const model_t *m, int type) {
     }
     if (g_tc_state >= 0) return g_tc_state != 0;
     return tc_promoted(m, type);
+}
+
+// Said once at load (R4.12.28): a codebook i-quant on an architecture whose
+// tensor-core prefill is not promoted has only the scalar batched kernel,
+// which decodes its codebooks per element and per column. Measured before
+// muse-glimmer was promoted: Muse-Glimmer-30B IQ3_XXS prefilled at 2.6 tok/s
+// on the device against 24.0 on 16 host threads, and 85.3 with the tensor
+// cores. An architecture joins the promoted list on its own test-tc-tol row;
+// until it has one the user is told what they are getting and what the
+// alternatives are, instead of finding out from a prompt that never returns.
+static void tc_scalar_notice(const model_t *m) {
+    if (g_tc_state == TC_ENV_UNSET) (void)tc_on(m, T_Q4_K);   // read the env once
+    int n = 0, type = -1;
+    for (uint64_t i = 0; i < m->gf.n_tensors; i++) {
+        const gguf_tensor *t = &m->gf.tensors[i];
+        if (t->n_dims != 2 || !tc_codebook(t->type) || tc_on(m, t->type)) continue;
+        if (!n) type = t->type;
+        n++;
+    }
+    if (!n) return;
+    fprintf(stderr, "gpu: %d weight matrices are codebook i-quants (%s, ...) and "
+            "the tensor-core prefill is %s for '%s': prompts are prefilled by the "
+            "scalar kernel, which can be slower than the CPU. %s\n", n,
+            ggml_type_name(type),
+            g_tc_state == 0 ? "turned off (RUNNER_CUDA_TC=0)" : "not promoted",
+            m->arch,
+            g_tc_state == 0 ? "Unset RUNNER_CUDA_TC to use the promoted kernels."
+                            : "RUNNER_CUDA_TC=1 uses the tensor cores (not yet "
+                              "gated for this architecture); --gpu off prefills "
+                              "on the host.");
 }
 
 // A kernel with a fixed compile-time column tile cannot take the full prefill
