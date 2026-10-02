@@ -1258,7 +1258,7 @@ static void handle_embeddings(slot_t *s, sock_t fd, jv *req) {
 // /health and /v1/models read only startup-immutable strings plus an atomic
 // resident snapshot, so they are safe to answer from the accept thread with no lock
 static void send_health(sock_t fd) {
-    char b[1024];
+    char b[1088];
     int n, res = resident_load();
     // Inference requests in flight. "A model is loaded" and "the model is
     // working" look identical from outside the process, and the tray needs to
@@ -1293,12 +1293,18 @@ static void send_health(sock_t fd) {
     uint64_t cur_rss = plat_proc_rss_bytes();
     uint64_t peak_rss = plat_proc_peak_rss_bytes();
     if (peak_rss < cur_rss) peak_rss = cur_rss;
-    char m[384];
+    // How many loads this process has made (R10.12.1): it moves on every
+    // load, reload and swap, so a client that reads it twice and sees the
+    // same number with a resident model has been talking to one load. A
+    // request can require it (`expect_resident`).
+    char m[448];
     snprintf(m, sizeof(m),
+             ",\"load_generation\":%llu"
              ",\"rss_bytes\":%llu,\"peak_rss_bytes\":%llu,"
              "\"tokens_prompt\":%llu,\"tokens_generated\":%llu,"
              "\"generate_seconds\":%.6f,"
              "\"batch_steps\":%llu,\"batch_sequences\":%llu",
+             (unsigned long long)provenance_load_generation(NULL),
              (unsigned long long)cur_rss,
              (unsigned long long)peak_rss,
              wt.prompt_tokens, wt.gen_tokens, wt.gen_seconds, bs, bq);
@@ -2039,11 +2045,38 @@ static void handle_conn(slot_t *s, sock_t fd) {
                 free(body);
                 return;
             }
+            resident_expect expect;
+            if (!request_expect_resident(fd, req, &expect)) {
+                jv_free(req);
+                free(body);
+                return;
+            }
             atomic_fetch_add(&SV.active_requests, 1);
             atomic_fetch_add(&SV.total_requests, 1);
             bool ok = true;
-            if (SV.n_reg > 0) {
-                int sw = swap_to(jv_str(jv_get(req, "model"), NULL));
+            int sw = SV.n_reg > 0
+                ? swap_to_expect(jv_str(jv_get(req, "model"), NULL), &expect)
+                : single_model_expect(&expect);
+            if (sw == SWAP_EXPECT_MISMATCH || sw == SWAP_EXPECT_UNKNOWN) {
+                // R10.12.2: say what IS resident, so the client can decide
+                // without a second round trip
+                bool res = false;
+                unsigned long long g = provenance_load_generation(&res);
+                char msg[256];
+                snprintf(msg, sizeof msg,
+                         sw == SWAP_EXPECT_UNKNOWN
+                         ? "expect_resident could not be checked: the resident "
+                           "model's digest is not known yet or its file changed "
+                           "on disk (load_generation %llu); nothing was loaded"
+                         : "expect_resident does not match what is resident "
+                           "(load_generation %llu, %s); nothing was loaded",
+                         g, res ? "a model is resident" : "no model is resident");
+                send_error_detail(fd, 409, msg, "expect_resident",
+                                  sw == SWAP_EXPECT_UNKNOWN
+                                  ? "resident_identity_unknown"
+                                  : "resident_mismatch");
+                ok = false;
+            } else if (SV.n_reg > 0) {
                 if (sw == SWAP_LOAD_FAILED) {
                     send_error(fd, 500,
                                "model failed to load (registered but broken; see server log)");

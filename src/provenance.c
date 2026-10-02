@@ -35,6 +35,7 @@ static char     binary_sha[65];
 static bool     binary_ok;
 static bool     resident;
 static uint64_t gen;
+static uint64_t load_gen;   // loads since start; never moved by an unload
 static char    *model_path, *adapter_path;
 static float    adapter_scale;
 static char     adapter_sha[65];
@@ -145,6 +146,7 @@ void provenance_note_load(const provenance_load *l) {
     hstate = H_HASHING;
     resident = mp != NULL;
     uint64_t my_gen = ++gen;
+    load_gen++;
     pthread_mutex_unlock(&mu);
 
     hash_job *j = malloc(sizeof *j);
@@ -183,6 +185,34 @@ bool provenance_digests(char model[65], char binary[65]) {
     }
     pthread_mutex_unlock(&mu);
     return ok;
+}
+
+uint64_t provenance_load_generation(bool *is_resident) {
+    pthread_mutex_lock(&mu);
+    uint64_t g = load_gen;
+    if (is_resident) *is_resident = resident;
+    pthread_mutex_unlock(&mu);
+    return g;
+}
+
+int provenance_expect(uint64_t want_generation, const char *want_sha256) {
+    pthread_mutex_lock(&mu);
+    int r = PROV_EXPECT_OK;
+    if (!resident) {
+        r = PROV_EXPECT_MISMATCH;
+    } else if (want_generation && want_generation != load_gen) {
+        r = PROV_EXPECT_MISMATCH;
+    } else if (want_sha256 && *want_sha256) {
+        // the digest on display is the one a client can have read: withheld
+        // while it is being taken and once the file on disk has changed
+        file_id now;
+        bool changed = !load_id_ok || !identify(model_path, &now) ||
+                       !same_file(&now, &load_id);
+        if (changed || hstate != H_DONE) r = PROV_EXPECT_UNKNOWN;
+        else if (strcmp(want_sha256, model_sha) != 0) r = PROV_EXPECT_MISMATCH;
+    }
+    pthread_mutex_unlock(&mu);
+    return r;
 }
 
 void provenance_note_unload(void) {
@@ -247,7 +277,8 @@ void provenance_render(sbuf *b, const char *model_id) {
     sb_fmt(b, ",\"sha256_state\":\"%s\"", st);
     if (load_id_ok) sb_fmt(b, ",\"size\":%llu", (unsigned long long)load_id.size);
     else            sb_lit(b, ",\"size\":null");
-    sb_fmt(b, ",\"loaded_utc\":\"%s\",\"signature\":", loaded_utc);
+    sb_fmt(b, ",\"loaded_utc\":\"%s\",\"load_generation\":%llu,\"signature\":",
+           loaded_utc, (unsigned long long)load_gen);
     if (sig_json[0]) sb_put(b, sig_json, strlen(sig_json));
     else             sb_lit(b, "null");
     sb_fmt(b, ",\"envelope\":{\"state\":\"%s\",\"detail\":",

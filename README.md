@@ -2487,6 +2487,25 @@ used to be range-checked and then silently dropped. A completion with no
 refusals point at; serve with `--parallel 1` if you need an unloadable
 server.
 
+A client of a server it does not manage can ask for the opposite guarantee:
+that its request is served by the load it already looked at, or not at all.
+`/health` and `GET /v1/runner/provenance` carry `load_generation`, a count
+of the loads this process has made; it moves on every load, reload and swap,
+and an unload leaves it alone. A generation request may carry
+
+```json
+"expect_resident": {"load_generation": 3, "model_sha256": "<64 hex>"}
+```
+
+with either field or both. The server checks it under the lock every load,
+unload and swap takes. When what is resident is something else, or nothing,
+the request is **refused** with `409` and `resident_mismatch`, and the
+refusal changes nothing: no model is loaded or swapped and a pending unload
+stays pending. While the model file's digest is still being taken, or after
+the file changed on disk, a `model_sha256` expectation is refused with
+`resident_identity_unknown` rather than guessed. A request without the
+field behaves as before, loading on demand.
+
 ### Health and metrics
 
 `/health` also carries what a supervisor needs to budget several runners on

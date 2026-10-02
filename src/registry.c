@@ -138,7 +138,64 @@ static bool request_model_matches(const char *want, const char *served) {
 }
 
 // resolve + load the requested model; returns entry index or SWAP_*
-int swap_to(const char *want) {
+int swap_to(const char *want) { return swap_to_expect(want, NULL); }
+
+bool request_expect_resident(sock_t fd, jv *req, resident_expect *ex) {
+    memset(ex, 0, sizeof *ex);
+    jv *e = jv_get(req, "expect_resident");
+    if (!e || e->type == J_NULL) return true;
+    if (e->type != J_OBJ) {
+        send_error_detail(fd, 400, "expect_resident must be an object with "
+                          "load_generation and/or model_sha256",
+                          "expect_resident", "invalid_type");
+        return false;
+    }
+    jv *g = jv_get(e, "load_generation");
+    jv *h = jv_get(e, "model_sha256");
+    if (g && g->type != J_NULL) {
+        double v = g->type == J_NUM ? g->num : -1;
+        if (v < 1 || v > 9e15 || v != (double)(unsigned long long)v) {
+            send_error_detail(fd, 400, "expect_resident.load_generation must "
+                              "be a positive integer", "expect_resident",
+                              "invalid_value");
+            return false;
+        }
+        ex->generation = (unsigned long long)v;
+    }
+    if (h && h->type != J_NULL) {
+        const char *sv = h->type == J_STR ? h->str : NULL;
+        bool hex = sv && strlen(sv) == 64;
+        for (int i = 0; hex && i < 64; i++)
+            hex = (sv[i] >= '0' && sv[i] <= '9') || (sv[i] >= 'a' && sv[i] <= 'f');
+        if (!hex) {
+            send_error_detail(fd, 400, "expect_resident.model_sha256 must be "
+                              "64 lowercase hex digits", "expect_resident",
+                              "invalid_value");
+            return false;
+        }
+        memcpy(ex->sha256, sv, 65);
+    }
+    if (!ex->generation && !ex->sha256[0]) {
+        send_error_detail(fd, 400, "expect_resident names nothing to expect: "
+                          "give load_generation, model_sha256 or both",
+                          "expect_resident", "invalid_value");
+        return false;
+    }
+    ex->set = true;
+    return true;
+}
+
+static int expect_verdict(const resident_expect *ex) {
+    int v = provenance_expect(ex->generation, ex->sha256[0] ? ex->sha256 : NULL);
+    return v == PROV_EXPECT_OK ? 0
+         : v == PROV_EXPECT_UNKNOWN ? SWAP_EXPECT_UNKNOWN : SWAP_EXPECT_MISMATCH;
+}
+
+int single_model_expect(const resident_expect *ex) {
+    return ex && ex->set ? expect_verdict(ex) : 0;
+}
+
+int swap_to_expect(const char *want, const resident_expect *ex) {
     int idx = 0; // default: first entry
     if (want && *want) {
         idx = -1;
@@ -149,6 +206,20 @@ int swap_to(const char *want) {
         if (idx < 0) return SWAP_UNKNOWN;
     }
     pthread_mutex_lock(&SV.swap_mu);
+    // A request that says what it expects to find resident is served by that
+    // model or refused, and a refusal leaves the lifecycle exactly as it was:
+    // no load, no swap, and a pending unload stays pending. The check sits
+    // under the lock every load, unload and swap takes, so a client that
+    // looked at /health and then sent its request cannot have a reload slip
+    // in between unnoticed: the generation it read is no longer the one here.
+    if (ex && ex->set) {
+        int v = resident_load() != idx || SV.loading ? SWAP_EXPECT_MISMATCH
+                                                     : expect_verdict(ex);
+        if (v) {
+            pthread_mutex_unlock(&SV.swap_mu);
+            return v;
+        }
+    }
     // A request supersedes any unload that was still pending: it is about to
     // (re)load a model on purpose.
     SV.pending_unload = false;

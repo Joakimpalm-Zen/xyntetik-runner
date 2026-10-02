@@ -8,6 +8,13 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **`expect_resident`: a request can refuse to cause a load.** `/health`
+  and the provenance record now carry `load_generation`, which moves on
+  every load, reload and swap. A request may require it, the model file's
+  sha256, or both; when something else (or nothing) is resident the server
+  answers `409 resident_mismatch` and loads nothing, swaps nothing and
+  leaves a pending unload pending. For clients of a server they do not
+  manage, where checking `/health` and then sending a request is a race.
 - **Metal prefill over a long history is faster again.** The tiled
   attention kernel read each tile's scores from the device once per element
   of the head in its value phase; they now pass through threadgroup memory

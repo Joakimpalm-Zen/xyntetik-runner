@@ -230,6 +230,24 @@ void server_work_totals(work_totals *out);
 // startup suppresses it.
 #define SWAP_ENVELOPE_REFUSED (-4)
 #define SWAP_SIGNATURE_REFUSED (-5)
+// The request named what it expects to find resident (`expect_resident`) and
+// that is not what is resident: nothing was loaded, unloaded or swapped, and
+// no pending unload was cancelled (409). UNKNOWN is the same refusal when the
+// expectation could not be checked yet (the model digest is still being
+// taken, or the file changed on disk).
+#define SWAP_EXPECT_MISMATCH (-6)
+#define SWAP_EXPECT_UNKNOWN  (-7)
+
+// What a request expects to find resident. A request that carries one is
+// served by the resident model or refused; it never causes a load.
+typedef struct {
+    bool               set;
+    unsigned long long generation;   // 0 = not asked
+    char               sha256[65];   // "" = not asked
+} resident_expect;
+// Parse `expect_resident` off a request body. False = malformed (a 400 was
+// sent); *ex stays unset when the field is absent.
+bool request_expect_resident(sock_t fd, jv *req, resident_expect *ex);
 
 // ---- residency and admission (registry.c) ----
 
@@ -243,7 +261,10 @@ void unload_draft(void);
 void handle_unload(sock_t fd);
 // Resolve + load the requested model; returns the registry index or a SWAP_*.
 int  swap_to(const char *want);
+int  swap_to_expect(const char *want, const resident_expect *ex);
 bool validate_single_model_request(sock_t fd, jv *req);
+// The same expectation on a server whose slots hold the model directly.
+int  single_model_expect(const resident_expect *ex);
 // R8.6: split an adapter suffix off the request's "model" ("base:name"),
 // leaving the base for the usual validation; returns the adapter index, -1
 // for none. A suffix naming no loaded adapter is left in place, so the model

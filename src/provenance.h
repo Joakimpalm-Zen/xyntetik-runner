@@ -23,6 +23,7 @@
 #define RUNNER_PROVENANCE_H
 
 #include <stdbool.h>
+#include <stdint.h>
 
 #include "json.h"
 #include "oms.h"
@@ -49,6 +50,17 @@ void provenance_note_unload(void);
 // disk is no longer the one loaded: a receipt must not name bytes that are
 // not the ones served.
 bool provenance_digests(char model[65], char binary[65]);
+// How many models this process has made resident so far: 0 before the first
+// load, and one more after every load, reload or swap. An unload does not
+// move it, so a client that read N and sees N again with a resident model is
+// talking to the same load. *is_resident says whether one is resident now.
+uint64_t provenance_load_generation(bool *is_resident);
+// Does the resident model meet a client's expectation? want_generation 0 and
+// want_sha256 NULL each mean "not asked". Never waits: a digest that is still
+// being taken, failed, or withheld because the file changed is UNKNOWN, not a
+// guess either way.
+enum { PROV_EXPECT_OK = 0, PROV_EXPECT_MISMATCH, PROV_EXPECT_UNKNOWN };
+int provenance_expect(uint64_t want_generation, const char *want_sha256);
 // Append `"build":{...},"model":{...}|null,"adapter":{...}|null` to b.
 // `model_id` is the id the server answers to for the resident model; it is
 // the caller's, because a registry name is chosen after the load.
