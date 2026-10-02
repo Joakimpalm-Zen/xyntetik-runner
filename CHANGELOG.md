@@ -16,12 +16,13 @@ names that were true when they were written.
     closes it, and a stop token was still admitted at that point; with the
     model's prose masked it was the likeliest token left. Qwen3.5-0.8B and
     4B under `json_object`: 100 of 200 tokens, all reasoning, `"content":
-    ""`. After a close the ENGINE forced, a stop is refused until the payload
-    is complete, and so is every other control token but the model's own
-    close tag (granite-4.2-8b spent the second half on tokens that decode to
-    nothing); a block the model closed itself is untouched, since Muse goes
-    on in its protocol's control tokens there. The 4B now returns the
-    document. A document the model completes after the cap reports
+    ""`. After a closed thinking block a stop is now refused until the
+    payload is complete, whoever closed it (Kvist-14B closed its own self
+    turn and stopped, content empty). Where the ENGINE closed it, every
+    other control token is refused too, save the model's own close tag
+    (granite-4.2-8b spent the second half on tokens that decode to nothing);
+    where the model closed it they stay admitted, since Muse goes on in its
+    protocol's control tokens there. A document the model completes after the cap reports
     `finish_reason: "stop"` (it was `"length"`, which makes a typed client
     discard a whole answer); `finish_detail: "reasoning_limit"` still says
     the reasoning was cut.

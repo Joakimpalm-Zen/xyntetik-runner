@@ -1731,26 +1731,23 @@ static bool constraint_token_ok(engine *e, int id, bool schema) {
     // change was a no-op for the case that motivated it and untestable
     // without a think-tag model to hand. It may still be right; it is not
     // shipping unmeasured.
-    // CP_AFTER_THINK is the prelude the budget cap closed (gen_consume): the
-    // model was mid-sentence and was not told. A control token is still its
-    // to emit there (its own close tag, typically), but a STOP is not: with
-    // prose masked, a stop was the likeliest token left, and the turn ended
-    // at half its budget with nothing in content (measured 2026-10-02 on
-    // Qwen3.5-0.8B and 4B under json_object: 100 of 200 tokens, all
-    // reasoning, finish "length"). The half that is left is for the payload.
-    // Nor is any other control token, save the model's own close tag: they
-    // decode to no bytes, so they never start the payload, and granite-4.2-8b
-    // spent the whole second half of its budget on them (content still
-    // empty, the same sweep). The close tag is admitted once: taking it
-    // moves the phase on (constraint_control_accept).
+    // After a closed thinking block (CP_AFTER_THINK) the payload is owed:
+    //  - a STOP is refused, whoever closed the block. With prose masked it
+    //    was the likeliest token left, and the turn ended with nothing in
+    //    content: Qwen3.5-0.8B and 4B under json_object after the reasoning
+    //    cap (100 of 200 tokens, all reasoning), and Kvist-14B after closing
+    //    its own self turn (2026-10-02, the family sweep).
+    //  - other control tokens are still the model's where IT closed the
+    //    block: Muse goes on in its protocol's control tokens between its
+    //    self turn and the payload. Where the ENGINE closed it (the cap,
+    //    gen_consume) the model was not told, and granite-4.2-8b spent the
+    //    rest of its budget on tokens that decode to nothing; there the only
+    //    control admitted is the model's own close tag, once (taking it
+    //    moves the phase on, constraint_control_accept).
     if (is_stop(e, id) || tok_is_control(e->tok, id))
         return e->constraint_phase == CP_THINK ||
-               // (only where the ENGINE closed the block: a model that closed
-               // its own goes on in its protocol's control tokens, as Muse does
-               // between its self turn and the payload)
-               (e->constraint_phase == CP_AFTER_THINK &&
-                (!e->prelude_exhausted ||
-                 (id == e->think_end_id && !is_stop(e, id)))) ||
+               (e->constraint_phase == CP_AFTER_THINK && !is_stop(e, id) &&
+                (!e->prelude_exhausted || id == e->think_end_id)) ||
                constraint_done(e, schema) ||
                // A trailing raw value (Muse's to=user free-text answer) can
                // only ever end at the model's own stop token: its byte
