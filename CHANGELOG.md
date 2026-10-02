@@ -24,7 +24,13 @@ names that were true when they were written.
 
 - **Family sweep, 2026-10-02: six defects real models showed.**
   `scripts/family-sweep.py` puts a real model of each family through every
-  surface (56 models on the Blackwell). What it found and what changed:
+  surface (56 models on the Blackwell, CPU and CUDA). On the final build
+  the CPU half read 27 models, 462 PASS, 0 FAIL, and the CUDA re-run of
+  every row a fix touched (17 models, among them the Muse, Qwen3.5, Qwen3,
+  granite-4.2, gemma-4 and Qwen2.5 rows) 0 FAIL; the rest are notes on a
+  model's own answer and stated refusals (mistral3, olmo2 and smollm3 are
+  not admitted architectures; stablelm refuses the GPU). What it found and
+  what changed:
   - *A JSON-mode or schema turn on a thinking model ended at half its budget
     with empty content.* When the reasoning prelude hits its cap the engine
     closes it, and a stop token was still admitted at that point; with the
