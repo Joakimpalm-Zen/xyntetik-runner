@@ -8,6 +8,12 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **`confirm_below`: a constrained turn says when it should be confirmed
+  (R2.1.3).** On Chat Completions, Responses and Messages, a buffered
+  request with `confirm_below: p` gets `runner_telemetry.decision`: the
+  lowest posterior the chosen token had at a grammar-shaped choice (which
+  tool, which enum value; not free text), its margin, where it fell, and
+  `needs_confirmation`. The threshold is the caller's.
 - **Session images over HTTP (R1.3.5).** `--sessions DIR` adds
   `POST /v1/runner/sessions` (a raw-prompt generation that `suspend_after`
   images), `POST /v1/runner/sessions/{id}/resume` (exact continuation, or a

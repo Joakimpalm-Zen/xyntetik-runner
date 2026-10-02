@@ -3049,6 +3049,21 @@ ECE report, and `scripts/tool-choice-boundary.py` runs an unlabeled
 tool-choice bank across serving conditions and reports where they disagree
 ([docs/tool-choice-boundary-lane.md](docs/tool-choice-boundary-lane.md)).
 
+`confirm_below: p` (a probability strictly between 0 and 1, buffered, on Chat
+Completions, Responses and Messages) asks for the turn's answer instead of the
+records: `runner_telemetry.decision` carries the number of grammar-shaped
+decisions (steps where the grammar removed some probed candidates, so a choice
+between the schema's branches such as which tool, not the wording inside a
+string), the lowest posterior the chosen token had among the legal ones
+(`min_chosen_prob`), its margin over the best legal alternative, the token
+index where it fell, and `needs_confirmation`, true when that posterior is
+below `p`. A chosen token outside the probed candidates counts as 0. Served
+Llama-3.2-3B with three tools, 2026-10-02: "What's the weather in Oslo?"
+chose `get_weather` at 0.92; "Tell Anna about Oslo." chose `get_weather` at
+0.78 where `send_email` was wanted, and asked for confirmation at `p = 0.9`.
+The threshold is the caller's; a per-model one calibrated on labeled
+decisions is not shipped.
+
 ### Reasoning budget
 
 `--reasoning-budget N` (server default) and `reasoning_max_tokens` (per

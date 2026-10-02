@@ -941,6 +941,16 @@ typedef struct req_diag {
     // R1.8.1: the watermark this turn was sampled under, when one is on
     bool        wm_on;
     int         wm_marked;
+    // R2.1.3: the confirmation answer, when the request set confirm_below.
+    // Over every constrained decision of the turn (a step where >= 2 legal
+    // tokens were probed): the lowest posterior the CHOSEN token had among
+    // the legal ones, its margin over the best legal alternative, and the
+    // generated-token index where that happened.
+    bool        confirm_on;
+    double      confirm_below;
+    int         decisions;
+    double      min_chosen_p, min_margin;
+    int         min_at;
 } req_diag;
 
 static void diag_json(sbuf *r, const req_diag *d) {
@@ -984,6 +994,20 @@ static void diag_json(sbuf *r, const req_diag *d) {
     if (d->wm_on)
         sb_fmt(r, ",\"watermark\":{\"scheme\":\"%s\",\"key_id\":\"%s\","
                   "\"marked_tokens\":%d}", WM_SCHEME, SV.wm_key.id, d->wm_marked);
+    if (d->confirm_on) {
+        sb_fmt(r, ",\"decision\":{\"confirm_below\":%.6f,\"decisions\":%d,",
+               d->confirm_below, d->decisions);
+        if (d->decisions > 0)
+            sb_fmt(r, "\"min_chosen_prob\":%.6f,\"min_margin\":%.6f,"
+                      "\"at_token\":%d,", d->min_chosen_p, d->min_margin,
+                   d->min_at);
+        else
+            sb_lit(r, "\"min_chosen_prob\":null,\"min_margin\":null,"
+                      "\"at_token\":null,");
+        sb_fmt(r, "\"needs_confirmation\":%s}",
+               d->decisions > 0 && d->min_chosen_p < d->confirm_below
+               ? "true" : "false");
+    }
     if (d->receipt_file)
         sb_fmt(r, ",\"receipt\":{\"file\":\"%s\",\"chain_hash\":\"%s\"}",
                d->receipt_file, d->receipt_chain);
@@ -2944,7 +2968,9 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
         return;
     }
     double cl_probe_d = 32;
-    if (cl_on && (!request_number(req, "choice_logprobs_probe", 32, 8, 64,
+    // the probe width serves confirm_below's decisions too (below)
+    bool cl_probe_used = cl_on || !absent(jv_get(req, "confirm_below"));
+    if (cl_probe_used && (!request_number(req, "choice_logprobs_probe", 32, 8, 64,
                                   &cl_probe_d) ||
                   !whole_number(cl_probe_d))) {
         send_error(fd, 400, "choice_logprobs_probe out of range (8..64)");
@@ -2955,6 +2981,30 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
                             "set stream to false");
         return;
     }
+    // R2.1.3: ask for a confirmation answer. A probability in (0, 1): the
+    // turn needs confirmation when any constrained decision chose a token
+    // whose posterior among the legal ones was below it. The posteriors are
+    // choice_logprobs', so the same constraint is required; the answer is
+    // runner_telemetry.decision on every surface, buffered.
+    double confirm_below = -1;
+    jv *cbv = jv_get(req, "confirm_below");
+    if (cbv && cbv->type != J_NULL) {
+        if (cbv->type != J_NUM || !(cbv->num > 0 && cbv->num < 1)) {
+            send_error_detail(fd, 400, "confirm_below must be a probability "
+                              "strictly between 0 and 1", "confirm_below",
+                              "invalid_value");
+            return;
+        }
+        if (stream) {
+            send_error_detail(fd, 400, "confirm_below is buffered-only: the "
+                              "answer covers the whole turn; set stream to "
+                              "false", "confirm_below", "invalid_value");
+            return;
+        }
+        confirm_below = cbv->num;
+    }
+    bool cl_render = cl_on;
+    if (confirm_below > 0) cl_on = true;
     // R4.8: echo (OpenAI legacy) and prompt_logprobs (vLLM's spelling) score
     // the prompt teacher-forced. Buffered-only: the prompt's entries are
     // known before the first generated token, but a stream has no field for
@@ -3350,8 +3400,13 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
         if (!schema && !e->json_mode) {
             free(toks);
             completion_cleanup(e, schema, NULL);
-            send_error(fd, 400, "choice_logprobs requires a json_schema "
-                                "response_format, tool schema, or JSON mode");
+            send_error(fd, 400, confirm_below > 0
+                       ? "confirm_below needs a constrained turn: a json_schema "
+                         "response_format, tools under a grammar, or JSON mode "
+                         "(a native protocol's auto turn is parsed, not "
+                         "constrained, and has no decision to report)"
+                       : "choice_logprobs requires a json_schema "
+                         "response_format, tool schema, or JSON mode");
             return;
         }
         if (e->dm) {
@@ -3679,6 +3734,40 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
                                req_deadline);
     diag.wm_on = SV.wm_on;
     diag.wm_marked = s->wm.marked;
+    if (confirm_below > 0) {
+        diag.confirm_on = true;
+        diag.confirm_below = confirm_below;
+        diag.min_chosen_p = 1.0;
+        diag.min_margin = 1.0;
+        for (int i = 0; i < e->cl_count; i++) {
+            const cl_rec *c = &e->cl_recs[i];
+            int at = e->gen_start + c->pos;
+            if (c->pos < 0 || at >= e->pos) continue;   // never emitted
+            // A choice the grammar shaped: some probed candidate was illegal.
+            // Inside free text (a string's content) every probed token is
+            // legal and every step is a "decision"; those are the model's
+            // wording, not a choice between the schema's branches, and a
+            // confirmation that fired on them would fire on every turn.
+            if (c->n_legal >= c->n_probed) continue;
+            int32_t chosen = e->hist[at];
+            int stored = c->n_legal < CL_MAX_ALT ? c->n_legal : CL_MAX_ALT;
+            double p = -1, best_other = 0;
+            for (int j = 0; j < stored; j++) {
+                if (c->ids[j] == chosen) p = c->prob[j];
+                else if (c->prob[j] > best_other) best_other = c->prob[j];
+            }
+            // a chosen token outside the stored alternatives had less than
+            // every stored one, possibly far less: counted as 0, so the turn
+            // asks for confirmation rather than guessing it was safe
+            if (p < 0) p = 0;
+            diag.decisions++;
+            if (p < diag.min_chosen_p) {
+                diag.min_chosen_p = p;
+                diag.min_margin = p - best_other;
+                diag.min_at = c->pos;
+            }
+        }
+    }
     // The one place every surface's generation passes through, so /health's
     // and /metrics' cumulative counters see chat, completions, responses and
     // messages alike. The speculation counters are read only when this request
@@ -4218,7 +4307,7 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
         // JC-R1 constrained-choice posteriors: one entry per decision point
         // (a constrained step where >= 2 probed candidates were legal),
         // shared shape across the chat and text surfaces.
-        if (e->cl_count > 0) {
+        if (cl_render && e->cl_count > 0) {
             char tb[512];
             sb_lit(&r, "\"choice_logprobs\":[");
             for (int i = 0; i < e->cl_count; i++) {

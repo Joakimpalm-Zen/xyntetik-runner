@@ -37,6 +37,7 @@ typedef struct { int32_t id; float lp; } lp_alt; // logprob alternative
 typedef struct {
     int32_t pos;                 // emitted-token index in this generation
     int32_t n_legal;             // legal candidates among the probed set
+    int32_t n_probed;            // candidates probed (n_legal of them legal)
     float   coverage;            // full-softmax mass of ALL probed candidates
     int32_t ids[CL_MAX_ALT];     // legal alternatives, descending probability
     float   prob[CL_MAX_ALT];    // renormalized over the legal probed set

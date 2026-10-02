@@ -2190,6 +2190,7 @@ static void cl_capture(engine *e, const float *logits) {
     }
     cl_rec *r = &e->cl_recs[e->cl_count];
     r->pos = e->gen_count;
+    r->n_probed = filled;
     r->n_legal = 0;
     r->coverage = 0;
     double legal_mass = 0;
