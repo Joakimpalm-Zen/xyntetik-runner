@@ -62,7 +62,7 @@
     },
     "gemma4": {
       "source": "gguf:models/e4b-q4km.gguf",
-      "sha256": "241c50d86bdfe5e4"
+      "sha256": "0a2c8073c878ab1d"
     },
     "gemma4-mainline": {
       "source": "gguf:models/gemma-4-12B-it-Q4_K_M.gguf",
