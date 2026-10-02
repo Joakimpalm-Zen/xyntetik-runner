@@ -58,7 +58,7 @@ from harness import RunnerServer, find_runner  # noqa: E402
 UNI = "Åsa gick ut på isen, 日本 🙂 naïve"
 REFUSALS = ("unsupported architecture", "needs sink-aware attention",
             "cannot be imaged", "does not cover", "refus", "not supported",
-            "unsupported")
+            "unsupported", "rerun with --gpu off", "would be silently wrong")
 WEATHER = {"type": "function", "function": {
     "name": "get_weather", "description": "Current weather for a city.",
     "parameters": {"type": "object", "properties": {
