@@ -50,10 +50,26 @@ def test_sentencepiece_references_are_what_they_say(name):
     assert info["corpus_sha256"] == cap["corpus_sha256"] and "source" not in info
 
 
+import os  # noqa: E402
+
+EXE = ROOT / ("difftok.exe" if os.name == "nt" else "difftok")
+
+
+def _built():
+    """The harness binary, built on demand the way difftok.py builds it."""
+    if not EXE.exists():
+        r = subprocess.run([os.environ.get("MAKE", "make"), "-C", str(ROOT), EXE.name],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if r.returncode != 0 or not EXE.exists():
+            pytest.skip("difftok could not be built here")
+    if not (ROOT / "test.gguf").exists():
+        pytest.skip("test.gguf not built")
+    return EXE
+
+
 def _difftok(capture, tmp_path, *extra):
     gguf = ROOT / "test.gguf"
-    if not gguf.exists() or not (ROOT / "difftok").exists():
-        pytest.skip("test.gguf or difftok not built")
+    _built()
     return subprocess.run([sys.executable, str(ROOT / "scripts" / "difftok.py"),
                            "--gguf", str(gguf), "--ref-ids", str(capture),
                            "--no-build", "--show", "0", *extra],
@@ -61,7 +77,7 @@ def _difftok(capture, tmp_path, *extra):
 
 
 def test_marker_rows_are_reported_and_not_gated(tmp_path):
-    out = subprocess.run([str(ROOT / "difftok"), str(ROOT / "test.gguf"), str(CORPUS)],
+    out = subprocess.run([str(_built()), str(ROOT / "test.gguf"), str(CORPUS)],
                          text=True, capture_output=True)
     if out.returncode != 0:
         pytest.skip("difftok cannot read test.gguf")
