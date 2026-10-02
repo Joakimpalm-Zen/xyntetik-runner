@@ -8,6 +8,12 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **One decision-record contract (R2.1.4).** The per-step
+  `choice_logprobs` records and the `runner_telemetry.decision` summary are
+  published as one versioned contract, `docs/decision-record.md` with a JSON
+  schema in `docs/schemas/`; the summary carries
+  `schema: "xyntetik.runner.decision.v1"` and each record its `n_probed`, so
+  a reader can tell a grammar-shaped choice from free text.
 - **`confirm_below`: a constrained turn says when it should be confirmed
   (R2.1.3).** On Chat Completions, Responses and Messages, a buffered
   request with `confirm_below: p` gets `runner_telemetry.decision`: the

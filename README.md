@@ -3062,7 +3062,10 @@ Llama-3.2-3B with three tools, 2026-10-02: "What's the weather in Oslo?"
 chose `get_weather` at 0.92; "Tell Anna about Oslo." chose `get_weather` at
 0.78 where `send_email` was wanted, and asked for confirmation at `p = 0.9`.
 The threshold is the caller's; a per-model one calibrated on labeled
-decisions is not shipped.
+decisions is not shipped. Both shapes, the per-step records and the turn
+summary, are one versioned contract
+([docs/decision-record.md](docs/decision-record.md), schema
+`xyntetik.runner.decision.v1`).
 
 ### Reasoning budget
 

@@ -111,3 +111,61 @@ def test_an_unconstrained_turn_has_nothing_to_report(srv):
         "messages": [{"role": "user", "content": "hi"}], "max_tokens": 4,
         "confirm_below": 0.5})
     assert code == 400 and "constrained" in err["error"]["message"], err
+
+
+def _conforms(value, schema, defs, where="$"):
+    """The subset of JSON Schema the decision-record schema uses; the test
+    venv carries no jsonschema."""
+    if "$ref" in schema:
+        return _conforms(value, defs[schema["$ref"].rsplit("/", 1)[1]], defs, where)
+    kinds = schema.get("type")
+    if kinds is not None:
+        kinds = [kinds] if isinstance(kinds, str) else kinds
+        py = {"object": dict, "array": list, "string": str, "boolean": bool,
+              "null": type(None)}
+        ok = any((k == "integer" and isinstance(value, int) and not isinstance(value, bool))
+                 or (k == "number" and isinstance(value, (int, float))
+                     and not isinstance(value, bool))
+                 or (k in py and isinstance(value, py[k])) for k in kinds)
+        assert ok, f"{where}: {value!r} is not {kinds}"
+    if "const" in schema:
+        assert value == schema["const"], f"{where}: {value!r}"
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        for key, test in (("minimum", lambda a, b: a >= b), ("maximum", lambda a, b: a <= b),
+                          ("exclusiveMinimum", lambda a, b: a > b),
+                          ("exclusiveMaximum", lambda a, b: a < b)):
+            if key in schema:
+                assert test(value, schema[key]), f"{where}: {value} vs {key} {schema[key]}"
+    if isinstance(value, dict):
+        for k in schema.get("required", []):
+            assert k in value, f"{where}: missing {k}"
+        for k, sub in schema.get("properties", {}).items():
+            if k in value:
+                _conforms(value[k], sub, defs, f"{where}.{k}")
+    if isinstance(value, list):
+        assert len(value) <= schema.get("maxItems", len(value)), where
+        for i, v in enumerate(value):
+            _conforms(v, schema.get("items", {}), defs, f"{where}[{i}]")
+
+
+def test_both_shapes_follow_the_published_contract(srv):
+    """R2.1.4: the per-step points and the turn summary are one contract,
+    docs/schemas/decision-record.v1.json, and what the server prints follows
+    it; the summary counts exactly the grammar-shaped points."""
+    schema = json.loads((ROOT / "docs/schemas/decision-record.v1.json").read_text())
+    defs = schema["$defs"]
+    code, r = _chat(srv, confirm_below=0.5, choice_logprobs=True)
+    assert code == 200, r
+    points = r["choices"][0]["choice_logprobs"]
+    turn = r["runner_telemetry"]["decision"]
+    assert points, r
+    for i, p in enumerate(points):
+        _conforms(p, defs["point"], defs, f"choice_logprobs[{i}]")
+        assert p["n_legal"] <= p["n_probed"] == 64
+        probs = [a["prob"] for a in p["alternatives"]]
+        assert probs == sorted(probs, reverse=True)
+    _conforms(turn, defs["turn"], defs, "decision")
+    shaped = [p for p in points if p["n_legal"] < p["n_probed"]]
+    assert turn["decisions"] == len(shaped)
+    if shaped:
+        assert turn["at_token"] in {p["index"] for p in shaped}

@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "decision-record.v1.json",
+  "title": "Runner decision record, v1",
+  "description": "What a constrained turn says about its choices. A point is one entry of choice_logprobs (one constrained step); a turn is runner_telemetry.decision (the summary confirm_below asks for). See docs/decision-record.md.",
+  "$defs": {
+    "alternative": {
+      "type": "object",
+      "required": ["token", "id", "prob", "logprob"],
+      "properties": {
+        "token": {"type": "string", "description": "the candidate's text"},
+        "id": {"type": "integer", "description": "its token id"},
+        "prob": {"type": "number", "minimum": 0, "maximum": 1,
+                 "description": "posterior over the legal probed candidates"},
+        "logprob": {"type": "number", "maximum": 0,
+                    "description": "log-softmax over the whole vocabulary"}
+      }
+    },
+    "point": {
+      "type": "object",
+      "required": ["index", "n_legal", "n_probed", "coverage", "alternatives"],
+      "properties": {
+        "index": {"type": "integer", "minimum": 0,
+                  "description": "generated-token index of the step"},
+        "n_legal": {"type": "integer", "minimum": 2,
+                    "description": "legal candidates among the probed ones"},
+        "n_probed": {"type": "integer", "minimum": 2,
+                     "description": "candidates probed; n_legal < n_probed means the grammar shaped this choice"},
+        "coverage": {"type": "number", "minimum": 0, "maximum": 1,
+                     "description": "whole-vocabulary probability mass of the probed candidates"},
+        "alternatives": {"type": "array", "maxItems": 8,
+                         "items": {"$ref": "#/$defs/alternative"},
+                         "description": "the legal candidates, most probable first, at most 8"}
+      }
+    },
+    "turn": {
+      "type": "object",
+      "required": ["schema", "confirm_below", "decisions", "min_chosen_prob",
+                   "min_margin", "at_token", "needs_confirmation"],
+      "properties": {
+        "schema": {"const": "xyntetik.runner.decision.v1"},
+        "confirm_below": {"type": "number", "exclusiveMinimum": 0, "exclusiveMaximum": 1},
+        "decisions": {"type": "integer", "minimum": 0,
+                      "description": "grammar-shaped choices in the turn"},
+        "min_chosen_prob": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
+        "min_margin": {"type": ["number", "null"], "minimum": -1, "maximum": 1},
+        "at_token": {"type": ["integer", "null"], "minimum": 0},
+        "needs_confirmation": {"type": "boolean"}
+      }
+    }
+  }
+}

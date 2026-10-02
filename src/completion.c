@@ -995,7 +995,8 @@ static void diag_json(sbuf *r, const req_diag *d) {
         sb_fmt(r, ",\"watermark\":{\"scheme\":\"%s\",\"key_id\":\"%s\","
                   "\"marked_tokens\":%d}", WM_SCHEME, SV.wm_key.id, d->wm_marked);
     if (d->confirm_on) {
-        sb_fmt(r, ",\"decision\":{\"confirm_below\":%.6f,\"decisions\":%d,",
+        sb_fmt(r, ",\"decision\":{\"schema\":\"xyntetik.runner.decision.v1\","
+                  "\"confirm_below\":%.6f,\"decisions\":%d,",
                d->confirm_below, d->decisions);
         if (d->decisions > 0)
             sb_fmt(r, "\"min_chosen_prob\":%.6f,\"min_margin\":%.6f,"
@@ -4313,9 +4314,9 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
             for (int i = 0; i < e->cl_count; i++) {
                 const cl_rec *c = &e->cl_recs[i];
                 if (i) sb_lit(&r, ",");
-                sb_fmt(&r, "{\"index\":%d,\"n_legal\":%d,"
+                sb_fmt(&r, "{\"index\":%d,\"n_legal\":%d,\"n_probed\":%d,"
                            "\"coverage\":%.6f,\"alternatives\":[",
-                       c->pos, c->n_legal, c->coverage);
+                       c->pos, c->n_legal, c->n_probed, c->coverage);
                 int stored = c->n_legal < CL_MAX_ALT ? c->n_legal : CL_MAX_ALT;
                 for (int j = 0; j < stored; j++) {
                     if (j) sb_lit(&r, ",");
