@@ -696,10 +696,12 @@
     "chatml",
     "zephyr"
    ],
-   "artifacts": [],
+   "artifacts": [
+    "stablelm-2-zephyr-1_6b-q8_0"
+   ],
    "tool_protocol": {
     "status": "NOT RUN",
-    "note": "no pinned artifact"
+    "note": "pinned 2026-10-02; the tool gate has not been run on this artifact"
    },
    "client_loop": {
     "status": "NOT RUN"
@@ -884,10 +886,12 @@
     "granite42",
     "granite"
    ],
-   "artifacts": [],
+   "artifacts": [
+    "granite-4.0-h-micro-q4_k_m"
+   ],
    "tool_protocol": {
     "status": "NOT RUN",
-    "note": "no pinned artifact"
+    "note": "pinned 2026-10-02; the tool gate has not been run on this artifact"
    },
    "client_loop": {
     "status": "NOT RUN"
@@ -902,10 +906,12 @@
    "templates": [
     "nemotron"
    ],
-   "artifacts": [],
+   "artifacts": [
+    "nemotron-nano-9b-v2-q4_k_m"
+   ],
    "tool_protocol": {
     "status": "NOT RUN",
-    "note": "no pinned artifact"
+    "note": "pinned 2026-10-02; the tool gate has not been run on this artifact"
    },
    "client_loop": {
     "status": "NOT RUN"
@@ -920,10 +926,12 @@
    "templates": [
     "chatml"
    ],
-   "artifacts": [],
+   "artifacts": [
+    "nemotron-3.5-lightning-30b-a3b-q4_0"
+   ],
    "tool_protocol": {
     "status": "NOT RUN",
-    "note": "no pinned artifact"
+    "note": "pinned 2026-10-02; the tool gate has not been run on this artifact"
    },
    "client_loop": {
     "status": "NOT RUN"

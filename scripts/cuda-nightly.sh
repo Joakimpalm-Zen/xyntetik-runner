@@ -62,14 +62,15 @@ if [ -n "${NIGHTLY_LOCK:-}" ]; then
 fi
 
 report_failure() {  # what logfile
-  log "FAIL: $1"
+  log "FAIL: $1 (see $2)"
   [ -n "${NIGHTLY_ISSUE_REPO:-}" ] || return 0
   command -v gh > /dev/null 2>&1 || { log "no gh: the failure is recorded here only"; return 0; }
   local title="CUDA nightly is failing on $(hostname)"
+  # The public report names the commit and the step, nothing from the logs:
+  # a log tail carries paths and model names nobody reviewed for publication.
   local body
-  body=$(printf 'The scheduled CUDA gate failed.\n\n- when: %s\n- commit: %s\n- what: %s\n\nLast lines of the log:\n\n```\n%s\n```\n' \
-    "$(date -u '+%F %T UTC')" "$(git -C "$SRC" rev-parse --short HEAD 2> /dev/null)" "$1" \
-    "$(tail -n 30 "$2" 2> /dev/null | cut -c1-300)")
+  body=$(printf 'The scheduled CUDA gate failed.\n\n- when: %s\n- commit: %s\n- what: %s\n\nThe logs are on the box, under the nightly directory.\n' \
+    "$(date -u '+%F %T UTC')" "$(git -C "$SRC" rev-parse --short HEAD 2> /dev/null)" "$1")
   local open
   open=$(gh issue list -R "$NIGHTLY_ISSUE_REPO" --state open --search "\"$title\" in:title" \
            --json number --jq '.[0].number' 2> /dev/null)
