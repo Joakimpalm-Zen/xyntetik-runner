@@ -3979,14 +3979,16 @@ static bool model_alloc_runtime(model_t *m, const model_params *p) {
                     p->yarn_factor)) return false;
 
     if (p->gpu_mode == GPU_AUTO) {
-        // A removed sublayer is omitted by the CPU forward only; the device
-        // decode loops still drive every block's attention and FFN. Refuse
-        // the offload by name rather than let a backend read a NULL weight.
+        // A removed sublayer is omitted by the CPU forward and by the Metal
+        // walk; the CUDA decode loops still drive every block's attention
+        // and FFN. Refuse the offload there by name rather than let a
+        // backend read a NULL weight.
         char gname[128];
-        if (m->n_removed > 0 && gpu_available(gname, sizeof(gname))) {
+        if (m->n_removed > 0 && gpu_available(gname, sizeof(gname)) &&
+            !gpu_removed_sublayers_ok()) {
             fprintf(stderr, "error: this model has %d removed sublayer%s "
-                    "(--remove-sublayer); only the CPU path omits them today "
-                    "— rerun with --gpu off\n", m->n_removed,
+                    "(--remove-sublayer); this GPU backend does not omit them "
+                    "yet — rerun with --gpu off\n", m->n_removed,
                     m->n_removed == 1 ? "" : "s");
             return false;
         }

@@ -8,6 +8,12 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **Metal runs files with removed sublayers (R4.1.6, Metal half).** A
+  `--remove-sublayer` artifact was CPU-only; the Metal walk now omits a
+  removed attention or FFN per block. The removed file scores
+  bit-identically to the parent with the branch's output projection
+  zeroed, on the decode walk and the batched prefill. CUDA still refuses
+  the offload by name.
 - **Constrained sampling no longer costs more than the model step.** Every
   sampled token under a constraint (a tool call, JSON mode, a schema, a
   reasoning budget, the loop guard) sorted the whole vocabulary, and with
