@@ -8,6 +8,17 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **`draft_hints`: the caller can say what it expects to be echoed
+  (R3.7.4).** On a server started with `--draft-lookup`, a generation
+  request may carry up to 16 strings the harness expects the model to
+  restate (a file about to be quoted, a tool result). They are proposed
+  through the lookup draft's verify walk when the context itself has no
+  match, so the output is byte for byte what it is without them; a wrong
+  hint costs a verify column. `runner_telemetry.speculation` reports
+  `hint_drafted` and `hint_accepted`. Ceiling measured on an M1 with
+  SmolLM2-135M and a scripted echo of a 216-token file: 92.5 to 210.6 tok/s
+  on the CPU, 127.0 to 261.0 under Metal; 5% on Llama-3.2-3B under Metal
+  (`docs/context-drafts.md`).
 - **`--lora` serves on Metal.** An adapter on an Apple GPU was refused, so
   an adapted model ran entirely on the CPU. An offloaded block now applies
   `y += scale * B(Ax)` on the device at the same seven projection sites as

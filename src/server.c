@@ -2937,7 +2937,10 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
     atomic_store(&SV.shutdown, true);
     if (SV.reaper_started) pthread_join(SV.reaper_th, NULL);
 
-    for (int i = 0; i < parallel; i++) free(SV.slots[i].e.hist);
+    for (int i = 0; i < parallel; i++) {
+        free(SV.slots[i].e.hist);
+        free(SV.slots[i].hint_buf);
+    }
     if (SV.n_reg > 0) {
         pthread_mutex_lock(&SV.swap_mu);
         unload_draft();

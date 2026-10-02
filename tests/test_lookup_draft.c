@@ -117,6 +117,44 @@ int main(void) {
         ck(n == 4 && same(out, want, 4), "and k caps it");
     }
 
+    // Draft hints (R3.7.4): the same n-gram rule, searched in the caller's
+    // text instead of the context. Runs are separated by -1.
+    {
+        // context ends 4 5 6; the hint holds "9 4 5 6 7 8 | 1 2": the 3-gram
+        // is at 1, followed by 7 8, and the proposal stops at the separator
+        const int32_t h[] = {1, 2, 3, 4, 5, 6};
+        const int32_t hint[] = {9, 4, 5, 6, 7, 8, -1, 1, 2, -1};
+        int n = engine_hint_draft(h, 6, hint, 10, 8, out);
+        const int32_t want[] = {7, 8};
+        ck(n == 2 && same(out, want, 2), "hint: proposes what follows, up to the separator");
+        n = engine_hint_draft(h, 6, hint, 10, 1, out);
+        ck(n == 1 && out[0] == 7, "hint: k caps the proposal");
+    }
+    {
+        // no 3-gram of the context occurs in the hint: nothing proposed
+        const int32_t h[] = {1, 2, 3, 4, 5, 6};
+        const int32_t hint[] = {4, 5, 9, 9, 5, 6, 7, -1};
+        ck(engine_hint_draft(h, 6, hint, 8, 8, out) == 0, "hint: a 2-gram is not a match");
+    }
+    {
+        // a match may not straddle two hints, and a match at a run's end
+        // (nothing after it) falls through to the next run that has one
+        const int32_t h[] = {3, 4, 5};
+        const int32_t straddle[] = {3, 4, -1, 5, 6, -1};
+        ck(engine_hint_draft(h, 3, straddle, 6, 8, out) == 0, "hint: no match across a separator");
+        const int32_t two[] = {3, 4, 5, -1, 0, 3, 4, 5, 8, -1};
+        int n = engine_hint_draft(h, 3, two, 10, 8, out);
+        ck(n == 1 && out[0] == 8, "hint: an occurrence with nothing after it is skipped");
+    }
+    {
+        // the longest n wins, as in the context search
+        const int32_t h[] = {1, 2, 3, 4, 5};
+        const int32_t hint[] = {3, 4, 5, 70, -1, 1, 2, 3, 4, 5, 80, -1};
+        int n = engine_hint_draft(h, 5, hint, 12, 8, out);
+        ck(n == 1 && out[0] == 80, "hint: the 5-gram match outranks an earlier 3-gram");
+        ck(engine_hint_draft(h, 5, NULL, 0, 8, out) == 0, "hint: none given, none proposed");
+    }
+
     if (g_fail) { fprintf(stderr, "test_lookup_draft: FAIL\n"); return 1; }
     fprintf(stderr, "test_lookup_draft: all ok\n");
     return 0;

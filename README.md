@@ -1862,7 +1862,11 @@ token-identical to plain decoding, greedy and seeded alike, because the target's
 walk decides every token (pinned in `make test` on three prompt shapes; the search
 itself is pinned against hand-computed proposals). One draft source per run: combining
 it with `--draft` or `--mtp` is refused at startup rather than silently ignored; grammar
-fast-forward still composes, as it does with the others. Works in one-shot, chat and
+fast-forward still composes, as it does with the others. In serve mode a request may
+add `draft_hints`, up to 16 strings the caller expects the model to restate (a file
+about to be quoted, a tool result): they are searched when the context has no match and
+verified the same way, so they change speed and never the output
+([docs/context-drafts.md](docs/context-drafts.md)). Works in one-shot, chat and
 single-model serve mode (`draft.source` is `lookup` in `GET /v1/capabilities`; ignored
 in swap mode with a `reason`), on every path the verify walk runs on (CPU, and the same
 GPU cases `--draft` accepts). Measured 2026-09-04 on an M1 CPU: 1.47x on a verbatim

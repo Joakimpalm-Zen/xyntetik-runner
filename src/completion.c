@@ -879,6 +879,8 @@ typedef struct {
     const char *spec_source;
     int         spec_rounds, spec_drafted, spec_accepted;
     int         spec_lk_drafted, spec_lk_accepted;
+    int         spec_hint_drafted, spec_hint_accepted;
+    bool        spec_hints;     // the request carried draft_hints
     // Set when the OpenAI wire value was widened to a standard one (see
     // openai_finish): carries the reason we would otherwise have emitted.
     const char *finish_detail;
@@ -998,6 +1000,9 @@ static void diag_json(sbuf *r, const req_diag *d) {
     .spec_accepted = (e)->spec_st.accepted, \
     .spec_lk_drafted = (e)->spec_st.lk_drafted, \
     .spec_lk_accepted = (e)->spec_st.lk_accepted, \
+    .spec_hint_drafted = (e)->spec_st.hint_drafted, \
+    .spec_hint_accepted = (e)->spec_st.hint_accepted, \
+    .spec_hints = (e)->hint_len > 0, \
     .reason_budget = (e)->think_budget, \
     .reason_budget_tokens = (e)->think_tokens, \
     .reason_forced = (e)->think_forced, \
@@ -1111,10 +1116,15 @@ static void telemetry_json(sbuf *r, const resp_doc *d) {
     if (d->spec) {
         sb_fmt(r, ",\"speculation\":{\"source\":\"%s\",\"rounds\":%d,"
                   "\"drafted\":%d,\"accepted\":%d,\"lookup_drafted\":%d,"
-                  "\"lookup_accepted\":%d}",
+                  "\"lookup_accepted\":%d",
                d->spec_source ? d->spec_source : "grammar",
                d->spec_rounds, d->spec_drafted, d->spec_accepted,
                d->spec_lk_drafted, d->spec_lk_accepted);
+        // the hints' share of the lookup's drafts, only when hints were sent
+        if (d->spec_hints)
+            sb_fmt(r, ",\"hint_drafted\":%d,\"hint_accepted\":%d",
+                   d->spec_hint_drafted, d->spec_hint_accepted);
+        sb_lit(r, "}");
     }
     sb_lit(r, "}");
 }
@@ -3084,6 +3094,50 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
         return;
     }
     engine_set_request_stops(e, req_stops, n_req_stops);
+    // draft_hints (R3.7.4): strings the caller expects to be echoed. Drafts
+    // only: every proposed token is verified by the target, so a hint can
+    // make a turn faster and cannot change it.
+    e->hint = NULL;
+    e->hint_len = 0;
+    jv *dh = jv_get(req, "draft_hints");
+    if (!absent(dh)) {
+        bool bad = dh->type != J_ARR || dh->n > 16;
+        size_t bytes = 0;
+        for (int i = 0; !bad && i < dh->n; i++) {
+            jv *it = dh->items[i];
+            if (!it || it->type != J_STR) bad = true;
+            else bytes += strlen(it->str);
+        }
+        if (bad || bytes > 262144) {
+            send_error(fd, 400, "draft_hints must be an array of up to 16 "
+                                "strings, 256 KiB in total");
+            return;
+        }
+        if (!e->lookup_on) {
+            send_error(fd, 400, "draft_hints needs a server started with "
+                                "--draft-lookup: hints are proposed through "
+                                "the lookup draft's verify walk");
+            return;
+        }
+        // one token per byte is the upper bound, plus a separator per hint
+        size_t need = bytes + (size_t)dh->n + 1;
+        if (need > (size_t)s->hint_cap) {
+            int32_t *nb = realloc(s->hint_buf, sizeof(int32_t) * need);
+            if (!nb) { send_error(fd, 500, "out of memory tokenizing draft_hints"); return; }
+            s->hint_buf = nb;
+            s->hint_cap = (int)need;
+        }
+        int hn = 0;
+        for (int i = 0; i < dh->n; i++) {
+            int n = tok_encode(s->tok, dh->items[i]->str, s->hint_buf + hn,
+                               s->hint_cap - hn - 1, false, false);
+            if (n < 0) { send_error(fd, 500, "out of memory tokenizing draft_hints"); return; }
+            hn += n;
+            s->hint_buf[hn++] = -1;
+        }
+        e->hint = s->hint_buf;
+        e->hint_len = hn;
+    }
     jv *rf = jv_get(req, "response_format");
     if (rf && rf->type != J_NULL) {   // null reads as absent, as everywhere else
         // An unrecognised or malformed response_format used to fall through to

@@ -184,6 +184,38 @@ minimum is 3.
 `make test`, `scripts/conformance.sh` and `scripts/help-parity.py` green;
 counts in the pull request.
 
+## Draft hints from the caller (R3.7.4, 2026-10-02)
+
+A harness often knows text the model is about to write that is not in the
+prompt: the file it asked to have quoted back, the next step of a plan, a
+tool result it will restate. `draft_hints`, an array of up to 16 strings
+(256 KiB in total) on any generation request to a server started with
+`--draft-lookup`, hands that text to the same verify walk. Each round the
+context is searched first; on a miss the last n context tokens are searched
+for in the hints (the same n from 5 down to 3, never across two hints) and
+what follows the first occurrence is proposed. The walk decides every token,
+so a hint that turns out wrong costs verify columns and never changes the
+output; the request is refused with 400 where the hints could not be used
+(no `--draft-lookup`), not ignored.
+
+`runner_telemetry.speculation` gains `hint_drafted` and `hint_accepted` on a
+request that sent hints, counted inside `lookup_drafted` and
+`lookup_accepted`.
+
+Gates: `tests/test_lookup_draft.c` pins the search against hand-computed
+proposals (the separator, the longest-n rule, an occurrence with nothing
+after it); `tests/test_draft_lookup.py` holds the output byte-identical with
+and without hints, the accounting, and the two refusals.
+
+Measured on an M1 with SmolLM2-135M Q8_0, `--draft-k 8`, a 216-token
+non-repeating Python file as the hint and the model made to write exactly
+that file (the scripted-reply test hook, so this is the ceiling, not a
+typical turn): CPU 92.5 to 210.6 tok/s, Metal 127.0 to 261.0 tok/s, 184 of
+184 hinted tokens accepted. On Llama-3.2-3B Q4_K_M under Metal the same
+shape gained 5% (9.9 to 10.4 tok/s): the verify walk there costs about as
+much as the decode steps it replaces, which is a property of that backend's
+walk and not of the hints.
+
 ## R3.7.2, designed and not built
 
 A session suffix tree over earlier outputs, with the draft length set by the
