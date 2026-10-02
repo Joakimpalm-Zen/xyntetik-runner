@@ -8,6 +8,12 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **`runner --adapt-info`: can this model take an adapter (R8.9.1)?** One
+  JSON line per model file: whether a LoRA adapter can be served on it and
+  whether one can be trained on it, each with the reason when not (a
+  recurrent architecture, a MoE FFN, removed sublayers, ...), and which GPU
+  backend of the build has adapter kernels. Both answers come from the
+  checks `--lora` and `--train` themselves run.
 - **`draft_hints`: the caller can say what it expects to be echoed
   (R3.7.4).** On a server started with `--draft-lookup`, a generation
   request may carry up to 16 strings the harness expects the model to

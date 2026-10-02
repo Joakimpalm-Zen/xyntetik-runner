@@ -1285,6 +1285,9 @@ static void usage_to(FILE *f, const char *prog) {
         "  --lora-rank R  fresh-adapter rank when no --lora is given (8)\n"
         "  --caps         print machine capabilities as JSON and exit\n"
         "  --tool-info    load -m MODEL and print its native tool-call protocol\n"
+        "  --adapt-info   load -m MODEL and print, as JSON, whether an adapter can\n"
+        "                 be served on it and trained on it, with the reason\n"
+        "                 when it cannot\n"
         "  --doctor       load -m MODEL, run one short probe and print a diagnostic\n"
         "                 report as JSON: version, placement, template, sampler,\n"
         "                 memory, timings, findings and a next step for each.\n"
@@ -1601,6 +1604,7 @@ int main(int argc, char **argv) {
     bool seed_given = false;
     bool ignore_eos = false, json_mode = false, serve = false, caps = false;
     bool tool_info = false;
+    bool adapt_info = false;   // --adapt-info: adapter eligibility as JSON
     bool shadow_mode = false, shadow_yes = false;
     const char *fit_path = NULL;
     bool no_tray = false;
@@ -1868,6 +1872,7 @@ int main(int argc, char **argv) {
         // model's chat template (a build property --caps cannot carry). Loads
         // the model, prints one JSON line, exits.
         else if (!strcmp(a, "--tool-info")) tool_info = true;
+        else if (!strcmp(a, "--adapt-info")) adapt_info = true;
         else if (!strcmp(a, "--fit")) fit_path = NEXT;
         else if (!strcmp(a, "--version")) {
             printf("runner %s%s\n", RUNNER_VERSION, RUNNER_BUILD_FLAVOR ? " (" RUNNER_BUILD_FLAVOR_STR ")" : "");
@@ -2254,7 +2259,7 @@ int main(int argc, char **argv) {
     }
     if (!prompt && !interactive && !serve && !quant_out && !merge_out &&
         !context_out &&
-        !bench_json && !doctor && !tool_info && !train_path && !dpo_path && !verify_path &&
+        !bench_json && !doctor && !tool_info && !adapt_info && !train_path && !dpo_path && !verify_path &&
         !decide_path && !detect_text && !resume_path) {
         fprintf(stderr, "error: need -p PROMPT, -i, or --serve\n");
         usage(argv[0]);
@@ -2900,6 +2905,9 @@ int main(int argc, char **argv) {
     // shared-weight registry keys on context — disagree with its peers and
     // force a second upload of the same weights.
     if (train_path) mp.gpu_mode = GPU_OFF;   // --train is the CPU path (v1)
+    // --adapt-info answers for the model, not for where it happened to load:
+    // training is CPU-hosted, and the device half is named separately
+    if (adapt_info) mp.gpu_mode = GPU_OFF;
     if (serve) mp.n_seq = parallel;
     mp.lora_path = lora_path;
     mp.lora_sig = lora_sig;
@@ -2947,6 +2955,42 @@ int main(int argc, char **argv) {
             printf("{\"tool_family\":\"%s\",\"native_tool_protocol\":%s,"
                    "\"template\":\"%s\"}\n",
                    fam, native ? "true" : "false", template_name(ti_tmpl));
+            cli_cleanup(NULL, NULL, &tok, &m);
+            return 0;
+        }
+        // --adapt-info (R8.9.1): inference, serving an adapter and training
+        // one are three capabilities with three admission lists. One JSON
+        // line says which of the last two this file has and, when not, the
+        // sentence the real operation would refuse with. stdout is JSON-only.
+        if (adapt_info) {
+            char why_s[256] = "", why_t[256] = "";
+            bool can_s = model_lora_serve_supported(&m, why_s, sizeof why_s);
+            bool can_t = model_lora_train_supported(&m, why_t, sizeof why_t);
+            char gname[128] = "";
+            bool gpu_there = gpu_available(gname, (int)sizeof gname);
+            sbuf r = {0};
+            sb_lit(&r, "{\"architecture\":\"");
+            sb_esc(&r, m.arch, strlen(m.arch));
+            sb_fmt(&r, "\",\"adapter_serving\":{\"supported\":%s,\"reason\":",
+                   can_s ? "true" : "false");
+            if (can_s) sb_lit(&r, "null");
+            else { sb_lit(&r, "\""); sb_esc(&r, why_s, strlen(why_s)); sb_lit(&r, "\""); }
+            // the device applies the adapter on its own blocks where the
+            // backend has the kernels; otherwise serving means --gpu off
+            sb_fmt(&r, ",\"device_kernels\":%s},\"training\":{\"supported\":%s,\"reason\":",
+                   !can_s || !gpu_there ? "null"
+#ifdef __APPLE__
+                   : "\"metal\"",
+#else
+                   : "\"cuda\"",
+#endif
+                   can_t ? "true" : "false");
+            if (can_t) sb_lit(&r, "null");
+            else { sb_lit(&r, "\""); sb_esc(&r, why_t, strlen(why_t)); sb_lit(&r, "\""); }
+            sb_lit(&r, ",\"host\":\"cpu\"}}\n");
+            if (r.failed) { free(r.s); cli_cleanup(NULL, NULL, &tok, &m); return 1; }
+            fwrite(r.s, 1, r.n, stdout);
+            free(r.s);
             cli_cleanup(NULL, NULL, &tok, &m);
             return 0;
         }

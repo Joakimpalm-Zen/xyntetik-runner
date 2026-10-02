@@ -858,6 +858,11 @@ enum { LW_Q, LW_K, LW_V, LW_O, LW_GATE, LW_UP, LW_DOWN, LW_SLOTS };
 // A [r][n_in] and B [n_out][r] host buffers, the rank, and the scale already
 // folded to (alpha/r) * user scale. false = no adapter on that (layer, slot),
 // which is the common case and not an error.
+// The two eligibility questions --adapt-info answers (R8.9.1): can an adapter
+// be served on this model, and can one be trained on it. Each is the check
+// the real operation runs, with the reason it would print.
+bool   model_lora_serve_supported(const model_t *m, char *why, size_t cap);
+bool   model_lora_train_supported(model_t *m, char *why, size_t cap);
 bool   model_lora_slot(const model_t *m, int layer, int slot,
                        const float **a, const float **b, int *r, float *scale,
                        int *n_in, int *n_out);
