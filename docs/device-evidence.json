@@ -19,9 +19,9 @@
         "gpu_backend": "cuda"
       },
       "last_verified": {
-        "date": "2026-09-27",
-        "commit": "15cef8ac58bf6c4b88567728bcfb598186e2342a",
-        "ran": "build057.sh on ZEN-GAMING: make OS=Windows_NT -j8 runner; make test-cuda-nvfp4 (qwen3.5-4b-nvfp4, 7.77e-05); test-gpu-identity.exe on the nine i-quant fixtures; make test-tc-overflow; scripts/cuda-smoke-remote.sh 13/13",
+        "date": "2026-10-02",
+        "commit": "027bd22a5f81e2dad860b14dc35e6de415f26921",
+        "ran": "scripts/cuda-gate.sh: test-tc-overflow, test-cuda-iquants, cpu_cuda_check (qwen3-0.6b-q8_0.gguf, 64 tokens)",
         "result": "pass",
         "caps": {
           "version": "0.5.7",
@@ -31,7 +31,7 @@
           "gpu_backend": "cuda",
           "gpu_name": "NVIDIA GeForce RTX 3070"
         },
-        "evidence": "docs/compat-reports/cuda-smoke-0.5.7-2026-09-27-rtx3070.json"
+        "evidence": "docs/device-runs-2026-10-02/cuda-gate-rtx3070.json"
       }
     },
     {
