@@ -6254,38 +6254,50 @@ bool model_lora_slot(const model_t *m, int layer, int slot,
 // adapter unservable on m, then the table. Returns the table (the caller's)
 // with its identity and alpha, or NULL having said why on stderr. Shared by
 // --lora (installed, owned) and --adapter (loaded once, borrowed per request).
-static struct lora_w *lora_parse(model_t *m, const char *path, float user_scale,
-                                 uint64_t *id_out, float *alpha_out,
-                                 int *pairs_out) {
-    // v1 scope, refused by property rather than allowed by accident: the
-    // hooks live on the dense-transformer projection sites. The offloaded
-    // half is bound at the end of this function, once the adapter has
-    // parsed, and a backend that cannot apply it refuses there.
+// Whether an adapter can be SERVED on this model at all, as a property of the
+// model and its configuration, before any adapter file is opened. v1 scope,
+// refused by property rather than allowed by accident: the hooks live on the
+// dense-transformer projection sites. `why` receives the sentence the load
+// would print. Shared by the loader and by --adapt-info, so the two cannot
+// disagree.
+bool model_lora_serve_supported(const model_t *m, char *why, size_t cap) {
     if (m->qwen35 || m->granite_hybrid || m->nemotron_h) {
-        fprintf(stderr, "error: --lora does not cover recurrent "
-                "architectures yet (%s)\n", m->arch);
-        return NULL;
+        snprintf(why, cap, "--lora does not cover recurrent architectures "
+                 "yet (%s)", m->arch);
+        return false;
     }
     if (m->n_removed > 0) {
         // The hook sites assume every dense projection exists in every
         // block; an adapter targeting a removed projection would bind to
         // nothing. Refused until the hooks learn the per-block absence.
-        fprintf(stderr, "error: --lora does not cover a model with removed "
-                "sublayers yet (%d removed by --remove-sublayer)\n",
-                m->n_removed);
-        return NULL;
+        snprintf(why, cap, "--lora does not cover a model with removed "
+                 "sublayers yet (%d removed by --remove-sublayer)", m->n_removed);
+        return false;
     }
     if (m->moe_gemma) {
-        fprintf(stderr, "error: --lora does not cover the gemma-4 "
-                "dual-branch FFN yet\n");
-        return NULL;
+        snprintf(why, cap, "--lora does not cover the gemma-4 dual-branch "
+                 "FFN yet");
+        return false;
     }
     if (m->tied_v) {
         // A K-side adapter delta would be silently dropped at read time on a
         // tied layer (K is derived from the stored V, which the hook never
         // touched), so the combination refuses rather than degrades.
-        fprintf(stderr, "error: --lora cannot run with RUNNER_TIEDV — the "
-                "derived K rows bypass the adapter hooks; unset RUNNER_TIEDV\n");
+        snprintf(why, cap, "--lora cannot run with RUNNER_TIEDV — the derived "
+                 "K rows bypass the adapter hooks; unset RUNNER_TIEDV");
+        return false;
+    }
+    return true;
+}
+
+static struct lora_w *lora_parse(model_t *m, const char *path, float user_scale,
+                                 uint64_t *id_out, float *alpha_out,
+                                 int *pairs_out) {
+    // The offloaded half is bound after this function, once the adapter has
+    // parsed, and a backend that cannot apply it refuses there.
+    char why[256];
+    if (!model_lora_serve_supported(m, why, sizeof why)) {
+        fprintf(stderr, "error: %s\n", why);
         return NULL;
     }
     gguf_file g;
@@ -6823,6 +6835,10 @@ static bool lora_bw_supported(model_t *m, char *why, size_t cap) {
     }
     if (r && why) snprintf(why, cap, "%s", r);
     return r == NULL;
+}
+
+bool model_lora_train_supported(model_t *m, char *why, size_t cap) {
+    return lora_bw_supported(m, why, cap);
 }
 
 void model_lora_grad_zero(model_t *m) {

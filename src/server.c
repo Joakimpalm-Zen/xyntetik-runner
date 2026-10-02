@@ -56,6 +56,18 @@
 
 // ---------------------------------------------------------------- routes
 
+// The publisher's fixed default system turn for the model this slot serves,
+// or NULL (template_default_system). Every chat surface asks here, so the
+// same system-less conversation is the same prompt through every door.
+// server_template_text_override is the conformance renderer's stand-in for
+// the model's template text: it drives these handlers with no model loaded.
+const char *server_template_text_override;
+const char *slot_default_system(const slot_t *s) {
+    const char *t = server_template_text_override;
+    if (!t && s->m) t = gguf_get_str(&s->m->gf, "tokenizer.chat_template", NULL);
+    return template_default_system(s->tmpl, t);
+}
+
 // Declared in api.h, where the reason it exists is written down.
 char *render_prompt_alloc(int tmpl, const chat_msg *msgs, int n_msgs,
                           bool add_assistant, int thinking, const jv *tools,
@@ -556,7 +568,7 @@ static void handle_chat_render(slot_t *s, sock_t fd, jv *req,
         send_error(fd, 500, "out of memory building chat prompt");
         return;
     }
-    size_t cm_cap = (size_t)msgs->n + 1;
+    size_t cm_cap = (size_t)msgs->n + 2;   // + the tool turn, + a default system turn
     // Every family that replays reasoning_content as its own turn needs a
     // slot for it: Harmony (analysis channel) and Muse (the to=self turn,
     // since #121). Counting only Harmony's left Muse one slot short per
@@ -588,6 +600,16 @@ static void handle_chat_render(slot_t *s, sock_t fd, jv *req,
     int n_cm = 0, n_own = 0;
     if (ts.n)
         cm[n_cm++] = (chat_msg){ .role = "system", .content = ts.s };
+    else if (!native_tools && msgs->n > 0 &&
+             strcmp(chat_role(msgs->items[0]), "system")) {
+        // no system turn from the caller and none from the tools: the
+        // publisher's template would write its own
+        const char *ds = slot_default_system(s);
+        if (ds) {
+            cm[n_cm++] = (chat_msg){ .role = "system", .content = ds };
+            total += strlen(ds) + 64;
+        }
+    }
     int last_user = -1;
     if (s->tmpl == TMPL_CHATML_THINK || tmpl_qwen35(s->tmpl))
         for (int i = 0; i < msgs->n; i++)
@@ -2915,7 +2937,10 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
     atomic_store(&SV.shutdown, true);
     if (SV.reaper_started) pthread_join(SV.reaper_th, NULL);
 
-    for (int i = 0; i < parallel; i++) free(SV.slots[i].e.hist);
+    for (int i = 0; i < parallel; i++) {
+        free(SV.slots[i].e.hist);
+        free(SV.slots[i].hint_buf);
+    }
     if (SV.n_reg > 0) {
         pthread_mutex_lock(&SV.swap_mu);
         unload_draft();

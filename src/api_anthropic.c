@@ -845,7 +845,7 @@ static char *messages_prompt(slot_t *s, sock_t fd, jv *req, tool_envelope *env,
 
     // upper bound on turns: the tool system turn, the system turn, and for
     // each message its own turn plus one per tool_result block it carries
-    int cap = 2 + msgs->n;
+    int cap = 3 + msgs->n;
     for (int i = 0; i < msgs->n; i++) {
         jv *c = jv_get(msgs->items[i], "content");
         if (c && c->type == J_ARR) cap += c->n;
@@ -868,6 +868,10 @@ static char *messages_prompt(slot_t *s, sock_t fd, jv *req, tool_envelope *env,
                 if (ts.failed) { oom = true; ok = false; }
             }
             if (ok && ts.n) turn_add_borrowed(&t, "system", ts.s);
+            // no `system` and no tool turn: the publisher's default, as on
+            // the chat surface
+            if (ok && !ts.n && !sys && !native_tools && slot_default_system(s))
+                turn_add_borrowed(&t, "system", slot_default_system(s));
             if (ok && sys) turn_add(&t, "system", sys);
             else free(sys);
         }

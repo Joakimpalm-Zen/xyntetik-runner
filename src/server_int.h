@@ -17,7 +17,11 @@
 #include "oms.h"
 #include "watermark.h"
 
-typedef struct {
+typedef struct slot_s slot_t;
+const char *slot_default_system(const slot_t *s);
+extern const char *server_template_text_override;
+
+struct slot_s {
     model_t   *m;         // slot 0 borrows the preloaded model
     tokenizer *tok;       // shared (read-only)
     sampler    smp;
@@ -35,7 +39,11 @@ typedef struct {
     int        adapter;
     // R1.8.1: this slot's watermark hook state (the key is SV.wm_key)
     wm_state   wm;
-} slot_t;
+    // R3.7.4: the current request's draft hints, tokenized (runs separated
+    // by -1). Owned by the slot and reused, so no request path frees it.
+    int32_t   *hint_buf;
+    int        hint_cap;
+};
 
 // A per-request adapter (R8.6): loaded once at startup, borrowed by a slot's
 // model for the requests that name it as "<model>:<name>".

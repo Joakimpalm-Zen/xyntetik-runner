@@ -239,6 +239,14 @@ typedef struct {
     // fast-forward still preempts it under a constraint, as it does the
     // others. See engine_lookup_draft.
     bool     lookup_on;
+    // Draft hints (R3.7.4): text the caller expects the model to echo, a
+    // file about to be quoted or a tool result, as token runs separated by
+    // -1. Searched only when the context lookup proposed nothing, with the
+    // same n-gram rule, and verified by the same walk, so a wrong hint costs
+    // one verify column and never a token. Borrowed for one request; needs
+    // lookup_on. See engine_hint_draft.
+    const int32_t *hint;
+    int      hint_len;
     // JC-R2 grammar fast-forward: when the active constraint pins a unique
     // byte continuation, its tokenization is drafted for free (no draft
     // forwards) and verified by the target exactly like a draft-model
@@ -248,7 +256,8 @@ typedef struct {
     bool     gram_ff;
     struct { int rounds, drafted, accepted,      // all drafts (every source)
                  gr_drafted, gr_accepted,        // grammar-pinned drafts only
-                 lk_drafted, lk_accepted; }      // prompt-lookup drafts only
+                 lk_drafted, lk_accepted,        // prompt-lookup drafts only
+                 hint_drafted, hint_accepted; }  // of those, from draft hints
              spec_st;                            // reset per generation
     // JC-R2 Phase 0 trace (RUNNER_GRAMMAR_TRACE=path): the current grammar
     // round's pinned bytes + drafted ids, stashed at draft time and emitted
@@ -325,6 +334,13 @@ bool engine_wants_spec(const engine *e);
 // the input-grounded rows kept their drafts (99% and 80% acceptance).
 enum { ENGINE_LOOKUP_N_MIN = 3, ENGINE_LOOKUP_N_MAX = 5 };
 int engine_lookup_draft(const int32_t *hist, int len, int k, int32_t *out);
+// The same search over the caller's hints instead of the context: the last n
+// context tokens (n from N_MAX down to N_MIN) are looked for in `hint`, a
+// sequence of token runs separated by -1, and the tokens that follow the
+// FIRST occurrence in the first run that has one are proposed, up to k and
+// never across a separator. Returns the count, 0 on no match. Pure.
+int engine_hint_draft(const int32_t *hist, int len, const int32_t *hint,
+                      int hint_len, int k, int32_t *out);
 
 // Returns false if the per-context history buffer could not be allocated;
 // the caller must not use the engine in that case.

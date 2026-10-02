@@ -293,9 +293,10 @@ FAMILIES = {
         note="the smollm pre-tokenizer family; plain ChatML",
         tokenizer=("SmolLM2-135M-Instruct-Q8_0.gguf",)),
     "hermes4": Family(
-        "chatml-think", ("hf", "NousResearch/Hermes-4-14B"),
-        note="ChatML with <think> and Hermes tools; detected as chatml-think",
-        tool_family=True, thinking_var="enable_thinking",
+        "hermes4", ("hf", "NousResearch/Hermes-4-14B"),
+        note="ChatML with its own system turn and tools preamble; reasoning "
+             "is asked for through the system prompt (`thinking`)",
+        tool_family=True, thinking_var="thinking",
         tokenizer=("NousResearch_Hermes-4-14B-Q4_K_M.gguf",)),
     "phi4mini": Family(
         "phi4", ("hf", "microsoft/Phi-4-mini-instruct"),
@@ -303,7 +304,7 @@ FAMILIES = {
              "system turn",
         tool_family=True, tokenizer=("Phi-4-mini-instruct-q4_0.gguf",)),
     "granite40h": Family(
-        "granite", ("hf", "ibm-granite/granite-4.0-h-small"),
+        "granite4", ("hf", "ibm-granite/granite-4.0-h-small"),
         note="granitehybrid; the 4.0 template with its tools section",
         tool_family=True, tokenizer=("granite-4.0-h-small-Q4_K_M.gguf",)),
     "qwen35-4b": Family(
@@ -324,9 +325,10 @@ FAMILIES = {
         note="llama3 framing with a leading bos and trimmed content",
         tokenizer=("Lucie-7B-Instruct-Q4_K_M.gguf",)),
     "mistral-nemo": Family(
-        "mistral", ("hf", "mistralai/Mistral-Nemo-Instruct-2407"),
-        note="detected as mistral (the v0.3 form) on the pinned file; the "
-             "runner also has a mistral-nemo family",
+        "mistral-nemo", ("hf", "mistralai/Mistral-Nemo-Instruct-2407"),
+        note="the publisher's current template, which the runner detects as "
+             "mistral-nemo; the pinned GGUF embeds an OLDER template that "
+             "detects as the v0.3 form (an artifact-freshness matter, R4.22.7)",
         tool_family=True,
         tokenizer=("Mistral-Nemo-Instruct-2407-Q4_K_M.gguf",),
         cannot={"consecutive-user": ALTERNATE_AFTER_SYS,
@@ -369,7 +371,7 @@ FAMILIES = {
         note="publisher page gated; the file's embedded template",
         tokenizer=("EuroLLM-9B-Instruct-Q4_K_M.gguf",)),
     "granite": Family(
-        "granite", ("gguf", "models/granite-4.1-8b-Q4_0.gguf"),
+        "granite4", ("gguf", "models/granite-4.1-8b-Q4_0.gguf"),
         note="src/template.c cites 'the model's OWN tokenizer.chat_template'; "
              "the ibm-granite HF repo is gated (401)",
         tokenizer=("granite-4.1-8b-Q4_0.gguf", "granite-4.1-3b-Q8_0.gguf")),
@@ -1346,7 +1348,11 @@ def run(args):
                    for d in fam_devs]
 
         tok_gguf = tokenizer_path(fam)
+        # The oracle's own text goes along: the server reads a model's
+        # publisher default system prompt out of its chat template, and this
+        # harness drives the handlers with no model loaded.
         jobs = [{"id": cid, "template": fam.runner,
+                 "chat_template": tmpl_src if fam.source else None,
                  "add_generation_prompt": add_gen,
                  "request": request_body(fam, msgs, thinking,
                                          TOOLS if "tool" in cid else None),

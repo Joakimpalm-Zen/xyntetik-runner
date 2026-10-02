@@ -513,7 +513,7 @@ static bool train_example_append(train_ex **exs, int *n_ex,
 static int train_eot_id(tokenizer *tok, int tmpl) {
     const char *s = NULL;
     switch (tmpl) {
-    case TMPL_CHATML: case TMPL_CHATML_THINK: case TMPL_QWEN38: case TMPL_QWEN3_CODER: s = "<|im_end|>"; break;
+    case TMPL_CHATML: case TMPL_CHATML_THINK: case TMPL_HERMES4: case TMPL_QWEN38: case TMPL_QWEN3_CODER: s = "<|im_end|>"; break;
     case TMPL_LLAMA3: s = "<|eot_id|>"; break;
     case TMPL_GEMMA: s = "<end_of_turn>"; break;
     case TMPL_GEMMA4: case TMPL_GEMMA4_MAINLINE: s = "<turn|>"; break;
@@ -1169,8 +1169,9 @@ static void usage_to(FILE *f, const char *prog) {
         "  --system TEXT  system prompt for interactive chat (-i) only\n"
         "  --chat-template chatml|chatml-think|llama2|llama3|mistral|mistral-v1|\n"
         "                 mistral-nemo|zephyr|phi3|phi4|gemma|gemma4|gemma4-mainline|\n"
-        "                 apertus|ornith|qwen35|qwen35-nothink|nemotron|granite42|\n"
-        "                 qwen38|qwen3-coder|muse|granite|harmony|raw\n"
+        "                 apertus|ornith|qwen35|qwen35-nothink|nemotron|hermes4|\n"
+        "                 granite|granite4|granite42|\n"
+        "                 qwen38|qwen3-coder|muse|harmony|raw\n"
         "                 (default: auto). Applies to chat and --serve; not\n"
         "                 valid with a multi-model -m swap set\n"
         "  --no-bos       do not add BOS token\n"
@@ -1257,7 +1258,8 @@ static void usage_to(FILE *f, const char *prog) {
         "                 response per line on stdout; options scored verbatim\n"
         "                 in context, no sampling (- reads stdin)\n"
         "  --lora FILE    load a LoRA adapter GGUF beside the frozen base\n"
-        "                 (CPU dense projections; fails closed otherwise)\n"
+        "                 (dense projections, on the CPU and on an offloaded\n"
+        "                 CUDA or Metal block; fails closed otherwise)\n"
         "  --lora-scale F multiply the adapter's trained alpha/r (default 1.0)\n"
         "  --lora-sig F   OMS bundle for the --lora adapter (default: its path\n"
         "                 + .sig when it exists); verified with --model-pubkey,\n"
@@ -1283,6 +1285,9 @@ static void usage_to(FILE *f, const char *prog) {
         "  --lora-rank R  fresh-adapter rank when no --lora is given (8)\n"
         "  --caps         print machine capabilities as JSON and exit\n"
         "  --tool-info    load -m MODEL and print its native tool-call protocol\n"
+        "  --adapt-info   load -m MODEL and print, as JSON, whether an adapter can\n"
+        "                 be served on it and trained on it, with the reason\n"
+        "                 when it cannot\n"
         "  --doctor       load -m MODEL, run one short probe and print a diagnostic\n"
         "                 report as JSON: version, placement, template, sampler,\n"
         "                 memory, timings, findings and a next step for each.\n"
@@ -1599,6 +1604,7 @@ int main(int argc, char **argv) {
     bool seed_given = false;
     bool ignore_eos = false, json_mode = false, serve = false, caps = false;
     bool tool_info = false;
+    bool adapt_info = false;   // --adapt-info: adapter eligibility as JSON
     bool shadow_mode = false, shadow_yes = false;
     const char *fit_path = NULL;
     bool no_tray = false;
@@ -1866,6 +1872,7 @@ int main(int argc, char **argv) {
         // model's chat template (a build property --caps cannot carry). Loads
         // the model, prints one JSON line, exits.
         else if (!strcmp(a, "--tool-info")) tool_info = true;
+        else if (!strcmp(a, "--adapt-info")) adapt_info = true;
         else if (!strcmp(a, "--fit")) fit_path = NEXT;
         else if (!strcmp(a, "--version")) {
             printf("runner %s%s\n", RUNNER_VERSION, RUNNER_BUILD_FLAVOR ? " (" RUNNER_BUILD_FLAVOR_STR ")" : "");
@@ -2252,7 +2259,7 @@ int main(int argc, char **argv) {
     }
     if (!prompt && !interactive && !serve && !quant_out && !merge_out &&
         !context_out &&
-        !bench_json && !doctor && !tool_info && !train_path && !dpo_path && !verify_path &&
+        !bench_json && !doctor && !tool_info && !adapt_info && !train_path && !dpo_path && !verify_path &&
         !decide_path && !detect_text && !resume_path) {
         fprintf(stderr, "error: need -p PROMPT, -i, or --serve\n");
         usage(argv[0]);
@@ -2898,6 +2905,9 @@ int main(int argc, char **argv) {
     // shared-weight registry keys on context — disagree with its peers and
     // force a second upload of the same weights.
     if (train_path) mp.gpu_mode = GPU_OFF;   // --train is the CPU path (v1)
+    // --adapt-info answers for the model, not for where it happened to load:
+    // training is CPU-hosted, and the device half is named separately
+    if (adapt_info) mp.gpu_mode = GPU_OFF;
     if (serve) mp.n_seq = parallel;
     mp.lora_path = lora_path;
     mp.lora_sig = lora_sig;
@@ -2945,6 +2955,42 @@ int main(int argc, char **argv) {
             printf("{\"tool_family\":\"%s\",\"native_tool_protocol\":%s,"
                    "\"template\":\"%s\"}\n",
                    fam, native ? "true" : "false", template_name(ti_tmpl));
+            cli_cleanup(NULL, NULL, &tok, &m);
+            return 0;
+        }
+        // --adapt-info (R8.9.1): inference, serving an adapter and training
+        // one are three capabilities with three admission lists. One JSON
+        // line says which of the last two this file has and, when not, the
+        // sentence the real operation would refuse with. stdout is JSON-only.
+        if (adapt_info) {
+            char why_s[256] = "", why_t[256] = "";
+            bool can_s = model_lora_serve_supported(&m, why_s, sizeof why_s);
+            bool can_t = model_lora_train_supported(&m, why_t, sizeof why_t);
+            char gname[128] = "";
+            bool gpu_there = gpu_available(gname, (int)sizeof gname);
+            sbuf r = {0};
+            sb_lit(&r, "{\"architecture\":\"");
+            sb_esc(&r, m.arch, strlen(m.arch));
+            sb_fmt(&r, "\",\"adapter_serving\":{\"supported\":%s,\"reason\":",
+                   can_s ? "true" : "false");
+            if (can_s) sb_lit(&r, "null");
+            else { sb_lit(&r, "\""); sb_esc(&r, why_s, strlen(why_s)); sb_lit(&r, "\""); }
+            // the device applies the adapter on its own blocks where the
+            // backend has the kernels; otherwise serving means --gpu off
+            sb_fmt(&r, ",\"device_kernels\":%s},\"training\":{\"supported\":%s,\"reason\":",
+                   !can_s || !gpu_there ? "null"
+#ifdef __APPLE__
+                   : "\"metal\"",
+#else
+                   : "\"cuda\"",
+#endif
+                   can_t ? "true" : "false");
+            if (can_t) sb_lit(&r, "null");
+            else { sb_lit(&r, "\""); sb_esc(&r, why_t, strlen(why_t)); sb_lit(&r, "\""); }
+            sb_lit(&r, ",\"host\":\"cpu\"}}\n");
+            if (r.failed) { free(r.s); cli_cleanup(NULL, NULL, &tok, &m); return 1; }
+            fwrite(r.s, 1, r.n, stdout);
+            free(r.s);
             cli_cleanup(NULL, NULL, &tok, &m);
             return 0;
         }
@@ -4236,6 +4282,9 @@ int main(int argc, char **argv) {
     if (tmpl < 0)
         tmpl = template_detect(gguf_get_str(&m.gf, "tokenizer.chat_template", NULL), &tok);
     template_bind_think_tags(tmpl, &m.think_open, &m.think_close);
+    if (!system_prompt)
+        system_prompt = template_default_system(
+            tmpl, gguf_get_str(&m.gf, "tokenizer.chat_template", NULL));
     if (!system_prompt) system_prompt = "You are a helpful assistant.";
     fprintf(stderr, "chat mode (template: %s) — Ctrl-D or /exit to quit\n\n",
             template_name(tmpl));

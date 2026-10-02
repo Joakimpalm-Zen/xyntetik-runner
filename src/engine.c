@@ -2483,6 +2483,7 @@ static int engine_generate_spec(engine *e, float *logits, int max_new,
     int st_rounds = 0, st_drafted = 0, st_accepted = 0;
     int st_gr_drafted = 0, st_gr_accepted = 0;
     int st_lk_drafted = 0, st_lk_accepted = 0;
+    int st_hint_drafted = 0, st_hint_accepted = 0;
     #define SPEC_STATS() do { \
         e->spec_st.rounds = st_rounds; e->spec_st.drafted = st_drafted; \
         e->spec_st.accepted = st_accepted; \
@@ -2490,6 +2491,8 @@ static int engine_generate_spec(engine *e, float *logits, int max_new,
         e->spec_st.gr_accepted = st_gr_accepted; \
         e->spec_st.lk_drafted = st_lk_drafted; \
         e->spec_st.lk_accepted = st_lk_accepted; \
+        e->spec_st.hint_drafted = st_hint_drafted; \
+        e->spec_st.hint_accepted = st_hint_accepted; \
         if (dm || e->mtp_on || e->lookup_on || getenv("RUNNER_SPEC_STATS")) \
             fprintf(stderr, \
             "spec: %d rounds, %d drafted, %d accepted (%.2f tok/round)" \
@@ -2544,7 +2547,7 @@ static int engine_generate_spec(engine *e, float *logits, int max_new,
         // token, cur) at position pos. A queue push; it runs with the draft.
         if (e->mtp_on) model_mtp_feed(m, cur);
         // a grammar-pinned run drafts for free and preempts the draft model
-        int nd = 0, gr = 0, lk = 0;
+        int nd = 0, gr = 0, lk = 0, hk = 0;
         if (e->gram_ff && constrained) {
             int cap = GK;
             if (max_new >= 0 && cap > max_new - n_gen) cap = max_new - n_gen;
@@ -2561,7 +2564,11 @@ static int engine_generate_spec(engine *e, float *logits, int max_new,
             if (max_new >= 0 && cap > max_new - n_gen) cap = max_new - n_gen;
             if (cap > m->n_ctx - e->pos - 1) cap = m->n_ctx - e->pos - 1;
             if (cap > 0) nd = lk = engine_lookup_draft(e->hist, e->pos + 1, cap, d);
-            st_drafted += nd; st_lk_drafted += nd;
+            // the caller's hints, when the context itself had no match
+            if (!nd && cap > 0 && e->hint_len > 0)
+                nd = lk = hk = engine_hint_draft(e->hist, e->pos + 1, e->hint,
+                                                 e->hint_len, cap, d);
+            st_drafted += nd; st_lk_drafted += nd; st_hint_drafted += hk;
         }
         if (prof) t_draft += now_s() - tp;
         // NextN/MTP head drafts (no draft model). The head holds the pair
@@ -2673,6 +2680,7 @@ static int engine_generate_spec(engine *e, float *logits, int max_new,
                 st_accepted++;
                 if (gr) st_gr_accepted++;
                 if (lk) st_lk_accepted++;
+                if (hk) st_hint_accepted++;
                 if (e->mtp_on) model_mtp_feed(m, tok); // pair (h of row i, tok)
                 if (cdone) {
                     if (gr) gtrace_emit(e, i + 1, -1, -1, -1);
@@ -2999,6 +3007,27 @@ int engine_lookup_draft(const int32_t *hist, int len, int k, int32_t *out) {
             for (int t = j + n; nd < k; t++, nd++)
                 out[nd] = t < len ? hist[t] : out[nd - P];
             return nd;
+        }
+    }
+    return 0;
+}
+
+int engine_hint_draft(const int32_t *hist, int len, const int32_t *hint,
+                      int hint_len, int k, int32_t *out) {
+    if (!hist || !hint || !out || k <= 0 || hint_len <= 0) return 0;
+    for (int n = ENGINE_LOOKUP_N_MAX; n >= ENGINE_LOOKUP_N_MIN; n--) {
+        if (len < n) continue;
+        const int32_t *suf = hist + len - n;
+        // an occurrence starts at j and needs one token after it, in the
+        // same run: hint[j..j+n-1] == suf and hint[j+n] is not a separator
+        for (int j = 0; j + n < hint_len; j++) {
+            int i = 0;
+            while (i < n && hint[j + i] == suf[i]) i++;
+            if (i < n) continue;        // a separator never equals a token id
+            int nd = 0;
+            for (int t = j + n; t < hint_len && nd < k && hint[t] >= 0; t++)
+                out[nd++] = hint[t];
+            if (nd) return nd;
         }
     }
     return 0;

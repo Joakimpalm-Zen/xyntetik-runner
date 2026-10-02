@@ -1432,6 +1432,9 @@ set, ensuring it remains a full offload. A single tensor larger than the
 per-buffer ceiling still cannot be wrapped and says so.
 
 `RUNNER_METAL_ATTN_COOP=0` pins the byte-identical decode attention kernel.
+At prefill the batch's columns are scored eight per threadgroup from one read
+of each K element (`k_attn_tile`), which is byte-identical to the one-column
+kernel and is pinned off with `RUNNER_METAL_ATTN_TILE=0`.
 The default is the cooperative KV read: one simdgroup owns a KV row and its
 lanes split `head_dim`, so a load covers 32 consecutive elements instead of 32
 rows. It reassociates the per-row dot into a `simd_sum`, which is why it
@@ -1745,8 +1748,8 @@ flag and ignore it rather than approximate one.
 
 Force `chatml`, `chatml-think`, `llama2`, `llama3`, `mistral`, `mistral-v1`,
 `mistral-nemo`, `zephyr`, `phi3`, `phi4`, `gemma`, `gemma4`, `gemma4-mainline`, `apertus`,
-`ornith`, `qwen35`, `qwen35-nothink`, `nemotron`, `granite42`, `qwen38`, `qwen3-coder`,
-`muse`, `granite`, `harmony`, or `raw`;
+`ornith`, `qwen35`, `qwen35-nothink`, `nemotron`, `hermes4`, `granite`, `granite4`, `granite42`,
+`qwen38`, `qwen3-coder`, `muse`, `harmony`, or `raw`;
 default is auto-detection. The three Mistral framings are not interchangeable: `mistral`
 is the v0.3 / Mistral-Small-2409 form and the fallback for an unrecognised Mistral
 template, `mistral-v1` is v0.1/v0.2, `mistral-nemo` is Nemo-Instruct-2407. They differ
@@ -1859,7 +1862,11 @@ token-identical to plain decoding, greedy and seeded alike, because the target's
 walk decides every token (pinned in `make test` on three prompt shapes; the search
 itself is pinned against hand-computed proposals). One draft source per run: combining
 it with `--draft` or `--mtp` is refused at startup rather than silently ignored; grammar
-fast-forward still composes, as it does with the others. Works in one-shot, chat and
+fast-forward still composes, as it does with the others. In serve mode a request may
+add `draft_hints`, up to 16 strings the caller expects the model to restate (a file
+about to be quoted, a tool result): they are searched when the context has no match and
+verified the same way, so they change speed and never the output
+([docs/context-drafts.md](docs/context-drafts.md)). Works in one-shot, chat and
 single-model serve mode (`draft.source` is `lookup` in `GET /v1/capabilities`; ignored
 in swap mode with a `reason`), on every path the verify walk runs on (CPU, and the same
 GPU cases `--draft` accepts). Measured 2026-09-04 on an M1 CPU: 1.47x on a verbatim
@@ -1893,7 +1900,7 @@ whether the draft is `active` there.
 | `--prune-experts FILE` | Apply a per-layer MoE expert keep-list while rewriting. Requires `--quantize`. |
 | `--remove-sublayer attn:N[,mlp:M,...]` | Physically drop block N's attention (or block M's dense FFN) tensors while rewriting, declaring the absence with a `0` in the per-block `attention.head_count` / `head_count_kv` (or `feed_forward_length`) array, llama.cpp's own convention. The pre-norm stays. The runner omits the branch and reserves no KV rows for it; CPU path, dense blocks only. Requires `--quantize`. See [Sublayer removal](#sublayer-removal). |
 | `--bench-json` | Run the built-in prompt/decode benchmark and print JSON metrics. |
-| `--lora FILE`, `--lora-scale F` | Serve a LoRA adapter with the frozen base; supports CPU and CUDA, with explicit architecture restrictions. [Details](#cli-lora). |
+| `--lora FILE`, `--lora-scale F` | Serve a LoRA adapter with the frozen base; supports CPU, CUDA and Metal, with explicit architecture restrictions. [Details](#cli-lora). |
 | `--adapter NAME=PATH` | With `--serve`: load an adapter once and select it per request as `"model": "<model>:NAME"`. [Details](#cli-adapter). |
 | `--train FILE`, `--train-steps`, `--lr`, `--train-ctx`, `--train-out`, `--save-every`, `--lora-rank` | Train a deterministic AdamW LoRA adapter from text or weighted prompt/completion JSONL. [Details](#cli-train). |
 | `--score` | Return teacher-forced token logprobs, NLL, perplexity and top-1 metrics as JSON. [Details](#cli-score). |
@@ -1923,6 +1930,7 @@ whether the draft is `active` there.
 | `--sign-model FILE`, `--model-key KEY.pem` | Write an OMS bundle for FILE (every part of a split GGUF) to `FILE.sig`, or to `--model-sig OUT`, signed with a PEM EC private key (SEC1 or PKCS#8, unencrypted, P-256/384/521) by deterministic ECDSA: the same key and model always give the same bytes. An existing bundle is never overwritten. Needs no `-m`. [Details](#cli-sign-model). |
 | `--caps` | Print machine, backend, quant, architecture, placement, and sampling capabilities as JSON. |
 | `--tool-info` | With `-m`, print the model's tool-call protocol as JSON (`{"tool_family":…,"native_tool_protocol":…}`) and exit. No manifest required. |
+| `--adapt-info` | With `-m`, print as JSON whether a LoRA adapter can be served on this model and whether one can be trained on it, each with the sentence the real operation would refuse with, plus which GPU backend of this build carries adapter kernels. Inference, adapter serving and training are three admission lists; this reads the last two without running either. |
 | `--doctor` | With `-m`, load the model, run one short probe and print a diagnostic report as JSON: version, where the layers actually ran, the template and sampler in effect, memory, timings, and findings with a next step each. Exit 2 when a finding is `broken`. The report holds no prompt or reply text unless `--doctor-include-text` is given; read it before sharing. |
 | `--shadow-mode` | Install shadow mode for Claude Code and Codex if present, asking first (`--yes` skips the question); `-m MODEL` names the model the `/shadow` offload serves. Hands off to the stdlib-only Python client beside the binary (`python/src`); see the shadow-mode section. |
 | `--fit PATH` | Estimate whether a GGUF fits this machine and exit. Reads only the header, so a partial download answers the question. |
@@ -1965,14 +1973,18 @@ loads and serves, measured). Interop runs the other way too: an adapter runner t
 scores identically (1.000 on its held-out eval) when served by stock llama.cpp. Applied
 as `y += scale·B(Ax)` on the dense projections (attention q/k/v/output, FFN
 gate/up/down) - the base weights and kernels are untouched, so every base identity gate
-still describes the adapted run's substrate. Runs on the CPU and, on CUDA, on the
-device: an offloaded block applies the delta from adapter weights held in VRAM (36.9 MB
-at rank 8 on a 1.5B), a partial split lets each half apply its own blocks, and the
-CPU-versus-GPU gap with the adapter is no wider than without it (max |Δlogprob| 1.110e-3
-against 1.255e-3, Qwen2.5-1.5B Q4_K_M, RTX 3070). Fails closed by name on shape/rank
-mismatches, unknown targets, recurrent/gemma-4-MoE architectures, and a backend with no
-adapter path (Metal today), rather than serving a model that ignored the adapter on its
-offloaded blocks. A zero adapter is gated byte-identical to the bare base; a real
+still describes the adapted run's substrate. Runs on the CPU and, on CUDA and Metal, on
+the device: an offloaded block applies the delta from adapter weights held in device
+memory (36.9 MB at rank 8 on a 1.5B), a partial split lets each half apply its own
+blocks, and the CPU-versus-GPU gap with the adapter is no wider than without it (CUDA:
+max |Δlogprob| 1.110e-3 against 1.255e-3, Qwen2.5-1.5B Q4_K_M, RTX 3070; Metal: mean
+3.0e-4 against 3.1e-4, SmolLM2-135M Q8_0 with a rank-8 adapter on all 210 projections,
+M1). On Metal a block with an adapter decodes on the split path, without the fused
+front kernel, so on a very small model decode slows (117 to 44 tok/s on that 135M,
+still above the CPU's 37) while prefill barely moves (1,250 to 1,150 tok/s). Fails
+closed by name on shape/rank mismatches, unknown targets, recurrent/gemma-4-MoE
+architectures, and an adapter on a routed-expert FFN that the device path cannot reach,
+rather than serving a model that ignored the adapter on its offloaded blocks. A zero adapter is gated byte-identical to the bare base; a real
 adapter is gated against the merged-weights reference. The adapter id joins the engine's
 model identity, so cached prefixes never cross an adapter boundary. The adapter and
 scale apply to every serving slot and every reload after `/unload` or TTL expiry,

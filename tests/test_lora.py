@@ -20,6 +20,7 @@ reason a GPU-resident model may load an adapter at all: without them the
 failure mode is a model that quietly ignored it.
 """
 import json
+import os
 import pathlib
 import subprocess
 import sys
@@ -122,6 +123,61 @@ def test_device_adapter_matches_the_merged_reference(runner_bin, fx):
     deltas = [abs(a - b) for a, b in
               zip(adapted["logprobs"], merged["logprobs"])]
     assert max(deltas) <= 5e-4, max(deltas)
+
+
+@pytest.fixture(scope="module")
+def fx_all(tmp_path_factory):
+    """The same fixtures with the adapter on all seven projections of block 0
+    (attention q/k/v/output, ffn gate/up/down)."""
+    d = tmp_path_factory.mktemp("lora-all")
+    base = d / "base.gguf"
+    subprocess.run([sys.executable, ROOT / "scripts/make-test-model.py",
+                    str(base)], check=True, cwd=ROOT,
+                   stdout=subprocess.DEVNULL)
+    subprocess.run([sys.executable, ROOT / "scripts/make-test-lora.py",
+                    str(base), str(d / "fx")], check=True, cwd=ROOT,
+                   stdout=subprocess.DEVNULL,
+                   env=dict(os.environ, LORA_TARGETS="all"))
+    return {"base": base, "adapter": d / "fx.adapter.gguf",
+            "zero": d / "fx.zero.gguf", "merged": d / "fx.merged.gguf"}
+
+
+def test_every_projection_site_matches_the_merged_reference(runner_bin, fx_all):
+    """Seven hooks, seven ways to forget one. With the adapter on every
+    projection of a block, the CPU path and the device path are each held to
+    the merged model, so a missing or misplaced hook at any site is a miss
+    here and not a quietly weaker adapter."""
+    merged_cpu = json.loads(_score(runner_bin, fx_all["merged"]))
+    cpu = json.loads(_score(runner_bin, fx_all["base"], lora=fx_all["adapter"]))
+    d_cpu = max(abs(a - b) for a, b in zip(cpu["logprobs"], merged_cpu["logprobs"]))
+    assert d_cpu <= 5e-4, d_cpu
+    base = json.loads(_score(runner_bin, fx_all["base"]))
+    assert max(abs(a - b) for a, b in
+               zip(base["logprobs"], merged_cpu["logprobs"])) > 1e-3, \
+        "the all-site adapter does not move the score, so the check is vacuous"
+    _gpu_or_skip(runner_bin, fx_all)
+    dev = json.loads(_score(runner_bin, fx_all["base"], lora=fx_all["adapter"],
+                            gpu=True))
+    merged_dev = json.loads(_score(runner_bin, fx_all["merged"], gpu=True))
+    d_dev = max(abs(a - b) for a, b in zip(dev["logprobs"], merged_dev["logprobs"]))
+    assert d_dev <= 5e-4, d_dev
+
+
+def test_device_adapter_generates_what_the_cpu_generates(runner_bin, fx_all):
+    """The score path is one token at a time. Generation prefills the prompt
+    as a batch, which is a different dispatch shape through every hook."""
+    _gpu_or_skip(runner_bin, fx_all)
+    prompt = "the quick brown fox jumps over the lazy dog and keeps running"
+    outs = []
+    for gpu in ("off", "auto"):
+        p = subprocess.run([runner_bin, "-m", str(fx_all["base"]), "--lora",
+                            str(fx_all["adapter"]), "-p", prompt, "-n", "12",
+                            "-b", "8", "--temp", "0", "-t", "2", "--gpu", gpu,
+                            "--no-tray"], cwd=ROOT, stdout=subprocess.PIPE,
+                           stderr=subprocess.PIPE, timeout=120)
+        assert p.returncode == 0, p.stderr.decode(errors="replace")
+        outs.append(p.stdout)
+    assert outs[0] == outs[1]
 
 
 def test_device_adapter_changes_the_score_deterministically(runner_bin, fx):

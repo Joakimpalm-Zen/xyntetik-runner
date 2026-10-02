@@ -26,6 +26,7 @@ import json
 import pathlib
 import subprocess
 import sys
+import urllib.error
 import urllib.request
 
 import pytest
@@ -266,3 +267,53 @@ def test_serve_reports_the_source_and_accounts_per_request(model):
                        "logprobs": 1, "cache_prompt": False})
         assert plain["runner_telemetry"]["speculative"] is False
         assert "speculation" not in plain["runner_telemetry"]
+
+
+# ---------------------------------------------------------------- draft hints
+
+HINT_TEXT = "README.md src tests Makefile LICENSE docs scripts site python"
+
+
+def _hint_request(extra):
+    # the scripted reply dictates the tokens, so the model "echoes" the hint
+    # whatever its weights are; the walk still verifies every drafted token
+    return {"prompt": "List the directory.\n", "max_tokens": 120,
+            "temperature": 0, "cache_prompt": False,
+            "runner_test_reply": HINT_TEXT, **extra}
+
+
+def test_draft_hints_are_accepted_and_change_nothing(model):
+    """R3.7.4: a hint the model goes on to echo is drafted from and accepted,
+    the output is byte for byte what it is without the hint, and the hints'
+    share is reported apart from the context lookup's."""
+    with RunnerServer(find_runner(ROOT), model, ctx=1024, parallel=1,
+                      extra_args=["--gpu", "off", "--draft-lookup"],
+                      env={"RUNNER_TEST_SCRIPTED_REPLY": "1"}) as srv:
+        plain = _post(srv, "/v1/completions", _hint_request({}))
+        hinted = _post(srv, "/v1/completions",
+                       _hint_request({"draft_hints": ["unrelated text", HINT_TEXT]}))
+        assert hinted["choices"][0]["text"] == plain["choices"][0]["text"]
+        assert HINT_TEXT in hinted["choices"][0]["text"]
+        sp = hinted["runner_telemetry"]["speculation"]
+        assert sp["hint_drafted"] > 0 and sp["hint_accepted"] > 0, sp
+        assert sp["hint_accepted"] <= sp["hint_drafted"] <= sp["lookup_drafted"]
+        # no hints sent: the two fields are absent, not zero
+        ps = plain["runner_telemetry"].get("speculation") or {}
+        assert "hint_drafted" not in ps
+
+
+def test_draft_hints_are_refused_where_they_cannot_be_honoured(model):
+    with RunnerServer(find_runner(ROOT), model, ctx=1024, parallel=1,
+                      extra_args=["--gpu", "off"]) as srv:
+        with pytest.raises(urllib.error.HTTPError) as ei:
+            _post(srv, "/v1/completions",
+                  {"prompt": "hi", "max_tokens": 4, "draft_hints": ["x"]})
+        assert ei.value.code == 400
+        assert b"--draft-lookup" in ei.value.read()
+    with RunnerServer(find_runner(ROOT), model, ctx=1024, parallel=1,
+                      extra_args=["--gpu", "off", "--draft-lookup"]) as srv:
+        for bad in ("a string", [1, 2], ["ok"] * 17):
+            with pytest.raises(urllib.error.HTTPError) as ei:
+                _post(srv, "/v1/completions",
+                      {"prompt": "hi", "max_tokens": 4, "draft_hints": bad})
+            assert ei.value.code == 400

@@ -126,6 +126,13 @@ def read_base(path):
 
 raw, tens, data0 = read_base(BASE)
 targets = {"blk.0.attn_q.weight": None, "blk.0.ffn_down.weight": None}
+# LORA_TARGETS=all puts the adapter (and so the merged reference) on every
+# projection a backend hooks in block 0, so a device path is held to the
+# definition at all seven sites and not only at the default two.
+if os.environ.get("LORA_TARGETS") == "all":
+    targets = {f"blk.0.{n}.weight": None
+               for n in ("attn_q", "attn_k", "attn_v", "attn_output",
+                         "ffn_gate", "ffn_up", "ffn_down")}
 targets_f32 = True
 for name, dims, ttype, toff in tens:
     if name in targets:

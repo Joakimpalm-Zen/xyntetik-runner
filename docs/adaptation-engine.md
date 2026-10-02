@@ -86,9 +86,18 @@ the same merged-reference gate. Exact either way: a zero B or a zero scale
 contributes `fmaf(scale, 0, y)`, which is `y`, so an unadapted answer is
 bit-for-bit unadapted on both paths.
 
-Refuses rather than degrades, in four places. A backend with no adapter
-kernels (Metal today) fails the load with that sentence instead of serving a
-model that ignored the adapter on every offloaded block. A rank past the
+Metal applies the same delta since 2026-10-02 (`k_lora_a`, `k_lora_b` in
+`src/kernels.metal`, hooked at the same seven sites): the gates are the ones
+above plus an adapter on every projection of a block against the merged
+reference, and CPU-versus-Metal generation equality through a batched prefill
+(`tests/test_lora.py`). A block that carries an adapter decodes on the split
+path, not the fused front kernel, which a 135M model notices (117 to 44
+tok/s) and a model whose weight pass dominates does not.
+
+Refuses rather than degrades, in four places. A backend whose adapter
+kernels are missing fails the load with a sentence saying so instead of
+serving a model that ignored the adapter on every offloaded block; on Metal
+an adapter on a routed-expert FFN is refused the same way. A rank past the
 kernel's shared-memory bound, and a VRAM placement that fails, do the same.
 And a model with an adapter declines the multi-sequence batched decode
 (`fwd_batch` has its own projection sites and did not get the hooks), so it

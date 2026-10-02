@@ -8,6 +8,76 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **`runner --adapt-info`: can this model take an adapter (R8.9.1)?** One
+  JSON line per model file: whether a LoRA adapter can be served on it and
+  whether one can be trained on it, each with the reason when not (a
+  recurrent architecture, a MoE FFN, removed sublayers, ...), and which GPU
+  backend of the build has adapter kernels. Both answers come from the
+  checks `--lora` and `--train` themselves run.
+- **`draft_hints`: the caller can say what it expects to be echoed
+  (R3.7.4).** On a server started with `--draft-lookup`, a generation
+  request may carry up to 16 strings the harness expects the model to
+  restate (a file about to be quoted, a tool result). They are proposed
+  through the lookup draft's verify walk when the context itself has no
+  match, so the output is byte for byte what it is without them; a wrong
+  hint costs a verify column. `runner_telemetry.speculation` reports
+  `hint_drafted` and `hint_accepted`. Ceiling measured on an M1 with
+  SmolLM2-135M and a scripted echo of a 216-token file: 92.5 to 210.6 tok/s
+  on the CPU, 127.0 to 261.0 under Metal; 5% on Llama-3.2-3B under Metal
+  (`docs/context-drafts.md`).
+- **`--lora` serves on Metal.** An adapter on an Apple GPU was refused, so
+  an adapted model ran entirely on the CPU. An offloaded block now applies
+  `y += scale * B(Ax)` on the device at the same seven projection sites as
+  CUDA, and a partial split lets each half apply its own blocks. Gates: a
+  zero adapter and a zero scale are byte-identical to the bare base on the
+  device, an adapter on every projection of a block matches the merged
+  reference within 5e-4 on the CPU and on the device, generation through a
+  batched prefill equals the CPU's, and the merged-reference gate was shown
+  red with one hook removed. Measured on an M1 with SmolLM2-135M Q8_0 and a
+  rank-8 adapter on all 210 projections: CPU-versus-Metal log-probabilities
+  differ by 3.0e-4 on average with the adapter and 3.1e-4 without; prefill
+  1,150 tok/s against the CPU's 115; decode 44 tok/s against 37 on the CPU
+  and 117 without the adapter, because a block with an adapter leaves the
+  fused decode kernel. An adapter on a routed-expert FFN is refused by name.
+- **Granite 4.0-H and 4.1 call tools in their own protocol (`granite4`).**
+  Granite tool calling was the generic JSON envelope with the declarations
+  in the runner's words. The 4.0-H and 4.1 templates define their own:
+  declarations appended to the system turn, the Hermes JSON call, and tool
+  results folded into a user turn of `<tool_response>` blocks. A Granite
+  template that carries that protocol is now detected as `granite4` and
+  served that way, under the same grammar and parser as Qwen2.5 and Hermes 4;
+  without tools the prompt is byte for byte what `granite` renders, and
+  Granite 3.x stays on `granite` and the generic envelope. The four Granite
+  4.0-H tool cases of the conformance gate match the publisher; nine known
+  differences remain (Phi-4-mini's and Nemotron Nano's own tool
+  declarations, and one deliberate setting).
+- **Hermes 4 has its own template family, and two publishers' default system
+  prompts are sent.** Hermes 4 (`hermes4`) was rendered as a Qwen3-style
+  thinking template; it now gets what its publisher's template writes: a
+  system turn on every conversation (the caller's, the standard prompt, or
+  the deep-thinking prompt when reasoning is asked for), its own tools
+  preamble, a newline before every replayed call, and a generation prompt
+  with no thought block. All 22 conformance cases match, tools included; the
+  call itself is the Hermes JSON block Qwen2.5 already used, so the grammar
+  and the parser are shared. SmolLM2 and Granite 4.0-H templates write a
+  fixed system turn when the caller sends none, and the runner sent the user
+  turn alone; the three chat surfaces and interactive chat now send that
+  text, read from the model's own template and only under its own family
+  (20 cases). The template-conformance backlog is 26 known differences, from
+  115 at the golden pass. `scripts/template-conformance-recite.py` re-points
+  the allowlist's line citations after an edit moves them.
+- **Metal prefill is faster over a long history, byte for byte the same.**
+  At prefill every prompt column walked its head's whole K history alone, so
+  the tokens an agent adds each turn were processed more slowly as the
+  conversation grew. `k_attn_tile` scores eight columns per threadgroup from
+  one read of each K element, in the same order of operations per column as
+  before. On an M1 with Llama-3.2-3B Q4_K_M a 2,431-token prefill goes from
+  36.2 to 59.2 tok/s, and a ten-turn tool conversation
+  (`scripts/agent-turns-bench.py`) from 173.6 to 116.8 s, with the worst
+  turn's time to first token down from 30.1 to 15.6 s. Output is
+  byte-identical (`tests/test_metal_attn_tile.py`, every KV format and a
+  sliding window); `RUNNER_METAL_ATTN_TILE=0` pins the old kernel.
+  `docs/performance.md` has the phase timings and what is still slow.
 - **`runner --doctor`: one diagnostic report to attach to a question.** It
   loads the model, runs one short chat probe through the renderer, tokenizer
   and engine a chat request uses, and prints JSON: the version, the file's

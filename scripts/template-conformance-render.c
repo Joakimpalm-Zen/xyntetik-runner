@@ -383,6 +383,8 @@ static int do_cases(jv *cases, sbuf *out) {
         }
         bool addgen = jv_bool(jv_get(c, "add_generation_prompt"), true);
         jv *request = jv_get(c, "request");
+        // what a loaded model's tokenizer.chat_template would be
+        server_template_text_override = jv_str(jv_get(c, "chat_template"), NULL);
         char err[1024];
         char *prompt = NULL;
         int rc = request

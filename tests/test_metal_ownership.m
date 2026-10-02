@@ -45,6 +45,14 @@ void model_ple_prepass(model_t *m, const int32_t *tokens, int n,
     abort();
 }
 
+bool model_lora_slot(const model_t *m, int layer, int slot,
+                     const float **a, const float **b, int *rank,
+                     float *scale, int *n_in, int *n_out) {
+    (void)m; (void)layer; (void)slot; (void)a; (void)b; (void)rank;
+    (void)scale; (void)n_in; (void)n_out;
+    return false;   // no adapter in this fixture
+}
+
 void model_embd_transform(const model_t *m, float *row) {
     (void)m; (void)row;
     abort();
