@@ -1937,6 +1937,7 @@ whether the draft is `active` there.
 | `--model-pubkey FILE` | The PEM `PUBLIC KEY` (EC, P-256/384/521) an OMS bundle must verify with. Given without `--model-sig`, it turns an auto-detected `<model>.sig` into a gate. |
 | `--require-signed-model` | Refuse to load `-m` unless an OMS bundle is present and verifies with `--model-pubkey`. The policy applies to named registry entries, every serving slot, and reloads after unload or TTL expiry. Registry refusals return HTTP 409 with `model_signature_refused`; the server stays available. Without `--model-sig`, each load discovers that model's own `.sig` sidecar. |
 | `--kv-snapshots DIR` | With `--serve`: let named contexts be written to DIR as signed KV snapshots and loaded back by a later server, so an agent's memory outlives the process and a run can prove which memory it started from. Opt-in; nothing is read from DIR unless a request names it. With `--trust-key` (the public key, or `sha256:` of its bytes), or else with `--sign-key`, a snapshot loads only when its manifest is signed by that key (409 `snapshot_untrusted` otherwise); with neither there is no anchor, a manifest is held only to the key it names, and the response's `signed_by` says who that was. See `POST /v1/runner/contexts/{id}/snapshot`. |
+| `--sessions DIR` | With `--serve`: session images over HTTP, `POST /v1/runner/sessions` (with `suspend_after`) and `POST /v1/runner/sessions/{id}/resume` (with `fork_seed` to fork), `GET` and `DELETE /v1/runner/sessions/{id}`; the images are the CLI's and live in `DIR`. [Details](#cli-session-images). |
 | `--session-out FILE`, `--suspend-after N`, `--resume FILE`, `--fork-seed N` | Suspend a `-p` generation to one file and resume it later, exactly, or fork it under a new seed. The resumed continuation and its image are byte-identical to what the uninterrupted run makes. CPU only, the solo step loop (no `--draft`, `--mtp`, `--draft-lookup`, `--watermark`), a finite `-n`; an image is never overwritten. [Details](#cli-session-images). |
 | `--watermark KEY` | Mark sampled output with a tournament-sampling watermark (SynthID-Text's construction) under the key in KEY: every sampled token on the `-p` path and every sampled turn in `--serve`. Off by default; greedy decoding (`--temp 0`) is never changed; averaged over keys the output distribution is unchanged. Transcripts and receipts record the key's id (`watermark`), responses report it in `runner_telemetry.watermark`, and `--verify` replays a marked record only with its key. [Details](#cli-watermark). |
 | `--watermark-keygen FILE` | Write a new watermark key (`xyntetik.runner.watermark_key.v1`, mode 0600, never overwritten) and print its id. Needs no `-m`. |
@@ -2200,6 +2201,32 @@ Images are CPU-only and use the solo step loop, so no `--draft`, `--mtp` or
 `--draft-lookup`. They cannot be combined with `--serve`, `-i`, `--verify`,
 `--transcript` or `--watermark` (an image does not carry the watermark key a marked
 continuation would need). A model whose KV cache is a ring or tied-V cannot be imaged.
+
+A server started with `--sessions DIR` does the same over HTTP, on whatever backend it
+serves from:
+
+```
+POST   /v1/runner/sessions              {"prompt": "...", "max_tokens": 400, "seed": 7,
+                                          "temperature": 0.8, "suspend_after": 150}
+POST   /v1/runner/sessions/{id}/resume  {}  |  {"suspend_after": 300}  |  {"fork_seed": 11}
+GET    /v1/runner/sessions/{id}         the image's header
+DELETE /v1/runner/sessions/{id}
+```
+
+A session is a raw prompt (no chat template) with the sampler fields a completion takes
+and `ignore_eos`. With `suspend_after` it stops after that many tokens and writes the
+image into `DIR`; the answer carries the text so far and the `id`, which is the image's
+own sha256, so the same state is the same id. A resume continues it exactly: on the
+8 GB M1 serving Llama-3.2-3B on Metal, a 60-token sampled generation suspended at 25 and
+resumed, and one suspended at 25 and again at 40, both returned the uninterrupted run's
+text byte for byte. `fork_seed` continues under another seed, the same text every time it
+is asked for. The images are the CLI's format. A served session holds the device from
+prefill to its last token, so it does not share batches with other slots, and a resume
+is exact on the backend and build that suspended it. A recurrent model on a device
+cannot be imaged (its state is not the host's to restore; serve it with `--gpu off`), and
+an image made under `--json` or `--json-schema` is resumed by the CLI, not the server.
+Gate: `tests/test_server_sessions.py`, red when a resume does not restore the image's
+rng state.
 
 <a id="cli-v"></a>
 #### `-v`

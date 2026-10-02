@@ -222,62 +222,23 @@ static bool schema_file_digest(const char *path, char hex[65]) {
     return ok;
 }
 
-// R1.3: the step loop behind --suspend-after, --session-out and --resume.
-// It stops after `stop_at` generated tokens in all (0: the budget), every
-// handed-out token already forwarded, and says whether the generation is
-// still live -- neither a stop, a finished document nor an error ended it.
-// Only a live generation is imaged. *last is the next token's logits.
-static bool session_steps(engine *e, float *logits, int stop_at, gen_cb cb,
-                          void *ud, const float **last) {
-    int32_t tok;
-    int pos;
-    while (stop_at <= 0 || e->gen_count < stop_at) {
-        if (engine_gen_step(e, logits, cb, ud, &tok, &pos) != ENGINE_STEP_MORE) break;
-        logits = model_forward(e->m, tok, pos);
-        if (!logits) { e->oom = true; break; }
-    }
-    e->pending_pos = -1;
-    *last = logits;
-    return logits && !e->hit_stop && !e->oom;
-}
-
+// R1.3: the CLI's image writer. The loop and the image are session.c's
+// (shared with the server's /v1/runner/sessions); this adds the schema digest
+// a --json-schema run carries and the line the CLI prints.
+#define session_steps session_run
 static bool session_image_out(const char *path, const engine *e,
                               const char *model_path, const float *logits,
                               int n_prompt, int max_new, bool json_mode,
                               bool ignore_eos, const char *schema_file) {
-    session_meta mt;
-    memset(&mt, 0, sizeof mt);
-    if (!envelope_file_sha256(model_path, mt.model_sha256)) {
-        fprintf(stderr, "error: session: cannot hash %s\n", model_path);
-        return false;
-    }
-    char *exe = plat_executable_path();
-    if (exe) envelope_file_sha256(exe, mt.binary_sha256);
-    free(exe);
-    if (schema_file && !schema_file_digest(schema_file, mt.schema_sha256)) {
+    char ssha[65] = "";
+    if (schema_file && !schema_file_digest(schema_file, ssha)) {
         fprintf(stderr, "error: session: cannot read %s\n", schema_file);
         return false;
     }
-    const model_t *m = e->m;
-    mt.model_key = e->model_key;
-    mt.n_ctx = m->n_ctx;
-    snprintf(mt.kv_type, sizeof mt.kv_type, "%s",
-             m->kv_fp4 ? "fp4" : m->kv_split ? "k8v4" : m->kv_q8 ? "q8" : "f16");
-    mt.n_prompt = n_prompt;
-    mt.n_tokens = e->pos;
-    mt.max_new = max_new;
-    mt.generated = e->gen_count;
-    mt.temp = e->smp->temp; mt.top_k = e->smp->top_k; mt.top_p = e->smp->top_p;
-    mt.min_p = e->smp->min_p; mt.repeat_penalty = e->smp->repeat_penalty;
-    // A greedy generation never draws from the rng, and an unseeded run's
-    // rng is the wall clock: recorded, it made two images of the same greedy
-    // state differ whenever the runs straddled a second. The image holds no
-    // timestamp, so a state that does not include the rng does not carry it.
-    mt.rng = e->smp->temp > 0 ? e->smp->rng : 0;
-    mt.json_mode = json_mode;
-    mt.ignore_eos = ignore_eos;
     char sha[65];
-    if (!session_write(path, e, &mt, logits, m->n_vocab, sha)) return false;
+    if (!session_image_write(path, e, model_path, NULL, NULL, logits, n_prompt,
+                       max_new, json_mode, ignore_eos, ssha, sha))
+        return false;
     fprintf(stderr, "session image -> %s (sha256 %s; %d tokens, %d of %d "
             "generated)\n", path, sha, e->pos, e->gen_count, max_new);
     return true;
@@ -1063,6 +1024,11 @@ static void usage_to(FILE *f, const char *prog) {
         "                 verify (--trust-key pins the manifest signer). Exit\n"
         "                 0 OK, 2 BAD, 3 UNVERIFIABLE. Does not replay: that is\n"
         "                 --verify with the model\n"
+        "  --sessions DIR  with --serve: POST /v1/runner/sessions starts a\n"
+        "                 raw-prompt generation that suspend_after N images\n"
+        "                 into DIR; POST /v1/runner/sessions/{id}/resume\n"
+        "                 continues it exactly (fork_seed S forks it); GET and\n"
+        "                 DELETE /v1/runner/sessions/{id}\n"
         "  --kv-snapshots DIR  with --serve: POST /v1/runner/contexts/{id}/\n"
         "                 snapshot writes a named context to DIR (KV + manifest\n"
         "                 with its digests, model, KV type and producing receipt,\n"
@@ -1592,6 +1558,7 @@ int main(int argc, char **argv) {
     const char *watermark_path = NULL, *watermark_keygen = NULL;
     const char *detect_path = NULL;
     const char *kv_snapshots = NULL;
+    const char *sessions_path = NULL;   // --sessions DIR (R1.3.5)
     const char *session_out = NULL, *resume_path = NULL;
     int suspend_after = 0;
     bool fork_seed_given = false, n_given = false, kv_given = false;
@@ -1725,6 +1692,7 @@ int main(int argc, char **argv) {
         else if (!strcmp(a, "--watermark-keygen")) watermark_keygen = NEXT;
         else if (!strcmp(a, "--detect-watermark")) detect_path = NEXT;
         else if (!strcmp(a, "--kv-snapshots")) kv_snapshots = NEXT;
+        else if (!strcmp(a, "--sessions")) sessions_path = NEXT;
         else if (!strcmp(a, "--session-out")) session_out = NEXT;
         else if (!strcmp(a, "--resume")) resume_path = NEXT;
         else if (!strcmp(a, "--suspend-after"))
@@ -2887,6 +2855,12 @@ int main(int argc, char **argv) {
         return 1;
     }
     if (kv_snapshots && !kvsnap_configure(kv_snapshots, sign_key, trust_key)) return 1;
+    if (sessions_path && !serve) {
+        fprintf(stderr, "error: --sessions keeps the server's session images "
+                "and needs --serve (the CLI uses --session-out / --resume)\n");
+        return 1;
+    }
+    if (sessions_path && !sessions_configure(sessions_path)) return 1;
     if (n_adapters && !serve) {
         fprintf(stderr, "error: --adapter routes adapters per request and "
                 "needs --serve (use --lora for a one-shot run)\n");

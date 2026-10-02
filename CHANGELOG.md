@@ -8,6 +8,12 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **Session images over HTTP (R1.3.5).** `--sessions DIR` adds
+  `POST /v1/runner/sessions` (a raw-prompt generation that `suspend_after`
+  images), `POST /v1/runner/sessions/{id}/resume` (exact continuation, or a
+  reproducible fork with `fork_seed`) and `GET`/`DELETE` by id, the id being
+  the image's sha256. On a Metal-served 3B a suspended and resumed run, and
+  a twice-suspended one, returned the straight run's text byte for byte.
 - **Records name the measured envelope they ran inside (R1.1.5).** A
   transcript and a served receipt carry `envelope.verdict` in the
   manifest's own vocabulary and the sha256 of the sidecar the load read
