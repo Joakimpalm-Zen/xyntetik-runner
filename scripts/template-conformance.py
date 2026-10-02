@@ -300,9 +300,14 @@ FAMILIES = {
         tokenizer=("NousResearch_Hermes-4-14B-Q4_K_M.gguf",)),
     "phi4mini": Family(
         "phi4", ("hf", "microsoft/Phi-4-mini-instruct"),
-        note="phi3's tags with no newlines, plus a <|tool|> block on the "
-             "system turn",
-        tool_family=True, tokenizer=("Phi-4-mini-instruct-q4_0.gguf",)),
+        note="phi3's tags with no newlines. No tool rows: the template "
+             "reads a declaration only from a `tools` STRING on the system "
+             "message, ignores the `tools` argument a client's request "
+             "becomes, and writes an assistant turn's content alone, so its "
+             "render of a tool conversation is the conversation with the "
+             "tools and the calls deleted. That is nothing to conform to; "
+             "the runner declares the tools through its generic envelope",
+        tokenizer=("Phi-4-mini-instruct-q4_0.gguf",)),
     "granite40h": Family(
         "granite4", ("hf", "ibm-granite/granite-4.0-h-small"),
         note="granitehybrid; the 4.0 template with its tools section",
@@ -356,8 +361,13 @@ FAMILIES = {
     "nemotron-nano": Family(
         "nemotron", ("hf", "nvidia/NVIDIA-Nemotron-Nano-9B-v2"),
         note="its own SPECIAL_10/11/12 framing; tools still ride the "
-             "generic envelope, so the tool cases stay in the backlog",
-        tool_family=True, thinking_var="enable_thinking",
+             "generic envelope, so the tool cases stay in the backlog "
+             "(R2.4.4). No thinking variable: the template's switch is "
+             "`/think` and `/no_think` in the text (tests/test_template.c), "
+             "and it reads no keyword, so a think-off row would compare the "
+             "runner honouring the request against a reference that never "
+             "saw it",
+        tool_family=True,
         tokenizer=("NVIDIA-Nemotron-Nano-9B-v2-Q8_0.gguf",)),
     "nemotron-lightning": Family(
         "granite42", ("gguf", "models/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-Q4_0.gguf"),
