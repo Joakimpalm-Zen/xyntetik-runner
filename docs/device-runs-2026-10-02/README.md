@@ -31,7 +31,10 @@ nats on average from the first positions on, under the gate's pins. The flip
 therefore sits inside the ordinary CPU-versus-CUDA difference on this card
 and happens to land on a tie that narrow; the E-series path (per-layer
 embeddings, shared KV) is not an outlier. Whether a dense row may tolerate a
-margin-qualified flip is a policy question and is not decided here.
+margin-qualified flip was a policy question; the owner decided it the same
+day (R4.25): dense rows get the MoE rule's two-sided 0.5-nat band, so this
+row reads `pass_margin_qualified`, and `scripts/cpu_cuda_check.py
+--dense-strict` keeps the old reading.
 
 ## The Linux CUDA box (Blackwell, MIG 1g.24gb slice)
 

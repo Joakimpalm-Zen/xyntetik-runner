@@ -86,3 +86,16 @@ def test_run_result_thresholds():
     # cap = max(1, int(0.34*9)) = 3, so 3 qualifies but 4 fails
     assert cc.run_result(near_tie=3, real=0, total=9) == "pass_margin_qualified"
     assert cc.run_result(near_tie=4, real=0, total=9) == "fail"
+
+
+def test_a_dense_near_tie_is_tolerated_unless_dense_strict():
+    """R4.25 (owner 2026-10-02): a dense model's in-band flip gets the same
+    two-sided band as a MoE routing near-tie; --dense-strict restores the
+    earlier strict reading. A confident divergence is real either way."""
+    cpu = blk(["A", "Z"], [{"A": -0.1, "B": -0.3}, {"Z": -0.1}])
+    gpu = blk(["B", "Y"], [{"B": -0.1, "A": -0.3}, {"Y": -0.1}])
+    kind, d = cc.classify_divergence(cpu, gpu)
+    assert cc.apply_dense_rule(kind, dict(d), moe=False, dense_strict=False) == "near_tie"
+    assert cc.apply_dense_rule(kind, dict(d), moe=False, dense_strict=True) == "real"
+    assert cc.apply_dense_rule(kind, dict(d), moe=True, dense_strict=True) == "near_tie"
+    assert cc.apply_dense_rule("real", {}, moe=False, dense_strict=False) == "real"

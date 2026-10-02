@@ -8,6 +8,13 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **The CPU-vs-CUDA identity gate gives dense models the near-tie band
+  (R4.25).** `scripts/cpu_cuda_check.py` tolerated an in-band flip only on
+  MoE models; a dense flip failed however close the tie. gemma-4 E4B failed
+  on the RTX 3070 on margins of 0.00056 and 0.00016 nats, inside the
+  ordinary CPU/CUDA difference a passing dense control shows. Dense rows now
+  get the same two-sided 0.5-nat band (reported, with `dense_rule`), a
+  confident divergence still fails, and `--dense-strict` keeps the old rule.
 - **A GGUF's own sampling defaults are used (R4.12.6).** When a file carries
   `general.sampling.temp`, `top_p`, `top_k` or `min_p` (converters copy the
   publisher's generation_config into them), a request that names none of
