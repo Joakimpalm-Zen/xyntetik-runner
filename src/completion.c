@@ -1703,12 +1703,9 @@ static void responses_body(sbuf *r, gen_ctx *g, const resp_doc *d) {
 // information is lost: a client that cares can still tell a prelude exhaustion
 // from an ordinary truncation.
 //
-// KNOWN GAP: streamed chat/completions never carried runner_telemetry at all
-// (its only extra terminal chunk is the opt-in include_usage one), so a
-// STREAMED turn reports "length" with no detail available anywhere. Buffered
-// turns, Responses and Anthropic all keep the full distinction. Widening the
-// streamed terminal chunk is a separate wire change and is deliberately not
-// bundled here.
+// Streamed chat/completions carried no runner_telemetry until RI-4 (owner,
+// 2026-10-02): the finish chunk now carries the full object, finish_detail
+// included, so a STREAMED turn keeps the distinction as a buffered one does.
 //
 // Owner decision 2026-08-08. Field evidence: a reasoning model truncated inside
 // its <think> block returns an EMPTY answer, and a harness that saw the
@@ -4189,23 +4186,23 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
                    openai_finish(finish));
             append_stop_token(&c, s, e);
             sb_lit(&c, "}]");
-            // A streamed turn carries no runner_telemetry of its own, so
-            // without this the reason widened away by openai_finish() would be
-            // recoverable on buffered turns and nowhere at all on streamed
-            // ones. Emitted only when there IS a distinction to keep, so an
-            // ordinary stream stays byte-for-byte what it was.
+            // RI-4 (the 2026-08-08 deferral reversed by the owner on
+            // 2026-10-02): the finish chunk carries the turn's whole
+            // runner_telemetry, the same object a buffered reply carries, so
+            // a streaming client gets the effective sampling, the closure,
+            // the decision summary and the receipt without opting into
+            // include_usage. The reason widened away by openai_finish()
+            // survives as finish_detail on the same object.
             const char *sdet = finish_detail_of(finish);
             if (!sdet) sdet = cut_detail;
-            // R4.12.19: the same rule for a repeated call, on the same chunk
+            // R4.12.19: a repeated call, on the same chunk
             if (chat) g.repeat_json = repeated_calls_streamed(&g, req, api);
-            if (sdet || g.repeat_json) {
-                sb_lit(&c, ",\"runner_telemetry\":{");
-                if (sdet) sb_fmt(&c, "\"finish_detail\":\"%s\"", sdet);
-                if (g.repeat_json)
-                    sb_fmt(&c, "%s\"repeated_tool_calls\":%s",
-                           sdet ? "," : "", g.repeat_json);
-                sb_lit(&c, "}");
-            }
+            sb_fmt(&c, ",\"runner_telemetry\":{\"prompt_cached_tokens\":%d", keep);
+            if (sdet) sb_fmt(&c, ",\"finish_detail\":\"%s\"", sdet);
+            if (g.repeat_json)
+                sb_fmt(&c, ",\"repeated_tool_calls\":%s", g.repeat_json);
+            diag_json(&c, &diag);
+            sb_lit(&c, "}");
             sb_lit(&c, "}");
             bool ok = chunk_send(&g, &c) == 0;
             // OpenAI stream_options {"include_usage": true}: one extra chunk

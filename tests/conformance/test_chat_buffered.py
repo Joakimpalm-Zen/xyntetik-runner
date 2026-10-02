@@ -61,18 +61,12 @@ def test_capabilities_reports_effective_slots_and_draft(client, server):
 
 
 def test_request_telemetry_capability_is_qualified(client):
-    """RI-4: the telemetry claim has to say WHICH surface carries it.
+    """RI-4: the telemetry claim says WHICH surface carries it.
 
-    Buffered replies carry the full runner_telemetry object; ordinary streamed
-    chat and legacy completions carry none, because a stream's only extra
-    terminal chunk is the opt-in include_usage one. Advertising
-    `request_telemetry: true` unqualified is the same accepted-then-ignored
-    shape the project refuses everywhere else: a claimed capability a caller
-    cannot actually get on the surface they are using.
-
-    Widening the streamed wire is a separate change, deliberately deferred by
-    an owner decision on 2026-08-08 and still deferred. What is fixed here is
-    the CLAIM."""
+    Buffered replies carry the full runner_telemetry object, and since
+    2026-10-02 (the owner reversed the 2026-08-08 deferral) so does the
+    finish chunk of a streamed chat or completions turn. The claim stays
+    qualified per surface so a client can rely on it."""
     caps = client.get("/v1/capabilities").expect_status(200).json
     rt = caps.get("features", {}).get("request_telemetry")
     if not isinstance(rt, dict):
@@ -81,9 +75,15 @@ def test_request_telemetry_capability_is_qualified(client):
                             request_telemetry=rt)
     if rt.get("buffered") is not True:
         raise ProtocolError("buffered telemetry should be advertised", rt=rt)
-    if rt.get("streamed") is not False:
-        raise ProtocolError("streamed telemetry is not carried today, so it "
-                            "must not be advertised as available", rt=rt)
+    if rt.get("streamed") is not True:
+        raise ProtocolError("the streamed finish chunk carries telemetry, so "
+                            "it should be advertised", rt=rt)
+    st = client.chat_stream(dict(BASE), name="streamed-telemetry")
+    fin = [c for c in st.chunks if isinstance(c, dict) and c.get("choices")
+           and c["choices"][0].get("finish_reason")]
+    if not fin or "sampling" not in fin[-1].get("runner_telemetry", {}):
+        raise ProtocolError("a streamed finish chunk must carry the turn's "
+                            "runner_telemetry", chunks=st.chunks[-3:])
 
 
 def test_buffered_chat_shape(client, report):

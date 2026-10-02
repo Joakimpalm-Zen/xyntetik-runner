@@ -17,7 +17,7 @@
     "repeat_penalty": true,
     "request_telemetry": {
       "buffered": true,
-      "streamed": false
+      "streamed": true
     },
     "responses_api": true,
     "schema_conditionals": true,

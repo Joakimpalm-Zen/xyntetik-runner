@@ -8,6 +8,11 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **Streamed turns carry their telemetry (RI-4).** The finish chunk of a
+  streamed chat or completions turn now carries the full `runner_telemetry`
+  object a buffered reply carries (sampling, tool protocol, timing, closure,
+  decision summary), without `include_usage`; `features.request_telemetry`
+  says `streamed: true`. The 2026-08-08 deferral, reversed by the owner.
 - **Closure provenance (R2.2).** A constrained turn cut by its budget used to
   return a call that parsed and executed with nothing saying which values the
   closer invented (a required enum filled with its first member, the tool

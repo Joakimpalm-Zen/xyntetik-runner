@@ -25,6 +25,15 @@
   "previous_response_id": null,
   "reasoning": null,
   "runner_telemetry": {
+    "closure": {
+      "closed": true,
+      "closer_bytes": "<number>",
+      "fields": {
+        "completed": [],
+        "synthesized": []
+      },
+      "model_bytes": "<number>"
+    },
     "generation_seconds": "<number>",
     "generation_tok_s": "<number>",
     "json_mode": false,

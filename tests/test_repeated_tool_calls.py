@@ -212,7 +212,10 @@ def test_streamed_chat_says_nothing_about_a_new_call(srv):
         "max_tokens": 400, "messages": _chat_history(), "tools": [WEATHER],
         "chat_template_kwargs": NO_THINK, "stream": True,
         "runner_test_reply": _call("get_weather", city="Tokyo")}, stream=True)
-    assert all("runner_telemetry" not in c for c in chunks), chunks
+    # every streamed finish chunk carries the turn's telemetry since RI-4;
+    # a call that repeats nothing is simply not listed in it
+    assert all("repeated_tool_calls" not in c.get("runner_telemetry", {})
+               for c in chunks), chunks
 
 
 def test_streamed_messages_flags_the_repeat_on_message_delta(srv):

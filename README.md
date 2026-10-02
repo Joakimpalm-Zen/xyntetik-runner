@@ -2484,13 +2484,13 @@ When it is true a `speculation` object follows: the `source` (`model`, `mtp`,
 `runner_speculation_*` counters on `/metrics` accumulate across sources), and
 the prompt lookup's share as `lookup_drafted`/`lookup_accepted`, so a
 per-source acceptance rate is one division.
-Ordinary streamed chat and legacy completions do NOT carry `runner_telemetry`:
-a stream's only extra terminal chunk is the opt-in `stream_options.include_usage`
-one, and that chunk carries `runner_telemetry.sampling` and
-`runner_telemetry.tool_protocol` (what the stream was served with) beside
-`usage`. `GET /v1/capabilities` says so rather than claiming the capability flatly,
-reporting `features.request_telemetry` as `{"buffered": true, "streamed":
-false}`. Set request field `"cache_prompt": false` to bypass prefix reuse. Streaming clients
+A streamed chat or legacy completions turn carries the same
+`runner_telemetry` object on its `finish_reason` chunk (since 2026-10-02;
+before, only the opt-in `stream_options.include_usage` chunk had it, and it
+still does), so a streaming client reads what the turn was served with, its
+closure and its decision summary without opting in.
+`GET /v1/capabilities` reports `features.request_telemetry` as
+`{"buffered": true, "streamed": true}`. Set request field `"cache_prompt": false` to bypass prefix reuse. Streaming clients
 whose writes fail cancel generation. An orderly client socket close on any
 completion surface also cancels at the next complete prefill chunk or decode
 step, so an abandoned long prompt does not keep its slot busy; the probe is
