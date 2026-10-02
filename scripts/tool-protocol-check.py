@@ -194,7 +194,16 @@ def main():
     ap.add_argument("--label", default="")
     args = ap.parse_args()
 
-    caps = get(args.base_url, "/v1/capabilities")
+    # /v1/capabilities is the runner's own route. Another OpenAI-compatible
+    # server (llama.cpp's, for the two-engine baseline) answers 404, and the
+    # gate still runs: what the server would have said about its sampling and
+    # context is then recorded as not known.
+    try:
+        caps = get(args.base_url, "/v1/capabilities")
+    except urllib.error.HTTPError as e:
+        if e.code != 404:
+            raise
+        caps = {}
     models = get(args.base_url, "/v1/models")
     model = args.model or models["data"][0]["id"]
     record = {
@@ -206,6 +215,7 @@ def main():
         "model_sha256": sha256(args.model_file) if args.model_file else None,
         "runner": args.runner,
         "runner_sha256": sha256(args.runner) if args.runner else None,
+        "capabilities_route": bool(caps),
         "sampling_served": caps.get("sampling"),
         "context": caps.get("context"),
         "overrides": {k: v for k, v in
