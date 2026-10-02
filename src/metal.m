@@ -32,6 +32,16 @@ typedef struct {
     id<MTLComputePipelineState> p_attn_chunk, p_attn_comb;
     id<MTLComputePipelineState> p_attn_coop, p_attn_chunk_coop;  // cooperative KV score read
     id<MTLComputePipelineState> p_attn_tile;   // prefill: several columns share each KV read
+    // R8.8, the loaded adapter on the device: A and B per (layer, slot) for
+    // the GPU-resident layers (NULL where there is none), the rank and the
+    // folded scale beside them, and the [columns][r] inner-projection scratch.
+    id<MTLComputePipelineState> p_lora_a, p_lora_b;
+    id<MTLBuffer> *lora_a, *lora_b;
+    int           *lora_r_of;
+    float         *lora_scale;
+    int            lora_n, lora_r;
+    id<MTLBuffer>  lora_t;
+    size_t         lora_t_cols;
     id<MTLComputePipelineState> p_silu, p_gelu, p_add, p_scale;
     id<MTLComputePipelineState> p_sigmul;   // attention output gate (x *= sigmoid(g))
     id<MTLComputePipelineState> p_moe_route, p_moe_actmul, p_moe_sum, p_trace_copy;
@@ -93,6 +103,8 @@ typedef struct {
     id<MTLBuffer> suppress;                     // gemma never-emit token ids
     int batch_cap;                              // scratch rows allocated
 } gpu_t;
+
+static void lora_dev_release(gpu_t *g);
 
 // mirrors struct mv_args in kernels.metal — keep the field order in step
 typedef struct { int n_in, n_out; uint64_t w_off; int has_bias;
@@ -221,6 +233,8 @@ static void gpu_release_state(gpu_t *g, int n_layer) {
     free(g->gpn1); free(g->gprn2); free(g->gpn2); free(g->ggis); free(g->gdsc);
     [g->p_attn_coop release]; [g->p_attn_chunk_coop release];
     [g->p_attn_tile release];
+    [g->p_lora_a release]; [g->p_lora_b release];
+    lora_dev_release(g);
     for (int i = 0; i < g->n_wbuf; i++) [g->wbuf[i] release];
     id<MTLBuffer> bufs[] = { g->kc, g->vc, g->x, g->xb, g->xb2,
                              g->q, g->kt, g->vt, g->hb, g->hb2, g->att,
@@ -1015,6 +1029,57 @@ static bool metal_attn_tile_on(void) {
     return v;
 }
 
+static void lora_dev_release(gpu_t *g) {
+    for (int i = 0; i < g->lora_n; i++) {
+        if (g->lora_a && g->lora_a[i]) [g->lora_a[i] release];
+        if (g->lora_b && g->lora_b[i]) [g->lora_b[i] release];
+    }
+    free(g->lora_a);     g->lora_a = NULL;
+    free(g->lora_b);     g->lora_b = NULL;
+    free(g->lora_r_of);  g->lora_r_of = NULL;
+    free(g->lora_scale); g->lora_scale = NULL;
+    if (g->lora_t) [g->lora_t release];
+    g->lora_t = nil;
+    g->lora_t_cols = 0;
+    g->lora_r = 0;
+    g->lora_n = 0;
+}
+
+// The adapter's delta at one projection site: y += scale * B (A x), over n
+// columns. A no-op, and the whole cost of the check, where this (layer, slot)
+// carries no adapter, which is every site of an unadapted model.
+static void enc_lora(gpu_t *g, id<MTLComputeCommandEncoder> e, int l, int slot,
+                     id<MTLBuffer> x, id<MTLBuffer> y, int n_in, int n_out,
+                     int n, int xs, int ys) {
+    if (!g->lora_a) return;
+    size_t idx = (size_t)l * LW_SLOTS + (size_t)slot;
+    id<MTLBuffer> A = g->lora_a[idx], B = g->lora_b[idx];
+    if (!A || !B) return;
+    if (g->lora_t_cols < (size_t)n) {
+        // sized for the widest batch seen; a batch is re-encoded rarely
+        if (g->lora_t) [g->lora_t release];
+        g->lora_t = new_f32_scratch(g->dev, (size_t)n * (size_t)g->lora_r);
+        g->lora_t_cols = g->lora_t ? (size_t)n : 0;
+        if (!g->lora_t) return;
+    }
+    struct { int n_in, n_out, r, xs, ys; float scale; } la =
+        { n_in, n_out, g->lora_r_of[idx], xs, ys, g->lora_scale[idx] };
+    [e setComputePipelineState:g->p_lora_a];
+    [e setBuffer:A offset:0 atIndex:0];
+    [e setBuffer:x offset:0 atIndex:1];
+    [e setBuffer:g->lora_t offset:0 atIndex:2];
+    [e setBytes:&la length:sizeof(la) atIndex:3];
+    [e dispatchThreads:MTLSizeMake((NSUInteger)la.r, (NSUInteger)n, 1)
+      threadsPerThreadgroup:MTLSizeMake(la.r < 32 ? (NSUInteger)la.r : 32, 1, 1)];
+    [e setComputePipelineState:g->p_lora_b];
+    [e setBuffer:B offset:0 atIndex:0];
+    [e setBuffer:g->lora_t offset:0 atIndex:1];
+    [e setBuffer:y offset:0 atIndex:2];
+    [e setBytes:&la length:sizeof(la) atIndex:3];
+    [e dispatchThreads:MTLSizeMake((NSUInteger)n_out, (NSUInteger)n, 1)
+      threadsPerThreadgroup:MTLSizeMake(64, 1, 1)];
+}
+
 static bool metal_attn_coop_on(void) {
     if (g_coop_state == COOP_ENV_UNSET) {
         const char *e = getenv("RUNNER_METAL_ATTN_COOP");
@@ -1468,6 +1533,8 @@ bool gpu_init(model_t *m) {
     g->p_attn         = mk_pipeline(dev, lib, @"k_attn");
     g->p_attn_coop    = mk_pipeline(dev, lib, @"k_attn_coop");
     g->p_attn_tile    = mk_pipeline(dev, lib, @"k_attn_tile");
+    g->p_lora_a       = mk_pipeline(dev, lib, @"k_lora_a");
+    g->p_lora_b       = mk_pipeline(dev, lib, @"k_lora_b");
     g->p_attn_chunk_coop = mk_pipeline(dev, lib, @"k_attn_chunk_coop");
     g->p_attn_chunk   = mk_pipeline(dev, lib, @"k_attn_chunk");
     g->p_attn_comb    = mk_pipeline(dev, lib, @"k_attn_combine");
@@ -2516,13 +2583,81 @@ bool gpu_mvcanon(model_t *mm, const gguf_tensor *w, const float *x, float *y,
     return false;   // no canonical-order shaders yet
 }
 
+// ------------------------------------- adapter residency (R8.8, D2 on Metal)
+//
+// Called once, after model_lora_load has parsed the adapter and before any
+// forward. Copies A and B for every GPU-resident (layer, slot) that carries
+// one. A layer the split left on the host is skipped: its host hook already
+// applies the same delta. Fails loudly rather than quietly serving an
+// unadapted model, because that failure is invisible in the output and looks
+// exactly like a weak adapter.
 bool gpu_lora_bind(model_t *mm) {
-    (void)mm;
-    fprintf(stderr, "error: the Metal backend has no adapter kernels yet, so "
-            "an offloaded block would ignore --lora; run with --gpu off\n");
-    return false;
+    gpu_t *g = mm->gpu;
+    if (!g) return false;
+    if (!g->p_lora_a || !g->p_lora_b) {
+        fprintf(stderr, "error: the Metal adapter kernels did not compile; "
+                "run with --gpu off\n");
+        return false;
+    }
+    lora_dev_release(g);
+    size_t n = (size_t)mm->n_layer * LW_SLOTS;
+    g->lora_a = calloc(n, sizeof(*g->lora_a));
+    g->lora_b = calloc(n, sizeof(*g->lora_b));
+    g->lora_r_of = calloc(n, sizeof(*g->lora_r_of));
+    g->lora_scale = calloc(n, sizeof(*g->lora_scale));
+    if (!g->lora_a || !g->lora_b || !g->lora_r_of || !g->lora_scale) {
+        lora_dev_release(g);
+        return false;
+    }
+    g->lora_n = (int)n;
+    int G = mm->gpu_layers < mm->n_layer ? mm->gpu_layers : mm->n_layer;
+    size_t bytes = 0;
+    for (int l = 0; l < G; l++) {
+        for (int sl = 0; sl < LW_SLOTS; sl++) {
+            const float *a = NULL, *b = NULL;
+            int r = 0, n_in = 0, n_out = 0;
+            float scale = 0.0f;
+            if (!model_lora_slot(mm, l, sl, &a, &b, &r, &scale, &n_in, &n_out))
+                continue;
+            // The routed-expert FFN has no adapter site on the device: its
+            // projections run inside the MoE kernels.
+            if (mm->layers[l].is_moe && sl >= LW_GATE) {
+                fprintf(stderr, "error: the adapter targets the FFN of block "
+                        "%d, a routed-expert block the Metal path cannot "
+                        "adapt; run with --gpu off\n", l);
+                lora_dev_release(g);
+                return false;
+            }
+            size_t na = sizeof(float) * (size_t)r * (size_t)n_in;
+            size_t nb = sizeof(float) * (size_t)n_out * (size_t)r;
+            size_t idx = (size_t)l * LW_SLOTS + (size_t)sl;
+            g->lora_a[idx] = [g->dev newBufferWithBytes:a length:na
+                                                options:MTLResourceStorageModeShared];
+            g->lora_b[idx] = [g->dev newBufferWithBytes:b length:nb
+                                                options:MTLResourceStorageModeShared];
+            if (!g->lora_a[idx] || !g->lora_b[idx]) {
+                fprintf(stderr, "error: cannot place the adapter on the device "
+                        "(%.1f MB placed); run with --gpu off\n", bytes / 1e6);
+                lora_dev_release(g);
+                return false;
+            }
+            g->lora_r_of[idx] = r;
+            g->lora_scale[idx] = scale;
+            if (r > g->lora_r) g->lora_r = r;
+            bytes += na + nb;
+        }
+    }
+    if (!g->lora_r) {          // adapter loaded, nothing on the device half
+        lora_dev_release(g);
+        return true;
+    }
+    fprintf(stderr, "gpu: adapter on device for %d block%s (%.1f MB)\n",
+            G, G == 1 ? "" : "s", bytes / 1e6);
+    return true;
 }
-void gpu_lora_unbind(model_t *mm) { (void)mm; }
+void gpu_lora_unbind(model_t *mm) {
+    if (mm->gpu) lora_dev_release(mm->gpu);
+}
 
 bool gpu_train_init(model_t *mm) { (void)mm; return false; }
 void gpu_train_free(model_t *mm) { (void)mm; }
@@ -3041,8 +3176,11 @@ static float *gpu_forward_native_batch(model_t *m, const int32_t *tokens,
         // The attention-front megakernel: norm + q/k/v + rope + store in ONE
         // dispatch (kernels.metal explains why the walk is cut exactly
         // here). Models it cannot serve byte-exactly stay on the split path.
+        // An adapter adds its delta after each projection, so a block that
+        // carries one keeps the split path the delta can be encoded into.
         id<MTLComputePipelineState> fpipe =
-            n == 1 && metal_fuse_on() ? metal_front_pipe(g, m, l) : nil;
+            n == 1 && metal_fuse_on() && !g->lora_a
+                ? metal_front_pipe(g, m, l) : nil;
         bool front = fpipe != nil;
         uint64_t qw = 0, kw = 0, vw = 0;
         id<MTLBuffer> qb = nil;
@@ -3108,6 +3246,7 @@ static float *gpu_forward_native_batch(model_t *m, const int32_t *tokens,
         } else {
         enc_mv_n(g, e, m, ly->wq, g->xb, 0, g->q,  0,
                  n_embd, q_dim_l,  g->bq[l], n, xdim, q_dim);
+        enc_lora(g, e, l, LW_Q, g->xb, g->q, n_embd, q_dim_l, n, xdim, q_dim);
         // the output gate projects the same normed input as Q; xb is
         // overwritten by the wo matvec below, so project it here
         if (m->attn_out_gate && ly->wq_gate)
@@ -3116,11 +3255,14 @@ static float *gpu_forward_native_batch(model_t *m, const int32_t *tokens,
         if (owns_kv) {
             enc_mv_n(g, e, m, ly->wk, g->xb, 0, g->kt, 0,
                      n_embd, kv_dim_l, g->bk[l], n, xdim, kv_dim);
+            enc_lora(g, e, l, LW_K, g->xb, g->kt, n_embd, kv_dim_l, n, xdim, kv_dim);
             // gemma-4 global layers publish no V projection: V is the raw K
             // projection, taken before K is normed/roped (as on the CPU path).
-            if (ly->wv)
+            if (ly->wv) {
                 enc_mv_n(g, e, m, ly->wv, g->xb, 0, g->vt, 0,
                          n_embd, kv_dim_l, g->bv[l], n, xdim, kv_dim);
+                enc_lora(g, e, l, LW_V, g->xb, g->vt, n_embd, kv_dim_l, n, xdim, kv_dim);
+            }
         }
         }
 
@@ -3355,6 +3497,7 @@ static float *gpu_forward_native_batch(model_t *m, const int32_t *tokens,
                        q_dim_l, n, xdim, q_dim);
         enc_mv_n(g, e, m, ly->wo, g->xb2, 0, g->xb, 0,
                  q_dim_l, n_embd, g->bo[l], n, xdim, xdim);
+        enc_lora(g, e, l, LW_O, g->xb2, g->xb, q_dim_l, n_embd, n, xdim, xdim);
         NAN_PROBE(g->xb, (size_t)n * xdim, "attn-wo");
         if (g->pan[l])
             enc_rmsnorm_n(g, e, g->xb, 0, g->xb, 0, g->pan[l],
@@ -3408,14 +3551,17 @@ static float *gpu_forward_native_batch(model_t *m, const int32_t *tokens,
                           n_embd, m->rms_eps, n, n_embd, xdim);
             enc_mv_n(g, e, m, ly->w_gate, g->xb, 0, g->hb,  0,
                      n_embd, nff_l, nil, n, xdim, nff_l);
+            enc_lora(g, e, l, LW_GATE, g->xb, g->hb, n_embd, nff_l, n, xdim, nff_l);
             enc_mv_n(g, e, m, ly->w_up,   g->xb, 0, g->hb2, 0,
                      n_embd, nff_l, nil, n, xdim, nff_l);
+            enc_lora(g, e, l, LW_UP, g->xb, g->hb2, n_embd, nff_l, n, xdim, nff_l);
             // hb/hb2 are contiguous across the batch, so the activation is one
             // dispatch over the whole batch rather than n
             enc_elem(g, e, m->ffn_act == ACT_GELU ? g->p_gelu : g->p_silu,
                      g->hb, 0, g->hb2, 0, n * nff_l);
             enc_mv_n(g, e, m, ly->w_down, g->hb, 0, g->xb, 0,
                      nff_l, n_embd, nil, n, nff_l, xdim);
+            enc_lora(g, e, l, LW_DOWN, g->hb, g->xb, nff_l, n_embd, n, nff_l, xdim);
         }
         NAN_PROBE(g->xb, (size_t)n * xdim, "ffn-out");
         if (g->pfn[l])
@@ -3562,6 +3708,7 @@ static bool metal_batch_eligible(model_t **seqs, int n, gpu_t **lead_out) {
         if (!m || !m->gpu) return false;
         gpu_t *g = (gpu_t *)m->gpu;
         if (m->gpu_layers < m->n_layer) return false;
+        if (g->lora_a) return false;   // the adapter delta is encoded on the solo path
         if (m->n_expert > 0 || m->qwen35 || m->granite_hybrid ||
             m->nemotron_h || m->attn_out_gate || m->n_embd_ple > 0)
             return false;

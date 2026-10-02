@@ -8,6 +8,20 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **`--lora` serves on Metal.** An adapter on an Apple GPU was refused, so
+  an adapted model ran entirely on the CPU. An offloaded block now applies
+  `y += scale * B(Ax)` on the device at the same seven projection sites as
+  CUDA, and a partial split lets each half apply its own blocks. Gates: a
+  zero adapter and a zero scale are byte-identical to the bare base on the
+  device, an adapter on every projection of a block matches the merged
+  reference within 5e-4 on the CPU and on the device, generation through a
+  batched prefill equals the CPU's, and the merged-reference gate was shown
+  red with one hook removed. Measured on an M1 with SmolLM2-135M Q8_0 and a
+  rank-8 adapter on all 210 projections: CPU-versus-Metal log-probabilities
+  differ by 3.0e-4 on average with the adapter and 3.1e-4 without; prefill
+  1,150 tok/s against the CPU's 115; decode 44 tok/s against 37 on the CPU
+  and 117 without the adapter, because a block with an adapter leaves the
+  fused decode kernel. An adapter on a routed-expert FFN is refused by name.
 - **Granite 4.0-H and 4.1 call tools in their own protocol (`granite4`).**
   Granite tool calling was the generic JSON envelope with the declarations
   in the runner's words. The 4.0-H and 4.1 templates define their own:

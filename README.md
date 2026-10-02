@@ -1896,7 +1896,7 @@ whether the draft is `active` there.
 | `--prune-experts FILE` | Apply a per-layer MoE expert keep-list while rewriting. Requires `--quantize`. |
 | `--remove-sublayer attn:N[,mlp:M,...]` | Physically drop block N's attention (or block M's dense FFN) tensors while rewriting, declaring the absence with a `0` in the per-block `attention.head_count` / `head_count_kv` (or `feed_forward_length`) array, llama.cpp's own convention. The pre-norm stays. The runner omits the branch and reserves no KV rows for it; CPU path, dense blocks only. Requires `--quantize`. See [Sublayer removal](#sublayer-removal). |
 | `--bench-json` | Run the built-in prompt/decode benchmark and print JSON metrics. |
-| `--lora FILE`, `--lora-scale F` | Serve a LoRA adapter with the frozen base; supports CPU and CUDA, with explicit architecture restrictions. [Details](#cli-lora). |
+| `--lora FILE`, `--lora-scale F` | Serve a LoRA adapter with the frozen base; supports CPU, CUDA and Metal, with explicit architecture restrictions. [Details](#cli-lora). |
 | `--adapter NAME=PATH` | With `--serve`: load an adapter once and select it per request as `"model": "<model>:NAME"`. [Details](#cli-adapter). |
 | `--train FILE`, `--train-steps`, `--lr`, `--train-ctx`, `--train-out`, `--save-every`, `--lora-rank` | Train a deterministic AdamW LoRA adapter from text or weighted prompt/completion JSONL. [Details](#cli-train). |
 | `--score` | Return teacher-forced token logprobs, NLL, perplexity and top-1 metrics as JSON. [Details](#cli-score). |
@@ -1968,14 +1968,18 @@ loads and serves, measured). Interop runs the other way too: an adapter runner t
 scores identically (1.000 on its held-out eval) when served by stock llama.cpp. Applied
 as `y += scale·B(Ax)` on the dense projections (attention q/k/v/output, FFN
 gate/up/down) - the base weights and kernels are untouched, so every base identity gate
-still describes the adapted run's substrate. Runs on the CPU and, on CUDA, on the
-device: an offloaded block applies the delta from adapter weights held in VRAM (36.9 MB
-at rank 8 on a 1.5B), a partial split lets each half apply its own blocks, and the
-CPU-versus-GPU gap with the adapter is no wider than without it (max |Δlogprob| 1.110e-3
-against 1.255e-3, Qwen2.5-1.5B Q4_K_M, RTX 3070). Fails closed by name on shape/rank
-mismatches, unknown targets, recurrent/gemma-4-MoE architectures, and a backend with no
-adapter path (Metal today), rather than serving a model that ignored the adapter on its
-offloaded blocks. A zero adapter is gated byte-identical to the bare base; a real
+still describes the adapted run's substrate. Runs on the CPU and, on CUDA and Metal, on
+the device: an offloaded block applies the delta from adapter weights held in device
+memory (36.9 MB at rank 8 on a 1.5B), a partial split lets each half apply its own
+blocks, and the CPU-versus-GPU gap with the adapter is no wider than without it (CUDA:
+max |Δlogprob| 1.110e-3 against 1.255e-3, Qwen2.5-1.5B Q4_K_M, RTX 3070; Metal: mean
+3.0e-4 against 3.1e-4, SmolLM2-135M Q8_0 with a rank-8 adapter on all 210 projections,
+M1). On Metal a block with an adapter decodes on the split path, without the fused
+front kernel, so on a very small model decode slows (117 to 44 tok/s on that 135M,
+still above the CPU's 37) while prefill barely moves (1,250 to 1,150 tok/s). Fails
+closed by name on shape/rank mismatches, unknown targets, recurrent/gemma-4-MoE
+architectures, and an adapter on a routed-expert FFN that the device path cannot reach,
+rather than serving a model that ignored the adapter on its offloaded blocks. A zero adapter is gated byte-identical to the bare base; a real
 adapter is gated against the merged-weights reference. The adapter id joins the engine's
 model identity, so cached prefixes never cross an adapter boundary. The adapter and
 scale apply to every serving slot and every reload after `/unload` or TTL expiry,

@@ -3258,6 +3258,43 @@ kernel void k_attn_coop(device const float *q_all   [[buffer(0)]],
     ATTN_EPILOGUE
 }
 
+// ------------------------------------------------------- adapter (LoRA)
+//
+// The delta of a loaded adapter at one projection site, applied after the
+// weight matvec has written y: t = A x, then y += scale * B t. A is [r][n_in]
+// and B is [n_out][r], both f32, the same host buffers the CPU hook reads
+// (model_lora_slot). One thread per rank row and column, then one per output
+// element and column; each sum runs in index order.
+struct lora_args { int n_in, n_out, r, xs, ys; float scale; };
+
+kernel void k_lora_a(device const float *A [[buffer(0)]],
+                     device const float *x [[buffer(1)]],
+                     device float       *t [[buffer(2)]],
+                     constant lora_args &a [[buffer(3)]],
+                     uint2 gid [[thread_position_in_grid]]) {
+    uint k = gid.x, b = gid.y;
+    if (k >= (uint)a.r) return;
+    device const float *ar = A + (ulong)k * a.n_in;
+    device const float *xr = x + (ulong)b * a.xs;
+    float s = 0;
+    for (int i = 0; i < a.n_in; i++) s += ar[i] * xr[i];
+    t[(ulong)b * a.r + k] = s;
+}
+
+kernel void k_lora_b(device const float *B [[buffer(0)]],
+                     device const float *t [[buffer(1)]],
+                     device float       *y [[buffer(2)]],
+                     constant lora_args &a [[buffer(3)]],
+                     uint2 gid [[thread_position_in_grid]]) {
+    uint j = gid.x, b = gid.y;
+    if (j >= (uint)a.n_out) return;
+    device const float *br = B + (ulong)j * a.r;
+    device const float *tb = t + (ulong)b * a.r;
+    float acc = 0;
+    for (int k = 0; k < a.r; k++) acc += br[k] * tb[k];
+    y[(ulong)b * a.ys + j] += a.scale * acc;
+}
+
 // ------------------------------------------------- tiled prefill attention
 //
 // k_attn at n > 1 gives every prompt column its own threadgroup, and each one
