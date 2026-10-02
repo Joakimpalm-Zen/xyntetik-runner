@@ -718,8 +718,8 @@
       "digest": "f8271018dcee3786",
       "allowlist_applied": [],
       "first_diff_at": 0,
-      "reference_excerpt": "'<s>[INST]F\u00e6rre \"smutthull\" \\\\ 100 % \u2014 kombinert: e\u0301, emoji: \ud83c\udf00 \ud83d\udc69\\u200d\ud83d\udcbb, RTL: \u05e9\u05dc\u05d5\u05dd, CJK: \u6f22\u5b57\u3001\u0623\u0647\u0644\u0627\u064b'",
-      "runner_excerpt": "'[INST] F\u00e6rre \"smutthull\" \\\\ 100 % \u2014 kombinert: e\u0301, emoji: \ud83c\udf00 \ud83d\udc69\\u200d\ud83d\udcbb, RTL: \u05e9\u05dc\u05d5\u05dd, CJK: \u6f22\u5b57\u3001\u0623\u0647\u0644\u0627\u064b[/'",
+      "reference_excerpt": "'<s>[INST]Færre \"smutthull\" \\\\ 100 % — kombinert: é, emoji: 🌀 👩\\u200d💻, RTL: שלום, CJK: 漢字、أهلاً'",
+      "runner_excerpt": "'[INST] Færre \"smutthull\" \\\\ 100 % — kombinert: é, emoji: 🌀 👩\\u200d💻, RTL: שלום, CJK: 漢字、أهلاً[/'",
       "token_delta": -1,
       "token_delta_stale": true
     },
@@ -794,110 +794,101 @@
     {
       "id": "nemotron-nano/multi-tool-call",
       "status": "open",
-      "note": "",
+      "note": "tools ride the generic envelope; the template's <AVAILABLE_TOOLS>/<TOOLCALL> protocol is not rendered (R2.4.4)",
       "digest": "2872835b0ab3583a",
       "allowlist_applied": [],
       "first_diff_at": 19,
       "reference_excerpt": "'<SPECIAL_10>System\\nYou are a helpful assistant.\\n\\nYou can use the following tools to assist'",
       "runner_excerpt": "'<SPECIAL_10>System\\nReply with exactly one JSON object and nothing else.\\nTo answer the user'",
-      "token_delta": -243,
-      "token_delta_stale": true
+      "token_delta": -98
     },
     {
       "id": "nemotron-nano/think-off",
       "status": "open",
-      "note": "",
+      "note": "deliberate: an explicit enable_thinking false closes the thought block; the publisher's template reads only /think and /no_think from the text and ignores the setting",
       "digest": "a0b576cd581c4655",
       "allowlist_applied": [],
       "first_diff_at": 117,
       "reference_excerpt": "'11>Assistant\\n<think>\\n'",
       "runner_excerpt": "'11>Assistant\\n<think></think>'",
-      "token_delta": 1,
-      "token_delta_stale": true
+      "token_delta": 2
     },
     {
       "id": "nemotron-nano/tool-call+result",
       "status": "open",
-      "note": "",
+      "note": "tools ride the generic envelope; the template's <AVAILABLE_TOOLS>/<TOOLCALL> protocol is not rendered (R2.4.4)",
       "digest": "e9afe5aa9a2340d4",
       "allowlist_applied": [],
       "first_diff_at": 19,
       "reference_excerpt": "'<SPECIAL_10>System\\nYou are a helpful assistant.\\n\\nYou can use the following tools to assist'",
       "runner_excerpt": "'<SPECIAL_10>System\\nReply with exactly one JSON object and nothing else.\\nTo answer the user'",
-      "token_delta": -246,
-      "token_delta_stale": true
+      "token_delta": -99
     },
     {
       "id": "nemotron-nano/tool-call-with-text",
       "status": "open",
-      "note": "",
+      "note": "tools ride the generic envelope; the template's <AVAILABLE_TOOLS>/<TOOLCALL> protocol is not rendered (R2.4.4)",
       "digest": "4c1af02a4f683453",
       "allowlist_applied": [],
       "first_diff_at": 19,
       "reference_excerpt": "'<SPECIAL_10>System\\nYou are a helpful assistant.\\n\\nYou can use the following tools to assist'",
       "runner_excerpt": "'<SPECIAL_10>System\\nReply with exactly one JSON object and nothing else.\\nTo answer the user'",
-      "token_delta": -247,
-      "token_delta_stale": true
+      "token_delta": -100
     },
     {
       "id": "nemotron-nano/tool-then-conversation",
       "status": "open",
-      "note": "",
+      "note": "tools ride the generic envelope; the template's <AVAILABLE_TOOLS>/<TOOLCALL> protocol is not rendered (R2.4.4)",
       "digest": "d9846b04bdfe64b8",
       "allowlist_applied": [],
       "first_diff_at": 19,
       "reference_excerpt": "'<SPECIAL_10>System\\nYou are a helpful assistant.\\n\\nYou can use the following tools to assist'",
       "runner_excerpt": "'<SPECIAL_10>System\\nReply with exactly one JSON object and nothing else.\\nTo answer the user'",
-      "token_delta": -248,
-      "token_delta_stale": true
+      "token_delta": -99
     },
     {
       "id": "phi4mini/multi-tool-call",
       "status": "open",
-      "note": "",
+      "note": "tools ride the generic envelope; Phi-4-mini's <|tool|> declaration block is not rendered",
       "digest": "211cd6918d2eb3b2",
       "allowlist_applied": [],
       "first_diff_at": 10,
       "reference_excerpt": "'<|system|>You are a helpful assistant.<|end|><|user|>Weather in Oslo and Bergen?<|end|><|a'",
       "runner_excerpt": "'<|system|>Reply with exactly one JSON object and nothing else.\\nTo answer the user directly'",
-      "token_delta": 182,
-      "token_delta_stale": true
+      "token_delta": 169
     },
     {
       "id": "phi4mini/tool-call+result",
       "status": "open",
-      "note": "",
+      "note": "tools ride the generic envelope; Phi-4-mini's <|tool|> declaration block is not rendered",
       "digest": "4b73463fdde73783",
       "allowlist_applied": [],
       "first_diff_at": 10,
       "reference_excerpt": "'<|system|>You are a helpful assistant.<|end|><|user|>Weather in Oslo?<|end|><|assistant|><'",
       "runner_excerpt": "'<|system|>Reply with exactly one JSON object and nothing else.\\nTo answer the user directly'",
-      "token_delta": 161,
-      "token_delta_stale": true
+      "token_delta": 150
     },
     {
       "id": "phi4mini/tool-call-with-text",
       "status": "open",
-      "note": "",
+      "note": "tools ride the generic envelope; Phi-4-mini's <|tool|> declaration block is not rendered",
       "digest": "6eecd4ad87260812",
       "allowlist_applied": [],
       "first_diff_at": 10,
       "reference_excerpt": "'<|system|>You are a helpful assistant.<|end|><|user|>Weather in Oslo?<|end|><|assistant|>L'",
       "runner_excerpt": "'<|system|>Reply with exactly one JSON object and nothing else.\\nTo answer the user directly'",
-      "token_delta": 160,
-      "token_delta_stale": true
+      "token_delta": 149
     },
     {
       "id": "phi4mini/tool-then-conversation",
       "status": "open",
-      "note": "",
+      "note": "tools ride the generic envelope; Phi-4-mini's <|tool|> declaration block is not rendered",
       "digest": "117dd665552cb24e",
       "allowlist_applied": [],
       "first_diff_at": 10,
       "reference_excerpt": "'<|system|>You are a helpful assistant.<|end|><|user|>Weather in Oslo?<|end|><|assistant|><'",
       "runner_excerpt": "'<|system|>Reply with exactly one JSON object and nothing else.\\nTo answer the user directly'",
-      "token_delta": 165,
-      "token_delta_stale": true
+      "token_delta": 150
     },
     {
       "id": "smollm2/consecutive-assistant",
