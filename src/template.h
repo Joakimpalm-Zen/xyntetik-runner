@@ -120,6 +120,15 @@ enum { TMPL_CHATML, TMPL_LLAMA2, TMPL_LLAMA3, TMPL_ZEPHYR, TMPL_GEMMA,
        // Tool calls ride the generic envelope: the template's own
        // <AVAILABLE_TOOLS>/<TOOLCALL> protocol is not rendered yet.
        TMPL_NEMOTRON,
+       // Hermes 4 (NousResearch/Hermes-4-*). ChatML framing and the Hermes
+       // JSON tool call, which Qwen2.5 shares, but its own system turn: always
+       // present, the caller's or one of two fixed prompts (a standard one,
+       // and a "deep thinking" one when thinking is asked for, which is how
+       // this family is told to reason: the generation prompt never carries a
+       // thought block), with its own tools preamble appended. Rendered as
+       // chatml-think until 2026-10-02 (15 of 22 cases). Detected by the
+       // standard prompt's text.
+       TMPL_HERMES4,
        // What template_detect returns when NOTHING matched. It renders
        // llama-2 markup, because changing what unrecognised models render is
        // a behavioural decision and not this constant's job -- but it is a
@@ -157,6 +166,17 @@ static inline void template_bind_think_tags(int tmpl, const char **open,
 // those sites ask this rather than naming one id and silently breaking the
 // other. Added when the mainline id split off TMPL_GEMMA4 (2026-08-19): a
 // missed site would leave mainline tool calls speaking the generic protocol.
+// The system turn a publisher's own template writes when the caller sends
+// none, for the families where that is a FIXED string (not a live date, which
+// the runner never embeds). `meta_tmpl` is the model's chat template: the
+// text is taken as that template's only when the template itself carries it,
+// and only under the family it was written for, so a forced --chat-template
+// or an unrelated ChatML model never gets another model's persona. NULL when
+// there is none. Until 2026-10-02 the runner sent the user turn alone, which
+// put every system-less request outside the model's training distribution
+// (golden pass 2026-09-07: SmolLM2 and Granite 4.0-H, 20 cases).
+const char *template_default_system(int tmpl, const char *meta_tmpl);
+
 static inline bool is_gemma4(int tmpl) {
     return tmpl == TMPL_GEMMA4 || tmpl == TMPL_GEMMA4_MAINLINE;
 }
@@ -168,6 +188,12 @@ static inline bool is_gemma4(int tmpl) {
 // default, both handled where the block is written.
 static inline bool tmpl_ornith_like(int t) {
     return t == TMPL_ORNITH || t == TMPL_QWEN35 || t == TMPL_QWEN35_NOTHINK;
+}
+// The families whose native tool call is the Hermes JSON block
+// (<tool_call>{"name": ..., "arguments": {...}}</tool_call>): one grammar,
+// one parser, one replay form.
+static inline bool tmpl_hermes_json(int t) {
+    return t == TMPL_CHATML || t == TMPL_CHATML_THINK || t == TMPL_HERMES4;
 }
 static inline bool tmpl_qwen35(int t) {
     return t == TMPL_QWEN35 || t == TMPL_QWEN35_NOTHINK;

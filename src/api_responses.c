@@ -760,7 +760,7 @@ void handle_responses(slot_t *s, sock_t fd, jv *req) {
     chat_msg *cm = NULL;
     char **owned = NULL;
     if (!ts.failed) {
-        cm = malloc(sizeof(chat_msg) * (size_t)(n_items + 2));
+        cm = malloc(sizeof(chat_msg) * (size_t)(n_items + 3));
         owned = malloc(sizeof(char *) * (size_t)n_items);
     }
     // client-controlled size: a NULL here would be indexed below. Fail cleanly.
@@ -797,6 +797,20 @@ void handle_responses(slot_t *s, sock_t fd, jv *req) {
             .role = "system", .content = instructions,
         };
         total += strlen(instructions) + 64;
+    }
+    // no instructions, no tool turn, and the input does not open with a
+    // system item: the publisher's default, as on the chat surface
+    bool input_opens_system = false;
+    if (input && input->type == J_ARR && input->n > 0) {
+        const char *r0 = jv_str(jv_get(input->items[0], "role"), "");
+        input_opens_system = !strcmp(r0, "system") || !strcmp(r0, "developer");
+    }
+    if (n_cm == 0 && !input_opens_system) {
+        const char *ds = slot_default_system(s);
+        if (ds) {
+            cm[n_cm++] = (chat_msg){ .role = "system", .content = ds };
+            total += strlen(ds) + 64;
+        }
     }
     if (input->type == J_STR) {
         cm[n_cm++] = (chat_msg){ .role = "user", .content = input->str };

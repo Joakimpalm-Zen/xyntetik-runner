@@ -8,6 +8,21 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **Hermes 4 has its own template family, and two publishers' default system
+  prompts are sent.** Hermes 4 (`hermes4`) was rendered as a Qwen3-style
+  thinking template; it now gets what its publisher's template writes: a
+  system turn on every conversation (the caller's, the standard prompt, or
+  the deep-thinking prompt when reasoning is asked for), its own tools
+  preamble, a newline before every replayed call, and a generation prompt
+  with no thought block. All 22 conformance cases match, tools included; the
+  call itself is the Hermes JSON block Qwen2.5 already used, so the grammar
+  and the parser are shared. SmolLM2 and Granite 4.0-H templates write a
+  fixed system turn when the caller sends none, and the runner sent the user
+  turn alone; the three chat surfaces and interactive chat now send that
+  text, read from the model's own template and only under its own family
+  (20 cases). The template-conformance backlog is 26 known differences, from
+  115 at the golden pass. `scripts/template-conformance-recite.py` re-points
+  the allowlist's line citations after an edit moves them.
 - **Metal prefill is faster over a long history, byte for byte the same.**
   At prefill every prompt column walked its head's whole K history alone, so
   the tokens an agent adds each turn were processed more slowly as the

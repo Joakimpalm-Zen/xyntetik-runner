@@ -38,7 +38,7 @@
     "in-progress": "someone is actively fixing this; see `note`"
   },
   "generated_by": "scripts/template-conformance.py --write-baseline",
-  "generated_at": "2026-10-02T08:02:10+00:00",
+  "generated_at": "2026-10-02T09:44:47+00:00",
   "oracles": {
     "apertus": {
       "source": "hf:swiss-ai/Apertus-8B-Instruct-2509",
@@ -167,42 +167,6 @@
   },
   "known_differences": [
     {
-      "id": "granite40h/consecutive-assistant",
-      "status": "open",
-      "note": "",
-      "digest": "c158c4cca27b67b4",
-      "allowlist_applied": [],
-      "first_diff_at": 17,
-      "reference_excerpt": "'<|start_of_role|>system<|end_of_role|>You are a helpful assistant. Please ensure responses'",
-      "runner_excerpt": "'<|start_of_role|>user<|end_of_role|>What color is the sky?<|end_of_text|>\\n<|start_of_role|'",
-      "token_delta": -22,
-      "token_delta_stale": true
-    },
-    {
-      "id": "granite40h/consecutive-user",
-      "status": "open",
-      "note": "",
-      "digest": "376d883e23e3d4ac",
-      "allowlist_applied": [],
-      "first_diff_at": 17,
-      "reference_excerpt": "'<|start_of_role|>system<|end_of_role|>You are a helpful assistant. Please ensure responses'",
-      "runner_excerpt": "'<|start_of_role|>user<|end_of_role|>What color is the sky?<|end_of_text|>\\n<|start_of_role|'",
-      "token_delta": -22,
-      "token_delta_stale": true
-    },
-    {
-      "id": "granite40h/empty-assistant-content",
-      "status": "open",
-      "note": "",
-      "digest": "931e36a21b756c0c",
-      "allowlist_applied": [],
-      "first_diff_at": 17,
-      "reference_excerpt": "'<|start_of_role|>system<|end_of_role|>You are a helpful assistant. Please ensure responses'",
-      "runner_excerpt": "'<|start_of_role|>user<|end_of_role|>What color is the sky?<|end_of_text|>\\n<|start_of_role|'",
-      "token_delta": -22,
-      "token_delta_stale": true
-    },
-    {
       "id": "granite40h/multi-tool-call",
       "status": "open",
       "note": "",
@@ -212,42 +176,6 @@
       "reference_excerpt": "'ystem<|end_of_role|>You are a helpful assistant.\\n\\nYou are a helpful assistant with access '",
       "runner_excerpt": "'ystem<|end_of_role|>Reply with exactly one JSON object and nothing else.\\nTo answer the use'",
       "token_delta": -49,
-      "token_delta_stale": true
-    },
-    {
-      "id": "granite40h/multiturn+gen",
-      "status": "open",
-      "note": "",
-      "digest": "75a2f762121b6e95",
-      "allowlist_applied": [],
-      "first_diff_at": 17,
-      "reference_excerpt": "'<|start_of_role|>system<|end_of_role|>You are a helpful assistant. Please ensure responses'",
-      "runner_excerpt": "'<|start_of_role|>user<|end_of_role|>What color is the sky?<|end_of_text|>\\n<|start_of_role|'",
-      "token_delta": -22,
-      "token_delta_stale": true
-    },
-    {
-      "id": "granite40h/multiturn-nogen",
-      "status": "open",
-      "note": "",
-      "digest": "97b2abc23cef850b",
-      "allowlist_applied": [],
-      "first_diff_at": 17,
-      "reference_excerpt": "'<|start_of_role|>system<|end_of_role|>You are a helpful assistant. Please ensure responses'",
-      "runner_excerpt": "'<|start_of_role|>user<|end_of_role|>What color is the sky?<|end_of_text|>\\n<|start_of_role|'",
-      "token_delta": -22,
-      "token_delta_stale": true
-    },
-    {
-      "id": "granite40h/system-mid-history",
-      "status": "open",
-      "note": "",
-      "digest": "5cef287e9b48bf7f",
-      "allowlist_applied": [],
-      "first_diff_at": 17,
-      "reference_excerpt": "'<|start_of_role|>system<|end_of_role|>You are a helpful assistant. Please ensure responses'",
-      "runner_excerpt": "'<|start_of_role|>user<|end_of_role|>What color is the sky?<|end_of_text|>\\n<|start_of_role|'",
-      "token_delta": -22,
       "token_delta_stale": true
     },
     {
@@ -284,234 +212,6 @@
       "reference_excerpt": "'ystem<|end_of_role|>You are a helpful assistant.\\n\\nYou are a helpful assistant with access '",
       "runner_excerpt": "'ystem<|end_of_role|>Reply with exactly one JSON object and nothing else.\\nTo answer the use'",
       "token_delta": -48,
-      "token_delta_stale": true
-    },
-    {
-      "id": "granite40h/trailing-assistant+gen",
-      "status": "open",
-      "note": "",
-      "digest": "c8516f95b7bfb7aa",
-      "allowlist_applied": [],
-      "first_diff_at": 17,
-      "reference_excerpt": "'<|start_of_role|>system<|end_of_role|>You are a helpful assistant. Please ensure responses'",
-      "runner_excerpt": "'<|start_of_role|>user<|end_of_role|>What color is the sky?<|end_of_text|>\\n<|start_of_role|'",
-      "token_delta": -22,
-      "token_delta_stale": true
-    },
-    {
-      "id": "granite40h/trailing-assistant-nogen",
-      "status": "open",
-      "note": "",
-      "digest": "2fa3436190123b4b",
-      "allowlist_applied": [],
-      "first_diff_at": 17,
-      "reference_excerpt": "'<|start_of_role|>system<|end_of_role|>You are a helpful assistant. Please ensure responses'",
-      "runner_excerpt": "'<|start_of_role|>user<|end_of_role|>What color is the sky?<|end_of_text|>\\n<|start_of_role|'",
-      "token_delta": -22,
-      "token_delta_stale": true
-    },
-    {
-      "id": "granite40h/user-only+gen",
-      "status": "open",
-      "note": "",
-      "digest": "a8678ab0a6df4ee6",
-      "allowlist_applied": [],
-      "first_diff_at": 17,
-      "reference_excerpt": "'<|start_of_role|>system<|end_of_role|>You are a helpful assistant. Please ensure responses'",
-      "runner_excerpt": "'<|start_of_role|>user<|end_of_role|>What color is the sky?<|end_of_text|>\\n<|start_of_role|'",
-      "token_delta": -22,
-      "token_delta_stale": true
-    },
-    {
-      "id": "granite40h/user-only-nogen",
-      "status": "open",
-      "note": "",
-      "digest": "9a3df75d8e695d85",
-      "allowlist_applied": [],
-      "first_diff_at": 17,
-      "reference_excerpt": "'<|start_of_role|>system<|end_of_role|>You are a helpful assistant. Please ensure responses'",
-      "runner_excerpt": "'<|start_of_role|>user<|end_of_role|>What color is the sky?<|end_of_text|>\\n'",
-      "token_delta": -22,
-      "token_delta_stale": true
-    },
-    {
-      "id": "hermes4/consecutive-assistant",
-      "status": "open",
-      "note": "",
-      "digest": "a258ec9dec6791ed",
-      "allowlist_applied": [],
-      "first_diff_at": 12,
-      "reference_excerpt": "'<|im_start|>system\\nYou are Hermes, created by Nous Research.<|im_end|>\\n<|im_start|>user\\nWh'",
-      "runner_excerpt": "'<|im_start|>user\\nWhat color is the sky?<|im_end|>\\n<|im_start|>assistant\\nBlue, because of R'",
-      "token_delta": -14,
-      "token_delta_stale": true
-    },
-    {
-      "id": "hermes4/consecutive-user",
-      "status": "open",
-      "note": "",
-      "digest": "9674200e20f5bd6c",
-      "allowlist_applied": [],
-      "first_diff_at": 12,
-      "reference_excerpt": "'<|im_start|>system\\nYou are Hermes, created by Nous Research.<|im_end|>\\n<|im_start|>user\\nWh'",
-      "runner_excerpt": "'<|im_start|>user\\nWhat color is the sky?<|im_end|>\\n<|im_start|>user\\nAnd at sunset?<|im_end|'",
-      "token_delta": -14,
-      "token_delta_stale": true
-    },
-    {
-      "id": "hermes4/empty-assistant-content",
-      "status": "open",
-      "note": "",
-      "digest": "853c0cec19596b2b",
-      "allowlist_applied": [],
-      "first_diff_at": 12,
-      "reference_excerpt": "'<|im_start|>system\\nYou are Hermes, created by Nous Research.<|im_end|>\\n<|im_start|>user\\nWh'",
-      "runner_excerpt": "'<|im_start|>user\\nWhat color is the sky?<|im_end|>\\n<|im_start|>assistant\\n<|im_end|>\\n<|im_st'",
-      "token_delta": -11,
-      "token_delta_stale": true
-    },
-    {
-      "id": "hermes4/multi-tool-call",
-      "status": "open",
-      "note": "",
-      "digest": "1914e764a5dcc17e",
-      "allowlist_applied": [],
-      "first_diff_at": 62,
-      "reference_excerpt": "'tant.\\n\\n# Tools\\n\\nYou are a function calling AI model. You may call one or more functions to'",
-      "runner_excerpt": "'tant.\\n\\n# Tools\\n\\nYou may call one or more functions to assist with the user query.\\n\\nYou are'",
-      "token_delta": -8,
-      "token_delta_stale": true
-    },
-    {
-      "id": "hermes4/multiturn+gen",
-      "status": "open",
-      "note": "",
-      "digest": "f0eaf2e2c1ce1304",
-      "allowlist_applied": [],
-      "first_diff_at": 12,
-      "reference_excerpt": "'<|im_start|>system\\nYou are Hermes, created by Nous Research.<|im_end|>\\n<|im_start|>user\\nWh'",
-      "runner_excerpt": "'<|im_start|>user\\nWhat color is the sky?<|im_end|>\\n<|im_start|>assistant\\nBlue, because of R'",
-      "token_delta": -14,
-      "token_delta_stale": true
-    },
-    {
-      "id": "hermes4/multiturn-nogen",
-      "status": "open",
-      "note": "",
-      "digest": "0a3ff288f85eebbd",
-      "allowlist_applied": [],
-      "first_diff_at": 12,
-      "reference_excerpt": "'<|im_start|>system\\nYou are Hermes, created by Nous Research.<|im_end|>\\n<|im_start|>user\\nWh'",
-      "runner_excerpt": "'<|im_start|>user\\nWhat color is the sky?<|im_end|>\\n<|im_start|>assistant\\nBlue, because of R'",
-      "token_delta": -14,
-      "token_delta_stale": true
-    },
-    {
-      "id": "hermes4/system-mid-history",
-      "status": "open",
-      "note": "",
-      "digest": "a87c516697f72140",
-      "allowlist_applied": [],
-      "first_diff_at": 12,
-      "reference_excerpt": "'<|im_start|>system\\nYou are Hermes, created by Nous Research.<|im_end|>\\n<|im_start|>user\\nWh'",
-      "runner_excerpt": "'<|im_start|>user\\nWhat color is the sky?<|im_end|>\\n<|im_start|>assistant\\nBlue, because of R'",
-      "token_delta": -14,
-      "token_delta_stale": true
-    },
-    {
-      "id": "hermes4/think-off",
-      "status": "open",
-      "note": "",
-      "digest": "8363b3bc0d53a7df",
-      "allowlist_applied": [],
-      "first_diff_at": 130,
-      "reference_excerpt": "'im_start|>assistant\\n'",
-      "runner_excerpt": "'im_start|>assistant\\n<think>\\n\\n</think>\\n\\n'",
-      "token_delta": 4,
-      "token_delta_stale": true
-    },
-    {
-      "id": "hermes4/tool-call+result",
-      "status": "open",
-      "note": "",
-      "digest": "700ee9d55932a6a9",
-      "allowlist_applied": [],
-      "first_diff_at": 62,
-      "reference_excerpt": "'tant.\\n\\n# Tools\\n\\nYou are a function calling AI model. You may call one or more functions to'",
-      "runner_excerpt": "'tant.\\n\\n# Tools\\n\\nYou may call one or more functions to assist with the user query.\\n\\nYou are'",
-      "token_delta": -8,
-      "token_delta_stale": true
-    },
-    {
-      "id": "hermes4/tool-call-with-text",
-      "status": "open",
-      "note": "",
-      "digest": "06ff7822a0ac2dc2",
-      "allowlist_applied": [],
-      "first_diff_at": 62,
-      "reference_excerpt": "'tant.\\n\\n# Tools\\n\\nYou are a function calling AI model. You may call one or more functions to'",
-      "runner_excerpt": "'tant.\\n\\n# Tools\\n\\nYou may call one or more functions to assist with the user query.\\n\\nYou are'",
-      "token_delta": -8,
-      "token_delta_stale": true
-    },
-    {
-      "id": "hermes4/tool-then-conversation",
-      "status": "open",
-      "note": "",
-      "digest": "2ab8c415e0a92d09",
-      "allowlist_applied": [],
-      "first_diff_at": 62,
-      "reference_excerpt": "'tant.\\n\\n# Tools\\n\\nYou are a function calling AI model. You may call one or more functions to'",
-      "runner_excerpt": "'tant.\\n\\n# Tools\\n\\nYou may call one or more functions to assist with the user query.\\n\\nYou are'",
-      "token_delta": -8,
-      "token_delta_stale": true
-    },
-    {
-      "id": "hermes4/trailing-assistant+gen",
-      "status": "open",
-      "note": "",
-      "digest": "fb34487818938186",
-      "allowlist_applied": [],
-      "first_diff_at": 12,
-      "reference_excerpt": "'<|im_start|>system\\nYou are Hermes, created by Nous Research.<|im_end|>\\n<|im_start|>user\\nWh'",
-      "runner_excerpt": "'<|im_start|>user\\nWhat color is the sky?<|im_end|>\\n<|im_start|>assistant\\n<think>\\n\\n</think>\\n'",
-      "token_delta": -10,
-      "token_delta_stale": true
-    },
-    {
-      "id": "hermes4/trailing-assistant-nogen",
-      "status": "open",
-      "note": "",
-      "digest": "f91df5739c858858",
-      "allowlist_applied": [],
-      "first_diff_at": 12,
-      "reference_excerpt": "'<|im_start|>system\\nYou are Hermes, created by Nous Research.<|im_end|>\\n<|im_start|>user\\nWh'",
-      "runner_excerpt": "'<|im_start|>user\\nWhat color is the sky?<|im_end|>\\n<|im_start|>assistant\\n<think>\\n\\n</think>\\n'",
-      "token_delta": -10,
-      "token_delta_stale": true
-    },
-    {
-      "id": "hermes4/user-only+gen",
-      "status": "open",
-      "note": "",
-      "digest": "6af2fcb08df3ec29",
-      "allowlist_applied": [],
-      "first_diff_at": 12,
-      "reference_excerpt": "'<|im_start|>system\\nYou are Hermes, created by Nous Research.<|im_end|>\\n<|im_start|>user\\nWh'",
-      "runner_excerpt": "'<|im_start|>user\\nWhat color is the sky?<|im_end|>\\n<|im_start|>assistant\\n'",
-      "token_delta": -14,
-      "token_delta_stale": true
-    },
-    {
-      "id": "hermes4/user-only-nogen",
-      "status": "open",
-      "note": "",
-      "digest": "f43228d3ad6539e2",
-      "allowlist_applied": [],
-      "first_diff_at": 12,
-      "reference_excerpt": "'<|im_start|>system\\nYou are Hermes, created by Nous Research.<|im_end|>\\n<|im_start|>user\\nWh'",
-      "runner_excerpt": "'<|im_start|>user\\nWhat color is the sky?<|im_end|>\\n'",
-      "token_delta": -14,
       "token_delta_stale": true
     },
     {
@@ -718,8 +418,8 @@
       "digest": "f8271018dcee3786",
       "allowlist_applied": [],
       "first_diff_at": 0,
-      "reference_excerpt": "'<s>[INST]Færre \"smutthull\" \\\\ 100 % — kombinert: é, emoji: 🌀 👩\\u200d💻, RTL: שלום, CJK: 漢字、أهلاً'",
-      "runner_excerpt": "'[INST] Færre \"smutthull\" \\\\ 100 % — kombinert: é, emoji: 🌀 👩\\u200d💻, RTL: שלום, CJK: 漢字、أهلاً[/'",
+      "reference_excerpt": "'<s>[INST]F\u00e6rre \"smutthull\" \\\\ 100 % \u2014 kombinert: e\u0301, emoji: \ud83c\udf00 \ud83d\udc69\\u200d\ud83d\udcbb, RTL: \u05e9\u05dc\u05d5\u05dd, CJK: \u6f22\u5b57\u3001\u0623\u0647\u0644\u0627\u064b'",
+      "runner_excerpt": "'[INST] F\u00e6rre \"smutthull\" \\\\ 100 % \u2014 kombinert: e\u0301, emoji: \ud83c\udf00 \ud83d\udc69\\u200d\ud83d\udcbb, RTL: \u05e9\u05dc\u05d5\u05dd, CJK: \u6f22\u5b57\u3001\u0623\u0647\u0644\u0627\u064b[/'",
       "token_delta": -1,
       "token_delta_stale": true
     },
@@ -800,7 +500,8 @@
       "first_diff_at": 19,
       "reference_excerpt": "'<SPECIAL_10>System\\nYou are a helpful assistant.\\n\\nYou can use the following tools to assist'",
       "runner_excerpt": "'<SPECIAL_10>System\\nReply with exactly one JSON object and nothing else.\\nTo answer the user'",
-      "token_delta": -98
+      "token_delta": -98,
+      "token_delta_stale": true
     },
     {
       "id": "nemotron-nano/think-off",
@@ -811,7 +512,8 @@
       "first_diff_at": 117,
       "reference_excerpt": "'11>Assistant\\n<think>\\n'",
       "runner_excerpt": "'11>Assistant\\n<think></think>'",
-      "token_delta": 2
+      "token_delta": 2,
+      "token_delta_stale": true
     },
     {
       "id": "nemotron-nano/tool-call+result",
@@ -822,7 +524,8 @@
       "first_diff_at": 19,
       "reference_excerpt": "'<SPECIAL_10>System\\nYou are a helpful assistant.\\n\\nYou can use the following tools to assist'",
       "runner_excerpt": "'<SPECIAL_10>System\\nReply with exactly one JSON object and nothing else.\\nTo answer the user'",
-      "token_delta": -99
+      "token_delta": -99,
+      "token_delta_stale": true
     },
     {
       "id": "nemotron-nano/tool-call-with-text",
@@ -833,7 +536,8 @@
       "first_diff_at": 19,
       "reference_excerpt": "'<SPECIAL_10>System\\nYou are a helpful assistant.\\n\\nYou can use the following tools to assist'",
       "runner_excerpt": "'<SPECIAL_10>System\\nReply with exactly one JSON object and nothing else.\\nTo answer the user'",
-      "token_delta": -100
+      "token_delta": -100,
+      "token_delta_stale": true
     },
     {
       "id": "nemotron-nano/tool-then-conversation",
@@ -844,7 +548,8 @@
       "first_diff_at": 19,
       "reference_excerpt": "'<SPECIAL_10>System\\nYou are a helpful assistant.\\n\\nYou can use the following tools to assist'",
       "runner_excerpt": "'<SPECIAL_10>System\\nReply with exactly one JSON object and nothing else.\\nTo answer the user'",
-      "token_delta": -99
+      "token_delta": -99,
+      "token_delta_stale": true
     },
     {
       "id": "phi4mini/multi-tool-call",
@@ -855,7 +560,8 @@
       "first_diff_at": 10,
       "reference_excerpt": "'<|system|>You are a helpful assistant.<|end|><|user|>Weather in Oslo and Bergen?<|end|><|a'",
       "runner_excerpt": "'<|system|>Reply with exactly one JSON object and nothing else.\\nTo answer the user directly'",
-      "token_delta": 169
+      "token_delta": 169,
+      "token_delta_stale": true
     },
     {
       "id": "phi4mini/tool-call+result",
@@ -866,7 +572,8 @@
       "first_diff_at": 10,
       "reference_excerpt": "'<|system|>You are a helpful assistant.<|end|><|user|>Weather in Oslo?<|end|><|assistant|><'",
       "runner_excerpt": "'<|system|>Reply with exactly one JSON object and nothing else.\\nTo answer the user directly'",
-      "token_delta": 150
+      "token_delta": 150,
+      "token_delta_stale": true
     },
     {
       "id": "phi4mini/tool-call-with-text",
@@ -877,7 +584,8 @@
       "first_diff_at": 10,
       "reference_excerpt": "'<|system|>You are a helpful assistant.<|end|><|user|>Weather in Oslo?<|end|><|assistant|>L'",
       "runner_excerpt": "'<|system|>Reply with exactly one JSON object and nothing else.\\nTo answer the user directly'",
-      "token_delta": 149
+      "token_delta": 149,
+      "token_delta_stale": true
     },
     {
       "id": "phi4mini/tool-then-conversation",
@@ -888,117 +596,8 @@
       "first_diff_at": 10,
       "reference_excerpt": "'<|system|>You are a helpful assistant.<|end|><|user|>Weather in Oslo?<|end|><|assistant|><'",
       "runner_excerpt": "'<|system|>Reply with exactly one JSON object and nothing else.\\nTo answer the user directly'",
-      "token_delta": 150
-    },
-    {
-      "id": "smollm2/consecutive-assistant",
-      "status": "open",
-      "note": "",
-      "digest": "c75d86754388a230",
-      "allowlist_applied": [],
-      "first_diff_at": 12,
-      "reference_excerpt": "'<|im_start|>system\\nYou are a helpful AI assistant named SmolLM, trained by Hugging Face<|i'",
-      "runner_excerpt": "'<|im_start|>user\\nWhat color is the sky?<|im_end|>\\n<|im_start|>assistant\\nBlue, because of R'",
-      "token_delta": -21
-    },
-    {
-      "id": "smollm2/consecutive-user",
-      "status": "open",
-      "note": "",
-      "digest": "03e48fcb5e9c18ae",
-      "allowlist_applied": [],
-      "first_diff_at": 12,
-      "reference_excerpt": "'<|im_start|>system\\nYou are a helpful AI assistant named SmolLM, trained by Hugging Face<|i'",
-      "runner_excerpt": "'<|im_start|>user\\nWhat color is the sky?<|im_end|>\\n<|im_start|>user\\nAnd at sunset?<|im_end|'",
-      "token_delta": -21
-    },
-    {
-      "id": "smollm2/empty-assistant-content",
-      "status": "open",
-      "note": "",
-      "digest": "2673731e9d7eacdf",
-      "allowlist_applied": [],
-      "first_diff_at": 12,
-      "reference_excerpt": "'<|im_start|>system\\nYou are a helpful AI assistant named SmolLM, trained by Hugging Face<|i'",
-      "runner_excerpt": "'<|im_start|>user\\nWhat color is the sky?<|im_end|>\\n<|im_start|>assistant\\n<|im_end|>\\n<|im_st'",
-      "token_delta": -21
-    },
-    {
-      "id": "smollm2/multiturn+gen",
-      "status": "open",
-      "note": "",
-      "digest": "604d2cb64afb2ab2",
-      "allowlist_applied": [],
-      "first_diff_at": 12,
-      "reference_excerpt": "'<|im_start|>system\\nYou are a helpful AI assistant named SmolLM, trained by Hugging Face<|i'",
-      "runner_excerpt": "'<|im_start|>user\\nWhat color is the sky?<|im_end|>\\n<|im_start|>assistant\\nBlue, because of R'",
-      "token_delta": -21
-    },
-    {
-      "id": "smollm2/multiturn-nogen",
-      "status": "open",
-      "note": "",
-      "digest": "666afb4e2f5249d9",
-      "allowlist_applied": [],
-      "first_diff_at": 12,
-      "reference_excerpt": "'<|im_start|>system\\nYou are a helpful AI assistant named SmolLM, trained by Hugging Face<|i'",
-      "runner_excerpt": "'<|im_start|>user\\nWhat color is the sky?<|im_end|>\\n<|im_start|>assistant\\nBlue, because of R'",
-      "token_delta": -21
-    },
-    {
-      "id": "smollm2/system-mid-history",
-      "status": "open",
-      "note": "",
-      "digest": "d2a82cda7d880a9f",
-      "allowlist_applied": [],
-      "first_diff_at": 12,
-      "reference_excerpt": "'<|im_start|>system\\nYou are a helpful AI assistant named SmolLM, trained by Hugging Face<|i'",
-      "runner_excerpt": "'<|im_start|>user\\nWhat color is the sky?<|im_end|>\\n<|im_start|>assistant\\nBlue, because of R'",
-      "token_delta": -21
-    },
-    {
-      "id": "smollm2/trailing-assistant+gen",
-      "status": "open",
-      "note": "",
-      "digest": "bf913a60c3f42ae6",
-      "allowlist_applied": [],
-      "first_diff_at": 12,
-      "reference_excerpt": "'<|im_start|>system\\nYou are a helpful AI assistant named SmolLM, trained by Hugging Face<|i'",
-      "runner_excerpt": "'<|im_start|>user\\nWhat color is the sky?<|im_end|>\\n<|im_start|>assistant\\nBlue, because of R'",
-      "token_delta": -21
-    },
-    {
-      "id": "smollm2/trailing-assistant-nogen",
-      "status": "open",
-      "note": "",
-      "digest": "eef3d890ee0cdc33",
-      "allowlist_applied": [],
-      "first_diff_at": 12,
-      "reference_excerpt": "'<|im_start|>system\\nYou are a helpful AI assistant named SmolLM, trained by Hugging Face<|i'",
-      "runner_excerpt": "'<|im_start|>user\\nWhat color is the sky?<|im_end|>\\n<|im_start|>assistant\\nBlue, because of R'",
-      "token_delta": -21
-    },
-    {
-      "id": "smollm2/user-only+gen",
-      "status": "open",
-      "note": "",
-      "digest": "e5ec5818519981d7",
-      "allowlist_applied": [],
-      "first_diff_at": 12,
-      "reference_excerpt": "'<|im_start|>system\\nYou are a helpful AI assistant named SmolLM, trained by Hugging Face<|i'",
-      "runner_excerpt": "'<|im_start|>user\\nWhat color is the sky?<|im_end|>\\n<|im_start|>assistant\\n'",
-      "token_delta": -21
-    },
-    {
-      "id": "smollm2/user-only-nogen",
-      "status": "open",
-      "note": "",
-      "digest": "aa5e8dca4bbe1dd8",
-      "allowlist_applied": [],
-      "first_diff_at": 12,
-      "reference_excerpt": "'<|im_start|>system\\nYou are a helpful AI assistant named SmolLM, trained by Hugging Face<|i'",
-      "runner_excerpt": "'<|im_start|>user\\nWhat color is the sky?<|im_end|>\\n'",
-      "token_delta": -21
+      "token_delta": 150,
+      "token_delta_stale": true
     }
   ]
 }

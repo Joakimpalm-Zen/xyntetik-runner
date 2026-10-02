@@ -527,6 +527,24 @@
     "cuda": "NOT RUN",
     "metal": "NOT RUN"
    }
+  },
+  "hermes4": {
+   "tool_protocol": {
+    "status": "NOT RUN",
+    "note": "the Hermes JSON tool call, declared and replayed as the publisher's template does (conformance 22/22 text); the tool gate has not been run on a Hermes 4 artifact"
+   },
+   "client_loop": {
+    "status": "NOT RUN"
+   },
+   "sampling_anchor": {
+    "status": "NOT RUN",
+    "note": "no template-keyed preset; resolved by name or architecture"
+   },
+   "backends": {
+    "cpu": "NOT RUN",
+    "cuda": "NOT RUN",
+    "metal": "NOT RUN"
+   }
   }
  },
  "architectures": {

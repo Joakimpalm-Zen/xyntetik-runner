@@ -1481,7 +1481,7 @@ static void test_name_roundtrip(void) {
         "chatml", "llama2", "llama3", "zephyr", "gemma", "gemma4", "mistral",
         "mistral-v1", "mistral-nemo",
         "phi3", "phi4", "apertus", "ornith", "qwen35", "qwen35-nothink",
-        "nemotron", "granite42", "qwen38", "raw",
+        "nemotron", "hermes4", "granite42", "qwen38", "raw",
     };
     for (size_t i = 0; i < sizeof(names) / sizeof(*names); i++) {
         int id = template_from_name(names[i]);
@@ -2688,6 +2688,70 @@ static void test_nemotron_nano_framing(tokenizer *t) {
     assert(template_think_tags(TMPL_NEMOTRON, &o, &c) && !strcmp(o, "<think>"));
 }
 
+// A publisher's fixed default system turn is the template's own text, taken
+// only from the template that carries it and only under its own family.
+static void test_default_system_is_read_from_the_models_own_template(void) {
+    const char *smol =
+        "{{ '<|im_start|>system\nYou are a helpful AI assistant named SmolLM, "
+        "trained by Hugging Face<|im_end|>\n' }}";
+    const char *g40 =
+        "{%- set g4_default_system_message = 'You are a helpful assistant. "
+        "Please ensure responses are professional, accurate, and safe.' %}"
+        "<|start_of_role|>";
+    const char *plain = "<|im_start|>{{ message.role }}";
+    assert(!strcmp(template_default_system(TMPL_CHATML, smol),
+                   "You are a helpful AI assistant named SmolLM, trained by Hugging Face"));
+    assert(!strcmp(template_default_system(TMPL_GRANITE, g40),
+                   "You are a helpful assistant. Please ensure responses are "
+                   "professional, accurate, and safe."));
+    // another ChatML model, a forced template, or no template text: nothing
+    assert(template_default_system(TMPL_CHATML, plain) == NULL);
+    assert(template_default_system(TMPL_CHATML_THINK, smol) == NULL);
+    assert(template_default_system(TMPL_CHATML, g40) == NULL);
+    assert(template_default_system(TMPL_CHATML, NULL) == NULL);
+}
+
+// Hermes 4: always a system turn (the caller's, the standard prompt, or the
+// thinking prompt), the tools preamble inside it, and a generation prompt
+// with no thought block. Expected strings are the publisher's renders
+// (template-conformance row hermes4).
+static void test_hermes4_system_turn_and_calls(tokenizer *t) {
+    const char *h4 = "<|im_start|>{%- set standard_prompt = 'You are Hermes, "
+                     "created by Nous Research.' %}<think>";
+    assert(template_detect(h4, t) == TMPL_HERMES4);
+    assert(tmpl_hermes_json(TMPL_HERMES4) && tmpl_hermes_json(TMPL_CHATML));
+    char out[4096];
+    const chat_msg one[] = { CHAT_MSG("user", "hi") };
+    render_messages(TMPL_HERMES4, one, 1, true, THINK_DEFAULT, out, sizeof(out));
+    assert(!strcmp(out, "<|im_start|>system\nYou are Hermes, created by Nous Research."
+                        "<|im_end|>\n<|im_start|>user\nhi<|im_end|>\n"
+                        "<|im_start|>assistant\n"));
+    render_messages(TMPL_HERMES4, one, 1, true, THINK_OFF, out, sizeof(out));
+    assert(strstr(out, "You are Hermes, created by Nous Research.<|im_end|>"));
+    render_messages(TMPL_HERMES4, one, 1, true, THINK_ON, out, sizeof(out));
+    assert(strstr(out, "<|im_start|>system\nYou are a deep thinking AI"));
+    assert(!strstr(out, "You are Hermes"));
+    // the caller's system turn replaces both, and is not repeated in the loop
+    const chat_msg sys[] = { CHAT_MSG("system", "S"), CHAT_MSG("user", "U"),
+                             CHAT_MSG("assistant", "A"), CHAT_MSG("assistant", "") };
+    render_messages(TMPL_HERMES4, sys, 4, false, THINK_DEFAULT, out, sizeof(out));
+    assert(!strcmp(out, "<|im_start|>system\nS<|im_end|>\n<|im_start|>user\nU<|im_end|>\n"
+                        "<|im_start|>assistant\nA<|im_end|>\n<|im_start|>assistant"));
+    // a call is led by its newline even when the turn said nothing
+    static const char cj[] =
+        "[{\"function\":{\"name\":\"f\",\"arguments\":\"{\\\"a\\\": 1}\"}}]";
+    jv *calls = json_parse(cj, sizeof cj - 1);
+    assert(calls);
+    sbuf quiet = {0};
+    assistant_calls_render(TMPL_HERMES4, "", calls, &quiet, NULL);
+    strip_sb_(&quiet);
+    assert(!strncmp(quiet.s, "\n<tool_call>\n{\"name\": \"f\", \"arguments\": {\"a\": 1}}\n</tool_call>", quiet.n));
+    free(quiet.s);
+    jv_free(calls);
+    const char *o, *c;
+    assert(template_think_tags(TMPL_HERMES4, &o, &c));
+}
+
 static void test_detect_qwen3_coder(void) {
     const char *native = "<|im_start|> <function=example_function_name> <parameter=example_parameter_1>";
     assert(!strcmp(template_name(template_detect(native, NULL)), "qwen3-coder"));
@@ -2695,6 +2759,7 @@ static void test_detect_qwen3_coder(void) {
 
 int main(void) {
     test_detect_qwen3_coder();
+    test_default_system_is_read_from_the_models_own_template();
     gguf_file g;
     if (!gguf_open(&g, FIXTURE)) {
         fprintf(stderr, "cannot open %s (run from the repo root)\n", FIXTURE);
@@ -2725,6 +2790,7 @@ int main(void) {
     test_qwen35_is_not_ornith(&t);
     test_phi4_has_no_newlines(&t);
     test_nemotron_nano_framing(&t);
+    test_hermes4_system_turn_and_calls(&t);
     test_qwen38_tool_turns();
     test_muse_split_closes_on_fed_reasoning_boundary();
     test_muse_plain_thinking_close_leaves_no_recipient_residue();

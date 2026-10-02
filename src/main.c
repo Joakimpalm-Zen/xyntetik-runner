@@ -513,7 +513,7 @@ static bool train_example_append(train_ex **exs, int *n_ex,
 static int train_eot_id(tokenizer *tok, int tmpl) {
     const char *s = NULL;
     switch (tmpl) {
-    case TMPL_CHATML: case TMPL_CHATML_THINK: case TMPL_QWEN38: case TMPL_QWEN3_CODER: s = "<|im_end|>"; break;
+    case TMPL_CHATML: case TMPL_CHATML_THINK: case TMPL_HERMES4: case TMPL_QWEN38: case TMPL_QWEN3_CODER: s = "<|im_end|>"; break;
     case TMPL_LLAMA3: s = "<|eot_id|>"; break;
     case TMPL_GEMMA: s = "<end_of_turn>"; break;
     case TMPL_GEMMA4: case TMPL_GEMMA4_MAINLINE: s = "<turn|>"; break;
@@ -1169,7 +1169,8 @@ static void usage_to(FILE *f, const char *prog) {
         "  --system TEXT  system prompt for interactive chat (-i) only\n"
         "  --chat-template chatml|chatml-think|llama2|llama3|mistral|mistral-v1|\n"
         "                 mistral-nemo|zephyr|phi3|phi4|gemma|gemma4|gemma4-mainline|\n"
-        "                 apertus|ornith|qwen35|qwen35-nothink|nemotron|granite42|\n"
+        "                 apertus|ornith|qwen35|qwen35-nothink|nemotron|hermes4|\n"
+        "                 granite42|\n"
         "                 qwen38|qwen3-coder|muse|granite|harmony|raw\n"
         "                 (default: auto). Applies to chat and --serve; not\n"
         "                 valid with a multi-model -m swap set\n"
@@ -4236,6 +4237,9 @@ int main(int argc, char **argv) {
     if (tmpl < 0)
         tmpl = template_detect(gguf_get_str(&m.gf, "tokenizer.chat_template", NULL), &tok);
     template_bind_think_tags(tmpl, &m.think_open, &m.think_close);
+    if (!system_prompt)
+        system_prompt = template_default_system(
+            tmpl, gguf_get_str(&m.gf, "tokenizer.chat_template", NULL));
     if (!system_prompt) system_prompt = "You are a helpful assistant.";
     fprintf(stderr, "chat mode (template: %s) — Ctrl-D or /exit to quit\n\n",
             template_name(tmpl));

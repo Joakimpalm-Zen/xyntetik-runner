@@ -108,6 +108,9 @@ int template_detect(const char *meta_tmpl, tokenizer *tok) {
         // Qwen3 and relatives: ChatML whose own template carries a
         // <think> branch. Detected from the model's template rather than
         // a name list, so it follows the checkpoint and not a guess.
+        if (strstr(meta_tmpl, "<|im_start|>") &&
+            strstr(meta_tmpl, "You are Hermes, created by Nous Research."))
+            return TMPL_HERMES4;
         if (strstr(meta_tmpl, "<|im_start|>"))
             return strstr(meta_tmpl, "<think>") ? TMPL_CHATML_THINK
                                                 : TMPL_CHATML;
@@ -177,6 +180,7 @@ int template_detect(const char *meta_tmpl, tokenizer *tok) {
 int template_from_name(const char *name) {
     if (!strcmp(name, "chatml")) return TMPL_CHATML;
     if (!strcmp(name, "chatml-think")) return TMPL_CHATML_THINK;
+    if (!strcmp(name, "hermes4")) return TMPL_HERMES4;
     if (!strcmp(name, "llama2")) return TMPL_LLAMA2;
     if (!strcmp(name, "llama3")) return TMPL_LLAMA3;
     if (!strcmp(name, "zephyr")) return TMPL_ZEPHYR;
@@ -211,10 +215,28 @@ int template_from_name(const char *name) {
     return -1;
 }
 
+const char *template_default_system(int tmpl, const char *meta_tmpl) {
+    static const struct { int tmpl; const char *text; } known[] = {
+        // HuggingFaceTB/SmolLM2-*-Instruct tokenizer_config.json
+        { TMPL_CHATML,
+          "You are a helpful AI assistant named SmolLM, trained by Hugging Face" },
+        // ibm-granite/granite-4.0-h-* chat_template (g4_default_system_message)
+        { TMPL_GRANITE,
+          "You are a helpful assistant. Please ensure responses are "
+          "professional, accurate, and safe." },
+    };
+    if (!meta_tmpl) return NULL;
+    for (size_t i = 0; i < sizeof known / sizeof *known; i++)
+        if (known[i].tmpl == tmpl && strstr(meta_tmpl, known[i].text))
+            return known[i].text;
+    return NULL;
+}
+
 const char *template_name(int t) {
     switch (t) {
         case TMPL_CHATML: return "chatml";  case TMPL_LLAMA2: return "llama2";
         case TMPL_CHATML_THINK: return "chatml-think";
+        case TMPL_HERMES4: return "hermes4";
         case TMPL_LLAMA3: return "llama3";  case TMPL_ZEPHYR: return "zephyr";
         case TMPL_GEMMA:  return "gemma";
         case TMPL_GEMMA4: return "gemma4";
@@ -535,7 +557,7 @@ int req_bare_recipients(struct jv *req) {
 
 bool template_think_tags(int tmpl, const char **open, const char **close) {
     if (tmpl == TMPL_CHATML_THINK || tmpl == TMPL_QWEN38 ||
-        tmpl == TMPL_NEMOTRON ||
+        tmpl == TMPL_NEMOTRON || tmpl == TMPL_HERMES4 ||
         tmpl == TMPL_GRANITE42 || tmpl_ornith_like(tmpl)) {
         *open = "<think>";
         *close = "</think>";
@@ -1887,6 +1909,65 @@ size_t render_messages_with_tools(int tmpl, const chat_msg *msgs, int n_msgs,
                            NULL);
         break;
     }
+    case TMPL_HERMES4: {
+        // NousResearch/Hermes-4-14B chat_template (2026-10-02). The system
+        // turn is always written: the caller's first message when it is a
+        // system one, else the standard prompt, or the thinking prompt when
+        // the request asks for reasoning (the template's `thinking`, false
+        // by default). The tools preamble is appended to it.
+        static const char standard[] = "You are Hermes, created by Nous Research.";
+        static const char deep[] = "You are a deep thinking AI, you may use extremely long chains of thought to deeply consider the problem and deliberate with yourself via systematic reasoning processes to help come to a correct solution prior to answering. You should enclose your thoughts and internal monologue inside <think> </think> tags, and then provide your solution or response to the problem.";
+        bool think = (thinking & THINK_MODE_MASK) == THINK_ON;
+        bool have_tools = tools && tools->type == J_ARR && tools->n > 0;
+        bool sys0 = n_msgs > 0 && !strcmp(msgs[0].role, "system");
+        off = emit(out, cap, off, "<|im_start|>system\n%s",
+                   sys0 ? msgs[0].content : think ? deep : standard, NULL);
+        if (have_tools) {
+            sbuf decl = {0};
+            tools_render_for(tmpl, tools, &decl);
+            if (decl.failed) { free(decl.s); return SIZE_MAX; }
+            off = emit(out, cap, off, "%s", decl.s, NULL);
+            free(decl.s);
+        }
+        off = emit(out, cap, off, "<|im_end|>\n", NULL, NULL);
+        for (int i = sys0 ? 1 : 0; i < n_msgs; i++) {
+            const char *role = msgs[i].role;
+            if (!strcmp(role, "tool")) {
+                bool prev_tool = i > 0 && !strcmp(msgs[i - 1].role, "tool");
+                bool next_tool = i + 1 < n_msgs &&
+                                 !strcmp(msgs[i + 1].role, "tool");
+                if (!prev_tool)
+                    off = emit(out, cap, off, "<|im_start|>user", NULL, NULL);
+                off = emit(out, cap, off,
+                           "\n<tool_response>\n%s\n</tool_response>",
+                           msgs[i].content, NULL);
+                if (!next_tool)
+                    off = emit(out, cap, off, "<|im_end|>\n", NULL, NULL);
+            } else if (!strcmp(role, "assistant")) {
+                // The reference writes the header, then "\n" + content when
+                // there is content, then "\n<tool_call>..." per call, and
+                // closes the turn only when it wrote one of the two. The
+                // flattened turn here is content followed by the calls, each
+                // already led by its newline (assistant_calls_render).
+                const char *c = skip_marks(msgs[i].content);
+                off = emit(out, cap, off, "<|im_start|>assistant", NULL, NULL);
+                if (!c[0]) continue;
+                // (the builder marks its literals one by one, so the newline
+                // and the tag are separated by marks)
+                bool calls_first = c[0] == '\n' &&
+                    !strncmp(skip_marks(c + 1), "<tool_call>", 11);
+                if (!calls_first)
+                    off = emit(out, cap, off, "\n", NULL, NULL);
+                off = emit(out, cap, off, "%s<|im_end|>\n", msgs[i].content, NULL);
+            } else {
+                off = emit(out, cap, off, "<|im_start|>%s\n%s<|im_end|>\n",
+                           role, msgs[i].content);
+            }
+        }
+        if (add_assistant)
+            off = emit(out, cap, off, "<|im_start|>assistant\n", NULL, NULL);
+        break;
+    }
     case TMPL_CHATML:
     case TMPL_CHATML_THINK: {
         bool qwen_tools = tools && tools->type == J_ARR && tools->n > 0;
@@ -2916,6 +2997,19 @@ static void coder_declaration(jv *tool, sbuf *out) {
 
 void tools_render_for(int tmpl, const jv *tools, sbuf *out) {
     bool qwen = tmpl == TMPL_CHATML || tmpl == TMPL_CHATML_THINK;
+    if (tmpl == TMPL_HERMES4) {
+        // NousResearch/Hermes-4-14B chat_template, verbatim: appended to the
+        // system text, the tools one per line, no instruction after the
+        // example call
+        if (!tools || tools->type != J_ARR || tools->n == 0) return;
+        pl_lit(out, "\n\n# Tools\n\nYou are a function calling AI model. You may call one or more functions to assist with the user query.\n\nYou are provided with function signatures within <tools></tools> XML tags:\n<tools>");
+        for (int i = 0; i < tools->n; i++) {
+            pl_lit(out, "\n");
+            jv_dump_tojson(tools->items[i], out);
+        }
+        pl_lit(out, "\n</tools>\n\nFor each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:\n<tool_call>\n{\"name\": \"<function-name>\", \"arguments\": <args-json-object>}\n</tool_call>");
+        return;
+    }
     if (!tmpl_ornith_like(tmpl) && tmpl != TMPL_GRANITE42 &&
         tmpl != TMPL_QWEN38 && tmpl != TMPL_QWEN3_CODER && !qwen) {
         tools_render(tools, out);
@@ -3075,8 +3169,11 @@ void tool_history_render_for(int tmpl, const jv *calls,
         const char *name = jv_str(jv_get(fn, "name"), NULL);
         const char *args = jv_str(jv_get(fn, "arguments"), "{}");
         if (!name) continue;
-        if (tmpl == TMPL_CHATML || tmpl == TMPL_CHATML_THINK) {
-            if (qwen_calls++ || turn_has_text) pl_lit(out, "\n");
+        if (tmpl_hermes_json(tmpl)) {
+            // Hermes 4 writes the newline before EVERY call, the first of a
+            // turn that said nothing included; Qwen only between things
+            if (tmpl == TMPL_HERMES4 || qwen_calls++ || turn_has_text)
+                pl_lit(out, "\n");
             pl_lit(out, "<tool_call>\n{\"name\": \"");
             sb_esc(out, name, strlen(name));
             pl_lit(out, "\", \"arguments\": ");
@@ -3623,7 +3720,7 @@ void tool_envelope_free(tool_envelope *e) {
 
 const jv *tool_decl_native(int tmpl, bool strict, bool atem_tool_calling,
                            jv *tools, tool_envelope *env, bool *skip_generic) {
-    bool qwen = tmpl == TMPL_CHATML || tmpl == TMPL_CHATML_THINK;
+    bool qwen = tmpl_hermes_json(tmpl);
     // The function/parameter XML families. Qwen3-Coder's turn is constrained
     // to the XML grammar (schema.c) as it has been since the template was
     // admitted; Qwen 3.8, Granite 4.2 and Ornith speak the same wire protocol
@@ -5602,7 +5699,7 @@ static int gemma4_tool_calls_parse(sbuf *content, sbuf *tc) {
 }
 
 int tool_calls_parse_for(int tmpl, sbuf *content, sbuf *tc) {
-    return (tmpl == TMPL_CHATML || tmpl == TMPL_CHATML_THINK)
+    return tmpl_hermes_json(tmpl)
                                ? qwen_tool_calls_parse(content, tc)
          : tmpl_ornith_like(tmpl) || tmpl == TMPL_QWEN38 ||
            tmpl == TMPL_GRANITE42 ? ornith_tool_calls_parse(content, tc)

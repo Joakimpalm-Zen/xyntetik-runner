@@ -293,9 +293,10 @@ FAMILIES = {
         note="the smollm pre-tokenizer family; plain ChatML",
         tokenizer=("SmolLM2-135M-Instruct-Q8_0.gguf",)),
     "hermes4": Family(
-        "chatml-think", ("hf", "NousResearch/Hermes-4-14B"),
-        note="ChatML with <think> and Hermes tools; detected as chatml-think",
-        tool_family=True, thinking_var="enable_thinking",
+        "hermes4", ("hf", "NousResearch/Hermes-4-14B"),
+        note="ChatML with its own system turn and tools preamble; reasoning "
+             "is asked for through the system prompt (`thinking`)",
+        tool_family=True, thinking_var="thinking",
         tokenizer=("NousResearch_Hermes-4-14B-Q4_K_M.gguf",)),
     "phi4mini": Family(
         "phi4", ("hf", "microsoft/Phi-4-mini-instruct"),
@@ -1346,7 +1347,11 @@ def run(args):
                    for d in fam_devs]
 
         tok_gguf = tokenizer_path(fam)
+        # The oracle's own text goes along: the server reads a model's
+        # publisher default system prompt out of its chat template, and this
+        # harness drives the handlers with no model loaded.
         jobs = [{"id": cid, "template": fam.runner,
+                 "chat_template": tmpl_src if fam.source else None,
                  "add_generation_prompt": add_gen,
                  "request": request_body(fam, msgs, thinking,
                                          TOOLS if "tool" in cid else None),
