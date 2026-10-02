@@ -114,6 +114,12 @@ typedef struct {
     sbuf  calls;
     int   n_calls;
     bool  call_open;   // a streamed call begun and not yet ended
+    // R2.2: the constrained document's content-channel bytes, and the offset
+    // at which the engine's closer took over (-1: the model finished it), so
+    // the turn can say which fields the closer wrote
+    bool  doc_on;
+    sbuf  doc;
+    long  close_at;
 } gen_ctx;
 
 typedef struct {
@@ -952,7 +958,151 @@ typedef struct req_diag {
     int         decisions;
     double      min_chosen_p, min_margin;
     int         min_at;
+    // R2.2: closure provenance, rendered JSON (owned by the request), or NULL
+    // when the closer did not run
+    char       *closure_json;
 } req_diag;
+
+// ---- R2.2 closure provenance ---------------------------------------------
+//
+// When the token budget ends inside a constrained document, the engine's
+// closer synthesizes the tail that makes it valid (constraint_close): a
+// required enum the model never reached gets the schema's first member, a
+// string is closed where it was cut. The call parses and executes, and until
+// 2026-10-02 nothing said which of its values the model wrote. The scan
+// below walks the delivered JSON with byte offsets and sorts every leaf value
+// (and every empty container) by where it lies against the offset the closer
+// took over at: wholly after it is "synthesized", straddling it is
+// "completed" (the model began it, the closer finished it). Paths are JSON
+// pointers into the constrained document, never inside tool_calls, so strict
+// clients keep parsing (owner decision 2026-10-02).
+typedef struct {
+    const char *d;
+    size_t n, i;
+    long at;
+    sbuf *synth, *comp;
+    char path[512];
+    size_t plen;
+    int depth;
+    bool bad;
+} clscan;
+
+static void cl_ws(clscan *c) {
+    while (c->i < c->n && (c->d[c->i] == ' ' || c->d[c->i] == '\n' ||
+                           c->d[c->i] == '\r' || c->d[c->i] == '\t')) c->i++;
+}
+
+static void cl_mark(clscan *c, size_t start, size_t end) {
+    sbuf *to = (long)start >= c->at ? c->synth
+             : (long)end > c->at ? c->comp : NULL;
+    if (!to) return;
+    sb_lit(to, to->n ? ",\"" : "\"");
+    sb_esc(to, c->plen ? c->path : "", c->plen);
+    sb_lit(to, "\"");
+}
+
+static void cl_push(clscan *c, const char *seg, size_t n, size_t *saved) {
+    *saved = c->plen;
+    if (c->plen + 1 >= sizeof c->path) { c->bad = true; return; }
+    c->path[c->plen++] = '/';
+    for (size_t k = 0; k < n && c->plen + 2 < sizeof c->path; k++) {
+        if (seg[k] == '~') { c->path[c->plen++] = '~'; c->path[c->plen++] = '0'; }
+        else if (seg[k] == '/') { c->path[c->plen++] = '~'; c->path[c->plen++] = '1'; }
+        else c->path[c->plen++] = seg[k];
+    }
+    c->path[c->plen] = 0;
+}
+
+static void cl_value(clscan *c);
+
+static bool cl_string(clscan *c, size_t *s0, size_t *s1) {
+    if (c->i >= c->n || c->d[c->i] != '"') return false;
+    *s0 = ++c->i;
+    while (c->i < c->n && c->d[c->i] != '"') c->i += c->d[c->i] == '\\' ? 2 : 1;
+    if (c->i >= c->n) { c->bad = true; return false; }
+    *s1 = c->i++;
+    return true;
+}
+
+static void cl_value(clscan *c) {
+    if (c->bad || ++c->depth > 64) { c->bad = true; return; }
+    cl_ws(c);
+    if (c->i >= c->n) { c->bad = true; return; }
+    size_t start = c->i;
+    char ch = c->d[c->i];
+    if (ch == '{' || ch == '[') {
+        bool obj = ch == '{';
+        c->i++;
+        int count = 0;
+        cl_ws(c);
+        if (c->i < c->n && c->d[c->i] == (obj ? '}' : ']')) {
+            c->i++;
+            cl_mark(c, start, c->i);    // an empty container is a leaf
+            c->depth--;
+            return;
+        }
+        while (!c->bad) {
+            size_t saved;
+            char idx[16];
+            if (obj) {
+                cl_ws(c);
+                size_t k0, k1;
+                if (!cl_string(c, &k0, &k1)) { c->bad = true; break; }
+                cl_ws(c);
+                if (c->i >= c->n || c->d[c->i] != ':') { c->bad = true; break; }
+                c->i++;
+                cl_push(c, c->d + k0, k1 - k0, &saved);
+            } else {
+                int w = snprintf(idx, sizeof idx, "%d", count);
+                cl_push(c, idx, (size_t)w, &saved);
+            }
+            cl_value(c);
+            c->plen = saved;
+            c->path[c->plen] = 0;
+            count++;
+            cl_ws(c);
+            if (c->i < c->n && c->d[c->i] == ',') { c->i++; continue; }
+            if (c->i < c->n && c->d[c->i] == (obj ? '}' : ']')) { c->i++; break; }
+            c->bad = true;
+        }
+    } else if (ch == '"') {
+        size_t s0, s1;
+        if (cl_string(c, &s0, &s1)) cl_mark(c, start, c->i);
+    } else {
+        while (c->i < c->n && !strchr(",}] \n\r\t", c->d[c->i])) c->i++;
+        if (c->i == start) c->bad = true;
+        else cl_mark(c, start, c->i);
+    }
+    c->depth--;
+}
+
+// NULL when the closer did not run. The document is the content channel of a
+// constrained turn; the JSON is read from its first '{' or '[' (a native
+// protocol may frame it), and a document that is not JSON (an XML protocol)
+// reports the byte counts with "fields": null.
+static char *closure_json(const char *doc, size_t n, long at) {
+    if (at < 0 || !doc) return NULL;
+    sbuf synth = {0}, comp = {0}, out = {0};
+    size_t j0 = 0;
+    while (j0 < n && doc[j0] != '{' && doc[j0] != '[') j0++;
+    clscan c = { .d = doc, .n = n, .i = j0, .at = at, .synth = &synth, .comp = &comp };
+    if (j0 < n) cl_value(&c); else c.bad = true;
+    sb_fmt(&out, "{\"closed\":true,\"model_bytes\":%ld,\"closer_bytes\":%ld,",
+           at, (long)n - at);
+    if (c.bad) {
+        sb_lit(&out, "\"fields\":null}");
+    } else {
+        sb_lit(&out, "\"fields\":{\"synthesized\":[");
+        if (synth.n) sb_put(&out, synth.s, synth.n);
+        sb_lit(&out, "],\"completed\":[");
+        if (comp.n) sb_put(&out, comp.s, comp.n);
+        sb_lit(&out, "]}}");
+    }
+    sb_put(&out, "", 1);
+    free(synth.s); free(comp.s);
+    if (out.failed) { free(out.s); return NULL; }
+    return out.s;
+}
 
 static void diag_json(sbuf *r, const req_diag *d) {
     sb_fmt(r, ",\"sampling\":{\"preset\":%s%s%s,\"temperature\":%.2f,"
@@ -1010,6 +1160,7 @@ static void diag_json(sbuf *r, const req_diag *d) {
                d->decisions > 0 && d->min_chosen_p < d->confirm_below
                ? "true" : "false");
     }
+    if (d->closure_json) sb_fmt(r, ",\"closure\":%s", d->closure_json);
     if (d->receipt_file)
         sb_fmt(r, ",\"receipt\":{\"file\":\"%s\",\"chain_hash\":\"%s\"}",
                d->receipt_file, d->receipt_chain);
@@ -1940,6 +2091,11 @@ static int envelope_map_buffered(const tool_envelope *env, gen_ctx *g, sbuf *tc,
 
 static int gen_emit(void *ud, int reasoning, const char *bytes, int n) {
     gen_ctx *g = ud;
+    if (!reasoning && g->doc_on && n > 0) {
+        if (g->close_at < 0 && g->eng && g->eng->constraint_closing)
+            g->close_at = (long)g->doc.n;
+        sb_put(&g->doc, bytes, (size_t)n);
+    }
     if (!reasoning && g->n_stop) return stop_feed(g, bytes, n);
     if (reasoning) ((gen_ctx *)ud)->tok_had_reasoning = true;
     return emit_channel(g, reasoning, bytes, n);
@@ -3734,8 +3890,15 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
     g.raw_on = receipts_enabled();
     // only a streamed chat-shaped turn with a history can repeat a call
     g.calls_on = stream && (api == API_CHAT || api == API_MESSAGES);
+    g.doc_on = e->schema || e->json_mode;
+    g.close_at = -1;
     int n_gen = sched_generate(s, logits, max_tokens, gen_collect, &g, &gtime,
                                req_deadline);
+    if (g.doc_on) {
+        diag.closure_json = closure_json(g.doc.s, g.doc.n, g.close_at);
+        free(g.doc.s);
+        g.doc = (sbuf){0};
+    }
     diag.wm_on = SV.wm_on;
     diag.wm_marked = s->wm.marked;
     if (confirm_below > 0) {
@@ -4356,6 +4519,7 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
 done: ;
 #undef WRITE_RECEIPT
     free(shape.json.s);
+    free(diag.closure_json);
     // A paging note only when there was paging. Silence is the normal case and
     // a per-request "0 page-ins" would be noise, but when the weights have been
     // evicted this line is the only thing that says the time went to the disk

@@ -8,6 +8,13 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **Closure provenance (R2.2).** A constrained turn cut by its budget used to
+  return a call that parsed and executed with nothing saying which values the
+  closer invented (a required enum filled with its first member, the tool
+  name itself). `runner_telemetry.closure` now names them as JSON pointers,
+  `synthesized` or `completed`, with the model's and the closer's byte
+  counts, on all chat surfaces, buffered and streamed; `tool_calls` is
+  unchanged. The truncation benchmark records them per rung.
 - **The CPU-vs-CUDA identity gate gives dense models the near-tie band
   (R4.25).** `scripts/cpu_cuda_check.py` tolerated an in-band flip only on
   MoE models; a dense flip failed however close the tie. gemma-4 E4B failed

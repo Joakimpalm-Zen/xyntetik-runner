@@ -207,7 +207,13 @@ one that retries from scratch - burning tokens, time, and context window.
 
 **Boundary:** recovery closes a document that has started; if the model never
 starts it, Runner returns empty content. Schema validity does not guarantee
-correct values or tool selection. The response retains its truncation signal.
+correct values or tool selection. The response retains its truncation signal,
+and says which values the closer wrote rather than the model:
+`runner_telemetry.closure` lists them as JSON pointers into the document,
+`synthesized` for a value the model never reached (a required enum filled
+with its first member, a tool name the closer chose) and `completed` for one
+the model began and the closer finished. It sits beside the choice, never
+inside `tool_calls`, so strict clients parse the call as before.
 See [structured output](#structured-output) for the complete contract, or the
 [tool-calling walkthrough](docs/truncation-safe-tool-calling.md) for a focused guide.
 
