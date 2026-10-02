@@ -1745,8 +1745,12 @@ static bool constraint_token_ok(engine *e, int id, bool schema) {
     // moves the phase on (constraint_control_accept).
     if (is_stop(e, id) || tok_is_control(e->tok, id))
         return e->constraint_phase == CP_THINK ||
-               (e->constraint_phase == CP_AFTER_THINK && id == e->think_end_id &&
-                !is_stop(e, id)) ||
+               // (only where the ENGINE closed the block: a model that closed
+               // its own goes on in its protocol's control tokens, as Muse does
+               // between its self turn and the payload)
+               (e->constraint_phase == CP_AFTER_THINK &&
+                (!e->prelude_exhausted ||
+                 (id == e->think_end_id && !is_stop(e, id)))) ||
                constraint_done(e, schema) ||
                // A trailing raw value (Muse's to=user free-text answer) can
                // only ever end at the model's own stop token: its byte
@@ -2087,7 +2091,7 @@ static int constraint_finish_think(engine *e, bool schema,
 static int constraint_control_accept(engine *e, int tok, bool schema,
                                      gen_cb cb, void *ud) {
     if (tok != e->think_end_id) return 0;
-    if (e->constraint_phase == CP_AFTER_THINK) {
+    if (e->constraint_phase == CP_AFTER_THINK && e->prelude_exhausted) {
         // the model's own close after the engine's: nothing is left to
         // close, and from here only the payload is admitted
         e->constraint_phase = CP_OUTPUT;
