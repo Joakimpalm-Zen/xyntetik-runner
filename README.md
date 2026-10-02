@@ -207,7 +207,13 @@ one that retries from scratch - burning tokens, time, and context window.
 
 **Boundary:** recovery closes a document that has started; if the model never
 starts it, Runner returns empty content. Schema validity does not guarantee
-correct values or tool selection. The response retains its truncation signal.
+correct values or tool selection. The response retains its truncation signal,
+and says which values the closer wrote rather than the model:
+`runner_telemetry.closure` lists them as JSON pointers into the document,
+`synthesized` for a value the model never reached (a required enum filled
+with its first member, a tool name the closer chose) and `completed` for one
+the model began and the closer finished. It sits beside the choice, never
+inside `tool_calls`, so strict clients parse the call as before.
 See [structured output](#structured-output) for the complete contract, or the
 [tool-calling walkthrough](docs/truncation-safe-tool-calling.md) for a focused guide.
 
@@ -1807,7 +1813,7 @@ instance instead.
 | `--kv f16\|q8\|k8v4\|fp4` | Choose KV cache storage; precision, memory use and backend support differ by format. [Details](#cli-kv). |
 | `--mlock` | Ask the OS to wire mapped weights into RAM; failure is non-fatal. |
 | `--moe-prefetch on\|off\|auto` | Prefetch routed expert blocks. Auto enables it only for measured oversubscribed Apple Silicon cases. |
-| `--draft PATH` | Use a same-vocabulary draft GGUF for speculative decoding; admission and backend restrictions apply. [Details](#cli-draft). |
+| `--draft PATH` | Use a same-vocabulary draft GGUF for speculative decoding; admission and backend restrictions apply. A server given a swap registry (`-m a=...,b=...`) refuses to start with `--draft`, which needs a single served model. [Details](#cli-draft). |
 | `--draft-k N` | Draft tokens per speculative round, default `4`. Also the width for `--mtp` and `--draft-lookup`. All sources stop at the context boundary, including with `-n -1`; a final verify row cannot emit a bonus beyond the context or transcript token buffer. |
 | `--mtp` | Use the model’s single NextN/MTP predictor block for CPU speculative decoding. [Details](#cli-mtp). |
 | `--draft-lookup` | Draft from repeated prompt context without a second model; uses the `--draft-k` round width (default `4`). [Details](#cli-draft-lookup). |
@@ -1922,6 +1928,7 @@ whether the draft is `active` there.
 | `--context-surgery OUT` | Compile `-c TARGET --yarn-factor FACTOR` into a native-YaRN GGUF and write `OUT.context.json` provenance. The target must equal original context × factor and extend both source values. Every tensor payload is independently reparsed and byte-compared before success; precision does not change. |
 | `--quant q8_0\|q4_0\|q3_k\|q4_k\|q6_k\|f16\|bf16\|keep` | Requantization target; default `q4_0`, or keep per-tensor types when pruning or merging alone. Requires `--quantize` or `--merge-lora`; without either the flag is refused rather than ignored. |
 | `--type-plan PLAN.json` | Apply a per-tensor rewrite plan; first matching substring rule wins. [Details](#cli-type-plan). |
+| `--type-plan-strict` | With `--type-plan`: fail before writing anything when a rule would be declined (block width, never-grow) or fall back to a 32-block type, instead of reporting it and building the file. Off by default. |
 | `--merge-lora OUT` | Merge an adapter into a standalone GGUF. Quantized merges round the delta; check the fidelity caveat below. [Details](#cli-merge-lora). |
 | `--prune-experts FILE` | Apply a per-layer MoE expert keep-list while rewriting. Requires `--quantize`. |
 | `--remove-sublayer attn:N[,mlp:M,...]` | Physically drop block N's attention (or block M's dense FFN) tensors while rewriting, declaring the absence with a `0` in the per-block `attention.head_count` / `head_count_kv` (or `feed_forward_length`) array, llama.cpp's own convention. The pre-norm stays. The runner omits the branch and reserves no KV rows for it; CPU and Metal, dense blocks only (a CUDA build refuses the offload). Requires `--quantize`. See [Sublayer removal](#sublayer-removal). |
@@ -2316,7 +2323,14 @@ Qwen 3.5 file was still served at Qwen3's 0.6 and the other two at the
 generic preset). What every publisher says, per family and per mode, is
 recorded in `docs/serving-guidance.json`; the envelope certifier sets it
 beside the served preset in each manifest and names the knobs that differ
-(`docs/envelope-manifests/README.md`). Where a preset carries a value
+(`docs/envelope-manifests/README.md`). A GGUF that carries the publisher's
+defaults itself (`general.sampling.temp`, `top_p`, `top_k`, `min_p`, which
+converters copy from `generation_config.json`) is served at them: the order
+is request, then CLI flag, then the file, then the family preset, and the
+load banner prints a second `sampling:` line naming what came from the file.
+The file's repeat penalty is not read; the presets' penalty is calibration
+(below), and a publisher's 1.05 measured as corrupting a tool protocol in
+this sampler. Where a preset carries a value
 the publisher never stated, its source says so: the `repeat_penalty 1.10`
 of the llama3, mistral, smollm2, lucie and teuken presets is runner's own
 calibration, not the vendor's. Gemma 4 used to inherit Gemma 3's preset,
@@ -2334,7 +2348,7 @@ transformers and llama.cpp apply it (until 2026-09-30 it compounded per
 occurrence; `tests/test_sampler.c`). A request can read back
 what it was served with: `runner_telemetry.sampling` carries the preset,
 the five effective values, the seed and each value's source (`preset`,
-`cli` or `request`), and `runner_telemetry.tool_protocol` the template, the
+`file`, `cli` or `request`), and `runner_telemetry.tool_protocol` the template, the
 tool-protocol family, whether tools were declared, whether a grammar
 constrained the turn and whether a native protocol was parsed without one.
 `GET /v1/capabilities` reports the resident model's `template` and
@@ -2471,13 +2485,13 @@ When it is true a `speculation` object follows: the `source` (`model`, `mtp`,
 `runner_speculation_*` counters on `/metrics` accumulate across sources), and
 the prompt lookup's share as `lookup_drafted`/`lookup_accepted`, so a
 per-source acceptance rate is one division.
-Ordinary streamed chat and legacy completions do NOT carry `runner_telemetry`:
-a stream's only extra terminal chunk is the opt-in `stream_options.include_usage`
-one, and that chunk carries `runner_telemetry.sampling` and
-`runner_telemetry.tool_protocol` (what the stream was served with) beside
-`usage`. `GET /v1/capabilities` says so rather than claiming the capability flatly,
-reporting `features.request_telemetry` as `{"buffered": true, "streamed":
-false}`. Set request field `"cache_prompt": false` to bypass prefix reuse. Streaming clients
+A streamed chat or legacy completions turn carries the same
+`runner_telemetry` object on its `finish_reason` chunk (since 2026-10-02;
+before, only the opt-in `stream_options.include_usage` chunk had it, and it
+still does), so a streaming client reads what the turn was served with, its
+closure and its decision summary without opting in.
+`GET /v1/capabilities` reports `features.request_telemetry` as
+`{"buffered": true, "streamed": true}`. Set request field `"cache_prompt": false` to bypass prefix reuse. Streaming clients
 whose writes fail cancel generation. An orderly client socket close on any
 completion surface also cancels at the next complete prefill chunk or decode
 step, so an abandoned long prompt does not keep its slot busy; the probe is

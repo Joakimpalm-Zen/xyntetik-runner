@@ -1283,6 +1283,30 @@ static void warn_if_it_will_not_stay_resident(const model_t *m, bool locked) {
         fprintf(stderr, "%s\n", msg);
 }
 
+void model_sampling_file(gguf_file *gf, sampler_file *out) {
+    memset(out, 0, sizeof *out);
+    if (!gf) return;
+    gguf_kv *kv;
+    if ((kv = gguf_get(gf, "general.sampling.temp")) != NULL) {
+        float v = gguf_get_f32(gf, "general.sampling.temp", -1.0f);
+        if (v >= 0.0f && v <= 10.0f) { out->has_temp = true; out->temp = v; }
+    }
+    if ((kv = gguf_get(gf, "general.sampling.top_p")) != NULL) {
+        float v = gguf_get_f32(gf, "general.sampling.top_p", -1.0f);
+        if (v > 0.0f && v <= 1.0f) { out->has_top_p = true; out->top_p = v; }
+    }
+    if ((kv = gguf_get(gf, "general.sampling.min_p")) != NULL) {
+        float v = gguf_get_f32(gf, "general.sampling.min_p", -1.0f);
+        if (v >= 0.0f && v <= 1.0f) { out->has_min_p = true; out->min_p = v; }
+    }
+    if ((kv = gguf_get(gf, "general.sampling.top_k")) != NULL) {
+        float v = gguf_get_f32(gf, "general.sampling.top_k", -1.0f);
+        if (v >= 0.0f && v <= 1e6f && v == (float)(int)v) {
+            out->has_top_k = true; out->top_k = (int)v;
+        }
+    }
+}
+
 bool model_load(model_t *m, const char *path, const model_params *p) {
     if (!m) return false;
     memset(m, 0, sizeof(*m));

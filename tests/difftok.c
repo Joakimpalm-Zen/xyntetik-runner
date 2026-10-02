@@ -104,8 +104,11 @@ int main(int argc, char **argv) {
         return 2;
     }
 
+    // The tokenizer reads only the metadata, so a header-only open lets the
+    // harness run on the first megabytes of a GGUF (a ranged download)
+    // rather than the whole file.
     gguf_file g;
-    if (!gguf_open(&g, argv[1])) {
+    if (!gguf_open_header(&g, argv[1])) {
         fprintf(stderr, "difftok: cannot open %s\n", argv[1]);
         return 1;
     }

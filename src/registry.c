@@ -335,13 +335,21 @@ int swap_to_expect(const char *want, const resident_expect *ex) {
                         ? SV.tmpl_override
                         : template_detect(gguf_get_str(&s->m->gf,
                                           "tokenizer.chat_template", NULL), NULL);
+        sampler_file sfile;
+        model_sampling_file(&s->m->gf, &sfile);
         const sampler_preset *sp =
-            sampler_resolve(&s->smp, s->m->arch, ident, preset_tmpl, &SV.ov);
+            sampler_resolve_file(&s->smp, s->m->arch, ident, preset_tmpl,
+                                 &sfile, &SV.ov);
         s->smp_base = s->smp;
         SV.preset_name = sp->name;
         char sdesc[256];
         sampler_describe(&s->smp, sp, sdesc, sizeof(sdesc));
         fprintf(stderr, "sampling: %s\n", sdesc);
+        {
+            char fdesc[160];
+            sampler_file_describe(&sfile, fdesc, sizeof fdesc);
+            if (fdesc[0]) fprintf(stderr, "sampling: %s\n", fdesc);
+        }
         if (!engine_init(&s->e, s->m, s->tok, &s->smp)) {
             // mirror the failed-load cleanup: leave the slot empty and the
             // resident unchanged rather than committing a half-built engine

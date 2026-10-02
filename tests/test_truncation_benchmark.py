@@ -151,3 +151,17 @@ def test_end_to_end_runner_survives_the_ladder():
     assert by_rung[1]["finish_reason"] == "length"
     assert by_rung[1]["tool_calls_present"] and by_rung[1]["arguments_parseable"]
     assert by_rung[64]["finish_reason"] == "tool_calls"
+    # R2.2: a truncated rung names what the closer wrote; the control rung,
+    # which the model finished, names nothing
+    assert by_rung[1]["closer_synthesized"], by_rung[1]
+    assert by_rung[64]["closer_synthesized"] is None, by_rung[64]
+
+
+def test_a_runtime_without_closure_telemetry_records_unknown():
+    class R:
+        status = 200
+        json = {"choices": [{"finish_reason": "length", "message": {
+            "tool_calls": [{"function": {"name": "f", "arguments": "{}"}}]}}]}
+    rec = MOD.observe(R(), 1)
+    assert rec["closer_synthesized"] is None and rec["closer_completed"] is None
+    assert MOD._closer_cell(rec) == "-"

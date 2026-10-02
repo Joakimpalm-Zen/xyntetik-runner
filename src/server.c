@@ -2136,19 +2136,12 @@ static void send_capabilities(sock_t fd) {
                "\"schema_conditionals\":true,"
                "\"schema_string_bounds\":true,"
                "\"schema_integer_bounds\":true,"
-               // RI-4: qualified per surface, because it differs per
-               // surface. Buffered replies carry the full
-               // runner_telemetry object; ordinary streamed chat and
-               // legacy completions carry none, since a stream's only
-               // extra terminal chunk is the opt-in include_usage one.
-               // Advertising this unqualified claimed a capability a
-               // caller on the streaming surface cannot get, which is
-               // the accepted-then-ignored shape this project refuses
-               // everywhere else. Widening the streamed wire is a
-               // separate change, deferred by owner decision
-               // 2026-08-08 and still deferred; this fixes the CLAIM.
+               // RI-4: qualified per surface. Buffered replies carry
+               // the full runner_telemetry object, and since 2026-10-02
+               // so does a streamed turn's finish chunk (the 2026-08-08
+               // deferral reversed by the owner).
                "\"request_telemetry\":{\"buffered\":true,"
-                                     "\"streamed\":false},"
+                                     "\"streamed\":true},"
                // GET /metrics, in Prometheus text exposition 0.0.4. Named as
                // a feature rather than assumed from the version, because a
                // scraper's alternative is to poll /health and translate, and
@@ -2947,12 +2940,17 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
                         "ignored in swap mode";
         draft_lookup = false;
     }
+    // RI-2 slice 2 (owner 2026-10-02): this one is a contradiction the
+    // command line itself states, so it refuses at startup instead of
+    // serving without the draft. The other fallbacks stay notes: a draft
+    // refused at load (vocabulary, offload, memory) is a fact about the
+    // environment, and `-m name=path --parallel N` keeping its slots is a
+    // trade users rely on.
     if (draft_path && swap_mode) {
-        fprintf(stderr, "note: --draft needs a single served model — "
-                "ignoring it in swap mode\n");
-        SV.draft_note = "a draft needs a single served model; ignored in "
-                        "swap mode";
-        draft_path = NULL;
+        fprintf(stderr, "error: --draft needs a single served model, and -m "
+                "names a swap registry; serve one model with --draft, or "
+                "drop --draft\n");
+        return 1;
     }
 
     // "name=path,name2=path2" enables swap mode: one resident model,

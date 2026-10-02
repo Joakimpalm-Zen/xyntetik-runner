@@ -8,6 +8,38 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **`--type-plan-strict` (RI-3).** An opt-in that fails a `--type-plan`
+  rewrite before any tensor data is written when a rule would be declined or
+  fall back; the default still reports such rules and builds the file.
+- **`--draft` with a swap registry refuses to start (RI-2).** It used to
+  print a note and serve without the draft. The other draft fallbacks (a
+  draft refused at load, a registry given up to keep `--parallel` slots)
+  stay notes and are reported in `/v1/capabilities`.
+- **Streamed turns carry their telemetry (RI-4).** The finish chunk of a
+  streamed chat or completions turn now carries the full `runner_telemetry`
+  object a buffered reply carries (sampling, tool protocol, timing, closure,
+  decision summary), without `include_usage`; `features.request_telemetry`
+  says `streamed: true`. The 2026-08-08 deferral, reversed by the owner.
+- **Closure provenance (R2.2).** A constrained turn cut by its budget used to
+  return a call that parsed and executed with nothing saying which values the
+  closer invented (a required enum filled with its first member, the tool
+  name itself). `runner_telemetry.closure` now names them as JSON pointers,
+  `synthesized` or `completed`, with the model's and the closer's byte
+  counts, on all chat surfaces, buffered and streamed; `tool_calls` is
+  unchanged. The truncation benchmark records them per rung.
+- **The CPU-vs-CUDA identity gate gives dense models the near-tie band
+  (R4.25).** `scripts/cpu_cuda_check.py` tolerated an in-band flip only on
+  MoE models; a dense flip failed however close the tie. gemma-4 E4B failed
+  on the RTX 3070 on margins of 0.00056 and 0.00016 nats, inside the
+  ordinary CPU/CUDA difference a passing dense control shows. Dense rows now
+  get the same two-sided 0.5-nat band (reported, with `dense_rule`), a
+  confident divergence still fails, and `--dense-strict` keeps the old rule.
+- **A GGUF's own sampling defaults are used (R4.12.6).** When a file carries
+  `general.sampling.temp`, `top_p`, `top_k` or `min_p` (converters copy the
+  publisher's generation_config into them), a request that names none of
+  them is served at the file's values: request, CLI, file, family preset, in
+  that order, with `file` as the telemetry source and a load-banner line.
+  The file's repeat penalty is not read.
 - **The competitor-freshness job reports and no longer pages.** Published
   competitor rows are dated snapshots, so a newer upstream release is news for
   the next certification window, not a defect: the weekly job writes the drift

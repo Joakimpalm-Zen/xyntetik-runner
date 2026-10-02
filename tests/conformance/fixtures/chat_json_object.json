@@ -14,6 +14,17 @@
   "model": "<redacted>",
   "object": "chat.completion",
   "runner_telemetry": {
+    "closure": {
+      "closed": true,
+      "closer_bytes": "<number>",
+      "fields": {
+        "completed": [
+          "<redacted>"
+        ],
+        "synthesized": []
+      },
+      "model_bytes": "<number>"
+    },
     "generation_seconds": "<number>",
     "generation_tok_s": "<number>",
     "json_mode": true,

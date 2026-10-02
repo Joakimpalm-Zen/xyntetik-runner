@@ -7,6 +7,7 @@
 #include "gguf.h"
 #include "quants.h"
 #include "tpool.h"
+#include "sample.h"
 
 typedef enum {
     KV_OWNER_MALLOC = 0,
@@ -801,6 +802,10 @@ typedef struct {
     float lora_scale;
 } model_params;
 
+// R4.12.6: the publisher sampling defaults the file carries (sample.h).
+// A value outside its range (temp outside [0,10], top_p outside (0,1], min_p
+// outside [0,1], a negative or fractional top_k) is ignored, not trusted.
+void   model_sampling_file(gguf_file *gf, sampler_file *out);
 bool   model_load(model_t *m, const char *path, const model_params *p);
 // LoRA adapter loading (adaptation D2): llama.cpp adapter-GGUF naming
 // (blk.N.<proj>.weight.lora_a/_b + adapter.lora.alpha), f32 tensors, dense

@@ -139,6 +139,13 @@ def observe(response, rung):
     # Leakage = protocol framing / partial text where a tool-call turn should
     # carry no assistant prose. Empty string and null are both "no leak".
     record["content_leak"] = bool(isinstance(content, str) and content.strip())
+    # R2.2: which values the closer wrote rather than the model. Runner
+    # reports them in runner_telemetry.closure; other runtimes say nothing,
+    # which is recorded as None (not known), never as "the model wrote all".
+    closure = (body.get("runner_telemetry") or {}).get("closure")
+    fields = (closure or {}).get("fields") or {}
+    record["closer_synthesized"] = fields.get("synthesized") if closure else None
+    record["closer_completed"] = fields.get("completed") if closure else None
     return record
 
 
@@ -286,18 +293,27 @@ def write_report(out, report):
         json.dumps(report, indent=2, sort_keys=True) + "\n")
 
 
+def _closer_cell(rec):
+    synth, comp = rec.get("closer_synthesized"), rec.get("closer_completed")
+    if synth is None and comp is None:
+        return "-"
+    parts = list(synth or []) + [f"{p} (finished)" for p in comp or []]
+    return ", ".join(parts) if parts else "nothing"
+
+
 def print_table(report):
     print(f"runtime={report['runtime']['name']} "
           f"version={report['runtime']['version']} "
           f"model={report['configuration']['model']}")
     header = f"{'rung':>4}  {'finish_reason':>13}  {'tool_call':>9}  " \
-             f"{'parseable':>9}  {'content_leak':>12}"
+             f"{'parseable':>9}  {'content_leak':>12}  closer wrote"
     print(header)
     for rec in report["rungs"]:
         print(f"{rec['max_tokens']:>4}  {str(rec.get('finish_reason')):>13}  "
               f"{('yes' if rec.get('tool_calls_present') else 'NO'):>9}  "
               f"{str(rec.get('arguments_parseable')):>9}  "
-              f"{str(rec.get('content_leak')):>12}")
+              f"{str(rec.get('content_leak')):>12}  "
+              f"{_closer_cell(rec)}")
 
 
 def main(argv=None):

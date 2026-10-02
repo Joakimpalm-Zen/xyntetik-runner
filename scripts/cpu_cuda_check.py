@@ -78,9 +78,17 @@ PROMPTS = [
 ]
 
 
-# ---- MoE margin-qualified tolerance (owner-ratified 2026-08-20) ------------
+# ---- Margin-qualified tolerance (MoE 2026-08-20; dense 2026-10-02) ---------
 #
-# Dense models keep strict byte-identity. But top-k MoE routing has a hard
+# Extended to dense models by the owner on 2026-10-02 (R4.25): gemma-4 E4B
+# failed dense-strict on the RTX 3070 on a flip whose margins were 0.00056 and
+# 0.00016 nats, with a per-position CPU/CUDA delta the size of the gemma-3
+# control that passes (mean 2.3e-4; docs/device-runs-2026-10-02/). A dense
+# model's reductions differ in order across backends just as a router's do,
+# so the same two-sided band applies; a confident divergence still fails, and
+# the report says the model is dense. --dense-strict restores the old rule.
+#
+# The original MoE reasoning: top-k MoE routing has a hard
 # ceiling: a genuine near-tie between two expert gates flips under CPU-vs-CUDA
 # reduction-order FP rounding (warp-tree vs SIMD-lane), and that flip cascades
 # into the token stream. Forcing the CUDA reduction to mimic host libm summation
@@ -111,12 +119,9 @@ def is_moe(model_path):
     """expert_count straight from the GGUF header (the same read as
     scripts/stress-models.py, via verify-gguf.py's reader).
 
-    The margin-qualified tolerance exists for MoE ROUTING near-ties only — a
-    dense model has no router whose reduction order could flip a coin, so a
-    dense divergence is a real defect even when the logprob gap happens to sit
-    inside the band, and it must stay under strict byte-identity. Fail-closed:
-    an unreadable header classifies as dense, which only makes the gate
-    stricter, never looser."""
+    Reported in every result (`moe`), and since 2026-10-02 no longer what
+    decides the tolerance: dense near-ties get the same band unless
+    --dense-strict is given. An unreadable header classifies as dense."""
     try:
         import importlib.util
         spec = importlib.util.spec_from_file_location(
@@ -181,6 +186,15 @@ def classify_divergence(cpu, gpu, band=DEFAULT_TIE_BAND):
     if m_cpu is not None and m_gpu is not None and m_cpu <= band and m_gpu <= band:
         return "near_tie", detail
     return "real", detail
+
+
+def apply_dense_rule(kind, detail, moe, dense_strict):
+    """A dense model's in-band near-tie stays a near-tie (R4.25, owner
+    2026-10-02) unless --dense-strict asks for the earlier rule."""
+    if kind == "near_tie" and not moe and dense_strict:
+        detail["dense_strict"] = True
+        return "real"
+    return kind
 
 
 def run_result(near_tie, real, total):
@@ -323,6 +337,9 @@ def main():
                          "--gpu-arm-arg=--gpu-layers --gpu-arm-arg=28")
     ap.add_argument("--extra-arg", action="append", default=[],
                     help="extra flag passed to BOTH runs (e.g. --cpu-moe)")
+    ap.add_argument("--dense-strict", action="store_true",
+                    help="count a dense model's in-band near-tie as a divergence "
+                         "(the rule before 2026-10-02)")
     ap.add_argument("--out")
     args = ap.parse_args()
 
@@ -341,20 +358,19 @@ def main():
                        env, args.extra_arg + args.gpu_arm_arg, args.timeout,
                        gpu_log)
 
-    # Dense models never get the near-tie tolerance (see is_moe): the
-    # written policy always said so, but until 2026-08-20 nothing ENFORCED it —
-    # classify_divergence itself is architecture-blind, so the downgrade to
-    # "real" happens here, where the model file is in hand.
+    # Dense near-ties are tolerated under the same two-sided band since
+    # 2026-10-02 (R4.25, see above); --dense-strict downgrades them to "real"
+    # as the rule did from 2026-08-20.
     moe = is_moe(args.model)
     rows = []
     exact = near_tie = real = 0
     for prompt, c, g in zip(PROMPTS, cpu, gpu):
         kind, detail = classify_divergence(c, g)
-        if kind == "near_tie" and not moe:
-            kind = "real"
-            detail["dense_strict"] = True
-            print("dense model: in-band flip is NOT a routing near-tie — "
-                  "strict identity applies", flush=True)
+        before = kind
+        kind = apply_dense_rule(kind, detail, moe, args.dense_strict)
+        if before != kind:
+            print("dense model under --dense-strict: in-band flip counted as a "
+                  "divergence", flush=True)
         exact += kind == "exact"
         near_tie += kind == "near_tie"
         real += kind == "real"
@@ -399,6 +415,8 @@ def main():
               "context": args.ctx,
               "routing": "fused" if args.fused else "eager",
               "moe": moe,
+              "dense_rule": None if moe else ("strict" if args.dense_strict
+                                              else "margin_qualified"),
               "extra_args": args.extra_arg,
               "gpu_split": split,
               "cpu_cuda_identity": {"result": result, "exact": f"{exact}/{total}",

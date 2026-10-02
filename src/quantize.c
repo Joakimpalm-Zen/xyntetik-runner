@@ -1388,6 +1388,9 @@ static bool quantize_install_injected(void) {
     return inject && *inject && strcmp(inject, "0");
 }
 
+static bool g_type_plan_strict = false;
+void quantize_set_type_plan_strict(bool on) { g_type_plan_strict = on; }
+
 static int install_finished_file(const char *tmp_path, const char *out_path) {
     if (quantize_install_injected()) return -1;
 #ifdef _WIN32
@@ -2094,6 +2097,8 @@ static int quantize_gguf_plan_inner(const char *in_path, const char *out_path, i
         quantize_plans_free(&plan, &tplan);
         return 1;
     }
+    bool strict_refuse = g_type_plan_strict && type_plan_path &&
+                         (fell_back || declined_width || declined_size);
     if (w.ok && fell_back) {
         fprintf(stderr, "quantize: %llu tensor(s) written in a 32-block fallback "
                 "type — the requested type's block does not divide their row "
@@ -2127,6 +2132,19 @@ static int quantize_gguf_plan_inner(const char *in_path, const char *out_path, i
         if (declined_size > (uint64_t)n_decl_s)
             fprintf(stderr, "quantize:   ... and %llu more\n",
                     (unsigned long long)(declined_size - (uint64_t)n_decl_s));
+    }
+    if (strict_refuse) {
+        fprintf(stderr, "error: --type-plan-strict: %llu plan rule(s) would "
+                "not be applied as written (listed above); nothing was "
+                "written\n", (unsigned long long)(fell_back + declined_width +
+                                                  declined_size));
+        free(out_type);
+        fclose(f);
+        remove(tmp_path);
+        free(tmp_path);
+        gguf_close(&g);
+        quantize_plans_free(&plan, &tplan);
+        return 1;
     }
     uint32_t ftype_out = 0;
     if (w.ok && g.n_tensors > 0) {
