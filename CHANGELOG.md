@@ -8,6 +8,13 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **Metal prefill over a long history is faster again.** The tiled
+  attention kernel read each tile's scores from the device once per element
+  of the head in its value phase; they now pass through threadgroup memory
+  a block of rows at a time. A 4,321-token prefill on an M1 (Llama-3.2-3B):
+  48.6 to 64.3 tok/s; the ten-turn agent benchmark 116.8 s to 93.9 s, median
+  time to first token 10.4 s to 7.4 s. Byte-identical to the one-column
+  kernel, as before.
 - **Metal runs files with removed sublayers (R4.1.6, Metal half).** A
   `--remove-sublayer` artifact was CPU-only; the Metal walk now omits a
   removed attention or FFN per block. The removed file scores

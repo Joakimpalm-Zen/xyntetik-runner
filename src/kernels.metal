@@ -3316,6 +3316,7 @@ kernel void k_lora_b(device const float *B [[buffer(0)]],
 // output byte-identical to k_attn's, and RUNNER_METAL_ATTN_TILE=0 pins k_attn.
 #define ATTN_TILE 8
 #define ATTN_TILE_MAX_HD 256   // the host keeps wider heads on k_attn
+#define ATTN_VBLK 128          // rows of scores held in threadgroup memory
 struct attn_tile_args { int n_col; };
 
 kernel void k_attn_tile(device const float *q_all   [[buffer(0)]],
@@ -3331,6 +3332,7 @@ kernel void k_attn_tile(device const float *q_all   [[buffer(0)]],
                    uint3 tpg3 [[threads_per_threadgroup]]) {
     threadgroup float red[256];
     threadgroup float4 qt[2 * ATTN_TILE_MAX_HD];
+    threadgroup float4 pt[2 * ATTN_VBLK];
     uint tid = tid3.x, tpg = tpg3.x;
     uint h = tgpig.x;
     int c0 = (int)tgpig.y * ATTN_TILE;
@@ -3433,20 +3435,61 @@ kernel void k_attn_tile(device const float *q_all   [[buffer(0)]],
     }
     threadgroup_barrier(mem_flags::mem_device);
 
-    // values: one V element, every column of the tile, in order of t
-    for (int i = (int)tid; i < hd; i += (int)tpg) {
-        float o[ATTN_TILE];
-        for (int c = 0; c < ATTN_TILE; c++) o[c] = 0;
-        for (int t = t0_lo; t <= pos_hi; t++) {
-            float v = kv_pair(vc + base_v + kv_row_off(t, a.kv_rows, row_v), i / 2, a.vq8)[i & 1];
-            int cs = t > pos_lo ? t - pos_lo : 0;
-            int ce = nc;
-            if (a.window > 0 && t + a.window - pos_lo < ce) ce = t + a.window - pos_lo;
-            for (int c = cs; c < ce; c++)
-                o[c] += att_all[(ulong)(c0 + c) * a.att_stride + (ulong)h * a.n_ctx + t] * v;
+    // values: one V element, every column of the tile, in order of t.
+    //
+    // A thread owns one output element and walks every row for it. Reading
+    // the scores straight from the device, each thread fetched the tile's
+    // whole score table, eight far-apart streams of it: head_dim copies per
+    // threadgroup, and that was most of this phase (41 s of an 89 s prefill
+    // of 4,321 tokens on an M1; 18 s now). The scores come through
+    // threadgroup memory a block of rows at a time instead: the threads load
+    // a block together, one device read per score, packed as two float4 per
+    // row, and each then accumulates its element over the block. The
+    // additions per (element, column) are the same ones in the same order,
+    // so the output is unchanged.
+    //
+    // Measured and not kept (2026-10-02, same prefill, all within noise of
+    // this form): four elements per thread, one float4 of columns per thread
+    // so every thread is busy, the V rows staged in threadgroup memory too,
+    // packed half4 V loads, and blocks of 32 to 256 rows. A block of 512
+    // rows was slower (more threadgroup memory, fewer groups resident).
+    int n_pass = (hd + (int)tpg - 1) / (int)tpg;
+    for (int pass = 0; pass < n_pass; pass++) {
+        int i = (int)tid + pass * (int)tpg;
+        bool mine = i < hd;
+        float4 o0 = float4(0), o1 = float4(0);
+        for (int tb = t0_lo; tb <= pos_hi; tb += ATTN_VBLK) {
+            int te = min(tb + ATTN_VBLK, pos_hi + 1);
+            // a block of scores, row-major: pt[2r] holds columns 0-3 of row
+            // tb + r and pt[2r+1] columns 4-7, zero where the column cannot
+            // see the row (adding 0 * v leaves its sum as it was)
+            for (int r = (int)tid; r < te - tb; r += (int)tpg) {
+                int t = tb + r;
+                int cs = t > pos_lo ? t - pos_lo : 0;
+                int ce = nc;
+                if (a.window > 0 && t + a.window - pos_lo < ce) ce = t + a.window - pos_lo;
+                float4 lo = float4(0), hi = float4(0);
+                for (int c = cs; c < ce; c++) {
+                    float w = att_all[(ulong)(c0 + c) * a.att_stride + (ulong)h * a.n_ctx + t];
+                    if (c < 4) lo[c] = w; else hi[c - 4] = w;
+                }
+                pt[2 * r] = lo;
+                pt[2 * r + 1] = hi;
+            }
+            threadgroup_barrier(mem_flags::mem_threadgroup);
+            if (mine) {
+                for (int t = tb; t < te; t++) {
+                    float v = kv_pair(vc + base_v + kv_row_off(t, a.kv_rows, row_v), i / 2, a.vq8)[i & 1];
+                    o0 += pt[2 * (t - tb)] * v;
+                    o1 += pt[2 * (t - tb) + 1] * v;
+                }
+            }
+            threadgroup_barrier(mem_flags::mem_threadgroup);
         }
-        for (int c = 0; c < nc; c++)
-            out_all[(ulong)(c0 + c) * a.out_stride + h * hd + i] = o[c] / sums[c];
+        if (mine)
+            for (int c = 0; c < nc; c++)
+                out_all[(ulong)(c0 + c) * a.out_stride + h * hd + i] =
+                    (c < 4 ? o0[c] : o1[c - 4]) / sums[c];
     }
 }
 

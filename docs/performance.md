@@ -133,14 +133,34 @@ last bit on the f16, q8, k8v4 and fp4 caches and under a sliding window, and
 | 1,297 tokens | 47.4 tok/s | 64.1 tok/s |
 | 2,431 tokens | 36.2 tok/s | 59.2 tok/s |
 
-The ten-turn conversation, same binary, same turns, first pass on a fresh
-server (records in `docs/agent-turns-2026-10-02/`):
+At 4,321 tokens the tiled kernel still fell to 48.6 tok/s (27.8 one-column),
+and the same one-phase-at-a-time timing gave a different split there: of
+89 s, 39 s outside attention, 7 s scores, 2 s softmax and 41 s values. In
+the value phase a thread owns one output element and walks every row, and
+it read the tile's scores straight from the device, so each threadgroup
+fetched its score table once per element of the head, as eight far-apart
+streams. The scores now go through threadgroup memory a block of 128 rows
+at a time, packed as two four-wide vectors per row; the sums are the same
+additions in the same order. Values 41 s to 18 s, the prefill 48.6 to
+64.3 tok/s, the same bytes out.
 
-| | one column | tiled |
-|---|---:|---:|
-| wall time, ten turns | 173.6 s | 116.8 s |
-| time to first token, median | 14.2 s | 10.4 s |
-| time to first token, worst turn | 30.1 s | 15.6 s |
+Four further forms of the value phase were measured on that prompt and none
+moved it (61.7 to 64.8 tok/s): four elements per thread, every thread busy
+on one vector of columns, the V rows staged in threadgroup memory as well,
+and packed four-wide V loads. A 512-row block was slower (57.6). What bounds
+the remaining 18 s is not identified.
+
+The ten-turn conversation, same turns, first pass on a fresh server (records
+in `docs/agent-turns-2026-10-02/`):
+
+| | one column | tiled | tiled, scores in blocks |
+|---|---:|---:|---:|
+| wall time, ten turns | 173.6 s | 116.8 s | 93.9 s |
+| time to first token, median | 14.2 s | 10.4 s | 7.4 s |
+| time to first token, worst turn | 30.1 s | 15.6 s | 13.1 s |
+
+The worst turn in the last column is the first (the model's pages coming
+in); the worst later turn is 10.8 s, at 3,200 tokens of history.
 
 Not changed, and still growing with context: decode attention (10.6 tok/s at
 the first turn, 7.1 at 2,100 tokens of history) and the restore of a turn
