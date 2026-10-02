@@ -8,6 +8,17 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **Publisher sampling for Qwen 3.5, Nemotron Nano and Apertus; serving
+  guidance in the manifest (R6.7.3).** Qwen 3.5 was served at Qwen3's
+  temperature 0.6 (the card's setting for precise coding) and Nemotron Nano
+  9B v2 and Apertus at the generic preset. Each now gets its card's
+  recommendation, selected by its template: `qwen35` 1.0 / 0.95 / 20,
+  `qwen35-nothink` 1.0 / 1.0 / 20, `nemotron` 0.6 / 0.95, `apertus`
+  0.8 / 0.9. `docs/serving-guidance.json` records what 18 publishers say
+  (generation_config, card recommendations per mode, thinking default,
+  precision); `runner --tool-info` names the sampling preset; the envelope
+  certifier writes a reported-only `serving_guidance` block with the knobs
+  where the preset departs from the publisher.
 - **One decision-record contract (R2.1.4).** The per-step
   `choice_logprobs` records and the `runner_telemetry.decision` summary are
   published as one versioned contract, `docs/decision-record.md` with a JSON

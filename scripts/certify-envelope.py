@@ -141,6 +141,52 @@ def tool_info(runner, model):
     return {"tool_family": fam, "native": bool(info.get("native_tool_protocol"))}
 
 
+GUIDANCE = Path(__file__).resolve().parents[1] / "docs" / "serving-guidance.json"
+_COMPARED = ("temperature", "top_p", "top_k", "min_p")
+
+
+def _tool_info_raw(runner, model):
+    try:
+        proc = subprocess.run([str(runner), "--tool-info", "-m", str(model)],
+                              text=True, capture_output=True, timeout=60)
+        if proc.returncode != 0 or not proc.stdout.strip():
+            return None
+        return json.loads(proc.stdout.strip().splitlines()[-1])
+    except (OSError, subprocess.TimeoutExpired, ValueError, IndexError):
+        return None
+
+
+def serving_guidance(caps, info, family=None, guidance_path=GUIDANCE):
+    """Reported-only (R6.7.3): the sampling preset a request without sampling
+    fields is served with, beside what the family's publisher says, and the
+    knobs where the two differ. The publisher's word is the repository's
+    generation_config.json when it states sampling keys, else the card's
+    first recommendation. Nothing here changes a load."""
+    name = (info or {}).get("sampling_preset")
+    preset = next((dict(p) for p in caps.get("sampling_presets") or []
+                   if p.get("name") == name), None)
+    try:
+        families = json.loads(Path(guidance_path).read_text())["families"]
+    except (OSError, ValueError, KeyError):
+        families = {}
+    key = family or name
+    pub = families.get(key)
+    if preset is None and pub is None:
+        return None
+    differs = None
+    if preset is not None and pub is not None:
+        said = pub.get("generation_config") or {}
+        if not any(k in said for k in _COMPARED):
+            said = next(iter(pub.get("card_sampling") or []), {})
+        differs = sorted(k for k in _COMPARED if k in said
+                         and abs(float(said[k]) - float(preset.get(k, 0))) > 1e-6)
+    return {
+        "preset": preset,
+        "publisher": dict(pub, family=key) if pub is not None else None,
+        "differs": differs,
+    }
+
+
 def truncation_axis(report):
     """Truncation-recovery: an ENGINE property (measured on a proxy model), so it
     is labelled `scope: engine` — presenting it as artifact-measured would
@@ -254,6 +300,8 @@ def build_manifest(args):
         if args.compat_report else None
     entry = find_model_evidence(report, sha, args.model)
     gate, checks, detail = summarize_checks(entry)
+    guidance = serving_guidance(caps, _tool_info_raw(args.runner, args.model),
+                                args.serving_guidance_family)
 
     # Reported-only tool-calling axis, indexed from evidence that already exists.
     tool_calling = build_tool_calling(
@@ -322,6 +370,7 @@ def build_manifest(args):
             if args.compat_report else None,
         },
         **({"tool_calling": tool_calling} if tool_calling else {}),
+        **({"serving_guidance": guidance} if guidance else {}),
         "verdict": verdict,
         "measured": {
             "date": args.date,
@@ -356,6 +405,9 @@ def main(argv=None):
     ap.add_argument("--quant-fidelity-quant", default="Q4_0",
                     help="which quant row of the fidelity report the schema-shape "
                     "claim reads (default Q4_0)")
+    ap.add_argument("--serving-guidance-family",
+                    help="key in docs/serving-guidance.json when the family has "
+                         "no runner preset of its own (default: the preset name)")
     ap.add_argument("--out")
     args = ap.parse_args(argv)
 

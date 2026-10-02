@@ -1676,7 +1676,7 @@ envelope: tool-calling gate=pass — truncation 6/6, schema-shape@Q4_0, agent-to
 A manifest with no `tool_calling` block prints nothing extra. You can also query
 a model's native tool protocol directly, without any manifest, with `runner
 --tool-info -m model.gguf`, which prints
-`{"tool_family":…,"native_tool_protocol":…}`. The full block, the evidence each
+`{"tool_family":…,"native_tool_protocol":…,"template":…,"sampling_preset":…}`. The full block, the evidence each
 field comes from, and the honesty caveats (notably that *schema-shape holding at
 `Q4_0`* is about the call **shape**, not the argument values) are documented in
 [docs/envelope-manifests/README.md](docs/envelope-manifests/README.md).
@@ -1946,7 +1946,7 @@ whether the draft is `active` there.
 | `--detect-watermark FILE` | Score FILE against `--watermark`'s key: a transcript record or receipt (its own token ids, the prompt as context; needs no `-m`) or a text (tokenized by `-m`'s tokenizer). Prints a `xyntetik.runner.watermark_detect.v1` object (mean g-value, z, one-sided p) and exits 0 `WATERMARKED` (z >= 4), 2 `NOT_DETECTED`, 3 `INSUFFICIENT` (fewer than 16 scored tokens). |
 | `--sign-model FILE`, `--model-key KEY.pem` | Write an OMS bundle for FILE (every part of a split GGUF) to `FILE.sig`, or to `--model-sig OUT`, signed with a PEM EC private key (SEC1 or PKCS#8, unencrypted, P-256/384/521) by deterministic ECDSA: the same key and model always give the same bytes. An existing bundle is never overwritten. Needs no `-m`. [Details](#cli-sign-model). |
 | `--caps` | Print machine, backend, quant, architecture, placement, and sampling capabilities as JSON. |
-| `--tool-info` | With `-m`, print the model's tool-call protocol as JSON (`{"tool_family":…,"native_tool_protocol":…}`) and exit. No manifest required. |
+| `--tool-info` | With `-m`, print the model's tool-call protocol, chat template and sampling preset as JSON (`{"tool_family":…,"native_tool_protocol":…,"template":…,"sampling_preset":…}`) and exit. No manifest required. |
 | `--adapt-info` | With `-m`, print as JSON whether a LoRA adapter can be served on this model and whether one can be trained on it, each with the sentence the real operation would refuse with, plus which GPU backend of this build carries adapter kernels. Inference, adapter serving and training are three admission lists; this reads the last two without running either. |
 | `--doctor` | With `-m`, load the model, run one short probe and print a diagnostic report as JSON: version, where the layers actually ran, the template and sampler in effect, memory, timings, and findings with a next step each. Exit 2 when a finding is `broken`. The report holds no prompt or reply text unless `--doctor-include-text` is given; read it before sharing. |
 | `--shadow-mode` | Install shadow mode for Claude Code and Codex if present, asking first (`--yes` skips the question); `-m MODEL` names the model the `/shadow` offload serves. Hands off to the stdlib-only Python client beside the binary (`python/src`); see the shadow-mode section. |
@@ -2297,7 +2297,15 @@ publishers' pinned `generation_config.json` values where a publisher ships
 them (Gemma 3 and Gemma 4: temperature 1.0, top_k 64, top_p 0.95, no
 repetition penalty; Qwen 3.8: 1.0 / 0.95 / 20; Qwen3-Coder: 0.7 / 0.8 / 20
 with 1.05; Granite 4.2: 1.0 / 0.95; the audit is in
-`docs/cross-family-remedy-2026-09-14.md`). Where a preset carries a value
+`docs/cross-family-remedy-2026-09-14.md`), and the model card's
+recommendation where only the card speaks (Qwen 3.5: 1.0 / 0.95 / 20, or
+1.0 / 1.0 / 20 on the 0.8B, whose thinking is off by default; Nemotron Nano
+9B v2: 0.6 / 0.95; Apertus: 0.8 / 0.9; all four since 2026-10-02, when a
+Qwen 3.5 file was still served at Qwen3's 0.6 and the other two at the
+generic preset). What every publisher says, per family and per mode, is
+recorded in `docs/serving-guidance.json`; the envelope certifier sets it
+beside the served preset in each manifest and names the knobs that differ
+(`docs/envelope-manifests/README.md`). Where a preset carries a value
 the publisher never stated, its source says so: the `repeat_penalty 1.10`
 of the llama3, mistral, smollm2, lucie and teuken presets is runner's own
 calibration, not the vendor's. Gemma 4 used to inherit Gemma 3's preset,

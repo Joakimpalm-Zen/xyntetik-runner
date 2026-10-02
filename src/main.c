@@ -1262,7 +1262,8 @@ static void usage_to(FILE *f, const char *prog) {
         "  --train-out F  adapter GGUF to write (default adapter-out.gguf)\n"
         "  --lora-rank R  fresh-adapter rank when no --lora is given (8)\n"
         "  --caps         print machine capabilities as JSON and exit\n"
-        "  --tool-info    load -m MODEL and print its native tool-call protocol\n"
+        "  --tool-info    load -m MODEL and print its native tool-call protocol,\n"
+        "                 chat template and sampling preset\n"
         "  --adapt-info   load -m MODEL and print, as JSON, whether an adapter can\n"
         "                 be served on it and trained on it, with the reason\n"
         "                 when it cannot\n"
@@ -2941,10 +2942,16 @@ int main(int argc, char **argv) {
             const char *fam = tool_family_for(ti_tmpl, &native);
             // The template family is named too: which renderer the chat
             // surface would use is the first question a golden pass asks of
-            // a file, and a fallback is a finding, not a default.
+            // a file, and a fallback is a finding, not a default. So is the
+            // sampling preset a request without sampling fields is served
+            // with (resolved as the load does; --temp and friends aside).
+            char ti_ident[256];
+            sampler_ident(gguf_get_str(&m.gf, "general.name", NULL), m.path,
+                          ti_ident, sizeof(ti_ident));
             printf("{\"tool_family\":\"%s\",\"native_tool_protocol\":%s,"
-                   "\"template\":\"%s\"}\n",
-                   fam, native ? "true" : "false", template_name(ti_tmpl));
+                   "\"template\":\"%s\",\"sampling_preset\":\"%s\"}\n",
+                   fam, native ? "true" : "false", template_name(ti_tmpl),
+                   sampler_preset_for(m.arch, ti_ident, ti_tmpl)->name);
             cli_cleanup(NULL, NULL, &tok, &m);
             return 0;
         }

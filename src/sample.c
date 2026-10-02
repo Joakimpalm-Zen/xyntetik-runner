@@ -628,6 +628,35 @@ static const sampler_preset PRESETS[] = {
     { "granite42", "Granite 4.2 generation_config.json (IBM)",
       1.00f, 0.95f, 0.00f, 1.00f, 0 },
 
+    // Qwen/Qwen3.5-4B model card, "Best Practices", thinking mode for
+    // general tasks (the family's default): temperature 1.0, top_p 0.95,
+    // top_k 20, min_p 0.0, repetition_penalty 1.0, plus a presence_penalty
+    // of 1.5 this sampler has no knob for. The repository ships no
+    // generation_config.json. Detected by template since 2026-09-07; until
+    // 2026-10-02 the preset still came from the name and a Qwen 3.5 file
+    // was served at Qwen3's 0.6, the card's setting for precise coding.
+    { "qwen35", "Qwen3.5 model card best practices (thinking mode, general tasks)",
+      1.00f, 0.95f, 0.00f, 1.00f, 20 },
+
+    // Qwen/Qwen3.5-0.8B, whose template defaults thinking OFF: the card's
+    // non-thinking text setting, temperature 1.0, top_p 1.0, top_k 20, min_p
+    // 0.0 (its presence_penalty 2.0 has no knob here either).
+    { "qwen35-nothink", "Qwen3.5-0.8B model card best practices (non-thinking mode, text)",
+      1.00f, 1.00f, 0.00f, 1.00f, 20 },
+
+    // nvidia/NVIDIA-Nemotron-Nano-9B-v2 model card: temperature 0.6 and
+    // top_p 0.95 with reasoning on (the template's default), greedy with
+    // reasoning off. No generation_config sampling keys. It used to fall
+    // through to the generic preset.
+    { "nemotron", "Nemotron Nano 9B v2 model card (reasoning on: temperature 0.6, top_p 0.95)",
+      0.60f, 0.95f, 0.00f, 1.00f, 0 },
+
+    // swiss-ai/Apertus-8B-Instruct-2509 model card: "We recommend setting
+    // temperature=0.8 and top_p=0.9". Nothing else stated, so top_k and
+    // min_p are off rather than the generic 40 and 0.05.
+    { "apertus", "Apertus model card recommendation (temperature 0.8, top_p 0.9)",
+      0.80f, 0.90f, 0.00f, 1.00f, 0 },
+
     // Phi-3.5-mini-instruct model card sample inference code, which runs
     // temperature 0.0 / do_sample False. Greedy by default is unusual but it
     // is what Microsoft publish; a caller wanting variety overrides --temp,
@@ -738,6 +767,10 @@ const sampler_preset *sampler_preset_for(const char *arch, const char *name,
     if (tmpl == TMPL_QWEN38)      return by_name("qwen38");
     if (tmpl == TMPL_QWEN3_CODER) return by_name("qwen3-coder");
     if (tmpl == TMPL_GRANITE42)   return by_name("granite42");
+    if (tmpl == TMPL_QWEN35)      return by_name("qwen35");
+    if (tmpl == TMPL_QWEN35_NOTHINK) return by_name("qwen35-nothink");
+    if (tmpl == TMPL_NEMOTRON)    return by_name("nemotron");
+    if (tmpl == TMPL_APERTUS)     return by_name("apertus");
     if (!strcmp(arch, "gemma3")) return by_name("gemma3");
 
     // The DETECTED TEMPLATE, where there is one, outranks every name test
