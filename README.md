@@ -3295,7 +3295,9 @@ Codex and other feature-rich agents can declare more than runner's 59-tool
 constrained envelope. Disable unused app, multi-agent, and hosted-search tools
 for a local-model session. Exact request shapes and test scope are recorded in
 [docs/agent-compatibility.md](docs/agent-compatibility.md) and
-[docs/compatibility-program.md](docs/compatibility-program.md).
+[docs/compatibility-program.md](docs/compatibility-program.md). One
+configuration written out as steps, with its measured limits and the
+diagnostic to run when it fails: [docs/workflow-opencode.md](docs/workflow-opencode.md).
 
 For Codex CLI, configure a stateless Responses provider:
 

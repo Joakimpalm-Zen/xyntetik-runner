@@ -1,0 +1,17 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "provider": {
+    "runner": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Xyntetik Runner (local)",
+      "options": { "baseURL": "http://127.0.0.1:8080/v1", "apiKey": "none" },
+      "models": {
+        "granite-4.2-8b-Q4_K_M.gguf": {
+          "name": "Granite 4.2 8B (local)",
+          "limit": { "context": 16384, "output": 1024 }
+        }
+      }
+    }
+  },
+  "model": "runner/granite-4.2-8b-Q4_K_M.gguf"
+}
