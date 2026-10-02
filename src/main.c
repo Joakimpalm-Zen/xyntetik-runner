@@ -1111,6 +1111,9 @@ static void usage_to(FILE *f, const char *prog) {
         "                 quantized output type rounds the delta through its\n"
         "                 grid — measure the merged artifact before trusting\n"
         "                 it; base + --lora stays the exact form\n"
+        "  --type-plan-strict  with --type-plan: fail before writing when\n"
+        "                 any rule would be declined or fall back, instead of\n"
+        "                 reporting it and writing the file\n"
         "  --type-plan PLAN.json  per-tensor precision while rewriting:\n"
         "                 {\"default\":\"keep\",\"rules\":[{\"match\":\"_exps.weight\",\n"
         "                 \"type\":\"q4_0\"}]}. First matching rule wins; types are\n"
@@ -1556,6 +1559,7 @@ int main(int argc, char **argv) {
     int cli_env_state = ENV_UNCLASSIFIED;
     bool cli_env_known = false;
     const char *type_plan = NULL, *merge_out = NULL, *context_out = NULL;
+    bool type_plan_strict = false;
     const char *transcript_path = NULL;
     const char *transcript_prev = NULL, *sign_key = NULL, *keygen_path = NULL;
     const char *sign_record = NULL, *record_prev = NULL, *check_record = NULL;
@@ -1735,6 +1739,7 @@ int main(int argc, char **argv) {
         else if (!strcmp(a, "--prune-experts")) prune_experts = NEXT;
         else if (!strcmp(a, "--remove-sublayer")) remove_sublayer = NEXT;
         else if (!strcmp(a, "--type-plan")) type_plan = NEXT;
+        else if (!strcmp(a, "--type-plan-strict")) type_plan_strict = true;
         else if (!strcmp(a, "--temp")) { ov.temp = (float)float_arg(a, NEXT, 0, FLT_MAX); ov.has_temp = true; }
         else if (!strcmp(a, "--top-k")) { ov.top_k = (int)int_arg(a, NEXT, 0, INT_MAX); ov.has_top_k = true; }
         else if (!strcmp(a, "--top-p")) { ov.top_p = (float)float_arg(a, NEXT, 0, 1); ov.has_top_p = true; }
@@ -2854,6 +2859,11 @@ int main(int argc, char **argv) {
         // in quantize_gguf_plan never reads it, and the summary line then
         // named a type nothing had been written in. Refused rather than
         // dropped, the same call --merge-lora + --type-plan already makes.
+        if (type_plan_strict && !type_plan) {
+            fprintf(stderr, "error: --type-plan-strict needs --type-plan\n");
+            return 1;
+        }
+        quantize_set_type_plan_strict(type_plan_strict);
         if (quant_type && type_plan) {
             fprintf(stderr, "error: --quant and --type-plan cannot be used "
                     "together: the plan decides every tensor's type, so "

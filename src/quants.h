@@ -59,6 +59,13 @@ int   quantize_gguf(const char *in_path, const char *out_path, int target,
 int   quantize_gguf_plan(const char *in_path, const char *out_path, int target,
                          const char *prune_path, const char *type_plan_path,
                          const char *remove_spec);
+// RI-3 (owner 2026-10-02): --type-plan-strict. A plan rule the writer would
+// decline (the type's block does not divide the row, it is not smaller than
+// the tensor's type, or it would fall back to a 32-block cousin) fails the
+// build before any tensor data is written, instead of being reported and
+// applied. Off by default: declines are predicted (scripts/type-plan-size.py)
+// and reported, and that stays the default behaviour.
+void  quantize_set_type_plan_strict(bool on);
 // Compile a longer native-YaRN context contract into a standalone GGUF.
 // Only {arch}.context_length and {arch}.rope.scaling.factor may change; the
 // implementation reopens both files and byte-compares every tensor payload

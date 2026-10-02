@@ -8,6 +8,9 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **`--type-plan-strict` (RI-3).** An opt-in that fails a `--type-plan`
+  rewrite before any tensor data is written when a rule would be declined or
+  fall back; the default still reports such rules and builds the file.
 - **`--draft` with a swap registry refuses to start (RI-2).** It used to
   print a note and serve without the draft. The other draft fallbacks (a
   draft refused at load, a registry given up to keep `--parallel` slots)

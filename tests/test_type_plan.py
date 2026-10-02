@@ -241,3 +241,43 @@ def test_a_same_size_decline_is_reported(runner_bin, tmp_path):
         "the fixture no longer exercises the same-size decline"
     assert b"not smaller than what they already carry" in proc.stderr, \
         proc.stderr.decode(errors="replace")
+
+
+def test_type_plan_strict_refuses_a_plan_it_would_not_apply(runner_bin, tmp_path):
+    """RI-3 (owner 2026-10-02): the default predicts, reports and builds; the
+    opt-in --type-plan-strict fails before writing anything when a rule would
+    be declined or fall back. The fixture's rows are narrower than q4_K's
+    256-value block, so a q4_k rule cannot be applied as written."""
+    src = tmp_path / "narrow.gguf"
+    subprocess.run([sys.executable, ROOT / "scripts/make-test-model.py", str(src)],
+                   check=True, cwd=ROOT, stdout=subprocess.DEVNULL)
+    plan = tmp_path / "plan.json"
+    plan.write_text(json.dumps({"default": "keep",
+                                "rules": [{"match": "weight", "type": "q4_k"}]}))
+    lax = tmp_path / "lax.gguf"
+    proc = subprocess.run([runner_bin, "-m", str(src), "--quantize", str(lax),
+                           "--type-plan", str(plan)], cwd=ROOT,
+                          stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=180)
+    assert proc.returncode == 0 and lax.exists(), proc.stderr.decode(errors="replace")
+    reported = proc.stderr.decode(errors="replace")
+    assert "fallback" in reported or "kept their own type" in reported, reported
+    strict = tmp_path / "strict.gguf"
+    proc = subprocess.run([runner_bin, "-m", str(src), "--quantize", str(strict),
+                           "--type-plan", str(plan), "--type-plan-strict"], cwd=ROOT,
+                          stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=180)
+    err = proc.stderr.decode(errors="replace")
+    assert proc.returncode == 1 and "--type-plan-strict" in err, err
+    assert not strict.exists() and not list(tmp_path.glob("strict.gguf*")), err
+    # a plan that applies exactly is unaffected by the flag
+    ok = tmp_path / "ok.json"
+    ok.write_text(json.dumps({"default": "keep",
+                              "rules": [{"match": "ffn", "type": "q8_0"}]}))
+    exact = tmp_path / "exact.gguf"
+    proc = subprocess.run([runner_bin, "-m", str(src), "--quantize", str(exact),
+                           "--type-plan", str(ok), "--type-plan-strict"], cwd=ROOT,
+                          stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=180)
+    assert proc.returncode == 0 and exact.exists(), proc.stderr.decode(errors="replace")
+    proc = subprocess.run([runner_bin, "-m", str(src), "--quantize", str(exact) + "2",
+                           "--quant", "q8_0", "--type-plan-strict"], cwd=ROOT,
+                          stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=180)
+    assert proc.returncode == 1 and b"needs --type-plan" in proc.stderr
