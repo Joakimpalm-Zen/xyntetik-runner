@@ -8,6 +8,20 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **CUDA: Muse-Glimmer and Qwen2 prefill on the tensor cores.** The
+  tensor-core prefill GEMM is promoted per architecture, on a measured
+  tolerance row, and `muse-glimmer` and `qwen2` had none, so their prefill
+  ran the scalar kernels. For a codebook i-quant that is pathological:
+  Muse-Glimmer-30B IQ3_XXS prefilled at 2.60 tok/s on the GPU against 24.0
+  on 16 host threads, and a 3,300-token prompt timed out after fifteen
+  minutes (the family sweep). Both architectures now have their rows
+  (`test-tc-tol` on real weights, the Blackwell: 0 of 64 top-1 flips,
+  0.00001 to 0.00007 of the logit range against a 0.005 limit, free-running
+  output token-identical, on Muse-Glimmer-30B IQ3_XXS and K-quant, Kvist-14B
+  Q8_0 and Qwen2.5-7B Q4_K_M) and are promoted: Muse IQ3_XXS prefill 2.60
+  -> 85.3 tok/s, the K-quant file 34.9 -> 116.9. `RUNNER_CUDA_TC=0` still
+  turns the path off.
+
 - **Family sweep, 2026-10-02: six defects real models showed.**
   `scripts/family-sweep.py` puts a real model of each family through every
   surface (56 models on the Blackwell). What it found and what changed:

@@ -2417,8 +2417,9 @@ void gpu_moe_eager_force(int on) { g_moe_eager_force = on < 0 ? -1 : (on != 0); 
 // all 0 top-1 flips in 64 teacher-forced positions. qwen3moe PASSED its
 // gate too (0.216%, one near-tie) but stays opt-in by owner decision: MoE
 // routing amplifies fp16 noise ~86x over dense, and the promotion decision
-// deliberately covers the dense family first. Unmeasured archs (qwen2,
-// qwen35, stablelm) are absent, not implied.
+// deliberately covers the dense family first. Unmeasured archs are absent,
+// not implied; an arch joins with its own row (qwen35 and granite later,
+// muse-glimmer and qwen2 on 2026-10-02: see tc_promoted).
 // The codebook family, promoted 2026-09-14 (see tc_promoted below).
 static bool tc_codebook(int type) {
     switch (type) {
@@ -2553,9 +2554,27 @@ static bool tc_promoted(const model_t *m, int type) {
     // reaches — attention, MLP and the recurrent-layer projections alike —
     // is inside the measured envelope; the scan kernels themselves have no
     // GEMM shape and are untouched.
+    // muse-glimmer and qwen2 joined 2026-10-02, each on its own test_tc_tol
+    // rows (the Blackwell MIG, real weights, 64 teacher-forced positions, 0
+    // top-1 flips and a token-identical free-running arm on every row):
+    //
+    //   muse-glimmer  Muse-Glimmer-30B IQ3_XXS   IQ3_XXS/IQ3_S/Q4_K/Q6_K  0.00005 of range
+    //   muse-glimmer  Muse-Glimmer-30B kquant    Q4_K/Q6_K                0.00005
+    //   muse-glimmer  Kvist-14B a12 Q8_0         Q8_0                     0.00001
+    //   qwen2         Qwen2.5-7B Q4_K_M          Q4_K/Q6_K                0.00007
+    //
+    // What forced the question: unpromoted, a codebook i-quant has only the
+    // scalar batched kernel, and Muse-Glimmer-30B IQ3_XXS prefilled at 2.60
+    // tok/s on the device against 24.0 on the host's 16 threads (slower than
+    // its own decode, 3.67): a 3,300-token prompt took over fifteen minutes
+    // on a GPU. With the tensor-core GEMM it is 85.3 tok/s; the K-quant file
+    // went 34.9 -> 116.9. Neither arch is MoE (muse-glimmer's gates are
+    // per-layer sigmoid gates, not routing), so the amplification that keeps
+    // qwen3moe opt-in does not apply.
     static const char *archs[] = { "llama", "phi3", "gemma4", "qwen3",
                                    "qwen35",
-                                   "mistral", "gemma3", "smollm", "granite" };
+                                   "mistral", "gemma3", "smollm", "granite",
+                                   "muse-glimmer", "qwen2" };
     for (size_t i = 0; i < sizeof(archs) / sizeof(*archs); i++)
         if (strcmp(m->arch, archs[i]) == 0) return true;
     return false;
