@@ -125,9 +125,14 @@ Published competitor rows are checked weekly against the runtimes' official
 release metadata by `.github/workflows/competitor-freshness.yml`. The workflow
 does not install runtimes, load models, or run inference: it reads
 `runtime.name` / `runtime.version` from the reports and queries GitHub Releases
-for llama.cpp and Ollama and PyPI for vLLM. A stale newest row opens or updates
-an issue and fails loudly. An unreachable registry is printed as `SKIP` and
-keeps the run green; malformed committed report metadata is still an error.
+for llama.cpp and Ollama and PyPI for vLLM. The rows are dated snapshots, so
+the job reports how far each one is behind in its run summary and stays green:
+it files no issue and does not fail when upstream moves on (until 2026-10-02 it
+did, on every minor Ollama or vLLM release). Re-measurement happens in
+certification windows on owned hardware, which read that summary. An
+unreachable registry is printed as `SKIP`; malformed committed report metadata,
+no published rows, or every registry lookup failing still fail the job, because
+those are defects in this repository.
 Run the same inexpensive check locally with:
 
 ```bash

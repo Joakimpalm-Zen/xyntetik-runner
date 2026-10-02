@@ -8,6 +8,12 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **The competitor-freshness job reports and no longer pages.** Published
+  competitor rows are dated snapshots, so a newer upstream release is news for
+  the next certification window, not a defect: the weekly job writes the drift
+  to its run summary and stays green instead of opening "Agent-torture
+  competitor results are stale" on every minor Ollama or vLLM release. A
+  broken checker still fails it.
 - **Evidence packs (R1.6.1).** `--export-pack RECEIPTS_DIR --pack-out DIR`
   gathers a server's receipts into one directory a reviewer can take: every
   receipt, the model signature and key, the envelope manifest the receipts
