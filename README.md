@@ -1432,6 +1432,9 @@ set, ensuring it remains a full offload. A single tensor larger than the
 per-buffer ceiling still cannot be wrapped and says so.
 
 `RUNNER_METAL_ATTN_COOP=0` pins the byte-identical decode attention kernel.
+At prefill the batch's columns are scored eight per threadgroup from one read
+of each K element (`k_attn_tile`), which is byte-identical to the one-column
+kernel and is pinned off with `RUNNER_METAL_ATTN_TILE=0`.
 The default is the cooperative KV read: one simdgroup owns a KV row and its
 lanes split `head_dim`, so a load covers 32 consecutive elements instead of 32
 rows. It reassociates the per-row dot into a `simd_sum`, which is why it

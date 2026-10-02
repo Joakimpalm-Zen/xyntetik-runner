@@ -3258,6 +3258,161 @@ kernel void k_attn_coop(device const float *q_all   [[buffer(0)]],
     ATTN_EPILOGUE
 }
 
+// ------------------------------------------------- tiled prefill attention
+//
+// k_attn at n > 1 gives every prompt column its own threadgroup, and each one
+// walks the whole KV history of its head by itself: a 64-column batch over a
+// 2,000-token history reads the same K and V rows 64 times per head. Measured
+// on an M1 (Llama-3.2-3B, 2026-10-02) that traffic, not arithmetic, is what a
+// growing agent conversation waits on: prefill fell from 61 tok/s at 700
+// tokens of history to 26 at 2,100 and 16 at 3,700.
+//
+// Here one threadgroup takes ATTN_TILE consecutive columns. The row loops are
+// the outer loops and the columns the inner ones, so a K row and a V element
+// are fetched once and used by every column of the tile.
+//
+// The arithmetic per column is k_attn's, in k_attn's order: the same
+// sequential dot per row (kv_dot), the same per-thread strided partition for
+// the max and the exp-sum (started at the column's own t0, which is what the
+// reduction order depends on), and the same sequential V accumulation over t.
+// So this is not a tolerance route: tests/test_metal_attn_tile.py holds its
+// output byte-identical to k_attn's, and RUNNER_METAL_ATTN_TILE=0 pins k_attn.
+#define ATTN_TILE 8
+#define ATTN_TILE_MAX_HD 256   // the host keeps wider heads on k_attn
+struct attn_tile_args { int n_col; };
+
+kernel void k_attn_tile(device const float *q_all   [[buffer(0)]],
+                   device const uchar *kc      [[buffer(1)]],
+                   device const uchar *vc      [[buffer(2)]],
+                   device float       *att_all [[buffer(3)]],
+                   device float       *out_all [[buffer(4)]],
+                   constant attn_args &a   [[buffer(5)]],
+                   device const float *sinks [[buffer(6)]],
+                   constant attn_tile_args &ta [[buffer(7)]],
+                   uint3 tgpig [[threadgroup_position_in_grid]],
+                   uint3 tid3 [[thread_position_in_threadgroup]],
+                   uint3 tpg3 [[threads_per_threadgroup]]) {
+    threadgroup float red[256];
+    threadgroup float4 qt[2 * ATTN_TILE_MAX_HD];
+    uint tid = tid3.x, tpg = tpg3.x;
+    uint h = tgpig.x;
+    int c0 = (int)tgpig.y * ATTN_TILE;
+    int nc = min(ATTN_TILE, ta.n_col - c0);
+    int hd = a.head_dim;
+    int kvh = h / (a.n_head / a.n_head_kv);
+    int kv_dim = a.n_head_kv * hd;
+    ulong row_b = kv_row_bytes(kv_dim, a.q8);
+    ulong base = a.l_off + kv_head_off(kvh, hd, a.q8);
+    ulong row_v = kv_row_bytes(kv_dim, a.vq8);
+    ulong base_v = a.v_off + kv_head_off(kvh, hd, a.vq8);
+    int pos_lo = a.pos + c0, pos_hi = pos_lo + nc - 1;
+    int t0_lo = 0;
+    if (a.window > 0 && pos_lo - a.window + 1 > 0) t0_lo = pos_lo - a.window + 1;
+
+    // The tile's queries, element-major in threadgroup memory: qt[2i] holds
+    // element i of columns 0-3 and qt[2i+1] of columns 4-7 (zero past the
+    // batch's last column), so the score loop reads them as two vectors
+    // from on-chip memory instead of eight device streams.
+    if (a.q8 == 0) {
+        for (int i = (int)tid; i < hd; i += (int)tpg) {
+            float4 lo = float4(0), hi = float4(0);
+            for (int c = 0; c < nc; c++) {
+                float v = q_all[(ulong)(c0 + c) * a.q_stride + h * hd + i];
+                if (c < 4) lo[c] = v; else hi[c - 4] = v;
+            }
+            qt[2 * i] = lo;
+            qt[2 * i + 1] = hi;
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+
+    // scores: one K row, every column of the tile that can see it. For the
+    // f16 cache each K element is loaded and widened once and feeds one
+    // accumulator per column, element by element in kv_dot's order, so a
+    // column's dot is the same chain of operations it is in k_attn. The
+    // quantized caches go through kv_dot itself, a column at a time.
+    for (int t = t0_lo + (int)tid; t <= pos_hi; t += (int)tpg) {
+        device const uchar *row = kc + base + kv_row_off(t, a.kv_rows, row_b);
+        // column c sees row t when t <= pos_lo + c and, under a window,
+        // t >= pos_lo + c - window + 1
+        int cs = t > pos_lo ? t - pos_lo : 0;
+        int ce = nc;
+        if (a.window > 0 && t + a.window - pos_lo < ce) ce = t + a.window - pos_lo;
+        if (cs >= ce) continue;
+        if (a.q8 == 0) {
+            device const half *k = (device const half *)row;
+            float4 acc0 = float4(0), acc1 = float4(0);
+            for (int i = 0; i < hd; i++) {
+                float kf = (float)k[i];
+                acc0 += qt[2 * i] * kf;
+                acc1 += qt[2 * i + 1] * kf;
+            }
+            for (int c = cs; c < ce; c++)
+                att_all[(ulong)(c0 + c) * a.att_stride + (ulong)h * a.n_ctx + t] =
+                    (c < 4 ? acc0[c] : acc1[c - 4]) * a.scale;
+        } else {
+            for (int c = cs; c < ce; c++) {
+                device const float *qh = q_all + (ulong)(c0 + c) * a.q_stride + h * hd;
+                att_all[(ulong)(c0 + c) * a.att_stride + (ulong)h * a.n_ctx + t] =
+                    kv_dot(row, qh, hd, a.q8) * a.scale;
+            }
+        }
+    }
+    threadgroup_barrier(mem_flags::mem_device);
+
+    // softmax, one column at a time over its own scores: k_attn's partition
+    float sums[ATTN_TILE];
+    for (int c = 0; c < nc; c++) {
+        int pc = pos_lo + c;
+        int t0 = 0;
+        if (a.window > 0 && pc - a.window + 1 > 0) t0 = pc - a.window + 1;
+        device float *ah = att_all + (ulong)(c0 + c) * a.att_stride + (ulong)h * a.n_ctx;
+        float mx = -1e30f;
+        for (int t = t0 + (int)tid; t <= pc; t += (int)tpg) mx = max(mx, ah[t]);
+        if (a.has_sinks && tid == 0) mx = max(mx, sinks[h]);
+        red[tid] = mx;
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        for (uint off = tpg / 2; off > 0; off >>= 1) {
+            if (tid < off) red[tid] = max(red[tid], red[tid + off]);
+            threadgroup_barrier(mem_flags::mem_threadgroup);
+        }
+        mx = red[0];
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        float sum = 0;
+        for (int t = t0 + (int)tid; t <= pc; t += (int)tpg) {
+            float e = exp(ah[t] - mx);
+            ah[t] = e;
+            sum += e;
+        }
+        if (a.has_sinks && tid == 0) sum += exp(sinks[h] - mx);
+        red[tid] = sum;
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        for (uint off = tpg / 2; off > 0; off >>= 1) {
+            if (tid < off) red[tid] += red[tid + off];
+            threadgroup_barrier(mem_flags::mem_threadgroup);
+        }
+        sums[c] = red[0];
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+    threadgroup_barrier(mem_flags::mem_device);
+
+    // values: one V element, every column of the tile, in order of t
+    for (int i = (int)tid; i < hd; i += (int)tpg) {
+        float o[ATTN_TILE];
+        for (int c = 0; c < ATTN_TILE; c++) o[c] = 0;
+        for (int t = t0_lo; t <= pos_hi; t++) {
+            float v = kv_pair(vc + base_v + kv_row_off(t, a.kv_rows, row_v), i / 2, a.vq8)[i & 1];
+            int cs = t > pos_lo ? t - pos_lo : 0;
+            int ce = nc;
+            if (a.window > 0 && t + a.window - pos_lo < ce) ce = t + a.window - pos_lo;
+            for (int c = cs; c < ce; c++)
+                o[c] += att_all[(ulong)(c0 + c) * a.att_stride + (ulong)h * a.n_ctx + t] * v;
+        }
+        for (int c = 0; c < nc; c++)
+            out_all[(ulong)(c0 + c) * a.out_stride + h * hd + i] = o[c] / sums[c];
+    }
+}
+
 // ------------------------------------------------- chunked decode attention
 //
 // k_attn gets n_head threadgroups and nothing else, so decode attention runs

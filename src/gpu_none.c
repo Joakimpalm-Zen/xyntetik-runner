@@ -56,6 +56,7 @@ unsigned long gpu_mv_dispatches(void) { return 0; }
 // Metal-only lever; present so the gate links and reports 'never here'.
 void gpu_attn_coop_force(int on) { (void)on; }
 unsigned long gpu_attn_coop_dispatches(void) { return 0; }
+unsigned long gpu_attn_tile_dispatches(void) { return 0; }
 
 // Same, for the fused-vs-eager MoE routing gate.
 void gpu_moe_eager_force(int on) { (void)on; }

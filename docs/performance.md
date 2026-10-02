@@ -45,6 +45,55 @@ across thread counts. Scope a shared box with `--reserve-cpu` or pin with `-t`.
 The 100.5s SmolLM2 torture run would now be ~16s. GPU decode is **2.23s**
 (2.6x the fixed CPU), and CPU/GPU top-1 tokens match 0/64.
 
+## 2026-10-02 - Metal prefill attention: the columns of a batch share the KV read
+
+Measured on the lab M1 (8 GB) with Llama-3.2-3B-Instruct Q4_K_M, because the
+question was what an agent user waits for, not a decode rate.
+`scripts/agent-turns-bench.py` drives a fixed ten-turn tool conversation the
+way an OpenAI-compatible coding client does: streamed requests, tools
+declared, the model's own reply and a canned tool result of about 480 tokens
+appended each turn. The server reused every earlier token on every turn (the
+bench counts recomputed history, and it was zero), so the wait was prefill of
+the new tokens, and that slowed as the history grew: 61 tok/s over 700 tokens
+of history, 26 over 2,100, 16 over 3,700.
+
+The cost was the attention score loop. At prefill `k_attn` gave every prompt
+column its own threadgroup, each walking its head's whole K history with one
+serial dot per row. Timing the kernel with one phase removed at a time on a
+1,297-token prompt: scores 6.4 s, values 0.9 s, softmax 0.8 s. Sharing the
+reads alone changed nothing (the first tiled kernel measured 46.95 against
+47.17 tok/s), so traffic was not the limit; the serial dot was.
+
+`k_attn_tile` takes eight columns per threadgroup, keeps their queries
+element-major in threadgroup memory, and loads each K element once to feed
+one accumulator per column as two four-wide vectors. Every column's dot,
+softmax partition and value sum is the same chain of operations in the same
+order as in `k_attn`, so it is byte-identical, not tolerance-gated:
+`tests/test_metal_attn_tile.py` holds served log-probabilities equal to the
+last bit on the f16, q8, k8v4 and fp4 caches and under a sliding window, and
+`RUNNER_METAL_ATTN_TILE=0` pins the one-column kernel.
+
+| prompt | one column | tiled |
+|---|---:|---:|
+| 1,297 tokens | 47.4 tok/s | 64.1 tok/s |
+| 2,431 tokens | 36.2 tok/s | 59.2 tok/s |
+
+The ten-turn conversation, same binary, same turns, first pass on a fresh
+server (records in `docs/agent-turns-2026-10-02/`):
+
+| | one column | tiled |
+|---|---:|---:|
+| wall time, ten turns | 173.6 s | 116.8 s |
+| time to first token, median | 14.2 s | 10.4 s |
+| time to first token, worst turn | 30.1 s | 15.6 s |
+
+Not changed, and still growing with context: decode attention (10.6 tok/s at
+the first turn, 7.1 at 2,100 tokens of history) and the restore of a turn
+from the prefix-cache store on a second pass over the same conversation
+(about 3 s per 700 cached tokens on this machine). One machine and one
+model; a larger GPU or a wider head count will move the split between the
+phases.
+
 ## 2026-09-30 — CPU attention: more threads than heads, and the same bits
 
 `attn_heads` gave each thread whole query heads, so a model with fewer heads

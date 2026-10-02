@@ -31,6 +31,7 @@ typedef struct {
     id<MTLComputePipelineState> p_rmsnorm, p_qknorm, p_headnorm, p_rope, p_store, p_attn;
     id<MTLComputePipelineState> p_attn_chunk, p_attn_comb;
     id<MTLComputePipelineState> p_attn_coop, p_attn_chunk_coop;  // cooperative KV score read
+    id<MTLComputePipelineState> p_attn_tile;   // prefill: several columns share each KV read
     id<MTLComputePipelineState> p_silu, p_gelu, p_add, p_scale;
     id<MTLComputePipelineState> p_sigmul;   // attention output gate (x *= sigmoid(g))
     id<MTLComputePipelineState> p_moe_route, p_moe_actmul, p_moe_sum, p_trace_copy;
@@ -219,6 +220,7 @@ static void gpu_release_state(gpu_t *g, int n_layer) {
     free(g->ppn); free(g->pan); free(g->pfn);
     free(g->gpn1); free(g->gprn2); free(g->gpn2); free(g->ggis); free(g->gdsc);
     [g->p_attn_coop release]; [g->p_attn_chunk_coop release];
+    [g->p_attn_tile release];
     for (int i = 0; i < g->n_wbuf; i++) [g->wbuf[i] release];
     id<MTLBuffer> bufs[] = { g->kc, g->vc, g->x, g->xb, g->xb2,
                              g->q, g->kt, g->vt, g->hb, g->hb2, g->att,
@@ -999,6 +1001,20 @@ void gpu_attn_coop_force(int on) {
 }
 unsigned long gpu_attn_coop_dispatches(void) { return g_coop_dispatches; }
 
+// Prefill attention tiles several columns per threadgroup so they share each
+// KV read (k_attn_tile). Byte-identical to k_attn; RUNNER_METAL_ATTN_TILE=0
+// pins the one-column kernel for an identity investigation.
+static unsigned long g_tile_dispatches;
+unsigned long gpu_attn_tile_dispatches(void) { return g_tile_dispatches; }
+static bool metal_attn_tile_on(void) {
+    static int v = -1;
+    if (v < 0) {
+        const char *e = getenv("RUNNER_METAL_ATTN_TILE");
+        v = !(e && e[0] == '0');
+    }
+    return v;
+}
+
 static bool metal_attn_coop_on(void) {
     if (g_coop_state == COOP_ENV_UNSET) {
         const char *e = getenv("RUNNER_METAL_ATTN_COOP");
@@ -1451,6 +1467,7 @@ bool gpu_init(model_t *m) {
     g->p_store        = mk_pipeline(dev, lib, @"k_store_kv");
     g->p_attn         = mk_pipeline(dev, lib, @"k_attn");
     g->p_attn_coop    = mk_pipeline(dev, lib, @"k_attn_coop");
+    g->p_attn_tile    = mk_pipeline(dev, lib, @"k_attn_tile");
     g->p_attn_chunk_coop = mk_pipeline(dev, lib, @"k_attn_chunk_coop");
     g->p_attn_chunk   = mk_pipeline(dev, lib, @"k_attn_chunk");
     g->p_attn_comb    = mk_pipeline(dev, lib, @"k_attn_combine");
@@ -3284,7 +3301,13 @@ static float *gpu_forward_native_batch(model_t *m, const int32_t *tokens,
             // the coop form's simdgroup-per-row split does not describe.
             bool coop = (n == 1) && metal_attn_coop_on() && g->p_attn_coop;
             if (coop) g_coop_dispatches++;
-            [e setComputePipelineState:coop ? g->p_attn_coop : g->p_attn];
+            // Prefill: the tiled kernel, same arithmetic, shared KV reads.
+            // Must agree with ATTN_TILE in kernels.metal.
+            enum { ATTN_TILE = 8 };
+            bool tile = (n > 1) && hd <= 256 && metal_attn_tile_on() &&
+                        g->p_attn_tile;
+            [e setComputePipelineState:tile ? g->p_attn_tile
+                                     : coop ? g->p_attn_coop : g->p_attn];
             [e setBuffer:g->q   offset:0 atIndex:0];
             [e setBuffer:g->kc  offset:0 atIndex:1];
             [e setBuffer:g->vc  offset:0 atIndex:2];
@@ -3295,7 +3318,10 @@ static float *gpu_forward_native_batch(model_t *m, const int32_t *tokens,
             // Widest power-of-two threadgroup this pipeline allows, capped
             // at the red[] scratch in the kernel. The reduction halves tpg
             // each step, so a non-power-of-two would drop lanes silently.
-            NSUInteger amax = (coop ? g->p_attn_coop : g->p_attn)
+            int32_t tile_cols = n;
+            if (tile) [e setBytes:&tile_cols length:sizeof(tile_cols) atIndex:7];
+            NSUInteger amax = (tile ? g->p_attn_tile
+                                    : coop ? g->p_attn_coop : g->p_attn)
                                   .maxTotalThreadsPerThreadgroup;
             if (amax > 256) amax = 256;   // measured optimum; red[] is sized to match
             NSUInteger atpg = 1;
@@ -3311,8 +3337,15 @@ static float *gpu_forward_native_batch(model_t *m, const int32_t *tokens,
                 }
             }
             g_disp.attn++;
-            [e dispatchThreadgroups:MTLSizeMake(m->n_head, n, 1)
-              threadsPerThreadgroup:MTLSizeMake(atpg, 1, 1)];
+            if (tile) {
+                g_tile_dispatches++;
+                [e dispatchThreadgroups:MTLSizeMake(m->n_head,
+                                                    (n + ATTN_TILE - 1) / ATTN_TILE, 1)
+                  threadsPerThreadgroup:MTLSizeMake(atpg, 1, 1)];
+            } else {
+                [e dispatchThreadgroups:MTLSizeMake(m->n_head, n, 1)
+                  threadsPerThreadgroup:MTLSizeMake(atpg, 1, 1)];
+            }
             attn_done: ;
         }
 
@@ -3480,10 +3513,10 @@ static float *gpu_forward_native_batch(model_t *m, const int32_t *tokens,
                         / (double)(g_disp.kv_swa + g_disp.kv_global));
         fprintf(stderr, "metal-census n=%d total=%lu | tensor=%lu mm=%lu mv=%lu mvf=%lu "
                 "rmsnorm=%lu qknorm=%lu headnorm=%lu rope=%lu store=%lu "
-                "attn=%lu attn_chunk=%lu(coop %lu) elem=%lu moe=%lu\n",
+                "attn=%lu(tile %lu) attn_chunk=%lu(coop %lu) elem=%lu moe=%lu\n",
                 n, tot, g_disp.tensor, g_disp.mm, g_disp.mv, g_disp.mvf, g_disp.rmsnorm,
                 g_disp.qknorm, g_disp.headnorm, g_disp.rope, g_disp.store,
-                g_disp.attn, g_disp.attn_chunk, g_coop_dispatches,
+                g_disp.attn, g_tile_dispatches, g_disp.attn_chunk, g_coop_dispatches,
                 g_disp.elem, g_disp.moe);
     }
     return (float *)g->logits.contents + (size_t)(n - 1) * m->n_vocab;

@@ -8,6 +8,18 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **Metal prefill is faster over a long history, byte for byte the same.**
+  At prefill every prompt column walked its head's whole K history alone, so
+  the tokens an agent adds each turn were processed more slowly as the
+  conversation grew. `k_attn_tile` scores eight columns per threadgroup from
+  one read of each K element, in the same order of operations per column as
+  before. On an M1 with Llama-3.2-3B Q4_K_M a 2,431-token prefill goes from
+  36.2 to 59.2 tok/s, and a ten-turn tool conversation
+  (`scripts/agent-turns-bench.py`) from 173.6 to 116.8 s, with the worst
+  turn's time to first token down from 30.1 to 15.6 s. Output is
+  byte-identical (`tests/test_metal_attn_tile.py`, every KV format and a
+  sliding window); `RUNNER_METAL_ATTN_TILE=0` pins the old kernel.
+  `docs/performance.md` has the phase timings and what is still slow.
 - **`runner --doctor`: one diagnostic report to attach to a question.** It
   loads the model, runs one short chat probe through the renderer, tokenizer
   and engine a chat request uses, and prints JSON: the version, the file's
