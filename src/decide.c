@@ -26,12 +26,61 @@ static int cmp_seq(const void *a, const void *b) {
     return x->n - y->n;
 }
 
+// A request's shared prefix, fed once in one fixed way (R10.3.3).
+//
+// A question's prompt starts with the request's state, and its rows used to
+// come from wherever the slot's KV happened to stand: what an earlier request
+// left, or the previous question of this one. Which rows were reused decides
+// how wide a batch the rest is fed in, and CPU prefill is not batch-invariant
+// on every host, so a logprob could move in its last digit with what the
+// slot served before and with the order of the questions. Here the state is
+// fed alone, from an empty KV, once per request; a question takes exactly
+// the rows its prompt shares with it and feeds its own remainder as one
+// batch. A score is then a function of the state and the question, and the
+// state is still prefilled once however many questions there are.
+typedef struct {
+    int32_t *toks;   // the state alone, tokenized as the prompts are
+    int      n;
+    int      upto;   // rows [0, upto) still hold the state's own feed; -1: none
+} canon_prefix;
+
+static bool canon_seat(engine *e, canon_prefix *c, const int32_t *ptoks, int np,
+                       const char **err) {
+    int k = 0;
+    while (k < c->n && k < np - 1 && c->toks[k] == ptoks[k]) k++;
+    // a recurrent fold is not sliceable: such a model scores every question
+    // cold, which is the same function of the prompt
+    if (k == 0 || model_has_recurrent(e->m) || model_kv_ring_active(e->m)) {
+        engine_reset(e);
+        c->upto = -1;
+        return true;
+    }
+    if (c->upto < k) {
+        engine_reset(e);
+        if (!engine_feed(e, c->toks, c->n)) {
+            *err = "engine feed failed (context or memory)";
+            return false;
+        }
+        c->upto = c->n;
+    }
+    // keep exactly k rows: engine_rewind keeps at most (n - 1) of n
+    if (engine_rewind(e, ptoks, k + 1) != k) {
+        engine_reset(e);
+        c->upto = -1;
+        return true;
+    }
+    c->upto = k;
+    return true;
+}
+
 // `mode` is how the prompt (and prompt + option) is tokenized: TOK_TEXT for
 // caller text, TOK_PROMPT for a chat render whose control tokens sit inside
 // the template's marks. An option is always appended as plain bytes.
+// `canon`, when given, seats the KV on the request's shared prefix first.
 static bool score_mode(engine *e, const char *prompt, tok_mode mode,
                        const char *const *options, int n_opt,
-                       decide_result *out, int *prompt_tokens, const char **err) {
+                       decide_result *out, int *prompt_tokens, const char **err,
+                       canon_prefix *canon) {
     *err = NULL;
     model_t *m = e->m;
     int32_t *ptoks = NULL;
@@ -79,6 +128,7 @@ static bool score_mode(engine *e, const char *prompt, tok_mode mode,
     // depth never scored (an option whose boundary merge reaches below the
     // others' common point) is computed rather than assumed.
     if (ok) qsort(seq, (size_t)n_opt, sizeof *seq, cmp_seq);
+    if (ok && canon) ok = canon_seat(e, canon, ptoks, np, err);
     const int32_t *path = NULL; int path_n = 0;
     for (int i = 0; i < n_opt && ok; i++) {
         opt_seq *s = &seq[i];
@@ -120,7 +170,7 @@ static bool score_mode(engine *e, const char *prompt, tok_mode mode,
 
 bool decide_score(engine *e, const char *prompt, const char *const *options, int n_opt,
                   decide_result *out, int *prompt_tokens, const char **err) {
-    return score_mode(e, prompt, TOK_TEXT, options, n_opt, out, prompt_tokens, err);
+    return score_mode(e, prompt, TOK_TEXT, options, n_opt, out, prompt_tokens, err, NULL);
 }
 
 // ---------------------------------------------------------------- request
@@ -199,6 +249,9 @@ int decide_handle(engine *e, const jv *req, const char *model_name, sbuf *out, c
     sb_lit(out, "\",\"decisions\":[");
     int total_prompt = 0;
     int status = 200;
+    canon_prefix canon = { NULL, 0, -1 };
+    canon.n = tok_encode_fit(e->tok, state, true, TOK_TEXT, 0, &canon.toks);
+    if (canon.n < 0) { free(canon.toks); *err = "out of memory tokenizing the state"; return 500; }
     for (int i = 0; i < qs->n && status == 200; i++) {
         const jv *q = qs->items[i];
         if (q->type != J_OBJ) { *err = "each question must be an object"; status = 400; break; }
@@ -234,7 +287,8 @@ int decide_handle(engine *e, const jv *req, const char *model_name, sbuf *out, c
         }
         int ptoks = 0;
         const char *serr = NULL;
-        bool ok = decide_score(e, prompt, ov, n_opt, res, &ptoks, &serr);
+        bool ok = score_mode(e, prompt, TOK_TEXT, ov, n_opt, res, &ptoks, &serr,
+                             &canon);
         free(prompt);
         if (!ok) {
             free(ov); free(res);
@@ -254,7 +308,9 @@ int decide_handle(engine *e, const jv *req, const char *model_name, sbuf *out, c
         sb_lit(out, "\",\"options\":[");
         for (int j = 0; j < n_opt; j++) { sb_fmt(out, "%s\"", j ? "," : ""); sb_esc(out, ov[j], strlen(ov[j])); sb_lit(out, "\""); }
         sb_lit(out, "],\"logprobs\":[");
-        for (int j = 0; j < n_opt; j++) sb_fmt(out, "%s%.6f", j ? "," : "", res[j].lp);
+        // nine significant digits, the precision --score prints: at six
+        // decimals a last-bit difference between two feeds was invisible
+        for (int j = 0; j < n_opt; j++) sb_fmt(out, "%s%.9g", j ? "," : "", res[j].lp);
         sb_lit(out, "],\"probs\":[");
         for (int j = 0; j < n_opt; j++) sb_fmt(out, "%s%.6g", j ? "," : "", exp(res[j].lp - mx) / z);
         sb_fmt(out, "],\"argmax\":%d,\"n_tokens\":[", argmax);
@@ -262,6 +318,7 @@ int decide_handle(engine *e, const jv *req, const char *model_name, sbuf *out, c
         sb_lit(out, "]}");
         free(ov); free(res);
     }
+    free(canon.toks);
     if (status != 200) return status;
     sb_fmt(out, "],\"usage\":{\"prompt_tokens\":%d,\"completion_tokens\":0,\"total_tokens\":%d},"
                 "\"envelope\":{\"runner_version\":\"%s\",\"state_sha256\":\"%s\",\"questions_sha256\":\"%s\","
@@ -419,7 +476,7 @@ int rerank_handle(engine *e, const jv *req, const char *model_name, int tmpl,
         // shared instruction and query being prefilled once per document.
         engine_reset(e);
         bool ok = score_mode(e, prompt, chat ? TOK_PROMPT : TOK_TEXT,
-                             chat ? opts_chat : opts_raw, 2, res, &ptoks, &serr);
+                             chat ? opts_chat : opts_raw, 2, res, &ptoks, &serr, NULL);
         free(prompt);
         if (!ok) {
             *err = serr ? serr : "scoring failed";

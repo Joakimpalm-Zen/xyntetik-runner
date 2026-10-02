@@ -29,9 +29,12 @@
 #include "engine.h"
 #include "json.h"
 
-// Opens (creates) DIR; sign_key may be NULL (unsigned manifests). False with
-// the reason on stderr.
-bool kvsnap_configure(const char *dir, const char *sign_key);
+// Opens (creates) DIR; sign_key may be NULL (unsigned manifests). A loaded
+// manifest must be signed by trust_key (hex public key or sha256:<digest>),
+// or, when that is NULL, by sign_key's own key; with neither there is no
+// anchor and a manifest is held only to the key it names. False with the
+// reason on stderr.
+bool kvsnap_configure(const char *dir, const char *sign_key, const char *trust_key);
 bool kvsnap_enabled(void);
 
 typedef struct {

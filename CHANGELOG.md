@@ -8,6 +8,42 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **`make sweep-thinking`: the real-model sweep as a repeatable job
+  (R4.12.27).** The roster of thinking and tool-protocol families is checked
+  in (`scripts/sweep-rosters/thinking.json`, paths under
+  `$RUNNER_SWEEP_MODELS`), `family-sweep.py --only cpu|gpu` selects a half,
+  and the exit code tells a scheduler what happened: 0 clean, 1 an engine
+  FAIL, 2 a rostered model missing (a run that tested nothing does not
+  pass).
+- **CUDA: apertus, nemotron_h and granitehybrid prefill on the tensor
+  cores**, each on its own `test-tc-tol` row (the Blackwell, real weights: 0
+  of 64 flips, 0.00003, 0.00001 and 0.00005 of the logit range, free-running
+  output token-identical). `qwen3moe` was measured for the record and stays
+  opt-in: Qwen3-30B-A3B keep96 passes the teacher-forced bounds at about
+  fifty times the dense rows' deviation and fails the free-running arm,
+  diverging at token 20.
+- **CUDA says when i-quants will prefill on the scalar kernel (R4.12.28).**
+  On an architecture whose tensor-core prefill is not promoted, a model with
+  codebook i-quant matrices now prints, at load, how many there are and the
+  two ways out (`RUNNER_CUDA_TC=1`, `--gpu off`), instead of leaving it to a
+  prompt that does not return.
+- **KV snapshots load only from a trusted key (R1.12.3).** A manifest was
+  verified against the key it names, so an unsigned one, or one signed by
+  anyone, loaded as well, even on a server started with `--sign-key`. A
+  server that signs its snapshots now trusts its own key; `--trust-key`
+  names another (the key, or `sha256:` of its bytes) and outranks it; a
+  manifest that is unsigned or signed by another key answers 409
+  `snapshot_untrusted`. With neither flag there is still no anchor, and the
+  response's `signed_by` says who signed.
+- **`/v1/decide`: a score is a function of the request (R10.3.3).** A
+  question's rows came from wherever the slot's KV stood, an earlier
+  request's or the previous question's, so a logprob could move in its
+  last digits with what the slot served before and with the order of the
+  questions. The state is fed alone from an empty KV once per request and
+  every question takes exactly the rows it shares with it; the state is
+  still prefilled once, so nothing got slower. `logprobs` print nine
+  significant digits (six decimals hid the difference).
+
 - **CUDA: Muse-Glimmer and Qwen2 prefill on the tensor cores.** The
   tensor-core prefill GEMM is promoted per architecture, on a measured
   tolerance row, and `muse-glimmer` and `qwen2` had none, so their prefill

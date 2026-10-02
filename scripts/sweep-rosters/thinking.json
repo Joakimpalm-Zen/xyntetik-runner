@@ -1,0 +1,119 @@
+[
+ {
+  "family": "qwen35 / Qwen3.5-0.8B Q8_0",
+  "path": "$RUNNER_SWEEP_MODELS/Qwen3.5-0.8B/Qwen3.5-0.8B-Q8_0.gguf",
+  "backends": [
+   "cpu",
+   "gpu"
+  ]
+ },
+ {
+  "family": "qwen35 / Qwen3.5-4B Q4_K_M",
+  "path": "$RUNNER_SWEEP_MODELS/Qwen3.5-4B/Qwen3.5-4B-Q4_K_M.gguf",
+  "backends": [
+   "gpu"
+  ]
+ },
+ {
+  "family": "qwen3 / Qwen3-4B Q4_K_M",
+  "path": "$RUNNER_SWEEP_MODELS/Qwen3-4B-tooluse/Qwen_Qwen3-4B-Q4_K_M.gguf",
+  "backends": [
+   "cpu",
+   "gpu"
+  ]
+ },
+ {
+  "family": "qwen3moe / Qwen3-Coder-30B-A3B keep120",
+  "path": "$RUNNER_SWEEP_MODELS/Qwen3-Coder-30B-A3B-keep120-Q4_K_M/Qwen3-Coder-30B-A3B-keep120-Q4_K_M.gguf",
+  "backends": [
+   "gpu"
+  ]
+ },
+ {
+  "family": "granite / granite-4.2-3b Q4_K_M",
+  "path": "$RUNNER_SWEEP_MODELS/granite-4.2/granite-4.2-3b-Q4_K_M.gguf",
+  "backends": [
+   "gpu"
+  ]
+ },
+ {
+  "family": "granite / granite-4.2-8b Q4_K_M",
+  "path": "$RUNNER_SWEEP_MODELS/granite-4.2/granite-4.2-8b-Q4_K_M.gguf",
+  "backends": [
+   "gpu"
+  ]
+ },
+ {
+  "family": "granite / granite-4.1-3b Q8_0",
+  "path": "$RUNNER_SWEEP_MODELS/granite-4.1-3b-Q8_0/granite-4.1-3b-Q8_0.gguf",
+  "backends": [
+   "cpu",
+   "gpu"
+  ]
+ },
+ {
+  "family": "granitehybrid / granite-4.0-h-micro Q4_K_M",
+  "path": "$RUNNER_SWEEP_MODELS/granite-4.0-h-micro/granite-4.0-h-micro-Q4_K_M.gguf",
+  "backends": [
+   "gpu"
+  ]
+ },
+ {
+  "family": "gemma4 / E2B Q4_K_M mix",
+  "path": "$RUNNER_SWEEP_MODELS/gemma-4-E2B-published-mix/gemma-4-E2B-it-Q4_K_M-Q4_0-mix.gguf",
+  "backends": [
+   "cpu",
+   "gpu"
+  ]
+ },
+ {
+  "family": "gemma4 / 12B QAT Q4_0",
+  "path": "$RUNNER_SWEEP_MODELS/gemma-4-12b-it-qat-q4_0/gemma-4-12b-it-qat-q4_0.gguf",
+  "backends": [
+   "gpu"
+  ]
+ },
+ {
+  "family": "gemma4 / 26B-A4B Q4_0",
+  "path": "$RUNNER_SWEEP_MODELS/gemma-4-26B-A4B-it-Q4_0/gemma-4-26B-A4B-it-Q4_0.gguf",
+  "backends": [
+   "gpu"
+  ]
+ },
+ {
+  "family": "gpt-oss / 20b keep30 MXFP4",
+  "path": "$RUNNER_SWEEP_MODELS/keep30-q4ne/keep30-q4ne.gguf",
+  "backends": [
+   "gpu"
+  ]
+ },
+ {
+  "family": "muse-glimmer / 30B IQ3_XXS",
+  "path": "$RUNNER_SWEEP_MODELS/Muse-Glimmer-30B-IQ3_XXS/Muse-Glimmer-30B-IQ3_XXS.gguf",
+  "backends": [
+   "gpu"
+  ]
+ },
+ {
+  "family": "muse-glimmer / 30B kquant Q4_K_M",
+  "path": "$RUNNER_SWEEP_MODELS/muse-glimmer-30B-kquant-17gb/muse-glimmer-30B-kquant-17gb.gguf",
+  "backends": [
+   "gpu"
+  ]
+ },
+ {
+  "family": "muse-glimmer / Kvist-14B a12 Q8_0",
+  "path": "$RUNNER_SWEEP_MODELS/muse-students/gguf/diag-a12-01440-Q8_0.gguf",
+  "backends": [
+   "gpu"
+  ]
+ },
+ {
+  "family": "llama / Llama-3.2-3B Q4_K_M",
+  "path": "$RUNNER_SWEEP_MODELS/Llama-3.2-3B-Instruct-Q4_K_M/Llama-3.2-3B-Instruct-Q4_K_M.gguf",
+  "backends": [
+   "cpu",
+   "gpu"
+  ]
+ }
+]

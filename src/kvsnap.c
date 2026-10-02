@@ -31,11 +31,47 @@ static struct {
     bool on;
     char dir[1024];
     char sign_key[1024];
+    // The key a loaded manifest must be signed with (R1.12.3): --trust-key,
+    // else this server's own --sign-key. Hex of the public key, or
+    // "sha256:" + the hex digest of its bytes; "" = no anchor.
+    char trust[SIGN_PUBHEX_CAP + 8];
     pthread_mutex_t mu;   // one writer at a time: names are checked then made
 } KS = { .mu = PTHREAD_MUTEX_INITIALIZER };
 
-bool kvsnap_configure(const char *dir, const char *sign_key) {
+static bool hex_eq(const char *a, const char *b) {
+    for (; *a && *b; a++, b++) {
+        char x = *a >= 'A' && *a <= 'F' ? (char)(*a + 32) : *a;
+        char y = *b >= 'A' && *b <= 'F' ? (char)(*b + 32) : *b;
+        if (x != y) return false;
+    }
+    return !*a && !*b;
+}
+
+// Is `pub` (hex) the trusted key? The forms --verify's --trust-key takes.
+static bool trusted_key(const char *pub) {
+    if (strncmp(KS.trust, "sha256:", 7) != 0) return hex_eq(KS.trust, pub);
+    uint8_t pkb[SIGN_PK_MAX];
+    size_t hn = strlen(pub);
+    if (hn % 2 || hn / 2 > sizeof pkb) return false;
+    for (size_t i = 0; i < hn / 2; i++) {
+        unsigned v = 0;
+        if (sscanf(pub + 2 * i, "%2x", &v) != 1) return false;
+        pkb[i] = (uint8_t)v;
+    }
+    char digest[65];
+    envelope_data_sha256(pkb, hn / 2, digest);
+    return hex_eq(KS.trust + 7, digest);
+}
+
+bool kvsnap_configure(const char *dir, const char *sign_key, const char *trust_key) {
     KS.on = false;
+    KS.trust[0] = 0;
+    if (trust_key && strlen(trust_key) >= sizeof KS.trust) {
+        fprintf(stderr, "error: --kv-snapshots: --trust-key is not a public key "
+                "or sha256:<digest>\n");
+        return false;
+    }
+    if (trust_key && *trust_key) snprintf(KS.trust, sizeof KS.trust, "%s", trust_key);
     if (!dir || !*dir || strlen(dir) >= sizeof KS.dir) {
         fprintf(stderr, "error: --kv-snapshots needs a directory\n");
         return false;
@@ -55,12 +91,20 @@ bool kvsnap_configure(const char *dir, const char *sign_key) {
                     sign_key);
             return false;
         }
+        // a server that signs its snapshots trusts its own key by default:
+        // without an anchor a manifest was only held to the key it named,
+        // so an unsigned one, or one signed by anyone, loaded as well
+        if (!KS.trust[0])
+            for (size_t i = 0; i < k.pk_n && 2 * i + 2 < sizeof KS.trust; i++)
+                snprintf(KS.trust + 2 * i, 3, "%02x", k.pk[i]);
         memset(&k, 0, sizeof k);
         snprintf(KS.sign_key, sizeof KS.sign_key, "%s", sign_key);
     }
     KS.on = true;
-    fprintf(stderr, "kv snapshots: %s (%s manifests)\n", KS.dir,
-            KS.sign_key[0] ? "signed" : "unsigned");
+    fprintf(stderr, "kv snapshots: %s (%s manifests; loads %s)\n", KS.dir,
+            KS.sign_key[0] ? "signed" : "unsigned",
+            KS.trust[0] ? "only manifests signed by the trusted key"
+                        : "any manifest that verifies against the key it names");
     return true;
 }
 
@@ -312,6 +356,13 @@ bool kvsnap_load(const engine *e, const char *id, const char *name, sbuf *out,
             break;
         }
         if (rs != RSIG_OK) pub[0] = 0;
+        if (KS.trust[0] && (rs != RSIG_OK || !trusted_key(pub))) {
+            fail(err, 409, "snapshot_untrusted", "snapshot %s is %s; this "
+                 "server loads only snapshots signed by its trusted key "
+                 "(--trust-key, else its own --sign-key)", name,
+                 rs == RSIG_OK ? "signed by another key" : "unsigned");
+            break;
+        }
         char want_file[80];
         snprintf(want_file, sizeof want_file, "%s.kv", name);
         const char *kvsha = jv_str(jv_get(man, "kv_sha256"), "");

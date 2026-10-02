@@ -586,6 +586,8 @@ static bool inject_no_kernel(int type) {
            !strcmp(inj + 10, ggml_type_name(type));
 }
 
+static void tc_scalar_notice(const model_t *m);
+
 static bool gpu_tensor_type_ok(const gguf_tensor *t) {
     if (!t) return true;
     if (t->scale != 1.0f && !gpu_scale_companion_ok(t->type)) {
@@ -2271,6 +2273,7 @@ bool gpu_init(model_t *m) {
                     name, g->sw->weights_len / 1e9);
         // the number Phase 5 is judged on: with weights shared, a second slot
         // should cost only its KV cache and activation scratch
+        tc_scalar_notice(m);
         size_t vfree = 0, vtotal = 0;
         if (cu.MemGetInfo(&vfree, &vtotal) == 0)
             fprintf(stderr, "gpu: VRAM %.2f GB free of %.2f GB after init "
@@ -2571,10 +2574,25 @@ static bool tc_promoted(const model_t *m, int type) {
     // went 34.9 -> 116.9. Neither arch is MoE (muse-glimmer's gates are
     // per-layer sigmoid gates, not routing), so the amplification that keeps
     // qwen3moe opt-in does not apply.
+    //
+    // apertus, nemotron_h and granitehybrid joined the same day, on the same
+    // gate (0 flips of 64 and token-identical free-running output on each):
+    //
+    //   apertus        Apertus-8B Q4_K_M            Q4_K/Q6_K   0.00003 of range
+    //   nemotron_h     Nemotron-Nano-9B-v2 Q4_K_M   Q8_0/Q4_K   0.00001
+    //   granitehybrid  granite-4.0-h-micro Q4_K_M   Q4_K/Q6_K   0.00005
+    //
+    // qwen3moe was run for the record and stays opt-in: Qwen3-30B-A3B keep96
+    // passes the teacher-forced bounds (2 flips of 64, 0.00250 of range, some
+    // fifty times the dense rows) and FAILS the free-running arm, diverging
+    // at token 20. That is the MoE amplification the owner's decision was
+    // about, now measured. afmoe has no row: its router has no device kernel
+    // and the model runs on the CPU.
     static const char *archs[] = { "llama", "phi3", "gemma4", "qwen3",
                                    "qwen35",
                                    "mistral", "gemma3", "smollm", "granite",
-                                   "muse-glimmer", "qwen2" };
+                                   "muse-glimmer", "qwen2",
+                                   "apertus", "nemotron_h", "granitehybrid" };
     for (size_t i = 0; i < sizeof(archs) / sizeof(*archs); i++)
         if (strcmp(m->arch, archs[i]) == 0) return true;
     return false;
@@ -2588,6 +2606,36 @@ static bool tc_on(const model_t *m, int type) {
     }
     if (g_tc_state >= 0) return g_tc_state != 0;
     return tc_promoted(m, type);
+}
+
+// Said once at load (R4.12.28): a codebook i-quant on an architecture whose
+// tensor-core prefill is not promoted has only the scalar batched kernel,
+// which decodes its codebooks per element and per column. Measured before
+// muse-glimmer was promoted: Muse-Glimmer-30B IQ3_XXS prefilled at 2.6 tok/s
+// on the device against 24.0 on 16 host threads, and 85.3 with the tensor
+// cores. An architecture joins the promoted list on its own test-tc-tol row;
+// until it has one the user is told what they are getting and what the
+// alternatives are, instead of finding out from a prompt that never returns.
+static void tc_scalar_notice(const model_t *m) {
+    if (g_tc_state == TC_ENV_UNSET) (void)tc_on(m, T_Q4_K);   // read the env once
+    int n = 0, type = -1;
+    for (uint64_t i = 0; i < m->gf.n_tensors; i++) {
+        const gguf_tensor *t = &m->gf.tensors[i];
+        if (t->n_dims != 2 || !tc_codebook(t->type) || tc_on(m, t->type)) continue;
+        if (!n) type = t->type;
+        n++;
+    }
+    if (!n) return;
+    fprintf(stderr, "gpu: %d weight matrices are codebook i-quants (%s, ...) and "
+            "the tensor-core prefill is %s for '%s': prompts are prefilled by the "
+            "scalar kernel, which can be slower than the CPU. %s\n", n,
+            ggml_type_name(type),
+            g_tc_state == 0 ? "turned off (RUNNER_CUDA_TC=0)" : "not promoted",
+            m->arch,
+            g_tc_state == 0 ? "Unset RUNNER_CUDA_TC to use the promoted kernels."
+                            : "RUNNER_CUDA_TC=1 uses the tensor cores (not yet "
+                              "gated for this architecture); --gpu off prefills "
+                              "on the host.");
 }
 
 // A kernel with a fixed compile-time column tile cannot take the full prefill

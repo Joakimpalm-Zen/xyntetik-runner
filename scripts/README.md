@@ -32,6 +32,20 @@ runner; several are load-bearing gates for changing it.
   prompt and budget - throughput only, and labelled as such, because the
   correctness gate is defined against the pinned llama.cpp reference and those
   runtimes do not expose comparable completion logprobs.
+- **`family-sweep.py`** - a real model of each family through the CLI and
+  every server surface, with the edges (streamed against buffered, non-ASCII
+  tool arguments, JSON and schema turns on thinking models, context limit and
+  overflow, KV reuse, named contexts, rerank, receipts that replay, malformed
+  requests, a client that hangs up). It exists because a fixture cannot model
+  what a trained model wants to emit: every engine defect found on 2026-10-02
+  passed every fixture test. Verdicts are PASS, FAIL (the engine), NOTE (the
+  model's answer) and SKIP (a stated refusal); exit 0 clean, 1 on a FAIL, 2
+  when a rostered model is missing. `make sweep-thinking
+  RUNNER_SWEEP_MODELS=/shelf SWEEP_BACKENDS=cpu,gpu` runs the checked-in
+  roster of thinking and tool-protocol families
+  (`sweep-rosters/thinking.json`, paths under `$RUNNER_SWEEP_MODELS`); run it
+  after any change to the constraint, think-block or tool path, and on a
+  schedule where a box with the shelf has an idle window.
 - **`stress-models.py`** - run every GGUF on a machine's shelf against this
   build: load, generate, CPU-vs-CUDA identity, fault detection (fallbacks,
   kernel-launch failures, refusals, timeouts) and a settings sweep, with one

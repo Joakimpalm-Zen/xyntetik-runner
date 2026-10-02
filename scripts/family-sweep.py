@@ -710,12 +710,22 @@ def main():
     ap.add_argument("--threads", type=int, default=0, help="-t for every run")
     ap.add_argument("--timeout", type=int, default=900, help="seconds per command")
     ap.add_argument("--tmp", default=None, help="scratch directory")
+    ap.add_argument("--only", help="keep only these backends of each roster row "
+                                   "(cpu, gpu), dropping rows that have neither")
     ap.add_argument("--quick", action="store_true", help="the core checks only")
     ap.add_argument("--skip-done", action="store_true")
     args = ap.parse_args()
     runner = Path(args.runner) if args.runner else find_runner(ROOT)
     roster = json.loads(Path(args.roster).read_text()) if args.roster else []
     roster += [{"path": m} for m in args.model]
+    for entry in roster:   # a checked-in roster names its shelf by variable
+        entry["path"] = os.path.expanduser(os.path.expandvars(entry["path"]))
+    if args.only:
+        roster = [e for e in roster
+                  if set(e.get("backends") or args.backends.split(",")) & set(args.only.split(","))]
+        for e in roster:
+            e["backends"] = [b for b in (e.get("backends") or args.backends.split(","))
+                             if b in args.only.split(",")]
     if not roster:
         ap.error("give --roster or --model")
     out_dir = Path(args.out_dir)
@@ -749,7 +759,11 @@ def main():
                 print(f"\nFAIL {r.get('family')} [{row['backend']}] {row['check']}:\n"
                       f"  {row['detail']}")
     (out_dir / "summary.json").write_text(json.dumps(recs, indent=1, ensure_ascii=False))
-    return 1 if fails else 0
+    missing = sum(r["verdicts"].get("MISSING", 0) for r in recs)
+    # 0: every row clean; 1: an engine FAIL; 2: no FAIL, but a model was not
+    # on the shelf (a scheduled run that silently tested nothing is the
+    # failure this exit code exists for)
+    return 1 if fails else 2 if missing else 0
 
 
 if __name__ == "__main__":
