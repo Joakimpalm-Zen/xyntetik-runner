@@ -515,3 +515,22 @@ def test_home_directory_paths_are_recognised():
     for text in ["/tmp/agent-sweep-x/home/.continue/config.yaml",
                  "~/xs-work/models/m.gguf", "models/m.gguf"]:
         assert not rx.search(text), text
+
+
+def test_kl_tables_need_a_margin_qualified_column():
+    """R6.7.8: a table that reports mean KL without the margin-qualified
+    top-1 beside it is refused; one that has it, or says it was not
+    measured, passes; a table without KL is not a fidelity table."""
+    md_bad = "| model | top-1 | mean KLD |\n|---|---|---|\n| a | 99% | 0.01 |\n"
+    md_ok = ("| model | margin-qualified top-1 | mean KLD |\n|---|---|---|\n"
+             "| a | not measured | 0.01 |\n")
+    md_other = "| model | tok/s |\n|---|---|\n| a | 12 |\n"
+    assert check_release.kl_tables_without_margin(md_bad)
+    assert not check_release.kl_tables_without_margin(md_ok)
+    assert not check_release.kl_tables_without_margin(md_other)
+    html_bad = "<table><tr><th>engine</th><th>mean KL</th></tr></table>"
+    html_ok = ("<table><tr><th>engine</th><th>margin-qualified top-1</th>"
+               "<th>mean KL</th></tr></table>")
+    assert check_release.kl_tables_without_margin(html_bad, html=True)
+    assert not check_release.kl_tables_without_margin(html_ok, html=True)
+    assert check_release.kl_table_scan()   # the tree itself is clean

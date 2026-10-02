@@ -431,10 +431,10 @@ instrument behind it that can fail.
 On unquantized StableLM 2 1.6B weights, through the same harness, on the
 same file, in the same run:
 
-| engine | mean KL from the reference | top-1 |
-|---|---|---|
-| llama.cpp | **0.0007** | **100%** |
-| Runner | **0.6099** | **55%** |
+| engine | margin-qualified top-1 | mean KL from the reference | top-1 |
+|---|---|---|---|
+| llama.cpp | **100.00%** | **0.0007** | **100%** |
+| Runner | **67.14%** | **0.6099** | **55%** |
 
 llama.cpp reproduces the publisher's implementation essentially exactly.
 The runner does not, and not subtly: at corpus position 110 the reference

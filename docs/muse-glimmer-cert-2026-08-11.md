@@ -117,10 +117,10 @@ With the fixed tool (greedy, "The capital of France is"):
 
 KLD vs the official kquant (same 400-position protocol as route A):
 
-| variant | size | top-1 | mean KLD | top-8 |
-|---|---|---|---|---|
-| keep-50 (−2) | 16.2 GB | **66.75%** | 0.394 | 0.676 |
-| keep-48 (−4) | 15.7 GB | **58.0%** | 0.681 | 0.578 |
+| variant | size | top-1 | margin-qualified top-1 | mean KLD | top-8 |
+|---|---|---|---|---|---|
+| keep-50 (−2) | 16.2 GB | **66.75%** | not measured | 0.394 | 0.676 |
+| keep-48 (−4) | 15.7 GB | **58.0%** | not measured | 0.681 | 0.578 |
 
 **Verdict: KILL, decisively.** Removing TWO of 52 layers does more damage
 (66.75% top-1) than compressing every weight to 3 bits (81%), while

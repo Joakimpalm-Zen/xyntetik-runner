@@ -174,8 +174,59 @@ def home_path_scan():
     return True
 
 
+# R6.7.8: the measure that flatters the engine is published last. A table
+# that reports a mean KL must report the margin-qualified top-1 beside it
+# (the 2026-09-07 golden pass found that mean KL alone ranked engines by
+# noise at near-ties). Matched on the header row of every markdown and HTML
+# table in the public text; a column named "margin", "qualified", "mq" or
+# "v2 top-1" satisfies it, including one that says "not measured".
+_KL_HEADER = re.compile(r"\bKLD?\b|mean[ -]KL", re.I)
+_MQ_HEADER = re.compile(r"margin|qualified|\bmq\b|v2 top-1", re.I)
+
+
+def kl_tables_without_margin(text, html=False):
+    """Header rows of tables in `text` that carry a KL column and no
+    margin-qualified column."""
+    bad = []
+    if html:
+        for m in re.finditer(r"<tr>(.*?)</tr>", text, re.S):
+            row = m.group(1)
+            if "<th" not in row:
+                continue
+            heads = " | ".join(re.sub(r"<[^>]+>", "", h)
+                               for h in re.findall(r"<th[^>]*>.*?</th>", row, re.S))
+            if _KL_HEADER.search(heads) and not _MQ_HEADER.search(heads):
+                bad.append(heads.strip())
+        return bad
+    lines = text.split("\n")
+    for i, line in enumerate(lines[:-1]):
+        if (line.lstrip().startswith("|") and
+                re.match(r"\s*\|[-:| ]+\|\s*$", lines[i + 1]) and
+                _KL_HEADER.search(line) and not _MQ_HEADER.search(line)):
+            bad.append(line.strip())
+    return bad
+
+
+def kl_table_scan():
+    paths = [ROOT / "README.md"] + sorted((ROOT / "docs").rglob("*.md")) \
+        + sorted((ROOT / "site" / "pages").glob("*.html"))
+    hits = []
+    for path in paths:
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        for head in kl_tables_without_margin(text, html=path.suffix == ".html"):
+            hits.append(f"{path.relative_to(ROOT)}: {head[:80]}")
+    if hits:
+        return fail("tables report mean KL without a margin-qualified column: "
+                    + "; ".join(hits))
+    return True
+
+
 def check(args):
     ok = True
+    ok &= kl_table_scan()
     ok &= private_reference_scan()
     ok &= home_path_scan()
     version = args.tag[1:] if args.tag.startswith("v") else args.tag
