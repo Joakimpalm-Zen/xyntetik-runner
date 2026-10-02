@@ -238,3 +238,48 @@ def test_telemetry_names_its_stage_timing_and_fault_counter(model):
         # to prefill but the trailing rows, and the timing says so
         d2 = _chat(srv, mid, max_tokens=8)
         assert d2["runner_telemetry"]["timing"]["prefill_tokens"] < tm["prefill_tokens"], d2["runner_telemetry"]
+
+
+@pytest.fixture(scope="module")
+def file_model(tmp_path_factory):
+    """A fixture whose GGUF carries publisher sampling defaults, values no
+    preset has, so a reading can only have come from the file."""
+    m = tmp_path_factory.mktemp("sampling-file") / "model.gguf"
+    subprocess.run([sys.executable, ROOT / "scripts/make-test-model.py", str(m),
+                    "--sampling", "0.37,0.81,23,0.02"],
+                   check=True, stdout=subprocess.DEVNULL)
+    return m
+
+
+def test_the_files_sampling_keys_sit_between_preset_and_overrides(file_model):
+    """R4.12.6: general.sampling.* applies when the request and the CLI say
+    nothing, is named as the `file` source, and loses to both; the file's
+    repeat penalty is never read, so the preset's stays."""
+    with _server(file_model, "gemma4-mainline") as srv:
+        mid = _get(srv, "/v1/models")["data"][0]["id"]
+        caps = _get(srv, "/v1/capabilities")["sampling"]
+        assert caps["preset"] == "gemma4", caps
+        want = {"temperature": 0.37, "top_p": 0.81, "top_k": 23, "min_p": 0.02}
+        for k, v in want.items():
+            assert caps[k] == pytest.approx(v, abs=1e-6), (k, caps)
+        t = _chat(srv, mid)["runner_telemetry"]["sampling"]
+        for k, v in want.items():
+            assert t[k] == pytest.approx(v, abs=1e-6), (k, t)
+            assert t["source"][k] == "file", (k, t)
+        assert t["repeat_penalty"] == pytest.approx(1.0)
+        assert t["source"]["repeat_penalty"] == "preset", t
+        t = _chat(srv, mid, temperature=0.9)["runner_telemetry"]["sampling"]
+        assert t["temperature"] == pytest.approx(0.9) and t["source"]["temperature"] == "request"
+        assert t["source"]["top_p"] == "file", t
+    with _server(file_model, "gemma4-mainline", extra=["--top-p", "0.5"]) as srv:
+        mid = _get(srv, "/v1/models")["data"][0]["id"]
+        t = _chat(srv, mid)["runner_telemetry"]["sampling"]
+        assert t["top_p"] == pytest.approx(0.5) and t["source"]["top_p"] == "cli", t
+        assert t["source"]["temperature"] == "file", t
+
+
+def test_a_file_without_the_keys_is_served_at_the_preset(model):
+    with _server(model, "gemma4-mainline") as srv:
+        mid = _get(srv, "/v1/models")["data"][0]["id"]
+        t = _chat(srv, mid)["runner_telemetry"]["sampling"]
+        assert "file" not in t["source"].values(), t

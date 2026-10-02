@@ -77,6 +77,20 @@ typedef struct {
     int   top_k;
 } sampler_override;
 
+// The publisher's sampling defaults as the GGUF carries them
+// (`general.sampling.temp`, `.top_p`, `.top_k`, `.min_p`: the converter copies
+// them from the publisher's generation_config.json). They sit between the
+// family preset and the CLI: request > CLI > file > preset (R4.12.6, owner
+// 2026-10-02). The file's `penalty_repeat` is deliberately NOT read: a
+// publisher's repetition_penalty measured as corrupting tool protocols in this
+// sampler (Qwen3-Coder's 1.05, 0 of 8 calls well-formed against 8 of 8 at
+// 1.0), and the presets document their penalty as calibration.
+typedef struct {
+    bool  has_temp, has_top_p, has_min_p, has_top_k;
+    float temp, top_p, min_p;
+    int   top_k;
+} sampler_file;
+
 // Preset for a model. Never NULL: an unrecognised model gets "generic".
 // Either string may be NULL.
 // `tmpl` is the DETECTED chat template (TMPL_* from template.h), or -1 when
@@ -98,6 +112,15 @@ const sampler_preset *sampler_preset_at(int i);
 const sampler_preset *sampler_resolve(sampler *s, const char *arch,
                                       const char *name, int tmpl,
                                       const sampler_override *ov);
+// The same with the file's defaults applied between preset and overrides;
+// `file` may be NULL.
+const sampler_preset *sampler_resolve_file(sampler *s, const char *arch,
+                                           const char *name, int tmpl,
+                                           const sampler_file *file,
+                                           const sampler_override *ov);
+// "sampling: from the file (general.sampling.*): temp 1.00, top_k 64" for the
+// load banner, or "" when the file carries none of the four keys.
+void sampler_file_describe(const sampler_file *f, char *buf, size_t cap);
 // One-line human summary, e.g.
 // "gemma3 (temp 1.00, top_p 0.95, top_k 64, min_p 0.00, repeat_penalty 1.10)"
 void sampler_describe(const sampler *s, const sampler_preset *p,

@@ -903,7 +903,8 @@ typedef struct {
 // request fields, that a family preset had applied a repeat penalty the
 // vendor never published; the effective values were visible nowhere a client
 // could reach. Each source is "request" when the request set the field,
-// "cli" when a --temp-style flag did, else "preset".
+// "cli" when a --temp-style flag did, "file" when the GGUF's own
+// general.sampling.* key did (R4.12.6), else "preset".
 typedef struct req_diag {
     const char *preset;
     float temp, top_p, min_p, repeat_penalty;
@@ -3480,18 +3481,20 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
     // tool contract it was served under (req_diag). Read back by clients
     // from runner_telemetry; the values are what the sampler holds now.
     bool native_tp = false;
+    sampler_file sfile;
+    model_sampling_file(&s->m->gf, &sfile);
     req_diag diag = {
         .preset = SV.preset_name,
         .temp = s->smp.temp, .top_p = s->smp.top_p, .min_p = s->smp.min_p,
         .repeat_penalty = s->smp.repeat_penalty, .top_k = s->smp.top_k,
         .src_temp = !absent(jv_get(req, "temperature")) ? "request"
-                  : SV.ov.has_temp ? "cli" : "preset",
+                  : SV.ov.has_temp ? "cli" : sfile.has_temp ? "file" : "preset",
         .src_top_p = !absent(jv_get(req, "top_p")) ? "request"
-                   : SV.ov.has_top_p ? "cli" : "preset",
+                   : SV.ov.has_top_p ? "cli" : sfile.has_top_p ? "file" : "preset",
         .src_min_p = !absent(jv_get(req, "min_p")) ? "request"
-                   : SV.ov.has_min_p ? "cli" : "preset",
+                   : SV.ov.has_min_p ? "cli" : sfile.has_min_p ? "file" : "preset",
         .src_top_k = !absent(jv_get(req, "top_k")) ? "request"
-                   : SV.ov.has_top_k ? "cli" : "preset",
+                   : SV.ov.has_top_k ? "cli" : sfile.has_top_k ? "file" : "preset",
         .src_repeat = !absent(jv_get(req, "repeat_penalty")) ? "request"
                     : SV.ov.has_repeat_penalty ? "cli" : "preset",
         .seed = seed > 0 ? (uint64_t)seed : 0,

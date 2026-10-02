@@ -71,6 +71,7 @@ POOLING = None     # --pooling N: {arch}.pooling_type (llama.cpp's enum)
 ADD_EOS = False    # --add-eos: tokenizer.ggml.add_eos_token = true
 LAYERS = None      # --layers N: block count (a family's size tells some rules)
 HEAD_DIM = None    # --head-dim N: decouple head_dim from N_EMBD / N_HEAD
+SAMPLING = None
 args = sys.argv[1:]
 i = 0
 while i < len(args):
@@ -129,6 +130,12 @@ while i < len(args):
         shared, ple = args[i].split(",")
         ESERIES_SHARED_KV, ESERIES_PLE = int(shared), int(ple)
         ARCH = "gemma4"
+    elif a == "--sampling":
+        # "TEMP,TOP_P,TOP_K[,MIN_P]": the publisher sampling defaults a
+        # converter copies into general.sampling.* (R4.12.6); TOP_K is
+        # written as an i32 the way llama.cpp's converter writes it
+        i += 1
+        SAMPLING = args[i].split(",")
     elif a == "--act-fp16-overflow":
         # Drive the FFN activation, the ffn_down input, past fp16's 65504
         # while every fp32 value stays finite: gate 4e4x and up 4e2x on
@@ -587,6 +594,12 @@ if HEAD_DIM:
     ]
 if POOLING is not None:
     meta_kvs.append(kv_u32(f"{ARCH}.pooling_type", POOLING))
+if SAMPLING:
+    meta_kvs += [kv_f32("general.sampling.temp", float(SAMPLING[0])),
+                 kv_f32("general.sampling.top_p", float(SAMPLING[1])),
+                 s("general.sampling.top_k") + struct.pack("<Ii", GGUF_I32, int(SAMPLING[2]))]
+    if len(SAMPLING) > 3:
+        meta_kvs.append(kv_f32("general.sampling.min_p", float(SAMPLING[3])))
 if ADD_EOS:
     meta_kvs.append(kv_bool("tokenizer.ggml.add_eos_token", True))
 if YARN_FACTOR is not None:

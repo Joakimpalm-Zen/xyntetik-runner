@@ -2316,7 +2316,14 @@ Qwen 3.5 file was still served at Qwen3's 0.6 and the other two at the
 generic preset). What every publisher says, per family and per mode, is
 recorded in `docs/serving-guidance.json`; the envelope certifier sets it
 beside the served preset in each manifest and names the knobs that differ
-(`docs/envelope-manifests/README.md`). Where a preset carries a value
+(`docs/envelope-manifests/README.md`). A GGUF that carries the publisher's
+defaults itself (`general.sampling.temp`, `top_p`, `top_k`, `min_p`, which
+converters copy from `generation_config.json`) is served at them: the order
+is request, then CLI flag, then the file, then the family preset, and the
+load banner prints a second `sampling:` line naming what came from the file.
+The file's repeat penalty is not read; the presets' penalty is calibration
+(below), and a publisher's 1.05 measured as corrupting a tool protocol in
+this sampler. Where a preset carries a value
 the publisher never stated, its source says so: the `repeat_penalty 1.10`
 of the llama3, mistral, smollm2, lucie and teuken presets is runner's own
 calibration, not the vendor's. Gemma 4 used to inherit Gemma 3's preset,
@@ -2334,7 +2341,7 @@ transformers and llama.cpp apply it (until 2026-09-30 it compounded per
 occurrence; `tests/test_sampler.c`). A request can read back
 what it was served with: `runner_telemetry.sampling` carries the preset,
 the five effective values, the seed and each value's source (`preset`,
-`cli` or `request`), and `runner_telemetry.tool_protocol` the template, the
+`file`, `cli` or `request`), and `runner_telemetry.tool_protocol` the template, the
 tool-protocol family, whether tools were declared, whether a grammar
 constrained the turn and whether a native protocol was parsed without one.
 `GET /v1/capabilities` reports the resident model's `template` and

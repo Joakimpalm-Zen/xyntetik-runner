@@ -3107,11 +3107,18 @@ int main(int argc, char **argv) {
         int preset_tmpl = tmpl_override >= 0 ? tmpl_override
                         : template_detect(gguf_get_str(&m.gf,
                                           "tokenizer.chat_template", NULL), NULL);
-        const sampler_preset *sp = sampler_resolve(&smp, m.arch, ident,
-                                                   preset_tmpl, &ov);
+        sampler_file sfile;
+        model_sampling_file(&m.gf, &sfile);
+        const sampler_preset *sp = sampler_resolve_file(&smp, m.arch, ident,
+                                                        preset_tmpl, &sfile, &ov);
         char sdesc[256];
         sampler_describe(&smp, sp, sdesc, sizeof(sdesc));
         fprintf(stderr, "sampling: %s\n", sdesc);
+        {
+            char fdesc[160];
+            sampler_file_describe(&sfile, fdesc, sizeof fdesc);
+            if (fdesc[0]) fprintf(stderr, "sampling: %s\n", fdesc);
+        }
         snprintf(doctor_sampling, sizeof doctor_sampling, "%s", sdesc);
         doctor_load_s = now_s() - t1;
         // An operator who set a reasoning-channel default must see it here:

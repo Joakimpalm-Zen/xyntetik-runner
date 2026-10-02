@@ -8,6 +8,12 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **A GGUF's own sampling defaults are used (R4.12.6).** When a file carries
+  `general.sampling.temp`, `top_p`, `top_k` or `min_p` (converters copy the
+  publisher's generation_config into them), a request that names none of
+  them is served at the file's values: request, CLI, file, family preset, in
+  that order, with `file` as the telemetry source and a load-banner line.
+  The file's repeat penalty is not read.
 - **The competitor-freshness job reports and no longer pages.** Published
   competitor rows are dated snapshots, so a newer upstream release is news for
   the next certification window, not a defect: the weekly job writes the drift

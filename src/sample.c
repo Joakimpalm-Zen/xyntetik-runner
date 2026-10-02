@@ -815,6 +815,13 @@ const sampler_preset *sampler_preset_for(const char *arch, const char *name,
 const sampler_preset *sampler_resolve(sampler *s, const char *arch,
                                       const char *name, int tmpl,
                                       const sampler_override *ov) {
+    return sampler_resolve_file(s, arch, name, tmpl, NULL, ov);
+}
+
+const sampler_preset *sampler_resolve_file(sampler *s, const char *arch,
+                                           const char *name, int tmpl,
+                                           const sampler_file *file,
+                                           const sampler_override *ov) {
     const sampler_preset *p = sampler_preset_for(arch, name, tmpl);
     // A scripted reply (a test hook, sample.h) never survives a resolve: the
     // pointer is per request and a caller resolving a sampler it declared
@@ -826,6 +833,12 @@ const sampler_preset *sampler_resolve(sampler *s, const char *arch,
     s->min_p          = p->min_p;
     s->repeat_penalty = p->repeat_penalty;
     s->top_k          = p->top_k;
+    if (file) {
+        if (file->has_temp)  s->temp  = file->temp;
+        if (file->has_top_p) s->top_p = file->top_p;
+        if (file->has_min_p) s->min_p = file->min_p;
+        if (file->has_top_k) s->top_k = file->top_k;
+    }
     if (ov) {
         if (ov->has_temp)           s->temp           = ov->temp;
         if (ov->has_top_p)          s->top_p          = ov->top_p;
@@ -834,6 +847,17 @@ const sampler_preset *sampler_resolve(sampler *s, const char *arch,
         if (ov->has_repeat_penalty) s->repeat_penalty = ov->repeat_penalty;
     }
     return p;
+}
+
+void sampler_file_describe(const sampler_file *f, char *buf, size_t cap) {
+    buf[0] = 0;
+    if (!f || !(f->has_temp || f->has_top_p || f->has_min_p || f->has_top_k)) return;
+    size_t n = (size_t)snprintf(buf, cap, "from the file (general.sampling.*):");
+    const char *sep = " ";
+    if (f->has_temp && n < cap)  { n += (size_t)snprintf(buf + n, cap - n, "%stemp %.2f", sep, (double)f->temp); sep = ", "; }
+    if (f->has_top_p && n < cap) { n += (size_t)snprintf(buf + n, cap - n, "%stop_p %.2f", sep, (double)f->top_p); sep = ", "; }
+    if (f->has_top_k && n < cap) { n += (size_t)snprintf(buf + n, cap - n, "%stop_k %d", sep, f->top_k); sep = ", "; }
+    if (f->has_min_p && n < cap) { n += (size_t)snprintf(buf + n, cap - n, "%smin_p %.2f", sep, (double)f->min_p); }
 }
 
 void sampler_describe(const sampler *s, const sampler_preset *p,
