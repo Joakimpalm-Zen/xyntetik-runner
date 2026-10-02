@@ -8,6 +8,23 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **KV snapshots load only from a trusted key (R1.12.3).** A manifest was
+  verified against the key it names, so an unsigned one, or one signed by
+  anyone, loaded as well, even on a server started with `--sign-key`. A
+  server that signs its snapshots now trusts its own key; `--trust-key`
+  names another (the key, or `sha256:` of its bytes) and outranks it; a
+  manifest that is unsigned or signed by another key answers 409
+  `snapshot_untrusted`. With neither flag there is still no anchor, and the
+  response's `signed_by` says who signed.
+- **`/v1/decide`: a score is a function of the request (R10.3.3).** A
+  question's rows came from wherever the slot's KV stood, an earlier
+  request's or the previous question's, so a logprob could move in its
+  last digits with what the slot served before and with the order of the
+  questions. The state is fed alone from an empty KV once per request and
+  every question takes exactly the rows it shares with it; the state is
+  still prefilled once, so nothing got slower. `logprobs` print nine
+  significant digits (six decimals hid the difference).
+
 - **CUDA: Muse-Glimmer and Qwen2 prefill on the tensor cores.** The
   tensor-core prefill GEMM is promoted per architecture, on a measured
   tolerance row, and `muse-glimmer` and `qwen2` had none, so their prefill

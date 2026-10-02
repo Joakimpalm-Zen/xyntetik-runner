@@ -1056,7 +1056,9 @@ static void usage_to(FILE *f, const char *prog) {
         "                 with its digests, model, KV type and producing receipt,\n"
         "                 signed with --sign-key); {\"id\",\"snapshot\"} on\n"
         "                 POST /v1/runner/contexts loads one back, refusing\n"
-        "                 another model, KV type or changed bytes\n"
+        "                 another model, KV type or changed bytes, and, with\n"
+        "                 --trust-key or --sign-key, any manifest not signed\n"
+        "                 by that key\n"
         "  --session-out F  with -p or --resume: write the generation's image\n"
         "                 to F (tokens, KV and recurrent state, sampler and rng,\n"
         "                 constraint, next-token logits; SHA-256 trailer; never\n"
@@ -2850,7 +2852,7 @@ int main(int argc, char **argv) {
                 "and needs --serve\n");
         return 1;
     }
-    if (kv_snapshots && !kvsnap_configure(kv_snapshots, sign_key)) return 1;
+    if (kv_snapshots && !kvsnap_configure(kv_snapshots, sign_key, trust_key)) return 1;
     if (n_adapters && !serve) {
         fprintf(stderr, "error: --adapter routes adapters per request and "
                 "needs --serve (use --lora for a one-shot run)\n");

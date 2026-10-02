@@ -238,3 +238,52 @@ def test_the_snapshot_route_and_a_failed_write_say_what_happened(runner_bin, fx,
             assert st == 500 and body["error"]["code"] == "snapshot_write_failed", body
         st, body = _post(srv, "/v1/runner/contexts/w/snapshot", {"name": "a"})
         assert st == 200, body
+
+
+def test_a_snapshot_is_loaded_only_from_a_trusted_key(runner_bin, fx, saved, tmp_path):
+    """R1.12.3. A manifest was verified against the key it names, so an
+    unsigned one, or one signed by anyone, loaded as well, even on a server
+    started with --sign-key. A server that signs trusts its own key by
+    default; --trust-key names another (the key, or sha256: of its bytes);
+    with neither there is no anchor and the response says who signed."""
+    import hashlib as h
+    snaps = saved["snaps"]
+    other = tmp_path / "other.json"
+    subprocess.run([runner_bin, "--keygen", other], check=True,
+                   stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    other_pk = json.loads(other.read_text())["public_key"]
+    fp = "sha256:" + h.sha256(bytes.fromhex(fx["pk"])).hexdigest()
+
+    def load(*extra, name="mem"):
+        with _srv(runner_bin, fx["model"], snaps, *extra) as srv:
+            st, body = _post(srv, "/v1/runner/contexts", {"id": "t", "snapshot": name})
+            return st, body
+
+    # an unsigned snapshot of the same model, made by a server with no key
+    with _srv(runner_bin, fx["model"], snaps) as srv:
+        assert _post(srv, "/v1/runner/contexts", {"id": "u", "prompt": MEMORY})[0] == 200
+        st, snap = _post(srv, "/v1/runner/contexts/u/snapshot", {"name": "plain"})
+        assert st == 200 and snap["signed"] is False, snap
+
+    # its own key, the key by hex, the key by digest: loaded
+    for extra in (["--sign-key", str(fx["key"])], ["--trust-key", fx["pk"]],
+                  ["--trust-key", fp], ["--trust-key", fp.upper().replace("SHA256", "sha256")]):
+        st, body = load(*extra)
+        assert st == 200 and body["snapshot"]["signed_by"] == fx["pk"], (extra, body)
+    # another signing key, another trusted key: refused, by name
+    for extra in (["--sign-key", str(other)], ["--trust-key", other_pk],
+                  ["--trust-key", "sha256:" + "0" * 64]):
+        st, body = load(*extra)
+        assert st == 409 and body["error"]["code"] == "snapshot_untrusted", (extra, body)
+        assert "another key" in body["error"]["message"]
+    # an unsigned snapshot under an anchor: refused; --trust-key outranks the
+    # server's own signing key
+    st, body = load("--sign-key", str(fx["key"]), name="plain")
+    assert st == 409 and body["error"]["code"] == "snapshot_untrusted", body
+    assert "unsigned" in body["error"]["message"]
+    st, body = load("--sign-key", str(other), "--trust-key", fx["pk"])
+    assert st == 200, body
+    # no anchor: both load, and the response says who signed
+    assert load()[0] == 200
+    st, body = load(name="plain")
+    assert st == 200 and body["snapshot"]["signed_by"] is None, body
