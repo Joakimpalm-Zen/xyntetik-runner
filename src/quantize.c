@@ -1686,6 +1686,27 @@ static int quantize_gguf_plan_inner(const char *in_path, const char *out_path, i
                     "bytes of tensor data\n", pname, layer,
                     (unsigned long long)n_t, (unsigned long long)bytes);
         }
+        // A file with no attention (or no FFN) left in ANY block is not a
+        // model the loader can run: it reads the head count (or FFN width)
+        // as the largest per-block entry, finds 0 and refuses the file. Say
+        // so here, before writing an artifact that cannot load. Counted
+        // over the whole array, so blocks the source already lacked count.
+        if (!bad) {
+            uint64_t attn_left = 0, ffn_left = 0;
+            for (uint64_t i = 0; i < nb; i++) {
+                if (hc && hc[i]) attn_left++;
+                if (ff && ff[i]) ffn_left++;
+            }
+            const char *none = hc && !attn_left ? "attention" :
+                               ff && !ffn_left  ? "FFN" : NULL;
+            if (none) {
+                fprintf(stderr, "error: --remove-sublayer would leave no %s in "
+                        "any of the %llu blocks; the loader cannot run such a "
+                        "file, so it is not written\n", none,
+                        (unsigned long long)nb);
+                bad = true;
+            }
+        }
         if (bad) {
             free(hc); free(hk); free(ff); free(drop);
             gguf_close(&g); quantize_plans_free(&plan, &tplan); free(rm.items);
