@@ -24,10 +24,23 @@ rename keep the names that were true when they were written.
   integrated CUDA keep the RAM answer, which is already the whole answer for
   one shared pool; `--gpu off` and `--gpu-layers` are honoured. Gated in
   `test-autofit` on the fixture header, mutation-checked.
-- **The OpenCode walkthrough asks `--fit` first.** Step 2 is now a 16 MiB
-  ranged read and `--fit` before anything downloads or starts; it used to
-  run `--fit` beside the step-2 server, which holds the very memory being
-  measured.
+- **The OpenCode walkthrough works as written on its own machine.** The
+  1.0.0 clean-setup run on the RTX 3070 failed it: the model guessed an
+  absolute path first (`/notes.md`), `opencode run` could not ask for the
+  permission that needs and ended the run, 0 of 5 runs without a rule; the
+  f16 cache left 5 layers on the CPU and the first 11,142-token turn took
+  long enough for OpenCode to send it twice. `examples/opencode/opencode.json`
+  now denies reads outside the directory, so a wrong guess comes back to the
+  model as an error (2 of 2 completed, 345 s and 393 s), the server runs with
+  `--kv q8` (39 of 40 layers on the card; 292 s against 948 s), the prompt
+  names the current directory, and step 2 is a 16 MiB ranged read and
+  `--fit` before anything downloads or starts, not beside a running server
+  that holds the memory being measured.
+- **The lab's real-load soak of the multi-slot fix (#210).** About 6 hours
+  of `--parallel 16` with Qwen2.5-Coder-7B Q4_K_M on the CUDA slice, mixed
+  staggered load, temperature 0.8, per-request seeds: 3,160 of 3,160
+  same-prompt, same-seed pairs identical (790 of 3,112 differed before the
+  fix), and 10 of 13,944 samples unparsable (0.07%, from 11.7%).
 
 ## v1.0.0 - 2026-10-03
 
