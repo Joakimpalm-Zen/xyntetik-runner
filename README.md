@@ -135,11 +135,13 @@ $response.choices[0].message.content
 
 </details>
 
-> **Pre-1.0 (`0.5.8`).** APIs, model coverage and certification envelopes may
-> change between releases. CI builds and smoke-tests Linux, macOS, and
-> Windows, but the project still has limited hardware coverage. Include
-> `runner --version`, `runner --caps`, the model's exact filename, and the load
-> log in issue reports. Read [SECURITY.md](SECURITY.md) for the threat model and
+> **Version `1.0.0`.** The command line, the HTTP API, the record formats and
+> the model files that load stay compatible across 1.x; speed, generated
+> tokens across releases and the support matrix move with the evidence. The
+> [versioning policy](docs/versioning.md) lists exactly what is kept. CI builds
+> and smoke-tests Linux, macOS and Windows, and hardware coverage is still
+> limited: include `runner --version`, `runner --caps`, the model's exact
+> filename and the load log in issue reports. Read [SECURITY.md](SECURITY.md) for the threat model and
 > [CONTRIBUTING.md](CONTRIBUTING.md) for the required correctness gates.
 
 ## Choose your workflow
@@ -1211,7 +1213,7 @@ for Linux, macOS, or Windows, or build from source:
 git clone https://github.com/Joakimpalm-Zen/xyntetik-runner
 cd xyntetik-runner
 make
-./runner --version   # -> runner 0.5.8
+./runner --version   # -> runner 1.0.0
 ```
 
 CUDA builds and releases need only an NVIDIA driver at runtime. The CUDA
@@ -1287,7 +1289,7 @@ shell, then run `make`.
 
 Each release publishes a CPU image - the same binary on a distroless glibc base,
 nothing else - to `ghcr.io/joakimpalm-zen/xyntetik-runner:v<version>` (the
-tag carries the `v`, e.g. `:v0.5.8`) and `:latest`. Build it yourself with `docker build -t runner .`.
+tag carries the `v`, e.g. `:v1.0.0`) and `:latest`. Build it yourself with `docker build -t runner .`.
 
 The server binds **loopback only** by design (there is no `--host`/`0.0.0.0`
 flag), so it never exposes itself to a network, even in a container - which

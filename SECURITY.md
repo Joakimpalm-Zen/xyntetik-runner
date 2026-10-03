@@ -1,7 +1,7 @@
 # Security Policy
 
-Runner is **pre-1.0** (`0.5.8`). Only the latest release is
-supported; there are no backports.
+Runner `1.0.0` follows the [versioning policy](docs/versioning.md). Only
+the latest 1.x release is supported; there are no backports.
 
 ## Threat model
 
