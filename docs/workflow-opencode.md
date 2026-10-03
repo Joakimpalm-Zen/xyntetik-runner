@@ -24,21 +24,27 @@ request is mostly prefill.
 1. Download and verify Runner as in the README's
    [quick start](../README.md#quick-start).
 
-2. Serve the model. The first start downloads the file, checks it against
+2. Ask whether it fits before downloading it. `--fit` needs only the file's
+   header, so a ranged read of the first 16 MiB is enough:
+
+   ```sh
+   curl -r 0-16777215 -L -o head.gguf \
+     https://huggingface.co/ibm-granite/granite-4.2-8b-GGUF/resolve/main/granite-4.2-8b-Q4_K_M.gguf
+   ./runner --fit head.gguf -c 16384
+   ```
+
+   On the RTX 3070 above it reads `FITS — 35 of 40 layers on the GPU`, and the
+   `split` line shows that `--kv q8` would put 39 of 40 there. A `PAGES`
+   verdict means the layers left on the CPU would be read from disk on every
+   token: pick a smaller file or a shorter context first. Ask before starting
+   a server, because a running one holds the memory being measured.
+
+3. Serve the model. The first start downloads the file, checks it against
    the Hub's SHA-256 record and prints where it was stored:
 
    ```sh
    ./runner -hf ibm-granite/granite-4.2-8b-GGUF:Q4_K_M --serve -c 16384
    ```
-
-3. Ask whether it fits, with the path the server printed:
-
-   ```sh
-   ./runner --fit PATH/granite-4.2-8b-Q4_K_M.gguf -c 16384
-   ```
-
-   A `PAGES` verdict means every token would be read from disk. Do not go on
-   with that configuration: pick a smaller file or a shorter context first.
 
 4. Copy [`examples/opencode/`](../examples/opencode) to an empty directory.
    `opencode.json` names the server, the model file and the same limits the

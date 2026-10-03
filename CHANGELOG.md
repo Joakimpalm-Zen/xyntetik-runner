@@ -7,6 +7,28 @@ to the exact build, and what is not covered. Releases before 1.0.0 made no
 such promise (the `-alpha` suffix was retired at v0.2.0). Entries below the
 rename keep the names that were true when they were written.
 
+## v1.0.1 - 2026-10-03
+
+- **`--fit` counts the GPU.** On a discrete CUDA GPU `--fit` compared
+  available RAM with the whole file plus the whole KV cache, as if nothing
+  were offloaded. The 1.0.0 clean-setup run caught it on the OpenCode
+  walkthrough's own machine: an RTX 3070 serving granite-4.2-8b Q4_K_M at
+  16k with 35 of 40 layers on the card was told `PAGES` and to stop. `--fit`
+  now reads the offload budget the loader splits against (driver free view,
+  the OS video-memory budget, `--reserve-vram`, the loader's headroom),
+  computes the loader's leading-layer split from the header's tensor table
+  for each KV format, prints it on a new `split` line, and judges RAM by what
+  stays on the host. Checked against the loader on the RTX 3070 (six models
+  from 8B to 14B, 4k and 16k, four KV formats): the same layer count in 70
+  of 72 cases, one layer fewer in two, never more. Apple silicon and
+  integrated CUDA keep the RAM answer, which is already the whole answer for
+  one shared pool; `--gpu off` and `--gpu-layers` are honoured. Gated in
+  `test-autofit` on the fixture header, mutation-checked.
+- **The OpenCode walkthrough asks `--fit` first.** Step 2 is now a 16 MiB
+  ranged read and `--fit` before anything downloads or starts; it used to
+  run `--fit` beside the step-2 server, which holds the very memory being
+  measured.
+
 ## v1.0.0 - 2026-10-03
 
 - **1.0.0: the interfaces are now held to a versioning policy.** The
