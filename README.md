@@ -135,7 +135,7 @@ $response.choices[0].message.content
 
 </details>
 
-> **Pre-1.0 (`0.5.7`).** APIs, model coverage and certification envelopes may
+> **Pre-1.0 (`0.5.8`).** APIs, model coverage and certification envelopes may
 > change between releases. CI builds and smoke-tests Linux, macOS, and
 > Windows, but the project still has limited hardware coverage. Include
 > `runner --version`, `runner --caps`, the model's exact filename, and the load
@@ -1006,7 +1006,7 @@ reported beside it).
   tasks it solves 57 where the parent solves 60 and the untrained control 0;
   the card leads with its disclosures (calc is the weak kind at 12 of 15 over
   160 tasks, 7 of 160 runs end in a reasoning loop, twelve gated attempts for
-  two full passes) and pins this runner from v0.5.7. Serving advice is under
+  two full passes) and pins this runner from 0.5.7. Serving advice is under
   "Serving a distilled reasoning student".
 - [Qwen3-30B-A3B selective precision](https://huggingface.co/Joakimpalm-Zen/Qwen3-30B-A3B-selective-attnQ8_0-expQ4_0-GGUF)
   (attention Q8_0 / experts Q4_0, 17.99 GB) **passes the bar** where the
@@ -1211,7 +1211,7 @@ for Linux, macOS, or Windows, or build from source:
 git clone https://github.com/Joakimpalm-Zen/xyntetik-runner
 cd xyntetik-runner
 make
-./runner --version   # -> runner 0.5.7
+./runner --version   # -> runner 0.5.8
 ```
 
 CUDA builds and releases need only an NVIDIA driver at runtime. The CUDA
@@ -1287,7 +1287,7 @@ shell, then run `make`.
 
 Each release publishes a CPU image - the same binary on a distroless glibc base,
 nothing else - to `ghcr.io/joakimpalm-zen/xyntetik-runner:v<version>` (the
-tag carries the `v`, e.g. `:v0.5.7`) and `:latest`. Build it yourself with `docker build -t runner .`.
+tag carries the `v`, e.g. `:v0.5.8`) and `:latest`. Build it yourself with `docker build -t runner .`.
 
 The server binds **loopback only** by design (there is no `--host`/`0.0.0.0`
 flag), so it never exposes itself to a network, even in a container - which
@@ -3312,7 +3312,7 @@ gate's own setting and the recommendation. The loop guard's value depends on
 how often a checkpoint loops: on an earlier checkpoint of the study it turned
 3 of 6 runaways into passes (51 to 54 of 60); on a later one that rarely
 loops the score was unchanged (57 of 60 either way) with termination from
-98.3% to 100%; and on the released checkpoint, measured on the v0.5.7 release
+98.3% to 100%; and on the released checkpoint, measured on the 0.5.7 release
 binary itself, it leaves the score unchanged (58 of 60 either way), does not
 end that checkpoint's one runaway (5 interventions inside it) and fired on no
 task that passed without it. Reasoning-channel
