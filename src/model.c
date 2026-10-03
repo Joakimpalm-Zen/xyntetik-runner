@@ -758,8 +758,13 @@ bool model_fit_gpu(gguf_file *g, model_fit *f, uint64_t budget,
                 dev_w += lb[l];
                 G = l + 1;
             }
+            // The loader's full-split test is `used + token_embd + output`
+            // with token_embd already inside `used` (it is in the fixed
+            // charge): it charges the embedding twice. Mirrored, because
+            // this must predict the split the loader makes; RTX 3070,
+            // granite-4.2-8b, --kv q8 at 16k: 39 of 40, not 40.
             if (G == f->n_layer) {
-                if (used + out <= budget) { used += out; if (out != tok) dev_w += out; }
+                if (used + tok + out <= budget) { used += out; if (out != tok) dev_w += out; }
                 else if (G > 1) { G--; used -= lb[G] + kv_layer; dev_w -= lb[G]; }
             }
         } else {
