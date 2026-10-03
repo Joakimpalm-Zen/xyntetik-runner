@@ -2765,6 +2765,15 @@ static bool model_bind_weights(model_t *m, const char *path, const model_params 
                 "only pure-transformer llama-family models are supported\n", m->arch);
         return false;
     }
+    // A --remove-sublayer artifact with the sublayer gone from EVERY block
+    // reads as a 0 head count or 0 FFN width; name that, not "missing".
+    if (m->n_layer > 0 && (m->l_no_attn || m->l_no_ffn) &&
+        (m->n_head <= 0 || m->n_ff <= 0)) {
+        fprintf(stderr, "error: every block of this file has its %s removed "
+                "(--remove-sublayer); there is no model left to run\n",
+                m->n_head <= 0 ? "attention" : "FFN");
+        return false;
+    }
     if (m->n_layer <= 0 || m->n_embd <= 0 || m->n_head <= 0 || m->n_ff <= 0) {
         fprintf(stderr, "error: missing model hyperparameters for arch '%s'\n", m->arch);
         return false;

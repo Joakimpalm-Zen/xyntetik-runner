@@ -7,6 +7,16 @@ to the exact build, and what is not covered. Releases before 1.0.0 made no
 such promise (the `-alpha` suffix was retired at v0.2.0). Entries below the
 rename keep the names that were true when they were written.
 
+## Unreleased
+
+- **`--remove-sublayer` refuses to remove a part from every block.** It
+  wrote a file with the attention (or the FFN) gone from every block, which
+  the loader then refused as "missing model hyperparameters" (lab finding,
+  Qwen3-0.6B BF16, 2026-10-03). The writer now refuses the request before
+  writing anything, counting blocks the source file already lacks, and the
+  loader names the cause for such a file made elsewhere. Gated in
+  `tests/test_remove_sublayer.py`, mutation-checked.
+
 ## v1.0.1 - 2026-10-03
 
 - **`--fit` counts the GPU.** On a discrete CUDA GPU `--fit` compared

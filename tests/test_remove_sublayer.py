@@ -468,3 +468,40 @@ def test_gemma4_shape_removal_matches_zeroed_output(runner_bin, gemma4_hetero,
     assert [v for i, v in enumerate(hk) if i != layer] == \
         [v for i, v in enumerate(kv["gemma4.attention.head_count_kv"]) if i != layer]
     assert f"blk.{layer}.attn_q.weight" not in _parse(out)["tensors"]
+
+
+@pytest.mark.parametrize("spec,part", [("attn:0,attn:1", "attention"),
+                                       ("mlp:0,mlp:1", "FFN")])
+def test_removing_a_part_from_every_block_is_refused_before_writing(
+        runner_bin, parent, tmp_path, spec, part):
+    """Lab finding 2026-10-03 (Qwen3-0.6B): the writer produced a file with
+    every attention removed that the loader then refused. Refuse the request
+    instead, and write nothing."""
+    out = tmp_path / "none.gguf"
+    p = _remove(runner_bin, parent, out, spec)
+    assert p.returncode != 0
+    assert f"would leave no {part} in any of the 2 blocks" in p.stderr.decode()
+    assert not out.exists()
+
+
+def test_the_last_remaining_block_counts_blocks_already_removed(
+        runner_bin, parent, tmp_path):
+    a = tmp_path / "attn0.gguf"
+    assert _remove(runner_bin, parent, a, "attn:0").returncode == 0
+    out = tmp_path / "attn01.gguf"
+    p = _remove(runner_bin, a, out, "attn:1")
+    assert p.returncode != 0
+    assert b"would leave no attention" in p.stderr
+    assert not out.exists()
+
+
+def test_loader_names_a_file_with_every_attention_removed(runner_bin, tmp_path):
+    """Such a file written elsewhere (or by a build before the writer check)
+    is refused with its cause, not as missing hyperparameters."""
+    f = tmp_path / "all-attn.gguf"
+    subprocess.run([sys.executable, ROOT / "scripts/make-test-model.py",
+                    "--declare-removed", "attn:0,attn:1", str(f)],
+                   check=True, cwd=ROOT, stdout=subprocess.DEVNULL)
+    p = _run(runner_bin, ["-m", f, "-p", "hi", "-n", "1", "--gpu", "off"])
+    assert p.returncode != 0
+    assert b"every block of this file has its attention removed" in p.stderr
