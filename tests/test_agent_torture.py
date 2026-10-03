@@ -112,7 +112,7 @@ def test_report_schema_and_totals(tmp_path):
     assert decoded["runtime"] == {"name": "runner", "version": "runner test"}
     assert decoded["configuration"]["model"] == "fixture.gguf"
     assert decoded["totals"] == {
-        "requests": 5, "passed": 2, "failed": 3,
+        "requests": 5, "excused": 0, "scored": 5, "passed": 2, "failed": 3,
         # both arms, reported separately: declined (chose not to call) split out
         # from the attempted cases, with the two rates.
         "declined": 1, "attempted": 4,
@@ -210,3 +210,40 @@ def test_stream_normalization_is_independent_of_tcp_chunks():
     assert reference["saw_done"] is True
     for point in range(len(raw) + 1):
         assert MOD.normalize_sse(raw, [raw[:point], raw[point:]]) == reference
+
+
+def test_a_budget_spent_in_reasoning_is_excused_not_failed():
+    """R4.12.3 (owner 2026-10-03): a forced-truncation case whose budget ended
+    inside the reasoning channel (finish_detail reasoning_limit, no call) is
+    excused and leaves the denominators; one that simply declined still counts
+    against the call rate."""
+    cases = [c for c in MOD.build_cases(40) if c["category"] == "forced_truncation"][:3]
+
+    class Resp:
+        def __init__(self, detail):
+            self.status = 200
+            self.choice = {"message": {"content": "", "reasoning_content": ""},
+                           "finish_reason": "length"}
+            self.json = {"choices": [self.choice],
+                         "runner_telemetry": {"finish_detail": detail} if detail else {}}
+
+        def expect_status(self, code):
+            assert code == 200
+            return self
+
+    import pytest as _pt
+    with _pt.raises(MOD.DegenerateBudget):
+        MOD._verify_buffered(cases[0], Resp("reasoning_limit"))
+    with _pt.raises(MOD.Declined):
+        MOD._verify_buffered(cases[1], Resp(None))
+    results = [
+        MOD.result_for(cases[0], "excused", 1.0,
+                       failure={"category": "degenerate_budget", "message": "m"}),
+        MOD.result_for(cases[1], "failed", 1.0,
+                       failure={"category": "declined", "message": "prose"}),
+        MOD.result_for(cases[2], "passed", 1.0),
+    ]
+    t = MOD.make_report(results, "runner", "v", "m.gguf", 10, 1)["totals"]
+    assert t["requests"] == 3 and t["excused"] == 1 and t["scored"] == 2
+    assert t["passed"] == 1 and t["failed"] == 1 and t["declined"] == 1
+    assert t["attempted"] == 1 and t["attempted_pass_rate"] == 1.0

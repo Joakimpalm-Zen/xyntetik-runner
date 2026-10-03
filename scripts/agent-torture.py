@@ -42,6 +42,16 @@ from harness import (Client, ProtocolError, RunnerServer,  # noqa: E402
 SCHEMA_VERSION = "xyntetik.agent-torture.v4"
 
 
+class DegenerateBudget(ProtocolError):
+    """A forced-truncation case whose whole budget went into the model's
+    reasoning channel (runner_telemetry.finish_detail "reasoning_limit"), so
+    no call was ever begun and there is nothing for the closer to finish.
+    The turn's "length" is the truthful answer to the request, not a protocol
+    failure; such cases are excused, counted apart from passed, failed and
+    declined (owner decision R4.12.3, 2026-10-03). Only the runner reports the
+    signal; a runtime without it is scored as before."""
+
+
 class Declined(ProtocolError):
     """The turn emitted NO tool call at all where one was offered — the model
     answered in prose. This is a DIFFERENT axis from a malformed call: it is
@@ -372,6 +382,14 @@ def _verify_buffered(case, response):
     if case["category"] == "structured_final":
         _verify_structured_final(response)
         return
+    if case["category"] == "forced_truncation":
+        message = response.choice.get("message") or {}
+        telemetry = (response.json or {}).get("runner_telemetry") or {}
+        if not message.get("tool_calls") and \
+                telemetry.get("finish_detail") == "reasoning_limit":
+            raise DegenerateBudget("the budget ended inside the reasoning "
+                                   "channel; no call was begun",
+                                   max_tokens=case["request"].get("max_tokens"))
     name, arguments = _only_tool(response)
     if case["category"] == "reasoning_then_tool":
         if name != "record_conclusion":
@@ -472,13 +490,19 @@ def make_report(results, runtime_name, version, model, elapsed_ms, peak_kb):
     # Conflating them hides why a runtime scores low — see qwen3-8b answering in
     # prose vs one that calls wrongly.
     declined = failures.get("declined", 0)
+    # R4.12.3: a budget spent wholly in the reasoning channel is excused, not
+    # failed; the denominators below exclude it so a pass rate is over the
+    # cases the request could have satisfied
+    excused = sum(r["status"] == "excused" for r in results)
+    total -= excused
     attempted = total - declined
     seconds = max(elapsed_ms / 1000, 1e-9)
     return {
         "schema_version": SCHEMA_VERSION,
         "runtime": {"name": runtime_name, "version": version},
         "configuration": {"model": model, "temperature": 0},
-        "totals": {"requests": total, "passed": passed,
+        "totals": {"requests": total + excused, "excused": excused,
+                   "scored": total, "passed": passed,
                    "failed": total - passed,
                    "declined": declined, "attempted": attempted,
                    "call_rate": round(attempted / max(total, 1), 3),
@@ -600,12 +624,16 @@ def run(target, runtime_name, version, model_label, out, count,
                         "body": base64.b64encode(response.body).decode("ascii")}
                     _verify_buffered(case, response)
             except Exception as exc:  # verdicts belong in the report, not traceback-only
-                cat = "declined" if isinstance(exc, Declined) else categorize(exc)
+                cat = ("declined" if isinstance(exc, Declined)
+                       else "degenerate_budget" if isinstance(exc, DegenerateBudget)
+                       else categorize(exc))
                 failure = {"category": cat, "message": str(exc)}
                 artifact["failure"] = failure
             latency = round((time.monotonic() - t0) * 1000, 2)
-            results.append(result_for(case, "failed" if failure else "passed",
-                                      latency, failure))
+            status = ("passed" if not failure
+                      else "excused" if failure["category"] == "degenerate_budget"
+                      else "failed")
+            results.append(result_for(case, status, latency, failure))
             artifacts.append(artifact)
     elapsed = round((time.monotonic() - started) * 1000, 2)
     report = make_report(results, runtime_name, version, model_label, elapsed,
