@@ -1,42 +1,54 @@
 # Xyntetik Runner
 
-Xyntetik Runner runs local AI models on hardware you own. Chat, serve models
-to applications, generate structured tool calls, and train LoRA adapters
-through quantized GGUF weights—all from one native binary. GGUF is the model
-file format; a LoRA adapter is a small set of learned changes to a base model.
+Xyntetik Runner runs local AI models on hardware you own and keeps a record of
+what they did that someone else can check. It is not the fastest engine or the
+one with the widest model list: llama.cpp is both, and the measured gap is
+[published below](#evidence-and-tradeoffs). Runner is for the work where
+the answer has to hold up: agent loops that finish on a small token budget,
+adapters trained on the exact file you deploy, runs a reviewer can replay, and
+a server that can share your workstation all day.
 
-The engine is written from scratch in plain C for CPU (x86 AVX2/FMA,
-ARM NEON), CUDA and Metal. It needs no Python, pip, third-party runtime or
-ggml. Optional tools such as [Shadow](#shadow-mode-what-could-your-local-model-have-done)
-use the [Python client](python/README.md); model training has its own
+One native binary chats, serves models to applications, generates structured
+tool calls, and trains LoRA adapters through quantized GGUF weights. GGUF is
+the model file format; a LoRA adapter is a small set of learned changes to a
+base model. The engine is written from scratch in plain C for CPU (x86
+AVX2/FMA, ARM NEON), CUDA and Metal. It needs no Python, pip, third-party
+runtime or ggml. Optional tools such as
+[Shadow](#shadow-mode-what-could-your-local-model-have-done) use the
+[Python client](python/README.md); model training has its own
 [supported architectures and backend limits](#adaptation).
 
+**Runner 1.0** holds its interfaces to a [versioning policy](docs/versioning.md):
+the command line, the HTTP API, the record formats and the model files that
+load stay compatible across 1.x.
+
 **Start here:** [Why Runner](#why-runner) · [Quick start](#quick-start) ·
-[Choose a workflow](#choose-your-workflow)
+[Use cases](#use-cases) · [Everything in 1.0](#everything-in-10)
 
 **Reference:** [Models](#models-and-conversion) · [Support matrix](#support-matrix) ·
 [Builds](#build-and-platforms) · [Hardware](#runtime-and-hardware) ·
 [CLI](#command-line-reference) · [APIs](#serving-and-apis) ·
-[Evidence and tradeoffs](#evidence-and-tradeoffs)
+[Evidence and tradeoffs](#evidence-and-tradeoffs) · [Versioning](docs/versioning.md)
 
 ## Why Runner?
 
 | What you need | How Runner helps | Learn more |
 |---|---|---|
-| A local model alongside your everyday work | Inspect memory needs, share GPU capacity, and unload idle models. | [Hardware and resource control](#runtime-and-hardware) |
-| Reliable structured output for applications and agents | Close a started JSON/tool-call document to a schema-valid ending when the token budget runs out, retaining the truncation signal. Valid arguments still need a semantic check. | [Tool-call recovery](#truncation) |
-| Runs you can reproduce and audit | Record replayable transcripts and sign receipts. Determinism has explicit bounds for builds, inputs and execution paths. | [Record and verify](#record-and-verify-a-run) |
-| Adaptation using the model weights you serve | Train reproducible LoRA adapters directly through frozen quantized GGUF weights, with no separate FP16 training copy. | [Training and its limits](#adaptation) |
-| Integration with existing tools | Serve Chat Completions, Responses and Anthropic Messages APIs; exchange GGUF models and LoRA adapters with the ecosystem. | [API support](#serving-and-apis) |
+| An agent loop that finishes on a small budget | A tool call cut short by `max_tokens` is closed to the smallest schema-legal document, so its arguments parse; the response names which values the closer wrote rather than the model. Native tool protocols per model family, a reasoning budget and a loop guard keep long agent turns on track. | [Tool-call recovery](#truncation), [reasoning budget](#reasoning-budget), [loop guard](#loop-guard) |
+| Runs you can reproduce and audit | Record replayable transcripts, sign them (Ed25519 or ML-DSA-44) into a chain, and hand a reviewer one evidence pack that verifies offline. Determinism has explicit bounds for builds, inputs and execution paths. | [Record and verify](#record-and-verify-a-run) |
+| Decisions you can gate | Constrained turns report how sure the model was between the schema's legal branches, and `confirm_below` answers whether this turn needs a human. | [Decision records](#structured-output) |
+| Adaptation using the model weights you serve | Train reproducible LoRA adapters directly through frozen quantized GGUF weights, with no separate FP16 training copy, and serve them on CPU, CUDA or Metal. | [Training and its limits](#adaptation) |
+| A local model alongside your everyday work | Ask whether a model fits before downloading it, share one GPU between processes, unload idle models, and let the operating system take the memory back while the server idles. | [Hardware and resource control](#runtime-and-hardware) |
+| Integration with existing tools | Serve Chat Completions, Responses, Completions, Embeddings and Anthropic Messages; validated with OpenCode, Claude Code, Codex CLI, Continue, Cline and pi; exchange GGUF models and LoRA adapters with the ecosystem. | [API support](#serving-and-apis), [coding agents](#coding-agent-evidence) |
 
 Runner prioritizes reproducibility, explicit correctness checks and workstation
 resource control. Performance and model coverage vary by workload: read the
 [measured tradeoffs](#evidence-and-tradeoffs) when choosing an engine.
 
 Xyntetik Runner is independent and bootstrapped: **the engine is free
-forever under Apache 2.0**—consulting and enterprise work fund the hardware.
-Built in Sweden, inference and training run locally on your hardware; your
-model inputs stay on your machine.
+forever under Apache 2.0**, and consulting and enterprise work fund the
+hardware. Built in Sweden, inference and training run locally on your
+hardware; your model inputs stay on your machine.
 
 <a id="sixty-seconds-to-a-served-model"></a>
 ## Quick start
@@ -151,11 +163,106 @@ $response.choices[0].message.content
 | Chat or run a prompt | [Everyday commands](#everyday-commands) or the [desktop tray](#desktop-tray) |
 | Connect an app or coding agent | [Serving and APIs](#serving-and-apis), [coding-agent evidence](#coding-agent-evidence), [Python client](python/README.md), [TypeScript client](clients/typescript/README.md) |
 | Generate JSON or tool calls | [Tool-call recovery](#truncation) and [structured output](#structured-output) |
+| Gate a model's decision on its confidence | [`confirm_below` and decision records](#structured-output), [docs/decision-record.md](docs/decision-record.md) |
 | Train, serve or merge an adapter | [LoRA training](#adaptation) and the [training walkthrough](docs/train-lora-on-quantized-gguf.md) |
-| Reproduce or audit a run | [Record and verify a run](#record-and-verify-a-run) |
+| Reproduce or audit a run, or hand one to a reviewer | [Record and verify a run](#record-and-verify-a-run), [the audit demo](docs/audit-demo.md) |
+| Suspend a generation and resume or fork it later | Session images (`--sessions DIR`) in the [CLI reference](#conversion-diagnostics-and-integration) |
 | Test local coding tasks alongside an existing agent | [Shadow mode](#shadow-mode-what-could-your-local-model-have-done) |
 | Choose, convert or prune a model | [Models and conversion](#models-and-conversion), [published artifacts](#published-artifacts), [support matrix](#support-matrix) |
-| Check fit or manage hardware | [Check before downloading](#deciding-before-you-download), [runtime and hardware](#runtime-and-hardware) |
+| Check fit, manage hardware or report a problem | [Check before downloading](#deciding-before-you-download), [runtime and hardware](#runtime-and-hardware), `runner --doctor` |
+
+## Use cases
+
+**A coding agent on your own GPU.** Point OpenCode, Claude Code, Codex CLI,
+Continue, Cline or pi at `runner --serve`. Each client's first request is
+re-validated every release, tool calls use the model family's own protocol,
+and a call cut short by the budget still parses instead of failing the turn.
+[Coding-agent evidence](#coding-agent-evidence)
+
+```sh
+./runner -hf ibm-granite/granite-4.2-8b-GGUF:Q4_K_M --serve -c 16384
+```
+
+**An agent pipeline that must not stall.** Serve several requests at once
+with `--parallel` slots and continuous batching. On CUDA and Metal the batched
+decode is gated to match decoding each request alone, byte for byte, including
+steps with more requests than one microbatch holds. A reasoning budget closes
+an over-long reasoning turn, and the loop guard closes one that has started
+repeating itself.
+[Serving and APIs](#serving-and-apis)
+
+**A record a reviewer can check.** Serve with receipts on, then export the
+receipts, the model signature and the measured envelope as one evidence pack.
+The reviewer verifies it offline and replays any receipt to `VERIFIED`,
+`DIVERGED` or `UNVERIFIABLE`. `scripts/audit-demo.sh` shows the whole chain,
+three forgeries refused, in under a minute on an 8 GB Mac.
+[Record and verify a run](#record-and-verify-a-run)
+
+**A classifier or router that knows when to ask.** Constrain the answer to a
+JSON schema or a tool list and set `confirm_below`: the response says how sure
+the model was between the legal branches and whether this turn needs a person.
+[Structured output](#structured-output)
+
+**Your own fine-tune, on the file you ship.** Train a LoRA through the 4-bit
+GGUF you already serve, with no FP16 copy, on CPU or CUDA, and serve it beside
+the base on any backend. The same data, seed and config write a byte-identical
+adapter, with a provenance sidecar. [Adaptation](#adaptation)
+
+**A model that lives on your workstation.** `--fit` answers whether a model
+fits from its header before the download; processes on one GPU share a VRAM
+registry instead of crashing each other; an idle server unloads on a timer or
+lets the operating system reclaim its memory; a tray on macOS and Windows
+starts and stops it. [Designed to stay on](#designed-to-stay-on)
+
+**Smaller files that keep their quality.** Requantize with a per-tensor type
+plan, prune experts, or remove whole sublayers, and measure each result
+against its parent before trusting it. [Models and conversion](#models-and-conversion)
+
+## Everything in 1.0
+
+A map of what the binary does, with the section that documents each part.
+
+- **Serving.** OpenAI Chat Completions, Completions, Responses, Embeddings and
+  rerank, Anthropic Messages, `/v1/decide`; continuous batching across
+  `--parallel` slots; a prefix cache; several models by name with swap mode
+  and idle unload; Prometheus `/metrics`; `-hf owner/repo[:TAG]` downloads
+  checked against the Hub's SHA-256 record.
+  [Serving and APIs](#serving-and-apis)
+- **Tool calls and agents.** Native tool protocols per family (Harmony, atem,
+  Qwen XML, Qwen3-Coder, Gemma 4, granite4, Apertus, Muse recipients);
+  truncation-safe tool calls with closure provenance; reasoning budget,
+  reasoning-channel sampling and loop guard; publisher sampling defaults,
+  from the GGUF itself when it carries them. [Tool-call recovery](#truncation),
+  [OpenAI Chat Completions](#openai-chat-completions)
+- **Structured output and decisions.** JSON Schema and JSON mode, per-token and per-choice logprobs, decision records and
+  `confirm_below`. [Structured output](#structured-output)
+- **Records and verification.** Replayable transcripts, signed and chained
+  receipts (Ed25519, ML-DSA-44), evidence packs, OpenSSF Model Signing checks
+  of the loaded GGUF, the measured envelope named in every record, session
+  images and context snapshots. [Record and verify a run](#record-and-verify-a-run)
+- **Training and adapters.** LoRA training through quantized GGUF weights on
+  CPU and CUDA, `--lora` serving on CPU, CUDA and Metal, `--merge-lora`,
+  `--adapt-info`. [Adaptation](#adaptation)
+- **Models and formats.** 19 admitted architectures, refused by name when
+  unknown; 24 weight formats including the K-quants, all seven codebook
+  i-quants, MXFP4 and NVFP4; KV caches in f16, q8, fp4 and split k8v4, with a
+  ring for sliding-window layers; speculative decoding from a draft model, the
+  model's own MTP head, or prompt lookup; requantization, expert pruning and
+  sublayer removal. [Support matrix](#support-matrix),
+  [models and conversion](#models-and-conversion)
+- **Hardware and coexistence.** CPU (AVX2/FMA, NEON), CUDA with tensor cores,
+  Metal; `--caps`, `--fit` and `--doctor`; a cross-process VRAM registry;
+  evictable weights; a desktop tray on macOS and Windows; a container image
+  on GHCR; the opt-in T3 build for the same bytes on any machine.
+  [Runtime and hardware](#runtime-and-hardware), [builds](#build-and-platforms)
+- **Shadow mode.** A bench with receipts that tries a local model on your own
+  coding tasks under your repository's tests, beside the agent you already use.
+  [Shadow mode](#shadow-mode-what-could-your-local-model-have-done)
+- **Evidence.** Admission against the publisher's reference implementation,
+  a compatibility matrix re-run per release, a device-evidence ledger for the
+  hardware CI cannot reach, and a family sweep that put 56 real models through
+  every surface before this release (CPU half: 27 models, 462 checks passed,
+  0 failed). [Compatibility evidence](#compatibility-evidence)
 
 ## Everyday commands
 
@@ -1098,6 +1205,13 @@ reported beside it).
   counted (one host). The record is the full preregistered GENESIS I record
   (18 studies, 1,407 files, 655 MB); start with `GENESIS-I.md`. Apache-2.0.
   Collection: [Xyntetik Research: GENESIS](https://huggingface.co/collections/Joakimpalm-Zen/xyntetik-research-genesis-6abcfa50b6707dec9bfee356).
+- The [GENESIS existence record](https://huggingface.co/datasets/Joakimpalm-Zen/Xyntetik-Genesis-Existence-record)
+  is research evidence, **not a Runner model** and no weights: the
+  preregistrations with every amendment, the reports, the experiment code
+  and every counted run of GE-001 to GE-007, failures included. GE-002
+  failed its preregistered pass on both limbs (a hand-written homeostat
+  outlived the learning subject) and GE-003 was inconclusive. Same
+  collection.
 
 Since 2026-09-15 the account is organised for a reader who has never seen
 it: weightless reports are Hugging Face **Datasets** (the seven above, plus
@@ -3590,8 +3704,9 @@ cold first token. Full table and method:
 [docs/idle-coexistence-120b-m5max-2026-09-01.md](docs/idle-coexistence-120b-m5max-2026-09-01.md).
 
 For release history and benchmark narratives, see [CHANGELOG.md](CHANGELOG.md)
-and [docs/benchmarks.md](docs/benchmarks.md) (last re-measured 2026-09-02 on three hosts:
-dense decode 81-93% of llama.cpp on the MIG, prefill 5-10%).
+and [docs/benchmarks.md](docs/benchmarks.md) (last re-measured 2026-10-03 on an RTX 3070
+with the 1.0.0 binary: dense decode 69-81% of llama.cpp, prefill 9-10%, one
+IQ3_S row decoding at 12%; the 2026-09-02 three-host tables are kept beside it).
 
 ## Compatibility evidence
 

@@ -21,6 +21,42 @@ fraction of the card's SMs. Absolute tok/s will differ on other hardware; the
 with the compute/bandwidth balance (the same kernels measured different ratios
 on an RTX 3070).
 
+## Results, 2026-10-03: RTX 3070, runner 1.0.0
+
+The 1.0.0 release binary (`2cc9c4e`) on the same desktop card, driver and
+llama.cpp build as the 2026-09-02 consumer table below: RTX 3070 8 GB,
+Windows 11, driver 596.36, i7-7700K, llama.cpp b10754 (`43d87ff2d`) CUDA
+prebuilt. Runner via `--bench-json -n 128 -b 64` (512-token prefill,
+128-token decode, mean of 2 runs, spread at most 2.5% decode and 3.3%
+prefill); llama.cpp via `llama-bench -p 512 -n 128 -ngl 99 -r 2`. Full
+offload verified (`full=1`) on every runner row. Raw outputs:
+[benchmarks-raw/2026-10-03-rtx3070-1.0.0/](benchmarks-raw/2026-10-03-rtx3070-1.0.0/).
+
+| model | quant | decode tok/s: runner / llama.cpp | prefill tok/s: runner / llama.cpp |
+|---|---|---|---|
+| Qwen2.5-7B | Q4_K_M | 64.8 / 81.7 (**79%**) | 322.7 / 3445.8 (9.4%) |
+| granite-4.1-3b | Q8_0 | 74.9 / 92.6 (**81%**) | 515.4 / 5539.5 (9.3%) |
+| Qwen2.5-3B | Q4_K_M | 112.8 / 159.5 (**71%**) | 622.6 / 6229.3 (10.0%) |
+| Llama-3.2-3B | Q4_K_M | 109.2 / 158.4 (**69%**) | 596.3 / 6691.2 (8.9%) |
+| granite-4.2-8b | Q4_K_M | 52.0 / 68.4 (**76%**) | 265.5 / 2758.1 (9.6%) |
+| granite-4.2-3b | IQ3_S | 19.0 / 154.1 (12%) | 469.6 / 5315.6 (8.8%) |
+
+Decode on the dense K-quant and Q8_0 rows sits at 69 to 81% of llama.cpp,
+the same band as a month ago. Prefill moved from 3.9-8.8% to 8.9-10.0%:
+Runner's own Qwen2.5 prefill roughly tripled (Qwen2.5-7B 112.3 to 322.7
+tok/s, Qwen2.5-3B 234.0 to 622.6) since `qwen2` took the tensor-core prefill
+path, while llama.cpp's prefill on the same build and driver also reads
+higher than on 2026-09-02 (Qwen2.5-7B 2224.5 to 3445.8), so the ratio, not
+either absolute, is the result. Prefill is still an order of magnitude
+behind and remains the column that decides the next piece of work.
+
+The IQ3_S row is the weak one: granite-4.2-3b at IQ3_S decodes at 12% of
+llama.cpp while the same family at Q4_K_M (granite-4.2-8b) decodes at 76%,
+so the gap belongs to the codebook i-quant decode path, not the
+architecture. Its prefill takes the tensor-core path and sits with the
+other rows. Found by this table; the cause is not yet diagnosed and the
+item is open in the plan.
+
 ## Results — 2026-09-02, three hosts, runner `6d705e9`
 
 Same method as the 2026-08-13 table on the MIG (`--bench-json -n 128 -b 64`,

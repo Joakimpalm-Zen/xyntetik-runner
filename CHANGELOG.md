@@ -18,6 +18,25 @@ rename keep the names that were true when they were written.
   releases, `RUNNER_*` switches). `make release-check` accepts the 1.x
   README banner and still demands the exact version.
 
+- **Speed re-measured on the 1.0.0 binary.** RTX 3070, the same driver and
+  llama.cpp build (b10754) as 2026-09-02, six models: dense decode 69 to 81%
+  of llama.cpp, prefill 8.9 to 10.0% (3.9 to 8.8% a month ago; Runner's own
+  Qwen2.5 prefill roughly tripled since `qwen2` took the tensor-core path).
+  A new weak row is published with them: granite-4.2-3b at IQ3_S decodes at
+  12% of llama.cpp while the same family at Q4_K_M reads 76%, so the gap is
+  in the codebook i-quant decode path; not yet diagnosed, open in the plan.
+  Raw outputs in `docs/benchmarks-raw/2026-10-03-rtx3070-1.0.0/`.
+
+- **README and xyntetik.com describe 1.0.** The README opens with what
+  Runner is for and what it is not, a refreshed "Why Runner" table, a
+  "Use cases" section and an "Everything in 1.0" map of every capability
+  with the section that documents it. The site gains a 1.0 section on the
+  landing page, a "What 1.x keeps" section on the Runner page, cards for
+  decision gating, serving controls, session images, `--doctor`, KV cache
+  formats and `-hf`, evidence packs and served receipts on the receipts
+  page, current speed rows everywhere they are quoted, and the GENESIS
+  existence record in the artifact ledger (13 datasets, not 12).
+
 - **Agent-torture: a one-token budget spent in the reasoning channel is
   excused, not failed (R4.12.3).** Under a constraint the engine closes
   reasoning at half the budget, so only `max_tokens: 1` can end inside the

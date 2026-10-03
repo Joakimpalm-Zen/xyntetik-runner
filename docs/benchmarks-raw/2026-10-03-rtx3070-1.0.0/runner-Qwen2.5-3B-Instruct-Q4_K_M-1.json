@@ -1,0 +1,1 @@
+{"model":"~/models/Qwen2.5-3B-Instruct-Q4_K_M.gguf","arch":"qwen2","context":4096,"gpu_layers":36,"layers":36,"prompt_tokens":512,"generated_tokens":128,"prompt_tok_s":612.447,"gen_tok_s":113.187,"prompt_s":0.836,"gen_s":1.131}
