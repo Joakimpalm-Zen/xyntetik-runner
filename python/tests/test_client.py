@@ -408,11 +408,11 @@ class EndpointTests(unittest.TestCase):
             "http://127.0.0.1:8080",
             opener=lambda request, timeout: _Response(payload={
                 "object": "runner.capabilities",
-                "version": "1.0.0",
+                "version": "1.0.1",
             }),
         )
 
-        self.assertEqual(endpoint.version(), "1.0.0")
+        self.assertEqual(endpoint.version(), "1.0.1")
 
     def test_stream_collects_content_and_requires_terminal_marker(self):
         lines = [

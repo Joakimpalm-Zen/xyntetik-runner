@@ -19,7 +19,9 @@
 #include <stdio.h>
 #include <stdint.h>
 #include <limits.h>
+#include <string.h>
 #include "model.h"
+#include "gguf.h"
 
 static int g_fail = 0;
 static void ck(int cond, const char *what) {
@@ -197,7 +199,75 @@ static void test_gpu_budget(void) {
     ck(headroom == 9 * G / 16, "headroom is taken from the effective budget");
 }
 
-int main(void) {
+
+// --fit on a discrete GPU (model_fit_gpu): the split, and the verdict that
+// compares RAM with what the split leaves on the host. The regression is the
+// 1.0.0 clean-setup run on an RTX 3070: granite-4.2-8b Q4_K_M at 16k, served
+// with 35 of 40 layers on the card, was told PAGES because the verdict
+// added every weight and every KV row to the RAM bill.
+static void test_fit_gpu(const char *fixture) {
+    gguf_file g;
+    if (!fixture || !gguf_open_header(&g, fixture)) {
+        ck(0, "fit gpu: the test.gguf header opens");
+        return;
+    }
+    model_fit base;
+    ck(model_fit_report(&g, 512, &base), "fit gpu: report from the header");
+    int nl = base.n_layer;
+
+    // A budget far beyond the file: every layer and the output on the device,
+    // so the host keeps nothing but what was never a layer.
+    model_fit f = base;
+    ck(model_fit_gpu(&g, &f, 1ull << 40, 512ull << 20, 0), "fit gpu: fills");
+    ck(f.gpu && f.gpu_layers[FIT_KV_F16] == nl, "fit gpu: huge budget, all layers");
+    ck(f.host_need[FIT_KV_F16] < base.weights, "fit gpu: host keeps less than the file");
+
+    // A budget below the fixed charge: nothing offloads, and the host bill is
+    // exactly the RAM-only one, so the verdicts cannot disagree.
+    f = base;
+    model_fit_gpu(&g, &f, 1, 512ull << 20, 0);
+    ck(f.gpu_layers[FIT_KV_F16] == 0, "fit gpu: tiny budget, no layers");
+    ck(f.host_need[FIT_KV_F16] == base.weights + base.kv_f16,
+       "fit gpu: tiny budget bills the whole file and cache to RAM");
+    f.available = base.weights + base.kv_f16;
+    model_fit r = base; r.available = f.available;
+    ck(!strcmp(model_fit_verdict(&f), model_fit_verdict(&r)),
+       "fit gpu: no offload, same verdict as RAM-only");
+
+    // --gpu-layers caps the split like the loader's override.
+    f = base;
+    model_fit_gpu(&g, &f, 1ull << 40, 512ull << 20, 1);
+    ck(f.gpu_layers[FIT_KV_F16] == 1, "fit gpu: max_layers caps the split");
+
+    // The bug: RAM too small for file + cache, enough for what stays on the
+    // host. RAM-only says PAGES; the GPU-aware verdict must say FITS.
+    f = base;
+    model_fit_gpu(&g, &f, 1ull << 40, 512ull << 20, 0);
+    f.available = f.host_need[FIT_KV_F16];
+    r = base; r.available = f.available;
+    ck(f.available < base.hot + base.kv_fp4, "fit gpu: the case is real (RAM-only short)");
+    ck(!strcmp(model_fit_verdict(&r), "PAGES"), "fit gpu: RAM-only verdict pages");
+    ck(!strcmp(model_fit_verdict(&f), "FITS"), "fit gpu: offloaded verdict fits");
+    // and one byte less RAM than the host needs is not a fit at f16
+    f.available = f.host_need[FIT_KV_F16] - 1;
+    ck(strcmp(model_fit_verdict(&f), "FITS") != 0, "fit gpu: one byte short is not FITS");
+
+    // The device bytes never exceed the budget, for any format and budget.
+    for (uint64_t b = 1; b < (64ull << 20); b = b * 3 + 7) {
+        f = base;
+        model_fit_gpu(&g, &f, b, 0, 0);
+        for (int k = 0; k < 4; k++)
+            if (f.gpu_layers[k] >= 0 && f.gpu_used[k] > b) {
+                ck(0, "fit gpu: device bytes stay inside the budget");
+                b = UINT64_MAX / 4;
+                break;
+            }
+    }
+    ck(1, "fit gpu: budget sweep done");
+    gguf_close(&g);
+}
+
+int main(int argc, char **argv) {
     test_gpu_budget();
     test_multislot_is_not_billed_once();
     test_budget_is_never_exceeded();
@@ -205,6 +275,7 @@ int main(void) {
     test_clamp();
     test_kv_trade_note();
     test_kv_ring_rows();
+    test_fit_gpu(argc > 1 ? argv[1] : NULL);
     if (g_fail) { fprintf(stderr, "test-autofit FAILED\n"); return 1; }
     fprintf(stderr, "test-autofit: all checks passed\n");
     return 0;

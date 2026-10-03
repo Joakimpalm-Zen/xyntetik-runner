@@ -2239,7 +2239,7 @@ test: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSON_OOM) $(
 	./$(TEST_GPU_ID) test-moe-fixture.gptoss-top1.gguf
 	./$(TEST_MOE_ROUTER) test-moe-fixture
 	./$(TEST_PAGING_WARN) test-moe-fixture
-	./$(TEST_AUTOFIT)
+	./$(TEST_AUTOFIT) test.gguf
 	@# Llama-4 attention knobs: NoPE and the position-dependent temperature
 	@mkdir -p test-attn
 	$(PYTHON) scripts/make-test-model.py test-attn/k_off.gguf

@@ -147,7 +147,7 @@ $response.choices[0].message.content
 
 </details>
 
-> **Version `1.0.0`.** The command line, the HTTP API, the record formats and
+> **Version `1.0.1`.** The command line, the HTTP API, the record formats and
 > the model files that load stay compatible across 1.x; speed, generated
 > tokens across releases and the support matrix move with the evidence. The
 > [versioning policy](docs/versioning.md) lists exactly what is kept. CI builds
@@ -1327,7 +1327,7 @@ for Linux, macOS, or Windows, or build from source:
 git clone https://github.com/Joakimpalm-Zen/xyntetik-runner
 cd xyntetik-runner
 make
-./runner --version   # -> runner 1.0.0
+./runner --version   # -> runner 1.0.1
 ```
 
 CUDA builds and releases need only an NVIDIA driver at runtime. The CUDA
@@ -1403,7 +1403,7 @@ shell, then run `make`.
 
 Each release publishes a CPU image - the same binary on a distroless glibc base,
 nothing else - to `ghcr.io/joakimpalm-zen/xyntetik-runner:v<version>` (the
-tag carries the `v`, e.g. `:v1.0.0`) and `:latest`. Build it yourself with `docker build -t runner .`.
+tag carries the `v`, e.g. `:v1.0.1`) and `:latest`. Build it yourself with `docker build -t runner .`.
 
 The server binds **loopback only** by design (there is no `--host`/`0.0.0.0`
 flag), so it never exposes itself to a network, even in a container - which
@@ -2091,7 +2091,7 @@ whether the draft is `active` there.
 | `--adapt-info` | With `-m`, print as JSON whether a LoRA adapter can be served on this model and whether one can be trained on it, each with the sentence the real operation would refuse with, plus which GPU backend of this build carries adapter kernels. Inference, adapter serving and training are three admission lists; this reads the last two without running either. |
 | `--doctor` | With `-m`, load the model, run one short probe and print a diagnostic report as JSON: version, where the layers actually ran, the template and sampler in effect, memory, timings, and findings with a next step each. Exit 2 when a finding is `broken`. The report holds no prompt or reply text unless `--doctor-include-text` is given; read it before sharing. |
 | `--shadow-mode` | Install shadow mode for Claude Code and Codex if present, asking first (`--yes` skips the question); `-m MODEL` names the model the `/shadow` offload serves. Hands off to the stdlib-only Python client beside the binary (`python/src`); see the shadow-mode section. |
-| `--fit PATH` | Estimate whether a GGUF fits this machine and exit. Reads only the header, so a partial download answers the question. |
+| `--fit PATH` | Estimate whether a GGUF fits this machine and exit: RAM, and on a discrete GPU how many layers the offload budget holds for each KV format. Reads only the header, so a partial download answers the question. Honours `--gpu off`, `--gpu-layers` and `--reserve-vram`. |
 | `--version` | Print the version and exit. |
 | `-h`, `--help` | Print the option reference to stdout and exit `0`. Help asked for is written to stdout; help printed because something went wrong goes to stderr with a non-zero exit. |
 | `--parent-pid N` | Exit when process `N` dies, whichever of its threads launched the Runner: at once on Linux 5.3 or later and on Windows, within 2 s elsewhere. A process already gone is refused. Intended for supervisor cleanup. |
@@ -2403,7 +2403,30 @@ fit: Trinity-Nano-Preview-Q4_K_M.gguf
 ```
 
 The verdict is `FITS`, `FITS WITH --kv q8` (or `k8v4`, or `fp4`), or `PAGES`, always with the
-arithmetic that produced it. `-c N` sizes the KV estimate for the context you
+arithmetic that produced it.
+
+On a discrete CUDA GPU the leading layers go to the card, so RAM only has to
+hold the rest. `--fit` then reads the same offload budget the loader splits
+against (the driver's free memory, the OS video-memory budget on Windows,
+`--reserve-vram` and the loader's headroom), computes the loader's split from
+the header for each KV format, and gives the verdict from what stays on the
+host. Measured against the loader's own split on an RTX 3070 (2026-10-03, six
+models from 8B to 14B, contexts 4k and 16k, all four KV formats): the same
+layer count in 70 of 72 cases and one layer fewer in the other two; never
+more. On Apple silicon and integrated CUDA devices the GPU shares RAM, and
+the RAM answer above is the whole answer.
+
+```console
+$ runner --fit granite-4.2-8b-Q4_K_M.gguf -c 16384
+  ...
+  available RAM 9.46 GiB right now
+  gpu           NVIDIA GeForce RTX 3070, offload budget 6.95 GiB right now (0.85 GiB of it for embeddings, scratch and headroom)
+  split         f16: 35 of 40 layers on the GPU, 1.22 GiB in RAM  | --kv q8: 39 of 40 layers on the GPU, 0.47 GiB in RAM  | --kv k8v4: 40 of 40 ...
+  verdict       FITS — 35 of 40 layers on the GPU, 8.24 GiB of RAM to spare at ctx 16384
+```
+
+The answer is "right now": a server already holding the GPU or the RAM is
+counted against the budget, so ask before starting one. `-c N` sizes the KV estimate for the context you
 actually intend to run. For a sparse MoE the verdict uses the **hot set**, not
 the file size, because only the routed experts a token selects are touched -
 which is why a 3.53 GiB file can be a comfortable fit in 3.25 GiB.

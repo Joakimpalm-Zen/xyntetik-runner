@@ -159,7 +159,7 @@ curl -L -o model.gguf https://huggingface.co/ibm-granite/granite-4.1-3b-GGUF/res
       </div>
       <div class="card">
         <h3>Ask what fits before loading anything</h3>
-        <p><code>--caps</code> needs no model file and returns one JSON document with live RAM and VRAM, backend and GPU limits, admitted quant types and architectures, placement modes and model-count limits. <code>--fit</code> answers the same question for a specific file from its GGUF header, the first few megabytes, so a ranged read decides whether the rest of the download is worth starting.</p>
+        <p><code>--caps</code> needs no model file and returns one JSON document with live RAM and VRAM, backend and GPU limits, admitted quant types and architectures, placement modes and model-count limits. <code>--fit</code> answers the same question for a specific file from its GGUF header, the first few megabytes, so a ranged read decides whether the rest of the download is worth starting. On a discrete GPU it computes the loader's own layer split for each KV cache format and judges RAM by what stays on the host: on an RTX 3070 it named the loader's exact layer count in 70 of 72 cases and one layer fewer in the other two.</p>
       </div>
       <div class="card">
         <h3>Decisions you can gate</h3>

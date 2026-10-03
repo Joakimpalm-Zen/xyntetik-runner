@@ -19,6 +19,14 @@ bool   gpu_mem_info(size_t *free_bytes, size_t *total_bytes);
 // integrated CUDA devices like the DGX Spark's GB10). A caller that budgets
 // "RAM plus VRAM" on such a machine counts the same bytes twice.
 bool   gpu_unified_memory(void);
+// The offload budget a load would split against right now, computed the way
+// the CUDA loader computes it (driver free view, bounded by the OS video
+// memory budget and --reserve-vram) with the loader's headroom beside it.
+// For `--fit`, which has no model to load. false when there is no discrete
+// device: Metal and integrated CUDA share one pool with the CPU, where the
+// RAM figure already is the answer.
+bool   gpu_offload_budget(int reserve_vram_pct, uint64_t *budget,
+                          uint64_t *headroom);
 // The GPU-side fit ceiling, which is NOT the same number as free RAM: on
 // Metal a single resource allocation larger than the device working-set
 // limit (~2/3 of unified memory) fails even when the file would fit in RAM.

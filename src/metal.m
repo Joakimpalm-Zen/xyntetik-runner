@@ -565,6 +565,13 @@ bool gpu_available(char *name, int cap) {
 
 bool gpu_unified_memory(void) { return true; }
 
+// unified memory: --fit's RAM figure is already the device's budget
+bool gpu_offload_budget(int reserve_vram_pct, uint64_t *budget,
+                        uint64_t *headroom) {
+    (void)reserve_vram_pct; (void)budget; (void)headroom;
+    return false;
+}
+
 bool gpu_mem_info(size_t *free_bytes, size_t *total_bytes) {
     // unified memory: the RAM reservation governs; no separate VRAM pool
     (void)free_bytes; (void)total_bytes;

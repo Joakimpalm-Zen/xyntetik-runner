@@ -505,6 +505,36 @@ bool gpu_mem_info(size_t *free_bytes, size_t *total_bytes) {
     return true;
 }
 
+static bool cu_dev_integrated(CUdevice dev);
+
+bool gpu_offload_budget(int reserve_vram_pct, uint64_t *budget,
+                        uint64_t *headroom) {
+    if (!cu_load() || cu.Init(0) != 0) return false;
+    int n = 0;
+    if (cu.DeviceGetCount(&n) != 0 || n < 1) return false;
+    CUdevice dev;
+    CUcontext ctx;
+    if (cu.DeviceGet(&dev, 0) != 0) return false;
+    if (cu_dev_integrated(dev)) return false;   // one pool: RAM is the answer
+    if (cu.PrimaryCtxRetain(&ctx, dev) != 0) return false;
+    size_t f = 0, t = 0;
+    bool ok = cu.CtxSetCurrent(ctx) == 0 && cu.MemGetInfo(&f, &t) == 0;
+    cu.PrimaryCtxRelease(dev);
+    if (!ok) return false;
+    // the same OS budget lookup and arithmetic as the loader (shared_build)
+    uint64_t os_budget = 0, os_usage = 0;
+    bool os_known = false;
+    if (cu.DeviceGetLuid) {
+        char luid[8]; unsigned mask = 0;
+        if (cu.DeviceGetLuid(luid, &mask, dev) == 0)
+            os_known = plat_gpu_os_budget((const unsigned char *)luid,
+                                          &os_budget, &os_usage);
+    }
+    *budget = model_gpu_budget(f, t, os_known, os_budget, os_usage,
+                               reserve_vram_pct, headroom);
+    return true;
+}
+
 // Integrated (unified-memory) device probe: CU_DEVICE_ATTRIBUTE_INTEGRATED.
 // On a DGX Spark (GB10) the GPU shares one LPDDR pool with the CPU and the
 // driver reports that pool as VRAM, so "how much VRAM" and "how much RAM"

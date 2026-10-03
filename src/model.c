@@ -697,8 +697,101 @@ bool model_fit_report(gguf_file *g, int n_ctx_want, model_fit *out) {
     return true;
 }
 
+// The leading-layer split a CUDA load makes (cuda.c shared_build), from the
+// header alone. Each layer costs its `blk.N.` tensors plus its share of the
+// KV cache; the device first holds the token embedding, the activation
+// scratch (the loader's own formula at MVB 64 columns, without the SSM
+// extras of the hybrid architectures) and the headroom. A full split also
+// owes the output projection, and when it does not fit the last layer goes
+// back to the CPU, as the loader does. What stays on the host is the rest of
+// the file (scaled to the hot set for a sparse MoE) and the CPU layers' KV.
+bool model_fit_gpu(gguf_file *g, model_fit *f, uint64_t budget,
+                   uint64_t headroom, int max_layers) {
+    if (f->n_layer <= 0) return false;
+    char key[128];
+    const char *arch = gguf_get_str(g, "general.architecture", "");
+    #define FK(fmt) (snprintf(key, sizeof(key), "%s." fmt, arch), key)
+    uint64_t n_embd    = gguf_get_u32(g, FK("embedding_length"), 0);
+    uint64_t n_head    = gguf_get_u32(g, FK("attention.head_count"), 0);
+    uint64_t n_head_kv = gguf_get_u32(g, FK("attention.head_count_kv"), (uint32_t)n_head);
+    uint64_t head_dim  = gguf_get_u32(g, FK("attention.key_length"),
+                                      n_head ? (uint32_t)(n_embd / n_head) : 0);
+    uint64_t n_ff      = gguf_get_u32(g, FK("feed_forward_length"), (uint32_t)(4 * n_embd));
+    #undef FK
+    uint64_t *lb = calloc((size_t)f->n_layer, sizeof(uint64_t));
+    if (!lb) return false;
+    uint64_t tok = 0, out = 0, n_vocab = 0;
+    for (uint64_t i = 0; i < g->n_tensors; i++) {
+        const gguf_tensor *t = &g->tensors[i];
+        int l = -1, n = 0;
+        if (sscanf(t->name, "blk.%d.%n", &l, &n) == 1 && n > 0 &&
+            l >= 0 && l < f->n_layer)
+            lb[l] += t->nbytes;
+        else if (!strcmp(t->name, "token_embd.weight")) {
+            tok = t->nbytes;
+            n_vocab = t->n_dims > 1 ? t->ne[1] : 0;
+        } else if (!strcmp(t->name, "output.weight"))
+            out = t->nbytes;
+    }
+    if (!out) out = tok;   // tied embeddings: the loader's output IS token_embd
+    uint64_t q_dim = n_head * head_dim, kv_dim = n_head_kv * head_dim;
+    uint64_t xdim = q_dim > n_embd ? q_dim : n_embd;
+    uint64_t act = 4ull * (64ull * (n_embd + 3 * xdim + q_dim + 2 * kv_dim +
+                                    2 * n_ff + n_head * (uint64_t)f->n_ctx) +
+                           n_vocab);
+    f->gpu = true;
+    f->gpu_budget = budget;
+    f->gpu_fixed = tok + act + headroom;
+    const uint64_t per_tok[4] = { f->kv_f16_per_tok, f->kv_q8_per_tok,
+                                  f->kv_k8v4_per_tok, f->kv_fp4_per_tok };
+    for (int k = 0; k < 4; k++) {
+        f->gpu_layers[k] = -1;
+        if (!per_tok[k]) continue;
+        uint64_t kv_layer = per_tok[k] / (uint64_t)f->n_layer * (uint64_t)f->n_ctx;
+        int G = 0;
+        uint64_t used = f->gpu_fixed, dev_w = tok;
+        if (used <= budget) {
+            for (int l = 0; l < f->n_layer; l++) {
+                if (max_layers > 0 && G >= max_layers) break;
+                if (used + lb[l] + kv_layer > budget) break;
+                used += lb[l] + kv_layer;
+                dev_w += lb[l];
+                G = l + 1;
+            }
+            // The loader's full-split test is `used + token_embd + output`
+            // with token_embd already inside `used` (it is in the fixed
+            // charge): it charges the embedding twice. Mirrored, because
+            // this must predict the split the loader makes; RTX 3070,
+            // granite-4.2-8b, --kv q8 at 16k: 39 of 40, not 40.
+            if (G == f->n_layer) {
+                if (used + tok + out <= budget) { used += out; if (out != tok) dev_w += out; }
+                else if (G > 1) { G--; used -= lb[G] + kv_layer; dev_w -= lb[G]; }
+            }
+        } else {
+            used = 0; dev_w = 0;   // not even the fixed charge fits: all CPU
+        }
+        uint64_t host_w = f->weights > dev_w ? f->weights - dev_w : 0;
+        if (f->sparse && f->weights)   // the routed banks are touched sparsely
+            host_w = (uint64_t)((double)host_w * (double)f->hot / (double)f->weights);
+        f->gpu_layers[k] = G;
+        f->gpu_used[k] = used;
+        f->host_need[k] = host_w + kv_layer * (uint64_t)(f->n_layer - G);
+    }
+    free(lb);
+    return true;
+}
+
 const char *model_fit_verdict(const model_fit *f) {
     if (!f->available) return "UNKNOWN";
+    if (f->gpu) {
+        // RAM against what the split leaves on the host, format by format
+        static const char *const words[4] = {
+            "FITS", "FITS WITH --kv q8", "FITS WITH --kv k8v4", "FITS WITH --kv fp4" };
+        for (int k = 0; k < 4; k++)
+            if (f->gpu_layers[k] >= 0 && f->host_need[k] <= f->available)
+                return words[k];
+        return "PAGES";
+    }
     if (f->hot + f->kv_f16 <= f->available) return "FITS";
     if (f->kv_q8 && f->hot + f->kv_q8 <= f->available) return "FITS WITH --kv q8";
     if (f->kv_k8v4 && f->hot + f->kv_k8v4 <= f->available) return "FITS WITH --kv k8v4";

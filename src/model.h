@@ -1022,7 +1022,19 @@ typedef struct {
     uint64_t kv_f16_per_tok, kv_q8_per_tok, kv_fp4_per_tok, kv_k8v4_per_tok;
     uint64_t kv_f16, kv_q8, kv_fp4, kv_k8v4; // at n_ctx; 0 when that KV format is illegal
     uint64_t available;          // RAM available now, 0 = could not tell
+    // Discrete GPU (model_fit_gpu). With gpu set, the verdict compares RAM
+    // against what stays on the HOST once the leading layers that fit the
+    // device budget are offloaded, which is how a CUDA load splits. Per KV
+    // format, in the order f16, q8, k8v4, fp4 (FIT_KV_*); a format that is
+    // illegal for the model keeps gpu_layers -1.
+    bool     gpu;
+    uint64_t gpu_budget, gpu_fixed;   // offload budget; embeddings, scratch, headroom
+    int      gpu_layers[4];
+    uint64_t host_need[4];            // RAM the CPU side needs with that split
+    uint64_t gpu_used[4];             // device bytes that split would hold
 } model_fit;
+
+enum { FIT_KV_F16 = 0, FIT_KV_Q8, FIT_KV_K8V4, FIT_KV_FP4 };
 
 // Bytes of the allocated KV a run can ever read back, and how many layers
 // slide. Equal to the allocation on a model with no sliding layers; strictly
@@ -1031,6 +1043,13 @@ size_t      model_kv_reachable_bytes(const model_t *m);
 int         model_kv_swa_layers(const model_t *m);
 bool        model_fit_report(gguf_file *g, int n_ctx_want, model_fit *out);
 const char *model_fit_verdict(const model_fit *f);
+// Fill the discrete-GPU half of a fit from the header's tensor table: the
+// loader's own split (leading layers, each its weights plus its KV, after a
+// fixed charge for the token embedding, activation scratch and `headroom`),
+// for each KV format. `max_layers` > 0 caps the count like --gpu-layers.
+// Pure arithmetic over the header, so it is gated without a card.
+bool        model_fit_gpu(gguf_file *g, model_fit *f, uint64_t budget,
+                          uint64_t headroom, int max_layers);
 // residency warning text; false when no warning is warranted (see model.c)
 // Should a load hint the WHOLE weight mapping to the OS (WILLNEED sweep)?
 // Cold-start page-in otherwise arrives as ~16 KB synchronous faults — 1.1M+
