@@ -70,7 +70,9 @@ request is mostly prefill.
    it then reads the right file. Without the rule, `opencode run` asks for
    permission, cannot get it non-interactively, and ends the run: 0 of 5
    runs completed without the rule on 2026-10-03 (two of them with this
-   prompt), 2 of 2 with it.
+   prompt), 2 of 2 with it. OpenCode's system prompt does state the working directory; outside
+   a git repository it also states `Workspace root folder: /`, which may be
+   where the `/`-rooted guesses come from (not tested).
 
    The expected transcript shows a `Read NOTES.md` step and an answer that
    contains `ORANGE-7319`. The word is in the file and nowhere in the prompt,
