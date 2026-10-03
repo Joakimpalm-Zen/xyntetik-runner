@@ -1,13 +1,13 @@
 {
   "schema_version": "xyntetik.runner.model-compat-report.v1",
-  "generated_utc": "2026-10-03T09:31:53Z",
+  "generated_utc": "2026-10-03T10:49:00Z",
   "host": {
     "os": "Darwin",
     "machine": "arm64"
   },
   "runner": {
     "path": "runner",
-    "version": "runner 0.5.8"
+    "version": "runner 1.0.0"
   },
   "reference": {
     "path": null,
@@ -23,13 +23,13 @@
         "load": {
           "status": "pass",
           "returncode": 0,
-          "elapsed_ms": 24264.7,
-          "stderr_tail": "gemma4: E-series (per-layer embeddings + shared KV) \u2014 verified against llama.cpp at the Q4_K noise floor rather than token-identically\nrope: using model frequency factors (rope_freqs.weight)\ngpu: Metal initialization failed (model is larger than available RAM, so no split can be held resident \u2014 CPU-only is faster (--gpu-layers forces a split anyway)) \u2014 using CPU\nwarning: weights are 5.2 GB but only 1.7 GB of RAM is available \u2014 expect the model to be evicted and every token to page from disk. --mlock pins them; a smaller model is the other fix.\nloaded gemma-4-E4B_q4_0-it.gguf | gemma4 | 42 layers | ctx 4096 | 4 threads | 0.30s\nsampling: gemma4 (temp 0.00 \u2014 greedy argmax; top_p/top_k/min_p/repeat_penalty inactive)\nsampling: from the file (general.sampling.*): temp 1.00, top_p 0.95, top_k 64\n\nprompt: 4 tok, 0.34 tok/s | gen: 1 tok, 0.08 tok/s\n"
+          "elapsed_ms": 24609.5,
+          "stderr_tail": "gemma4: E-series (per-layer embeddings + shared KV) \u2014 verified against llama.cpp at the Q4_K noise floor rather than token-identically\nrope: using model frequency factors (rope_freqs.weight)\ngpu: Metal initialization failed (model is larger than available RAM, so no split can be held resident \u2014 CPU-only is faster (--gpu-layers forces a split anyway)) \u2014 using CPU\nwarning: weights are 5.2 GB but only 1.7 GB of RAM is available \u2014 expect the model to be evicted and every token to page from disk. --mlock pins them; a smaller model is the other fix.\nloaded models/gemma-4-E4B_q4_0-it.gguf | gemma4 | 42 layers | ctx 4096 | 4 threads | 0.28s\nsampling: gemma4 (temp 0.00 \u2014 greedy argmax; top_p/top_k/min_p/repeat_penalty inactive)\nsampling: from the file (general.sampling.*): temp 1.00, top_p 0.95, top_k 64\n\nprompt: 4 tok, 0.33 tok/s | gen: 1 tok, 0.08 tok/s\n"
         },
         "chat": {
           "status": "pass",
           "returncode": 0,
-          "elapsed_ms": 110936.46,
+          "elapsed_ms": 110648.31,
           "prompt": "What is 2+2?",
           "gpu": "off",
           "failure_reasons": [],

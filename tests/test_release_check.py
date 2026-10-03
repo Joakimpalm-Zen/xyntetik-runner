@@ -243,6 +243,36 @@ def test_private_reference_scan_rejects_a_fatal_git_error(monkeypatch, capsys):
 # .github/workflows/release.yml carried `git tag v0.2.0` while the tree was at
 # 0.3.0, in the exact file the workflow scan targets, and the gate was green.
 
+def test_release_check_accepts_the_1x_banner(monkeypatch, tmp_path, capsys):
+    """From 1.0.0 the README banner reads "Version `X.Y.Z`" and points at the
+    versioning policy; the gate accepts it and still demands the exact
+    version, so a 1.0.0 banner does not satisfy a 1.0.1 release."""
+    args = good_args(tmp_path)
+    args.tag = "v1.0.0"
+    write(args.readme,
+          "> **Version `1.0.0`.** See docs/versioning.md.\n"
+          "./runner --version   # -> runner 1.0.0\n")
+    write(args.changelog, "## v1.0.0\n")
+    write(args.build_info,
+          "runner 1.0.0\ntag:        v1.0.0\ncommit:     abc123\n")
+    write(args.python_pyproject, '[project]\nversion = "1.0.0"\n')
+    write(args.release_workflow, "# release workflow\n")
+    args.compat_reports = report_dir(tmp_path, "1.0.0-2026-01-01.json")
+    monkeypatch.setattr(check_release, "binary_version", lambda _: "runner 1.0.0")
+    assert check_release.check(args)
+
+    args.tag = "v1.0.1"
+    write(args.changelog, "## v1.0.1\n")
+    write(args.build_info,
+          "runner 1.0.1\ntag:        v1.0.1\ncommit:     abc123\n")
+    write(args.python_pyproject, '[project]\nversion = "1.0.1"\n')
+    args.compat_reports = report_dir(tmp_path, "1.0.1-2026-01-01.json")
+    monkeypatch.setattr(check_release, "binary_version", lambda _: "runner 1.0.1")
+    capsys.readouterr()
+    assert not check_release.check(args)
+    assert "does not identify the 1.0.1 banner" in capsys.readouterr().err
+
+
 def test_stale_strings_are_found_in_the_current_spelling(monkeypatch, tmp_path,
                                                          capsys):
     """A release string without -alpha is still a release string."""

@@ -71,12 +71,18 @@ nav: evidence
       <figcaption>MIG 1g.24gb slice of an RTX PRO 6000 Blackwell, runner 6d705e9 vs llama.cpp b10353 CUDA, measured 2026-09-02. The box carried a load average of 18 from other work during this run, which lowered both sides' absolute numbers against August; the ratios are the result. Source: <a href="{{repo}}/blob/main/docs/benchmarks.md">docs/benchmarks.md</a>.</figcaption>
     </figure>
     <details class="table-view">
-      <summary>Tokens per second, all three hosts</summary>
+      <summary>Tokens per second: the 1.0.0 re-measure and all three hosts of 2026-09-02</summary>
       <div class="table-wrap">
         <table class="data">
-          <thead><tr><th>host, 2026-09-02</th><th>model</th><th class="num">decode runner / llama.cpp</th><th class="num">prefill runner / llama.cpp</th></tr></thead>
+          <thead><tr><th>host and date</th><th>model</th><th class="num">decode runner / llama.cpp</th><th class="num">prefill runner / llama.cpp</th></tr></thead>
           <tbody>
-            <tr><td rowspan="9">MIG 1g.24gb, llama.cpp b10353</td><td>Llama-3.2-3B Q4_K_M</td><td class="num">87.9 / 101.8 (86%)</td><td class="num">525.7 / 6387.6 (8.2%)</td></tr>
+            <tr><td rowspan="6">RTX 3070 8 GB, Windows 11, runner 1.0.0 vs llama.cpp b10754, 2026-10-03</td><td>Qwen2.5-7B Q4_K_M</td><td class="num">64.8 / 81.7 (79%)</td><td class="num">322.7 / 3445.8 (9.4%)</td></tr>
+            <tr><td>granite-4.1-3b Q8_0</td><td class="num">74.9 / 92.6 (81%)</td><td class="num">515.4 / 5539.5 (9.3%)</td></tr>
+            <tr><td>Qwen2.5-3B Q4_K_M</td><td class="num">112.8 / 159.5 (71%)</td><td class="num">622.6 / 6229.3 (10.0%)</td></tr>
+            <tr><td>Llama-3.2-3B Q4_K_M</td><td class="num">109.2 / 158.4 (69%)</td><td class="num">596.3 / 6691.2 (8.9%)</td></tr>
+            <tr><td>granite-4.2-8b Q4_K_M</td><td class="num">52.0 / 68.4 (76%)</td><td class="num">265.5 / 2758.1 (9.6%)</td></tr>
+            <tr><td>granite-4.2-3b IQ3_S</td><td class="num">19.0 / 154.1 (12%)</td><td class="num">469.6 / 5315.6 (8.8%)</td></tr>
+            <tr><td rowspan="9">MIG 1g.24gb, llama.cpp b10353, 2026-09-02</td><td>Llama-3.2-3B Q4_K_M</td><td class="num">87.9 / 101.8 (86%)</td><td class="num">525.7 / 6387.6 (8.2%)</td></tr>
             <tr><td>Phi-4-mini Q8_0</td><td class="num">53.8 / 57.7 (93%)</td><td class="num">355.6 / 5960.6 (6.0%)</td></tr>
             <tr><td>granite-3.3-8b Q4_K_M</td><td class="num">39.7 / 45.4 (87%)</td><td class="num">220.5 / 2288.9 (9.6%)</td></tr>
             <tr><td>granite-4.1-8b Q4_0</td><td class="num">41.7 / 46.5 (90%)</td><td class="num">151.1 / 2359.2 (6.4%)</td></tr>
@@ -85,10 +91,10 @@ nav: evidence
             <tr><td>Qwen3-30B-A3B Q4_K_M (MoE)</td><td class="num">62.2 / 86.6 (72%)</td><td class="num">128.5 / 2326.3 (5.5%)</td></tr>
             <tr><td>gemma-4-26B-A4B Q4_0 (MoE)</td><td class="num">23.3 / 56.2 (41%)</td><td class="num">34.3 / 2429.7 (1.4%)</td></tr>
             <tr><td>Qwen2.5-32B Q3_K_S</td><td class="num">1.8 / 14.3 (13%)</td><td class="num">15.3 / 469.0 (3.3%)</td></tr>
-            <tr><td rowspan="3">RTX 3070 8 GB, Windows 11, llama.cpp b10754 CUDA 13.3</td><td>Qwen2.5-7B Q4_K_M</td><td class="num">65.6 / 81.6 (80%)</td><td class="num">112.3 / 2224.5 (5.0%)</td></tr>
+            <tr><td rowspan="3">RTX 3070 8 GB, Windows 11, llama.cpp b10754 CUDA 13.3, 2026-09-02</td><td>Qwen2.5-7B Q4_K_M</td><td class="num">65.6 / 81.6 (80%)</td><td class="num">112.3 / 2224.5 (5.0%)</td></tr>
             <tr><td>granite-4.1-3b Q8_0</td><td class="num">78.6 / 94.3 (83%)</td><td class="num">493.5 / 5614.1 (8.8%)</td></tr>
             <tr><td>Qwen2.5-3B Q4_K_M</td><td class="num">113.3 / 161.2 (70%)</td><td class="num">234.0 / 6069.9 (3.9%)</td></tr>
-            <tr><td rowspan="2">Apple M1 8 GB, Metal, llama.cpp Homebrew ggml 0.22.0</td><td>granite-4.1-3b Q8_0</td><td class="num">11.6 / 14.4 (80%)</td><td class="num">47.8 / 266.5 (17.9%)</td></tr>
+            <tr><td rowspan="2">Apple M1 8 GB, Metal, llama.cpp Homebrew ggml 0.22.0, 2026-09-02</td><td>granite-4.1-3b Q8_0</td><td class="num">11.6 / 14.4 (80%)</td><td class="num">47.8 / 266.5 (17.9%)</td></tr>
             <tr><td>gemma-3-4b Q4_K_M</td><td class="num">8.4 / 20.3 (41%)</td><td class="num">62.9 / 250.3 (25.1%)</td></tr>
           </tbody>
         </table>
@@ -97,7 +103,7 @@ nav: evidence
     <div class="grid-3 mt-2">
       <div class="card">
         <h3>Decode: parity is the physical target</h3>
-        <p>Single-stream decode is memory-bandwidth-bound on the slice; both engines read the same quantized weights per token. Dense decode moved from 73 to 79% in July to 81 to 93% in September through decode GEMV work and a KV-ring accounting fix.</p>
+        <p>Single-stream decode is memory-bandwidth-bound on the slice; both engines read the same quantized weights per token. Dense decode moved from 73 to 79% in July to 81 to 93% in September through decode GEMV work and a KV-ring accounting fix. On the RTX 3070 the 1.0.0 binary reads 69 to 81%; the one i-quant row, granite-4.2-3b at IQ3_S, decodes at 12% where the same family at Q4_K_M reads 76%, and that gap is open work.</p>
       </div>
       <div class="card">
         <h3>Prefill: llama.cpp's win, published as such</h3>
@@ -243,6 +249,7 @@ nav: evidence
       <li><div><div class="t"><a href="{{hf}}/gpt-oss-20b-keep30-MXFP4-GGUF">gpt-oss-20b keep-30 MXFP4</a></div><div class="d">11.5 GB, 32-to-30-expert derivative. Its originally published number did not reproduce; the card leads with the measured status. Kept as a near-miss with its numbers in the open.</div></div><span class="pill fail">fails current bar</span></li>
       <li><div><div class="t">Evidence datasets over third-party files, no weights republished</div><div class="d"><a href="{{hfd}}/Hermes-4-14B-quant-fidelity-report">Hermes-4-14B quant fidelity</a>, the <a href="{{hfd}}/Qwen3-speculative-pair-report">Qwen3 speculative pair</a>, the <a href="{{hfd}}/granite-4.0-h-small-runner-report">granite-4.0-h-small</a> and <a href="{{hfd}}/Nemotron-3.5-Lightning-30B-A3B-runner-report">Nemotron-3.5-Lightning</a> support reports, and two frontier reports where nothing cleared the bar and beat upstream: the <a href="{{hfd}}/Nemotron-3.5-Lightning-30B-A3B-prune-frontier-report">Lightning prune frontier</a> and the <a href="{{hfd}}/Muse-Glimmer-30B-runner-quant-frontier-report">Muse-Glimmer quant frontier</a>, where Meta's own Q4_K_M passes and six Runner plans did not beat it, stated openly.</div></div><span class="pill note">reports</span></li>
       <li><div><div class="t"><a href="{{hf}}/Xyntetik-Blad-Genesis-0.7M">Xyntetik-Blad-Genesis-0.7M</a> and the <a href="{{hfd}}/Xyntetik-Blad-Genesis-0.7M-training-record">training record</a></div><div class="d">A research artifact at toy scale, not a Runner model: no GGUF, PyTorch on CPU only, with a small <code>run_example.py</code>. 686,756-parameter program-proposal cores (3 seeds x 160, 320 and 640 iterations) trained from scratch with no human text. A tiny model trained only on its own executed programs beat the best blind search at equal executions on a synthetic list DSL; every self-improvement mechanism tested failed once its cost was counted (one host). The record is the full preregistered GENESIS I record (18 studies, 1,407 files, 655 MB); start with <code>GENESIS-I.md</code>. Apache-2.0. Collection: <a href="https://huggingface.co/collections/Joakimpalm-Zen/xyntetik-research-genesis-6abcfa50b6707dec9bfee356">Xyntetik Research: GENESIS</a>.</div></div><span class="pill note">research artifact</span></li>
+      <li><div><div class="t">The <a href="{{hfd}}/Xyntetik-Genesis-Existence-record">GENESIS existence record</a></div><div class="d">Research evidence, not a Runner model and no weights: the preregistrations with every amendment, the reports, the experiment code and every counted run of GE-001 to GE-007, failures included. GE-002 failed its preregistered pass on both limbs, a hand-written homeostat outliving the learning subject, and GE-003 was inconclusive. Same collection.</div></div><span class="pill note">research record</span></li>
       <li><div><div class="t">Datasets and collections</div><div class="d">Since 2026-09-15 every weightless report is a Hugging Face Dataset (the ones above, plus the <a href="{{hfd}}/Qwen3-4B-ToolUse-LoRA-training-record">Qwen3-4B tool-use training record</a>), every model card opens with a release or research-artifact status block, and seven collections group the account: <a href="https://huggingface.co/collections/Joakimpalm-Zen/runner-releases-6aa98baaed03bba0e8a561ae">Runner Releases</a>, <a href="https://huggingface.co/collections/Joakimpalm-Zen/xyntetik-research-model-surgery-and-scale-recovery-6aa98bab0ecb9723f310c770">Model Surgery and Scale Recovery</a>, <a href="https://huggingface.co/collections/Joakimpalm-Zen/xyntetik-research-pruning-and-quantization-frontiers-6aa98badc3307048c060ebe2">Pruning and Quantization Frontiers</a>, <a href="https://huggingface.co/collections/Joakimpalm-Zen/xyntetik-research-runner-compatibility-reports-6aa98baf2859827a8d866165">Runner Compatibility Reports</a>, <a href="https://huggingface.co/collections/Joakimpalm-Zen/xyntetik-research-lora-training-on-quantized-weights-6aa98bb02859827a8d86618c">LoRA Training on Quantized Weights</a>, <a href="https://huggingface.co/collections/Joakimpalm-Zen/xyntetik-kvist-distilled-agents-6ab9f930af19ca84df9ebf6b">Kvist: distilled agents</a> and <a href="https://huggingface.co/collections/Joakimpalm-Zen/xyntetik-research-genesis-6abcfa50b6707dec9bfee356">GENESIS</a>.</div></div></li>
     </ul>
   </div>

@@ -1,0 +1,1 @@
+{"model":"~/models/granite-4.2-8b-Q4_K_M.gguf","arch":"granite","context":4096,"gpu_layers":40,"layers":40,"prompt_tokens":512,"generated_tokens":128,"prompt_tok_s":267.142,"gen_tok_s":52.669,"prompt_s":1.917,"gen_s":2.430}

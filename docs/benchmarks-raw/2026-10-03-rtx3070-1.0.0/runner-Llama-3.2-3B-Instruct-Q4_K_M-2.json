@@ -1,0 +1,1 @@
+{"model":"~/models/Llama-3.2-3B-Instruct-Q4_K_M.gguf","arch":"llama","context":4096,"gpu_layers":28,"layers":28,"prompt_tokens":512,"generated_tokens":128,"prompt_tok_s":604.504,"gen_tok_s":109.360,"prompt_s":0.847,"gen_s":1.170}

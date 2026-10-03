@@ -237,9 +237,11 @@ def check(args):
         ok &= fail(f"binary version {got!r} does not match tag {args.tag!r}")
 
     readme = read(args.readme)
-    # v0.2.0 retired the -alpha suffix: the README banner says "Pre-1.0"
-    # with the exact version; older tags keep the alpha phrasing.
-    if (f"Pre-1.0 (`{version}`)" not in readme and
+    # v0.2.0 retired the -alpha suffix: the README banner said "Pre-1.0"
+    # with the exact version; older tags keep the alpha phrasing. From 1.0.0
+    # the banner names the release and the versioning policy it is held to.
+    if (f"Version `{version}`" not in readme and
+            f"Pre-1.0 (`{version}`)" not in readme and
             f"Public alpha (`{version}`)" not in readme):
         ok &= fail(f"README does not identify the {version} banner")
     if f"./runner --version   # -> runner {version}" not in readme:

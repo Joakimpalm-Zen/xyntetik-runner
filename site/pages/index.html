@@ -1,6 +1,6 @@
 <!--meta
-title: Xyntetik Runner: local inference you can prove
-description: Runner is a single-binary GGUF inference and LoRA training engine in C for CPU, CUDA and Metal. Tool calls that survive the token limit, adapters trained through the quantized weights you serve, and signed receipts that replay. Every claim carries its measurement.
+title: Xyntetik Runner 1.0: local inference you can prove
+description: Runner 1.0 is a single-binary GGUF inference and LoRA training engine in C for CPU, CUDA and Metal. Tool calls that survive the token limit, adapters trained through the quantized weights you serve, signed receipts that replay, and interfaces held to a versioning policy. Every claim carries its measurement.
 path: /
 nav: home
 bare: yes
@@ -8,12 +8,13 @@ bare: yes
 <section class="hero">
   <div class="wrap hero-grid">
     <div>
-      <p class="eyebrow">Xyntetik Runner, a Zenova AB product</p>
+      <p class="eyebrow">Xyntetik Runner 1.0, a Zenova AB product</p>
       <h1>Local inference you can prove.</h1>
-      <p class="lede">Runner is a single-binary engine in plain C that serves, scores and trains GGUF models on hardware you own. It closes tool calls that run out of tokens so they still parse, trains LoRA adapters through the same quantized weights it serves, and records any run as a signed receipt that replays.</p>
-      <p class="lede">Every number on this site names the document it comes from and the day it was measured, including the rows where Runner loses.</p>
+      <p class="lede">Runner is a single-binary engine in plain C that serves, scores and trains GGUF models on hardware you own. It closes tool calls that run out of tokens so they still parse, trains LoRA adapters through the same quantized weights it serves, and records any run as a signed receipt that replays. It is not the fastest engine or the widest; <a href="#compare">the table below</a> says where it loses.</p>
+      <p class="lede">Version 1.0 holds the command line, the API and the record formats to a <a href="/runner/#versioning">versioning policy</a>. Every number on this site names the document it comes from and the day it was measured, including the rows where Runner loses.</p>
       <div class="btn-row">
         <a class="btn btn-primary" href="/runner/#sixty-seconds">Sixty seconds to a served model</a>
+        <a class="btn" href="#one-oh">What is in 1.0</a>
         <a class="btn" href="/evidence/">See the evidence</a>
         <a class="btn" href="{{repo}}" rel="noopener">GitHub</a>
       </div>
@@ -21,6 +22,7 @@ bare: yes
         <span>Apache 2.0, free forever</span>
         <span>CPU, CUDA and Metal</span>
         <span>No Python, no pip, no ggml</span>
+        <span>Interfaces stable across 1.x</span>
         <span>{{version}}, released {{release_date}}</span>
       </div>
     </div>
@@ -61,6 +63,63 @@ bare: yes
         <p>Loaded and idle, Runner holds +35 MB of wired memory against +60.8 GB for llama-server on the same 128 GB machine; on an 8 GB laptop it is +8 MB against +3,819 MB. The cost is a slower cold first token, and it is published.</p>
         <p class="measured">measured 2026-09-01 (M5 Max, gpt-oss-120b) and on an 8 GB M1</p>
         <span class="more">How that works &rarr;</span>
+      </a>
+    </div>
+  </div>
+</section>
+
+<section class="section tint" id="one-oh">
+  <div class="wrap">
+    <div class="section-head reveal">
+      <p class="eyebrow">Runner 1.0</p>
+      <h2>Everything the binary does, on one screen.</h2>
+      <p>One executable, no runtime underneath. Each card names what is there and links to where it is documented and measured. The <a href="/runner/#versioning">versioning policy</a> says which of these interfaces 1.x keeps stable.</p>
+    </div>
+    <div class="grid-3">
+      <a class="card card-link reveal" href="/runner/#support">
+        <h3>Serving</h3>
+        <p>OpenAI Chat Completions, Completions, Responses, Embeddings and rerank, Anthropic Messages, <code>/v1/decide</code>. Parallel slots in one batched step, gated byte-identical to solo decoding on CUDA and Metal; prefix reuse; swap mode and idle unload; Prometheus metrics; <code>-hf</code> downloads checked against the Hub's SHA-256.</p>
+        <span class="more">Support matrix &rarr;</span>
+      </a>
+      <a class="card card-link reveal" href="/runner/truncation-safe-tool-calling/">
+        <h3>Tool calls and agents</h3>
+        <p>Each family's own tool protocol, rendered from the publisher's template and checked token for token: Harmony, atem, Qwen XML, Qwen3-Coder, Gemma 4, granite4, Apertus, Muse. Calls that survive the token limit and say which values the closer wrote; a reasoning budget and a loop guard for long turns.</p>
+        <span class="more">Truncation-safe tool calls &rarr;</span>
+      </a>
+      <a class="card card-link reveal" href="/runner/#more">
+        <h3>Structured output and decisions</h3>
+        <p>JSON Schema and JSON mode as a sampler guarantee, per-token and per-choice logprobs, and <code>confirm_below</code>: how sure the model was between the schema's legal branches, and whether this turn needs a person.</p>
+        <span class="more">Decisions you can gate &rarr;</span>
+      </a>
+      <a class="card card-link reveal" href="/runner/reproducible-lora-training-receipts/">
+        <h3>Records and verification</h3>
+        <p>Replayable transcripts; Ed25519- or ML-DSA-44-signed receipts in a chain; evidence packs a reviewer verifies offline; OpenSSF Model Signing checks of the loaded file; session images that suspend, resume and fork a generation. The audit demo runs the chain in under a minute on an 8 GB Mac.</p>
+        <span class="more">Receipts &rarr;</span>
+      </a>
+      <a class="card card-link reveal" href="/runner/train-lora-on-quantized-gguf/">
+        <h3>Training and adapters</h3>
+        <p>LoRA trained through the frozen quantized GGUF on the CPU or with a CUDA assist, byte-identical across runs; adapters served on CPU, CUDA and Metal, merged with provenance, or loaded straight into llama.cpp.</p>
+        <span class="more">LoRA on the file you serve &rarr;</span>
+      </a>
+      <a class="card card-link reveal" href="/runner/#support">
+        <h3>Models and formats</h3>
+        <p>19 named architectures, unknown ones refused by name; 24 weight formats including every codebook i-quant, MXFP4 and NVFP4; KV caches in f16, q8, fp4 and k8v4; speculative decoding from a draft, an MTP head or prompt lookup; requantization, expert pruning and sublayer removal.</p>
+        <span class="more">What loads &rarr;</span>
+      </a>
+      <a class="card card-link reveal" href="/runner/#coexistence">
+        <h3>Hardware and coexistence</h3>
+        <p>CPU, CUDA with tensor cores, Metal. <code>--caps</code>, <code>--fit</code> and <code>--doctor</code> answer before and after a load; a VRAM registry shares one card between processes; evictable weights give memory back while idle; a tray on macOS and Windows; a container image on GHCR.</p>
+        <span class="more">Designed to stay on &rarr;</span>
+      </a>
+      <a class="card card-link reveal" href="/runner/shadow-mode/">
+        <h3>Shadow mode</h3>
+        <p>A bench with receipts that tries a local model on your own coding tasks, under your repository's tests, beside the agent you already pay for. It measures; it does not learn.</p>
+        <span class="more">How shadow mode works &rarr;</span>
+      </a>
+      <a class="card card-link reveal" href="/evidence/">
+        <h3>Evidence behind every claim</h3>
+        <p>Admission against the publisher's reference in float32; a compatibility matrix and CUDA smoke on every release; a family sweep that put 56 real models through every surface before 1.0, its CPU half 462 checks passed and 0 failed; speed tables with the losing rows.</p>
+        <span class="more">All evidence &rarr;</span>
       </a>
     </div>
   </div>
@@ -119,13 +178,13 @@ bare: yes
           </tr>
           <tr>
             <td>Decode throughput, dense models, CUDA</td>
-            <td><span class="p">81 to 93% of llama.cpp on the same slice and files</span></td>
+            <td><span class="p">69 to 81% of llama.cpp on an RTX 3070 (1.0.0), 81 to 93% on a MIG slice; one i-quant row at 12%</span></td>
             <td><span class="y win">Faster</span></td>
             <td><span class="n">Not measured</span></td>
           </tr>
           <tr>
             <td>Prefill throughput, CUDA</td>
-            <td><span class="n lose">5 to 10% of llama.cpp. Runner's honest weak column, and the next piece of work</span></td>
+            <td><span class="n lose">9 to 10% of llama.cpp on an RTX 3070 at 1.0.0. Runner's honest weak column, and the next piece of work</span></td>
             <td><span class="y win">An order of magnitude faster</span></td>
             <td><span class="n">Not measured</span></td>
           </tr>
@@ -155,7 +214,7 @@ bare: yes
           </tr>
           <tr>
             <td>Prove what ran: signed receipts, replay verdicts, model-signature checks</td>
-            <td><span class="y win">Ed25519- or ML-DSA-44-signed chained receipts, VERIFIED / DIVERGED / UNVERIFIABLE replay, OpenSSF Model Signing verification of the loaded GGUF</span></td>
+            <td><span class="y win">Ed25519- or ML-DSA-44-signed chained receipts, VERIFIED / DIVERGED / UNVERIFIABLE replay, evidence packs a reviewer verifies offline, OpenSSF Model Signing verification of the loaded GGUF</span></td>
             <td><span class="n">Not claimed</span></td>
             <td><span class="n">Not claimed</span></td>
           </tr>
@@ -168,7 +227,7 @@ bare: yes
         </tbody>
       </table>
     </div>
-    <p class="small muted mt-1">Speed rows: MIG 1g.24gb slice, runner 6d705e9 vs llama.cpp b10353, 2026-09-02. Truncation row: 2026-08-19, granite-4.1-3b, versions named on the <a href="/evidence/#truncation">evidence page</a>. Idle rows: 2026-09-01 and the README's M1 measurement. Sources: <a href="{{repo}}/blob/main/docs/benchmarks.md">docs/benchmarks.md</a>, <a href="{{repo}}/blob/main/docs/truncation-benchmark.md">docs/truncation-benchmark.md</a>, <a href="{{repo}}/blob/main/docs/idle-coexistence-120b-m5max-2026-09-01.md">docs/idle-coexistence-120b-m5max-2026-09-01.md</a>.</p>
+    <p class="small muted mt-1">Speed rows: RTX 3070, runner 1.0.0 vs llama.cpp b10754, 2026-10-03, and MIG 1g.24gb slice, runner 6d705e9 vs llama.cpp b10353, 2026-09-02. Truncation row: 2026-08-19, granite-4.1-3b, versions named on the <a href="/evidence/#truncation">evidence page</a>. Idle rows: 2026-09-01 and the README's M1 measurement. Sources: <a href="{{repo}}/blob/main/docs/benchmarks.md">docs/benchmarks.md</a>, <a href="{{repo}}/blob/main/docs/truncation-benchmark.md">docs/truncation-benchmark.md</a>, <a href="{{repo}}/blob/main/docs/idle-coexistence-120b-m5max-2026-09-01.md">docs/idle-coexistence-120b-m5max-2026-09-01.md</a>.</p>
     <div class="callout warn reveal">
       <span class="t">Choose Runner for the contracts, not the speed.</span>
       <p>If the machine is dedicated to inference and you want the fastest prefill and the widest model list, llama.cpp is the right call and we mean that sincerely. If you need an agent loop that finishes on a small budget, adapters trained on the exact file you deploy, receipts that a third party can replay, or an engine that can live on your workstation all day, that is what Runner is for.</p>
@@ -250,7 +309,11 @@ bare: yes
         </div></div>
       <div class="tile reveal"><div class="t"><a href="/runner/">Confidence you can see</a></div><div class="d">Per-token and per-choice logprobs on every surface, and a telemetry block that says what a turn was served with and where its time went.</div><span class="pill plain">logprobs, telemetry</span></div>
 
-      <div class="tile cmd reveal"><pre><code>runner -hf Joakimpalm-Zen/Qwen3-30B-A3B-selective-attnQ8_0-expQ4_0-GGUF --serve --parallel 2</code></pre></div>
+      <div class="tile reveal"><div class="t"><a href="/runner/#more">Decisions you can gate</a></div><div class="d"><code>confirm_below</code> on a constrained turn returns the lowest posterior a chosen branch had and whether it fell under your threshold: route the sure answers, ask about the rest.</div><span class="pill plain">confirm_below</span></div>
+<div class="tile reveal"><div class="t"><a href="/runner/reproducible-lora-training-receipts/">An evidence pack for the reviewer</a></div><div class="d">Receipts, the model signature and the measured envelope in one directory; <code>--check-pack</code> verifies it offline and each receipt still replays. A receipt left out between two others shows.</div><span class="pill pass">verifies offline</span></div>
+<div class="tile reveal"><div class="t"><a href="/runner/#versioning">Interfaces that hold across 1.x</a></div><div class="d">Flags, exit codes, the HTTP API, record formats and loadable model files stay compatible until 2.0; what is bound to the exact build is written down beside it.</div><span class="pill plain">semver</span></div>
+
+<div class="tile cmd reveal"><pre><code>runner -hf Joakimpalm-Zen/Qwen3-30B-A3B-selective-attnQ8_0-expQ4_0-GGUF --serve --parallel 2</code></pre></div>
       <div class="tile cmd reveal"><pre><code>runner --shadow-mode -m ~/models/a.gguf</code></pre></div>
       <div class="tile cmd reveal"><pre><code>runner --verify &lt;receipt&gt;   # one exit code: the run replays, or it does not</code></pre></div>
 
@@ -262,7 +325,7 @@ bare: yes
   <div class="wrap split">
     <div class="reveal">
       <p class="eyebrow">Published artifacts</p>
-      <h2>Fifteen models and twelve evidence datasets on Hugging Face, gated the same way.</h2>
+      <h2>Fifteen models and thirteen evidence datasets on Hugging Face, gated the same way.</h2>
       <p>The models carry weights; the datasets are the measurement reports, gate records and training records behind them, with no third-party weights republished. Seven <a href="{{hf}}">collections</a> group them: releases, the Kvist distilled agents, model surgery, pruning and quantization frontiers, compatibility reports, LoRA training on quantized weights, and GENESIS research. A derivative is published only after its stated gate against the named parent, and a near-miss stays published with its numbers in the open rather than being quietly removed.</p>
       <div class="btn-row">
         <a class="btn" href="{{hf}}" rel="noopener">Browse on Hugging Face</a>
