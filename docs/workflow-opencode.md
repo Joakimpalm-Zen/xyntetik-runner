@@ -65,7 +65,7 @@ request is mostly prefill.
    opencode run "Read the file NOTES.md in the current directory with your tools and reply with the sentinel word it contains."
    ```
 
-   The model sometimes guesses an absolute path first (`/home/user/NOTES.md`).
+   The model sometimes guesses an absolute path first (`/notes.md`, `/app/NOTES.md`).
    The `external_directory: deny` rule sends that back to it as an error, and
    it then reads the right file. Without the rule, `opencode run` asks for
    permission, cannot get it non-interactively, and ends the run: 0 of 5
