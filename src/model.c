@@ -8627,6 +8627,7 @@ struct model_batch {
     model_t **seqs;
     int       n;
     gpu_batch *gb;      // NULL = decode sequentially
+    float    *hold;     // [n][n_vocab]: rows of every microbatch but the last
 };
 
 int model_batch_max(void) {
@@ -8654,6 +8655,7 @@ bool model_batch_engaged(const model_batch *b) {
 void model_batch_free(model_batch *b) {
     if (!b) return;
     gpu_batch_free(b->gb);
+    free(b->hold);
     free(b->seqs);
     free(b);
 }
@@ -8680,6 +8682,25 @@ bool model_batch_decode(model_batch *b, const int *idx, const int32_t *tok,
             for (int i = done; i < done + take; i++) {
                 model_t *m = b->seqs[idx[i]];
                 apply_head_transforms(m, out[i]);
+            }
+            // The backend's logit rows live in ONE buffer per batch that the
+            // next microbatch overwrites, and the caller reads out[] only
+            // after the whole step. Copy every microbatch but the last out of
+            // the way first. Until 2026-10-03 nothing did, so a step with
+            // more than MODEL_BATCH_MAX ready sequences handed the first
+            // microbatch's rows the second one's logits: one request sampled
+            // from another request's distribution (the lab's 16-slot CUDA
+            // server, garbled code under staggered load; 4 of 12 on Metal).
+            if (done + take < n) {
+                int nv = b->seqs[idx[done]]->n_vocab;
+                if (!b->hold)
+                    b->hold = malloc(sizeof(float) * (size_t)b->n * (size_t)nv);
+                if (!b->hold) return false;
+                for (int i = done; i < done + take; i++) {
+                    float *dst = b->hold + (size_t)i * (size_t)nv;
+                    memcpy(dst, out[i], sizeof(float) * (size_t)nv);
+                    out[i] = dst;
+                }
             }
         }
         if (!ok) {
