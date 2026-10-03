@@ -1377,7 +1377,8 @@ static void fit_gib(char *buf, size_t n, uint64_t bytes) {
     snprintf(buf, n, "%.2f GiB", (double)bytes / (double)(1ull << 30));
 }
 
-static int run_fit_check(const char *path, int n_ctx_want) {
+static int run_fit_check(const char *path, int n_ctx_want,
+                         const model_params *mp) {
     gguf_file g;
     if (!gguf_open_header(&g, path)) return 1;   // already reported why
 
@@ -1388,6 +1389,14 @@ static int run_fit_check(const char *path, int n_ctx_want) {
         gguf_close(&g);
         return 1;
     }
+    // A discrete GPU holds the leading layers, so RAM only has to hold the
+    // rest: answering from RAM alone told an RTX 3070 box that an 8B model
+    // it serves with 35 of 40 layers on the card would page every token.
+    char gname[128] = "";
+    uint64_t gbudget = 0, gheadroom = 0;
+    if (mp->gpu_mode != GPU_OFF && gpu_available(gname, sizeof gname) &&
+        gpu_offload_budget(mp->reserve_vram_pct, &gbudget, &gheadroom))
+        model_fit_gpu(&g, &f, gbudget, gheadroom, mp->gpu_layers_override);
 
     char w[32], h[32], kf[32], kq[32], av[32];
     fit_gib(w, sizeof w, f.weights);
@@ -1420,10 +1429,47 @@ static int run_fit_check(const char *path, int n_ctx_want) {
     printf("\n");
     if (f.available) printf("  available RAM %s right now\n", av);
     else             printf("  available RAM unknown on this platform\n");
+    static const char *const kvname[4] = { "f16", "--kv q8", "--kv k8v4", "--kv fp4" };
+    if (f.gpu) {
+        char gb[32], fx[32];
+        fit_gib(gb, sizeof gb, f.gpu_budget);
+        fit_gib(fx, sizeof fx, f.gpu_fixed);
+        printf("  gpu           %s, offload budget %s right now (%s of it for "
+               "embeddings, scratch and headroom)\n", gname, gb, fx);
+        printf("  split        ");
+        for (int k = 0, first = 1; k < 4; k++) {
+            if (f.gpu_layers[k] < 0) continue;
+            char hn[32];
+            fit_gib(hn, sizeof hn, f.host_need[k]);
+            printf("%s %s: %d of %d layers on the GPU, %s in RAM",
+                   first ? "" : "  |", kvname[k], f.gpu_layers[k], f.n_layer, hn);
+            first = 0;
+        }
+        printf("\n");
+    }
 
     const char *v = model_fit_verdict(&f);
     printf("  verdict       %s", v);
-    if (!f.available) {
+    if (f.gpu && f.available) {
+        int k = !strcmp(v, "FITS") ? 0 : !strcmp(v, "FITS WITH --kv q8") ? 1
+              : !strcmp(v, "FITS WITH --kv k8v4") ? 2 : !strcmp(v, "FITS WITH --kv fp4") ? 3 : -1;
+        if (k >= 0) {
+            char slack[32];
+            fit_gib(slack, sizeof slack, f.available - f.host_need[k]);
+            printf(" — %d of %d layers on the GPU, %s of RAM to spare at ctx %d\n",
+                   f.gpu_layers[k], f.n_layer, slack, f.n_ctx);
+        } else {
+            uint64_t least = UINT64_MAX;
+            for (int j = 0; j < 4; j++)
+                if (f.gpu_layers[j] >= 0 && f.host_need[j] < least) least = f.host_need[j];
+            char over[32];
+            fit_gib(over, sizeof over, least - f.available);
+            printf(" — %s more RAM than is available even with the smallest cache "
+                   "and the GPU full. The CPU layers would page from disk.\n", over);
+            printf("                fixes: a smaller quantization, a shorter -c, "
+                   "or free GPU memory (another process may hold it)\n");
+        }
+    } else if (!f.available) {
         printf("\n                available RAM could not be read, so this is "
                "sizes only\n");
     } else if (!strcmp(v, "FITS")) {
@@ -2114,7 +2160,7 @@ int main(int argc, char **argv) {
         n_threads = plat_cpu_count() * reserve_cpu_pct / 100;
         if (n_threads < 1) n_threads = 1;
     }
-    if (fit_path) return run_fit_check(fit_path, mp.n_ctx);
+    if (fit_path) return run_fit_check(fit_path, mp.n_ctx, &mp);
 
     if (shadow_mode) return run_shadow_mode(model_path, shadow_yes);
     if (caps) {

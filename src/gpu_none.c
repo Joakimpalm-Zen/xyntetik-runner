@@ -14,6 +14,12 @@ bool gpu_device_id(char *id, int cap) {
 
 bool gpu_unified_memory(void) { return false; }
 
+bool gpu_offload_budget(int reserve_vram_pct, uint64_t *budget,
+                        uint64_t *headroom) {
+    (void)reserve_vram_pct; (void)budget; (void)headroom;
+    return false;
+}
+
 bool gpu_mem_info(size_t *free_bytes, size_t *total_bytes) {
     (void)free_bytes; (void)total_bytes;
     return false;
