@@ -43,13 +43,25 @@ SCHEMA_VERSION = "xyntetik.agent-torture.v4"
 
 
 class DegenerateBudget(ProtocolError):
-    """A forced-truncation case whose whole budget went into the model's
-    reasoning channel (runner_telemetry.finish_detail "reasoning_limit"), so
-    no call was ever begun and there is nothing for the closer to finish.
-    The turn's "length" is the truthful answer to the request, not a protocol
-    failure; such cases are excused, counted apart from passed, failed and
-    declined (owner decision R4.12.3, 2026-10-03). Only the runner reports the
-    signal; a runtime without it is scored as before."""
+    """A forced-truncation case with max_tokens 1 whose single token went into
+    the model's reasoning channel (runner_telemetry.finish_detail
+    "reasoning_limit"), so no call was ever begun and there is nothing for the
+    closer to finish. Under a constraint the engine closes reasoning at half
+    the budget (prelude_max = max_new / 2 in src/engine.c), so one token is the
+    only budget that cannot be split: there the turn's "length" is the
+    truthful answer, and the case is excused, counted apart from passed,
+    failed and declined (owner decision R4.12.3, 2026-10-03).
+
+    Only the runner reports the signal. A runtime without it is scored as
+    before on the same case, which is why the report and the printed summary
+    always carry requests, scored and excused side by side (docs/agent-torture.md
+    says how to read a cross-runtime comparison on a reasoning model)."""
+
+
+# Under a constraint the engine caps the reasoning prelude at half of
+# max_tokens and spends the rest on the payload; only a budget of one token
+# cannot be split. Mirrors prelude_max == max_new in src/engine.c.
+UNSPLITTABLE_BUDGET = 1
 
 
 class Declined(ProtocolError):
@@ -385,11 +397,20 @@ def _verify_buffered(case, response):
     if case["category"] == "forced_truncation":
         message = response.choice.get("message") or {}
         telemetry = (response.json or {}).get("runner_telemetry") or {}
+        budget = case["request"].get("max_tokens")
         if not message.get("tool_calls") and \
                 telemetry.get("finish_detail") == "reasoning_limit":
-            raise DegenerateBudget("the budget ended inside the reasoning "
-                                   "channel; no call was begun",
-                                   max_tokens=case["request"].get("max_tokens"))
+            if budget == UNSPLITTABLE_BUDGET:
+                raise DegenerateBudget("the one-token budget ended inside the "
+                                       "reasoning channel; no call was begun",
+                                       max_tokens=budget)
+            # At any larger budget the engine closes reasoning at half and
+            # spends the rest on the call; a missing call here means that
+            # reserve regressed, and it must fail the gate, not be excused.
+            raise ProtocolError("reasoning reserve did not hold: the budget "
+                                "ended inside the reasoning channel with no "
+                                "call at a budget that can be split",
+                                max_tokens=budget)
     name, arguments = _only_tool(response)
     if case["category"] == "reasoning_then_tool":
         if name != "record_conclusion":
@@ -735,6 +756,8 @@ def main(argv=None):
     print(f"raw: {args.out / 'raw.jsonl'}")
     print(f"runtime={report['runtime']['name']} "
           f"requests={report['totals']['requests']} "
+          f"scored={report['totals']['scored']} "
+          f"excused={report['totals']['excused']} "
           f"passed={report['totals']['passed']} failed={report['totals']['failed']}")
     return 1 if (report["totals"]["failed"] or mismatches or
                  not speculation_active) else 0

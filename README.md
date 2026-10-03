@@ -206,11 +206,12 @@ generation is slow, it is the difference between an agent loop that finishes and
 one that retries from scratch - burning tokens, time, and context window.
 
 **Boundary:** recovery closes a document that has started; if the model never
-starts it, Runner returns empty content. A reasoning model whose budget runs
-out inside its reasoning channel has not started the call either: the turn
-ends `length` with `runner_telemetry.finish_detail: "reasoning_limit"` and no
-call. Turn thinking off, or give the turn a budget that fits the reasoning and
-the call. Schema validity does not guarantee
+starts it, Runner returns empty content. On a reasoning model under a tool
+choice or schema, Runner closes the reasoning channel at half the budget and
+spends the rest on the call, so the call survives any budget that can be split.
+The one that cannot is a single token: at `max_tokens: 1` the token goes to
+reasoning, no call is begun, and the turn ends `length` with
+`runner_telemetry.finish_detail: "reasoning_limit"`. Schema validity does not guarantee
 correct values or tool selection. The response retains its truncation signal,
 and says which values the closer wrote rather than the model:
 `runner_telemetry.closure` lists them as JSON pointers into the document,
@@ -226,7 +227,9 @@ See [structured output](#structured-output) for the complete contract, or the
 
 What each engine hands the caller when the token budget cuts a tool call short
 - same box, same tool schema, same prompt, `tool_choice:"required"`,
-temperature 0, budgets 1→64:
+temperature 0, budgets 1→64, on direct tool-calling (granite-4.1-3b is a
+non-reasoning model, and the two Qwen3-1.7B rows ran with `enable_thinking`
+false; [details](docs/truncation-benchmark.md)):
 
 | engine | budget too small (1–16 tokens) | enough budget (64, control) |
 |---|---|---|

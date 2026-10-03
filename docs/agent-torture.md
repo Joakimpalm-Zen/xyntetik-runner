@@ -87,13 +87,24 @@ Two files under `--out` (default `tests/torture/out/`):
   lets the model decline is measured on the decline arm rather than conflated
   with one that emits a broken call — a low overall score then reads as "didn't
   call" or "called wrongly", not an undifferentiated fail.
-  A third outcome, `excused` (since 2026-10-03): a `forced_truncation` case
-  whose whole budget went into a reasoning model's reasoning channel
-  (Runner's `runner_telemetry.finish_detail` is `reasoning_limit` and no call
-  was begun). Its `length` is the truthful answer, there is no call for the
-  closer to finish, and it is counted in `requests` and `excused` but left out
-  of `scored`, `failed` and both rates. Granite 4.2 at `max_tokens` 1 is the
-  case that prompted it (3 of 120 on 2026-10-02).
+  A third outcome, `excused` (since 2026-10-03, narrowed the same day): a
+  `forced_truncation` case at `max_tokens` 1 whose single token went into a
+  reasoning model's reasoning channel (Runner's
+  `runner_telemetry.finish_detail` is `reasoning_limit` and no call was
+  begun). Under a constraint the engine closes reasoning at half the budget
+  and spends the rest on the call, so one token is the only budget that
+  cannot be split. The case is counted in `requests` and `excused` and left
+  out of `scored`, `failed` and both rates. The same no-call at a budget of 2
+  or more FAILS (`reasoning reserve did not hold`): it would mean that close
+  regressed. Granite 4.2 at `max_tokens` 1 is the instance (3 of 120 on
+  2026-10-02).
+  **Comparing runtimes on a reasoning model:** only Runner reports the
+  signal, so another runtime's budget-1 no-call is scored as `declined` where
+  Runner's is excused. The report and the printed summary always carry
+  `requests`, `scored` and `excused` together; on a reasoning model compare
+  runtimes on `requests`, or drop the budget-1 `forced_truncation` cases for
+  every runtime, never the excused count of one against the declined count of
+  another.
 - `raw.jsonl` — one line per request: the exact request body, the raw response
   (base64, so nothing is lost or reinterpreted), the normalized stream where
   applicable, and the failure category on a miss. Every verdict is auditable
