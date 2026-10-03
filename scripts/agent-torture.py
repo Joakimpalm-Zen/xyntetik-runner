@@ -61,6 +61,8 @@ class DegenerateBudget(ProtocolError):
 # Under a constraint the engine caps the reasoning prelude at half of
 # max_tokens and spends the rest on the payload; only a budget of one token
 # cannot be split. Mirrors prelude_max == max_new in src/engine.c.
+# tests/test_reasoning_reserve.py holds it to the engine by behaviour: the
+# largest budget that returns no call on a reasoning template must equal it.
 UNSPLITTABLE_BUDGET = 1
 
 
