@@ -206,7 +206,11 @@ generation is slow, it is the difference between an agent loop that finishes and
 one that retries from scratch - burning tokens, time, and context window.
 
 **Boundary:** recovery closes a document that has started; if the model never
-starts it, Runner returns empty content. Schema validity does not guarantee
+starts it, Runner returns empty content. A reasoning model whose budget runs
+out inside its reasoning channel has not started the call either: the turn
+ends `length` with `runner_telemetry.finish_detail: "reasoning_limit"` and no
+call. Turn thinking off, or give the turn a budget that fits the reasoning and
+the call. Schema validity does not guarantee
 correct values or tool selection. The response retains its truncation signal,
 and says which values the closer wrote rather than the model:
 `runner_telemetry.closure` lists them as JSON pointers into the document,
