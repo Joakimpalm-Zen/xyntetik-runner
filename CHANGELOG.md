@@ -8,6 +8,18 @@ names that were true when they were written.
 
 ## Unreleased
 
+- **Fix: a server with more than 8 requests decoding at once could give one
+  request another's next token.** A decode step with more than 8 ready
+  sequences runs as consecutive microbatches, and on CUDA and Metal each
+  microbatch wrote its logits into the same buffer, so the first
+  microbatch's rows were overwritten before the scheduler copied them out.
+  The affected requests sampled from other requests' distributions: garbled
+  or mixed text, and seeded or greedy requests that did not reproduce. It
+  needed more than 8 distinct requests decoding in one step, which a busy
+  `--parallel 9` or wider server reaches under staggered load. Found by the
+  lab's 16-slot CUDA study (6 to 9 of 40 short requests wrong); reproduced on
+  Metal at 4 of 12 and fixed there (12 of 12 and 16 of 16).
+  `tests/test_batch_identity.c` now decodes 11 sequences, past the split.
 - **SentencePiece references for three tokenizer rows (R6.2.2).** Mistral
   v0.3, Phi-3.5 and Salamandra now gate on the SentencePiece model each
   publisher trained with, where the runner matches every string that does not

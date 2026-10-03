@@ -12,13 +12,21 @@
 // NULL), the comparison is sequential-vs-sequential and proves nothing — on
 // a Metal host with an eligible dense fixture that is a FAIL, not a skip.
 // No GPU at all skips loudly.
+//
+// Eleven sequences, not three, since 2026-10-03: a step with more than
+// MODEL_BATCH_MAX (8) ready sequences runs as consecutive microbatches, and
+// the backend's logits buffer is reused by each. With three the split never
+// happened, so the gate could not see the second microbatch overwriting the
+// first one's rows -- which served one request another request's next-token
+// distribution on the lab's 16-slot CUDA server (garbled code, 25% of
+// same-seed pairs different) and reproduced on Metal at 4 of 12.
 #include "runner.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-enum { NSEQ = 3, STEPS = 12, PROMPT_MAX = 8 };
+enum { NSEQ = 11, STEPS = 12, PROMPT_MAX = 8 };
 
 static int g_fail = 0;
 
@@ -31,8 +39,16 @@ static const int32_t PROMPTS[NSEQ][PROMPT_MAX] = {
     { 5, 9, 12 },
     { 7, 3, 20, 11, 6 },
     { 4, 4, 8, 15, 16, 23, 42 },
+    { 2, 30 },
+    { 9, 1, 44, 17 },
+    { 13, 13, 13, 6, 31, 8 },
+    { 21 },
+    { 40, 2, 9, 33, 5, 18, 27, 3 },
+    { 6, 11, 25 },
+    { 38, 14, 7, 22, 9 },
+    { 3, 36, 10, 28 },
 };
-static const int PLEN[NSEQ] = { 3, 5, 7 };
+static const int PLEN[NSEQ] = { 3, 5, 7, 2, 4, 6, 1, 8, 3, 5, 4 };
 
 static bool load_all(const char *path, model_t *m, int n) {
     for (int i = 0; i < n; i++) {
