@@ -6,7 +6,7 @@ change between releases (the `-alpha` suffix was retired at v0.2.0 — the 0.x
 version already says what it needs to). Entries below the rename keep the
 names that were true when they were written.
 
-## Unreleased
+## v0.5.8 - 2026-10-03
 
 - **Agent-torture: a one-token budget spent in the reasoning channel is
   excused, not failed (R4.12.3).** Under a constraint the engine closes
