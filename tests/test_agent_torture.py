@@ -212,12 +212,60 @@ def test_stream_normalization_is_independent_of_tcp_chunks():
         assert MOD.normalize_sse(raw, [raw[:point], raw[point:]]) == reference
 
 
+def _reasoning_limit_no_call(budget):
+    case = next(c for c in MOD.build_cases(40) if c["category"] == "forced_truncation")
+    case = dict(case, request=dict(case["request"], max_tokens=budget))
+
+    class Resp:
+        status = 200
+        choice = {"message": {"content": "", "reasoning_content": "\n"},
+                  "finish_reason": "length"}
+        json = {"choices": [choice],
+                "runner_telemetry": {"finish_detail": "reasoning_limit"}}
+
+        def expect_status(self, code):
+            assert code == 200
+            return self
+
+    return case, Resp()
+
+
+def test_only_the_one_token_budget_is_excused():
+    """R4.12.3, narrowed: under a constraint the engine closes reasoning at
+    half the budget (prelude_max), so only max_tokens 1 cannot be split. A
+    reasoning_limit no-call there is excused; at 2, 3, 5 or 8 the same
+    response means the reserve regressed, and it fails and is scored."""
+    import pytest as _pt
+    case, resp = _reasoning_limit_no_call(1)
+    with _pt.raises(MOD.DegenerateBudget):
+        MOD._verify_buffered(case, resp)
+    for budget in (2, 3, 5, 8):
+        case, resp = _reasoning_limit_no_call(budget)
+        with _pt.raises(MOD.ProtocolError) as err:
+            MOD._verify_buffered(case, resp)
+        assert not isinstance(err.value, (MOD.DegenerateBudget, MOD.Declined)), budget
+        assert "reserve did not hold" in str(err.value)
+    excused, _ = _reasoning_limit_no_call(1)
+    failed, _ = _reasoning_limit_no_call(2)
+    results = [
+        MOD.result_for(excused, "excused", 1.0,
+                       failure={"category": "degenerate_budget", "message": "m"}),
+        MOD.result_for(failed, "failed", 1.0,
+                       failure={"category": "protocol", "message": "reserve"}),
+    ]
+    t = MOD.make_report(results, "runner", "v", "m.gguf", 10, 1)["totals"]
+    assert t["requests"] == 2 and t["excused"] == 1 and t["scored"] == 1
+    assert t["failed"] == 1 and t["passed"] == 0
+
+
 def test_a_budget_spent_in_reasoning_is_excused_not_failed():
     """R4.12.3 (owner 2026-10-03): a forced-truncation case whose budget ended
     inside the reasoning channel (finish_detail reasoning_limit, no call) is
     excused and leaves the denominators; one that simply declined still counts
     against the call rate."""
     cases = [c for c in MOD.build_cases(40) if c["category"] == "forced_truncation"][:3]
+    # the excused budget is the unsplittable one (see the narrowed rule)
+    cases[0] = dict(cases[0], request=dict(cases[0]["request"], max_tokens=1))
 
     class Resp:
         def __init__(self, detail):

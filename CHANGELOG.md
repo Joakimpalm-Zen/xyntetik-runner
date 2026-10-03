@@ -8,12 +8,15 @@ names that were true when they were written.
 
 ## Unreleased
 
-- **Agent-torture: a budget spent in the reasoning channel is excused, not
-  failed (R4.12.3).** A forced-truncation case whose budget ran out inside a
-  reasoning model's reasoning channel (`finish_detail: reasoning_limit`, no
-  call) is reported as `excused` and left out of the scored totals; the
-  runner's behaviour is unchanged (`length`, no call). Granite 4.2's three
-  `max_tokens: 1` cases were the instance.
+- **Agent-torture: a one-token budget spent in the reasoning channel is
+  excused, not failed (R4.12.3).** Under a constraint the engine closes
+  reasoning at half the budget, so only `max_tokens: 1` can end inside the
+  reasoning channel with no call; such a `forced_truncation` case is reported
+  as `excused` and left out of the scored totals. The same no-call at a budget
+  of 2 or more fails (`reasoning reserve did not hold`), so a regression of
+  the half-budget close turns the gate red. The report and the printed summary
+  carry `requests`, `scored` and `excused` together; the runner's behaviour is
+  unchanged. Granite 4.2's three `max_tokens: 1` cases were the instance.
 - **Fix: a server with more than 8 requests decoding at once could give one
   request another's next token.** A decode step with more than 8 ready
   sequences runs as consecutive microbatches, and on CUDA and Metal each
