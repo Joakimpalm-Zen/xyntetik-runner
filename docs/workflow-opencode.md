@@ -86,7 +86,10 @@ On the machine above, 2026-10-03, with the steps exactly as written here
 (the 1.0.1 build, OpenCode 1.18.31, `--kv q8`, the permission rule and the
 prompt above): 2 of 2 runs answered `ORANGE-7319`, in 345 s and 393 s. Each
 model first guessed an absolute path, got the rule's error back and then
-read `NOTES.md`. The 1.0.0 walkthrough, which had neither the rule nor
+read `NOTES.md`. The released 1.0.1 binary then passed the whole page from
+a fresh download and an empty model cache (358 s for step 5; record:
+[compat-reports/clean-setup-1.0.1-2026-10-03-rtx3070.md](compat-reports/clean-setup-1.0.1-2026-10-03-rtx3070.md)).
+The 1.0.0 walkthrough, which had neither the rule nor
 `--kv q8`, failed its own clean-setup run on this machine: 0 of 3 runs
 completed, each ending at the rejected guess, and the f16 cache left 5
 layers on the CPU, so the first 11,142-token turn outran OpenCode's patience
