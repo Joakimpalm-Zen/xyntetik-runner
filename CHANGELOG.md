@@ -9,6 +9,20 @@ rename keep the names that were true when they were written.
 
 ## Unreleased
 
+- **gemma-4 E-series runs on Metal on an 8 GB Mac.** The per-layer token
+  embedding (`per_layer_token_embd`, 2.31 GB of the 5.15 GB E4B QAT file) is
+  read only by a host-side row gather, one row per token, but the Metal
+  admission counted the whole mapping and the wrap pinned the whole table.
+  On an 8 GB M1 with 3.6 GB available E4B was sent to the CPU (found choosing
+  a Swedish writing model, 2026-10-03). The wrap now leaves host-only tables
+  out (cutting its buffers around them) and admission counts what Metal
+  reads: E4B loads all 42 layers on Metal with 2.2 to 2.5 GB available.
+  Same machine, alternated runs: decode 8.1 against 6.9 tok/s on the CPU,
+  prefill 31 to 38 against 20, CPU time per run 1.1 s against 103 s;
+  Metal against CPU on the real file, max |dlogprob| 0.0014 over 41
+  positions. The residency warning stops counting the gathered table too.
+  `test-metal-eseries` now fails if the table is wrapped (mutation-checked).
+
 - **`--remove-sublayer` refuses to remove a part from every block.** It
   wrote a file with the attention (or the FFN) gone from every block, which
   the loader then refused as "missing model hyperparameters" (lab finding,

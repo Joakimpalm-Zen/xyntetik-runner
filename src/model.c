@@ -1370,7 +1370,17 @@ static bool moe_prefetch_default(const model_t *m, int flag) {
 
 static void warn_if_it_will_not_stay_resident(const model_t *m, bool locked) {
     char msg[512];
-    if (model_residency_warning(gguf_mapped_size(&m->gf), model_hot_set_bytes(m),
+    // The gemma-4 E-series per-layer token embedding is gathered one row per
+    // token, never streamed: 2.31 GB of the 5.15 GB E4B QAT file, of which a
+    // run touches a few KB per distinct token. Counting it called a model
+    // that decodes at 8 tok/s on an 8 GB M1 one that would page every token.
+    uint64_t gathered = m->ple_tok_embd ? m->ple_tok_embd->nbytes : 0;
+    uint64_t mapped = gguf_mapped_size(&m->gf), hot = model_hot_set_bytes(m);
+    if (gathered < mapped) {
+        mapped -= gathered;
+        if (hot > gathered) hot -= gathered;
+    }
+    if (model_residency_warning(mapped, hot,
                                 plat_ram_available_bytes(), locked,
                                 msg, sizeof(msg)))
         fprintf(stderr, "%s\n", msg);

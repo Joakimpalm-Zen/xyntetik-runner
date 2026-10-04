@@ -1172,6 +1172,20 @@ bool gpu_kv_fp4_ok(void) {
 // --gpu-layers bypasses this: an operator asking for a specific split gets it.
 static bool metal_wrap_check(gpu_t *g, model_t *m, uint64_t wlen);
 
+// Tensors no Metal kernel ever reads. The gemma-4 E-series per-layer token
+// embedding (per_layer_token_embd, 2.31 GB in the 5.15 GB E4B QAT file) is
+// gathered one row per token on the host (model_ple_prepass); only the rows
+// it touches are ever paged in. Wrapping it would make the whole table part
+// of the Metal working set, and counting it would size admission by bytes
+// that are never resident: on an 8 GB M1 with 3.6 GB available, E4B was sent
+// to the CPU at about 0.2 words per second although its hot set is 2.8 GB.
+static bool metal_host_only(const model_t *m, const gguf_tensor *t) {
+    return t && t == m->ple_tok_embd;
+}
+static uint64_t metal_host_only_bytes(const model_t *m) {
+    return m->ple_tok_embd ? m->ple_tok_embd->nbytes : 0;
+}
+
 // Per-buffer ceiling for the weight wraps. RUNNER_METAL_MAX_BUF overrides the
 // device's maxBufferLength so the multi-buffer path can be exercised on a
 // machine whose models all fit one buffer -- which is every machine this was
@@ -1227,10 +1241,11 @@ static bool metal_wrap_weights(gpu_t *g, model_t *m, id<MTLDevice> dev,
     typedef struct { uint64_t beg, end; uint32_t part; } ext;
     ext *ex = calloc(n ? n : 1, sizeof(ext));
     if (!ex) return false;
-    uint64_t n_ex = 0;
+    uint64_t n_ex = 0, left_out = 0;
     for (uint64_t i = 0; i < n; i++) {
         gguf_tensor *t = &m->gf.tensors[i];
         if (!t->data) continue;
+        if (metal_host_only(m, t)) { left_out += t->nbytes; continue; }
         uint64_t beg = (uint64_t)(uintptr_t)t->data;
         uint64_t end = beg + t->nbytes;
         if (n_parts == 1) {
@@ -1257,6 +1272,7 @@ static bool metal_wrap_weights(gpu_t *g, model_t *m, id<MTLDevice> dev,
     }
 
     uint64_t gi = 0;
+    bool capcut = false;
     while (gi < n_ex) {
         if (g->n_wbuf >= METAL_MAX_WBUF) {
             fprintf(stderr, "gpu: this model needs more than %d weight buffers "
@@ -1279,8 +1295,13 @@ static bool metal_wrap_weights(gpu_t *g, model_t *m, id<MTLDevice> dev,
             return false;
         }
         uint64_t gj = gi + 1;
+        // A hole longer than a page is a host-only tensor left out above;
+        // a group that spanned it would wrap it after all, so cut there.
         while (gj < n_ex && ex[gj].part == part &&
+               ex[gj].beg <= last + page &&
                ex[gj].end - base <= cap) { last = ex[gj].end; gj++; }
+        if (gj < n_ex && ex[gj].part == part && ex[gj].beg <= last + page)
+            capcut = true;  // cut by the per-buffer ceiling, not a hole
 
         uint64_t len = (last - base + page - 1) & ~(uint64_t)(page - 1);
         if (base + len > pend[part]) len = pend[part] - base;
@@ -1306,7 +1327,11 @@ static bool metal_wrap_weights(gpu_t *g, model_t *m, id<MTLDevice> dev,
         g->n_wbuf = 0;
         return false;
     }
-    if (g->n_wbuf > 1)
+    if (left_out)
+        fprintf(stderr, "gpu: the %.2f GB per-layer embedding table stays on "
+                "the host (gathered by row); the Metal wrap leaves it out\n",
+                left_out / 1e9);
+    if (capcut)
         fprintf(stderr, "gpu: weights wrapped in %d buffers (%.2f GB "
                 "per-buffer limit)\n", g->n_wbuf, cap / 1e9);
     return true;
@@ -1384,7 +1409,7 @@ static uint64_t metal_bind_weights(gpu_t *g, id<MTLComputeCommandEncoder> e,
 static bool metal_wrap_check(gpu_t *g, model_t *m, uint64_t wlen) {
     for (uint64_t i = 0; i < m->gf.n_tensors; i++) {
         gguf_tensor *t = &m->gf.tensors[i];
-        if (!t->data) continue;
+        if (!t->data || metal_host_only(m, t)) continue;
         uint64_t addr = (uint64_t)(uintptr_t)t->data;
         uint64_t len = t->nbytes;
         if (gguf_map_count(&m->gf) == 1) {
@@ -1427,7 +1452,9 @@ static bool metal_partial_pays(const model_t *m, uint64_t wrapped) {
     // the ordinary compute blend. An oversubscribed model is refused however
     // the split is drawn, because whatever is pinned is taken from what the
     // rest must stream through.
-    uint64_t total = m->gf.map_size;
+    // host-only tables (metal_host_only) are row-gathered, not streamed:
+    // their size is not what has to stay resident
+    uint64_t total = m->gf.map_size - metal_host_only_bytes(m);
     uint64_t margin = have / 8;              // KV, scratch, the OS
     return total + margin <= have && wrapped <= total;
 }
@@ -1750,7 +1777,7 @@ bool gpu_init(model_t *m) {
     // budget question across every part's mapping.
     size_t page = 16384;
     size_t wlen = (m->gf.map_size + page - 1) & ~(page - 1);
-    uint64_t wtotal = gguf_mapped_size(&m->gf);
+    uint64_t wtotal = gguf_mapped_size(&m->gf) - metal_host_only_bytes(m);
 
     // Choose K. Full offload stays the default and the fast path; a partial
     // split is only entered when the whole file cannot be wrapped, because a
