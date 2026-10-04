@@ -2041,6 +2041,7 @@ ifeq ($(shell uname -s),Darwin)
 		  env RUNNER_METAL_MM=0 RUNNER_METAL_ATTN_COOP=0 RUNNER_METAL_MOE_MM=0 ./$(RUNNER_EXE) -m test-es-cfg.gguf -p "hello world" -n 8 --temp 0 --gpu auto > metal-es-gpu.out 2> metal-es-gpu.err; \
 		  cmp -s metal-es-cpu.out metal-es-gpu.out || { echo "eseries $$cfg differs"; exit 1; }; \
 		  grep -q "Metal backend" metal-es-gpu.err || { echo "eseries $$cfg: Metal never engaged"; exit 1; }; \
+		  case $$cfg in *,0) ;; *) grep -q "per-layer embedding table stays on the host" metal-es-gpu.err || { echo "eseries $$cfg: the per-layer embedding table was wrapped"; exit 1; };; esac; \
 		done; \
 		echo "metal E-series ok"; \
 	else \
