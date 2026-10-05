@@ -591,8 +591,10 @@ typedef struct {
     double   age_s;
     uint64_t model_key;
 } prefix_context_info;
-// Fills up to cap entries; returns the total count of named contexts.
-int  prefix_context_list(prefix_context_info *out, int cap);
+// Captures all named contexts under one lock. Returns the count, or
+// PFX_CTX_NOSPACE on allocation failure. Caller frees *out; it is NULL for
+// an empty list or failure. Later cache mutations cannot change the snapshot.
+int  prefix_context_list(prefix_context_info **out);
 
 // ---- snapshot persistence (runner.prefix.v1) --------------------------
 //

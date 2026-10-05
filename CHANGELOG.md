@@ -9,6 +9,13 @@ rename keep the names that were true when they were written.
 
 ## Unreleased
 
+- **Listing named contexts is safe during concurrent creation.**
+  `GET /v1/runner/contexts` now reads one owned snapshot captured under the
+  cache lock. Previously a context added between counting and copying could
+  make the response read past its allocation and crash the server. A
+  concurrent HTTP regression runs in the normal and sanitized conformance
+  suites.
+
 - **gemma-4 E-series runs on Metal on an 8 GB Mac.** The per-layer token
   embedding (`per_layer_token_embd`, 2.31 GB of the 5.15 GB E4B QAT file) is
   read only by a host-side row gather, one row per token, but the Metal

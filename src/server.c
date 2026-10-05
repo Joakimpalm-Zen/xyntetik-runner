@@ -1285,10 +1285,9 @@ static void handle_context_create(slot_t *s, sock_t fd, jv *req) {
 }
 
 static void send_contexts(sock_t fd) {
-    int n = prefix_context_list(NULL, 0);
-    prefix_context_info *v = n ? calloc((size_t)n, sizeof *v) : NULL;
-    if (n && !v) { send_error(fd, 500, "out of memory"); return; }
-    if (n) n = prefix_context_list(v, n);
+    prefix_context_info *v = NULL;
+    int n = prefix_context_list(&v);
+    if (n < 0) { send_error(fd, 500, "out of memory"); return; }
     sbuf r = {0};
     sb_lit(&r, "{\"object\":\"list\",\"data\":[");
     for (int i = 0; i < n; i++)

@@ -979,23 +979,33 @@ bool prefix_context_release(const char *name) {
     return pp != NULL;
 }
 
-int prefix_context_list(prefix_context_info *out, int cap) {
+int prefix_context_list(prefix_context_info **out) {
+    *out = NULL;
     pthread_mutex_lock(&PFX.mu);
-    double now = now_s();
+    // Count, allocate and copy under the same lock: a caller cannot size its
+    // own buffer from a count that another slot can invalidate before copying.
     int n = 0;
+    for (pfx_entry *p = PFX.head; p; p = p->next)
+        if (p->pinned) n++;
+    prefix_context_info *v = n ? calloc((size_t)n, sizeof *v) : NULL;
+    if (n && !v) {
+        pthread_mutex_unlock(&PFX.mu);
+        return PFX_CTX_NOSPACE;
+    }
+    double now = now_s();
+    int i = 0;
     for (pfx_entry *p = PFX.head; p; p = p->next) {
         if (!p->pinned) continue;
-        if (n < cap) {
-            snprintf(out[n].name, sizeof out[n].name, "%s", p->name);
-            out[n].tokens = p->n;
-            out[n].bytes = p->bytes;
-            out[n].hits = p->hits;
-            out[n].age_s = now - p->created;
-            out[n].model_key = p->key;
-        }
-        n++;
+        snprintf(v[i].name, sizeof v[i].name, "%s", p->name);
+        v[i].tokens = p->n;
+        v[i].bytes = p->bytes;
+        v[i].hits = p->hits;
+        v[i].age_s = now - p->created;
+        v[i].model_key = p->key;
+        i++;
     }
     pthread_mutex_unlock(&PFX.mu);
+    *out = v;
     return n;
 }
 
