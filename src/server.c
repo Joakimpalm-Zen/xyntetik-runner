@@ -882,19 +882,49 @@ static void context_from_snapshot(slot_t *s, sock_t fd, const char *id,
 }
 
 // R1.12.1: POST /v1/runner/contexts/{id}/snapshot {name?, receipt?}
+// A context id in a URL path may arrive percent-encoded: the TypeScript
+// client sends encodeURIComponent(id), which turns the ':' the id grammar
+// allows into "%3A", and the raw comparison then found no such context
+// (found 2026-10-05). Decode %XX (and only %XX; '+' is a literal here, not a
+// space) into a bounded buffer, then validate the DECODED id against the
+// same grammar every other door uses.
+static int hexval(int c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
+static bool path_segment_decode(const char *in, char *out, size_t cap) {
+    size_t n = 0;
+    for (const char *p = in; *p; p++) {
+        int c = (unsigned char)*p;
+        if (c == '%') {
+            int h = hexval(p[1]), l = p[1] ? hexval(p[2]) : -1;
+            if (h < 0 || l < 0) return false;
+            c = h * 16 + l;
+            p += 2;
+        }
+        if (n + 1 >= cap) return false;
+        out[n++] = (char)c;
+    }
+    out[n] = 0;
+    return true;
+}
+
 static void handle_context_snapshot(slot_t *s, sock_t fd, jv *req,
                                     const char *path) {
-    char id[PFX_CTX_NAME_MAX + 1];
+    char id[PFX_CTX_NAME_MAX + 1], raw[3 * PFX_CTX_NAME_MAX + 1];
     const char *p = path + sizeof("/v1/runner/contexts/") - 1;
     const char *end = strchr(p, '/');
     size_t n = end ? (size_t)(end - p) : 0;
-    if (!end || strcmp(end, "/snapshot") != 0 || n == 0 || n > PFX_CTX_NAME_MAX) {
+    if (!end || strcmp(end, "/snapshot") != 0 || n == 0 || n >= sizeof raw) {
         send_error_detail(fd, 400, "not a context id", "id", "invalid_value");
         return;
     }
-    memcpy(id, p, n);
-    id[n] = 0;
-    if (!prefix_context_name_ok(id)) {
+    memcpy(raw, p, n);
+    raw[n] = 0;
+    if (!path_segment_decode(raw, id, sizeof id) || !prefix_context_name_ok(id)) {
         send_error_detail(fd, 400, "not a context id", "id", "invalid_value");
         return;
     }
@@ -1348,8 +1378,10 @@ static void send_contexts(sock_t fd) {
 }
 
 static void delete_context(sock_t fd, const char *path) {
-    const char *id = path + sizeof("/v1/runner/contexts/") - 1;
-    if (!prefix_context_name_ok(id)) {
+    char id[PFX_CTX_NAME_MAX + 1];
+    if (!path_segment_decode(path + sizeof("/v1/runner/contexts/") - 1,
+                             id, sizeof id) ||
+        !prefix_context_name_ok(id)) {
         send_error_detail(fd, 400, "not a context id", "id", "invalid_value");
         return;
     }
