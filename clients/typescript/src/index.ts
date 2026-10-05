@@ -43,8 +43,13 @@ export class RunnerAPIError extends Error {
   }
 }
 
-/** A stream that broke its own protocol (a malformed data frame): never
- *  skipped, because a later finish_reason would then certify a corrupt turn. */
+/** A stream that broke its own protocol: a malformed data frame, or a body
+ *  that ended before its terminal event (Chat: a chunk with finish_reason and
+ *  then `[DONE]`; Responses: response.completed, .incomplete or .failed).
+ *  Never skipped and never a clean end, because a consumer that reads a
+ *  truncated turn as finished would certify a half answer (found 2026-10-05:
+ *  a server-side fault closed the socket after the opening events and the
+ *  generator simply returned). */
 export class RunnerProtocolError extends Error {
   readonly partial: string;
   constructor(message: string, partial: string) {
@@ -104,23 +109,30 @@ export class RunnerClient {
    *  data frame throws RunnerProtocolError; comments and non-data fields are
    *  ignored as the SSE spec requires. */
   async *chatStream(req: Json): AsyncGenerator<Json> {
-    yield* this.sse("/v1/chat/completions", { ...req, stream: true });
+    yield* this.sse("/v1/chat/completions", { ...req, stream: true }, "chat");
   }
 
   /** Typed events of a streamed Responses turn. */
   async *responsesStream(req: Json): AsyncGenerator<Json> {
-    yield* this.sse("/v1/responses", { ...req, stream: true });
+    yield* this.sse("/v1/responses", { ...req, stream: true }, "responses");
   }
 
-  private async *sse(path: string, req: Json): AsyncGenerator<Json> {
+  private async *sse(path: string, req: Json,
+                     kind: "chat" | "responses"): AsyncGenerator<Json> {
     const res = await this.raw("POST", path, req);
     if (!res.body) throw new RunnerProtocolError("stream has no body", "");
     const reader = res.body.getReader();
     const dec = new TextDecoder();
     let buf = "", seen = "";
+    // Terminal-state tracking. A Chat stream is complete only after a chunk
+    // carried a finish_reason AND the [DONE] sentinel arrived; a Responses
+    // stream only after response.completed, .incomplete or .failed. A body
+    // that ends in any other state is a truncated turn and throws.
+    let finished = false;   // chat: a finish_reason chunk was seen
+    let terminal = false;   // the surface's terminal marker arrived
     // The reader is cancelled on every way out: a consumer that breaks out of
-    // the loop, a protocol error, or [DONE]. A body left open and unread keeps
-    // the server generating for nobody and holds its slot.
+    // the loop, a protocol error, or the terminal event. A body left open and
+    // unread keeps the server generating for nobody and holds its slot.
     try {
       for (;;) {
         const { value, done } = await reader.read();
@@ -131,15 +143,52 @@ export class RunnerClient {
           buf = buf.slice(nl + 1);
           if (!line.startsWith("data:")) continue;
           const data = line.slice(5).trimStart();
-          if (data === "[DONE]") return;
+          if (data === "[DONE]") {
+            if (kind !== "chat") {
+              throw new RunnerProtocolError("[DONE] on a Responses stream", seen);
+            }
+            if (!finished) {
+              throw new RunnerProtocolError(
+                "[DONE] before any chunk carried a finish_reason", seen);
+            }
+            terminal = true;
+            return;
+          }
+          if (terminal) {
+            throw new RunnerProtocolError("data after the terminal event", seen);
+          }
           let ev: Json;
           try { ev = JSON.parse(data) as Json; } catch {
             throw new RunnerProtocolError("malformed data frame", seen);
           }
           seen += data;
+          if (kind === "chat") {
+            const choices = ev["choices"];
+            if (Array.isArray(choices) &&
+                choices.some((c) => (c as Json)?.["finish_reason"] != null)) {
+              finished = true;
+            }
+          } else {
+            const t = ev["type"];
+            if (t === "response.completed" || t === "response.incomplete" ||
+                t === "response.failed") {
+              terminal = true;
+            }
+          }
           yield ev;
+          if (terminal) return;
         }
-        if (done) return;
+        if (done) {
+          if (!terminal) {
+            throw new RunnerProtocolError(
+              kind === "chat"
+                ? (finished ? "stream ended without [DONE]"
+                            : "stream ended before a finish_reason")
+                : "stream ended before response.completed, .incomplete or .failed",
+              seen);
+          }
+          return;
+        }
       }
     } finally {
       await reader.cancel().catch(() => {});

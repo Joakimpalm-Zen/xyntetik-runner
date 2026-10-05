@@ -136,3 +136,67 @@ test("a malformed SSE frame is an error, never skipped", async () => {
   }, (e) => e instanceof RunnerProtocolError);
   assert.equal(seen.length, 1);
 });
+
+function sseResponse(text) {
+  return new Response(text, { status: 200,
+                              headers: { "Content-Type": "text/event-stream" } });
+}
+
+test("a chat stream that ends before its finish_reason is an error", async () => {
+  // the server-side fault of 2026-10-05: opening events, then a bare FIN
+  const fake = async () => sseResponse(
+    "data: {\"choices\":[{\"delta\":{\"role\":\"assistant\"},\"finish_reason\":null}]}\n\n" +
+    "data: {\"choices\":[{\"delta\":{\"content\":\"Hel\"},\"finish_reason\":null}]}\n\n");
+  const c = new RunnerClient({ fetch: fake });
+  const seen = [];
+  await assert.rejects(async () => {
+    for await (const ev of c.chatStream({ messages: [] })) seen.push(ev);
+  }, (e) => e instanceof RunnerProtocolError && /before a finish_reason/.test(e.message));
+  assert.equal(seen.length, 2);
+});
+
+test("a chat stream with a finish_reason but no [DONE] is an error", async () => {
+  const fake = async () => sseResponse(
+    "data: {\"choices\":[{\"delta\":{\"content\":\"Hi\"},\"finish_reason\":null}]}\n\n" +
+    "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n");
+  const c = new RunnerClient({ fetch: fake });
+  await assert.rejects(async () => {
+    for await (const _ of c.chatStream({ messages: [] })) { /* drain */ }
+  }, (e) => e instanceof RunnerProtocolError && /without \[DONE\]/.test(e.message));
+});
+
+test("a complete chat stream ends cleanly", async () => {
+  const fake = async () => sseResponse(
+    "data: {\"choices\":[{\"delta\":{\"content\":\"Hi\"},\"finish_reason\":null}]}\n\n" +
+    "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n" +
+    "data: [DONE]\n\n");
+  const c = new RunnerClient({ fetch: fake });
+  const seen = [];
+  for await (const ev of c.chatStream({ messages: [] })) seen.push(ev);
+  assert.equal(seen.length, 2);
+});
+
+test("a Responses stream that ends before its terminal event is an error", async () => {
+  const fake = async () => sseResponse(
+    "data: {\"type\":\"response.created\",\"response\":{}}\n\n" +
+    "data: {\"type\":\"response.output_text.delta\",\"delta\":\"Hel\"}\n\n");
+  const c = new RunnerClient({ fetch: fake });
+  const seen = [];
+  await assert.rejects(async () => {
+    for await (const ev of c.responsesStream({ input: "x" })) seen.push(ev);
+  }, (e) => e instanceof RunnerProtocolError && /response\.completed/.test(e.message));
+  assert.equal(seen.length, 2);
+});
+
+test("a Responses stream ends cleanly on completed, incomplete or failed", async () => {
+  for (const t of ["response.completed", "response.incomplete", "response.failed"]) {
+    const fake = async () => sseResponse(
+      "data: {\"type\":\"response.created\",\"response\":{}}\n\n" +
+      `data: {"type":"${t}","response":{}}\n\n`);
+    const c = new RunnerClient({ fetch: fake });
+    const seen = [];
+    for await (const ev of c.responsesStream({ input: "x" })) seen.push(ev);
+    assert.equal(seen.length, 2);
+    assert.equal(seen[1].type, t);
+  }
+});
