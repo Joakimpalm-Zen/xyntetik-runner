@@ -124,6 +124,27 @@ bool engine_init(engine *e, model_t *m, tokenizer *tok, sampler *smp) {
     return true;
 }
 
+void engine_request_defaults(engine *e) {
+    engine_set_stop(e, NULL, NULL);
+    engine_set_request_stops(e, NULL, 0);
+    e->schema = NULL;
+    e->json_mode = false;
+    e->ignore_eos = false;
+    e->render_special = false;
+    e->emit_think_prelude = false;
+    e->constraint_includes_prelude = false;
+    e->think_budget = 0;
+    e->think_msg_n = 0;
+    e->think_smp = false;
+    e->loop_guard = false;
+    e->loop_all = false;
+    if (e->smp) {
+        free((void *)e->smp->script);
+        e->smp->script = NULL;
+        e->smp->script_n = e->smp->script_at = 0;
+    }
+}
+
 void engine_reset(engine *e) {
     e->pos = 0;
     e->hit_stop = false; e->stop_id = -1;

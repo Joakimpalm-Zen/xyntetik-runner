@@ -354,6 +354,15 @@ int engine_hint_draft(const int32_t *hist, int len, const int32_t *hint,
 // the caller must not use the engine in that case.
 bool   engine_init(engine *e, model_t *m, tokenizer *tok, sampler *smp);
 void   engine_reset(engine *e); // clear KV position + sampler + json state
+// Every option one REQUEST sets on the engine, back to its default: the
+// stops, the schema and JSON mode, ignore_eos, the reasoning budget and its
+// sampler, the loop guard, rendered specials and the scripted reply.
+// engine_reset clears a SEQUENCE (positions, caches); this clears the request
+// that shaped it. A chat request sets what it needs at its start, so what it
+// left behind reached the next request on the slot that did not set the same
+// field: a session on a slot that had just served a json_object turn
+// generated under JSON mode (found 2026-10-05).
+void   engine_request_defaults(engine *e);
 void   engine_think_started(engine *e); // prompt already contains think_open
 // Read the prompt's reasoning state (the last think_open/think_close wins)
 // so a raw completion that resumes an open reasoning turn is treated as one

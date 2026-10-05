@@ -956,6 +956,11 @@ static void session_answer(slot_t *s, sock_t fd, float *logits, int n_prompt,
     double t0 = now_s();
     bool live = session_run(e, logits, stop_at, session_text_cb, &text, &last);
     bool suspended = live && stop_at > 0 && e->gen_count < e->gen_max;
+    // Read before engine_reset below zeroes them: a suspended session
+    // answered tokens:0, generated:0 while its image carried the real
+    // counts (found 2026-10-05).
+    int tokens_total = e->pos, generated = e->gen_count;
+    bool hit_stop = e->hit_stop;
     char id[65] = "";
     const char *why = NULL;
     if (suspended) {
@@ -1000,15 +1005,15 @@ static void session_answer(slot_t *s, sock_t fd, float *logits, int n_prompt,
     sb_esc(&r, text.s ? text.s : "", text.n);
     sb_fmt(&r, "\",\"tokens\":%d,\"generated\":%d,\"max_tokens\":%d,"
                "\"finish_reason\":\"%s\",\"seconds\":%.6f}",
-           e->pos, e->gen_count, max_new,
-           suspended ? "suspended" : e->hit_stop ? "stop" : "length", secs);
+           tokens_total, generated, max_new,
+           suspended ? "suspended" : hit_stop ? "stop" : "length", secs);
     free(text.s);
     if (r.failed) { free(r.s); send_error(fd, 500, "out of memory"); return; }
     send_response(fd, 200, "application/json", r.s, r.n);
     free(r.s);
     fprintf(stderr, "[slot %d] session%s%s: %d tokens, %d of %d generated%s\n",
-            s->id, parent ? " resume " : " ", parent ? parent : "", e->pos,
-            e->gen_count, max_new, id[0] ? ", imaged" : "");
+            s->id, parent ? " resume " : " ", parent ? parent : "", tokens_total,
+            generated, max_new, id[0] ? ", imaged" : "");
 }
 
 static bool session_int(sock_t fd, jv *req, const char *key, int lo, int hi,
@@ -1029,6 +1034,40 @@ static bool session_int(sock_t fd, jv *req, const char *key, int lo, int hi,
         return false;
     }
     *out = (int)v->num;
+    return true;
+}
+
+// A sampler knob from the request body: absent or null keeps the default;
+// anything else must be a finite number inside [lo, hi]. jv_num() took a
+// string as the default and a negative temperature as itself, so a session
+// could start on an unsamplable setting that a chat request would refuse.
+static bool session_float(sock_t fd, jv *req, const char *key, double lo,
+                          double hi, float *out) {
+    jv *v = jv_get(req, key);
+    if (!v || v->type == J_NULL) return true;
+    if (v->type != J_NUM || !isfinite(v->num) || v->num < lo || v->num > hi) {
+        char msg[128];
+        snprintf(msg, sizeof msg, "%s must be a number in [%g, %g]", key, lo, hi);
+        send_error_detail(fd, 400, msg, key, "invalid_value");
+        return false;
+    }
+    *out = (float)v->num;
+    return true;
+}
+
+// A seed is a positive integer the rng can hold exactly: a double carries
+// 53 bits, so the range is capped there rather than cast past it.
+static bool session_seed(sock_t fd, jv *req, const char *key, uint64_t *out) {
+    jv *v = jv_get(req, key);
+    if (!v || v->type == J_NULL) return true;
+    if (v->type != J_NUM || v->num < 1 || v->num > 9007199254740991.0 ||
+        v->num != (double)(long long)v->num) {
+        char msg[128];
+        snprintf(msg, sizeof msg, "%s must be a positive integer below 2^53", key);
+        send_error_detail(fd, 400, msg, key, "invalid_value");
+        return false;
+    }
+    *out = (uint64_t)v->num;
     return true;
 }
 
@@ -1053,17 +1092,20 @@ static void handle_session_start(slot_t *s, sock_t fd, jv *req) {
         return;
     }
     jv *ie = jv_get(req, "ignore_eos");
+    if (ie && ie->type != J_NULL && ie->type != J_BOOL) {
+        send_error_detail(fd, 400, "ignore_eos must be a boolean", "ignore_eos",
+                          "invalid_value");
+        return;
+    }
     bool ignore_eos = ie && ie->type == J_BOOL && ie->b;
     s->smp = s->smp_base;
     s->smp.top_k = top_k;
-    s->smp.temp = (float)jv_num(jv_get(req, "temperature"), s->smp.temp);
-    s->smp.top_p = (float)jv_num(jv_get(req, "top_p"), s->smp.top_p);
-    s->smp.min_p = (float)jv_num(jv_get(req, "min_p"), s->smp.min_p);
-    s->smp.repeat_penalty = (float)jv_num(jv_get(req, "repeat_penalty"),
-                                          s->smp.repeat_penalty);
-    jv *seed = jv_get(req, "seed");
-    if (seed && seed->type == J_NUM && seed->num >= 1)
-        s->smp.rng = (uint64_t)seed->num;
+    if (!session_float(fd, req, "temperature", 0.0, 10.0, &s->smp.temp) ||
+        !session_float(fd, req, "top_p", 0.0, 1.0, &s->smp.top_p) ||
+        !session_float(fd, req, "min_p", 0.0, 1.0, &s->smp.min_p) ||
+        !session_float(fd, req, "repeat_penalty", 0.0, 10.0, &s->smp.repeat_penalty) ||
+        !session_seed(fd, req, "seed", &s->smp.rng))
+        return;
     int32_t *toks = NULL;
     int n = tok_encode_fit(s->tok, prompt->str, true, TOK_RAW, 0, &toks);
     if (n < 0) { free(toks); send_error(fd, 500, "out of memory tokenizing"); return; }
@@ -1074,6 +1116,7 @@ static void handle_session_start(slot_t *s, sock_t fd, jv *req) {
         return;
     }
     sched_prefill_begin();
+    engine_request_defaults(e);   // nothing the previous request set survives
     engine_reset(e);
     e->ignore_eos = ignore_eos;
     float *lg = engine_feed(e, toks, n);
@@ -1162,6 +1205,7 @@ static void handle_session_resume(slot_t *s, sock_t fd, jv *req,
     // a greedy image records no rng (it is never drawn from)
     s->smp.rng = fork_seed ? (uint64_t)fork_seed : sm->rng ? sm->rng : 1;
     sched_prefill_begin();
+    engine_request_defaults(e);   // the image, not the last request, is the state
     if (!engine_state_load(e, img.tokens, sm->n_tokens, img.state)) {
         sched_prefill_end();
         session_image_free(&img);
