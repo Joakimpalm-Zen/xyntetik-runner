@@ -84,6 +84,7 @@ It takes about a minute to try: [quick start](#quick-start).
 [Also in the box](#more) · [All commands](#all-commands) ·
 [Prove what a model did](#record-and-verify-a-run)
 
+<a id="quick-start"></a>
 <a id="sixty-seconds-to-a-served-model"></a>
 ## <img src="site/assets/readme-section.svg" width="8" height="24" alt=""> Quick start
 
