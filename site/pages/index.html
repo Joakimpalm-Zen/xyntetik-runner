@@ -1,6 +1,6 @@
 <!--meta
-title: Xyntetik: model files you can check, and the open engine behind them
-description: Compressed and modified versions of open models, each measured against its original and published with the result. Runner 1.0 is the open single-binary engine in C that measures and serves them, and builds most of them, on CPU, CUDA and Metal, with tools to make a file of your own.
+title: Xyntetik Runner: run AI on your own machine, and know exactly what you are getting
+description: Runner is a free, open engine that runs AI models on your own computer and replaces the guesswork with answers you can check. It tells you whether a model fits before you download it, shows what shrinking a model cost, gives memory back while idle, and can prove afterwards what the model said.
 path: /
 nav: home
 bare: yes
@@ -9,223 +9,267 @@ bare: yes
   <div class="wrap hero-grid">
     <div>
       <p class="eyebrow">Xyntetik Runner 1.0, a Zenova AB product</p>
-      <h1>Model files you can check.</h1>
-      <p class="lede">Xyntetik publishes compressed and modified versions of open models, each measured against its original and published with the result, the misses beside the passes. Runner is the open engine that measures and serves them, and builds most of them: one binary in plain C for CPU, CUDA and Metal.</p>
-      <p class="lede">It is not the fastest engine or the widest; <a href="#compare">the table below</a> says where it loses. What it adds is the measurement, and the tools to make a file of your own.</p>
+      <h1 style="max-width:19ch">Run AI on your own machine. Know exactly what you are getting.</h1>
+      <p class="lede">Running an AI model yourself is mostly guesswork. Will it fit? Did shrinking it break it? Why is the laptop out of memory when nothing is running? Runner is a free, open engine that replaces those guesses with answers you can check.</p>
       <div class="btn-row">
-        <a class="btn btn-primary" href="#files">Get a file</a>
-        <a class="btn" href="#make">Make your own</a>
-        <a class="btn" href="{{repo}}/issues/new?template=model_request.yml" rel="noopener">Request a model</a>
+        <a class="btn btn-primary" href="/runner/#sixty-seconds">Try it in a minute</a>
+        <a class="btn" href="#can-do">See what it can do</a>
+        <a class="btn" href="#new">New to this? Start here</a>
         <a class="btn btn-support" href="https://buy.stripe.com/9B69AUddpdx9auHgP27N600" rel="noopener">Support this work</a>
       </div>
       <div class="hero-facts">
-        <span>Apache 2.0, free forever</span>
-        <span>CPU, CUDA and Metal</span>
-        <span>No Python, no pip, no ggml</span>
-        <span>Interfaces stable across 1.x</span>
+        <span>Free forever, Apache 2.0</span>
+        <span>One file, nothing to install</span>
+        <span>Mac, Windows and Linux</span>
+        <span>NVIDIA and Apple graphics, or none at all</span>
         <span>{{version}}, released {{release_date}}</span>
       </div>
     </div>
     <div class="hero-art">
       {{heromark:xyntetik}}
-      <p class="hero-note">The mark is an ensö, the Zen circle drawn in one uninhibited stroke and often left open, and Xyntetik tries to work the way it is drawn. One stroke: plain tools that do one thing whole, a single binary with no stack hidden underneath. Whole, imperfections included: every number carries its measurement, the rows where we lose too. Open where the work is not finished: what is not claimed is written down as carefully as what is. And present: models run here, on hardware you own, in the moment.</p>
+      <p class="hero-note">The mark is an ensö, the Zen circle drawn in one stroke and often left open. One stroke: a single program with nothing hidden underneath. Left open: what is not yet claimed is written down as carefully as what is.</p>
     </div>
   </div>
 </section>
 
-<section class="section" style="padding-top:0" id="doors">
-  <div class="wrap grid-2">
-    <a class="card card-link accent reveal" href="#files">
-      <p class="eyebrow">Run</p>
-      <h3>I want a model file I can check.</h3>
-      <p>Smaller or repaired versions of models you already run, each with its number against the original on the card, and the command that built it.</p>
-      <span class="more">The files &rarr;</span>
-    </a>
-    <a class="card card-link accent reveal" href="/runner/reproducible-lora-training-receipts/">
-      <p class="eyebrow">Attest</p>
-      <h3>I need to prove what my model did.</h3>
-      <p>Signed, chained receipts that replay to VERIFIED, DIVERGED or UNVERIFIABLE, and an evidence pack a reviewer checks offline.</p>
-      <span class="more">Receipts and evidence packs &rarr;</span>
-    </a>
+<section class="section" style="padding-top:0" id="see">
+  <div class="wrap split rev">
+    <figure class="shot reveal">
+      <picture>
+        <source media="(prefers-color-scheme: dark)" srcset="/assets/readme-fit-dark.svg">
+        <img src="/assets/readme-fit-light.svg" alt="Runner asked whether Granite 4.2 8B fits an RTX 3070: FITS, 35 of 40 layers on the GPU" width="640" height="282" loading="lazy">
+      </picture>
+      <figcaption class="measured">Real output, Runner 1.0.2 on an RTX 3070, shortened to fit. <a href="{{repo}}/blob/main/docs/compat-reports/fit-capture-1.0.2-2026-10-06-rtx3070.md">Full capture</a></figcaption>
+    </figure>
+    <div class="reveal">
+      <p class="eyebrow">See it answer</p>
+      <h2>It read 16 MB of a 5 GB model and already knew.</h2>
+      <p>Before you download anything, Runner looks at the first few megabytes of a model file and tells you whether it will run on your machine, how much lands on the graphics card, and what each memory setting would buy you.</p>
+      <p>Checked against what really happened on load, it named the right split in 70 of 72 tests and was never too optimistic.</p>
+      <a class="more" href="/runner/#fit">How to ask before you download &rarr;</a>
+    </div>
   </div>
 </section>
 
-<section class="section tint" id="files">
+<section class="section tint" id="new">
   <div class="wrap">
     <div class="section-head reveal">
-      <p class="eyebrow">Files</p>
-      <h2>Three files, each with its number against the original.</h2>
-      <p>The project bar is a margin-qualified top-1 of at least 97% and a mean KLD of at most 0.05 against the named parent. A file is published with its result either way; the <a href="/evidence/#artifacts">ledger</a> lists the ones that miss.</p>
-    </div>
-    <div class="table-wrap reveal">
-      <table class="data">
-        <thead>
-          <tr><th style="min-width:12rem">File</th><th class="num">Size</th><th class="num">Margin-qualified top-1</th><th class="num">Mean KLD</th><th>What was done</th></tr>
-        </thead>
-        <tbody>
-          <tr>
-            <td><a href="{{hf}}/Qwen3.8-27B-GSQ-RCO-IQ3_S-recovered-GGUF">Qwen3.8-27B IQ3_S, recovered scales</a></td>
-            <td class="num">11.77 GB</td><td class="num">97.80%</td><td class="num">0.0450</td>
-            <td>ISTA-DASLab's 3-bit file with every block scale retrained against the BF16 parent. Same bytes and layout, so any engine that reads the source reads this one. The source reads 97.60% and 0.0480 on the same positions: the edge points the right way and is not resolved at 500 positions.</td>
-          </tr>
-          <tr>
-            <td><a href="{{hf}}/Qwen3-30B-A3B-selective-attnQ8_0-expQ4_0-GGUF">Qwen3-30B-A3B, selective precision</a></td>
-            <td class="num">17.99 GB</td><td class="num">99.50%</td><td class="num">0.034</td>
-            <td>Attention at Q8_0, experts at Q4_0, built with <code>--type-plan</code>. Smaller than the official uniform Q4_K_M (18.56 GB), which reads 94.75% and 0.114 and fails the bar.</td>
-          </tr>
-          <tr>
-            <td><a href="{{hf}}/Qwen3-Coder-30B-A3B-Instruct-keep120-Q4_K_M-GGUF">Qwen3-Coder-30B, keep-120</a></td>
-            <td class="num">17.5 GB</td><td class="num">100.00%</td><td class="num">0.00738</td>
-            <td>120 of 128 experts kept per layer, built with <code>--prune-experts</code>. 1.1 GB under the stock 18.6 GB file; plain top-1 is 97.25%, a thin margin the card states.</td>
-          </tr>
-        </tbody>
-      </table>
-    </div>
-    <p class="small muted mt-1">Each row is copied from the file's own model card, which carries the method, the date and the limits. Fidelity to a parent is not a capability benchmark; the cards say where the two part.</p>
-    <div class="grid-3 mt-2">
-      <div class="card reveal">
-        <p class="eyebrow">Run one</p>
-        <h3>One command, checked on download.</h3>
-        <pre><code>runner -hf Joakimpalm-Zen/Qwen3-30B-A3B-selective-attnQ8_0-expQ4_0-GGUF --serve</code></pre>
-        <p>Runner fetches the file, verifies it against the Hub's SHA-256 record and serves it on localhost. <a href="/runner/#sixty-seconds">Sixty seconds to a served model</a></p>
-      </div>
-      <div class="card reveal" id="make">
-        <p class="eyebrow">Make your own</p>
-        <h3>The same tools, on your model.</h3>
-        <pre><code>runner -m model-Q8_0.gguf --quantize out.gguf --type-plan plan.json
-runner -m model.gguf --quantize pruned.gguf --prune-experts keep.json</code></pre>
-        <p>Then measure the result against its parent with <code>scripts/kld-compare-raw.py</code> before trusting it. <a href="{{repo}}/blob/main/MANUAL.md#models-and-conversion">Requantization, pruning and sublayer removal</a></p>
-      </div>
-      <div class="card reveal">
-        <p class="eyebrow">Take part</p>
-        <h3>Say which model is next.</h3>
-        <p>The next file is chosen from requests. Ran one of these on your own hardware? The result is wanted, good or bad, and is credited by name.</p>
-        <p><a href="{{repo}}/issues/new?template=model_request.yml" rel="noopener">Request a model</a> &middot; <a href="{{repo}}/issues/new?template=result_report.yml" rel="noopener">Report a result</a> &middot; <a href="{{repo}}/blob/main/docs/community-results.md" rel="noopener">Community results</a></p>
-      </div>
-    </div>
-  </div>
-</section>
-
-<section class="section" id="should-not-work">
-  <div class="wrap">
-    <div class="section-head reveal">
-      <p class="eyebrow">What else the engine does</p>
-      <h2>Each one breaks an assumption about local inference. Each one has the raw result underneath.</h2>
+      <p class="eyebrow">New to this?</p>
+      <h2>What an inference engine is, in three steps.</h2>
     </div>
     <div class="grid-3">
-      <a class="card card-link accent reveal" href="/runner/truncation-safe-tool-calling/">
-        <h3>Cut the model off in the middle of a tool call. It still returns a valid, executable call.</h3>
-        <p>Six engines, seven token budgets from 1 to 64. Below the control rung, five of them hand back nothing usable. Runner closes the JSON to the smallest schema-legal document and the agent keeps going.</p>
-        <p class="measured">measured 2026-08-19 vs vLLM, llama.cpp, Ollama, TensorRT-LLM, SGLang</p>
-        <span class="more">How that works &rarr;</span>
+      <div class="card reveal">
+        <span class="step-n">1</span>
+        <h3>An AI model is a file.</h3>
+        <p>A few gigabytes of numbers that you download, the way you would download a film. On its own it does nothing.</p>
+      </div>
+      <div class="card reveal">
+        <span class="step-n">2</span>
+        <h3>An engine is the player.</h3>
+        <p>It opens the file and turns your question into an answer, on your own computer. Nothing you type is sent anywhere.</p>
+      </div>
+      <div class="card reveal">
+        <span class="step-n">3</span>
+        <h3>Runner is a player that shows its work.</h3>
+        <p>It tells you whether the file will fit, what was lost when someone shrank it, and it can prove later exactly what the model said.</p>
+      </div>
+    </div>
+    <div class="callout reveal">
+      <span class="t">Why run a model yourself at all?</span>
+      <p>Your documents never leave the building, there is no bill per question, and it keeps working without an internet connection.</p>
+    </div>
+  </div>
+</section>
+
+<section class="section" id="can-do">
+  <div class="wrap">
+    <div class="section-head reveal">
+      <p class="eyebrow">What it can do</p>
+      <h2>Six answers that are guesswork everywhere else.</h2>
+      <p>Each one is a measurement you can repeat, and each links to how it was made.</p>
+    </div>
+    <div class="grid-3">
+      <a class="card card-link accent reveal" href="/runner/#fit">
+        <span class="big">70 of 72</span>
+        <h3>Know whether a model fits before you download it.</h3>
+        <p>Runner reads the start of the file and predicts how it will run on your machine. It called the real result in 70 of 72 tests and was one step cautious in the other two.</p>
+        <span class="more">Ask before you download &rarr;</span>
       </a>
-      <a class="card card-link accent reveal" href="/runner/shadow-mode/">
-        <h3>Keep your coding assistant. A bench with receipts for what a local model has proven on your own work.</h3>
-        <p>One command wires Claude Code or Codex to the runner. Your requests and commits become tasks a local model is tried on under your repository's own tests; the ledger keeps the verdicts and signed receipts, offload opens only where the evidence says so, and every patch is yours to apply. It measures; it does not learn.</p>
-        <p class="measured">measured 2026-09-08 to 09-17: five consumer models over 260 samples, then a 7B at best-of-8 over 224 samples on 28 real commits, zero verified; the instrument verified the human's own fixes 13 of 13</p>
-        <span class="more">How shadow mode works &rarr;</span>
+      <a class="card card-link accent reveal" href="/runner/#make">
+        <span class="big">Smaller and closer</span>
+        <h3>Shrink a model and see what it cost.</h3>
+        <p>One command and a one-line plan built a Qwen3-30B that is smaller than the official 4-bit file and closer to the original: 99.5% agreement where that file reads 94.75%.</p>
+        <span class="more">Make your own model file &rarr;</span>
       </a>
-      <a class="card card-link accent reveal" href="/runner/train-lora-on-quantized-gguf/">
-        <h3>Train the LoRA through the 4-bit file you actually deploy. Run it twice: the same adapter, byte for byte.</h3>
-        <p>No FP16 training copy. Held-out exact tool calling went from 0.69 to 1.00, two independent runs wrote the same sha256, and stock llama.cpp scores the adapter at the same 1.00.</p>
-        <p class="measured">measured 2026-08-22, Qwen3-4B Q4_K_M, public artifact</p>
-        <span class="more">How that works &rarr;</span>
+      <a class="card card-link accent reveal" href="/runner/#memory">
+        <span class="big">41%</span>
+        <h3>Read longer documents in the same memory.</h3>
+        <p>The notes a model keeps while it reads can outgrow your memory. Runner stores them in about 41% of the usual space, with full agreement on models from 4B to 30B.</p>
+        <span class="more">More context, less memory &rarr;</span>
       </a>
       <a class="card card-link accent reveal" href="/runner/#coexistence">
-        <h3>Serve a 63 GB model on your workstation. While it idles, the operating system can take the memory back.</h3>
-        <p>Loaded and idle, Runner holds +35 MB of wired memory against +60.8 GB for llama-server on the same 128 GB machine; on an 8 GB laptop it is +8 MB against +3,819 MB. The cost is a slower cold first token, and it is published.</p>
-        <p class="measured">measured 2026-09-01 (M5 Max, gpt-oss-120b) and on an 8 GB M1</p>
-        <span class="more">How that works &rarr;</span>
+        <span class="big">35 MB</span>
+        <h3>Leave it running.</h3>
+        <p>A 63 GB model sitting idle holds 35 MB of your memory under Runner. On the same Mac, llama-server holds 60.8 GB. Runner hands the rest back until you ask again.</p>
+        <span class="more">A server that gives memory back &rarr;</span>
+      </a>
+      <a class="card card-link accent reveal" href="/runner/truncation-safe-tool-calling/">
+        <span class="big">1 of 6</span>
+        <h3>Tool calls that survive running out of words.</h3>
+        <p>Six engines were cut off in the middle of a tool call. Only Runner handed back something a program could still run, at every budget tested.</p>
+        <span class="more">What six engines sent back &rarr;</span>
+      </a>
+      <a class="card card-link accent reveal" href="/runner/train-lora-on-quantized-gguf/">
+        <span class="big">Same bytes, twice</span>
+        <h3>Teach the exact file you run.</h3>
+        <p>Runner trains a small add-on directly on the compressed model you already use. Two runs wrote the identical file, and an outside tester got the same result on their own hardware.</p>
+        <span class="more">Train what you serve &rarr;</span>
       </a>
     </div>
   </div>
 </section>
 
-<section class="section tint" id="one-oh">
+<section class="section tint" id="proof">
   <div class="wrap">
     <div class="section-head reveal">
-      <p class="eyebrow">Runner 1.0</p>
-      <h2>Everything the binary does, on one screen.</h2>
-      <p>One executable, no runtime underneath. Each card names what is there and links to where it is documented and measured. The <a href="/runner/#versioning">versioning policy</a> says which of these interfaces 1.x keeps stable.</p>
+      <p class="eyebrow">Do not take our word for it</p>
+      <h2>Two of those measurements, drawn.</h2>
+    </div>
+    <div class="grid-2">
+      <figure class="fig reveal">
+        <picture>
+          <source media="(prefers-color-scheme: dark)" srcset="/assets/readme-idle-dark.svg">
+          <img src="/assets/readme-idle-light.svg" alt="Wired memory with a 63 GB model loaded and idle: Runner 35 MB on a 0 to 40 MB scale, llama-server 60.8 GB off the scale" width="540" height="152" loading="lazy">
+        </picture>
+        <figcaption><strong>Memory an idle model keeps from you.</strong> gpt-oss-120b, 63 GB, loaded and idle on a 128 GB M5 Max; on an 8 GB M1 the same pair is 8 MB against 3,819 MB. Measured 2026-09-01. Source: <a href="{{repo}}/blob/main/docs/idle-coexistence-120b-m5max-2026-09-01.md">docs/idle-coexistence-120b-m5max-2026-09-01.md</a>.</figcaption>
+      </figure>
+      <figure class="fig reveal">
+        <picture>
+          <source media="(prefers-color-scheme: dark)" srcset="/assets/readme-toolcalls-dark.svg">
+          <img src="/assets/readme-toolcalls-light.svg" alt="One truncated tool call across six engines: only Runner returns a usable call below the control budget" width="422" height="284" loading="lazy">
+        </picture>
+        <figcaption><strong>One tool call, cut short, on six engines.</strong> Same machine, same prompt and tool, token budgets from 1 to 64; the last column is the control where every engine completes. Measured 2026-08-19. Source: <a href="{{repo}}/blob/main/docs/truncation-benchmark.md">docs/truncation-benchmark.md</a>.</figcaption>
+      </figure>
+    </div>
+    <div class="btn-row">
+      <a class="btn" href="/evidence/">Every claim, with the measurement behind it</a>
+    </div>
+  </div>
+</section>
+
+<section class="section" id="for">
+  <div class="wrap">
+    <div class="section-head reveal">
+      <p class="eyebrow">Who it is for</p>
+      <h2>One engine, four reasons to care.</h2>
+    </div>
+    <div class="grid-4">
+      <a class="card card-link reveal" href="/runner/#sixty-seconds">
+        <p class="eyebrow">Curious</p>
+        <h3>I want to try AI that stays on my computer.</h3>
+        <p>Download one file, start a model, ask it something. It takes about a minute and nothing leaves your machine.</p>
+        <span class="more">Start here &rarr;</span>
+      </a>
+      <a class="card card-link reveal" href="/runner/#agents">
+        <p class="eyebrow">Building</p>
+        <h3>I want my tools to just connect.</h3>
+        <p>Runner speaks the OpenAI and Anthropic APIs, so Claude Code, Codex, OpenCode and your own apps point at it without changes.</p>
+        <span class="more">Connect a coding agent &rarr;</span>
+      </a>
+      <a class="card card-link reveal" href="/runner/reproducible-lora-training-receipts/">
+        <p class="eyebrow">Leading a team</p>
+        <h3>I have to answer for what the model did.</h3>
+        <p>Keep data in the building, know whether a model fits your machines before you commit to it, and hand a reviewer a signed record they can replay.</p>
+        <span class="more">Records a reviewer can check &rarr;</span>
+      </a>
+      <a class="card card-link reveal" href="/about/">
+        <p class="eyebrow">Backing</p>
+        <h3>I want to know what is behind it.</h3>
+        <p>An open engine, a research lab that publishes its failures, a measurement behind every claim, and a Swedish company that builds it.</p>
+        <span class="more">The company behind it &rarr;</span>
+      </a>
+    </div>
+  </div>
+</section>
+
+<section class="section tint" id="lab">
+  <div class="wrap">
+    <div class="section-head reveal">
+      <p class="eyebrow">The Xyntetik-Lab on Hugging Face</p>
+      <h2><img class="hf-logo" src="https://huggingface.co/front/assets/huggingface_logo-noborder.svg" width="38" height="35" alt="Hugging Face"> Everything the lab makes is published, failures included.</h2>
+      <p>Models, the measurements behind them and the experiments that did not work, all in the open.</p>
+    </div>
+    <div class="grid-2">
+      <a class="card card-link reveal" href="https://huggingface.co/collections/Joakimpalm-Zen/xyntetik-kvist-distilled-agents-6ab9f930af19ca84df9ebf6b" rel="noopener">
+        <h3>Can a model half the size do its parent's job?</h3>
+        <p>Kvist-14B was distilled from a 30B model for one thing, tool-calling agents on a 24 GB card, and it solves 57 of the 60 held-out tasks its parent solves.</p>
+        <span class="more">Meet Kvist &rarr;</span>
+      </a>
+      <a class="card card-link reveal" href="https://huggingface.co/collections/Joakimpalm-Zen/xyntetik-research-model-surgery-and-scale-recovery-6aa98bab0ecb9723f310c770" rel="noopener">
+        <h3>What survives when you cut pieces out of a 30B model?</h3>
+        <p>Nine preregistered surgeries on one frozen Muse-Glimmer-30B. Two of the results run with up to 6% of the decoder gone and still pass the fidelity bar.</p>
+        <span class="more">See the surgery &rarr;</span>
+      </a>
+      <a class="card card-link reveal" href="{{hf}}/Qwen3.8-27B-GSQ-RCO-IQ3_S-recovered-GGUF" rel="noopener">
+        <h3>A 3-bit Qwen3.8-27B that fits a 16 GB card whole.</h3>
+        <p>Another lab's file with every block scale retrained against the original. It is the lab's most downloaded file so far, and its card shows it side by side with the source.</p>
+        <span class="more">Get the file &rarr;</span>
+      </a>
+      <a class="card card-link reveal" href="https://huggingface.co/collections/Joakimpalm-Zen/xyntetik-research-genesis-6abcfa50b6707dec9bfee356" rel="noopener">
+        <h3>Can a model learn with no human text at all?</h3>
+        <p>GENESIS: eighteen preregistered experiments on tiny models that only ever saw programs they ran themselves. Read what survived, and everything that did not.</p>
+        <span class="more">Read the record &rarr;</span>
+      </a>
+    </div>
+    <div class="btn-row">
+      <a class="btn btn-primary" href="{{hf}}" rel="noopener">Step inside the lab</a>
+      <a class="btn" href="https://huggingface.co/collections/Joakimpalm-Zen/runner-releases-6aa98baaed03bba0e8a561ae" rel="noopener">Xyntetik-Runner releases</a>
+      <a class="btn" href="/evidence/#artifacts">The artifact ledger</a>
+    </div>
+  </div>
+</section>
+
+<section class="section" id="box">
+  <div class="wrap">
+    <div class="section-head reveal">
+      <p class="eyebrow">Also in the box</p>
+      <h2>Everything the one file does.</h2>
     </div>
     <div class="grid-3">
       <a class="card card-link reveal" href="/runner/#support">
-        <h3>Serving</h3>
-        <p>OpenAI Chat Completions, Completions, Responses, Embeddings and rerank, Anthropic Messages, <code>/v1/decide</code>. Parallel slots in one batched step, gated byte-identical to solo decoding on CUDA and Metal; prefix reuse; swap mode and idle unload; Prometheus metrics; <code>-hf</code> downloads checked against the Hub's SHA-256.</p>
-        <span class="more">Support matrix &rarr;</span>
-      </a>
-      <a class="card card-link reveal" href="/runner/truncation-safe-tool-calling/">
-        <h3>Tool calls and agents</h3>
-        <p>Each family's own tool protocol, rendered from the publisher's template and checked token for token: Harmony, atem, Qwen XML, Qwen3-Coder, Gemma 4, granite4, Apertus, Muse. Calls that survive the token limit and say which values the closer wrote; a reasoning budget and a loop guard for long turns.</p>
-        <span class="more">Truncation-safe tool calls &rarr;</span>
+        <h3>Serves your apps</h3>
+        <p>OpenAI and Anthropic APIs on your own machine, several requests at once, with a <code>/metrics</code> endpoint and models fetched and checked by one flag.</p>
+        <span class="more">What it serves &rarr;</span>
       </a>
       <a class="card card-link reveal" href="/runner/#more">
-        <h3>Structured output and decisions</h3>
-        <p>JSON Schema and JSON mode as a sampler guarantee, per-token and per-choice logprobs, and <code>confirm_below</code>: how sure the model was between the schema's legal branches, and whether this turn needs a person.</p>
-        <span class="more">Decisions you can gate &rarr;</span>
+        <h3>Answers in the shape you asked for</h3>
+        <p>JSON and JSON Schema are guaranteed, not hoped for, and the model can say how sure it was so unsure answers go to a person.</p>
+        <span class="more">Structured output &rarr;</span>
+      </a>
+      <a class="card card-link reveal" href="/runner/#more">
+        <h3>Long agent turns that finish</h3>
+        <p>A cap on how long a model thinks out loud and a guard that notices when it starts going round in circles.</p>
+        <span class="more">Keep agents on track &rarr;</span>
       </a>
       <a class="card card-link reveal" href="/runner/reproducible-lora-training-receipts/">
-        <h3>Records and verification</h3>
-        <p>Replayable transcripts; Ed25519- or ML-DSA-44-signed receipts in a chain; evidence packs a reviewer verifies offline; OpenSSF Model Signing checks of the loaded file; session images that suspend, resume and fork a generation. The audit demo runs the chain in under a minute on an 8 GB Mac.</p>
+        <h3>Proof of what was said</h3>
+        <p>Signed records that replay, evidence packs a reviewer checks offline, and a signature check on the model file itself.</p>
         <span class="more">Receipts &rarr;</span>
       </a>
-      <a class="card card-link reveal" href="/runner/train-lora-on-quantized-gguf/">
-        <h3>Training and adapters</h3>
-        <p>LoRA trained through the frozen quantized GGUF on the CPU or with a CUDA assist, byte-identical across runs; adapters served on CPU, CUDA and Metal, merged with provenance, or loaded straight into llama.cpp.</p>
-        <span class="more">LoRA on the file you serve &rarr;</span>
-      </a>
-      <a class="card card-link reveal" href="/runner/#support">
-        <h3>Models and formats</h3>
-        <p>19 named architectures, unknown ones refused by name; 24 weight formats including every codebook i-quant, MXFP4 and NVFP4; KV caches in f16, q8, fp4 and k8v4; speculative decoding from a draft, an MTP head or prompt lookup; requantization, expert pruning and sublayer removal.</p>
-        <span class="more">What loads &rarr;</span>
-      </a>
-      <a class="card card-link reveal" href="/runner/#coexistence">
-        <h3>Hardware and coexistence</h3>
-        <p>CPU, CUDA with tensor cores, Metal. <code>--caps</code>, <code>--fit</code> and <code>--doctor</code> answer before and after a load; a VRAM registry shares one card between processes; evictable weights give memory back while idle; a tray on macOS and Windows; a container image on GHCR.</p>
-        <span class="more">Designed to stay on &rarr;</span>
+      <a class="card card-link reveal" href="/runner/#more">
+        <h3>One graphics card, several models</h3>
+        <p>Programs queue for the card instead of crashing each other, and an idle model unloads itself after a while.</p>
+        <span class="more">Share a GPU &rarr;</span>
       </a>
       <a class="card card-link reveal" href="/runner/shadow-mode/">
         <h3>Shadow mode</h3>
-        <p>A bench with receipts that tries a local model on your own coding tasks, under your repository's tests, beside the agent you already pay for. It measures; it does not learn.</p>
+        <p>Keep the coding assistant you pay for. Shadow retries your own finished tasks with a local model under your own tests and keeps score.</p>
         <span class="more">How shadow mode works &rarr;</span>
       </a>
-      <a class="card card-link reveal" href="/evidence/">
-        <h3>Evidence behind every claim</h3>
-        <p>Admission against the publisher's reference in float32; a compatibility matrix and CUDA smoke on every release; a family sweep that put 56 real models through every surface before 1.0, its CPU half 462 checks passed and 0 failed; speed tables with the losing rows.</p>
-        <span class="more">All evidence &rarr;</span>
-      </a>
     </div>
-  </div>
-</section>
-
-<section class="section" id="why">
-  <div class="wrap">
-    <div class="section-head reveal">
-      <p class="eyebrow">Why Runner exists</p>
-      <h2>Serving tokens locally is solved. Trusting what came out is not.</h2>
-      <p>Excellent local engines already exist and Runner rides their formats rather than competing with them. It exists because four things go wrong the moment a local model has to do real work, and none of them is a speed problem.</p>
-    </div>
-    <div class="grid-2">
-      <div class="card reveal">
-        <h3>An agent loop dies at the token budget</h3>
-        <p>When <code>max_tokens</code> runs out in the middle of a tool call's JSON, most engines hand back nothing usable: an empty call, framing leaked into the prose, or arguments that do not parse. On a local model, where context is tight and generation is slow, the agent retries from scratch and burns the window it was short of.</p>
-        <p>Runner closes the call to the smallest schema-legal document instead, so the arguments parse and the loop continues. <a href="/runner/truncation-safe-tool-calling/">How, and what six engines do</a></p>
-      </div>
-      <div class="card reveal">
-        <h3>What you trained is not what you ship</h3>
-        <p>The usual fine-tuning path trains through an FP16 copy and then serves a quantized file. Two numerical paths means the policy you sampled is not the policy you trained, and a 4-bit merge can quietly erase the adaptation while perplexity still looks fine.</p>
-        <p>Runner trains through the frozen quantized GGUF it serves. One codepath, and a reproducibility contract with named edges. <a href="/runner/train-lora-on-quantized-gguf/">The measured claim and its caveat</a></p>
-      </div>
-      <div class="card reveal">
-        <h3>A log is not evidence</h3>
-        <p>If you have to show what a model said, what it learned from, or which file you actually deployed, a printout of a chat is not going to hold. You need the model hash, the adapter hash, the binary, the seed, the exact bytes, and a way for someone else to replay them.</p>
-        <p>Runner writes that record as a signed, chained receipt, and a verifier answers VERIFIED, DIVERGED or UNVERIFIABLE with one exit code. <a href="/runner/reproducible-lora-training-receipts/">Receipts and the determinism scope</a></p>
-      </div>
-      <div class="card reveal">
-        <h3>The server takes over the workstation</h3>
-        <p>A resident inference server on the machine you also work on wires down gigabytes and ticks in the background while it serves nothing. That is the reason people kill it every time.</p>
-        <p>Runner keeps weights as evictable mappings the OS can reclaim, wakes about once every two seconds while idle, and hands everything back on <code>/unload</code>. The cost is a slower cold first token, and that cost is published. <a href="/runner/#coexistence">The idle measurement</a></p>
-      </div>
+    <div class="btn-row">
+      <a class="btn" href="/runner/">Everything Runner does</a>
+      <a class="btn" href="{{repo}}/blob/main/MANUAL.md#command-line-reference" rel="noopener">The complete list of commands</a>
     </div>
   </div>
 </section>
@@ -233,201 +277,60 @@ runner -m model.gguf --quantize pruned.gguf --prune-experts keep.json</code></pr
 <section class="section tint" id="compare">
   <div class="wrap">
     <div class="section-head reveal">
-      <p class="eyebrow">Where it wins, where it does not</p>
-      <h2>Use llama.cpp. Then read this table.</h2>
-      <p>llama.cpp is the ecosystem, and if you want maximum architecture coverage and raw speed you should use it. Runner adds contracts the ecosystem does not make. Every row below is a measurement from the repository, and the comparison covers the engines and versions that were actually measured.</p>
+      <p class="eyebrow">How it compares</p>
+      <h2>Measured side by side, on the same machine.</h2>
+      <p>Runner uses the same model files as llama.cpp, so trying it costs you nothing. These are the places where the measurements differ.</p>
     </div>
     <div class="table-wrap reveal">
       <table class="data compare">
         <thead>
-          <tr><th>Question</th><th>Runner</th><th>llama.cpp</th><th>vLLM, Ollama, TensorRT-LLM, SGLang</th></tr>
+          <tr><th>Question</th><th>Runner</th><th>Others measured</th></tr>
         </thead>
         <tbody>
           <tr>
-            <td>A tool call is cut short by <code>max_tokens</code>. What does the caller get?</td>
-            <td><span class="y win">Executable <code>tool_calls</code>, arguments parse, at every budget from 1 to 16 tokens</span></td>
-            <td><span class="n">No call, framing leaked into content; at 16 tokens a call whose arguments do not parse (b10488)</span></td>
-            <td><span class="n">No usable call at any truncated budget; Ollama returns HTTP 500 at 16 (versions on the evidence page)</span></td>
+            <td>A tool call is cut short by the token limit. What does the program get?</td>
+            <td><span class="y win">A call it can run, at every budget from 1 to 16 tokens</span></td>
+            <td><span class="n">Nothing usable from vLLM, llama.cpp, Ollama, TensorRT-LLM or SGLang below the control budget</span></td>
           </tr>
           <tr>
-            <td>Decode throughput, dense models, CUDA</td>
-            <td><span class="p">69 to 81% of llama.cpp on an RTX 3070 (1.0.0), 81 to 93% on a MIG slice; one i-quant row at 12%</span></td>
-            <td><span class="y win">Faster</span></td>
-            <td><span class="n">Not measured</span></td>
+            <td>How much memory does an idle model keep from the rest of the machine?</td>
+            <td><span class="y win">35 MB with a 63 GB model; 8 MB on an 8 GB Mac</span></td>
+            <td><span class="n">llama-server: 60.8 GB and 3,819 MB on the same two machines</span></td>
           </tr>
           <tr>
-            <td>Prefill throughput, CUDA</td>
-            <td><span class="n lose">9 to 10% of llama.cpp on an RTX 3070 at 1.0.0. Runner's honest weak column, and the next piece of work</span></td>
-            <td><span class="y win">An order of magnitude faster</span></td>
-            <td><span class="n">Not measured</span></td>
+            <td>How close is the output to the model publisher's own implementation?</td>
+            <td><span class="y win">Closer than llama.cpp on 21 of 22 rows across twelve model families</span></td>
+            <td><span class="n">llama.cpp, given its stronger configuration at each size</span></td>
           </tr>
           <tr>
-            <td>Architecture coverage</td>
-            <td><span class="p">A named list; unknown architectures are refused by name, never guessed</span></td>
-            <td><span class="y win">The widest</span></td>
-            <td><span class="n">Not compared</span></td>
+            <td>Can you train the compressed file you actually run, and get the same result twice?</td>
+            <td><span class="y win">Yes, byte for byte, with a provenance record</span></td>
+            <td><span class="y">The adapter Runner writes scores the same in stock llama.cpp</span></td>
           </tr>
           <tr>
-            <td>Memory held while idle beside your other work</td>
-            <td><span class="y win">+8 MB wired on an 8 GB M1; +35 MB with a 63 GB model on a 128 GB M5 Max; <code>/unload</code> gives it all back</span></td>
-            <td><span class="n">+3,819 MB and +60.8 GB on the same two machines; no unload</span></td>
-            <td><span class="n">Not measured</span></td>
-          </tr>
-          <tr>
-            <td>Cold time to first token when the server is allowed to hold everything</td>
-            <td><span class="n lose">Slower: 3.2 s vs 0.15 s on the pressured M1, 10.1 s vs 0.25 s at 120B. Residency is what llama-server buys</span></td>
-            <td><span class="y win">Faster</span></td>
-            <td><span class="n">Not measured</span></td>
-          </tr>
-          <tr>
-            <td>Train a LoRA through the quantized file you serve, reproducibly</td>
-            <td><span class="y win">Yes. Same forward pass as serving on the CPU, and within the measured CPU/GPU envelope on CUDA; same data, seed and config write a byte-identical adapter</span></td>
-            <td><span class="p">Runner-trained adapters load and score identically in stock llama.cpp; community F16 adapters load back into Runner</span></td>
-            <td><span class="n">Not measured</span></td>
-          </tr>
-          <tr>
-            <td>Prove what ran: signed receipts, replay verdicts, model-signature checks</td>
-            <td><span class="y win">Ed25519- or ML-DSA-44-signed chained receipts, VERIFIED / DIVERGED / UNVERIFIABLE replay, evidence packs a reviewer verifies offline, OpenSSF Model Signing verification of the loaded GGUF</span></td>
-            <td><span class="n">Not claimed</span></td>
-            <td><span class="n">Not claimed</span></td>
-          </tr>
-          <tr>
-            <td>Vulkan, TLS, remote bind</td>
-            <td><span class="n lose">Not implemented. Loopback only by design; put a reverse proxy in front for anything else</span></td>
-            <td><span class="y">Vulkan available</span></td>
-            <td><span class="n">Not compared</span></td>
+            <td>Can someone else verify what the model said?</td>
+            <td><span class="y win">Signed, chained records that replay to VERIFIED, DIVERGED or UNVERIFIABLE</span></td>
+            <td><span class="n">Not claimed by the engines measured</span></td>
           </tr>
         </tbody>
       </table>
     </div>
-    <p class="small muted mt-1">Speed rows: RTX 3070, runner 1.0.0 vs llama.cpp b10754, 2026-10-03, and MIG 1g.24gb slice, runner 6d705e9 vs llama.cpp b10353, 2026-09-02. Truncation row: 2026-08-19, granite-4.1-3b, versions named on the <a href="/evidence/#truncation">evidence page</a>. Idle rows: 2026-09-01 and the README's M1 measurement. Sources: <a href="{{repo}}/blob/main/docs/benchmarks.md">docs/benchmarks.md</a>, <a href="{{repo}}/blob/main/docs/truncation-benchmark.md">docs/truncation-benchmark.md</a>, <a href="{{repo}}/blob/main/docs/idle-coexistence-120b-m5max-2026-09-01.md">docs/idle-coexistence-120b-m5max-2026-09-01.md</a>.</p>
-    <div class="callout warn reveal">
-      <span class="t">Choose Runner for the contracts, not the speed.</span>
-      <p>If the machine is dedicated to inference and you want the fastest prefill and the widest model list, llama.cpp is the right call and we mean that sincerely. If you need an agent loop that finishes on a small budget, adapters trained on the exact file you deploy, receipts that a third party can replay, or an engine that can live on your workstation all day, that is what Runner is for.</p>
-    </div>
+    <p class="small muted mt-1">Tool calls: 2026-08-19, <a href="{{repo}}/blob/main/docs/truncation-benchmark.md">docs/truncation-benchmark.md</a>. Idle memory: 2026-09-01 and the M1 measurement, <a href="{{repo}}/blob/main/docs/idle-coexistence-120b-m5max-2026-09-01.md">docs/idle-coexistence-120b-m5max-2026-09-01.md</a>. Publisher reference: 2026-09-07, <a href="{{repo}}/blob/main/docs/golden-pass-2026-09-07.md">docs/golden-pass-2026-09-07.md</a>. Speed tables and every other measurement are on the <a href="/evidence/">evidence page</a>.</p>
   </div>
 </section>
 
-<section class="section" id="proof">
-  <div class="wrap">
-    <div class="section-head reveal">
-      <p class="eyebrow">Proof</p>
-      <h2>We tested this. Here is what happened.</h2>
-      <p>Three of the measurements the project rests on. Each figure names its source document and date; the raw responses, scripts and pinned files are in the repository, and the regression gates run on every release.</p>
-    </div>
-
-    <figure class="fig reveal">
-      <div class="legend">
-        <span><i class="ok"></i>executable tool call, arguments parse</span>
-        <span><i class="none"></i>no usable call (empty, leaked framing, unparseable arguments, or HTTP 500)</span>
-      </div>
-      {{chart:truncation}}
-      <figcaption><strong>Tool calls that survive the token limit.</strong> Same box, same tool schema and prompt, <code>tool_choice: required</code>, temperature 0, <code>max_tokens</code> from 1 to 64. The 64-token control proves the failure is truncation, not misconfiguration: every engine completes there. Runner 0.1.19-alpha, vLLM 0.27.1, llama.cpp b10488, Ollama 0.32.14, TensorRT-LLM 1.2.1, SGLang 0.5.17. <strong>&dagger;</strong> measured on a Qwen3-1.7B substitute because those registries did not carry granite-4.1-3b; recovery is a property of the runtime, so the substitution measures the engine. Measured 2026-08-19. Raw responses: <a href="{{repo}}/tree/main/tests/torture/truncation/2026-08-19-granite-4.1-3b">tests/torture/truncation/</a>. Method: <a href="{{repo}}/blob/main/docs/truncation-benchmark.md">docs/truncation-benchmark.md</a>.</figcaption>
-    </figure>
-
-    <div class="grid-2 mt-2">
-      <figure class="fig reveal">
-        {{chart:lora}}
-        <figcaption><strong>A LoRA trained through 4-bit serving weights, and what merging does to it.</strong> Held-out exact tool-call score on Qwen3-4B. The adapter served beside the base with <code>--lora</code> takes the score from 0.69 to 1.00, and the same 1.00 is reproduced in stock llama.cpp. Merging into F16 or Q8_0 keeps it. Merging into the 4-bit base erases it: 98.55% of weight bytes round back to the base's own codes. Measured 2026-08-22. Artifact: <a href="{{hf}}/Qwen3-4B-Runner-ToolUse-Q4_K_M">Qwen3-4B-Runner-ToolUse-Q4_K_M</a>. Method: <a href="{{repo}}/blob/main/docs/adaptation-engine.md">docs/adaptation-engine.md</a>.</figcaption>
-      </figure>
-      <figure class="fig reveal">
-        {{chart:speed}}
-        <figcaption><strong>Speed, including the rows Runner loses.</strong> Runner 6d705e9 vs llama.cpp b10353 CUDA on one MIG 1g.24gb slice, same GGUF files, full offload verified on every row, 512-token prefill and 128-token greedy decode. Dense decode sits at 81 to 93% of llama.cpp; prefill at 5 to 10% is the published weak column; the Q3_K row still runs a naive token-identical kernel. Absolute numbers depend on the slice, the ratios are the result. Measured 2026-09-02. Source: <a href="{{repo}}/blob/main/docs/benchmarks.md">docs/benchmarks.md</a>, with RTX 3070 and M1 tables.</figcaption>
-      </figure>
-    </div>
-    <div class="btn-row">
-      <a class="btn" href="/evidence/">All evidence: benchmarks, fidelity ladders, artifacts, negative results</a>
-    </div>
-  </div>
-</section>
-
-<section class="section tint" id="personas">
-  <div class="wrap">
-    <div class="section-head reveal">
-      <p class="eyebrow">Who Runner is for</p>
-      <h2>Run, build, attest. Find your column, then read what was measured.</h2>
-    </div>
-    <div class="tiles">
-
-      <div class="tile head reveal"><p class="eyebrow">Run</p><h3>The Operator</h3><p>You run agents against a model on a GPU you own, and need calls that survive budgets, models that fit before they download, and one card shared without drama.</p></div>
-      <div class="tile head reveal"><p class="eyebrow">Build</p><h3>The Builder</h3><p>You pay per token for a coding agent all day and want to know, with proof, what a local model could take off that bill without breaking your flow.</p></div>
-      <div class="tile head reveal"><p class="eyebrow">Attest</p><h3>The Auditor</h3><p>You answer for what the model did: to a customer, a regulator, or yourself in six months. You need the receipt, not the demo.</p></div>
-
-      <div class="tile reveal"><div class="t"><a href="/runner/">Your client's first request works</a></div><div class="d">OpenCode, Claude Code, Codex CLI, Continue, Cline and pi re-validated at their latest versions; native tool protocols per model family (Harmony, atem, Qwen XML, Gemma 4).</div><span class="pill pass">re-run per release</span></div>
-      <div class="tile reveal"><div class="t"><a href="/runner/shadow-mode/">Shadow mode</a></div><div class="d">A bench with receipts: runs your own tasks past the local model under tests frozen per task, records what it managed with both denominators shown, and admits an offload only on verified successes.</div><span class="pill pass">measured on your work</span></div>
-      <div class="tile reveal"><div class="t"><a href="/runner/reproducible-lora-training-receipts/">Signed receipts</a></div><div class="d">Recorded runs are signed (Ed25519, ML-DSA-44 optional) and chained; a one-exit-code verifier replays them; the determinism claim has named edges, including what is not promised.</div><span class="pill pass">replayable</span></div>
-
-      <div class="tile reveal"><div class="t"><a href="/runner/">One card, several models</a></div><div class="d">A VRAM registry across processes, swap mode by name, parallel slots, idle unload on a TTL.</div><span class="pill plain">registry, swap</span></div>
-      <div class="tile reveal"><div class="t"><a href="/runner/">Designed to stay on</a></div><div class="d">A menu-bar controller on macOS and Windows, idle unload on a TTL, a model swapped in by name. The engine as a thing that sits there all day, not a chore.</div><span class="pill plain">tray, TTL, swap</span></div>
-      <div class="tile reveal"><div class="t"><a href="/evidence/">The correctness contract</a></div><div class="d">Every published artifact carries its measured envelope against the named parent: margin-qualified top-1 at least 97% and mean KLD at most 0.05, the misses published beside the passes.</div><span class="pill pass">bar and misses</span></div>
-
-      <div class="tile reveal"><div class="t"><a href="/runner/">A box you do not sit at</a></div><div class="d">The GHCR image, one binary in a container, the same loopback API; the Windows layer fit respects the OS video-memory budget.</div><span class="pill plain">docker, ghcr</span></div>
-      <div class="tile shared ba reveal"><div class="t"><a href="/runner/train-lora-on-quantized-gguf/">LoRA on the file you serve</a></div><div class="d">Train adapters directly through the frozen Q4_K_M, with no FP16 training copy. 0.69 to 1.00 exact tool calls on a public artifact; the 4-bit merge that erases the adaptation is measured beside it.</div>
-        <div class="who">
-          <div><span class="pill ba">for the Builder</span><div class="d">Train on your own verified edits and serve base plus adapter, on the machine you already have.</div></div>
-          <div><span class="pill ba">for the Auditor</span><div class="d">Two runs with the same data, seed and config write a byte-identical adapter with a provenance sidecar: training you can attest to.</div></div>
-        </div></div>
-
-      <div class="tile shared ob reveal"><div class="t"><a href="/runner/truncation-safe-tool-calling/">Tool calls that survive the token limit</a></div><div class="d">When the budget cuts a call short, Runner closes it to the smallest schema-legal document so the arguments still parse. Six engines measured on the same rungs; only Runner returns an executable call.</div>
-        <div class="who">
-          <div><span class="pill ob">for the Operator</span><div class="d">An agent loop that keeps going under a budget instead of stalling on a half-written call.</div></div>
-          <div><span class="pill ob">for the Builder</span><div class="d">Your coding agent is the caller: a cut call still parses instead of failing the turn.</div></div>
-        </div></div>
-      <div class="tile reveal"><div class="t"><a href="/evidence/">The publisher's reference is the anchor</a></div><div class="d">Admission compares against the model publisher's float32 reference and chat template token for token; agreement with llama.cpp is a ceiling, never the headline.</div><span class="pill plain">provider-reference first</span></div>
-
-      <div class="tile shared ob reveal"><div class="t"><a href="/runner/">Fit and capabilities before you download</a></div><div class="d"><code>--fit</code> reports what your machine needs from the header alone; <code>--caps</code> says what this build can serve; <code>-hf</code> fetches the file, verified against the Hub's SHA-256 record.</div>
-        <div class="who">
-          <div><span class="pill ob">for the Operator</span><div class="d">Size the card before the model lands on it, and know the build serves the format.</div></div>
-          <div><span class="pill ob">for the Builder</span><div class="d">Will it fit the laptop, answered before the download starts.</div></div>
-        </div></div>
-      <div class="tile reveal"><div class="t"><a href="/runner/">Confidence you can see</a></div><div class="d">Per-token and per-choice logprobs on every surface, and a telemetry block that says what a turn was served with and where its time went.</div><span class="pill plain">logprobs, telemetry</span></div>
-
-      <div class="tile reveal"><div class="t"><a href="/runner/#more">Decisions you can gate</a></div><div class="d"><code>confirm_below</code> on a constrained turn returns the lowest posterior a chosen branch had and whether it fell under your threshold: route the sure answers, ask about the rest.</div><span class="pill plain">confirm_below</span></div>
-<div class="tile reveal"><div class="t"><a href="/runner/reproducible-lora-training-receipts/">An evidence pack for the reviewer</a></div><div class="d">Receipts, the model signature and the measured envelope in one directory; <code>--check-pack</code> verifies it offline and each receipt still replays. A receipt left out between two others shows.</div><span class="pill pass">verifies offline</span></div>
-<div class="tile reveal"><div class="t"><a href="/runner/#versioning">Interfaces that hold across 1.x</a></div><div class="d">Flags, exit codes, the HTTP API, record formats and loadable model files stay compatible until 2.0; what is bound to the exact build is written down beside it.</div><span class="pill plain">semver</span></div>
-
-<div class="tile cmd reveal"><pre><code>runner -hf Joakimpalm-Zen/Qwen3-30B-A3B-selective-attnQ8_0-expQ4_0-GGUF --serve --parallel 2</code></pre></div>
-      <div class="tile cmd reveal"><pre><code>runner --shadow-mode -m ~/models/a.gguf</code></pre></div>
-      <div class="tile cmd reveal"><pre><code>runner --verify &lt;receipt&gt;   # one exit code: the run replays, or it does not</code></pre></div>
-
-    </div>
-  </div>
-</section>
-
-<section class="section" id="artifacts">
-  <div class="wrap split">
-    <div class="reveal">
-      <p class="eyebrow">Published artifacts</p>
-      <h2>Fifteen models and fifteen datasets on Hugging Face, gated the same way.</h2>
-      <p>The models carry weights; the datasets are the measurement reports, gate records, training records and research records behind them, with no third-party weights republished. Seven <a href="{{hf}}">collections</a> group them: releases, the Kvist distilled agents, model surgery, pruning and quantization frontiers, compatibility reports, LoRA training on quantized weights, and GENESIS research. A derivative is published only after its stated gate against the named parent, and a near-miss stays published with its numbers in the open rather than being quietly removed.</p>
-      <div class="btn-row">
-        <a class="btn" href="{{hf}}" rel="noopener">Browse on Hugging Face</a>
-        <a class="btn" href="https://huggingface.co/collections/Joakimpalm-Zen/runner-releases-6aa98baaed03bba0e8a561ae" rel="noopener">Runner Releases collection</a>
-        <a class="btn" href="/evidence/#artifacts">The artifact ledger</a>
-      </div>
-    </div>
-    <ul class="ledger reveal">
-      <li><div><div class="t"><a href="{{hf}}/Qwen3-30B-A3B-selective-attnQ8_0-expQ4_0-GGUF">Qwen3-30B-A3B, selective precision</a></div><div class="d">Attention Q8_0, experts Q4_0, 17.99 GB. Passes the fidelity bar where the official uniform Q4_K_M fails it.</div></div><span class="pill pass">passes bar</span></li>
-      <li><div><div class="t"><a href="{{hf}}/Qwen3-4B-Runner-ToolUse-Q4_K_M">Qwen3-4B Runner ToolUse adapter</a></div><div class="d">The LoRA behind the 0.69 to 1.00 claim, produced twice with the same sha256; the card carries the sidecar and the training command.</div></div><span class="pill pass">reproduced</span></li>
-      <li><div><div class="t"><a href="{{hf}}/gemma-4-31B-it-attn48-removed-Q4_0-GGUF">gemma-4-31B-it, attention block 48 removed</a></div><div class="d">First sublayer-removal artifact: one attention sublayer physically dropped, 64 MiB of KV cache freed at 4k context, KLD 0.0223 on 44,413 held-out positions.</div></div><span class="pill pass">KLD 0.0223</span></li>
-      <li><div><div class="t"><a href="{{hf}}/Qwen3.8-27B-GSQ-RCO-IQ3_S-recovered-GGUF">Qwen3.8-27B GSQ-RCO IQ3_S, recovered scales</a></div><div class="d">ISTA-DASLab's IQ3_S file with every block scale retrained against the BF16 parent: same bytes, same layout, inside the bar at KLD 0.0450 and 97.80%; the edge over the source file is not resolved at 500 positions. Evidence in its <a href="{{hfd}}/Qwen3.8-27B-GSQ-RCO-scale-recovery-evidence">dataset</a>.</div></div></li>
-      <li><div><div class="t"><a href="{{hf}}/gpt-oss-20b-keep30-MXFP4-GGUF">gpt-oss-20b keep-30</a></div><div class="d">Expert-pruned derivative whose originally published number did not reproduce. Kept published with the measured status at the top of the card.</div></div><span class="pill fail">fails current bar</span></li>
-    </ul>
-  </div>
-</section>
-
-<section class="section tint" id="about-teaser">
+<section class="section" id="about-teaser">
   <div class="wrap grid-2">
     <div class="card reveal">
       <p class="eyebrow">About</p>
       <h3>A Zenova AB product, built in Sweden</h3>
-      <p>Xyntetik is the program under which Zenova AB builds tooling for running capable models on hardware you already own. Runner is the released engine. Suite is the testing and evidence layer around it. Shade is the research lab that feeds both. The engine is free forever under Apache 2.0.</p>
+      <p>Xyntetik is the program under which Zenova AB builds tools for running capable models on hardware you already own. Runner is the released engine, Suite is the testing and evidence layer around it, and Shade is the research lab that feeds both. The engine is free forever under Apache 2.0.</p>
       <a class="more" href="/about/">Runner, Suite, Shade and the company behind them &rarr;</a>
     </div>
     <div class="card reveal">
       <p class="eyebrow">Support the work</p>
       <h3>Open infrastructure, funded in the open</h3>
-      <p>Runner is developed openly rather than around a subscription. Measurement time on real hardware, model hosting, cross-engine validation and the loaner machines behind the benchmark tables are what contributions pay for.</p>
+      <p>Runner is developed openly rather than around a subscription. Contributions pay for measurement time on real hardware, the thing every number on this site cost.</p>
       <div class="btn-row"><a class="btn btn-support" href="https://buy.stripe.com/9B69AUddpdx9auHgP27N600" rel="noopener">Support this work</a><a class="btn" href="/support/">What contributions enable</a></div>
     </div>
   </div>
