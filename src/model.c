@@ -30,6 +30,10 @@
 // keeps the int products the loader and forward pass compute from it
 // (n_head*head_dim, 2*n_ff_exp, batch*width) far inside their type.
 #define MDL_DIM_MAX 1048576   /* 2^20 elements per axis */
+// Routed-expert count ceiling. Mixtral 8, Qwen3-MoE 128, gpt-oss 128, gemma-4
+// 128, Qwen3.8-Flash-Next 512 per block; the per-token selection arrays are
+// sized by expert_used_count, this bounds the per-expert ones.
+#define MOE_EXPERTS_MAX 1024
 
 // ---------------------------------------------------------------- helpers
 
@@ -286,6 +290,71 @@ static gguf_tensor *opt_tensor(gguf_file *g, const char *fmt, int i) {
     char name[128];
     snprintf(name, sizeof(name), fmt, i);
     return gguf_find_tensor(g, name);
+}
+
+// qwen4exp hyper-connection tensors of one block (both mixers), and its
+// PLE block when this is the one. Shapes per llama.cpp b11433
+// qwen4exp.cpp::load_arch_tensors: norms [n_embd, hc] (read flat as
+// hc*n_embd F32), down [hc*n_embd, low_rank], up [low_rank, hc*n_embd],
+// inject [hc*n_embd, hc]. The indexer tensors on a full-attention block are
+// checked present and left unread: this admission runs attention dense
+// under the indexer's top_k (the loader refused a longer context).
+static bool bind_hc_block(model_t *m, gguf_file *g, layer_t *l, int i) {
+    bool ok = true;
+    int hcd = m->hc_count * m->n_embd, lr = m->hc_low_rank;
+    gguf_tensor *an = need_tensor(g, "blk.%d.hc_attn_norm.weight", i, &ok);
+    gguf_tensor *fn = need_tensor(g, "blk.%d.hc_ffn_norm.weight",  i, &ok);
+    l->hc_attn_down   = need_tensor(g, "blk.%d.hc_attn_down.weight",   i, &ok);
+    l->hc_attn_up     = need_tensor(g, "blk.%d.hc_attn_up.weight",     i, &ok);
+    l->hc_attn_inject = need_tensor(g, "blk.%d.hc_attn_inject.weight", i, &ok);
+    l->hc_ffn_down    = need_tensor(g, "blk.%d.hc_ffn_down.weight",    i, &ok);
+    l->hc_ffn_up      = need_tensor(g, "blk.%d.hc_ffn_up.weight",      i, &ok);
+    l->hc_ffn_inject  = need_tensor(g, "blk.%d.hc_ffn_inject.weight",  i, &ok);
+    if (!ok) return false;
+    if (!check_shape(l->hc_attn_down, hcd, lr, "hc_attn_down", i) ||
+        !check_shape(l->hc_attn_up, lr, hcd, "hc_attn_up", i) ||
+        !check_shape(l->hc_attn_inject, hcd, m->hc_count, "hc_attn_inject", i) ||
+        !check_shape(l->hc_ffn_down, hcd, lr, "hc_ffn_down", i) ||
+        !check_shape(l->hc_ffn_up, lr, hcd, "hc_ffn_up", i) ||
+        !check_shape(l->hc_ffn_inject, hcd, m->hc_count, "hc_ffn_inject", i))
+        return false;
+    l->hc_attn_norm = tensor_to_f32(an, hcd, &ok);
+    l->hc_ffn_norm  = tensor_to_f32(fn, hcd, &ok);
+    if (!ok) return false;
+    bool full_attn = (i + 1) % m->full_attn_interval == 0;
+    if (full_attn) {
+        static const char *const idx[] = { "blk.%d.indexer.q_proj.weight",
+            "blk.%d.indexer.k_proj.weight", "blk.%d.indexer.q_norm.weight",
+            "blk.%d.indexer.k_norm.weight" };
+        for (size_t k = 0; k < sizeof idx / sizeof idx[0]; k++)
+            need_tensor(g, idx[k], i, &ok);
+        if (!ok) return false;
+    }
+    if (i == m->ple4_layer) {
+        l->ple4 = true;
+        l->ple4_key    = need_tensor(g, "blk.%d.ple_key.weight",    i, &ok);
+        l->ple4_value  = need_tensor(g, "blk.%d.ple_value.weight",  i, &ok);
+        l->ple4_conv1d = need_tensor(g, "blk.%d.ple_conv1d.weight", i, &ok);
+        gguf_tensor *nk = need_tensor(g, "blk.%d.ple_norm_key.weight",   i, &ok);
+        gguf_tensor *nq = need_tensor(g, "blk.%d.ple_norm_query.weight", i, &ok);
+        gguf_tensor *nc = need_tensor(g, "blk.%d.ple_norm_conv.weight",  i, &ok);
+        if (!ok) return false;
+        // key reads the gathered embedding (ple4_n_heads * head_dim) into
+        // every stream; value reads it into one n_embd
+        int ed = m->ple4_n_heads * m->ple4_head_dim;
+        if (!check_shape(l->ple4_key, ed, hcd, "ple_key", i) ||
+            !check_shape(l->ple4_value, ed, m->n_embd, "ple_value", i) ||
+            !check_shape(l->ple4_conv1d, m->ple4_conv_kernel, hcd, "ple_conv1d", i))
+            return false;
+        l->ple4_norm_key   = tensor_to_f32(nk, hcd, &ok);
+        l->ple4_norm_query = tensor_to_f32(nq, hcd, &ok);
+        l->ple4_norm_conv  = tensor_to_f32(nc, hcd, &ok);
+        // the conv kernel is tiny ([K, hcd]); dequantize it once here rather
+        // than per forward into activation scratch
+        l->ple4_conv_w     = tensor_to_f32(l->ple4_conv1d, (int64_t)m->ple4_conv_kernel * hcd, &ok);
+        if (!ok) return false;
+    }
+    return true;
 }
 
 // ---------------------------------------------------------------- rope setup
@@ -1015,7 +1084,7 @@ const char *const *model_supported_archs(size_t *count) {
     // --caps in main.c). Keep in sync with any new per-family handling added
     // here; wrong-math archs (granite/gemma2/gemma) are intentionally excluded.
     static const char *const arches[] = {
-        "llama", "qwen2", "qwen3", "qwen35", "qwen3moe", "mistral",
+        "llama", "qwen2", "qwen3", "qwen35", "qwen4exp", "qwen3moe", "mistral",
         "smollm", "stablelm", "gemma3", "gemma4", "phi3", "gpt-oss",
         "apertus", "afmoe", "muse-glimmer", "granite", "granitehybrid",
         "nemotron_h", "nemotron_h_moe",
@@ -1212,6 +1281,9 @@ static void model_free_weights(model_t *m) {
         free(l->attn_sinks);
         free(l->ffn_gate_inp_b); free(l->ffn_gate_exps_b); free(l->exp_probs_b);
         free(l->ffn_up_exps_b);  free(l->ffn_down_exps_b);
+        free(l->hc_attn_norm); free(l->hc_ffn_norm);
+        free(l->ple4_norm_key); free(l->ple4_norm_query); free(l->ple4_norm_conv);
+        free(l->ple4_conv_w);
         free(l->ffn_pre_norm2_w); free(l->ffn_post_norm1_w); free(l->ffn_post_norm2_w);
         free(l->ssm_dt); free(l->ssm_a); free(l->ssm_norm_w);
         free(l->ssm_conv1d_b); free(l->ssm_d);
@@ -1226,7 +1298,7 @@ static void model_free_weights(model_t *m) {
     free(m->layers);
     free(m->path);
     free(m->fused_splits);
-    free(m->out_norm_w); free(m->out_norm_b);
+    free(m->out_norm_w); free(m->out_norm_b); free(m->hc_head_norm);
     free(m->mtp_enorm_w); free(m->mtp_hnorm_w); free(m->mtp_head_norm_w);
     // Unlock before unmapping, and only the mapping this model_t actually
     // locked: with shared weights several model_t alias one map, and munlock
@@ -1854,6 +1926,11 @@ static bool model_bind_weights(model_t *m, const char *path, const model_params 
     // per-index getter, and heterogeneous widths mark ffn_var so the device
     // backends can refuse rather than compute with one global width.
     m->n_ff        = (int)gguf_get_u32(g, AK("feed_forward_length"), 0);
+    // an experts-only file (qwen4exp) declares no dense FFN width; the
+    // scratch that sizes off n_ff is then the expert width (llama.cpp:
+    // n_ff_exp ? n_ff_exp : n_ff / n_expert_used)
+    if (m->n_ff == 0)
+        m->n_ff = (int)gguf_get_u32(g, AK("expert_feed_forward_length"), 0);
     m->ffn_var     = false;
     if (m->n_ff == 0 && m->n_layer > 0) {
         // A 0 entry on a non-hybrid file is a REMOVED FFN (--remove-sublayer,
@@ -2037,9 +2114,15 @@ static bool model_bind_weights(model_t *m, const char *path, const model_params 
                     m->l_is_swa[i] = ((i + 1) % pattern) != 0;
         }
     }
-    if (strcmp(arch, "qwen35") == 0) {
+    if (strcmp(arch, "qwen35") == 0 || strcmp(arch, "qwen4exp") == 0) {
         // Qwen3.5 dense (the architecture used by Ornith-1.0-9B) alternates
         // three Gated DeltaNet layers with one conventional attention layer.
+        // qwen4exp (Qwen3.8-Flash-Next, "a preview of the Qwen4
+        // architecture") keeps that token mixer and adds routed experts
+        // with a gated shared expert on every block, a hyper-connection
+        // residual (hc parallel streams, mixers in place of the pre-norms),
+        // a sparse-attention indexer on the full-attention blocks (dense
+        // under the admission cap, see below) and an n-gram PLE block.
         m->qwen35            = true;
         m->think_open        = "<think>";
         m->think_close       = "</think>";
@@ -2067,6 +2150,76 @@ static bool model_bind_weights(model_t *m, const char *path, const model_params 
             m->ssm_v_heads % m->ssm_groups != 0) {
             fprintf(stderr, "error: invalid qwen35 Gated DeltaNet geometry\n");
             return false;
+        }
+    }
+    m->ple4_layer = -1;
+    if (strcmp(arch, "qwen4exp") == 0) {
+        m->hyper_conn  = true;
+        m->hc_count    = (int)gguf_get_u32(g, AK("hyper_connection.count"), 0);
+        m->hc_low_rank = (int)gguf_get_u32(g, AK("hyper_connection.low_rank"), 0);
+        if (m->hc_count < 2 || m->hc_count > 8 || m->hc_low_rank <= 0 ||
+            m->hc_low_rank > MDL_DIM_MAX) {
+            fprintf(stderr, "error: invalid qwen4exp hyper-connection geometry "
+                    "(count %d, low rank %d)\n", m->hc_count, m->hc_low_rank);
+            return false;
+        }
+        // The sparse-attention indexer (QSA) scores blocks of compress_ratio
+        // cells and attends the top indexer.top_k of them. Below top_k cells
+        // every cell is kept, so attention is exactly dense there; this
+        // admission runs dense and caps the context at top_k until the
+        // indexer is implemented (R4.26.2). Stated at load, refused above.
+        {
+            uint32_t topk = gguf_get_u32(g, AK("attention.indexer.top_k"), 0);
+            if (topk > 0 && (uint32_t)m->n_ctx > topk) {
+                fprintf(stderr, "error: qwen4exp sparse attention (indexer top_k "
+                        "%u) is not implemented; this build runs it dense and "
+                        "admits contexts up to %u tokens (asked %d)\n",
+                        topk, topk, m->n_ctx);
+                return false;
+            }
+        }
+        // PLE n-gram block: optional, at most one, must be a recurrent block
+        gguf_kv *pl = gguf_get(g, AK("ple.layers"));
+        if (pl) {
+            if (pl->type != GGUF_T_ARR || pl->arr_n != 1) {
+                fprintf(stderr, "error: qwen4exp ple.layers must name exactly one block\n");
+                return false;
+            }
+            int li = (int)gguf_get_u32_idx(g, AK("ple.layers"), 0, 0);
+            m->ple4_ngram          = (int)gguf_get_u32(g, AK("ple.ngram_size"), 0);
+            m->ple4_heads_per_gram = (int)gguf_get_u32(g, AK("ple.heads_per_ngram"), 0);
+            m->ple4_conv_kernel    = (int)gguf_get_u32(g, AK("ple.conv_kernel"), 0);
+            m->ple4_head_dim       = (int)gguf_get_u32(g, AK("embedding_length_per_layer_input"), 0);
+            m->ple4_eos            = (int32_t)gguf_get_u32(g, AK("ple.eos_token_id"), 0);
+            m->ple4_n_heads = (m->ple4_ngram - 1) * m->ple4_heads_per_gram;
+            if (li < 0 || li >= m->n_layer || m->ple4_ngram < 2 || m->ple4_ngram > 8 ||
+                m->ple4_heads_per_gram <= 0 || m->ple4_n_heads > 64 ||
+                m->ple4_conv_kernel <= 0 || m->ple4_conv_kernel > 8 ||
+                m->ple4_head_dim <= 0 || m->ple4_head_dim > MDL_DIM_MAX) {
+                fprintf(stderr, "error: invalid qwen4exp PLE geometry\n");
+                return false;
+            }
+            gguf_kv *mu = gguf_get(g, AK("ple.layer_multipliers"));
+            gguf_kv *of = gguf_get(g, AK("ple.head_offsets"));
+            gguf_kv *vs = gguf_get(g, AK("ple.head_vocab_sizes"));
+            if (!mu || mu->type != GGUF_T_ARR || mu->arr_n != (uint64_t)m->ple4_ngram ||
+                !of || of->type != GGUF_T_ARR || of->arr_n != (uint64_t)m->ple4_n_heads ||
+                !vs || vs->type != GGUF_T_ARR || vs->arr_n != (uint64_t)m->ple4_n_heads) {
+                fprintf(stderr, "error: qwen4exp PLE hash arrays are missing or the wrong length\n");
+                return false;
+            }
+            for (int k = 0; k < m->ple4_ngram; k++)
+                m->ple4_mult[k] = gguf_get_u64_idx(g, AK("ple.layer_multipliers"), (uint64_t)k, 0);
+            for (int h = 0; h < m->ple4_n_heads; h++) {
+                uint64_t o = gguf_get_u64_idx(g, AK("ple.head_offsets"), (uint64_t)h, 0);
+                uint64_t v = gguf_get_u64_idx(g, AK("ple.head_vocab_sizes"), (uint64_t)h, 0);
+                if (v == 0 || o > INT32_MAX || v > INT32_MAX || o + v > INT32_MAX) {
+                    fprintf(stderr, "error: qwen4exp PLE head %d range does not fit\n", h);
+                    return false;
+                }
+                m->ple4_off[h] = (uint32_t)o; m->ple4_vocab[h] = (uint32_t)v;
+            }
+            m->ple4_layer = li;
         }
     }
     if (strcmp(arch, "apertus") == 0) {
@@ -2652,9 +2805,9 @@ static bool model_bind_weights(model_t *m, const char *path, const model_params 
     // "== 0" (so the dense FFN is skipped too) — the layer then loaded no FFN
     // at all and the forward pass ran a matvec on a NULL tensor.
     uint32_t n_expert_raw = gguf_get_u32(g, AK("expert_count"), 0);
-    if (n_expert_raw > 256) {
-        fprintf(stderr, "error: expert_count %u is out of range (max 256)\n",
-                n_expert_raw);
+    if (n_expert_raw > MOE_EXPERTS_MAX) {
+        fprintf(stderr, "error: expert_count %u is out of range (max %d)\n",
+                n_expert_raw, MOE_EXPERTS_MAX);
         return false;
     }
     m->n_expert = (int)n_expert_raw;
@@ -2679,7 +2832,7 @@ static bool model_bind_weights(model_t *m, const char *path, const model_params 
         // Mixtral omits expert_feed_forward_length and uses feed_forward_length
         m->n_ff_exp = (int)gguf_get_u32(g, AK("expert_feed_forward_length"), m->n_ff);
         if (m->n_expert_used < 1 || m->n_expert_used > m->n_expert ||
-            m->n_ff_exp <= 0 || m->n_ff_exp > MDL_DIM_MAX || m->n_expert > 256) {
+            m->n_ff_exp <= 0 || m->n_ff_exp > MDL_DIM_MAX || m->n_expert > MOE_EXPERTS_MAX) {
             fprintf(stderr, "error: invalid MoE geometry (experts=%d used=%d ff_exp=%d)\n",
                     m->n_expert, m->n_expert_used, m->n_ff_exp);
             return false;
@@ -2918,12 +3071,43 @@ static bool model_bind_weights(model_t *m, const char *path, const model_params 
         return false;
     }
 
-    gguf_tensor *out_norm = need_tensor(g, "output_norm.weight", 0, &ok);
+    // qwen4exp carries no output_norm: the final hyper-connection mixer is
+    // the output norm (llama.cpp: "there is no output_norm")
+    gguf_tensor *out_norm = m->hyper_conn ? gguf_find_tensor(g, "output_norm.weight")
+                                          : need_tensor(g, "output_norm.weight", 0, &ok);
     if (!ok) return false;
     m->out_norm_w = tensor_to_f32(out_norm, m->n_embd, &ok);
     m->out_norm_b = tensor_to_f32(gguf_find_tensor(g, "output_norm.bias"),
                                   m->n_embd, &ok);
     if (!ok) return false;
+    if (m->hyper_conn) {
+        int hcd = m->hc_count * m->n_embd, lr = m->hc_low_rank;
+        gguf_tensor *hn = need_tensor(g, "output_hc_norm.weight", 0, &ok);
+        m->hc_head_down = need_tensor(g, "output_hc_down.weight", 0, &ok);
+        m->hc_head_up   = need_tensor(g, "output_hc_up.weight",   0, &ok);
+        if (!ok) return false;
+        if (!check_shape(m->hc_head_down, hcd, lr, "output_hc_down", -1) ||
+            !check_shape(m->hc_head_up, lr, hcd, "output_hc_up", -1))
+            return false;
+        m->hc_head_norm = tensor_to_f32(hn, hcd, &ok);
+        if (!ok) return false;
+        if (m->ple4_layer >= 0) {
+            m->ple4_table = need_tensor(g, "per_layer_token_embd.weight", 0, &ok);
+            if (!ok) return false;
+            if ((int64_t)m->ple4_table->ne[0] != m->ple4_head_dim) {
+                fprintf(stderr, "error: per_layer_token_embd row width %llu, "
+                        "expected %d\n", (unsigned long long)m->ple4_table->ne[0],
+                        m->ple4_head_dim);
+                return false;
+            }
+            for (int h = 0; h < m->ple4_n_heads; h++)
+                if ((uint64_t)m->ple4_off[h] + m->ple4_vocab[h] > m->ple4_table->ne[1]) {
+                    fprintf(stderr, "error: PLE head %d range exceeds the table "
+                            "(%llu rows)\n", h, (unsigned long long)m->ple4_table->ne[1]);
+                    return false;
+                }
+        }
+    }
 
     m->output = gguf_find_tensor(g, "output.weight");
     if (!m->output) m->output = m->tok_embd; // tied embeddings
@@ -3031,12 +3215,18 @@ static bool model_bind_weights(model_t *m, const char *path, const model_params 
                     i, l->n_ff, m->n_ff);
             return false;
         }
-        gguf_tensor *an = need_tensor(g, "blk.%d.attn_norm.weight", i, &ok);
+        // qwen4exp has no pre-norms: the hyper-connection mixers replace
+        // them (bound by bind_hc_block below), so both reads are optional
+        // there and tensor_to_f32(NULL) leaves the norm pointers NULL.
+        gguf_tensor *an = m->hyper_conn ? opt_tensor(g, "blk.%d.attn_norm.weight", i)
+                                        : need_tensor(g, "blk.%d.attn_norm.weight", i, &ok);
         // gpt-oss shares qwen35's shape here: post_attention_norm IS the FFN
         // input norm and there is no ffn_norm tensor at all.
-        gguf_tensor *fn = (m->qwen35 || m->gptoss)
+        gguf_tensor *fn = m->hyper_conn ? opt_tensor(g, "blk.%d.post_attention_norm.weight", i)
+                        : (m->qwen35 || m->gptoss)
             ? need_tensor(g, "blk.%d.post_attention_norm.weight", i, &ok)
             : need_tensor(g, "blk.%d.ffn_norm.weight", i, &ok);
+        if (m->hyper_conn && !bind_hc_block(m, g, l, i)) return false;
         if (m->gptoss && !no_attn)
             l->attn_sinks = tensor_to_f32(
                 need_tensor(g, "blk.%d.attn_sinks.weight", i, &ok),
@@ -3058,9 +3248,14 @@ static bool model_bind_weights(model_t *m, const char *path, const model_params 
             if (!dt) dt = need_tensor(g, "blk.%d.ssm_dt", i, &ok);
             gguf_tensor *sa = need_tensor(g, "blk.%d.ssm_a", i, &ok);
             gguf_tensor *sn = need_tensor(g, "blk.%d.ssm_norm.weight", i, &ok);
-            l->w_gate = need_tensor(g, "blk.%d.ffn_gate.weight", i, &ok);
-            l->w_up   = need_tensor(g, "blk.%d.ffn_up.weight", i, &ok);
-            l->w_down = need_tensor(g, "blk.%d.ffn_down.weight", i, &ok);
+            // a dense Qwen3.5 block carries its FFN here; a qwen4exp block
+            // routes experts instead and takes the shared MoE binding below
+            bool dense_ffn = m->n_expert == 0;
+            if (dense_ffn) {
+                l->w_gate = need_tensor(g, "blk.%d.ffn_gate.weight", i, &ok);
+                l->w_up   = need_tensor(g, "blk.%d.ffn_up.weight", i, &ok);
+                l->w_down = need_tensor(g, "blk.%d.ffn_down.weight", i, &ok);
+            }
             if (!ok) return false;
             // The DeltaNet geometry keys index every tensor above, and until
             // this check nothing tied the two together: ssm.inner_size,
@@ -3087,9 +3282,10 @@ static bool model_bind_weights(model_t *m, const char *path, const model_params 
                     !check_shape(dt, m->ssm_v_heads, 1, "ssm_dt", i) ||
                     !check_shape(sa, m->ssm_v_heads, 1, "ssm_a", i) ||
                     !check_shape(sn, hv, 1, "ssm_norm", i) ||
-                    !check_shape(l->w_gate, m->n_embd, l->n_ff, "ffn_gate", i) ||
-                    !check_shape(l->w_up, m->n_embd, l->n_ff, "ffn_up", i) ||
-                    !check_shape(l->w_down, l->n_ff, m->n_embd, "ffn_down", i))
+                    (dense_ffn &&
+                     (!check_shape(l->w_gate, m->n_embd, l->n_ff, "ffn_gate", i) ||
+                      !check_shape(l->w_up, m->n_embd, l->n_ff, "ffn_up", i) ||
+                      !check_shape(l->w_down, l->n_ff, m->n_embd, "ffn_down", i))))
                     return false;
             }
             l->ssm_dt     = tensor_to_f32(dt, m->ssm_v_heads, &ok);
@@ -3100,7 +3296,10 @@ static bool model_bind_weights(model_t *m, const char *path, const model_params 
             l->ffn_norm_w = tensor_to_f32(fn, m->n_embd, &ok);
             if (!ok) return false;
             l->out_scale = 1.0f;
-            continue;
+            if (dense_ffn) continue;
+            // qwen4exp recurrent block: falls through to the shared MoE
+            // binding below; every attention read there is behind
+            // !l->recurrent already
         }
         if (l->recurrent && m->granite_hybrid) {
             // Granite-4 h-series Mamba-2 mixer. attn_norm (an) is bound above;
@@ -3938,6 +4137,26 @@ static bool model_alloc_runtime(model_t *m, const model_params *p) {
     m->vcache = calloc(1, kv_bytes);
     m->kv_owner = KV_OWNER_MALLOC;
     m->x      = malloc(sizeof(float) * (size_t)B * m->n_embd);
+    if (m->hyper_conn) {
+        // the wide residual, the per-token inject logits and the low-rank
+        // mixer scratch; the PLE's gathered rows, its temporaries and the
+        // dilated conv history ((K-1)*ngram rows per sequence position)
+        int hcd = m->hc_count * m->n_embd;
+        m->x_hc      = malloc(sizeof(float) * (size_t)B * hcd);
+        m->hc_inject = malloc(sizeof(float) * (size_t)B * m->hc_count);
+        m->hc_mix_lo = malloc(sizeof(float) * (size_t)B * (hcd + m->hc_low_rank + hcd));
+        if (!m->x_hc || !m->hc_inject || !m->hc_mix_lo) return false;
+        if (m->ple4_layer >= 0) {
+            int ed = m->ple4_n_heads * m->ple4_head_dim;
+            int hist = (m->ple4_conv_kernel - 1) * m->ple4_ngram;
+            m->ple4_emb  = malloc(sizeof(float) * (size_t)B * ed);
+            m->ple4_tmp  = malloc(sizeof(float) * (size_t)B * (3 * hcd + m->n_embd + m->hc_count));
+            m->ple4_conv_hist = calloc((size_t)(hist + B) * hcd, sizeof(float));
+            m->ple4_prev = malloc(sizeof(int32_t) * (size_t)(m->n_ctx + B));
+            if (!m->ple4_emb || !m->ple4_tmp || !m->ple4_conv_hist || !m->ple4_prev) return false;
+            for (int i = 0; i < m->n_ctx + B; i++) m->ple4_prev[i] = -1;
+        }
+    }
     m->xb     = malloc(sizeof(float) * (size_t)B * xdim);
     m->xb2    = malloc(sizeof(float) * (size_t)B * xdim);
     m->q      = malloc(sizeof(float) * (size_t)B * q_dim);
@@ -4260,6 +4479,8 @@ void model_free(model_t *m) {
     m->vcache = NULL;
     m->kv_owner = KV_OWNER_MALLOC;
     free(m->x); free(m->xb); free(m->xb2); free(m->q);
+    free(m->x_hc); free(m->hc_inject); free(m->hc_mix_lo);
+    free(m->ple4_emb); free(m->ple4_tmp); free(m->ple4_conv_hist); free(m->ple4_prev);
     free(m->k_tmp); free(m->v_tmp);
     free(m->q_gate); free(m->ssm_qkv); free(m->ssm_z); free(m->ssm_aux);
     free(m->ssm_cw);
@@ -5781,7 +6002,7 @@ static void moe_ffn_token(model_t *m, const layer_t *ly, float *xin) {
     int layer_idx = (int)(ly - m->layers);
     int   sel[256];
     float selw[256];
-    float norms[256];
+    float norms[MOE_EXPERTS_MAX];
     moe_route(m, ly, xin, n_embd, ne, used, sel, selw, true);
     model_moe_prefetch(m, ly, sel, used);
     // RUNNER_MOE_PROBE: same lookback replay as gemma_route's caller — see
@@ -6057,7 +6278,7 @@ static void gemma_moe_ffn(model_t *m, const layer_t *ly, int n, int xdim) {
         //     expert FFN's own input — the router below uses a SEPARATE
         //     weightless norm of attn_out, computed inside gemma_route)
         rmsnorm(xn2, attn, ly->ffn_pre_norm2_w, n_embd, m->rms_eps);
-        int sel[256]; float selw[256], norms[256];
+        int sel[256]; float selw[256], norms[MOE_EXPERTS_MAX];
         gemma_route(m, ly, attn, n_embd, ne, used, sel, selw, b == n - 1);
         model_moe_prefetch(m, ly, sel, used);
         // RUNNER_MOE_PROBE: replay THIS layer's router against the 1/2/3
@@ -8008,6 +8229,201 @@ bool model_lora_save(model_t *m, const char *path) {
 // which owns the KV region right after the backbone's -- runs exactly the
 // same code path. Per-layer tables are indexed through the model.h helpers,
 // which fall back to the model-wide value past n_layer.
+// ------------------------------------------------ qwen4exp hyper-connections
+// The residual is hc parallel streams per token (m->x_hc, [n][hc*n_embd]).
+// hc_mix produces the single-stream input a sub-layer reads (into `out`,
+// stride out_stride) and the per-token inject logits (m->hc_inject, [n][hc]);
+// hc_combine scatters the sub-layer's output back into every stream.
+// Arithmetic per llama.cpp b11433 qwen4exp.cpp build_hc_mix/build_hc_combine:
+//   xn    = rmsnorm_per_stream(x) * gamma            (gamma already 1 + w)
+//   lo    = silu(W_down . xn / hc)                    [low_rank]
+//   gate  = W_up . lo                                 [hc*n_embd]
+//   mixed = mean_c( xn_c * sigmoid(gate_c) )          [n_embd]
+//   inject = W_inject . xn                            [hc]
+//   combine: x_c += 2 * sigmoid(inject_c / hc) * block_out
+static void hc_mix(model_t *m, const float *w_norm, const gguf_tensor *w_down,
+                   const gguf_tensor *w_up, const gguf_tensor *w_inject,
+                   float *out, int out_stride, int n) {
+    const int E = m->n_embd, hc = m->hc_count, hcd = hc * E, lr = m->hc_low_rank;
+    float *xn   = m->hc_mix_lo;                       // [n][hcd]
+    float *lo   = xn + (size_t)n * hcd;               // [n][lr]
+    float *gate = lo + (size_t)n * lr;                // [n][hcd]
+    for (int b = 0; b < n; b++)
+        for (int c = 0; c < hc; c++)
+            rmsnorm(xn + (size_t)b * hcd + (size_t)c * E,
+                    m->x_hc + (size_t)b * hcd + (size_t)c * E,
+                    w_norm + (size_t)c * E, E, m->rms_eps);
+    matvec_b(m->tp, lo, lr, w_down, xn, hcd, hcd, lr, NULL, n);
+    const float inv_hc = 1.0f / (float)hc;
+    for (size_t i = 0; i < (size_t)n * lr; i++) lo[i] = silu_f(lo[i] * inv_hc);
+    matvec_b(m->tp, gate, hcd, w_up, lo, lr, lr, hcd, NULL, n);
+    for (int b = 0; b < n; b++) {
+        float *o = out + (size_t)b * out_stride;
+        const float *xb = xn + (size_t)b * hcd, *gb = gate + (size_t)b * hcd;
+        for (int i = 0; i < E; i++) {
+            float acc = 0.0f;
+            for (int c = 0; c < hc; c++) {
+                float g = gb[(size_t)c * E + i];
+                acc += xb[(size_t)c * E + i] * (1.0f / (1.0f + expf(-g)));
+            }
+            o[i] = acc * inv_hc;
+        }
+    }
+    if (w_inject)
+        matvec_b(m->tp, m->hc_inject, hc, w_inject, xn, hcd, hcd, hc, NULL, n);
+}
+
+static void hc_combine(model_t *m, const float *block_out, int out_stride, int n) {
+    const int E = m->n_embd, hc = m->hc_count, hcd = hc * E;
+    const float inv_hc = 1.0f / (float)hc;
+    for (int b = 0; b < n; b++) {
+        const float *o = block_out + (size_t)b * out_stride;
+        float *x = m->x_hc + (size_t)b * hcd;
+        for (int c = 0; c < hc; c++) {
+            float w = 2.0f / (1.0f + expf(-m->hc_inject[(size_t)b * hc + c] * inv_hc));
+            float *xc = x + (size_t)c * E;
+            for (int i = 0; i < E; i++) xc[i] += w * o[i];
+        }
+    }
+}
+
+// The head's pre-norm for row b of the last forward, into m->xb. Under
+// hyper-connections the output norm IS the final stream mixer (no separate
+// output_norm tensor), so it reads row b of the wide residual x_hc; every
+// other family norms row b of x. Both the single-row head and the per-row
+// spec/score heads go through here, so a row scored from a batch equals the
+// same row scored alone.
+static void head_norm_row(model_t *m, int b) {
+    const int n_embd = m->n_embd;
+    if (m->hyper_conn) {
+        float *save = m->x_hc;   // hc_mix walks x_hc from row 0
+        m->x_hc = save + (size_t)b * m->hc_count * n_embd;
+        hc_mix(m, m->hc_head_norm, m->hc_head_down, m->hc_head_up, NULL,
+               m->xb, m->xdim, 1);
+        m->x_hc = save;
+        return;
+    }
+    xnorm(m, m->xb, m->x + (size_t)b * n_embd, m->out_norm_w,
+          m->out_norm_b, n_embd, m->rms_eps);
+}
+
+// qwen4exp PLE n-gram block, per llama.cpp b11433 qwen4exp.cpp build_ple and
+// llm_graph_input_qwen4exp_ple::set_input. Host side: for token t at
+// position p, with its n-1 predecessors (an EOS in the window, or the
+// sequence start, resets everything at or before it to EOS), for each
+// n-gram order n in 2..ngram:
+//   mixed = (t[p]*m[0]) ^ (t[p-1]*m[1]) ^ ... ^ (t[p-n+1]*m[n-1])   (uint64)
+//   row(h) = mixed % vocab[h] + offset[h]   for the heads of that order
+// The gathered rows [n_heads * head_dim] feed key (into every stream) and
+// value (one stream); grouped norms; a signed-sqrt sigmoid gate from the
+// per-stream dot of key and the normed residual; a dilated depthwise causal
+// conv over the gated value; SiLU; both added into the residual.
+static void ple4_rows(const model_t *m, int32_t tok, int pos, int32_t *rows) {
+    const int ng = m->ple4_ngram, per = m->ple4_heads_per_gram;
+    int64_t ctx[8];
+    ctx[0] = tok;
+    bool cut = false;
+    for (int sidx = 1; sidx < ng; sidx++) {
+        int32_t t = -1;
+        if (!cut && pos - sidx >= 0) t = m->ple4_prev[pos - sidx];
+        cut = cut || t < 0 || t == m->ple4_eos;
+        ctx[sidx] = cut ? m->ple4_eos : t;
+    }
+    for (int nn = 2; nn <= ng; nn++) {
+        uint64_t mixed = (uint64_t)ctx[0] * m->ple4_mult[0];
+        for (int j = 1; j < nn; j++) mixed ^= (uint64_t)ctx[j] * m->ple4_mult[j];
+        int base = (nn - 2) * per;
+        for (int gidx = 0; gidx < per; gidx++) {
+            int h = base + gidx;
+            rows[h] = (int32_t)(mixed % m->ple4_vocab[h] + m->ple4_off[h]);
+        }
+    }
+}
+
+static void ple4_block(model_t *m, const layer_t *ly, const int32_t *tokens,
+                       int n, int pos) {
+    const int E = m->n_embd, hc = m->hc_count, hcd = hc * E;
+    const int H = m->ple4_n_heads, D = m->ple4_head_dim, ed = H * D;
+    const int K = m->ple4_conv_kernel, dil = m->ple4_ngram, hist = (K - 1) * dil;
+    // 1. gather
+    for (int b = 0; b < n; b++) {
+        m->ple4_prev[pos + b] = tokens[b];
+        int32_t rows[64];
+        ple4_rows(m, tokens[b], pos + b, rows);
+        size_t ers = ggml_row_size(m->ple4_table->type, D);
+        for (int h = 0; h < H; h++)
+            dequant_row(m->ple4_table->type,
+                        (const uint8_t *)m->ple4_table->data + (size_t)rows[h] * ers,
+                        m->ple4_emb + (size_t)b * ed + (size_t)h * D, D);
+    }
+    float *key   = m->ple4_tmp;                          // [n][hcd]
+    float *query = key + (size_t)n * hcd;                // [n][hcd]
+    float *gated = query + (size_t)n * hcd;              // [n][hcd]
+    float *value = gated + (size_t)n * hcd;              // [n][E]
+    float *gate  = value + (size_t)n * E;                // [n][hc]
+    // 2. projections and grouped norms
+    matvec_b(m->tp, key, hcd, ly->ple4_key, m->ple4_emb, ed, ed, hcd, NULL, n);
+    matvec_b(m->tp, value, E, ly->ple4_value, m->ple4_emb, ed, ed, E, NULL, n);
+    for (int b = 0; b < n; b++)
+        for (int c = 0; c < hc; c++) {
+            rmsnorm(key + (size_t)b * hcd + (size_t)c * E, key + (size_t)b * hcd + (size_t)c * E,
+                    ly->ple4_norm_key + (size_t)c * E, E, m->rms_eps);
+            rmsnorm(query + (size_t)b * hcd + (size_t)c * E, m->x_hc + (size_t)b * hcd + (size_t)c * E,
+                    ly->ple4_norm_query + (size_t)c * E, E, m->rms_eps);
+        }
+    // 3. per-stream gate: signed sqrt of the scaled dot, then sigmoid
+    const float inv_sqrt_e = 1.0f / sqrtf((float)E);
+    for (int b = 0; b < n; b++)
+        for (int c = 0; c < hc; c++) {
+            const float *k = key + (size_t)b * hcd + (size_t)c * E;
+            const float *q = query + (size_t)b * hcd + (size_t)c * E;
+            float dot = 0.0f;
+            for (int i = 0; i < E; i++) dot += k[i] * q[i];
+            dot *= inv_sqrt_e;
+            float mag = sqrtf(fabsf(dot) < 1e-6f ? 1e-6f : fabsf(dot));
+            float sgn = dot > 0 ? 1.0f : dot < 0 ? -1.0f : 0.0f;
+            gate[(size_t)b * hc + c] = 1.0f / (1.0f + expf(-sgn * mag));
+        }
+    // 4. gated value broadcast across the streams, then the conv norm
+    for (int b = 0; b < n; b++)
+        for (int c = 0; c < hc; c++) {
+            float g = gate[(size_t)b * hc + c];
+            float *dst = gated + (size_t)b * hcd + (size_t)c * E;
+            const float *v = value + (size_t)b * E;
+            for (int i = 0; i < E; i++) dst[i] = v[i] * g;
+        }
+    // normalized goes into the conv history at rows [hist .. hist+n)
+    float *histbuf = m->ple4_conv_hist;                  // [(hist + B)][hcd]
+    for (int b = 0; b < n; b++)
+        for (int c = 0; c < hc; c++)
+            rmsnorm(histbuf + (size_t)(hist + b) * hcd + (size_t)c * E,
+                    gated + (size_t)b * hcd + (size_t)c * E,
+                    ly->ple4_norm_conv + (size_t)c * E, E, m->rms_eps);
+    // 5. dilated depthwise causal conv: out[c,t] = sum_k w[k,c] * x[c, t - (K-1-k)*dil]
+    //    tap k is column k of the [K, hcd] kernel, one weight per channel
+    const float *wk = ly->ple4_conv_w;                   // [hcd][K], dequantized at load
+    for (int b = 0; b < n; b++) {
+        float *dst = key + (size_t)b * hcd;              // reuse key as conv out
+        for (int ch = 0; ch < hcd; ch++) {
+            float acc = 0.0f;
+            for (int k = 0; k < K; k++) {
+                int t = hist + b - (K - 1 - k) * dil;
+                acc += wk[(size_t)ch * K + k] * histbuf[(size_t)t * hcd + ch];
+            }
+            dst[ch] = silu_f(acc);
+        }
+    }
+    // 6. residual += gated + conv_out
+    for (int b = 0; b < n; b++) {
+        float *x = m->x_hc + (size_t)b * hcd;
+        const float *g = gated + (size_t)b * hcd, *co = key + (size_t)b * hcd;
+        for (int i = 0; i < hcd; i++) x[i] += g[i] + co[i];
+    }
+    // 7. slide the history: the last `hist` rows of (history + this batch)
+    //    become the next call's history
+    memmove(histbuf, histbuf + (size_t)n * hcd, sizeof(float) * (size_t)hist * hcd);
+}
+
 static void forward_layer(model_t *m, int l, int n, int pos, int dbg) {
     const int n_embd = m->n_embd;
     const int xdim = m->xdim;
@@ -8053,6 +8469,13 @@ static void forward_layer(model_t *m, int l, int n, int pos, int dbg) {
     if (ly->skip_mixer) goto nemo_ffn;
 
     // attention
+    if (m->hyper_conn) {
+        // qwen4exp: the PLE block folds its n-gram rows into the wide
+        // residual first, then the first mixer replaces the pre-norm
+        if (ly->ple4) ple4_block(m, ly, m->fwd_tokens, n, pos);
+        hc_mix(m, ly->hc_attn_norm, ly->hc_attn_down, ly->hc_attn_up,
+               ly->hc_attn_inject, m->xb, xdim, n);
+    } else
     for (int b = 0; b < n; b++)
         xnorm(m, m->xb + (size_t)b * xdim, m->x + (size_t)b * n_embd,
               ly->attn_norm_w, ly->attn_norm_b, n_embd, m->rms_eps);
@@ -8064,7 +8487,7 @@ static void forward_layer(model_t *m, int l, int n, int pos, int dbg) {
                 ly->knorm_w != NULL, ly->post_attn_norm_w != NULL,
                 ly->post_ffn_norm_w != NULL);
         float a = 0;
-        for (int i = 0; i < n_embd; i++) {
+        for (int i = 0; ly->attn_norm_w && i < n_embd; i++) {
             float t = ly->attn_norm_w[i] < 0 ? -ly->attn_norm_w[i] : ly->attn_norm_w[i];
             if (t > a) a = t;
         }
@@ -8246,6 +8669,8 @@ static void forward_layer(model_t *m, int l, int n, int pos, int dbg) {
         for (int b = 0; b < n; b++)
             for (int i = 0; i < n_embd; i++)
                 m->xb[(size_t)b * xdim + i] *= m->resid_scale;
+    if (m->hyper_conn) hc_combine(m, m->xb, xdim, n);   // scatter into every stream
+    else
     for (int b = 0; b < n; b++)
         for (int i = 0; i < n_embd; i++)
             m->x[(size_t)b * n_embd + i] += m->xb[(size_t)b * xdim + i];
@@ -8262,6 +8687,10 @@ nemo_ffn:
         gemma_moe_ffn(m, ly, n, xdim);  // reads m->x, writes dense⊕routed to m->xb
         goto ffn_done;
     }
+    if (m->hyper_conn)
+        hc_mix(m, ly->hc_ffn_norm, ly->hc_ffn_down, ly->hc_ffn_up,
+               ly->hc_ffn_inject, m->xb, xdim, n);
+    else
     for (int b = 0; b < n; b++)
         xnorm(m, m->xb + (size_t)b * xdim, m->x + (size_t)b * n_embd,
               ly->ffn_norm_w, ly->ffn_norm_b, n_embd, m->rms_eps);
@@ -8319,6 +8748,8 @@ nemo_ffn:
         for (int b = 0; b < n; b++)
             for (int i = 0; i < n_embd; i++)
                 m->xb[(size_t)b * xdim + i] *= m->resid_scale;
+    if (m->hyper_conn) hc_combine(m, m->xb, xdim, n);
+    else
     for (int b = 0; b < n; b++)
         for (int i = 0; i < n_embd; i++)
             m->x[(size_t)b * n_embd + i] += m->xb[(size_t)b * xdim + i];
@@ -8355,6 +8786,20 @@ nemo_layer_end:;   // nemotron_h SSM/attention blocks land here (no FFN)
         for (int b = 0; b < n; b++)
             for (int i = 0; i < n_embd; i++)
                 m->x[(size_t)b * n_embd + i] *= ly->out_scale;
+    if (m->hyper_conn) {
+        // keep the single-stream view current for the diagnostics and the
+        // layer-similarity probe: the mean of the streams
+        int hc = m->hc_count, hcd = hc * n_embd;
+        for (int b = 0; b < n; b++) {
+            const float *xs = m->x_hc + (size_t)b * hcd;
+            float *xo = m->x + (size_t)b * n_embd;
+            for (int i = 0; i < n_embd; i++) {
+                float acc = 0.0f;
+                for (int c = 0; c < hc; c++) acc += xs[(size_t)c * n_embd + i];
+                xo[i] = acc / (float)hc;
+            }
+        }
+    }
     if (dbg) dbg_stat("layer-out", l, m->x + (size_t)(n - 1) * n_embd, n_embd);
     if (sim) {
         double cs = 0;
@@ -8478,7 +8923,16 @@ float *model_forward_batch(model_t *m, const int32_t *tokens, int n, int pos,
         if (dbg) dbg_stat("post-embd", -1, m->x + (size_t)(n - 1) * n_embd, n_embd);
         if (m->n_embd_ple > 0)
             model_ple_prepass(m, tokens, n, m->x, m->ple, m->ple_tmp);
+        if (m->hyper_conn) {
+            // the wide residual starts as hc identical copies of the embedding
+            int hcd = m->hc_count * n_embd;
+            for (int b = 0; b < n; b++)
+                for (int c = 0; c < m->hc_count; c++)
+                    memcpy(m->x_hc + (size_t)b * hcd + (size_t)c * n_embd,
+                           m->x + (size_t)b * n_embd, sizeof(float) * (size_t)n_embd);
+        }
     }
+    m->fwd_tokens = tokens;   // the PLE block hashes the batch's own ids
 
     for (int l = start; l < m->n_layer; l++)
         forward_layer(m, l, n, pos, dbg);
@@ -8487,8 +8941,7 @@ float *model_forward_batch(model_t *m, const int32_t *tokens, int n, int pos,
         memcpy(m->tape + ((size_t)m->n_layer * m->tape_T + pos) * m->n_embd,
                m->x, sizeof(float) * (size_t)m->n_embd);
     if (!want_logits) return NULL;
-    xnorm(m, m->xb, m->x + (size_t)(n - 1) * n_embd, m->out_norm_w,
-          m->out_norm_b, n_embd, m->rms_eps);
+    head_norm_row(m, n - 1);
     if (dbg) dbg_stat("final-norm", m->n_layer, m->xb, n_embd);
     matvec_b(m->tp, m->logits, m->n_vocab, m->output, m->xb, xdim, n_embd, m->n_vocab, NULL, 1);
     if (dbg) dbg_stat("logits-raw", m->n_layer, m->logits, m->n_vocab);
@@ -8550,8 +9003,7 @@ float *model_spec_row_logits(model_t *m, int b) {
     }
     int n_embd = m->n_embd, xdim = m->xdim;   // cached at load (RNC-3)
     float *lg = m->all_logits + (size_t)b * m->n_vocab;
-    xnorm(m, m->xb, m->x + (size_t)b * n_embd, m->out_norm_w,
-          m->out_norm_b, n_embd, m->rms_eps);
+    head_norm_row(m, b);
     matvec_b(m->tp, lg, m->n_vocab, m->output, m->xb, xdim, n_embd,
              m->n_vocab, NULL, 1);
     apply_head_transforms(m, lg);

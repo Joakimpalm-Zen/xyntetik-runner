@@ -69,6 +69,10 @@ gguf_kv     *gguf_get(gguf_file *g, const char *key);
 uint32_t     gguf_get_u32 (gguf_file *g, const char *key, uint32_t dflt);
 uint32_t     gguf_get_u32_idx(gguf_file *g, const char *key, uint64_t idx,
                               uint32_t dflt);
+// Full-width element of an integer array (the qwen4exp PLE hash multipliers
+// are 45-bit constants a u32 reader would collapse to the default).
+uint64_t     gguf_get_u64_idx(gguf_file *g, const char *key, uint64_t idx,
+                              uint64_t dflt);
 float        gguf_get_f32 (gguf_file *g, const char *key, float dflt);
 bool         gguf_get_bool(gguf_file *g, const char *key, bool dflt);
 const char  *gguf_get_str (gguf_file *g, const char *key, const char *dflt);

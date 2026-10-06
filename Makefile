@@ -847,6 +847,14 @@ $(TEST_MVCANON): $(TEST_MVCANON_SRC) src/quants.c $(HDR) test.gguf test-q8.gguf
 test-yarn.gguf: scripts/make-test-model.py
 	$(PYTHON) scripts/make-test-model.py --yarn 32,4096 test-yarn.gguf
 
+# qwen4exp (R4.26.1, experimental): hyper-connection streams, the Engram
+# n-gram PLE block, Gated DeltaNet + full-attention blocks, routed + shared
+# experts. Random weights; the gate is "loads, binds every tensor, the CPU
+# forward runs and every logit is finite". The reference anchor is the
+# llama.cpp and fp32 comparisons in R4.26.3, not this.
+test-qwen4exp.gguf: scripts/make-test-qwen4exp.py
+	$(PYTHON) scripts/make-test-qwen4exp.py test-qwen4exp.gguf
+
 # gemma3 at the 27B's block count and at the 1B's, both with heads narrower
 # than n_embd / n_head so the two attention-scale rules disagree
 test-gemma3-62.gguf: scripts/make-test-model.py
@@ -2117,8 +2125,20 @@ test: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSON_OOM) $(
       $(TEST_SCHED_TURN) $(TEST_RESIDENCY) $(TEST_BUDGET) $(TEST_ATTRIB_DEP) \
       $(TEST_STOP_CONSTRAINT) $(TEST_MSG_OOM_DEP) $(TEST_RECURRENT) $(TEST_PENALTY_WINDOW) $(TEST_ROPE_YARN) $(TEST_ATTN_SCALE) $(TEST_REQUEST_STOP) \
       runner test.gguf test-q8.gguf test-bf16.gguf test-ornith.gguf test-ornith-draft.gguf test-yarn.gguf \
-      test-gemma3-62.gguf test-gemma3-26.gguf
+      test-gemma3-62.gguf test-gemma3-26.gguf test-qwen4exp.gguf
 	./$(TEST_RECURRENT)
+	@# qwen4exp: chunked prefill must equal the single-shot prefill (the PLE
+	@# conv history carries across batches; llama.cpp's does not), and a row
+	@# scored out of a batch (the per-row hyper-connection head) must equal
+	@# the same row scored alone. Found: the conv kernel scratch overran its
+	@# region at every batch size, and the per-row head read the stream mean.
+	./runner -m test-qwen4exp.gguf -p "hello world one two three four" -n 4 --temp 0 --gpu off -c 128 > test-qwen4exp.a.out 2>/dev/null
+	./runner -b 3 -m test-qwen4exp.gguf -p "hello world one two three four" -n 4 --temp 0 --gpu off -c 128 > test-qwen4exp.b.out 2>/dev/null
+	cmp test-qwen4exp.a.out test-qwen4exp.b.out
+	./runner -b 1 -m test-qwen4exp.gguf --score -p "hello world one two three four five six" --gpu off -c 128 > test-qwen4exp.a.out 2>/dev/null
+	RUNNER_SCORE_CHUNKED=1 ./runner -b 3 -m test-qwen4exp.gguf --score -p "hello world one two three four five six" --gpu off -c 128 > test-qwen4exp.b.out 2>/dev/null
+	cmp test-qwen4exp.a.out test-qwen4exp.b.out
+	rm -f test-qwen4exp.a.out test-qwen4exp.b.out
 	./$(TEST_ATTN_SCALE) test-gemma3-62.gguf test-gemma3-26.gguf
 	./$(TEST_PENALTY_WINDOW) test.gguf
 	./$(TEST_REQUEST_STOP)

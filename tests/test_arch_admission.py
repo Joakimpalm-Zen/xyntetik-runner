@@ -97,6 +97,11 @@ ARCH_GATE_EXEMPTIONS = {
     # string is not. Keep until a file actually ships with these strings.
     "mistral": "covered by llama-arch files (mistral-7b-instruct-v0.3-q4_k_m)",
     "smollm": "covered by llama-arch files; no GGUF ships arch=smollm",
+    # Experimental admission (R4.26.1). The toy fixture test-qwen4exp.gguf
+    # exercises the loader and the CPU forward in `make test`; the pinned
+    # real file (83 GB, two parts) is admitted to the manifest with the
+    # anchor runs in R4.26.3, and this entry goes with it.
+    "qwen4exp": "experimental; fixture-gated only until the R4.26.3 anchor",
 }
 
 
