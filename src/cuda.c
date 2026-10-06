@@ -337,7 +337,7 @@ typedef struct gpu_weights {
     CUdeviceptr *hc_an, *hc_fn;         // qwen4exp per-stream mixer gammas [hc*n_embd]
     CUdeviceptr hc_head_norm;           // qwen4exp head mixer gamma
     CUfunction  f_rmsnorm_grouped, f_hc_gate_mean, f_hc_combine, f_silu_scale;
-    CUfunction  f_mv_bf16_splitk, f_splitk_reduce;
+    CUfunction  f_mv_bf16_splitk, f_splitk_reduce, f_axpy_sigmoid;
     CUdeviceptr *pan, *pfn;             // gemma3 sandwich norms, may be 0
     CUdeviceptr *bq, *bk, *bv, *bo;     // per layer, may be 0
     CUdeviceptr *qn, *kn;               // qwen3 per-head q/k norms
@@ -374,6 +374,7 @@ typedef struct {
     CUdeviceptr x, xb, xb2, q, kt, vt, hb, hb2, att, attn_part, logits;
     CUdeviceptr x_hc, hc_xn, hc_lo, hc_gate, hc_inject;  // qwen4exp wide residual + mixer scratch
     CUdeviceptr splitk;                                   // split-K partials, SPLITK_PARTIALS floats
+    CUdeviceptr shexp_in, shexp_g, shexp_u, shexp_o, shexp_gate;  // shared expert on the device
     CUdeviceptr xsc;                    // [TC_N] per-column |x| max for the scaled TC GEMMs
     // sparse-MoE: router logits [MVB][n_expert], per-slot expert down-out
     // [rows][n_embd] (rows = max(used, MVB); the eager path uses column 0)
@@ -1473,6 +1474,7 @@ static gpu_weights *shared_build(model_t *m, size_t act_bytes, int max_hd,
             { &w->f_hc_gate_mean, "k_hc_gate_mean" }, { &w->f_hc_combine, "k_hc_combine" },
             { &w->f_silu_scale, "k_silu_scale" },
             { &w->f_mv_bf16_splitk, "k_mv_bf16_splitk" }, { &w->f_splitk_reduce, "k_splitk_reduce" },
+            { &w->f_axpy_sigmoid, "k_axpy_sigmoid" },
             { &w->f_rope,       "k_rope" },      { &w->f_store,  "k_store_kv" },
             { &w->f_attn,       "k_attn" },      { &w->f_silu,   "k_silu_mul" },
             { &w->f_attn_dec,   "k_attn_dec" },  { &w->f_attn_merge, "k_attn_merge" },
@@ -1650,7 +1652,11 @@ static gpu_weights *shared_build(model_t *m, size_t act_bytes, int max_hd,
                         !binding_add(w, m, ly->ffn_gate_up_exps) ||
                         !binding_add(w, m, ly->ffn_gate_exps) ||
                         !binding_add(w, m, ly->ffn_up_exps) ||
-                        !binding_add(w, m, ly->ffn_down_exps)) goto fail;
+                        !binding_add(w, m, ly->ffn_down_exps) ||
+                        !binding_add(w, m, ly->w_gate_shexp) ||
+                        !binding_add(w, m, ly->w_up_shexp) ||
+                        !binding_add(w, m, ly->w_down_shexp) ||
+                        !binding_add(w, m, ly->ffn_gate_inp_shexp)) goto fail;
                     if (ly->moe_split)
                         for (int e = 0; e < m->n_expert; e++)
                             if (!binding_add(w, m, ly->moe_g[e]) ||
@@ -2005,9 +2011,18 @@ bool gpu_init(model_t *m) {
     // The shared always-on expert has no device path: the routed MoE
     // kernels write the FFN output and nothing adds a second dense branch.
     if (m->n_ff_shexp > 0 && moe_any_on_device(m)) {
-        fprintf(stderr, "gpu: shared-expert MoE has no device path — "
-                "running on CPU (--cpu-moe keeps it on the host)\n");
-        return false;
+        // the device twin covers the gated-SiLU shared expert with its scalar
+        // sigmoid gate (Qwen3.5/3.8); an ungated or relu2 one stays on the host
+        bool ok_shape = !m->ffn_relu2;
+        for (int l = 0; ok_shape && l < m->n_layer; l++)
+            if (m->layers[l].is_moe && !moe_on_host(m, l) && m->layers[l].w_up_shexp &&
+                (!m->layers[l].w_gate_shexp || !m->layers[l].ffn_gate_inp_shexp))
+                ok_shape = false;
+        if (!ok_shape) {
+            fprintf(stderr, "gpu: this shared-expert shape has no device path — "
+                    "running on CPU (--cpu-moe keeps it on the host)\n");
+            return false;
+        }
     }
     // The DENSE attention output gate (muse-glimmer) rides qwen35's
     // machinery: wq_gate is already in every weight table and k_q35_attn_gate
@@ -2210,6 +2225,13 @@ bool gpu_init(model_t *m) {
             hb_elems = 2 * (size_t)m->n_ff_exp;
         CK(cu.MemAlloc(&g->hb,     sizeof(float) * hb_elems));
         CK(cu.MemAlloc(&g->hb2,    sizeof(float) * hb_elems));
+        if (m->n_ff_shexp > 0 && moe_any_on_device(m)) {
+            CK(cu.MemAlloc(&g->shexp_in,   sizeof(float) * MVB * xdim));
+            CK(cu.MemAlloc(&g->shexp_g,    sizeof(float) * MVB * m->n_ff_shexp));
+            CK(cu.MemAlloc(&g->shexp_u,    sizeof(float) * MVB * m->n_ff_shexp));
+            CK(cu.MemAlloc(&g->shexp_o,    sizeof(float) * MVB * m->n_embd));
+            CK(cu.MemAlloc(&g->shexp_gate, sizeof(float) * MVB));
+        }
         CK(cu.MemAlloc(&g->att,    sizeof(float) * MVB * (size_t)m->n_head * m->n_ctx));
         // flash-decoding partials: per (token, head, split) -> hd weighted-V + max + sum
         CK(cu.MemAlloc(&g->attn_part, sizeof(float) * MVB * (size_t)m->n_head *
@@ -4252,7 +4274,28 @@ static bool fwd_tile(gpu_t *g, model_t *m, const int32_t *tokens, int tn,
                                tn, n_embd, xdim);
         prof_mark(g, PH_NORM);
         if (ly->is_moe) {
+            bool shexp = ly->w_up_shexp && g->shexp_in;
+            if (shexp && cu.MemcpyDtoD(g->shexp_in, g->xb,
+                                       sizeof(float) * (size_t)tn * xdim) != 0)
+                return false;
             ok = ok && gpu_moe_ffn(g, m, ly, tn, xdim);  // writes FFN output into g->xb
+            if (ok && shexp) {
+                // the gated shared expert, the device twin of shexp_add:
+                // out += sigmoid(gate_inp_shexp . in) * down(act(gate(in)) * up(in))
+                int nf = m->n_ff_shexp;
+                ok = ok && enc_mv(g, m, ly->w_up_shexp, g->shexp_in, g->shexp_u, n_embd, nf, 0, tn, xdim, nf)
+                        && enc_mv(g, m, ly->w_gate_shexp, g->shexp_in, g->shexp_g, n_embd, nf, 0, tn, xdim, nf)
+                        && enc_actmul(g, m, g->shexp_g, g->shexp_u, tn * nf)
+                        && enc_mv(g, m, ly->w_down_shexp, g->shexp_g, g->shexp_o, nf, n_embd, 0, tn, nf, n_embd);
+                // the scalar gate is required here (admission refuses an
+                // ungated shared expert on the device, see below)
+                ok = ok && enc_mv(g, m, ly->ffn_gate_inp_shexp, g->shexp_in, g->shexp_gate, n_embd, 1, 0, tn, xdim, 1);
+                if (ok) {
+                    int vs = n_embd;
+                    void *pa[] = { &g->xb, &g->shexp_o, &g->shexp_gate, &n_embd, &xdim, &vs };
+                    ok = launch(g, g->sw->f_axpy_sigmoid, (n_embd + 255) / 256, tn, 1, 256, pa);
+                }
+            }
             prof_mark(g, PH_MATVEC);
         } else {
         if (!ly->w_gate) {

@@ -5483,6 +5483,16 @@ extern "C" __global__ void k_silu_scale(float *x, float s, int n, int xs) {
     xr[i] = g < -80.0f ? 0.0f : g / (1.0f + expf(-g));
 }
 
+// shared expert: y[row][i] += sigmoid(glogit[row]) * v[row][i] (the CPU's
+// shexp_add tail; glogit is the 1-wide ffn_gate_inp_shexp projection)
+extern "C" __global__ void k_axpy_sigmoid(float *y, const float *v, const float *glogit,
+                                          int n, int ys, int vs) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    float gsig = 1.0f / (1.0f + expf(-glogit[blockIdx.y]));
+    y[(ulong64)blockIdx.y * ys + i] += gsig * v[(ulong64)blockIdx.y * vs + i];
+}
+
 // mixed[row][i] = mean over streams c of xn[row][c*n+i] * sigmoid(gate[row][c*n+i]).
 // sigmoid as 1/(1+exp(-g)): exp overflow gives 1/inf = 0 and underflow gives
 // exactly 1 in IEEE float, the values the CPU's guarded sigmoid_f returns.
