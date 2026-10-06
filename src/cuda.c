@@ -689,11 +689,14 @@ bool gpu_quant_ok(int type) { return gpu_type_ok(type); }
 // Expert tensor types the indirect MoE matvecs (k_moe_mv_*) cover. A type
 // outside this set is not an error — that model keeps the eager per-expert
 // path, exactly as before the device-routing work.
+// experts per token the device router (k_moe_route) holds in local memory
+enum { MOE_ROUTE_MAX = 512 };
+
 static bool moe_indirect_type_ok(int type) {
     switch (type) {
         case T_F32: case T_F16: case T_Q8_0: case T_Q4_0:
         case T_Q4_K: case T_Q5_K: case T_Q6_K: case T_MXFP4:
-        case T_NVFP4:
+        case T_NVFP4: case T_IQ3_XXS: case T_IQ4_NL: case T_Q2_0:
             return true;
         default:
             return false;
@@ -747,7 +750,7 @@ static bool moe_any_on_device(const model_t *m) {
 // for every expert tensor type. All-or-nothing per model: one eager layer
 // would force the graph off anyway.
 static bool moe_fused_eligible(const model_t *m) {
-    if (m->n_expert <= 0 || m->n_expert > 256) return false;
+    if (m->n_expert <= 0 || m->n_expert > MOE_ROUTE_MAX) return false;
     if (!moe_any_on_device(m)) return false;
     for (int l = 0; l < m->n_layer; l++) {
         const layer_t *ly = &m->layers[l];
@@ -1582,6 +1585,9 @@ static gpu_weights *shared_build(model_t *m, size_t act_bytes, int max_hd,
             { &w->f_moe_mv[T_Q6_K],   "k_moe_mv_q6_K" },
             { &w->f_moe_mv[T_MXFP4],  "k_moe_mv_mxfp4" },
             { &w->f_moe_mv[T_NVFP4],  "k_moe_mv_nvfp4" },
+            { &w->f_moe_mv[T_IQ3_XXS], "k_moe_mv_iq3_xxs" },
+            { &w->f_moe_mv[T_IQ4_NL],  "k_moe_mv_iq4_nl" },
+            { &w->f_moe_mv[T_Q2_0],    "k_moe_mv_q2_0" },
             // expert-grouped prefill glue
             { &w->f_moe_gather,       "k_moe_gather" },
             { &w->f_moe_scatter,      "k_moe_scatter_add" },
@@ -3390,7 +3396,7 @@ static bool gpu_moe_ffn_fused(gpu_t *g, model_t *m, const layer_t *ly,
     int l = (int)(ly - m->layers);
     enum { MOE_MAX_USED = 256 };
     if (used > MOE_MAX_USED) used = MOE_MAX_USED;
-    if (ne  > MOE_MAX_USED) ne  = MOE_MAX_USED;
+    if (ne  > MOE_ROUTE_MAX) ne  = MOE_ROUTE_MAX;
     uint64_t gstride = (uint64_t)nff *
                        ggml_row_size(ly->ffn_gate_exps->type, n_embd);
     uint64_t ustride = (uint64_t)nff *
@@ -3555,7 +3561,7 @@ static bool gpu_moe_ffn_grouped(gpu_t *g, model_t *m, const layer_t *ly,
     int l = (int)(ly - m->layers);
     enum { MOE_MAX_USED = 256 };
     if (used > MOE_MAX_USED) used = MOE_MAX_USED;
-    if (ne  > MOE_MAX_USED) ne  = MOE_MAX_USED;
+    if (ne  > MOE_ROUTE_MAX) ne  = MOE_ROUTE_MAX;
     for (int t = 0; t < tn; t++) {
         CUdeviceptr xin = g->xb + (size_t)t * xdim * sizeof(float);
         CUdeviceptr lg  = g->moe_logits + (size_t)t * ne * sizeof(float);

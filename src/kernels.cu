@@ -5048,7 +5048,9 @@ extern "C" __global__ void k_moe_route(const float *logits, int *sel,
                                        int tokens, int ls) {
     int t = blockIdx.x * blockDim.x + threadIdx.x;
     if (t >= tokens) return;
-    float lg[256];
+    // MOE_ROUTE_MAX experts per token in local memory (one thread per token);
+    // 512 for Qwen3.8-Flash-Next (the host clamps ne to this bound)
+    float lg[512];
     const float *src = logits + (ulong64)t * ls;
     for (int e = 0; e < ne; e++) lg[e] = src[e];
     float mx = lg[0];
@@ -5267,6 +5269,78 @@ extern "C" __global__ void k_moe_mv_q4_K(MOE_MV_PARAMS) {
                  + (float)((v1 >> 24)       ) * x1.w;
         float sx = x0.x + x0.y + x0.z + x0.w + x1.x + x1.y + x1.z + x1.w;
         s += dg * t - mmg * sx;
+    }
+    MOE_MV_TAIL;
+}
+
+// body of k_mv_iq3_xxs (Qwen3.8-Flash-Next gate/up experts)
+extern "C" __global__ void k_moe_mv_iq3_xxs(MOE_MV_PARAMS) {
+    MOE_MV_HEAD;
+    int nb = a.n_in / 256;
+    const uchar *rw = wbase + (ulong64)row * nb * 98;
+    for (int b = lane; b < nb; b += 32) {
+        const uchar *blk = rw + (ulong64)b * 98;
+        float d = f16f(blk);
+        const uchar *qs = blk + 2, *ss = blk + 66;
+        const float *xp = x + b * 256;
+        for (int ib = 0; ib < 8; ib++, qs += 8) {
+            unsigned aux = iq_ld32a2(ss + 4 * ib);
+            float db = d * (0.5f + (float)(aux >> 28)) * 0.5f;
+            float t = 0;
+            for (int l = 0; l < 4; l++, xp += 8) {
+                unsigned g1 = kiq3xxs_grid[qs[2 * l + 0]];
+                unsigned g2 = kiq3xxs_grid[qs[2 * l + 1]];
+                unsigned signs = iq_signs7((aux >> (7 * l)) & 127);
+                for (int j = 0; j < 4; j++) {
+                    t += iq_w4(g1, j, signs) * xp[j];
+                    t += iq_w4(g2, j, signs >> 4) * xp[j + 4];
+                }
+            }
+            s += db * t;
+        }
+    }
+    MOE_MV_TAIL;
+}
+
+// body of k_mv_iq4_nl (Qwen3.8-Flash-Next down experts)
+extern "C" __global__ void k_moe_mv_iq4_nl(MOE_MV_PARAMS) {
+    MOE_MV_HEAD;
+    int nb = a.n_in / 32;
+    const uchar *rw = wbase + (ulong64)row * nb * 18;
+    for (int b = lane; b < nb; b += 32) {
+        const uchar *blk = rw + (ulong64)b * 18;
+        float d = f16f(blk);
+        const uchar *q = blk + 2;
+        const float *xp = x + b * 32;
+        float t = 0;
+        for (int j = 0; j < 16; j++) {
+            t += (float)kv_iq4[q[j] & 0xF] * xp[j];
+            t += (float)kv_iq4[q[j] >> 4]  * xp[j + 16];
+        }
+        s += d * t;
+    }
+    MOE_MV_TAIL;
+}
+
+// body of k_mv_q2_0 (some blocks' down experts in the GSQ release)
+extern "C" __global__ void k_moe_mv_q2_0(MOE_MV_PARAMS) {
+    MOE_MV_HEAD;
+    int nb = a.n_in / 64;
+    const uchar *rw = wbase + (ulong64)row * nb * 18;
+    for (int b = lane; b < nb; b += 32) {
+        const uchar *blk = rw + (ulong64)b * 18;
+        float d = f16f(blk);
+        const uchar *q = blk + 2;
+        const float *xp = x + (ulong64)b * 64;
+        float t = 0;
+        for (int j = 0; j < 16; j++) {
+            uchar c = q[j];
+            t += ((int)(c & 3) - 1) * xp[4 * j]
+               + ((int)((c >> 2) & 3) - 1) * xp[4 * j + 1]
+               + ((int)((c >> 4) & 3) - 1) * xp[4 * j + 2]
+               + ((int)(c >> 6) - 1) * xp[4 * j + 3];
+        }
+        s += d * t;
     }
     MOE_MV_TAIL;
 }
