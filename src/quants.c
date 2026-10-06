@@ -689,6 +689,16 @@ static inline void avx2_iq_sign16(const uint8_t *mag, uint8_t s0, uint8_t s1,
     scale16(y, db);
 }
 
+// the signed 16-value vector avx2_iq_sign16 builds, before the widen/scale
+static inline __m128i avx2_iq_signed16(const uint8_t *mag, uint8_t s0, uint8_t s1) {
+    __m128i m = _mm_loadu_si128((const __m128i *)mag);
+    __m128i sv = _mm_set_epi64x((long long)(0x0101010101010101ULL * s1),
+                                (long long)(0x0101010101010101ULL * s0));
+    __m128i km = _mm_loadu_si128((const __m128i *)avx2_iq_kmask);
+    __m128i neg = _mm_cmpeq_epi8(_mm_and_si128(sv, km), km);
+    return _mm_blendv_epi8(m, _mm_sub_epi8(_mm_setzero_si128(), m), neg);
+}
+
 static inline void avx2_iq1_16(const int8_t *g16, float dl, float d0, float d1,
                                float *y) {
     __m128i v = _mm_loadu_si128((const __m128i *)g16);
@@ -1185,6 +1195,13 @@ static const uint8_t neon_iq_kmask[16] = { 1, 2, 4, 8, 16, 32, 64, 128,
                                            1, 2, 4, 8, 16, 32, 64, 128 };
 
 // y[0..15] = db * +/-mag[0..15], sign bit j of s0 (first 8) / s1 (second 8)
+static inline int8x16_t neon_iq_signed16(const uint8_t *mag, uint8_t s0, uint8_t s1) {
+    int8x16_t m = vld1q_s8((const int8_t *)mag);
+    uint8x16_t neg = vtstq_u8(vcombine_u8(vdup_n_u8(s0), vdup_n_u8(s1)),
+                              vld1q_u8(neon_iq_kmask));
+    return vbslq_s8(neg, vnegq_s8(m), m);
+}
+
 static inline void neon_iq_sign16(const uint8_t *mag, uint8_t s0, uint8_t s1,
                                   float *y, float db) {
     int8x16_t m = vld1q_s8((const int8_t *)mag);
@@ -2135,6 +2152,44 @@ static float dot_q2_0_avx2(const block_q2_0 *b, const float *x, int n) {
     return hsum8(acc);
 }
 
+// IQ3_XXS fused dot: the same grid gathers and sign blend as dq_iq3_xxs_avx2,
+// but the 16 signed codes go straight into the FMAs instead of through a
+// 256-float scratch row (vec_dot's default path dequantizes a block, then
+// dots it: two passes over the row and a store/reload per value). The
+// routed experts of Qwen3.8-Flash-Next are IQ3_XXS gate/up; on the Blackwell
+// CPUs they were 45% of the token through the default path.
+static float dot_iq3_xxs_avx2(const block_iq3_xxs *b, const float *x, int n) {
+    __m256 acc = _mm256_setzero_ps();
+    uint8_t mag[16];
+    for (int i = 0; i < n / QK_K; i++, b++) {
+        float d = f16_to_f32(b->d);
+        const uint8_t *qs = b->qs, *sas = b->qs + QK_K / 4;
+        const float *xp = x + i * QK_K;
+        for (int ib32 = 0; ib32 < QK_K / 32; ib32++) {
+            uint32_t aux32;
+            memcpy(&aux32, sas + 4 * ib32, sizeof(uint32_t));
+            float db = d * (0.5f + (aux32 >> 28)) * 0.5f;
+            __m256 t = _mm256_setzero_ps();
+            for (int half = 0; half < 2; half++) {
+                const uint8_t *q = qs + 4 * half;
+                memcpy(mag,      iq3xxs_grid + q[0], 4);
+                memcpy(mag + 4,  iq3xxs_grid + q[1], 4);
+                memcpy(mag + 8,  iq3xxs_grid + q[2], 4);
+                memcpy(mag + 12, iq3xxs_grid + q[3], 4);
+                __m128i v = avx2_iq_signed16(mag,
+                                ksigns_iq2xs[(aux32 >> (14 * half)) & 127],
+                                ksigns_iq2xs[(aux32 >> (14 * half + 7)) & 127]);
+                const float *xh = xp + 32 * ib32 + 16 * half;
+                t = _mm256_fmadd_ps(i8lo_ps(v), _mm256_loadu_ps(xh), t);
+                t = _mm256_fmadd_ps(i8hi_ps(v), _mm256_loadu_ps(xh + 8), t);
+            }
+            acc = _mm256_fmadd_ps(_mm256_set1_ps(db), t, acc);
+            qs += 8;
+        }
+    }
+    return hsum8(acc);
+}
+
 static float dot_iq4_xs_avx2(const block_iq4_xs *b, const float *x, int n) {
     const __m128i tbl = _mm_loadu_si128((const __m128i *)kvalues_iq4nl);
     const __m128i mF  = _mm_set1_epi8(0xF);
@@ -2297,6 +2352,36 @@ static float dot_q2_0_neon(const block_q2_0 *b, const float *x, int n) {
         const float *xp = x + i * QK2_0;
         float32x4_t t = vaddq_f32(dot32(e[0], e[1], xp), dot32(e[2], e[3], xp + 32));
         acc = vfmaq_n_f32(acc, t, f16_to_f32(b[i].d));
+    }
+    return vaddvq_f32(acc);
+}
+
+// IQ3_XXS fused dot on NEON (same construction as dq_iq3_xxs_neon)
+static float dot_iq3_xxs_neon(const block_iq3_xxs *b, const float *x, int n) {
+    float32x4_t acc = vdupq_n_f32(0);
+    uint8_t mag[16];
+    for (int i = 0; i < n / QK_K; i++, b++) {
+        float d = f16_to_f32(b->d);
+        const uint8_t *qs = b->qs, *sas = b->qs + QK_K / 4;
+        const float *xp = x + i * QK_K;
+        for (int ib32 = 0; ib32 < QK_K / 32; ib32++) {
+            uint32_t aux32;
+            memcpy(&aux32, sas + 4 * ib32, sizeof(uint32_t));
+            float db = d * (0.5f + (aux32 >> 28)) * 0.5f;
+            int8x16_t v[2];
+            for (int half = 0; half < 2; half++) {
+                const uint8_t *q = qs + 4 * half;
+                memcpy(mag,      iq3xxs_grid + q[0], 4);
+                memcpy(mag + 4,  iq3xxs_grid + q[1], 4);
+                memcpy(mag + 8,  iq3xxs_grid + q[2], 4);
+                memcpy(mag + 12, iq3xxs_grid + q[3], 4);
+                v[half] = neon_iq_signed16(mag,
+                              ksigns_iq2xs[(aux32 >> (14 * half)) & 127],
+                              ksigns_iq2xs[(aux32 >> (14 * half + 7)) & 127]);
+            }
+            acc = vfmaq_n_f32(acc, dot32(v[0], v[1], xp + 32 * ib32), db);
+            qs += 8;
+        }
     }
     return vaddvq_f32(acc);
 }
@@ -2716,9 +2801,13 @@ float vec_dot(int type, const void *row, const float *x, int n) {
 #if RUNNER_AVX2
         case T_Q2_0:
             return dot_q2_0_avx2(row, x, n);
+        case T_IQ3_XXS:
+            return dot_iq3_xxs_avx2(row, x, n);
 #elif RUNNER_NEON
         case T_Q2_0:
             return dot_q2_0_neon(row, x, n);
+        case T_IQ3_XXS:
+            return dot_iq3_xxs_neon(row, x, n);
 #endif
         case T_MXFP4: {
 #if RUNNER_AVX2
