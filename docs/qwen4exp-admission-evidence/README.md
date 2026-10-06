@@ -63,3 +63,31 @@ The 200-position p512 anchor and the 64-token greedy comparison on this
 file wait for a lane G gap on the Blackwell (filed with the lab queue,
 2026-10-06 11:40); the fp32 publisher reference stays R4.26.3's primary
 anchor.
+
+## Release file, anchor rows (Blackwell, 2026-10-06 13:41-14:00)
+
+Runner at `3eb67982` CPU-only on CPUs 40-55/104-119 (`-t 24`); llama.cpp
+b11433 `llama-server --fit on -c 8192 -ctk f32 -ctv f32 -t 16` on the MIG
+1g.24gb slice with the experts on the same CPUs. Same two-part file (sha256
+4c1eb2ce... / 316b46f3...). Prompt `bench/prompts/p512.txt` (481 tokens, a
+deliberately repetitive paragraph: the speed table's prompt, which makes
+most positions near-certain; the 2,000-position run uses natural text).
+Raw files in `release-file-2026-10-06/`.
+
+- `--score` per position vs the llama-server distribution at every prefix
+  (`n_probs 50`, target present at 472 of 480): mean |delta logprob|
+  0.0253, median 0.0018, p95 0.133, max 0.728 (position 445: runner -0.006,
+  llama -0.735). NLL over the shared positions 0.3483 (runner) vs 0.3471.
+- Top-1 agreement 472 / 480 = 98.3%. The eight disagreements are all
+  near-tie positions where both engines put the two candidates within
+  about 0.3 nats of each other.
+- Greedy 64 tokens from the prompt: 64 of 64 token ids identical
+  (`runner-greedy64-ids.err` vs `llama-greedy64.json`).
+- Speed, for the record only (both engines shared the cores, ER-001 had
+  just been stopped): runner prefill 25.0 / decode 7.8 tok/s CPU-only;
+  llama.cpp prefill 310 / decode 30.7 tok/s on the slice.
+
+What this is and is not: agreement between two quantized implementations of
+the same file. The gaps are of the size two kernel sets give a 3-bit 125B
+model, and nothing here says which engine is closer to the publisher's fp32
+forward; that is R4.26.4, the primary anchor, still pending.
