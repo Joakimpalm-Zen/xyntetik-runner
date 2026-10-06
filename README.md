@@ -77,7 +77,7 @@ It takes about a minute to try: [quick start](#quick-start).
 > ([versioning policy](docs/versioning.md)). This page is the short version;
 > every flag, endpoint, limit and measurement is in the [manual](MANUAL.md).
 
-**On this page:** [Quick start](#quick-start) · [The Lab](#files) ·
+**On this page:** [Quick start](#quick-start) · [The Xyntetik-Lab](#files) ·
 [Will it fit](#fit) · [Make your own file](#models-and-conversion) ·
 [More context, less memory](#long-contexts) · [Idle memory](#designed-to-stay-on) ·
 [Tool calls](#truncation) · [Training](#adaptation) ·
@@ -116,12 +116,13 @@ Prefer to chat in the terminal? `./runner -m model.gguf -i`.
 
 <a id="files"></a>
 <a id="published-artifacts"></a>
-## <img src="https://huggingface.co/front/assets/huggingface_logo-noborder.svg" width="30" height="28" alt="Hugging Face"> The Lab on Hugging Face
+## <img src="https://huggingface.co/front/assets/huggingface_logo-noborder.svg" width="30" height="28" alt="Hugging Face"> The Xyntetik-Lab on Hugging Face
 
 The lab publishes everything it makes, with the measurements and the
 failures left in: 15 models and 15 datasets so far.
-**[Step inside the lab](https://huggingface.co/Joakimpalm-Zen)**, or follow
-one of these.
+**[Step inside the lab](https://huggingface.co/Joakimpalm-Zen)** to check the
+[Xyntetik-Runner releases](https://huggingface.co/collections/Joakimpalm-Zen/runner-releases-6aa98baaed03bba0e8a561ae),
+or follow one of these.
 
 - **[Can a model half the size do its parent's job?](https://huggingface.co/collections/Joakimpalm-Zen/xyntetik-kvist-distilled-agents-6ab9f930af19ca84df9ebf6b)**
   Kvist-14B was distilled from a 30B model for one thing, tool-calling agents
