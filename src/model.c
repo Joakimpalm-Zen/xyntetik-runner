@@ -4270,9 +4270,12 @@ static bool model_alloc_runtime(model_t *m, const model_params *p) {
         }
         m->moe_group_score = malloc(sizeof(float) * (size_t)m->n_expert_groups);
         if (!m->moe_sel_scores || !m->moe_group_score) return false;
-        m->moe_gate   = malloc(sizeof(float) * (size_t)m->n_ff_exp);
-        m->moe_up     = malloc(sizeof(float) * (size_t)m->n_ff_exp);
-        m->moe_dexp   = malloc(sizeof(float) * (size_t)m->n_embd);
+        // one slice per used expert: the decode path runs every selected
+        // expert's gate+up in one pool dispatch and every down in a second
+        int used_cap = m->n_expert_used > 0 ? m->n_expert_used : 1;
+        m->moe_gate   = malloc(sizeof(float) * (size_t)used_cap * m->n_ff_exp);
+        m->moe_up     = malloc(sizeof(float) * (size_t)used_cap * m->n_ff_exp);
+        m->moe_dexp   = malloc(sizeof(float) * (size_t)used_cap * m->n_embd);
         m->moe_out    = malloc(sizeof(float) * (size_t)m->n_embd);
         if (m->moe_gemma) {
             m->gemma_scr = malloc(sizeof(float) * 4 * (size_t)m->n_embd);
@@ -4781,7 +4784,7 @@ typedef struct {
     const float *bias;
 } mv_part;
 
-enum { MV_MAX_PARTS = 4 };
+enum { MV_MAX_PARTS = 32 };
 
 typedef struct {
     int n;
@@ -4836,6 +4839,34 @@ static void matvec_b_parts(tpool *tp, const mv_part *p, int np, const float *x,
     }
     tpool_run(tp, mv_multi_rows, &mm, mm.start[np]);
     free(xq);
+}
+
+// The same fusion for parts that each read their OWN input (the selected
+// experts' down projections: one gated vector per expert). xs[s] is part s's
+// input row; the activation quantization, when a part takes the int8 route,
+// is done per part. Falls back to one dispatch per part under RUNNER_MV_FUSE=0.
+static void matvec_b_parts_x(tpool *tp, const mv_part *p, const float *const *xs,
+                             int np, int n_in) {
+    if (np == 1 || !mv_fuse_enabled()) {
+        for (int s = 0; s < np; s++)
+            matvec_b(tp, p[s].y, p[s].y_stride, p[s].w, xs[s], n_in, n_in,
+                     p[s].n_out, p[s].bias, 1);
+        return;
+    }
+    mv_multi mm = { .n = np };
+    void *xq[MV_MAX_PARTS] = {0};
+    for (int s = 0; s < np; s++) {
+        mv_job j = { p[s].w, xs[s], p[s].bias, p[s].y, n_in, 1, n_in,
+                     p[s].y_stride, ggml_row_size(p[s].w->type, n_in), NULL, 0 };
+        if (mv_takes_i8(p[s].w, n_in, p[s].n_out, 1)) {
+            xq[s] = mv_quant_act(xs[s], n_in, n_in, 1);
+            if (xq[s]) { j.xq = xq[s]; j.xq_stride = i8_act_size(n_in); }
+        }
+        mm.job[s] = j;
+        mm.start[s + 1] = mm.start[s] + p[s].n_out;
+    }
+    tpool_run(tp, mv_multi_rows, &mm, mm.start[np]);
+    for (int s = 0; s < np; s++) free(xq[s]);
 }
 
 // qwen3-style per-head RMSNorm on Q or K (weight is one head_dim vector)
@@ -6058,46 +6089,87 @@ static void moe_ffn_token(model_t *m, const layer_t *ly, float *xin) {
     }
     if (probe) moe_probe_push(m, xin, 1, n_embd, n_embd);
     for (int i = 0; i < n_embd; i++) m->moe_out[i] = 0.0f;
+    // Every selected expert's projections go out as a few pool dispatches
+    // rather than three per expert: with ten experts a layer and 48 layers
+    // that was 1,440 fork/join barriers a token on matrices that take
+    // microseconds (Qwen3.8-Flash-Next on the Blackwell CPUs: the experts
+    // were 49% of the token at 5.9 tok/s). Each row still runs exactly the
+    // dot matvec_b gives it, the per-expert math and the ascending-expert
+    // accumulation are unchanged, so the output is byte-identical to the
+    // one-dispatch-per-matrix form (RUNNER_MV_FUSE=0 restores it).
+    gguf_tensor gv[256], uv[256], dv[256];
     for (int t = 0; t < used; t++) {
         int e = sel[t];
-        float w = selw[t];
-        gguf_tensor uv = moe_expert_weight(ly, 1, e, n_embd, nff);
-        gguf_tensor dv = moe_expert_weight(ly, 2, e, n_embd, nff);
-        matvec_b(m->tp, m->moe_up,   nff, &uv, xin, n_embd, n_embd, nff, NULL, 1);
+        uv[t] = moe_expert_weight(ly, 1, e, n_embd, nff);
+        dv[t] = moe_expert_weight(ly, 2, e, n_embd, nff);
+        if (!m->ffn_relu2) gv[t] = moe_expert_weight(ly, 0, e, n_embd, nff);
+    }
+    // phase 1: gate and up of every expert, one shared input
+    {
+        mv_part parts[MV_MAX_PARTS];
+        int np = 0;
+        for (int t = 0; t < used; t++) {
+            parts[np++] = (mv_part){ m->moe_up + (size_t)t * nff, nff, &uv[t], nff, NULL };
+            if (!m->ffn_relu2)
+                parts[np++] = (mv_part){ m->moe_gate + (size_t)t * nff, nff, &gv[t], nff, NULL };
+            if (np + 2 > MV_MAX_PARTS || t == used - 1) {
+                matvec_b_parts(m->tp, parts, np, xin, n_embd, n_embd, 1);
+                np = 0;
+            }
+        }
+    }
+    for (int t = 0; t < used; t++) {
+        int e = sel[t];
+        float *g = m->moe_gate + (size_t)t * nff, *u = m->moe_up + (size_t)t * nff;
         if (m->ffn_relu2) {
             // nemotron_h_moe: gate-less squared-ReLU experts, no gate branch —
             // relu(up)^2 into moe_gate (the down-projection input), same shape
             // the dense nemotron MLP uses.
             for (int j = 0; j < nff; j++) {
-                float r = m->moe_up[j] > 0.0f ? m->moe_up[j] : 0.0f;
-                m->moe_gate[j] = r * r;
+                float r = u[j] > 0.0f ? u[j] : 0.0f;
+                g[j] = r * r;
             }
         } else {
-        gguf_tensor gv = moe_expert_weight(ly, 0, e, n_embd, nff);
-        matvec_b(m->tp, m->moe_gate, nff, &gv, xin, n_embd, n_embd, nff, NULL, 1);
         // gpt-oss per-expert biases: added to this expert's own gate/up before
         // the activation, and to its down output BEFORE the routing weight
         // scales it (llama.cpp adds down_exps_b, then multiplies by weights).
         if (ly->ffn_gate_exps_b)
             for (int j = 0; j < nff; j++)
-                m->moe_gate[j] += ly->ffn_gate_exps_b[(size_t)e * nff + j];
+                g[j] += ly->ffn_gate_exps_b[(size_t)e * nff + j];
         if (ly->ffn_up_exps_b)
             for (int j = 0; j < nff; j++)
-                m->moe_up[j] += ly->ffn_up_exps_b[(size_t)e * nff + j];
+                u[j] += ly->ffn_up_exps_b[(size_t)e * nff + j];
         for (int j = 0; j < nff; j++)
-            m->moe_gate[j] = gated_act(m->ffn_act, m->moe_gate[j], m->moe_up[j]);
+            g[j] = gated_act(m->ffn_act, g[j], u[j]);
         }
-        matvec_b(m->tp, m->moe_dexp, n_embd, &dv, m->moe_gate,
-                 nff, nff, n_embd, NULL, 1);
+    }
+    // phase 2: every expert's down projection, each from its own gated vector
+    {
+        mv_part parts[MV_MAX_PARTS];
+        const float *xs[MV_MAX_PARTS];
+        int np = 0;
+        for (int t = 0; t < used; t++) {
+            parts[np] = (mv_part){ m->moe_dexp + (size_t)t * n_embd, n_embd, &dv[t], n_embd, NULL };
+            xs[np++] = m->moe_gate + (size_t)t * nff;
+            if (np == MV_MAX_PARTS || t == used - 1) {
+                matvec_b_parts_x(m->tp, parts, xs, np, nff);
+                np = 0;
+            }
+        }
+    }
+    for (int t = 0; t < used; t++) {
+        int e = sel[t];
+        float w = selw[t];
+        float *d = m->moe_dexp + (size_t)t * n_embd;
         if (ly->ffn_down_exps_b)
             for (int i = 0; i < n_embd; i++)
-                m->moe_dexp[i] += ly->ffn_down_exps_b[(size_t)e * n_embd + i];
+                d[i] += ly->ffn_down_exps_b[(size_t)e * n_embd + i];
         if (trace) {
             float ss = 0.0f;
-            for (int i = 0; i < n_embd; i++) ss += m->moe_dexp[i] * m->moe_dexp[i];
+            for (int i = 0; i < n_embd; i++) ss += d[i] * d[i];
             norms[t] = sqrtf(ss);
         }
-        for (int i = 0; i < n_embd; i++) m->moe_out[i] += w * m->moe_dexp[i];
+        for (int i = 0; i < n_embd; i++) m->moe_out[i] += w * d[i];
     }
     moe_trace_emit(m->fwd_pos, layer_idx, sel, selw, trace ? norms : NULL, used);
     for (int i = 0; i < n_embd; i++) xin[i] = m->moe_out[i];
