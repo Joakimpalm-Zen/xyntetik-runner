@@ -5741,9 +5741,16 @@ static void qwen35_linear(model_t *m, layer_t *ly, int layer, int n, int xdim) {
             }
             rmsnorm(out + h * hv, out + h * hv, ly->ssm_norm_w,
                     hv, m->rms_eps);
+            // Output gate: Qwen3.5 gates the normed output with silu(z);
+            // Qwen3.8 (qwen4exp) with sigmoid(z), the one numerical change
+            // in its Gated DeltaNet (Qwen4ExpGatedDeltaNet.norm; llama.cpp
+            // qwen4exp.cpp build_norm_gated says the same). Found by the
+            // two-engine bisect on the toy fixture: zeroing ssm_out was the
+            // only component that closed a 5e-2 logprob gap.
             for (int j = 0; j < hv; j++) {
                 float z = m->ssm_z[(size_t)b * inner + h * hv + j];
-                out[h * hv + j] *= z / (1.0f + expf(-z));
+                float sz = 1.0f / (1.0f + expf(-z));
+                out[h * hv + j] *= m->hyper_conn ? sz : z * sz;
             }
         }
     }

@@ -59,10 +59,29 @@ def rnd():
 def data(n): return struct.pack(f"<{n}f", *(rnd() for _ in range(n)))
 def ones(n): return struct.pack(f"<{n}f", *([1.] * n))
 def vals(xs): return struct.pack(f"<{len(xs)}f", *xs)
+# QWEN4EXP_TEST_ZERO=ple,hc,moe,attn,lin zeroes a component's output so a
+# two-engine comparison can name the component that disagrees: the PLE table
+# (its block adds nothing), the hc mixers (down/up/inject zero: the mix is
+# mean/2, the combine weight 1), the expert and shared-expert down
+# projections, the attention output projection, the DeltaNet out projection.
+ZERO = set(filter(None, os.environ.get("QWEN4EXP_TEST_ZERO", "").split(",")))
+ZERO_NAMES = {
+    "ple":  ("per_layer_token_embd.weight",),
+    "hc":   ("hc_attn_down", "hc_attn_up", "hc_attn_inject", "hc_ffn_down",
+             "hc_ffn_up", "hc_ffn_inject", "output_hc_down", "output_hc_up"),
+    "moe":  ("ffn_down_exps", "ffn_down_shexp"),
+    "attn": ("attn_output.weight",),
+    "lin":  ("ssm_out.weight",),
+}
 def add(ts, name, dims, payload=None):
     n = 1
     for d in dims: n *= d
-    ts.append((name, dims, payload if payload is not None else data(n)))
+    if payload is None:
+        payload = data(n)
+        for z in ZERO:
+            if any(k in name for k in ZERO_NAMES[z]):
+                payload = struct.pack(f"<{n}f", *([0.] * n))
+    ts.append((name, dims, payload))
 
 
 HCD = HC * E
@@ -125,8 +144,13 @@ kvs = [
     ku(f"{A}.context_length", 256), ku(f"{A}.embedding_length", E),
     ku(f"{A}.attention.head_count", HEADS), ku(f"{A}.attention.head_count_kv", KV),
     ku(f"{A}.attention.key_length", HD), ku(f"{A}.attention.value_length", HD),
-    ku(f"{A}.rope.dimension_count", HD), kau(f"{A}.rope.dimension_sections", [2, 2, 0, 0]),
-    kf(f"{A}.rope.freq_base", 10000.), kf(f"{A}.attention.layer_norm_rms_epsilon", 1e-6),
+    ku(f"{A}.rope.dimension_count", HD), # [t, h, w, extra] must give every rotary pair a live section: llama.cpp's
+    # interleaved M-RoPE sends pair p to section p % 3 and a pair whose section
+    # is empty falls to the 4th position, which is 0 for text (unrotated).
+    # [2, 2, 0, 0] left pair 2 unrotated there; the release file's
+    # [11, 11, 10, 0] has no such pair.
+    kau(f"{A}.rope.dimension_sections", [2, 1, 1, 0]),
+    kf(f"{A}.rope.freq_base", float(os.environ.get("QWEN4EXP_TEST_FREQ_BASE", "10000"))), kf(f"{A}.attention.layer_norm_rms_epsilon", 1e-6),
     ku(f"{A}.expert_count", N_EXP), ku(f"{A}.expert_used_count", N_USED),
     ku(f"{A}.expert_feed_forward_length", FF_EXP),
     ku(f"{A}.expert_shared_feed_forward_length", FF_SHEXP),
