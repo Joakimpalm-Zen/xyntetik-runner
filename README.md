@@ -39,10 +39,10 @@ exists to replace those guesses with answers you can check.
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="site/assets/readme-fit-dark.svg">
-    <img src="site/assets/readme-fit-light.svg" alt="runner --fit reading the first 16 MB of a model on an RTX 3070: FITS, 35 of 40 layers on the GPU" width="560">
+    <img src="site/assets/readme-fit-light.svg" alt="runner --fit reading the first 16 MB of Granite 4.2 8B on an RTX 3070: FITS, 35 of 40 layers on the GPU" width="560">
   </picture>
 </p>
-<p align="center"><sub>Real output from the <a href="docs/compat-reports/clean-setup-1.0.1-2026-10-03-rtx3070.md">1.0.1 clean-setup run</a> on an RTX 3070, shortened to fit.</sub></p>
+<p align="center"><sub>Real output: Runner 1.0.2 asked about Granite 4.2 8B on an RTX 3070, shortened to fit. <a href="docs/compat-reports/fit-capture-1.0.2-2026-10-06-rtx3070.md">Full capture</a></sub></p>
 
 It takes about a minute to try: [quick start](#quick-start).
 
@@ -155,7 +155,7 @@ curl -r 0-16777215 -L -o head.gguf \
 ```console
   gpu           NVIDIA GeForce RTX 3070, offload budget 6.95 GiB right now
   split         f16: 35 of 40 layers on the GPU, 1.22 GiB in RAM  | --kv q8: 39 of 40 layers on the GPU, 0.47 GiB in RAM  | ...
-  verdict       FITS — 35 of 40 layers on the GPU, 8.24 GiB of RAM to spare at ctx 16384
+  verdict       FITS — 35 of 40 layers on the GPU, 6.53 GiB of RAM to spare at ctx 16384
 ```
 
 `./runner --caps` says what this machine and build can run, and
@@ -228,7 +228,7 @@ wired memory under Runner and 60.8 GB under llama-server. On an 8 GB M1 it is
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="site/assets/readme-idle-dark.svg">
-    <img src="site/assets/readme-idle-light.svg" alt="Memory held while a 63 GB model sits loaded and idle: Runner 35 MB, llama-server 60.8 GB" width="440">
+    <img src="site/assets/readme-idle-light.svg" alt="Wired memory with a 63 GB model loaded and idle: Runner 35 MB on a 0 to 40 MB scale, llama-server 60.8 GB off the scale" width="440">
   </picture>
 </p>
 
