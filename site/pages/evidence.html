@@ -63,7 +63,7 @@ nav: evidence
   <div class="wrap">
     <div class="section-head">
       <p class="eyebrow">Throughput</p>
-      <h2>Against llama.cpp, same files, same box, losing rows included.</h2>
+      <h2>Speed against llama.cpp, same files, same box.</h2>
       <p>One machine, one method, both engines on the same GGUF files. Runner via <code>--bench-json -n 128 -b 64</code> (mean of 2), llama.cpp via <code>llama-bench -p 512 -n 128 -ngl 99 -r 2</code>, full GPU offload verified on every row. Absolute numbers depend on the hardware; the ratios are the result, and even those shift with the compute-to-bandwidth balance.</p>
     </div>
     <figure class="fig">
@@ -298,7 +298,7 @@ nav: evidence
 <section class="section tint" id="gold">
   <div class="wrap">
     <div class="section-head">
-      <p class="eyebrow">Why Runner is slower, and what that does and does not buy</p>
+      <p class="eyebrow">What the extra precision buys</p>
       <h2>Measured against each model's own implementation, not against another engine.</h2>
       <p>Runner does the model's arithmetic without the shortcuts faster engines take: activations stay in 32-bit float instead of being rounded to 8 bits before every multiply, and attention accumulates in 32-bit float instead of 16. That costs speed where prefill is compute-bound. To see what it buys, the yardstick is the model publisher's own reference implementation run in full precision, not a second engine that may have taken the same shortcuts.</p>
     </div>

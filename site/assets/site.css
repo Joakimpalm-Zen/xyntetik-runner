@@ -160,6 +160,15 @@ li { margin: 0.3rem 0; }
 .card p:last-child { margin-bottom: 0; }
 .card .more { margin-top: auto; padding-top: 0.6rem; font-weight: 500; }
 .card pre { margin: 0.2rem 0 0.4rem; font-size: 0.8rem; white-space: pre-wrap; word-break: break-all; }
+.card .big { font-family: var(--display); font-weight: 600; font-size: clamp(1.6rem, 2.6vw, 2.1rem); letter-spacing: -0.03em; line-height: 1.05; color: var(--teal-ink); margin-bottom: 0.2rem; }
+.card .step-n { display: inline-flex; align-items: center; justify-content: center; width: 2rem; height: 2rem; border-radius: 50%; background: var(--teal-soft); color: var(--teal-ink); font-family: var(--display); font-weight: 600; margin-bottom: 0.3rem; }
+.card > .eyebrow { margin-bottom: 0.1rem; }
+.shot { margin: 0; min-width: 0; }
+.shot img, .fig picture img { display: block; width: 100%; height: auto; }
+.shot figcaption { margin-top: 0.6rem; }
+.fig picture { display: block; max-width: 540px; margin: 0 auto; }
+.grid-2 > .fig { align-self: start; }
+.hf-logo { display: inline-block; vertical-align: -0.12em; margin-right: 0.25rem; }
 .card.accent { border-top: 3px solid var(--teal); }
 .card .icon { width: 36px; height: 36px; color: var(--teal); margin-bottom: 0.4rem; }
 .card .icon svg { width: 100%; height: 100%; }

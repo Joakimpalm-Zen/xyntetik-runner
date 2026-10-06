@@ -1,6 +1,6 @@
 <!--meta
 title: Runner
-description: What Xyntetik Runner 1.0 is, how to serve a model in sixty seconds, the contracts it makes, what 1.x keeps compatible, what it supports, and where it does not win.
+description: What Xyntetik Runner 1.0 does and how to use it: serve a model in sixty seconds, ask whether a model fits before you download it, make your own model file, fit more context in the same memory, and the promises 1.x keeps.
 path: /runner/
 nav: runner
 -->
@@ -8,17 +8,19 @@ nav: runner
   <div class="wrap">
     <div class="page-mark">{{mark:runner:64}}</div>
     <p class="eyebrow">Runner {{version}}</p>
-    <h1>One binary that serves, verifies, scores, adapts and trains GGUF models.</h1>
-    <p class="lede">Xyntetik Runner is written from scratch in plain C for CPU (x86 AVX2/FMA, ARM NEON), CUDA and Metal. The core engine needs no Python, pip, third-party runtime or ggml; optional tools such as Shadow use the Python client. It speaks the OpenAI Chat Completions, Completions, Responses and Embeddings APIs and Anthropic Messages on a loopback port, reads the GGUF files the ecosystem already produces, and writes adapters the ecosystem can already load.</p>
-    <p class="lede">It is not the fastest engine or the widest: prefill trails llama.cpp and the architecture list is named, both <a href="#compare">published below</a>. From 1.0 its interfaces are held to a <a href="#versioning">versioning policy</a>.</p>
+    <h1>One file that runs AI models on your machine, and shows its work.</h1>
+    <p class="lede">Runner is the program that loads an AI model file and answers with it, on your own computer. It is written from scratch in plain C, needs nothing installed underneath it, and runs on ordinary processors, NVIDIA graphics cards and Apple Silicon. Your apps and coding agents talk to it through the OpenAI and Anthropic APIs.</p>
+    <p class="lede">What sets it apart is that it answers the questions other engines leave to trial and error: will this model fit, what did shrinking it cost, and what exactly did it say. From 1.0 its interfaces are held to a <a href="#versioning">versioning policy</a>.</p>
     <nav class="toc" aria-label="On this page">
-      <a href="#sixty-seconds">Sixty seconds</a>
-      <a href="#contracts">The contracts</a>
+      <a href="#sixty-seconds">Try it</a>
+      <a href="#fit">Will it fit</a>
+      <a href="#make">Make your own file</a>
+      <a href="#memory">More context, less memory</a>
+      <a href="#coexistence">Gives memory back</a>
+      <a href="#more">Also in the box</a>
+      <a href="#contracts">What it promises</a>
       <a href="#versioning">What 1.x keeps</a>
-      <a href="#coexistence">Designed to stay on</a>
-      <a href="#more">What else it adds</a>
       <a href="#support">Support matrix</a>
-      <a href="#compare">Where it does not win</a>
       <a href="#agents">Coding agents</a>
       <a href="#how">How it is built</a>
     </nav>
@@ -31,7 +33,7 @@ nav: runner
       <p class="eyebrow">Try it</p>
       <h2>Sixty seconds to a served model</h2>
       <p>Download the binary and its checksum file, verify, fetch a model, serve. The checksum line is not decoration: this project's whole culture is receipts, and it starts at the download.</p>
-      <p class="small muted">The model below, granite-4.1-3b at Q8_0, is the smallest that passes the project's fidelity gate against its own BF16 parent. Alternatives and the reasoning are in the <a href="{{repo}}/blob/main/MANUAL.md#choose-a-model">README model choices</a>.</p>
+      <p class="small muted">The model below, granite-4.1-3b at Q8_0, is the smallest that passes the project's fidelity gate against its own BF16 parent. Alternatives and the reasoning are in the <a href="{{repo}}/blob/main/MANUAL.md#choose-a-model">manual's model choices</a>.</p>
     </div>
     <div>
 <pre><code>curl -LO https://github.com/Joakimpalm-Zen/xyntetik-runner/releases/latest/download/runner-macos-arm64
@@ -57,59 +59,67 @@ curl -L -o model.gguf https://huggingface.co/ibm-granite/granite-4.1-3b-GGUF/res
   </div>
 </section>
 
-<section class="section tint" id="contracts">
-  <div class="wrap">
-    <div class="section-head">
-      <p class="eyebrow">What Runner adds</p>
-      <h2>Not a longer feature list. A set of contracts.</h2>
-      <p>Runner deliberately rides llama.cpp's formats rather than competing with them: GGUF in, llama.cpp-convention adapter files in and out. An adapter Runner trains scores identically, 1.000 on its held-out eval, when served by stock llama.cpp, and community F16 adapters load straight back. Both measured, not assumed. What it adds on top are promises the ecosystem does not make.</p>
-    </div>
-    <div class="grid-3">
-      <div class="card">
-        <h3>Determinism as a hard promise</h3>
-        <p>The same executable and inputs reproduce the same sampled tokens across runs and thread counts. Training reproduces the same adapter file sha256. Both are gated in CI. Independent rebuilds are explicitly outside the byte-identity claim, because compilers and ISA libm differ, and the full boundary is one page: <a href="{{repo}}/blob/main/docs/determinism-scope.md">docs/determinism-scope.md</a>.</p>
-      </div>
-      <div class="card">
-        <h3>Scope as a promise</h3>
-        <p>Supported architectures are named. Unknown ones are refused by name rather than run on a guess. Every backend claim is tied to an executable gate and pinned model evidence, and a hardware switch has a correctness contract: CPU/GPU identity belongs to a SHA-256-pinned model and execution path, and faster kernels that reassociate sums pass tolerance gates rather than inherit correctness from the backend's name.</p>
-      </div>
-      <div class="card">
-        <h3>Honesty as an artifact</h3>
-        <p>The benchmark tables include the rows where Runner loses. Experiments that were built, measured and rejected are kept as negative-result documents so they are not attempted twice. A published artifact whose number did not reproduce stays published with the measured status at the top of its card.</p>
-      </div>
-      <div class="card">
-        <h3>Concurrency without crosstalk</h3>
-        <p>Parallel slots decode in one batched step, and on CUDA and Metal that step is gated to match decoding each request alone, byte for byte, including steps with more requests than one microbatch holds. The gate grew to eleven sequences after a 16-slot server in the lab showed what happens without it.</p>
-      </div>
-      <div class="card">
-        <h3>Records a reviewer can check</h3>
-        <p>A served turn is a receipt; receipts chain; <code>--export-pack</code> gathers them with the model signature and the measured envelope into one evidence pack that <code>--check-pack</code> verifies offline. <a href="/runner/reproducible-lora-training-receipts/">Receipts and the audit demo</a>.</p>
-      </div>
-      <div class="card">
-        <h3>Compatibility as a promise</h3>
-        <p>From 1.0 the command line, the exit codes, the HTTP API, the record formats and the model files that load stay compatible across 1.x. What is bound to the exact build, and what is not covered, is written down beside it. <a href="#versioning">What 1.x keeps</a>.</p>
-      </div>
+<section class="section tint" id="fit">
+  <div class="wrap split rev">
+    <figure class="shot">
+      <picture>
+        <source media="(prefers-color-scheme: dark)" srcset="/assets/readme-fit-dark.svg">
+        <img src="/assets/readme-fit-light.svg" alt="Runner asked whether Granite 4.2 8B fits an RTX 3070: FITS, 35 of 40 layers on the GPU" width="640" height="282" loading="lazy">
+      </picture>
+      <figcaption class="measured">Real output, Runner 1.0.2 on an RTX 3070, shortened to fit. <a href="{{repo}}/blob/main/docs/compat-reports/fit-capture-1.0.2-2026-10-06-rtx3070.md">Full capture</a></figcaption>
+    </figure>
+    <div class="sticky">
+      <p class="eyebrow">Will it fit</p>
+      <h2>Know whether a model fits before you download it.</h2>
+      <p>Finding out that a model does not fit usually means downloading 20 GB and watching it crash. The answer is already written in the first few megabytes of the file. Runner reads just that part and tells you, with the arithmetic.</p>
+<pre><code>curl -r 0-16777215 -L -o head.gguf \
+  https://huggingface.co/ORG/REPO/resolve/main/MODEL.gguf
+./runner --fit head.gguf -c 16384</code></pre>
+      <p>On an RTX 3070 it named the same split the loader then used in 70 of 72 cases and was one layer cautious in the other two (six models, two context sizes, four cache formats, 2026-10-03). <code>--caps</code> says what the machine can run and <code>--doctor</code> loads a model, probes it and reports. <a href="{{repo}}/blob/main/MANUAL.md#deciding-before-you-download">How the verdict is computed</a></p>
     </div>
   </div>
 </section>
 
-<section class="section" id="versioning">
+<section class="section" id="make">
   <div class="wrap split">
     <div class="sticky">
-      <p class="eyebrow">Runner 1.0</p>
-      <h2>What 1.x keeps, and what it does not.</h2>
-      <p>A 1.0 is a promise about interfaces, not about speed. Runner follows semantic versioning from 1.0.0: what this list keeps changes only at 2.0, and a flag that has to go is deprecated with a warning for the rest of 1.x first. The full policy is one page: <a href="{{repo}}/blob/main/docs/versioning.md">docs/versioning.md</a>.</p>
+      <p class="eyebrow">Make your own file</p>
+      <h2>Shrink a model and see what it cost.</h2>
+      <p>A model file is a huge table of numbers, and the usual way to shrink it squeezes every part the same amount, including the parts that matter most. Runner lets you choose which parts to squeeze and which to keep sharp, and then tells you how far the result drifted from the original.</p>
+      <p>A <a href="{{hf}}/Qwen3-30B-A3B-selective-attnQ8_0-expQ4_0-GGUF">17.99 GB Qwen3-30B file</a> built this way is smaller than the official 4-bit file and closer to the original: 99.50% agreement where that file reads 94.75%. <a href="{{repo}}/blob/main/MANUAL.md#models-and-conversion">Plan formats and limits</a></p>
     </div>
-    <div class="rows">
-      <div><span>Kept across 1.x</span><p>Every flag <code>runner --help</code> documents and its meaning; the exit codes, including the <code>--verify</code> verdicts; the HTTP endpoints and request fields, with response fields only added, never renamed; every record format by its <code>schema_version</code>, so a 1.0 receipt still verifies under a later 1.x build; every architecture and quantization format that loads today; the Python and TypeScript client APIs.</p></div>
-      <div><span>Bound to the build</span><p>Replay agreement, session images and measured envelopes belong to the exact binary that produced them. That was never a cross-version promise, and the envelope gate matches the version exactly so it cannot become one by accident.</p></div>
-      <div><span>Not covered</span><p>Generated tokens can change between releases when a kernel or sampler is fixed, and the CHANGELOG says so. Speed figures, the support matrix and certification verdicts follow the evidence. <code>RUNNER_*</code> switches and log text are not interfaces; the JSON outputs are.</p></div>
-      <div><span>Support</span><p>The latest 1.x release is supported; there are no backports. Security reports go through <a href="{{repo}}/blob/main/SECURITY.md">SECURITY.md</a>.</p></div>
+    <div>
+<pre><code>{"default": "keep", "rules": [{"match": "_exps.weight", "type": "q4_0"}]}</code></pre>
+<pre><code># keep some tensors sharp and squeeze others, from a plan file
+./runner -m model-Q8_0.gguf --quantize out.gguf --type-plan plan.json
+# drop the experts a mixture-of-experts model rarely uses
+./runner -m model.gguf --quantize pruned.gguf --prune-experts keep.json
+# remove one block's attention or feed-forward sublayer
+./runner -m model.gguf --quantize cut.gguf --remove-sublayer attn:48
+# then score the result against its parent
+python3 scripts/kld-compare-raw.py --model-a out.gguf \
+    --model-b model-Q8_0.gguf --runner ./runner \
+    --corpus corpus.txt --max-positions 400 --out fidelity.json</code></pre>
     </div>
   </div>
 </section>
 
-<section class="section tint" id="coexistence">
+<section class="section tint" id="memory">
+  <div class="wrap split">
+    <div class="sticky">
+      <p class="eyebrow">More context, less memory</p>
+      <h2>Fit more context in the same memory.</h2>
+      <p>While a model reads a long document it keeps notes on every word so far, and on a long context those notes can take more memory than you have left. Runner can write the notes smaller. It keeps 8 bits for the half that decides where to look, which measurement showed is the half that matters, and shrinks the other half to 4 bits.</p>
+    </div>
+    <div>
+<pre><code>./runner -m model.gguf --serve -c 32768 --kv k8v4
+./runner -m model.gguf --serve -c 32768 --kv q8     # the gentler setting, about half</code></pre>
+      <p><code>--kv k8v4</code> stores the cache in about 41% of the usual bytes. On Qwen3.5-4B, Muse-Glimmer-30B and Qwen3.8-27B it agreed with the full-size cache on 100% of clear-cut tokens over 500 positions each. <a href="{{repo}}/blob/main/MANUAL.md#long-contexts">What each setting costs, model by model</a></p>
+    </div>
+  </div>
+</section>
+
+<section class="section" id="coexistence">
   <div class="wrap split rev">
     <div>
       <div class="table-wrap">
@@ -120,7 +130,6 @@ curl -L -o model.gguf https://huggingface.co/ibm-granite/granite-4.1-3b-GGUF/res
             <tr><td>CPU wakeups per second</td><td class="num win">0.5</td><td class="num">161</td></tr>
             <tr><td>CPU time per idle minute</td><td class="num win">~0.00 s</td><td class="num">0.2 to 0.3 s</td></tr>
             <tr><td>give the memory back</td><td><code>POST /unload</code>, 360 MB to 24 MB</td><td>kill the process</td></tr>
-            <tr><td>cold time to first token, pressured machine</td><td class="num lose">3.2 s</td><td class="num">0.15 s</td></tr>
           </tbody>
         </table>
       </div>
@@ -130,7 +139,6 @@ curl -L -o model.gguf https://huggingface.co/ibm-granite/granite-4.1-3b-GGUF/res
           <tbody>
             <tr><td>wired memory while loaded and idle</td><td class="num win">+35 MB</td><td class="num">+60.8 GB</td></tr>
             <tr><td>after <code>/unload</code></td><td class="num">RSS 229 MB</td><td>no unload</td></tr>
-            <tr><td>cold first token</td><td class="num lose">10.1 s</td><td class="num">0.25 s</td></tr>
           </tbody>
         </table>
       </div>
@@ -140,17 +148,17 @@ curl -L -o model.gguf https://huggingface.co/ibm-granite/granite-4.1-3b-GGUF/res
       <p class="eyebrow">Designed to stay on</p>
       <h2>What a resident server does while it serves nothing</h2>
       <p>Benchmarks rarely show it, so it was measured. llama-server wires the whole model into unified memory, holds it until the process dies, and its idle loop ticks at about 160 Hz. Runner keeps weights as evictable zero-copy mappings the OS can reclaim when another app needs the RAM, wakes about once every two seconds, and hands everything back on <code>/unload</code> or automatically with <code>--ttl</code>.</p>
-      <p>The flip side is real and reported: when llama-server is allowed to hold everything, its cold time to first token is faster, because residency is exactly what it buys. These are different optimization goals, not a defect. A dedicated inference box should run llama.cpp. A machine that is also your workstation is what Runner is built for.</p>
+      <p>What that costs is the first answer after the memory has been taken back, which waits for the model to be read in again: about 3 s for the 3.6 GB model on the 8 GB M1, about 10 s for the 63 GB model. Runner is built to be left running all day next to your actual work.</p>
       <p>On a discrete GPU (RTX 3070) the footprint gap disappears, both engines hold about 4 GB of VRAM loaded, and the remaining differences are idle discipline and lifecycle control: <code>/unload</code> returned all 4 GB of VRAM; llama-server has no unload.</p>
     </div>
   </div>
 </section>
 
-<section class="section" id="more">
+<section class="section tint" id="more">
   <div class="wrap">
     <div class="section-head">
-      <p class="eyebrow">What else it adds</p>
-      <h2>Ordered by how much difference each makes in practice.</h2>
+      <p class="eyebrow">Also in the box</p>
+      <h2>Everything else the one file does.</h2>
     </div>
     <div class="grid-2">
       <div class="card">
@@ -191,7 +199,7 @@ curl -L -o model.gguf https://huggingface.co/ibm-granite/granite-4.1-3b-GGUF/res
       </div>
       <div class="card">
         <h3>Speculative decoding from four draft sources</h3>
-        <p>A draft model, an n-gram lookup, the model's own MTP head where a single-block export carries one (<code>--mtp</code>, token-identical, measured 1.31x on code on a Threadripper and a loss on a 4-core AVX2 box, both published), and context-grounded drafts that need no weights at all.</p>
+        <p>A draft model, an n-gram lookup, the model's own MTP head where a single-block export carries one (<code>--mtp</code>, token-identical, measured 1.31x on code on a Threadripper; the gain depends on the machine, and both measurements are published), and context-grounded drafts that need no weights at all.</p>
       </div>
       <div class="card">
         <h3>Structured output as a sampler guarantee</h3>
@@ -201,12 +209,64 @@ curl -L -o model.gguf https://huggingface.co/ibm-granite/granite-4.1-3b-GGUF/res
   </div>
 </section>
 
-<section class="section tint" id="support">
+<section class="section" id="contracts">
+  <div class="wrap">
+    <div class="section-head">
+      <p class="eyebrow">What it promises</p>
+      <h2>Six promises, each one tested.</h2>
+      <p>Runner deliberately rides llama.cpp's formats rather than competing with them: GGUF in, llama.cpp-convention adapter files in and out. An adapter Runner trains scores identically, 1.000 on its held-out eval, when served by stock llama.cpp, and community F16 adapters load straight back. Both measured, not assumed. What it adds on top are promises the ecosystem does not make.</p>
+    </div>
+    <div class="grid-3">
+      <div class="card">
+        <h3>Determinism as a hard promise</h3>
+        <p>The same executable and inputs reproduce the same sampled tokens across runs and thread counts. Training reproduces the same adapter file sha256. Both are gated in CI. Independent rebuilds are explicitly outside the byte-identity claim, because compilers and ISA libm differ, and the full boundary is one page: <a href="{{repo}}/blob/main/docs/determinism-scope.md">docs/determinism-scope.md</a>.</p>
+      </div>
+      <div class="card">
+        <h3>Scope as a promise</h3>
+        <p>Supported architectures are named. Unknown ones are refused by name rather than run on a guess. Every backend claim is tied to an executable gate and pinned model evidence, and a hardware switch has a correctness contract: CPU/GPU identity belongs to a SHA-256-pinned model and execution path, and faster kernels that reassociate sums pass tolerance gates rather than inherit correctness from the backend's name.</p>
+      </div>
+      <div class="card">
+        <h3>Evidence as an artifact</h3>
+        <p>Every table names its method and its date. Experiments that were built, measured and rejected are kept as documents so they are not attempted twice. A published file whose number did not reproduce stays published with the measured status at the top of its card.</p>
+      </div>
+      <div class="card">
+        <h3>Concurrency without crosstalk</h3>
+        <p>Parallel slots decode in one batched step, and on CUDA and Metal that step is gated to match decoding each request alone, byte for byte, including steps with more requests than one microbatch holds. The gate grew to eleven sequences after a 16-slot server in the lab showed what happens without it.</p>
+      </div>
+      <div class="card">
+        <h3>Records a reviewer can check</h3>
+        <p>A served turn is a receipt; receipts chain; <code>--export-pack</code> gathers them with the model signature and the measured envelope into one evidence pack that <code>--check-pack</code> verifies offline. <a href="/runner/reproducible-lora-training-receipts/">Receipts and the audit demo</a>.</p>
+      </div>
+      <div class="card">
+        <h3>Compatibility as a promise</h3>
+        <p>From 1.0 the command line, the exit codes, the HTTP API, the record formats and the model files that load stay compatible across 1.x. What is bound to the exact build, and what is not covered, is written down beside it. <a href="#versioning">What 1.x keeps</a>.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="section tint" id="versioning">
+  <div class="wrap split">
+    <div class="sticky">
+      <p class="eyebrow">Runner 1.0</p>
+      <h2>What 1.x keeps, and what it does not.</h2>
+      <p>A 1.0 is a promise about interfaces, not about speed. Runner follows semantic versioning from 1.0.0: what this list keeps changes only at 2.0, and a flag that has to go is deprecated with a warning for the rest of 1.x first. The full policy is one page: <a href="{{repo}}/blob/main/docs/versioning.md">docs/versioning.md</a>.</p>
+    </div>
+    <div class="rows">
+      <div><span>Kept across 1.x</span><p>Every flag <code>runner --help</code> documents and its meaning; the exit codes, including the <code>--verify</code> verdicts; the HTTP endpoints and request fields, with response fields only added, never renamed; every record format by its <code>schema_version</code>, so a 1.0 receipt still verifies under a later 1.x build; every architecture and quantization format that loads today; the Python and TypeScript client APIs.</p></div>
+      <div><span>Bound to the build</span><p>Replay agreement, session images and measured envelopes belong to the exact binary that produced them. That was never a cross-version promise, and the envelope gate matches the version exactly so it cannot become one by accident.</p></div>
+      <div><span>Not covered</span><p>Generated tokens can change between releases when a kernel or sampler is fixed, and the CHANGELOG says so. Speed figures, the support matrix and certification verdicts follow the evidence. <code>RUNNER_*</code> switches and log text are not interfaces; the JSON outputs are.</p></div>
+      <div><span>Support</span><p>The latest 1.x release is supported; there are no backports. Security reports go through <a href="{{repo}}/blob/main/SECURITY.md">SECURITY.md</a>.</p></div>
+    </div>
+  </div>
+</section>
+
+<section class="section" id="support">
   <div class="wrap">
     <div class="section-head">
       <p class="eyebrow">Support matrix</p>
       <h2>Named, gated, and refused by name outside the list.</h2>
-      <p><code>runner --caps</code> publishes the architecture IDs the current binary admits. The full per-family notes, with the measured evidence behind each row, are in the <a href="{{repo}}/blob/main/MANUAL.md#support-matrix">README support matrix</a>. Summary as of {{version}}:</p>
+      <p><code>runner --caps</code> publishes the architecture IDs the current binary admits. The full per-family notes, with the measured evidence behind each row, are in the <a href="{{repo}}/blob/main/MANUAL.md#support-matrix">manual's support matrix</a>. Summary as of {{version}}:</p>
     </div>
     <div class="rows">
       <div><span>Backends</span><p>CPU (x86 AVX2/FMA, ARM NEON), CUDA (driver API, embedded PTX), Metal (embedded shaders, unified memory). Linux x86_64, macOS arm64, Windows x86_64 release binaries.</p></div>
@@ -218,24 +278,6 @@ curl -L -o model.gguf https://huggingface.co/ibm-granite/granite-4.1-3b-GGUF/res
       <div><span>Desktop</span><p>macOS menu bar and Windows notification-area controller. Release binaries for Linux, macOS and Windows with a SHA256SUMS file, and a container image on GHCR.</p></div>
       <div><span>Not implemented</span><p>Vulkan; TLS, auth and remote bind (loopback only, by design); remote or streamed GGUF parts; <code>qwen2moe</code>, <code>deepseek2</code>, <code>kimi</code> and MLA attention; Mamba and Jamba; MTP on GPU backends; OMS certificate and keyless signature methods; full GBNF; image and document inputs; hosted tools; response persistence; parallel tool calls on the Responses and Messages surfaces.</p></div>
     </div>
-  </div>
-</section>
-
-<section class="section" id="compare">
-  <div class="wrap split">
-    <div class="sticky">
-      <p class="eyebrow">Where it does not win</p>
-      <h2>Published as such.</h2>
-      <p>The comparison on the <a href="/#compare">front page</a> has the full table. The short version of what to expect from Runner today, in its own words.</p>
-    </div>
-    <ul class="ledger">
-      <li><div><div class="t">Prefill throughput on CUDA is 9 to 10% of llama.cpp</div><div class="d">llama.cpp's prefill comes from a mature tensor-core GEMM stack across every quant type. Runner's tile is 64 columns wide, and prefill is the column that decides the next piece of work.</div></div><span class="pill fail">weak column</span></li>
-      <li><div><div class="t">Some decode rows on GPU are known-slow</div><div class="d">Dense decode reads 69 to 81% of llama.cpp on an RTX 3070 at 1.0.0. Qwen3-30B-A3B decodes at 72%; gemma-4-26B-A4B's dual-branch MoE at 41%; the Q3_K kernel is naive and token-identical at 13%; granite-4.2-3b at IQ3_S at 12%. All of them stay in the table.</div></div><span class="pill fail">tracked</span></li>
-      <li><div><div class="t">Cold first token is slower when the other engine may hold everything</div><div class="d">3.2 s vs 0.15 s on a pressured 8 GB M1; 10.1 s vs 0.25 s at 120B on a 128 GB M5 Max. Residency is what llama-server buys, and Runner chose not to.</div></div><span class="pill fail">by design</span></li>
-      <li><div><div class="t">Architecture coverage is a named list</div><div class="d">If your model is not on it, Runner refuses it by name. llama.cpp is the ecosystem and covers far more.</div></div><span class="pill note">scope</span></li>
-      <li><div><div class="t">No Vulkan, no TLS, no remote bind</div><div class="d">Loopback only. A reverse proxy in front is the intended route to anything else.</div></div><span class="pill note">not implemented</span></li>
-      <li><div><div class="t">The 8B and 14B training ladder is open work</div><div class="d">The LoRA claim is measured on one base and one task. It is not a promise about other families until they are measured.</div></div><span class="pill note">open</span></li>
-    </ul>
   </div>
 </section>
 
@@ -287,7 +329,7 @@ src/ed25519.c         signing subset of TweetNaCl (receipts)</code></pre>
       <p class="eyebrow">How it is built</p>
       <h2>Readable in an afternoon.</h2>
       <p>Host weights stay quantized in the mapped GGUF and are dequantized while computing. CUDA copies selected weights and compute buffers to VRAM; Metal wraps the mapped weights in unified memory. The load log and <code>--caps</code> are the sizing sources for an exact model and machine.</p>
-      <p>The complete map, the command-line reference and the compatibility evidence are in the <a href="{{repo}}/blob/main/README.md">README</a>; release history with each version's measurements is in the <a href="{{repo}}/blob/main/CHANGELOG.md">changelog</a>.</p>
+      <p>The complete map, the command-line reference and the compatibility evidence are in the <a href="{{repo}}/blob/main/MANUAL.md">manual</a>; release history with each version's measurements is in the <a href="{{repo}}/blob/main/CHANGELOG.md">changelog</a>.</p>
     </div>
   </div>
 </section>

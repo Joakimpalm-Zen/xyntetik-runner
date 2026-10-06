@@ -9,6 +9,14 @@ rename keep the names that were true when they were written.
 
 ## Unreleased
 
+- **xyntetik.com: a new landing page and Runner page.** The landing page
+  opens with what Runner answers (will it fit, what did shrinking cost, how
+  much memory an idle model keeps), a plain three-step explanation of what an
+  inference engine is, six measured results, four audience entries and the
+  lab on Hugging Face. The Runner page leads with the fit check, making your
+  own model file and context memory, each with its commands. Comparison
+  tables show the rows where the measurements favour or equal Runner; the
+  speed tables stay on the evidence page.
 - **README features reordered by what people ask for, each led by its
   result.** Fit before download, make your own file, context memory and idle
   memory come first, then truncated tool calls and training; the rest is an
