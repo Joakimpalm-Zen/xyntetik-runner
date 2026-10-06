@@ -1,0 +1,54 @@
+gpu: no OS video memory budget published for this device; offload budget 25.13 GB from the driver's free view, headroom 1.57 GB
+gpu: 20.81 GB of the budget is unused — `--cpu-moe auto` would keep 21 of 48 expert layers on the GPU.
+gpu-split: budget=25.13GB fixed=1.93GB G=48/48 full=1 used=4.32GB
+gpu-split: experts 0/48 layers on GPU, 48 on host
+gpu: CUDA backend on NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb (48/48 attention layers, 3.8 GB in VRAM; 48/48 expert layers on CPU)
+gpu: 91 weight matrices are codebook i-quants (IQ4_XS, ...) and the tensor-core prefill is not promoted for 'qwen4exp': prompts are prefilled by the scalar kernel, which can be slower than the CPU. RUNNER_CUDA_TC=1 uses the tensor cores (not yet gated for this architecture); --gpu off prefills on the host.
+gpu: VRAM 19.98 GB free of 25.37 GB after init (kv 0.40 GB + scratch 0.36 GB this instance)
+loaded ~/workspace/models/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf | qwen4exp | 48 layers | ctx 4096 | 16 threads | 0.89s
+sampling: qwen38 (temp 0.00 — greedy argmax; top_p/top_k/min_p/repeat_penalty inactive)
+sampling: from the file (general.sampling.*): temp 1.00, top_p 0.95, top_k 20
+The capital of France is Paris. The capital of Germany is Berlin. The capital of Italy is Rome. The capital of Spain is Madrid. The capital of Portugal is Lisbon. The capital
+prompt: 5 tok, 8.23 tok/s | gen: 32 tok, 12.46 tok/s
+
+==== RUNNER_CUDA_PROFILE [PREFILL tile tn>1 (_b kernels)] ====
+note: CUDA graphs are DISABLED while profiling — a replayed graph never
+      re-enters the instrumented launch path, so decode would report
+      0.0 ms for every phase. Decode wall time is therefore pessimistic
+      (it carries the launch overhead graphs remove); the phase SPLIT is
+      what these numbers are for.
+tiles=1 tokens=5 launches=1363 (1363.0/tile, 272.6/token)
+wall: 596.7 ms | 596.7410 ms/tile | 119.3482 ms/token
+-- GPU phase (CUDA events, authoritative) --
+  norms(rms+qk)       25.7 ms    4.4%  25.6564 ms/tile  5.1313 ms/tok
+  matvec             553.7 ms   95.3%  553.7242 ms/tile  110.7448 ms/tok
+  rope                 0.0 ms    0.0%  0.0492 ms/tile  0.0098 ms/tok
+  attention            0.1 ms    0.0%  0.1475 ms/tile  0.0295 ms/tok
+  elementwise          0.3 ms    0.0%  0.2653 ms/tile  0.0531 ms/tok
+  logits-mv            1.4 ms    0.2%  1.3722 ms/tile  0.2744 ms/tok
+  GPU-TOTAL          581.2 ms  (97.4% of wall)  581.2148 ms/tile
+-- host-side raw QPC (overlaps GPU via sync memcpy) --
+  stage_x=0.5  kv_copyback=14.7  logitsDtoH=0.3  sync-wait=1.4 ms
+  residual(wall-GPUbusy)=15.5 ms (2.6% of wall) = launch+host overhead
+
+==== RUNNER_CUDA_PROFILE [DECODE  tn==1 (k_mv_* kernels)] ====
+note: CUDA graphs are DISABLED while profiling — a replayed graph never
+      re-enters the instrumented launch path, so decode would report
+      0.0 ms for every phase. Decode wall time is therefore pessimistic
+      (it carries the launch overhead graphs remove); the phase SPLIT is
+      what these numbers are for.
+tiles=32 tokens=32 launches=43232 (1351.0/tile, 1351.0/token)
+wall: 2566.2 ms | 80.1936 ms/tile | 80.1936 ms/token
+-- GPU phase (CUDA events, authoritative) --
+  norms(rms+qk)      146.1 ms    5.8%  4.5641 ms/tile  4.5641 ms/tok
+  matvec            2303.5 ms   91.8%  71.9831 ms/tile  71.9831 ms/tok
+  rope                 1.6 ms    0.1%  0.0489 ms/tile  0.0489 ms/tok
+  attention            7.1 ms    0.3%  0.2204 ms/tile  0.2204 ms/tok
+  elementwise          8.1 ms    0.3%  0.2539 ms/tile  0.2539 ms/tok
+  logits-mv           43.8 ms    1.7%  1.3698 ms/tile  1.3698 ms/tok
+  GPU-TOTAL         2510.1 ms  (97.8% of wall)  78.4403 ms/tile
+-- host-side raw QPC (overlaps GPU via sync memcpy) --
+  stage_x=25.6  kv_copyback=26.8  logitsDtoH=2.4  sync-wait=45.4 ms
+  residual(wall-GPUbusy)=56.1 ms (2.2% of wall) = launch+host overhead
+=============================
+

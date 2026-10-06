@@ -1,0 +1,7 @@
+17:37:55 kernel-verify TC off vs on (5 prompts)
+exit 0
+ok   'JSON example: {"name":'
+PASS: token-identical on 5 prompts (Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf)
+17:38:48 p512 greedy-32 TC off vs on
+p512 greedy-32: TC on == TC off (bytes)
+17:39:24 done

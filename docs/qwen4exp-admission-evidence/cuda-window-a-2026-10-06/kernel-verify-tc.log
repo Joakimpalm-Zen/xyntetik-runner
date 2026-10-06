@@ -1,0 +1,6 @@
+ok   'The capital of France is'
+ok   'def fibonacci(n):'
+ok   '1 2 3 4 5 6 7 8'
+ok   'Once upon a time, in a land far away,'
+ok   'JSON example: {"name":'
+PASS: token-identical on 5 prompts (Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf)
