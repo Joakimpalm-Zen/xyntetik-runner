@@ -1034,6 +1034,10 @@ void model_recurrent_mark_drop(model_t *m);
 // FFN (including its residual) to m->x on the host. CUDA uses this after its
 // attention sublayer and then resumes on-device. False rejects a non-MoE layer.
 bool   model_moe_ffn_cpu(model_t *m, int layer, int n);
+// qwen4exp: experts on the premixed input in m->xb, output left in m->xb
+bool   model_moe_ffn_cpu_premixed(model_t *m, int layer, int n);
+// qwen4exp: the PLE block over m->x_hc rows (device boundary)
+bool   model_ple4_block_host(model_t *m, int layer, const int32_t *tokens, int n, int pos);
 // byte cost of one layer's expert half (router + experts + gemma shared branch)
 uint64_t model_layer_expert_bytes(const layer_t *ly, int n_expert);
 // bytes a single token actually touches: the whole file for a dense model

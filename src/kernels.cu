@@ -5347,7 +5347,7 @@ extern "C" __global__ void k_q35_delta(float *cv, const float *z,
                                         const float *dt, const float *a,
                                         const float *norm, float *state,
                                         float *out, int state_dim, int groups,
-                                        int heads, float eps) {
+                                        int heads, float eps, int gate_sigmoid) {
     __shared__ float red[256];
     int tid = threadIdx.x, h = blockIdx.x;
     if (h >= heads) return;
@@ -5410,7 +5410,75 @@ extern "C" __global__ void k_q35_delta(float *cv, const float *z,
     for (int j = tid; j < state_dim; j += blockDim.x) {
         int o = h * state_dim + j;
         float zv = z[o];
-        yo[j] = yo[j] * rms * norm[j] * (zv / (1.0f + expf(-zv)));
+        // Qwen3.5 gates the normed output with silu(z); Qwen3.8 (qwen4exp)
+        // with sigmoid(z), mirroring the CPU path's one numerical difference
+        float sg = 1.0f / (1.0f + expf(-zv));
+        yo[j] = yo[j] * rms * norm[j] * (gate_sigmoid ? sg : zv * sg);
+    }
+}
+
+// ---- qwen4exp hyper-connections (CPU twins: hc_mix / hc_combine in model.c)
+// Grouped RMSNorm: row r of x is `groups` streams of n values, each normed
+// over its own n and scaled by that stream's gamma slice (w has groups*n).
+// One block per (stream, row).
+extern "C" __global__ void k_rmsnorm_grouped(const float *x, float *y, const float *w,
+                                             int n, int groups, float eps, int xs, int ys) {
+    __shared__ float red[256];
+    int tid = threadIdx.x, tpg = blockDim.x, c = blockIdx.x;
+    x += (ulong64)blockIdx.y * xs + (ulong64)c * n;
+    y += (ulong64)blockIdx.y * ys + (ulong64)c * n;
+    w += (ulong64)c * n;
+    float s = 0;
+    for (int i = tid; i < n; i += tpg) s += x[i] * x[i];
+    red[tid] = s;
+    __syncthreads();
+    for (int off = tpg / 2; off > 0; off >>= 1) {
+        if (tid < off) red[tid] += red[tid + off];
+        __syncthreads();
+    }
+    float r = rsqrtf(red[0] / n + eps);
+    for (int i = tid; i < n; i += tpg) y[i] = x[i] * r * w[i];
+}
+
+// x[row][i] = silu(x[row][i] * s), the mixer's low-rank activation (CPU silu_f
+// with its -80 cutoff: exp(80+) is inf there and g/(1+inf) is 0 here as well).
+extern "C" __global__ void k_silu_scale(float *x, float s, int n, int xs) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    float *xr = x + (ulong64)blockIdx.y * xs;
+    float g = xr[i] * s;
+    xr[i] = g < -80.0f ? 0.0f : g / (1.0f + expf(-g));
+}
+
+// mixed[row][i] = mean over streams c of xn[row][c*n+i] * sigmoid(gate[row][c*n+i]).
+// sigmoid as 1/(1+exp(-g)): exp overflow gives 1/inf = 0 and underflow gives
+// exactly 1 in IEEE float, the values the CPU's guarded sigmoid_f returns.
+extern "C" __global__ void k_hc_gate_mean(const float *xn, const float *gate, float *mixed,
+                                          int n, int groups, int xs, int ms) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    const float *xr = xn + (ulong64)blockIdx.y * xs;
+    const float *gr = gate + (ulong64)blockIdx.y * xs;
+    float acc = 0.0f;
+    for (int c = 0; c < groups; c++) {
+        float gv = gr[(ulong64)c * n + i];
+        acc += xr[(ulong64)c * n + i] * (1.0f / (1.0f + expf(-gv)));
+    }
+    mixed[(ulong64)blockIdx.y * ms + i] = acc * (1.0f / (float)groups);
+}
+
+// x[row][c*n+i] += 2*sigmoid(inject[row][c]/groups) * out[row][i], every stream.
+extern "C" __global__ void k_hc_combine(float *x, const float *out, const float *inject,
+                                        int n, int groups, int xs, int os) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    float *xr = x + (ulong64)blockIdx.y * xs;
+    float ov = out[(ulong64)blockIdx.y * os + i];
+    const float *inj = inject + (ulong64)blockIdx.y * groups;
+    float inv = 1.0f / (float)groups;
+    for (int c = 0; c < groups; c++) {
+        float w = 2.0f / (1.0f + expf(-inj[c] * inv));
+        xr[(ulong64)c * n + i] += w * ov;
     }
 }
 

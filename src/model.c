@@ -6512,6 +6512,37 @@ bool model_moe_ffn_cpu(model_t *m, int layer, int n) {
     return true;
 }
 
+static void ple4_block(model_t *m, const layer_t *ly, const int32_t *tokens, int n, int pos);
+
+// qwen4exp device boundary: the device has already run the hyper-connection
+// mixer, so the FFN input (n rows, stride xdim) sits in m->xb; run the routed
+// and shared experts on the host and leave the FFN OUTPUT in m->xb for the
+// device's hc_combine. No norm, no residual add here.
+bool model_moe_ffn_cpu_premixed(model_t *m, int layer, int n) {
+    if (!m || layer < 0 || layer >= m->n_layer || n < 1 || n > m->n_batch)
+        return false;
+    layer_t *ly = &m->layers[layer];
+    if (!ly->is_moe || ly->moe_gemma) return false;
+    int ne = m->n_embd, xs = m->xdim;
+    if (ly->w_gate_shexp)
+        for (int b = 0; b < n; b++)
+            memcpy(m->shexp_in + (size_t)b * ne,
+                   m->xb + (size_t)b * xs, sizeof(float) * (size_t)ne);
+    moe_ffn(m, ly, n, xs);
+    shexp_add(m, ly, m->shexp_in, n, xs);
+    return true;
+}
+
+// qwen4exp device boundary: the PLE block on the host, over the wide
+// residual rows the device copied into m->x_hc (n rows of hc * n_embd).
+bool model_ple4_block_host(model_t *m, int layer, const int32_t *tokens, int n, int pos) {
+    if (!m || !m->hyper_conn || layer < 0 || layer >= m->n_layer || !tokens) return false;
+    layer_t *ly = &m->layers[layer];
+    if (!ly->ple4) return true;
+    ple4_block(m, ly, tokens, n, pos);
+    return true;
+}
+
 // ---- recurrent-state cache seam (SSM tracer 4) -------------------------
 //
 // The persistent recurrent state is two buffers, both indexed [layer][...] and

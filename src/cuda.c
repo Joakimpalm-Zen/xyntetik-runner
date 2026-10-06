@@ -334,6 +334,9 @@ typedef struct gpu_weights {
     CUdeviceptr inv_freq, inv_freq_local, out_norm, dummy;
     CUdeviceptr ones;                   // weightless V RMS norm (gemma4)
     CUdeviceptr *attn_norm, *ffn_norm;  // per layer
+    CUdeviceptr *hc_an, *hc_fn;         // qwen4exp per-stream mixer gammas [hc*n_embd]
+    CUdeviceptr hc_head_norm;           // qwen4exp head mixer gamma
+    CUfunction  f_rmsnorm_grouped, f_hc_gate_mean, f_hc_combine, f_silu_scale;
     CUdeviceptr *pan, *pfn;             // gemma3 sandwich norms, may be 0
     CUdeviceptr *bq, *bk, *bv, *bo;     // per layer, may be 0
     CUdeviceptr *qn, *kn;               // qwen3 per-head q/k norms
@@ -366,6 +369,7 @@ typedef struct {
     gpu_weights *sw;                    // shared weights, refcounted
     CUdeviceptr kc, vc;
     CUdeviceptr x, xb, xb2, q, kt, vt, hb, hb2, att, attn_part, logits;
+    CUdeviceptr x_hc, hc_xn, hc_lo, hc_gate, hc_inject;  // qwen4exp wide residual + mixer scratch
     CUdeviceptr xsc;                    // [TC_N] per-column |x| max for the scaled TC GEMMs
     // sparse-MoE: router logits [MVB][n_expert], per-slot expert down-out
     // [rows][n_embd] (rows = max(used, MVB); the eager path uses column 0)
@@ -1461,6 +1465,9 @@ static gpu_weights *shared_build(model_t *m, size_t act_bytes, int max_hd,
         CK(cu.ModuleLoadData(&w->mod, k_ptx_src));
         struct { CUfunction *f; const char *name; } fns[] = {
             { &w->f_rmsnorm,    "k_rmsnorm" },   { &w->f_qknorm, "k_qknorm" },
+            { &w->f_rmsnorm_grouped, "k_rmsnorm_grouped" },
+            { &w->f_hc_gate_mean, "k_hc_gate_mean" }, { &w->f_hc_combine, "k_hc_combine" },
+            { &w->f_silu_scale, "k_silu_scale" },
             { &w->f_rope,       "k_rope" },      { &w->f_store,  "k_store_kv" },
             { &w->f_attn,       "k_attn" },      { &w->f_silu,   "k_silu_mul" },
             { &w->f_attn_dec,   "k_attn_dec" },  { &w->f_attn_merge, "k_attn_merge" },
@@ -1619,7 +1626,13 @@ static gpu_weights *shared_build(model_t *m, size_t act_bytes, int max_hd,
                     !binding_add(w, m, ly->ssm_conv) ||
                     !binding_add(w, m, ly->ssm_beta) ||
                     !binding_add(w, m, ly->ssm_alpha) ||
-                    !binding_add(w, m, ly->ssm_out)) goto fail;
+                    !binding_add(w, m, ly->ssm_out) ||
+                    !binding_add(w, m, ly->hc_attn_down) ||
+                    !binding_add(w, m, ly->hc_attn_up) ||
+                    !binding_add(w, m, ly->hc_attn_inject) ||
+                    !binding_add(w, m, ly->hc_ffn_down) ||
+                    !binding_add(w, m, ly->hc_ffn_up) ||
+                    !binding_add(w, m, ly->hc_ffn_inject)) goto fail;
                 if (!ly->is_moe &&
                     (!binding_add(w, m, ly->w_gate) ||
                      !binding_add(w, m, ly->w_up) ||
@@ -1645,6 +1658,9 @@ static gpu_weights *shared_build(model_t *m, size_t act_bytes, int max_hd,
                 }
             }
             if (full && !binding_add(w, m, m->output)) goto fail;
+            if (full && m->hyper_conn &&
+                (!binding_add(w, m, m->hc_head_down) ||
+                 !binding_add(w, m, m->hc_head_up))) goto fail;
         }
         CK(cu.MemAlloc(&w->dummy, 4));
 
@@ -1655,7 +1671,11 @@ static gpu_weights *shared_build(model_t *m, size_t act_bytes, int max_hd,
                                      "local rope table", -1);
         w->out_norm = f32_dbuf(m->out_norm_w, m->n_embd,
                                "output norm", -1);
-        if (!w->inv_freq || !w->out_norm ||
+        if (m->hyper_conn)
+            w->hc_head_norm = f32_dbuf(m->hc_head_norm,
+                                       (size_t)m->hc_count * m->n_embd,
+                                       "hc head mixer norm", -1);
+        if (!w->inv_freq || (m->hyper_conn ? !w->hc_head_norm : !w->out_norm) ||
             (m->rope_inv_freq_local && !w->inv_freq_local)) goto fail;
         if (m->v_rmsnorm) { // weightless per-head V norm: weight of ones
             float *ones = malloc(sizeof(float) * max_hd);
@@ -1670,6 +1690,8 @@ static gpu_weights *shared_build(model_t *m, size_t act_bytes, int max_hd,
             if (!w->ones) goto fail;
         }
         w->attn_norm = calloc(m->n_layer, sizeof(CUdeviceptr));
+        w->hc_an = calloc(m->n_layer, sizeof(CUdeviceptr));
+        w->hc_fn = calloc(m->n_layer, sizeof(CUdeviceptr));
         w->ffn_norm  = calloc(m->n_layer, sizeof(CUdeviceptr));
         w->bq = calloc(m->n_layer, sizeof(CUdeviceptr));
         w->bk = calloc(m->n_layer, sizeof(CUdeviceptr));
@@ -1702,6 +1724,8 @@ static gpu_weights *shared_build(model_t *m, size_t act_bytes, int max_hd,
             goto fail; \
         } } while (0)
         REQUIRE_PTR_TABLE(w->attn_norm, "attn_norm");
+        REQUIRE_PTR_TABLE(w->hc_an, "hc_attn_norm");
+        REQUIRE_PTR_TABLE(w->hc_fn, "hc_ffn_norm");
         REQUIRE_PTR_TABLE(w->ffn_norm, "ffn_norm");
         REQUIRE_PTR_TABLE(w->bq, "attn_q bias");
         REQUIRE_PTR_TABLE(w->bk, "attn_k bias");
@@ -1740,6 +1764,11 @@ static gpu_weights *shared_build(model_t *m, size_t act_bytes, int max_hd,
             layer_t *ly = &m->layers[l];
             w->attn_norm[l] = f32_dbuf(ly->attn_norm_w, m->n_embd,
                                        "attention norm", l);
+            if (m->hyper_conn) {
+                size_t hcd = (size_t)m->hc_count * m->n_embd;
+                w->hc_an[l] = f32_dbuf(ly->hc_attn_norm, hcd, "hc attention mixer norm", l);
+                w->hc_fn[l] = f32_dbuf(ly->hc_ffn_norm, hcd, "hc FFN mixer norm", l);
+            }
             w->ffn_norm[l]  = f32_dbuf(ly->ffn_norm_w, m->n_embd,
                                        "FFN norm", l);
             w->bq[l] = f32_dbuf(ly->bq, model_q_dim(m, l), "Q bias", l);
@@ -1832,7 +1861,9 @@ static gpu_weights *shared_build(model_t *m, size_t act_bytes, int max_hd,
                         "blk.%d — using CPU\n", label, l); \
                 goto fail; \
             } } while (0)
-            REQUIRE_UPLOAD(!w->attn_norm[l], "attention norm");
+            REQUIRE_UPLOAD(ly->attn_norm_w && !w->attn_norm[l], "attention norm");
+            REQUIRE_UPLOAD(m->hyper_conn && !w->hc_an[l], "hc attention mixer norm");
+            REQUIRE_UPLOAD(m->hyper_conn && !w->hc_fn[l], "hc FFN mixer norm");
             REQUIRE_UPLOAD(ly->ffn_norm_w && !w->ffn_norm[l], "FFN norm");
             REQUIRE_UPLOAD(ly->bq && !w->bq[l], "Q bias");
             REQUIRE_UPLOAD(ly->bk && !w->bk[l], "K bias");
@@ -1968,9 +1999,9 @@ bool gpu_init(model_t *m) {
         }
     // The shared always-on expert has no device path: the routed MoE
     // kernels write the FFN output and nothing adds a second dense branch.
-    if (m->n_ff_shexp > 0) {
+    if (m->n_ff_shexp > 0 && moe_any_on_device(m)) {
         fprintf(stderr, "gpu: shared-expert MoE has no device path — "
-                "running on CPU\n");
+                "running on CPU (--cpu-moe keeps it on the host)\n");
         return false;
     }
     // The DENSE attention output gate (muse-glimmer) rides qwen35's
@@ -2154,6 +2185,14 @@ bool gpu_init(model_t *m) {
         CK(cu.MemAlloc(&g->x,      sizeof(float) * MVB * m->n_embd));
         CK(cu.MemAlloc(&g->xb,     sizeof(float) * MVB * xdim));
         CK(cu.MemAlloc(&g->xb2,    sizeof(float) * MVB * xdim));
+        if (m->hyper_conn) {
+            size_t hcd = (size_t)m->hc_count * m->n_embd;
+            CK(cu.MemAlloc(&g->x_hc,      sizeof(float) * MVB * hcd));
+            CK(cu.MemAlloc(&g->hc_xn,     sizeof(float) * MVB * hcd));
+            CK(cu.MemAlloc(&g->hc_gate,   sizeof(float) * MVB * hcd));
+            CK(cu.MemAlloc(&g->hc_lo,     sizeof(float) * MVB * m->hc_low_rank));
+            CK(cu.MemAlloc(&g->hc_inject, sizeof(float) * MVB * m->hc_count));
+        }
         CK(cu.MemAlloc(&g->q,      sizeof(float) * MVB * q_dim));
         CK(cu.MemAlloc(&g->kt,     sizeof(float) * MVB * kv_dim));
         CK(cu.MemAlloc(&g->vt,     sizeof(float) * MVB * kv_dim));
@@ -3184,6 +3223,16 @@ static bool stage_x(gpu_t *g, model_t *m, const int32_t *tokens, int tn) {
     }
     if (cu.MemcpyHtoD(g->x, g->h_x, sizeof(float) * tn * m->n_embd) != 0)
         return false;
+    if (m->hyper_conn) {
+        // the wide residual starts as hc identical copies of the embedding
+        size_t hcd = (size_t)m->hc_count * m->n_embd;
+        for (int b = 0; b < tn; b++)
+            for (int c = 0; c < m->hc_count; c++)
+                memcpy(m->x_hc + (size_t)b * hcd + (size_t)c * m->n_embd,
+                       g->h_x + (size_t)b * m->n_embd, sizeof(float) * (size_t)m->n_embd);
+        if (cu.MemcpyHtoD(g->x_hc, m->x_hc, sizeof(float) * tn * hcd) != 0)
+            return false;
+    }
     return stage_ple(g, m, tokens, tn);
 }
 
@@ -3879,9 +3928,10 @@ static bool gpu_q35_recurrent(gpu_t *g, model_t *m, const layer_t *ly, int l,
         if (!launch(g, g->sw->f_q35_conv, (convdim + 255) / 256,
                     1, 1, 256, pc)) return false;
         float eps = m->rms_eps;
+        int gate_sigmoid = m->hyper_conn ? 1 : 0;   // Qwen3.8's DeltaNet gate
         void *pd[] = { &cv, &z, &beta, &alpha, &g->sw->ssm_dt[l],
                        &g->sw->ssm_a[l], &g->sw->ssm_norm[l], &state,
-                       &out, &sk, &ng, &nh, &eps };
+                       &out, &sk, &ng, &nh, &eps, &gate_sigmoid };
         if (!launch(g, g->sw->f_q35_delta, nh, 1, 1, 128, pd)) return false;
     }
     return enc_mv(g, m, ly->ssm_out, g->xb2, g->xb, inner, m->n_embd,
@@ -3936,6 +3986,41 @@ static bool gpu_mamba2_recurrent(gpu_t *g, model_t *m, const layer_t *ly,
                   0, tn, inner, xdim);
 }
 
+// ---- qwen4exp hyper-connections on the device (twins of model.c hc_mix /
+// hc_combine; the same ops in the same order, the reductions per stream)
+// mixed (n_embd, stride ys) = mean_c xn_c * sigmoid(W_up silu(W_down xn / hc));
+// the inject logits (hc per row) are left in g->hc_inject for hc_combine.
+static bool gpu_hc_mix(gpu_t *g, model_t *m, CUdeviceptr w_norm,
+                       gguf_tensor *w_down, gguf_tensor *w_up, gguf_tensor *w_inject,
+                       CUdeviceptr x_hc_rows, CUdeviceptr y, int ys, int tn) {
+    const int E = m->n_embd, hc = m->hc_count, hcd = hc * E, lr = m->hc_low_rank;
+    float eps = m->rms_eps;
+    int xs = hcd;
+    void *pn[] = { &x_hc_rows, &g->hc_xn, &w_norm, &E, &hc, &eps, &xs, &xs };
+    if (!launch(g, g->sw->f_rmsnorm_grouped, hc, tn, 1, 256, pn)) return false;
+    if (!enc_mv(g, m, w_down, g->hc_xn, g->hc_lo, hcd, lr, 0, tn, hcd, lr)) return false;
+    {
+        float inv_hc = 1.0f / (float)hc;
+        int n = lr;
+        void *ps[] = { &g->hc_lo, &inv_hc, &n, &n };
+        if (!launch(g, g->sw->f_silu_scale, (lr + 255) / 256, tn, 1, 256, ps)) return false;
+    }
+    if (!enc_mv(g, m, w_up, g->hc_lo, g->hc_gate, lr, hcd, 0, tn, lr, hcd)) return false;
+    {
+        void *pm[] = { &g->hc_xn, &g->hc_gate, &y, &E, &hc, &xs, &ys };
+        if (!launch(g, g->sw->f_hc_gate_mean, (E + 255) / 256, tn, 1, 256, pm)) return false;
+    }
+    if (w_inject &&
+        !enc_mv(g, m, w_inject, g->hc_xn, g->hc_inject, hcd, hc, 0, tn, hcd, hc)) return false;
+    return true;
+}
+
+static bool gpu_hc_combine(gpu_t *g, model_t *m, CUdeviceptr block_out, int os, int tn) {
+    const int E = m->n_embd, hc = m->hc_count, hcd = hc * E;
+    void *pc[] = { &g->x_hc, &block_out, &g->hc_inject, &E, &hc, &hcd, &os };
+    return launch(g, g->sw->f_hc_combine, (E + 255) / 256, tn, 1, 256, pc);
+}
+
 static bool fwd_tile(gpu_t *g, model_t *m, const int32_t *tokens, int tn,
                      int pos, bool want_logits, int l0, int l1) {
     (void)tokens; (void)pos;
@@ -3955,6 +4040,20 @@ static bool fwd_tile(gpu_t *g, model_t *m, const int32_t *tokens, int tn,
         int kv_dim  = model_kv_dim(m, l);
 
         if (ly->skip_mixer) goto mamba_mlp;   // nemotron_h MLP-only block
+        if (m->hyper_conn) {
+            size_t hcd = (size_t)m->hc_count * n_embd;
+            if (ly->ple4) {
+                // the n-gram PLE block runs on the host over the wide
+                // residual rows (one layer; its table is host-resident)
+                if (cu.StreamSynchronize(g->stream) != 0 ||
+                    cu.MemcpyDtoH(m->x_hc, g->x_hc, sizeof(float) * tn * hcd) != 0 ||
+                    !model_ple4_block_host(m, l, tokens, tn, pos) ||
+                    cu.MemcpyHtoD(g->x_hc, m->x_hc, sizeof(float) * tn * hcd) != 0)
+                    return false;
+            }
+            ok = ok && gpu_hc_mix(g, m, g->sw->hc_an[l], ly->hc_attn_down, ly->hc_attn_up,
+                                  ly->hc_attn_inject, g->x_hc, g->xb, xdim, tn);
+        } else
         ok = ok && enc_rmsnorm(g, g->x, g->xb, g->sw->attn_norm[l], n_embd, m->rms_eps,
                                tn, n_embd, xdim);
         prof_mark(g, PH_NORM);
@@ -4080,10 +4179,27 @@ static bool fwd_tile(gpu_t *g, model_t *m, const int32_t *tokens, int tn,
                                    tn, xdim, xdim);
         if (m->resid_scale != 1.0f)  // granite muP branch scale
             ok = ok && enc_scale(g, g->xb, m->resid_scale, n_embd, tn, xdim);
-        ok = ok && enc_add(g, g->x, g->xb, n_embd, tn, n_embd, xdim);
+        if (m->hyper_conn) ok = ok && gpu_hc_combine(g, m, g->xb, xdim, tn);
+        else ok = ok && enc_add(g, g->x, g->xb, n_embd, tn, n_embd, xdim);
         prof_mark(g, PH_ELEM);
         if (ly->skip_ffn) goto mamba_tail;   // nemotron_h SSM/attention block
 
+        if (ly->is_moe && moe_on_host(m, l) && m->hyper_conn) {
+            // qwen4exp: the device mixes the FFN input, the host runs the
+            // routed + shared experts on that tile, the device scatters the
+            // FFN output into the four streams
+            ok = ok && gpu_hc_mix(g, m, g->sw->hc_fn[l], ly->hc_ffn_down, ly->hc_ffn_up,
+                                  ly->hc_ffn_inject, g->x_hc, g->xb, xdim, tn);
+            if (!ok) return false;
+            if (cu.StreamSynchronize(g->stream) != 0 ||
+                cu.MemcpyDtoH(m->xb, g->xb, sizeof(float) * (size_t)tn * xdim) != 0 ||
+                !model_moe_ffn_cpu_premixed(m, l, tn) ||
+                cu.MemcpyHtoD(g->xb, m->xb, sizeof(float) * (size_t)tn * xdim) != 0)
+                return false;
+            ok = ok && gpu_hc_combine(g, m, g->xb, xdim, tn);
+            prof_mark(g, PH_MATVEC);
+            continue;
+        }
         if (ly->is_moe && moe_on_host(m, l)) {
             // Tensor-role boundary: attention has updated the residual and KV
             // on-device. Move only the small activation tile to the host, run
@@ -4107,6 +4223,10 @@ static bool fwd_tile(gpu_t *g, model_t *m, const int32_t *tokens, int tn,
             goto ffn_done;
         }
     mamba_mlp:
+        if (m->hyper_conn)
+            ok = ok && gpu_hc_mix(g, m, g->sw->hc_fn[l], ly->hc_ffn_down, ly->hc_ffn_up,
+                                  ly->hc_ffn_inject, g->x_hc, g->xb, xdim, tn);
+        else
         ok = ok && enc_rmsnorm(g, g->x, g->xb, g->sw->ffn_norm[l], n_embd, m->rms_eps,
                                tn, n_embd, xdim);
         prof_mark(g, PH_NORM);
@@ -4150,7 +4270,8 @@ static bool fwd_tile(gpu_t *g, model_t *m, const int32_t *tokens, int tn,
                                    tn, xdim, xdim);
         if (m->resid_scale != 1.0f)
             ok = ok && enc_scale(g, g->xb, m->resid_scale, n_embd, tn, xdim);
-        ok = ok && enc_add(g, g->x, g->xb, n_embd, tn, n_embd, xdim);
+        if (m->hyper_conn) ok = ok && gpu_hc_combine(g, m, g->xb, xdim, tn);
+        else ok = ok && enc_add(g, g->x, g->xb, n_embd, tn, n_embd, xdim);
     mamba_tail:
         ok = ok && enc_ple(g, m, ly, l, tn, xdim);
         if (ly->out_scale != 1.0f && ly->out_scale != 0.0f)
@@ -4161,6 +4282,12 @@ static bool fwd_tile(gpu_t *g, model_t *m, const int32_t *tokens, int tn,
 
     if (want_logits) {
         CUdeviceptr xlast = g->x + (size_t)(tn - 1) * n_embd * sizeof(float);
+        if (m->hyper_conn) {
+            // the final mixer is the output norm: last row of the wide residual
+            CUdeviceptr xhl = g->x_hc + (size_t)(tn - 1) * m->hc_count * n_embd * sizeof(float);
+            ok = ok && gpu_hc_mix(g, m, g->sw->hc_head_norm, m->hc_head_down, m->hc_head_up,
+                                  NULL, xhl, g->xb, 0, 1);
+        } else
         ok = ok && enc_rmsnorm(g, xlast, g->xb, g->sw->out_norm, n_embd, m->rms_eps,
                                1, 0, 0);
         prof_mark(g, PH_NORM);
@@ -4284,6 +4411,7 @@ static bool batch_mv_twin_ok(const gpu_weights *sw, const gguf_tensor *t) {
 // decodes these sequences one at a time, exactly as before.
 static bool batch_eligible(model_t **seqs, int n, gpu_t **lead_out) {
     if (n < 1) return false;
+    if (seqs[0] && seqs[0]->hyper_conn) return false;   // qwen4exp: no microbatch path yet
     gpu_t *lead = NULL;
     for (int i = 0; i < n; i++) {
         model_t *m = seqs[i];
