@@ -21,32 +21,12 @@ with no Python or third-party runtime underneath.
 > ([versioning policy](docs/versioning.md)). This page is the short version;
 > every flag, endpoint, limit and measurement is in the [manual](MANUAL.md).
 
-**On this page:** [Files](#files) · [Quick start](#quick-start) ·
+**On this page:** [Quick start](#quick-start) · [Model files](#files) ·
 [Will it fit](#fit) · [Make your own file](#models-and-conversion) ·
 [More context, less memory](#long-contexts) · [Idle memory](#designed-to-stay-on) ·
 [Tool calls](#truncation) · [Training](#adaptation) ·
 [Also in the box](#more) · [All commands](#all-commands) ·
 [Prove what a model did](#record-and-verify-a-run)
-
-<a id="files"></a>
-<a id="published-artifacts"></a>
-## Files, each with its number against the original
-
-**Result.** A Qwen3-30B file that is smaller than the official 4-bit one and
-closer to the original, a 3-bit Qwen3.8-27B that passes the bar, and a coder
-model 1.1 GB lighter that still agrees with its parent.
-
-| File | Size | Margin-qualified top-1 | Mean KLD | What was done |
-|---|---|---|---|---|
-| [Qwen3.8-27B IQ3_S, recovered scales](https://huggingface.co/Joakimpalm-Zen/Qwen3.8-27B-GSQ-RCO-IQ3_S-recovered-GGUF) | 11.77 GB | 97.80% | 0.0450 | ISTA-DASLab's 3-bit file with every block scale retrained against the BF16 parent. Same bytes and layout, so any engine that reads the source reads this one. |
-| [Qwen3-30B-A3B, selective precision](https://huggingface.co/Joakimpalm-Zen/Qwen3-30B-A3B-selective-attnQ8_0-expQ4_0-GGUF) | 17.99 GB | 99.50% | 0.034 | Attention at Q8_0, experts at Q4_0. Smaller than the official uniform Q4_K_M (18.56 GB) and closer to the original: that file reads 94.75% and 0.114. |
-| [Qwen3-Coder-30B, keep-120](https://huggingface.co/Joakimpalm-Zen/Qwen3-Coder-30B-A3B-Instruct-keep120-Q4_K_M-GGUF) | 17.5 GB | 100.00% | 0.00738 | 120 of 128 experts kept per layer. 1.1 GB under the stock 18.6 GB file. |
-
-A file passes when it agrees with its original on at least 97% of clear-cut
-tokens and its mean KLD is at most 0.05. Each row is copied from the file's
-own card, which has the method, the date and the limits. Every published
-file is in the [ledger](MANUAL.md#published-artifacts) and on
-[Hugging Face](https://huggingface.co/Joakimpalm-Zen).
 
 <a id="sixty-seconds-to-a-served-model"></a>
 ## Quick start
@@ -77,6 +57,18 @@ curl http://127.0.0.1:8080/v1/chat/completions \
 ```
 
 Prefer to chat in the terminal? `./runner -m model.gguf -i`.
+
+<a id="files"></a>
+<a id="published-artifacts"></a>
+## Model files on Hugging Face
+
+The files Xyntetik publishes live at
+[huggingface.co/Joakimpalm-Zen](https://huggingface.co/Joakimpalm-Zen):
+smaller and repaired versions of current open models, and the evidence
+datasets behind them. Each card says what was changed, how the file measures
+against its original, and where it runs. The
+[Runner Releases collection](https://huggingface.co/collections/Joakimpalm-Zen/runner-releases-6aa98baaed03bba0e8a561ae)
+is the place to start.
 
 ## Features
 
@@ -117,9 +109,10 @@ curl -r 0-16777215 -L -o head.gguf \
 <a id="models-and-conversion"></a>
 ### Make your own model file
 
-**Result.** The 17.99 GB Qwen3-30B file above came from one command and a
-one-line plan. It is smaller than the official 4-bit file and closer to the
-original: 99.50% agreement where that file reads 94.75%.
+**Result.** A [17.99 GB Qwen3-30B file](https://huggingface.co/Joakimpalm-Zen/Qwen3-30B-A3B-selective-attnQ8_0-expQ4_0-GGUF)
+came from one command and a one-line plan. It is smaller than the official
+4-bit file and closer to the original: 99.50% agreement where that file
+reads 94.75%.
 
 **Why.** A model file is a huge table of numbers, and the usual way to shrink
 it squeezes every part the same amount, including the parts that matter most.
