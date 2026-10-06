@@ -43,7 +43,7 @@ prompt and output token ids, and the exact streamed output bytes.
 Receipts chain (`--transcript-prev`), are signed with an Ed25519 key you
 generate (`--keygen`, `--sign-key`), and the loaded model can be verified
 against an OpenSSF Model Signing bundle (`--model-sig`, `--model-pubkey`).
-Flag rows are in the [command-line reference](../README.md#command-line-reference).
+Flag rows are in the [command-line reference](../MANUAL.md#command-line-reference).
 
 ## Measured
 

@@ -101,13 +101,16 @@ CAPABILITIES: tuple[Capability, ...] = (
 
 
 def find_readme(runner: str) -> Path | None:
-    """The README beside the binary (source tree and release archive both
-    keep it there), if it is there."""
+    """The manual beside the binary (source tree and release archive both
+    keep it there), if it is there. Since 2026-10-06 the reference sections
+    the sheet names live in MANUAL.md; an archive from before that carries
+    them in README.md, which is the fallback."""
     try:
         exe = Path(runner).expanduser().resolve()
     except OSError:
         return None
-    for candidate in (exe.parent / "README.md", exe.parent.parent / "README.md"):
+    for candidate in (exe.parent / "MANUAL.md", exe.parent.parent / "MANUAL.md",
+                      exe.parent / "README.md", exe.parent.parent / "README.md"):
         if candidate.is_file():
             return candidate
     return None
@@ -151,7 +154,7 @@ def render_sheet(runner: str, *, version: str = "", readme: Path | None = None,
         "",
     ]
     if readme is not None:
-        lines.append(f"Full documentation: `{readme}` (the README beside the binary), also at")
+        lines.append(f"Full documentation: `{readme}` (the manual beside the binary), also at")
     else:
         lines.append("Full documentation:")
     lines += [f"{README_URL} and {SITE_URL}.", ""]
@@ -169,7 +172,7 @@ def render_sheet(runner: str, *, version: str = "", readme: Path | None = None,
     lines += ["## Capabilities", ""]
     for c in capabilities:
         lines.append(f"- **{c.title}.** {c.what} Flags: {', '.join(f'`{f}`' for f in c.flags)}. "
-                     f"README section: \"{c.readme_section}\".")
+                     f"Manual section: \"{c.readme_section}\".")
     lines += ["", "## How to use it from here", "",
               "- Serve a model: `runner --serve -m MODEL.gguf` (OpenAI-compatible on http://127.0.0.1:8080).",
               "- Check a model fits first: `runner --fit MODEL.gguf`.",

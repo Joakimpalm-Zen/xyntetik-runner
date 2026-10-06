@@ -157,7 +157,7 @@ def check_cuda_target() -> bool:
     if f'.target {ptx_target}' not in ptx_h:
         print(f"DRIFT: kernels_ptx.h target is not {ptx_target}", file=sys.stderr)
         ok = False
-    for doc in ("README.md", os.path.join("docs", "performance.md")):
+    for doc in ("MANUAL.md", os.path.join("docs", "performance.md")):
         text = read_rel(doc)
         if min_gpu not in text:
             print(f"DRIFT: {doc} does not document {min_gpu}", file=sys.stderr)

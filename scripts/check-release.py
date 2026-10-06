@@ -155,7 +155,7 @@ def home_path_scan():
     try:
         proc = subprocess.run(
             ["git", "grep", "-l", "-E", HOME_PATH_RE, "--", "docs", "site",
-             "README.md", "python/README.md"],
+             "README.md", "MANUAL.md", "python/README.md"],
             cwd=ROOT, capture_output=True, text=True, timeout=60)
     except FileNotFoundError:
         print("release-check: note: git unavailable, home-path scan skipped "
@@ -208,7 +208,7 @@ def kl_tables_without_margin(text, html=False):
 
 
 def kl_table_scan():
-    paths = [ROOT / "README.md"] + sorted((ROOT / "docs").rglob("*.md")) \
+    paths = [ROOT / "README.md", ROOT / "MANUAL.md"] + sorted((ROOT / "docs").rglob("*.md")) \
         + sorted((ROOT / "site" / "pages").glob("*.html"))
     hits = []
     for path in paths:
@@ -237,6 +237,13 @@ def check(args):
         ok &= fail(f"binary version {got!r} does not match tag {args.tag!r}")
 
     readme = read(args.readme)
+    # Since 2026-10-06 the README is the short front page and MANUAL.md, in
+    # the same directory, is the reference it used to contain. The banner
+    # stays a README claim; the version example, the stale-string scan and
+    # the Hugging Face parity read both, so moving a line between the two
+    # files neither hides it from this gate nor fails it.
+    manual_path = getattr(args, "manual", None) or Path(args.readme).parent / "MANUAL.md"
+    manual = read(manual_path) if Path(manual_path).is_file() else ""
     # v0.2.0 retired the -alpha suffix: the README banner said "Pre-1.0"
     # with the exact version; older tags keep the alpha phrasing. From 1.0.0
     # the banner names the release and the versioning policy it is held to.
@@ -244,15 +251,17 @@ def check(args):
             f"Pre-1.0 (`{version}`)" not in readme and
             f"Public alpha (`{version}`)" not in readme):
         ok &= fail(f"README does not identify the {version} banner")
-    if f"./runner --version   # -> runner {version}" not in readme:
+    if f"./runner --version   # -> runner {version}" not in readme + manual:
         ok &= fail("README version-output example is not in sync")
     for stale in stale_release_strings(readme, version, args.tag):
         ok &= fail(f"README contains stale release string {stale!r}")
+    for stale in stale_release_strings(manual, version, args.tag):
+        ok &= fail(f"MANUAL.md contains stale release string {stale!r}")
 
     changelog = read(args.changelog)
     if not re.search(rf"^## v?{re.escape(version)}\b", changelog, re.M):
         ok &= fail(f"CHANGELOG has no section for {version}")
-    ok &= site_parity(readme, getattr(args, "site_pages", None))
+    ok &= site_parity(readme + "\n" + manual, getattr(args, "site_pages", None))
 
     build_info = read(args.build_info)
     build_lines = build_info.splitlines()
@@ -408,6 +417,9 @@ def main(argv=None):
     parser.add_argument("--tag", required=True)
     parser.add_argument("--binary", type=Path, required=True)
     parser.add_argument("--readme", type=Path, default=ROOT / "README.md")
+    parser.add_argument("--manual", type=Path, default=None,
+                        help="the reference manual; default MANUAL.md beside "
+                             "--readme, and absent is allowed")
     parser.add_argument("--changelog", type=Path, default=ROOT / "CHANGELOG.md")
     parser.add_argument("--build-info", type=Path, required=True)
     parser.add_argument("--release-workflow", type=Path,

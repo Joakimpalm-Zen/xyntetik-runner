@@ -60,7 +60,7 @@ def test_capability_sheet_names_only_flags_the_binary_has():
     help_text = proc.stdout + proc.stderr
     missing = [f for c in CAPABILITIES for f in c.flags if f"  {f}" not in help_text and f" {f} " not in help_text]
     assert not missing, missing
-    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    readme = (ROOT / "MANUAL.md").read_text(encoding="utf-8")
     absent = [c.readme_section for c in CAPABILITIES if c.readme_section not in readme]
     assert not absent, absent
     assert "OpenAI-compatible" in render_sheet(str(RUNNER))

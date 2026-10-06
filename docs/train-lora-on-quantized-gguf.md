@@ -46,7 +46,7 @@ Serve adapters with `--lora` (the exact form) or merge into 8-bit or better.
 
 Flag reference: `--train`, `--train-steps`, `--lr`, `--train-ctx`,
 `--train-out`, `--save-every`, `--lora-rank`, `--lora`, `--lora-scale`,
-`--merge-lora`, `--score` in the [command-line reference](../README.md#command-line-reference).
+`--merge-lora`, `--score` in the [command-line reference](../MANUAL.md#command-line-reference).
 
 ## Where the numbers come from
 

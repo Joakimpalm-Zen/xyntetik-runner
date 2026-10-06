@@ -65,7 +65,7 @@ nav: runner
 ./runner --export-pack receipts/ --pack-out pack/
 ./runner --check-pack pack/; echo $?</code></pre>
       <p class="small muted"><code>scripts/audit-demo.sh</code> runs the whole chain in under a minute on an 8 GB Mac: a signed 1,000-token sampled run, a replay that trusts only the signer's public key, and three forgeries refused. <a href="{{repo}}/blob/main/docs/audit-demo.md">docs/audit-demo.md</a>.</p>
-      <p class="small muted">Flag rows for <code>--transcript</code>, <code>--verify</code>, <code>--keygen</code>, <code>--sign-key</code>, <code>--transcript-prev</code>, <code>--model-sig</code> and <code>--model-pubkey</code> are in the <a href="{{repo}}/blob/main/README.md#command-line-reference">command-line reference</a>. The signing code is the TweetNaCl Ed25519 subset, vendored as <code>src/ed25519.c</code>.</p>
+      <p class="small muted">Flag rows for <code>--transcript</code>, <code>--verify</code>, <code>--keygen</code>, <code>--sign-key</code>, <code>--transcript-prev</code>, <code>--model-sig</code> and <code>--model-pubkey</code> are in the <a href="{{repo}}/blob/main/MANUAL.md#command-line-reference">command-line reference</a>. The signing code is the TweetNaCl Ed25519 subset, vendored as <code>src/ed25519.c</code>.</p>
     </div>
   </div>
 </section>

@@ -31,7 +31,7 @@ nav: runner
       <p class="eyebrow">Try it</p>
       <h2>Sixty seconds to a served model</h2>
       <p>Download the binary and its checksum file, verify, fetch a model, serve. The checksum line is not decoration: this project's whole culture is receipts, and it starts at the download.</p>
-      <p class="small muted">The model below, granite-4.1-3b at Q8_0, is the smallest that passes the project's fidelity gate against its own BF16 parent. Alternatives and the reasoning are in the <a href="{{repo}}/blob/main/README.md#choose-a-model">README model choices</a>.</p>
+      <p class="small muted">The model below, granite-4.1-3b at Q8_0, is the smallest that passes the project's fidelity gate against its own BF16 parent. Alternatives and the reasoning are in the <a href="{{repo}}/blob/main/MANUAL.md#choose-a-model">README model choices</a>.</p>
     </div>
     <div>
 <pre><code>curl -LO https://github.com/Joakimpalm-Zen/xyntetik-runner/releases/latest/download/runner-macos-arm64
@@ -46,8 +46,8 @@ curl -L -o model.gguf https://huggingface.co/ibm-granite/granite-4.1-3b-GGUF/res
         <div><span>Linux</span><p>The asset is <code>runner-linux-x86_64</code>; check with <code>sha256sum -c --ignore-missing SHA256SUMS</code>.</p></div>
         <div><span>Windows</span><p><code>runner-windows-x86_64.exe</code>, with a notification-area controller.</p></div>
         <div><span>macOS note</span><p>The binaries are not yet notarized. A <code>curl</code> download runs as shown; a browser download gets quarantined by Gatekeeper. Clear it with <code>xattr -d com.apple.quarantine runner</code> or right-click and Open once.</p></div>
-        <div><span>From source</span><p><code>make</code> builds the release binary with no dependencies beyond a C compiler; CUDA and Metal kernels are embedded at build time. <a href="{{repo}}/blob/main/README.md#build-and-platforms">Build and platforms</a>.</p></div>
-        <div><span>Container</span><p>A Dockerfile ships in the repository. <a href="{{repo}}/blob/main/README.md#container-image">Container image</a>.</p></div>
+        <div><span>From source</span><p><code>make</code> builds the release binary with no dependencies beyond a C compiler; CUDA and Metal kernels are embedded at build time. <a href="{{repo}}/blob/main/MANUAL.md#build-and-platforms">Build and platforms</a>.</p></div>
+        <div><span>Container</span><p>A Dockerfile ships in the repository. <a href="{{repo}}/blob/main/MANUAL.md#container-image">Container image</a>.</p></div>
       </div>
       <div class="callout mt-2">
         <span class="t">Testing Runner?</span>
@@ -206,7 +206,7 @@ curl -L -o model.gguf https://huggingface.co/ibm-granite/granite-4.1-3b-GGUF/res
     <div class="section-head">
       <p class="eyebrow">Support matrix</p>
       <h2>Named, gated, and refused by name outside the list.</h2>
-      <p><code>runner --caps</code> publishes the architecture IDs the current binary admits. The full per-family notes, with the measured evidence behind each row, are in the <a href="{{repo}}/blob/main/README.md#support-matrix">README support matrix</a>. Summary as of {{version}}:</p>
+      <p><code>runner --caps</code> publishes the architecture IDs the current binary admits. The full per-family notes, with the measured evidence behind each row, are in the <a href="{{repo}}/blob/main/MANUAL.md#support-matrix">README support matrix</a>. Summary as of {{version}}:</p>
     </div>
     <div class="rows">
       <div><span>Backends</span><p>CPU (x86 AVX2/FMA, ARM NEON), CUDA (driver API, embedded PTX), Metal (embedded shaders, unified memory). Linux x86_64, macOS arm64, Windows x86_64 release binaries.</p></div>
