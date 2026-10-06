@@ -1351,6 +1351,46 @@ extern "C" __global__ void k_mv_q5_K_b(MV_PARAMS) {
 // 8-aligned in the 176-byte block), two float4 x loads, and the factored
 // s += dg*sum(qv*x) - mmg*sum(x). Weights per element unchanged; identity vs
 // CPU empirically gated by kernel-verify as before.
+// Q3_K decode GEMV in the k_gemv_q5_K geometry: lane owns 8 consecutive
+// elements of each 256-block, so a 32-lane warp covers the block in one pass
+// with coalesced x loads. Element e's rules from k_mv_q3_K: half = e/128,
+// j = (e%128)/32 (shift 2j, high-bit mask 1<<(4*half+j)), byte l = e%32 of
+// qs + 32*half, scale index 8*half + 2j + (l >= 16); value
+// ((q >> shift) & 3) - (hbit ? 0 : 4), times d_all * (scale - 32).
+extern "C" __global__ void k_gemv_q3_K(MV_PARAMS) {
+    MV_HEAD;
+    int nb = a.n_in / 256;
+    const uchar *rw = wb + a.w_off + (ulong64)row * nb * 110;
+    int half  = (int)(lane >> 4);
+    int j     = (int)(lane >> 2) & 3;
+    int lseg  = ((int)lane & 3) * 8;
+    int shift = 2 * j, hsh = 4 * half + j;
+    int sidx  = 8 * half + 2 * j + (lseg >= 16 ? 1 : 0);
+    float s = 0;
+    for (int b = 0; b < nb; b++) {
+        const uchar *blk = rw + (ulong64)b * 110;
+        Q3K_UNPACK_SCALES;
+        float dl = d_all * (float)(q3scales[sidx] - 32);
+        uint2 qv = *(const uint2 *)(qbase + 32 * half + lseg);
+        uint2 hv = *(const uint2 *)(hm + lseg);
+        const float *xp = x + (ulong64)b * 256 + (int)lane * 8;
+        float4 x0 = *(const float4 *)xp, x1 = *(const float4 *)(xp + 4);
+        uint v0 = (qv.x >> shift) & 0x03030303u, v1 = (qv.y >> shift) & 0x03030303u;
+        uint h0 = (hv.x >> hsh) & 0x01010101u,  h1 = (hv.y >> hsh) & 0x01010101u;
+        // value = q + 4*hbit - 4
+        float t = ((float)(v0 & 0xFF)         + 4.0f * (float)(h0 & 0xFF)         - 4.0f) * x0.x
+                + ((float)((v0 >>  8) & 0xFF) + 4.0f * (float)((h0 >>  8) & 0xFF) - 4.0f) * x0.y
+                + ((float)((v0 >> 16) & 0xFF) + 4.0f * (float)((h0 >> 16) & 0xFF) - 4.0f) * x0.z
+                + ((float)((v0 >> 24)       ) + 4.0f * (float)((h0 >> 24)       ) - 4.0f) * x0.w
+                + ((float)(v1 & 0xFF)         + 4.0f * (float)(h1 & 0xFF)         - 4.0f) * x1.x
+                + ((float)((v1 >>  8) & 0xFF) + 4.0f * (float)((h1 >>  8) & 0xFF) - 4.0f) * x1.y
+                + ((float)((v1 >> 16) & 0xFF) + 4.0f * (float)((h1 >> 16) & 0xFF) - 4.0f) * x1.z
+                + ((float)((v1 >> 24)       ) + 4.0f * (float)((h1 >> 24)       ) - 4.0f) * x1.w;
+        s += dl * t;
+    }
+    MV_TAIL;
+}
+
 extern "C" __global__ void k_gemv_q5_K(MV_PARAMS) {
     MV_HEAD;
     int nb = a.n_in / 256;
