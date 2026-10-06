@@ -3828,6 +3828,8 @@ int main(int argc, char **argv) {
         printf("],\"logprobs\":[");
         double total = 0;
         int pos = 0, emitted = 0, fail = 0, top1 = 0;
+        int32_t *argmaxes = malloc(sizeof(int32_t) * (size_t)n_prompt);
+        if (!argmaxes) CLI_FAIL;
         while (pos < n_prompt - 1 && !fail) {
             int k = n_prompt - 1 - pos;
             int cap = m.spec_batch < m.n_batch ? m.spec_batch : m.n_batch;
@@ -3843,6 +3845,7 @@ int main(int argc, char **argv) {
                         if (lg[i] > lg[arg]) arg = i;
                     float lp = lg[toks[pos + b + 1]] -
                                engine_logsumexp(lg, m.n_vocab);
+                    argmaxes[emitted] = arg;
                     printf("%s%.9g", emitted++ ? "," : "", (double)lp);
                     total += lp;
                     if (arg == toks[pos + b + 1]) top1++;
@@ -3855,6 +3858,7 @@ int main(int argc, char **argv) {
                 for (int i = 1; i < m.n_vocab; i++)
                     if (lg[i] > lg[arg]) arg = i;
                 float lp = lg[toks[pos + 1]] - engine_logsumexp(lg, m.n_vocab);
+                argmaxes[emitted] = arg;
                 printf("%s%.9g", emitted++ ? "," : "", (double)lp);
                 total += lp;
                 if (arg == toks[pos + 1]) top1++;
@@ -3862,6 +3866,7 @@ int main(int argc, char **argv) {
             }
         }
         if (fail) {
+            free(argmaxes);
             printf("]}\n");
             fprintf(stderr, "error: forward pass failed at position %d\n", pos);
             CLI_FAIL;
@@ -3873,6 +3878,12 @@ int main(int argc, char **argv) {
         // token has p >= 1/n_vocab - so a harness can bracket top1 from the
         // logprobs alone and refuse a run that disagrees with itself.
         double nll = -total, mean = nll / (n_prompt - 1);
+        // per-position argmax ids (additive field): a second engine's
+        // top-1 at the same prefix compares against these
+        printf("],\"argmax\":[");
+        for (int i = 0; i < emitted; i++)
+            printf("%s%d", i ? "," : "", argmaxes[i]);
+        free(argmaxes);
         printf("],\"n_vocab\":%d,\"top1\":%d,\"top1_rate\":%.9g,"
                "\"nll_total\":%.9g,\"nll_mean\":%.9g,\"ppl\":%.9g}\n",
                m.n_vocab, top1, (double)top1 / (n_prompt - 1),
@@ -4287,6 +4298,7 @@ int main(int argc, char **argv) {
         fprintf(stderr, "\nprompt: %d tok, %.2f tok/s | gen: %d tok, %.2f tok/s\n",
                 n_prompt, n_prompt / (ptime > 0 ? ptime : 1e-9),
                 n_gen, n_gen / (gtime > 0 ? gtime : 1e-9));
+        model_debug_time_report();
         int t_rc = 0;
         if (transcript_path) {
             char prev_hash[65] = "";

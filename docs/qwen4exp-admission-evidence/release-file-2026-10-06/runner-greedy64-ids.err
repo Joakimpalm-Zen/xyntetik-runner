@@ -1,0 +1,5 @@
+loaded ~/workspace/models/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf | qwen4exp | 48 layers | ctx 2048 | 24 threads | 0.06s
+sampling: qwen38 (temp 0.00 — greedy argmax; top_p/top_k/min_p/repeat_penalty inactive)
+sampling: from the file (general.sampling.*): temp 1.00, top_p 0.95, top_k 20
+ 271 248068 198 760 1156 6587 728 310 59987 279 51624 579 13618 303 799 13901 13 561 1414 369 16421 56127 11 440 279 1788 22157 11173 1599 2942 13 6558 728 8385 279 4752 1928 25 271 16 13 561 324 55965 51624 12076 279 8831 1396 6353 25 9662 4944 11 9158 3311 11 279 2521 314 279 74611 2272 279
+prompt: 481 tok, 22.08 tok/s | gen: 64 tok, 8.24 tok/s

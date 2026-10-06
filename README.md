@@ -2191,8 +2191,8 @@ test`. Design, gates and measured results:
 
 Teacher-forced scoring: per-token log P(token|prefix) over the raw `-p`/`-f` text - no
 template, no sampling - printed as JSON (`xyntetik.runner.score.v1`) with per-position
-logprobs, NLL, perplexity, and the absolute next-token `top1`/`top1_rate` beside
-`n_vocab`. The default path scores one forward per position, the exact numerics the
+logprobs, the per-position `argmax` ids, NLL, perplexity, and the absolute next-token
+`top1`/`top1_rate` beside `n_vocab`. The default path scores one forward per position, the exact numerics the
 sampler sees at decode time; `RUNNER_SCORE_CHUNKED=1` opts into a faster batched pass
 whose deviation from solo is measured and test-pinned (max |Δlogprob| ~1e-6 on the
 fixtures - the CPU batched forward is not bit-identical to solo, and scoring defaults to

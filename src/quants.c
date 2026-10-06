@@ -82,6 +82,11 @@ typedef struct { uint8_t e; uint8_t qs[QK / 2]; }               block_mxfp4; // 
 #define QK_NVFP4 64
 #define QK_NVFP4_SUB 16
 typedef struct { uint8_t d[QK_NVFP4 / QK_NVFP4_SUB]; uint8_t qs[QK_NVFP4 / 2]; } block_nvfp4; // 36
+// Q2_0 (llama.cpp ggml-common.h, byte-identical): one f16 scale, then 64
+// two-bit codes packed four per byte, element j at bits (j%4)*2 of byte j/4;
+// code q decodes to (q - 1) * d, so the levels are {-1, 0, +1, +2} * d.
+#define QK2_0 64
+typedef struct { f16_t d; uint8_t qs[QK2_0 / 4]; } block_q2_0; // 18
 // codebook i-quants (llama.cpp b10353 ggml-common.h shapes, byte-identical)
 typedef struct { f16_t d; uint16_t qs[QK_K / 8]; } block_iq2_xxs; // 66
 typedef struct { f16_t d; uint16_t qs[QK_K / 8]; uint8_t scales[QK_K / 32]; } block_iq2_xs; // 74
@@ -117,6 +122,7 @@ int ggml_block_size(int type) {
         case T_Q4_0: case T_Q4_1: case T_Q5_0: case T_Q5_1: case T_Q8_0:
         case T_IQ4_NL: case T_MXFP4: return QK;
         case T_NVFP4: return QK_NVFP4;
+        case T_Q2_0: return QK2_0;
         case T_Q4_K: case T_Q5_K: case T_Q6_K: case T_Q2_K: case T_Q3_K:
         case T_IQ4_XS:
         case T_IQ2_XXS: case T_IQ2_XS: case T_IQ2_S:
@@ -152,6 +158,7 @@ size_t ggml_type_size(int type) {
         case T_IQ1_M: return sizeof(block_iq1_m);
         case T_MXFP4: return sizeof(block_mxfp4);
         case T_NVFP4: return sizeof(block_nvfp4);
+        case T_Q2_0: return sizeof(block_q2_0);
         default:     return 1;
     }
 }
@@ -173,6 +180,8 @@ const char *ggml_type_name(int type) {
         // named but not decoded: the refusal names the format and the reader
         // learns "runner lacks NVFP4", not "my file is garbage"
         case T_NVFP4: return "NVFP4";
+        case T_Q2_0: return "Q2_0";
+        case T_Q1_0: return "Q1_0";
         default: return "?";
     }
 }
@@ -185,6 +194,7 @@ bool ggml_type_supported(int type) {
         case T_IQ4_NL: case T_IQ4_XS: case T_MXFP4: case T_NVFP4:
         case T_IQ2_XXS: case T_IQ2_XS: case T_IQ2_S:
         case T_IQ3_XXS: case T_IQ3_S: case T_IQ1_S: case T_IQ1_M:
+        case T_Q2_0:
             return true;
         default:
             return false;
@@ -192,6 +202,13 @@ bool ggml_type_supported(int type) {
 }
 
 // ---------------------------------------------------------------- dequant
+
+// Q2_0, per ggml dequantize_row_q2_0: 00 = -1, 01 = 0, 10 = +1, 11 = +2.
+static void dq_q2_0(const block_q2_0 *b, float *y) {
+    const float d = f16_to_f32(b->d);
+    for (int j = 0; j < QK2_0; j++)
+        y[j] = (float)((int)((b->qs[j >> 2] >> ((j & 3) * 2)) & 3) - 1) * d;
+}
 
 static void dq_mxfp4(const block_mxfp4 *b, float *y) {
     // E8M0 block scale: the byte is a biased power-of-two exponent, 2^(e-127).
@@ -672,6 +689,16 @@ static inline void avx2_iq_sign16(const uint8_t *mag, uint8_t s0, uint8_t s1,
     scale16(y, db);
 }
 
+// the signed 16-value vector avx2_iq_sign16 builds, before the widen/scale
+static inline __m128i avx2_iq_signed16(const uint8_t *mag, uint8_t s0, uint8_t s1) {
+    __m128i m = _mm_loadu_si128((const __m128i *)mag);
+    __m128i sv = _mm_set_epi64x((long long)(0x0101010101010101ULL * s1),
+                                (long long)(0x0101010101010101ULL * s0));
+    __m128i km = _mm_loadu_si128((const __m128i *)avx2_iq_kmask);
+    __m128i neg = _mm_cmpeq_epi8(_mm_and_si128(sv, km), km);
+    return _mm_blendv_epi8(m, _mm_sub_epi8(_mm_setzero_si128(), m), neg);
+}
+
 static inline void avx2_iq1_16(const int8_t *g16, float dl, float d0, float d1,
                                float *y) {
     __m128i v = _mm_loadu_si128((const __m128i *)g16);
@@ -805,6 +832,37 @@ static void dq_iq1_s_avx2(const block_iq1_s *b, float *y) {
             y += 16;
         }
         qs += 4;
+    }
+}
+
+// Q2_0: the 16 code bytes hold four 2-bit planes (element 4k+s is bits 2s of
+// byte k). Mask each plane, then interleave bytes (plane 0 with 1, 2 with 3)
+// and words so the 64 codes come back in element order: 16 per vector,
+// four vectors. Code - 1 is the level; one block scale.
+static inline void q2_0_unpack_avx2(const uint8_t *qs, __m128i out[4]) {
+    const __m128i m3 = _mm_set1_epi8(3), one = _mm_set1_epi8(1);
+    __m128i q  = _mm_loadu_si128((const __m128i *)qs);
+    __m128i p0 = _mm_and_si128(q, m3);
+    __m128i p1 = _mm_and_si128(_mm_srli_epi16(q, 2), m3);
+    __m128i p2 = _mm_and_si128(_mm_srli_epi16(q, 4), m3);
+    __m128i p3 = _mm_and_si128(_mm_srli_epi16(q, 6), m3);
+    __m128i a = _mm_unpacklo_epi8(p0, p1), b = _mm_unpacklo_epi8(p2, p3);
+    __m128i c = _mm_unpackhi_epi8(p0, p1), d = _mm_unpackhi_epi8(p2, p3);
+    out[0] = _mm_sub_epi8(_mm_unpacklo_epi16(a, b), one);   // elements  0..15
+    out[1] = _mm_sub_epi8(_mm_unpackhi_epi16(a, b), one);   // elements 16..31
+    out[2] = _mm_sub_epi8(_mm_unpacklo_epi16(c, d), one);   // elements 32..47
+    out[3] = _mm_sub_epi8(_mm_unpackhi_epi16(c, d), one);   // elements 48..63
+}
+
+static void dq_q2_0_avx2(const block_q2_0 *b, float *y) {
+    __m128i e[4];
+    q2_0_unpack_avx2(b->qs, e);
+    const __m256 d = _mm256_set1_ps(f16_to_f32(b->d));
+    for (int k = 0; k < 4; k++) {
+        __m256 lo = _mm256_cvtepi32_ps(_mm256_cvtepi8_epi32(e[k]));
+        __m256 hi = _mm256_cvtepi32_ps(_mm256_cvtepi8_epi32(_mm_srli_si128(e[k], 8)));
+        _mm256_storeu_ps(y + 16 * k,     _mm256_mul_ps(lo, d));
+        _mm256_storeu_ps(y + 16 * k + 8, _mm256_mul_ps(hi, d));
     }
 }
 
@@ -967,6 +1025,34 @@ static void dq_iq4_xs_neon(const block_iq4_xs *b, float *y) {
     }
 }
 
+// Q2_0 on NEON: the same plane split and two-level zip as the AVX2 kernel.
+static inline void q2_0_unpack_neon(const uint8_t *qs, int8x16_t out[4]) {
+    const uint8x16_t m3 = vdupq_n_u8(3);
+    const int8x16_t one = vdupq_n_s8(1);
+    uint8x16_t q  = vld1q_u8(qs);
+    uint8x16_t p0 = vandq_u8(q, m3), p1 = vandq_u8(vshrq_n_u8(q, 2), m3);
+    uint8x16_t p2 = vandq_u8(vshrq_n_u8(q, 4), m3), p3 = vshrq_n_u8(q, 6);
+    uint8x16_t a = vzip1q_u8(p0, p1), b = vzip1q_u8(p2, p3);
+    uint8x16_t c = vzip2q_u8(p0, p1), d = vzip2q_u8(p2, p3);
+    uint16x8_t a16 = vreinterpretq_u16_u8(a), b16 = vreinterpretq_u16_u8(b);
+    uint16x8_t c16 = vreinterpretq_u16_u8(c), d16 = vreinterpretq_u16_u8(d);
+    out[0] = vsubq_s8(vreinterpretq_s8_u16(vzip1q_u16(a16, b16)), one);
+    out[1] = vsubq_s8(vreinterpretq_s8_u16(vzip2q_u16(a16, b16)), one);
+    out[2] = vsubq_s8(vreinterpretq_s8_u16(vzip1q_u16(c16, d16)), one);
+    out[3] = vsubq_s8(vreinterpretq_s8_u16(vzip2q_u16(c16, d16)), one);
+}
+
+static void dq_q2_0_neon(const block_q2_0 *b, float *y) {
+    int8x16_t e[4];
+    q2_0_unpack_neon(b->qs, e);
+    const float d = f16_to_f32(b->d);
+    for (int k = 0; k < 4; k++) {
+        float32x4_t f[4];
+        i8_to_f32x4(e[k], f);
+        for (int j = 0; j < 4; j++) vst1q_f32(y + 16 * k + 4 * j, vmulq_n_f32(f[j], d));
+    }
+}
+
 static void dq_mxfp4_neon(const block_mxfp4 *b, float *y) {
     const int8x16_t tbl = vld1q_s8(kvalues_mxfp4_i8);
     const uint8x16_t mF = vdupq_n_u8(0xF);
@@ -1109,6 +1195,13 @@ static const uint8_t neon_iq_kmask[16] = { 1, 2, 4, 8, 16, 32, 64, 128,
                                            1, 2, 4, 8, 16, 32, 64, 128 };
 
 // y[0..15] = db * +/-mag[0..15], sign bit j of s0 (first 8) / s1 (second 8)
+static inline int8x16_t neon_iq_signed16(const uint8_t *mag, uint8_t s0, uint8_t s1) {
+    int8x16_t m = vld1q_s8((const int8_t *)mag);
+    uint8x16_t neg = vtstq_u8(vcombine_u8(vdup_n_u8(s0), vdup_n_u8(s1)),
+                              vld1q_u8(neon_iq_kmask));
+    return vbslq_s8(neg, vnegq_s8(m), m);
+}
+
 static inline void neon_iq_sign16(const uint8_t *mag, uint8_t s0, uint8_t s1,
                                   float *y, float db) {
     int8x16_t m = vld1q_s8((const int8_t *)mag);
@@ -1298,6 +1391,7 @@ static void dequant_block(int type, const void *src, float *dst) {
         case T_IQ3_S: dq_iq3_s_avx2(src, dst); return;
         case T_IQ1_S: dq_iq1_s_avx2(src, dst); return;
         case T_IQ1_M: dq_iq1_m_avx2(src, dst); return;
+        case T_Q2_0:  dq_q2_0_avx2(src, dst); return;
     }
 #elif RUNNER_NEON
     switch (type) {
@@ -1310,6 +1404,7 @@ static void dequant_block(int type, const void *src, float *dst) {
         case T_IQ4_NL: dq_iq4_nl_neon(src, dst); return;
         case T_IQ4_XS: dq_iq4_xs_neon(src, dst); return;
         case T_MXFP4: dq_mxfp4_neon(src, dst); return;
+        case T_Q2_0:  dq_q2_0_neon(src, dst); return;
         case T_IQ2_XXS: dq_iq2_xxs_neon(src, dst); return;
         case T_IQ2_XS: dq_iq2_xs_neon(src, dst); return;
         case T_IQ2_S: dq_iq2_s_neon(src, dst); return;
@@ -1341,6 +1436,7 @@ static void dequant_block(int type, const void *src, float *dst) {
         case T_IQ1_M: dq_iq1_m(src, dst); break;
         case T_MXFP4: dq_mxfp4(src, dst); break;
         case T_NVFP4: dq_nvfp4(src, dst); break;
+        case T_Q2_0: dq_q2_0(src, dst); break;
     }
 }
 
@@ -2037,6 +2133,63 @@ static float dot_mxfp4_avx2(const block_mxfp4 *b, const float *x, int n) {
     return hsum8(acc);
 }
 
+static float dot_q2_0_avx2(const block_q2_0 *b, const float *x, int n) {
+    __m256 acc = _mm256_setzero_ps();
+    for (int i = 0; i < n / QK2_0; i++) {
+        __m128i e[4];
+        q2_0_unpack_avx2(b[i].qs, e);
+        const float *xp = x + i * QK2_0;
+        __m256 t = _mm256_mul_ps(i8lo_ps(e[0]), _mm256_loadu_ps(xp));
+        t = _mm256_fmadd_ps(i8hi_ps(e[0]), _mm256_loadu_ps(xp + 8),  t);
+        t = _mm256_fmadd_ps(i8lo_ps(e[1]), _mm256_loadu_ps(xp + 16), t);
+        t = _mm256_fmadd_ps(i8hi_ps(e[1]), _mm256_loadu_ps(xp + 24), t);
+        t = _mm256_fmadd_ps(i8lo_ps(e[2]), _mm256_loadu_ps(xp + 32), t);
+        t = _mm256_fmadd_ps(i8hi_ps(e[2]), _mm256_loadu_ps(xp + 40), t);
+        t = _mm256_fmadd_ps(i8lo_ps(e[3]), _mm256_loadu_ps(xp + 48), t);
+        t = _mm256_fmadd_ps(i8hi_ps(e[3]), _mm256_loadu_ps(xp + 56), t);
+        acc = _mm256_fmadd_ps(_mm256_set1_ps(f16_to_f32(b[i].d)), t, acc);
+    }
+    return hsum8(acc);
+}
+
+// IQ3_XXS fused dot: the same grid gathers and sign blend as dq_iq3_xxs_avx2,
+// but the 16 signed codes go straight into the FMAs instead of through a
+// 256-float scratch row (vec_dot's default path dequantizes a block, then
+// dots it: two passes over the row and a store/reload per value). The
+// routed experts of Qwen3.8-Flash-Next are IQ3_XXS gate/up; on the Blackwell
+// CPUs they were 45% of the token through the default path.
+static float dot_iq3_xxs_avx2(const block_iq3_xxs *b, const float *x, int n) {
+    __m256 acc = _mm256_setzero_ps();
+    uint8_t mag[16];
+    for (int i = 0; i < n / QK_K; i++, b++) {
+        float d = f16_to_f32(b->d);
+        const uint8_t *qs = b->qs, *sas = b->qs + QK_K / 4;
+        const float *xp = x + i * QK_K;
+        for (int ib32 = 0; ib32 < QK_K / 32; ib32++) {
+            uint32_t aux32;
+            memcpy(&aux32, sas + 4 * ib32, sizeof(uint32_t));
+            float db = d * (0.5f + (aux32 >> 28)) * 0.5f;
+            __m256 t = _mm256_setzero_ps();
+            for (int half = 0; half < 2; half++) {
+                const uint8_t *q = qs + 4 * half;
+                memcpy(mag,      iq3xxs_grid + q[0], 4);
+                memcpy(mag + 4,  iq3xxs_grid + q[1], 4);
+                memcpy(mag + 8,  iq3xxs_grid + q[2], 4);
+                memcpy(mag + 12, iq3xxs_grid + q[3], 4);
+                __m128i v = avx2_iq_signed16(mag,
+                                ksigns_iq2xs[(aux32 >> (14 * half)) & 127],
+                                ksigns_iq2xs[(aux32 >> (14 * half + 7)) & 127]);
+                const float *xh = xp + 32 * ib32 + 16 * half;
+                t = _mm256_fmadd_ps(i8lo_ps(v), _mm256_loadu_ps(xh), t);
+                t = _mm256_fmadd_ps(i8hi_ps(v), _mm256_loadu_ps(xh + 8), t);
+            }
+            acc = _mm256_fmadd_ps(_mm256_set1_ps(db), t, acc);
+            qs += 8;
+        }
+    }
+    return hsum8(acc);
+}
+
 static float dot_iq4_xs_avx2(const block_iq4_xs *b, const float *x, int n) {
     const __m128i tbl = _mm_loadu_si128((const __m128i *)kvalues_iq4nl);
     const __m128i mF  = _mm_set1_epi8(0xF);
@@ -2187,6 +2340,48 @@ static float dot_mxfp4_neon(const block_mxfp4 *b, const float *x, int n) {
         float32x4_t t = dot32(vqtbl1q_s8(tbl, vandq_u8(q, mF)),
                               vqtbl1q_s8(tbl, vshrq_n_u8(q, 4)), x + i * QK);
         acc = vfmaq_n_f32(acc, t, 0.5f * ldexpf(1.0f, (int)b[i].e - 127));
+    }
+    return vaddvq_f32(acc);
+}
+
+static float dot_q2_0_neon(const block_q2_0 *b, const float *x, int n) {
+    float32x4_t acc = vdupq_n_f32(0);
+    for (int i = 0; i < n / QK2_0; i++) {
+        int8x16_t e[4];
+        q2_0_unpack_neon(b[i].qs, e);
+        const float *xp = x + i * QK2_0;
+        float32x4_t t = vaddq_f32(dot32(e[0], e[1], xp), dot32(e[2], e[3], xp + 32));
+        acc = vfmaq_n_f32(acc, t, f16_to_f32(b[i].d));
+    }
+    return vaddvq_f32(acc);
+}
+
+// IQ3_XXS fused dot on NEON (same construction as dq_iq3_xxs_neon)
+static float dot_iq3_xxs_neon(const block_iq3_xxs *b, const float *x, int n) {
+    float32x4_t acc = vdupq_n_f32(0);
+    uint8_t mag[16];
+    for (int i = 0; i < n / QK_K; i++, b++) {
+        float d = f16_to_f32(b->d);
+        const uint8_t *qs = b->qs, *sas = b->qs + QK_K / 4;
+        const float *xp = x + i * QK_K;
+        for (int ib32 = 0; ib32 < QK_K / 32; ib32++) {
+            uint32_t aux32;
+            memcpy(&aux32, sas + 4 * ib32, sizeof(uint32_t));
+            float db = d * (0.5f + (aux32 >> 28)) * 0.5f;
+            int8x16_t v[2];
+            for (int half = 0; half < 2; half++) {
+                const uint8_t *q = qs + 4 * half;
+                memcpy(mag,      iq3xxs_grid + q[0], 4);
+                memcpy(mag + 4,  iq3xxs_grid + q[1], 4);
+                memcpy(mag + 8,  iq3xxs_grid + q[2], 4);
+                memcpy(mag + 12, iq3xxs_grid + q[3], 4);
+                v[half] = neon_iq_signed16(mag,
+                              ksigns_iq2xs[(aux32 >> (14 * half)) & 127],
+                              ksigns_iq2xs[(aux32 >> (14 * half + 7)) & 127]);
+            }
+            acc = vfmaq_n_f32(acc, dot32(v[0], v[1], xp + 32 * ib32), db);
+            qs += 8;
+        }
     }
     return vaddvq_f32(acc);
 }
@@ -2602,6 +2797,17 @@ float vec_dot(int type, const void *row, const float *x, int n) {
             return dot_iq4_nl_neon(row, x, n);
         case T_IQ4_XS:
             return dot_iq4_xs_neon(row, x, n);
+#endif
+#if RUNNER_AVX2
+        case T_Q2_0:
+            return dot_q2_0_avx2(row, x, n);
+        case T_IQ3_XXS:
+            return dot_iq3_xxs_avx2(row, x, n);
+#elif RUNNER_NEON
+        case T_Q2_0:
+            return dot_q2_0_neon(row, x, n);
+        case T_IQ3_XXS:
+            return dot_iq3_xxs_neon(row, x, n);
 #endif
         case T_MXFP4: {
 #if RUNNER_AVX2

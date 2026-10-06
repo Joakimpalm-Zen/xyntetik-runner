@@ -134,6 +134,7 @@ bench-err.*.txt
 metal-*.out
 metal-*.err
 shared-noid.out
+test-qwen4exp.*.out
 split-guard.out
 # renamed from test-split-guard 2026-08-08: the old name collided with the
 # .PHONY make target, which left the binary unbuilt and the guard dead

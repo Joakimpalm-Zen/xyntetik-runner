@@ -2186,6 +2186,7 @@ static int quantize_gguf_plan_inner(const char *in_path, const char *out_path, i
             { T_IQ3_S, 26, "IQ3_S" }, { T_IQ1_S, 24, "IQ1_S" },
             { T_IQ1_M, 31, "IQ1_M" }, { T_IQ4_NL, 25, "IQ4_NL" },
             { T_IQ4_XS, 30, "IQ4_XS" }, { T_MXFP4, 38, "MXFP4" },
+            { T_NVFP4, 39, "NVFP4" }, { T_Q2_0, 41, "Q2_0" },   // llama.h LLAMA_FTYPE
         };
         uint64_t counts[sizeof(FT) / sizeof(*FT)] = {0};
         uint64_t f32s = 0;

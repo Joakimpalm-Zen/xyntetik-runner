@@ -94,6 +94,24 @@ typedef struct {
     gguf_tensor *ple_gate;       // [n_embd, n_embd_ple]  (blk.N.inp_gate)
     gguf_tensor *ple_proj;       // [n_embd_ple, n_embd]  (blk.N.proj)
     float       *ple_post_norm;  // [n_embd]              (blk.N.post_norm)
+    // qwen4exp hyper-connections (DeepSeek-V4 style): the residual is HC
+    // parallel streams [hc * n_embd] per token in place of the pre-norms.
+    // Two mixers per block, one before the token mixer and one before the
+    // FFN: a grouped RMS norm over each stream with a [hc * n_embd] gamma
+    // (the converter folded 1 + w), a low-rank down/up producing the mixed
+    // n_embd input, and an inject [hc * n_embd -> hc] whose 2*sigmoid(./hc)
+    // scatters the block output back into every stream.
+    float       *hc_attn_norm, *hc_ffn_norm;        // [hc * n_embd] F32
+    gguf_tensor *hc_attn_down, *hc_attn_up, *hc_attn_inject;
+    gguf_tensor *hc_ffn_down,  *hc_ffn_up,  *hc_ffn_inject;
+    // qwen4exp PLE n-gram layer (one block carries it): the hashed rows of
+    // the n-gram table are gathered on the host (model_ple4_rows), then
+    // key/value projections, three grouped norms, a dilated depthwise conv
+    // and a SiLU fold them into every stream.
+    bool         ple4;
+    gguf_tensor *ple4_key, *ple4_value, *ple4_conv1d;   // [n_embd, hc*n_embd], [n_embd, n_embd], [K, hc*n_embd]
+    float       *ple4_norm_key, *ple4_norm_query, *ple4_norm_conv;  // [hc * n_embd] F32
+    float       *ple4_conv_w;      // [hc * n_embd][conv_kernel] F32, dequantized at load
     // gpt-oss: router bias [n_expert] and per-expert FFN biases. The expert
     // biases are added to each expert's own gate/up/down result BEFORE the
     // routing weight multiplies it (llama.cpp build_moe_ffn ordering).
@@ -133,6 +151,7 @@ typedef struct {
     // for every other arch, which always runs mixer THEN FFN.
     bool         skip_mixer, skip_ffn;
     gguf_tensor *wqkv, *wq_gate, *ssm_conv, *ssm_beta, *ssm_alpha, *ssm_out;
+    float *ssm_conv_w;   // qwen35: ssm_conv dequantized once at load, [convdim][kernel]
     float       *ssm_dt, *ssm_a, *ssm_norm_w;
     // Granite-4 h-series (`granitehybrid`) Mamba-2 mixer. A DIFFERENT tensor
     // set from Gated DeltaNet: it carries an input projection (zxBCdt), a
@@ -405,6 +424,24 @@ typedef struct {
     // kv_from_start < n_layer turns on shared KV, where every layer at or
     // past it computes no K/V of its own and reads kv_src[l] instead.
     int    n_embd_ple;
+    // qwen4exp: hyper-connection count and low rank; the head mixer that
+    // replaces output_norm; the wide residual [n_batch][hc * n_embd]; the
+    // inject scratch [n_batch][hc]; the PLE hash geometry and table.
+    bool   hyper_conn;
+    const int32_t *fwd_tokens;                   // this forward's token ids (PLE hash)
+    int    hc_count, hc_low_rank;
+    float       *hc_head_norm;                  // [hc * n_embd]
+    gguf_tensor *hc_head_down, *hc_head_up;
+    float       *x_hc, *hc_inject, *hc_mix_lo;  // scratch
+    int    ple4_layer;                           // -1 when none
+    int    ple4_ngram, ple4_heads_per_gram, ple4_n_heads, ple4_conv_kernel;
+    int    ple4_head_dim;                        // embedding_length_per_layer_input
+    int32_t ple4_eos;
+    uint64_t ple4_mult[8];
+    uint32_t ple4_off[64], ple4_vocab[64];
+    gguf_tensor *ple4_table;                     // [ple4_head_dim, rows], part 2
+    int32_t *ple4_prev;                          // [n_ctx] token history for the hash
+    float  *ple4_emb, *ple4_tmp, *ple4_conv_hist; // scratch
     int    kv_from_start;
     int   *kv_src;               // [n_layer] cache-owning layer for each layer
     gguf_tensor *ple_tok_embd;   // [n_embd_ple * n_layer, n_vocab]
@@ -1171,5 +1208,8 @@ void         model_batch_free(model_batch *b);
 bool model_batch_engaged(const model_batch *b);
 bool model_batch_decode(model_batch *b, const int *idx, const int32_t *tok,
                         const int *pos, int n, float **out);
+
+// RUNNER_DEBUG_TIME=1 stage timing summary (stderr), no-op when unset
+void model_debug_time_report(void);
 
 #endif // RUNNER_MODEL_H

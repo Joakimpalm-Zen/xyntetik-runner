@@ -7,6 +7,36 @@ to the exact build, and what is not covered. Releases before 1.0.0 made no
 such promise (the `-alpha` suffix was retired at v0.2.0). Entries below the
 rename keep the names that were true when they were written.
 
+## Unreleased
+
+- **`qwen4exp` (Qwen3.8-Flash-Next) runs on the CPU, EXPERIMENTAL.** The
+  loader and CPU forward admit the architecture: four persistent
+  hyper-connection streams with the output norm as the final mixer, the
+  Engram n-gram PLE block (its conv history carried across batches, so a
+  chunked prefill equals a single-shot one), Gated DeltaNet blocks sharing
+  the Qwen3.5 path with Qwen3.8's sigmoid output gate, full attention run
+  dense under the indexer's 2,048-token budget (a longer context is refused
+  with the cap named; QSA, CUDA and Metal follow), 512 routed experts plus
+  the gated shared expert. Anchored against llama.cpp b11433 on a toy
+  fixture at 56 of 56 positions (max |delta logprob| 3.3e-06); the release
+  file loads CPU-only on a 250 GB box and its greedy continuation matches
+  llama.cpp's. The publisher's fp32 reference pass has not run, which is
+  why the row says experimental (`docs/qwen4exp-admission-evidence/`).
+- **Q2_0 (ggml type 42) is read**, the format Qwen3.8-Flash-Next's GSQ
+  release stores some routed experts in; Q1_0 is named in refusals.
+- **MoE decode dispatches every selected expert's gate and up in one pool
+  dispatch and every down in a second** instead of three dispatches per
+  expert; byte-identical output (`RUNNER_MV_FUSE=0` restores the old
+  shape). With ten experts and 48 layers that removes about 1,300
+  fork/join barriers a token.
+- **Qwen3.5/3.8 DeltaNet heads run across the thread pool** and the conv
+  taps are dequantized once at load. On Qwen3.8-Flash-Next CPU-only decode
+  on the Blackwell's 16 lane cores went from 5.9 to 9.3 tok/s (llama.cpp
+  b11433 on the same cores: 9.5); prefill is still a third of llama.cpp's.
+- `RUNNER_DEBUG_TIME=1` prints wall-clock per block stage at the end of a
+  CLI run; `scripts/anchor-llama-logprobs.py` collects the llama.cpp column
+  of a per-position logprob anchor from a running llama-server.
+
 ## v1.0.2 - 2026-10-06
 
 - **A client that stops reading a large GET no longer blocks admission.**
