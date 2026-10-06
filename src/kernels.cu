@@ -540,6 +540,39 @@ extern "C" __global__ void k_mv_bf16(MV_PARAMS) {
     MV_TAIL;
 }
 
+// Split-K GEMV for the few-long-rows shape (qwen4exp's hyper-connection
+// down projections: 320 rows of 10,240, and the 4-row inject). A warp per
+// row leaves most of the device idle and the call latency-bound; here block
+// (row, split) reduces one K-slice into partial[row*splits+split] in a fixed
+// tree, and k_splitk_reduce sums the splits in index order, so the result is
+// deterministic (no atomics) and the same for every launch of the same shape.
+extern "C" __global__ void k_mv_bf16_splitk(const uchar *wb, const float *x, float *partial,
+                                            mv_args a, int splits) {
+    __shared__ float red[256];
+    int row = blockIdx.x, sp = blockIdx.y, tid = threadIdx.x;
+    int slice = a.n_in / splits, i0 = sp * slice;
+    const unsigned short *rw = (const unsigned short *)(wb + a.w_off) + (ulong64)row * a.n_in + i0;
+    const float *xr = x + i0;
+    float s = 0;
+    for (int i = tid; i < slice; i += blockDim.x) s += bf16f(rw[i]) * xr[i];
+    red[tid] = s;
+    __syncthreads();
+    for (int off = blockDim.x / 2; off > 0; off >>= 1) {
+        if (tid < off) red[tid] += red[tid + off];
+        __syncthreads();
+    }
+    if (tid == 0) partial[(ulong64)row * splits + sp] = red[0];
+}
+
+extern "C" __global__ void k_splitk_reduce(const float *partial, float *y, const float *bias,
+                                           int n_out, int splits, int has_bias) {
+    int row = blockIdx.x * blockDim.x + threadIdx.x;
+    if (row >= n_out) return;
+    float s = 0;
+    for (int sp = 0; sp < splits; sp++) s += partial[(ulong64)row * splits + sp];
+    y[row] = has_bias ? s + bias[row] : s;
+}
+
 extern "C" __global__ void k_mv_bf16_b(MV_PARAMS) {
     MV_HEAD_B;
     const unsigned short *rw =

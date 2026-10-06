@@ -337,6 +337,7 @@ typedef struct gpu_weights {
     CUdeviceptr *hc_an, *hc_fn;         // qwen4exp per-stream mixer gammas [hc*n_embd]
     CUdeviceptr hc_head_norm;           // qwen4exp head mixer gamma
     CUfunction  f_rmsnorm_grouped, f_hc_gate_mean, f_hc_combine, f_silu_scale;
+    CUfunction  f_mv_bf16_splitk, f_splitk_reduce;
     CUdeviceptr *pan, *pfn;             // gemma3 sandwich norms, may be 0
     CUdeviceptr *bq, *bk, *bv, *bo;     // per layer, may be 0
     CUdeviceptr *qn, *kn;               // qwen3 per-head q/k norms
@@ -365,11 +366,14 @@ typedef struct gpu_weights {
 // One per model_t: the KV cache this stream is decoding into, its activation
 // scratch, and its own stream/graph. Nothing here is shared, so one sequence
 // failing, resetting, or being unloaded cannot touch another's.
+enum { SPLITK_PARTIALS = 65536 };   // floats: n_out * splits of one split-K GEMV call
+
 typedef struct {
     gpu_weights *sw;                    // shared weights, refcounted
     CUdeviceptr kc, vc;
     CUdeviceptr x, xb, xb2, q, kt, vt, hb, hb2, att, attn_part, logits;
     CUdeviceptr x_hc, hc_xn, hc_lo, hc_gate, hc_inject;  // qwen4exp wide residual + mixer scratch
+    CUdeviceptr splitk;                                   // split-K partials, SPLITK_PARTIALS floats
     CUdeviceptr xsc;                    // [TC_N] per-column |x| max for the scaled TC GEMMs
     // sparse-MoE: router logits [MVB][n_expert], per-slot expert down-out
     // [rows][n_embd] (rows = max(used, MVB); the eager path uses column 0)
@@ -1468,6 +1472,7 @@ static gpu_weights *shared_build(model_t *m, size_t act_bytes, int max_hd,
             { &w->f_rmsnorm_grouped, "k_rmsnorm_grouped" },
             { &w->f_hc_gate_mean, "k_hc_gate_mean" }, { &w->f_hc_combine, "k_hc_combine" },
             { &w->f_silu_scale, "k_silu_scale" },
+            { &w->f_mv_bf16_splitk, "k_mv_bf16_splitk" }, { &w->f_splitk_reduce, "k_splitk_reduce" },
             { &w->f_rope,       "k_rope" },      { &w->f_store,  "k_store_kv" },
             { &w->f_attn,       "k_attn" },      { &w->f_silu,   "k_silu_mul" },
             { &w->f_attn_dec,   "k_attn_dec" },  { &w->f_attn_merge, "k_attn_merge" },
@@ -2192,6 +2197,7 @@ bool gpu_init(model_t *m) {
             CK(cu.MemAlloc(&g->hc_gate,   sizeof(float) * MVB * hcd));
             CK(cu.MemAlloc(&g->hc_lo,     sizeof(float) * MVB * m->hc_low_rank));
             CK(cu.MemAlloc(&g->hc_inject, sizeof(float) * MVB * m->hc_count));
+            CK(cu.MemAlloc(&g->splitk,    sizeof(float) * SPLITK_PARTIALS));
         }
         CK(cu.MemAlloc(&g->q,      sizeof(float) * MVB * q_dim));
         CK(cu.MemAlloc(&g->kt,     sizeof(float) * MVB * kv_dim));
@@ -2811,6 +2817,21 @@ static bool enc_mv(gpu_t *g, model_t *m, gguf_tensor *w, CUdeviceptr x,
         return launch_tiled(g, g->sw->f_gemm[w->type], (n_out + 7) / 8, 8 * 32,
                             weights, x, y, a, b,
                             w->type == T_Q8_0 ? Q8_COLS : MVT, false, 1.0f);
+    }
+    // Decode (batch==1), few long BF16 rows (n_out <= 1024, n_in >= 2048):
+    // split-K, see k_mv_bf16_splitk. splits is a power of two dividing n_in/32
+    // with n_out*splits around 4,096 blocks, bounded by the partials buffer.
+    if (batch == 1 && w->type == T_BF16 && w->scale == 1.0f && g->splitk &&
+        n_out <= 1024 && n_in >= 2048 && g->sw->f_mv_bf16_splitk) {
+        int splits = 1;
+        while (splits < 64 && n_out * splits * 2 <= 4096 &&
+               (n_in % (splits * 2 * 32)) == 0 &&
+               (size_t)n_out * splits * 2 <= SPLITK_PARTIALS) splits *= 2;
+        void *ps[] = { &weights, &x, &g->splitk, &a, &splits };
+        if (!launch(g, g->sw->f_mv_bf16_splitk, n_out, splits, 1, 256, ps)) return false;
+        int hb = bias != 0;
+        void *pr[] = { &g->splitk, &y, &b, &n_out, &splits, &hb };
+        return launch(g, g->sw->f_splitk_reduce, (n_out + 255) / 256, 1, 1, 256, pr);
     }
     // Decode (batch==1) uses the coalesced lane-per-element GEMV where available
     // (Q8_0/Q4_K); same 4-rows/block shape, so capture-compatible with no
