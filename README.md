@@ -18,8 +18,6 @@
   <a href="MANUAL.md">Manual</a>
 </p>
 
-## Why you would want it
-
 Running a model yourself is mostly guesswork. Will it fit? Did shrinking it
 break it? Why is my laptop out of memory when nothing is running? Runner
 exists to replace those guesses with answers you can check.
@@ -40,7 +38,7 @@ exists to replace those guesses with answers you can check.
 
 It takes about a minute to try: [quick start](#quick-start).
 
-## How it is built
+## What is it?
 
 - **One file.** A single program written from scratch in plain C. No Python,
   no installer, nothing underneath it. Download it and run it.
