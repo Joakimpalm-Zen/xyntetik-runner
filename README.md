@@ -139,9 +139,6 @@ one of these.
   GENESIS: eighteen preregistered experiments on 0.7M-parameter models that
   only ever saw programs they ran themselves. Read what survived, and
   everything that did not.
-- **[Smaller than the official 4-bit file, and closer to the original](https://huggingface.co/collections/Joakimpalm-Zen/runner-releases-6aa98baaed03bba0e8a561ae)**
-  That is the Qwen3-30B in Runner Releases, the files built to be downloaded
-  and served with Runner. Start here if you want something to run tonight.
 
 Each card says what was changed, how it measures against its original, and
 where it runs.
