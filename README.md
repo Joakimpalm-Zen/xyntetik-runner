@@ -1,10 +1,43 @@
 # Xyntetik Runner
 
-**Model files you can check, and the open engine behind them.** Xyntetik
-publishes compressed and modified versions of open models, each measured
-against its original. Runner is the engine that measures and serves them, and
-builds most of them: one native binary in plain C for CPU, CUDA and Metal,
-with no Python or third-party runtime underneath.
+**Run AI models on your own machine, and know exactly what you are getting.**
+
+## Why you would want it
+
+Running a model yourself is mostly guesswork. Will it fit? Did shrinking it
+break it? Why is my laptop out of memory when nothing is running? Runner
+exists to replace those guesses with answers you can check.
+
+- **Ask before you download.** Runner reads the first few megabytes of a
+  model and tells you whether it fits your machine, and how. It called the
+  real split in 70 of 72 tests and was never too optimistic.
+- **Shrink a model and see what it cost.** One command and a one-line plan
+  built a Qwen3-30B that is smaller than the official 4-bit file and closer
+  to the original.
+- **Read longer documents in the same memory.** The context cache fits in
+  about 41% of the usual space, with full agreement on models from 4B to 30B.
+- **Leave it running.** A 63 GB model sitting idle holds 35 MB of your
+  memory. On the same Mac, llama-server holds 60.8 GB.
+- **Trust what comes out.** A tool call still parses when the model runs out
+  of words, a fine-tune comes out the same twice, byte for byte, and any run
+  can be signed and replayed by someone else.
+
+It takes about a minute to try: [quick start](#quick-start).
+
+## How it is built
+
+- **One file.** A single program written from scratch in plain C. No Python,
+  no installer, nothing underneath it. Download it and run it.
+- **Runs on what you have.** Ordinary processors, NVIDIA graphics cards and
+  Apple Silicon, on Linux, macOS and Windows.
+- **Speaks what your tools speak.** Standard GGUF model files and the OpenAI
+  and Anthropic APIs, so your apps and coding agents connect without changes.
+- **Measured, not assumed.** Twelve model families have been scored against
+  their publishers' own implementations, and Runner is closer to the
+  reference than llama.cpp on 21 of 22 rows. A model it does not know is
+  refused by name, never guessed at.
+- **Yours.** Free forever under Apache 2.0, built in Sweden, and your prompts
+  never leave your machine.
 
 <p align="center">
   <a href="https://buy.stripe.com/9B69AUddpdx9auHgP27N600"><img src="site/assets/support-button.svg" alt="Support this work" height="44"></a>
