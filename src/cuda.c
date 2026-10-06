@@ -2712,8 +2712,20 @@ static bool tc_promoted(const model_t *m, int type) {
     // at token 20. That is the MoE amplification the owner's decision was
     // about, now measured. afmoe has no row: its router has no device kernel
     // and the model runs on the CPU.
+    // qwen4exp PROMOTED 2026-10-06 (experimental family) on the release
+    // file Qwen3.8-Flash-Next GSQ-RCO IQ3_S with the experts on the host
+    // (--cpu-moe, the only placement whose dense half fits the 24 GB slice):
+    // forced on against forced off, token-identical on the five
+    // kernel-verify prompts at 32 and at 64 tokens, and byte-identical
+    // greedy-32 on the 481-token prompt and greedy-64 on the 3,675-token
+    // prompt (docs/qwen4exp-admission-evidence/). The promotion covers what
+    // the TC prefill touched there: the dense projections (Q5_K, Q3_K,
+    // IQ4_XS, BF16 mixers). With expert layers on the device the codebook
+    // expert GEMMs would join the TC path under the same arch flag; that
+    // placement was measured only through the eager route today, so a
+    // device-expert row is still owed before it is called covered (R4.26.8).
     static const char *archs[] = { "llama", "phi3", "gemma4", "qwen3",
-                                   "qwen35",
+                                   "qwen35", "qwen4exp",
                                    "mistral", "gemma3", "smollm", "granite",
                                    "muse-glimmer", "qwen2",
                                    "apertus", "nemotron_h", "granitehybrid" };
