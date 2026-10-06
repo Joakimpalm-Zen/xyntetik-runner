@@ -350,6 +350,51 @@ extern "C" __global__ void k_gemv_q4_0(MV_PARAMS) {
     MV_TAIL;
 }
 
+// Q2_0 (ggml type 42): 64 codes per 18-byte block, code j at bits 2*(j%4) of
+// byte j/4, value (code - 1) * d; the device twin of quants.c dq_q2_0.
+extern "C" __global__ void k_mv_q2_0(MV_PARAMS) {
+    MV_HEAD;
+    int nb = a.n_in / 64;
+    const uchar *rw = wb + a.w_off + (ulong64)row * nb * 18;
+    float s = 0;
+    for (int b = lane; b < nb; b += 32) {
+        const uchar *blk = rw + (ulong64)b * 18;
+        float d = f16f(blk);
+        const uchar *q = blk + 2;
+        const float *xp = x + (ulong64)b * 64;
+        float t = 0;
+        for (int j = 0; j < 16; j++) {
+            uchar c = q[j];
+            t += ((int)(c & 3) - 1) * xp[4 * j]
+               + ((int)((c >> 2) & 3) - 1) * xp[4 * j + 1]
+               + ((int)((c >> 4) & 3) - 1) * xp[4 * j + 2]
+               + ((int)(c >> 6) - 1) * xp[4 * j + 3];
+        }
+        s += d * t;
+    }
+    MV_TAIL;
+}
+
+extern "C" __global__ void k_mv_q2_0_b(MV_PARAMS) {
+    MV_HEAD_B;
+    int nb = a.n_in / 64;
+    const uchar *rw = wb + a.w_off + (ulong64)row * nb * 18;
+    for (int b = lane; b < nb; b += 32) {
+        const uchar *blk = rw + (ulong64)b * 18;
+        float d = f16f(blk);
+        const uchar *q = blk + 2;
+        ulong64 base = (ulong64)b * 64;
+        for (int j = 0; j < 16; j++) {
+            uchar c = q[j];
+            MV_FMA(d * (float)((int)(c & 3) - 1),        base + 4 * j);
+            MV_FMA(d * (float)((int)((c >> 2) & 3) - 1), base + 4 * j + 1);
+            MV_FMA(d * (float)((int)((c >> 4) & 3) - 1), base + 4 * j + 2);
+            MV_FMA(d * (float)((int)(c >> 6) - 1),       base + 4 * j + 3);
+        }
+    }
+    MV_TAIL_B;
+}
+
 extern "C" __global__ void k_mv_q4_0(MV_PARAMS) {
     MV_HEAD;
     int nb = a.n_in / 32;

@@ -302,7 +302,7 @@ typedef struct gpu_weights {
     // the highest CUDA serves: these arrays are indexed by ggml type, and a
     // CPU-supported type with no CUDA kernel must land on a NULL slot and
     // decline — never index past the table.
-    #define KT_N (T_NVFP4 + 1)
+    #define KT_N (T_Q2_0 + 1)   // ggml type ids are sparse; the highest decoded one bounds the tables
     CUfunction  f_mv[KT_N], f_mvb[KT_N];// indexed by ggml type; _b = tile variant
     CUfunction  f_mvt[KT_N];            // transposed matvec (training backward)
     CUfunction  f_lora_a, f_lora_b;     // adapter at inference (D2 on CUDA)
@@ -1493,6 +1493,7 @@ static gpu_weights *shared_build(model_t *m, size_t act_bytes, int max_hd,
             { &w->f_colabsmax,  "k_colabsmax" },
             { &w->f_mv[T_F32],  "k_mv_f32" },    { &w->f_mv[T_F16],  "k_mv_f16" },
             { &w->f_mv[T_Q8_0], "k_mv_q8_0" },   { &w->f_mv[T_Q4_0], "k_mv_q4_0" },
+            { &w->f_mv[T_Q2_0], "k_mv_q2_0" },
             { &w->f_mv[T_Q4_1], "k_mv_q4_1" },   { &w->f_mv[T_Q5_0], "k_mv_q5_0" },
             { &w->f_mv[T_Q5_1], "k_mv_q5_1" },   { &w->f_mv[T_Q4_K], "k_mv_q4_K" },
             { &w->f_mv[T_Q5_K], "k_mv_q5_K" },   { &w->f_mv[T_Q6_K], "k_mv_q6_K" },
@@ -1520,6 +1521,7 @@ static gpu_weights *shared_build(model_t *m, size_t act_bytes, int max_hd,
             { &w->f_mv[T_IQ1_M], "k_mv_iq1_m" },
             { &w->f_mvb[T_F32],  "k_mv_f32_b" },  { &w->f_mvb[T_F16],  "k_mv_f16_b" },
             { &w->f_mvb[T_Q8_0], "k_mv_q8_0_b" }, { &w->f_mvb[T_Q4_0], "k_mv_q4_0_b" },
+            { &w->f_mvb[T_Q2_0], "k_mv_q2_0_b" },
             { &w->f_mvb[T_Q4_1], "k_mv_q4_1_b" }, { &w->f_mvb[T_Q5_0], "k_mv_q5_0_b" },
             { &w->f_mvb[T_Q5_1], "k_mv_q5_1_b" }, { &w->f_mvb[T_Q4_K], "k_mv_q4_K_b" },
             { &w->f_mvb[T_Q5_K], "k_mv_q5_K_b" }, { &w->f_mvb[T_Q6_K], "k_mv_q6_K_b" },
