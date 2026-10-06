@@ -21,6 +21,10 @@ enum ggml_type {
     T_IQ1_M = 29,
     T_BF16 = 30,
     T_MXFP4 = 39,   // OCP microscaling FP4 (E2M1 codes + per-block E8M0 scale); gpt-oss
+    T_Q1_0 = 41,    // 1-bit (llama.cpp ggml type 41, 128/block, f16 scale):
+                    // RECOGNIZED, NOT DECODED, named for the refusal
+    T_Q2_0 = 42,    // 2-bit {-1,0,+1,+2} x f16 scale, 64/block (llama.cpp ggml
+                    // type 42; the routed experts of Qwen3.8-Flash-Next GSQ)
     T_NVFP4 = 40,   // NVIDIA FP4 (E2M1 codes + per-block UE4M3 scale, 16/block);
                     // RECOGNIZED, NOT DECODED: named so a refusal says NVFP4
                     // instead of "?" (first seen in the wild on a DGX Spark,

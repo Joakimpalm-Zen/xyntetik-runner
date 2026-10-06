@@ -82,6 +82,11 @@ typedef struct { uint8_t e; uint8_t qs[QK / 2]; }               block_mxfp4; // 
 #define QK_NVFP4 64
 #define QK_NVFP4_SUB 16
 typedef struct { uint8_t d[QK_NVFP4 / QK_NVFP4_SUB]; uint8_t qs[QK_NVFP4 / 2]; } block_nvfp4; // 36
+// Q2_0 (llama.cpp ggml-common.h, byte-identical): one f16 scale, then 64
+// two-bit codes packed four per byte, element j at bits (j%4)*2 of byte j/4;
+// code q decodes to (q - 1) * d, so the levels are {-1, 0, +1, +2} * d.
+#define QK2_0 64
+typedef struct { f16_t d; uint8_t qs[QK2_0 / 4]; } block_q2_0; // 18
 // codebook i-quants (llama.cpp b10353 ggml-common.h shapes, byte-identical)
 typedef struct { f16_t d; uint16_t qs[QK_K / 8]; } block_iq2_xxs; // 66
 typedef struct { f16_t d; uint16_t qs[QK_K / 8]; uint8_t scales[QK_K / 32]; } block_iq2_xs; // 74
@@ -117,6 +122,7 @@ int ggml_block_size(int type) {
         case T_Q4_0: case T_Q4_1: case T_Q5_0: case T_Q5_1: case T_Q8_0:
         case T_IQ4_NL: case T_MXFP4: return QK;
         case T_NVFP4: return QK_NVFP4;
+        case T_Q2_0: return QK2_0;
         case T_Q4_K: case T_Q5_K: case T_Q6_K: case T_Q2_K: case T_Q3_K:
         case T_IQ4_XS:
         case T_IQ2_XXS: case T_IQ2_XS: case T_IQ2_S:
@@ -152,6 +158,7 @@ size_t ggml_type_size(int type) {
         case T_IQ1_M: return sizeof(block_iq1_m);
         case T_MXFP4: return sizeof(block_mxfp4);
         case T_NVFP4: return sizeof(block_nvfp4);
+        case T_Q2_0: return sizeof(block_q2_0);
         default:     return 1;
     }
 }
@@ -173,6 +180,8 @@ const char *ggml_type_name(int type) {
         // named but not decoded: the refusal names the format and the reader
         // learns "runner lacks NVFP4", not "my file is garbage"
         case T_NVFP4: return "NVFP4";
+        case T_Q2_0: return "Q2_0";
+        case T_Q1_0: return "Q1_0";
         default: return "?";
     }
 }
@@ -185,6 +194,7 @@ bool ggml_type_supported(int type) {
         case T_IQ4_NL: case T_IQ4_XS: case T_MXFP4: case T_NVFP4:
         case T_IQ2_XXS: case T_IQ2_XS: case T_IQ2_S:
         case T_IQ3_XXS: case T_IQ3_S: case T_IQ1_S: case T_IQ1_M:
+        case T_Q2_0:
             return true;
         default:
             return false;
@@ -192,6 +202,13 @@ bool ggml_type_supported(int type) {
 }
 
 // ---------------------------------------------------------------- dequant
+
+// Q2_0, per ggml dequantize_row_q2_0: 00 = -1, 01 = 0, 10 = +1, 11 = +2.
+static void dq_q2_0(const block_q2_0 *b, float *y) {
+    const float d = f16_to_f32(b->d);
+    for (int j = 0; j < QK2_0; j++)
+        y[j] = (float)((int)((b->qs[j >> 2] >> ((j & 3) * 2)) & 3) - 1) * d;
+}
 
 static void dq_mxfp4(const block_mxfp4 *b, float *y) {
     // E8M0 block scale: the byte is a biased power-of-two exponent, 2^(e-127).
@@ -1341,6 +1358,7 @@ static void dequant_block(int type, const void *src, float *dst) {
         case T_IQ1_M: dq_iq1_m(src, dst); break;
         case T_MXFP4: dq_mxfp4(src, dst); break;
         case T_NVFP4: dq_nvfp4(src, dst); break;
+        case T_Q2_0: dq_q2_0(src, dst); break;
     }
 }
 
