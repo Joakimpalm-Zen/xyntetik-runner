@@ -22,15 +22,19 @@ with no Python or third-party runtime underneath.
 > every flag, endpoint, limit and measurement is in the [manual](MANUAL.md).
 
 **On this page:** [Files](#files) · [Quick start](#quick-start) ·
-[Make your own file](#models-and-conversion) · [Tool calls](#truncation) ·
-[Structured output](#structured-output) · [Training](#adaptation) ·
-[Receipts](#record-and-verify-a-run) · [Serving](#serving-and-apis) ·
-[Long agent turns](#reasoning-budget) · [Fit and memory](#runtime-and-hardware) ·
-[Shadow mode](#shadow-mode) · [Tray](#desktop-tray) · [More](#more)
+[Will it fit](#fit) · [Make your own file](#models-and-conversion) ·
+[More context, less memory](#long-contexts) · [Idle memory](#designed-to-stay-on) ·
+[Tool calls](#truncation) · [Training](#adaptation) ·
+[Also in the box](#more) · [All commands](#all-commands) ·
+[Prove what a model did](#record-and-verify-a-run)
 
 <a id="files"></a>
 <a id="published-artifacts"></a>
 ## Files, each with its number against the original
+
+**Result.** A Qwen3-30B file that is smaller than the official 4-bit one and
+closer to the original, a 3-bit Qwen3.8-27B that passes the bar, and a coder
+model 1.1 GB lighter that still agrees with its parent.
 
 | File | Size | Margin-qualified top-1 | Mean KLD | What was done |
 |---|---|---|---|---|
@@ -76,15 +80,57 @@ Prefer to chat in the terminal? `./runner -m model.gguf -i`.
 
 ## Features
 
+Each one starts with what it achieved, then why it exists, then how to use it.
+
+<a id="fit"></a>
+<a id="runtime-and-hardware"></a>
+### Know whether a model fits before you download it
+
+**Result.** On an RTX 3070, `--fit` named the same GPU and CPU split the
+loader then used in 70 of 72 cases and was one layer cautious in the other
+two, never optimistic (six models, two context sizes, four cache formats).
+
+**Why.** Finding out that a model does not fit usually means downloading
+20 GB and watching it crash. The answer is already written in the first few
+megabytes of the file. Runner reads just that part and tells you, with the
+arithmetic.
+
+**How.**
+
+```sh
+# fetch only the first 16 MB of a model, then ask
+curl -r 0-16777215 -L -o head.gguf \
+  https://huggingface.co/ORG/REPO/resolve/main/MODEL.gguf
+./runner --fit head.gguf -c 16384
+```
+
+```console
+  gpu           NVIDIA GeForce RTX 3070, offload budget 6.95 GiB right now
+  split         f16: 35 of 40 layers on the GPU, 1.22 GiB in RAM  | --kv q8: 39 of 40 layers on the GPU, 0.47 GiB in RAM  | ...
+  verdict       FITS — 35 of 40 layers on the GPU, 8.24 GiB of RAM to spare at ctx 16384
+```
+
+`./runner --caps` says what this machine and build can run, and
+`./runner -m model.gguf --doctor` loads a model, probes it and reports.
+[How the verdict is computed](MANUAL.md#deciding-before-you-download)
+
 <a id="models-and-conversion"></a>
 ### Make your own model file
+
+**Result.** The 17.99 GB Qwen3-30B file above came from one command and a
+one-line plan. It is smaller than the official 4-bit file and closer to the
+original: 99.50% agreement where that file reads 94.75%.
 
 **Why.** A model file is a huge table of numbers, and the usual way to shrink
 it squeezes every part the same amount, including the parts that matter most.
 Runner lets you choose which parts to squeeze and which to keep sharp, and
 then tells you how far the result drifted from the original.
 
-**How.**
+**How.** The plan that built that file, and the commands:
+
+```json
+{"default": "keep", "rules": [{"match": "_exps.weight", "type": "q4_0"}]}
+```
 
 ```sh
 # keep some tensors sharp and squeeze others, from a plan file
@@ -100,8 +146,60 @@ python3 scripts/kld-compare-raw.py --model-a out.gguf --model-b model-Q8_0.gguf 
 
 [Plan formats and limits](MANUAL.md#models-and-conversion)
 
+<a id="long-contexts"></a>
+### Fit more context in the same memory
+
+**Result.** `--kv k8v4` stores the context cache in about 41% of the usual
+bytes. On three models from 4B to 30B it agreed with the full-size cache on
+100% of clear-cut tokens (500 positions each).
+
+**Why.** While a model reads a long document it keeps notes on every word so
+far, and on a long context those notes can take more memory than you have
+left. Runner can write the notes smaller. It keeps 8 bits for the half that
+decides where to look, which measurement showed is the half that matters,
+and shrinks the other half to 4 bits.
+
+**How.**
+
+```sh
+./runner -m model.gguf --serve -c 32768 --kv k8v4
+./runner -m model.gguf --serve -c 32768 --kv q8     # the gentler setting, about half
+```
+
+`--fit` shows what each setting buys on your machine before you load anything.
+[Cache formats and their measured cost](MANUAL.md#long-contexts)
+
+<a id="designed-to-stay-on"></a>
+### A server that gives your memory back
+
+**Result.** A 63 GB model, loaded and idle on a 128 GB M5 Max, holds 35 MB of
+wired memory under Runner and 60.8 GB under llama-server. On an 8 GB M1 it is
+8 MB against 3,819 MB.
+
+**Why.** A model server usually lives on the machine you also work on. Most
+servers hold all of the model's memory until you quit them. Runner keeps the
+model as memory the operating system may take back whenever another app needs
+it, and reads it in again on the next request.
+
+**How.**
+
+```sh
+./runner -m model.gguf --serve --ttl 300          # unload after five idle minutes
+curl -X POST http://127.0.0.1:8080/unload         # or hand everything back now
+./runner -m second.gguf --serve --port 8081 --wait-for-vram   # queue for a busy GPU
+```
+
+The first reply after the memory has been taken back waits for the model to
+be read in again, about 3 s for the 3.6 GB model on that M1.
+[Idle measurements](MANUAL.md#designed-to-stay-on) ·
+[Sharing a GPU](MANUAL.md#resource-control)
+
 <a id="truncation"></a>
 ### Tool calls that survive the token limit
+
+**Result.** Six engines, one tool call cut short by the token limit. Runner
+was the only one to return a call a program could run, at every budget from
+1 to 16 tokens.
 
 **Why.** A model only gets so many words per reply. If it runs out halfway
 through filling in a form for a tool, most engines hand your program half a
@@ -117,41 +215,22 @@ a call cut short by `max_tokens` still parses, and
 ```
 
 Measured on the same prompt and schema against vLLM, llama.cpp, Ollama,
-TensorRT-LLM and SGLang, Runner was the only engine that returned an
-executable call at every budget from 1 to 16 tokens.
+TensorRT-LLM and SGLang.
 [Method and raw responses](docs/truncation-benchmark.md) ·
 [Details](MANUAL.md#truncation)
-
-<a id="structured-output"></a>
-### Structured output and decisions you can gate
-
-**Why.** Programs need answers in a fixed shape, and a model that is only
-asked for JSON sometimes adds a stray word or forgets a field. Runner lets
-the model pick only words that keep the answer valid, so the shape is
-guaranteed. When the answer is a choice, it can also say how sure the model
-was, so the sure answers go straight through and the unsure ones go to a
-person.
-
-**How.**
-
-```sh
-./runner -m model.gguf -p "Return a status object" --json
-./runner -m model.gguf -p "Classify this ticket" --json-schema schema.json
-```
-
-Over the API, use `response_format` or a tool list, and add
-`"confirm_below": 0.8` to get the confidence verdict in
-`runner_telemetry.decision`.
-[Schema coverage and decision records](MANUAL.md#structured-output)
 
 <a id="adaptation"></a>
 ### Train the model file you actually serve
 
+**Result.** Two training runs wrote the same adapter, checksum for checksum,
+and an independent tester reproduced that on a Tesla T4. On Qwen3-4B at
+4 bits, exact tool calls on a held-out set went from 0.69 to 1.00, and stock
+llama.cpp scores the same adapter at the same 1.00.
+
 **Why.** Teaching a model a new habit normally means training a large
 full-precision copy and compressing it afterwards, so the model you tested is
 not quite the one you ship. Runner trains a small add-on, a LoRA adapter,
-directly on the compressed file you already run. Run the training twice and
-you get the same adapter, byte for byte.
+directly on the compressed file you already run, with no Python stack.
 
 **How.**
 
@@ -161,14 +240,77 @@ you get the same adapter, byte for byte.
 ./runner -m base-Q4_K_M.gguf --lora adapter.gguf --serve
 ```
 
-On Qwen3-4B at Q4_K_M, exact tool calls on a held-out set went from 0.69 to
-1.00, and stock llama.cpp scores the same adapter at the same 1.00. Serve the
-adapter with `--lora`, or merge it into a Q8_0 or F16 file.
+It is built for small, targeted datasets on dense models (Llama, Mistral,
+Qwen2.5, Granite 4.x, Gemma 3 and 4). Serve the adapter with `--lora`, or
+merge it into a Q8_0 or F16 file.
 [Walkthrough](docs/train-lora-on-quantized-gguf.md) ·
 [Supported architectures](MANUAL.md#adaptation)
 
+<a id="more"></a>
+## Also in the box
+
+- <a id="serving-and-apis"></a>**OpenAI and Anthropic APIs.** Chat
+  Completions, Responses, Completions, Embeddings and Anthropic Messages on
+  `http://127.0.0.1:8080`, with each model family's own tool format.
+  OpenCode, Claude Code, Codex CLI, Continue, Cline and pi are checked
+  against it every release. [Endpoints](MANUAL.md#endpoints) ·
+  [Coding-agent setup](MANUAL.md#coding-agent-evidence)
+- <a id="structured-output"></a>**Structured output.** `--json`,
+  `--json-schema FILE` or the API's `response_format` guarantee the shape of
+  the answer, and `"confirm_below": 0.8` reports whether the model was sure
+  enough to skip a human. [Details](MANUAL.md#structured-output)
+- **Rerank without a second model.** `POST /v1/rerank` scores documents
+  against a query with the model that is already loaded.
+  [Details](MANUAL.md#endpoints)
+- **A `/metrics` endpoint.** Prometheus counters for tokens, timings, memory
+  and the prefix cache, always on with `--serve`.
+  [Details](MANUAL.md#health-and-metrics)
+- **Multi-file models load as they are.** A standard split GGUF set loads
+  from any of its parts, with no merge step.
+  [Details](MANUAL.md#models-and-conversion)
+- **Expert layers in system RAM.** `--cpu-moe` keeps a mixture-of-experts
+  model's expert layers off a small graphics card.
+  [Details](MANUAL.md#placement-and-memory)
+- <a id="reasoning-budget"></a><a id="loop-guard"></a>**Long thinking turns
+  that finish.** `--reasoning-budget 512` caps how long a model thinks out
+  loud and `--loop-guard` closes a turn that has started repeating itself.
+  [Reasoning budget](MANUAL.md#reasoning-budget) ·
+  [Loop guard](MANUAL.md#loop-guard)
+- <a id="shadow-mode"></a><a id="shadow-mode-what-could-your-local-model-have-done"></a>**Shadow
+  mode.** `runner --shadow-mode -m model.gguf` retries your own finished
+  coding tasks with a local model under your own tests and keeps score.
+  [Details](MANUAL.md#shadow-mode-what-could-your-local-model-have-done)
+- <a id="desktop-tray"></a>**Desktop tray.** On macOS and Windows an icon
+  shows which models are loaded and starts or stops them.
+  [Details](MANUAL.md#desktop-tray)
+- **Draft decoding.** `--draft small.gguf`, `--mtp` or `--draft-lookup`.
+  [Details](MANUAL.md#runtime-and-hardware)
+- **Pause and resume a generation.** Session images with `--sessions DIR`.
+  [Details](docs/session-images.md)
+- **Container image and clients.** `ghcr.io/joakimpalm-zen/xyntetik-runner`,
+  a [Python client](python/README.md) and a
+  [TypeScript client](clients/typescript/README.md).
+  [Container](MANUAL.md#container-image)
+- **What loads.** 19 architectures and 24 weight formats, verified on
+  download with `-hf`. [Support matrix](MANUAL.md#support-matrix)
+- **How Runner compares.** Closer to the publisher's reference than
+  llama.cpp on 21 of 22 measured rows, and level or ahead on the reference's
+  chosen token on 20 of 22. [Evidence](MANUAL.md#evidence-and-tradeoffs) ·
+  [Speed tables](docs/benchmarks.md)
+
+<a id="all-commands"></a>
+## All commands
+
+**The complete list of Runner's commands and flags is the
+[command-line reference](MANUAL.md#command-line-reference)**, and every
+endpoint is in the [API reference](MANUAL.md#serving-and-apis).
+`./runner --help` prints the same list.
+
 <a id="record-and-verify-a-run"></a>
-### Record and verify a run
+## Prove what a model did
+
+**Result.** `scripts/audit-demo.sh` signs a 1,000-token record, replays it
+and refuses three forgeries, in under a minute on an 8 GB Mac.
 
 **Why.** A chat log is only text, and anyone could have typed it. If you have
 to show what a model really said, you need a record that someone else can run
@@ -182,123 +324,12 @@ replays it.
 ./runner -m model.gguf --verify run.json     # VERIFIED, DIVERGED or UNVERIFIABLE
 ```
 
-`--keygen` and `--sign-key` sign a record, and `--export-pack` gathers a
-server's receipts into one folder a reviewer checks offline with
-`--check-pack`. `scripts/audit-demo.sh` runs the whole chain in under a
-minute on an 8 GB Mac.
+Around that core: signed and chained receipts (`--keygen`, `--sign-key`),
+evidence packs a reviewer checks offline (`--export-pack`, `--check-pack`),
+signature checks on the model file itself (`--model-sig`), and a text
+watermark with its detector (`--watermark`, `--detect-watermark`).
 [Details](MANUAL.md#record-and-verify-a-run) ·
 [What is and is not promised](docs/determinism-scope.md)
-
-<a id="serving-and-apis"></a>
-### Serving and APIs
-
-**Why.** Most apps and coding agents already speak the OpenAI or Anthropic
-API. Runner speaks both, so you point the app at your own machine and change
-nothing else.
-
-**How.**
-
-```sh
-./runner -m model.gguf --serve --parallel 2
-```
-
-Chat Completions, Responses, Completions, Embeddings, rerank and Anthropic
-Messages are served on `http://127.0.0.1:8080`. OpenCode, Claude Code, Codex
-CLI, Continue, Cline and pi are checked against it every release, and each
-model family uses its own native tool format.
-[Endpoints](MANUAL.md#endpoints) ·
-[Coding-agent setup](MANUAL.md#coding-agent-evidence) ·
-[Python client](python/README.md) ·
-[TypeScript client](clients/typescript/README.md)
-
-<a id="reasoning-budget"></a>
-<a id="loop-guard"></a>
-### Long agent turns that finish
-
-**Why.** Some models think out loud before they answer, and sometimes they
-keep thinking, or go round in circles, until the reply is used up. Runner can
-cap the thinking and notice the circling, then steer the model to its answer
-with the full reply budget left.
-
-**How.**
-
-```sh
-./runner -m model.gguf --serve --reasoning-budget 512 --loop-guard
-```
-
-[Reasoning budget](MANUAL.md#reasoning-budget) ·
-[Loop guard](MANUAL.md#loop-guard)
-
-<a id="runtime-and-hardware"></a>
-<a id="designed-to-stay-on"></a>
-### Know what fits, share the GPU, give memory back
-
-**Why.** Finding out that a model does not fit usually means downloading
-20 GB and watching it crash. Runner reads the first few megabytes and tells
-you. And because a model server usually sits next to your other work, Runner
-lets several programs share one graphics card and hands memory back while it
-is idle.
-
-**How.**
-
-```sh
-./runner --fit model.gguf          # will it fit, from the header alone
-./runner --caps                    # what this machine and build can run
-./runner -m model.gguf --doctor    # load, probe and report
-./runner -m model.gguf --serve --ttl 300 --wait-for-vram
-```
-
-Loaded and idle on an 8 GB M1, Runner holds 8 MB of wired memory where
-llama-server holds 3,819 MB; with a 63 GB model on a 128 GB M5 Max it is
-35 MB against 60.8 GB.
-[Hardware and placement](MANUAL.md#runtime-and-hardware) ·
-[Idle measurements](MANUAL.md#designed-to-stay-on)
-
-<a id="shadow-mode"></a>
-<a id="shadow-mode-what-could-your-local-model-have-done"></a>
-### Shadow mode
-
-**Why.** You already use a coding assistant. Shadow quietly retries your own
-finished tasks with a local model, checks each attempt against your own
-tests, and keeps score, so you know from evidence which jobs the local model
-can take over.
-
-**How.**
-
-```sh
-runner --shadow-mode -m ~/models/a.gguf     # asks first, then wires Claude Code and Codex
-```
-
-[How it works and what it stores](MANUAL.md#shadow-mode-what-could-your-local-model-have-done)
-
-<a id="desktop-tray"></a>
-### Desktop tray
-
-**Why.** A server you cannot see is one you forget is running. On macOS and
-Windows a tray icon shows which models are loaded and lets you start or stop
-them.
-
-**How.** It appears when you start a session; `./runner --tray` starts it on
-its own. [Details](MANUAL.md#desktop-tray)
-
-## More
-
-- **Faster decoding with a draft:** `--draft small.gguf`, `--mtp` or
-  `--draft-lookup`. [Details](MANUAL.md#runtime-and-hardware)
-- **Smaller context memory:** `--kv q8`, `k8v4` or `fp4`, and long contexts
-  with YaRN. [Details](MANUAL.md#long-contexts)
-- **Pause and resume a generation:** session images with `--sessions DIR`.
-  [Details](docs/session-images.md)
-- **Run it in a container:** `ghcr.io/joakimpalm-zen/xyntetik-runner`.
-  [Details](MANUAL.md#container-image)
-- **What loads:** 19 architectures and 24 weight formats.
-  [Support matrix](MANUAL.md#support-matrix)
-- **Every flag and endpoint:** [command-line reference](MANUAL.md#command-line-reference),
-  [APIs](MANUAL.md#serving-and-apis)
-- **How Runner compares:** closer to the publisher's reference than
-  llama.cpp on 21 of 22 measured rows, and level or ahead on the reference's
-  chosen token on 20 of 22. [Evidence](MANUAL.md#evidence-and-tradeoffs) ·
-  [Speed tables](docs/benchmarks.md)
 
 <a id="build-and-platforms"></a>
 ## Build from source

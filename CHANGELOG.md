@@ -9,6 +9,14 @@ rename keep the names that were true when they were written.
 
 ## Unreleased
 
+- **README features reordered by what people ask for, each led by its
+  result.** Fit before download, make your own file, context memory and idle
+  memory come first, then truncated tool calls and training; the rest is an
+  "Also in the box" list that now names rerank without a second model, the
+  `/metrics` endpoint, multi-file GGUF loading and `--cpu-moe`. A new "All
+  commands" section links the complete command-line reference, and receipts,
+  signing and watermarking sit under "Prove what a model did". Older section
+  anchors are kept.
 - **The README is a short front page and the reference is `MANUAL.md`.**
   The README went from about 4,000 lines to about 350: the published files,
   a quick start, and each feature as why it exists in plain words, how to use
