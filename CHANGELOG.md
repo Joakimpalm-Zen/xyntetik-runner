@@ -9,6 +9,17 @@ rename keep the names that were true when they were written.
 
 ## Unreleased
 
+- **The README is a short front page and the reference is `MANUAL.md`.**
+  The README went from about 4,000 lines to about 350: the published files,
+  a quick start, and each feature as why it exists in plain words, how to use
+  it and a link to the detail. Everything it used to hold moved, unchanged
+  apart from a new header, to `MANUAL.md` beside it, so every relative link
+  and section anchor there is the one it was. Release archives now carry
+  `MANUAL.md` next to `README.md`, and the shadow capability sheet cites the
+  manual. Gates that read the option reference, the minimum-GPU sentence,
+  the version strings and the Hugging Face link set read the manual (and
+  the README where the claim is the README's). The support button is
+  centred.
 - **The README and xyntetik.com lead with the published files.** Both open
   with three files and their numbers against the original, the command to
   run one and the commands to make your own; the engine's other features
@@ -708,7 +719,7 @@ rename keep the names that were true when they were written.
   under seeded sampling with a repeat penalty, greedy, `--json`,
   `--json-schema` and a Mamba-2 hybrid. A different model, a changed byte, a
   missing or different schema and an existing output file are refused. CPU,
-  solo step loop, finite `-n`. [README](README.md#cli-session-images)
+  solo step loop, finite `-n`. [manual](MANUAL.md#cli-session-images)
 
 - **Signed KV snapshots: memory with provenance (`--kv-snapshots DIR`).**
   A named context can be written to disk (`POST /v1/runner/contexts/{id}/

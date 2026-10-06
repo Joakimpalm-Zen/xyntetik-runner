@@ -32,7 +32,7 @@ curl -s localhost:8080/v1/runner/sessions/ID/resume -d '{"fork_seed":11}'
 ```
 
 The flags and fields are in the README's
-[session images](../README.md#cli-session-images) section.
+[session images](../MANUAL.md#cli-session-images) section.
 
 ## The demo
 
@@ -69,7 +69,7 @@ own gate before it is claimed.
 
 ## With transcripts
 
-A transcript ([record and verify](../README.md#record-and-verify-a-run))
+A transcript ([record and verify](../MANUAL.md#record-and-verify-a-run))
 proves what a model produced; an image lets the production continue. They
 compose: the image's header carries the same model and binary digests a
 transcript does, so a generation can be recorded up to a suspension, resumed

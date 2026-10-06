@@ -549,7 +549,7 @@ test-bare-invocation: runner
 # a script or a package manifest discovers this binary's interface, so it goes
 # to stdout and exits 0, stderr stays reserved for things that went wrong, and
 # the help flags appear in the list they head. The parity gate below then keeps
-# that list and the README from drifting apart.
+# that list and the manual (MANUAL.md) from drifting apart.
 test-help-interface: runner
 	@set -e; \
 	out=$$(./runner --help 2>/dev/null); \
@@ -568,8 +568,8 @@ test-help-interface: runner
 	rc=0; ./runner --definitely-not-a-flag >/dev/null 2>&1 || rc=$$?; \
 	[ $$rc -ne 0 ] || { \
 		echo "FAIL: an unknown option exited 0"; exit 1; }; \
-	$(PYTHON) scripts/help-parity.py --binary ./$(RUNNER_EXE) --readme README.md; \
-	echo "help interface ok (stdout, exit 0, flags listed, README in parity)"
+	$(PYTHON) scripts/help-parity.py --binary ./$(RUNNER_EXE) --readme MANUAL.md; \
+	echo "help interface ok (stdout, exit 0, flags listed, MANUAL.md in parity)"
 
 # split-guard harness: same link as the shared-weights test — the guard lives
 # in the GPU registry, so it needs the real backend

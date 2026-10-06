@@ -15,8 +15,8 @@ with a warning for the rest of 1.x, and is removed no earlier than 2.0.0.
 **Exit codes.** The documented exit codes keep their meaning, including the
 `--verify` verdicts `VERIFIED`, `DIVERGED` and `UNVERIFIABLE`.
 
-**HTTP API.** The endpoints in the README's
-[endpoint table](../README.md#endpoints) stay, and so do the request fields
+**HTTP API.** The endpoints in the manual's
+[endpoint table](../MANUAL.md#endpoints) stay, and so do the request fields
 they accept. A response field keeps its name, type and
 meaning; new fields can appear in any 1.x release, so a client must ignore
 fields it does not know. This covers the OpenAI-compatible surfaces (Chat

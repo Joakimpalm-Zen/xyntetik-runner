@@ -85,12 +85,12 @@ jobs:
             # works from the unpacked archive without a pip install
             # this step runs in the msys2 shell: PowerShell only through `powershell -Command`
             find python -name __pycache__ -type d -prune -exec rm -rf {} +
-            powershell -Command "Compress-Archive -Path '${{ matrix.artifact }}','BUILD-INFO.txt','README.md','LICENSE','python' -DestinationPath '${{ matrix.artifact }}.zip' -Force"
+            powershell -Command "Compress-Archive -Path '${{ matrix.artifact }}','BUILD-INFO.txt','README.md','MANUAL.md','LICENSE','python' -DestinationPath '${{ matrix.artifact }}.zip' -Force"
             ARCHIVE="${{ matrix.artifact }}.zip"
           else
             # python/src carries the stdlib-only client, so `runner --shadow-mode`
             # works from the unpacked archive without a pip install
-            tar --exclude='__pycache__' -czf "${{ matrix.artifact }}.tar.gz" "${{ matrix.artifact }}" BUILD-INFO.txt README.md LICENSE python/src python/README.md python/pyproject.toml
+            tar --exclude='__pycache__' -czf "${{ matrix.artifact }}.tar.gz" "${{ matrix.artifact }}" BUILD-INFO.txt README.md MANUAL.md LICENSE python/src python/README.md python/pyproject.toml
             ARCHIVE="${{ matrix.artifact }}.tar.gz"
           fi
           # one checksum file per artifact; the release job concatenates them

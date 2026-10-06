@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""Mechanical parity between `runner --help` and the README's option reference.
+"""Mechanical parity between `runner --help` and the manual's option reference.
+
+The reference moved from README.md to MANUAL.md on 2026-10-06; the `--readme`
+argument names whichever file carries it.
 
 AGENTS.md rule 5 treats the README as a tested public interface rather than a
 historical summary, and the failure mode it exists to catch is silent drift: a
@@ -13,7 +16,7 @@ terse help line and a README table. A flag that appears in either place and
 not the other is the whole signal.
 
 Usage:
-    python3 scripts/help-parity.py --binary ./runner --readme README.md
+    python3 scripts/help-parity.py --binary ./runner --readme MANUAL.md
 """
 
 import argparse
