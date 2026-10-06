@@ -1285,7 +1285,7 @@ static void model_free_weights(model_t *m) {
         free(l->ple4_norm_key); free(l->ple4_norm_query); free(l->ple4_norm_conv);
         free(l->ple4_conv_w);
         free(l->ffn_pre_norm2_w); free(l->ffn_post_norm1_w); free(l->ffn_post_norm2_w);
-        free(l->ssm_dt); free(l->ssm_a); free(l->ssm_norm_w);
+        free(l->ssm_dt); free(l->ssm_a); free(l->ssm_norm_w); free(l->ssm_conv_w);
         free(l->ssm_conv1d_b); free(l->ssm_d);
         free(l->moe_g); free(l->moe_u); free(l->moe_d);  // split-MoE pointer arrays
         free(l->ple_post_norm);
@@ -3292,6 +3292,20 @@ static bool model_bind_weights(model_t *m, const char *path, const model_params 
             l->ssm_a      = tensor_to_f32(sa, m->ssm_v_heads, &ok);
             l->ssm_norm_w = tensor_to_f32(sn, m->ssm_inner / m->ssm_v_heads, &ok);
             if (!ok) return false;
+            {
+                // the depthwise conv taps, dequantized once: the per-token
+                // path used to dequantize every channel's kernel row on
+                // every token (10,240 small calls a layer on Qwen3.8)
+                int K = m->ssm_conv_kernel;
+                int cd = 2 * m->ssm_state * m->ssm_groups + m->ssm_inner;
+                l->ssm_conv_w = malloc(sizeof(float) * (size_t)cd * K);
+                if (!l->ssm_conv_w) return false;
+                size_t wrs = ggml_row_size(l->ssm_conv->type, K);
+                for (int c = 0; c < cd; c++)
+                    dequant_row(l->ssm_conv->type,
+                                (const uint8_t *)l->ssm_conv->data + (size_t)c * wrs,
+                                l->ssm_conv_w + (size_t)c * K, K);
+            }
             l->attn_norm_w = tensor_to_f32(an, m->n_embd, &ok);
             l->ffn_norm_w = tensor_to_f32(fn, m->n_embd, &ok);
             if (!ok) return false;
@@ -5720,6 +5734,58 @@ static void mamba2_ssd_step(model_t *m, layer_t *ly, int layer, int n, int xdim)
 // ([value_column][key_row]), matching the reference operator: decay, delta
 // correction, outer-product update, then query readout.
 static float sigmoid_f(float g);   // defined with silu_f below
+
+typedef struct {
+    model_t *m; const layer_t *ly;
+    const float *cv, *vv; float *out; float *states; const float *alphas;
+    int b, sk, ng, nh, hv, keydim, inner;
+} q35_head_job;
+
+static void q35_heads_worker(void *vp, int h0, int h1) {
+    const q35_head_job *J = vp;
+    model_t *m = J->m; const layer_t *ly = J->ly;
+    const int sk = J->sk, ng = J->ng, nh = J->nh, hv = J->hv, b = J->b;
+    const float *cv = J->cv, *vv = J->vv, *alphas = J->alphas;
+    float *out = J->out, *states = J->states;
+    for (int h = h0; h < h1; h++) {
+        // llama.cpp's Qwen3.5 GDN kernel tiles the key-head axis across
+        // value heads (0..G-1, 0..G-1).
+        int group = h % ng;
+        const float *q = cv + group * sk;
+        const float *k = cv + J->keydim + group * sk;
+        const float *v = vv + h * hv;
+        float *st = states + (size_t)h * hv * hv;
+        float beta = 1.0f / (1.0f + expf(-m->q_gate[(size_t)b * nh + h]));
+        float a = alphas[(size_t)b * nh + h] + ly->ssm_dt[h];
+        float softplus = a > 20.0f ? a : log1pf(expf(a));
+        float decay = expf(ly->ssm_a[h] * softplus);
+        for (int j = 0; j < hv; j++)
+            for (int i = 0; i < hv; i++) st[j * hv + i] *= decay;
+        for (int j = 0; j < hv; j++) {
+            float pred = 0;
+            for (int i = 0; i < hv; i++) pred += st[j * hv + i] * k[i];
+            float delta = (v[j] - pred) * beta;
+            for (int i = 0; i < hv; i++) st[j * hv + i] += delta * k[i];
+            float y = 0;
+            for (int i = 0; i < hv; i++) y += st[j * hv + i] * q[i];
+            // The DeltaNet recurrence uses normalized Q/K and applies the
+            // conventional 1/sqrt(key_dim) query scale.
+            out[h * hv + j] = y / sqrtf((float)sk);
+        }
+        rmsnorm(out + h * hv, out + h * hv, ly->ssm_norm_w, hv, m->rms_eps);
+        // Output gate: Qwen3.5 gates the normed output with silu(z);
+        // Qwen3.8 (qwen4exp) with sigmoid(z), the one numerical change
+        // in its Gated DeltaNet (Qwen4ExpGatedDeltaNet.norm; llama.cpp
+        // qwen4exp.cpp build_norm_gated says the same). Found by the
+        // two-engine bisect on the toy fixture: zeroing ssm_out was the
+        // only component that closed a 5e-2 logprob gap.
+        for (int j = 0; j < hv; j++) {
+            float z = m->ssm_z[(size_t)b * J->inner + h * hv + j];
+            out[h * hv + j] *= m->hyper_conn ? sigmoid_f(z) : z / (1.0f + expf(-z));
+        }
+    }
+}
+
 static void qwen35_linear(model_t *m, layer_t *ly, int layer, int n, int xdim) {
     int sk = m->ssm_state, ng = m->ssm_groups, nh = m->ssm_v_heads;
     int inner = m->ssm_inner, hv = inner / nh;
@@ -5739,15 +5805,12 @@ static void qwen35_linear(model_t *m, layer_t *ly, int layer, int n, int xdim) {
 
     float *hist = m->ssm_conv_state + (size_t)layer * histn * convdim;
     float *states = m->ssm_state_mem + (size_t)layer * nh * hv * hv;
-    size_t wrs = ggml_row_size(ly->ssm_conv->type, m->ssm_conv_kernel);
-    float *cw = m->ssm_cw;   // preallocated at load
+    const int K = m->ssm_conv_kernel;
     for (int b = 0; b < n; b++) {
         float *mix = m->ssm_qkv + (size_t)b * convdim;
         // Causal depthwise convolution over the persistent history and input.
         for (int c = 0; c < convdim; c++) {
-            dequant_row(ly->ssm_conv->type,
-                        (const uint8_t *)ly->ssm_conv->data + (size_t)c * wrs,
-                        cw, m->ssm_conv_kernel);
+            const float *cw = ly->ssm_conv_w + (size_t)c * K;
             float sum = cw[histn] * mix[c];
             for (int k = 0; k < histn; k++)
                 sum += cw[k] * hist[(size_t)k * convdim + c];
@@ -5772,46 +5835,13 @@ static void qwen35_linear(model_t *m, layer_t *ly, int layer, int n, int xdim) {
             qs = 1.0f / sqrtf(qs); ks = 1.0f / sqrtf(ks);
             for (int j = 0; j < sk; j++) { q[j] *= qs; k[j] *= ks; }
         }
-        const float *vv = cv + 2 * keydim;
-        float *out = m->xb2 + (size_t)b * xdim;
-        for (int h = 0; h < nh; h++) {
-            // llama.cpp's Qwen3.5 GDN kernel tiles the key-head axis across
-            // value heads (0..G-1, 0..G-1).
-            int group = h % ng;
-            const float *q = cv + group * sk;
-            const float *k = cv + keydim + group * sk;
-            const float *v = vv + h * hv;
-            float *st = states + (size_t)h * hv * hv;
-            float beta = 1.0f / (1.0f + expf(-m->q_gate[(size_t)b * nh + h]));
-            float a = alphas[(size_t)b * nh + h] + ly->ssm_dt[h];
-            float softplus = a > 20.0f ? a : log1pf(expf(a));
-            float decay = expf(ly->ssm_a[h] * softplus);
-            for (int j = 0; j < hv; j++)
-                for (int i = 0; i < hv; i++) st[j * hv + i] *= decay;
-            for (int j = 0; j < hv; j++) {
-                float pred = 0;
-                for (int i = 0; i < hv; i++) pred += st[j * hv + i] * k[i];
-                float delta = (v[j] - pred) * beta;
-                for (int i = 0; i < hv; i++) st[j * hv + i] += delta * k[i];
-                float y = 0;
-                for (int i = 0; i < hv; i++) y += st[j * hv + i] * q[i];
-                // The DeltaNet recurrence uses normalized Q/K and applies the
-                // conventional 1/sqrt(key_dim) query scale.
-                out[h * hv + j] = y / sqrtf((float)sk);
-            }
-            rmsnorm(out + h * hv, out + h * hv, ly->ssm_norm_w,
-                    hv, m->rms_eps);
-            // Output gate: Qwen3.5 gates the normed output with silu(z);
-            // Qwen3.8 (qwen4exp) with sigmoid(z), the one numerical change
-            // in its Gated DeltaNet (Qwen4ExpGatedDeltaNet.norm; llama.cpp
-            // qwen4exp.cpp build_norm_gated says the same). Found by the
-            // two-engine bisect on the toy fixture: zeroing ssm_out was the
-            // only component that closed a 5e-2 logprob gap.
-            for (int j = 0; j < hv; j++) {
-                float z = m->ssm_z[(size_t)b * inner + h * hv + j];
-                out[h * hv + j] *= m->hyper_conn ? sigmoid_f(z) : z / (1.0f + expf(-z));
-            }
-        }
+        // the heads are independent (own state, own output slice; Q and K
+        // shared within a group, read only), so they run across the pool;
+        // the token order stays sequential, which is what the recurrence
+        // needs. Per head the math is unchanged.
+        q35_head_job hj = { m, ly, cv, cv + 2 * keydim, m->xb2 + (size_t)b * xdim,
+                            states, alphas, b, sk, ng, nh, hv, keydim, inner };
+        tpool_run(m->tp, q35_heads_worker, &hj, nh);
     }
     matvec_b(m->tp, m->xb, xdim, ly->ssm_out, m->xb2, xdim,
              inner, m->n_embd, NULL, n);
@@ -6069,8 +6099,10 @@ static void moe_ffn_token(model_t *m, const layer_t *ly, float *xin) {
     int   sel[256];
     float selw[256];
     float norms[MOE_EXPERTS_MAX];
+    DT_BEGIN;
     moe_route(m, ly, xin, n_embd, ne, used, sel, selw, true);
     model_moe_prefetch(m, ly, sel, used);
+    DT_MARK(DT_ROUTE);
     // RUNNER_MOE_PROBE: same lookback replay as gemma_route's caller — see
     // gemma_moe_ffn's comment. xin gets overwritten in place by this
     // function's last line, so the push below must happen before that, and
@@ -8830,7 +8862,9 @@ nemo_ffn:
                        m->xb + (size_t)b * xdim,
                        sizeof(float) * (size_t)n_embd);
         moe_ffn(m, ly, n, xdim);   // reads normed m->xb, writes FFN out to m->xb
+        DT_MARK(DT_EXPERTS);
         shexp_add(m, ly, m->shexp_in, n, xdim);
+        DT_MARK(DT_SHEXP);
     } else {
     {
     int nff = ly->n_ff;   // per-layer width (gemma-4 E2B varies it)

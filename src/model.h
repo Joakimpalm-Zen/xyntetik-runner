@@ -151,6 +151,7 @@ typedef struct {
     // for every other arch, which always runs mixer THEN FFN.
     bool         skip_mixer, skip_ffn;
     gguf_tensor *wqkv, *wq_gate, *ssm_conv, *ssm_beta, *ssm_alpha, *ssm_out;
+    float *ssm_conv_w;   // qwen35: ssm_conv dequantized once at load, [convdim][kernel]
     float       *ssm_dt, *ssm_a, *ssm_norm_w;
     // Granite-4 h-series (`granitehybrid`) Mamba-2 mixer. A DIFFERENT tensor
     // set from Gated DeltaNet: it carries an input projection (zxBCdt), a
