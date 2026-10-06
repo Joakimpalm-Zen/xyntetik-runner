@@ -28,9 +28,14 @@ for i in range(1, len(toks)):
     ents = {e["id"]: e for e in cp["top_logprobs"]}
     e = ents.get(tgt)
     if e is None:
-        lps.append(None); top1.append(None); continue
+        best = max(cp["top_logprobs"], key=lambda t: t["logprob"] if "logprob" in t else t["prob"])
+        lps.append(None); top1.append(best["id"]); continue
     lp = e["logprob"] if "logprob" in e else math.log(e["prob"])
-    lps.append(lp); top1.append(cp["id"] if "id" in cp else cp.get("token"))
+    lps.append(lp)
+    # top-1 is the highest-logprob entry of the reported distribution, NOT the
+    # sampled token: the logit_bias above makes the sample <s> every time
+    best = max(cp["top_logprobs"], key=lambda t: t["logprob"] if "logprob" in t else t["prob"])
+    top1.append(best["id"])
 json.dump({"n_tokens": len(toks), "logprobs": lps, "top1_id": top1,
            "n_probs_returned": len(cp["top_logprobs"])}, open(out_path, "w"))
 print("positions", len(lps), "none", sum(1 for x in lps if x is None),
