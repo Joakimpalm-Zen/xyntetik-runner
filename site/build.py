@@ -290,7 +290,8 @@ def shell(meta: dict, body: str, sha: str) -> str:
     path = meta["path"]
     active = meta.get("nav", "")
     nav = "".join(
-        f'<a href="{href}"{" aria-current=\"page\"" if key == active else ""}>{label}</a>'
+        f'<a href="{href}"{" class=\"nav-cta\"" if key == "support" else ""}'
+        f'{" aria-current=\"page\"" if key == active else ""}>{label}</a>'
         for key, label, href in NAV)
     og_image = ORIGIN + "/assets/og.png"
     return f"""<!doctype html>

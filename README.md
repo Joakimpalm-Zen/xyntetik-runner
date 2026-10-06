@@ -1,19 +1,73 @@
 # Xyntetik Runner
 
-Xyntetik Runner runs local AI models on hardware you own and keeps a record of
-what they did that someone else can check. It is not the fastest engine or the
-one with the widest model list: llama.cpp is both, and the measured gap is
-[published below](#evidence-and-tradeoffs). Runner is for the work where
-the answer has to hold up: agent loops that finish on a small token budget,
-adapters trained on the exact file you deploy, runs a reviewer can replay, and
-a server that can share your workstation all day.
+**Model files you can check, and the open engine behind them.** Xyntetik
+publishes compressed and modified versions of open models, each measured
+against its original and published with the result, the misses beside the
+passes. Runner is the engine that measures and serves them, and builds most of
+them: one native
+binary in plain C for CPU (x86 AVX2/FMA, ARM NEON), CUDA and Metal, with no
+Python, pip, third-party runtime or ggml.
+
+<a href="https://buy.stripe.com/9B69AUddpdx9auHgP27N600"><img src="site/assets/support-button.svg" alt="Support this work" height="40"></a>
+
+If a file here saved you memory or time, a contribution funds the hardware
+time behind the next one.
+[Request a model](https://github.com/Joakimpalm-Zen/xyntetik-runner/issues/new?template=model_request.yml) ·
+[Report a result](https://github.com/Joakimpalm-Zen/xyntetik-runner/issues/new?template=result_report.yml) ·
+[Community results](docs/community-results.md)
+
+<a id="files"></a>
+## Files, each with its number against the original
+
+| File | Size | Margin-qualified top-1 | Mean KLD | What was done |
+|---|---|---|---|---|
+| [Qwen3.8-27B IQ3_S, recovered scales](https://huggingface.co/Joakimpalm-Zen/Qwen3.8-27B-GSQ-RCO-IQ3_S-recovered-GGUF) | 11.77 GB | 97.80% | 0.0450 | ISTA-DASLab's 3-bit file with every block scale retrained against the BF16 parent. Same bytes and layout, so any engine that reads the source reads this one. The source reads 97.60% and 0.0480 on the same positions: the edge is not resolved at 500 positions. |
+| [Qwen3-30B-A3B, selective precision](https://huggingface.co/Joakimpalm-Zen/Qwen3-30B-A3B-selective-attnQ8_0-expQ4_0-GGUF) | 17.99 GB | 99.50% | 0.034 | Attention at Q8_0, experts at Q4_0, built with `--type-plan`. Smaller than the official uniform Q4_K_M (18.56 GB), which reads 94.75% and 0.114 and fails the bar. |
+| [Qwen3-Coder-30B, keep-120](https://huggingface.co/Joakimpalm-Zen/Qwen3-Coder-30B-A3B-Instruct-keep120-Q4_K_M-GGUF) | 17.5 GB | 100.00% | 0.00738 | 120 of 128 experts kept per layer, built with `--prune-experts`. 1.1 GB under the stock 18.6 GB file; plain top-1 is 97.25%, a thin margin the card states. |
+
+The bar is a margin-qualified top-1 of at least 97% and a mean KLD of at most
+0.05 against the named parent. Each row is copied from the file's own card,
+which carries the method, the date and the limits; fidelity to a parent is not
+a capability benchmark. Every published file, including the ones that miss
+the bar, is in the [artifact ledger](#published-artifacts).
+
+**Run one.** [Download Runner](#quick-start), then:
+
+```sh
+./runner -hf Joakimpalm-Zen/Qwen3-30B-A3B-selective-attnQ8_0-expQ4_0-GGUF --serve
+```
+
+**Make your own.** The same tools, on your model, and the measurement that
+says whether to trust the result:
+
+```sh
+# a per-tensor type plan, for example attention at Q8_0 and experts at Q4_0
+./runner -m model-Q8_0.gguf --quantize out.gguf --type-plan plan.json
+# or prune MoE experts from a measured plan
+./runner -m model.gguf --quantize pruned.gguf --prune-experts keep.json
+# then score the result against its parent before trusting it
+python3 scripts/kld-compare-raw.py --model-a out.gguf --model-b model-Q8_0.gguf \
+    --runner ./runner --corpus corpus.txt --max-positions 400 --out fidelity.json
+```
+
+[Requantization, pruning and sublayer removal](#models-and-conversion) has the
+plan formats and the limits. Tell us which model you want next with a
+[model request](https://github.com/Joakimpalm-Zen/xyntetik-runner/issues/new?template=model_request.yml).
+
+## The engine
+
+Runner is not the fastest engine or the one with the widest model list:
+llama.cpp is both, and the measured gap is
+[published below](#evidence-and-tradeoffs). Runner is for the work where the
+answer has to hold up: model files measured against their parents, agent loops
+that finish on a small token budget, adapters trained on the exact file you
+deploy, runs a reviewer can replay, and a server that can share your
+workstation all day.
 
 One native binary chats, serves models to applications, generates structured
 tool calls, and trains LoRA adapters through quantized GGUF weights. GGUF is
 the model file format; a LoRA adapter is a small set of learned changes to a
-base model. The engine is written from scratch in plain C for CPU (x86
-AVX2/FMA, ARM NEON), CUDA and Metal. It needs no Python, pip, third-party
-runtime or ggml. Optional tools such as
+base model. Optional tools such as
 [Shadow](#shadow-mode-what-could-your-local-model-have-done) use the
 [Python client](python/README.md); model training has its own
 [supported architectures and backend limits](#adaptation).
@@ -22,15 +76,17 @@ runtime or ggml. Optional tools such as
 the command line, the HTTP API, the record formats and the model files that
 load stay compatible across 1.x.
 
-**Start here:** [Why Runner](#why-runner) · [Quick start](#quick-start) ·
-[Use cases](#use-cases) · [Everything in 1.0](#everything-in-10)
+**Start here:** [Files](#files) · [Quick start](#quick-start) ·
+[What else the engine does](#why-runner) · [Use cases](#use-cases) ·
+[Everything in 1.0](#everything-in-10)
 
 **Reference:** [Models](#models-and-conversion) · [Support matrix](#support-matrix) ·
 [Builds](#build-and-platforms) · [Hardware](#runtime-and-hardware) ·
 [CLI](#command-line-reference) · [APIs](#serving-and-apis) ·
 [Evidence and tradeoffs](#evidence-and-tradeoffs) · [Versioning](docs/versioning.md)
 
-## Why Runner?
+<a id="why-runner"></a>
+## What else the engine does
 
 | What you need | How Runner helps | Learn more |
 |---|---|---|
@@ -1167,8 +1223,10 @@ reported beside it).
   (11.77 GB) is ISTA-DASLab's IQ3_S file with every quantised block's fp16
   scales retrained by distillation against the BF16 parent: same integer
   codes, same layout, same byte length, and it reads mean KLD 0.0450 with
-  margin-qualified top-1 97.80% on 500 held-out positions, inside the bar
-  the unmodified source misses. Evidence and code:
+  margin-qualified top-1 97.80% on 500 held-out positions, inside the bar.
+  The unmodified source reads 0.0480 and 97.60% on the same positions, so
+  the edge over it is a consistent direction this sample does not resolve.
+  Evidence and code:
   [scale-recovery dataset](https://huggingface.co/datasets/Joakimpalm-Zen/Qwen3.8-27B-GSQ-RCO-scale-recovery-evidence).
 - [Muse-Glimmer-30B surgical 6.34%, Q4_K with recovered scales](https://huggingface.co/Joakimpalm-Zen/Muse-Glimmer-30B-Surgical-6p34-Q4_K-recovered-GGUF)
   (14.61 GiB) closes the gate the surgery study left open: the 6.34% model
@@ -3929,8 +3987,8 @@ an exact model/machine combination.
 
 ## Support the project
 
-**Testing Runner?** The project is pre-1.0 and hardware coverage is still
-limited - that is an invitation, not an apology. If you have an
+**Testing Runner?** Hardware coverage is still limited - that is an
+invitation, not an apology. If you have an
 NVIDIA/Apple setup, an unusual GGUF, a coding agent, or a model family
 not in the [support matrix](#support-matrix), the result is genuinely
 wanted, success or failure alike:
@@ -3939,9 +3997,16 @@ the model's exact filename and the load log. Independent reproductions
 of the determinism claims get credited in the docs, as the first one
 already is.
 
-Xyntetik Runner is developed independently. If it is useful to you and you
-want to help fund the hardware and measurement time behind it, you can
-[support the project here](https://buy.stripe.com/9B69AUddpdx9auHgP27N600).
+Xyntetik Runner is developed independently. If it or one of its files is
+useful to you, a contribution funds the hardware and measurement time behind
+the next one. One-off, through Stripe, with no tiers and no gated features;
+[what contributions enable](https://xyntetik.com/support/).
+
+<a href="https://buy.stripe.com/9B69AUddpdx9auHgP27N600"><img src="site/assets/support-button.svg" alt="Support this work" height="40"></a>
+
+Ran a file or the engine on your own hardware? A
+[result report](https://github.com/Joakimpalm-Zen/xyntetik-runner/issues/new?template=result_report.yml)
+is credited by name in [community results](docs/community-results.md).
 
 ## License
 
