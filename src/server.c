@@ -2641,8 +2641,18 @@ static void *slot_worker(void *arg) {
 // never frees anything a slot is using (handle_unload defers under an active
 // load or generation), and an operator reclaiming memory must not queue behind
 // the very work that holds it. Prefix-cache telemetry and release have their
-// own mutex and likewise need no inference slot. Every other POST is handed to
-// a slot untouched.
+// own mutex and likewise need no inference slot. Every other request is handed
+// to a slot untouched.
+//
+// Two rules keep this thread admitting connections (found 2026-10-05: a
+// stored-response GET to a client that stopped reading parked the accept loop
+// and nothing new was served):
+//  1. Only answers that fit a socket buffer are written from here. A stored
+//     Responses body or its input_items can be megabytes, /metrics and the
+//     context listing grow with the server; those take a slot, whose writes
+//     are bounded like every other slot write.
+//  2. Every write from here carries the slot path's 30 s send timeout, so a
+//     reader that stops costs this thread at most 30 s, never forever.
 static bool accept_fastpath(sock_t fd) {
 #ifndef _WIN32
     // POSIX fd_set is a fixed-size bitmask indexed by fd value; FD_SET on an
@@ -2672,21 +2682,16 @@ static bool accept_fastpath(sock_t fd) {
                               sizeof("GET /v1/runner/prefix-cache ") - 1);
     bool pfx_clear = !strncmp(hdr, "POST /v1/runner/prefix-cache/clear ",
                               sizeof("POST /v1/runner/prefix-cache/clear ") - 1);
-    bool metrics = !strncmp(hdr, "GET /metrics ", 13);
     bool prov = !strncmp(hdr, "GET /v1/runner/provenance ",
                          sizeof("GET /v1/runner/provenance ") - 1);
-    bool ctx_list = !strncmp(hdr, "GET /v1/runner/contexts ",
-                             sizeof("GET /v1/runner/contexts ") - 1);
-    bool stored = !strncmp(hdr, "GET /v1/responses/",
-                           sizeof("GET /v1/responses/") - 1) ||
-                  !strncmp(hdr, "DELETE /v1/responses/",
-                           sizeof("DELETE /v1/responses/") - 1);
+    // Deliberately NOT here: GET /metrics, GET /v1/runner/contexts and the
+    // stored-response routes (rule 1 above); the slot path serves them.
     // The old spelling still has to reach a handler, or an operator's script
     // gets a 404 that says nothing. It is not answered here — it falls through
     // to the slot path, which replies 405 with the reason.
     if (!strncmp(hdr, "GET /unload ", 12)) return false;
     if (!health && !models && !caps && !unload && !pfx_stats && !pfx_clear &&
-        !metrics && !prov && !ctx_list && !stored)
+        !prov)
         return false;
     // Keep the request untouched until framing says it is bodyless. A partial
     // header, an oversized header, malformed framing, and every declared body
@@ -2715,12 +2720,11 @@ static bool accept_fastpath(sock_t fd) {
         if (r <= 0) { sock_close(fd); return true; }
         got += (size_t)r;
     }
+    sock_send_timeout(fd, 30.0);   // rule 2: a dead reader cannot hold this thread
+    (void)method; (void)path;
     if (health)          send_health(fd);
     else if (models)     send_models(fd);
-    else if (metrics)    send_metrics(fd);
     else if (prov)       send_provenance(fd);
-    else if (ctx_list)   send_contexts(fd);
-    else if (stored)     stored_response_route(fd, method, path);
     else if (unload)     handle_unload(fd);
     else if (pfx_stats)  send_prefix_cache(fd);
     else if (pfx_clear) {
