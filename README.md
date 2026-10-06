@@ -119,7 +119,7 @@ Prefer to chat in the terminal? `./runner -m model.gguf -i`.
 ## <img src="https://huggingface.co/front/assets/huggingface_logo-noborder.svg" width="30" height="28" alt="Hugging Face"> The Xyntetik-Lab on Hugging Face
 
 The lab publishes everything it makes, with the measurements and the
-failures left in: 15 models and 15 datasets so far.
+failures left in.
 **[Step inside the lab](https://huggingface.co/Joakimpalm-Zen)** to check the
 [Xyntetik-Runner releases](https://huggingface.co/collections/Joakimpalm-Zen/runner-releases-6aa98baaed03bba0e8a561ae),
 or follow one of these.
@@ -141,14 +141,11 @@ or follow one of these.
   only ever saw programs they ran themselves. Read what survived, and
   everything that did not.
 
-Each card says what was changed, how it measures against its original, and
-where it runs.
-
 <a id="fit"></a>
 <a id="runtime-and-hardware"></a>
 ## <img src="site/assets/readme-section.svg" width="8" height="24" alt=""> Know whether a model fits before you download it
 
-**Result.** On an RTX 3070, `--fit` named the same GPU and CPU split the
+On an RTX 3070, `--fit` named the same GPU and CPU split the
 loader then used in 70 of 72 cases and was one layer cautious in the other
 two, never optimistic (six models, two context sizes, four cache formats).
 
@@ -179,7 +176,7 @@ curl -r 0-16777215 -L -o head.gguf \
 <a id="models-and-conversion"></a>
 ## <img src="site/assets/readme-section.svg" width="8" height="24" alt=""> Make your own model file
 
-**Result.** A [17.99 GB Qwen3-30B file](https://huggingface.co/Joakimpalm-Zen/Qwen3-30B-A3B-selective-attnQ8_0-expQ4_0-GGUF)
+A [17.99 GB Qwen3-30B file](https://huggingface.co/Joakimpalm-Zen/Qwen3-30B-A3B-selective-attnQ8_0-expQ4_0-GGUF)
 came from one command and a one-line plan. It is smaller than the official
 4-bit file and closer to the original: 99.50% agreement where that file
 reads 94.75%.
@@ -212,7 +209,7 @@ python3 scripts/kld-compare-raw.py --model-a out.gguf --model-b model-Q8_0.gguf 
 <a id="long-contexts"></a>
 ## <img src="site/assets/readme-section.svg" width="8" height="24" alt=""> Fit more context in the same memory
 
-**Result.** `--kv k8v4` stores the context cache in about 41% of the usual
+`--kv k8v4` stores the context cache in about 41% of the usual
 bytes. On three models from 4B to 30B it agreed with the full-size cache on
 100% of clear-cut tokens (500 positions each).
 
@@ -235,7 +232,7 @@ and shrinks the other half to 4 bits.
 <a id="designed-to-stay-on"></a>
 ## <img src="site/assets/readme-section.svg" width="8" height="24" alt=""> A server that gives your memory back
 
-**Result.** A 63 GB model, loaded and idle on a 128 GB M5 Max, holds 35 MB of
+A 63 GB model, loaded and idle on a 128 GB M5 Max, holds 35 MB of
 wired memory under Runner and 60.8 GB under llama-server. On an 8 GB M1 it is
 8 MB against 3,819 MB.
 
@@ -272,7 +269,7 @@ be read in again, about 3 s for the 3.6 GB model on that M1.
   <img align="right" src="site/assets/readme-toolcalls-light.svg" alt="One truncated tool call across six engines: only Runner returns a usable call below the control budget" width="360">
 </picture>
 
-**Result.** Six engines, one tool call cut short by the token limit. Runner
+Six engines, one tool call cut short by the token limit. Runner
 was the only one to return a call a program could run, at every budget from
 1 to 16 tokens.
 
@@ -297,7 +294,7 @@ TensorRT-LLM and SGLang.
 <a id="adaptation"></a>
 ## <img src="site/assets/readme-section.svg" width="8" height="24" alt=""> Train the model file you actually serve
 
-**Result.** Two training runs wrote the same adapter, checksum for checksum,
+Two training runs wrote the same adapter, checksum for checksum,
 and an independent tester reproduced that on a Tesla T4. On Qwen3-4B at
 4 bits, exact tool calls on a held-out set went from 0.69 to 1.00, and stock
 llama.cpp scores the same adapter at the same 1.00.
@@ -384,7 +381,7 @@ endpoint is in the [API reference](MANUAL.md#serving-and-apis).
 <a id="record-and-verify-a-run"></a>
 ## Prove what a model did
 
-**Result.** `scripts/audit-demo.sh` signs a 1,000-token record, replays it
+`scripts/audit-demo.sh` signs a 1,000-token record, replays it
 and refuses three forgeries, in under a minute on an 8 GB Mac.
 
 **Why.** A chat log is only text, and anyone could have typed it. If you have
