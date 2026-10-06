@@ -61,6 +61,22 @@ rename keep the names that were true when they were written.
   file loads CPU-only on a 250 GB box and its greedy continuation matches
   llama.cpp's. The publisher's fp32 reference pass has not run, which is
   why the row says experimental (`docs/qwen4exp-admission-evidence/`).
+- **`qwen4exp` runs on CUDA with `--cpu-moe`, EXPERIMENTAL.** The device
+  path for the family: hyper-connection mixer and combine kernels, a
+  grouped per-stream norm, Qwen3.8's DeltaNet gate, the PLE block on the
+  host at its one layer, the host-expert boundary handing over the mixed
+  input, the gated shared expert on the device, and the fused device-MoE
+  path admitting 512 experts and IQ3_XXS/IQ4_NL/Q2_0 expert tensors. New
+  kernels for the file's shapes: a deterministic split-K BF16 GEMV for the
+  few-long-rows mixer projections, coalesced Q3_K and IQ4_XS decode GEMVs,
+  Q2_0 device matvecs. Gates: the toy fixture matches the CPU at 4.8e-07
+  in every placement on a Blackwell slice and an RTX 3070; on the release
+  file `kernel-verify` is token-identical CPU vs CUDA and tensor-core
+  prefill forced on equals forced off at 64 tokens and on a 3,675-token
+  prompt, on which `qwen4exp` joins the TC prefill list. Speed is not yet
+  at llama.cpp's on the same slice (`docs/qwen4exp-admission-evidence/`);
+  the fused device-MoE path is unmeasured on the release file at this
+  commit. `scripts/aa-pilot.py` is a timing A/A pilot driver.
 - **Q2_0 (ggml type 42) is read**, the format Qwen3.8-Flash-Next's GSQ
   release stores some routed experts in; Q1_0 is named in refusals.
 - **MoE decode dispatches every selected expert's gate and up in one pool
