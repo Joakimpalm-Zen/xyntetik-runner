@@ -40,3 +40,26 @@ zeroing one component's output projection on both engines
 
 Not covered here: QSA (the toy declares no compress ratio, both engines
 run dense attention), CUDA, Metal, quantized tensors, the real file.
+
+## The release file (Blackwell, CPU only, 2026-10-06)
+
+`Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S` (two parts, 83.6 GB; part 1 sha256
+4c1eb2ce..., part 2 316b46f3...), runner at `c127504`, 16 threads on
+CPUs 40-55/104-119, `--gpu off -c 4096 --temp 0`:
+
+- 1.0.2 refused the file: `unsupported type 42` (the routed experts are
+  Q2_0, a ggml type newer than the i-quants; now read).
+- First load produced "The capital of France is Paris." and then token 0
+  ("!") forever: the hyper-connection gate reached -94.7 at layer 42 of
+  the third decode step and the unguarded sigmoid overflowed under
+  -ffast-math (`RUNNER_DEBUG_ACT=3`, `hc-gate ... min=-94.69`, then
+  `inf=2` in the mixed block input). Guarded; see sigmoid_f.
+- After the guard, greedy 12 tokens: "The capital of France is Paris. The
+  capital of Germany is Berlin. The capital of", identical to llama.cpp
+  b11433's CPU-only greedy continuation of the same prompt. Prefill 7.6,
+  decode 5.7 tok/s (generic dequantize-per-block dot, no Q2_0 SIMD kernel).
+
+The 200-position p512 anchor and the 64-token greedy comparison on this
+file wait for a lane G gap on the Blackwell (filed with the lab queue,
+2026-10-06 11:40); the fp32 publisher reference stays R4.26.3's primary
+anchor.
