@@ -2134,7 +2134,8 @@ test: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSON_OOM) $(
 	@# region at every batch size, and the per-row head read the stream mean.
 	./runner -m test-qwen4exp.gguf -p "hello world one two three four" -n 4 --temp 0 --gpu off -c 128 > test-qwen4exp.a.out 2>/dev/null
 	./runner -b 3 -m test-qwen4exp.gguf -p "hello world one two three four" -n 4 --temp 0 --gpu off -c 128 > test-qwen4exp.b.out 2>/dev/null
-	cmp test-qwen4exp.a.out test-qwen4exp.b.out
+	@# bytes, via python: the Windows CI shell (MSYS2) has no cmp
+	$(PYTHON) -c "import sys; a=open('test-qwen4exp.a.out','rb').read(); b=open('test-qwen4exp.b.out','rb').read(); print('qwen4exp chunked vs single-shot prefill: %s' % ('identical' if a==b else 'DIFFER')); sys.exit(0 if a==b else 1)"
 	./runner -b 1 -m test-qwen4exp.gguf --score -p "hello world one two three four five six" --gpu off -c 128 > test-qwen4exp.a.out 2>/dev/null
 	RUNNER_SCORE_CHUNKED=1 ./runner -b 3 -m test-qwen4exp.gguf --score -p "hello world one two three four five six" --gpu off -c 128 > test-qwen4exp.b.out 2>/dev/null
 	@# tolerance, not bytes: the routed-expert path sums in a different order

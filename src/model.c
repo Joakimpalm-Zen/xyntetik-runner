@@ -8620,10 +8620,10 @@ static void forward_layer(model_t *m, int l, int n, int pos, int dbg) {
     // No mixer at all (a nemotron_h MLP-only block, or an attention
     // removed by --remove-sublayer): the residual passes straight to the
     // FFN. The whole branch is omitted, not computed as zero and added.
+    DT_BEGIN;
     if (ly->skip_mixer) goto nemo_ffn;
 
     // attention
-    DT_BEGIN;
     if (m->hyper_conn) {
         // qwen4exp: the PLE block folds its n-gram rows into the wide
         // residual first, then the first mixer replaces the pre-norm
