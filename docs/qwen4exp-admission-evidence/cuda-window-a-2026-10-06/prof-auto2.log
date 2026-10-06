@@ -1,0 +1,10 @@
+gpu: no OS video memory budget published for this device; offload budget 25.13 GB from the driver's free view, headroom 1.57 GB
+gpu-split: budget=25.13GB fixed=1.93GB G=48/48 full=1 used=24.20GB
+gpu-split: experts 20/48 layers on GPU, 28 on host (auto fit)
+gpu: cu.ModuleGetFunction(fns[i].f, w->mod, fns[i].name) failed: named symbol not found
+loaded ~/workspace/models/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf | qwen4exp | 48 layers | ctx 4096 | 16 threads | 0.70s
+sampling: qwen38 (temp 0.00 — greedy argmax; top_p/top_k/min_p/repeat_penalty inactive)
+sampling: from the file (general.sampling.*): temp 1.00, top_p 0.95, top_k 20
+The capital of France is Paris. The capital of Germany is Berlin. The capital of Italy is Rome. The capital of Spain is Madrid. The capital of Portugal is Lisbon. The capital
+prompt: 5 tok, 8.37 tok/s | gen: 32 tok, 8.73 tok/s
+

@@ -91,3 +91,40 @@ What this is and is not: agreement between two quantized implementations of
 the same file. The gaps are of the size two kernel sets give a 3-bit 125B
 model, and nothing here says which engine is closer to the publisher's fp32
 forward; that is R4.26.4, the primary anchor, still pending.
+
+## CUDA path, window A (Blackwell MIG 1g.24gb, 2026-10-06 17:15-17:46)
+
+Branch `qwen4exp-cuda` at `c438e876`: the device path for the family (hc
+mixer and combine kernels, grouped norm, Qwen3.8's DeltaNet gate, the PLE
+block on the host at its one layer, the host-expert boundary handing over
+the mixed input), split-K BF16 GEMV for the few-long-rows mixer shapes,
+coalesced Q3_K and IQ4_XS GEMVs, Q2_0 device matvecs, the gated shared
+expert on the device. Logs in `cuda-window-a-2026-10-06/`.
+
+- Toy fixture, CUDA vs CPU `--score`: 56 of 56 positions, max 4.8e-07, with
+  the experts on the host and with experts plus shared expert on the device;
+  batched prefill (`-b 8`) the same.
+- Release file, `scripts/kernel-verify.py`: CPU-only against CUDA
+  `--cpu-moe`, token-identical on the five prompts (32 tokens).
+- Tensor-core prefill forced on against forced off (`RUNNER_CUDA_TC`),
+  `--cpu-moe`: token-identical on the five prompts at 32 and at 64 tokens;
+  byte-identical greedy-32 on the 481-token prompt and greedy-64 on the
+  3,675-token prompt. `qwen4exp` joins the TC arch list on that evidence,
+  scoped to the host-expert placement (the device-expert placement ran
+  only through the eager route; see below).
+- Speed, device path with every expert on the host, 16 threads: decode
+  12.5 tok/s at a short prompt (GPU-side matvec 50 -> 18 ms per token after
+  the split-K and GEMV kernels; the remaining ~54 ms is the host experts),
+  7.5 to 9.2 tok/s after a 481-token prompt; prefill 37 to 39 tok/s, bound
+  by the host experts (the CPU grouped-MoE path dequantizes every routed
+  expert to f32 once per layer per prefill: 13.2 s of a 20.4 s CPU
+  prefill). llama.cpp on the same slice and prompt: 310 prefill, 30.7 decode.
+- `--cpu-moe auto` (20 of 48 expert layers on the slice, 24.2 GB used):
+  8.7 tok/s decode, barely above all-host, because the fused device MoE
+  path refuses this file (512 experts, IQ3_XXS/IQ4_NL/Q2_0 expert types)
+  and the eager route pays a host round-trip per layer plus warp-per-row
+  matvecs. That is R4.26.8, the item between here and the llama.cpp-class
+  numbers, together with an int8 CPU expert prefill.
+- The TC tolerance tool (`test-tc-tol`) needs full device offload and
+  skipped this file (22 of 48 layers fit); the identity runs above are the
+  evidence class the qwen35 promotion used.

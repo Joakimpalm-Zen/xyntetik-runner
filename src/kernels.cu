@@ -350,6 +350,51 @@ extern "C" __global__ void k_gemv_q4_0(MV_PARAMS) {
     MV_TAIL;
 }
 
+// Q2_0 (ggml type 42): 64 codes per 18-byte block, code j at bits 2*(j%4) of
+// byte j/4, value (code - 1) * d; the device twin of quants.c dq_q2_0.
+extern "C" __global__ void k_mv_q2_0(MV_PARAMS) {
+    MV_HEAD;
+    int nb = a.n_in / 64;
+    const uchar *rw = wb + a.w_off + (ulong64)row * nb * 18;
+    float s = 0;
+    for (int b = lane; b < nb; b += 32) {
+        const uchar *blk = rw + (ulong64)b * 18;
+        float d = f16f(blk);
+        const uchar *q = blk + 2;
+        const float *xp = x + (ulong64)b * 64;
+        float t = 0;
+        for (int j = 0; j < 16; j++) {
+            uchar c = q[j];
+            t += ((int)(c & 3) - 1) * xp[4 * j]
+               + ((int)((c >> 2) & 3) - 1) * xp[4 * j + 1]
+               + ((int)((c >> 4) & 3) - 1) * xp[4 * j + 2]
+               + ((int)(c >> 6) - 1) * xp[4 * j + 3];
+        }
+        s += d * t;
+    }
+    MV_TAIL;
+}
+
+extern "C" __global__ void k_mv_q2_0_b(MV_PARAMS) {
+    MV_HEAD_B;
+    int nb = a.n_in / 64;
+    const uchar *rw = wb + a.w_off + (ulong64)row * nb * 18;
+    for (int b = lane; b < nb; b += 32) {
+        const uchar *blk = rw + (ulong64)b * 18;
+        float d = f16f(blk);
+        const uchar *q = blk + 2;
+        ulong64 base = (ulong64)b * 64;
+        for (int j = 0; j < 16; j++) {
+            uchar c = q[j];
+            MV_FMA(d * (float)((int)(c & 3) - 1),        base + 4 * j);
+            MV_FMA(d * (float)((int)((c >> 2) & 3) - 1), base + 4 * j + 1);
+            MV_FMA(d * (float)((int)((c >> 4) & 3) - 1), base + 4 * j + 2);
+            MV_FMA(d * (float)((int)(c >> 6) - 1),       base + 4 * j + 3);
+        }
+    }
+    MV_TAIL_B;
+}
+
 extern "C" __global__ void k_mv_q4_0(MV_PARAMS) {
     MV_HEAD;
     int nb = a.n_in / 32;
@@ -538,6 +583,39 @@ extern "C" __global__ void k_mv_bf16(MV_PARAMS) {
     float s = 0;
     for (int i = lane; i < a.n_in; i += 32) s += bf16f(rw[i]) * x[i];
     MV_TAIL;
+}
+
+// Split-K GEMV for the few-long-rows shape (qwen4exp's hyper-connection
+// down projections: 320 rows of 10,240, and the 4-row inject). A warp per
+// row leaves most of the device idle and the call latency-bound; here block
+// (row, split) reduces one K-slice into partial[row*splits+split] in a fixed
+// tree, and k_splitk_reduce sums the splits in index order, so the result is
+// deterministic (no atomics) and the same for every launch of the same shape.
+extern "C" __global__ void k_mv_bf16_splitk(const uchar *wb, const float *x, float *partial,
+                                            mv_args a, int splits) {
+    __shared__ float red[256];
+    int row = blockIdx.x, sp = blockIdx.y, tid = threadIdx.x;
+    int slice = a.n_in / splits, i0 = sp * slice;
+    const unsigned short *rw = (const unsigned short *)(wb + a.w_off) + (ulong64)row * a.n_in + i0;
+    const float *xr = x + i0;
+    float s = 0;
+    for (int i = tid; i < slice; i += blockDim.x) s += bf16f(rw[i]) * xr[i];
+    red[tid] = s;
+    __syncthreads();
+    for (int off = blockDim.x / 2; off > 0; off >>= 1) {
+        if (tid < off) red[tid] += red[tid + off];
+        __syncthreads();
+    }
+    if (tid == 0) partial[(ulong64)row * splits + sp] = red[0];
+}
+
+extern "C" __global__ void k_splitk_reduce(const float *partial, float *y, const float *bias,
+                                           int n_out, int splits, int has_bias) {
+    int row = blockIdx.x * blockDim.x + threadIdx.x;
+    if (row >= n_out) return;
+    float s = 0;
+    for (int sp = 0; sp < splits; sp++) s += partial[(ulong64)row * splits + sp];
+    y[row] = has_bias ? s + bias[row] : s;
 }
 
 extern "C" __global__ void k_mv_bf16_b(MV_PARAMS) {
@@ -1318,6 +1396,46 @@ extern "C" __global__ void k_mv_q5_K_b(MV_PARAMS) {
 // 8-aligned in the 176-byte block), two float4 x loads, and the factored
 // s += dg*sum(qv*x) - mmg*sum(x). Weights per element unchanged; identity vs
 // CPU empirically gated by kernel-verify as before.
+// Q3_K decode GEMV in the k_gemv_q5_K geometry: lane owns 8 consecutive
+// elements of each 256-block, so a 32-lane warp covers the block in one pass
+// with coalesced x loads. Element e's rules from k_mv_q3_K: half = e/128,
+// j = (e%128)/32 (shift 2j, high-bit mask 1<<(4*half+j)), byte l = e%32 of
+// qs + 32*half, scale index 8*half + 2j + (l >= 16); value
+// ((q >> shift) & 3) - (hbit ? 0 : 4), times d_all * (scale - 32).
+extern "C" __global__ void k_gemv_q3_K(MV_PARAMS) {
+    MV_HEAD;
+    int nb = a.n_in / 256;
+    const uchar *rw = wb + a.w_off + (ulong64)row * nb * 110;
+    int half  = (int)(lane >> 4);
+    int j     = (int)(lane >> 2) & 3;
+    int lseg  = ((int)lane & 3) * 8;
+    int shift = 2 * j, hsh = 4 * half + j;
+    int sidx  = 8 * half + 2 * j + (lseg >= 16 ? 1 : 0);
+    float s = 0;
+    for (int b = 0; b < nb; b++) {
+        const uchar *blk = rw + (ulong64)b * 110;
+        Q3K_UNPACK_SCALES;
+        float dl = d_all * (float)(q3scales[sidx] - 32);
+        uint2 qv = *(const uint2 *)(qbase + 32 * half + lseg);
+        uint2 hv = *(const uint2 *)(hm + lseg);
+        const float *xp = x + (ulong64)b * 256 + (int)lane * 8;
+        float4 x0 = *(const float4 *)xp, x1 = *(const float4 *)(xp + 4);
+        uint v0 = (qv.x >> shift) & 0x03030303u, v1 = (qv.y >> shift) & 0x03030303u;
+        uint h0 = (hv.x >> hsh) & 0x01010101u,  h1 = (hv.y >> hsh) & 0x01010101u;
+        // value = q + 4*hbit - 4
+        float t = ((float)(v0 & 0xFF)         + 4.0f * (float)(h0 & 0xFF)         - 4.0f) * x0.x
+                + ((float)((v0 >>  8) & 0xFF) + 4.0f * (float)((h0 >>  8) & 0xFF) - 4.0f) * x0.y
+                + ((float)((v0 >> 16) & 0xFF) + 4.0f * (float)((h0 >> 16) & 0xFF) - 4.0f) * x0.z
+                + ((float)((v0 >> 24)       ) + 4.0f * (float)((h0 >> 24)       ) - 4.0f) * x0.w
+                + ((float)(v1 & 0xFF)         + 4.0f * (float)(h1 & 0xFF)         - 4.0f) * x1.x
+                + ((float)((v1 >>  8) & 0xFF) + 4.0f * (float)((h1 >>  8) & 0xFF) - 4.0f) * x1.y
+                + ((float)((v1 >> 16) & 0xFF) + 4.0f * (float)((h1 >> 16) & 0xFF) - 4.0f) * x1.z
+                + ((float)((v1 >> 24)       ) + 4.0f * (float)((h1 >> 24)       ) - 4.0f) * x1.w;
+        s += dl * t;
+    }
+    MV_TAIL;
+}
+
 extern "C" __global__ void k_gemv_q5_K(MV_PARAMS) {
     MV_HEAD;
     int nb = a.n_in / 256;
@@ -2032,6 +2150,45 @@ extern "C" __global__ void k_mv_iq4_nl_b(MV_PARAMS) {
         }
     }
     MV_TAIL_B;
+}
+
+// IQ4_XS decode GEMV, same geometry. Block 136 bytes: d f16, scales_h u16,
+// scales_l[4], qs[128]. Sub-block ib (32 values) reads qs[16*ib + j]: low
+// nibble -> value j, high nibble -> value j+16, through the IQ4_NL table;
+// scale ls = (scales_l nibble) | (scales_h 2 bits << 4), dl = d*(ls-32).
+// Lane l: ib = l/4, quarter q = l%4 owns values 8q..8q+7 of that sub-block:
+// q < 2 reads the low nibbles of bytes 8q..8q+7, q >= 2 the high nibbles of
+// bytes 8(q-2)..8(q-2)+7.
+extern "C" __global__ void k_gemv_iq4_xs(MV_PARAMS) {
+    MV_HEAD;
+    int nb = a.n_in / 256;
+    const uchar *rw = wb + a.w_off + (ulong64)row * nb * 136;
+    int ib = (int)(lane >> 2), qd = (int)(lane & 3);
+    int boff = 16 * ib + 8 * (qd & 1);
+    int hi = qd >= 2;
+    float s = 0;
+    for (int b = 0; b < nb; b++) {
+        const uchar *blk = rw + (ulong64)b * 136;
+        float d = f16f(blk);
+        unsigned sh = (unsigned)blk[2] | ((unsigned)blk[3] << 8);
+        int ls = ((blk[4 + ib / 2] >> 4 * (ib % 2)) & 0xF) | (((sh >> 2 * ib) & 3) << 4);
+        float dl = d * (float)(ls - 32);
+        uint2 qv = *(const uint2 *)(blk + 8 + boff);
+        uint v0 = hi ? (qv.x >> 4) & 0x0F0F0F0Fu : qv.x & 0x0F0F0F0Fu;
+        uint v1 = hi ? (qv.y >> 4) & 0x0F0F0F0Fu : qv.y & 0x0F0F0F0Fu;
+        const float *xp = x + (ulong64)b * 256 + (int)lane * 8;
+        float4 x0 = *(const float4 *)xp, x1 = *(const float4 *)(xp + 4);
+        float t = (float)kv_iq4[v0 & 0xFF]         * x0.x
+                + (float)kv_iq4[(v0 >>  8) & 0xFF] * x0.y
+                + (float)kv_iq4[(v0 >> 16) & 0xFF] * x0.z
+                + (float)kv_iq4[(v0 >> 24)       ] * x0.w
+                + (float)kv_iq4[v1 & 0xFF]         * x1.x
+                + (float)kv_iq4[(v1 >>  8) & 0xFF] * x1.y
+                + (float)kv_iq4[(v1 >> 16) & 0xFF] * x1.z
+                + (float)kv_iq4[(v1 >> 24)       ] * x1.w;
+        s += dl * t;
+    }
+    MV_TAIL;
 }
 
 extern "C" __global__ void k_mv_iq4_xs(MV_PARAMS) {
@@ -4891,7 +5048,9 @@ extern "C" __global__ void k_moe_route(const float *logits, int *sel,
                                        int tokens, int ls) {
     int t = blockIdx.x * blockDim.x + threadIdx.x;
     if (t >= tokens) return;
-    float lg[256];
+    // MOE_ROUTE_MAX experts per token in local memory (one thread per token);
+    // 512 for Qwen3.8-Flash-Next (the host clamps ne to this bound)
+    float lg[512];
     const float *src = logits + (ulong64)t * ls;
     for (int e = 0; e < ne; e++) lg[e] = src[e];
     float mx = lg[0];
@@ -5110,6 +5269,78 @@ extern "C" __global__ void k_moe_mv_q4_K(MOE_MV_PARAMS) {
                  + (float)((v1 >> 24)       ) * x1.w;
         float sx = x0.x + x0.y + x0.z + x0.w + x1.x + x1.y + x1.z + x1.w;
         s += dg * t - mmg * sx;
+    }
+    MOE_MV_TAIL;
+}
+
+// body of k_mv_iq3_xxs (Qwen3.8-Flash-Next gate/up experts)
+extern "C" __global__ void k_moe_mv_iq3_xxs(MOE_MV_PARAMS) {
+    MOE_MV_HEAD;
+    int nb = a.n_in / 256;
+    const uchar *rw = wbase + (ulong64)row * nb * 98;
+    for (int b = lane; b < nb; b += 32) {
+        const uchar *blk = rw + (ulong64)b * 98;
+        float d = f16f(blk);
+        const uchar *qs = blk + 2, *ss = blk + 66;
+        const float *xp = x + b * 256;
+        for (int ib = 0; ib < 8; ib++, qs += 8) {
+            unsigned aux = iq_ld32a2(ss + 4 * ib);
+            float db = d * (0.5f + (float)(aux >> 28)) * 0.5f;
+            float t = 0;
+            for (int l = 0; l < 4; l++, xp += 8) {
+                unsigned g1 = kiq3xxs_grid[qs[2 * l + 0]];
+                unsigned g2 = kiq3xxs_grid[qs[2 * l + 1]];
+                unsigned signs = iq_signs7((aux >> (7 * l)) & 127);
+                for (int j = 0; j < 4; j++) {
+                    t += iq_w4(g1, j, signs) * xp[j];
+                    t += iq_w4(g2, j, signs >> 4) * xp[j + 4];
+                }
+            }
+            s += db * t;
+        }
+    }
+    MOE_MV_TAIL;
+}
+
+// body of k_mv_iq4_nl (Qwen3.8-Flash-Next down experts)
+extern "C" __global__ void k_moe_mv_iq4_nl(MOE_MV_PARAMS) {
+    MOE_MV_HEAD;
+    int nb = a.n_in / 32;
+    const uchar *rw = wbase + (ulong64)row * nb * 18;
+    for (int b = lane; b < nb; b += 32) {
+        const uchar *blk = rw + (ulong64)b * 18;
+        float d = f16f(blk);
+        const uchar *q = blk + 2;
+        const float *xp = x + b * 32;
+        float t = 0;
+        for (int j = 0; j < 16; j++) {
+            t += (float)kv_iq4[q[j] & 0xF] * xp[j];
+            t += (float)kv_iq4[q[j] >> 4]  * xp[j + 16];
+        }
+        s += d * t;
+    }
+    MOE_MV_TAIL;
+}
+
+// body of k_mv_q2_0 (some blocks' down experts in the GSQ release)
+extern "C" __global__ void k_moe_mv_q2_0(MOE_MV_PARAMS) {
+    MOE_MV_HEAD;
+    int nb = a.n_in / 64;
+    const uchar *rw = wbase + (ulong64)row * nb * 18;
+    for (int b = lane; b < nb; b += 32) {
+        const uchar *blk = rw + (ulong64)b * 18;
+        float d = f16f(blk);
+        const uchar *q = blk + 2;
+        const float *xp = x + (ulong64)b * 64;
+        float t = 0;
+        for (int j = 0; j < 16; j++) {
+            uchar c = q[j];
+            t += ((int)(c & 3) - 1) * xp[4 * j]
+               + ((int)((c >> 2) & 3) - 1) * xp[4 * j + 1]
+               + ((int)((c >> 4) & 3) - 1) * xp[4 * j + 2]
+               + ((int)(c >> 6) - 1) * xp[4 * j + 3];
+        }
+        s += d * t;
     }
     MOE_MV_TAIL;
 }
@@ -5347,7 +5578,7 @@ extern "C" __global__ void k_q35_delta(float *cv, const float *z,
                                         const float *dt, const float *a,
                                         const float *norm, float *state,
                                         float *out, int state_dim, int groups,
-                                        int heads, float eps) {
+                                        int heads, float eps, int gate_sigmoid) {
     __shared__ float red[256];
     int tid = threadIdx.x, h = blockIdx.x;
     if (h >= heads) return;
@@ -5410,7 +5641,85 @@ extern "C" __global__ void k_q35_delta(float *cv, const float *z,
     for (int j = tid; j < state_dim; j += blockDim.x) {
         int o = h * state_dim + j;
         float zv = z[o];
-        yo[j] = yo[j] * rms * norm[j] * (zv / (1.0f + expf(-zv)));
+        // Qwen3.5 gates the normed output with silu(z); Qwen3.8 (qwen4exp)
+        // with sigmoid(z), mirroring the CPU path's one numerical difference
+        float sg = 1.0f / (1.0f + expf(-zv));
+        yo[j] = yo[j] * rms * norm[j] * (gate_sigmoid ? sg : zv * sg);
+    }
+}
+
+// ---- qwen4exp hyper-connections (CPU twins: hc_mix / hc_combine in model.c)
+// Grouped RMSNorm: row r of x is `groups` streams of n values, each normed
+// over its own n and scaled by that stream's gamma slice (w has groups*n).
+// One block per (stream, row).
+extern "C" __global__ void k_rmsnorm_grouped(const float *x, float *y, const float *w,
+                                             int n, int groups, float eps, int xs, int ys) {
+    __shared__ float red[256];
+    int tid = threadIdx.x, tpg = blockDim.x, c = blockIdx.x;
+    x += (ulong64)blockIdx.y * xs + (ulong64)c * n;
+    y += (ulong64)blockIdx.y * ys + (ulong64)c * n;
+    w += (ulong64)c * n;
+    float s = 0;
+    for (int i = tid; i < n; i += tpg) s += x[i] * x[i];
+    red[tid] = s;
+    __syncthreads();
+    for (int off = tpg / 2; off > 0; off >>= 1) {
+        if (tid < off) red[tid] += red[tid + off];
+        __syncthreads();
+    }
+    float r = rsqrtf(red[0] / n + eps);
+    for (int i = tid; i < n; i += tpg) y[i] = x[i] * r * w[i];
+}
+
+// x[row][i] = silu(x[row][i] * s), the mixer's low-rank activation (CPU silu_f
+// with its -80 cutoff: exp(80+) is inf there and g/(1+inf) is 0 here as well).
+extern "C" __global__ void k_silu_scale(float *x, float s, int n, int xs) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    float *xr = x + (ulong64)blockIdx.y * xs;
+    float g = xr[i] * s;
+    xr[i] = g < -80.0f ? 0.0f : g / (1.0f + expf(-g));
+}
+
+// shared expert: y[row][i] += sigmoid(glogit[row]) * v[row][i] (the CPU's
+// shexp_add tail; glogit is the 1-wide ffn_gate_inp_shexp projection)
+extern "C" __global__ void k_axpy_sigmoid(float *y, const float *v, const float *glogit,
+                                          int n, int ys, int vs) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    float gsig = 1.0f / (1.0f + expf(-glogit[blockIdx.y]));
+    y[(ulong64)blockIdx.y * ys + i] += gsig * v[(ulong64)blockIdx.y * vs + i];
+}
+
+// mixed[row][i] = mean over streams c of xn[row][c*n+i] * sigmoid(gate[row][c*n+i]).
+// sigmoid as 1/(1+exp(-g)): exp overflow gives 1/inf = 0 and underflow gives
+// exactly 1 in IEEE float, the values the CPU's guarded sigmoid_f returns.
+extern "C" __global__ void k_hc_gate_mean(const float *xn, const float *gate, float *mixed,
+                                          int n, int groups, int xs, int ms) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    const float *xr = xn + (ulong64)blockIdx.y * xs;
+    const float *gr = gate + (ulong64)blockIdx.y * xs;
+    float acc = 0.0f;
+    for (int c = 0; c < groups; c++) {
+        float gv = gr[(ulong64)c * n + i];
+        acc += xr[(ulong64)c * n + i] * (1.0f / (1.0f + expf(-gv)));
+    }
+    mixed[(ulong64)blockIdx.y * ms + i] = acc * (1.0f / (float)groups);
+}
+
+// x[row][c*n+i] += 2*sigmoid(inject[row][c]/groups) * out[row][i], every stream.
+extern "C" __global__ void k_hc_combine(float *x, const float *out, const float *inject,
+                                        int n, int groups, int xs, int os) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    float *xr = x + (ulong64)blockIdx.y * xs;
+    float ov = out[(ulong64)blockIdx.y * os + i];
+    const float *inj = inject + (ulong64)blockIdx.y * groups;
+    float inv = 1.0f / (float)groups;
+    for (int c = 0; c < groups; c++) {
+        float w = 2.0f / (1.0f + expf(-inj[c] * inv));
+        xr[(ulong64)c * n + i] += w * ov;
     }
 }
 

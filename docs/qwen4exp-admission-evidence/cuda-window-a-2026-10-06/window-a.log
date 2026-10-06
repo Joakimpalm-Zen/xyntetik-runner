@@ -1,0 +1,26 @@
+17:15:27 build candidate (qwen4exp-cuda) with fresh PTX
+f309e5f cuda: Q2_0 device matvec pair; type tables bounded by the highest decoded id
+17:16:00 1. toy fixture CUDA vs CPU score (all layers on device, --cpu-moe)
+toy-cuda vs cpu: 56 positions max 4.80e-07
+toy-cuda-moe-on-device vs cpu: 56 positions max 4.80e-07
+17:16:04 2. real file: kernel-verify (greedy identity) CUDA --cpu-moe vs CPU-only
+17:21:12 kernel-verify exit 0
+ok   'Once upon a time, in a land far away,'
+ok   'JSON example: {"name":'
+PASS: token-identical on 5 prompts (Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf)
+17:21:12 3. real file: decode profile, --cpu-moe (all experts host)
+  norms(rms+qk)       25.7 ms    4.4%  25.6564 ms/tile  5.1313 ms/tok
+  matvec             553.7 ms   95.3%  553.7242 ms/tile  110.7448 ms/tok
+  GPU-TOTAL          581.2 ms  (97.4% of wall)  581.2148 ms/tile
+  residual(wall-GPUbusy)=15.5 ms (2.6% of wall) = launch+host overhead
+  norms(rms+qk)      146.1 ms    5.8%  4.5641 ms/tile  4.5641 ms/tok
+  matvec            2303.5 ms   91.8%  71.9831 ms/tile  71.9831 ms/tok
+  GPU-TOTAL         2510.1 ms  (97.8% of wall)  78.4403 ms/tile
+  residual(wall-GPUbusy)=56.1 ms (2.2% of wall) = launch+host overhead
+17:21:16 4. real file: --cpu-moe auto (experts partly on the slice, shared expert on device)
+The capital of France is Paris. The capital of Germany is Berlin. The capital of Italy is Rome. The capital of Spain is Madrid. The capital of Portugal is Lisbon. The capital
+prompt: 5 tok, 7.82 tok/s | gen: 32 tok, 7.75 tok/s
+17:21:22 5. real file: p512 prefill + decode timing, auto
+prompt: 481 tok, 10.40 tok/s | gen: 64 tok, 4.66 tok/s
+17:22:24 6. TC prefill tolerance gate for the arch (if the gate tool runs here)
+17:22:25 window A jobs done
