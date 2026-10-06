@@ -22,6 +22,14 @@ Running a model yourself is mostly guesswork. Will it fit? Did shrinking it
 break it? Why is my laptop out of memory when nothing is running? Runner
 exists to replace those guesses with answers you can check.
 
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="site/assets/readme-fit-dark.svg">
+    <img src="site/assets/readme-fit-light.svg" alt="runner --fit reading the first 16 MB of Granite 4.2 8B on an RTX 3070: FITS, 35 of 40 layers on the GPU" width="560">
+  </picture>
+</p>
+<p align="center"><sub>Real output: Runner 1.0.2 asked about Granite 4.2 8B on an RTX 3070, shortened to fit. <a href="docs/compat-reports/fit-capture-1.0.2-2026-10-06-rtx3070.md">Full capture</a></sub></p>
+
 - **Ask before you download.** Runner reads the first few megabytes of a
   model and tells you whether it fits your machine, and how. It called the
   real split in 70 of 72 tests and was never too optimistic.
@@ -35,14 +43,6 @@ exists to replace those guesses with answers you can check.
 - **Trust what comes out.** A tool call still parses when the model runs out
   of words, a fine-tune comes out the same twice, byte for byte, and any run
   can be signed and replayed by someone else.
-
-<p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="site/assets/readme-fit-dark.svg">
-    <img src="site/assets/readme-fit-light.svg" alt="runner --fit reading the first 16 MB of Granite 4.2 8B on an RTX 3070: FITS, 35 of 40 layers on the GPU" width="560">
-  </picture>
-</p>
-<p align="center"><sub>Real output: Runner 1.0.2 asked about Granite 4.2 8B on an RTX 3070, shortened to fit. <a href="docs/compat-reports/fit-capture-1.0.2-2026-10-06-rtx3070.md">Full capture</a></sub></p>
 
 It takes about a minute to try: [quick start](#quick-start).
 
