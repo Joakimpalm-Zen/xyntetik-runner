@@ -1,6 +1,6 @@
 <!--meta
-title: Xyntetik Runner 1.0: local inference you can prove
-description: Runner 1.0 is a single-binary GGUF inference and LoRA training engine in C for CPU, CUDA and Metal. Tool calls that survive the token limit, adapters trained through the quantized weights you serve, signed receipts that replay, and interfaces held to a versioning policy. Every claim carries its measurement.
+title: Xyntetik: model files you can check, and the open engine behind them
+description: Compressed and modified versions of open models, each measured against its original and published with the result. Runner 1.0 is the open single-binary engine in C that measures and serves them, and builds most of them, on CPU, CUDA and Metal, with tools to make a file of your own.
 path: /
 nav: home
 bare: yes
@@ -9,14 +9,14 @@ bare: yes
   <div class="wrap hero-grid">
     <div>
       <p class="eyebrow">Xyntetik Runner 1.0, a Zenova AB product</p>
-      <h1>Local inference you can prove.</h1>
-      <p class="lede">Runner is a single-binary engine in plain C that serves, scores and trains GGUF models on hardware you own. It closes tool calls that run out of tokens so they still parse, trains LoRA adapters through the same quantized weights it serves, and records any run as a signed receipt that replays. It is not the fastest engine or the widest; <a href="#compare">the table below</a> says where it loses.</p>
-      <p class="lede">Version 1.0 holds the command line, the API and the record formats to a <a href="/runner/#versioning">versioning policy</a>. Every number on this site names the document it comes from and the day it was measured, including the rows where Runner loses.</p>
+      <h1>Model files you can check.</h1>
+      <p class="lede">Xyntetik publishes compressed and modified versions of open models, each measured against its original and published with the result, the misses beside the passes. Runner is the open engine that measures and serves them, and builds most of them: one binary in plain C for CPU, CUDA and Metal.</p>
+      <p class="lede">It is not the fastest engine or the widest; <a href="#compare">the table below</a> says where it loses. What it adds is the measurement, and the tools to make a file of your own.</p>
       <div class="btn-row">
-        <a class="btn btn-primary" href="/runner/#sixty-seconds">Sixty seconds to a served model</a>
-        <a class="btn" href="#one-oh">What is in 1.0</a>
-        <a class="btn" href="/evidence/">See the evidence</a>
-        <a class="btn" href="{{repo}}" rel="noopener">GitHub</a>
+        <a class="btn btn-primary" href="#files">Get a file</a>
+        <a class="btn" href="#make">Make your own</a>
+        <a class="btn" href="{{repo}}/issues/new?template=model_request.yml" rel="noopener">Request a model</a>
+        <a class="btn btn-support" href="https://buy.stripe.com/9B69AUddpdx9auHgP27N600" rel="noopener">Support this work</a>
       </div>
       <div class="hero-facts">
         <span>Apache 2.0, free forever</span>
@@ -33,10 +33,83 @@ bare: yes
   </div>
 </section>
 
-<section class="section" style="padding-top:0" id="should-not-work">
+<section class="section" style="padding-top:0" id="doors">
+  <div class="wrap grid-2">
+    <a class="card card-link accent reveal" href="#files">
+      <p class="eyebrow">Run</p>
+      <h3>I want a model file I can check.</h3>
+      <p>Smaller or repaired versions of models you already run, each with its number against the original on the card, and the command that built it.</p>
+      <span class="more">The files &rarr;</span>
+    </a>
+    <a class="card card-link accent reveal" href="/runner/reproducible-lora-training-receipts/">
+      <p class="eyebrow">Attest</p>
+      <h3>I need to prove what my model did.</h3>
+      <p>Signed, chained receipts that replay to VERIFIED, DIVERGED or UNVERIFIABLE, and an evidence pack a reviewer checks offline.</p>
+      <span class="more">Receipts and evidence packs &rarr;</span>
+    </a>
+  </div>
+</section>
+
+<section class="section tint" id="files">
   <div class="wrap">
     <div class="section-head reveal">
-      <p class="eyebrow">Three things that should not work</p>
+      <p class="eyebrow">Files</p>
+      <h2>Three files, each with its number against the original.</h2>
+      <p>The project bar is a margin-qualified top-1 of at least 97% and a mean KLD of at most 0.05 against the named parent. A file is published with its result either way; the <a href="/evidence/#artifacts">ledger</a> lists the ones that miss.</p>
+    </div>
+    <div class="table-wrap reveal">
+      <table class="data">
+        <thead>
+          <tr><th style="min-width:12rem">File</th><th class="num">Size</th><th class="num">Margin-qualified top-1</th><th class="num">Mean KLD</th><th>What was done</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><a href="{{hf}}/Qwen3.8-27B-GSQ-RCO-IQ3_S-recovered-GGUF">Qwen3.8-27B IQ3_S, recovered scales</a></td>
+            <td class="num">11.77 GB</td><td class="num">97.80%</td><td class="num">0.0450</td>
+            <td>ISTA-DASLab's 3-bit file with every block scale retrained against the BF16 parent. Same bytes and layout, so any engine that reads the source reads this one. The source reads 97.60% and 0.0480 on the same positions: the edge points the right way and is not resolved at 500 positions.</td>
+          </tr>
+          <tr>
+            <td><a href="{{hf}}/Qwen3-30B-A3B-selective-attnQ8_0-expQ4_0-GGUF">Qwen3-30B-A3B, selective precision</a></td>
+            <td class="num">17.99 GB</td><td class="num">99.50%</td><td class="num">0.034</td>
+            <td>Attention at Q8_0, experts at Q4_0, built with <code>--type-plan</code>. Smaller than the official uniform Q4_K_M (18.56 GB), which reads 94.75% and 0.114 and fails the bar.</td>
+          </tr>
+          <tr>
+            <td><a href="{{hf}}/Qwen3-Coder-30B-A3B-Instruct-keep120-Q4_K_M-GGUF">Qwen3-Coder-30B, keep-120</a></td>
+            <td class="num">17.5 GB</td><td class="num">100.00%</td><td class="num">0.00738</td>
+            <td>120 of 128 experts kept per layer, built with <code>--prune-experts</code>. 1.1 GB under the stock 18.6 GB file; plain top-1 is 97.25%, a thin margin the card states.</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="small muted mt-1">Each row is copied from the file's own model card, which carries the method, the date and the limits. Fidelity to a parent is not a capability benchmark; the cards say where the two part.</p>
+    <div class="grid-3 mt-2">
+      <div class="card reveal">
+        <p class="eyebrow">Run one</p>
+        <h3>One command, checked on download.</h3>
+        <pre><code>runner -hf Joakimpalm-Zen/Qwen3-30B-A3B-selective-attnQ8_0-expQ4_0-GGUF --serve</code></pre>
+        <p>Runner fetches the file, verifies it against the Hub's SHA-256 record and serves it on localhost. <a href="/runner/#sixty-seconds">Sixty seconds to a served model</a></p>
+      </div>
+      <div class="card reveal" id="make">
+        <p class="eyebrow">Make your own</p>
+        <h3>The same tools, on your model.</h3>
+        <pre><code>runner -m model-Q8_0.gguf --quantize out.gguf --type-plan plan.json
+runner -m model.gguf --quantize pruned.gguf --prune-experts keep.json</code></pre>
+        <p>Then measure the result against its parent with <code>scripts/kld-compare-raw.py</code> before trusting it. <a href="{{repo}}#models-and-conversion">Requantization, pruning and sublayer removal</a></p>
+      </div>
+      <div class="card reveal">
+        <p class="eyebrow">Take part</p>
+        <h3>Say which model is next.</h3>
+        <p>The next file is chosen from requests. Ran one of these on your own hardware? The result is wanted, good or bad, and is credited by name.</p>
+        <p><a href="{{repo}}/issues/new?template=model_request.yml" rel="noopener">Request a model</a> &middot; <a href="{{repo}}/issues/new?template=result_report.yml" rel="noopener">Report a result</a> &middot; <a href="{{repo}}/blob/main/docs/community-results.md" rel="noopener">Community results</a></p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="section" id="should-not-work">
+  <div class="wrap">
+    <div class="section-head reveal">
+      <p class="eyebrow">What else the engine does</p>
       <h2>Each one breaks an assumption about local inference. Each one has the raw result underneath.</h2>
     </div>
     <div class="grid-3">
@@ -325,8 +398,8 @@ bare: yes
   <div class="wrap split">
     <div class="reveal">
       <p class="eyebrow">Published artifacts</p>
-      <h2>Fifteen models and thirteen evidence datasets on Hugging Face, gated the same way.</h2>
-      <p>The models carry weights; the datasets are the measurement reports, gate records and training records behind them, with no third-party weights republished. Seven <a href="{{hf}}">collections</a> group them: releases, the Kvist distilled agents, model surgery, pruning and quantization frontiers, compatibility reports, LoRA training on quantized weights, and GENESIS research. A derivative is published only after its stated gate against the named parent, and a near-miss stays published with its numbers in the open rather than being quietly removed.</p>
+      <h2>Fifteen models and fifteen datasets on Hugging Face, gated the same way.</h2>
+      <p>The models carry weights; the datasets are the measurement reports, gate records, training records and research records behind them, with no third-party weights republished. Seven <a href="{{hf}}">collections</a> group them: releases, the Kvist distilled agents, model surgery, pruning and quantization frontiers, compatibility reports, LoRA training on quantized weights, and GENESIS research. A derivative is published only after its stated gate against the named parent, and a near-miss stays published with its numbers in the open rather than being quietly removed.</p>
       <div class="btn-row">
         <a class="btn" href="{{hf}}" rel="noopener">Browse on Hugging Face</a>
         <a class="btn" href="https://huggingface.co/collections/Joakimpalm-Zen/runner-releases-6aa98baaed03bba0e8a561ae" rel="noopener">Runner Releases collection</a>
@@ -337,7 +410,7 @@ bare: yes
       <li><div><div class="t"><a href="{{hf}}/Qwen3-30B-A3B-selective-attnQ8_0-expQ4_0-GGUF">Qwen3-30B-A3B, selective precision</a></div><div class="d">Attention Q8_0, experts Q4_0, 17.99 GB. Passes the fidelity bar where the official uniform Q4_K_M fails it.</div></div><span class="pill pass">passes bar</span></li>
       <li><div><div class="t"><a href="{{hf}}/Qwen3-4B-Runner-ToolUse-Q4_K_M">Qwen3-4B Runner ToolUse adapter</a></div><div class="d">The LoRA behind the 0.69 to 1.00 claim, produced twice with the same sha256; the card carries the sidecar and the training command.</div></div><span class="pill pass">reproduced</span></li>
       <li><div><div class="t"><a href="{{hf}}/gemma-4-31B-it-attn48-removed-Q4_0-GGUF">gemma-4-31B-it, attention block 48 removed</a></div><div class="d">First sublayer-removal artifact: one attention sublayer physically dropped, 64 MiB of KV cache freed at 4k context, KLD 0.0223 on 44,413 held-out positions.</div></div><span class="pill pass">KLD 0.0223</span></li>
-      <li><div><div class="t"><a href="{{hf}}/Qwen3.8-27B-GSQ-RCO-IQ3_S-recovered-GGUF">Qwen3.8-27B GSQ-RCO IQ3_S, recovered scales</a></div><div class="d">ISTA-DASLab's IQ3_S file with every block scale retrained against the BF16 parent: same bytes, same layout, inside the bar the source misses. Evidence in its <a href="{{hfd}}/Qwen3.8-27B-GSQ-RCO-scale-recovery-evidence">dataset</a>.</div></div></li>
+      <li><div><div class="t"><a href="{{hf}}/Qwen3.8-27B-GSQ-RCO-IQ3_S-recovered-GGUF">Qwen3.8-27B GSQ-RCO IQ3_S, recovered scales</a></div><div class="d">ISTA-DASLab's IQ3_S file with every block scale retrained against the BF16 parent: same bytes, same layout, inside the bar at KLD 0.0450 and 97.80%; the edge over the source file is not resolved at 500 positions. Evidence in its <a href="{{hfd}}/Qwen3.8-27B-GSQ-RCO-scale-recovery-evidence">dataset</a>.</div></div></li>
       <li><div><div class="t"><a href="{{hf}}/gpt-oss-20b-keep30-MXFP4-GGUF">gpt-oss-20b keep-30</a></div><div class="d">Expert-pruned derivative whose originally published number did not reproduce. Kept published with the measured status at the top of the card.</div></div><span class="pill fail">fails current bar</span></li>
     </ul>
   </div>
@@ -355,7 +428,7 @@ bare: yes
       <p class="eyebrow">Support the work</p>
       <h3>Open infrastructure, funded in the open</h3>
       <p>Runner is developed openly rather than around a subscription. Measurement time on real hardware, model hosting, cross-engine validation and the loaner machines behind the benchmark tables are what contributions pay for.</p>
-      <a class="more" href="/support/">What contributions enable &rarr;</a>
+      <div class="btn-row"><a class="btn btn-support" href="https://buy.stripe.com/9B69AUddpdx9auHgP27N600" rel="noopener">Support this work</a><a class="btn" href="/support/">What contributions enable</a></div>
     </div>
   </div>
 </section>

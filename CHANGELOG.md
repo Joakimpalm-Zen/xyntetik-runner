@@ -9,6 +9,18 @@ rename keep the names that were true when they were written.
 
 ## Unreleased
 
+- **The README and xyntetik.com lead with the published files.** Both open
+  with three files and their numbers against the original, the command to
+  run one and the commands to make your own; the engine's other features
+  follow under "What else the engine does" (the `#why-runner` anchor is
+  kept). New issue forms for a model request and a result report, and
+  `docs/community-results.md` for results from other people's hardware. A
+  support button sits at the top of the README, in the site header and on
+  the landing page. Corrected on all three surfaces: the unmodified
+  Qwen3.8-27B GSQ-RCO IQ3_S source is inside the fidelity bar on the matched
+  positions (0.0480, 97.60%), so the recovered file's edge over it is a
+  direction, not a resolved difference; the README and site had said the
+  source misses the bar.
 - **`qwen4exp` (Qwen3.8-Flash-Next) runs on the CPU, EXPERIMENTAL.** The
   loader and CPU forward admit the architecture: four persistent
   hyper-connection streams with the output norm as the final mixer, the

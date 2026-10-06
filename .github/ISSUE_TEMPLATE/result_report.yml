@@ -1,0 +1,52 @@
+name: Result report
+description: You ran a published file or the engine on your own hardware. Tell us what happened.
+labels: [community-result]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Success and failure are both wanted. Reports are summarised in
+        docs/community-results.md and credited to your GitHub handle unless you
+        ask otherwise below.
+  - type: input
+    id: file
+    attributes:
+      label: File or model
+      description: The exact filename and the repository it came from
+    validations:
+      required: true
+  - type: input
+    id: engine
+    attributes:
+      label: Engine and version
+      description: "`runner --version`, or the other engine and its version if you ran the file elsewhere"
+    validations:
+      required: true
+  - type: input
+    id: hardware
+    attributes:
+      label: Hardware
+      description: GPU and VRAM, or Mac model and unified memory, plus OS
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What you ran and what you measured
+      description: The command or workload, the numbers you saw (speed, memory, task outcome), and how many runs.
+    validations:
+      required: true
+  - type: textarea
+    id: compare
+    attributes:
+      label: Compared against
+      description: The original file or another quantization on the same setup, if you ran one.
+  - type: dropdown
+    id: credit
+    attributes:
+      label: Credit
+      options:
+        - Credit my GitHub handle
+        - Publish the result without my name
+    validations:
+      required: true

@@ -159,6 +159,7 @@ li { margin: 0.3rem 0; }
 .card p { margin-bottom: 0.4rem; font-size: 0.97rem; color: var(--ink-2); }
 .card p:last-child { margin-bottom: 0; }
 .card .more { margin-top: auto; padding-top: 0.6rem; font-weight: 500; }
+.card pre { margin: 0.2rem 0 0.4rem; font-size: 0.8rem; white-space: pre-wrap; word-break: break-all; }
 .card.accent { border-top: 3px solid var(--teal); }
 .card .icon { width: 36px; height: 36px; color: var(--teal); margin-bottom: 0.4rem; }
 .card .icon svg { width: 100%; height: 100%; }
@@ -197,6 +198,14 @@ li { margin: 0.3rem 0; }
 .btn-primary:hover { background: var(--ink-2); border-color: var(--ink-2); }
 @media (prefers-color-scheme: dark) { .btn-primary { background: var(--teal); border-color: var(--teal); color: #07110F; } .btn-primary:hover { background: var(--teal-ink); border-color: var(--teal-ink); } }
 .btn-row { display: flex; flex-wrap: wrap; gap: 0.75rem; margin-top: 1.5rem; }
+.btn-support { background: var(--teal-ink); border-color: var(--teal-ink); color: #FFFFFF; }
+.btn-support::before { content: "\2665"; font-size: 0.95em; }
+.btn-support:hover { background: var(--teal); border-color: var(--teal); }
+@media (prefers-color-scheme: dark) { .btn-support { background: var(--teal); border-color: var(--teal); color: #07110F; } .btn-support:hover { background: var(--teal-ink); border-color: var(--teal-ink); } }
+.nav a.nav-cta { padding: 0.4rem 0.85rem; border-radius: 9px; background: var(--teal-ink); color: #FFFFFF; }
+.nav a.nav-cta:hover { background: var(--teal); color: #FFFFFF; }
+.nav a.nav-cta[aria-current="page"] { box-shadow: none; }
+@media (prefers-color-scheme: dark) { .nav a.nav-cta, .nav a.nav-cta:hover { color: #07110F; } .nav a.nav-cta { background: var(--teal); } .nav a.nav-cta:hover { background: var(--teal-ink); } }
 
 /* hero */
 .hero { padding: clamp(3rem, 8vw, 6.5rem) 0 clamp(2.5rem, 6vw, 4.5rem); }

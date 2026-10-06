@@ -1,0 +1,48 @@
+name: Model request
+description: Ask for a measured file of a model you want to run
+labels: [model-request]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        The next published file is chosen from these requests. A request does not
+        promise a file: a derivative is published only after it is measured against
+        its parent, and the result is published either way.
+  - type: input
+    id: model
+    attributes:
+      label: Model
+      description: The Hugging Face repository of the original, e.g. Qwen/Qwen3.8-27B
+    validations:
+      required: true
+  - type: input
+    id: hardware
+    attributes:
+      label: Your hardware
+      description: GPU and VRAM, or Mac model and unified memory, plus system RAM
+    validations:
+      required: true
+  - type: dropdown
+    id: want
+    attributes:
+      label: What would help most
+      options:
+        - A smaller file that still passes the fidelity bar
+        - A file that fits a specific memory size (say which below)
+        - A repaired version of an existing low-bit file (recovered scales)
+        - Support for an architecture Runner does not load yet
+        - Something else
+    validations:
+      required: true
+  - type: textarea
+    id: why
+    attributes:
+      label: What you would use it for
+      description: The workload, the context length you need, and what you run today.
+    validations:
+      required: true
+  - type: textarea
+    id: existing
+    attributes:
+      label: Files you already tried
+      description: Existing quantizations and where they fell short, if any.
