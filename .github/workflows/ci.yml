@@ -11,17 +11,26 @@ on:
     - cron: "23 4 * * *"
   push:
     branches: [main]
-    # the site has its own workflow and nothing under docs/ is a test input
-    # (the release check reads README, CHANGELOG and SECURITY at the top
-    # level, which stay in scope); a site- or docs-only change does not
-    # need the engine's gates
+    # the site has its own workflow and nothing under docs/ is a test input;
+    # a site-, docs- or front-page-only change does not need the engine's
+    # gates. README.md and CHANGELOG.md joined the list on 2026-10-06: no job
+    # here reads the real files (the release check that does runs in
+    # release.yml at tag time, and its tests use temporary copies), and a day
+    # of README edits had queued two full runs per merge and held the site
+    # deploy behind them. MANUAL.md stays in scope because help-parity reads
+    # it, and SECURITY.md because it changes rarely and with code. A change
+    # that touches anything else still runs everything.
     paths-ignore:
       - "site/**"
       - "docs/**"
+      - "README.md"
+      - "CHANGELOG.md"
   pull_request:
     paths-ignore:
       - "site/**"
       - "docs/**"
+      - "README.md"
+      - "CHANGELOG.md"
 
 jobs:
   unix:
