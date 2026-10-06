@@ -36,6 +36,14 @@ exists to replace those guesses with answers you can check.
   of words, a fine-tune comes out the same twice, byte for byte, and any run
   can be signed and replayed by someone else.
 
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="site/assets/readme-fit-dark.svg">
+    <img src="site/assets/readme-fit-light.svg" alt="runner --fit reading the first 16 MB of a model on an RTX 3070: FITS, 35 of 40 layers on the GPU" width="560">
+  </picture>
+</p>
+<p align="center"><sub>Real output from the <a href="docs/compat-reports/clean-setup-1.0.1-2026-10-03-rtx3070.md">1.0.1 clean-setup run</a> on an RTX 3070, shortened to fit.</sub></p>
+
 It takes about a minute to try: [quick start](#quick-start).
 
 ## What is it?
@@ -217,6 +225,13 @@ and shrinks the other half to 4 bits.
 wired memory under Runner and 60.8 GB under llama-server. On an 8 GB M1 it is
 8 MB against 3,819 MB.
 
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="site/assets/readme-idle-dark.svg">
+    <img src="site/assets/readme-idle-light.svg" alt="Memory held while a 63 GB model sits loaded and idle: Runner 35 MB, llama-server 60.8 GB" width="440">
+  </picture>
+</p>
+
 **Why.** A model server usually lives on the machine you also work on. Most
 servers hold all of the model's memory until you quit them. Runner keeps the
 model as memory the operating system may take back whenever another app needs
@@ -241,6 +256,13 @@ be read in again, about 3 s for the 3.6 GB model on that M1.
 **Result.** Six engines, one tool call cut short by the token limit. Runner
 was the only one to return a call a program could run, at every budget from
 1 to 16 tokens.
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="site/assets/readme-toolcalls-dark.svg">
+    <img src="site/assets/readme-toolcalls-light.svg" alt="One truncated tool call across six engines: only Runner returns a usable call below the control budget" width="380">
+  </picture>
+</p>
 
 **Why.** A model only gets so many words per reply. If it runs out halfway
 through filling in a form for a tool, most engines hand your program half a
