@@ -882,19 +882,49 @@ static void context_from_snapshot(slot_t *s, sock_t fd, const char *id,
 }
 
 // R1.12.1: POST /v1/runner/contexts/{id}/snapshot {name?, receipt?}
+// A context id in a URL path may arrive percent-encoded: the TypeScript
+// client sends encodeURIComponent(id), which turns the ':' the id grammar
+// allows into "%3A", and the raw comparison then found no such context
+// (found 2026-10-05). Decode %XX (and only %XX; '+' is a literal here, not a
+// space) into a bounded buffer, then validate the DECODED id against the
+// same grammar every other door uses.
+static int hexval(int c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
+static bool path_segment_decode(const char *in, char *out, size_t cap) {
+    size_t n = 0;
+    for (const char *p = in; *p; p++) {
+        int c = (unsigned char)*p;
+        if (c == '%') {
+            int h = hexval(p[1]), l = p[1] ? hexval(p[2]) : -1;
+            if (h < 0 || l < 0) return false;
+            c = h * 16 + l;
+            p += 2;
+        }
+        if (n + 1 >= cap) return false;
+        out[n++] = (char)c;
+    }
+    out[n] = 0;
+    return true;
+}
+
 static void handle_context_snapshot(slot_t *s, sock_t fd, jv *req,
                                     const char *path) {
-    char id[PFX_CTX_NAME_MAX + 1];
+    char id[PFX_CTX_NAME_MAX + 1], raw[3 * PFX_CTX_NAME_MAX + 1];
     const char *p = path + sizeof("/v1/runner/contexts/") - 1;
     const char *end = strchr(p, '/');
     size_t n = end ? (size_t)(end - p) : 0;
-    if (!end || strcmp(end, "/snapshot") != 0 || n == 0 || n > PFX_CTX_NAME_MAX) {
+    if (!end || strcmp(end, "/snapshot") != 0 || n == 0 || n >= sizeof raw) {
         send_error_detail(fd, 400, "not a context id", "id", "invalid_value");
         return;
     }
-    memcpy(id, p, n);
-    id[n] = 0;
-    if (!prefix_context_name_ok(id)) {
+    memcpy(raw, p, n);
+    raw[n] = 0;
+    if (!path_segment_decode(raw, id, sizeof id) || !prefix_context_name_ok(id)) {
         send_error_detail(fd, 400, "not a context id", "id", "invalid_value");
         return;
     }
@@ -956,6 +986,11 @@ static void session_answer(slot_t *s, sock_t fd, float *logits, int n_prompt,
     double t0 = now_s();
     bool live = session_run(e, logits, stop_at, session_text_cb, &text, &last);
     bool suspended = live && stop_at > 0 && e->gen_count < e->gen_max;
+    // Read before engine_reset below zeroes them: a suspended session
+    // answered tokens:0, generated:0 while its image carried the real
+    // counts (found 2026-10-05).
+    int tokens_total = e->pos, generated = e->gen_count;
+    bool hit_stop = e->hit_stop;
     char id[65] = "";
     const char *why = NULL;
     if (suspended) {
@@ -1000,15 +1035,15 @@ static void session_answer(slot_t *s, sock_t fd, float *logits, int n_prompt,
     sb_esc(&r, text.s ? text.s : "", text.n);
     sb_fmt(&r, "\",\"tokens\":%d,\"generated\":%d,\"max_tokens\":%d,"
                "\"finish_reason\":\"%s\",\"seconds\":%.6f}",
-           e->pos, e->gen_count, max_new,
-           suspended ? "suspended" : e->hit_stop ? "stop" : "length", secs);
+           tokens_total, generated, max_new,
+           suspended ? "suspended" : hit_stop ? "stop" : "length", secs);
     free(text.s);
     if (r.failed) { free(r.s); send_error(fd, 500, "out of memory"); return; }
     send_response(fd, 200, "application/json", r.s, r.n);
     free(r.s);
     fprintf(stderr, "[slot %d] session%s%s: %d tokens, %d of %d generated%s\n",
-            s->id, parent ? " resume " : " ", parent ? parent : "", e->pos,
-            e->gen_count, max_new, id[0] ? ", imaged" : "");
+            s->id, parent ? " resume " : " ", parent ? parent : "", tokens_total,
+            generated, max_new, id[0] ? ", imaged" : "");
 }
 
 static bool session_int(sock_t fd, jv *req, const char *key, int lo, int hi,
@@ -1029,6 +1064,40 @@ static bool session_int(sock_t fd, jv *req, const char *key, int lo, int hi,
         return false;
     }
     *out = (int)v->num;
+    return true;
+}
+
+// A sampler knob from the request body: absent or null keeps the default;
+// anything else must be a finite number inside [lo, hi]. jv_num() took a
+// string as the default and a negative temperature as itself, so a session
+// could start on an unsamplable setting that a chat request would refuse.
+static bool session_float(sock_t fd, jv *req, const char *key, double lo,
+                          double hi, float *out) {
+    jv *v = jv_get(req, key);
+    if (!v || v->type == J_NULL) return true;
+    if (v->type != J_NUM || !isfinite(v->num) || v->num < lo || v->num > hi) {
+        char msg[128];
+        snprintf(msg, sizeof msg, "%s must be a number in [%g, %g]", key, lo, hi);
+        send_error_detail(fd, 400, msg, key, "invalid_value");
+        return false;
+    }
+    *out = (float)v->num;
+    return true;
+}
+
+// A seed is a positive integer the rng can hold exactly: a double carries
+// 53 bits, so the range is capped there rather than cast past it.
+static bool session_seed(sock_t fd, jv *req, const char *key, uint64_t *out) {
+    jv *v = jv_get(req, key);
+    if (!v || v->type == J_NULL) return true;
+    if (v->type != J_NUM || v->num < 1 || v->num > 9007199254740991.0 ||
+        v->num != (double)(long long)v->num) {
+        char msg[128];
+        snprintf(msg, sizeof msg, "%s must be a positive integer below 2^53", key);
+        send_error_detail(fd, 400, msg, key, "invalid_value");
+        return false;
+    }
+    *out = (uint64_t)v->num;
     return true;
 }
 
@@ -1053,17 +1122,20 @@ static void handle_session_start(slot_t *s, sock_t fd, jv *req) {
         return;
     }
     jv *ie = jv_get(req, "ignore_eos");
+    if (ie && ie->type != J_NULL && ie->type != J_BOOL) {
+        send_error_detail(fd, 400, "ignore_eos must be a boolean", "ignore_eos",
+                          "invalid_value");
+        return;
+    }
     bool ignore_eos = ie && ie->type == J_BOOL && ie->b;
     s->smp = s->smp_base;
     s->smp.top_k = top_k;
-    s->smp.temp = (float)jv_num(jv_get(req, "temperature"), s->smp.temp);
-    s->smp.top_p = (float)jv_num(jv_get(req, "top_p"), s->smp.top_p);
-    s->smp.min_p = (float)jv_num(jv_get(req, "min_p"), s->smp.min_p);
-    s->smp.repeat_penalty = (float)jv_num(jv_get(req, "repeat_penalty"),
-                                          s->smp.repeat_penalty);
-    jv *seed = jv_get(req, "seed");
-    if (seed && seed->type == J_NUM && seed->num >= 1)
-        s->smp.rng = (uint64_t)seed->num;
+    if (!session_float(fd, req, "temperature", 0.0, 10.0, &s->smp.temp) ||
+        !session_float(fd, req, "top_p", 0.0, 1.0, &s->smp.top_p) ||
+        !session_float(fd, req, "min_p", 0.0, 1.0, &s->smp.min_p) ||
+        !session_float(fd, req, "repeat_penalty", 0.0, 10.0, &s->smp.repeat_penalty) ||
+        !session_seed(fd, req, "seed", &s->smp.rng))
+        return;
     int32_t *toks = NULL;
     int n = tok_encode_fit(s->tok, prompt->str, true, TOK_RAW, 0, &toks);
     if (n < 0) { free(toks); send_error(fd, 500, "out of memory tokenizing"); return; }
@@ -1074,6 +1146,7 @@ static void handle_session_start(slot_t *s, sock_t fd, jv *req) {
         return;
     }
     sched_prefill_begin();
+    engine_request_defaults(e);   // nothing the previous request set survives
     engine_reset(e);
     e->ignore_eos = ignore_eos;
     float *lg = engine_feed(e, toks, n);
@@ -1162,6 +1235,7 @@ static void handle_session_resume(slot_t *s, sock_t fd, jv *req,
     // a greedy image records no rng (it is never drawn from)
     s->smp.rng = fork_seed ? (uint64_t)fork_seed : sm->rng ? sm->rng : 1;
     sched_prefill_begin();
+    engine_request_defaults(e);   // the image, not the last request, is the state
     if (!engine_state_load(e, img.tokens, sm->n_tokens, img.state)) {
         sched_prefill_end();
         session_image_free(&img);
@@ -1304,8 +1378,10 @@ static void send_contexts(sock_t fd) {
 }
 
 static void delete_context(sock_t fd, const char *path) {
-    const char *id = path + sizeof("/v1/runner/contexts/") - 1;
-    if (!prefix_context_name_ok(id)) {
+    char id[PFX_CTX_NAME_MAX + 1];
+    if (!path_segment_decode(path + sizeof("/v1/runner/contexts/") - 1,
+                             id, sizeof id) ||
+        !prefix_context_name_ok(id)) {
         send_error_detail(fd, 400, "not a context id", "id", "invalid_value");
         return;
     }
@@ -2565,8 +2641,18 @@ static void *slot_worker(void *arg) {
 // never frees anything a slot is using (handle_unload defers under an active
 // load or generation), and an operator reclaiming memory must not queue behind
 // the very work that holds it. Prefix-cache telemetry and release have their
-// own mutex and likewise need no inference slot. Every other POST is handed to
-// a slot untouched.
+// own mutex and likewise need no inference slot. Every other request is handed
+// to a slot untouched.
+//
+// Two rules keep this thread admitting connections (found 2026-10-05: a
+// stored-response GET to a client that stopped reading parked the accept loop
+// and nothing new was served):
+//  1. Only answers that fit a socket buffer are written from here. A stored
+//     Responses body or its input_items can be megabytes, /metrics and the
+//     context listing grow with the server; those take a slot, whose writes
+//     are bounded like every other slot write.
+//  2. Every write from here carries the slot path's 30 s send timeout, so a
+//     reader that stops costs this thread at most 30 s, never forever.
 static bool accept_fastpath(sock_t fd) {
 #ifndef _WIN32
     // POSIX fd_set is a fixed-size bitmask indexed by fd value; FD_SET on an
@@ -2596,21 +2682,16 @@ static bool accept_fastpath(sock_t fd) {
                               sizeof("GET /v1/runner/prefix-cache ") - 1);
     bool pfx_clear = !strncmp(hdr, "POST /v1/runner/prefix-cache/clear ",
                               sizeof("POST /v1/runner/prefix-cache/clear ") - 1);
-    bool metrics = !strncmp(hdr, "GET /metrics ", 13);
     bool prov = !strncmp(hdr, "GET /v1/runner/provenance ",
                          sizeof("GET /v1/runner/provenance ") - 1);
-    bool ctx_list = !strncmp(hdr, "GET /v1/runner/contexts ",
-                             sizeof("GET /v1/runner/contexts ") - 1);
-    bool stored = !strncmp(hdr, "GET /v1/responses/",
-                           sizeof("GET /v1/responses/") - 1) ||
-                  !strncmp(hdr, "DELETE /v1/responses/",
-                           sizeof("DELETE /v1/responses/") - 1);
+    // Deliberately NOT here: GET /metrics, GET /v1/runner/contexts and the
+    // stored-response routes (rule 1 above); the slot path serves them.
     // The old spelling still has to reach a handler, or an operator's script
     // gets a 404 that says nothing. It is not answered here — it falls through
     // to the slot path, which replies 405 with the reason.
     if (!strncmp(hdr, "GET /unload ", 12)) return false;
     if (!health && !models && !caps && !unload && !pfx_stats && !pfx_clear &&
-        !metrics && !prov && !ctx_list && !stored)
+        !prov)
         return false;
     // Keep the request untouched until framing says it is bodyless. A partial
     // header, an oversized header, malformed framing, and every declared body
@@ -2639,12 +2720,11 @@ static bool accept_fastpath(sock_t fd) {
         if (r <= 0) { sock_close(fd); return true; }
         got += (size_t)r;
     }
+    sock_send_timeout(fd, 30.0);   // rule 2: a dead reader cannot hold this thread
+    (void)method; (void)path;
     if (health)          send_health(fd);
     else if (models)     send_models(fd);
-    else if (metrics)    send_metrics(fd);
     else if (prov)       send_provenance(fd);
-    else if (ctx_list)   send_contexts(fd);
-    else if (stored)     stored_response_route(fd, method, path);
     else if (unload)     handle_unload(fd);
     else if (pfx_stats)  send_prefix_cache(fd);
     else if (pfx_clear) {

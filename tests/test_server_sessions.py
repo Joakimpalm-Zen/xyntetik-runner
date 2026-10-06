@@ -126,3 +126,68 @@ def test_the_flag_needs_a_server(exe, model, tmp_path):
                         str(tmp_path)], stdout=subprocess.PIPE,
                        stderr=subprocess.PIPE, timeout=60)
     assert p.returncode != 0 and b"--serve" in p.stderr
+
+
+def test_suspended_session_reports_its_tokens(exe, model, tmp_path):
+    """The response is written after the slot is reset for the next request;
+    `tokens` read the reset position and said 0 while the image carried the
+    real count (found 2026-10-05)."""
+    with RunnerServer(exe, model, ctx=256, extra_args=[
+            "--gpu", "off", "-t", "2", "--sessions", str(tmp_path / "s")]) as srv:
+        code, a = _post(srv, "/v1/runner/sessions", dict(START, suspend_after=15))
+        assert code == 200 and a["finish_reason"] == "suspended"
+        code, meta = _get(srv, f"/v1/runner/sessions/{a['id']}")
+        assert a["generated"] == 15 == meta["generated"]
+        assert a["tokens"] == meta["tokens"] > 15
+
+
+def test_a_session_does_not_inherit_the_previous_request(exe, model, tmp_path):
+    """A chat turn sets JSON mode, a reasoning budget or the loop guard on the
+    slot's engine at its start and never cleared them; a session on that slot
+    then generated under the previous request's constraint (found 2026-10-05).
+    The anchor: a session after a json_object turn is byte-identical to the
+    same session on a fresh server."""
+    args = ["--gpu", "off", "-t", "2", "--parallel", "1",
+            "--sessions", str(tmp_path / "s")]
+    with RunnerServer(exe, model, ctx=256, extra_args=args) as srv:
+        code, clean = _post(srv, "/v1/runner/sessions", START)
+        assert code == 200
+    with RunnerServer(exe, model, ctx=256, extra_args=args) as srv:
+        code, j = _post(srv, "/v1/chat/completions", {
+            "messages": [{"role": "user", "content": "object please"}],
+            "max_tokens": 12, "response_format": {"type": "json_object"},
+            "temperature": 0})
+        assert code == 200, j
+        code, after = _post(srv, "/v1/runner/sessions", START)
+        assert code == 200
+        assert after["text"] == clean["text"]
+        assert after["generated"] == clean["generated"] == 40
+
+
+@pytest.mark.parametrize("field,value", [
+    ("temperature", "hot"), ("temperature", -1), ("temperature", 11),
+    ("top_p", 1.5), ("min_p", -0.1), ("repeat_penalty", "2"),
+    ("seed", 0), ("seed", 1.5), ("seed", "7"), ("seed", 2.0 ** 60),
+    ("ignore_eos", "yes"), ("max_tokens", "40"), ("top_k", -1),
+])
+def test_session_numbers_are_validated(exe, model, tmp_path, field, value):
+    """Every sampler knob is type- and range-checked before it is used: a
+    string temperature used to read as the default and a negative one as
+    itself (found 2026-10-05)."""
+    with RunnerServer(exe, model, ctx=256, extra_args=[
+            "--gpu", "off", "-t", "2", "--sessions", str(tmp_path / "s")]) as srv:
+        code, err = _post(srv, "/v1/runner/sessions", dict(START, **{field: value}))
+        assert code == 400, (field, value, err)
+        assert err["error"]["code"] == "invalid_value"
+        assert err["error"].get("param") == field
+
+
+def test_resume_validates_its_numbers(exe, model, tmp_path):
+    with RunnerServer(exe, model, ctx=256, extra_args=[
+            "--gpu", "off", "-t", "2", "--sessions", str(tmp_path / "s")]) as srv:
+        code, a = _post(srv, "/v1/runner/sessions", dict(START, suspend_after=10))
+        for body in ({"fork_seed": 0}, {"fork_seed": "9"}, {"fork_seed": 1.5},
+                     {"suspend_after": "20"}, {"suspend_after": 1.5}):
+            code, err = _post(srv, f"/v1/runner/sessions/{a['id']}/resume", body)
+            assert code == 400, (body, err)
+            assert err["error"]["code"] == "invalid_value"

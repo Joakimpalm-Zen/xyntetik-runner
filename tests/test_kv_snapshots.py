@@ -287,3 +287,39 @@ def test_a_snapshot_is_loaded_only_from_a_trusted_key(runner_bin, fx, saved, tmp
     assert load()[0] == 200
     st, body = load(name="plain")
     assert st == 200 and body["snapshot"]["signed_by"] is None, body
+
+
+def _delete(srv, path):
+    req = urllib.request.Request(srv.base_url + path, method="DELETE")
+    try:
+        with urllib.request.urlopen(req, timeout=60) as r:
+            return r.status, json.load(r)
+    except urllib.error.HTTPError as r:
+        return r.code, json.load(r)
+
+
+def test_context_ids_with_colons_delete_encoded_or_bare(runner_bin, fx, tmp_path):
+    """The id grammar allows ':' and the TypeScript client sends
+    encodeURIComponent(id), so a DELETE arrived as %3A and the raw comparison
+    found no such context (found 2026-10-05). Both spellings now work, and
+    decoding does not widen the grammar: an encoded '/' is still refused."""
+    with _srv(runner_bin, fx["model"], tmp_path / "snaps") as srv:
+        st, _ = _post(srv, "/v1/runner/contexts", {"id": "user:42", "prompt": MEMORY})
+        assert st == 200
+        st, body = _delete(srv, "/v1/runner/contexts/user%3A42")
+        assert st == 200 and body["id"] == "user:42" and body["deleted"]
+        st, _ = _post(srv, "/v1/runner/contexts", {"id": "user:43", "prompt": MEMORY})
+        assert st == 200
+        st, body = _delete(srv, "/v1/runner/contexts/user:43")
+        assert st == 200 and body["id"] == "user:43"
+        # the snapshot route reads the same segment
+        st, _ = _post(srv, "/v1/runner/contexts", {"id": "a:b", "prompt": MEMORY})
+        assert st == 200
+        # (a snapshot's default file name is the id, and file names exclude
+        # ':', so a colon id names its snapshot explicitly)
+        st, snap = _post(srv, "/v1/runner/contexts/a%3Ab/snapshot", {"name": "ab"})
+        assert st == 200, snap
+        for bad in ("user%2F42", "user%3", "user%zz", "%00"):
+            st, err = _delete(srv, f"/v1/runner/contexts/{bad}")
+            assert st == 400, (bad, err)
+            assert err["error"]["code"] == "invalid_value"

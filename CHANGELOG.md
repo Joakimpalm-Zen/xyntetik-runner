@@ -7,7 +7,47 @@ to the exact build, and what is not covered. Releases before 1.0.0 made no
 such promise (the `-alpha` suffix was retired at v0.2.0). Entries below the
 rename keep the names that were true when they were written.
 
-## Unreleased
+## v1.0.2 - 2026-10-06
+
+- **A client that stops reading a large GET no longer blocks admission.**
+  The accept thread answered `GET /metrics`, the context listing and the
+  stored-response routes itself, with no send timeout; once such a body
+  passed the socket buffers, a reader that stopped parked the thread and no
+  new connection was served. Those routes now take a slot, and what the
+  accept thread still answers (`/health`, `/v1/models`, `/v1/capabilities`,
+  `/unload`, provenance, the prefix-cache routes) is written behind the slot
+  path's 30 s send timeout. Gated in conformance with every slot held, and
+  `scripts/accept-stall.py` is the real-model experiment for the stall
+  itself.
+- **Sessions reset the previous request's options.** A chat turn set JSON
+  mode, a reasoning budget, reasoning-channel sampling or the loop guard on
+  the slot's engine and never cleared them, so a session on that slot
+  generated under the previous request's constraint. One
+  `engine_request_defaults()` clears every request-level option at session
+  start and resume. The anchor: a session after a `json_object` turn is
+  byte-identical to the same session on a fresh server.
+- **Sessions validate every number.** `temperature`, `top_p`, `min_p` and
+  `repeat_penalty` went through a lenient reader (a string read as the
+  default, a negative temperature as itself) and `seed` was cast from a
+  double unbounded; each is now type- and range-checked, and `ignore_eos`
+  must be a boolean, refused with 400 `invalid_value` naming the field.
+  Resume checks `fork_seed` and `suspend_after` the same way.
+- **A suspended session reports its token count.** The response read
+  `tokens` after the slot had been reset for the next request and said 0;
+  the counters are captured first.
+- **Context ids with `:` can be deleted and snapshotted from an encoded
+  URL.** The id grammar allows `:` and the TypeScript client sends
+  `encodeURIComponent(id)`, so `DELETE /v1/runner/contexts/user%3A42`
+  answered 404. Both context routes percent-decode the path segment (only
+  `%XX`, bounded) and validate the decoded id against the same grammar, so
+  an encoded `/` stays refused and a bare `:` keeps working.
+- **TypeScript client: a stream that ends before its terminal event is an
+  error.** `chatStream` and `responsesStream` returned cleanly whenever the
+  body ended, so a server fault that closed the socket after the opening
+  events read as a complete turn. Chat streams now need a chunk with
+  `finish_reason` and then `[DONE]`; Responses streams need
+  `response.completed`, `.incomplete` or `.failed`; anything else at end of
+  body throws `RunnerProtocolError` with the partial text.
 
 - **Listing named contexts is safe during concurrent creation.**
   `GET /v1/runner/contexts` now reads one owned snapshot captured under the
