@@ -85,7 +85,7 @@ It takes about a minute to try: [quick start](#quick-start).
 [Prove what a model did](#record-and-verify-a-run)
 
 <a id="sixty-seconds-to-a-served-model"></a>
-## Quick start
+## <img src="site/assets/readme-section.svg" width="8" height="24" alt=""> Quick start
 
 **1. Download Runner** (macOS on Apple Silicon shown;
 [Linux, Windows and checksum steps](MANUAL.md#quick-start)):
