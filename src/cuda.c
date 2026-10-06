@@ -599,6 +599,7 @@ static bool gpu_type_ok(int type) {
         case T_Q6_K: case T_IQ4_NL: case T_IQ4_XS: case T_MXFP4:
         case T_NVFP4: case T_IQ1_S: case T_IQ1_M: case T_IQ2_XXS:
         case T_IQ2_XS: case T_IQ2_S: case T_IQ3_XXS: case T_IQ3_S:
+        case T_Q2_0:
             return true;
         default:
             return false;
