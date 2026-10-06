@@ -126,13 +126,9 @@ against its original, and where it runs. The
 [Runner Releases collection](https://huggingface.co/collections/Joakimpalm-Zen/runner-releases-6aa98baaed03bba0e8a561ae)
 is the place to start.
 
-## Features
-
-Each one starts with what it achieved, then why it exists, then how to use it.
-
 <a id="fit"></a>
 <a id="runtime-and-hardware"></a>
-### Know whether a model fits before you download it
+## <img src="site/assets/readme-section.svg" width="8" height="24" alt=""> Know whether a model fits before you download it
 
 **Result.** On an RTX 3070, `--fit` named the same GPU and CPU split the
 loader then used in 70 of 72 cases and was one layer cautious in the other
@@ -163,7 +159,7 @@ curl -r 0-16777215 -L -o head.gguf \
 [How the verdict is computed](MANUAL.md#deciding-before-you-download)
 
 <a id="models-and-conversion"></a>
-### Make your own model file
+## <img src="site/assets/readme-section.svg" width="8" height="24" alt=""> Make your own model file
 
 **Result.** A [17.99 GB Qwen3-30B file](https://huggingface.co/Joakimpalm-Zen/Qwen3-30B-A3B-selective-attnQ8_0-expQ4_0-GGUF)
 came from one command and a one-line plan. It is smaller than the official
@@ -196,7 +192,7 @@ python3 scripts/kld-compare-raw.py --model-a out.gguf --model-b model-Q8_0.gguf 
 [Plan formats and limits](MANUAL.md#models-and-conversion)
 
 <a id="long-contexts"></a>
-### Fit more context in the same memory
+## <img src="site/assets/readme-section.svg" width="8" height="24" alt=""> Fit more context in the same memory
 
 **Result.** `--kv k8v4` stores the context cache in about 41% of the usual
 bytes. On three models from 4B to 30B it agreed with the full-size cache on
@@ -219,7 +215,7 @@ and shrinks the other half to 4 bits.
 [Cache formats and their measured cost](MANUAL.md#long-contexts)
 
 <a id="designed-to-stay-on"></a>
-### A server that gives your memory back
+## <img src="site/assets/readme-section.svg" width="8" height="24" alt=""> A server that gives your memory back
 
 **Result.** A 63 GB model, loaded and idle on a 128 GB M5 Max, holds 35 MB of
 wired memory under Runner and 60.8 GB under llama-server. On an 8 GB M1 it is
@@ -251,18 +247,16 @@ be read in again, about 3 s for the 3.6 GB model on that M1.
 [Sharing a GPU](MANUAL.md#resource-control)
 
 <a id="truncation"></a>
-### Tool calls that survive the token limit
+## <img src="site/assets/readme-section.svg" width="8" height="24" alt=""> Tool calls that survive the token limit
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="site/assets/readme-toolcalls-dark.svg">
+  <img align="right" src="site/assets/readme-toolcalls-light.svg" alt="One truncated tool call across six engines: only Runner returns a usable call below the control budget" width="360">
+</picture>
 
 **Result.** Six engines, one tool call cut short by the token limit. Runner
 was the only one to return a call a program could run, at every budget from
 1 to 16 tokens.
-
-<p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="site/assets/readme-toolcalls-dark.svg">
-    <img src="site/assets/readme-toolcalls-light.svg" alt="One truncated tool call across six engines: only Runner returns a usable call below the control budget" width="380">
-  </picture>
-</p>
 
 **Why.** A model only gets so many words per reply. If it runs out halfway
 through filling in a form for a tool, most engines hand your program half a
@@ -283,7 +277,7 @@ TensorRT-LLM and SGLang.
 [Details](MANUAL.md#truncation)
 
 <a id="adaptation"></a>
-### Train the model file you actually serve
+## <img src="site/assets/readme-section.svg" width="8" height="24" alt=""> Train the model file you actually serve
 
 **Result.** Two training runs wrote the same adapter, checksum for checksum,
 and an independent tester reproduced that on a Tesla T4. On Qwen3-4B at
