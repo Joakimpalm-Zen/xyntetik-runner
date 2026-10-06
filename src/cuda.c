@@ -1545,6 +1545,7 @@ static gpu_weights *shared_build(model_t *m, size_t act_bytes, int max_hd,
             { &w->f_gemv[T_Q4_K], "k_gemv_q4_K" },
             { &w->f_gemv[T_Q5_K], "k_gemv_q5_K" },
             { &w->f_gemv[T_Q3_K], "k_gemv_q3_K" },
+            { &w->f_gemv[T_IQ4_XS], "k_gemv_iq4_xs" },
             { &w->f_gemv[T_Q6_K], "k_gemv_q6_K" },
             // cross-sequence decode microbatch: per-column position and KV,
             // plus the multi-column twins of the decode GEMVs above

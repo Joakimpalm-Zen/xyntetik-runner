@@ -2107,6 +2107,45 @@ extern "C" __global__ void k_mv_iq4_nl_b(MV_PARAMS) {
     MV_TAIL_B;
 }
 
+// IQ4_XS decode GEMV, same geometry. Block 136 bytes: d f16, scales_h u16,
+// scales_l[4], qs[128]. Sub-block ib (32 values) reads qs[16*ib + j]: low
+// nibble -> value j, high nibble -> value j+16, through the IQ4_NL table;
+// scale ls = (scales_l nibble) | (scales_h 2 bits << 4), dl = d*(ls-32).
+// Lane l: ib = l/4, quarter q = l%4 owns values 8q..8q+7 of that sub-block:
+// q < 2 reads the low nibbles of bytes 8q..8q+7, q >= 2 the high nibbles of
+// bytes 8(q-2)..8(q-2)+7.
+extern "C" __global__ void k_gemv_iq4_xs(MV_PARAMS) {
+    MV_HEAD;
+    int nb = a.n_in / 256;
+    const uchar *rw = wb + a.w_off + (ulong64)row * nb * 136;
+    int ib = (int)(lane >> 2), qd = (int)(lane & 3);
+    int boff = 16 * ib + 8 * (qd & 1);
+    int hi = qd >= 2;
+    float s = 0;
+    for (int b = 0; b < nb; b++) {
+        const uchar *blk = rw + (ulong64)b * 136;
+        float d = f16f(blk);
+        unsigned sh = (unsigned)blk[2] | ((unsigned)blk[3] << 8);
+        int ls = ((blk[4 + ib / 2] >> 4 * (ib % 2)) & 0xF) | (((sh >> 2 * ib) & 3) << 4);
+        float dl = d * (float)(ls - 32);
+        uint2 qv = *(const uint2 *)(blk + 8 + boff);
+        uint v0 = hi ? (qv.x >> 4) & 0x0F0F0F0Fu : qv.x & 0x0F0F0F0Fu;
+        uint v1 = hi ? (qv.y >> 4) & 0x0F0F0F0Fu : qv.y & 0x0F0F0F0Fu;
+        const float *xp = x + (ulong64)b * 256 + (int)lane * 8;
+        float4 x0 = *(const float4 *)xp, x1 = *(const float4 *)(xp + 4);
+        float t = (float)kv_iq4[v0 & 0xFF]         * x0.x
+                + (float)kv_iq4[(v0 >>  8) & 0xFF] * x0.y
+                + (float)kv_iq4[(v0 >> 16) & 0xFF] * x0.z
+                + (float)kv_iq4[(v0 >> 24)       ] * x0.w
+                + (float)kv_iq4[v1 & 0xFF]         * x1.x
+                + (float)kv_iq4[(v1 >>  8) & 0xFF] * x1.y
+                + (float)kv_iq4[(v1 >> 16) & 0xFF] * x1.z
+                + (float)kv_iq4[(v1 >> 24)       ] * x1.w;
+        s += dl * t;
+    }
+    MV_TAIL;
+}
+
 extern "C" __global__ void k_mv_iq4_xs(MV_PARAMS) {
     MV_HEAD;
     int nb = a.n_in / 256;
