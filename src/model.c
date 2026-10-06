@@ -8262,8 +8262,15 @@ static void hc_mix(model_t *m, const float *w_norm, const gguf_tensor *w_down,
                     w_norm + (size_t)c * E, E, m->rms_eps);
     matvec_b(m->tp, lo, lr, w_down, xn, hcd, hcd, lr, NULL, n);
     const float inv_hc = 1.0f / (float)hc;
+    const bool dbg = dbg_act_now();
+    if (dbg) {
+        dbg_stat("hc-streams", -1, m->x_hc + (size_t)(n - 1) * hcd, hcd);
+        dbg_stat("hc-xn", -1, xn + (size_t)(n - 1) * hcd, hcd);
+        dbg_stat("hc-lo-raw", -1, lo + (size_t)(n - 1) * lr, lr);
+    }
     for (size_t i = 0; i < (size_t)n * lr; i++) lo[i] = silu_f(lo[i] * inv_hc);
     matvec_b(m->tp, gate, hcd, w_up, lo, lr, lr, hcd, NULL, n);
+    if (dbg) dbg_stat("hc-gate", -1, gate + (size_t)(n - 1) * hcd, hcd);
     for (int b = 0; b < n; b++) {
         float *o = out + (size_t)b * out_stride;
         const float *xb = xn + (size_t)b * hcd, *gb = gate + (size_t)b * hcd;
@@ -8276,8 +8283,10 @@ static void hc_mix(model_t *m, const float *w_norm, const gguf_tensor *w_down,
             o[i] = acc * inv_hc;
         }
     }
-    if (w_inject)
+    if (w_inject) {
         matvec_b(m->tp, m->hc_inject, hc, w_inject, xn, hcd, hcd, hc, NULL, n);
+        if (dbg) dbg_stat("hc-inject", -1, m->hc_inject + (size_t)(n - 1) * hc, hc);
+    }
 }
 
 static void hc_combine(model_t *m, const float *block_out, int out_stride, int n) {
