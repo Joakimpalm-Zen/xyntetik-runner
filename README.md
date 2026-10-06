@@ -77,7 +77,7 @@ It takes about a minute to try: [quick start](#quick-start).
 > ([versioning policy](docs/versioning.md)). This page is the short version;
 > every flag, endpoint, limit and measurement is in the [manual](MANUAL.md).
 
-**On this page:** [Quick start](#quick-start) · [Model files](#files) ·
+**On this page:** [Quick start](#quick-start) · [The Lab](#files) ·
 [Will it fit](#fit) · [Make your own file](#models-and-conversion) ·
 [More context, less memory](#long-contexts) · [Idle memory](#designed-to-stay-on) ·
 [Tool calls](#truncation) · [Training](#adaptation) ·
@@ -116,14 +116,31 @@ Prefer to chat in the terminal? `./runner -m model.gguf -i`.
 
 <a id="files"></a>
 <a id="published-artifacts"></a>
-## Model files on Hugging Face
+## <img src="https://huggingface.co/front/assets/huggingface_logo-noborder.svg" width="30" height="28" alt="Hugging Face"> The Lab on Hugging Face
 
-The files Xyntetik publishes live at
-[huggingface.co/Joakimpalm-Zen](https://huggingface.co/Joakimpalm-Zen):
-smaller and repaired versions of current open models, and the evidence
-datasets behind them. Each card says what was changed, how the file measures
-against its original, and where it runs. The
-[Runner Releases collection](https://huggingface.co/collections/Joakimpalm-Zen/runner-releases-6aa98baaed03bba0e8a561ae)
+Everything the lab makes is published at
+[huggingface.co/Joakimpalm-Zen](https://huggingface.co/Joakimpalm-Zen), with
+its measurements and its failures beside the wins: 15 models and 15 datasets
+so far.
+
+- **[Kvist-14B](https://huggingface.co/collections/Joakimpalm-Zen/xyntetik-kvist-distilled-agents-6ab9f930af19ca84df9ebf6b).**
+  A 14B model distilled from a 30B parent for one job: tool-calling agents on
+  a 24 GB card. It solves 57 of 60 held-out agent tasks where the parent
+  solves 60.
+- **[Surgery on real models](https://huggingface.co/collections/Joakimpalm-Zen/xyntetik-research-model-surgery-and-scale-recovery-6aa98bab0ecb9723f310c770).**
+  A Qwen3-30B that is smaller than the official 4-bit file and closer to the
+  original. A Muse-Glimmer-30B with 6% of its decoder cut out and healed. A
+  Gemma 4 31B that runs with an attention block removed.
+- **[A 3-bit Qwen3.8-27B, repaired](https://huggingface.co/Joakimpalm-Zen/Qwen3.8-27B-GSQ-RCO-IQ3_S-recovered-GGUF).**
+  Another lab's 3-bit file with every block scale retrained against the
+  original. The account's most downloaded file so far.
+- **[GENESIS](https://huggingface.co/collections/Joakimpalm-Zen/xyntetik-research-genesis-6abcfa50b6707dec9bfee356).**
+  Can a model learn with no human text at all? Eighteen preregistered
+  experiments on 0.7M-parameter models, and the whole record is public,
+  including everything that failed.
+
+Each card says what was changed, how it measures against its original, and
+where it runs. [Runner Releases](https://huggingface.co/collections/Joakimpalm-Zen/runner-releases-6aa98baaed03bba0e8a561ae)
 is the place to start.
 
 <a id="fit"></a>
