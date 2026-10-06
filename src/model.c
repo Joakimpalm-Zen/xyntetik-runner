@@ -5103,6 +5103,34 @@ static int dbg_act_mode(void) {
     }
     return mode;
 }
+// RUNNER_DEBUG_TIME=1: wall-clock per block stage, summed over every
+// forward pass and printed by model_debug_time_report at the end of a run.
+// Off by default; one cached getenv and a predictable branch per stage.
+enum { DT_PLE, DT_MIX, DT_ATTN, DT_RECUR, DT_COMBINE, DT_ROUTE, DT_EXPERTS,
+       DT_SHEXP, DT_DENSE_FFN, DT_HEAD, DT_N };
+static const char *const dt_names[DT_N] = {
+    "ple", "hc_mix", "attention", "deltanet/ssm", "hc_combine", "moe_route",
+    "experts", "shared_expert", "dense_ffn", "head" };
+static double dt_acc[DT_N];
+static int dt_on = -1;
+static inline bool dbg_time_on(void) {
+    if (dt_on < 0) { const char *e = getenv("RUNNER_DEBUG_TIME"); dt_on = e && *e && strcmp(e, "0") != 0; }
+    return dt_on > 0;
+}
+static inline double dt_now(void) {
+    struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (double)ts.tv_sec + 1e-9 * (double)ts.tv_nsec;
+}
+#define DT_BEGIN double dt_t0 = dbg_time_on() ? dt_now() : 0
+#define DT_MARK(k) do { if (dbg_time_on()) { double dt_t1 = dt_now(); dt_acc[k] += dt_t1 - dt_t0; dt_t0 = dt_t1; } } while (0)
+void model_debug_time_report(void) {
+    if (!dbg_time_on()) return;
+    double tot = 0; for (int k = 0; k < DT_N; k++) tot += dt_acc[k];
+    fprintf(stderr, "TIME total %.3f s over the run\n", tot);
+    for (int k = 0; k < DT_N; k++)
+        if (dt_acc[k] > 0) fprintf(stderr, "TIME %-14s %8.3f s  %5.1f%%\n", dt_names[k], dt_acc[k], 100.0 * dt_acc[k] / tot);
+}
+
 static int dbg_act_pass = 0; // forward passes seen so far
 
 // Is the pass currently running the one RUNNER_DEBUG_ACT selected? The layer
@@ -8491,12 +8519,15 @@ static void forward_layer(model_t *m, int l, int n, int pos, int dbg) {
     if (ly->skip_mixer) goto nemo_ffn;
 
     // attention
+    DT_BEGIN;
     if (m->hyper_conn) {
         // qwen4exp: the PLE block folds its n-gram rows into the wide
         // residual first, then the first mixer replaces the pre-norm
         if (ly->ple4) ple4_block(m, ly, m->fwd_tokens, n, pos);
+        DT_MARK(DT_PLE);
         hc_mix(m, ly->hc_attn_norm, ly->hc_attn_down, ly->hc_attn_up,
                ly->hc_attn_inject, m->xb, xdim, n);
+        DT_MARK(DT_MIX);
     } else
     for (int b = 0; b < n; b++)
         xnorm(m, m->xb + (size_t)b * xdim, m->x + (size_t)b * n_embd,
@@ -8520,6 +8551,7 @@ static void forward_layer(model_t *m, int l, int n, int pos, int dbg) {
         if (m->granite_hybrid || m->nemotron_h)
                                mamba2_ssd_step(m, ly, l, n, xdim);
         else                   qwen35_linear(m, ly, l, n, xdim);
+        DT_MARK(DT_RECUR);
     } else {
     if (m->qwen35) {
         matvec_b(m->tp, m->ssm_qkv, 2 * q_dim, ly->wq,
@@ -8691,11 +8723,13 @@ static void forward_layer(model_t *m, int l, int n, int pos, int dbg) {
         for (int b = 0; b < n; b++)
             for (int i = 0; i < n_embd; i++)
                 m->xb[(size_t)b * xdim + i] *= m->resid_scale;
+    DT_MARK(DT_ATTN);
     if (m->hyper_conn) hc_combine(m, m->xb, xdim, n);   // scatter into every stream
     else
     for (int b = 0; b < n; b++)
         for (int i = 0; i < n_embd; i++)
             m->x[(size_t)b * n_embd + i] += m->xb[(size_t)b * xdim + i];
+    DT_MARK(DT_COMBINE);
     if (dbg) {
         dbg_stat("post-attn-res", l, m->x + (size_t)(n - 1) * n_embd, n_embd);
     }
@@ -8716,6 +8750,7 @@ nemo_ffn:
     for (int b = 0; b < n; b++)
         xnorm(m, m->xb + (size_t)b * xdim, m->x + (size_t)b * n_embd,
               ly->ffn_norm_w, ly->ffn_norm_b, n_embd, m->rms_eps);
+    DT_MARK(DT_MIX);
     if (ly->is_moe) {
         if (ly->w_up_shexp)
             for (int b = 0; b < n; b++)
@@ -8761,6 +8796,7 @@ nemo_ffn:
     }
     }
     ffn_done:
+    DT_MARK(ly->is_moe ? DT_EXPERTS : DT_DENSE_FFN);
     if (dbg) dbg_stat("ffn-down", l, m->xb + (size_t)(n - 1) * xdim, n_embd);
     if (ly->post_ffn_norm_w)
         for (int b = 0; b < n; b++)
@@ -8775,6 +8811,7 @@ nemo_ffn:
     for (int b = 0; b < n; b++)
         for (int i = 0; i < n_embd; i++)
             m->x[(size_t)b * n_embd + i] += m->xb[(size_t)b * xdim + i];
+    DT_MARK(DT_COMBINE);
 
 nemo_layer_end:;   // nemotron_h SSM/attention blocks land here (no FFN)
     // Per-layer embedding branch (E-series). Runs on the post-FFN residual
@@ -8963,11 +9000,13 @@ float *model_forward_batch(model_t *m, const int32_t *tokens, int n, int pos,
         memcpy(m->tape + ((size_t)m->n_layer * m->tape_T + pos) * m->n_embd,
                m->x, sizeof(float) * (size_t)m->n_embd);
     if (!want_logits) return NULL;
+    DT_BEGIN;
     head_norm_row(m, n - 1);
     if (dbg) dbg_stat("final-norm", m->n_layer, m->xb, n_embd);
     matvec_b(m->tp, m->logits, m->n_vocab, m->output, m->xb, xdim, n_embd, m->n_vocab, NULL, 1);
     if (dbg) dbg_stat("logits-raw", m->n_layer, m->logits, m->n_vocab);
     apply_head_transforms(m, m->logits);
+    DT_MARK(DT_HEAD);
     if (dbg) {
         dbg_stat("logits-final", m->n_layer, m->logits, m->n_vocab);
         int am = 0;

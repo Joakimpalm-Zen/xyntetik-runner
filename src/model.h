@@ -1208,4 +1208,7 @@ bool model_batch_engaged(const model_batch *b);
 bool model_batch_decode(model_batch *b, const int *idx, const int32_t *tok,
                         const int *pos, int n, float **out);
 
+// RUNNER_DEBUG_TIME=1 stage timing summary (stderr), no-op when unset
+void model_debug_time_report(void);
+
 #endif // RUNNER_MODEL_H

@@ -4287,6 +4287,7 @@ int main(int argc, char **argv) {
         fprintf(stderr, "\nprompt: %d tok, %.2f tok/s | gen: %d tok, %.2f tok/s\n",
                 n_prompt, n_prompt / (ptime > 0 ? ptime : 1e-9),
                 n_gen, n_gen / (gtime > 0 ? gtime : 1e-9));
+        model_debug_time_report();
         int t_rc = 0;
         if (transcript_path) {
             char prev_hash[65] = "";
