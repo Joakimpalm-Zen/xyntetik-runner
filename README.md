@@ -13,6 +13,7 @@ with no Python or third-party runtime underneath.
   If a file here saved you memory or time, a contribution funds the hardware time behind the next one.<br>
   <a href="https://github.com/Joakimpalm-Zen/xyntetik-runner/issues/new?template=model_request.yml">Request a model</a> ·
   <a href="https://github.com/Joakimpalm-Zen/xyntetik-runner/issues/new?template=result_report.yml">Report a result</a> ·
+  <a href="https://github.com/Joakimpalm-Zen/xyntetik-runner/issues/new?template=bug_report.yml">Report a bug</a> ·
   <a href="docs/community-results.md">Community results</a>
 </p>
 
