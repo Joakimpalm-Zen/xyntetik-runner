@@ -2137,7 +2137,9 @@ test: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSON_OOM) $(
 	cmp test-qwen4exp.a.out test-qwen4exp.b.out
 	./runner -b 1 -m test-qwen4exp.gguf --score -p "hello world one two three four five six" --gpu off -c 128 > test-qwen4exp.a.out 2>/dev/null
 	RUNNER_SCORE_CHUNKED=1 ./runner -b 3 -m test-qwen4exp.gguf --score -p "hello world one two three four five six" --gpu off -c 128 > test-qwen4exp.b.out 2>/dev/null
-	cmp test-qwen4exp.a.out test-qwen4exp.b.out
+	@# tolerance, not bytes: the routed-expert path sums in a different order
+	@# for a batch than for one row (test-moe-fixture shows the same 5e-7)
+	$(PYTHON) -c "import json,sys; a=json.load(open('test-qwen4exp.a.out'))['logprobs']; b=json.load(open('test-qwen4exp.b.out'))['logprobs']; d=max(abs(x-y) for x,y in zip(a,b)); print('qwen4exp batched vs solo score: %d positions, max %.2e' % (len(a), d)); sys.exit(0 if len(a)==len(b)==56 and d < 1e-5 else 1)"
 	rm -f test-qwen4exp.a.out test-qwen4exp.b.out
 	./$(TEST_ATTN_SCALE) test-gemma3-62.gguf test-gemma3-26.gguf
 	./$(TEST_PENALTY_WINDOW) test.gguf

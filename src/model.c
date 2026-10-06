@@ -5660,6 +5660,7 @@ static void mamba2_ssd_step(model_t *m, layer_t *ly, int layer, int n, int xdim)
 // One CPU Gated DeltaNet layer for Qwen3.5. State is stored transposed
 // ([value_column][key_row]), matching the reference operator: decay, delta
 // correction, outer-product update, then query readout.
+static float sigmoid_f(float g);   // defined with silu_f below
 static void qwen35_linear(model_t *m, layer_t *ly, int layer, int n, int xdim) {
     int sk = m->ssm_state, ng = m->ssm_groups, nh = m->ssm_v_heads;
     int inner = m->ssm_inner, hv = inner / nh;
@@ -5749,8 +5750,7 @@ static void qwen35_linear(model_t *m, layer_t *ly, int layer, int n, int xdim) {
             // only component that closed a 5e-2 logprob gap.
             for (int j = 0; j < hv; j++) {
                 float z = m->ssm_z[(size_t)b * inner + h * hv + j];
-                float sz = 1.0f / (1.0f + expf(-z));
-                out[h * hv + j] *= m->hyper_conn ? sz : z * sz;
+                out[h * hv + j] *= m->hyper_conn ? sigmoid_f(z) : z / (1.0f + expf(-z));
             }
         }
     }
@@ -7130,6 +7130,13 @@ static void rope_unapply(model_t *m, float *v, int n_heads, int pos,
 static float silu_f(float g) {
     return g < -80.0f ? 0.0f : g / (1.0f + expf(-g));
 }
+// sigmoid with the same cutoff: under -ffast-math (finite-math-only) the
+// compiler may not keep 1/(1+inf) == 0, and the qwen4exp hyper-connection
+// gate reaches -95 on the release file (layer 42, Blackwell, 2026-10-06),
+// where the unguarded form turned the whole block into NaN.
+static float sigmoid_f(float g) {
+    return g < -80.0f ? 0.0f : g > 80.0f ? 1.0f : 1.0f / (1.0f + expf(-g));
+}
 static float silu_d(float g) {
     if (g < -80.0f) return 0.0f;
     float sg = 1.0f / (1.0f + expf(-g));
@@ -8277,8 +8284,7 @@ static void hc_mix(model_t *m, const float *w_norm, const gguf_tensor *w_down,
         for (int i = 0; i < E; i++) {
             float acc = 0.0f;
             for (int c = 0; c < hc; c++) {
-                float g = gb[(size_t)c * E + i];
-                acc += xb[(size_t)c * E + i] * (1.0f / (1.0f + expf(-g)));
+                acc += xb[(size_t)c * E + i] * sigmoid_f(gb[(size_t)c * E + i]);
             }
             o[i] = acc * inv_hc;
         }
@@ -8296,7 +8302,7 @@ static void hc_combine(model_t *m, const float *block_out, int out_stride, int n
         const float *o = block_out + (size_t)b * out_stride;
         float *x = m->x_hc + (size_t)b * hcd;
         for (int c = 0; c < hc; c++) {
-            float w = 2.0f / (1.0f + expf(-m->hc_inject[(size_t)b * hc + c] * inv_hc));
+            float w = 2.0f * sigmoid_f(m->hc_inject[(size_t)b * hc + c] * inv_hc);
             float *xc = x + (size_t)c * E;
             for (int i = 0; i < E; i++) xc[i] += w * o[i];
         }
@@ -8398,7 +8404,7 @@ static void ple4_block(model_t *m, const layer_t *ly, const int32_t *tokens,
             dot *= inv_sqrt_e;
             float mag = sqrtf(fabsf(dot) < 1e-6f ? 1e-6f : fabsf(dot));
             float sgn = dot > 0 ? 1.0f : dot < 0 ? -1.0f : 0.0f;
-            gate[(size_t)b * hc + c] = 1.0f / (1.0f + expf(-sgn * mag));
+            gate[(size_t)b * hc + c] = sigmoid_f(sgn * mag);
         }
     // 4. gated value broadcast across the streams, then the conv norm
     for (int b = 0; b < n; b++)
