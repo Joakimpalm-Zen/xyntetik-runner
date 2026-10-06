@@ -1,6 +1,22 @@
-# Xyntetik Runner
+<p align="center">
+  <a href="https://xyntetik.com">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="site/assets/readme-header-dark.svg">
+      <img src="site/assets/readme-header-light.svg" alt="Xyntetik Runner" width="328">
+    </picture>
+  </a>
+</p>
 
-**Run AI models on your own machine, and know exactly what you are getting.**
+<p align="center">
+  <b>Run AI models on your own machine, and know exactly what you are getting.</b>
+</p>
+
+<p align="center">
+  <a href="https://xyntetik.com">xyntetik.com</a> ·
+  <a href="https://xyntetik.com/evidence/">Evidence</a> ·
+  <a href="https://huggingface.co/Joakimpalm-Zen">Model files</a> ·
+  <a href="MANUAL.md">Manual</a>
+</p>
 
 ## Why you would want it
 
