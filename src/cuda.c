@@ -82,6 +82,7 @@ static struct {
     CUresult (*MemcpyHtoD)(CUdeviceptr, const void *, size_t);
     CUresult (*MemcpyDtoH)(void *, CUdeviceptr, size_t);
     CUresult (*MemcpyDtoD)(CUdeviceptr, CUdeviceptr, size_t);
+    CUresult (*MemcpyDtoDAsync)(CUdeviceptr, CUdeviceptr, size_t, CUstream);
     CUresult (*MemsetD8)(CUdeviceptr, unsigned char, size_t);
     CUresult (*ModuleLoadData)(CUmodule *, const void *);
     CUresult (*ModuleUnload)(CUmodule);
@@ -192,6 +193,7 @@ static bool cu_load(void) {
     cu.MemcpyHtoD        = sym2("cuMemcpyHtoD");
     cu.MemcpyDtoH        = sym2("cuMemcpyDtoH");
     cu.MemcpyDtoD        = sym2("cuMemcpyDtoD");
+    cu.MemcpyDtoDAsync   = sym2("cuMemcpyDtoDAsync");
     cu.MemsetD8          = sym2("cuMemsetD8");
     cu.ModuleLoadData    = dl_sym(cu.lib, "cuModuleLoadData");
     cu.ModuleUnload      = dl_sym(cu.lib, "cuModuleUnload");
@@ -409,6 +411,14 @@ typedef struct {
     // [MVB*hc][2E], the chained hidden [hcd] and the normed embedding [MVB][E]
     CUdeviceptr mtp_h, mtp_pending, mtp_cat, mtp_hid, mtp_en, mtp_hn;
     CUdeviceptr mtp_rows;               // [n_batch][hcd]: every tile's final wide residual rows
+    // per-row recurrent checkpoints of a verify tile (speculative decode):
+    // after row r of the tile, every recurrent layer's fold and conv window
+    // land in slot r, so a partially accepted round restores the fold after
+    // the last accepted row instead of rolling back and re-folding it
+    CUdeviceptr snap_state, snap_hist;
+    int         snap_rows;              // slots (0: off)
+    int         snap_on;                // the current forward files them (a keep-forward)
+    int         snap_valid;             // rows filed by the last keep-forward
     unsigned long fwd_count;            // forwards run (recurrent rollback validity)
     unsigned long fwd_snap;             // fwd_count when the rollback point was taken
     // Mamba-2 recurrent buffers (granitehybrid/nemotron_h)
@@ -1333,6 +1343,12 @@ static gpu_weights *shared_build(model_t *m, size_t act_bytes, int max_hd,
             if (m->mtp_hc_head_up) fixed += m->mtp_hc_head_up->nbytes;
             fixed += model_kv_boundary_bytes_sum(m, m->n_layer + 1) -
                      model_kv_boundary_bytes_sum(m, m->n_layer);
+            if (m->qwen35) {   // per-row recurrent checkpoints of a verify tile
+                int convdim = 2 * m->ssm_state * m->ssm_groups + m->ssm_inner;
+                size_t per_row = sizeof(float) * (size_t)m->n_layer *
+                    ((size_t)(m->ssm_conv_kernel - 1) * convdim + (size_t)m->ssm_v_heads * m->ssm_state * m->ssm_state);
+                fixed += per_row * (size_t)(m->spec_batch < 8 ? m->spec_batch : 8);
+            }
         }
         // decide how many *leading* layers fit — accumulate each layer's weight
         // bytes plus its KV bytes until the budget runs out; the CPU runs the
@@ -2299,6 +2315,14 @@ bool gpu_init(model_t *m) {
             CK(cu.MemAlloc(&g->mtp_hn,      sizeof(float) * MVB * hcd));
             CK(cu.MemAlloc(&g->mtp_rows,    sizeof(float) * (size_t)m->n_batch * hcd));
             CK(cu.MemsetD8(g->mtp_pending, 0, sizeof(float) * hcd));
+            if (m->qwen35 && cu.MemcpyDtoDAsync) {
+                int convdim = 2 * m->ssm_state * m->ssm_groups + m->ssm_inner;
+                size_t hist_l = (size_t)m->n_layer * (m->ssm_conv_kernel - 1) * convdim;
+                size_t state_l = (size_t)m->n_layer * m->ssm_v_heads * m->ssm_state * m->ssm_state;
+                g->snap_rows = m->spec_batch < 8 ? m->spec_batch : 8;
+                CK(cu.MemAlloc(&g->snap_state, sizeof(float) * state_l * g->snap_rows));
+                CK(cu.MemAlloc(&g->snap_hist,  sizeof(float) * (hist_l ? hist_l : 1) * g->snap_rows));
+            }
         }
         if (m->hyper_conn) {
             size_t hcd = (size_t)m->hc_count * m->n_embd;
@@ -3147,7 +3171,7 @@ static void gpu_ctx_free(model_t *m, gpu_t *g) {
                            g->q35_alpha, g->q35_gate, g->q35_hist,
                            g->q35_state, g->q35_hist_prev, g->q35_state_prev,
                            g->mtp_h, g->mtp_pending, g->mtp_cat, g->mtp_hid,
-                           g->mtp_en, g->mtp_hn, g->mtp_rows,
+                           g->mtp_en, g->mtp_hn, g->mtp_rows, g->snap_state, g->snap_hist,
                            g->mamba_proj, g->mamba_xBC, g->mamba_y,
                            g->mamba_conv, g->mamba_state,
                            g->mamba_conv_prev, g->mamba_state_prev };
@@ -3415,6 +3439,24 @@ bool gpu_recurrent_rollback_mark(model_t *m) {
     gpu_t *g = m ? m->gpu : NULL;
     if (!g) return false;
     g->fwd_snap = g->fwd_count;
+    return true;
+}
+
+// Restore the device fold to its state after row r of the last keep-forward
+// (r = 0 is after the pending token, r = acc after the last accepted draft):
+// no re-fold. false = no checkpoint for that row (caller rolls back instead).
+bool gpu_recurrent_restore_row(model_t *m, int r) {
+    gpu_t *g = m ? m->gpu : NULL;
+    if (!g || !g->snap_rows || !m->qwen35 || r < 0 || r >= g->snap_valid) return false;
+    if (cu.CtxSetCurrent(g->sw->ctx) != 0) return false;
+    int convdim = 2 * m->ssm_state * m->ssm_groups + m->ssm_inner;
+    size_t hb = sizeof(float) * (size_t)m->n_layer * (m->ssm_conv_kernel - 1) * convdim;
+    size_t sb = sizeof(float) * (size_t)m->n_layer * m->ssm_v_heads * m->ssm_state * m->ssm_state;
+    if (cu.StreamSynchronize(g->stream) != 0) return false;
+    if ((hb && cu.MemcpyDtoD(g->q35_hist, g->snap_hist + (size_t)r * hb, hb) != 0) ||
+        cu.MemcpyDtoD(g->q35_state, g->snap_state + (size_t)r * sb, sb) != 0)
+        return false;
+    g->snap_valid = 0;
     return true;
 }
 
@@ -4242,6 +4284,16 @@ static bool gpu_q35_recurrent(gpu_t *g, model_t *m, const layer_t *ly, int l,
                        &g->sw->ssm_a[l], &g->sw->ssm_norm[l], &state,
                        &out, &sk, &ng, &nh, &eps, &gate_sigmoid };
         if (!launch(g, g->sw->f_q35_delta, nh, 1, 1, 128, pd)) return false;
+        if (g->snap_on && t < g->snap_rows) {
+            // checkpoint after this row, in stream order behind the kernels
+            size_t hb = sizeof(float) * (size_t)m->n_layer * hist_layer;
+            size_t sb = sizeof(float) * (size_t)m->n_layer * state_layer;
+            if ((hist_layer && cu.MemcpyDtoDAsync(g->snap_hist + (size_t)t * hb + (size_t)l * hist_layer * sizeof(float),
+                                                   hist, hist_layer * sizeof(float), g->stream) != 0) ||
+                cu.MemcpyDtoDAsync(g->snap_state + (size_t)t * sb + (size_t)l * state_layer * sizeof(float),
+                                   state, state_layer * sizeof(float), g->stream) != 0)
+                return false;
+        }
     }
     return enc_mv(g, m, ly->ssm_out, g->xb2, g->xb, inner, m->n_embd,
                   0, tn, xdim, xdim);
@@ -5567,6 +5619,9 @@ bool gpu_forward_batch(model_t *m, const int32_t *tokens, int n, int pos,
             return false;
     }
     g->fwd_count++;
+    // a keep-forward (speculative verify) files per-row checkpoints
+    g->snap_on = g->snap_rows > 0 && m->spec_want_all >= n && n <= g->snap_rows && m->qwen35;
+    g->snap_valid = 0;
     if ((m->granite_hybrid || m->nemotron_h) && g->mamba_state) {
         int cd = m->ssm_inner + 2 * m->ssm_groups * m->ssm_state;
         size_t conv_bytes = sizeof(float) * (size_t)m->n_layer *
@@ -5723,6 +5778,7 @@ bool gpu_forward_batch(model_t *m, const int32_t *tokens, int n, int pos,
     }
     if (prof.on) { prof.t_sync[m_] += prof_now() - tsy0; prof_flush(); }
 
+    if (g->snap_on) { g->snap_valid = n; g->snap_on = 0; }
     // keep the host KV cache authoritative: copy the offloaded layers' rows
     // back so the CPU path can take over at any point
     double tc0 = prof.on ? prof_now() : 0;

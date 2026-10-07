@@ -103,6 +103,7 @@ bool gpu_recurrent_download(model_t *m) { (void)m; return true; }
 bool gpu_recurrent_upload(model_t *m) { (void)m; return true; }
 bool gpu_recurrent_rollback_mark(model_t *m) { (void)m; return false; }
 bool gpu_recurrent_rollback(model_t *m) { (void)m; return false; }
+bool gpu_recurrent_restore_row(model_t *m, int r) { (void)m; (void)r; return false; }
 bool gpu_mtp_bound(const model_t *m) { (void)m; return false; }
 bool gpu_mtp_note_row(model_t *m, int row) { (void)m; (void)row; return false; }
 bool gpu_mtp_queue_pending(model_t *m, int slot) { (void)m; (void)slot; return false; }

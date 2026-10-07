@@ -186,6 +186,7 @@ bool   gpu_recurrent_upload(model_t *m);
 // one forward in between; false = rebuild the fold from the history).
 bool   gpu_recurrent_rollback_mark(model_t *m);
 bool   gpu_recurrent_rollback(model_t *m);
+bool   gpu_recurrent_restore_row(model_t *m, int r);   // after row r of the last keep-forward
 
 // NextN/MTP head on the device (hyper-connection families, full split). The
 // hidden rows the head consumes stay on the device: note_row copies the

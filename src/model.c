@@ -4528,7 +4528,7 @@ void model_free(model_t *m) {
     free(m->x); free(m->xb); free(m->xb2); free(m->q);
     free(m->x_hc); free(m->hc_inject); free(m->hc_mix_lo);
     free(m->ple4_emb); free(m->ple4_tmp); free(m->ple4_conv_hist); free(m->ple4_prev);
-    free(m->ple4_hist_snap); free(m->ple4_hist_mark);
+    free(m->ple4_hist_snap); free(m->ple4_hist_mark); free(m->ple4_hist_keep);
     free(m->k_tmp); free(m->v_tmp);
     free(m->q_gate); free(m->ssm_qkv); free(m->ssm_z); free(m->ssm_aux);
     free(m->ssm_cw);
@@ -6687,6 +6687,19 @@ bool model_recurrent_restore(model_t *m, int pos) {
     return true;
 }
 
+bool model_recurrent_restore_row(model_t *m, int r) {
+    if (!model_has_recurrent(m) || !m->gpu || r < 0) return false;
+    if (recurrent_ple_bytes(m) && (!m->ple4_hist_keep || r >= m->ple4_keep_n)) return false;
+    if (!gpu_recurrent_restore_row(m, r)) return false;
+    if (recurrent_ple_bytes(m)) {
+        size_t hcd = (size_t)m->hc_count * m->n_embd;
+        memcpy(m->ple4_conv_hist, m->ple4_hist_keep + (size_t)(r + 1) * hcd, recurrent_ple_bytes(m));
+        m->ple4_keep_n = 0;
+    }
+    m->ssm_snap_pos = -1;   // the round-start rollback point is behind us now
+    return true;
+}
+
 // Serialize/restore the recurrent fold to/from a caller-owned byte buffer, so
 // the prefix cache can store the fold beside the KV rows and restore it on an
 // EXACT full-prefix hit (tracer 5). The fold is a fixed-size, position-keyed
@@ -8709,6 +8722,17 @@ static void ple4_block(model_t *m, const layer_t *ly, const int32_t *tokens,
         float *x = m->x_hc + (size_t)b * hcd;
         const float *g = gated + (size_t)b * hcd, *co = key + (size_t)b * hcd;
         for (int i = 0; i < hcd; i++) x[i] += g[i] + co[i];
+    }
+    // a keep-forward (speculative verify) keeps the pre-slide window so the
+    // state after any of its rows can be restored (model_recurrent_restore_row)
+    m->ple4_keep_n = 0;
+    if (m->spec_want_all >= n && n <= m->spec_batch) {
+        if (!m->ple4_hist_keep)
+            m->ple4_hist_keep = malloc(sizeof(float) * (size_t)(hist + m->spec_batch) * hcd);
+        if (m->ple4_hist_keep) {
+            memcpy(m->ple4_hist_keep, histbuf, sizeof(float) * (size_t)(hist + n) * hcd);
+            m->ple4_keep_n = n;
+        }
     }
     // 7. slide the history: the last `hist` rows of (history + this batch)
     //    become the next call's history
