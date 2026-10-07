@@ -3321,6 +3321,7 @@ static bool mtp_save_rows(gpu_t *g, model_t *m, int i, int tn) {
     if (!g->mtp_rows || !m->hyper_conn) return true;
     size_t hcd = (size_t)m->hc_count * m->n_embd * sizeof(float);
     if (i + tn > m->n_batch) return true;
+    if (cu.StreamSynchronize(g->stream) != 0) return false;   // the tile's kernels first
     return cu.MemcpyDtoD(g->mtp_rows + (size_t)i * hcd, g->x_hc, (size_t)tn * hcd) == 0;
 }
 
@@ -3403,6 +3404,8 @@ bool gpu_mtp_run(model_t *m, bool chained, int slot0, const int32_t *tok, int n,
         }
     }
     CUdeviceptr last = g->x_hc + (size_t)(n - 1) * hcd * sizeof(float);
+    // the copies below are plain (default-stream) copies: wait for the block
+    if (cu.StreamSynchronize(g->stream) != 0) return false;
     if (cu.MemcpyDtoD(g->mtp_hid, last, (size_t)hcd * sizeof(float)) != 0) return false;
     if (want_logits) {
         if (!gpu_hc_mix(g, m, g->sw->mtp_head_norm, m->mtp_hc_head_down, m->mtp_hc_head_up,
