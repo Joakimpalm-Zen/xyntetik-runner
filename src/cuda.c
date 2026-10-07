@@ -124,9 +124,10 @@ static struct {
 // in a shipped binary. Do not read prof.* outside that assumption; a lock
 // here would sit on the hot launch path for no production benefit.
 typedef void *CUevent;
-enum { PH_NORM = 0, PH_MATVEC, PH_ROPE, PH_ATTN, PH_ELEM, PH_LOGITS, PH_N };
+enum { PH_NORM = 0, PH_MATVEC, PH_ROPE, PH_ATTN, PH_ELEM, PH_LOGITS, PH_HOSTMOE, PH_N };
 static const char *PH_NAME[PH_N] = {
-    "norms(rms+qk)", "matvec", "rope", "attention", "elementwise", "logits-mv" };
+    "norms(rms+qk)", "matvec", "rope", "attention", "elementwise", "logits-mv",
+    "host-experts" };   // the stream's idle span around a host-resident expert layer
 // two independent accumulator sets: mode 0 = prefill/batch tiles (tn>1, _b
 // kernels), mode 1 = single-token decode (tn==1, k_mv_* kernels). Set per
 // gpu_forward_batch call from n, so one run yields both clean breakdowns.
@@ -4552,11 +4553,13 @@ static bool fwd_tile(gpu_t *g, model_t *m, const int32_t *tokens, int tn,
             ok = ok && gpu_hc_mix(g, m, g->sw->hc_fn[l], ly->hc_ffn_down, ly->hc_ffn_up,
                                   ly->hc_ffn_inject, g->x_hc, g->xb, xdim, tn);
             if (!ok) return false;
+            prof_mark(g, PH_MATVEC);
             if (cu.StreamSynchronize(g->stream) != 0 ||
                 cu.MemcpyDtoH(m->xb, g->xb, sizeof(float) * (size_t)tn * xdim) != 0 ||
                 !model_moe_ffn_cpu_premixed(m, l, tn) ||
                 cu.MemcpyHtoD(g->xb, m->xb, sizeof(float) * (size_t)tn * xdim) != 0)
                 return false;
+            prof_mark(g, PH_HOSTMOE);
             ok = ok && gpu_hc_combine(g, m, g->xb, xdim, tn);
             prof_mark(g, PH_MATVEC);
             continue;
@@ -4566,6 +4569,7 @@ static bool fwd_tile(gpu_t *g, model_t *m, const int32_t *tokens, int tn,
             // on-device. Move only the small activation tile to the host, run
             // the sparse expert FFN against mmap-resident weights, and resume
             // the next layer on CUDA. This is the 30B-on-small-VRAM path.
+            prof_mark(g, PH_MATVEC);
             if (cu.StreamSynchronize(g->stream) != 0 ||
                 cu.MemcpyDtoH(m->x, g->x,
                               sizeof(float) * (size_t)tn * n_embd) != 0 ||
@@ -4573,7 +4577,7 @@ static bool fwd_tile(gpu_t *g, model_t *m, const int32_t *tokens, int tn,
                 cu.MemcpyHtoD(g->x, m->x,
                               sizeof(float) * (size_t)tn * n_embd) != 0)
                 return false;
-            prof_mark(g, PH_MATVEC);
+            prof_mark(g, PH_HOSTMOE);
             continue;
         }
 
