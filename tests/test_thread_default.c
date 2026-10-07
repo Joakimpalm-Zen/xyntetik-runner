@@ -1,5 +1,11 @@
+#if defined(__linux__) && !defined(_GNU_SOURCE)
+#define _GNU_SOURCE
+#endif
 #include "compat.h"
 #include "tpool.h"
+#ifdef __linux__
+#include <sched.h>
+#endif
 
 #include <stdio.h>
 
@@ -21,6 +27,24 @@ int main(void) {
     ck(def >= 1, "default thread count is positive");
     ck(def <= logical, "default thread count does not exceed logical CPUs");
     ck(def <= PLAT_THREAD_DEFAULT_MAX, "default thread count is capped");
+#ifdef __linux__
+    // the count follows the affinity MASK, not the machine: a taskset, cpuset
+    // or container that narrows it must narrow the default with it (a mask
+    // of 32 logical CPUs got the machine's 32-thread default and decoded at
+    // 1.7 tok/s where 16 threads gave 9.3, 2026-10-07)
+    cpu_set_t saved;
+    if (logical >= 2 && sched_getaffinity(0, sizeof(saved), &saved) == 0) {
+        cpu_set_t two; CPU_ZERO(&two);
+        int picked = 0;
+        for (int c = 0; c < CPU_SETSIZE && picked < 2; c++)
+            if (CPU_ISSET(c, &saved)) { CPU_SET(c, &two); picked++; }
+        if (sched_setaffinity(0, sizeof(two), &two) == 0) {
+            ck(plat_cpu_count() == 2, "cpu count follows a 2-cpu affinity mask");
+            ck(plat_default_thread_count() <= 2, "default thread count follows the mask");
+            sched_setaffinity(0, sizeof(saved), &saved);
+        }
+    }
+#endif
 
     // The CEILING is the measured part of this policy, and it cannot be
     // exercised on a host with few cores -- the machine this test usually runs

@@ -181,6 +181,25 @@ void   gpu_disable(model_t *m);
 // lost (recompute from position 0).
 bool   gpu_recurrent_download(model_t *m);
 bool   gpu_recurrent_upload(model_t *m);
+// Speculative rollback of a device-resident fold without the host round
+// trip: mark before the verify forward, roll back after it (valid for exactly
+// one forward in between; false = rebuild the fold from the history).
+bool   gpu_recurrent_rollback_mark(model_t *m);
+bool   gpu_recurrent_rollback(model_t *m);
+bool   gpu_recurrent_restore_row(model_t *m, int r);   // after row r of the last keep-forward
+
+// NextN/MTP head on the device (hyper-connection families, full split). The
+// hidden rows the head consumes stay on the device: note_row copies the
+// trunk's wide residual row into the pending slot, queue_pending files it
+// into the queue slot, run drafts from the queue (or from the chained hidden
+// when `chained`) and leaves the logits in m->mtp_logits. false from bound =
+// the CPU head (model.c mtp_run) is the one in use.
+bool   gpu_mtp_bound(const model_t *m);
+bool   gpu_mtp_note_row(model_t *m, int row);
+bool   gpu_mtp_queue_pending(model_t *m, int slot);
+bool   gpu_mtp_reset_pending(model_t *m);
+bool   gpu_mtp_run(model_t *m, bool chained, int slot0, const int32_t *tok, int n, int pos,
+                   bool want_logits);   // n <= 64 rows per call
 
 // ------------------------------------------- batched decode (backend half)
 //

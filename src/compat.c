@@ -1,3 +1,7 @@
+// sched_getaffinity (plat_cpu_count counts the mask this process may run on)
+#if defined(__linux__) && !defined(_GNU_SOURCE)
+#define _GNU_SOURCE
+#endif
 #include "compat.h"
 
 #include <stdio.h>
@@ -82,6 +86,14 @@ void plat_munmap(void *p, size_t size) {
 }
 
 int plat_cpu_count(void) {
+    // the process affinity mask first (a job object or `start /affinity`
+    // narrows it), the machine's count as the fallback; see the POSIX twin
+    DWORD_PTR pm = 0, sm = 0;
+    if (GetProcessAffinityMask(GetCurrentProcess(), &pm, &sm) && pm) {
+        int n = 0;
+        for (DWORD_PTR b = pm; b; b &= b - 1) n++;
+        if (n > 0) return n;
+    }
     SYSTEM_INFO si;
     GetSystemInfo(&si);
     return si.dwNumberOfProcessors > 0 ? (int)si.dwNumberOfProcessors : 1;
@@ -443,6 +455,7 @@ void plat_parent_watch(long pid) {
 
 #ifdef __linux__
 #include <poll.h>
+#include <sched.h>
 #include <sys/syscall.h>
 #ifndef SYS_pidfd_open
 #define SYS_pidfd_open 434   // one number on every architecture since Linux 5.3
@@ -491,7 +504,20 @@ void plat_munmap(void *p, size_t size) {
     if (p) munmap(p, size);
 }
 
+// The CPUs this process may run on, not the machine's: under taskset, a
+// cgroup cpuset or a container the two differ, and a thread default sized
+// from the machine oversubscribes the mask. Measured 2026-10-07 on a 128-cpu
+// box with a 32-cpu mask (16 cores + SMT siblings): 32 pool threads decoded
+// Qwen3.8-Flash-Next at 1.7 tok/s where 16 gave 9.3, a spinning sibling
+// starving the straggler at every barrier.
 int plat_cpu_count(void) {
+#ifdef __linux__
+    cpu_set_t mask;
+    if (sched_getaffinity(0, sizeof(mask), &mask) == 0) {
+        int n = CPU_COUNT(&mask);
+        if (n > 0) return n;
+    }
+#endif
     long n = sysconf(_SC_NPROCESSORS_ONLN);
     return n > 0 ? (int)n : 1;
 }

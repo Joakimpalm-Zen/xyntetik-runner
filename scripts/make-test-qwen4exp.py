@@ -68,6 +68,11 @@ def vals(xs): return struct.pack(f"<{len(xs)}f", *xs)
 # mean/2, the combine weight 1), the expert and shared-expert down
 # projections, the attention output projection, the DeltaNet out projection.
 ZERO = set(filter(None, os.environ.get("QWEN4EXP_TEST_ZERO", "").split(",")))
+# QWEN4EXP_TEST_MTP=1 appends the NextN/MTP block (a full-attention block at
+# index LAYERS plus the head's eh_proj/enorm/hnorm/hc_head mixer), declared
+# with nextn_predict_layers 1 as llama.cpp's converter does; block_count
+# counts it. The CPU head is then the oracle for the device head.
+MTP = os.environ.get("QWEN4EXP_TEST_MTP", "") not in ("", "0")
 ZERO_NAMES = {
     "ple":  ("per_layer_token_embd.weight",),
     "hc":   ("hc_attn_down", "hc_attn_up", "hc_attn_inject", "hc_ffn_down",
@@ -96,13 +101,13 @@ add(t, "output_hc_norm.weight", [HCD], ones(HCD))
 add(t, "output_hc_down.weight", [HCD, HC_LR])
 add(t, "output_hc_up.weight", [HC_LR, HCD])
 add(t, "per_layer_token_embd.weight", [PLE_DIM, PLE_ROWS])
-for i in range(LAYERS):
+def block(i):
     for part in ("attn", "ffn"):
         add(t, f"blk.{i}.hc_{part}_norm.weight", [HCD], ones(HCD))
         add(t, f"blk.{i}.hc_{part}_down.weight", [HCD, HC_LR])
         add(t, f"blk.{i}.hc_{part}_up.weight", [HC_LR, HCD])
         add(t, f"blk.{i}.hc_{part}_inject.weight", [HCD, HC])
-    if (i + 1) % 4:
+    if (i + 1) % 4 and i < LAYERS:
         keydim, valuedim = STATE * GROUPS, STATE * VHEADS
         add(t, f"blk.{i}.attn_qkv.weight", [E, keydim * 2 + valuedim])
         add(t, f"blk.{i}.attn_gate.weight", [E, valuedim])
@@ -141,9 +146,21 @@ for i in range(LAYERS):
     add(t, f"blk.{i}.ffn_up_shexp.weight", [E, FF_SHEXP])
     add(t, f"blk.{i}.ffn_down_shexp.weight", [FF_SHEXP, E])
 
+for i in range(LAYERS):
+    block(i)
+if MTP:
+    i = LAYERS
+    block(i)
+    add(t, f"blk.{i}.nextn.eh_proj.weight", [2 * E, E])
+    add(t, f"blk.{i}.nextn.enorm.weight", [E], ones(E))
+    add(t, f"blk.{i}.nextn.hnorm.weight", [HCD], ones(HCD))
+    add(t, f"blk.{i}.nextn.hc_head_norm.weight", [HCD], ones(HCD))
+    add(t, f"blk.{i}.nextn.hc_head_down.weight", [HCD, HC_LR])
+    add(t, f"blk.{i}.nextn.hc_head_up.weight", [HC_LR, HCD])
+
 A = "qwen4exp"
 kvs = [
-    ks("general.architecture", A), ku(f"{A}.block_count", LAYERS),
+    ks("general.architecture", A), ku(f"{A}.block_count", LAYERS + (1 if MTP else 0)),
     ku(f"{A}.context_length", 256), ku(f"{A}.embedding_length", E),
     ku(f"{A}.attention.head_count", HEADS), ku(f"{A}.attention.head_count_kv", KV),
     ku(f"{A}.attention.key_length", HD), ku(f"{A}.attention.value_length", HD),
@@ -164,7 +181,8 @@ kvs = [
     ku(f"{A}.attention.indexer.head_count", IDX_HEADS),
     ku(f"{A}.attention.indexer.key_length", IDX_DIM),
     ku(f"{A}.attention.indexer.top_k", IDX_TOPK),
-    kau(f"{A}.attention.compress_ratios", [0] * LAYERS),
+    kau(f"{A}.attention.compress_ratios", [0] * (LAYERS + (1 if MTP else 0))),
+] + ([ku(f"{A}.nextn_predict_layers", 1)] if MTP else []) + [
     kau(f"{A}.ple.layers", [PLE_LAYER]), ku(f"{A}.ple.ngram_size", PLE_NGRAM),
     ku(f"{A}.ple.heads_per_ngram", PLE_PER), ku(f"{A}.ple.conv_kernel", PLE_K),
     ku(f"{A}.ple.eos_token_id", 2), ku(f"{A}.embedding_length_per_layer_input", PLE_DIM),

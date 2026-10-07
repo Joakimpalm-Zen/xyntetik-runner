@@ -226,6 +226,10 @@ static void spec_fold_sync(engine *e, const int32_t *d, int acc, int nd,
                            int round_pos) {
     model_t *m = e->m;
     if (nd <= 0 || acc >= nd || !model_has_recurrent(m)) return;
+    // a backend with per-row checkpoints restores the fold after the last
+    // kept row outright: `acc` rows are kept (row 0 the pending token, then
+    // the accepted drafts), so the state after row acc-1
+    if (acc >= 1 && model_recurrent_restore_row(m, acc - 1)) return;
     if (model_recurrent_restore(m, round_pos)) {
         if (acc > 0) model_forward_batch(m, d, acc, round_pos, false);
         return;
@@ -1403,7 +1407,7 @@ float *engine_feed(engine *e, const int32_t *toks, int n) {
         if (e->mtp_on)
             for (int j = 0; j < chunk; j++) {
                 model_mtp_feed(m, toks[i + j]);
-                model_mtp_note_hidden(m, model_hidden_row(m, j));
+                model_mtp_note_row(m, j);
             }
         // The prompt does NOT enter the repeat-penalty window. It used to, and a
         // prompt carrying a tool schema then held exactly the tokens a call must
@@ -2711,7 +2715,7 @@ static int engine_generate_spec(engine *e, float *logits, int max_new,
             float *ti = (i == 0 && row0) ? row0 : model_spec_row_logits(m, i);
             if (prof) t_logits += now_s() - tp;
             // b[i] is consumed: its hidden is the head's h for the next pair
-            if (e->mtp_on) model_mtp_note_hidden(m, model_hidden_row(m, i));
+            if (e->mtp_on) model_mtp_note_row(m, i);
             int tok = engine_pick(e, ti, m->n_vocab, ok, e->pos + i + 1);
             if (tok < 0) {
                 if (tok == -2) e->oom = true;  // error, not a clean stop
@@ -2798,7 +2802,7 @@ static int engine_generate_spec(engine *e, float *logits, int max_new,
             e->pos += i + 1;
             spec_fold_sync(e, b, i + 1, nb, round_pos);
             dpos_rewind(e, e->pos);
-            if (e->mtp_on) model_mtp_note_hidden(m, model_hidden_row(m, i));
+            if (e->mtp_on) model_mtp_note_row(m, i);
             cur = -1;
             break;
         }
@@ -2812,7 +2816,7 @@ done:
         if (prof) t_tail += now_s() - tp;
         if (e->mtp_on) {
             model_mtp_feed(m, cur);
-            model_mtp_note_hidden(m, model_hidden_row(m, 0));
+            model_mtp_note_row(m, 0);
         }
         e->pos++;
         dpos_rewind(e, e->pos);

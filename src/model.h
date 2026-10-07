@@ -364,6 +364,12 @@ typedef struct {
     // spec-decode/abandoned-step rollback boundary and the CUDA q35_*_prev
     // pattern need; per-slot because each decoding stream owns its own model_t.
     float *ssm_conv_snap, *ssm_state_snap; // snapshot of the two buffers above
+    // CPU per-row checkpoints of a keep-forward (speculative verify): slot r
+    // holds both buffers' image after row r, so a partially accepted round
+    // restores the fold outright instead of re-folding the accepted rows
+    // (the device path keeps its own, gpu_recurrent_restore_row)
+    float *ssm_conv_keep, *ssm_state_keep;  // [spec_batch][buffer]
+    int    ssm_keep_n;                      // rows the last keep-forward filed (0: none)
     int    ssm_snap_pos;                   // position that snapshot is valid at, -1 = none
     // Turn mark (tracer 7): a second, independent checkpoint of the same two
     // buffers, taken at a request's prompt boundary so the NEXT request on the
@@ -417,6 +423,8 @@ typedef struct {
     // reads and chains is the WIDE residual [hc*n_embd] (mtp_hw below)
     gguf_tensor *mtp_hc_head_down, *mtp_hc_head_up;
     float   *mtp_hmix;       // [n_embd] mixed head input (hyper-connection heads)
+    float   *mtp_res;        // [n_batch][mtp_hw] the block's own residual: a drain
+                             // must not overwrite trunk rows the engine still reads
     int      mtp_hw;         // hidden width the head consumes: n_embd, or hc*n_embd
     gguf_tensor *mtp_embd, *mtp_head; // per-head or the backbone's shared ones
     float   *mtp_h;          // queue: [n_batch][mtp_hw] previous-position hidden
@@ -453,6 +461,8 @@ typedef struct {
     float  *ple4_emb, *ple4_tmp, *ple4_conv_hist; // scratch; conv_hist's first
                                                   // (K-1)*ngram rows are recurrent STATE
     float  *ple4_hist_snap, *ple4_hist_mark;      // its rollback snapshot and turn mark
+    float  *ple4_hist_keep;  // [(hist + spec_batch)][hcd]: the pre-slide window of a keep-forward
+    int     ple4_keep_n;     // rows that keep-forward had (0: none)
     int    kv_from_start;
     int   *kv_src;               // [n_layer] cache-owning layer for each layer
     gguf_tensor *ple_tok_embd;   // [n_embd_ple * n_layer, n_vocab]
@@ -1021,6 +1031,9 @@ bool model_recurrent_snapshot(model_t *m, int pos);
 // and return true; otherwise leave the live state untouched and return false —
 // the caller must then recompute the recurrent layers from position 0.
 bool model_recurrent_restore(model_t *m, int pos);
+// After row r of the last keep-forward, without re-folding (device checkpoints
+// + the host PLE window); false = not available, roll back and re-fold.
+bool model_recurrent_restore_row(model_t *m, int r);
 // Serialize the recurrent fold to / from a caller-owned byte buffer, so the
 // prefix cache can store it beside the KV and restore it on an exact full-prefix
 // hit. `model_recurrent_blob_bytes` is 0 on a non-recurrent model. The fold is
@@ -1153,6 +1166,7 @@ int          model_mtp_position(const model_t *m); // pairs fed so far
 void         model_mtp_reset(model_t *m, int pos);
 bool         model_mtp_feed(model_t *m, int32_t tok);
 void         model_mtp_note_hidden(model_t *m, const float *h);
+void         model_mtp_note_row(model_t *m, int b);   // row b of the last forward, host or device
 const float *model_mtp_pending(const model_t *m);
 float       *model_mtp_draft_logits(model_t *m);
 float       *model_mtp_step(model_t *m, const float *h, int32_t tok, int pos);

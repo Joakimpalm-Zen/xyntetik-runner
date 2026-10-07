@@ -5322,6 +5322,90 @@ extern "C" __global__ void k_moe_mv_iq4_nl(MOE_MV_PARAMS) {
     MOE_MV_TAIL;
 }
 
+// body of k_mv_iq2_s (Qwen3.8-Flash-Next gate/up experts on 20 of 48 blocks)
+extern "C" __global__ void k_moe_mv_iq2_s(MOE_MV_PARAMS) {
+    MOE_MV_HEAD;
+    int nb = a.n_in / 256;
+    const uchar *rw = wbase + (ulong64)row * nb * 82;
+    for (int b = lane; b < nb; b += 32) {
+        const uchar *blk = rw + (ulong64)b * 82;
+        float d = f16f(blk);
+        const uchar *qs = blk + 2, *sg = blk + 34, *qh = blk + 66, *sc = blk + 74;
+        const float *xp = x + b * 256;
+        for (int ib = 0; ib < 8; ib++, qs += 4, sg += 4) {
+            float db0 = d * (0.5f + (float)(sc[ib] & 0xF)) * 0.25f;
+            float db1 = d * (0.5f + (float)(sc[ib] >> 4)) * 0.25f;
+            unsigned hb = qh[ib];
+            for (int l = 0; l < 4; l++, xp += 8) {
+                ulong64 g = kiq2s_grid[qs[l] | ((hb << (8 - 2 * l)) & 0x300)];
+                unsigned signs = sg[l];
+                float t = 0;
+                for (int j = 0; j < 8; j++) t += iq_w8(g, j, signs) * xp[j];
+                s += (l < 2 ? db0 : db1) * t;
+            }
+        }
+    }
+    MOE_MV_TAIL;
+}
+
+// body of k_mv_iq3_s (Qwen3.8-Flash-Next gate/up experts on 10 of 48 blocks)
+extern "C" __global__ void k_moe_mv_iq3_s(MOE_MV_PARAMS) {
+    MOE_MV_HEAD;
+    int nb = a.n_in / 256;
+    const uchar *rw = wbase + (ulong64)row * nb * 110;
+    for (int b = lane; b < nb; b += 32) {
+        const uchar *blk = rw + (ulong64)b * 110;
+        float d = f16f(blk);
+        const uchar *qs = blk + 2, *qh = blk + 66, *sg = blk + 74, *sc = blk + 106;
+        const float *xp = x + b * 256;
+        for (int pair = 0; pair < 4; pair++, qh += 2) {
+            for (int h = 0; h < 2; h++, qs += 8, sg += 4) {
+                float db = d * (float)(1 + 2 * (h ? (sc[pair] >> 4) : (sc[pair] & 0xF)));
+                unsigned hb = qh[h];
+                float t = 0;
+                for (int l = 0; l < 4; l++, xp += 8) {
+                    unsigned g1 = kiq3s_grid[qs[2 * l + 0] | ((hb << (8 - 2 * l)) & 256)];
+                    unsigned g2 = kiq3s_grid[qs[2 * l + 1] | ((hb << (7 - 2 * l)) & 256)];
+                    unsigned signs = sg[l];
+                    for (int j = 0; j < 4; j++) {
+                        t += iq_w4(g1, j, signs) * xp[j];
+                        t += iq_w4(g2, j, signs >> 4) * xp[j + 4];
+                    }
+                }
+                s += db * t;
+            }
+        }
+    }
+    MOE_MV_TAIL;
+}
+
+// body of k_mv_iq4_xs (Qwen3.8-Flash-Next gate/up experts on its last block)
+extern "C" __global__ void k_moe_mv_iq4_xs(MOE_MV_PARAMS) {
+    MOE_MV_HEAD;
+    int nb = a.n_in / 256;
+    const uchar *rw = wbase + (ulong64)row * nb * 136;
+    for (int b = lane; b < nb; b += 32) {
+        const uchar *blk = rw + (ulong64)b * 136;
+        float d = f16f(blk);
+        unsigned sh = (unsigned)blk[2] | ((unsigned)blk[3] << 8);
+        const uchar *sl = blk + 4;
+        const uchar *q  = blk + 8;
+        const float *xp = x + b * 256;
+        for (int ib = 0; ib < 8; ib++) {
+            int ls = ((sl[ib / 2] >> 4 * (ib % 2)) & 0xF) | (((sh >> 2 * ib) & 3) << 4);
+            float dl = d * (ls - 32);
+            float t = 0;
+            for (int j = 0; j < 16; j++) {
+                t += (float)kv_iq4[q[j] & 0xF] * xp[j];
+                t += (float)kv_iq4[q[j] >> 4]  * xp[j + 16];
+            }
+            s += dl * t;
+            q += 16; xp += 32;
+        }
+    }
+    MOE_MV_TAIL;
+}
+
 // body of k_mv_q2_0 (some blocks' down experts in the GSQ release)
 extern "C" __global__ void k_moe_mv_q2_0(MOE_MV_PARAMS) {
     MOE_MV_HEAD;
@@ -5669,6 +5753,18 @@ extern "C" __global__ void k_rmsnorm_grouped(const float *x, float *y, const flo
     }
     float r = rsqrtf(red[0] / n + eps);
     for (int i = tid; i < n; i += tpg) y[i] = x[i] * r * w[i];
+}
+
+// NextN/MTP head input per stream: cat[row*hc + c] = [en[row] ; hn[row][c]],
+// the concat graph_mtp feeds eh_proj for every hyper-connection stream
+// (CPU mtp_run builds the same rows on the host).
+extern "C" __global__ void k_mtp_cat(const float *en, const float *hn, float *cat,
+                                     int E, int hc) {
+    int row = blockIdx.y, c = blockIdx.x;
+    const float *e = en + (ulong64)row * E;
+    const float *h = hn + (ulong64)row * hc * E + (ulong64)c * E;
+    float *o = cat + ((ulong64)row * hc + c) * 2 * E;
+    for (int i = threadIdx.x; i < E; i += blockDim.x) { o[i] = e[i]; o[E + i] = h[i]; }
 }
 
 // x[row][i] = silu(x[row][i] * s), the mixer's low-rank activation (CPU silu_f
