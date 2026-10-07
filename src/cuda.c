@@ -3316,6 +3316,13 @@ bool gpu_mtp_note_row(model_t *m, int row) {
     return cu.MemcpyDtoD(g->mtp_pending, g->mtp_rows + (size_t)row * hcd, hcd) == 0;
 }
 
+void gpu_mtp_debug_pending(model_t *m, const char *tag) {
+    gpu_t *g = m->gpu; float t[4096];
+    if (!gpu_mtp_bound(m) || m->n_embd > 4096) return;
+    cu.StreamSynchronize(g->stream);
+    cu.MemcpyDtoH(t, g->mtp_pending, sizeof(float) * m->n_embd); mtp_stat(tag, t, m->n_embd);
+}
+
 // after a trunk tile: file its final wide residual rows for the head
 static bool mtp_save_rows(gpu_t *g, model_t *m, int i, int tn) {
     if (!g->mtp_rows || !m->hyper_conn) return true;

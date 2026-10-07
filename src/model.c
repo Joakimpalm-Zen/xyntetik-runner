@@ -9417,7 +9417,15 @@ void model_mtp_note_row(model_t *m, int b) {
     if (m->gpu && gpu_mtp_bound(m)) {
         if (!mtp_alloc(m)) return;
         gpu_mtp_note_row(m, b);
+        if (getenv("RUNNER_MTP_DEBUG")) {
+            char tag[32]; snprintf(tag, sizeof tag, "gpu note%d", b);
+            gpu_mtp_debug_pending(m, tag);
+        }
         return;
+    }
+    if (getenv("RUNNER_MTP_DEBUG")) {
+        char tag[32]; snprintf(tag, sizeof tag, "cpu note%d", b);
+        mtp_stat(tag, model_hidden_row(m, b), m->n_embd);
     }
     model_mtp_note_hidden(m, model_hidden_row(m, b));
 }
