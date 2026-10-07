@@ -1153,6 +1153,7 @@ int          model_mtp_position(const model_t *m); // pairs fed so far
 void         model_mtp_reset(model_t *m, int pos);
 bool         model_mtp_feed(model_t *m, int32_t tok);
 void         model_mtp_note_hidden(model_t *m, const float *h);
+void         model_mtp_note_row(model_t *m, int b);   // row b of the last forward, host or device
 const float *model_mtp_pending(const model_t *m);
 float       *model_mtp_draft_logits(model_t *m);
 float       *model_mtp_step(model_t *m, const float *h, int32_t tok, int pos);

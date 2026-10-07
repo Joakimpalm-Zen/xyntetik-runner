@@ -338,7 +338,12 @@ typedef struct gpu_weights {
     CUdeviceptr *attn_norm, *ffn_norm;  // per layer
     CUdeviceptr *hc_an, *hc_fn;         // qwen4exp per-stream mixer gammas [hc*n_embd]
     CUdeviceptr hc_head_norm;           // qwen4exp head mixer gamma
-    CUfunction  f_rmsnorm_grouped, f_hc_gate_mean, f_hc_combine, f_silu_scale;
+    // NextN/MTP head on the device (hyper-connection families): the block's
+    // own tables sit at index n_layer in the per-layer arrays above, these
+    // are the head-only gammas. mtp is part of the share key.
+    bool        mtp;
+    CUdeviceptr mtp_enorm, mtp_hnorm, mtp_head_norm;
+    CUfunction  f_rmsnorm_grouped, f_hc_gate_mean, f_hc_combine, f_silu_scale, f_mtp_cat;
     CUfunction  f_mv_bf16_splitk, f_splitk_reduce, f_axpy_sigmoid;
     CUdeviceptr *pan, *pfn;             // gemma3 sandwich norms, may be 0
     CUdeviceptr *bq, *bk, *bv, *bo;     // per layer, may be 0
@@ -399,6 +404,12 @@ typedef struct {
     CUdeviceptr q35_mix, q35_cv, q35_z, q35_beta, q35_alpha, q35_gate;
     CUdeviceptr q35_hist, q35_state;    // persistent recurrent state per sequence
     CUdeviceptr q35_hist_prev, q35_state_prev; // pre-forward rollback snapshot
+    // NextN/MTP head scratch (device): the queue of previous-position wide
+    // residuals [n_batch][hcd], the pending row, the per-stream head input
+    // [MVB*hc][2E], the chained hidden [hcd] and the normed embedding [MVB][E]
+    CUdeviceptr mtp_h, mtp_pending, mtp_cat, mtp_hid, mtp_en, mtp_hn;
+    unsigned long fwd_count;            // forwards run (recurrent rollback validity)
+    unsigned long fwd_snap;             // fwd_count when the rollback point was taken
     // Mamba-2 recurrent buffers (granitehybrid/nemotron_h)
     CUdeviceptr mamba_proj, mamba_xBC, mamba_y;         // per-tile scratch
     CUdeviceptr mamba_conv, mamba_state;                // persistent conv ring + SSD state
@@ -699,6 +710,7 @@ static bool moe_indirect_type_ok(int type) {
         case T_F32: case T_F16: case T_Q8_0: case T_Q4_0:
         case T_Q4_K: case T_Q5_K: case T_Q6_K: case T_MXFP4:
         case T_NVFP4: case T_IQ3_XXS: case T_IQ4_NL: case T_Q2_0:
+        case T_IQ2_S: case T_IQ3_S: case T_IQ4_XS:
             return true;
         default:
             return false;
@@ -937,7 +949,8 @@ static bool shared_config_matches(const gpu_weights *w, const model_t *m) {
         w->kv_q8 != kv_identity(m) || w->v_rmsnorm != (int)m->v_rmsnorm ||
         w->rope_base != m->rope_base || w->rope_mscale != m->rope_mscale ||
         w->cpu_moe != m->cpu_moe ||
-        w->cpu_moe_layers != m->cpu_moe_layers)
+        w->cpu_moe_layers != m->cpu_moe_layers ||
+        w->mtp != m->mtp_ready)
         return false;
     if ((w->rope_inv_freq_local != NULL) != (m->rope_inv_freq_local != NULL))
         return false;
@@ -1225,6 +1238,7 @@ static gpu_weights *shared_build(model_t *m, size_t act_bytes, int max_hd,
     w->n_vocab = m->n_vocab; w->n_ctx = m->n_ctx;
     w->cpu_moe = m->cpu_moe;
     w->cpu_moe_layers = m->cpu_moe_layers;
+    w->mtp = m->mtp_ready;
     w->rope_dim = m->rope_dim; w->rope_dim_local = m->rope_dim_local;
     w->kv_q8 = kv_identity(m); w->v_rmsnorm = (int)m->v_rmsnorm;
     w->rope_base = m->rope_base; w->rope_mscale = m->rope_mscale;
@@ -1306,6 +1320,19 @@ static gpu_weights *shared_build(model_t *m, size_t act_bytes, int max_hd,
         // the CUDA context + PTX JIT + allocator slack + the OS reserve
         size_t fixed = act_bytes + (m->cpu_moe ? 0 : m->tok_embd->nbytes) +
                        (size_t)headroom;
+        // the NextN/MTP block rides along with a full split: its attention,
+        // mixers and head projections (its experts stay on the host under
+        // --cpu-moe, like any bank the plan leaves there), plus its KV rows
+        const bool mtp_dev = m->mtp_ready && m->hyper_conn;
+        if (mtp_dev) {
+            const layer_t *ml = &m->layers[m->n_layer];
+            fixed += layer_weight_bytes(ml, m->n_expert, moe_on_host(m, m->n_layer));
+            if (m->mtp_eh_proj) fixed += m->mtp_eh_proj->nbytes;
+            if (m->mtp_hc_head_down) fixed += m->mtp_hc_head_down->nbytes;
+            if (m->mtp_hc_head_up) fixed += m->mtp_hc_head_up->nbytes;
+            fixed += model_kv_boundary_bytes_sum(m, m->n_layer + 1) -
+                     model_kv_boundary_bytes_sum(m, m->n_layer);
+        }
         // decide how many *leading* layers fit — accumulate each layer's weight
         // bytes plus its KV bytes until the budget runs out; the CPU runs the
         // rest (partial offload)
@@ -1481,7 +1508,7 @@ static gpu_weights *shared_build(model_t *m, size_t act_bytes, int max_hd,
         CK(cu.ModuleLoadData(&w->mod, k_ptx_src));
         struct { CUfunction *f; const char *name; } fns[] = {
             { &w->f_rmsnorm,    "k_rmsnorm" },   { &w->f_qknorm, "k_qknorm" },
-            { &w->f_rmsnorm_grouped, "k_rmsnorm_grouped" },
+            { &w->f_rmsnorm_grouped, "k_rmsnorm_grouped" }, { &w->f_mtp_cat, "k_mtp_cat" },
             { &w->f_hc_gate_mean, "k_hc_gate_mean" }, { &w->f_hc_combine, "k_hc_combine" },
             { &w->f_silu_scale, "k_silu_scale" },
             { &w->f_mv_bf16_splitk, "k_mv_bf16_splitk" }, { &w->f_splitk_reduce, "k_splitk_reduce" },
@@ -1595,6 +1622,9 @@ static gpu_weights *shared_build(model_t *m, size_t act_bytes, int max_hd,
             { &w->f_moe_mv[T_IQ3_XXS], "k_moe_mv_iq3_xxs" },
             { &w->f_moe_mv[T_IQ4_NL],  "k_moe_mv_iq4_nl" },
             { &w->f_moe_mv[T_Q2_0],    "k_moe_mv_q2_0" },
+            { &w->f_moe_mv[T_IQ2_S],   "k_moe_mv_iq2_s" },
+            { &w->f_moe_mv[T_IQ3_S],   "k_moe_mv_iq3_s" },
+            { &w->f_moe_mv[T_IQ4_XS],  "k_moe_mv_iq4_xs" },
             // expert-grouped prefill glue
             { &w->f_moe_gather,       "k_moe_gather" },
             { &w->f_moe_scatter,      "k_moe_scatter_add" },
@@ -1690,6 +1720,25 @@ static gpu_weights *shared_build(model_t *m, size_t act_bytes, int max_hd,
             if (full && m->hyper_conn &&
                 (!binding_add(w, m, m->hc_head_down) ||
                  !binding_add(w, m, m->hc_head_up))) goto fail;
+            if (full && mtp_dev) {
+                layer_t *ly = &m->layers[m->n_layer];
+                if (!binding_add(w, m, ly->wq) || !binding_add(w, m, ly->wk) ||
+                    !binding_add(w, m, ly->wv) || !binding_add(w, m, ly->wo) ||
+                    !binding_add(w, m, ly->hc_attn_down) || !binding_add(w, m, ly->hc_attn_up) ||
+                    !binding_add(w, m, ly->hc_attn_inject) || !binding_add(w, m, ly->hc_ffn_down) ||
+                    !binding_add(w, m, ly->hc_ffn_up) || !binding_add(w, m, ly->hc_ffn_inject) ||
+                    !binding_add(w, m, m->mtp_eh_proj) || !binding_add(w, m, m->mtp_hc_head_down) ||
+                    !binding_add(w, m, m->mtp_hc_head_up)) goto fail;
+                if (ly->is_moe && !moe_on_host(m, m->n_layer) &&
+                    (!binding_add(w, m, ly->ffn_gate_inp) || !binding_add(w, m, ly->ffn_gate_exps) ||
+                     !binding_add(w, m, ly->ffn_up_exps) || !binding_add(w, m, ly->ffn_down_exps) ||
+                     !binding_add(w, m, ly->w_gate_shexp) || !binding_add(w, m, ly->w_up_shexp) ||
+                     !binding_add(w, m, ly->w_down_shexp) || !binding_add(w, m, ly->ffn_gate_inp_shexp)))
+                    goto fail;
+                if (ly->is_moe && moe_on_host(m, m->n_layer) &&
+                    (!binding_add(w, m, ly->ffn_gate_inp) || !binding_add(w, m, ly->ffn_gate_inp_shexp)))
+                    goto fail;
+            }
         }
         CK(cu.MemAlloc(&w->dummy, 4));
 
@@ -1704,6 +1753,13 @@ static gpu_weights *shared_build(model_t *m, size_t act_bytes, int max_hd,
             w->hc_head_norm = f32_dbuf(m->hc_head_norm,
                                        (size_t)m->hc_count * m->n_embd,
                                        "hc head mixer norm", -1);
+        if (m->mtp_ready && m->hyper_conn) {
+            size_t hcd = (size_t)m->hc_count * m->n_embd;
+            w->mtp_enorm     = f32_dbuf(m->mtp_enorm_w, m->n_embd, "MTP embedding norm", m->n_layer);
+            w->mtp_hnorm     = f32_dbuf(m->mtp_hnorm_w, hcd, "MTP hidden norm", m->n_layer);
+            w->mtp_head_norm = f32_dbuf(m->mtp_head_norm_w, hcd, "MTP head mixer norm", m->n_layer);
+            if (!w->mtp_enorm || !w->mtp_hnorm || !w->mtp_head_norm) goto fail;
+        }
         if (!w->inv_freq || (m->hyper_conn ? !w->hc_head_norm : !w->out_norm) ||
             (m->rope_inv_freq_local && !w->inv_freq_local)) goto fail;
         if (m->v_rmsnorm) { // weightless per-head V norm: weight of ones
@@ -1718,35 +1774,37 @@ static gpu_weights *shared_build(model_t *m, size_t act_bytes, int max_hd,
             free(ones);
             if (!w->ones) goto fail;
         }
-        w->attn_norm = calloc(m->n_layer, sizeof(CUdeviceptr));
-        w->hc_an = calloc(m->n_layer, sizeof(CUdeviceptr));
-        w->hc_fn = calloc(m->n_layer, sizeof(CUdeviceptr));
-        w->ffn_norm  = calloc(m->n_layer, sizeof(CUdeviceptr));
-        w->bq = calloc(m->n_layer, sizeof(CUdeviceptr));
-        w->bk = calloc(m->n_layer, sizeof(CUdeviceptr));
-        w->bv = calloc(m->n_layer, sizeof(CUdeviceptr));
-        w->bo = calloc(m->n_layer, sizeof(CUdeviceptr));
-        w->qn = calloc(m->n_layer, sizeof(CUdeviceptr));
-        w->kn = calloc(m->n_layer, sizeof(CUdeviceptr));
-        w->pan = calloc(m->n_layer, sizeof(CUdeviceptr));
-        w->pfn = calloc(m->n_layer, sizeof(CUdeviceptr));
-        w->ple_pn = calloc(m->n_layer, sizeof(CUdeviceptr));
-        w->g_pn1  = calloc(m->n_layer, sizeof(CUdeviceptr));
-        w->g_prn2 = calloc(m->n_layer, sizeof(CUdeviceptr));
-        w->g_pn2  = calloc(m->n_layer, sizeof(CUdeviceptr));
-        w->g_gis  = calloc(m->n_layer, sizeof(CUdeviceptr));
-        w->g_dsc  = calloc(m->n_layer, sizeof(CUdeviceptr));
-        w->ssm_dt   = calloc(m->n_layer, sizeof(CUdeviceptr));
-        w->ssm_a    = calloc(m->n_layer, sizeof(CUdeviceptr));
-        w->ssm_norm = calloc(m->n_layer, sizeof(CUdeviceptr));
-        w->ssm_D      = calloc(m->n_layer, sizeof(CUdeviceptr));
-        w->ssm_conv_b = calloc(m->n_layer, sizeof(CUdeviceptr));
-        w->ssm_gnorm  = calloc(m->n_layer, sizeof(CUdeviceptr));
-        w->sinks    = calloc(m->n_layer, sizeof(CUdeviceptr));
-        w->gib      = calloc(m->n_layer, sizeof(CUdeviceptr));
-        w->geb      = calloc(m->n_layer, sizeof(CUdeviceptr));
-        w->ueb      = calloc(m->n_layer, sizeof(CUdeviceptr));
-        w->deb      = calloc(m->n_layer, sizeof(CUdeviceptr));
+        // one slot past the backbone for the NextN/MTP block when it is bound
+        const int n_tab = m->n_layer + (m->mtp_ready ? 1 : 0);
+        w->attn_norm = calloc(n_tab, sizeof(CUdeviceptr));
+        w->hc_an = calloc(n_tab, sizeof(CUdeviceptr));
+        w->hc_fn = calloc(n_tab, sizeof(CUdeviceptr));
+        w->ffn_norm  = calloc(n_tab, sizeof(CUdeviceptr));
+        w->bq = calloc(n_tab, sizeof(CUdeviceptr));
+        w->bk = calloc(n_tab, sizeof(CUdeviceptr));
+        w->bv = calloc(n_tab, sizeof(CUdeviceptr));
+        w->bo = calloc(n_tab, sizeof(CUdeviceptr));
+        w->qn = calloc(n_tab, sizeof(CUdeviceptr));
+        w->kn = calloc(n_tab, sizeof(CUdeviceptr));
+        w->pan = calloc(n_tab, sizeof(CUdeviceptr));
+        w->pfn = calloc(n_tab, sizeof(CUdeviceptr));
+        w->ple_pn = calloc(n_tab, sizeof(CUdeviceptr));
+        w->g_pn1  = calloc(n_tab, sizeof(CUdeviceptr));
+        w->g_prn2 = calloc(n_tab, sizeof(CUdeviceptr));
+        w->g_pn2  = calloc(n_tab, sizeof(CUdeviceptr));
+        w->g_gis  = calloc(n_tab, sizeof(CUdeviceptr));
+        w->g_dsc  = calloc(n_tab, sizeof(CUdeviceptr));
+        w->ssm_dt   = calloc(n_tab, sizeof(CUdeviceptr));
+        w->ssm_a    = calloc(n_tab, sizeof(CUdeviceptr));
+        w->ssm_norm = calloc(n_tab, sizeof(CUdeviceptr));
+        w->ssm_D      = calloc(n_tab, sizeof(CUdeviceptr));
+        w->ssm_conv_b = calloc(n_tab, sizeof(CUdeviceptr));
+        w->ssm_gnorm  = calloc(n_tab, sizeof(CUdeviceptr));
+        w->sinks    = calloc(n_tab, sizeof(CUdeviceptr));
+        w->gib      = calloc(n_tab, sizeof(CUdeviceptr));
+        w->geb      = calloc(n_tab, sizeof(CUdeviceptr));
+        w->ueb      = calloc(n_tab, sizeof(CUdeviceptr));
+        w->deb      = calloc(n_tab, sizeof(CUdeviceptr));
 #define REQUIRE_PTR_TABLE(ptr, label) do { if (!(ptr)) { \
             fprintf(stderr, "gpu: CUDA shared per-layer pointer-table " \
                     "allocation failed (%s) — using CPU\n", label); \
@@ -1789,7 +1847,7 @@ static gpu_weights *shared_build(model_t *m, size_t act_bytes, int max_hd,
                                         "MoE default expert scale", -1);
             if (!w->moe_ones) goto fail;
         }
-        for (int l = 0; l < m->n_layer; l++) {
+        for (int l = 0; l < n_tab; l++) {
             layer_t *ly = &m->layers[l];
             w->attn_norm[l] = f32_dbuf(ly->attn_norm_w, m->n_embd,
                                        "attention norm", l);
@@ -2209,8 +2267,9 @@ bool gpu_init(model_t *m) {
         // redirected) storage location. See model_kv_boundary_bytes().
         // K and V are sized separately: under --kv k8v4 the two caches
         // have different row formats (K q8_0, V fp4).
-        size_t k_bytes = model_k_boundary_bytes(m, m->gpu_layers);
-        size_t v_bytes = model_v_boundary_bytes(m, m->gpu_layers);
+        const bool mtp_dev = m->mtp_ready && m->hyper_conn && m->gpu_layers == m->n_layer;
+        size_t k_bytes = model_k_boundary_bytes(m, m->gpu_layers + (mtp_dev ? 1 : 0));
+        size_t v_bytes = model_v_boundary_bytes(m, m->gpu_layers + (mtp_dev ? 1 : 0));
         CK(cu.MemAlloc(&g->kc, k_bytes));
         CK(cu.MemAlloc(&g->vc, v_bytes));
         CK(cu.MemsetD8(g->kc, 0, k_bytes));
@@ -2229,6 +2288,16 @@ bool gpu_init(model_t *m) {
         CK(cu.MemAlloc(&g->x,      sizeof(float) * MVB * m->n_embd));
         CK(cu.MemAlloc(&g->xb,     sizeof(float) * MVB * xdim));
         CK(cu.MemAlloc(&g->xb2,    sizeof(float) * MVB * xdim));
+        if (mtp_dev) {
+            size_t hcd = (size_t)m->hc_count * m->n_embd;
+            CK(cu.MemAlloc(&g->mtp_h,       sizeof(float) * (size_t)m->n_batch * hcd));
+            CK(cu.MemAlloc(&g->mtp_pending, sizeof(float) * hcd));
+            CK(cu.MemAlloc(&g->mtp_cat,     sizeof(float) * MVB * hcd * 2));
+            CK(cu.MemAlloc(&g->mtp_hid,     sizeof(float) * hcd));
+            CK(cu.MemAlloc(&g->mtp_en,      sizeof(float) * MVB * m->n_embd));
+            CK(cu.MemAlloc(&g->mtp_hn,      sizeof(float) * MVB * hcd));
+            CK(cu.MemsetD8(g->mtp_pending, 0, sizeof(float) * hcd));
+        }
         if (m->hyper_conn) {
             size_t hcd = (size_t)m->hc_count * m->n_embd;
             CK(cu.MemAlloc(&g->x_hc,      sizeof(float) * MVB * hcd));
@@ -3074,6 +3143,8 @@ static void gpu_ctx_free(model_t *m, gpu_t *g) {
                            g->q35_mix, g->q35_cv, g->q35_z, g->q35_beta,
                            g->q35_alpha, g->q35_gate, g->q35_hist,
                            g->q35_state, g->q35_hist_prev, g->q35_state_prev,
+                           g->mtp_h, g->mtp_pending, g->mtp_cat, g->mtp_hid,
+                           g->mtp_en, g->mtp_hn,
                            g->mamba_proj, g->mamba_xBC, g->mamba_y,
                            g->mamba_conv, g->mamba_state,
                            g->mamba_conv_prev, g->mamba_state_prev };
@@ -3215,6 +3286,132 @@ bool gpu_recurrent_upload(model_t *m) {
 // nothing to rescue before releasing. Freeing rather than orphaning matters
 // now that weights are shared — an abandoned context would keep every other
 // slot's copy of them alive too.
+// ---- NextN/MTP head on the device (hyper-connection families) ------------
+// The CPU head's twin (model.c mtp_run): per queued pair (h, tok) the input
+// per stream is [enorm(embed(tok)) ; hnorm_c(h_c)], projected by eh_proj into
+// the block's wide residual, the block runs through fwd_tile at index
+// n_layer (its own KV region, its experts where --cpu-moe left them), the
+// next chained step reads the wide residual and the logits read it through
+// the block's own stream mixer. Hidden rows never leave the device: the
+// trunk's x_hc rows are copied into the queue (gpu_mtp_note_row) and the
+// chained hidden stays in mtp_hid.
+bool gpu_mtp_bound(const model_t *m) {
+    gpu_t *g = m ? m->gpu : NULL;
+    return g && g->mtp_h && m->mtp_ready && m->hyper_conn && m->gpu_layers >= m->n_layer;
+}
+
+bool gpu_mtp_note_row(model_t *m, int row) {
+    gpu_t *g = m->gpu;
+    if (!gpu_mtp_bound(m) || row < 0 || row >= MVB) return false;
+    size_t hcd = (size_t)m->hc_count * m->n_embd * sizeof(float);
+    if (cu.CtxSetCurrent(g->sw->ctx) != 0) return false;
+    return cu.MemcpyDtoD(g->mtp_pending, g->x_hc + (size_t)row * hcd, hcd) == 0;
+}
+
+bool gpu_mtp_queue_pending(model_t *m, int slot) {
+    gpu_t *g = m->gpu;
+    if (!gpu_mtp_bound(m) || slot < 0 || slot >= m->n_batch) return false;
+    size_t hcd = (size_t)m->hc_count * m->n_embd * sizeof(float);
+    if (cu.CtxSetCurrent(g->sw->ctx) != 0) return false;
+    return cu.MemcpyDtoD(g->mtp_h + (size_t)slot * hcd, g->mtp_pending, hcd) == 0;
+}
+
+bool gpu_mtp_reset_pending(model_t *m) {
+    gpu_t *g = m->gpu;
+    if (!gpu_mtp_bound(m)) return false;
+    size_t hcd = (size_t)m->hc_count * m->n_embd * sizeof(float);
+    if (cu.CtxSetCurrent(g->sw->ctx) != 0) return false;
+    return cu.MemsetD8(g->mtp_pending, 0, hcd) == 0;
+}
+
+// Run n queued pairs (h from mtp_h, or the chained mtp_hid when chained) at
+// positions pos..pos+n-1; want_logits leaves the last row's head logits in
+// m->mtp_logits (host) and the last wide residual in mtp_hid.
+bool gpu_mtp_run(model_t *m, bool chained, const int32_t *tok, int n, int pos,
+                 bool want_logits) {
+    gpu_t *g = m->gpu;
+    if (!gpu_mtp_bound(m) || n < 1 || n > MVB || (chained && n != 1)) return false;
+    const int E = m->n_embd, hc = m->hc_count, hcd = hc * E, l = m->n_layer;
+    if (cu.CtxSetCurrent(g->sw->ctx) != 0) return false;
+    // embeddings of the pair tokens, dequantized on the host like stage_x
+    size_t ers = ggml_row_size(m->mtp_embd->type, E);
+    for (int b = 0; b < n; b++) {
+        float *hx = g->h_x + (size_t)b * E;
+        int32_t id = tok[b];
+        if (id < 0 || id >= m->n_vocab) id = 0;
+        dequant_row(m->mtp_embd->type, (uint8_t *)m->mtp_embd->data + (size_t)id * ers, hx, E);
+        if (m->mtp_embd->scale != 1.0f) for (int i = 0; i < E; i++) hx[i] *= m->mtp_embd->scale;
+    }
+    if (cu.MemcpyHtoD(g->mtp_en, g->h_x, sizeof(float) * (size_t)n * E) != 0) return false;
+    CUdeviceptr hsrc = chained ? g->mtp_hid : g->mtp_h;
+    if (!enc_rmsnorm(g, g->mtp_en, g->mtp_en, g->sw->mtp_enorm, E, m->rms_eps, n, E, E))
+        return false;
+    {
+        float eps = m->rms_eps; int xs = hcd;
+        void *pn[] = { &hsrc, &g->mtp_hn, &g->sw->mtp_hnorm, &E, &hc, &eps, &xs, &xs };
+        if (!launch(g, g->sw->f_rmsnorm_grouped, hc, n, 1, 256, pn)) return false;
+    }
+    {
+        void *pc[] = { &g->mtp_en, &g->mtp_hn, &g->mtp_cat, &E, &hc };
+        if (!launch(g, g->sw->f_mtp_cat, hc, n, 1, 256, pc)) return false;
+    }
+    // eh_proj over the n*hc stream rows straight into the block's wide residual
+    if (!enc_mv(g, m, m->mtp_eh_proj, g->mtp_cat, g->x_hc, 2 * E, E, 0, n * hc, 2 * E, E))
+        return false;
+    if (!fwd_tile(g, m, tok, n, pos, false, l, l + 1)) return false;
+    CUdeviceptr last = g->x_hc + (size_t)(n - 1) * hcd * sizeof(float);
+    if (cu.MemcpyDtoD(g->mtp_hid, last, (size_t)hcd * sizeof(float)) != 0) return false;
+    if (want_logits) {
+        if (!gpu_hc_mix(g, m, g->sw->mtp_head_norm, m->mtp_hc_head_down, m->mtp_hc_head_up,
+                        NULL, last, g->xb, 0, 1)) return false;
+        if (!enc_mv(g, m, m->mtp_head, g->xb, g->logits, E, m->n_vocab, 0, 1, 0, 0)) return false;
+        if (cu.StreamSynchronize(g->stream) != 0) return false;
+        if (cu.MemcpyDtoH(m->mtp_logits, g->logits, sizeof(float) * (size_t)m->n_vocab) != 0)
+            return false;
+    } else if (cu.StreamSynchronize(g->stream) != 0) {
+        return false;
+    }
+    // the block's KV rows are read only by the block itself on the device; a
+    // CPU fallback mid-run drops them and the head re-syncs (model_mtp_reset)
+    return true;
+}
+
+// Speculative rollback of the device fold: the forward that advanced it
+// copied the pre-forward state to the *_prev buffers, so one forward after
+// the snapshot the rollback is a device-to-device copy. More than one
+// forward (or none) since the snapshot means the copy is stale: refuse, and
+// the caller rebuilds the fold from the history.
+bool gpu_recurrent_rollback_mark(model_t *m) {
+    gpu_t *g = m ? m->gpu : NULL;
+    if (!g) return false;
+    g->fwd_snap = g->fwd_count;
+    return true;
+}
+
+bool gpu_recurrent_rollback(model_t *m) {
+    gpu_t *g = m ? m->gpu : NULL;
+    if (!g || g->fwd_count != g->fwd_snap + 1) return false;
+    if (cu.CtxSetCurrent(g->sw->ctx) != 0) return false;
+    if (m->qwen35) {
+        int convdim = 2 * m->ssm_state * m->ssm_groups + m->ssm_inner;
+        size_t hist_bytes = sizeof(float) * (size_t)m->n_layer * (m->ssm_conv_kernel - 1) * convdim;
+        size_t state_bytes = sizeof(float) * (size_t)m->n_layer * m->ssm_v_heads * m->ssm_state * m->ssm_state;
+        if ((hist_bytes && cu.MemcpyDtoD(g->q35_hist, g->q35_hist_prev, hist_bytes) != 0) ||
+            cu.MemcpyDtoD(g->q35_state, g->q35_state_prev, state_bytes) != 0)
+            return false;
+    } else if ((m->granite_hybrid || m->nemotron_h) && g->mamba_state) {
+        int cd = m->ssm_inner + 2 * m->ssm_groups * m->ssm_state;
+        size_t conv_bytes = sizeof(float) * (size_t)m->n_layer * (m->ssm_conv_kernel - 1) * cd;
+        size_t state_bytes = sizeof(float) * (size_t)m->n_layer * m->ssm_inner * m->ssm_state;
+        if (cu.MemcpyDtoD(g->mamba_conv, g->mamba_conv_prev, conv_bytes) != 0 ||
+            cu.MemcpyDtoD(g->mamba_state, g->mamba_state_prev, state_bytes) != 0)
+            return false;
+    }
+    // the restored state is now also the pre-forward state of the next forward
+    g->fwd_snap = g->fwd_count;
+    return cu.CtxSynchronize() == 0;
+}
+
 void gpu_disable(model_t *m) {
     gpu_t *g = m ? m->gpu : NULL;
     // KV is mirrored after every step. The recurrent fold is much larger, so
@@ -5316,6 +5513,7 @@ bool gpu_forward_batch(model_t *m, const int32_t *tokens, int n, int pos,
             cu.MemcpyDtoD(g->q35_state_prev, g->q35_state, state_bytes) != 0)
             return false;
     }
+    g->fwd_count++;
     if ((m->granite_hybrid || m->nemotron_h) && g->mamba_state) {
         int cd = m->ssm_inner + 2 * m->ssm_groups * m->ssm_state;
         size_t conv_bytes = sizeof(float) * (size_t)m->n_layer *

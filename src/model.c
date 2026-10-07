@@ -4001,9 +4001,10 @@ static bool model_alloc_runtime(model_t *m, const model_params *p) {
         // is the original all-on-host meaning; a CUDA upload may narrow it to
         // the requested count or to what the VRAM budget actually fits, and
         // publishes the outcome here so the forward path reads one array.
-        m->moe_host = calloc((size_t)m->n_layer, sizeof(bool));
+        m->moe_host = calloc((size_t)m->n_layer + 1, sizeof(bool));
         if (!m->moe_host) return false;
         model_moe_place_host(m, m->cpu_moe_layers);
+        m->moe_host[m->n_layer] = true;   // the NextN/MTP block's experts, if any, stay on the host
     }
     int n_ctx = p->n_ctx;
     if (n_ctx <= 0 && (p->reserve_vram_pct > 0 || p->reserve_ram_pct > 0)) {
@@ -6537,7 +6538,8 @@ static void moe_ffn(model_t *m, const layer_t *ly, int n, int xdim) {
 }
 
 bool model_moe_ffn_cpu(model_t *m, int layer, int n) {
-    if (!m || layer < 0 || layer >= m->n_layer || n < 1 || n > m->n_batch)
+    if (!m || layer < 0 || layer > m->n_layer || (layer == m->n_layer && !m->mtp_ready) ||
+        n < 1 || n > m->n_batch)
         return false;
     layer_t *ly = &m->layers[layer];
     if (!ly->is_moe) return false;
@@ -6580,7 +6582,8 @@ static void ple4_block(model_t *m, const layer_t *ly, const int32_t *tokens, int
 // and shared experts on the host and leave the FFN OUTPUT in m->xb for the
 // device's hc_combine. No norm, no residual add here.
 bool model_moe_ffn_cpu_premixed(model_t *m, int layer, int n) {
-    if (!m || layer < 0 || layer >= m->n_layer || n < 1 || n > m->n_batch)
+    if (!m || layer < 0 || layer > m->n_layer || (layer == m->n_layer && !m->mtp_ready) ||
+        n < 1 || n > m->n_batch)
         return false;
     layer_t *ly = &m->layers[layer];
     if (!ly->is_moe || ly->moe_gemma) return false;
@@ -6656,8 +6659,14 @@ bool model_recurrent_snapshot(model_t *m, int pos) {
         return false;
     size_t pb = recurrent_ple_bytes(m);
     if (pb && !m->ple4_hist_snap && !(m->ple4_hist_snap = malloc(pb))) return false;
-    memcpy(m->ssm_conv_snap, m->ssm_conv_state, recurrent_conv_bytes(m));
-    memcpy(m->ssm_state_snap, m->ssm_state_mem, recurrent_state_bytes(m));
+    if (m->gpu) {
+        // the device fold is rolled back from its own pre-forward copy
+        // (gpu_recurrent_rollback); only the host-side PLE window is copied
+        if (!gpu_recurrent_rollback_mark(m)) return false;
+    } else {
+        memcpy(m->ssm_conv_snap, m->ssm_conv_state, recurrent_conv_bytes(m));
+        memcpy(m->ssm_state_snap, m->ssm_state_mem, recurrent_state_bytes(m));
+    }
     if (pb) memcpy(m->ple4_hist_snap, m->ple4_conv_hist, pb);
     m->ssm_snap_pos = pos;
     return true;
@@ -6667,8 +6676,12 @@ bool model_recurrent_restore(model_t *m, int pos) {
     if (!model_has_recurrent(m) || !m->ssm_conv_snap || !m->ssm_state_snap)
         return false;
     if (pos < 0 || m->ssm_snap_pos != pos) return false;   // fold not sliceable
-    memcpy(m->ssm_conv_state, m->ssm_conv_snap, recurrent_conv_bytes(m));
-    memcpy(m->ssm_state_mem, m->ssm_state_snap, recurrent_state_bytes(m));
+    if (m->gpu) {
+        if (!gpu_recurrent_rollback(m)) { m->ssm_snap_pos = -1; return false; }
+    } else {
+        memcpy(m->ssm_conv_state, m->ssm_conv_snap, recurrent_conv_bytes(m));
+        memcpy(m->ssm_state_mem, m->ssm_state_snap, recurrent_state_bytes(m));
+    }
     if (recurrent_ple_bytes(m) && m->ple4_hist_snap)
         memcpy(m->ple4_conv_hist, m->ple4_hist_snap, recurrent_ple_bytes(m));
     return true;
@@ -9391,9 +9404,22 @@ static bool mtp_alloc(model_t *m) {
 }
 
 bool model_mtp_ready(const model_t *m) {
-    // The head reads the backbone's residual rows out of m->x, which a GPU
-    // backend keeps on-device: CPU path only for now.
-    return m->mtp_ready && !m->gpu;
+    // The head reads the backbone's residual rows: on the host out of m->x /
+    // m->x_hc, on a CUDA backend out of the device's x_hc through the
+    // device head (gpu_mtp_bound: hyper-connection families on a full split).
+    return m->mtp_ready && (!m->gpu || gpu_mtp_bound(m));
+}
+
+// The hidden the head pairs with the next token is row `b` of the forward
+// that just ran: a host pointer on the CPU path, a device copy otherwise.
+void model_mtp_note_row(model_t *m, int b) {
+    if (!m->mtp_ready) return;
+    if (m->gpu && gpu_mtp_bound(m)) {
+        if (!mtp_alloc(m)) return;
+        gpu_mtp_note_row(m, b);
+        return;
+    }
+    model_mtp_note_hidden(m, model_hidden_row(m, b));
 }
 
 void model_mtp_reset(model_t *m, int pos) {
@@ -9406,7 +9432,10 @@ void model_mtp_reset(model_t *m, int pos) {
     // residual that produced position pos-1 went away with the forward that
     // made it, so the pending h is whatever the previous run left -- one
     // provisional-quality pair at position pos. Only acceptance can notice.
-    if (pos == 0) memset(m->mtp_pending, 0, sizeof(float) * (size_t)m->mtp_hw);
+    if (pos == 0) {
+        memset(m->mtp_pending, 0, sizeof(float) * (size_t)m->mtp_hw);
+        if (m->gpu && gpu_mtp_bound(m)) gpu_mtp_reset_pending(m);
+    }
 }
 
 // Run n pairs (h rows, tokens) through the head at positions pos..pos+n-1,
@@ -9469,8 +9498,11 @@ static bool mtp_run(model_t *m, const float *h, size_t h_stride,
 
 static bool mtp_drain(model_t *m, bool want_logits) {
     if (m->mtp_qn == 0) return true;
-    bool ok = mtp_run(m, m->mtp_h, (size_t)m->mtp_hw, m->mtp_tok, m->mtp_qn,
+    bool ok = m->gpu && gpu_mtp_bound(m)
+            ? gpu_mtp_run(m, false, m->mtp_tok, m->mtp_qn, m->mtp_pos, want_logits)
+            : mtp_run(m, m->mtp_h, (size_t)m->mtp_hw, m->mtp_tok, m->mtp_qn,
                       m->mtp_pos, want_logits);
+    if (ok && want_logits && m->gpu && gpu_mtp_bound(m)) m->mtp_logits_pos = m->mtp_pos + m->mtp_qn;
     m->mtp_pos += m->mtp_qn;
     m->mtp_qn = 0;
     return ok;
@@ -9480,8 +9512,12 @@ bool model_mtp_feed(model_t *m, int32_t tok) {
     if (!m->mtp_ready || !mtp_alloc(m)) return false;
     if (m->mtp_qn == m->n_batch && !mtp_drain(m, false)) return false;
     if (m->mtp_pos + m->mtp_qn >= m->n_ctx) return false;
-    memcpy(m->mtp_h + (size_t)m->mtp_qn * m->mtp_hw, m->mtp_pending,
-           sizeof(float) * (size_t)m->mtp_hw);
+    if (m->gpu && gpu_mtp_bound(m)) {
+        if (!gpu_mtp_queue_pending(m, m->mtp_qn)) return false;
+    } else {
+        memcpy(m->mtp_h + (size_t)m->mtp_qn * m->mtp_hw, m->mtp_pending,
+               sizeof(float) * (size_t)m->mtp_hw);
+    }
     m->mtp_tok[m->mtp_qn++] = tok;
     return true;
 }
@@ -9501,6 +9537,13 @@ float *model_mtp_draft_logits(model_t *m) {
 
 float *model_mtp_step(model_t *m, const float *h, int32_t tok, int pos) {
     if (!model_mtp_ready(m) || !h || m->mtp_qn != 0) return NULL;
+    if (m->gpu && gpu_mtp_bound(m)) {
+        // h is the device-resident chained hidden (model_mtp_hidden returns a
+        // non-NULL host handle so the engine's chain reads the same way)
+        if (!gpu_mtp_run(m, true, &tok, 1, pos, true)) return NULL;
+        m->mtp_logits_pos = pos + 1;
+        return m->mtp_logits;
+    }
     if (!mtp_run(m, h, 0, &tok, 1, pos, true)) return NULL;
     return m->mtp_logits;
 }

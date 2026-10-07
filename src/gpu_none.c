@@ -101,6 +101,15 @@ void gpu_disable(model_t *m) {
 
 bool gpu_recurrent_download(model_t *m) { (void)m; return true; }
 bool gpu_recurrent_upload(model_t *m) { (void)m; return true; }
+bool gpu_recurrent_rollback_mark(model_t *m) { (void)m; return false; }
+bool gpu_recurrent_rollback(model_t *m) { (void)m; return false; }
+bool gpu_mtp_bound(const model_t *m) { (void)m; return false; }
+bool gpu_mtp_note_row(model_t *m, int row) { (void)m; (void)row; return false; }
+bool gpu_mtp_queue_pending(model_t *m, int slot) { (void)m; (void)slot; return false; }
+bool gpu_mtp_reset_pending(model_t *m) { (void)m; return false; }
+bool gpu_mtp_run(model_t *m, bool chained, const int32_t *tok, int n, int pos, bool want_logits) {
+    (void)m; (void)chained; (void)tok; (void)n; (void)pos; (void)want_logits; return false;
+}
 
 // No backend, so no microbatch: model_batch_decode sees NULL and decodes the
 // sequences one at a time, which is what this platform would have done anyway.

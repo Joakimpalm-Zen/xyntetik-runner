@@ -2619,6 +2619,15 @@ void gpu_disable(model_t *m) {
 // mixers have no Metal path), so the host buffers are the live fold already.
 bool gpu_recurrent_download(model_t *m) { (void)m; return true; }
 bool gpu_recurrent_upload(model_t *m) { (void)m; return true; }
+bool gpu_recurrent_rollback_mark(model_t *m) { (void)m; return false; }
+bool gpu_recurrent_rollback(model_t *m) { (void)m; return false; }
+bool gpu_mtp_bound(const model_t *m) { (void)m; return false; }
+bool gpu_mtp_note_row(model_t *m, int row) { (void)m; (void)row; return false; }
+bool gpu_mtp_queue_pending(model_t *m, int slot) { (void)m; (void)slot; return false; }
+bool gpu_mtp_reset_pending(model_t *m) { (void)m; return false; }
+bool gpu_mtp_run(model_t *m, bool chained, const int32_t *tok, int n, int pos, bool want_logits) {
+    (void)m; (void)chained; (void)tok; (void)n; (void)pos; (void)want_logits; return false;
+}
 
 // Metal has no batched-decode kernels yet, so it declines the microbatch and
 // model_batch_decode decodes sequentially. The port is the same shape as the
