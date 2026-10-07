@@ -40,6 +40,14 @@ rename keep the names that were true when they were written.
   twin of the CUDA change above: a partially accepted round restores the
   DeltaNet window and state after the last kept row instead of re-folding
   the accepted rows with a second forward.
+- **The default thread count follows the process's CPU affinity mask**
+  (Linux `sched_getaffinity`, Windows `GetProcessAffinityMask`), not the
+  machine's CPU count. Under `taskset`, a cpuset or a container the two
+  differ, and the old default oversubscribed the mask: on a 32-cpu mask of
+  16 cores and their SMT siblings, 32 pool threads decoded
+  Qwen3.8-Flash-Next at 1.7 tok/s where 16 gave 9.3. An explicit `-t` is
+  unchanged; `test-thread-default` narrows the mask and expects the count
+  to follow.
 - **Three more expert formats on the fused device MoE path**: IQ2_S, IQ3_S
   and IQ4_XS expert tensors (Qwen3.8-Flash-Next's ISTA release mixes them)
   take the fused path; the eager path handled them before. Device results
