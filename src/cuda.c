@@ -722,7 +722,7 @@ static bool moe_indirect_type_ok(int type) {
         case T_F32: case T_F16: case T_Q8_0: case T_Q4_0:
         case T_Q4_K: case T_Q5_K: case T_Q6_K: case T_MXFP4:
         case T_NVFP4: case T_IQ3_XXS: case T_IQ4_NL: case T_Q2_0:
-        case T_IQ2_S: case T_IQ3_S: case T_IQ4_XS:
+        case T_IQ2_S: case T_IQ3_S: case T_IQ4_XS: case T_IQ2_XS: case T_IQ2_XXS:
             return true;
         default:
             return false;
@@ -1643,6 +1643,8 @@ static gpu_weights *shared_build(model_t *m, size_t act_bytes, int max_hd,
             { &w->f_moe_mv[T_IQ2_S],   "k_moe_mv_iq2_s" },
             { &w->f_moe_mv[T_IQ3_S],   "k_moe_mv_iq3_s" },
             { &w->f_moe_mv[T_IQ4_XS],  "k_moe_mv_iq4_xs" },
+            { &w->f_moe_mv[T_IQ2_XS],  "k_moe_mv_iq2_xs" },
+            { &w->f_moe_mv[T_IQ2_XXS], "k_moe_mv_iq2_xxs" },
             // expert-grouped prefill glue
             { &w->f_moe_gather,       "k_moe_gather" },
             { &w->f_moe_scatter,      "k_moe_scatter_add" },
