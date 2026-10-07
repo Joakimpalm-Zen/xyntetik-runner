@@ -1681,6 +1681,31 @@ test-tc-overflow: runner $(TEST_TC_TOL)
 	grep -q "ok (skipped)" tc-overflow.out && echo "tc overflow gate: skipped (no CUDA device)" || \
 	  { grep -q "TC dispatches: Q8_0=" tc-overflow.out || { cat tc-overflow.out; exit 1; }; echo "tc overflow gate ok"; }
 
+# CUDA qwen4exp (Qwen3.8-Flash-Next): the device path against the CPU path at
+# logit precision on the family fixture, in the three placements the slice
+# runs it in. Each arm pins a defect the greedy-64 identity check of
+# 2026-10-06 did not see (2026-10-07): the 512-expert fixture pins the eager
+# router's expert bound (it selected among the first 256 of 512); the forced
+# partial split (--gpu-layers 2) pins the boundary hand-off of the wide
+# hyper-connection residual (the CPU layers continued from a stale stream);
+# device experts and host experts both run. Skips itself without a CUDA
+# device. 2e-5 is reduction-order residue on the fixture (measured 4.8e-7).
+test-cuda-qwen4exp: runner
+	@set -e; \
+	if ./$(RUNNER_EXE) --caps | $(PYTHON) -c "import json,sys; d=json.load(sys.stdin); sys.exit(0 if (d.get('gpu') or {}).get('backend') == 'cuda' else 1)"; then \
+		$(PYTHON) scripts/make-test-qwen4exp.py test-qwen4exp.gguf > /dev/null; \
+		QWEN4EXP_TEST_EXPERTS=512 $(PYTHON) scripts/make-test-qwen4exp.py test-qwen4exp-512.gguf > /dev/null; \
+		for f in test-qwen4exp.gguf test-qwen4exp-512.gguf; do \
+		  ./$(RUNNER_EXE) -b 1 -m $$f --score -p "hello world one two three four five six" --gpu off --no-tray -c 128 2>/dev/null > cuda-q4e-cpu.score; \
+		  for arm in "" "--cpu-moe" "--gpu-layers 2" "--gpu-layers 2 --cpu-moe"; do \
+		    ./$(RUNNER_EXE) -b 1 -m $$f --score -p "hello world one two three four five six" $$arm --no-tray -c 128 2>cuda-q4e-gpu.err > cuda-q4e-gpu.score; \
+		    grep -q "CUDA backend" cuda-q4e-gpu.err || { echo "FAIL: $$f [$$arm] did not run on the device"; cat cuda-q4e-gpu.err; exit 1; }; \
+		    $(PYTHON) -c "import json,sys; a=json.load(open('cuda-q4e-cpu.score')); b=json.load(open('cuda-q4e-gpu.score')); d=max(abs(x-y) for x,y in zip(a['logprobs'],b['logprobs'])); am=sum(1 for x,y in zip(a['argmax'],b['argmax']) if x!=y); assert len(a['logprobs'])==len(b['logprobs'])==56 and d < 2e-5 and am == 0, (len(a['logprobs']), len(b['logprobs']), d, am); print('%s [%s]: cpu/cuda logprob max diff %.2e, argmax flips %d' % (sys.argv[1], sys.argv[2], d, am))" $$f "$$arm"; \
+		  done; \
+		done; \
+		rm -f cuda-q4e-cpu.score cuda-q4e-gpu.score cuda-q4e-gpu.err test-qwen4exp-512.gguf; \
+	else echo "cuda qwen4exp gate: skipped (no CUDA device)"; fi
+
 # CUDA NVFP4 (ModelOpt two-level export): the device kernels and the companion
 # scale in their tails against the CPU seam. Token identity on a generated
 # fixture and on any real NVFP4 file named in NVFP4_MODEL, logprob agreement
@@ -2632,7 +2657,7 @@ test-makefile-sane:
 
 
 .PHONY: template-conformance template-conformance-refresh template-conformance-baseline template-conformance-harmony-oracle
-.PHONY: test-gpu-stub test-cuda-nvfp4 test-ts-client
+.PHONY: test-gpu-stub test-cuda-nvfp4 test-cuda-qwen4exp test-ts-client
 .PHONY: test-metal-kv-fp4 FORCE makefile-noop test-python-deps test-makefile-sane test-cuda-iquants test-tc-overflow fixture-scale-note clean debug ptx test test-bare-invocation test-help-interface test-shader-embed test-metal-shader-gate test-apertus test-moe test-prune-experts test-metal-fallback test-metal-prefill test-metal-kquant test-metal-decode-only test-metal-split test-metal-bind-failure test-metal-kv-q8 test-metal-moe test-metal-gptoss-moe test-metal-gemma4-moe test-metal-gemma4-hetero test-metal-bigmodel test-metal-bigmodel-multibuf test-metal-moe-em test-metal-moe-mm test-metal-fuse test-metal-gelu-overflow test-metal-eseries test-metal-swa smoke release-check test-truncation fuzz fuzz-build fuzz-run test-shared-asan test-shared-noid test-split-guard test-swap-race
 
 # The TypeScript client (R10.7): type-checked with the pinned compiler and run
