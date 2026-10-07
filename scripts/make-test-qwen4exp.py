@@ -8,7 +8,8 @@ block but each full_attention_interval-th, routed experts with a gated shared
 expert on every block, hyper-connections (HC streams), a PLE n-gram block at
 block 1 with a hashed table sized to its head ranges, and the indexer tensors
 on the attention blocks with compress_ratios 0 (dense attention in both
-engines). Environment: QWEN4EXP_TEST_LAYERS (default 4), QWEN4EXP_TEST_SEED.
+engines). Environment: QWEN4EXP_TEST_LAYERS (default 4), QWEN4EXP_TEST_SEED,
+QWEN4EXP_TEST_EXPERTS (default 8; 512 is the release file's count).
 """
 import os
 import struct
@@ -19,7 +20,9 @@ E, HEADS, KV, HD = 32, 4, 2, 8            # HD must be a multiple of 4 for the r
 LAYERS = int(os.environ.get("QWEN4EXP_TEST_LAYERS", "4"))
 STATE, GROUPS, VHEADS, CONV = 8, 2, 4, 4
 HC, HC_LR = 4, 16
-N_EXP, N_USED, FF_EXP, FF_SHEXP = 8, 2, 16, 16
+# QWEN4EXP_TEST_EXPERTS raises the expert count (the release file has 512; a
+# device path that clamped its router to 256 passed every 8-expert fixture)
+N_EXP, N_USED, FF_EXP, FF_SHEXP = int(os.environ.get("QWEN4EXP_TEST_EXPERTS", "8")), 2, 16, 16
 IDX_HEADS, IDX_DIM, IDX_TOPK = 2, 8, 2048
 PLE_LAYER, PLE_NGRAM, PLE_PER, PLE_K, PLE_DIM = 1, 3, 2, 4, 8
 PLE_HEADS = (PLE_NGRAM - 1) * PLE_PER

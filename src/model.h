@@ -228,6 +228,8 @@ typedef struct {
     // all tokens, then run each expert once over ALL its routed tokens as a
     // batched matmul instead of one-at-a-time. Decode (n==1) never uses these.
     float    *moe_out_b;   // [n_batch][n_embd] per-token output accumulator
+    float    *moe_dall;    // [n_batch][n_expert_used][n_embd] each token's expert
+                           // outputs, summed in the ROUTER's order at the end
     float    *moe_gath;    // [n_batch][n_embd] one expert's gathered inputs
     float    *moe_gate_b;  // [n_batch][n_ff_exp] batched gate
     float    *moe_up_b;    // [n_batch][n_ff_exp] batched up
@@ -407,18 +409,25 @@ typedef struct {
     // the token, and predicts x_{p+1}; the target's verify walk keeps output
     // token-identical to plain decoding.
     bool   mtp_ready;        // head bound; drafts available on the CPU path
+    bool   mtp_external;     // the block came from --mtp-file, not the trunk
     gguf_tensor *mtp_eh_proj;   // [2*n_embd, n_embd]  concat(enorm e, hnorm h)
     float *mtp_enorm_w, *mtp_hnorm_w, *mtp_head_norm_w;
+    // hyper-connection heads (qwen4exp): hnorm is per stream [hc*n_embd], the
+    // head norm is the block's own stream mixer, and the hidden the head
+    // reads and chains is the WIDE residual [hc*n_embd] (mtp_hw below)
+    gguf_tensor *mtp_hc_head_down, *mtp_hc_head_up;
+    float   *mtp_hmix;       // [n_embd] mixed head input (hyper-connection heads)
+    int      mtp_hw;         // hidden width the head consumes: n_embd, or hc*n_embd
     gguf_tensor *mtp_embd, *mtp_head; // per-head or the backbone's shared ones
-    float   *mtp_h;          // queue: [n_batch][n_embd] previous-position hidden
+    float   *mtp_h;          // queue: [n_batch][mtp_hw] previous-position hidden
     int32_t *mtp_tok;        // queue: [n_batch] tokens
     int      mtp_qn;         // queued pairs not yet run through the head
     int      mtp_pos;        // position the next queued pair lands at
-    float   *mtp_pending;    // h of the last fed position (next pair's h)
-    float   *mtp_cat;        // [n_batch][2*n_embd] head input scratch
+    float   *mtp_pending;    // [mtp_hw] h of the last fed position (next pair's h)
+    float   *mtp_cat;        // [n_batch * hc][2*n_embd] head input scratch
     float   *mtp_logits;     // [n_vocab] head logits of the last row run
     int      mtp_logits_pos; // position those logits predict (-1 = none)
-    float   *mtp_hid;        // [n_embd] head hidden of the last row run
+    float   *mtp_hid;        // [mtp_hw] head hidden of the last row run
                              // (post head norm) -- the chained draft's h
     // Gemma-4 E-series. n_embd_ple > 0 turns on per-layer embeddings;
     // kv_from_start < n_layer turns on shared KV, where every layer at or
@@ -441,7 +450,9 @@ typedef struct {
     uint32_t ple4_off[64], ple4_vocab[64];
     gguf_tensor *ple4_table;                     // [ple4_head_dim, rows], part 2
     int32_t *ple4_prev;                          // [n_ctx] token history for the hash
-    float  *ple4_emb, *ple4_tmp, *ple4_conv_hist; // scratch
+    float  *ple4_emb, *ple4_tmp, *ple4_conv_hist; // scratch; conv_hist's first
+                                                  // (K-1)*ngram rows are recurrent STATE
+    float  *ple4_hist_snap, *ple4_hist_mark;      // its rollback snapshot and turn mark
     int    kv_from_start;
     int   *kv_src;               // [n_layer] cache-owning layer for each layer
     gguf_tensor *ple_tok_embd;   // [n_embd_ple * n_layer, n_vocab]
@@ -831,6 +842,10 @@ typedef struct {
     // outside this process can make it give memory back except this flag.
     bool  yield_on_request;
     bool  mtp;         // consume a declared NextN/MTP head (speculative drafts)
+    // --mtp-file: a companion GGUF carrying the NextN/MTP block the main file
+    // was exported without (llama.cpp's MTP-only layout: the same arch and
+    // depth, nextn_predict_layers 1, the block at index n_layer). Implies mtp.
+    const char *mtp_path;
     // Target adapter is part of the load contract, including server slot
     // copies and lazy reloads. Path is borrowed for the params' lifetime;
     // scale is explicit (0 is a valid no-op), ignored when path is NULL.

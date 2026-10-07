@@ -356,7 +356,8 @@ merge it into a Q8_0 or F16 file.
 - <a id="desktop-tray"></a>**Desktop tray.** On macOS and Windows an icon
   shows which models are loaded and starts or stops them.
   [Details](MANUAL.md#desktop-tray)
-- **Draft decoding.** `--draft small.gguf`, `--mtp` or `--draft-lookup`.
+- **Draft decoding.** `--draft small.gguf`, `--mtp`, `--mtp-file head.gguf`
+  (a NextN/MTP head shipped as a companion file) or `--draft-lookup`.
   [Details](MANUAL.md#runtime-and-hardware)
 - **Pause and resume a generation.** Session images with `--sessions DIR`.
   [Details](docs/session-images.md)

@@ -9,6 +9,41 @@ rename keep the names that were true when they were written.
 
 ## Unreleased
 
+- **`--mtp-file PATH`: a NextN/MTP draft head from a companion GGUF.**
+  Qwen3.8-Flash-Next's release trunk ships without its MTP block;
+  `scripts/make-mtp-companion.py` builds it from the publisher's BF16
+  checkpoint in llama.cpp's MTP-only layout with the source revision and
+  per-tensor sha256 in the header (published as
+  `Joakimpalm-Zen/Qwen3.8-Flash-Next-MTP-GGUF`, and loadable by llama.cpp
+  as `-md ... --spec-type draft-mtp`). The runner attaches the file to the
+  trunk and drafts from it on the CPU path; under hyper-connections the head
+  consumes the wide residual. Measured on the real model: drafts accepted
+  69 percent, generated text byte-identical to plain decoding, decoding
+  slower on the CPU (a routed-expert verify batch costs nearly its rows'
+  worth and a partial acceptance re-folds the accepted rows), so the speed
+  case is the device path, not yet done.
+- **Four correctness fixes the head exposed, each with a byte-level gate.**
+  (1) The grouped MoE path summed a token's experts in ascending expert id,
+  decode in the router's order, so a speculation verify batch was not
+  byte-equal to decoding its rows alone; it now sums in router order and the
+  qwen4exp gate's batched-vs-solo score is bytes. (2) The qwen4exp PLE
+  block's conv history is recurrent state and now travels with the fold in
+  reset, snapshot, the prefix-cache blob and the turn mark; before, a
+  partially accepted draft round, a new sequence and a prefix fork each left
+  it stale. (3) The CUDA eager MoE path routed among the first 256 experts
+  only (a stale bound 1.0.2's fused-path widening to 512 did not reach);
+  Qwen3.8-Flash-Next's expert types force that path, so every CUDA forward
+  of the model was wrong at about one position in thirteen (device vs CPU
+  444/480 argmax, now 480/480). (4) A partial device split of a
+  hyper-connection model handed the CPU layers the narrow residual instead
+  of the wide one. `make test-cuda-qwen4exp` scores the fixture and a
+  512-expert variant on the device in every placement against the CPU path.
+- **Prefix cache: recurrent fork on the device (R4.26.7).** An exact
+  full-prefix hit forks a recurrent model's fold on CUDA too, so an agent
+  turn prefills only its new tokens instead of the whole conversation.
+- **`RUNNER_DEBUG_TIME` whole-pass accounts**: one-row vs batched forwards
+  and MTP head runs, beside the per-stage split.
+
 - **xyntetik.com: a new landing page and Runner page.** The landing page
   opens with what Runner answers (will it fit, what did shrinking cost, how
   much memory an idle model keeps), a plain three-step explanation of what an

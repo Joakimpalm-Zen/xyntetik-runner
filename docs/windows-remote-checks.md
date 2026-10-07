@@ -68,8 +68,12 @@ Run the gate before tagging any release:
 
 It exits nonzero on failure and the report is committed with the release, the
 same way the compatibility report is. Beside it, on every CUDA box that
-records a device-ledger row: `make test-cuda-nvfp4` on the real NVFP4 file
-and `make test-cuda-iquants` on the seven codebook i-quant fixtures (on this
+records a device-ledger row: `make test-cuda-nvfp4` on the real NVFP4 file,
+`make test-cuda-qwen4exp` (the qwen4exp fixture at full offload, a forced
+partial split and with device experts, plus its 512-expert variant, each
+scored against the CPU path; added 2026-10-07 after two device defects
+passed the greedy identity check) and `make test-cuda-iquants` on the seven
+codebook i-quant fixtures (on this
 box `RUNNER_IQ_FIXTURES=~/iqfix`, the set quantized on the
 Blackwell with llama.cpp b10353, because the tools are not installed here).
 The i-quant target fails, rather than skipping, when the device, the

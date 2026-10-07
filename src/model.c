@@ -2100,6 +2100,33 @@ static bool model_bind_weights(model_t *m, const char *path, const model_params 
         return false;
     }
     m->n_layer -= m->mtp_layers;
+    // --mtp-file: the predictor block lives in a companion file (llama.cpp's
+    // MTP-only export: block_count counts the block, nextn_predict_layers 1,
+    // tensors at index n_layer). Checked against the trunk before its
+    // tensors join the directory; the trunk's own copy of any shared tensor
+    // (embeddings, LM head) is the one bound.
+    if (p->mtp_path) {
+        gguf_file ex;
+        if (!gguf_open(&ex, p->mtp_path)) {
+            fprintf(stderr, "error: --mtp-file: cannot open %s\n", p->mtp_path);
+            return false;
+        }
+        const char *ex_arch = gguf_get_str(&ex, "general.architecture", "");
+        int ex_n   = (int)gguf_get_u32(&ex, AK("nextn_predict_layers"), 0);
+        int ex_blk = (int)gguf_get_u32(&ex, AK("block_count"), 0);
+        const char *why = strcmp(ex_arch, arch) ? "architecture differs from the trunk"
+                        : m->mtp_layers != 0 ? "the trunk already carries a predictor block"
+                        : ex_n != 1 ? "the companion must declare exactly one predictor block"
+                        : ex_blk - ex_n != m->n_layer ? "the companion's depth differs from the trunk"
+                        : NULL;
+        if (why || !gguf_attach(g, &ex)) {
+            fprintf(stderr, "error: --mtp-file: %s\n", why ? why : "out of memory");
+            gguf_close(&ex);
+            return false;
+        }
+        m->mtp_layers = 1;
+        m->mtp_external = true;
+    }
     if (!m->l_is_swa) {
         int sw = (int)gguf_get_u32(g, AK("attention.sliding_window"), 0);
         if (sw > 0) {
@@ -3171,10 +3198,11 @@ static bool model_bind_weights(model_t *m, const char *path, const model_params 
         const char *why = m->mtp_layers == 0 ? "the export declares no predictor block"
                         : m->mtp_layers != 1 ? "only a single predictor block is consumable"
                         : fused_qkv ? "fused-QKV families are not supported"
-                        : (m->n_expert > 0 || m->nemotron_h || m->granite_hybrid ||
-                           m->l_head_kv || m->l_head_dim || m->kv_src ||
-                           m->n_embd_ple > 0)
-                            ? "only dense attention or Gated DeltaNet backbones are supported"
+                        : ((m->n_expert > 0 && !m->hyper_conn) || m->nemotron_h ||
+                           m->granite_hybrid || m->l_head_kv || m->l_head_dim ||
+                           m->kv_src || m->n_embd_ple > 0)
+                            ? "only dense attention, Gated DeltaNet or hyper-connection "
+                              "MoE backbones are supported"
                         : NULL;
         if (why) {
             fprintf(stderr, "error: mtp: %s\n", why);
@@ -4303,6 +4331,7 @@ static bool model_alloc_runtime(model_t *m, const model_params *p) {
         m->moe_gate_b = malloc(sizeof(float) * nb * nf);
         m->moe_up_b   = malloc(sizeof(float) * nb * nf);
         m->moe_dexp_b = malloc(sizeof(float) * nb * ne);
+        m->moe_dall   = malloc(sizeof(float) * nb * nu * ne);
         m->moe_sel    = malloc(sizeof(int)   * nb * nu);
         m->moe_selw   = malloc(sizeof(float) * nb * nu);
         m->moe_trace_norms = malloc(sizeof(float) * nb * nu);
@@ -4315,7 +4344,7 @@ static bool model_alloc_runtime(model_t *m, const model_params *p) {
         (m->n_expert > 0 && (!m->moe_logits || !m->moe_gate || !m->moe_up ||
                              !m->moe_dexp || !m->moe_out || !m->moe_out_b ||
                              !m->moe_gath || !m->moe_gate_b || !m->moe_up_b ||
-                             !m->moe_dexp_b || !m->moe_sel || !m->moe_selw ||
+                             !m->moe_dexp_b || !m->moe_dall || !m->moe_sel || !m->moe_selw ||
                              !m->moe_trace_norms || !m->moe_gidx || !m->moe_gw)) ||
         (m->qwen35 && (!m->q_gate || !m->ssm_qkv || !m->ssm_z ||
                        !m->ssm_aux || !m->ssm_conv_state ||
@@ -4498,6 +4527,7 @@ void model_free(model_t *m) {
     free(m->x); free(m->xb); free(m->xb2); free(m->q);
     free(m->x_hc); free(m->hc_inject); free(m->hc_mix_lo);
     free(m->ple4_emb); free(m->ple4_tmp); free(m->ple4_conv_hist); free(m->ple4_prev);
+    free(m->ple4_hist_snap); free(m->ple4_hist_mark);
     free(m->k_tmp); free(m->v_tmp);
     free(m->q_gate); free(m->ssm_qkv); free(m->ssm_z); free(m->ssm_aux);
     free(m->ssm_cw);
@@ -4506,7 +4536,7 @@ void model_free(model_t *m) {
     free(m->ssm_conv_mark); free(m->ssm_state_mark);
     free(m->hb); free(m->hb2); free(m->att); free(m->logits); free(m->all_logits);
     free(m->mtp_h); free(m->mtp_tok); free(m->mtp_pending); free(m->mtp_cat);
-    free(m->mtp_logits); free(m->mtp_hid);
+    free(m->mtp_logits); free(m->mtp_hid); free(m->mtp_hmix);
     // the MTP head's norm conversions are bind-phase material and belong to
     // the shared half below: freeing them here freed them once per slot
     free(m->shexp_in); free(m->shexp_o); free(m->shexp_g); free(m->shexp_u);
@@ -4514,7 +4544,7 @@ void model_free(model_t *m) {
     free(m->moe_gate); free(m->moe_up);
     free(m->moe_dexp); free(m->moe_out);
     free(m->gemma_scr);
-    free(m->moe_out_b); free(m->moe_gath); free(m->moe_gate_b);
+    free(m->moe_out_b); free(m->moe_dall); free(m->moe_gath); free(m->moe_gate_b);
     free(m->moe_up_b); free(m->moe_dexp_b); free(m->moe_sel);
     free(m->moe_selw); free(m->moe_trace_norms); free(m->moe_gidx); free(m->moe_gw);
     free(m->moe_probe_hist);
@@ -5157,6 +5187,10 @@ static const char *const dt_names[DT_N] = {
     "ple", "hc_mix", "attention", "deltanet/ssm", "hc_combine", "moe_route",
     "experts", "shared_expert", "dense_ffn", "head" };
 static double dt_acc[DT_N];
+// whole-pass accounting beside the stage split: backbone forwards by row
+// count (one row, or a batch) and the NextN/MTP head's runs
+static double dt_fwd_t[2], dt_mtp_t;
+static long   dt_fwd_n[2], dt_fwd_rows[2], dt_mtp_n, dt_mtp_rows;
 static int dt_on = -1;
 static inline bool dbg_time_on(void) {
     if (dt_on < 0) { const char *e = getenv("RUNNER_DEBUG_TIME"); dt_on = e && *e && strcmp(e, "0") != 0; }
@@ -5174,6 +5208,11 @@ void model_debug_time_report(void) {
     fprintf(stderr, "TIME total %.3f s over the run\n", tot);
     for (int k = 0; k < DT_N; k++)
         if (dt_acc[k] > 0) fprintf(stderr, "TIME %-14s %8.3f s  %5.1f%%\n", dt_names[k], dt_acc[k], 100.0 * dt_acc[k] / tot);
+    for (int k = 0; k < 2; k++)
+        if (dt_fwd_n[k]) fprintf(stderr, "TIME forward %s: %ld passes, %ld rows, %8.3f s (%.1f ms/pass)\n",
+                                 k ? "batch" : "1-row", dt_fwd_n[k], dt_fwd_rows[k], dt_fwd_t[k], 1e3 * dt_fwd_t[k] / dt_fwd_n[k]);
+    if (dt_mtp_n) fprintf(stderr, "TIME mtp head: %ld runs, %ld rows, %8.3f s (%.1f ms/run)\n",
+                          dt_mtp_n, dt_mtp_rows, dt_mtp_t, 1e3 * dt_mtp_t / dt_mtp_n);
 }
 
 static int dbg_act_pass = 0; // forward passes seen so far
@@ -6211,9 +6250,13 @@ static void moe_ffn_token(model_t *m, const layer_t *ly, float *xin) {
 // tokens routed to it as a single batched matmul (the weight rows dequantize
 // once and stream across every token) instead of one token at a time. Same
 // math as the per-token path — the router, SwiGLU, and weights are identical,
-// and each token accumulates its selected experts in ascending-expert order,
-// which for the dense-oracle configs equals the per-token order — so greedy
-// output is preserved. Big prefill throughput win; decode is untouched.
+// and each token sums its experts in the ROUTER's order (moe_dall holds the
+// per-expert outputs until the whole layer has run), exactly the per-token
+// accumulation. Below MV_SMALL_BATCH rows per expert the dots are the
+// per-token dots too, so a speculation verify batch (K+1 rows) is byte-equal
+// to decoding its rows one at a time; the ascending-expert order this path
+// used before was not (Qwen3.8-Flash-Next --draft-lookup changed the greedy
+// text, 2026-10-07). Big prefill throughput win; decode is untouched.
 static void moe_ffn_grouped(model_t *m, const layer_t *ly, int n, int xdim) {
     int n_embd = m->n_embd, ne = ly->n_expert, used = m->n_expert_used;
     int nff = m->n_ff_exp;
@@ -6329,8 +6372,26 @@ static void moe_ffn_grouped(model_t *m, const layer_t *ly, int n, int xdim) {
                 for (int t = 0; t < used; t++)
                     if (sel[t] == e) { m->moe_trace_norms[(size_t)b * used + t] = sqrtf(ss); break; }
             }
-            if (db) for (int i = 0; i < n_embd; i++) out[i] += w * (dx[i] + db[i]);
-            else    for (int i = 0; i < n_embd; i++) out[i] += w * dx[i];
+            (void)out; (void)w;
+            // park this expert's output in the token's router slot
+            {
+                const int *sel = m->moe_sel + (size_t)b * used;
+                int t = 0;
+                while (t < used - 1 && sel[t] != e) t++;
+                float *slot = m->moe_dall + ((size_t)b * used + t) * n_embd;
+                if (db) for (int i = 0; i < n_embd; i++) slot[i] = dx[i] + db[i];
+                else    memcpy(slot, dx, sizeof(float) * (size_t)n_embd);
+            }
+        }
+    }
+    // per token, the experts in the router's order: the per-token path's sum
+    for (int b = 0; b < n; b++) {
+        float *out = m->moe_out_b + (size_t)b * n_embd;
+        const float *selw = m->moe_selw + (size_t)b * used;
+        for (int t = 0; t < used; t++) {
+            const float *d = m->moe_dall + ((size_t)b * used + t) * n_embd;
+            float w = selw[t];
+            for (int i = 0; i < n_embd; i++) out[i] += w * d[i];
         }
     }
     if (trace)
@@ -6556,6 +6617,18 @@ static size_t recurrent_conv_bytes(const model_t *m) {
     return sizeof(float) * (size_t)m->n_layer *
            (size_t)(m->ssm_conv_kernel - 1) * (size_t)conv_dim;
 }
+// qwen4exp: the PLE block's dilated causal conv reads the (K-1)*ngram rows
+// before the current one, kept in ple4_conv_hist across forwards. That window
+// is recurrent state like the DeltaNet fold -- a rollback that restored the
+// fold but not the window left the next nine tokens reading a history that
+// included the rejected drafts (Qwen3.8-Flash-Next --draft-lookup changed the
+// greedy text, 2026-10-07) -- so every reset/snapshot/blob/mark below carries
+// it. Host-side on every backend (the PLE block runs on the host).
+static size_t recurrent_ple_bytes(const model_t *m) {
+    if (!m->hyper_conn || m->ple4_layer < 0 || !m->ple4_conv_hist) return 0;
+    return sizeof(float) * (size_t)(m->ple4_conv_kernel - 1) * (size_t)m->ple4_ngram *
+           (size_t)m->hc_count * (size_t)m->n_embd;
+}
 static size_t recurrent_state_bytes(const model_t *m) {
     int hv = m->ssm_inner / m->ssm_v_heads;
     size_t per_head = m->qwen35 ? (size_t)hv * (size_t)hv
@@ -6573,6 +6646,7 @@ void model_recurrent_reset(model_t *m) {
     if (!model_has_recurrent(m)) return;
     memset(m->ssm_conv_state, 0, recurrent_conv_bytes(m));
     memset(m->ssm_state_mem, 0, recurrent_state_bytes(m));
+    if (recurrent_ple_bytes(m)) memset(m->ple4_conv_hist, 0, recurrent_ple_bytes(m));
     m->ssm_snap_pos = -1;   // a fresh sequence: no earlier fold to restore
     m->ssm_mark_pos = -1;   // and the mark was over the sequence being dropped
 }
@@ -6580,8 +6654,11 @@ void model_recurrent_reset(model_t *m) {
 bool model_recurrent_snapshot(model_t *m, int pos) {
     if (!model_has_recurrent(m) || !m->ssm_conv_snap || !m->ssm_state_snap)
         return false;
+    size_t pb = recurrent_ple_bytes(m);
+    if (pb && !m->ple4_hist_snap && !(m->ple4_hist_snap = malloc(pb))) return false;
     memcpy(m->ssm_conv_snap, m->ssm_conv_state, recurrent_conv_bytes(m));
     memcpy(m->ssm_state_snap, m->ssm_state_mem, recurrent_state_bytes(m));
+    if (pb) memcpy(m->ple4_hist_snap, m->ple4_conv_hist, pb);
     m->ssm_snap_pos = pos;
     return true;
 }
@@ -6592,6 +6669,8 @@ bool model_recurrent_restore(model_t *m, int pos) {
     if (pos < 0 || m->ssm_snap_pos != pos) return false;   // fold not sliceable
     memcpy(m->ssm_conv_state, m->ssm_conv_snap, recurrent_conv_bytes(m));
     memcpy(m->ssm_state_mem, m->ssm_state_snap, recurrent_state_bytes(m));
+    if (recurrent_ple_bytes(m) && m->ple4_hist_snap)
+        memcpy(m->ple4_conv_hist, m->ple4_hist_snap, recurrent_ple_bytes(m));
     return true;
 }
 
@@ -6602,23 +6681,32 @@ bool model_recurrent_restore(model_t *m, int pos) {
 // the exact position it was saved. 0 bytes when the model has no recurrent state.
 size_t model_recurrent_blob_bytes(const model_t *m) {
     if (!model_has_recurrent(m)) return 0;
-    return recurrent_conv_bytes(m) + recurrent_state_bytes(m);
+    return recurrent_conv_bytes(m) + recurrent_state_bytes(m) + recurrent_ple_bytes(m);
 }
 
 bool model_recurrent_blob_save(const model_t *m, uint8_t *dst) {
     if (!model_has_recurrent(m)) return false;
-    size_t cb = recurrent_conv_bytes(m);
+    // a device-resident fold (CUDA) is pulled through the host buffers first,
+    // the same seam the turn mark uses; the host rows of the offloaded layers
+    // are otherwise stale (R4.26.7: prefix reuse for recurrent models on the
+    // device, so an agent turn re-prefills only its new tokens)
+    if (m->gpu && !gpu_recurrent_download((model_t *)m)) return false;
+    size_t cb = recurrent_conv_bytes(m), sb = recurrent_state_bytes(m);
     memcpy(dst, m->ssm_conv_state, cb);
-    memcpy(dst + cb, m->ssm_state_mem, recurrent_state_bytes(m));
+    memcpy(dst + cb, m->ssm_state_mem, sb);
+    if (recurrent_ple_bytes(m)) memcpy(dst + cb + sb, m->ple4_conv_hist, recurrent_ple_bytes(m));
     return true;
 }
 
 bool model_recurrent_blob_load(model_t *m, const uint8_t *src) {
     if (!model_has_recurrent(m)) return false;
-    size_t cb = recurrent_conv_bytes(m);
+    size_t cb = recurrent_conv_bytes(m), sb = recurrent_state_bytes(m);
     memcpy(m->ssm_conv_state, src, cb);
-    memcpy(m->ssm_state_mem, src + cb, recurrent_state_bytes(m));
+    memcpy(m->ssm_state_mem, src + cb, sb);
+    if (recurrent_ple_bytes(m)) memcpy(m->ple4_conv_hist, src + cb + sb, recurrent_ple_bytes(m));
     m->ssm_snap_pos = -1;   // a freshly installed fold has no earlier snapshot
+    // and pushed back onto the device layers (see blob_save)
+    if (m->gpu && !gpu_recurrent_upload(m)) return false;
     return true;
 }
 
@@ -6644,10 +6732,13 @@ bool model_recurrent_mark(model_t *m, int pos) {
             return false;
         }
     }
+    size_t pb = recurrent_ple_bytes(m);
+    if (pb && !m->ple4_hist_mark && !(m->ple4_hist_mark = malloc(pb))) return false;
     m->ssm_mark_pos = -1;
     if (m->gpu && !gpu_recurrent_download(m)) return false;
     memcpy(m->ssm_conv_mark, m->ssm_conv_state, recurrent_conv_bytes(m));
     memcpy(m->ssm_state_mark, m->ssm_state_mem, recurrent_state_bytes(m));
+    if (pb) memcpy(m->ple4_hist_mark, m->ple4_conv_hist, pb);
     m->ssm_mark_pos = pos;
     return true;
 }
@@ -6662,6 +6753,8 @@ bool model_recurrent_restore_mark(model_t *m) {
     if (model_recurrent_mark_pos(m) < 0) return false;
     memcpy(m->ssm_conv_state, m->ssm_conv_mark, recurrent_conv_bytes(m));
     memcpy(m->ssm_state_mem, m->ssm_state_mark, recurrent_state_bytes(m));
+    if (recurrent_ple_bytes(m) && m->ple4_hist_mark)
+        memcpy(m->ple4_conv_hist, m->ple4_hist_mark, recurrent_ple_bytes(m));
     m->ssm_snap_pos = -1;   // the rollback slot described the abandoned tail
     if (m->gpu && !gpu_recurrent_upload(m)) {
         m->ssm_mark_pos = -1;   // the device fold is undefined: caller recomputes
@@ -9130,8 +9223,10 @@ float *model_forward_batch(model_t *m, const int32_t *tokens, int n, int pos,
     }
     m->fwd_tokens = tokens;   // the PLE block hashes the batch's own ids
 
+    double dt_f0 = dbg_time_on() ? dt_now() : 0;
     for (int l = start; l < m->n_layer; l++)
         forward_layer(m, l, n, pos, dbg);
+    if (dbg_time_on()) { int k = n > 1; dt_fwd_t[k] += dt_now() - dt_f0; dt_fwd_n[k]++; dt_fwd_rows[k] += n; }
 
     if (m->tape && n == 1 && pos < m->tape_T)
         memcpy(m->tape + ((size_t)m->n_layer * m->tape_T + pos) * m->n_embd,
@@ -9210,6 +9305,7 @@ float *model_spec_row_logits(model_t *m, int b) {
 
 const float *model_hidden_row(const model_t *m, int b) {
     if (m->gpu && m->gpu_layers >= m->n_layer) return NULL;
+    if (m->hyper_conn) return m->x_hc + (size_t)b * m->hc_count * m->n_embd;
     return m->x + (size_t)b * m->n_embd;
 }
 
@@ -9234,10 +9330,25 @@ static bool model_mtp_bind(model_t *m, gguf_file *g) {
     if (!check_shape(m->mtp_eh_proj, 2 * m->n_embd, m->n_embd,
                      "nextn.eh_proj", i))
         return false;
+    m->mtp_hw = m->hyper_conn ? m->hc_count * m->n_embd : m->n_embd;
     m->mtp_enorm_w = tensor_to_f32(en, m->n_embd, &ok);
-    m->mtp_hnorm_w = tensor_to_f32(hn, m->n_embd, &ok);
-    gguf_tensor *shn = opt_tensor(g, "blk.%d.nextn.shared_head_norm.weight", i);
-    m->mtp_head_norm_w = shn ? tensor_to_f32(shn, m->n_embd, &ok) : NULL;
+    m->mtp_hnorm_w = tensor_to_f32(hn, m->mtp_hw, &ok);   // per stream under hc
+    if (m->hyper_conn) {
+        // qwen4exp (llama.cpp qwen4exp.cpp graph_mtp): the head norm is the
+        // block's own stream mixer, nextn.hc_head_{norm,down,up}
+        const int hcd = m->mtp_hw, lr = m->hc_low_rank;
+        gguf_tensor *hhn = need_tensor(g, "blk.%d.nextn.hc_head_norm.weight", i, &ok);
+        m->mtp_hc_head_down = need_tensor(g, "blk.%d.nextn.hc_head_down.weight", i, &ok);
+        m->mtp_hc_head_up   = need_tensor(g, "blk.%d.nextn.hc_head_up.weight", i, &ok);
+        if (!ok) return false;
+        if (!check_shape(m->mtp_hc_head_down, hcd, lr, "nextn.hc_head_down", i) ||
+            !check_shape(m->mtp_hc_head_up, lr, hcd, "nextn.hc_head_up", i))
+            return false;
+        m->mtp_head_norm_w = tensor_to_f32(hhn, hcd, &ok);
+    } else {
+        gguf_tensor *shn = opt_tensor(g, "blk.%d.nextn.shared_head_norm.weight", i);
+        m->mtp_head_norm_w = shn ? tensor_to_f32(shn, m->n_embd, &ok) : NULL;
+    }
     if (!ok) return false;
     gguf_tensor *emb = opt_tensor(g, "blk.%d.nextn.embed_tokens.weight", i);
     gguf_tensor *hd  = opt_tensor(g, "blk.%d.nextn.shared_head_head.weight", i);
@@ -9261,14 +9372,16 @@ static bool model_mtp_bind(model_t *m, gguf_file *g) {
 static bool mtp_alloc(model_t *m) {
     if (m->mtp_h) return true;
     const size_t E = (size_t)m->n_embd, B = (size_t)m->n_batch;
-    m->mtp_h       = malloc(sizeof(float) * B * E);
+    const size_t HW = (size_t)m->mtp_hw, S = m->hyper_conn ? (size_t)m->hc_count : 1;
+    m->mtp_h       = malloc(sizeof(float) * B * HW);
     m->mtp_tok     = malloc(sizeof(int32_t) * B);
-    m->mtp_pending = calloc(E, sizeof(float));
-    m->mtp_cat     = malloc(sizeof(float) * B * 2 * E);
+    m->mtp_pending = calloc(HW, sizeof(float));
+    m->mtp_cat     = malloc(sizeof(float) * B * S * 2 * E);
     m->mtp_logits  = malloc(sizeof(float) * (size_t)m->n_vocab);
-    m->mtp_hid     = malloc(sizeof(float) * E);
+    m->mtp_hid     = malloc(sizeof(float) * HW);
+    m->mtp_hmix    = m->hyper_conn ? malloc(sizeof(float) * E) : NULL;
     if (!m->mtp_h || !m->mtp_tok || !m->mtp_pending || !m->mtp_cat ||
-        !m->mtp_logits || !m->mtp_hid) {
+        !m->mtp_logits || !m->mtp_hid || (m->hyper_conn && !m->mtp_hmix)) {
         fprintf(stderr, "mtp: out of memory for the head's buffers; drafts off\n");
         m->mtp_ready = false;
         return false;
@@ -9293,7 +9406,7 @@ void model_mtp_reset(model_t *m, int pos) {
     // residual that produced position pos-1 went away with the forward that
     // made it, so the pending h is whatever the previous run left -- one
     // provisional-quality pair at position pos. Only acceptance can notice.
-    if (pos == 0) memset(m->mtp_pending, 0, sizeof(float) * (size_t)m->n_embd);
+    if (pos == 0) memset(m->mtp_pending, 0, sizeof(float) * (size_t)m->mtp_hw);
 }
 
 // Run n pairs (h rows, tokens) through the head at positions pos..pos+n-1,
@@ -9302,9 +9415,13 @@ static bool mtp_run(model_t *m, const float *h, size_t h_stride,
                     const int32_t *tok, int n, int pos, bool want_logits) {
     const int E = m->n_embd;
     if (n < 1 || n > m->n_batch || pos < 0 || pos + n > m->n_ctx) return false;
+    double dt_m0 = dbg_time_on() ? dt_now() : 0;
     const size_t ers = ggml_row_size(m->mtp_embd->type, E);
+    // S input rows per token: one, or one per hyper-connection stream, each
+    // [enorm(e) ; hnorm_c(h_c)] projected by the same eh_proj into stream c
+    const int S = m->hyper_conn ? m->hc_count : 1;
     for (int b = 0; b < n; b++) {
-        float *cat = m->mtp_cat + (size_t)b * 2 * E;
+        float *cat = m->mtp_cat + (size_t)b * S * 2 * E;
         int32_t id = tok[b];
         if (id < 0 || id >= m->n_vocab) id = 0;
         dequant_row(m->mtp_embd->type,
@@ -9312,23 +9429,47 @@ static bool mtp_run(model_t *m, const float *h, size_t h_stride,
         if (m->mtp_embd->scale != 1.0f)
             for (int i = 0; i < E; i++) cat[i] *= m->mtp_embd->scale;
         rmsnorm(cat, cat, m->mtp_enorm_w, E, m->rms_eps);
-        rmsnorm(cat + E, h + (size_t)b * h_stride, m->mtp_hnorm_w, E, m->rms_eps);
+        for (int c = 1; c < S; c++)
+            memcpy(cat + (size_t)c * 2 * E, cat, sizeof(float) * (size_t)E);
+        const float *hb = h + (size_t)b * h_stride;
+        for (int c = 0; c < S; c++)
+            rmsnorm(cat + (size_t)c * 2 * E + E, hb + (size_t)c * E,
+                    m->mtp_hnorm_w + (size_t)c * E, E, m->rms_eps);
     }
-    matvec_b(m->tp, m->x, E, m->mtp_eh_proj, m->mtp_cat, 2 * E, 2 * E, E,
-             NULL, n);
+    float *res = m->hyper_conn ? m->x_hc : m->x;   // [n][S*E]: the block's residual
+    matvec_b(m->tp, res, E, m->mtp_eh_proj, m->mtp_cat, 2 * E, 2 * E, E,
+             NULL, n * S);
     forward_layer(m, m->n_layer, n, pos, 0);
-    if (!want_logits) return true;
-    const float *hnw = m->mtp_head_norm_w ? m->mtp_head_norm_w : m->out_norm_w;
-    rmsnorm(m->mtp_hid, m->x + (size_t)(n - 1) * E, hnw, E, m->rms_eps);
-    matvec_b(m->tp, m->mtp_logits, m->n_vocab, m->mtp_head, m->mtp_hid, E, E,
-             m->n_vocab, NULL, 1);
+    if (!want_logits) {
+        if (dbg_time_on()) { dt_mtp_t += dt_now() - dt_m0; dt_mtp_n++; dt_mtp_rows += n; }
+        return true;
+    }
+    const float *last = res + (size_t)(n - 1) * S * E;
+    if (m->hyper_conn) {
+        // the next chained step reads the wide residual; the head reads it
+        // through the block's own stream mixer
+        memcpy(m->mtp_hid, last, sizeof(float) * (size_t)S * E);
+        float *save = m->x_hc;   // hc_mix walks x_hc from row 0
+        m->x_hc = (float *)last;
+        hc_mix(m, m->mtp_head_norm_w, m->mtp_hc_head_down, m->mtp_hc_head_up,
+               NULL, m->mtp_hmix, E, 1);
+        m->x_hc = save;
+        matvec_b(m->tp, m->mtp_logits, m->n_vocab, m->mtp_head, m->mtp_hmix, E, E,
+                 m->n_vocab, NULL, 1);
+    } else {
+        const float *hnw = m->mtp_head_norm_w ? m->mtp_head_norm_w : m->out_norm_w;
+        rmsnorm(m->mtp_hid, last, hnw, E, m->rms_eps);
+        matvec_b(m->tp, m->mtp_logits, m->n_vocab, m->mtp_head, m->mtp_hid, E, E,
+                 m->n_vocab, NULL, 1);
+    }
     m->mtp_logits_pos = pos + n;
+    if (dbg_time_on()) { dt_mtp_t += dt_now() - dt_m0; dt_mtp_n++; dt_mtp_rows += n; }
     return true;
 }
 
 static bool mtp_drain(model_t *m, bool want_logits) {
     if (m->mtp_qn == 0) return true;
-    bool ok = mtp_run(m, m->mtp_h, (size_t)m->n_embd, m->mtp_tok, m->mtp_qn,
+    bool ok = mtp_run(m, m->mtp_h, (size_t)m->mtp_hw, m->mtp_tok, m->mtp_qn,
                       m->mtp_pos, want_logits);
     m->mtp_pos += m->mtp_qn;
     m->mtp_qn = 0;
@@ -9339,15 +9480,15 @@ bool model_mtp_feed(model_t *m, int32_t tok) {
     if (!m->mtp_ready || !mtp_alloc(m)) return false;
     if (m->mtp_qn == m->n_batch && !mtp_drain(m, false)) return false;
     if (m->mtp_pos + m->mtp_qn >= m->n_ctx) return false;
-    memcpy(m->mtp_h + (size_t)m->mtp_qn * m->n_embd, m->mtp_pending,
-           sizeof(float) * (size_t)m->n_embd);
+    memcpy(m->mtp_h + (size_t)m->mtp_qn * m->mtp_hw, m->mtp_pending,
+           sizeof(float) * (size_t)m->mtp_hw);
     m->mtp_tok[m->mtp_qn++] = tok;
     return true;
 }
 
 void model_mtp_note_hidden(model_t *m, const float *h) {
     if (!m->mtp_ready || !h || !mtp_alloc(m)) return;
-    memcpy(m->mtp_pending, h, sizeof(float) * (size_t)m->n_embd);
+    memcpy(m->mtp_pending, h, sizeof(float) * (size_t)m->mtp_hw);
 }
 
 const float *model_mtp_pending(const model_t *m) { return m->mtp_pending; }

@@ -560,6 +560,37 @@ bool gguf_open(gguf_file *g, const char *path) {
     return true;
 }
 
+bool gguf_attach(gguf_file *g, gguf_file *extra) {
+    if (!g || !extra || g->header_only || extra->header_only) return false;
+    uint64_t keep = 0;
+    for (uint64_t i = 0; i < extra->n_tensors; i++)
+        if (!gguf_find_tensor(g, extra->tensors[i].name)) keep++;
+    const uint32_t n_old = gguf_map_count(g), n_new = gguf_map_count(extra);
+    gguf_tensor *merged = realloc(g->tensors,
+                                  (size_t)(g->n_tensors + keep) * sizeof(*merged));
+    if (!merged) return false;
+    g->tensors = merged;
+    void  **maps  = calloc((size_t)n_old + n_new, sizeof(*maps));
+    size_t *sizes = calloc((size_t)n_old + n_new, sizeof(*sizes));
+    if (!maps || !sizes) { free(maps); free(sizes); return false; }
+    for (uint32_t i = 0; i < n_old; i++) maps[i] = gguf_map_part(g, i, &sizes[i]);
+    for (uint32_t i = 0; i < n_new; i++)
+        maps[n_old + i] = gguf_map_part(extra, i, &sizes[n_old + i]);
+    for (uint64_t i = 0; i < extra->n_tensors; i++)
+        if (!gguf_find_tensor(g, extra->tensors[i].name))
+            g->tensors[g->n_tensors++] = extra->tensors[i];
+    free(g->maps); free(g->map_sizes);
+    g->maps = maps; g->map_sizes = sizes; g->n_maps = n_old + n_new;
+    g->map = maps[0]; g->map_size = sizes[0];
+    g->mapped_size += extra->mapped_size;
+    // the mappings now belong to g; drop extra's bookkeeping without unmapping
+    free(extra->maps); free(extra->map_sizes);
+    extra->maps = NULL; extra->map_sizes = NULL; extra->n_maps = 0;
+    extra->map = NULL; extra->map_size = 0;
+    gguf_close(extra);
+    return true;
+}
+
 void gguf_close(gguf_file *g) {
     for (uint64_t i = 0; g->kv && i < g->n_kv; i++) {
         gguf_kv *kv = &g->kv[i];
