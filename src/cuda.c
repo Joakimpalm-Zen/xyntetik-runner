@@ -4355,7 +4355,7 @@ static bool gpu_mamba2_recurrent(gpu_t *g, model_t *m, const layer_t *ly,
 static bool gpu_hc_mix(gpu_t *g, model_t *m, CUdeviceptr w_norm,
                        gguf_tensor *w_down, gguf_tensor *w_up, gguf_tensor *w_inject,
                        CUdeviceptr x_hc_rows, CUdeviceptr y, int ys, int tn) {
-    const int E = m->n_embd, hc = m->hc_count, hcd = hc * E, lr = m->hc_low_rank;
+    int E = m->n_embd, hc = m->hc_count, hcd = hc * E, lr = m->hc_low_rank;
     float eps = m->rms_eps;
     int xs = hcd;
     void *pn[] = { &x_hc_rows, &g->hc_xn, &w_norm, &E, &hc, &eps, &xs, &xs };
@@ -4378,7 +4378,7 @@ static bool gpu_hc_mix(gpu_t *g, model_t *m, CUdeviceptr w_norm,
 }
 
 static bool gpu_hc_combine(gpu_t *g, model_t *m, CUdeviceptr block_out, int os, int tn) {
-    const int E = m->n_embd, hc = m->hc_count, hcd = hc * E;
+    int E = m->n_embd, hc = m->hc_count, hcd = hc * E;
     void *pc[] = { &g->x_hc, &block_out, &g->hc_inject, &E, &hc, &hcd, &os };
     return launch(g, g->sw->f_hc_combine, (E + 255) / 256, tn, 1, 256, pc);
 }
