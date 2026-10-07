@@ -137,6 +137,10 @@ or follow one of these.
   Another lab's file with every block scale retrained against the original.
   It is the account's most downloaded file so far, and the card shows it side
   by side with the source.
+- **[The draft head Qwen3.8-Flash-Next shipped without](https://huggingface.co/Joakimpalm-Zen/Qwen3.8-Flash-Next-MTP-GGUF)**
+  Built from the publisher's own weights so the released 3-bit trunk can
+  draft its next tokens; 69 to 82% of its guesses are accepted, and the card
+  says which engine it speeds up today and which it does not.
 - **[Can a model learn with no human text at all?](https://huggingface.co/collections/Joakimpalm-Zen/xyntetik-research-genesis-6abcfa50b6707dec9bfee356)**
   GENESIS: eighteen preregistered experiments on 0.7M-parameter models that
   only ever saw programs they ran themselves. Read what survived, and
