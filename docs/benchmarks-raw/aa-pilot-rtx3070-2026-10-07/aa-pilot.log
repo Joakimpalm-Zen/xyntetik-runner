@@ -1,0 +1,24 @@
+2026-10-07  2:55:01,24 start 
+2026-10-07  3:18:01,68 lock taken pid + 
+block  0 A wall 10.15s decode 99.4 prefill 298 cpu 15.55
+block  1 B wall 8.96s decode 100.0 prefill 818 cpu 8.67
+block  2 B wall 8.97s decode 99.8 prefill 832 cpu 8.53
+block  3 A wall 8.94s decode 100.0 prefill 845 cpu 8.52
+block  4 A wall 8.99s decode 99.5 prefill 833 cpu 8.67
+block  5 B wall 9.02s decode 99.1 prefill 850 cpu 8.53
+block  6 B wall 9.03s decode 99.4 prefill 793 cpu 8.69
+block  7 A wall 9.04s decode 99.2 prefill 808 cpu 8.59
+block  8 A wall 8.99s decode 99.2 prefill 867 cpu 8.62
+block  9 B wall 9.09s decode 98.7 prefill 797 cpu 8.58
+block 10 B wall 9.04s decode 99.1 prefill 811 cpu 8.73
+block 11 A wall 9.04s decode 99.0 prefill 828 cpu 8.53
+block 12 A wall 9.04s decode 99.3 prefill 796 cpu 8.61
+block 13 B wall 9.07s decode 98.7 prefill 828 cpu 8.56
+block 14 B wall 8.98s decode 99.2 prefill 894 cpu 8.67
+block 15 A wall 9.06s decode 98.9 prefill 817 cpu 8.56
+wall_s {"n": 8, "mean_log_ratio": 0.014236412744195735, "sd": 0.045023203467117745, "half_width_95": 0.0376463212603678, "resolution": 0.0752926425207356, "gate_0.10": true}
+decode_tok_s {"n": 8, "mean_log_ratio": 0.0007524565226311753, "sd": 0.004637342124472723, "half_width_95": 0.00387753109437534, "resolution": 0.00775506218875068, "gate_0.10": true}
+prefill_tok_s {"n": 8, "mean_log_ratio": -0.1276135886632163, "sd": 0.3599270740587407, "half_width_95": 0.3009543794504895, "resolution": 0.601908758900979, "gate_0.10": false}
+cpu_s {"n": 8, "mean_log_ratio": 0.07026579588397643, "sd": 0.20786576328406414, "half_width_95": 0.17380774136470842, "resolution": 0.34761548272941684, "gate_0.10": false}
+2026-10-07  3:20:31,69 pilot rc=0 
+2026-10-07  3:20:31,71 lock released 

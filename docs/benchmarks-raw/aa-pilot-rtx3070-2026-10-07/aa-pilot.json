@@ -1,0 +1,363 @@
+{
+ "schema_version": "xyntetik.runner.aa-pilot.v1",
+ "box": "Zen-Gaming",
+ "platform": "Windows-11-10.0.26100-SP0",
+ "runner": "~/cuda-smoke\\runner.exe",
+ "runner_version": "1.0.2",
+ "binary_sha256": "28de83aa1ce4d8d665eee3de6fdfd78e915ab1ba8cccc0234929ff9a3e352dd0",
+ "profile": {
+  "device": "NVIDIA GeForce RTX 3070",
+  "gpu": true,
+  "gpu_layers": 36,
+  "threads": 4,
+  "ctx": 4096,
+  "kv": "f16",
+  "batch": 512,
+  "slots": 1
+ },
+ "model": "Qwen3-4B-Q4_K_M.gguf",
+ "model_sha256": null,
+ "design": "ABBA x 8 pairs, 20 greedy non-thinking requests of max_tokens 64 per block, warm-up block excluded, box not quieted",
+ "warmup": {
+  "wall_s": 2.188492000102997,
+  "prompt_tokens": 134,
+  "gen_tokens": 162,
+  "generate_s": 1.658254,
+  "decode_tok_s": 97.69311577116655,
+  "prefill_tok_s": 252.716704525083,
+  "cpu_s": 4.296875,
+  "first_reply": "\n\nThe sky appears blue because molecules in the atmosphere scatter shorter wavel"
+ },
+ "blocks": [
+  {
+   "wall_s": 10.153945399913937,
+   "prompt_tokens": 534,
+   "gen_tokens": 831,
+   "generate_s": 8.363682,
+   "decode_tok_s": 99.35815350224937,
+   "prefill_tok_s": 298.28013018959734,
+   "cpu_s": 15.546875,
+   "first_reply": "\n\nThe sky appears blue because molecules in the atmosphere scatter shorter wavel",
+   "label": "A",
+   "index": 0
+  },
+  {
+   "wall_s": 8.962528199888766,
+   "prompt_tokens": 534,
+   "gen_tokens": 831,
+   "generate_s": 8.310064,
+   "decode_tok_s": 99.99922984949333,
+   "prefill_tok_s": 818.435708949301,
+   "cpu_s": 8.671875,
+   "first_reply": "\n\nThe sky appears blue because molecules in the atmosphere scatter shorter wavel",
+   "label": "B",
+   "index": 1
+  },
+  {
+   "wall_s": 8.9700238998048,
+   "prompt_tokens": 534,
+   "gen_tokens": 831,
+   "generate_s": 8.328219,
+   "decode_tok_s": 99.78123774122653,
+   "prefill_tok_s": 832.0285497390437,
+   "cpu_s": 8.53125,
+   "first_reply": "\n\nThe sky appears blue because molecules in the atmosphere scatter shorter wavel",
+   "label": "B",
+   "index": 2
+  },
+  {
+   "wall_s": 8.939434299943969,
+   "prompt_tokens": 534,
+   "gen_tokens": 831,
+   "generate_s": 8.307593999999998,
+   "decode_tok_s": 100.02896145382167,
+   "prefill_tok_s": 845.1502698503931,
+   "cpu_s": 8.515625,
+   "first_reply": "\n\nThe sky appears blue because molecules in the atmosphere scatter shorter wavel",
+   "label": "A",
+   "index": 3
+  },
+  {
+   "wall_s": 8.992390200030059,
+   "prompt_tokens": 534,
+   "gen_tokens": 831,
+   "generate_s": 8.351016999999999,
+   "decode_tok_s": 99.50883826484848,
+   "prefill_tok_s": 832.5885770951647,
+   "cpu_s": 8.671875,
+   "first_reply": "\n\nThe sky appears blue because molecules in the atmosphere scatter shorter wavel",
+   "label": "A",
+   "index": 4
+  },
+  {
+   "wall_s": 9.015231600031257,
+   "prompt_tokens": 534,
+   "gen_tokens": 831,
+   "generate_s": 8.386937000000003,
+   "decode_tok_s": 99.08265675538038,
+   "prefill_tok_s": 849.9197668950792,
+   "cpu_s": 8.53125,
+   "first_reply": "\n\nThe sky appears blue because molecules in the atmosphere scatter shorter wavel",
+   "label": "B",
+   "index": 5
+  },
+  {
+   "wall_s": 9.032022699946538,
+   "prompt_tokens": 534,
+   "gen_tokens": 831,
+   "generate_s": 8.358666999999997,
+   "decode_tok_s": 99.417766014605,
+   "prefill_tok_s": 793.0429638338185,
+   "cpu_s": 8.6875,
+   "first_reply": "\n\nThe sky appears blue because molecules in the atmosphere scatter shorter wavel",
+   "label": "B",
+   "index": 6
+  },
+  {
+   "wall_s": 9.036773199914023,
+   "prompt_tokens": 534,
+   "gen_tokens": 831,
+   "generate_s": 8.375937999999998,
+   "decode_tok_s": 99.21276876691306,
+   "prefill_tok_s": 808.0683354480411,
+   "cpu_s": 8.59375,
+   "first_reply": "\n\nThe sky appears blue because molecules in the atmosphere scatter shorter wavel",
+   "label": "A",
+   "index": 7
+  },
+  {
+   "wall_s": 8.98874199995771,
+   "prompt_tokens": 534,
+   "gen_tokens": 831,
+   "generate_s": 8.372973000000002,
+   "decode_tok_s": 99.24790155181437,
+   "prefill_tok_s": 867.2083200626782,
+   "cpu_s": 8.625,
+   "first_reply": "\n\nThe sky appears blue because molecules in the atmosphere scatter shorter wavel",
+   "label": "A",
+   "index": 8
+  },
+  {
+   "wall_s": 9.08978520007804,
+   "prompt_tokens": 534,
+   "gen_tokens": 831,
+   "generate_s": 8.419724000000002,
+   "decode_tok_s": 98.69682189107384,
+   "prefill_tok_s": 796.9421299693344,
+   "cpu_s": 8.578125,
+   "first_reply": "\n\nThe sky appears blue because molecules in the atmosphere scatter shorter wavel",
+   "label": "B",
+   "index": 9
+  },
+  {
+   "wall_s": 9.042720899917185,
+   "prompt_tokens": 534,
+   "gen_tokens": 831,
+   "generate_s": 8.384502999999995,
+   "decode_tok_s": 99.11142019986164,
+   "prefill_tok_s": 811.2814921429242,
+   "cpu_s": 8.734375,
+   "first_reply": "\n\nThe sky appears blue because molecules in the atmosphere scatter shorter wavel",
+   "label": "B",
+   "index": 10
+  },
+  {
+   "wall_s": 9.042505700141191,
+   "prompt_tokens": 534,
+   "gen_tokens": 831,
+   "generate_s": 8.39741500000001,
+   "decode_tok_s": 98.95902489039771,
+   "prefill_tok_s": 827.7905725243455,
+   "cpu_s": 8.53125,
+   "first_reply": "\n\nThe sky appears blue because molecules in the atmosphere scatter shorter wavel",
+   "label": "A",
+   "index": 11
+  },
+  {
+   "wall_s": 9.03715500002727,
+   "prompt_tokens": 534,
+   "gen_tokens": 831,
+   "generate_s": 8.366508999999994,
+   "decode_tok_s": 99.32458089748073,
+   "prefill_tok_s": 796.2472004280677,
+   "cpu_s": 8.609375,
+   "first_reply": "\n\nThe sky appears blue because molecules in the atmosphere scatter shorter wavel",
+   "label": "A",
+   "index": 12
+  },
+  {
+   "wall_s": 9.066313300048932,
+   "prompt_tokens": 534,
+   "gen_tokens": 831,
+   "generate_s": 8.421738000000005,
+   "decode_tok_s": 98.6732192333696,
+   "prefill_tok_s": 828.452470889694,
+   "cpu_s": 8.5625,
+   "first_reply": "\n\nThe sky appears blue because molecules in the atmosphere scatter shorter wavel",
+   "label": "B",
+   "index": 13
+  },
+  {
+   "wall_s": 8.976546199992299,
+   "prompt_tokens": 534,
+   "gen_tokens": 831,
+   "generate_s": 8.37911299999999,
+   "decode_tok_s": 99.1751752243944,
+   "prefill_tok_s": 893.8237781343153,
+   "cpu_s": 8.671875,
+   "first_reply": "\n\nThe sky appears blue because molecules in the atmosphere scatter shorter wavel",
+   "label": "B",
+   "index": 14
+  },
+  {
+   "wall_s": 9.05708249984309,
+   "prompt_tokens": 534,
+   "gen_tokens": 831,
+   "generate_s": 8.403154999999998,
+   "decode_tok_s": 98.89142827902141,
+   "prefill_tok_s": 816.6042873684487,
+   "cpu_s": 8.5625,
+   "first_reply": "\n\nThe sky appears blue because molecules in the atmosphere scatter shorter wavel",
+   "label": "A",
+   "index": 15
+  }
+ ],
+ "stats": {
+  "wall_s": {
+   "n": 8,
+   "mean_log_ratio": 0.014236412744195735,
+   "sd": 0.045023203467117745,
+   "half_width_95": 0.0376463212603678,
+   "resolution": 0.0752926425207356,
+   "gate_0.10": true
+  },
+  "decode_tok_s": {
+   "n": 8,
+   "mean_log_ratio": 0.0007524565226311753,
+   "sd": 0.004637342124472723,
+   "half_width_95": 0.00387753109437534,
+   "resolution": 0.00775506218875068,
+   "gate_0.10": true
+  },
+  "prefill_tok_s": {
+   "n": 8,
+   "mean_log_ratio": -0.1276135886632163,
+   "sd": 0.3599270740587407,
+   "half_width_95": 0.3009543794504895,
+   "resolution": 0.601908758900979,
+   "gate_0.10": false
+  },
+  "cpu_s": {
+   "n": 8,
+   "mean_log_ratio": 0.07026579588397643,
+   "sd": 0.20786576328406414,
+   "half_width_95": 0.17380774136470842,
+   "resolution": 0.34761548272941684,
+   "gate_0.10": false
+  }
+ },
+ "stats_sensitivity": {
+  "wall_s": {
+   "all_8_pairs": {
+    "n": 8,
+    "mean_log_ratio": 0.01424,
+    "sd": 0.04502,
+    "half_width_95": 0.0376,
+    "resolution": 0.0753,
+    "gate_0.10": true
+   },
+   "pairs_2_to_8_(block_0_cold)": {
+    "n": 7,
+    "mean_log_ratio": -0.00156,
+    "sd": 0.00601,
+    "half_width_95": 0.0056,
+    "resolution": 0.0111,
+    "gate_0.10": true
+   },
+   "blocks_1_to_15": {
+    "mean": 9.02,
+    "min": 8.94,
+    "max": 9.09,
+    "cv": 0.0046
+   }
+  },
+  "decode_tok_s": {
+   "all_8_pairs": {
+    "n": 8,
+    "mean_log_ratio": 0.00075,
+    "sd": 0.00464,
+    "half_width_95": 0.0039,
+    "resolution": 0.0078,
+    "gate_0.10": true
+   },
+   "pairs_2_to_8_(block_0_cold)": {
+    "n": 7,
+    "mean_log_ratio": 0.00178,
+    "sd": 0.00391,
+    "half_width_95": 0.0036,
+    "resolution": 0.0072,
+    "gate_0.10": true
+   },
+   "blocks_1_to_15": {
+    "mean": 99.27,
+    "min": 98.67,
+    "max": 100.03,
+    "cv": 0.0041
+   }
+  },
+  "prefill_tok_s": {
+   "all_8_pairs": {
+    "n": 8,
+    "mean_log_ratio": -0.12761,
+    "sd": 0.35993,
+    "half_width_95": 0.301,
+    "resolution": 0.6019,
+    "gate_0.10": false
+   },
+   "pairs_2_to_8_(block_0_cold)": {
+    "n": 7,
+    "mean_log_ratio": -0.00165,
+    "sd": 0.0552,
+    "half_width_95": 0.0511,
+    "resolution": 0.1021,
+    "gate_0.10": false
+   },
+   "blocks_1_to_15": {
+    "mean": 827.84,
+    "min": 793.04,
+    "max": 893.82,
+    "cv": 0.0324
+   }
+  },
+  "cpu_s": {
+   "all_8_pairs": {
+    "n": 8,
+    "mean_log_ratio": 0.07027,
+    "sd": 0.20787,
+    "half_width_95": 0.1738,
+    "resolution": 0.3476,
+    "gate_0.10": false
+   },
+   "pairs_2_to_8_(block_0_cold)": {
+    "n": 7,
+    "mean_log_ratio": -0.00309,
+    "sd": 0.01351,
+    "half_width_95": 0.0125,
+    "resolution": 0.025,
+    "gate_0.10": true
+   },
+   "blocks_1_to_15": {
+    "mean": 8.61,
+    "min": 8.52,
+    "max": 8.73,
+    "cv": 0.0077
+   }
+  }
+ },
+ "notes": [
+  "block 0 (first scored block) was still cold: prefill 298 vs ~820 tok/s, CPU 15.6 s vs ~8.6 s, despite the 5-request warm-up block; the 'pairs 2 to 8' rows drop that pair (7 pairs, t with 6 df)",
+  "box not quieted (sunshine, Defender, Search on); GE-009's container had just exited; Docker's WSL VM up and idle",
+  "lock C:\\projectgrid\\box-gpu.lock held 03:18:01-03:20:31; the pid field was written malformed ('+') by the cmd wrapper and the lock was released on exit",
+  "preconditions (no queue.lock, no ge002 container, no box-gpu.lock) cleared at 03:18 after a 23 min wait from the 02:55 task start"
+ ]
+}
