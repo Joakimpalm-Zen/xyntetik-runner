@@ -1,7 +1,7 @@
 # Sparse-MoE support — implementation and test report
 
 Date: 2026-07-24
-Runner: v1.0.2 (core support plus the follow-ups at the end of this doc)
+Runner: v1.1.0 (core support plus the follow-ups at the end of this doc)
 Hardware: NVIDIA RTX PRO 6000 Blackwell, **24 GB MIG slice** (`MIG 1g.24gb`),
 CPU fallback on the same host (64 threads).
 

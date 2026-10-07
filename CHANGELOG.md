@@ -9,6 +9,16 @@ rename keep the names that were true when they were written.
 
 ## Unreleased
 
+## v1.1.0 - 2026-10-07
+
+- **A split GGUF shares device weights across server slots.** A multi-part
+  file had no shared-weights identity, so every `--parallel` slot built its
+  own device copy; on a two-part Qwen3.8-Flash-Next with `--cpu-moe auto`
+  the second slot found no VRAM and fell to the CPU, and the two slots
+  answered the same request with different logits. The identity is now the
+  first part plus the part count and total mapped bytes (a `--mtp-file`
+  companion counts as a part); `make test-cuda-qwen4exp` serves a two-part
+  split with two slots and requires the sharing.
 - **`--mtp-file PATH`: a NextN/MTP draft head from a companion GGUF.**
   Qwen3.8-Flash-Next's release trunk ships without its MTP block;
   `scripts/make-mtp-companion.py` builds it from the publisher's BF16

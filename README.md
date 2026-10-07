@@ -28,7 +28,7 @@ exists to replace those guesses with answers you can check.
     <img src="site/assets/readme-fit-light.svg" alt="runner --fit reading the first 16 MB of Granite 4.2 8B on an RTX 3070: FITS, 35 of 40 layers on the GPU" width="560">
   </picture>
 </p>
-<p align="center"><sub>Real output: Runner 1.0.2 asked about Granite 4.2 8B on an RTX 3070, shortened to fit. <a href="docs/compat-reports/fit-capture-1.0.2-2026-10-06-rtx3070.md">Full capture</a></sub></p>
+<p align="center"><sub>Real output: Runner asked about Granite 4.2 8B on an RTX 3070 (October 2026), shortened to fit. <a href="docs/compat-reports/fit-capture-1.0.2-2026-10-06-rtx3070.md">Full capture</a></sub></p>
 
 - **Ask before you download.** Runner reads the first few megabytes of a
   model and tells you whether it fits your machine, and how. It called the
@@ -72,7 +72,7 @@ It takes about a minute to try: [quick start](#quick-start).
   <a href="docs/community-results.md">Community results</a>
 </p>
 
-> **Version `1.0.2`.** The command line, the HTTP API, the record formats and
+> **Version `1.1.0`.** The command line, the HTTP API, the record formats and
 > the model files that load stay compatible across 1.x
 > ([versioning policy](docs/versioning.md)). This page is the short version;
 > every flag, endpoint, limit and measurement is in the [manual](MANUAL.md).
@@ -412,7 +412,7 @@ watermark with its detector (`--watermark`, `--detect-watermark`).
 git clone https://github.com/Joakimpalm-Zen/xyntetik-runner
 cd xyntetik-runner
 make
-./runner --version   # -> runner 1.0.2
+./runner --version   # -> runner 1.1.0
 ```
 
 Linux, macOS and Windows. NVIDIA GPUs need a driver with CUDA 13.0 support

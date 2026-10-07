@@ -1714,7 +1714,7 @@ test-cuda-qwen4exp: runner
 		$(PYTHON) scripts/gguf-split.py test-qwen4exp.gguf test-q4e-split 2 > /dev/null; \
 		./$(RUNNER_EXE) --serve --port 18840 -m test-q4e-split-00001-of-00002.gguf --parallel 2 --no-tray -c 256 > cuda-q4e-serve.log 2>&1 & pid=$$!; \
 		for i in $$(seq 1 60); do curl -sf http://127.0.0.1:18840/health > /dev/null 2>&1 && break; sleep 1; done; \
-		kill $$pid 2>/dev/null; wait $$pid 2>/dev/null; \
+		kill $$pid 2>/dev/null; wait $$pid 2>/dev/null || true; \
 		grep -q "reusing resident weights" cuda-q4e-serve.log || { echo "FAIL: the second slot of a split GGUF did not share the first slot's device weights"; cat cuda-q4e-serve.log; exit 1; }; \
 		echo "split GGUF, 2 slots: device weights shared"; \
 		rm -f test-q4e-split-0000?-of-00002.gguf cuda-q4e-serve.log; \
