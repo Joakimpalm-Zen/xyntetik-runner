@@ -3335,29 +3335,118 @@ static __device__ const ulong64 kiq1s_grid[2048] = {
 // IQ2_XXS: 66-byte block, d (fp16) + 8 sub-blocks of 8 bytes: four grid
 // indices, then one word of four 7-bit sign indices (bits 0-27) and a 4-bit
 // scale (bits 28-31) decoded as (0.5 + scale) / 4.
-extern "C" __global__ void k_mv_iq2_xxs(MV_PARAMS) {
-    MV_HEAD;
-    int nb = a.n_in / 256;
-    const uchar *rw = wb + a.w_off + (ulong64)row * nb * 66;
-    float s = 0;
-    for (int b = lane; b < nb; b += 32) {
-        const uchar *blk = rw + (ulong64)b * 66;
-        float d = f16f(blk);
-        const uchar *qs = blk + 2;
-        const float *xp = x + b * 256;
-        for (int ib = 0; ib < 8; ib++, qs += 8) {
-            unsigned aux = iq_ld32a2(qs + 4);
-            float db = d * (0.5f + (float)(aux >> 28)) * 0.25f;
-            float t = 0;
-            for (int l = 0; l < 4; l++, xp += 8) {
-                ulong64 g = kiq2xxs_grid[qs[l]];
-                unsigned signs = iq_signs7((aux >> (7 * l)) & 127);
-                for (int j = 0; j < 8; j++) t += iq_w8(g, j, signs) * xp[j];
-            }
-            s += db * t;
-        }
+
+// ---------------------------------------- codebook i-quants: lane-level dots
+//
+// The i-quant GEMVs below used to give each lane a whole 256-weight block
+// (`for (b = lane; b < nb; b += 32)`), a shape for dense rows of 4096 and
+// more. A routed expert row has n_in 2560 (gate/up: 10 of 32 lanes busy) or
+// n_ff_exp (down: 4 lanes), so the device expert time of a MoE token was
+// mostly idle lanes: Qwen3.8-Flash-Next IQ2_XS decoded at 8.4 tok/s with 28
+// of 48 expert layers on the device against IQ3_S's 13.2 with 19 (2026-10-07).
+// Here every block is split across the warp: lane L takes sub-block ib = L/4
+// and the 8-weight group l = L%4 of it, the natural unit of every codebook
+// format (one grid entry and its sign word), so all 32 lanes work on every
+// block and the index loads coalesce. The per-lane partial sums are reduced
+// by MV_TAIL's warp_sum; the summation order differs from the old kernels,
+// which is inside the tolerance these device kernels are gated at (CPU score
+// at logit precision, the nine gpu-identity fixtures), not a bit contract.
+
+static __device__ __forceinline__ float iq2xxs_lane(const uchar *blk, const float *xb, int lane) {
+    int ib = lane >> 2, l = lane & 3;
+    float d = f16f(blk);
+    const uchar *qs = blk + 2 + ib * 8;
+    unsigned aux = iq_ld32a2(qs + 4);
+    float db = d * (0.5f + (float)(aux >> 28)) * 0.25f;
+    ulong64 g = kiq2xxs_grid[qs[l]];
+    unsigned signs = iq_signs7((aux >> (7 * l)) & 127);
+    const float *xp = xb + ib * 32 + l * 8;
+    float t = 0;
+    for (int j = 0; j < 8; j++) t += iq_w8(g, j, signs) * xp[j];
+    return db * t;
+}
+
+static __device__ __forceinline__ float iq2xs_lane(const uchar *blk, const float *xb, int lane) {
+    int ib = lane >> 2, l = lane & 3;
+    float d = f16f(blk);
+    const uchar *qs = blk + 2 + ib * 8, *sc = blk + 66;
+    float db = d * (0.5f + (float)(l < 2 ? (sc[ib] & 0xF) : (sc[ib] >> 4))) * 0.25f;
+    unsigned q = iq_ld16(qs + 2 * l);
+    ulong64 g = kiq2xs_grid[q & 511];
+    unsigned signs = iq_signs7(q >> 9);
+    const float *xp = xb + ib * 32 + l * 8;
+    float t = 0;
+    for (int j = 0; j < 8; j++) t += iq_w8(g, j, signs) * xp[j];
+    return db * t;
+}
+
+static __device__ __forceinline__ float iq2s_lane(const uchar *blk, const float *xb, int lane) {
+    int ib = lane >> 2, l = lane & 3;
+    float d = f16f(blk);
+    const uchar *qs = blk + 2 + ib * 4, *sg = blk + 34 + ib * 4, *qh = blk + 66, *sc = blk + 74;
+    float db = d * (0.5f + (float)(l < 2 ? (sc[ib] & 0xF) : (sc[ib] >> 4))) * 0.25f;
+    unsigned hb = qh[ib];
+    ulong64 g = kiq2s_grid[qs[l] | ((hb << (8 - 2 * l)) & 0x300)];
+    unsigned signs = sg[l];
+    const float *xp = xb + ib * 32 + l * 8;
+    float t = 0;
+    for (int j = 0; j < 8; j++) t += iq_w8(g, j, signs) * xp[j];
+    return db * t;
+}
+
+static __device__ __forceinline__ float iq3xxs_lane(const uchar *blk, const float *xb, int lane) {
+    int ib = lane >> 2, l = lane & 3;
+    float d = f16f(blk);
+    const uchar *qs = blk + 2 + ib * 8, *ss = blk + 66;
+    unsigned aux = iq_ld32a2(ss + 4 * ib);
+    float db = d * (0.5f + (float)(aux >> 28)) * 0.5f;
+    unsigned g1 = kiq3xxs_grid[qs[2 * l + 0]];
+    unsigned g2 = kiq3xxs_grid[qs[2 * l + 1]];
+    unsigned signs = iq_signs7((aux >> (7 * l)) & 127);
+    const float *xp = xb + ib * 32 + l * 8;
+    float t = 0;
+    for (int j = 0; j < 4; j++) {
+        t += iq_w4(g1, j, signs) * xp[j];
+        t += iq_w4(g2, j, signs >> 4) * xp[j + 4];
     }
+    return db * t;
+}
+
+static __device__ __forceinline__ float iq3s_lane(const uchar *blk, const float *xb, int lane) {
+    int ib = lane >> 2, l = lane & 3, pair = ib >> 1, h = ib & 1;
+    float d = f16f(blk);
+    const uchar *qs = blk + 2 + ib * 8, *qh = blk + 66, *sg = blk + 74 + ib * 4, *sc = blk + 106;
+    float db = d * (float)(1 + 2 * (h ? (sc[pair] >> 4) : (sc[pair] & 0xF)));
+    unsigned hb = qh[ib];
+    unsigned g1 = kiq3s_grid[qs[2 * l + 0] | ((hb << (8 - 2 * l)) & 256)];
+    unsigned g2 = kiq3s_grid[qs[2 * l + 1] | ((hb << (7 - 2 * l)) & 256)];
+    unsigned signs = sg[l];
+    const float *xp = xb + ib * 32 + l * 8;
+    float t = 0;
+    for (int j = 0; j < 4; j++) {
+        t += iq_w4(g1, j, signs) * xp[j];
+        t += iq_w4(g2, j, signs >> 4) * xp[j + 4];
+    }
+    return db * t;
+}
+
+#define IQ_LANE_MV(fn, BS) \
+    MV_HEAD; \
+    int nb = a.n_in / 256; \
+    const uchar *rw = wb + a.w_off + (ulong64)row * nb * BS; \
+    float s = 0; \
+    for (int b = 0; b < nb; b++) s += fn(rw + (ulong64)b * BS, x + b * 256, lane); \
     MV_TAIL;
+
+#define IQ_LANE_MOE_MV(fn, BS) \
+    MOE_MV_HEAD; \
+    int nb = a.n_in / 256; \
+    const uchar *rw = wbase + (ulong64)row * nb * BS; \
+    for (int b = 0; b < nb; b++) s += fn(rw + (ulong64)b * BS, x + b * 256, lane); \
+    MOE_MV_TAIL;
+
+extern "C" __global__ void k_mv_iq2_xxs(MV_PARAMS) {
+    IQ_LANE_MV(iq2xxs_lane, 66)
 }
 
 extern "C" __global__ void k_mv_iq2_xxs_b(MV_PARAMS) {
@@ -3386,29 +3475,7 @@ extern "C" __global__ void k_mv_iq2_xxs_b(MV_PARAMS) {
 // sign index) + 8 scale bytes (two 4-bit scales per sub-block of 32, one per
 // 16 weights) decoded as (0.5 + scale) / 4.
 extern "C" __global__ void k_mv_iq2_xs(MV_PARAMS) {
-    MV_HEAD;
-    int nb = a.n_in / 256;
-    const uchar *rw = wb + a.w_off + (ulong64)row * nb * 74;
-    float s = 0;
-    for (int b = lane; b < nb; b += 32) {
-        const uchar *blk = rw + (ulong64)b * 74;
-        float d = f16f(blk);
-        const uchar *qs = blk + 2, *sc = blk + 66;
-        const float *xp = x + b * 256;
-        for (int ib = 0; ib < 8; ib++, qs += 8) {
-            float db0 = d * (0.5f + (float)(sc[ib] & 0xF)) * 0.25f;
-            float db1 = d * (0.5f + (float)(sc[ib] >> 4)) * 0.25f;
-            for (int l = 0; l < 4; l++, xp += 8) {
-                unsigned q = iq_ld16(qs + 2 * l);
-                ulong64 g = kiq2xs_grid[q & 511];
-                unsigned signs = iq_signs7(q >> 9);
-                float t = 0;
-                for (int j = 0; j < 8; j++) t += iq_w8(g, j, signs) * xp[j];
-                s += (l < 2 ? db0 : db1) * t;
-            }
-        }
-    }
-    MV_TAIL;
+    IQ_LANE_MV(iq2xs_lane, 74)
 }
 
 extern "C" __global__ void k_mv_iq2_xs_b(MV_PARAMS) {
@@ -3439,29 +3506,7 @@ extern "C" __global__ void k_mv_iq2_xs_b(MV_PARAMS) {
 // bit per weight) + 8 bytes of high index bits (two per index) + 8 scale
 // bytes as in IQ2_XS.
 extern "C" __global__ void k_mv_iq2_s(MV_PARAMS) {
-    MV_HEAD;
-    int nb = a.n_in / 256;
-    const uchar *rw = wb + a.w_off + (ulong64)row * nb * 82;
-    float s = 0;
-    for (int b = lane; b < nb; b += 32) {
-        const uchar *blk = rw + (ulong64)b * 82;
-        float d = f16f(blk);
-        const uchar *qs = blk + 2, *sg = blk + 34, *qh = blk + 66, *sc = blk + 74;
-        const float *xp = x + b * 256;
-        for (int ib = 0; ib < 8; ib++, qs += 4, sg += 4) {
-            float db0 = d * (0.5f + (float)(sc[ib] & 0xF)) * 0.25f;
-            float db1 = d * (0.5f + (float)(sc[ib] >> 4)) * 0.25f;
-            unsigned hb = qh[ib];
-            for (int l = 0; l < 4; l++, xp += 8) {
-                ulong64 g = kiq2s_grid[qs[l] | ((hb << (8 - 2 * l)) & 0x300)];
-                unsigned signs = sg[l];
-                float t = 0;
-                for (int j = 0; j < 8; j++) t += iq_w8(g, j, signs) * xp[j];
-                s += (l < 2 ? db0 : db1) * t;
-            }
-        }
-    }
-    MV_TAIL;
+    IQ_LANE_MV(iq2s_lane, 82)
 }
 
 extern "C" __global__ void k_mv_iq2_s_b(MV_PARAMS) {
@@ -3492,32 +3537,7 @@ extern "C" __global__ void k_mv_iq2_s_b(MV_PARAMS) {
 // + 8 words of four 7-bit sign indices (bits 0-27) and a 4-bit scale (bits
 // 28-31) decoded as (0.5 + scale) / 2.
 extern "C" __global__ void k_mv_iq3_xxs(MV_PARAMS) {
-    MV_HEAD;
-    int nb = a.n_in / 256;
-    const uchar *rw = wb + a.w_off + (ulong64)row * nb * 98;
-    float s = 0;
-    for (int b = lane; b < nb; b += 32) {
-        const uchar *blk = rw + (ulong64)b * 98;
-        float d = f16f(blk);
-        const uchar *qs = blk + 2, *ss = blk + 66;
-        const float *xp = x + b * 256;
-        for (int ib = 0; ib < 8; ib++, qs += 8) {
-            unsigned aux = iq_ld32a2(ss + 4 * ib);
-            float db = d * (0.5f + (float)(aux >> 28)) * 0.5f;
-            float t = 0;
-            for (int l = 0; l < 4; l++, xp += 8) {
-                unsigned g1 = kiq3xxs_grid[qs[2 * l + 0]];
-                unsigned g2 = kiq3xxs_grid[qs[2 * l + 1]];
-                unsigned signs = iq_signs7((aux >> (7 * l)) & 127);
-                for (int j = 0; j < 4; j++) {
-                    t += iq_w4(g1, j, signs) * xp[j];
-                    t += iq_w4(g2, j, signs >> 4) * xp[j + 4];
-                }
-            }
-            s += db * t;
-        }
-    }
-    MV_TAIL;
+    IQ_LANE_MV(iq3xxs_lane, 98)
 }
 
 extern "C" __global__ void k_mv_iq3_xxs_b(MV_PARAMS) {
@@ -3551,34 +3571,7 @@ extern "C" __global__ void k_mv_iq3_xxs_b(MV_PARAMS) {
 // sign bytes (one bit per weight) + 4 scale bytes (a 4-bit scale per
 // sub-block of 32, decoded as 1 + 2*scale).
 extern "C" __global__ void k_mv_iq3_s(MV_PARAMS) {
-    MV_HEAD;
-    int nb = a.n_in / 256;
-    const uchar *rw = wb + a.w_off + (ulong64)row * nb * 110;
-    float s = 0;
-    for (int b = lane; b < nb; b += 32) {
-        const uchar *blk = rw + (ulong64)b * 110;
-        float d = f16f(blk);
-        const uchar *qs = blk + 2, *qh = blk + 66, *sg = blk + 74, *sc = blk + 106;
-        const float *xp = x + b * 256;
-        for (int pair = 0; pair < 4; pair++, qh += 2) {
-            for (int h = 0; h < 2; h++, qs += 8, sg += 4) {
-                float db = d * (float)(1 + 2 * (h ? (sc[pair] >> 4) : (sc[pair] & 0xF)));
-                unsigned hb = qh[h];
-                float t = 0;
-                for (int l = 0; l < 4; l++, xp += 8) {
-                    unsigned g1 = kiq3s_grid[qs[2 * l + 0] | ((hb << (8 - 2 * l)) & 256)];
-                    unsigned g2 = kiq3s_grid[qs[2 * l + 1] | ((hb << (7 - 2 * l)) & 256)];
-                    unsigned signs = sg[l];
-                    for (int j = 0; j < 4; j++) {
-                        t += iq_w4(g1, j, signs) * xp[j];
-                        t += iq_w4(g2, j, signs >> 4) * xp[j + 4];
-                    }
-                }
-                s += db * t;
-            }
-        }
-    }
-    MV_TAIL;
+    IQ_LANE_MV(iq3s_lane, 110)
 }
 
 extern "C" __global__ void k_mv_iq3_s_b(MV_PARAMS) {
@@ -5275,31 +5268,7 @@ extern "C" __global__ void k_moe_mv_q4_K(MOE_MV_PARAMS) {
 
 // body of k_mv_iq3_xxs (Qwen3.8-Flash-Next gate/up experts)
 extern "C" __global__ void k_moe_mv_iq3_xxs(MOE_MV_PARAMS) {
-    MOE_MV_HEAD;
-    int nb = a.n_in / 256;
-    const uchar *rw = wbase + (ulong64)row * nb * 98;
-    for (int b = lane; b < nb; b += 32) {
-        const uchar *blk = rw + (ulong64)b * 98;
-        float d = f16f(blk);
-        const uchar *qs = blk + 2, *ss = blk + 66;
-        const float *xp = x + b * 256;
-        for (int ib = 0; ib < 8; ib++, qs += 8) {
-            unsigned aux = iq_ld32a2(ss + 4 * ib);
-            float db = d * (0.5f + (float)(aux >> 28)) * 0.5f;
-            float t = 0;
-            for (int l = 0; l < 4; l++, xp += 8) {
-                unsigned g1 = kiq3xxs_grid[qs[2 * l + 0]];
-                unsigned g2 = kiq3xxs_grid[qs[2 * l + 1]];
-                unsigned signs = iq_signs7((aux >> (7 * l)) & 127);
-                for (int j = 0; j < 4; j++) {
-                    t += iq_w4(g1, j, signs) * xp[j];
-                    t += iq_w4(g2, j, signs >> 4) * xp[j + 4];
-                }
-            }
-            s += db * t;
-        }
-    }
-    MOE_MV_TAIL;
+    IQ_LANE_MOE_MV(iq3xxs_lane, 98)
 }
 
 // body of k_mv_iq4_nl (Qwen3.8-Flash-Next down experts)
@@ -5324,59 +5293,20 @@ extern "C" __global__ void k_moe_mv_iq4_nl(MOE_MV_PARAMS) {
 
 // body of k_mv_iq2_s (Qwen3.8-Flash-Next gate/up experts on 20 of 48 blocks)
 extern "C" __global__ void k_moe_mv_iq2_s(MOE_MV_PARAMS) {
-    MOE_MV_HEAD;
-    int nb = a.n_in / 256;
-    const uchar *rw = wbase + (ulong64)row * nb * 82;
-    for (int b = lane; b < nb; b += 32) {
-        const uchar *blk = rw + (ulong64)b * 82;
-        float d = f16f(blk);
-        const uchar *qs = blk + 2, *sg = blk + 34, *qh = blk + 66, *sc = blk + 74;
-        const float *xp = x + b * 256;
-        for (int ib = 0; ib < 8; ib++, qs += 4, sg += 4) {
-            float db0 = d * (0.5f + (float)(sc[ib] & 0xF)) * 0.25f;
-            float db1 = d * (0.5f + (float)(sc[ib] >> 4)) * 0.25f;
-            unsigned hb = qh[ib];
-            for (int l = 0; l < 4; l++, xp += 8) {
-                ulong64 g = kiq2s_grid[qs[l] | ((hb << (8 - 2 * l)) & 0x300)];
-                unsigned signs = sg[l];
-                float t = 0;
-                for (int j = 0; j < 8; j++) t += iq_w8(g, j, signs) * xp[j];
-                s += (l < 2 ? db0 : db1) * t;
-            }
-        }
-    }
-    MOE_MV_TAIL;
+    IQ_LANE_MOE_MV(iq2s_lane, 82)
+}
+
+extern "C" __global__ void k_moe_mv_iq2_xs(MOE_MV_PARAMS) {
+    IQ_LANE_MOE_MV(iq2xs_lane, 74)
+}
+
+extern "C" __global__ void k_moe_mv_iq2_xxs(MOE_MV_PARAMS) {
+    IQ_LANE_MOE_MV(iq2xxs_lane, 66)
 }
 
 // body of k_mv_iq3_s (Qwen3.8-Flash-Next gate/up experts on 10 of 48 blocks)
 extern "C" __global__ void k_moe_mv_iq3_s(MOE_MV_PARAMS) {
-    MOE_MV_HEAD;
-    int nb = a.n_in / 256;
-    const uchar *rw = wbase + (ulong64)row * nb * 110;
-    for (int b = lane; b < nb; b += 32) {
-        const uchar *blk = rw + (ulong64)b * 110;
-        float d = f16f(blk);
-        const uchar *qs = blk + 2, *qh = blk + 66, *sg = blk + 74, *sc = blk + 106;
-        const float *xp = x + b * 256;
-        for (int pair = 0; pair < 4; pair++, qh += 2) {
-            for (int h = 0; h < 2; h++, qs += 8, sg += 4) {
-                float db = d * (float)(1 + 2 * (h ? (sc[pair] >> 4) : (sc[pair] & 0xF)));
-                unsigned hb = qh[h];
-                float t = 0;
-                for (int l = 0; l < 4; l++, xp += 8) {
-                    unsigned g1 = kiq3s_grid[qs[2 * l + 0] | ((hb << (8 - 2 * l)) & 256)];
-                    unsigned g2 = kiq3s_grid[qs[2 * l + 1] | ((hb << (7 - 2 * l)) & 256)];
-                    unsigned signs = sg[l];
-                    for (int j = 0; j < 4; j++) {
-                        t += iq_w4(g1, j, signs) * xp[j];
-                        t += iq_w4(g2, j, signs >> 4) * xp[j + 4];
-                    }
-                }
-                s += db * t;
-            }
-        }
-    }
-    MOE_MV_TAIL;
+    IQ_LANE_MOE_MV(iq3s_lane, 110)
 }
 
 // body of k_mv_iq4_xs (Qwen3.8-Flash-Next gate/up experts on its last block)

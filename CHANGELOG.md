@@ -16,6 +16,25 @@ rename keep the names that were true when they were written.
   `make test-cuda-qwen4exp` compares the device head with the CPU head draft
   step for draft step (argmax, top logit and top-2 gap within 1e-5) and
   requires identical text, with device and with host experts.
+- **The codebook i-quant device matvecs use every lane.** The IQ2_XXS,
+  IQ2_XS, IQ2_S, IQ3_XXS and IQ3_S GEMVs (and their indirect MoE twins)
+  gave each lane a whole 256-weight block, a shape for dense rows of 4096
+  and more; a routed expert row has 2560 or fewer inputs, so 4 to 10 of 32
+  lanes worked. Every block is now split across the warp. Measured on
+  Qwen3.8-Flash-Next on a 24 GB MIG slice: IQ3_S plain decode 12.4 to
+  14.4 tok/s, IQ2_XS 8.4 to 19.1 (28 of 48 expert layers on the device), with
+  the device-vs-CPU score gate and the nine i-quant gpu-identity fixtures
+  unchanged. IQ2_XS and IQ2_XXS have indirect twins now but keep the eager
+  expert path by default (their fused path measured half the eager speed).
+- **The CUDA placement plan reserves the DeltaNet fold.** The recurrent
+  window and state, their rollback copies and the per-row scratch were not
+  in the plan's fixed part; on a tight split the state allocation failed
+  after the plan had filled the device with expert layers, and decode fell
+  back to 2 tok/s.
+- **The eager expert path routes a small tile in one launch** and reads the
+  router logits back once per layer instead of once per row (a 5-row verify
+  tile paid 90 round trips over 18 device expert layers), where the router
+  type has a width-classed twin so each row's logits keep their bits.
 - **Small device batches (2 to 8 rows) take the GEMV twins, not the tile
   kernels.** A speculative verify tile, a short prompt or a few rows of one
   expert went through the prefill kernels (tensor-core GEMM over 64-row

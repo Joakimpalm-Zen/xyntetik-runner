@@ -259,6 +259,8 @@ static const char *cu_err(CUresult r) {
 // they are not using are 3 (runs 4-wide) and 5..7 (run 8-wide).
 enum { BW_4 = 0, BW_8 = 1, BW_N = 2 };
 static inline int batch_width_class(int n) { return n <= 4 ? BW_4 : BW_8; }
+enum { GPU_SMALL_BATCH = 8 };   // the widest f_gemvb class (BW_8): small-batch routing in enc_mv
+struct gpu_weights; static bool batch_mv_twin_ok(const struct gpu_weights *sw, const gguf_tensor *t);
 // The widest microbatch those kernels actually COMPUTE. Every width class
 // stops at its own column count (`t < a.batch && t < NC`), so a call wider
 // than the widest class does not fail — it leaves columns NC.. holding
@@ -724,6 +726,12 @@ static bool moe_indirect_type_ok(int type) {
         case T_NVFP4: case T_IQ3_XXS: case T_IQ4_NL: case T_Q2_0:
         case T_IQ2_S: case T_IQ3_S: case T_IQ4_XS:
             return true;
+        // IQ2_XS/IQ2_XXS have indirect twins (k_moe_mv_iq2_xs/_xxs) but the
+        // fused path measured 6.0 tok/s against 19.1 eager on the IQ2_XS
+        // Qwen3.8-Flash-Next file (prefill 3.8 vs 33.9), same split, same
+        // memory; until that is understood the eager path stays their default
+        case T_IQ2_XS: case T_IQ2_XXS:
+            return false;
         default:
             return false;
     }
@@ -1332,6 +1340,26 @@ static gpu_weights *shared_build(model_t *m, size_t act_bytes, int max_hd,
         // the CUDA context + PTX JIT + allocator slack + the OS reserve
         size_t fixed = act_bytes + (m->cpu_moe ? 0 : m->tok_embd->nbytes) +
                        (size_t)headroom;
+        if (m->qwen35) {
+            // the DeltaNet fold lives on the device: window + state, their
+            // pre-forward copies for the speculative rollback, and the
+            // per-token scratch the recurrent layer stages. These were never
+            // in the plan; on Qwen3.8-Flash-Next IQ2_XS the planner filled the
+            // slice to 1.6 GB of headroom with expert layers and the state
+            // allocation then failed (2026-10-07, decode fell to 2 tok/s).
+            int convdim = 2 * m->ssm_state * m->ssm_groups + m->ssm_inner;
+            size_t fold = sizeof(float) * (size_t)m->n_layer *
+                ((size_t)(m->ssm_conv_kernel - 1) * convdim +
+                 (size_t)m->ssm_v_heads * m->ssm_state * m->ssm_state);
+            // q35_mix (max(convdim, 2 q_dim)), cv (convdim), z (inner), beta +
+            // alpha (heads each), gate (q_dim): the allocation below, in rows of MVB
+            size_t qd = 0;
+            for (int l = 0; l < m->n_layer; l++) if ((size_t)model_q_dim(m, l) > qd) qd = (size_t)model_q_dim(m, l);
+            size_t mixd = (size_t)convdim > 2 * qd ? (size_t)convdim : 2 * qd;
+            size_t scratch = sizeof(float) * (size_t)MVB *
+                (mixd + (size_t)convdim + (size_t)m->ssm_inner + 2 * (size_t)m->ssm_v_heads + qd);
+            fixed += 2 * fold + scratch;
+        }
         // the NextN/MTP block rides along with a full split: its attention,
         // mixers and head projections (its experts stay on the host under
         // --cpu-moe, like any bank the plan leaves there), plus its KV rows
@@ -1643,6 +1671,8 @@ static gpu_weights *shared_build(model_t *m, size_t act_bytes, int max_hd,
             { &w->f_moe_mv[T_IQ2_S],   "k_moe_mv_iq2_s" },
             { &w->f_moe_mv[T_IQ3_S],   "k_moe_mv_iq3_s" },
             { &w->f_moe_mv[T_IQ4_XS],  "k_moe_mv_iq4_xs" },
+            { &w->f_moe_mv[T_IQ2_XS],  "k_moe_mv_iq2_xs" },
+            { &w->f_moe_mv[T_IQ2_XXS], "k_moe_mv_iq2_xxs" },
             // expert-grouped prefill glue
             { &w->f_moe_gather,       "k_moe_gather" },
             { &w->f_moe_scatter,      "k_moe_scatter_add" },
@@ -2480,7 +2510,7 @@ bool gpu_init(model_t *m) {
         g->h_x      = malloc(sizeof(float) * MVB * m->n_embd);
         g->h_logits = malloc(sizeof(float) * (size_t)(m->spec_batch > 0 ? m->spec_batch : 1) * m->n_vocab);
         if (m->n_expert > 0)
-            g->h_moe_logits = malloc(sizeof(float) * (size_t)m->n_expert);
+            g->h_moe_logits = malloc(sizeof(float) * (size_t)m->n_expert * (size_t)(GPU_SMALL_BATCH > 1 ? GPU_SMALL_BATCH : 1));
         if (!g->h_x || !g->h_logits ||
             (m->n_expert > 0 && !g->h_moe_logits)) {
             fprintf(stderr, "gpu: CUDA host activation staging allocation "
@@ -2940,7 +2970,6 @@ static bool launch_tiled_xscaled(gpu_t *g, CUfunction f, unsigned grid,
     return true;
 }
 
-enum { GPU_SMALL_BATCH = 8 };   // the widest f_gemvb class (BW_8)
 static bool enc_mv_batch(gpu_t *g, model_t *m, gguf_tensor *w, CUdeviceptr x,
                          CUdeviceptr y, int n_in, int n_out, CUdeviceptr bias,
                          int batch, int xs, int ys);
@@ -4019,17 +4048,37 @@ static bool gpu_moe_ffn_eager(gpu_t *g, model_t *m, const layer_t *ly, int tn, i
     enum { MOE_MAX_USED = 256 };
     if (used > MOE_MAX_USED) used = MOE_MAX_USED;
     if (ne  > MOE_ROUTE_MAX) ne  = MOE_ROUTE_MAX;
+    // A small tile (a speculative verify) routes all its rows in one launch
+    // and reads the logits back once: the per-row sync + copy below cost a
+    // 5-row tile 90 round trips over 18 device expert layers. Only with a
+    // width-classed twin of the router's batch-1 kernel, so each row's
+    // logits are the bits the per-row launch would have produced (the eager
+    // path's byte contract); wider tiles keep the per-row route.
+    bool batched_router = tn > 1 && tn <= GPU_SMALL_BATCH &&
+                          batch_mv_twin_ok(g->sw, ly->ffn_gate_inp) &&
+                          g->sw->f_gemvb[batch_width_class(tn)][ly->ffn_gate_inp->type];
+    if (batched_router) {
+        if (!enc_mv(g, m, ly->ffn_gate_inp, g->xb, g->moe_logits, n_embd, ne,
+                    g->sw->gib[l], tn, xdim, ne))
+            return false;
+        if (cu.StreamSynchronize(g->stream) != 0) return false;
+        if (cu.MemcpyDtoH(g->h_moe_logits, g->moe_logits,
+                          sizeof(float) * (size_t)tn * ne) != 0)
+            return false;
+    }
     for (int t = 0; t < tn; t++) {
         CUdeviceptr xin  = g->xb  + (size_t)t * xdim * sizeof(float);
         CUdeviceptr aout = g->xb2 + (size_t)t * xdim * sizeof(float);
-        if (!enc_mv(g, m, ly->ffn_gate_inp, xin, g->moe_logits, n_embd, ne,
-                    g->sw->gib[l], 1, xdim, ne))
-            return false;
-        if (cu.StreamSynchronize(g->stream) != 0) return false;
-        if (cu.MemcpyDtoH(g->h_moe_logits, g->moe_logits, sizeof(float) * (size_t)ne) != 0)
-            return false;
+        float *lg = g->h_moe_logits + (batched_router ? (size_t)t * ne : 0);
+        if (!batched_router) {
+            if (!enc_mv(g, m, ly->ffn_gate_inp, xin, g->moe_logits, n_embd, ne,
+                        g->sw->gib[l], 1, xdim, ne))
+                return false;
+            if (cu.StreamSynchronize(g->stream) != 0) return false;
+            if (cu.MemcpyDtoH(g->h_moe_logits, g->moe_logits, sizeof(float) * (size_t)ne) != 0)
+                return false;
+        }
         // softmax over all experts, then top-k with renormalized weights
-        float *lg = g->h_moe_logits;
         float mx = lg[0];
         for (int e = 1; e < ne; e++)
             if (lg[e] > mx) mx = lg[e];
