@@ -6686,6 +6686,11 @@ size_t model_recurrent_blob_bytes(const model_t *m) {
 
 bool model_recurrent_blob_save(const model_t *m, uint8_t *dst) {
     if (!model_has_recurrent(m)) return false;
+    // a device-resident fold (CUDA) is pulled through the host buffers first,
+    // the same seam the turn mark uses; the host rows of the offloaded layers
+    // are otherwise stale (R4.26.7: prefix reuse for recurrent models on the
+    // device, so an agent turn re-prefills only its new tokens)
+    if (m->gpu && !gpu_recurrent_download((model_t *)m)) return false;
     size_t cb = recurrent_conv_bytes(m), sb = recurrent_state_bytes(m);
     memcpy(dst, m->ssm_conv_state, cb);
     memcpy(dst + cb, m->ssm_state_mem, sb);
@@ -6700,6 +6705,8 @@ bool model_recurrent_blob_load(model_t *m, const uint8_t *src) {
     memcpy(m->ssm_state_mem, src + cb, sb);
     if (recurrent_ple_bytes(m)) memcpy(m->ple4_conv_hist, src + cb + sb, recurrent_ple_bytes(m));
     m->ssm_snap_pos = -1;   // a freshly installed fold has no earlier snapshot
+    // and pushed back onto the device layers (see blob_save)
+    if (m->gpu && !gpu_recurrent_upload(m)) return false;
     return true;
 }
 
