@@ -724,8 +724,14 @@ static bool moe_indirect_type_ok(int type) {
         case T_F32: case T_F16: case T_Q8_0: case T_Q4_0:
         case T_Q4_K: case T_Q5_K: case T_Q6_K: case T_MXFP4:
         case T_NVFP4: case T_IQ3_XXS: case T_IQ4_NL: case T_Q2_0:
-        case T_IQ2_S: case T_IQ3_S: case T_IQ4_XS: case T_IQ2_XS: case T_IQ2_XXS:
+        case T_IQ2_S: case T_IQ3_S: case T_IQ4_XS:
             return true;
+        // IQ2_XS/IQ2_XXS have indirect twins (k_moe_mv_iq2_xs/_xxs) but the
+        // fused path measured 6.0 tok/s against 19.1 eager on the IQ2_XS
+        // Qwen3.8-Flash-Next file (prefill 3.8 vs 33.9), same split, same
+        // memory; until that is understood the eager path stays their default
+        case T_IQ2_XS: case T_IQ2_XXS:
+            return false;
         default:
             return false;
     }
