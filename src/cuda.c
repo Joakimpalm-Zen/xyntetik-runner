@@ -3286,6 +3286,11 @@ bool gpu_recurrent_upload(model_t *m) {
 // nothing to rescue before releasing. Freeing rather than orphaning matters
 // now that weights are shared — an abandoned context would keep every other
 // slot's copy of them alive too.
+static bool fwd_tile(gpu_t *g, model_t *m, const int32_t *tokens, int tn,
+                     int pos, bool want_logits, int l0, int l1);
+static bool gpu_hc_mix(gpu_t *g, model_t *m, CUdeviceptr w_norm,
+                       gguf_tensor *w_down, gguf_tensor *w_up, gguf_tensor *w_inject,
+                       CUdeviceptr x_hc_rows, CUdeviceptr y, int ys, int tn);
 // ---- NextN/MTP head on the device (hyper-connection families) ------------
 // The CPU head's twin (model.c mtp_run): per queued pair (h, tok) the input
 // per stream is [enorm(embed(tok)) ; hnorm_c(h_c)], projected by eh_proj into
