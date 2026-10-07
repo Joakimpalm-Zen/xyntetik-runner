@@ -259,6 +259,8 @@ static const char *cu_err(CUresult r) {
 // they are not using are 3 (runs 4-wide) and 5..7 (run 8-wide).
 enum { BW_4 = 0, BW_8 = 1, BW_N = 2 };
 static inline int batch_width_class(int n) { return n <= 4 ? BW_4 : BW_8; }
+enum { GPU_SMALL_BATCH = 8 };   // the widest f_gemvb class (BW_8): small-batch routing in enc_mv
+struct gpu_weights; static bool batch_mv_twin_ok(const struct gpu_weights *sw, const gguf_tensor *t);
 // The widest microbatch those kernels actually COMPUTE. Every width class
 // stops at its own column count (`t < a.batch && t < NC`), so a call wider
 // than the widest class does not fail — it leaves columns NC.. holding
@@ -2502,7 +2504,7 @@ bool gpu_init(model_t *m) {
         g->h_x      = malloc(sizeof(float) * MVB * m->n_embd);
         g->h_logits = malloc(sizeof(float) * (size_t)(m->spec_batch > 0 ? m->spec_batch : 1) * m->n_vocab);
         if (m->n_expert > 0)
-            g->h_moe_logits = malloc(sizeof(float) * (size_t)m->n_expert);
+            g->h_moe_logits = malloc(sizeof(float) * (size_t)m->n_expert * (size_t)(GPU_SMALL_BATCH > 1 ? GPU_SMALL_BATCH : 1));
         if (!g->h_x || !g->h_logits ||
             (m->n_expert > 0 && !g->h_moe_logits)) {
             fprintf(stderr, "gpu: CUDA host activation staging allocation "
@@ -2962,7 +2964,6 @@ static bool launch_tiled_xscaled(gpu_t *g, CUfunction f, unsigned grid,
     return true;
 }
 
-enum { GPU_SMALL_BATCH = 8 };   // the widest f_gemvb class (BW_8)
 static bool enc_mv_batch(gpu_t *g, model_t *m, gguf_tensor *w, CUdeviceptr x,
                          CUdeviceptr y, int n_in, int n_out, CUdeviceptr bias,
                          int batch, int xs, int ys);
@@ -4041,17 +4042,37 @@ static bool gpu_moe_ffn_eager(gpu_t *g, model_t *m, const layer_t *ly, int tn, i
     enum { MOE_MAX_USED = 256 };
     if (used > MOE_MAX_USED) used = MOE_MAX_USED;
     if (ne  > MOE_ROUTE_MAX) ne  = MOE_ROUTE_MAX;
+    // A small tile (a speculative verify) routes all its rows in one launch
+    // and reads the logits back once: the per-row sync + copy below cost a
+    // 5-row tile 90 round trips over 18 device expert layers. Only with a
+    // width-classed twin of the router's batch-1 kernel, so each row's
+    // logits are the bits the per-row launch would have produced (the eager
+    // path's byte contract); wider tiles keep the per-row route.
+    bool batched_router = tn > 1 && tn <= GPU_SMALL_BATCH &&
+                          batch_mv_twin_ok(g->sw, ly->ffn_gate_inp) &&
+                          g->sw->f_gemvb[batch_width_class(tn)][ly->ffn_gate_inp->type];
+    if (batched_router) {
+        if (!enc_mv(g, m, ly->ffn_gate_inp, g->xb, g->moe_logits, n_embd, ne,
+                    g->sw->gib[l], tn, xdim, ne))
+            return false;
+        if (cu.StreamSynchronize(g->stream) != 0) return false;
+        if (cu.MemcpyDtoH(g->h_moe_logits, g->moe_logits,
+                          sizeof(float) * (size_t)tn * ne) != 0)
+            return false;
+    }
     for (int t = 0; t < tn; t++) {
         CUdeviceptr xin  = g->xb  + (size_t)t * xdim * sizeof(float);
         CUdeviceptr aout = g->xb2 + (size_t)t * xdim * sizeof(float);
-        if (!enc_mv(g, m, ly->ffn_gate_inp, xin, g->moe_logits, n_embd, ne,
-                    g->sw->gib[l], 1, xdim, ne))
-            return false;
-        if (cu.StreamSynchronize(g->stream) != 0) return false;
-        if (cu.MemcpyDtoH(g->h_moe_logits, g->moe_logits, sizeof(float) * (size_t)ne) != 0)
-            return false;
+        float *lg = g->h_moe_logits + (batched_router ? (size_t)t * ne : 0);
+        if (!batched_router) {
+            if (!enc_mv(g, m, ly->ffn_gate_inp, xin, g->moe_logits, n_embd, ne,
+                        g->sw->gib[l], 1, xdim, ne))
+                return false;
+            if (cu.StreamSynchronize(g->stream) != 0) return false;
+            if (cu.MemcpyDtoH(g->h_moe_logits, g->moe_logits, sizeof(float) * (size_t)ne) != 0)
+                return false;
+        }
         // softmax over all experts, then top-k with renormalized weights
-        float *lg = g->h_moe_logits;
         float mx = lg[0];
         for (int e = 1; e < ne; e++)
             if (lg[e] > mx) mx = lg[e];
