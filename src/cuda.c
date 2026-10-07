@@ -5432,12 +5432,23 @@ bool gpu_forward_batch(model_t *m, const int32_t *tokens, int n, int pos,
                             "forward %d — falling back to CPU\n", inj);
             return false;
         }
-        // partial: copy this tile's post-boundary activation to the host x
-        // buffer so the CPU layer loop can continue from gpu_layers
-        if (partial &&
-            cu.MemcpyDtoH((uint8_t *)m->x + (size_t)i * m->n_embd * sizeof(float),
-                          g->x, sizeof(float) * tn * m->n_embd) != 0)
-            return false;
+        // partial: copy this tile's post-boundary activation to the host
+        // buffer so the CPU layer loop can continue from gpu_layers. Under
+        // hyper-connections the residual IS the wide x_hc (hc * n_embd per
+        // row), not x: handing x over left the CPU layers a stale stream
+        // (Qwen3.8-Flash-Next --cpu-moe 24 on the slice: 415/480 argmax vs
+        // the CPU path, 2026-10-07).
+        if (partial) {
+            if (m->hyper_conn) {
+                size_t hcd = (size_t)m->hc_count * m->n_embd;
+                if (cu.MemcpyDtoH(m->x_hc + (size_t)i * hcd, g->x_hc,
+                                  sizeof(float) * tn * hcd) != 0)
+                    return false;
+            } else if (cu.MemcpyDtoH((uint8_t *)m->x + (size_t)i * m->n_embd * sizeof(float),
+                                     g->x, sizeof(float) * tn * m->n_embd) != 0) {
+                return false;
+            }
+        }
     }
     double tsy0 = prof.on ? prof_now() : 0;
     if (cu.CtxSynchronize() != 0) {
