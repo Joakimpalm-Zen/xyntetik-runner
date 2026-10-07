@@ -7,7 +7,7 @@ to the exact build, and what is not covered. Releases before 1.0.0 made no
 such promise (the `-alpha` suffix was retired at v0.2.0). Entries below the
 rename keep the names that were true when they were written.
 
-## v1.1.1 - 2026-10-07
+## v1.1.1 - 2026-10-08
 
 - **The NextN/MTP draft head runs on the CUDA path** (`--mtp-file` on a
   full split). The head's input is the trunk's wide residual, which stays
