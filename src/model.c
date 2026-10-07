@@ -4667,15 +4667,30 @@ static void mv_rows(void *ctx, int i0, int i1) {
         // on the CPU path, not by luck at near-ties), and a 2-row batch
         // costs one weight pass plus a dot, not the dequantize-to-f32 route
         // below, which at these widths cost about two solo forwards.
+        // The f32 route takes all columns in one call: vec_dot_multi decodes
+        // each weight block once and keeps every column's arithmetic the
+        // single-column dot's, so y is byte-equal to the loop it replaces
+        // while a codebook quant pays its decode once per tile, not per row.
+        if (!j->xq) {
+            const float *xs[VEC_DOT_MULTI_MAX];
+            float v[VEC_DOT_MULTI_MAX];
+            for (int c = 0; c < j->n_batch; c++) xs[c] = j->x + (size_t)c * j->x_stride;
+            for (int r = i0; r < i1; r++) {
+                const void *row = base + (size_t)r * j->rsz;
+                float b0 = j->bias ? j->bias[r] : 0.0f;
+                vec_dot_multi(type, row, xs, j->n_batch, n_in, v);
+                for (int c = 0; c < j->n_batch; c++)
+                    j->y[(size_t)c * j->y_stride + r] = v[c] * sc + b0;
+            }
+            return;
+        }
         for (int r = i0; r < i1; r++) {
             const void *row = base + (size_t)r * j->rsz;
             float b0 = j->bias ? j->bias[r] : 0.0f;
             for (int c = 0; c < j->n_batch; c++) {
-                float v = j->xq
-                    ? vec_dot_i8(type, row,
-                                 (const uint8_t *)j->xq + (size_t)c * j->xq_stride,
-                                 n_in)
-                    : vec_dot(type, row, j->x + (size_t)c * j->x_stride, n_in);
+                float v = vec_dot_i8(type, row,
+                                     (const uint8_t *)j->xq + (size_t)c * j->xq_stride,
+                                     n_in);
                 j->y[(size_t)c * j->y_stride + r] = v * sc + b0;
             }
         }

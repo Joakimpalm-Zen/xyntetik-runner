@@ -639,6 +639,32 @@ static void test_vec_dot(int type, int n) {
     free(row); free(x); free(w);
 }
 
+// vec_dot_multi: every column byte-equal to the single-column vec_dot of
+// that column (the small-batch tile dot shares the decode, nothing else)
+static void test_vec_dot_multi(int type, int n) {
+    size_t rowsz = ggml_row_size(type, n);
+    uint8_t *row = malloc(rowsz);
+    float *x = malloc((size_t)n * VEC_DOT_MULTI_MAX * sizeof(float));
+    for (int trial = 0; trial < RANDOM_TRIALS; trial++) {
+        set_trial(trial);
+        make_row(type, row, n);
+        for (int i = 0; i < n * VEC_DOT_MULTI_MAX; i++) x[i] = frnd();
+        for (int nc = 1; nc <= VEC_DOT_MULTI_MAX; nc++) {
+            const float *xs[VEC_DOT_MULTI_MAX];
+            float got[VEC_DOT_MULTI_MAX];
+            for (int c = 0; c < nc; c++) xs[c] = x + (size_t)c * n;
+            vec_dot_multi(type, row, xs, nc, n, got);
+            for (int c = 0; c < nc; c++) {
+                float one = vec_dot(type, row, xs[c], n);
+                uint32_t a, b; memcpy(&a, &got[c], 4); memcpy(&b, &one, 4);
+                CHECK(a == b, "vec_dot_multi %s n=%d trial=%d nc=%d col=%d: %.9g vs vec_dot %.9g",
+                      ggml_type_name(type), n, trial, nc, c, (double)got[c], (double)one);
+            }
+        }
+    }
+    free(row); free(x);
+}
+
 static void test_dequant(int type, int n) {
     size_t rowsz = ggml_row_size(type, n);
     uint8_t *row = malloc(rowsz);
@@ -1157,6 +1183,8 @@ int main(void) {
     for (size_t t = 0; t < sizeof(types) / sizeof(types[0]); t++) {
         test_vec_dot(types[t], 4096);
         test_vec_dot(types[t], 256);   // single K-block / few 32-blocks
+        test_vec_dot_multi(types[t], 4096);
+        test_vec_dot_multi(types[t], 256);
     }
     test_dequant(T_Q8_0, 4096);
     test_dequant(T_Q4_0, 4096);

@@ -135,6 +135,12 @@ bool   i8_dot_ok(int type, int n);        // fused kernel exists for (type, n)
 size_t i8_act_size(int n);                // scratch bytes for n activations
 void   i8_quant_act(const float *x, void *dst, int n);
 float  vec_dot_i8(int type, const void *row, const void *xq, int n);
+// One weight row against up to VEC_DOT_MULTI_MAX activation columns, each
+// output byte-equal to vec_dot(type, row, xs[c], n): the weight block is
+// decoded once for every column (the small-batch win for codebook quants).
+#define VEC_DOT_MULTI_MAX 8
+void   vec_dot_multi(int type, const void *row, const float *const *xs, int nc,
+                     int n, float *out);
 // Force the route on (1) or off (0) regardless of RUNNER_CPU_I8; -1 returns
 // to the env default. Mirrors gpu_tc_force so one harness can drive both.
 void   i8_dot_force(int on);
