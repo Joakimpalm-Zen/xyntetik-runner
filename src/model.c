@@ -9496,6 +9496,10 @@ static bool mtp_run(model_t *m, const float *h, size_t h_stride,
         m->x_hc = save;
         matvec_b(m->tp, m->mtp_logits, m->n_vocab, m->mtp_head, m->mtp_hmix, E, E,
                  m->n_vocab, NULL, 1);
+        if (getenv("RUNNER_MTP_DEBUG")) {
+            mtp_stat("cpu blkL", last, E); mtp_stat("cpu mix", m->mtp_hmix, E);
+            mtp_stat("cpu logits", m->mtp_logits, m->n_vocab);
+        }
     } else {
         const float *hnw = m->mtp_head_norm_w ? m->mtp_head_norm_w : m->out_norm_w;
         rmsnorm(m->mtp_hid, last, hnw, E, m->rms_eps);

@@ -3414,6 +3414,15 @@ bool gpu_mtp_run(model_t *m, bool chained, int slot0, const int32_t *tok, int n,
         if (cu.StreamSynchronize(g->stream) != 0) return false;
         if (cu.MemcpyDtoH(m->mtp_logits, g->logits, sizeof(float) * (size_t)m->n_vocab) != 0)
             return false;
+        if (getenv("RUNNER_MTP_DEBUG")) {
+            float *t = malloc(sizeof(float) * (size_t)hcd);
+            if (t) {
+                cu.MemcpyDtoH(t, last, sizeof(float) * E); mtp_stat("gpu blkL", t, E);
+                cu.MemcpyDtoH(t, g->xb, sizeof(float) * E); mtp_stat("gpu mix", t, E);
+                mtp_stat("gpu logits", m->mtp_logits, m->n_vocab);
+                free(t);
+            }
+        }
     } else if (cu.StreamSynchronize(g->stream) != 0) {
         return false;
     }
