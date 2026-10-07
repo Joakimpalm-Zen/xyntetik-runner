@@ -4331,6 +4331,7 @@ static bool model_alloc_runtime(model_t *m, const model_params *p) {
         m->moe_gate_b = malloc(sizeof(float) * nb * nf);
         m->moe_up_b   = malloc(sizeof(float) * nb * nf);
         m->moe_dexp_b = malloc(sizeof(float) * nb * ne);
+        m->moe_dall   = malloc(sizeof(float) * nb * nu * ne);
         m->moe_sel    = malloc(sizeof(int)   * nb * nu);
         m->moe_selw   = malloc(sizeof(float) * nb * nu);
         m->moe_trace_norms = malloc(sizeof(float) * nb * nu);
@@ -4343,7 +4344,7 @@ static bool model_alloc_runtime(model_t *m, const model_params *p) {
         (m->n_expert > 0 && (!m->moe_logits || !m->moe_gate || !m->moe_up ||
                              !m->moe_dexp || !m->moe_out || !m->moe_out_b ||
                              !m->moe_gath || !m->moe_gate_b || !m->moe_up_b ||
-                             !m->moe_dexp_b || !m->moe_sel || !m->moe_selw ||
+                             !m->moe_dexp_b || !m->moe_dall || !m->moe_sel || !m->moe_selw ||
                              !m->moe_trace_norms || !m->moe_gidx || !m->moe_gw)) ||
         (m->qwen35 && (!m->q_gate || !m->ssm_qkv || !m->ssm_z ||
                        !m->ssm_aux || !m->ssm_conv_state ||
@@ -4542,7 +4543,7 @@ void model_free(model_t *m) {
     free(m->moe_gate); free(m->moe_up);
     free(m->moe_dexp); free(m->moe_out);
     free(m->gemma_scr);
-    free(m->moe_out_b); free(m->moe_gath); free(m->moe_gate_b);
+    free(m->moe_out_b); free(m->moe_dall); free(m->moe_gath); free(m->moe_gate_b);
     free(m->moe_up_b); free(m->moe_dexp_b); free(m->moe_sel);
     free(m->moe_selw); free(m->moe_trace_norms); free(m->moe_gidx); free(m->moe_gw);
     free(m->moe_probe_hist);
@@ -6239,9 +6240,13 @@ static void moe_ffn_token(model_t *m, const layer_t *ly, float *xin) {
 // tokens routed to it as a single batched matmul (the weight rows dequantize
 // once and stream across every token) instead of one token at a time. Same
 // math as the per-token path — the router, SwiGLU, and weights are identical,
-// and each token accumulates its selected experts in ascending-expert order,
-// which for the dense-oracle configs equals the per-token order — so greedy
-// output is preserved. Big prefill throughput win; decode is untouched.
+// and each token sums its experts in the ROUTER's order (moe_dall holds the
+// per-expert outputs until the whole layer has run), exactly the per-token
+// accumulation. Below MV_SMALL_BATCH rows per expert the dots are the
+// per-token dots too, so a speculation verify batch (K+1 rows) is byte-equal
+// to decoding its rows one at a time; the ascending-expert order this path
+// used before was not (Qwen3.8-Flash-Next --draft-lookup changed the greedy
+// text, 2026-10-07). Big prefill throughput win; decode is untouched.
 static void moe_ffn_grouped(model_t *m, const layer_t *ly, int n, int xdim) {
     int n_embd = m->n_embd, ne = ly->n_expert, used = m->n_expert_used;
     int nff = m->n_ff_exp;
@@ -6357,8 +6362,26 @@ static void moe_ffn_grouped(model_t *m, const layer_t *ly, int n, int xdim) {
                 for (int t = 0; t < used; t++)
                     if (sel[t] == e) { m->moe_trace_norms[(size_t)b * used + t] = sqrtf(ss); break; }
             }
-            if (db) for (int i = 0; i < n_embd; i++) out[i] += w * (dx[i] + db[i]);
-            else    for (int i = 0; i < n_embd; i++) out[i] += w * dx[i];
+            (void)out; (void)w;
+            // park this expert's output in the token's router slot
+            {
+                const int *sel = m->moe_sel + (size_t)b * used;
+                int t = 0;
+                while (t < used - 1 && sel[t] != e) t++;
+                float *slot = m->moe_dall + ((size_t)b * used + t) * n_embd;
+                if (db) for (int i = 0; i < n_embd; i++) slot[i] = dx[i] + db[i];
+                else    memcpy(slot, dx, sizeof(float) * (size_t)n_embd);
+            }
+        }
+    }
+    // per token, the experts in the router's order: the per-token path's sum
+    for (int b = 0; b < n; b++) {
+        float *out = m->moe_out_b + (size_t)b * n_embd;
+        const float *selw = m->moe_selw + (size_t)b * used;
+        for (int t = 0; t < used; t++) {
+            const float *d = m->moe_dall + ((size_t)b * used + t) * n_embd;
+            float w = selw[t];
+            for (int i = 0; i < n_embd; i++) out[i] += w * d[i];
         }
     }
     if (trace)

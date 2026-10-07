@@ -228,6 +228,8 @@ typedef struct {
     // all tokens, then run each expert once over ALL its routed tokens as a
     // batched matmul instead of one-at-a-time. Decode (n==1) never uses these.
     float    *moe_out_b;   // [n_batch][n_embd] per-token output accumulator
+    float    *moe_dall;    // [n_batch][n_expert_used][n_embd] each token's expert
+                           // outputs, summed in the ROUTER's order at the end
     float    *moe_gath;    // [n_batch][n_embd] one expert's gathered inputs
     float    *moe_gate_b;  // [n_batch][n_ff_exp] batched gate
     float    *moe_up_b;    // [n_batch][n_ff_exp] batched up
