@@ -9498,10 +9498,19 @@ static bool mtp_run(model_t *m, const float *h, size_t h_stride,
 
 static bool mtp_drain(model_t *m, bool want_logits) {
     if (m->mtp_qn == 0) return true;
-    bool ok = m->gpu && gpu_mtp_bound(m)
-            ? gpu_mtp_run(m, false, m->mtp_tok, m->mtp_qn, m->mtp_pos, want_logits)
-            : mtp_run(m, m->mtp_h, (size_t)m->mtp_hw, m->mtp_tok, m->mtp_qn,
-                      m->mtp_pos, want_logits);
+    bool ok;
+    if (m->gpu && gpu_mtp_bound(m)) {
+        // the device head takes a tile (64 rows) at a time
+        ok = true;
+        for (int off = 0; ok && off < m->mtp_qn; off += 64) {
+            int c = m->mtp_qn - off < 64 ? m->mtp_qn - off : 64;
+            ok = gpu_mtp_run(m, false, off, m->mtp_tok + off, c, m->mtp_pos + off,
+                             want_logits && off + c == m->mtp_qn);
+        }
+    } else {
+        ok = mtp_run(m, m->mtp_h, (size_t)m->mtp_hw, m->mtp_tok, m->mtp_qn,
+                     m->mtp_pos, want_logits);
+    }
     if (ok && want_logits && m->gpu && gpu_mtp_bound(m)) m->mtp_logits_pos = m->mtp_pos + m->mtp_qn;
     m->mtp_pos += m->mtp_qn;
     m->mtp_qn = 0;
@@ -9540,7 +9549,7 @@ float *model_mtp_step(model_t *m, const float *h, int32_t tok, int pos) {
     if (m->gpu && gpu_mtp_bound(m)) {
         // h is the device-resident chained hidden (model_mtp_hidden returns a
         // non-NULL host handle so the engine's chain reads the same way)
-        if (!gpu_mtp_run(m, true, &tok, 1, pos, true)) return NULL;
+        if (!gpu_mtp_run(m, true, 0, &tok, 1, pos, true)) return NULL;
         m->mtp_logits_pos = pos + 1;
         return m->mtp_logits;
     }

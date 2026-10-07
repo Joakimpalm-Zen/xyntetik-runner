@@ -197,8 +197,8 @@ bool   gpu_mtp_bound(const model_t *m);
 bool   gpu_mtp_note_row(model_t *m, int row);
 bool   gpu_mtp_queue_pending(model_t *m, int slot);
 bool   gpu_mtp_reset_pending(model_t *m);
-bool   gpu_mtp_run(model_t *m, bool chained, const int32_t *tok, int n, int pos,
-                   bool want_logits);
+bool   gpu_mtp_run(model_t *m, bool chained, int slot0, const int32_t *tok, int n, int pos,
+                   bool want_logits);   // n <= 64 rows per call
 
 // ------------------------------------------- batched decode (backend half)
 //

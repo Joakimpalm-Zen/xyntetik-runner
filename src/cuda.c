@@ -3332,10 +3332,11 @@ bool gpu_mtp_reset_pending(model_t *m) {
 // Run n queued pairs (h from mtp_h, or the chained mtp_hid when chained) at
 // positions pos..pos+n-1; want_logits leaves the last row's head logits in
 // m->mtp_logits (host) and the last wide residual in mtp_hid.
-bool gpu_mtp_run(model_t *m, bool chained, const int32_t *tok, int n, int pos,
+bool gpu_mtp_run(model_t *m, bool chained, int slot0, const int32_t *tok, int n, int pos,
                  bool want_logits) {
     gpu_t *g = m->gpu;
-    if (!gpu_mtp_bound(m) || n < 1 || n > MVB || (chained && n != 1)) return false;
+    if (!gpu_mtp_bound(m) || n < 1 || n > MVB || (chained && n != 1) ||
+        slot0 < 0 || slot0 + n > m->n_batch) return false;
     const int E = m->n_embd, hc = m->hc_count, hcd = hc * E, l = m->n_layer;
     if (cu.CtxSetCurrent(g->sw->ctx) != 0) return false;
     // embeddings of the pair tokens, dequantized on the host like stage_x
@@ -3348,7 +3349,7 @@ bool gpu_mtp_run(model_t *m, bool chained, const int32_t *tok, int n, int pos,
         if (m->mtp_embd->scale != 1.0f) for (int i = 0; i < E; i++) hx[i] *= m->mtp_embd->scale;
     }
     if (cu.MemcpyHtoD(g->mtp_en, g->h_x, sizeof(float) * (size_t)n * E) != 0) return false;
-    CUdeviceptr hsrc = chained ? g->mtp_hid : g->mtp_h;
+    CUdeviceptr hsrc = chained ? g->mtp_hid : g->mtp_h + (size_t)slot0 * hcd * sizeof(float);
     if (!enc_rmsnorm(g, g->mtp_en, g->mtp_en, g->sw->mtp_enorm, E, m->rms_eps, n, E, E))
         return false;
     {
