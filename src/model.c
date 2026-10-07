@@ -4527,6 +4527,7 @@ void model_free(model_t *m) {
     free(m->x); free(m->xb); free(m->xb2); free(m->q);
     free(m->x_hc); free(m->hc_inject); free(m->hc_mix_lo);
     free(m->ple4_emb); free(m->ple4_tmp); free(m->ple4_conv_hist); free(m->ple4_prev);
+    free(m->ple4_hist_snap); free(m->ple4_hist_mark);
     free(m->k_tmp); free(m->v_tmp);
     free(m->q_gate); free(m->ssm_qkv); free(m->ssm_z); free(m->ssm_aux);
     free(m->ssm_cw);
@@ -6616,6 +6617,18 @@ static size_t recurrent_conv_bytes(const model_t *m) {
     return sizeof(float) * (size_t)m->n_layer *
            (size_t)(m->ssm_conv_kernel - 1) * (size_t)conv_dim;
 }
+// qwen4exp: the PLE block's dilated causal conv reads the (K-1)*ngram rows
+// before the current one, kept in ple4_conv_hist across forwards. That window
+// is recurrent state like the DeltaNet fold -- a rollback that restored the
+// fold but not the window left the next nine tokens reading a history that
+// included the rejected drafts (Qwen3.8-Flash-Next --draft-lookup changed the
+// greedy text, 2026-10-07) -- so every reset/snapshot/blob/mark below carries
+// it. Host-side on every backend (the PLE block runs on the host).
+static size_t recurrent_ple_bytes(const model_t *m) {
+    if (!m->hyper_conn || m->ple4_layer < 0 || !m->ple4_conv_hist) return 0;
+    return sizeof(float) * (size_t)(m->ple4_conv_kernel - 1) * (size_t)m->ple4_ngram *
+           (size_t)m->hc_count * (size_t)m->n_embd;
+}
 static size_t recurrent_state_bytes(const model_t *m) {
     int hv = m->ssm_inner / m->ssm_v_heads;
     size_t per_head = m->qwen35 ? (size_t)hv * (size_t)hv
@@ -6633,6 +6646,7 @@ void model_recurrent_reset(model_t *m) {
     if (!model_has_recurrent(m)) return;
     memset(m->ssm_conv_state, 0, recurrent_conv_bytes(m));
     memset(m->ssm_state_mem, 0, recurrent_state_bytes(m));
+    if (recurrent_ple_bytes(m)) memset(m->ple4_conv_hist, 0, recurrent_ple_bytes(m));
     m->ssm_snap_pos = -1;   // a fresh sequence: no earlier fold to restore
     m->ssm_mark_pos = -1;   // and the mark was over the sequence being dropped
 }
@@ -6640,8 +6654,11 @@ void model_recurrent_reset(model_t *m) {
 bool model_recurrent_snapshot(model_t *m, int pos) {
     if (!model_has_recurrent(m) || !m->ssm_conv_snap || !m->ssm_state_snap)
         return false;
+    size_t pb = recurrent_ple_bytes(m);
+    if (pb && !m->ple4_hist_snap && !(m->ple4_hist_snap = malloc(pb))) return false;
     memcpy(m->ssm_conv_snap, m->ssm_conv_state, recurrent_conv_bytes(m));
     memcpy(m->ssm_state_snap, m->ssm_state_mem, recurrent_state_bytes(m));
+    if (pb) memcpy(m->ple4_hist_snap, m->ple4_conv_hist, pb);
     m->ssm_snap_pos = pos;
     return true;
 }
@@ -6652,6 +6669,8 @@ bool model_recurrent_restore(model_t *m, int pos) {
     if (pos < 0 || m->ssm_snap_pos != pos) return false;   // fold not sliceable
     memcpy(m->ssm_conv_state, m->ssm_conv_snap, recurrent_conv_bytes(m));
     memcpy(m->ssm_state_mem, m->ssm_state_snap, recurrent_state_bytes(m));
+    if (recurrent_ple_bytes(m) && m->ple4_hist_snap)
+        memcpy(m->ple4_conv_hist, m->ple4_hist_snap, recurrent_ple_bytes(m));
     return true;
 }
 
@@ -6662,22 +6681,24 @@ bool model_recurrent_restore(model_t *m, int pos) {
 // the exact position it was saved. 0 bytes when the model has no recurrent state.
 size_t model_recurrent_blob_bytes(const model_t *m) {
     if (!model_has_recurrent(m)) return 0;
-    return recurrent_conv_bytes(m) + recurrent_state_bytes(m);
+    return recurrent_conv_bytes(m) + recurrent_state_bytes(m) + recurrent_ple_bytes(m);
 }
 
 bool model_recurrent_blob_save(const model_t *m, uint8_t *dst) {
     if (!model_has_recurrent(m)) return false;
-    size_t cb = recurrent_conv_bytes(m);
+    size_t cb = recurrent_conv_bytes(m), sb = recurrent_state_bytes(m);
     memcpy(dst, m->ssm_conv_state, cb);
-    memcpy(dst + cb, m->ssm_state_mem, recurrent_state_bytes(m));
+    memcpy(dst + cb, m->ssm_state_mem, sb);
+    if (recurrent_ple_bytes(m)) memcpy(dst + cb + sb, m->ple4_conv_hist, recurrent_ple_bytes(m));
     return true;
 }
 
 bool model_recurrent_blob_load(model_t *m, const uint8_t *src) {
     if (!model_has_recurrent(m)) return false;
-    size_t cb = recurrent_conv_bytes(m);
+    size_t cb = recurrent_conv_bytes(m), sb = recurrent_state_bytes(m);
     memcpy(m->ssm_conv_state, src, cb);
-    memcpy(m->ssm_state_mem, src + cb, recurrent_state_bytes(m));
+    memcpy(m->ssm_state_mem, src + cb, sb);
+    if (recurrent_ple_bytes(m)) memcpy(m->ple4_conv_hist, src + cb + sb, recurrent_ple_bytes(m));
     m->ssm_snap_pos = -1;   // a freshly installed fold has no earlier snapshot
     return true;
 }
@@ -6704,10 +6725,13 @@ bool model_recurrent_mark(model_t *m, int pos) {
             return false;
         }
     }
+    size_t pb = recurrent_ple_bytes(m);
+    if (pb && !m->ple4_hist_mark && !(m->ple4_hist_mark = malloc(pb))) return false;
     m->ssm_mark_pos = -1;
     if (m->gpu && !gpu_recurrent_download(m)) return false;
     memcpy(m->ssm_conv_mark, m->ssm_conv_state, recurrent_conv_bytes(m));
     memcpy(m->ssm_state_mark, m->ssm_state_mem, recurrent_state_bytes(m));
+    if (pb) memcpy(m->ple4_hist_mark, m->ple4_conv_hist, pb);
     m->ssm_mark_pos = pos;
     return true;
 }
@@ -6722,6 +6746,8 @@ bool model_recurrent_restore_mark(model_t *m) {
     if (model_recurrent_mark_pos(m) < 0) return false;
     memcpy(m->ssm_conv_state, m->ssm_conv_mark, recurrent_conv_bytes(m));
     memcpy(m->ssm_state_mem, m->ssm_state_mark, recurrent_state_bytes(m));
+    if (recurrent_ple_bytes(m) && m->ple4_hist_mark)
+        memcpy(m->ple4_conv_hist, m->ple4_hist_mark, recurrent_ple_bytes(m));
     m->ssm_snap_pos = -1;   // the rollback slot described the abandoned tail
     if (m->gpu && !gpu_recurrent_upload(m)) {
         m->ssm_mark_pos = -1;   // the device fold is undefined: caller recomputes

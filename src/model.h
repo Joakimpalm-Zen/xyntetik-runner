@@ -450,7 +450,9 @@ typedef struct {
     uint32_t ple4_off[64], ple4_vocab[64];
     gguf_tensor *ple4_table;                     // [ple4_head_dim, rows], part 2
     int32_t *ple4_prev;                          // [n_ctx] token history for the hash
-    float  *ple4_emb, *ple4_tmp, *ple4_conv_hist; // scratch
+    float  *ple4_emb, *ple4_tmp, *ple4_conv_hist; // scratch; conv_hist's first
+                                                  // (K-1)*ngram rows are recurrent STATE
+    float  *ple4_hist_snap, *ple4_hist_mark;      // its rollback snapshot and turn mark
     int    kv_from_start;
     int   *kv_src;               // [n_layer] cache-owning layer for each layer
     gguf_tensor *ple_tok_embd;   // [n_embd_ple * n_layer, n_vocab]
