@@ -3348,9 +3348,13 @@ bool gpu_mtp_run(model_t *m, bool chained, int slot0, const int32_t *tok, int n,
         dequant_row(m->mtp_embd->type, (uint8_t *)m->mtp_embd->data + (size_t)id * ers, hx, E);
         if (m->mtp_embd->scale != 1.0f) for (int i = 0; i < E; i++) hx[i] *= m->mtp_embd->scale;
     }
-    if (cu.MemcpyHtoD(g->mtp_en, g->h_x, sizeof(float) * (size_t)n * E) != 0) return false;
+    if (cu.MemcpyHtoD(g->mtp_en, g->h_x, sizeof(float) * (size_t)n * E) != 0 ||
+        cu.MemcpyHtoD(g->pos_dev, &pos, sizeof(int)) != 0)   // the block's rows start at pos
+        return false;
     CUdeviceptr hsrc = chained ? g->mtp_hid : g->mtp_h + (size_t)slot0 * hcd * sizeof(float);
-    if (!enc_rmsnorm(g, g->mtp_en, g->mtp_en, g->sw->mtp_enorm, E, m->rms_eps, n, E, E))
+    // the normed embedding goes through xb (not in place: the norm kernel's
+    // read and write loops are not guaranteed ordered against each other)
+    if (!enc_rmsnorm(g, g->mtp_en, g->xb, g->sw->mtp_enorm, E, m->rms_eps, n, E, E))
         return false;
     {
         float eps = m->rms_eps; int xs = hcd;
@@ -3358,7 +3362,7 @@ bool gpu_mtp_run(model_t *m, bool chained, int slot0, const int32_t *tok, int n,
         if (!launch(g, g->sw->f_rmsnorm_grouped, hc, n, 1, 256, pn)) return false;
     }
     {
-        void *pc[] = { &g->mtp_en, &g->mtp_hn, &g->mtp_cat, &E, &hc };
+        void *pc[] = { &g->xb, &g->mtp_hn, &g->mtp_cat, &E, &hc };
         if (!launch(g, g->sw->f_mtp_cat, hc, n, 1, 256, pc)) return false;
     }
     // eh_proj over the n*hc stream rows straight into the block's wide residual
