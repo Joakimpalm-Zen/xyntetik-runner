@@ -9,6 +9,27 @@ rename keep the names that were true when they were written.
 
 ## Unreleased
 
+- **The NextN/MTP draft head runs on the CUDA path** (`--mtp-file` on a
+  full split). The head's input is the trunk's wide residual, which stays
+  on the device; the block runs through the same tile forward at index
+  `n_layer` with its own KV region, experts on the host under `--cpu-moe`.
+  `make test-cuda-qwen4exp` compares the device head with the CPU head draft
+  step for draft step (argmax, top logit and top-2 gap within 1e-5) and
+  requires identical text, with device and with host experts.
+- **Speculative decoding verifies on the CUDA path.** A device forward
+  rejected every draft before (no per-row logits came back), so
+  `--draft-lookup`, `--draft` and `--mtp-file` drafted for nothing on CUDA.
+  A verify forward now computes every row's head and accepts from the
+  device rows.
+- **A partially accepted round restores the recurrent fold from per-row
+  checkpoints** on CUDA (DeltaNet conv window and state, filed after every
+  row of a verify tile) instead of re-running the accepted rows, and the
+  hyper-connection PLE window restores with it.
+- **Three more expert formats on the fused device MoE path**: IQ2_S, IQ3_S
+  and IQ4_XS expert tensors (Qwen3.8-Flash-Next's ISTA release mixes them)
+  take the fused path; the eager path handled them before. Device results
+  are scored against the CPU path in the qwen4exp gate.
+
 ## v1.1.0 - 2026-10-07
 
 - **A split GGUF shares device weights across server slots.** A multi-part
