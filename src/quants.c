@@ -1,3 +1,7 @@
+// pthread_setaffinity_np / sched_getaffinity (the pool pinning below)
+#if defined(__linux__) && !defined(_GNU_SOURCE)
+#define _GNU_SOURCE
+#endif
 // RUNNER_NO_SIMD (cross-ISA bit-exactness experiment, R12.1): compile the
 // scalar reference kernels only, so the reduction order is the source order
 // on every ISA. The SIMD selection below is preprocessor-keyed on the
@@ -23,6 +27,9 @@
 #include <string.h>
 #include <pthread.h>
 #include <stdatomic.h>
+#ifdef __linux__
+#include <sched.h>
+#endif
 
 // ---------------------------------------------------------------- fp16 table
 
@@ -3666,6 +3673,40 @@ static inline void tp_relax(void) {
 
 typedef struct { tpool *tp; int idx; } tp_arg;
 
+// Pool pinning (Linux). Two pools sharing one affinity mask that holds SMT
+// siblings collapse: the scheduler lands threads of both on sibling
+// hyperthreads while cores idle, and every tpool_run barrier waits for the
+// straggler. Measured 2026-10-07 on Qwen3.8-Flash-Next CPU-only, 16 cores +
+// siblings, --parallel 2: 1.8 tok/s per slot against 4.9 + 6.5 on the same
+// cores without the siblings in the mask. Each pool takes the next block of
+// n_threads CPUs from the process mask (round robin over pools), so two
+// slots' workers sit on distinct cores. RUNNER_TPOOL_PIN=0 turns it off.
+#ifdef __linux__
+static _Atomic int tp_pool_seq;
+static bool tp_pin_on(void) {
+    const char *e = getenv("RUNNER_TPOOL_PIN");
+    return !(e && *e && strcmp(e, "0") == 0);
+}
+static void tp_pin_workers(tpool *tp, int created) {
+    if (!tp_pin_on()) return;
+    cpu_set_t mask;
+    if (sched_getaffinity(0, sizeof(mask), &mask) != 0) return;
+    int cpus[CPU_SETSIZE], n = 0;
+    for (int c = 0; c < CPU_SETSIZE; c++) if (CPU_ISSET(c, &mask)) cpus[n++] = c;
+    // fewer CPUs than one pool's threads: pinning would stack them, leave it
+    if (n < tp->n_threads) return;
+    int seq = atomic_fetch_add(&tp_pool_seq, 1);
+    int base = (seq * tp->n_threads) % n;
+    for (int i = 1; i <= created; i++) {
+        cpu_set_t one; CPU_ZERO(&one);
+        CPU_SET(cpus[(base + i) % n], &one);
+        pthread_setaffinity_np(tp->th[i], sizeof(one), &one);
+    }
+}
+#else
+static void tp_pin_workers(tpool *tp, int created) { (void)tp; (void)created; }
+#endif
+
 static void tp_slice(int idx, int n_threads, int n_items, int *i0, int *i1) {
     int per = (n_items + n_threads - 1) / n_threads;
     *i0 = idx * per;
@@ -3766,6 +3807,7 @@ tpool *tpool_create(int n_threads) {
         }
         created++;
     }
+    tp_pin_workers(tp, created);
     return tp;
 
 fail:
