@@ -4537,7 +4537,7 @@ void model_free(model_t *m) {
     free(m->ssm_conv_mark); free(m->ssm_state_mark);
     free(m->hb); free(m->hb2); free(m->att); free(m->logits); free(m->all_logits);
     free(m->mtp_h); free(m->mtp_tok); free(m->mtp_pending); free(m->mtp_cat);
-    free(m->mtp_logits); free(m->mtp_hid); free(m->mtp_hmix);
+    free(m->mtp_logits); free(m->mtp_hid); free(m->mtp_hmix); free(m->mtp_res);
     // the MTP head's norm conversions are bind-phase material and belong to
     // the shared half below: freeing them here freed them once per slot
     free(m->shexp_in); free(m->shexp_o); free(m->shexp_g); free(m->shexp_u);
@@ -9393,7 +9393,8 @@ static bool mtp_alloc(model_t *m) {
     m->mtp_logits  = malloc(sizeof(float) * (size_t)m->n_vocab);
     m->mtp_hid     = malloc(sizeof(float) * HW);
     m->mtp_hmix    = m->hyper_conn ? malloc(sizeof(float) * E) : NULL;
-    if (!m->mtp_h || !m->mtp_tok || !m->mtp_pending || !m->mtp_cat ||
+    m->mtp_res     = malloc(sizeof(float) * B * HW);
+    if (!m->mtp_h || !m->mtp_tok || !m->mtp_pending || !m->mtp_cat || !m->mtp_res ||
         !m->mtp_logits || !m->mtp_hid || (m->hyper_conn && !m->mtp_hmix)) {
         fprintf(stderr, "mtp: out of memory for the head's buffers; drafts off\n");
         m->mtp_ready = false;
@@ -9417,15 +9418,7 @@ void model_mtp_note_row(model_t *m, int b) {
     if (m->gpu && gpu_mtp_bound(m)) {
         if (!mtp_alloc(m)) return;
         gpu_mtp_note_row(m, b);
-        if (getenv("RUNNER_MTP_DEBUG")) {
-            char tag[32]; snprintf(tag, sizeof tag, "gpu note%d", b);
-            gpu_mtp_debug_pending(m, tag);
-        }
         return;
-    }
-    if (getenv("RUNNER_MTP_DEBUG")) {
-        char tag[32]; snprintf(tag, sizeof tag, "cpu note%d", b);
-        mtp_stat(tag, model_hidden_row(m, b), m->n_embd);
     }
     model_mtp_note_hidden(m, model_hidden_row(m, b));
 }
@@ -9479,18 +9472,18 @@ static bool mtp_run(model_t *m, const float *h, size_t h_stride,
             rmsnorm(cat + (size_t)c * 2 * E + E, hb + (size_t)c * E,
                     m->mtp_hnorm_w + (size_t)c * E, E, m->rms_eps);
     }
-    float *res = m->hyper_conn ? m->x_hc : m->x;   // [n][S*E]: the block's residual
+    // the block runs over its own residual rows: a drain can happen in the
+    // middle of the engine's note/feed walk over a fresh batch (the queue
+    // fills at n_batch), and the trunk's rows it still has to note must stay
+    // intact. forward_layer reads the residual through m->x_hc / m->x, so
+    // those pointers are swapped for the duration (head_norm_row's trick).
+    float *res = m->mtp_res;   // [n][S*E]
     matvec_b(m->tp, res, E, m->mtp_eh_proj, m->mtp_cat, 2 * E, 2 * E, E,
              NULL, n * S);
-    if (getenv("RUNNER_MTP_DEBUG")) {
-        mtp_stat("cpu h0", h, E); mtp_stat("cpu en0", m->mtp_cat, E);
-        mtp_stat("cpu hn0", m->mtp_cat + E, E); mtp_stat("cpu eh0", res, E);
-        mtp_stat("cpu hL", h + (size_t)(n - 1) * h_stride, E);
-        mtp_stat("cpu catL", m->mtp_cat + (size_t)(n - 1) * S * 2 * E, 2 * E);
-        mtp_stat("cpu ehL", res + (size_t)(n - 1) * S * E, E);
-    }
+    float *save_x = m->x, *save_xhc = m->x_hc;
+    if (m->hyper_conn) m->x_hc = res; else m->x = res;
     forward_layer(m, m->n_layer, n, pos, 0);
-    if (getenv("RUNNER_MTP_DEBUG")) mtp_stat("cpu blk0", res, E);
+    m->x = save_x; m->x_hc = save_xhc;
     if (!want_logits) {
         if (dbg_time_on()) { dt_mtp_t += dt_now() - dt_m0; dt_mtp_n++; dt_mtp_rows += n; }
         return true;
@@ -9507,10 +9500,6 @@ static bool mtp_run(model_t *m, const float *h, size_t h_stride,
         m->x_hc = save;
         matvec_b(m->tp, m->mtp_logits, m->n_vocab, m->mtp_head, m->mtp_hmix, E, E,
                  m->n_vocab, NULL, 1);
-        if (getenv("RUNNER_MTP_DEBUG")) {
-            mtp_stat("cpu blkL", last, E); mtp_stat("cpu mix", m->mtp_hmix, E);
-            mtp_stat("cpu logits", m->mtp_logits, m->n_vocab);
-        }
     } else {
         const float *hnw = m->mtp_head_norm_w ? m->mtp_head_norm_w : m->out_norm_w;
         rmsnorm(m->mtp_hid, last, hnw, E, m->rms_eps);

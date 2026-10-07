@@ -417,6 +417,8 @@ typedef struct {
     // reads and chains is the WIDE residual [hc*n_embd] (mtp_hw below)
     gguf_tensor *mtp_hc_head_down, *mtp_hc_head_up;
     float   *mtp_hmix;       // [n_embd] mixed head input (hyper-connection heads)
+    float   *mtp_res;        // [n_batch][mtp_hw] the block's own residual: a drain
+                             // must not overwrite trunk rows the engine still reads
     int      mtp_hw;         // hidden width the head consumes: n_embd, or hc*n_embd
     gguf_tensor *mtp_embd, *mtp_head; // per-head or the backbone's shared ones
     float   *mtp_h;          // queue: [n_batch][mtp_hw] previous-position hidden
