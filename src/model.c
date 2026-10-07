@@ -9538,10 +9538,29 @@ void model_mtp_note_hidden(model_t *m, const float *h) {
 
 const float *model_mtp_pending(const model_t *m) { return m->mtp_pending; }
 
+// RUNNER_MTP_DUMP=path: one line per head logits vector (position, argmax,
+// its logit, the top-2 gap and a checksum), the same on every backend, so
+// the device head can be compared against the CPU head on a fixture whose
+// drafts are never accepted. Off by default, one cached getenv.
+static void mtp_dump(const model_t *m, const float *lg, int pos, const char *how) {
+    static FILE *fp; static int opened;
+    if (!opened) { opened = 1; const char *e = getenv("RUNNER_MTP_DUMP"); if (e && *e) fp = fopen(e, "a"); }
+    if (!fp || !lg) return;
+    int a = 0, b = -1; double sum = 0;
+    for (int i = 0; i < m->n_vocab; i++) {
+        sum += lg[i];
+        if (lg[i] > lg[a]) { b = a; a = i; } else if (b < 0 || lg[i] > lg[b]) b = i;
+    }
+    fprintf(fp, "%s pos %d argmax %d %.6f gap %.6f sum %.4f\n", how, pos, a, lg[a], b >= 0 ? lg[a] - lg[b] : 0.0f, sum);
+    fflush(fp);
+}
+
 float *model_mtp_draft_logits(model_t *m) {
     if (!model_mtp_ready(m) || !mtp_alloc(m)) return NULL;
     if (m->mtp_qn > 0 && !mtp_drain(m, true)) return NULL;
-    return m->mtp_logits_pos == m->mtp_pos ? m->mtp_logits : NULL;
+    float *lg = m->mtp_logits_pos == m->mtp_pos ? m->mtp_logits : NULL;
+    mtp_dump(m, lg, m->mtp_pos, "draft");
+    return lg;
 }
 
 float *model_mtp_step(model_t *m, const float *h, int32_t tok, int pos) {
@@ -9551,9 +9570,11 @@ float *model_mtp_step(model_t *m, const float *h, int32_t tok, int pos) {
         // non-NULL host handle so the engine's chain reads the same way)
         if (!gpu_mtp_run(m, true, 0, &tok, 1, pos, true)) return NULL;
         m->mtp_logits_pos = pos + 1;
+        mtp_dump(m, m->mtp_logits, pos + 1, "step");
         return m->mtp_logits;
     }
     if (!mtp_run(m, h, 0, &tok, 1, pos, true)) return NULL;
+    mtp_dump(m, m->mtp_logits, pos + 1, "step");
     return m->mtp_logits;
 }
 
