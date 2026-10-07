@@ -1690,7 +1690,10 @@ test-tc-overflow: runner $(TEST_TC_TOL)
 # through RUNNER_MOE_EAGER=1, the #243 binary flips 3 of 56 there); the forced
 # partial split (--gpu-layers 2) pins the boundary hand-off of the wide
 # hyper-connection residual (the CPU layers continued from a stale stream);
-# device experts and host experts both run. Skips itself without a CUDA
+# device experts and host experts both run; and a 2-slot server on the
+# fixture split in two parts must share one device copy (a split GGUF had
+# no shared-weights identity, so slot 2 built privately, found no VRAM and
+# fell to the CPU: two slots, two answers). Skips itself without a CUDA
 # device. 2e-5 is reduction-order residue on the fixture (measured 4.8e-7).
 test-cuda-qwen4exp: runner
 	@set -e; \
@@ -1708,6 +1711,13 @@ test-cuda-qwen4exp: runner
 		  done; \
 		done; \
 		rm -f cuda-q4e-cpu.score cuda-q4e-gpu.score cuda-q4e-gpu.err test-qwen4exp-512.gguf; \
+		$(PYTHON) scripts/gguf-split.py test-qwen4exp.gguf test-q4e-split 2 > /dev/null; \
+		./$(RUNNER_EXE) --serve --port 18840 -m test-q4e-split-00001-of-00002.gguf --parallel 2 --no-tray -c 256 > cuda-q4e-serve.log 2>&1 & pid=$$!; \
+		for i in $$(seq 1 60); do curl -sf http://127.0.0.1:18840/health > /dev/null 2>&1 && break; sleep 1; done; \
+		kill $$pid 2>/dev/null; wait $$pid 2>/dev/null; \
+		grep -q "reusing resident weights" cuda-q4e-serve.log || { echo "FAIL: the second slot of a split GGUF did not share the first slot's device weights"; cat cuda-q4e-serve.log; exit 1; }; \
+		echo "split GGUF, 2 slots: device weights shared"; \
+		rm -f test-q4e-split-0000?-of-00002.gguf cuda-q4e-serve.log; \
 	else echo "cuda qwen4exp gate: skipped (no CUDA device)"; fi
 
 # CUDA NVFP4 (ModelOpt two-level export): the device kernels and the companion
