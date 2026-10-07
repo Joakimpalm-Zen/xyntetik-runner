@@ -3375,7 +3375,7 @@ bool gpu_mtp_run(model_t *m, bool chained, int slot0, const int32_t *tok, int n,
     gpu_t *g = m->gpu;
     if (!gpu_mtp_bound(m) || n < 1 || n > MVB || (chained && n != 1) ||
         slot0 < 0 || slot0 + n > m->n_batch) return false;
-    const int E = m->n_embd, hc = m->hc_count, hcd = hc * E, l = m->n_layer;
+    int E = m->n_embd, hc = m->hc_count, hcd = hc * E, l = m->n_layer;
     if (cu.CtxSetCurrent(g->sw->ctx) != 0) return false;
     // embeddings of the pair tokens, dequantized on the host like stage_x
     size_t ers = ggml_row_size(m->mtp_embd->type, E);
