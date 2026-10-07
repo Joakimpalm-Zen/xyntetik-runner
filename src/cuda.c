@@ -3365,9 +3365,14 @@ bool gpu_mtp_run(model_t *m, bool chained, int slot0, const int32_t *tok, int n,
         void *pc[] = { &g->xb, &g->mtp_hn, &g->mtp_cat, &E, &hc };
         if (!launch(g, g->sw->f_mtp_cat, hc, n, 1, 256, pc)) return false;
     }
-    // eh_proj over the n*hc stream rows straight into the block's wide residual
-    if (!enc_mv(g, m, m->mtp_eh_proj, g->mtp_cat, g->x_hc, 2 * E, E, 0, n * hc, 2 * E, E))
-        return false;
+    // eh_proj over the n*hc stream rows straight into the block's wide residual,
+    // a tile of columns at a time (the batched matvecs take at most MVB columns)
+    for (int r0 = 0; r0 < n * hc; r0 += MVB) {
+        int rc = n * hc - r0 < MVB ? n * hc - r0 : MVB;
+        if (!enc_mv(g, m, m->mtp_eh_proj, g->mtp_cat + (size_t)r0 * 2 * E * sizeof(float),
+                    g->x_hc + (size_t)r0 * E * sizeof(float), 2 * E, E, 0, rc, 2 * E, E))
+            return false;
+    }
     if (!fwd_tile(g, m, tok, n, pos, false, l, l + 1)) return false;
     CUdeviceptr last = g->x_hc + (size_t)(n - 1) * hcd * sizeof(float);
     if (cu.MemcpyDtoD(g->mtp_hid, last, (size_t)hcd * sizeof(float)) != 0) return false;
