@@ -9438,6 +9438,12 @@ void model_mtp_reset(model_t *m, int pos) {
     }
 }
 
+void mtp_stat(const char *what, const float *v, int n) {
+    double sum = 0, amax = 0;
+    for (int i = 0; i < n; i++) { sum += v[i]; if (fabs(v[i]) > amax) amax = fabs(v[i]); }
+    fprintf(stderr, "MTPDBG %-10s n=%d sum=%.6f absmax=%.6f v0=%.6f v1=%.6f\n", what, n, sum, amax, v[0], v[1]);
+}
+
 // Run n pairs (h rows, tokens) through the head at positions pos..pos+n-1,
 // writing their KV slots; want_logits computes the last row's head output.
 static bool mtp_run(model_t *m, const float *h, size_t h_stride,
@@ -9468,7 +9474,12 @@ static bool mtp_run(model_t *m, const float *h, size_t h_stride,
     float *res = m->hyper_conn ? m->x_hc : m->x;   // [n][S*E]: the block's residual
     matvec_b(m->tp, res, E, m->mtp_eh_proj, m->mtp_cat, 2 * E, 2 * E, E,
              NULL, n * S);
+    if (getenv("RUNNER_MTP_DEBUG")) {
+        mtp_stat("cpu h0", h, E); mtp_stat("cpu en0", m->mtp_cat, E);
+        mtp_stat("cpu hn0", m->mtp_cat + E, E); mtp_stat("cpu eh0", res, E);
+    }
     forward_layer(m, m->n_layer, n, pos, 0);
+    if (getenv("RUNNER_MTP_DEBUG")) mtp_stat("cpu blk0", res, E);
     if (!want_logits) {
         if (dbg_time_on()) { dt_mtp_t += dt_now() - dt_m0; dt_mtp_n++; dt_mtp_rows += n; }
         return true;

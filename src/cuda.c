@@ -3373,7 +3373,24 @@ bool gpu_mtp_run(model_t *m, bool chained, int slot0, const int32_t *tok, int n,
                     g->x_hc + (size_t)r0 * E * sizeof(float), 2 * E, E, 0, rc, 2 * E, E))
             return false;
     }
+    if (getenv("RUNNER_MTP_DEBUG")) {
+        float *t = malloc(sizeof(float) * (size_t)hcd * 2);
+        if (t && cu.StreamSynchronize(g->stream) == 0) {
+            cu.MemcpyDtoH(t, hsrc, sizeof(float) * E); mtp_stat("gpu h0", t, E);
+            cu.MemcpyDtoH(t, g->xb, sizeof(float) * E); mtp_stat("gpu en0", t, E);
+            cu.MemcpyDtoH(t, g->mtp_hn, sizeof(float) * E); mtp_stat("gpu hn0", t, E);
+            cu.MemcpyDtoH(t, g->mtp_cat, sizeof(float) * 2 * E); mtp_stat("gpu cat0", t, 2 * E);
+            cu.MemcpyDtoH(t, g->x_hc, sizeof(float) * E); mtp_stat("gpu eh0", t, E);
+        }
+        free(t);
+    }
     if (!fwd_tile(g, m, tok, n, pos, false, l, l + 1)) return false;
+    if (getenv("RUNNER_MTP_DEBUG")) {
+        float t[4096];
+        if (cu.StreamSynchronize(g->stream) == 0 && E <= 4096) {
+            cu.MemcpyDtoH(t, g->x_hc, sizeof(float) * E); mtp_stat("gpu blk0", t, E);
+        }
+    }
     CUdeviceptr last = g->x_hc + (size_t)(n - 1) * hcd * sizeof(float);
     if (cu.MemcpyDtoD(g->mtp_hid, last, (size_t)hcd * sizeof(float)) != 0) return false;
     if (want_logits) {
