@@ -408,6 +408,7 @@ typedef struct {
     // residuals [n_batch][hcd], the pending row, the per-stream head input
     // [MVB*hc][2E], the chained hidden [hcd] and the normed embedding [MVB][E]
     CUdeviceptr mtp_h, mtp_pending, mtp_cat, mtp_hid, mtp_en, mtp_hn;
+    CUdeviceptr mtp_rows;               // [n_batch][hcd]: every tile's final wide residual rows
     unsigned long fwd_count;            // forwards run (recurrent rollback validity)
     unsigned long fwd_snap;             // fwd_count when the rollback point was taken
     // Mamba-2 recurrent buffers (granitehybrid/nemotron_h)
@@ -2296,6 +2297,7 @@ bool gpu_init(model_t *m) {
             CK(cu.MemAlloc(&g->mtp_hid,     sizeof(float) * hcd));
             CK(cu.MemAlloc(&g->mtp_en,      sizeof(float) * MVB * m->n_embd));
             CK(cu.MemAlloc(&g->mtp_hn,      sizeof(float) * MVB * hcd));
+            CK(cu.MemAlloc(&g->mtp_rows,    sizeof(float) * (size_t)m->n_batch * hcd));
             CK(cu.MemsetD8(g->mtp_pending, 0, sizeof(float) * hcd));
         }
         if (m->hyper_conn) {
@@ -3144,7 +3146,7 @@ static void gpu_ctx_free(model_t *m, gpu_t *g) {
                            g->q35_alpha, g->q35_gate, g->q35_hist,
                            g->q35_state, g->q35_hist_prev, g->q35_state_prev,
                            g->mtp_h, g->mtp_pending, g->mtp_cat, g->mtp_hid,
-                           g->mtp_en, g->mtp_hn,
+                           g->mtp_en, g->mtp_hn, g->mtp_rows,
                            g->mamba_proj, g->mamba_xBC, g->mamba_y,
                            g->mamba_conv, g->mamba_state,
                            g->mamba_conv_prev, g->mamba_state_prev };
@@ -3307,10 +3309,19 @@ bool gpu_mtp_bound(const model_t *m) {
 
 bool gpu_mtp_note_row(model_t *m, int row) {
     gpu_t *g = m->gpu;
-    if (!gpu_mtp_bound(m) || row < 0 || row >= MVB) return false;
+    if (!gpu_mtp_bound(m) || row < 0 || row >= m->n_batch) return false;
     size_t hcd = (size_t)m->hc_count * m->n_embd * sizeof(float);
     if (cu.CtxSetCurrent(g->sw->ctx) != 0) return false;
-    return cu.MemcpyDtoD(g->mtp_pending, g->x_hc + (size_t)row * hcd, hcd) == 0;
+    // mtp_rows holds every tile of the last forward (x_hc only the last tile)
+    return cu.MemcpyDtoD(g->mtp_pending, g->mtp_rows + (size_t)row * hcd, hcd) == 0;
+}
+
+// after a trunk tile: file its final wide residual rows for the head
+static bool mtp_save_rows(gpu_t *g, model_t *m, int i, int tn) {
+    if (!g->mtp_rows || !m->hyper_conn) return true;
+    size_t hcd = (size_t)m->hc_count * m->n_embd * sizeof(float);
+    if (i + tn > m->n_batch) return true;
+    return cu.MemcpyDtoD(g->mtp_rows + (size_t)i * hcd, g->x_hc, (size_t)tn * hcd) == 0;
 }
 
 bool gpu_mtp_queue_pending(model_t *m, int slot) {
@@ -5617,6 +5628,7 @@ bool gpu_forward_batch(model_t *m, const int32_t *tokens, int n, int pos,
                       cu.StreamSynchronize(g->stream) == 0;
             if (prof.on) prof.t_sync[m_] += prof_now() - tg0;
             if (gl) {
+                if (!mtp_save_rows(g, m, 0, 1)) return false;
                 double tc0 = prof.on ? prof_now() : 0;
                 if (!kv_copyback(g, m, pos, pos + 1)) return false;
                 if (prof.on) prof.t_copyback[m_] += prof_now() - tc0;
@@ -5666,6 +5678,7 @@ bool gpu_forward_batch(model_t *m, const int32_t *tokens, int n, int pos,
             fprintf(stderr, "gpu: kernel launch failed — falling back to CPU\n");
             return false;
         }
+        if (!mtp_save_rows(g, m, i, tn)) return false;
         int inj = inject_fail_ordinal();
         if (inj) {
             // Deterministic ownership/state-machine hook: fail after recurrent
