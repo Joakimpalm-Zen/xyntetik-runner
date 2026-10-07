@@ -9477,6 +9477,9 @@ static bool mtp_run(model_t *m, const float *h, size_t h_stride,
     if (getenv("RUNNER_MTP_DEBUG")) {
         mtp_stat("cpu h0", h, E); mtp_stat("cpu en0", m->mtp_cat, E);
         mtp_stat("cpu hn0", m->mtp_cat + E, E); mtp_stat("cpu eh0", res, E);
+        mtp_stat("cpu hL", h + (size_t)(n - 1) * h_stride, E);
+        mtp_stat("cpu catL", m->mtp_cat + (size_t)(n - 1) * S * 2 * E, 2 * E);
+        mtp_stat("cpu ehL", res + (size_t)(n - 1) * S * E, E);
     }
     forward_layer(m, m->n_layer, n, pos, 0);
     if (getenv("RUNNER_MTP_DEBUG")) mtp_stat("cpu blk0", res, E);

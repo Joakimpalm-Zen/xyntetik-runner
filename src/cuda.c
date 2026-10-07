@@ -3393,6 +3393,9 @@ bool gpu_mtp_run(model_t *m, bool chained, int slot0, const int32_t *tok, int n,
             cu.MemcpyDtoH(t, g->mtp_hn, sizeof(float) * E); mtp_stat("gpu hn0", t, E);
             cu.MemcpyDtoH(t, g->mtp_cat, sizeof(float) * 2 * E); mtp_stat("gpu cat0", t, 2 * E);
             cu.MemcpyDtoH(t, g->x_hc, sizeof(float) * E); mtp_stat("gpu eh0", t, E);
+            cu.MemcpyDtoH(t, hsrc + (size_t)(n - 1) * hcd * sizeof(float), sizeof(float) * E); mtp_stat("gpu hL", t, E);
+            cu.MemcpyDtoH(t, g->mtp_cat + (size_t)(n - 1) * hc * 2 * E * sizeof(float), sizeof(float) * 2 * E); mtp_stat("gpu catL", t, 2 * E);
+            cu.MemcpyDtoH(t, g->x_hc + (size_t)(n - 1) * hcd * sizeof(float), sizeof(float) * E); mtp_stat("gpu ehL", t, E);
         }
         free(t);
     }
