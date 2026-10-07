@@ -2331,7 +2331,8 @@ bool gpu_init(model_t *m) {
         // flash-decoding partials: per (token, head, split) -> hd weighted-V + max + sum
         CK(cu.MemAlloc(&g->attn_part, sizeof(float) * MVB * (size_t)m->n_head *
                                       ATTN_SPLITS * (max_hd + 2)));
-        CK(cu.MemAlloc(&g->logits, sizeof(float) * m->n_vocab));
+        // spec_batch rows: the speculative verify reads every row's head
+        CK(cu.MemAlloc(&g->logits, sizeof(float) * (size_t)(m->spec_batch > 0 ? m->spec_batch : 1) * m->n_vocab));
         CK(cu.MemAlloc(&g->xsc,    sizeof(float) * TC_N));
         CK(cu.MemAlloc(&g->pos_dev, sizeof(int)));
         if (m->qwen35) {
@@ -2452,7 +2453,7 @@ bool gpu_init(model_t *m) {
             }
         }
         g->h_x      = malloc(sizeof(float) * MVB * m->n_embd);
-        g->h_logits = malloc(sizeof(float) * m->n_vocab);
+        g->h_logits = malloc(sizeof(float) * (size_t)(m->spec_batch > 0 ? m->spec_batch : 1) * m->n_vocab);
         if (m->n_expert > 0)
             g->h_moe_logits = malloc(sizeof(float) * (size_t)m->n_expert);
         if (!g->h_x || !g->h_logits ||
@@ -4609,7 +4610,19 @@ static bool fwd_tile(gpu_t *g, model_t *m, const int32_t *tokens, int tn,
         prof_mark(g, PH_ELEM);
     }
 
-    if (want_logits) {
+    if (m->spec_want_all >= tn && tn <= m->spec_batch && l1 >= m->n_layer) {
+        // speculative verify (model_forward_batch_keep): every row's head,
+        // row r's logits at g->logits + r * n_vocab (gpu_spec_logits)
+        if (m->hyper_conn)
+            ok = ok && gpu_hc_mix(g, m, g->sw->hc_head_norm, m->hc_head_down, m->hc_head_up,
+                                  NULL, g->x_hc, g->xb, xdim, tn);
+        else
+            ok = ok && enc_rmsnorm(g, g->x, g->xb, g->sw->out_norm, n_embd, m->rms_eps,
+                                   tn, n_embd, xdim);
+        prof_mark(g, PH_NORM);
+        ok = ok && enc_mv(g, m, m->output, g->xb, g->logits, n_embd, m->n_vocab, 0, tn, xdim, m->n_vocab);
+        prof_mark(g, PH_LOGITS);
+    } else if (want_logits) {
         CUdeviceptr xlast = g->x + (size_t)(tn - 1) * n_embd * sizeof(float);
         if (m->hyper_conn) {
             // the final mixer is the output norm: last row of the wide residual
@@ -5128,8 +5141,19 @@ bool gpu_train_mvt(model_t *m, const gguf_tensor *w, const float *dy,
 // Discrete VRAM: the hidden states and per-row logits live device-side and
 // the CPU verify walk cannot read them without copies the design does not
 // want on this path. Full-offload speculative decoding stays refused here.
-bool gpu_spec_keep_ok(const model_t *m) { (void)m; return false; }
-float *gpu_spec_logits(model_t *m, int row) { (void)m; (void)row; return NULL; }
+// Speculative verify on CUDA: a full split emits every row's head into
+// g->logits (fwd_tile, spec_want_all) and gpu_forward_batch brings the rows
+// to h_logits; the walk reads them by row. A partial split hands the
+// boundary rows to the CPU, which serves the walk itself.
+bool gpu_spec_keep_ok(const model_t *m) {
+    gpu_t *g = m ? m->gpu : NULL;
+    return g && m->gpu_layers >= m->n_layer && m->spec_batch <= MVB;
+}
+float *gpu_spec_logits(model_t *m, int row) {
+    gpu_t *g = m ? m->gpu : NULL;
+    if (!g || !g->h_logits || row < 0 || row >= m->spec_batch) return NULL;
+    return g->h_logits + (size_t)row * m->n_vocab;
+}
 
 gpu_batch *gpu_batch_create(model_t **seqs, int n) {
     gpu_t *lead = NULL;
@@ -5712,6 +5736,10 @@ bool gpu_forward_batch(model_t *m, const int32_t *tokens, int n, int pos,
             return false;
         if (prof.on) prof.t_logitscp[m_] += prof_now() - tl0;
         if (logits) *logits = g->h_logits;
+    } else if (m->spec_want_all >= n && n <= m->spec_batch && !partial) {
+        // the verify walk's rows, read lazily by gpu_spec_logits
+        if (cu.MemcpyDtoH(g->h_logits, g->logits, sizeof(float) * (size_t)n * m->n_vocab) != 0)
+            return false;
     }
     if (prof.on) prof.wall_ms[m_] += prof_now() - t_fwd0;
     return true;
