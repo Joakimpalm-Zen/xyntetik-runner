@@ -1693,8 +1693,12 @@ test-tc-overflow: runner $(TEST_TC_TOL)
 # device experts and host experts both run; and a 2-slot server on the
 # fixture split in two parts must share one device copy (a split GGUF had
 # no shared-weights identity, so slot 2 built privately, found no VRAM and
-# fell to the CPU: two slots, two answers). Skips itself without a CUDA
-# device. 2e-5 is reduction-order residue on the fixture (measured 4.8e-7).
+# fell to the CPU: two slots, two answers); and the NextN/MTP head on the
+# device must draft the same logits as the CPU head, step for step, and
+# leave the text identical (RUNNER_MTP_DUMP on the fixture's MTP block, an
+# 86-token prompt so the head's queue drains in two tiles). Skips itself
+# without a CUDA device. 2e-5 is reduction-order residue on the fixture
+# (measured 4.8e-7).
 test-cuda-qwen4exp: runner
 	@set -e; \
 	if ./$(RUNNER_EXE) --caps | $(PYTHON) -c "import json,sys; d=json.load(sys.stdin); sys.exit(0 if (d.get('gpu') or {}).get('backend') == 'cuda' else 1)"; then \
@@ -1711,6 +1715,17 @@ test-cuda-qwen4exp: runner
 		  done; \
 		done; \
 		rm -f cuda-q4e-cpu.score cuda-q4e-gpu.score cuda-q4e-gpu.err test-qwen4exp-512.gguf; \
+		QWEN4EXP_TEST_MTP=1 $(PYTHON) scripts/make-test-qwen4exp.py test-q4e-mtp.gguf > /dev/null; \
+		P="hello world one two three four five six seven eight nine ten"; \
+		rm -f cuda-q4e-mtp-cpu.dump cuda-q4e-mtp-gpu.dump; \
+		RUNNER_MTP_DUMP=cuda-q4e-mtp-cpu.dump ./$(RUNNER_EXE) -m test-q4e-mtp.gguf -p "$$P" -n 24 --temp 0 --gpu off --mtp --no-tray -c 128 > cuda-q4e-mtp-cpu.out 2>/dev/null; \
+		for arm in "" "--cpu-moe"; do \
+		  rm -f cuda-q4e-mtp-gpu.dump; \
+		  RUNNER_MTP_DUMP=cuda-q4e-mtp-gpu.dump ./$(RUNNER_EXE) -m test-q4e-mtp.gguf -p "$$P" -n 24 --temp 0 --mtp $$arm --no-tray -c 128 > cuda-q4e-mtp-gpu.out 2>cuda-q4e-mtp-gpu.err; \
+		  grep -q "CUDA backend" cuda-q4e-mtp-gpu.err || { echo "FAIL: --mtp [$$arm] did not run on the device"; cat cuda-q4e-mtp-gpu.err; exit 1; }; \
+		  $(PYTHON) -c "import sys; a=open('cuda-q4e-mtp-cpu.out','rb').read(); b=open('cuda-q4e-mtp-gpu.out','rb').read(); da=open('cuda-q4e-mtp-cpu.dump').read(); db=open('cuda-q4e-mtp-gpu.dump').read(); assert a and a == b, 'generated text differs'; assert da and da == db, 'head logits differ: %d vs %d steps' % (da.count(chr(10)), db.count(chr(10))); print('mtp head [%s]: %d draft steps, device head == CPU head (bytes), text identical' % (sys.argv[1], da.count(chr(10))))" "$$arm"; \
+		done; \
+		rm -f test-q4e-mtp.gguf cuda-q4e-mtp-*; \
 		$(PYTHON) scripts/gguf-split.py test-qwen4exp.gguf test-q4e-split 2 > /dev/null; \
 		./$(RUNNER_EXE) --serve --port 18840 -m test-q4e-split-00001-of-00002.gguf --parallel 2 --no-tray -c 256 > cuda-q4e-serve.log 2>&1 & pid=$$!; \
 		for i in $$(seq 1 60); do curl -sf http://127.0.0.1:18840/health > /dev/null 2>&1 && break; sleep 1; done; \

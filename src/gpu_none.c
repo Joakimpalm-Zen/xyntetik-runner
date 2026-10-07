@@ -107,7 +107,6 @@ bool gpu_mtp_bound(const model_t *m) { (void)m; return false; }
 bool gpu_mtp_note_row(model_t *m, int row) { (void)m; (void)row; return false; }
 bool gpu_mtp_queue_pending(model_t *m, int slot) { (void)m; (void)slot; return false; }
 bool gpu_mtp_reset_pending(model_t *m) { (void)m; return false; }
-void gpu_mtp_debug_pending(model_t *m, const char *tag) { (void)m; (void)tag; }
 bool gpu_mtp_run(model_t *m, bool chained, int slot0, const int32_t *tok, int n, int pos, bool want_logits) {
     (void)m; (void)chained; (void)slot0; (void)tok; (void)n; (void)pos; (void)want_logits; return false;
 }

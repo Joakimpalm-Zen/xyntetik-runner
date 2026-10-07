@@ -1160,7 +1160,6 @@ const float *model_mtp_pending(const model_t *m);
 float       *model_mtp_draft_logits(model_t *m);
 float       *model_mtp_step(model_t *m, const float *h, int32_t tok, int pos);
 const float *model_mtp_hidden(const model_t *m);
-void         mtp_stat(const char *what, const float *v, int n);   // RUNNER_MTP_DEBUG helper
 // mean-pooled L2-normalized embedding of toks; clobbers KV slots [0, n)
 // Pooled, L2-normalized embedding of `toks` under m->pooling_type: the mean
 // of every position's final-normed hidden state (none or mean declared), or

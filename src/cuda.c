@@ -3316,13 +3316,6 @@ bool gpu_mtp_note_row(model_t *m, int row) {
     return cu.MemcpyDtoD(g->mtp_pending, g->mtp_rows + (size_t)row * hcd, hcd) == 0;
 }
 
-void gpu_mtp_debug_pending(model_t *m, const char *tag) {
-    gpu_t *g = m->gpu; float t[4096];
-    if (!gpu_mtp_bound(m) || m->n_embd > 4096) return;
-    cu.StreamSynchronize(g->stream);
-    cu.MemcpyDtoH(t, g->mtp_pending, sizeof(float) * m->n_embd); mtp_stat(tag, t, m->n_embd);
-}
-
 // after a trunk tile: file its final wide residual rows for the head
 static bool mtp_save_rows(gpu_t *g, model_t *m, int i, int tn) {
     if (!g->mtp_rows || !m->hyper_conn) return true;
@@ -3392,27 +3385,7 @@ bool gpu_mtp_run(model_t *m, bool chained, int slot0, const int32_t *tok, int n,
                     g->x_hc + (size_t)r0 * E * sizeof(float), 2 * E, E, 0, rc, 2 * E, E))
             return false;
     }
-    if (getenv("RUNNER_MTP_DEBUG")) {
-        float *t = malloc(sizeof(float) * (size_t)hcd * 2);
-        if (t && cu.StreamSynchronize(g->stream) == 0) {
-            cu.MemcpyDtoH(t, hsrc, sizeof(float) * E); mtp_stat("gpu h0", t, E);
-            cu.MemcpyDtoH(t, g->xb, sizeof(float) * E); mtp_stat("gpu en0", t, E);
-            cu.MemcpyDtoH(t, g->mtp_hn, sizeof(float) * E); mtp_stat("gpu hn0", t, E);
-            cu.MemcpyDtoH(t, g->mtp_cat, sizeof(float) * 2 * E); mtp_stat("gpu cat0", t, 2 * E);
-            cu.MemcpyDtoH(t, g->x_hc, sizeof(float) * E); mtp_stat("gpu eh0", t, E);
-            cu.MemcpyDtoH(t, hsrc + (size_t)(n - 1) * hcd * sizeof(float), sizeof(float) * E); mtp_stat("gpu hL", t, E);
-            cu.MemcpyDtoH(t, g->mtp_cat + (size_t)(n - 1) * hc * 2 * E * sizeof(float), sizeof(float) * 2 * E); mtp_stat("gpu catL", t, 2 * E);
-            cu.MemcpyDtoH(t, g->x_hc + (size_t)(n - 1) * hcd * sizeof(float), sizeof(float) * E); mtp_stat("gpu ehL", t, E);
-        }
-        free(t);
-    }
     if (!fwd_tile(g, m, tok, n, pos, false, l, l + 1)) return false;
-    if (getenv("RUNNER_MTP_DEBUG")) {
-        float t[4096];
-        if (cu.StreamSynchronize(g->stream) == 0 && E <= 4096) {
-            cu.MemcpyDtoH(t, g->x_hc, sizeof(float) * E); mtp_stat("gpu blk0", t, E);
-        }
-    }
     CUdeviceptr last = g->x_hc + (size_t)(n - 1) * hcd * sizeof(float);
     // the copies below are plain (default-stream) copies: wait for the block
     if (cu.StreamSynchronize(g->stream) != 0) return false;
@@ -3424,15 +3397,6 @@ bool gpu_mtp_run(model_t *m, bool chained, int slot0, const int32_t *tok, int n,
         if (cu.StreamSynchronize(g->stream) != 0) return false;
         if (cu.MemcpyDtoH(m->mtp_logits, g->logits, sizeof(float) * (size_t)m->n_vocab) != 0)
             return false;
-        if (getenv("RUNNER_MTP_DEBUG")) {
-            float *t = malloc(sizeof(float) * (size_t)hcd);
-            if (t) {
-                cu.MemcpyDtoH(t, last, sizeof(float) * E); mtp_stat("gpu blkL", t, E);
-                cu.MemcpyDtoH(t, g->xb, sizeof(float) * E); mtp_stat("gpu mix", t, E);
-                mtp_stat("gpu logits", m->mtp_logits, m->n_vocab);
-                free(t);
-            }
-        }
     } else if (cu.StreamSynchronize(g->stream) != 0) {
         return false;
     }

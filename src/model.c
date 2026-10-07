@@ -9439,12 +9439,6 @@ void model_mtp_reset(model_t *m, int pos) {
     }
 }
 
-void mtp_stat(const char *what, const float *v, int n) {
-    double sum = 0, amax = 0;
-    for (int i = 0; i < n; i++) { sum += v[i]; if (fabs(v[i]) > amax) amax = fabs(v[i]); }
-    fprintf(stderr, "MTPDBG %-10s n=%d sum=%.6f absmax=%.6f v0=%.6f v1=%.6f\n", what, n, sum, amax, v[0], v[1]);
-}
-
 // Run n pairs (h rows, tokens) through the head at positions pos..pos+n-1,
 // writing their KV slots; want_logits computes the last row's head output.
 static bool mtp_run(model_t *m, const float *h, size_t h_stride,
