@@ -282,6 +282,8 @@ typedef struct gpu_weights {
     char       *path;
     uint64_t    fsize, fino;
     int64_t     fmtime;
+    uint32_t    n_maps;        // mapped parts (split GGUF, attached companions)
+    uint64_t    mapped_size;   // every part's bytes: with part 1's identity, the key
     int         n_layer, n_embd, n_head, n_head_kv, head_dim, n_ff, n_vocab;
     int         n_ctx, rope_dim, rope_dim_local, kv_q8, v_rmsnorm;
     float       rope_base, rope_mscale;
@@ -956,6 +958,10 @@ static bool shared_matches(const gpu_weights *w, const model_t *m,
     if (w->no_id) return false;
     if (!w->path || !m->path || strcmp(w->path, m->path) != 0) return false;
     if (w->fsize != size || w->fino != ino || w->fmtime != mtime) return false;
+    // a multi-part file (split GGUF, --mtp-file companion) is identified by
+    // its first part plus the part count and the total mapped bytes
+    if (w->n_maps != gguf_map_count(&m->gf) || w->mapped_size != gguf_mapped_size(&m->gf))
+        return false;
     return shared_config_matches(w, m);
 }
 
@@ -1213,6 +1219,7 @@ static gpu_weights *shared_build(model_t *m, size_t act_bytes, int max_hd,
         memcpy(w->path, m->path, n);
     }
     w->fsize = fsize; w->fino = fino; w->fmtime = fmtime;
+    w->n_maps = gguf_map_count(&m->gf); w->mapped_size = gguf_mapped_size(&m->gf);
     w->n_layer = m->n_layer; w->n_embd = m->n_embd; w->n_head = m->n_head;
     w->n_head_kv = m->n_head_kv; w->head_dim = m->head_dim; w->n_ff = m->n_ff;
     w->n_vocab = m->n_vocab; w->n_ctx = m->n_ctx;
@@ -1947,8 +1954,14 @@ fail_quiet:
 static gpu_weights *shared_acquire(model_t *m, size_t act_bytes, int max_hd) {
     uint64_t fsize = 0, fino = 0;
     int64_t  fmtime = 0;
-    bool have_id = m->gf.n_maps <= 1 &&
-                   file_id(m->path, &fsize, &fino, &fmtime);
+    // Every file gets an identity: part 1's (size, inode, mtime) plus, in
+    // shared_matches, the part count and total mapped bytes. A split GGUF
+    // used to have none, so every server slot built its own device copy;
+    // on a 2-part Qwen3.8-Flash-Next with --cpu-moe auto the first slot
+    // filled the slice and the second fell to the CPU, and the two slots
+    // then answered the same request with different logits (the hazard
+    // split_guard describes; --parallel 2 on the Blackwell, 2026-10-07).
+    bool have_id = file_id(m->path, &fsize, &fino, &fmtime);
     gpu_weights *w = NULL;
     pthread_mutex_lock(&g_shared_mu);
     if (have_id)
