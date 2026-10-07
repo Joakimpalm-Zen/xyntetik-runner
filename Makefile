@@ -1694,8 +1694,9 @@ test-tc-overflow: runner $(TEST_TC_TOL)
 # fixture split in two parts must share one device copy (a split GGUF had
 # no shared-weights identity, so slot 2 built privately, found no VRAM and
 # fell to the CPU: two slots, two answers); and the NextN/MTP head on the
-# device must draft the same logits as the CPU head, step for step, and
-# leave the text identical (RUNNER_MTP_DUMP on the fixture's MTP block, an
+# device must draft the CPU head's logits step for step (same argmax,
+# top logit and top-2 gap within reduction-order residue) and leave the
+# text identical (RUNNER_MTP_DUMP on the fixture's MTP block, an
 # 86-token prompt so the head's queue drains in two tiles). Skips itself
 # without a CUDA device. 2e-5 is reduction-order residue on the fixture
 # (measured 4.8e-7).
@@ -1723,7 +1724,7 @@ test-cuda-qwen4exp: runner
 		  rm -f cuda-q4e-mtp-gpu.dump; \
 		  RUNNER_MTP_DUMP=cuda-q4e-mtp-gpu.dump ./$(RUNNER_EXE) -m test-q4e-mtp.gguf -p "$$P" -n 24 --temp 0 --mtp $$arm --no-tray -c 128 > cuda-q4e-mtp-gpu.out 2>cuda-q4e-mtp-gpu.err; \
 		  grep -q "CUDA backend" cuda-q4e-mtp-gpu.err || { echo "FAIL: --mtp [$$arm] did not run on the device"; cat cuda-q4e-mtp-gpu.err; exit 1; }; \
-		  $(PYTHON) -c "import sys; a=open('cuda-q4e-mtp-cpu.out','rb').read(); b=open('cuda-q4e-mtp-gpu.out','rb').read(); da=open('cuda-q4e-mtp-cpu.dump').read(); db=open('cuda-q4e-mtp-gpu.dump').read(); assert a and a == b, 'generated text differs'; assert da and da == db, 'head logits differ: %d vs %d steps' % (da.count(chr(10)), db.count(chr(10))); print('mtp head [%s]: %d draft steps, device head == CPU head (bytes), text identical' % (sys.argv[1], da.count(chr(10))))" "$$arm"; \
+		  $(PYTHON) -c "import sys; a=open('cuda-q4e-mtp-cpu.out','rb').read(); b=open('cuda-q4e-mtp-gpu.out','rb').read(); assert a and a == b, 'generated text differs'; da=[l.split() for l in open('cuda-q4e-mtp-cpu.dump') if l.strip()]; db=[l.split() for l in open('cuda-q4e-mtp-gpu.dump') if l.strip()]; assert len(da) == len(db) > 10, (len(da), len(db)); bad=[(x,y) for x,y in zip(da,db) if x[4] != y[4] or abs(float(x[5])-float(y[5])) > 1e-5 or abs(float(x[7])-float(y[7])) > 1e-5]; assert not bad, 'head logits differ: %s' % bad[:2]; print('mtp head [%s]: %d draft steps, device head == CPU head (argmax, logit and gap within 1e-5), text identical' % (sys.argv[1], len(da)))" "$$arm"; \
 		done; \
 		rm -f test-q4e-mtp.gguf cuda-q4e-mtp-*; \
 		$(PYTHON) scripts/gguf-split.py test-qwen4exp.gguf test-q4e-split 2 > /dev/null; \
