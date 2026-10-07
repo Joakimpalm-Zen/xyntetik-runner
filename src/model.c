@@ -4529,6 +4529,7 @@ void model_free(model_t *m) {
     free(m->x_hc); free(m->hc_inject); free(m->hc_mix_lo);
     free(m->ple4_emb); free(m->ple4_tmp); free(m->ple4_conv_hist); free(m->ple4_prev);
     free(m->ple4_hist_snap); free(m->ple4_hist_mark); free(m->ple4_hist_keep);
+    free(m->ssm_conv_keep); free(m->ssm_state_keep);
     free(m->k_tmp); free(m->v_tmp);
     free(m->q_gate); free(m->ssm_qkv); free(m->ssm_z); free(m->ssm_aux);
     free(m->ssm_cw);
@@ -5841,6 +5842,8 @@ static void q35_heads_worker(void *vp, int h0, int h1) {
     }
 }
 
+static size_t recurrent_conv_bytes(const model_t *m);
+static size_t recurrent_state_bytes(const model_t *m);
 static void qwen35_linear(model_t *m, layer_t *ly, int layer, int n, int xdim) {
     int sk = m->ssm_state, ng = m->ssm_groups, nh = m->ssm_v_heads;
     int inner = m->ssm_inner, hv = inner / nh;
@@ -5860,6 +5863,19 @@ static void qwen35_linear(model_t *m, layer_t *ly, int layer, int n, int xdim) {
 
     float *hist = m->ssm_conv_state + (size_t)layer * histn * convdim;
     float *states = m->ssm_state_mem + (size_t)layer * nh * hv * hv;
+    // a keep-forward (speculative verify) files per-row checkpoints so the
+    // state after any row can be restored (model_recurrent_restore_row)
+    bool keep = !m->gpu && m->spec_want_all >= n && n <= m->spec_batch;
+    if (keep && !m->ssm_conv_keep) {
+        m->ssm_conv_keep = malloc((size_t)m->spec_batch * recurrent_conv_bytes(m));
+        m->ssm_state_keep = malloc((size_t)m->spec_batch * recurrent_state_bytes(m));
+        if (!m->ssm_conv_keep || !m->ssm_state_keep) {
+            free(m->ssm_conv_keep); free(m->ssm_state_keep);
+            m->ssm_conv_keep = m->ssm_state_keep = NULL;
+        }
+    }
+    if (!m->ssm_conv_keep) keep = false;
+    m->ssm_keep_n = keep ? n : 0;
     const int K = m->ssm_conv_kernel;
     for (int b = 0; b < n; b++) {
         float *mix = m->ssm_qkv + (size_t)b * convdim;
@@ -5897,6 +5913,14 @@ static void qwen35_linear(model_t *m, layer_t *ly, int layer, int n, int xdim) {
         q35_head_job hj = { m, ly, cv, cv + 2 * keydim, m->xb2 + (size_t)b * xdim,
                             states, alphas, b, sk, ng, nh, hv, keydim, inner };
         tpool_run(m->tp, q35_heads_worker, &hj, nh);
+        if (keep) {
+            // checkpoint this layer's window and state after row b
+            size_t cb = (size_t)histn * convdim, sb = (size_t)nh * hv * hv;
+            memcpy(m->ssm_conv_keep + ((size_t)b * m->n_layer + layer) * cb, hist,
+                   sizeof(float) * cb);
+            memcpy(m->ssm_state_keep + ((size_t)b * m->n_layer + layer) * sb, states,
+                   sizeof(float) * sb);
+        }
     }
     matvec_b(m->tp, m->xb, xdim, ly->ssm_out, m->xb2, xdim,
              inner, m->n_embd, NULL, n);
@@ -6703,9 +6727,17 @@ bool model_recurrent_restore(model_t *m, int pos) {
 }
 
 bool model_recurrent_restore_row(model_t *m, int r) {
-    if (!model_has_recurrent(m) || !m->gpu || r < 0) return false;
+    if (!model_has_recurrent(m) || r < 0) return false;
     if (recurrent_ple_bytes(m) && (!m->ple4_hist_keep || r >= m->ple4_keep_n)) return false;
-    if (!gpu_recurrent_restore_row(m, r)) return false;
+    if (m->gpu) {
+        if (!gpu_recurrent_restore_row(m, r)) return false;
+    } else {
+        if (!m->qwen35 || !m->ssm_conv_keep || r >= m->ssm_keep_n) return false;
+        size_t cb = recurrent_conv_bytes(m), sb = recurrent_state_bytes(m);
+        memcpy(m->ssm_conv_state, (const char *)m->ssm_conv_keep + (size_t)r * cb, cb);
+        memcpy(m->ssm_state_mem, (const char *)m->ssm_state_keep + (size_t)r * sb, sb);
+        m->ssm_keep_n = 0;
+    }
     if (recurrent_ple_bytes(m)) {
         size_t hcd = (size_t)m->hc_count * m->n_embd;
         memcpy(m->ple4_conv_hist, m->ple4_hist_keep + (size_t)(r + 1) * hcd, recurrent_ple_bytes(m));

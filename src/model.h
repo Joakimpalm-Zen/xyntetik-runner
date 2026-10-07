@@ -364,6 +364,12 @@ typedef struct {
     // spec-decode/abandoned-step rollback boundary and the CUDA q35_*_prev
     // pattern need; per-slot because each decoding stream owns its own model_t.
     float *ssm_conv_snap, *ssm_state_snap; // snapshot of the two buffers above
+    // CPU per-row checkpoints of a keep-forward (speculative verify): slot r
+    // holds both buffers' image after row r, so a partially accepted round
+    // restores the fold outright instead of re-folding the accepted rows
+    // (the device path keeps its own, gpu_recurrent_restore_row)
+    float *ssm_conv_keep, *ssm_state_keep;  // [spec_batch][buffer]
+    int    ssm_keep_n;                      // rows the last keep-forward filed (0: none)
     int    ssm_snap_pos;                   // position that snapshot is valid at, -1 = none
     // Turn mark (tracer 7): a second, independent checkpoint of the same two
     // buffers, taken at a request's prompt boundary so the NEXT request on the
