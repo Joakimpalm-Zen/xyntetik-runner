@@ -5186,6 +5186,10 @@ static const char *const dt_names[DT_N] = {
     "ple", "hc_mix", "attention", "deltanet/ssm", "hc_combine", "moe_route",
     "experts", "shared_expert", "dense_ffn", "head" };
 static double dt_acc[DT_N];
+// whole-pass accounting beside the stage split: backbone forwards by row
+// count (one row, or a batch) and the NextN/MTP head's runs
+static double dt_fwd_t[2], dt_mtp_t;
+static long   dt_fwd_n[2], dt_fwd_rows[2], dt_mtp_n, dt_mtp_rows;
 static int dt_on = -1;
 static inline bool dbg_time_on(void) {
     if (dt_on < 0) { const char *e = getenv("RUNNER_DEBUG_TIME"); dt_on = e && *e && strcmp(e, "0") != 0; }
@@ -5203,6 +5207,11 @@ void model_debug_time_report(void) {
     fprintf(stderr, "TIME total %.3f s over the run\n", tot);
     for (int k = 0; k < DT_N; k++)
         if (dt_acc[k] > 0) fprintf(stderr, "TIME %-14s %8.3f s  %5.1f%%\n", dt_names[k], dt_acc[k], 100.0 * dt_acc[k] / tot);
+    for (int k = 0; k < 2; k++)
+        if (dt_fwd_n[k]) fprintf(stderr, "TIME forward %s: %ld passes, %ld rows, %8.3f s (%.1f ms/pass)\n",
+                                 k ? "batch" : "1-row", dt_fwd_n[k], dt_fwd_rows[k], dt_fwd_t[k], 1e3 * dt_fwd_t[k] / dt_fwd_n[k]);
+    if (dt_mtp_n) fprintf(stderr, "TIME mtp head: %ld runs, %ld rows, %8.3f s (%.1f ms/run)\n",
+                          dt_mtp_n, dt_mtp_rows, dt_mtp_t, 1e3 * dt_mtp_t / dt_mtp_n);
 }
 
 static int dbg_act_pass = 0; // forward passes seen so far
@@ -9181,8 +9190,10 @@ float *model_forward_batch(model_t *m, const int32_t *tokens, int n, int pos,
     }
     m->fwd_tokens = tokens;   // the PLE block hashes the batch's own ids
 
+    double dt_f0 = dbg_time_on() ? dt_now() : 0;
     for (int l = start; l < m->n_layer; l++)
         forward_layer(m, l, n, pos, dbg);
+    if (dbg_time_on()) { int k = n > 1; dt_fwd_t[k] += dt_now() - dt_f0; dt_fwd_n[k]++; dt_fwd_rows[k] += n; }
 
     if (m->tape && n == 1 && pos < m->tape_T)
         memcpy(m->tape + ((size_t)m->n_layer * m->tape_T + pos) * m->n_embd,
@@ -9371,6 +9382,7 @@ static bool mtp_run(model_t *m, const float *h, size_t h_stride,
                     const int32_t *tok, int n, int pos, bool want_logits) {
     const int E = m->n_embd;
     if (n < 1 || n > m->n_batch || pos < 0 || pos + n > m->n_ctx) return false;
+    double dt_m0 = dbg_time_on() ? dt_now() : 0;
     const size_t ers = ggml_row_size(m->mtp_embd->type, E);
     // S input rows per token: one, or one per hyper-connection stream, each
     // [enorm(e) ; hnorm_c(h_c)] projected by the same eh_proj into stream c
@@ -9395,7 +9407,10 @@ static bool mtp_run(model_t *m, const float *h, size_t h_stride,
     matvec_b(m->tp, res, E, m->mtp_eh_proj, m->mtp_cat, 2 * E, 2 * E, E,
              NULL, n * S);
     forward_layer(m, m->n_layer, n, pos, 0);
-    if (!want_logits) return true;
+    if (!want_logits) {
+        if (dbg_time_on()) { dt_mtp_t += dt_now() - dt_m0; dt_mtp_n++; dt_mtp_rows += n; }
+        return true;
+    }
     const float *last = res + (size_t)(n - 1) * S * E;
     if (m->hyper_conn) {
         // the next chained step reads the wide residual; the head reads it
@@ -9415,6 +9430,7 @@ static bool mtp_run(model_t *m, const float *h, size_t h_stride,
                  m->n_vocab, NULL, 1);
     }
     m->mtp_logits_pos = pos + n;
+    if (dbg_time_on()) { dt_mtp_t += dt_now() - dt_m0; dt_mtp_n++; dt_mtp_rows += n; }
     return true;
 }
 
