@@ -227,8 +227,9 @@ static void spec_fold_sync(engine *e, const int32_t *d, int acc, int nd,
     model_t *m = e->m;
     if (nd <= 0 || acc >= nd || !model_has_recurrent(m)) return;
     // a backend with per-row checkpoints restores the fold after the last
-    // accepted row outright (row 0 = the pending token, rows 1..acc = drafts)
-    if (model_recurrent_restore_row(m, acc)) return;
+    // kept row outright: `acc` rows are kept (row 0 the pending token, then
+    // the accepted drafts), so the state after row acc-1
+    if (acc >= 1 && model_recurrent_restore_row(m, acc - 1)) return;
     if (model_recurrent_restore(m, round_pos)) {
         if (acc > 0) model_forward_batch(m, d, acc, round_pos, false);
         return;
