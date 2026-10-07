@@ -9,6 +9,8 @@ rename keep the names that were true when they were written.
 
 ## Unreleased
 
+## v1.1.0 - 2026-10-07
+
 - **`--mtp-file PATH`: a NextN/MTP draft head from a companion GGUF.**
   Qwen3.8-Flash-Next's release trunk ships without its MTP block;
   `scripts/make-mtp-companion.py` builds it from the publisher's BF16
