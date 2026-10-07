@@ -28,7 +28,7 @@ exists to replace those guesses with answers you can check.
     <img src="site/assets/readme-fit-light.svg" alt="runner --fit reading the first 16 MB of Granite 4.2 8B on an RTX 3070: FITS, 35 of 40 layers on the GPU" width="560">
   </picture>
 </p>
-<p align="center"><sub>Real output: Runner 1.0.2 asked about Granite 4.2 8B on an RTX 3070, shortened to fit. <a href="docs/compat-reports/fit-capture-1.0.2-2026-10-06-rtx3070.md">Full capture</a></sub></p>
+<p align="center"><sub>Real output: Runner asked about Granite 4.2 8B on an RTX 3070 (October 2026), shortened to fit. <a href="docs/compat-reports/fit-capture-1.0.2-2026-10-06-rtx3070.md">Full capture</a></sub></p>
 
 - **Ask before you download.** Runner reads the first few megabytes of a
   model and tells you whether it fits your machine, and how. It called the
