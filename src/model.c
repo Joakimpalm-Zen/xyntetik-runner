@@ -2100,6 +2100,33 @@ static bool model_bind_weights(model_t *m, const char *path, const model_params 
         return false;
     }
     m->n_layer -= m->mtp_layers;
+    // --mtp-file: the predictor block lives in a companion file (llama.cpp's
+    // MTP-only export: block_count counts the block, nextn_predict_layers 1,
+    // tensors at index n_layer). Checked against the trunk before its
+    // tensors join the directory; the trunk's own copy of any shared tensor
+    // (embeddings, LM head) is the one bound.
+    if (p->mtp_path) {
+        gguf_file ex;
+        if (!gguf_open(&ex, p->mtp_path)) {
+            fprintf(stderr, "error: --mtp-file: cannot open %s\n", p->mtp_path);
+            return false;
+        }
+        const char *ex_arch = gguf_get_str(&ex, "general.architecture", "");
+        int ex_n   = (int)gguf_get_u32(&ex, AK("nextn_predict_layers"), 0);
+        int ex_blk = (int)gguf_get_u32(&ex, AK("block_count"), 0);
+        const char *why = strcmp(ex_arch, arch) ? "architecture differs from the trunk"
+                        : m->mtp_layers != 0 ? "the trunk already carries a predictor block"
+                        : ex_n != 1 ? "the companion must declare exactly one predictor block"
+                        : ex_blk - ex_n != m->n_layer ? "the companion's depth differs from the trunk"
+                        : NULL;
+        if (why || !gguf_attach(g, &ex)) {
+            fprintf(stderr, "error: --mtp-file: %s\n", why ? why : "out of memory");
+            gguf_close(&ex);
+            return false;
+        }
+        m->mtp_layers = 1;
+        m->mtp_external = true;
+    }
     if (!m->l_is_swa) {
         int sw = (int)gguf_get_u32(g, AK("attention.sliding_window"), 0);
         if (sw > 0) {
@@ -3171,10 +3198,11 @@ static bool model_bind_weights(model_t *m, const char *path, const model_params 
         const char *why = m->mtp_layers == 0 ? "the export declares no predictor block"
                         : m->mtp_layers != 1 ? "only a single predictor block is consumable"
                         : fused_qkv ? "fused-QKV families are not supported"
-                        : (m->n_expert > 0 || m->nemotron_h || m->granite_hybrid ||
-                           m->l_head_kv || m->l_head_dim || m->kv_src ||
-                           m->n_embd_ple > 0)
-                            ? "only dense attention or Gated DeltaNet backbones are supported"
+                        : ((m->n_expert > 0 && !m->hyper_conn) || m->nemotron_h ||
+                           m->granite_hybrid || m->l_head_kv || m->l_head_dim ||
+                           m->kv_src || m->n_embd_ple > 0)
+                            ? "only dense attention, Gated DeltaNet or hyper-connection "
+                              "MoE backbones are supported"
                         : NULL;
         if (why) {
             fprintf(stderr, "error: mtp: %s\n", why);
@@ -4506,7 +4534,7 @@ void model_free(model_t *m) {
     free(m->ssm_conv_mark); free(m->ssm_state_mark);
     free(m->hb); free(m->hb2); free(m->att); free(m->logits); free(m->all_logits);
     free(m->mtp_h); free(m->mtp_tok); free(m->mtp_pending); free(m->mtp_cat);
-    free(m->mtp_logits); free(m->mtp_hid);
+    free(m->mtp_logits); free(m->mtp_hid); free(m->mtp_hmix);
     // the MTP head's norm conversions are bind-phase material and belong to
     // the shared half below: freeing them here freed them once per slot
     free(m->shexp_in); free(m->shexp_o); free(m->shexp_g); free(m->shexp_u);
@@ -9210,6 +9238,7 @@ float *model_spec_row_logits(model_t *m, int b) {
 
 const float *model_hidden_row(const model_t *m, int b) {
     if (m->gpu && m->gpu_layers >= m->n_layer) return NULL;
+    if (m->hyper_conn) return m->x_hc + (size_t)b * m->hc_count * m->n_embd;
     return m->x + (size_t)b * m->n_embd;
 }
 
@@ -9234,10 +9263,25 @@ static bool model_mtp_bind(model_t *m, gguf_file *g) {
     if (!check_shape(m->mtp_eh_proj, 2 * m->n_embd, m->n_embd,
                      "nextn.eh_proj", i))
         return false;
+    m->mtp_hw = m->hyper_conn ? m->hc_count * m->n_embd : m->n_embd;
     m->mtp_enorm_w = tensor_to_f32(en, m->n_embd, &ok);
-    m->mtp_hnorm_w = tensor_to_f32(hn, m->n_embd, &ok);
-    gguf_tensor *shn = opt_tensor(g, "blk.%d.nextn.shared_head_norm.weight", i);
-    m->mtp_head_norm_w = shn ? tensor_to_f32(shn, m->n_embd, &ok) : NULL;
+    m->mtp_hnorm_w = tensor_to_f32(hn, m->mtp_hw, &ok);   // per stream under hc
+    if (m->hyper_conn) {
+        // qwen4exp (llama.cpp qwen4exp.cpp graph_mtp): the head norm is the
+        // block's own stream mixer, nextn.hc_head_{norm,down,up}
+        const int hcd = m->mtp_hw, lr = m->hc_low_rank;
+        gguf_tensor *hhn = need_tensor(g, "blk.%d.nextn.hc_head_norm.weight", i, &ok);
+        m->mtp_hc_head_down = need_tensor(g, "blk.%d.nextn.hc_head_down.weight", i, &ok);
+        m->mtp_hc_head_up   = need_tensor(g, "blk.%d.nextn.hc_head_up.weight", i, &ok);
+        if (!ok) return false;
+        if (!check_shape(m->mtp_hc_head_down, hcd, lr, "nextn.hc_head_down", i) ||
+            !check_shape(m->mtp_hc_head_up, lr, hcd, "nextn.hc_head_up", i))
+            return false;
+        m->mtp_head_norm_w = tensor_to_f32(hhn, hcd, &ok);
+    } else {
+        gguf_tensor *shn = opt_tensor(g, "blk.%d.nextn.shared_head_norm.weight", i);
+        m->mtp_head_norm_w = shn ? tensor_to_f32(shn, m->n_embd, &ok) : NULL;
+    }
     if (!ok) return false;
     gguf_tensor *emb = opt_tensor(g, "blk.%d.nextn.embed_tokens.weight", i);
     gguf_tensor *hd  = opt_tensor(g, "blk.%d.nextn.shared_head_head.weight", i);
@@ -9261,14 +9305,16 @@ static bool model_mtp_bind(model_t *m, gguf_file *g) {
 static bool mtp_alloc(model_t *m) {
     if (m->mtp_h) return true;
     const size_t E = (size_t)m->n_embd, B = (size_t)m->n_batch;
-    m->mtp_h       = malloc(sizeof(float) * B * E);
+    const size_t HW = (size_t)m->mtp_hw, S = m->hyper_conn ? (size_t)m->hc_count : 1;
+    m->mtp_h       = malloc(sizeof(float) * B * HW);
     m->mtp_tok     = malloc(sizeof(int32_t) * B);
-    m->mtp_pending = calloc(E, sizeof(float));
-    m->mtp_cat     = malloc(sizeof(float) * B * 2 * E);
+    m->mtp_pending = calloc(HW, sizeof(float));
+    m->mtp_cat     = malloc(sizeof(float) * B * S * 2 * E);
     m->mtp_logits  = malloc(sizeof(float) * (size_t)m->n_vocab);
-    m->mtp_hid     = malloc(sizeof(float) * E);
+    m->mtp_hid     = malloc(sizeof(float) * HW);
+    m->mtp_hmix    = m->hyper_conn ? malloc(sizeof(float) * E) : NULL;
     if (!m->mtp_h || !m->mtp_tok || !m->mtp_pending || !m->mtp_cat ||
-        !m->mtp_logits || !m->mtp_hid) {
+        !m->mtp_logits || !m->mtp_hid || (m->hyper_conn && !m->mtp_hmix)) {
         fprintf(stderr, "mtp: out of memory for the head's buffers; drafts off\n");
         m->mtp_ready = false;
         return false;
@@ -9293,7 +9339,7 @@ void model_mtp_reset(model_t *m, int pos) {
     // residual that produced position pos-1 went away with the forward that
     // made it, so the pending h is whatever the previous run left -- one
     // provisional-quality pair at position pos. Only acceptance can notice.
-    if (pos == 0) memset(m->mtp_pending, 0, sizeof(float) * (size_t)m->n_embd);
+    if (pos == 0) memset(m->mtp_pending, 0, sizeof(float) * (size_t)m->mtp_hw);
 }
 
 // Run n pairs (h rows, tokens) through the head at positions pos..pos+n-1,
@@ -9303,8 +9349,11 @@ static bool mtp_run(model_t *m, const float *h, size_t h_stride,
     const int E = m->n_embd;
     if (n < 1 || n > m->n_batch || pos < 0 || pos + n > m->n_ctx) return false;
     const size_t ers = ggml_row_size(m->mtp_embd->type, E);
+    // S input rows per token: one, or one per hyper-connection stream, each
+    // [enorm(e) ; hnorm_c(h_c)] projected by the same eh_proj into stream c
+    const int S = m->hyper_conn ? m->hc_count : 1;
     for (int b = 0; b < n; b++) {
-        float *cat = m->mtp_cat + (size_t)b * 2 * E;
+        float *cat = m->mtp_cat + (size_t)b * S * 2 * E;
         int32_t id = tok[b];
         if (id < 0 || id >= m->n_vocab) id = 0;
         dequant_row(m->mtp_embd->type,
@@ -9312,23 +9361,43 @@ static bool mtp_run(model_t *m, const float *h, size_t h_stride,
         if (m->mtp_embd->scale != 1.0f)
             for (int i = 0; i < E; i++) cat[i] *= m->mtp_embd->scale;
         rmsnorm(cat, cat, m->mtp_enorm_w, E, m->rms_eps);
-        rmsnorm(cat + E, h + (size_t)b * h_stride, m->mtp_hnorm_w, E, m->rms_eps);
+        for (int c = 1; c < S; c++)
+            memcpy(cat + (size_t)c * 2 * E, cat, sizeof(float) * (size_t)E);
+        const float *hb = h + (size_t)b * h_stride;
+        for (int c = 0; c < S; c++)
+            rmsnorm(cat + (size_t)c * 2 * E + E, hb + (size_t)c * E,
+                    m->mtp_hnorm_w + (size_t)c * E, E, m->rms_eps);
     }
-    matvec_b(m->tp, m->x, E, m->mtp_eh_proj, m->mtp_cat, 2 * E, 2 * E, E,
-             NULL, n);
+    float *res = m->hyper_conn ? m->x_hc : m->x;   // [n][S*E]: the block's residual
+    matvec_b(m->tp, res, E, m->mtp_eh_proj, m->mtp_cat, 2 * E, 2 * E, E,
+             NULL, n * S);
     forward_layer(m, m->n_layer, n, pos, 0);
     if (!want_logits) return true;
-    const float *hnw = m->mtp_head_norm_w ? m->mtp_head_norm_w : m->out_norm_w;
-    rmsnorm(m->mtp_hid, m->x + (size_t)(n - 1) * E, hnw, E, m->rms_eps);
-    matvec_b(m->tp, m->mtp_logits, m->n_vocab, m->mtp_head, m->mtp_hid, E, E,
-             m->n_vocab, NULL, 1);
+    const float *last = res + (size_t)(n - 1) * S * E;
+    if (m->hyper_conn) {
+        // the next chained step reads the wide residual; the head reads it
+        // through the block's own stream mixer
+        memcpy(m->mtp_hid, last, sizeof(float) * (size_t)S * E);
+        float *save = m->x_hc;   // hc_mix walks x_hc from row 0
+        m->x_hc = (float *)last;
+        hc_mix(m, m->mtp_head_norm_w, m->mtp_hc_head_down, m->mtp_hc_head_up,
+               NULL, m->mtp_hmix, E, 1);
+        m->x_hc = save;
+        matvec_b(m->tp, m->mtp_logits, m->n_vocab, m->mtp_head, m->mtp_hmix, E, E,
+                 m->n_vocab, NULL, 1);
+    } else {
+        const float *hnw = m->mtp_head_norm_w ? m->mtp_head_norm_w : m->out_norm_w;
+        rmsnorm(m->mtp_hid, last, hnw, E, m->rms_eps);
+        matvec_b(m->tp, m->mtp_logits, m->n_vocab, m->mtp_head, m->mtp_hid, E, E,
+                 m->n_vocab, NULL, 1);
+    }
     m->mtp_logits_pos = pos + n;
     return true;
 }
 
 static bool mtp_drain(model_t *m, bool want_logits) {
     if (m->mtp_qn == 0) return true;
-    bool ok = mtp_run(m, m->mtp_h, (size_t)m->n_embd, m->mtp_tok, m->mtp_qn,
+    bool ok = mtp_run(m, m->mtp_h, (size_t)m->mtp_hw, m->mtp_tok, m->mtp_qn,
                       m->mtp_pos, want_logits);
     m->mtp_pos += m->mtp_qn;
     m->mtp_qn = 0;
@@ -9339,15 +9408,15 @@ bool model_mtp_feed(model_t *m, int32_t tok) {
     if (!m->mtp_ready || !mtp_alloc(m)) return false;
     if (m->mtp_qn == m->n_batch && !mtp_drain(m, false)) return false;
     if (m->mtp_pos + m->mtp_qn >= m->n_ctx) return false;
-    memcpy(m->mtp_h + (size_t)m->mtp_qn * m->n_embd, m->mtp_pending,
-           sizeof(float) * (size_t)m->n_embd);
+    memcpy(m->mtp_h + (size_t)m->mtp_qn * m->mtp_hw, m->mtp_pending,
+           sizeof(float) * (size_t)m->mtp_hw);
     m->mtp_tok[m->mtp_qn++] = tok;
     return true;
 }
 
 void model_mtp_note_hidden(model_t *m, const float *h) {
     if (!m->mtp_ready || !h || !mtp_alloc(m)) return;
-    memcpy(m->mtp_pending, h, sizeof(float) * (size_t)m->n_embd);
+    memcpy(m->mtp_pending, h, sizeof(float) * (size_t)m->mtp_hw);
 }
 
 const float *model_mtp_pending(const model_t *m) { return m->mtp_pending; }

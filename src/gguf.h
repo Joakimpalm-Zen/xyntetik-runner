@@ -96,5 +96,13 @@ void        *gguf_map_part(const gguf_file *g, uint32_t i, size_t *size);
 // read through it. Split-GGUF continuation is deliberately not followed:
 // callers get this part's header and the split metadata to reason with.
 bool         gguf_open_header(gguf_file *g, const char *path);
+// Attach a second, independently opened GGUF to `g` as one more mapped part:
+// its tensors join g's directory (a name g already has is skipped, g's copy
+// wins) and its mapping is owned and unmapped by g from then on. `extra`'s
+// metadata is released; read what you need from it BEFORE attaching. Used
+// for a companion file that carries blocks the main file does not (the
+// NextN/MTP head of a trunk exported without one). Returns false with
+// `extra` still open on allocation failure.
+bool         gguf_attach(gguf_file *g, gguf_file *extra);
 
 #endif // RUNNER_GGUF_H

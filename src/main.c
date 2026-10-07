@@ -1216,6 +1216,8 @@ static void usage_to(FILE *f, const char *prog) {
         "                 (one-shot, chat, and single-model --serve)\n"
         "  --draft-k N    draft tokens per round (default 4)\n"
         "  --mtp          draft from the model's own NextN/MTP head (CPU path)\n"
+        "  --mtp-file PATH  the NextN/MTP head from a companion GGUF (llama.cpp's\n"
+        "                 MTP-only export) when the model file carries none; implies --mtp\n"
         "  --draft-lookup draft from n-gram matches in the context itself\n"
         "                 (prompt lookup: no weights, no draft forward; one\n"
         "                 draft source per run, exclusive with --draft/--mtp)\n"
@@ -1827,6 +1829,7 @@ int main(int argc, char **argv) {
         else if (!strcmp(a, "--draft-required")) draft_required = true;
         else if (!strcmp(a, "--draft-k")) draft_k = (int)int_arg(a, NEXT, 1, 15);
         else if (!strcmp(a, "--mtp"))     { mp.mtp = true; mtp_on = true; }
+        else if (!strcmp(a, "--mtp-file")) { mp.mtp_path = NEXT; mp.mtp = true; mtp_on = true; }
         else if (!strcmp(a, "--draft-lookup")) draft_lookup = true;
         else if (!strcmp(a, "--reasoning-budget"))
             reasoning_budget = (int)int_arg(a, NEXT, 0, INT_MAX);
