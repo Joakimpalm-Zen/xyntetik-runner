@@ -16,6 +16,15 @@ rename keep the names that were true when they were written.
   `make test-cuda-qwen4exp` compares the device head with the CPU head draft
   step for draft step (argmax, top logit and top-2 gap within 1e-5) and
   requires identical text, with device and with host experts.
+- **Small device batches (2 to 8 rows) take the GEMV twins, not the tile
+  kernels.** A speculative verify tile, a short prompt or a few rows of one
+  expert went through the prefill kernels (tensor-core GEMM over 64-row
+  weight tiles), whose cost barely falls with the row count: a 5-row verify
+  tile spent 414 ms in device matvecs against 29 ms for one decoded row
+  (Qwen3.8-Flash-Next on a MIG slice). `enc_mv` now launches the
+  width-classed GEMV twin where one exists (batch-1 bits per column) and
+  otherwise the batch-1 kernel once per column. `RUNNER_CUDA_SMALL_BATCH=0`
+  restores the tile path.
 - **Speculative decoding verifies on the CUDA path.** A device forward
   rejected every draft before (no per-row logits came back), so
   `--draft-lookup`, `--draft` and `--mtp-file` drafted for nothing on CUDA.

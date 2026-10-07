@@ -2940,6 +2940,19 @@ static bool launch_tiled_xscaled(gpu_t *g, CUfunction f, unsigned grid,
     return true;
 }
 
+enum { GPU_SMALL_BATCH = 8 };   // the widest f_gemvb class (BW_8)
+static bool enc_mv_batch(gpu_t *g, model_t *m, gguf_tensor *w, CUdeviceptr x,
+                         CUdeviceptr y, int n_in, int n_out, CUdeviceptr bias,
+                         int batch, int xs, int ys);
+static bool gpu_small_batch_on(void) {
+    static int on = -1;
+    if (on < 0) {
+        const char *e = getenv("RUNNER_CUDA_SMALL_BATCH");
+        on = !(e && *e && strcmp(e, "0") == 0);
+    }
+    return on > 0;
+}
+
 static bool enc_mv(gpu_t *g, model_t *m, gguf_tensor *w, CUdeviceptr x,
                    CUdeviceptr y, int n_in, int n_out, CUdeviceptr bias,
                    int batch, int xs, int ys) {
@@ -2953,6 +2966,27 @@ static bool enc_mv(gpu_t *g, model_t *m, gguf_tensor *w, CUdeviceptr x,
     mv_args a = { n_in, n_out, w_off, bias != 0, batch, xs, ys };
     CUdeviceptr b = bias ? bias : g->sw->dummy;
     void *p[] = { &weights, &x, &y, &a, &b };
+    // Small batch (1 < batch <= GPU_SMALL_BATCH): a speculative verify tile,
+    // a short prompt, a few rows of one expert. The tile kernels below are
+    // shaped for 64-row prefill tiles and their cost barely falls with the
+    // row count: a 5-row verify tile spent 414 ms in matvec against 29 ms
+    // for one decoded row (Qwen3.8-Flash-Next on the MIG slice, 2026-10-07).
+    // The width-classed GEMV twins stream each weight once and reproduce the
+    // batch-1 bits per column (the decode microbatch's contract); a type
+    // without a twin takes the batch-1 kernel once per column, the same bits
+    // at batch times the cost, still far under the tile kernel.
+    // RUNNER_CUDA_SMALL_BATCH=0 restores the tile path for an A/B.
+    if (batch > 1 && batch <= GPU_SMALL_BATCH && w->scale == 1.0f &&
+        gpu_small_batch_on()) {
+        if (g->sw->f_gemvb[batch_width_class(batch)][w->type])
+            return enc_mv_batch(g, m, w, x, y, n_in, n_out, bias, batch, xs, ys);
+        for (int c = 0; c < batch; c++)
+            if (!enc_mv(g, m, w, x + (size_t)c * xs * sizeof(float),
+                        y + (size_t)c * ys * sizeof(float), n_in, n_out, bias,
+                        1, xs, ys))
+                return false;
+        return true;
+    }
     // Prefill (batch>1), tensor-core GEMM when promoted for this (type, arch)
     // or forced by RUNNER_CUDA_TC: the block dequantizes a 64-row fp16 weight
     // tile once and its four warps' MMAs share it (TC_ROWS/block, 128 threads).
