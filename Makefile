@@ -1685,7 +1685,9 @@ test-tc-overflow: runner $(TEST_TC_TOL)
 # logit precision on the family fixture, in the three placements the slice
 # runs it in. Each arm pins a defect the greedy-64 identity check of
 # 2026-10-06 did not see (2026-10-07): the 512-expert fixture pins the eager
-# router's expert bound (it selected among the first 256 of 512); the forced
+# router's expert bound (it selected among the first 256 of 512, on the
+# eager path a fused-ineligible expert type forces: the "eager" arm runs it
+# through RUNNER_MOE_EAGER=1, the #243 binary flips 3 of 56 there); the forced
 # partial split (--gpu-layers 2) pins the boundary hand-off of the wide
 # hyper-connection residual (the CPU layers continued from a stale stream);
 # device experts and host experts both run. Skips itself without a CUDA
@@ -1697,8 +1699,10 @@ test-cuda-qwen4exp: runner
 		QWEN4EXP_TEST_EXPERTS=512 $(PYTHON) scripts/make-test-qwen4exp.py test-qwen4exp-512.gguf > /dev/null; \
 		for f in test-qwen4exp.gguf test-qwen4exp-512.gguf; do \
 		  ./$(RUNNER_EXE) -b 1 -m $$f --score -p "hello world one two three four five six" --gpu off --no-tray -c 128 2>/dev/null > cuda-q4e-cpu.score; \
-		  for arm in "" "--cpu-moe" "--gpu-layers 2" "--gpu-layers 2 --cpu-moe"; do \
-		    ./$(RUNNER_EXE) -b 1 -m $$f --score -p "hello world one two three four five six" $$arm --no-tray -c 128 2>cuda-q4e-gpu.err > cuda-q4e-gpu.score; \
+		  for arm in "" "--cpu-moe" "--gpu-layers 2" "--gpu-layers 2 --cpu-moe" "eager"; do \
+		    E=""; if [ "$$arm" = eager ]; then E="RUNNER_MOE_EAGER=1"; arm=""; fi; \
+		    env $$E ./$(RUNNER_EXE) -b 1 -m $$f --score -p "hello world one two three four five six" $$arm --no-tray -c 128 2>cuda-q4e-gpu.err > cuda-q4e-gpu.score; \
+		    [ -n "$$E" ] && arm="eager experts"; \
 		    grep -q "CUDA backend" cuda-q4e-gpu.err || { echo "FAIL: $$f [$$arm] did not run on the device"; cat cuda-q4e-gpu.err; exit 1; }; \
 		    $(PYTHON) -c "import json,sys; a=json.load(open('cuda-q4e-cpu.score')); b=json.load(open('cuda-q4e-gpu.score')); d=max(abs(x-y) for x,y in zip(a['logprobs'],b['logprobs'])); am=sum(1 for x,y in zip(a['argmax'],b['argmax']) if x!=y); assert len(a['logprobs'])==len(b['logprobs'])==56 and d < 2e-5 and am == 0, (len(a['logprobs']), len(b['logprobs']), d, am); print('%s [%s]: cpu/cuda logprob max diff %.2e, argmax flips %d' % (sys.argv[1], sys.argv[2], d, am))" $$f "$$arm"; \
 		  done; \
