@@ -278,6 +278,7 @@ directory, or a size that is not a whole byte count, is refused whole):
 # Speculative decoding: draft model, CPU MTP head, or prompt lookup.
 ./runner -m big.gguf --draft small.gguf -p "Continue this code"
 ./runner -m qwen3.5-4b-mtp.gguf --mtp --gpu off -p "Continue this code"
+./runner -m trunk.gguf --mtp-file trunk-mtp.gguf --gpu off -p "Continue this code"
 ./runner -m model.gguf --draft-lookup -f transcript.txt -p "Summarize the text above"
 ```
 
@@ -1930,6 +1931,7 @@ instance instead.
 | `--draft PATH` | Use a same-vocabulary draft GGUF for speculative decoding; admission and backend restrictions apply. A server given a swap registry (`-m a=...,b=...`) refuses to start with `--draft`, which needs a single served model. [Details](#cli-draft). |
 | `--draft-k N` | Draft tokens per speculative round, default `4`. Also the width for `--mtp` and `--draft-lookup`. All sources stop at the context boundary, including with `-n -1`; a final verify row cannot emit a bonus beyond the context or transcript token buffer. |
 | `--mtp` | Use the model’s single NextN/MTP predictor block for CPU speculative decoding. [Details](#cli-mtp). |
+| `--mtp-file PATH` | The NextN/MTP predictor block from a companion GGUF when the model file was exported without one (llama.cpp's MTP-only layout: same architecture and depth, `nextn_predict_layers` 1, the block at index `block_count - 1`; the trunk's embeddings and LM head are used). Implies `--mtp`. Built for Qwen3.8-Flash-Next by `scripts/make-mtp-companion.py` from the publisher's BF16 checkpoint, provenance in the header. CPU path only, like `--mtp`. |
 | `--draft-lookup` | Draft from repeated prompt context without a second model; uses the `--draft-k` round width (default `4`). [Details](#cli-draft-lookup). |
 | `--draft-required` | Fail instead of falling back to plain decoding when a requested draft model is refused. [Details](#cli-draft-required). |
 
