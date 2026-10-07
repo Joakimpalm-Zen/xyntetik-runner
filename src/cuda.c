@@ -3613,7 +3613,7 @@ static bool gpu_gemma_moe_ffn_grouped(gpu_t *g, model_t *m, const layer_t *ly,
     int nff = m->n_ff_exp, dff = m->n_ff;
     enum { MOE_MAX_USED = 256 };
     if (used > MOE_MAX_USED) used = MOE_MAX_USED;
-    if (ne  > MOE_MAX_USED) ne  = MOE_MAX_USED;
+    if (ne  > MOE_ROUTE_MAX) ne  = MOE_ROUTE_MAX;
     float eps = m->rms_eps;
     CUdeviceptr xn_b  = g->g_scr;
     CUdeviceptr xn2_b = g->g_scr + (size_t)MVB * n_embd * sizeof(float);
@@ -3693,12 +3693,15 @@ static bool gpu_gemma_moe_ffn_grouped(gpu_t *g, model_t *m, const layer_t *ly,
 static bool gpu_moe_ffn_eager(gpu_t *g, model_t *m, const layer_t *ly, int tn, int xdim) {
     int n_embd = m->n_embd, ne = m->n_expert, used = m->n_expert_used, nff = m->n_ff_exp;
     int l = (int)(ly - m->layers);
-    // belt-and-suspenders: sel[]/selw[] below are fixed MOE_MAX_USED wide. The
-    // loader already bounds n_expert_used <= n_expert <= 256 (model.c), but never
-    // let a rogue value walk these stack arrays even if a future path reaches here.
+    // belt-and-suspenders: sel[]/selw[] below are fixed MOE_MAX_USED wide and
+    // the router logits MOE_ROUTE_MAX wide. The expert COUNT bounds the router,
+    // not the selection: clamping ne to 256 here routed Qwen3.8-Flash-Next
+    // (512 experts, eager path because of its IQ2_S/IQ3_S/IQ4_XS expert
+    // tensors) among its first 256 experts only -- --score vs the CPU path
+    // 444/480, vs llama.cpp 446/480 where the CPU path has 472 (2026-10-07).
     enum { MOE_MAX_USED = 256 };
     if (used > MOE_MAX_USED) used = MOE_MAX_USED;
-    if (ne  > MOE_MAX_USED) ne  = MOE_MAX_USED;
+    if (ne  > MOE_ROUTE_MAX) ne  = MOE_ROUTE_MAX;
     for (int t = 0; t < tn; t++) {
         CUdeviceptr xin  = g->xb  + (size_t)t * xdim * sizeof(float);
         CUdeviceptr aout = g->xb2 + (size_t)t * xdim * sizeof(float);
@@ -3810,7 +3813,7 @@ static bool gpu_gemma_moe_ffn_fused(gpu_t *g, model_t *m, const layer_t *ly,
     int nff = m->n_ff_exp, dff = m->n_ff;   // dff = dense shared-FFN size
     enum { MOE_MAX_USED = 256 };
     if (used > MOE_MAX_USED) used = MOE_MAX_USED;
-    if (ne  > MOE_MAX_USED) ne  = MOE_MAX_USED;
+    if (ne  > MOE_ROUTE_MAX) ne  = MOE_ROUTE_MAX;
     float eps = m->rms_eps;
     // fused gate_up expert block: [n_embd -> 2*nff] per expert
     uint64_t gustride = (uint64_t)(2 * (size_t)nff) *
@@ -3868,7 +3871,7 @@ static bool gpu_gemma_moe_ffn_eager(gpu_t *g, model_t *m, const layer_t *ly, int
     int nff = m->n_ff_exp, dff = m->n_ff;   // dff = dense shared-FFN size
     enum { MOE_MAX_USED = 256 };
     if (used > MOE_MAX_USED) used = MOE_MAX_USED;
-    if (ne  > MOE_MAX_USED) ne  = MOE_MAX_USED;
+    if (ne  > MOE_ROUTE_MAX) ne  = MOE_ROUTE_MAX;
     float eps = m->rms_eps;
     CUdeviceptr xn   = g->g_scr + (size_t)0 * n_embd * sizeof(float);
     CUdeviceptr xn2  = g->g_scr + (size_t)1 * n_embd * sizeof(float);
