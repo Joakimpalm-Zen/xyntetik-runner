@@ -1332,6 +1332,26 @@ static gpu_weights *shared_build(model_t *m, size_t act_bytes, int max_hd,
         // the CUDA context + PTX JIT + allocator slack + the OS reserve
         size_t fixed = act_bytes + (m->cpu_moe ? 0 : m->tok_embd->nbytes) +
                        (size_t)headroom;
+        if (m->qwen35) {
+            // the DeltaNet fold lives on the device: window + state, their
+            // pre-forward copies for the speculative rollback, and the
+            // per-token scratch the recurrent layer stages. These were never
+            // in the plan; on Qwen3.8-Flash-Next IQ2_XS the planner filled the
+            // slice to 1.6 GB of headroom with expert layers and the state
+            // allocation then failed (2026-10-07, decode fell to 2 tok/s).
+            int convdim = 2 * m->ssm_state * m->ssm_groups + m->ssm_inner;
+            size_t fold = sizeof(float) * (size_t)m->n_layer *
+                ((size_t)(m->ssm_conv_kernel - 1) * convdim +
+                 (size_t)m->ssm_v_heads * m->ssm_state * m->ssm_state);
+            // q35_mix (max(convdim, 2 q_dim)), cv (convdim), z (inner), beta +
+            // alpha (heads each), gate (q_dim): the allocation below, in rows of MVB
+            size_t qd = 0;
+            for (int l = 0; l < m->n_layer; l++) if ((size_t)model_q_dim(m, l) > qd) qd = (size_t)model_q_dim(m, l);
+            size_t mixd = (size_t)convdim > 2 * qd ? (size_t)convdim : 2 * qd;
+            size_t scratch = sizeof(float) * (size_t)MVB *
+                (mixd + (size_t)convdim + (size_t)m->ssm_inner + 2 * (size_t)m->ssm_v_heads + qd);
+            fixed += 2 * fold + scratch;
+        }
         // the NextN/MTP block rides along with a full split: its attention,
         // mixers and head projections (its experts stay on the host under
         // --cpu-moe, like any bank the plan leaves there), plus its KV rows
