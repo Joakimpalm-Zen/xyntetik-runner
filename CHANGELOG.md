@@ -25,6 +25,21 @@ rename keep the names that were true when they were written.
   checkpoints** on CUDA (DeltaNet conv window and state, filed after every
   row of a verify tile) instead of re-running the accepted rows, and the
   hyper-connection PLE window restores with it.
+- **Small CPU batches decode each weight block once.** Below eight rows
+  (a speculative verify tile, a few server slots) every row took its own
+  native dot, and for the codebook i-quants that dot is the codebook decode,
+  so a 5-row verify cost five solo rows. `vec_dot_multi` decodes a block once
+  and keeps every column's arithmetic the single-column kernel's, op for op:
+  outputs are byte-equal to the loop it replaces (pinned on every format by
+  `test-quants-simd`, AVX2 and NEON). Measured on Qwen3.8-Flash-Next IQ3_S,
+  CPU only: a 5-row verify tile from ~5 to 3.9 rows' worth, p512 prefill 23
+  to 29 tok/s (the grouped expert path's small per-expert counts take the
+  same route); `--mtp-file` decode 4.5 to 7.4 tok/s against 9.2 plain, text
+  byte-identical throughout.
+- **The CPU path keeps per-row recurrent checkpoints in a verify tile**, the
+  twin of the CUDA change above: a partially accepted round restores the
+  DeltaNet window and state after the last kept row instead of re-folding
+  the accepted rows with a second forward.
 - **Three more expert formats on the fused device MoE path**: IQ2_S, IQ3_S
   and IQ4_XS expert tensors (Qwen3.8-Flash-Next's ISTA release mixes them)
   take the fused path; the eager path handled them before. Device results
