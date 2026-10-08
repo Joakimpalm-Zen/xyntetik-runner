@@ -5327,6 +5327,61 @@ Q8X_MV(k_q8x_iq4_xs_x6, iq4xs_q8, 136, 6, 1)
 Q8X_MV(k_q8x_iq4_xs_x7, iq4xs_q8, 136, 7, 1)
 Q8X_MV(k_q8x_iq4_xs_x8, iq4xs_q8, 136, 8, 1)
 
+// Q4_K: d*sc*q - dmin*m per 32-element sub-block; lane L takes sub-block L/4,
+// elements 8*(L%4).. +8 (one nibble half of the pair's 32 quant bytes)
+static __device__ __forceinline__ void q4k_q8(const uchar *blk, const signed char *xq, const float *dx,
+                                              int n, int lane, int nc, float *acc) {
+    int ib = lane >> 2, l = lane & 3;
+    float d = f16f(blk), dmin = f16f(blk + 2);
+    uchar sc, mn;
+    get_scale_min_k4(ib, blk + 4, &sc, &mn);
+    const uchar *q = blk + 16 + (ib >> 1) * 32 + l * 8;
+    int shift = (ib & 1) * 4;
+    int w0 = (int)((iq_ld32a2(q) >> shift) & 0x0F0F0F0Fu);
+    int w1 = (int)((iq_ld32a2(q + 4) >> shift) & 0x0F0F0F0Fu);
+    float dsc = d * (float)sc, dm = dmin * (float)mn;
+    _Pragma("unroll")
+    for (int c = 0; c < nc; c++) {
+        const signed char *xc = xq + (ulong64)c * n + ib * 32 + l * 8;
+        int x0 = *(const int *)xc, x1 = *(const int *)(xc + 4);
+        int s = __dp4a(w0, x0, 0); s = __dp4a(w1, x1, s);
+        int sx = __dp4a(0x01010101, x0, 0); sx = __dp4a(0x01010101, x1, sx);
+        acc[c] += dx[(ulong64)c * (n / 32) + ib] * (dsc * (float)s - dm * (float)sx);
+    }
+}
+
+// Q8_0 in groups of eight 34-byte blocks (256 elements): lane L takes block
+// L/4, elements 8*(L%4).. +8
+static __device__ __forceinline__ void q80_q8(const uchar *grp, const signed char *xq, const float *dx,
+                                              int n, int lane, int nc, float *acc) {
+    int ib = lane >> 2, l = lane & 3;
+    const uchar *blk = grp + ib * 34;
+    float d = f16f(blk);
+    int w0 = (int)iq_ld32a2(blk + 2 + l * 8), w1 = (int)iq_ld32a2(blk + 6 + l * 8);
+    _Pragma("unroll")
+    for (int c = 0; c < nc; c++) {
+        const signed char *xc = xq + (ulong64)c * n + ib * 32 + l * 8;
+        int s = __dp4a(w0, *(const int *)xc, 0); s = __dp4a(w1, *(const int *)(xc + 4), s);
+        acc[c] += d * dx[(ulong64)c * (n / 32) + ib] * (float)s;
+    }
+}
+Q8X_MV(k_q8x_q4_K_x1, q4k_q8, 144, 1, 2)
+Q8X_MV(k_q8x_q4_K_x2, q4k_q8, 144, 2, 1)
+Q8X_MV(k_q8x_q4_K_x3, q4k_q8, 144, 3, 1)
+Q8X_MV(k_q8x_q4_K_x4, q4k_q8, 144, 4, 1)
+Q8X_MV(k_q8x_q4_K_x5, q4k_q8, 144, 5, 1)
+Q8X_MV(k_q8x_q4_K_x6, q4k_q8, 144, 6, 1)
+Q8X_MV(k_q8x_q4_K_x7, q4k_q8, 144, 7, 1)
+Q8X_MV(k_q8x_q4_K_x8, q4k_q8, 144, 8, 1)
+Q8X_MV(k_q8x_q8_0_x1, q80_q8, 272, 1, 2)
+Q8X_MV(k_q8x_q8_0_x2, q80_q8, 272, 2, 1)
+Q8X_MV(k_q8x_q8_0_x3, q80_q8, 272, 3, 1)
+Q8X_MV(k_q8x_q8_0_x4, q80_q8, 272, 4, 1)
+Q8X_MV(k_q8x_q8_0_x5, q80_q8, 272, 5, 1)
+Q8X_MV(k_q8x_q8_0_x6, q80_q8, 272, 6, 1)
+Q8X_MV(k_q8x_q8_0_x7, q80_q8, 272, 7, 1)
+Q8X_MV(k_q8x_q8_0_x8, q80_q8, 272, 8, 1)
+
 // exact widths 2, 3, 5, 6 and 7 (2026-10-08): the x4/x8 classes made a 5-row
 // verify tile (--draft-k 4) pay for eight columns; the 27B head decoded at
 // 10.6 tok/s at k=4 against 13.6 at k=3 for that reason
