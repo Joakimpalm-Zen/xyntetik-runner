@@ -7,7 +7,7 @@ to the exact build, and what is not covered. Releases before 1.0.0 made no
 such promise (the `-alpha` suffix was retired at v0.2.0). Entries below the
 rename keep the names that were true when they were written.
 
-## Unreleased
+## v1.1.4 - 2026-10-08
 
 - **A required tool turn with `parallel_tool_calls:true` carries one to
   eight calls on the Qwen protocols, not exactly two.** Under `tool_choice`
