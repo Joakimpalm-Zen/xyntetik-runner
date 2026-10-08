@@ -598,6 +598,32 @@ through their records to their origins.
 What it proves is where the file came from and that nothing in between was
 changed; not that the file is good. That is the evaluation's job.
 
+<a id="evaluation-records"></a>
+### Evaluations that travel with the file
+
+`scripts/eval-record.py` turns an evaluation into a record beside the file
+it judged, `<model>.eval.<kind>.json`: the model and every other input by
+sha256 (linked to their lineage records), the method and its settings, the
+numbers, the thresholds you set and whether they passed. `--sign-key`
+signs it. Two kinds:
+
+```sh
+# fidelity: the file against a reference over a corpus (kld-compare-raw.py)
+scripts/eval-record.py fidelity --model q.gguf --reference ref.gguf \
+    --corpus text.txt --max-mean-kld 0.05 --min-top1 95 --sign-key key.json
+# agent: an agent-bank run (shadow replay evidence) on the file
+scripts/eval-record.py agent --model q.gguf --evidence evidence.jsonl \
+    --attempts attempts/ --min-verified 4 --sign-key key.json
+```
+
+`--lineage` shows a file's evaluations beside its chain, VERIFIED or
+UNSIGNED by their signature, and STALE when the file changed after its
+evaluation (the record names another hash). `--require-eval fidelity`
+(or `agent`) refuses to load a model without a passing, current one; with
+`--trust-key` the evaluation must be signed by that key. The script exits
+0 when every threshold passed, 1 when one failed (the record still says
+so), 2 on an error.
+
 ## Shadow mode: what could your local model have done?
 
 `python -m xyntetik_runner.shadow` is a bench with receipts: it records
@@ -2118,6 +2144,7 @@ whether the draft is `active` there.
 | `--train-eot` | Append the selected template's end-of-turn token to each JSONL completion target. Opt-in; without it the supplied completion is the complete target. |
 | `--train-dpo FILE` | Train an adapter from JSONL `prompt`, `chosen`, `rejected` pairs. CPU forward/backward path; the frozen base is the reference, evaluated with the adapter bypassed. Does not activate the output adapter. |
 | `--dpo-beta F` | DPO reference-deviation coefficient (default `0.1`). Uses the existing training step, learning-rate, context and output options. |
+| `--require-eval KIND` | Refuse to load `-m` unless it carries a passing evaluation of KIND (`fidelity` or `agent`, written by `scripts/eval-record.py`) made for this very file, signed by `--trust-key` when one is given. Hashes the model at load. [Details](#evaluation-records). |
 | `--lineage FILE` | Walk the provenance chain of a model or adapter file (or of its record) back to its origins: each step's record re-hashed and checked against the next, each signature verified, `--trust-key` pinning the signer. Exit 0 verified and signed, 1 consistent but not all signed, 2 broken or no record. [Details](#lineage). |
 | `--sign-key FILE` | With `--quantize`, `--merge-lora`, `--train` or `--context-surgery`: sign the step's provenance record in place. With `--transcript`: sign the receipt with the key in FILE. The signature object is appended inside the record after the chain and covers every byte before its own `,"signature"` key, chain hash included, so any Ed25519 (or ML-DSA-44) library verifies it from the file bytes and the embedded public key alone. |
 | `--transcript-prev FILE` | With `--transcript`: link the new receipt to FILE (FILE's chain hash becomes this record's `chain.prev`; a chain head carries 64 zeros). With `--verify`: check that link, `UNVERIFIABLE` on a break. |

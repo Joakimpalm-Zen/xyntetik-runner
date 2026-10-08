@@ -96,6 +96,79 @@ static void walk_record(const char *rec_path, const char *want_rec_sha,
                         const char *want_out_sha, const char *trust_hex,
                         int depth, walk_state *w);
 
+// The evaluations a file carries (<file>.eval.<kind>.json, R17.2): shown
+// beside its chain. An evaluation made for another file (its subject hash
+// differs) is STALE and does not count; a bad signature is BROKEN.
+static const char *const EVAL_KINDS[] = { "fidelity", "agent" };
+
+static void walk_evals(const char *file, const char *sha, const char *trust_hex,
+                       int depth, walk_state *w) {
+    for (size_t k = 0; k < sizeof EVAL_KINDS / sizeof EVAL_KINDS[0]; k++) {
+        char path[4096];
+        int n = snprintf(path, sizeof path, "%s.eval.%s.json", file, EVAL_KINDS[k]);
+        if (n < 0 || (size_t)n >= sizeof path) continue;
+        jv *ev = read_json(path);
+        if (!ev) continue;
+        indent(depth);
+        const char *subj = jv_str(jv_get(jv_get(ev, "subject"), "sha256"), "");
+        jv *m = jv_get(ev, "metrics");
+        jv *pass = jv_get(ev, "pass");
+        const char *pw = !pass || pass->type == J_NULL ? "no threshold set"
+                       : pass->type == J_BOOL && pass->b ? "pass" : "FAIL";
+        printf("eval %s: ", EVAL_KINDS[k]);
+        if (!strcmp(EVAL_KINDS[k], "fidelity"))
+            printf("vs %s, %d positions, top-1 %.1f%%, mean KL %.4g; %s",
+                   jv_str(jv_get(jv_get(ev, "reference"), "path"), "?"),
+                   (int)jv_num(jv_get(m, "positions_scored"), 0),
+                   jv_num(jv_get(m, "top1_agreement_pct"), 0),
+                   jv_num(jv_get(m, "mean_kld"), 0), pw);
+        else
+            printf("%d of %d tasks verified, %d aborts; %s",
+                   (int)jv_num(jv_get(m, "tasks_verified"), 0),
+                   (int)jv_num(jv_get(m, "tasks_attempted"), 0),
+                   (int)jv_num(jv_get(m, "engine_error_aborts"), 0), pw);
+        if (!sha || strcmp(subj, sha) != 0) {
+            printf("  STALE (made for another file)\n");
+            jv_free(ev);
+            continue;
+        }
+        char pub[SIGN_PUBHEX_CAP];
+        int sig = record_signature_state(path, trust_hex, pub);
+        if (sig == 0) printf("  VERIFIED (signed %.16s...)\n", pub);
+        else if (sig == 1) { printf("  UNSIGNED\n"); note(w, 1); }
+        else { printf("  BROKEN: bad, malformed or untrusted signature\n"); note(w, 2); }
+        jv_free(ev);
+    }
+}
+
+bool lineage_require_eval(const char *model, const char *kind, const char *trust_hex,
+                          char *why, size_t cap) {
+    char path[4096], sha[65], pub[SIGN_PUBHEX_CAP];
+    snprintf(path, sizeof path, "%s.eval.%s.json", model, kind);
+    jv *ev = read_json(path);
+    if (!ev) { snprintf(why, cap, "no %s evaluation beside the model (%s)", kind, path); return false; }
+    bool ok = false;
+    jv *pass = jv_get(ev, "pass");
+    if (strcmp(jv_str(jv_get(ev, "schema_version"), ""), "xyntetik.runner.eval.v1") ||
+        strcmp(jv_str(jv_get(ev, "kind"), ""), kind))
+        snprintf(why, cap, "%s is not a %s evaluation record", path, kind);
+    else if (!envelope_file_sha256(model, sha))
+        snprintf(why, cap, "cannot hash %s", model);
+    else if (strcmp(jv_str(jv_get(jv_get(ev, "subject"), "sha256"), ""), sha))
+        snprintf(why, cap, "%s was made for another file (its subject sha256 differs)", path);
+    else if (!pass || pass->type != J_BOOL || !pass->b)
+        snprintf(why, cap, "%s did not pass (or set no threshold)", path);
+    else {
+        int sig = record_signature_state(path, trust_hex, pub);
+        if (sig == 2) snprintf(why, cap, "%s: bad, malformed or untrusted signature", path);
+        else if (sig == 1 && trust_hex && *trust_hex)
+            snprintf(why, cap, "%s is unsigned and --trust-key asks for a signer", path);
+        else ok = true;
+    }
+    jv_free(ev);
+    return ok;
+}
+
 // A record cited by path that is not there any more: a chain copied to
 // another machine or folder keeps its records together, so look for the same
 // file name beside the record that cites it. The hash still decides whether
@@ -127,9 +200,11 @@ static void walk_input(const char *key, jv *in, const char *citing, const char *
     if (!link) {
         printf("%s: %s sha256 %s  ORIGIN (no record: a download, or made before records)\n",
                key, path, s);
+        walk_evals(path, sha, trust_hex, depth + 1, w);
         return;
     }
     printf("%s: %s sha256 %s\n", key, path, s);
+    walk_evals(path, sha, trust_hex, depth + 1, w);
     char moved[4096];
     walk_record(relocate(jv_str(jv_get(link, "path"), ""), citing, moved, sizeof moved),
                 jv_str(jv_get(link, "sha256"), NULL), sha, trust_hex, depth + 1, w);
@@ -251,6 +326,7 @@ int lineage_walk(const char *start, const char *trust_hex) {
             return 2;
         }
         want_out = sha;
+        walk_evals(start, sha, trust_hex, 1, &w);
     }
     jv_free(probe);
     walk_record(rec, NULL, want_out, trust_hex, 1, &w);

@@ -40,6 +40,16 @@ rename keep the names that were true when they were written.
   run.json` walks from an answer back to the base model and the training
   data, checking the receipt's own signature first. Replay (`--verify`) is
   unchanged.
+- **Evaluations that travel with the file (R17.2).**
+  `scripts/eval-record.py fidelity` (the file against a reference through
+  `kld-compare-raw.py`) and `scripts/eval-record.py agent` (an agent-bank
+  run's evidence, with multi-call turns from the attempt transcripts) write
+  `<model>.eval.<kind>.json`: subject and inputs by sha256 with their
+  lineage links, method, numbers, thresholds and pass, signed with
+  `--sign-key`. `--lineage` shows a file's evaluations (STALE when the file
+  changed since), and `--require-eval KIND` refuses to load a model without
+  a passing, current one, signed by `--trust-key` when given.
+  `tests/test_eval_record.py`.
 
 - **`scripts/decide-calibrate.py` counts both splits the same way and can
   emit per-question predictions.** The held-out group count used
