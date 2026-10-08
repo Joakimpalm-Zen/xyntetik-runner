@@ -176,8 +176,8 @@ static void test_gpu_budget(void) {
     // no OS budget (Linux, or a driver without the query): the driver's free
     // view, with the larger of 512 MiB and one sixteenth held back
     uint64_t b = model_gpu_budget(23 * G, 24 * G, false, 0, 0, 0, &headroom);
-    ck(b == 23 * G && headroom == 23 * G / 16,
-       "no OS budget: the driver's free view, headroom one sixteenth of it");
+    ck(b == 23 * G && headroom == 23 * G / 32,
+       "no OS budget: the driver's free view, headroom one thirty-second of it");
     b = model_gpu_budget(6 * G, 8 * G, false, 0, 0, 0, &headroom);
     ck(headroom == 512 * M, "a small budget keeps the 512 MiB floor");
     // the OS budget is the process's share and bounds the driver's view:
@@ -195,8 +195,11 @@ static void test_gpu_budget(void) {
     ck(b == 12 * G / 100 * 85, "--reserve-vram caps below the OS budget");
     b = model_gpu_budget(12 * G, 12 * G, true, 9 * G, 0, 85, &headroom);
     ck(b == 9 * G, "and the OS budget caps below --reserve-vram");
-    // the headroom follows the budget the fit will actually use
-    ck(headroom == 9 * G / 16, "headroom is taken from the effective budget");
+    // the headroom follows the budget the fit will actually use (a case
+    // where a thirty-second clears the 512 MiB floor: 20 GB of OS budget on
+    // a 24 GB card)
+    b = model_gpu_budget(24 * G, 24 * G, true, 20 * G, 0, 0, &headroom);
+    ck(b == 20 * G && headroom == 20 * G / 32, "headroom is taken from the effective budget");
 }
 
 
