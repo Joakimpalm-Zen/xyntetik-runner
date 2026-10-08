@@ -588,8 +588,50 @@ to another folder, they verify without the model files, looked up by name
 when their recorded paths are gone. Exit 0 every link verified and signed,
 1 consistent but not all signed, 2 broken or no record.
 
+A receipt links the chain too. A one-shot `--transcript` record and every
+`--receipts` record of a served answer name the model (and adapter) by
+sha256, and when a step on this machine made that file, the receipt links
+the step's record. `--lineage run.json` starts from the answer: the
+receipt's own signature, then the model and the adapter walked back
+through their records to their origins.
+
+`--lineage DIR` on a `--receipts` folder answers which file answered what.
+It groups the answers by model and adapter version, shows each version's
+answer count and time span, prints the order versions served in (a version
+that comes back after another, `timeline: v1 x2 v2 x1 v1 x1`, is a rollback),
+checks the receipt chain is continuous (a receipt removed from the middle
+breaks it) and every receipt's signature, then walks each version's lineage
+once. A swap set (`-m "a=...,b=..."`) or a file replaced between restarts
+shows up the same way, because every receipt names the model by sha256.
+
 What it proves is where the file came from and that nothing in between was
 changed; not that the file is good. That is the evaluation's job.
+
+<a id="evaluation-records"></a>
+### Evaluations that travel with the file
+
+`scripts/eval-record.py` turns an evaluation into a record beside the file
+it judged, `<model>.eval.<kind>.json`: the model and every other input by
+sha256 (linked to their lineage records), the method and its settings, the
+numbers, the thresholds you set and whether they passed. `--sign-key`
+signs it. Two kinds:
+
+```sh
+# fidelity: the file against a reference over a corpus (kld-compare-raw.py)
+scripts/eval-record.py fidelity --model q.gguf --reference ref.gguf \
+    --corpus text.txt --max-mean-kld 0.05 --min-top1 95 --sign-key key.json
+# agent: an agent-bank run (shadow replay evidence) on the file
+scripts/eval-record.py agent --model q.gguf --evidence evidence.jsonl \
+    --attempts attempts/ --min-verified 4 --sign-key key.json
+```
+
+`--lineage` shows a file's evaluations beside its chain, VERIFIED or
+UNSIGNED by their signature, and STALE when the file changed after its
+evaluation (the record names another hash). `--require-eval fidelity`
+(or `agent`) refuses to load a model without a passing, current one; with
+`--trust-key` the evaluation must be signed by that key. The script exits
+0 when every threshold passed, 1 when one failed (the record still says
+so), 2 on an error.
 
 ## Shadow mode: what could your local model have done?
 
@@ -2111,7 +2153,8 @@ whether the draft is `active` there.
 | `--train-eot` | Append the selected template's end-of-turn token to each JSONL completion target. Opt-in; without it the supplied completion is the complete target. |
 | `--train-dpo FILE` | Train an adapter from JSONL `prompt`, `chosen`, `rejected` pairs. CPU forward/backward path; the frozen base is the reference, evaluated with the adapter bypassed. Does not activate the output adapter. |
 | `--dpo-beta F` | DPO reference-deviation coefficient (default `0.1`). Uses the existing training step, learning-rate, context and output options. |
-| `--lineage FILE` | Walk the provenance chain of a model or adapter file (or of its record) back to its origins: each step's record re-hashed and checked against the next, each signature verified, `--trust-key` pinning the signer. Exit 0 verified and signed, 1 consistent but not all signed, 2 broken or no record. [Details](#lineage). |
+| `--require-eval KIND` | Refuse to load `-m` unless it carries a passing evaluation of KIND (`fidelity` or `agent`, written by `scripts/eval-record.py`) made for this very file, signed by `--trust-key` when one is given. Hashes the model at load. [Details](#evaluation-records). |
+| `--lineage FILE` | Walk the provenance chain of a model or adapter file, of its record, of an answer's receipt, or of a `--receipts` folder (versions served, timeline, chain continuity) back to its origins: each step's record re-hashed and checked against the next, each signature verified, `--trust-key` pinning the signer. Exit 0 verified and signed, 1 consistent but not all signed, 2 broken or no record. [Details](#lineage). |
 | `--sign-key FILE` | With `--quantize`, `--merge-lora`, `--train` or `--context-surgery`: sign the step's provenance record in place. With `--transcript`: sign the receipt with the key in FILE. The signature object is appended inside the record after the chain and covers every byte before its own `,"signature"` key, chain hash included, so any Ed25519 (or ML-DSA-44) library verifies it from the file bytes and the embedded public key alone. |
 | `--transcript-prev FILE` | With `--transcript`: link the new receipt to FILE (FILE's chain hash becomes this record's `chain.prev`; a chain head carries 64 zeros). With `--verify`: check that link, `UNVERIFIABLE` on a break. |
 | `--require-signed` | With `--verify`: an unsigned record is `UNVERIFIABLE`. Signature, trust and link checks all run before the model is loaded for the replay. |

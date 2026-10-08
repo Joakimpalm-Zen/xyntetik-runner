@@ -40,5 +40,8 @@ void receipts_reset(void);
 // R1.12: the path of receipt `file` (a plain receipt-<sequence>.json name)
 // in DIR; false when receipts are off or the name is not one of theirs.
 bool receipts_record_path(const char *file, char *path, size_t cap);
+// The receipt files of a --receipts directory, oldest first (by sequence);
+// returns the count, *paths_out (and each path) the caller's to free.
+int  receipts_list_dir(const char *dir, char ***paths_out);
 
 #endif

@@ -33,6 +33,28 @@ rename keep the names that were true when they were written.
   chain and checks a signed chain, an unsigned one, an edited record, a
   swapped file, another signer, a file with no record and a records-only
   copy.
+- **A receipt links the model's and adapter's records, and `--lineage`
+  starts from it (R17.1).** A `--transcript` record and every `--receipts`
+  record of a served answer add a `record` link (path and sha256) to the
+  `model` and `adapter` objects when a step made that file, so `--lineage
+  run.json` walks from an answer back to the base model and the training
+  data, checking the receipt's own signature first. Replay (`--verify`) is
+  unchanged.
+- **Evaluations that travel with the file (R17.2).**
+  `scripts/eval-record.py fidelity` (the file against a reference through
+  `kld-compare-raw.py`) and `scripts/eval-record.py agent` (an agent-bank
+  run's evidence, with multi-call turns from the attempt transcripts) write
+  `<model>.eval.<kind>.json`: subject and inputs by sha256 with their
+  lineage links, method, numbers, thresholds and pass, signed with
+  `--sign-key`. `--lineage` shows a file's evaluations (STALE when the file
+  changed since), and `--require-eval KIND` refuses to load a model without
+  a passing, current one, signed by `--trust-key` when given.
+  `tests/test_eval_record.py`.
+- **`--lineage DIR` on a `--receipts` folder: which version answered what
+  (R17.4).** The answers grouped by model and adapter sha256, each version's
+  count and time span, the order they served in (a rollback reads as a
+  version served again), the receipt chain's continuity and every receipt's
+  signature, then each version's lineage once.
 
 - **`scripts/decide-calibrate.py` counts both splits the same way and can
   emit per-question predictions.** The held-out group count used

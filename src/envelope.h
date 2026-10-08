@@ -188,6 +188,10 @@ int  record_check(const char *path, const char *trust_hex);
 int  record_signature_state(const char *path, const char *trust_hex,
                             char pub_out[SIGN_PUBHEX_CAP]);
 bool record_chain_hash(const char *path, char hex[65]);
+// The provenance record a rewrite, merge, training or context-surgery step
+// wrote beside ARTIFACT (<artifact>.quant/.merge/.train/.context.json),
+// newest by mtime; false when it has none (R17.1 lineage).
+bool record_sidecar(const char *artifact, char *out, size_t cap);
 
 // Writes the transcript beside the run. Returns false (with the reason on
 // stderr) on any failure; a partial transcript is never left installed.

@@ -34,3 +34,11 @@ bool lineage_sign(const char *record_path, const char *sign_key);
 // record unsigned, 2 a broken link (a hash that does not match, a record
 // altered after it was written, a bad or untrusted signature) or no record.
 int lineage_walk(const char *start, const char *trust_hex);
+
+// --require-eval KIND: the model must carry <model>.eval.<KIND>.json (written
+// by scripts/eval-record.py) about THIS file (its sha256), marked "pass",
+// with a signature that verifies: by trust_hex when one is given; an
+// unsigned record is accepted only without trust_hex. False with the reason
+// in `why` otherwise. Hashes the model (about a second per GB).
+bool lineage_require_eval(const char *model, const char *kind, const char *trust_hex,
+                          char *why, size_t cap);

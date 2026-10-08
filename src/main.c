@@ -1027,11 +1027,18 @@ static void usage_to(FILE *f, const char *prog) {
         "                 the replay would not reproduce; --json, --json-schema\n"
         "                 and --ignore-eos must match the record's). The\n"
         "                 record's config and seed override CLI sampling flags\n"
+        "  --require-eval K  refuse to load -m unless it carries a passing\n"
+        "                 evaluation of kind K (fidelity | agent) made for\n"
+        "                 this file, signed by --trust-key when given\n"
+        "                 (scripts/eval-record.py writes them)\n"
         "  --lineage F    walk F's provenance chain (a model or adapter file,\n"
         "                 or its record) back to its origins: every link\n"
         "                 re-hashed, every signature checked (--trust-key\n"
         "                 pins the signer); exit 0 verified and signed,\n"
-        "                 1 consistent but not all signed, 2 broken or no record\n"
+        "                 1 consistent but not all signed, 2 broken or no record;\n"
+        "                 on a --receipts folder: the model and adapter versions\n"
+        "                 that answered, when and in what order, then each\n"
+        "                 version's chain\n"
         "  --sign-record F  sign any JSON object file in place with --sign-key,\n"
         "                 the transcript's chain + signature (--record-prev P\n"
         "                 links it to record P); --check-record F verifies one\n"
@@ -1636,7 +1643,7 @@ int main(int argc, char **argv) {
     bool type_plan_strict = false;
     const char *transcript_path = NULL;
     const char *transcript_prev = NULL, *sign_key = NULL, *keygen_path = NULL;
-    const char *lineage_path = NULL;
+    const char *lineage_path = NULL, *require_eval = NULL;
     const char *sign_record = NULL, *record_prev = NULL, *check_record = NULL;
     // R1.2.1: receipt bundles
     const char *export_bundle = NULL, *bundle_out = NULL, *check_bundle = NULL;
@@ -1767,6 +1774,7 @@ int main(int argc, char **argv) {
         else if (!strcmp(a, "--transcript-prev")) transcript_prev = NEXT;
         else if (!strcmp(a, "--sign-key")) sign_key = NEXT;
         else if (!strcmp(a, "--lineage")) lineage_path = NEXT;
+        else if (!strcmp(a, "--require-eval")) require_eval = NEXT;
         else if (!strcmp(a, "--keygen")) keygen_path = NEXT;
         else if (!strcmp(a, "--sign-record")) sign_record = NEXT;
         else if (!strcmp(a, "--record-prev")) record_prev = NEXT;
@@ -3064,6 +3072,17 @@ int main(int argc, char **argv) {
         fprintf(stderr, "error: %s requires --quantize OUT (or "
                 "--merge-lora OUT for --quant)\n", orphan);
         return 1;
+    }
+
+    // R17.2: refuse a model that carries no passing evaluation of the asked
+    // kind, made for this very file (scripts/eval-record.py writes them)
+    if (require_eval) {
+        char why[512];
+        if (!lineage_require_eval(load_path, require_eval, trust_key, why, sizeof why)) {
+            fprintf(stderr, "error: --require-eval %s: %s\n", require_eval, why);
+            return 1;
+        }
+        fprintf(stderr, "eval: %s.eval.%s.json passes for this file\n", load_path, require_eval);
     }
 
     model_t m;
