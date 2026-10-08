@@ -5187,6 +5187,40 @@ IQ_LANE_MVB(k_gemvb_iq3_s_x8, iq3s_lane_n, 110, 8)
 IQ_LANE_MVB(k_gemvb_iq4_xs_x4, iq4xs_lane_n, 136, 4)
 IQ_LANE_MVB(k_gemvb_iq4_xs_x8, iq4xs_lane_n, 136, 8)
 
+// exact widths 2, 3, 5, 6 and 7 (2026-10-08): the x4/x8 classes made a 5-row
+// verify tile (--draft-k 4) pay for eight columns; the 27B head decoded at
+// 10.6 tok/s at k=4 against 13.6 at k=3 for that reason
+IQ_LANE_MVB(k_gemvx_iq2_xxs_x2, iq2xxs_lane_n, 66, 2)
+IQ_LANE_MVB(k_gemvx_iq2_xxs_x3, iq2xxs_lane_n, 66, 3)
+IQ_LANE_MVB(k_gemvx_iq2_xxs_x5, iq2xxs_lane_n, 66, 5)
+IQ_LANE_MVB(k_gemvx_iq2_xxs_x6, iq2xxs_lane_n, 66, 6)
+IQ_LANE_MVB(k_gemvx_iq2_xxs_x7, iq2xxs_lane_n, 66, 7)
+IQ_LANE_MVB(k_gemvx_iq2_xs_x2, iq2xs_lane_n, 74, 2)
+IQ_LANE_MVB(k_gemvx_iq2_xs_x3, iq2xs_lane_n, 74, 3)
+IQ_LANE_MVB(k_gemvx_iq2_xs_x5, iq2xs_lane_n, 74, 5)
+IQ_LANE_MVB(k_gemvx_iq2_xs_x6, iq2xs_lane_n, 74, 6)
+IQ_LANE_MVB(k_gemvx_iq2_xs_x7, iq2xs_lane_n, 74, 7)
+IQ_LANE_MVB(k_gemvx_iq2_s_x2, iq2s_lane_n, 82, 2)
+IQ_LANE_MVB(k_gemvx_iq2_s_x3, iq2s_lane_n, 82, 3)
+IQ_LANE_MVB(k_gemvx_iq2_s_x5, iq2s_lane_n, 82, 5)
+IQ_LANE_MVB(k_gemvx_iq2_s_x6, iq2s_lane_n, 82, 6)
+IQ_LANE_MVB(k_gemvx_iq2_s_x7, iq2s_lane_n, 82, 7)
+IQ_LANE_MVB(k_gemvx_iq3_xxs_x2, iq3xxs_lane_n, 98, 2)
+IQ_LANE_MVB(k_gemvx_iq3_xxs_x3, iq3xxs_lane_n, 98, 3)
+IQ_LANE_MVB(k_gemvx_iq3_xxs_x5, iq3xxs_lane_n, 98, 5)
+IQ_LANE_MVB(k_gemvx_iq3_xxs_x6, iq3xxs_lane_n, 98, 6)
+IQ_LANE_MVB(k_gemvx_iq3_xxs_x7, iq3xxs_lane_n, 98, 7)
+IQ_LANE_MVB(k_gemvx_iq3_s_x2, iq3s_lane_n, 110, 2)
+IQ_LANE_MVB(k_gemvx_iq3_s_x3, iq3s_lane_n, 110, 3)
+IQ_LANE_MVB(k_gemvx_iq3_s_x5, iq3s_lane_n, 110, 5)
+IQ_LANE_MVB(k_gemvx_iq3_s_x6, iq3s_lane_n, 110, 6)
+IQ_LANE_MVB(k_gemvx_iq3_s_x7, iq3s_lane_n, 110, 7)
+IQ_LANE_MVB(k_gemvx_iq4_xs_x2, iq4xs_lane_n, 136, 2)
+IQ_LANE_MVB(k_gemvx_iq4_xs_x3, iq4xs_lane_n, 136, 3)
+IQ_LANE_MVB(k_gemvx_iq4_xs_x5, iq4xs_lane_n, 136, 5)
+IQ_LANE_MVB(k_gemvx_iq4_xs_x6, iq4xs_lane_n, 136, 6)
+IQ_LANE_MVB(k_gemvx_iq4_xs_x7, iq4xs_lane_n, 136, 7)
+
 // ---------------------------------------------------------------- elementwise
 // grid.y = token column for k_add (different x/d strides); silu operates on
 // the contiguous [batch][n_ff] region in one launch
