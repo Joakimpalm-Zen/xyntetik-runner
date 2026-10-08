@@ -10,6 +10,7 @@
 #include "compat.h"
 #include "json.h"
 #include "envelope.h"
+#include "lineage.h"
 #include "oms.h"
 #include "server.h"
 #include "provenance.h"
@@ -442,6 +443,22 @@ static bool write_provenance(const char *artifact, const char *suffix,
     if (ok) fprintf(stderr, "%s: provenance -> %s\n", kind, path);
     else    fprintf(stderr, "error: cannot write %s provenance to %s\n",
                     kind, path);
+    free(path);
+    return ok;
+}
+
+// Write a step's provenance record and, when --sign-key was given, sign it in
+// place (R17.1): the lineage walker reads both.
+static bool write_record(const char *artifact, const char *suffix,
+                         const char *kind, const sbuf *doc, const char *sign_key) {
+    if (!write_provenance(artifact, suffix, kind, doc)) return false;
+    size_t an = strlen(artifact), sn = strlen(suffix);
+    char *path = malloc(an + sn + 1);
+    if (!path) return false;
+    memcpy(path, artifact, an);
+    memcpy(path + an, suffix, sn + 1);
+    bool ok = lineage_sign(path, sign_key);
+    if (!ok) fprintf(stderr, "error: cannot sign the %s record %s\n", kind, path);
     free(path);
     return ok;
 }
@@ -1010,6 +1027,11 @@ static void usage_to(FILE *f, const char *prog) {
         "                 the replay would not reproduce; --json, --json-schema\n"
         "                 and --ignore-eos must match the record's). The\n"
         "                 record's config and seed override CLI sampling flags\n"
+        "  --lineage F    walk F's provenance chain (a model or adapter file,\n"
+        "                 or its record) back to its origins: every link\n"
+        "                 re-hashed, every signature checked (--trust-key\n"
+        "                 pins the signer); exit 0 verified and signed,\n"
+        "                 1 consistent but not all signed, 2 broken or no record\n"
         "  --sign-record F  sign any JSON object file in place with --sign-key,\n"
         "                 the transcript's chain + signature (--record-prev P\n"
         "                 links it to record P); --check-record F verifies one\n"
@@ -1080,7 +1102,9 @@ static void usage_to(FILE *f, const char *prog) {
         "                 response's runner_telemetry.receipt names its file\n"
         "  --receipts-keep N  keep the newest N receipts (default 0: all)\n"
         "  --sign-key F   with --transcript or --receipts: sign the receipt\n"
-        "                 with the key in F\n"
+        "                 with the key in F; with --quantize, --merge-lora,\n"
+        "                 --train or --context-surgery: sign the step's\n"
+        "                 provenance record\n"
         "                 (a signature over every byte before the ,\"signature\"\n"
         "                 key, chain hash included; the object names the algo)\n"
         "  --transcript-prev F  with --transcript: link the receipt to F (its\n"
@@ -1612,6 +1636,7 @@ int main(int argc, char **argv) {
     bool type_plan_strict = false;
     const char *transcript_path = NULL;
     const char *transcript_prev = NULL, *sign_key = NULL, *keygen_path = NULL;
+    const char *lineage_path = NULL;
     const char *sign_record = NULL, *record_prev = NULL, *check_record = NULL;
     // R1.2.1: receipt bundles
     const char *export_bundle = NULL, *bundle_out = NULL, *check_bundle = NULL;
@@ -1741,6 +1766,7 @@ int main(int argc, char **argv) {
         else if (!strcmp(a, "--verify")) verify_path = NEXT;
         else if (!strcmp(a, "--transcript-prev")) transcript_prev = NEXT;
         else if (!strcmp(a, "--sign-key")) sign_key = NEXT;
+        else if (!strcmp(a, "--lineage")) lineage_path = NEXT;
         else if (!strcmp(a, "--keygen")) keygen_path = NEXT;
         else if (!strcmp(a, "--sign-record")) sign_record = NEXT;
         else if (!strcmp(a, "--record-prev")) record_prev = NEXT;
@@ -1985,6 +2011,7 @@ int main(int argc, char **argv) {
         return record_sign(sign_record, sign_key, record_prev) ? 0 : 1;
     }
     if (check_record) return record_check(check_record, trust_key);
+    if (lineage_path) return lineage_walk(lineage_path, trust_key);
     if (check_bundle) return bundle_check(check_bundle, trust_key);
     if (check_pack) return pack_check(check_pack, trust_key);
     if (export_pack || pack_out) {
@@ -2827,10 +2854,9 @@ int main(int argc, char **argv) {
         sb_lit(&rec, "{\"schema_version\":\"xyntetik.runner.context-surgery.v1\","
                      "\"runner\":\"");
         sb_esc(&rec, RUNNER_VERSION, strlen(RUNNER_VERSION));
-        sb_lit(&rec, "\",\"base\":{\"path\":\"");
-        sb_esc(&rec, load_path, strlen(load_path));
-        sb_lit(&rec, "\",\"sha256\":\""); sb_lit(&rec, bsha);
-        sb_fmt(&rec, "\"},\"source\":{\"context_length\":%u,"
+        sb_lit(&rec, "\",\"base\":");
+        lineage_put_input(&rec, load_path, bsha);
+        sb_fmt(&rec, ",\"source\":{\"context_length\":%u,"
                        "\"original_context_length\":%u,\"yarn_factor\":%.9g},",
                sr.source_context, sr.original_context,
                (double)sr.source_factor);
@@ -2841,8 +2867,8 @@ int main(int argc, char **argv) {
                osha, mp.n_ctx, sr.original_context, (double)mp.yarn_factor);
         sb_fmt(&rec, "\"tensor_payloads_byte_identical\":%s}\n",
                sr.tensors_byte_identical ? "true" : "false");
-        bool wrote = write_provenance(context_out, ".context.json",
-                                      "context-surgery", &rec);
+        bool wrote = write_record(context_out, ".context.json",
+                                  "context-surgery", &rec, sign_key);
         free(rec.s);
         return wrote ? 0 : 1;
     }
@@ -2883,13 +2909,11 @@ int main(int argc, char **argv) {
             sb_lit(&rec, "{\"schema_version\":\"xyntetik.runner.merge.v1\","
                          "\"runner\":\"");
             sb_esc(&rec, RUNNER_VERSION, strlen(RUNNER_VERSION));
-            sb_lit(&rec, "\",\"base\":{\"path\":\"");
-            sb_esc(&rec, model_path, strlen(model_path));
-            sb_lit(&rec, "\",\"sha256\":\""); sb_lit(&rec, bsha);
-            sb_lit(&rec, "\"},\"adapter\":{\"path\":\"");
-            sb_esc(&rec, lora_path, strlen(lora_path));
-            sb_lit(&rec, "\",\"sha256\":\""); sb_lit(&rec, asha);
-            sb_fmt(&rec, "\"},\"lora_scale\":%g,\"target\":\"",
+            sb_lit(&rec, "\",\"base\":");
+            lineage_put_input(&rec, model_path, bsha);
+            sb_lit(&rec, ",\"adapter\":");
+            lineage_put_input(&rec, lora_path, asha);
+            sb_fmt(&rec, ",\"lora_scale\":%g,\"target\":\"",
                    (double)lora_scale);
             const char *target = quant_type ? quant_type : "keep";
             sb_esc(&rec, target, strlen(target));
@@ -2897,7 +2921,7 @@ int main(int argc, char **argv) {
             sb_esc(&rec, merge_out, strlen(merge_out));
             sb_lit(&rec, "\",\"sha256\":\""); sb_lit(&rec, osha);
             sb_lit(&rec, "\"}}\n");
-            if (!write_provenance(merge_out, ".merge.json", "merge", &rec))
+            if (!write_record(merge_out, ".merge.json", "merge", &rec, sign_key))
                 rc = 1;
             free(rec.s);
         }
@@ -2935,8 +2959,58 @@ int main(int argc, char **argv) {
             // this is plain --quantize, whose long-standing default is q4_0.
             tt = (prune_experts || remove_sublayer) ? T_KEEP : T_Q4_0;
         }
-        return quantize_gguf_plan(model_path, quant_out, tt, prune_experts,
-                                  type_plan, remove_sublayer);
+        int qrc = quantize_gguf_plan(model_path, quant_out, tt, prune_experts,
+                                     type_plan, remove_sublayer);
+        if (qrc != 0) return qrc;
+        // R17.1: the rewrite leaves its record like merge and training do --
+        // the input and output by sha256, every option that shaped the
+        // bytes, and the building binary -- so the file's lineage can be
+        // walked back (--lineage)
+        char bsha[65] = "", osha[65] = "", xsha[65] = "";
+        char *exe_path = plat_executable_path();
+        bool hash_ok = envelope_file_sha256(model_path, bsha) &&
+                       envelope_file_sha256(quant_out, osha) &&
+                       exe_path && envelope_file_sha256(exe_path, xsha);
+        free(exe_path);
+        if (!hash_ok) {
+            fprintf(stderr, "error: cannot hash the rewrite's files for the "
+                    "provenance record\n");
+            return 1;
+        }
+        const char *target = quant_type ? quant_type
+                           : type_plan ? "plan"
+                           : (prune_experts || remove_sublayer) ? "keep" : "q4_0";
+        sbuf rec = {0};
+        sb_lit(&rec, "{\"schema_version\":\"xyntetik.runner.quant.v1\","
+                     "\"runner\":\"");
+        sb_esc(&rec, RUNNER_VERSION, strlen(RUNNER_VERSION));
+        sb_lit(&rec, "\",\"build\":{\"binary_sha256\":\"");
+        sb_lit(&rec, xsha);
+        sb_lit(&rec, "\"},\"base\":");
+        lineage_put_input(&rec, model_path, bsha);
+        sb_lit(&rec, ",\"target\":\"");
+        sb_esc(&rec, target, strlen(target));
+        sb_lit(&rec, "\"");
+        if (prune_experts) {
+            sb_lit(&rec, ",\"prune_experts\":");
+            lineage_put_input(&rec, prune_experts, NULL);
+        }
+        if (type_plan) {
+            sb_lit(&rec, ",\"type_plan\":");
+            lineage_put_input(&rec, type_plan, NULL);
+        }
+        if (remove_sublayer) {
+            sb_lit(&rec, ",\"remove_sublayer\":\"");
+            sb_esc(&rec, remove_sublayer, strlen(remove_sublayer));
+            sb_lit(&rec, "\"");
+        }
+        sb_lit(&rec, ",\"output\":{\"path\":\"");
+        sb_esc(&rec, quant_out, strlen(quant_out));
+        sb_lit(&rec, "\",\"sha256\":\""); sb_lit(&rec, osha);
+        sb_lit(&rec, "\"}}\n");
+        bool wrote = write_record(quant_out, ".quant.json", "quantize", &rec, sign_key);
+        free(rec.s);
+        return wrote ? 0 : 1;
     }
     // Every flag that only has meaning while rewriting a file. Reaching here
     // means --quantize was not given, and the block above is their only
@@ -3503,18 +3577,16 @@ int main(int argc, char **argv) {
             sb_lit(&rec, "\",\"arch\":\"");
             const char *build_arch = RUNNER_BUILD_ARCH;
             sb_lit(&rec, build_arch);
-            sb_lit(&rec, "\"},\"base\":{\"path\":\"");
-            sb_esc(&rec, load_path, strlen(load_path));
-            sb_lit(&rec, "\",\"sha256\":\""); sb_lit(&rec, bsha);
-            sb_lit(&rec, "\"},\"objective\":\"");
+            sb_lit(&rec, "\"},\"base\":");
+            lineage_put_input(&rec, load_path, bsha);
+            sb_lit(&rec, ",\"objective\":\"");
             sb_lit(&rec, dpo_path ? "dpo" : "weighted-cross-entropy");
             if (dpo_path) sb_fmt(&rec, "\",\"dpo_beta\":%g", (double)dpo_beta);
             else sb_lit(&rec, "\"");
-            sb_lit(&rec, ",\"data\":{\"path\":\"");
-            sb_esc(&rec, data_path, strlen(data_path));
-            sb_lit(&rec, "\",\"sha256\":\""); sb_lit(&rec, dsha);
+            sb_lit(&rec, ",\"data\":");
+            lineage_put_input(&rec, data_path, dsha);
             sb_fmt(&rec,
-                    "\"},\"seed\":%llu,\"lora_rank\":%d,\"alpha\":%g,"
+                    ",\"seed\":%llu,\"lora_rank\":%d,\"alpha\":%g,"
                     "\"lr\":%g,\"steps\":%d,\"ctx\":%d,"
                     "\"end_of_turn\":%s,\"eot_id\":%d,"
                     "\"adamw\":{\"beta1\":0.9,\"beta2\":0.999,"
@@ -3528,7 +3600,7 @@ int main(int argc, char **argv) {
             sb_esc(&rec, train_out, strlen(train_out));
             sb_lit(&rec, "\",\"sha256\":\""); sb_lit(&rec, asha);
             sb_lit(&rec, "\"}}\n");
-            if (!write_provenance(train_out, ".train.json", "train", &rec)) {
+            if (!write_record(train_out, ".train.json", "train", &rec, sign_key)) {
                 free(rec.s);
                 TRAIN_FAIL;
             }

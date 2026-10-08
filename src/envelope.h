@@ -182,6 +182,11 @@ receipt_sig_state receipt_signature_check(const char *rec, size_t n, char pub_he
 // NULL starts one); check prints OK/UNSIGNED/BAD and returns 0/1/2.
 bool record_sign(const char *path, const char *sign_key_path, const char *prev_path);
 int  record_check(const char *path, const char *trust_hex);
+// The same verdict without printing (lineage walks many records): 0 signed
+// and verifying (by trust_hex when given), 1 unsigned, 2 bad, malformed,
+// untrusted, trailing bytes, or unreadable. pub_out gets the signer's key.
+int  record_signature_state(const char *path, const char *trust_hex,
+                            char pub_out[SIGN_PUBHEX_CAP]);
 bool record_chain_hash(const char *path, char hex[65]);
 
 // Writes the transcript beside the run. Returns false (with the reason on

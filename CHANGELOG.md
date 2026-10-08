@@ -19,6 +19,20 @@ rename keep the names that were true when they were written.
   output path goes (`--help` used to write a set of `--help.*` files).
   `docs/README.md` indexes every document and evidence folder by topic.
   `scripts/outcome-table.py`, used only by the Strata comparison, is gone.
+- **`--lineage FILE`: where a model file came from, checked (R17.1).**
+  `--quantize` (and its prune, sublayer-removal and type-plan forms) now
+  writes a provenance record beside its output, `OUT.gguf.quant.json`, as
+  `--merge-lora`, `--train` and `--context-surgery` already did; every
+  record's inputs link the record that produced them (path and sha256), and
+  `--sign-key` beside any of these steps signs the record in place.
+  `--lineage` walks a file's chain back to its origins: each link re-hashed,
+  each signature checked (`--trust-key` pins the signer), exit 0 verified
+  and signed, 1 consistent but not all signed, 2 broken or no record. The
+  records alone verify after the model files are gone, copied together to
+  another folder. `tests/test_lineage.py` builds a train, merge and quantize
+  chain and checks a signed chain, an unsigned one, an edited record, a
+  swapped file, another signer, a file with no record and a records-only
+  copy.
 
 - **`scripts/decide-calibrate.py` counts both splits the same way and can
   emit per-question predictions.** The held-out group count used
