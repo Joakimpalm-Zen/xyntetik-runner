@@ -1109,28 +1109,50 @@ static void shared_release(gpu_weights *w) {
 // dense FFN and a sparse-MoE layer (router + every expert, fused or split).
 // The dense w_gate/w_up/w_down are NULL on a MoE layer, so accounting only
 // those undercounts a MoE layer by ~all of its weight (the experts).
+// A tensor's device bytes in the plan. Per-tensor uploads (bound: every
+// --cpu-moe split) are separate allocations, which the driver rounds up to
+// its 2 MB granularity; on Qwen3.8-Flash-Next's 707 bindings that was 0.66 GB
+// the plan never saw (RUNNER_DEBUG_VRAM, 2026-10-08).
+#define PLAN_GRAN ((size_t)2 << 20)
+static size_t plan_bytes(const gguf_tensor *t, bool bound) {
+    if (!t) return 0;
+    return bound ? (t->nbytes + PLAN_GRAN - 1) / PLAN_GRAN * PLAN_GRAN : t->nbytes;
+}
+
+// an expert bank as uploaded: its bytes plus, bound, the rounding of its
+// (at most nine) tensors: router, routed gate/up/down or fused gate_up,
+// shared gate/up/down and the shared-expert gate
+static size_t expert_plan_bytes(const layer_t *ly, int n_expert, bool bound) {
+    return model_layer_expert_bytes(ly, n_expert) + (bound ? 9 * PLAN_GRAN : 0);
+}
+
 static size_t layer_weight_bytes(const layer_t *ly, int n_expert,
-                                 bool host_experts) {
+                                 bool host_experts, bool bound) {
     size_t wb = 0;
+    // attention / recurrent mixer, and the hyper-connection stream mixers
+    // (four projections and two injects per layer: 1.27 GB on Qwen3.8-Flash-
+    // Next, all of it outside the plan until 2026-10-08)
     gguf_tensor *att[] = { ly->wq, ly->wk, ly->wv, ly->wo, ly->wqkv,
                            ly->wq_gate, ly->ssm_conv, ly->ssm_beta,
-                           ly->ssm_alpha, ly->ssm_out };
+                           ly->ssm_alpha, ly->ssm_out,
+                           ly->hc_attn_down, ly->hc_attn_up, ly->hc_attn_inject,
+                           ly->hc_ffn_down, ly->hc_ffn_up, ly->hc_ffn_inject };
     for (size_t i = 0; i < sizeof(att) / sizeof(*att); i++)
-        if (att[i]) wb += att[i]->nbytes;
+        wb += plan_bytes(att[i], bound);
     if (ly->is_moe && host_experts) {
         // The complete expert FFN (router, routed tensors and a coupled
         // Gemma shared branch) executes on the host. Attention remains here.
     } else if (ly->is_moe) {
-        wb += model_layer_expert_bytes(ly, n_expert);
+        wb += expert_plan_bytes(ly, n_expert, bound);
     } else {
         gguf_tensor *ffn[] = { ly->w_gate, ly->w_up, ly->w_down };
-        for (int i = 0; i < 3; i++) if (ffn[i]) wb += ffn[i]->nbytes;
+        for (int i = 0; i < 3; i++) wb += plan_bytes(ffn[i], bound);
     }
     // E-series per-layer embedding matrices ride with the layer. They are f32
     // in the published GGUFs and far from negligible (~5 MB/layer on E4B), so
     // leaving them out would under-budget the offload and overcommit VRAM.
-    if (ly->ple_gate) wb += ly->ple_gate->nbytes;
-    if (ly->ple_proj) wb += ly->ple_proj->nbytes;
+    wb += plan_bytes(ly->ple_gate, bound);
+    wb += plan_bytes(ly->ple_proj, bound);
     return wb;
 }
 
@@ -1394,7 +1416,7 @@ static gpu_weights *shared_build(model_t *m, size_t act_bytes, int max_hd,
         const bool mtp_dev = m->mtp_ready;
         if (mtp_dev) {
             const layer_t *ml = &m->layers[m->n_layer];
-            fixed += layer_weight_bytes(ml, m->n_expert, moe_on_host(m, m->n_layer));
+            fixed += layer_weight_bytes(ml, m->n_expert, moe_on_host(m, m->n_layer), m->cpu_moe);
             if (m->mtp_eh_proj) fixed += m->mtp_eh_proj->nbytes;
             if (m->mtp_head && m->mtp_head != m->output) fixed += m->mtp_head->nbytes;
             if (m->mtp_hc_head_down) fixed += m->mtp_hc_head_down->nbytes;
@@ -1418,7 +1440,7 @@ static gpu_weights *shared_build(model_t *m, size_t act_bytes, int max_hd,
         size_t used = fixed;
         for (int l = 0; l < m->n_layer; l++) {
             layer_t *ly = &m->layers[l];
-            size_t wb = layer_weight_bytes(ly, m->n_expert, moe_on_host(m, l));
+            size_t wb = layer_weight_bytes(ly, m->n_expert, moe_on_host(m, l), m->cpu_moe);
             // KV bytes mirror the allocation: model_kv_boundary_bytes is the
             // same cumulative account MemAlloc sizes the device cache from,
             // so a ringed sliding layer costs its ring rows rather than
@@ -1458,7 +1480,7 @@ static gpu_weights *shared_build(model_t *m, size_t act_bytes, int max_hd,
             for (int l = 0; l < G; l++) {
                 layer_t *ly = &m->layers[l];
                 if (!ly->is_moe) continue;
-                size_t eb = model_layer_expert_bytes(ly, m->n_expert);
+                size_t eb = expert_plan_bytes(ly, m->n_expert, true);
                 if (used + eb + owed > vram_budget) break;
                 used += eb;
                 m->moe_host[l] = false;
@@ -1473,7 +1495,7 @@ static gpu_weights *shared_build(model_t *m, size_t act_bytes, int max_hd,
                 if (!m->layers[l].is_moe || m->moe_host[l]) continue;
                 if (placed <= m->moe_auto_placed - m->moe_auto_trim) break;
                 m->moe_host[l] = true;
-                used -= model_layer_expert_bytes(&m->layers[l], m->n_expert);
+                used -= expert_plan_bytes(&m->layers[l], m->n_expert, true);
                 placed--;
             }
             if (m->moe_auto_trim == 0) m->moe_auto_placed = placed;
@@ -1580,7 +1602,7 @@ static gpu_weights *shared_build(model_t *m, size_t act_bytes, int max_hd,
         // per tensor when it is real, the path the MoE split already uses.
         size_t sum_w = 0;
         for (int l = 0; l < G; l++)
-            sum_w += layer_weight_bytes(&m->layers[l], m->n_expert, moe_on_host(m, l));
+            sum_w += layer_weight_bytes(&m->layers[l], m->n_expert, moe_on_host(m, l), false);
         size_t planned_upload = sum_w + m->tok_embd->nbytes + (full ? m->output->nbytes : 0);
         // relative slack only, and a small one: the norms and biases outside
         // a layer's big tensors are kilobytes, never a sixty-fourth of the
