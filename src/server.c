@@ -3118,6 +3118,7 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
 
     int threads_per_slot = n_threads / parallel;
     if (threads_per_slot < 1) threads_per_slot = 1;
+    int shared_pool_threads = n_threads;   // the slots' shared pool (see below), for the banner
 
     const char *name = strrchr(model_path, '/');
     const char *bsname = strrchr(model_path, '\\'); // Windows path separator
@@ -3199,7 +3200,6 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
         // each slot gets its share of the CPU-forced fallback cap too
         slot_mp.cpu_fallback_threads = 0;   // the shared pool below is sized once, from the server's count
         tpool *shared_pool = NULL;
-        int shared_pool_threads = n_threads;
 
         for (int i = 0; i < parallel; i++) {
             // a Ctrl-C during a multi-slot load means "don't start": honour it
