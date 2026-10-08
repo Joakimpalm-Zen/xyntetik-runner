@@ -4672,6 +4672,19 @@ static void mv_rows(void *ctx, int i0, int i1) {
         // each weight block once and keeps every column's arithmetic the
         // single-column dot's, so y is byte-equal to the loop it replaces
         // while a codebook quant pays its decode once per tile, not per row.
+        if (!j->xq && j->n_batch == 1) {
+            // one column: the single-column kernel itself. The multi-column
+            // twins keep their accumulators in runtime-indexed vector arrays,
+            // which no compiler holds in registers, and a lone row paid for
+            // that: dense IQ3_S decode fell from 1.21 to 0.42 tok/s at four
+            // threads in 1.1.1 (every stage of the 1-row pass 2 to 3x slower,
+            // the batch pass untouched). Byte-equal either way.
+            for (int r = i0; r < i1; r++) {
+                const void *row = base + (size_t)r * j->rsz;
+                j->y[r] = vec_dot(type, row, j->x, n_in) * sc + (j->bias ? j->bias[r] : 0.0f);
+            }
+            return;
+        }
         if (!j->xq) {
             const float *xs[VEC_DOT_MULTI_MAX];
             float v[VEC_DOT_MULTI_MAX];
