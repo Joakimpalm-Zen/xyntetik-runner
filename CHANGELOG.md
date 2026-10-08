@@ -7,7 +7,7 @@ to the exact build, and what is not covered. Releases before 1.0.0 made no
 such promise (the `-alpha` suffix was retired at v0.2.0). Entries below the
 rename keep the names that were true when they were written.
 
-## Unreleased
+## v1.1.3 - 2026-10-08
 
 - **Server slots share one thread pool.** Each `--parallel` slot used to
   run its own pool, and on a CPU-only box the pools fought over the same
