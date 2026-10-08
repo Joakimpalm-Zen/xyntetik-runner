@@ -595,6 +595,15 @@ the step's record. `--lineage run.json` starts from the answer: the
 receipt's own signature, then the model and the adapter walked back
 through their records to their origins.
 
+`--lineage DIR` on a `--receipts` folder answers which file answered what.
+It groups the answers by model and adapter version, shows each version's
+answer count and time span, prints the order versions served in (a version
+that comes back after another, `timeline: v1 x2 v2 x1 v1 x1`, is a rollback),
+checks the receipt chain is continuous (a receipt removed from the middle
+breaks it) and every receipt's signature, then walks each version's lineage
+once. A swap set (`-m "a=...,b=..."`) or a file replaced between restarts
+shows up the same way, because every receipt names the model by sha256.
+
 What it proves is where the file came from and that nothing in between was
 changed; not that the file is good. That is the evaluation's job.
 
@@ -2145,7 +2154,7 @@ whether the draft is `active` there.
 | `--train-dpo FILE` | Train an adapter from JSONL `prompt`, `chosen`, `rejected` pairs. CPU forward/backward path; the frozen base is the reference, evaluated with the adapter bypassed. Does not activate the output adapter. |
 | `--dpo-beta F` | DPO reference-deviation coefficient (default `0.1`). Uses the existing training step, learning-rate, context and output options. |
 | `--require-eval KIND` | Refuse to load `-m` unless it carries a passing evaluation of KIND (`fidelity` or `agent`, written by `scripts/eval-record.py`) made for this very file, signed by `--trust-key` when one is given. Hashes the model at load. [Details](#evaluation-records). |
-| `--lineage FILE` | Walk the provenance chain of a model or adapter file (or of its record) back to its origins: each step's record re-hashed and checked against the next, each signature verified, `--trust-key` pinning the signer. Exit 0 verified and signed, 1 consistent but not all signed, 2 broken or no record. [Details](#lineage). |
+| `--lineage FILE` | Walk the provenance chain of a model or adapter file, of its record, of an answer's receipt, or of a `--receipts` folder (versions served, timeline, chain continuity) back to its origins: each step's record re-hashed and checked against the next, each signature verified, `--trust-key` pinning the signer. Exit 0 verified and signed, 1 consistent but not all signed, 2 broken or no record. [Details](#lineage). |
 | `--sign-key FILE` | With `--quantize`, `--merge-lora`, `--train` or `--context-surgery`: sign the step's provenance record in place. With `--transcript`: sign the receipt with the key in FILE. The signature object is appended inside the record after the chain and covers every byte before its own `,"signature"` key, chain hash included, so any Ed25519 (or ML-DSA-44) library verifies it from the file bytes and the embedded public key alone. |
 | `--transcript-prev FILE` | With `--transcript`: link the new receipt to FILE (FILE's chain hash becomes this record's `chain.prev`; a chain head carries 64 zeros). With `--verify`: check that link, `UNVERIFIABLE` on a break. |
 | `--require-signed` | With `--verify`: an unsigned record is `UNVERIFIABLE`. Signature, trust and link checks all run before the model is loaded for the replay. |

@@ -50,6 +50,11 @@ rename keep the names that were true when they were written.
   changed since), and `--require-eval KIND` refuses to load a model without
   a passing, current one, signed by `--trust-key` when given.
   `tests/test_eval_record.py`.
+- **`--lineage DIR` on a `--receipts` folder: which version answered what
+  (R17.4).** The answers grouped by model and adapter sha256, each version's
+  count and time span, the order they served in (a rollback reads as a
+  version served again), the receipt chain's continuity and every receipt's
+  signature, then each version's lineage once.
 
 - **`scripts/decide-calibrate.py` counts both splits the same way and can
   emit per-question predictions.** The held-out group count used

@@ -164,3 +164,54 @@ def test_a_receipt_for_a_downloaded_model_ends_at_its_origin(runner_bin, tmp_pat
     r.write_text(r.read_text().replace('"threads":', '"threads": ', 1))
     w2 = _run(runner_bin, ["--lineage", "run.json"], tmp_path)
     assert w2.returncode == 2 and "BROKEN" in w2.stdout, w2.stdout
+
+
+def _free_port():
+    import socket
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    port = s.getsockname()[1]
+    s.close()
+    return port
+
+
+def test_a_servers_receipts_show_versions_timeline_and_lineage(runner_bin, tmp_path):
+    # a swap set served A, A, B, A: the receipts folder tells which version
+    # answered what and when (B, then back to A: a rollback), the receipt
+    # chain is continuous, and each version's lineage is walked once
+    import time
+    import urllib.request
+    _chain(runner_bin, tmp_path)
+    port = _free_port()
+    srv = subprocess.Popen(
+        [str(runner_bin), "--serve", "--port", str(port), "--gpu", "off", "--no-tray",
+         "-m", f"a={tmp_path / 'final.gguf'},b={tmp_path / 'merged.gguf'}",
+         "--receipts", "rc", "--sign-key", "key.json"],
+        cwd=tmp_path, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        for _ in range(100):
+            try:
+                urllib.request.urlopen(f"http://127.0.0.1:{port}/v1/models", timeout=2)
+                break
+            except OSError:
+                time.sleep(0.2)
+        for m in "aaba":
+            body = json.dumps({"model": m, "messages": [{"role": "user", "content": "hi"}],
+                               "max_tokens": 2, "temperature": 0}).encode()
+            req = urllib.request.Request(f"http://127.0.0.1:{port}/v1/chat/completions",
+                                         body, {"Content-Type": "application/json"})
+            urllib.request.urlopen(req, timeout=120).read()
+    finally:
+        srv.terminate()
+        srv.wait(timeout=30)
+    w = _run(runner_bin, ["--lineage", "rc"], tmp_path)
+    assert w.returncode == 0, w.stdout
+    out = w.stdout
+    assert "4 answers" in out and "4 signed" in out and "chain continuous" in out, out
+    assert "timeline: v1 x2 v2 x1 v1 x1" in out, out
+    assert "v1: model sha256" in out and ": 3 answers" in out and ": 1 answers" in out
+    # a receipt removed from the middle breaks the chain
+    receipts = sorted((tmp_path / "rc").glob("receipt-*.json"))
+    receipts[1].unlink()
+    w2 = _run(runner_bin, ["--lineage", "rc"], tmp_path)
+    assert w2.returncode == 2 and "chain BROKEN" in w2.stdout, w2.stdout

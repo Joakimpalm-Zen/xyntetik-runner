@@ -5,6 +5,9 @@
 #include <string.h>
 
 #include "envelope.h"
+#include "receipts.h"
+
+#include <sys/stat.h>
 
 bool lineage_sidecar(const char *artifact, char *out, size_t cap) {
     return record_sidecar(artifact, out, cap);
@@ -274,7 +277,91 @@ static void walk_record(const char *rec_path, const char *want_rec_sha,
     jv_free(rec);
 }
 
+// --lineage DIR on a --receipts directory (R17.4): which model and adapter
+// versions served the answers, when, and in what order (a rollback shows as
+// a version served again), the receipt chain's continuity, then each
+// version's lineage once.
+typedef struct { char model[65], adapter[65]; int count; int idx; char first[32], last[32]; } version;
+
+static int walk_receipts_dir(const char *dir, const char *trust_hex) {
+    walk_state w = { 0 };
+    char **paths = NULL;
+    int n = receipts_list_dir(dir, &paths);
+    printf("lineage of the receipts in %s: %d answers\n", dir, n);
+    if (n == 0) { printf("  NO RECORD: no receipt-*.json files\n"); free(paths); return 2; }
+    version *v = calloc((size_t)n, sizeof *v);
+    int nv = 0, *seq_v = calloc((size_t)n, sizeof *seq_v);
+    jv **first_rec = calloc((size_t)n, sizeof *first_rec);   // per version
+    int signed_n = 0, unsigned_n = 0, bad_n = 0, breaks = 0;
+    char prev_hash[65] = "";
+    for (int i = 0; i < n && v && seq_v && first_rec; i++) {
+        jv *r = read_json(paths[i]);
+        if (!r) { bad_n++; seq_v[i] = -1; continue; }
+        char pub[SIGN_PUBHEX_CAP];
+        int sig = record_signature_state(paths[i], trust_hex, pub);
+        if (sig == 0) signed_n++; else if (sig == 1) unsigned_n++; else bad_n++;
+        jv *ch = jv_get(r, "chain");
+        const char *ph = jv_str(jv_get(ch, "prev"), ""), *hh = jv_str(jv_get(ch, "hash"), "");
+        if (i > 0 && prev_hash[0] && strcmp(ph, prev_hash)) breaks++;
+        snprintf(prev_hash, sizeof prev_hash, "%s", hh);
+        const char *ms = jv_str(jv_get(jv_get(r, "model"), "sha256"), "");
+        jv *ad = jv_get(r, "adapter");
+        const char *as = ad && ad->type == J_OBJ ? jv_str(jv_get(ad, "sha256"), "") : "";
+        const char *utc = jv_str(jv_get(r, "generated_utc"), "?");
+        int k = 0;
+        while (k < nv && (strcmp(v[k].model, ms) || strcmp(v[k].adapter, as))) k++;
+        if (k == nv) {
+            snprintf(v[k].model, 65, "%s", ms);
+            snprintf(v[k].adapter, 65, "%s", as);
+            snprintf(v[k].first, 32, "%s", utc);
+            v[k].idx = k + 1;
+            first_rec[k] = r;
+            r = NULL;
+            nv++;
+        }
+        v[k].count++;
+        snprintf(v[k].last, 32, "%s", utc);
+        seq_v[i] = k;
+        jv_free(r);
+    }
+    if (breaks) note(&w, 2);
+    if (bad_n) note(&w, 2);
+    if (unsigned_n) note(&w, 1);
+    printf("  receipts: %d signed, %d unsigned, %d bad; chain %s\n", signed_n, unsigned_n, bad_n,
+           breaks ? "BROKEN (a receipt's prev is not the one before it)" : "continuous");
+    // the order versions served in: a version that returns is a rollback
+    printf("  timeline:");
+    for (int i = 0; i < n; ) {
+        int k = seq_v[i], run = 0;
+        while (i < n && seq_v[i] == k) { i++; run++; }
+        if (k >= 0) printf(" v%d x%d", k + 1, run);
+    }
+    printf("\n");
+    for (int k = 0; k < nv; k++) {
+        char ms[13], as[13];
+        short_sha(v[k].model, ms);
+        short_sha(v[k].adapter[0] ? v[k].adapter : "none", as);
+        printf("  v%d: model sha256 %s, adapter %s: %d answers, %s .. %s\n", k + 1, ms,
+               v[k].adapter[0] ? as : "none", v[k].count, v[k].first, v[k].last);
+        static const char *const KEYS[] = { "model", "adapter" };
+        for (size_t i = 0; i < 2; i++) {
+            jv *in = jv_get(first_rec[k], KEYS[i]);
+            if (in && in->type == J_OBJ && jv_get(in, "sha256"))
+                walk_input(KEYS[i], in, paths[0], trust_hex, 2, &w);
+        }
+        jv_free(first_rec[k]);
+    }
+    for (int i = 0; i < n; i++) free(paths[i]);
+    free(paths); free(v); free(seq_v); free(first_rec);
+    printf("RESULT: %s\n", w.worst == 0 ? "VERIFIED (every link consistent and signed)"
+                         : w.worst == 1 ? "CONSISTENT, NOT ALL SIGNED"
+                                        : "BROKEN");
+    return w.worst;
+}
+
 int lineage_walk(const char *start, const char *trust_hex) {
+    struct stat dst;
+    if (stat(start, &dst) == 0 && S_ISDIR(dst.st_mode)) return walk_receipts_dir(start, trust_hex);
     walk_state w = { 0 };
     char rec[4096];
     const char *want_out = NULL;

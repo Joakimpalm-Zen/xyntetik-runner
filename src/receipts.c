@@ -47,14 +47,33 @@ static bool seq_of(const char *name, unsigned long long *seq) {
     return true;
 }
 
-// Every record sequence in the directory, ascending. Returns the count;
-// *out is the caller's to free.
-static int list_seqs(unsigned long long **out) {
+// Every record sequence in `dir`, ascending. Returns the count; *out is
+// the caller's to free.
+static int list_seqs_in(const char *dir, unsigned long long **out);
+static int list_seqs(unsigned long long **out) { return list_seqs_in(RC.dir, out); }
+
+int receipts_list_dir(const char *dir, char ***paths_out) {
+    unsigned long long *seqs = NULL;
+    int n = list_seqs_in(dir, &seqs);
+    char **paths = n > 0 ? calloc((size_t)n, sizeof *paths) : NULL;
+    int k = 0;
+    for (int i = 0; paths && i < n; i++) {
+        char buf[1200];
+        snprintf(buf, sizeof buf, "%s/" RC_PREFIX "%010llu" RC_SUFFIX, dir, seqs[i]);
+        if (!(paths[k] = strdup(buf))) break;
+        k++;
+    }
+    free(seqs);
+    *paths_out = paths;
+    return paths ? k : 0;
+}
+
+static int list_seqs_in(const char *dir, unsigned long long **out) {
     int n = 0, cap = 0;
     unsigned long long *v = NULL;
 #ifdef _WIN32
     char pat[1100];
-    snprintf(pat, sizeof pat, "%s\\" RC_PREFIX "*" RC_SUFFIX, RC.dir);
+    snprintf(pat, sizeof pat, "%s\\" RC_PREFIX "*" RC_SUFFIX, dir);
     struct _finddata_t fd;
     intptr_t h = _findfirst(pat, &fd);
     if (h != -1) {
@@ -72,7 +91,7 @@ static int list_seqs(unsigned long long **out) {
         _findclose(h);
     }
 #else
-    DIR *d = opendir(RC.dir);
+    DIR *d = opendir(dir);
     if (d) {
         struct dirent *de;
         while ((de = readdir(d)) != NULL) {
