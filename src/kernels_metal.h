@@ -4356,7 +4356,7 @@ static const char *k_metal_src =
     "// reuse in registers where the flat expert-major family measured that cache\n"
     "// alone does not pay.\n"
     "static inline void moe_dot8_q8_0(device const uchar *wbase, uint row, int n_in,\n"
-    "                                 const thread device const float **xps,\n"
+    "                                 device const float * thread const *xps,\n"
     "                                 int ncol, uint tiisg, thread float *acc) {\n"
     "    int nb = n_in / 32;\n"
     "    device const uchar *rw = wbase + (ulong)row * nb * 34;\n"
@@ -4374,7 +4374,7 @@ static const char *k_metal_src =
     "}\n"
     "\n"
     "static inline void moe_dot8_mxfp4(device const uchar *wbase, uint row, int n_in,\n"
-    "                                  const thread device const float **xps,\n"
+    "                                  device const float * thread const *xps,\n"
     "                                  int ncol, uint tiisg, thread float *acc) {\n"
     "    int nb = n_in / 32;\n"
     "    device const uchar *rw = wbase + (ulong)row * nb * 17;\n"
@@ -4993,4 +4993,4 @@ static const char *k_metal_src =
     "\n"
 ;
 // SHA-256 of kernels.metal as embedded above.
-static const char *k_metal_sha = "4dfd54df9f215aa93b269cb652715d5fc59ba1691db4764cdf8c7d9ced056fa5";
+static const char *k_metal_sha = "e7bb5e03c1a123f6bf47786954a9658ca9bb8021963ac4d0c810a41cafe33f8f";
