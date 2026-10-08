@@ -1134,6 +1134,16 @@ static size_t layer_weight_bytes(const layer_t *ly, int n_expert,
     return wb;
 }
 
+// RUNNER_DEBUG_VRAM=1: the driver's free figure at each init stage, so the
+// placement plan can be checked against what the device actually spends
+static void vram_probe(const char *stage) {
+    static int on = -1;
+    if (on < 0) { const char *e = getenv("RUNNER_DEBUG_VRAM"); on = e && *e && *e != '0'; }
+    size_t f = 0, t = 0;
+    if (on && cu.MemGetInfo && cu.MemGetInfo(&f, &t) == 0)
+        fprintf(stderr, "vram: %-28s free %.3f GB\n", stage, f / 1e9);
+}
+
 static uint64_t tensor_file_off(const model_t *m, const gguf_tensor *t) {
     return (uint64_t)((const uint8_t *)t->data - (const uint8_t *)m->gf.map);
 }
@@ -1306,6 +1316,7 @@ static gpu_weights *shared_build(model_t *m, size_t act_bytes, int max_hd,
     {
         size_t vram_free = 0, vram_total = 0;
         CK(cu.MemGetInfo(&vram_free, &vram_total));
+        vram_probe("plan (budget source)");
         size_t vram_budget = vram_free;
         // Unified memory (integrated device): the "VRAM" the driver reports
         // IS system RAM, so the upload budget must also respect what the OS
@@ -1585,7 +1596,9 @@ static gpu_weights *shared_build(model_t *m, size_t act_bytes, int max_hd,
         w->bound = m->cpu_moe || spread || (full && mtp_dev && mtp_outside_main_map(m));
         w->weights_len = w->bound ? 0 : upload_len;
 
+        vram_probe("before module load");
         CK(cu.ModuleLoadData(&w->mod, k_ptx_src));
+        vram_probe("after module load");
         struct { CUfunction *f; const char *name; } fns[] = {
             { &w->f_rmsnorm,    "k_rmsnorm" },   { &w->f_qknorm, "k_qknorm" },
             { &w->f_rmsnorm_grouped, "k_rmsnorm_grouped" }, { &w->f_mtp_cat, "k_mtp_cat" },
@@ -2102,6 +2115,7 @@ static gpu_weights *shared_build(model_t *m, size_t act_bytes, int max_hd,
         }
     }
     w->refs = 1;
+    vram_probe("after weights upload");
     return w;
 
 fail:
@@ -2604,6 +2618,7 @@ bool gpu_init(model_t *m) {
                     act_bytes / 1e9);
     }
 
+    vram_probe("after instance buffers");
     m->gpu = g;
     return true;
 
