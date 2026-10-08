@@ -1395,6 +1395,9 @@ static gpu_weights *shared_build(model_t *m, size_t act_bytes, int max_hd,
                 fixed += per_row * (size_t)(m->spec_batch < 8 ? m->spec_batch : 8);
             }
         }
+        // --cpu-moe auto plans from all-host every time: a retry after a
+        // failed init (model.c) must not inherit the last attempt's banks
+        if (m->cpu_moe && m->cpu_moe_layers == CPU_MOE_AUTO) model_moe_place_host(m, -1);
         // decide how many *leading* layers fit — accumulate each layer's weight
         // bytes plus its KV bytes until the budget runs out; the CPU runs the
         // rest (partial offload)
@@ -1438,6 +1441,7 @@ static gpu_weights *shared_build(model_t *m, size_t act_bytes, int max_hd,
             size_t owed = G == m->n_layer
                         ? (m->cpu_moe ? 0 : m->tok_embd->nbytes) + m->output->nbytes
                         : 0;
+            int placed = 0;
             for (int l = 0; l < G; l++) {
                 layer_t *ly = &m->layers[l];
                 if (!ly->is_moe) continue;
@@ -1445,7 +1449,21 @@ static gpu_weights *shared_build(model_t *m, size_t act_bytes, int max_hd,
                 if (used + eb + owed > vram_budget) break;
                 used += eb;
                 m->moe_host[l] = false;
+                placed++;
             }
+            // a retry after an out-of-memory init holds back the deepest
+            // banks: the plan is an estimate (on a 24 GB MIG slice it
+            // undercounted the device by ~2 GB, so a smaller KV that bought a
+            // 20th bank failed its recurrent-state allocation and the whole
+            // run fell back to the CPU at half speed, 2026-10-08)
+            for (int l = G - 1; l >= 0 && m->moe_auto_trim > 0 && placed > 0; l--) {
+                if (!m->layers[l].is_moe || m->moe_host[l]) continue;
+                if (placed <= m->moe_auto_placed - m->moe_auto_trim) break;
+                m->moe_host[l] = true;
+                used -= model_layer_expert_bytes(&m->layers[l], m->n_expert);
+                placed--;
+            }
+            if (m->moe_auto_trim == 0) m->moe_auto_placed = placed;
         }
         // a full split also needs token_embd + output weights resident
         bool full = G == m->n_layer &&
