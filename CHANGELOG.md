@@ -9,6 +9,15 @@ rename keep the names that were true when they were written.
 
 ## Unreleased
 
+- **Source builds on the macOS 27 SDK keep Metal.** Two helper parameters in
+  `kernels.metal` (`moe_dot8_q8_0`, `moe_dot8_mxfp4`) named two address
+  spaces for one pointer (`const thread device const float **`); the SDK 27
+  Metal compiler rejects that, the embedded library failed to compile and
+  every run of such a build fell back to the CPU (`--caps` reported no GPU;
+  `make test-metal-shader-gate` caught it). The release binaries, built
+  against SDK 26.5, were not affected. Reported by an outside review on an
+  M5 Max.
+
 - **The codebook i-quant decode GEMVs take two rows per warp.** The
   batch-1 kernel is latency-bound (index bytes, then the grid word, then x,
   per block); a second independent row per warp hides part of that, the rows
