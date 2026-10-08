@@ -1638,6 +1638,17 @@ AVX2 fallback): 2.4-2.5x on the kernel in isolation, but it quantizes the
 activations, so it is **off by default** - no format cleared the 0/64
 teacher-forced flip bar with a decode gain worth taking on the measurement
 box. `./test-i8-tol MODEL.gguf` is the gate.
+
+**CUDA (experimental):** `RUNNER_CUDA_Q8X=1` quantizes each matvec's
+activation to int8 (per 32 elements) and runs the IQ3_S, IQ3_XXS, IQ4_XS,
+Q4_K and Q8_0 GEMVs as `dp4a` integer dots at 1 to 8 columns, the route
+llama.cpp's MMVQ takes. A speculative verify row then costs little more than
+a decoded one. Qwen3.8-27B IQ3_S with its MTP head on a 24 GB MIG slice:
+plain decode 13.9 to 14.8 tok/s, `--mtp-file --draft-k 3` 22.0 (1.6x the
+float route's plain decode), the drafted text byte-identical to the route's
+own plain decode. It is **off by default** because it is not the float
+route's bits: device against CPU `--score` on the same file moves from 0 to
+2 argmax flips in 480 positions (max |dlogprob| 0.003 to 0.93).
 `RUNNER_TPOOL_SPIN` sets how many relax iterations a pool worker spins before
 parking (default 3000, roughly 50 us); `0` restores a pure condvar pool. The
 spin window only changes when threads wake, never which rows they compute, so

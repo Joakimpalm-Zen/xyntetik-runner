@@ -25,6 +25,16 @@ rename keep the names that were true when they were written.
   at prefill tiles of 1, 3, 5 and 8 rows: the tail of the two-rows-per-warp
   GEMV and of the exact-width twins. Pre-built as `odd-<T>.gguf` under
   `RUNNER_IQ_FIXTURES`; all eight pass on the RTX 3070.
+- **Experimental int8-activation GEMVs on CUDA (`RUNNER_CUDA_Q8X=1`, off by
+  default).** The activation is quantized to int8 per 32 elements once per
+  matvec and IQ3_S / IQ3_XXS / IQ4_XS / Q4_K / Q8_0 rows run as `__dp4a`
+  dots at 1 to 8 columns; batch-1 and the verify columns share one lane
+  function, so within the route a drafted token is the plain decode's.
+  Qwen3.8-27B IQ3_S + MTP head on a 24 GB MIG slice, interleaved: plain
+  14.8 tok/s (float 13.9), `--draft-k` 1/2/3/4 20.0/22.2/22.0/20.4, text
+  identical to the route's plain in every row. Device vs CPU `--score`: 2
+  argmax flips in 480 positions (float route: 0), max |dlogprob| 0.93, so
+  it stays opt-in until a tolerance decision.
 
 - **`make test` checks the embedded PTX against `cuda.c`'s kernel roster.**
   A kernel `cuda.c` names but `kernels_ptx.h` lacks fails the CUDA init, and
