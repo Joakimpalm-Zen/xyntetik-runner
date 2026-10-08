@@ -275,10 +275,10 @@ directory, or a size that is not a whole byte count, is refused whole):
 ./runner -m model.gguf -p "Return a status object" --json
 ./runner -m model.gguf -f big-document.txt -c 8192 -n 200
 
-# Speculative decoding: draft model, CPU MTP head, or prompt lookup.
+# Speculative decoding: draft model, MTP head, or prompt lookup.
 ./runner -m big.gguf --draft small.gguf -p "Continue this code"
 ./runner -m qwen3.5-4b-mtp.gguf --mtp --gpu off -p "Continue this code"
-./runner -m trunk.gguf --mtp-file trunk-mtp.gguf --gpu off -p "Continue this code"
+./runner -m trunk.gguf --mtp-file trunk-mtp.gguf -p "Continue this code"
 ./runner -m model.gguf --draft-lookup -f transcript.txt -p "Summarize the text above"
 ```
 
@@ -1258,7 +1258,7 @@ merely dense matvec/matmul support.
 |---|---|
 | `llama`, `mistral`, `smollm`, `stablelm` | Llama-style dense families with family tokenizers/templates. |
 | `qwen2`, `qwen3` | QKV-bias and per-head-QK-norm variants. |
-| `qwen35` | Dense Qwen3.5/3.8/Ornith Gated DeltaNet plus full attention; CPU and CUDA. Qwen3.8-27B admitted 2026-09-06 (tokenizer 0/721 after the `qwen35` rule learned `[\p{L}\p{M}]+` runs; its NextN block feeds `--mtp`; its own `qwen38` chat template with the reasoning-effort preamble, `reasoning_effort` xhigh/medium/low honoured); evidence in `docs/granite-42-qwen38-cert-2026-09-06.md`. CPU recurrent folds support speculative decode, grammar fast-forward, and exact shared-prefix restore. Any GPU-backed recurrent instance declines shared-prefix restore (its own turn mark resumes the next request at the prompt boundary on CPU and CUDA alike, since 2026-09-15); a CUDA-resident recurrent layer also declines speculative decode and grammar fast-forward. |
+| `qwen35` | Dense Qwen3.5/3.8/Ornith Gated DeltaNet plus full attention; CPU and CUDA. Qwen3.8-27B admitted 2026-09-06 (tokenizer 0/721 after the `qwen35` rule learned `[\p{L}\p{M}]+` runs; its NextN block feeds `--mtp`; its own `qwen38` chat template with the reasoning-effort preamble, `reasoning_effort` xhigh/medium/low honoured); evidence in `docs/granite-42-qwen38-cert-2026-09-06.md`. CPU recurrent folds support speculative decode, grammar fast-forward, and exact shared-prefix restore. Any GPU-backed recurrent instance declines shared-prefix restore (its own turn mark resumes the next request at the prompt boundary on CPU and CUDA alike, since 2026-09-15); a CUDA-resident recurrent layer runs speculative decode (per-row recurrent checkpoints restore a partially accepted round) and declines grammar fast-forward. |
 | `qwen3moe` | Fused and legacy split sparse-MoE layouts on CPU/CUDA; supported fused layouts on Metal. |
 | `gemma3` | Regular and QAT layouts, sliding-window attention, sandwich norms. The 27B (62 blocks) scales attention by its config's `query_pre_attn_scalar`, which is n_embd / n_head (168), not its 128-wide heads; every other size uses the head width (since 2026-09-30, `tests/test_attn_scale.c`; before, the 27B ran 1.146x too sharp). |
 | `gemma4` | Heterogeneous attention, thinking channels, E-series, supported dense/MoE layouts, and the family's native tool protocol. Both E-series export shapes load. A layer at or past `block_count - attention.shared_kv_layers` computes no K and no V (it attends over the cache an earlier layer filled), so the current quantized exports - the ggml-org Q4_0, Google's own QAT Q4_0 and the community QAT F16 - omit `attn_k.weight`, `attn_v.weight` and `attn_k_norm.weight` on exactly those layers: 666 tensors on E4B where the BF16 export has 720. Those three are optional on the shared-KV tail and still required on every KV-owning layer, where a missing one is refused by name. |
@@ -1298,9 +1298,10 @@ silently dropped branch.
 Not implemented: Vulkan; TLS/auth; remote bind; remote/streamed GGUF parts; the
 `qwen2moe`/`deepseek2`/`kimi` architecture IDs (their shared-expert *layout* is
 implemented, as above - the architectures are not admitted) or MLA attention;
-Mamba/Jamba; MTP/NextN draft-head consumption on the GPU backends or with more
-than one predictor block (`--mtp` serves the single-block CPU case; without
-the flag the tensors load and are skipped, so dense decoding is unchanged);
+Mamba/Jamba; MTP/NextN draft-head consumption on Metal, on a partial CUDA
+split, or with more than one predictor block (`--mtp` serves the single-block
+case on the CPU and on CUDA with the whole trunk on the device; without the
+flag the tensors load and are skipped, so dense decoding is unchanged);
 OMS model signatures by the certificate or keyless (Fulcio/Rekor) methods, or
 with shard or BLAKE serialization (reported as unsupported, never as
 verified); full GBNF; image/document inputs;
@@ -1930,8 +1931,8 @@ instance instead.
 | `--moe-prefetch on\|off\|auto` | Prefetch routed expert blocks. Auto enables it only for measured oversubscribed Apple Silicon cases. |
 | `--draft PATH` | Use a same-vocabulary draft GGUF for speculative decoding; admission and backend restrictions apply. A server given a swap registry (`-m a=...,b=...`) refuses to start with `--draft`, which needs a single served model. [Details](#cli-draft). |
 | `--draft-k N` | Draft tokens per speculative round, default `4`. Also the width for `--mtp` and `--draft-lookup`. All sources stop at the context boundary, including with `-n -1`; a final verify row cannot emit a bonus beyond the context or transcript token buffer. |
-| `--mtp` | Use the model’s single NextN/MTP predictor block for CPU speculative decoding. [Details](#cli-mtp). |
-| `--mtp-file PATH` | The NextN/MTP predictor block from a companion GGUF when the model file was exported without one (llama.cpp's MTP-only layout: same architecture and depth, `nextn_predict_layers` 1, the block at index `block_count - 1`; the trunk's embeddings and LM head are used). Implies `--mtp`. Built for Qwen3.8-Flash-Next by `scripts/make-mtp-companion.py` from the publisher's BF16 checkpoint, provenance in the header. CPU path only, like `--mtp`. |
+| `--mtp` | Use the model’s single NextN/MTP predictor block for speculative decoding: on the CPU, and on CUDA when the whole trunk is on the device (a partial split refuses with an error naming `--gpu off`). [Details](#cli-mtp). |
+| `--mtp-file PATH` | The NextN/MTP predictor block from a companion GGUF when the model file was exported without one (llama.cpp's MTP-only layout: same architecture and depth, `nextn_predict_layers` 1, the block at index `block_count - 1`; the trunk's embeddings and LM head are used). Implies `--mtp`. Built for Qwen3.8-Flash-Next by `scripts/make-mtp-companion.py` from the publisher's BF16 checkpoint, provenance in the header; the Qwen3.8-27B head (llama.cpp's `convert_hf_to_gguf.py --mtp`) loads the same way. Same placement rule as `--mtp`. |
 | `--draft-lookup` | Draft from repeated prompt context without a second model; uses the `--draft-k` round width (default `4`). [Details](#cli-draft-lookup). |
 | `--draft-required` | Fail instead of falling back to plain decoding when a requested draft model is refused. [Details](#cli-draft-required). |
 

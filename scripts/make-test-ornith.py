@@ -8,6 +8,9 @@ OUT = sys.argv[1] if len(sys.argv) > 1 else "test-ornith.gguf"
 E, HEADS, KV, FF = 32, 4, 2, 64
 LAYERS = int(os.environ.get("ORNITH_TEST_LAYERS", "4"))
 LEGACY_DT = os.environ.get("ORNITH_LEGACY_DT") == "1"
+# ORNITH_TEST_MTP=1: emit the declared NextN/MTP block (an attention block at
+# index LAYERS plus its nextn.* head tensors), so the head can be bound and run
+MTP = os.environ.get("ORNITH_TEST_MTP") == "1"
 STATE, GROUPS, VHEADS, CONV = 8, 2, 4, 4
 VOCAB = ["<unk>", "<s>", "</s>"] + [f"<0x{i:02X}>" for i in range(256)]
 TTYPE = [2, 3, 3] + [6] * 256
@@ -45,10 +48,10 @@ def add(ts, name, dims, payload=None):
 t = []
 add(t, "token_embd.weight", [E, len(VOCAB)])
 add(t, "output_norm.weight", [E], ones(E))
-for i in range(LAYERS):
+for i in range(LAYERS + (1 if MTP else 0)):
     add(t, f"blk.{i}.attn_norm.weight", [E], ones(E))
     add(t, f"blk.{i}.post_attention_norm.weight", [E], ones(E))
-    if (i + 1) % 4:
+    if i < LAYERS and (i + 1) % 4:
         keydim, valuedim = STATE * GROUPS, STATE * VHEADS
         add(t, f"blk.{i}.attn_qkv.weight", [E, keydim * 2 + valuedim])
         add(t, f"blk.{i}.attn_gate.weight", [E, valuedim])
@@ -71,6 +74,11 @@ for i in range(LAYERS):
     add(t, f"blk.{i}.ffn_gate.weight", [E, FF])
     add(t, f"blk.{i}.ffn_up.weight", [E, FF])
     add(t, f"blk.{i}.ffn_down.weight", [FF, E])
+    if i == LAYERS:
+        add(t, f"blk.{i}.nextn.eh_proj.weight", [2 * E, E])
+        add(t, f"blk.{i}.nextn.enorm.weight", [E], ones(E))
+        add(t, f"blk.{i}.nextn.hnorm.weight", [E], ones(E))
+        add(t, f"blk.{i}.nextn.shared_head_norm.weight", [E], ones(E))
 
 kvs = [
     # Current Qwen3.5 GGUFs include the auxiliary NextN/MTP predictor in

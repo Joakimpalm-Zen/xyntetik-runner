@@ -2191,32 +2191,7 @@ extern "C" __global__ void k_gemv_iq4_xs(MV_PARAMS) {
     MV_TAIL;
 }
 
-extern "C" __global__ void k_mv_iq4_xs(MV_PARAMS) {
-    MV_HEAD;
-    int nb = a.n_in / 256;
-    const uchar *rw = wb + a.w_off + (ulong64)row * nb * 136;
-    float s = 0;
-    for (int b = lane; b < nb; b += 32) {
-        const uchar *blk = rw + (ulong64)b * 136;
-        float d = f16f(blk);
-        unsigned sh = (unsigned)blk[2] | ((unsigned)blk[3] << 8);
-        const uchar *sl = blk + 4;
-        const uchar *q  = blk + 8;
-        const float *xp = x + b * 256;
-        for (int ib = 0; ib < 8; ib++) {
-            int ls = ((sl[ib / 2] >> 4 * (ib % 2)) & 0xF) | (((sh >> 2 * ib) & 3) << 4);
-            float dl = d * (ls - 32);
-            float t = 0;
-            for (int j = 0; j < 16; j++) {
-                t += (float)kv_iq4[q[j] & 0xF] * xp[j];
-                t += (float)kv_iq4[q[j] >> 4]  * xp[j + 16];
-            }
-            s += dl * t;
-            q += 16; xp += 32;
-        }
-    }
-    MV_TAIL;
-}
+// k_mv_iq4_xs: lane-level since 2026-10-08, defined after the lane dots below
 
 extern "C" __global__ void k_mv_iq4_xs_b(MV_PARAMS) {
     MV_HEAD_B;
@@ -3430,6 +3405,211 @@ static __device__ __forceinline__ float iq3s_lane(const uchar *blk, const float 
     return db * t;
 }
 
+// N-column forms of the lane dots: the lane's grid words, signs and scale are
+// decoded once and the batch-1 inner loop runs per column, so column c of a
+// width-classed twin emits exactly the FMA sequence the batch-1 kernel emits
+// for that column (the batch-1 kernels below call these with nc = 1: one
+// source, the same bits, which the speculative verify and the decode
+// microbatch depend on).
+static __device__ __forceinline__ void iq2xxs_lane_n(const uchar *blk, const float *xb, ulong64 xs, int lane, int nc, float *acc) {
+    int ib = lane >> 2, l = lane & 3;
+    float d = f16f(blk);
+    const uchar *qs = blk + 2 + ib * 8;
+    unsigned aux = iq_ld32a2(qs + 4);
+    float db = d * (0.5f + (float)(aux >> 28)) * 0.25f;
+    ulong64 g = kiq2xxs_grid[qs[l]];
+    unsigned signs = iq_signs7((aux >> (7 * l)) & 127);
+    const float *xp0 = xb + ib * 32 + l * 8;
+    float w[8];
+    _Pragma("unroll")
+    for (int j = 0; j < 8; j++) w[j] = iq_w8(g, j, signs);
+    _Pragma("unroll")
+    for (int c = 0; c < nc; c++) {
+        const float *xp = xp0 + (ulong64)c * xs;
+        float t = 0;
+        _Pragma("unroll")
+        for (int j = 0; j < 8; j++) t += w[j] * xp[j];
+        acc[c] += db * t;
+    }
+}
+
+static __device__ __forceinline__ void iq2xs_lane_n(const uchar *blk, const float *xb, ulong64 xs, int lane, int nc, float *acc) {
+    int ib = lane >> 2, l = lane & 3;
+    float d = f16f(blk);
+    const uchar *qs = blk + 2 + ib * 8, *sc = blk + 66;
+    float db = d * (0.5f + (float)(l < 2 ? (sc[ib] & 0xF) : (sc[ib] >> 4))) * 0.25f;
+    unsigned q = iq_ld16(qs + 2 * l);
+    ulong64 g = kiq2xs_grid[q & 511];
+    unsigned signs = iq_signs7(q >> 9);
+    const float *xp0 = xb + ib * 32 + l * 8;
+    float w[8];
+    _Pragma("unroll")
+    for (int j = 0; j < 8; j++) w[j] = iq_w8(g, j, signs);
+    _Pragma("unroll")
+    for (int c = 0; c < nc; c++) {
+        const float *xp = xp0 + (ulong64)c * xs;
+        float t = 0;
+        _Pragma("unroll")
+        for (int j = 0; j < 8; j++) t += w[j] * xp[j];
+        acc[c] += db * t;
+    }
+}
+
+static __device__ __forceinline__ void iq2s_lane_n(const uchar *blk, const float *xb, ulong64 xs, int lane, int nc, float *acc) {
+    int ib = lane >> 2, l = lane & 3;
+    float d = f16f(blk);
+    const uchar *qs = blk + 2 + ib * 4, *sg = blk + 34 + ib * 4, *qh = blk + 66, *sc = blk + 74;
+    float db = d * (0.5f + (float)(l < 2 ? (sc[ib] & 0xF) : (sc[ib] >> 4))) * 0.25f;
+    unsigned hb = qh[ib];
+    ulong64 g = kiq2s_grid[qs[l] | ((hb << (8 - 2 * l)) & 0x300)];
+    unsigned signs = sg[l];
+    const float *xp0 = xb + ib * 32 + l * 8;
+    float w[8];
+    _Pragma("unroll")
+    for (int j = 0; j < 8; j++) w[j] = iq_w8(g, j, signs);
+    _Pragma("unroll")
+    for (int c = 0; c < nc; c++) {
+        const float *xp = xp0 + (ulong64)c * xs;
+        float t = 0;
+        _Pragma("unroll")
+        for (int j = 0; j < 8; j++) t += w[j] * xp[j];
+        acc[c] += db * t;
+    }
+}
+
+static __device__ __forceinline__ void iq3xxs_lane_n(const uchar *blk, const float *xb, ulong64 xs, int lane, int nc, float *acc) {
+    int ib = lane >> 2, l = lane & 3;
+    float d = f16f(blk);
+    const uchar *qs = blk + 2 + ib * 8, *ss = blk + 66;
+    unsigned aux = iq_ld32a2(ss + 4 * ib);
+    float db = d * (0.5f + (float)(aux >> 28)) * 0.5f;
+    unsigned g1 = kiq3xxs_grid[qs[2 * l + 0]];
+    unsigned g2 = kiq3xxs_grid[qs[2 * l + 1]];
+    unsigned signs = iq_signs7((aux >> (7 * l)) & 127);
+    const float *xp0 = xb + ib * 32 + l * 8;
+    float w1[4], w2[4];
+    _Pragma("unroll")
+    for (int j = 0; j < 4; j++) { w1[j] = iq_w4(g1, j, signs); w2[j] = iq_w4(g2, j, signs >> 4); }
+    _Pragma("unroll")
+    for (int c = 0; c < nc; c++) {
+        const float *xp = xp0 + (ulong64)c * xs;
+        float t = 0;
+        _Pragma("unroll")
+        for (int j = 0; j < 4; j++) {
+            t += w1[j] * xp[j];
+            t += w2[j] * xp[j + 4];
+        }
+        acc[c] += db * t;
+    }
+}
+
+static __device__ __forceinline__ void iq3s_lane_n(const uchar *blk, const float *xb, ulong64 xs, int lane, int nc, float *acc) {
+    int ib = lane >> 2, l = lane & 3, pair = ib >> 1, h = ib & 1;
+    float d = f16f(blk);
+    const uchar *qs = blk + 2 + ib * 8, *qh = blk + 66, *sg = blk + 74 + ib * 4, *sc = blk + 106;
+    float db = d * (float)(1 + 2 * (h ? (sc[pair] >> 4) : (sc[pair] & 0xF)));
+    unsigned hb = qh[ib];
+    unsigned g1 = kiq3s_grid[qs[2 * l + 0] | ((hb << (8 - 2 * l)) & 256)];
+    unsigned g2 = kiq3s_grid[qs[2 * l + 1] | ((hb << (7 - 2 * l)) & 256)];
+    unsigned signs = sg[l];
+    const float *xp0 = xb + ib * 32 + l * 8;
+    float w1[4], w2[4];
+    _Pragma("unroll")
+    for (int j = 0; j < 4; j++) { w1[j] = iq_w4(g1, j, signs); w2[j] = iq_w4(g2, j, signs >> 4); }
+    _Pragma("unroll")
+    for (int c = 0; c < nc; c++) {
+        const float *xp = xp0 + (ulong64)c * xs;
+        float t = 0;
+        _Pragma("unroll")
+        for (int j = 0; j < 4; j++) {
+            t += w1[j] * xp[j];
+            t += w2[j] * xp[j + 4];
+        }
+        acc[c] += db * t;
+    }
+}
+
+// IQ4_XS on the same lane geometry (it kept the whole-block-per-lane shape
+// after the codebook formats moved, 2026-10-08): 136-byte block, d, the high
+// scale bits, the low scale nibbles, 128 quant bytes; sub-block ib's 16 bytes
+// carry elements 0-15 (low nibbles) and 16-31 (high). Lane L takes sub-block
+// L/4, bytes 4*(L%4).. +4: elements 4l..4l+3 and 16+4l..16+4l+3.
+static __device__ __forceinline__ void iq4xs_lane_n(const uchar *blk, const float *xb, ulong64 xs, int lane, int nc, float *acc) {
+    int ib = lane >> 2, l = lane & 3;
+    float d = f16f(blk);
+    unsigned sh = (unsigned)blk[2] | ((unsigned)blk[3] << 8);
+    int ls = ((blk[4 + ib / 2] >> 4 * (ib % 2)) & 0xF) | (((sh >> 2 * ib) & 3) << 4);
+    float dl = d * (ls - 32);
+    const uchar *q = blk + 8 + ib * 16 + l * 4;
+    const float *xp0 = xb + ib * 32 + l * 4;
+    float wl[4], wh[4];
+    _Pragma("unroll")
+    for (int j = 0; j < 4; j++) { wl[j] = (float)kv_iq4[q[j] & 0xF]; wh[j] = (float)kv_iq4[q[j] >> 4]; }
+    _Pragma("unroll")
+    for (int c = 0; c < nc; c++) {
+        const float *xp = xp0 + (ulong64)c * xs;
+        float t = 0;
+        _Pragma("unroll")
+        for (int j = 0; j < 4; j++) {
+            t += wl[j] * xp[j];
+            t += wh[j] * xp[j + 16];
+        }
+        acc[c] += dl * t;
+    }
+}
+
+// The twins' GEMV body. Every warp of a block reads
+// the same activation, so x is staged in shared memory once per chunk of CH
+// 256-weight blocks for the block's rows (4 at batch 1, GEMM_WARPS for a
+// twin) instead of once per row from global: the batch-1 kernels re-read the
+// whole activation per row, which on the dense Qwen3.8-27B rows held decode
+// to ~150 GB/s (2026-10-08). Shared memory holds the same values as global,
+// so no output changes. Columns past a.batch stage zeros (a caller's x need
+// not be NC columns wide).
+#define IQ_LANE_BODY(fnn, BS, NC, CH) \
+    __shared__ float xsm[(NC) * (CH) * 256]; \
+    unsigned row = blockIdx.x * (blockDim.x >> 5) + (threadIdx.x >> 5); \
+    unsigned lane = threadIdx.x & 31; \
+    int nb = a.n_in / 256; \
+    bool live = row < (unsigned)a.n_out; \
+    const uchar *rw = wb + a.w_off + (ulong64)(live ? row : 0) * nb * BS; \
+    float acc[NC] = {0}; \
+    int nbat = (NC) == 1 ? 1 : a.batch; \
+    for (int cs = 0; cs < nb; cs += (CH)) { \
+        int cb = nb - cs < (CH) ? nb - cs : (CH); \
+        int ce = cb * 256; \
+        for (int t = 0; t < (NC); t++) { \
+            const float *xg = x + (ulong64)t * a.xs + (ulong64)cs * 256; \
+            for (int e = threadIdx.x; e < ce; e += blockDim.x) \
+                xsm[t * (CH) * 256 + e] = t < nbat ? xg[e] : 0.0f; \
+        } \
+        __syncthreads(); \
+        if (live) \
+            for (int bi = 0; bi < cb; bi++) \
+                fnn(rw + (ulong64)(cs + bi) * BS, xsm + bi * 256, (ulong64)(CH) * 256, lane, (NC), acc); \
+        __syncthreads(); \
+    } \
+    if (live) \
+        for (int t = 0; t < nbat && t < (NC); t++) { \
+            float r = warp_sum(acc[t]); \
+            if (lane == 0) y[(ulong64)t * a.ys + row] = a.has_bias ? r + bias[row] : r; \
+        }
+
+// batch-1: x from global (staging for four rows measured slower: 27B decode
+// 11.9 -> 10.0 tok/s); the same values as the twins' staged copy
+#define IQ_LANE_MV1(fnn, BS) \
+    MV_HEAD; \
+    int nb = a.n_in / 256; \
+    const uchar *rw = wb + a.w_off + (ulong64)row * nb * BS; \
+    float acc[1] = {0}; \
+    for (int b = 0; b < nb; b++) fnn(rw + (ulong64)b * BS, x + b * 256, 0, lane, 1, acc); \
+    float s = acc[0]; \
+    MV_TAIL;
+
+// width-classed twins (launched GEMM_WARPS rows per block like the GEMVB family)
+#define IQ_LANE_MVB(NAME, fnn, BS, NC) \
+extern "C" __global__ void NAME(MV_PARAMS) { IQ_LANE_BODY(fnn, BS, NC, 32 / (NC)) }
+
 #define IQ_LANE_MV(fn, BS) \
     MV_HEAD; \
     int nb = a.n_in / 256; \
@@ -3446,7 +3626,7 @@ static __device__ __forceinline__ float iq3s_lane(const uchar *blk, const float 
     MOE_MV_TAIL;
 
 extern "C" __global__ void k_mv_iq2_xxs(MV_PARAMS) {
-    IQ_LANE_MV(iq2xxs_lane, 66)
+    IQ_LANE_MV1(iq2xxs_lane_n, 66)
 }
 
 extern "C" __global__ void k_mv_iq2_xxs_b(MV_PARAMS) {
@@ -3475,7 +3655,7 @@ extern "C" __global__ void k_mv_iq2_xxs_b(MV_PARAMS) {
 // sign index) + 8 scale bytes (two 4-bit scales per sub-block of 32, one per
 // 16 weights) decoded as (0.5 + scale) / 4.
 extern "C" __global__ void k_mv_iq2_xs(MV_PARAMS) {
-    IQ_LANE_MV(iq2xs_lane, 74)
+    IQ_LANE_MV1(iq2xs_lane_n, 74)
 }
 
 extern "C" __global__ void k_mv_iq2_xs_b(MV_PARAMS) {
@@ -3506,7 +3686,7 @@ extern "C" __global__ void k_mv_iq2_xs_b(MV_PARAMS) {
 // bit per weight) + 8 bytes of high index bits (two per index) + 8 scale
 // bytes as in IQ2_XS.
 extern "C" __global__ void k_mv_iq2_s(MV_PARAMS) {
-    IQ_LANE_MV(iq2s_lane, 82)
+    IQ_LANE_MV1(iq2s_lane_n, 82)
 }
 
 extern "C" __global__ void k_mv_iq2_s_b(MV_PARAMS) {
@@ -3537,7 +3717,7 @@ extern "C" __global__ void k_mv_iq2_s_b(MV_PARAMS) {
 // + 8 words of four 7-bit sign indices (bits 0-27) and a 4-bit scale (bits
 // 28-31) decoded as (0.5 + scale) / 2.
 extern "C" __global__ void k_mv_iq3_xxs(MV_PARAMS) {
-    IQ_LANE_MV(iq3xxs_lane, 98)
+    IQ_LANE_MV1(iq3xxs_lane_n, 98)
 }
 
 extern "C" __global__ void k_mv_iq3_xxs_b(MV_PARAMS) {
@@ -3571,7 +3751,7 @@ extern "C" __global__ void k_mv_iq3_xxs_b(MV_PARAMS) {
 // sign bytes (one bit per weight) + 4 scale bytes (a 4-bit scale per
 // sub-block of 32, decoded as 1 + 2*scale).
 extern "C" __global__ void k_mv_iq3_s(MV_PARAMS) {
-    IQ_LANE_MV(iq3s_lane, 110)
+    IQ_LANE_MV1(iq3s_lane_n, 110)
 }
 
 extern "C" __global__ void k_mv_iq3_s_b(MV_PARAMS) {
@@ -4968,6 +5148,25 @@ GEMVB_Q5_K(k_gemvb_q5_K_x4, 4)
 GEMVB_Q5_K(k_gemvb_q5_K_x8, 8)
 GEMVB_Q6_K(k_gemvb_q6_K_x4, 4)
 GEMVB_Q6_K(k_gemvb_q6_K_x8, 8)
+
+extern "C" __global__ void k_mv_iq4_xs(MV_PARAMS) {
+    IQ_LANE_MV1(iq4xs_lane_n, 136)
+}
+
+// width-classed twins of the codebook GEMVs (2026-10-08): before these a
+// 2-8 row verify tile ran the batch-1 kernel once per column
+IQ_LANE_MVB(k_gemvb_iq2_xxs_x4, iq2xxs_lane_n, 66, 4)
+IQ_LANE_MVB(k_gemvb_iq2_xxs_x8, iq2xxs_lane_n, 66, 8)
+IQ_LANE_MVB(k_gemvb_iq2_xs_x4, iq2xs_lane_n, 74, 4)
+IQ_LANE_MVB(k_gemvb_iq2_xs_x8, iq2xs_lane_n, 74, 8)
+IQ_LANE_MVB(k_gemvb_iq2_s_x4, iq2s_lane_n, 82, 4)
+IQ_LANE_MVB(k_gemvb_iq2_s_x8, iq2s_lane_n, 82, 8)
+IQ_LANE_MVB(k_gemvb_iq3_xxs_x4, iq3xxs_lane_n, 98, 4)
+IQ_LANE_MVB(k_gemvb_iq3_xxs_x8, iq3xxs_lane_n, 98, 8)
+IQ_LANE_MVB(k_gemvb_iq3_s_x4, iq3s_lane_n, 110, 4)
+IQ_LANE_MVB(k_gemvb_iq3_s_x8, iq3s_lane_n, 110, 8)
+IQ_LANE_MVB(k_gemvb_iq4_xs_x4, iq4xs_lane_n, 136, 4)
+IQ_LANE_MVB(k_gemvb_iq4_xs_x8, iq4xs_lane_n, 136, 8)
 
 // ---------------------------------------------------------------- elementwise
 // grid.y = token column for k_add (different x/d strides); silu operates on

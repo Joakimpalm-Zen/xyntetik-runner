@@ -9493,7 +9493,7 @@ static bool mtp_alloc(model_t *m) {
 bool model_mtp_ready(const model_t *m) {
     // The head reads the backbone's residual rows: on the host out of m->x /
     // m->x_hc, on a CUDA backend out of the device's x_hc through the
-    // device head (gpu_mtp_bound: hyper-connection families on a full split).
+    // device head (gpu_mtp_bound: a full split).
     return m->mtp_ready && (!m->gpu || gpu_mtp_bound(m));
 }
 
