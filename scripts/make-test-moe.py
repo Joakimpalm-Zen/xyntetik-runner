@@ -25,6 +25,10 @@ import struct
 import sys
 
 OUT = sys.argv[1] if len(sys.argv) > 1 else "test-moe"
+# the first argument is the output path: an option there (`--help`) used to
+# be taken as a file name prefix and wrote a set of "--help.*" files
+if str(OUT).startswith("-"):
+    sys.exit(f"usage: {sys.argv[0]} [OUTPUT]: writes test fixtures to OUTPUT (got {str(OUT)!r})")
 # --act-fp16-overflow: every variant's FFN input norm (ffn_norm, or
 # post_attention_norm on gpt-oss where that IS the FFN norm) is set to 4e6, so
 # the experts' gate/up GEMM input is ~1e6, past fp16's 65504 while every fp32

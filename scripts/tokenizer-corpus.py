@@ -326,6 +326,10 @@ def main():
               file=sys.stderr)
         return 1
     dst = sys.argv[1] if len(sys.argv) > 1 else "tests/fixtures/tokenizer-corpus.txt"
+    # the first argument is the output path: an option there (`--help`) used to
+    # be taken as a file name prefix and wrote a set of "--help.*" files
+    if str(dst).startswith("-"):
+        sys.exit(f"usage: {sys.argv[0]} [OUTPUT]: writes test fixtures to OUTPUT (got {str(dst)!r})")
     with open(dst, "w", encoding="utf-8") as f:
         for s in c:
             f.write(json.dumps(s, ensure_ascii=False) + "\n")

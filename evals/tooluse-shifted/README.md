@@ -88,7 +88,8 @@ Options:
 - `--rescore RECORD...` re-derives every verdict of existing records from the outputs they store, under the current scoring rules and the frozen labels
 
 Output: JSON record written to `evals/tooluse-shifted/results/<model>-<adapter>-<set>-<host>.json`
-(v1 records keep the old name without the set). `scripts/tooluse-shifted-compare.py BASE ADAPTER...`
+(v1 records keep the old name without the set). Published records live in
+[the record dataset](https://huggingface.co/datasets/Joakimpalm-Zen/Qwen3-4B-tooluse-shifted-eval-record) under `results/`, not in this repository (`results/README.md`). `scripts/tooluse-shifted-compare.py BASE ADAPTER...`
 turns records into the paired comparison the verdict rests on.
 
 ## Results
@@ -231,7 +232,7 @@ The lab's 16-thread Q8_0 record differs from its 8-thread one on three
 the box was at load 23, not a numeric difference; that record is kept
 under `-linux-t16` for the account and is not the row above.
 
-Both records per arm are in `results/` (`-windows` and `-linux`). The
+Both records per arm are in [the record dataset](https://huggingface.co/datasets/Joakimpalm-Zen/Qwen3-4B-tooluse-shifted-eval-record) (`-windows` and `-linux`). The
 cross-host result does not change the verdict: the set separates base
 from adapter weakly on both hosts and cannot rank the adapters on either.
 
@@ -282,14 +283,14 @@ auto` (the 4B fits on the card; the adapter served on the device, R8.7.2),
 8 threads, greedy. The same base and adapters as v1, sha256 verified on
 the box: base fbe1d5ed..., published adapter ea38f80c..., through-Q8_0
 0c85d630..., through-BF16 1cafe339.... One arm took 13 to 16 minutes for
-all four legs. Records: `results/*-v2-gpu-windows.json`. The CPU-path pass
+all four legs. Records: `results/*-v2-gpu-windows.json` in the record dataset. The CPU-path pass
 is the section below.
 
 ### Second path: the same box on the CPU
 
 The four arms were rerun on the same host with `--gpu off`, the path every v1
 record used, 2 h 45 m to 2 h 55 m per arm against 13 to 16 minutes on the
-card. Records: `results/*-v2-windows.json` (the CUDA ones carry `-gpu`).
+card. Records: `results/*-v2-windows.json` in the record dataset (the CUDA ones carry `-gpu`).
 
 Agreement is per row, not per total. Verdicts identical on every row of every
 leg, all four arms:

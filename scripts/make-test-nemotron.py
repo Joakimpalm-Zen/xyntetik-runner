@@ -30,6 +30,10 @@ import struct
 import sys
 
 OUT = sys.argv[1] if len(sys.argv) > 1 else "test-nemotron"
+# the first argument is the output path: an option there (`--help`) used to
+# be taken as a file name prefix and wrote a set of "--help.*" files
+if str(OUT).startswith("-"):
+    sys.exit(f"usage: {sys.argv[0]} [OUTPUT]: writes test fixtures to OUTPUT (got {str(OUT)!r})")
 ARCH = "nemotron_h"
 
 # tiny geometry (structurally faithful to Mamba-2, not to any real size)

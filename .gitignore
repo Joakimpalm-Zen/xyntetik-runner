@@ -263,3 +263,6 @@ test-metal-kvfp4
 test-cuda-kvfp4
 test-cuda-kvfp4.exe
 family-sweep-out/
+
+# tooluse-shifted eval records go to the Hugging Face dataset (evals/tooluse-shifted/results/README.md)
+evals/tooluse-shifted/results/*.json

@@ -9,6 +9,17 @@ rename keep the names that were true when they were written.
 
 ## Unreleased
 
+- **Repository cleanup.** The 17 raw records of the `tooluse-shifted` eval
+  (122 MB, about half of a checkout) moved to the
+  [Qwen3-4B-tooluse-shifted-eval-record](https://huggingface.co/datasets/Joakimpalm-Zen/Qwen3-4B-tooluse-shifted-eval-record)
+  dataset, checksums verified after the upload; the instrument, its sets and
+  its summary stay in `evals/tooluse-shifted/`, and new records there are
+  ignored by git. The fixture scripts (`make-test-*.py`,
+  `make-tooluse-data.py`, `tokenizer-corpus.py`) refuse an option where the
+  output path goes (`--help` used to write a set of `--help.*` files).
+  `docs/README.md` indexes every document and evidence folder by topic.
+  `scripts/outcome-table.py`, used only by the Strata comparison, is gone.
+
 - **`scripts/decide-calibrate.py` counts both splits the same way and can
   emit per-question predictions.** The held-out group count used
   permutation groups while the train count used split keys, so the two

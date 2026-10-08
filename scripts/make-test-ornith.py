@@ -5,6 +5,10 @@ import sys
 import os
 
 OUT = sys.argv[1] if len(sys.argv) > 1 else "test-ornith.gguf"
+# the first argument is the output path: an option there (`--help`) used to
+# be taken as a file name prefix and wrote a set of "--help.*" files
+if str(OUT).startswith("-"):
+    sys.exit(f"usage: {sys.argv[0]} [OUTPUT]: writes test fixtures to OUTPUT (got {str(OUT)!r})")
 E, HEADS, KV, FF = 32, 4, 2, 64
 LAYERS = int(os.environ.get("ORNITH_TEST_LAYERS", "4"))
 LEGACY_DT = os.environ.get("ORNITH_LEGACY_DT") == "1"
