@@ -8,7 +8,7 @@
 </p>
 
 <p align="center">
-  <b>Run AI models on your own machine, and know exactly what you are getting.</b>
+  <b>Lifecycle engine with inference you can prove.</b>
 </p>
 
 <p align="center">
