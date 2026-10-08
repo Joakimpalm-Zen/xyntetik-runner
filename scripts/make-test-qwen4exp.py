@@ -16,6 +16,10 @@ import struct
 import sys
 
 OUT = sys.argv[1] if len(sys.argv) > 1 else "test-qwen4exp.gguf"
+# the first argument is the output path: an option there (`--help`) used to
+# be taken as a file name prefix and wrote a set of "--help.*" files
+if str(OUT).startswith("-"):
+    sys.exit(f"usage: {sys.argv[0]} [OUTPUT]: writes test fixtures to OUTPUT (got {str(OUT)!r})")
 E, HEADS, KV, HD = 32, 4, 2, 8            # HD must be a multiple of 4 for the rope sections below
 LAYERS = int(os.environ.get("QWEN4EXP_TEST_LAYERS", "4"))
 STATE, GROUPS, VHEADS, CONV = 8, 2, 4, 4
