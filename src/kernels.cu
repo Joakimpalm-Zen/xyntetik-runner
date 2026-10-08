@@ -3597,14 +3597,33 @@ static __device__ __forceinline__ void iq4xs_lane_n(const uchar *blk, const floa
 
 // batch-1: x from global (staging for four rows measured slower: 27B decode
 // 11.9 -> 10.0 tok/s); the same values as the twins' staged copy
+// Two rows per warp: the batch-1 i-quant GEMV is latency-bound (a chain of
+// small dependent loads per block: index bytes, then the grid word, then x),
+// and a second independent row in flight per warp hides part of it. The rows
+// share x through L1; each row's arithmetic is the one-row kernel's, so the
+// output bits are unchanged. Qwen3.8-27B IQ3_S on the 24 GB slice: decode
+// 11.96 -> 13.84 tok/s, text identical; four rows per warp 11.57 (register
+// pressure), two rows at eight warps per block 13.72 (2026-10-08).
+// enc_mv launches these kernels with 4 * IQ_ROWS rows per 128-thread block.
+#define IQ_ROWS 2
 #define IQ_LANE_MV1(fnn, BS) \
-    MV_HEAD; \
+    unsigned row0 = (blockIdx.x * (blockDim.x >> 5) + (threadIdx.x >> 5)) * IQ_ROWS; \
+    unsigned lane = threadIdx.x & 31; \
+    if (row0 >= (unsigned)a.n_out) return; \
     int nb = a.n_in / 256; \
-    const uchar *rw = wb + a.w_off + (ulong64)row * nb * BS; \
-    float acc[1] = {0}; \
-    for (int b = 0; b < nb; b++) fnn(rw + (ulong64)b * BS, x + b * 256, 0, lane, 1, acc); \
-    float s = acc[0]; \
-    MV_TAIL;
+    float acc[IQ_ROWS] = {0}; \
+    for (int b = 0; b < nb; b++) { \
+        _Pragma("unroll") \
+        for (int r = 0; r < IQ_ROWS; r++) \
+            if (row0 + r < (unsigned)a.n_out) \
+                fnn(wb + a.w_off + ((ulong64)(row0 + r) * nb + b) * BS, x + b * 256, 0, lane, 1, acc + r); \
+    } \
+    _Pragma("unroll") \
+    for (int r = 0; r < IQ_ROWS; r++) { \
+        float s = warp_sum(acc[r]); \
+        unsigned row = row0 + r; \
+        if (lane == 0 && row < (unsigned)a.n_out) y[row] = a.has_bias ? s + bias[row] : s; \
+    }
 
 // width-classed twins (launched GEMM_WARPS rows per block like the GEMVB family)
 #define IQ_LANE_MVB(NAME, fnn, BS, NC) \
