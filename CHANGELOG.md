@@ -21,6 +21,11 @@ rename keep the names that were true when they were written.
   balance) and `tests/test_server_shared_pool.py` (1, 2 and 4 slots answer
   concurrent greedy requests exactly like a lone one; SIGTERM with requests
   in flight exits promptly without a crash signal).
+- **The codebook i-quant verify twins take two rows per warp**, as the
+  batch-1 GEMVs already do. Qwen3.8-27B IQ3_S with its MTP head on a 24 GB
+  MIG slice, two interleaved rounds, text byte-identical to plain:
+  `--draft-k` 1/2/3/4 13.0/14.7/13.6/12.3 to 13.4/15.4/15.3/13.6 tok/s
+  against 13.9 plain (float route).
 
 - **The CUDA offload headroom is a thirty-second of the budget (512 MiB
   floor), down from a sixteenth.** While the placement plan undercounted the
