@@ -518,6 +518,9 @@ typedef struct {
                              // bounces). Decided once per file at upload and
                              // shared by every instance on that upload.
     int    cpu_moe_layers;   // requested host-expert layer count (params copy)
+    int    moe_auto_placed;  // --cpu-moe auto: device expert banks the last plan placed
+    int    moe_auto_trim;    // --cpu-moe auto: banks to hold back after a device
+                             // init ran out of memory (model.c retries gpu_init)
     int    gpu_layers;       // leading layers run on GPU (n_layer = full,
                              // <n_layer = partial offload, CPU finishes the rest).
                              // Decided by the first instance to upload a given

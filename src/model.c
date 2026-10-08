@@ -4421,6 +4421,18 @@ static bool model_alloc_runtime(model_t *m, const model_params *p) {
         size_t vfree_before = 0, vtotal_before = 0;
         gpu_mem_info(&vfree_before, &vtotal_before);
         gpu_init(m);                        // sets m->gpu on success
+        // --cpu-moe auto spends the budget on expert banks by an estimate; when
+        // the device then runs out of memory during init, hold back one more
+        // bank and try again before giving the model to the CPU
+        while (!m->gpu && m->cpu_moe && m->cpu_moe_layers == CPU_MOE_AUTO &&
+               m->moe_auto_trim < m->moe_auto_placed && m->moe_auto_trim < 4) {
+            m->moe_auto_trim++;
+            fprintf(stderr, "gpu: device init failed with %d expert layers on the GPU; "
+                            "retrying with %d (--cpu-moe auto)\n",
+                    m->moe_auto_placed - m->moe_auto_trim + 1,
+                    m->moe_auto_placed - m->moe_auto_trim);
+            gpu_init(m);
+        }
         model_vram_commit(m, vfree_before);
         // A context that FITS but evicts weights is the silent case. Refusing
         // one that cannot fit is loud and correct — `-c 1000000` says it needs
