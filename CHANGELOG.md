@@ -7,6 +7,40 @@ to the exact build, and what is not covered. Releases before 1.0.0 made no
 such promise (the `-alpha` suffix was retired at v0.2.0). Entries below the
 rename keep the names that were true when they were written.
 
+## Unreleased
+
+- **The NextN/MTP device head runs for one-stream models** (the dense
+  Qwen3.5-class trunks, Qwen3.8-27B among them). 1.1.1's device head was
+  built for the hyper-connection family, so `--mtp-file` on a dense trunk
+  fully on the device refused with "drafts need the CPU path". The head now
+  runs with the narrow residual too: rows from `x`, `eh_proj` into `x`, the
+  block at index `n_layer`, the head norm and the LM head, as the CPU head
+  does. A head in its own `--mtp-file` lies outside the main file's one
+  contiguous upload, so a full split binds per tensor when one is loaded.
+  `make-test-ornith.py` emits the declared MTP block under
+  `ORNITH_TEST_MTP=1`; on it the device head matches the CPU head step for
+  step (92 of 92 draft steps, argmax, logit and gap within 1e-5) with
+  identical text. On the Qwen3.8-27B IQ3_S file with
+  [its head](https://huggingface.co/Joakimpalm-Zen/Qwen3.8-27B-GSQ-RCO-IQ3_S-recovered-GGUF)
+  on a 24 GB MIG slice the text is byte-identical to plain decoding at 512
+  and 4,096 prompt tokens, and device against CPU `--score` is 480 positions,
+  0 argmax flips. It does not pay there yet: 11.0 tok/s at `--draft-k 6`
+  against 11.9 plain, because a verify row on these formats still costs
+  most of a solo row (llama.cpp's int8 batched dot gets 1.9x from the same
+  head on the same slice).
+- **Width-classed GEMV twins for the codebook i-quants.** A 2-8 row batch
+  of an IQ2_XXS, IQ2_XS, IQ2_S, IQ3_XXS, IQ3_S or IQ4_XS tensor ran the
+  batch-1 kernel once per column. The lane dots get an N-column form that
+  decodes a lane's weights once and runs the batch-1 inner loop per column
+  against x staged in shared memory; the batch-1 kernels call the same form
+  with one column, so a twin's column is the batch-1 kernel's bits (the
+  speculative verify and the decode microbatch depend on that). The 27B
+  head above went from 8.2 to 10.4 tok/s at `--draft-k 4`. IQ4_XS's
+  batch-1 kernel moves from a whole block per lane (20 of 32 lanes busy on
+  a 5120-wide row) to the lane geometry the other codebook formats use;
+  the nine i-quant `gpu-identity` fixtures and `test_iquants.py`'s GPU leg
+  pass on the RTX 3070.
+
 ## v1.1.2 - 2026-10-08
 
 - **Single-row CPU decode takes the single-column dot again.** v1.1.1 routed
