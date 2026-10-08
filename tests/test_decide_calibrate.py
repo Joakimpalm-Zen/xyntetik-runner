@@ -512,3 +512,51 @@ def test_model_not_found_from_decide_is_not_retried(tmp_path, make_server, capsy
     groups = len({(r["state"], r.get("split_group") or r["permutation_group"]) for r in ROWS})
     assert len(server.received) <= groups + 2   # each group sent once, never retried
     assert "NO RESULT" in (tmp_path / "r.md").read_text()
+
+
+# ------------------------------- (k) group counts and per-question output ---
+
+def test_both_splits_count_groups_in_the_split_unit(tmp_path, make_server):
+    # two permutation groups paired by one split_group: the held-out side
+    # used to count permutation_groups while the train side counted split
+    # keys, so the two numbers disagreed on exactly this shape
+    rows = [dict(r) for r in ROWS]
+    for r in rows:
+        if r["permutation_group"] in ("g2", "g3"):
+            r["split_group"] = "pairX"
+    server = make_server(hash_scorer)
+    qfile = tmp_path / "questions.jsonl"
+    write_jsonl(qfile, rows)
+    for seed in (1, 2, 3, 4, 42):
+        out = tmp_path / f"out-{seed}.json"
+        assert dc.main(["--questions", str(qfile), "--endpoint", server.endpoint,
+                        "--model-name", "test", "--seed", str(seed),
+                        "--holdout-frac", "0.5", "--out", str(out)]) == 0
+        p = json.loads(out.read_text())["provenance"]
+        keys = [dc.split_key(r) for r in rows]
+        held = dc.assign_holdout_groups(keys, seed=seed, holdout_frac=0.5)
+        assert p["n_holdout_groups"] == len(held)
+        assert p["n_train_groups"] == len(set(keys) - held)
+        pg_held = {r["permutation_group"] for r in rows if dc.split_key(r) in held}
+        assert p["n_holdout_permutation_groups"] == len(pg_held)
+        assert p["n_train_permutation_groups"] == len(set(ALL_GROUPS) - pg_held)
+
+
+def test_emit_predictions_writes_every_question_with_its_probabilities(tmp_path, make_server):
+    server = make_server(hash_scorer)
+    qfile = tmp_path / "questions.jsonl"
+    write_jsonl(qfile, ROWS)
+    pred = tmp_path / "pred.jsonl"
+    assert dc.main(["--questions", str(qfile), "--endpoint", server.endpoint,
+                    "--model-name", "test", "--seed", "42", "--holdout-frac", "0.5",
+                    "--emit-predictions", str(pred)]) == 0
+    recs = [json.loads(line) for line in pred.read_text().splitlines()]
+    assert [r["id"] for r in recs] == [f"q{i}" for i in range(len(ROWS))]
+    held = dc.assign_holdout_groups(ALL_GROUPS, seed=42, holdout_frac=0.5)
+    for rec, src in zip(recs, ROWS):
+        assert rec["options"] == src["options"]
+        assert rec["split"] == ("holdout" if src["permutation_group"] in held else "train")
+        assert len(rec["probs"]) == len(src["options"])
+        assert abs(sum(rec["probs"]) - 1.0) < 1e-6
+        assert rec["failed"] is False
+        assert len(rec["label_dist"]) == len(src["options"])

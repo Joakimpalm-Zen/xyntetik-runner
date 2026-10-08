@@ -7,6 +7,18 @@ to the exact build, and what is not covered. Releases before 1.0.0 made no
 such promise (the `-alpha` suffix was retired at v0.2.0). Entries below the
 rename keep the names that were true when they were written.
 
+## Unreleased
+
+- **`scripts/decide-calibrate.py` counts both splits the same way and can
+  emit per-question predictions.** The held-out group count used
+  permutation groups while the train count used split keys, so the two
+  disagreed on any question file with `split_group` pairs; both now count
+  the split unit, with `n_train_permutation_groups` and
+  `n_holdout_permutation_groups` beside them. `--emit-predictions FILE`
+  writes one JSONL record per question with its probabilities, logprobs and
+  label, which the aggregate report never kept. Found by the lab while
+  drafting its typed-decisions baselines (TD-000).
+
 ## v1.1.4 - 2026-10-08
 
 - **A required tool turn with `parallel_tool_calls:true` carries one to

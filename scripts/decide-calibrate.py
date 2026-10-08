@@ -562,8 +562,10 @@ def render_report(result):
         f"runner: {p['runner_git_describe'] or '(git describe unavailable)'}",
         f"rows: {p['n_rows']} used, {p['n_skipped']} skipped at parse, "
         f"{p['n_failed']} failed at the endpoint",
-        f"split: {p['n_train_rows']} train rows / {p['n_train_groups']} groups, "
-        f"{p['n_holdout_rows']} holdout rows / {p['n_holdout_groups']} groups",
+        f"split: {p['n_train_rows']} train rows / {p['n_train_groups']} split groups "
+        f"({p['n_train_permutation_groups']} permutation groups), "
+        f"{p['n_holdout_rows']} holdout rows / {p['n_holdout_groups']} split groups "
+        f"({p['n_holdout_permutation_groups']} permutation groups)",
         "",
         "## Permutation invariance (the unflattering metric, reported first)",
         "",
@@ -656,8 +658,16 @@ def run(args):
 
     train_rows = [r for r in rows if r["split"] == "train"]
     holdout_rows = [r for r in rows if r["split"] == "holdout"]
+    # Both sides count the SPLIT unit (split_key: split_group, else
+    # permutation_group), the unit the holdout is drawn in. Until 2026-10-08
+    # the held-out side counted permutation_groups while the train side
+    # counted split keys, so the two numbers were not comparable on a file
+    # with split_group pairs (the lab's TD-000 drafting found it). The
+    # permutation_group counts are reported beside them under their own names.
     train_groups = {split_key(r) for r in train_rows}
-    holdout_groups_seen = {r["permutation_group"] for r in holdout_rows}
+    holdout_groups_seen = {split_key(r) for r in holdout_rows}
+    train_pgroups = {r["permutation_group"] for r in train_rows}
+    holdout_pgroups = {r["permutation_group"] for r in holdout_rows}
 
     failures = [{"id": r["id"], "line": r["line"], "source": r["source"],
                 "error": r["error"]} for r in rows if r["failed"]]
@@ -681,6 +691,8 @@ def run(args):
         "n_train_groups": len(train_groups),
         "n_holdout_rows": len(holdout_rows),
         "n_holdout_groups": len(holdout_groups_seen),
+        "n_train_permutation_groups": len(train_pgroups),
+        "n_holdout_permutation_groups": len(holdout_pgroups),
         "per_source_counts": {
             s: sum(1 for r in rows if r["source"] == s)
             for s in sorted({r["source"] for r in rows})
@@ -724,6 +736,10 @@ def main(argv=None):
     ap.add_argument("--emit-holdout", default=None,
                     help="re-emit the held-out rows, unchanged, as JSONL")
     ap.add_argument("--report", default=None, help="write the markdown report")
+    ap.add_argument("--emit-predictions", default=None,
+                    help="write one JSONL record per question: id, split, groups, "
+                         "options, the returned probabilities and logprobs, the "
+                         "label distribution, and any error")
     args = ap.parse_args(argv)
 
     payload, code = run(args)
@@ -754,6 +770,23 @@ def main(argv=None):
     if args.report:
         with open(args.report, "w", encoding="utf-8") as f:
             f.write(render_report(result))
+
+    # Per-question output: the aggregate JSON keeps metrics only, so any
+    # analysis past them (a different binning, a paired comparison of two
+    # models on the same questions) needed a re-run of the whole set.
+    if args.emit_predictions:
+        with open(args.emit_predictions, "w", encoding="utf-8") as f:
+            for r in rows:
+                f.write(json.dumps({
+                    "id": r["id"], "line": r["line"], "split": r["split"],
+                    "source": r["source"],
+                    "permutation_group": r["permutation_group"],
+                    "split_group": r["split_group"], "variant": r["variant"],
+                    "options": r["options"], "probs": r["probs"],
+                    "logprobs": r["logprobs"], "argmax": r["argmax"],
+                    "n_tokens": r["n_tokens"], "label_dist": r["label_dist"],
+                    "failed": r["failed"], "error": r["error"],
+                }) + "\n")
 
     n_scored = sum(1 for r in rows if r.get("probs") is not None)
     if n_scored == 0:
