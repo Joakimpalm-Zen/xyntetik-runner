@@ -146,6 +146,7 @@ TEST_RECURRENT = $(TEST_BATCH:test-batch%=test-recurrent-rewind%)
 TEST_PENALTY_WINDOW = $(TEST_BATCH:test-batch%=test-penalty-window%)
 TEST_ROPE_YARN = $(TEST_BATCH:test-batch%=test-rope-yarn%)
 TEST_ATTN_SCALE = $(TEST_BATCH:test-batch%=test-attn-scale%)
+TEST_DOT_ROUTE = $(TEST_BATCH:test-batch%=test-dot-route%)
 TEST_REQUEST_STOP = $(TEST_BATCH:test-batch%=test-request-stop%)
 TEST_HOST_HEADER = $(TEST_BATCH:test-batch%=test-host-header%)
 TEST_GRAMMAR_FF = $(TEST_BATCH:test-batch%=test-grammar-ff%)
@@ -652,6 +653,12 @@ $(TEST_ROPE_YARN): $(TEST_ROPE_YARN_SRC) $(HDR)
 TEST_ATTN_SCALE_SRC = $(TEST_ROPE_YARN_SRC:tests/test_rope_yarn.c=tests/test_attn_scale.c)
 $(TEST_ATTN_SCALE): $(TEST_ATTN_SCALE_SRC) $(HDR)
 	$(CC) $(CFLAGS) -I src $(TEST_ATTN_SCALE_SRC) -o $@ $(LDFLAGS)
+
+# the CPU dot route gate: dispatch of the one-row and small-batch matvec, and
+# a same-process ratio canary for the multi-column dot (tests/test_dot_route.c)
+TEST_DOT_ROUTE_SRC = $(TEST_ROPE_YARN_SRC:tests/test_rope_yarn.c=tests/test_dot_route.c)
+$(TEST_DOT_ROUTE): $(TEST_DOT_ROUTE_SRC) $(HDR)
+	$(CC) $(CFLAGS) -I src $(TEST_DOT_ROUTE_SRC) -o $@ $(LDFLAGS)
 
 $(TEST_RECURRENT): $(TEST_RECURRENT_SRC) $(HDR)
 	$(CC) $(CFLAGS) -I src $(TEST_RECURRENT_SRC) -o $@ $(LDFLAGS)
@@ -2178,7 +2185,7 @@ test: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSON_OOM) $(
       $(TEST_THREAD_DEFAULT) \
       $(TEST_MODEL_LOAD_FAILURE) $(TEST_RESTART) $(TEST_PFX_PERSIST) \
       $(TEST_SCHED_TURN) $(TEST_RESIDENCY) $(TEST_BUDGET) $(TEST_ATTRIB_DEP) \
-      $(TEST_STOP_CONSTRAINT) $(TEST_MSG_OOM_DEP) $(TEST_RECURRENT) $(TEST_PENALTY_WINDOW) $(TEST_ROPE_YARN) $(TEST_ATTN_SCALE) $(TEST_REQUEST_STOP) \
+      $(TEST_STOP_CONSTRAINT) $(TEST_MSG_OOM_DEP) $(TEST_RECURRENT) $(TEST_PENALTY_WINDOW) $(TEST_ROPE_YARN) $(TEST_ATTN_SCALE) $(TEST_DOT_ROUTE) $(TEST_REQUEST_STOP) \
       runner test.gguf test-q8.gguf test-bf16.gguf test-ornith.gguf test-ornith-draft.gguf test-yarn.gguf \
       test-gemma3-62.gguf test-gemma3-26.gguf test-qwen4exp.gguf
 	./$(TEST_RECURRENT)
@@ -2199,6 +2206,7 @@ test: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSON_OOM) $(
 	$(PYTHON) -c "import json,sys; a=json.load(open('test-qwen4exp.a.out'))['logprobs']; b=json.load(open('test-qwen4exp.b.out'))['logprobs']; d=max(abs(x-y) for x,y in zip(a,b)); print('qwen4exp batched vs solo score: %d positions, max %.2e' % (len(a), d)); sys.exit(0 if len(a)==len(b)==56 and d == 0 else 1)"
 	rm -f test-qwen4exp.a.out test-qwen4exp.b.out
 	./$(TEST_ATTN_SCALE) test-gemma3-62.gguf test-gemma3-26.gguf
+	./$(TEST_DOT_ROUTE) test-q8.gguf
 	./$(TEST_PENALTY_WINDOW) test.gguf
 	./$(TEST_REQUEST_STOP)
 	./$(TEST_LORA_GRAD)
@@ -2587,7 +2595,7 @@ clean:
 	      $(TEST_QUANTIZE) $(TEST_VRAM_ROLLBACK) $(TEST_GGUF_GETTERS) $(TEST_HFHUB) \
 	      $(TEST_PARSE) $(TEST_THREAD_DEFAULT) $(TEST_METAL_OWNERSHIP) $(TEST_METAL_SHADERS) $(TEST_METAL_KQUANTS) $(TEST_MODEL_LOAD_FAILURE) \
 	      $(TEST_FILE_ID) test-file-identity.tmp \
-	      $(TEST_BUDGET) $(TEST_ATTRIB) $(TEST_MSG_OOM) $(TEST_STOP_CONSTRAINT) $(TEST_ROPE_YARN) $(TEST_ATTN_SCALE) \
+	      $(TEST_BUDGET) $(TEST_ATTRIB) $(TEST_MSG_OOM) $(TEST_STOP_CONSTRAINT) $(TEST_ROPE_YARN) $(TEST_ATTN_SCALE) $(TEST_DOT_ROUTE) \
 	      $(TMPL_CONF_RENDER) \
 	      $(TEST_SPLIT_GUARD) split-guard.out test-swap-race-bin test-tokenizer-race-bin \
 	      runner-gpu-stub

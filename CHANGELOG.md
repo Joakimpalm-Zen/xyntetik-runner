@@ -17,6 +17,14 @@ rename keep the names that were true when they were written.
   `make test-metal-shader-gate` caught it). The release binaries, built
   against SDK 26.5, were not affected. Reported by an outside review on an
   M5 Max.
+- **A CPU dot route gate in `make test`.** Byte-identity tests cannot see a
+  route that is correct and slow: 1.1.1 sent the one-row decode through the
+  multi-column dot and dense IQ3_S decode halved with every output intact.
+  `tests/test_dot_route.c` asserts the dispatch (a one-token forward never
+  calls `vec_dot_multi`, a 3-row batch does; it fails on the 1.1.1 routing)
+  and runs a same-process ratio canary: for 2-7 columns the multi-column dot
+  may not cost more than 1.5x the per-column loop (Q8_0, Q4_K, IQ3_S,
+  IQ4_XS). A ratio on one machine, not an absolute tok/s.
 
 - **The codebook i-quant decode GEMVs take two rows per warp.** The
   batch-1 kernel is latency-bound (index bytes, then the grid word, then x,

@@ -147,5 +147,6 @@ void   i8_dot_force(int on);
 // Matvecs that took the fused route since process start. A tolerance gate
 // that sees zero is comparing the scalar path with itself.
 unsigned long i8_dot_dispatches(void);
+unsigned long vec_dot_multi_calls(void);   // route gate: calls into vec_dot_multi
 
 #endif // RUNNER_QUANTS_H
