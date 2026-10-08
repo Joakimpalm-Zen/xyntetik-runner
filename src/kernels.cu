@@ -3411,7 +3411,7 @@ static __device__ __forceinline__ float iq3s_lane(const uchar *blk, const float 
 // for that column (the batch-1 kernels below call these with nc = 1: one
 // source, the same bits, which the speculative verify and the decode
 // microbatch depend on).
-static __device__ __forceinline__ void iq2xxs_lane_n(const uchar *blk, const float *xb, ulong64 xs, int sbs, int lane, int nc, float *acc) {
+static __device__ __forceinline__ void iq2xxs_lane_n(const uchar *blk, const float *xb, ulong64 xs, int lane, int nc, float *acc) {
     int ib = lane >> 2, l = lane & 3;
     float d = f16f(blk);
     const uchar *qs = blk + 2 + ib * 8;
@@ -3419,7 +3419,7 @@ static __device__ __forceinline__ void iq2xxs_lane_n(const uchar *blk, const flo
     float db = d * (0.5f + (float)(aux >> 28)) * 0.25f;
     ulong64 g = kiq2xxs_grid[qs[l]];
     unsigned signs = iq_signs7((aux >> (7 * l)) & 127);
-    const float *xp0 = xb + ib * sbs + l * 8;
+    const float *xp0 = xb + ib * 32 + l * 8;
     float w[8];
     _Pragma("unroll")
     for (int j = 0; j < 8; j++) w[j] = iq_w8(g, j, signs);
@@ -3433,7 +3433,7 @@ static __device__ __forceinline__ void iq2xxs_lane_n(const uchar *blk, const flo
     }
 }
 
-static __device__ __forceinline__ void iq2xs_lane_n(const uchar *blk, const float *xb, ulong64 xs, int sbs, int lane, int nc, float *acc) {
+static __device__ __forceinline__ void iq2xs_lane_n(const uchar *blk, const float *xb, ulong64 xs, int lane, int nc, float *acc) {
     int ib = lane >> 2, l = lane & 3;
     float d = f16f(blk);
     const uchar *qs = blk + 2 + ib * 8, *sc = blk + 66;
@@ -3441,7 +3441,7 @@ static __device__ __forceinline__ void iq2xs_lane_n(const uchar *blk, const floa
     unsigned q = iq_ld16(qs + 2 * l);
     ulong64 g = kiq2xs_grid[q & 511];
     unsigned signs = iq_signs7(q >> 9);
-    const float *xp0 = xb + ib * sbs + l * 8;
+    const float *xp0 = xb + ib * 32 + l * 8;
     float w[8];
     _Pragma("unroll")
     for (int j = 0; j < 8; j++) w[j] = iq_w8(g, j, signs);
@@ -3455,7 +3455,7 @@ static __device__ __forceinline__ void iq2xs_lane_n(const uchar *blk, const floa
     }
 }
 
-static __device__ __forceinline__ void iq2s_lane_n(const uchar *blk, const float *xb, ulong64 xs, int sbs, int lane, int nc, float *acc) {
+static __device__ __forceinline__ void iq2s_lane_n(const uchar *blk, const float *xb, ulong64 xs, int lane, int nc, float *acc) {
     int ib = lane >> 2, l = lane & 3;
     float d = f16f(blk);
     const uchar *qs = blk + 2 + ib * 4, *sg = blk + 34 + ib * 4, *qh = blk + 66, *sc = blk + 74;
@@ -3463,7 +3463,7 @@ static __device__ __forceinline__ void iq2s_lane_n(const uchar *blk, const float
     unsigned hb = qh[ib];
     ulong64 g = kiq2s_grid[qs[l] | ((hb << (8 - 2 * l)) & 0x300)];
     unsigned signs = sg[l];
-    const float *xp0 = xb + ib * sbs + l * 8;
+    const float *xp0 = xb + ib * 32 + l * 8;
     float w[8];
     _Pragma("unroll")
     for (int j = 0; j < 8; j++) w[j] = iq_w8(g, j, signs);
@@ -3477,7 +3477,7 @@ static __device__ __forceinline__ void iq2s_lane_n(const uchar *blk, const float
     }
 }
 
-static __device__ __forceinline__ void iq3xxs_lane_n(const uchar *blk, const float *xb, ulong64 xs, int sbs, int lane, int nc, float *acc) {
+static __device__ __forceinline__ void iq3xxs_lane_n(const uchar *blk, const float *xb, ulong64 xs, int lane, int nc, float *acc) {
     int ib = lane >> 2, l = lane & 3;
     float d = f16f(blk);
     const uchar *qs = blk + 2 + ib * 8, *ss = blk + 66;
@@ -3486,7 +3486,7 @@ static __device__ __forceinline__ void iq3xxs_lane_n(const uchar *blk, const flo
     unsigned g1 = kiq3xxs_grid[qs[2 * l + 0]];
     unsigned g2 = kiq3xxs_grid[qs[2 * l + 1]];
     unsigned signs = iq_signs7((aux >> (7 * l)) & 127);
-    const float *xp0 = xb + ib * sbs + l * 8;
+    const float *xp0 = xb + ib * 32 + l * 8;
     float w1[4], w2[4];
     _Pragma("unroll")
     for (int j = 0; j < 4; j++) { w1[j] = iq_w4(g1, j, signs); w2[j] = iq_w4(g2, j, signs >> 4); }
@@ -3503,7 +3503,7 @@ static __device__ __forceinline__ void iq3xxs_lane_n(const uchar *blk, const flo
     }
 }
 
-static __device__ __forceinline__ void iq3s_lane_n(const uchar *blk, const float *xb, ulong64 xs, int sbs, int lane, int nc, float *acc) {
+static __device__ __forceinline__ void iq3s_lane_n(const uchar *blk, const float *xb, ulong64 xs, int lane, int nc, float *acc) {
     int ib = lane >> 2, l = lane & 3, pair = ib >> 1, h = ib & 1;
     float d = f16f(blk);
     const uchar *qs = blk + 2 + ib * 8, *qh = blk + 66, *sg = blk + 74 + ib * 4, *sc = blk + 106;
@@ -3512,7 +3512,7 @@ static __device__ __forceinline__ void iq3s_lane_n(const uchar *blk, const float
     unsigned g1 = kiq3s_grid[qs[2 * l + 0] | ((hb << (8 - 2 * l)) & 256)];
     unsigned g2 = kiq3s_grid[qs[2 * l + 1] | ((hb << (7 - 2 * l)) & 256)];
     unsigned signs = sg[l];
-    const float *xp0 = xb + ib * sbs + l * 8;
+    const float *xp0 = xb + ib * 32 + l * 8;
     float w1[4], w2[4];
     _Pragma("unroll")
     for (int j = 0; j < 4; j++) { w1[j] = iq_w4(g1, j, signs); w2[j] = iq_w4(g2, j, signs >> 4); }
@@ -3534,14 +3534,14 @@ static __device__ __forceinline__ void iq3s_lane_n(const uchar *blk, const float
 // scale bits, the low scale nibbles, 128 quant bytes; sub-block ib's 16 bytes
 // carry elements 0-15 (low nibbles) and 16-31 (high). Lane L takes sub-block
 // L/4, bytes 4*(L%4).. +4: elements 4l..4l+3 and 16+4l..16+4l+3.
-static __device__ __forceinline__ void iq4xs_lane_n(const uchar *blk, const float *xb, ulong64 xs, int sbs, int lane, int nc, float *acc) {
+static __device__ __forceinline__ void iq4xs_lane_n(const uchar *blk, const float *xb, ulong64 xs, int lane, int nc, float *acc) {
     int ib = lane >> 2, l = lane & 3;
     float d = f16f(blk);
     unsigned sh = (unsigned)blk[2] | ((unsigned)blk[3] << 8);
     int ls = ((blk[4 + ib / 2] >> 4 * (ib % 2)) & 0xF) | (((sh >> 2 * ib) & 3) << 4);
     float dl = d * (ls - 32);
     const uchar *q = blk + 8 + ib * 16 + l * 4;
-    const float *xp0 = xb + ib * sbs + l * 4;
+    const float *xp0 = xb + ib * 32 + l * 4;
     float wl[4], wh[4];
     _Pragma("unroll")
     for (int j = 0; j < 4; j++) { wl[j] = (float)kv_iq4[q[j] & 0xF]; wh[j] = (float)kv_iq4[q[j] >> 4]; }
@@ -3566,12 +3566,8 @@ static __device__ __forceinline__ void iq4xs_lane_n(const uchar *blk, const floa
 // to ~150 GB/s (2026-10-08). Shared memory holds the same values as global,
 // so no output changes. Columns past a.batch stage zeros (a caller's x need
 // not be NC columns wide).
-// staged x: 32-element sub-blocks padded to 33 floats, so a warp's lanes
-// (sub-block L/4, offset 8*(L%4)) read 32 distinct banks instead of four
-#define IQ_SBP 33
-#define IQ_BLKP (8 * IQ_SBP)
 #define IQ_LANE_BODY(fnn, BS, NC, CH) \
-    __shared__ float xsm[(NC) * (CH) * IQ_BLKP]; \
+    __shared__ float xsm[(NC) * (CH) * 256]; \
     unsigned row = blockIdx.x * (blockDim.x >> 5) + (threadIdx.x >> 5); \
     unsigned lane = threadIdx.x & 31; \
     int nb = a.n_in / 256; \
@@ -3585,12 +3581,12 @@ static __device__ __forceinline__ void iq4xs_lane_n(const uchar *blk, const floa
         for (int t = 0; t < (NC); t++) { \
             const float *xg = x + (ulong64)t * a.xs + (ulong64)cs * 256; \
             for (int e = threadIdx.x; e < ce; e += blockDim.x) \
-                xsm[t * (CH) * IQ_BLKP + (e >> 5) * IQ_SBP + (e & 31)] = t < nbat ? xg[e] : 0.0f; \
+                xsm[t * (CH) * 256 + e] = t < nbat ? xg[e] : 0.0f; \
         } \
         __syncthreads(); \
         if (live) \
             for (int bi = 0; bi < cb; bi++) \
-                fnn(rw + (ulong64)(cs + bi) * BS, xsm + bi * IQ_BLKP, (ulong64)(CH) * IQ_BLKP, IQ_SBP, lane, (NC), acc); \
+                fnn(rw + (ulong64)(cs + bi) * BS, xsm + bi * 256, (ulong64)(CH) * 256, lane, (NC), acc); \
         __syncthreads(); \
     } \
     if (live) \
@@ -3606,7 +3602,7 @@ static __device__ __forceinline__ void iq4xs_lane_n(const uchar *blk, const floa
     int nb = a.n_in / 256; \
     const uchar *rw = wb + a.w_off + (ulong64)row * nb * BS; \
     float acc[1] = {0}; \
-    for (int b = 0; b < nb; b++) fnn(rw + (ulong64)b * BS, x + b * 256, 0, 32, lane, 1, acc); \
+    for (int b = 0; b < nb; b++) fnn(rw + (ulong64)b * BS, x + b * 256, 0, lane, 1, acc); \
     float s = acc[0]; \
     MV_TAIL;
 
