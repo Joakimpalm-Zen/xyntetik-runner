@@ -15,6 +15,13 @@ rename keep the names that were true when they were written.
   a stale `kernels_ptx.h` ran the whole RTX 3070 gate on the CPU,
   2026-10-08). `scripts/check-ptx-roster.py` needs no GPU, so every platform
   runs it.
+- **Exact-width (2 to 8 column) GEMV twins for the codebook i-quants.** The
+  verify tile of `--draft-k k` is k+1 rows, and the x4/x8 width classes made
+  a 5-row tile pay for eight columns. Qwen3.8-27B IQ3_S with its MTP head on
+  a 24 GB MIG slice, interleaved, text byte-identical to plain in every row:
+  k=1 11.0 to 13.0 tok/s, k=2 13.4 to 14.7 (plain 13.9: the first width
+  where the head beats plain decoding on CUDA), k=4 10.6 to 12.3, k=6 11.1
+  to 11.5; k=3 (a 4-row tile, already exact) unchanged at 13.6.
 
 - **Source builds on the macOS 27 SDK keep Metal.** Two helper parameters in
   `kernels.metal` (`moe_dot8_q8_0`, `moe_dot8_mxfp4`) named two address

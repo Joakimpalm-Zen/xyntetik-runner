@@ -322,6 +322,9 @@ typedef struct gpu_weights {
     // multi-column twins of f_gemv, per microbatch width (see BW_* below):
     // f_gemvb[w][type], w indexing the width class, not the width itself
     CUfunction  f_gemvb[BW_N][KT_N];
+    // exact-width twins, [n] for n = 2..8 columns (the codebook i-quants);
+    // enc_mv_batch prefers them over the width class
+    CUfunction  f_gemvx[9][KT_N];
     // sparse-MoE device routing + indirect expert matvecs (fused-3D layout)
     CUfunction  f_moe_route, f_moe_actmul, f_moe_sum;
     CUfunction  f_moe_mv[KT_N];         // indexed by expert tensor type
@@ -1735,6 +1738,48 @@ static gpu_weights *shared_build(model_t *m, size_t act_bytes, int max_hd,
             { &w->f_gemvb[BW_8][T_IQ3_S], "k_gemvb_iq3_s_x8" },
             { &w->f_gemvb[BW_4][T_IQ4_XS], "k_gemvb_iq4_xs_x4" },
             { &w->f_gemvb[BW_8][T_IQ4_XS], "k_gemvb_iq4_xs_x8" },
+            { &w->f_gemvx[2][T_IQ2_XXS], "k_gemvx_iq2_xxs_x2" },
+            { &w->f_gemvx[3][T_IQ2_XXS], "k_gemvx_iq2_xxs_x3" },
+            { &w->f_gemvx[4][T_IQ2_XXS], "k_gemvb_iq2_xxs_x4" },
+            { &w->f_gemvx[5][T_IQ2_XXS], "k_gemvx_iq2_xxs_x5" },
+            { &w->f_gemvx[6][T_IQ2_XXS], "k_gemvx_iq2_xxs_x6" },
+            { &w->f_gemvx[7][T_IQ2_XXS], "k_gemvx_iq2_xxs_x7" },
+            { &w->f_gemvx[8][T_IQ2_XXS], "k_gemvb_iq2_xxs_x8" },
+            { &w->f_gemvx[2][T_IQ2_XS], "k_gemvx_iq2_xs_x2" },
+            { &w->f_gemvx[3][T_IQ2_XS], "k_gemvx_iq2_xs_x3" },
+            { &w->f_gemvx[4][T_IQ2_XS], "k_gemvb_iq2_xs_x4" },
+            { &w->f_gemvx[5][T_IQ2_XS], "k_gemvx_iq2_xs_x5" },
+            { &w->f_gemvx[6][T_IQ2_XS], "k_gemvx_iq2_xs_x6" },
+            { &w->f_gemvx[7][T_IQ2_XS], "k_gemvx_iq2_xs_x7" },
+            { &w->f_gemvx[8][T_IQ2_XS], "k_gemvb_iq2_xs_x8" },
+            { &w->f_gemvx[2][T_IQ2_S], "k_gemvx_iq2_s_x2" },
+            { &w->f_gemvx[3][T_IQ2_S], "k_gemvx_iq2_s_x3" },
+            { &w->f_gemvx[4][T_IQ2_S], "k_gemvb_iq2_s_x4" },
+            { &w->f_gemvx[5][T_IQ2_S], "k_gemvx_iq2_s_x5" },
+            { &w->f_gemvx[6][T_IQ2_S], "k_gemvx_iq2_s_x6" },
+            { &w->f_gemvx[7][T_IQ2_S], "k_gemvx_iq2_s_x7" },
+            { &w->f_gemvx[8][T_IQ2_S], "k_gemvb_iq2_s_x8" },
+            { &w->f_gemvx[2][T_IQ3_XXS], "k_gemvx_iq3_xxs_x2" },
+            { &w->f_gemvx[3][T_IQ3_XXS], "k_gemvx_iq3_xxs_x3" },
+            { &w->f_gemvx[4][T_IQ3_XXS], "k_gemvb_iq3_xxs_x4" },
+            { &w->f_gemvx[5][T_IQ3_XXS], "k_gemvx_iq3_xxs_x5" },
+            { &w->f_gemvx[6][T_IQ3_XXS], "k_gemvx_iq3_xxs_x6" },
+            { &w->f_gemvx[7][T_IQ3_XXS], "k_gemvx_iq3_xxs_x7" },
+            { &w->f_gemvx[8][T_IQ3_XXS], "k_gemvb_iq3_xxs_x8" },
+            { &w->f_gemvx[2][T_IQ3_S], "k_gemvx_iq3_s_x2" },
+            { &w->f_gemvx[3][T_IQ3_S], "k_gemvx_iq3_s_x3" },
+            { &w->f_gemvx[4][T_IQ3_S], "k_gemvb_iq3_s_x4" },
+            { &w->f_gemvx[5][T_IQ3_S], "k_gemvx_iq3_s_x5" },
+            { &w->f_gemvx[6][T_IQ3_S], "k_gemvx_iq3_s_x6" },
+            { &w->f_gemvx[7][T_IQ3_S], "k_gemvx_iq3_s_x7" },
+            { &w->f_gemvx[8][T_IQ3_S], "k_gemvb_iq3_s_x8" },
+            { &w->f_gemvx[2][T_IQ4_XS], "k_gemvx_iq4_xs_x2" },
+            { &w->f_gemvx[3][T_IQ4_XS], "k_gemvx_iq4_xs_x3" },
+            { &w->f_gemvx[4][T_IQ4_XS], "k_gemvb_iq4_xs_x4" },
+            { &w->f_gemvx[5][T_IQ4_XS], "k_gemvx_iq4_xs_x5" },
+            { &w->f_gemvx[6][T_IQ4_XS], "k_gemvx_iq4_xs_x6" },
+            { &w->f_gemvx[7][T_IQ4_XS], "k_gemvx_iq4_xs_x7" },
+            { &w->f_gemvx[8][T_IQ4_XS], "k_gemvb_iq4_xs_x8" },
             // sparse-MoE device routing + indirect expert matvecs
             { &w->f_moe_route,        "k_moe_route" },
             { &w->f_moe_actmul,       "k_moe_actmul" },
@@ -5505,7 +5550,9 @@ static bool enc_mv_batch(gpu_t *g, model_t *m, gguf_tensor *w, CUdeviceptr x,
     // GEMM-shaped twins stage x in shared memory and give 8 rows per block;
     // without that, MVB scattered global x-loads per decoded weight make a
     // microbatch L1-bound and it loses to running the sequences separately.
-    CUfunction f = g->sw->f_gemvb[batch_width_class(batch)][w->type];
+    CUfunction f = batch >= 2 && batch <= 8 && g->sw->f_gemvx[batch][w->type]
+                 ? g->sw->f_gemvx[batch][w->type]
+                 : g->sw->f_gemvb[batch_width_class(batch)][w->type];
     if (f) return launch(g, f, (n_out + GEMM_WARPS - 1) / GEMM_WARPS, 1, 1,
                          GEMM_WARPS * 32, p);
     // No width-classed twin. f_mvb is the right answer only where it really is
