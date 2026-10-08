@@ -9,6 +9,14 @@ rename keep the names that were true when they were written.
 
 ## Unreleased
 
+- **The codebook i-quant decode GEMVs take two rows per warp.** The
+  batch-1 kernel is latency-bound (index bytes, then the grid word, then x,
+  per block); a second independent row per warp hides part of that, the rows
+  share x through L1, and each row's arithmetic is unchanged, so the output
+  bits are the same. Qwen3.8-27B IQ3_S fully on a 24 GB MIG slice: decode
+  11.96 to 13.84 tok/s, text byte-identical over three interleaved rounds
+  (four rows per warp: 11.57; two rows at eight warps per block: 13.72).
+
 - **The CUDA placement plan counts what the device actually spends.** The
   hyper-connection stream mixers (`hc_attn_*`, `hc_ffn_*`: 1.27 GB on
   Qwen3.8-Flash-Next) were never in a layer's bytes, and a split that
