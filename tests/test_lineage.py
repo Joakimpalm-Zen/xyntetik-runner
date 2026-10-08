@@ -128,3 +128,39 @@ def test_the_records_alone_verify_after_the_files_are_gone(runner_bin, tmp_path)
     assert p.returncode == 0, p.stdout
     assert p.stdout.count("VERIFIED (signed") == 3
     assert "output file not present" in p.stdout
+
+
+def test_an_answer_walks_back_from_its_receipt(runner_bin, tmp_path):
+    # a served or one-shot answer's receipt names the model and links the
+    # record of the step that made it: the chain runs from the answer back to
+    # the base model and the training data
+    _chain(runner_bin, tmp_path)
+    p = _run(runner_bin, ["-m", "final.gguf", "-p", "hello", "-n", "4", "--temp", "0",
+                          "--gpu", "off", "--transcript", "run.json",
+                          "--sign-key", "key.json"], tmp_path)
+    assert p.returncode == 0, p.stderr
+    rec = json.loads((tmp_path / "run.json").read_text())
+    assert rec["model"]["record"]["path"].endswith("final.gguf.quant.json")
+    v = _run(runner_bin, ["-m", "final.gguf", "--verify", "run.json"], tmp_path)
+    assert v.returncode == 0, v.stdout + v.stderr      # the link does not disturb replay
+    w = _run(runner_bin, ["--lineage", "run.json"], tmp_path)
+    assert w.returncode == 0, w.stdout
+    assert "lineage of receipt" in w.stdout and w.stdout.count("VERIFIED (signed") == 3
+
+
+def test_a_receipt_for_a_downloaded_model_ends_at_its_origin(runner_bin, tmp_path):
+    shutil.copy(ROOT / "test.gguf", tmp_path / "plain.gguf")
+    assert _run(runner_bin, ["--keygen", "key.json"], tmp_path).returncode == 0
+    p = _run(runner_bin, ["-m", "plain.gguf", "-p", "hi", "-n", "2", "--temp", "0",
+                          "--gpu", "off", "--transcript", "run.json",
+                          "--sign-key", "key.json"], tmp_path)
+    assert p.returncode == 0, p.stderr
+    assert "record" not in json.loads((tmp_path / "run.json").read_text())["model"]
+    w = _run(runner_bin, ["--lineage", "run.json"], tmp_path)
+    assert w.returncode == 0 and "ORIGIN" in w.stdout, w.stdout
+    # an edited receipt is caught by its own signature
+    r = tmp_path / "run.json"
+    assert '"threads":' in r.read_text()
+    r.write_text(r.read_text().replace('"threads":', '"threads": ', 1))
+    w2 = _run(runner_bin, ["--lineage", "run.json"], tmp_path)
+    assert w2.returncode == 2 and "BROKEN" in w2.stdout, w2.stdout

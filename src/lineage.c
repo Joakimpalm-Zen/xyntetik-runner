@@ -3,38 +3,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/stat.h>
 
 #include "envelope.h"
 
-// The sidecar suffixes, one per step that writes a record.
-static const char *const SUFFIXES[] = {
-    ".quant.json", ".merge.json", ".train.json", ".context.json",
-};
-#define N_SUFFIXES (sizeof(SUFFIXES) / sizeof(SUFFIXES[0]))
-
-static bool join(char *out, size_t cap, const char *a, const char *b) {
-    int n = snprintf(out, cap, "%s%s", a, b);
-    return n >= 0 && (size_t)n < cap;
-}
-
 bool lineage_sidecar(const char *artifact, char *out, size_t cap) {
-    bool found = false;
-    long long newest = 0;
-    char cand[4096];
-    for (size_t i = 0; i < N_SUFFIXES; i++) {
-        struct stat st;
-        if (!join(cand, sizeof cand, artifact, SUFFIXES[i])) continue;
-        if (stat(cand, &st) != 0) continue;
-        long long t = (long long)st.st_mtime;
-        if (!found || t > newest) {
-            if (strlen(cand) >= cap) continue;
-            memcpy(out, cand, strlen(cand) + 1);
-            newest = t;
-            found = true;
-        }
-    }
-    return found;
+    return record_sidecar(artifact, out, cap);
 }
 
 bool lineage_put_input(sbuf *b, const char *path, const char *sha) {
@@ -236,6 +209,29 @@ int lineage_walk(const char *start, const char *trust_hex) {
     size_t sl = strlen(start);
     if (sl > 5 && !strcmp(start + sl - 5, ".json")) probe = read_json(start);
     const char *ok_key = NULL;
+    if (probe && !strcmp(jv_str(jv_get(probe, "schema_version"), ""),
+                         "xyntetik.runner.transcript.v1")) {
+        // a receipt: a served or one-shot answer. Its signature, then the
+        // model and adapter it names, walked back through their records.
+        char pub[SIGN_PUBHEX_CAP];
+        int sig = record_signature_state(start, trust_hex, pub);
+        printf("lineage of receipt %s: %s", start,
+               sig == 0 ? "signed" : sig == 1 ? "UNSIGNED" : "BROKEN: bad, malformed or untrusted signature");
+        if (sig == 0) printf(" (%.16s...)", pub);
+        printf("\n");
+        note(&w, sig);
+        static const char *const KEYS[] = { "model", "adapter" };
+        for (size_t i = 0; i < 2; i++) {
+            jv *in = jv_get(probe, KEYS[i]);
+            if (in && in->type == J_OBJ && jv_get(in, "sha256"))
+                walk_input(KEYS[i], in, start, trust_hex, 1, &w);
+        }
+        jv_free(probe);
+        printf("RESULT: %s\n", w.worst == 0 ? "VERIFIED (every link consistent and signed)"
+                             : w.worst == 1 ? "CONSISTENT, NOT ALL SIGNED"
+                                            : "BROKEN");
+        return w.worst;
+    }
     if (probe && step_of(probe, &ok_key)) {
         snprintf(rec, sizeof rec, "%s", start);
         printf("lineage of record %s\n", start);

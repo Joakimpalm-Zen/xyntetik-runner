@@ -9,6 +9,7 @@
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <sys/stat.h>
 #include <string.h>
 #include <time.h>
 
@@ -263,6 +264,40 @@ const char *envelope_state_word(int state) {
     }
 }
 
+static const char *const SIDECAR_SUFFIXES[] = {
+    ".quant.json", ".merge.json", ".train.json", ".context.json",
+};
+
+bool record_sidecar(const char *artifact, char *out, size_t cap) {
+    bool found = false;
+    long long newest = 0;
+    char cand[4096];
+    for (size_t i = 0; i < sizeof SIDECAR_SUFFIXES / sizeof SIDECAR_SUFFIXES[0]; i++) {
+        struct stat st;
+        int n = snprintf(cand, sizeof cand, "%s%s", artifact, SIDECAR_SUFFIXES[i]);
+        if (n < 0 || (size_t)n >= sizeof cand || (size_t)n >= cap) continue;
+        if (stat(cand, &st) != 0) continue;
+        if (!found || (long long)st.st_mtime > newest) {
+            memcpy(out, cand, (size_t)n + 1);
+            newest = (long long)st.st_mtime;
+            found = true;
+        }
+    }
+    return found;
+}
+
+// A receipt names the model (and adapter) by sha256; when a step on this
+// machine made that file, the receipt also links the step's record, so
+// --lineage can walk from a served answer back to the publisher's file.
+static void tsb_record_link(tsb *w, const char *file) {
+    char rec[4096], rsha[65];
+    if (!file || !record_sidecar(file, rec, sizeof rec) ||
+        !envelope_file_sha256(rec, rsha)) return;
+    tsb_put(w, ",\"record\":{\"path\":", sizeof ",\"record\":{\"path\":" - 1);
+    tsb_json_str(w, rec, strlen(rec));
+    tsb_fmt(w, ",\"sha256\":\"%s\"}", rsha);
+}
+
 bool transcript_write(const transcript_info *ti) {
     char msha[65] = "", bsha[65] = "", asha[65] = "";
     if (ti->model_sha256 && strlen(ti->model_sha256) == 64) {
@@ -319,7 +354,9 @@ bool transcript_write(const transcript_info *ti) {
             ti->n_ctx, ti->kv_fp4 ? "fp4" : ti->kv_split ? "k8v4" : ti->kv_q8 ? "q8" : "f16", ti->n_batch);
     tsb_put(&w, "\"model\":{\"path\":", 16);
     tsb_json_str(&w, ti->model_path, strlen(ti->model_path));
-    tsb_fmt(&w, ",\"sha256\":\"%s\"},", msha);
+    tsb_fmt(&w, ",\"sha256\":\"%s\"", msha);
+    tsb_record_link(&w, ti->model_path);
+    tsb_put(&w, "},", 2);
     if (ti->envelope_known) {
         // the sidecar the verdict came from, by digest; null when there is
         // none (unclassified) or it can no longer be read
@@ -342,8 +379,10 @@ bool transcript_write(const transcript_info *ti) {
     if (ti->adapter_path) {
         tsb_put(&w, "\"adapter\":{\"path\":", 18);
         tsb_json_str(&w, ti->adapter_path, strlen(ti->adapter_path));
-        tsb_fmt(&w, ",\"sha256\":\"%s\",\"scale\":%g},", asha,
+        tsb_fmt(&w, ",\"sha256\":\"%s\",\"scale\":%g", asha,
                 (double)ti->adapter_scale);
+        tsb_record_link(&w, ti->adapter_path);
+        tsb_put(&w, "},", 2);
     } else {
         tsb_put(&w, "\"adapter\":null,", 15);
     }

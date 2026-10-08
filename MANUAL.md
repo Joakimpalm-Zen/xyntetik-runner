@@ -588,6 +588,13 @@ to another folder, they verify without the model files, looked up by name
 when their recorded paths are gone. Exit 0 every link verified and signed,
 1 consistent but not all signed, 2 broken or no record.
 
+A receipt links the chain too. A one-shot `--transcript` record and every
+`--receipts` record of a served answer name the model (and adapter) by
+sha256, and when a step on this machine made that file, the receipt links
+the step's record. `--lineage run.json` starts from the answer: the
+receipt's own signature, then the model and the adapter walked back
+through their records to their origins.
+
 What it proves is where the file came from and that nothing in between was
 changed; not that the file is good. That is the evaluation's job.
 
