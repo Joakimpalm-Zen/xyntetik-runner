@@ -3452,6 +3452,12 @@ than accuracy, because a decision surface that changes its answer when the
 options are reordered is not usable no matter how sharp its distribution
 looks elsewhere. `--batch-state` (default on) groups a state's questions
 into one request, the same KV reuse the endpoint itself is built around.
+`--emit-predictions FILE` writes one JSONL record per question (split,
+groups, options, the returned probabilities and logprobs, the label
+distribution), so a different binning or a paired comparison of two models
+needs no re-run. The split line counts both sides in the split unit
+(`split_group`, else `permutation_group`) and reports the permutation-group
+counts beside it.
 No claim about any model's calibration is made here; the script measures
 whatever endpoint it is pointed at.
 
