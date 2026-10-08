@@ -3157,7 +3157,12 @@ static bool enc_mv(gpu_t *g, model_t *m, gguf_tensor *w, CUdeviceptr x,
     // 128 threads = 4 warps = 4 rows per block; the tile variant applies each
     // decoded weight to all columns, the single variant is faster at batch 1
     CUfunction f = batch > 1 ? g->sw->f_mvb[w->type] : g->sw->f_mv[w->type];
-    return launch_tiled(g, f, (n_out + 3) / 4, 128, weights, x, y, a, b,
+    // EXPERIMENT: the lane-level i-quant batch-1 kernels take IQ_ROWS rows per warp
+    unsigned rpb = 4;
+    if (batch == 1 && (w->type == T_IQ2_XXS || w->type == T_IQ2_XS || w->type == T_IQ2_S ||
+                       w->type == T_IQ3_XXS || w->type == T_IQ3_S || w->type == T_IQ4_XS))
+        rpb = 4 * 2;
+    return launch_tiled(g, f, (n_out + rpb - 1) / rpb, 128, weights, x, y, a, b,
                         batch > 1 ? MVT : MVB,
                         w->type == T_NVFP4, w->scale);
 }

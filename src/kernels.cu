@@ -3597,14 +3597,29 @@ static __device__ __forceinline__ void iq4xs_lane_n(const uchar *blk, const floa
 
 // batch-1: x from global (staging for four rows measured slower: 27B decode
 // 11.9 -> 10.0 tok/s); the same values as the twins' staged copy
+// IQ_ROWS rows per warp (EXPERIMENT 2026-10-08): the rows share x through L1
+// and give a warp independent work; each row's arithmetic is unchanged
+#ifndef IQ_ROWS
+#define IQ_ROWS 2
+#endif
 #define IQ_LANE_MV1(fnn, BS) \
-    MV_HEAD; \
+    unsigned row0 = (blockIdx.x * (blockDim.x >> 5) + (threadIdx.x >> 5)) * IQ_ROWS; \
+    unsigned lane = threadIdx.x & 31; \
+    if (row0 >= (unsigned)a.n_out) return; \
     int nb = a.n_in / 256; \
-    const uchar *rw = wb + a.w_off + (ulong64)row * nb * BS; \
-    float acc[1] = {0}; \
-    for (int b = 0; b < nb; b++) fnn(rw + (ulong64)b * BS, x + b * 256, 0, lane, 1, acc); \
-    float s = acc[0]; \
-    MV_TAIL;
+    float acc[IQ_ROWS] = {0}; \
+    for (int b = 0; b < nb; b++) { \
+        _Pragma("unroll") \
+        for (int r = 0; r < IQ_ROWS; r++) \
+            if (row0 + r < (unsigned)a.n_out) \
+                fnn(wb + a.w_off + ((ulong64)(row0 + r) * nb + b) * BS, x + b * 256, 0, lane, 1, acc + r); \
+    } \
+    _Pragma("unroll") \
+    for (int r = 0; r < IQ_ROWS; r++) { \
+        float s = warp_sum(acc[r]); \
+        unsigned row = row0 + r; \
+        if (lane == 0 && row < (unsigned)a.n_out) y[row] = a.has_bias ? s + bias[row] : s; \
+    }
 
 // width-classed twins (launched GEMM_WARPS rows per block like the GEMVB family)
 #define IQ_LANE_MVB(NAME, fnn, BS, NC) \
