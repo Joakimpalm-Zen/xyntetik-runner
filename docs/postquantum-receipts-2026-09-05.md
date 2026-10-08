@@ -116,4 +116,4 @@ it still holds.
 - Hybrid signatures (option 3).
 - The site and the Hugging Face cards mention Ed25519 by name in four
   places; if this ships, those move with the README in the release pull
-  request (AGENTS.md rule 5).
+  request (AGENTS.md rule 4).

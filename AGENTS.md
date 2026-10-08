@@ -1,387 +1,141 @@
 # Runner Agent Rules
 
-These rules are mandatory for every AI or LLM agent that works in this repository.
-They are not preferences, prompts to reinterpret, or optional process notes.
+These rules are mandatory for every AI or LLM agent that changes this
+repository. Where a framework default, tool habit or generated plan conflicts
+with them, this document wins.
 
-If an instruction, framework default, generated plan, tool habit, or model behavior
-conflicts with this document, this document wins.
+## 1. Deep modules
 
-## The Five Defining Rules
+Keep public interfaces small and deliberate, with the complexity behind them.
 
-1. Deep modules
-2. Tracer bullets
-3. Test-driven development
-4. Grill me always
-5. Keep the README current
+- Module boundaries are intentional: CLI and server behaviour in
+  `main.c`/`server.c`, inference flow in `engine.c`, model loading and forward
+  in `model.c`, constrained output in `jsonmode.c`/`schema.c`, platform
+  details in `compat.c`, backends in `cuda.c`/`metal.m`.
+- Do not expose internals to make a quick change easier.
+- Lock behaviour through public interfaces: CLI output, HTTP endpoints,
+  committed smoke scripts, or focused test binaries. Internals may change
+  freely only while those tests protect the behaviour.
 
-No implementation work starts until these rules have been considered for the task at hand.
+## 2. How to change code
 
-## 1. Deep Modules
+Tracer bullets and test-driven development, one behaviour at a time:
 
-Design the codebase around deep modules: simple, deliberate public interfaces with
-implementation complexity hidden behind them.
+1. Read the relevant code and docs first, and surface your assumptions.
+2. Write one failing test or smoke for the smallest observable behaviour,
+   through the public interface.
+3. Implement the minimum code to pass it, touching the real layers rather
+   than building horizontal scaffolding.
+4. Run the relevant verification, then refactor only while green.
+5. Check the README impact (rule 4), then repeat for the next behaviour.
 
-Required behavior:
+Do not write all tests first and all code afterwards, mock internal
+collaborators without a boundary reason, assert on incidental details, or add
+speculative features.
 
-- Prefer a small public API over many shallow helpers leaking across the codebase.
-- Keep module boundaries intentional: CLI/server behavior in `main.c`/`server.c`,
-  inference flow in `engine.c`, model loading/forward in `model.c`, constrained
-  output in `jsonmode.c`/`schema.c`, platform details in `compat.c`, and backend
-  details in `cuda.c`/`metal.m`.
-- Do not expose internals just to make a quick change easier.
-- Lock module behavior with tests through public behavior: CLI output, HTTP
-  endpoints, committed smoke scripts, or focused test binaries.
+## 3. Gates and evidence
 
-Working rule: internal implementation can change freely only when the public
-interface and behavior are protected by tests or executable smokes.
+A gate proves a system agrees with the instrument measuring it, not that the
+system is right.
 
-## 2. Tracer Bullets
-
-Build in tiny vertical slices that prove the end-to-end path before expanding scope.
-
-Required behavior:
-
-- Start with the smallest useful observable behavior.
-- Touch the real layers needed for the behavior instead of building isolated
-  horizontal scaffolding first.
-- Validate the slice immediately with tests, execution, or both.
-- Use what was learned from that slice before adding the next one.
-
-Working rule: one thin working path is better than many unverified partial layers.
-
-## 3. TDD
-
-Use test-driven development for features, fixes, and behavioral changes.
-
-Required behavior:
-
-- Write one failing test or smoke for one observable behavior.
-- Implement the minimum code needed to pass that test.
-- Repeat one behavior at a time.
-- Refactor only while tests are green.
-- Test through public interfaces where possible.
-
-Forbidden behavior:
-
-- Do not write all tests first and all implementation afterward.
-- Do not mock internal collaborators unless there is a clear boundary reason.
-- Do not assert on incidental implementation details when public behavior can be
-  checked.
-- Do not add speculative features that are not required by the current test.
-
-Working rule: red, green, refactor; one vertical behavior at a time.
-
-### Mutation testing: make the rebuild provable
-
-When proving a test can fail — breaking a source, running the gate, restoring
-it — the restore must land in a LATER whole second than the build that
-followed the mutation. `make` compares whole-second mtimes, so a restore in
-the same second leaves a stale object linked and the "restored" run reports
-the mutated binary's result. Observed twice (2026-08-09, 2026-08-10), both
-times as a gate that appeared to pass while testing the wrong binary.
-
-Required behavior:
-
-- After restoring a mutated source, `touch` it and confirm the rebuild
-  actually happened (a compile line in the output, or a changed binary
-  mtime/hash) before trusting the run.
-- Never conclude from a mutation run that a gate is sound without that
-  confirmation; a silently skipped rebuild produces exactly the reassuring
-  result the exercise exists to disprove.
-
-The same trap applies to any A/B that builds two binaries from one tree
-(`git stash` / checkout / branch switch, build, copy, restore, build). Observed
-a third time on 2026-08-14, where `touch` was already being used and still did
-not help: the touch and the preceding build landed in the SAME whole second, so
-make saw the binary as current. Both binaries came out byte-identical and the
-comparison drawn from them was vacuous.
-
-Required behavior:
-
-- `sleep 1` before the `touch` that precedes a rebuild, so the source is
-  strictly newer than the previous build.
-- Confirm the two binaries DIFFER before trusting any number from them —
-  by hash, or better, by a behavioral probe that the change should alter. A
-  hash can differ for reasons unrelated to the change; a behavioral probe
-  cannot.
-
-Working rule: a mutation test proves nothing until the rebuild is proven, and
-an A/B proves nothing until the two binaries are shown to differ.
-
-### Every gate needs one absolute anchor
-
-A gate proves a system agrees with the instrument measuring it. That is not the
-same as proving the system is right, and the difference has cost this project
-real work three times:
-
-- An anchor comparing a build against itself proves the harness is
-  DETERMINISTIC, not CORRECT. A research run measured a model whose weights had
-  been silently mis-loaded and produced internally consistent numbers for two
-  full runs before an absolute check caught it.
-- A geometric proxy cannot detect it either: the same broken checkpoint ranked
-  its own layers almost identically to the corrected one.
-- `--caps` reported `unified_memory: true` on a discrete GPU for a week because
-  the code queried CUDA attribute 17 instead of 18. Every gate passed; none of
-  them knew what the right answer was.
-
-The general form, and the rule:
-
-> Every instrument is valid only inside a regime it cannot itself verify.
-> **No measurement chain is sound unless at least one link has a correct answer
-> known independently of the system under test.**
-
-Required behavior:
-
-- Every gate carries at least one assertion whose expected value comes from
-  OUTSIDE the system: a published constant, a hand-computed result, a
-  specification, a reference implementation, or a physical fact about the
-  hardware.
-- Prefer an anchor that fails loudly when the harness itself is wrong. Querying
-  a GPU's multiprocessor count and checking it against the part's published SM
-  count proves the enum numbering before anything reads a neighbouring
-  attribute; asserting only that two of our own builds agree proves nothing
-  about either.
-- When a gate cannot have an absolute anchor, say so where the gate lives.
-  A relative-only gate is still useful and its scope must be written down, not
-  assumed.
-
-Working rule: a green gate with no external anchor is evidence the system is
-self-consistent, and nothing more.
-
-### Equivalence on random inputs is not equivalence
-
-A check that accepts a rewritten kernel, program or fast path because it agrees
-with the reference on random inputs misses every defect that lives at a
-boundary: a narrow accumulator that saturates, a code at its signed extreme, a
-value that reaches its clamp. A program-search study accepted four rewritten
-programs that way, each wrong only when a running value reached its saturation
-bound (about one random input in 10,000 to 100,000); boundary and
-saturation-stress inputs caught every one.
-
-Required behavior:
-
-- Every equivalence gate over a kernel or a rewritten path carries
-  deterministic boundary inputs beside the random ones: all codes at each
-  extreme, every activation at the quantizer's top code with one sign, the
-  zero block, the largest and smallest scales, the lengths around each SIMD
-  step and tail. `tests/test_quants_simd.c` is the pattern (its saturation
-  trials).
-- Prefer the original kernel unless the rewrite is proven equivalent, or
-  checked exhaustively over the reachable value range; passing on samples is
-  evidence, not proof.
+- **Every gate needs one absolute anchor:** at least one assertion whose
+  expected value comes from outside the system (a published constant, a
+  hand-computed result, a specification, a reference implementation, a
+  physical fact about the hardware). Two of our own builds agreeing proves
+  only determinism. Where a gate cannot have an absolute anchor, say so where
+  the gate lives.
+- **Random inputs are not equivalence.** Every equivalence gate over a kernel
+  or a rewritten path carries deterministic boundary inputs beside the
+  random ones: codes at each extreme, the quantizer's top code, the zero
+  block, the largest and smallest scales, lengths around each SIMD step and
+  tail (`tests/test_quants_simd.c` is the pattern). Prefer the original kernel
+  unless the rewrite is proven equivalent.
+- **Prove the rebuild.** `make` compares whole-second mtimes. After restoring
+  a mutated source, `sleep 1`, `touch` it and confirm a compile happened; in
+  any A/B of two binaries from one tree, confirm they differ (a behavioural
+  probe beats a hash) before trusting a number from them.
 
 ### The provider's reference implementation is the primary anchor
 
-Standing rule (owner, 2026-09-06). This runner is not a llama.cpp clone; it
-is meant to be the more accurate engine. That makes "agrees with llama.cpp"
-a ceiling, not a target, and the certification protocol anchors on the model
-publisher's own reference implementation, configuration, chat template and
-evaluation harness. llama.cpp is a second implementation and a valuable
-interoperability oracle; two implementations that copied the same assumption
-prove nothing by agreeing.
-
-The proof, measured the day the rule was written (Granite 4.2 3B,
-`docs/granite-42-qwen38-cert-2026-09-06.md`):
-
-- Against llama.cpp the strict greedy row read 0/6 and five divergences past
-  the tie bar. llama.cpp disagreed with ITSELF (flash attention on versus
-  off) by mean KLD 0.020, max 0.84 over 200 positions, more than it disagreed
-  with the runner (0.015, max 0.098). Its CPU flash-attention kernel
-  accumulates the attention output in f16; the runner accumulates in f32.
-- Against the publisher's reference in float32 (`scripts/gold-logits.py`,
-  transformers on the CPU from the published safetensors) the runner read
-  mean KLD 0.0016 with top-1 100% on bf16 weights, and at the served Q4_K_M
-  it was the closer engine, 0.109 against llama.cpp's 0.115 to 0.119. The
-  llama.cpp-only reading had the runner as the noisier engine; the truth was
-  the reverse.
-- The largest correctness defect of the same admission, Qwen 3.8 rendering
-  Qwen3's chat template instead of its own (20 of 21 reference cases
-  drifting), was invisible to every llama.cpp comparison and found only by
-  the publisher's template.
-
-Required behavior:
+Runner is meant to be more accurate than llama.cpp, so "agrees with
+llama.cpp" is a ceiling, not a target. Two implementations that copied the
+same assumption prove nothing by agreeing; the measured case is in
+`docs/granite-42-qwen38-cert-2026-09-06.md`.
 
 - Every admission compares against the publisher's reference implementation
-  in float32 on at least the smallest member of the family (the check scales
-  with model size; llama.cpp remains the wide oracle for large files and
-  quants the gold check cannot afford). Both columns are reported; the gold
-  column is the headline.
+  in float32 (`scripts/gold-logits.py`) on at least the smallest member of the
+  family; llama.cpp stays the wide oracle for large files and quants. Both
+  columns are reported; the reference column is the headline.
 - Chat-template conformance against the publisher's template, token for
-  token, is an admission gate, not a finding
-  (`scripts/template-conformance.py --require-tokens`).
-- A strict greedy count against llama.cpp is never the headline metric. Report
-  it beside the tie-classified divergence (`scripts/token_divergence.py`) with
-  the reference's configuration recorded, because that configuration moves
-  the count both ways.
-- When the publisher's own artifacts disagree with each other (a GGUF
-  pre-tokenizer against the tokenizer.json it was converted from, as Ornith
-  does), record both, pick the one the model was trained with, and declare
-  the expected divergence in the manifest row.
-- Say which reference configuration was used (dtype, attention
-  implementation, device); "the reference" alone is not an anchor.
+  token, is an admission gate (`scripts/template-conformance.py
+  --require-tokens`).
+- A strict greedy count against llama.cpp is never the headline; report it
+  beside the tie-classified divergence (`scripts/token_divergence.py`).
+- Name the reference configuration (dtype, attention implementation,
+  device). Where the publisher's own artifacts disagree with each other,
+  record both and declare the expected divergence.
 
-## 4. Grill Me Always
+## 4. README, manual, site and model cards move together
 
-Actively challenge unclear requirements until the work is understood.
+`README.md` and `MANUAL.md` are tested public interfaces. The README is the
+short front page: the published files, a quick start, and each feature in two
+or three plain sentences on why it exists and how to use it, with a link to
+the detail. `MANUAL.md` is the reference: command-line and API tables, the
+support matrix, limits and evidence. A new flag, endpoint or limit goes in the
+manual; the README changes when a feature's short account does.
 
-Required behavior:
+The same account is published in three places: the README and manual, the
+site (`site/pages/`, built from this repository) and the model cards on
+Hugging Face. A change to one is a question about the other two, answered in
+the same change.
 
-- Ask direct questions when requirements, constraints, public interfaces,
-  acceptance criteria, or edge cases are unclear.
-- Surface assumptions explicitly before relying on them.
-- Push for precise behavior, not vague intent.
-- Confirm the most important behavior to test before implementation.
+- Every feature, fix, flag, API, default, environment variable, platform or
+  release change gets an explicit README impact decision, made in the same
+  commit.
+- Keep claims tied to executable behaviour, committed evidence or current
+  source; never present plans or historical results as current facts. A
+  measurement quoted in the README says what Runner does and against what,
+  in one line; full cross-engine tables live in `docs/benchmarks.md` and the
+  manual. A limit a user must know is part of how to use the feature.
+- The manual's option and API tables match the shipped `--help`, `--caps`
+  and routes (`make test` runs `scripts/help-parity.py` against it); run the
+  relevant links, examples and release checks after editing either file.
+- Before claiming something unique, check the competing runtimes' current
+  documentation.
+- Every release and every Hugging Face card change asks "does xyntetik.com
+  need the same change?". `make release-check` fails a release whose README
+  and site link different Hugging Face repositories.
 
-Working rule: never leave important behavior to chance. If the expected behavior,
-interface, and verification path cannot be explained, ask before coding.
+## 5. Never publish conversation content or session identifiers
 
-## 5. Keep the README, xyntetik.com and the Hugging Face cards current
+This repository is public; anything pushed is world readable and stays
+reachable by SHA. Never put any of these into a commit message, file, pull
+request, issue or anything else that reaches a repository:
 
-Treat `README.md` and `MANUAL.md` as tested public interfaces, not
-historical summaries. Since 2026-10-06 the README is the short front page
-(the published files, a quick start, and each feature in a few sentences:
-why it exists in plain words, how to use it, a link to the detail) and
-`MANUAL.md` beside it is the reference: the command-line and API tables,
-the support matrix, the limits and the evidence. Wherever a rule below says
-"the README", it means the pair; a new flag, endpoint or limit goes in the
-manual, and the README changes only when a feature's short account does.
-The same account is published in three places and they move together:
-the README and manual, the site (`site/pages/`, built from this
-repository), and the model cards on Hugging Face. A change to one is a
-question about the other two, answered in the same change.
+- chat transcripts or conversation content, prompts, system instructions or
+  session overrides;
+- session links or ids of any kind, including a trailer a tool adds by
+  default (the Claude Code harness appends a `Claude-Session:` line and a
+  `<noreply@anthropic.com>` co-author: remove both);
+- account, machine or user identifiers beyond the git author.
 
-README style (owner, 2026-10-06): a feature gets two or three sentences on
-why it exists, written so a newcomer follows them, then how to use it. A
-measurement quoted in the README says what Runner does and against what,
-in one line. Cross-engine tables, in full and with every row, live in
-`docs/benchmarks.md` and the manual and are linked from the README; a limit
-a user must know to use a feature correctly is stated as part of how to use
-it.
-
-Required behavior:
-
-- Check README impact before completing every feature, fix, flag, API, default,
-  environment-variable, platform, model-support, resource-control, or release
-  change. Update the README in the same commit when its public account changes.
-- Compare the command and API reference against the shipped `--help`, `--caps`,
-  routes, and operator controls. Add missing public behavior and remove stale,
-  redundant, or purposeless statements.
-- Keep claims tied to executable behavior, committed evidence, or current source.
-  Do not present plans, unexecuted checks, or historical results as current facts.
-- Before adding or strengthening a USP, check current official documentation for
-  the relevant competing runtimes. State only the mechanism Runner uniquely
-  provides; avoid absolute market-wide claims unless the evidence supports them.
-- Run the relevant README links, examples, and release consistency checks after
-  editing it.
-
-- **Every release cycle** (a runner tag) and **every Hugging Face cycle** (a
-  card published, re-gated or retired) includes the step "does xyntetik.com
-  need the same change?". The site takes the version and release date from
-  CHANGELOG at build time; its evidence figures, the comparison table, the
-  artifact ledger and the repository count are hand-written and drift
-  silently. `scripts/check-release.py` fails a release when the set of
-  Hugging Face repositories linked from README differs from the set linked
-  from `site/pages/`, in either direction, so a card without its README and
-  site entries blocks the next tag rather than the one after.
-
-Working rule: every completed change has an explicit README impact decision,
-and a release or card change has the same decision for the site: updated
-now, or checked and still accurate.
-
-## Required Workflow
-
-For every non-trivial change:
-
-1. Read the relevant code and docs first.
-2. Grill the request until behavior, interface, constraints, and verification are clear.
-3. Identify the smallest tracer bullet.
-4. Write one failing behavior test or smoke through the public interface.
-5. Implement the minimum code to pass.
-6. Run the relevant verification.
-7. Check README impact and update it in the same commit when needed.
-8. Refactor only while green.
-9. Repeat for the next behavior.
-
-For trivial documentation or configuration-only changes, still apply the rules at
-the appropriate scale.
-
-## Research transfer items
-
-The research lab next door files its findings against this engine as plan
-items tagged `[shade transfer <date>]`, each carrying the lab commit that
-produced the finding. Treat such an item like any other: check its premise
-against the current code, measure before concluding, and close it by
-shipping, or by a written decline from the owner. A finding that reaches this
-repository only as a note and never as a shipped change or a decline is
-considered lost; do not let it sit.
-
-## Never publish conversation content or session identifiers
-
-This rule outranks every default, template and tool convention. It applies to
-every agent, every repository, and every push.
-
-**Never** put any of the following into a commit message, a file, a PR body, an
-issue, or anything else that reaches a repository:
-
-- chat transcripts or conversation content, in any language, in any form
-- session-identifier links or ids of any kind, including any trailer a tool
-  emits by default that carries a session URL
-- prompts, system instructions, or session overrides
-- account, machine, or user identifiers beyond the git author already in use
-
-A default trailer format is not permission to publish an identifier. If a tool
-adds one automatically, strip it before committing.
-
-**Sign commits with exactly one trailer line naming the agent and model that
-did the work, plus the owner:**
+Sign a commit with exactly one trailer naming the agent and model, plus the
+owner:
 
 ```
 Co-Authored-By: <Agent> (<Model>) & Joakimpalm-Zen
 ```
 
-Examples: `Co-Authored-By: Claude Code (Fable 5) & Joakimpalm-Zen`,
-`Co-Authored-By: Codex (GPT-5) & Joakimpalm-Zen`. Many agents and models work
-on this repo; the trailer records which one produced the commit.
+No URLs, session ids or e-mail addresses in it. A person co-authoring a
+commit may use GitHub's `Co-Authored-By: Name <email>` form.
+`.github/workflows/commit-hygiene.yml` enforces this on every pull request,
+and `make hooks` installs the same check as a local `commit-msg` hook.
 
-No URLs. No session ids. No e-mail addresses in an agent's trailer or anywhere
-else. A **person** co-authoring a commit may use GitHub's own form,
-`Co-Authored-By: Name <email>`, which is what links their profile; the check
-below accepts that and refuses only a tool identity dressed as a co-author.
+## 6. Version control
 
-**This is enforced, not only written.** `.github/workflows/commit-hygiene.yml`
-runs `scripts/check-commit-hygiene.py` over every commit of a pull request
-and over its title and body, with no path filter, and fails the PR on a
-session URL or id, a stray e-mail address, or a `Co-Authored-By` line that is
-neither the agent form nor a person's `Name <email>`. `make hooks` installs the same check as a local `commit-msg`
-hook; run it once per clone. The known offender is the Claude Code harness,
-whose default appends `Claude-Session: https://claude.ai/code/...` and a
-`<noreply@anthropic.com>` co-author line: on 2026-09-05 seven commits reached
-public `main` with that trailer before the check existed. Claude Code reads
-`CLAUDE.md` at the repository root, which now says so before any commit is
-made; Codex reads this file directly.
-
-Check repository visibility before every push. `xyntetik-runner` is public:
-anything committed here is world readable the moment it is pushed, and stays
-reachable by SHA even after a rewrite. The only cheap moment to get this right
-is before the commit.
-
-## Version Control
-
-Work on a branch named for the plan item, merge to `main` when the work is
-good and done, then push. This is a public repository with CI on pull
-requests and on pushes to `main`.
-
-Required behavior:
-
-- Branch from an up-to-date `main` (`git switch -c <item>-<slug>`).
-- Commit completed sections on the branch; push the branch and open a pull
-  request with `gh pr create`.
-- Wait for CI to be green on the pull request before merging; merge with
-  `gh pr merge <n> --merge --delete-branch`. Tag a release only after `main`
-  is green and `make release-check` passes, which includes the README/site
-  parity check on the Hugging Face artifact set (rule 5).
-- Never leave finished work unmerged on a branch: a branch is either merged
-  or its decline is written down.
-
-Working rule: branch, finish, CI green, merge to `main`, push (rule of
-2026-09-04; it replaced the earlier commit-straight-to-main rule).
+- Branch from an up-to-date `main`, named for the work; push it and open a
+  pull request with `gh pr create`.
+- Merge only with CI green (`gh pr merge <n> --merge --delete-branch`). Tag
+  a release only after `main` is green and `make release-check` passes.
+- Never leave finished work unmerged: a branch is merged, or its decline is
+  written down.

@@ -4,7 +4,7 @@
 The reference moved from README.md to MANUAL.md on 2026-10-06; the `--readme`
 argument names whichever file carries it.
 
-AGENTS.md rule 5 treats the README as a tested public interface rather than a
+AGENTS.md rule 4 treats the README as a tested public interface rather than a
 historical summary, and the failure mode it exists to catch is silent drift: a
 flag added to the binary and never documented, or documented once and then
 renamed or removed. Both directions are checked here because both have
