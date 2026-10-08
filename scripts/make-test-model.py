@@ -65,6 +65,7 @@ YARN_FACTOR = None # optional native YaRN metadata for CLI/rope tests
 YARN_ORIG_CTX = 0
 QK_NORM = False    # --qk-norm: per-head attn_q_norm/attn_k_norm (qwen3-style)
 WIDE = False       # 256-wide rows, large enough for an i-quant test block
+N_FF_SET = None    # --n-ff N: FFN width (an odd N gives odd ffn_gate/ffn_up row counts)
 GPU_UNSUPPORTED = None  # one named tensor stored as CPU-only IQ2_XXS
 ZERO_BRANCHES = False  # --zero-branches: attn_output/ffn_down all zero
 POOLING = None     # --pooling N: {arch}.pooling_type (llama.cpp's enum)
@@ -226,6 +227,13 @@ while i < len(args):
         if YARN_FACTOR <= 1 or YARN_ORIG_CTX < 1 or not YARN_ORIG_CTX.is_integer():
             sys.exit("--yarn expects FACTOR>1,ORIGINAL_CONTEXT")
         YARN_ORIG_CTX = int(YARN_ORIG_CTX)
+    elif a == "--n-ff":
+        # the FFN width: an odd count gives ffn_gate/ffn_up an odd number of
+        # output rows, the tail of the two-rows-per-warp and exact-width GEMV
+        # kernels (ffn_down's input is then not a whole i-quant block and the
+        # quantizer keeps it in a fallback type)
+        i += 1
+        N_FF_SET = int(args[i])
     elif a == "--wide":
         WIDE = True
     elif a == "--gpu-unsupported":
@@ -314,6 +322,8 @@ while i < len(args):
 N_EMBD, N_HEAD, N_KV, N_FF, N_LAYER = 64, 4, 2, 128, 2
 if WIDE:
     N_EMBD, N_FF = 256, 512
+if N_FF_SET is not None:
+    N_FF = N_FF_SET
 if ESERIES_SHARED_KV or ESERIES_PLE or G4HETERO:
     # enough layers for a sliding/full pattern (with a shared-KV tail for
     # the E-series variants)

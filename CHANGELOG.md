@@ -20,6 +20,11 @@ rename keep the names that were true when they were written.
   `--cpu-moe auto` places 18 banks with 1.6 GB actually free (`--kv q8`
   without a retry), the pin is full again at 18.5. Cards under 16 GB keep
   the 512 MiB floor, so the 8 GB class is unchanged.
+- **`test_iquants.py` covers odd output rows.** IQ3_S and IQ4_XS fixtures
+  with a 257-wide FFN (`make-test-model.py --n-ff`) run device against host
+  at prefill tiles of 1, 3, 5 and 8 rows: the tail of the two-rows-per-warp
+  GEMV and of the exact-width twins. Pre-built as `odd-<T>.gguf` under
+  `RUNNER_IQ_FIXTURES`; all eight pass on the RTX 3070.
 
 - **`make test` checks the embedded PTX against `cuda.c`'s kernel roster.**
   A kernel `cuda.c` names but `kernels_ptx.h` lacks fails the CUDA init, and
