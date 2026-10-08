@@ -813,3 +813,33 @@ _g4h_meta = [
     ku("tokenizer.ggml.eos_token_id", 2), kb("tokenizer.ggml.add_bos_token", True),
 ]
 write(f"{OUT}.gemma4-moe-hetero.gguf", g4h, _g4h_meta)
+
+# R17.3: MoE fixtures for the LoRA backward's finite-difference gate. moe4's
+# experts are scaled copies of one FFN and its router logits sit within
+# about +-0.2, so the gradient through the router is under the gate's
+# tolerance there (a mutation dropping that term passed). These experts are
+# drawn independently and the router logits are widened, so the routing
+# weights, and the router's share of the input gradient, are not small.
+# Appended last: every fixture above keeps its random stream.
+def moe_ffn_train(i, n_expert, router_scale):
+    gate_exps, up_exps, down_exps = [], [], []
+    for e in range(n_expert):
+        gate_exps += flist(FF * E)
+        up_exps += flist(FF * E)
+        down_exps += flist(FF * E)
+    return [
+        (f"blk.{i}.ffn_gate_inp.weight", [E, n_expert],
+         pack([v * router_scale for v in flist(E * n_expert)])),
+        (f"blk.{i}.ffn_gate_exps.weight", [E, FF, n_expert], pack(gate_exps)),
+        (f"blk.{i}.ffn_up_exps.weight", [E, FF, n_expert], pack(up_exps)),
+        (f"blk.{i}.ffn_down_exps.weight", [FF, E, n_expert], pack(down_exps)),
+    ]
+
+
+for _tag, _norm in (("moe4-train", True), ("moe4-train-nonorm", False)):
+    _ts = list(shared)
+    for i in range(LAYERS):
+        _ts += moe_ffn_train(i, 4, 6.0)
+    write(f"{OUT}.{_tag}.gguf", _ts,
+          base_meta("llama", [ku("llama.expert_count", 4), ku("llama.expert_used_count", 2),
+                              kb("llama.expert_weights_norm", _norm)]))

@@ -814,7 +814,7 @@ $(TEST_TC_TOL): $(TEST_TC_TOL_SRC) $(HDR) tests/finite_check.h
 TEST_LORA_GRAD_SRC = tests/test_lora_grad.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o \
                   $(QUANTS_OBJ) $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(OBJDIR)/vramreg.o \
                   $(GPU_OBJ)
-$(TEST_LORA_GRAD): $(TEST_LORA_GRAD_SRC) $(HDR) test.gguf test-lora.full.gguf test-q8.gguf test-lora-q8.full.gguf test-qk.gguf test-lora-qk.full.gguf test-nope.gguf test-lora-nope.full.gguf test-granite.gguf test-lora-granite.full.gguf test-muse.gguf test-lora-muse.full.gguf test-gemma3.gguf test-lora-gemma3.full.gguf test-gemma4.gguf test-lora-gemma4.full.gguf test-g4v.gguf test-lora-g4v.full.gguf test-es8.gguf test-lora-es8.full.gguf
+$(TEST_LORA_GRAD): $(TEST_LORA_GRAD_SRC) $(HDR) test.gguf test-lora.full.gguf test-q8.gguf test-lora-q8.full.gguf test-qk.gguf test-lora-qk.full.gguf test-nope.gguf test-lora-nope.full.gguf test-granite.gguf test-lora-granite.full.gguf test-muse.gguf test-lora-muse.full.gguf test-gemma3.gguf test-lora-gemma3.full.gguf test-gemma4.gguf test-lora-gemma4.full.gguf test-g4v.gguf test-lora-g4v.full.gguf test-es8.gguf test-lora-es8.full.gguf test-moe-train.moe4-train.gguf test-lora-moe4.full.gguf test-moe-train.moe4-train-nonorm.gguf test-lora-moe4n.full.gguf
 	$(CC) $(CFLAGS) -I src $(TEST_LORA_GRAD_SRC) -o $@ $(LDFLAGS)
 
 test-lora.full.gguf: test.gguf scripts/make-test-lora.py
@@ -896,6 +896,16 @@ test-muse.gguf: scripts/make-test-model.py
 
 test-lora-muse.full.gguf: test-muse.gguf scripts/make-test-lora.py
 	$(PYTHON) scripts/make-test-lora.py test-muse.gguf test-lora-muse
+
+# R17.3: router-sensitive MoE fixtures (written together by one run) and
+# their attention-only adapters, for the LoRA backward's strict FD gate
+test-moe-train.moe4-train.gguf: scripts/make-test-moe.py
+	$(PYTHON) scripts/make-test-moe.py test-moe-train > /dev/null
+test-moe-train.moe4-train-nonorm.gguf: test-moe-train.moe4-train.gguf
+test-lora-moe4.full.gguf: test-moe-train.moe4-train.gguf scripts/make-test-lora.py
+	$(PYTHON) scripts/make-test-lora.py test-moe-train.moe4-train.gguf test-lora-moe4 > /dev/null
+test-lora-moe4n.full.gguf: test-moe-train.moe4-train-nonorm.gguf scripts/make-test-lora.py
+	$(PYTHON) scripts/make-test-lora.py test-moe-train.moe4-train-nonorm.gguf test-lora-moe4n > /dev/null
 
 # R8.9.5: gemma3's GELU (not SiLU) gated FFN, the first refusal gemma3 and
 # gemma4 hit under --train. No SWA keys are written -- that adjoint is
@@ -2234,6 +2244,11 @@ test: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSON_OOM) $(
 	@# E-series (shared KV + per-layer embeddings) as a stiff fixture: the
 	@# whole-adapter directional derivative and the cosine are its checks
 	./$(TEST_LORA_GRAD) test-gemma4.gguf test-lora-gemma4.full.gguf
+	@# R17.3: an attention-only adapter on a sparse-MoE model, the backward
+	@# through the frozen experts and the router (renormalized top-k, and the
+	@# plain softmax over all experts), held per coordinate to 0.5%
+	./$(TEST_LORA_GRAD) test-moe-train.moe4-train.gguf test-lora-moe4.full.gguf strict
+	./$(TEST_LORA_GRAD) test-moe-train.moe4-train-nonorm.gguf test-lora-moe4n.full.gguf strict
 	./$(TEST_LORA_GRAD) test-g4v.gguf test-lora-g4v.full.gguf
 	./$(TEST_LORA_GRAD) test-es8.gguf test-lora-es8.full.gguf stiff
 	@# and with qwen3-style per-head QK norms in the layer: the norm adjoint

@@ -140,8 +140,11 @@ for name, dims, ttype, toff in tens:
         if ttype != T_F32:
             targets_f32 = False   # quantized base: adapters still written,
                                   # the merged F32 reference is skipped
-for k, v in targets.items():
-    assert v, f"base lacks {k}"
+# a sparse-MoE base has no dense FFN tensors: its adapter is attention-only
+# (R17.3), so a default target the base lacks is dropped, not refused --
+# but attn_q, the one every base carries, must be there
+assert targets.get("blk.0.attn_q.weight"), "base lacks blk.0.attn_q.weight"
+targets = {k: v for k, v in targets.items() if v}
 
 
 def pack_f(vals):

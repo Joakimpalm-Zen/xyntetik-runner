@@ -9,6 +9,21 @@ rename keep the names that were true when they were written.
 
 ## Unreleased
 
+- **`--train` on sparse-MoE models: an attention-only adapter (R17.3).**
+  Qwen3-MoE and Mixtral routing (softmax router, top-k, with or without
+  renormalization and a weight scale) train now: the adapter sits on the
+  attention projections, and the backward recomputes the forward's routing
+  and runs through the frozen experts and the router's softmax weights.
+  Pinned by a strict finite-difference gate on two router-sensitive
+  fixtures (`make-test-moe.py`'s `moe4-train` and `moe4-train-nonorm`,
+  worst per-coordinate error 0 against a 0.5% limit; dropping the router
+  term reads 1.3 to 2.0% and fails), and end to end by
+  `tests/test_moe_lora.py`: the loss falls, a rerun is byte-identical, the
+  adapter serves back, a merge scores exactly like base plus adapter. Still
+  refused by name: adapters on the experts, sigmoid, group-limited or biased
+  routers, shared experts. `make-test-lora.py` builds attention-only
+  adapters for bases without dense FFN tensors.
+
 - **Repository cleanup.** The 17 raw records of the `tooluse-shifted` eval
   (122 MB, about half of a checkout) moved to the
   [Qwen3-4B-tooluse-shifted-eval-record](https://huggingface.co/datasets/Joakimpalm-Zen/Qwen3-4B-tooluse-shifted-eval-record)
