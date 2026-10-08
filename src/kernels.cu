@@ -3534,29 +3534,49 @@ static __device__ __forceinline__ void iq4xs_lane_n(const uchar *blk, const floa
     }
 }
 
-// batch-1: one column through the N-column form
-#define IQ_LANE_MV1(fnn, BS) \
-    MV_HEAD; \
+// The GEMV body shared by batch-1 and the twins. Every warp of a block reads
+// the same activation, so x is staged in shared memory once per chunk of CH
+// 256-weight blocks for the block's rows (4 at batch 1, GEMM_WARPS for a
+// twin) instead of once per row from global: the batch-1 kernels re-read the
+// whole activation per row, which on the dense Qwen3.8-27B rows held decode
+// to ~150 GB/s (2026-10-08). Shared memory holds the same values as global,
+// so no output changes. Columns past a.batch stage zeros (a caller's x need
+// not be NC columns wide).
+#define IQ_LANE_BODY(fnn, BS, NC, CH) \
+    __shared__ float xsm[(NC) * (CH) * 256]; \
+    unsigned row = blockIdx.x * (blockDim.x >> 5) + (threadIdx.x >> 5); \
+    unsigned lane = threadIdx.x & 31; \
     int nb = a.n_in / 256; \
-    const uchar *rw = wb + a.w_off + (ulong64)row * nb * BS; \
-    float acc[1] = {0}; \
-    for (int b = 0; b < nb; b++) fnn(rw + (ulong64)b * BS, x + b * 256, 0, lane, 1, acc); \
-    float s = acc[0]; \
-    MV_TAIL;
+    bool live = row < (unsigned)a.n_out; \
+    const uchar *rw = wb + a.w_off + (ulong64)(live ? row : 0) * nb * BS; \
+    float acc[NC] = {0}; \
+    int nbat = (NC) == 1 ? 1 : a.batch; \
+    for (int cs = 0; cs < nb; cs += (CH)) { \
+        int cb = nb - cs < (CH) ? nb - cs : (CH); \
+        int ce = cb * 256; \
+        for (int t = 0; t < (NC); t++) { \
+            const float *xg = x + (ulong64)t * a.xs + (ulong64)cs * 256; \
+            for (int e = threadIdx.x; e < ce; e += blockDim.x) \
+                xsm[t * (CH) * 256 + e] = t < nbat ? xg[e] : 0.0f; \
+        } \
+        __syncthreads(); \
+        if (live) \
+            for (int bi = 0; bi < cb; bi++) \
+                fnn(rw + (ulong64)(cs + bi) * BS, xsm + bi * 256, (ulong64)(CH) * 256, lane, (NC), acc); \
+        __syncthreads(); \
+    } \
+    if (live) \
+        for (int t = 0; t < nbat && t < (NC); t++) { \
+            float r = warp_sum(acc[t]); \
+            if (lane == 0) y[(ulong64)t * a.ys + row] = a.has_bias ? r + bias[row] : r; \
+        }
+
+// batch-1: one column (a.batch is 1 on this path)
+#define IQ_LANE_MV1(fnn, BS) IQ_LANE_BODY(fnn, BS, 1, 16)
 
 // width-classed twins (launched GEMM_WARPS rows per block like the GEMVB family)
 #define IQ_LANE_MVB(NAME, fnn, BS, NC) \
-extern "C" __global__ void NAME(MV_PARAMS) { \
-    MV_HEAD; \
-    int nb = a.n_in / 256; \
-    const uchar *rw = wb + a.w_off + (ulong64)row * nb * BS; \
-    float acc[NC] = {0}; \
-    for (int b = 0; b < nb; b++) fnn(rw + (ulong64)b * BS, x + b * 256, (ulong64)a.xs, lane, NC, acc); \
-    for (int t = 0; t < a.batch && t < NC; t++) { \
-        float r = warp_sum(acc[t]); \
-        if (lane == 0) y[(ulong64)t * a.ys + row] = a.has_bias ? r + bias[row] : r; \
-    } \
-}
+extern "C" __global__ void NAME(MV_PARAMS) { IQ_LANE_BODY(fnn, BS, NC, 32 / (NC)) }
 
 #define IQ_LANE_MV(fn, BS) \
     MV_HEAD; \
