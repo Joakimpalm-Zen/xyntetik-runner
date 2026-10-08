@@ -4354,7 +4354,7 @@ kernel void NAME(MOE_MV_PARAMS) { \
 // reuse in registers where the flat expert-major family measured that cache
 // alone does not pay.
 static inline void moe_dot8_q8_0(device const uchar *wbase, uint row, int n_in,
-                                 const thread device const float **xps,
+                                 device const float * thread const *xps,
                                  int ncol, uint tiisg, thread float *acc) {
     int nb = n_in / 32;
     device const uchar *rw = wbase + (ulong)row * nb * 34;
@@ -4372,7 +4372,7 @@ static inline void moe_dot8_q8_0(device const uchar *wbase, uint row, int n_in,
 }
 
 static inline void moe_dot8_mxfp4(device const uchar *wbase, uint row, int n_in,
-                                  const thread device const float **xps,
+                                  device const float * thread const *xps,
                                   int ncol, uint tiisg, thread float *acc) {
     int nb = n_in / 32;
     device const uchar *rw = wbase + (ulong)row * nb * 17;
