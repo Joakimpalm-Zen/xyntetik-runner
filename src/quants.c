@@ -3640,6 +3640,8 @@ struct tpool {
     _Atomic int caller_parked;
     _Atomic int stop;
     int spin;                 // relax iterations before parking
+    pthread_mutex_t run_mu;   // one run at a time: shared pools serialize their holders
+    _Atomic int refs;         // holders (tpool_retain / tpool_destroy)
 };
 
 // One spin iteration is a pause plus an atomic load: ~15 ns on this class of
@@ -3752,7 +3754,9 @@ tpool *tpool_create(int n_threads) {
     if (!tp) return NULL;
     tp->n_threads = n_threads;
     tp->spin = tp_spin_budget();
-    if (pthread_mutex_init(&tp->mu, NULL) != 0) { free(tp); return NULL; }
+    atomic_store(&tp->refs, 1);
+    if (pthread_mutex_init(&tp->run_mu, NULL) != 0) { free(tp); return NULL; }
+    if (pthread_mutex_init(&tp->mu, NULL) != 0) { pthread_mutex_destroy(&tp->run_mu); free(tp); return NULL; }
     if (pthread_cond_init(&tp->cv_work, NULL) != 0) {
         pthread_mutex_destroy(&tp->mu);
         free(tp);
@@ -3790,8 +3794,13 @@ fail:
     return NULL;
 }
 
+void tpool_retain(tpool *tp) {
+    if (tp) atomic_fetch_add(&tp->refs, 1);
+}
+
 void tpool_destroy(tpool *tp) {
     if (!tp) return;
+    if (atomic_fetch_sub(&tp->refs, 1) > 1) return;   // another holder keeps it
     pthread_mutex_lock(&tp->mu);
     atomic_store(&tp->stop, 1);
     pthread_cond_broadcast(&tp->cv_work);
@@ -3800,8 +3809,11 @@ void tpool_destroy(tpool *tp) {
     pthread_mutex_destroy(&tp->mu);
     pthread_cond_destroy(&tp->cv_work);
     pthread_cond_destroy(&tp->cv_done);
+    pthread_mutex_destroy(&tp->run_mu);
     free(tp);
 }
+
+static void tpool_run_locked(tpool *tp, tp_fn fn, void *ctx, int n_items);
 
 void tpool_run(tpool *tp, tp_fn fn, void *ctx, int n_items) {
     if (n_items <= 0) return;
@@ -3809,6 +3821,17 @@ void tpool_run(tpool *tp, tp_fn fn, void *ctx, int n_items) {
         fn(ctx, 0, n_items);
         return;
     }
+    // Serialized: a pool shared by several slots (server --parallel) runs one
+    // job at a time, so two slots' forwards interleave one matvec at a time
+    // instead of two pools of half the threads fighting for the same cores
+    // (measured 2026-10-07: 6 tok/s total against 9.3 for one slot). For a
+    // pool with one holder the lock is uncontended, ~50 ns per run.
+    pthread_mutex_lock(&tp->run_mu);
+    tpool_run_locked(tp, fn, ctx, n_items);
+    pthread_mutex_unlock(&tp->run_mu);
+}
+
+static void tpool_run_locked(tpool *tp, tp_fn fn, void *ctx, int n_items) {
     tp->fn = fn; tp->ctx = ctx; tp->n_items = n_items;
     atomic_store_explicit(&tp->n_done, 0, memory_order_relaxed);
     atomic_store_explicit(&tp->caller_parked, 0, memory_order_relaxed);

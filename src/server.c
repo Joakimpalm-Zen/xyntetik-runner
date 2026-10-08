@@ -3189,12 +3189,16 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
                     template_name(tmpl));
         model_params slot_mp = *mp;
         slot_mp.verbose = false;
-        slot_mp.n_threads = threads_per_slot;
+        // every slot shares ONE pool of n_threads (tpool_run serializes, so
+        // forwards interleave a matvec at a time); a slot's own load-time
+        // pool is a single thread and is replaced right after the load
+        slot_mp.n_threads = 1;
         // a reservation is a budget for the server, and every slot pays its
         // own KV cache out of it -- see the auto-fit in model_alloc_runtime
         slot_mp.n_seq = parallel;
         // each slot gets its share of the CPU-forced fallback cap too
-        slot_mp.cpu_fallback_threads = mp->cpu_fallback_threads / parallel;
+        slot_mp.cpu_fallback_threads = 0;   // the shared pool below is sized once, from the server's count
+        tpool *shared_pool = NULL;
 
         for (int i = 0; i < parallel; i++) {
             // a Ctrl-C during a multi-slot load means "don't start": honour it
@@ -3212,19 +3216,19 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
             s->smp_base = s->smp;
             if (i == 0) {
                 s->m = base;
-                // mirror model_load's CPU-forced bump: this replacement pool
-                // would otherwise silently undo it for slot 0
-                int slot_threads = threads_per_slot;
+                // mirror model_load's CPU-forced bump: the shared pool would
+                // otherwise silently undo it
+                int pool_threads = n_threads;
                 if (base->qwen35 &&
-                    slot_mp.cpu_fallback_threads > slot_threads)
-                    slot_threads = slot_mp.cpu_fallback_threads;
-                tpool *replacement = tpool_create(slot_threads);
-                if (!replacement) {
-                    fprintf(stderr, "error: cannot create pool for slot 0\n");
+                    mp->cpu_fallback_threads > pool_threads)
+                    pool_threads = mp->cpu_fallback_threads;
+                shared_pool = tpool_create(pool_threads);
+                if (!shared_pool) {
+                    fprintf(stderr, "error: cannot create the slots' thread pool\n");
                     return 1;
                 }
                 tpool_destroy(base->tp); // replace the single-thread load pool
-                base->tp = replacement;
+                base->tp = shared_pool;
             } else {
                 s->m = calloc(1, sizeof(model_t));
                 if (!s->m) {
@@ -3236,6 +3240,9 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
                     fprintf(stderr, "error: failed to load slot %d\n", i);
                     return 1;
                 }
+                tpool_destroy(s->m->tp);    // the single-thread load pool
+                tpool_retain(shared_pool);
+                s->m->tp = shared_pool;
             }
             template_bind_think_tags(tmpl, &s->m->think_open, &s->m->think_close);
             if (!engine_init(&s->e, s->m, s->tok, &s->smp)) {
@@ -3365,8 +3372,8 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
                 port, SV.n_reg, SV.ttl);
     else
         fprintf(stderr,
-                "server listening on http://127.0.0.1:%d — %d slot%s x %d threads%s\n",
-                port, parallel, parallel > 1 ? "s" : "", threads_per_slot,
+                "server listening on http://127.0.0.1:%d — %d slot%s sharing %d threads%s\n",
+                port, parallel, parallel > 1 ? "s" : "", n_threads,
                 batched ? ", continuous batching" : "");
     fputs("  POST /v1/chat/completions | POST /v1/responses | POST /v1/completions\n"
           "  POST /v1/embeddings | POST /v1/rerank | POST /v1/messages"
