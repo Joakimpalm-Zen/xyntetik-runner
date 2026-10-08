@@ -7,6 +7,31 @@ to the exact build, and what is not covered. Releases before 1.0.0 made no
 such promise (the `-alpha` suffix was retired at v0.2.0). Entries below the
 rename keep the names that were true when they were written.
 
+## Unreleased
+
+- **A required tool turn with `parallel_tool_calls:true` carries one to
+  eight calls on the Qwen protocols, not exactly two.** Under `tool_choice`
+  `required` or named, the Qwen JSON and function/parameter XML grammars
+  (Qwen 3, 3.5 and 3.8, Qwen3-Coder, Granite 4.2, Ornith, Hermes-style JSON)
+  compiled the flag as a fixed pair: a model with one call to make had to
+  invent a second, and a third could not start. After each call the turn now
+  ends at the model's own stop token or opens the next call, up to eight.
+  The gap between calls is a raw tail of at most 16 bytes, because a stop
+  token decodes to no bytes and can never complete a literal `<|im_end|>` in
+  the grammar: built that way, a first version ran every turn to its eighth
+  call, inventing the rest. The `auto` paths' final literal had the same
+  latent defect past their eighth call and takes the same tail. Measured on
+  Qwen3.5-4B (CPU, thinking on and off, buffered and streamed): one, two and
+  three calls exactly as the unconstrained turn makes them, `finish_reason`
+  `tool_calls`. Gemma 4 and Muse keep the fixed pair for now: their stop
+  marker and call opener begin with the same byte and need a discriminated
+  continuation.
+- **The shadow bank client sends `parallel_tool_calls:true`.** The server
+  still reads an absent flag as false, so the agent bank's required turns
+  were held to one call: on Qwen3.8-Flash-Next none of Runner's 396 turns
+  carried a second call, while llama.cpp's carried several in 123 of 396
+  and Strata's in 103 of 375, on the same requests.
+
 ## v1.1.3 - 2026-10-08
 
 - **Server slots share one thread pool.** Each `--parallel` slot used to
