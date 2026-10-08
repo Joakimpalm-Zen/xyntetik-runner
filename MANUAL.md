@@ -1648,7 +1648,7 @@ plain decode 13.9 to 14.8 tok/s, `--mtp-file --draft-k 3` 22.0 (1.6x the
 float route's plain decode), the drafted text byte-identical to the route's
 own plain decode. It is **off by default** because it is not the float
 route's bits: device against CPU `--score` on the same file moves from 0 to
-2 argmax flips in 480 positions (max |dlogprob| 0.003 to 0.93).
+3 argmax flips in 480 positions (max |dlogprob| 0.003 to 0.67).
 `RUNNER_TPOOL_SPIN` sets how many relax iterations a pool worker spins before
 parking (default 3000, roughly 50 us); `0` restores a pure condvar pool. The
 spin window only changes when threads wake, never which rows they compute, so
