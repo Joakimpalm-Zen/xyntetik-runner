@@ -4676,9 +4676,11 @@ static void mv_rows(void *ctx, int i0, int i1) {
             // one column: the single-column kernel itself. The multi-column
             // twins keep their accumulators in runtime-indexed vector arrays,
             // which no compiler holds in registers, and a lone row paid for
-            // that: dense IQ3_S decode fell from 1.21 to 0.42 tok/s at four
-            // threads in 1.1.1 (every stage of the 1-row pass 2 to 3x slower,
-            // the batch pass untouched). Byte-equal either way.
+            // that: Qwen3.8-27B IQ3_S decode fell from 1.45 to 0.83 tok/s at
+            // four threads in 1.1.1 (same compiler both sides; bisected to
+            // the vec_dot_multi commit). Two to seven rows stay on the multi
+            // route, where it still wins (MTP verify tiles 4.57 vs 4.19 tok/s
+            // at four threads against a per-column loop). Byte-equal either way.
             for (int r = i0; r < i1; r++) {
                 const void *row = base + (size_t)r * j->rsz;
                 j->y[r] = vec_dot(type, row, j->x, n_in) * sc + (j->bias ? j->bias[r] : 0.0f);
