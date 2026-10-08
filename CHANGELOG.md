@@ -7,7 +7,7 @@ to the exact build, and what is not covered. Releases before 1.0.0 made no
 such promise (the `-alpha` suffix was retired at v0.2.0). Entries below the
 rename keep the names that were true when they were written.
 
-## Unreleased
+## v1.1.2 - 2026-10-08
 
 - **Single-row CPU decode takes the single-column dot again.** v1.1.1 routed
   every batch below eight rows through `vec_dot_multi`, the one-row case
