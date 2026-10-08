@@ -9,6 +9,19 @@ rename keep the names that were true when they were written.
 
 ## Unreleased
 
+- **Server slots share one thread pool.** Each `--parallel` slot used to
+  run its own pool, and on a CPU-only box the pools fought over the same
+  cores: two slots decoded Qwen3.8-Flash-Next at 3.0 + 3.2 tok/s against 9.3
+  for one. Now every slot runs on one pool (`tpool_run` serializes, so slot
+  forwards interleave a matvec at a time; pools are refcounted), sized by
+  `tpool_shared_threads`: the server's thread count, one CPU short of the
+  affinity mask when more than one slot shares it. Pinned by
+  `tests/test_thread_default.c` (the size policy; three holders running one
+  retained pool concurrently, every sum exact, references released in
+  balance) and `tests/test_server_shared_pool.py` (1, 2 and 4 slots answer
+  concurrent greedy requests exactly like a lone one; SIGTERM with requests
+  in flight exits promptly without a crash signal).
+
 - **The CUDA offload headroom is a thirty-second of the budget (512 MiB
   floor), down from a sixteenth.** While the placement plan undercounted the
   device by ~2 GB on a 24 GB slice, the 1.57 GB headroom was what absorbed
