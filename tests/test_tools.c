@@ -695,7 +695,8 @@ static void test_qwen_native_tool_protocol(void) {
 }
 
 // A required/named parallel turn carries ONE TO EIGHT calls, then the stop
-// marker. Until 1.1.4 the native Qwen grammars compiled a fixed pair: one
+// marker, ending at the model's own stop token. Until 1.1.4 the native Qwen
+// grammars compiled a fixed pair: one
 // call could not end the turn and a third could not start. And without
 // parallel_tool_calls the turn is exactly one call, which is what an agent
 // bank omitting the flag got (Qwen3.8-Flash-Next, 396 turns, never more
@@ -724,7 +725,7 @@ static void test_native_parallel_turn_carries_one_to_eight_calls(void) {
             assert(ok == (n >= 1 && n <= NATIVE_PARALLEL_MAX_CALLS));
             free(doc.s);
         }
-        // between calls only the separator: no prose, no second stop
+        // between calls no more than a separator's worth of text
         sbuf bad = {0};
         sb_put(&bad, G[g].one, strlen(G[g].one));
         sb_lit(&bad, "\nand then <tool_call>");

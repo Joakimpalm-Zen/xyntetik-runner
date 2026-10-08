@@ -1949,6 +1949,11 @@ static snode *qwen_or_final(snode *body, jv *final_schema,
     return root;
 }
 
+// Free bytes allowed between two calls of one turn (a separator and the next
+// opener), and after the last call a turn may carry (too few to spell one).
+#define NATIVE_GAP_BYTES 16
+#define NATIVE_END_BYTES 4
+
 // Free assistant text with a native-call handoff. Unlike a catch-all final
 // branch, seeing the FULL opener commits to the tool grammar even after prose.
 // SN_RAW owns one optional marker/continuation pair (lits[0], alts[0]).
@@ -1968,8 +1973,10 @@ static snode *qwen_text_handoff(snode *call) {
 static snode *qwen_text_calls(jv *tools, const char *only_tool, int remaining,
                               char *err, int errcap) {
     // past the last admitted call the turn ends: raw text there would let
-    // an unvalidated call through the mapper
-    if (!remaining) return atem_lit("<|im_end|>");
+    // an unvalidated call through the mapper, so the tail is too short to
+    // spell an opener. It is raw, not the literal `<|im_end|>`: the model's
+    // stop token decodes to no bytes and could never complete a literal.
+    if (!remaining) return atem_raw_bounded("<|im_end|>", NATIVE_END_BYTES);
     snode *seq=atem_seq(2);
     snode *call=qwen_call(tools,only_tool,false,err,errcap);
     snode *tail=call ? qwen_text_calls(tools,only_tool,remaining-1,err,errcap) : NULL;
@@ -2054,38 +2061,47 @@ fail:
 }
 
 // After a complete call in a required/named parallel turn: end the turn, or
-// open another call, at most `remaining` more. The two alternatives start on
-// different bytes (the stop marker's '<' against the separator's '\n'), so
-// the union resolves on the model's first byte. This replaced a fixed PAIR:
+// open another call, at most `remaining` more. This replaced a fixed PAIR:
 // the turn had to carry exactly two calls, so a model with one call to make
-// was forced to invent a second, and one with three lost the third. The
-// model's own stop token reaches the end alternative through its spelling
-// (constraint_spelling_ok), as it does at the end of qwen_text_calls.
+// was forced to invent a second, and one with three lost the third.
+//
+// The gap is a raw tail bounded to a separator's worth of bytes: it ends at
+// the stop marker, and the full `<tool_call>` opener hands off to the next
+// constrained call. A raw tail is what lets the model's own stop token end
+// the turn (constraint_token_ok admits a stop there; a stop token decodes to
+// no bytes, so a LITERAL `<|im_end|>` in the grammar is unreachable for it,
+// and a first version built that way ran every turn to the eighth call,
+// inventing the rest). Past the last admitted call the tail is too short to
+// spell an opener, so no unvalidated call can reach the mapper.
 typedef snode *(*native_call_fn)(jv *tools, const char *only, bool lead,
                                  char *err, int errcap);
 static snode *native_more_calls(native_call_fn mk, jv *tools, const char *only,
                                 int remaining, char *err, int errcap) {
-    snode *end = atem_lit("<|im_end|>");
-    if (!end || !remaining) return end;
-    snode *more = atem_seq(3), *u = sn_new(SN_UNION);
-    snode *call = more && u ? mk(tools, only, true, err, errcap) : NULL;
+    snode *raw = atem_raw_bounded("<|im_end|>", remaining ? NATIVE_GAP_BYTES
+                                                          : NATIVE_END_BYTES);
+    if (!raw) goto oom;
+    raw->whitespace_significant = true;
+    if (!remaining) return raw;
+    snode *seq = atem_seq(2);
+    snode *call = seq ? mk(tools, only, false, err, errcap) : NULL;
     snode *tail = call ? native_more_calls(mk, tools, only, remaining - 1,
                                            err, errcap) : NULL;
-    if (u) u->alts = calloc(2, sizeof(*u->alts));
-    if (!more || !u || !u->alts || !call || !tail ||
-        !atem_seq_add(more, atem_lit("\n"))) {
-        schema_free(end); schema_free(more); schema_free(u);
-        schema_free(call); schema_free(tail);
-        if (!err[0]) snprintf(err, errcap, "out of memory compiling parallel calls");
-        return NULL;
+    raw->lits = calloc(1, sizeof(*raw->lits));
+    raw->alts = calloc(1, sizeof(*raw->alts));
+    if (!seq || !call || !tail || !raw->lits || !raw->alts ||
+        !(raw->lits[0] = strdup("<tool_call>"))) {
+        schema_free(seq); schema_free(call); schema_free(tail); schema_free(raw);
+        goto oom;
     }
-    atem_seq_add(more, call);
-    atem_seq_add(more, tail);
-    more->whitespace_significant = true;
-    u->whitespace_significant = true;
-    u->alts[u->n_alts++] = end;
-    u->alts[u->n_alts++] = more;
-    return u;
+    raw->n_lits = 1;
+    atem_seq_add(seq, call);
+    atem_seq_add(seq, tail);
+    seq->whitespace_significant = true;
+    raw->alts[raw->n_alts++] = seq;
+    return raw;
+oom:
+    if (!err[0]) snprintf(err, errcap, "out of memory compiling parallel calls");
+    return NULL;
 }
 
 static snode *native_parallel_calls(native_call_fn mk, jv *tools,
@@ -2209,7 +2225,7 @@ bad:
 }
 
 static snode *coder_text_calls(jv *tools, const char *only, int left, char *err, int errcap) {
-    if (!left) return atem_lit("<|im_end|>");
+    if (!left) return atem_raw_bounded("<|im_end|>", NATIVE_END_BYTES);
     snode *seq=atem_seq(2), *call=coder_call(tools,only,false,err,errcap);
     snode *tail=call ? coder_text_calls(tools,only,left-1,err,errcap) : NULL;
     if (!seq || !call || !tail) { schema_free(seq);schema_free(call);schema_free(tail);return NULL; }
