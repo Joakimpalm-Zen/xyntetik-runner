@@ -3161,7 +3161,7 @@ static bool enc_mv(gpu_t *g, model_t *m, gguf_tensor *w, CUdeviceptr x,
     unsigned rpb = 4;
     if (batch == 1 && (w->type == T_IQ2_XXS || w->type == T_IQ2_XS || w->type == T_IQ2_S ||
                        w->type == T_IQ3_XXS || w->type == T_IQ3_S || w->type == T_IQ4_XS))
-        rpb = 4 * 2;
+        rpb = 4 * 4;   // IQ_ROWS in kernels.cu
     return launch_tiled(g, f, (n_out + rpb - 1) / rpb, 128, weights, x, y, a, b,
                         batch > 1 ? MVT : MVB,
                         w->type == T_NVFP4, w->scale);
