@@ -3600,7 +3600,7 @@ static __device__ __forceinline__ void iq4xs_lane_n(const uchar *blk, const floa
 // IQ_ROWS rows per warp (EXPERIMENT 2026-10-08): the rows share x through L1
 // and give a warp independent work; each row's arithmetic is unchanged
 #ifndef IQ_ROWS
-#define IQ_ROWS 4
+#define IQ_ROWS 2
 #endif
 #define IQ_LANE_MV1(fnn, BS) \
     unsigned row0 = (blockIdx.x * (blockDim.x >> 5) + (threadIdx.x >> 5)) * IQ_ROWS; \
