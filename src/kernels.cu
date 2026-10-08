@@ -3420,11 +3420,15 @@ static __device__ __forceinline__ void iq2xxs_lane_n(const uchar *blk, const flo
     ulong64 g = kiq2xxs_grid[qs[l]];
     unsigned signs = iq_signs7((aux >> (7 * l)) & 127);
     const float *xp0 = xb + ib * 32 + l * 8;
+    float w[8];
+    _Pragma("unroll")
+    for (int j = 0; j < 8; j++) w[j] = iq_w8(g, j, signs);
     _Pragma("unroll")
     for (int c = 0; c < nc; c++) {
         const float *xp = xp0 + (ulong64)c * xs;
         float t = 0;
-        for (int j = 0; j < 8; j++) t += iq_w8(g, j, signs) * xp[j];
+        _Pragma("unroll")
+        for (int j = 0; j < 8; j++) t += w[j] * xp[j];
         acc[c] += db * t;
     }
 }
@@ -3438,11 +3442,15 @@ static __device__ __forceinline__ void iq2xs_lane_n(const uchar *blk, const floa
     ulong64 g = kiq2xs_grid[q & 511];
     unsigned signs = iq_signs7(q >> 9);
     const float *xp0 = xb + ib * 32 + l * 8;
+    float w[8];
+    _Pragma("unroll")
+    for (int j = 0; j < 8; j++) w[j] = iq_w8(g, j, signs);
     _Pragma("unroll")
     for (int c = 0; c < nc; c++) {
         const float *xp = xp0 + (ulong64)c * xs;
         float t = 0;
-        for (int j = 0; j < 8; j++) t += iq_w8(g, j, signs) * xp[j];
+        _Pragma("unroll")
+        for (int j = 0; j < 8; j++) t += w[j] * xp[j];
         acc[c] += db * t;
     }
 }
@@ -3456,11 +3464,15 @@ static __device__ __forceinline__ void iq2s_lane_n(const uchar *blk, const float
     ulong64 g = kiq2s_grid[qs[l] | ((hb << (8 - 2 * l)) & 0x300)];
     unsigned signs = sg[l];
     const float *xp0 = xb + ib * 32 + l * 8;
+    float w[8];
+    _Pragma("unroll")
+    for (int j = 0; j < 8; j++) w[j] = iq_w8(g, j, signs);
     _Pragma("unroll")
     for (int c = 0; c < nc; c++) {
         const float *xp = xp0 + (ulong64)c * xs;
         float t = 0;
-        for (int j = 0; j < 8; j++) t += iq_w8(g, j, signs) * xp[j];
+        _Pragma("unroll")
+        for (int j = 0; j < 8; j++) t += w[j] * xp[j];
         acc[c] += db * t;
     }
 }
@@ -3475,13 +3487,17 @@ static __device__ __forceinline__ void iq3xxs_lane_n(const uchar *blk, const flo
     unsigned g2 = kiq3xxs_grid[qs[2 * l + 1]];
     unsigned signs = iq_signs7((aux >> (7 * l)) & 127);
     const float *xp0 = xb + ib * 32 + l * 8;
+    float w1[4], w2[4];
+    _Pragma("unroll")
+    for (int j = 0; j < 4; j++) { w1[j] = iq_w4(g1, j, signs); w2[j] = iq_w4(g2, j, signs >> 4); }
     _Pragma("unroll")
     for (int c = 0; c < nc; c++) {
         const float *xp = xp0 + (ulong64)c * xs;
         float t = 0;
+        _Pragma("unroll")
         for (int j = 0; j < 4; j++) {
-            t += iq_w4(g1, j, signs) * xp[j];
-            t += iq_w4(g2, j, signs >> 4) * xp[j + 4];
+            t += w1[j] * xp[j];
+            t += w2[j] * xp[j + 4];
         }
         acc[c] += db * t;
     }
@@ -3497,13 +3513,17 @@ static __device__ __forceinline__ void iq3s_lane_n(const uchar *blk, const float
     unsigned g2 = kiq3s_grid[qs[2 * l + 1] | ((hb << (7 - 2 * l)) & 256)];
     unsigned signs = sg[l];
     const float *xp0 = xb + ib * 32 + l * 8;
+    float w1[4], w2[4];
+    _Pragma("unroll")
+    for (int j = 0; j < 4; j++) { w1[j] = iq_w4(g1, j, signs); w2[j] = iq_w4(g2, j, signs >> 4); }
     _Pragma("unroll")
     for (int c = 0; c < nc; c++) {
         const float *xp = xp0 + (ulong64)c * xs;
         float t = 0;
+        _Pragma("unroll")
         for (int j = 0; j < 4; j++) {
-            t += iq_w4(g1, j, signs) * xp[j];
-            t += iq_w4(g2, j, signs >> 4) * xp[j + 4];
+            t += w1[j] * xp[j];
+            t += w2[j] * xp[j + 4];
         }
         acc[c] += db * t;
     }
@@ -3522,19 +3542,23 @@ static __device__ __forceinline__ void iq4xs_lane_n(const uchar *blk, const floa
     float dl = d * (ls - 32);
     const uchar *q = blk + 8 + ib * 16 + l * 4;
     const float *xp0 = xb + ib * 32 + l * 4;
+    float wl[4], wh[4];
+    _Pragma("unroll")
+    for (int j = 0; j < 4; j++) { wl[j] = (float)kv_iq4[q[j] & 0xF]; wh[j] = (float)kv_iq4[q[j] >> 4]; }
     _Pragma("unroll")
     for (int c = 0; c < nc; c++) {
         const float *xp = xp0 + (ulong64)c * xs;
         float t = 0;
+        _Pragma("unroll")
         for (int j = 0; j < 4; j++) {
-            t += (float)kv_iq4[q[j] & 0xF] * xp[j];
-            t += (float)kv_iq4[q[j] >> 4]  * xp[j + 16];
+            t += wl[j] * xp[j];
+            t += wh[j] * xp[j + 16];
         }
         acc[c] += dl * t;
     }
 }
 
-// The GEMV body shared by batch-1 and the twins. Every warp of a block reads
+// The twins' GEMV body. Every warp of a block reads
 // the same activation, so x is staged in shared memory once per chunk of CH
 // 256-weight blocks for the block's rows (4 at batch 1, GEMM_WARPS for a
 // twin) instead of once per row from global: the batch-1 kernels re-read the
@@ -3571,8 +3595,16 @@ static __device__ __forceinline__ void iq4xs_lane_n(const uchar *blk, const floa
             if (lane == 0) y[(ulong64)t * a.ys + row] = a.has_bias ? r + bias[row] : r; \
         }
 
-// batch-1: one column (a.batch is 1 on this path)
-#define IQ_LANE_MV1(fnn, BS) IQ_LANE_BODY(fnn, BS, 1, 16)
+// batch-1: x from global (staging for four rows measured slower: 27B decode
+// 11.9 -> 10.0 tok/s); the same values as the twins' staged copy
+#define IQ_LANE_MV1(fnn, BS) \
+    MV_HEAD; \
+    int nb = a.n_in / 256; \
+    const uchar *rw = wb + a.w_off + (ulong64)row * nb * BS; \
+    float acc[1] = {0}; \
+    for (int b = 0; b < nb; b++) fnn(rw + (ulong64)b * BS, x + b * 256, 0, lane, 1, acc); \
+    float s = acc[0]; \
+    MV_TAIL;
 
 // width-classed twins (launched GEMM_WARPS rows per block like the GEMVB family)
 #define IQ_LANE_MVB(NAME, fnn, BS, NC) \
