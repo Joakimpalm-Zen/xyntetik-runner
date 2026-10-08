@@ -390,7 +390,7 @@ def test_release_check_counts_executed_checks_across_all_dated_reports(
 def test_release_check_requires_readme_and_site_to_link_the_same_hf_repos(
         monkeypatch, tmp_path, capsys):
     """A card published with a README entry and no site entry, or the reverse,
-    is the drift rule 5 names; the release refuses until both agree."""
+    is the drift AGENTS.md rule 4 names; the release refuses until both agree."""
     args = good_args(tmp_path)
     monkeypatch.setattr(
         check_release, "binary_version", lambda _: "runner 0.1.3-alpha"
