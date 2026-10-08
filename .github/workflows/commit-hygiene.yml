@@ -22,6 +22,10 @@ jobs:
           fetch-depth: 0
       - name: self-test the checker
         run: python3 scripts/check-commit-hygiene.py --self-test
+      - name: agent rule files are intact (AGENTS.md was shredded on 2026-10-06)
+        run: |
+          python3 scripts/check-agent-docs.py --self-test
+          python3 scripts/check-agent-docs.py AGENTS.md CLAUDE.md
       - name: commits and pull request text
         env:
           PR_TITLE: ${{ github.event.pull_request.title }}
