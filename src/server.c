@@ -3199,6 +3199,7 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
         // each slot gets its share of the CPU-forced fallback cap too
         slot_mp.cpu_fallback_threads = 0;   // the shared pool below is sized once, from the server's count
         tpool *shared_pool = NULL;
+        int shared_pool_threads = n_threads;
 
         for (int i = 0; i < parallel; i++) {
             // a Ctrl-C during a multi-slot load means "don't start": honour it
@@ -3227,6 +3228,7 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
                 // (16 threads on 16 cores 4.7 tok/s, 15 threads 9.0, 2026-10-08)
                 int cpus = plat_cpu_count();
                 if (parallel > 1 && pool_threads >= cpus && cpus > 1) pool_threads = cpus - 1;
+                shared_pool_threads = pool_threads;
                 shared_pool = tpool_create(pool_threads);
                 if (!shared_pool) {
                     fprintf(stderr, "error: cannot create the slots' thread pool\n");
@@ -3378,7 +3380,7 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
     else
         fprintf(stderr,
                 "server listening on http://127.0.0.1:%d — %d slot%s sharing %d threads%s\n",
-                port, parallel, parallel > 1 ? "s" : "", n_threads,
+                port, parallel, parallel > 1 ? "s" : "", shared_pool_threads,
                 batched ? ", continuous batching" : "");
     fputs("  POST /v1/chat/completions | POST /v1/responses | POST /v1/completions\n"
           "  POST /v1/embeddings | POST /v1/rerank | POST /v1/messages"
