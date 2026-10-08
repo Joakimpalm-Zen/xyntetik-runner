@@ -9,6 +9,18 @@ rename keep the names that were true when they were written.
 
 ## Unreleased
 
+- **The CUDA placement plan counts what the device actually spends.** The
+  hyper-connection stream mixers (`hc_attn_*`, `hc_ffn_*`: 1.27 GB on
+  Qwen3.8-Flash-Next) were never in a layer's bytes, and a split that
+  uploads per tensor (every `--cpu-moe` split) pays the driver's 2 MB
+  rounding per allocation (0.66 GB over Flash-Next's 707 tensors). The plan
+  was ~2 GB short on a 24 GB slice, which the init retry below absorbed. Now
+  `--cpu-moe auto` places 17 expert banks with 2.8 GB actually free where it
+  placed 19 with 0.5 GB, at the same decode speed (18.5-18.8 tok/s warm, f16
+  or q8 cache), and plans `--kv q8` without a retry. `RUNNER_DEBUG_VRAM=1`
+  prints the driver's free figure at each init stage (`=2` names every
+  per-tensor upload), the probe that found both.
+
 - **`--cpu-moe auto` retries with fewer expert banks when the device runs
   out of memory during init**, instead of handing the whole model to the CPU.
   The placement plan is an estimate, and on a 24 GB MIG slice it undercounts
