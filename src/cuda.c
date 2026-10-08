@@ -2116,6 +2116,12 @@ static gpu_weights *shared_build(model_t *m, size_t act_bytes, int max_hd,
     }
     w->refs = 1;
     vram_probe("after weights upload");
+    if (getenv("RUNNER_DEBUG_VRAM")) {
+        size_t bb = 0;
+        for (int i = 0; i < w->n_bindings; i++) bb += w->bindings[i].nbytes;
+        fprintf(stderr, "vram: %d bindings, %.3f GB requested; prefix upload %.3f GB\n",
+                w->n_bindings, bb / 1e9, w->weights_len / 1e9);
+    }
     return w;
 
 fail:
