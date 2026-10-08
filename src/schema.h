@@ -98,6 +98,9 @@ snode *schema_compile_qwen_turn(struct jv *tools, bool allow_final,
                                 struct jv *final_schema,
                                 bool allow_reasoning, bool parallel,
                                 char *err, int errcap);
+// Most calls a parallel turn carries, in the generic envelope's array and in
+// the native grammars (one required call, then up to this many in all).
+#define NATIVE_PARALLEL_MAX_CALLS 8
 snode *schema_compile_qwen_parallel(struct jv *tools, const char *only_tool,
                                     char *err, int errcap);
 // Wrap a JSON/schema payload in Muse's user-recipient header. The second

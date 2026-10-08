@@ -3532,7 +3532,8 @@ int tool_envelope_build(jv *tools, jv *choice, jv *final_schema,
 // Bound on a parallel turn's call count. An unbounded array under a token
 // budget is a truncation waiting to happen, and sval_close would have to
 // close it mid-call; a small cap keeps every legal document completable.
-#define PARALLEL_MAX_CALLS 8
+// One bound for the generic envelope's array and the native grammars.
+#define PARALLEL_MAX_CALLS NATIVE_PARALLEL_MAX_CALLS
 
 // Is a tool's parameter schema a JSON Schema at all? Not "does this engine
 // compile it" (a native-protocol turn is parsed, not constrained, and takes

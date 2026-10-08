@@ -167,6 +167,32 @@ def test_qwen38_buffered_one_native_call(qwen38):
     _no_framing(ch["message"].get("content") or "")
 
 
+@pytest.mark.parametrize("n_calls", [1, 3])
+@pytest.mark.parametrize("stream", [False, True])
+def test_qwen38_required_parallel_turn_carries_what_the_model_calls(qwen38, n_calls, stream):
+    """tool_choice required + parallel_tool_calls:true held the native grammar
+    to EXACTLY two calls until 1.1.4: one call could not end the turn and a
+    third could not start. The turn now carries one to eight calls and ends
+    at the model's own stop token, buffered and streamed alike."""
+    reply = "\n".join(_call("glob", pattern=f"**/f{i}.json") for i in range(n_calls))
+    payload = {"model": qwen38.model_id, "max_tokens": 600, "stream": stream,
+               "messages": [{"role": "user", "content": "Find the files."}],
+               "tools": [BASH, GLOB], "tool_choice": "required",
+               "parallel_tool_calls": True, "chat_template_kwargs": NO_THINK,
+               "runner_test_reply": reply + "<|im_end|>"}
+    if stream:
+        content, calls, finish = _chat_stream(_post(qwen38, "/v1/chat/completions", payload, stream=True))
+        got = [(calls[i]["name"], json.loads(calls[i]["args"])) for i in sorted(calls)]
+    else:
+        ch = _post(qwen38, "/v1/chat/completions", payload)["choices"][0]
+        finish, content = ch["finish_reason"], ch["message"].get("content") or ""
+        got = [(c["function"]["name"], json.loads(c["function"]["arguments"]))
+               for c in ch["message"].get("tool_calls") or []]
+    assert finish == "tool_calls", (finish, content, got)
+    assert got == [("glob", {"pattern": f"**/f{i}.json"}) for i in range(n_calls)], got
+    _no_framing(content)
+
+
 def test_qwen38_streams_prose_and_three_calls(qwen38):
     """The report's case B, streamed: the prose stays content, each block is
     its own tool_calls index, and the turn ends with tool_calls."""

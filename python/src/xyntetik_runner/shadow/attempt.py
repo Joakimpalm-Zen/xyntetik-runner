@@ -489,9 +489,14 @@ def runner_chat(post_json: Callable[..., dict[str, Any]], model: str, *, max_tok
         # runner's schema-driven decoding; finish is a tool, so the loop can
         # still end. Without it Qwen2.5-Coder wrote its calls as JSON code
         # blocks in the text and the runner rightly returned no tool call.
+        # parallel_tool_calls is explicit: the runner reads an absent flag as
+        # false, so every turn was held to ONE call, while llama.cpp and
+        # Strata answered the same requests with several (the 33-task bank,
+        # 2026-10-07: 0 of 396 Runner turns carried a second call, 123 of 396
+        # llama.cpp turns did). The loop executes every call a turn carries.
         payload = {"model": model, "messages": messages, "tools": tools,
-                   "tool_choice": "required", "max_tokens": max_tokens,
-                   "temperature": temperature}
+                   "tool_choice": "required", "parallel_tool_calls": True,
+                   "max_tokens": max_tokens, "temperature": temperature}
         if seed > 0:
             payload["seed"] = seed
         data = post_json("/v1/chat/completions", payload)

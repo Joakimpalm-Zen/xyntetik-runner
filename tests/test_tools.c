@@ -694,6 +694,76 @@ static void test_qwen_native_tool_protocol(void) {
     jv_free(history); jv_free(tools);
 }
 
+// A required/named parallel turn carries ONE TO EIGHT calls, then the stop
+// marker, ending at the model's own stop token. Until 1.1.4 the native Qwen
+// grammars compiled a fixed pair: one
+// call could not end the turn and a third could not start. And without
+// parallel_tool_calls the turn is exactly one call, which is what an agent
+// bank omitting the flag got (Qwen3.8-Flash-Next, 396 turns, never more
+// than one call, where llama.cpp and Strata made several in 123 and 103).
+static void test_native_parallel_turn_carries_one_to_eight_calls(void) {
+    jv *tools = parse(TOOLS);
+    char err[192];
+    const char *json1 = "<tool_call>\n{\"name\": \"add\", \"arguments\": {\"a\": 1, \"b\": 2}}\n</tool_call>";
+    const char *xml1 = "<tool_call>\n<function=add>\n<parameter=a>\n1\n</parameter>\n<parameter=b>\n2\n</parameter>\n</function>\n</tool_call>";
+    struct { const char *name; snode *root; const char *one; int tmpl; } G[] = {
+        { "qwen_parallel", schema_compile_qwen_parallel(tools, NULL, err, sizeof err), json1, TMPL_CHATML },
+        { "qwen_xml_parallel", schema_compile_qwen_xml_turn(tools, false, NULL, NULL, true, err, sizeof err), xml1, TMPL_QWEN3_CODER },
+    };
+    for (size_t g = 0; g < sizeof G / sizeof *G; g++) {
+        assert(G[g].root);
+        for (int n = 0; n <= 9; n++) {
+            sbuf doc = {0};
+            for (int k = 0; k < n; k++) {
+                if (k) sb_lit(&doc, "\n");
+                sb_put(&doc, G[g].one, strlen(G[g].one));
+            }
+            sb_lit(&doc, "<|im_end|>");
+            bool ok = accepts(G[g].root, doc.s);
+            if (ok != (n >= 1 && n <= NATIVE_PARALLEL_MAX_CALLS))
+                fprintf(stderr, "%s: %d calls %s\n", G[g].name, n, ok ? "accepted" : "refused");
+            assert(ok == (n >= 1 && n <= NATIVE_PARALLEL_MAX_CALLS));
+            free(doc.s);
+        }
+        // between calls no more than a separator's worth of text
+        sbuf bad = {0};
+        sb_put(&bad, G[g].one, strlen(G[g].one));
+        sb_lit(&bad, "\nand then <tool_call>");
+        assert(!feeds(G[g].root, bad.s));
+        free(bad.s);
+        // every truncation after the first byte closes to a legal turn that
+        // maps to whole calls (nothing generated closes to nothing)
+        sbuf three = {0};
+        for (int k = 0; k < 3; k++) {
+            if (k) sb_lit(&three, "\n");
+            sb_put(&three, G[g].one, strlen(G[g].one));
+        }
+        sb_lit(&three, "<|im_end|>");
+        tool_envelope e; bool skip = false;
+        jv *required = parse("\"required\"");
+        assert(tool_envelope_build_ex(tools, required, NULL, true, &e, err, sizeof err) == 1);
+        tool_decl_native(G[g].tmpl, true, true, tools, &e, &skip);
+        sbuf out = {0}, tc = {0};
+        assert(tool_envelope_map(&e, three.s, three.n, &out, &tc) == 3);
+        free(out.s); free(tc.s);
+        for (size_t cut = 1; cut <= three.n; cut++) {
+            sval v; sval_init(&v, G[g].root);
+            if (!sval_feed(&v, three.s, (int)cut)) continue;
+            char close[16384]; size_t n = sval_close(&v, close, sizeof close);
+            assert(n != SIZE_MAX);
+            sbuf whole = {0}, o = {0}, t = {0};
+            sb_put(&whole, three.s, cut); sb_put(&whole, close, n);
+            int mapped = tool_envelope_map(&e, whole.s, whole.n, &o, &t);
+            if (mapped < 1)
+                fprintf(stderr, "%s: cut %zu closed to [%.*s] maps %d\n", G[g].name, cut, (int)whole.n, whole.s, mapped);
+            assert(mapped >= 1);
+            free(whole.s); free(o.s); free(t.s);
+        }
+        tool_envelope_free(&e); jv_free(required); free(three.s); schema_free(G[g].root);
+    }
+    jv_free(tools);
+}
+
 static void test_qwen_native_turn_constrains_and_maps_calls(void) {
     jv *tools = parse(TOOLS);
     char err[192];
@@ -2869,6 +2939,7 @@ int main(void) {
     test_ornith_native_tool_protocol();
     test_qwen_native_tool_protocol();
     test_qwen_native_turn_constrains_and_maps_calls();
+    test_native_parallel_turn_carries_one_to_eight_calls();
     test_auto_envelope_constrains_names_and_arguments();
     test_truncated_call_stays_valid_and_executable();
     test_tool_choice_required_removes_the_final_branch();
