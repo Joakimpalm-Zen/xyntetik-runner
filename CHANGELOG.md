@@ -7,6 +7,26 @@ to the exact build, and what is not covered. Releases before 1.0.0 made no
 such promise (the `-alpha` suffix was retired at v0.2.0). Entries below the
 rename keep the names that were true when they were written.
 
+## Unreleased
+
+- **Single-row CPU decode takes the single-column dot again.** v1.1.1 routed
+  every batch below eight rows through `vec_dot_multi`, the one-row case
+  included; the multi-column kernel indexes its accumulators by a runtime
+  column count, which the compilers spill to the stack, and a plain decode
+  step (one row, no draft) paid for it: Qwen3.8-27B IQ3_S at 4 threads
+  1.45 to 0.83 tok/s, Qwen3.8-Flash-Next IQ3_S at 16 threads 12.1 to 6.5
+  (clang 22 builds; bisected to the v1.1.1 commit). `mv_rows` now calls
+  `vec_dot` when the batch is one row and keeps `vec_dot_multi` for two to
+  seven, where it still wins (Flash-Next `--mtp-file` decode 4.57 vs 4.19
+  tok/s at 4 threads, 10.28 vs 9.44 at 16, against a per-column loop).
+  Outputs are unchanged: both routes are byte-equal per column.
+- **Build note.** A box that builds the runner with conda's gcc 15.2
+  (`CC=x86_64-conda-linux-gnu-gcc`) decodes dense IQ3_S about three times
+  slower than the release binary (Ubuntu gcc 13.3) or `make CC=clang`; the
+  codebook f32 route is the part that suffers. The toolchain, not the
+  source, was the first suspect in the regression above; build with the
+  distribution compiler or clang when a measurement matters.
+
 ## v1.1.1 - 2026-10-08
 
 - **The NextN/MTP draft head runs on the CUDA path** (`--mtp-file` on a
