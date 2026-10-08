@@ -1198,6 +1198,8 @@ static bool binding_add(gpu_weights *w, const model_t *m, gguf_tensor *t) {
         return false;
     }
     w->bound_bytes += t->nbytes;
+    if (getenv("RUNNER_DEBUG_VRAM") && atoi(getenv("RUNNER_DEBUG_VRAM")) >= 2)
+        fprintf(stderr, "vram-bind %s %zu\n", t->name, (size_t)t->nbytes);
     w->bindings[w->n_bindings++] = (gpu_weight_binding){ off, t->nbytes, d };
     w->weights_len += t->nbytes;
     return true;
