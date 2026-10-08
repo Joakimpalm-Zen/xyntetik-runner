@@ -3327,6 +3327,17 @@ bool i8_dot_ok(int type, int n) {
 // and both sit far inside the deviation bound, but the promotion bar for a
 // tolerance-gated fast route on this engine is 0/64 and it is not widened to
 // fit a lever. `RUNNER_CPU_I8=1` opts in; test-i8-tol is the gate.
+//
+// 2026-10-08, IQ3_S and IQ2_S added to the route (clang 22, Blackwell host,
+// taskset on fixed cores, p512, CPU only):
+//
+//   model                        gate (0/64 flips)   decode gain
+//   Qwen3.8-27B IQ3_S (dense)    0/64  pass          +22% at 4 threads (1.46 -> 1.78),
+//                                                    0% at 16 (bandwidth-bound)
+//   Qwen3.8-Flash-Next IQ3_S     3/64  FAIL          +9% at 4 threads (6.18 -> 6.76)
+//   (MoE; main's Q8_0/Q4_K-only route already fails 2/64 on this model)
+//
+// Same disposition: opt-in, gated per model by test-i8-tol.
 static int g_i8_env = -1;      // -1 unparsed, else the env verdict
 static int g_i8_force = -1;    // -1 follow env, else the forced verdict
 
