@@ -8,7 +8,7 @@
 </p>
 
 <p align="center">
-  <b>Run AI models on your own machine, and know exactly what you are getting.</b>
+  <b>Lifecycle engine with inference you can prove.</b>
 </p>
 
 <p align="center">
@@ -20,7 +20,10 @@
 
 Running a model yourself is mostly guesswork. Will it fit? Did shrinking it
 break it? Why is my laptop out of memory when nothing is running? Runner
-exists to replace those guesses with answers you can check.
+exists to replace those guesses with answers you can check, and a run can
+carry a signed record of the model file, the settings and the output that
+someone else replays to get the same bytes. That is what "prove" means here:
+what ran, and that it reproduces, not that an answer is right.
 
 <p align="center">
   <picture>
