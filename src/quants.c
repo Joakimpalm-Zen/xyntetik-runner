@@ -3794,6 +3794,13 @@ fail:
     return NULL;
 }
 
+int tpool_shared_threads(int n_threads, int parallel, int cpus, int floor) {
+    int n = n_threads > floor ? n_threads : floor;
+    if (n < 1) n = 1;
+    if (parallel > 1 && cpus > 1 && n >= cpus) n = cpus - 1;
+    return n;
+}
+
 void tpool_retain(tpool *tp) {
     if (tp) atomic_fetch_add(&tp->refs, 1);
 }

@@ -7,6 +7,7 @@
 #include <sched.h>
 #endif
 
+#include <pthread.h>
 #include <stdio.h>
 
 #ifdef __APPLE__
@@ -18,6 +19,28 @@ static int g_fail = 0;
 static void ck(int cond, const char *what) {
     if (!cond) { fprintf(stderr, "FAIL: %s\n", what); g_fail = 1; }
     else        printf("ok: %s\n", what);
+}
+
+
+// the shared pool: several holders (server slots) run one pool from their
+// own threads; tpool_run serializes, every run must see only its own items
+typedef struct { long long *sum; } sum_ctx;
+static void sum_items(void *ctx, int i0, int i1) {
+    sum_ctx *c = ctx;
+    long long s = 0;
+    for (int i = i0; i < i1; i++) s += i;
+    __atomic_add_fetch(c->sum, s, __ATOMIC_RELAXED);
+}
+typedef struct { tpool *tp; int bad; } caller;
+static void *call_pool(void *arg) {
+    caller *c = arg;
+    for (int r = 0; r < 300; r++) {
+        long long sum = 0;
+        sum_ctx ctx = { &sum };
+        tpool_run(c->tp, sum_items, &ctx, 1000);
+        if (sum != 999LL * 1000 / 2) c->bad++;
+    }
+    return NULL;
 }
 
 int main(void) {
@@ -90,6 +113,31 @@ int main(void) {
         ck(tpool_size(big) <= 64, "over-large thread request is clamped");
         ck(tpool_size(big) == 64, "clamp lands on TP_MAX, not something else");
         tpool_destroy(big);
+    }
+
+    // the shared-pool size (tpool_shared_threads): the one policy server.c uses
+    ck(tpool_shared_threads(16, 1, 16, 0) == 16, "one slot keeps the full count");
+    ck(tpool_shared_threads(16, 2, 16, 0) == 15, "two slots leave one CPU of the mask free");
+    ck(tpool_shared_threads(8, 4, 16, 0) == 8, "a count under the mask is kept");
+    ck(tpool_shared_threads(4, 2, 16, 12) == 12, "the CPU-forced fallback floor raises it");
+    ck(tpool_shared_threads(16, 2, 1, 0) == 16, "a single-CPU mask is not cut to zero");
+    ck(tpool_shared_threads(0, 2, 8, 0) == 1, "never below one thread");
+
+    // several holders running one retained pool concurrently: every run sees
+    // exactly its own items, and the references come back in balance
+    tpool *sp = tpool_create(4);
+    ck(sp != NULL, "shared pool created");
+    if (sp) {
+        tpool_retain(sp); tpool_retain(sp);
+        caller cs[3] = { { sp, 0 }, { sp, 0 }, { sp, 0 } };
+        pthread_t th[3];
+        for (int i = 0; i < 3; i++) pthread_create(&th[i], NULL, call_pool, &cs[i]);
+        for (int i = 0; i < 3; i++) pthread_join(th[i], NULL);
+        ck(cs[0].bad + cs[1].bad + cs[2].bad == 0,
+           "three holders x 300 concurrent runs: every sum exact");
+        tpool_destroy(sp); tpool_destroy(sp);
+        ck(tpool_size(sp) == 4, "the last holder still has a live pool after two releases");
+        tpool_destroy(sp);
     }
 
     if (g_fail) {
