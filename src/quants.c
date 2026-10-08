@@ -3300,7 +3300,9 @@ bool i8_dot_ok(int type, int n) {
     switch (type) {
         case T_Q8_0:
         case T_Q4_0:
-        case T_Q4_K: return n % ggml_block_size(type) == 0;
+        case T_Q4_K:
+        case T_IQ3_S:
+        case T_IQ2_S: return n % ggml_block_size(type) == 0;
         default:     return false;
     }
 #else
@@ -3580,6 +3582,74 @@ static float dot_q4_K_i8(const block_q4_K *b, const block_i8a *xq, int n) {
     }
     return hsum8(facc) + mins;
 }
+
+// Codebook i-quants on the int8 route (R4.26.9). The grid gives signed int8
+// weights (odd magnitudes up to 15 for IQ3_S, up to 15 for IQ2_S), so the
+// dot is the standard signed trick: |w| as the unsigned operand and the
+// activations carrying w's sign (_mm256_sign_epi8), exact in int32 per
+// 32-weight sub-block, then one FMA per sub-block with the weight scale and
+// the activation block's scale. A 32-weight sub-block is two I8A_QK=16
+// activation blocks, so the 8 int32 lanes split 4/4 between their scales,
+// as in dot_q4_K_i8.
+static inline __m128i iq3s_i8_group16(const block_iq3_s *b, int pair, int k, int h, float *db) {
+    const uint8_t *qs = b->qs + (pair * 2 + k) * 8, *signs = b->signs + (pair * 2 + k) * 4;
+    uint8_t qh = b->qh[pair * 2 + k];
+    *db = f16_to_f32(b->d) * (1 + 2 * (k ? (b->scales[pair] >> 4) : (b->scales[pair] & 0xf)));
+    int l0 = 2 * h, l1 = 2 * h + 1;
+    uint8_t mag[16];
+    memcpy(mag,      iq3s_grid + (qs[2 * l0]     | ((qh << (8 - 2 * l0)) & 256)), 4);
+    memcpy(mag + 4,  iq3s_grid + (qs[2 * l0 + 1] | ((qh << (7 - 2 * l0)) & 256)), 4);
+    memcpy(mag + 8,  iq3s_grid + (qs[2 * l1]     | ((qh << (8 - 2 * l1)) & 256)), 4);
+    memcpy(mag + 12, iq3s_grid + (qs[2 * l1 + 1] | ((qh << (7 - 2 * l1)) & 256)), 4);
+    return avx2_iq_signed16(mag, signs[l0], signs[l1]);
+}
+static inline __m128i iq2s_i8_group16(const block_iq2_s *b, int ib32, int h, float *db) {
+    const uint8_t *qs = b->qs + ib32 * 4, *signs = b->qs + QK_K / 8 + ib32 * 4;
+    *db = f16_to_f32(b->d) * (0.5f + (h ? (b->scales[ib32] >> 4) : (b->scales[ib32] & 0xf))) * 0.25f;
+    int l0 = 2 * h, l1 = 2 * h + 1;
+    uint8_t mag[16];
+    memcpy(mag,     iq2s_grid + (qs[l0] | ((b->qh[ib32] << (8 - 2 * l0)) & 0x300)), 8);
+    memcpy(mag + 8, iq2s_grid + (qs[l1] | ((b->qh[ib32] << (8 - 2 * l1)) & 0x300)), 8);
+    return avx2_iq_signed16(mag, signs[l0], signs[l1]);
+}
+
+// one 32-weight sub-block: signed weights w (two 16-groups), scales dw0/dw1
+// for its two halves, activation blocks xq[0], xq[1]
+static inline __m256 iq_i8_sub32(__m128i w0, __m128i w1, float dw0, float dw1,
+                                 const block_i8a *xq, __m256 facc) {
+    __m256i w = _mm256_inserti128_si256(_mm256_castsi128_si256(w0), w1, 1);
+    __m256i xs = _mm256_sign_epi8(i8a_load32(xq), w);
+    __m256i a = i8_mac32(_mm256_setzero_si256(), _mm256_abs_epi8(w), xs);
+    float s0 = dw0 * xq[0].d, s1 = dw1 * xq[1].d;
+    __m256 sc = _mm256_setr_ps(s0, s0, s0, s0, s1, s1, s1, s1);
+    return _mm256_fmadd_ps(sc, _mm256_cvtepi32_ps(a), facc);
+}
+
+static float dot_iq3_s_i8(const block_iq3_s *b, const block_i8a *xq, int n) {
+    __m256 facc = _mm256_setzero_ps();
+    int blk = 0;
+    for (int i = 0; i < n / QK_K; i++, b++)
+        for (int g = 0; g < 8; g++, blk += 2) {
+            float db;
+            __m128i w0 = iq3s_i8_group16(b, g >> 1, g & 1, 0, &db);
+            __m128i w1 = iq3s_i8_group16(b, g >> 1, g & 1, 1, &db);
+            facc = iq_i8_sub32(w0, w1, db, db, &xq[blk], facc);
+        }
+    return hsum8(facc);
+}
+
+static float dot_iq2_s_i8(const block_iq2_s *b, const block_i8a *xq, int n) {
+    __m256 facc = _mm256_setzero_ps();
+    int blk = 0;
+    for (int i = 0; i < n / QK_K; i++, b++)
+        for (int g = 0; g < 8; g++, blk += 2) {
+            float db0, db1;
+            __m128i w0 = iq2s_i8_group16(b, g, 0, &db0);
+            __m128i w1 = iq2s_i8_group16(b, g, 1, &db1);
+            facc = iq_i8_sub32(w0, w1, db0, db1, &xq[blk], facc);
+        }
+    return hsum8(facc);
+}
 #endif // RUNNER_AVX2
 
 float vec_dot_i8(int type, const void *row, const void *xq, int n) {
@@ -3588,6 +3658,8 @@ float vec_dot_i8(int type, const void *row, const void *xq, int n) {
         case T_Q8_0: return dot_q8_0_i8(row, xq, n);
         case T_Q4_0: return dot_q4_0_i8(row, xq, n);
         case T_Q4_K: return dot_q4_K_i8(row, xq, n);
+        case T_IQ3_S: return dot_iq3_s_i8(row, xq, n);
+        case T_IQ2_S: return dot_iq2_s_i8(row, xq, n);
         default: break;
     }
 #endif
