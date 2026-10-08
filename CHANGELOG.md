@@ -18,6 +18,14 @@ rename keep the names that were true when they were written.
   writes one JSONL record per question with its probabilities, logprobs and
   label, which the aggregate report never kept. Found by the lab while
   drafting its typed-decisions baselines (TD-000).
+- **A gate on the agent rule files.** On 2026-10-06 an edit meant to
+  replace one paragraph of AGENTS.md inserted it after every character of
+  the file (372 lines became 150,523, every rule cut apart) and nothing
+  noticed for two days. `scripts/check-agent-docs.py` fails on a rule file
+  past 800 lines, a paragraph that occurs twice, or a long line repeated;
+  it runs in `make test` and in the commit-hygiene workflow, which every
+  pull request waits for, docs-only ones included. Its self-test includes
+  the shredded shape.
 
 ## v1.1.4 - 2026-10-08
 
