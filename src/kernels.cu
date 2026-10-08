@@ -3566,14 +3566,21 @@ static __device__ __forceinline__ void iq4xs_lane_n(const uchar *blk, const floa
 // to ~150 GB/s (2026-10-08). Shared memory holds the same values as global,
 // so no output changes. Columns past a.batch stage zeros (a caller's x need
 // not be NC columns wide).
+// Two rows per warp in the twins too: the batch-1 kernels gained 16% from a
+// second row per warp, and a verify tile is the same latency-bound chain per
+// column. Qwen3.8-27B IQ3_S + MTP head on the 24 GB slice: --draft-k 2
+// 14.73 -> 15.43, k=3 13.62 -> 15.25, k=4 12.27 -> 13.61 tok/s, plain
+// unchanged, text identical (2026-10-08). Each row's arithmetic is the
+// one-row twin's, so the bits do not move. enc_mv_batch launches
+// 8 * IQ_TWR rows per block for these six formats.
+#define IQ_TWR 2
 #define IQ_LANE_BODY(fnn, BS, NC, CH) \
     __shared__ float xsm[(NC) * (CH) * 256]; \
-    unsigned row = blockIdx.x * (blockDim.x >> 5) + (threadIdx.x >> 5); \
+    unsigned row0 = (blockIdx.x * (blockDim.x >> 5) + (threadIdx.x >> 5)) * IQ_TWR; \
     unsigned lane = threadIdx.x & 31; \
     int nb = a.n_in / 256; \
-    bool live = row < (unsigned)a.n_out; \
-    const uchar *rw = wb + a.w_off + (ulong64)(live ? row : 0) * nb * BS; \
-    float acc[NC] = {0}; \
+    float acc[IQ_TWR][NC]; \
+    _Pragma("unroll") for (int r = 0; r < IQ_TWR; r++) _Pragma("unroll") for (int c = 0; c < (NC); c++) acc[r][c] = 0.0f; \
     int nbat = (NC) == 1 ? 1 : a.batch; \
     for (int cs = 0; cs < nb; cs += (CH)) { \
         int cb = nb - cs < (CH) ? nb - cs : (CH); \
@@ -3584,16 +3591,23 @@ static __device__ __forceinline__ void iq4xs_lane_n(const uchar *blk, const floa
                 xsm[t * (CH) * 256 + e] = t < nbat ? xg[e] : 0.0f; \
         } \
         __syncthreads(); \
-        if (live) \
-            for (int bi = 0; bi < cb; bi++) \
-                fnn(rw + (ulong64)(cs + bi) * BS, xsm + bi * 256, (ulong64)(CH) * 256, lane, (NC), acc); \
+        for (int bi = 0; bi < cb; bi++) { \
+            _Pragma("unroll") \
+            for (int r = 0; r < IQ_TWR; r++) \
+                if (row0 + r < (unsigned)a.n_out) \
+                    fnn(wb + a.w_off + ((ulong64)(row0 + r) * nb + cs + bi) * BS, xsm + bi * 256, (ulong64)(CH) * 256, lane, (NC), acc[r]); \
+        } \
         __syncthreads(); \
     } \
-    if (live) \
-        for (int t = 0; t < nbat && t < (NC); t++) { \
-            float r = warp_sum(acc[t]); \
-            if (lane == 0) y[(ulong64)t * a.ys + row] = a.has_bias ? r + bias[row] : r; \
-        }
+    _Pragma("unroll") \
+    for (int r = 0; r < IQ_TWR; r++) { \
+        unsigned row = row0 + r; \
+        if (row < (unsigned)a.n_out) \
+            for (int t = 0; t < nbat && t < (NC); t++) { \
+                float s_ = warp_sum(acc[r][t]); \
+                if (lane == 0) y[(ulong64)t * a.ys + row] = a.has_bias ? s_ + bias[row] : s_; \
+            } \
+    }
 
 // batch-1: x from global (staging for four rows measured slower: 27B decode
 // 11.9 -> 10.0 tok/s); the same values as the twins' staged copy

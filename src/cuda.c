@@ -5631,7 +5631,11 @@ static bool enc_mv_batch(gpu_t *g, model_t *m, gguf_tensor *w, CUdeviceptr x,
     CUfunction f = batch >= 2 && batch <= 8 && g->sw->f_gemvx[batch][w->type]
                  ? g->sw->f_gemvx[batch][w->type]
                  : g->sw->f_gemvb[batch_width_class(batch)][w->type];
-    if (f) return launch(g, f, (n_out + GEMM_WARPS - 1) / GEMM_WARPS, 1, 1,
+    // the codebook i-quant twins take IQ_TWR (2) rows per warp (kernels.cu)
+    bool iq2r = w->type == T_IQ2_XXS || w->type == T_IQ2_XS || w->type == T_IQ2_S ||
+                w->type == T_IQ3_XXS || w->type == T_IQ3_S || w->type == T_IQ4_XS;
+    unsigned rpb = GEMM_WARPS * (iq2r ? 2 : 1);
+    if (f) return launch(g, f, (n_out + rpb - 1) / rpb, 1, 1,
                          GEMM_WARPS * 32, p);
     // No width-classed twin. f_mvb is the right answer only where it really is
     // f_mv's twin (see mvb_is_mv_twin) — for a quantized type it is a different
