@@ -148,6 +148,17 @@ rename keep the names that were true when they were written.
   codebook f32 route is the part that suffers. The toolchain, not the
   source, was the first suspect in the regression above; build with the
   distribution compiler or clang when a measurement matters.
+- **IQ3_S and IQ2_S join the int8 activation route** (`RUNNER_CPU_I8=1`,
+  still opt-in, still gated per model by `make test-i8-tol`). The codebook
+  decode happens once per 16-weight group into int8, and the dot is the
+  same VNNI/AVX2 int8 dot the Q8_0/Q4_K route uses. Measured CPU only with
+  one compiler on both sides: Qwen3.8-27B IQ3_S (dense) passes the gate
+  (0/64 flips, mean logit deviation 0.00046 of range) and decodes 22%
+  faster at 4 threads (1.46 to 1.78 tok/s), the same at 16 threads where
+  memory bandwidth is the wall. Qwen3.8-Flash-Next IQ3_S fails the gate
+  (3/64 near-tie flips; the pre-existing route already flipped 2/64 on
+  this model), so the switch stays off there: the gate, not the lever,
+  decides.
 
 ## v1.1.1 - 2026-10-08
 

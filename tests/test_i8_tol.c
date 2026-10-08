@@ -211,13 +211,14 @@ int main(int argc, char **argv) {
         fprintf(stderr, "cannot open %s\n", path);
         return 1;
     }
-    // The fused kernels exist for Q4_K, Q8_0 and Q4_0. Without one of those
+    // The fused kernels exist for Q4_K, Q8_0, Q4_0, IQ3_S and IQ2_S. Without one of those
     // types the two configurations run the same code and the gate measures
     // nothing.
     bool has_i8_type = false;
     for (uint64_t i = 0; i < gf.n_tensors; i++)
         if (gf.tensors[i].type == T_Q4_K || gf.tensors[i].type == T_Q8_0 ||
-            gf.tensors[i].type == T_Q4_0) has_i8_type = true;
+            gf.tensors[i].type == T_Q4_0 || gf.tensors[i].type == T_IQ3_S ||
+            gf.tensors[i].type == T_IQ2_S) has_i8_type = true;
 
     tokenizer tk;
     if (!tokenizer_init(&tk, &gf)) {

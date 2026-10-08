@@ -1222,11 +1222,11 @@ int main(void) {
     }
     CHECK(!i8_dot_ok(T_Q4_K, 128), "i8_dot_ok must decline a partial K-block");
     CHECK(!i8_dot_ok(T_IQ2_XXS, 4096), "i8_dot_ok must decline ungated formats");
-    // On a build with the fused route compiled in, all three promoted formats
+    // On a build with the fused route compiled in, all five promoted formats
     // must have been exercised at both row lengths. Reporting "OK" because
     // every combo declined itself is the failure mode this catches.
 #if defined(__AVX2__) && defined(__FMA__) && defined(__F16C__)
-    CHECK(g_i8_checked == 6, "fused int8 route: %d combos exercised, expected 6",
+    CHECK(g_i8_checked == 10, "fused int8 route: %d combos exercised, expected 10",
           g_i8_checked);
     // i8_dot_ok promises a fused kernel EXISTS for (type, n). Every kernel
     // steps in whole WEIGHT blocks -- n / QK for q8_0 and q4_0, n / QK_K for
