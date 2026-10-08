@@ -62,6 +62,14 @@ static runner_pvm_fn runner_pvm(void) {
 
 bool plat_willneed_available(void) { return runner_pvm() != NULL; }
 
+void plat_populate(const void *addr, size_t len) {
+    if (!addr || !len) return;
+    const volatile unsigned char *p = addr;
+    unsigned char sink = 0;
+    for (size_t off = 0; off < len; off += 4096) sink ^= p[off];
+    (void)sink;
+}
+
 void plat_willneed(const void *addr, size_t len) {
     if (!addr || !len) return;
     runner_pvm_fn pvm = runner_pvm();
@@ -499,6 +507,22 @@ void plat_willneed(const void *addr, size_t len) {
 }
 
 bool plat_willneed_available(void) { return true; }   // madvise is always there
+
+void plat_populate(const void *addr, size_t len) {
+    if (!addr || !len) return;
+#ifdef __linux__
+    (void)madvise((void *)(uintptr_t)addr, len, MADV_SEQUENTIAL);
+#ifdef MADV_POPULATE_READ
+    if (madvise((void *)(uintptr_t)addr, len, MADV_POPULATE_READ) == 0) return;
+#endif
+#endif
+    // portable fallback: touch one byte per page in file order, the access
+    // pattern the kernel's readahead is built for
+    const volatile unsigned char *p = addr;
+    unsigned char sink = 0;
+    for (size_t off = 0; off < len; off += 4096) sink ^= p[off];
+    (void)sink;
+}
 
 void plat_munmap(void *p, size_t size) {
     if (p) munmap(p, size);

@@ -1563,6 +1563,27 @@ bool model_load(model_t *m, const char *path, const model_params *p) {
                     (double)gguf_mapped_size(&m->gf) / 1e9);
         }
     }
+    // --populate: the synchronous sequential read-in (model_params.populate)
+    if (p && p->populate && !locked && gguf_mapped_size(&m->gf)) {
+        uint64_t mapped = gguf_mapped_size(&m->gf), avail = plat_ram_available_bytes();
+        if (avail && mapped > avail) {
+            fprintf(stderr, "populate: skipped, %.1f GB of weights against %.1f GB "
+                            "available RAM (the read would evict its own head)\n",
+                    (double)mapped / 1e9, (double)avail / 1e9);
+        } else {
+            struct timespec pt0, pt1; clock_gettime(CLOCK_MONOTONIC, &pt0);
+            uint32_t np = gguf_map_count(&m->gf);
+            for (uint32_t i = 0; i < np; i++) {
+                size_t sz;
+                void *mp = gguf_map_part(&m->gf, i, &sz);
+                if (mp && sz) plat_populate(mp, sz);
+            }
+            clock_gettime(CLOCK_MONOTONIC, &pt1);
+            fprintf(stderr, "populate: %.1f GB of weights read into the page cache "
+                            "in %.1f s\n", (double)mapped / 1e9,
+                    (double)(pt1.tv_sec - pt0.tv_sec) + 1e-9 * (double)(pt1.tv_nsec - pt0.tv_nsec));
+        }
+    }
     return true;
 }
 

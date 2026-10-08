@@ -1206,6 +1206,10 @@ static void usage_to(FILE *f, const char *prog) {
         "                 little headroom, locking the model can cause the very\n"
         "                 pressure it avoids. Without it a loaded machine can\n"
         "                 page the weights out and every token reads from disk\n"
+        "  --populate     read the weights into the page cache sequentially at\n"
+        "                 load (synchronous) when they fit in RAM. A cold\n"
+        "                 mixture-of-experts file otherwise faults in by routed\n"
+        "                 rows for minutes; a sequential read takes seconds.\n"
         "  --moe-prefetch on|off|auto   hand routed experts to the OS as whole\n"
         "                 blocks before the FFN reads them (MoE models only).\n"
         "                 auto (default): on for Apple Silicon when the weights\n"
@@ -1818,6 +1822,7 @@ int main(int argc, char **argv) {
             else if (strcmp(v, "f16")) { fprintf(stderr, "error: --kv expects f16, q8, k8v4 or fp4\n"); return 1; }
         }
         else if (!strcmp(a, "--mlock")) mp.mlock = true;
+        else if (!strcmp(a, "--populate")) mp.populate = true;
         else if (!strcmp(a, "--moe-prefetch")) {
             const char *v = NEXT;
             if (!strcmp(v, "on")) mp.moe_prefetch = 1;

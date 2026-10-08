@@ -26,6 +26,9 @@ void  *plat_mmap_ro(const char *path, size_t *size);
 // Ask the OS to fault a whole range in as one unit. Advisory: it can never
 // change what a later read returns, only how many faults that read costs.
 void   plat_willneed(const void *addr, size_t len);
+// Synchronous sequential read-in of a mapping (model_params.populate): Linux
+// MADV_POPULATE_READ where it exists, a page-touch loop in file order elsewhere.
+void   plat_populate(const void *addr, size_t len);
 // Whether plat_willneed actually does anything on this build+OS. POSIX always
 // has madvise; Windows needs PrefetchVirtualMemory, which is resolved at
 // runtime and absent before Windows 8. Callers use this so nothing announces

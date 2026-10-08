@@ -845,6 +845,13 @@ typedef struct {
     // load continues. Without it, weights are clean file-backed pages and are
     // the first thing a loaded machine evicts.
     bool  mlock;
+    // --populate: read every mapped part into the page cache SEQUENTIALLY at
+    // load (synchronous, Linux MADV_POPULATE_READ where it exists, a page
+    // touch loop elsewhere) when the mapping fits in available RAM. A cold
+    // 83 GB MoE file faulted in by routed 4 KB rows took 501 s to its 32nd
+    // token on the Blackwell CPUs; the async WILLNEED hint (RUNNER_PREFETCH)
+    // made that 658 s; the same file reads sequentially at 7.7 GB/s.
+    bool  populate;
     // --yield-on-request: opt in to the cooperative VRAM yield primitive.
     // --serve polls vram_yield_requested() for the resident model only while
     // idle between requests (no --ttl/-m swap concept applies otherwise), and
