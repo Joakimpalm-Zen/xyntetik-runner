@@ -9,6 +9,16 @@ rename keep the names that were true when they were written.
 
 ## Unreleased
 
+- **`--cpu-moe auto` retries with fewer expert banks when the device runs
+  out of memory during init**, instead of handing the whole model to the CPU.
+  The placement plan is an estimate, and on a 24 GB MIG slice it undercounts
+  the device by about 2 GB: with `--kv q8` or `--kv k8v4` the smaller cache
+  bought a 20th expert bank, the recurrent-state allocation failed, and
+  Qwen3.8-Flash-Next IQ3_S decoded on the CPU at 9.5-10.8 tok/s. The retry
+  holds back the deepest bank (at most four times) and says so; the same
+  runs now decode at 17.3-17.7 tok/s on the device with 19 banks (19.2 with
+  the f16 cache).
+
 - **The NextN/MTP device head runs for one-stream models** (the dense
   Qwen3.5-class trunks, Qwen3.8-27B among them). 1.1.1's device head was
   built for the hyper-connection family, so `--mtp-file` on a dense trunk
