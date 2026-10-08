@@ -556,6 +556,41 @@ refused too. A served tool turn, stop sequences, a reasoning budget and the
 loop guard are not replayed: the record names them and does not carry what
 would rebuild them.
 
+<a id="lineage"></a>
+### Where a file came from: `--lineage`
+
+Every step that makes a model or adapter file leaves a provenance record
+beside it: `--quantize` (with `--prune-experts`, `--remove-sublayer` or
+`--type-plan`) writes `OUT.gguf.quant.json`, `--merge-lora` writes
+`.merge.json`, `--train` writes `.train.json` and `--context-surgery` writes
+`.context.json`. Each record names its input and output files by sha256,
+the options that shaped the bytes and the runner that ran it, and for each
+input that was itself made by a step it links that step's record by path
+and sha256. With `--sign-key` the record is signed in place, the same chain
+and signature objects a receipt carries.
+
+```sh
+./runner -m base.gguf --train data.txt --train-out a.gguf --sign-key key.json
+./runner -m base.gguf --lora a.gguf --merge-lora merged.gguf --sign-key key.json
+./runner -m merged.gguf --quantize final.gguf --quant q8_0 --sign-key key.json
+./runner --lineage final.gguf --trust-key <public key>
+```
+
+`--lineage` walks the chain back and prints one line per step. A link is
+VERIFIED when the next step's input hash is this step's output hash, the
+record is byte for byte the one the next step recorded, the output file
+(where it is still on disk) hashes to its record, and the signature
+verifies (by the `--trust-key` signer when one is given). A consistent but
+unsigned record reads UNSIGNED; anything else is BROKEN. An input no step
+on this machine made (the publisher's download, a dataset) is the chain's
+ORIGIN, named by its sha256. The records alone are enough: copied together
+to another folder, they verify without the model files, looked up by name
+when their recorded paths are gone. Exit 0 every link verified and signed,
+1 consistent but not all signed, 2 broken or no record.
+
+What it proves is where the file came from and that nothing in between was
+changed; not that the file is good. That is the evaluation's job.
+
 ## Shadow mode: what could your local model have done?
 
 `python -m xyntetik_runner.shadow` is a bench with receipts: it records
@@ -2076,7 +2111,8 @@ whether the draft is `active` there.
 | `--train-eot` | Append the selected template's end-of-turn token to each JSONL completion target. Opt-in; without it the supplied completion is the complete target. |
 | `--train-dpo FILE` | Train an adapter from JSONL `prompt`, `chosen`, `rejected` pairs. CPU forward/backward path; the frozen base is the reference, evaluated with the adapter bypassed. Does not activate the output adapter. |
 | `--dpo-beta F` | DPO reference-deviation coefficient (default `0.1`). Uses the existing training step, learning-rate, context and output options. |
-| `--sign-key FILE` | With `--transcript`: sign the receipt with the key in FILE. The signature object is appended inside the record after the chain and covers every byte before its own `,"signature"` key, chain hash included, so any Ed25519 (or ML-DSA-44) library verifies it from the file bytes and the embedded public key alone. |
+| `--lineage FILE` | Walk the provenance chain of a model or adapter file (or of its record) back to its origins: each step's record re-hashed and checked against the next, each signature verified, `--trust-key` pinning the signer. Exit 0 verified and signed, 1 consistent but not all signed, 2 broken or no record. [Details](#lineage). |
+| `--sign-key FILE` | With `--quantize`, `--merge-lora`, `--train` or `--context-surgery`: sign the step's provenance record in place. With `--transcript`: sign the receipt with the key in FILE. The signature object is appended inside the record after the chain and covers every byte before its own `,"signature"` key, chain hash included, so any Ed25519 (or ML-DSA-44) library verifies it from the file bytes and the embedded public key alone. |
 | `--transcript-prev FILE` | With `--transcript`: link the new receipt to FILE (FILE's chain hash becomes this record's `chain.prev`; a chain head carries 64 zeros). With `--verify`: check that link, `UNVERIFIABLE` on a break. |
 | `--require-signed` | With `--verify`: an unsigned record is `UNVERIFIABLE`. Signature, trust and link checks all run before the model is loaded for the replay. |
 | `--trust-key HEX` | With `--verify`: the record must be signed by this public key, given as its hex bytes or as `sha256:` plus the hex SHA-256 of those bytes (an ML-DSA-44 key is 2624 hex characters; its digest fits a policy file); unsigned, or signed by any other key, is `UNVERIFIABLE`. The verdict JSON carries `signed`, `public_key` and `prev` either way. |

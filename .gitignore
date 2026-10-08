@@ -266,3 +266,10 @@ family-sweep-out/
 
 # tooluse-shifted eval records go to the Hugging Face dataset (evals/tooluse-shifted/results/README.md)
 evals/tooluse-shifted/results/*.json
+
+# provenance records the test fixtures leave beside themselves in the repo root (R17.1);
+# root-anchored: evals/ keeps its real records tracked
+/*.quant.json
+/*.merge.json
+/*.train.json
+/*.context.json

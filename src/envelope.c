@@ -1138,6 +1138,21 @@ bool record_sign(const char *path, const char *sign_key_path, const char *prev_p
     return ok;
 }
 
+int record_signature_state(const char *path, const char *trust_hex,
+                           char pub_out[SIGN_PUBHEX_CAP]) {
+    pub_out[0] = 0;
+    size_t n = 0;
+    char *buf = record_read(path, &n);
+    if (!buf) return 2;
+    receipt_sig_state st = receipt_signature_check(buf, n, pub_out);
+    bool tail_ok = record_tail_clean(buf, n);
+    free(buf);
+    if (st == RSIG_NONE) return 1;
+    if (st != RSIG_OK || !tail_ok) return 2;
+    if (trust_hex && *trust_hex && strcmp(trust_hex, pub_out) != 0) return 2;
+    return 0;
+}
+
 // 0: signed and the signature verifies (and matches trust_hex when given);
 // 1: unsigned; 2: bad or malformed signature, or another key than trusted
 int record_check(const char *path, const char *trust_hex) {
