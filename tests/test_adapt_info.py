@@ -47,12 +47,20 @@ def test_a_dense_model_serves_and_trains(fx):
     assert info["training"] == {"supported": True, "reason": None, "host": "cpu"}
 
 
-def test_a_routed_expert_model_serves_but_does_not_train(fx):
+def test_a_routed_expert_model_serves_and_trains_on_its_attention(fx):
+    # R17.3 (2026-10-08): softmax-routed MoE trains an attention-only adapter
+    # (the strict FD gate pins this fixture's backward, router term included)
     exe, d = fx
     info = _info(exe, d / "moe.afmoe-plain.gguf")
     assert info["adapter_serving"]["supported"] is True
+    assert info["training"]["supported"] is True
+
+
+def test_a_moe_router_outside_the_backward_does_not_train(fx):
+    exe, d = fx
+    info = _info(exe, d / "moe.ggroup.gguf")
     assert info["training"]["supported"] is False
-    assert info["training"]["reason"] == "MoE FFN"
+    assert info["training"]["reason"] == "group-limited MoE routing"
 
 
 def test_the_refusal_is_the_loaders_own_sentence(fx):

@@ -49,6 +49,14 @@ int main(int argc, char **argv) {
     // the gradient cosine are the checks. Established on the muse fixture
     // in R8.9.4 as a reading, made a mode here.
     bool stiff = argc > 3 && strcmp(argv[3], "stiff") == 0;
+    // "strict" (R17.3): the sparse-MoE fixtures. An attention adapter's
+    // gradient reaches its layer input through the frozen experts AND the
+    // router's softmax weights, and the router's share is small next to the
+    // 5% per-coordinate tolerance: a mutation that dropped the router term
+    // passed every check at 5% (worst rel err 0.013 to 0.020 on the three
+    // MoE fixtures) while the correct backward reads 0. Strict holds the
+    // resolved coordinates to 0.5%.
+    bool strict = argc > 3 && strcmp(argv[3], "strict") == 0;
     f16_init();
     model_params p;
     memset(&p, 0, sizeof(p));
@@ -213,6 +221,9 @@ int main(int argc, char **argv) {
     if (stiff)
         CHECK(cos_num / (sqrt(cos_a) * sqrt(cos_f) + 1e-30) >= 0.999,
               "stiff fixture: gradient cosine below 0.999");
+    if (strict)
+        CHECK(worst <= 0.005, "strict fixture: worst per-coordinate rel err %.4g above 0.005",
+              worst);
     printf("ok: %d FD coordinates across %d buffers (%d unresolved), worst rel err %.4g, "
            "cosine %.6f\n", checked, nsnap, unresolved, worst, cosine);
 

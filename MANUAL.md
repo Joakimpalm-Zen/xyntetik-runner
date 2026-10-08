@@ -384,9 +384,16 @@ tokens), the afmoe and Muse-Glimmer attention output gate, the sandwich
 norms, the per-layer output scale and sliding-window attention, and since
 2026-09-22 the GELU gated FFN (Gemma 3) beside the SiLU one, and since
 2026-09-23 Gemma 4 in full: the weightless V norm, the V-less full-attention
-layers, the E-series shared KV and per-layer embeddings. The training gate
-names what it still refuses: attention sinks, MoE experts, recurrent or
-hybrid blocks, and the derived-K cache layout. Every
+layers, the E-series shared KV and per-layer embeddings, and since
+2026-10-08 sparse-MoE models with Qwen3-MoE or Mixtral routing (softmax
+router, top-k, with or without renormalization): the adapter goes on the
+attention projections and the backward runs through the frozen experts and
+the router's softmax weights, held per coordinate to 0.5% by a strict
+finite-difference gate (a backward without the router term fails it). The
+training gate names what it still refuses: adapters on the experts
+themselves, other MoE routers (sigmoid, group-limited, biased), shared
+experts, attention sinks, recurrent or hybrid blocks, and the derived-K
+cache layout. Every
 covered shape is pinned by the finite-difference gate in `make test` on
 a fixture that carries it,
 and by a directional derivative over the whole adapter that averages out

@@ -7546,7 +7546,17 @@ static bool lora_bw_supported(model_t *m, char *why, size_t cap) {
     else if (m->n_removed > 0) r = "removed sublayers (--remove-sublayer artifact)";
     else if (m->qwen35 || m->granite_hybrid || m->nemotron_h)
         r = "recurrent architecture";
-    else if (m->n_expert > 0 || m->moe_gemma) r = "MoE FFN";
+    // R17.3 (2026-10-08): an adapter on the ATTENTION of a sparse-MoE model
+    // trains, with the backward running through the frozen router and
+    // experts (Qwen3-MoE / Mixtral routing: softmax router, top-k, optional
+    // renormalization and weight scale). The shapes the backward does not
+    // cover yet are refused by name.
+    else if (m->moe_gemma) r = "MoE FFN (gemma-4 dual-branch)";
+    else if (m->n_expert > 0 && m->expert_gating != EXPERT_GATE_SOFTMAX &&
+             m->expert_gating != EXPERT_GATE_SOFTMAX_WEIGHT)
+        r = "MoE router gating other than softmax";
+    else if (m->n_expert > 0 && m->n_expert_groups > 1) r = "group-limited MoE routing";
+    else if (m->n_expert > 0 && m->ffn_relu2) r = "gate-less MoE experts";
     else if (m->kv_q8) r = "q8 KV cache (use --kv f16)";
     else if (m->ffn_act == ACT_SWIGLU_OAI || m->ffn_act == ACT_XIELU)
         r = "FFN activation not in the backward (gpt-oss/apertus)";
@@ -7574,7 +7584,15 @@ static bool lora_bw_supported(model_t *m, char *why, size_t cap) {
         if (model_kv_is_ring(m, l)) r = "recycled KV rows (RUNNER_KV_RING)";
         else if (owner && !ly->wv && !m->v_rmsnorm) r = "absent V projection";
         else if (owner && !ly->wk) r = "absent K projection";
-        else if (!ly->w_gate || !ly->w_up) r = "ungated FFN";
+        else if (ly->n_expert > 0 &&
+                 (ly->exp_probs_b || ly->ffn_gate_inp_b || ly->ffn_gate_exps_b ||
+                  ly->ffn_up_exps_b || ly->ffn_down_exps_b))
+            r = "MoE router or expert biases";
+        else if (ly->n_expert > 0 && ly->post_ffn_norm_w) r = "MoE with a post-FFN norm";
+        else if (ly->n_expert > 0 && ly->ple_gate) r = "MoE with per-layer embeddings";
+        else if (ly->n_expert > 0 && (ly->w_gate_shexp || ly->w_up_shexp || ly->w_down_shexp))
+            r = "MoE shared experts";
+        else if (ly->n_expert == 0 && (!ly->w_gate || !ly->w_up)) r = "ungated FFN";
         else if (ly->attn_sinks) r = "attention sinks";
         else if (model_rope_dim(m, l) != model_head_dim(m, l))
             r = "partial-dimension rope";
@@ -7794,6 +7812,14 @@ static bool lora_layer_bw(model_t *m, int l, const int32_t *toks, int T,
     int q_dim = model_q_dim(m, l), kv_dim = model_kv_dim(m, l);
     int n_kv = kv_dim / hd, kv_mul = n_head / n_kv;
     int nff = ly->n_ff;
+    // R17.3: a sparse-MoE layer (attention-only adapter) recomputes its
+    // routing and the selected experts instead of a dense FFN, and its
+    // backward runs through the frozen experts and router; the dense FFN
+    // buffers below stay one element wide for it.
+    bool moe = ly->n_expert > 0;
+    int ne_x = moe ? ly->n_expert : 0, used = moe ? m->n_expert_used : 0;
+    int nfe = moe ? m->n_ff_exp : 0;
+    if (moe) nff = 1;
     float scale = model_attn_scale(m, l);
     const uint8_t *kc_l = (const uint8_t *)m->kcache + model_k_byte_off(m, l);
     const uint8_t *vc_l = (const uint8_t *)m->vcache + model_v_byte_off(m, l);
@@ -7863,6 +7889,17 @@ static bool lora_layer_bw(model_t *m, int l, const int32_t *toks, int T,
     float *dxg   = gate ? calloc((size_t)T * E, sizeof(float)) : NULL;
     float *opre  = ly->post_attn_norm_w ? malloc(szE) : NULL;
     float *fpre  = ly->post_ffn_norm_w ? malloc(szE) : NULL;
+    int   *msel  = moe ? malloc(sizeof(int) * (size_t)T * used) : NULL;
+    float *mselw = moe ? malloc(sizeof(float) * (size_t)T * used) : NULL;
+    float *mprob = moe ? malloc(sizeof(float) * (size_t)T * ne_x) : NULL;
+    float *mg    = moe ? malloc(sizeof(float) * (size_t)T * used * nfe) : NULL;
+    float *mu    = moe ? malloc(sizeof(float) * (size_t)T * used * nfe) : NULL;
+    float *mh    = moe ? malloc(sizeof(float) * (size_t)nfe) : NULL;
+    float *mdh   = moe ? malloc(sizeof(float) * (size_t)nfe) : NULL;
+    float *mdg   = moe ? malloc(sizeof(float) * (size_t)nfe) : NULL;
+    float *mdu   = moe ? malloc(sizeof(float) * (size_t)nfe) : NULL;
+    float *md    = moe ? malloc(sizeof(float) * (size_t)E) : NULL;
+    float *mdr   = moe ? malloc(sizeof(float) * (size_t)ne_x) : NULL;
     float *dbr   = malloc(szE);   // a branch output's gradient, per window
     float *dyb   = malloc(sizeof(float) * (size_t)E);  // one scaled row
     bool ok = xn1 && xa && xn2 && q && ao && g && u && dxn1 && dxa && dq &&
@@ -7871,7 +7908,9 @@ static bool lora_layer_bw(model_t *m, int l, const int32_t *toks, int T,
               (!ly->post_attn_norm_w || opre) && (!ly->post_ffn_norm_w || fpre) &&
               (!ly->qnorm_w || qpre) && (!need_kpre || kpre) &&
               (!vnorm || (vpre && dvn)) &&
-              (!ple || (xpost && ptt && pga && puu && pdu && pdg && pdx));
+              (!ple || (xpost && ptt && pga && puu && pdu && pdg && pdx)) &&
+              (!moe || (used <= 256 && msel && mselw && mprob && mg && mu && mh &&
+                        mdh && mdg && mdu && md && mdr));
     // the per-layer output scale multiplies the whole residual stream after
     // the layer, so every gradient inside the layer carries it
     if (ok && os != 1.0f)
@@ -7945,6 +7984,31 @@ static bool lora_layer_bw(model_t *m, int l, const int32_t *toks, int T,
         for (int i = 0; i < E; i++) xat[i] = xt[i] + rs * tmpE[i];
         float *x2 = xn2 + (size_t)t * E;
         xnorm(m, x2, xat, ly->ffn_norm_w, ly->ffn_norm_b, E, m->rms_eps);
+        if (moe) {
+            // the forward's own router (selection and weights), then the
+            // router's probabilities for the softmax-over-all adjoint, then
+            // each selected expert's gate and up
+            int *sl = msel + (size_t)t * used;
+            float *sw = mselw + (size_t)t * used;
+            moe_route(m, ly, x2, E, ne_x, used, sl, sw, false);
+            float *pr = mprob + (size_t)t * ne_x;
+            matvec_b(m->tp, pr, ne_x, ly->ffn_gate_inp, x2, E, E, ne_x, NULL, 1);
+            if (m->expert_gating == EXPERT_GATE_SOFTMAX) {
+                float mx = pr[0], ssum = 0.0f;
+                for (int e = 1; e < ne_x; e++) if (pr[e] > mx) mx = pr[e];
+                for (int e = 0; e < ne_x; e++) { pr[e] = expf(pr[e] - mx); ssum += pr[e]; }
+                for (int e = 0; e < ne_x; e++) pr[e] /= ssum;
+            }
+            for (int k = 0; k < used; k++) {
+                gguf_tensor gv = moe_expert_weight(ly, 0, sl[k], E, nfe);
+                gguf_tensor uv = moe_expert_weight(ly, 1, sl[k], E, nfe);
+                matvec_b(m->tp, mg + ((size_t)t * used + k) * nfe, nfe, &gv, x2,
+                         E, E, nfe, NULL, 1);
+                matvec_b(m->tp, mu + ((size_t)t * used + k) * nfe, nfe, &uv, x2,
+                         E, E, nfe, NULL, 1);
+            }
+            continue;
+        }
         matvec_b(m->tp, g + (size_t)t * nff, nff, ly->w_gate, x2, E, E, nff,
                  NULL, 1);
         lora_site_fw(m, l, LW_GATE, g + (size_t)t * nff, x2, E, nff);
@@ -7954,7 +8018,7 @@ static bool lora_layer_bw(model_t *m, int l, const int32_t *toks, int T,
     }
 
     if (lprof) { double n2 = plat_now(); lbw_prof[0] += n2 - lt; lt = n2; }
-    for (int t = 0; ok && t < T; t++) {
+    for (int t = 0; ok && !moe && t < T; t++) {
         const float *gt = g + (size_t)t * nff, *ut = u + (size_t)t * nff;
         float *ht = hact + (size_t)t * nff;
         // gated_act itself (not a re-transcription of SiLU/GELU here), so
@@ -8024,6 +8088,60 @@ static bool lora_layer_bw(model_t *m, int l, const int32_t *toks, int T,
             for (int i = 0; i < E; i++) dbt[i] = rs * dxt[i];
         }
     }
+    if (moe) {
+        // y = sum_k w_k * expert_k(x2), w = c * q(router logits). Through the
+        // experts: dx2 += w_k * J_k^T dy. Through the router: with
+        // s_k = dy . expert_k(x2), dL/dw_k = s_k, and the logit adjoint is
+        // c*q_j*(s_j - sum_k q_k s_k) on the selected experts when q is a
+        // softmax over them (renormalized top-k, or SOFTMAX_WEIGHT), and
+        // c*p_j*(s_j[j selected] - sum_k p_k s_k) on every expert when q is
+        // the plain softmax over all of them; dx2 += W_router^T dr.
+        float c = m->expert_w_scale != 0.0f ? m->expert_w_scale : 1.0f;
+        bool over_selected = m->expert_gating == EXPERT_GATE_SOFTMAX_WEIGHT ||
+                             m->expert_norm_w;
+        for (int t = 0; ok && t < T; t++) {
+            const float *dyt = dbr + (size_t)t * E;
+            float *dx2 = dxn2 + (size_t)t * E;
+            const int *sl = msel + (size_t)t * used;
+            const float *sw = mselw + (size_t)t * used;
+            float sk[256];
+            for (int k = 0; ok && k < used; k++) {
+                gguf_tensor gv = moe_expert_weight(ly, 0, sl[k], E, nfe);
+                gguf_tensor uv = moe_expert_weight(ly, 1, sl[k], E, nfe);
+                gguf_tensor dvw = moe_expert_weight(ly, 2, sl[k], E, nfe);
+                const float *gk = mg + ((size_t)t * used + k) * nfe;
+                const float *uk = mu + ((size_t)t * used + k) * nfe;
+                for (int j = 0; j < nfe; j++) mh[j] = gated_act(m->ffn_act, gk[j], uk[j]);
+                matvec_b(m->tp, md, E, &dvw, mh, nfe, nfe, E, NULL, 1);
+                float acc = 0.0f;
+                for (int i = 0; i < E; i++) acc = fmaf(dyt[i], md[i], acc);
+                sk[k] = acc;
+                memset(mdh, 0, sizeof(float) * (size_t)nfe);
+                ok = matvec_t(m, &dvw, dyt, mdh, nfe, E, 1);
+                for (int j = 0; ok && j < nfe; j++) {
+                    float dh = sw[k] * mdh[j];
+                    mdg[j] = dh * uk[j] * act_d(m->ffn_act, gk[j]);
+                    mdu[j] = dh * act_f(m->ffn_act, gk[j]);
+                }
+                ok = ok && matvec_t(m, &gv, mdg, dx2, E, nfe, 1) &&
+                     matvec_t(m, &uv, mdu, dx2, E, nfe, 1);
+            }
+            memset(mdr, 0, sizeof(float) * (size_t)ne_x);
+            if (over_selected) {
+                float sbar = 0.0f;
+                for (int k = 0; k < used; k++) sbar += (sw[k] / c) * sk[k];
+                for (int k = 0; k < used; k++)
+                    mdr[sl[k]] = c * (sw[k] / c) * (sk[k] - sbar);
+            } else {
+                const float *pr = mprob + (size_t)t * ne_x;
+                float sbar = 0.0f;
+                for (int k = 0; k < used; k++) sbar += pr[sl[k]] * sk[k];
+                for (int e = 0; e < ne_x; e++) mdr[e] = -c * pr[e] * sbar;
+                for (int k = 0; k < used; k++) mdr[sl[k]] += c * pr[sl[k]] * sk[k];
+            }
+            ok = ok && matvec_t(m, ly->ffn_gate_inp, mdr, dx2, E, ne_x, 1);
+        }
+    } else {
     ok = ok && lora_site_bw(m, l, LW_DOWN, ly->w_down, hact, dbr, dhact,
                             nff, E, T);
     for (int t = 0; ok && t < T; t++) {
@@ -8042,6 +8160,7 @@ static bool lora_layer_bw(model_t *m, int l, const int32_t *toks, int T,
     }
     ok = ok && lora_site_bw(m, l, LW_UP, ly->w_up, xn2, dgu, dxn2,
                             E, nff, T);
+    }
     for (int t = 0; ok && t < T; t++) {
         float *dxat = dxa + (size_t)t * E;
         memcpy(dxat, dx + (size_t)t * E,
@@ -8194,6 +8313,8 @@ static bool lora_layer_bw(model_t *m, int l, const int32_t *toks, int T,
     free(dbr); free(dyb);
     free(vpre); free(dvn); free(xpost); free(ptt); free(pga); free(puu);
     free(pdu); free(pdg); free(pdx);
+    free(msel); free(mselw); free(mprob); free(mg); free(mu); free(mh);
+    free(mdh); free(mdg); free(mdu); free(md); free(mdr);
     return ok;
 }
 
