@@ -3935,7 +3935,15 @@ uint64_t model_gpu_budget(uint64_t driver_free, uint64_t driver_total,
         uint64_t cap = driver_total / 100 * (uint64_t)reserve_pct;
         if (cap < budget) budget = cap;
     }
-    uint64_t hr = budget / 16;
+    // A thirty-second of the budget, 512 MiB at least. It was a sixteenth
+    // while the placement plan undercounted the device: on a 24 GB MIG slice
+    // the plan missed ~2 GB (hyper-connection mixers, per-binding rounding)
+    // and the 1.57 GB headroom was what absorbed it. With the plan counting
+    // both (RUNNER_DEBUG_VRAM, 2026-10-08) it is within 0.1 GB of the
+    // device's own figure on the RTX 3070 and the Blackwell slice, module
+    // load and JIT cost 3 MB on either, and a sixteenth was margin on top of
+    // margin: a pinned --cpu-moe 30 on Qwen3.8-Flash-Next lost its full split.
+    uint64_t hr = budget / 32;
     if (hr < (512ull << 20)) hr = 512ull << 20;
     if (headroom) *headroom = hr;
     return budget;

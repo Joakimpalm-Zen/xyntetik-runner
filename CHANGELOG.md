@@ -9,6 +9,18 @@ rename keep the names that were true when they were written.
 
 ## Unreleased
 
+- **The CUDA offload headroom is a thirty-second of the budget (512 MiB
+  floor), down from a sixteenth.** While the placement plan undercounted the
+  device by ~2 GB on a 24 GB slice, the 1.57 GB headroom was what absorbed
+  it; with the plan counting the hyper-connection mixers and per-binding
+  rounding, `RUNNER_DEBUG_VRAM` puts it within 0.1 GB of the device's own
+  figure on both the RTX 3070 (Windows) and the Blackwell slice, and module
+  load costs 3 MB on either. A sixteenth then cost a pinned `--cpu-moe 30`
+  on Qwen3.8-Flash-Next its full split (decode 18.5 to 14.5 tok/s). Now:
+  `--cpu-moe auto` places 18 banks with 1.6 GB actually free (`--kv q8`
+  without a retry), the pin is full again at 18.5. Cards under 16 GB keep
+  the 512 MiB floor, so the 8 GB class is unchanged.
+
 - **`make test` checks the embedded PTX against `cuda.c`'s kernel roster.**
   A kernel `cuda.c` names but `kernels_ptx.h` lacks fails the CUDA init, and
   the run goes to the CPU with only a log line (a branch with new kernels and
