@@ -3209,9 +3209,18 @@ static void dot_generic_multi(int type, const void *row, const float *const *xs,
     for (int c = 0; c < nc; c++) out[c] = s[c];
 }
 
+// calls into vec_dot_multi, for the route gate (tests/test_dot_route.c): a
+// one-row decode must never come here (1.1.1 sent it here and dense IQ3_S
+// decode halved while every output stayed byte-identical)
+static _Atomic unsigned long g_vdm_calls = 0;
+unsigned long vec_dot_multi_calls(void) {
+    return atomic_load_explicit(&g_vdm_calls, memory_order_relaxed);
+}
+
 void vec_dot_multi(int type, const void *row, const float *const *xs, int nc,
                    int n, float *out) {
     if (nc < 1) return;
+    atomic_fetch_add_explicit(&g_vdm_calls, 1, memory_order_relaxed);
     if (nc > VEC_DOT_MULTI_MAX) {
         // never asked for (mv_rows caps at MV_SMALL_BATCH); stay correct anyway
         for (int c = 0; c < nc; c++) out[c] = vec_dot(type, row, xs[c], n);
