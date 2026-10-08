@@ -2053,24 +2053,63 @@ fail:
     return NULL;
 }
 
-snode *schema_compile_qwen_parallel(jv *tools, const char *only_tool,
-                                    char *err, int errcap) {
-    snode *root = atem_seq(3);
-    snode *first = qwen_call(tools, only_tool, true, err, errcap);
-    snode *second = first ? qwen_call(tools, only_tool, true, err, errcap)
-                          : NULL;
-    if (!root || !first || !second || !atem_seq_add(root, first) ||
-        !atem_seq_add(root, atem_lit("\n")) ||
-        !atem_seq_add(root, second)) {
-        if (!root || root->n_props == 0) schema_free(first);
-        if (!root || root->n_props < 3) schema_free(second);
-        schema_free(root);
-        if (!err[0]) snprintf(err, errcap,
-                              "out of memory compiling parallel Qwen calls");
+// After a complete call in a required/named parallel turn: end the turn, or
+// open another call, at most `remaining` more. The two alternatives start on
+// different bytes (the stop marker's '<' against the separator's '\n'), so
+// the union resolves on the model's first byte. This replaced a fixed PAIR:
+// the turn had to carry exactly two calls, so a model with one call to make
+// was forced to invent a second, and one with three lost the third. The
+// model's own stop token reaches the end alternative through its spelling
+// (constraint_spelling_ok), as it does at the end of qwen_text_calls.
+typedef snode *(*native_call_fn)(jv *tools, const char *only, bool lead,
+                                 char *err, int errcap);
+static snode *native_more_calls(native_call_fn mk, jv *tools, const char *only,
+                                int remaining, char *err, int errcap) {
+    snode *end = atem_lit("<|im_end|>");
+    if (!end || !remaining) return end;
+    snode *more = atem_seq(3), *u = sn_new(SN_UNION);
+    snode *call = more && u ? mk(tools, only, true, err, errcap) : NULL;
+    snode *tail = call ? native_more_calls(mk, tools, only, remaining - 1,
+                                           err, errcap) : NULL;
+    if (u) u->alts = calloc(2, sizeof(*u->alts));
+    if (!more || !u || !u->alts || !call || !tail ||
+        !atem_seq_add(more, atem_lit("\n"))) {
+        schema_free(end); schema_free(more); schema_free(u);
+        schema_free(call); schema_free(tail);
+        if (!err[0]) snprintf(err, errcap, "out of memory compiling parallel calls");
         return NULL;
     }
+    atem_seq_add(more, call);
+    atem_seq_add(more, tail);
+    more->whitespace_significant = true;
+    u->whitespace_significant = true;
+    u->alts[u->n_alts++] = end;
+    u->alts[u->n_alts++] = more;
+    return u;
+}
+
+static snode *native_parallel_calls(native_call_fn mk, jv *tools,
+                                    const char *only, char *err, int errcap) {
+    snode *root = atem_seq(2);
+    snode *first = root ? mk(tools, only, true, err, errcap) : NULL;
+    snode *rest = first ? native_more_calls(mk, tools, only,
+                                            NATIVE_PARALLEL_MAX_CALLS - 1,
+                                            err, errcap) : NULL;
+    if (!root || !first || !rest) {
+        schema_free(root); schema_free(first); schema_free(rest);
+        if (!err[0]) snprintf(err, errcap, "out of memory compiling parallel calls");
+        return NULL;
+    }
+    atem_seq_add(root, first);
+    atem_seq_add(root, rest);
     root->whitespace_significant = true;
     return root;
+}
+
+snode *schema_compile_qwen_parallel(jv *tools, const char *only_tool,
+                                    char *err, int errcap) {
+    err[0] = 0;
+    return native_parallel_calls(qwen_call, tools, only_tool, err, errcap);
 }
 
 // XML parameter lists use the existing ordered native-member automaton.
@@ -2189,11 +2228,8 @@ snode *schema_compile_qwen_xml_turn(jv *tools, bool allow_final,
     if (!call) return NULL;
     if (allow_final) return qwen_or_final(call,final_schema,err,errcap);
     if (!parallel) return call;
-    snode *seq=atem_seq(3), *second=coder_call(tools,only,true,err,errcap);
-    if (!seq || !second) { schema_free(seq);schema_free(call);schema_free(second);return NULL; }
-    atem_seq_add(seq,call);
-    if (!atem_seq_add(seq,atem_lit("\n"))) { schema_free(seq);schema_free(second);return NULL; }
-    atem_seq_add(seq,second);return seq;
+    schema_free(call);
+    return native_parallel_calls(coder_call, tools, only, err, errcap);
 }
 
 snode *schema_compile_muse_user_payload(struct jv *schema,
