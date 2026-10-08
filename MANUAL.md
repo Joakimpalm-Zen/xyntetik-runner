@@ -1927,6 +1927,7 @@ instance instead.
 | `--reserve-cpu P` | Size the default thread count as a percentage of cores. |
 | `--kv f16\|q8\|k8v4\|fp4` | Choose KV cache storage; precision, memory use and backend support differ by format. [Details](#cli-kv). |
 | `--mlock` | Ask the OS to wire mapped weights into RAM; failure is non-fatal. |
+| `--populate` | Read every mapped part through once, sequentially, at load (synchronous) when the weights fit in available RAM, so a cold model does not fault its weights in by rows. Pays off where the disk's sequential rate dwarfs its random-fault rate (NVMe); measured on a ~100 MB/s volume it read all 83 GB of a MoE file in 849 s where demand faults took 501 s to the 32nd token, so it is off by default and says what it read and how long it took. Skipped with a message when RAM is short. |
 | `--moe-prefetch on\|off\|auto` | Prefetch routed expert blocks. Auto enables it only for measured oversubscribed Apple Silicon cases. |
 | `--draft PATH` | Use a same-vocabulary draft GGUF for speculative decoding; admission and backend restrictions apply. A server given a swap registry (`-m a=...,b=...`) refuses to start with `--draft`, which needs a single served model. [Details](#cli-draft). |
 | `--draft-k N` | Draft tokens per speculative round, default `4`. Also the width for `--mtp` and `--draft-lookup`. All sources stop at the context boundary, including with `-n -1`; a final verify row cannot emit a bonus beyond the context or transcript token buffer. |
