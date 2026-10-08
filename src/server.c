@@ -3222,6 +3222,11 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
                 if (base->qwen35 &&
                     mp->cpu_fallback_threads > pool_threads)
                     pool_threads = mp->cpu_fallback_threads;
+                // the slots' own threads and the HTTP thread need a CPU too:
+                // a pool filling every CPU of the mask halved a lone request
+                // (16 threads on 16 cores 4.7 tok/s, 15 threads 9.0, 2026-10-08)
+                int cpus = plat_cpu_count();
+                if (parallel > 1 && pool_threads >= cpus && cpus > 1) pool_threads = cpus - 1;
                 shared_pool = tpool_create(pool_threads);
                 if (!shared_pool) {
                     fprintf(stderr, "error: cannot create the slots' thread pool\n");
