@@ -7,6 +7,19 @@ to the exact build, and what is not covered. Releases before 1.0.0 made no
 such promise (the `-alpha` suffix was retired at v0.2.0). Entries below the
 rename keep the names that were true when they were written.
 
+## Unreleased
+
+- **`--populate`: a sequential read of the weights at load.** A cold
+  Qwen3.8-Flash-Next (83 GB, 512 experts) faulted its weights in by routed
+  4 KB rows: 501 s to its 32nd token on the Blackwell CPUs, 658 s with the
+  async `RUNNER_PREFETCH=1` hint. `--populate` reads each mapped part
+  through once (synchronous) when the weights fit in available RAM and
+  reports what it read and how long it took; `MADV_POPULATE_READ` was tried
+  first and ran past 28 minutes on that file. Off by default: on that box's
+  ~100 MB/s volume the full read (849 s) lost to demand faults; the knob is
+  for storage whose sequential rate dwarfs its random-fault rate. GGUF parts
+  now remember their file paths (`gguf_map_part_path`).
+
 ## v1.1.1 - 2026-10-08
 
 - **The NextN/MTP draft head runs on the CUDA path** (`--mtp-file` on a
