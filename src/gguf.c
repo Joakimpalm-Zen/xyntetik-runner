@@ -136,6 +136,7 @@ static int cmp_tensor_offset(const void *a, const void *b) {
 static bool gguf_open_one_x(gguf_file *g, const char *path, bool header_only) {
     memset(g, 0, sizeof(*g));
     g->header_only = header_only;
+    g->path = path ? strdup(path) : NULL;
     g->map = plat_mmap_ro(path, &g->map_size);
     if (!g->map || g->map_size < 24) {
         // "cannot open X as a GGUF file" reads as "this file is corrupt", but
@@ -517,8 +518,9 @@ bool gguf_open(gguf_file *g, const char *path) {
     gguf_tensor *merged = calloc((size_t)total, sizeof(*merged));
     void **maps = calloc(count, sizeof(*maps));
     size_t *sizes = calloc(count, sizeof(*sizes));
-    if ((total && !merged) || !maps || !sizes) {
-        free(merged); free(maps); free(sizes);
+    char **paths = calloc(count, sizeof(*paths));
+    if ((total && !merged) || !maps || !sizes || !paths) {
+        free(merged); free(maps); free(sizes); free(paths);
         for (uint32_t i = 0; i < count; i++) gguf_close(&parts[i]);
         free(parts);
         return false;
@@ -530,8 +532,10 @@ bool gguf_open(gguf_file *g, const char *path) {
         at += parts[i].n_tensors;
         maps[i] = parts[i].map;
         sizes[i] = parts[i].map_size;
+        paths[i] = parts[i].path;
         parts[i].map = NULL;
         parts[i].map_size = 0;
+        parts[i].path = NULL;
     }
 
     *g = parts[0];
@@ -540,6 +544,7 @@ bool gguf_open(gguf_file *g, const char *path) {
     g->n_tensors = total;
     g->maps = maps;
     g->map_sizes = sizes;
+    g->map_paths = paths;
     g->n_maps = count;
     g->mapped_size = mapped;
     g->map = maps[0];
@@ -572,20 +577,28 @@ bool gguf_attach(gguf_file *g, gguf_file *extra) {
     g->tensors = merged;
     void  **maps  = calloc((size_t)n_old + n_new, sizeof(*maps));
     size_t *sizes = calloc((size_t)n_old + n_new, sizeof(*sizes));
-    if (!maps || !sizes) { free(maps); free(sizes); return false; }
-    for (uint32_t i = 0; i < n_old; i++) maps[i] = gguf_map_part(g, i, &sizes[i]);
-    for (uint32_t i = 0; i < n_new; i++)
+    char  **paths = calloc((size_t)n_old + n_new, sizeof(*paths));
+    if (!maps || !sizes || !paths) { free(maps); free(sizes); free(paths); return false; }
+    for (uint32_t i = 0; i < n_old; i++) {
+        maps[i] = gguf_map_part(g, i, &sizes[i]);
+        const char *pp = gguf_map_part_path(g, i); paths[i] = pp ? strdup(pp) : NULL;
+    }
+    for (uint32_t i = 0; i < n_new; i++) {
         maps[n_old + i] = gguf_map_part(extra, i, &sizes[n_old + i]);
+        const char *pp = gguf_map_part_path(extra, i); paths[n_old + i] = pp ? strdup(pp) : NULL;
+    }
     for (uint64_t i = 0; i < extra->n_tensors; i++)
         if (!gguf_find_tensor(g, extra->tensors[i].name))
             g->tensors[g->n_tensors++] = extra->tensors[i];
-    free(g->maps); free(g->map_sizes);
-    g->maps = maps; g->map_sizes = sizes; g->n_maps = n_old + n_new;
+    if (g->map_paths) for (uint32_t i = 0; i < g->n_maps; i++) free(g->map_paths[i]);
+    free(g->maps); free(g->map_sizes); free(g->map_paths);
+    g->maps = maps; g->map_sizes = sizes; g->map_paths = paths; g->n_maps = n_old + n_new;
     g->map = maps[0]; g->map_size = sizes[0];
     g->mapped_size += extra->mapped_size;
     // the mappings now belong to g; drop extra's bookkeeping without unmapping
-    free(extra->maps); free(extra->map_sizes);
-    extra->maps = NULL; extra->map_sizes = NULL; extra->n_maps = 0;
+    if (extra->map_paths) for (uint32_t i = 0; i < extra->n_maps; i++) free(extra->map_paths[i]);
+    free(extra->maps); free(extra->map_sizes); free(extra->map_paths);
+    extra->maps = NULL; extra->map_sizes = NULL; extra->map_paths = NULL; extra->n_maps = 0;
     extra->map = NULL; extra->map_size = 0;
     gguf_close(extra);
     return true;
@@ -604,13 +617,17 @@ void gguf_close(gguf_file *g) {
     free(g->kv);
     free(g->tensors);
     if (g->maps) {
-        for (uint32_t i = 0; i < g->n_maps; i++)
+        for (uint32_t i = 0; i < g->n_maps; i++) {
             plat_munmap(g->maps[i], g->map_sizes[i]);
+            if (g->map_paths) free(g->map_paths[i]);
+        }
         free(g->maps);
         free(g->map_sizes);
+        free(g->map_paths);
     } else {
         plat_munmap(g->map, g->map_size);
     }
+    free(g->path);
     memset(g, 0, sizeof(*g));
 }
 
@@ -628,6 +645,12 @@ void *gguf_map_part(const gguf_file *g, uint32_t i, size_t *size) {
     if (!g || i >= gguf_map_count(g)) return NULL;
     if (size) *size = g->n_maps ? g->map_sizes[i] : g->map_size;
     return g->n_maps ? g->maps[i] : g->map;
+}
+
+const char *gguf_map_part_path(const gguf_file *g, uint32_t i) {
+    if (!g || i >= gguf_map_count(g)) return NULL;
+    if (g->n_maps) return g->map_paths ? g->map_paths[i] : NULL;
+    return g->path;
 }
 
 gguf_kv *gguf_get(gguf_file *g, const char *key) {

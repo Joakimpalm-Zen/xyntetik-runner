@@ -1574,6 +1574,11 @@ bool model_load(model_t *m, const char *path, const model_params *p) {
             struct timespec pt0, pt1; clock_gettime(CLOCK_MONOTONIC, &pt0);
             uint32_t np = gguf_map_count(&m->gf);
             for (uint32_t i = 0; i < np; i++) {
+                // a sequential read() through the file is the fast path (the
+                // page cache is shared with the mapping); a part whose path
+                // is unknown falls back to touching its mapping in order
+                const char *pp = gguf_map_part_path(&m->gf, i);
+                if (pp && plat_file_readthrough(pp)) continue;
                 size_t sz;
                 void *mp = gguf_map_part(&m->gf, i, &sz);
                 if (mp && sz) plat_populate(mp, sz);

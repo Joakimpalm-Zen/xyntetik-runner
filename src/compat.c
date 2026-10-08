@@ -62,6 +62,21 @@ static runner_pvm_fn runner_pvm(void) {
 
 bool plat_willneed_available(void) { return runner_pvm() != NULL; }
 
+uint64_t plat_file_readthrough(const char *path) {
+    HANDLE h = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING,
+                           FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN, NULL);
+    if (h == INVALID_HANDLE_VALUE) return 0;
+    enum { CHUNK = 16u << 20 };
+    char *buf = malloc(CHUNK);
+    if (!buf) { CloseHandle(h); return 0; }
+    uint64_t total = 0;
+    DWORD n = 0;
+    while (ReadFile(h, buf, CHUNK, &n, NULL) && n > 0) total += n;
+    free(buf);
+    CloseHandle(h);
+    return total;
+}
+
 void plat_populate(const void *addr, size_t len) {
     if (!addr || !len) return;
     const volatile unsigned char *p = addr;
@@ -508,16 +523,37 @@ void plat_willneed(const void *addr, size_t len) {
 
 bool plat_willneed_available(void) { return true; }   // madvise is always there
 
+uint64_t plat_file_readthrough(const char *path) {
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) return 0;
+#ifdef POSIX_FADV_SEQUENTIAL
+    (void)posix_fadvise(fd, 0, 0, POSIX_FADV_SEQUENTIAL);
+#endif
+    enum { CHUNK = 16u << 20 };
+    char *buf = malloc(CHUNK);
+    if (!buf) { close(fd); return 0; }
+    uint64_t total = 0;
+    for (;;) {
+        ssize_t n = read(fd, buf, CHUNK);
+        if (n <= 0) break;
+        total += (uint64_t)n;
+    }
+    free(buf);
+    close(fd);
+    return total;
+}
+
 void plat_populate(const void *addr, size_t len) {
     if (!addr || !len) return;
 #ifdef __linux__
+    // MADV_POPULATE_READ was tried first: on an 83 GB file it ran past 28
+    // minutes (page-sized faults under the mount's readahead window), so the
+    // fallback below stays a touch loop and plat_file_readthrough is the
+    // path that matters
     (void)madvise((void *)(uintptr_t)addr, len, MADV_SEQUENTIAL);
-#ifdef MADV_POPULATE_READ
-    if (madvise((void *)(uintptr_t)addr, len, MADV_POPULATE_READ) == 0) return;
 #endif
-#endif
-    // portable fallback: touch one byte per page in file order, the access
-    // pattern the kernel's readahead is built for
+    // touch one byte per page in file order, the access pattern the kernel's
+    // readahead is built for
     const volatile unsigned char *p = addr;
     unsigned char sink = 0;
     for (size_t off = 0; off < len; off += 4096) sink ^= p[off];

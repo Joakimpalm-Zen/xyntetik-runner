@@ -48,6 +48,8 @@ typedef struct {
     size_t      map_size;
     void      **maps;       // split GGUF ownership; NULL for a single file
     size_t     *map_sizes;
+    char       *path;       // the file this mapping came from (a single file)
+    char      **map_paths;  // per part, parallel to maps (split / attached)
     uint32_t    n_maps;
     uint64_t    mapped_size; // sum of every mapped part
     uint32_t    version;
@@ -85,6 +87,8 @@ uint64_t     gguf_mapped_size(const gguf_file *g);
 // iterate. Part `i` past the end is (NULL, 0).
 uint32_t     gguf_map_count(const gguf_file *g);
 void        *gguf_map_part(const gguf_file *g, uint32_t i, size_t *size);
+// the file behind mapped part i (NULL when unknown): what --populate reads through
+const char  *gguf_map_part_path(const gguf_file *g, uint32_t i);
 // Parse metadata and tensor DESCRIPTORS from a file whose data section may be
 // absent or short -- a header-only download, or the first few megabytes of a
 // remote file. This is a separate read path on purpose: gguf_open() refuses a

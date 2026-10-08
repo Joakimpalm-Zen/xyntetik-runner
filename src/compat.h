@@ -29,6 +29,9 @@ void   plat_willneed(const void *addr, size_t len);
 // Synchronous sequential read-in of a mapping (model_params.populate): Linux
 // MADV_POPULATE_READ where it exists, a page-touch loop in file order elsewhere.
 void   plat_populate(const void *addr, size_t len);
+// Read a whole file through once, sequentially, discarding the bytes: the OS
+// keeps them in the page cache for the mapping. Returns bytes read, 0 on failure.
+uint64_t plat_file_readthrough(const char *path);
 // Whether plat_willneed actually does anything on this build+OS. POSIX always
 // has madvise; Windows needs PrefetchVirtualMemory, which is resolved at
 // runtime and absent before Windows 8. Callers use this so nothing announces
