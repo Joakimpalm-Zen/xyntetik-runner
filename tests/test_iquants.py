@@ -334,6 +334,62 @@ def test_iquant_gpu_matches_cpu(runner_bin, gpu_identity_bin, iq_files, t):
     assert "gpu-identity: ok" in log, log
 
 
+# Odd output rows (2026-10-08): the lane GEMVs take two rows per warp and the
+# verify tiles run exact-width twins, so an odd row count exercises the tail
+# of both. A 257-wide FFN gives ffn_gate/ffn_up 257 rows (ffn_down falls back
+# to F16: its input is no longer whole i-quant blocks). IQ3_S and IQ4_XS need
+# no importance matrix. Pre-built as odd-<T>.gguf under RUNNER_IQ_FIXTURES.
+ODD_TYPES = ("IQ3_S", "IQ4_XS")
+
+
+@pytest.fixture(scope="module")
+def odd_files(tmp_path_factory):
+    files = {}
+    if FIXTURE_DIR:
+        for t in ODD_TYPES:
+            out = pathlib.Path(FIXTURE_DIR) / f"odd-{t}.gguf"
+            if not out.is_file():
+                unavailable("gpu", f"RUNNER_IQ_FIXTURES has no {out.name}")
+            files[t] = out
+        return files
+    if not TOOL["llama-quantize"]:
+        unavailable("gpu", "RUNNER_LLAMA_CPP_BIN lacks llama-quantize and RUNNER_IQ_FIXTURES is unset")
+    tmp = tmp_path_factory.mktemp("iqodd")
+    base = tmp / "odd-f32.gguf"
+    subprocess.run([sys.executable, ROOT / "scripts/make-test-model.py", "--wide",
+                    "--n-ff", "257", str(base)],
+                   check=True, cwd=ROOT, stdout=subprocess.DEVNULL)
+    for t in ODD_TYPES:
+        out = tmp / f"odd-{t}.gguf"
+        subprocess.run([TOOL["llama-quantize"], str(base), str(out), t],
+                       check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                       timeout=300)
+        files[t] = out
+    return files
+
+
+@pytest.mark.parametrize("batch", (1, 3, 5, 8))
+@pytest.mark.parametrize("t", ODD_TYPES)
+def test_iquant_gpu_odd_rows(runner_bin, gpu_identity_bin, odd_files, t, batch):
+    """Device against host at logit precision on 257-row i-quant tensors,
+    prefill in tiles of `batch` rows: batch 1 is the two-rows-per-warp GEMV's
+    tail, 3 and 5 the exact-width twins, 8 the widest twin."""
+    caps = json.loads(subprocess.run(
+        [runner_bin, "--caps"], cwd=ROOT, stdout=subprocess.PIPE,
+        check=True).stdout)
+    if not caps.get("gpu"):
+        unavailable("gpu", "no GPU backend on this machine")
+    if t not in caps.get("gpu_quants", []):
+        unavailable("gpu", f"{t} has no kernel on the {caps['gpu'].get('backend')} backend")
+    p = subprocess.run([gpu_identity_bin, odd_files[t], "0", str(batch)], cwd=ROOT,
+                       stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=600)
+    log = p.stdout.decode(errors="replace")
+    if "gpu-identity: ok (skipped)" in log:
+        unavailable("gpu", f"{t}: the gate skipped (no device, or CPU fallback)")
+    assert p.returncode == 0, log
+    assert "gpu-identity: ok" in log, log
+
+
 @pytest.fixture(scope="module")
 def tc_tol_bin():
     exe = ROOT / ("test-tc-tol.exe" if sys.platform == "win32" else "test-tc-tol")
