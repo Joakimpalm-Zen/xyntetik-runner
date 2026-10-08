@@ -9,6 +9,13 @@ rename keep the names that were true when they were written.
 
 ## Unreleased
 
+- **`make test` checks the embedded PTX against `cuda.c`'s kernel roster.**
+  A kernel `cuda.c` names but `kernels_ptx.h` lacks fails the CUDA init, and
+  the run goes to the CPU with only a log line (a branch with new kernels and
+  a stale `kernels_ptx.h` ran the whole RTX 3070 gate on the CPU,
+  2026-10-08). `scripts/check-ptx-roster.py` needs no GPU, so every platform
+  runs it.
+
 - **Source builds on the macOS 27 SDK keep Metal.** Two helper parameters in
   `kernels.metal` (`moe_dot8_q8_0`, `moe_dot8_mxfp4`) named two address
   spaces for one pointer (`const thread device const float **`); the SDK 27
