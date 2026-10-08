@@ -3597,11 +3597,15 @@ static __device__ __forceinline__ void iq4xs_lane_n(const uchar *blk, const floa
 
 // batch-1: x from global (staging for four rows measured slower: 27B decode
 // 11.9 -> 10.0 tok/s); the same values as the twins' staged copy
-// IQ_ROWS rows per warp (EXPERIMENT 2026-10-08): the rows share x through L1
-// and give a warp independent work; each row's arithmetic is unchanged
-#ifndef IQ_ROWS
+// Two rows per warp: the batch-1 i-quant GEMV is latency-bound (a chain of
+// small dependent loads per block: index bytes, then the grid word, then x),
+// and a second independent row in flight per warp hides part of it. The rows
+// share x through L1; each row's arithmetic is the one-row kernel's, so the
+// output bits are unchanged. Qwen3.8-27B IQ3_S on the 24 GB slice: decode
+// 11.96 -> 13.84 tok/s, text identical; four rows per warp 11.57 (register
+// pressure), two rows at eight warps per block 13.72 (2026-10-08).
+// enc_mv launches these kernels with 4 * IQ_ROWS rows per 128-thread block.
 #define IQ_ROWS 2
-#endif
 #define IQ_LANE_MV1(fnn, BS) \
     unsigned row0 = (blockIdx.x * (blockDim.x >> 5) + (threadIdx.x >> 5)) * IQ_ROWS; \
     unsigned lane = threadIdx.x & 31; \
