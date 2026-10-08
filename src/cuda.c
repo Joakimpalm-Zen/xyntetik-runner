@@ -325,6 +325,9 @@ typedef struct gpu_weights {
     // exact-width twins, [n] for n = 2..8 columns (the codebook i-quants);
     // enc_mv_batch prefers them over the width class
     CUfunction  f_gemvx[9][KT_N];
+    // int8-activation codebook GEMVs, [n] for n = 1..8 columns, and the x
+    // quantizer (RUNNER_CUDA_Q8X=1, experimental)
+    CUfunction  f_q8x[9][KT_N], f_quant_q8x;
     // sparse-MoE device routing + indirect expert matvecs (fused-3D layout)
     CUfunction  f_moe_route, f_moe_actmul, f_moe_sum;
     CUfunction  f_moe_mv[KT_N];         // indexed by expert tensor type
@@ -387,6 +390,8 @@ typedef struct {
     gpu_weights *sw;                    // shared weights, refcounted
     CUdeviceptr kc, vc;
     CUdeviceptr x, xb, xb2, q, kt, vt, hb, hb2, att, attn_part, logits;
+    CUdeviceptr q8x_q, q8x_d;   // RUNNER_CUDA_Q8X: int8 x [MVB][q8x_cap] and its per-32 scales
+    int q8x_cap;
     CUdeviceptr x_hc, hc_xn, hc_lo, hc_gate, hc_inject;  // qwen4exp wide residual + mixer scratch
     CUdeviceptr splitk;                                   // split-K partials, SPLITK_PARTIALS floats
     CUdeviceptr shexp_in, shexp_g, shexp_u, shexp_o, shexp_gate;  // shared expert on the device
@@ -839,6 +844,7 @@ static bool moe_grouped_eligible(const model_t *m) {
 }
 
 static void gpu_ctx_free(model_t *m, gpu_t *g);
+static bool gpu_q8x_on(void);
 
 #define CK(call) do { CUresult _r = (call); if (_r != 0) { \
     fprintf(stderr, "gpu: %s failed: %s\n", #call, cu_err(_r)); goto fail; } } while (0)
@@ -1806,6 +1812,31 @@ static gpu_weights *shared_build(model_t *m, size_t act_bytes, int max_hd,
             { &w->f_moe_scatter,      "k_moe_scatter_add" },
             { &w->f_moe_actmul_plain, "k_moe_actmul_plain" },
             { &w->f_moe_copy,         "k_moe_copy_cols" },
+            { &w->f_q8x[1][T_IQ3_S], "k_q8x_iq3_s_x1" },
+            { &w->f_q8x[2][T_IQ3_S], "k_q8x_iq3_s_x2" },
+            { &w->f_q8x[3][T_IQ3_S], "k_q8x_iq3_s_x3" },
+            { &w->f_q8x[4][T_IQ3_S], "k_q8x_iq3_s_x4" },
+            { &w->f_q8x[5][T_IQ3_S], "k_q8x_iq3_s_x5" },
+            { &w->f_q8x[6][T_IQ3_S], "k_q8x_iq3_s_x6" },
+            { &w->f_q8x[7][T_IQ3_S], "k_q8x_iq3_s_x7" },
+            { &w->f_q8x[8][T_IQ3_S], "k_q8x_iq3_s_x8" },
+            { &w->f_q8x[1][T_IQ3_XXS], "k_q8x_iq3_xxs_x1" },
+            { &w->f_q8x[2][T_IQ3_XXS], "k_q8x_iq3_xxs_x2" },
+            { &w->f_q8x[3][T_IQ3_XXS], "k_q8x_iq3_xxs_x3" },
+            { &w->f_q8x[4][T_IQ3_XXS], "k_q8x_iq3_xxs_x4" },
+            { &w->f_q8x[5][T_IQ3_XXS], "k_q8x_iq3_xxs_x5" },
+            { &w->f_q8x[6][T_IQ3_XXS], "k_q8x_iq3_xxs_x6" },
+            { &w->f_q8x[7][T_IQ3_XXS], "k_q8x_iq3_xxs_x7" },
+            { &w->f_q8x[8][T_IQ3_XXS], "k_q8x_iq3_xxs_x8" },
+            { &w->f_q8x[1][T_IQ4_XS], "k_q8x_iq4_xs_x1" },
+            { &w->f_q8x[2][T_IQ4_XS], "k_q8x_iq4_xs_x2" },
+            { &w->f_q8x[3][T_IQ4_XS], "k_q8x_iq4_xs_x3" },
+            { &w->f_q8x[4][T_IQ4_XS], "k_q8x_iq4_xs_x4" },
+            { &w->f_q8x[5][T_IQ4_XS], "k_q8x_iq4_xs_x5" },
+            { &w->f_q8x[6][T_IQ4_XS], "k_q8x_iq4_xs_x6" },
+            { &w->f_q8x[7][T_IQ4_XS], "k_q8x_iq4_xs_x7" },
+            { &w->f_q8x[8][T_IQ4_XS], "k_q8x_iq4_xs_x8" },
+            { &w->f_quant_q8x,        "k_quant_q8x" },
         };
         for (size_t i = 0; i < sizeof(fns) / sizeof(*fns); i++)
             CK(cu.ModuleGetFunction(fns[i].f, w->mod, fns[i].name));
@@ -2517,6 +2548,18 @@ bool gpu_init(model_t *m) {
             hb_elems = 2 * (size_t)m->n_ff_exp;
         CK(cu.MemAlloc(&g->hb,     sizeof(float) * hb_elems));
         CK(cu.MemAlloc(&g->hb2,    sizeof(float) * hb_elems));
+        if (gpu_q8x_on()) {
+            // the widest matvec input: FFN down (n_ff), the attention/recurrent
+            // projections (xdim, the DeltaNet mix), the MTP concat (2 n_embd)
+            int mi = xdim;
+            if (m->n_ff > mi) mi = m->n_ff;
+            if (q35_mixdim > mi) mi = q35_mixdim;
+            if (2 * m->n_embd > mi) mi = 2 * m->n_embd;
+            if (m->ssm_inner > mi) mi = m->ssm_inner;
+            g->q8x_cap = mi;
+            CK(cu.MemAlloc(&g->q8x_q, (size_t)MVB * mi));
+            CK(cu.MemAlloc(&g->q8x_d, sizeof(float) * (size_t)MVB * (mi / 32 + 1)));
+        }
         if (m->n_ff_shexp > 0 && moe_any_on_device(m)) {
             CK(cu.MemAlloc(&g->shexp_in,   sizeof(float) * MVB * xdim));
             CK(cu.MemAlloc(&g->shexp_g,    sizeof(float) * MVB * m->n_ff_shexp));
@@ -3116,6 +3159,14 @@ static bool launch_tiled_xscaled(gpu_t *g, CUfunction f, unsigned grid,
 static bool enc_mv_batch(gpu_t *g, model_t *m, gguf_tensor *w, CUdeviceptr x,
                          CUdeviceptr y, int n_in, int n_out, CUdeviceptr bias,
                          int batch, int xs, int ys);
+// RUNNER_CUDA_Q8X=1: the int8-activation codebook GEMVs (EXPERIMENTAL; not
+// the float route's bits, tolerance-gated against the CPU)
+static bool gpu_q8x_on(void) {
+    static int on = -1;
+    if (on < 0) { const char *e = getenv("RUNNER_CUDA_Q8X"); on = e && *e && *e != '0'; }
+    return on == 1;
+}
+
 static bool gpu_small_batch_on(void) {
     static int on = -1;
     if (on < 0) {
@@ -3138,6 +3189,17 @@ static bool enc_mv(gpu_t *g, model_t *m, gguf_tensor *w, CUdeviceptr x,
     mv_args a = { n_in, n_out, w_off, bias != 0, batch, xs, ys };
     CUdeviceptr b = bias ? bias : g->sw->dummy;
     void *p[] = { &weights, &x, &y, &a, &b };
+    // RUNNER_CUDA_Q8X: quantize x to int8 once (per 32), then the dp4a GEMV;
+    // batch 1..8 of IQ3_S / IQ3_XXS / IQ4_XS
+    if (batch >= 1 && batch <= 8 && w->scale == 1.0f && g->q8x_q &&
+        n_in <= g->q8x_cap && n_in % 256 == 0 && g->sw->f_q8x[batch][w->type]) {
+        int nbk = n_in / 32 * batch;
+        void *pq[] = { &x, &g->q8x_q, &g->q8x_d, &n_in, &batch, &xs };
+        if (!launch(g, g->sw->f_quant_q8x, (nbk + 3) / 4, 1, 1, 128, pq)) return false;
+        void *pm[] = { &weights, &g->q8x_q, &g->q8x_d, &y, &a, &b };
+        unsigned rpb = batch == 1 ? 8 : 4;
+        return launch(g, g->sw->f_q8x[batch][w->type], (n_out + rpb - 1) / rpb, 1, 1, 128, pm);
+    }
     // Small batch (1 < batch <= GPU_SMALL_BATCH): a speculative verify tile,
     // a short prompt, a few rows of one expert. The tile kernels below are
     // shaped for 64-row prefill tiles and their cost barely falls with the
@@ -3374,7 +3436,7 @@ static void gpu_ctx_free(model_t *m, gpu_t *g) {
     if (g->stream && cu.StreamDestroy) cu.StreamDestroy(g->stream);
     CUdeviceptr bufs[] = { g->kc, g->vc, g->x, g->xb, g->xb2,
                            g->q, g->kt, g->vt, g->hb, g->hb2, g->att,
-                           g->attn_part, g->logits, g->xsc, g->pos_dev,
+                           g->attn_part, g->logits, g->xsc, g->pos_dev, g->q8x_q, g->q8x_d,
                            g->moe_logits, g->moe_eout, g->moe_sel,
                            g->moe_selw, g->moe_hb, g->moe_hb2,
                            g->moe_gath, g->moe_dout, g->moe_gidx, g->moe_gw,
