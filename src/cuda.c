@@ -1138,6 +1138,21 @@ static uint64_t tensor_file_off(const model_t *m, const gguf_tensor *t) {
     return (uint64_t)((const uint8_t *)t->data - (const uint8_t *)m->gf.map);
 }
 
+// The NextN/MTP head's residual: one row of n_embd, or one per
+// hyper-connection stream.
+static int mtp_streams(const model_t *m) { return m->hyper_conn ? m->hc_count : 1; }
+
+// A head loaded with --mtp-file lives in its own mapping, outside the one
+// contiguous upload a full split makes of the main file.
+static bool mtp_outside_main_map(const model_t *m) {
+    const gguf_tensor *ts[] = { m->mtp_eh_proj, m->layers[m->n_layer].wo, m->mtp_head };
+    const uint8_t *b = (const uint8_t *)m->gf.map;
+    for (size_t i = 0; i < sizeof ts / sizeof *ts; i++)
+        if (ts[i] && ((const uint8_t *)ts[i]->data < b ||
+                      (const uint8_t *)ts[i]->data >= b + m->gf.map_size)) return true;
+    return false;
+}
+
 // Tensor-role placement cannot preserve mmap offsets in one compact device
 // allocation: the skipped experts are the holes. Upload each retained tensor
 // as a small binding and resolve matvecs by their stable GGUF file offset.
@@ -1363,11 +1378,12 @@ static gpu_weights *shared_build(model_t *m, size_t act_bytes, int max_hd,
         // the NextN/MTP block rides along with a full split: its attention,
         // mixers and head projections (its experts stay on the host under
         // --cpu-moe, like any bank the plan leaves there), plus its KV rows
-        const bool mtp_dev = m->mtp_ready && m->hyper_conn;
+        const bool mtp_dev = m->mtp_ready;
         if (mtp_dev) {
             const layer_t *ml = &m->layers[m->n_layer];
             fixed += layer_weight_bytes(ml, m->n_expert, moe_on_host(m, m->n_layer));
             if (m->mtp_eh_proj) fixed += m->mtp_eh_proj->nbytes;
+            if (m->mtp_head && m->mtp_head != m->output) fixed += m->mtp_head->nbytes;
             if (m->mtp_hc_head_down) fixed += m->mtp_hc_head_down->nbytes;
             if (m->mtp_hc_head_up) fixed += m->mtp_hc_head_up->nbytes;
             fixed += model_kv_boundary_bytes_sum(m, m->n_layer + 1) -
@@ -1548,7 +1564,7 @@ static gpu_weights *shared_build(model_t *m, size_t act_bytes, int max_hd,
                             "layers over %.2f GB of the file against %.2f GB of "
                             "weights; uploading per tensor\n",
                     G, upload_len / 1e9, planned_upload / 1e9);
-        w->bound = m->cpu_moe || spread;
+        w->bound = m->cpu_moe || spread || (full && mtp_dev && mtp_outside_main_map(m));
         w->weights_len = w->bound ? 0 : upload_len;
 
         CK(cu.ModuleLoadData(&w->mod, k_ptx_src));
@@ -1776,7 +1792,11 @@ static gpu_weights *shared_build(model_t *m, size_t act_bytes, int max_hd,
                     !binding_add(w, m, ly->hc_attn_inject) || !binding_add(w, m, ly->hc_ffn_down) ||
                     !binding_add(w, m, ly->hc_ffn_up) || !binding_add(w, m, ly->hc_ffn_inject) ||
                     !binding_add(w, m, m->mtp_eh_proj) || !binding_add(w, m, m->mtp_hc_head_down) ||
-                    !binding_add(w, m, m->mtp_hc_head_up)) goto fail;
+                    !binding_add(w, m, m->mtp_hc_head_up) || !binding_add(w, m, ly->wqkv) ||
+                    !binding_add(w, m, ly->wq_gate) || !binding_add(w, m, m->mtp_head)) goto fail;
+                if (!ly->is_moe &&
+                    (!binding_add(w, m, ly->w_gate) || !binding_add(w, m, ly->w_up) ||
+                     !binding_add(w, m, ly->w_down))) goto fail;
                 if (ly->is_moe && !moe_on_host(m, m->n_layer) &&
                     (!binding_add(w, m, ly->ffn_gate_inp) || !binding_add(w, m, ly->ffn_gate_exps) ||
                      !binding_add(w, m, ly->ffn_up_exps) || !binding_add(w, m, ly->ffn_down_exps) ||
@@ -1801,11 +1821,14 @@ static gpu_weights *shared_build(model_t *m, size_t act_bytes, int max_hd,
             w->hc_head_norm = f32_dbuf(m->hc_head_norm,
                                        (size_t)m->hc_count * m->n_embd,
                                        "hc head mixer norm", -1);
-        if (m->mtp_ready && m->hyper_conn) {
-            size_t hcd = (size_t)m->hc_count * m->n_embd;
+        if (m->mtp_ready) {
+            size_t hcd = (size_t)mtp_streams(m) * m->n_embd;
+            // one stream: the head norm is nextn.shared_head_norm, or the
+            // backbone's output norm (model.c mtp_run)
+            const float *hn = m->mtp_head_norm_w ? m->mtp_head_norm_w : m->hyper_conn ? NULL : m->out_norm_w;
             w->mtp_enorm     = f32_dbuf(m->mtp_enorm_w, m->n_embd, "MTP embedding norm", m->n_layer);
             w->mtp_hnorm     = f32_dbuf(m->mtp_hnorm_w, hcd, "MTP hidden norm", m->n_layer);
-            w->mtp_head_norm = f32_dbuf(m->mtp_head_norm_w, hcd, "MTP head mixer norm", m->n_layer);
+            w->mtp_head_norm = f32_dbuf(hn, hcd, "MTP head norm", m->n_layer);
             if (!w->mtp_enorm || !w->mtp_hnorm || !w->mtp_head_norm) goto fail;
         }
         if (!w->inv_freq || (m->hyper_conn ? !w->hc_head_norm : !w->out_norm) ||
@@ -2315,7 +2338,7 @@ bool gpu_init(model_t *m) {
         // redirected) storage location. See model_kv_boundary_bytes().
         // K and V are sized separately: under --kv k8v4 the two caches
         // have different row formats (K q8_0, V fp4).
-        const bool mtp_dev = m->mtp_ready && m->hyper_conn && m->gpu_layers == m->n_layer;
+        const bool mtp_dev = m->mtp_ready && m->gpu_layers == m->n_layer;
         size_t k_bytes = model_k_boundary_bytes(m, m->gpu_layers + (mtp_dev ? 1 : 0));
         size_t v_bytes = model_v_boundary_bytes(m, m->gpu_layers + (mtp_dev ? 1 : 0));
         CK(cu.MemAlloc(&g->kc, k_bytes));
@@ -2337,7 +2360,7 @@ bool gpu_init(model_t *m) {
         CK(cu.MemAlloc(&g->xb,     sizeof(float) * MVB * xdim));
         CK(cu.MemAlloc(&g->xb2,    sizeof(float) * MVB * xdim));
         if (mtp_dev) {
-            size_t hcd = (size_t)m->hc_count * m->n_embd;
+            size_t hcd = (size_t)mtp_streams(m) * m->n_embd;
             CK(cu.MemAlloc(&g->mtp_h,       sizeof(float) * (size_t)m->n_batch * hcd));
             CK(cu.MemAlloc(&g->mtp_pending, sizeof(float) * hcd));
             CK(cu.MemAlloc(&g->mtp_cat,     sizeof(float) * MVB * hcd * 2));
@@ -3382,7 +3405,7 @@ static bool fwd_tile(gpu_t *g, model_t *m, const int32_t *tokens, int tn,
 static bool gpu_hc_mix(gpu_t *g, model_t *m, CUdeviceptr w_norm,
                        gguf_tensor *w_down, gguf_tensor *w_up, gguf_tensor *w_inject,
                        CUdeviceptr x_hc_rows, CUdeviceptr y, int ys, int tn);
-// ---- NextN/MTP head on the device (hyper-connection families) ------------
+// ---- NextN/MTP head on the device ----------------------------------------
 // The CPU head's twin (model.c mtp_run): per queued pair (h, tok) the input
 // per stream is [enorm(embed(tok)) ; hnorm_c(h_c)], projected by eh_proj into
 // the block's wide residual, the block runs through fwd_tile at index
@@ -3393,31 +3416,32 @@ static bool gpu_hc_mix(gpu_t *g, model_t *m, CUdeviceptr w_norm,
 // chained hidden stays in mtp_hid.
 bool gpu_mtp_bound(const model_t *m) {
     gpu_t *g = m ? m->gpu : NULL;
-    return g && g->mtp_h && m->mtp_ready && m->hyper_conn && m->gpu_layers >= m->n_layer;
+    return g && g->mtp_h && m->mtp_ready && m->gpu_layers >= m->n_layer;
 }
 
 bool gpu_mtp_note_row(model_t *m, int row) {
     gpu_t *g = m->gpu;
     if (!gpu_mtp_bound(m) || row < 0 || row >= m->n_batch) return false;
-    size_t hcd = (size_t)m->hc_count * m->n_embd * sizeof(float);
+    size_t hcd = (size_t)mtp_streams(m) * m->n_embd * sizeof(float);
     if (cu.CtxSetCurrent(g->sw->ctx) != 0) return false;
     // mtp_rows holds every tile of the last forward (x_hc only the last tile)
     return cu.MemcpyDtoD(g->mtp_pending, g->mtp_rows + (size_t)row * hcd, hcd) == 0;
 }
 
-// after a trunk tile: file its final wide residual rows for the head
+// after a trunk tile: file its final residual rows (wide under hyper-connections) for the head
 static bool mtp_save_rows(gpu_t *g, model_t *m, int i, int tn) {
-    if (!g->mtp_rows || !m->hyper_conn) return true;
-    size_t hcd = (size_t)m->hc_count * m->n_embd * sizeof(float);
+    if (!g->mtp_rows) return true;
+    size_t hcd = (size_t)mtp_streams(m) * m->n_embd * sizeof(float);
     if (i + tn > m->n_batch) return true;
     if (cu.StreamSynchronize(g->stream) != 0) return false;   // the tile's kernels first
-    return cu.MemcpyDtoD(g->mtp_rows + (size_t)i * hcd, g->x_hc, (size_t)tn * hcd) == 0;
+    return cu.MemcpyDtoD(g->mtp_rows + (size_t)i * hcd, m->hyper_conn ? g->x_hc : g->x,
+                         (size_t)tn * hcd) == 0;
 }
 
 bool gpu_mtp_queue_pending(model_t *m, int slot) {
     gpu_t *g = m->gpu;
     if (!gpu_mtp_bound(m) || slot < 0 || slot >= m->n_batch) return false;
-    size_t hcd = (size_t)m->hc_count * m->n_embd * sizeof(float);
+    size_t hcd = (size_t)mtp_streams(m) * m->n_embd * sizeof(float);
     if (cu.CtxSetCurrent(g->sw->ctx) != 0) return false;
     return cu.MemcpyDtoD(g->mtp_h + (size_t)slot * hcd, g->mtp_pending, hcd) == 0;
 }
@@ -3425,7 +3449,7 @@ bool gpu_mtp_queue_pending(model_t *m, int slot) {
 bool gpu_mtp_reset_pending(model_t *m) {
     gpu_t *g = m->gpu;
     if (!gpu_mtp_bound(m)) return false;
-    size_t hcd = (size_t)m->hc_count * m->n_embd * sizeof(float);
+    size_t hcd = (size_t)mtp_streams(m) * m->n_embd * sizeof(float);
     if (cu.CtxSetCurrent(g->sw->ctx) != 0) return false;
     return cu.MemsetD8(g->mtp_pending, 0, hcd) == 0;
 }
@@ -3438,7 +3462,9 @@ bool gpu_mtp_run(model_t *m, bool chained, int slot0, const int32_t *tok, int n,
     gpu_t *g = m->gpu;
     if (!gpu_mtp_bound(m) || n < 1 || n > MVB || (chained && n != 1) ||
         slot0 < 0 || slot0 + n > m->n_batch) return false;
-    int E = m->n_embd, hc = m->hc_count, hcd = hc * E, l = m->n_layer;
+    int E = m->n_embd, hc = mtp_streams(m), hcd = hc * E, l = m->n_layer;
+    // the block's residual: the wide x_hc, or the narrow x of a plain model
+    CUdeviceptr res = m->hyper_conn ? g->x_hc : g->x;
     if (cu.CtxSetCurrent(g->sw->ctx) != 0) return false;
     // embeddings of the pair tokens, dequantized on the host like stage_x
     size_t ers = ggml_row_size(m->mtp_embd->type, E);
@@ -3471,11 +3497,22 @@ bool gpu_mtp_run(model_t *m, bool chained, int slot0, const int32_t *tok, int n,
     for (int r0 = 0; r0 < n * hc; r0 += MVB) {
         int rc = n * hc - r0 < MVB ? n * hc - r0 : MVB;
         if (!enc_mv(g, m, m->mtp_eh_proj, g->mtp_cat + (size_t)r0 * 2 * E * sizeof(float),
-                    g->x_hc + (size_t)r0 * E * sizeof(float), 2 * E, E, 0, rc, 2 * E, E))
+                    res + (size_t)r0 * E * sizeof(float), 2 * E, E, 0, rc, 2 * E, E))
             return false;
     }
     if (!fwd_tile(g, m, tok, n, pos, false, l, l + 1)) return false;
-    CUdeviceptr last = g->x_hc + (size_t)(n - 1) * hcd * sizeof(float);
+    CUdeviceptr last = res + (size_t)(n - 1) * hcd * sizeof(float);
+    if (!m->hyper_conn) {
+        // one stream (model.c mtp_run): the head norm writes the hidden the
+        // next chained step pairs with, and the LM head reads it
+        if (!want_logits) return cu.StreamSynchronize(g->stream) == 0;
+        if (!enc_rmsnorm(g, last, g->mtp_hid, g->sw->mtp_head_norm, E, m->rms_eps, 1, E, E) ||
+            !enc_mv(g, m, m->mtp_head, g->mtp_hid, g->logits, E, m->n_vocab, 0, 1, 0, 0) ||
+            cu.StreamSynchronize(g->stream) != 0 ||
+            cu.MemcpyDtoH(m->mtp_logits, g->logits, sizeof(float) * (size_t)m->n_vocab) != 0)
+            return false;
+        return true;
+    }
     // the copies below are plain (default-stream) copies: wait for the block
     if (cu.StreamSynchronize(g->stream) != 0) return false;
     if (cu.MemcpyDtoD(g->mtp_hid, last, (size_t)hcd * sizeof(float)) != 0) return false;
