@@ -812,7 +812,7 @@ static char *messages_prompt(slot_t *s, sock_t fd, jv *req, tool_envelope *env,
     // explicit disable_parallel_tool_use always wins.
     jv *par = raw_choice ? jv_get(raw_choice, "disable_parallel_tool_use") : NULL;
     bool parallel = par && par->type == J_BOOL ? !par->b
-                                               : tool_parallel_default(s->tmpl);
+                                               : tool_parallel_default(s->tmpl, NULL);
     int rc = tool_envelope_build_ex(tools, choice, NULL, parallel, env, terr,
                                     sizeof(terr));
     if (rc < 0) {

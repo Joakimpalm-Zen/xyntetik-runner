@@ -3854,7 +3854,7 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
             // announced as they start — so they are emitted before any token
             // exists, which is exactly what makes a client able to render the
             // turn's identity immediately.
-            resp_doc d = { .par_default = tool_parallel_default(s->tmpl), .status = "in_progress", .req = req };
+            resp_doc d = { .par_default = tool_parallel_default(s->tmpl, jv_get(req, "tool_choice")), .status = "in_progress", .req = req };
             for (int i = 0; i < 2 && !g.dead; i++) {
                 sbuf f = {0};
                 sb_lit(&f, ",\"response\":");
@@ -3867,7 +3867,7 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
             // its content: the id, model and input token count are known
             // before a token exists, and a client renders the turn's identity
             // from them immediately. stop_reason is null until message_delta.
-            resp_doc d = { .par_default = tool_parallel_default(s->tmpl), .n_prompt = n_prompt, .req = req };
+            resp_doc d = { .par_default = tool_parallel_default(s->tmpl, jv_get(req, "tool_choice")), .n_prompt = n_prompt, .req = req };
             sbuf f = {0};
             sb_lit(&f, ",\"message\":");
             anth_body(&f, &g, &d);
@@ -4077,7 +4077,7 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
         }
         if (!g.dead) {
             bool truncated = cut || failed;
-            resp_doc d = { .par_default = tool_parallel_default(s->tmpl), .status = truncated ? "incomplete" : "completed",
+            resp_doc d = { .par_default = tool_parallel_default(s->tmpl, jv_get(req, "tool_choice")), .status = truncated ? "incomplete" : "completed",
                            .incomplete = failed ? "envelope_unmapped"
                                        : cut   ? "max_output_tokens" : NULL,
                            .output_json = g.out_items.s ? g.out_items.s : "",
@@ -4313,7 +4313,7 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
             // extracted once, and each surface only renders them in its own
             // vocabulary.
             jv *call = tool_calls_array(&tc, n_tc);
-            resp_doc d = { .par_default = tool_parallel_default(s->tmpl), .with_output = true,
+            resp_doc d = { .par_default = tool_parallel_default(s->tmpl, jv_get(req, "tool_choice")), .with_output = true,
                            .stop_reason = anth_stop_reason(finish,
                                                            g.stop_hit != NULL),
                            .stop_seq = g.stop_hit,
@@ -4356,7 +4356,7 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
             // budget forever
             bool failed = strcmp(finish, "envelope_error") == 0;
             bool truncated = cut || failed;
-            resp_doc d = { .par_default = tool_parallel_default(s->tmpl), .status = truncated ? "incomplete" : "completed",
+            resp_doc d = { .par_default = tool_parallel_default(s->tmpl, jv_get(req, "tool_choice")), .status = truncated ? "incomplete" : "completed",
                            .incomplete = failed ? "envelope_unmapped"
                                        : cut   ? "max_output_tokens" : NULL,
                            .with_output = true,

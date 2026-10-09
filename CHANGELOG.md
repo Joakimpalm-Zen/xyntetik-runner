@@ -19,7 +19,10 @@ rename keep the names that were true when they were written.
   is silent) and to `/v1/messages` (`disable_parallel_tool_use` absent means
   allowed, Anthropic's default). Exception: Gemma 4 and Muse, whose parallel
   grammar is still a fixed pair of calls, keep one call when the flag is
-  absent. An explicit value always wins. The conformance tests that pin the
+  absent. A `tool_choice` that names one function also keeps one call when
+  the flag is absent, on both OpenAI surfaces: OpenAI's forced function calls
+  exactly one (Anthropic's named `tool` choice is not changed, its default
+  allows several). An explicit value always wins. The conformance tests that pin the
   one-call path now say `parallel_tool_calls: false` (or
   `disable_parallel_tool_use: true`) explicitly; new tests pin the default.
 

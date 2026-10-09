@@ -189,9 +189,14 @@ const char *template_default_system(int tmpl, const char *meta_tmpl);
 // documented defaults have it, except on the protocols whose parallel
 // grammar is still a fixed PAIR of calls (gemma-4, Muse), where "several"
 // would force exactly two on every turn; those keep one until their grammar
-// takes 1..N like the Qwen protocols (suite R4.26.19). An explicit value
-// always wins.
-bool tool_parallel_default(int tmpl);
+// takes 1..N like the Qwen protocols (suite R4.26.19). A tool_choice that
+// names one function (`choice` an object, in either the chat or the flat
+// responses form) defaults to one call: OpenAI's forced function calls
+// exactly one. NULL for a surface whose named choice allows several
+// (Anthropic's {"type":"tool"} without disable_parallel_tool_use). An
+// explicit value always wins.
+struct jv;
+bool tool_parallel_default(int tmpl, const struct jv *choice);
 
 static inline bool is_gemma4(int tmpl) {
     return tmpl == TMPL_GEMMA4 || tmpl == TMPL_GEMMA4_MAINLINE;

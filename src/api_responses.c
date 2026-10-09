@@ -717,7 +717,8 @@ void handle_responses(slot_t *s, sock_t fd, jv *req) {
     // reach chat; this used to be refused here as "not supported yet", and
     // Codex 0.154.0 sends parallel_tool_calls:true on every request.
     bool parallel = false;   // absent: tool_parallel_default (owner, 2026-10-09)
-    if (!request_bool(req, "parallel_tool_calls", tool_parallel_default(s->tmpl),
+    if (!request_bool(req, "parallel_tool_calls",
+                      tool_parallel_default(s->tmpl, choice_raw),
                       &parallel)) {
         jv_free(tools);
         jv_free(choice_owned);

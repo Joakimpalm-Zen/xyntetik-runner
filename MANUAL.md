@@ -2978,7 +2978,10 @@ A request that leaves `parallel_tool_calls` out gets several calls per turn,
 as OpenAI's API does (since the release after 1.1.4; before, an absent flag
 meant one call), except on Gemma 4 and Muse, whose parallel grammar is still
 a fixed pair of calls: there an absent flag keeps one call per turn and
-`true` asks for the pair. `false` always means one call.
+`true` asks for the pair. A `tool_choice` that names one function also gets
+one call when the flag is absent, as OpenAI's forced function does (on
+`/v1/messages` a named `tool` choice follows Anthropic's default and allows
+several). `false` always means one call.
 `parallel_tool_calls:true` compiles the generic JSON tool envelope into a
 bounded `{"calls":[...]}` array (up to 8 entries) over the same discriminated
 union, instead of a single object; a direct answer is just a one-element

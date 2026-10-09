@@ -705,11 +705,20 @@ static void test_qwen_native_tool_protocol(void) {
 // per turn, except on the families whose parallel grammar is still a fixed
 // pair of calls, where it would force two on every turn.
 static void test_parallel_default_per_family(void) {
-    assert(tool_parallel_default(TMPL_QWEN38));
-    assert(tool_parallel_default(TMPL_QWEN3_CODER));
-    assert(tool_parallel_default(TMPL_CHATML));
-    assert(!tool_parallel_default(TMPL_GEMMA4));
-    assert(!tool_parallel_default(TMPL_MUSE));
+    assert(tool_parallel_default(TMPL_QWEN38, NULL));
+    assert(tool_parallel_default(TMPL_QWEN3_CODER, NULL));
+    assert(tool_parallel_default(TMPL_CHATML, NULL));
+    assert(!tool_parallel_default(TMPL_GEMMA4, NULL));
+    assert(!tool_parallel_default(TMPL_MUSE, NULL));
+    // OpenAI: auto/required allow several calls, a named function exactly one
+    // (platform.openai.com function-calling guide, "Forced Function").
+    jv *req_s = parse("\"required\"");
+    jv *named = parse("{\"type\":\"function\",\"function\":{\"name\":\"f\"}}");
+    jv *flat  = parse("{\"type\":\"function\",\"name\":\"f\"}");
+    assert(tool_parallel_default(TMPL_CHATML, req_s));
+    assert(!tool_parallel_default(TMPL_CHATML, named));
+    assert(!tool_parallel_default(TMPL_QWEN38, flat));
+    jv_free(req_s); jv_free(named); jv_free(flat);
 }
 
 static void test_native_parallel_turn_carries_one_to_eight_calls(void) {

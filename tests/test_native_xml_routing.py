@@ -209,6 +209,32 @@ def test_a_request_silent_on_parallel_calls_gets_several(qwen38):
     assert len(ch["message"]["tool_calls"]) == 3, d
 
 
+def test_a_named_tool_choice_still_gets_one_call(qwen38):
+    """OpenAI's forced function calls exactly one function, so a request
+    that names a tool and is silent on parallel_tool_calls gets one call on
+    both OpenAI surfaces, and the responses echo says false. The model's text
+    asks for three; the grammar ends the turn after the first."""
+    reply = "\n".join(_call("glob", pattern=f"**/g{i}.json") for i in range(3))
+    d = _post(qwen38, "/v1/chat/completions", {
+        "model": qwen38.model_id, "max_tokens": 600,
+        "messages": [{"role": "user", "content": "Find the files."}],
+        "tools": [BASH, GLOB],
+        "tool_choice": {"type": "function", "function": {"name": "glob"}},
+        "chat_template_kwargs": NO_THINK, "runner_test_reply": reply + "<|im_end|>"})
+    ch = d["choices"][0]
+    assert ch["finish_reason"] == "tool_calls", d
+    assert [c["function"]["name"] for c in ch["message"]["tool_calls"]] == ["glob"], d
+    r = _post(qwen38, "/v1/responses", {
+        "model": qwen38.model_id, "max_output_tokens": 600, "input": "Find the files.",
+        "tools": [{"type": "function", "name": t["function"]["name"],
+                   "parameters": t["function"]["parameters"]} for t in (BASH, GLOB)],
+        "tool_choice": {"type": "function", "name": "glob"},
+        "chat_template_kwargs": NO_THINK, "runner_test_reply": reply + "<|im_end|>"})
+    calls = [o for o in r["output"] if o["type"] == "function_call"]
+    assert [c["name"] for c in calls] == ["glob"], r
+    assert r["parallel_tool_calls"] is False, r
+
+
 def test_qwen38_streams_prose_and_three_calls(qwen38):
     """The report's case B, streamed: the prose stays content, each block is
     its own tool_calls index, and the turn ends with tool_calls."""
