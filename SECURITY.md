@@ -1,6 +1,6 @@
 # Security Policy
 
-Runner `1.1.4` follows the [versioning policy](docs/versioning.md). Only
+Runner `1.2.0` follows the [versioning policy](docs/versioning.md). Only
 the latest 1.x release is supported; there are no backports.
 
 ## Threat model
