@@ -1172,6 +1172,78 @@ static void log_free(demux_log *l) {
     free(l->names.s);
 }
 
+// Nemotron Nano's native protocol (R2.4.4): one `<TOOLCALL>[...]</TOOLCALL>`
+// block holding the turn's calls as a JSON list, in nvidia's template form.
+static void test_nemotron_native_protocol(void) {
+    jv *tools = parse(TOOLS);
+    char err[192];
+    // the envelope: required takes the grammar, auto is parse-only
+    tool_envelope e; bool skip = false;
+    jv *required = parse("\"required\""), *autoc = parse("\"auto\"");
+    assert(tool_envelope_build_ex(tools, required, NULL, true, &e, err, sizeof err) == 1);
+    assert(tool_decl_native(TMPL_NEMOTRON, true, true, tools, &e, &skip) == tools);
+    assert(skip && e.proto == TP_NEMOTRON && !e.parse_only && e.max_calls == NATIVE_PARALLEL_MAX_CALLS);
+    tool_envelope ea; skip = false;
+    assert(tool_envelope_build_ex(tools, autoc, NULL, true, &ea, err, sizeof err) == 1);
+    tool_decl_native(TMPL_NEMOTRON, true, true, tools, &ea, &skip);
+    assert(ea.proto == TP_NEMOTRON && ea.parse_only);
+    tool_envelope_free(&ea);
+
+    // the grammar: one to eight entries when parallel, exactly one when not
+    const char *one = "{\"name\": \"add\", \"arguments\": {\"a\": 1, \"b\": 2}}";
+    snode *par = schema_compile_nemotron_turn(tools, NULL, true, err, sizeof err);
+    snode *single = schema_compile_nemotron_turn(tools, NULL, false, err, sizeof err);
+    assert(par && single);
+    for (int n = 0; n <= 9; n++) {
+        sbuf doc = {0};
+        sb_lit(&doc, "<TOOLCALL>[");
+        for (int k = 0; k < n; k++) {
+            if (k) sb_lit(&doc, ", ");
+            sb_put(&doc, one, strlen(one));
+        }
+        sb_lit(&doc, "]</TOOLCALL>");
+        assert(accepts(par, doc.s) == (n >= 1 && n <= NATIVE_PARALLEL_MAX_CALLS));
+        assert(accepts(single, doc.s) == (n == 1));
+        free(doc.s);
+    }
+    // the blank line after </think> may lead the block; text may not
+    sbuf lead = {0};
+    sb_lit(&lead, "\n\n<TOOLCALL>["); sb_put(&lead, one, strlen(one)); sb_lit(&lead, "]</TOOLCALL>");
+    assert(accepts(single, lead.s));
+    assert(!feeds(single, "ok <TOOLCALL>["));
+    assert(!feeds(single, "<TOOLCALL>[{\"name\": \"invented\""));
+    free(lead.s);
+    schema_free(par); schema_free(single);
+
+    // the mapper and the stream read the same turn the same way
+    const char *turn = "Let me add both.\n\n<TOOLCALL>[{\"name\": \"add\", \"arguments\": "
+                       "{\"a\": 1, \"b\": 2}}, {\"name\": \"add\", \"arguments\": "
+                       "{\"a\": 3, \"b\": 4}}]</TOOLCALL><SPECIAL_12>";
+    sbuf content = {0}, tc = {0};
+    assert(tool_envelope_map(&e, turn, strlen(turn), &content, &tc) == 2);
+    assert(content.s && !strcmp(content.s, "Let me add both."));
+    assert(strstr(tc.s, "\"id\":\"call_0\"") && strstr(tc.s, "\"id\":\"call_1\""));
+    assert(strstr(tc.s, "{\\\"a\\\":3,\\\"b\\\":4}"));
+    free(content.s); free(tc.s);
+    static const size_t steps[] = { 1, 3, 64 };
+    for (size_t i = 0; i < sizeof steps / sizeof *steps; i++) {
+        demux_log l;
+        demux_step(&e, turn, steps[i], &l);
+        assert(l.content.s && !strcmp(l.content.s, "Let me add both."));
+        assert(l.begins == 2 && l.ends == 2 && !strcmp(l.names.s, "add add"));
+        assert(strstr(l.args.s, "{\"a\":1,\"b\":2}") && strstr(l.args.s, "{\"a\":3,\"b\":4}"));
+        log_free(&l);
+    }
+    // a turn without a block is all content
+    demux_log l;
+    demux_step(&e, "Just text.<SPECIAL_12>", 1, &l);
+    assert(l.content.s && !strcmp(l.content.s, "Just text.") && l.begins == 0);
+    log_free(&l);
+    tool_envelope_free(&e);
+    jv_free(required); jv_free(autoc); jv_free(tools);
+}
+
+
 // Qwen3 (chatml-think) reasons BEFORE it calls a tool, and its reference
 // template defaults thinking ON: runner emits the closed <think></think> block
 // only when a caller explicitly turns thinking off, so in the default
@@ -3031,6 +3103,7 @@ int main(void) {
     test_qwen_native_tool_protocol();
     test_qwen_native_turn_constrains_and_maps_calls();
     test_native_parallel_turn_carries_one_to_eight_calls();
+    test_nemotron_native_protocol();
     test_native_first_call_admits_the_post_think_newlines();
     test_parallel_default_per_family();
     test_auto_envelope_constrains_names_and_arguments();

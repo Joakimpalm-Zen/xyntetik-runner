@@ -1913,7 +1913,7 @@ snode *schema_compile_atem_parallel(struct jv *tools, const char *only_tool,
 
 // ------------------------------------------------------------- Qwen tools
 
-static snode *qwen_call_tail(jv *tool, char *err, int errcap) {
+static snode *qwen_call_tail(jv *tool, const char *close, char *err, int errcap) {
     jv *fn = jv_get(tool, "function");
     if (!fn) fn = tool;
     const char *name = jv_str(jv_get(fn, "name"), "tool");
@@ -1929,7 +1929,7 @@ static snode *qwen_call_tail(jv *tool, char *err, int errcap) {
     if (!seq || !args ||
         !atem_seq_add(seq, atem_lit("\", \"arguments\": ")) ||
         !atem_seq_add(seq, args) ||
-        !atem_seq_add(seq, atem_lit("}\n</tool_call>"))) {
+        !atem_seq_add(seq, atem_lit(close))) {
         if (!seq || seq->n_props < 2) schema_free(args);
         schema_free(seq);
         if (!err[0]) snprintf(err, errcap,
@@ -1981,7 +1981,7 @@ static snode *qwen_call(jv *tools, const char *only_tool, bool lead,
         if (!names->lits[names->n_lits]) goto fail;
         names->n_lits++;
         choice->alts[choice->n_alts] = qwen_call_tail(
-            tools->items[i], err, errcap);
+            tools->items[i], "}\n</tool_call>", err, errcap);
         if (!choice->alts[choice->n_alts]) goto fail;
         choice->n_alts++;
     }
@@ -2189,6 +2189,104 @@ snode *schema_compile_qwen_parallel(jv *tools, const char *only_tool,
                                     char *err, int errcap) {
     err[0] = 0;
     return native_parallel_calls(qwen_call, tools, only_tool, err, errcap);
+}
+
+// ----------------------------------------------------- Nemotron Nano tools
+
+// One entry of Nemotron Nano's call list: `{"name": "N", "arguments": {...}}`,
+// the name chosen from the declared tools and the arguments compiled from its
+// schema exactly as the Qwen JSON call's are.
+static snode *nemo_entry(jv *tools, const char *only, char *err, int errcap) {
+    int selected = 0;
+    for (int i = 0; i < tools->n; i++) {
+        jv *fn = jv_get(tools->items[i], "function");
+        if (!fn) fn = tools->items[i];
+        const char *name = jv_str(jv_get(fn, "name"), NULL);
+        if (!only || (name && !strcmp(name, only))) selected++;
+    }
+    if (!selected) { snprintf(err, errcap, "named Nemotron tool is not declared"); return NULL; }
+    snode *root = atem_seq(3);
+    snode *names = sn_new(SN_ENUM), *choice = sn_new(SN_COND);
+    if (!root || !names || !choice) goto fail;
+    names->lits = calloc((size_t)selected, sizeof(*names->lits));
+    choice->alts = calloc((size_t)selected, sizeof(*choice->alts));
+    if (!names->lits || !choice->alts) goto fail;
+    names->min_items = 1;
+    names->whitespace_significant = choice->whitespace_significant = true;
+    root->whitespace_significant = true;
+    if (!atem_seq_add(root, atem_lit("{\"name\": \""))) goto fail;
+    for (int i = 0; i < tools->n; i++) {
+        jv *fn = jv_get(tools->items[i], "function");
+        if (!fn) fn = tools->items[i];
+        const char *name = jv_str(jv_get(fn, "name"), NULL);
+        if (!name || !name[0]) { snprintf(err, errcap, "Nemotron tool %d has no function name", i); goto fail; }
+        if (only && strcmp(name, only)) continue;
+        if (!(names->lits[names->n_lits] = strdup(name))) goto fail;
+        names->n_lits++;
+        if (!(choice->alts[choice->n_alts] = qwen_call_tail(tools->items[i], "}", err, errcap)))
+            goto fail;
+        choice->n_alts++;
+    }
+    if (!enum_index(names) || !atem_seq_add(root, names)) goto fail;
+    names = NULL;
+    if (!atem_seq_add(root, choice)) goto fail;
+    return root;
+fail:
+    schema_free(names); schema_free(choice); schema_free(root);
+    if (!err[0]) snprintf(err, errcap, "out of memory compiling Nemotron call");
+    return NULL;
+}
+
+// After an entry: close the list, or (while `remaining`) a separator and the
+// next entry. The two branches open with different bytes (`]` and `,`).
+static snode *nemo_rest(jv *tools, const char *only, int remaining,
+                        char *err, int errcap) {
+    snode *end = atem_lit("]</TOOLCALL>");
+    if (!end || !remaining) return end;
+    snode *seq = atem_seq(3), *u = sn_new(SN_UNION);
+    snode *entry = seq ? nemo_entry(tools, only, err, errcap) : NULL;
+    snode *tail = entry ? nemo_rest(tools, only, remaining - 1, err, errcap) : NULL;
+    if (!seq || !u || !entry || !tail || !(u->alts = calloc(2, sizeof(*u->alts))) ||
+        !atem_seq_add(seq, atem_lit(", "))) {
+        schema_free(seq); schema_free(u); schema_free(entry); schema_free(tail); schema_free(end);
+        if (!err[0]) snprintf(err, errcap, "out of memory compiling Nemotron calls");
+        return NULL;
+    }
+    atem_seq_add(seq, entry);
+    atem_seq_add(seq, tail);
+    seq->whitespace_significant = u->whitespace_significant = true;
+    u->alts[u->n_alts++] = end;
+    u->alts[u->n_alts++] = seq;
+    return u;
+}
+
+// A required or named Nemotron Nano turn: one `<TOOLCALL>[...]</TOOLCALL>`
+// block, one entry, or up to NATIVE_PARALLEL_MAX_CALLS when parallel. The
+// opener may follow the blank line a reasoning model writes after `</think>`
+// (native_lead_lit). The turn end after the block is the model's own stop.
+snode *schema_compile_nemotron_turn(jv *tools, const char *only_tool,
+                                    bool parallel, char *err, int errcap) {
+    err[0] = 0;
+    if (!tools || tools->type != J_ARR || tools->n <= 0 || tools->n > 60) {
+        snprintf(err, errcap, "Nemotron tools must be a non-empty array of at most 60 tools");
+        return NULL;
+    }
+    snode *root = atem_seq(3);
+    snode *open = root ? native_lead_lit("<TOOLCALL>[") : NULL;
+    snode *entry = open ? nemo_entry(tools, only_tool, err, errcap) : NULL;
+    snode *rest = entry ? nemo_rest(tools, only_tool,
+                                    parallel ? NATIVE_PARALLEL_MAX_CALLS - 1 : 0,
+                                    err, errcap) : NULL;
+    if (!root || !open || !entry || !rest) {
+        schema_free(root); schema_free(open); schema_free(entry); schema_free(rest);
+        if (!err[0]) snprintf(err, errcap, "out of memory compiling Nemotron turn");
+        return NULL;
+    }
+    atem_seq_add(root, open);
+    atem_seq_add(root, entry);
+    atem_seq_add(root, rest);
+    root->whitespace_significant = true;
+    return root;
 }
 
 // XML parameter lists use the existing ordered native-member automaton.
