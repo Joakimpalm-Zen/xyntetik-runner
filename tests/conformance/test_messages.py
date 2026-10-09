@@ -676,7 +676,8 @@ def test_real_sdk_accumulates_a_stream(sdk):
 def test_real_sdk_reads_a_tool_use_block(sdk):
     m = sdk.messages.create(model="local", max_tokens=48,
                             extra_body={"temperature": 0},
-                            tools=[WEATHER], tool_choice={"type": "any"},
+                            tools=[WEATHER],
+            tool_choice={"type": "any", "disable_parallel_tool_use": True},
                             messages=[{"role": "user", "content": "weather in Oslo?"}])
     uses = [b for b in m.content if b.type == "tool_use"]
     if not uses:
