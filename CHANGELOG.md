@@ -22,8 +22,8 @@ rename keep the names that were true when they were written.
   parsed as before. Its sampling preset `nemotron35` is NVIDIA's
   generation_config (temperature 1.0, top_p 0.95), the same numbers it got
   before. Template conformance against the file's own template: 22 of 22
-  cases, where the four tool cases drifted. Found by the lab (suite
-  R4.22.5).
+  cases identical in text and in tokens on the real 30B file, where the
+  four tool cases drifted. Found by the lab (suite R4.22.5).
 - **Granite 4.2 trims the text of a truncated tool-call turn.** On an
   assistant turn with tool calls before the last user message, Granite
   4.2's template trims the text after `<think></think>`; Runner kept its
