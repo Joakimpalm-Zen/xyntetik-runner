@@ -351,9 +351,11 @@ FAMILIES = {
                 "system-mid-history": ALTERNATE_AFTER_SYS}),
     "mistral-file": Family(
         "mistral-v1", ("gguf", "models/Mistral-7B-Instruct-v0.3-Q4_K_M.gguf"),
-        note="the template EMBEDDED in the pinned v0.3 file, which the "
-             "runner detects as the v0.1 framing; the hf row above is the "
-             "publisher's current template",
+        note="the template EMBEDDED in the pinned v0.3 file, written in the "
+             "v0.1 form; runner now detects the file as v0.3 by its "
+             "vocabulary (R4.22.7), and this row keeps the v0.1 renderer "
+             "checked against a real v0.1-form template; the hf row above is "
+             "the publisher's current template",
         tokenizer=("Mistral-7B-Instruct-v0.3-Q4_K_M.gguf",),
         cannot={"consecutive-user": ALTERNATE,
                 "consecutive-assistant": ALTERNATE,

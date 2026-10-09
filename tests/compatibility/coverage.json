@@ -285,7 +285,7 @@
    "artifact": "mistral-7b-instruct-v0.3-q4_k_m",
    "tool_protocol": {
     "status": "NOT RUN",
-    "note": "native [AVAILABLE_TOOLS]/[TOOL_CALLS] protocol since 2026-10-09 (R2.4.3): template-conformance clean in text and tokens; agent-torture on the real Q4_K_M file 40/40 on the generic and the native arm (docs/compat-reports/mistral-native-tools-2026-10-09); the tool-protocol check itself has not been run on this artifact; the pinned file embeds the v0.1 template, so native tools need --chat-template mistral"
+    "note": "native [AVAILABLE_TOOLS]/[TOOL_CALLS] protocol since 2026-10-09 (R2.4.3): template-conformance clean in text and tokens; agent-torture on the real Q4_K_M file 40/40 on the generic and the native arm (docs/compat-reports/mistral-native-tools-2026-10-09); the tool-protocol check itself has not been run on this artifact; the pinned file embeds the v0.1 template and is detected as v0.3 by its vocabulary (R4.22.7)"
    },
    "client_loop": {
     "status": "NOT RUN"

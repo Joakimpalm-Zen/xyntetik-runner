@@ -34,8 +34,16 @@ rename keep the names that were true when they were written.
   constrained too: prose, or a hand-off to the list. Template conformance:
   both families clean in text and tokens. Agent-torture on the real Q4_K_M
   files: 40 of 40 on both arms for both models (suite R2.4.3). The v0.1
-  framing stays generic; the pinned v0.3 file embeds it, so serve that file
-  with `--chat-template mistral`.
+  framing stays generic.
+
+- **Mistral v0.3 files with the publisher's old template get the v0.3
+  framing.** v0.3 GGUFs converted before the publisher replaced its
+  template embed the v0.1 form (`' [/INST]'`), and detection served them
+  v0.1's framing, which the model was not trained on, and no tool
+  protocol. A v0.1-form template over a vocabulary holding
+  `[AVAILABLE_TOOLS]` (a v0.3 token; v0.1 and v0.2 have none) now detects as
+  `mistral`, so the pinned v0.3 file is served its own framing and native
+  tools without `--chat-template` (suite R4.22.7).
 
 - **Nemotron Nano speaks its own tool protocol.** Its tools rode the generic
   JSON envelope, which also replaced the caller's system prompt with the

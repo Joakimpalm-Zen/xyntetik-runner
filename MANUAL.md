@@ -3267,10 +3267,11 @@ Before 2026-10-09 these families rode the generic envelope, whose teaching
 turn the Mistral renderer dropped whenever the caller also sent a system
 prompt; agent-torture on the real Q4_K_M files is 40 of 40 on both arms
 ([evidence](docs/compat-reports/mistral-native-tools-2026-10-09/README.md)).
-The v0.1 framing (`mistral-v1`) has no tool protocol and stays generic; the
-pinned v0.3 file embeds that older template, so serve it with
-`--chat-template mistral` for native tools. `--tool-info` reports
-`mistral_json`.
+The v0.1 framing (`mistral-v1`) has no tool protocol and stays generic.
+v0.3 files converted before the publisher replaced its template embed the
+v0.1 form; detection reads the vocabulary for that case (v0.1 and v0.2 have
+no `[AVAILABLE_TOOLS]` token, v0.3 does) and serves such a file the v0.3
+framing and its tools without a flag. `--tool-info` reports `mistral_json`.
 
 Qwen3-Coder, Qwen 3.8, Granite 4.2 and Ornith speak the same
 function/parameter XML and share one contract. A `tool_choice: auto` turn
