@@ -9,6 +9,21 @@ rename keep the names that were true when they were written.
 
 ## Unreleased
 
+- **Gemma 4: a parallel tool turn carries one to eight calls, and an absent
+  `parallel_tool_calls` now means several there too.** The native grammar
+  compiled a parallel turn as a fixed pair: on Gemma 4 E4B Q4_K_M (CPU,
+  temperature 0, `required`), a prompt needing one city's weather got
+  `Oslo, Oslo` and one needing three lost the third. Each call is now
+  followed by the model's own stop or the next call, up to eight: the same
+  prompts give one, two and three calls, thinking on and off. Gemma 4 ends
+  a turn of calls with `<|tool_response>`, which Google's generation_config
+  lists as end of generation (id 50, beside `<turn|>` and `<eos>`); Runner
+  now stops on it too, where unconstrained output could run past a call.
+  The calls share the grammar's expansion budget, so a tool whose
+  arguments fit a pair but not eight copies steps the cap down (8, 4, 2,
+  1) instead of failing. Muse keeps its fixed pair and the one-call
+  default for now (suite R4.26.19(b)).
+
 - **A required tool turn with thinking on keeps the model's own blank line
   after `</think>`.** On the Qwen JSON and function/parameter XML protocols
   a required or named turn opened on the literal `<tool_call>`, so the
