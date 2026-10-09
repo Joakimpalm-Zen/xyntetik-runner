@@ -2994,12 +2994,14 @@ OpenAI shape, the flag is refused on the other surfaces and together with
 
 A request that leaves `parallel_tool_calls` out gets several calls per turn,
 as OpenAI's API does (since 1.2.0; before, an absent flag
-meant one call), except on Muse, whose parallel grammar is still a fixed
-pair of calls: there an absent flag keeps one call per turn and `true` asks
-for the pair. Gemma 4's parallel turn is one to eight calls (a fixed pair
-until after 1.2.0), each followed by the model's own stop or the next call;
-`<|tool_response>`, which Google's generation_config lists as end of
-generation, ends a turn of calls. A `tool_choice` that names one function also gets
+meant one call). On every native protocol a parallel turn is one to eight
+calls, each followed by the model's own stop or the next call; Gemma 4 and
+Muse forced a fixed pair until after 1.2.0, and kept one call when the flag
+was absent. Gemma 4 ends a turn of calls with `<|tool_response>`, which
+Google's generation_config lists as end of generation. Muse separates calls
+with `<|eom|><|start|>assistant` and ends the turn with `<|eot|>`; asked for
+three cities' weather it writes "one at a time" in its reasoning and makes
+one call per turn, which the grammar now leaves to it. A `tool_choice` that names one function also gets
 one call when the flag is absent, as OpenAI's forced function does (on
 `/v1/messages` a named `tool` choice follows Anthropic's default and allows
 several). `false` always means one call.
@@ -3663,8 +3665,8 @@ every tool-choice form, stop sequences, sampling controls, metadata,
 thinking-channel blocks, and Anthropic SSE event ordering. `max_tokens` is
 required. Several `tool_use` blocks in one turn are allowed unless
 `tool_choice.disable_parallel_tool_use` is `true`, Anthropic's own default
-and the same rule `parallel_tool_calls` follows on the OpenAI surfaces
-(including its Muse exception); until 1.2.0
+and the same rule `parallel_tool_calls` follows on the OpenAI surfaces;
+until 1.2.0
 an absent field meant one call per turn here.
 
 `thinking.type:"enabled"` requires `budget_tokens`; that field is rejected for

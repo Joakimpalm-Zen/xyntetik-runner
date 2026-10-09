@@ -9,6 +9,18 @@ rename keep the names that were true when they were written.
 
 ## Unreleased
 
+- **Muse: a parallel tool turn carries one to eight calls in the model's
+  own form, and an absent `parallel_tool_calls` now means several there
+  too.** The parallel grammar was a fixed pair joined by a bare
+  `assistant`, which refused the model's own separator (`<|eom|><|start|>`,
+  control tokens admitted only by their spelling) and pushed it to type a
+  turn header as text. On Muse-Glimmer-30B (CPU, temperature 0, `required`)
+  it then gave two calls every time, the second a repeat of the first city
+  in 5 of 6 turns. The separator is now spelled in the grammar, and the turn
+  ends at the model's `<|eot|>` or opens the next call, up to eight. The same
+  prompts now give one call: unconstrained, the model writes "one at a time"
+  in its reasoning and calls once per turn, so one call is its own choice.
+
 - **A lineage walkthrough on a real model (R17.1.5).**
   `docs/lineage-walkthrough.md` runs one chain on Qwen3-0.6B: quantize to
   Q8_0, train a LoRA, merge, record a fidelity evaluation, serve with
