@@ -11,6 +11,7 @@
 #include "json.h"
 
 #include <assert.h>
+#include <ctype.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -1243,6 +1244,107 @@ static void test_nemotron_native_protocol(void) {
     jv_free(required); jv_free(autoc); jv_free(tools);
 }
 
+
+// Mistral v0.3 and Nemo's native protocol (R2.4.3): `[TOOL_CALLS]` and a JSON
+// list of calls with no closing tag. The marker is a control token, so every
+// choice is constrained, auto included.
+static void test_mistral_native_protocol(void) {
+    jv *tools = parse(TOOLS);
+    char err[192];
+    jv *required = parse("\"required\""), *autoc = parse("\"auto\"");
+    int tmpls[] = { TMPL_MISTRAL, TMPL_MISTRAL_NEMO };
+    for (int t = 0; t < 2; t++) {
+        tool_envelope e; bool skip = false;
+        assert(tool_envelope_build_ex(tools, autoc, NULL, true, &e, err, sizeof err) == 1);
+        assert(tool_decl_native(tmpls[t], true, true, tools, &e, &skip) == tools);
+        assert(skip && e.proto == TP_MISTRAL && !e.parse_only);
+        tool_envelope_free(&e);
+    }
+    // the v0.1 framing has no tool protocol: generic
+    tool_envelope eg; bool skipg = false;
+    assert(tool_envelope_build_ex(tools, autoc, NULL, true, &eg, err, sizeof err) == 1);
+    assert(!tool_decl_native(TMPL_MISTRAL_V1, true, true, tools, &eg, &skipg));
+    assert(!skipg && eg.proto == TP_GENERIC);
+    tool_envelope_free(&eg);
+
+    // required: the marker and one to eight entries, the list opened with or
+    // without v0.3's space
+    const char *one = "{\"name\": \"add\", \"arguments\": {\"a\": 1, \"b\": 2}}";
+    snode *par = schema_compile_mistral_turn(tools, false, NULL, NULL, true, err, sizeof err);
+    snode *single = schema_compile_mistral_turn(tools, false, NULL, NULL, false, err, sizeof err);
+    assert(par && single);
+    for (int n = 0; n <= 9; n++) {
+        sbuf doc = {0};
+        sb_lit(&doc, n % 2 ? "[TOOL_CALLS] [" : "[TOOL_CALLS][");
+        for (int k = 0; k < n; k++) {
+            if (k) sb_lit(&doc, ", ");
+            sb_put(&doc, one, strlen(one));
+        }
+        sb_lit(&doc, "]");
+        assert(accepts(par, doc.s) == (n >= 1 && n <= NATIVE_PARALLEL_MAX_CALLS));
+        assert(accepts(single, doc.s) == (n == 1));
+        free(doc.s);
+    }
+    assert(!feeds(single, "ok [TOOL_CALLS]"));
+    assert(!feeds(single, "[TOOL_CALLS][{\"name\": \"invented\""));
+    schema_free(par); schema_free(single);
+
+    // auto: prose to the stop, or prose handing off to the list
+    snode *au = schema_compile_mistral_turn(tools, true, NULL, NULL, true, err, sizeof err);
+    assert(au);
+    assert(accepts(au, "Just text.</s>"));
+    sbuf mixed = {0};
+    sb_lit(&mixed, "Adding.[TOOL_CALLS]["); sb_put(&mixed, one, strlen(one)); sb_lit(&mixed, "]");
+    assert(accepts(au, mixed.s));
+    assert(!feeds(au, "Adding.[TOOL_CALLS][{\"name\": \"invented\""));
+    free(mixed.s);
+    schema_free(au);
+
+    // the mapper and the stream read the same turn the same way
+    tool_envelope e; bool skip = false;
+    assert(tool_envelope_build_ex(tools, required, NULL, true, &e, err, sizeof err) == 1);
+    tool_decl_native(TMPL_MISTRAL_NEMO, true, true, tools, &e, &skip);
+    const char *turn = "[TOOL_CALLS][{\"name\": \"add\", \"arguments\": "
+                       "{\"a\": 1, \"b\": [2]}}, {\"name\": \"add\", \"arguments\": "
+                       "{\"a\": 3, \"b\": \"]\"}}]";
+    sbuf content = {0}, tc = {0};
+    assert(tool_envelope_map(&e, turn, strlen(turn), &content, &tc) == 2);
+    assert(!content.n);
+    assert(strstr(tc.s, "\"id\":\"call_0\"") && strstr(tc.s, "\"id\":\"call_1\""));
+    assert(strstr(tc.s, "{\\\"a\\\":3,\\\"b\\\":\\\"]\\\"}"));
+    free(content.s); free(tc.s);
+    static const size_t steps[] = { 1, 3, 64 };
+    for (size_t i = 0; i < sizeof steps / sizeof *steps; i++) {
+        demux_log l;
+        demux_step(&e, turn, steps[i], &l);
+        assert(!l.content.n);
+        assert(l.begins == 2 && l.ends == 2 && !strcmp(l.names.s, "add add"));
+        assert(strstr(l.args.s, "{\"a\":1,\"b\":[2]}") && strstr(l.args.s, "{\"a\":3,\"b\":\"]\"}"));
+        log_free(&l);
+    }
+    // prose before the marker is content; a turn without one is all content
+    demux_log l;
+    demux_step(&e, "Adding. [TOOL_CALLS] [{\"name\": \"add\", \"arguments\": {}}]", 2, &l);
+    assert(l.content.s && !strcmp(l.content.s, "Adding.") && l.begins == 1);
+    log_free(&l);
+    demux_step(&e, "Just text.", 1, &l);
+    assert(l.content.s && !strcmp(l.content.s, "Just text.") && l.begins == 0);
+    log_free(&l);
+    tool_envelope_free(&e);
+
+    // ids: nine alphanumerics pass through, any other id maps to nine
+    // base-36 characters, the same for a call and its result
+    char a[10], b[10];
+    mistral_call_id("abcDEF123", a);
+    assert(!strcmp(a, "abcDEF123"));
+    mistral_call_id("call_0", a);
+    mistral_call_id("call_0", b);
+    assert(strlen(a) == 9 && !strcmp(a, b));
+    for (int i = 0; i < 9; i++) assert(isalnum((unsigned char)a[i]));
+    mistral_call_id("call_1", b);
+    assert(strcmp(a, b));
+    jv_free(required); jv_free(autoc); jv_free(tools);
+}
 
 // Qwen3 (chatml-think) reasons BEFORE it calls a tool, and its reference
 // template defaults thinking ON: runner emits the closed <think></think> block
@@ -3104,6 +3206,7 @@ int main(void) {
     test_qwen_native_turn_constrains_and_maps_calls();
     test_native_parallel_turn_carries_one_to_eight_calls();
     test_nemotron_native_protocol();
+    test_mistral_native_protocol();
     test_native_first_call_admits_the_post_think_newlines();
     test_parallel_default_per_family();
     test_auto_envelope_constrains_names_and_arguments();

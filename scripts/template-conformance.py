@@ -1110,16 +1110,17 @@ class Deviation:
 
 
 def compile_patch(dev, bos):
-    """Turn a declarative patch spec into oracle_text -> oracle_text."""
+    """Turn a declarative patch spec into (oracle_text, case_messages) ->
+    oracle_text. Only a builtin reads the messages."""
     spec = dev.patch_spec
     op = spec.get("op")
     if op == "strip-bos":
         b = bos or "\0"
-        return lambda s: s[len(b):] if s.startswith(b) else s
+        return lambda s, msgs=None: s[len(b):] if s.startswith(b) else s
     if op == "drop-first-match":
         rx = re.compile(spec["pattern"],
                         re.S if spec.get("dotall") else 0)
-        return lambda s: rx.sub("", s, count=1)
+        return lambda s, msgs=None: rx.sub("", s, count=1)
     if op == "builtin":
         fn = BUILTIN_PATCHES.get(spec["name"])
         if not fn:
@@ -1134,13 +1135,32 @@ def compile_patch(dev, bos):
 # channel only when there are NO tools (with tools it leaves the header bare
 # so the constrained recipient stays reachable). "namespace functions" is how
 # the harmony reference spells a tool declaration block.
-def _harmony_prime_analysis(s):
+def _harmony_prime_analysis(s, msgs=None):
     if s.endswith("<|start|>assistant") and "namespace functions" not in s:
         return s + "<|channel|>analysis<|message|>"
     return s
 
 
-BUILTIN_PATCHES = {"harmony-prime-analysis": _harmony_prime_analysis}
+# Mistral v0.3 and Nemo fold the system text into the user turn on
+# `loop.last`, so a conversation that ends in anything but a user turn (a
+# tool result, a prefill) renders with the system prompt dropped. Runner
+# folds it into the LAST USER turn, as mistral-common's own encoder does;
+# this puts it where runner does, and only on such a case.
+def _mistral_system_on_last_user(s, msgs=None):
+    if not msgs or msgs[0].get("role") != "system" or msgs[-1].get("role") == "user":
+        return s
+    users = [m for m in msgs if m.get("role") == "user"]
+    if not users or not isinstance(users[-1].get("content"), str):
+        return s
+    tail = users[-1]["content"] + "[/INST]"
+    at = s.rfind(tail)
+    if at < 0:
+        return s
+    return s[:at] + msgs[0]["content"] + "\n\n" + s[at:]
+
+
+BUILTIN_PATCHES = {"harmony-prime-analysis": _harmony_prime_analysis,
+                   "mistral-system-on-last-user": _mistral_system_on_last_user}
 
 
 def load_allowlist(path):
@@ -1485,7 +1505,7 @@ def run(args):
             applied = []
             if not args.raw:
                 for d, patch in patches:
-                    patched = patch(want)
+                    patched = patch(want, omsgs)
                     if patched != want:
                         applied.append(d.key())
                         d.used += 1

@@ -448,6 +448,7 @@ enum tool_proto {
     TP_QWEN_XML,      // Qwen3-Coder function/parameter XML
     TP_MUSE_PLAIN,    // Muse: stream a schema payload after a to=user header
     TP_NEMOTRON,      // Nemotron Nano native <TOOLCALL>[{JSON}, ...]</TOOLCALL>
+    TP_MISTRAL,       // Mistral v0.3 / Nemo native [TOOL_CALLS][{JSON}, ...]
 };
 
 typedef struct {
