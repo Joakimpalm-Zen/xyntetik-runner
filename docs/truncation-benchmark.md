@@ -32,6 +32,7 @@ engine answers the same question:
 | Tool | `get_weather(city: string, units: enum[celsius,fahrenheit])`, both `required`, `additionalProperties: false` |
 | Prompt | `What is the weather in Paris? Use fahrenheit.` |
 | `tool_choice` | `required` (forces a call at every budget) |
+| `parallel_tool_calls` | `false` (one call per rung; sent explicitly since 2026-10-09, when Runner's default for an absent flag became `true`; the published rows ran with Runner's earlier default, which was one call) |
 | `temperature` | 0 (deterministic) |
 | Model | `granite-4.1-3b` — Q4_K_M GGUF for Runner, llama.cpp and Ollama; the HF safetensors of the same model for vLLM |
 

@@ -369,7 +369,7 @@ WEATHER = {"type": "function", "name": "get_weather",
 def _forced_call(client, name, stream=False):
     payload = {"input": "what is the weather in Oslo?", "temperature": 0,
                "max_output_tokens": 40, "tools": [WEATHER],
-               "tool_choice": "required"}
+               "tool_choice": "required", "parallel_tool_calls": False}
     if stream:
         st = client.responses_stream(payload, name=name).expect_sse()
         final = (st.payloads("response.completed") or
@@ -594,7 +594,8 @@ def test_function_call_output_is_accepted_in_a_later_request(client):
          "name": call["name"], "arguments": call["arguments"]},
         {"type": "function_call_output", "call_id": call["call_id"],
          "output": "12 degrees and raining"},
-    ], "temperature": 0, "max_output_tokens": 24, "tools": [WEATHER]}
+    ], "temperature": 0, "max_output_tokens": 24, "tools": [WEATHER],
+       "parallel_tool_calls": False}
     d = client.responses(followup, name="responses-loop-result").expect_status(200).json
     if not d["output"]:
         raise ProtocolError("tool result turn produced no output", body=d)

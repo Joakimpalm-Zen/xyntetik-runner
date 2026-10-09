@@ -701,6 +701,17 @@ static void test_qwen_native_tool_protocol(void) {
 // parallel_tool_calls the turn is exactly one call, which is what an agent
 // bank omitting the flag got (Qwen3.8-Flash-Next, 396 turns, never more
 // than one call, where llama.cpp and Strata made several in 123 and 103).
+// What an absent parallel_tool_calls means (owner, 2026-10-09): several calls
+// per turn, except on the families whose parallel grammar is still a fixed
+// pair of calls, where it would force two on every turn.
+static void test_parallel_default_per_family(void) {
+    assert(tool_parallel_default(TMPL_QWEN38));
+    assert(tool_parallel_default(TMPL_QWEN3_CODER));
+    assert(tool_parallel_default(TMPL_CHATML));
+    assert(!tool_parallel_default(TMPL_GEMMA4));
+    assert(!tool_parallel_default(TMPL_MUSE));
+}
+
 static void test_native_parallel_turn_carries_one_to_eight_calls(void) {
     jv *tools = parse(TOOLS);
     char err[192];
@@ -2940,6 +2951,7 @@ int main(void) {
     test_qwen_native_tool_protocol();
     test_qwen_native_turn_constrains_and_maps_calls();
     test_native_parallel_turn_carries_one_to_eight_calls();
+    test_parallel_default_per_family();
     test_auto_envelope_constrains_names_and_arguments();
     test_truncated_call_stays_valid_and_executable();
     test_tool_choice_required_removes_the_final_branch();

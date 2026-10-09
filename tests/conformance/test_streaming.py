@@ -221,7 +221,8 @@ def test_stream_emits_tool_calls_with_incremental_arguments(client):
     the internal envelope as ordinary content, which is what runner used to
     do, silently hands the caller a string instead of a call."""
     st = client.chat_stream(
-        dict(BASE, max_tokens=32, tools=[TOOL], tool_choice="required"),
+        dict(BASE, max_tokens=32, tools=[TOOL], tool_choice="required",
+             parallel_tool_calls=False),
         name="stream-tools").expect_sse()
 
     if st.finish_reason != "tool_calls":
@@ -271,7 +272,8 @@ def test_stream_keeps_the_three_channels_separate(client):
     delta that mixes them forces the client to guess which one it is reading,
     and that guess is where reasoning text ends up in an executed call."""
     st = client.chat_stream(
-        dict(BASE, max_tokens=32, tools=[TOOL], tool_choice="required"),
+        dict(BASE, max_tokens=32, tools=[TOOL], tool_choice="required",
+             parallel_tool_calls=False),
         name="stream-tools-channels").expect_sse()
     for d in st.deltas():
         present = [k for k in ("content", "reasoning_content", "tool_calls")
@@ -304,7 +306,8 @@ def test_stream_tool_call_survives_every_split_point(client):
     argument deltas are the part most likely to be reassembled differently
     depending on where the bytes were cut."""
     st = client.chat_stream(
-        dict(BASE, max_tokens=32, tools=[TOOL], tool_choice="required"),
+        dict(BASE, max_tokens=32, tools=[TOOL], tool_choice="required",
+             parallel_tool_calls=False),
         name="stream-tools-matrix").expect_sse()
     reference = parse_stream(st.raw)
     for chunks in split_points(st.raw):

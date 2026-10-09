@@ -193,6 +193,22 @@ def test_qwen38_required_parallel_turn_carries_what_the_model_calls(qwen38, n_ca
     _no_framing(content)
 
 
+def test_a_request_silent_on_parallel_calls_gets_several(qwen38):
+    """Owner, 2026-10-09: a request that does not set parallel_tool_calls
+    follows OpenAI's default, several calls per turn. Before, Runner read an
+    absent flag as false, and every required (and, on the JSON families,
+    every auto) turn carried at most one call."""
+    reply = "\n".join(_call("glob", pattern=f"**/g{i}.json") for i in range(3))
+    d = _post(qwen38, "/v1/chat/completions", {
+        "model": qwen38.model_id, "max_tokens": 600,
+        "messages": [{"role": "user", "content": "Find the files."}],
+        "tools": [BASH, GLOB], "tool_choice": "required",
+        "chat_template_kwargs": NO_THINK, "runner_test_reply": reply + "<|im_end|>"})
+    ch = d["choices"][0]
+    assert ch["finish_reason"] == "tool_calls", d
+    assert len(ch["message"]["tool_calls"]) == 3, d
+
+
 def test_qwen38_streams_prose_and_three_calls(qwen38):
     """The report's case B, streamed: the prose stays content, each block is
     its own tool_calls index, and the turn ends with tool_calls."""

@@ -487,8 +487,12 @@ static void handle_chat_render(slot_t *s, sock_t fd, jv *req,
     // parallel_tool_calls is read BEFORE the envelope is built, because it
     // changes the envelope's shape. Silently ignoring a request for several
     // calls would leave the caller expecting calls it never gets.
+    // An absent flag follows OpenAI's default (several calls per turn),
+    // except where the family's parallel grammar is still a fixed pair
+    // (tool_parallel_default, owner 2026-10-09).
     bool parallel = false;
-    if (!request_bool(req, "parallel_tool_calls", false, &parallel)) {
+    if (!request_bool(req, "parallel_tool_calls", tool_parallel_default(s->tmpl),
+                      &parallel)) {
         send_error(fd, 400, "parallel_tool_calls must be a boolean");
         return;
     }

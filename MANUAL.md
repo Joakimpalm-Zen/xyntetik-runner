@@ -2974,6 +2974,11 @@ following the rendered text) instead of dropping them; the default stays the
 OpenAI shape, the flag is refused on the other surfaces and together with
 `response_format`.
 
+A request that leaves `parallel_tool_calls` out gets several calls per turn,
+as OpenAI's API does (since the release after 1.1.4; before, an absent flag
+meant one call), except on Gemma 4 and Muse, whose parallel grammar is still
+a fixed pair of calls: there an absent flag keeps one call per turn and
+`true` asks for the pair. `false` always means one call.
 `parallel_tool_calls:true` compiles the generic JSON tool envelope into a
 bounded `{"calls":[...]}` array (up to 8 entries) over the same discriminated
 union, instead of a single object; a direct answer is just a one-element
@@ -3208,16 +3213,14 @@ turn in the syntax its template teaches, parsed by the same demultiplexer
 buffered and streamed, on the Chat, Responses and Anthropic surfaces; a
 `required` or named choice keeps the grammar above, because a prompt alone
 cannot enforce a choice the caller insisted on. Under that grammar a turn is
-exactly ONE call unless the request sends `parallel_tool_calls:true` (an
-absent flag counts as false); with the flag it is one to eight calls, each
-followed by either the model's own stop token or the next call, the same
-contract the Qwen JSON protocol keeps. An agent loop that sends `required`
-and wants the model to batch its reads must send the flag: the 33-task agent
-bank on Qwen3.8-Flash-Next did not, and none of Runner's 396 turns carried a
-second call where llama.cpp's carried several in 123 of 396 and Strata's in
-103 of 375. Until 1.1.4 the flag compiled a fixed pair instead (a model with
-one call to make had to invent a second; a third could not start); Gemma 4
-and Muse keep that pair for now. A parameter value in this
+one to eight calls, each followed by either the model's own stop token or
+the next call, the same contract the Qwen JSON protocol keeps;
+`parallel_tool_calls:false` holds it to exactly one. Until 1.1.4 the
+parallel grammar was a fixed pair of calls, and until the release after
+1.1.4 a request that left the flag out got one call per turn: on the
+33-task agent bank (Qwen3.8-Flash-Next) none of Runner's 396 turns carried
+a second call where llama.cpp's carried several in 123 of 396 and Strata's
+in 103 of 375. A parameter value in this
 syntax is raw text up to its closing tag, so the grammar cannot enforce a
 string's `minLength`, `maxLength` or `pattern`; a `required` or named
 request that declares one uses the generic JSON envelope instead, prompt and
@@ -3633,11 +3636,11 @@ Messages uses the same internal engine and constrained tool envelope. It
 supports string or block-list system/content values, `tool_use`/`tool_result`,
 every tool-choice form, stop sequences, sampling controls, metadata,
 thinking-channel blocks, and Anthropic SSE event ordering. `max_tokens` is
-required. `tool_choice.disable_parallel_tool_use:false` compiles the parallel
-envelope (several `tool_use` blocks in one turn, as `parallel_tool_calls:true`
-does on the OpenAI surfaces); absent or `true` keeps one call per turn, which
-is what this surface has always compiled, so an unmarked request's grammar is
-unchanged.
+required. Several `tool_use` blocks in one turn are allowed unless
+`tool_choice.disable_parallel_tool_use` is `true`, Anthropic's own default
+and the same rule `parallel_tool_calls` follows on the OpenAI surfaces
+(including its Gemma 4 and Muse exception); until the release after 1.1.4
+an absent field meant one call per turn here.
 
 `thinking.type:"enabled"` requires `budget_tokens`; that field is rejected for
 `adaptive` and `disabled`. `thinking.display` accepts `summarized` or `omitted`
