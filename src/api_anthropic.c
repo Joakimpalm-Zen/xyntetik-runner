@@ -807,8 +807,7 @@ static char *messages_prompt(slot_t *s, sock_t fd, jv *req, tool_envelope *env,
     // surfaces: this is what makes an Anthropic tool call and a chat tool call
     // the same internal agent action
     // Absent follows Anthropic's own default, parallel use allowed (owner,
-    // 2026-10-09, with the OpenAI surfaces), except where the family's
-    // parallel grammar is still a fixed pair (tool_parallel_default); an
+    // 2026-10-09, with the OpenAI surfaces; tool_parallel_default); an
     // explicit disable_parallel_tool_use always wins.
     jv *par = raw_choice ? jv_get(raw_choice, "disable_parallel_tool_use") : NULL;
     bool parallel = par && par->type == J_BOOL ? !par->b

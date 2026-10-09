@@ -462,7 +462,12 @@ static void test_atem_native_turn_preserves_optional_parameters(void) {
     jv_free(tools);
 }
 
-static void test_atem_parallel_turn_constrains_two_recipient_calls(void) {
+// Muse's parallel turn: one to eight recipient calls in the model's trained
+// form, `<|eom|><|start|>assistant` between calls and the turn's own stop
+// after the last (the spelled `<|eot|>` here; the real token decodes to no
+// bytes and is admitted at the gap). It was a fixed PAIR joined by a bare
+// `assistant`, which refused the model's own separator.
+static void test_atem_parallel_turn_constrains_one_to_eight_calls(void) {
     jv *tools = parse(
         "[{\"type\":\"function\",\"function\":{\"name\":\"weather.get\","
         "\"parameters\":{\"type\":\"object\",\"properties\":{"
@@ -471,16 +476,31 @@ static void test_atem_parallel_turn_constrains_two_recipient_calls(void) {
     char err[192];
     snode *root = schema_compile_atem_parallel(tools, NULL, err, sizeof(err));
     assert(root != NULL);
-    const char *doc =
+    const char *one =
         " to=weather.get<|message|><atem:function_calls>\n"
         "<atem:invoke name=\"weather.get\">\n"
         "<atem:parameter name=\"city\">Oslo</atem:parameter>\n"
-        "</atem:invoke>\n</atem:function_calls>assistant"
-        " to=weather.get<|message|><atem:function_calls>\n"
-        "<atem:invoke name=\"weather.get\">\n"
-        "<atem:parameter name=\"city\">Bergen</atem:parameter>\n"
         "</atem:invoke>\n</atem:function_calls>";
-    assert(accepts(root, doc));
+    for (int n = 0; n <= 9; n++) {
+        sbuf doc = {0};
+        for (int k = 0; k < n; k++) {
+            if (k) sb_lit(&doc, "<|eom|><|start|>assistant");
+            sb_put(&doc, one, strlen(one));
+        }
+        sb_lit(&doc, "<|eot|>");
+        bool ok = accepts(root, doc.s);
+        if (ok != (n >= 1 && n <= NATIVE_PARALLEL_MAX_CALLS))
+            fprintf(stderr, "atem parallel: %d calls %s\n", n, ok ? "accepted" : "refused");
+        assert(ok == (n >= 1 && n <= NATIVE_PARALLEL_MAX_CALLS));
+        free(doc.s);
+    }
+    // the old bare `assistant` join is no longer the protocol
+    sbuf bare = {0};
+    sb_put(&bare, one, strlen(one));
+    sb_lit(&bare, "assistant");
+    sb_put(&bare, one, strlen(one));
+    assert(!feeds(root, bare.s));
+    free(bare.s);
     schema_free(root); jv_free(tools);
 }
 
@@ -709,7 +729,7 @@ static void test_parallel_default_per_family(void) {
     assert(tool_parallel_default(TMPL_QWEN3_CODER, NULL));
     assert(tool_parallel_default(TMPL_CHATML, NULL));
     assert(tool_parallel_default(TMPL_GEMMA4, NULL));     // 1..N since 2026-10-09
-    assert(!tool_parallel_default(TMPL_MUSE, NULL));
+    assert(tool_parallel_default(TMPL_MUSE, NULL));       // 1..N since 2026-10-09
     // OpenAI: auto/required allow several calls, a named function exactly one
     // (platform.openai.com function-calling guide, "Forced Function").
     jv *req_s = parse("\"required\"");
@@ -3002,7 +3022,7 @@ int main(void) {
     test_atem_stop_token_is_valid_at_the_raw_answer_tail();
     test_atem_declared_optional_parameters_are_constrained();
     test_atem_native_turn_preserves_optional_parameters();
-    test_atem_parallel_turn_constrains_two_recipient_calls();
+    test_atem_parallel_turn_constrains_one_to_eight_calls();
     test_muse_generic_envelope_is_constrained_behind_user_recipient();
     test_atem_auto_user_branch_honors_response_schema();
     test_atem_truncated_string_enum_recovers_closest_member();
