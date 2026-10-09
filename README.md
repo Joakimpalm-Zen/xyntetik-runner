@@ -407,6 +407,13 @@ Around that core: signed and chained receipts (`--keygen`, `--sign-key`),
 evidence packs a reviewer checks offline (`--export-pack`, `--check-pack`),
 signature checks on the model file itself (`--model-sig`), and a text
 watermark with its detector (`--watermark`, `--detect-watermark`).
+
+**Where a model came from.** Each step that makes a model file (quantize,
+train, merge) writes a signed record beside it that names its inputs by
+sha256. `--lineage` walks a file, or a served answer's receipt, back to the
+download it started from, and `--require-eval` refuses a file without a
+passing evaluation made for those exact bytes.
+[Lineage walkthrough](docs/lineage-walkthrough.md) ·
 [Details](MANUAL.md#record-and-verify-a-run) ·
 [What is and is not promised](docs/determinism-scope.md)
 
