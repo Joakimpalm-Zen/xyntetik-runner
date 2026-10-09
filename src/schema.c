@@ -3073,23 +3073,78 @@ bool schema_gemma4_constrainable(jv *tools, char *err, int errcap) {
     return true;
 }
 
-snode *schema_compile_gemma4_parallel(jv *tools, const char *only_tool,
-                                      char *err, int errcap) {
+// After a complete gemma4 call in a parallel turn: end the turn or open the
+// next call, at most `remaining` more. The same bounded raw gap as the Qwen
+// protocols (native_more_calls): the model's own stop token ends the turn
+// there (gemma4 closes a turn of calls with <|tool_response>, which the
+// engine counts as a stop, as the publisher's generation_config does), and
+// the full `<|tool_call>` opener hands off to the next call's `call:NAME`.
+// Gemma4 writes consecutive calls with no separator at all.
+static snode *g4_more_calls(jv *tools, const char *only, int remaining,
+                            int *budget, char *err, int errcap) {
+    snode *raw = atem_raw_bounded("<turn|>", remaining ? NATIVE_GAP_BYTES
+                                                       : NATIVE_END_BYTES);
+    if (!raw) goto oom;
+    raw->whitespace_significant = true;
+    if (!remaining) return raw;
+    snode *seq = atem_seq(3);
+    snode *open = seq ? atem_lit("call:") : NULL;
+    snode *call = open ? g4_call(tools, only, false, budget, err, errcap) : NULL;
+    snode *tail = call ? g4_more_calls(tools, only, remaining - 1, budget,
+                                       err, errcap) : NULL;
+    raw->lits = calloc(1, sizeof(*raw->lits));
+    raw->alts = calloc(1, sizeof(*raw->alts));
+    if (!seq || !open || !call || !tail || !raw->lits || !raw->alts ||
+        !(raw->lits[0] = strdup("<|tool_call>"))) {
+        schema_free(seq); schema_free(open); schema_free(call);
+        schema_free(tail); schema_free(raw);
+        goto oom;
+    }
+    raw->n_lits = 1;
+    atem_seq_add(seq, open);
+    atem_seq_add(seq, call);
+    atem_seq_add(seq, tail);
+    seq->whitespace_significant = true;
+    raw->alts[raw->n_alts++] = seq;
+    return raw;
+oom:
+    if (!err[0]) snprintf(err, errcap, "out of memory compiling parallel gemma4 turn");
+    return NULL;
+}
+
+static snode *g4_parallel_calls(jv *tools, const char *only_tool, int max_calls,
+                                char *err, int errcap) {
     snode *root = atem_seq(2);
     int budget = G4_MAX_EXPANSIONS;
-    snode *first = g4_call(tools, only_tool, true, &budget, err, errcap);
-    snode *second = first ? g4_call(tools, only_tool, true, &budget, err, errcap)
-                          : NULL;
-    if (!root || !first || !second) {
-        schema_free(first); schema_free(second); schema_free(root);
+    snode *first = root ? g4_call(tools, only_tool, true, &budget, err, errcap)
+                        : NULL;
+    snode *rest = first ? g4_more_calls(tools, only_tool, max_calls - 1,
+                                        &budget, err, errcap) : NULL;
+    if (!root || !first || !rest) {
+        schema_free(first); schema_free(rest); schema_free(root);
         if (!err[0]) snprintf(err, errcap,
                               "out of memory compiling parallel gemma4 turn");
         return NULL;
     }
     root->whitespace_significant = true;
     root->props[root->n_props++] = first;
-    root->props[root->n_props++] = second;
+    root->props[root->n_props++] = rest;
     return root;
+}
+
+// A parallel gemma4 turn is one to NATIVE_PARALLEL_MAX_CALLS calls, each
+// followed by the model's own stop or the next call (it was a fixed PAIR
+// until 2026-10-09: one call to make meant inventing a second). Every call
+// shares the G4_MAX_EXPANSIONS budget, so a tool whose argument grammar fit
+// two copies may not fit eight; the cap then steps down (8, 4, 2, 1) rather
+// than refusing a request the pair accepted.
+snode *schema_compile_gemma4_parallel(jv *tools, const char *only_tool,
+                                      char *err, int errcap) {
+    for (int max_calls = NATIVE_PARALLEL_MAX_CALLS; ; max_calls /= 2) {
+        err[0] = 0;
+        snode *root = g4_parallel_calls(tools, only_tool, max_calls, err, errcap);
+        if (root || max_calls <= 1 || !strstr(err, "maxItems")) return root;
+    }
 }
 
 // ---------------------------------------------------------------- validate

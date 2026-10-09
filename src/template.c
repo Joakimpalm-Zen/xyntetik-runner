@@ -3631,7 +3631,7 @@ static bool tool_schema_sane(const jv *s, int depth, char *err, int errcap) {
 
 bool tool_parallel_default(int tmpl, const jv *choice) {
     if (choice && choice->type == J_OBJ) return false;   // one named function
-    return !(is_gemma4(tmpl) || tmpl == TMPL_MUSE);
+    return tmpl != TMPL_MUSE;
 }
 
 int tool_envelope_build_ex(jv *tools, jv *choice, jv *final_schema,
