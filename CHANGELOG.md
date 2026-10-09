@@ -9,6 +9,17 @@ rename keep the names that were true when they were written.
 
 ## Unreleased
 
+- **A lineage walkthrough on a real model (R17.1.5).**
+  `docs/lineage-walkthrough.md` runs one chain on Qwen3-0.6B: quantize to
+  Q8_0, train a LoRA, merge, record a fidelity evaluation, serve with
+  receipts, then `--lineage` from the file, from the receipts and from a
+  copy with one changed byte, every output as printed. It found that a
+  Q8_0 base merged back into Q8_0 keeps only 18.2% of a 20-step adapter's
+  delta; the merge refusal's advice, which named q8_0 as a remedy, now
+  points to a type wider than the base's own (f16). The README's "Prove
+  what a model did" and the site's receipts page gain a sentence on
+  lineage.
+
 - **Gemma 4: a parallel tool turn carries one to eight calls, and an absent
   `parallel_tool_calls` now means several there too.** The native grammar
   compiled a parallel turn as a fixed pair: on Gemma 4 E4B Q4_K_M (CPU,

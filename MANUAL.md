@@ -2222,7 +2222,9 @@ rounded away), and `bytes_changed` counts the adapted bytes that differ. Both ar
 printed and recorded under `survival` in `OUT.merge.json`. A merge that keeps under 50%
 of the delta is refused, the destination left untouched: merged back onto the 4-bit
 grid its base already sits on, the study's adapter kept 1.8% of its delta (8.9% at 8x
-scale), and the file scored like the base; into Q8_0 it kept 99.5%. Merge into a wider
+scale), and the file scored like the base; into Q8_0 it kept 99.5%. The same holds on any
+grid: a 20-step adapter on Qwen3-0.6B Q8_0, merged back into Q8_0, kept 18.2%, and into
+F16 all of it ([lineage walkthrough](docs/lineage-walkthrough.md)). Merge into a wider
 type, serve `base + --lora`, or pass `--merge-allow-erased` to write it anyway (the
 record then shows `"min_retained": null`). A merge onto a different 4-bit grid (a
 Q4_K_M base into `--quant q4_0`) keeps the delta on average, because the base weights

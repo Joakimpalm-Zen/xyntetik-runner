@@ -25,7 +25,7 @@ nav: runner
       </div>
       <div class="card accent">
         <h3>Prove what it learned from</h3>
-        <p>Every adapter is written with a sidecar recording the base, data and adapter sha256, the seed, the full configuration, and the binary sha, compiler, OS and architecture that produced it. Same inputs on the same build reproduce the same adapter file byte for byte, gated in CI.</p>
+        <p>Every adapter is written with a sidecar recording the base, data and adapter sha256, the seed, the full configuration, and the binary sha, compiler, OS and architecture that produced it. Same inputs on the same build reproduce the same adapter file byte for byte, gated in CI. Quantize and merge steps write the same kind of signed record, each linking the records of its inputs, and <code>runner --lineage</code> walks a model file, or a served answer's receipt, back to the download it started from.</p>
       </div>
       <div class="card accent">
         <h3>Prove what you actually shipped</h3>

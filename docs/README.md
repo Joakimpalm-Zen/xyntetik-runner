@@ -28,6 +28,7 @@ updated afterwards; the newest record of a topic wins.
 
 - [The adaptation engine](adaptation-engine.md)
 - [Train a LoRA on the quantized GGUF you serve](train-lora-on-quantized-gguf.md)
+- [A model's life, recorded: a lineage walkthrough](lineage-walkthrough.md)
 - [Reproducible LoRA training with receipts](reproducible-lora-training-receipts.md)
 - [The local training floor (M5 Max)](training-floor-m5max-2026-09-01.md)
 - [Sublayer removal, `--remove-sublayer`](sublayer-removal.md)
