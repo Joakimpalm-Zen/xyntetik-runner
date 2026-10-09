@@ -3248,6 +3248,30 @@ real 9B Q8_0 file the generic envelope scored 39 of 40 and the native protocol
 ([evidence](docs/compat-reports/nemotron-nano-native-tools-2026-10-09/README.md)).
 `--tool-info` reports `nemotron_json`.
 
+Mistral v0.3 (`mistral`) and Mistral-Nemo (`mistral-nemo`) speak their own
+protocol: the declarations as one `[AVAILABLE_TOOLS] [...]` list before the
+last user turn, a turn's calls as `[TOOL_CALLS]` and a JSON list of
+`{"name": ..., "arguments": {...}}`, and a result as a `[TOOL_RESULTS]` block
+naming its call, all in the publisher templates' bytes (template conformance:
+both families clean in text and tokens). The templates require 9-character
+alphanumeric call ids; any other id (OpenAI's `call_...`) is mapped to one
+from its hash, the same for a call and its result, on all three surfaces.
+`[TOOL_CALLS]` is a control token that decodes to nothing unless a grammar
+admits it by its spelling, so every choice is constrained, `auto` included:
+prose that ends at the model's stop or hands off to the list at the marker.
+The list ends the turn at its `]` (v0.3 writes no end-of-turn after it).
+When the caller sends its own system prompt it is kept on the last user turn
+beside the declarations; the reference template drops it when the
+conversation ends in a tool result, mistral-common keeps it as Runner does.
+Before 2026-10-09 these families rode the generic envelope, whose teaching
+turn the Mistral renderer dropped whenever the caller also sent a system
+prompt; agent-torture on the real Q4_K_M files is 40 of 40 on both arms
+([evidence](docs/compat-reports/mistral-native-tools-2026-10-09/README.md)).
+The v0.1 framing (`mistral-v1`) has no tool protocol and stays generic; the
+pinned v0.3 file embeds that older template, so serve it with
+`--chat-template mistral` for native tools. `--tool-info` reports
+`mistral_json`.
+
 Qwen3-Coder, Qwen 3.8, Granite 4.2 and Ornith speak the same
 function/parameter XML and share one contract. A `tool_choice: auto` turn
 (the shipped default, what every agent client sends) is the model's own free

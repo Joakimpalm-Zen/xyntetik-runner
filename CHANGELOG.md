@@ -9,6 +9,22 @@ rename keep the names that were true when they were written.
 
 ## Unreleased
 
+- **Mistral v0.3 and Mistral-Nemo speak their own tool protocol.** Their
+  tools rode the generic JSON envelope, whose teaching turn the Mistral
+  renderer dropped whenever the caller also sent a system prompt: the model
+  was then never shown the tools, and only the grammar forced a call out.
+  Runner now declares tools in the publisher templates' `[AVAILABLE_TOOLS]`
+  block before the last user turn, replays calls as `[TOOL_CALLS]` lists and
+  results as `[TOOL_RESULTS]` blocks with 9-character call ids (any other id
+  maps to one by its hash, call and result alike, on the Chat, Responses and
+  Anthropic surfaces), and constrains and parses a turn's `[TOOL_CALLS]`
+  list, buffered and streamed. The marker is a control token, so `auto` is
+  constrained too: prose, or a hand-off to the list. Template conformance:
+  both families clean in text and tokens. Agent-torture on the real Q4_K_M
+  files: 40 of 40 on both arms for both models (suite R2.4.3). The v0.1
+  framing stays generic; the pinned v0.3 file embeds it, so serve that file
+  with `--chat-template mistral`.
+
 - **Nemotron Nano speaks its own tool protocol.** Its tools rode the generic
   JSON envelope, which also replaced the caller's system prompt with the
   envelope's instructions; the template's own `<AVAILABLE_TOOLS>` list and
