@@ -136,7 +136,7 @@ $response.choices[0].message.content
 
 </details>
 
-> **Version `1.1.4`.** The command line, the HTTP API, the record formats and
+> **Version `1.2.0`.** The command line, the HTTP API, the record formats and
 > the model files that load stay compatible across 1.x; speed, generated
 > tokens across releases and the support matrix move with the evidence. The
 > [versioning policy](docs/versioning.md) lists exactly what is kept. CI builds
@@ -1404,7 +1404,7 @@ for Linux, macOS, or Windows, or build from source:
 git clone https://github.com/Joakimpalm-Zen/xyntetik-runner
 cd xyntetik-runner
 make
-./runner --version   # -> runner 1.1.4
+./runner --version   # -> runner 1.2.0
 ```
 
 CUDA builds and releases need only an NVIDIA driver at runtime. The CUDA
@@ -1480,7 +1480,7 @@ shell, then run `make`.
 
 Each release publishes a CPU image - the same binary on a distroless glibc base,
 nothing else - to `ghcr.io/joakimpalm-zen/xyntetik-runner:v<version>` (the
-tag carries the `v`, e.g. `:v1.1.4`) and `:latest`. Build it yourself with `docker build -t runner .`.
+tag carries the `v`, e.g. `:v1.2.0`) and `:latest`. Build it yourself with `docker build -t runner .`.
 
 The server binds **loopback only** by design (there is no `--host`/`0.0.0.0`
 flag), so it never exposes itself to a network, even in a container - which
@@ -2975,7 +2975,7 @@ OpenAI shape, the flag is refused on the other surfaces and together with
 `response_format`.
 
 A request that leaves `parallel_tool_calls` out gets several calls per turn,
-as OpenAI's API does (since the release after 1.1.4; before, an absent flag
+as OpenAI's API does (since 1.2.0; before, an absent flag
 meant one call), except on Gemma 4 and Muse, whose parallel grammar is still
 a fixed pair of calls: there an absent flag keeps one call per turn and
 `true` asks for the pair. A `tool_choice` that names one function also gets
@@ -3219,8 +3219,7 @@ cannot enforce a choice the caller insisted on. Under that grammar a turn is
 one to eight calls, each followed by either the model's own stop token or
 the next call, the same contract the Qwen JSON protocol keeps;
 `parallel_tool_calls:false` holds it to exactly one. Until 1.1.4 the
-parallel grammar was a fixed pair of calls, and until the release after
-1.1.4 a request that left the flag out got one call per turn: on the
+parallel grammar was a fixed pair of calls, and until 1.2.0 a request that left the flag out got one call per turn: on the
 33-task agent bank (Qwen3.8-Flash-Next) none of Runner's 396 turns carried
 a second call where llama.cpp's carried several in 123 of 396 and Strata's
 in 103 of 375. A parameter value in this
@@ -3642,7 +3641,7 @@ thinking-channel blocks, and Anthropic SSE event ordering. `max_tokens` is
 required. Several `tool_use` blocks in one turn are allowed unless
 `tool_choice.disable_parallel_tool_use` is `true`, Anthropic's own default
 and the same rule `parallel_tool_calls` follows on the OpenAI surfaces
-(including its Gemma 4 and Muse exception); until the release after 1.1.4
+(including its Gemma 4 and Muse exception); until 1.2.0
 an absent field meant one call per turn here.
 
 `thinking.type:"enabled"` requires `budget_tokens`; that field is rejected for

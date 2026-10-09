@@ -7,7 +7,7 @@ to the exact build, and what is not covered. Releases before 1.0.0 made no
 such promise (the `-alpha` suffix was retired at v0.2.0). Entries below the
 rename keep the names that were true when they were written.
 
-## Unreleased
+## v1.2.0 - 2026-10-09
 
 - **A request that leaves `parallel_tool_calls` out now gets several calls
   per turn, as OpenAI's API does (owner, 2026-10-09).** Runner used to read
