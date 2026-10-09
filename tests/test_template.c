@@ -2798,6 +2798,29 @@ static void test_granite4_native_tools(tokenizer *t) {
     jv_free(tools);
 }
 
+// The generic tool envelope's teaching turn comes in front of the caller's
+// own system message. The framings that fold one system text into a user turn
+// kept only the later one until 2026-10-09, so a caller who sent a system
+// prompt had the tool declarations dropped from the prompt. Both now reach it,
+// in order, a blank line apart; a single system message renders as before.
+static void test_leading_system_messages_are_joined(void) {
+    static const int tmpls[] = { TMPL_LLAMA2, TMPL_LLAMA2_FALLBACK, TMPL_GEMMA,
+                                 TMPL_MISTRAL, TMPL_MISTRAL_V1, TMPL_MISTRAL_NEMO };
+    chat_msg two[] = { { .role = "system", .content = "TOOLS-TURN" },
+                       { .role = "system", .content = "CALLER-SYSTEM" },
+                       { .role = "user", .content = "hi" } };
+    for (size_t i = 0; i < sizeof tmpls / sizeof *tmpls; i++) {
+        char out[2048];
+        render_messages(tmpls[i], two, 3, true, THINK_DEFAULT, out, sizeof out);
+        const char *a = strstr(out, "TOOLS-TURN"), *b = strstr(out, "CALLER-SYSTEM");
+        assert(a && b && a < b);
+        assert(!strncmp(a + strlen("TOOLS-TURN"), "\n\nCALLER-SYSTEM", 15));
+        char one[2048];
+        render_messages(tmpls[i], two + 1, 2, true, THINK_DEFAULT, one, sizeof one);
+        assert(strstr(one, "CALLER-SYSTEM") && !strstr(one, "TOOLS-TURN"));
+    }
+}
+
 static void test_detect_qwen3_coder(void) {
     const char *native = "<|im_start|> <function=example_function_name> <parameter=example_parameter_1>";
     assert(!strcmp(template_name(template_detect(native, NULL)), "qwen3-coder"));
@@ -2805,6 +2828,7 @@ static void test_detect_qwen3_coder(void) {
 
 int main(void) {
     test_detect_qwen3_coder();
+    test_leading_system_messages_are_joined();
     test_default_system_is_read_from_the_models_own_template();
     gguf_file g;
     if (!gguf_open(&g, FIXTURE)) {
