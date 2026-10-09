@@ -9,6 +9,15 @@ rename keep the names that were true when they were written.
 
 ## Unreleased
 
+- **`/v1/completions` takes `prompt` as an array of token ids.** OpenAI's
+  API, vLLM and llama.cpp accept it; Runner answered "missing prompt". The
+  ids are used exactly as sent (no BOS added, nothing re-tokenized), so a
+  receipt records them and `--verify` replays them. A request sent as text
+  and the same request sent as the ids its receipt recorded leave identical
+  token lists and identical greedy output. An empty array, an id outside
+  the vocabulary, a non-integer and a batch are refused with a 400. Found
+  while probing Muse's unconstrained output (suite R4.26.19(e)).
+
 - **Muse: a parallel tool turn carries one to eight calls in the model's
   own form, and an absent `parallel_tool_calls` now means several there
   too.** The parallel grammar was a fixed pair joined by a bare
