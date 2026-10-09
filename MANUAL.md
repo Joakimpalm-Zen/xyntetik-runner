@@ -2645,7 +2645,7 @@ non-loopback authorities.
 |---|---|
 | `POST /v1/chat/completions` | OpenAI Chat Completions, including SSE, tools, structured output, logprobs, and stop strings. |
 | `POST /v1/responses` | OpenAI Responses translation over the same engine and tool envelope. |
-| `POST /v1/completions` | Legacy raw prompt completions. |
+| `POST /v1/completions` | Legacy raw prompt completions; `prompt` is a string or an array of token ids. |
 | `POST /v1/embeddings` | L2-normalized embeddings, pooled as the GGUF declares in `{arch}.pooling_type`: the mean over every token (also when the key is absent, as on generative models), or the last token (embedding models such as Qwen3-Embedding), with the end token appended first when `tokenizer.ggml.add_eos_token` is set. A model declaring CLS or rank pooling is refused with 400 naming it (since 2026-09-30; before, every model was mean-pooled with no end token). |
 | `POST /v1/rerank` | Documents ranked against a `query` with no reranker model: each document is put to the served model as a question with exactly two answers (`yes`, `no`) and scored with `/v1/decide`'s exact in-context readout. `relevance_score` is P(yes) renormalized over the two answers, `logit` is log P(yes) - log P(no), and `margin` is the logit gap to the next-ranked document, so a client can tell a decisive order from a near tie. Accepts `documents` as strings or `{"text": ...}` objects, `top_n`, `return_documents`, an `instruction` replacing the default ("Judge whether the document answers the query. Answer yes or no."), and `rendering`: `chat-v1` (default; the model's own chat template, thinking off, refused for harmony's channel protocol) or `raw-v1` (`{instruction}\n\nQuery: {query}\nDocument: {document}\nRelevant:` with answers ` yes`/` no`, for base models). The `envelope` carries digests of the query, documents and instruction. The score is the served model's judgement, not a trained reranker's. |
 | `POST /v1/messages` | Anthropic Messages translation. |
@@ -2990,7 +2990,11 @@ budget end or a completed constrained document carries neither. On
 vocabulary spellings in `text` and in `logprobs.tokens` (with `text_offset`
 following the rendered text) instead of dropping them; the default stays the
 OpenAI shape, the flag is refused on the other surfaces and together with
-`response_format`.
+`response_format`. `prompt` may also be an array of token ids, as on OpenAI's
+API: the ids are used exactly as sent (no BOS added, nothing re-tokenized),
+so a receipt records them and `--verify` replays them, and the record's
+prompt text is their decode. An empty array, an id outside the vocabulary,
+a non-integer, and a batch (strings or nested arrays) are refused.
 
 A request that leaves `parallel_tool_calls` out gets several calls per turn,
 as OpenAI's API does (since 1.2.0; before, an absent flag

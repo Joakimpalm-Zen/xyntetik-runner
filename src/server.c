@@ -1467,8 +1467,56 @@ static void stored_response_route(sock_t fd, const char *method,
     free(doc);
 }
 
+// `prompt` as an array of token ids (OpenAI's completions API accepts it):
+// validated here, then decoded to the text the record carries beside the
+// ids. run_completion uses the ids exactly as sent (no BOS, no re-tokenizing:
+// the receipt's prompt.tokens is what --verify replays). Returns a malloc'd
+// text, or NULL with the reason in `why`. A batch (strings or nested
+// arrays) is refused, not taken apart.
+static char *prompt_ids_text(slot_t *s, const jv *a, char *why, size_t cap) {
+    if (a->n == 0) { snprintf(why, cap, "prompt is an empty array"); return NULL; }
+    sbuf t = {0};
+    for (int i = 0; i < a->n; i++) {
+        const jv *v = a->items[i];
+        if (v->type != J_NUM) {
+            snprintf(why, cap, "prompt must be a string or an array of token "
+                     "ids (a batch of prompts is not supported)");
+            free(t.s);
+            return NULL;
+        }
+        if (v->num != (double)(int32_t)v->num || v->num < 0 ||
+            v->num >= s->tok->n_vocab) {
+            snprintf(why, cap, "prompt[%d] is not a token id of this model "
+                     "(an integer in 0..%d)", i, s->tok->n_vocab - 1);
+            free(t.s);
+            return NULL;
+        }
+        char buf[512];
+        int id = (int)v->num;
+        int n = tok_decode(s->tok, id, buf, sizeof buf);
+        if (n > 0) sb_put(&t, buf, (size_t)n);
+        else if (tok_is_control(s->tok, id) && tok_raw(s->tok, id))
+            sb_put(&t, tok_raw(s->tok, id), strlen(tok_raw(s->tok, id)));
+    }
+    sb_put(&t, "", 0);
+    if (t.failed || !t.s) { free(t.s); snprintf(why, cap, "out of memory"); return NULL; }
+    return t.s;
+}
+
 static void handle_completion(slot_t *s, sock_t fd, jv *req) {
-    const char *prompt = jv_str(jv_get(req, "prompt"), NULL);
+    jv *p = jv_get(req, "prompt");
+    if (p && p->type == J_ARR) {
+        char why[160];
+        char *text = prompt_ids_text(s, p, why, sizeof why);
+        if (!text) {
+            send_error(fd, !strcmp(why, "out of memory") ? 500 : 400, why);
+            return;
+        }
+        run_completion(s, fd, text, API_TEXT, req, NULL);
+        free(text);
+        return;
+    }
+    const char *prompt = jv_str(p, NULL);
     if (!prompt) { send_error(fd, 400, "missing prompt"); return; }
     run_completion(s, fd, prompt, API_TEXT, req, NULL);
 }
