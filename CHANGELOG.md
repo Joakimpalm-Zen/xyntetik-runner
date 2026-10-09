@@ -9,6 +9,17 @@ rename keep the names that were true when they were written.
 
 ## Unreleased
 
+- **A required tool turn with thinking on keeps the model's own blank line
+  after `</think>`.** On the Qwen JSON and function/parameter XML protocols
+  a required or named turn opened on the literal `<tool_call>`, so the
+  newline the template itself writes after a closed thought
+  (`</think>\n\n`) was vetoed and the model was pushed straight to the
+  opener, off its own distribution (with `auto` the newline was already
+  admitted). The first call now admits up to two newlines ahead of its
+  opener and nothing else: no text, no third newline, and still no turn
+  without a call. Found with a scripted reply, which the veto ended with no
+  call at all (suite R4.26.19(d)).
+
 - **`--merge-lora` measures what the merge kept, and refuses a merge that
   rounded the fine-tune away.** Each adapted row is also written from the
   base alone at the same output type; the projection of the difference onto
