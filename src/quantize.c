@@ -1130,6 +1130,11 @@ typedef struct {
     merge_pair_t *map;    // one entry per BASE tensor index
     uint64_t n_base;      // base tensor count the map was resolved against
     int n_pairs, n_zero;
+    // What the output grid kept of the delta, over the adapted tensors:
+    // each row is written twice, base + delta (the merged row) and the base
+    // alone at the same output type, and the two are compared.
+    merge_survival surv;
+    float min_retained;   // refuse below this delta_retained; < 0 = never
 } merge_set_t;
 
 // mirror of model.c lora_slot_name — the projections --lora hooks. The
@@ -1494,7 +1499,8 @@ int context_surgery_gguf(const char *in_path, const char *out_path,
 // are stable across the two opens of one file, and the adapter's mmap (the
 // a/b pointers in the map) stays alive in `ms` for the whole write.
 int merge_lora_gguf(const char *in_path, const char *adapter_path,
-                    float user_scale, const char *out_path, int target) {
+                    float user_scale, const char *out_path, int target,
+                    float min_retained, merge_survival *surv) {
     gguf_file base;
     if (!gguf_open(&base, in_path)) return 1;
     merge_set_t ms;
@@ -1504,10 +1510,12 @@ int merge_lora_gguf(const char *in_path, const char *adapter_path,
         merge_set_free(&ms);
         return 1;
     }
+    ms.min_retained = min_retained;
     fp_denormal_state fpst = fp_denormals_disable();
     int rc = quantize_gguf_plan_inner(in_path, out_path, target, NULL, NULL, NULL,
                                       &ms, 0, 0, NULL);
     fp_denormals_restore(fpst);
+    if (surv) *surv = ms.surv;
     merge_set_free(&ms);
     return rc;
 }
@@ -2312,6 +2320,16 @@ static int quantize_gguf_plan_inner(const char *in_path, const char *out_path, i
     float *rowf = malloc(sizeof(float) * max_row);
     uint8_t *rowq = malloc(ggml_row_size(T_F32, max_row) + 64);
     if (!rowf || !rowq) w.ok = false;
+    // the survival measurement's second write of each adapted row
+    float *basef = NULL, *deqm = NULL, *deqb = NULL;
+    uint8_t *rowqb = NULL;
+    if (ms) {
+        basef = malloc(sizeof(float) * max_row);
+        deqm = malloc(sizeof(float) * max_row);
+        deqb = malloc(sizeof(float) * max_row);
+        rowqb = malloc(ggml_row_size(T_F32, max_row) + 64);
+        if (!basef || !deqm || !deqb || !rowqb) w.ok = false;
+    }
 
     uint64_t quantized = 0, kept = 0;
     for (uint64_t i = 0; w.ok && i < g.n_tensors; i++) {
@@ -2387,15 +2405,38 @@ static int quantize_gguf_plan_inner(const char *in_path, const char *out_path, i
             w.ok = false;
             break;
         }
+        int n0 = (int)t->ne[0];
         for (uint64_t r = 0; r < rows; r++) {
-            dequant_row(t->type, (uint8_t *)t->data + r * in_rs, rowf, (int)t->ne[0]);
-            if (mp) merge_row(mp, r, rowf, (int)t->ne[0]);
-            quantize_row_any(out_type[i], rowf, rowq, (int)t->ne[0]);
+            dequant_row(t->type, (uint8_t *)t->data + r * in_rs, rowf, n0);
+            if (mp) {
+                memcpy(basef, rowf, sizeof(float) * (size_t)n0);
+                merge_row(mp, r, rowf, n0);
+            }
+            quantize_row_any(out_type[i], rowf, rowq, n0);
             wr(&w, rowq, out_rs);
+            if (mp) {
+                // Did the grid keep the delta? The base alone, written at
+                // the same type, is what the merge would be had the adapter
+                // done nothing; the projection of (merged - that) onto the
+                // intended delta is the part of the delta that survived.
+                quantize_row_any(out_type[i], basef, rowqb, n0);
+                merge_survival *sv = &ms->surv;
+                sv->bytes += out_rs;
+                for (size_t k = 0; k < out_rs; k++)
+                    sv->bytes_changed += rowq[k] != rowqb[k];
+                dequant_row(out_type[i], rowq, deqm, n0);
+                dequant_row(out_type[i], rowqb, deqb, n0);
+                for (int k = 0; k < n0; k++) {
+                    double d = (double)rowf[k] - basef[k];
+                    sv->ret_num += ((double)deqm[k] - deqb[k]) * d;
+                    sv->ret_den += d * d;
+                }
+            }
         }
         quantized++;
     }
     bool write_ok = wr_close(&w);
+    free(basef); free(deqm); free(deqb); free(rowqb);
     free(rowf); free(rowq); free(out_type); free(out_off); free(eff_ne);
     free(drop);
     gguf_close(&g);
@@ -2407,6 +2448,30 @@ static int quantize_gguf_plan_inner(const char *in_path, const char *out_path, i
                 "(destination left untouched)\n", out_path);
         free(tmp_path);
         return 1;
+    }
+
+    // A merge whose output grid rounded the delta away is not the adapted
+    // model: refuse it before it replaces anything (the 2026-08-22 study's
+    // 4-bit merge scored the base's 0.69 again with 98.55% of the adapted
+    // bytes on the base's own codes). --merge-allow-erased writes it anyway.
+    if (ms && ms->surv.ret_den > 0) {
+        double ret = ms->surv.ret_num / ms->surv.ret_den;
+        if (ms->min_retained >= 0 && ret < ms->min_retained) {
+            remove(tmp_path);
+            fprintf(stderr, "error: the merge kept %.1f%% of the adapter's "
+                    "delta (%.2f%% of the adapted bytes differ from the base "
+                    "written alone at the same type), under the %.0f%% "
+                    "floor: the output grid rounded the fine-tune away, so "
+                    "%s would behave like the base. Merge into a wider type "
+                    "(--quant q8_0 or f16), serve base + --lora, or pass "
+                    "--merge-allow-erased to write it anyway (destination "
+                    "left untouched)\n", 100.0 * ret,
+                    100.0 * (double)ms->surv.bytes_changed /
+                        (double)ms->surv.bytes,
+                    100.0 * ms->min_retained, out_path);
+            free(tmp_path);
+            return 1;
+        }
     }
 
     // Install the finished file only after the temp is complete. POSIX rename()
@@ -2435,5 +2500,10 @@ static int quantize_gguf_plan_inner(const char *in_path, const char *out_path, i
                 "weights%s\n", ms->n_pairs - ms->n_zero,
                 ms->n_pairs - ms->n_zero == 1 ? "" : "s",
                 ms->n_zero ? " (zero-delta pairs copied verbatim)" : "");
+    if (ms && ms->surv.ret_den > 0)
+        fprintf(stderr, "merge: the output kept %.1f%% of the adapter's delta; "
+                "%.2f%% of the adapted bytes differ from the base written "
+                "alone\n", 100.0 * ms->surv.ret_num / ms->surv.ret_den,
+                100.0 * (double)ms->surv.bytes_changed / (double)ms->surv.bytes);
     return 0;
 }

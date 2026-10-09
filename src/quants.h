@@ -89,8 +89,24 @@ int   context_surgery_gguf(const char *in_path, const char *out_path,
 // Merging into a quantized type rounds the delta through that type's grid:
 // the merged artifact's fidelity is a measurement, not a given. Untouched
 // tensors are copied byte-verbatim under T_KEEP.
+// What the merged file kept of the delta, over the adapted tensors: bytes
+// written and bytes that differ from the base written alone at the same
+// type, and delta_retained = ret_num / ret_den, the projection of (merged -
+// base-alone) onto the intended delta (1 = all kept, 0 = rounded away).
+typedef struct {
+    uint64_t bytes, bytes_changed;
+    double ret_num, ret_den;
+} merge_survival;
+// --merge-lora's default floor on delta_retained. Calibrated 2026-10-09 on the
+// merge study's Qwen3-4B Q4_K_M + tool-use adapter: merged back onto Q4_K,
+// 1.8% (scale 1) to 8.9% (scale 8) of the delta survived; into Q8_0 99.5%.
+#define MERGE_MIN_RETAINED     0.5f
+#define MERGE_MIN_RETAINED_STR "0.5"
+// Refuses (returns 1, destination untouched) when delta_retained falls under
+// min_retained; a negative min_retained never refuses. *surv may be NULL.
 int   merge_lora_gguf(const char *in_path, const char *adapter_path,
-                      float user_scale, const char *out_path, int target);
+                      float user_scale, const char *out_path, int target,
+                      float min_retained, merge_survival *surv);
 // CLI-name -> T_* for every type the quantizer can write ("keep" -> T_KEEP);
 // -2 for a name it cannot.
 int   quantize_type_from_name(const char *s);

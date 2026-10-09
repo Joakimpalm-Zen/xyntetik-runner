@@ -658,8 +658,8 @@ int main(void) {
             { "blk.0.attn_q.weight.lora_b", {M_R, M_OUT}, mb, 2 },
         };
         write_adapter(ad, alpha, NULL, ats, 2, T_F32);
-        assert(merge_lora_gguf(base, ad, 1.0f, out1, T_KEEP) == 0);
-        assert(merge_lora_gguf(base, ad, 1.0f, out2, T_KEEP) == 0);
+        assert(merge_lora_gguf(base, ad, 1.0f, out1, T_KEEP, -1.0f, NULL) == 0);
+        assert(merge_lora_gguf(base, ad, 1.0f, out2, T_KEEP, -1.0f, NULL) == 0);
         assert(files_equal(out1, out2));      // byte-deterministic
         gguf_file g;
         assert(gguf_open(&g, out1));
@@ -687,14 +687,14 @@ int main(void) {
         };
         write_adapter(zad, alpha, NULL, zts, 2, T_F32);
         assert(quantize_gguf(base, keep, T_KEEP, NULL) == 0);
-        assert(merge_lora_gguf(base, zad, 1.0f, zout, T_KEEP) == 0);
+        assert(merge_lora_gguf(base, zad, 1.0f, zout, T_KEEP, -1.0f, NULL) == 0);
         assert(files_equal(zout, keep));
         // merging into a quantized base: the delta rides the dequant->
         // requant path; the merged row decodes to base row + delta within
         // the type's grid resolution
         const char *q8b = "q_mrg_q8.gguf", *q8m = "q_mrg_q8m.gguf";
         assert(quantize_gguf(base, q8b, T_Q8_0, NULL) == 0);
-        assert(merge_lora_gguf(q8b, ad, 1.0f, q8m, T_KEEP) == 0);
+        assert(merge_lora_gguf(q8b, ad, 1.0f, q8m, T_KEEP, -1.0f, NULL) == 0);
         {
             gguf_file gb, gm;
             assert(gguf_open(&gb, q8b) && gguf_open(&gm, q8m));
@@ -723,7 +723,7 @@ int main(void) {
         {
             const char *fad = "q_mrg_f16ad.gguf", *fout = "q_mrg_f16.gguf";
             write_adapter(fad, alpha, NULL, ats, 2, T_F16);
-            assert(merge_lora_gguf(base, fad, 1.0f, fout, T_KEEP) == 0);
+            assert(merge_lora_gguf(base, fad, 1.0f, fout, T_KEEP, -1.0f, NULL) == 0);
             gguf_file gf;
             assert(gguf_open(&gf, fout));
             gguf_tensor *qf = gguf_find_tensor(&gf, "blk.0.attn_q.weight");
@@ -741,33 +741,69 @@ int main(void) {
             gguf_close(&gf);
             remove(fad); remove(fout);
         }
+        // What the output grid kept of the delta (2026-10-09). An exact
+        // output type keeps all of it: F32 stores base + delta as computed,
+        // so the merged-minus-base-alone difference IS the delta and the
+        // projection is exactly 1.
+        {
+            merge_survival sv;
+            assert(merge_lora_gguf(base, ad, 1.0f, out1, T_KEEP, 0.5f, &sv) == 0);
+            assert(sv.ret_den > 0 && sv.ret_num == sv.ret_den);
+            assert(sv.bytes == (uint64_t)M_OUT * M_IN * sizeof(float));
+            // A Q4_0 requant of Q4_0 codes is the identity (each block's
+            // extreme decodes to -8d and gives the same d back), so a delta
+            // far under half a step and under the fp16 scale's resolution
+            // leaves every byte where the base alone puts it: nothing kept.
+            const char *q4b = "q_mrg_q4.gguf", *q4m = "q_mrg_q4m.gguf";
+            assert(quantize_gguf(base, q4b, T_Q4_0, NULL) == 0);
+            assert(merge_lora_gguf(q4b, ad, 1e-6f, q4m, T_KEEP, -1.0f, &sv) == 0);
+            assert(sv.bytes > 0 && sv.bytes_changed == 0);
+            assert(sv.ret_den > 0 && sv.ret_num == 0.0);
+            // under a floor that merge is refused: the existing destination
+            // stays byte-for-byte, and no partial file is left behind
+            FILE *fp = fopen(q4m, "wb");
+            assert(fp && fputs("previous model", fp) >= 0 && fclose(fp) == 0);
+            assert(merge_lora_gguf(q4b, ad, 1e-6f, q4m, T_KEEP, 0.5f, &sv) != 0);
+            char got[32] = {0};
+            fp = fopen(q4m, "rb");
+            assert(fp && fread(got, 1, sizeof(got) - 1, fp) == 14);
+            fclose(fp);
+            assert(!strcmp(got, "previous model"));
+            assert(!exists("q_mrg_q4m.gguf.partial"));
+            // the override (a negative floor) writes it anyway
+            assert(merge_lora_gguf(q4b, ad, 1e-6f, q4m, T_KEEP, -1.0f, NULL) == 0);
+            gguf_file gq;
+            assert(gguf_open(&gq, q4m));
+            gguf_close(&gq);
+            remove(q4b); remove(q4m);
+        }
         // hostile adapters refuse the whole merge
         const char *hout = "q_mrg_h.gguf";
         adesc half[1] = {
             { "blk.0.attn_q.weight.lora_a", {M_IN, M_R}, ma, 2 },
         };
         write_adapter(ad, alpha, NULL, half, 1, T_F32);
-        assert(merge_lora_gguf(base, ad, 1.0f, hout, T_KEEP) != 0);
+        assert(merge_lora_gguf(base, ad, 1.0f, hout, T_KEEP, -1.0f, NULL) != 0);
         adesc badshape[2] = {
             { "blk.0.attn_q.weight.lora_a", {32, M_R},  ma, 2 },
             { "blk.0.attn_q.weight.lora_b", {M_R, M_OUT}, mb, 2 },
         };
         write_adapter(ad, alpha, NULL, badshape, 2, T_F32);
-        assert(merge_lora_gguf(base, ad, 1.0f, hout, T_KEEP) != 0);
+        assert(merge_lora_gguf(base, ad, 1.0f, hout, T_KEEP, -1.0f, NULL) != 0);
         adesc extradim[2] = {
             { "blk.0.attn_q.weight.lora_a", {M_IN, M_R, 2}, ma3, 3 },
             { "blk.0.attn_q.weight.lora_b", {M_R, M_OUT}, mb, 2 },
         };
         write_adapter(ad, alpha, NULL, extradim, 2, T_F32);
-        assert(merge_lora_gguf(base, ad, 1.0f, hout, T_KEEP) != 0);
+        assert(merge_lora_gguf(base, ad, 1.0f, hout, T_KEEP, -1.0f, NULL) != 0);
         adesc unhooked[2] = {
             { "blk.0.attn_qkv.weight.lora_a", {M_IN, M_R},  ma, 2 },
             { "blk.0.attn_qkv.weight.lora_b", {M_R, M_OUT}, mb, 2 },
         };
         write_adapter(ad, alpha, NULL, unhooked, 2, T_F32);
-        assert(merge_lora_gguf(base, ad, 1.0f, hout, T_KEEP) != 0);
+        assert(merge_lora_gguf(base, ad, 1.0f, hout, T_KEEP, -1.0f, NULL) != 0);
         write_adapter(ad, alpha, "llama", ats, 2, T_F32);   // base carries no arch
-        assert(merge_lora_gguf(base, ad, 1.0f, hout, T_KEEP) != 0);
+        assert(merge_lora_gguf(base, ad, 1.0f, hout, T_KEEP, -1.0f, NULL) != 0);
         assert(!exists(hout));                       // nothing was installed
         remove(base); remove(ad); remove(out1); remove(out2);
         remove(keep); remove(zad); remove(zout); remove(q8b); remove(q8m);
