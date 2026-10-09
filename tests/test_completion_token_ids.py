@@ -69,7 +69,11 @@ def test_token_ids_are_used_exactly_and_replay(runner_bin, model, tmp_path):
     assert len(recs) == 2
     rb = json.loads(recs[1].read_text())
     assert rb["prompt"]["tokens"] == ids            # used as sent, not re-tokenized
-    assert rb["prompt"]["text"] == TEXT             # the record still reads as text
+    # the record also carries a text, decoded from the ids: readable, but not
+    # always the caller's original spelling (a SentencePiece piece decodes
+    # with its word-boundary space, a control token as its spelling), which
+    # is why the ids, not the text, are what --verify replays
+    assert isinstance(rb["prompt"]["text"], str) and rb["prompt"]["text"], rb
     assert b["choices"][0]["text"] == a["choices"][0]["text"]
     assert b["usage"]["prompt_tokens"] == len(ids)
     v = subprocess.run([runner_bin, "-m", model, "--verify", recs[1], "--gpu", "off",
