@@ -12,7 +12,7 @@
       "object": "response",
       "output": [],
       "output_text": "<redacted>",
-      "parallel_tool_calls": false,
+      "parallel_tool_calls": true,
       "previous_response_id": null,
       "reasoning": null,
       "status": "<redacted>",
@@ -46,7 +46,7 @@
       "object": "response",
       "output": [],
       "output_text": "<redacted>",
-      "parallel_tool_calls": false,
+      "parallel_tool_calls": true,
       "previous_response_id": null,
       "reasoning": null,
       "status": "<redacted>",
@@ -168,7 +168,7 @@
         }
       ],
       "output_text": "<redacted>",
-      "parallel_tool_calls": false,
+      "parallel_tool_calls": true,
       "previous_response_id": null,
       "reasoning": null,
       "runner_telemetry": {

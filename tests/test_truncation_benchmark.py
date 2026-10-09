@@ -106,6 +106,7 @@ def test_request_is_identical_across_engines_bar_the_model_field():
     a = MOD.request_for(8)
     b = MOD.request_for(8, model="granite")
     assert a["tool_choice"] == "required"
+    assert a["parallel_tool_calls"] is False
     assert a["temperature"] == 0
     assert a["max_tokens"] == 8
     assert a["tools"] == [MOD.TOOL]

@@ -9,6 +9,23 @@ rename keep the names that were true when they were written.
 
 ## Unreleased
 
+- **A request that leaves `parallel_tool_calls` out now gets several calls
+  per turn, as OpenAI's API does (owner, 2026-10-09).** Runner used to read
+  an absent flag as false, and on the Hermes-style JSON families (Qwen 2.5,
+  Qwen 3) every tool turn is constrained, so any client that omitted the
+  flag, `tool_choice: auto` included, got at most one call per turn; on
+  required turns it held the XML families to one as well. The same rule
+  applies to `/v1/responses` (whose echo now reads `true` when the request
+  is silent) and to `/v1/messages` (`disable_parallel_tool_use` absent means
+  allowed, Anthropic's default). Exception: Gemma 4 and Muse, whose parallel
+  grammar is still a fixed pair of calls, keep one call when the flag is
+  absent. A `tool_choice` that names one function also keeps one call when
+  the flag is absent, on both OpenAI surfaces: OpenAI's forced function calls
+  exactly one (Anthropic's named `tool` choice is not changed, its default
+  allows several). An explicit value always wins. The conformance tests that pin the
+  one-call path now say `parallel_tool_calls: false` (or
+  `disable_parallel_tool_use: true`) explicitly; new tests pin the default.
+
 - **`--train` on sparse-MoE models: an attention-only adapter (R17.3).**
   Qwen3-MoE and Mixtral routing (softmax router, top-k, with or without
   renormalization and a weight scale) train now: the adapter sits on the

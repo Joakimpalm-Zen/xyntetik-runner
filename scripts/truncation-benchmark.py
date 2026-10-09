@@ -82,13 +82,17 @@ PROMPT = "What is the weather in Paris? Use fahrenheit."
 
 def request_for(rung, model=None):
     """The exact request sent at one ladder rung. tool_choice 'required' forces
-    a call at every budget, so the only variable is whether it survives."""
+    a call at every budget, so the only variable is whether it survives. One
+    call per rung, said explicitly: since Runner reads an absent
+    parallel_tool_calls as true (2026-10-09), leaving it out would let a
+    call list stay open past the control rung."""
     req = {
         "messages": [{"role": "user", "content": PROMPT}],
         "temperature": 0,
         "max_tokens": rung,
         "tools": [TOOL],
         "tool_choice": "required",
+        "parallel_tool_calls": False,
     }
     if model is not None:
         req["model"] = model

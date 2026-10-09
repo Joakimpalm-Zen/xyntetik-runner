@@ -806,12 +806,13 @@ static char *messages_prompt(slot_t *s, sock_t fd, jv *req, tool_envelope *env,
     // the same envelope compiler, from the same declarations, as both OpenAI
     // surfaces: this is what makes an Anthropic tool call and a chat tool call
     // the same internal agent action
-    // Absent keeps the one-call envelope this surface has always compiled;
-    // an explicit false opts into several calls per turn. (Anthropic's own
-    // default allows parallel use; changing what an unmarked request
-    // compiles to would change every existing client's grammar at once.)
+    // Absent follows Anthropic's own default, parallel use allowed (owner,
+    // 2026-10-09, with the OpenAI surfaces), except where the family's
+    // parallel grammar is still a fixed pair (tool_parallel_default); an
+    // explicit disable_parallel_tool_use always wins.
     jv *par = raw_choice ? jv_get(raw_choice, "disable_parallel_tool_use") : NULL;
-    bool parallel = par && par->type == J_BOOL && !par->b;
+    bool parallel = par && par->type == J_BOOL ? !par->b
+                                               : tool_parallel_default(s->tmpl, NULL);
     int rc = tool_envelope_build_ex(tools, choice, NULL, parallel, env, terr,
                                     sizeof(terr));
     if (rc < 0) {

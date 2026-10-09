@@ -239,7 +239,7 @@ def _forced_call(client, name, stream=False, **extra):
     does not depend on the stub model choosing to call anything."""
     payload = {"messages": [{"role": "user", "content": "what is the weather in Oslo?"}],
                "max_tokens": 48, "temperature": 0, "tools": [WEATHER],
-               "tool_choice": {"type": "any"}}
+               "tool_choice": {"type": "any", "disable_parallel_tool_use": True}}
     payload.update(extra)
     if stream:
         st = client.messages_stream(payload, name=name).expect_sse()
@@ -308,7 +308,7 @@ def test_tool_use_input_is_always_a_json_object(client):
     for name, payload in [
         ("strict", {"messages": [{"role": "user", "content": "weather in Oslo?"}],
                     "max_tokens": 48, "temperature": 0, "tools": [WEATHER],
-                    "tool_choice": {"type": "any"}}),
+                    "tool_choice": {"type": "any", "disable_parallel_tool_use": True}}),
         # tool_choice none builds no envelope, so anything that looks like a
         # call in the output goes through the free-text parser instead
         ("unconstrained", {"messages": [{"role": "user", "content": "weather?"}],
@@ -393,7 +393,8 @@ def test_tool_result_closes_the_loop(client):
     long = {"role": "user",
             "content": [{"type": "tool_result", "tool_use_id": "toolu_0",
                          "content": "it is " + "extremely " * 12 + "cold"}]}
-    base = {"max_tokens": 8, "temperature": 0, "tools": [WEATHER]}
+    base = {"max_tokens": 8, "temperature": 0, "tools": [WEATHER],
+            "tool_choice": {"type": "auto", "disable_parallel_tool_use": True}}
     a = client.messages(dict(base, messages=[first, call, short]),
                         name="messages-tool-result-short") \
               .expect_status(200).json
@@ -675,7 +676,8 @@ def test_real_sdk_accumulates_a_stream(sdk):
 def test_real_sdk_reads_a_tool_use_block(sdk):
     m = sdk.messages.create(model="local", max_tokens=48,
                             extra_body={"temperature": 0},
-                            tools=[WEATHER], tool_choice={"type": "any"},
+                            tools=[WEATHER],
+            tool_choice={"type": "any", "disable_parallel_tool_use": True},
                             messages=[{"role": "user", "content": "weather in Oslo?"}])
     uses = [b for b in m.content if b.type == "tool_use"]
     if not uses:
@@ -721,7 +723,7 @@ def test_messages_and_chat_agree_on_the_same_turn(client):
     anth = client.messages(
         {"messages": [{"role": "user", "content": prompt}], "max_tokens": 48,
          "temperature": 0, "tools": [WEATHER],
-         "tool_choice": {"type": "any"}},
+         "tool_choice": {"type": "any", "disable_parallel_tool_use": True}},
         name="messages-equiv").expect_status(200).json
     chat = client.chat(
         {"messages": [{"role": "user", "content": prompt}], "max_tokens": 48,
@@ -730,7 +732,7 @@ def test_messages_and_chat_agree_on_the_same_turn(client):
                     "function": {"name": WEATHER["name"],
                                  "description": WEATHER["description"],
                                  "parameters": WEATHER["input_schema"]}}],
-         "tool_choice": "required"},
+         "tool_choice": "required", "parallel_tool_calls": False},
         name="messages-equiv-chat").expect_status(200).json
     a_use = [b for b in anth["content"] if b["type"] == "tool_use"]
     c_calls = chat["choices"][0]["message"].get("tool_calls") or []

@@ -153,8 +153,8 @@ def test_auto_allows_a_plain_answer(client):
     """"auto" adds the final branch back, so a normal reply is legal again.
     Whichever branch the model lands on must be reported coherently: a call
     with finish_reason "tool_calls", or content with no tool_calls at all."""
-    r = client.chat(dict(BASE, max_tokens=64, tools=TOOLS, tool_choice="auto"),
-                    name="tools-auto")
+    r = client.chat(dict(BASE, max_tokens=64, tools=TOOLS, tool_choice="auto",
+                         parallel_tool_calls=False), name="tools-auto")
     r.expect_status(200)
     msg = r.choice.get("message") or {}
     if msg.get("tool_calls"):
@@ -191,6 +191,7 @@ def test_tools_and_response_format_in_the_same_request(client):
                      "properties": {"answer": {"type": "string"}},
                      "required": ["answer"]}
     r = client.chat(dict(BASE, max_tokens=64, tools=TOOLS, tool_choice="auto",
+                         parallel_tool_calls=False,
                          response_format={"type": "json_schema",
                                           "json_schema": {"name": "a",
                                                           "schema": answer_schema}}),
@@ -264,7 +265,8 @@ def test_streamed_final_branch_matches_the_buffered_answer(client):
     """The other half of the union: when the model answers instead of calling,
     the streamed text must be the buffered text — unescaped, with no envelope
     around it."""
-    payload = dict(BASE, max_tokens=48, tools=TOOLS, tool_choice="auto")
+    payload = dict(BASE, max_tokens=48, tools=TOOLS, tool_choice="auto",
+                   parallel_tool_calls=False)
     b = client.chat(dict(payload), name="equiv-buffered-auto")
     b.expect_status(200)
     st = client.chat_stream(dict(payload), name="equiv-stream-auto")

@@ -70,6 +70,7 @@ def _chat(srv, stream, tools):
         p["tools"] = [{"type": "function", "function": {
             "name": "get_weather", "parameters": PARAMS}}]
         p["tool_choice"] = "required"
+        p["parallel_tool_calls"] = False   # the reply is one call, not a list
     d = _post(srv, "/v1/chat/completions", p)
     if not stream:
         msg = d["choices"][0]["message"]
@@ -93,6 +94,7 @@ def _responses(srv, stream, tools):
         p["tools"] = [{"type": "function", "name": "get_weather",
                        "parameters": PARAMS}]
         p["tool_choice"] = "required"
+        p["parallel_tool_calls"] = False   # the reply is one call, not a list
     d = _post(srv, "/v1/responses", p)
     if not stream:
         for o in d["output"]:
@@ -112,7 +114,7 @@ def _messages(srv, stream, tools):
          "runner_test_reply": CALL if tools else TEXT}
     if tools:
         p["tools"] = [{"name": "get_weather", "input_schema": PARAMS}]
-        p["tool_choice"] = {"type": "any"}
+        p["tool_choice"] = {"type": "any", "disable_parallel_tool_use": True}
     d = _post(srv, "/v1/messages", p)
     if not stream:
         for b in d["content"]:
