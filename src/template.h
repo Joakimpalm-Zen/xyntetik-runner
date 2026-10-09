@@ -74,6 +74,18 @@ enum { TMPL_CHATML, TMPL_LLAMA2, TMPL_LLAMA3, TMPL_ZEPHYR, TMPL_GEMMA,
        // `<think>\n\n</think>\n\n`. Detected by that literal
        // `<think></think>`, which ornith's template never carries.
        TMPL_GRANITE42,
+       // Nemotron 3.5 Lightning (nemotron_h_moe, the GGUF's own template,
+       // 2026-10-09): granite 4.2's template with Qwen3-Coder's nested-XML
+       // tool declarations (`<function><name>`, `<parameters>`, `enum` after
+       // the description, `required` after the other keys) in place of
+       // granite's JSON ones, no `defer_loading` skip, a `reasoning_content`
+       // fold of `<think>\n` reasoning `</think>` (no newline around the
+       // close), an untrimmed text after the seeded block on a truncated
+       // tool-call turn, and no low-effort suffix. Every other behaviour is
+       // granite 4.2's (tmpl_granite42_like). Detected by the `<parameters>`
+       // block granite 4.2 never writes; it was served as granite42 until a
+       // lab report.
+       TMPL_NEMOTRON35,
        // Qwen 3.8 (Qwen/Qwen3.8-27B chat_template.jinja, 2026-09-06). Not
        // Qwen3's template rendered by TMPL_CHATML_THINK, which is what the
        // GGUF's own template was detected as until the conformance gate was
@@ -209,6 +221,12 @@ static inline bool is_gemma4(int tmpl) {
 // default, both handled where the block is written.
 static inline bool tmpl_ornith_like(int t) {
     return t == TMPL_ORNITH || t == TMPL_QWEN35 || t == TMPL_QWEN35_NOTHINK;
+}
+// Granite 4.2 and the template derived from it (Nemotron 3.5): the same
+// framing, think seeding, call syntax and system fold; they differ in the
+// tool declarations and the few spots TMPL_NEMOTRON35's comment lists.
+static inline bool tmpl_granite42_like(int t) {
+    return t == TMPL_GRANITE42 || t == TMPL_NEMOTRON35;
 }
 // The families whose native tool call is the Hermes JSON block
 // (<tool_call>{"name": ..., "arguments": {...}}</tool_call>): one grammar,

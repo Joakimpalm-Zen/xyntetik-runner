@@ -7,6 +7,29 @@ to the exact build, and what is not covered. Releases before 1.0.0 made no
 such promise (the `-alpha` suffix was retired at v0.2.0). Entries below the
 rename keep the names that were true when they were written.
 
+## Unreleased
+
+- **Nemotron 3.5 Lightning gets its own chat template family,
+  `nemotron35`.** Its template is Granite 4.2's with Qwen3-Coder's
+  nested-XML tool declarations, and Runner detected and served it as
+  `granite42`: a request with tools declared them as JSON inside `<tools>`,
+  a format the model was not trained on, and telemetry named the family
+  and sampling preset `granite42`. It now writes the declarations as the
+  file's template does (`<function><name>`, `<parameters>`, `enum` after the
+  description, `required` after the other keys), folds `reasoning_content`
+  as `<think>\n...</think>` and keeps the text after `<think></think>` on a
+  truncated tool-call turn untrimmed, as that template does; calls are
+  parsed as before. Its sampling preset `nemotron35` is NVIDIA's
+  generation_config (temperature 1.0, top_p 0.95), the same numbers it got
+  before. Template conformance against the file's own template: 22 of 22
+  cases identical in text and in tokens on the real 30B file, where the
+  four tool cases drifted. Found by the lab (suite R4.22.5).
+- **Granite 4.2 trims the text of a truncated tool-call turn.** On an
+  assistant turn with tool calls before the last user message, Granite
+  4.2's template trims the text after `<think></think>`; Runner kept its
+  leading whitespace. Pinned against the template's own render, with and
+  without a thought block.
+
 ## v1.2.0 - 2026-10-09
 
 - **A request that leaves `parallel_tool_calls` out now gets several calls

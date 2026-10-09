@@ -59,6 +59,27 @@
    },
    "note": "Windows 11 / RTX 3070 rows"
   },
+  "nemotron35": {
+   "artifact": "nemotron-3.5-lightning-30b-a3b-q4_0",
+   "tool_protocol": {
+    "status": "NOT RUN",
+    "note": "the template renders the file's own tool declarations and calls (template-conformance nemotron-lightning, 22/22 text and tokens, 2026-10-09); the live tool gate has not been run on this artifact"
+   },
+   "client_loop": {
+    "status": "NOT RUN"
+   },
+   "sampling_anchor": {
+    "status": "PASS",
+    "preset": "nemotron35",
+    "anchor": "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16 generation_config.json"
+   },
+   "backends": {
+    "cpu": "NOT RUN",
+    "cuda": "NOT RUN",
+    "metal": "NOT RUN"
+   },
+   "note": "served as granite42 until 2026-10-09 (suite R4.22.5)"
+  },
   "ornith": {
    "artifact": "ornith-1.0-9b-q4_k_m",
    "tool_protocol": {
@@ -962,7 +983,7 @@
   },
   "nemotron_h_moe": {
    "templates": [
-    "chatml"
+    "nemotron35"
    ],
    "artifacts": [
     "nemotron-3.5-lightning-30b-a3b-q4_0"

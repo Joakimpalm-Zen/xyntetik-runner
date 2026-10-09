@@ -628,6 +628,13 @@ static const sampler_preset PRESETS[] = {
     { "granite42", "Granite 4.2 generation_config.json (IBM)",
       1.00f, 0.95f, 0.00f, 1.00f, 0 },
 
+    // nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16 generation_config.json:
+    // temperature 1.0, top_p 0.95, do_sample, nothing else; the GGUF's
+    // general.sampling carries the same two. The same numbers as granite42,
+    // whose preset this family was served under until 2026-10-09.
+    { "nemotron35", "Nemotron 3.5 Lightning generation_config.json (NVIDIA)",
+      1.00f, 0.95f, 0.00f, 1.00f, 0 },
+
     // Qwen/Qwen3.5-4B model card, "Best Practices", thinking mode for
     // general tasks (the family's default): temperature 1.0, top_p 0.95,
     // top_k 20, min_p 0.0, repetition_penalty 1.0, plus a presence_penalty
@@ -767,6 +774,7 @@ const sampler_preset *sampler_preset_for(const char *arch, const char *name,
     if (tmpl == TMPL_QWEN38)      return by_name("qwen38");
     if (tmpl == TMPL_QWEN3_CODER) return by_name("qwen3-coder");
     if (tmpl == TMPL_GRANITE42)   return by_name("granite42");
+    if (tmpl == TMPL_NEMOTRON35)  return by_name("nemotron35");
     if (tmpl == TMPL_QWEN35)      return by_name("qwen35");
     if (tmpl == TMPL_QWEN35_NOTHINK) return by_name("qwen35-nothink");
     if (tmpl == TMPL_NEMOTRON)    return by_name("nemotron");
