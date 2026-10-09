@@ -3494,8 +3494,19 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
     // completion prompt is the caller's to compose, specials and all.
     int32_t *toks = NULL;
     double tokenize_t0 = now_s();
-    int n_prompt = tok_encode_fit(s->tok, prompt, true,
+    // `prompt` sent as token ids (server.c validated them): used exactly as
+    // sent, so the receipt records the caller's ids and --verify replays them
+    const jv *pid = api == API_TEXT ? jv_get(req, "prompt") : NULL;
+    int n_prompt;
+    if (pid && pid->type == J_ARR) {
+        toks = malloc(sizeof(*toks) * (size_t)(pid->n ? pid->n : 1));
+        n_prompt = toks ? pid->n : -1;
+        for (int i = 0; toks && i < pid->n; i++)
+            toks[i] = (int32_t)pid->items[i]->num;
+    } else {
+        n_prompt = tok_encode_fit(s->tok, prompt, true,
                                   chat ? TOK_PROMPT : TOK_RAW, 0, &toks);
+    }
     double tokenize_s = now_s() - tokenize_t0;
     if (n_prompt < 0) {
         free(toks);
