@@ -209,6 +209,24 @@ def test_a_request_silent_on_parallel_calls_gets_several(qwen38):
     assert len(ch["message"]["tool_calls"]) == 3, d
 
 
+def test_a_required_thinking_turn_keeps_its_post_think_newlines(qwen38):
+    """R4.26.19(d): with thinking on, the model closes its thought and writes
+    the template's blank line before the call. A required turn used to veto
+    that newline (the scripted reply then ended with no call at all); the
+    first call now admits up to two newlines ahead of its opener."""
+    for lead in ("\n", "\n\n"):
+        d = _post(qwen38, "/v1/chat/completions", {
+            "model": qwen38.model_id, "max_tokens": 600,
+            "messages": [{"role": "user", "content": "Find the file."}],
+            "tools": [BASH, GLOB], "tool_choice": "required",
+            "runner_test_reply": "Plan.\n</think>" + lead +
+                                 _call("glob", pattern="**/g.json") + "<|im_end|>"})
+        ch = d["choices"][0]
+        assert ch["finish_reason"] == "tool_calls", (lead, d)
+        assert [c["function"]["name"] for c in ch["message"]["tool_calls"]] == ["glob"], d
+        assert not (ch["message"].get("content") or "").strip(), d
+
+
 def test_a_named_tool_choice_still_gets_one_call(qwen38):
     """OpenAI's forced function calls exactly one function, so a request
     that names a tool and is silent on parallel_tool_calls gets one call on

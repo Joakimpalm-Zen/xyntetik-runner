@@ -1435,6 +1435,30 @@ static snode *atem_lit(const char *s) {
     return n;
 }
 
+// The opener of a turn's FIRST native call, with the blank line a reasoning
+// model writes after `</think>` (Qwen3's template renders `</think>\n\n` +
+// content): the opener alone, or behind one or two newlines, and nothing
+// else. A literal opener vetoed that newline and pushed the model straight
+// to the call, off its own distribution (R4.26.19(d)); a raw gap would also
+// admit text, and a stop at a raw tail could end a required turn callless.
+static snode *native_lead_lit(const char *opener) {
+    snode *n = sn_new(SN_ENUM);
+    if (!n) return NULL;
+    n->lits = calloc(3, sizeof(*n->lits));
+    if (!n->lits) { schema_free(n); return NULL; }
+    size_t len = strlen(opener);
+    for (int k = 0; k < 3; k++) {
+        char *s = malloc(len + (size_t)k + 1);
+        if (!s) { schema_free(n); return NULL; }
+        memset(s, '\n', (size_t)k);
+        memcpy(s + k, opener, len + 1);
+        n->lits[n->n_lits++] = s;
+    }
+    if (!enum_index(n)) { schema_free(n); return NULL; }
+    n->whitespace_significant = true;
+    return n;
+}
+
 static snode *atem_raw(const char *sentinel) {
     snode *n = sn_new(SN_RAW);
     if (!n) return NULL;
@@ -1895,7 +1919,7 @@ static snode *qwen_call(jv *tools, const char *only_tool, bool lead,
     names->lits = calloc((size_t)selected, sizeof(*names->lits));
     choice->alts = calloc((size_t)selected, sizeof(*choice->alts));
     if (!names->lits || !choice->alts) goto fail;
-    if (lead && !atem_seq_add(root, atem_lit("<tool_call>"))) goto fail;
+    if (lead && !atem_seq_add(root, native_lead_lit("<tool_call>"))) goto fail;
     if (!atem_seq_add(root, atem_lit("\n{\"name\": \""))) goto fail;
     names->min_items = 1;
     names->whitespace_significant = true;
@@ -2216,7 +2240,8 @@ static snode *coder_call(jv *tools, const char *only, bool lead, char *err, int 
         choice->alts[choice->n_alts++]=tail;
     }
     if (!names->n_lits) { snprintf(err,errcap,"named Qwen3-Coder tool is not declared");goto bad; }
-    if (!enum_index(names) || !atem_seq_add(seq,atem_lit(lead?"<tool_call>\n<function=":"\n<function="))) goto bad;
+    if (!enum_index(names) ||
+        !atem_seq_add(seq,lead?native_lead_lit("<tool_call>\n<function="):atem_lit("\n<function="))) goto bad;
     atem_seq_add(seq,names);atem_seq_add(seq,choice);return seq;
 bad:
     schema_free(seq);schema_free(names);schema_free(choice);
