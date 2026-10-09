@@ -9,6 +9,18 @@ rename keep the names that were true when they were written.
 
 ## Unreleased
 
+- **Tools are no longer dropped from Llama 2, Gemma and Mistral v0.1
+  prompts that carry a system prompt.** The generic tool envelope puts its
+  teaching turn (the tool declarations and the call format) in front of the
+  caller's system message, and these three framings fold only one system
+  text into the first user turn: they kept the caller's and discarded the
+  tools. A request with a system prompt and tools rendered the same prompt as
+  one without tools (Llama 2: 31 tokens either way), and only the grammar
+  forced a call out of a model that had never been shown the tools. The
+  leading system messages are now joined, the envelope's first, a blank line
+  apart (Llama 2 now 214 tokens, Mistral v0.1 207, Gemma 219, on Qwen2.5's
+  tokenizer). A single system message renders exactly as before.
+
 - **Mistral v0.3 and Mistral-Nemo speak their own tool protocol.** Their
   tools rode the generic JSON envelope, whose teaching turn the Mistral
   renderer dropped whenever the caller also sent a system prompt: the model

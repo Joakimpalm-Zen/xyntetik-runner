@@ -332,6 +332,30 @@ static bool content_starts(const char *s, const char *lit) {
 }
 static bool tmpl_mistral_tools(int t) { return t == TMPL_MISTRAL || t == TMPL_MISTRAL_NEMO; }
 
+// The generic tool envelope puts its teaching turn in front of the caller's
+// own system message, so a conversation can open with two. The renderers that
+// fold ONE system text into a user turn (llama2, gemma, mistral) kept only the
+// later one, and the tool declarations never reached the prompt whenever a
+// caller sent a system prompt (2026-10-09: 31 prompt tokens with and without
+// tools on llama2). *n_lead is set to the number of leading system messages;
+// with two or more, they are returned joined by a blank line, in order (the
+// caller frees it). NULL otherwise, or on allocation failure (*oom set).
+static char *leading_system_join(const chat_msg *msgs, int n_msgs, int *n_lead,
+                                 bool *oom) {
+    int k = 0;
+    while (k < n_msgs && !strcmp(msgs[k].role, "system")) k++;
+    *n_lead = k;
+    *oom = false;
+    if (k < 2) return NULL;
+    sbuf b = {0};
+    for (int i = 0; i < k; i++) {
+        if (i) sb_lit(&b, "\n\n");
+        sb_put(&b, msgs[i].content, strlen(msgs[i].content));
+    }
+    if (b.failed || !b.s) { free(b.s); *oom = true; return NULL; }
+    return b.s;
+}
+
 // Does a message begin with `lit` written by a builder (prompt_lit), not
 // typed by the caller? Only the builder's literal opens with a mark.
 static bool builder_starts(const char *s, const char *lit) {
@@ -2727,9 +2751,15 @@ size_t render_messages_with_tools(int tmpl, const chat_msg *msgs, int n_msgs,
         // gemma has no system role: fold a system message into the first
         // user turn; the assistant role is named "model"
         const char *gsys = NULL;
+        int g_lead; bool g_oom;
+        char *g_joined = leading_system_join(msgs, n_msgs, &g_lead, &g_oom);
+        if (g_oom) return SIZE_MAX;
         for (int i = 0; i < n_msgs; i++) {
             const chat_msg *m = &msgs[i];
-            if (!strcmp(m->role, "system")) { gsys = m->content; continue; }
+            if (!strcmp(m->role, "system")) {
+                gsys = i < g_lead && g_joined ? g_joined : m->content;
+                continue;
+            }
             const char *role = !strcmp(m->role, "assistant") ? "model" : m->role;
             if (gsys && !strcmp(m->role, "user")) {
                 off = emit(out, cap, off, "<start_of_turn>%s\n%s\n\n", role, gsys);
@@ -2742,6 +2772,7 @@ size_t render_messages_with_tools(int tmpl, const chat_msg *msgs, int n_msgs,
         }
         if (add_assistant)
             off = emit(out, cap, off, "<start_of_turn>model\n", NULL, NULL);
+        free(g_joined);
         break;
     }
     case TMPL_LLAMA2:
@@ -2776,9 +2807,15 @@ size_t render_messages_with_tools(int tmpl, const chat_msg *msgs, int n_msgs,
         const bool real_llama2 = tmpl == TMPL_LLAMA2;
         const char *sys = NULL;
         int user_turns = 0;
+        int l_lead; bool l_oom;
+        char *l_joined = leading_system_join(msgs, n_msgs, &l_lead, &l_oom);
+        if (l_oom) return SIZE_MAX;
         for (int i = 0; i < n_msgs; i++) {
             const chat_msg *m = &msgs[i];
-            if (!strcmp(m->role, "system")) { sys = m->content; continue; }
+            if (!strcmp(m->role, "system")) {
+                sys = i < l_lead && l_joined ? l_joined : m->content;
+                continue;
+            }
             if (!strcmp(m->role, "user")) {
                 sbuf c = {0};
                 if (sys) {
@@ -2807,6 +2844,7 @@ size_t render_messages_with_tools(int tmpl, const chat_msg *msgs, int n_msgs,
                 off = emit(out, cap, off, " </s>", NULL, NULL);
             }
         }
+        free(l_joined);
         break;
     }
     case TMPL_MISTRAL:
@@ -2854,6 +2892,10 @@ size_t render_messages_with_tools(int tmpl, const chat_msg *msgs, int n_msgs,
                 sys = msgs[i].content;
                 sys_at = i;
             }
+        int m_lead; bool m_oom;
+        char *m_joined = leading_system_join(msgs, n_msgs, &m_lead, &m_oom);
+        if (m_oom) return SIZE_MAX;
+        if (m_joined && sys_at == m_lead - 1) sys = m_joined;
         for (int i = sys_at + 1; sys && i < n_msgs; i++)
             if (!strcmp(msgs[i].role, "user")) {
                 fold_at = i;
@@ -2867,7 +2909,7 @@ size_t render_messages_with_tools(int tmpl, const chat_msg *msgs, int n_msgs,
         sbuf decl = {0};
         if (!v1 && tools && tools->type == J_ARR && tools->n > 0) {
             tools_render_for(tmpl, tools, &decl);
-            if (decl.failed) { free(decl.s); return SIZE_MAX; }
+            if (decl.failed) { free(decl.s); free(m_joined); return SIZE_MAX; }
         }
 
         for (int i = 0; i < n_msgs; i++) {
@@ -2904,6 +2946,7 @@ size_t render_messages_with_tools(int tmpl, const chat_msg *msgs, int n_msgs,
             }
         }
         free(decl.s);
+        free(m_joined);
         break;
     }
     default: // TMPL_RAW: concatenate contents
