@@ -102,6 +102,10 @@ NO_MID_SYSTEM = (
 # reads tokenizer.chat_template straight out of a local GGUF, which is what
 # src/template.c cites for the families whose HF repo is gated.
 
+# the Mistral templates' id shape: 9 alphanumeric characters
+MISTRAL_CALL_IDS = {"call_1": "callid001", "call_2": "callid002"}
+
+
 class Family:
     def __init__(self, runner, source, note="", tool_family=False,
                  thinking_var=None, skip=None, tokenizer=(), cannot=None,
@@ -452,8 +456,6 @@ TOOLS = [{
         },
     },
 }]
-# the Mistral templates' id shape: 9 alphanumeric characters
-MISTRAL_CALL_IDS = {"call_1": "callid001", "call_2": "callid002"}
 CALL = {"id": "call_1", "type": "function",
         "function": {"name": "get_weather",
                      "arguments": '{"city": "Oslo"}'}}
