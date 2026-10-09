@@ -3234,7 +3234,9 @@ buffered and streamed, on the Chat, Responses and Anthropic surfaces; a
 cannot enforce a choice the caller insisted on. Under that grammar a turn is
 one to eight calls, each followed by either the model's own stop token or
 the next call, the same contract the Qwen JSON protocol keeps;
-`parallel_tool_calls:false` holds it to exactly one. Until 1.1.4 the
+`parallel_tool_calls:false` holds it to exactly one. The first call may
+follow up to two newlines, the blank line a reasoning model writes after
+`</think>`, and nothing else. Until 1.1.4 the
 parallel grammar was a fixed pair of calls, and until 1.2.0 a request that left the flag out got one call per turn: on the
 33-task agent bank (Qwen3.8-Flash-Next) none of Runner's 396 turns carried
 a second call where llama.cpp's carried several in 123 of 396 and Strata's

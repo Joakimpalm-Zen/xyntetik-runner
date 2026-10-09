@@ -721,6 +721,52 @@ static void test_parallel_default_per_family(void) {
     jv_free(req_s); jv_free(named); jv_free(flat);
 }
 
+// R4.26.19(d): a reasoning model closes its thought with `</think>` and then
+// writes the template's own blank line before the call (Qwen3's chat template
+// renders an assistant turn as `</think>\n\n` + content). A required or named
+// native turn used to open on the literal `<tool_call>`, so that newline was
+// vetoed and the model was pushed straight to the opener, off its own
+// distribution. The first call now admits up to two newlines ahead of its
+// opener and nothing else: no text, no third newline, no turn without a call.
+static void test_native_first_call_admits_the_post_think_newlines(void) {
+    jv *tools = parse(TOOLS);
+    char err[192];
+    const char *json1 = "<tool_call>\n{\"name\": \"add\", \"arguments\": {\"a\": 1, \"b\": 2}}\n</tool_call>";
+    const char *xml1 = "<tool_call>\n<function=add>\n<parameter=a>\n1\n</parameter>\n<parameter=b>\n2\n</parameter>\n</function>\n</tool_call>";
+    struct { const char *name; snode *root; const char *one; const char *end; } G[] = {
+        { "qwen", schema_compile_qwen_turn(tools, false, NULL, NULL, false, false, err, sizeof err), json1, "" },
+        { "qwen_parallel", schema_compile_qwen_parallel(tools, NULL, err, sizeof err), json1, "<|im_end|>" },
+        { "qwen_xml", schema_compile_qwen_xml_turn(tools, false, NULL, NULL, false, err, sizeof err), xml1, "" },
+        { "qwen_xml_parallel", schema_compile_qwen_xml_turn(tools, false, NULL, NULL, true, err, sizeof err), xml1, "<|im_end|>" },
+    };
+    static const char *const lead_ok[] = { "", "\n", "\n\n" };
+    static const char *const lead_bad[] = { "\n\n\n", " ", "ok", "\nok\n" };
+    for (size_t g = 0; g < sizeof G / sizeof *G; g++) {
+        assert(G[g].root);
+        for (size_t k = 0; k < sizeof lead_ok / sizeof *lead_ok; k++) {
+            sbuf doc = {0};
+            sb_put(&doc, lead_ok[k], strlen(lead_ok[k]));
+            sb_put(&doc, G[g].one, strlen(G[g].one));
+            sb_put(&doc, G[g].end, strlen(G[g].end));
+            if (!accepts(G[g].root, doc.s))
+                fprintf(stderr, "%s: lead %zu refused\n", G[g].name, k);
+            assert(accepts(G[g].root, doc.s));
+            free(doc.s);
+        }
+        for (size_t k = 0; k < sizeof lead_bad / sizeof *lead_bad; k++) {
+            sbuf doc = {0};
+            sb_put(&doc, lead_bad[k], strlen(lead_bad[k]));
+            sb_put(&doc, G[g].one, strlen(G[g].one));
+            assert(!feeds(G[g].root, doc.s));
+            free(doc.s);
+        }
+        // newlines alone are not a turn: the call is still required
+        assert(!accepts(G[g].root, "\n\n"));
+        schema_free(G[g].root);
+    }
+    jv_free(tools);
+}
+
 static void test_native_parallel_turn_carries_one_to_eight_calls(void) {
     jv *tools = parse(TOOLS);
     char err[192];
@@ -2960,6 +3006,7 @@ int main(void) {
     test_qwen_native_tool_protocol();
     test_qwen_native_turn_constrains_and_maps_calls();
     test_native_parallel_turn_carries_one_to_eight_calls();
+    test_native_first_call_admits_the_post_think_newlines();
     test_parallel_default_per_family();
     test_auto_envelope_constrains_names_and_arguments();
     test_truncated_call_stays_valid_and_executable();
