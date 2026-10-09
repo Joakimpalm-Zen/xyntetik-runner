@@ -38,8 +38,19 @@
 // v0.3, which is the population: Mistral-Small-Instruct-2409's template is
 // byte-identical to v0.3's, and the derivative shelf copied that one. Nemo is
 // the outlier.
-static int mistral_variant(const char *meta_tmpl) {
-    if (strstr(meta_tmpl, " [/INST]"))  return TMPL_MISTRAL_V1;
+//
+// One exception reads the vocabulary (suite R4.22.7): Mistral-7B-Instruct-v0.3
+// GGUFs converted before the publisher replaced its template embed the v0.1
+// form (`' [/INST]'`), so the rule above served them the framing of an older
+// model, without the tool protocol their vocabulary carries. v0.1 and v0.2
+// have no `[AVAILABLE_TOOLS]` token; v0.3 added it with the rest of the v3
+// tokenizer, whose encoder (mistral-common) writes the v0.3 form. A v0.1
+// literal over a vocabulary holding that token is therefore a stale v0.3
+// template, and gets the publisher's current v0.3 framing.
+static int mistral_variant(const char *meta_tmpl, tokenizer *tok) {
+    if (strstr(meta_tmpl, " [/INST]"))
+        return tok && tok_find(tok, "[AVAILABLE_TOOLS]") >= 0 ? TMPL_MISTRAL
+                                                              : TMPL_MISTRAL_V1;
     if (!strstr(meta_tmpl, "[INST] "))  return TMPL_MISTRAL_NEMO;
     return TMPL_MISTRAL;
 }
@@ -133,7 +144,7 @@ int template_detect(const char *meta_tmpl, tokenizer *tok) {
         if (strstr(meta_tmpl, "<start_of_turn>"))     return TMPL_GEMMA;
         if (strstr(meta_tmpl, "[INST]"))
             return strstr(meta_tmpl, "<<SYS>>") ? TMPL_LLAMA2
-                                                : mistral_variant(meta_tmpl);
+                                                : mistral_variant(meta_tmpl, tok);
     }
     // Every probe below reads the VOCABULARY, and they are the fallback for a
     // model that ships no chat template text. A caller holding only the

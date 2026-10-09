@@ -25,6 +25,7 @@ MTP_LAYERS = 0   # extra trailing blocks declared as NextN/MTP predictor heads
 # load cost minutes of CPU. Not a model feature -- a load-cost fixture.
 SPECIALS = 0
 CONTROL = []  # --control: named control tokens appended to the vocabulary
+CHAT_TEMPLATE = None  # --chat-template-file: tokenizer.chat_template text
 # Gemma-4 E-series: per-layer embeddings plus a tail of layers that own no KV
 # cache. Both mechanisms are structural, so a tiny random model exercises the
 # load-time geometry, the aliased cache reads and the extra forward stage
@@ -279,6 +280,12 @@ while i < len(args):
         # bytes, which is the whole point of testing it
         i += 1
         CONTROL = [x for x in args[i].split(",") if x]
+    elif a == "--chat-template-file":
+        # embed this file's text as tokenizer.chat_template, so a test can
+        # pin template detection on a vocabulary it chose (--control)
+        i += 1
+        with open(args[i], encoding="utf-8") as f:
+            CHAT_TEMPLATE = f.read()
     elif a == "--zero-branches":
         # Every block's attention and FFN write zero into the residual
         # stream, so each position's final hidden state IS its token's
@@ -612,6 +619,8 @@ if SAMPLING:
         meta_kvs.append(kv_f32("general.sampling.min_p", float(SAMPLING[3])))
 if ADD_EOS:
     meta_kvs.append(kv_bool("tokenizer.ggml.add_eos_token", True))
+if CHAT_TEMPLATE is not None:
+    meta_kvs.append(kv_str("tokenizer.chat_template", CHAT_TEMPLATE))
 if YARN_FACTOR is not None:
     meta_kvs += [
         kv_str(f"{ARCH}.rope.scaling.type", "yarn"),

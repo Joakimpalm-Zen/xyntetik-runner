@@ -41,8 +41,10 @@ Two facts about the pinned files, both from runner's template detection:
 - The v0.3 file embeds an older template that detects as the v0.1 framing
   (`mistral-v1`), which has no tool protocol and stays on the generic
   envelope. Both v0.3 arms were therefore run with `--chat-template mistral`,
-  the publisher's current template. Without the flag this file is served as
-  before.
+  the publisher's current template. Without the flag this file was served
+  the v0.1 framing; since the same night (suite R4.22.7) detection reads the
+  vocabulary and serves it the v0.3 framing, so the flag is no longer
+  needed.
 - The Nemo file embeds a template that detects as the v0.3 form (`mistral`),
   so both Nemo arms ran on it unflagged; the grammar admits the list opened
   with or without v0.3's space, which covers the Nemo spelling too.
