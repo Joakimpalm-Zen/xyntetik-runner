@@ -9,6 +9,19 @@ rename keep the names that were true when they were written.
 
 ## Unreleased
 
+- **Nemotron Nano speaks its own tool protocol.** Its tools rode the generic
+  JSON envelope, which also replaced the caller's system prompt with the
+  envelope's instructions; the template's own `<AVAILABLE_TOOLS>` list and
+  `<TOOLCALL>[...]` calls were the last open rows of the template
+  conformance backlog. Runner now renders the declarations after the
+  caller's system text and replays calls in NVIDIA's form, parses a
+  `<TOOLCALL>` block back into `tool_calls`, buffered and streamed, and holds
+  a required or named turn to one entry (one to eight when parallel) with a
+  grammar; an auto turn is the model's own, parsed. Template conformance:
+  20 of 20 cases identical to NVIDIA's template in text and tokens.
+  Agent-torture on the real 9B Q8_0 file: generic 39 of 40, native 39 of
+  39 with one case excused (suite R2.4.4).
+
 - **`/v1/completions` takes `prompt` as an array of token ids.** OpenAI's
   API, vLLM and llama.cpp accept it; Runner answered "missing prompt". The
   ids are used exactly as sent (no BOS added, nothing re-tokenized), so a

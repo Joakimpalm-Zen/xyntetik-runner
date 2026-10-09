@@ -3236,6 +3236,18 @@ and admits as many calls as `parallel_tool_calls` allows. `--tool-info`
 reports `qwen3_xml` for this family and `qwen_json` for the ChatML JSON
 protocol, both native. Not measured here: any checkpoint's task quality.
 
+Nemotron Nano (`nemotron`) speaks its own protocol: the declarations as one
+`<AVAILABLE_TOOLS>[...]` JSON list after the caller's system text, and a
+turn's calls as one `<TOOLCALL>[{"name": ..., "arguments": {...}}, ...]</TOOLCALL>`
+block, as NVIDIA's template writes them (template conformance 20 of 20 cases,
+text and tokens). A `tool_choice: auto` turn is parsed, a `required` or named
+one is held by a grammar of one entry, or one to eight when parallel. Before
+2026-10-09 its tools rode the generic JSON envelope; on agent-torture with the
+real 9B Q8_0 file the generic envelope scored 39 of 40 and the native protocol
+39 of 39 with one case excused
+([evidence](docs/compat-reports/nemotron-nano-native-tools-2026-10-09/README.md)).
+`--tool-info` reports `nemotron_json`.
+
 Qwen3-Coder, Qwen 3.8, Granite 4.2 and Ornith speak the same
 function/parameter XML and share one contract. A `tool_choice: auto` turn
 (the shipped default, what every agent client sends) is the model's own free

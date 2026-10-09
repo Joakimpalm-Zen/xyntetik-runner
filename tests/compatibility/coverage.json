@@ -534,7 +534,7 @@
   "nemotron": {
    "tool_protocol": {
     "status": "NOT RUN",
-    "note": "generic envelope; the template's own <AVAILABLE_TOOLS>/<TOOLCALL> protocol is not rendered (template-conformance backlog, 4 cases)"
+    "note": "native <AVAILABLE_TOOLS>/<TOOLCALL> protocol since 2026-10-09 (R2.4.4): template-conformance nemotron-nano 20/20 text and tokens; agent-torture on the real Q8_0 file, generic 39/40 against native 39/39 with 1 excused (docs/compat-reports/nemotron-nano-native-tools-2026-10-09); the tool-protocol check itself has not been run on this artifact"
    },
    "client_loop": {
     "status": "NOT RUN"

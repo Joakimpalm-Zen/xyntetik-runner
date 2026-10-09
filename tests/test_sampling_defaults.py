@@ -46,8 +46,9 @@ TEMPLATE_FOR = {"gemma4": "gemma4-mainline", "qwen38": "qwen38",
                 "granite42": "granite42", "qwen3-coder": "qwen3-coder",
                 "qwen35": "qwen35", "qwen35-nothink": "qwen35-nothink",
                 "nemotron": "nemotron", "apertus": "apertus"}
-# families whose tool calls ride the generic envelope
-NOT_NATIVE = {"nemotron", "apertus"}
+# families whose tool calls ride the generic envelope (Nemotron Nano speaks
+# its own <TOOLCALL> protocol since 2026-10-09, suite R2.4.4)
+NOT_NATIVE = {"apertus"}
 
 
 @pytest.fixture(scope="module")
