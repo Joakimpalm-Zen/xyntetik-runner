@@ -3631,7 +3631,8 @@ static bool tool_schema_sane(const jv *s, int depth, char *err, int errcap) {
 
 bool tool_parallel_default(int tmpl, const jv *choice) {
     if (choice && choice->type == J_OBJ) return false;   // one named function
-    return tmpl != TMPL_MUSE;
+    (void)tmpl;      // every native parallel grammar takes 1..N calls now
+    return true;
 }
 
 int tool_envelope_build_ex(jv *tools, jv *choice, jv *final_schema,

@@ -1840,32 +1840,75 @@ snode *schema_compile_atem_turn(struct jv *tools, bool allow_user,
     return root;
 }
 
+// Free bytes allowed between two calls of one turn (a separator and the next
+// opener), and after the last call a turn may carry (too few to spell one).
+#define NATIVE_GAP_BYTES 16
+#define NATIVE_END_BYTES 4
+
+// After a complete Muse call in a parallel turn: end the turn or open the
+// next call, at most `remaining` more. The model's trained form (template.c,
+// assistant_calls_render) separates calls with `<|eom|><|start|>assistant`
+// and ends the turn with `<|eot|>`. Both controls decode to no bytes, so the
+// SEPARATOR is spelled in the grammar: a control token is admitted by its
+// spelling (engine.c constraint_spelling_ok) and its spelling is what the
+// validator consumes. The pair this replaced spelled only `assistant`, which
+// refused the model's own `<|eom|>` and pushed it to type a turn header as
+// text; on Muse-Glimmer-30B (CPU, required, 2026-10-09) it then repeated the
+// first city as the second call in 5 of 6 turns. The gap is bounded to the
+// separator plus a few bytes, the Qwen protocols' raw gap (native_more_calls):
+// a stop there ends the turn, and past the last admitted call it is too short
+// to spell another separator.
+#define ATEM_CALL_SEP "<|eom|><|start|>assistant"
+static snode *atem_more_calls(jv *tools, const char *only, int remaining,
+                              char *err, int errcap) {
+    snode *raw = atem_raw_bounded("<|eot|>", remaining
+        ? (int)sizeof(ATEM_CALL_SEP) - 1 + NATIVE_END_BYTES : NATIVE_END_BYTES);
+    if (!raw) goto oom;
+    raw->whitespace_significant = true;
+    if (!remaining) return raw;
+    snode *seq = atem_seq(2);
+    snode *call = seq ? schema_compile_atem_turn(tools, false, only, NULL,
+                                                 ATEM_TURN_DIRECT, err, errcap)
+                      : NULL;
+    snode *tail = call ? atem_more_calls(tools, only, remaining - 1, err, errcap)
+                       : NULL;
+    raw->lits = calloc(1, sizeof(*raw->lits));
+    raw->alts = calloc(1, sizeof(*raw->alts));
+    if (!seq || !call || !tail || !raw->lits || !raw->alts ||
+        !(raw->lits[0] = strdup(ATEM_CALL_SEP))) {
+        schema_free(seq); schema_free(call); schema_free(tail); schema_free(raw);
+        goto oom;
+    }
+    raw->n_lits = 1;
+    atem_seq_add(seq, call);
+    atem_seq_add(seq, tail);
+    seq->whitespace_significant = true;
+    raw->alts[raw->n_alts++] = seq;
+    return raw;
+oom:
+    if (!err[0]) snprintf(err, errcap, "out of memory compiling parallel atem turn");
+    return NULL;
+}
+
 snode *schema_compile_atem_parallel(struct jv *tools, const char *only_tool,
                                     char *err, int errcap) {
-    // Muse separates native calls with <|eom|><|start|>; those controls decode
-    // to no visible bytes, leaving the literal `assistant` before the next
-    // recipient header. A parallel request asks for a bounded pair, keeping
-    // truncation closable while exercising the model's trained multi-turn form.
-    snode *root = atem_seq(3);
-    snode *first = schema_compile_atem_turn(
-        tools, false, only_tool, NULL, ATEM_TURN_DIRECT, err, errcap);
-    snode *second = schema_compile_atem_turn(
-        tools, false, only_tool, NULL, ATEM_TURN_DIRECT, err, errcap);
-    if (!root || !first || !second) {
-        schema_free(first); schema_free(second); schema_free(root);
+    // one to NATIVE_PARALLEL_MAX_CALLS calls; it was a fixed PAIR until
+    // 2026-10-09 (see atem_more_calls)
+    snode *root = atem_seq(2);
+    snode *first = root ? schema_compile_atem_turn(
+        tools, false, only_tool, NULL, ATEM_TURN_DIRECT, err, errcap) : NULL;
+    snode *rest = first ? atem_more_calls(tools, only_tool,
+                                          NATIVE_PARALLEL_MAX_CALLS - 1,
+                                          err, errcap) : NULL;
+    if (!root || !first || !rest) {
+        schema_free(first); schema_free(rest); schema_free(root);
         if (!err[0]) snprintf(err, errcap, "out of memory compiling parallel atem turn");
         return NULL;
     }
     root->whitespace_significant = true;
     root->props[root->n_props++] = first;
-    snode *middle = atem_lit("assistant");
-    if (!middle) { schema_free(second); schema_free(root); goto parallel_oom; }
-    root->props[root->n_props++] = middle;
-    root->props[root->n_props++] = second;
+    root->props[root->n_props++] = rest;
     return root;
-parallel_oom:
-    if (!err[0]) snprintf(err, errcap, "out of memory compiling parallel atem turn");
-    return NULL;
 }
 
 // ------------------------------------------------------------- Qwen tools
@@ -1973,10 +2016,6 @@ static snode *qwen_or_final(snode *body, jv *final_schema,
     return root;
 }
 
-// Free bytes allowed between two calls of one turn (a separator and the next
-// opener), and after the last call a turn may carry (too few to spell one).
-#define NATIVE_GAP_BYTES 16
-#define NATIVE_END_BYTES 4
 
 // Free assistant text with a native-call handoff. Unlike a catch-all final
 // branch, seeing the FULL opener commits to the tool grammar even after prose.
