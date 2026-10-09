@@ -708,7 +708,7 @@ static void test_parallel_default_per_family(void) {
     assert(tool_parallel_default(TMPL_QWEN38, NULL));
     assert(tool_parallel_default(TMPL_QWEN3_CODER, NULL));
     assert(tool_parallel_default(TMPL_CHATML, NULL));
-    assert(!tool_parallel_default(TMPL_GEMMA4, NULL));
+    assert(tool_parallel_default(TMPL_GEMMA4, NULL));     // 1..N since 2026-10-09
     assert(!tool_parallel_default(TMPL_MUSE, NULL));
     // OpenAI: auto/required allow several calls, a named function exactly one
     // (platform.openai.com function-calling guide, "Forced Function").
@@ -772,19 +772,23 @@ static void test_native_parallel_turn_carries_one_to_eight_calls(void) {
     char err[192];
     const char *json1 = "<tool_call>\n{\"name\": \"add\", \"arguments\": {\"a\": 1, \"b\": 2}}\n</tool_call>";
     const char *xml1 = "<tool_call>\n<function=add>\n<parameter=a>\n1\n</parameter>\n<parameter=b>\n2\n</parameter>\n</function>\n</tool_call>";
-    struct { const char *name; snode *root; const char *one; int tmpl; } G[] = {
-        { "qwen_parallel", schema_compile_qwen_parallel(tools, NULL, err, sizeof err), json1, TMPL_CHATML },
-        { "qwen_xml_parallel", schema_compile_qwen_xml_turn(tools, false, NULL, NULL, true, err, sizeof err), xml1, TMPL_QWEN3_CODER },
+    // gemma4 joins its calls with no separator and ends the turn at <turn|>
+    // (since 2026-10-09; it was a fixed pair before)
+    const char *g4one = "<|tool_call>call:add{a:1,b:2}<tool_call|>";
+    struct { const char *name; snode *root; const char *one; int tmpl; const char *sep, *end, *opener; } G[] = {
+        { "qwen_parallel", schema_compile_qwen_parallel(tools, NULL, err, sizeof err), json1, TMPL_CHATML, "\n", "<|im_end|>", "<tool_call>" },
+        { "qwen_xml_parallel", schema_compile_qwen_xml_turn(tools, false, NULL, NULL, true, err, sizeof err), xml1, TMPL_QWEN3_CODER, "\n", "<|im_end|>", "<tool_call>" },
+        { "gemma4_parallel", schema_compile_gemma4_parallel(tools, NULL, err, sizeof err), g4one, TMPL_GEMMA4, "", "<turn|>", "<|tool_call>" },
     };
     for (size_t g = 0; g < sizeof G / sizeof *G; g++) {
         assert(G[g].root);
         for (int n = 0; n <= 9; n++) {
             sbuf doc = {0};
             for (int k = 0; k < n; k++) {
-                if (k) sb_lit(&doc, "\n");
+                if (k) sb_put(&doc, G[g].sep, strlen(G[g].sep));
                 sb_put(&doc, G[g].one, strlen(G[g].one));
             }
-            sb_lit(&doc, "<|im_end|>");
+            sb_put(&doc, G[g].end, strlen(G[g].end));
             bool ok = accepts(G[g].root, doc.s);
             if (ok != (n >= 1 && n <= NATIVE_PARALLEL_MAX_CALLS))
                 fprintf(stderr, "%s: %d calls %s\n", G[g].name, n, ok ? "accepted" : "refused");
@@ -794,17 +798,18 @@ static void test_native_parallel_turn_carries_one_to_eight_calls(void) {
         // between calls no more than a separator's worth of text
         sbuf bad = {0};
         sb_put(&bad, G[g].one, strlen(G[g].one));
-        sb_lit(&bad, "\nand then <tool_call>");
+        sb_lit(&bad, "\nand then ");
+        sb_put(&bad, G[g].opener, strlen(G[g].opener));
         assert(!feeds(G[g].root, bad.s));
         free(bad.s);
         // every truncation after the first byte closes to a legal turn that
         // maps to whole calls (nothing generated closes to nothing)
         sbuf three = {0};
         for (int k = 0; k < 3; k++) {
-            if (k) sb_lit(&three, "\n");
+            if (k) sb_put(&three, G[g].sep, strlen(G[g].sep));
             sb_put(&three, G[g].one, strlen(G[g].one));
         }
-        sb_lit(&three, "<|im_end|>");
+        sb_put(&three, G[g].end, strlen(G[g].end));
         tool_envelope e; bool skip = false;
         jv *required = parse("\"required\"");
         assert(tool_envelope_build_ex(tools, required, NULL, true, &e, err, sizeof err) == 1);
