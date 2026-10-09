@@ -139,3 +139,56 @@ def test_two_tensors_for_one_adapter_slot_are_refused(runner_bin, fixtures,
     proc = _merge(runner_bin, base, dup, out)
     assert proc.returncode != 0
     assert not out.exists()
+
+
+def test_record_carries_what_the_merge_kept(runner_bin, fixtures, tmp_path):
+    """An exact output type (the F32 fixture) keeps the whole delta, and the
+    record says so beside the hashes."""
+    base, adapter = fixtures
+    merged = tmp_path / "s.gguf"
+    p = _merge(runner_bin, base, adapter, merged)
+    assert p.returncode == 0, p.stderr.decode(errors="replace")
+    sv = json.loads((tmp_path / "s.gguf.merge.json").read_text())["survival"]
+    assert sv["delta_retained"] == 1.0, sv
+    assert sv["min_retained"] == 0.5 and sv["adapted_bytes"] > 0, sv
+    assert b"kept 100.0% of the adapter's delta" in p.stderr
+
+
+def test_a_merge_the_grid_erased_is_refused(runner_bin, fixtures, tmp_path):
+    """Merged back onto the 4-bit grid its base already sits on, a delta far
+    under half a step leaves every code where it was: the file would be the
+    base again. That is refused with the destination untouched, and
+    --merge-allow-erased writes it anyway with the numbers on record."""
+    base, adapter = fixtures
+    q4 = tmp_path / "q4.gguf"
+    p = subprocess.run([runner_bin, "-m", str(base), "--quantize", str(q4),
+                        "--quant", "q4_0"], cwd=ROOT, stdout=subprocess.PIPE,
+                       stderr=subprocess.PIPE, timeout=300)
+    assert p.returncode == 0, p.stderr.decode(errors="replace")
+    out = tmp_path / "erased.gguf"
+    tiny = ("--lora-scale", "0.000001")
+    p = subprocess.run([runner_bin, "-m", str(q4), "--lora", str(adapter),
+                        "--merge-lora", str(out), *tiny], cwd=ROOT,
+                       stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                       timeout=300)
+    err = p.stderr.decode(errors="replace")
+    assert p.returncode != 0, err
+    assert "rounded the fine-tune away" in err and "--merge-allow-erased" in err
+    assert not out.exists() and not (tmp_path / "erased.gguf.partial").exists()
+    p = subprocess.run([runner_bin, "-m", str(q4), "--lora", str(adapter),
+                        "--merge-lora", str(out), *tiny, "--merge-allow-erased"],
+                       cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                       timeout=300)
+    assert p.returncode == 0, p.stderr.decode(errors="replace")
+    sv = json.loads((tmp_path / "erased.gguf.merge.json").read_text())["survival"]
+    assert sv["delta_retained"] == 0.0 and sv["bytes_changed"] == 0, sv
+    assert sv["min_retained"] is None, sv
+
+
+def test_allow_erased_alone_is_refused(runner_bin, fixtures):
+    base, _ = fixtures
+    p = subprocess.run([runner_bin, "-m", str(base), "--merge-allow-erased",
+                        "-p", "hi", "-n", "1"], cwd=ROOT, stdout=subprocess.PIPE,
+                       stderr=subprocess.PIPE, timeout=120)
+    assert p.returncode != 0
+    assert b"--merge-allow-erased requires --merge-lora" in p.stderr

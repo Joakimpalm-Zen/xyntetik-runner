@@ -1141,7 +1141,12 @@ static void usage_to(FILE *f, const char *prog) {
         "                 The merged file runs in any GGUF runtime, but a\n"
         "                 quantized output type rounds the delta through its\n"
         "                 grid — measure the merged artifact before trusting\n"
-        "                 it; base + --lora stays the exact form\n"
+        "                 it; base + --lora stays the exact form. Refused\n"
+        "                 (destination untouched) when the output keeps under\n"
+        "                 50%% of the delta; the kept share and changed\n"
+        "                 bytes go in the record\n"
+        "  --merge-allow-erased  with --merge-lora: write the merge even\n"
+        "                 when the output grid rounded the delta away\n"
         "  --type-plan-strict  with --type-plan: fail before writing when\n"
         "                 any rule would be declined or fall back, instead of\n"
         "                 reporting it and writing the file\n"
@@ -1640,7 +1645,7 @@ int main(int argc, char **argv) {
     int cli_env_state = ENV_UNCLASSIFIED;
     bool cli_env_known = false;
     const char *type_plan = NULL, *merge_out = NULL, *context_out = NULL;
-    bool type_plan_strict = false;
+    bool type_plan_strict = false, merge_allow_erased = false;
     const char *transcript_path = NULL;
     const char *transcript_prev = NULL, *sign_key = NULL, *keygen_path = NULL;
     const char *lineage_path = NULL, *require_eval = NULL;
@@ -1769,6 +1774,7 @@ int main(int argc, char **argv) {
         else if (!strcmp(a, "--quantize")) quant_out = NEXT;
         else if (!strcmp(a, "--context-surgery")) context_out = NEXT;
         else if (!strcmp(a, "--merge-lora")) merge_out = NEXT;
+        else if (!strcmp(a, "--merge-allow-erased")) merge_allow_erased = true;
         else if (!strcmp(a, "--transcript")) transcript_path = NEXT;
         else if (!strcmp(a, "--verify")) verify_path = NEXT;
         else if (!strcmp(a, "--transcript-prev")) transcript_prev = NEXT;
@@ -2899,8 +2905,11 @@ int main(int argc, char **argv) {
                     quant_type);
             return 1;
         }
+        merge_survival sv = {0};
         int rc = merge_lora_gguf(model_path, lora_path, lora_scale,
-                                 merge_out, tt);
+                                 merge_out, tt,
+                                 merge_allow_erased ? -1.0f : MERGE_MIN_RETAINED,
+                                 &sv);
         if (rc == 0) {
             // the D7 discipline extended to merged artifacts: the standalone
             // blob stays auditable — base sha + adapter sha + config ->
@@ -2928,7 +2937,18 @@ int main(int argc, char **argv) {
             sb_lit(&rec, "\",\"merged\":{\"path\":\"");
             sb_esc(&rec, merge_out, strlen(merge_out));
             sb_lit(&rec, "\",\"sha256\":\""); sb_lit(&rec, osha);
-            sb_lit(&rec, "\"}}\n");
+            sb_lit(&rec, "\"}");
+            // what the output grid kept of the delta (quants.h
+            // merge_survival); absent when no adapted tensor was rewritten
+            if (sv.ret_den > 0)
+                sb_fmt(&rec, ",\"survival\":{\"adapted_bytes\":%llu,"
+                       "\"bytes_changed\":%llu,\"delta_retained\":%.6f,"
+                       "\"min_retained\":%s}",
+                       (unsigned long long)sv.bytes,
+                       (unsigned long long)sv.bytes_changed,
+                       sv.ret_num / sv.ret_den,
+                       merge_allow_erased ? "null" : MERGE_MIN_RETAINED_STR);
+            sb_lit(&rec, "}\n");
             if (!write_record(merge_out, ".merge.json", "merge", &rec, sign_key))
                 rc = 1;
             free(rec.s);
@@ -3071,6 +3091,10 @@ int main(int argc, char **argv) {
     if (orphan) {
         fprintf(stderr, "error: %s requires --quantize OUT (or "
                 "--merge-lora OUT for --quant)\n", orphan);
+        return 1;
+    }
+    if (merge_allow_erased) {
+        fprintf(stderr, "error: --merge-allow-erased requires --merge-lora OUT\n");
         return 1;
     }
 

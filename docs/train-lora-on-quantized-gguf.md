@@ -34,6 +34,9 @@ Merging into Q8_0 or F16 keeps the 1.00 (verified in stock llama.cpp).
 Merging into the 4-bit base erases the fine-tune: the score returns to 0.69
 because most of the delta rounds back to the base's own quantization grid.
 Serve adapters with `--lora` (the exact form) or merge into 8-bit or better.
+Since 2026-10-09 every merge measures how much of the delta its output kept and
+refuses one that keeps under half: this adapter merged back onto Q4_K keeps 1.8%,
+into Q8_0 99.5% (`survival` in the merge record; `--merge-allow-erased` overrides).
 
 ## Commands
 

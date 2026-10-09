@@ -401,7 +401,9 @@ the f16 cache staircase.
 
 **Serving and merging:** use `--lora` to preserve the adapter delta. A quantized
 merge rounds it; in the measured study, merging into the 4-bit base erased the
-fine-tune, while Q8_0 and F16 retained it. See the study below before merging.
+fine-tune, while Q8_0 and F16 retained it. Every merge now measures how much of the
+delta its output kept, and refuses one that keeps under half
+([`--merge-lora`](#cli-merge-lora)).
 
 Start with the [training walkthrough](docs/train-lora-on-quantized-gguf.md)
 or [reproducible training with receipts](docs/reproducible-lora-training-receipts.md).
@@ -2141,7 +2143,8 @@ whether the draft is `active` there.
 | `--quant q8_0\|q4_0\|q3_k\|q4_k\|q6_k\|f16\|bf16\|keep` | Requantization target; default `q4_0`, or keep per-tensor types when pruning or merging alone. Requires `--quantize` or `--merge-lora`; without either the flag is refused rather than ignored. |
 | `--type-plan PLAN.json` | Apply a per-tensor rewrite plan; first matching substring rule wins. [Details](#cli-type-plan). |
 | `--type-plan-strict` | With `--type-plan`: fail before writing anything when a rule would be declined (block width, never-grow) or fall back to a 32-block type, instead of reporting it and building the file. Off by default. |
-| `--merge-lora OUT` | Merge an adapter into a standalone GGUF. Quantized merges round the delta; check the fidelity caveat below. [Details](#cli-merge-lora). |
+| `--merge-lora OUT` | Merge an adapter into a standalone GGUF. Quantized merges round the delta; a merge that keeps under 50% of it is refused. [Details](#cli-merge-lora). |
+| `--merge-allow-erased` | With `--merge-lora`: write the merge even when the output grid rounded the delta away. [Details](#cli-merge-lora). |
 | `--prune-experts FILE` | Apply a per-layer MoE expert keep-list while rewriting. Requires `--quantize`. |
 | `--remove-sublayer attn:N[,mlp:M,...]` | Physically drop block N's attention (or block M's dense FFN) tensors while rewriting, declaring the absence with a `0` in the per-block `attention.head_count` / `head_count_kv` (or `feed_forward_length`) array, llama.cpp's own convention. The pre-norm stays. The runner omits the branch and reserves no KV rows for it; CPU and Metal, dense blocks only (a CUDA build refuses the offload). Requires `--quantize`. See [Sublayer removal](#sublayer-removal). |
 | `--bench-json` | Run the built-in prompt/decode benchmark and print JSON metrics. |
@@ -2211,6 +2214,19 @@ provenance (base/adapter/merged sha256s) written beside it. Deterministic: same 
 byte-identical merged file. Merging into a quantized type rounds the delta through that
 type's grid - the merged artifact's fidelity is a measurement, not a given; `base +
 --lora` remains the exact form.
+
+Runner takes that measurement on every merge. Each adapted row is also written from the
+base alone at the same type, and the two are compared: `delta_retained` is the
+projection of (merged - base alone) onto the intended delta (1 = all of it kept, 0 =
+rounded away), and `bytes_changed` counts the adapted bytes that differ. Both are
+printed and recorded under `survival` in `OUT.merge.json`. A merge that keeps under 50%
+of the delta is refused, the destination left untouched: merged back onto the 4-bit
+grid its base already sits on, the study's adapter kept 1.8% of its delta (8.9% at 8x
+scale), and the file scored like the base; into Q8_0 it kept 99.5%. Merge into a wider
+type, serve `base + --lora`, or pass `--merge-allow-erased` to write it anyway (the
+record then shows `"min_retained": null`). A merge onto a different 4-bit grid (a
+Q4_K_M base into `--quant q4_0`) keeps the delta on average, because the base weights
+no longer sit on that grid's steps; its effect on behaviour is not measured.
 
 <a id="cli-lora"></a>
 #### `--lora FILE`, `--lora-scale F`

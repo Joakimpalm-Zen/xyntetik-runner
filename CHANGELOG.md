@@ -9,6 +9,20 @@ rename keep the names that were true when they were written.
 
 ## Unreleased
 
+- **`--merge-lora` measures what the merge kept, and refuses a merge that
+  rounded the fine-tune away.** Each adapted row is also written from the
+  base alone at the same output type; the projection of the difference onto
+  the intended delta (`delta_retained`) and the adapted bytes that differ
+  are printed and recorded under `survival` in the `.merge.json` record. A
+  merge that keeps under 50% of the delta is refused with the destination
+  untouched; `--merge-allow-erased` writes it anyway. Calibrated on the
+  merge study's Qwen3-4B Q4_K_M and tool-use adapter: merged back onto Q4_K
+  it kept 1.8% of the delta (3.0, 4.7 and 8.9% at 2, 4 and 8x scale), into
+  Q8_0 99.5%. A merge onto a different 4-bit grid (Q4_K_M into `q4_0`) keeps
+  the delta on average; its effect on behaviour is not measured. The
+  study's 8x merge, which scored like the adapter only because the grid cut
+  an overshoot, is now refused by default.
+
 - **Nemotron 3.5 Lightning gets its own chat template family,
   `nemotron35`.** Its template is Granite 4.2's with Qwen3-Coder's
   nested-XML tool declarations, and Runner detected and served it as

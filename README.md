@@ -319,7 +319,8 @@ directly on the compressed file you already run, with no Python stack.
 
 It is built for small, targeted datasets on dense models (Llama, Mistral,
 Qwen2.5, Granite 4.x, Gemma 3 and 4). Serve the adapter with `--lora`, or
-merge it into a Q8_0 or F16 file.
+merge it into a Q8_0 or F16 file; a merge whose output would round the
+fine-tune away is refused.
 [Walkthrough](docs/train-lora-on-quantized-gguf.md) ·
 [Supported architectures](MANUAL.md#adaptation)
 
