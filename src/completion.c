@@ -3439,6 +3439,12 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
             schema = schema_compile_nemotron_turn(
                 env->tools, env->kind == TCH_NAMED ? env->named : NULL,
                 env->parallel, serr, sizeof(serr));
+        } else if (env->proto == TP_MISTRAL) {
+            schema = schema_compile_mistral_turn(
+                env->tools, env->kind == TCH_AUTO,
+                env->kind == TCH_NAMED ? env->named : NULL,
+                env->kind == TCH_AUTO ? request_schema(req) : NULL,
+                env->parallel, serr, sizeof(serr));
         } else if (env->proto == TP_ATEM) {
             const char *only = env->kind == TCH_NAMED ? env->named : NULL;
             jv *final = env->kind == TCH_AUTO ? request_schema(req) : NULL;

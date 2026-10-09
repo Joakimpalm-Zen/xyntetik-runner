@@ -2196,7 +2196,8 @@ snode *schema_compile_qwen_parallel(jv *tools, const char *only_tool,
 // One entry of Nemotron Nano's call list: `{"name": "N", "arguments": {...}}`,
 // the name chosen from the declared tools and the arguments compiled from its
 // schema exactly as the Qwen JSON call's are.
-static snode *nemo_entry(jv *tools, const char *only, char *err, int errcap) {
+static snode *nemo_entry(jv *tools, const char *only, const char *fam,
+                         char *err, int errcap) {
     int selected = 0;
     for (int i = 0; i < tools->n; i++) {
         jv *fn = jv_get(tools->items[i], "function");
@@ -2204,7 +2205,7 @@ static snode *nemo_entry(jv *tools, const char *only, char *err, int errcap) {
         const char *name = jv_str(jv_get(fn, "name"), NULL);
         if (!only || (name && !strcmp(name, only))) selected++;
     }
-    if (!selected) { snprintf(err, errcap, "named Nemotron tool is not declared"); return NULL; }
+    if (!selected) { snprintf(err, errcap, "named %s tool is not declared", fam); return NULL; }
     snode *root = atem_seq(3);
     snode *names = sn_new(SN_ENUM), *choice = sn_new(SN_COND);
     if (!root || !names || !choice) goto fail;
@@ -2219,7 +2220,7 @@ static snode *nemo_entry(jv *tools, const char *only, char *err, int errcap) {
         jv *fn = jv_get(tools->items[i], "function");
         if (!fn) fn = tools->items[i];
         const char *name = jv_str(jv_get(fn, "name"), NULL);
-        if (!name || !name[0]) { snprintf(err, errcap, "Nemotron tool %d has no function name", i); goto fail; }
+        if (!name || !name[0]) { snprintf(err, errcap, "%s tool %d has no function name", fam, i); goto fail; }
         if (only && strcmp(name, only)) continue;
         if (!(names->lits[names->n_lits] = strdup(name))) goto fail;
         names->n_lits++;
@@ -2233,19 +2234,19 @@ static snode *nemo_entry(jv *tools, const char *only, char *err, int errcap) {
     return root;
 fail:
     schema_free(names); schema_free(choice); schema_free(root);
-    if (!err[0]) snprintf(err, errcap, "out of memory compiling Nemotron call");
+    if (!err[0]) snprintf(err, errcap, "out of memory compiling %s call", fam);
     return NULL;
 }
 
 // After an entry: close the list, or (while `remaining`) a separator and the
 // next entry. The two branches open with different bytes (`]` and `,`).
-static snode *nemo_rest(jv *tools, const char *only, int remaining,
-                        char *err, int errcap) {
-    snode *end = atem_lit("]</TOOLCALL>");
+static snode *nemo_rest(jv *tools, const char *only, const char *fam,
+                        const char *close, int remaining, char *err, int errcap) {
+    snode *end = atem_lit(close);
     if (!end || !remaining) return end;
     snode *seq = atem_seq(3), *u = sn_new(SN_UNION);
-    snode *entry = seq ? nemo_entry(tools, only, err, errcap) : NULL;
-    snode *tail = entry ? nemo_rest(tools, only, remaining - 1, err, errcap) : NULL;
+    snode *entry = seq ? nemo_entry(tools, only, fam, err, errcap) : NULL;
+    snode *tail = entry ? nemo_rest(tools, only, fam, close, remaining - 1, err, errcap) : NULL;
     if (!seq || !u || !entry || !tail || !(u->alts = calloc(2, sizeof(*u->alts))) ||
         !atem_seq_add(seq, atem_lit(", "))) {
         schema_free(seq); schema_free(u); schema_free(entry); schema_free(tail); schema_free(end);
@@ -2273,8 +2274,8 @@ snode *schema_compile_nemotron_turn(jv *tools, const char *only_tool,
     }
     snode *root = atem_seq(3);
     snode *open = root ? native_lead_lit("<TOOLCALL>[") : NULL;
-    snode *entry = open ? nemo_entry(tools, only_tool, err, errcap) : NULL;
-    snode *rest = entry ? nemo_rest(tools, only_tool,
+    snode *entry = open ? nemo_entry(tools, only_tool, "Nemotron", err, errcap) : NULL;
+    snode *rest = entry ? nemo_rest(tools, only_tool, "Nemotron", "]</TOOLCALL>",
                                     parallel ? NATIVE_PARALLEL_MAX_CALLS - 1 : 0,
                                     err, errcap) : NULL;
     if (!root || !open || !entry || !rest) {
@@ -2286,6 +2287,89 @@ snode *schema_compile_nemotron_turn(jv *tools, const char *only_tool,
     atem_seq_add(root, entry);
     atem_seq_add(root, rest);
     root->whitespace_significant = true;
+    return root;
+}
+
+// ----------------------------------------------------- Mistral tools
+
+// The list after Mistral's `[TOOL_CALLS]`: `[` (Nemo) or ` [` (v0.3, and
+// what a Nemo file carrying the v0.3 template writes), entries as Nemotron's,
+// closed by the bare `]`. The turn ends there: the model writes no eos after
+// the list on v0.3, so the constraint's own end stops it.
+static snode *mistral_list(jv *tools, const char *only, bool parallel,
+                           char *err, int errcap) {
+    snode *root = atem_seq(3), *open = sn_new(SN_ENUM);
+    snode *entry = NULL, *rest = NULL;
+    if (!root || !open || !(open->lits = calloc(2, sizeof(*open->lits))) ||
+        !(open->lits[0] = strdup("[")) || !(open->lits[1] = strdup(" [")))
+        goto fail;
+    open->n_lits = 2;
+    open->min_items = 1;
+    open->whitespace_significant = true;
+    if (!enum_index(open)) goto fail;
+    entry = nemo_entry(tools, only, "Mistral", err, errcap);
+    rest = entry ? nemo_rest(tools, only, "Mistral", "]",
+                             parallel ? NATIVE_PARALLEL_MAX_CALLS - 1 : 0,
+                             err, errcap) : NULL;
+    if (!entry || !rest) goto fail;
+    atem_seq_add(root, open);
+    atem_seq_add(root, entry);
+    atem_seq_add(root, rest);
+    root->whitespace_significant = true;
+    return root;
+fail:
+    schema_free(root); schema_free(open); schema_free(entry); schema_free(rest);
+    if (!err[0]) snprintf(err, errcap, "out of memory compiling Mistral turn");
+    return NULL;
+}
+
+// A Mistral v0.3 or Nemo turn. Required or named: `[TOOL_CALLS]` and the
+// list. Auto: prose ending at the model's stop, or handing off to the list
+// at the full `[TOOL_CALLS]`; with a response_format, that schema instead of
+// the prose (its `{` cannot open the marker).
+snode *schema_compile_mistral_turn(jv *tools, bool allow_text,
+                                   const char *only_tool, jv *final_schema,
+                                   bool parallel, char *err, int errcap) {
+    err[0] = 0;
+    if (!tools || tools->type != J_ARR || tools->n <= 0 || tools->n > 60) {
+        snprintf(err, errcap, "Mistral tools must be a non-empty array of at most 60 tools");
+        return NULL;
+    }
+    snode *list = mistral_list(tools, only_tool, parallel, err, errcap);
+    if (!list) return NULL;
+    if (allow_text && !final_schema) {
+        snode *raw = atem_raw("</s>");
+        if (!raw || !(raw->lits = calloc(1, sizeof(*raw->lits))) ||
+            !(raw->alts = calloc(1, sizeof(*raw->alts))) ||
+            !(raw->lits[0] = strdup("[TOOL_CALLS]"))) {
+            schema_free(raw); schema_free(list);
+            snprintf(err, errcap, "out of memory compiling Mistral turn");
+            return NULL;
+        }
+        raw->n_lits = 1;
+        raw->alts[raw->n_alts++] = list;
+        raw->whitespace_significant = true;
+        return raw;
+    }
+    snode *call = atem_seq(2);
+    if (!call || !atem_seq_add(call, atem_lit("[TOOL_CALLS]"))) {
+        schema_free(call); schema_free(list);
+        snprintf(err, errcap, "out of memory compiling Mistral turn");
+        return NULL;
+    }
+    atem_seq_add(call, list);
+    call->whitespace_significant = true;
+    if (!allow_text) return call;
+    snode *final = compile_node(final_schema, err, errcap, 0);
+    snode *root = final ? sn_new(SN_UNION) : NULL;
+    if (!root || !(root->alts = calloc(2, sizeof(*root->alts)))) {
+        schema_free(call); schema_free(final); schema_free(root);
+        if (!err[0]) snprintf(err, errcap, "out of memory compiling Mistral turn");
+        return NULL;
+    }
+    root->whitespace_significant = true;
+    root->alts[root->n_alts++] = call;
+    root->alts[root->n_alts++] = final;
     return root;
 }
 

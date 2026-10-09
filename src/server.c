@@ -145,6 +145,11 @@ static char *message_text(jv *msg, int tmpl, bool replay_reason, bool *oom) {
     if (tmpl_ornith_like(tmpl) && !strcmp(role, "tool")) {
         // a result is a <tool_response> block in a user turn, not a plain one
         tool_result_wrap(tmpl, txt.s ? txt.s : "", &b);
+    } else if ((tmpl == TMPL_MISTRAL || tmpl == TMPL_MISTRAL_NEMO) &&
+               !strcmp(role, "tool")) {
+        // Mistral's result block names the call it answers
+        tool_result_wrap_id(tmpl, txt.s ? txt.s : "",
+                            jv_str(jv_get(msg, "tool_call_id"), NULL), &b);
     } else {
         // Ornith opens every assistant turn with its (possibly empty) thought
         // block. Qwen3 preserves reasoning only on the final historical

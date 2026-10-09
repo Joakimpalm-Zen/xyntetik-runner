@@ -330,6 +330,13 @@ static bool content_starts(const char *s, const char *lit) {
     while (*s == PROMPT_RAW_OPEN || *s == PROMPT_RAW_CLOSE) s++;
     return strncmp(s, lit, strlen(lit)) == 0;
 }
+static bool tmpl_mistral_tools(int t) { return t == TMPL_MISTRAL || t == TMPL_MISTRAL_NEMO; }
+
+// Does a message begin with `lit` written by a builder (prompt_lit), not
+// typed by the caller? Only the builder's literal opens with a mark.
+static bool builder_starts(const char *s, const char *lit) {
+    return s[0] == PROMPT_RAW_OPEN && strncmp(s + 1, lit, strlen(lit)) == 0;
+}
 static const char *skip_marks(const char *s) {
     while (*s == PROMPT_RAW_OPEN || *s == PROMPT_RAW_CLOSE) s++;
     return s;
@@ -2832,13 +2839,14 @@ size_t render_messages_with_tools(int tmpl, const chat_msg *msgs, int n_msgs,
         //
         // DELIBERATE DEVIATION, and the only one: the v0.3 and Nemo references
         // fold on `loop.last`, so they attach the system text only when the
-        // final message is a user turn -- a conversation ending in an
-        // assistant turn (a prefill or continuation) renders with the caller's
-        // system prompt silently dropped. Runner attaches it to the last USER
-        // turn instead. Every conversation that ends with a user turn, which is
-        // every generation request, renders byte-identically to the reference;
-        // the prefill shape differs by keeping a system prompt the caller sent
-        // rather than discarding it.
+        // final message is a user turn -- a conversation ending in a tool
+        // result or an assistant turn (a prefill or continuation) renders
+        // with the caller's system prompt silently dropped. Runner attaches it
+        // to the last USER turn instead, as mistral-common's own encoder does.
+        // Every conversation that ends with a user turn renders
+        // byte-identically to the reference; the tool-result and prefill
+        // shapes differ by keeping a system prompt the caller sent rather
+        // than discarding it.
         const char *sys = NULL;
         int sys_at = -1, fold_at = -1;
         for (int i = 0; i < n_msgs; i++)
@@ -2851,11 +2859,33 @@ size_t render_messages_with_tools(int tmpl, const chat_msg *msgs, int n_msgs,
                 fold_at = i;
                 if (v1) break;
             }
+        // v0.3 and Nemo declare tools in a block right before the LAST user
+        // turn (the reference's `message == user_messages[-1]`).
+        int last_user = -1;
+        for (int i = 0; i < n_msgs; i++)
+            if (!strcmp(msgs[i].role, "user")) last_user = i;
+        sbuf decl = {0};
+        if (!v1 && tools && tools->type == J_ARR && tools->n > 0) {
+            tools_render_for(tmpl, tools, &decl);
+            if (decl.failed) { free(decl.s); return SIZE_MAX; }
+        }
 
         for (int i = 0; i < n_msgs; i++) {
             const chat_msg *m = &msgs[i];
             if (!strcmp(m->role, "system")) continue;
+            if (!v1 && (builder_starts(m->content, "[TOOL_CALLS]") ||
+                        builder_starts(m->content, "[TOOL_RESULTS]"))) {
+                // a native call turn (assistant_calls_render) or result
+                // block (tool_result_wrap): no leading space, no trim; a
+                // call turn ends with the eos
+                off = emit(out, cap, off, "%s", m->content, NULL);
+                if (builder_starts(m->content, "[TOOL_CALLS]"))
+                    off = emit_raw(out, cap, off, "</s>", NULL, NULL);
+                continue;
+            }
             if (!strcmp(m->role, "user")) {
+                if (i == last_user && decl.s)
+                    off = emit(out, cap, off, "%s", decl.s, NULL);
                 if (i == fold_at) {
                     // no <<SYS>> block anywhere in this family: its template
                     // accepts only user and assistant, so the system text
@@ -2873,6 +2903,7 @@ size_t render_messages_with_tools(int tmpl, const chat_msg *msgs, int n_msgs,
                                    tmpl == TMPL_MISTRAL, "</s>");
             }
         }
+        free(decl.s);
         break;
     }
     default: // TMPL_RAW: concatenate contents
@@ -3073,6 +3104,43 @@ static void coder_declaration(jv *tool, bool nemotron, sbuf *out) {
 }
 
 void tools_render_for(int tmpl, const jv *tools, sbuf *out) {
+    if (tmpl == TMPL_MISTRAL || tmpl == TMPL_MISTRAL_NEMO) {
+        // mistralai/Mistral-7B-Instruct-v0.3 and Mistral-Nemo-Instruct-2407
+        // chat_template, verbatim: `[AVAILABLE_TOOLS] [` (Nemo: no space),
+        // each function as `{"type": "function", "function": {` + its keys in
+        // order except `return`, a string value concatenated raw between
+        // quotes (no escaping, as the reference does) and any other through
+        // tojson, then `}}`; the list closes `][/AVAILABLE_TOOLS]`. The
+        // renderer puts the block right before the last user turn.
+        if (!tools || tools->type != J_ARR || tools->n == 0) return;
+        pl_lit(out, tmpl == TMPL_MISTRAL_NEMO ? "[AVAILABLE_TOOLS][" : "[AVAILABLE_TOOLS] [");
+        for (int i = 0; i < tools->n; i++) {
+            const jv *fn = jv_get(tools->items[i], "function");
+            if (i) pl_lit(out, ", ");
+            pl_lit(out, "{\"type\": \"function\", \"function\": {");
+            int k = 0;
+            for (int j = 0; fn && fn->type == J_OBJ && j < fn->n; j++) {
+                const char *key = fn->keys[j];
+                const jv *val = fn->items[j];
+                if (!strcmp(key, "return")) continue;
+                if (k++) pl_lit(out, ", ");
+                pl_lit(out, "\"");
+                sb_put(out, key, strlen(key));
+                if (val && val->type == J_STR) {
+                    pl_lit(out, "\": \"");
+                    sb_put(out, val->str, strlen(val->str));
+                    pl_lit(out, "\"");
+                } else {
+                    pl_lit(out, "\": ");
+                    if (val) jv_dump_tojson(val, out);
+                    else     pl_lit(out, "null");
+                }
+            }
+            pl_lit(out, "}}");
+        }
+        pl_lit(out, "][/AVAILABLE_TOOLS]");
+        return;
+    }
     if (tmpl == TMPL_NEMOTRON) {
         // nvidia/NVIDIA-Nemotron-Nano-9B-v2 chat_template, verbatim: the
         // unwrapped function objects as one JSON list, then the format note,
@@ -3256,9 +3324,62 @@ const char *tool_result_name(const jv *messages, int message_index) {
 // with the declaration macros it shares with -- the reference has one macro
 // for both, and so does this file.
 
+// The Mistral templates raise unless a tool call id is 9 alphanumeric
+// characters. An id of that shape passes through; any other (OpenAI's
+// `call_...`, Runner's own `call_0`) maps to 9 base-36 characters of its
+// FNV-1a hash, so a call and the result that names it map alike.
+void mistral_call_id(const char *id, char out[10]) {
+    size_t n = id ? strlen(id) : 0;
+    bool ok = n == 9;
+    for (size_t i = 0; ok && i < n; i++)
+        ok = (id[i] >= '0' && id[i] <= '9') || (id[i] >= 'a' && id[i] <= 'z') ||
+             (id[i] >= 'A' && id[i] <= 'Z');
+    if (ok) { memcpy(out, id, 10); return; }
+    uint64_t h = 1469598103934665603ULL;
+    for (size_t i = 0; i < n; i++) { h ^= (unsigned char)id[i]; h *= 1099511628211ULL; }
+    static const char D[] = "0123456789abcdefghijklmnopqrstuvwxyz";
+    for (int i = 0; i < 9; i++) { out[i] = D[h % 36]; h /= 36; }
+    out[9] = 0;
+}
+
 void tool_history_render_for(int tmpl, const jv *calls,
                              bool turn_has_text, sbuf *out) {
     if (!calls || calls->type != J_ARR) return;
+    // Mistral v0.3 and Nemo: the turn is the calls alone (the reference's
+    // tool_calls branch writes no content), `[TOOL_CALLS] [` (Nemo: no
+    // space), then each call as its function object's tojson with the id
+    // spliced in before the close: `{"name": N, "arguments": A, "id": "ID"}`.
+    // The reference reads arguments as a mapping, so OpenAI's JSON string is
+    // parsed and re-dumped in tojson's spacing (verbatim when it does not
+    // parse). The renderer adds the turn's `</s>`.
+    if (tmpl_mistral_tools(tmpl)) {
+        if (!calls->n) return;
+        pl_lit(out, tmpl == TMPL_MISTRAL_NEMO ? "[TOOL_CALLS][" : "[TOOL_CALLS] [");
+        for (int i = 0; i < calls->n; i++) {
+            jv *fn = jv_get(calls->items[i], "function");
+            jv *name = jv_get(fn, "name");
+            jv *args = jv_get(fn, "arguments");
+            char id9[10];
+            mistral_call_id(jv_str(jv_get(calls->items[i], "id"), ""), id9);
+            if (i) pl_lit(out, ", ");
+            pl_lit(out, "{\"name\": ");
+            if (name) jv_dump_tojson(name, out);
+            else      pl_lit(out, "\"\"");
+            pl_lit(out, ", \"arguments\": ");
+            jv *parsed = args && args->type == J_STR
+                             ? json_parse(args->str, strlen(args->str)) : NULL;
+            if (parsed)    jv_dump_tojson(parsed, out);
+            else if (args && args->type == J_STR) sb_put(out, args->str, strlen(args->str));
+            else if (args) jv_dump_tojson(args, out);
+            else           pl_lit(out, "{}");
+            jv_free(parsed);
+            pl_lit(out, ", \"id\": \"");
+            sb_put(out, id9, 9);
+            pl_lit(out, "\"}");
+        }
+        pl_lit(out, "]");
+        return;
+    }
     // Nemotron Nano writes a turn's calls as ONE block, a JSON list:
     // `<TOOLCALL>[{"name": "N", "arguments": A}, ...]</TOOLCALL>`, after the
     // trimmed text and a blank line when there was text. The arguments go in
@@ -3443,7 +3564,7 @@ static bool history_text_visible(const char *text) {
 // frees, or NULL on OOM. This is the adapter the typed surfaces use to reach
 // the SAME serializer the chat path does: whatever vocabulary carried the call
 // in, it becomes the one shape tool_history_render_for reads.
-jv *tool_call_synth(const char *name, const char *args_json) {
+jv *tool_call_synth(const char *name, const char *args_json, const char *id) {
     if (!name) return NULL;
     if (!args_json || !args_json[0]) args_json = "{}";
     sbuf b = {0};
@@ -3451,7 +3572,13 @@ jv *tool_call_synth(const char *name, const char *args_json) {
     sb_esc(&b, name, strlen(name));
     sb_lit(&b, "\",\"arguments\":\"");
     sb_esc(&b, args_json, strlen(args_json));
-    sb_lit(&b, "\"}}]");
+    sb_lit(&b, "\"}");
+    if (id) {   // Mistral's call turn names the call
+        sb_lit(&b, ",\"id\":\"");
+        sb_esc(&b, id, strlen(id));
+        sb_lit(&b, "\"");
+    }
+    sb_lit(&b, "}]");
     jv *out = b.failed || !b.s ? NULL : json_parse(b.s, b.n);
     free(b.s);
     return out;
@@ -3475,8 +3602,8 @@ void assistant_calls_render(int tmpl, const char *text, const jv *calls,
                             sbuf *out, const char **turn_name) {
     if (turn_name) *turn_name = NULL;
     bool has_text = history_text_visible(text);
-    bool muse_calls = tmpl == TMPL_MUSE && calls && calls->type == J_ARR &&
-                      calls->n > 0;
+    bool muse_calls = (tmpl == TMPL_MUSE || tmpl_mistral_tools(tmpl)) &&
+                      calls && calls->type == J_ARR && calls->n > 0;
     if (is_gemma4(tmpl)) tool_history_render_for(tmpl, calls, has_text, out);
     if (!muse_calls && text) {
         const char *b = text, *e = text + strlen(text);
@@ -3487,7 +3614,7 @@ void assistant_calls_render(int tmpl, const char *text, const jv *calls,
         sb_put(out,b,(size_t)(e-b));
     }
     if (!is_gemma4(tmpl)) tool_history_render_for(tmpl, calls, has_text, out);
-    if (muse_calls && turn_name) {
+    if (muse_calls && tmpl == TMPL_MUSE && turn_name) {
         jv *fn = jv_get(calls->items[0], "function");
         *turn_name = jv_str(jv_get(fn, "name"), NULL);
     }
@@ -3501,6 +3628,25 @@ void assistant_calls_render(int tmpl, const char *text, const jv *calls,
 // written the (possibly wrapped) content. Shared by message_text and the typed
 // surfaces so a result is framed the same way whatever surface replayed it.
 const char *tool_result_wrap(int tmpl, const char *result, sbuf *out) {
+    return tool_result_wrap_id(tmpl, result, NULL, out);
+}
+
+// Mistral v0.3 and Nemo carry a result in its own block that names the call:
+// `[TOOL_RESULTS] {"content": RESULT, "call_id": "ID"}[/TOOL_RESULTS]` (Nemo:
+// no space), the result text inserted as is (the reference's `|string`).
+const char *tool_result_wrap_id(int tmpl, const char *result, const char *call_id,
+                                 sbuf *out) {
+    if (tmpl_mistral_tools(tmpl)) {
+        char id9[10];
+        mistral_call_id(call_id ? call_id : "", id9);
+        pl_lit(out, tmpl == TMPL_MISTRAL_NEMO ? "[TOOL_RESULTS]{\"content\": "
+                                              : "[TOOL_RESULTS] {\"content\": ");
+        if (result) sb_put(out, result, strlen(result));
+        pl_lit(out, ", \"call_id\": \"");
+        sb_put(out, id9, 9);
+        pl_lit(out, "\"}[/TOOL_RESULTS]");
+        return "tool";
+    }
     if (tmpl_ornith_like(tmpl)) {
         pl_lit(out, "<tool_response>\n");
         if (result) sb_put(out, result, strlen(result));
@@ -3946,6 +4092,14 @@ const jv *tool_decl_native(int tmpl, bool strict, bool atem_tool_calling,
             env->parse_only = true;
             env->max_calls = TOOL_STREAM_MAX_CALLS;
         }
+    } else if (strict && (tmpl == TMPL_MISTRAL || tmpl == TMPL_MISTRAL_NEMO)) {
+        // Mistral v0.3 and Nemo's own protocol (suite R2.4.3): `[TOOL_CALLS]`
+        // and a JSON list of calls. `[TOOL_CALLS]` is a control token, which
+        // decodes to nothing unless a grammar admits it by its spelling, so
+        // every choice is constrained, auto included (prose that may hand
+        // off to the list at the marker). Plain JSON arguments: no fallback.
+        env->proto = TP_MISTRAL;
+        env->tools = tools;
     } else if (strict && is_gemma4(tmpl)) {
         // Decided 2026-08-27 (owner, option c of the recorded three): a
         // tools[] the native compiler cannot constrain -- an untyped
@@ -3992,7 +4146,9 @@ const jv *tool_decl_native(int tmpl, bool strict, bool atem_tool_calling,
     // Nemotron Nano renders its declarations whenever tools are present,
     // like gemma4: its template has no tool_choice, so `none` keeps the
     // native list rather than a second, untrained protocol.
-    bool nemo_native = tmpl == TMPL_NEMOTRON;
+    // Mistral v0.3 and Nemo likewise: their templates have no tool_choice.
+    bool nemo_native = tmpl == TMPL_NEMOTRON || tmpl == TMPL_MISTRAL ||
+                       tmpl == TMPL_MISTRAL_NEMO;
     *skip_generic = qwen || g4_native || nemo_native || tmpl == TMPL_APERTUS ||
                     (tmpl == TMPL_MUSE && env->proto == TP_ATEM) ||
                     tmpl == TMPL_HARMONY || xml_in_template;
@@ -4012,6 +4168,7 @@ const char *tool_envelope_protocol_name(const tool_envelope *e) {
         case TP_QWEN:       return "qwen_json";
         case TP_QWEN_XML:   return "qwen3_xml";
         case TP_NEMOTRON:   return "nemotron_json";
+        case TP_MISTRAL:    return "mistral_json";
         default: break;
     }
     return "generic";
@@ -4030,6 +4187,7 @@ const char *tool_protocol_name(int tmpl, bool *native) {
         case TP_QWEN:     return "qwen_json";
         case TP_QWEN_XML: return "qwen3_xml";
         case TP_NEMOTRON: return "nemotron_json";
+        case TP_MISTRAL:  return "mistral_json";
         default: break;
     }
     *native = false;
@@ -4753,23 +4911,40 @@ static int qwen_map(const tool_envelope *e, const char *doc, size_t n,
 #define NEMO_CALL_END  "</TOOLCALL>"
 #define NEMO_TURN_END  "<SPECIAL_12>"
 
+// Mistral v0.3 and Nemo write the same list behind `[TOOL_CALLS]` with no
+// closing tag: the block ends at the `]` after which the body parses.
+#define MISTRAL_CALL_OPEN "[TOOL_CALLS]"
+#define MISTRAL_TURN_END  "</s>"
+
+typedef struct { const char *open, *close, *turn_end; } list_proto;
+static const list_proto NEMO_LP = { NEMO_CALL_OPEN, NEMO_CALL_END, NEMO_TURN_END };
+static const list_proto MISTRAL_LP = { MISTRAL_CALL_OPEN, NULL, MISTRAL_TURN_END };
+static const list_proto *list_proto_of(const tool_envelope *e) {
+    return e && e->proto == TP_MISTRAL ? &MISTRAL_LP : &NEMO_LP;
+}
+
 // One block at *pp (which starts at the opener): its calls appended to `tc`
 // in OpenAI form, ids from `index`. A string argument may spell the closing
 // tag, so the close is the first one after which the body is a JSON list.
 // Returns the call count, -1 for a block that is not a list of
 // {name, arguments} entries or that carries more than `max` of them.
-static int nemotron_block_calls(const char **pp, const char *end, int index,
-                                int max, sbuf *tc) {
+static int nemotron_block_calls(const list_proto *lp, const char **pp,
+                                const char *end, int index, int max, sbuf *tc) {
     const char *p = *pp;
-    size_t ol = strlen(NEMO_CALL_OPEN), cl = strlen(NEMO_CALL_END);
-    if ((size_t)(end - p) < ol || memcmp(p, NEMO_CALL_OPEN, ol)) return -1;
+    size_t ol = strlen(lp->open), cl = lp->close ? strlen(lp->close) : 1;
+    if ((size_t)(end - p) < ol || memcmp(p, lp->open, ol)) return -1;
     const char *body = trim_left(p + ol, end);
-    const char *close = atem_find(body, end, NEMO_CALL_END);
+    // with no closing tag the terminator is the list's own `]`, kept in
+    // the parsed span
+    const char *close = lp->close ? atem_find(body, end, lp->close)
+                                  : memchr(body, ']', (size_t)(end - body));
     jv *arr = NULL;
     while (close) {
-        arr = json_parse(body, (size_t)(trim_right(body, close) - body));
+        arr = json_parse(body, lp->close ? (size_t)(trim_right(body, close) - body)
+                                         : (size_t)(close + 1 - body));
         if (arr) break;
-        close = atem_find(close + cl, end, NEMO_CALL_END);
+        close = lp->close ? atem_find(close + cl, end, lp->close)
+                          : memchr(close + 1, ']', (size_t)(end - close - 1));
     }
     if (!close || !arr || arr->type != J_ARR || arr->n < 1 || arr->n > max) {
         jv_free(arr);
@@ -4805,14 +4980,15 @@ static int nemotron_block_calls(const char **pp, const char *end, int index,
 
 static int nemotron_map(const tool_envelope *e, const char *doc, size_t n,
                         sbuf *content, sbuf *tc) {
+    const list_proto *lp = list_proto_of(e);
     const char *p = doc, *end = doc + n;
     int calls = 0;
     if (tool_trace_on())
-        fprintf(stderr, "tool-trace: nemotron document (%zu bytes):\n%.*s\n",
-                n, (int)n, doc);
+        fprintf(stderr, "tool-trace: %s document (%zu bytes):\n%.*s\n",
+                lp == &NEMO_LP ? "nemotron" : "mistral", n, (int)n, doc);
     while (p < end) {
-        const char *open = atem_find(p, end, NEMO_CALL_OPEN);
-        const char *stop = atem_find(p, end, NEMO_TURN_END);
+        const char *open = atem_find(p, end, lp->open);
+        const char *stop = atem_find(p, end, lp->turn_end);
         if (!open || (stop && stop < open)) {
             if (!calls) sb_put(content, p, (size_t)((stop ? stop : end) - p));
             break;
@@ -4822,9 +4998,9 @@ static int nemotron_map(const tool_envelope *e, const char *doc, size_t n,
         if (!calls && trim_left(p, open) < open)
             sb_put(content, p, (size_t)(trim_right(p, open) - p));
         const char *at = open;
-        int got = nemotron_block_calls(&at, end, calls, e->max_calls - calls, tc);
+        int got = nemotron_block_calls(lp, &at, end, calls, e->max_calls - calls, tc);
         if (got < 0) {
-            if (tool_trace_on()) fprintf(stderr, "tool-trace: refused, a <TOOLCALL> block that is not a list of at most %d calls\n", e->max_calls - calls);
+            if (tool_trace_on()) fprintf(stderr, "tool-trace: refused, a %s block that is not a list of at most %d calls\n", lp->open, e->max_calls - calls);
             return -1;
         }
         calls += got;
@@ -4849,7 +5025,8 @@ int tool_envelope_map(const tool_envelope *e, const char *doc, size_t n,
     if (e->proto == TP_HARMONY) return harmony_map(e, doc, n, NULL, content, tc);
     if (e->proto == TP_GEMMA4) return gemma4_map(e, doc, n, NULL, content, tc);
     if (e->proto == TP_QWEN || e->proto == TP_QWEN_XML) return qwen_map(e, doc, n, content, tc);
-    if (e->proto == TP_NEMOTRON) return nemotron_map(e, doc, n, content, tc);
+    if (e->proto == TP_NEMOTRON || e->proto == TP_MISTRAL)
+        return nemotron_map(e, doc, n, content, tc);
     if (e->proto == TP_ATEM) return atem_map(e, doc, n, content, tc);
     if (e->proto == TP_MUSE_USER) {
         const char *end = doc + n;
@@ -5216,7 +5393,7 @@ void tool_stream_init(tool_stream *s, const tool_envelope *e,
     s->state = e && e->proto == TP_HARMONY ? TS_HARMONY
              : e && e->proto == TP_GEMMA4 ? TS_G4_START
              : e && (e->proto == TP_QWEN || e->proto == TP_QWEN_XML) ? TS_QWEN_START
-             : e && e->proto == TP_NEMOTRON ? TS_NEMO_START
+             : e && (e->proto == TP_NEMOTRON || e->proto == TP_MISTRAL) ? TS_NEMO_START
              : e && e->proto == TP_ATEM ? TS_ATEM
              : e && e->proto == TP_MUSE_PLAIN ? TS_MUSE_HEADER : TS_TOOL;
 }
@@ -5466,6 +5643,7 @@ static int ts_qwen(tool_stream *s, const char *bytes, int n) {
 // the fault recorded so a later block still arrives.
 static int ts_nemotron(tool_stream *s, const char *bytes, int n) {
     head_put(s, bytes, (size_t)n);
+    const list_proto *lp = list_proto_of(s->env);
     bool lenient = s->env && s->env->parse_only;
     for (;;) {
         if (s->state == TS_DONE || !s->head_n) return 0;
@@ -5473,10 +5651,13 @@ static int ts_nemotron(tool_stream *s, const char *bytes, int n) {
             const char *at = s->head;
             sbuf tc = {0}, wrapped = {0};
             int max = s->env ? s->env->max_calls - s->n_calls : 1;
-            int got = nemotron_block_calls(&at, s->head + s->head_n, 0,
+            int got = nemotron_block_calls(lp, &at, s->head + s->head_n, 0,
                                            max > 0 ? max : 0, &tc);
             if (got < 0) {
                 free(tc.s);
+                // a constrained turn's block is held until it parses; the
+                // finish reports one that never does
+                if (!lenient || !lp->close) return 0;
                 // not closed yet, or closed but not a list of calls
                 const char *close = strstr(s->head, NEMO_CALL_END);
                 bool parses = false;
@@ -5489,7 +5670,6 @@ static int ts_nemotron(tool_stream *s, const char *bytes, int n) {
                     close = strstr(close + strlen(NEMO_CALL_END), NEMO_CALL_END);
                 }
                 if (!close) return 0;                 // wait for the close
-                if (!lenient) return 0;               // held; finish reports it
                 s->fault = true;
                 head_drop(s, (size_t)(close - s->head) + strlen(NEMO_CALL_END));
                 s->state = TS_NEMO_TEXT; s->skip_ws = true;
@@ -5522,8 +5702,8 @@ static int ts_nemotron(tool_stream *s, const char *bytes, int n) {
             if (!s->head_n) return 0;
             s->skip_ws = false;
         }
-        const char *open = strstr(s->head, NEMO_CALL_OPEN);
-        const char *stop = strstr(s->head, NEMO_TURN_END);
+        const char *open = strstr(s->head, lp->open);
+        const char *stop = strstr(s->head, lp->turn_end);
         if (stop && (!open || stop < open)) {
             int rc = stop > s->head && s->sink.content
                 ? s->sink.content(s->sink.ud, s->head, (int)(stop - s->head)) : 0;
@@ -5540,7 +5720,7 @@ static int ts_nemotron(tool_stream *s, const char *bytes, int n) {
             continue;
         }
         size_t keep = 0;
-        const char *markers[] = { NEMO_CALL_OPEN, NEMO_TURN_END };
+        const char *markers[] = { lp->open, lp->turn_end };
         for (int m = 0; m < 2; m++) {
             size_t k = strlen(markers[m]) - 1;
             if (k > s->head_n) k = s->head_n;
@@ -5754,7 +5934,8 @@ int tool_stream_finish_ex(tool_stream *s, bool truncated) {
         } else {
             size_t i = 0;
             while (i < s->head_n && ts_ws(s->head[i])) i++;
-            bool partial = ts_partial(s, NEMO_CALL_OPEN) || ts_partial(s, NEMO_TURN_END);
+            const list_proto *lp = list_proto_of(s->env);
+            bool partial = ts_partial(s, lp->open) || ts_partial(s, lp->turn_end);
             if (i < s->head_n && !partial && s->sink.content)
                 rc = s->sink.content(s->sink.ud, s->head, (int)s->head_n);
         }

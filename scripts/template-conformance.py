@@ -102,10 +102,14 @@ NO_MID_SYSTEM = (
 # reads tokenizer.chat_template straight out of a local GGUF, which is what
 # src/template.c cites for the families whose HF repo is gated.
 
+# the Mistral templates' id shape: 9 alphanumeric characters
+MISTRAL_CALL_IDS = {"call_1": "callid001", "call_2": "callid002"}
+
+
 class Family:
     def __init__(self, runner, source, note="", tool_family=False,
                  thinking_var=None, skip=None, tokenizer=(), cannot=None,
-                 oracle_tool_shape=None):
+                 oracle_tool_shape=None, call_ids=None):
         self.runner = runner            # --chat-template name
         self.source = source            # ("hf", repo) | ("gguf", path)
         self.note = note
@@ -118,6 +122,11 @@ class Family:
         # manufacture agreement (or disagreement) out of an unrelated vocab.
         # Several names because a shelf may hold any quant of the checkpoint.
         self.tokenizer = tokenizer
+        # Fixture call ids THIS reference accepts, as {fixture_id: id}: the
+        # Mistral templates raise unless a tool call id is 9 alphanumeric
+        # characters, so their tool rows use ids of that shape (both sides:
+        # the case itself carries them, runner and reference alike).
+        self.call_ids = call_ids or {}
         # How THIS reference wants tools handed to it. Runner is always fed the
         # OpenAI wire form, because that is what a client sends; only the
         # ORACLE side is reshaped, and only where the template cannot read the
@@ -231,6 +240,7 @@ FAMILIES = {
         tokenizer=("gemma-4-12B-it-Q4_K_M.gguf",
                    "gemma-4-26B-A4B-it-Q4_0.gguf", "e2b-q40.gguf")),
     "mistral": Family("mistral", ("hf", "mistralai/Mistral-7B-Instruct-v0.3"),
+                      tool_family=True, call_ids=MISTRAL_CALL_IDS,
                       tokenizer=("Mistral-7B-Instruct-v0.3-Q4_K_M.gguf",
                                  "Mistral-7B-Instruct-v0.3-Q8_0.gguf"),
                       cannot={"consecutive-user": ALTERNATE_AFTER_SYS,
@@ -334,15 +344,11 @@ FAMILIES = {
         note="the publisher's current template, which the runner detects as "
              "mistral-nemo; the pinned GGUF embeds an OLDER template that "
              "detects as the v0.3 form (an artifact-freshness matter, R4.22.7)",
-        tool_family=True,
+        tool_family=True, call_ids=MISTRAL_CALL_IDS,
         tokenizer=("Mistral-Nemo-Instruct-2407-Q4_K_M.gguf",),
         cannot={"consecutive-user": ALTERNATE_AFTER_SYS,
                 "consecutive-assistant": ALTERNATE_AFTER_SYS,
-                "system-mid-history": ALTERNATE_AFTER_SYS,
-                "tool-call+result": TOOL_CALL_ID_9,
-                "multi-tool-call": TOOL_CALL_ID_9,
-                "tool-call-with-text": TOOL_CALL_ID_9,
-                "tool-then-conversation": TOOL_CALL_ID_9}),
+                "system-mid-history": ALTERNATE_AFTER_SYS}),
     "mistral-file": Family(
         "mistral-v1", ("gguf", "models/Mistral-7B-Instruct-v0.3-Q4_K_M.gguf"),
         note="the template EMBEDDED in the pinned v0.3 file, which the "
@@ -610,6 +616,15 @@ def matrix(family):
             {"role": "assistant", "content": "It is -3 C in Oslo."},
             {"role": "user", "content": "Should I bring a coat?"},
         ], True, "default"))
+    if family.call_ids:
+        def remap(v):
+            if isinstance(v, dict):
+                return {k: (family.call_ids.get(x, x) if k in ("id", "tool_call_id")
+                            and isinstance(x, str) else remap(x)) for k, x in v.items()}
+            if isinstance(v, list):
+                return [remap(x) for x in v]
+            return v
+        cases = [(c[0], remap(c[1]), *c[2:]) for c in cases]
     return [c if len(c) == 5 else (c + (None,)) for c in cases]
 
 
@@ -1095,16 +1110,17 @@ class Deviation:
 
 
 def compile_patch(dev, bos):
-    """Turn a declarative patch spec into oracle_text -> oracle_text."""
+    """Turn a declarative patch spec into (oracle_text, case_messages) ->
+    oracle_text. Only a builtin reads the messages."""
     spec = dev.patch_spec
     op = spec.get("op")
     if op == "strip-bos":
         b = bos or "\0"
-        return lambda s: s[len(b):] if s.startswith(b) else s
+        return lambda s, msgs=None: s[len(b):] if s.startswith(b) else s
     if op == "drop-first-match":
         rx = re.compile(spec["pattern"],
                         re.S if spec.get("dotall") else 0)
-        return lambda s: rx.sub("", s, count=1)
+        return lambda s, msgs=None: rx.sub("", s, count=1)
     if op == "builtin":
         fn = BUILTIN_PATCHES.get(spec["name"])
         if not fn:
@@ -1119,13 +1135,32 @@ def compile_patch(dev, bos):
 # channel only when there are NO tools (with tools it leaves the header bare
 # so the constrained recipient stays reachable). "namespace functions" is how
 # the harmony reference spells a tool declaration block.
-def _harmony_prime_analysis(s):
+def _harmony_prime_analysis(s, msgs=None):
     if s.endswith("<|start|>assistant") and "namespace functions" not in s:
         return s + "<|channel|>analysis<|message|>"
     return s
 
 
-BUILTIN_PATCHES = {"harmony-prime-analysis": _harmony_prime_analysis}
+# Mistral v0.3 and Nemo fold the system text into the user turn on
+# `loop.last`, so a conversation that ends in anything but a user turn (a
+# tool result, a prefill) renders with the system prompt dropped. Runner
+# folds it into the LAST USER turn, as mistral-common's own encoder does;
+# this puts it where runner does, and only on such a case.
+def _mistral_system_on_last_user(s, msgs=None):
+    if not msgs or msgs[0].get("role") != "system" or msgs[-1].get("role") == "user":
+        return s
+    users = [m for m in msgs if m.get("role") == "user"]
+    if not users or not isinstance(users[-1].get("content"), str):
+        return s
+    tail = users[-1]["content"] + "[/INST]"
+    at = s.rfind(tail)
+    if at < 0:
+        return s
+    return s[:at] + msgs[0]["content"] + "\n\n" + s[at:]
+
+
+BUILTIN_PATCHES = {"harmony-prime-analysis": _harmony_prime_analysis,
+                   "mistral-system-on-last-user": _mistral_system_on_last_user}
 
 
 def load_allowlist(path):
@@ -1470,7 +1505,7 @@ def run(args):
             applied = []
             if not args.raw:
                 for d, patch in patches:
-                    patched = patch(want)
+                    patched = patch(want, omsgs)
                     if patched != want:
                         applied.append(d.key())
                         d.used += 1

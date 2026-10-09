@@ -107,7 +107,7 @@ static bool templates_mark_their_own_control_spellings(void) {
     for (int i = 0; replayers[i]; i++) {
         int tmpl = template_from_name(replayers[i]);
         if (tmpl < 0) { fprintf(stderr, "FAIL: unknown template %s\n", replayers[i]); return false; }
-        jv *calls = tool_call_synth("get_weather", "{\"city\": \"Oslo\"}");
+        jv *calls = tool_call_synth("get_weather", "{\"city\": \"Oslo\"}", NULL);
         if (!calls) { fprintf(stderr, "FAIL: oom building the call\n"); return false; }
         sbuf turn = {0};
         bool think_family = tmpl == template_from_name("ornith") ||

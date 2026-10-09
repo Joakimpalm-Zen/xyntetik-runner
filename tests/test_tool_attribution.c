@@ -1105,6 +1105,18 @@ static void test_history_serialization_contract(void) {
           "</atem:function_calls>",
           "<tool_output name=\"get_weather\">", "</tool_output>",
           "<|tool_call>call:get_weather" },
+        // mistral v0.3 and nemo: a [TOOL_CALLS] JSON list whose entry carries
+        // a 9-character id, and a [TOOL_RESULTS] block naming the same id.
+        // The extracted call and result include the id, so the three
+        // surfaces must also agree on it.
+        { "mistral", TMPL_MISTRAL,
+          "[TOOL_CALLS] [{\"name\": \"get_weather\"", "}]",
+          "[TOOL_RESULTS] {\"content\": ", "[/TOOL_RESULTS]",
+          "<|tool_call>call:get_weather" },
+        { "mistral-nemo", TMPL_MISTRAL_NEMO,
+          "[TOOL_CALLS][{\"name\": \"get_weather\"", "}]",
+          "[TOOL_RESULTS]{\"content\": ", "[/TOOL_RESULTS]",
+          "<|tool_call>call:get_weather" },
         // harmony: already native before the fix -- guards it stays that way.
         { "harmony", TMPL_HARMONY,
           "<|start|>assistant to=functions.get_weather", "<|call|>",
@@ -1215,6 +1227,14 @@ static void test_declaration_rendering_contract(void) {
         // preamble. The generic block must be gone.
         { "muse", TMPL_MUSE,
           "// Function schemas", "</atem:function_calls>",
+          "You have these tools available" },
+        // mistral v0.3 and nemo: the [AVAILABLE_TOOLS] list before the last
+        // user turn.
+        { "mistral", TMPL_MISTRAL,
+          "[AVAILABLE_TOOLS] [", "[/AVAILABLE_TOOLS]",
+          "You have these tools available" },
+        { "mistral-nemo", TMPL_MISTRAL_NEMO,
+          "[AVAILABLE_TOOLS][", "[/AVAILABLE_TOOLS]",
           "You have these tools available" },
         // harmony: the `functions` TypeScript namespace -- already native on
         // all three before the fix; guards it stays that way.

@@ -62,6 +62,11 @@ def test_reports_family_and_native_flag(model):
     # question this flag exists to answer.
     ("chatml", "qwen_json"),
     ("qwen3-coder", "qwen3_xml"),
+    ("nemotron", "nemotron_json"),
+    # Mistral v0.3 and Nemo: [TOOL_CALLS] and a JSON list. The v0.1 framing
+    # (mistral-v1) has no tool protocol and stays generic.
+    ("mistral", "mistral_json"),
+    ("mistral-nemo", "mistral_json"),
 ])
 def test_native_families_report_native(model, template, family):
     if not RUNNER.exists():
@@ -77,5 +82,8 @@ def test_generic_family_is_not_native(model):
     if not RUNNER.exists():
         pytest.skip("runner not built")
     info = _tool_info(model, "--chat-template", "llama3")
+    assert info["tool_family"] == "generic"
+    assert info["native_tool_protocol"] is False
+    info = _tool_info(model, "--chat-template", "mistral-v1")
     assert info["tool_family"] == "generic"
     assert info["native_tool_protocol"] is False
