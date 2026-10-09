@@ -38,7 +38,7 @@
     "in-progress": "someone is actively fixing this; see `note`"
   },
   "generated_by": "scripts/template-conformance.py --write-baseline",
-  "generated_at": "2026-10-09T06:07:39+00:00",
+  "generated_at": "2026-10-09T08:02:03+00:00",
   "oracles": {
     "apertus": {
       "source": "hf:swiss-ai/Apertus-8B-Instruct-2509",
@@ -242,50 +242,6 @@
       "reference_excerpt": "'<s>[INST] What color is the sky? [/INST]'",
       "runner_excerpt": "' [INST] What color is the sky? [/INST]'",
       "token_delta": 0
-    },
-    {
-      "id": "nemotron-lightning/multi-tool-call",
-      "status": "open",
-      "note": "",
-      "digest": "6f245a22517c9d43",
-      "allowlist_applied": [],
-      "first_diff_at": 111,
-      "reference_excerpt": "'functions:\\n\\n<tools>\\n<function>\\n<name>get_weather</name>\\n<description>Get the current weath'",
-      "runner_excerpt": "'functions:\\n\\n<tools>\\n{\"name\": \"get_weather\", \"description\": \"Get the current weather for a '",
-      "token_delta": -26
-    },
-    {
-      "id": "nemotron-lightning/tool-call+result",
-      "status": "open",
-      "note": "",
-      "digest": "352de6a543501c10",
-      "allowlist_applied": [],
-      "first_diff_at": 111,
-      "reference_excerpt": "'functions:\\n\\n<tools>\\n<function>\\n<name>get_weather</name>\\n<description>Get the current weath'",
-      "runner_excerpt": "'functions:\\n\\n<tools>\\n{\"name\": \"get_weather\", \"description\": \"Get the current weather for a '",
-      "token_delta": -26
-    },
-    {
-      "id": "nemotron-lightning/tool-call-with-text",
-      "status": "open",
-      "note": "",
-      "digest": "8d5b3b05dfdc2113",
-      "allowlist_applied": [],
-      "first_diff_at": 111,
-      "reference_excerpt": "'functions:\\n\\n<tools>\\n<function>\\n<name>get_weather</name>\\n<description>Get the current weath'",
-      "runner_excerpt": "'functions:\\n\\n<tools>\\n{\"name\": \"get_weather\", \"description\": \"Get the current weather for a '",
-      "token_delta": -26
-    },
-    {
-      "id": "nemotron-lightning/tool-then-conversation",
-      "status": "open",
-      "note": "",
-      "digest": "76f571a7c9633580",
-      "allowlist_applied": [],
-      "first_diff_at": 111,
-      "reference_excerpt": "'functions:\\n\\n<tools>\\n<function>\\n<name>get_weather</name>\\n<description>Get the current weath'",
-      "runner_excerpt": "'functions:\\n\\n<tools>\\n{\"name\": \"get_weather\", \"description\": \"Get the current weather for a '",
-      "token_delta": -26
     },
     {
       "id": "nemotron-nano/multi-tool-call",

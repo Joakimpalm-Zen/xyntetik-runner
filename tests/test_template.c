@@ -1481,7 +1481,7 @@ static void test_name_roundtrip(void) {
         "chatml", "llama2", "llama3", "zephyr", "gemma", "gemma4", "mistral",
         "mistral-v1", "mistral-nemo",
         "phi3", "phi4", "apertus", "ornith", "qwen35", "qwen35-nothink",
-        "nemotron", "hermes4", "granite", "granite4", "granite42", "qwen38", "raw",
+        "nemotron", "nemotron35", "hermes4", "granite", "granite4", "granite42", "qwen38", "raw",
     };
     for (size_t i = 0; i < sizeof(names) / sizeof(*names); i++) {
         int id = template_from_name(names[i]);
@@ -2268,6 +2268,16 @@ static void test_detect_and_render_granite42(tokenizer *t) {
         "<tool_call>\\n<function=example_function_name>"
         "{{- '<|im_start|>assistant\\n<think>\\n' }}";
     assert(template_detect(g42, t) == TMPL_GRANITE42);
+    // Nemotron 3.5 Lightning carries the same two markers (its template is
+    // granite 4.2's with Qwen3-Coder's nested-XML declarations), so it is told
+    // apart by the `<parameters>` block granite 4.2's JSON declarations never
+    // write (lab report 2026-10-09: it was served as granite42).
+    const char *n35 =
+        "{%- set content = \"<think></think>\" ~ content -%}"
+        "{{- '\\n<parameters>' }}"
+        "<tool_call>\\n<function=example_function_name>"
+        "{{- '<|im_start|>assistant\\n<think>\\n' }}";
+    assert(template_detect(n35, t) == TMPL_NEMOTRON35);
 
     // No system turn given: the reference still opens with an EMPTY one
     // (system_message is "" and therefore defined). Thinking on/default

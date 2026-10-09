@@ -163,15 +163,16 @@ static char *message_text(jv *msg, int tmpl, bool replay_reason, bool *oom) {
             prompt_lit(&b, "<think>\n");
             if (reason) sb_put(&b, reason, strlen(reason));
             prompt_lit(&b, "\n</think>\n\n");
-        } else if (tmpl == TMPL_GRANITE42 && !strcmp(role, "assistant") &&
+        } else if (tmpl_granite42_like(tmpl) && !strcmp(role, "assistant") &&
                    reason && reason[strspn(reason, " \t\n\r\f\v")]) {
             // granite 4.2 folds a non-blank reasoning_content in as
             // `<think>\n` reasoning `\n</think>\n` content
-            // (chat_template.jinja:77); the renderer then seeds or
+            // (chat_template.jinja:77), Nemotron 3.5 as `<think>\n`
+            // reasoning `</think>` content; the renderer then seeds or
             // truncates the block by the turn's position.
             prompt_lit(&b, "<think>\n");
             sb_put(&b, reason, strlen(reason));
-            prompt_lit(&b, "\n</think>\n");
+            prompt_lit(&b, tmpl == TMPL_NEMOTRON35 ? "</think>" : "\n</think>\n");
         }
         assistant_calls_render(tmpl, txt.s, calls, &b, NULL);
     }
@@ -559,7 +560,7 @@ static void handle_chat_render(slot_t *s, sock_t fd, jv *req,
     // declaration turn the way their references do (tools_system_fold, the
     // same helper the typed surfaces use); the folded message is then skipped
     bool ornith_merged_system = false;
-    if ((tmpl_ornith_like(s->tmpl) || s->tmpl == TMPL_GRANITE42) && ts.n &&
+    if ((tmpl_ornith_like(s->tmpl) || tmpl_granite42_like(s->tmpl)) && ts.n &&
         msgs->n > 0 && !strcmp(chat_role(msgs->items[0]), "system")) {
         char *system = message_text(msgs->items[0], s->tmpl, false, &oom);
         tools_system_fold(s->tmpl, &ts, system);

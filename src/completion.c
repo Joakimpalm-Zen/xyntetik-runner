@@ -2673,7 +2673,7 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
         nemotron_primed_think = k == 0;
     }
     bool granite42_primed_think = chat &&
-                                  (s->tmpl == TMPL_GRANITE42 ||
+                                  (tmpl_granite42_like(s->tmpl) ||
                                    s->tmpl == TMPL_QWEN38 ||
                                    tmpl_ornith_like(s->tmpl)) &&
                                   (s->tmpl == TMPL_QWEN35_NOTHINK

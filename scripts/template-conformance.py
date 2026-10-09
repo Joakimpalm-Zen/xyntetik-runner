@@ -370,10 +370,10 @@ FAMILIES = {
         tool_family=True,
         tokenizer=("NVIDIA-Nemotron-Nano-9B-v2-Q8_0.gguf",)),
     "nemotron-lightning": Family(
-        "granite42", ("gguf", "models/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-Q4_0.gguf"),
-        note="detected as granite42 because its template carries the "
-             "function-XML marker and the closed think block; the row "
-             "measures how far that renderer is from the file's own",
+        "nemotron35", ("gguf", "models/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-Q4_0.gguf"),
+        note="granite 4.2's template with Qwen3-Coder's nested-XML tool "
+             "declarations; served as granite42 until 2026-10-09 (R4.22.5), "
+             "when its four tool cases drifted at the declarations",
         tool_family=True, thinking_var="enable_thinking",
         tokenizer=("NVIDIA-Nemotron-3.5-Lightning-30B-A3B-Q4_0.gguf",)),
     "eurollm": Family(

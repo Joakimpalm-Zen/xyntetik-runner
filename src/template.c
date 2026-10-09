@@ -75,9 +75,13 @@ int template_detect(const char *meta_tmpl, tokenizer *tok) {
         if (strstr(meta_tmpl, "<function=example_function_name>") &&
             strstr(meta_tmpl, "Reasoning effort is set to"))
             return TMPL_QWEN38;
+        // Nemotron 3.5 carries granite 4.2's template with Qwen3-Coder's
+        // nested-XML declarations, so its `<parameters>` block (which granite
+        // 4.2's JSON declarations never write) tells the two apart.
         if (strstr(meta_tmpl, "<function=example_function_name>") &&
             strstr(meta_tmpl, "<think></think>"))
-            return TMPL_GRANITE42;
+            return strstr(meta_tmpl, "<parameters>") ? TMPL_NEMOTRON35
+                                                     : TMPL_GRANITE42;
         if (strstr(meta_tmpl, "<function=example_function_name>") &&
             strstr(meta_tmpl, "<think>")) {
             // Qwen 3.5 is ornith's template with a thought block only on the
@@ -209,6 +213,7 @@ int template_from_name(const char *name) {
     if (!strcmp(name, "qwen35")) return TMPL_QWEN35;
     if (!strcmp(name, "qwen35-nothink")) return TMPL_QWEN35_NOTHINK;
     if (!strcmp(name, "granite42")) return TMPL_GRANITE42;
+    if (!strcmp(name, "nemotron35")) return TMPL_NEMOTRON35;
     if (!strcmp(name, "qwen3-coder")) return TMPL_QWEN3_CODER;
     if (!strcmp(name, "qwen38")) return TMPL_QWEN38;
     if (!strcmp(name, "muse"))   return TMPL_MUSE;
@@ -256,6 +261,7 @@ const char *template_name(int t) {
         case TMPL_QWEN35: return "qwen35";
         case TMPL_QWEN35_NOTHINK: return "qwen35-nothink";
         case TMPL_GRANITE42: return "granite42";
+        case TMPL_NEMOTRON35: return "nemotron35";
         case TMPL_QWEN38: return "qwen38";
         case TMPL_QWEN3_CODER: return "qwen3-coder";
         case TMPL_MUSE:   return "muse";
@@ -563,7 +569,7 @@ int req_bare_recipients(struct jv *req) {
 bool template_think_tags(int tmpl, const char **open, const char **close) {
     if (tmpl == TMPL_CHATML_THINK || tmpl == TMPL_QWEN38 ||
         tmpl == TMPL_NEMOTRON || tmpl == TMPL_HERMES4 ||
-        tmpl == TMPL_GRANITE42 || tmpl_ornith_like(tmpl)) {
+        tmpl_granite42_like(tmpl) || tmpl_ornith_like(tmpl)) {
         *open = "<think>";
         *close = "</think>";
         return true;
@@ -1833,7 +1839,8 @@ size_t render_messages_with_tools(int tmpl, const chat_msg *msgs, int n_msgs,
                                              : "<think>\n", NULL);
         break;
     }
-    case TMPL_GRANITE42: {
+    case TMPL_GRANITE42:
+    case TMPL_NEMOTRON35: {
         // ibm-granite/granite-4.2-3b chat_template.jinja (2026-09-06), see
         // the enum comment. Line references below are into that file.
         bool have_tools = tools && tools->type == J_ARR && tools->n > 0;
@@ -1898,6 +1905,17 @@ size_t render_messages_with_tools(int tmpl, const chat_msg *msgs, int n_msgs,
             }
             const char *end = body + strlen(body);
             const char *b = seed ? body : trim_left(body, end);
+            // granite 4.2 trims the text it kept from a truncated TOOL-CALL
+            // turn (`"<think></think>" ~ c | trim`, the filter binding to c);
+            // Nemotron 3.5's copy of that line has no trim, and a truncated
+            // turn without calls is trimmed as a whole, seed first, by both.
+            // Only the caller's text is trimmed: it is unmarked, so the walk
+            // stops at the first mark, which leaves the template's own
+            // newline before the first call (`c ~ '\n'`) and the call's
+            // marks in place.
+            if (tmpl == TMPL_GRANITE42 && i < last_user && trim_right(b, end) - b >= 12 &&
+                !strncmp(trim_right(b, end) - 12, "</tool_call>", 12))
+                while (b < end && strchr(" \t\n\r\f\v", *b) && *b) b++;
             const char *e = trim_right(b, end);
             off = emit_raw(out, cap, off, "<|im_start|>assistant\n%s",
                            seed ? "<think></think>" : "", NULL);   // the seed is the template's
@@ -3015,7 +3033,11 @@ static void coder_extra(const jv *v, const char *handled, sbuf *out) {
     }
 }
 
-static void coder_declaration(jv *tool, sbuf *out) {
+// Qwen3-Coder's declaration; `nemotron` is Nemotron 3.5's copy of it, which
+// writes a parameter's `enum` right after its description and the
+// parameters' `required` after their other keys, where Qwen3-Coder writes
+// both wherever the key falls.
+static void coder_declaration(jv *tool, bool nemotron, sbuf *out) {
     jv *fn = jv_get(tool, "function");
     if (!fn) fn = tool;
     pl_lit(out, "<function>");
@@ -3029,10 +3051,13 @@ static void coder_declaration(jv *tool, sbuf *out) {
         pl_fmt(out, "\n<parameter>\n<name>%s</name>",props->keys[i]);
         coder_field("type",jv_get(spec,"type"),false,out);
         coder_field("description",jv_get(spec,"description"),true,out);
-        coder_extra(spec,"name|type|description",out);
+        if (nemotron) coder_field("enum",jv_get(spec,"enum"),false,out);
+        coder_extra(spec,nemotron ? "name|type|description|enum"
+                                  : "name|type|description",out);
         pl_lit(out,"\n</parameter>");
     }
-    coder_extra(params,"type|properties",out);
+    coder_extra(params,nemotron ? "type|properties|required" : "type|properties",out);
+    if (nemotron) coder_field("required",jv_get(params,"required"),false,out);
     pl_lit(out,"\n</parameters>");
     coder_extra(fn,"type|name|description|parameters",out);
     pl_lit(out,"\n</function>");
@@ -3065,7 +3090,7 @@ void tools_render_for(int tmpl, const jv *tools, sbuf *out) {
         pl_lit(out, "\n</tools>\n\nFor each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:\n<tool_call>\n{\"name\": \"<function-name>\", \"arguments\": <args-json-object>}\n</tool_call>");
         return;
     }
-    if (!tmpl_ornith_like(tmpl) && tmpl != TMPL_GRANITE42 &&
+    if (!tmpl_ornith_like(tmpl) && !tmpl_granite42_like(tmpl) &&
         tmpl != TMPL_QWEN38 && tmpl != TMPL_QWEN3_CODER && !qwen) {
         tools_render(tools, out);
         return;
@@ -3090,8 +3115,8 @@ void tools_render_for(int tmpl, const jv *tools, sbuf *out) {
     pl_lit(out, "# Tools\n\nYou have access to the following functions:\n\n<tools>");
     for (int i = 0; i < tools->n; i++) {
         pl_lit(out, "\n");
-        if (tmpl == TMPL_QWEN3_CODER) {
-            coder_declaration(tools->items[i], out);
+        if (tmpl == TMPL_QWEN3_CODER || tmpl == TMPL_NEMOTRON35) {
+            coder_declaration(tools->items[i], tmpl == TMPL_NEMOTRON35, out);
             continue;
         }
         if (tmpl == TMPL_GRANITE42) {
@@ -3265,7 +3290,7 @@ void tool_history_render_for(int tmpl, const jv *calls,
             jv_free(g4);
             continue;
         }
-        if (!tmpl_ornith_like(tmpl) && tmpl != TMPL_GRANITE42 &&
+        if (!tmpl_ornith_like(tmpl) && !tmpl_granite42_like(tmpl) &&
             tmpl != TMPL_QWEN38 && tmpl != TMPL_QWEN3_CODER && tmpl != TMPL_MUSE) {
             pl_fmt(out, "<|tool_call>call:%s%s<tool_call|>", name, args);
             continue;
@@ -3295,7 +3320,7 @@ void tool_history_render_for(int tmpl, const jv *calls,
         // Runner emitted no separator at all, so two calls in one turn came
         // out as `</tool_call><tool_call>` -- a shape the reference never
         // writes.
-        if (tmpl == TMPL_GRANITE42) {
+        if (tmpl_granite42_like(tmpl)) {
             // granite 4.2 writes `(content | trim) ~ '\n'` and then every
             // call as `<tool_call>...</tool_call>\n` (chat_template.jinja:
             // 95-118), so the first call follows the trimmed text, or the
@@ -3327,7 +3352,7 @@ void tool_history_render_for(int tmpl, const jv *calls,
 }
 
 bool tools_system_fold(int tmpl, sbuf *ts, const char *system) {
-    if ((!tmpl_ornith_like(tmpl) && tmpl != TMPL_GRANITE42) || !ts || !ts->n ||
+    if ((!tmpl_ornith_like(tmpl) && !tmpl_granite42_like(tmpl)) || !ts || !ts->n ||
         !system || !system[0])
         return false;
     if (tmpl_ornith_like(tmpl)) {
@@ -3792,7 +3817,7 @@ const jv *tool_decl_native(int tmpl, bool strict, bool atem_tool_calling,
     // measured decision (template.h, tool_envelope.parse_only). Both choices
     // reach the client through one parser, so a call is a call on every
     // surface, streamed or buffered.
-    bool xml = tmpl == TMPL_QWEN38 || tmpl == TMPL_GRANITE42 ||
+    bool xml = tmpl == TMPL_QWEN38 || tmpl_granite42_like(tmpl) ||
                tmpl_ornith_like(tmpl) || tmpl == TMPL_QWEN3_CODER;
     // A required or named choice on these families is held by the XML
     // grammar, and that grammar has no way to enforce some schemas (a string
@@ -5801,7 +5826,7 @@ int tool_calls_parse_for(int tmpl, sbuf *content, sbuf *tc) {
     return tmpl_hermes_json(tmpl)
                                ? qwen_tool_calls_parse(content, tc)
          : tmpl_ornith_like(tmpl) || tmpl == TMPL_QWEN38 ||
-           tmpl == TMPL_GRANITE42 ? ornith_tool_calls_parse(content, tc)
+           tmpl_granite42_like(tmpl) ? ornith_tool_calls_parse(content, tc)
          : is_gemma4(tmpl)     ? gemma4_tool_calls_parse(content, tc)
                                : tool_calls_parse(content, tc);
 }

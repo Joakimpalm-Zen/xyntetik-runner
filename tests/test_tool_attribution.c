@@ -585,6 +585,204 @@ static void test_chat_no_id_at_all(void) {
     ta_expect_refused("chat, tool result with neither name nor id, 2 tools");
 }
 
+// Nemotron 3.5 Lightning (nemotron_h_moe) ships Granite 4.2's chat template
+// with Qwen3-Coder's nested-XML tool declarations and three small changes.
+// Until 2026-10-09 it was detected and rendered as granite42; the strings
+// below are its own template (the GGUF's tokenizer.chat_template, sha256
+// 58933db77d3099b4) rendered through jinja2 the way transformers does
+// (scripts/template-conformance.py's jinja_env), so each check is against
+// the publisher's template, not this renderer's reading of it.
+static void test_chat_nemotron35_renders_its_reference(void) {
+    ta_tmpl = TMPL_NEMOTRON35;
+    ta_run(handle_chat,
+           "{\"model\":\"m\",\"messages\":[{\"role\":\"user\",\"content\":\"HI\"}],\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"set_unit\",\"description\":\" Pick a unit. \",\"parameters\":{\"type\":\"object\",\"required\":[\"unit\"],\"properties\":{\"unit\":{\"default\":\"c\",\"enum\":[\"c\",\"f\"],\"type\":\"string\",\"description\":\"the unit\"}},\"additionalProperties\":false}}}]}");
+    ck(ta_prompt && !strcmp(ta_prompt,
+        "<|im_start|>system\n"
+        "# Tools\n"
+        "\n"
+        "You have access to the following functions:\n"
+        "\n"
+        "<tools>\n"
+        "<function>\n"
+        "<name>set_unit</name>\n"
+        "<description>Pick a unit.</description>\n"
+        "<parameters>\n"
+        "<parameter>\n"
+        "<name>unit</name>\n"
+        "<type>string</type>\n"
+        "<description>the unit</description>\n"
+        "<enum>[\"c\", \"f\"]</enum>\n"
+        "<default>c</default>\n"
+        "</parameter>\n"
+        "<additionalProperties>False</additionalProperties>\n"
+        "<required>[\"unit\"]</required>\n"
+        "</parameters>\n"
+        "</function>\n"
+        "</tools>\n"
+        "\n"
+        "If you choose to call a function ONLY reply in the following format with NO suffix:\n"
+        "\n"
+        "<tool_call>\n"
+        "<function=example_function_name>\n"
+        "<parameter=example_parameter_1>\n"
+        "value_1\n"
+        "</parameter>\n"
+        "<parameter=example_parameter_2>\n"
+        "This is the value for the second parameter\n"
+        "that can span\n"
+        "multiple lines\n"
+        "</parameter>\n"
+        "</function>\n"
+        "</tool_call>\n"
+        "\n"
+        "<IMPORTANT>\n"
+        "Reminder:\n"
+        "- Function calls MUST follow the specified format: an inner <function=...></function> block must be nested within <tool_call></tool_call> XML tags\n"
+        "- Required parameters MUST be specified\n"
+        "- You may provide optional reasoning for your function call in natural language BEFORE the function call, but NOT after\n"
+        "- If there is no function call available, answer the question like normal with your current knowledge and do not tell the user about function calls\n"
+        "</IMPORTANT><|im_end|>\n"
+        "<|im_start|>user\n"
+        "HI<|im_end|>\n"
+        "<|im_start|>assistant\n"
+        "<think>\n"),
+       "nemotron 3.5, tool declarations: nested XML, enum after the description, required after the other keys");
+    ta_run(handle_chat,
+           "{\"model\":\"m\",\"messages\":[{\"role\":\"user\",\"content\":\"Q\"},{\"role\":\"assistant\",\"content\":\"B\",\"reasoning_content\":\"S\"}]}");
+    ck(ta_prompt && !strcmp(ta_prompt,
+        "<|im_start|>system\n"
+        "<|im_end|>\n"
+        "<|im_start|>user\n"
+        "Q<|im_end|>\n"
+        "<|im_start|>assistant\n"
+        "<think>\n"
+        "S</think>B<|im_end|>\n"
+        "<|im_start|>assistant\n"
+        "<think>\n"),
+       "nemotron 3.5, reasoning_content folds in with no newline either side of </think>");
+    ta_run(handle_chat,
+           "{\"model\":\"m\",\"messages\":[{\"role\":\"user\",\"content\":\"Q\"},{\"role\":\"assistant\",\"content\":\"<think>x</think> sure\",\"tool_calls\":[{\"id\":\"c1\",\"type\":\"function\",\"function\":{\"name\":\"f\",\"arguments\":\"{\\\"a\\\": 1}\"}}]},{\"role\":\"tool\",\"tool_call_id\":\"c1\",\"content\":\"ok\"},{\"role\":\"user\",\"content\":\"Q2\"}]}");
+    ck(ta_prompt && !strcmp(ta_prompt,
+        "<|im_start|>system\n"
+        "<|im_end|>\n"
+        "<|im_start|>user\n"
+        "Q<|im_end|>\n"
+        "<|im_start|>assistant\n"
+        "<think></think> sure\n"
+        "<tool_call>\n"
+        "<function=f>\n"
+        "<parameter=a>\n"
+        "1\n"
+        "</parameter>\n"
+        "</function>\n"
+        "</tool_call>\n"
+        "<|im_end|>\n"
+        "<|im_start|>user\n"
+        "<tool_response>\n"
+        "ok\n"
+        "</tool_response>\n"
+        "<|im_end|>\n"
+        "<|im_start|>user\n"
+        "Q2<|im_end|>\n"
+        "<|im_start|>assistant\n"
+        "<think>\n"),
+       "nemotron 3.5, a tool-call turn before the last user keeps the text after <think></think> untrimmed");
+    ta_tmpl = TMPL_HARMONY;
+}
+
+// Granite 4.2's own template trims the text after the seeded block on a
+// tool-call turn before the last user (`"<think></think>" ~ c | trim`, the
+// filter binding to c); Nemotron 3.5's copy dropped that trim (above). The
+// expected string is ibm-granite/granite-4.2-3b's template (sha256
+// f0ba43f79b3cabca) rendered through jinja2. Found 2026-10-09 beside R4.22.5.
+static void test_chat_granite42_trims_a_truncated_call_turn(void) {
+    ta_tmpl = TMPL_GRANITE42;
+    ta_run(handle_chat,
+           "{\"model\":\"m\",\"messages\":[{\"role\":\"user\",\"content\":\"Q\"},{\"role\":\"assistant\",\"content\":\"<think>x</think> sure\",\"tool_calls\":[{\"id\":\"c1\",\"type\":\"function\",\"function\":{\"name\":\"f\",\"arguments\":\"{\\\"a\\\": 1}\"}}]},{\"role\":\"tool\",\"tool_call_id\":\"c1\",\"content\":\"ok\"},{\"role\":\"user\",\"content\":\"Q2\"}]}");
+    ck(ta_prompt && !strcmp(ta_prompt,
+        "<|im_start|>system\n"
+        "<|im_end|>\n"
+        "<|im_start|>user\n"
+        "Q<|im_end|>\n"
+        "<|im_start|>assistant\n"
+        "<think></think>sure\n"
+        "<tool_call>\n"
+        "<function=f>\n"
+        "<parameter=a>\n"
+        "1\n"
+        "</parameter>\n"
+        "</function>\n"
+        "</tool_call>\n"
+        "<|im_end|>\n"
+        "<|im_start|>user\n"
+        "<tool_response>\n"
+        "ok\n"
+        "</tool_response>\n"
+        "<|im_end|>\n"
+        "<|im_start|>user\n"
+        "Q2<|im_end|>\n"
+        "<|im_start|>assistant\n"
+        "<think>\n"),
+       "granite 4.2, a truncated tool-call turn's text is trimmed after <think></think>");
+    ta_tmpl = TMPL_GRANITE42;
+    ta_run(handle_chat,
+           "{\"model\":\"m\",\"messages\":[{\"role\":\"user\",\"content\":\"Q\"},{\"role\":\"assistant\",\"content\":\" sure\",\"tool_calls\":[{\"id\":\"c1\",\"type\":\"function\",\"function\":{\"name\":\"f\",\"arguments\":\"{\\\"a\\\": 1}\"}}]},{\"role\":\"tool\",\"tool_call_id\":\"c1\",\"content\":\"ok\"},{\"role\":\"user\",\"content\":\"Q2\"}]}");
+    ck(ta_prompt && !strcmp(ta_prompt,
+        "<|im_start|>system\n"
+        "<|im_end|>\n"
+        "<|im_start|>user\n"
+        "Q<|im_end|>\n"
+        "<|im_start|>assistant\n"
+        "<think></think>sure\n"
+        "<tool_call>\n"
+        "<function=f>\n"
+        "<parameter=a>\n"
+        "1\n"
+        "</parameter>\n"
+        "</function>\n"
+        "</tool_call>\n"
+        "<|im_end|>\n"
+        "<|im_start|>user\n"
+        "<tool_response>\n"
+        "ok\n"
+        "</tool_response>\n"
+        "<|im_end|>\n"
+        "<|im_start|>user\n"
+        "Q2<|im_end|>\n"
+        "<|im_start|>assistant\n"
+        "<think>\n"),
+       "granite 4.2, a truncated tool-call turn without a thought block: text as its template writes it");
+    ta_tmpl = TMPL_NEMOTRON35;
+    ta_run(handle_chat,
+           "{\"model\":\"m\",\"messages\":[{\"role\":\"user\",\"content\":\"Q\"},{\"role\":\"assistant\",\"content\":\" sure\",\"tool_calls\":[{\"id\":\"c1\",\"type\":\"function\",\"function\":{\"name\":\"f\",\"arguments\":\"{\\\"a\\\": 1}\"}}]},{\"role\":\"tool\",\"tool_call_id\":\"c1\",\"content\":\"ok\"},{\"role\":\"user\",\"content\":\"Q2\"}]}");
+    ck(ta_prompt && !strcmp(ta_prompt,
+        "<|im_start|>system\n"
+        "<|im_end|>\n"
+        "<|im_start|>user\n"
+        "Q<|im_end|>\n"
+        "<|im_start|>assistant\n"
+        "<think></think> sure\n"
+        "<tool_call>\n"
+        "<function=f>\n"
+        "<parameter=a>\n"
+        "1\n"
+        "</parameter>\n"
+        "</function>\n"
+        "</tool_call>\n"
+        "<|im_end|>\n"
+        "<|im_start|>user\n"
+        "<tool_response>\n"
+        "ok\n"
+        "</tool_response>\n"
+        "<|im_end|>\n"
+        "<|im_start|>user\n"
+        "Q2<|im_end|>\n"
+        "<|im_start|>assistant\n"
+        "<think>\n"),
+       "nemotron 3.5, a truncated tool-call turn without a thought block: text as its template writes it");
+    ta_tmpl = TMPL_HARMONY;
+}
+
 static void test_chat_resolvable_is_unchanged(void) {
     ta_run(handle_chat,
            "{\"model\":\"m\",\"messages\":["
@@ -883,6 +1081,11 @@ static void test_history_serialization_contract(void) {
         // granite 4.2: ornith's call and result shapes, framed by its own
         // renderer (the result is a plain tool turn the template wraps).
         { "granite42", TMPL_GRANITE42,
+          "<tool_call>\n<function=get_weather>", "</tool_call>",
+          "<tool_response>", "</tool_response>",
+          "<|tool_call>call:get_weather" },
+        // nemotron 3.5: granite 4.2's protocol, its own declarations.
+        { "nemotron35", TMPL_NEMOTRON35,
           "<tool_call>\n<function=get_weather>", "</tool_call>",
           "<tool_response>", "</tool_response>",
           "<|tool_call>call:get_weather" },
@@ -1293,6 +1496,8 @@ int main(void) {
     test_chat_unmatched_id_one_tool();
     test_chat_no_id_at_all();
     test_chat_resolvable_is_unchanged();
+    test_chat_nemotron35_renders_its_reference();
+    test_chat_granite42_trims_a_truncated_call_turn();
     test_chat_explicit_name_is_unchanged();
     test_chat_refuses_non_json_tool_call_arguments();
     test_chat_refuses_nameless_tool_call();

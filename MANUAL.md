@@ -1991,7 +1991,7 @@ flag and ignore it rather than approximate one.
 
 Force `chatml`, `chatml-think`, `llama2`, `llama3`, `mistral`, `mistral-v1`,
 `mistral-nemo`, `zephyr`, `phi3`, `phi4`, `gemma`, `gemma4`, `gemma4-mainline`, `apertus`,
-`ornith`, `qwen35`, `qwen35-nothink`, `nemotron`, `hermes4`, `granite`, `granite4`, `granite42`,
+`ornith`, `qwen35`, `qwen35-nothink`, `nemotron`, `nemotron35`, `hermes4`, `granite`, `granite4`, `granite42`,
 `qwen38`, `qwen3-coder`, `muse`, `harmony`, or `raw`;
 default is auto-detection. The three Mistral framings are not interchangeable: `mistral`
 is the v0.3 / Mistral-Small-2409 form and the fallback for an unrecognised Mistral
