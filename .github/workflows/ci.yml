@@ -11,9 +11,8 @@ on:
     - cron: "23 4 * * *"
   push:
     branches: [main]
-    # the site has its own workflow and nothing under docs/ is a test input;
-    # a site-, docs- or front-page-only change does not need the engine's
-    # gates. README.md and CHANGELOG.md joined the list on 2026-10-06: no job
+    # metadata.yml checks documentation and evidence inputs on every PR;
+    # prose-only changes do not need the expensive engine gates. README.md and CHANGELOG.md joined the list on 2026-10-06: no job
     # here reads the real files (the release check that does runs in
     # release.yml at tag time, and its tests use temporary copies), and a day
     # of README edits had queued two full runs per merge and held the site
@@ -34,7 +33,7 @@ on:
 
 # Cancel superseded PR work, but keep main/scheduled certification runs.
 concurrency:
-  group: ci-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  group: ci-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
@@ -192,6 +191,7 @@ jobs:
         run: ./runner -m test.gguf -p "hi" -n 24 --temp 0 --json 2>/dev/null | python3 -c "import json,sys; json.load(sys.stdin); print('valid json')"
       - name: smoke test (server)
         run: |
+          trap 'pids=$(jobs -pr); if [ -n "$pids" ]; then kill $pids 2>/dev/null || true; sleep 1; kill -KILL $pids 2>/dev/null || true; wait $pids 2>/dev/null || true; fi' EXIT
           ./runner -m test.gguf --serve --port 8123 --parallel 2 &
           # readiness poll, not a fixed sleep: the paravirtual macOS
           # runner lost a 2s race by 250ms twice on 2026-08-12
@@ -227,6 +227,7 @@ jobs:
         # a stalled request pins the only slot; /health and /v1/models must
         # still answer from the accept loop (xyntetik watchdog regression)
         run: |
+          trap 'pids=$(jobs -pr); if [ -n "$pids" ]; then kill $pids 2>/dev/null || true; sleep 1; kill -KILL $pids 2>/dev/null || true; wait $pids 2>/dev/null || true; fi' EXIT
           ./runner -m test.gguf --serve --port 8126 --parallel 1 &
           # readiness poll, not a fixed sleep: the paravirtual macOS
           # runner lost a 2s race by 250ms twice on 2026-08-12
@@ -242,6 +243,7 @@ jobs:
         # a client that never finishes its request must get a 408 and release
         # the slot within the 10s read deadline instead of pinning it forever
         run: |
+          trap 'pids=$(jobs -pr); if [ -n "$pids" ]; then kill $pids 2>/dev/null || true; sleep 1; kill -KILL $pids 2>/dev/null || true; wait $pids 2>/dev/null || true; fi' EXIT
           ./runner -m test.gguf --serve --port 8129 --parallel 1 &
           # readiness poll, not a fixed sleep: the paravirtual macOS
           # runner lost a 2s race by 250ms twice on 2026-08-12
@@ -269,6 +271,7 @@ jobs:
         # OpenAI "stop": truncates before the match (also mid-token-stream),
         # a partial match that never completes must flush, malformed -> 400
         run: |
+          trap 'pids=$(jobs -pr); if [ -n "$pids" ]; then kill $pids 2>/dev/null || true; sleep 1; kill -KILL $pids 2>/dev/null || true; wait $pids 2>/dev/null || true; fi' EXIT
           ./runner -m test.gguf --serve --port 8130 --parallel 1 &
           # readiness poll, not a fixed sleep: the paravirtual macOS
           # runner lost a 2s race by 250ms twice on 2026-08-12
@@ -325,6 +328,7 @@ jobs:
         # multipart content arrays, assistant tool_calls in history,
         # role:"tool" results, stream_options usage, extra fields
         run: |
+          trap 'pids=$(jobs -pr); if [ -n "$pids" ]; then kill $pids 2>/dev/null || true; sleep 1; kill -KILL $pids 2>/dev/null || true; wait $pids 2>/dev/null || true; fi' EXIT
           ./runner -m test.gguf -c 1024 --serve --port 8131 --parallel 1 &
           # readiness poll, not a fixed sleep: the paravirtual macOS
           # runner lost a 2s race by 250ms twice on 2026-08-12
@@ -429,6 +433,7 @@ jobs:
           fi
       - name: smoke test (model swap)
         run: |
+          trap 'pids=$(jobs -pr); if [ -n "$pids" ]; then kill $pids 2>/dev/null || true; sleep 1; kill -KILL $pids 2>/dev/null || true; wait $pids 2>/dev/null || true; fi' EXIT
           printf 'not a gguf' > bad.gguf
           ./runner -m "a=test.gguf,b=test-q8.gguf" --serve --port 8124 --ttl 0 &
           SWAP_PID=$!
@@ -458,6 +463,7 @@ jobs:
         # byte-for-byte, and a json-constrained request must still succeed
         # through the constrained speculative path.
         run: |
+          trap 'pids=$(jobs -pr); if [ -n "$pids" ]; then kill $pids 2>/dev/null || true; sleep 1; kill -KILL $pids 2>/dev/null || true; wait $pids 2>/dev/null || true; fi' EXIT
           REQ='{"messages":[{"role":"user","content":"hi"}],"max_tokens":12,"temperature":0}'
           ./runner -m test.gguf --serve --port 8128 --gpu off &
           # readiness poll, not a fixed sleep: the paravirtual macOS
@@ -526,6 +532,14 @@ jobs:
         if: runner.os == 'Linux'
         run: make test-tokenizer-race
 
+      - name: CI timing and test reports
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ci-reports-${{ github.job }}-${{ runner.os }}
+          path: .build/ci/
+          if-no-files-found: ignore
+
   # The `make test` baseline. Deliberately boring: one Linux CPU runner, one
   # build, one target — so that ADDING A CHECK TO `make test` IS ENOUGH TO PUT
   # IT IN CI. Every gate above is a hand-written step, which means a check can
@@ -543,13 +557,6 @@ jobs:
   # self-skip as macOS-only and the CUDA-linked tolerance gates report
   # "skipped: no GPU" instead of failing. Nothing here downloads a model —
   # `make test` builds its own fixtures with scripts/make-test-model.py.
-      - name: CI timing and test reports
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: ci-reports-${{ github.job }}-${{ runner.os }}
-          path: .build/ci/
-          if-no-files-found: ignore
 
   make-test:
     runs-on: ubuntu-latest
@@ -583,6 +590,14 @@ jobs:
         # themselves) still runs in order inside the one `test` rule
         run: .venv/bin/python scripts/ci-run.py --timeout 2400 make-test -- make -j"$(nproc)" test PYTHON=.venv/bin/python
 
+      - name: CI timing and test reports
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ci-reports-${{ github.job }}-${{ runner.os }}
+          path: .build/ci/
+          if-no-files-found: ignore
+
   # The SIMD kernel gates at the two x86 ISA levels `make test` never names:
   # x86-64-v3, which the release binaries pin, and x86-64-v4 (AVX-512),
   # which this pool only sometimes provides. The batched f32 dot's
@@ -594,13 +609,6 @@ jobs:
   # AVX-512, so a host without it skips that step with a printed reason:
   # a pool property, not a failure, and the v3 step still ran. The host
   # line is printed so a failure carries the compiler and CPU it came from.
-      - name: CI timing and test reports
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: ci-reports-${{ github.job }}-${{ runner.os }}
-          path: .build/ci/
-          if-no-files-found: ignore
 
   simd-isa-levels:
     runs-on: ubuntu-latest
@@ -626,9 +634,6 @@ jobs:
           make test-quants-simd ARCH_FLAGS=-march=x86-64-v4
           ./test-quants-simd
 
-  # libFuzzer harnesses for the hand-written parsers that eat untrusted input.
-  # Bounded by design: this is a regression gate that has to finish in a couple
-  # of minutes, not a fuzzing campaign. Long soaks belong on a schedule.
       - name: CI timing and test reports
         if: always()
         uses: actions/upload-artifact@v7
@@ -636,6 +641,10 @@ jobs:
           name: ci-reports-${{ github.job }}-${{ runner.os }}
           path: .build/ci/
           if-no-files-found: ignore
+
+  # libFuzzer harnesses for the hand-written parsers that eat untrusted input.
+  # Bounded by design: this is a regression gate that has to finish in a couple
+  # of minutes, not a fuzzing campaign. Long soaks belong on a schedule.
 
   fuzz:
     runs-on: ubuntu-latest
@@ -657,8 +666,8 @@ jobs:
       - uses: actions/cache/restore@v4
         with:
           path: fuzz-corpus/
-          key: fuzz-v2-${{ matrix.group }}-${{ github.sha }}-${{ github.run_id }}
-          restore-keys: fuzz-v2-${{ matrix.group }}-
+          key: fuzz-v3-${{ matrix.group }}-${{ github.sha }}-${{ github.run_id }}
+          restore-keys: fuzz-v3-${{ matrix.group }}-
       - name: build harnesses
         run: make -j2 fuzz-build FUZZ_CLANG=clang FUZZ_TARGETS="${{ matrix.targets }}"
       - name: fuzz with bounded budget
@@ -675,7 +684,7 @@ jobs:
         if: success() && github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
         with:
           path: fuzz-corpus/
-          key: fuzz-v2-${{ matrix.group }}-${{ github.sha }}-${{ github.run_id }}
+          key: fuzz-v3-${{ matrix.group }}-${{ github.sha }}-${{ github.run_id }}
       - name: preserve corpora, crashes, sanitizer logs and timing
         if: always()
         uses: actions/upload-artifact@v7
@@ -684,6 +693,7 @@ jobs:
           path: |
             fuzz-corpus/
             .build/fuzz-coverage/
+            .build/fuzz-findings/
             .build/ci/
       - name: no-op without clang
         run: |
@@ -811,6 +821,7 @@ jobs:
           ./runner.exe -m test-q8.gguf -p "hi" -n 4 --temp 0
       - name: smoke test (server)
         run: |
+          trap 'pids=$(jobs -pr); if [ -n "$pids" ]; then kill $pids 2>/dev/null || true; sleep 1; kill -KILL $pids 2>/dev/null || true; wait $pids 2>/dev/null || true; fi' EXIT
           ./runner.exe -m test.gguf --serve --port 8123 --parallel 2 &
           sleep 3
           curl --connect-timeout 5 --max-time 90 -sf http://127.0.0.1:8123/health
@@ -829,6 +840,7 @@ jobs:
         # regression: a C:\...\model.gguf -m path used to land unescaped in the
         # response's "model" field, making every completion body invalid JSON
         run: |
+          trap 'pids=$(jobs -pr); if [ -n "$pids" ]; then kill $pids 2>/dev/null || true; sleep 1; kill -KILL $pids 2>/dev/null || true; wait $pids 2>/dev/null || true; fi' EXIT
           ./runner.exe -m "$(cygpath -w "$PWD")\\test.gguf" --serve --port 8125 &
           sleep 3
           curl --connect-timeout 5 --max-time 90 -sf -d '{"messages":[{"role":"user","content":"hi"}],"max_tokens":4,"temperature":0}' \
@@ -852,8 +864,6 @@ jobs:
           fi
           echo "parent-pid ok"
 
-  # Phase 0 agent-protocol conformance harness. Runs against the synthetic
-  # test.gguf so it needs no model download and no GPU. Locally: scripts/conformance.sh
       - name: CI timing and test reports
         if: always()
         uses: actions/upload-artifact@v7
@@ -861,6 +871,9 @@ jobs:
           name: ci-reports-${{ github.job }}-${{ runner.os }}
           path: .build/ci/
           if-no-files-found: ignore
+
+  # Phase 0 agent-protocol conformance harness. Runs against the synthetic
+  # test.gguf so it needs no model download and no GPU. Locally: scripts/conformance.sh
 
   conformance:
     runs-on: ubuntu-latest
@@ -884,7 +897,7 @@ jobs:
           python3 -m venv .venv
           .venv/bin/python -m pip install --quiet -r tests/ci/requirements.txt
       - name: agent-protocol conformance harness
-        run: PYTHON=.venv/bin/python ./scripts/conformance.sh
+        run: PYTHON=.venv/bin/python ./scripts/conformance.sh --junitxml=.build/ci/conformance.xml
       - name: conformance report
         if: always()
         run: |
@@ -919,6 +932,14 @@ jobs:
             tests/conformance/out/
             tests/torture/out/
 
+      - name: CI timing and test reports
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ci-reports-${{ github.job }}-${{ runner.os }}
+          path: .build/ci/
+          if-no-files-found: ignore
+
   # The same conformance suite against the ASan+UBSan binary (make debug).
   # The plain-build suite cannot be trusted to surface undefined behavior:
   # the v0.4.0 release gate caught an out-of-bounds read that SIGBUSed the
@@ -929,13 +950,6 @@ jobs:
   # API surface. Leak detection is off (the harness kills servers, so exit
   # paths may be forcibly terminated). CLI transformations run in their own
   # fully instrumented lane; no optimized quantization object is linked.
-      - name: CI timing and test reports
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: ci-reports-${{ github.job }}-${{ runner.os }}
-          path: .build/ci/
-          if-no-files-found: ignore
 
   conformance-sanitized:
     runs-on: ubuntu-latest
@@ -964,7 +978,7 @@ jobs:
           UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
           RUNNER_EXE: ./runner-debug
           RUNNER_CONFORMANCE_OUT: tests/conformance/out-sanitized
-        run: PYTHON=.venv/bin/python ./scripts/conformance.sh
+        run: PYTHON=.venv/bin/python ./scripts/conformance.sh --junitxml=.build/ci/conformance.xml
       - name: sanitizer instrumentation negative controls
         run: python3 scripts/check-sanitizers.py
       - name: sanitized sharing and load cleanup
@@ -996,8 +1010,6 @@ jobs:
           name: conformance-sanitized-report
           path: tests/conformance/out-sanitized/
 
-  # Real SDK/gateway/framework parsers catch integration assumptions that raw
-  # JSON fixtures cannot. Dependencies are pinned and isolated from Runner.
       - name: CI timing and test reports
         if: always()
         uses: actions/upload-artifact@v7
@@ -1005,6 +1017,9 @@ jobs:
           name: ci-reports-${{ github.job }}-${{ runner.os }}
           path: .build/ci/
           if-no-files-found: ignore
+
+  # Real SDK/gateway/framework parsers catch integration assumptions that raw
+  # JSON fixtures cannot. Dependencies are pinned and isolated from Runner.
 
   consumer-compatibility:
     runs-on: ubuntu-latest
@@ -1036,7 +1051,11 @@ jobs:
       - name: official SDK, LiteLLM and LangChain compatibility
         run: .compat-venv/bin/python scripts/consumer_compat.py
       - name: install Vercel AI SDK conformance dependencies
-        run: npm install --ignore-scripts --prefix tests/aisdk
+        run: |
+          npm install --ignore-scripts --prefix tests/aisdk
+          mkdir -p .build/ci
+          npm list --all --json --prefix tests/aisdk > .build/ci/vercel-dependencies.json
+          .compat-venv/bin/pip freeze > .build/ci/python-consumer-dependencies.txt
       - name: SDK protocol conformance (required, no skips)
         run: |
           RUNNER_CONFORMANCE_OUT=.build/sdk-conformance .compat-venv/bin/python -m pytest -q \
@@ -1050,6 +1069,14 @@ jobs:
         with:
           name: consumer-compatibility-report
           path: tests/compatibility/out/consumers.json
+
+      - name: CI timing and test reports
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ci-reports-${{ github.job }}-${{ runner.os }}
+          path: .build/ci/
+          if-no-files-found: ignore
 
   # Chat-template conformance: runner renders chat templates natively in C, so
   # the ONLY thing standing between a family and silent drift is a comparison
@@ -1073,13 +1100,6 @@ jobs:
   # for them would guarantee a permanent exit 2. Those four are covered by
   # `make template-conformance` on a dev box with models/, and their backlog
   # stays recorded in scripts/template-conformance-baseline.json either way.
-      - name: CI timing and test reports
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: ci-reports-${{ github.job }}-${{ runner.os }}
-          path: .build/ci/
-          if-no-files-found: ignore
 
   template-conformance:
     runs-on: ubuntu-latest
@@ -1108,6 +1128,14 @@ jobs:
           name: template-oracles
           path: .build/template-oracles/
 
+      - name: CI timing and test reports
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ci-reports-${{ github.job }}-${{ runner.os }}
+          path: .build/ci/
+          if-no-files-found: ignore
+
   # The whole suite on Windows, which the per-pull-request `windows` job above
   # does NOT run: that job is a hand-picked list of smokes, and a hand-picked
   # list is exactly what drifts away from what exists. Five test files it had
@@ -1120,13 +1148,6 @@ jobs:
   # value is "main is never red for more than a day", not "every PR waits".
   # No GPU here, so the CUDA gates self-skip; the device half is covered by
   # docs/device-evidence.json and the release check that reads it.
-      - name: CI timing and test reports
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: ci-reports-${{ github.job }}-${{ runner.os }}
-          path: .build/ci/
-          if-no-files-found: ignore
 
   windows-suite:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
@@ -1187,7 +1208,9 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: build actual T3 binary and fixture
-        run: make T3=1 test.gguf runner
+        run: |
+          make T3=1 test.gguf runner
+          ./runner --version | grep -F "(t3)"
       - name: install pytest
         run: |
           python3 -m venv .venv

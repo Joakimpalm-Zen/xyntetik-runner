@@ -9,7 +9,7 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: metadata-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  group: metadata-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   check:
@@ -21,4 +21,5 @@ jobs:
       - run: python3 scripts/check-agent-docs.py
       - run: python3 scripts/check-generated.py
       - run: python3 scripts/check-evidence-paths.py
+      - run: python3 scripts/check-ci-roster.py
       - run: python3 -m unittest discover -s tests -p test_ci_contracts.py

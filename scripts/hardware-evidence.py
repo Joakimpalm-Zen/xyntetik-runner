@@ -36,7 +36,8 @@ def main():
         raise SystemExit("required device/backend is unavailable; not a pass")
     record = dict(schema="xyntetik.runner.candidate-hardware.v1", commit=sha,
                   binary_sha256=digest(exe), gate_sha256=digest(gate),
-                  model_sha256=digest(args.model), backend=args.backend, caps=caps, steps=[], result="fail")
+                  model_sha256=digest(args.model), backend=args.backend, caps=caps,
+                  scope="gpu-identity (additional backend and PTX gates are separate)", steps=[], result="fail")
     try:
         for name, model, batch in [("fixture-prefill", ROOT / "test.gguf", "32"),
                                     ("model-prefill", args.model, "32"),

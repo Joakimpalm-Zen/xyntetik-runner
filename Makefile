@@ -136,7 +136,7 @@ endif
 # at that point would have named `.build//quants.o`, leaving the real quant
 # object to the generic pattern rule -- with -ffast-math. test-makefile-sane
 # caught exactly that.
-BUILD_ID := $(firstword $(shell printf '%s' '$(CC) $(CFLAGS)' | cksum))
+BUILD_ID := $(firstword $(shell printf '%s' '$(CC) $(CFLAGS) $(LDFLAGS)' | cksum))
 OBJDIR = .build/$(BUILD_ID)
 
 # same .exe suffix rule as every other test binary, without repeating the
@@ -358,8 +358,13 @@ RUNNER_OBJ = $(patsubst src/%.c,$(OBJDIR)/%.o,$(filter-out $(MLDSA_SRC),$(filter
 $(OBJDIR)/%.o: src/%.m $(HDR)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -I src -c $< -o $@
-runner: $(RUNNER_OBJ) $(HDR) src/kernels_ptx.h src/kernels_tensor_metal.h
+# The executable is keyed too: switching back from T3 must not keep a newer
+# T3 runner merely because the default objects are older. Comparison keeps no-op
+# builds cheap while selecting the exact configured executable on every call.
+$(OBJDIR)/$(RUNNER_EXE): $(RUNNER_OBJ) $(HDR) src/kernels_ptx.h src/kernels_tensor_metal.h
 	$(CC) $(CFLAGS) $(RUNNER_OBJ) -o $@ $(LDFLAGS)
+runner: $(OBJDIR)/$(RUNNER_EXE) FORCE
+	@$(PYTHON) -c "import filecmp,os,shutil; src='$(OBJDIR)/$(RUNNER_EXE)'; dst='$(RUNNER_EXE)'; same=os.path.exists(dst) and filecmp.cmp(src,dst,shallow=False); shutil.copy2(src,dst) if not same else None"
 
 # Local negative controls for scripts/write-stall.py. These compile from the
 # same sources and embedded kernels as runner; they are not release artifacts.
@@ -2230,6 +2235,7 @@ test: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSON_OOM) $(
 	./$(TEST_ATTN_SCALE) test-gemma3-62.gguf test-gemma3-26.gguf
 	./$(TEST_DOT_ROUTE) test-q8.gguf
 	$(PYTHON) scripts/check-ptx-roster.py src/cuda.c src/kernels_ptx.h
+	$(PYTHON) scripts/check-ci-roster.py
 	$(PYTHON) scripts/check-agent-docs.py --self-test
 	$(PYTHON) scripts/check-agent-docs.py AGENTS.md CLAUDE.md
 	./$(TEST_PENALTY_WINDOW) test.gguf
@@ -2577,8 +2583,8 @@ FUZZ_SAN_OPTS = allocator_may_return_null=1:max_allocation_size_mb=1024
 
 # gguf_open mutes its own stderr per call (see the harness); log_path keeps
 # sanitizer reports that are raised inside the muted window.
-FUZZ_ENV_gguf_open = ASAN_OPTIONS=$(FUZZ_SAN_OPTS):log_path=fuzz-corpus/gguf_open/asan \
-                     UBSAN_OPTIONS=log_path=fuzz-corpus/gguf_open/ubsan
+FUZZ_ENV_gguf_open = ASAN_OPTIONS=$(FUZZ_SAN_OPTS):log_path=.build/fuzz-findings/gguf_open/asan \
+                     UBSAN_OPTIONS=log_path=.build/fuzz-findings/gguf_open/ubsan
 # a valid GGUF header is ~8 KB; without a cap libFuzzer sizes inputs from the
 # largest seed and spends the budget copying weights instead of parsing
 FUZZ_ARGS_gguf_open = -max_len=16384 -dict=tests/fuzz/gguf.dict
@@ -2588,8 +2594,8 @@ FUZZ_ARGS_http_request = -max_len=16384 -dict=tests/fuzz/http.dict
 FUZZ_ARGS_tokenizer = -max_len=8192
 FUZZ_ARGS_model_load = -max_len=1048576 -dict=tests/fuzz/gguf.dict
 FUZZ_ARGS_gguf_split = -max_len=1048576
-FUZZ_ENV_model_load = ASAN_OPTIONS=$(FUZZ_SAN_OPTS):log_path=fuzz-corpus/model_load/asan UBSAN_OPTIONS=halt_on_error=1:log_path=fuzz-corpus/model_load/ubsan
-FUZZ_ENV_gguf_split = ASAN_OPTIONS=$(FUZZ_SAN_OPTS):log_path=fuzz-corpus/gguf_split/asan UBSAN_OPTIONS=halt_on_error=1:log_path=fuzz-corpus/gguf_split/ubsan
+FUZZ_ENV_model_load = ASAN_OPTIONS=$(FUZZ_SAN_OPTS):log_path=.build/fuzz-findings/model_load/asan UBSAN_OPTIONS=halt_on_error=1:log_path=.build/fuzz-findings/model_load/ubsan
+FUZZ_ENV_gguf_split = ASAN_OPTIONS=$(FUZZ_SAN_OPTS):log_path=.build/fuzz-findings/gguf_split/asan UBSAN_OPTIONS=halt_on_error=1:log_path=.build/fuzz-findings/gguf_split/ubsan
 
 # $(foreach) not a shell loop: the per-target FUZZ_ENV_*/FUZZ_ARGS_* lookups
 # have to happen while make is expanding, which `for t in ...; $(VAR_$$t)`
@@ -2598,14 +2604,14 @@ fuzz-run: fuzz-build
 	$(PYTHON) scripts/fuzz-seeds.py fuzz-corpus
 	@$(foreach t,$(FUZZ_TARGETS), \
 		echo "== fuzzing $(t) for $(FUZZ_TIME)s =="; \
-		mkdir -p fuzz-corpus/$(t); \
+		mkdir -p fuzz-corpus/$(t) .build/fuzz-findings/$(t); \
 		env ASAN_OPTIONS=$(FUZZ_SAN_OPTS) $(FUZZ_ENV_$(t)) \
 		    ./fuzz-$(t) fuzz-corpus/$(t) tests/fuzz/corpus/$(t) \
 			-max_total_time=$(FUZZ_TIME) -rss_limit_mb=$(FUZZ_RSS_MB) \
 			-malloc_limit_mb=1024 \
-			-timeout=25 -artifact_prefix=fuzz-corpus/$(t)/crash- \
+			-timeout=25 -artifact_prefix=.build/fuzz-findings/$(t)/ \
 			-print_final_stats=1 $(FUZZ_ARGS_$(t)) \
-			|| { cat fuzz-corpus/$(t)/asan.* fuzz-corpus/$(t)/ubsan.* 2>/dev/null; exit 1; }; \
+			|| { cat .build/fuzz-findings/$(t)/asan.* .build/fuzz-findings/$(t)/ubsan.* 2>/dev/null; exit 1; }; \
 	)
 	@echo "fuzz: all targets clean"
 

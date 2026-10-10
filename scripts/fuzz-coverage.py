@@ -34,7 +34,7 @@ def main():
             env = dict(os.environ, LLVM_PROFILE_FILE=str(out / "replay.profraw"),
                        ASAN_OPTIONS="allocator_may_return_null=1:max_allocation_size_mb=1024:log_path=" + str(out / "asan"),
                        UBSAN_OPTIONS="halt_on_error=1:log_path=" + str(out / "ubsan"))
-            subprocess.run([str(binary.resolve()), "-runs=0", "-timeout=25", td,
+            subprocess.run([str(binary.resolve()), "-runs=0", "-timeout=25", "-rss_limit_mb=2048", "-malloc_limit_mb=1024", td,
                             str(Path("tests/fuzz/corpus") / target)], env=env, check=True, timeout=180)
         profile = out / "replay.profdata"
         subprocess.run([profdata, "merge", "-sparse", str(out / "replay.profraw"), "-o", str(profile)], check=True)

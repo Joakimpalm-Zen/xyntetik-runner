@@ -22,6 +22,27 @@ class SanitizerBuild(unittest.TestCase):
 
 
 class CommandGate(unittest.TestCase):
+    def test_roster_catches_an_unwired_test_and_duplicate_fuzz_group(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            for d in ("scripts", "tests/fuzz", ".github/workflows"):
+                (root / d).mkdir(parents=True)
+            script = root / "scripts/check-ci-roster.py"
+            script.write_bytes((ROOT / "scripts/check-ci-roster.py").read_bytes())
+            (root / "tests/test_new.py").write_text("")
+            (root / "tests/fuzz/fuzz_probe.c").write_text("")
+            workflow = root / ".github/workflows/ci.yml"
+            workflow.write_text("  targets: probe\n")
+            make = root / "Makefile"
+            make.write_text("FUZZ_TARGETS = probe\n# tests/test_new.py is not an execution entry\n")
+            def run():
+                return subprocess.run([sys.executable, str(script)], capture_output=True).returncode
+            self.assertNotEqual(run(), 0)
+            make.write_text("FUZZ_TARGETS = probe\ntest:\n\tpython -m pytest tests/test_new.py\n")
+            self.assertEqual(run(), 0)
+            workflow.write_text("  targets: probe probe\n")
+            self.assertNotEqual(run(), 0)
+
     def test_failed_command_keeps_its_status_and_timing(self):
         with tempfile.TemporaryDirectory() as td:
             p = subprocess.run([sys.executable, str(ROOT / "scripts/ci-run.py"),

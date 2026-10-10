@@ -24,6 +24,8 @@ jobs:
     environment: runner-hardware
     runs-on: [self-hosted, runner-ci, '${{ inputs.device }}']
     timeout-minutes: 90
+    env:
+      DEVICE_CLASS: ${{ inputs.device }}
     defaults:
       run:
         shell: bash
@@ -37,6 +39,7 @@ jobs:
         env:
           CANDIDATE_SHA: ${{ inputs.commit }}
         run: |
+          case "$DEVICE_CLASS" in blackwell|windows-cuda|apple-metal) ;; *) exit 2 ;; esac
           [[ "$CANDIDATE_SHA" =~ ^[0-9a-f]{40}$ ]]
           git merge-base --is-ancestor "$CANDIDATE_SHA" origin/main
           git checkout --detach "$CANDIDATE_SHA"
@@ -53,16 +56,17 @@ jobs:
           CANDIDATE_SHA: ${{ inputs.commit }}
           GATE_MODEL: ${{ vars.RUNNER_GATE_MODEL }}
         run: |
+          GATE_MODEL=${GATE_MODEL:-${RUNNER_GATE_MODEL:-}}
           test -n "$GATE_MODEL"
           backend=cuda
-          if [ "${{ inputs.device }}" = apple-metal ]; then backend=metal; fi
+          if [ "$DEVICE_CLASS" = apple-metal ]; then backend=metal; fi
           python3 scripts/hardware-evidence.py --backend "$backend" --commit "$CANDIDATE_SHA" --model "$GATE_MODEL"
       - name: CUDA source to PTX gate with pinned compiler
         if: inputs.device == 'blackwell'
         run: python3 scripts/check-ptx-source.py
       - name: backend regression gates
         run: |
-          if [ "${{ inputs.device }}" = apple-metal ]; then
+          if [ "$DEVICE_CLASS" = apple-metal ]; then
             make test-metal-fallback test-metal-prefill test-metal-kquant
           else
             make test-tc-overflow test-cuda-iquants
