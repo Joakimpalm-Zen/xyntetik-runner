@@ -32,6 +32,19 @@ on:
       - "README.md"
       - "CHANGELOG.md"
 
+# Cancel superseded PR work, but keep main/scheduled certification runs.
+concurrency:
+  group: ci-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+  PYTEST_ADDOPTS: "--durations=25 --durations-min=1 -ra"
+  UBSAN_OPTIONS: "halt_on_error=1:print_stacktrace=1"
+
 jobs:
   unix:
     strategy:
@@ -39,8 +52,17 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
+      - name: pip download cache
+        if: runner.os != 'Windows'
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/pip
+            ~/Library/Caches/pip
+          key: pip-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tests/**/requirements*.txt', 'python/pyproject.toml') }}
       # The committed kernels_metal.h / kernels_ptx.h are what every build
       # embeds, so an edit to kernels.metal can be reviewed and merged while
       # the shipped binary still carries the OLD shader bytes. `make test` runs
@@ -119,7 +141,7 @@ jobs:
         # refuses a bare pip install, so install into a venv instead
         run: |
           python3 -m venv .venv
-          .venv/bin/python -m pip install --quiet pytest mypy
+          .venv/bin/python -m pip install --quiet -r tests/ci/requirements.txt mypy
           MYPYPATH=python/src .venv/bin/python -m mypy --strict -p xyntetik_runner
           PYTHONPATH=python/src .venv/bin/python -m pytest python/tests/
       - name: sparse MoE synthetic correctness
@@ -173,33 +195,33 @@ jobs:
           ./runner -m test.gguf --serve --port 8123 --parallel 2 &
           # readiness poll, not a fixed sleep: the paravirtual macOS
           # runner lost a 2s race by 250ms twice on 2026-08-12
-          for i in $(seq 60); do curl -sf -o /dev/null http://127.0.0.1:8123/health && break; sleep 0.5; done
-          curl -sf http://127.0.0.1:8123/health
-          curl -sf http://127.0.0.1:8123/v1/models
-          curl -sf http://127.0.0.1:8123/v1/capabilities | python3 -c "import json,sys; d=json.load(sys.stdin); assert d['features']['json_schema'] and d['models'][0]['id']; print('capabilities ok')"
+          for i in $(seq 60); do curl --connect-timeout 5 --max-time 90 -sf -o /dev/null http://127.0.0.1:8123/health && break; sleep 0.5; done
+          curl --connect-timeout 5 --max-time 90 -sf http://127.0.0.1:8123/health
+          curl --connect-timeout 5 --max-time 90 -sf http://127.0.0.1:8123/v1/models
+          curl --connect-timeout 5 --max-time 90 -sf http://127.0.0.1:8123/v1/capabilities | python3 -c "import json,sys; d=json.load(sys.stdin); assert d['features']['json_schema'] and d['models'][0]['id']; print('capabilities ok')"
           # the family preset the server picked must be visible, and a client
           # must be able to turn the repeat penalty off per request
-          curl -sf http://127.0.0.1:8123/v1/capabilities | python3 -c "import json,sys; d=json.load(sys.stdin); s=d['sampling']; assert s['preset'] and 'repeat_penalty' in s and d['features']['repeat_penalty']; print('sampling capabilities ok')"
-          curl -sf -d '{"messages":[{"role":"user","content":"hi"}],"max_tokens":4,"temperature":0,"repeat_penalty":1.0}' \
+          curl --connect-timeout 5 --max-time 90 -sf http://127.0.0.1:8123/v1/capabilities | python3 -c "import json,sys; d=json.load(sys.stdin); s=d['sampling']; assert s['preset'] and 'repeat_penalty' in s and d['features']['repeat_penalty']; print('sampling capabilities ok')"
+          curl --connect-timeout 5 --max-time 90 -sf -d '{"messages":[{"role":"user","content":"hi"}],"max_tokens":4,"temperature":0,"repeat_penalty":1.0}' \
             http://127.0.0.1:8123/v1/chat/completions | python3 -c "import json,sys; json.load(sys.stdin)['choices'][0]['message']; print('repeat_penalty accepted')"
-          [ "$(curl -s -o /dev/null -w '%{http_code}' -d '{"prompt":"x","repeat_penalty":0}' http://127.0.0.1:8123/v1/completions)" = 400 ]
-          curl -sf -d '{"messages":[{"role":"user","content":"hi"}],"max_tokens":4,"temperature":0}' \
+          [ "$(curl --connect-timeout 5 --max-time 90 -s -o /dev/null -w '%{http_code}' -d '{"prompt":"x","repeat_penalty":0}' http://127.0.0.1:8123/v1/completions)" = 400 ]
+          curl --connect-timeout 5 --max-time 90 -sf -d '{"messages":[{"role":"user","content":"hi"}],"max_tokens":4,"temperature":0}' \
             http://127.0.0.1:8123/v1/chat/completions | python3 -c "import json,sys; d=json.load(sys.stdin); assert 'runner_telemetry' in d and 'prompt_cached_tokens' in d['runner_telemetry']; print('server valid json')"
           # prefix-cache regression: an identical greedy request must reuse the
           # cached KV and still return the identical completion
-          R1=$(curl -sf -d '{"messages":[{"role":"user","content":"again"}],"max_tokens":8,"temperature":0}' http://127.0.0.1:8123/v1/chat/completions)
-          R2=$(curl -sf -d '{"messages":[{"role":"user","content":"again"}],"max_tokens":8,"temperature":0}' http://127.0.0.1:8123/v1/chat/completions)
+          R1=$(curl --connect-timeout 5 --max-time 90 -sf -d '{"messages":[{"role":"user","content":"again"}],"max_tokens":8,"temperature":0}' http://127.0.0.1:8123/v1/chat/completions)
+          R2=$(curl --connect-timeout 5 --max-time 90 -sf -d '{"messages":[{"role":"user","content":"again"}],"max_tokens":8,"temperature":0}' http://127.0.0.1:8123/v1/chat/completions)
           C1=$(echo "$R1" | python3 -c "import json,sys; print(json.load(sys.stdin)['choices'][0]['message']['content'])")
           C2=$(echo "$R2" | python3 -c "import json,sys; print(json.load(sys.stdin)['choices'][0]['message']['content'])")
           [ "$C1" = "$C2" ] && echo "prefix cache ok"
-          curl -sf -d '{"messages":[{"role":"user","content":"again"}],"max_tokens":2,"temperature":0,"cache_prompt":false}' \
+          curl --connect-timeout 5 --max-time 90 -sf -d '{"messages":[{"role":"user","content":"again"}],"max_tokens":2,"temperature":0,"cache_prompt":false}' \
             http://127.0.0.1:8123/v1/chat/completions | python3 -c "import json,sys; d=json.load(sys.stdin); assert d['runner_telemetry']['prompt_cached_tokens'] == 0; print('cache bypass ok')"
-          curl -sf -d '{"input":["a","b"]}' http://127.0.0.1:8123/v1/embeddings \
+          curl --connect-timeout 5 --max-time 90 -sf -d '{"input":["a","b"]}' http://127.0.0.1:8123/v1/embeddings \
             | python3 -c "import json,sys; d=json.load(sys.stdin); assert len(d['data'])==2 and len(d['data'][0]['embedding'])==64; print('embeddings ok')"
-          curl -sf -d '{"messages":[{"role":"user","content":"logprobs"}],"max_tokens":999999,"temperature":0,"logprobs":true,"top_logprobs":2}' \
+          curl --connect-timeout 5 --max-time 90 -sf -d '{"messages":[{"role":"user","content":"logprobs"}],"max_tokens":999999,"temperature":0,"logprobs":true,"top_logprobs":2}' \
             http://127.0.0.1:8123/v1/chat/completions | python3 -c "import json,sys; d=json.load(sys.stdin); assert d['usage']['completion_tokens'] < 256; print('max_tokens clamp ok')"
-          [ "$(curl -s -o /dev/null -w '%{http_code}' -d '{"prompt":"x","top_k":1e300}' http://127.0.0.1:8123/v1/completions)" = 400 ]
-          [ "$(curl -s -o /dev/null -w '%{http_code}' -d '{"prompt":"x","keep_alive":1e300}' http://127.0.0.1:8123/v1/completions)" = 400 ]
+          [ "$(curl --connect-timeout 5 --max-time 90 -s -o /dev/null -w '%{http_code}' -d '{"prompt":"x","top_k":1e300}' http://127.0.0.1:8123/v1/completions)" = 400 ]
+          [ "$(curl --connect-timeout 5 --max-time 90 -s -o /dev/null -w '%{http_code}' -d '{"prompt":"x","keep_alive":1e300}' http://127.0.0.1:8123/v1/completions)" = 400 ]
           kill %1
       - name: smoke test (health bypasses a busy slot)
         # a stalled request pins the only slot; /health and /v1/models must
@@ -208,12 +230,12 @@ jobs:
           ./runner -m test.gguf --serve --port 8126 --parallel 1 &
           # readiness poll, not a fixed sleep: the paravirtual macOS
           # runner lost a 2s race by 250ms twice on 2026-08-12
-          for i in $(seq 60); do curl -sf -o /dev/null http://127.0.0.1:8126/health && break; sleep 0.5; done
+          for i in $(seq 60); do curl --connect-timeout 5 --max-time 90 -sf -o /dev/null http://127.0.0.1:8126/health && break; sleep 0.5; done
           python3 -c "import socket,time; s=socket.create_connection(('127.0.0.1',8126)); s.sendall(b'POST /v1/chat/completions HTTP/1.1\r\n'); time.sleep(20)" &
           sleep 1
-          curl -sf -m 3 http://127.0.0.1:8126/health
-          curl -sf -m 3 http://127.0.0.1:8126/v1/models
-          curl -sf -m 3 http://127.0.0.1:8126/v1/capabilities | python3 -c "import json,sys; assert json.load(sys.stdin)['features']['json_schema']; print('capabilities bypass ok')"
+          curl --connect-timeout 5 --max-time 90 -sf -m 3 http://127.0.0.1:8126/health
+          curl --connect-timeout 5 --max-time 90 -sf -m 3 http://127.0.0.1:8126/v1/models
+          curl --connect-timeout 5 --max-time 90 -sf -m 3 http://127.0.0.1:8126/v1/capabilities | python3 -c "import json,sys; assert json.load(sys.stdin)['features']['json_schema']; print('capabilities bypass ok')"
           kill %1 %2 2>/dev/null || true
           echo "health bypass ok"
       - name: smoke test (stalled request is reaped)
@@ -223,7 +245,7 @@ jobs:
           ./runner -m test.gguf --serve --port 8129 --parallel 1 &
           # readiness poll, not a fixed sleep: the paravirtual macOS
           # runner lost a 2s race by 250ms twice on 2026-08-12
-          for i in $(seq 60); do curl -sf -o /dev/null http://127.0.0.1:8129/health && break; sleep 0.5; done
+          for i in $(seq 60); do curl --connect-timeout 5 --max-time 90 -sf -o /dev/null http://127.0.0.1:8129/health && break; sleep 0.5; done
           python3 - <<'PYEOF'
           import socket, sys
           s = socket.create_connection(("127.0.0.1", 8129))
@@ -239,7 +261,7 @@ jobs:
               sys.exit("stalled connection not reaped within 15s")
           assert b"408" in data.split(b"\r\n", 1)[0], data[:60]
           PYEOF
-          curl -sf -m 10 -d '{"messages":[{"role":"user","content":"hi"}],"max_tokens":4,"temperature":0}' \
+          curl --connect-timeout 5 --max-time 90 -sf -m 10 -d '{"messages":[{"role":"user","content":"hi"}],"max_tokens":4,"temperature":0}' \
             http://127.0.0.1:8129/v1/chat/completions > /dev/null
           kill %1
           echo "stall reap ok"
@@ -250,7 +272,7 @@ jobs:
           ./runner -m test.gguf --serve --port 8130 --parallel 1 &
           # readiness poll, not a fixed sleep: the paravirtual macOS
           # runner lost a 2s race by 250ms twice on 2026-08-12
-          for i in $(seq 60); do curl -sf -o /dev/null http://127.0.0.1:8130/health && break; sleep 0.5; done
+          for i in $(seq 60); do curl --connect-timeout 5 --max-time 90 -sf -o /dev/null http://127.0.0.1:8130/health && break; sleep 0.5; done
           python3 - <<'PYEOF'
           import json, urllib.request, urllib.error, sys
           def post(body, path="/v1/chat/completions"):
@@ -306,7 +328,7 @@ jobs:
           ./runner -m test.gguf -c 1024 --serve --port 8131 --parallel 1 &
           # readiness poll, not a fixed sleep: the paravirtual macOS
           # runner lost a 2s race by 250ms twice on 2026-08-12
-          for i in $(seq 60); do curl -sf -o /dev/null http://127.0.0.1:8131/health && break; sleep 0.5; done
+          for i in $(seq 60); do curl --connect-timeout 5 --max-time 90 -sf -o /dev/null http://127.0.0.1:8131/health && break; sleep 0.5; done
           python3 - <<'PYEOF'
           import json, urllib.request
           URL = "http://127.0.0.1:8131/v1/chat/completions"
@@ -374,7 +396,7 @@ jobs:
           os._exit(0)  # abrupt parent death, no cleanup
           PYEOF
           sleep 6
-          if curl -s -m 2 http://127.0.0.1:8127/health > /dev/null; then
+          if curl --connect-timeout 5 --max-time 90 -s -m 2 http://127.0.0.1:8127/health > /dev/null; then
             echo "runner survived parent death"; exit 1
           fi
           echo "parent-pid ok"
@@ -412,22 +434,22 @@ jobs:
           SWAP_PID=$!
           # readiness poll, not a fixed sleep: the paravirtual macOS
           # runner lost a 2s race by 250ms twice on 2026-08-12
-          for i in $(seq 60); do curl -sf -o /dev/null http://127.0.0.1:8124/health && break; sleep 0.5; done
-          curl -sf -d '{"model":"a","messages":[{"role":"user","content":"x"}],"max_tokens":3}' http://127.0.0.1:8124/v1/chat/completions > /dev/null
-          curl -sf -d '{"model":"b","messages":[{"role":"user","content":"x"}],"max_tokens":3}' http://127.0.0.1:8124/v1/chat/completions > /dev/null
-          curl -sf http://127.0.0.1:8124/v1/models | python3 -c "import json,sys; assert len(json.load(sys.stdin)['data']) == 2; print('swap ok')"
-          curl -sf http://127.0.0.1:8124/v1/capabilities | python3 -c "import json,sys; d=json.load(sys.stdin); assert d['swap'] and len(d['models']) == 2; print('swap capabilities ok')"
+          for i in $(seq 60); do curl --connect-timeout 5 --max-time 90 -sf -o /dev/null http://127.0.0.1:8124/health && break; sleep 0.5; done
+          curl --connect-timeout 5 --max-time 90 -sf -d '{"model":"a","messages":[{"role":"user","content":"x"}],"max_tokens":3}' http://127.0.0.1:8124/v1/chat/completions > /dev/null
+          curl --connect-timeout 5 --max-time 90 -sf -d '{"model":"b","messages":[{"role":"user","content":"x"}],"max_tokens":3}' http://127.0.0.1:8124/v1/chat/completions > /dev/null
+          curl --connect-timeout 5 --max-time 90 -sf http://127.0.0.1:8124/v1/models | python3 -c "import json,sys; assert len(json.load(sys.stdin)['data']) == 2; print('swap ok')"
+          curl --connect-timeout 5 --max-time 90 -sf http://127.0.0.1:8124/v1/capabilities | python3 -c "import json,sys; d=json.load(sys.stdin); assert d['swap'] and len(d['models']) == 2; print('swap capabilities ok')"
           kill "$SWAP_PID" 2>/dev/null || true
           wait "$SWAP_PID" 2>/dev/null || true
           ./runner -m "good=test.gguf,bad=bad.gguf" --serve --port 8124 --ttl 0 &
           BAD_SWAP_PID=$!
           # readiness poll, not a fixed sleep: the paravirtual macOS
           # runner lost a 2s race by 250ms twice on 2026-08-12
-          for i in $(seq 60); do curl -sf -o /dev/null http://127.0.0.1:8124/health && break; sleep 0.5; done
-          if curl -sf -d '{"model":"bad","messages":[{"role":"user","content":"x"}],"max_tokens":3}' http://127.0.0.1:8124/v1/chat/completions > /dev/null; then
+          for i in $(seq 60); do curl --connect-timeout 5 --max-time 90 -sf -o /dev/null http://127.0.0.1:8124/health && break; sleep 0.5; done
+          if curl --connect-timeout 5 --max-time 90 -sf -d '{"model":"bad","messages":[{"role":"user","content":"x"}],"max_tokens":3}' http://127.0.0.1:8124/v1/chat/completions > /dev/null; then
             echo "bad swap unexpectedly loaded"; exit 1
           fi
-          curl -sf -d '{"model":"good","messages":[{"role":"user","content":"x"}],"max_tokens":3}' http://127.0.0.1:8124/v1/chat/completions > /dev/null
+          curl --connect-timeout 5 --max-time 90 -sf -d '{"model":"good","messages":[{"role":"user","content":"x"}],"max_tokens":3}' http://127.0.0.1:8124/v1/chat/completions > /dev/null
           kill "$BAD_SWAP_PID" 2>/dev/null || true
           wait "$BAD_SWAP_PID" 2>/dev/null || true
           echo "bad swap cleanup ok"
@@ -440,21 +462,21 @@ jobs:
           ./runner -m test.gguf --serve --port 8128 --gpu off &
           # readiness poll, not a fixed sleep: the paravirtual macOS
           # runner lost a 2s race by 250ms twice on 2026-08-12
-          for i in $(seq 60); do curl -sf -o /dev/null http://127.0.0.1:8128/health && break; sleep 0.5; done
-          P=$(curl -sf -d "$REQ" http://127.0.0.1:8128/v1/chat/completions | python3 -c "import json,sys; print(json.load(sys.stdin)['choices'][0]['message']['content'])")
+          for i in $(seq 60); do curl --connect-timeout 5 --max-time 90 -sf -o /dev/null http://127.0.0.1:8128/health && break; sleep 0.5; done
+          P=$(curl --connect-timeout 5 --max-time 90 -sf -d "$REQ" http://127.0.0.1:8128/v1/chat/completions | python3 -c "import json,sys; print(json.load(sys.stdin)['choices'][0]['message']['content'])")
           kill %1; wait %1 2>/dev/null || true
           ./runner -m test.gguf --draft test.gguf --serve --port 8128 --gpu off &
           # readiness poll, not a fixed sleep: the paravirtual macOS
           # runner lost a 2s race by 250ms twice on 2026-08-12
-          for i in $(seq 60); do curl -sf -o /dev/null http://127.0.0.1:8128/health && break; sleep 0.5; done
-          S=$(curl -sf -d "$REQ" http://127.0.0.1:8128/v1/chat/completions | python3 -c "import json,sys; print(json.load(sys.stdin)['choices'][0]['message']['content'])")
+          for i in $(seq 60); do curl --connect-timeout 5 --max-time 90 -sf -o /dev/null http://127.0.0.1:8128/health && break; sleep 0.5; done
+          S=$(curl --connect-timeout 5 --max-time 90 -sf -d "$REQ" http://127.0.0.1:8128/v1/chat/completions | python3 -c "import json,sys; print(json.load(sys.stdin)['choices'][0]['message']['content'])")
           [ -n "$P" ] || exit 1
           [ "$P" = "$S" ] || { echo "spec output diverged: '$P' vs '$S'"; exit 1; }
           # capture the response first: a heredoc on the same pipeline would
           # replace curl's output as python3's stdin (python3 would read the
           # heredoc as program text instead), so json.load(sys.stdin) would
           # always hit EOF and fail this step on every run
-          RESP=$(curl -sf -d '{"messages":[{"role":"user","content":"hi"}],"max_tokens":24,"temperature":0,"response_format":{"type":"json_object"}}' \
+          RESP=$(curl --connect-timeout 5 --max-time 90 -sf -d '{"messages":[{"role":"user","content":"hi"}],"max_tokens":24,"temperature":0,"response_format":{"type":"json_object"}}' \
             http://127.0.0.1:8128/v1/chat/completions)
           printf '%s' "$RESP" | python3 -c '
           import json, sys
@@ -521,10 +543,27 @@ jobs:
   # self-skip as macOS-only and the CUDA-linked tolerance gates report
   # "skipped: no GPU" instead of failing. Nothing here downloads a model —
   # `make test` builds its own fixtures with scripts/make-test-model.py.
+      - name: CI timing and test reports
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ci-reports-${{ github.job }}-${{ runner.os }}
+          path: .build/ci/
+          if-no-files-found: ignore
+
   make-test:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
+      - name: pip download cache
+        if: runner.os != 'Windows'
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/pip
+            ~/Library/Caches/pip
+          key: pip-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tests/**/requirements*.txt', 'python/pyproject.toml') }}
       # PEP 668: keep the venv convention the `unix` job already uses, and pass
       # it in as PYTHON= so every recipe in the target — fixture generation as
       # well as pytest — runs against the interpreter that has pytest. Without
@@ -533,7 +572,7 @@ jobs:
       - name: install pytest
         run: |
           python3 -m venv .venv
-          .venv/bin/python -m pip install --quiet pytest
+          .venv/bin/python -m pip install --quiet -r tests/ci/requirements.txt
       # Separate from `make test` (which would build it as a prerequisite) so a
       # compile failure is legible as one, matching the other jobs.
       - name: build
@@ -542,7 +581,7 @@ jobs:
         # -j: the test binaries are independent builds and the Makefile's
         # object layer makes each one a link; the recipe body (the gates
         # themselves) still runs in order inside the one `test` rule
-        run: make -j"$(nproc)" test PYTHON=.venv/bin/python
+        run: .venv/bin/python scripts/ci-run.py --timeout 2400 make-test -- make -j"$(nproc)" test PYTHON=.venv/bin/python
 
   # The SIMD kernel gates at the two x86 ISA levels `make test` never names:
   # x86-64-v3, which the release binaries pin, and x86-64-v4 (AVX-512),
@@ -555,8 +594,17 @@ jobs:
   # AVX-512, so a host without it skips that step with a printed reason:
   # a pool property, not a failure, and the v3 step still ran. The host
   # line is printed so a failure carries the compiler and CPU it came from.
+      - name: CI timing and test reports
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ci-reports-${{ github.job }}-${{ runner.os }}
+          path: .build/ci/
+          if-no-files-found: ignore
+
   simd-isa-levels:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: host
@@ -581,27 +629,62 @@ jobs:
   # libFuzzer harnesses for the hand-written parsers that eat untrusted input.
   # Bounded by design: this is a regression gate that has to finish in a couple
   # of minutes, not a fuzzing campaign. Long soaks belong on a schedule.
-  fuzz:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - name: install clang
-        run: sudo apt-get update && sudo apt-get install -y clang llvm
-      # the harnesses must keep compiling even when nobody runs them locally
-      - name: build harnesses
-        run: make fuzz-build FUZZ_CLANG=clang
-      - name: fuzz (bounded)
-        run: make fuzz FUZZ_CLANG=clang FUZZ_TIME=30
-      # a crash artifact is the whole point of the job: keep it so the failure
-      # can be reproduced locally with ./fuzz-<target> <artifact>
-      - name: upload crash artifacts
-        if: failure()
+      - name: CI timing and test reports
+        if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: fuzz-crashes
-          path: fuzz-corpus/*/crash-*
+          name: ci-reports-${{ github.job }}-${{ runner.os }}
+          path: .build/ci/
           if-no-files-found: ignore
-      # `make fuzz` must be a no-op, not an error, where clang is absent
+
+  fuzz:
+    runs-on: ubuntu-latest
+    timeout-minutes: 70
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - group: parsers
+            targets: json_parse schema_compile sval_feed sval_trial jsonv_feed http_request
+          - group: files
+            targets: gguf_open tokenizer model_load gguf_split
+    steps:
+      - uses: actions/checkout@v7
+      - name: compiler
+        run: |
+          command -v clang || { sudo apt-get update && sudo apt-get install -y clang llvm; }
+          clang --version
+      - uses: actions/cache/restore@v4
+        with:
+          path: fuzz-corpus/
+          key: fuzz-v2-${{ matrix.group }}-${{ github.sha }}-${{ github.run_id }}
+          restore-keys: fuzz-v2-${{ matrix.group }}-
+      - name: build harnesses
+        run: make -j2 fuzz-build FUZZ_CLANG=clang FUZZ_TARGETS="${{ matrix.targets }}"
+      - name: fuzz with bounded budget
+        env:
+          FUZZ_BUDGET: ${{ github.event_name == 'schedule' && '300' || '30' }}
+        run: python3 scripts/ci-run.py --timeout 3600 fuzz-${{ matrix.group }} -- make fuzz FUZZ_CLANG=clang FUZZ_TIME="$FUZZ_BUDGET" FUZZ_TARGETS="${{ matrix.targets }}"
+      - name: minimize evolved corpora
+        if: github.event_name == 'schedule'
+        run: python3 scripts/fuzz-corpus.py --targets ${{ matrix.targets }}
+      - name: source coverage from the evolved corpus
+        if: github.event_name == 'schedule'
+        run: python3 scripts/fuzz-coverage.py ${{ matrix.targets }}
+      - uses: actions/cache/save@v4
+        if: success() && github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        with:
+          path: fuzz-corpus/
+          key: fuzz-v2-${{ matrix.group }}-${{ github.sha }}-${{ github.run_id }}
+      - name: preserve corpora, crashes, sanitizer logs and timing
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: fuzz-${{ matrix.group }}
+          path: |
+            fuzz-corpus/
+            .build/fuzz-coverage/
+            .build/ci/
       - name: no-op without clang
         run: |
           OUT=$(make fuzz FUZZ_CLANG=definitely-not-a-compiler)
@@ -610,11 +693,20 @@ jobs:
 
   windows:
     runs-on: windows-latest
+    timeout-minutes: 45
     defaults:
       run:
         shell: msys2 {0}
     steps:
       - uses: actions/checkout@v7
+      - name: pip download cache
+        if: runner.os != 'Windows'
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/pip
+            ~/Library/Caches/pip
+          key: pip-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tests/**/requirements*.txt', 'python/pyproject.toml') }}
       - uses: msys2/setup-msys2@v2
         with:
           msystem: UCRT64
@@ -721,17 +813,17 @@ jobs:
         run: |
           ./runner.exe -m test.gguf --serve --port 8123 --parallel 2 &
           sleep 3
-          curl -sf http://127.0.0.1:8123/health
-          curl -sf http://127.0.0.1:8123/v1/capabilities | python3 -c "import json,sys; d=json.load(sys.stdin); assert d['features']['json_schema']; print('capabilities ok')"
+          curl --connect-timeout 5 --max-time 90 -sf http://127.0.0.1:8123/health
+          curl --connect-timeout 5 --max-time 90 -sf http://127.0.0.1:8123/v1/capabilities | python3 -c "import json,sys; d=json.load(sys.stdin); assert d['features']['json_schema']; print('capabilities ok')"
           # the family preset the server picked must be visible, and a client
           # must be able to turn the repeat penalty off per request
-          curl -sf http://127.0.0.1:8123/v1/capabilities | python3 -c "import json,sys; d=json.load(sys.stdin); s=d['sampling']; assert s['preset'] and 'repeat_penalty' in s and d['features']['repeat_penalty']; print('sampling capabilities ok')"
-          curl -sf -d '{"messages":[{"role":"user","content":"hi"}],"max_tokens":4,"temperature":0,"repeat_penalty":1.0}' \
+          curl --connect-timeout 5 --max-time 90 -sf http://127.0.0.1:8123/v1/capabilities | python3 -c "import json,sys; d=json.load(sys.stdin); s=d['sampling']; assert s['preset'] and 'repeat_penalty' in s and d['features']['repeat_penalty']; print('sampling capabilities ok')"
+          curl --connect-timeout 5 --max-time 90 -sf -d '{"messages":[{"role":"user","content":"hi"}],"max_tokens":4,"temperature":0,"repeat_penalty":1.0}' \
             http://127.0.0.1:8123/v1/chat/completions | python3 -c "import json,sys; json.load(sys.stdin)['choices'][0]['message']; print('repeat_penalty accepted')"
-          [ "$(curl -s -o /dev/null -w '%{http_code}' -d '{"prompt":"x","repeat_penalty":0}' http://127.0.0.1:8123/v1/completions)" = 400 ]
-          curl -sf -d '{"messages":[{"role":"user","content":"hi"}],"max_tokens":4,"temperature":0}' \
+          [ "$(curl --connect-timeout 5 --max-time 90 -s -o /dev/null -w '%{http_code}' -d '{"prompt":"x","repeat_penalty":0}' http://127.0.0.1:8123/v1/completions)" = 400 ]
+          curl --connect-timeout 5 --max-time 90 -sf -d '{"messages":[{"role":"user","content":"hi"}],"max_tokens":4,"temperature":0}' \
             http://127.0.0.1:8123/v1/chat/completions | python3 -c "import json,sys; d=json.load(sys.stdin); assert 'runner_telemetry' in d; print('server valid json')"
-          [ "$(curl -s -o /dev/null -w '%{http_code}' -d '{"prompt":"x","top_k":1e300}' http://127.0.0.1:8123/v1/completions)" = 400 ]
+          [ "$(curl --connect-timeout 5 --max-time 90 -s -o /dev/null -w '%{http_code}' -d '{"prompt":"x","top_k":1e300}' http://127.0.0.1:8123/v1/completions)" = 400 ]
           kill %1
       - name: smoke test (server, backslash model path)
         # regression: a C:\...\model.gguf -m path used to land unescaped in the
@@ -739,7 +831,7 @@ jobs:
         run: |
           ./runner.exe -m "$(cygpath -w "$PWD")\\test.gguf" --serve --port 8125 &
           sleep 3
-          curl -sf -d '{"messages":[{"role":"user","content":"hi"}],"max_tokens":4,"temperature":0}' \
+          curl --connect-timeout 5 --max-time 90 -sf -d '{"messages":[{"role":"user","content":"hi"}],"max_tokens":4,"temperature":0}' \
             http://127.0.0.1:8125/v1/chat/completions | python3 -c "import json,sys; d=json.load(sys.stdin); assert d['model'] == 'test.gguf', d['model']; print('windows path model field ok')"
           kill %1
       - name: smoke test (parent-pid watch)
@@ -755,17 +847,34 @@ jobs:
           os._exit(0)  # abrupt parent death, no cleanup
           PYEOF
           sleep 6
-          if curl -s -m 2 http://127.0.0.1:8127/health > /dev/null; then
+          if curl --connect-timeout 5 --max-time 90 -s -m 2 http://127.0.0.1:8127/health > /dev/null; then
             echo "runner survived parent death"; exit 1
           fi
           echo "parent-pid ok"
 
   # Phase 0 agent-protocol conformance harness. Runs against the synthetic
   # test.gguf so it needs no model download and no GPU. Locally: scripts/conformance.sh
+      - name: CI timing and test reports
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ci-reports-${{ github.job }}-${{ runner.os }}
+          path: .build/ci/
+          if-no-files-found: ignore
+
   conformance:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
+      - name: pip download cache
+        if: runner.os != 'Windows'
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/pip
+            ~/Library/Caches/pip
+          key: pip-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tests/**/requirements*.txt', 'python/pyproject.toml') }}
       - name: build
         run: make
       - name: make test model
@@ -773,15 +882,7 @@ jobs:
       - name: install pytest
         run: |
           python3 -m venv .venv
-          .venv/bin/python -m pip install --quiet pytest
-      # The Anthropic SDK turns the /v1/messages tests in test_messages.py from
-      # a hand-written shape check into a real client parsing real events —
-      # which is the check that found bugs a spec reading did not. It is not
-      # required: those tests skip when it is absent, so a registry outage
-      # degrades the run rather than failing it.
-      - name: install the Anthropic SDK (optional, for real-client checks)
-        continue-on-error: true
-        run: .venv/bin/python -m pip install --quiet anthropic
+          .venv/bin/python -m pip install --quiet -r tests/ci/requirements.txt
       - name: agent-protocol conformance harness
         run: PYTHON=.venv/bin/python ./scripts/conformance.sh
       - name: conformance report
@@ -826,12 +927,29 @@ jobs:
   # -fno-sanitize-recover turns it into a dead server the suite cannot miss.
   # Scope, stated plainly: this leg gates UB and memory corruption on the
   # API surface. Leak detection is off (the harness kills servers, so exit
-  # paths never run to completion), and quantize.o links uninstrumented by
-  # the debug recipe's design (the CLI quantizer is not on this surface).
+  # paths may be forcibly terminated). CLI transformations run in their own
+  # fully instrumented lane; no optimized quantization object is linked.
+      - name: CI timing and test reports
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ci-reports-${{ github.job }}-${{ runner.os }}
+          path: .build/ci/
+          if-no-files-found: ignore
+
   conformance-sanitized:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
+      - name: pip download cache
+        if: runner.os != 'Windows'
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/pip
+            ~/Library/Caches/pip
+          key: pip-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tests/**/requirements*.txt', 'python/pyproject.toml') }}
       - name: build sanitized runner
         run: make debug
       - name: make test model
@@ -839,14 +957,30 @@ jobs:
       - name: install pytest
         run: |
           python3 -m venv .venv
-          .venv/bin/python -m pip install --quiet pytest
+          .venv/bin/python -m pip install --quiet -r tests/ci/requirements.txt
       - name: agent-protocol conformance harness (sanitized)
         env:
           ASAN_OPTIONS: detect_leaks=0
-          UBSAN_OPTIONS: print_stacktrace=1
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
           RUNNER_EXE: ./runner-debug
           RUNNER_CONFORMANCE_OUT: tests/conformance/out-sanitized
         run: PYTHON=.venv/bin/python ./scripts/conformance.sh
+      - name: sanitizer instrumentation negative controls
+        run: python3 scripts/check-sanitizers.py
+      - name: sanitized sharing and load cleanup
+        run: make test-shared-asan
+      - name: CLI lifecycle and transformations under sanitizers
+        env:
+          ASAN_OPTIONS: detect_leaks=1
+          RUNNER_TEST_GPU_OFF: "1"
+        run: |
+          cp runner-debug runner
+          make test-moe-train.moe4-train.gguf test-lora.full.gguf PYTHON=.venv/bin/python
+          .venv/bin/python scripts/ci-run.py --timeout 1800 sanitized-cli -- \
+            .venv/bin/python -m pytest -q --junitxml=.build/ci/sanitized-cli.xml \
+            tests/test_cli_files.py tests/test_lineage.py tests/test_eval_record.py \
+            tests/test_moe_lora.py tests/test_merge.py
+          .venv/bin/python scripts/check-junit.py --no-skips .build/ci/sanitized-cli.xml
       - name: conformance report
         if: always()
         run: |
@@ -864,10 +998,27 @@ jobs:
 
   # Real SDK/gateway/framework parsers catch integration assumptions that raw
   # JSON fixtures cannot. Dependencies are pinned and isolated from Runner.
+      - name: CI timing and test reports
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ci-reports-${{ github.job }}-${{ runner.os }}
+          path: .build/ci/
+          if-no-files-found: ignore
+
   consumer-compatibility:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
+      - name: pip download cache
+        if: runner.os != 'Windows'
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/pip
+            ~/Library/Caches/pip
+          key: pip-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tests/**/requirements*.txt', 'python/pyproject.toml') }}
       - uses: actions/setup-node@v7
         with:
           node-version: 22
@@ -884,6 +1035,14 @@ jobs:
           npm ci --ignore-scripts --prefix tests/compatibility/node
       - name: official SDK, LiteLLM and LangChain compatibility
         run: .compat-venv/bin/python scripts/consumer_compat.py
+      - name: install Vercel AI SDK conformance dependencies
+        run: npm install --ignore-scripts --prefix tests/aisdk
+      - name: SDK protocol conformance (required, no skips)
+        run: |
+          RUNNER_CONFORMANCE_OUT=.build/sdk-conformance .compat-venv/bin/python -m pytest -q \
+            tests/conformance/test_openai_sdk.py tests/conformance/test_messages.py \
+            tests/conformance/test_ai_sdk.py --junitxml=.build/ci/sdk.xml
+          .compat-venv/bin/python scripts/check-junit.py --no-skips .build/ci/sdk.xml
       - name: TypeScript client (clients/typescript)
         run: make test-ts-client
       - uses: actions/upload-artifact@v7
@@ -914,10 +1073,27 @@ jobs:
   # for them would guarantee a permanent exit 2. Those four are covered by
   # `make template-conformance` on a dev box with models/, and their backlog
   # stays recorded in scripts/template-conformance-baseline.json either way.
+      - name: CI timing and test reports
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ci-reports-${{ github.job }}-${{ runner.os }}
+          path: .build/ci/
+          if-no-files-found: ignore
+
   template-conformance:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
+      - name: pip download cache
+        if: runner.os != 'Windows'
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/pip
+            ~/Library/Caches/pip
+          key: pip-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tests/**/requirements*.txt', 'python/pyproject.toml') }}
       - name: install jinja2
         # jinja2 renders the REFERENCE side. Without it nothing is compared,
         # and the harness says so (exit 2) instead of passing.
@@ -944,8 +1120,16 @@ jobs:
   # value is "main is never red for more than a day", not "every PR waits".
   # No GPU here, so the CUDA gates self-skip; the device half is covered by
   # docs/device-evidence.json and the release check that reads it.
+      - name: CI timing and test reports
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ci-reports-${{ github.job }}-${{ runner.os }}
+          path: .build/ci/
+          if-no-files-found: ignore
+
   windows-suite:
-    if: github.event_name != 'pull_request'
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: windows-latest
     timeout-minutes: 90
     defaults:
@@ -953,6 +1137,14 @@ jobs:
         shell: msys2 {0}
     steps:
       - uses: actions/checkout@v7
+      - name: pip download cache
+        if: runner.os != 'Windows'
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/pip
+            ~/Library/Caches/pip
+          key: pip-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tests/**/requirements*.txt', 'python/pyproject.toml') }}
       - uses: msys2/setup-msys2@v2
         with:
           msystem: UCRT64
@@ -966,4 +1158,66 @@ jobs:
       - name: make test
         env:
           PYTHONUTF8: "1"
-        run: make OS=Windows_NT -j2 test
+        run: python3 scripts/ci-run.py --timeout 5100 windows-suite -- make OS=Windows_NT -j2 test
+      - name: CI timing and test reports
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ci-reports-${{ github.job }}-${{ runner.os }}
+          path: .build/ci/
+          if-no-files-found: ignore
+
+
+  thread-sanitizer:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+      - name: shared pool and registry/shutdown races
+        run: python3 scripts/ci-run.py --timeout 1200 thread-sanitizer -- make test-pool-race test-server-race-tsan
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: thread-sanitizer-report
+          path: .build/ci/
+
+  t3:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - name: build actual T3 binary and fixture
+        run: make T3=1 test.gguf runner
+      - name: install pytest
+        run: |
+          python3 -m venv .venv
+          .venv/bin/pip install -r tests/ci/requirements.txt
+      - name: deterministic generation, training and replay
+        run: |
+          .venv/bin/python scripts/ci-run.py --timeout 1500 t3 -- .venv/bin/python -m pytest -q \
+            tests/test_transcript.py tests/test_train.py tests/test_session_images.py \
+            -k "not gpu_training_matches_cpu_bytes" --junitxml=.build/ci/t3.xml
+          .venv/bin/python scripts/check-junit.py --no-skips .build/ci/t3.xml
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: t3-report
+          path: .build/ci/
+
+  macos-suite:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: macos-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+      - name: install pytest
+        run: |
+          python3 -m venv .venv
+          .venv/bin/pip install -r tests/ci/requirements.txt
+      - name: full suite
+        run: .venv/bin/python scripts/ci-run.py --timeout 5100 macos-suite -- make -j3 test PYTHON=.venv/bin/python
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: macos-suite-report
+          path: .build/ci/

@@ -350,8 +350,16 @@ cross-riscv64:
 # kernels_ptx.h is embedded into the binary by cuda.c — a pull that changes
 # ONLY the regenerated PTX header must rebuild, or benchmarks silently run
 # yesterday's kernels (this bit a publication run on 2026-07-29).
-runner: $(SRC) $(HDR) src/kernels_ptx.h src/kernels_tensor_metal.h
-	$(CC) $(CFLAGS) $(SRC) -o $@ $(LDFLAGS)
+# Reuse the flag-keyed objects that focused tests already link. Special
+# quantization and crypto objects keep their existing compilation rules.
+RUNNER_OBJ = $(patsubst src/%.c,$(OBJDIR)/%.o,$(filter-out $(MLDSA_SRC),$(filter %.c,$(SRC)))) \
+             $(patsubst src/%.m,$(OBJDIR)/%.o,$(filter %.m,$(SRC))) \
+             $(QUANTS_OBJ) $(QUANTIZE_OBJ) $(MLDSA_OBJ)
+$(OBJDIR)/%.o: src/%.m $(HDR)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -I src -c $< -o $@
+runner: $(RUNNER_OBJ) $(HDR) src/kernels_ptx.h src/kernels_tensor_metal.h
+	$(CC) $(CFLAGS) $(RUNNER_OBJ) -o $@ $(LDFLAGS)
 
 # Local negative controls for scripts/write-stall.py. These compile from the
 # same sources and embedded kernels as runner; they are not release artifacts.
@@ -361,9 +369,13 @@ runner-no-write-timeout: $(SRC) $(HDR) src/kernels_ptx.h
 runner-sigpipe-default: $(SRC) $(HDR) src/kernels_ptx.h
 	$(CC) $(CFLAGS) -DRUNNER_TEST_SIGPIPE_DEFAULT $(SRC) -o $@ $(LDFLAGS)
 
-debug: $(SRC) $(HDR)
-	$(CC) -O0 -g -fsanitize=address,undefined -fno-fast-math -std=gnu11 -Wall \
-		$(filter-out $(QUANTS_OBJ),$(SRC)) src/quants.c -o runner-debug $(LDFLAGS)
+# Every translation unit, including quantization, must carry instrumentation.
+# An optimized object linked into this binary silently loses its sanitizer gate.
+SAN_FLAGS = -O0 -g -fsanitize=address,undefined -fno-sanitize-recover=undefined \
+            -fno-omit-frame-pointer -fno-fast-math -std=gnu11 -Wall $(GPU_BACKEND_DEF)
+SAN_SRC = $(filter-out $(QUANTS_OBJ) $(QUANTIZE_OBJ),$(SRC)) src/quants.c src/quantize.c
+debug: $(SAN_SRC) $(HDR)
+	$(CC) $(SAN_FLAGS) $(SAN_SRC) -o runner-debug $(LDFLAGS)
 
 # $(CFLAGS), not a hand-rolled flag list: schema bounds compile in the same
 # -ffast-math configuration as the shipped binary. Building this test without
@@ -471,8 +483,8 @@ fixture-scale-note:
 # same test under ASan/UBSan: the free-exactly-once half of it only fails
 # loudly here. Kept out of `make test` because a sanitized model load is slow.
 test-shared-asan: $(TEST_SHARED_SRC) $(HDR) test.gguf fixture-scale-note
-	$(CC) -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer \
-	    -std=gnu11 -Wall -I src $(TEST_SHARED_SRC) -o test-shared-asan-bin $(LDFLAGS)
+	$(CC) -O1 -g -fsanitize=address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer \
+	    -std=gnu11 -Wall -I src $(filter-out $(QUANTS_OBJ),$(TEST_SHARED_SRC)) src/quants.c -o test-shared-asan-bin $(LDFLAGS)
 	RUNNER_TEST_GPU_OFF=1 LSAN_OPTIONS=suppressions=tests/lsan.supp \
 	    ./test-shared-asan-bin $(ASAN_MODEL)
 
@@ -1169,7 +1181,7 @@ test-tokenizer-race: $(TEST_TOKENIZER_RACE_SRC) $(HDR) test.gguf
 	TSAN_OPTIONS=halt_on_error=1 ./test-tokenizer-race-bin test.gguf
 
 test-swap-race: $(TEST_SWAP_RACE_SRC) $(HDR) test.gguf
-	$(CC) -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer \
+	$(CC) -O1 -g -fsanitize=address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer \
 	    -fno-fast-math -std=gnu11 -Wall -I src $(TEST_SWAP_RACE_SRC) \
 	    -o test-swap-race-bin $(LDFLAGS)
 	ASAN_OPTIONS=detect_leaks=0 ./test-swap-race-bin test.gguf
@@ -2402,7 +2414,7 @@ test: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSON_OOM) $(
 	$(MAKE) --no-print-directory test-attn-split
 	$(PYTHON) scripts/check-generated.py
 	PYTHONPATH=python/src $(PYTHON) -m pytest python/tests/
-	$(PYTHON) -m pytest -q tests/test_fit_check.py tests/test_apertus.py tests/test_ornith_cpu.py tests/test_ornith_reference.py tests/test_compat_matrix.py tests/test_arch_admission.py tests/test_hybrid_admission.py tests/test_hostile_geometry.py tests/test_certify_envelope.py tests/test_cpu_cuda_margin.py tests/test_envelope_gate.py tests/test_envelope_swap.py tests/test_cli_files.py tests/test_hf_fetch.py tests/test_stop_specials.py tests/test_muse_auto_toolchoice.py tests/test_chat_template_flag.py tests/test_server_banner.py tests/test_split_gguf.py tests/test_metal_coverage.py tests/test_gpu_declines.py tests/test_caps.py tests/test_tool_info.py tests/test_bench_json.py tests/test_mtp_admission.py tests/test_mtp_consume.py tests/test_compare_llamacpp.py tests/test_release_check.py tests/test_eseries.py tests/test_stress_models.py tests/test_moe_prune_plan.py tests/test_kld_compare.py tests/test_kld_margin.py tests/test_quant_fidelity.py tests/test_token_divergence.py tests/test_verify_gguf.py tests/test_type_plan_size.py tests/test_stress_context.py tests/test_cert_greedy_identity.py tests/test_tokenizer_corpus.py tests/test_batch_bench.py tests/test_spec_telemetry.py tests/test_draft_required.py tests/test_draft_lookup.py tests/test_kv_reachable.py tests/test_kv_ring.py tests/test_tiedv.py tests/test_moe_mm_flips.py tests/test_load_prefetch.py tests/test_spec_gpu.py tests/test_request_disconnect.py tests/test_score.py tests/test_decide.py tests/test_hf_spec_bounds.py tests/test_lora.py tests/test_train.py tests/test_merge.py tests/test_lineage.py tests/test_eval_record.py tests/test_moe_lora.py tests/test_transcript.py tests/test_oms.py tests/test_kv_quality.py tests/test_tool_choice_boundary.py tests/test_nvfp4_scale.py tests/test_remove_sublayer.py tests/test_rewind_under_refused_prefix.py tests/test_server_penalty_exemptions.py tests/test_lora_identity_alpha.py tests/test_ttl_releases_draft.py tests/test_depth_slice.py tests/test_device_evidence.py tests/test_difftok.py tests/test_gate_coverage.py tests/test_gemma4_untyped_fallback.py tests/test_xml_schema_fallback.py tests/test_gen_quality_metrics.py tests/test_granite.py tests/test_iquants.py tests/test_metal_moe_batch.py tests/test_muse_glimmer.py tests/test_receipts.py tests/test_truncation_benchmark.py tests/test_type_plan.py tests/test_unload_honesty.py tests/test_tray_not_raised_on_refusal.py tests/test_shadow_mode_flag.py tests/test_record_sign.py tests/test_qwen3_coder_tools.py tests/test_native_xml_routing.py tests/test_sampling_defaults.py tests/test_coverage_inventory.py tests/test_turn_mark.py tests/test_cuda_iq_grids.py tests/test_metal_iq_kernels.py tests/test_tc_gate_eligibility.py tests/test_decide_calibrate.py tests/test_gpu_split_order.py tests/test_tooluse_shifted.py tests/test_reasoning_budget.py tests/test_reasoning_sampling.py tests/test_loop_guard.py tests/test_model_id_long_name.py tests/test_gguf_blockorder.py tests/test_schema_close_api.py tests/test_embeddings_pooling.py tests/test_provenance.py tests/test_rerank.py tests/test_echo_logprobs.py tests/test_repeated_tool_calls.py tests/test_named_contexts.py tests/test_responses_store.py tests/test_adapter_routing.py tests/test_bundle.py tests/test_serve_receipts.py tests/test_adapter_signature.py tests/test_sign_model.py tests/test_agent_transcripts.py tests/test_watermark.py tests/test_kv_snapshots.py tests/test_session_images.py tests/test_parent_pid.py tests/test_lease_interop.py tests/test_gold_logits.py tests/test_mv_fuse.py tests/test_stream_utf8.py tests/test_tool_schema_validity.py tests/test_doctor.py tests/test_metal_attn_tile.py tests/test_metal_attn_gqa.py tests/test_server_sessions.py tests/test_confirm_below.py tests/test_evidence_pack.py tests/test_closure_provenance.py tests/test_reasoning_reserve.py tests/test_hermes_json_families.py tests/test_adapt_info.py tests/test_expect_resident.py tests/test_health_requests.py tests/test_server_shared_pool.py
+	$(PYTHON) scripts/ci-run.py --timeout 2400 root-pytest -- $(PYTHON) -m pytest --durations=25 -ra --junitxml=.build/ci/root.xml -q tests/test_ci_contracts.py tests/test_fit_check.py tests/test_apertus.py tests/test_ornith_cpu.py tests/test_ornith_reference.py tests/test_compat_matrix.py tests/test_arch_admission.py tests/test_hybrid_admission.py tests/test_hostile_geometry.py tests/test_certify_envelope.py tests/test_cpu_cuda_margin.py tests/test_envelope_gate.py tests/test_envelope_swap.py tests/test_cli_files.py tests/test_hf_fetch.py tests/test_stop_specials.py tests/test_muse_auto_toolchoice.py tests/test_chat_template_flag.py tests/test_server_banner.py tests/test_split_gguf.py tests/test_metal_coverage.py tests/test_gpu_declines.py tests/test_caps.py tests/test_tool_info.py tests/test_bench_json.py tests/test_mtp_admission.py tests/test_mtp_consume.py tests/test_compare_llamacpp.py tests/test_release_check.py tests/test_eseries.py tests/test_stress_models.py tests/test_moe_prune_plan.py tests/test_kld_compare.py tests/test_kld_margin.py tests/test_quant_fidelity.py tests/test_token_divergence.py tests/test_verify_gguf.py tests/test_type_plan_size.py tests/test_stress_context.py tests/test_cert_greedy_identity.py tests/test_tokenizer_corpus.py tests/test_batch_bench.py tests/test_spec_telemetry.py tests/test_draft_required.py tests/test_draft_lookup.py tests/test_kv_reachable.py tests/test_kv_ring.py tests/test_tiedv.py tests/test_moe_mm_flips.py tests/test_load_prefetch.py tests/test_spec_gpu.py tests/test_request_disconnect.py tests/test_score.py tests/test_decide.py tests/test_hf_spec_bounds.py tests/test_lora.py tests/test_train.py tests/test_merge.py tests/test_lineage.py tests/test_eval_record.py tests/test_moe_lora.py tests/test_transcript.py tests/test_oms.py tests/test_kv_quality.py tests/test_tool_choice_boundary.py tests/test_nvfp4_scale.py tests/test_remove_sublayer.py tests/test_rewind_under_refused_prefix.py tests/test_server_penalty_exemptions.py tests/test_lora_identity_alpha.py tests/test_ttl_releases_draft.py tests/test_depth_slice.py tests/test_device_evidence.py tests/test_difftok.py tests/test_gate_coverage.py tests/test_gemma4_untyped_fallback.py tests/test_xml_schema_fallback.py tests/test_gen_quality_metrics.py tests/test_granite.py tests/test_iquants.py tests/test_metal_moe_batch.py tests/test_muse_glimmer.py tests/test_receipts.py tests/test_truncation_benchmark.py tests/test_type_plan.py tests/test_unload_honesty.py tests/test_tray_not_raised_on_refusal.py tests/test_shadow_mode_flag.py tests/test_record_sign.py tests/test_qwen3_coder_tools.py tests/test_native_xml_routing.py tests/test_sampling_defaults.py tests/test_coverage_inventory.py tests/test_turn_mark.py tests/test_cuda_iq_grids.py tests/test_metal_iq_kernels.py tests/test_tc_gate_eligibility.py tests/test_decide_calibrate.py tests/test_gpu_split_order.py tests/test_tooluse_shifted.py tests/test_reasoning_budget.py tests/test_reasoning_sampling.py tests/test_loop_guard.py tests/test_model_id_long_name.py tests/test_gguf_blockorder.py tests/test_schema_close_api.py tests/test_embeddings_pooling.py tests/test_provenance.py tests/test_rerank.py tests/test_echo_logprobs.py tests/test_repeated_tool_calls.py tests/test_named_contexts.py tests/test_responses_store.py tests/test_adapter_routing.py tests/test_bundle.py tests/test_serve_receipts.py tests/test_adapter_signature.py tests/test_sign_model.py tests/test_agent_transcripts.py tests/test_watermark.py tests/test_kv_snapshots.py tests/test_session_images.py tests/test_parent_pid.py tests/test_lease_interop.py tests/test_gold_logits.py tests/test_mv_fuse.py tests/test_stream_utf8.py tests/test_tool_schema_validity.py tests/test_doctor.py tests/test_metal_attn_tile.py tests/test_metal_attn_gqa.py tests/test_server_sessions.py tests/test_confirm_below.py tests/test_evidence_pack.py tests/test_closure_provenance.py tests/test_reasoning_reserve.py tests/test_hermes_json_families.py tests/test_adapt_info.py tests/test_expect_resident.py tests/test_health_requests.py tests/test_server_shared_pool.py
 	$(MAKE) --no-print-directory test-moe PYTHON="$(PYTHON)"
 	$(MAKE) --no-print-directory test-prune-experts PYTHON="$(PYTHON)"
 
@@ -2529,17 +2541,11 @@ FUZZ_CLANG   ?= clang
 FUZZ_TIME    ?= 20
 FUZZ_RSS_MB  ?= 2048
 FUZZ_TARGETS = json_parse schema_compile sval_feed sval_trial jsonv_feed \
-               gguf_open http_request
-# TODO: tok_encode (src/tokenizer.c) is deliberately absent. It needs a loaded
-# tokenizer rather than a bare buffer, so the harness has to stand up a vocab
-# first -- and tokenizer.c has been rewritten substantially since the original
-# fuzz plan was drafted, so re-read the current code before trusting a harness.
-# The committed tests/fixtures/vocab-*.gguf are the natural fixture when
-# someone picks this up.
-
+               gguf_open http_request tokenizer model_load gguf_split
 # -O1 -g: libFuzzer wants speed but ASan reports want frames.
 # No -march=native and no -ffast-math: the point here is defined behaviour,
 # and UBSan must abort rather than warn or the run cannot gate anything.
+FUZZ_INSTRUMENTATION = -fsanitize=fuzzer,address,undefined
 FUZZ_FLAGS = -g -O1 -std=gnu11 -Wall -Wextra -Wno-unused-parameter -I src \
              -fsanitize=fuzzer,address,undefined -fno-sanitize-recover=undefined \
              -fno-omit-frame-pointer
@@ -2551,9 +2557,12 @@ FUZZ_SRC_sval_trial     = src/json.c src/schema.c src/jsonmode.c
 FUZZ_SRC_jsonv_feed     = src/jsonmode.c
 FUZZ_SRC_gguf_open      = src/gguf.c src/compat.c src/quants.c
 FUZZ_SRC_http_request   = src/http.c src/json.c src/compat.c
+FUZZ_SRC_tokenizer      = src/tokenizer.c src/gguf.c src/compat.c src/quants.c
+FUZZ_SRC_model_load     = src/model.c src/gguf.c src/compat.c src/quants.c src/vramreg.c src/gpu_none.c
+FUZZ_SRC_gguf_split     = src/gguf.c src/compat.c src/quants.c
 
-fuzz-%: tests/fuzz/fuzz_%.c $(wildcard src/*.c) $(HDR)
-	$(FUZZ_CLANG) $(FUZZ_FLAGS) tests/fuzz/fuzz_$*.c $(FUZZ_SRC_$*) -o $@ -lm
+fuzz-%: tests/fuzz/fuzz_%.c tests/fuzz/fuzz_files.h $(wildcard src/*.c) $(HDR)
+	$(FUZZ_CLANG) $(FUZZ_FLAGS) $(FUZZ_EXTRA_FLAGS) tests/fuzz/fuzz_$*.c $(FUZZ_SRC_$*) -o $@ -lm -lpthread $(FUZZ_EXTRA_FLAGS)
 
 # build only; useful on its own to check the harnesses still compile
 fuzz-build: $(addprefix fuzz-,$(FUZZ_TARGETS))
@@ -2572,15 +2581,21 @@ FUZZ_ENV_gguf_open = ASAN_OPTIONS=$(FUZZ_SAN_OPTS):log_path=fuzz-corpus/gguf_ope
                      UBSAN_OPTIONS=log_path=fuzz-corpus/gguf_open/ubsan
 # a valid GGUF header is ~8 KB; without a cap libFuzzer sizes inputs from the
 # largest seed and spends the budget copying weights instead of parsing
-FUZZ_ARGS_gguf_open = -max_len=16384
+FUZZ_ARGS_gguf_open = -max_len=16384 -dict=tests/fuzz/gguf.dict
 # a request header is kilobytes at most; without a cap the mutator spends the
 # budget on multi-megabyte buffers that reach no branch the small ones miss
-FUZZ_ARGS_http_request = -max_len=8192
+FUZZ_ARGS_http_request = -max_len=16384 -dict=tests/fuzz/http.dict
+FUZZ_ARGS_tokenizer = -max_len=8192
+FUZZ_ARGS_model_load = -max_len=1048576 -dict=tests/fuzz/gguf.dict
+FUZZ_ARGS_gguf_split = -max_len=1048576
+FUZZ_ENV_model_load = ASAN_OPTIONS=$(FUZZ_SAN_OPTS):log_path=fuzz-corpus/model_load/asan UBSAN_OPTIONS=halt_on_error=1:log_path=fuzz-corpus/model_load/ubsan
+FUZZ_ENV_gguf_split = ASAN_OPTIONS=$(FUZZ_SAN_OPTS):log_path=fuzz-corpus/gguf_split/asan UBSAN_OPTIONS=halt_on_error=1:log_path=fuzz-corpus/gguf_split/ubsan
 
 # $(foreach) not a shell loop: the per-target FUZZ_ENV_*/FUZZ_ARGS_* lookups
 # have to happen while make is expanding, which `for t in ...; $(VAR_$$t)`
 # cannot do (make would resolve the name before the shell ever sets $t)
 fuzz-run: fuzz-build
+	$(PYTHON) scripts/fuzz-seeds.py fuzz-corpus
 	@$(foreach t,$(FUZZ_TARGETS), \
 		echo "== fuzzing $(t) for $(FUZZ_TIME)s =="; \
 		mkdir -p fuzz-corpus/$(t); \
@@ -2730,3 +2745,19 @@ test-ts-client: $(RUNNER_EXE)
 .PHONY: repro-startup-signal
 repro-startup-signal: runner test.gguf
 	$(PYTHON) scripts/repro-startup-signal.py --iterations 6000 --concurrency 12 --load
+
+# CI-only race lanes: CPU stub avoids driver-owned threads and allocations.
+TSAN_FLAGS = -O1 -g -fsanitize=thread -fno-omit-frame-pointer -fno-fast-math -std=gnu11 -Wall -I src
+test-pool-race:
+	$(CC) $(TSAN_FLAGS) tests/test_thread_default.c src/compat.c src/quants.c -o test-pool-race-bin $(LDFLAGS)
+	TSAN_OPTIONS=halt_on_error=1 ./test-pool-race-bin
+
+test-server-race-tsan: test.gguf
+	$(CC) $(TSAN_FLAGS) $(filter-out $(GPU_SRC),$(TEST_SWAP_RACE_SRC)) src/gpu_none.c -o test-server-race-tsan-bin $(LDFLAGS)
+	TSAN_OPTIONS=halt_on_error=1 ./test-server-race-tsan-bin test.gguf
+
+.PHONY: test-pool-race test-server-race-tsan
+
+fuzz-replay-%: tests/fuzz/fuzz_%.c tests/fuzz/replay.c tests/fuzz/fuzz_files.h $(HDR)
+	$(FUZZ_CLANG) $(filter-out $(FUZZ_INSTRUMENTATION),$(FUZZ_FLAGS)) -fsanitize=address,undefined tests/fuzz/replay.c tests/fuzz/fuzz_$*.c $(FUZZ_SRC_$*) -o $@ -lm -lpthread
+

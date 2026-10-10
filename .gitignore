@@ -273,3 +273,8 @@ evals/tooluse-shifted/results/*.json
 /*.merge.json
 /*.train.json
 /*.context.json
+
+# Sanitized corpus replay binaries on hosts without libFuzzer
+/fuzz-replay-*
+/test-pool-race-bin
+/test-server-race-tsan-bin
