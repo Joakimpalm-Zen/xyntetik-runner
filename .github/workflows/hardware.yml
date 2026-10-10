@@ -1,0 +1,80 @@
+name: candidate hardware
+
+# Never run untrusted pull_request code automatically on the lab machines.
+# Configure the runner-hardware environment's reviewers before enabling this
+# workflow. It records exact-candidate evidence, not an age-only ledger update.
+on:
+  workflow_dispatch:
+    inputs:
+      commit:
+        description: Approved full commit SHA reachable from this repository's main
+        required: true
+      device:
+        description: Provisioned runner label
+        type: choice
+        options: [blackwell, windows-cuda, apple-metal]
+        required: true
+permissions:
+  contents: read
+concurrency:
+  group: hardware-${{ inputs.device }}
+  cancel-in-progress: false
+jobs:
+  device:
+    environment: runner-hardware
+    runs-on: [self-hosted, runner-ci, '${{ inputs.device }}']
+    timeout-minutes: 90
+    env:
+      DEVICE_CLASS: ${{ inputs.device }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+      - name: select approved main-history candidate
+        env:
+          CANDIDATE_SHA: ${{ inputs.commit }}
+        run: |
+          case "$DEVICE_CLASS" in blackwell|windows-cuda|apple-metal) ;; *) exit 2 ;; esac
+          [[ "$CANDIDATE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          git merge-base --is-ancestor "$CANDIDATE_SHA" origin/main
+          git checkout --detach "$CANDIDATE_SHA"
+      - name: fresh native build
+        run: |
+          make clean
+          if [ "${{ runner.os }}" = Windows ]; then
+            make OS=Windows_NT runner test.gguf test-gpu-identity.exe
+          else
+            make runner test.gguf test-gpu-identity
+          fi
+      - name: exact candidate device checks
+        env:
+          CANDIDATE_SHA: ${{ inputs.commit }}
+          GATE_MODEL: ${{ vars.RUNNER_GATE_MODEL }}
+        run: |
+          GATE_MODEL=${GATE_MODEL:-${RUNNER_GATE_MODEL:-}}
+          test -n "$GATE_MODEL"
+          backend=cuda
+          if [ "$DEVICE_CLASS" = apple-metal ]; then backend=metal; fi
+          python3 scripts/hardware-evidence.py --backend "$backend" --commit "$CANDIDATE_SHA" --model "$GATE_MODEL"
+      - name: CUDA source to PTX gate with pinned compiler
+        if: inputs.device == 'blackwell'
+        run: python3 scripts/check-ptx-source.py
+      - name: backend regression gates
+        run: |
+          if [ "$DEVICE_CLASS" = apple-metal ]; then
+            make test-metal-fallback test-metal-prefill test-metal-kquant
+          else
+            make test-tc-overflow test-cuda-iquants
+          fi
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: hardware-${{ inputs.device }}-${{ inputs.commit }}
+          path: |
+            .build/hardware/
+            .build/ci/

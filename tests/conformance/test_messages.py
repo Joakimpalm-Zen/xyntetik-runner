@@ -643,7 +643,7 @@ def sdk(server):
     if _anthropic is None:
         pytest.skip("the anthropic SDK is not installed")
     return _anthropic.Anthropic(base_url=f"http://127.0.0.1:{server.port}",
-                                api_key="not-used", max_retries=0)
+                                api_key="not-used", max_retries=0, timeout=60)
 
 
 @needs_sdk

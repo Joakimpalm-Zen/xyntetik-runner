@@ -31,6 +31,7 @@ bool sock_peer_closed(sock_t fd) {
     return recv(fd, &byte, 1, MSG_PEEK) == 0;
 }
 void sock_close(sock_t fd) { closesocket(fd); }
+bool sock_timed_out(void) { return WSAGetLastError() == WSAETIMEDOUT; }
 // Winsock reports through WSAGetLastError, NOT errno — strerror(errno) here
 // prints "Success" (or a stale unrelated error) for a genuine bind failure,
 // which is worse than no reason at all. FormatMessage gives the real text.
@@ -76,6 +77,7 @@ bool sock_peer_closed(sock_t fd) {
     return recv(fd, &byte, 1, MSG_PEEK | MSG_DONTWAIT) == 0;
 }
 void sock_close(sock_t fd) { close(fd); }
+bool sock_timed_out(void) { return errno == EAGAIN || errno == EWOULDBLOCK; }
 const char *sock_errstr(void) { return strerror(errno); }
 void sock_recv_timeout(sock_t fd, double s) {
     struct timeval tv;

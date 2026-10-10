@@ -145,8 +145,7 @@ class RunnerServer:
         become healthy exits 0 on SIGTERM; anything else after a normal stop
         is a shutdown defect (a double free at exit passed every server test
         for as long as nothing looked). ``strict`` raises on it; a stop that
-        had to escalate to kill is recorded, not raised, since the wait is
-        a wall clock. Windows terminates rather than signals, so its exit
+        had to escalate to kill is a failed bounded shutdown contract. Windows terminates rather than signals, so its exit
         code says nothing and is not judged."""
         if not self.proc:
             return
@@ -164,7 +163,7 @@ class RunnerServer:
         if self._log not in (None, subprocess.DEVNULL):
             self._log.close()
         self._log = None
-        if strict and not WINDOWS and not self.killed and self.exit_code != 0:
+        if strict and (self.killed or (not WINDOWS and self.exit_code != 0)):
             raise TransportError("runner exited uncleanly on stop",
                                  returncode=self.exit_code, log=self._tail())
 

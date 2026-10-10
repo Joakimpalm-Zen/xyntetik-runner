@@ -6,6 +6,10 @@ feature works, the reports and certifications that back a claim, and the
 negative results. Dated files are records of the day they name and are not
 updated afterwards; the newest record of a topic wins.
 
+## Contributing
+
+- [CI execution, sanitizers, fuzzing and controlled device evidence](ci.md)
+
 ## Using Runner
 
 - [One tested workflow: OpenCode against a local model](workflow-opencode.md)

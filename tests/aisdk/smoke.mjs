@@ -114,16 +114,21 @@ await check('tool round trip', async () => {
   // Two model turns with an executed tool between them. This is where an
   // OpenAI-shaped history is easiest to reject: the SDK replays an assistant
   // message carrying tool-call parts and no text, then a tool result keyed by
-  // call id.
+  // call id. One call per turn and an enum city: the test model is random
+  // weights, which append calls and spell long strings until the budget
+  // ends them, and the replayed history then outgrows the conformance
+  // server's 1024-token context beside the tool envelope.
   const r = await generateText({
     model: chat,
     maxOutputTokens: 64,
     temperature: 0,
     stopWhen: stepCountIs(3),
+    toolChoice: 'required',   // a random model's auto turn may answer in prose
+    providerOptions: { openai: { parallelToolCalls: false } },
     tools: {
       get_weather: tool({
         description: 'Look up the weather for a city',
-        inputSchema: z.object({ city: z.string() }),
+        inputSchema: z.object({ city: z.enum(['Oslo']) }),
         execute: async ({ city }) => ({ city, tempC: 12, sky: 'raining' }),
       }),
     },

@@ -2299,6 +2299,28 @@ static void send_capabilities(sock_t fd) {
     free(r.s);
 }
 
+// One receive of a request still being read, before `deadline`. It waits in
+// slices of at most REQUEST_READ_SLICE_S and gives up when a stop has been
+// requested: a client stalled mid-request has been admitted to nothing, and
+// without the check its slot held the shutdown for the whole read deadline
+// (10 s, exactly the bound the conformance harness kills at; 2026-10-10).
+// Returns the bytes read, 0 when the client closed, -1 on the deadline or a
+// socket error, -2 when the server is stopping.
+#define REQUEST_READ_SLICE_S 0.25
+static bool stop_was_requested(void);
+static int recv_request(sock_t fd, char *buf, size_t n, double deadline) {
+    for (;;) {
+        double remaining = deadline - now_s();
+        if (remaining <= 0) return -1;
+        sock_recv_timeout(fd, remaining < REQUEST_READ_SLICE_S ? remaining
+                                                               : REQUEST_READ_SLICE_S);
+        int r = sock_recv(fd, buf, n);
+        if (r >= 0) return r;
+        if (!sock_timed_out()) return -1;
+        if (stop_was_requested()) return -2;
+    }
+}
+
 static void handle_conn(slot_t *s, sock_t fd) {
     // a stalled or dead client must not pin an inference slot: the whole
     // request (header + body) has to arrive within this budget. Generation
@@ -2316,8 +2338,8 @@ static void handle_conn(slot_t *s, sock_t fd) {
     while (got < sizeof(hdr) - 1) {
         double remaining = deadline - now_s();
         if (remaining <= 0) { send_error(fd, 408, "request read timed out"); return; }
-        sock_recv_timeout(fd, remaining);
-        int r = sock_recv(fd, hdr + got, sizeof(hdr) - 1 - got);
+        int r = recv_request(fd, hdr + got, sizeof(hdr) - 1 - got, deadline);
+        if (r == -2) return;   // stopping: nothing was admitted, nothing to answer
         if (r <= 0) {
             // r == 0: orderly close, client is gone. r < 0: timeout (or a
             // socket error, where the 408 write fails harmlessly).
@@ -2385,8 +2407,8 @@ static void handle_conn(slot_t *s, sock_t fd) {
                 send_error(fd, 408, "request read timed out");
                 return;
             }
-            sock_recv_timeout(fd, remaining);
-            int r = sock_recv(fd, body + have, content_length - have);
+            int r = recv_request(fd, body + have, content_length - have, deadline);
+            if (r == -2) { free(body); return; }
             if (r <= 0) {
                 free(body);
                 if (r < 0) send_error(fd, 408, "request read timed out");
@@ -2799,18 +2821,22 @@ static bool accept_fastpath(sock_t fd) {
 // ---------------------------------------------------------------- entry
 
 #ifndef _WIN32
-static volatile sig_atomic_t stop_requested;
-static volatile sig_atomic_t listener_fd = -1;
+// Atomics, not volatile sig_atomic_t: the stop is requested from a signal
+// handler OR from another thread (an embedding caller, the swap-race test),
+// and read by the accept loop's thread. sig_atomic_t is only defined across a
+// handler and the thread it interrupted; between threads it is a data race
+// (ThreadSanitizer, 2026-10-10). A lock-free atomic is async-signal-safe too.
+static atomic_int stop_requested;
+static atomic_int listener_fd = -1;
 
 void server_request_stop(void) {
     // A second signal is the operator overruling the drain: exit now. _exit is
     // async-signal-safe (128+SIGINT — the shell's convention for a Ctrl-C kill),
     // where the alternative on a pinned drain was reaching for SIGKILL.
-    if (stop_requested) _exit(130);
-    stop_requested = 1;
-    int fd = (int)listener_fd;
+    if (atomic_exchange(&stop_requested, 1)) _exit(130);
+    // exchange: a handler and a thread racing here close the listener once
+    int fd = atomic_exchange(&listener_fd, -1);
     if (fd >= 0) {
-        listener_fd = -1;
         // shutdown() BEFORE close(), and it is not belt-and-braces.
         //
         // A blocked accept() is woken by the signal only in the thread the
@@ -2844,7 +2870,7 @@ static void install_stop_handlers(void) {
 // Between the handlers installing and the listener publishing there is nothing
 // a signal can close, so startup polls this at its long stops (model loads)
 // and abandons the launch instead of serving a request nobody wants anymore.
-static bool stop_was_requested(void) { return stop_requested != 0; }
+static bool stop_was_requested(void) { return atomic_load(&stop_requested) != 0; }
 #else
 // Windows port of the same design: stop flag + listener close + drain +
 // second-signal escalation, via SetConsoleCtrlHandler. The handler runs on
@@ -2996,8 +3022,8 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
     // through six translation units.
     memset(&SV, 0, sizeof(SV));
 #ifndef _WIN32
-    stop_requested = 0;
-    listener_fd = -1;
+    atomic_store(&stop_requested, 0);
+    atomic_store(&listener_fd, -1);
 #endif
     install_stop_handlers(); // resets the stop flag + listener on both platforms
     provenance_init();       // the executable's digest, once, before serving
@@ -3406,7 +3432,7 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
         return 1;
     }
 #ifndef _WIN32
-    listener_fd = lfd;
+    atomic_store(&listener_fd, (int)lfd);
 #else
     win_listener_socket = lfd;
 #endif
@@ -3469,7 +3495,7 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
         sock_t cfd = accept(lfd, NULL, NULL);
         if (cfd == SOCK_INVALID) {
 #ifndef _WIN32
-            if (stop_requested) break;
+            if (atomic_load(&stop_requested)) break;
 #else
             if (win_stop_requested) break;
 #endif
@@ -3481,10 +3507,8 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
     // Stop admission first, fail work that has not started, then allow active
     // requests to finish before dismantling the scheduler and model state.
 #ifndef _WIN32
-    if (listener_fd >= 0) {
-        listener_fd = -1;
+    if (atomic_exchange(&listener_fd, -1) >= 0)   // not already closed by the stop
         sock_close(lfd);
-    }
 #else
     if (win_listener_socket != INVALID_SOCKET) {
         win_listener_socket = INVALID_SOCKET;

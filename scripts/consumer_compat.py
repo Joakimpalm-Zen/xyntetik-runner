@@ -74,7 +74,7 @@ def main(argv=None):
         try:
             wait_ready(base, proc)
             results = []
-            py_openai = openai.OpenAI(base_url=base + "/v1", api_key="compat-test")
+            py_openai = openai.OpenAI(base_url=base + "/v1", api_key="compat-test", timeout=60, max_retries=0)
 
             check("openai-python-chat", lambda: py_openai.chat.completions.create(
                 model="runner", messages=[{"role": "user", "content": "Say OK"}],
@@ -86,7 +86,7 @@ def main(argv=None):
             check("openai-python-responses", lambda: py_openai.responses.create(
                 model="runner", input="Say OK", max_output_tokens=4), results)
 
-            py_anthropic = anthropic.Anthropic(base_url=base, api_key="compat-test")
+            py_anthropic = anthropic.Anthropic(base_url=base, api_key="compat-test", timeout=60, max_retries=0)
             check("anthropic-python", lambda: py_anthropic.messages.create(
                 model="runner", max_tokens=4,
                 messages=[{"role": "user", "content": "Say OK"}]), results)

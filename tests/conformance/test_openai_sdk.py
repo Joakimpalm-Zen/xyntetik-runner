@@ -59,7 +59,7 @@ def sdk(server):
     if _openai is None:
         pytest.skip("the openai SDK is not installed")
     return _openai.OpenAI(base_url=f"http://127.0.0.1:{server.port}/v1",
-                          api_key="not-used", max_retries=0)
+                          api_key="not-used", max_retries=0, timeout=60)
 
 
 @pytest.fixture(scope="module")

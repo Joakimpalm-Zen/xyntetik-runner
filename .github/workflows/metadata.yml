@@ -1,0 +1,25 @@
+name: metadata
+
+# Engine CI may skip prose-only changes; these files are still gate inputs.
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: metadata-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - run: python3 scripts/check-agent-docs.py --self-test
+      - run: python3 scripts/check-agent-docs.py
+      - run: python3 scripts/check-generated.py
+      - run: python3 scripts/check-evidence-paths.py
+      - run: python3 scripts/check-ci-roster.py
+      - run: python3 -m unittest discover -s tests -p test_ci_contracts.py
