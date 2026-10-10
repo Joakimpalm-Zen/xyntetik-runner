@@ -2222,7 +2222,9 @@ rounded away), and `bytes_changed` counts the adapted bytes that differ. Both ar
 printed and recorded under `survival` in `OUT.merge.json`. A merge that keeps under 50%
 of the delta is refused, the destination left untouched: merged back onto the 4-bit
 grid its base already sits on, the study's adapter kept 1.8% of its delta (8.9% at 8x
-scale), and the file scored like the base; into Q8_0 it kept 99.5%. Merge into a wider
+scale), and the file scored like the base; into Q8_0 it kept 99.5%. The same holds on any
+grid: a 20-step adapter on Qwen3-0.6B Q8_0, merged back into Q8_0, kept 18.2%, and into
+F16 all of it ([lineage walkthrough](docs/lineage-walkthrough.md)). Merge into a wider
 type, serve `base + --lora`, or pass `--merge-allow-erased` to write it anyway (the
 record then shows `"min_retained": null`). A merge onto a different 4-bit grid (a
 Q4_K_M base into `--quant q4_0`) keeps the delta on average, because the base weights
@@ -2643,7 +2645,7 @@ non-loopback authorities.
 |---|---|
 | `POST /v1/chat/completions` | OpenAI Chat Completions, including SSE, tools, structured output, logprobs, and stop strings. |
 | `POST /v1/responses` | OpenAI Responses translation over the same engine and tool envelope. |
-| `POST /v1/completions` | Legacy raw prompt completions. |
+| `POST /v1/completions` | Legacy raw prompt completions; `prompt` is a string or an array of token ids. |
 | `POST /v1/embeddings` | L2-normalized embeddings, pooled as the GGUF declares in `{arch}.pooling_type`: the mean over every token (also when the key is absent, as on generative models), or the last token (embedding models such as Qwen3-Embedding), with the end token appended first when `tokenizer.ggml.add_eos_token` is set. A model declaring CLS or rank pooling is refused with 400 naming it (since 2026-09-30; before, every model was mean-pooled with no end token). |
 | `POST /v1/rerank` | Documents ranked against a `query` with no reranker model: each document is put to the served model as a question with exactly two answers (`yes`, `no`) and scored with `/v1/decide`'s exact in-context readout. `relevance_score` is P(yes) renormalized over the two answers, `logit` is log P(yes) - log P(no), and `margin` is the logit gap to the next-ranked document, so a client can tell a decisive order from a near tie. Accepts `documents` as strings or `{"text": ...}` objects, `top_n`, `return_documents`, an `instruction` replacing the default ("Judge whether the document answers the query. Answer yes or no."), and `rendering`: `chat-v1` (default; the model's own chat template, thinking off, refused for harmony's channel protocol) or `raw-v1` (`{instruction}\n\nQuery: {query}\nDocument: {document}\nRelevant:` with answers ` yes`/` no`, for base models). The `envelope` carries digests of the query, documents and instruction. The score is the served model's judgement, not a trained reranker's. |
 | `POST /v1/messages` | Anthropic Messages translation. |
@@ -2988,13 +2990,22 @@ budget end or a completed constrained document carries neither. On
 vocabulary spellings in `text` and in `logprobs.tokens` (with `text_offset`
 following the rendered text) instead of dropping them; the default stays the
 OpenAI shape, the flag is refused on the other surfaces and together with
-`response_format`.
+`response_format`. `prompt` may also be an array of token ids, as on OpenAI's
+API: the ids are used exactly as sent (no BOS added, nothing re-tokenized),
+so a receipt records them and `--verify` replays them, and the record's
+prompt text is their decode. An empty array, an id outside the vocabulary,
+a non-integer, and a batch (strings or nested arrays) are refused.
 
 A request that leaves `parallel_tool_calls` out gets several calls per turn,
 as OpenAI's API does (since 1.2.0; before, an absent flag
-meant one call), except on Gemma 4 and Muse, whose parallel grammar is still
-a fixed pair of calls: there an absent flag keeps one call per turn and
-`true` asks for the pair. A `tool_choice` that names one function also gets
+meant one call). On every native protocol a parallel turn is one to eight
+calls, each followed by the model's own stop or the next call; Gemma 4 and
+Muse forced a fixed pair until after 1.2.0, and kept one call when the flag
+was absent. Gemma 4 ends a turn of calls with `<|tool_response>`, which
+Google's generation_config lists as end of generation. Muse separates calls
+with `<|eom|><|start|>assistant` and ends the turn with `<|eot|>`; asked for
+three cities' weather it writes "one at a time" in its reasoning and makes
+one call per turn, which the grammar now leaves to it. A `tool_choice` that names one function also gets
 one call when the flag is absent, as OpenAI's forced function does (on
 `/v1/messages` a named `tool` choice follows Anthropic's default and allows
 several). `false` always means one call.
@@ -3225,6 +3236,43 @@ and admits as many calls as `parallel_tool_calls` allows. `--tool-info`
 reports `qwen3_xml` for this family and `qwen_json` for the ChatML JSON
 protocol, both native. Not measured here: any checkpoint's task quality.
 
+Nemotron Nano (`nemotron`) speaks its own protocol: the declarations as one
+`<AVAILABLE_TOOLS>[...]` JSON list after the caller's system text, and a
+turn's calls as one `<TOOLCALL>[{"name": ..., "arguments": {...}}, ...]</TOOLCALL>`
+block, as NVIDIA's template writes them (template conformance 20 of 20 cases,
+text and tokens). A `tool_choice: auto` turn is parsed, a `required` or named
+one is held by a grammar of one entry, or one to eight when parallel. Before
+2026-10-09 its tools rode the generic JSON envelope; on agent-torture with the
+real 9B Q8_0 file the generic envelope scored 39 of 40 and the native protocol
+39 of 39 with one case excused
+([evidence](docs/compat-reports/nemotron-nano-native-tools-2026-10-09/README.md)).
+`--tool-info` reports `nemotron_json`.
+
+Mistral v0.3 (`mistral`) and Mistral-Nemo (`mistral-nemo`) speak their own
+protocol: the declarations as one `[AVAILABLE_TOOLS] [...]` list before the
+last user turn, a turn's calls as `[TOOL_CALLS]` and a JSON list of
+`{"name": ..., "arguments": {...}}`, and a result as a `[TOOL_RESULTS]` block
+naming its call, all in the publisher templates' bytes (template conformance:
+both families clean in text and tokens). The templates require 9-character
+alphanumeric call ids; any other id (OpenAI's `call_...`) is mapped to one
+from its hash, the same for a call and its result, on all three surfaces.
+`[TOOL_CALLS]` is a control token that decodes to nothing unless a grammar
+admits it by its spelling, so every choice is constrained, `auto` included:
+prose that ends at the model's stop or hands off to the list at the marker.
+The list ends the turn at its `]` (v0.3 writes no end-of-turn after it).
+When the caller sends its own system prompt it is kept on the last user turn
+beside the declarations; the reference template drops it when the
+conversation ends in a tool result, mistral-common keeps it as Runner does.
+Before 2026-10-09 these families rode the generic envelope, whose teaching
+turn the Mistral renderer dropped whenever the caller also sent a system
+prompt; agent-torture on the real Q4_K_M files is 40 of 40 on both arms
+([evidence](docs/compat-reports/mistral-native-tools-2026-10-09/README.md)).
+The v0.1 framing (`mistral-v1`) has no tool protocol and stays generic.
+v0.3 files converted before the publisher replaced its template embed the
+v0.1 form; detection reads the vocabulary for that case (v0.1 and v0.2 have
+no `[AVAILABLE_TOOLS]` token, v0.3 does) and serves such a file the v0.3
+framing and its tools without a flag. `--tool-info` reports `mistral_json`.
+
 Qwen3-Coder, Qwen 3.8, Granite 4.2 and Ornith speak the same
 function/parameter XML and share one contract. A `tool_choice: auto` turn
 (the shipped default, what every agent client sends) is the model's own free
@@ -3234,7 +3282,9 @@ buffered and streamed, on the Chat, Responses and Anthropic surfaces; a
 cannot enforce a choice the caller insisted on. Under that grammar a turn is
 one to eight calls, each followed by either the model's own stop token or
 the next call, the same contract the Qwen JSON protocol keeps;
-`parallel_tool_calls:false` holds it to exactly one. Until 1.1.4 the
+`parallel_tool_calls:false` holds it to exactly one. The first call may
+follow up to two newlines, the blank line a reasoning model writes after
+`</think>`, and nothing else. Until 1.1.4 the
 parallel grammar was a fixed pair of calls, and until 1.2.0 a request that left the flag out got one call per turn: on the
 33-task agent bank (Qwen3.8-Flash-Next) none of Runner's 396 turns carried
 a second call where llama.cpp's carried several in 123 of 396 and Strata's
@@ -3656,8 +3706,8 @@ every tool-choice form, stop sequences, sampling controls, metadata,
 thinking-channel blocks, and Anthropic SSE event ordering. `max_tokens` is
 required. Several `tool_use` blocks in one turn are allowed unless
 `tool_choice.disable_parallel_tool_use` is `true`, Anthropic's own default
-and the same rule `parallel_tool_calls` follows on the OpenAI surfaces
-(including its Gemma 4 and Muse exception); until 1.2.0
+and the same rule `parallel_tool_calls` follows on the OpenAI surfaces;
+until 1.2.0
 an absent field meant one call per turn here.
 
 `thinking.type:"enabled"` requires `budget_tokens`; that field is rejected for

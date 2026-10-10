@@ -38,7 +38,7 @@
     "in-progress": "someone is actively fixing this; see `note`"
   },
   "generated_by": "scripts/template-conformance.py --write-baseline",
-  "generated_at": "2026-10-09T08:02:03+00:00",
+  "generated_at": "2026-10-09T15:51:27+00:00",
   "oracles": {
     "apertus": {
       "source": "hf:swiss-ai/Apertus-8B-Instruct-2509",
@@ -242,54 +242,6 @@
       "reference_excerpt": "'<s>[INST] What color is the sky? [/INST]'",
       "runner_excerpt": "' [INST] What color is the sky? [/INST]'",
       "token_delta": 0
-    },
-    {
-      "id": "nemotron-nano/multi-tool-call",
-      "status": "open",
-      "note": "tools ride the generic envelope; the template's <AVAILABLE_TOOLS>/<TOOLCALL> protocol is not rendered (R2.4.4)",
-      "digest": "8f16c054b8d849e9",
-      "allowlist_applied": [],
-      "first_diff_at": 19,
-      "reference_excerpt": "'<SPECIAL_10>System\\nYou are a helpful assistant.\\n\\nYou can use the following tools to assist'",
-      "runner_excerpt": "'<SPECIAL_10>System\\nReply with exactly one JSON object and nothing else.\\nThe object is {\"ca'",
-      "token_delta": -98,
-      "token_delta_stale": true
-    },
-    {
-      "id": "nemotron-nano/tool-call+result",
-      "status": "open",
-      "note": "tools ride the generic envelope; the template's <AVAILABLE_TOOLS>/<TOOLCALL> protocol is not rendered (R2.4.4)",
-      "digest": "65616d598632a32c",
-      "allowlist_applied": [],
-      "first_diff_at": 19,
-      "reference_excerpt": "'<SPECIAL_10>System\\nYou are a helpful assistant.\\n\\nYou can use the following tools to assist'",
-      "runner_excerpt": "'<SPECIAL_10>System\\nReply with exactly one JSON object and nothing else.\\nThe object is {\"ca'",
-      "token_delta": -99,
-      "token_delta_stale": true
-    },
-    {
-      "id": "nemotron-nano/tool-call-with-text",
-      "status": "open",
-      "note": "tools ride the generic envelope; the template's <AVAILABLE_TOOLS>/<TOOLCALL> protocol is not rendered (R2.4.4)",
-      "digest": "d46b3796c3cc2474",
-      "allowlist_applied": [],
-      "first_diff_at": 19,
-      "reference_excerpt": "'<SPECIAL_10>System\\nYou are a helpful assistant.\\n\\nYou can use the following tools to assist'",
-      "runner_excerpt": "'<SPECIAL_10>System\\nReply with exactly one JSON object and nothing else.\\nThe object is {\"ca'",
-      "token_delta": -100,
-      "token_delta_stale": true
-    },
-    {
-      "id": "nemotron-nano/tool-then-conversation",
-      "status": "open",
-      "note": "tools ride the generic envelope; the template's <AVAILABLE_TOOLS>/<TOOLCALL> protocol is not rendered (R2.4.4)",
-      "digest": "0bebc7b742cdad42",
-      "allowlist_applied": [],
-      "first_diff_at": 19,
-      "reference_excerpt": "'<SPECIAL_10>System\\nYou are a helpful assistant.\\n\\nYou can use the following tools to assist'",
-      "runner_excerpt": "'<SPECIAL_10>System\\nReply with exactly one JSON object and nothing else.\\nThe object is {\"ca'",
-      "token_delta": -99,
-      "token_delta_stale": true
     }
   ]
 }

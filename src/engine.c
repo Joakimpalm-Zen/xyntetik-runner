@@ -59,6 +59,11 @@ bool engine_init(engine *e, model_t *m, tokenizer *tok, sampler *smp) {
                                    "<|endoftext|>", "</s>",
                                    // gemma turn terminators (gemma1-3 / gemma4)
                                    "<end_of_turn>", "<turn|>",
+                                   // gemma4 ends a turn of tool calls with
+                                   // <|tool_response>: google/gemma-4-*'s
+                                   // generation_config lists it (id 50) as
+                                   // eos beside <turn|> (106) and <eos> (1)
+                                   "<|tool_response>",
                                    // phi3 ends assistant turns with <|end|>,
                                    // which is not its declared eos_token_id
                                    "<|end|>",

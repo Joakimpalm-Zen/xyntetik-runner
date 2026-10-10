@@ -9,6 +9,113 @@ rename keep the names that were true when they were written.
 
 ## Unreleased
 
+- **Tools are no longer dropped from Llama 2, Gemma and Mistral v0.1
+  prompts that carry a system prompt.** The generic tool envelope puts its
+  teaching turn (the tool declarations and the call format) in front of the
+  caller's system message, and these three framings fold only one system
+  text into the first user turn: they kept the caller's and discarded the
+  tools. A request with a system prompt and tools rendered the same prompt as
+  one without tools (Llama 2: 31 tokens either way), and only the grammar
+  forced a call out of a model that had never been shown the tools. The
+  leading system messages are now joined, the envelope's first, a blank line
+  apart (Llama 2 now 214 tokens, Mistral v0.1 207, Gemma 219, on Qwen2.5's
+  tokenizer). A single system message renders exactly as before.
+
+- **Mistral v0.3 and Mistral-Nemo speak their own tool protocol.** Their
+  tools rode the generic JSON envelope, whose teaching turn the Mistral
+  renderer dropped whenever the caller also sent a system prompt: the model
+  was then never shown the tools, and only the grammar forced a call out.
+  Runner now declares tools in the publisher templates' `[AVAILABLE_TOOLS]`
+  block before the last user turn, replays calls as `[TOOL_CALLS]` lists and
+  results as `[TOOL_RESULTS]` blocks with 9-character call ids (any other id
+  maps to one by its hash, call and result alike, on the Chat, Responses and
+  Anthropic surfaces), and constrains and parses a turn's `[TOOL_CALLS]`
+  list, buffered and streamed. The marker is a control token, so `auto` is
+  constrained too: prose, or a hand-off to the list. Template conformance:
+  both families clean in text and tokens. Agent-torture on the real Q4_K_M
+  files: 40 of 40 on both arms for both models (suite R2.4.3). The v0.1
+  framing stays generic.
+
+- **Mistral v0.3 files with the publisher's old template get the v0.3
+  framing.** v0.3 GGUFs converted before the publisher replaced its
+  template embed the v0.1 form (`' [/INST]'`), and detection served them
+  v0.1's framing, which the model was not trained on, and no tool
+  protocol. A v0.1-form template over a vocabulary holding
+  `[AVAILABLE_TOOLS]` (a v0.3 token; v0.1 and v0.2 have none) now detects as
+  `mistral`, so the pinned v0.3 file is served its own framing and native
+  tools without `--chat-template` (suite R4.22.7).
+
+- **Nemotron Nano speaks its own tool protocol.** Its tools rode the generic
+  JSON envelope, which also replaced the caller's system prompt with the
+  envelope's instructions; the template's own `<AVAILABLE_TOOLS>` list and
+  `<TOOLCALL>[...]` calls were the last open rows of the template
+  conformance backlog. Runner now renders the declarations after the
+  caller's system text and replays calls in NVIDIA's form, parses a
+  `<TOOLCALL>` block back into `tool_calls`, buffered and streamed, and holds
+  a required or named turn to one entry (one to eight when parallel) with a
+  grammar; an auto turn is the model's own, parsed. Template conformance:
+  20 of 20 cases identical to NVIDIA's template in text and tokens.
+  Agent-torture on the real 9B Q8_0 file: generic 39 of 40, native 39 of
+  39 with one case excused (suite R2.4.4).
+
+- **`/v1/completions` takes `prompt` as an array of token ids.** OpenAI's
+  API, vLLM and llama.cpp accept it; Runner answered "missing prompt". The
+  ids are used exactly as sent (no BOS added, nothing re-tokenized), so a
+  receipt records them and `--verify` replays them. A request sent as text
+  and the same request sent as the ids its receipt recorded leave identical
+  token lists and identical greedy output. An empty array, an id outside
+  the vocabulary, a non-integer and a batch are refused with a 400. Found
+  while probing Muse's unconstrained output (suite R4.26.19(e)).
+
+- **Muse: a parallel tool turn carries one to eight calls in the model's
+  own form, and an absent `parallel_tool_calls` now means several there
+  too.** The parallel grammar was a fixed pair joined by a bare
+  `assistant`, which refused the model's own separator (`<|eom|><|start|>`,
+  control tokens admitted only by their spelling) and pushed it to type a
+  turn header as text. On Muse-Glimmer-30B (CPU, temperature 0, `required`)
+  it then gave two calls every time, the second a repeat of the first city
+  in 5 of 6 turns. The separator is now spelled in the grammar, and the turn
+  ends at the model's `<|eot|>` or opens the next call, up to eight. The same
+  prompts now give one call: unconstrained, the model writes "one at a time"
+  in its reasoning and calls once per turn, so one call is its own choice.
+
+- **A lineage walkthrough on a real model (R17.1.5).**
+  `docs/lineage-walkthrough.md` runs one chain on Qwen3-0.6B: quantize to
+  Q8_0, train a LoRA, merge, record a fidelity evaluation, serve with
+  receipts, then `--lineage` from the file, from the receipts and from a
+  copy with one changed byte, every output as printed. It found that a
+  Q8_0 base merged back into Q8_0 keeps only 18.2% of a 20-step adapter's
+  delta; the merge refusal's advice, which named q8_0 as a remedy, now
+  points to a type wider than the base's own (f16). The README's "Prove
+  what a model did" and the site's receipts page gain a sentence on
+  lineage.
+
+- **Gemma 4: a parallel tool turn carries one to eight calls, and an absent
+  `parallel_tool_calls` now means several there too.** The native grammar
+  compiled a parallel turn as a fixed pair: on Gemma 4 E4B Q4_K_M (CPU,
+  temperature 0, `required`), a prompt needing one city's weather got
+  `Oslo, Oslo` and one needing three lost the third. Each call is now
+  followed by the model's own stop or the next call, up to eight: the same
+  prompts give one, two and three calls, thinking on and off. Gemma 4 ends
+  a turn of calls with `<|tool_response>`, which Google's generation_config
+  lists as end of generation (id 50, beside `<turn|>` and `<eos>`); Runner
+  now stops on it too, where unconstrained output could run past a call.
+  The calls share the grammar's expansion budget, so a tool whose
+  arguments fit a pair but not eight copies steps the cap down (8, 4, 2,
+  1) instead of failing. Muse keeps its fixed pair and the one-call
+  default for now (suite R4.26.19(b)).
+
+- **A required tool turn with thinking on keeps the model's own blank line
+  after `</think>`.** On the Qwen JSON and function/parameter XML protocols
+  a required or named turn opened on the literal `<tool_call>`, so the
+  newline the template itself writes after a closed thought
+  (`</think>\n\n`) was vetoed and the model was pushed straight to the
+  opener, off its own distribution (with `auto` the newline was already
+  admitted). The first call now admits up to two newlines ahead of its
+  opener and nothing else: no text, no third newline, and still no turn
+  without a call. Found with a scripted reply, which the veto ended with no
+  call at all (suite R4.26.19(d)).
+
 - **`--merge-lora` measures what the merge kept, and refuses a merge that
   rounded the fine-tune away.** Each adapted row is also written from the
   base alone at the same output type; the projection of the difference onto

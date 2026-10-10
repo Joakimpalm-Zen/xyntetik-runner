@@ -1435,6 +1435,30 @@ static snode *atem_lit(const char *s) {
     return n;
 }
 
+// The opener of a turn's FIRST native call, with the blank line a reasoning
+// model writes after `</think>` (Qwen3's template renders `</think>\n\n` +
+// content): the opener alone, or behind one or two newlines, and nothing
+// else. A literal opener vetoed that newline and pushed the model straight
+// to the call, off its own distribution (R4.26.19(d)); a raw gap would also
+// admit text, and a stop at a raw tail could end a required turn callless.
+static snode *native_lead_lit(const char *opener) {
+    snode *n = sn_new(SN_ENUM);
+    if (!n) return NULL;
+    n->lits = calloc(3, sizeof(*n->lits));
+    if (!n->lits) { schema_free(n); return NULL; }
+    size_t len = strlen(opener);
+    for (int k = 0; k < 3; k++) {
+        char *s = malloc(len + (size_t)k + 1);
+        if (!s) { schema_free(n); return NULL; }
+        memset(s, '\n', (size_t)k);
+        memcpy(s + k, opener, len + 1);
+        n->lits[n->n_lits++] = s;
+    }
+    if (!enum_index(n)) { schema_free(n); return NULL; }
+    n->whitespace_significant = true;
+    return n;
+}
+
 static snode *atem_raw(const char *sentinel) {
     snode *n = sn_new(SN_RAW);
     if (!n) return NULL;
@@ -1816,37 +1840,80 @@ snode *schema_compile_atem_turn(struct jv *tools, bool allow_user,
     return root;
 }
 
+// Free bytes allowed between two calls of one turn (a separator and the next
+// opener), and after the last call a turn may carry (too few to spell one).
+#define NATIVE_GAP_BYTES 16
+#define NATIVE_END_BYTES 4
+
+// After a complete Muse call in a parallel turn: end the turn or open the
+// next call, at most `remaining` more. The model's trained form (template.c,
+// assistant_calls_render) separates calls with `<|eom|><|start|>assistant`
+// and ends the turn with `<|eot|>`. Both controls decode to no bytes, so the
+// SEPARATOR is spelled in the grammar: a control token is admitted by its
+// spelling (engine.c constraint_spelling_ok) and its spelling is what the
+// validator consumes. The pair this replaced spelled only `assistant`, which
+// refused the model's own `<|eom|>` and pushed it to type a turn header as
+// text; on Muse-Glimmer-30B (CPU, required, 2026-10-09) it then repeated the
+// first city as the second call in 5 of 6 turns. The gap is bounded to the
+// separator plus a few bytes, the Qwen protocols' raw gap (native_more_calls):
+// a stop there ends the turn, and past the last admitted call it is too short
+// to spell another separator.
+#define ATEM_CALL_SEP "<|eom|><|start|>assistant"
+static snode *atem_more_calls(jv *tools, const char *only, int remaining,
+                              char *err, int errcap) {
+    snode *raw = atem_raw_bounded("<|eot|>", remaining
+        ? (int)sizeof(ATEM_CALL_SEP) - 1 + NATIVE_END_BYTES : NATIVE_END_BYTES);
+    if (!raw) goto oom;
+    raw->whitespace_significant = true;
+    if (!remaining) return raw;
+    snode *seq = atem_seq(2);
+    snode *call = seq ? schema_compile_atem_turn(tools, false, only, NULL,
+                                                 ATEM_TURN_DIRECT, err, errcap)
+                      : NULL;
+    snode *tail = call ? atem_more_calls(tools, only, remaining - 1, err, errcap)
+                       : NULL;
+    raw->lits = calloc(1, sizeof(*raw->lits));
+    raw->alts = calloc(1, sizeof(*raw->alts));
+    if (!seq || !call || !tail || !raw->lits || !raw->alts ||
+        !(raw->lits[0] = strdup(ATEM_CALL_SEP))) {
+        schema_free(seq); schema_free(call); schema_free(tail); schema_free(raw);
+        goto oom;
+    }
+    raw->n_lits = 1;
+    atem_seq_add(seq, call);
+    atem_seq_add(seq, tail);
+    seq->whitespace_significant = true;
+    raw->alts[raw->n_alts++] = seq;
+    return raw;
+oom:
+    if (!err[0]) snprintf(err, errcap, "out of memory compiling parallel atem turn");
+    return NULL;
+}
+
 snode *schema_compile_atem_parallel(struct jv *tools, const char *only_tool,
                                     char *err, int errcap) {
-    // Muse separates native calls with <|eom|><|start|>; those controls decode
-    // to no visible bytes, leaving the literal `assistant` before the next
-    // recipient header. A parallel request asks for a bounded pair, keeping
-    // truncation closable while exercising the model's trained multi-turn form.
-    snode *root = atem_seq(3);
-    snode *first = schema_compile_atem_turn(
-        tools, false, only_tool, NULL, ATEM_TURN_DIRECT, err, errcap);
-    snode *second = schema_compile_atem_turn(
-        tools, false, only_tool, NULL, ATEM_TURN_DIRECT, err, errcap);
-    if (!root || !first || !second) {
-        schema_free(first); schema_free(second); schema_free(root);
+    // one to NATIVE_PARALLEL_MAX_CALLS calls; it was a fixed PAIR until
+    // 2026-10-09 (see atem_more_calls)
+    snode *root = atem_seq(2);
+    snode *first = root ? schema_compile_atem_turn(
+        tools, false, only_tool, NULL, ATEM_TURN_DIRECT, err, errcap) : NULL;
+    snode *rest = first ? atem_more_calls(tools, only_tool,
+                                          NATIVE_PARALLEL_MAX_CALLS - 1,
+                                          err, errcap) : NULL;
+    if (!root || !first || !rest) {
+        schema_free(first); schema_free(rest); schema_free(root);
         if (!err[0]) snprintf(err, errcap, "out of memory compiling parallel atem turn");
         return NULL;
     }
     root->whitespace_significant = true;
     root->props[root->n_props++] = first;
-    snode *middle = atem_lit("assistant");
-    if (!middle) { schema_free(second); schema_free(root); goto parallel_oom; }
-    root->props[root->n_props++] = middle;
-    root->props[root->n_props++] = second;
+    root->props[root->n_props++] = rest;
     return root;
-parallel_oom:
-    if (!err[0]) snprintf(err, errcap, "out of memory compiling parallel atem turn");
-    return NULL;
 }
 
 // ------------------------------------------------------------- Qwen tools
 
-static snode *qwen_call_tail(jv *tool, char *err, int errcap) {
+static snode *qwen_call_tail(jv *tool, const char *close, char *err, int errcap) {
     jv *fn = jv_get(tool, "function");
     if (!fn) fn = tool;
     const char *name = jv_str(jv_get(fn, "name"), "tool");
@@ -1862,7 +1929,7 @@ static snode *qwen_call_tail(jv *tool, char *err, int errcap) {
     if (!seq || !args ||
         !atem_seq_add(seq, atem_lit("\", \"arguments\": ")) ||
         !atem_seq_add(seq, args) ||
-        !atem_seq_add(seq, atem_lit("}\n</tool_call>"))) {
+        !atem_seq_add(seq, atem_lit(close))) {
         if (!seq || seq->n_props < 2) schema_free(args);
         schema_free(seq);
         if (!err[0]) snprintf(err, errcap,
@@ -1895,7 +1962,7 @@ static snode *qwen_call(jv *tools, const char *only_tool, bool lead,
     names->lits = calloc((size_t)selected, sizeof(*names->lits));
     choice->alts = calloc((size_t)selected, sizeof(*choice->alts));
     if (!names->lits || !choice->alts) goto fail;
-    if (lead && !atem_seq_add(root, atem_lit("<tool_call>"))) goto fail;
+    if (lead && !atem_seq_add(root, native_lead_lit("<tool_call>"))) goto fail;
     if (!atem_seq_add(root, atem_lit("\n{\"name\": \""))) goto fail;
     names->min_items = 1;
     names->whitespace_significant = true;
@@ -1914,7 +1981,7 @@ static snode *qwen_call(jv *tools, const char *only_tool, bool lead,
         if (!names->lits[names->n_lits]) goto fail;
         names->n_lits++;
         choice->alts[choice->n_alts] = qwen_call_tail(
-            tools->items[i], err, errcap);
+            tools->items[i], "}\n</tool_call>", err, errcap);
         if (!choice->alts[choice->n_alts]) goto fail;
         choice->n_alts++;
     }
@@ -1949,10 +2016,6 @@ static snode *qwen_or_final(snode *body, jv *final_schema,
     return root;
 }
 
-// Free bytes allowed between two calls of one turn (a separator and the next
-// opener), and after the last call a turn may carry (too few to spell one).
-#define NATIVE_GAP_BYTES 16
-#define NATIVE_END_BYTES 4
 
 // Free assistant text with a native-call handoff. Unlike a catch-all final
 // branch, seeing the FULL opener commits to the tool grammar even after prose.
@@ -2128,6 +2191,188 @@ snode *schema_compile_qwen_parallel(jv *tools, const char *only_tool,
     return native_parallel_calls(qwen_call, tools, only_tool, err, errcap);
 }
 
+// ----------------------------------------------------- Nemotron Nano tools
+
+// One entry of Nemotron Nano's call list: `{"name": "N", "arguments": {...}}`,
+// the name chosen from the declared tools and the arguments compiled from its
+// schema exactly as the Qwen JSON call's are.
+static snode *nemo_entry(jv *tools, const char *only, const char *fam,
+                         char *err, int errcap) {
+    int selected = 0;
+    for (int i = 0; i < tools->n; i++) {
+        jv *fn = jv_get(tools->items[i], "function");
+        if (!fn) fn = tools->items[i];
+        const char *name = jv_str(jv_get(fn, "name"), NULL);
+        if (!only || (name && !strcmp(name, only))) selected++;
+    }
+    if (!selected) { snprintf(err, errcap, "named %s tool is not declared", fam); return NULL; }
+    snode *root = atem_seq(3);
+    snode *names = sn_new(SN_ENUM), *choice = sn_new(SN_COND);
+    if (!root || !names || !choice) goto fail;
+    names->lits = calloc((size_t)selected, sizeof(*names->lits));
+    choice->alts = calloc((size_t)selected, sizeof(*choice->alts));
+    if (!names->lits || !choice->alts) goto fail;
+    names->min_items = 1;
+    names->whitespace_significant = choice->whitespace_significant = true;
+    root->whitespace_significant = true;
+    if (!atem_seq_add(root, atem_lit("{\"name\": \""))) goto fail;
+    for (int i = 0; i < tools->n; i++) {
+        jv *fn = jv_get(tools->items[i], "function");
+        if (!fn) fn = tools->items[i];
+        const char *name = jv_str(jv_get(fn, "name"), NULL);
+        if (!name || !name[0]) { snprintf(err, errcap, "%s tool %d has no function name", fam, i); goto fail; }
+        if (only && strcmp(name, only)) continue;
+        if (!(names->lits[names->n_lits] = strdup(name))) goto fail;
+        names->n_lits++;
+        if (!(choice->alts[choice->n_alts] = qwen_call_tail(tools->items[i], "}", err, errcap)))
+            goto fail;
+        choice->n_alts++;
+    }
+    if (!enum_index(names) || !atem_seq_add(root, names)) goto fail;
+    names = NULL;
+    if (!atem_seq_add(root, choice)) goto fail;
+    return root;
+fail:
+    schema_free(names); schema_free(choice); schema_free(root);
+    if (!err[0]) snprintf(err, errcap, "out of memory compiling %s call", fam);
+    return NULL;
+}
+
+// After an entry: close the list, or (while `remaining`) a separator and the
+// next entry. The two branches open with different bytes (`]` and `,`).
+static snode *nemo_rest(jv *tools, const char *only, const char *fam,
+                        const char *close, int remaining, char *err, int errcap) {
+    snode *end = atem_lit(close);
+    if (!end || !remaining) return end;
+    snode *seq = atem_seq(3), *u = sn_new(SN_UNION);
+    snode *entry = seq ? nemo_entry(tools, only, fam, err, errcap) : NULL;
+    snode *tail = entry ? nemo_rest(tools, only, fam, close, remaining - 1, err, errcap) : NULL;
+    if (!seq || !u || !entry || !tail || !(u->alts = calloc(2, sizeof(*u->alts))) ||
+        !atem_seq_add(seq, atem_lit(", "))) {
+        schema_free(seq); schema_free(u); schema_free(entry); schema_free(tail); schema_free(end);
+        if (!err[0]) snprintf(err, errcap, "out of memory compiling Nemotron calls");
+        return NULL;
+    }
+    atem_seq_add(seq, entry);
+    atem_seq_add(seq, tail);
+    seq->whitespace_significant = u->whitespace_significant = true;
+    u->alts[u->n_alts++] = end;
+    u->alts[u->n_alts++] = seq;
+    return u;
+}
+
+// A required or named Nemotron Nano turn: one `<TOOLCALL>[...]</TOOLCALL>`
+// block, one entry, or up to NATIVE_PARALLEL_MAX_CALLS when parallel. The
+// opener may follow the blank line a reasoning model writes after `</think>`
+// (native_lead_lit). The turn end after the block is the model's own stop.
+snode *schema_compile_nemotron_turn(jv *tools, const char *only_tool,
+                                    bool parallel, char *err, int errcap) {
+    err[0] = 0;
+    if (!tools || tools->type != J_ARR || tools->n <= 0 || tools->n > 60) {
+        snprintf(err, errcap, "Nemotron tools must be a non-empty array of at most 60 tools");
+        return NULL;
+    }
+    snode *root = atem_seq(3);
+    snode *open = root ? native_lead_lit("<TOOLCALL>[") : NULL;
+    snode *entry = open ? nemo_entry(tools, only_tool, "Nemotron", err, errcap) : NULL;
+    snode *rest = entry ? nemo_rest(tools, only_tool, "Nemotron", "]</TOOLCALL>",
+                                    parallel ? NATIVE_PARALLEL_MAX_CALLS - 1 : 0,
+                                    err, errcap) : NULL;
+    if (!root || !open || !entry || !rest) {
+        schema_free(root); schema_free(open); schema_free(entry); schema_free(rest);
+        if (!err[0]) snprintf(err, errcap, "out of memory compiling Nemotron turn");
+        return NULL;
+    }
+    atem_seq_add(root, open);
+    atem_seq_add(root, entry);
+    atem_seq_add(root, rest);
+    root->whitespace_significant = true;
+    return root;
+}
+
+// ----------------------------------------------------- Mistral tools
+
+// The list after Mistral's `[TOOL_CALLS]`: `[` (Nemo) or ` [` (v0.3, and
+// what a Nemo file carrying the v0.3 template writes), entries as Nemotron's,
+// closed by the bare `]`. The turn ends there: the model writes no eos after
+// the list on v0.3, so the constraint's own end stops it.
+static snode *mistral_list(jv *tools, const char *only, bool parallel,
+                           char *err, int errcap) {
+    snode *root = atem_seq(3), *open = sn_new(SN_ENUM);
+    snode *entry = NULL, *rest = NULL;
+    if (!root || !open || !(open->lits = calloc(2, sizeof(*open->lits))) ||
+        !(open->lits[0] = strdup("[")) || !(open->lits[1] = strdup(" [")))
+        goto fail;
+    open->n_lits = 2;
+    open->min_items = 1;
+    open->whitespace_significant = true;
+    if (!enum_index(open)) goto fail;
+    entry = nemo_entry(tools, only, "Mistral", err, errcap);
+    rest = entry ? nemo_rest(tools, only, "Mistral", "]",
+                             parallel ? NATIVE_PARALLEL_MAX_CALLS - 1 : 0,
+                             err, errcap) : NULL;
+    if (!entry || !rest) goto fail;
+    atem_seq_add(root, open);
+    atem_seq_add(root, entry);
+    atem_seq_add(root, rest);
+    root->whitespace_significant = true;
+    return root;
+fail:
+    schema_free(root); schema_free(open); schema_free(entry); schema_free(rest);
+    if (!err[0]) snprintf(err, errcap, "out of memory compiling Mistral turn");
+    return NULL;
+}
+
+// A Mistral v0.3 or Nemo turn. Required or named: `[TOOL_CALLS]` and the
+// list. Auto: prose ending at the model's stop, or handing off to the list
+// at the full `[TOOL_CALLS]`; with a response_format, that schema instead of
+// the prose (its `{` cannot open the marker).
+snode *schema_compile_mistral_turn(jv *tools, bool allow_text,
+                                   const char *only_tool, jv *final_schema,
+                                   bool parallel, char *err, int errcap) {
+    err[0] = 0;
+    if (!tools || tools->type != J_ARR || tools->n <= 0 || tools->n > 60) {
+        snprintf(err, errcap, "Mistral tools must be a non-empty array of at most 60 tools");
+        return NULL;
+    }
+    snode *list = mistral_list(tools, only_tool, parallel, err, errcap);
+    if (!list) return NULL;
+    if (allow_text && !final_schema) {
+        snode *raw = atem_raw("</s>");
+        if (!raw || !(raw->lits = calloc(1, sizeof(*raw->lits))) ||
+            !(raw->alts = calloc(1, sizeof(*raw->alts))) ||
+            !(raw->lits[0] = strdup("[TOOL_CALLS]"))) {
+            schema_free(raw); schema_free(list);
+            snprintf(err, errcap, "out of memory compiling Mistral turn");
+            return NULL;
+        }
+        raw->n_lits = 1;
+        raw->alts[raw->n_alts++] = list;
+        raw->whitespace_significant = true;
+        return raw;
+    }
+    snode *call = atem_seq(2);
+    if (!call || !atem_seq_add(call, atem_lit("[TOOL_CALLS]"))) {
+        schema_free(call); schema_free(list);
+        snprintf(err, errcap, "out of memory compiling Mistral turn");
+        return NULL;
+    }
+    atem_seq_add(call, list);
+    call->whitespace_significant = true;
+    if (!allow_text) return call;
+    snode *final = compile_node(final_schema, err, errcap, 0);
+    snode *root = final ? sn_new(SN_UNION) : NULL;
+    if (!root || !(root->alts = calloc(2, sizeof(*root->alts)))) {
+        schema_free(call); schema_free(final); schema_free(root);
+        if (!err[0]) snprintf(err, errcap, "out of memory compiling Mistral turn");
+        return NULL;
+    }
+    root->whitespace_significant = true;
+    root->alts[root->n_alts++] = call;
+    root->alts[root->n_alts++] = final;
+    return root;
+}
+
 // XML parameter lists use the existing ordered native-member automaton.
 // Strings are raw text; all other values retain JSON's own schema machine.
 static snode *coder_call_tail(jv *tool, char *err, int errcap) {
@@ -2216,7 +2461,8 @@ static snode *coder_call(jv *tools, const char *only, bool lead, char *err, int 
         choice->alts[choice->n_alts++]=tail;
     }
     if (!names->n_lits) { snprintf(err,errcap,"named Qwen3-Coder tool is not declared");goto bad; }
-    if (!enum_index(names) || !atem_seq_add(seq,atem_lit(lead?"<tool_call>\n<function=":"\n<function="))) goto bad;
+    if (!enum_index(names) ||
+        !atem_seq_add(seq,lead?native_lead_lit("<tool_call>\n<function="):atem_lit("\n<function="))) goto bad;
     atem_seq_add(seq,names);atem_seq_add(seq,choice);return seq;
 bad:
     schema_free(seq);schema_free(names);schema_free(choice);
@@ -3048,23 +3294,78 @@ bool schema_gemma4_constrainable(jv *tools, char *err, int errcap) {
     return true;
 }
 
-snode *schema_compile_gemma4_parallel(jv *tools, const char *only_tool,
-                                      char *err, int errcap) {
+// After a complete gemma4 call in a parallel turn: end the turn or open the
+// next call, at most `remaining` more. The same bounded raw gap as the Qwen
+// protocols (native_more_calls): the model's own stop token ends the turn
+// there (gemma4 closes a turn of calls with <|tool_response>, which the
+// engine counts as a stop, as the publisher's generation_config does), and
+// the full `<|tool_call>` opener hands off to the next call's `call:NAME`.
+// Gemma4 writes consecutive calls with no separator at all.
+static snode *g4_more_calls(jv *tools, const char *only, int remaining,
+                            int *budget, char *err, int errcap) {
+    snode *raw = atem_raw_bounded("<turn|>", remaining ? NATIVE_GAP_BYTES
+                                                       : NATIVE_END_BYTES);
+    if (!raw) goto oom;
+    raw->whitespace_significant = true;
+    if (!remaining) return raw;
+    snode *seq = atem_seq(3);
+    snode *open = seq ? atem_lit("call:") : NULL;
+    snode *call = open ? g4_call(tools, only, false, budget, err, errcap) : NULL;
+    snode *tail = call ? g4_more_calls(tools, only, remaining - 1, budget,
+                                       err, errcap) : NULL;
+    raw->lits = calloc(1, sizeof(*raw->lits));
+    raw->alts = calloc(1, sizeof(*raw->alts));
+    if (!seq || !open || !call || !tail || !raw->lits || !raw->alts ||
+        !(raw->lits[0] = strdup("<|tool_call>"))) {
+        schema_free(seq); schema_free(open); schema_free(call);
+        schema_free(tail); schema_free(raw);
+        goto oom;
+    }
+    raw->n_lits = 1;
+    atem_seq_add(seq, open);
+    atem_seq_add(seq, call);
+    atem_seq_add(seq, tail);
+    seq->whitespace_significant = true;
+    raw->alts[raw->n_alts++] = seq;
+    return raw;
+oom:
+    if (!err[0]) snprintf(err, errcap, "out of memory compiling parallel gemma4 turn");
+    return NULL;
+}
+
+static snode *g4_parallel_calls(jv *tools, const char *only_tool, int max_calls,
+                                char *err, int errcap) {
     snode *root = atem_seq(2);
     int budget = G4_MAX_EXPANSIONS;
-    snode *first = g4_call(tools, only_tool, true, &budget, err, errcap);
-    snode *second = first ? g4_call(tools, only_tool, true, &budget, err, errcap)
-                          : NULL;
-    if (!root || !first || !second) {
-        schema_free(first); schema_free(second); schema_free(root);
+    snode *first = root ? g4_call(tools, only_tool, true, &budget, err, errcap)
+                        : NULL;
+    snode *rest = first ? g4_more_calls(tools, only_tool, max_calls - 1,
+                                        &budget, err, errcap) : NULL;
+    if (!root || !first || !rest) {
+        schema_free(first); schema_free(rest); schema_free(root);
         if (!err[0]) snprintf(err, errcap,
                               "out of memory compiling parallel gemma4 turn");
         return NULL;
     }
     root->whitespace_significant = true;
     root->props[root->n_props++] = first;
-    root->props[root->n_props++] = second;
+    root->props[root->n_props++] = rest;
     return root;
+}
+
+// A parallel gemma4 turn is one to NATIVE_PARALLEL_MAX_CALLS calls, each
+// followed by the model's own stop or the next call (it was a fixed PAIR
+// until 2026-10-09: one call to make meant inventing a second). Every call
+// shares the G4_MAX_EXPANSIONS budget, so a tool whose argument grammar fit
+// two copies may not fit eight; the cap then steps down (8, 4, 2, 1) rather
+// than refusing a request the pair accepted.
+snode *schema_compile_gemma4_parallel(jv *tools, const char *only_tool,
+                                      char *err, int errcap) {
+    for (int max_calls = NATIVE_PARALLEL_MAX_CALLS; ; max_calls /= 2) {
+        err[0] = 0;
+        snode *root = g4_parallel_calls(tools, only_tool, max_calls, err, errcap);
+        if (root || max_calls <= 1 || !strstr(err, "maxItems")) return root;
+    }
 }
 
 // ---------------------------------------------------------------- validate

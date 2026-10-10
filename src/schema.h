@@ -103,6 +103,17 @@ snode *schema_compile_qwen_turn(struct jv *tools, bool allow_final,
 #define NATIVE_PARALLEL_MAX_CALLS 8
 snode *schema_compile_qwen_parallel(struct jv *tools, const char *only_tool,
                                     char *err, int errcap);
+// Nemotron Nano's native turn for a required or named choice:
+// `<TOOLCALL>[{"name": ..., "arguments": {...}}, ...]</TOOLCALL>`, one entry,
+// or one to NATIVE_PARALLEL_MAX_CALLS when parallel.
+snode *schema_compile_nemotron_turn(struct jv *tools, const char *only_tool,
+                                    bool parallel, char *err, int errcap);
+// Mistral v0.3 / Nemo: `[TOOL_CALLS]` then the JSON call list. allow_text
+// (an auto turn) admits prose that may hand off to the list, or the
+// final_schema instead when given.
+snode *schema_compile_mistral_turn(jv *tools, bool allow_text,
+                                   const char *only_tool, jv *final_schema,
+                                   bool parallel, char *err, int errcap);
 // Wrap a JSON/schema payload in Muse's user-recipient header. The second
 // branch starts after a reasoning close has already consumed ` to=`.
 snode *schema_compile_muse_user_payload(struct jv *schema,

@@ -54,7 +54,10 @@ def _serve_gemma4(runner_bin, model):
     port = _free_port()
     proc = subprocess.Popen(
         [str(runner_bin), "-m", str(model), "--serve", "--port", str(port),
-         "-c", "512", "--gpu", "off", "--no-tray",
+         # 1024: since 2026-10-09 a request silent on parallel_tool_calls gets
+         # several calls on gemma4 too, and the generic envelope it falls back
+         # to then teaches the longer {"calls":[...]} form
+         "-c", "1024", "--gpu", "off", "--no-tray",
          "--chat-template", "gemma4"],
         cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     try:

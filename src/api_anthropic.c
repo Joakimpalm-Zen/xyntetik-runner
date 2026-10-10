@@ -253,7 +253,10 @@ static bool anth_blocks(jv *messages, int message_index, jv *msg,
             sb_esc(&calls_json, name, strlen(name));
             sb_lit(&calls_json, "\",\"arguments\":\"");
             sb_esc(&calls_json, aj.s ? aj.s : "{}", aj.s ? aj.n : 2);
-            sb_lit(&calls_json, "\"}}");
+            // the id rides along for the families whose call turn names it
+            sb_lit(&calls_json, "\"},\"id\":\"");
+            sb_esc(&calls_json, id, strlen(id));
+            sb_lit(&calls_json, "\"}");
             free(aj.s);
             if (!first_call_name) first_call_name = name;
         } else if (!strcmp(bt, "tool_result")) {
@@ -315,6 +318,13 @@ static bool anth_blocks(jv *messages, int message_index, jv *msg,
                     return false;
                 }
                 turn_add_native(t, "tool", result, name, NULL);
+            } else if (tmpl == TMPL_MISTRAL || tmpl == TMPL_MISTRAL_NEMO) {
+                // Mistral's result block names the call it answers
+                sbuf w = {0};
+                tool_result_wrap_id(tmpl, result, id, &w);
+                free(result);
+                if (!w.s || w.failed) { free(w.s); free(body.s); free(calls_json.s); t->failed = true; return true; }
+                turn_add_native(t, "tool", w.s, NULL, NULL);
             } else if (tmpl_ornith_like(tmpl)) {
                 // ornith frames a result as a <tool_response> block in a user
                 // turn; its own render loop keys on that content prefix.
@@ -807,8 +817,7 @@ static char *messages_prompt(slot_t *s, sock_t fd, jv *req, tool_envelope *env,
     // surfaces: this is what makes an Anthropic tool call and a chat tool call
     // the same internal agent action
     // Absent follows Anthropic's own default, parallel use allowed (owner,
-    // 2026-10-09, with the OpenAI surfaces), except where the family's
-    // parallel grammar is still a fixed pair (tool_parallel_default); an
+    // 2026-10-09, with the OpenAI surfaces; tool_parallel_default); an
     // explicit disable_parallel_tool_use always wins.
     jv *par = raw_choice ? jv_get(raw_choice, "disable_parallel_tool_use") : NULL;
     bool parallel = par && par->type == J_BOOL ? !par->b

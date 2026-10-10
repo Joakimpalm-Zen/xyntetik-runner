@@ -38,6 +38,14 @@ WEATHER = {
     },
 }
 
+# A tool small enough that the generic envelope's teaching turn fits this
+# suite's 1024-token context BESIDE a system prompt (the test model tokenizes
+# close to one token per character). Until 2026-10-09 the llama2 framing the
+# test model falls back to dropped the teaching turn whenever a system prompt
+# was present, which is what let WEATHER fit here.
+PING = {"name": "ping", "input_schema": {"type": "object", "properties": {},
+                                         "additionalProperties": False}}
+
 
 # ------------------------------------------------------------------- buffered
 def test_messages_is_advertised_in_capabilities(client):
@@ -480,7 +488,7 @@ def test_count_tokens_matches_a_real_request(client):
     """The count must be the count of the prompt the request would really
     run, not an estimate built by a second code path."""
     payload = {"messages": [{"role": "user", "content": "what is the weather in Oslo?"}],
-               "system": "Be brief.", "tools": [WEATHER],
+               "system": "Be brief.", "tools": [PING],
                "temperature": 0}
     counted = client.count_tokens(dict(payload), name="count-tokens") \
                     .expect_status(200).json
@@ -807,7 +815,7 @@ def test_cache_control_is_accepted_wherever_anthropic_puts_it(client):
     payload = {
         "model": "local", "max_tokens": 8, "temperature": 0,
         "system": [{"type": "text", "text": "be terse", "cache_control": CACHED}],
-        "tools": [dict(WEATHER, cache_control=CACHED)],
+        "tools": [dict(PING, cache_control=CACHED)],
         "messages": [{"role": "user",
                       "content": [{"type": "text", "text": "hello",
                                    "cache_control": CACHED}]}],

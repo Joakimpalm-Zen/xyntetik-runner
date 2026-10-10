@@ -62,6 +62,11 @@ def test_reports_family_and_native_flag(model):
     # question this flag exists to answer.
     ("chatml", "qwen_json"),
     ("qwen3-coder", "qwen3_xml"),
+    ("nemotron", "nemotron_json"),
+    # Mistral v0.3 and Nemo: [TOOL_CALLS] and a JSON list. The v0.1 framing
+    # (mistral-v1) has no tool protocol and stays generic.
+    ("mistral", "mistral_json"),
+    ("mistral-nemo", "mistral_json"),
 ])
 def test_native_families_report_native(model, template, family):
     if not RUNNER.exists():
@@ -79,3 +84,37 @@ def test_generic_family_is_not_native(model):
     info = _tool_info(model, "--chat-template", "llama3")
     assert info["tool_family"] == "generic"
     assert info["native_tool_protocol"] is False
+    info = _tool_info(model, "--chat-template", "mistral-v1")
+    assert info["tool_family"] == "generic"
+    assert info["native_tool_protocol"] is False
+
+
+# Mistral-7B-Instruct-v0.3 GGUFs converted before the publisher replaced its
+# template embed the v0.1 form (' [/INST]'). The vocabulary tells them apart:
+# v0.3's v3 tokenizer added [AVAILABLE_TOOLS], v0.1/v0.2 have no such token
+# (suite R4.22.7).
+V01_FORM = ("{{ bos_token }}{% for message in messages %}"
+            "{% if message['role'] == 'user' %}"
+            "{{ '[INST] ' + message['content'] + ' [/INST]' }}"
+            "{% else %}{{ message['content'] + eos_token }}{% endif %}"
+            "{% endfor %}")
+
+
+@pytest.mark.parametrize("control,template,family", [
+    ("[INST],[/INST]", "mistral-v1", "generic"),
+    ("[INST],[/INST],[AVAILABLE_TOOLS],[TOOL_CALLS],[TOOL_RESULTS],[/TOOL_RESULTS],"
+     "[/AVAILABLE_TOOLS]", "mistral", "mistral_json"),
+])
+def test_stale_mistral_v03_template_is_read_by_its_vocabulary(
+        tmp_path, control, template, family):
+    if not RUNNER.exists():
+        pytest.skip("runner not built")
+    tmpl = tmp_path / "chat_template.jinja"
+    tmpl.write_text(V01_FORM, encoding="utf-8")
+    p = tmp_path / "mistral.gguf"
+    subprocess.run([sys.executable, ROOT / "scripts/make-test-model.py", str(p),
+                    "--control", control, "--chat-template-file", str(tmpl)],
+                   check=True, cwd=ROOT)
+    info = _tool_info(p)
+    assert info["template"] == template, info
+    assert info["tool_family"] == family, info

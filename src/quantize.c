@@ -2462,8 +2462,10 @@ static int quantize_gguf_plan_inner(const char *in_path, const char *out_path, i
                     "delta (%.2f%% of the adapted bytes differ from the base "
                     "written alone at the same type), under the %.0f%% "
                     "floor: the output grid rounded the fine-tune away, so "
-                    "%s would behave like the base. Merge into a wider type "
-                    "(--quant q8_0 or f16), serve base + --lora, or pass "
+                    "%s would behave like the base. Merge into a type wider "
+                    "than the base's own (--quant f16 keeps the delta as "
+                    "computed; q8_0 is enough only over a narrower base, such "
+                    "as a 4-bit one), serve base + --lora, or pass "
                     "--merge-allow-erased to write it anyway (destination "
                     "left untouched)\n", 100.0 * ret,
                     100.0 * (double)ms->surv.bytes_changed /

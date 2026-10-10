@@ -28,6 +28,10 @@ except ImportError:  # pragma: no cover - depends on the environment
 needs_sdk = pytest.mark.skipif(_openai is None,
                                reason="the openai SDK is not installed")
 
+# The test model is random weights: a free string argument runs to the
+# token budget, and a truncated call is rightly finish_reason "length". The
+# enum keeps the forced call short, so these tests check what the SDK reads,
+# not how long a random model spells a city.
 WEATHER = {
     "type": "function",
     "function": {
@@ -35,7 +39,7 @@ WEATHER = {
         "description": "Look up the weather for a city",
         "parameters": {
             "type": "object",
-            "properties": {"city": {"type": "string"}},
+            "properties": {"city": {"type": "string", "enum": ["Oslo"]}},
             "required": ["city"],
             "additionalProperties": False,
         },
@@ -150,9 +154,11 @@ def test_sdk_accumulates_a_chat_stream(sdk, model):
 
 @needs_sdk
 def test_sdk_reads_a_tool_call(sdk, model):
+    # one call: with several admitted (the default since 1.2.0, as OpenAI's)
+    # the random test model keeps appending calls until the budget ends it
     c = sdk.chat.completions.create(
         model=model, max_tokens=48, temperature=0,
-        tools=[WEATHER], tool_choice="required",
+        tools=[WEATHER], tool_choice="required", parallel_tool_calls=False,
         messages=[{"role": "user", "content": "weather in Oslo?"}])
     calls = c.choices[0].message.tool_calls
     if not calls:
@@ -178,11 +184,14 @@ def test_sdk_round_trips_a_tool_result(sdk, model):
     `role: tool` message keyed by id."""
     first = sdk.chat.completions.create(
         model=model, max_tokens=48, temperature=0,
-        tools=[WEATHER], tool_choice="required",
+        tools=[WEATHER], tool_choice="required", parallel_tool_calls=False,
         messages=[{"role": "user", "content": "weather in Oslo?"}])
     call = first.choices[0].message.tool_calls[0]
+    # one call per turn: the parallel envelope's teaching turn and this
+    # history do not both fit the suite's 1024-token context
     second = sdk.chat.completions.create(
         model=model, max_tokens=32, temperature=0, tools=[WEATHER],
+        parallel_tool_calls=False,
         messages=[
             {"role": "user", "content": "weather in Oslo?"},
             {"role": "assistant", "tool_calls": [
