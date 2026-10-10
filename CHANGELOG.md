@@ -9,6 +9,15 @@ rename keep the names that were true when they were written.
 
 ## Unreleased
 
+- **A client stalled mid-request no longer holds the server's shutdown.**
+  A connection that had sent half a request kept its slot reading until the
+  10-second request-read deadline, so a SIGTERM or Ctrl-C waited up to 10 s
+  for a request nothing had admitted. The read now waits in quarter-second
+  slices and gives up when a stop is requested: a stop with such a client
+  open finishes in about a second. The stop flag and the listener descriptor
+  are now atomics, which removes a data race ThreadSanitizer reported
+  between a stop requested from another thread and the accept loop.
+
 - **Tools are no longer dropped from Llama 2, Gemma and Mistral v0.1
   prompts that carry a system prompt.** The generic tool envelope puts its
   teaching turn (the tool declarations and the call format) in front of the

@@ -44,6 +44,8 @@ bool sock_peer_closed(sock_t fd);
 void sock_close(sock_t fd);
 // The reason a socket call failed, from the platform's own error channel.
 const char *sock_errstr(void);
+// Did the last failed receive end on its SO_RCVTIMEO rather than an error?
+bool sock_timed_out(void);
 void sock_recv_timeout(sock_t fd, double s);
 void sock_send_timeout(sock_t fd, double s);
 

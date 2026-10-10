@@ -368,11 +368,44 @@ def test_signal_during_startup_aborts_startup():
 def test_second_signal_exits_immediately():
     """A second SIGINT during the shutdown drain must exit now, with 130.
 
-    The drain waits for in-flight work, and a stalled client pins it for the
-    full request-read budget; the operator's second Ctrl-C used to find the
-    listener already closed, do nothing, and leave only SIGKILL. The stalled
-    connection below holds a slot in its read loop to keep the drain open
-    while the second signal lands."""
+    The drain waits for in-flight work; the operator's second Ctrl-C used to
+    find the listener already closed, do nothing, and leave only SIGKILL. An
+    admitted generation, slowed by the step-delay hook, holds a slot below to
+    keep the drain open while the second signal lands. (Until 2026-10-10 a
+    client stalled mid-request held it; that no longer pins the drain, which
+    test_stalled_request_read_does_not_pin_the_drain checks.)"""
+    import socket
+    root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+    model = os.environ.get("RUNNER_TEST_MODEL", os.path.join(root, "test.gguf"))
+    srv = RunnerServer(find_runner(root), model, ctx=1024, parallel=2,
+                       extra_args=["--gpu", "off"],
+                       env=dict(os.environ, RUNNER_TEST_STEP_DELAY_MS="50"))
+    srv.start()
+    busy = None
+    try:
+        body = json.dumps({"messages": [{"role": "user", "content": "hi"}],
+                           "max_tokens": 400, "temperature": 0,
+                           "ignore_eos": True}).encode()
+        busy = socket.create_connection(("127.0.0.1", srv.port), timeout=15)
+        busy.sendall(b"POST /v1/chat/completions HTTP/1.1\r\nHost: localhost\r\n"
+                     b"Content-Type: application/json\r\nContent-Length: "
+                     + str(len(body)).encode() + b"\r\n\r\n" + body)
+        time.sleep(0.5)                    # the generation is under way
+        srv.proc.send_signal(signal.SIGINT)
+        time.sleep(0.3)
+        assert srv.proc.poll() is None, "drain should still be pinned by the generation"
+        srv.proc.send_signal(signal.SIGINT)
+        assert srv.proc.wait(timeout=3) == 130
+    finally:
+        if busy is not None:
+            busy.close()
+        srv.stop()
+
+
+def test_stalled_request_read_does_not_pin_the_drain():
+    """A client that sent half a request has been admitted to nothing, so it
+    must not hold the shutdown. Its slot used to wait out the whole 10 s
+    request-read deadline; the read now gives up within a slice of the stop."""
     import socket
     root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
     model = os.environ.get("RUNNER_TEST_MODEL", os.path.join(root, "test.gguf"))
@@ -384,11 +417,10 @@ def test_second_signal_exits_immediately():
         stalled = socket.create_connection(("127.0.0.1", srv.port), timeout=15)
         stalled.sendall(b"POST /v1/chat/completions HTTP/1.1\r\n")  # never finishes
         time.sleep(0.5)                    # let a slot enter its read loop
-        srv.proc.send_signal(signal.SIGINT)
-        time.sleep(0.3)
-        assert srv.proc.poll() is None, "drain should still be pinned by the stalled client"
-        srv.proc.send_signal(signal.SIGINT)
-        assert srv.proc.wait(timeout=3) == 130
+        t0 = time.monotonic()
+        srv.proc.send_signal(signal.SIGTERM)
+        assert srv.proc.wait(timeout=5) == 0
+        assert time.monotonic() - t0 < 3, "the stalled read held the shutdown"
     finally:
         if stalled is not None:
             stalled.close()
