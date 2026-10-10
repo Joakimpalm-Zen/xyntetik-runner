@@ -44,6 +44,43 @@ Read with their sizes in mind:
   calls on both files. The wall times are in the records; they are not a
   speed comparison (llama.cpp ran on the CPU, Runner on a GPU slice).
 
+## 2,000 positions against the BF16 reference (2026-10-10)
+
+The fidelity row above left a 0.028-nat gap at 300 positions against Q8_0
+that the sample could not resolve. It was rerun at 2,000 positions of the same
+corpus against a BF16 reference (`Qwen3.8-27B-BF16-backbone.gguf`, the text
+model in BF16, kept beside the publisher's safetensors for `Qwen/Qwen3.8-27B`
+at revision `1d4bf0f2`; it fits beside the two files now), with `scripts/kld-compare-raw.py`, runner main `25ccd6c`, on the
+Blackwell host's CPUs (16 threads, CUDA hidden), each file and the reference
+served by Runner. The original file was downloaded again and matches its pin.
+
+| against BF16, 2,000 positions | original | derived |
+|---|---|---|
+| mean KL | 0.665 | 0.688 |
+| top-1 agreement | 77.4% | 77.0% |
+| outside the 0.5-nat tie band | 86.2% | 85.4% |
+| mean top-8 overlap | 0.800 | 0.795 |
+| positions scored, failed | 2,000, 0 | 2,000, 0 |
+
+- **The recovered file is not closer to the reference; at most positions it
+  is slightly further.** Its KL is higher at 1,172 of the 2,000 positions
+  (a sign test puts that about 7.7 standard deviations from an even split),
+  while the mean difference is small: +0.024 nats, with a 95% bootstrap
+  interval of about [-0.012, +0.061] over blocks of 1 to 100 consecutive
+  positions, which includes zero. Top-1 agreement does not separate them:
+  both files agree with the reference at 1,484 positions, only the original
+  at 64, only the derived at 55.
+- **The reference does not explain the higher numbers here.** Over the first
+  300 positions the original reads 0.313 against BF16, the same as 0.312
+  against Q8_0 in the row above. KL grows along the corpus for both files
+  (original 0.31, 0.64, 0.79 over positions 0-299, 300-999, 1000-1999;
+  derived 0.35, 0.66, 0.81), so a 300-position mean is not a stand-in for a
+  longer one on this text.
+
+`original.fidelity-2000-bf16.json`, `derived.fidelity-2000-bf16.json`: the
+harness's records, per position. `fidelity-2000-bf16.inputs.sha256`: the two
+files, the reference and the corpus.
+
 ## What the run fixed on the way
 
 Three defects in the harnesses, each found by this run and fixed in the
