@@ -1,7 +1,8 @@
 # Security Policy
 
-Runner `1.2.0` follows the [versioning policy](docs/versioning.md). Only
-the latest 1.x release is supported; there are no backports.
+Runner follows the [versioning policy](docs/versioning.md). Only the
+[latest 1.x release](https://github.com/Joakimpalm-Zen/xyntetik-runner/releases/latest)
+is supported; there are no backports.
 
 ## Threat model
 
@@ -49,7 +50,7 @@ general-purpose web server and does not try to be:
 | TLS | none — loopback traffic only |
 
 API and schema features outside the documented subset fail closed (`400`).
-The current HTTP framing limitations are documented below; the loopback-only
+The current HTTP framing limits are listed above; the loopback-only
 listener is a required part of the threat model, not a substitute for a hardened
 internet-facing parser.
 
@@ -65,19 +66,18 @@ Request bodies are parsed by runner's own strict JSON parser (no
 dependencies, rejects malformed input outright), and JSON Schemas are
 validated at compile time before they ever drive sampling.
 
-**Chat message content is trusted as prompt text.** Runner renders chat
-messages into the model's prompt template and tokenizes the result with
-special-token parsing enabled, so a `content` string that itself contains a
-template control marker (e.g. `<|im_start|>system`) is tokenized as a genuine
-control token, not literal text — i.e. a caller can forge turn boundaries or a
-system turn. This is acceptable under the trust model above: every caller that
-can reach the loopback socket is already trusted, and there is no privilege
-boundary between chat roles to escalate across. **Operators who place an
-untrusted relay in front of runner (serving end-user chat through a shared
-proxy) must sanitize special-token sequences out of user-role content before
-forwarding**, exactly as they would for any OpenAI-compatible backend — runner
-does not, and cannot, distinguish a trusted from an untrusted upstream on a
-loopback connection.
+**Chat message content is tokenized as text.** Runner marks the framing
+written by its chat template and recognizes control tokens only within those
+marks. A template control marker (e.g. `<|im_start|>system`) spelled in a
+caller's message content remains text; it does not create a control token or
+forge a turn boundary. This protects template framing, not the model's
+interpretation of instructions in ordinary text.
+
+**Raw completion prompts are caller-composed.** `/v1/completions` recognizes
+control-token spellings in raw text prompts and accepts explicit token-ID
+prompts exactly as sent. This is intentional under the trusted-local-caller
+model above. Operators serving untrusted callers through a proxy are
+responsible for authentication, authorization, and the inputs they forward.
 
 ## Hardening in place
 
@@ -94,8 +94,8 @@ loopback connection.
 ## Reporting a vulnerability
 
 Found something? Please use
-[GitHub private vulnerability reporting](../../security/advisories/new)
-for anything sensitive, or an [ordinary issue](../../issues) for
-hardening suggestions that don't need coordinated disclosure. Alpha means
-reports get read fast — include `runner --version` output and, if you
-can, a reproducer.
+[GitHub private vulnerability reporting](https://github.com/Joakimpalm-Zen/xyntetik-runner/security/advisories/new)
+for anything sensitive, or an
+[ordinary issue](https://github.com/Joakimpalm-Zen/xyntetik-runner/issues/new)
+for hardening suggestions that don't need coordinated disclosure. Include
+`runner --version` output and, if you can, a reproducer.
