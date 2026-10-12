@@ -1,3 +1,0 @@
-The capital of France is
-<|channel>thought
-thought: The user is asking for the capital of France. The capital of France is Paris.<channel|>The capital of France is Paris.

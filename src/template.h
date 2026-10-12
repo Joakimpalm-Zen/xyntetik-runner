@@ -129,8 +129,8 @@ enum { TMPL_CHATML, TMPL_LLAMA2, TMPL_LLAMA3, TMPL_ZEPHYR, TMPL_GEMMA,
        // generation prompt that opens `<think>\n` or writes the closed
        // `<think></think>`. Unrecognised until 2026-10-02, when the file
        // was served on llama-2 markup with a loud banner (19 of 22 cases).
-       // Tool calls ride the generic envelope: the template's own
-       // <AVAILABLE_TOOLS>/<TOOLCALL> protocol is not rendered yet.
+       // Native <AVAILABLE_TOOLS>/<TOOLCALL> declarations, history,
+       // grammar, and buffered/streamed mapping are implemented.
        TMPL_NEMOTRON,
        // Hermes 4 (NousResearch/Hermes-4-*). ChatML framing and the Hermes
        // JSON tool call, which Qwen2.5 shares, but its own system turn: always

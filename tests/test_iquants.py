@@ -25,7 +25,7 @@ on the default 64-wide rows llama-quantize silently substitutes IQ4_NL or
 Q4_0 for every tensor, so the seven "i-quant" files held no i-quant block
 at all and the comparison passed against the wrong decoder (found
 2026-09-14 while adding the CUDA kernels; the real-file anchor in
-docs/muse-glimmer-cert-2026-08-11.md was the gate that actually held).
+docs/model-evidence.md was the gate that actually held).
 The files are named by the llama-quantize ftype requested, and the ftype
 does not decide every tensor's type (on this fixture the IQ2_S recipe
 stores IQ2_XS and IQ3_S tensors, while the IQ3_XXS recipe stores four

@@ -128,7 +128,8 @@ comparison, run the same `--cases N` against each runtime on the same machine
 and commit all four `out/` directories side by side.
 
 Ollama routes on the OpenAI `model` field, so pass `--model-name <name>` (the
-name you gave `ollama create`); Runner and llama.cpp ignore it. The flag is
+name you gave `ollama create`). For Runner, use the ID returned by
+`GET /v1/models`; unknown model names are refused. The flag is
 recorded in `raw.jsonl` so the request stays reproducible.
 
 Summarize any set of reports into one leaderboard (ordered best-first, each
@@ -157,52 +158,13 @@ Run the same inexpensive check locally with:
 python3 scripts/competitor-freshness.py
 ```
 
-## Published comparisons
+## Published comparison inputs
 
-Both runs below predate the `large_enum_selection` category (added 2026-07-24),
-so their totals cover the four original categories.
-
-- [2026-07-21 — Runner vs llama.cpp vs Ollama, Llama-3.2-3B, CPU](../tests/torture/results/2026-07-21-llama-3.2-3b-cpu/README.md):
-  Runner 12/12, llama.cpp 5/12, Ollama 5/12. The split is exactly the schema
-  cases — Runner wins `nested_arguments` and `forced_truncation` 3/3 vs 0/3;
-  the rest are close. (llama.cpp is far faster on raw CPU throughput — that is
-  the other axis, and the readout is honest about it.)
-- [2026-07-22 — Runner vs llama.cpp, SmolLM2-1.7B, CPU](../tests/torture/results/2026-07-22-smollm2-1.7b-cpu/README.md):
-  Runner 12/12, llama.cpp 3/12. On a model this small, llama.cpp's Jinja
-  template path emits no parseable tool call at all (all 9 failures are
-  "got None"), while Runner's schema-constrained sampling — template-independent
-  — still lands every call. The wedge widens as the model weakens; the readout
-  is explicit that this is a mechanism difference, not the model reasoning better.
-
-The current matrix is **v3 (120 cases, eight categories)**: the atem work
-added `tool_stream_normalization` (streamed tool-call verification), and 105
-does not divide by eight, so the count moved to 8 x 15 = 120. Earlier result
-sets remain valid on their own terms and are not case-for-case comparable
-with v3.
-
-One result set uses the current v3 matrix:
-
-- [2026-08-19 — Runner vs llama.cpp vs Ollama vs vLLM, SmolLM2-1.7B, v3 matrix](../tests/torture/results/2026-08-19-smollm2-1.7b-refresh/README.md):
-  Runner 120/120, vLLM `0.27.1` (`--tool-call-parser hermes`) 80/120, llama.cpp
-  `b10488` 30/120, Ollama `0.32.14` 28/120. Refreshes the three competitor
-  runtimes to the current upstream releases (the [freshness ledger](#published-comparisons)
-  the weekly workflow checks); llama.cpp and Ollama fail every tool-call family
-  through their chat-template paths — the same mechanism finding as the small-model
-  rows above — while their non-tool families pass.
-
-Three older result sets use the v2 matrix (105 cases, seven categories):
-
-- [2026-08-03 — Runner vs vLLM, SmolLM2-1.7B, v2 matrix](../tests/torture/results/2026-08-03-smollm2-1.7b-v2/README.md):
-  Runner 105/105, vLLM (`--tool-call-parser hermes`) 80/105. **This is the
-  correction of record** for the withdrawn 2026-08-02 run below.
-- [2026-08-02 — Runner vs vLLM (WITHDRAWN)](../tests/torture/results/2026-08-02-smollm2-1.7b-vllm/README.md):
-  do not quote its 20/100 — vLLM was started without a tool-call parser, so 80
-  cases failed at admission; correctly configured it scores 80/105. Kept, with
-  its correction banner, so the correction is checkable.
-- [2026-08-03 — Runner-only, Qwen2.5-7B, v2 matrix](../tests/torture/results/2026-08-03-qwen2.5-7b-v2-matrix/README.md):
-  105/105, plus the finding that the matrix's token budgets measure
-  non-thinking models (Qwen3-4B scores 15/105 because its thinking prelude
-  consumes the constrained budget).
+The retained [comparison inputs](../tests/torture/results/README.md) name the
+measured runtime versions used by the freshness checker. The
+[six-engine truncation measurement](truncation-benchmark.md) is separate
+from a full agent matrix. Neither a newer package nor a newer Runner build
+inherits those dated task outcomes automatically.
 
 ## Submit a result
 
@@ -214,8 +176,8 @@ are published in the comparison table.
 
 ## Copy-ready client examples
 
-The suite speaks the OpenAI tool-call contract, so these clients target Runner
-(or any runtime) unchanged — point the base URL at the server.
+These examples target Runner's OpenAI-compatible Chat Completions surface.
+Match the client's actual route, model ID, and server limits.
 
 **OpenAI Python SDK**
 
@@ -223,7 +185,7 @@ The suite speaks the OpenAI tool-call contract, so these clients target Runner
 from openai import OpenAI
 client = OpenAI(base_url="http://127.0.0.1:8080/v1", api_key="not-needed")
 resp = client.chat.completions.create(
-    model="local",
+    model=client.models.list().data[0].id,
     messages=[{"role": "user", "content": "dispatch a fast job for /a and /b"}],
     tools=[{"type": "function", "function": {
         "name": "dispatch_job",
@@ -243,31 +205,39 @@ print(resp.choices[0].message.tool_calls[0].function.arguments)
 
 **Vercel AI SDK (TypeScript)**
 
+Use the versions pinned in `tests/aisdk/package.json`; the smoke exercises
+these same `inputSchema`/`input` fields and the Chat Completions route.
+
 ```ts
 import { createOpenAI } from "@ai-sdk/openai";
-import { generateText, tool } from "ai";
+import { generateText, tool, stepCountIs } from "ai";
 import { z } from "zod";
 
-const runtime = createOpenAI({ baseURL: "http://127.0.0.1:8080/v1", apiKey: "x" });
+const baseURL = "http://127.0.0.1:8080/v1";
+const models = await (await fetch(`${baseURL}/models`)).json();
+const runtime = createOpenAI({ baseURL, apiKey: "unused" });
 const { toolCalls } = await generateText({
-  model: runtime("local"),
+  model: runtime.chat(models.data[0].id),
   temperature: 0,
+  maxOutputTokens: 128,
+  stopWhen: stepCountIs(1),
   tools: { dispatch_job: tool({
-    parameters: z.object({ job: z.object({
+    inputSchema: z.object({ job: z.object({
       mode: z.enum(["fast", "safe"]),
       targets: z.array(z.object({ path: z.string(), retries: z.number().int() })),
-    }) }) }) },
+    }) }),
+  }) },
   toolChoice: { type: "tool", toolName: "dispatch_job" },
   prompt: "dispatch a fast job for /a and /b",
 });
-console.log(toolCalls[0].args);
+console.log(toolCalls[0].input);
 ```
 
 **curl**
 
 ```bash
 curl -s http://127.0.0.1:8080/v1/chat/completions -H 'Content-Type: application/json' -d '{
-  "model": "local", "temperature": 0,
+  "temperature": 0,
   "messages": [{"role": "user", "content": "dispatch a fast job for /a and /b"}],
   "tools": [{"type": "function", "function": {"name": "dispatch_job",
     "parameters": {"type": "object", "required": ["job"], "additionalProperties": false,
@@ -276,6 +246,6 @@ curl -s http://127.0.0.1:8080/v1/chat/completions -H 'Content-Type: application/
 }'
 ```
 
-Codex, Cline, OpenCode, and Claude-compatible clients all take a base URL and
-an OpenAI-shaped tool schema — the same request works; only the base URL
-changes.
+Client adapters may use Chat, Responses, or Anthropic Messages and have
+different tool wrappers. Match the actual surface and base URL; see the
+[coding-agent guide](agent-compatibility.md).

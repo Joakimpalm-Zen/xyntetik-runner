@@ -319,7 +319,7 @@ static bool metal_moe_em_on(void) {
 // class as dense RUNNER_METAL_MM (half-staged operands, reassociated k-sum):
 // answers to the tolerance gates, never to byte identity. Opt-in until the
 // measured prefill win clears the bar recorded in
-// docs/negative-result-metal-moe-expert-major.md.
+// docs/performance.md.
 // DEFAULT ON since 2026-09-01, when the owner ratified the house fidelity
 // bar (margin-qualified top-1 + mean KLD, test-moe-mm-ab) as the instrument
 // that judges reassociating prefill on sparse-routing models — the dense

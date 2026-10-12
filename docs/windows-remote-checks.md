@@ -1,160 +1,44 @@
-# Windows remote-check protocol (learned the hard way, 2026-08-10)
+# Windows remote verification
 
-`ssh $HOST` reaches the Windows box and runs cmd.exe, but **stderr from
-the remote process is not forwarded**. `gcc --version` (stdout) comes back;
-compiler diagnostics (stderr) do not, and neither does `> file 2>&1` reliably
-when chained.
+Use MSYS2 UCRT64 for native builds. The full Windows suite runs in the
+scheduled/manually dispatched CI lane; native platform smokes also run on
+pull requests. CUDA verification still needs an actual NVIDIA device.
+See [CI execution and device evidence](ci.md) for the required lanes.
 
-Silence therefore means nothing. A file with `return zzz;` produced exactly the
-same empty output as a clean compile.
+```sh
+make OS=Windows_NT CC=gcc
+make OS=Windows_NT -j2 test
+```
 
-Use the exit code, which is trustworthy:
+## Remote CUDA helper
 
-    gcc ... & if errorlevel 1 (echo FAILED) else (echo CLEAN)
+`scripts/cuda-smoke-remote.sh` drives the smoke on an explicitly supplied
+host/binary/model and retrieves the report. Read its `--help`; the expected
+version comes from the candidate's `runner --version`, not an old example.
+A successful command must provide a nonzero set of executed device checks
+and the correct candidate/model/hardware identities.
 
-`%errorlevel%` is expanded at parse time in a one-liner and is NOT a substitute.
+Some Windows SSH sessions use cmd.exe and do not forward remote stderr
+reliably. Redirect the remote command into a file as a single invocation,
+retrieve that file, and check the exit status. Silence is not a successful
+compile or test. In cmd.exe, `if errorlevel 1` checks the executed command;
+`%errorlevel%` in a compound one-liner may have been expanded earlier.
 
-Two further traps:
-  - `;` is not a command separator in cmd; use `&` (or `&&`).
-  - Single-file `-fsyntax-only` checks are under-specified for this project:
-    the Windows build needs the Makefile's flags and backend defines. Baseline
-    `cuda.c` from before any local change also fails a bare check, so a bare
-    pass/fail says nothing about a diff. Compare baseline against changed with
-    identical flags, or build properly.
+Use explicit argument quoting for cmd.exe, PowerShell, or the MSYS2 shell;
+they are not interchangeable. The release workflow's Windows shell is
+MSYS2. Preserve `SystemRoot` and the inherited environment when overriding
+test variables so Winsock can initialize. Use UTF-8 explicitly for fixture
+text and compare logical text versus bytes according to the gate's contract.
 
-The earlier note that `make` was absent is stale. Rechecked 2026-08-13:
-`C:\msys64\usr\bin\make.exe` is present (GNU Make 4.4.1), and a fresh detached
-Runner checkout completed the native MinGW/UCRT gate at `aa359e2` with
-`make OS=Windows_NT -j2 test` (exit 0). The run passed the native, CUDA, and
-tray-core gates; Python totals were client 30 passed/1 skipped, main 162/17,
-MoE 28/0, and prune 9/0. No validation runner or tray process survived it.
+## Before trusting a failure
 
-That run found two Windows-only test-harness defects before it went green:
-`d302a7a` makes the compatibility test's executable stub native on Windows,
-and `aa359e2` stops the MTP admission test from raising a detached tray that
-locks `runner.exe` before a later relink. Both were reproduced red on Windows,
-then verified by targeted tests and the clean full gate. Do not install or
-change the machine based on the old absence claim; verify the current tool
-directly before diagnosing the setup.
+Ensure the test process can create its temporary directory. A scheduled
+service/task context can have different permissions from an interactive
+SSH session. Stop only test-owned processes; a leftover server can retain
+its port or executable, making a later run fail before it tests anything.
+Tests that must prove graceful shutdown fail if they need a forced kill.
 
-The headless tray seams are also verified: menu dumping passed, and the idle,
-loaded, and running BMPs have distinct hashes and pixel counts. Pixel analysis
-confirmed that loaded preserves the idle icon's two opposing sweeps while
-filling the core, and running draws the four-segment ring. This proves the GDI
-raster states, not visibility or click behavior in the live Windows taskbar.
-
-## The CUDA smoke gate (added 2026-08-29, after it was needed)
-
-This box is a full CUDA build-and-run machine: `C:\msys64\ucrt64\bin\gcc.exe`,
-`C:\msys64\usr\bin\make.exe`, CUDA Toolkit v13.3 with `nvcc` and `ptxas`,
-Python 3.12, git, and GGUF models already in `~\`. A fresh clone
-builds with `make OS=Windows_NT -j2 runner`.
-
-That matters because CI has no GPU, so `src/cuda.c` is compiled on three
-platforms and run by none. v0.4.2 shipped an integrated-device probe reading
-attribute 17 (`KERNEL_EXEC_TIMEOUT`, which is 1 whenever a display is attached)
-instead of 18 (`INTEGRATED`), and reported every desktop NVIDIA card as unified
-memory. **A headless datacenter GPU reads 17 as 0 and looks correct, so the
-Blackwell would have passed it.** A display-attached consumer card is a test
-surface nothing else in the lab has.
-
-Run the gate before tagging any release:
-
-    scripts/cuda-smoke-remote.sh \
-        --binary ~/cuda-smoke/runner.exe \
-        --model  ~/qwen3-0.6b-q8_0.gguf \
-        --expect-version X.Y.Z \
-        --report docs/compat-reports/cuda-smoke-X.Y.Z-<date>-rtx3070.json
-
-It exits nonzero on failure and the report is committed with the release, the
-same way the compatibility report is. Beside it, on every CUDA box that
-records a device-ledger row: `make test-cuda-nvfp4` on the real NVFP4 file,
-`make test-cuda-qwen4exp` (the qwen4exp fixture at full offload, a forced
-partial split and with device experts, plus its 512-expert variant, each
-scored against the CPU path; added 2026-10-07 after two device defects
-passed the greedy identity check) and `make test-cuda-iquants` on the seven
-codebook i-quant fixtures (on this
-box `RUNNER_IQ_FIXTURES=~/iqfix`, the set quantized on the
-Blackwell with llama.cpp b10353, because the tools are not installed here).
-The i-quant target fails, rather than skipping, when the device, the
-fixtures or the gate binary are missing; a required gate that skips reads
-as green in the evidence, which is the failure the ledger exists to stop. The checks are invariants rather than
-expected constants, so the same script is valid on a discrete card, a headless
-card, and a unified-memory device: the central one is that `unified_memory`
-must agree with the VRAM and RAM sizes actually reported, which is the v0.4.2
-bug regardless of which attribute the driver was asked for.
-
-Two protocol notes the driver script already handles, repeated because they
-cost time every time they are rediscovered: the remote run redirects into a
-file as the SOLE command of its ssh invocation, because redirects do not
-survive `&` chaining and stderr is not forwarded; and `mkdir` in cmd.exe
-rejects forward slashes even though scp and python accept them.
-
-## Detached runs and building from cmd (added 2026-09-01)
-
-A run longer than one ssh call's patience has to be detached, and two ways
-that look right do not work: a PowerShell `Start-Process` launched over ssh
-dies with the session (zero-byte logs, no process left), and there is no
-`nohup` in cmd.exe. What works is a scheduled task. Write a `.bat` that
-`cd`s and runs the command with its own `> log 2>&1` redirect, then:
-
-    schtasks /create /tn <name> /tr C:\path\run.bat /sc once /st 00:00 /f & schtasks /run /tn <name>
-
-The `/ST is earlier than current time` warning is harmless; `/run` starts
-it now. Poll the log with `type` in separate calls and `schtasks /delete
-/tn <name> /f` when done. Use the full interpreter path in the `.bat`
-(`~\AppData\Local\Programs\Python\Python312\python.exe -u`);
-the bare `python` is a Store alias that resolves for cmd but not reliably
-for a task.
-
-`make` invoked straight from cmd cannot find `uname` or `mkdir` and stops
-at the first object. Build from msys bash instead
-(`C:\msys64\usr\bin\bash.exe C:/path/build.sh`) with
-`PATH=/ucrt64/bin:/usr/bin:$PATH` exported inside the script, redirecting
-`make` output to a file there, and echo `$?` so the exit code comes back
-on stdout. A fresh checkout at `4731dc0` built this way in under a minute
-with `make OS=Windows_NT -j4 runner`.
-
-## The suite on this box, 2026-09-07
-
-Ran again for the first time since 2026-08-13 and it did not build: `setenv`
-is not in MinGW, so `tests/test_gpu_identity.c` and `tests/test_moe_mm_ab.c`
-stopped `make test` at a compile error. Past that, the Python half read
-**1107 passed, 8 failed, 1 error** on `main`, every one of them the harness
-rather than the engine:
-
-| what | why it is Windows-only |
-|---|---|
-| `test_weight_io_bench.py` x5 | `os.pread` does not exist; `mmap`'s `flags`/`prot` are Unix-only; a mapping offset must be 64 KB-aligned, not page-aligned; `os.open` needs `O_BINARY` or a weight file is newline-translated |
-| `test_kv_quality.py` | `os.killpg` does not exist, and it raises `AttributeError`, which the `OSError` fallback beside it did not catch |
-| `test_tool_choice_boundary.py` | the record hashes the template TEXT, the test hashed the file BYTES, and `write_text` lands CRLF |
-| `conformance/test_prefill_deadline.py` | a test-supplied `env` replaced the inherited one; without `SystemRoot` a process cannot initialise Winsock and exits 1 before printing anything |
-| `test_caps.py` | `--caps` has advertised NVFP4 on CUDA since 2026-09-06 and the expected list had not admitted it (the check only runs where a backend exists, and CI has no GPU) |
-
-All fixed the same day. `make OS=Windows_NT -j2 test` **exits 0** here again
-(C gates plus 525 + 47 + 28 + 20 passed across the Python legs), and the
-Python suite on its own reads **1130 passed, 67 skipped, 0 failed**. The general lesson is the one worth keeping: **CI builds Windows and
-never runs the suite there**, so a Windows-only harness defect is invisible
-until somebody uses this box, and this box is the only CUDA device in the lab.
-Whether that becomes a CI job or a scheduled run on the box is open (suite
-plan R8.7.4).
-
-Two operational notes from the same session. Running the suite under
-`schtasks` fails wholesale: the task's session cannot create
-`%LOCALAPPDATA%\Temp\pytest-of-zen`, so every `tmp_path` test errors
-(363 of them) for a reason that has nothing to do with the code. Run it from
-the interactive ssh session instead, and detach only what is genuinely long.
-And check for a leftover `runner.exe` before trusting a conformance failure:
-an interrupted run leaves a server holding its port, and the next run reports
-`runner exited during startup` with an empty log.
-
-One such leftover was not an interrupted run. `tests/test_draft_required.py`
-exercises `-i --draft-required`, and an interactive run whose stdin is a
-terminal raises the detached tray at `main.c`'s `tray_ensure_running()`
-BEFORE the check that refuses the flag combination, so a run that failed its
-own arguments left a `runner --tray` resident, holding the executable open
-against the next relink. The test now passes `--no-tray` like every other. The
-ordering itself is an engine question and is filed rather than changed here:
-the comment beside that call already says a process that is about to be short
-should not leave a menu-bar icon behind it, and a refused invocation is the
-shortest one there is. It only shows on a tty, so CI cannot see it either.
+Record actual native/compiler flags, executable/model hashes, driver/device,
+commands, report paths, and executed/skipped checks. Update the device ledger
+from the verified run using `scripts/device-evidence.py`; do not manufacture
+fresh evidence by changing an old report's version or date.

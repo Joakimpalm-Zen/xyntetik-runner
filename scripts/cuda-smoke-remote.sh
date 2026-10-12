@@ -1,7 +1,7 @@
 #!/bin/sh
 # Drive scripts/cuda-smoke.py on a remote CUDA box and bring the evidence back.
 #
-# Written for ZEN-GAMING (Windows 11, RTX 3070), whose SSH session runs cmd.exe
+# For Windows hosts whose SSH session runs cmd.exe
 # and DOES NOT FORWARD STDERR from the remote process. Silence there means
 # nothing, so the remote run redirects everything into a file as the sole
 # command of its ssh invocation (redirects do not survive `&` chaining) and the
@@ -9,10 +9,10 @@
 # this script exits with. See docs/windows-remote-checks.md.
 #
 #   scripts/cuda-smoke-remote.sh \
-#       --binary C:/Users/zen/cuda-smoke/runner.exe \
-#       --model  C:/Users/zen/qwen3-0.6b-q8_0.gguf \
-#       --expect-version 0.4.3 \
-#       --report docs/compat-reports/cuda-smoke-0.4.3-2026-08-29-rtx3070.json
+#       --binary C:/runner-check/runner.exe \
+#       --model  C:/models/model.gguf \
+#       --expect-version 1.2.0 \
+#       --report docs/compat-reports/cuda-smoke-1.2.0-2026-10-09-rtx3070.json
 #
 # Exit 0 means the gate passed on real hardware.
 set -eu

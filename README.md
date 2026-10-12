@@ -370,8 +370,9 @@ fine-tune away is refused.
   a [Python client](python/README.md) and a
   [TypeScript client](clients/typescript/README.md).
   [Container](MANUAL.md#container-image)
-- **What loads.** 19 architectures and 24 weight formats, verified on
-  download with `-hf`. [Support matrix](MANUAL.md#support-matrix)
+- **What loads.** 20 admitted architecture labels and 24 weight formats, verified on
+  download with `-hf`. Experimental layouts and backend limits are listed
+  in the [support matrix](MANUAL.md#support-matrix).
 - **How Runner compares.** Closer to the publisher's reference than
   llama.cpp on 21 of 22 measured rows, and level or ahead on the reference's
   chosen token on 20 of 22. [Evidence](MANUAL.md#evidence-and-tradeoffs) ·

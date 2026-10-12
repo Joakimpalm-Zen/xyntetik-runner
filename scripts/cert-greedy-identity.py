@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Six-prompt greedy-identity gate: runner vs a pinned llama.cpp reference.
 
-Same protocol as the afmoe cert session (docs/afmoe-cert-goal-2026-08-05.md
+Same protocol as the afmoe cert session (docs/compatibility-program.md
 gate 3): four short domains at 64 tokens, two of them repeated at 256.
 Reference queried via /v1/completions with an explicit pure-greedy sampler
 (repeat_penalty 1.0, top_k 0, top_p 1.0, min_p 0.0) and cache_prompt:false

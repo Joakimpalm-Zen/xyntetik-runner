@@ -15,6 +15,8 @@ def main():
                                     if not line.lstrip().startswith("#"))
     named = set(re.findall(r"tests/test_[\w]+\.py", recipes + executable_workflow))
     actual = {p.relative_to(ROOT).as_posix() for p in (ROOT / "tests").glob("test_*.py")}
+    if not actual:
+        raise SystemExit("root test inventory is empty; no execution coverage was checked")
     missing = sorted(actual - named)
     if missing:
         raise SystemExit("root tests have no Makefile/workflow entry: " + ", ".join(missing))

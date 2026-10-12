@@ -501,13 +501,9 @@ These capabilities help when managing several models or evaluating decisions:
 
 The full compatibility method is in
 [docs/compatibility-program.md](docs/compatibility-program.md) and performance
-measurements are in [docs/performance.md](docs/performance.md). Work that was
-built, measured and rejected is kept too, so it is not attempted twice:
-[docs/negative-result-expert-cache.md](docs/negative-result-expert-cache.md)
-for MoE expert caching, and
-[docs/negative-result-metal-multirow-matvec.md](docs/negative-result-metal-multirow-matvec.md)
-for the multi-row Metal decode matvec - which also records what the
-CPU/GPU byte-identity contract costs in reachable GPU optimizations.
+routes are in [docs/performance.md](docs/performance.md). Numerical
+contracts and current admission/refusals remain part of the implementation
+and its regression gates; a faster route needs its own applicable evidence.
 
 ## Record and verify a run
 
@@ -1352,8 +1348,8 @@ merely dense matvec/matmul support.
 | `gpt-oss` | Attention sinks, alpha-sigmoid GLU, expert biases, MXFP4 experts. The YaRN ramp follows OpenAI's reference, whose correction range is not rounded (`"truncate": false` in the model's config; transformers' default and llama.cpp round it), since 2026-09-30 (`tests/test_rope_yarn.c`, anchored on tables computed from the reference formula); the cross-engine figures in this row were measured before that change. Tokenizer exact (0/721 differential) and chat renders the real Harmony format (analysis channel as `reasoning_content`) as of 2026-08-14; cross-engine greedy identity remains inside the model's own measured KV-precision sensitivity envelope rather than certified. |
 | `apertus` | xIELU FFN; CPU and CUDA. |
 | `afmoe` | Arcee Trinity sparse MoE; CPU only. CUDA and Metal refuse it loudly as gated attention plus sparse MoE, rather than misreporting a quantization problem. Against Arcee's float32 reference (the golden pass of 2026-09-07 ([`docs/golden-pass-2026-09-07.md`](docs/golden-pass-2026-09-07.md)), Trinity Nano, 2,000 positions) the runner and llama.cpp BOTH sit about 0.045 of mean KL from the publisher at bf16, where every other measured family reads 0.0001 to 0.003: a shared reproduction gap, not yet explained. Margin-qualified top-1 there is 98.53% for the runner and 98.60% for llama.cpp, not a significant difference, so the 1-in-6 greedy identity against llama.cpp that failed this family's 2026-08-05 certification measured the distance between two engines equally far from the publisher, not a runner defect. |
-| `muse-glimmer` | Meta Muse Glimmer 30B, text path: gated attention, QK and sandwich norms, SWA with NoPE globals, softcapped logits. CPU, CUDA and Metal. Measured 2026-08-11; evidence in `docs/muse-glimmer-cert-2026-08-11.md` and `docs/muse-atem-cert-2026-08-11.md`. No vision encoder. Native atem definitions/results, recipient-constrained generation, truncation recovery, multi-call mapping, and buffered/SSE parsing are implemented and selected automatically for tool requests. The reference template's `reasoning_strength` kwarg (low, medium, high; absent renders high) is honoured on the chat surface, `reasoning_effort` is accepted as the cross-family spelling, and a system prompt that carries the directive itself keeps it (the reference's normalisation of "reasoning effort" to "reasoning strength" and skip of its own line are reproduced). Bare tool names render as the reference's namespace patterns by default; `bare_recipients` / `--bare-recipients` selects the verbatim rendering of Meta's discussion #60 (see "Muse recipients line"). |
-| `granite` | IBM Granite dense (3.x/4.1/4.2): the four muP scalars (embedding, fixed attention, residual, divided logit), read from the header (4.2 ships them all at 1.0). CPU, CUDA and Metal. Measured 2026-08-11; evidence in `docs/granite-cert-2026-08-11.md`. Granite 4.2 (3B, 8B) admitted 2026-09-06 with its `granite-docling` pre-tokenizer and its own `granite42` chat template (ChatML, `<think>`, function-XML tools); evidence in `docs/granite-42-qwen38-cert-2026-09-06.md`. granitemoe is a separate arch id and not admitted; granitehybrid is admitted separately, below. |
+| `muse-glimmer` | Meta Muse Glimmer 30B, text path: gated attention, QK and sandwich norms, SWA with NoPE globals, softcapped logits. CPU, CUDA and Metal. Measured 2026-08-11; evidence in [the model reference](docs/model-evidence.md#muse-glimmer). No vision encoder. Native atem definitions/results, recipient-constrained generation, truncation recovery, multi-call mapping, and buffered/SSE parsing are implemented and selected automatically for tool requests. The reference template's `reasoning_strength` kwarg (low, medium, high; absent renders high) is honoured on the chat surface, `reasoning_effort` is accepted as the cross-family spelling, and a system prompt that carries the directive itself keeps it (the reference's normalisation of "reasoning effort" to "reasoning strength" and skip of its own line are reproduced). Bare tool names render as the reference's namespace patterns by default; `bare_recipients` / `--bare-recipients` selects the verbatim rendering of Meta's discussion #60 (see "Muse recipients line"). |
+| `granite` | IBM Granite dense (3.x/4.1/4.2): the four muP scalars (embedding, fixed attention, residual, divided logit), read from the header (4.2 ships them all at 1.0). CPU, CUDA and Metal. Measured 2026-08-11; evidence in `docs/model-evidence.md#granite`. Granite 4.2 (3B, 8B) admitted 2026-09-06 with its `granite-docling` pre-tokenizer and its own `granite42` chat template (ChatML, `<think>`, function-XML tools); evidence in `docs/granite-42-qwen38-cert-2026-09-06.md`. granitemoe is a separate arch id and not admitted; granitehybrid is admitted separately, below. |
 | `granitehybrid` | Granite-4 h-series: a Mamba-2 selective-SSD recurrence (causal conv1d + the input-dependent state-space scan, with the gated RMS norm) interleaved with GQA attention, the layer type read per-layer from the `attention.head_count_kv` array (0 ⇒ recurrent); the attention layers are NoPE (`rope.scaling.finetuned=false`); the four granite muP scalars. Both published FFN layouts are supported: dense h-micro has a gated MLP on every layer and runs on CPU and CUDA; sparse h-small has a routed MoE FFN plus an always-on shared expert and currently runs on CPU because those two branches have no device path. The dense h-micro CUDA path is CPU-token-identical over 600/600 greedy tokens with per-run mean |Δlp| ≤ 0.000024 (max per-position 0.000422); evidence and raw probes are in [`docs/compat-reports/cpu-cuda-hybrid-2026-08-21/`](docs/compat-reports/cpu-cuda-hybrid-2026-08-21/). Against IBM's float32 reference (the golden pass of 2026-09-07 ([`docs/golden-pass-2026-09-07.md`](docs/golden-pass-2026-09-07.md)), granite-4.0-h-micro, 2,000 positions) margin-qualified top-1 is 100.00% at bf16 and 94.36% at Q4_K_M (llama.cpp 100.00% and 93.67%, not a significant difference), and the runner is the closer engine on per-position KL at both tiers. Second column, llama.cpp: the sparse h-small CPU path was verified against llama.cpp b10353 at both Q4_K_M and Q8_0: greedy output is token-identical on deterministic prompts (a 256-token completion matches byte-for-byte) and holds at the quantisation noise floor elsewhere, where the divergences are synonymous-phrasing near-ties, not wrong math. Re-verified at higher precision (Q8_0, 2026-08-19): the sole non-empty divergence is a single-token near-tie whose top-2 candidates the runner and llama.cpp rank identically to within ~0.03-0.09 nats (an argmax coin-flip), with the runner's full top-5 logit distribution matching the oracle's - so the Mamba-2 math is correct and the Q4_K misses were pure noise floor, the same envelope noted for gpt-oss. Chunked-scan prefill: the token axis is tiled into chunks (~256), the per-head SSD recurrence runs in parallel across heads within a chunk and the SSD state + conv ring are carried across chunk boundaries - bit-identical to the serial per-token sweep (a pinned `make test` gate holds chunked == serial across chunk sizes) and ~1.8x faster prompt throughput on a long prompt (measured on granite-4.0-h-small Q8_0, 264 tokens). `XR_SSM_SERIAL=1` forces the serial reference path. The recurrent-state cache seam is wired: the fixed-size fold is snapshotted/restored on a rewind, and stored beside the KV in the prefix cache so an exact CPU prompt-prefix hit restores it in a memcpy rather than recomputing the recurrent layers. CPU speculative decode and grammar fast-forward use a per-round fold checkpoint; a CUDA split is admitted only while every recurrent layer remains host-resident. Metal has no SSM path. |
 | `nemotron_h` | NVIDIA Nemotron-H (Nemotron-Nano-9B-v2): a Mamba-2 selective-SSD recurrence interleaved with GQA attention and dense MLP blocks, where each block is EXACTLY ONE of three kinds (SSM \| attention \| MLP), typed per-layer off `attention.head_count_kv` (0) and `feed_forward_length` (0). NON-MoE and no muP scalars - unlike granitehybrid; the MLP is a gate-less squared-ReLU FFN (`down(relu(up(x))^2)`), attention is NoPE (`rope.scaling.finetuned=false`), and the SSM uses a GROUPED scan (`ssm.group_count=8`): B/C are shared across groups of heads and broadcast (group g covers heads [g·H/G, (g+1)·H/G)) - the same grouped scan `nemotron_h_moe` (Nemotron-3.5 Lightning) also uses - here first proven WITHOUT MoE, and admitted WITH MoE in the row below. CPU and **CUDA**: the Mamba-2 SSD scan, causal conv1d, gated RMS norm and squared-ReLU FFN all have device kernels, and full 56-layer offload is **greedy byte-identical to the CPU path** on the real Nano-9B-v2 Q8_0 (3 prompts x 48 decode steps plus an 88-token multi-tile prefill; re-verified independently post-merge at 32 tokens). Device prefill currently runs the per-token loop (correct, unoptimized); no Metal SSM path. Against NVIDIA's float32 reference (the golden pass of 2026-09-07 ([`docs/golden-pass-2026-09-07.md`](docs/golden-pass-2026-09-07.md)), 100 positions; the 2,000-position rerun did not finish) margin-qualified top-1 is 100% at bf16 and at Q8_0 for both engines, and the runner reads the lower mean KL at both (0.0027 and 0.0041 against llama.cpp's 0.0031 and 0.0054). Second column: verified against llama.cpp b10353 on the real Nemotron-Nano-9B-v2 at Q8_0 (same GGUF both engines, CPU): 5/6 greedy completions byte-identical (including both 256-token generations); the sole miss is a single-token near-tie where both engines share the same top-3 candidates and llama.cpp's own top-1/top-2 gap is ~0.075 nats (an FP-summation-order coin-flip), i.e. the quantisation noise floor, not wrong math. Chunked-scan prefill (the grouped scan tiled into chunks, parallel across heads within a chunk, SSD state + conv ring carried across chunk boundaries), bit-identical to the serial per-token sweep and pinned chunked == serial in `make test`; the recurrent-state cache seam is wired (fold snapshotted/restored on rewind, and stored beside the KV so an exact CPU prompt-prefix hit restores it in a memcpy). CPU speculative decode and grammar fast-forward use the per-round fold checkpoint; full GPU offload and partial splits with a CUDA-resident recurrent layer decline them. |
 | `nemotron_h_moe` | NVIDIA Nemotron-3.5-Lightning-30B-A3B: `nemotron_h` with the dense squared-ReLU MLP replaced by a gate-less squared-ReLU **MoE** (128 experts / 6 used, no gate branch) plus an always-on **gate-less shared expert**; the router reuses the general softmax/group/scale/norm path. Same three-way block typing, grouped scan (`n_group=8`), and NoPE attention as `nemotron_h`. Runs on CPU: the SSM scan has a device kernel, but this family's router (weight-normed, scaled) and gate-less shared expert have no device path, so the backend falls back to CPU there. No publisher reference has been measured: the family's smallest member is 30B, too large for a float32 reference on the measurement box, so llama.cpp is this row's only anchor and the figure below is agreement with another engine, not fidelity. Greedy vs llama.cpp `ea12b27` on the real Lightning-30B Q4_0 (CPU, 8 tok × 5 prompts): **4/5 byte-identical**, the one divergence a near-tie on an open-ended counting continuation (noise floor, not wrong math - the coherent `Paris. … Berlin.` completion matches exactly). Evidence: `docs/compat-reports/ssm-greedy-reference-2026-08-20/`. Chat template: its own `nemotron35` family (Granite 4.2's template with Qwen3-Coder's nested-XML tool declarations), conformant to the file's own template in 22 of 22 cases, text and tokens (2026-10-09); before that it was served as `granite42`, which declared tools as JSON. |
@@ -1373,7 +1369,7 @@ silently dropped branch.
 |---|---|
 | File format | GGUF v2/v3, mmap/file-mapped host weights, including standard local multi-part sets. |
 | Tokenizers | SPM and byte-level BPE with llama, qwen2/qwen35, smollm, afmoe, tekken, llama4/gpt-4o, Gemma, and GPT-2-family (including `granite-docling`) pre-tokenization rules. |
-| Quantizations | `--caps` lists the admitted tensor formats: the k-quant and legacy families plus MXFP4, NVFP4 (two-level, with its per-tensor scale companion applied) and the codebook i-quants (IQ1_S/M, IQ2_XXS/XS/S, IQ3_XXS/S, IQ4_NL/XS). CUDA serves every one of them; on Metal, NVFP4 and the IQ1, IQ2 and IQ3 families are CPU-only and the backend refuses them loudly, naming the exact tensor and type that caused the CPU fallback. |
+| Quantizations | `--caps` lists the admitted tensor formats: the k-quant and legacy families plus MXFP4, NVFP4 (two-level, with its per-tensor scale companion applied) and the codebook i-quants (IQ1_S/M, IQ2_XXS/XS/S, IQ3_XXS/S, IQ4_NL/XS). CUDA serves every one of them; Metal admits the codebook i-quants through its current dense kernels and retains separate NVFP4/MoE/layout refusals, naming the tensor and type that caused a fallback. |
 | Transformer | RMSNorm, adjacent-pair and NeoX RoPE, grouped-query attention, SwiGLU/GELU/xIELU family paths, tied embeddings, dense and selected sparse MoE. |
 | Sampling | Greedy, temperature, top-k, top-p, min-p, repeat penalty, stop strings, JSON/schema constraints, speculative decoding. |
 | Context | Batched prefill, f16/q8 KV, linear/YaRN/llama-3 scaling, automatic extension. |
@@ -1399,7 +1395,7 @@ Messages surfaces (Chat Completions supports it, buffered and streaming).
 <a id="build-from-source"></a>
 ### Build from source
 
-Download a prebuilt binary from the [latest release](../../releases/latest)
+Download a prebuilt binary from the [latest release](https://github.com/Joakimpalm-Zen/xyntetik-runner/releases/latest)
 for Linux, macOS, or Windows, or build from source:
 
 ```sh
@@ -1680,10 +1676,8 @@ to the default by construction (one shared dot body, one writer per output).
 Measured on 30B/120B/235B MoE at batch 512 they are 3-4% **slower** than
 slot-major — the cache already absorbs the redundant weight reads they
 eliminate — so they ship off by default as a measured negative result;
-`make test-metal-moe-em` keeps them byte-identical. The full writeup, and why
-the surviving MoE prefill lever is simdgroup-MMA tiling (llama.cpp's
-`mul_mat_id` shape), is
-[docs/negative-result-metal-moe-expert-major.md](docs/negative-result-metal-moe-expert-major.md).
+`make test-metal-moe-em` keeps them byte-identical. Current grouped-MMA execution and its numerical contract are described
+below and in [the performance reference](docs/performance.md).
 
 Grouped-MMA MoE prefill is that surviving lever, built, measured, and
 **promoted to the default** (ratified 2026-09-01): the batch's slots are
@@ -1712,8 +1706,8 @@ It clears the 0/64 teacher-forced flip bar on both formats but measured
 neutral on an 8-core M1 - −0.16 % bandwidth-bound, −0.01 % dispatch-bound - so
 it is **off by default**, leaving the byte-identical kernel on the default
 path. `./test-mv-tol MODEL.gguf` is the gate; see
-`docs/negative-result-metal-multirow-matvec.md` for why decode on that machine
-is bound by bytes rather than instructions.
+`docs/negative-result-metal-multirow-matvec.md` for the matvec numerical
+contract and its verification gates.
 The CPU quant dot/dequant module is a separate translation unit compiled with
 `-fno-fast-math`; fast math remains enabled for the rest of the engine.
 
@@ -3073,9 +3067,8 @@ what ends that narration whenever a call is legal - not only under
 `tool_choice:"required"` - and it is not free: a tool result the model wants to
 quote back, typically a JSON document, can be cut mid-quotation, and gpt-oss
 then repeats the call it was just answered before replying on the next round. A
-prose tool result fits inside the bound and answers directly. Lifting the bound
-is measured and worse, not untried:
-[docs/negative-result-harmony-analysis-bound.md](docs/negative-result-harmony-analysis-bound.md).
+prose tool result fits inside the bound and answers directly. The bound is part of the current native-turn contract; changing it requires
+checking the full tool-result/continuation loop and the closure budget.
 
 For example, the usual OpenAI request needs no Runner-specific switch:
 
@@ -3902,28 +3895,25 @@ three-host tables are kept beside it).
 
 ## Compatibility evidence
 
-The machine-readable manifest is
-[`tests/compatibility/models.json`](tests/compatibility/models.json). It pins
-files by SHA-256 and declares checks independently:
+The [model manifest](tests/compatibility/models.json) pins artifact hashes,
+reference revisions, and independently declared checks. The
+[coverage inventory](tests/compatibility/coverage.json) separates PASS,
+FAIL, NOT RUN, and UNSUPPORTED; an admitted family does not certify every
+artifact or backend. Read [the current verification method](docs/compatibility-program.md)
+and [model admission evidence](docs/model-evidence.md) for the contracts.
 
-| Check | Meaning |
-|---|---|
-| `load` | The pinned file hashes and loads. |
-| `tokenizer` | The committed 721-string corpus is compared with the model's Hugging Face tokenizer; revision-bound ID captures make declared rows replayable offline. |
-| `greedy_reference` | Greedy tokens are compared with a pinned llama.cpp revision. |
-| `cpu_cuda` | CPU and CUDA scalar-path greedy output are compared. |
-| `chat` | A real Chat Completions request answers through the model template. |
-| `tool` | A function call round-trips as schema-conformant tool output. |
-| `long_context` | A needle is retrieved from an extended context. |
+The publisher's float32 implementation is the primary numerical anchor;
+[the reference comparison](docs/golden-pass-2026-09-07.md) records exact
+model/dtype/attention/device/position coverage and limitations. Tokenizer
+and template conformance use pinned publisher assets, with offline ID
+captures where provided. Scalar/eager CPU/GPU identity and faster
+matrix/routing tolerance routes are distinct checks.
 
-Being present in the manifest does not mean every check passed. Read each
-entry's declared checks and notes.
-
-Every release ships a schema-versioned report under `docs/compat-reports/`,
-and `scripts/check-release.py` enforces it: a tag whose version has no
-`<version>-<date>.json` in that directory fails the release check rather
-than shipping with an unpublished ledger. Generate it against the pinned
-files available on the release box with:
+Each release needs an executed `<version>-<date>.json` compatibility report
+under `docs/compat-reports/`; `scripts/check-release.py` refuses a missing
+or wholly unexecuted report. Device verification is tracked separately by
+[the ledger](docs/device-evidence.json) and [CI/device procedures](docs/ci.md).
+A documentation update does not refresh an old run's version or date.
 
 ```sh
 python3 scripts/compat_matrix.py --models-root /path/to/models \
@@ -3931,136 +3921,11 @@ python3 scripts/compat_matrix.py --models-root /path/to/models \
   --verify-files --execute-checks --out docs/compat-reports/<release>-<date>.json
 ```
 
-The executable classes are SHA/load, tokenizer differential when the manifest
-declares a reference and the corpus exists, and greedy reference when both
-binaries and the pinned model are present. Every other declared check, and any
-check missing a prerequisite, is retained as `not_executed` with a machine-
-readable reason; absence from a run is never presented as a pass.
-
-Tokenizer rows with `tokenizer_reference_ids` use the committed capture rather
-than the network. Each capture names the Hugging Face repository and immutable
-revision, binds itself to the corpus SHA-256, and contains only token IDs - never
-credentials or model weights. `scripts/difftok.py --ref-ids CAPTURE` is the
-standalone replay path; `--capture CAPTURE --ref-revision COMMIT` creates one
-during an authenticated evidence run.
-
-<details>
-<summary>Detailed model results, known gaps and re-measurements</summary>
-
-Current high-signal caveats include:
-
-- Qwen3-4B's 2026-08-03 scalar CPU/CUDA recheck passed only 4 of 5 prompts;
-  **re-measured 2026-08-20 with the current gate: 9/9 prompts byte-exact at 128
-  tokens, zero near-ties** (the intervening router-bias, tensor-core-identity
-  and canonical-quantizer fixes resolved it). Per-row evidence:
-  `docs/compat-reports/cpu-cuda-128/qwen3-4b-q4km-2026-08-20.json`. A
-  2026-09-02 rebuild on the same box with a newer compiler measured 8/9: one
-  prompt flips at token 40 on a 0.0013-nat near-tie, and it is the **CPU** arm
-  that moved (today's GPU text equals the 2026-08-20 text for both arms; the
-  2026-08-20 commit rebuilt today shows the same flip). That is the
-  build-reproducibility boundary [docs/determinism-scope.md](docs/determinism-scope.md)
-  already draws: same executable and inputs reproduce; independent rebuilds
-  need not, at the libm/codegen level. The dense-model identity gate stays
-  strict and the row is recorded as a fail in
-  `docs/compat-reports/0.4.5-2026-09-02-blackwell.json`.
-- Canonical gpt-oss-20b passed an earlier 5-of-5, 16-token partial-offload test
-  on an RTX 3070, but failed CPU/CUDA identity and chat/tokenizer gates on the
-  later Blackwell full-offload matrix. Hardware and test-contract scope matter.
-  Its tokenizer differential is exact (0/721) and its **chat** gate now passes
-  too: gpt-oss renders through a real Harmony template as of 2026-08-14
-  (`<|channel|>`-structured turns, `<|return|>` as the stop), where it
-  previously fell through to llama2's `[INST]` markup and ran away. The
-  analysis channel is suppressed from `content` and surfaced as
-  `reasoning_content`; `enable_thinking: false` skips it. Harmony tool calling
-  uses the model's native commentary/recipient protocol and strict declared-
-  argument constraints. Measured transcripts:
-  [docs/gpt-oss-harmony-2026-08-14.md](docs/gpt-oss-harmony-2026-08-14.md).
-  The CPU/CUDA identity row was **re-measured on 2026-08-19** now that the file
-  is on the Blackwell box, after the 2026-08-18 router-bias fix
-  ([docs/cuda-gptoss-router-bias-2026-08-18.md](docs/cuda-gptoss-router-bias-2026-08-18.md)).
-  `gpt-oss-20b-MXFP4` at **full offload** - the deployment configuration -
-  passes `test-gpu-identity` at 0.000732 of logit range against the 2e-3 bound.
-  The bound is exceeded only under *partial* offload (0.00356 at 1 GPU layer),
-  where a single device layer's reduction-order rounding is amplified through
-  the remaining CPU layers: the divergence is non-monotonic in GPU-layer count,
-  a shape a systematic wrong op cannot produce. The mechanism is discrete
-  top-4-of-32 expert-routing chaos (two experts tied to four decimals reorder
-  under a sub-ULP perturbation), and the model already disagrees with itself on
-  3 of 16 prompts under a CPU-only KV-precision change. No CUDA correctness
-  defect remains; gpt-oss is gated at its measured sensitivity floor, not at
-  dense-model logit identity. `gpt-oss-120b-MXFP4` (63 GB, unable to fully
-  offload on a 24 GB MIG) reproduces 0.00245 at 4 GPU layers - the same
-  amplification effect at greater depth. It is now also validated fully
-  resident on a 128 GB M5 Max: 36/36 Metal layers, 0.000215 mean logit-range
-  deviation against the 0.002 gate, 54.65 tok/s prefill and 64.59 tok/s
-  sustained decode, with zero swap. See the
-  [full bisection](docs/cuda-gptoss-divergence-2026-08-19.md) and the
-  [M5 evidence](docs/gpt-oss-120b-metal-m5max-2026-08-31.md). On the exact
-  same 120B GGUF and 715/128-token shape, llama.cpp `010be968` reaches
-  1,607.70/102.76 tok/s prefill/decode (752.65/102.27 with its tensor API
-  disabled). Runner's 54.65/64.59 result makes the remaining limitation
-  explicit: Metal MoE prefill grouping, not merely Metal 4 dense GEMM.
-- **Llama-3.3-70B-Instruct Q4_0 on Metal: validated 2026-08-31.** The complete
-  40,116,537,952-byte single-file artifact fully offloads all 80 layers on a
-  128 GB M5 Max. CPU/Metal identity passes over 3,078,144 logits at 0.0000139
-  of mean logit range (0.002 limit). A 731-token prefill plus 128-token greedy
-  decode ran coherently at 42.25/10.57 tok/s; swap ended at 0.25 MB. Evidence:
-  [docs/llama33-70b-metal-m5max-2026-08-31.md](docs/llama33-70b-metal-m5max-2026-08-31.md).
-- **Qwen3-30B-A3B Q8_0 on Metal: validated 2026-08-31.** All 48 layers and
-  the native 128-expert Q8_0 MoE route run on Metal. CPU/Metal identity passes
-  over 3,646,464 logits at 0.00109 of mean logit range (0.002 limit). A
-  732-token prefill plus 128-token greedy decode ran coherently at
-  183.39/65.45 tok/s with 0.25 MB swap. Evidence:
-  [docs/qwen3-30b-a3b-metal-m5max-2026-08-31.md](docs/qwen3-30b-a3b-metal-m5max-2026-08-31.md).
-- **Qwen3-235B-A22B Q2_K mix on Metal: validated with caveat 2026-09-01.**
-  Runner merges the two standard compact-metadata shards into one 85.69 GB
-  file with `--quant keep`; Q2_K and Q3_K expert kernels then fully offload all
-  94 layers. Direct kernels match scalar dequantization, and a 732/128 run is
-  coherent at 24.31/21.07 tok/s with 1.12 MB swap. The broad CPU/Metal logit
-  gate does **not** pass (0.00332 versus 0.002) after a top-8 route first flips
-  at token 4/layer 12, so this is not claimed as cross-backend identity.
-  Evidence: [docs/qwen3-235b-metal-m5max-2026-09-01.md](docs/qwen3-235b-metal-m5max-2026-09-01.md).
-- Gemma-4-26B-A4B QAT's old 16-token CPU/CUDA result is not a substitute for
-  the manifest's pending 128-token re-verification.
-- **Gemma-4-26B-A4B on Metal: fixed 2026-08-31.** The routed-expert GELU
-  kernel (`k_moe_actmul`) computed `tanh()` without the overflow clamp its
-  dense twin `k_gelu_mul` already carried; under Metal's fast math that
-  reaches `inf/inf` = NaN, and the model emitted only token id 0 at every
-  position while the CPU arm was correct. First model in the set that both
-  routes through the MoE kernel and drives the gate hard enough to reach it.
-  No tiny fixture can reproduce it, which is why
-  `make test-metal-bigmodel BIGMODEL=<path.gguf>` exists; it takes
-  `BIGPROMPT=` to pin a prompt. Root cause and bisection:
-  [docs/metal-gemma4-moe-divergence-2026-08-31.md](docs/metal-gemma4-moe-divergence-2026-08-31.md).
-- Numerically sensitive models may use a measured self-sensitivity floor
-  instead of claiming cross-engine token identity.
-- **The 2026-09-02 Blackwell matrix** (`docs/compat-reports/0.4.5-2026-09-02-blackwell.json`,
-  all 25 files then pinned present, every executable class run) is the
-  current ledger. Its executed tokenizer differentials pass on 7 models
-  and differed on 4: Mistral-7B-v0.3 (44/721, almost all leading-whitespace strings),
-  Phi-3.5-mini (2/721, around a literal `<s>` in text), Lucie-7B (190/721)
-  and Salamandra-7B (16/721, special-token spellings in plain text). Re-read
-  on 2026-10-03 against the SentencePiece model each publisher trained with
-  ([docs/tokenizer-spm-2026-10-03.md](docs/tokenizer-spm-2026-10-03.md)), the
-  first three are not runner defects: the runner matches Mistral's, Phi's and
-  Salamandra's own SentencePiece models on every string that does not spell a
-  special token, and the counts above are those publishers' `tokenizer.json`
-  files disagreeing with their own SentencePiece models. Those rows now gate on
-  the SentencePiece model, with the `tokenizer.json` count kept as an
-  informational column: a server that tokenizes through `tokenizer.json` gives
-  these models different tokens for a leading space than the ones they were
-  trained on. Lucie, which ships only `tokenizer.json` and a custom normalizer
-  the runner does not implement, remains a real gap, deferred until there is
-  demand; the chat and tool checks on all four pass. Seven cross-engine greedy
-  misses and the Teuken/TildeOpen chat failures were already in the
-  2026-08-15 ledger.
-
-</details>
-
-The full 2026-08-05 pass/fail/refusal matrix, including failed derivatives, is
-in [docs/cert-matrix-status.md](docs/cert-matrix-status.md). Architecture and
-model-family additions must update the manifest and executable gates, not only
-this README.
+Checks without their pinned model, reference, client, or device are reported
+as `not_executed`, not inherited passes. Current API conformance, client
+loops, malformed-input, ownership, numerical, and build/configuration gates
+remain executable tests. The current docs index links the published evidence
+behind retained claims rather than a chronology of old certification campaigns.
 
 ## How it works
 

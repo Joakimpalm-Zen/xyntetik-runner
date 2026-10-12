@@ -1,878 +1,133 @@
-# The adaptation engine: scoring, adapters, and training in the serving binary
-
-*2026-08-22, the CUDA training grid and the CUDA adapter path added
-2026-09-07. Status: D1–D9 built and gated (scoring, adapters, backward,
-training, GRPO-lite, CUDA slices 1–4, the position-batched backward
-(slice 3), merge). Training is position-batched and threaded under a
-byte-exact contract, on the CPU or with the device assist, which since
-slice 4 is the faster of the two on a consumer GPU; serving an adapter runs
-on the CPU or on CUDA. Everything below with a number attached was measured,
-and the gates named here run in `make test`.*
-
-The runner can now score, adapt, and train — narrowly scoped as **LoRA
-adaptation of a frozen quantized base, in the same binary, on the same
-kernels** that serve the model. Not pretraining, not a framework: a GGUF
-that learns locally, reproducibly.
-
-## Why inside the inference engine
-
-The systems argument: when the trainer's forward pass is literally the
-inference forward pass — same kernels, same bits — the policy you sample is
-the policy you train, **by construction**. Train/infer numerical mismatch
-(the thing that silently breaks on-policy RL and motivated the industry's
-determinism work) cannot occur between two codepaths that are one codepath.
-The second claim is **deterministic training**: same data + same seed →
-byte-identical adapter file, which extends the runner's reproducibility
-discipline from "prove what it said" to "prove what it learned from."
-
-Both claims are gated, not asserted (see D5 below).
-
-**The scope of the first claim, stated because it narrowed.** "One codepath"
-means the CPU codepath: the trainer keeps the model CPU-resident and unbound,
-so the forward it tapes is the CPU forward. Serving that adapter on the CPU
-is the case the claim covers exactly. Serving it on CUDA is not: the device
-forward reduces in a different order, measured at 1.255e-3 max |Δlogprob| on
-Qwen2.5-1.5B Q4_K_M against the host path, adapter or no adapter. That gap
-was unreachable while `--lora` refused a GPU-resident model; R8.7.2 made the
-combination possible, so the limit is written here rather than implied. It is
-a property of the base forward, not of the adapter: an adapter trained on the
-CPU and served on CUDA is as correct as the engine's CPU/GPU agreement, which
-is measured and bounded, and is NOT the by-construction identity above.
-Closing it means moving the trainer's forward onto the device, which is a
-separate piece of work with its own reproducibility question.
-
-## D1 — `--score`: teacher-forced logprobs
-
-Per-token log P(token | prefix) over raw text, plus NLL and perplexity, as
-versioned JSON (`xyntetik.runner.score.v1`). The eval/reward primitive
-everything else builds on.
-
-Design finding, measured during its red-first gate: **the CPU batched
-forward is not bit-identical to solo forwards** (max |Δlogprob| ~1e-6 on the
-fixtures). Sampling-time logprobs come from solo decode forwards — so the
-scorer *defaults to the solo path*, and the ~10×-faster chunked pass is an
-opt-in (`RUNNER_SCORE_CHUNKED=1`) whose deviation envelope is pinned by
-test. Semantic sanity: a natural sentence scores ppl 15.3 where its
-word-shuffled anagram scores 1818 (SmolLM2-135M Q8_0).
-
-## D2 — `--lora`: adapters at inference
-
-llama.cpp adapter-GGUF naming (`blk.N.<proj>.weight.lora_a/_b`,
-`adapter.lora.alpha`), f32 deltas applied as `y += scale·B(Ax)` beside the
-untouched base matvecs on the dense projections (attention q/k/v/output,
-FFN gate/up/down), on the CPU and, since R8.7.2, on CUDA. Fails closed by
-name on shape/rank mismatches, unknown targets, unsupported architectures,
-and a backend with no adapter path. Gated through `--score`: a zero adapter is byte-identical to the
-bare base; a real adapter matches the merged-weights reference model within
-the float summation-order envelope (5e-4). The adapter id joins the engine's
-model identity, so a cached prefix can never serve across an adapter
-boundary.
-
-### D2 on the device (R8.7.2): the same delta where the activations are
-
-A GPU-resident block's activations never reach the host, so the host hook
-cannot see them and `--lora` used to refuse an offloaded model outright.
-The delta now runs on the device instead: `k_lora_a` reduces the r inner
-projections, `k_lora_b` accumulates `y += scale·B·t`, both from A and B
-uploaded once when the adapter loads, at each of the seven projection sites
-the host hook covers. A partial split needs no special case, because the
-blocks the split left on the host keep the host hook and the two halves
-apply the same definition.
-
-Not the same arithmetic, and the doc says so rather than implying otherwise:
-the inner reduction is a warp tree where the CPU walks a serial fmaf chain,
-which is the engine's ordinary CPU-versus-GPU difference and is bounded by
-the same merged-reference gate. Exact either way: a zero B or a zero scale
-contributes `fmaf(scale, 0, y)`, which is `y`, so an unadapted answer is
-bit-for-bit unadapted on both paths.
-
-Metal applies the same delta since 2026-10-02 (`k_lora_a`, `k_lora_b` in
-`src/kernels.metal`, hooked at the same seven sites): the gates are the ones
-above plus an adapter on every projection of a block against the merged
-reference, and CPU-versus-Metal generation equality through a batched prefill
-(`tests/test_lora.py`). A block that carries an adapter decodes on the split
-path, not the fused front kernel. A 135M model notices that most (117 to 44
-tok/s). On Llama-3.2-3B Q4_K_M with a rank-16 adapter on the Q and V
-projections of all 28 blocks (M1, 1,157-token prompt, 64 tokens): decode
-9.8 to 8.3 tok/s, prefill unchanged (65.6 and 70.0 tok/s, within run-to-run
-spread), against 5.7 tok/s decode and 25 to 27 tok/s prefill on the CPU
-with or without the adapter.
-
-Refuses rather than degrades, in four places. A backend whose adapter
-kernels are missing fails the load with a sentence saying so instead of
-serving a model that ignored the adapter on every offloaded block; on Metal
-an adapter on a routed-expert FFN is refused the same way. A rank past the
-kernel's shared-memory bound, and a VRAM placement that fails, do the same.
-And a model with an adapter declines the multi-sequence batched decode
-(`fwd_batch` has its own projection sites and did not get the hooks), so it
-decodes sequentially rather than losing the adapter for batched requests.
-
-Gated on the CUDA box, four arms beside the CPU ones and self-skipping
-without a device (`tests/test_lora.py`): zero adapter byte-identical to the
-bare base, `--lora-scale 0` likewise, a real adapter deterministic and
-different from the base, and the merged-weights reference matched inside
-5e-4. **The mutation is the part worth keeping.** Deleting one of the seven
-hooks (the down projection) left the zero-adapter gate green, the scale-zero
-gate green and the "a real adapter changes the score" gate green: six of
-seven sites still move the output, so every relative check passes a model
-that silently dropped a seventh of its adapter. Only the merged-weights
-comparison went red. A gate that compares the system against itself would
-have shipped that.
-
-Measured at real width, Qwen2.5-1.5B-Instruct Q4_K_M fully offloaded to an
-RTX 3070, 28 blocks and 196 adapted projections, 36.9 MB of VRAM for the
-adapter, against the same run on 8 CPU threads, as max |Δlogprob| over the
-scored positions:
-
-| | CPU vs GPU |
-|---|---|
-| base, no adapter | 1.255e-3 |
-| adapter at its own scale | 1.110e-3 |
-| adapter at `--lora-scale 40` | 3.718e-3 |
-
-The middle row is the result: applying the adapter on the device does not
-widen the gap between the two paths beyond what the two paths already have
-without it. The third row is honest about what a deliberately loud scale
-does, and is read next to the delta it applies, 11.67 nats.
-
-## D3 — the backward pass
-
-Activation gradients flow through the whole network in reverse — attention
-including the cross-position dK/dV paths, the rope adjoint, the softmax
-jacobian, rmsnorm backward — while weight gradients exist only for the
-adapters. Three properties carry the design:
-
-1. **The forward half is the inference forward.** Solo forwards tape each
-   layer's residual-stream input; the backward recomputes internals with the
-   same primitives (`rmsnorm`, `matvec_b`, the production attention worker)
-   and reads K/V from the actual cache, so the values differentiated are the
-   f16-rounded values inference attended over.
-2. **The transposed quantized matvec** (`dx = Wᵀ·dy` through frozen
-   quantized rows, per-row dequant, serial fmaf) carries the frozen-base
-   activation gradients — for any weight type the engine can decode, and
-   FD-verified through real Q8_0 rows, not just F32.
-3. **Byte-determinism**: fixed sequential fmaf accumulation everywhere.
-
-Gate: finite differences on 84 coordinates across all 28 adapter buffers
-(every slot × both layers × A and B × F32 **and** Q8_0 bases), aggregate
-cosine 0.99997, gradients byte-identical run to run. The gate's design
-itself records a measurement: the f16 KV cache **staircases** finite
-differences (probed: fd oscillates around the analytic value and converges
-to it as eps grows), so the check is two-scale rather than
-single-tolerance. Teeth proven by sabotage: a deliberately broken rope
-adjoint fails at relative error 1.36.
-
-Declared scope, fail-closed by property: CPU, dense SiLU transformers, f16
-KV. Recurrent architectures, MoE, sliding windows, per-head norms and head
-transforms refuse with a named reason. The CPU in that list is the backward's
-own host, and it is also what scopes the train/infer identity claim above: an
-adapter this backward produced is bit-for-bit the policy a CPU forward
-samples, and within the engine's measured CPU/GPU envelope of the policy a
-CUDA forward samples.
-
-## D4 — `--train`: the loop
-
-Fresh rank-R adapters on every hooked projection (A seeded, B zero — an
-exact no-op start), AdamW (0.9/0.999, wd 0.01) in fixed elementwise order,
-per-step JSONL loss logging, checkpoints via an adapter-GGUF writer that
-emits exactly the format `--lora` reads. Two data modes:
-
-- plain text: tokenize, fixed windows, cycle;
-- `.jsonl` lines `{"prompt", "completion", "weight"}`: prompt transitions
-  masked to weight 0, completion transitions carry the example weight —
-  `model_lora_backward_w`'s per-position weights are the policy-gradient
-  hook.
-
-Determinism is the default: fixed init seed unless `-s` is given, fixed
-data order, the D3 compute path underneath.
-
-## D5 — the gates (`make test`)
-
-- **Deterministic training**: two identical runs → byte-identical adapter
-  files and identical loss trajectories.
-- Loss falls on an overfit corpus; the saved adapter loads back through
-  `--lora` and improves `--score` on the trained text (fixture: nll
-  5.58 → 4.59).
-- JSONL mode trains with prompt masking; a different seed produces a
-  different adapter (the determinism is seeded, not vacuous).
-- Plus the D3 FD gate on both base types.
-
-## Measured at scale (Blackwell, 128-thread CPU path)
-
-**Llama-3.2-3B-Instruct Q4_K_M** (a frozen 4-bit base learning through the
-transposed-quantized-matvec path), rank-8 adapters on every projection,
-corpus = this repository's README introduction (164 words), 30 AdamW steps
-at ctx 96, lr 2e-4, 32 threads:
-
-| measure | value |
-|---|---|
-| step wall time | ~33 s (992 s for 30 steps) |
-| training loss | 5.11 → 0.14 |
-| exact corpus text, nll/token | **5.00 → 0.31** (ppl 148 → 1.4) |
-| unrelated control sentence | 1.63 → 1.67 (barely moves) |
-| off-corpus paraphrase | 6.20 → 6.65 (overfit, as expected) |
-
-The paraphrase row is kept deliberately: 30 steps at lr 2e-4 on 164 words is
-memorization, and an honest overfit report shows the specificity — the
-adapter learned exactly the trained text, left the control alone, and got
-slightly worse at near-miss phrasings. Generalization tuning is a recipe
-question, not an engine question.
-
-## D6 — GRPO-lite: reinforcement with zero train/infer mismatch
-
-`scripts/train-grpo-lite.py`: sample K completions per prompt from the
-runner itself (seeded — the sampling replays), score with a task reward
-(built-in task: emit exactly one valid tool-call JSON object), convert
-group-relative advantages (r − mean r) into weighted examples, take one
-weighted `--train` pass, repeat. REINFORCE at example granularity —
-deliberately the simplest correct member of the GRPO family, because the
-demonstration is the mechanism: the sampler and the trainer are the same
-binary, so the improvement loop has no numerical seam at all.
-
-**Measured (SmolLM2-1.7B-Instruct Q4_K_M, 4 tool-call prompts × K=8, 6
-rounds, lr 2e-5, Blackwell CPU path).** Two runs, both reported because the
-failed one taught more:
-
-- **Raw advantages (r − mean), lr 1e-4 — the policy COLLAPSED**: valid-call
-  rate 0.91 → 0.78 → 0.94 → 0.88 → 0.59 → **0.09** → 0.38. On a
-  high-baseline task the rare failures carry advantage ≈ −0.9 while the many
-  successes carry ≈ +0.1; the asymmetric negative mass unlearns the shared
-  structure. The textbook naive-REINFORCE failure, reproduced in an
-  afternoon on a laptop-class stack — which is rather the point of having
-  the loop this cheap to run.
-- **Group-normalized, clipped advantages ((r − mean)/std, ±1), lr 2e-5 —
-  stable and improving**: 0.906 → 0.906 → 0.875 → 0.938 → **0.969** →
-  0.938 → 0.938 (mean reward 0.906 → 0.947). Modest headroom — the base
-  model is already decent at the task — but the loop climbs instead of
-  detonating, and the whole run replays from its config (seeded sampling +
-  deterministic training).
-
-Verdict against the item's own kill-switch ("the RL demo underwhelms →
-supervised LoRA remains the product"): the mechanism is demonstrated — the
-sampler and trainer share every bit, the loop improves a real quantized
-model, and the stabilization it needed is the standard one, arrived at by
-measurement. A product-grade recipe (KL anchoring, bigger prompt sets,
-harder rewards) is future work, not engine work.
-
-## D7 — `--train-dpo`: the pairwise objective, and what it costs today
-
-Direct Preference Optimization (arXiv 2305.18290) over the adapter, as one
-pairwise step. The gradient needs no new kernel: with `CE(y) = -log pi(y|x)` the
-published form rearranges to
-
-    grad L_DPO = beta * sigma(r_l - r_w) * ( grad CE(y_w) - grad CE(y_l) )
-
-a scalar multiple of a **difference of two weighted cross-entropy gradients**,
-and `model_lora_backward_w`'s `pos_w` is linear including negatives. So a pair is
-two backward calls into one gradient buffer (the rejected half with a negated
-mask) and one buffer multiply by a scalar known only after both.
-
-The reference policy costs nothing either. The adapter applies as
-`fmaf(scale, acc, y)`, so `model_lora_bypass` zeroes every slot scale and pi_ref
-is these same weights: no second copy and no second load. It **refuses a
-device-bound adapter**, because those scales are host-side and a GPU-resident
-reference would silently equal the trained policy — every margin exactly zero
-while the loss fell.
-
-### The gate
-
-`tests/test_dpo_grad.c`, four checks, because a loss that merely descends looks
-exactly like a correct one until the adapter is useless:
-
-- a **zero adapter** (B=0, so pi_theta is identical to pi_ref) must give margin
-  exactly `0` and loss exactly `log 2`. It does.
-- the loss and coefficient against an independently written formula: agree to
-  < 1e-9.
-- the gradient against the identity it claims to be, assembled by hand from two
-  separate backward calls: worst 1.28e-08 on a scale of 0.124.
-- the **directional derivative** against central differences of the actual loss,
-  the only check touching none of the gradient machinery: **0.78%**, inside the
-  1% band, on both macOS/arm64 and Windows/x86-64.
-
-### Measured cost, and read this before starting a run
-
-On the Blackwell measurement box — a **MIG 1g.24gb** slice, `--gpu off` (the
-forward is CPU; `--train` refuses a GPU model), `RUNNER_TRAIN_GPU=1` so only the
-backward's transposed matvec is on the device, 32 threads, Hermes-4-14B-Q4_K_M,
-`-c 8192 --train-ctx 8192`, pairs of **4,110 / 6,803 / 3,423 tokens**:
-
-| step | tokens | loss | margin | step time |
-|---:|---:|---:|---:|---:|
-| 1 | 4,110 | 0.693147 | **0.000000** | 2,856 s |
-| 2 | 6,803 | 0.592574 | 0.212404 | 5,553 s |
-| 3 | 3,423 | 0.554414 | 0.299862 | 2,327 s |
-
-**Mean 3,579 s per step — just under an hour.** A 116-pair dataset is therefore
-about **115 hours**. For comparison the plain `--train` SFT step on the same
-model and box is ~1,051 s median, so a DPO step is about **3.4x** an SFT step:
-a pair carries two sequences, the step does two reference forwards and two
-backwards against SFT's one backward, and attention is quadratic in a length
-that is already 2,314 tokens at the median.
-
-Step 1's `margin 0.000000` with `logp_w == logp_ref_w` is the zero-adapter
-identity from the gate, visible in production. **It is the line to read first on
-any run**: a non-zero margin at step 1 from a fresh adapter means the reference
-is wrong.
-
-This cost is a property of **this hardware and these sequence lengths**, not of
-the objective. Three things move it, none of them a different method: putting the
-**forward** on the device (three of the four passes are CPU today), **shorter
-sequences** (a retrieved context rather than a whole function cuts a quadratic
-term), or a larger slice than the 14.7 GB budget the trainer reports.
-
-## D8 slice 1 — the transposed matvec on device
-
-The deterministic-training claim extends to the GPU only if the GPU produces
-the same BYTES as the CPU backward. Slice 1 delivers that for the backward's
-dominant primitive: `k_mvt_{f32,f16,bf16,q8_0,q4_0,q4_K,q6_K}` compute
-`dx += Wᵀ·dy` with the CPU trainer's exact accumulation chain (accumulator
-starts from dx, serial j per output element, fmaf, zero-dy skip), and the
-gate (`test-mvt`, in `make test`, self-skipping without CUDA) byte-compares
-the float buffers against the CPU path on real fixture and real-model
-tensors. Measured on the RTX 3070 (CUDA 13.3): **bit-identical on every
-type**, first try for five of seven. Throughput, honestly: with per-call
-PCIe transfers the f16 head wins 1.9× over one CPU thread, while the naive
-per-element q6_K decode LOSES (0.6×) — the primitive's win needs persistent
-device buffers and a tiled decode, which is what the remaining D8 slices
-(integrated training-side GPU context, batched taped forward) are for. What
-slice 1 establishes is the hard part: determinism does not have to be traded
-away to move training onto CUDA.
-
-## D8 slice 2 — the persistent training context (integrated, measured, not yet winning)
-
-Slice 2 integrates the primitive: `RUNNER_TRAIN_GPU=1` gives `--train` a
-standalone CUDA context (the model stays CPU-resident and unbound — the
-serving offload is never engaged), uploads each weight tensor **once** on
-first use, and routes the backward's `dx += Wᵀ·dy` through the slice-1
-kernels with reused scratch. Any tensor that cannot go to the device (no
-kernel for its type, VRAM budget reached) silently stays on the CPU path —
-free to mix, because both paths are gated byte-identical, so the adapter
-bytes cannot depend on the switch. Gated in `make test`
-(`test_train.py::test_gpu_training_matches_cpu_bytes`, self-skipping
-without CUDA) and verified at 4B scale on Blackwell-generation hardware
-(RTX PRO 6000, a second GPU generation after the slice-1 RTX 3070): CPU
-and GPU-assisted runs produce **byte-identical adapters** with identical
-loss trajectories.
-
-Measured honestly, it does not win yet: 6 training steps of the 4B
-ToolUse config took 284 s on 96 EPYC-class CPU threads and 430 s
-GPU-assisted (a 1g.24gb MIG slice). Removing the per-call weight upload
-was necessary but not sufficient — the backward makes tens of thousands
-of batch-1 mvt calls per step, and per-call dy/dx transfer plus
-synchronization now dominates. The win requires batching the backward
-across positions (one device call per site covering the whole window),
-which is the next slice, alongside the tiled q6_K decode. What slice 2
-banks is the structure and the guarantee: determinism survives
-integration, on two GPU generations, at 4B scale.
-
-## D8 slice 3 — the position-batched backward: 2.3× on the CPU, measured honestly
-
-Slice 2's verdict ("the wall is batch-1 calls") led here: the backward ran
-its transposed matvec once per position — ~28k batch-1 calls per 4B step,
-the lm-head backward alone re-decoding all 152k vocab rows every position.
-Slice 3 makes every projection site ONE batched call over the window
-(site-major passes, the head chunked at 16 positions) and rebuilds the
-CPU matvec around the invariant that actually matters: **each dx[t][i]
-accumulates its ascending-j fmaf chain from its incoming value**, which is
-loop-order-, partition- and thread-count-invariant. Workers own
-(column-slice × position-chunk) cells, decode only their slice — every
-weight element decodes once per position chunk instead of once per
-position — and no element is ever touched by two workers. The
-score/softmax backward threads the same way over kv-head groups (each
-dk/dv element belongs to one group; the group's (t,h,s) loop is the
-serial order restricted to its slice).
-
-Because all of that is scheduling, the bytes cannot move, and the gates
-say they didn't: an adapter trained by the pre-slice-3 binary is
-**byte-identical** to one trained after (tiny fixture and 4B scale), the
-bytes are invariant across thread counts, and the FD gradient gate holds
-at worst relative error 0.
-
-Measured on the 4B ToolUse config (96 EPYC-class threads, ctx 128):
-
-| | s/step | phase profile (s) |
-|---|---|---|
-| before slice 3 | 47.3 | head-dominated re-decode |
-| after slice 3 | **20.5** | fw 5.5 · sites 7.2 · recompute 3.2 · B2/B3 2.1 · attn 0.8 · head 0.4 |
-
-Each optimization round was driven by `RUNNER_TRAIN_PROF=1` (per-step
-phase wall times) after the first guess — that dy scanning dominated —
-measured out as wrong (a threaded transpose bought 3%). The profile
-found the real ceilings: the serial O(T²) attention backward (~15 s,
-now 0.8), and the column-partition capping the matvec at 10 workers
-(15–17 s, now 7.2).
-
-How to read training speed here: the KPI is **time-to-adapter under the
-reproducibility contract** — the published ToolUse adapter (316 steps)
-now trains in ~1.8 hours on a 96-thread CPU host, byte-identical across
-reruns, down from ~4.2. Per-step JSON carries `step_s` and `tok_s`
-(training tokens/sec: forward + backward + optimizer, ~5.4 at seq 110 /
-batch 1 — not an inference number) for normalized comparisons across
-configs. Dense-training metrics like MFU are deliberately not quoted:
-under batch 1 + frozen quantized base + serving numerics + byte-exact
-output, the peak-FLOP denominator is artificial. The clean future
-benchmark is Runner against Runner — CPU deterministic vs CUDA
-deterministic, same data, same convergence, same adapter sha if the
-contract survives the kernel batch grid.
-
-The GPU assist after the same batching: **still loses, now by more**
-(49 s/step vs 20.5 on a 1g MIG slice), byte-equal as always. The
-transfers amortized as intended, but the `k_mvt_*` kernels parallelize
-over n_in only — 2,560 device threads on a 2,560-wide input is two
-orders of magnitude under GPU occupancy. The remaining GPU slice is a
-kernel-side batch grid (positions as blocks), which needs a PTX
-regeneration; it is deprioritized while the CPU path is the one winning,
-and RUNNER_TRAIN_GPU=1 stays an opt-in that changes step time, never
-bytes. **Slice 4 took that slice and the assist now wins; the paragraph
-above is kept as the diagnosis it was.**
-
-## D8 slice 4 - the position grid: the assist wins, on a consumer GPU
-
-Slice 3 named the ceiling and slice 4 is that one change: the `k_mvt_*`
-kernels get the grid's second dimension, positions. Nothing else moves.
-A 1,536-wide projection was six 256-thread blocks, six of an RTX 3070's
-46 SMs, with the kernel walking the window's positions one after another
-inside each thread; it is now six blocks per position.
-
-The change is scheduling, not arithmetic, and structurally so. Each
-`dx[t][i]` starts from its own incoming value and advances j serially,
-so the t iterations touch disjoint outputs and read nothing another t
-writes: spreading them across blocks cannot move a bit. The kernel loop
-is strided (`t = blockIdx.y; t += gridDim.y`), which keeps it correct for
-any `gridDim.y`, including the 1 the pre-slice-4 host launched and the
-clamp a window longer than CUDA's 65,535-row grid limit would need.
-
-Measured on ZEN-GAMING, a consumer desktop rather than a server: RTX 3070
-(8 GB, CUDA 13.3, driver 596.36) and 8 CPU threads, so both columns are
-the machine somebody would actually train on at home. Qwen2.5-Instruct
-Q4_K_M, rank-8 adapters on every projection, ctx 128, `--lr 1e-4`, the
-median of three steps.
-
-| Qwen2.5-1.5B | s/step | fw | head | recompute | sites | attn | B2/B3 |
-|---|---:|---:|---:|---:|---:|---:|---:|
-| CPU, 8 threads | 18.7 | 7.44 | 2.41 | 4.22 | 3.78 | 0.47 | 0.31 |
-| `RUNNER_TRAIN_GPU=1`, before | 59.8 | 7.60 | 14.51 | 4.25 | 31.2 | 0.49 | 1.67 |
-| `RUNNER_TRAIN_GPU=1`, after | **16.5** | 7.37 | 1.93 | 4.23 | 2.21 | 0.48 | 0.22 |
-
-| Qwen2.5-7B | s/step | fw | head | recompute | sites | attn | B2/B3 |
-|---|---:|---:|---:|---:|---:|---:|---:|
-| CPU, 8 threads | 76.5 | 31.6 | 6.02 | 19.8 | 16.9 | 0.79 | 1.31 |
-| `RUNNER_TRAIN_GPU=1`, before | 145.7 | 32.2 | 15.71 | 20.0 | 70.5 | 0.88 | 6.32 |
-| `RUNNER_TRAIN_GPU=1`, after | **64.8** | 31.8 | 3.33 | 20.0 | 7.82 | 0.88 | 0.70 |
-
-The three offloaded phases at 7B: sites 70.5 to 7.82 (9.0x), the head
-backward 15.71 to 3.33 (4.7x), B2/B3 6.32 to 0.70 (9.0x). Against the CPU
-they now win 2.2x, 1.8x and 1.9x, where before they lost 4.2x, 2.6x and
-4.8x. The step as a whole goes from **1.9x slower than the CPU to 1.18x
-faster** at 7B and from 3.2x slower to 1.13x faster at 1.5B.
-
-The bytes did not move, which is the only result that makes the speed
-one usable. At 7B all five runs of the A/B (CPU, two before-runs, two
-after-runs, interleaved, from two binaries proven distinct by hash before
-any number was read) wrote the same adapter,
-`2efdd297...` sha256, with identical loss trajectories; at 1.5B the same
-across CPU, before and after (`7db88c6d...`). `test-mvt` now runs a
-37-position batch, a real position grid rather than the old 3, and adds
-one assertion the grid could break on its own: a position computed alone
-must equal its slice of the batched call. The gate was proven red by
-sabotage on the box (stride `gridDim.y` replaced by 1, so every block
-walks every position): all three assertions fired on all four tensors,
-with the rebuild confirmed by a changed binary hash both ways.
-
-The PTX is regenerated on that box, whose CUDA 13.3 (V13.3.73, build
-CL-38244171) is the toolchain stamped in the committed header. Attributed
-the way `docs/cuda-microbatch-identity-2026-08-18.md` requires, against a
-baseline regeneration from the unmodified `kernels.cu` on the SAME box
-rather than against the committed header: of 107 kernels, exactly the
-seven `k_mvt_*` instruction streams differ and nothing else does. Two
-regenerations of the fixed source were byte-identical to each other.
-
-**What is left, and it is not what the plan item said.** With sites, head
-and B2/B3 on the device, the training step is now 80% CPU forward at 7B
-(taped forward 31.8 + recompute 20.0 of 64.8) and 70% at 1.5B. The
-attention backward is 0.88 s of 64.8, and the AdamW step does not
-register in the profile at all: at 7B, step time minus the three printed
-phases is 0.04 s. Porting the attention backward and the optimizer to
-CUDA, the next step as written, is worth about 1% of a step. The lever
-that is left is the forward itself, and it is a different kind of
-question: the trainer keeps the model CPU-resident and unbound on purpose,
-because the forward it tapes has to be the forward inference runs, and
-the CUDA inference path is not bit-identical to the CPU one. Moving it is
-a T1-to-T2 trade (token-exact rather than byte-exact), not an
-optimization, and it belongs to the owner rather than to a profile.
-
-## D8 slice 5: the forward, and a device dot that is bit-identical to the host
-
-After slice 4, a training step is not backward-bound. Measured on the same
-RTX 3070 box (Qwen2.5-7B Q4_K_M, rank 8, ctx 128, `RUNNER_TRAIN_PROF=1`), the
-64.8 s step is 31.8 s taped forward plus 20.0 s recompute, both of them on
-the CPU because the trainer keeps the model unbound, and 12.8 s of everything
-else. The attention backward is 0.88 s of it and the AdamW step 0.04 s, so
-the piece a plan would naturally reach for next is worth about 1%.
-
-What the device would buy was measured rather than estimated, using `--score`
-as the instrument: its default path runs ONE SOLO FORWARD PER POSITION, which
-is exactly what the tape does, and `RUNNER_SCORE_CHUNKED=1` runs the batched
-pass the recompute resembles. 152 positions, same file, same host, two runs
-each:
-
-| phase, and its proxy | CPU, 8 threads | RTX 3070 | ratio |
-|---|---:|---:|---:|
-| solo forwards (the tape) | 36 s | 5 s | **7.3x** |
-| batched forward (the recompute) | 13 s | 4.5 s | **2.9x** |
-
-Scaled onto the 128-position step: the taped forward would go 31.8 s to about
-4.2 s and the recompute 20.0 s to about 6 s, putting a step near **23 s**,
-which is 2.8x today's GPU-assisted 64.8 s and 3.3x the 76.5 s CPU-only run.
-Both proxies include model load and are therefore conservative.
-
-That prize is not free, and the cost is the reproducibility tier rather than
-the work. The trainer's forward is CPU-resident on purpose (see the scope
-note at the top), and the device forward reduces in a different order. There
-are two ways to spend it and they are genuinely different products:
-
-- **Take T2.** Use the shipped CUDA forward. Adapters stop being byte-identical
-  to a CPU run and become token-exact instead. The identity claim moves from
-  the CPU to CUDA, which is where a GPU owner serves anyway.
-- **Keep T1.** Build a reference-exact forward the way slices 1 and 4 built
-  the backward's: a serial fmaf chain per output element, parallelised over
-  the dimensions that are free (output rows, and positions where the call has
-  them), tiled through shared memory so the global loads still coalesce. The
-  reason to expect this to cost little is that a batch-1 forward is
-  bandwidth-bound, not reduction-bound: a 7B Q4_K_M forward reads about 4.4 GB
-  of weights, so 128 of them move ~560 GB, and the 3070's 448 GB/s puts the
-  floor near 1.3 s whatever order the accumulation runs in. The industry's
-  determinism tax (batch-invariant kernels, roughly 61.5% of throughput) is a
-  large-batch serving number and does not obviously apply here.
-
-Slice 1 already established the harder half of the second option: a GPU
-kernel bit-identical to a CPU reference, on seven weight types. It is a
-stronger property than the same-device reproducibility the literature aims
-at, and it is the one this engine is for.
-
-### The owner took T1 (2026-09-07), and here is the primitive
-
-`gpu_mvcanon` computes `y = W·x` in **exactly** the association `vec_dot`
-uses under `RUNNER_CANON_KERNELS`, so the device answer is bit-identical to
-the host's rather than close to it. `memcmp`, not a tolerance: a tolerance
-would pass the ordinary CPU/GPU divergence this exists to remove.
-
-The reason it is affordable is that the work was already done for a different
-reason. R12.1 defined the canonical reduction as an **eight-lane tree**, so
-that a CPU could be bit-exact across ISAs:
-
-```
-c[l] = acc[l] + acc[l+4]        (l < 4)
-d0 = c0 + c2,  d1 = c1 + c3
-out = d0 + d1
-```
-
-Eight lanes with a three-step tree is a shape a warp runs natively. Three
-`__shfl_down_sync` steps at width 8 ARE `canon_tree8`, not an approximation
-of it, and lane `l` reading element `l` of each eight-wide group means the
-eight lanes of a row read 32 contiguous bytes. The order that makes the CPU
-portable is the order that makes the GPU coalesce.
-
-Measured on the RTX 3070, Qwen3-0.6B Q8_0, the lm head `[1024 x 151936]`:
-
-| | |
-|---|---|
-| device vs canonical host dot | **byte-identical**, every element, both runs |
-| device | 0.611 ms |
-| host, one thread, same association | 11.682 ms |
-| effective bandwidth | 165.3 MB in 0.611 ms = **270 GB/s** of the card's 448 |
-
-The fixed per-call cost (allocation, transfers, synchronize) measures 0.05 ms
-on the tiny fixture, so the kernel itself runs near 72% of peak bandwidth.
-That is the answer to the question the tier choice turned on: **the exact
-association is not what limits this kernel, memory is.** The published price
-of deterministic GPU inference is batch-invariant kernels at roughly 61.5% of
-throughput; nothing like that is being paid here, because a batch-1 forward
-was never reduction-bound in the first place.
-
-Scope, stated rather than implied: F32, F16 and Q8_0 have a canonical order
-today and are what this covers. The k-quants do not have one yet, and
-`gpu_mvcanon` refuses them by name instead of inventing one. Defining the
-canonical order for a k-quant is R12.1's work, not this slice's, and the
-trainer's forward cannot move for a Q4_K_M base until it exists. The
-integration -- taping through the device forward, and the direct comparison
-against the non-canonical GEMV -- is the next slice, exactly as `gpu_mvt`
-was a gated primitive for three slices before the trainer consumed it.
-
-## D9 — `--merge-lora`: folding the adapter into the base
-
-Serving `base + --lora` is the exact form: the frozen base plus an F32
-delta, every base identity gate still valid, provenance = base sha +
-adapter sha. But an adapter only helps runner users. `--merge-lora OUT`
-produces the portable form — a standalone GGUF with
-`W' = W + (alpha/r)·B·A` folded into each adapted projection, runnable in
-any GGUF runtime:
-
-```sh
-runner -m base-Q4_K_M.gguf --lora adapter.gguf --merge-lora merged.gguf
-runner -m base-Q4_K_M.gguf --lora adapter.gguf --merge-lora merged-f16.gguf --quant f16
-```
-
-Mechanics, and where the honesty lives:
-
-- Each adapted tensor's rows are dequantized, the delta is folded in a
-  fixed-order fmaf chain (the same discipline as `lora_apply`), and the row
-  is requantized — to its own source type by default, or to `--quant T`.
-  **Merging into a quantized type rounds the delta through that type's
-  grid.** The merged file is NOT numerically the served base+adapter; how
-  much of the learned behavior survives the rounding is a *measurement*,
-  per target type, not a given. The exact form stays `--lora`.
-- Untouched tensors (and zero-delta pairs) are copied byte-verbatim — no
-  gratuitous dequant/requant churn of weights the adapter never touched.
-  Gated: merging the all-zero adapter writes a file byte-identical to a
-  keep-type requant of the base.
-- The merge is deterministic: same base + adapter + flags → byte-identical
-  merged file, and on an F32 base the merged floats are gated *byte-exactly*
-  against the documented fmaf chain (`test-quantize`).
-- Validation mirrors `model_lora_load` (hostile-GGUF discipline): unknown
-  projections, shape/rank mismatches, half pairs, and architecture
-  mismatches refuse the whole merge — a silently skipped tensor would emit
-  a merged model that is not base+adapter.
-- Provenance extends D7 to the standalone artifact: `OUT.merge.json`
-  carries base/adapter/merged sha256s plus the scale and target, so the
-  merged blob remains auditable back to what it was made from.
-
-Requantizing into K-quant bases needed writers the requantizer didn't have:
-faithful ports of ggml's `Q4_K` and `Q6_K` quantizers (and a
-round-to-nearest-even `BF16`) now sit beside the existing `q8_0/q4_0/q3_K`,
-gated on round-trip error through the production dequant readers and on
-byte determinism. They are general: `--quantize` and `--type-plan` accept
-`q3_k`, `q4_k`, `q6_k`, and `bf16` targets now too.
-
-### Measured: the 4-bit merge erases the fine-tune
-
-The ToolUse adapter (the published Qwen3-4B artifact: base+adapter scores
-1.000 exact on the held-out eval, base alone 0.690) was merged into three
-output precisions of its Q4_K_M base and each standalone file re-evaled
-(128-thread EPYC-class host, greedy, temperature 0):
-
-| merged into | right tool | exact call | bytes changed vs base |
-|---|---|---|---|
-| Q4_K_M (keep) | 0.724 | 0.690 | **1.45%** |
-| Q8_0 | **1.000** | **1.000** | ~all (type change) |
-| F16 | **1.000** | **1.000** | ~all (type change) |
-
-The Q4_K_M merge does not degrade the adaptation — it **deletes** it: the
-merged file reproduces the base's numbers to the prompt, because the LoRA
-delta is small against the 4-bit grid step and requantization rounds
-98.55% of the weight bytes back to their original codes. The symptom is
-visible in one generation: through stock llama.cpp (b10581, raw
-completion), the Q8_0 and F16 merges answer with JSON only, exactly as
-trained; the Q4_K_M merge answers, then drifts into conversational prose —
-the base's habit the adapter had trained away.
-
-At 4B scale the merge determinism held too: two independent
-`--merge-lora` runs of the Q4_K_M target produced byte-identical 2.5 GB
-files (same sha256).
-
-The deployment rule this measures out to: **serve 4-bit as
-`base + --lora` (exact); merge only into Q8_0 or wider, and eval the
-merged file, not the adapter.** Merging into a 4-bit base is where a
-fine-tune silently disappears — precisely the failure a workflow that
-never re-evals its merged artifact would ship. Interop is verified the
-same way: the merged files load and generate correctly in stock llama.cpp.
-
-### Measured: the survival threshold (delta magnitude vs the 4-bit grid)
-
-If the mechanism is "delta smaller than the grid step rounds away", the
-delta's magnitude should be the knob — and `--lora-scale` at merge time is
-that knob for free. The same adapter merged into the same Q4_K_M base at
-five scales, each merged file evaled standalone, with the served
-base+adapter at the same scale as the control:
-
-| scale | merged-Q4 exact call | served exact call | bytes changed vs base |
-|---|---|---|---|
-| 0.5 | 0.690 (base) | 1.000 | 1.15% |
-| 1 | 0.690 (base) | 1.000 | 1.45% |
-| 2 | 0.690 (base) | 1.000 | 2.05% |
-| 4 | 0.828 | 1.000 | 2.87% |
-| 8 | **1.000** | **0.138** | 4.60% |
-
-Two findings. First, survival is monotone in delta magnitude, as the
-mechanism predicts: at 2× the delta still rounds away entirely, at 4× it
-partially lands, at 8× it fully lands — for this adapter and task the
-behavioral threshold sits between ~2.9% and ~4.6% of weight bytes
-actually changing. Second, the inversion at 8×: the *exact* 8×-scaled
-adapter breaks the served model (0.138 — over-amplified), while the
-Q4-merged version of the same weights scores 1.000. The 4-bit grid acts
-as a soft threshold on the delta — it keeps the components large enough
-to land and rounds away the rest, which at 8× amounts to an accidental
-regularizer. Do not read that as a technique; read it as the measurement
-that merging through a quantization grid is a *filter* on your fine-tune,
-with a pass-band you don't control. Scaling an adapter 8× to survive a
-4-bit merge hands the filter a model the exact form of which you can no
-longer serve.
-
-## Measured: weight-space divergence IS behavioral — one level below top-1
-
-The three-precision study left a question on the table: the bf16- and
-Q4_K_M-trained adapters diverge 12% in weight space while every top-1
-metric sits at 1.000 — is the divergence real behavior or numerical
-trivia? The external reproduction proposed the right instrument before
-new benchmarks: compare held-out token logprobs. All 29 eval prompts,
-gold completions appended, scored through the SAME Q4_K_M serving base
-under each adapter (3,195 scored positions):
-
-| pair | weight rel L2 | mean \|Δlogprob\| | p95 | positions >1 nat |
-|---|---|---|---|---|
-| bf16-ad vs Q8-ad | 0.019 | **0.020** | 0.086 | 0% |
-| bf16-ad vs Q4-ad | 0.122 | **0.146** | 0.65 | 2.2% |
-| Q8-ad vs Q4-ad | 0.120 | 0.145 | 0.49 | 2.3% |
-| base vs any adapter | — | 0.32–0.40 | ~1.1–1.7 | 6–8% |
-
-Read: the divergence is real behavior. The Q4-trained adapter differs
-from the bf16-trained one by roughly **40% of the entire adapter effect**
-in logprob space (0.146 vs ~0.36), with a 6× weight-space gap mapping to
-a 7.4× logprob gap — essentially proportional. It is invisible at top-1
-only because this task's decisions have wide margins; on a task whose
-decisions sit closer to zero margin, this is the size of gap that flips
-answers. "Fine-tune FP16 then quantize" and "adapt the deployed quant"
-are not just measurably different objects — they are measurably
-different *behaviors*, one level below where the eval saturates. Raw
-per-position score outputs are in the HF repo (`evals/logprob-study/`).
-
-## Where that divergence lives, and where it flips
-
-Two refinements from the same external reviewer whose reproduction scopes the
-determinism claims below. The first changes how the table above should be read,
-and it belongs here rather than only on the artifact card.
-
-**The aggregate hides a split (2026-08-25).** Separating scored positions by
-prompt region versus gold-completion region changes what 0.146 is measuring. On
-the supervised completion region the three adapters nearly coincide: bf16 vs Q4
-mean |Δlogprob| is about **0.0003 nat**, with no position near 1 nat. Almost
-all of the 0.146 aggregate lives in the **unsupervised prompt region**. The
-honest reading is that the precision path leaves a real function-level
-fingerprint largely outside what the completion loss supervised, while the
-supervised decisions stay wide-margin. Those are two different observables, and
-the aggregate row above conflates them.
-
-**The fingerprint does cross a decision boundary (2026-08-25, systematized
-2026-08-30).** On a deliberately ambiguous request, *tell me what README.md
-says and translate it*, the bf16- and Q8-trained adapters call `read_file`
-(margins ~0.49 nat) while the Q4-trained adapter answers `none` (margin 2.17
-nat), and the split survives full deterministic JSON generation.
-
-That began as one constructed case. It is now a screened one. The reviewer
-built a **36-prompt tool-choice boundary bank** across five ambiguity families
-(`list_dir`/`search_files`, `read_file`/`search`, `read_file`/`write_file`
-multi-intent, config browsing, and available-tool/none), kept the cases whose
-top1-top2 legal-choice margin sits at or under 3 nat, and compared base, bf16-,
-Q8- and Q4-trained adapters on the survivors, generating the full JSON
-deterministically wherever branches disagreed. Seven cases passed the screen,
-and the split above is the one that reproduced. Notebooks, clean and executed
-with reference outputs, are published at
-`huggingface.co/datasets/John6666/forum3` under
-`deterministic_GGUF_LoRA_training/`.
-
-Three constraints travel with it, all his:
-
-- **Existence proof, not a rate.** One split out of seven selected out of 36
-  in the notebook (three out of 36 in the unscreened native pass below), and
-  the screen selects on the Q4 adapter's own margin, so the seven cases
-  cannot estimate any general margin distribution.
-- **No monotonic precision law.** Several cases had smaller Q4 margins, not all
-  did, and one case had **Q8** as the tightest condition. What this supports is
-  that some decision boundaries are far more sensitive to the training
-  precision path than others, non-monotonically in bit width. It does not
-  support "lower training precision degrades tool choice", which his own data
-  refutes.
-- **No gold labels, deliberately.** Labeling would convert a
-  decision-sensitivity probe into a quality benchmark and quietly change the
-  question. That reasoning is adopted here.
-
-One methodological note worth carrying: an earlier version of his scorer ranked
-full tool-name sequences and was discarded once BPE merged punctuation across
-the apparent string boundary, which invalidated the score. Runner's
-`choice_logprobs` is not exposed to that failure mode, because it records the
-legal alternatives as the grammar defines them rather than as text. That lane
-now exists: `scripts/tool-choice-boundary.py` ships the bank byte-identical
-(MIT OR Apache-2.0, with credit) and records the tool decision as the grammar
-exposes it (`docs/tool-choice-boundary-lane.md`).
-
-**Migrated and extended (2026-09-01).** The seven screened cases rerun through
-the native lane agree with the notebook on the top branch at all 28
-case-conditions, and the split above reproduces through full deterministic
-generation. Then every prompt, unscreened, under all four conditions: **3 of
-36 split across the three adapters, all surviving full generation.** The two
-new cases are both `config_browse` (*show me the yaml files in config*, *list
-config and find yaml files*): BF16 and Q8 `list_dir`, Q4 `search_files` with a
-real pattern argument, and Q4 the MOST confident condition there (5.9 and 3.9
-nat). The Q4-margin screen could never have found them, because a screen
-that selects on one condition's uncertainty is blind to that condition being
-confident and different. Bank-wide the Q4-trained adapter carries the widest
-margins of the three (median 5.8 nat against 4.6 and 4.9; wider than both
-others on 22 of 36; Q8 tightest on 7), so the non-monotonic constraint holds
-on the whole bank, and "more decisive" is not "better": no labels, and the
-new cases are Q4 confidently taking the branch the other two decline. A
-cross-host anchor (the same rows on Apple M1 and x86, byte-identical text,
-margins within 0.007 nat) says the host is not a variable. Three of 36 is a
-property of this constructed bank, not a rate in traffic.
-
-**Read against the merge study above, these are two different mechanisms and
-must not be collapsed into one claim.** Merging an adapter into a 4-bit base
-erases it, because the grid rounds the delta away. Training *through* a 4-bit
-base yields an adapter that is present and effective, and that picks a
-different branch at a tight boundary.
-
-## Reproducibility, scoped by an external reproduction
-
-An independent reproduction (HF forum, 2026-08-23) confirmed the
-determinism claim on hardware this project never touched — including the
-GPU-assisted backward on a **Tesla T4** (a third GPU generation, and
-exactly the sm_75 floor the embedded PTX targets): identical adapter
-sha256 and loss, CPU vs GPU, byte for byte. The same report contributed a
-finding we had not measured: **rebuilding from source under a different
-ISA profile changes the adapter bytes** (behavior essentially unchanged,
-cosine ~1.0). The mechanism is libm: the trainer's fmaf chains are
-pinned, but SiLU and softmax call `expf`, whose implementation varies
-with compiler codegen and ISA profile.
-
-The reproduction's three-level taxonomy is adopted here, with credit:
-(1) **artifact determinism** — same binary + same inputs → same adapter
-bytes: claimed and gated; (2) **build reproducibility** — independent
-rebuilds byte-agree: NOT claimed, and now known to fail at the libm/ISA
-boundary; (3) **behavioral reproducibility** — same predictions/task
-performance: measured by the evals. The `.train.json` provenance record
-carries the running binary's own sha256, compiler, OS and arch, so any
-reproduction report can distinguish "same executable" from "same source"
-mechanically.
-
-## Interop, measured in both directions
-
-The "format matches llama.cpp's by construction" claim graduated to
-measurement:
-
-- **Outbound**: the published ToolUse adapter, served by *stock llama.cpp*
-  (b10581, `llama-server --lora`, raw completion), scores **1.000 /
-  1.000 / 1.000 / 1.000** on the full 29-prompt held-out eval — identical
-  to runner serving it. The adapter is a first-class llama.cpp artifact.
-- **Inbound**: the first community adapter tried (a third-party Qwen3-4B
-  LoRA GGUF from HF) exposed a real gap — llama.cpp's
-  `convert_lora_to_gguf` emits **F16** tensors and the loader was
-  F32-only. Fixed and gated (F32/F16/BF16 accepted, converted
-  deterministically at load; quantized adapter tensors still refuse by
-  name): the community adapter now loads (144 adapted projections),
-  generates coherently on the Q4_K_M base, and measurably shifts `--score`
-  (nll 2.904 → 2.783 on a greeting prompt — it is applied, not just
-  accepted).
-
-## Honest limits
-
-- The training loop is CPU-hosted; RUNNER_TRAIN_GPU=1 offloads the
-  backward's dominant matvec (D8 slice 2), but the forward, the attention
-  backward and the optimizer still run on the CPU — larger bases want a
-  many-core box (the M1-class floor is ~2B models per the T0 memory
-  audit; a 128 GB M5 Max measures 8B at ~32 s/step with byte-identical
-  adapters across runs, and a 70B step at ~7.6 min —
-  `docs/training-floor-m5max-2026-09-01.md`).
-- The merge-survival threshold is measured for ONE adapter/task/base
-  triple; the mechanism (delta vs grid step) is general, the numbers are
-  not.
-- The GRPO-lite demo optimizes a narrow synthetic reward; it demonstrates
-  the mechanism, not a product-grade RL recipe.
+# Scoring, adapters, training, and merge contracts
+
+Runner trains a LoRA adapter through a frozen quantized GGUF and serves that
+adapter beside the base. The CPU training forward shares the inference
+primitives. CUDA/Metal serving uses device arithmetic with its own measured
+numerical envelope; training on the CPU is not a claim that every device
+forward is bit identical.
+
+For commands, use the [training walkthrough](train-lora-on-quantized-gguf.md)
+and the [manual](../MANUAL.md#adaptation). This page describes current
+admission, ownership, numerical contracts, and the scoped public evidence.
+
+## Scoring and attachment
+
+`--score` teacher-forces raw text and emits token log probabilities, NLL,
+and perplexity as `xyntetik.runner.score.v1`. The default uses scalar
+forwards; `RUNNER_SCORE_CHUNKED=1` explicitly selects the batch contract.
+
+`--lora` accepts adapter GGUFs with known projection names and matched
+architecture/shapes/ranks. F32, F16, and BF16 adapter tensors load; quantized
+adapter tensors refuse. The applied scale is trained alpha/r times
+`--lora-scale`. A zero adapter or zero scale bypasses the delta exactly.
+The adapter identity participates in prefix/cache identity.
+
+Supported adapter serving runs on CPU, CUDA, and Metal, with the backend's
+projection/layout refusals. An unavailable device adapter path refuses the
+load rather than silently dropping the adapter. Per-request `--adapter`
+sets use CPU hooks, borrow an adapter only for that request, and isolate
+cached rows across adapter changes. Multi-sequence device decode declines
+an attached-adapter combination its batch path does not implement.
+Reload rechecks the adapter and retains its scale/signature policy; draft
+models do not inherit the target's adapter.
+
+## Training admission
+
+`--train` and `--train-dpo` keep the base CPU-resident, use f16 KV, and
+update only adapter parameters. Supported dense SiLU/GELU paths include
+attention gates/head transforms, sliding windows, sandwich norms, and the
+covered Gemma tied/shared-KV and per-layer-embedding layouts. Admission is
+by implemented property, not by an old blanket dense-model list.
+
+Attention-only adapters on supported sparse MoE also train: the backward
+propagates through frozen softmax routing and frozen experts, including
+selected-expert renormalization and supported non-renormalized weights.
+Frozen parameters still affect the gradient to the attention adapter.
+Expert adapters, unsupported gating/group/bias/shared-expert shapes,
+Gemma dual-branch MoE, recurrent architectures, removed sublayers, attention
+sinks, partial-dimension RoPE, and unimplemented backward properties refuse
+by name. Derived-K (`RUNNER_TIEDV`), ring KV, and non-f16 training caches
+retain their refusals. `--adapt-info` reports serving and training support
+for the actual loaded model.
+
+CUDA training assistance is opt-in with `RUNNER_TRAIN_GPU=1`; the CPU hosts
+the forward/optimizer and the implemented device primitives assist the
+backward. It must preserve CPU adapter bytes with proof the device hooks
+engaged. This is not a fully GPU-hosted trainer.
+
+## Reproducibility, gradients, and failure behavior
+
+The backward recomputes with the inference primitives and preserves fmaf,
+rounding, and accumulation order. The gradient suite covers dense and
+quantized bases, Gemma/E-series properties, and strict MoE routing cases.
+Strict MoE finite differences hold resolved coordinates to 0.5%; ordinary
+and stiff fixtures retain their established, separately justified modes.
+
+The same executable, data, configuration, and seed reproduce the same
+adapter bytes and deterministic loss trajectory. Different builds/ISAs
+need not write the same bytes. Prompt/completion JSONL masks prompt loss;
+weighted examples, training context, and opt-in end-of-turn tokens retain
+their specified behavior. DPO evaluates the frozen reference through an
+adapter bypass rather than a second base-weight copy.
+
+Checkpoint/output installation preserves the previous artifact on failure.
+Allocation, optimizer, save, hashing, record, and signing failures remain
+non-successful even if some output bytes were already written. `.train.json`
+records base/data/adapter identities, configuration, loss, and build identity;
+`--sign-key` signs it. [Lineage](lineage-walkthrough.md) connects train,
+merge, quantize, and serving receipts.
+
+## Merge survival
+
+`--merge-lora OUT` folds the adapter delta into each adapted projection and
+writes a standalone GGUF at the source tensor type or `--quant` target.
+Untouched tensors and zero-delta pairs preserve their specified copy behavior.
+The quantization grid can round away a learned delta, so the exact serving
+form remains base plus `--lora`.
+
+Every nonzero rewritten delta is measured against the base written alone
+at the same output type. The default retained-delta floor is 0.5. A merge
+below it refuses before replacing the destination and removes partial
+output. `--merge-allow-erased` is the explicit override; `.merge.json`
+records `survival` with adapted bytes, changed bytes, retained delta, and
+the floor (`null` under the override). Write/install failures leave the
+destination untouched. Record/signing errors remain command failures.
+
+Choose a type wider than the base when needed and evaluate the merged
+artifact. Q8_0 over a narrower base can keep a delta that its original grid
+erases; Q8_0 over a Q8_0 base is not a universal fidelity guarantee.
+
+## Public measurements and their limits
+
+Measured 2026-08-22 on
+[Qwen3-4B-Runner-ToolUse-Q4_K_M](https://huggingface.co/Joakimpalm-Zen/Qwen3-4B-Runner-ToolUse-Q4_K_M),
+one base/task with a held-out tool-call evaluation:
+
+| Serving form | Exact held-out tool calls |
+| --- | --- |
+| Frozen Q4_K_M base | 0.69 |
+| Base with the trained adapter | 1.00 |
+| Adapter merged into F16 or Q8_0 | 1.00 |
+| Adapter merged back into the 4-bit grid | 0.69 |
+
+Two identical training runs wrote identical adapter hashes. Stock llama.cpp
+served the adapter at the same 1.00 score. BF16/Q8_0-trained adapters had
+cosine 0.9998; the Q4_K_M-trained adapter had cosine 0.9926. The neutral
+corpus's NLL moved from 4.063 to 4.026. These are measurements for that
+artifact/task, not general quality promises. The reproducibility scope is
+[documented separately](determinism-scope.md).
+
+The merge-survival measurement on this base/adapter recorded 1.8% retained
+delta onto Q4_K and 99.5% onto Q8_0. The independent 36-prompt unlabeled
+boundary bank found three disagreements across the precision-trained
+adapters; that is a property of the constructed bank, not a traffic rate.
+See the [decision-boundary lane](tool-choice-boundary-lane.md) and its frozen
+inputs for that measurement. CPU/device serving comparisons and training
+assistance are scoped by the backend/model gates in the manual; no new
+hardware result is implied by this reference.
+
+The regression entry points are `tests/test_lora.py`, `tests/test_train.py`,
+`tests/test_lora_grad.c`, `tests/test_moe_lora.py`, `tests/test_dpo_grad.c`,
+`tests/test_merge.py`, `tests/test_quantize.c`, adapter routing/signature
+checks, and lineage/evaluation/receipt checks. Their fixture/hash/tolerance
+contracts remain part of the aggregate test gate.
