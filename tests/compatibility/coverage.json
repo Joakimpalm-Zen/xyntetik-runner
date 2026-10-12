@@ -1008,17 +1008,17 @@
    "artifacts": [],
    "tool_protocol": {
     "status": "NOT RUN",
-    "note": "experimental admission (R4.26.1): loader and CPU forward exist, no anchor run yet"
+    "note": "No live tool-protocol anchor run is recorded for this artifact; CPU/CUDA execution evidence is a separate check."
    },
    "client_loop": {
     "status": "NOT RUN"
    },
    "backends": {
-    "cpu": "NOT RUN",
-    "cuda": "UNSUPPORTED",
+    "cpu": "PASS",
+    "cuda": "PASS",
     "metal": "UNSUPPORTED"
    },
-   "note": "EXPERIMENTAL. CPU only, dense attention under the 2,048-token indexer budget; CUDA follows in R4.26.2, Metal has no qwen35-family path. The pinned artifact (Qwen3.8-Flash-Next GSQ-RCO IQ3_S) lands with the anchor runs in R4.26.3."
+   "note": "EXPERIMENTAL. CPU and CUDA execution measured on the toy fixture and release file in docs/qwen4exp-admission-evidence/README.md (2026-10-06, scoped placement/context). Metal has no qwen35-family path. Publisher-float32 agreement and live tool/client loops remain unmeasured; backend execution does not certify those checks."
   }
  }
 }

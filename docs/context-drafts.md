@@ -215,29 +215,3 @@ typical turn): CPU 92.5 to 210.6 tok/s, Metal 127.0 to 261.0 tok/s, 184 of
 shape gained 5% (9.9 to 10.4 tok/s): the verify walk there costs about as
 much as the decode steps it replaces, which is a property of that backend's
 walk and not of the hints.
-
-## R3.7.2, designed and not built
-
-A session suffix tree over earlier outputs, with the draft length set by the
-match score, was to follow only if time remained after this item was fully
-gated. It was not built; the design, for the next session:
-
-- **Store.** One per-slot array of the last N tokens the slot generated
-  across requests (a ring of, say, 8k tokens), plus a hash table from
-  4-gram to its latest position in the ring. The n-gram search above is
-  linear in the context and already cheap; a suffix tree buys nothing at
-  these sizes, a 4-gram hash does. The current context stays the primary
-  source; the session store is consulted on a miss.
-- **Score.** The length of the match (n) and how far the earlier occurrence
-  continued matching after the n-gram (extend the comparison forward past
-  the suffix into the proposal region on the previous round's outcome).
-  Draft length = min(`--draft-k`, matched-extension + 1), so a 3-gram match
-  with no history of continuing proposes one token and a long verbatim run
-  proposes the full window. On the tables above this is the missing piece:
-  the compute-bound rows lose because every match drafts four columns
-  regardless of how likely they are.
-- **Gates.** The identity gate unchanged (the walk decides); an accounting
-  split of `lookup_drafted` into context and session shares; a cost gate on
-  the hash table per token; and the same five-prompt table with the
-  adaptive length, where the summary and unrelated rows are the ones that
-  must move toward parity.

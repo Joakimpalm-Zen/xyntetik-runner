@@ -72,7 +72,7 @@ nav: about
     <div>
       <div class="flow">
         <div><strong>Shade finds a mechanism</strong>A study removes one attention sublayer from a 31B model and measures what it costs against the parent on a held-out split.</div>
-        <div><strong>Runner productizes it</strong>The finding becomes <code>--remove-sublayer</code> in Runner v0.4.7, with a bit-identity gate against the study's zeroed form, and the artifact is published with its numbers.</div>
+        <div><strong>Runner productizes it</strong>The finding becomes <code>--remove-sublayer</code> in Runner, with a bit-identity gate against the study's zeroed form, and the artifact is published with its numbers.</div>
         <div><strong>Suite will gate it</strong>The evidence layer is where a derivative like that gets admitted or refused for a given machine and workload, with the receipt kept. That layer is in development.</div>
       </div>
       <p class="mt-2">Nothing crosses that pipeline without a measurement, and a measurement that goes the wrong way is published as a negative result rather than dropped. Two consequences follow. The audience arbitrates every ambiguous decision: what makes a local model usable on a modest machine wins over what is architecturally interesting. And correctness is a hard rule rather than a preference, because everything else relies on it; a faster wrong answer is a regression.</p>

@@ -37,31 +37,31 @@ def write(path, text):
 
 def good_args(tmp_path):
     return argparse.Namespace(
-        tag="v0.1.3-alpha",
+        tag="v1.2.0",
         binary=tmp_path / "runner",
         readme=write(
             tmp_path / "README.md",
-            "Public alpha (`0.1.3-alpha`)\n"
-            "./runner --version   # -> runner 0.1.3-alpha\n",
+            "Version `1.2.0`\n"
+            "./runner --version   # -> runner 1.2.0\n",
         ),
-        changelog=write(tmp_path / "CHANGELOG.md", "## v0.1.3-alpha\n"),
+        changelog=write(tmp_path / "CHANGELOG.md", "## v1.2.0\n"),
         build_info=write(
             tmp_path / "BUILD-INFO.txt",
-            "runner 0.1.3-alpha\n"
-            "tag:        v0.1.3-alpha\n"
+            "runner 1.2.0\n"
+            "tag:        v1.2.0\n"
             "commit:     abc123\n",
         ),
         release_workflow=write(
-            tmp_path / "release.yml", "# release v0.1.3-alpha\n"
+            tmp_path / "release.yml", "# release v1.2.0\n"
         ),
         python_pyproject=write(
             tmp_path / "pyproject.toml",
-            '[project]\nversion = "0.1.3a0"\n',
+            '[project]\nversion = "1.2.0"\n',
         ),
         site_pages=None,
         commit="abc123",
         current_docs=[],
-        compat_reports=report_dir(tmp_path, "0.1.3-alpha-2026-01-01.json"),
+        compat_reports=report_dir(tmp_path, "1.2.0-2026-01-01.json"),
         device_evidence=device_ledger(tmp_path),
     )
 
@@ -120,28 +120,43 @@ NOTHING_RAN_REPORT = json.dumps({"models": [{"id": "x", "checks": {
 def test_release_check_accepts_consistent_artifacts(monkeypatch, tmp_path):
     args = good_args(tmp_path)
     monkeypatch.setattr(
-        check_release, "binary_version", lambda _: "runner 0.1.3-alpha"
+        check_release, "binary_version", lambda _: "runner 1.2.0"
     )
+    assert check_release.check(args)
+
+
+def test_release_check_accepts_legacy_alpha_package_spelling(monkeypatch, tmp_path):
+    args = good_args(tmp_path)
+    args.tag = "v0.1.3-alpha"
+    write(args.readme, "Public alpha (`0.1.3-alpha`)\n"
+          "./runner --version   # -> runner 0.1.3-alpha\n")
+    write(args.changelog, "## v0.1.3-alpha\n")
+    write(args.build_info, "runner 0.1.3-alpha\ntag:        v0.1.3-alpha\n"
+          "commit:     abc123\n")
+    write(args.python_pyproject, '[project]\nversion = "0.1.3a0"\n')
+    write(args.release_workflow, "# release workflow\n")
+    args.compat_reports = report_dir(tmp_path, "0.1.3-alpha-2026-01-01.json")
+    monkeypatch.setattr(check_release, "binary_version", lambda _: "runner 0.1.3-alpha")
     assert check_release.check(args)
 
 
 def test_release_check_rejects_stale_readme(monkeypatch, tmp_path, capsys):
     args = good_args(tmp_path)
     args.readme.write_text(
-        args.readme.read_text() + "old example 0.1.2-alpha\n", encoding="utf-8"
+        args.readme.read_text() + "old example v1.1.4\n", encoding="utf-8"
     )
     monkeypatch.setattr(
-        check_release, "binary_version", lambda _: "runner 0.1.3-alpha"
+        check_release, "binary_version", lambda _: "runner 1.2.0"
     )
     assert not check_release.check(args)
-    assert "stale release string '0.1.2-alpha'" in capsys.readouterr().err
+    assert "stale release string 'v1.1.4'" in capsys.readouterr().err
 
 
 def test_release_check_rejects_build_commit_drift(monkeypatch, tmp_path, capsys):
     args = good_args(tmp_path)
     args.commit = "different"
     monkeypatch.setattr(
-        check_release, "binary_version", lambda _: "runner 0.1.3-alpha"
+        check_release, "binary_version", lambda _: "runner 1.2.0"
     )
     assert not check_release.check(args)
     assert "BUILD-INFO commit line is inconsistent" in capsys.readouterr().err
@@ -150,10 +165,10 @@ def test_release_check_rejects_build_commit_drift(monkeypatch, tmp_path, capsys)
 def test_release_check_rejects_python_version_drift(monkeypatch, tmp_path, capsys):
     args = good_args(tmp_path)
     args.python_pyproject.write_text(
-        '[project]\nversion = "0.1.2a0"\n', encoding="utf-8"
+        '[project]\nversion = "1.1.4"\n', encoding="utf-8"
     )
     monkeypatch.setattr(
-        check_release, "binary_version", lambda _: "runner 0.1.3-alpha"
+        check_release, "binary_version", lambda _: "runner 1.2.0"
     )
     assert not check_release.check(args)
     assert "Python package version" in capsys.readouterr().err
@@ -161,9 +176,9 @@ def test_release_check_rejects_python_version_drift(monkeypatch, tmp_path, capsy
 
 def test_release_check_rejects_stale_current_document(monkeypatch, tmp_path, capsys):
     args = good_args(tmp_path)
-    args.current_docs = [write(tmp_path / "SECURITY.md", "public 0.1.2-alpha\n")]
+    args.current_docs = [write(tmp_path / "SECURITY.md", "public v1.1.4\n")]
     monkeypatch.setattr(
-        check_release, "binary_version", lambda _: "runner 0.1.3-alpha"
+        check_release, "binary_version", lambda _: "runner 1.2.0"
     )
     assert not check_release.check(args)
     assert "current document" in capsys.readouterr().err
@@ -176,9 +191,9 @@ def test_release_check_rejects_stale_current_document(monkeypatch, tmp_path, cap
 def test_release_check_requires_a_compat_report_for_this_release(
         monkeypatch, tmp_path, capsys):
     args = good_args(tmp_path)
-    args.compat_reports = report_dir(tmp_path, "0.1.2-alpha-2026-01-01.json")
+    args.compat_reports = report_dir(tmp_path, "1.1.4-2026-01-01.json")
     monkeypatch.setattr(
-        check_release, "binary_version", lambda _: "runner 0.1.3-alpha"
+        check_release, "binary_version", lambda _: "runner 1.2.0"
     )
     assert not check_release.check(args)
     assert "compat report" in capsys.readouterr().err
@@ -188,10 +203,10 @@ def test_release_check_accepts_any_dated_report_for_this_release(
         monkeypatch, tmp_path):
     args = good_args(tmp_path)
     args.compat_reports = report_dir(
-        tmp_path, "0.1.2-alpha-2026-01-01.json", "0.1.3-alpha-2026-02-09.json"
+        tmp_path, "1.1.4-2026-01-01.json", "1.2.0-2026-02-09.json"
     )
     monkeypatch.setattr(
-        check_release, "binary_version", lambda _: "runner 0.1.3-alpha"
+        check_release, "binary_version", lambda _: "runner 1.2.0"
     )
     assert check_release.check(args)
 
@@ -203,7 +218,7 @@ def test_release_check_skips_the_report_gate_when_no_directory_is_given(
     args = good_args(tmp_path)
     args.compat_reports = None
     monkeypatch.setattr(
-        check_release, "binary_version", lambda _: "runner 0.1.3-alpha"
+        check_release, "binary_version", lambda _: "runner 1.2.0"
     )
     assert check_release.check(args)
 
@@ -216,7 +231,7 @@ def test_release_check_fails_when_the_named_report_directory_is_missing(
     args = good_args(tmp_path)
     args.compat_reports = tmp_path / "compat-reports-renamed"
     monkeypatch.setattr(
-        check_release, "binary_version", lambda _: "runner 0.1.3-alpha"
+        check_release, "binary_version", lambda _: "runner 1.2.0"
     )
     assert not check_release.check(args)
     assert "compat report" in capsys.readouterr().err
@@ -312,7 +327,7 @@ def test_a_missing_release_workflow_fails_rather_than_skipping(monkeypatch,
     args = good_args(tmp_path)
     args.release_workflow = tmp_path / "release-renamed.yml"
     monkeypatch.setattr(
-        check_release, "binary_version", lambda _: "runner 0.1.3-alpha")
+        check_release, "binary_version", lambda _: "runner 1.2.0")
     assert not check_release.check(args)
     assert "release workflow" in capsys.readouterr().err
 
@@ -323,11 +338,11 @@ def test_current_doc_replaces_the_default_set_rather_than_adding_to_it(tmp_path)
     since been deleted from the tree as a FileNotFoundError."""
     only = tmp_path / "ONE.md"
     write(only, "x\n")
-    parsed = _parse(["--tag", "v0.1.3-alpha", "--binary", "b",
+    parsed = _parse(["--tag", "v1.2.0", "--binary", "b",
                      "--build-info", "bi", "--commit", "c",
                      "--current-doc", str(only)])
     assert [str(p) for p in parsed.current_docs] == [str(only)]
-    default = _parse(["--tag", "v0.1.3-alpha", "--binary", "b",
+    default = _parse(["--tag", "v1.2.0", "--binary", "b",
                       "--build-info", "bi", "--commit", "c"])
     assert len(default.current_docs) == 3
 
@@ -362,11 +377,11 @@ def test_release_check_refuses_a_report_in_which_nothing_ran(
     """Existence is not evidence: a report whose every check is
     not_executed is a placeholder, and the gate names it as one."""
     args = good_args(tmp_path)
-    args.compat_reports = report_dir(tmp_path, "0.1.3-alpha-2026-01-01.json")
-    write(args.compat_reports / "0.1.3-alpha-2026-01-01.json",
+    args.compat_reports = report_dir(tmp_path, "1.2.0-2026-01-01.json")
+    write(args.compat_reports / "1.2.0-2026-01-01.json",
           NOTHING_RAN_REPORT)
     monkeypatch.setattr(
-        check_release, "binary_version", lambda _: "runner 0.1.3-alpha"
+        check_release, "binary_version", lambda _: "runner 1.2.0"
     )
     assert not check_release.check(args)
     assert "executed no check" in capsys.readouterr().err
@@ -378,11 +393,11 @@ def test_release_check_counts_executed_checks_across_all_dated_reports(
     version has evidence somewhere in its ledger."""
     args = good_args(tmp_path)
     args.compat_reports = report_dir(
-        tmp_path, "0.1.3-alpha-2026-01-01.json", "0.1.3-alpha-2026-01-02.json")
-    write(args.compat_reports / "0.1.3-alpha-2026-01-01.json",
+        tmp_path, "1.2.0-2026-01-01.json", "1.2.0-2026-01-02.json")
+    write(args.compat_reports / "1.2.0-2026-01-01.json",
           NOTHING_RAN_REPORT)
     monkeypatch.setattr(
-        check_release, "binary_version", lambda _: "runner 0.1.3-alpha"
+        check_release, "binary_version", lambda _: "runner 1.2.0"
     )
     assert check_release.check(args)
 
@@ -393,12 +408,12 @@ def test_release_check_requires_readme_and_site_to_link_the_same_hf_repos(
     is the drift AGENTS.md rule 4 names; the release refuses until both agree."""
     args = good_args(tmp_path)
     monkeypatch.setattr(
-        check_release, "binary_version", lambda _: "runner 0.1.3-alpha"
+        check_release, "binary_version", lambda _: "runner 1.2.0"
     )
     args.readme = write(
         tmp_path / "README.md",
-        "Public alpha (`0.1.3-alpha`)\n"
-        "./runner --version   # -> runner 0.1.3-alpha\n"
+        "Version `1.2.0`\n"
+        "./runner --version   # -> runner 1.2.0\n"
         "https://huggingface.co/Joakimpalm-Zen/Only-In-README\n"
         "https://huggingface.co/Joakimpalm-Zen/Both-GGUF\n",
     )
@@ -423,12 +438,12 @@ def test_release_check_parity_sees_dataset_links_too(monkeypatch, tmp_path, caps
     the site unseen (2026-09-15 restructure)."""
     args = good_args(tmp_path)
     monkeypatch.setattr(
-        check_release, "binary_version", lambda _: "runner 0.1.3-alpha"
+        check_release, "binary_version", lambda _: "runner 1.2.0"
     )
     args.readme = write(
         tmp_path / "README.md",
-        "Public alpha (`0.1.3-alpha`)\n"
-        "./runner --version   # -> runner 0.1.3-alpha\n"
+        "Version `1.2.0`\n"
+        "./runner --version   # -> runner 1.2.0\n"
         "https://huggingface.co/datasets/Joakimpalm-Zen/Only-In-README-report\n"
         "https://huggingface.co/datasets/Joakimpalm-Zen/Both-report\n",
     )
@@ -449,7 +464,7 @@ def test_release_check_parity_sees_dataset_links_too(monkeypatch, tmp_path, caps
 
 def _pinned(monkeypatch):
     monkeypatch.setattr(
-        check_release, "binary_version", lambda _: "runner 0.1.3-alpha"
+        check_release, "binary_version", lambda _: "runner 1.2.0"
     )
 
 

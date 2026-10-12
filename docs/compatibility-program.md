@@ -1,251 +1,70 @@
-# Compatibility program
+# Compatibility checks
 
-Runner is an inference engine. Its compatibility boundary is model execution
-and the APIs consumed by Thane, SDKs, gateways, frameworks and agent clients. A
-separate third-party web UI is therefore not part of this matrix.
+Compatibility is recorded per model artifact, execution route, and API
+consumer. A report must name the model hash, exact build/reference,
+configuration, hardware, commands, and checks actually executed. Missing
+models, devices, reference assets, or dependencies are not passes.
 
-## Real-model matrix
+## Model and reference checks
 
-`tests/compatibility/models.json` pins one real GGUF for every claimed Runner
-architecture. A filename is not evidence: `scripts/compat_matrix.py` hashes
-each file before running it and emits a versioned JSON report. Model files are
-not committed.
+`tests/compatibility/models.json` pins real GGUFs and their reference/check
+parameters. Model files are not committed. The coverage inventory also
+records admitted layouts with no pinned artifact or independent anchor;
+being listed by `--caps` does not certify a model automatically.
 
 ```sh
-python3 scripts/compat_matrix.py --verify-files --load \
-  --reference /path/to/llama-cli \
-  --out tests/compatibility/out/model-load.json
+python3 scripts/compat_matrix.py --verify-files --load   --reference /path/to/llama-cli   --out tests/compatibility/out/model-load.json
 ```
 
-The matrix separates independent claims: file/load, Hugging Face tokenizer
-differential, llama.cpp reference generation, CPU/GPU identity, chat/tool use
-and long context. A report only marks checks that actually ran. The 2026-07-22
-run verified hashes and inference loads for all eight architecture targets and
-CPU/CUDA token identity for the seven GPU-capable targets available at that
-time. Qwen3.5/Ornith gained native CUDA Gated DeltaNet support on 2026-07-28;
-its synthetic hybrid gate and local real-model Q4/Q8 smokes are CPU/GPU
-greedy-identical, while regeneration of the pinned full matrix remains a
-separate evidence run.
+Select the intended model/check/backend with the harness's `--help` options.
+It verifies file identity before running declared load, tokenizer, greedy
+reference, CPU/GPU, chat/tool, context, and performance checks. Current
+release/device records live in [compat-reports/](compat-reports/) and the
+[device ledger](device-evidence.json). New local output goes to
+`tests/compatibility/out/`; generated output is not a regression fixture.
 
-**European roster evidence run (2026-07-29).** Five European `llama`-path
-models (EuroLLM-9B, Lucie-7B, Mistral-Nemo-12B, Teuken-7B, salamandra-7b)
-were SHA-pinned into the manifest and evidenced:
-`eu-roster-load-2026-07-29.json` (hash + load),
-`eu-roster-checks-2026-07-29.json` (cpu_cuda / tokenizer / chat / tool,
-with `not_executed` recorded where a check could not run) and
-`reference-<family>.json` (the 8-token greedy sweep vs pinned b10076 — the
-reference binary lives at `~/agent-torture-tools/llama/llama-b10076`
-on the dev box, and a CPU-only build of the pinned source is reproducible
-from the workspace checkout). Findings worth naming: Lucie's tokenizer
-diverges on 259/721 corpus strings — **root-caused to the GGUF conversion,
-not the engine**: the file exports Lucie's BPE tokenizer as SentencePiece
-with all 65,024 merge ranks flattened to −1000, so the reference
-tokenization is unreproducible from the artifact by any engine (Runner and
-llama.cpp b10076 are token-identical on the file; OpenLLM-France's own
-official GGUF carries the same defect — reported upstream as
-[OpenLLM-France/Lucie-Training#3](https://github.com/OpenLLM-France/Lucie-Training/issues/3)). Lucie still does NOT hold the tokenizer check, because
-the check certifies the shipped artifact against the HF reference — but the
-failure names the right culprit. **(Resolved upstream 2026-08-19.)**
-OpenLLM-France republished the GGUF on 2026-08-18: the conversion now rebuilds
-the merge hierarchy from `tokenizer.json`, so `tokenizer.ggml.scores` carries
-65,024 genuine, distinct merge ranks instead of the flat −1000 (the artifact
-stays SentencePiece/`llama`, the ranks are restored in the scores). Re-tested
-on the updated `OpenLLM-France/Lucie-7B-Instruct-v1.1-gguf`
-(`Lucie-7B-Instruct-v1.1-q4_k_m.gguf`, sha256
-`bec3af604bc043bb0860216b11da6ef689e01e7696e1b064c75acc3e15753433`): corpus
-divergence dropped 259/721 → **190/721**, "jumps" now segments jum+ps as the
-reference does, and every one of the 190 residual strings is the maintainer's
-normalizer class — a missing/extra leading ▁ that the HF normalizer inserts
-after line breaks and punctuation, plus `\r`-stripping and non-breaking-space
-handling; after canceling that ▁/whitespace normalization **zero** strings show
-a different segmentation (never a wrong merge). So the artifact now holds the
-tokenizer check modulo the minor normalizer-▁ residual llama.cpp does not run
-(confirmed upstream, issue #3). The manifest (`tests/compatibility/models.json`,
-`lucie-7b-instruct-q4_k_m`) was re-pinned to the fixed file on 2026-08-19
-(sha `bec3af60…`, `models/Lucie-7B-Instruct-v1.1-q4_k_m.gguf`). The re-pin was
-not a blind sha swap: the HF reference tokenizer is unchanged by the GGUF fix, so
-the committed capture (`tokenizer-references/lucie-7b-instruct-v1.1.json`,
-revision `5242dfec`) was re-captured from an authenticated Blackwell run and
-confirmed byte-identical (HF `main` still resolves to `5242dfec`), and the fixed
-file was re-evidenced in `docs/compat-reports/0.1.19-alpha-2026-08-19-lucie-repin.json`
-— sha match, load/cpu_cuda/chat/tool pass, and the tokenizer difftok row reproduces
-**190/721** offline from the committed capture (no network). Teuken renders through the llama2 fallback and its chat row shows that
-framing's artifacts, though the surface and tool calls work. (Corrected
-2026-08-14: this previously read "Teuken's chat template emits artifacts
-(`{Answer}`)". Teuken ships no chat template — its GGUF carries no
-`tokenizer.chat_template` and it detects as `llama2`, the terminal
-fallback — so the artifacts were runner's own framing, not Teuken's.) `reference_compare.py`
-was also fixed in this run: Runner now rejects unknown model names, so the
-script asks each server for its served model id instead of sending a
-placeholder.
+The publisher's float32 implementation is the primary numerical anchor.
+`scripts/gold-logits.py` and the [published reference comparison](golden-pass-2026-09-07.md)
+state dtype, attention implementation, device, tokenizer/model hashes, and
+covered positions. llama.cpp is the wider quantization/reference oracle.
+Report tie-classified divergences beside strict greedy counts, and state
+where a publisher's tokenizer artifacts disagree with each other.
 
-**Eager-routing pinning for MoE identity (since the 2026-07-29 device
-routing).** MoE decode/prefill default to device-side routing; its softmax
-arithmetic can only bit-match hosts whose `expf` is correctly rounded (UCRT
-verified; a glibc/libmvec fast-math host is ~4 ulp and unreachable by any
-device code). The certified byte-identity property is therefore defined over
-the **eager path** (`RUNNER_MOE_EAGER=1`) — the unchanged v0.1.4 host-routing
-arithmetic — and the harnesses pin it alongside `RUNNER_CUDA_TC=0`. The
-fused default (fp32 device `expf` + per-element division, the body the
-Blackwell splice-proof validated) is separately verified to the weaker
-class: expert selection identical and `selw` within ~2 ulp of the host
-reference (two independent 1-ulp sources: device-vs-host expf and
-division-vs-reciprocal codegen; observed 1 ulp at the first routing on
-both cert boxes). (A correctly-rounded double-exp + reciprocal-mirror
-variant briefly made fused byte-identical on correctly-rounded hosts;
-retired once certification pinned eager — the property was void on the
-fast-math cert box, and the mirror's rcp.rn form measured 23% of MoE
-decode on the Blackwell MIG.) `RUNNER_DEBUG_MOE` dumps both paths'
-routing bits for re-verification.
+## Exact and tolerance routes
 
-**Scalar-path pinning (since the 2026-07-29 TC promotion).** The tensor-core
-prefill GEMM is now the default on gated dense (Q4_K, arch) combos. It is
-fp16-tile arithmetic held to a tolerance gate (`tests/test_tc_tol.c`), not to
-byte identity — so all exact-identity evidence in this program (cpu_cuda,
-greedy_reference, the reference comparison scripts) is defined over the
-scalar path. **Metal gained the same shape in 0.1.11**: prompt processing
-runs a tiled simdgroup-matrix GEMM under the same `test_tc_tol` gate, pinned
-off by `RUNNER_METAL_MM=0` — which the Metal identity smokes now set, exactly
-as the CUDA harnesses set `RUNNER_CUDA_TC=0`. And `compat_matrix.py`, `reference_compare.py` and
-`compare_llamacpp.py` pin `RUNNER_CUDA_TC=0` when spawning Runner. Existing
-recorded reports predate the promotion and were produced by the scalar path
-they describe; they remain valid and reproducible. The promoted default is
-certified separately, per (type, arch), by the tolerance gate's recorded
-rows (see the TC spec).
+Exact CPU/GPU checks pin scalar/eager execution: `RUNNER_CUDA_TC=0`,
+`RUNNER_MOE_EAGER=1`, and the applicable Metal matrix pin
+`RUNNER_METAL_MM=0`. Build flags, compiler/libm, and cache state belong in
+the record. A different build is a different numerical configuration.
 
-**The CPU side of that identity is the build, not only the source.** The
-0.4.9 release run produced two `cpu_cuda` failures (granite-4.1-8b 8/9,
-gemma-4-E4B 8/9, each a 0.001-nat near-tie flipping at one position) from a
-binary that was otherwise the same code that had passed 9/9 hours earlier on
-the same box. The difference was the compiler environment: `conda activate`
-exports a `CFLAGS` variable (`-march=nocona -mtune=haswell -fstack-protector-
-strong -fno-plt -O2 -ffunction-sections ...`) which the Makefile's `CFLAGS ?=`
-adopts before appending its own flags, and that codegen moves the CPU dot
-products by an ulp against the CUDA scalar kernel. A rebuild with `CFLAGS`
-unset passed 9/9 again, on both models. So: build the matrix binary with the
-Makefile's own flags (`unset CFLAGS` after activating the toolchain), and
-treat a near-tie flip in this check as a question about the build before
-a question about the code.
+Default tensor-core/matrix, fused-routing, and other reassociated paths
+are held to their established type/shape/model tolerance gates. A scalar
+identity result does not certify a faster route; a tolerance result does
+not authorize widening the scalar identity contract. See
+[performance routes](performance.md) and the manual's backend tables.
 
-Tokenizer references are exercised with the pinned `tokenizers` package and
-the committed 721-string corpus. Install
-`tests/compatibility/tokenizer-requirements.txt`, then run `scripts/difftok.py`
-with the GGUF and immutable reference revision from the published report.
+## Tokenizers and templates
 
-That run needs the network, and for a gated repo it needs credentials — which
-is what has kept this check off contributors' machines and out of CI. The
-reference tokenization of a fixed corpus is a constant, so it only has to be
-fetched once: add `--capture PATH --ref-revision COMMIT` to an authenticated
-run to write the reference ids out, then every later run replays them with
-`--ref-ids PATH` and touches no network at all. A capture records the immutable
-reference revision and the SHA-256 of the exact corpus it was taken against;
-replay refuses a different corpus because ids compared to the wrong strings
-would report confident nonsense.
+Tokenizer checks use the committed 721-string corpus and immutable
+publisher assets. Install the tokenizer requirements and use
+`scripts/difftok.py --help` for `--capture`, `--ref-revision`, and `--ref-ids`.
+A reference-ID capture can be replayed offline and refuses a different
+corpus. The four pinned captures under
+`tests/compatibility/tokenizer-references/` are intentional regression inputs.
 
-Note that a capture cannot be reconstructed from the published compat reports.
-Their `stdout_tail` records the diverging cases in full — string, runner ids
-and reference ids — but it is a *tail*: of the four models diverging as of
-2026-08-15, only phi-3.5-mini (2/721) has every case present. mistral-7b-v0.3
-(44/721), salamandra-7b (16/721) and lucie-7b (259/721) are truncated to 14, 10
-and 11 cases. The tail is enough to reproduce and debug a known divergence; it
-is not enough to certify the other ~700 strings still agree, which is what the
-check is for.
+Mistral v0.3, Phi-3.5, and Salamandra gate against their published
+SentencePiece models; tokenizer.json comparisons are a separate
+informational column. Lucie's custom-normalizer difference remains a
+separate limitation. The [SentencePiece evidence](tokenizer-spm-2026-10-03.md)
+records those distinctions. Do not replace reference IDs with Runner's own
+output to make a tokenizer gate pass.
 
-Since 2026-10-03 the Mistral v0.3, Phi-3.5 and Salamandra captures are taken
-from each publisher's SentencePiece model (`difftok.py --spm-model FILE
---added-tokens tokenizer.json --capture`), the tokenizer the models were
-trained with, and record the model file's sha256 and the rows that spell a
-special token (from the model's control pieces and the tokenizer.json added
-specials). Those rows are reported apart and not gated: the runner reads a
-spelled `<s>` as the special token, the SentencePiece library as text. The
-earlier `tokenizer.json` captures stay beside them as
-`<name>.tokenizer-json.json` and are compared as an informational column
-(`tokenizer_reference_ids_informational` in the manifest), never gated.
-Evidence: [tokenizer-spm-2026-10-03.md](tokenizer-spm-2026-10-03.md).
+`scripts/template-conformance.py --require-tokens` checks rendered prompts
+against pinned publisher templates/tokenizers. Text-only checks and
+accounted-for deviations do not establish token identity for every family.
+Keep template baselines, allowlists, and coverage declarations deliberate.
 
-`scripts/reference_compare.py` gives Runner and llama.cpp equivalent raw
-`/v1/completions` requests and compares exact generated UTF-8 at temperature
-zero. This avoids CLI banners, prompt echo, ANSI output and chat-template
-differences. The initial eight-token sweep is evidence, not a universal
-equivalence claim: four architecture targets matched all five prompts, while
-Llama 3, Qwen 3, Phi 3 and Gemma 4 had at least one divergence. Per-prompt
-outputs are committed under `tests/compatibility/out/reference-*.json`.
-
-`scripts/compare_llamacpp.py` is the reproducible performance/evidence harness
-for current MoE and release-readiness comparisons. It runs Runner and a supplied
-llama.cpp `llama-server` against the same GGUF, prompt, context and greedy
-sampling settings, captures model hash, commits/versions, commands, hardware,
-driver, throughput, time to first token, VRAM snapshots, generated tokens, raw
-responses and top-logprob data where both endpoints expose it, then writes JSON
-and Markdown. CI exercises its fixture mode. Real Qwen3-30B-A3B reports were
-captured on 2026-07-28 against pinned llama.cpp `b10076` on CPU and a newer
-`91d2fc3` build on the same Blackwell GPU. Runner CPU/GPU identity passed, but
-both independent 128-token greedy comparisons diverged after a shared prefix;
-the pinned CPU reference passes the committed semantic gate (55 shared tokens,
-1.523 maximum common-token logprob delta; required 32 and 2.0 respectively).
-Exact 128-token identity is required between Runner CPU and GPU, while the
-independent-engine gate compares logits only over the shared history. The
-committed reports under `tests/compatibility/out/qwen3-30b-a3b-*` record both
-the passing gate and the exact point where generated text diverges.
-
-Apertus joined forward-pass coverage on 2026-08-03. The architecture landed
-2026-08-02 (`d7eda52`) but was only checked for shape, not for numbers, and it
-was **wrong**: the first run against a real checkpoint produced fluent-looking
-gibberish, because `ggml_xielu` transforms alpha_n and alpha_p before
-`op_xielu` ever sees them and runner had transcribed only the leaf function.
-See the CHANGELOG. It carries `load`, `cpu_cuda`, and `chat` but **not**
-`greedy_reference`, for the same measured reason as the two models below: its
-own floor is a 0.4596-nat max log-probability delta with 4 of 16 prompts
-identical, against a 0.4148-nat cross-engine delta — the disagreement with
-llama.cpp is smaller than the model's disagreement with itself under a KV
-precision change. Evidence:
-`out/sensitivity-apertus-2026-08-03.json`,
-`out/divergence-apertus-2026-08-03.json`. CUDA support followed on 2026-08-03:
-the pinned Q4_K_M artifact fully offloaded 32/32 layers on an RTX 3070 and
-matched CPU greedy output on 5/5 prompts at 128 tokens. Evidence:
-`out/apertus-cpu-cuda-2026-08-03.json`.
-
-The manifest also, since 2026-08-01, deliberately omits `greedy_reference` for
-`gemma-4-26b-a4b-it-q4_0`. This is a different kind of omission from Apertus:
-the architecture *is* implemented and certified for `load`, `cpu_cuda` and
-`chat`. What is unachievable is the check itself. That model is numerically
-chaotic, and the way to establish that is to measure its floor before reading
-any cross-engine number — `scripts/sensitivity_floor.py` compares an engine
-against **itself** under a perturbation smaller than switching engines. On the
-certified file at b10076, Runner disagrees with itself on 11 of 16 prompts when
-only the KV cache precision changes, against the 9 it disagrees with llama.cpp
-on. A perturbation strictly inside one build moves the output further than
-changing engines does, so there is no threshold at which token-for-token
-agreement would be evidence of anything. The cause is discrete top-8-of-128
-expert routing over Q4_0 weights: at layer 2 the sixth and seventh selected
-experts sat 0.0002 apart in weight, so a rounding difference flips an expert
-and rewrites an eighth of the FFN output. The forward pass was checked directly
-and does agree — layer 0 activations match the reference exactly, and the
-pre-softmax router logits to ~0.1–0.5%.
-
-Declaring the check anyway would have been worse than omitting it: under
-`--require-complete` the manifest would assert a property no implementation can
-satisfy, and a future reader would take the recorded failure for a defect. The
-same instrument applies generally — a cross-engine logprob gap is uninterpretable
-without the model's own sensitivity floor, so measure the floor first. Evidence:
-`tests/compatibility/out/divergence-study-gemma4-moe-2026-08-01.json`.
-
-The remaining chat/tool and long-context checks were run on 2026-07-23 through
-the real `/v1/chat/completions` surface with fp16 KV.  Each pinned model saw a
-needle near the middle of a measured 4K-token document and the same weather
-tool request both without history and after 24 padded turns.  Six of eight
-models passed all three assertions.  Ornith made both tool calls but emitted no
-retrieval answer; Qwen 3 emitted a truncated short-tool argument and no answer
-for the padded-tool or retrieval cases.  All 24 requests completed without a
-server, protocol, schema or inference failure.  These are model-behavior
-results, so successful execution is not reported as a quality pass.  Raw
-prompts, token counts, replies and scores are committed in
-`tests/compatibility/out/chat-tool-long-context-2026-07-23.json`.
-
-## Library consumers
-
-The optional gate starts one real Runner and exercises response parsing through
-the pinned OpenAI and Anthropic Python/Node SDKs, LiteLLM and LangChain:
+## API and library consumers
 
 ```sh
 python3 -m venv .compat-venv
@@ -254,21 +73,24 @@ npm ci --ignore-scripts --prefix tests/compatibility/node
 .compat-venv/bin/python scripts/consumer_compat.py
 ```
 
-`make compat-consumers` runs the final command after dependencies are present.
-CI runs this independently of the dependency-free Runner build and uploads the
-machine-readable report.
+`make compat-consumers` runs the consumer check after dependencies are
+installed. The OpenAI/Anthropic Python and Node SDKs, LiteLLM, LangChain,
+and separately pinned AI SDK smoke exercise real response builders/parsers.
+CI must run mandatory consumer tests rather than treating missing packages
+as compatibility. [CI](ci.md) documents the current execution lanes.
 
-## End-user agents
+[Agent setup](agent-compatibility.md) describes endpoint choices and current
+limits. [The agent torture matrix](agent-torture.md) checks constrained
+calls, truncation, tool selection, and transport normalization with fixed
+requests. Full client-loop evidence needs the installed client, not only a
+replayed capture or compatible JSON shape.
 
-Installed clients are exercised against a real Qwen3-4B server and an isolated
-sentinel fixture. Missing clients are recorded as `not_run`, never carried
-forward as a fresh pass. Editor extensions such as Roo Code require a real
-VS Code-compatible host; replaying a captured request is useful protocol
-coverage but is not advertised as end-to-end client compatibility.
+## Evidence ownership
 
-Thane is the UI consumer in scope. Its runner-client, gateway and CLI integration
-tests are part of the evidence sweep; unrelated third-party web UIs are not.
-
-Evidence lives under `tests/compatibility/out/`. Each aggregate record includes
-the Runner commit, exact package/client versions, model hashes, hardware,
-outcomes, exclusions and warnings. Historical reports are immutable.
+Keep current coverage dispositions and public evidence for retained claims.
+The inventory in `tests/compatibility/coverage.json` names executed protocol
+and client-loop records and separates PASS, FAIL, NOT RUN, and UNSUPPORTED.
+`tests/test_coverage_inventory.py` and `scripts/check-evidence-paths.py`
+require the referenced evidence to exist. Reference hashes, frozen labels,
+and numerical fixtures remain inputs; superseded generated run output is
+not part of the executable test suite.

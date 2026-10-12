@@ -30,7 +30,7 @@ Every runner process in a *run* mode (one-shot generation, `--serve`,
 
 ```json
 {"pid": 4711, "started": 1785940000, "mode": "serve", "port": 8080,
- "version": "0.1.8-alpha",
+ "version": "1.2.0",
  "models": [{"name": "trinity.gguf", "path": "/abs/path/trinity.gguf"}]}
 ```
 
@@ -112,9 +112,8 @@ naming the live controller's pid.
 ```
 
 `last_args` is a space-split argument tail appended to the managed server's
-command line. This field is the seam the calibration profiles
-(Brain/Balanced/Fastest) will write into later; the tray itself only ever
-records your file-picker choice in `last_model`.
+command line. The tray stores the file-picker choice in `last_model` and appends
+`last_args` when it starts its managed server.
 
 ## Autostart
 
@@ -149,8 +148,9 @@ Nothing else is written anywhere (`managed.log` lives inside the same
   24 px the ring is never thinner than 2 px and the spark never smaller than
   1.75 px in radius, and the three streaks snap to whole pixel rows; those
   weights are the taskbar's, the geometry is the mark's.
-- No load/unload of individual models from the menu — the runner has no
-  unload API; you stop the instance instead.
+- No load/unload action for an individual model from the menu; the tray
+  stops the instance. The server's separate `POST /unload` API retains its
+  documented configuration and safe-boundary behavior.
 - Registry refresh is poll-on-open plus a 5 s badge timer, not a
   filesystem watch.
 

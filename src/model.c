@@ -550,7 +550,7 @@ static uint64_t vram_free_now(void *ud) {
 // architecture-agnostic: the ONLY thing it takes from the model is the list of
 // expert ids a router just produced, which every MoE arch has. The rejected
 // expert-cache tier hooked one specific FFN path and therefore never engaged on
-// gemma-4 at all (docs/negative-result-expert-cache.md); this hook is fed by
+// gemma-4 at all (docs/performance.md); this hook is fed by
 // whichever router ran.
 //
 // Advisory throughout: it cannot change a single output bit, only how long the
@@ -1082,7 +1082,7 @@ static void model_vram_commit(model_t *m, size_t before) {
 const char *const *model_supported_archs(size_t *count) {
     // One source of truth for the admission allowlist (see model_load below and
     // --caps in main.c). Keep in sync with any new per-family handling added
-    // here; wrong-math archs (granite/gemma2/gemma) are intentionally excluded.
+    // here; unsupported layouts still fail the subsequent shape/admission checks.
     static const char *const arches[] = {
         "llama", "qwen2", "qwen3", "qwen35", "qwen4exp", "qwen3moe", "mistral",
         "smollm", "stablelm", "gemma3", "gemma4", "phi3", "gpt-oss",

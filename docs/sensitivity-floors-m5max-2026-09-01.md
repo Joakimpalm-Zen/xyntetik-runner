@@ -1,31 +1,13 @@
-# Self-sensitivity floors: 235B and gpt-oss — M5 Max, 2026-09-01
+# Measured MoE sensitivity floors
 
-Two standing gaps said "measure the floor before reading the gap":
-`docs/qwen3-235b-metal-m5max-2026-09-01.md` declined to claim a
-self-sensitivity floor for the 235B's cross-backend identity FAIL, and
-`docs/cert-matrix-status.md` records that the gpt-oss self-floor "is
-plausibly below 6/6 and has never been measured." Both are measured here.
-
-Method: `scripts/sensitivity_floor.py --mode runner` — the same build, the
-same weights, an f16 KV cache vs a q8_0 KV cache, 16 greedy prompts × 16
-tokens, CPU. This is the smallest bounded numeric perturbation available
-inside one engine: if a model diverges from itself under it, no cross-engine
-or cross-backend comparison can be expected to do better.
-
-| model | self-identical | mean tokens before divergence | mean \|Δlogprob\| | max |
-|---|---|---|---|---|
-| Qwen3-235B-A22B Q2_K (merged) | **11/16** | 12.19 | 0.0159 | 0.270 |
-| gpt-oss-20b MXFP4 | **14/16** | 15.50 | 0.0208 | 0.252 |
-| gpt-oss-120b MXFP4 | **11/16** | 12.69 | 0.0218 | 0.303 |
-
-For scale, the worked example in the script's header (b10076, on
-llama.cpp's own cold-vs-warm perturbation) put a placid dense 7B at 16/16
-and gemma-4-26B-A4B at 12/16: all three models here sit in the measured
-chaotic class, not the placid one.
+Measured 2026-09-01 on the named M5 Max configurations below. These are
+scoped comparisons, not a live artifact-status table. Current admission
+and numerical routes are described in [model evidence](model-evidence.md)
+and the [manual](../MANUAL.md#support-matrix).
 
 ## What this licenses, and what it does not
 
-**gpt-oss:** the suspicion in `cert-matrix-status.md` is confirmed by
+**gpt-oss:** the measured self-sensitivity is shown by
 measurement. gpt-oss disagrees with ITSELF on 2/16 (20b) to 5/16 (120b) of
 prompts within 16 greedy tokens under a bounded KV-format change. The 1/6
 cross-engine greedy identity row is therefore consistent with the model's

@@ -512,7 +512,7 @@
         "load",
         "chat"
       ],
-      "notes": "Google's own QAT release (google/gemma-4-E4B-it-qat-q4_0-gguf/gemma-4-E4B_q4_0-it.gguf), 5,154,941,280 bytes, sha verified against the HF blob 2026-09-04. DISTINCT from gemma-4-e4b-it-q4_k_m: two publishers, two artifacts, two quantizations (Q4_0 with a Q6_K token_embd here; an imatrix Q4_K_M there). This row exists because of what its SHAPE is: a 666-tensor export whose 18 shared-KV layers (24..41) carry no attn_k, attn_v or attn_k_norm at all, since a layer at or past block_count - attention.shared_kv_layers computes no K/V. Runner 0.4.7 refused it at load with 'error: missing tensor blk.24.attn_k.weight'; the q4_k_m row above is an older full-form 720-tensor conversion, so the matrix could not see the defect. No llama.cpp reference is declared: nothing in this row was measured against a second engine, so greedy_reference and tokenizer are not claimed. cpu_cuda is not declared either - the row was added from a CPU-only macOS box (8 GB, so the weights page from disk and every check here is slow rather than wrong). Evidence: docs/compat-reports/0.4.7-2026-09-04-macos-eseries-qat.json.",
+      "notes": "Google's own QAT release (google/gemma-4-E4B-it-qat-q4_0-gguf/gemma-4-E4B_q4_0-it.gguf), 5,154,941,280 bytes, sha verified against the HF blob 2026-09-04. DISTINCT from gemma-4-e4b-it-q4_k_m: two publishers, two artifacts, two quantizations (Q4_0 with a Q6_K token_embd here; an imatrix Q4_K_M there). This row exists because of what its SHAPE is: a 666-tensor export whose 18 shared-KV layers (24..41) carry no attn_k, attn_v or attn_k_norm at all, since a layer at or past block_count - attention.shared_kv_layers computes no K/V. Runner 0.4.7 refused it at load with 'error: missing tensor blk.24.attn_k.weight'; the q4_k_m row above is an older full-form 720-tensor conversion, so the matrix could not see the defect. No llama.cpp reference is declared: nothing in this row was measured against a second engine, so greedy_reference and tokenizer are not claimed. cpu_cuda is not declared either - the row was added from a CPU-only macOS box (8 GB, so the weights page from disk and every check here is slow rather than wrong).",
       "check_params": {
         "chat": {
           "prompt": "What is 2+2?",
@@ -543,7 +543,7 @@
         "cpu_cuda",
         "chat"
       ],
-      "notes": "greedy_reference deliberately not declared: this model is numerically chaotic, so token-for-token agreement with any second implementation is unachievable rather than merely unmet. Measured 2026-08-01 at b10076 on this exact file - runner disagrees with ITSELF on 11 of 16 prompts when only the KV cache precision changes, against the 9 it disagrees with llama.cpp on, so a perturbation inside one build moves the output further than switching engines does. Cause is discrete top-8-of-128 expert routing over Q4_0 weights; at layer 2 the 6th and 7th selected experts sat 0.0002 apart in weight. Layer 0 activations and the pre-softmax router logits do match the reference (exactly, and to ~0.1-0.5%). Re-measure the floor with scripts/sensitivity_floor.py before reading any cross-engine gap on this model. Evidence: out/divergence-study-gemma4-moe-2026-08-01.json",
+      "notes": "greedy_reference deliberately not declared: this model is numerically chaotic, so token-for-token agreement with any second implementation is unachievable rather than merely unmet. Measured 2026-08-01 at b10076 on this exact file - runner disagrees with ITSELF on 11 of 16 prompts when only the KV cache precision changes, against the 9 it disagrees with llama.cpp on, so a perturbation inside one build moves the output further than switching engines does. Cause is discrete top-8-of-128 expert routing over Q4_0 weights; at layer 2 the 6th and 7th selected experts sat 0.0002 apart in weight. Layer 0 activations and the pre-softmax router logits do match the reference (exactly, and to ~0.1-0.5%). Re-measure the floor with scripts/sensitivity_floor.py before reading any cross-engine gap on this model.",
       "check_params": {
         "cpu_cuda": {
           "pins": {
@@ -583,7 +583,7 @@
         "cpu_cuda",
         "chat"
       ],
-      "notes": "Google's genuine QAT release (google/gemma-4-26B-A4B-it-qat-q4_0-gguf/gemma-4-26B_q4_0-it.gguf), 14,439,363,584 bytes, sha verified against the HF LFS blob 2026-08-05. DISTINCT from gemma-4-26b-a4b-it-q4_0, which is ggml-org's non-QAT Q4_0 (sha d208665a) - two publishers, two artifacts, not a re-upload of one. Comparing their hashes as if they were the same file is what produced the retired 'QAT pin drift' plan item. This is the artifact behind the 16 GB recommendation, so it belongs under the automated gate rather than in prose alone. Expert tensors are uniformly Q4_0 across 60 tensors - the signature of QAT baked into the checkpoint, unlike repos that only inherit 'QAT' from the base model's lineage. greedy_reference deliberately not declared: top-8-of-128 expert routing over Q4_0 is numerically chaotic (layer 2's 6th/7th experts sat 0.0002 apart), so the runner disagrees with ITSELF under a KV-precision change more than it disagrees with llama.cpp. cpu_cuda PENDING re-verification at the 128-token contract - the 2026-08-05 CERTIFIED-WITH-CAVEAT pass was measured under the old 16-token default. Evidence: docs/cert-matrix-status.md item 4; out/divergence-study-gemma4-moe-2026-08-01.json",
+      "notes": "Google's genuine QAT release (google/gemma-4-26B-A4B-it-qat-q4_0-gguf/gemma-4-26B_q4_0-it.gguf), 14,439,363,584 bytes, sha verified against the HF LFS blob 2026-08-05. DISTINCT from gemma-4-26b-a4b-it-q4_0, which is ggml-org's non-QAT Q4_0 (sha d208665a) - two publishers, two artifacts, not a re-upload of one. Comparing their hashes as if they were the same file is what produced the retired 'QAT pin drift' plan item. This is the artifact behind the 16 GB recommendation, so it belongs under the automated gate rather than in prose alone. Expert tensors are uniformly Q4_0 across 60 tensors - the signature of QAT baked into the checkpoint, unlike repos that only inherit 'QAT' from the base model's lineage. greedy_reference deliberately not declared: top-8-of-128 expert routing over Q4_0 is numerically chaotic (layer 2's 6th/7th experts sat 0.0002 apart), so the runner disagrees with ITSELF under a KV-precision change more than it disagrees with llama.cpp. cpu_cuda PENDING re-verification at the 128-token contract - the 2026-08-05 CERTIFIED-WITH-CAVEAT pass was measured under the old 16-token default. Evidence: docs/model-evidence.md#gemma-sparse-and-shared-kv-layouts; the artifact-specific reference check",
       "check_params": {
         "cpu_cuda": {
           "pins": {
@@ -623,7 +623,7 @@
         "cpu_cuda",
         "chat"
       ],
-      "notes": "Per-head attention sinks, clamped alpha-sigmoid GLU (swiglu_oai), router and per-expert biases, MXFP4 expert tensors, SWA layers roped in the GLOBAL regime. CUDA support landed 2026-08-01 with the MXFP4 matmul kernels and the sink-aware attention softmax; before that the backend refused the architecture at load. cpu_cuda measured the same day: 5/5 prompts byte-identical at 16 tokens, eager routing, RUNNER_CUDA_TC=0, on an 8 GB RTX 3070 at a 13/24 layer split - full offload is not reachable for a 12.1 GB model on that card, so the 11 host layers were identical by construction in both runs and the gate covers the device kernels for 13 layers. greedy_reference is NOT declared: after the SWA-rope fix the cross-engine residual is 9/16 prompts token-identical at 16 tokens with a worst-case logprob delta of 0.151, which is BELOW this model's own 0.272 sensitivity floor (runner vs itself under a KV-precision change) - i.e. at the noise floor rather than at token identity, the same standard applied to gemma-4-E4B. Measure the floor with scripts/sensitivity_floor.py before reading any cross-engine gap. Evidence: out/gpt-oss-cpu-cuda-2026-08-01.json, out/gpt-oss-swa-rope-fix-2026-08-01.json 2026-08-15 re-run on current main: tokenizer differential 0/721 (was 222/721), chat smoke PASSES through TMPL_HARMONY (answers and stops, analysis in reasoning_content), cpu_cuda 5/5 byte-identical at 64 tokens on 24/24 full offload with RUNNER_CUDA_TC=0 and RUNNER_MOE_EAGER=1. Greedy identity vs b10353 is 1/6 on the full six-prompt protocol and is now the row's only failing check; the architecture's own self-sensitivity floor has not been measured, so the 1/6 is not yet attributable between engine difference and model sensitivity.",
+      "notes": "Per-head attention sinks, clamped alpha-sigmoid GLU (swiglu_oai), router and per-expert biases, MXFP4 expert tensors, SWA layers roped in the GLOBAL regime. CUDA support landed 2026-08-01 with the MXFP4 matmul kernels and the sink-aware attention softmax; before that the backend refused the architecture at load. cpu_cuda measured the same day: 5/5 prompts byte-identical at 16 tokens, eager routing, RUNNER_CUDA_TC=0, on an 8 GB RTX 3070 at a 13/24 layer split - full offload is not reachable for a 12.1 GB model on that card, so the 11 host layers were identical by construction in both runs and the gate covers the device kernels for 13 layers. greedy_reference is NOT declared: after the SWA-rope fix the cross-engine residual is 9/16 prompts token-identical at 16 tokens with a worst-case logprob delta of 0.151, which is BELOW this model's own 0.272 sensitivity floor (runner vs itself under a KV-precision change) - i.e. at the noise floor rather than at token identity, the same standard applied to gemma-4-E4B. Measure the floor with scripts/sensitivity_floor.py before reading any cross-engine gap.",
       "check_params": {
         "cpu_cuda": {
           "pins": {
@@ -666,7 +666,7 @@
         "cpu_cuda",
         "chat"
       ],
-      "notes": "Source: bartowski/swiss-ai_Apertus-8B-Instruct-2509-GGUF at a5d1742307bf949e2cd95f253e8776539e19d1fc, published filename swiss-ai_Apertus-8B-Instruct-2509-Q4_K_M.gguf. CUDA support is full-graph: 32/32 layers plus output weight on the 8 GB RTX 3070, with 5/5 CPU/CUDA-identical prompts at 128 tokens and RUNNER_CUDA_TC=0. greedy_reference deliberately remains undeclared because the cross-engine delta is below the model's measured self-sensitivity floor. Evidence: out/apertus-cpu-cuda-2026-08-03.json, out/divergence-apertus-2026-08-03.json, out/sensitivity-apertus-2026-08-03.json",
+      "notes": "Source: bartowski/swiss-ai_Apertus-8B-Instruct-2509-GGUF at a5d1742307bf949e2cd95f253e8776539e19d1fc, published filename swiss-ai_Apertus-8B-Instruct-2509-Q4_K_M.gguf. CUDA support is full-graph: 32/32 layers plus output weight on the 8 GB RTX 3070, with 5/5 CPU/CUDA-identical prompts at 128 tokens and RUNNER_CUDA_TC=0. greedy_reference deliberately remains undeclared because the cross-engine delta is below the model's measured self-sensitivity floor.",
       "check_params": {
         "cpu_cuda": {
           "pins": {
@@ -986,7 +986,7 @@
         "tokenizer",
         "chat"
       ],
-      "notes": "Source: arcee-ai/Trinity-Nano-Preview-GGUF (Q4_K_M sha256 211127328238031b7aead5c71f488023710300da587703160e42fb981c8c335a also on record). CPU only: CUDA and Metal refuse loudly and fall back, so cpu_cuda is not declared. greedy_reference deliberately not declared: 1/6 byte-identical vs llama.cpp b10280, with the mechanism measured rather than presumed (afmoe re-normalizes every branch before the residual add, amplifying the engines' by-design quantized-matvec arithmetic difference; layer-0 verified to ~2e-4) - see docs/afmoe-divergence-triage-2026-08-05.md and docs/afmoe-sensitivity-floor-2026-08-05.md. Chat smoke and perf gates green on the M1 (13.25 tok/s decode, Q4_K_M resident, CPU). Evidence: out/divergence-afmoe-trinity-2026-08-05.json, out/sensitivity-afmoe-trinity-2026-08-05.json, out/sensitivity-afmoe-trinity-reference-2026-08-05.json, out/bench-afmoe-m1-2026-08-05.json",
+      "notes": "Source: arcee-ai/Trinity-Nano-Preview-GGUF (Q4_K_M sha256 211127328238031b7aead5c71f488023710300da587703160e42fb981c8c335a also on record). CPU only: CUDA and Metal refuse loudly and fall back, so cpu_cuda is not declared. greedy_reference deliberately not declared: 1/6 byte-identical vs llama.cpp b10280, with the mechanism measured rather than presumed (afmoe re-normalizes every branch before the residual add, amplifying the engines' by-design quantized-matvec arithmetic difference; layer-0 verified to ~2e-4) - see docs/model-evidence.md#afmoe and docs/model-evidence.md#afmoe. Chat smoke and perf gates green on the M1 (13.25 tok/s decode, Q4_K_M resident, CPU).",
       "check_params": {
         "chat": {
           "prompt": "What is 2+2?",
@@ -1019,7 +1019,7 @@
         "cpu_cuda",
         "chat"
       ],
-      "notes": "Official meta-models GGUF (Muse-Glimmer-30B-KQuant-17GB-Q4_K_M.gguf, 4-bit k-quant; upstream renamed/replaced the original muse-glimmer-30B-kquant-17gb.gguf — re-measured 2026-08-21, all six greedy cert outputs byte-identical, only the sha changed). Text path only: the separate vision encoder (mmproj) and atem tool syntax are out of scope. Evidence: docs/muse-glimmer-cert-2026-08-11.md.",
+      "notes": "Official meta-models GGUF (Muse-Glimmer-30B-KQuant-17GB-Q4_K_M.gguf, 4-bit k-quant; upstream renamed/replaced the original muse-glimmer-30B-kquant-17gb.gguf — re-measured 2026-08-21, all six greedy cert outputs byte-identical, only the sha changed). The vision encoder remains out of scope. Native atem rendering, grammar, and transport are implemented; current protocol tests and reference scope are in docs/model-evidence.md#muse-glimmer. Evidence: docs/model-evidence.md#muse-glimmer.",
       "check_params": {
         "cpu_cuda": {
           "pins": {
@@ -1061,7 +1061,7 @@
         "cpu_cuda",
         "chat"
       ],
-      "notes": "Official IBM GGUF. CERTIFIED: greedy 6/6 vs b10353, tokenizer 0/721, cpu_cuda 11/12 with the single flip measured at the model's own floor. Evidence: docs/granite-cert-2026-08-11.md.",
+      "notes": "Official IBM GGUF. CERTIFIED: greedy 6/6 vs b10353, tokenizer 0/721, cpu_cuda 11/12 with the single flip measured at the model's own floor. Evidence: docs/model-evidence.md#granite.",
       "check_params": {
         "cpu_cuda": {
           "pins": {
@@ -1101,7 +1101,7 @@
         "cpu_cuda",
         "chat"
       ],
-      "notes": "Official IBM GGUF. Engine-correct (cpu_cuda 6/6, chat clean) but FAILS the 16GB-tier quality bar: KLD 71%/0.314 vs Q8_0. The Q8_0 sibling is CERTIFIED-WITH-CAVEAT (greedy 3/6, divergences <=0.19 nats). Evidence: docs/granite-cert-2026-08-11.md.",
+      "notes": "Official IBM GGUF. Engine-correct (cpu_cuda 6/6, chat clean) but FAILS the 16GB-tier quality bar: KLD 71%/0.314 vs Q8_0. The Q8_0 sibling is CERTIFIED-WITH-CAVEAT (greedy 3/6, divergences <=0.19 nats). Evidence: docs/model-evidence.md#granite.",
       "check_params": {
         "cpu_cuda": {
           "pins": {
@@ -1226,7 +1226,7 @@
         "cpu_cuda",
         "chat"
       ],
-      "notes": "Unsloth UD-Q4_K_M of Qwen/Qwen3.8-27B: the qwen35 layout (48 Gated DeltaNet + 16 full-attention blocks, one NextN/MTP block declared and excluded from the backbone; --mtp drafts from it). Pre-tokenizer qwen35 with [\\p{L}\\p{M}]+ runs; its own qwen38 chat template (reasoning-effort preamble, preserved thinking, function-XML tools; 21/21 conformance, token-identical). CUDA: this dynamic quant carries 4 IQ3_S tensors, a CPU-only codebook type in the runner, so a CUDA box runs it on the CPU; the qwen35 CUDA path was measured on the pure Q8_0 and plain Q4_K_M siblings instead (see the evidence document). Blackwell 2026-09-06 vs 73a43d1 (the matrix row's own cpu_cuda check not_executed, full residency asked of a held slice): tokenizer 0/721, greedy 5/5 at 8 tokens (4/6 on the six-prompt cert set, the two 256-token runs part late), chat clean; UD-Q4_K_M vs Q8_0 bar PASS (100 positions, mean KLD 0.0016, top-1 100%). Evidence in docs/granite-42-qwen38-cert-2026-09-06.md.",
+      "notes": "Unsloth UD-Q4_K_M of Qwen/Qwen3.8-27B: the qwen35 layout (48 Gated DeltaNet + 16 full-attention blocks, one NextN/MTP block declared and excluded from the backbone; --mtp drafts from it). Pre-tokenizer qwen35 with [\\p{L}\\p{M}]+ runs; its own qwen38 chat template (reasoning-effort preamble, preserved thinking, function-XML tools; 21/21 conformance, token-identical). CUDA: this dynamic quant carries 4 IQ3_S tensors, a codebook type supported on CPU and CUDA; placement still depends on file geometry and the available device budget; the qwen35 CUDA path was measured on the pure Q8_0 and plain Q4_K_M siblings instead (see the evidence document). Blackwell 2026-09-06 vs 73a43d1 (the matrix row's own cpu_cuda check not_executed, full residency asked of a held slice): tokenizer 0/721, greedy 5/5 at 8 tokens (4/6 on the six-prompt cert set, the two 256-token runs part late), chat clean; UD-Q4_K_M vs Q8_0 bar PASS (100 positions, mean KLD 0.0016, top-1 100%). Evidence in docs/granite-42-qwen38-cert-2026-09-06.md.",
       "check_params": {
         "cpu_cuda": {
           "pins": {

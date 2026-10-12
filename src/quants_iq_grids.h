@@ -1,6 +1,6 @@
 // i-quant codebook grids and sign tables, extracted VERBATIM from
 // llama.cpp b10353 ggml/src/ggml-common.h (MIT) by scripts note in
-// docs/muse-glimmer-cert-2026-08-11.md. Data, not code: do not edit.
+// docs/model-evidence.md. Data, not code: do not edit.
 #ifndef RUNNER_QUANTS_IQ_GRIDS_H
 #define RUNNER_QUANTS_IQ_GRIDS_H
 #include <stdint.h>

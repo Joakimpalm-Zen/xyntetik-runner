@@ -17,7 +17,6 @@ nav: evidence
       <a href="#receipts">Receipts</a>
       <a href="#compat">Compatibility gates</a>
       <a href="#artifacts">Artifact ledger</a>
-      <a href="#negative">Negative results</a>
       <a href="#external">External reproductions</a>
     </nav>
   </div>
@@ -256,22 +255,7 @@ nav: evidence
   </div>
 </section>
 
-<section class="section tint" id="negative">
-  <div class="wrap split">
-    <div class="sticky">
-      <p class="eyebrow">Negative results</p>
-      <h2>Built, measured, rejected, and kept.</h2>
-      <p>Work that did not pay is written up so it is not attempted twice, and because where the cliff is happens to be exactly what someone with 8 to 16 GB needs to know.</p>
-    </div>
-    <ul class="ledger">
-      <li><div><div class="t"><a href="{{repo}}/blob/main/docs/negative-result-expert-cache.md">MoE expert caching</a></div><div class="d">An expert-residency cache tier for MoE models larger than RAM. Investigated, measured, rejected (2026-08-05); not in the product.</div></div><span class="pill note">rejected</span></li>
-      <li><div><div class="t"><a href="{{repo}}/blob/main/docs/negative-result-metal-multirow-matvec.md">Multi-row Metal decode matvec</a></div><div class="d">Rejected, and the write-up records what the CPU/GPU byte-identity contract costs in reachable GPU optimizations.</div></div><span class="pill note">rejected</span></li>
-      <li><div><div class="t"><a href="{{repo}}/blob/main/docs/negative-result-metal-gemm-occupancy.md">Metal GEMM occupancy</a>, <a href="{{repo}}/blob/main/docs/negative-result-metal-moe-expert-major.md">expert-major MoE layout</a></div><div class="d">A prefill tile sweep on the M1 where the shipped shape was already at a local optimum (2026-08-15), and two expert-grouping shapes for MoE prefill on the M5 Max that both lose (2026-09-01), kept so the third shape starts from evidence.</div></div><span class="pill note">rejected</span></li>
-      <li><div><div class="t"><a href="{{repo}}/blob/main/docs/negative-result-harmony-analysis-bound.md">Harmony analysis-channel bound</a></div><div class="d">Implemented, measured, reverted (2026-08-14), with a same-day correction recorded in place when the motivating symptom turned out to be gone.</div></div><span class="pill note">rejected</span></li>
-      <li><div><div class="t"><a href="{{repo}}/blob/main/docs/negative-result-muse-glimmer-selective-2026-08-20.md">Muse-Glimmer selective precision</a>, <a href="{{repo}}/blob/main/docs/negative-result-nemotron-lightning-artifacts-2026-08-20.md">Nemotron Lightning artifacts</a></div><div class="d">Six selective-precision candidates for Muse Glimmer built, gated and rejected (a Runner gap, not a Muse one); three of four planned Lightning derivatives rejected by cheap checks before being built. Published as reports rather than weights.</div></div><span class="pill note">no artifact</span></li>
-    </ul>
-  </div>
-</section>
+
 
 <section class="section" id="external">
   <div class="wrap">

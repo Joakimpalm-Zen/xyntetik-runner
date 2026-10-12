@@ -22,6 +22,19 @@ class SanitizerBuild(unittest.TestCase):
 
 
 class CommandGate(unittest.TestCase):
+    def test_roster_refuses_an_empty_root_inventory(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            for d in ("scripts", "tests/fuzz", ".github/workflows"):
+                (root / d).mkdir(parents=True)
+            script = root / "scripts/check-ci-roster.py"
+            script.write_bytes((ROOT / "scripts/check-ci-roster.py").read_bytes())
+            (root / "tests/fuzz/fuzz_probe.c").write_text("")
+            (root / "Makefile").write_text("FUZZ_TARGETS = probe\n")
+            (root / ".github/workflows/ci.yml").write_text("  targets: probe\n")
+            result = subprocess.run([sys.executable, str(script)], capture_output=True)
+            self.assertNotEqual(result.returncode, 0)
+
     def test_roster_catches_an_unwired_test_and_duplicate_fuzz_group(self):
         with tempfile.TemporaryDirectory() as td:
             root = pathlib.Path(td)

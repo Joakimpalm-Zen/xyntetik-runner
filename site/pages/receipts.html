@@ -110,11 +110,11 @@ nav: runner
       </div>
       <div class="card">
         <h3>Blocking-independence by construction</h3>
-        <p>v0.4.8 found that GCC could contract the scalar tail of the CPU prefill dot differently per loop shape, one ulp between batch blockings on some hosts. Every f32 dot tail is now an explicit <code>fmaf</code>, which has exactly one admissible result, and a CI leg pins the SIMD gates at x86-64-v3 and v4. No shipped model could have been affected, and the changelog says exactly why. <a href="{{repo}}/blob/main/CHANGELOG.md">CHANGELOG, v0.4.8</a>.</p>
+        <p>Every f32 dot tail is an explicit <code>fmaf</code>, which has exactly one admissible result, and a CI leg pins the SIMD gates at x86-64-v3 and v4. The numerical route and its current verification requirements are documented in <a href="{{repo}}/blob/main/docs/performance.md">the performance reference</a>.</p>
       </div>
       <div class="card">
         <h3>Second device family as a gate</h3>
-        <p>Since v0.4.3 every release passes a CUDA smoke gate on real hardware, because GitHub runners have no GPU and the CUDA backend is compiled on three platforms and executed by none of them. Its assertions are invariants rather than expected constants, so one script covers a desktop card, a datacenter card and a unified-memory device. Compatibility reports that executed no check at all are refused by the release check.</p>
+        <p>A release requires a CUDA smoke gate on real hardware, because GitHub runners have no GPU and the CUDA backend is compiled on three platforms and executed by none of them. Its assertions are invariants rather than expected constants, so one script covers a desktop card, a datacenter card and a unified-memory device. Compatibility reports that executed no check at all are refused by the release check.</p>
       </div>
     </div>
     <div class="btn-row">

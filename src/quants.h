@@ -26,9 +26,8 @@ enum ggml_type {
     T_Q2_0 = 42,    // 2-bit {-1,0,+1,+2} x f16 scale, 64/block (llama.cpp ggml
                     // type 42; the routed experts of Qwen3.8-Flash-Next GSQ)
     T_NVFP4 = 40,   // NVIDIA FP4 (E2M1 codes + per-block UE4M3 scale, 16/block);
-                    // RECOGNIZED, NOT DECODED: named so a refusal says NVFP4
-                    // instead of "?" (first seen in the wild on a DGX Spark,
-                    // 2026-08-29; upstream llama.cpp ggml type 40)
+                    // CPU and CUDA decode it, applying the scale companion;
+                    // Metal refuses it by name (upstream ggml type 40).
 };
 int         ggml_block_size(int type);   // elements per block
 size_t      ggml_type_size(int type);    // bytes per block

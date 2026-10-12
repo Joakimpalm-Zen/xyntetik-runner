@@ -1,8 +1,7 @@
 """NextN/MTP head consumption: drafts from the model's own predictor block.
 
-Contract under test (the fixture half; the real-model half is the measured
-acceptance rate recorded in docs/performance.md, which a random-weight fixture
-cannot stand in for):
+Contract under test (see docs/performance.md). This random-weight fixture
+protects consumption behavior; it does not measure real-model draft quality:
   - `--mtp` never changes the sampled stream: the head only proposes, the
     target's verify walk decides, so greedy output is byte-identical to plain
     decoding at every draft width;
