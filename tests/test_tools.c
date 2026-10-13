@@ -721,7 +721,7 @@ static void test_qwen_native_tool_protocol(void) {
 // call could not end the turn and a third could not start. And without
 // parallel_tool_calls the turn is exactly one call, which is what an agent
 // bank omitting the flag got (Qwen3.8-Flash-Next, 396 turns, never more
-// than one call, where llama.cpp and Strata made several in 123 and 103).
+// than one call, where llama.cpp and another engine made several in 123 and 103).
 // What an absent parallel_tool_calls means (owner, 2026-10-09): several calls
 // per turn, except on the families whose parallel grammar is still a fixed
 // pair of calls, where it would force two on every turn.

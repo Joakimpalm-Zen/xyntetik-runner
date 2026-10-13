@@ -15,6 +15,16 @@ Current release and unreleased changes. Compatibility follows the
   against the next relink. The raise now follows the last of them; a run
   that fails later, when the model will not load, still raises one.
 
+- **Shadow's verification replay runs in the recorded directory on
+  Windows.** `capture_report.reproduce_verification` ran the recorded
+  command in a login shell and set the directory on the process, but
+  MSYS2's login hook moves to `$HOME` whenever `SHLVL` is at most 1, which
+  is every shell started from cmd, PowerShell or make. The command then ran
+  in the home directory, failed to find its files (exit 127) and was
+  reported as an instrument error instead of reproduced or not reproduced.
+  The shell now enters the recorded directory itself after its startup
+  files run, so no profile can move it.
+
 - **Byte-level BPE tokenization matches the reference on Latin-1 symbols,
   superscripts, currency and U+FFFD.** The pre-tokenizers read every code
   point above U+007F as a letter unless it sat in a few symbol blocks, so
@@ -236,7 +246,7 @@ Current release and unreleased changes. Compatibility follows the
   `make-tooluse-data.py`, `tokenizer-corpus.py`) refuse an option where the
   output path goes (`--help` used to write a set of `--help.*` files).
   `docs/README.md` indexes every document and evidence folder by topic.
-  `scripts/outcome-table.py`, used only by the Strata comparison, is gone.
+  `scripts/outcome-table.py`, used only by the comparison with another engine, is gone.
 - **`--lineage FILE`: where a model file came from, checked (R17.1).**
   `--quantize` (and its prune, sublayer-removal and type-plan forms) now
   writes a provenance record beside its output, `OUT.gguf.quant.json`, as

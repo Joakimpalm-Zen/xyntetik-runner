@@ -290,7 +290,15 @@ def reproduce_verification(home: Path, thread: list[dict[str, Any]],
                 # read as a failed verification. Resolve through PATH instead,
                 # where the shell that recorded the command comes first.
                 shell = shutil.which("bash") or "bash"
-                pr = subprocess.run([shell, "-lc", str(v["command"])],
+                # A login shell's startup files run before the command and can
+                # change directory: MSYS2's login hook moves to $HOME whenever
+                # SHLVL is at most 1, which is every shell started from cmd,
+                # PowerShell or make, so the cwd given to the process did not
+                # survive. The shell enters the recorded directory itself, after
+                # its startup files; a directory it cannot enter exits 3, an
+                # instrument error like any other command that could not run.
+                pr = subprocess.run([shell, "-lc", 'cd -- "$1" || exit 3; shift; eval "$1"',
+                                     "replay", str(tree), str(v["command"])],
                                     cwd=str(tree), capture_output=True, text=True,
                                     timeout=timeout_s)
                 got = {0: "passed", 1: "failed"}.get(pr.returncode)
