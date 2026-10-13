@@ -1999,6 +1999,70 @@ static size_t render_granite42(int tmpl, const chat_msg *msgs, int n_msgs,
     return off;
 }
 
+// TMPL_HERMES4.
+static size_t render_hermes4(int tmpl, const chat_msg *msgs, int n_msgs,
+                             bool add_assistant, int thinking, const jv *tools,
+                             char *out, size_t cap) {
+    size_t off = 0;
+    // NousResearch/Hermes-4-14B chat_template (2026-10-02). The system
+    // turn is always written: the caller's first message when it is a
+    // system one, else the standard prompt, or the thinking prompt when
+    // the request asks for reasoning (the template's `thinking`, false
+    // by default). The tools preamble is appended to it.
+    static const char standard[] = "You are Hermes, created by Nous Research.";
+    static const char deep[] = "You are a deep thinking AI, you may use extremely long chains of thought to deeply consider the problem and deliberate with yourself via systematic reasoning processes to help come to a correct solution prior to answering. You should enclose your thoughts and internal monologue inside <think> </think> tags, and then provide your solution or response to the problem.";
+    bool think = (thinking & THINK_MODE_MASK) == THINK_ON;
+    bool have_tools = tools && tools->type == J_ARR && tools->n > 0;
+    bool sys0 = n_msgs > 0 && !strcmp(msgs[0].role, "system");
+    off = emit(out, cap, off, "<|im_start|>system\n%s",
+               sys0 ? msgs[0].content : think ? deep : standard, NULL);
+    if (have_tools) {
+        sbuf decl = {0};
+        tools_render_for(tmpl, tools, &decl);
+        if (decl.failed) { free(decl.s); return SIZE_MAX; }
+        off = emit(out, cap, off, "%s", decl.s, NULL);
+        free(decl.s);
+    }
+    off = emit(out, cap, off, "<|im_end|>\n", NULL, NULL);
+    for (int i = sys0 ? 1 : 0; i < n_msgs; i++) {
+        const char *role = msgs[i].role;
+        if (!strcmp(role, "tool")) {
+            bool prev_tool = i > 0 && !strcmp(msgs[i - 1].role, "tool");
+            bool next_tool = i + 1 < n_msgs &&
+                             !strcmp(msgs[i + 1].role, "tool");
+            if (!prev_tool)
+                off = emit(out, cap, off, "<|im_start|>user", NULL, NULL);
+            off = emit(out, cap, off,
+                       "\n<tool_response>\n%s\n</tool_response>",
+                       msgs[i].content, NULL);
+            if (!next_tool)
+                off = emit(out, cap, off, "<|im_end|>\n", NULL, NULL);
+        } else if (!strcmp(role, "assistant")) {
+            // The reference writes the header, then "\n" + content when
+            // there is content, then "\n<tool_call>..." per call, and
+            // closes the turn only when it wrote one of the two. The
+            // flattened turn here is content followed by the calls, each
+            // already led by its newline (assistant_calls_render).
+            const char *c = skip_marks(msgs[i].content);
+            off = emit(out, cap, off, "<|im_start|>assistant", NULL, NULL);
+            if (!c[0]) continue;
+            // (the builder marks its literals one by one, so the newline
+            // and the tag are separated by marks)
+            bool calls_first = c[0] == '\n' &&
+                !strncmp(skip_marks(c + 1), "<tool_call>", 11);
+            if (!calls_first)
+                off = emit(out, cap, off, "\n", NULL, NULL);
+            off = emit(out, cap, off, "%s<|im_end|>\n", msgs[i].content, NULL);
+        } else {
+            off = emit(out, cap, off, "<|im_start|>%s\n%s<|im_end|>\n",
+                       role, msgs[i].content);
+        }
+    }
+    if (add_assistant)
+        off = emit(out, cap, off, "<|im_start|>assistant\n", NULL, NULL);
+    return off;
+}
+
 size_t render_messages_with_tools(int tmpl, const chat_msg *msgs, int n_msgs,
                                   bool add_assistant, int thinking,
                                   const jv *tools,
@@ -2019,65 +2083,8 @@ size_t render_messages_with_tools(int tmpl, const chat_msg *msgs, int n_msgs,
     case TMPL_GRANITE42:
     case TMPL_NEMOTRON35:
         return render_granite42(tmpl, msgs, n_msgs, add_assistant, thinking, tools, out, cap);
-    case TMPL_HERMES4: {
-        // NousResearch/Hermes-4-14B chat_template (2026-10-02). The system
-        // turn is always written: the caller's first message when it is a
-        // system one, else the standard prompt, or the thinking prompt when
-        // the request asks for reasoning (the template's `thinking`, false
-        // by default). The tools preamble is appended to it.
-        static const char standard[] = "You are Hermes, created by Nous Research.";
-        static const char deep[] = "You are a deep thinking AI, you may use extremely long chains of thought to deeply consider the problem and deliberate with yourself via systematic reasoning processes to help come to a correct solution prior to answering. You should enclose your thoughts and internal monologue inside <think> </think> tags, and then provide your solution or response to the problem.";
-        bool think = (thinking & THINK_MODE_MASK) == THINK_ON;
-        bool have_tools = tools && tools->type == J_ARR && tools->n > 0;
-        bool sys0 = n_msgs > 0 && !strcmp(msgs[0].role, "system");
-        off = emit(out, cap, off, "<|im_start|>system\n%s",
-                   sys0 ? msgs[0].content : think ? deep : standard, NULL);
-        if (have_tools) {
-            sbuf decl = {0};
-            tools_render_for(tmpl, tools, &decl);
-            if (decl.failed) { free(decl.s); return SIZE_MAX; }
-            off = emit(out, cap, off, "%s", decl.s, NULL);
-            free(decl.s);
-        }
-        off = emit(out, cap, off, "<|im_end|>\n", NULL, NULL);
-        for (int i = sys0 ? 1 : 0; i < n_msgs; i++) {
-            const char *role = msgs[i].role;
-            if (!strcmp(role, "tool")) {
-                bool prev_tool = i > 0 && !strcmp(msgs[i - 1].role, "tool");
-                bool next_tool = i + 1 < n_msgs &&
-                                 !strcmp(msgs[i + 1].role, "tool");
-                if (!prev_tool)
-                    off = emit(out, cap, off, "<|im_start|>user", NULL, NULL);
-                off = emit(out, cap, off,
-                           "\n<tool_response>\n%s\n</tool_response>",
-                           msgs[i].content, NULL);
-                if (!next_tool)
-                    off = emit(out, cap, off, "<|im_end|>\n", NULL, NULL);
-            } else if (!strcmp(role, "assistant")) {
-                // The reference writes the header, then "\n" + content when
-                // there is content, then "\n<tool_call>..." per call, and
-                // closes the turn only when it wrote one of the two. The
-                // flattened turn here is content followed by the calls, each
-                // already led by its newline (assistant_calls_render).
-                const char *c = skip_marks(msgs[i].content);
-                off = emit(out, cap, off, "<|im_start|>assistant", NULL, NULL);
-                if (!c[0]) continue;
-                // (the builder marks its literals one by one, so the newline
-                // and the tag are separated by marks)
-                bool calls_first = c[0] == '\n' &&
-                    !strncmp(skip_marks(c + 1), "<tool_call>", 11);
-                if (!calls_first)
-                    off = emit(out, cap, off, "\n", NULL, NULL);
-                off = emit(out, cap, off, "%s<|im_end|>\n", msgs[i].content, NULL);
-            } else {
-                off = emit(out, cap, off, "<|im_start|>%s\n%s<|im_end|>\n",
-                           role, msgs[i].content);
-            }
-        }
-        if (add_assistant)
-            off = emit(out, cap, off, "<|im_start|>assistant\n", NULL, NULL);
-        break;
-    }
+    case TMPL_HERMES4:
+        return render_hermes4(tmpl, msgs, n_msgs, add_assistant, thinking, tools, out, cap);
     case TMPL_CHATML:
     case TMPL_CHATML_THINK: {
         bool qwen_tools = tools && tools->type == J_ARR && tools->n > 0;
